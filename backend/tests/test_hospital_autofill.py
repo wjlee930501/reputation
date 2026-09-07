@@ -5,8 +5,22 @@
 import json
 import types
 
+import pytest
+
 from app.services import hospital_profile_autofill as af
-from app.services import naver_place
+from app.services import naver_place, provider_usage
+
+
+@pytest.fixture(autouse=True)
+def _capture_provider_attempts(monkeypatch):
+    attempts = []
+
+    async def capture(**kwargs):
+        attempts.append(kwargs)
+        return True
+
+    monkeypatch.setattr(provider_usage, "record_attempt", capture)
+    return attempts
 
 
 # ── naver_place ──────────────────────────────────────────────────
@@ -84,7 +98,11 @@ def test_collect_violations_flags_forbidden_fields():
 # ── autofill_profile 통합 ─────────────────────────────────────────
 def _fake_claude_response(fields: dict):
     payload = json.dumps({"fields": fields}, ensure_ascii=False)
-    return types.SimpleNamespace(content=[types.SimpleNamespace(text=payload)])
+    return types.SimpleNamespace(
+        id="msg-autofill-test",
+        usage=types.SimpleNamespace(input_tokens=11, output_tokens=3),
+        content=[types.SimpleNamespace(text=payload)],
+    )
 
 
 async def test_autofill_profile_happy_path(monkeypatch):
@@ -374,3 +392,62 @@ async def test_autofill_does_not_retry_deterministic_client_error(monkeypatch):
 
     assert calls["n"] == 1
     assert result.draft == {}
+
+
+async def test_autofill_records_each_http_retry_with_one_logical_identity(
+    monkeypatch, _capture_provider_attempts
+):
+    import anthropic
+    import httpx
+    from tenacity import wait_none
+
+    async def ok_fetch(_url: str):
+        return "김원장", None, None
+
+    async def fake_naver(_name: str):
+        return naver_place.NaverPlaceResult(None, "", "없음")
+
+    async def no_cost_counter(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(af, "fetch_url_text", ok_fetch)
+    monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
+    monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_counter)
+    monkeypatch.setattr(af._extract_with_claude.retry, "wait", wait_none())
+
+    http_response = httpx.Response(
+        429, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    )
+    calls = 0
+
+    def create(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise anthropic.RateLimitError(
+                "retry", response=http_response, body=None
+            )
+        return _fake_claude_response(
+            {
+                "director_name": {
+                    "value": "김원장",
+                    "source": "homepage",
+                    "confidence": 0.9,
+                    "evidence": "김원장",
+                }
+            }
+        )
+
+    monkeypatch.setattr(af._client.messages, "create", create)
+    hospital_id = "00000000-0000-0000-0000-000000000123"
+
+    result = await af.autofill_profile(
+        "장편한외과의원", "http://hp", None, hospital_id=hospital_id
+    )
+
+    assert result.draft["director_name"] == "김원장"
+    assert [event["http_attempt"] for event in _capture_provider_attempts] == [1, 2]
+    assert len({event["logical_call_id"] for event in _capture_provider_attempts}) == 1
+    assert _capture_provider_attempts[0]["usage_known"] is False
+    assert "usage_known" not in _capture_provider_attempts[1]
+    assert _capture_provider_attempts[1]["provider_request_id"] == "msg-autofill-test"

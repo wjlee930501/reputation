@@ -174,6 +174,40 @@ def test_semantic_policy_rejection_prevents_upload_and_same_prompt_retry(monkeyp
     assert calls == {"generation": 1, "upload": 0}
 
 
+def test_transient_upload_retry_reuses_the_verified_candidate(monkeypatch):
+    calls = {"generation": 0, "review": 0, "upload": 0}
+
+    def generated(**_kwargs):
+        calls["generation"] += 1
+        return SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"one-candidate"))]
+                    )
+                )
+            ]
+        )
+
+    _patch_google_client(monkeypatch, generated)
+
+    def review(*_args, **_kwargs):
+        calls["review"] += 1
+
+    def upload(*_args):
+        calls["upload"] += 1
+        if calls["upload"] < 3:
+            raise RuntimeError("temporary storage failure")
+        return "gs://bucket/final.png"
+
+    monkeypatch.setattr(image_engine, "_validate_generated_image", review)
+    monkeypatch.setattr(image_engine, "_upload_png_to_gcs", upload)
+    monkeypatch.setattr(image_engine._upload_verified_png.retry, "sleep", lambda _s: None)
+
+    assert image_engine._generate_and_upload("prompt", "hospital") == "gs://bucket/final.png"
+    assert calls == {"generation": 1, "review": 1, "upload": 3}
+
+
 def test_openai_only_policy_review_sends_strict_typed_schema(monkeypatch):
     captured = {}
 

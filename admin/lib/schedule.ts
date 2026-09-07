@@ -75,5 +75,5 @@ export function validateScheduleCapacity(
   if (available >= total) return null
 
   const monthLabel = activeFrom.slice(0, 7)
-  return `선택한 요일로는 ${monthLabel}에 ${available}개 슬롯만 생성됩니다. ${total}개 슬롯이 필요하므로 발행 요일을 추가하거나 요금제를 변경해 주세요.`
+  return `선택한 요일로는 ${monthLabel}에 콘텐츠 항목 ${available}개만 만들 수 있습니다. ${total}개가 필요하므로 발행 요일을 추가하거나 요금제를 변경해 주세요.`
 }

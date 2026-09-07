@@ -20,6 +20,7 @@ from app.models.content import ContentStatus
 from app.models.essence import PhilosophyStatus, SourceType
 from app.models.hospital import HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_NEEDS_REVIEW
+from app.services.image_engine import IMAGE_POLICY_VERSION, image_subject_hash
 
 # slowapi @limiter.limit 우회 — 단위 테스트는 FastAPI 요청 라이프사이클 밖에서 실행된다
 # (test_public_by_domain.py와 동일 패턴).
@@ -95,12 +96,28 @@ def test_serialize_hospital_includes_public_profile_fields():
     assert serialized["hero_image_url"] == "https://cdn.example.com/hero.png"
     assert serialized["hero_media_kind"] == "VERIFIED_FACILITY"
     assert serialized["hero_headline"] == "피부 건강 정보를 차분히 확인하세요"
+    assert serialized["hero_description"] == "진료 범위와 방문 정보를 안내합니다."
     assert serialized["image_style_direction"] == "밝은 자연광, 실제 진료 공간에 가까운 조명"
     assert serialized["site_access_mode"] == "specialist"
     assert serialized["treatments"] == [{"name": "리프팅", "description": "안면 리프팅"}]
     # license_number는 내부 보관 전용 — 공개 응답에서 제거됨.
     assert "license_number" not in serialized["director_credentials"]
     assert serialized["director_credentials"]["medical_school"] == "서울대학교 의과대학"
+
+
+def test_forbidden_hero_copy_falls_back_without_changing_clean_copy():
+    hospital = _hospital_with_photo(None)
+    hospital.hero_headline = "최고의 치료를 보장합니다"
+    hospital.hero_description = "부작용 없는 치료"
+    serialized = _serialize_hospital(hospital)
+    assert serialized["hero_headline"] is None
+    assert serialized["hero_description"] is None
+
+    hospital.hero_headline = "진료 정보를 차분히 확인하세요"
+    hospital.hero_description = "진료 범위와 방문 정보를 안내합니다."
+    serialized = _serialize_hospital(hospital)
+    assert serialized["hero_headline"] == hospital.hero_headline
+    assert serialized["hero_description"] == hospital.hero_description
 
 
 def test_serialize_hospital_covers_every_visual_field_the_site_contract_declares():
@@ -152,10 +169,16 @@ def test_serialize_hospital_normalizes_treatments_for_site_contract():
 
 
 def test_public_content_policy_requires_published_and_essence_aligned():
+    image_hash = "a" * 64
     common = {
         "title": "진료 안내",
         "body": "확인된 진료 정보를 안내합니다.",
         "published_at": datetime(2026, 6, 1, 8, 0, 0),
+        "image_url": f"gs://reputation-images/content/{image_hash}-reviewed.png",
+        "image_content_hash": image_hash,
+        "image_subject_hash": image_subject_hash("NOTICE", "진료 안내"),
+        "image_policy_version": IMAGE_POLICY_VERSION,
+        "image_policy_verified_at": datetime(2026, 6, 1, 7, 59, 0),
         "content_type": "NOTICE",
         "references_list": [
             {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
@@ -686,7 +709,6 @@ async def test_content_image_uses_the_historical_public_approval(monkeypatch):
     item = _published_item(
         hospital_id="hospital-id",
         content_philosophy_id=philosophy_id,
-        image_url="gs://reputation-images/content/example.png",
     )
     db = _ImageFakeDB([_FakeResult([_active_hospital()])], item)
     seen: list[object] = []
@@ -714,6 +736,7 @@ async def test_content_image_uses_the_historical_public_approval(monkeypatch):
 
 def _published_item(**overrides):
     """발행 게이트를 통과한 공개 후보 1건."""
+    image_hash = "b" * 64
     values = {
         "id": uuid.uuid4(),
         "status": ContentStatus.PUBLISHED,
@@ -724,7 +747,10 @@ def _published_item(**overrides):
         "meta_description": "회복 기간 안내",
         "faq_question": "회복까지 얼마나 걸리나요?",
         "faq_answer_summary": "평균 2주입니다.",
-        "image_url": None,
+        "image_url": f"gs://reputation-images/content/{image_hash}-reviewed.png",
+        "image_content_hash": image_hash,
+        "image_policy_version": IMAGE_POLICY_VERSION,
+        "image_policy_verified_at": datetime(2026, 6, 1, 7, 59, 0),
         "scheduled_date": date(2026, 6, 1),
         "published_at": datetime(2026, 6, 1, 8, 0, 0),
         "body_updated_at": None,
@@ -734,6 +760,10 @@ def _published_item(**overrides):
         "query_target_id": None,
     }
     values.update(overrides)
+    if "image_subject_hash" not in overrides:
+        values["image_subject_hash"] = image_subject_hash(
+            values["content_type"], values["title"]
+        )
     return SimpleNamespace(**values)
 
 
@@ -772,11 +802,45 @@ def test_notice_can_be_public_without_external_references():
     assert _is_public_safe_content(_published_item(content_type="NOTICE", references_list=[]))
 
 
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"faq_question": None},
+        {"faq_answer_summary": None},
+        {"faq_question": "물음표가 없는 질문"},
+    ],
+)
+def test_incomplete_published_faq_is_not_public_safe(overrides):
+    assert _is_public_safe_content(_published_item(**overrides)) is False
+
+
+@pytest.mark.parametrize("content_type", ["DISEASE", "TREATMENT", "COLUMN", "HEALTH", "LOCAL", "NOTICE"])
+def test_non_faq_public_types_do_not_require_faq_fields(content_type):
+    assert _is_public_safe_content(
+        _published_item(
+            content_type=content_type,
+            faq_question=None,
+            faq_answer_summary=None,
+            references_list=[] if content_type == "NOTICE" else _published_item().references_list,
+        )
+    )
+
+
 def test_forbidden_check_reads_the_body_as_rendered_markdown():
     """`최**고**의`는 화면에 '최고의'로 렌더된다 — 마크업으로 우회할 수 없다."""
     assert _is_public_safe_content(_published_item(body="저희는 최**고**의 병원입니다.")) is False
     # 반대로 짝이 맞지 않는 별표는 리터럴이므로 오탐하지 않는다.
     assert _is_public_safe_content(_published_item(body="가격은 5*3 만원 수준입니다.")) is True
+
+
+def test_forbidden_reference_title_is_not_public_even_when_body_and_url_are_safe():
+    item = _published_item(
+        body="진료 범위와 개인차를 설명합니다.",
+        references_list=[
+            {"title": "부작용 없는 치료 안내", "url": "https://www.kdca.go.kr/example"}
+        ],
+    )
+    assert _is_public_safe_content(item) is False
 
 
 async def test_list_published_contents_drops_items_that_fail_the_filter(monkeypatch):

@@ -1,4 +1,11 @@
-"""Best-effort persistence and hospital-scoped aggregation for provider usage."""
+"""Best-effort persistence and hospital-scoped aggregation for provider usage.
+
+This is the backward-compatible aggregate introduced before per-provider attempt events.
+Its non-null token columns map unknown usage to zero, so this view cannot distinguish an
+unreported token count from a provider-reported zero. New attempt-level consumers must use
+``ProviderUsageEvent.usage_known`` and its nullable unit columns; this module intentionally
+keeps the existing admin response shape stable.
+"""
 
 import logging
 import uuid

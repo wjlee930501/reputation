@@ -36,7 +36,7 @@ test('fresh server state blocks stale delivery before mutation and stays actiona
 
 test('fresh server state prevents a duplicate delivery but allows valid correction and rescind', () => {
   const delivered = { ...ready, effectiveEventType: 'DELIVERED' }
-  assert.match(preflightDeliveryAction(delivered, 'deliver')?.title ?? '', /이미 전달/)
+  assert.match(preflightDeliveryAction(delivered, 'deliver')?.title ?? '', /이미 고객 전달/)
   assert.equal(preflightDeliveryAction(delivered, 'correct'), null)
   assert.equal(preflightDeliveryAction(delivered, 'rescind'), null)
 })

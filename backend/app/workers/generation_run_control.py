@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -23,6 +23,11 @@ from app.services.operation_run_payloads import (
     UnsafeDispatchPayload,
     build_request_payload,
     parse_stored_dispatch,
+)
+from app.workers.generation_retry_policy import (
+    GenerationRetryClass,
+    next_recovery_sweep,
+    retry_class_for,
 )
 
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
@@ -210,13 +215,16 @@ def finish_explicit_run(
         "attempt_id": f"{context.run_id}:{item_id}:{context.version}",
     }
     if safe_error_code is not None:
+        retry_class = retry_class_for(safe_error_code)
         item_result.update(
             {
                 "safe_error_code": safe_error_code,
                 "safe_error_message": safe_error_message,
-                "next_retry_at": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+                "retry_class": retry_class.value,
             }
         )
+        if retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+            item_result["next_retry_at"] = next_recovery_sweep().isoformat()
     result = db.execute(
         update(OperationRun)
         .where(

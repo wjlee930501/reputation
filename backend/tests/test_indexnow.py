@@ -211,6 +211,27 @@ async def test_non_2xx_reports_failure(enabled, monkeypatch):
     ) is False
 
 
+@pytest.mark.asyncio
+async def test_submission_result_retries_rate_limits_but_not_validation_rejections(
+    enabled, monkeypatch
+):
+    rate_limited = _FakeClient(_status=429)
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", lambda *a, **k: rate_limited)
+    transient = await indexnow.submit_urls_result(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    indexnow._OWNERSHIP_CACHE.clear()
+    rejected = _FakeClient(_status=422)
+    monkeypatch.setattr(indexnow.httpx, "AsyncClient", lambda *a, **k: rejected)
+    permanent = await indexnow.submit_urls_result(
+        base_url="https://jangclinic.kr", urls=["https://jangclinic.kr/a"]
+    )
+
+    assert transient == indexnow.SubmissionResult(False, True, "transient_failure")
+    assert permanent == indexnow.SubmissionResult(False, False, "rejected")
+
+
 # ── 백필용 URL 조립 ──
 
 

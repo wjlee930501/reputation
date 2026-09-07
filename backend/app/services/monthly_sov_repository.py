@@ -75,7 +75,8 @@ def load_monthly_sov_manifest(
         .options(
             selectinload(MonthlyMeasurementCell.attempts).selectinload(
                 MonthlyMeasurementAttempt.sov_record
-            )
+            ),
+            selectinload(MonthlyMeasurementCell.observation_slots),
         )
         .where(MonthlyMeasurementCell.manifest_id == manifest.id)
         .order_by(MonthlyMeasurementCell.query_key, MonthlyMeasurementCell.platform)
@@ -83,6 +84,7 @@ def load_monthly_sov_manifest(
     cells: list[ManifestCellInput] = []
     records_by_id: dict[uuid.UUID, SovRecord] = {}
     for cell, live_intent in rows:
+        observation_slots = list(getattr(cell, "observation_slots", ()) or ())
         attempts = tuple(
             CellAttempt(
                 record_id=attempt.sov_record.id,
@@ -116,6 +118,28 @@ def load_monthly_sov_manifest(
             query_variant_id=cell.query_variant_id,
             query_intent_source=intent_source,
             attempts=attempts,
+            planned_repeat_count=len(observation_slots),
+            received_answer_count=sum(
+                slot.answer_status == "RECEIVED" for slot in observation_slots
+            ),
+            confirmed_slot_count=sum(
+                slot.judgment_status == "CONFIRMED" for slot in observation_slots
+            ),
+            ambiguous_slot_count=sum(
+                slot.judgment_status == "AMBIGUOUS" for slot in observation_slots
+            ),
+            answer_failed_slot_count=sum(
+                slot.answer_status == "FAILED" for slot in observation_slots
+            ),
+            judgment_failed_slot_count=sum(
+                slot.answer_status == "RECEIVED" and slot.judgment_status == "FAILED"
+                for slot in observation_slots
+            ),
+            pending_slot_count=sum(
+                slot.judgment_status not in {"CONFIRMED", "AMBIGUOUS"}
+                for slot in observation_slots
+            ),
+            slot_lineage="SLOTTED" if observation_slots else "LEGACY_UNKNOWN",
         )
         cells.append(metric_cell)
         records_by_id.update(

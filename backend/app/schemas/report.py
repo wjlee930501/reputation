@@ -20,7 +20,7 @@ class DoctorArtifactProjection(BaseModel):
     # 본문 1쪽 + (부록이 있으면) 2쪽. 그 외 쪽수는 검증을 통과하지 못한다.
     page_count: Literal[1, 2] | None = None
     validated_at: datetime | None = None
-    validation_version: Literal["doctor-pdf-v1"] | None = None
+    validation_version: Literal["doctor-pdf-v1", "v0-pdf-v1"] | None = None
 
 
 class ReportMeasurementProjection(BaseModel):
@@ -81,8 +81,7 @@ class ReportListResponse(BaseModel):
     report_type: str
     display: Optional[dict[str, Any]] = None
     has_pdf: bool
-    # 검증본에 묶인 전달 기록 파이프라인의 대상인지(월간만 true). 초기 진단(V0)은
-    # AE가 PDF를 직접 원장에게 전달하므로 전달 이벤트를 남기지 않는다.
+    # 검증본에 묶인 전달 기록 파이프라인의 대상인지. V0와 월간 모두 true다.
     delivery_tracked: bool = True
     # 원장 보고용 1페이지 판본이 준비됐는지. 없으면 화면이 그 버튼을 감춘다.
     has_doctor_pdf: bool = False

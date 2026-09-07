@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -34,7 +35,10 @@ from app.services.notification_outbox import (
     retry_notification,
 )
 
-_ASYNC_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_ASYNC_URL = os.getenv(
+    "CONTENT_PUBLISH_RECOVERY_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
+)
 
 
 @pytest.mark.asyncio

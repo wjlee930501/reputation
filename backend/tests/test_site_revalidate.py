@@ -51,8 +51,8 @@ async def test_trigger_content_site_revalidate_safe_never_raises(monkeypatch):
         assert unpublished_from is None
         return RevalidationRetryPlan(content_id, 60, False, True)
 
-    def fake_send_task(name, *, args, queue, countdown, headers):
-        scheduled.append((name, args, queue, countdown, headers))
+    def fake_send_task(name, *, args, queue, priority, countdown, headers):
+        scheduled.append((name, args, queue, priority, countdown, headers))
 
     monkeypatch.setattr(site_revalidate, "trigger_site_revalidate", boom)
     monkeypatch.setattr(site_revalidate, "start_revalidation_failure", fake_start)
@@ -69,7 +69,8 @@ async def test_trigger_content_site_revalidate_safe_never_raises(monkeypatch):
         (
             "app.workers.tasks.retry_site_revalidation",
             ["f5aa8f49-fc76-46b6-b6d5-d372dad2522a", 0],
-            "default",
+            "control",
+            0,
             60,
             site_revalidate.build_dispatch_headers(
                 "retry-site-revalidation", "f5aa8f49-fc76-46b6-b6d5-d372dad2522a"
@@ -110,8 +111,8 @@ async def test_hospital_revalidation_failure_is_persisted_and_requeued(monkeypat
     monkeypatch.setattr(
         celery_app,
         "send_task",
-        lambda name, *, args, queue, countdown, headers: scheduled.append(
-            (name, args, queue, countdown, headers)
+        lambda name, *, args, queue, priority, countdown, headers: scheduled.append(
+            (name, args, queue, priority, countdown, headers)
         ),
     )
 
@@ -120,7 +121,8 @@ async def test_hospital_revalidation_failure_is_persisted_and_requeued(monkeypat
         (
             "app.workers.tasks.retry_site_revalidation",
             ["f5aa8f49-fc76-46b6-b6d5-d372dad2522a", 0],
-            "default",
+            "control",
+            0,
             60,
             site_revalidate.build_dispatch_headers(
                 "retry-site-revalidation", "f5aa8f49-fc76-46b6-b6d5-d372dad2522a"

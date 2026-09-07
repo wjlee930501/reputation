@@ -66,7 +66,19 @@ def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(tasks, "build_monthly_sov", lambda *_args, **_kwargs: monthly_sov())
     monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_kwargs: "gs://qa-private/ae.pdf")
     monkeypatch.setattr(tasks, "build_content_attribution_summary", lambda *_args: {})
-    monkeypatch.setattr(tasks, "build_monthly_essence_summary", lambda *_args: {})
+    monkeypatch.setattr(
+        tasks,
+        "build_monthly_essence_summary",
+        lambda *_args: {
+            "approved_philosophy_exists": True,
+            "source_stale": False,
+            "source_count": 4,
+            "processed_source_count": 4,
+            "needs_review_content_count": 0,
+            "missing_philosophy_content_count": 0,
+            "medical_risk_findings": [],
+        },
+    )
     monkeypatch.setattr(tasks, "apply_manifest_to_report", apply_complete)
     calls = 0
 

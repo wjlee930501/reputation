@@ -200,7 +200,8 @@ def reconcile() -> RecoveryCounts:
             celery_app.send_task(
                 "app.workers.tasks.retry_site_revalidation",
                 args=[str(run.id), run.attempt_count],
-                queue="default",
+                queue="control",
+                priority=0,
                 headers=build_dispatch_headers("retry-site-revalidation", str(run.id)),
             )
             run.heartbeat_at = observed_at

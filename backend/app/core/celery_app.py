@@ -11,11 +11,15 @@ from app.workers.dispatch_auth import (
     build_dispatch_headers,
     stamp_published_message,
 )
+from app.workers.runtime_queue_observability import (
+    record_task_queue_wait,
+    stamp_task_enqueue_time,
+)
 
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-09-07.1"
+REDBEAT_SCHEDULE_VERSION = "2026-09-07.2"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -87,10 +91,14 @@ celery_app = Celery(
         "app.workers.domain_certificate_tasks",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
+        "app.workers.indexnow_retry",
+        "app.workers.provider_usage_recovery",
     ],
 )
 
 before_task_publish.connect(stamp_published_message, weak=False)
+before_task_publish.connect(stamp_task_enqueue_time, weak=False)
+task_prerun.connect(record_task_queue_wait, weak=False)
 
 celery_app.conf.update(
     task_serializer="json",
@@ -110,6 +118,12 @@ celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_reject_on_worker_lost=True,
+    # Redis priority 0 is highest and 9 is lowest. It is advisory and cannot preempt work
+    # already occupying both slots; queue-wait measurements determine whether later dedicated
+    # capacity is justified. Priority queue ordering makes an available slot select control work.
+    broker_transport_options={"queue_order_strategy": "priority"},
+    task_queue_max_priority=9,
+    task_default_priority=4,
     # Beat 신뢰성 (Cloud Run 롤아웃 중 구/신 beat가 잠시 공존):
     # RedBeat은 Redis 분산 락으로 단일 dispatcher를 보장하고, 스케줄 상태를
     # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
@@ -133,7 +147,7 @@ celery_app.conf.update(
         "app.workers.tasks.process_source_asset_task": {"queue": "default"},
         "app.workers.tasks.auto_review_essence_snapshot": {"queue": "content"},
         "app.workers.tasks.reconcile_essence_snapshots": {"queue": "default"},
-        "app.workers.tasks.morning_content_auto_publish": {"queue": "content"},
+        "app.workers.tasks.morning_content_auto_publish": {"queue": "control", "priority": 0},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_sov_measurement": {"queue": "sov"},
@@ -142,7 +156,7 @@ celery_app.conf.update(
         "app.workers.tasks.generate_monthly_report_for_hospital": {"queue": "reports"},
         "app.workers.tasks.trigger_v0_report": {"queue": "reports"},
         "app.workers.tasks.build_aeo_site": {"queue": "default"},
-        "app.workers.tasks.retry_site_revalidation": {"queue": "default"},
+        "app.workers.tasks.retry_site_revalidation": {"queue": "control", "priority": 0},
         "app.workers.tasks.monthly_slot_generation": {"queue": "default"},
         "app.workers.tasks.backfill_indexnow": {"queue": "default"},
         # 라우팅 누락 시 기본 "celery" 큐로 떨어지는데 배포 워커는 명시한 큐만
@@ -165,7 +179,9 @@ celery_app.conf.update(
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
         "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
-        "app.workers.autonomous_recovery.reconcile": {"queue": "default"},
+        "app.workers.autonomous_recovery.reconcile": {"queue": "control", "priority": 0},
+        "app.workers.indexnow_retry.drain": {"queue": "default", "priority": 9},
+        "app.workers.provider_usage_recovery.drain": {"queue": "default", "priority": 9},
         "app.workers.content_backlog_recovery.reconcile": {"queue": "default"},
         "app.workers.domain_certificate_tasks.provision_domain_certificate": {
             "queue": "certificates"
@@ -176,6 +192,7 @@ celery_app.conf.update(
         "app.workers.canary_tasks.canary_reports": {"queue": "reports"},
         "app.workers.canary_tasks.canary_leadgen": {"queue": "leadgen"},
         "app.workers.canary_tasks.canary_certificates": {"queue": "certificates"},
+        "app.workers.canary_tasks.canary_control": {"queue": "control", "priority": 0},
     },
     beat_schedule={
         # 매일 밤 23:00 — 내일 발행 예정 콘텐츠 자동 생성
@@ -284,6 +301,19 @@ celery_app.conf.update(
             "task": "app.workers.notification_tasks.dispatch_notification_outbox",
             "schedule": crontab(minute="*"),
         },
+        # 1분마다 — 발행 트랜잭션에 함께 저장된 IndexNow 의도를 host별로 합쳐 bounded 재전송.
+        # 색인 힌트 실패는 발행 실패나 운영 알림으로 승격하지 않는다.
+        "drain-indexnow-retries": {
+            "task": "app.workers.indexnow_retry.drain",
+            "schedule": crontab(minute="*"),
+            "options": {"headers": build_dispatch_headers("drain-indexnow-retries")},
+        },
+        # 1분마다 — DB 장애 중 Redis bounded spool에 보관한 provider usage를 조용히 복구.
+        "drain-provider-usage-spool": {
+            "task": "app.workers.provider_usage_recovery.drain",
+            "schedule": crontab(minute="*"),
+            "options": {"headers": build_dispatch_headers("drain-provider-usage-spool")},
+        },
         # 1분마다 — 리포트 커밋 직후 워커가 종료돼도 누락된 운영 이슈와 알림을 복구한다.
         "reconcile-monthly-artifact-incidents": {
             "task": "app.workers.monthly_artifact_reconciliation.reconcile",
@@ -310,6 +340,11 @@ celery_app.conf.update(
             "task": "app.workers.canary_tasks.canary_default",
             "schedule": crontab(minute="*/5"),
             "options": {"headers": build_dispatch_headers("canary-default")},
+        },
+        "canary-control": {
+            "task": "app.workers.canary_tasks.canary_control",
+            "schedule": crontab(minute="*/5"),
+            "options": {"headers": build_dispatch_headers("canary-control")},
         },
         "canary-content": {
             "task": "app.workers.canary_tasks.canary_content",

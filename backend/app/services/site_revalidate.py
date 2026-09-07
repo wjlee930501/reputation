@@ -123,7 +123,8 @@ async def trigger_hospital_site_revalidate_safe(
                 celery_app.send_task(
                     "app.workers.tasks.retry_site_revalidation",
                     args=[str(plan.run_id), 0],
-                    queue="default",
+                    queue="control",
+                    priority=0,
                     countdown=plan.delay_seconds,
                     headers=build_dispatch_headers(
                         "retry-site-revalidation", str(plan.run_id)
@@ -175,7 +176,8 @@ async def trigger_content_site_revalidate_safe(
                 celery_app.send_task(
                     "app.workers.tasks.retry_site_revalidation",
                     args=[str(plan.run_id), 0],
-                    queue="default",
+                    queue="control",
+                    priority=0,
                     countdown=plan.delay_seconds,
                     headers=build_dispatch_headers(
                         "retry-site-revalidation", str(plan.run_id)

@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom'
 import type { DeliveryIssue } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
 import { dialogKeyDecision } from '@/lib/report-component-behavior'
+import { reportOperationsHref } from '@/lib/operations-center'
 import { ReportDelivery, type DeliveryAction } from './ReportDelivery'
 import { ReportEvidence } from './ReportEvidence'
 
@@ -87,7 +88,7 @@ export function ReportReviewDialog({
             <h3 id="report-dialog-title" className="mt-1 text-lg font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">{report.periodYear}년 {report.periodMonth}월 {report.typeLabel}</h3>
             <p id="report-dialog-description" className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">근거를 먼저 확인한 뒤 맨 아래에서 원장 전달 기록을 남깁니다.</p>
           </div>
-          <button ref={closeRef} type="button" onClick={onClose} aria-label="리포트 검수 닫기" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)]">
+          <button ref={closeRef} type="button" onClick={onClose} aria-label="보고서 검수 닫기" className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)]">
             <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 6l12 12M18 6L6 18" /></svg>
           </button>
         </header>
@@ -98,7 +99,7 @@ export function ReportReviewDialog({
               <dl className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-3"><IssueItem label="무슨 문제인지" value={issue.problem} /><IssueItem label="고객 영향" value={issue.customerImpact} /><IssueItem label="지금 할 일" value={issue.nextAction} /></dl>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                 <button type="button" onClick={onRefresh} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">최신 상태 다시 확인</button>
-                {issue.action === 'operations' && <Link href={`/operations?queue=REPORTS&hospital_id=${report.hospitalId}`} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">운영 센터에서 차단 사유 확인</Link>}
+                {issue.action === 'operations' && <Link href={reportOperationsHref(report.hospitalId, report.id, report.periodYear, report.periodMonth)} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">운영 센터에서 차단 사유 확인</Link>}
                 <button type="button" onClick={onCopyIssue} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">개발팀 문의용 정보 복사</button>
               </div>
             </div>

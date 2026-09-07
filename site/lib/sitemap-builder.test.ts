@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { buildSitemap } from './sitemap-builder.ts'
+import { buildSitemap, SitemapTransientError } from './sitemap-builder.ts'
 import type { SitemapScope } from './sitemap-host.ts'
+import { renderSitemapXml, sitemapHttpResponse } from './sitemap-response.ts'
 
 const PLATFORM = 'https://reputation.motionlabs.kr'
 const API_BASE = 'https://api.example.test'
@@ -38,7 +39,7 @@ async function withPlatform<T>(fn: () => Promise<T>): Promise<T> {
 function installFetchMock(routes: {
   byDomain?: (host: string) => Response
   detail?: (slug: string) => Response
-  contents?: Response
+  contents?: Response | ((url: string) => Response | Promise<Response>)
   hospitals?: Response
 }): () => void {
   const originalFetch = globalThis.fetch
@@ -49,6 +50,7 @@ function installFetchMock(routes: {
       return routes.byDomain?.(host) ?? new Response('not found', { status: 404 })
     }
     if (url.includes('/contents?')) {
+      if (typeof routes.contents === 'function') return routes.contents(url)
       return routes.contents ?? new Response(JSON.stringify([]), { status: 200 })
     }
     if (/\/hospitals\/[^/?]+$/.test(url)) {
@@ -147,10 +149,12 @@ test('host-scope sitemap returns an empty list when the domain is unregistered (
   })
 })
 
-test('host-scope sitemap returns an empty list when apiBase is missing (no platform leak)', async () => {
+test('host-scope sitemap treats a missing apiBase as transient configuration failure', async () => {
   await withPlatform(async () => {
-    const entries = await buildSitemap({ kind: 'host', hostname: 'clinic.example.com' }, null)
-    assert.deepEqual(entries, [])
+    await assert.rejects(
+      buildSitemap({ kind: 'host', hostname: 'clinic.example.com' }, null),
+      SitemapTransientError,
+    )
   })
 })
 
@@ -211,4 +215,107 @@ test('all-scope sitemap falls back to platform base entries when apiBase is miss
     const urls = entries.map((e) => e.url)
     assert.deepEqual(urls, [PLATFORM, `${PLATFORM}/llms.txt`])
   })
+})
+
+test('host lookup 500 is transient instead of an empty successful sitemap', async () => {
+  await withPlatform(async () => {
+    const restore = installFetchMock({
+      byDomain: () => new Response('upstream failed', { status: 500 }),
+    })
+    try {
+      await assert.rejects(
+        buildSitemap({ kind: 'host', hostname: 'clinic.example.com' }, API_BASE),
+        SitemapTransientError,
+      )
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('second contents page failure never returns a successful sitemap prefix', async () => {
+  await withPlatform(async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({
+      id: String(index),
+      published_at: '2026-09-07T00:00:00Z',
+      scheduled_date: '2026-09-07',
+    }))
+    const restore = installFetchMock({
+      byDomain: () => new Response(JSON.stringify({ slug: 'jang-clinic' }), { status: 200 }),
+      detail: (slug) =>
+        new Response(JSON.stringify({ slug, treatments: [] }), { status: 200 }),
+      contents: (url) =>
+        url.includes('offset=500')
+          ? new Response('rate limited', { status: 429 })
+          : new Response(JSON.stringify(firstPage), { status: 200 }),
+    })
+    try {
+      await assert.rejects(
+        buildSitemap({ kind: 'host', hostname: 'clinic.example.com' }, API_BASE),
+        SitemapTransientError,
+      )
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('tenant that becomes private during pagination returns a complete empty sitemap', async () => {
+  await withPlatform(async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({
+      id: String(index),
+      published_at: '2026-09-07T00:00:00Z',
+      scheduled_date: '2026-09-07',
+    }))
+    const restore = installFetchMock({
+      byDomain: () => new Response(JSON.stringify({ slug: 'jang-clinic' }), { status: 200 }),
+      detail: (slug) =>
+        new Response(JSON.stringify({ slug, treatments: [] }), { status: 200 }),
+      contents: (url) =>
+        url.includes('offset=500')
+          ? new Response('not public', { status: 404 })
+          : new Response(JSON.stringify(firstPage), { status: 200 }),
+    })
+    try {
+      const entries = await buildSitemap(
+        { kind: 'host', hostname: 'clinic.example.com' },
+        API_BASE,
+      )
+      assert.deepEqual(entries, [])
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('transient sitemap response is 503 and never cacheable', async () => {
+  await withPlatform(async () => {
+    const restore = installFetchMock({
+      byDomain: () => new Response('rate limited', { status: 429 }),
+    })
+    try {
+      const response = await sitemapHttpResponse(
+        { kind: 'host', hostname: 'clinic.example.com' },
+        API_BASE,
+      )
+      assert.equal(response.status, 503)
+      assert.equal(response.headers.get('cache-control'), 'no-store')
+      assert.equal(response.headers.get('retry-after'), '60')
+    } finally {
+      restore()
+    }
+  })
+})
+
+test('sitemap XML escapes canonical URLs and serializes timestamps', () => {
+  const xml = renderSitemapXml([
+    {
+      url: 'https://clinic.example.com/contents?a=1&b=<two>',
+      lastModified: new Date('2026-09-07T00:00:00Z'),
+      changeFrequency: 'daily',
+      priority: 0.7,
+    },
+  ])
+  assert.match(xml, /a=1&amp;b=&lt;two&gt;/)
+  assert.match(xml, /<lastmod>2026-09-07T00:00:00.000Z<\/lastmod>/)
 })

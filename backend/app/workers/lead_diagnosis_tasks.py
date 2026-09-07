@@ -168,6 +168,7 @@ async def _claim_for_execution(
     에러가 아니라 정상 경로이므로 조용히 종료한다.
     """
     recovery = recovery_expected_attempts is not None
+    now = datetime.now(timezone.utc)
     predicates = [LeadDiagnosis.id == diagnosis_id]
     if recovery:
         predicates.extend(
@@ -187,6 +188,10 @@ async def _claim_for_execution(
             (
                 LeadDiagnosis.execution_status == ExecutionStatus.PENDING.value,
                 LeadDiagnosis.execution_attempts < MAX_EXECUTION_ATTEMPTS,
+                or_(
+                    LeadDiagnosis.cost_deferred_until.is_(None),
+                    LeadDiagnosis.cost_deferred_until <= now,
+                ),
             )
         )
     result = await session.execute(
@@ -194,8 +199,8 @@ async def _claim_for_execution(
         .where(*predicates)
         .values(
             execution_status=ExecutionStatus.RUNNING.value,
-            running_since=datetime.now(timezone.utc),
-            started_at=datetime.now(timezone.utc),
+            running_since=now,
+            started_at=now,
             execution_attempts=LeadDiagnosis.execution_attempts + 1,
         )
     )
@@ -255,10 +260,8 @@ async def _run_lead_diagnosis(
         # 된다. 시도가 남아 있으면 PENDING으로 되돌려 폴러가 자동으로 다시 집게 한다 —
         # 소진되면 그때 FAILED로 남고, 그 목록이 DLQ가 된다.
         #
-        # **차단(blocked)은 재큐하지 않는다.** 예산 소진과 정책 드리프트는 다시 돌려도
-        # 같은 결과이고, 각각 사람의 결정(상한 조정·배포 완료)이 풀어야 한다 — 재시도는
-        # 시도 횟수만 태워 진짜 재측정 기회를 없앤다. 예산 차단은 엔진이 이미 Slack을
-        # 보냈고, 정책 드리프트는 아래 종결 알림이 담당한다.
+        # 정책 드리프트는 배포 조건이 바뀌기 전에는 재큐하지 않는다. 비용 차단은 엔진이
+        # 이미 PENDING+due로 바꾸고, 실제 공급자 호출이 없었으므로 claim 횟수도 복원한다.
         if (
             recovery_expected_attempts is None
             and result.get("status") == ExecutionStatus.FAILED.value
@@ -692,12 +695,17 @@ async def _pending_to_dispatch(session) -> list[str]:
     LIFO로 두면 적체가 생겼을 때 가장 오래 기다린 신청자가 영원히 굶는다 —
     P95는 통과하면서 개별 사용자는 리포트를 못 받는 상태가 만들어진다.
     """
+    now = datetime.now(timezone.utc)
     rows = (
         await session.execute(
             select(LeadDiagnosis.id)
             .where(
                 LeadDiagnosis.execution_status == ExecutionStatus.PENDING.value,
                 LeadDiagnosis.execution_attempts < MAX_EXECUTION_ATTEMPTS,
+                or_(
+                    LeadDiagnosis.cost_deferred_until.is_(None),
+                    LeadDiagnosis.cost_deferred_until <= now,
+                ),
             )
             .order_by(LeadDiagnosis.created_at.asc())
             .limit(DRAIN_BATCH_SIZE)

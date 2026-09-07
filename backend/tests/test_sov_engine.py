@@ -1,9 +1,10 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
 import pytest
 
-from app.services import sov_engine
+from app.services import provider_usage, sov_engine
 
 
 class _FakeChoice:
@@ -53,11 +54,199 @@ def test_provider_failure_reason_preserves_safe_quota_cause():
 def test_provider_retry_policy_keeps_transient_failures_retryable():
     assert sov_engine._should_retry_provider_exception(TimeoutError("temporary")) is True
     assert sov_engine._should_retry_provider_exception(_TransientRateLimitError("slow down")) is True
+    assert sov_engine._should_retry_provider_exception(RuntimeError("deterministic")) is False
 
 
-def test_measurement_client_disables_sdk_retry_without_weakening_judge_client():
+def test_answer_and_judge_clients_disable_hidden_sdk_retries():
     assert sov_engine.openai_query_client.max_retries == 0
-    assert sov_engine.openai_client.max_retries > 0
+    assert sov_engine.openai_client.max_retries == 0
+
+
+@pytest.mark.asyncio
+async def test_judge_transient_retry_is_explicit_and_each_http_attempt_is_metered(monkeypatch):
+    calls = 0
+    metered: list[dict] = []
+
+    class _Flaky:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise _TransientRateLimitError("slow down")
+            return SimpleNamespace(
+                choices=[_FakeChoice(json.dumps({
+                    "verdict": "MATCHED",
+                    "matched_text": "장편한외과의원",
+                    "mention_rank": 1,
+                    "sentiment": "neutral",
+                    "mention_context": None,
+                }))],
+                usage=SimpleNamespace(prompt_tokens=3, completion_tokens=2),
+            )
+
+    async def _meter(**kwargs):
+        metered.append(kwargs)
+
+    async def _actual(_count=1):
+        return None
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", _Flaky())
+    monkeypatch.setattr(sov_engine, "_record_provider_attempt", _meter)
+    monkeypatch.setattr(sov_engine, "_record_sov_provider_call", _actual)
+    monkeypatch.setattr(sov_engine._request_judge_completion.retry, "sleep", _no_sleep)
+
+    result = await sov_engine._parse_mention(
+        "장편한외과의원", "장편한외과의원을 추천합니다."
+    )
+
+    assert result["verdict"] == "MATCHED"
+    assert calls == 2
+    assert len(metered) == 2
+    assert metered[0].get("response") is None
+    assert metered[1]["input_tokens"] == 3
+
+
+@pytest.mark.asyncio
+async def test_empty_sdk_usage_object_is_not_marked_known(monkeypatch):
+    recorded: list[dict] = []
+
+    async def _capture(**kwargs):
+        recorded.append(kwargs)
+        return True
+
+    monkeypatch.setattr(provider_usage, "record_attempt", _capture)
+
+    with sov_engine.provider_execution_context(pool=sov_engine.POOL_SOV):
+        await sov_engine._record_provider_attempt(
+            provider="openai",
+            model="judge-model",
+            logical_call_id="judgment:self",
+            usage=SimpleNamespace(),
+        )
+
+    assert len(recorded) == 1
+    assert recorded[0]["usage_known"] is None
+    assert provider_usage.normalize_usage("openai", SimpleNamespace())["usage_known"] is False
+
+
+@pytest.mark.asyncio
+async def test_missing_responses_capability_is_not_counted_as_an_http_attempt(monkeypatch):
+    actual_calls = 0
+    usage_events = 0
+
+    async def _actual(_count=1):
+        nonlocal actual_calls
+        actual_calls += 1
+
+    async def _usage(**_kwargs):
+        nonlocal usage_events
+        usage_events += 1
+
+    monkeypatch.setattr(
+        sov_engine,
+        "openai_query_client",
+        SimpleNamespace(responses=None),
+    )
+    monkeypatch.setattr(sov_engine, "_record_sov_provider_call", _actual)
+    monkeypatch.setattr(sov_engine, "_record_provider_attempt", _usage)
+
+    result = await sov_engine._query_chatgpt_with_search_result("query")
+
+    assert result["text"] == ""
+    assert actual_calls == 0
+    assert usage_events == 0
+
+
+def test_judgment_fingerprint_binds_identity_answer_and_policy():
+    base = sov_engine.judgment_input_fingerprint(
+        hospital_identity="hospital-1",
+        hospital_name="가나의원",
+        region="수서역",
+        response_text="가나의원을 추천합니다.",
+    )
+    assert base == sov_engine.judgment_input_fingerprint(
+        hospital_identity="hospital-1",
+        hospital_name="가나의원",
+        region="수서역",
+        response_text="가나의원을 추천합니다.",
+    )
+    assert base != sov_engine.judgment_input_fingerprint(
+        hospital_identity="hospital-2",
+        hospital_name="가나의원",
+        region="수서역",
+        response_text="가나의원을 추천합니다.",
+    )
+    assert base != sov_engine.judgment_input_fingerprint(
+        hospital_identity="hospital-1",
+        hospital_name="가나의원",
+        region="수서역",
+        response_text="가나의원은 언급되지 않았습니다.",
+    )
+
+
+def test_judgment_reservation_estimate_includes_self_and_competitor_batches():
+    response = "가나의원과 다라병원을 비교해 주세요."
+
+    assert sov_engine.estimate_judgment_provider_calls("가나의원", response) == 1
+    assert sov_engine.estimate_judgment_provider_calls(
+        "가나의원", response, ["다라병원", "마바사의원"]
+    ) == 2
+    assert sov_engine.estimate_judgment_provider_calls(
+        "없는의원", response, ["마바사의원"]
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_lead_gemini_is_serialized_without_blocking_lead_openai(monkeypatch):
+    gemini_entered = asyncio.Event()
+    release_gemini = asyncio.Event()
+    gemini_in_flight = 0
+    gemini_max = 0
+
+    async def gemini(_query):
+        nonlocal gemini_in_flight, gemini_max
+        gemini_in_flight += 1
+        gemini_max = max(gemini_max, gemini_in_flight)
+        gemini_entered.set()
+        await release_gemini.wait()
+        gemini_in_flight -= 1
+        return {
+            "text": "Gemini answer",
+            "source_urls": [],
+            "measurement_method": "GEMINI_GOOGLE_SEARCH",
+        }
+
+    async def openai(_query):
+        return {
+            "text": "OpenAI answer",
+            "source_urls": [],
+            "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
+        }
+
+    monkeypatch.setattr(sov_engine, "_query_gemini_result", gemini)
+    monkeypatch.setattr(sov_engine, "_query_chatgpt", openai)
+
+    gemini_tasks = [
+        asyncio.create_task(
+            sov_engine.fetch_answer("query", "gemini", pool=sov_engine.POOL_LEADGEN)
+        )
+        for _ in range(4)
+    ]
+    await gemini_entered.wait()
+
+    # Provider pools are independent: an occupied Gemini slot cannot hold OpenAI answers.
+    openai_result = await asyncio.wait_for(
+        sov_engine.fetch_answer("query", "chatgpt", pool=sov_engine.POOL_LEADGEN),
+        timeout=0.5,
+    )
+    assert openai_result["measurement_status"] == "SUCCESS"
+
+    release_gemini.set()
+    await asyncio.gather(*gemini_tasks)
+    assert gemini_max == 1
 
 
 class _FakeCompletions:

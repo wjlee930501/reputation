@@ -83,7 +83,7 @@ test('reportDeliveryBlockers includes missing PDF, review gaps, and medical risk
     medicalRiskCount: 1,
   })
   assert.ok(blockers.some((item) => item.includes('PDF')))
-  assert.ok(blockers.some((item) => item.includes('AI 답변')))
+  assert.ok(blockers.some((item) => item.includes('병원 언급률')))
   assert.ok(blockers.some((item) => item.includes('운영 전략')))
   assert.ok(blockers.some((item) => item.includes('운영 기준')))
   assert.ok(blockers.some((item) => item.includes('병원 자료')))
@@ -119,5 +119,5 @@ test('activationBlockers allows default platform domain only after all prerequis
     v0_report_done: false,
     site_built: true,
     schedule_set: false,
-  }), ['초기 진단 리포트'])
+  }), ['초기 진단 보고서'])
 })

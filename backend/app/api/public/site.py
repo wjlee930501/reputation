@@ -24,8 +24,14 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
-from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
-from app.services.content_publication import has_required_references
+from app.services.content_publication import (
+    PUBLICATION_CHECK_FIELDS,
+    has_required_faq_fields,
+    has_required_references,
+    image_certification_current,
+    public_candidate_review_safe,
+    publication_field_values,
+)
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     get_essence_readiness,
@@ -510,8 +516,8 @@ def _serialize_hospital(
         "logo_url": _public_logo_url(h),
         "hero_image_url": _safe_external_url(getattr(h, "hero_image_url", None)),
         "hero_media_kind": getattr(h, "hero_media_kind", None),
-        "hero_headline": getattr(h, "hero_headline", None),
-        "hero_description": getattr(h, "hero_description", None),
+        "hero_headline": _safe_public_text(getattr(h, "hero_headline", None)),
+        "hero_description": _safe_public_text(getattr(h, "hero_description", None)),
         # 공개 표면 계약(site/lib/hospital-payload.ts)이 선언한 필드다. 빼두면 저장된
         # 값이 있어도 항상 null로 정규화돼, 운영자가 승인한 아트 디렉션을 화면 쪽에서
         # 확인할 방법이 없었다. 승인된 문장을 그대로 싣는다.
@@ -626,7 +632,10 @@ def _is_public_safe_content(
         and bool((item.title or "").strip())
         and bool((item.body or "").strip())
         and item.published_at is not None
+        and has_required_faq_fields(item)
         and has_required_references(item)
+        and image_certification_current(item)
+        and public_candidate_review_safe(item)
     ):
         return False
     violations = _forbidden_content_violations(item)
@@ -646,11 +655,16 @@ def _is_public_safe_content(
 def _forbidden_content_violations(item: ContentItem) -> list[str]:
     """공개 직렬화 직전 마지막 의료광고 검사 (아이템당 한 번).
 
-    검사 대상 필드는 생성 엔진의 `FORBIDDEN_CHECK_FIELDS`를 그대로 재사용한다 —
-    공개 텍스트 필드가 늘어날 때 세 적용 지점이 함께 따라오게 하는 유일한 방법이다.
+    발행 검사와 같은 공개 필드 매핑을 재사용해 참고자료 제목까지 포함한다.
     """
-    values = {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
-    return check_forbidden_content_fields(values, FORBIDDEN_CHECK_FIELDS)
+    return check_forbidden_content_fields(
+        publication_field_values(item), PUBLICATION_CHECK_FIELDS
+    )
+
+
+def _safe_public_text(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text if text and not check_forbidden(text) else None
 
 
 def _content_image_url(slug: str, item: ContentItem) -> str:

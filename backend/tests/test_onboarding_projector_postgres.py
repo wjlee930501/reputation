@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -22,7 +23,10 @@ from app.workers.milestone_event_tasks import (
 from app.workers.milestone_onboarding_projection import observe_onboarding_milestones
 from app.workers.milestone_projection_support import event_uuid
 
-_DATABASE_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_DATABASE_URL = os.getenv(
+    "ONBOARDING_PROJECTOR_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
+)
 _PREFIX = "OPS-QA-T13-ONBOARDING"
 
 

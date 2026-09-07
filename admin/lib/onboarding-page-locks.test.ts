@@ -46,3 +46,11 @@ test('accepted handoff hides only the due-date row and keeps accepted status', (
   )
   assert.match(ONBOARDING_PAGE, /<dt>처리 상태<\/dt>[\s\S]*handoffDueStatus\.label/)
 })
+
+test('source processing follows the durable server run across batches and re-entry', () => {
+  assert.match(ONBOARDING_PAGE, /source-processing-runs\/latest/)
+  assert.match(ONBOARDING_PAGE, /source-processing-runs\/\$\{processingRun\.run_id\}/)
+  assert.match(ONBOARDING_PAGE, /success_count \+ processingRun\.failure_count \+ processingRun\.skipped_count/)
+  assert.match(ONBOARDING_PAGE, /다른 화면으로 이동해도 중단되지 않습니다/)
+  assert.doesNotMatch(ONBOARDING_PAGE, /process-pending\?limit=/)
+})

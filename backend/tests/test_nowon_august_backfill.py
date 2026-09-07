@@ -353,7 +353,8 @@ def test_backfill_attaches_nine_drafts_to_active_schedule(monkeypatch):
         call.kwargs["args"][0] for call in regenerate_apply_async.call_args_list
     }
     morning_apply_async.assert_called_once_with(
-        queue="content",
+        queue="control",
+        priority=0,
         headers={"purpose": "morning-content-auto-publish", "target": None},
     )
 

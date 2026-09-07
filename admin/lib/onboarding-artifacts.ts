@@ -99,7 +99,7 @@ export function selectV0ReportArtifacts(reports: ReportArtifactLike[]): Onboardi
   const v0 = rows.filter((report) => report.report_type === 'V0')
   if (v0.length === 0) {
     return [{
-      label: '초기 진단 리포트',
+      label: '초기 진단 보고서',
       value: '아직 생성되지 않았습니다',
       missing: true,
       state: 'empty',
@@ -110,7 +110,7 @@ export function selectV0ReportArtifacts(reports: ReportArtifactLike[]): Onboardi
   if (!withPdf) {
     return [
       {
-        label: '초기 진단 리포트',
+        label: '초기 진단 보고서',
         value: `기록 ${v0.length}건 · PDF 없음 — 다시 만들어야 원장 보고 자료가 생깁니다`,
         missing: true,
         state: 'empty',
@@ -121,7 +121,7 @@ export function selectV0ReportArtifacts(reports: ReportArtifactLike[]): Onboardi
   const created = formatDate(withPdf.created_at)
   return [
     {
-      label: '초기 진단 리포트 PDF',
+      label: '초기 진단 보고서 PDF',
       value: created ? `${created} 생성` : '생성 완료',
       href: withPdf.download_url ?? undefined,
     },
@@ -133,15 +133,15 @@ export function describeV0ReportArtifactState(
 ): OnboardingArtifact[] {
   if (state.status === 'loading') {
     return [{
-      label: '초기 진단 리포트',
-      value: '리포트 정보를 불러오는 중입니다',
+      label: '초기 진단 보고서',
+      value: '보고서 정보를 불러오는 중입니다',
       state: 'loading',
     }]
   }
   if (state.status === 'error') {
     return [{
-      label: '초기 진단 리포트',
-      value: '리포트 정보를 불러오지 못했습니다. 위의 새로 고침을 눌러 다시 시도해 주세요',
+      label: '초기 진단 보고서',
+      value: '보고서 정보를 불러오지 못했습니다. 위의 새로 고침을 눌러 다시 시도해 주세요',
       state: 'error',
     }]
   }
@@ -200,7 +200,7 @@ export function describeScheduleArtifacts(
 ): OnboardingArtifact[] {
   if (!schedule) {
     return [{
-      label: '발행 스케줄',
+      label: '발행 일정',
       value: '아직 저장되지 않았습니다',
       missing: true,
       state: 'empty',
@@ -238,12 +238,12 @@ export function describeScheduleArtifactState(
   state: OnboardingArtifactLoadState<ScheduleArtifactLike | null>,
 ): OnboardingArtifact[] {
   if (state.status === 'loading') {
-    return [{ label: '발행 스케줄', value: '스케줄 정보를 불러오는 중입니다', state: 'loading' }]
+    return [{ label: '발행 일정', value: '발행 일정 정보를 불러오는 중입니다', state: 'loading' }]
   }
   if (state.status === 'error') {
     return [{
-      label: '발행 스케줄',
-      value: '스케줄 정보를 불러오지 못했습니다. 위의 새로 고침을 눌러 다시 시도해 주세요',
+      label: '발행 일정',
+      value: '발행 일정 정보를 불러오지 못했습니다. 위의 새로 고침을 눌러 다시 시도해 주세요',
       state: 'error',
     }]
   }

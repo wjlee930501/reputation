@@ -20,13 +20,23 @@ sitemap은 크롤러가 올 때까지 기다리는 수동적 신호다. IndexNow
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from time import monotonic
 from urllib.parse import urlparse
 
 import httpx
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.models.operations import OperationRun, OperationRunState
 from app.services.content_citations import platform_public_base_url
 from app.services.site_revalidate import content_site_paths, hospital_site_paths
 from app.utils.domain import normalize_domain
@@ -38,6 +48,15 @@ INDEXNOW_ENDPOINT = "https://api.indexnow.org/indexnow"
 KEY_PATH = "/indexnow-key.txt"
 # IndexNow 규격 상한은 10,000이나, 한 번에 크게 보내면 실패 시 전량이 날아간다.
 MAX_URLS_PER_REQUEST = 500
+INDEXNOW_OPERATION_TYPE = "INDEXNOW_SUBMISSION"
+_INTENT_NAMESPACE = uuid.UUID("ed491925-93b2-53ab-87dc-dde84a6c0644")
+
+
+@dataclass(frozen=True, slots=True)
+class SubmissionResult:
+    accepted: bool
+    retryable: bool
+    reason: str
 
 
 def is_configured() -> bool:
@@ -156,21 +175,24 @@ async def _ownership_verified(base_url: str, host: str) -> bool:
     return verified
 
 
-async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
-    """IndexNow에 URL 목록을 제출한다. 설정이 없으면 조용히 건너뛴다."""
+async def submit_urls_result(*, base_url: str, urls: list[str]) -> SubmissionResult:
+    """Submit URLs and distinguish transient delivery failures from permanent rejection."""
+
     if not is_configured():
         logger.debug("IndexNow not configured; skipping submission")
-        return False
+        return SubmissionResult(False, False, "not_configured")
     if not urls:
-        return False
+        return SubmissionResult(False, False, "empty")
 
     host = _host_of(base_url)
     if not host:
         logger.warning("IndexNow: base_url에서 host를 얻지 못함 — %s", base_url)
-        return False
+        return SubmissionResult(False, False, "invalid_host")
 
     if not await _ownership_verified(base_url, host):
-        return False
+        # Site/backend rollout order, DNS, and tenant TLS can all make ownership proof
+        # temporarily unavailable. The durable worker still caps these attempts.
+        return SubmissionResult(False, True, "ownership_unavailable")
 
     # 다른 호스트의 URL이 섞이면 IndexNow가 전체 요청을 422로 거부한다.
     same_host = [u for u in urls if _host_of(u) == host]
@@ -179,9 +201,11 @@ async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
             "IndexNow: host 불일치 URL %d건 제외 (host=%s)", len(urls) - len(same_host), host
         )
     if not same_host:
-        return False
+        return SubmissionResult(False, False, "host_mismatch")
 
     ok = True
+    transient_failure = False
+    permanent_failure = False
     async with httpx.AsyncClient(timeout=10, follow_redirects=False) as client:
         for start in range(0, len(same_host), MAX_URLS_PER_REQUEST):
             chunk = same_host[start : start + MAX_URLS_PER_REQUEST]
@@ -196,6 +220,7 @@ async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("IndexNow 제출 실패 (host=%s): %s", host, exc)
                 ok = False
+                transient_failure = True
                 continue
             # 200 OK / 202 Accepted 모두 정상. 그 외는 본문에 사유가 담긴다.
             if res.status_code in (200, 202):
@@ -208,7 +233,21 @@ async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
                     (res.text or "")[:200],
                 )
                 ok = False
-    return ok
+                if res.status_code == 429 or 500 <= res.status_code < 600:
+                    transient_failure = True
+                else:
+                    permanent_failure = True
+    if ok:
+        return SubmissionResult(True, False, "accepted")
+    if permanent_failure:
+        return SubmissionResult(False, False, "rejected")
+    return SubmissionResult(False, transient_failure, "transient_failure")
+
+
+async def submit_urls(*, base_url: str, urls: list[str]) -> bool:
+    """Compatibility wrapper returning whether IndexNow accepted every URL chunk."""
+
+    return (await submit_urls_result(base_url=base_url, urls=urls)).accepted
 
 
 async def submit_content_published(
@@ -233,6 +272,217 @@ async def submit_content_published(
             ),
         ),
     )
+
+
+async def enqueue_content_published(
+    db: AsyncSession,
+    *,
+    slug: str,
+    content_id: object,
+    aeo_domain: str | None,
+    treatments: list | None = None,
+    revision: int | str,
+) -> uuid.UUID:
+    """Add a durable IndexNow intent to the caller's publication transaction.
+
+    This function performs no commit, broker publish, or network call. The deterministic
+    primary key coalesces an exact host + URL set + content revision replay, while a newer
+    public revision receives a new intent. The minute worker drains committed rows only.
+    """
+
+    base, urls = content_submission_urls(
+        slug=slug,
+        content_id=content_id,
+        aeo_domain=aeo_domain,
+        treatments=treatments,
+    )
+    return await enqueue_urls(
+        db,
+        base_url=base,
+        urls=urls,
+        revision=revision,
+        slug=slug,
+        content_id=content_id,
+    )
+
+
+def enqueue_content_published_sync(
+    db: Session,
+    *,
+    slug: str,
+    content_id: object,
+    aeo_domain: str | None,
+    treatments: list | None = None,
+    revision: int | str,
+) -> uuid.UUID:
+    """Synchronous worker counterpart to :func:`enqueue_content_published`."""
+
+    base, urls = content_submission_urls(
+        slug=slug,
+        content_id=content_id,
+        aeo_domain=aeo_domain,
+        treatments=treatments,
+    )
+    return enqueue_urls_sync(
+        db,
+        base_url=base,
+        urls=urls,
+        revision=revision,
+        slug=slug,
+        content_id=content_id,
+    )
+
+
+def content_submission_urls(
+    *,
+    slug: str,
+    content_id: object,
+    aeo_domain: str | None,
+    treatments: list | None = None,
+) -> tuple[str, list[str]]:
+    """Return the canonical host and public URLs affected by a content revision."""
+
+    platform_tenant_base = platform_public_base_url(slug)
+    tenant_host = bool(normalize_domain(aeo_domain) or platform_tenant_base)
+    base = public_base_url(aeo_domain, slug)
+    urls = _absolute(
+        base,
+        _canonical_public_paths(
+            content_site_paths(slug, content_id, treatments),
+            slug,
+            tenant_host=tenant_host,
+        ),
+    )
+    return base, urls
+
+
+def _intent_insert(
+    *,
+    base_url: str,
+    urls: list[str],
+    revision: int | str,
+    slug: str | None = None,
+    content_id: object | None = None,
+):
+    """Build an idempotent insert owned by the caller's database transaction."""
+
+    revision_value = str(revision)
+    canonical_base = base_url.rstrip("/")
+    host = _host_of(canonical_base)
+    canonical_urls = sorted(set(urls))
+    if not host or not canonical_base.startswith("https://"):
+        raise ValueError("IndexNow base_url must be an absolute HTTPS URL")
+    if (
+        not canonical_urls
+        or len(canonical_urls) > MAX_URLS_PER_REQUEST
+        or any(_host_of(url) != host for url in canonical_urls)
+    ):
+        raise ValueError("IndexNow intent URLs must be non-empty and match base_url host")
+    if not revision_value:
+        raise ValueError("IndexNow intent revision must be non-empty")
+    identity_payload = {
+        "base_url": canonical_base,
+        "revision": revision_value,
+        "urls": canonical_urls,
+    }
+    encoded = json.dumps(
+        identity_payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    )
+    digest = hashlib.sha256(encoded.encode()).hexdigest()
+    run_id = uuid.uuid5(_INTENT_NAMESPACE, digest)
+    statement = (
+        pg_insert(OperationRun)
+        .values(
+            id=run_id,
+            hospital_id=None,
+            operation_type=INDEXNOW_OPERATION_TYPE,
+            state=OperationRunState.REQUESTED.value,
+            idempotency_key=f"indexnow:{digest}",
+            total_count=len(identity_payload["urls"]),
+            request_payload={
+                "schema_version": 1,
+                "slug": slug or "",
+                "content_id": str(content_id) if content_id is not None else "",
+                **identity_payload,
+            },
+            requested_at=datetime.now(UTC),
+        )
+        # A repeated or concurrent publication of the same durable revision is a no-op.
+        # It must never turn a successful content transaction into an IntegrityError.
+        .on_conflict_do_nothing(index_elements=[OperationRun.id])
+    )
+    return statement, run_id
+
+
+async def enqueue_urls(
+    db: AsyncSession,
+    *,
+    base_url: str,
+    urls: list[str],
+    revision: int | str,
+    slug: str | None = None,
+    content_id: object | None = None,
+) -> uuid.UUID:
+    """Insert a durable intent without committing or contacting IndexNow."""
+
+    statement, run_id = _intent_insert(
+        base_url=base_url,
+        urls=urls,
+        revision=revision,
+        slug=slug,
+        content_id=content_id,
+    )
+    await db.execute(statement)
+    return run_id
+
+
+def enqueue_urls_sync(
+    db: Session,
+    *,
+    base_url: str,
+    urls: list[str],
+    revision: int | str,
+    slug: str | None = None,
+    content_id: object | None = None,
+) -> uuid.UUID:
+    """Synchronous worker variant of :func:`enqueue_urls`."""
+
+    statement, run_id = _intent_insert(
+        base_url=base_url,
+        urls=urls,
+        revision=revision,
+        slug=slug,
+        content_id=content_id,
+    )
+    db.execute(statement)
+    return run_id
+
+
+def parse_submission_intent(run: OperationRun) -> tuple[str, list[str], str] | None:
+    """Validate a stored intent before a worker turns it into an external request."""
+
+    payload = run.request_payload
+    if not isinstance(payload, Mapping) or payload.get("schema_version") != 1:
+        return None
+    base_url = payload.get("base_url")
+    revision = payload.get("revision")
+    raw_urls = payload.get("urls")
+    if (
+        not isinstance(base_url, str)
+        or not base_url.startswith("https://")
+        or not isinstance(revision, str)
+        or not revision
+        or not isinstance(raw_urls, list)
+        or not raw_urls
+        or len(raw_urls) > MAX_URLS_PER_REQUEST
+        or not all(isinstance(url, str) for url in raw_urls)
+    ):
+        return None
+    host = _host_of(base_url)
+    urls = list(dict.fromkeys(raw_urls))
+    if not host or any(_host_of(url) != host for url in urls):
+        return None
+    return base_url.rstrip("/"), urls, revision
 
 
 def hospital_all_urls(

@@ -9,10 +9,13 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -104,6 +107,9 @@ class MonthlyMeasurementCell(Base):
     attempts: Mapped[list["MonthlyMeasurementAttempt"]] = relationship(
         back_populates="cell", cascade="all, delete-orphan"
     )
+    observation_slots: Mapped[list["MeasurementObservationSlot"]] = relationship(
+        back_populates="monthly_cell", cascade="all, delete-orphan"
+    )
 
 
 class MonthlyMeasurementAttempt(Base):
@@ -125,6 +131,126 @@ class MonthlyMeasurementAttempt(Base):
 
     cell: Mapped[MonthlyMeasurementCell] = relationship(back_populates="attempts")
     sov_record: Mapped["SovRecord"] = relationship()
+
+
+class MeasurementObservationSlot(Base):
+    """Durable answer/judgment checkpoint for one paid observation repeat.
+
+    New monthly and V0 work gets an explicit, immutable repeat identity. Existing
+    SovRecord rows are deliberately not backfilled: their repeat/protocol lineage
+    cannot be reconstructed truthfully and remains legacy evidence.
+    """
+
+    __tablename__ = "measurement_observation_slots"
+    __table_args__ = (
+        CheckConstraint("scope IN ('MONTHLY', 'V0')", name="ck_measurement_slot_scope"),
+        CheckConstraint("repeat_no > 0", name="ck_measurement_slot_repeat_no"),
+        CheckConstraint(
+            "(scope = 'MONTHLY' AND monthly_cell_id IS NOT NULL) OR "
+            "(scope = 'V0' AND monthly_cell_id IS NULL)",
+            name="ck_measurement_slot_scope_shape",
+        ),
+        CheckConstraint(
+            "answer_status IN ('PENDING', 'RECEIVED', 'FAILED')",
+            name="ck_measurement_slot_answer_status",
+        ),
+        CheckConstraint(
+            "judgment_status IN ('PENDING', 'CONFIRMED', 'AMBIGUOUS', 'FAILED')",
+            name="ck_measurement_slot_judgment_status",
+        ),
+        CheckConstraint(
+            "answer_attempt_count >= 0 AND judgment_attempt_count >= 0 AND version > 0",
+            name="ck_measurement_slot_counters",
+        ),
+        CheckConstraint(
+            "(lease_token IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_measurement_slot_lease_pair",
+        ),
+        Index(
+            "uq_measurement_slot_monthly_repeat",
+            "monthly_cell_id",
+            "repeat_no",
+            unique=True,
+            postgresql_where=text("scope = 'MONTHLY'"),
+        ),
+        Index(
+            "uq_measurement_slot_v0_repeat",
+            "measurement_run_id",
+            "query_id",
+            "platform",
+            "repeat_no",
+            unique=True,
+            postgresql_where=text("scope = 'V0'"),
+        ),
+        Index("ix_measurement_slots_run_status", "measurement_run_id", "judgment_status"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    hospital_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("hospitals.id", ondelete="CASCADE"), nullable=False
+    )
+    monthly_cell_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("monthly_measurement_cells.id", ondelete="CASCADE")
+    )
+    measurement_run_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("measurement_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    query_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("query_matrix.id", ondelete="RESTRICT"), nullable=False
+    )
+    platform: Mapped[str] = mapped_column(String(20), nullable=False)
+    repeat_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    protocol_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    answer_status: Mapped[str] = mapped_column(
+        String(20), default="PENDING", server_default="PENDING", nullable=False
+    )
+    raw_response: Mapped[str | None] = mapped_column(Text)
+    answer_hash: Mapped[str | None] = mapped_column(String(64))
+    answer_model: Mapped[str | None] = mapped_column(String(100))
+    measurement_method: Mapped[str | None] = mapped_column(String(100))
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    search_calls: Mapped[int | None] = mapped_column(Integer)
+    citation_urls: Mapped[list | None] = mapped_column(JSON)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    answer_failure_reason: Mapped[str | None] = mapped_column(String(500))
+    answer_attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+
+    judgment_status: Mapped[str] = mapped_column(
+        String(20), default="PENDING", server_default="PENDING", nullable=False
+    )
+    judgment_input_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    judgment_attempt_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    judgment_failure_reason: Mapped[str | None] = mapped_column(String(500))
+    sov_record_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey(
+            "sov_records.id",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        unique=True,
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    monthly_cell: Mapped["MonthlyMeasurementCell | None"] = relationship(
+        back_populates="observation_slots"
+    )
+    sov_record: Mapped["SovRecord | None"] = relationship()
 
 
 class HospitalServiceInterval(Base):

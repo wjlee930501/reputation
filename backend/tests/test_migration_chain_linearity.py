@@ -31,9 +31,13 @@ SYSTEM_INCIDENT_ACK = "0061_allow_system_incident_acknowledgement"
 MANIFEST_SUPERSEDE = "0062_allow_monthly_manifest_protocol_supersede"
 MONTHLY_SOV_COHORT = "0063_add_monthly_sov_cohort"
 MANIFEST_RECOVERY_GUARD = "0064_manifest_recovery_guard"
+PROVIDER_USAGE = "0065_provider_usage"
+CONTENT_CONTRACTS = "0066_content_contracts"
+MEASUREMENT_SLOTS = "0067_measurement_slots"
+LEAD_COST_DEFERRAL = "0068_lead_cost_deferral"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = MANIFEST_RECOVERY_GUARD
+HEAD = LEAD_COST_DEFERRAL
 
 
 def _script_directory() -> ScriptDirectory:
@@ -88,6 +92,10 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         MANIFEST_SUPERSEDE,
         MONTHLY_SOV_COHORT,
         MANIFEST_RECOVERY_GUARD,
+        PROVIDER_USAGE,
+        CONTENT_CONTRACTS,
+        MEASUREMENT_SLOTS,
+        LEAD_COST_DEFERRAL,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -106,6 +114,10 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         MANIFEST_SUPERSEDE: SYSTEM_INCIDENT_ACK,
         MONTHLY_SOV_COHORT: MANIFEST_SUPERSEDE,
         MANIFEST_RECOVERY_GUARD: MONTHLY_SOV_COHORT,
+        PROVIDER_USAGE: MANIFEST_RECOVERY_GUARD,
+        CONTENT_CONTRACTS: PROVIDER_USAGE,
+        MEASUREMENT_SLOTS: CONTENT_CONTRACTS,
+        LEAD_COST_DEFERRAL: MEASUREMENT_SLOTS,
     }
 
 
@@ -117,6 +129,10 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        LEAD_COST_DEFERRAL,
+        MEASUREMENT_SLOTS,
+        CONTENT_CONTRACTS,
+        PROVIDER_USAGE,
         MANIFEST_RECOVERY_GUARD,
         MONTHLY_SOV_COHORT,
         MANIFEST_SUPERSEDE,
@@ -138,7 +154,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-13:] == [
+    assert applied[-17:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -152,4 +168,8 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         MANIFEST_SUPERSEDE,
         MONTHLY_SOV_COHORT,
         MANIFEST_RECOVERY_GUARD,
+        PROVIDER_USAGE,
+        CONTENT_CONTRACTS,
+        MEASUREMENT_SLOTS,
+        LEAD_COST_DEFERRAL,
     ]

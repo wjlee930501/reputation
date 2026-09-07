@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
@@ -16,8 +17,14 @@ from app.services import operation_runs
 from app.services.operation_runs import DispatchTask, OperationCommand, dispatch_operation
 from app.workers import operation_run_signals
 
-DATABASE_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
-SYNC_DATABASE_URL = "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test"
+DATABASE_URL = os.getenv(
+    "OPERATION_RUN_SIGNAL_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
+)
+SYNC_DATABASE_URL = os.getenv(
+    "OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL",
+    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
+)
 
 
 async def _skip_audit(

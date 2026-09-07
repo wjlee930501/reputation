@@ -86,9 +86,9 @@ export function leadSourceLabel(sourcePath: string | null | undefined): string {
 export const RECOVERY_ADAPTERS = [
   { id: 'content-generation', route: '/operations?queue=incidents', action: '작업 다시 시도' },
   { id: 'publish-notification', route: '/hospitals/:id/content', action: 'Slack 다시 보내기' },
-  { id: 'lead-diagnosis', route: '/leads', action: '다시 측정 또는 리포트 다시 만들기' },
+  { id: 'lead-diagnosis', route: '/leads', action: '다시 측정 또는 보고서 다시 만들기' },
   { id: 'naver-single-url', route: '/hospitals/:id/onboarding', action: '다시 처리' },
-  { id: 'monthly-report', route: '/hospitals/:id/reports', action: '리포트 다시 만들기' },
+  { id: 'monthly-report', route: '/hospitals/:id/reports', action: '보고서 다시 만들기' },
   { id: 'domain-health', route: '/operations?queue=incidents', action: '복구 결과 확인' },
   { id: 'cache-revalidation', route: '/operations?queue=incidents', action: '복구 결과 확인' },
   { id: 'worker-failure', route: '/operations?queue=incidents', action: '작업 다시 시도' },

@@ -1,6 +1,8 @@
 """Deterministic content brief fallback for query-linked content slots."""
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 from app.models.content import ContentItem
@@ -25,6 +27,7 @@ BRIEF_STATUSES = {
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_NEEDS_REVIEW,
 }
+CONTENT_BRIEF_SCHEMA_VERSION = "content-brief-v2"
 
 
 def is_usable_content_brief(brief: Any) -> bool:
@@ -64,6 +67,7 @@ def build_content_brief(
     region_terms = _list(getattr(query_target, "region_terms", None))
 
     return {
+        "schema_version": CONTENT_BRIEF_SCHEMA_VERSION,
         "target_query": target_query,
         # ── 측정 질의를 프롬프트·검증이 그대로 쓸 수 있는 형태로 분해해 둔다.
         # 예전에는 target_query 한 줄만 프롬프트에 들어가서, 글이 그 질문에 답했는지
@@ -78,6 +82,8 @@ def build_content_brief(
         "query_target": _query_target_reference(query_target),
         "exposure_action": _exposure_action_reference(exposure_action),
         "philosophy_reference": _philosophy_reference(philosophy),
+        "source_snapshot": _source_snapshot_reference(philosophy),
+        "target_revision": _target_revision(query_target),
         "treatment_narrative": treatment_narrative,
         "must_use_messages": _list(getattr(philosophy, "must_use_messages", None)),
         "avoid_messages": safety_policy["avoid_messages"],
@@ -210,6 +216,58 @@ def _philosophy_reference(philosophy: HospitalContentPhilosophy | None) -> dict[
     }
 
 
+def _source_snapshot_reference(
+    philosophy: HospitalContentPhilosophy | None,
+) -> dict[str, Any] | None:
+    if philosophy is None:
+        return None
+    return {
+        "hash": getattr(philosophy, "source_snapshot_hash", None),
+        "source_asset_ids": sorted(
+            str(value) for value in (getattr(philosophy, "source_asset_ids", None) or [])
+        ),
+    }
+
+
+def _target_revision(query_target: AIQueryTarget | None) -> str | None:
+    if query_target is None:
+        return None
+    payload = _query_target_reference(query_target) or {}
+    payload["variants"] = sorted(
+        (
+            {
+                "query_text": str(getattr(variant, "query_text", "") or ""),
+                "is_active": bool(getattr(variant, "is_active", False)),
+            }
+            for variant in (getattr(query_target, "variants", None) or [])
+        ),
+        key=lambda value: (value["query_text"], value["is_active"]),
+    )
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def content_brief_matches_inputs(
+    brief: Any,
+    *,
+    philosophy: HospitalContentPhilosophy,
+    query_target: AIQueryTarget | None,
+) -> bool:
+    if not is_usable_content_brief(brief) or brief.get("schema_version") != CONTENT_BRIEF_SCHEMA_VERSION:
+        return False
+    philosophy_reference = brief.get("philosophy_reference")
+    source_snapshot = brief.get("source_snapshot")
+    return bool(
+        isinstance(philosophy_reference, dict)
+        and philosophy_reference.get("id") == str(philosophy.id)
+        and philosophy_reference.get("version") == getattr(philosophy, "version", None)
+        and source_snapshot == _source_snapshot_reference(philosophy)
+        and brief.get("target_revision") == _target_revision(query_target)
+    )
+
+
 def _treatment_narrative(
     *,
     treatment_name: str | None,
@@ -222,30 +280,58 @@ def _treatment_narrative(
             continue
         candidate = str(narrative.get("treatment") or narrative.get("name") or "").strip()
         if normalized and normalized in candidate.lower():
-            return {
-                "source": "approved_philosophy",
-                "treatment": candidate or treatment_name,
-                "angle": narrative.get("angle") or narrative.get("narrative") or "",
-                "details": narrative,
-            }
+            return normalize_treatment_narrative(
+                narrative,
+                source="approved_philosophy",
+                treatment=candidate or treatment_name,
+            )
 
     for treatment in _list(getattr(hospital, "treatments", None)):
         if not isinstance(treatment, dict):
             continue
         candidate = str(treatment.get("name") or "").strip()
         if not normalized or normalized in candidate.lower():
-            return {
-                "source": "hospital_profile",
-                "treatment": candidate,
-                "angle": treatment.get("description") or "",
-                "details": treatment,
-            }
+            return normalize_treatment_narrative(
+                treatment,
+                source="hospital_profile",
+                treatment=candidate,
+            )
 
     return {
         "source": "fallback",
         "treatment": treatment_name,
         "angle": "증상, 진단, 치료 선택지, 회복 과정과 주의사항을 환자 언어로 설명합니다.",
         "details": {},
+    }
+
+
+def normalize_treatment_narrative(
+    value: Any,
+    *,
+    source: str | None = None,
+    treatment: str | None = None,
+) -> dict[str, Any]:
+    """Normalize LLM and legacy fallback treatment DTOs without dropping facts."""
+
+    raw = value if isinstance(value, dict) else {}
+    patient_language = [
+        str(item).strip() for item in _list(raw.get("patient_language")) if str(item).strip()
+    ]
+    cautions = [str(item).strip() for item in _list(raw.get("cautions")) if str(item).strip()]
+    evidence_note_ids = [
+        str(item).strip() for item in _list(raw.get("evidence_note_ids")) if str(item).strip()
+    ]
+    angle = str(raw.get("angle") or raw.get("narrative") or raw.get("description") or "").strip()
+    if not angle:
+        angle = " ".join((*patient_language, *cautions)).strip()
+    return {
+        "source": source or str(raw.get("source") or "fallback"),
+        "treatment": treatment or str(raw.get("treatment") or raw.get("name") or "").strip(),
+        "angle": angle,
+        "patient_language": patient_language,
+        "cautions": cautions,
+        "evidence_note_ids": evidence_note_ids,
+        "details": dict(raw),
     }
 
 

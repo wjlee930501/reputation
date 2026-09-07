@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { hospitalOperationsHref, reportOperationsHref } from '@/lib/operations-center'
 import type { ActionCopy, ReportView } from '@/lib/report-review'
 
 function dateTime(value: string | null): string {
@@ -18,7 +19,7 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
       <section className="rounded-xl border border-[var(--color-revisit-primary-80)] bg-[var(--color-revisit-primary-95)] p-4" aria-labelledby="review-status-heading" data-review-section="status">
         <p className="text-xs font-bold text-[var(--color-revisit-nav)]">{review?.versionLabel ?? '버전 정보를 확인할 수 없습니다'}</p>
         <h4 id="review-status-heading" className="mt-1 text-lg font-bold text-[var(--color-revisit-text-title)] [word-break:keep-all]">
-          {report.deliveryReady ? '원장 전달 전 근거를 최종 확인해 주세요' : '현재 리포트는 원장님께 전달할 수 없습니다'}
+          {report.deliveryReady ? '원장 전달 전 근거를 최종 확인해 주세요' : '현재 보고서는 원장님께 전달할 수 없습니다'}
         </h4>
         {!report.deliveryReady && (
           <dl className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-3">
@@ -37,12 +38,12 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
       <section className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="measurement-heading" data-review-section="measurement">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div><p className="text-xs font-bold text-[var(--color-revisit-text-caption)]">측정 근거</p><h4 id="measurement-heading" className="mt-1 font-bold text-[var(--color-revisit-text-title)]">{review?.measurement.label ?? '측정 상태 확인 필요'}</h4></div>
-          <p className="text-sm font-semibold text-[var(--color-revisit-text-helper)]">AI 답변 내 병원 언급률 {report.sovPct === null ? '확인 불가' : `${report.sovPct.toFixed(1)}%`}</p>
+          <p className="text-sm font-semibold text-[var(--color-revisit-text-helper)]">답변 내 병원 언급률 {report.sovPct === null ? '확인 불가' : `${report.sovPct.toFixed(1)}%`}</p>
         </div>
         {review && <EvidenceCopy copy={review.measurement} />}
         {report.citations && (
           <p className="mt-3 text-sm leading-6 text-[var(--color-revisit-text-helper)]">
-            AI가 인용한 우리 글: 측정한 답변 {report.citations.measuredCells}건 중 {report.citations.citedCells}건이 병원 공개 표면을 인용했고,
+            외부 답변에 인용된 우리 글: 측정한 답변 {report.citations.measuredCells}건 중 {report.citations.citedCells}건이 병원 공개 페이지를 인용했고,
             인용된 발행 글은 {report.citations.citedContentCount}편입니다.
           </p>
         )}
@@ -85,14 +86,14 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
                 </li>
               ))}
             </ul>
-          ) : <div className="mt-2 text-sm text-[var(--color-revisit-red-50)]"><p>문제: 질문별 측정 근거가 없습니다.<br />고객 영향: 이 화면만으로 수치가 충분히 측정됐는지 확인할 수 없습니다.<br />지금 할 일: 운영 센터에서 측정 기록을 확인해 주세요.</p><EvidenceActions operationsUrl={review?.notification.operationsUrl} onCopy={onCopyNotification} /></div>}
+          ) : <div className="mt-2 text-sm text-[var(--color-revisit-red-50)]"><p>문제: 질문별 측정 근거가 없습니다.<br />고객 영향: 이 화면만으로 수치가 충분히 측정됐는지 확인할 수 없습니다.<br />지금 할 일: 운영 센터에서 측정 기록을 확인해 주세요.</p><EvidenceActions report={report} operationsUrl={review?.notification.operationsUrl} onCopy={onCopyNotification} /></div>}
         </details>
       </section>
 
       {report.comparison && (
         <section className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="comparison-heading">
           <h4 id="comparison-heading" className="font-bold text-[var(--color-revisit-text-title)]">지난달과 비교</h4>
-          <p className="mt-2 text-sm font-semibold">{report.comparison.comparable ? '같은 질문과 AI 서비스 기준으로 비교할 수 있습니다.' : '지난달과 직접 비교할 수 없습니다.'}</p>
+          <p className="mt-2 text-sm font-semibold">{report.comparison.comparable ? '같은 질문과 측정 서비스 기준으로 비교할 수 있습니다.' : '지난달과 직접 비교할 수 없습니다.'}</p>
           <EvidenceCopy copy={{ label: '', ...report.comparison }} />
         </section>
       )}
@@ -116,19 +117,19 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
           )}
           <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Count label="약정 미달" value={report.contentOperations.shortfallCount} />
-            <Count label="스케줄 슬롯" value={report.contentOperations.scheduledSlotCount} />
+            <Count label="발행 예정 콘텐츠" value={report.contentOperations.scheduledSlotCount} />
             <Count label="사후검수 완료" value={report.contentOperations.reviewedCount} />
             <Count label="사후검수 대기" value={report.contentOperations.pendingReviewCount} />
           </dl>
           <details className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3">
-            <summary className="flex min-h-11 cursor-pointer items-center font-bold text-[var(--color-revisit-text-title)]">슬롯 상태와 검수 기준 확인</summary>
+            <summary className="flex min-h-11 cursor-pointer items-center font-bold text-[var(--color-revisit-text-title)]">발행 상태와 검수 기준 확인</summary>
             <div className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-2">
               <div>
-                <p className="font-bold">스케줄 슬롯 상태</p>
+                <p className="font-bold">발행 예정 콘텐츠 상태</p>
                 <p className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
                   {Object.entries(report.contentOperations.scheduledSlotStateCounts).length
                     ? Object.entries(report.contentOperations.scheduledSlotStateCounts).map(([state, count]) => `${contentStatusLabel(state)} ${count}건`).join(' · ')
-                    : '이번 달 스케줄 슬롯이 없습니다.'}
+                    : '이번 달 발행 예정 콘텐츠가 없습니다.'}
                 </p>
               </div>
               <div>
@@ -162,16 +163,16 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
         <h4 id="artifact-heading" className="font-bold text-[var(--color-revisit-text-title)]">원장 전달용 파일 검증</h4>
         <p className="mt-2 text-sm font-semibold">{report.doctorArtifact.stateLabel}</p>
         <p className="mt-1 text-sm text-[var(--color-revisit-text-helper)]">{report.doctorArtifact.pageCount ? `${report.doctorArtifact.pageCount}페이지` : '페이지 수 확인 불가'} · 검증 {dateTime(report.doctorArtifact.validatedAt)}</p>
-        {report.doctorArtifact.state !== 'VALID' && <div className="mt-2 text-sm text-[var(--color-revisit-red-50)]"><p>문제: 원장 전달용 파일 검증이 끝나지 않았습니다.<br />고객 영향: 검증되지 않은 파일은 원장님께 전달할 수 없습니다.<br />지금 할 일: 운영 센터에서 차단 사유를 확인하고 리포트를 다시 만들어 주세요.</p><EvidenceActions operationsUrl={review?.notification.operationsUrl} onCopy={onCopyNotification} /></div>}
+        {report.doctorArtifact.state !== 'VALID' && <div className="mt-2 text-sm text-[var(--color-revisit-red-50)]"><p>문제: 원장 전달용 파일 검증이 끝나지 않았습니다.<br />고객 영향: 검증되지 않은 파일은 원장님께 전달할 수 없습니다.<br />지금 할 일: 운영 센터에서 차단 사유를 확인하고 보고서를 다시 만들어 주세요.</p><EvidenceActions report={report} operationsUrl={review?.notification.operationsUrl} onCopy={onCopyNotification} /></div>}
       </section>
 
       {review && (
         <section className="rounded-xl border border-[var(--color-revisit-coolgrey-20)] p-4" aria-labelledby="notification-heading" data-review-section="notification">
-          <h4 id="notification-heading" className="font-bold text-[var(--color-revisit-text-title)]">운영팀 Slack 알림 · 리포트 성공과 별도</h4>
+          <h4 id="notification-heading" className="font-bold text-[var(--color-revisit-text-title)]">운영팀 Slack 알림 · 보고서 성공과 별도</h4>
           <p className="mt-2 text-sm font-semibold">{review.notification.label}</p>
           <EvidenceCopy copy={review.notification} />
           <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-            <Link href={review.notification.operationsUrl} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">운영 센터에서 최신 Slack 알림 확인</Link>
+            <Link href={hospitalOperationsHref(report.hospitalId, review.notification.operationsUrl)} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">운영 센터에서 최신 Slack 알림 확인</Link>
             <button type="button" onClick={onCopyNotification} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold">개발팀 문의용 정보 복사</button>
           </div>
         </section>
@@ -193,6 +194,6 @@ function contentStatusLabel(value: string): string {
 function EvidenceCopy({ copy }: { copy: ActionCopy }) {
   return <dl className="mt-3 grid gap-3 text-sm leading-6 md:grid-cols-3"><Copy label="무슨 문제인지" value={copy.problem} /><Copy label="고객 영향" value={copy.customerImpact} /><Copy label="지금 할 일" value={copy.nextAction} /></dl>
 }
-function EvidenceActions({ operationsUrl, onCopy }: { operationsUrl?: string; onCopy: () => void }) { return <div className="mt-3 flex flex-col gap-2 sm:flex-row"><Link href={operationsUrl ?? '/operations?queue=REPORTS'} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">운영 센터에서 확인</Link><button type="button" onClick={onCopy} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div> }
+function EvidenceActions({ report, operationsUrl, onCopy }: { report: ReportView; operationsUrl?: string; onCopy: () => void }) { return <div className="mt-3 flex flex-col gap-2 sm:flex-row"><Link href={operationsUrl ? hospitalOperationsHref(report.hospitalId, operationsUrl) : reportOperationsHref(report.hospitalId, report.id, report.periodYear, report.periodMonth)} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">운영 센터에서 확인</Link><button type="button" onClick={onCopy} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div> }
 function Copy({ label, value }: { label: string; value: string }) { return <div><dt className="font-bold">{label}</dt><dd className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">{value}</dd></div> }
 function Count({ label, value }: { label: string; value: number }) { return <div className="rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3"><dt className="text-xs text-[var(--color-revisit-text-helper)]">{label}</dt><dd className="mt-1 text-xl font-bold">{value}</dd></div> }

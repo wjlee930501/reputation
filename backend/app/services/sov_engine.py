@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import product
 from typing import Any
@@ -37,6 +38,105 @@ _provider_cost_category: ContextVar[str] = ContextVar("sov_provider_cost_categor
 _provider_hospital_id: ContextVar[uuid.UUID | str | None] = ContextVar(
     "sov_provider_hospital_id", default=None
 )
+_provider_lead_id: ContextVar[uuid.UUID | str | None] = ContextVar(
+    "sov_provider_lead_id", default=None
+)
+_provider_workflow: ContextVar[str] = ContextVar("sov_provider_workflow", default="sov")
+_provider_run_id: ContextVar[str | None] = ContextVar("sov_provider_run_id", default=None)
+_provider_item_id: ContextVar[str | None] = ContextVar("sov_provider_item_id", default=None)
+_provider_attempt_id: ContextVar[str | None] = ContextVar(
+    "sov_provider_attempt_id", default=None
+)
+_provider_http_attempts: ContextVar[dict[str, int] | None] = ContextVar(
+    "sov_provider_http_attempts", default=None
+)
+
+
+@contextmanager
+def provider_execution_context(
+    *,
+    pool: str,
+    hospital_id: uuid.UUID | str | None = None,
+    lead_id: uuid.UUID | str | None = None,
+    workflow: str = "sov",
+    run_id: str | None = None,
+    item_id: str | None = None,
+    attempt_id: str | None = None,
+):
+    """Set paid-call attribution for one answer or judgment and always restore it.
+
+    Cached lead answers still need this boundary because the hospital-specific judgment is a
+    paid provider call.  Explicit reset prevents a lead task and a paid SoV task sharing one
+    event-loop worker from inheriting each other's budget and usage owner.
+    """
+    tokens = (
+        (_provider_cost_category, _provider_cost_category.set(pool)),
+        (_provider_hospital_id, _provider_hospital_id.set(hospital_id)),
+        (_provider_lead_id, _provider_lead_id.set(lead_id)),
+        (_provider_workflow, _provider_workflow.set(workflow)),
+        (_provider_run_id, _provider_run_id.set(run_id)),
+        (_provider_item_id, _provider_item_id.set(item_id)),
+        (_provider_attempt_id, _provider_attempt_id.set(attempt_id)),
+        (_provider_http_attempts, _provider_http_attempts.set({})),
+    )
+    try:
+        yield
+    finally:
+        for variable, token in reversed(tokens):
+            variable.reset(token)
+
+
+def _next_http_attempt(logical_call_id: str) -> int:
+    counters = _provider_http_attempts.get()
+    if counters is None:
+        counters = {}
+        _provider_http_attempts.set(counters)
+    attempt = counters.get(logical_call_id, 0) + 1
+    counters[logical_call_id] = attempt
+    return attempt
+
+
+async def _record_provider_attempt(
+    *,
+    provider: str,
+    model: str | None,
+    logical_call_id: str,
+    response: Any | None = None,
+    usage: Any | None = None,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    search_units: int | None = None,
+) -> None:
+    """Append one normalized HTTP-attempt event; ledger failure never fails the work."""
+    try:
+        from app.services import provider_usage
+
+        request_id = _field(response, "id") if response is not None else None
+        await provider_usage.record_attempt(
+            provider=provider,
+            model=model,
+            workflow=_provider_workflow.get(),
+            cost_category=_provider_cost_category.get(),
+            hospital_id=_provider_hospital_id.get(),
+            lead_id=_provider_lead_id.get(),
+            run_id=_provider_run_id.get(),
+            item_id=_provider_item_id.get(),
+            attempt_id=_provider_attempt_id.get(),
+            logical_call_id=logical_call_id,
+            http_attempt=_next_http_attempt(logical_call_id),
+            provider_request_id=str(request_id) if request_id else None,
+            usage=usage,
+            # Let provider_usage infer this from normalized non-null fields. SDKs sometimes
+            # attach an empty usage object to an error/partial response; object presence alone
+            # is not evidence that usage is known.
+            usage_known=None,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            search_units=search_units,
+            cache_status="bypass",
+        )
+    except Exception as exc:  # noqa: BLE001 - usage telemetry is deliberately best-effort.
+        logger.warning("provider usage event skipped: %s", type(exc).__name__)
 
 
 async def _record_sov_provider_call(count: int = 1) -> None:
@@ -82,7 +182,7 @@ def _pool_limit(pool: str) -> int:
     # 서로 다른 세마포어를 사용해 전체 측정 시간은 불필요하게 늘리지 않는다.
     if pool.endswith(":gemini"):
         return 1
-    if pool == POOL_LEADGEN:
+    if pool == POOL_LEADGEN or pool.startswith(f"{POOL_LEADGEN}:"):
         return settings.LEADGEN_PROVIDER_CONCURRENCY
     return SOV_PROVIDER_CONCURRENCY
 
@@ -121,9 +221,13 @@ OPENAI_TIMEOUT_SECONDS = 120.0
 # Gemini는 실측 p50 7.9s / 최대 10.4s로 훨씬 빠르다. 여유만 두고 과하게 늘리지 않는다.
 GEMINI_TIMEOUT_SECONDS = 60.0
 
-openai_client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY, timeout=OPENAI_TIMEOUT_SECONDS)
-# 측정 공급자 호출만 SDK 재시도를 끈다. 판정기(`openai_client`)는 기존 SDK 복원력을
-# 유지하고, 측정 경로의 실제 호출 횟수·백오프·영구 오류 중단은 Tenacity 한곳에서 통제한다.
+openai_client = AsyncOpenAI(
+    api_key=settings.OPENAI_API_KEY,
+    timeout=OPENAI_TIMEOUT_SECONDS,
+    max_retries=0,
+)
+# SDK 내부 재시도는 HTTP 시도를 숨기므로 답변·판정 모두 끈다. 일시 오류 복원력은 아래의
+# 명시적 bounded retry가 맡고, 각 실제 HTTP 시도를 비용/usage 원장에 따로 기록한다.
 openai_query_client = AsyncOpenAI(
     api_key=settings.OPENAI_API_KEY,
     timeout=OPENAI_TIMEOUT_SECONDS,
@@ -204,7 +308,19 @@ def is_terminal_provider_failure(reason: str | None) -> bool:
 
 def _should_retry_provider_exception(exc: BaseException) -> bool:
     """타임아웃·5xx·일반 429는 짧게 재시도하고 명시적 크레딧/쿼터 오류는 중단한다."""
-    return not is_terminal_provider_failure(provider_failure_reason(exc))
+    if is_terminal_provider_failure(provider_failure_reason(exc)):
+        return False
+    root = _root_provider_exception(exc)
+    status_code = _provider_status_code(root)
+    if status_code is not None:
+        return status_code in {408, 409, 425, 429} or status_code >= 500
+    if isinstance(root, (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError)):
+        return True
+    # OpenAI and Google expose connection/timeout failures as SDK-specific exception
+    # classes. Match only their stable class meaning; arbitrary RuntimeError/TypeError is
+    # usually a deterministic client or programming failure and must not be purchased again.
+    class_name = type(root).__name__.lower()
+    return any(token in class_name for token in ("timeout", "connection", "ratelimit"))
 
 
 def _get_gemini_client() -> google_genai.Client | None:
@@ -709,19 +825,36 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
     if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
         return await _query_chatgpt_with_search_result(query)
     await _record_sov_provider_call()
-    response = await openai_query_client.chat.completions.create(
-        model=settings.OPENAI_MODEL_QUERY,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT_SOV},
-            {"role": "user", "content": query},
-        ],
-        temperature=0.7,
-        max_tokens=800,
-    )
+    try:
+        response = await openai_query_client.chat.completions.create(
+            model=settings.OPENAI_MODEL_QUERY,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_SOV},
+                {"role": "user", "content": query},
+            ],
+            temperature=0.7,
+            max_tokens=800,
+        )
+    except Exception:
+        await _record_provider_attempt(
+            provider="openai",
+            model=settings.OPENAI_MODEL_QUERY,
+            logical_call_id="answer",
+        )
+        raise
     usage = _field(response, "usage")
     input_tokens = _field(usage, "prompt_tokens")
     output_tokens = _field(usage, "completion_tokens")
-    await _record_sov_usage(input_tokens, output_tokens)
+    await _record_provider_attempt(
+        provider="openai",
+        model=_field(response, "model") or settings.OPENAI_MODEL_QUERY,
+        logical_call_id="answer",
+        response=response,
+        usage=usage,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        search_units=0,
+    )
     return {
         "text": response.choices[0].message.content or "",
         "source_urls": [],
@@ -741,9 +874,19 @@ async def _query_chatgpt_with_search(query: str) -> str:
 
 async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
     """OpenAI Responses web search의 답변과 실제 인용 URL을 함께 보존한다."""
+    create_response = getattr(getattr(openai_query_client, "responses", None), "create", None)
+    if not callable(create_response):
+        # No HTTP attempt occurred, so neither the actual-call counter nor the usage ledger
+        # should claim one. Runtime capability drift is surfaced as an unavailable answer.
+        logger.warning("openai SDK has no .responses; falling through to FAILED.")
+        return {
+            "text": "",
+            "source_urls": [],
+            "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
+        }
     await _record_sov_provider_call()
     try:
-        response = await openai_query_client.responses.create(
+        response = await create_response(
             model=settings.OPENAI_MODEL_QUERY,
             tools=[{"type": "web_search"}],
             # 도구는 제공하되 강제하지 않는다 (측정 정책 v2). 매 요청 검색을 강제하면
@@ -757,16 +900,13 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             instructions=SYSTEM_PROMPT_SOV,
             input=query,
         )
-    except AttributeError:
-        # SDK 버전이 responses API를 지원하지 않으면 chat.completions로 폴백
-        # 운영자가 OPENAI_CHATGPT_USE_WEB_SEARCH=true로 켰지만 SDK 미지원이라 빈 결과로
-        # 분리되는 게 맞으므로 — 빈 문자열 반환해 FAILED 라벨로 흐르게 함.
-        logger.warning("openai SDK has no .responses; falling through to FAILED.")
-        return {
-            "text": "",
-            "source_urls": [],
-            "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
-        }
+    except Exception:
+        await _record_provider_attempt(
+            provider="openai",
+            model=settings.OPENAI_MODEL_QUERY,
+            logical_call_id="answer",
+        )
+        raise
     output_text = getattr(response, "output_text", None)
     text = output_text if isinstance(output_text, str) else ""
     if not text:
@@ -779,12 +919,22 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             if text:
                 break
     input_tokens, output_tokens = _extract_openai_usage(response)
-    await _record_sov_usage(input_tokens, output_tokens)
+    search_calls = _extract_openai_search_calls(response)
+    await _record_provider_attempt(
+        provider="openai",
+        model=_field(response, "model") or settings.OPENAI_MODEL_QUERY,
+        logical_call_id="answer",
+        response=response,
+        usage=_field(response, "usage"),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        search_units=search_calls,
+    )
     return {
         "text": text,
         "source_urls": _extract_openai_source_urls(response),
         "answer_model": _field(response, "model"),
-        "search_calls": _extract_openai_search_calls(response),
+        "search_calls": search_calls,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
@@ -806,30 +956,48 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
             "measurement_method": "GEMINI_GOOGLE_SEARCH",
         }
     await _record_sov_provider_call()
-    response = await asyncio.wait_for(
-        asyncio.to_thread(
-            client.models.generate_content,
-            model=settings.GEMINI_MODEL,
-            contents=query,
-            config=genai_types.GenerateContentConfig(
-                temperature=1.0,
-                max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-                tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                # OpenAI 경로와 **같은 문자열을 같은 역할로** 보낸다. 한쪽만 지시문을
-                # 질문에 이어붙이면 "ChatGPT n% vs Gemini m%"가 플랫폼 차이가 아니라
-                # 우리 호출 방식의 차이가 된다 (2026-07-29 비대칭 회귀와 같은 종류).
-                system_instruction=SYSTEM_PROMPT_SOV,
+    try:
+        response = await asyncio.wait_for(
+            asyncio.to_thread(
+                client.models.generate_content,
+                model=settings.GEMINI_MODEL,
+                contents=query,
+                config=genai_types.GenerateContentConfig(
+                    temperature=1.0,
+                    max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+                    tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
+                    # OpenAI 경로와 **같은 문자열을 같은 역할로** 보낸다. 한쪽만 지시문을
+                    # 질문에 이어붙이면 "ChatGPT n% vs Gemini m%"가 플랫폼 차이가 아니라
+                    # 우리 호출 방식의 차이가 된다 (2026-07-29 비대칭 회귀와 같은 종류).
+                    system_instruction=SYSTEM_PROMPT_SOV,
+                ),
             ),
-        ),
-        timeout=GEMINI_TIMEOUT_SECONDS,
-    )
+            timeout=GEMINI_TIMEOUT_SECONDS,
+        )
+    except Exception:
+        await _record_provider_attempt(
+            provider="google",
+            model=settings.GEMINI_MODEL,
+            logical_call_id="answer",
+        )
+        raise
     input_tokens, output_tokens = _extract_gemini_usage(response)
-    await _record_sov_usage(input_tokens, output_tokens)
+    search_calls = _extract_gemini_search_calls(response)
+    await _record_provider_attempt(
+        provider="google",
+        model=_field(response, "model_version") or settings.GEMINI_MODEL,
+        logical_call_id="answer",
+        response=response,
+        usage=_field(response, "usage_metadata"),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        search_units=search_calls,
+    )
     return {
         "text": response.text or "",
         "source_urls": _extract_gemini_source_urls(response),
         "answer_model": _field(response, "model_version"),
-        "search_calls": _extract_gemini_search_calls(response),
+        "search_calls": search_calls,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "measurement_method": "GEMINI_GOOGLE_SEARCH",
@@ -985,6 +1153,50 @@ def _corroborates(hospital_name: str, matched_text: str | None, response_text: s
     return len(core) >= 3 and quoted == core
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(min=1, max=5),
+    retry=retry_if_exception(_should_retry_provider_exception),
+    reraise=True,
+)
+async def _request_judge_completion(
+    *,
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    logical_call_id: str,
+) -> Any:
+    """Issue one explicitly retried judge request and meter every HTTP attempt."""
+    await _record_sov_provider_call()
+    try:
+        result = await openai_client.chat.completions.create(
+            model=settings.OPENAI_MODEL_PARSE,
+            messages=messages,
+            temperature=0,
+            max_tokens=max_tokens,
+            response_format={"type": "json_object"},
+        )
+    except Exception:
+        await _record_provider_attempt(
+            provider="openai",
+            model=settings.OPENAI_MODEL_PARSE,
+            logical_call_id=logical_call_id,
+        )
+        raise
+    usage = _field(result, "usage")
+    input_tokens = _field(usage, "prompt_tokens")
+    output_tokens = _field(usage, "completion_tokens")
+    await _record_provider_attempt(
+        provider="openai",
+        model=_field(result, "model") or settings.OPENAI_MODEL_PARSE,
+        logical_call_id=logical_call_id,
+        response=result,
+        usage=usage,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+    return result
+
+
 async def _parse_mention(hospital_name: str, response_text: str, region: str = "") -> dict:
     if not response_text.strip():
         return _not_matched()
@@ -995,9 +1207,7 @@ async def _parse_mention(hospital_name: str, response_text: str, region: str = "
         logger.debug("prefilter skip (mention): hospital=%s", hospital_name)
         return _not_matched()
 
-    await _record_sov_provider_call()
-    result = await openai_client.chat.completions.create(
-        model=settings.OPENAI_MODEL_PARSE,
+    result = await _request_judge_completion(
         messages=[
             {
                 "role": "user",
@@ -1008,14 +1218,8 @@ async def _parse_mention(hospital_name: str, response_text: str, region: str = "
                 ),
             }
         ],
-        temperature=0,
         max_tokens=300,
-        response_format={"type": "json_object"},
-    )
-    usage = _field(result, "usage")
-    await _record_sov_usage(
-        _field(usage, "prompt_tokens"),
-        _field(usage, "completion_tokens"),
+        logical_call_id="judgment:self",
     )
     try:
         parsed = json.loads(result.choices[0].message.content or "{}")
@@ -1091,9 +1295,7 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
         logger.debug("prefilter skip (competitors): count=%d", len(competitors))
         return [{"name": c, "is_mentioned": False, "mention_rank": None} for c in competitors]
 
-    await _record_sov_provider_call()
-    result = await openai_client.chat.completions.create(
-        model=settings.OPENAI_MODEL_PARSE,
+    result = await _request_judge_completion(
         messages=[
             {
                 "role": "user",
@@ -1103,14 +1305,8 @@ async def _parse_competitors(competitors: list[str], response_text: str) -> list
                 ),
             }
         ],
-        temperature=0,
         max_tokens=500,
-        response_format={"type": "json_object"},
-    )
-    usage = _field(result, "usage")
-    await _record_sov_usage(
-        _field(usage, "prompt_tokens"),
-        _field(usage, "completion_tokens"),
+        logical_call_id="judgment:competitors",
     )
     # 판정기 장애를 "미언급"으로 삼키지 않는다. 자사 판정(_parse_mention)은 파싱 실패 시
     # ValueError를 던져 측정이 FAILED로 분모에서 빠지는데, 경쟁사만 조용히 전부 False를
@@ -1169,11 +1365,7 @@ async def run_single_query(
     """
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
 
-    async def single():
-        # 이 측정에서 나가는 실제 호출을 어느 예산으로 셀지 고정한다. 무료 진단이
-        # 유료 측정 예산에 섞이면 상한 판단이 무너진다.
-        _provider_cost_category.set(pool)
-        _provider_hospital_id.set(hospital_id)
+    async def _single_in_context():
         provider_pool = f"{pool}:gemini" if platform == "gemini" else pool
         async with _get_semaphore(provider_pool):
             try:
@@ -1245,6 +1437,16 @@ async def run_single_query(
                     "failure_reason": "mention_parse_failed",
                 }
 
+    async def single():
+        # 반복별 컨텍스트를 명시적으로 복원한다. 같은 event-loop worker가 다음에 무료
+        # 진단을 실행해도 직전 유료 병원 귀속이 남지 않는다.
+        with provider_execution_context(
+            pool=pool,
+            hospital_id=hospital_id,
+            workflow="sov_query_and_judgment",
+        ):
+            return await _single_in_context()
+
     return list(await asyncio.gather(*[single() for _ in range(repeat_count)]))
 
 
@@ -1254,6 +1456,12 @@ async def fetch_answer(
     *,
     pool: str = POOL_SOV,
     requested_model: str | None = None,
+    hospital_id: uuid.UUID | str | None = None,
+    lead_id: uuid.UUID | str | None = None,
+    workflow: str = "sov_answer",
+    run_id: str | None = None,
+    item_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> dict[str, Any]:
     """공급자 답변만 가져온다 — **판정은 하지 않는다.**
 
@@ -1270,6 +1478,27 @@ async def fetch_answer(
     실패는 예외가 아니라 `measurement_status='FAILED'`인 dict로 돌려준다 — 호출부가
     측정 1건의 실패와 진단 전체의 실패를 구분해야 한다.
     """
+    measurement_method = (
+        "OPENAI_RESPONSES_WEB_SEARCH"
+        if platform == "chatgpt" and settings.OPENAI_CHATGPT_USE_WEB_SEARCH
+        else ("OPENAI_CHAT_COMPLETIONS" if platform == "chatgpt" else "GEMINI_GOOGLE_SEARCH")
+    )
+
+    def failed(reason: str, *, provider_calls: int, source_urls: list[str] | None = None) -> dict:
+        return {
+            "text": "",
+            "raw_response": "",
+            "source_urls": source_urls or [],
+            "answer_model": None,
+            "search_calls": None,
+            "input_tokens": None,
+            "output_tokens": None,
+            "measurement_method": measurement_method,
+            "provider_calls": provider_calls,
+            "measurement_status": "FAILED",
+            "failure_reason": reason,
+        }
+
     if requested_model:
         active = settings.OPENAI_MODEL_QUERY if platform == "chatgpt" else settings.GEMINI_MODEL
         if requested_model != active:
@@ -1277,44 +1506,42 @@ async def fetch_answer(
                 "pinned model drift: requested=%s active=%s platform=%s",
                 requested_model, active, platform,
             )
-            return {
-                "text": "",
-                "source_urls": [],
-                "measurement_status": "FAILED",
-                "failure_reason": f"pinned_model_drift:{requested_model}!={active}",
-            }
+            return failed(
+                f"pinned_model_drift:{requested_model}!={active}",
+                provider_calls=0,
+            )
 
     query_fn = _query_chatgpt if platform == "chatgpt" else _query_gemini_result
-    # 무료 진단 경로 — 실제 호출을 leadgen 예산으로 센다(위 measure 경로와 같은 규약).
-    _provider_cost_category.set(pool)
-    # 이 경로는 병원이 아직 없는 리드 진단이다. 귀속 대상이 없으므로 원장에 쓰지 않는다
-    # (같은 컨텍스트를 재사용해 앞선 측정의 병원이 남아 있는 경우를 막는다).
-    _provider_hospital_id.set(None)
-    async with _get_semaphore(pool):
-        try:
-            provider_result = await query_fn(query_text)
-        except Exception as exc:  # noqa: BLE001 — 측정 1건의 실패는 진단을 멈추지 않는다.
-            failure_reason = provider_failure_reason(exc)
-            logger.error("Query failed (%s): %s", platform, failure_reason)
-            return {
-                "text": "",
-                "source_urls": [],
-                "measurement_status": "FAILED",
-                "failure_reason": failure_reason,
-            }
+    provider_pool = f"{pool}:gemini" if platform == "gemini" else pool
+    with provider_execution_context(
+        pool=pool,
+        hospital_id=hospital_id,
+        lead_id=lead_id,
+        workflow=workflow,
+        run_id=run_id,
+        item_id=item_id,
+        attempt_id=attempt_id,
+    ):
+        async with _get_semaphore(provider_pool):
+            try:
+                provider_result = await query_fn(query_text)
+            except Exception as exc:  # noqa: BLE001 — 측정 1건의 실패는 진단을 멈추지 않는다.
+                failure_reason = provider_failure_reason(exc)
+                logger.error("Query failed (%s): %s", platform, failure_reason)
+                return failed(failure_reason, provider_calls=1)
 
     if isinstance(provider_result, str):
         provider_result = {"text": provider_result, "source_urls": []}
     raw = str(provider_result.get("text") or "")
     if not raw.strip():
-        return {
-            "text": "",
-            "source_urls": _normalize_source_urls(provider_result.get("source_urls") or []),
-            "measurement_status": "FAILED",
-            "failure_reason": "empty_raw_response",
-        }
+        return failed(
+            "empty_raw_response",
+            provider_calls=1,
+            source_urls=_normalize_source_urls(provider_result.get("source_urls") or []),
+        )
     return {
         "text": raw,
+        "raw_response": raw,
         "source_urls": _normalize_source_urls(provider_result.get("source_urls") or []),
         "answer_model": provider_result.get("answer_model"),
         # 검색이 실제로 돌았는지는 이 숫자를 해석하는 데 필수다 — 없으면
@@ -1323,6 +1550,7 @@ async def fetch_answer(
         "input_tokens": provider_result.get("input_tokens"),
         "output_tokens": provider_result.get("output_tokens"),
         "measurement_method": provider_result.get("measurement_method"),
+        "provider_calls": 1,
         "measurement_status": "SUCCESS",
         "failure_reason": None,
     }
@@ -1337,6 +1565,127 @@ async def judge_mention(hospital_name: str, response_text: str, region: str = ""
     이 병원인지 다른 동네 같은 이름인지 알 방법이 없고, 그 불확실성이 MATCHED로 접힌다.
     """
     return await _parse_mention(hospital_name, response_text, region)
+
+
+def answer_hash(response_text: str) -> str:
+    """Stable full digest used to bind a judgment to the exact purchased answer."""
+    return hashlib.sha256((response_text or "").encode()).hexdigest()
+
+
+def judgment_input_fingerprint(
+    *,
+    hospital_identity: str,
+    response_text: str,
+    hospital_name: str = "",
+    region: str = "",
+    competitors: list[str] | tuple[str, ...] | None = None,
+    policy: dict[str, Any] | None = None,
+) -> str:
+    """Bind judgment reuse to every input that can change the verdict."""
+    active_policy = policy or measurement_protocol()
+    material = {
+        "hospital_identity": str(hospital_identity),
+        "hospital_name": " ".join((hospital_name or "").split()),
+        "region": " ".join((region or "").split()),
+        "competitors": [" ".join(str(name).split()) for name in (competitors or [])],
+        "answer_hash": answer_hash(response_text),
+        "judge_model": active_policy.get("judge_model"),
+        "judge_prompt_fingerprint": active_policy.get("judge_prompt_fingerprint"),
+    }
+    encoded = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _judgment_provider_call_plan(
+    hospital_name: str,
+    response_text: str,
+    competitors: list[str] | tuple[str, ...] | None = None,
+) -> tuple[bool, bool]:
+    normalized = _normalize_for_prefilter(response_text)
+    own_key = prefilter_key(hospital_name)
+    own_call = bool(own_key and own_key in normalized)
+    competitor_call = bool(
+        competitors
+        and any((key := prefilter_key(name)) and key in normalized for name in competitors)
+    )
+    return own_call, competitor_call
+
+
+def estimate_judgment_provider_calls(
+    hospital_name: str,
+    response_text: str,
+    competitors: list[str] | tuple[str, ...] | None = None,
+) -> int:
+    """Exact pre-call reservation units for the self and competitor judgment batches."""
+    return sum(_judgment_provider_call_plan(hospital_name, response_text, competitors))
+
+
+async def judge_answer(
+    hospital_name: str,
+    response_text: str,
+    *,
+    region: str = "",
+    competitors: list[str] | None = None,
+    hospital_identity: str | None = None,
+    pool: str = POOL_SOV,
+    hospital_id: uuid.UUID | str | None = None,
+    lead_id: uuid.UUID | str | None = None,
+    workflow: str = "sov_judgment",
+    run_id: str | None = None,
+    item_id: str | None = None,
+    attempt_id: str | None = None,
+    policy: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Judge one saved answer without buying another answer.
+
+    The result carries the exact input fingerprint so callers can checkpoint the judgment
+    independently and reuse it only when hospital identity, answer, competitors, and judge
+    policy are unchanged.
+    """
+    fingerprint = judgment_input_fingerprint(
+        hospital_identity=hospital_identity or str(hospital_id or lead_id or hospital_name),
+        hospital_name=hospital_name,
+        response_text=response_text,
+        region=region,
+        competitors=competitors,
+        policy=policy,
+    )
+    own_provider_call, competitor_provider_call = _judgment_provider_call_plan(
+        hospital_name, response_text, competitors
+    )
+    provider_calls = int(own_provider_call)
+    with provider_execution_context(
+        pool=pool,
+        hospital_id=hospital_id,
+        lead_id=lead_id,
+        workflow=workflow,
+        run_id=run_id,
+        item_id=item_id,
+        attempt_id=attempt_id,
+    ):
+        async with _get_semaphore(f"{pool}:openai-judge"):
+            try:
+                parsed = await _parse_mention(hospital_name, response_text, region)
+                provider_calls += int(competitor_provider_call)
+                competitor_mentions = (
+                    await _parse_competitors(competitors, response_text) if competitors else []
+                )
+            except Exception as exc:  # noqa: BLE001 - preserve answer and retry judgment only.
+                return {
+                    "measurement_status": "FAILED",
+                    "failure_reason": "mention_parse_failed",
+                    "judgment_input_fingerprint": fingerprint,
+                    "provider_calls": max(provider_calls, 1 if own_provider_call else 0),
+                    "provider_failure_reason": provider_failure_reason(exc),
+                }
+    return {
+        **parsed,
+        "competitor_mentions": competitor_mentions or None,
+        "measurement_status": "SUCCESS",
+        "failure_reason": None,
+        "judgment_input_fingerprint": fingerprint,
+        "provider_calls": provider_calls,
+    }
 
 
 def calculate_sov(

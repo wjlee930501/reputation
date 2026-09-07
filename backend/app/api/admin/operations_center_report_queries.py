@@ -279,6 +279,8 @@ async def load_reports_queue(
             latest_delivery.c.event_type == ReportDeliveryEventType.RESCINDED.value,
         ),
     ]
+    if filters.hospital_id is not None:
+        predicates.append(Hospital.id == filters.hospital_id)
     owner_filter = owner_predicate(assignee, filters.owner)
     if owner_filter is not None:
         predicates.append(owner_filter)

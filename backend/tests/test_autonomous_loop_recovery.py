@@ -70,7 +70,7 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
     assert schedules["reconcile-autonomous-workflows"]["task"] == (
         "app.workers.autonomous_recovery.reconcile"
     )
-    assert routes["app.workers.autonomous_recovery.reconcile"]["queue"] == "default"
+    assert routes["app.workers.autonomous_recovery.reconcile"]["queue"] == "control"
     assert str(schedules["overnight-content-generation-recovery"]["schedule"]) == (
         "<crontab: 0 1,4,7 * * * (m/h/dM/MY/d)>"
     )
@@ -133,7 +133,8 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
             "app.workers.tasks.retry_site_revalidation",
             [str(run.id), 0],
             {
-                "queue": "default",
+                "queue": "control",
+                "priority": 0,
                 "headers": autonomous_recovery.build_dispatch_headers(
                     "retry-site-revalidation", str(run.id)
                 ),

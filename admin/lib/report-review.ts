@@ -116,7 +116,7 @@ export type ReportView = {
   platforms: readonly PlatformMeasurementEvidence[]
   mentions: readonly MentionEvidence[]
   /**
-   * AI 답변이 병원 공개 표면(허브·발행 글)을 인용한 관찰 집계.
+   * AI 답변이 병원 공개 정보(허브·발행 글)를 인용했는지 모은 결과.
    *
    * `citations` 키가 없던 과거 리포트는 null이다 — 화면은 이 경우 줄을 감춘다.
    */
@@ -254,7 +254,7 @@ function parseContentOperations(value: unknown): ContentOperationsEvidence | nul
   const operations = record(content?.operations)
   if (!operations) return null
   const review = record(operations.post_publish_review)
-  const copy = actionCopy(operations.operator_copy, '콘텐츠 운영 증거')
+  const copy = actionCopy(operations.operator_copy, '콘텐츠 운영 근거')
   const rawStateCounts = record(operations.scheduled_slot_state_counts)
   const scheduledSlotStateCounts: Record<string, number> = {}
   for (const [key, raw] of Object.entries(rawStateCounts ?? {})) {
@@ -296,7 +296,7 @@ export function parseReport(value: unknown): ReportView | null {
     hospitalId,
     periodYear: number(root.period_year),
     periodMonth: number(root.period_month),
-    typeLabel: text(display?.report_type_label, text(root.report_type, '리포트')),
+    typeLabel: text(display?.report_type_label, text(root.report_type, '보고서')),
     statusLabel: text(display?.screening_status_label, '검수 필요'),
     hasPdf: root.has_pdf === true,
     internalDownloadUrl: text(root.download_url) || null,

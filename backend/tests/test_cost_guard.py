@@ -67,6 +67,71 @@ class FakeRedis:
 
     async def eval(self, _script, _numkeys, *keys_and_args):
         await self._guard()
+        if _script == cost_guard._RESERVE_WITH_RECEIPT_SCRIPT:
+            daily_key, monthly_key, receipt_key = keys_and_args[:3]
+            argv = keys_and_args[3:]
+            count, daily_limit, monthly_limit = map(int, argv[:3])
+            category, daily_period, monthly_period = argv[5:8]
+            existing = self.store.get(receipt_key)
+            if existing is not None:
+                if existing["category"] != category or existing["reserved_units"] != count:
+                    return [-1, "conflict", 0, 0, daily_period, monthly_period]
+                status = 3 if existing["consumed_units"] is not None else 2
+                return [
+                    status, "", int(self.store.get(existing["daily_key"], 0)),
+                    int(self.store.get(existing["monthly_key"], 0)),
+                    existing["daily_period"], existing["monthly_period"],
+                    "" if existing["consumed_units"] is None else existing["consumed_units"],
+                    "" if existing["released_units"] is None else existing["released_units"],
+                ]
+            daily = int(self.store.get(daily_key, 0))
+            monthly = int(self.store.get(monthly_key, 0))
+            if monthly_limit > 0 and monthly + count > monthly_limit:
+                return [0, "monthly", daily, monthly, daily_period, monthly_period]
+            if daily_limit > 0 and daily + count > daily_limit:
+                return [0, "daily", daily, monthly, daily_period, monthly_period]
+            self.store[daily_key] = daily + count
+            self.store[monthly_key] = monthly + count
+            self.store[receipt_key] = {
+                "category": category,
+                "daily_period": daily_period,
+                "monthly_period": monthly_period,
+                "daily_key": daily_key,
+                "monthly_key": monthly_key,
+                "reserved_units": count,
+                "consumed_units": None,
+                "released_units": None,
+            }
+            self.ttls[receipt_key] = int(argv[8])
+            return [1, "", daily + count, monthly + count, daily_period, monthly_period]
+        if _script == cost_guard._SETTLE_RESERVATION_SCRIPT:
+            receipt_key = keys_and_args[0]
+            category, daily_period, monthly_period = keys_and_args[1:4]
+            reserved, consumed = map(int, keys_and_args[4:6])
+            receipt = self.store.get(receipt_key)
+            if receipt is None:
+                return [0, "missing"]
+            if (
+                receipt["category"] != category
+                or receipt["daily_period"] != daily_period
+                or receipt["monthly_period"] != monthly_period
+                or receipt["reserved_units"] != reserved
+            ):
+                return [-1, "receipt_mismatch"]
+            if receipt["consumed_units"] is not None:
+                if receipt["consumed_units"] == consumed:
+                    return [2, "duplicate", consumed, receipt["released_units"]]
+                return [
+                    3, "already_settled", receipt["consumed_units"],
+                    receipt["released_units"],
+                ]
+            released = reserved - consumed
+            for key in (receipt["daily_key"], receipt["monthly_key"]):
+                current = int(self.store.get(key, 0))
+                self.store[key] = current - min(current, released)
+            receipt["consumed_units"] = consumed
+            receipt["released_units"] = released
+            return [1, "settled", consumed, released]
         daily_key, monthly_key = keys_and_args[0], keys_and_args[1]
         argv = keys_and_args[_numkeys:]
         count = int(argv[0])
@@ -388,6 +453,29 @@ async def test_zero_call_reservation_is_a_noop(monkeypatch, alerts):
 
     assert decision.allowed is True
     assert redis.store == {}
+
+
+async def test_zero_call_reservation_still_obeys_kill_switch(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="leadgen", daily=10, monthly=20)
+    redis = FakeRedis()
+    await cost_guard.set_kill_switch(True, redis_client=redis)
+
+    decision = await cost_guard.reserve("leadgen", count=0, redis_client=redis)
+
+    assert decision.allowed is False
+    assert decision.receipt is None
+
+
+async def test_zero_call_kill_switch_check_remains_fail_open(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="leadgen", daily=10, monthly=20)
+
+    decision = await cost_guard.reserve("leadgen", count=0, redis_client=FakeRedis())
+    failed = FakeRedis()
+    failed.fail = True
+    fail_open = await cost_guard.reserve("leadgen", count=0, redis_client=failed)
+
+    assert decision.allowed is True
+    assert fail_open.allowed is True
 
 
 async def test_batch_is_rejected_before_it_would_overshoot_hard_cap(monkeypatch, alerts):
@@ -752,3 +840,103 @@ async def test_release_reservation_refunds_unused_units_without_going_negative(m
     remaining = await cost_guard.remaining_units("sov", redis_client=redis)
     assert remaining == (10, 20)
     assert alerts.calls == []
+
+
+async def test_receipt_settlement_uses_original_day_and_month_after_boundary(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="sov", daily=10, monthly=20)
+    redis = FakeRedis()
+    before = datetime(2026, 8, 31, 23, 59, tzinfo=cost_guard._KST)
+    after = datetime(2026, 9, 1, 0, 1, tzinfo=cost_guard._KST)
+    decision = await cost_guard.reserve(
+        "sov", count=5, reservation_id="month-edge", reserved_at=before,
+        redis_client=redis,
+    )
+    assert decision.receipt is not None
+    monkeypatch.setattr(cost_guard, "_now", lambda: after)
+
+    assert await cost_guard.settle_reservation(
+        decision.receipt, consumed_units=2, redis_client=redis
+    )
+
+    assert redis.store[cost_guard._daily_key("sov", "20260831")] == 2
+    assert redis.store[cost_guard._monthly_key("sov", "202608")] == 2
+    assert cost_guard._daily_key("sov", "20260901") not in redis.store
+    assert cost_guard._monthly_key("sov", "202609") not in redis.store
+
+
+async def test_receipt_duplicate_reserve_and_release_are_idempotent(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="content", daily=10, monthly=20)
+    redis = FakeRedis()
+    first = await cost_guard.reserve(
+        "content", count=4, reservation_id="same-job", redis_client=redis
+    )
+    duplicate = await cost_guard.reserve(
+        "content", count=4, reservation_id="same-job", redis_client=redis
+    )
+    assert first.receipt == duplicate.receipt
+
+    receipt = first.receipt
+    assert receipt is not None
+    assert await cost_guard.settle_reservation(receipt, consumed_units=0, redis_client=redis)
+    assert await cost_guard.settle_reservation(receipt, consumed_units=0, redis_client=redis)
+
+    assert redis.store[cost_guard._daily_key("content", receipt.daily_period)] == 0
+    assert redis.store[cost_guard._monthly_key("content", receipt.monthly_period)] == 0
+
+    settled_duplicate = await cost_guard.reserve(
+        "content", count=4, reservation_id="same-job", redis_client=redis
+    )
+    assert settled_duplicate.allowed is False
+    assert settled_duplicate.receipt is not None
+    assert settled_duplicate.receipt.consumed_units == 0
+    assert settled_duplicate.receipt.released_units == 4
+
+
+async def test_conflicting_second_settlement_reports_original_without_more_release(
+    monkeypatch, alerts
+):
+    _set_limits(monkeypatch, category="content", daily=10, monthly=20)
+    redis = FakeRedis()
+    decision = await cost_guard.reserve(
+        "content", count=4, reservation_id="partial", redis_client=redis
+    )
+    receipt = decision.receipt
+    assert receipt is not None
+    first = await cost_guard.settle_reservation(receipt, consumed_units=2, redis_client=redis)
+    second = await cost_guard.settle_reservation(receipt, consumed_units=1, redis_client=redis)
+
+    assert first is not None and second is not None
+    assert (second.consumed_units, second.released_units) == (2, 2)
+    assert redis.store[cost_guard._daily_key("content", receipt.daily_period)] == 2
+
+
+async def test_duplicate_reserve_after_midnight_returns_original_periods(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="content", daily=10, monthly=20)
+    redis = FakeRedis()
+    before = datetime(2026, 8, 31, 23, 59, tzinfo=cost_guard._KST)
+    after = datetime(2026, 9, 1, 0, 1, tzinfo=cost_guard._KST)
+    first = await cost_guard.reserve(
+        "content", count=2, reservation_id="redelivered", reserved_at=before,
+        redis_client=redis,
+    )
+    duplicate = await cost_guard.reserve(
+        "content", count=2, reservation_id="redelivered", reserved_at=after,
+        redis_client=redis,
+    )
+
+    assert duplicate.receipt == first.receipt
+    assert duplicate.receipt is not None
+    assert duplicate.receipt.daily_period == "20260831"
+    assert duplicate.receipt.monthly_period == "202608"
+    assert cost_guard._daily_key("content", "20260901") not in redis.store
+
+
+async def test_receipt_cannot_be_reused_for_different_reservation(monkeypatch, alerts):
+    _set_limits(monkeypatch, category="content", daily=10, monthly=20)
+    redis = FakeRedis()
+    await cost_guard.reserve("content", count=1, reservation_id="collision", redis_client=redis)
+
+    with pytest.raises(ValueError, match="different inputs"):
+        await cost_guard.reserve(
+            "content", count=2, reservation_id="collision", redis_client=redis
+        )

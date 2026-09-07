@@ -8,6 +8,7 @@ import {
   summarizeExposureActions,
 } from '@/lib/exposure-action-counts'
 import { groupExposureActions, type ExposureActionGroup } from '@/lib/exposure-action-groups'
+import { ADMIN_COPY } from '@/lib/admin-copy'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
   EXPOSURE_ACTION_TYPE_LABELS,
@@ -30,6 +31,12 @@ const STATUS_OPTIONS: ExposureActionStatus[] = [
   'ARCHIVED',
 ]
 
+const BRIEF_STATUS_LABELS: Record<string, string> = {
+  DRAFT: '초안',
+  APPROVED: '확정',
+  NEEDS_REVIEW: '확인 필요',
+}
+
 const BRIEF_CAPABLE_ACTION_TYPES = new Set<ExposureActionType>(['CONTENT', 'WEBBLOG_IA', 'SOURCE'])
 
 const SEVERITY_LABELS: Record<string, { label: string; color: string }> = {
@@ -40,30 +47,30 @@ const SEVERITY_LABELS: Record<string, { label: string; color: string }> = {
 }
 
 const GAP_TYPE_LABELS: Record<string, string> = {
-  NO_SUCCESSFUL_MEASUREMENT: '측정값 없음',
-  TARGET_NOT_MEASURED: '아직 측정 안 된 질문',
+  NO_SUCCESSFUL_MEASUREMENT: '확정된 측정 없음',
+  TARGET_NOT_MEASURED: '아직 측정하지 않은 질문',
   MISSING_MENTION: '병원 미언급',
-  LOW_MENTION_RATE: '낮은 AI 언급률',
+  LOW_MENTION_RATE: '낮은 병원 언급률',
   MENTIONS_COMPETITOR_ONLY: '경쟁 병원만 언급',
   COMPETITOR_VISIBILITY: '경쟁 병원이 더 많이 노출',
   COMPETITOR_DOMINANCE: '경쟁 병원이 더 많이 노출',
   NO_PUBLIC_CONTENT: '대응 콘텐츠 없음',
   WEAK_ENTITY_FACTS: '병원 기본 정보 부족',
   TECHNICAL_CRAWL_GAP: '검색 반영 보강',
-  SOURCE_GAP: 'AI가 참고할 근거 자료 부족',
-  SOURCE_SIGNAL_GAP: 'AI가 참고할 근거 자료 부족',
-  SOURCE_AUTHORITY_GAP: '근거 자료의 권위 부족',
-  CONTENT_STALE: '콘텐츠 신선도 낮음',
-  MEDICAL_RISK_BLOCKED: '의료광고 리스크 차단',
+  SOURCE_GAP: 'AI 답변이 참고할 근거 자료 부족',
+  SOURCE_SIGNAL_GAP: 'AI 답변이 참고할 근거 자료 부족',
+  SOURCE_AUTHORITY_GAP: '근거 자료의 신뢰도 부족',
+  CONTENT_STALE: '콘텐츠 최신성 부족',
+  MEDICAL_RISK_BLOCKED: '의료광고 위험으로 차단됨',
 }
 
 const EVIDENCE_KEY_LABELS: Record<string, string> = {
-  share_of_voice: 'AI 언급률',
-  sov: 'AI 언급률',
-  sov_pct: 'AI 언급률',
-  sov_percent: 'AI 언급률',
-  mention_rate: 'AI 언급률',
-  mentioned_rate: 'AI 언급률',
+  share_of_voice: ADMIN_COPY.aiMentionRate,
+  sov: ADMIN_COPY.aiMentionRate,
+  sov_pct: ADMIN_COPY.aiMentionRate,
+  sov_percent: ADMIN_COPY.aiMentionRate,
+  mention_rate: ADMIN_COPY.aiMentionRate,
+  mentioned_rate: ADMIN_COPY.aiMentionRate,
   mentioned_count: '언급 횟수',
   mention_count: '언급 횟수',
   successful_count: '성공 측정 수',
@@ -95,7 +102,7 @@ const EVIDENCE_KEY_LABELS: Record<string, string> = {
   query_target: '환자 질문',
   query_target_name: '환자 질문',
   target_priority: '질문 우선순위',
-  rule: '진단 규칙',
+  rule: '진단 기준',
   ai_platform: 'AI 답변 서비스',
   platform: 'AI 답변 서비스',
   platforms: 'AI 답변 서비스',
@@ -104,13 +111,13 @@ const EVIDENCE_KEY_LABELS: Record<string, string> = {
   sources: '참고 자료',
   source_urls: '참고 URL',
   source_types: '참고 자료 유형',
-  authority_score: '권위 점수',
+  authority_score: '출처 신뢰도 점수',
   freshness_days: '경과 일수',
   last_published_at: '최근 발행',
   last_measured_at: '최근 측정',
   latest_measured_at: '최근 측정',
   measured_at: '측정 시각',
-  observed_at: '관측 시각',
+  observed_at: '확인 시각',
   severity: '심각도',
   threshold: '임계값',
   gap_id: '진단 ID',
@@ -127,13 +134,13 @@ const EVIDENCE_VALUE_LABELS: Record<string, string> = {
   positive: '긍정',
   neutral: '중립',
   negative: '부정',
-  no_successful_measurements: '성공 측정 없음',
-  target_not_measured_yet: '이 질문 아직 미측정',
+  no_successful_measurements: '확정된 성공 측정 없음',
+  target_not_measured_yet: '이 질문은 아직 측정하지 않음',
   missing_mention: '병원 미언급',
   competitor_visibility: '경쟁 병원이 더 많이 노출',
-  source_signal_gap: 'AI가 참고할 근거 자료 부족',
+  source_signal_gap: 'AI 답변이 참고할 근거 자료 부족',
   zero_hospital_mentions: '병원 미언급',
-  mention_rate_below_threshold: 'AI 언급률 기준 미달',
+  mention_rate_below_threshold: '병원 언급률 기준 미달',
   competitor_mentions_match_or_exceed_hospital_mentions: '경쟁 병원 언급 우세',
   source_urls_missing_for_majority_of_successful_measurements: '참고 URL 부족',
   HIGH: '높음',
@@ -217,7 +224,7 @@ export default function ExposureActionsPage() {
         return next[0]?.id ?? null
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI 노출 보완 작업을 불러오지 못했습니다.')
+      setError(err instanceof Error ? err.message : 'AI 답변 노출 보완 작업을 불러오지 못했습니다.')
     } finally {
       setLoading(false)
     }
@@ -341,14 +348,14 @@ export default function ExposureActionsPage() {
     <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
       <section className="rounded-2xl bg-slate-900 p-5 text-white sm:p-7">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
-          AI 노출 운영 작업 큐
+          AI 답변 노출 보완 작업
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
-            <h2 className="text-2xl font-bold">AI 노출 보완 작업 큐</h2>
+            <h2 className="text-2xl font-bold">AI 답변 노출 보완 작업</h2>
             <p className="mt-2 text-sm leading-6 text-blue-50/90">
-              AI 언급률 측정 결과로 자동 진단된 보완 작업(AI에 더 잘 노출되도록 보완할 작업)입니다.
-              우선순위 높은 항목부터 담당자·기한을 지정하고, 환자 질문에 맞춘 콘텐츠 가이드를 만들어 이번 달 운영 큐에 연결하세요.
+              병원 언급률 측정 결과를 바탕으로 자동으로 찾은 보완 작업입니다.
+              우선순위가 높은 항목부터 담당자와 기한을 정하고, 환자 질문에 맞는 콘텐츠 가이드를 이번 달 발행 일정에 연결하세요.
             </p>
           </div>
           <div className="w-full lg:min-w-[420px] lg:w-auto">
@@ -359,8 +366,8 @@ export default function ExposureActionsPage() {
             */}
             <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
               <SummaryPill label="대기" value={String(counts.waiting)} />
-              <SummaryPill label="진행중" value={String(counts.inProgress)} />
-              <SummaryPill label="확인필요" value={String(counts.blocked)} />
+              <SummaryPill label="진행 중" value={String(counts.inProgress)} />
+              <SummaryPill label="확인 필요" value={String(counts.blocked)} />
               <SummaryPill label="남은 작업" value={String(counts.active)} />
             </div>
             <button
@@ -369,7 +376,7 @@ export default function ExposureActionsPage() {
               disabled={refreshing || loading}
               className="mt-2 w-full rounded-lg border border-white/25 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-50"
             >
-              {refreshing ? '진단 다시 실행 중...' : '최신 측정으로 진단 다시 실행'}
+              {refreshing ? '진단 갱신 중...' : '최신 측정 결과로 진단 갱신'}
             </button>
           </div>
         </div>
@@ -397,10 +404,10 @@ export default function ExposureActionsPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
-              <h3 className="text-lg font-semibold text-slate-900">상위 AI 노출 보완 작업</h3>
+              <h3 className="text-lg font-semibold text-slate-900">우선 확인할 노출 보완 작업</h3>
               <p className="text-sm text-slate-500">
-                진단 유형 {groups.length}건 · 연결 질문 {actions.length}개를 우선순위 순으로 표시합니다
-                {actions.length >= EXPOSURE_ACTION_LIST_LIMIT ? ` · ${EXPOSURE_ACTION_LIST_LIMIT}건까지만 표시 중` : ''}. 행을 선택하면 우측에서 상세 정보를 확인할 수 있습니다.
+                진단 항목 {groups.length}건 · 연결 질문 {actions.length}개를 우선순위 순으로 표시합니다
+                {actions.length >= EXPOSURE_ACTION_LIST_LIMIT ? ` · ${EXPOSURE_ACTION_LIST_LIMIT}건까지만 표시 중` : ''}. 항목을 선택하면 오른쪽에서 상세 정보를 확인할 수 있습니다.
               </p>
             </div>
             <button
@@ -414,13 +421,13 @@ export default function ExposureActionsPage() {
 
           {loading ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-              AI 노출 보완 작업을 불러오는 중입니다.
+              노출 보완 작업을 불러오는 중입니다.
             </div>
           ) : groups.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-blue-200 bg-white p-8 text-center">
               <h4 className="text-base font-semibold text-slate-900">표시할 보완 작업이 없습니다.</h4>
               <p className="mt-2 text-sm text-slate-500">
-                AI 언급률 측정과 부족 진단이 끝나면 보완 작업이 자동으로 생성됩니다. 환자 질문 측정을 먼저 실행했는지 확인하세요.
+                병원 언급률 측정과 부족한 부분 진단이 끝나면 보완 작업이 자동으로 만들어집니다. 환자 질문 측정을 먼저 실행했는지 확인하세요.
               </p>
             </div>
           ) : (
@@ -429,11 +436,11 @@ export default function ExposureActionsPage() {
                 const action = group.representative
                 const isSelected = group.actions.some((member) => member.id === selectedId)
                 const typeLabel = EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
-                  label: action.display?.action_type_label ?? action.action_type,
+                  label: action.display?.action_type_label ?? '보완 작업 유형 확인 필요',
                   color: 'bg-slate-50 text-slate-700 border-slate-200',
                 }
                 const statusLabel = EXPOSURE_ACTION_STATUS_LABELS[action.status] ?? {
-                  label: action.display?.status_label ?? action.status,
+                  label: action.display?.status_label ?? '처리 상태 확인 필요',
                   color: 'bg-slate-50 text-slate-700 border-slate-200',
                 }
                 const severityLabel = action.severity ? getSeverityLabel(action) : null
@@ -464,7 +471,7 @@ export default function ExposureActionsPage() {
                       )}
                       {action.linked_content_id && (
                         <Badge
-                          label="콘텐츠 연결됨"
+                          label="콘텐츠 연결"
                           color="bg-emerald-50 text-emerald-700 border-emerald-200"
                         />
                       )}
@@ -479,7 +486,7 @@ export default function ExposureActionsPage() {
                         label="연결된 환자 질문"
                         value={`${group.questionCount}개 질문 체크리스트`}
                       />
-                      <InfoBlock label="담당자" value={group.commonOwner ?? (group.actions.some((member) => member.owner) ? '담당자 혼합' : '미지정')} muted={!group.commonOwner} />
+                        <InfoBlock label="담당자" value={group.commonOwner ?? (group.actions.some((member) => member.owner) ? '여러 담당자' : '미지정')} muted={!group.commonOwner} />
                       <InfoBlock
                         label="진단 근거"
                         value={summarizeEvidence(action)}
@@ -576,17 +583,17 @@ function DetailPanel({
 
   const statusLabel =
     EXPOSURE_ACTION_STATUS_LABELS[action.status] ?? {
-      label: action.display?.status_label ?? action.status,
+      label: action.display?.status_label ?? '처리 상태 확인 필요',
       color: 'bg-slate-50 text-slate-700 border-slate-200',
     }
   const typeLabel =
     EXPOSURE_ACTION_TYPE_LABELS[action.action_type] ?? {
-      label: action.display?.action_type_label ?? action.action_type,
+      label: action.display?.action_type_label ?? '보완 작업 유형 확인 필요',
       color: 'bg-slate-50 text-slate-700 border-slate-200',
     }
   const canCreateBrief = isBriefCapableActionType(action.action_type)
   const briefGuidanceMessage = canCreateBrief
-    ? '콘텐츠 가이드 생성 가능: 생성 후 콘텐츠 탭에서 운영 기준과 의료광고 리스크를 검수하세요.'
+    ? '콘텐츠 가이드를 만들 수 있습니다. 만든 뒤 콘텐츠 탭에서 운영 기준과 의료광고 위험을 검토하세요.'
     : getBriefUnavailableMessage(action.action_type)
 
   return (
@@ -607,7 +614,7 @@ function DetailPanel({
         }`}
       >
         <div className="font-semibold">
-          {canCreateBrief ? '콘텐츠 가이드 만들기 가능' : '콘텐츠 가이드 만들기 불가'}
+          {canCreateBrief ? '콘텐츠 가이드를 만들 수 있음' : '콘텐츠 가이드를 만들 수 없음'}
         </div>
         <p className="mt-1">{briefGuidanceMessage}</p>
       </div>
@@ -677,13 +684,13 @@ function DetailPanel({
       </div>
 
       <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <h4 className="text-sm font-semibold text-slate-700">운영자 메타</h4>
+        <h4 className="text-sm font-semibold text-slate-700">운영 기록</h4>
         <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-500">
-          <dt>생성</dt>
+          <dt>등록</dt>
           <dd className="text-slate-700">{formatDateTime(action.created_at)}</dd>
           <dt>수정</dt>
           <dd className="text-slate-700">{formatDateTime(action.updated_at)}</dd>
-          <dt>완료</dt>
+          <dt>완료 시각</dt>
           <dd className="text-slate-700">{formatDateTime(action.completed_at)}</dd>
           <dt>연결 콘텐츠</dt>
           <dd className="text-slate-700">
@@ -700,7 +707,7 @@ function DetailPanel({
             disabled={creatingBrief}
             className="w-full rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
           >
-            {creatingBrief ? '콘텐츠 가이드 생성 중...' : '콘텐츠 가이드 만들기'}
+            {creatingBrief ? '콘텐츠 가이드를 만드는 중...' : '콘텐츠 가이드 만들기'}
           </button>
         ) : (
           <button
@@ -708,12 +715,12 @@ function DetailPanel({
             disabled
             className="w-full cursor-not-allowed rounded-xl bg-slate-300 px-4 py-3 text-sm font-semibold text-white shadow-sm"
           >
-            콘텐츠 가이드 만들기 대상 아님
+            이 작업은 콘텐츠 가이드를 만들 수 없음
           </button>
         )}
         <p className="text-[11px] leading-5 text-slate-500">
           {canCreateBrief
-            ? '콘텐츠 운영 기준이 아직 자동 승인되지 않아도 콘텐츠 가이드 초안은 만들 수 있습니다. 시스템 검수가 승인하면 예약일에 자동 발행되며, 보류된 예외만 운영 기준 탭에서 확인합니다.'
+            ? '콘텐츠 운영 기준이 아직 자동 승인되지 않아도 콘텐츠 가이드 초안은 만들 수 있습니다. 자동 검토가 통과하면 예약일에 자동 발행되며, 보류된 예외만 운영 기준 탭에서 확인합니다.'
             : getBriefUnavailableMessage(action.action_type)}
         </p>
         {briefResult && (
@@ -726,10 +733,13 @@ function DetailPanel({
 
 function BriefResultPanel({ result }: { result: BriefResultState }) {
   const { contentItem, philosophyGate } = result
-  const typeLabel = TYPE_LABELS[contentItem.content_type] ?? contentItem.content_type
+  const typeLabel = TYPE_LABELS[contentItem.content_type] ?? '콘텐츠 유형 확인 필요'
+  const briefStatusLabel = contentItem.brief_status
+    ? BRIEF_STATUS_LABELS[contentItem.brief_status] ?? '콘텐츠 가이드 상태 확인 필요'
+    : '아직 만들지 않음'
   return (
     <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 text-sm">
-      <div className="font-semibold text-emerald-800">콘텐츠 슬롯 연결 완료</div>
+      <div className="font-semibold text-emerald-800">콘텐츠 항목에 연결했습니다</div>
       <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-emerald-900/80">
         <dt>유형</dt>
         <dd>{typeLabel}</dd>
@@ -740,7 +750,7 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
         <dt>발행 예정</dt>
         <dd>{contentItem.scheduled_date}</dd>
         <dt>콘텐츠 가이드 상태</dt>
-        <dd>{contentItem.brief_status ?? '미정'}</dd>
+        <dd>{briefStatusLabel}</dd>
         <dt>제목</dt>
         <dd className="truncate" title={contentItem.title ?? undefined}>
           {contentItem.title ?? '미작성'}
@@ -756,7 +766,7 @@ function BriefResultPanel({ result }: { result: BriefResultState }) {
         {philosophyGate.has_approved_philosophy
           ? '승인된 콘텐츠 운영 기준이 적용되었습니다. 예약일 자동 발행 후 콘텐츠 탭에서 공개 내용을 확인하세요.'
           : philosophyGate.message ??
-            '시스템 자동 승인이 아직 완료되지 않았습니다. 운영 기준 탭에서 자동 검수 상태와 보류 사유를 확인하세요.'}
+            '자동 승인이 아직 완료되지 않았습니다. 운영 기준 탭에서 자동 검토 상태와 보류 사유를 확인하세요.'}
       </div>
     </div>
   )
@@ -766,7 +776,7 @@ function EvidenceList({ action }: { action: ExposureAction }) {
   const displayItems = action.display?.evidence_items?.filter((item) => item.label && item.value) ?? []
   const fallbackEntries = Object.entries(action.evidence ?? {}).filter(([, value]) => !isEmptyEvidenceValue(value))
   if (displayItems.length === 0 && fallbackEntries.length === 0) {
-    return <p className="mt-2 text-sm text-slate-500">기록된 근거가 없습니다.</p>
+    return <p className="mt-2 text-sm text-slate-500">확인된 근거가 없습니다.</p>
   }
   return (
     <dl className="mt-2 grid grid-cols-1 gap-x-3 gap-y-1 text-xs text-slate-600">
@@ -841,9 +851,9 @@ function isBriefCapableActionType(actionType: ExposureAction['action_type']): bo
 
 function getBriefUnavailableMessage(actionType: ExposureAction['action_type']): string {
   if (actionType === 'MEASUREMENT') {
-    return '측정 작업은 콘텐츠 가이드 생성 대상이 아닙니다. 활성 질문을 확인한 뒤 첫 AI 답변 언급률 측정을 실행해 처리하세요.'
+    return '측정 작업은 콘텐츠 가이드 생성 대상이 아닙니다. 활성 질문을 확인한 뒤 첫 병원 언급률 측정을 실행해 처리하세요.'
   }
-  return '이 작업 유형은 콘텐츠 가이드 생성 대상이 아닙니다. 작업 설명에 따라 큐에서 처리하세요.'
+  return '이 작업 유형은 콘텐츠 가이드를 만들 수 없습니다. 작업 설명에 따라 목록에서 처리하세요.'
 }
 
 function getSeverityLabel(action: ExposureAction): { label: string; color: string } {
@@ -857,7 +867,7 @@ function formatGapType(action: ExposureAction): string {
   if (action.display?.gap_type_label) return action.display.gap_type_label
   const gapType = action.gap_type
   if (!gapType) return ''
-  return GAP_TYPE_LABELS[gapType] ?? gapType.replaceAll('_', ' ').toLowerCase()
+  return GAP_TYPE_LABELS[gapType] ?? '진단 항목 확인 필요'
 }
 
 function formatQueryTargetPriority(priority: string): string {
@@ -870,7 +880,7 @@ function formatQueryTargetStatus(status: string): string {
 
 function formatLinkedContent(content: ExposureActionContentSummary | null | undefined): string {
   if (!content) return '미연결'
-  const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
+  const typeLabel = TYPE_LABELS[content.content_type] ?? '콘텐츠 유형 확인 필요'
   const title = content.title ?? '제목 미작성'
   return `${typeLabel} ${content.sequence_no}/${content.total_count} · ${content.scheduled_date} · ${title}`
 }
@@ -878,9 +888,9 @@ function formatLinkedContent(content: ExposureActionContentSummary | null | unde
 function summarizeEvidence(action: ExposureAction): string {
   if (action.display?.evidence_summary) return action.display.evidence_summary
   const evidence = action.evidence
-  if (!evidence) return '근거 없음'
+  if (!evidence) return '근거 자료 없음'
   const entries = Object.entries(evidence).filter(([, value]) => !isEmptyEvidenceValue(value))
-  if (entries.length === 0) return '근거 없음'
+  if (entries.length === 0) return '근거 자료 없음'
   return entries
     .slice(0, 2)
     .map(([key, value]) => `${formatEvidenceKey(key)}: ${formatEvidenceValue(value, key)}`)
@@ -890,7 +900,7 @@ function summarizeEvidence(action: ExposureAction): string {
 function formatEvidenceKey(key: string): string {
   const direct = EVIDENCE_KEY_LABELS[key] ?? EVIDENCE_KEY_LABELS[key.toLowerCase()]
   if (direct) return direct
-  return key.replaceAll('_', ' ')
+  return '근거 항목 확인 필요'
 }
 
 function formatEvidenceValueLabel(value: string): string {

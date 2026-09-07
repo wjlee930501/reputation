@@ -26,6 +26,7 @@ import {
   summarizeExposureActions,
 } from '@/lib/exposure-action-counts'
 import { groupExposureActions } from '@/lib/exposure-action-groups'
+import { ADMIN_COPY, describeMentionRate } from '@/lib/admin-copy'
 import { useHospitalHeader } from '../hospital-context'
 import {
   EXPOSURE_ACTION_STATUS_LABELS,
@@ -127,18 +128,18 @@ interface HospitalUsageResponse {
 }
 
 const AUDIT_ACTION_LABELS: Record<string, string> = {
-  trigger_v0_report: '초기 진단 리포트 다시 만들기',
-  trigger_v0_report_requested: '초기 진단 리포트 다시 만들기 요청',
+  trigger_v0_report: '초기 진단 보고서 다시 만들기',
+  trigger_v0_report_requested: '초기 진단 보고서 다시 만들기 요청',
   auto_approve_philosophy: '운영 기준 자동 승인',
   auto_review_philosophy_escalated: '운영 기준 자동 검수 확인 필요',
   incident_occurrence_recorded: '운영 이상 기록',
   handoff_accepted: '고객 인수 승인',
   handoff_contracted: '계약 정보 저장',
   create_hospital: '병원 등록',
-  set_schedule: '발행 스케줄 저장',
+  set_schedule: '발행 일정 저장',
   profile_completed: '병원 기본 정보 완료',
-  run_sov: 'AI 언급률 측정',
-  rebuild_site: '사이트 재빌드',
+  run_sov: '병원 언급률 측정',
+  rebuild_site: '사이트 정보 다시 반영',
   connect_domain: '커스텀 도메인 연결',
   disconnect_domain: '커스텀 도메인 연결 해제',
   provision_domain_certificate: 'HTTPS 인증서 발급',
@@ -147,8 +148,8 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   publish_content: '콘텐츠 발행',
   reject_content: '콘텐츠 반려',
   approve_philosophy: '운영 기준 승인',
-  update_exposure_action: 'AI 노출 작업 변경',
-  update_exposure_action_group: 'AI 노출 묶음 작업 변경',
+  update_exposure_action: '노출 보완 작업 변경',
+  update_exposure_action_group: '노출 보완 작업 묶음 변경',
   upload_source_asset: '자료 업로드',
   crawl_source_url: 'URL 자동 크롤',
   exclude_source_asset: '자료 제외',
@@ -212,7 +213,7 @@ function formatMeasurementFailurePlatforms(summary: Record<string, unknown> | nu
     const attempted = typeof counts.attempted_count === 'number' ? counts.attempted_count : success + failure
     const planned = typeof counts.planned_count === 'number' ? counts.planned_count : attempted
     const skipped = typeof counts.skipped_count === 'number' ? counts.skipped_count : Math.max(0, planned - attempted)
-    const interrupted = skipped > 0 ? ` · 공급자 장애로 ${skipped}건 호출 중단` : ''
+    const interrupted = skipped > 0 ? ` · 미실행 ${skipped}건` : ''
     return [`${labels[platform] ?? platform} 성공 ${success}·실패 ${failure} (시도 ${attempted}/${planned})${interrupted}`]
   })
   return parts.length > 0 ? parts.join(' / ') : null
@@ -383,15 +384,15 @@ export default function DashboardPage() {
       }
     : !hasMeasurement
       ? {
-          label: '첫 AI 언급률 측정',
+          label: '첫 병원 언급률 측정',
           href: queryTargetsHref,
           hint: '환자 질문별로 우리 병원이 AI 답변에 얼마나 등장하는지 처음 측정합니다.',
         }
       : !hasExposureActions
         ? {
-            label: 'AI 노출 진단·보완 작업 검토',
+            label: 'AI 답변 노출 진단·보완 작업 검토',
             href: exposureActionsHref,
-            hint: '측정 결과에서 부족한 부분을 진단하고, AI에 더 잘 노출되도록 보완할 작업을 정리합니다.',
+            hint: '측정 결과에서 부족한 부분을 진단하고, AI 답변에서 확인되도록 보완할 작업을 정리합니다.',
           }
         : !hasBrief
           ? {
@@ -425,10 +426,10 @@ export default function DashboardPage() {
         if (result.idempotent_replay || result.operation_state === 'QUEUED' || result.operation_state === 'RUNNING') {
           setOperationMessage(`초기 진단이 진행 중입니다.${runId}`)
         } else {
-          setOperationMessage(`초기 진단 리포트를 다시 만들기 시작했습니다.${runId}`)
+          setOperationMessage(`초기 진단 보고서를 다시 만들기 시작했습니다.${runId}`)
         }
       } else if (path === 'run-sov') {
-        setOperationMessage('AI 답변 언급 측정을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
+        setOperationMessage('병원 언급률 측정을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
       } else if (path === 'rebuild-site') {
         setOperationMessage('공개 정보 갱신을 접수했습니다. 진행 상태에서 결과를 확인하세요.')
       }
@@ -526,15 +527,14 @@ export default function DashboardPage() {
       {/* Hero */}
       <section className="rounded-2xl border border-[var(--color-revisit-coolgrey-20)] bg-[var(--color-revisit-nav)] p-7 text-white">
         <p className="details2 font-semibold uppercase text-[var(--color-revisit-primary-80)]">
-          AI 노출 운영
+          {ADMIN_COPY.aiExposure} 운영
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
-            <h2 className="heading2">AI 노출 운영 보드</h2>
+            <h2 className="heading2">AI 답변 노출 운영 요약</h2>
             <p className="body4 mt-2 text-[var(--color-revisit-coolgrey-85)]">
-              환자 질문 정의 → AI 언급률 측정 → 부족한 부분 진단·보완 작업 → 환자 질문에 맞춘 콘텐츠 가이드 작성을
-              한 화면에서 운영합니다. AI가 우리 병원을 정확히 이해하고 추천 후보에 올리도록 정보 구조를 다듬는
-              내부 콘솔이며, 노출을 보장하는 게 아니라 개선과 재측정을 반복하는 흐름을 관리합니다.
+              환자 질문 정의 → 병원 언급 측정 → 부족한 부분 진단·보완 → 질문에 맞춘 콘텐츠 가이드 작성을
+              한 화면에서 관리합니다. 측정 결과를 바탕으로 필요한 작업을 정리하고, 개선한 뒤 다시 확인하는 운영 흐름입니다.
             </p>
           </div>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:min-w-[440px]">
@@ -544,8 +544,8 @@ export default function DashboardPage() {
               hint={describeQuestionPhraseCounts(questionCounts)}
             />
             <HeroStat
-              label="현재 AI 언급률"
-              value={currentSov !== null ? `${currentSov.toFixed(1)}%` : '-'}
+              label={ADMIN_COPY.aiMentionRate}
+              value={describeMentionRate(currentSov)}
               hint={trendSummary.hint}
               tone={change === null ? 'neutral' : change >= 0 ? 'up' : 'down'}
             />
@@ -555,7 +555,7 @@ export default function DashboardPage() {
               hint={describeExposureActions(actionCounts)}
             />
             <HeroStat
-              label="AI 노출 준비도"
+              label="노출 준비 상태"
               value={readiness ? String(readiness.score) : '-'}
               hint={readiness ? getReadinessStatusLabel(readiness) : '측정 후 산출'}
             />
@@ -604,8 +604,8 @@ export default function DashboardPage() {
             </div>
             <div className="mt-5 grid gap-3 md:grid-cols-3">
               <FocusCard
-                label="현재 AI 언급률"
-                value={currentSov !== null ? `${currentSov.toFixed(1)}%` : '-'}
+                label={ADMIN_COPY.aiMentionRate}
+                value={describeMentionRate(currentSov)}
                 hint={trendSummary.hint}
                 tone={change === null ? 'neutral' : change >= 0 ? 'good' : 'warn'}
               />
@@ -616,7 +616,7 @@ export default function DashboardPage() {
                 tone={(readiness?.published_content_count ?? 0) > 0 ? 'good' : 'neutral'}
               />
               <FocusCard
-                label="다음 액션"
+                label="다음 작업"
                 value={nextStep.label}
                 hint={nextStep.hint}
                 tone={blockedActionCount > 0 ? 'warn' : 'neutral'}
@@ -650,7 +650,7 @@ export default function DashboardPage() {
                 <AlertLine key={check.key} tone="neutral" label={check.label} hint={check.next_action} />
               ))}
               {carriedOverCount === 0 && blockedActionCount === 0 && failedMeasurementCount === 0 && pendingChecks.length === 0 && (
-                <AlertLine tone="good" label="큰 확인 항목 없음" hint="현재는 다음 액션 중심으로 운영을 이어가면 됩니다." />
+                <AlertLine tone="good" label="지금 확인할 항목이 없습니다" hint="예약된 운영 흐름이 진행 중입니다. 새로운 확인 항목이 생기면 이곳에 표시됩니다." />
               )}
             </div>
           </div>
@@ -660,11 +660,11 @@ export default function DashboardPage() {
       {!loading && (
         <section className="admin-panel p-5">
           <div>
-            <p className="admin-eyebrow">관측 지표</p>
+            <p className="admin-eyebrow">사용량 지표</p>
             <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">사용량</h3>
             <p className="body4 admin-muted mt-1">
-              공급자 호출과 공급자가 보고한 토큰을 병원별로 관측한 값입니다. 오늘·이번 달 모두 한국 시간 기준이며,
-              청구 또는 과금 자료가 아닙니다.
+              외부 AI 서비스의 호출 횟수와 서비스가 반환한 입력·출력 토큰 수입니다. 오늘·이번 달 모두 한국 시간 기준이며,
+              실제 청구액이 아닌 서비스 사용량 기록입니다.
             </p>
           </div>
           <div className="mt-4 overflow-x-auto">
@@ -702,27 +702,27 @@ export default function DashboardPage() {
         <section className="admin-panel p-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <p className="admin-eyebrow">v1.0 운영 제어</p>
-              <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">수동 재실행·상태 확인</h3>
+              <p className="admin-eyebrow">운영 작업 제어</p>
+              <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">필요한 작업 다시 실행</h3>
               <p className="body4 admin-muted mt-1">
-                고객 보고 전 필요한 분석, 공개 정보 갱신, 공개 주소 확인을 이 화면에서 다시 실행합니다. 모든 실행은 감사 기록에 남습니다.
+                고객 보고에 필요한 분석과 공개 정보 확인을 이 화면에서 다시 실행합니다. 모든 실행은 감사 기록에 남습니다.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
               <OperationButton
-                label="초기 진단 리포트 다시 만들기"
+                label="초기 진단 보고서 다시 만들기"
                 loading={operationLoading === 'v0'}
                 disabled={v0AlreadyDone}
                 onClick={() => runOperation('v0', 'trigger-v0-report')}
               />
               <OperationButton
-                label="AI 언급률 측정"
+                label="병원 언급률 측정"
                 loading={operationLoading === 'sov'}
                 disabled={!canRunSov}
                 onClick={() => runOperation('sov', 'run-sov')}
               />
               <OperationButton
-                label="사이트 재빌드"
+                label="사이트 정보 다시 반영"
                 loading={operationLoading === 'site'}
                 onClick={() => runOperation('site', 'rebuild-site')}
               />
@@ -735,13 +735,13 @@ export default function DashboardPage() {
           </div>
           {v0AlreadyDone && (
             <p className="mt-3 text-xs text-slate-600">
-              초기 진단 리포트는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
-              &lsquo;AI 언급률 측정&rsquo;과 월간 리포트로 확인합니다.
+              초기 진단 보고서는 이미 생성됐습니다. 초기 진단은 병원당 한 번만 만들며, 이후 수치는
+              &lsquo;병원 언급률 측정&rsquo;과 월간 보고서로 확인합니다.
             </p>
           )}
           {!canRunSov && (
             <p className="mt-3 text-xs text-amber-700">
-              AI 언급률 측정은 운영 중 또는 공개 주소 확인 대기 상태에서, 활성 환자 질문 문구가 있을 때 실행할 수 있습니다.
+              병원 언급률 측정은 운영 중 또는 공개 주소 확인 대기 상태에서, 활성 환자 질문 문구가 있을 때 실행할 수 있습니다.
             </p>
           )}
           {operationMessage && (
@@ -761,16 +761,16 @@ export default function DashboardPage() {
           <summary>
             <div>
               <p className="admin-eyebrow">감사 로그</p>
-              <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">최근 운영 액션 기록</h3>
+              <h3 className="title3 mt-1 text-[var(--color-revisit-text-title)]">최근 운영 작업 기록</h3>
             </div>
           </summary>
           <div className="p-5 pt-2">
           <p className="body4 admin-muted">
-            고객 영향이 있는 모든 운영 액션은 이 로그에 남습니다. 실행자(actor)는 환경 변수 ADMIN_ACTOR_NAME 기준입니다.
+            고객에게 영향을 주는 모든 운영 작업은 이 기록에 남습니다. 실행자는 환경 변수 ADMIN_ACTOR_NAME 기준입니다.
           </p>
           {auditLogs.length === 0 ? (
             <p className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-              아직 기록된 운영 액션이 없습니다.
+              아직 기록된 운영 작업이 없습니다.
             </p>
           ) : (
             <ol className="mt-4 divide-y divide-slate-100">
@@ -810,7 +810,7 @@ export default function DashboardPage() {
             <WorkflowStep
               index={1}
               title="환자 질문"
-              caption="AI에 노출시킬 질문 정의"
+              caption="AI 답변에서 확인할 질문 정의"
               done={hasQueryTargets}
               summary={
                 hasQueryTargets
@@ -822,8 +822,8 @@ export default function DashboardPage() {
             />
             <WorkflowStep
               index={2}
-              title="AI 언급률 측정"
-              caption="ChatGPT·Gemini 답변 확인"
+              title="병원 언급률 측정"
+              caption="ChatGPT·Gemini 답변에서 병원 언급 확인"
               done={hasMeasurement}
               summary={
                 lastRun
@@ -838,7 +838,7 @@ export default function DashboardPage() {
             />
             <WorkflowStep
               index={3}
-              title="AI 노출 진단·보완 작업"
+              title="AI 답변 노출 진단·보완"
               caption="부족한 부분 보완 정리"
               done={hasExposureActions}
               summary={hasExposureActions ? describeExposureActions(actionCounts) : '진단 결과가 아직 없습니다.'}
@@ -892,7 +892,7 @@ export default function DashboardPage() {
               }
               hint={
                 hasQueryTargets
-                  ? '환자 질문 화면에서 첫 측정을 실행하세요. 측정이 끝나면 AI 언급률 추이가 누적됩니다.'
+                  ? '환자 질문 화면에서 첫 측정을 실행하세요. 측정이 끝나면 병원 언급률 추이가 누적됩니다.'
                   : '운영 흐름은 환자 질문 정의 → 첫 측정 순서로 진행됩니다.'
               }
               ctaLabel={hasQueryTargets ? '첫 측정 실행' : '환자 질문 만들기'}
@@ -952,9 +952,9 @@ export default function DashboardPage() {
         <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <h3 className="text-base font-semibold text-slate-900">이번 달 AI 노출 개선 TOP 3</h3>
+              <h3 className="text-base font-semibold text-slate-900">이번 달 노출 개선 우선순위 3개</h3>
               <p className="mt-1 text-sm text-slate-500">
-                환자 질문별 AI 언급률 진단에서 우선순위가 높은 보완 작업을 표시합니다. 상세 편집은 AI 노출 개선 작업 화면에서 진행합니다.
+                환자 질문별 병원 언급률 진단에서 우선순위가 높은 보완 작업을 표시합니다. 상세 편집은 노출 보완 작업 화면에서 진행합니다.
               </p>
             </div>
             <Link
@@ -974,8 +974,8 @@ export default function DashboardPage() {
               }
               hint={
                 hasMeasurement
-                  ? '환자 질문 화면에서 AI 언급률 진단을 실행해 부족한 부분과 보완 작업을 만들어 주세요.'
-                  : '첫 측정 후 환자 질문별로 AI에 부족한 부분이 진단되고, 보완 작업이 자동으로 제안됩니다.'
+                  ? '환자 질문 화면에서 병원 언급률 진단을 실행해 부족한 부분과 보완 작업을 만들어 주세요.'
+                  : '첫 측정 후 환자 질문별로 AI 답변에서 부족한 부분이 진단되고, 보완 작업이 자동으로 제안됩니다.'
               }
               ctaLabel={hasMeasurement ? '진단·보완 작업 검토' : '첫 측정으로 이동'}
               ctaHref={hasMeasurement ? exposureActionsHref : queryTargetsHref}
@@ -1005,7 +1005,7 @@ export default function DashboardPage() {
                             {actionStatus.label}
                           </span>
                           <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-medium text-slate-600">
-                            {action.due_month ?? '월 미정'}
+                            {action.due_month ?? '월 확인 안 됨'}
                           </span>
                         </div>
                         <p className="mt-2 text-sm font-semibold text-slate-900">
@@ -1040,7 +1040,7 @@ export default function DashboardPage() {
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex items-start justify-between gap-6">
                 <div>
-                  <h3 className="text-base font-semibold text-slate-900">AI 노출 준비도</h3>
+                  <h3 className="text-base font-semibold text-slate-900">AI 답변 노출 준비 상태</h3>
                   <p className="mt-1 text-sm text-slate-500">
                     AI가 참고할 수 있는 병원 기본 정보, 구글 지도·프로필, 공개 콘텐츠, 환자 질문 측정 데이터를 기준으로 계산합니다.
                   </p>
@@ -1081,7 +1081,7 @@ export default function DashboardPage() {
           {isAnalyticsEmpty ? (
             <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-10 text-center">
               <p className="text-sm font-semibold text-slate-700">
-                AI 언급률 추이는 첫 주간 측정이 끝난 뒤부터 누적됩니다.
+                병원 언급률 추이는 첫 주간 측정이 끝난 뒤부터 누적됩니다.
               </p>
               <p className="mt-2 text-xs text-slate-500">
                 위 운영 흐름에서 첫 측정을 먼저 실행해 주세요.
@@ -1090,7 +1090,7 @@ export default function DashboardPage() {
           ) : (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
               <div className="flex items-center justify-between">
-                <h3 className="text-base font-semibold text-slate-900">AI 언급률 주간 추이</h3>
+                <h3 className="text-base font-semibold text-slate-900">병원 언급률 주간 추이</h3>
                 <span className="text-xs text-slate-400">
                   {QUESTION_COUNT_LABELS.phrasesMeasured} {questionCounts.phrasesMeasured}개 · 측정 시작 후 {measuredWeeks.length}주
                 </span>
@@ -1117,7 +1117,7 @@ export default function DashboardPage() {
                       dataKey="sov_pct"
                       stroke="#1A4B8C"
                       strokeWidth={2}
-                      name="AI 언급률"
+                      name="병원 언급률"
                       dot={{ r: 3 }}
                       connectNulls={false}
                     />
@@ -1131,16 +1131,16 @@ export default function DashboardPage() {
           {queries.length > 0 && (
             <div className="admin-responsive-table-wrap overflow-hidden rounded-2xl border border-slate-200 bg-white">
               <div className="border-b border-slate-100 px-6 py-4">
-                <h3 className="text-base font-semibold text-slate-900">질문별 AI 언급률</h3>
+                <h3 className="text-base font-semibold text-slate-900">질문별 병원 언급률</h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  환자 질문 문구 단위로 본 AI 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
+                  환자 질문 문구 단위로 본 병원 언급률입니다. 보완 작업 우선순위를 정하는 보조 지표로 사용합니다.
                 </p>
               </div>
               <table className="admin-responsive-table w-full text-sm">
                 <thead className="border-b border-slate-200 bg-slate-50">
                   <tr>
                     <th className="px-6 py-3 text-left font-medium text-slate-600">환자 질문</th>
-                    <th className="px-6 py-3 text-center font-medium text-slate-600">AI 언급률</th>
+                    <th className="px-6 py-3 text-center font-medium text-slate-600">병원 언급률</th>
                     <th className="px-6 py-3 text-left font-medium text-slate-600">서비스별 확인 결과</th>
                     <th className="px-6 py-3 text-center font-medium text-slate-600">최근 측정</th>
                   </tr>
@@ -1149,7 +1149,7 @@ export default function DashboardPage() {
                   {queries.map((q) => (
                     <tr key={q.query_id} className="transition-colors hover:bg-slate-50">
                       <td className="px-6 py-3 text-slate-700" data-primary="true">{q.query_text}</td>
-                      <td className="px-6 py-3 text-center" data-label="AI 언급률">
+                      <td className="px-6 py-3 text-center" data-label="병원 언급률">
                         {/* null은 측정 자체가 안 된 상태 — 0%로 찍으면 '언급 안 됨'이라는 오진이 된다. */}
                         <span
                           className={`font-medium ${
@@ -1205,7 +1205,7 @@ function PlatformBreakdown({ value }: { value?: Record<string, QueryPlatformBrea
         >
           <strong className="font-semibold text-slate-700">{row.platform_label ?? formatPlatformLabel(platform)}</strong>
           {/* 해당 서비스 측정이 전부 실패하면 null — 0%가 아니라 실패로 표기한다. */}
-          <span>{row.mention_rate !== null ? `${row.mention_rate.toFixed(0)}%` : '측정 실패'}</span>
+          <span>{row.mention_rate !== null ? `${row.mention_rate.toFixed(0)}%` : '측정 결과 없음'}</span>
           <span className="text-slate-400">
             ({row.total_count}회 중 {row.mention_count}회)
           </span>

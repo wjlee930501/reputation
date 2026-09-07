@@ -7,10 +7,13 @@ stored candidate still has to pass the deterministic publication assessment.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import threading
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -27,6 +30,15 @@ logger = logging.getLogger(__name__)
 
 _MAX_FINDINGS = 5
 _PASS_CONFIDENCE = 0.85
+REVIEW_SCHEMA_VERSION = "content-review-v2"
+REVIEWED_CANDIDATE_FIELDS = (
+    "title",
+    "body",
+    "meta_description",
+    "faq_question",
+    "faq_answer_summary",
+    "references",
+)
 
 # 검수 1건마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 핸드셰이크를 매번 버린다.
 # essence_engine._anthropic_client와 같은 lazy 싱글턴.
@@ -66,11 +78,18 @@ _SYSTEM_PROMPT = """\
 4. references의 제목/기관이 글의 주제와 명백히 어긋나지 않는지
 5. 환자가 응급 또는 대면 진료가 필요한 상황을 오해하게 만들지 않는지
 
-문제가 하나라도 있거나 확신이 부족하면 REVISE입니다. 반드시 JSON 객체만 출력하세요.
+각 finding은 심각도와 종류를 내용 자체로 판정하세요. confidence 숫자만으로 hard/soft를
+나누지 마세요. 병원 고유 사실의 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
+문체·가독성·구성 개선은 SOFT입니다. 사실 또는 의료 안전을 판단할 근거가 부족하면
+UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구체적으로 기록하세요.
+
+반드시 JSON 객체만 출력하세요.
 {
   "decision": "PASS 또는 REVISE",
   "confidence": 0.0,
-  "findings": ["수정 가능한 구체적 지적"],
+  "findings": [
+    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 STYLE", "message": "수정 가능한 구체적 지적"}
+  ],
   "summary": "한 문장 검수 요약"
 }
 """
@@ -82,21 +101,95 @@ class ContentAiReviewStatus(StrEnum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+class ContentAiReviewUnavailableReason(StrEnum):
+    COST_BLOCKED = "COST_BLOCKED"
+    PROVIDER_UNCONFIGURED = "PROVIDER_UNCONFIGURED"
+    PROVIDER_ERROR = "PROVIDER_ERROR"
+    INVALID_RESPONSE = "INVALID_RESPONSE"
+
+
+class ContentAiFindingSeverity(StrEnum):
+    HARD = "HARD"
+    SOFT = "SOFT"
+    UNCERTAIN = "UNCERTAIN"
+
+
+class ContentAiFindingKind(StrEnum):
+    HOSPITAL_FACT = "HOSPITAL_FACT"
+    MEDICAL_SAFETY = "MEDICAL_SAFETY"
+    STYLE = "STYLE"
+
+
+@dataclass(frozen=True, slots=True)
+class ContentAiFinding:
+    severity: ContentAiFindingSeverity
+    kind: ContentAiFindingKind
+    message: str
+
+    @property
+    def blocks_publication(self) -> bool:
+        return self.severity in {
+            ContentAiFindingSeverity.HARD,
+            ContentAiFindingSeverity.UNCERTAIN,
+        }
+
+    def payload(self) -> dict[str, str]:
+        return {
+            "severity": self.severity.value,
+            "kind": self.kind.value,
+            "message": self.message,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class ContentAiReview:
     status: ContentAiReviewStatus
     confidence: float
-    findings: tuple[str, ...]
+    findings: tuple[ContentAiFinding, ...]
     summary: str
     model: str
+    candidate_sha256: str = ""
+    coverage: dict[str, int] | None = None
+    provider_attempted: bool | None = None
+    unavailable_reason: ContentAiReviewUnavailableReason | None = None
+
+    def _typed_findings(self) -> tuple[ContentAiFinding, ...]:
+        # Rolling workers/tests may still construct the pre-v2 string shape.
+        # Treat it as uncertain medical safety rather than silently softening it.
+        return tuple(
+            finding
+            if isinstance(finding, ContentAiFinding)
+            else ContentAiFinding(
+                severity=ContentAiFindingSeverity.UNCERTAIN,
+                kind=ContentAiFindingKind.MEDICAL_SAFETY,
+                message=str(finding),
+            )
+            for finding in self.findings
+        )
+
+    @property
+    def blocking_findings(self) -> tuple[ContentAiFinding, ...]:
+        return tuple(finding for finding in self._typed_findings() if finding.blocks_publication)
+
+    @property
+    def remediation_messages(self) -> tuple[str, ...]:
+        return tuple(finding.message for finding in self._typed_findings())
 
     def payload(self) -> dict[str, Any]:
         return {
             "status": self.status.value,
             "confidence": self.confidence,
-            "findings": list(self.findings),
+            "findings": [finding.payload() for finding in self._typed_findings()],
+            "blocking": bool(self.blocking_findings),
             "summary": self.summary,
             "model": self.model,
+            "schema_version": REVIEW_SCHEMA_VERSION,
+            "candidate_sha256": self.candidate_sha256,
+            "coverage": dict(self.coverage or {}),
+            "provider_attempted": self.provider_attempted,
+            "unavailable_reason": (
+                self.unavailable_reason.value if self.unavailable_reason else None
+            ),
         }
 
 
@@ -104,13 +197,90 @@ def _bounded_text(value: object, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _string_list(value: object, *, limit: int = _MAX_FINDINGS) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [text for text in (_bounded_text(item, 240) for item in value[:limit]) if text]
+def candidate_review_payload(content: dict[str, Any] | object) -> dict[str, Any]:
+    """Return every public candidate field in a stable, hashable shape."""
+
+    def field_value(field: str) -> Any:
+        if isinstance(content, dict):
+            if field == "references":
+                return content.get("references", content.get("references_list"))
+            return content.get(field)
+        if field == "references":
+            return getattr(content, "references_list", None)
+        return getattr(content, field, None)
+
+    references = field_value("references")
+    return {
+        "title": str(field_value("title") or ""),
+        "body": str(field_value("body") or ""),
+        "meta_description": str(field_value("meta_description") or ""),
+        "faq_question": str(field_value("faq_question") or ""),
+        "faq_answer_summary": str(field_value("faq_answer_summary") or ""),
+        "references": references if isinstance(references, list) else [],
+    }
 
 
-def _review_data(
+def candidate_sha256(content: dict[str, Any] | object) -> str:
+    encoded = json.dumps(
+        candidate_review_payload(content),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def candidate_review_coverage(content: dict[str, Any] | object) -> dict[str, int]:
+    candidate = candidate_review_payload(content)
+    return {
+        field: len(
+            json.dumps(candidate[field], ensure_ascii=False, sort_keys=True)
+            if field == "references"
+            else str(candidate[field])
+        )
+        for field in REVIEWED_CANDIDATE_FIELDS
+    }
+
+
+def _parse_finding(value: object) -> ContentAiFinding | None:
+    if isinstance(value, str):
+        message = _bounded_text(value, 240)
+        if not message:
+            return None
+        return ContentAiFinding(
+            ContentAiFindingSeverity.UNCERTAIN,
+            ContentAiFindingKind.MEDICAL_SAFETY,
+            message,
+        )
+    if not isinstance(value, dict):
+        return None
+    message = _bounded_text(value.get("message"), 240)
+    if not message:
+        return None
+    try:
+        severity = ContentAiFindingSeverity(str(value.get("severity") or "").upper())
+    except ValueError:
+        severity = ContentAiFindingSeverity.UNCERTAIN
+    try:
+        kind = ContentAiFindingKind(str(value.get("kind") or "").upper())
+    except ValueError:
+        kind = ContentAiFindingKind.MEDICAL_SAFETY
+    if (
+        severity == ContentAiFindingSeverity.SOFT
+        and kind
+        in {
+            ContentAiFindingKind.HOSPITAL_FACT,
+            ContentAiFindingKind.MEDICAL_SAFETY,
+        }
+    ):
+        # The kind and message describe a factual/safety concern. A conflicting
+        # SOFT label cannot downgrade that signal into publishable style advice.
+        severity = ContentAiFindingSeverity.UNCERTAIN
+    return ContentAiFinding(severity, kind, message)
+
+
+def content_review_input_payload(
     *,
     hospital: Hospital,
     philosophy: HospitalContentPhilosophy,
@@ -118,6 +288,7 @@ def _review_data(
     content_brief: dict[str, Any] | None,
 ) -> dict[str, Any]:
     safety_policy = effective_safety_policy(philosophy)
+    candidate = candidate_review_payload(content)
     return {
         "hospital_profile": {
             "name": _bounded_text(getattr(hospital, "name", None), 150),
@@ -147,19 +318,29 @@ def _review_data(
             "must_use_messages": list((content_brief or {}).get("must_use_messages") or [])[:10],
             "avoid_messages": list((content_brief or {}).get("avoid_messages") or [])[:10],
             "medical_risk_rules": list((content_brief or {}).get("medical_risk_rules") or [])[:10],
+            "treatment_narrative": (content_brief or {}).get("treatment_narrative") or {},
+            "philosophy_reference": (content_brief or {}).get("philosophy_reference") or {},
+            "source_snapshot": (content_brief or {}).get("source_snapshot") or {},
         },
-        "candidate": {
-            "title": _bounded_text(content.get("title"), 300),
-            "body": str(content.get("body") or "")[:6000],
-            "meta_description": _bounded_text(content.get("meta_description"), 500),
-            "faq_question": _bounded_text(content.get("faq_question"), 300),
-            "faq_answer_summary": _bounded_text(content.get("faq_answer_summary"), 700),
-            "references": list(content.get("references") or [])[:5],
-        },
+        # Generation already bounds stored fields. Reviewing a prefix here creates a
+        # safety blind spot at the tail of otherwise-valid 1,800~5,200 character bodies.
+        "candidate": candidate,
+        "candidate_sha256": candidate_sha256(candidate),
+        "coverage": candidate_review_coverage(candidate),
     }
 
 
-def _parse_response(raw: str) -> ContentAiReview:
+# Compatibility for focused tests and internal callers that predate the public
+# projection name. Durable backfills hash ``content_review_input_payload`` so
+# their retry identity always matches the exact bytes semantically sent.
+_review_data = content_review_input_payload
+
+
+def _parse_response(
+    raw: str,
+    *,
+    reviewed_content: dict[str, Any] | object | None = None,
+) -> ContentAiReview:
     clean = (raw or "").strip()
     if clean.startswith("```"):
         clean = clean.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -171,23 +352,77 @@ def _parse_response(raw: str) -> ContentAiReview:
     if not isinstance(data, dict):
         raise ValueError("content reviewer returned a non-object")
 
-    findings = _string_list(data.get("findings"))
+    raw_findings = data.get("findings")
+    if not isinstance(raw_findings, list):
+        raise ValueError("content reviewer findings must be a list")
+    parsed: list[ContentAiFinding] = []
+    for value in raw_findings:
+        # A malformed safety signal cannot disappear and turn an otherwise
+        # high-confidence PASS into a clear result.
+        finding = _parse_finding(value)
+        if finding is None:
+            raise ValueError("content reviewer finding is incomplete")
+        parsed.append(finding)
+    # The response itself is already bounded by max_tokens. Classifying only
+    # the first five entries lets a provider put a HARD fact finding after five
+    # style notes and silently remove it from the publication policy.
+    parsed_findings = tuple(parsed)
+    blocking_findings = tuple(
+        finding for finding in parsed_findings if finding.blocks_publication
+    )
+    soft_findings = tuple(
+        finding for finding in parsed_findings if not finding.blocks_publication
+    )
+    # Keep every safety-relevant finding. The display cap applies only to advisory
+    # style feedback; it can never truncate HARD or UNCERTAIN policy state.
+    findings = blocking_findings + soft_findings[
+        : max(0, _MAX_FINDINGS - len(blocking_findings))
+    ]
+    raw_confidence = data.get("confidence")
+    if isinstance(raw_confidence, bool):
+        raise ValueError("content reviewer confidence must be numeric")
     try:
-        confidence = min(max(float(data.get("confidence", 0.0)), 0.0), 1.0)
-    except (TypeError, ValueError):
-        confidence = 0.0
+        confidence = float(raw_confidence)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("content reviewer confidence must be numeric") from exc
+    if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+        raise ValueError("content reviewer confidence must be finite and within 0..1")
     requested = str(data.get("decision") or "").strip().upper()
-    status = ContentAiReviewStatus.PASS
-    if requested != ContentAiReviewStatus.PASS.value or findings or confidence < _PASS_CONFIDENCE:
-        status = ContentAiReviewStatus.REVISE
-        if confidence < _PASS_CONFIDENCE and not findings:
-            findings = ["독립 AI 검수의 확신이 충분하지 않아 보수적으로 다시 작성해야 합니다."]
+    unexplained_non_pass = (
+        requested != ContentAiReviewStatus.PASS.value and not blocking_findings
+        and not soft_findings
+    )
+    invalid_decision = requested not in {
+        ContentAiReviewStatus.PASS.value,
+        ContentAiReviewStatus.REVISE.value,
+    }
+    if confidence < _PASS_CONFIDENCE or unexplained_non_pass or invalid_decision:
+        findings = (
+            *findings,
+            ContentAiFinding(
+                ContentAiFindingSeverity.UNCERTAIN,
+                ContentAiFindingKind.MEDICAL_SAFETY,
+                (
+                    "독립 AI 검수의 판정 근거가 충분하지 않아 자동 재검수가 필요합니다."
+                    if confidence >= _PASS_CONFIDENCE
+                    else "독립 AI 검수의 확신이 충분하지 않아 자동 재검수가 필요합니다."
+                ),
+            ),
+        )
+    status = (
+        ContentAiReviewStatus.REVISE
+        if requested != ContentAiReviewStatus.PASS.value or findings
+        else ContentAiReviewStatus.PASS
+    )
+    reviewed_content = reviewed_content or {}
     return ContentAiReview(
         status=status,
         confidence=confidence,
-        findings=tuple(findings),
+        findings=findings,
         summary=_bounded_text(data.get("summary"), 300),
         model=settings.CLAUDE_MODEL_FAST,
+        candidate_sha256=candidate_sha256(reviewed_content),
+        coverage=candidate_review_coverage(reviewed_content),
     )
 
 
@@ -197,10 +432,14 @@ async def review_generated_content(
     philosophy: HospitalContentPhilosophy,
     content: dict[str, Any],
     content_brief: dict[str, Any] | None,
+    cost_decision: cost_guard.CostGuardDecision | None = None,
+    logical_call_id: str | None = None,
+    attempt_id: str | None = None,
+    http_attempt: int = 1,
 ) -> ContentAiReview:
     """Return bounded advisory findings; provider/cost failures never grant PASS."""
 
-    decision = await cost_guard.check_and_increment("content")
+    decision = cost_decision or await cost_guard.reserve("content")
     if not decision.allowed:
         return ContentAiReview(
             status=ContentAiReviewStatus.UNAVAILABLE,
@@ -208,27 +447,56 @@ async def review_generated_content(
             findings=(),
             summary="비용 가드로 독립 AI 검수를 실행하지 않았습니다.",
             model=settings.CLAUDE_MODEL_FAST,
+            candidate_sha256=candidate_sha256(content),
+            coverage=candidate_review_coverage(content),
+            provider_attempted=False,
+            unavailable_reason=ContentAiReviewUnavailableReason.COST_BLOCKED,
         )
     if not settings.ANTHROPIC_API_KEY:
+        await cost_guard.settle_reservation(decision.receipt, consumed_units=0)
         return ContentAiReview(
             status=ContentAiReviewStatus.UNAVAILABLE,
             confidence=0.0,
             findings=(),
             summary="독립 AI 검수 공급자가 설정되지 않았습니다.",
             model=settings.CLAUDE_MODEL_FAST,
+            candidate_sha256=candidate_sha256(content),
+            coverage=candidate_review_coverage(content),
+            provider_attempted=False,
+            unavailable_reason=ContentAiReviewUnavailableReason.PROVIDER_UNCONFIGURED,
         )
 
     payload = untrusted_json_block(
-        _review_data(
+        content_review_input_payload(
             hospital=hospital,
             philosophy=philosophy,
             content=content,
             content_brief=content_brief,
         )
     )
-    client = _anthropic_client()
     try:
-        await cost_guard.record_provider_call("content")
+        client = _anthropic_client()
+    except Exception as exc:
+        await cost_guard.settle_reservation(decision.receipt, consumed_units=0)
+        logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)
+        return ContentAiReview(
+            status=ContentAiReviewStatus.UNAVAILABLE,
+            confidence=0.0,
+            findings=(),
+            summary="독립 AI 검수 공급자를 초기화하지 못했습니다.",
+            model=settings.CLAUDE_MODEL_FAST,
+            candidate_sha256=candidate_sha256(content),
+            coverage=candidate_review_coverage(content),
+            provider_attempted=False,
+            unavailable_reason=ContentAiReviewUnavailableReason.PROVIDER_ERROR,
+        )
+    await cost_guard.record_provider_call("content")
+    from app.services import provider_usage
+
+    logical_call_id = logical_call_id or str(uuid.uuid4())
+    attempt_id = attempt_id or f"{logical_call_id}:http:{http_attempt}"
+
+    try:
         response = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: client.messages.create(
@@ -243,17 +511,18 @@ async def review_generated_content(
                 ],
             ),
         )
-        from app.services.hospital_usage import record_usage
-
-        usage = getattr(response, "usage", None)
-        await record_usage(
+    except Exception as exc:
+        await provider_usage.record_attempt(
+            provider="anthropic",
+            model=settings.CLAUDE_MODEL_FAST,
+            workflow="content_independent_review",
+            cost_category="content",
             hospital_id=getattr(hospital, "id", None),
-            kind="content",
-            input_tokens=getattr(usage, "input_tokens", 0),
-            output_tokens=getattr(usage, "output_tokens", 0),
+            logical_call_id=logical_call_id,
+            attempt_id=attempt_id,
+            http_attempt=http_attempt,
+            usage_known=False,
         )
-        return _parse_response(response.content[0].text)
-    except Exception as exc:  # provider and parser failures are advisory-unavailable
         logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)
         return ContentAiReview(
             status=ContentAiReviewStatus.UNAVAILABLE,
@@ -261,11 +530,57 @@ async def review_generated_content(
             findings=(),
             summary="독립 AI 검수를 완료하지 못해 결정론적 안전검사만 적용했습니다.",
             model=settings.CLAUDE_MODEL_FAST,
+            candidate_sha256=candidate_sha256(content),
+            coverage=candidate_review_coverage(content),
+            provider_attempted=True,
+            unavailable_reason=ContentAiReviewUnavailableReason.PROVIDER_ERROR,
+        )
+    finally:
+        await cost_guard.settle_reservation(decision.receipt, consumed_units=1)
+
+    usage = getattr(response, "usage", None)
+    await provider_usage.record_attempt(
+        provider="anthropic",
+        model=settings.CLAUDE_MODEL_FAST,
+        workflow="content_independent_review",
+        cost_category="content",
+        hospital_id=getattr(hospital, "id", None),
+        logical_call_id=logical_call_id,
+        attempt_id=attempt_id,
+        http_attempt=http_attempt,
+        provider_request_id=str(getattr(response, "id", "") or "") or None,
+        usage=usage,
+    )
+    try:
+        return replace(
+            _parse_response(response.content[0].text, reviewed_content=content),
+            provider_attempted=True,
+        )
+    except Exception as exc:  # parser failure is advisory-unavailable; HTTP was recorded above
+        logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)
+        return ContentAiReview(
+            status=ContentAiReviewStatus.UNAVAILABLE,
+            confidence=0.0,
+            findings=(),
+            summary="독립 AI 검수를 완료하지 못해 결정론적 안전검사만 적용했습니다.",
+            model=settings.CLAUDE_MODEL_FAST,
+            candidate_sha256=candidate_sha256(content),
+            coverage=candidate_review_coverage(content),
+            provider_attempted=True,
+            unavailable_reason=ContentAiReviewUnavailableReason.INVALID_RESPONSE,
         )
 
 
 __all__ = (
+    "ContentAiFinding",
+    "ContentAiFindingKind",
+    "ContentAiFindingSeverity",
     "ContentAiReview",
     "ContentAiReviewStatus",
+    "ContentAiReviewUnavailableReason",
+    "candidate_review_coverage",
+    "candidate_review_payload",
+    "candidate_sha256",
+    "content_review_input_payload",
     "review_generated_content",
 )

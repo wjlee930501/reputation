@@ -1,5 +1,6 @@
 """Concurrent PostgreSQL proof for broker-failure incident deduplication."""
 
+import os
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -21,8 +22,9 @@ from app.services.operation_runs import (
     retry_operation_run,
 )
 
-_DATABASE_URL = (
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_DATABASE_URL = os.getenv(
+    "OPERATION_RUN_CONCURRENCY_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
 )
 
 

@@ -255,9 +255,17 @@ def serialize_incident_row(
             else (1 if hospital_id is not None else 0)
         ),
         cost_guard_category=budget_category,
-        # RETRYING is automatic recovery in flight. Keep the row (the FE groups and
-        # collapses it) but stop counting it as work waiting on a person.
-        requires_operator_action=incident.state == IncidentState.OPEN.value,
+        # RETRYING is automatic recovery while its promised window remains. Once
+        # that deadline passes, the unresolved episode becomes operator work even
+        # though the last recorded transition still says retrying.
+        requires_operator_action=(
+            incident.state == IncidentState.OPEN.value
+            or (
+                incident.state == IncidentState.RETRYING.value
+                and incident.sla_due_at is not None
+                and incident.sla_due_at < now
+            )
+        ),
         safe_cause=projected_message,
         history=history(incident),
         slack=slack_state(outbox),

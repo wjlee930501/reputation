@@ -8,6 +8,7 @@ from typing import Any
 
 from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
+from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
 from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     REFERENCES_REQUIRED_TYPES,
@@ -16,6 +17,11 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_NEEDS_REVIEW,
     screen_content_against_philosophy,
+)
+from app.services.image_engine import (
+    IMAGE_POLICY_VERSION,
+    image_content_hash_from_url,
+    image_subject_hash,
 )
 from app.utils.authority_sources import is_citable_reference_url
 from app.utils.medical_filter import check_forbidden_content_fields
@@ -94,6 +100,58 @@ def publication_field_values(item: ContentItem) -> dict:
     return values
 
 
+def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] | None:
+    """Return CURRENT/STALE for an unresolved review that cannot be discarded."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if not isinstance(review, dict):
+        return None
+    review_status = review.get("status")
+    if review_status == "UNAVAILABLE":
+        return "UNAVAILABLE", review
+    if review_status != "REVISE":
+        return None
+    # v2 explicitly distinguishes soft findings. Legacy REVISE payloads did not,
+    # so they are safety-uncertain and require one automatic re-review.
+    is_legacy = review.get("schema_version") is None
+    if not is_legacy and review.get("blocking") is not True:
+        return None
+    if review.get("candidate_sha256") != candidate_sha256(item):
+        return "STALE", review
+    coverage = review.get("coverage")
+    if not isinstance(coverage, dict) or coverage != candidate_review_coverage(item):
+        return "STALE", review
+    return "CURRENT", review
+
+
+def public_candidate_review_safe(item: ContentItem) -> bool:
+    """Public read paths must never expose a known unresolved review."""
+
+    return _blocking_ai_review_state(item) is None
+
+
+def image_certification_current(item: ContentItem) -> bool:
+    """Require the stored URL, exact bytes, subject, and policy to remain bound."""
+
+    if not getattr(item, "image_url", None) or not getattr(
+        item, "image_policy_verified_at", None
+    ):
+        return False
+    content_hash = getattr(item, "image_content_hash", None)
+    subject_hash = getattr(item, "image_subject_hash", None)
+    policy_version = getattr(item, "image_policy_version", None)
+    url_hash = image_content_hash_from_url(getattr(item, "image_url", None))
+    return bool(
+        content_hash
+        and url_hash
+        and content_hash == url_hash
+        and subject_hash
+        == image_subject_hash(getattr(item, "content_type", None), getattr(item, "title", None))
+        and policy_version == IMAGE_POLICY_VERSION
+    )
+
+
 def assess_content_publication(
     item: ContentItem,
     philosophy: HospitalContentPhilosophy | None,
@@ -143,6 +201,38 @@ def assess_content_publication(
             philosophy_id=getattr(philosophy, "id", None),
         )
 
+    hard_review_state = _blocking_ai_review_state(item)
+    if hard_review_state is not None:
+        review_state, hard_review = hard_review_state
+        findings = [
+            str(finding.get("message") or "").strip()
+            for finding in (hard_review.get("findings") or [])
+            if isinstance(finding, dict) and str(finding.get("message") or "").strip()
+        ]
+        code = (
+            "CONTENT_AI_REVIEW_STALE"
+            if review_state == "STALE"
+            else "CONTENT_AI_REVIEW_UNAVAILABLE"
+            if review_state == "UNAVAILABLE"
+            else "CONTENT_AI_HARD_FINDING"
+        )
+        return _blocked(
+            code=code,
+            message=(
+                "이전의 미해결 사실·의료 안전 지적 이후 후보가 변경되어 독립 재검수가 필요합니다."
+                if review_state == "STALE"
+                else "독립 AI 검수를 완료하지 못해 공급자 복구 후 자동 재검수가 필요합니다."
+                if review_state == "UNAVAILABLE"
+                else (
+                    findings[0]
+                    if findings
+                    else "독립 검수의 사실·의료 안전 지적이 해결되지 않았습니다."
+                )
+            ),
+            item=item,
+            philosophy=philosophy,
+        )
+
     screening = screen_content_against_philosophy(item, philosophy)
     if screening.status != ESSENCE_STATUS_ALIGNED:
         return PublicationAssessment(
@@ -162,7 +252,7 @@ def assess_content_publication(
             item=item,
             philosophy=philosophy,
         )
-    if not getattr(item, "image_policy_verified_at", None):
+    if not image_certification_current(item):
         return _blocked(
             code="CONTENT_IMAGE_NOT_VERIFIED",
             message="대표 이미지의 자동 정책 검사가 아직 완료되지 않았습니다.",
@@ -194,13 +284,60 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # Scheduled generation uses this durable JSON fragment to avoid
             # paying again for the same unchanged body/image failure.
             "generation_attempt",
+            "legacy_image_certification",
         ):
             value = previous_summary.get(key)
             if value is not None:
                 summary[key] = value
     item.content_philosophy_id = assessment.philosophy_id
+    if hasattr(item, "last_reviewed_philosophy_id"):
+        item.last_reviewed_philosophy_id = assessment.philosophy_id
     item.essence_status = assessment.essence_status
     item.essence_check_summary = summary
+
+
+def apply_essence_revalidation(
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy,
+) -> str:
+    """Re-screen Essence fields without erasing independent review provenance."""
+
+    screening = screen_content_against_philosophy(item, philosophy)
+    item.content_philosophy_id = philosophy.id
+    previous = getattr(item, "essence_check_summary", None)
+    summary = dict(screening.summary or {})
+    if isinstance(previous, dict):
+        for key in (
+            "automatic_remediation_attempts",
+            "reviewer_driven_rewrites",
+            "ai_review",
+            "generation_attempt",
+            "generation_provenance",
+            "legacy_image_certification",
+        ):
+            if key in previous:
+                summary[key] = previous[key]
+    unresolved_review = _blocking_ai_review_state(item)
+    if unresolved_review is not None:
+        summary["blocking"] = True
+        review = unresolved_review[1]
+        review_messages = [
+            str(finding.get("message") or "").strip()
+            for finding in (review.get("findings") or [])
+            if isinstance(finding, dict) and str(finding.get("message") or "").strip()
+        ]
+        summary["findings"] = review_messages or [
+            "미해결 독립 검수가 있어 자동 재검수가 필요합니다."
+        ]
+        item.essence_status = ESSENCE_STATUS_NEEDS_REVIEW
+    else:
+        item.essence_status = screening.status
+    item.essence_check_summary = summary
+    if hasattr(item, "last_reviewed_philosophy_id"):
+        item.last_reviewed_philosophy_id = philosophy.id
+    if hasattr(item, "content_revision"):
+        item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
+    return item.essence_status
 
 
 def _blocked(

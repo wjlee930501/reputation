@@ -60,7 +60,7 @@ export function buildProfileChecklist(profile: ProfileReadinessInput): ProfileCh
     { key: 'web_channels', label: '홈페이지/블로그', hint: '병원 홈페이지 또는 블로그 URL 중 하나는 등록합니다.', required: true },
     {
       key: 'ai_channels',
-      label: 'AI가 참고할 외부 채널',
+      label: '외부 공식 채널',
       hint: '네이버 플레이스와 구글 지도/병원 정보 URL을 등록합니다.',
       required: true,
     },
@@ -87,7 +87,7 @@ export function buildProfileChecklist(profile: ProfileReadinessInput): ProfileCh
   items.push({
     key: 'competitors',
     label: '경쟁 병원',
-    hint: 'AI 언급률 비교 대상 병원을 1개 이상 등록하면 리포트 정확도가 올라갑니다.',
+    hint: '병원 언급률 비교 대상 병원을 1개 이상 등록하면 보고서의 정확도가 올라갑니다.',
     required: false,
     status: (profile.competitors ?? []).length > 0 ? 'done' : 'recommended',
   })

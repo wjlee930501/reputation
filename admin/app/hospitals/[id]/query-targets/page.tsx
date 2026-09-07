@@ -101,13 +101,13 @@ export default function QueryTargetsPage() {
       )
       setMeasureFeedback({
         tone: 'success',
-        text: 'AI 답변 언급 측정을 접수했습니다. 진행 상태는 운영 센터에서 확인하세요.',
+        text: '병원 언급률 측정을 접수했습니다. 진행 상태는 운영 요약에서 확인하세요.',
       })
     } catch (err: unknown) {
       if (!isExpectedOperatorRequestFailure(err)) throw err
       setMeasureFeedback({
         tone: 'error',
-        text: safeOperatorError('onboarding', '환자 질문 상태를 확인한 뒤 ‘AI 언급률 측정’을 다시 누르세요.'),
+        text: safeOperatorError('onboarding', '환자 질문 상태를 확인한 뒤 ‘병원 언급률 측정’을 다시 누르세요.'),
       })
     } finally {
       setMeasuring(false)
@@ -197,7 +197,7 @@ export default function QueryTargetsPage() {
     const platform = variantPlatforms[target.id] ?? supportedPlatforms[0]
     if (!queryText || variantSavingByTarget[target.id]) return
     if (!platform) {
-      setError('이 환자 질문에는 지원 중인 AI 서비스가 없습니다. 새 환자 질문으로 다시 등록해 주세요.')
+      setError('이 환자 질문에는 측정할 AI 서비스가 없습니다. 새 환자 질문으로 다시 등록해 주세요.')
       return
     }
     const alreadyExists = target.variants.some(
@@ -247,14 +247,14 @@ export default function QueryTargetsPage() {
     <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
       <section className="rounded-2xl bg-slate-900 p-5 text-white sm:p-7">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-200">
-          AI 답변에 확인할 핵심 질문
+          AI 답변에서 확인할 핵심 질문
         </p>
         <div className="mt-2 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
           <div className="max-w-2xl">
-            <h2 className="text-2xl font-bold">AI에 노출시킬 환자 질문</h2>
+            <h2 className="text-2xl font-bold">AI 답변에서 확인할 환자 질문</h2>
             <p className="mt-2 text-sm leading-6 text-blue-50/90">
-              환자가 ChatGPT·Gemini 같은 AI 답변 서비스에서 병원을 찾을 때 어떤 질문에 우리 병원이 떠야 하는지 정의합니다.
-              일반 검색 키워드가 아니라 AI 답변 안에서 우리 병원이 언급되는 비율 확인 → 부족한 부분 진단 → 환자 질문에 맞춘 콘텐츠 가이드 작성까지
+              환자가 ChatGPT·Gemini 같은 AI 답변 서비스에서 병원을 찾을 때 어떤 질문에 우리 병원이 언급되어야 하는지 정합니다.
+              일반 검색 키워드가 아니라 AI 답변에서 우리 병원이 언급되는 정도를 확인하고, 부족한 부분을 진단해 질문에 맞는 콘텐츠 가이드를 작성합니다.
               운영 흐름의 기준이 되는 질문입니다.
             </p>
           </div>
@@ -275,10 +275,10 @@ export default function QueryTargetsPage() {
           </div>
         </div>
 
-        {/* AI 언급률 측정 실행 */}
+        {/* 병원 언급률 측정 실행 */}
         <div className="mt-5 flex flex-col gap-2 rounded-xl bg-white/10 p-4 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-white">AI 언급률 측정</p>
+            <p className="text-sm font-semibold text-white">병원 언급률 측정</p>
             <p className="mt-0.5 text-xs text-blue-100">
               등록된 환자 질문 문구로 ChatGPT·Gemini 답변에서 우리 병원 언급 여부를 확인합니다. 화면을 떠나도 측정은
               계속되며 결과는 대시보드에 누적됩니다.
@@ -330,13 +330,13 @@ export default function QueryTargetsPage() {
 
           {loading ? (
             <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-500">
-              AI에 노출시킬 환자 질문 목록을 불러오는 중입니다.
+              AI 답변에서 확인할 환자 질문 목록을 불러오는 중입니다.
             </div>
           ) : targets.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-blue-200 bg-white p-8 text-center">
               <h4 className="text-base font-semibold text-slate-900">아직 등록된 환자 질문이 없습니다.</h4>
               <p className="mt-2 text-sm text-slate-500">
-                첫 환자 질문을 만들면 이후 첫 AI 언급률 측정, 부족한 부분 진단, 환자 질문에 맞춘 콘텐츠 기획의 기준으로 사용할 수 있습니다.
+                첫 환자 질문을 만들면 이후 첫 병원 언급률 측정, 부족한 부분 진단, 환자 질문에 맞춘 콘텐츠 기획의 기준으로 사용할 수 있습니다.
               </p>
             </div>
           ) : (
@@ -366,7 +366,7 @@ export default function QueryTargetsPage() {
           <summary>새 환자 질문 만들기</summary>
           <div className="p-5">
             <p className="text-sm text-slate-500">
-              환자 질문을 먼저 정의하고, 실제 AI에 물어볼 문장을 함께 입력합니다.
+              환자 질문을 먼저 정의하고, AI 답변 확인에 사용할 문장을 함께 입력합니다.
             </p>
 
           <form onSubmit={handleCreate} className="mt-5 space-y-4">
@@ -474,7 +474,7 @@ function TargetCard({
             {target.target_intent} · {target.specialty || '진료과 미지정'} · {target.condition_or_symptom || target.treatment || '질환/치료 미지정'}
           </p>
           <p className="mt-1 text-xs text-slate-500">
-            질문 문구 {target.summary.active_variant_count}/{target.summary.variant_count}개 운영 · 최근 AI 언급률 {target.summary.latest_sov_pct === null ? '측정 대기' : `${target.summary.latest_sov_pct.toFixed(1)}%`}
+            질문 문구 {target.summary.active_variant_count}/{target.summary.variant_count}개 운영 · 최근 병원 언급률 {target.summary.latest_sov_pct === null ? '측정 결과 없음' : `${target.summary.latest_sov_pct.toFixed(1)}%`}
           </p>
         </div>
         <span className="shrink-0 text-xs font-semibold text-blue-700">{expanded ? '접기' : '편집'}</span>
@@ -507,15 +507,15 @@ function TargetCard({
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         <InfoBlock label="지역" value={target.region_terms.join(', ') || '미지정'} />
-        <InfoBlock label="확인할 AI 서비스" value={platformLabels.join(', ') || '미지정'} />
+        <InfoBlock label="측정할 AI 서비스" value={platformLabels.join(', ') || '미지정'} />
         <InfoBlock label="경쟁 병원" value={target.competitor_names.join(', ') || '미지정'} />
         <InfoBlock label="환자 질문 문구" value={`${target.summary.active_variant_count}/${target.summary.variant_count}개 운영`} />
         <InfoBlock
-          label="최근 AI 언급률"
+          label="최근 병원 언급률"
           value={target.summary.latest_sov_pct === null ? '측정 대기' : `${target.summary.latest_sov_pct.toFixed(1)}%`}
         />
         <InfoBlock
-          label="갭 / 다음 액션"
+          label="부족한 점 / 다음 작업"
           value={[target.summary.gap_status, target.summary.next_action].filter(Boolean).join(' · ') || '진단 대기'}
         />
       </div>
@@ -537,8 +537,8 @@ function TargetCard({
 
       <div className="mt-4 rounded-xl bg-slate-50 p-4">
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium text-slate-700">실제 AI에 물어볼 환자 질문 문구</p>
-          <p className="text-xs text-slate-400">AI 언급률 확인 문항 연결 {target.summary.linked_query_matrix_count}개</p>
+          <p className="text-sm font-medium text-slate-700">실제로 확인할 환자 질문 문구</p>
+          <p className="text-xs text-slate-400">병원 언급률 측정 문항 연결 {target.summary.linked_query_matrix_count}개</p>
         </div>
         <div className="mt-3 space-y-2">
           {target.variants.length === 0 ? (
@@ -568,7 +568,7 @@ function TargetCard({
         </div>
         <div className="mt-3 flex flex-col gap-2 sm:flex-row">
           <select
-            aria-label="추가할 질문의 AI 서비스"
+            aria-label="질문을 확인할 AI 서비스"
             value={variantPlatform}
             onChange={(event) => onVariantPlatformChange(event.target.value)}
             className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm"
@@ -698,7 +698,7 @@ function PlatformPicker({
 }) {
   return (
     <fieldset>
-      <legend className="text-xs font-medium text-slate-600">확인할 AI 서비스</legend>
+      <legend className="text-xs font-medium text-slate-600">측정할 AI 서비스</legend>
       <div className="mt-2 flex gap-3">
         {SUPPORTED_QUERY_PLATFORMS.map((platform) => (
           <label

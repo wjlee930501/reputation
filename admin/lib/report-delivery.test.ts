@@ -38,7 +38,7 @@ test('only the validated doctor artifact becomes the primary download', () => {
     getDoctorDownload('h1', 'r1', 'VALID', { deliveryReady: false, effectiveEventType: null, sentAt: null }),
     null,
   )
-  assert.equal(getInternalReportLabel(true, true), '내부 검수용 리포트 열기 · 원장 전달 금지')
+  assert.equal(getInternalReportLabel(true, true), '내부 검수용 보고서 열기 · 원장 전달 금지')
 })
 
 test('rescission overrides compatibility sent time until re-delivery', () => {
@@ -55,10 +55,10 @@ test('stale readiness conflicts become problem, impact, and exact action without
 })
 
 test('delivery history never renders raw event enums', () => {
-  assert.equal(deliveryEventLabel('DELIVERED'), '최초 전달 기록')
-  assert.equal(deliveryEventLabel('CORRECTED'), '전달 정보 수정 기록')
-  assert.equal(deliveryEventLabel('RESCINDED'), '전달 기록 무효 처리')
-  assert.equal(deliveryEventLabel('REDELIVERED'), '다시 전달한 기록')
+  assert.equal(deliveryEventLabel('DELIVERED'), '최초 고객 전달 기록')
+  assert.equal(deliveryEventLabel('CORRECTED'), '고객 전달 정보 수정 기록')
+  assert.equal(deliveryEventLabel('RESCINDED'), '고객 전달 기록 무효 처리')
+  assert.equal(deliveryEventLabel('REDELIVERED'), '고객에게 다시 전달한 기록')
 })
 
 test('the last item in the ascending API delivery history is the current receipt', () => {
@@ -104,8 +104,8 @@ test('the initial diagnosis report is never described with the monthly delivery 
     effectiveEventType: 'DELIVERED',
     sentAt: '2026-08-01',
   }
-  assert.equal(reportStatusLabel(monthlyDelivered), '전달 기록 있음')
-  assert.equal(reportStatusLabel({ ...monthlyDelivered, effectiveEventType: null, sentAt: null }), '전달 전 검수 가능')
+  assert.equal(reportStatusLabel(monthlyDelivered), '고객 전달 기록 있음')
+  assert.equal(reportStatusLabel({ ...monthlyDelivered, effectiveEventType: null, sentAt: null }), '고객 전달 전 검수 가능')
 })
 
 test('a V0 report never counts as a delivery receipt even if a legacy sent_at exists', () => {

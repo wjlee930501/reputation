@@ -14,6 +14,7 @@ CANARY_TASKS = {
     "app.workers.canary_tasks.canary_reports": "canary-reports",
     "app.workers.canary_tasks.canary_leadgen": "canary-leadgen",
     "app.workers.canary_tasks.canary_certificates": "canary-certificates",
+    "app.workers.canary_tasks.canary_control": "canary-control",
 }
 
 
@@ -124,7 +125,8 @@ def test_site_revalidation_retry_is_routed_and_bound_to_run_id(monkeypatch) -> N
     )
 
     assert celery_app.conf.task_routes["app.workers.tasks.retry_site_revalidation"] == {
-        "queue": "default"
+        "queue": "control",
+        "priority": 0,
     }
     dispatch_auth.require_dispatch(
         _task(headers, task_id="retry-task"),

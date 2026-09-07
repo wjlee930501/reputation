@@ -1,4 +1,4 @@
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from app.services.sov_statistics import DeltaSignificance
 
@@ -35,6 +35,7 @@ class CellPayload(TypedDict):
     attempts_used: int
     mentioned_attempts: int
     mention_frequency: float | None
+    observation_slots: NotRequired[dict[str, int | str]]
 
 
 class SegmentPayload(TypedDict):
@@ -143,3 +144,4 @@ class MonthlySovPayload(TypedDict):
     queries: list[QueryPayload]
     segments: dict[str, SegmentPayload]
     comparison: ComparisonPayload
+    observation_adequacy: dict[str, int | str]

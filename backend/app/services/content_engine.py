@@ -6,6 +6,7 @@
 """
 import logging
 import re
+import uuid
 from urllib.parse import urlparse
 
 import anthropic
@@ -429,7 +430,7 @@ def _build_philosophy_context(philosophy: HospitalContentPhilosophy | None) -> s
         return ""
     safety_policy = _hospital_specific_safety(philosophy)
     treatments = "\n".join(
-        f"- {item.get('treatment', '진료 항목')}: {item.get('angle', '')}"
+        f"- {_format_treatment_narrative(item)}"
         for item in (philosophy.treatment_narratives or [])
         if isinstance(item, dict)
     )
@@ -470,9 +471,29 @@ def _format_treatment_narrative(value: object) -> str:
     if isinstance(value, dict):
         treatment = str(value.get("treatment") or "").strip()
         angle = str(value.get("angle") or "").strip()
-        if treatment and angle:
-            return f"{treatment} — {angle}"
-        return treatment or angle or ""
+        patient_language = [
+            str(item).strip()
+            for item in (value.get("patient_language") or [])
+            if str(item).strip()
+        ]
+        cautions = [
+            str(item).strip() for item in (value.get("cautions") or []) if str(item).strip()
+        ]
+        evidence_note_ids = [
+            str(item).strip()
+            for item in (value.get("evidence_note_ids") or [])
+            if str(item).strip()
+        ]
+        lines = []
+        if treatment or angle:
+            lines.append(f"{treatment} — {angle}" if treatment and angle else treatment or angle)
+        if patient_language:
+            lines.append(f"환자 설명: {' / '.join(patient_language)}")
+        if cautions:
+            lines.append(f"주의사항: {' / '.join(cautions)}")
+        if evidence_note_ids:
+            lines.append(f"근거 ID: {', '.join(evidence_note_ids)}")
+        return "\n".join(lines)
     if isinstance(value, str):
         return value
     return ""
@@ -624,6 +645,7 @@ async def _generate_content_attempt(
     philosophy: HospitalContentPhilosophy | None = None,
     content_brief: dict | None = None,
     remediation_findings: list[str] | None = None,
+    _attempt_context: dict | None = None,
 ) -> dict:
     """
     Claude Sonnet으로 콘텐츠 생성.
@@ -699,17 +721,37 @@ async def _generate_content_attempt(
 
     # asyncio에서 sync anthropic 클라이언트 호출
     loop = asyncio.get_running_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: client.messages.create(
-            model=settings.CLAUDE_MODEL,
-            max_tokens=5500,
-            system=system_blocks,
-            messages=[{"role": "user", "content": user_message}],
-        ),
-    )
+    from app.services import provider_usage
 
-    from app.services.hospital_usage import record_usage
+    attempt_context = _attempt_context if _attempt_context is not None else {}
+    logical_call_id = str(attempt_context.setdefault("logical_call_id", uuid.uuid4()))
+    http_attempt = int(attempt_context.get("http_attempt") or 0) + 1
+    attempt_context["http_attempt"] = http_attempt
+    attempt_id = f"{logical_call_id}:http:{http_attempt}"
+
+    try:
+        response = await loop.run_in_executor(
+            None,
+            lambda: client.messages.create(
+                model=settings.CLAUDE_MODEL,
+                max_tokens=5500,
+                system=system_blocks,
+                messages=[{"role": "user", "content": user_message}],
+            ),
+        )
+    except Exception:
+        await provider_usage.record_attempt(
+            provider="anthropic",
+            model=settings.CLAUDE_MODEL,
+            workflow="content_generation",
+            cost_category="content",
+            hospital_id=getattr(hospital, "id", None),
+            logical_call_id=logical_call_id,
+            attempt_id=attempt_id,
+            http_attempt=http_attempt,
+            usage_known=False,
+        )
+        raise
 
     usage = getattr(response, "usage", None)
     # 캐시된 입력은 usage.input_tokens에 포함되지 않는다. 두 필드를 더하지 않으면
@@ -729,11 +771,17 @@ async def _generate_content_attempt(
         cache_read_tokens,
         _usage_token(usage, "output_tokens"),
     )
-    await record_usage(
+    await provider_usage.record_attempt(
+        provider="anthropic",
+        model=settings.CLAUDE_MODEL,
+        workflow="content_generation",
+        cost_category="content",
         hospital_id=getattr(hospital, "id", None),
-        kind="content",
-        input_tokens=uncached_input_tokens + cache_creation_tokens + cache_read_tokens,
-        output_tokens=_usage_token(usage, "output_tokens"),
+        logical_call_id=logical_call_id,
+        attempt_id=attempt_id,
+        http_attempt=http_attempt,
+        provider_request_id=str(getattr(response, "id", "") or "") or None,
+        usage=usage,
     )
 
     raw = response.content[0].text
@@ -836,6 +884,7 @@ async def generate_content(
 ) -> dict:
     """Generate with hard retries and apply bounded deterministic heals."""
 
+    attempt_context = {"logical_call_id": str(uuid.uuid4()), "http_attempt": 0}
     try:
         try:
             return await _generate_content_attempt(
@@ -845,6 +894,7 @@ async def generate_content(
                 philosophy,
                 content_brief,
                 remediation_findings,
+                attempt_context,
             )
         except MissingCitableReferencesError as exc:
             result = exc.result

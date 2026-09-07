@@ -88,59 +88,58 @@ def _stub_source_lookup(monkeypatch):
     return hospital, source
 
 
-async def test_process_source_blocked_by_cost_guard_returns_429(monkeypatch, _stub_source_lookup):
-    _hospital, source = _stub_source_lookup
-    monkeypatch.setattr(essence.cost_guard, "check_and_increment", _blocked_decision())
-
-    async def _should_not_run(*_args, **_kwargs):
-        raise AssertionError("cost_guard가 막았는데 evidence 추출을 시도했다")
-
-    monkeypatch.setattr(essence, "process_source_asset", _should_not_run)
-
-    with pytest.raises(HTTPException) as exc_info:
-        await essence.process_source(_hospital.id, source.id, db=_FakeDB())
-
-    assert exc_info.value.status_code == 429
-    assert "킬스위치" in exc_info.value.detail
-
-
-async def test_process_source_reserves_cost_guard_before_extraction(monkeypatch, _stub_source_lookup):
-    """cost_guard가 허용하면 예약 이후에만 실제 추출이 일어난다."""
+async def test_process_source_api_only_creates_durable_work(monkeypatch, _stub_source_lookup):
+    """The API must not reserve or call a provider before the durable worker claim."""
     hospital, source = _stub_source_lookup
-    calls = {"reserved": False, "extracted": False}
+    queued: list[uuid.UUID] = []
 
-    async def _allowed(*_args, **_kwargs):
-        calls["reserved"] = True
-        return CostGuardDecision(True, None)
+    async def _should_not_reserve(*_args, **_kwargs):
+        raise AssertionError("API layer must not duplicate the worker cost reservation")
 
-    monkeypatch.setattr(essence.cost_guard, "check_and_increment", _allowed)
+    async def _start(_db, *, hospital_id, source_ids, **_kwargs):
+        assert hospital_id == hospital.id
+        queued.extend(source_ids)
+        return SimpleNamespace(id=uuid.uuid4())
 
-    def _extract(_source):
-        assert calls["reserved"], "예약 전에 추출이 먼저 일어났다"
-        calls["extracted"] = True
+    async def _notes(_db, _source_id):
         return []
 
-    monkeypatch.setattr(essence, "process_source_asset", _extract)
-    monkeypatch.setattr(essence, "evidence_text_is_acceptable", lambda *_a, **_k: True)
-    monkeypatch.setattr(essence, "_enqueue_essence_review_best_effort", lambda *_a, **_k: None)
+    class _DB(_FakeDB):
+        async def refresh(self, _obj):
+            return None
+
+    monkeypatch.setattr(essence.cost_guard, "check_and_increment", _should_not_reserve)
+    monkeypatch.setattr(essence, "_start_source_processing_best_effort", _start)
+    monkeypatch.setattr(essence, "_get_notes_for_source", _notes)
+
+    response = await essence.process_source(hospital.id, source.id, db=_DB())
+
+    assert response["id"] == str(source.id)
+    assert queued == [source.id]
+
+
+async def test_process_source_does_not_extract_inside_request(monkeypatch, _stub_source_lookup):
+    """The endpoint returns after enqueueing; extraction belongs to the worker."""
+    hospital, source = _stub_source_lookup
+    calls = {"queued": 0}
+
+    async def _start(*_args, **_kwargs):
+        calls["queued"] += 1
+        return SimpleNamespace(id=uuid.uuid4())
+
+    async def _notes(_db, _source_id):
+        return []
+
+    monkeypatch.setattr(essence, "_start_source_processing_best_effort", _start)
+    monkeypatch.setattr(essence, "_get_notes_for_source", _notes)
 
     class _DB(_FakeDB):
-        async def execute(self, *_args, **_kwargs):
-            return None
-
-        def add_all(self, _items):
-            return None
-
-        async def commit(self):
-            return None
-
         async def refresh(self, _obj):
             return None
 
     await essence.process_source(hospital.id, source.id, db=_DB())
 
-    assert calls["reserved"] is True
-    assert calls["extracted"] is True
+    assert calls["queued"] == 1
 
 
 async def test_process_source_skips_reextraction_when_already_processed_unchanged(
@@ -154,16 +153,21 @@ async def test_process_source_skips_reextraction_when_already_processed_unchange
     source.content_hash = compute_source_content_hash(
         source.title, source.url, source.raw_text, source.operator_note
     )
+    from app.services.source_processing_runs import processing_input_hash
+
+    source.source_metadata = {
+        "extraction_input_hash": processing_input_hash(source, source.content_hash)
+    }
 
     async def _should_not_reserve(*_args, **_kwargs):
         raise AssertionError("이미 처리된 자료인데 cost_guard 예약을 시도했다")
 
     monkeypatch.setattr(essence.cost_guard, "check_and_increment", _should_not_reserve)
 
-    async def _should_not_run(*_args, **_kwargs):
-        raise AssertionError("이미 처리된 자료인데 재추출을 시도했다")
+    async def _should_not_queue(*_args, **_kwargs):
+        raise AssertionError("이미 처리된 자료인데 재추출을 큐잉했다")
 
-    monkeypatch.setattr(essence, "process_source_asset", _should_not_run)
+    monkeypatch.setattr(essence, "_start_source_processing_best_effort", _should_not_queue)
 
     async def _notes(_db, _source_id):
         return []

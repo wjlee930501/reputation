@@ -161,6 +161,17 @@ class ContentItem(Base):
     content_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
     )
+    # Immutable generation provenance and the newest completed revalidation are
+    # distinct from the compatibility field above, which remains the publication gate.
+    generation_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    last_reviewed_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    content_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     query_target_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("ai_query_targets.id", ondelete="SET NULL")
     )
@@ -204,15 +215,19 @@ class ContentItem(Base):
     post_publish_reviewed_by: Mapped[str | None] = mapped_column(String(100))
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    generation_claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     # 생성 이미지가 의미론적(semantic) 정책 검수를 통과한 시각. migration 0053.
     image_policy_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    image_content_hash: Mapped[str | None] = mapped_column(String(64))
+    image_subject_hash: Mapped[str | None] = mapped_column(String(64))
+    image_policy_version: Mapped[str | None] = mapped_column(String(40))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     hospital: Mapped["Hospital"] = relationship(back_populates="content_items")
     schedule: Mapped["ContentSchedule"] = relationship(back_populates="content_items")
     content_philosophy: Mapped["HospitalContentPhilosophy | None"] = relationship(
-        back_populates="content_items"
+        back_populates="content_items", foreign_keys=[content_philosophy_id]
     )
     query_target: Mapped["AIQueryTarget | None"] = relationship()
     exposure_action: Mapped["ExposureAction | None"] = relationship(

@@ -500,9 +500,9 @@ export default function NewHospitalPage() {
         )}
 
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-          <p className="font-medium text-slate-800">등록 버튼 실행 내용</p>
+          <p className="font-medium text-slate-800">등록 시 처리 내용</p>
           <p className="mt-1">
-            병원을 생성하고 고객 인수를 승인한 뒤 온보딩 화면으로 이동합니다.
+            병원을 생성하고 고객 인수를 승인한 뒤 병원 운영 화면으로 이동합니다.
           </p>
         </div>
 
@@ -516,7 +516,7 @@ export default function NewHospitalPage() {
           disabled={loading || leadLoading || workflowRestoring || Boolean(submitBlockReason)}
           className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {workflowRestoring ? '저장된 진행 상태 확인 중...' : leadLoading ? '리드 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}
+          {workflowRestoring ? '저장된 진행 상태 확인 중...' : leadLoading ? '상담 요청 정보 확인 중...' : loading ? '인수 승인 중...' : '등록하고 고객 인수 승인'}
         </button>
       </form>
     </div>

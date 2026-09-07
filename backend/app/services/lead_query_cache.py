@@ -14,10 +14,18 @@ AI 답변은 신청 병원이 누구든 동일하다. 병원마다 달라지는 
 **개인정보가 아니다.** 질의에 신청자 이름·연락처를 절대 넣지 않으므로(PRD §6)
 파기 파이프라인의 대상이 아니고 TTL로만 관리한다.
 """
+import asyncio
 import hashlib
+import json
 import logging
+import uuid
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+import redis.asyncio as redis_async
+from redis.exceptions import RedisError
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +35,173 @@ from app.models.lead_diagnosis import LeadQueryAnswer
 from app.services import sov_engine
 
 logger = logging.getLogger(__name__)
+
+_FLIGHT_LEASE_SECONDS = 90
+_FLIGHT_RESULT_SECONDS = 600
+_FLIGHT_FAILURE_SECONDS = 20
+_FLIGHT_POLL_SECONDS = 0.1
+
+_ACQUIRE_FLIGHT_SCRIPT = """
+if redis.call('EXISTS', KEYS[2]) == 1 then
+  return 2
+end
+if redis.call('SETNX', KEYS[1], ARGV[1]) == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+  return 1
+end
+return 0
+"""
+
+_RENEW_LEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
+_RELEASE_LEASE_SCRIPT = """
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+"""
+
+
+@dataclass(frozen=True)
+class SingleFlightAnswer:
+    answer: dict
+    owner: bool
+
+
+def _flight_keys(cache_key: str, repeat_no: int) -> tuple[str, str]:
+    identity = f"{cache_key}:{repeat_no}"
+    return f"lead-query-flight:lease:{identity}", f"lead-query-flight:result:{identity}"
+
+
+async def _renew_flight_lease(client, lease_key: str, token: str) -> None:
+    """Keep a live owner from expiring while provider latency is high."""
+    try:
+        while True:
+            await asyncio.sleep(_FLIGHT_LEASE_SECONDS / 3)
+            renewed = await client.eval(
+                _RENEW_LEASE_SCRIPT, 1, lease_key, token, _FLIGHT_LEASE_SECONDS
+            )
+            if not renewed:
+                return
+    except (OSError, RedisError, RuntimeError, TimeoutError):
+        # The owner still returns its purchased answer. Redis fail-open can reduce sharing,
+        # but must never turn one successful provider call into a workflow failure.
+        return
+
+
+async def singleflight_fetch_answer(
+    *,
+    query_text: str,
+    platform: str,
+    requested_model: str,
+    repeat_no: int,
+    fetch: Callable[[], Awaitable[dict]],
+    redis_client: redis_async.Redis | None = None,
+) -> SingleFlightAnswer:
+    """Run one provider fetch per shared cache identity across worker processes.
+
+    A short renewable Redis lease elects the owner. The completed result is handed directly
+    to waiters so they do not race the database commit. If an owner process dies, its lease
+    expires and exactly one waiter takes over. Redis failure keeps the documented fail-open
+    behavior and performs the fetch locally.
+    """
+    from app.services import cost_guard
+
+    key = query_cache_key(
+        query_text=query_text,
+        platform=platform,
+        requested_model=requested_model,
+    )
+    lease_key, result_key = _flight_keys(key, repeat_no)
+    token = uuid.uuid4().hex
+    client = redis_client or cost_guard._client()  # shared configured async Redis client
+
+    waiting_on_owner = False
+    while True:
+        if waiting_on_owner:
+            try:
+                cached_payload = await client.get(result_key)
+                if cached_payload is not None:
+                    if isinstance(cached_payload, bytes):
+                        cached_payload = cached_payload.decode()
+                    return SingleFlightAnswer(json.loads(cached_payload), owner=False)
+                if not await client.exists(lease_key):
+                    # The owner crashed before publishing. Return to election; one waiter wins.
+                    waiting_on_owner = False
+                    continue
+            except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+                logger.warning("lead query single-flight fail-open: %s", type(exc).__name__)
+                return SingleFlightAnswer(await fetch(), owner=True)
+
+        try:
+            acquired = await client.eval(
+                _ACQUIRE_FLIGHT_SCRIPT,
+                2,
+                lease_key,
+                result_key,
+                token,
+                _FLIGHT_LEASE_SECONDS,
+            )
+        except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+            logger.warning("lead query single-flight fail-open: %s", type(exc).__name__)
+            return SingleFlightAnswer(await fetch(), owner=True)
+
+        if int(acquired) == 2:
+            # The prior owner finished its paid call but the caller may have crashed before
+            # committing the DB cache/checkpoint. Treat this short-lived handoff as a valid
+            # answer for the exact same query/model/protocol/repeat identity.
+            try:
+                cached_payload = await client.get(result_key)
+                if cached_payload is None:
+                    continue
+                if isinstance(cached_payload, bytes):
+                    cached_payload = cached_payload.decode()
+                return SingleFlightAnswer(json.loads(cached_payload), owner=False)
+            except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+                logger.warning("lead query single-flight handoff skipped: %s", type(exc).__name__)
+                return SingleFlightAnswer(await fetch(), owner=True)
+
+        if int(acquired) == 1:
+            renewer = asyncio.create_task(_renew_flight_lease(client, lease_key, token))
+            try:
+                # Provider exceptions propagate. Treating them as Redis failures would execute
+                # `fetch` twice and purchase the same answer twice in one logical attempt.
+                answer = await fetch()
+                ttl = (
+                    _FLIGHT_RESULT_SECONDS
+                    if answer.get("measurement_status") == "SUCCESS"
+                    else _FLIGHT_FAILURE_SECONDS
+                )
+                try:
+                    await client.set(
+                        result_key,
+                        json.dumps(answer, ensure_ascii=False, separators=(",", ":")),
+                        ex=ttl,
+                    )
+                except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+                    logger.warning(
+                        "lead query single-flight result publish skipped: %s",
+                        type(exc).__name__,
+                    )
+                return SingleFlightAnswer(answer, owner=True)
+            finally:
+                renewer.cancel()
+                with suppress(asyncio.CancelledError):
+                    await renewer
+                try:
+                    await client.eval(_RELEASE_LEASE_SCRIPT, 1, lease_key, token)
+                except (OSError, RedisError, RuntimeError, TimeoutError):
+                    pass
+
+        # A live owner is working. Poll the result; when an owner crashes the lease
+        # disappears and this loop elects one successor without human intervention.
+        waiting_on_owner = True
+        await asyncio.sleep(_FLIGHT_POLL_SECONDS)
 
 
 def prompt_version(*, platform: str | None = None) -> str:

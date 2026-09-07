@@ -46,7 +46,7 @@ export function ReportDelivery({
       <p className="text-xs font-bold text-[var(--color-revisit-primary-40)]">근거 확인 후 실행</p>
       <h4 id="delivery-heading" className="mt-1 text-lg font-bold text-[var(--color-revisit-text-title)]">원장 전달과 이력 관리</h4>
       <p className="mt-2 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-        원장 전달용 파일이 첫 번째 자료입니다. 내부 검수용 리포트는 원장님께 보내지 마세요.
+        원장 전달용 파일이 첫 번째 자료입니다. 내부 검수용 보고서는 원장님께 보내지 마세요.
       </p>
       <div className="mt-4 grid gap-2">
         {doctorUrl ? (
@@ -87,7 +87,7 @@ export function ReportDelivery({
               <button type="button" onClick={() => setMode(mode === 'rescind' ? 'none' : 'rescind')} className="min-h-11 rounded-lg border border-[var(--color-revisit-red-50)] px-4 text-sm font-bold text-[var(--color-revisit-red-50)]">전달 기록 무효 처리</button>
             </div>
           ) : (
-            <p className="mt-2 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3 text-sm leading-6">수정과 무효 처리는 관리자만 할 수 있습니다. 잘못된 기록이 있으면 관리자에게 이 리포트 기간과 수신자를 알려 주세요.</p>
+            <p className="mt-2 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3 text-sm leading-6">수정과 무효 처리는 관리자만 할 수 있습니다. 잘못된 기록이 있으면 관리자에게 이 보고서 기간과 수신자를 알려 주세요.</p>
           )}
         </div>
       )}

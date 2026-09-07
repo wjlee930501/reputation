@@ -26,6 +26,7 @@ from app.core.database import SyncSessionLocal
 from app.workers.canary_tasks import read_queue_canaries
 
 EXPECTED_BEAT_SCHEDULES = {
+    "canary-control",
     "canary-content",
     "canary-default",
     "canary-leadgen",
@@ -33,6 +34,8 @@ EXPECTED_BEAT_SCHEDULES = {
     "canary-sov",
     "canary-certificates",
     "dispatch-notification-outbox",
+    "drain-indexnow-retries",
+    "drain-provider-usage-spool",
     "drain-lead-diagnoses",
     "live-custom-domain-health",
     "monthly-report-gap-summary",
@@ -55,6 +58,8 @@ EXPECTED_BEAT_SCHEDULES = {
 }
 
 EXPECTED_TASKS = {
+    "app.workers.indexnow_retry.drain",
+    "app.workers.provider_usage_recovery.drain",
     "app.workers.autonomous_recovery.reconcile",
     "app.workers.content_backlog_recovery.reconcile",
     "app.workers.domain_certificate_tasks.provision_domain_certificate",
@@ -64,6 +69,7 @@ EXPECTED_TASKS = {
     "app.workers.canary_tasks.canary_reports",
     "app.workers.canary_tasks.canary_sov",
     "app.workers.canary_tasks.canary_certificates",
+    "app.workers.canary_tasks.canary_control",
     "app.workers.lead_diagnosis_tasks.build_lead_report",
     "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses",
     "app.workers.lead_diagnosis_tasks.notify_lead_intake",
@@ -245,6 +251,7 @@ def _queue_operator_label(queue: str) -> str:
         "reports": "보고서 생성",
         "leadgen": "무료 진단 접수",
         "certificates": "도메인 인증서 발급",
+        "control": "발행·복구 제어",
     }.get(queue, "자동 작업")
 
 

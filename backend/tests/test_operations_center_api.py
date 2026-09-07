@@ -1,7 +1,7 @@
 """Unified operations-center API contracts."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -145,6 +145,22 @@ def test_incident_rows_mark_automatic_retries_as_context_not_operator_work() -> 
     assert waiting_row.requires_operator_action is True
 
 
+def test_retrying_incident_becomes_operator_work_only_after_its_deadline() -> None:
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+
+    now = datetime(2026, 8, 24, 3, 0, tzinfo=UTC)
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="일시 지연")
+    incident.state = "RETRYING"
+    incident.sla_due_at = now + timedelta(minutes=10)
+
+    before_deadline = serialize_incident_row(incident, None, None, None, None, now)
+    incident.sla_due_at = now - timedelta(seconds=1)
+    after_deadline = serialize_incident_row(incident, None, None, None, None, now)
+
+    assert before_deadline.requires_operator_action is False
+    assert after_deadline.requires_operator_action is True
+
+
 def test_operation_actions_distinguish_browser_navigation_from_bff_mutations() -> None:
     """Mutation paths target the Admin BFF while links remain browser navigation paths."""
 
@@ -249,6 +265,21 @@ def test_invalid_sla_filter_returns_a_typed_422() -> None:
     assert "처리 기한" in message
     assert "SLA" not in message
     assert all(raw not in message for raw in ("OVERDUE", "DUE", "NONE"))
+
+
+def test_operations_filters_preserve_hospital_scope() -> None:
+    from app.api.admin.operations_center_query_common import normalize_filters
+
+    hospital_id = uuid.uuid4()
+    filters = normalize_filters(
+        hospital_id=hospital_id,
+        owner=None,
+        status=None,
+        severity=None,
+        sla=None,
+    )
+
+    assert filters.hospital_id == hospital_id
 
 
 def test_incident_recovery_filter_defaults_to_active_and_validates_values() -> None:

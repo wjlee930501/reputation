@@ -27,7 +27,11 @@ from app.models.operations import Incident, NotificationOutbox, OperationRun, Op
 from app.workers import generation_incident_control, tasks
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_run_control import GenerationItemState
-from app.workers.nightly_generation_batch import write_back_generated_content
+from app.workers.nightly_generation_batch import (
+    claim_generation_lease,
+    release_generation_claim,
+    write_back_generated_content,
+)
 
 
 @pytest.fixture
@@ -208,6 +212,76 @@ def test_write_back_does_not_overwrite_an_already_published_item(pg_conn, pg_ses
     ).one()
     assert row.status == "PUBLISHED"
     assert row.title is None
+
+
+def test_old_revision_and_claim_cannot_overwrite_newer_edit(pg_conn, pg_session):
+    item_id = _seed_item(pg_conn, status="DRAFT")
+    old_token = uuid.uuid4()
+    new_token = uuid.uuid4()
+    pg_conn.execute(
+        text(
+            "UPDATE content_items SET content_revision = 2, generation_claim_token = :token, "
+            "title = '운영자 수정' WHERE id = :id"
+        ),
+        {"id": item_id, "token": new_token},
+    )
+
+    written = write_back_generated_content(
+        pg_session,
+        item_id=item_id,
+        expected_revision=1,
+        expected_claim_token=old_token,
+        values={"title": "늦은 생성", "body": "늦은 본문", "status": ContentStatus.DRAFT},
+    )
+
+    assert written == 0
+    row = pg_conn.execute(
+        text(
+            "SELECT title, body, content_revision, generation_claim_token "
+            "FROM content_items WHERE id = :id"
+        ),
+        {"id": item_id},
+    ).one()
+    assert (row.title, row.body, row.content_revision, row.generation_claim_token) == (
+        "운영자 수정",
+        None,
+        2,
+        new_token,
+    )
+
+
+def test_exact_claim_release_cannot_clear_new_owner(pg_conn, pg_session):
+    item_id = _seed_item(pg_conn, status="DRAFT")
+    old_token = uuid.uuid4()
+    new_token = uuid.uuid4()
+    pg_conn.execute(
+        text(
+            "UPDATE content_items SET generation_claimed_at = now(), "
+            "generation_claim_token = :token WHERE id = :id"
+        ),
+        {"id": item_id, "token": new_token},
+    )
+
+    assert release_generation_claim(pg_session, item_id, old_token) == 0
+    assert pg_conn.execute(
+        text("SELECT generation_claim_token FROM content_items WHERE id = :id"),
+        {"id": item_id},
+    ).scalar_one() == new_token
+
+
+def test_second_image_owner_cannot_claim_live_generation_lease(pg_conn, pg_session):
+    item_id = _seed_item(pg_conn, status="DRAFT")
+
+    first = claim_generation_lease(pg_session, item_id)
+    assert first is not None
+    _item, first_token = first
+
+    second = claim_generation_lease(pg_session, item_id)
+    assert second is None
+    assert pg_conn.execute(
+        text("SELECT generation_claim_token FROM content_items WHERE id = :id"),
+        {"id": item_id},
+    ).scalar_one() == first_token
 
 
 def test_a_dirty_tracked_object_bypasses_the_guard_via_autoflush(pg_conn, pg_session):

@@ -45,7 +45,9 @@ def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_co
     assert "jsonb_array_length" in sql
     assert "hospital_content_philosophies.status" in sql
     assert "essence_status" in sql
-    assert "essence_check_summary" not in sql.split("WHERE", 1)[1]
+    assert "essence_check_summary" in sql.split("WHERE", 1)[1]
+    assert "UNAVAILABLE" in sql
+    assert "REVISE" in sql
     # cap+1로 읽어 절단 발생을 감지한다
     assert f"LIMIT {tasks.NIGHTLY_GENERATION_CAP + 1}" in sql
 
@@ -1155,11 +1157,17 @@ def test_changed_generation_context_allows_exactly_one_retry(monkeypatch):
 
 
 def test_existing_image_is_absolute_zero_recall_guard(monkeypatch):
+    image_hash = "d" * 64
     item = SimpleNamespace(
         id=uuid.uuid4(),
         body="stored body",
         title="stored title",
-        image_url="https://cdn.example/existing.webp",
+        image_url=f"gs://reputation-images/content/{image_hash}-existing.png",
+        image_content_hash=image_hash,
+        image_subject_hash=tasks.image_subject_hash(
+            SimpleNamespace(value="FAQ"), "stored title"
+        ),
+        image_policy_version=tasks.IMAGE_POLICY_VERSION,
         image_policy_verified_at=datetime.now(),
         content_type=SimpleNamespace(value="FAQ"),
         meta_description="summary",
@@ -3097,6 +3105,7 @@ def _publication_hospital():
 
 
 def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
+    image_hash = "c" * 64
     return SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -3104,7 +3113,10 @@ def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
         status=tasks.ContentStatus.DRAFT,
         title=title,
         body=body,
-        image_url="https://storage.googleapis.com/reputation/content.png",
+        image_url=f"gs://reputation-images/content/{image_hash}-content.png",
+        image_content_hash=image_hash,
+        image_subject_hash=tasks.image_subject_hash(SimpleNamespace(value="FAQ"), title),
+        image_policy_version=tasks.IMAGE_POLICY_VERSION,
         image_policy_verified_at=datetime.now(),
         meta_description="진료 전 확인할 점을 정리했습니다.",
         faq_question="진료 전에 무엇을 확인해야 하나요?",

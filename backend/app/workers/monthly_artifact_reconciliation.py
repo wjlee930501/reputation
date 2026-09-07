@@ -37,6 +37,8 @@ class _RunSummary(BaseModel):
     milestones: list[str] | None = None
     report_id: str | None = None
     report_version: int | None = None
+    measurement_quality: str | None = None
+    observation_adequacy: dict[str, object] | None = None
     supersedes_report_id: str | None = None
 
 

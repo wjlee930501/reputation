@@ -52,15 +52,15 @@ export function reportSummaryCounts(reports: readonly DeliveryContract[]): {
 /**
  * 목록 행과 요약 카드가 같은 말을 하도록 상태 문구를 한곳에서 만든다.
  *
- * 초기 진단(V0)은 전달 기록을 남기지 않으므로 월간의 "전달 전 검수 가능"으로 부르면
+ * 초기 진단(V0)은 전달 기록을 남기지 않으므로 월간의 "고객 전달 전 검수 가능"으로 부르면
  * 있지도 않은 전달 단계를 가리킨다. 준비 완료 사실만 말한다.
  */
 export function reportStatusLabel(report: DeliveryContract): string {
   if (!isDeliveryTracked(report)) {
     return report.deliveryReady ? '원장 보고 자료 준비 완료' : '조치 필요'
   }
-  if (isEffectivelyDelivered(report)) return '전달 기록 있음'
-  return report.deliveryReady ? '전달 전 검수 가능' : '조치 필요'
+  if (isEffectivelyDelivered(report)) return '고객 전달 기록 있음'
+  return report.deliveryReady ? '고객 전달 전 검수 가능' : '조치 필요'
 }
 
 /** 상태 행에 문제·영향·다음 행동 설명을 붙여야 하는지. */
@@ -117,19 +117,19 @@ export function getDoctorDownload(
 }
 
 export function getInternalReportLabel(hasLink: boolean, hasPdf: boolean): string {
-  if (hasLink) return '내부 검수용 리포트 열기 · 원장 전달 금지'
+  if (hasLink) return '내부 검수용 보고서 열기 · 원장 전달 금지'
   if (hasPdf) return '내부 검수용 링크 준비 중 · 원장 전달 금지'
-  return '내부 검수용 리포트 생성 중 · 원장 전달 금지'
+  return '내부 검수용 보고서 생성 중 · 원장 전달 금지'
 }
 
 export function deliveryEventLabel(value: string): string {
   const labels: Record<string, string> = {
-    DELIVERED: '최초 전달 기록',
-    CORRECTED: '전달 정보 수정 기록',
-    RESCINDED: '전달 기록 무효 처리',
-    REDELIVERED: '다시 전달한 기록',
+    DELIVERED: '최초 고객 전달 기록',
+    CORRECTED: '고객 전달 정보 수정 기록',
+    RESCINDED: '고객 전달 기록 무효 처리',
+    REDELIVERED: '고객에게 다시 전달한 기록',
   }
-  return labels[value] ?? '전달 이력 확인 필요'
+  return labels[value] ?? '고객 전달 이력 확인 필요'
 }
 
 export function deliveryConflict(detail: unknown): DeliveryIssue {
@@ -141,10 +141,10 @@ export function deliveryConflict(detail: unknown): DeliveryIssue {
   const serverProblem = blockers[0]
   if (code === 'already_delivered') {
     return {
-      title: '이미 전달 기록이 있습니다',
-      problem: '다른 화면에서 이 리포트의 전달 기록을 먼저 남겼습니다.',
-      customerImpact: '같은 전달을 두 번 기록하면 고객 보고 이력이 부정확해집니다.',
-      nextAction: '최신 상태를 다시 불러와 전달 이력을 확인해 주세요.',
+      title: '이미 고객 전달 기록이 있습니다',
+      problem: '다른 화면에서 이 보고서의 고객 전달 기록을 먼저 남겼습니다.',
+      customerImpact: '같은 고객 전달을 두 번 기록하면 고객 보고 이력이 부정확해집니다.',
+      nextAction: '최신 상태를 다시 불러와 고객 전달 이력을 확인해 주세요.',
       action: 'refresh',
     }
   }
@@ -161,8 +161,8 @@ export function deliveryConflict(detail: unknown): DeliveryIssue {
     return {
       title: '최신 병원 자료 또는 측정 확인이 필요합니다',
       problem: serverProblem ?? '전달 직전 확인에서 필수 자료가 준비되지 않은 상태로 바뀌었습니다.',
-      customerImpact: '현재 리포트는 원장님께 전달할 수 없습니다.',
-      nextAction: '운영 센터에서 차단 사유를 해결한 뒤 최신 리포트를 다시 확인해 주세요.',
+      customerImpact: '현재 보고서는 원장님께 전달할 수 없습니다.',
+      nextAction: '운영 센터에서 차단 사유를 해결한 뒤 최신 보고서를 다시 확인해 주세요.',
       action: 'operations',
     }
   }
@@ -186,9 +186,9 @@ export function deliveryConflict(detail: unknown): DeliveryIssue {
 
 export function deliveryDeveloperNote(hospitalId: string, reportId: string, periodLabel: string): string {
   return [
-    '월간 리포트 전달 기록 확인 요청',
+    '월간 보고서 전달 기록 확인 요청',
     `병원 ID: ${hospitalId}`,
-    `리포트 ID: ${reportId}`,
+    `보고서 ID: ${reportId}`,
     `대상 기간: ${periodLabel}`,
     `확인 시각: ${new Date().toISOString()}`,
   ].join('\n')
@@ -196,7 +196,7 @@ export function deliveryDeveloperNote(hospitalId: string, reportId: string, peri
 
 export function reportListDeveloperNote(hospitalId: string, checkedAt = new Date()): string {
   return [
-    '월간 리포트 목록 확인 요청',
+    '월간 보고서 목록 확인 요청',
     `병원 ID: ${hospitalId}`,
     `확인 시각: ${checkedAt.toISOString()}`,
   ].join('\n')

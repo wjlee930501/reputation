@@ -396,6 +396,25 @@ def build_monthly_sov(
     mentioned_attempts, attempts_used = _attempt_counts(headline_cells, "LOCAL")
     interval = wilson_interval(mentioned_attempts, attempts_used)
     scored = _scored_cells(headline_cells, "LOCAL")
+    slotted = tuple(cell for cell in cells if cell.slot_lineage == "SLOTTED")
+    planned_slots = sum(cell.planned_repeat_count for cell in slotted)
+    confirmed_slots = sum(cell.confirmed_slot_count for cell in slotted)
+    ambiguous_slots = sum(cell.ambiguous_slot_count for cell in slotted)
+    pending_slots = sum(cell.pending_slot_count for cell in slotted)
+    answer_failed_slots = sum(cell.answer_failed_slot_count for cell in slotted)
+    judgment_failed_slots = sum(cell.judgment_failed_slot_count for cell in slotted)
+    if len(slotted) != len(cells):
+        adequacy_status = "LEGACY_UNKNOWN"
+        adequacy_lineage = "MIXED" if slotted else "LEGACY_UNKNOWN"
+    elif planned_slots and confirmed_slots == planned_slots:
+        adequacy_status = "COMPLETE"
+        adequacy_lineage = "SLOTTED"
+    elif confirmed_slots:
+        adequacy_status = "LIMITED"
+        adequacy_lineage = "SLOTTED"
+    else:
+        adequacy_status = "UNAVAILABLE"
+        adequacy_lineage = "SLOTTED"
     return MonthlySovSummary(
         sov_pct=headline_rate,
         sov_pct_all_cells=all_cells_rate,
@@ -436,6 +455,17 @@ def build_monthly_sov(
             info=_segment(cells, platforms, "INFO"),
         ),
         comparison=comparison,
+        observation_adequacy={
+            "status": adequacy_status,
+            "lineage": adequacy_lineage,
+            "planned_slots": planned_slots,
+            "received_answers": sum(cell.received_answer_count for cell in slotted),
+            "confirmed_slots": confirmed_slots,
+            "ambiguous_slots": ambiguous_slots,
+            "answer_failed_slots": answer_failed_slots,
+            "judgment_failed_slots": judgment_failed_slots,
+            "pending_slots": pending_slots,
+        },
         comparison_cell_keys=frozenset(
             (cell.query_key, cell.platform) for cell in result.matched_current_cells
         ),

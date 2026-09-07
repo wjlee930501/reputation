@@ -18,7 +18,7 @@ test('a run with both outcomes says the successful measurements still count', ()
 
   assert.match(text, /실패율 6\.7%/)
   assert.match(text, /실패 10건만 분모에서 빠지고/)
-  assert.match(text, /성공 140건은 AI 언급률에 반영됩니다/)
+  assert.match(text, /성공 140건은 병원 언급률에 반영됩니다/)
 })
 
 test('a fully successful run never claims anything was excluded', () => {
@@ -29,7 +29,7 @@ test('a fully successful run never claims anything was excluded', () => {
     failure_rate: 0,
   })
 
-  assert.match(text, /성공 150건이 모두 AI 언급률에 반영됩니다/)
+  assert.match(text, /성공 150건이 모두 병원 언급률에 반영됩니다/)
   assert.doesNotMatch(text, /제외/)
 })
 
@@ -41,7 +41,7 @@ test('only a run without a single success is called unreflected', () => {
     failure_rate: 100,
   })
 
-  assert.match(text, /확정된 성공 측정이 없어 이 실행은 AI 언급률에 반영되지 않습니다/)
+  assert.match(text, /확정된 성공 측정이 없어 이 실행은 병원 언급률에 반영되지 않습니다/)
 })
 
 test('ambiguous SUCCESS rows are excluded from the absolute reflected count', () => {
@@ -54,7 +54,7 @@ test('ambiguous SUCCESS rows are excluded from the absolute reflected count', ()
   })
 
   assert.match(text, /판정 미확정 12건은 분모에서 빠지고/)
-  assert.match(text, /확정 성공 128건은 AI 언급률에 반영됩니다/)
+  assert.match(text, /확정 성공 128건은 병원 언급률에 반영됩니다/)
   assert.doesNotMatch(text, /성공 140건.*반영됩니다/)
 })
 
@@ -107,7 +107,7 @@ test('the dashboard never tells the operator a whole run leaves the mention rate
 })
 
 test('the shared copy names both excluded cases, not just failures', () => {
-  assert.match(MENTION_RATE_EXCLUSION_COPY, /성공한 측정은 AI 언급률에 그대로 반영/)
+  assert.match(MENTION_RATE_EXCLUSION_COPY, /성공한 측정은 병원 언급률에 그대로 반영/)
   assert.match(MENTION_RATE_EXCLUSION_COPY, /판정이 확정되지 않은 측정/)
-  assert.match(MENTION_RATE_FAILURE_ALERT_COPY, /성공한 측정은 언급률에 반영/)
+  assert.match(MENTION_RATE_FAILURE_ALERT_COPY, /성공한 측정은 병원 언급률에 반영/)
 })

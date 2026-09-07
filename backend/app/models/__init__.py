@@ -42,6 +42,7 @@ from app.models.lead_diagnosis import (
 )
 from app.models.monthly_control import (
     HospitalServiceInterval,
+    MeasurementObservationSlot,
     MonthlyDeliveryEvent,
     MonthlyMeasurementAttempt,
     MonthlyMeasurementCell,
@@ -67,7 +68,12 @@ from app.models.sov import (
     QueryMatrix,
     SovRecord,
 )
-from app.models.usage import HospitalUsageEvent, HospitalUsageKind
+from app.models.usage import (
+    HospitalUsageEvent,
+    HospitalUsageKind,
+    ProviderCacheStatus,
+    ProviderUsageEvent,
+)
 
 __all__ = [
     "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
@@ -80,6 +86,7 @@ __all__ = [
     "MeasurementRun", "QueryMatrix", "SovRecord",
     "MonthlyReport",
     "MonthlyMeasurementManifest", "MonthlyMeasurementCell", "MonthlyMeasurementAttempt",
+    "MeasurementObservationSlot",
     "HospitalServiceInterval", "MonthlyReportArtifact", "MonthlyDeliveryEvent",
     "Incident", "IncidentState", "IncidentSeverity",
     "OperationRun", "OperationRunState",
@@ -89,5 +96,5 @@ __all__ = [
     "LeadReportToken", "LeadReportArtifact", "LeadDelivery",
     "ExecutionStatus", "ReportStatus", "DeliveryStatus", "AnswerSource", "MentionVerdict",
     "REPORTABLE_EXECUTION_STATUSES",
-    "HospitalUsageEvent", "HospitalUsageKind",
+    "HospitalUsageEvent", "HospitalUsageKind", "ProviderUsageEvent", "ProviderCacheStatus",
 ]
