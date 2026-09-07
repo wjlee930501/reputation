@@ -1,5 +1,7 @@
 # Re:putation 종합 아키텍처 리뷰 — 배선·규칙·연결성·고아 요소·비용 효율
 
+> 문서 분류 갱신: 2026-09-07 · 분류 버전 1.0. 이 문서는 작성 당시의 계획·검수 기록으로 보존한다. 현재 구현·운영 안내는 [문서 인덱스](../README.md)와 [현재 시스템 구조](../architecture/system-map.md)를 따른다. 아래 과거 본문을 현재 구현 완료 또는 미해결 결함의 증거로 단독 사용하지 않는다.
+
 - 기준 커밋: `5522af7` (2026-09-01), `REDBEAT_SCHEDULE_VERSION = 2026-08-30.1`
 - 범위: `backend/app` 전체(API·모델·서비스·워커), `admin/`, `site/`, `alembic/`, `scripts/`, `terraform/`, `docker-compose.yml`, `CLAUDE.md`·`docs/`
 - 방법: 영역별 전수 코드 읽기 6트랙 + 기계 검사(ruff F401/F811/F841, vulture, `settings.*` 참조 대조, 라우트 트리 실제 import 순회 144개, 프론트 API 경로 리터럴 ↔ FastAPI 라우트 교차 대조, 모듈 import 그래프, Alembic 체인). 모든 항목은 파일:행 근거를 가진다.

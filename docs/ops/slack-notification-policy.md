@@ -1,5 +1,9 @@
 # Re:putation Slack 알림 정책
 
+문서 버전: **2.0** · 갱신일: **2026-09-07 (Asia/Seoul)**
+구현 기준: **`345a6420998bcba21169519cf5ad77600cbfa94b`**
+범위: 현재 알림 정책과 코드 경계. 실제 수신 채널은 webhook 설정으로 결정되며 이번 구조 조사에서 Slack 메시지를 보내지 않았다.
+
 운영 채널은 `#mkt-reputation`이며, `SLACK_WEBHOOK_URL`이 연결된 채널이 실제 수신처다.
 Incoming Webhook은 코드에서 채널을 바꾸지 못하므로 배포 전 웹훅이 이 채널에 연결됐는지
 Slack 앱 설정에서 확인한다.
@@ -40,7 +44,7 @@ Slack은 로그 저장소가 아니라 사람이 행동을 결정하는 화면�
 | 매일 08:00 발행 | 차단 요약 최대 1건 | 모든 예약 복구 뒤에도 공개를 막는 항목만 묶는다. 정상 자동 발행은 알리지 않는다 |
 | 매주 네이버 자산 수집 | 실패가 있을 때 최대 1건 | 실패 병원과 건수를 묶는다. 정상 수집·자료 처리·Essence 재검토·승인은 로그에만 남긴다 |
 | 주간·월간 AI 측정 | 정상 시작·완료 0건 | 자동 재시도 뒤에도 남은 측정 실패는 인시던트 정책에 따라 에피소드별로 알리고, 정상 측정은 DB·로그에만 남긴다 |
-| 매월 1~7일 09:00 월간 리포트 복구 | 1건 | 당일 자동 복구 뒤에도 남은 미생성·측정 미완료 병원 수와 대상 요약 |
+| 매월 1~7일 09:00 월간 리포트 공백 요약 | 필요 시 1건 | 남은 미생성·측정 미완료 병원 수와 대상 요약. 이 작업 자체는 생성·측정 복구를 실행하지 않는다 |
 | 매 15분 온보딩·월간 마일스톤 | 이벤트 창당 1건 | 인계 지연/수락, 활성화 준비/완료, 월간 차단/산출물 검증 대기/고객 전달 준비, 전달 정정·철회·재전달 |
 
 요약 본문은 최대 12~15개 항목만 보여주고 나머지는 “그 외 N개”로 표시한다. 전체 상세는
@@ -75,8 +79,9 @@ Admin에서 확인·재시도할 수 있어야 한다.
 자동 재시도가 스스로 복구한 인시던트는 시스템이 `ACKNOWLEDGED`로 종료한다
 (`acknowledged_by_id`가 비어 있으면 시스템 종료, 채워져 있으면 사람이 확인한 것이다).
 
-**OPEN과 RECOVERED는 쌍으로만 억제한다.** 실제로 Slack에 나간 "운영 확인 필요"는 반드시
-그 복구 메시지로 닫힌다. 억제 판단의 유일한 근거는 시간이 아니라 **그 인시던트의
+**정책 목표는 OPEN과 RECOVERED를 쌍으로 관리하는 것이다.** 실제 공통 복구 구현은
+`notify=True`이며 OPEN 공지가 outbox에 등록된 이력이 있을 때 복구 공지를 등록한다.
+`notify=False`인 복구 경로도 있으므로 모든 복구가 반드시 Slack 메시지를 만든다고 해석하지 않는다. 억제 판단의 유일한 근거는 시간이 아니라 **그 인시던트의
 `INCIDENT_OPEN` 공지가 outbox에 들어갔는지**다(`services/dependency_incident_helpers.py`의
 `open_notice_exists`). 파이프라인이 이미 자기 인시던트를 낸 경우나 `notify=False`로 연
 경우처럼 OPEN이 나간 적 없는 건은 복구도 Slack 없이 DB 인시던트·감사 로그로만 남는다.
@@ -125,7 +130,7 @@ AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, 
 - 콘텐츠 자동 발행 및 수동 복구 발행 성공. 현재 두 발행 경로 모두 `CONTENT_PUBLISHED`
   Slack outbox를 만들지 않으며, 공개 상태·감사 로그·재검증 결과가 실행 증적이다.
 - `INCIDENT_OPEN` 공지가 나간 적 없는 인시던트의 복구 사실 (위 “자동 복구는 사람의 확인을
-  요구하지 않는다” 참고 — OPEN이 나갔다면 복구 메시지는 반드시 보낸다)
+  요구하지 않는다” 참고 — 복구 알림이 허용된 경로에서 OPEN 등록 이력이 있으면 복구 알림을 등록한다)
 
 0건 파기라도 작업 로그와 모니터링 지표에는 남는다. Slack에서 없앤 것이지 실행 기록을
 없앤 것이 아니다.
@@ -144,3 +149,7 @@ AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, 
 
 자동 테스트와 QA는 MockTransport로 payload·실패·재시도만 검증한다. 실제 Slack 채널에는 테스트
 메시지를 게시하지 않고, 필요 시 읽기 전용 검색으로 QA 게시물 0건을 확인한다.
+
+## 구현 근거
+
+[알림 facade](../../backend/app/services/notification_outbox.py), [인시던트 복구](../../backend/app/services/ops_incident_alerts.py), [전송](../../backend/app/services/notification_transport.py), [발행 차단](../../backend/app/workers/content_publication_block_control.py), [월간 공백 요약](../../backend/app/services/monthly_report_gap_notifications.py), [Beat 스케줄](../../backend/app/core/celery_app.py). 현재 코드와 정책이 다른 세부 경로는 [시스템 구조](../architecture/system-map.md)에 함께 기록한다.

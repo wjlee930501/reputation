@@ -1,5 +1,7 @@
 # Hybrid Vercel + GCP + Supabase Deployment Prep
 
+> 문서 분류 갱신: 2026-09-07 · 분류 버전 1.0. 이 문서는 작성 당시의 계획·검수 기록으로 보존한다. 현재 구현·운영 안내는 [문서 인덱스](../README.md)와 [현재 시스템 구조](../architecture/system-map.md)를 따른다. 아래 과거 본문을 현재 구현 완료 또는 미해결 결함의 증거로 단독 사용하지 않는다.
+
 Decision for the 2026-06-20 launch: use Vercel for the Admin console and hospital-facing web app, GCP Cloud Run for the backend API plus Celery worker/beat, Supabase Postgres for the database, and existing GCS/Vertex asset flows. No marketing landing project/domain is part of this launch. The site repository may still contain `/landing` code, but external launch domains should attach only the hospital/platform surfaces needed for onboarding.
 
 This is the optimal launch path for the current codebase: Vercel is efficient for Next.js frontends, but the backend has persistent Celery worker/beat processes, Redis-backed rate limits and schedules, and GCS/Vertex storage assumptions. Cloud Run fits those runtime needs without a storage/worker rewrite. Supabase remains useful as the database of record and avoids standing up Cloud SQL for launch.
