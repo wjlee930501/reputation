@@ -663,7 +663,7 @@ async def test_trigger_v0_rejects_analyzing_in_progress(monkeypatch):
     hospital = _hospital(v0_report_done=False, status=HospitalStatus.ANALYZING)
     db = FakeDB(hospital=hospital)
     queued = []
-    active = SimpleNamespace(id=uuid.uuid4(), state=SimpleNamespace(value="RUNNING"))
+    active = OperationRun(id=uuid.uuid4(), state="RUNNING")
 
     async def _alive(_db, _hospital_id):
         return True
@@ -685,4 +685,5 @@ async def test_trigger_v0_rejects_analyzing_in_progress(monkeypatch):
     assert exc.value.status_code == 409
     assert "이미 초기 진단을 만들고 있습니다" in exc.value.detail["message"]
     assert exc.value.detail["operation_run_id"] == str(active.id)
+    assert exc.value.detail["operation_state"] == "RUNNING"
     assert queued == []
