@@ -2,12 +2,13 @@
 
 병원의 공식 자료를 근거가 있는 콘텐츠로 바꾸고, AI 답변의 병원 언급을 측정해 콘텐츠 보완과 월간 보고로 연결하는 MotionLabs의 관리형 서비스다. 운영 목표는 **최소한의 사람 개입, 자동 복구, 필요한 알림만 전달**이다.
 
-문서 버전: **2.0** · 갱신일: **2026-09-07 (Asia/Seoul)**
+문서 버전: **2.1** · 갱신일: **2026-09-07 (Asia/Seoul)**
 구현 기준: **`345a6420998bcba21169519cf5ad77600cbfa94b`**
 
 ## 먼저 읽을 문서
 
 - [현재 시스템 구조](docs/architecture/system-map.md): 데이터·생성·발행·측정·리포트·복구의 전체 연결과 확인된 한계
+- [목적·자율 운영·비용 효율 검수](docs/reviews/2026-09-07-purpose-autonomy-efficiency-audit.md): 코드 근거와 개선 순서, 필요한 사람 역할, 토큰·복구 최적화의 합격 기준
 - [개발 안내](CLAUDE.md): 변경 시 함께 지켜야 할 계약과 검증 방법
 - [문서 인덱스](docs/README.md): 현재 안내와 과거 계획·검수 기록 구분
 - [마케터 운영](docs/ops/marketer-operations-runbook.md), [알림 정책](docs/ops/slack-notification-policy.md), [배포·헬스체크](docs/ops/deployment-runbook.md)
