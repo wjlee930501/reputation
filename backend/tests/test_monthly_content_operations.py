@@ -162,3 +162,21 @@ def test_prior_month_supplements_do_not_hide_current_month_shortfall():
     assert snapshot.payload['published_count'] == 13
     assert snapshot.payload['contracted_published_count'] == 11
     assert snapshot.payload['shortfall_count'] == 1
+
+
+def test_late_recovery_fulfills_contract_without_rewriting_calendar_publications():
+    snapshot = build_monthly_content_operations_snapshot(
+        plan="PLAN_12",
+        scheduled_items=[_item(sequence_no=index + 1) for index in range(12)],
+        published_items=[_item(sequence_no=index + 1) for index in range(7)],
+        cutoff_at=datetime(2026, 9, 3, tzinfo=timezone.utc),
+        contract_published_count=12,
+        early_publication_count=1,
+        late_recovery_count=4,
+    )
+
+    assert snapshot.payload["published_count"] == 7
+    assert snapshot.payload["contracted_published_count"] == 12
+    assert snapshot.payload["shortfall_count"] == 0
+    assert snapshot.payload["early_publication_count"] == 1
+    assert snapshot.payload["late_recovery_count"] == 4

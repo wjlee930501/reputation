@@ -26,6 +26,7 @@ from app.services.content_engine import (  # noqa: E402
     _normalize_references,
     _parse_json_response,
     _validate_body_length,
+    _validate_generated_result,
     _validate_geo,
     _validate_unverified_price_claims,
 )
@@ -321,9 +322,86 @@ async def test_generate_content_heals_missing_approved_director_name_after_retri
     assert provider_calls == 3
     assert "장현경" not in body_without_director
     assert saved["body"] == (
-        f"{body_without_director.rstrip()}\n\n본원 장현경 원장이 진료를 담당합니다."
+        f"{body_without_director.rstrip()}\n\n강심장내과의원의 원장은 장현경입니다."
     )
     _validate_geo(saved, hospital, ContentType.NOTICE)
+
+
+@pytest.mark.parametrize("content_type", list(ContentType))
+def test_all_content_types_enforce_their_faq_field_contract(content_type):
+    hospital = SimpleNamespace(
+        name="테스트병원",
+        director_name="김원장",
+        region=["강남"],
+        keywords=["복통"],
+    )
+    result = {
+        "title": "복통 진료 전 확인할 점",
+        "body": (
+            "테스트병원 김원장은 강남에서 복통을 설명합니다.\n"
+            "## 복통 확인\n- 증상을 기록합니다.\n"
+            "## 진료 준비\n- 복용약을 준비합니다."
+        ),
+        "meta_description": "복통 진료 전 확인할 내용을 정리합니다.",
+        "references": (
+            []
+            if content_type == ContentType.NOTICE
+            else [{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}]
+        ),
+        "faq_question": "복통은 언제 진료받아야 하나요?",
+        "faq_answer_summary": "증상이 지속되거나 심해지면 진료로 원인을 확인합니다.",
+    }
+
+    saved = _validate_generated_result(result, hospital, content_type, None)
+
+    if content_type == ContentType.FAQ:
+        assert saved["faq_question"].endswith("?")
+        assert saved["faq_answer_summary"]
+    else:
+        assert saved["faq_question"] is None
+        assert saved["faq_answer_summary"] is None
+
+
+@pytest.mark.parametrize("missing_field", ["faq_question", "faq_answer_summary"])
+def test_faq_generation_rejects_missing_json_ld_field(missing_field):
+    hospital = SimpleNamespace(
+        name="테스트병원",
+        director_name="김원장",
+        region=["강남"],
+        keywords=["복통"],
+    )
+    result = {
+        "title": "복통 질문",
+        "body": "테스트병원 김원장은 강남에서 설명합니다.\n## 확인\n- 항목\n## 준비\n- 항목",
+        "meta_description": "설명",
+        "references": [{"title": "질병관리청", "url": "https://www.kdca.go.kr/x"}],
+        "faq_question": "복통은 언제 진료받아야 하나요?",
+        "faq_answer_summary": "증상이 지속되면 진료받습니다.",
+    }
+    result[missing_field] = None
+
+    with pytest.raises(ValueError, match="FAQ output requires"):
+        _validate_generated_result(result, hospital, ContentType.FAQ, None)
+
+
+def test_generation_rejects_forbidden_expression_in_reference_title():
+    hospital = SimpleNamespace(
+        name="테스트병원",
+        director_name="김원장",
+        region=["강남"],
+        keywords=["복통"],
+    )
+    result = {
+        "title": "복통 안내",
+        "body": "테스트병원 김원장은 강남에서 설명합니다.\n## 확인\n- 항목\n## 준비\n- 항목",
+        "meta_description": "설명",
+        "references": [{"title": "복통 완치 안내", "url": "https://www.kdca.go.kr/x"}],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+
+    with pytest.raises(ValueError, match="Forbidden medical expressions"):
+        _validate_generated_result(result, hospital, ContentType.DISEASE, None)
 
 
 
@@ -578,7 +656,7 @@ async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkey
         "references": [
             {"title": "대한정형외과학회", "url": "https://www.koa.or.kr"},
         ],
-        "faq_question": focus,
+        "faq_question": f"{focus}?",
         "faq_answer_summary": "통증 위치와 양상, 진단 과정과 치료 항목을 함께 비교합니다.",
     }
     brief = {

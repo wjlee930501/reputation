@@ -47,7 +47,11 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
     schedule_id = uuid.uuid4()
     content_id = uuid.uuid4()
     slug = f"ops-qa-t15-{hospital_id.hex[:10]}"
-    published_at = datetime(2026, 8, 10, 0, 0, tzinfo=UTC)
+    # The dispatcher intentionally claims every due outbox row. Keep this test's
+    # clock in a private historical window so an unrelated pending row left by a
+    # preceding failed integration test cannot be delivered through this mock.
+    published_at = datetime(2000, 8, 10, 0, 0, tzinfo=UTC)
+    first_attempt_at = published_at + timedelta(minutes=1)
 
     try:
         async with sessions() as db:
@@ -64,7 +68,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 hospital_id=hospital_id,
                 plan="PLAN_12",
                 publish_days=[0, 2, 4],
-                active_from=date(2026, 8, 1),
+                active_from=date(2000, 8, 1),
             )
             item = ContentItem(
                 id=content_id,
@@ -75,7 +79,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 total_count=12,
                 title="진료 전 확인할 점",
                 body="증상에 따라 진료 방향을 설명합니다.",
-                scheduled_date=date(2026, 8, 10),
+                scheduled_date=date(2000, 8, 10),
                 status=ContentStatus.PUBLISHED,
                 published_at=published_at,
                 published_by="SYSTEM_MANUAL_RECOVERY",
@@ -83,7 +87,9 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
             db.add_all((hospital, schedule, item))
             await db.flush()
             outbox = await enqueue_notification(
-                db, build_publish_notification_intent(item, hospital)
+                db,
+                build_publish_notification_intent(item, hospital),
+                now=first_attempt_at,
             )
             outbox_id = outbox.id
             await db.commit()
@@ -101,6 +107,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 client,
                 webhook_url="https://hooks.slack.com/services/test/task15",
                 worker_id="task15-fail",
+                now=first_attempt_at,
                 throttle=_no_pause,
             )
             second_retry = await dispatch_notification_batch(
@@ -108,7 +115,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 client,
                 webhook_url="https://hooks.slack.com/services/test/task15",
                 worker_id="task15-fail-2",
-                now=datetime.now(UTC) + timedelta(minutes=2),
+                now=first_attempt_at + timedelta(minutes=2),
                 throttle=_no_pause,
             )
             third = await dispatch_notification_batch(
@@ -116,7 +123,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 client,
                 webhook_url="https://hooks.slack.com/services/test/task15",
                 worker_id="task15-fail-3",
-                now=datetime.now(UTC) + timedelta(minutes=5),
+                now=first_attempt_at + timedelta(minutes=5),
                 throttle=_no_pause,
             )
         assert (first.retried, second_retry.retried, third.failed) == (1, 1, 1)
@@ -135,6 +142,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 expected_version=failed.version,
                 actor="ae-operator",
                 reason="Slack 전송 실패 확인 후 수동 재시도",
+                now=first_attempt_at + timedelta(minutes=10),
             )
             assert isinstance(retried, NotificationOutbox)
             await db.commit()
@@ -168,7 +176,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                     payload={"text": "다음 알림도 처리"},
                     fallback_text="다음 알림도 처리",
                     max_attempts=1,
-                    next_attempt_at=datetime.now(UTC),
+                    next_attempt_at=first_attempt_at + timedelta(minutes=10),
                 )
             )
             await db.commit()
@@ -185,6 +193,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 client,
                 webhook_url="https://hooks.slack.com/services/test/task15",
                 worker_id="task15-success",
+                now=first_attempt_at + timedelta(minutes=10),
                 throttle=_no_pause,
             )
         assert second.claimed == 2
@@ -216,7 +225,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 attempt_count=1,
                 max_attempts=1,
                 next_attempt_at=None,
-                sent_at=datetime.now(UTC),
+                sent_at=first_attempt_at + timedelta(minutes=10),
             )
             db.add(malformed)
             await db.commit()
@@ -280,6 +289,7 @@ async def test_failed_manual_publish_notification_recovers_without_republish(
                 client,
                 webhook_url="https://hooks.slack.com/services/test/task15",
                 worker_id="task15-no-replay",
+                now=first_attempt_at + timedelta(minutes=20),
                 throttle=_no_pause,
             )
         assert replay.claimed == 0

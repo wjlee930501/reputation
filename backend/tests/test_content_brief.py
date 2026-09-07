@@ -222,6 +222,10 @@ def test_serialize_item_blocks_publish_without_references():
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[],
+        faq_question="치질 수술 전 무엇을 확인해야 하나요?",
+        faq_answer_summary="증상과 회복 계획을 진료에서 함께 확인합니다.",
+        image_url="https://storage.googleapis.com/reputation/content.png",
+        image_policy_verified_at=datetime.now(timezone.utc),
     )
 
     serialized = content_api._serialize_item(item, full=True)
@@ -238,6 +242,10 @@ def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[{"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"}],
+        faq_question="치질 수술 전 무엇을 확인해야 하나요?",
+        faq_answer_summary="증상과 회복 계획을 진료에서 함께 확인합니다.",
+        image_url="https://storage.googleapis.com/reputation/content.png",
+        image_policy_verified_at=datetime.now(timezone.utc),
     )
 
     serialized = content_api._serialize_item(item, full=True)
@@ -261,6 +269,10 @@ async def test_publish_content_rejects_generated_content_without_references(monk
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[],
+        faq_question="치질 수술 전에 무엇을 확인해야 하나요?",
+        faq_answer_summary="환자 상태를 확인한 뒤 진료 방향을 정합니다.",
+        image_url="gs://bucket/content.png",
+        image_policy_verified_at=datetime.now(timezone.utc),
     )
 
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
@@ -310,6 +322,10 @@ async def test_publish_content_rejects_non_whitelisted_references(monkeypatch):
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[{"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"}],
+        faq_question="치질 수술 전에 무엇을 확인해야 하나요?",
+        faq_answer_summary="환자 상태를 확인한 뒤 진료 방향을 정합니다.",
+        image_url="gs://bucket/content.png",
+        image_policy_verified_at=datetime.now(timezone.utc),
     )
 
     async def fake_get_content(db, requested_item_id, requested_hospital_id):

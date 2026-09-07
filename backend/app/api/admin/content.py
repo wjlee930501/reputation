@@ -520,7 +520,28 @@ async def update_content(
                     "submitted_count": len(raw_refs),
                 },
             )
+        reference_title_violations = check_forbidden_content_fields(
+            {
+                "reference_titles": " ".join(
+                    reference["title"] for reference in normalized_refs
+                )
+            },
+            ("reference_titles",),
+        )
+        if reference_title_violations:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "참고 자료 제목에 의료광고 금지 표현이 포함되어 있습니다.",
+                    "violations": reference_title_violations,
+                },
+            )
         item.references_list = normalized_refs
+        if was_published and not has_required_references(item):
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "공개된 의료 콘텐츠의 참고 자료는 비울 수 없습니다."},
+            )
 
     body_changed = False
     if body.title is not None:
@@ -738,8 +759,11 @@ async def publish_content(
     assessment = assess_content_publication(item, None)
     if assessment.code not in {
         "CONTENT_NOT_GENERATED",
+        "FAQ_FIELDS_MISSING",
         "MISSING_REFERENCES",
         "FORBIDDEN_EXPRESSION",
+        "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
     }:
         philosophy = await _get_approved_philosophy(db, hospital_id)
         assessment = assess_content_publication(item, philosophy)

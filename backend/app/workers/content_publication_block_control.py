@@ -14,6 +14,8 @@ from app.models.hospital import Hospital
 from app.models.operations import JSONValue, OperationRun, OperationRunState
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
 
+_IMAGE_REGENERATION_CODES = frozenset({"CONTENT_IMAGE_NOT_READY", "CONTENT_IMAGE_NOT_VERIFIED"})
+
 
 def ensure_publication_block_run(
     db: Session,
@@ -25,7 +27,7 @@ def ensure_publication_block_run(
 ) -> OperationRun:
     """Return one retryable failed run for the current blocked content revision."""
     operation_type = (
-        "REGENERATE_CONTENT_IMAGE" if code == "CONTENT_IMAGE_NOT_READY" else "REGENERATE_CONTENT"
+        "REGENERATE_CONTENT_IMAGE" if code in _IMAGE_REGENERATION_CODES else "REGENERATE_CONTENT"
     )
     idempotency_key = _idempotency_key(item, code)
     existing = db.execute(
@@ -79,6 +81,10 @@ def _idempotency_key(item: ContentItem, code: str) -> str:
         code,
         str(getattr(item, "scheduled_date", "")),
         revision.isoformat() if isinstance(revision, datetime) else "unversioned",
+        # A source refresh first blocks with no current Essence, then may reveal a
+        # real alignment failure against the newly approved snapshot.  Keep those
+        # as separate retry episodes even though the stored body did not change.
+        str(getattr(item, "content_philosophy_id", None) or "missing"),
         bool(getattr(item, "image_url", None)),
     )
     digest = hashlib.sha256(repr(material).encode()).hexdigest()[:24]

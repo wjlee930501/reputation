@@ -184,8 +184,10 @@ def build_generation_blocked_digest_intent(
         raise NotificationPayloadError("GENERATION_BLOCKED_DIGEST_ITEMS_REQUIRED")
     entries = [
         (
+            str(outcome.get("hospital_id") or ""),
             str(outcome.get("hospital_name") or "이름 미확인 병원"),
             str(outcome.get("content_id") or ""),
+            str(outcome.get("scheduled_date") or ""),
             str(outcome.get("code") or "UNKNOWN"),
             str(outcome.get("cause") or "자동 생성 작업이 완료되지 않았습니다."),
             _generation_blocked_display_title(outcome.get("title"), outcome.get("code")),
@@ -195,19 +197,37 @@ def build_generation_blocked_digest_intent(
     ]
     identity = sorted(
         {
-            f"{content_id}:{code}:{attempt_fingerprint}"
-            for _, content_id, code, _, _, attempt_fingerprint in entries
+            f"{hospital_id}:{content_id}:{scheduled_date}:{code}:{cause}:{attempt_fingerprint}"
+            for (
+                hospital_id,
+                _,
+                content_id,
+                scheduled_date,
+                code,
+                cause,
+                _,
+                attempt_fingerprint,
+            ) in entries
         }
     )
     digest = hashlib.sha256("\n".join(identity).encode()).hexdigest()[:32]
-    hospitals: dict[str, list[tuple[str, str, str]]] = {}
-    for hospital_name, _content_id, code, cause, title, _attempt_fingerprint in entries:
-        hospitals.setdefault(hospital_name, []).append((title, code, cause))
+    hospitals: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+    for (
+        hospital_id,
+        hospital_name,
+        _content_id,
+        _scheduled_date,
+        code,
+        cause,
+        title,
+        _attempt_fingerprint,
+    ) in entries:
+        hospitals.setdefault((hospital_id, hospital_name), []).append((title, code, cause))
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
     shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
     hidden = len(hospitals) - len(shown)
     lines = []
-    for hospital_name, items in shown:
+    for (_hospital_id, hospital_name), items in shown:
         detail = " · ".join(
             f"{_publish_safe_text(title, 60)}({_publish_safe_text(cause, 80)})"
             for title, _code, cause in items[:_DIGEST_MAX_ITEMS_PER_HOSPITAL]
@@ -215,7 +235,9 @@ def build_generation_blocked_digest_intent(
         remainder = len(items) - min(len(items), _DIGEST_MAX_ITEMS_PER_HOSPITAL)
         if remainder > 0:
             detail = f"{detail} · 그 외 {remainder}건"
-        lines.append(f"• *{_publish_safe_text(hospital_name, 100)}* 차단 {len(items)}건\n  {detail}")
+        lines.append(
+            f"• *{_publish_safe_text(hospital_name, 100)}* 차단 {len(items)}건\n  {detail}"
+        )
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}곳")
     summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
@@ -238,8 +260,8 @@ def build_generation_blocked_digest_intent(
     )
     return NotificationIntent(
         # A due slot remains the same operational state across morning batches and
-        # calendar days. Re-page only when the content/code set or a persisted
-        # generation-attempt fingerprint changes.
+        # calendar days. Re-page only when its schedule, safe cause, blocker code,
+        # tenant identity, or persisted generation-attempt fingerprint changes.
         dedupe_key=f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}v2:{digest}",
         notification_type=GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE,
         message=message,

@@ -39,6 +39,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "monthly-reports",
     "monthly-sov-measurement",
     "monthly-slot-generation",
+    "current-month-slot-reconciliation",
     "nightly-content-generation",
     "overnight-content-generation-recovery",
     "prepublish-content-generation-recovery",

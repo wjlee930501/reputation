@@ -51,7 +51,10 @@ def _content(content_type, title, *, target_id=None):
     return SimpleNamespace(content_type=content_type, title=title, query_target_id=target_id)
 
 
-def _summary(*, current=(), prior=None, contents=()):
+def _summary(
+    *, current=(), prior=None, contents=(), comparable_cell_keys=None,
+    comparison_reason=None,
+):
     return build_content_attribution_summary(
         ContentAttributionInput(
             published_contents=list(contents),
@@ -61,6 +64,8 @@ def _summary(*, current=(), prior=None, contents=()):
             sov_pct=100.0,
             prev_sov_pct=0.0,
             change_pct=100.0,
+            comparable_cell_keys=comparable_cell_keys,
+            comparison_reason=comparison_reason,
         )
     )
 
@@ -157,6 +162,52 @@ def test_counts_all_cells_before_capping_visible_rows():
 
     assert summary["new_mention_count"] == 8
     assert len(summary["new_mention_cells"]) == 5
+
+
+def test_noncomparable_month_suppresses_new_and_lost_mention_claims():
+    current = [
+        _cell("NEW", mentioned=True),
+        _cell("LOST", mentioned=False),
+    ]
+    prior = [
+        _cell("NEW", mentioned=False),
+        _cell("LOST", mentioned=True),
+    ]
+
+    summary = _summary(
+        current=current,
+        prior=prior,
+        comparable_cell_keys=frozenset(),
+        comparison_reason="ANSWER_MODEL_CHANGED",
+    )
+
+    assert summary["new_mention_count"] == 0
+    assert summary["lost_mention_count"] == 0
+    assert summary["non_comparable_count"] == 1
+    assert summary["question_rows"][0]["prior_comparable"] is False
+
+
+def test_first_measured_mention_remains_current_fact_when_comparison_is_unavailable():
+    summary = _summary(
+        current=[_cell("FIRST", mentioned=True)],
+        prior=[],
+        comparable_cell_keys=frozenset(),
+        comparison_reason="NO_MATCHED_CELLS",
+    )
+
+    assert summary["first_measured_mention_count"] == 1
+    assert summary["non_comparable_count"] == 0
+
+
+def test_explicit_noncomparable_reason_fails_closed_without_a_cell_cohort():
+    summary = _summary(
+        current=[_cell("A", mentioned=True)],
+        prior=[_cell("A", mentioned=False)],
+        comparison_reason="MEASUREMENT_POLICY_CHANGED",
+    )
+
+    assert summary["new_mention_count"] == 0
+    assert summary["non_comparable_count"] == 1
 
 
 # ── 연관 콘텐츠 연결 ──────────────────────────────────────────

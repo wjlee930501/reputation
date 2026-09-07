@@ -27,6 +27,9 @@ function normalizePlatformSiteUrl(value: string): string {
     if (isLocalHostname(url.hostname)) {
       throw new Error('NEXT_PUBLIC_SITE_URL must use a public hostname in production')
     }
+    if (!HOSTNAME_PATTERN.test(url.hostname.toLowerCase())) {
+      throw new Error('NEXT_PUBLIC_SITE_URL must use a DNS hostname in production')
+    }
   }
   return url.origin
 }
@@ -58,25 +61,55 @@ interface HospitalWithDomain {
   aeo_domain?: string | null
 }
 
+const TENANT_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
+const RESERVED_TENANT_LABELS = new Set(['www', 'admin', 'api', 'cname', 'static', 'assets'])
+
+/**
+ * 병원 자기 도메인이 없을 때 쓰는 관리형 기본 주소.
+ *
+ * 백엔드 활성화 안내와 host middleware가 이미 `{slug}.{platform host}`를 공개 주소로
+ * 사용한다. canonical만 `/{slug}` 경로형을 가리키면 같은 페이지의 robots/sitemap과
+ * canonical이 서로 다른 URL을 정본이라고 말하게 된다. 로컬 개발은 임의 서브도메인을
+ * 바로 열기 어려우므로 기존 경로형을 유지한다.
+ */
+export function platformHospitalUrl(slug: string): string {
+  const platform = new URL(platformSiteUrl())
+  const label = slug.trim().toLowerCase()
+  if (
+    !TENANT_SLUG_PATTERN.test(label) ||
+    RESERVED_TENANT_LABELS.has(label) ||
+    isLocalHostname(platform.hostname) ||
+    !HOSTNAME_PATTERN.test(platform.hostname.toLowerCase())
+  ) {
+    return `${platform.origin}/${encodeURIComponent(slug)}`
+  }
+  platform.hostname = `${label}.${platform.hostname}`
+  return platform.origin
+}
+
 /**
  * 병원 허브 페이지(canonical/OG/JSON-LD/llms.txt/sitemap)에 쓰는 canonical base.
  * - aeo_domain이 유효하면 `https://{aeo_domain}` (공개 payload에 aeo_domain이
  *   내려온다는 것 자체가 해당 도메인으로 서빙 중임을 의미한다)
- * - 없거나 무효하면 플랫폼 SITE_URL — 기존 동작 그대로.
+ * - 없거나 무효하면 slug가 있을 때 관리형 tenant 서브도메인, 없으면 플랫폼 SITE_URL.
  */
-export function canonicalBase(hospital: HospitalWithDomain | null | undefined): string {
+export function canonicalBase(
+  hospital: HospitalWithDomain | null | undefined,
+  slug?: string,
+): string {
   const domain = normalizeCustomDomain(hospital?.aeo_domain)
-  return domain ? `https://${domain}` : platformSiteUrl()
+  if (domain) return `https://${domain}`
+  return slug ? platformHospitalUrl(slug) : platformSiteUrl()
 }
 
-/** 병원 홈의 canonical URL. 커스텀 도메인은 `/`, 플랫폼은 `/{slug}`가 홈이다. */
+/** 병원 홈의 canonical URL. 커스텀/플랫폼 기본 서브도메인 모두 `/`가 홈이다. */
 export function canonicalHospitalUrl(
   hospital: HospitalWithDomain | null | undefined,
   slug: string,
   suffix = '',
 ): string {
   const domain = normalizeCustomDomain(hospital?.aeo_domain)
-  const base = domain ? `https://${domain}` : `${platformSiteUrl()}/${slug}`
+  const base = domain ? `https://${domain}` : platformHospitalUrl(slug)
   if (!suffix) return base
   return `${base}/${suffix.replace(/^\/+/, '')}`
 }

@@ -212,13 +212,15 @@ def test_doctor_copy_avoids_internal_and_distorting_terms(banned):
 
 def test_publishing_progress_is_shown_against_the_contracted_volume():
     """요금제가 편수 약정이므로 이 타일이 곧 계약 이행 증명이다."""
-    tile = next(t for t in _view()["tiles"] if t["label"] == "이번 달 발행한 글")
+    tile = next(t for t in _view()["tiles"] if t["label"] == "대상 월 약정 이행")
 
     assert tile["value"] == "16편 중 12편"
 
 
 def test_publishing_tile_degrades_when_no_quota_is_known():
-    tile = next(t for t in _view(plan_quota=None)["tiles"] if t["label"] == "이번 달 발행한 글")
+    tile = next(
+        t for t in _view(plan_quota=None)["tiles"] if t["label"] == "대상 기간 공개한 글"
+    )
 
     assert tile["value"] == "12편"
 
@@ -231,8 +233,8 @@ def test_attribution_copy_separates_real_change_from_missing_baseline():
     assert view["new_mention_sentences"][0]["query_text"] == "강남 치질 병원 추천해줘"
     assert "이번 달 처음 확인된 질문 2개" in copy
     assert "새로 좋아진 결과로 계산하지 않았습니다" in copy
-    assert "지난달 측정이 끝나지 않은 질문 1개" in copy
-    assert "다음 달 정상 측정 후 비교합니다" in copy
+    assert "같은 조건으로 비교할 수 없는 질문·AI 서비스 조합 1개" in copy
+    assert "새 언급과 빠진 언급 계산에서 제외했습니다" in copy
 
 
 # ── 막 1: 이번 달 저희가 한 일 ─────────────────────────────────────────
@@ -944,7 +946,7 @@ def test_talking_points_are_three_number_bound_sentences_in_the_report_order():
     points = view["talking_points"]
 
     assert len(points) == 3
-    assert "16편 중 12편" in points[0]
+    assert "16편 중 현재 12편" in points[0]
     assert "치질 수술 FAQ" in points[0]
     assert "4건" in points[0]
     assert "47번" in points[1]
@@ -1065,8 +1067,10 @@ def test_failed_platform_is_never_reported_as_zero_exposure():
 def test_supplementary_posts_do_not_fill_the_current_contract():
     view = _view(published_count=13, plan_quota=12, supplementary_count=2)
     assert view['tiles'][0]['value'] == '12편 중 11편'
-    assert '이전 월 보충 2편 별도' in view['tiles'][0]['hint']
-    assert '약정 12편 중 11편' in view['talking_points'][0]
+    assert '대상 기간 실제 공개 13편' in view['tiles'][0]['hint']
+    assert '이전 월 보충 2편 포함' in view['tiles'][0]['hint']
+    assert '대상 월 약정 12편 중 현재 11편을 이행' in view['talking_points'][0]
+    assert '대상 기간에는 실제 13편을 공개' in view['talking_points'][0]
 
 
 def test_answer_markdown_is_readable_plain_text_with_original_wording():
@@ -1093,10 +1097,40 @@ def test_answer_decorative_emoji_cannot_break_the_pdf_font_encoding():
 
 def test_late_recovery_is_disclosed_without_backdating_monthly_results():
     view = _view(published_count=7, plan_quota=12,
-                 early_publication_count=1, late_recovery_count=4)
-    assert view['tiles'][0]['value'] == '12편 중 7편'
-    assert '기간 전 공개 1편' in view['tiles'][0]['hint']
-    assert '마감 후 보충 완료 4편' in view['tiles'][0]['hint']
+                 early_publication_count=1, late_recovery_count=4,
+                 contract_published_count=12)
+    assert view['tiles'][0]['value'] == '12편 중 12편'
+    assert '대상 기간 실제 공개 7편' in view['tiles'][0]['hint']
+    assert '약정분 기간 전 공개 1편' in view['tiles'][0]['hint']
+    assert '약정분 마감 후 보충 완료 4편' in view['tiles'][0]['hint']
+    assert view['tiles'][0]['label'] == '대상 월 약정 이행'
+    assert '대상 월 약정 12편 중 현재 12편을 이행' in view['talking_points'][0]
+    assert '대상 기간에는 실제 7편을 공개' in view['talking_points'][0]
+    assert '약정분 마감 후 보충 4편' in view['talking_points'][0]
+
+
+def test_noncomparable_question_rows_do_not_show_prior_counts():
+    view = _view(
+        comparison_reason="ANSWER_MODEL_CHANGED",
+        attribution={
+            "has_prior_month": True,
+            "question_rows": [{
+                "query_key": "q1",
+                "query_text": "강남 치질 병원",
+                "current_attempts_used": 5,
+                "current_mentioned_attempts": 2,
+                "prior_attempts_used": 5,
+                "prior_mentioned_attempts": 0,
+                "prior_measured": True,
+                "prior_comparable": False,
+            }],
+        },
+    )
+
+    assert view["appendix_rows"][0]["prev_label"] == "비교 불가"
+    assert view["new_mention_empty_text"] == (
+        "이번 달은 지난달과 같은 조건의 새 언급을 계산하지 않았습니다."
+    )
 
 
 def test_answer_table_markers_do_not_leak_into_doctor_excerpt():

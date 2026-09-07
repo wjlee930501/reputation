@@ -153,6 +153,8 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
     # Given: COMPLETE coverage starts with an unvalidated doctor artifact
     first_window = canonical_projection_window(datetime(2026, 8, 10, 2, 47, tzinfo=UTC))
     later_window = canonical_projection_window(datetime(2026, 8, 10, 3, 17, tzinfo=UTC))
+    first_delivery_at = datetime(2001, 8, 10, 0, 1, tzinfo=UTC)
+    ready_delivery_at = first_delivery_at + timedelta(minutes=1)
     hospital_id = uuid.UUID("b1340000-0000-0000-0000-000000000001")
     report_id = uuid.UUID("c1340000-0000-0000-0000-000000000001")
     async with monthly_sessions() as db:
@@ -251,6 +253,17 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
     # And: the first durable snapshot records artifact-pending truth
     async with monthly_sessions() as db:
         first = await project_milestone_window(db, first_window, "http://localhost:3000")
+        first_outbox = await db.scalar(
+            select(NotificationOutbox).where(
+                NotificationOutbox.hospital_id == hospital_id,
+                NotificationOutbox.state == NotificationOutboxState.PENDING.value,
+            )
+        )
+        assert first_outbox is not None
+        # The production dispatcher intentionally claims every due row. Put this
+        # test's rows in a private historical window so a hospital-less outbox row
+        # left by another integration fixture cannot be sent through this mock.
+        first_outbox.next_attempt_at = first_delivery_at
         await db.commit()
         assert (first.monthly_count, first.enqueued) == (1, True)
     async with httpx.AsyncClient(
@@ -261,7 +274,7 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
             client,
             webhook_url="https://hooks.slack.com/services/T/B/X",
             worker_id="task13-first",
-            now=datetime.now(UTC) + timedelta(minutes=1),
+            now=first_delivery_at,
             throttle=lambda: _no_pause(),
         )
     assert sent.sent == 1
@@ -286,11 +299,15 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
         replay = await project_milestone_window(db, later_window, "http://localhost:3000")
         ready_outbox = await db.scalar(
             select(NotificationOutbox)
-            .where(NotificationOutbox.state == NotificationOutboxState.PENDING.value)
+            .where(
+                NotificationOutbox.hospital_id == hospital_id,
+                NotificationOutbox.state == NotificationOutboxState.PENDING.value,
+            )
             .order_by(NotificationOutbox.created_at.desc())
         )
         assert ready_outbox is not None
         ready_outbox.max_attempts = 1
+        ready_outbox.next_attempt_at = ready_delivery_at
         await db.commit()
         assert (later.monthly_count, later.enqueued) == (1, True)
         assert (replay.monthly_count, replay.enqueued) == (0, False)
@@ -304,7 +321,7 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
             client,
             webhook_url="https://hooks.slack.com/services/T/B/X",
             worker_id="task13-qa",
-            now=datetime.now(UTC) + timedelta(minutes=2),
+            now=ready_delivery_at,
             throttle=lambda: _no_pause(),
         )
 

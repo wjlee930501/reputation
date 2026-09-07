@@ -386,6 +386,11 @@ test('a known code becomes an explanation, and every explanation reads as Korean
   }
 })
 
+test('recoverable content blockers explain automatic recovery before human action', () => {
+  assert.match(safeCauseText('CONTENT_IMAGE_NOT_VERIFIED'), /시스템이 다시 검사/)
+  assert.match(safeCauseText('FAQ_FIELDS_MISSING'), /다음 복구 배치에서 다시 생성/)
+})
+
 test('a future deadline is not called imminent, and a passed one says how far past', () => {
   const now = Date.parse('2026-08-23T12:00:00Z')
   const at = (iso: string) => iso.slice(5, 16)

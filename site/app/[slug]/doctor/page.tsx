@@ -8,6 +8,7 @@ import {
   buildClinicThemeStyle,
   selectClinicDirectorImage,
 } from '@/lib/clinic-theme'
+import { buildPostalAddress } from '@/lib/clinic-schema'
 import { buildPhysicianCredentials } from '@/lib/schema'
 import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
@@ -53,7 +54,7 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         images: (() => {
           const photo = absoluteClinicImageUrl(
             selectClinicDirectorImage(hospital),
-            canonicalBase(hospital),
+            canonicalBase(hospital, params.slug),
           )
           return photo ? [{ url: photo }] : []
         })(),
@@ -89,7 +90,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
   // 자격·학회·전문영역 신뢰축은 랜딩 중첩 Physician과 동일 빌더를 공유한다.
   const physicianCredentials = buildPhysicianCredentials(hospital)
 
-  const base = canonicalBase(hospital)
+  const base = canonicalBase(hospital, params.slug)
   const directorImageUrl = selectClinicDirectorImage(hospital)
   const directorImageAbsoluteUrl = absoluteClinicImageUrl(directorImageUrl, base)
 
@@ -117,7 +118,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
       '@id': `${hospitalRootUrl}#clinic`,
       name: hospital.name,
       url: hospitalRootUrl,
-      address: { '@type': 'PostalAddress', streetAddress: hospital.address, addressCountry: 'KR' },
+      address: buildPostalAddress(hospital.address),
       telephone: hospital.phone,
     },
     url: `${hospitalRootUrl}/doctor`,

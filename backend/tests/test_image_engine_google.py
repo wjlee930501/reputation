@@ -5,6 +5,7 @@ import tenacity
 from google import genai
 
 from app.services import image_engine
+from app.services.image_policy import ImagePolicyAssessment, ImagePolicyRejectedError
 
 
 def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(monkeypatch):
@@ -44,6 +45,17 @@ def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(m
         image_engine,
         "_upload_png_to_gcs",
         lambda payload, hospital: f"gs://bucket/{hospital}/{payload.decode()}.png",
+    )
+    monkeypatch.setattr(
+        image_engine,
+        "_validate_generated_image",
+        lambda *_args, **_kwargs: ImagePolicyAssessment(
+            has_text=False,
+            has_logo=False,
+            has_recognizable_people=False,
+            impersonates_real_clinic=False,
+            topic_relevant=True,
+        ),
     )
 
     result = image_engine._generate_and_upload("medical prompt", "hospital-slug")
@@ -120,6 +132,98 @@ def test_google_client_is_created_once_and_reused(monkeypatch):
 
     assert image_engine._get_google_client() is image_engine._get_google_client()
     assert len(created) == 1
+
+
+def test_semantic_policy_rejection_prevents_upload_and_same_prompt_retry(monkeypatch):
+    calls = {"generation": 0, "upload": 0}
+
+    def generated(**_kwargs):
+        calls["generation"] += 1
+        return SimpleNamespace(
+            candidates=[
+                SimpleNamespace(
+                    content=SimpleNamespace(
+                        parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"unsafe"))]
+                    )
+                )
+            ]
+        )
+
+    _patch_google_client(monkeypatch, generated)
+    rejected = ImagePolicyAssessment(
+        has_text=True,
+        has_logo=False,
+        has_recognizable_people=False,
+        impersonates_real_clinic=False,
+        topic_relevant=True,
+    )
+    monkeypatch.setattr(
+        image_engine,
+        "_validate_generated_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ImagePolicyRejectedError(rejected)),
+    )
+    monkeypatch.setattr(
+        image_engine,
+        "_upload_png_to_gcs",
+        lambda *_args: calls.__setitem__("upload", calls["upload"] + 1),
+    )
+
+    with pytest.raises(ImagePolicyRejectedError):
+        image_engine._generate_and_upload("prompt", "hospital-slug")
+
+    assert calls == {"generation": 1, "upload": 0}
+
+
+def test_openai_only_policy_review_sends_strict_typed_schema(monkeypatch):
+    captured = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(
+                            content=(
+                                '{"has_text":false,"has_logo":false,'
+                                '"has_recognizable_people":false,'
+                                '"impersonates_real_clinic":false,"topic_relevant":true}'
+                            )
+                        )
+                    )
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+        def with_options(self, **kwargs):
+            captured["client_options"] = kwargs
+            return self
+
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
+    monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(image_engine, "_get_openai_client", lambda: FakeClient())
+
+    assessment = image_engine._validate_generated_image(
+        b"png",
+        mime_type="image/png",
+        prompt="editorial prompt",
+        expected_topic="복통 진료",
+    )
+
+    assert assessment.topic_relevant is True
+    assert captured["response_format"]["type"] == "json_schema"
+    schema = captured["response_format"]["json_schema"]["schema"]
+    assert set(schema["required"]) == {
+        "has_text",
+        "has_logo",
+        "has_recognizable_people",
+        "impersonates_real_clinic",
+        "topic_relevant",
+    }
+    assert captured["client_options"] == {"timeout": 60.0, "max_retries": 0}
 
 
 def test_google_visual_scene_does_not_echo_sensitive_medical_title():

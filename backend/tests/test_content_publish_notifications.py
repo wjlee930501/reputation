@@ -131,11 +131,18 @@ def test_publish_projection_treats_missing_success_alert_as_intentional_silence(
     assert projection["problem"] is None
 
 
-def _blocked(hospital_name: str, code: str, title: str) -> dict[str, object]:
+def _blocked(
+    hospital_name: str,
+    code: str,
+    title: str,
+    *,
+    hospital_id: uuid.UUID | None = None,
+) -> dict[str, object]:
     return {
-        "hospital_id": uuid.uuid4(),
+        "hospital_id": hospital_id or uuid.uuid4(),
         "hospital_name": hospital_name,
         "content_id": uuid.uuid4(),
+        "scheduled_date": "2026-08-19",
         "title": title,
         "code": code,
         "cause": f"{code} 상태로 공개를 중단했습니다.",
@@ -144,9 +151,25 @@ def _blocked(hospital_name: str, code: str, title: str) -> dict[str, object]:
 
 def test_many_blocked_slots_collapse_into_one_morning_slack_message() -> None:
     # Given: one morning batch that blocked five slots across two hospitals
+    first_hospital_id = uuid.uuid4()
+    second_hospital_id = uuid.uuid4()
     blocked = [
-        _blocked("가나의원", "FORBIDDEN_EXPRESSION", f"금지 표현 {index}") for index in range(3)
-    ] + [_blocked("다라의원", "MISSING_REFERENCES", f"참고 자료 {index}") for index in range(2)]
+        _blocked(
+            "가나의원",
+            "FORBIDDEN_EXPRESSION",
+            f"금지 표현 {index}",
+            hospital_id=first_hospital_id,
+        )
+        for index in range(3)
+    ] + [
+        _blocked(
+            "다라의원",
+            "MISSING_REFERENCES",
+            f"참고 자료 {index}",
+            hospital_id=second_hospital_id,
+        )
+        for index in range(2)
+    ]
 
     # When
     intent = build_generation_blocked_digest_intent(
@@ -184,6 +207,45 @@ def test_blocked_digest_identity_is_stable_for_the_same_blocked_set() -> None:
     # Then: a repeated batch re-sends nothing, and a genuinely new blocker does
     assert forward.dedupe_key == reverse.dedupe_key
     assert changed.dedupe_key != forward.dedupe_key
+
+
+def test_blocked_digest_separates_same_name_hospitals_by_id() -> None:
+    # Hospital names are not unique tenant identities.
+    blocked = [
+        _blocked("같은이름의원", "FORBIDDEN_EXPRESSION", "첫 병원"),
+        _blocked("같은이름의원", "MISSING_REFERENCES", "둘째 병원"),
+    ]
+
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19), PUBLISH_MORNING_BATCH, blocked
+    )
+
+    assert "병원 2곳 · 글 2건" in intent.message.payload_json()
+
+
+def test_blocked_digest_realerts_only_for_meaningful_episode_changes() -> None:
+    blocked = _blocked("변경감지의원", "ESSENCE_NOT_ALIGNED", "운영 기준 확인")
+
+    original = build_generation_blocked_digest_intent(
+        date(2026, 8, 19), PUBLISH_MORNING_BATCH, [blocked]
+    )
+    next_day_same = build_generation_blocked_digest_intent(
+        date(2026, 8, 20), PREPUBLISH_MORNING_BATCH, [blocked]
+    )
+    rescheduled = build_generation_blocked_digest_intent(
+        date(2026, 8, 20),
+        PUBLISH_MORNING_BATCH,
+        [{**blocked, "scheduled_date": "2026-08-20"}],
+    )
+    changed_cause = build_generation_blocked_digest_intent(
+        date(2026, 8, 20),
+        PUBLISH_MORNING_BATCH,
+        [{**blocked, "cause": "새 운영 기준에서 근거 충돌이 확인되었습니다."}],
+    )
+
+    assert next_day_same.dedupe_key == original.dedupe_key
+    assert rescheduled.dedupe_key != original.dedupe_key
+    assert changed_cause.dedupe_key != original.dedupe_key
 
 
 def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
@@ -227,6 +289,7 @@ def test_blocked_digest_refuses_an_empty_batch() -> None:
         "STALE_GENERATION_CLAIM",
         "IMAGE_GENERATION_FAILED",
         "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
     ],
 )
 def test_provider_transient_blockers_wait_for_the_seven_forty_five_recovery(code: str) -> None:

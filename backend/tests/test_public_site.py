@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from app.api.public import site as site_api
 from app.api.public.assets import public_asset_response
 from app.api.public.site import (
+    _is_active_public_hospital,
     _is_public_safe_content,
     _reading_minutes,
     _serialize_hospital,
@@ -23,6 +24,7 @@ from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_N
 # slowapi @limiter.limit 우회 — 단위 테스트는 FastAPI 요청 라이프사이클 밖에서 실행된다
 # (test_public_by_domain.py와 동일 패턴).
 _list_published_contents = site_api.list_published_contents.__wrapped__
+_get_public_content_image = site_api.get_public_content_image.__wrapped__
 
 
 def test_serialize_hospital_includes_public_profile_fields():
@@ -150,12 +152,27 @@ def test_serialize_hospital_normalizes_treatments_for_site_contract():
 
 
 def test_public_content_policy_requires_published_and_essence_aligned():
-    aligned = SimpleNamespace(status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_ALIGNED)
-    draft = SimpleNamespace(status=ContentStatus.DRAFT, essence_status=ESSENCE_STATUS_ALIGNED)
-    needs_review = SimpleNamespace(
-        status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_NEEDS_REVIEW
+    common = {
+        "title": "진료 안내",
+        "body": "확인된 진료 정보를 안내합니다.",
+        "published_at": datetime(2026, 6, 1, 8, 0, 0),
+        "content_type": "NOTICE",
+        "references_list": [
+            {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+        ],
+    }
+    aligned = SimpleNamespace(
+        **common, status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_ALIGNED
     )
-    legacy_without_screening = SimpleNamespace(status=ContentStatus.PUBLISHED, essence_status=None)
+    draft = SimpleNamespace(
+        **common, status=ContentStatus.DRAFT, essence_status=ESSENCE_STATUS_ALIGNED
+    )
+    needs_review = SimpleNamespace(
+        **common, status=ContentStatus.PUBLISHED, essence_status=ESSENCE_STATUS_NEEDS_REVIEW
+    )
+    legacy_without_screening = SimpleNamespace(
+        **common, status=ContentStatus.PUBLISHED, essence_status=None
+    )
 
     assert _is_public_safe_content(aligned) is True
     assert _is_public_safe_content(draft) is False
@@ -553,16 +570,46 @@ class _SequentialFakeDB:
         return self._results.pop(0)
 
 
+class _ImageFakeDB(_SequentialFakeDB):
+    def __init__(self, results, item):
+        super().__init__(results)
+        self.item = item
+
+    async def get(self, _model, _content_id):
+        return self.item
+
+
 def _active_hospital(slug="test-hospital"):
     return SimpleNamespace(
-        id="hospital-id", slug=slug, status=HospitalStatus.ACTIVE, site_live=True
+        id="hospital-id",
+        slug=slug,
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        profile_complete=True,
+        v0_report_done=True,
+        site_built=True,
+        schedule_set=True,
     )
 
 
-async def test_list_published_contents_applies_offset_to_query(monkeypatch):
-    """offset 파라미터가 SQL OFFSET 절에 실제로 전달되어야 500건 하드캡을 넘는
-    오래된 콘텐츠도 다음 페이지 호출로 도달할 수 있다."""
-    db = _SequentialFakeDB([_FakeResult([_active_hospital()]), _FakeResult([])])
+def test_public_hospital_requires_every_step_five_gate():
+    hospital = _active_hospital()
+    assert _is_active_public_hospital(hospital)
+    for field in ("profile_complete", "v0_report_done", "site_built"):
+        drifted = _active_hospital()
+        setattr(drifted, field, False)
+        assert not _is_active_public_hospital(drifted)
+
+
+async def test_list_published_contents_applies_offset_after_public_filter(monkeypatch):
+    """공개 불가 행은 API offset에 포함하지 않아 안전한 오래된 글을 건너뛰지 않는다."""
+    first = _published_item(title="완치 보장 프로그램")
+    safe_one = _published_item(title="첫 번째 공개 글")
+    safe_two = _published_item(title="두 번째 공개 글")
+    safe_three = _published_item(title="세 번째 공개 글")
+    db = _SequentialFakeDB(
+        [_FakeResult([_active_hospital()]), _FakeResult([first, safe_one, safe_two, safe_three])]
+    )
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
@@ -570,11 +617,14 @@ async def test_list_published_contents_applies_offset_to_query(monkeypatch):
 
     monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
 
-    await _list_published_contents(SimpleNamespace(), "test-hospital", limit=20, offset=520, db=db)
+    result = await _list_published_contents(
+        SimpleNamespace(), "test-hospital", limit=2, offset=1, db=db
+    )
 
     contents_stmt = db.statements[1]
-    assert contents_stmt._offset_clause.value == 520
-    assert contents_stmt._limit_clause.value == 20
+    assert contents_stmt._offset_clause.value == 0
+    assert contents_stmt._limit_clause.value == 500
+    assert [entry["id"] for entry in result] == [str(safe_two.id), str(safe_three.id)]
 
 
 async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
@@ -590,6 +640,73 @@ async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
 
     contents_stmt = db.statements[1]
     assert contents_stmt._offset_clause.value == 0
+
+
+async def test_list_published_contents_is_empty_until_schedule_is_set(monkeypatch):
+    hospital = _active_hospital()
+    hospital.schedule_set = False
+    db = _SequentialFakeDB([_FakeResult([hospital])])
+
+    async def _must_not_read_essence(*_args, **_kwargs):
+        raise AssertionError("schedule gate must run before essence/content queries")
+
+    monkeypatch.setattr(site_api, "get_essence_readiness", _must_not_read_essence)
+    assert await _list_published_contents(
+        SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db
+    ) == []
+
+
+async def test_list_published_contents_scans_past_a_filtered_raw_page(monkeypatch):
+    monkeypatch.setattr(site_api, "_PUBLIC_SCAN_BATCH", 2)
+    withheld_one = _published_item(title="완치 보장 프로그램")
+    withheld_two = _published_item(body="부작용 없는 치료입니다.")
+    safe = _published_item(title="근거 기반 공개 글")
+    db = _SequentialFakeDB(
+        [
+            _FakeResult([_active_hospital()]),
+            _FakeResult([withheld_one, withheld_two]),
+            _FakeResult([safe]),
+        ]
+    )
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+
+    async def _fresh(*_args, **_kwargs):
+        return SimpleNamespace(public_philosophy=philosophy)
+
+    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
+    result = await _list_published_contents(
+        SimpleNamespace(), "test-hospital", limit=1, offset=0, db=db
+    )
+    assert [entry["id"] for entry in result] == [str(safe.id)]
+    assert db.statements[2]._offset_clause.value == 2
+
+
+async def test_content_image_uses_the_historical_public_approval(monkeypatch):
+    philosophy_id = uuid.uuid4()
+    item = _published_item(
+        hospital_id="hospital-id",
+        content_philosophy_id=philosophy_id,
+        image_url="gs://reputation-images/content/example.png",
+    )
+    db = _ImageFakeDB([_FakeResult([_active_hospital()])], item)
+    seen: list[object] = []
+
+    async def _public_id(_db, hospital_id):
+        seen.append(hospital_id)
+        return philosophy_id
+
+    monkeypatch.setattr(site_api, "get_public_approved_philosophy_id", _public_id)
+    monkeypatch.setattr(
+        site_api,
+        "public_asset_response",
+        lambda ref, **_kwargs: {"ref": ref},
+    )
+
+    result = await _get_public_content_image(
+        SimpleNamespace(), "test-hospital", item.id, db=db
+    )
+    assert result == {"ref": item.image_url}
+    assert seen == ["hospital-id"]
 
 
 # ── 의료광고 필터: 공개 직렬화(세 번째 적용 지점) ─────────────────────────
@@ -611,7 +728,9 @@ def _published_item(**overrides):
         "scheduled_date": date(2026, 6, 1),
         "published_at": datetime(2026, 6, 1, 8, 0, 0),
         "body_updated_at": None,
-        "references_list": [],
+        "references_list": [
+            {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+        ],
         "query_target_id": None,
     }
     values.update(overrides)
@@ -634,6 +753,23 @@ def test_published_content_with_forbidden_expression_is_not_public_safe(field, v
 
 def test_clean_published_content_stays_public_safe():
     assert _is_public_safe_content(_published_item()) is True
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"title": "  "},
+        {"body": ""},
+        {"published_at": None},
+        {"references_list": []},
+    ],
+)
+def test_incomplete_medical_content_is_not_public_safe(overrides):
+    assert _is_public_safe_content(_published_item(**overrides)) is False
+
+
+def test_notice_can_be_public_without_external_references():
+    assert _is_public_safe_content(_published_item(content_type="NOTICE", references_list=[]))
 
 
 def test_forbidden_check_reads_the_body_as_rendered_markdown():

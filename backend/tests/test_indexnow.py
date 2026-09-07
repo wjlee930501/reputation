@@ -92,13 +92,14 @@ def enabled(monkeypatch):
 def test_custom_domain_wins_over_platform_host():
     # 자기 도메인을 연결한 병원은 그 도메인이 정본이다. 플랫폼 호스트로 제출하면
     # 환자가 실제로 보는 URL은 색인 신호를 받지 못한다.
-    assert indexnow.public_base_url("jangclinic.kr") == "https://jangclinic.kr"
-    assert indexnow.public_base_url("https://jangclinic.kr/") == "https://jangclinic.kr"
+    assert indexnow.public_base_url("jangclinic.kr", "jang") == "https://jangclinic.kr"
+    assert indexnow.public_base_url("https://jangclinic.kr/", "jang") == "https://jangclinic.kr"
 
 
 def test_falls_back_to_platform_host_without_custom_domain():
-    assert indexnow.public_base_url(None) == settings.SITE_BASE_URL.rstrip("/")
-    assert indexnow.public_base_url("  ") == settings.SITE_BASE_URL.rstrip("/")
+    expected = "https://jang.reputation.motionlabs.kr"
+    assert indexnow.public_base_url(None, "jang") == expected
+    assert indexnow.public_base_url("  ", "jang") == expected
 
 
 # ── 제출 동작 ──
@@ -175,10 +176,11 @@ async def test_content_submission_includes_the_new_page_and_its_listings(enabled
     )
 
     urls = client.posts[0][1]["urlList"]
-    assert "https://jangclinic.kr/jangpyeonhanoegwayiweon/contents/abc-123" in urls
+    assert "https://jangclinic.kr/contents/abc-123" in urls
     # 새 글이 걸리는 목록/허브도 함께 알려야 링크가 발견된다.
-    assert "https://jangclinic.kr/jangpyeonhanoegwayiweon/contents" in urls
-    assert "https://jangclinic.kr/jangpyeonhanoegwayiweon/llms.txt" in urls
+    assert "https://jangclinic.kr/contents" in urls
+    assert "https://jangclinic.kr/llms.txt" in urls
+    assert not any("/jangpyeonhanoegwayiweon/" in url for url in urls)
     # sitemap.xml은 색인 대상 문서가 아니다.
     assert not any(u.endswith("/sitemap.xml") for u in urls)
 
@@ -221,8 +223,8 @@ def test_hospital_all_urls_includes_hub_and_every_published_content():
 
     assert base == "https://jangclinic.kr"
     for cid in ("c1", "c2", "c3"):
-        assert f"https://jangclinic.kr/jangpyeonhanoegwayiweon/contents/{cid}" in urls
-    assert "https://jangclinic.kr/jangpyeonhanoegwayiweon" in urls
+        assert f"https://jangclinic.kr/contents/{cid}" in urls
+    assert "https://jangclinic.kr/" in urls
     assert not any(u.endswith("/sitemap.xml") for u in urls)
 
 
@@ -231,6 +233,17 @@ def test_hospital_all_urls_has_no_duplicates():
         slug="s", aeo_domain="x.kr", content_ids=["a", "a", "b"]
     )
     assert len(urls) == len(set(urls))
+
+
+def test_local_platform_fallback_preserves_the_slug_path(monkeypatch):
+    monkeypatch.setattr(settings, "SITE_BASE_URL", "http://localhost:3000")
+    base, urls = indexnow.hospital_all_urls(
+        slug="demo-clinic", aeo_domain=None, content_ids=["content-1"]
+    )
+    assert base == "http://localhost:3000"
+    assert "http://localhost:3000/demo-clinic" in urls
+    assert "http://localhost:3000/demo-clinic/contents/content-1" in urls
+    assert "http://localhost:3000/" not in urls
 
 
 # ── 소유 증명 ──

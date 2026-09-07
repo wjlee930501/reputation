@@ -84,13 +84,13 @@ def test_image_generation_records_every_attempt_including_the_fallback(monkeypat
     monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
 
-    def failing_openai(_prompt, _hospital, *, counter=None):
+    def failing_openai(_prompt, _hospital, *, expected_topic=None, counter=None):
         for _ in range(3):  # tenacity가 소진한 시도 수
             if counter is not None:
                 counter.tick()
         raise RuntimeError("all openai attempts failed")
 
-    def succeeding_google(_prompt, _hospital, *, counter=None):
+    def succeeding_google(_prompt, _hospital, *, expected_topic=None, counter=None):
         if counter is not None:
             counter.tick()
         return "gs://bucket/image.png"
@@ -104,6 +104,46 @@ def test_image_generation_records_every_attempt_including_the_fallback(monkeypat
     assert recorded.by_category["image"] == 4, "예약은 1건이지만 실제 호출은 4회다"
 
 
+def test_image_policy_review_uses_content_meter_instead_of_image_meter(
+    monkeypatch, recorded
+):
+    """A cheap vision review must not consume a second image-generation unit."""
+
+    counter = image_engine._CallCounter()
+    counter.tick()
+    counter.tick_review()
+
+    asyncio.run(image_engine._record_image_calls(counter))
+
+    assert recorded.by_category == {"image": 1, "content": 1}
+
+
+def test_image_generation_reserves_existing_content_budget_for_policy_review(
+    monkeypatch, recorded
+):
+    reserved = []
+
+    async def allowed(category, **_kwargs):
+        from app.services.cost_guard import CostGuardDecision
+
+        reserved.append(category)
+        return CostGuardDecision(True, None)
+
+    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    monkeypatch.setattr(
+        image_engine,
+        "_generate_and_upload",
+        lambda *_args, **_kwargs: "gs://bucket/reviewed.png",
+    )
+
+    url, _ = asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원"))
+
+    assert url == "gs://bucket/reviewed.png"
+    assert reserved == ["image", "content"]
+
+
 def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded):
     async def allowed(*_a, **_k):
         from app.services.cost_guard import CostGuardDecision
@@ -115,7 +155,7 @@ def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
     prompts = []
 
-    def topic_then_fallback(prompt, _hospital, *, counter=None):
+    def topic_then_fallback(prompt, _hospital, *, expected_topic=None, counter=None):
         prompts.append(prompt)
         if counter is not None:
             counter.tick()
@@ -148,6 +188,47 @@ def test_blocked_image_generation_records_no_provider_call(monkeypatch, recorded
     url, prompt = asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원"))
 
     assert (url, prompt) == ("", "")
+    assert recorded.total == 0
+
+
+def test_blocked_image_review_refunds_the_unused_image_reservation(monkeypatch, recorded):
+    decisions = iter((True, False))
+    released = []
+
+    async def decide(*_args, **_kwargs):
+        from app.services.cost_guard import CostGuardDecision
+
+        return CostGuardDecision(next(decisions), "review cap")
+
+    async def release(category, count):
+        released.append((category, count))
+
+    monkeypatch.setattr("app.services.cost_guard.check_and_increment", decide)
+    monkeypatch.setattr("app.services.cost_guard.release_reservation", release)
+
+    assert asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원")) == ("", "")
+    assert released == [("image", 1)]
+    assert recorded.total == 0
+
+
+def test_no_usable_image_provider_refunds_both_reservations(monkeypatch, recorded):
+    released = []
+
+    async def allowed(*_args, **_kwargs):
+        from app.services.cost_guard import CostGuardDecision
+
+        return CostGuardDecision(True, None)
+
+    async def release(category, count):
+        released.append((category, count))
+
+    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
+    monkeypatch.setattr("app.services.cost_guard.release_reservation", release)
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
+
+    assert asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원")) == ("", "")
+    assert released == [("image", 1), ("content", 1)]
     assert recorded.total == 0
 
 

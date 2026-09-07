@@ -44,13 +44,14 @@ def _cell(
     state: str = "SUCCESS",
     query_intent: str = "LOCAL",
     attempts: tuple[CellAttempt, ...] | None = None,
+    query_text: str | None = None,
 ) -> ManifestCellInput:
     selected_attempts = attempts
     if selected_attempts is None:
         selected_attempts = () if state != "SUCCESS" else (_attempt(0, mentioned=mentioned),)
     return ManifestCellInput(
         query_key=query_key,
-        query_text=f"환자 질문 {query_key}",
+        query_text=query_text or f"환자 질문 {query_key}",
         platform=platform,
         query_intent=query_intent,
         state=state,
@@ -111,6 +112,47 @@ def test_single_attempt_cells_still_score_as_k_over_one() -> None:
     assert summary.sov_pct == 50.0
     assert summary.attempts_used == 2
     assert summary.measurement_basis.repeat_count == 1
+
+
+def test_same_query_id_with_changed_text_is_not_a_comparable_cell() -> None:
+    current = (_cell("q1", "chatgpt", mentioned=True, query_text="강남 치질 병원"),)
+    prior = (_cell("q1", "chatgpt", mentioned=False, query_text="강남 탈장 병원"),)
+
+    summary = build_monthly_sov(
+        current,
+        ("chatgpt",),
+        prior_cells=prior,
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "QUERY_TEXT_CHANGED"
+    assert summary.comparison_cell_keys == frozenset()
+
+
+def test_unequal_repeat_denominators_are_not_reported_as_monthly_change() -> None:
+    current = (
+        _cell(
+            "q1",
+            "chatgpt",
+            attempts=tuple(_attempt(index, mentioned=index == 0) for index in range(5)),
+        ),
+    )
+    prior = (_cell("q1", "chatgpt", mentioned=True),)
+
+    summary = build_monthly_sov(
+        current,
+        ("chatgpt",),
+        prior_cells=prior,
+        prior_platforms=("chatgpt",),
+        **_SAME_POLICY,
+    )
+
+    # Pooling 1/5 against 1/1 would turn a collection-depth change into -80%p.
+    assert summary.comparison.status == "NON_COMPARABLE"
+    assert summary.comparison.reason == "SAMPLE_SHAPE_CHANGED"
+    assert summary.comparison.change_pct is None
 
 
 def test_headline_uncertainty_comes_from_the_actual_repeat_sample() -> None:

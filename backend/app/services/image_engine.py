@@ -15,11 +15,18 @@ import threading
 import uuid
 from io import BytesIO
 
+from pydantic import ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
 from app.models.content import ContentType
 from app.services.image_direction import HospitalImageDirection, image_direction_prompt
+from app.services.image_policy import (
+    ImagePolicyAssessment,
+    ImagePolicyRejectedError,
+    ImagePolicyUnavailableError,
+    image_is_publishable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +63,7 @@ def _get_google_client():
                     vertexai=True,
                     project=settings.GCP_PROJECT_ID,
                     location=settings.GOOGLE_IMAGE_LOCATION,
-                    http_options=types.HttpOptions(api_version="v1"),
+                    http_options=types.HttpOptions(api_version="v1", timeout=60_000),
                 )
     return _google_client_instance
 
@@ -96,7 +103,10 @@ def _is_transient_google_image_error(exc: BaseException) -> bool:
     종전에는 IMAGE_SAFETY 차단도 3회 재시도한 뒤 폴백 프롬프트를 다시 3회 재시도해
     이미지 1장에 최대 6회 유료 호출이 나갔다. 차단은 같은 입력에 항상 같은 결과다.
     """
-    if isinstance(exc, ImageSafetyBlockedError) or _looks_like_policy_block(exc):
+    if isinstance(
+        exc,
+        (ImageSafetyBlockedError, ImagePolicyRejectedError, ImagePolicyUnavailableError),
+    ) or _looks_like_policy_block(exc):
         return False
     status = getattr(exc, "status_code", None)
     if not isinstance(status, int):
@@ -109,6 +119,8 @@ def _is_transient_google_image_error(exc: BaseException) -> bool:
 def _is_transient_openai_error(exc: BaseException) -> bool:
     """결정적 4xx(예: moderation_blocked)는 재시도해도 항상 실패하므로 재시도 금지 —
     바로 Google 경로로 넘겨 시간/비용 낭비와 Job 타임아웃을 막는다. 5xx/네트워크만 재시도."""
+    if isinstance(exc, (ImagePolicyRejectedError, ImagePolicyUnavailableError)):
+        return False
     try:
         from openai import APIStatusError
 
@@ -241,34 +253,55 @@ def _build_google_image_prompt(
 
 
 class _CallCounter:
-    """동기 실행기 안에서 일어나는 재시도 횟수를 밖으로 전달하기 위한 카운터.
+    """Carry generation and semantic-review call counts out of sync executors.
 
-    재시도는 tenacity가 워커 스레드에서 처리하므로 async 호출부는 시도 횟수를 볼 수
-    없다. 각 시도가 직접 tick()해 실제 호출 수를 남긴다.
+    Image generation uses the image budget. The cheaper multimodal policy check
+    uses the existing content/review budget; combining them would make one image
+    consume two scarce image-generation units.
     """
 
-    __slots__ = ("count",)
+    __slots__ = ("count", "review_count")
 
     def __init__(self) -> None:
         self.count = 0
+        self.review_count = 0
 
     def tick(self) -> None:
         self.count += 1
+
+    def tick_review(self) -> None:
+        self.review_count += 1
 
 
 async def _record_image_calls(
     counter: _CallCounter, hospital_id: uuid.UUID | str | None = None
 ) -> None:
-    if counter.count <= 0:
+    if counter.count <= 0 and counter.review_count <= 0:
         return
     from app.services import cost_guard
 
-    await cost_guard.record_provider_call("image", count=counter.count)
+    if counter.count > 0:
+        await cost_guard.record_provider_call("image", count=counter.count)
+    if counter.review_count > 0:
+        await cost_guard.record_provider_call("content", count=counter.review_count)
     if hospital_id is not None:
         from app.services.hospital_usage import record_usage
 
         for _ in range(counter.count):
             await record_usage(hospital_id=hospital_id, kind="image")
+        for _ in range(counter.review_count):
+            await record_usage(hospital_id=hospital_id, kind="content")
+
+
+async def _release_unused_image_reservations(*counters: _CallCounter) -> None:
+    """Refund logical capacity when no matching provider request was made."""
+
+    from app.services import cost_guard
+
+    if sum(counter.count for counter in counters) == 0:
+        await cost_guard.release_reservation("image", 1)
+    if sum(counter.review_count for counter in counters) == 0:
+        await cost_guard.release_reservation("content", 1)
 
 
 async def generate_image(
@@ -296,6 +329,14 @@ async def generate_image(
     if not decision.allowed:
         logger.warning("이미지 생성이 비용 가드로 차단됨 — 이미지 없이 진행: %s", decision.reason)
         return ("", "")
+    review_decision = await cost_guard.check_and_increment("content")
+    if not review_decision.allowed:
+        await cost_guard.release_reservation("image", 1)
+        logger.warning(
+            "이미지 안전 검수가 비용 가드로 차단됨 — 이미지 생성을 건너뜀: %s",
+            review_decision.reason,
+        )
+        return ("", "")
 
     loop = asyncio.get_running_loop()
     provider = (settings.IMAGE_PROVIDER or "").lower()
@@ -309,10 +350,25 @@ async def generate_image(
         prompt = _build_openai_image_prompt(content_type, topic, direction)
         try:
             url = await loop.run_in_executor(
-                None, lambda: _openai_generate_and_upload(prompt, hospital_name, counter=attempts)
+                None,
+                lambda: _openai_generate_and_upload(
+                    prompt,
+                    hospital_name,
+                    expected_topic=topic,
+                    counter=attempts,
+                ),
             )
             if url:
+                await _release_unused_image_reservations(attempts)
                 return url, prompt
+        except ImagePolicyUnavailableError as e:
+            logger.error("Image policy review unavailable: %s", e)
+            await _release_unused_image_reservations(attempts)
+            return ("", "")
+        except ImagePolicyRejectedError:
+            logger.warning("Generated OpenAI image failed semantic policy review")
+            await _release_unused_image_reservations(attempts)
+            return ("", "")
         except Exception as e:  # noqa: BLE001 — gpt-image-2 불가 시 Google 경로로 폴백
             logger.error("gpt-image-2 path failed, falling back to Google image: %s", e)
         finally:
@@ -321,15 +377,28 @@ async def generate_image(
     # ── Vertex AI Gemini image (기본 또는 폴백) ──
     if not settings.GCP_PROJECT_ID:
         logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
+        await _release_unused_image_reservations(attempts)
         return ("", "")
 
     prompt = _build_google_image_prompt(content_type, topic, direction)
     fallback_attempts = _CallCounter()
     try:
         url = await loop.run_in_executor(
-            None, lambda: _generate_and_upload(prompt, hospital_name, counter=fallback_attempts)
+            None,
+            lambda: _generate_and_upload(
+                prompt,
+                hospital_name,
+                expected_topic=topic,
+                counter=fallback_attempts,
+            ),
         )
         return url, prompt
+    except ImagePolicyUnavailableError as e:
+        logger.error("Image policy review unavailable: %s", e)
+        return ("", "")
+    except ImagePolicyRejectedError:
+        logger.warning("Generated Google image failed semantic policy review")
+        return ("", "")
     except Exception as e:  # noqa: BLE001
         logger.warning("Google topic image failed; trying safety-neutral fallback: %s", e)
         try:
@@ -338,6 +407,7 @@ async def generate_image(
                 lambda: _generate_and_upload(
                     GOOGLE_SAFETY_FALLBACK_PROMPT,
                     hospital_name,
+                    expected_topic=topic,
                     counter=fallback_attempts,
                 ),
             )
@@ -347,6 +417,7 @@ async def generate_image(
             return ("", "")
     finally:
         await _record_image_calls(fallback_attempts, hospital_id)
+        await _release_unused_image_reservations(attempts, fallback_attempts)
 
 
 def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:
@@ -361,6 +432,86 @@ def _upload_png_to_gcs(image_bytes: bytes, hospital_name: str) -> str:
     gcs_path = f"gs://{settings.GCP_STORAGE_BUCKET}/{filename}"
     logger.info("Image uploaded: %s", gcs_path)
     return gcs_path
+
+
+def _validate_generated_image(
+    image_bytes: bytes,
+    *,
+    mime_type: str,
+    prompt: str,
+    expected_topic: str | None,
+    counter: _CallCounter | None = None,
+) -> ImagePolicyAssessment:
+    """Run one bounded multimodal review before any generated bytes are uploaded."""
+    if counter is not None:
+        counter.tick_review()
+    rubric = (
+        "Inspect this generated editorial image and return only the requested JSON policy "
+        "assessment. A safe editorial metaphor counts as topic relevant when its objects clearly "
+        "support the article topic; explicit anatomy or a literal procedure is never required. "
+        f"The article topic is {expected_topic or prompt!r}. Text includes any readable letters, "
+        "numbers, signage, or caption. Logo includes brand marks or watermarks. Recognizable "
+        "people includes any identifiable face. Clinic impersonation is true only when the image "
+        "implies an identifiable or named actual hospital, doctor, or patient encounter; a generic "
+        "anonymous illustrative treatment room is allowed."
+    )
+    try:
+        if settings.GCP_PROJECT_ID:
+            from google.genai import types
+
+            response = _get_google_client().models.generate_content(
+                model=settings.GEMINI_MODEL,
+                contents=[rubric, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=ImagePolicyAssessment,
+                    temperature=0,
+                    max_output_tokens=512,
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                ),
+            )
+            response_text = response.text or ""
+        elif settings.OPENAI_API_KEY:
+            data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+            response = _get_openai_client().with_options(
+                timeout=60.0, max_retries=0
+            ).chat.completions.create(
+                model=settings.OPENAI_MODEL_PARSE,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": rubric},
+                            {"type": "image_url", "image_url": {"url": data_url}},
+                        ],
+                    }
+                ],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "image_policy_assessment",
+                        "strict": True,
+                        "schema": ImagePolicyAssessment.model_json_schema(),
+                    },
+                },
+                temperature=0,
+                max_tokens=512,
+            )
+            response_text = response.choices[0].message.content or ""
+        else:
+            raise ImagePolicyUnavailableError(
+                "Google or OpenAI credentials are required for image policy review"
+            )
+        assessment = ImagePolicyAssessment.model_validate_json(response_text)
+    except (ImportError, ValidationError) as exc:
+        raise ImagePolicyUnavailableError("invalid image policy response") from exc
+    except ImagePolicyUnavailableError:
+        raise
+    except Exception as exc:
+        raise ImagePolicyUnavailableError("image policy review failed") from exc
+    if not image_is_publishable(assessment):
+        raise ImagePolicyRejectedError(assessment)
+    return assessment
 
 
 def _safe_google_visual_scene(topic: str) -> str:
@@ -402,7 +553,11 @@ def _safe_google_visual_scene(topic: str) -> str:
     retry=retry_if_exception(_is_transient_openai_error),
 )
 def _openai_generate_and_upload(
-    prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
+    prompt: str,
+    hospital_name: str,
+    *,
+    expected_topic: str | None = None,
+    counter: _CallCounter | None = None,
 ) -> str:
     """동기 — gpt-image-2 이미지 생성 + GCS 업로드 (실패 시 raise → 호출부에서 폴백).
     moderation_blocked 등 결정적 4xx 는 재시도하지 않고 즉시 raise → Google 폴백."""
@@ -425,7 +580,14 @@ def _openai_generate_and_upload(
         b64 = result.data[0].b64_json
         if not b64:
             raise ValueError("gpt-image-2 returned no b64_json payload")
-        image_bytes = base64.b64decode(b64)
+        image_bytes = base64.b64decode(b64, validate=True)
+        _validate_generated_image(
+            image_bytes,
+            mime_type="image/png",
+            prompt=prompt,
+            expected_topic=expected_topic,
+            counter=counter,
+        )
         return _upload_png_to_gcs(image_bytes, hospital_name)
     except ImportError:
         logger.error("openai SDK not installed")
@@ -441,7 +603,11 @@ def _openai_generate_and_upload(
     retry=retry_if_exception(_is_transient_google_image_error),
 )
 def _generate_and_upload(
-    prompt: str, hospital_name: str, *, counter: _CallCounter | None = None
+    prompt: str,
+    hospital_name: str,
+    *,
+    expected_topic: str | None = None,
+    counter: _CallCounter | None = None,
 ) -> str:
     """동기 — Vertex AI Gemini 이미지 생성 + GCS 업로드 (기본/폴백).
 
@@ -471,15 +637,15 @@ def _generate_and_upload(
             if response.candidates and response.candidates[0].content
             else []
         ) or []
-        image_bytes = next(
+        image_part = next(
             (
-                part.inline_data.data
+                part.inline_data
                 for part in parts
                 if part.inline_data and part.inline_data.data
             ),
             None,
         )
-        if not image_bytes:
+        if not image_part:
             finish_reasons = [
                 str(getattr(candidate, "finish_reason", None))
                 for candidate in (response.candidates or [])
@@ -494,6 +660,14 @@ def _generate_and_upload(
             ):
                 raise ImageSafetyBlockedError(message)
             raise ValueError(message)
+        image_bytes = image_part.data
+        _validate_generated_image(
+            image_bytes,
+            mime_type=getattr(image_part, "mime_type", None) or "image/png",
+            prompt=prompt,
+            expected_topic=expected_topic,
+            counter=counter,
+        )
         return _upload_png_to_gcs(image_bytes, hospital_name)
 
     except ImportError:

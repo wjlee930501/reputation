@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.orm import joinedload
 
-from app.models.content import ContentItem, ContentStatus
+from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 
 NIGHTLY_GENERATION_CAP = 50
@@ -41,6 +42,32 @@ def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
     return result.rowcount
 
 
+def write_back_generated_image(
+    db,
+    *,
+    item_id,
+    expected_title: str | None,
+    values: dict[str, Any],
+) -> int:
+    """Persist a generated image only while its source title still matches."""
+    title_clause = (
+        ContentItem.title.is_(None)
+        if expected_title is None
+        else ContentItem.title == expected_title
+    )
+    result = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id == item_id,
+            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+            title_clause,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
+
+
 # STEP 7 자동 생성은 공개 활성화가 끝난 병원만 대상으로 한다. PENDING_DOMAIN
 # pre-warm은 공개되지 않을 초안에 비용을 쓰고 STEP 5/6 순서를 우회하므로 제외한다.
 NIGHTLY_GENERATION_HOSPITAL_STATUSES = (HospitalStatus.ACTIVE,)
@@ -58,15 +85,65 @@ def _nightly_generation_claim_filter(claim_cutoff: datetime):
 
 
 def _needs_generation_recovery():
-    """Select only missing generation fragments, never a stored gate by itself.
+    """Select missing fragments and stored defects the writer can repair.
 
-    A blocking readiness summary on an otherwise complete item is publication
-    state, not permission to rewrite its body or image.  The 07:45 gate pager
-    owns that state.
+    A newly approved Essence archives the version attached to an existing body,
+    so that body must re-enter the scheduled writer once. FAQ schema fields and
+    empty required reference lists are also writer-owned output, rather than
+    permanent 07:45 publication blockers.
     """
+    faq_needs_repair = and_(
+        ContentItem.content_type == ContentType.FAQ,
+        or_(
+            ContentItem.faq_question.is_(None),
+            func.right(func.trim(ContentItem.faq_question), 1) != "?",
+            ContentItem.faq_answer_summary.is_(None),
+            func.length(func.trim(ContentItem.faq_answer_summary)) == 0,
+        ),
+    )
+    # JSONB ``null`` is a scalar (distinct from SQL NULL), and PostgreSQL raises
+    # if jsonb_array_length receives it. CASE keeps the function on array values
+    # while treating legacy/malformed shapes as empty and therefore repairable.
+    reference_count = case(
+        (
+            func.jsonb_typeof(ContentItem.references_list) == "array",
+            func.jsonb_array_length(ContentItem.references_list),
+        ),
+        else_=0,
+    )
+    references_need_repair = and_(
+        ContentItem.content_type.in_(
+            (
+                ContentType.FAQ,
+                ContentType.DISEASE,
+                ContentType.TREATMENT,
+                ContentType.COLUMN,
+                ContentType.HEALTH,
+                ContentType.LOCAL,
+            )
+        ),
+        or_(
+            ContentItem.references_list.is_(None),
+            reference_count == 0,
+        ),
+    )
+    body_uses_unapproved_essence = or_(
+        ContentItem.content_philosophy_id.is_(None),
+        ContentItem.content_philosophy.has(
+            HospitalContentPhilosophy.status != PhilosophyStatus.APPROVED
+        ),
+    )
     return or_(
         ContentItem.body.is_(None),
         ContentItem.image_url.is_(None),
+        ContentItem.image_policy_verified_at.is_(None),
+        faq_needs_repair,
+        references_need_repair,
+        body_uses_unapproved_essence,
+        and_(
+            ContentItem.essence_status.is_not(None),
+            ContentItem.essence_status != "ALIGNED",
+        ),
     )
 
 

@@ -48,14 +48,18 @@ class _Tenant:
 
 
 async def _seed_tenant(session, *, label: str) -> _Tenant:
-    """ACTIVE + site_live 병원 1곳 — 승인된 운영 기준·발행 콘텐츠·공개 사진까지."""
+    """공개 활성화·운영 준비가 끝난 병원 1곳과 공개 자원을 만든다."""
     suffix = uuid.uuid4().hex[:8]
     hospital = Hospital(
         id=uuid.uuid4(),
         name=f"교차테넌트{label}병원",
         slug=f"xtenant-{label}-{suffix}",
         status=HospitalStatus.ACTIVE,
+        profile_complete=True,
+        v0_report_done=True,
+        site_built=True,
         site_live=True,
+        schedule_set=True,
         region=[],
         specialties=[],
         keywords=[],
@@ -126,6 +130,14 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         total_count=8,
         title=f"{label} 병원 전용 콘텐츠",
         body="본문",
+        references_list=[
+            {
+                "title": "질병관리청 국가건강정보포털",
+                "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo.do",
+            }
+        ],
+        faq_question=f"{label} 병원 진료 정보는 어디에서 확인하나요?",
+        faq_answer_summary="병원 공식 안내와 의료진 상담을 통해 확인할 수 있습니다.",
         image_url="gs://reputation-images/content/x.png",
         scheduled_date=date(2026, 7, 15),
         status=ContentStatus.PUBLISHED,
@@ -149,6 +161,12 @@ async def _seed_content(session, tenant: _Tenant, *, philosophy_id, title: str) 
         total_count=8,
         title=title,
         body="본문",
+        references_list=[
+            {
+                "title": "질병관리청 국가건강정보포털",
+                "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo.do",
+            }
+        ],
         scheduled_date=date(2026, 7, 22),
         status=ContentStatus.PUBLISHED,
         published_at=datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),

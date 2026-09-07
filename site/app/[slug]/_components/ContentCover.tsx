@@ -1,7 +1,7 @@
 'use client'
 
 import Image from 'next/image'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 
 import { ContentMotif } from '@/components/brand'
 import { isOffAllowlistExternalUrl } from '@/lib/image-policy'
@@ -10,6 +10,8 @@ interface Props {
   type: string
   /** 해석된 이미지 URL (없으면 유형 모티프만 노출) */
   src?: string | null
+  /** 이미지가 콘텐츠 정보를 전달할 때 쓰는 대체 텍스트. 카드 장식 이미지는 생략한다. */
+  alt?: string
   /** 시각 변주 — featured(대형) / card(중형) / band(가로 배너) */
   variant?: 'featured' | 'card' | 'band'
   className?: string
@@ -30,13 +32,11 @@ const COVER_SIZES: Record<NonNullable<Props['variant']>, string> = {
  * 덮어씌운다(로드 확인 후 페이드인). 이미지가 없거나 404/blank여도 "빈 회색 박스"가 아니라
  * 유형 모티프가 보인다(anti-slop: 빈 박스 0개). 색상은 유형 태그 클래스로 스코프된다.
  */
-export function ContentCover({ type, src, variant = 'card', className = '' }: Props) {
+export function ContentCover({ type, src, alt = '', variant = 'card', className = '' }: Props) {
   const [failed, setFailed] = useState(!src)
-  // 이미지는 클라이언트 마운트 후에만 렌더 — SSR img가 하이드레이션 전 실패 시 onError 유실로
-  // 깨진 아이콘이 남는 것을 차단한다. 유형 모티프 언더레이는 항상 렌더되어 빈 박스가 없다.
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
-  const showImage = mounted && !failed && Boolean(src)
+  // SSR에서도 대표 이미지가 HTML에 포함되어 크롤러가 본문과 함께 발견할 수 있어야 한다.
+  // 로드 실패·빈 placeholder는 하이드레이션 뒤 모티프로 대체한다.
+  const showImage = !failed && Boolean(src)
 
   // 유형 모티프를 항상 언더레이로 깔고 이미지를 그 위에 덮는다. 실패(404)·빈 placeholder(1x1)
   // 일 때만 이미지를 제거한다(빈 회색 박스 0개).
@@ -48,7 +48,7 @@ export function ContentCover({ type, src, variant = 'card', className = '' }: Pr
   return (
     <div
       className={`clinic-cover clinic-cover--${variant} clinic-cover--${(type || 'FAQ').toLowerCase()} ${className}`.trim()}
-      aria-hidden="true"
+      aria-hidden={alt ? undefined : true}
     >
       {!showImage && (
         <>
@@ -64,7 +64,7 @@ export function ContentCover({ type, src, variant = 'card', className = '' }: Pr
         <Image
           ref={imgRef}
           src={src}
-          alt=""
+          alt={alt}
           fill
           sizes={COVER_SIZES[variant]}
           priority={variant === 'featured'}

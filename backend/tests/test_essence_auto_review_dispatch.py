@@ -127,9 +127,7 @@ def test_escalated_snapshot_with_approved_essence_recovers_without_opening(monke
 def test_escalated_snapshot_with_approved_essence_opens_incident_for_active_hospital(
     monkeypatch,
 ) -> None:
-    """ACTIVE hospitals keep generating content on the last approved version, so the
-    escalation that blocks new sources from being reflected must open a visible
-    (MEDIUM) incident instead of the silent notify=False recovery."""
+    """An unresolved active-hospital refresh opens one visible incident."""
 
     hospital_id = uuid.uuid4()
     result = EssenceRefreshResult(
@@ -154,7 +152,8 @@ def test_escalated_snapshot_with_approved_essence_opens_incident_for_active_hosp
     assert incident["pipeline"] == "essence_auto_review"
     assert incident["severity"] == tasks.IncidentSeverity.MEDIUM
     assert incident["hospital_id"] == hospital_id
-    assert "마지막으로 승인된" in incident["customer_impact"]
+    assert "일시 중지" in incident["customer_impact"]
+    assert "마지막으로 승인된" not in incident["customer_impact"]
     assert "essence" in incident["admin_path"]
 
 

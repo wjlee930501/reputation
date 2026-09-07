@@ -24,10 +24,11 @@ from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.models.sov import SovRecord
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
+from app.services.essence_engine import compute_sources_snapshot_hash
 from app.workers import tasks
 
 
-def test_nightly_generation_stmt_selects_only_missing_fragments():
+def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_content():
     window_start = date(2026, 6, 3)
     tomorrow = date(2026, 6, 11)
 
@@ -38,6 +39,12 @@ def test_nightly_generation_stmt_selects_only_missing_fragments():
     assert "scheduled_date <= '2026-06-11'" in sql
     assert "body IS NULL" in sql
     assert "image_url IS NULL" in sql
+    assert "image_policy_verified_at IS NULL" in sql
+    assert "faq_question" in sql
+    assert "faq_answer_summary" in sql
+    assert "jsonb_array_length" in sql
+    assert "hospital_content_philosophies.status" in sql
+    assert "essence_status" in sql
     assert "essence_check_summary" not in sql.split("WHERE", 1)[1]
     # cap+1로 읽어 절단 발생을 감지한다
     assert f"LIMIT {tasks.NIGHTLY_GENERATION_CAP + 1}" in sql
@@ -1151,14 +1158,26 @@ def test_existing_image_is_absolute_zero_recall_guard(monkeypatch):
     item = SimpleNamespace(
         id=uuid.uuid4(),
         body="stored body",
+        title="stored title",
         image_url="https://cdn.example/existing.webp",
+        image_policy_verified_at=datetime.now(),
         content_type=SimpleNamespace(value="FAQ"),
+        meta_description="summary",
+        references_list=[
+            {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+        ],
+        faq_question="진료 전 무엇을 확인해야 하나요?",
+        faq_answer_summary="증상과 복용약을 정리합니다.",
         essence_check_summary=None,
     )
     hospital = SimpleNamespace(id=uuid.uuid4(), name="이미지보존의원", slug="image-guard")
     philosophy = SimpleNamespace(id=uuid.uuid4())
+    item.content_philosophy_id = philosophy.id
 
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(
+        tasks, "assess_content_publication", lambda *_args: SimpleNamespace(code=None)
+    )
     monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
     monkeypatch.setattr(
         tasks,
@@ -1189,11 +1208,19 @@ def test_recovery_fills_image_fragment_without_rewriting_body(monkeypatch):
         body="immutable stored body",
         title="stored title",
         image_url=None,
+        image_policy_verified_at=None,
         content_type=SimpleNamespace(value="FAQ"),
+        meta_description="summary",
+        references_list=[
+            {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+        ],
+        faq_question="진료 전 무엇을 확인해야 하나요?",
+        faq_answer_summary="증상과 복용약을 정리합니다.",
         essence_check_summary=None,
     )
     hospital = SimpleNamespace(id=uuid.uuid4(), name="조각복구의원", slug="fragment")
     philosophy = SimpleNamespace(id=uuid.uuid4())
+    item.content_philosophy_id = philosophy.id
     image_calls = 0
 
     class DB(_NightlyTaskDB):
@@ -1205,16 +1232,25 @@ def test_recovery_fills_image_fragment_without_rewriting_body(monkeypatch):
         image_calls += 1
         return "https://cdn.example/recovered.webp", "prompt"
 
-    def write_image(_db, *, item_id, values):
+    def write_image(_db, *, item_id, expected_title, values):
         assert item_id == item.id
-        assert set(values) == {"image_url", "image_prompt"}
+        assert expected_title == item.title
+        assert set(values) == {
+            "image_url",
+            "image_prompt",
+            "image_policy_verified_at",
+        }
         item.image_url = values["image_url"]
+        item.image_policy_verified_at = values["image_policy_verified_at"]
         return 1
 
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(
+        tasks, "assess_content_publication", lambda *_args: SimpleNamespace(code=None)
+    )
     monkeypatch.setattr(tasks, "generate_image", image_only)
     monkeypatch.setattr(tasks, "hospital_image_direction", lambda *_args: None)
-    monkeypatch.setattr(tasks, "write_back_generated_content", write_image)
+    monkeypatch.setattr(tasks, "write_back_generated_image", write_image)
     monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
     monkeypatch.setattr(
         tasks,
@@ -1230,6 +1266,154 @@ def test_recovery_fills_image_fragment_without_rewriting_body(monkeypatch):
     assert code is None
     assert image_calls == 1
     assert item.body == "immutable stored body"
+
+
+def test_newly_approved_essence_regenerates_body_from_previous_snapshot(monkeypatch):
+    old_philosophy_id = uuid.uuid4()
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        body="old snapshot body",
+        title="old title",
+        content_philosophy_id=old_philosophy_id,
+        content_type=SimpleNamespace(value="NOTICE"),
+        essence_check_summary=None,
+        scheduled_date=date(2026, 8, 20),
+        published_at=None,
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="자동갱신의원")
+    calls = {"writer": 0}
+
+    class Result:
+        rowcount = 1
+
+        def all(self):
+            return []
+
+    class DB:
+        def execute(self, _statement):
+            return Result()
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def refresh(self, _item):
+            return None
+
+    async def allowed(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def regenerated(**_kwargs):
+        calls["writer"] += 1
+        return (
+            {
+                "title": "new snapshot title",
+                "body": "new snapshot body",
+                "meta_description": "summary",
+                "references": [],
+                "faq_question": None,
+                "faq_answer_summary": None,
+            },
+            SimpleNamespace(status="ALIGNED", summary={"blocking": False}),
+        )
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", regenerated)
+    monkeypatch.setattr(
+        tasks,
+        "_recover_missing_content_image",
+        lambda *_args: tasks.GenerationItemState.SUCCEEDED,
+    )
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+
+    state, code, _message = tasks._generate_single_content_item(DB(), item, hospital)
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    assert code is None
+    assert calls["writer"] == 1
+
+
+def test_current_essence_faq_with_missing_schema_fields_is_repaired(monkeypatch):
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        body="stored FAQ body",
+        title="stored FAQ title",
+        content_philosophy_id=philosophy.id,
+        content_type=SimpleNamespace(value="FAQ"),
+        essence_check_summary=None,
+        scheduled_date=date(2026, 8, 20),
+        published_at=None,
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="FAQ복구의원")
+    calls = {"writer": 0}
+
+    class Result:
+        rowcount = 1
+
+        def all(self):
+            return []
+
+    class DB:
+        def execute(self, _statement):
+            return Result()
+
+        def commit(self):
+            return None
+
+        def rollback(self):
+            return None
+
+        def refresh(self, _item):
+            return None
+
+    async def allowed(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def regenerated(**_kwargs):
+        calls["writer"] += 1
+        return (
+            {
+                "title": "repaired FAQ",
+                "body": "repaired body",
+                "meta_description": "summary",
+                "references": [
+                    {"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}
+                ],
+                "faq_question": "언제 진료받아야 하나요?",
+                "faq_answer_summary": "증상이 지속되면 진료받습니다.",
+            },
+            SimpleNamespace(status="ALIGNED", summary={"blocking": False}),
+        )
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(
+        tasks,
+        "assess_content_publication",
+        lambda *_args: SimpleNamespace(code="FAQ_FIELDS_MISSING"),
+    )
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", regenerated)
+    monkeypatch.setattr(
+        tasks,
+        "_recover_missing_content_image",
+        lambda *_args: tasks.GenerationItemState.SUCCEEDED,
+    )
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+
+    state, code, _message = tasks._generate_single_content_item(DB(), item, hospital)
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    assert code is None
+    assert calls["writer"] == 1
 
 
 def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeback(
@@ -1503,7 +1687,6 @@ def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatc
         def __exit__(self, *_exc):
             return False
 
-    fallbacks = []
     pages = []
     monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
@@ -1513,11 +1696,6 @@ def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatc
         lambda *_args, **_kwargs: arrow.get(
             2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"
         ),
-    )
-    monkeypatch.setattr(
-        tasks,
-        "_write_morning_image_fallback",
-        lambda _db, target, owner: fallbacks.append((target.id, owner.id)) or True,
     )
     monkeypatch.setattr(
         tasks,
@@ -1541,7 +1719,6 @@ def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatc
 
     tasks.prepublish_content_generation_recovery.run()
 
-    assert fallbacks == [(item.id, hospital.id)]
     assert len(pages) == 1
 
 
@@ -1916,6 +2093,11 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(
         tasks,
+        "_recover_missing_content_image",
+        lambda *_args: tasks.GenerationItemState.SUCCEEDED,
+    )
+    monkeypatch.setattr(
+        tasks,
         "screen_content_against_philosophy",
         lambda _item, _philosophy: SimpleNamespace(status="ALIGNED", summary={"ok": True}),
     )
@@ -1980,8 +2162,8 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
     assert item.essence_check_summary["blocking"] is True
 
 
-def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch):
-    """Last-good approval generates while current/public refresh is pending."""
+def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
+    """Automated snapshot refresh must finish before a new write can start."""
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
     processed = SimpleNamespace(
         id=uuid.uuid4(),
@@ -2001,9 +2183,7 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     approved = SimpleNamespace(
         id=uuid.uuid4(),
         status=PhilosophyStatus.APPROVED,
-        # The saved baseline is deliberately stale relative to ``processed``.
-        # Public/current must remain unavailable while generation uses approved.
-        source_snapshot_hash="previous-approved-snapshot",
+        source_snapshot_hash=compute_sources_snapshot_hash([processed]),
         source_asset_ids=[processed.id],
     )
 
@@ -2144,17 +2324,13 @@ def test_approved_hospital_generates_when_readiness_would_be_pending(monkeypatch
     outcome, code, _message = tasks._generate_single_content_item(
         approved_db, pending_item, hospital
     )
-    assert outcome == tasks.GenerationItemState.SUCCEEDED
-    assert code is None
-    assert calls["cost"] == 1
-    assert calls["generate"] == 1
-    assert approved_db.written_values
-    written = approved_db.written_values[0]
-    assert written["title"] == "치질 수술 전 확인할 점"
-    assert written["body"] == "환자 상태에 따라 진료 방향을 설명합니다."
-    assert written["status"] == tasks.ContentStatus.DRAFT
-    assert written["content_philosophy_id"] == approved.id
-    assert pending_item.essence_status != tasks.ESSENCE_STATUS_MISSING_APPROVED
+    assert outcome == tasks.GenerationItemState.SKIPPED
+    assert code == "MISSING_APPROVED_ESSENCE"
+    assert calls["cost"] == 0
+    assert calls["generate"] == 0
+    assert approved_db.written_values == []
+    assert pending_item.content_philosophy_id is None
+    assert pending_item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
 
     calls_before_onboarding = dict(calls)
     onboarding_item = SimpleNamespace(
@@ -2722,52 +2898,6 @@ def test_morning_publish_cycle_has_no_success_slack(monkeypatch):
     assert due_db.added == []
 
 
-def test_seven_forty_five_image_sweep_uses_confirmed_hero_fallback(monkeypatch):
-    item = SimpleNamespace(
-        id=uuid.uuid4(),
-        scheduled_date=date(2026, 8, 19),
-        title="진료 안내",
-        body="이미 저장된 본문",
-        image_url=None,
-        image_prompt=None,
-    )
-    hospital = SimpleNamespace(
-        hero_image_url="https://cdn.example.test/confirmed-hero.jpg"
-    )
-
-    class DB:
-        commits = 0
-
-        def commit(self):
-            self.commits += 1
-
-        def rollback(self):
-            raise AssertionError("confirmed fallback should be writable")
-
-        def refresh(self, _item):
-            return None
-
-    db = DB()
-
-    def write_fallback(_db, *, item_id, values):
-        assert item_id == item.id
-        item.image_url = values["image_url"]
-        item.image_prompt = values["image_prompt"]
-        return 1
-
-    monkeypatch.setattr(tasks, "write_back_generated_content", write_fallback)
-    monkeypatch.setattr(
-        tasks.arrow,
-        "now",
-        lambda *_args, **_kwargs: arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"),
-    )
-
-    assert tasks._write_morning_image_fallback(db, item, hospital) is True
-    assert item.image_url == hospital.hero_image_url
-    assert item.image_prompt == tasks.CONFIRMED_HERO_FALLBACK_PROMPT
-    assert db.commits == 1
-
-
 def test_auto_publish_one_commits_publication_before_external_effects(monkeypatch):
     content_id = uuid.uuid4()
     hospital = SimpleNamespace(
@@ -2787,6 +2917,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
         title="진료 전 확인할 점",
         body="상태에 따라 진료 방향을 설명합니다.",
         image_url="https://storage.googleapis.com/reputation/content.png",
+        image_policy_verified_at=datetime.now(),
         image_prompt=None,
         sequence_no=1,
         total_count=8,
@@ -2860,7 +2991,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert item.post_publish_notified_at is None
 
 
-def test_auto_publish_closes_missing_image_with_confirmed_hospital_hero(monkeypatch):
+def test_auto_publish_does_not_treat_profile_hero_as_verified_content_image(monkeypatch):
     hospital = _publication_hospital()
     hospital.hero_image_url = "https://cdn.example.test/hospital-hero.jpg"
     item = _publication_item(hospital, body="진료 기준과 내원 시점을 안내합니다.")
@@ -2869,21 +3000,21 @@ def test_auto_publish_closes_missing_image_with_confirmed_hospital_hero(monkeypa
     db = _AutoPublishDB(item, hospital)
     philosophy = _approved_philosophy()
 
-    def assert_fallback_before_gate(candidate, _philosophy):
-        assert candidate.image_url == hospital.hero_image_url
+    def assert_no_fallback_before_gate(candidate, _philosophy):
+        assert candidate.image_url is None
         return SimpleNamespace(
-            publishable=True,
-            code=None,
-            message=None,
+            publishable=False,
+            code="CONTENT_IMAGE_NOT_READY",
+            message="대표 이미지가 아직 준비되지 않았습니다.",
             violations=(),
-            essence_status="ALIGNED",
-            essence_summary={"blocking": False},
+            essence_status="NEEDS_REVIEW",
+            essence_summary={"blocking": True, "findings": []},
             philosophy_id=philosophy.id,
         )
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
-    monkeypatch.setattr(tasks, "assess_content_publication", assert_fallback_before_gate)
+    monkeypatch.setattr(tasks, "assess_content_publication", assert_no_fallback_before_gate)
     monkeypatch.setattr(
         tasks.arrow,
         "now",
@@ -2892,13 +3023,12 @@ def test_auto_publish_closes_missing_image_with_confirmed_hospital_hero(monkeypa
 
     outcome = tasks._auto_publish_one(item.id)
 
-    assert outcome["kind"] == "published"
-    assert item.status == tasks.ContentStatus.PUBLISHED
-    assert item.image_url == hospital.hero_image_url
-    assert item.image_prompt == tasks.CONFIRMED_HERO_FALLBACK_PROMPT
+    assert outcome["kind"] == "blocked"
+    assert item.status == tasks.ContentStatus.DRAFT
+    assert item.image_url is None
+    assert item.image_prompt is None
     assert [log.action for log in db.added if hasattr(log, "action")] == [
-        "auto_publish_confirmed_image_fallback",
-        "auto_publish_content",
+        "auto_publish_blocked",
     ]
 
 
@@ -2975,9 +3105,10 @@ def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
         title=title,
         body=body,
         image_url="https://storage.googleapis.com/reputation/content.png",
+        image_policy_verified_at=datetime.now(),
         meta_description="진료 전 확인할 점을 정리했습니다.",
-        faq_question=None,
-        faq_answer_summary=None,
+        faq_question="진료 전에 무엇을 확인해야 하나요?",
+        faq_answer_summary="현재 증상과 복용약을 정리해 의료진에게 알려 주세요.",
         # 참고 자료 게이트(MISSING_REFERENCES)는 이 테스트들의 관심사가 아니므로
         # 화이트리스트 도메인의 실제 문서 URL로 미리 통과시켜 둔다.
         references_list=[

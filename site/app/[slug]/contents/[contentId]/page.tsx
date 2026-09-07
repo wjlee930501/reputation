@@ -61,21 +61,8 @@ function headingText(children: ReactNode): string {
     .join('')
 }
 
-function buildImageAlt(args: {
-  contentTitle: string
-  typeLabel: string
-  hospitalName: string
-  region: string[]
-  directorName: string
-}): string {
-  const regionLabel = args.region?.join(' ') ?? ''
-  const parts = [
-    `${args.typeLabel}: ${args.contentTitle}`,
-    args.hospitalName,
-    regionLabel,
-    args.directorName ? `${args.directorName} 원장 진료 분야` : '',
-  ].filter(Boolean)
-  const joined = parts.join(' — ')
+function buildImageAlt(args: { contentTitle: string; typeLabel: string }): string {
+  const joined = `${args.typeLabel}: ${args.contentTitle}`
   return joined.length > ALT_MAX_LENGTH ? `${joined.slice(0, ALT_MAX_LENGTH - 1)}…` : joined
 }
 
@@ -91,34 +78,6 @@ function calculateReadingMinutes(body: string | null | undefined): number {
   // 마크다운 기호·URL 노이즈 차감 후 글자수 추정.
   const stripped = body.replace(/[#*_\[\]\(\)`>!\-]/g, '').replace(/https?:\/\/\S+/g, '')
   return Math.max(1, Math.round(stripped.length / KOREAN_READING_SPEED_CHARS_PER_MIN))
-}
-
-interface HowToStep {
-  name: string
-  text: string
-}
-
-// HowTo schema용 단계 추출. content_engine TREATMENT 프롬프트가 "### 1단계 ...",
-// "### 2단계 ..." 형식으로 작성하도록 유도하므로 H3을 step으로 매핑.
-function extractHowToSteps(body: string | null | undefined): HowToStep[] {
-  if (!body) return []
-  const lines = body.split('\n')
-  const steps: HowToStep[] = []
-  let current: HowToStep | null = null
-  for (const rawLine of lines) {
-    const line = rawLine.trim()
-    const match = line.match(/^###\s+(.+)/)
-    if (match) {
-      if (current) steps.push(current)
-      current = { name: match[1].trim(), text: '' }
-      continue
-    }
-    if (current && line && !line.startsWith('#')) {
-      current.text = current.text ? `${current.text} ${line}` : line
-    }
-  }
-  if (current) steps.push(current)
-  return steps.filter((s) => s.text.length > 0)
 }
 
 export async function generateMetadata({ params: paramsPromise }: Props): Promise<Metadata> {
@@ -145,7 +104,10 @@ export async function generateMetadata({ params: paramsPromise }: Props): Promis
         description,
         url: canonicalUrl,
         type: 'article',
-        images: imageUrl ? [{ url: imageUrl }] : [],
+        publishedTime: content.published_at || undefined,
+        modifiedTime: content.body_updated_at || content.published_at || undefined,
+        authors: [hospital.name],
+        images: imageUrl ? [{ url: imageUrl, alt: `${TYPE_LABELS[content.content_type] ?? '의료 정보'}: ${content.title}` }] : [],
       },
     }
   } catch {
@@ -212,8 +174,8 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
   ]
 
   const articleUrl = `${hospitalRootUrl}/contents/${params.contentId}`
-  const datePublished = content.published_at || content.scheduled_date
-  const dateModified = content.body_updated_at || content.published_at || content.scheduled_date
+  const datePublished = content.published_at || undefined
+  const dateModified = content.body_updated_at || content.published_at || undefined
 
   // 모든 article 공통 base. type별 추가 schema는 jsonLd 배열에 별도로 push.
   const physicianId = `${hospitalRootUrl}/doctor#physician`
@@ -229,12 +191,16 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
       '@type': 'MedicalClinic',
       '@id': clinicId,
       name: hospital.name,
+      url: hospitalRootUrl,
     },
     publisher: {
       '@type': 'MedicalClinic',
       '@id': clinicId,
       name: hospital.name,
+      url: hospitalRootUrl,
+      logo: resolveAssetUrl(hospital.logo_url) ?? undefined,
     },
+    inLanguage: 'ko-KR',
     isPartOf: pillarUrl
       ? {
           '@type': 'CollectionPage',
@@ -258,20 +224,12 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
             }
           })
         : undefined,
-    // Speakable: 음성 어시스턴트가 발췌해 읽을 수 있는 구간.
-    speakable: {
-      '@type': 'SpeakableSpecification',
-      cssSelector: ['.clinic-article-title', '.clinic-article-tldr p'],
-    },
   }
 
   const imageAlt = content.image_url
     ? buildImageAlt({
         contentTitle: content.title,
         typeLabel,
-        hospitalName: hospital.name,
-        region: hospital.region,
-        directorName: hospital.director_name,
       })
     : ''
 
@@ -280,32 +238,11 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
     buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl),
   ]
 
-  if (articleImageUrl) {
-    jsonLd.push({
-      '@context': 'https://schema.org',
-      '@type': 'ImageObject',
-      contentUrl: articleImageUrl,
-      url: articleImageUrl,
-      name: content.title,
-      caption: imageAlt,
-      description: content.meta_description ?? imageAlt,
-      creator: {
-        '@type': 'MedicalClinic',
-        '@id': clinicId,
-        name: hospital.name,
-      },
-      representativeOfPage: true,
-      datePublished,
-      // license는 플랫폼(MotionLabs) 약관을 가리키고 있어 제거 — 병원 페이지의
-      // 구조화 데이터가 B2B 법적 문서를 참조하면 안 된다.
-    })
-  }
-
   // 화면과 같은 승인 Q&A 선택기를 쓴다. 제목·메타 설명으로 없는 FAQ를 만들지 않는다.
-  const faqJsonLd = buildFaqPageJsonLd([content], hospitalRootUrl)
+  const faqJsonLd = buildFaqPageJsonLd([content], hospitalRootUrl, articleUrl)
   if (faqJsonLd) jsonLd.push(faqJsonLd)
 
-  // ── TREATMENT → MedicalProcedure + (단계 추출 시) HowTo ──────────────────
+  // ── TREATMENT → MedicalProcedure ────────────────────────────────────────
   if (content.content_type === 'TREATMENT') {
     jsonLd.push({
       '@context': 'https://schema.org',
@@ -319,21 +256,6 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
         name: hospital.director_name,
       },
     })
-    const steps = extractHowToSteps(content.body)
-    if (steps.length >= 2) {
-      jsonLd.push({
-        '@context': 'https://schema.org',
-        '@type': 'HowTo',
-        name: content.title,
-        description: content.meta_description ?? undefined,
-        step: steps.map((step, idx) => ({
-          '@type': 'HowToStep',
-          position: idx + 1,
-          name: step.name,
-          text: step.text,
-        })),
-      })
-    }
   }
 
   // ── DISEASE → MedicalCondition + MedicalWebPage ────────────────────────
@@ -376,6 +298,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                   <ContentCover
                     type={content.content_type}
                     src={resolveAssetUrl(content.image_url)}
+                    alt={imageAlt}
                     variant="featured"
                   />
                 </div>

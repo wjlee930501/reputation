@@ -27,7 +27,9 @@ from urllib.parse import urlparse
 import httpx
 
 from app.core.config import settings
+from app.services.content_citations import platform_public_base_url
 from app.services.site_revalidate import content_site_paths, hospital_site_paths
+from app.utils.domain import normalize_domain
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +44,47 @@ def is_configured() -> bool:
     return bool(settings.INDEXNOW_ENABLED and settings.INDEXNOW_KEY)
 
 
-def public_base_url(aeo_domain: str | None) -> str:
+def public_base_url(aeo_domain: str | None, slug: str | None) -> str:
     """병원 공개 표면의 절대 base URL.
 
     자기 도메인을 연결했으면 그 도메인이 정본이다. 플랫폼 호스트로 제출하면
     커스텀 도메인 URL은 색인 신호를 못 받는다.
     """
-    domain = (aeo_domain or "").strip().strip("/")
+    domain = normalize_domain(aeo_domain)
     if domain:
-        if "://" not in domain:
-            domain = f"https://{domain}"
-        return domain.rstrip("/")
-    return settings.SITE_BASE_URL.rstrip("/")
+        return f"https://{domain}"
+    return (platform_public_base_url(slug) or settings.SITE_BASE_URL).rstrip("/")
+
+
+def _canonical_public_paths(
+    paths: list[str], slug: str, *, tenant_host: bool
+) -> list[str]:
+    """Revalidation용 내부 경로를 tenant host의 공개 경로로 바꾼다.
+
+    `site_revalidate`는 커스텀 호스트의 `/`와 Next 내부 라우트 `/{slug}`를 모두
+    무효화해야 해서 두 형태를 함께 돌려준다. IndexNow는 그 목록을 그대로 쓰면
+    canonical이 아닌 `https://tenant/{slug}/...`를 제출한다. tenant host에서 slug
+    접두어는 308로 제거되므로, 제출 전에 공개 pathname 하나로 축약한다.
+    """
+    prefix = f"/{slug}"
+    canonical: list[str] = []
+    for path in paths:
+        if tenant_host:
+            if path == prefix:
+                public_path = "/"
+            elif path.startswith(f"{prefix}/"):
+                public_path = path[len(prefix) :]
+            else:
+                public_path = path
+        else:
+            # 로컬/비표준 환경은 tenant 서브도메인을 만들 수 없어 플랫폼의
+            # /{slug} 경로가 정본이다. 전역 루트·llms.txt는 이 병원 URL이 아니다.
+            if path != prefix and not path.startswith(f"{prefix}/"):
+                continue
+            public_path = path
+        if public_path not in canonical:
+            canonical.append(public_path)
+    return canonical
 
 
 def _host_of(base_url: str) -> str:
@@ -188,9 +219,19 @@ async def submit_content_published(
     treatments: list | None = None,
 ) -> bool:
     """콘텐츠 발행 직후 호출 — 새 글과 그 글이 노출되는 목록/허브 페이지를 함께 알린다."""
-    base = public_base_url(aeo_domain)
+    platform_tenant_base = platform_public_base_url(slug)
+    tenant_host = bool(normalize_domain(aeo_domain) or platform_tenant_base)
+    base = public_base_url(aeo_domain, slug)
     return await submit_urls(
-        base_url=base, urls=_absolute(base, content_site_paths(slug, content_id, treatments))
+        base_url=base,
+        urls=_absolute(
+            base,
+            _canonical_public_paths(
+                content_site_paths(slug, content_id, treatments),
+                slug,
+                tenant_host=tenant_host,
+            ),
+        ),
     )
 
 
@@ -206,11 +247,15 @@ def hospital_all_urls(
     백필처럼 "이 병원의 색인 대상 전부"가 필요한 곳에서 쓴다.
     (base_url, urls)를 함께 돌려주는 이유는 submit_urls가 host 검증에 base_url을 쓰기 때문이다.
     """
-    base = public_base_url(aeo_domain)
+    platform_tenant_base = platform_public_base_url(slug)
+    tenant_host = bool(normalize_domain(aeo_domain) or platform_tenant_base)
+    base = public_base_url(aeo_domain, slug)
     paths = hospital_site_paths(slug, treatments)
     for content_id in content_ids or []:
         paths.append(f"/{slug}/contents/{content_id}")
-    return base, _absolute(base, paths)
+    return base, _absolute(
+        base, _canonical_public_paths(paths, slug, tenant_host=tenant_host)
+    )
 
 
 async def submit_content_published_safe(

@@ -4,17 +4,21 @@
 // FAQPage JSON-LD 빌더는 여기 두지 않는다 — schema.ts의 buildFaqPageJsonLd가
 // @id/url까지 채운 완성판이고 실제로 쓰이는 것도 그쪽이다 (중복 방지).
 
-/**
- * hospital.region([시/도, 구/시])로 PostalAddress를 보강한다.
- * region[0] → addressRegion, region[1] → addressLocality. 비어 있으면 해당 키를 생략한다.
- * streetAddress/addressCountry는 호출부가 채운다 (이 함수는 지역 파생값만 더한다).
+/** 실제 병원 주소만으로 만드는 PostalAddress.
+ *
+ * `hospital.region`은 주소 계층이 아니라 검색 타겟 지역 배열이다. 예를 들어
+ * `["강남구", "서초구"]`를 addressRegion/addressLocality로 매핑하면 병원 주소와
+ * 무관한 행정구역을 물리 주소로 주장하게 된다. 원문 주소는 이미 전체 주소이므로
+ * 임의 파싱하거나 타겟 값을 섞지 않고 그대로 제공한다.
  */
-export function buildAddressRegionFields(
-  region: string[] | null | undefined,
-): { addressRegion?: string; addressLocality?: string } {
-  const cleaned = (region || []).map((r) => (r || '').trim()).filter(Boolean)
-  const fields: { addressRegion?: string; addressLocality?: string } = {}
-  if (cleaned[0]) fields.addressRegion = cleaned[0]
-  if (cleaned[1]) fields.addressLocality = cleaned[1]
-  return fields
+export function buildPostalAddress(
+  address: string | null | undefined,
+): Record<string, string> | undefined {
+  const streetAddress = (address || '').trim()
+  if (!streetAddress) return undefined
+  return {
+    '@type': 'PostalAddress',
+    streetAddress,
+    addressCountry: 'KR',
+  }
 }

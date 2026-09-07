@@ -286,7 +286,10 @@ TYPE_PROMPTS = {
 """,
     ContentType.NOTICE: """\
 [콘텐츠 유형: 병원 공지]
-병원의 최근 소식·장비·서비스를 신뢰감 있게 안내하세요.
+승인된 병원 프로파일과 운영 기준에 명시된 사실만 안내하세요.
+확인된 날짜·진료시간 변경·휴진·행사 정보가 없으면 최근 소식이나 이벤트를 만들지 말고,
+등록된 진료 항목을 설명하는 상시 이용 안내로 작성하세요. 프로파일에 없는 새 장비 도입,
+신규 서비스, 의료진 참여, 할인·혜택, 성과를 추정하거나 만들어내지 마세요.
 진료 내용: {treatments}
 """,
 }
@@ -760,6 +763,19 @@ def _validate_generated_result(
 ) -> dict:
     """Apply every stored-content hard gate to one normalized provider result."""
 
+    # FAQPage JSON-LD fields are a hard type contract, not optional decoration.
+    # Conversely, non-FAQ outputs must not leak model-supplied FAQ schema fields.
+    result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
+    result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
+    if content_type == ContentType.FAQ:
+        if not result["faq_question"] or not result["faq_answer_summary"]:
+            raise ValueError("FAQ output requires faq_question and faq_answer_summary")
+        if not result["faq_question"].endswith("?"):
+            raise ValueError("FAQ question must end with a question mark")
+    else:
+        result["faq_question"] = None
+        result["faq_answer_summary"] = None
+
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
     geo_findings = _validate_geo(result, hospital, content_type)
@@ -778,16 +794,21 @@ def _validate_generated_result(
             "; ".join(all_findings),
         )
 
-    # FAQ 분리 필드 정규화 — 다른 type일 때는 None. 금지 표현 검사 전에 정규화해
-    # faq_question/faq_answer_summary도 동일한 필터 경로를 타게 한다 (P1-2).
-    result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
-    result["faq_answer_summary"] = _trim_or_none(result.get("faq_answer_summary"), 600)
-
     # 금지 표현이 하나라도 있으면 이 결과는 폐기한다. 문장 일부를 삭제·치환하면 문법과
     # 의료 의미가 달라질 수 있으므로, tenacity가 공급자를 다시 호출해 공개 필드 전체가
     # 완전한 새 응답인 결과만 반환하게 한다. 재시도 소진 시 호출자는 결과를 저장하지 않고
     # 기존 생성 실패 incident/outbox 경로를 연다.
     violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
+    reference_titles = " ".join(
+        str(reference.get("title") or "").strip()
+        for reference in (result.get("references") or [])
+        if isinstance(reference, dict)
+    )
+    violations.extend(
+        check_forbidden_content_fields(
+            {"reference_titles": reference_titles}, ("reference_titles",)
+        )
+    )
     if violations:
         logger.warning(
             "Forbidden expressions found labels=%s — discarding the complete response and "
@@ -846,7 +867,7 @@ async def generate_content(
         body = (result.get("body") or "").rstrip()
         if not director or director in body:
             raise
-        result["body"] = f"{body}\n\n본원 {director} 원장이 진료를 담당합니다."
+        result["body"] = f"{body}\n\n{hospital.name}의 원장은 {director}입니다."
         return _validate_generated_result(result, hospital, content_type, content_brief)
 
 

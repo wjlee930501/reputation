@@ -6,6 +6,18 @@ CellState = Literal["SUCCESS", "FAILED", "EXCLUDED"]
 QueryIntent = Literal["LOCAL", "INFO"]
 QueryIntentSource = Literal["FROZEN", "LEGACY_LIVE"]
 ComparabilityStatus = Literal["COMPARABLE", "NON_COMPARABLE"]
+ComparisonReason = Literal[
+    "MATCHED_COHORT",
+    "NO_PRIOR_MANIFEST",
+    "PLATFORM_COHORT_MISSING",
+    "MEASUREMENT_POLICY_CHANGED",
+    "INTENT_SNAPSHOT_MISSING",
+    "NO_MATCHED_CELLS",
+    "ANSWER_MODEL_UNKNOWN",
+    "ANSWER_MODEL_CHANGED",
+    "QUERY_TEXT_CHANGED",
+    "SAMPLE_SHAPE_CHANGED",
+]
 
 
 class CellPayload(TypedDict):
@@ -84,7 +96,7 @@ class MeasurementBasisPayload(TypedDict):
 
 class ComparisonPayload(TypedDict):
     status: ComparabilityStatus
-    reason: str
+    reason: ComparisonReason
     current_sov_pct: float | None
     prior_sov_pct: float | None
     change_pct: float | None

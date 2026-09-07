@@ -2,8 +2,9 @@
 // 계층으로 분리해 단위 테스트가 가능하게 한다(sitemap.ts는 headers()→scope만 넘기는 얇은 래퍼).
 //
 // 스코프별 계약:
-//   - 'all'  : 플랫폼(전체 병원) sitemap. 플랫폼 루트 + /llms.txt(platformBaseEntries) +
-//              모든 병원 엔트리.
+//   - 'all'  : 플랫폼 루트 sitemap. 플랫폼 루트 + /llms.txt만 포함한다. 병원 URL의
+//              canonical origin은 각 `{slug}.{platform host}` 또는 자기 도메인이므로
+//              각 tenant host의 sitemap이 소유한다.
 //   - 'host' : 커스텀 도메인(또는 {slug}.{platform host} 하이브리드 서브도메인) sitemap.
 //              그 병원 하나의 URL만 싣는다 — 플랫폼 엔트리는 절대 넣지 않는다(넣으면
 //              커스텀 도메인 sitemap에 플랫폼/타 병원 URL이 함께 노출된다).
@@ -12,7 +13,7 @@ import type { MetadataRoute } from 'next'
 
 import { REVALIDATE_SECONDS } from './fetch-policy.ts'
 import type { SitemapScope } from './sitemap-host.ts'
-import { normalizeCustomDomain, platformSiteUrl } from './site-url.ts'
+import { platformSiteUrl } from './site-url.ts'
 import { buildTreatmentSlug } from './treatment-slug.ts'
 
 // 백엔드 /contents 목록의 하드캡과 동일 — offset으로 페이지를 넘겨 전체 발행 콘텐츠를 순회한다.
@@ -173,8 +174,7 @@ export async function appendHospitalEntries(
       url: `${base}/contents/${content.id}`,
       lastModified:
         validDate(content.body_updated_at) ||
-        validDate(content.published_at) ||
-        validDate(content.scheduled_date),
+        validDate(content.published_at),
       changeFrequency: 'monthly',
       priority: 0.6,
     })
@@ -243,28 +243,6 @@ export async function buildSitemap(
     return entries
   }
 
-  const platformBase = platformSiteUrl()
   const entries = platformBaseEntries()
-  let hospitals: HospitalEntry[]
-  try {
-    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: REVALIDATE_SECONDS } })
-    if (!res.ok) {
-      console.error(`[sitemap] Failed to fetch hospitals: HTTP ${res.status}`)
-      return entries
-    }
-    hospitals = await res.json()
-  } catch (err) {
-    console.error('[sitemap] Error fetching hospitals:', err)
-    return entries
-  }
-
-  for (const hospital of hospitals) {
-    // 자체 도메인이 연결된 병원은 페이지 canonical이 그 도메인을 가리킨다(site-url.canonicalBase).
-    // 플랫폼 sitemap에 플랫폼 호스트 URL로 실으면 자기 자신을 중복으로 신고하는 꼴이라 제외하고,
-    // 해당 병원은 자기 도메인의 host scope sitemap이 담당한다.
-    if (normalizeCustomDomain(hospital.aeo_domain)) continue
-    await appendHospitalEntries(entries, apiBase, hospital, platformBase, `/${hospital.slug}`)
-  }
-
   return entries
 }

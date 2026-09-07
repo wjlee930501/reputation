@@ -23,10 +23,10 @@ test('the visit node does not claim /visit as the clinic url', () => {
 
 test('both nodes build the same PostalAddress shape', () => {
   for (const source of [hubPageSource, visitPageSource]) {
-    assert.match(source, /streetAddress: hospital\.address/)
-    assert.match(source, /addressCountry: 'KR'/)
-    // region[0]/region[1] 보강 없이는 두 노드의 주소가 서로 다른 정밀도로 병합된다.
-    assert.match(source, /\.\.\.buildAddressRegionFields\(hospital\.region\)/)
-    assert.match(source, /buildAddressRegionFields.*from '@\/lib\/clinic-schema'/)
+    assert.match(source, /address: buildPostalAddress\(hospital\.address\)/)
+    assert.match(source, /buildPostalAddress.*from '@\/lib\/clinic-schema'/)
+    // region[]은 검색 타겟 지역이며 물리 주소 계층이 아니다.
+    assert.doesNotMatch(source, /buildPostalAddress\(hospital\.region\)/)
+    assert.doesNotMatch(source, /addressRegion: hospital\.region/)
   }
 })

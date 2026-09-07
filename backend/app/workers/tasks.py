@@ -21,7 +21,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
 from typing import Any
-from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import arrow
@@ -143,6 +142,7 @@ from app.services.monthly_report_gap_notifications import (
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
+from app.services.monthly_sov_types import ManifestCellInput
 from app.services.onboarding_notifications import (
     build_hospital_activated_notification,
     build_site_built_notification,
@@ -251,6 +251,7 @@ from app.workers.nightly_generation_batch import (
     load_stuck_claims,
     release_unfinished_claims,
     write_back_generated_content,
+    write_back_generated_image,
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
@@ -286,21 +287,18 @@ logger = logging.getLogger(__name__)
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 MORNING_CLOSE_START = time(7, 45)
-CONFIRMED_HERO_FALLBACK_PROMPT = "confirmed hospital hero fallback"
 
 
 def _generation_philosophy_sync(db, hospital_id: uuid.UUID) -> HospitalContentPhilosophy | None:
-    """Use the last approved standard for generation while refresh is pending.
+    """Use only an approval for the complete current processed-source snapshot.
 
-    ``current`` is intentionally stricter because it also protects the public
-    philosophy surface.  A newly added or changed source can therefore make it
-    temporarily ``None`` even though an approved, previously validated snapshot
-    still exists.  Generation may safely use that last-good approved snapshot;
-    onboarding hospitals with no approved snapshot remain blocked.
+    Source ingestion automatically processes and reviews a new snapshot. During
+    that bounded refresh, generation pauses without a per-item notification and
+    resumes when the new snapshot is auto-approved.
     """
 
     readiness = get_essence_readiness_sync(db, hospital_id)
-    return readiness.current or readiness.approved
+    return readiness.current
 
 
 def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
@@ -315,45 +313,17 @@ def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
     )
 
 
-def _confirmed_hospital_hero_url(hospital: Hospital) -> str | None:
-    """Use only the operator-saved absolute hospital hero as a publication fallback."""
-
-    candidate = str(getattr(hospital, "hero_image_url", "") or "").strip()
-    if not candidate:
-        return None
-    parsed = urlparse(candidate)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return None
-    return candidate
-
-
-def _write_morning_image_fallback(db, item: ContentItem, hospital: Hospital) -> bool:
-    """Close a due image hole with the hospital's confirmed hero, preserving text."""
-
-    fallback_url = _confirmed_hospital_hero_url(hospital)
-    if fallback_url is None or not _morning_close_due(item):
-        return False
-    written = write_back_generated_content(
-        db,
-        item_id=item.id,
-        values={
-            "image_url": fallback_url,
-            "image_prompt": CONFIRMED_HERO_FALLBACK_PROMPT,
-        },
-    )
-    if written == 0:
-        db.rollback()
-        return False
-    db.commit()
-    db.refresh(item)
-    _clear_generation_attempt(db, item)
-    logger.warning("Using confirmed hospital hero fallback for due content %s", item.id)
-    return True
-
-
 _GENERATION_ATTEMPT_KEY = "generation_attempt"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
+)
+_AUTOMATIC_BODY_REPAIR_CODES = frozenset(
+    {
+        "FAQ_FIELDS_MISSING",
+        "MISSING_REFERENCES",
+        "FORBIDDEN_EXPRESSION",
+        "ESSENCE_NOT_ALIGNED",
+    }
 )
 
 
@@ -444,32 +414,37 @@ def _recover_missing_content_image(
     hospital: Hospital,
     philosophy: HospitalContentPhilosophy,
 ) -> GenerationItemState:
-    """Fill only a missing image; an existing image is an absolute no-call guard."""
+    """Fill a missing or legacy-unverified image without rewriting stored text."""
 
-    if getattr(item, "image_url", None):
+    if getattr(item, "image_url", None) and getattr(
+        item, "image_policy_verified_at", None
+    ):
         _clear_generation_attempt(db, item)
         return GenerationItemState.SUCCEEDED
     try:
+        image_source_title = item.title
         image_url, image_prompt = _run_async(
             generate_image(
                 item.content_type,
                 hospital.slug,
-                topic=item.title,
+                topic=image_source_title,
                 direction=hospital_image_direction(hospital),
                 hospital_id=hospital.id,
             )
         )
         if not image_url:
             logger.warning("Image generation returned no URL for %s (text saved)", item.id)
-            if _write_morning_image_fallback(db, item, hospital):
-                _clear_generation_attempt(db, item)
-                return GenerationItemState.SUCCEEDED
             _remember_generation_attempt(db, item, philosophy, "IMAGE_GENERATION_FAILED")
             return GenerationItemState.PARTIAL
-        image_written = write_back_generated_content(
+        image_written = write_back_generated_image(
             db,
             item_id=item.id,
-            values={"image_url": image_url, "image_prompt": image_prompt},
+            expected_title=image_source_title,
+            values={
+                "image_url": image_url,
+                "image_prompt": image_prompt,
+                "image_policy_verified_at": datetime.now(timezone.utc),
+            },
         )
         if image_written == 0:
             db.rollback()
@@ -490,9 +465,6 @@ def _recover_missing_content_image(
         )
         db.rollback()
         db.refresh(item)
-        if _write_morning_image_fallback(db, item, hospital):
-            _clear_generation_attempt(db, item)
-            return GenerationItemState.SUCCEEDED
         _remember_generation_attempt(db, item, philosophy, "IMAGE_GENERATION_FAILED")
         return GenerationItemState.PARTIAL
 
@@ -851,10 +823,54 @@ def build_v0_baseline(
     }
 
 
+def _v0_query_snapshot(queries: Iterable[QueryMatrix]) -> list[dict[str, str]]:
+    """Freeze the exact questions a V0 run will send before provider calls start."""
+    return [
+        {
+            "query_id": str(query.id),
+            "query_text": query.query_text,
+            "query_intent": query.query_intent,
+        }
+        for query in queries
+    ]
+
+
+def _local_v0_query_texts(snapshot: object) -> dict[uuid.UUID, str] | None:
+    """Parse an immutable V0 query snapshot; malformed lineage is unusable."""
+    if not isinstance(snapshot, list) or not snapshot:
+        return None
+    local_queries: dict[uuid.UUID, str] = {}
+    seen_ids: set[uuid.UUID] = set()
+    for raw in snapshot:
+        if not isinstance(raw, dict):
+            return None
+        try:
+            query_id = uuid.UUID(str(raw.get("query_id")))
+        except (TypeError, ValueError):
+            return None
+        query_text = raw.get("query_text")
+        query_intent = raw.get("query_intent")
+        if query_id in seen_ids or not isinstance(query_text, str) or not query_text.strip():
+            return None
+        if not isinstance(query_intent, str):
+            return None
+        seen_ids.add(query_id)
+        if query_intent == sov_engine.QUERY_INTENT_LOCAL:
+            local_queries[query_id] = query_text
+    return local_queries or None
+
+
 def _load_v0_baseline(
-    db, hospital_id, *, current_sov_pct: float | None, tracking_query_texts: Iterable[object]
+    db,
+    hospital_id,
+    *,
+    current_sov_pct: float | None,
+    tracking_query_texts: Iterable[object],
+    current_platforms: tuple[str, ...],
+    current_protocol: dict | None,
+    current_cells: tuple[ManifestCellInput, ...],
 ) -> DoctorV0Baseline | None:
-    """V0 리포트와 그때 실제로 물어본 질문 세트를 읽어 참고선을 만든다."""
+    """검증 가능한 동일 실행 조건의 V0만 참고선으로 읽는다."""
     v0_report = db.execute(
         select(MonthlyReport)
         .where(
@@ -866,19 +882,93 @@ def _load_v0_baseline(
     ).scalars().first()
     if v0_report is None:
         return None
-    v0_sov_pct = (v0_report.sov_summary or {}).get("sov_pct")
+    v0_summary = v0_report.sov_summary or {}
+    v0_sov_pct = v0_summary.get("sov_pct")
     if not isinstance(v0_sov_pct, (int, float)):
         return None
-    v0_query_texts = db.execute(
-        select(QueryMatrix.query_text)
-        .join(SovRecord, SovRecord.query_id == QueryMatrix.id)
-        .join(MeasurementRun, MeasurementRun.id == SovRecord.measurement_run_id)
-        .where(
-            MeasurementRun.hospital_id == hospital_id,
-            MeasurementRun.run_label == V0_MEASUREMENT_RUN_LABEL,
+    basis = v0_summary.get("baseline_basis")
+    if not isinstance(basis, dict):
+        # 구버전 V0는 어떤 MeasurementRun이 수치를 만들었는지 알 수 없다. 같은 병원의
+        # 다른 V0 실행에서 질문만 가져와 붙이면 근거가 섞이므로 표시하지 않는다.
+        return None
+    try:
+        measurement_run_id = uuid.UUID(str(basis.get("measurement_run_id")))
+    except (TypeError, ValueError):
+        return None
+    frozen_query_texts = _local_v0_query_texts(basis.get("query_snapshot"))
+    if frozen_query_texts is None:
+        return None
+    v0_platforms = tuple(
+        value for value in basis.get("platforms", ()) if isinstance(value, str)
+    )
+    v0_protocol = basis.get("measurement_protocol")
+    if set(v0_platforms) != set(current_platforms) or not sov_engine.same_execution_policy(
+        v0_protocol if isinstance(v0_protocol, dict) else None,
+        current_protocol,
+        platforms=current_platforms,
+    ):
+        return None
+    rows = db.execute(
+        select(
+            SovRecord.query_id,
+            SovRecord.ai_platform,
+            SovRecord.answer_model,
+            SovRecord.measurement_status,
+            SovRecord.mention_verdict,
+            SovRecord.is_mentioned,
         )
-        .distinct()
-    ).scalars().all()
+        .where(
+            SovRecord.hospital_id == hospital_id,
+            SovRecord.measurement_run_id == measurement_run_id,
+            SovRecord.measurement_status == "SUCCESS",
+            SovRecord.is_mentioned.is_not(None),
+            or_(
+                SovRecord.mention_verdict.is_(None),
+                SovRecord.mention_verdict != sov_engine.VERDICT_AMBIGUOUS,
+            ),
+        )
+    ).all()
+    # SQLAlchemy enforces this in production; the shared predicate is repeated here so
+    # alternate/fake result sources cannot make the baseline denominator diverge.
+    local_rows = [
+        row
+        for row in rows
+        if row.query_id in frozen_query_texts and sov_engine.record_is_confirmed(row)
+    ]
+    if not local_rows or any(row.answer_model is None for row in local_rows):
+        return None
+    current_shape_lists: dict[tuple[str, str], list[str]] = {}
+    for cell in current_cells:
+        if cell.query_intent != "LOCAL" or not cell.successful_attempts:
+            continue
+        observed_models = tuple(
+            attempt.answer_model for attempt in cell.successful_attempts
+        )
+        if any(model is None for model in observed_models):
+            return None
+        key = (_normalized_query_text(cell.query_text), cell.platform)
+        current_shape_lists.setdefault(key, []).extend(
+            model for model in observed_models if model is not None
+        )
+    current_shapes = {
+        key: tuple(sorted(models)) for key, models in current_shape_lists.items()
+    }
+    v0_shape_lists: dict[tuple[str, str], list[str]] = {}
+    for row in local_rows:
+        key = (_normalized_query_text(frozen_query_texts[row.query_id]), row.ai_platform)
+        v0_shape_lists.setdefault(key, []).append(row.answer_model)
+    v0_shapes = {key: tuple(sorted(models)) for key, models in v0_shape_lists.items()}
+    if v0_shapes != current_shapes:
+        return None
+    v0_query_texts = list(frozen_query_texts.values())
+    normalized_v0 = {
+        text for value in v0_query_texts if (text := _normalized_query_text(value))
+    }
+    normalized_tracking = {
+        text for value in tracking_query_texts if (text := _normalized_query_text(value))
+    }
+    if normalized_v0 != normalized_tracking:
+        return None
     return build_v0_baseline(
         v0_sov_pct=float(v0_sov_pct),
         current_sov_pct=current_sov_pct,
@@ -1375,7 +1465,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 incident_type="ESSENCE_AUTO_REVIEW_COST_BLOCKED",
                 safe_error_code="COST_BLOCKED",
                 problem="AI 운영 기준 자동 검수가 비용 가드로 보류되었습니다.",
-                customer_impact="기존 승인 운영 기준은 유지되지만 새 자료 반영이 지연됩니다.",
+                customer_impact="새 자료의 자동 검수가 끝날 때까지 콘텐츠 생성과 발행이 일시 중지됩니다.",
                 next_action="비용 가드가 해제되면 정기 복구가 자동으로 다시 시도합니다.",
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
@@ -1397,7 +1487,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 incident_type="ESSENCE_AUTO_REVIEW_FAILED",
                 safe_error_code="ESSENCE_AUTO_REVIEW_FAILED",
                 problem="AI 운영 기준 자동 검수를 완료하지 못했습니다.",
-                customer_impact="기존 승인 운영 기준은 유지되며 새 자료 자동 반영만 지연됩니다.",
+                customer_impact="새 자료의 자동 검수가 끝날 때까지 콘텐츠 생성과 발행이 일시 중지됩니다.",
                 next_action="운영센터에서 자동 생성된 초안과 근거 자료를 확인해 주세요.",
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
@@ -1443,7 +1533,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                     if result.findings
                     else "AI 근거 검수가 자동 승인을 보류했습니다."
                 ),
-                customer_impact="기존 승인 운영 기준은 유지되며 새 자료는 검토 대기 초안으로 보관됩니다.",
+                customer_impact="승인 운영 기준이 없어 콘텐츠 생성과 발행이 중지되며 초안은 검토 대기 상태로 보관됩니다.",
                 next_action="운영센터에서 새 운영 기준 초안의 근거와 충돌 항목만 확인해 주세요.",
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
@@ -1454,9 +1544,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
             )
         )
     elif result.status == EssenceRefreshStatus.ESCALATED and hospital_status == HospitalStatus.ACTIVE:
-        # 승인된 운영 기준이 이미 있어 지금까지 notify=False 복구로만 처리되던 경로.
-        # ACTIVE 병원은 콘텐츠가 계속 자동 생성되므로, 새 자료가 반영되지 않고 있다는
-        # 사실을 무음으로 두지 않는다 — 스냅샷 해시 단위로 중복 없이 1건만 연다.
+        # 자동 심사로 해결되지 않은 활성 병원의 예외만 스냅샷 해시 단위로 1건 연다.
         snapshot = result.snapshot_hash or "unknown"
         _run_async(
             open_ops_incident(
@@ -1470,10 +1558,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                     if result.findings
                     else "AI 근거 검수가 새 자료 반영을 보류했습니다."
                 ),
-                customer_impact=(
-                    "콘텐츠 생성은 마지막으로 승인된 운영 기준으로 계속되며, "
-                    "새로 추가된 자료는 이 예외가 검토되기 전까지 반영되지 않습니다."
-                ),
+                customer_impact="이 예외가 해결될 때까지 콘텐츠 생성과 발행이 일시 중지됩니다.",
                 next_action="운영센터 Essence 페이지에서 보류된 예외를 확인해 주세요.",
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
@@ -1496,7 +1581,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
                 hospital_name=hospital_name,
                 actor=AUTO_ESSENCE_ACTOR,
-                reason="approved Essence remains available for generation",
+                reason="current Essence snapshot is approved for generation",
                 notify=False,
             )
         )
@@ -1701,6 +1786,7 @@ def trigger_v0_report(self, hospital_id: str):
                 reusable_run = find_reusable_v0_measurement_run(
                     db, hospital.id, operation_run_id=v0_operation_run_id
                 )
+                sample_queries = []
                 if reusable_run is not None:
                     checkpoint = load_v0_checkpoint(
                         db, reusable_run, default_repeat_count=V0_REPEAT_COUNT
@@ -1714,14 +1800,20 @@ def trigger_v0_report(self, hospital_id: str):
                     )
                 else:
                     # AI 답변 언급률 측정 (V0: 쿼리 수 제한, 빠른 실행)
+                    sample_queries = db.execute(
+                        v0_sample_query_stmt(hospital.id)
+                    ).scalars().all()
+                    run_config = v0_measurement_run_config(
+                        repeat_count=V0_REPEAT_COUNT,
+                        operation_run_id=v0_operation_run_id,
+                    )
+                    run_config["measurement_protocol"] = sov_engine.measurement_protocol()
+                    run_config["query_snapshot"] = _v0_query_snapshot(sample_queries)
                     run = _start_measurement_run(
                         db,
                         hospital,
                         run_label=V0_MEASUREMENT_RUN_LABEL,
-                        config=v0_measurement_run_config(
-                            repeat_count=V0_REPEAT_COUNT,
-                            operation_run_id=v0_operation_run_id,
-                        ),
+                        config=run_config,
                     )
                 db.commit()
             finally:
@@ -1744,9 +1836,6 @@ def trigger_v0_report(self, hospital_id: str):
                 failure_reasons: Counter[str] = Counter()
                 platform_counts: dict[str, Counter[str]] = {}
                 blocked_platforms: dict[str, str] = {}
-                result = db.execute(v0_sample_query_stmt(hospital.id))
-                sample_queries = result.scalars().all()
-
                 platforms = ["chatgpt"]
                 if settings.GEMINI_API_KEY:
                     platforms.append("gemini")
@@ -1876,13 +1965,43 @@ def trigger_v0_report(self, hospital_id: str):
             )
 
             # DB 저장
+            basis_run = reusable_run if checkpoint is not None else run
+            basis_config = basis_run.config if basis_run is not None else None
+            basis_protocol = (
+                basis_config.get("measurement_protocol")
+                if isinstance(basis_config, dict)
+                else None
+            )
+            basis_query_snapshot = (
+                basis_config.get("query_snapshot")
+                if isinstance(basis_config, dict)
+                else None
+            )
+            baseline_basis = (
+                {
+                    "measurement_run_id": str(basis_run.id),
+                    "measurement_protocol": basis_protocol,
+                    "platforms": platforms,
+                    "query_snapshot": basis_query_snapshot,
+                }
+                if (
+                    basis_run is not None
+                    and isinstance(basis_protocol, dict)
+                    and _local_v0_query_texts(basis_query_snapshot) is not None
+                )
+                else None
+            )
             report = MonthlyReport(
                 hospital_id=hospital.id,
                 period_year=now.year,
                 period_month=now.month,
                 report_type="V0",
                 pdf_path=pdf_path,
-                sov_summary={"sov_pct": sov_pct, "platforms": platforms},
+                sov_summary={
+                    "sov_pct": sov_pct,
+                    "platforms": platforms,
+                    "baseline_basis": baseline_basis,
+                },
             )
             db.add(report)
             db.flush()
@@ -2349,6 +2468,9 @@ def nightly_content_generation(self):
                         "references_list": content_data.get("references") or [],
                         "faq_question": content_data.get("faq_question"),
                         "faq_answer_summary": content_data.get("faq_answer_summary"),
+                        "image_url": None,
+                        "image_prompt": None,
+                        "image_policy_verified_at": None,
                         "generated_at": now,
                         "body_updated_at": now,
                         "status": ContentStatus.DRAFT,
@@ -2623,29 +2745,11 @@ def overnight_content_generation_recovery(self):
     bind=True,
 )
 def prepublish_content_generation_recovery(self):
-    """At 07:45, apply confirmed hero fallbacks and page stored Korean gates."""
+    """At 07:45, page only blockers left after the automated recovery sweeps."""
 
     require_dispatch(self, "prepublish-content-generation-recovery")
     now_kst = arrow.now("Asia/Seoul")
     with SyncSessionLocal() as db:
-        items = list(
-            db.execute(
-                select(ContentItem)
-                .join(Hospital, ContentItem.hospital_id == Hospital.id)
-                .where(
-                    auto_publish_due_predicate(now_kst.date()),
-                    publicly_operational_hospital_predicate(),
-                    ContentItem.body.isnot(None),
-                    ContentItem.image_url.is_(None),
-                )
-                .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)
-                .options(joinedload(ContentItem.hospital))
-            )
-            .scalars()
-            .all()
-        )
-        for item in items:
-            _write_morning_image_fallback(db, item, item.hospital)
         _page_morning_stored_publication_gates(db, now_kst=now_kst)
 
 
@@ -2794,11 +2898,23 @@ def generate_content_image(self, content_id: str):
             )
             return
         try:
+            philosophy = _generation_philosophy_sync(db, hospital.id)
+            if philosophy is None:
+                finish_explicit_run(
+                    db,
+                    self,
+                    item_id,
+                    OperationRunState.FAILED,
+                    safe_error_code="MISSING_APPROVED_ESSENCE",
+                    safe_error_message="최신 콘텐츠 운영 기준의 자동 승인이 아직 완료되지 않았습니다.",
+                )
+                return
+            image_source_title = item.title or "병원 의료 정보"
             image_url, image_prompt = _run_async(
                 generate_image(
                     item.content_type,
                     hospital.slug,
-                    topic=item.title or "병원 의료 정보",
+                    topic=image_source_title,
                     direction=hospital_image_direction(hospital),
                     hospital_id=hospital.id,
                 )
@@ -2826,10 +2942,15 @@ def generate_content_image(self, content_id: str):
                         )
                     )
                 return
-            written = write_back_generated_content(
+            written = write_back_generated_image(
                 db,
                 item_id=item.id,
-                values={"image_url": image_url, "image_prompt": image_prompt},
+                expected_title=item.title,
+                values={
+                    "image_url": image_url,
+                    "image_prompt": image_prompt,
+                    "image_policy_verified_at": datetime.now(timezone.utc),
+                },
             )
             if written == 0:
                 db.rollback()
@@ -2841,7 +2962,6 @@ def generate_content_image(self, content_id: str):
                 return
             db.commit()
             db.refresh(item)
-            philosophy = get_current_approved_philosophy_sync(db, hospital.id)
             _persist_publication_readiness(db, item, philosophy)
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if run_id is not None:
@@ -2854,6 +2974,7 @@ def generate_content_image(self, content_id: str):
                         safe_error_codes=(
                             "IMAGE_GENERATION_FAILED",
                             "CONTENT_IMAGE_NOT_READY",
+                            "CONTENT_IMAGE_NOT_VERIFIED",
                         ),
                     )
                 )
@@ -2904,33 +3025,40 @@ def _generate_single_content_item(
             "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다.",
         )
 
-    # A stored body is immutable in every scheduled sweep.  Recover only its
-    # missing image, and never enter the content writer or its cost guard.
-    if getattr(item, "body", None):
-        previous = _stored_generation_attempt(item)
-        if (
-            previous.get("reason") == "IMAGE_GENERATION_FAILED"
-            and _generation_attempt_is_unchanged(item, philosophy)
-        ):
-            return (
-                GenerationItemState.SKIPPED,
-                previous["reason"],
-                "직전 이미지 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다.",
+    # A body generated under this exact Essence remains immutable in scheduled
+    # sweeps. Once automated source refresh approves a different snapshot, the
+    # old body gets one normal regeneration attempt against the new standard.
+    body_uses_current_philosophy = bool(
+        getattr(item, "body", None)
+        and getattr(item, "content_philosophy_id", None) == philosophy.id
+    )
+    if body_uses_current_philosophy:
+        stored_assessment = assess_content_publication(item, philosophy)
+        if stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES:
+            logger.info(
+                "Regenerating repairable stored content %s: %s",
+                item.id,
+                stored_assessment.code,
             )
-        image_state = _recover_missing_content_image(db, item, hospital, philosophy)
-        if image_state == GenerationItemState.PARTIAL:
-            _persist_publication_readiness(db, item, philosophy)
-            return (
-                image_state,
-                "IMAGE_GENERATION_FAILED",
-                "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
-            )
-        if image_state == GenerationItemState.DISCARDED:
-            return image_state, None, None
-        readiness_failure = _persist_publication_readiness(db, item, philosophy)
-        if readiness_failure is not None:
-            return GenerationItemState.FAILED, *readiness_failure
-        return GenerationItemState.SUCCEEDED, None, None
+        else:
+            # Image candidates are individually bounded and semantic failures are
+            # fail-closed before upload. Scheduled sweeps may therefore try a fresh
+            # candidate again; the cost guard bounds provider spend and incidents
+            # stay deduplicated by item/cause/attempt context.
+            image_state = _recover_missing_content_image(db, item, hospital, philosophy)
+            if image_state == GenerationItemState.PARTIAL:
+                _persist_publication_readiness(db, item, philosophy)
+                return (
+                    image_state,
+                    "IMAGE_GENERATION_FAILED",
+                    "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
+                )
+            if image_state == GenerationItemState.DISCARDED:
+                return image_state, None, None
+            readiness_failure = _persist_publication_readiness(db, item, philosophy)
+            if readiness_failure is not None:
+                return GenerationItemState.FAILED, *readiness_failure
+            return GenerationItemState.SUCCEEDED, None, None
 
     # The same empty slot and unchanged generation context gets no second writer
     # call.  A philosophy/context change removes this suppression exactly once.
@@ -3003,6 +3131,9 @@ def _generate_single_content_item(
             "references_list": content_data.get("references") or [],
             "faq_question": content_data.get("faq_question"),
             "faq_answer_summary": content_data.get("faq_answer_summary"),
+            "image_url": None,
+            "image_prompt": None,
+            "image_policy_verified_at": None,
             "generated_at": now,
             "body_updated_at": now,
             "status": ContentStatus.DRAFT,
@@ -3032,6 +3163,7 @@ def _generate_single_content_item(
         return image_state, None, None
     readiness_failure = _persist_publication_readiness(db, item, philosophy)
     if readiness_failure is not None:
+        _remember_generation_attempt(db, item, philosophy, readiness_failure[0])
         return GenerationItemState.FAILED, *readiness_failure
     return GenerationItemState.SUCCEEDED, None, None
 
@@ -3115,6 +3247,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                     "hospital_id": hospital.id,
                     "hospital_name": hospital.name,
                     "content_id": item.id,
+                    "scheduled_date": str(item.scheduled_date),
                     "title": item.title,
                     "code": code,
                     "cause": generation_safe_cause(code),
@@ -3176,6 +3309,7 @@ def morning_content_auto_publish(self):
                             "hospital_id": outcome["hospital_id"],
                             "hospital_name": outcome["hospital_name"],
                             "content_id": content_id,
+                            "scheduled_date": outcome.get("scheduled_date"),
                             "title": outcome.get("title"),
                             "code": outcome["code"],
                             "cause": generation_safe_cause(outcome["code"]),
@@ -3270,26 +3404,6 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             return None
         if hospital.status != HospitalStatus.ACTIVE or not hospital.site_live:
             return None
-
-        fallback_url = _confirmed_hospital_hero_url(hospital)
-        if (
-            item.title
-            and item.body
-            and not getattr(item, "image_url", None)
-            and fallback_url is not None
-            and _morning_close_due(item)
-        ):
-            item.image_url = fallback_url
-            item.image_prompt = CONFIRMED_HERO_FALLBACK_PROMPT
-            write_audit_log_sync(
-                db,
-                action="auto_publish_confirmed_image_fallback",
-                hospital_id=hospital.id,
-                actor=AUTO_PUBLISH_ACTOR,
-                target_type="content_item",
-                target_id=item.id,
-                detail={"scheduled_date": str(item.scheduled_date)},
-            )
 
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
@@ -4070,7 +4184,7 @@ def _dispatch_automatic_monthly_report_recovery(
 ) -> OperationRun | None:
     latest = _latest_monthly_report(db, hospital.id, year, month)
     report_complete = _monthly_report_quality_is_complete(latest)
-    if report_complete:
+    if report_complete and _has_valid_doctor_artifact(db, latest):
         return None
     idempotency_key = f"coverage-recovery:{hospital.id}:{year:04d}-{month:02d}"
     existing = db.execute(
@@ -5895,6 +6009,47 @@ def _fail_monthly_operation_run(
     _finish_monthly_operation_run(db, run_id, hospital_id, year, month, "failed")
 
 
+def _observed_contract_publications(items: Iterable[ContentItem], observed_at: datetime) -> list:
+    """Only publications that had actually happened at report-build time fulfill a contract."""
+    return [
+        item
+        for item in items
+        if item.published_at is not None and item.published_at <= observed_at
+    ]
+
+
+def _contract_publication_timing_counts(
+    items: Iterable[ContentItem],
+    period_start: datetime,
+    period_end: datetime,
+) -> tuple[int, int]:
+    """Return contract publications before the period and at/after its exclusive end."""
+    early = 0
+    late = 0
+    for item in items:
+        if item.published_at is None:
+            continue
+        if item.published_at < period_start:
+            early += 1
+        elif item.published_at >= period_end:
+            late += 1
+    return early, late
+
+
+def _headline_uses_full_current_cohort(
+    monthly_sov, current_cells: tuple[ManifestCellInput, ...]
+) -> bool:
+    current_local_keys = frozenset(
+        (cell.query_key, cell.platform)
+        for cell in current_cells
+        if cell.query_intent == "LOCAL" and cell.state != "EXCLUDED"
+    )
+    return (
+        monthly_sov.comparison.status != "COMPARABLE"
+        or monthly_sov.comparison_cell_keys == current_local_keys
+    )
+
+
 def _build_monthly_report_for_hospital(
     db,
     h: Hospital,
@@ -6009,30 +6164,32 @@ def _build_monthly_report_for_hospital(
         1 for item in published_contents
         if item.carried_over_from is not None and item.carried_over_from < period_start.date()
     )
-    scheduled_content_stmt = select(ContentItem).where(
+    contract_scheduled_content_stmt = select(ContentItem).where(
         ContentItem.hospital_id == h.id,
-        ContentItem.scheduled_date >= period_start.date(),
-        ContentItem.scheduled_date < period_end.date(),
+        func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+        >= period_start.date(),
+        func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+        < period_end.date(),
     )
-    scheduled_content_result = db.execute(scheduled_content_stmt)
-    scheduled_contents = scheduled_content_result.scalars().all()
-    contract_contents = db.execute(
+    contract_scheduled_contents = db.execute(
+        contract_scheduled_content_stmt
+    ).scalars().all()
+    contract_contents = _observed_contract_publications(db.execute(
         select(ContentItem).where(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.published_at.is_not(None),
+            ContentItem.published_at <= actual_now,
             func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
             >= period_start.date(),
             func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
             < period_end.date(),
         )
-    ).scalars().all()
-    early_publication_count = sum(
-        item.published_at is not None and item.published_at < period_start
-        for item in contract_contents
-    )
-    late_recovery_count = sum(
-        item.published_at is not None and item.published_at >= period_end
-        for item in contract_contents
+    ).scalars().all(), actual_now)
+    early_publication_count, late_recovery_count = _contract_publication_timing_counts(
+        contract_contents,
+        period_start,
+        period_end,
     )
     # A September upgrade must not rewrite the August contractual denominator.
     period_plan = db.execute(
@@ -6046,10 +6203,13 @@ def _build_monthly_report_for_hospital(
     ).scalar_one_or_none()
     content_operations = build_monthly_content_operations_snapshot(
         plan=period_plan,
-        scheduled_items=scheduled_contents,
+        scheduled_items=contract_scheduled_contents,
         published_items=published_contents,
         cutoff_at=actual_now,
         supplementary_count=supplementary_count,
+        contract_published_count=len(contract_contents),
+        early_publication_count=early_publication_count,
+        late_recovery_count=late_recovery_count,
     )
 
     # 전월 발행 콘텐츠(유형별 발행 누적을 전월과 나란히 비교하기 위함)
@@ -6072,6 +6232,8 @@ def _build_monthly_report_for_hospital(
             sov_pct=sov_pct,
             prev_sov_pct=prev_sov,
             change_pct=change_pct,
+            comparison_reason=monthly_sov.comparison.reason,
+            comparable_cell_keys=monthly_sov.comparison_cell_keys,
         )
     )
 
@@ -6160,13 +6322,26 @@ def _build_monthly_report_for_hospital(
     # "서비스 시작 시점(V0) 대비" 참고선. 질문 세트가 충분히 겹치지 않으면 None이라
     # 원장 페이지에 아무 말도 하지 않는다 — 다른 질문으로 잰 두 수치를 나란히
     # 놓는 순간 그 줄은 거짓말이 된다.
+    headline_uses_full_current_cohort = _headline_uses_full_current_cohort(
+        monthly_sov,
+        current_loaded.cells if current_loaded is not None else (),
+    )
     v0_baseline = _load_v0_baseline(
         db,
         h.id,
-        current_sov_pct=sov_pct,
+        current_sov_pct=sov_pct if headline_uses_full_current_cohort else None,
         tracking_query_texts=[
-            cell.query_text for cell in (current_loaded.cells if current_loaded else ())
+            cell.query_text
+            for cell in (current_loaded.cells if current_loaded else ())
+            if cell.query_intent == "LOCAL"
         ],
+        current_platforms=tuple(report_platforms or ()),
+        current_protocol=(
+            (manifest.platform_provenance or {}).get("measurement_protocol")
+            if manifest is not None
+            else None
+        ),
+        current_cells=current_loaded.cells if current_loaded is not None else (),
     )
     # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
     # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
@@ -6179,6 +6354,7 @@ def _build_monthly_report_for_hospital(
         supplementary_count=supplementary_count,
         early_publication_count=early_publication_count,
         late_recovery_count=late_recovery_count,
+        contract_published_count=len(contract_contents),
         attribution=attribution,
         citations=citations,
         published_contents=list(published_contents),
@@ -6364,7 +6540,21 @@ def run_monthly_reports(self):
             )
             if latest_run is not None:
                 if latest_run.state == OperationRunState.SUCCEEDED:
-                    hospitals.append((hospital, "already_succeeded"))
+                    latest_report = _latest_monthly_report(
+                        db, hospital.id, period.year, period.month
+                    )
+                    if _monthly_report_quality_is_complete(
+                        latest_report
+                    ) and not _has_valid_doctor_artifact(db, latest_report):
+                        blocked.append(hospital.name)
+                        if is_monthly_recovery_window(
+                            now.datetime, period.year, period.month
+                        ):
+                            _dispatch_automatic_monthly_report_recovery(
+                                db, hospital, period.year, period.month
+                            )
+                    else:
+                        hospitals.append((hospital, "already_succeeded"))
                     continue
                 if latest_run.state in (
                     OperationRunState.PARTIAL,
@@ -6372,6 +6562,19 @@ def run_monthly_reports(self):
                     OperationRunState.QUEUED,
                     OperationRunState.RUNNING,
                 ):
+                    if latest_run.state == OperationRunState.PARTIAL:
+                        latest_report = _latest_monthly_report(
+                            db, hospital.id, period.year, period.month
+                        )
+                        if _monthly_report_quality_is_complete(
+                            latest_report
+                        ) and not _has_valid_doctor_artifact(db, latest_report):
+                            if is_monthly_recovery_window(
+                                now.datetime, period.year, period.month
+                            ):
+                                _dispatch_automatic_monthly_report_recovery(
+                                    db, hospital, period.year, period.month
+                                )
                     blocked.append(hospital.name)
                     continue
             hospitals.append((hospital, "build"))

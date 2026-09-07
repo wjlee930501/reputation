@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql import Select
 
 from app.api.public.assets import public_asset_response, public_asset_url
 from app.core.config import settings
@@ -24,8 +25,13 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
+from app.services.content_publication import has_required_references
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
-from app.services.essence_readiness import get_current_approved_philosophy_id, get_essence_readiness
+from app.services.essence_readiness import (
+    get_essence_readiness,
+    get_public_approved_philosophy_id,
+)
+from app.services.hospital_lifecycle import activation_gate_snapshot
 from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.utils.domain import normalize_domain
@@ -106,6 +112,9 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
             match_clause,
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
+            Hospital.profile_complete.is_(True),
+            Hospital.v0_report_done.is_(True),
+            Hospital.site_built.is_(True),
         )
         .limit(1)
     )
@@ -142,6 +151,9 @@ async def get_tenant_health_by_domain(
                     match_clause,
                     Hospital.status == HospitalStatus.ACTIVE,
                     Hospital.site_live.is_(True),
+                    Hospital.profile_complete.is_(True),
+                    Hospital.v0_report_done.is_(True),
+                    Hospital.site_built.is_(True),
                 )
                 .limit(1)
             )
@@ -163,7 +175,11 @@ async def get_tenant_health_by_domain(
 async def list_hospitals(request: Request, db: AsyncSession = Depends(get_db)):
     """Public list of active hospitals for sitemap generation."""
     stmt = select(Hospital).where(
-        Hospital.status == HospitalStatus.ACTIVE, Hospital.site_live.is_(True)
+        Hospital.status == HospitalStatus.ACTIVE,
+        Hospital.site_live.is_(True),
+        Hospital.profile_complete.is_(True),
+        Hospital.v0_report_done.is_(True),
+        Hospital.site_built.is_(True),
     )
     result = await db.execute(stmt)
     hospitals = result.scalars().all()
@@ -205,7 +221,7 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
     """병원 기본정보 (ACTIVE 상태 병원만 공개) + AE가 검수해 공개로 표시한 사진."""
     result = await db.execute(select(Hospital).where(Hospital.slug == slug))
     h = result.scalar_one_or_none()
-    if not h or h.status != HospitalStatus.ACTIVE or not h.site_live:
+    if not _is_active_public_hospital(h):
         raise HTTPException(status_code=404, detail="Hospital not found")
 
     # is_public=True 사진만 노출. 의료광고법 우려가 큰 카테고리는 enum에 포함되지 않으므로
@@ -291,12 +307,14 @@ async def list_published_contents(
     넘어서는 병원(수년 누적)도 호출부(sitemap 등)가 전체 발행 콘텐츠를 순회할 수 있다.
     """
     h = await _get_active_hospital(db, slug)
+    if not h.schedule_set:
+        return []
     essence = await get_essence_readiness(db, h.id)
     public_philosophy = essence.public_philosophy
     if public_philosophy is None:
         return []
 
-    result = await db.execute(
+    stmt = (
         select(ContentItem)
         .options(selectinload(ContentItem.query_target))
         .where(
@@ -305,14 +323,10 @@ async def list_published_contents(
             ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
             ContentItem.content_philosophy_id == public_philosophy.id,
         )
-        .order_by(ContentItem.published_at.desc())
-        .offset(offset)
-        .limit(limit)
+        .order_by(ContentItem.published_at.desc(), ContentItem.id.desc())
     )
-    items = result.scalars().all()
-    # SQL 조건으로 표현할 수 없는 마지막 게이트(의료광고 필터)를 여기서 한 번 더 건다 —
-    # sitemap·llms.txt·목록이 모두 이 응답을 읽으므로 여기서 빠지면 공개 표면 전체에서 빠진다.
-    return [_serialize_item(item, h.slug) for item in items if _is_public_safe_content(item)]
+    items = await _load_public_safe_items(db, stmt, offset=offset, limit=limit)
+    return [_serialize_item(item, h.slug) for item in items]
 
 
 @router.get("/{slug}/contents/{content_id}")
@@ -322,6 +336,8 @@ async def get_content_public(
 ):
     """콘텐츠 상세"""
     h = await _get_active_hospital(db, slug)
+    if not h.schedule_set:
+        raise HTTPException(status_code=404, detail="Content not found")
     essence = await get_essence_readiness(db, h.id)
     public_philosophy = essence.public_philosophy
 
@@ -347,18 +363,19 @@ async def get_public_content_image(
 ):
     """발행된 콘텐츠 대표 이미지를 안정 URL로 서빙 (요청마다 fresh signed URL로 302).
 
-    `get_essence_readiness()`는 신선도 판정에 쓰지 않는 원문(raw_text 등)까지 포함해
-    소스 자산 전체 행을 로드한다. 이미지 프록시는 "지금 신선한 승인 철학의 id"만
-    있으면 되므로 그 컬럼만 선택하는 `get_current_approved_philosophy_id()`를 쓴다
-    (크롤러·next/image가 반복 호출하는 경로라 요청당 데이터 이동량이 누적된다).
+    이미지 프록시는 공개 중인 글의 승인 baseline id만 필요하므로 대용량 소스 원문을
+    읽지 않는 historical-read helper를 쓴다. 새 자료가 처리 중이어도 기존 승인 baseline이
+    온전하면 이미 공개된 이미지가 불필요하게 깨지지 않는다.
     """
     h = await _get_active_hospital(db, slug)
-    current_philosophy_id = await get_current_approved_philosophy_id(db, h.id)
+    if not h.schedule_set:
+        raise HTTPException(status_code=404, detail="Content image not found")
+    public_philosophy_id = await get_public_approved_philosophy_id(db, h.id)
     item = await db.get(ContentItem, content_id)
     if (
         not item
         or item.hospital_id != h.id
-        or not _is_public_safe_content(item, current_philosophy_id)
+        or not _is_public_safe_content(item, public_philosophy_id)
         or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
@@ -369,9 +386,19 @@ async def get_public_content_image(
 async def _get_active_hospital(db: AsyncSession, slug: str) -> Hospital:
     result = await db.execute(select(Hospital).where(Hospital.slug == slug))
     h = result.scalar_one_or_none()
-    if not h or h.status != HospitalStatus.ACTIVE or not h.site_live:
+    if not _is_active_public_hospital(h):
         raise HTTPException(status_code=404, detail="Hospital not found")
     return h
+
+
+def _is_active_public_hospital(hospital: Hospital | None) -> bool:
+    """Use the same STEP 5 gate as activation even if a row drifts out of sync."""
+    return bool(
+        hospital
+        and hospital.status == HospitalStatus.ACTIVE
+        and hospital.site_live
+        and activation_gate_snapshot(hospital)["ready"]
+    )
 
 
 def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | None:
@@ -541,6 +568,45 @@ def _safe_credentials(credentials: dict | None) -> dict | None:
 
 
 _CURRENT_PHILOSOPHY_UNSET = object()
+_PUBLIC_SCAN_BATCH = 500
+
+
+async def _load_public_safe_items(
+    db: AsyncSession,
+    stmt: Select,
+    *,
+    offset: int,
+    limit: int,
+) -> list[ContentItem]:
+    """Apply pagination after the last public-safety filter.
+
+    A SQL page can contain rows withheld by the medical-ad filter. Filtering only
+    after OFFSET/LIMIT produces short pages, causing sitemap/llms callers to stop
+    early and making API offsets skip otherwise safe older rows. Scan stable raw
+    pages and count only rows that are actually public.
+    """
+    safe_seen = 0
+    raw_offset = 0
+    selected: list[ContentItem] = []
+    while len(selected) < limit:
+        result = await db.execute(stmt.offset(raw_offset).limit(_PUBLIC_SCAN_BATCH))
+        candidates = result.scalars().all()
+        if not candidates:
+            break
+        for item in candidates:
+            if not _is_public_safe_content(item):
+                continue
+            if safe_seen < offset:
+                safe_seen += 1
+                continue
+            selected.append(item)
+            safe_seen += 1
+            if len(selected) == limit:
+                break
+        if len(candidates) < _PUBLIC_SCAN_BATCH:
+            break
+        raw_offset += len(candidates)
+    return selected
 
 
 def _is_public_safe_content(
@@ -557,6 +623,10 @@ def _is_public_safe_content(
         current_matches
         and item.status == ContentStatus.PUBLISHED
         and item.essence_status == ESSENCE_STATUS_ALIGNED
+        and bool((item.title or "").strip())
+        and bool((item.body or "").strip())
+        and item.published_at is not None
+        and has_required_references(item)
     ):
         return False
     violations = _forbidden_content_violations(item)

@@ -126,10 +126,9 @@ function isContentDetailPayload(value: unknown): value is ContentDetail {
   return isRecord(value) && isContentSummaryPayload(value) && typeof value.body === 'string'
 }
 
-export async function fetchContents(slug: string, limit?: number): Promise<ContentSummary[]> {
-  // 항상 같은 URL(하드캡 500)로 요청해 캐시 키를 하나로 유지한다 — 호출부가 원하는
-  // 개수(60/200/...)는 아래에서 slice한다.
-  const url = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENTS_FETCH_LIMIT}`
+async function fetchContentsPage(slug: string, offset: number): Promise<ContentSummary[]> {
+  const offsetQuery = offset > 0 ? `&offset=${offset}` : ''
+  const url = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENTS_FETCH_LIMIT}${offsetQuery}`
   const res = await fetch(url, publicFetchInit())
   // 404는 "콘텐츠 0건"이 아니라 병원 자체가 없거나 비활성 상태라는 뜻이다(콘텐츠가 0건이면
   // 백엔드가 200 []를 내려준다) — fetchHospital과 동일한 타입으로 던져 페이지의 notFound()
@@ -141,7 +140,25 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
   if (!Array.isArray(contents) || !contents.every(isContentSummaryPayload)) {
     throw new Error('Invalid contents payload')
   }
+  return contents
+}
+
+export async function fetchContents(slug: string, limit?: number): Promise<ContentSummary[]> {
+  // 일반 페이지는 항상 첫 500건 URL을 공유해 cache key를 하나로 유지한다.
+  const contents = await fetchContentsPage(slug, 0)
   return typeof limit === 'number' ? contents.slice(0, limit) : contents
+}
+
+/** 누적 500건을 넘은 병원도 llms.txt에서 발행 콘텐츠 전체를 발견할 수 있게 순회한다. */
+export async function fetchAllContents(slug: string): Promise<ContentSummary[]> {
+  const all: ContentSummary[] = []
+  let offset = 0
+  for (;;) {
+    const page = await fetchContentsPage(slug, offset)
+    all.push(...page)
+    if (page.length < CONTENTS_FETCH_LIMIT) return all
+    offset += CONTENTS_FETCH_LIMIT
+  }
 }
 
 export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {

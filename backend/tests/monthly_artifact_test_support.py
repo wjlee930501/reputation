@@ -41,7 +41,14 @@ def monthly_sov() -> SimpleNamespace:
     }
     return SimpleNamespace(
         sov_pct=47.0,
-        comparison=SimpleNamespace(prior_sov_pct=None, change_pct=None),
+        sov_pct_all_cells=47.0,
+        comparison=SimpleNamespace(
+            prior_sov_pct=None,
+            change_pct=None,
+            reason="NO_PRIOR_MANIFEST",
+            status="NON_COMPARABLE",
+        ),
+        comparison_cell_keys=frozenset(),
         to_payload=lambda: payload,
     )
 

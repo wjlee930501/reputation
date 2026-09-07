@@ -85,6 +85,8 @@ def _sample_attribution(**overrides):
         "sov_pct": 42.0,
         "prev_sov_pct": 30.0,
         "change_pct": 12.0,
+        "comparison_reason": "MATCHED_COHORT",
+        "new_mention_empty_text": "지난달과 같은 기준으로 새로 확인된 언급은 없습니다.",
         **overrides,
     }
     return payload
@@ -124,6 +126,20 @@ def test_report_renders_empty_new_mentions_branch():
     assert "지난달과 같은 기준으로 새로 확인된 언급은 없습니다" in html
 
 
+def test_report_does_not_claim_no_change_when_comparison_is_unavailable():
+    html = _render(_sample_attribution(
+        new_mention_cells=[],
+        new_mention_count=0,
+        comparison_reason="ANSWER_MODEL_CHANGED",
+        new_mention_empty_text=(
+            "지난달과 같은 조건으로 비교할 수 없어 새 언급을 계산하지 않았습니다."
+        ),
+    ))
+
+    assert "비교할 수 없어 새 언급을 계산하지 않았습니다" in html
+    assert "같은 기준으로 새로 확인된 언급은 없습니다" not in html
+
+
 def test_report_attribution_coheres_with_no_sov_data():
     attribution = _sample_attribution(sov_pct=None, prev_sov_pct=None, change_pct=None)
     html = _render(attribution, sov_pct=None, sov_measured=False)
@@ -141,22 +157,25 @@ def test_report_renders_content_operations_truthfully():
     html = _render(
         None,
         content_operations={
-            "plan_quota": 16,
+            "plan_quota": 12,
             "published_count": 15,
-            "shortfall_count": 1,
+            "contracted_published_count": 12,
+            "shortfall_count": 0,
+            "early_publication_count": 1,
+            "late_recovery_count": 4,
             "post_publish_review": {
                 "required_sample_count": 2,
                 "pending_count": 0,
             },
-            "delivery_warnings": ["약정 콘텐츠 16편 중 15편만 발행되었습니다."],
+            "delivery_warnings": [],
         },
     )
 
     assert "약정 편수" in html
-    assert "16편" in html
+    assert "스타터 · 월 12편" in html
+    assert "그로워 · 월 16편" not in html
     assert "15편" in html
-    assert "약정 콘텐츠 16편 중 15편만 발행되었습니다." in html
-    assert "다음 달 복구 계획" in html
+    assert "12편 (기간 전 1편) (마감 후 4편)" in html
 
 
 # ── 원장 미팅 토킹 포인트(AE 전용) ─────────────────────────────────────
