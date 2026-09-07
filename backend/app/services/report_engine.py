@@ -983,6 +983,8 @@ def build_doctor_report_view(
     comparison_reason: str | None = None,
     significance: DeltaSignificance | None = None,
     supplementary_count: int = 0,
+    early_publication_count: int = 0,
+    late_recovery_count: int = 0,
 ) -> DoctorReportView:
     """원장에게 보낼 1페이지(+선택적 2쪽 부록)의 모든 문구와 숫자를 만든다.
 
@@ -1102,6 +1104,14 @@ def build_doctor_report_view(
         "측정 기준이 바뀌어 다음 달부터 비교합니다",
     }:
         summary = f"{delta_sentence}. 이번 달 현재는 환자 질문 100번 중 {this_count}번입니다."
+
+    timing_notes = []
+    if early_publication_count:
+        timing_notes.append(f"기간 전 공개 {early_publication_count}편")
+    if late_recovery_count:
+        timing_notes.append(f"마감 후 보충 완료 {late_recovery_count}편")
+    if timing_notes:
+        tiles[0]["hint"] += " " + " · ".join(timing_notes) + "."
 
     ours = ["다음 달에도 계획한 글을 예정대로 발행합니다."]
     if lost_mention_sentences:

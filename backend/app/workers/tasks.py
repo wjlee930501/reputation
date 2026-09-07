@@ -6016,6 +6016,24 @@ def _build_monthly_report_for_hospital(
     )
     scheduled_content_result = db.execute(scheduled_content_stmt)
     scheduled_contents = scheduled_content_result.scalars().all()
+    contract_contents = db.execute(
+        select(ContentItem).where(
+            ContentItem.hospital_id == h.id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+            func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+            >= period_start.date(),
+            func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+            < period_end.date(),
+        )
+    ).scalars().all()
+    early_publication_count = sum(
+        item.published_at is not None and item.published_at < period_start
+        for item in contract_contents
+    )
+    late_recovery_count = sum(
+        item.published_at is not None and item.published_at >= period_end
+        for item in contract_contents
+    )
     # A September upgrade must not rewrite the August contractual denominator.
     period_plan = db.execute(
         select(ContentSchedule.plan)
@@ -6159,6 +6177,8 @@ def _build_monthly_report_for_hospital(
         published_count=len(published_contents),
         plan_quota=monthly_quota_for_plan(period_plan),
         supplementary_count=supplementary_count,
+        early_publication_count=early_publication_count,
+        late_recovery_count=late_recovery_count,
         attribution=attribution,
         citations=citations,
         published_contents=list(published_contents),
@@ -6201,6 +6221,12 @@ def _build_monthly_report_for_hospital(
         content_summary={
             "published_count": len(published_contents),
             "operations": content_operations.payload,
+            "contract_timing": {
+                "early_publication_count": early_publication_count,
+                "late_recovery_count": late_recovery_count,
+                "published_for_contract_count": len(contract_contents),
+                "observed_at": actual_now.isoformat(),
+            },
             "attribution": attribution,
             "strategy": strategy,
             "citations": citations,

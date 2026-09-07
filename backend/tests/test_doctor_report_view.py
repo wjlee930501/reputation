@@ -1089,3 +1089,11 @@ def test_appendix_merges_platform_variants_before_limiting_questions():
 def test_answer_decorative_emoji_cannot_break_the_pdf_font_encoding():
     view = _view(records=[_record(mentioned=True, raw="장편한외과의원 💡 방문 안내 ✅ 준비물")])
     assert view['evidence']['found']['excerpt'] == '장편한외과의원 방문 안내 준비물'
+
+
+def test_late_recovery_is_disclosed_without_backdating_monthly_results():
+    view = _view(published_count=7, plan_quota=12,
+                 early_publication_count=1, late_recovery_count=4)
+    assert view['tiles'][0]['value'] == '12편 중 7편'
+    assert '기간 전 공개 1편' in view['tiles'][0]['hint']
+    assert '마감 후 보충 완료 4편' in view['tiles'][0]['hint']
