@@ -1403,7 +1403,14 @@ def _reset_v0_analyzing_status(hospital_id: str, prior_status: str | None) -> No
         return
     try:
         with SyncSessionLocal() as db:
-            hospital = db.get(Hospital, uuid.UUID(hospital_id))
+            # 사이트 빌드가 동시에 ACTIVE로 전진할 수 있다. 잠금 없는 ANALYZING
+            # 스냅샷을 기준으로 복원하면 대기하던 UPDATE가 새 ACTIVE/PAUSED를 덮는다.
+            hospital = db.get(
+                Hospital,
+                uuid.UUID(hospital_id),
+                populate_existing=True,
+                with_for_update=True,
+            )
             if hospital and hospital.status == HospitalStatus.ANALYZING:
                 hospital.status = HospitalStatus(prior_status)
                 db.commit()
@@ -2730,7 +2737,15 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             checkpoint = None
             try:
                 acquire_hospital_advisory_lock_sync(db, hospital_uuid)
-                hospital = db.get(Hospital, hospital_uuid)
+                # 사이트 빌드 전환과 같은 Hospital 행에서 직렬화한다. identity map에 남은
+                # ONBOARDING을 강제로 다시 읽지 않으면, build가 막 ACTIVE를 커밋한 뒤
+                # 이 UPDATE가 그 상태를 ANALYZING으로 되돌리는 lost update가 생긴다.
+                hospital = db.get(
+                    Hospital,
+                    hospital_uuid,
+                    populate_existing=True,
+                    with_for_update=True,
+                )
                 if not hospital:
                     return
 

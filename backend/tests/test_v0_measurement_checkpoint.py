@@ -82,6 +82,7 @@ class FakeSession:
         self.artifacts: list[MonthlyReportArtifact] = []
         self.reports: list[MonthlyReport] = []
         self.commits = 0
+        self.status_on_locked_get: HospitalStatus | None = None
         self.status_on_refresh: HospitalStatus | None = None
 
     # -- context manager (SyncSessionPinnedConnection / SyncSessionLocal 대역) --
@@ -92,8 +93,11 @@ class FakeSession:
         return False
 
     # -- session API --
-    def get(self, model: type, ident: uuid.UUID, **_kwargs: Any) -> Any:
+    def get(self, model: type, ident: uuid.UUID, **kwargs: Any) -> Any:
         if model is Hospital and ident == self.hospital.id:
+            if kwargs.get("populate_existing") and kwargs.get("with_for_update"):
+                if self.status_on_locked_get is not None:
+                    self.hospital.status = self.status_on_locked_get
             return self.hospital
         if model is MeasurementRun:
             return next((row for row in self.measurement_runs if row.id == ident), None)
@@ -554,6 +558,30 @@ def test_a_fresh_trigger_still_measures(harness):
     assert len(harness.session.measurement_runs) == 1
     assert harness.session.measurement_runs[0].status == "COMPLETED"
     assert harness.hospital.v0_report_done is True
+
+
+@pytest.mark.parametrize("concurrent_status", [HospitalStatus.ACTIVE, HospitalStatus.PAUSED])
+def test_v0_initial_claim_preserves_concurrent_live_status(harness, concurrent_status):
+    """초기 claim도 행 잠금 뒤 최신 상태를 읽어 build/pause 전환을 덮지 않는다."""
+    harness.session.status_on_locked_get = concurrent_status
+
+    _run_task(harness.hospital.id, operation_run_id=uuid.uuid4())
+
+    assert harness.hospital.v0_report_done is True
+    assert harness.hospital.status is concurrent_status
+
+
+@pytest.mark.parametrize("concurrent_status", [HospitalStatus.ACTIVE, HospitalStatus.PAUSED])
+def test_v0_retry_reset_preserves_concurrent_live_status(harness, concurrent_status):
+    """재시도 복원도 최신 행을 잠가 이미 전진한 상태를 과거 값으로 덮지 않는다."""
+    harness.hospital.status = HospitalStatus.ANALYZING
+    harness.session.status_on_locked_get = concurrent_status
+
+    tasks._reset_v0_analyzing_status(
+        str(harness.hospital.id), HospitalStatus.ONBOARDING.value
+    )
+
+    assert harness.hospital.status is concurrent_status
 
 
 @pytest.mark.parametrize("late_status", [HospitalStatus.ACTIVE, HospitalStatus.PAUSED])
