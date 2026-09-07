@@ -570,7 +570,7 @@ def test_replacement_diagnostic_is_durable_and_two_attempt_cap_never_resets(
                     "reason": "POLICY_REJECTED",
                     "stage": "GOOGLE_REPAIR" if kwargs["policy_repair"] else "GOOGLE_PRIMARY",
                     "prompt_version": (
-                        "topical-no-text-repair-v2"
+                        "topical-no-text-repair-v3"
                         if kwargs["policy_repair"]
                         else "google-primary-v1"
                     ),
@@ -609,11 +609,11 @@ def test_replacement_diagnostic_is_durable_and_two_attempt_cap_never_resets(
         {"id": content_id},
     ).scalar_one()["legacy_image_certification"]
     assert state["replacement_attempts"] == 2
-    assert state["replacement_prompt_version"] == "topical-no-text-repair-v2"
+    assert state["replacement_prompt_version"] == "topical-no-text-repair-v3"
     assert state["replacement_diagnostic"] == {
         "reason": "POLICY_REJECTED",
         "stage": "GOOGLE_REPAIR",
-        "prompt_version": "topical-no-text-repair-v2",
+        "prompt_version": "topical-no-text-repair-v3",
         "has_text": False,
         "has_logo": False,
         "has_recognizable_people": False,

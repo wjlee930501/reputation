@@ -38,7 +38,7 @@ from app.services.image_policy import (
 logger = logging.getLogger(__name__)
 IMAGE_POLICY_VERSION = "image-policy-v2"
 IMAGE_POLICY_FALLBACK_PROMPT_VERSION = "topical-no-text-v1"
-IMAGE_POLICY_REPAIR_PROMPT_VERSION = "topical-no-text-repair-v2"
+IMAGE_POLICY_REPAIR_PROMPT_VERSION = "topical-no-text-repair-v3"
 
 
 @dataclass(frozen=True)
@@ -931,8 +931,33 @@ def _safe_google_visual_scene(
     diagnosis or body-region wording to the image model.
     """
     compact = "".join(topic.lower().split())
-    if any(keyword in compact for keyword in ("발열", "탈수", "수분")):
-        return "a clear glass of water and a folded cool cloth on a sunlit bedside table"
+    if any(keyword in compact for keyword in ("탈수", "수분")):
+        return "a clear drinking cup, a small water pitcher, and a bowl of sliced watermelon"
+    if "발열" in compact:
+        return "a reusable cool pack, a clear drinking cup, and a folded child-sized blanket"
+    if any(
+        keyword in compact
+        for keyword in ("간질환", "간기능", "지방간", "간염")
+    ):
+        return (
+            "an unpowered ultrasound probe, plain unmarked capped sample tubes, "
+            "and a bowl of whole grains"
+        )
+    if any(keyword in compact for keyword in ("체외충격파", "충격파")):
+        return (
+            "an unpowered unmarked handheld therapy applicator with a coiled cable, "
+            "a plain gel bowl, a cork therapy ball, and a folded towel"
+        )
+    if any(keyword in compact for keyword in ("스포츠외상", "스포츠손상", "운동손상", "스포츠")):
+        return (
+            "a plain resistance band, a reusable cold pack, a cork therapy ball, "
+            "and a rolled elastic bandage"
+        )
+    if any(keyword in compact for keyword in ("응급의학", "응급", "외상", "골절")):
+        return (
+            "a reusable cold pack, a rolled elastic bandage, a plain wooden splint, "
+            "and a folded towel"
+        )
     if any(keyword in compact for keyword in ("유방초음파", "초음파")):
         return "an unpowered ultrasound probe, a plain gel bowl, and a folded neutral towel"
     if any(keyword in compact for keyword in ("건강검진", "검진")):

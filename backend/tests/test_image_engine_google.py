@@ -197,7 +197,7 @@ def test_policy_rejection_diagnostic_preserves_stage_and_typed_assessment():
         "policy_rejection": {
             "reason": "POLICY_REJECTED",
             "stage": "GOOGLE_FALLBACK",
-            "prompt_version": "topical-no-text-repair-v2",
+            "prompt_version": "topical-no-text-repair-v3",
             "has_text": True,
             "has_logo": False,
             "has_recognizable_people": False,
@@ -305,6 +305,6 @@ def test_google_visual_scene_does_not_echo_sensitive_medical_title():
 
 
 def test_google_visual_scene_preserves_safe_topic_variety():
-    assert "cool cloth" in image_engine._safe_google_visual_scene("소아 발열 치료")
+    assert "cool pack" in image_engine._safe_google_visual_scene("소아 발열 치료")
     assert "unpowered ultrasound probe" in image_engine._safe_google_visual_scene("유방초음파 비용")
     assert "plain wooden blocks" in image_engine._safe_google_visual_scene("건강검진 준비")

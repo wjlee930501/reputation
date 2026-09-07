@@ -216,7 +216,7 @@ def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded
     )
     assert prompt == expected
     assert prompts[1] == expected
-    assert "welcoming doorway" in prompt
+    assert "sample tubes" in prompt
     assert recorded.by_category["image"] == 2
 
 

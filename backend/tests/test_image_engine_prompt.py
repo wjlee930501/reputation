@@ -101,7 +101,7 @@ def test_second_policy_repair_prompt_is_distinct_and_uses_prior_typed_facts():
     assert "single dominant subject" in prompt
     assert "large, clear, and unobscured" in prompt
     assert "remove every mark or glyph-like detail" in prompt
-    assert IMAGE_POLICY_REPAIR_PROMPT_VERSION == "topical-no-text-repair-v2"
+    assert IMAGE_POLICY_REPAIR_PROMPT_VERSION == "topical-no-text-repair-v3"
 
 
 def test_safe_scene_maps_common_orthopedic_topics_to_no_text_objects():
@@ -111,3 +111,34 @@ def test_safe_scene_maps_common_orthopedic_topics_to_no_text_objects():
         assert not any(
             risky in scene for risky in ("text", "thermometer", "monitor", "calendar", "card")
         )
+
+
+def test_safe_scene_routes_anonymized_repair_topics_before_generic_defaults():
+    cases = (
+        ("소아 탈수 치료 비용 안내", ContentType.COLUMN, "water pitcher"),
+        ("소아 발열 치료 비용 안내", ContentType.COLUMN, "cool pack"),
+        ("간질환 전문의와 진료과 선택", ContentType.FAQ, "sample tubes"),
+        ("간질환 초음파와 혈액검사 흐름", ContentType.LOCAL, "sample tubes"),
+        ("체외충격파 치료와 통증 진단", ContentType.DISEASE, "therapy applicator"),
+        ("지역 응급의학과 외상 진료", ContentType.LOCAL, "wooden splint"),
+        ("외상 골절 통증 종합 진단", ContentType.COLUMN, "wooden splint"),
+        ("야간 응급 외상 진료 안내", ContentType.HEALTH, "wooden splint"),
+        ("스포츠 외상 검사와 치료", ContentType.LOCAL, "resistance band"),
+    )
+    generic_fragments = ("small green plant", "welcoming doorway", "leafy vegetables")
+    risky_fragments = ("text", "screen", "monitor", "calendar", "form", "sign", "packaging")
+
+    for title, content_type, expected in cases:
+        scene = _safe_google_visual_scene(title, content_type)
+        assert expected in scene
+        assert not any(fragment in scene for fragment in generic_fragments)
+        assert not any(fragment in scene for fragment in risky_fragments)
+
+
+def test_generic_gastroenterology_colonoscopy_keeps_colorectal_scene():
+    scene = _safe_google_visual_scene(
+        "소화기내과 대장내시경 준비 안내", ContentType.TREATMENT
+    )
+
+    assert "leafy vegetables and whole grains" in scene
+    assert "sample tubes" not in scene
