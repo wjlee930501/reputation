@@ -170,6 +170,8 @@ def _non_comparable(
             "수치 변화는 병원 성과가 아니라 모델 변경의 영향일 수 있습니다."
         ),
         "ANSWER_MODEL_UNKNOWN": "실제 응답 모델 기록이 없어 두 달의 측정 조건을 확인할 수 없습니다.",
+        "QUERY_TEXT_CHANGED": "같은 추적 질문 식별자에 저장된 질문 문장이 두 달 사이 달라졌습니다.",
+        "SAMPLE_SHAPE_CHANGED": "같은 질문에서 확인된 답변 반복 수가 두 달 사이 달라졌습니다.",
     }
     return ComparisonResult(
         summary=ComparisonSummary(
@@ -249,15 +251,46 @@ def _comparison(
 
     current_by_key = {(cell.query_key, cell.platform): cell for cell in current}
     prior_by_key = {(cell.query_key, cell.platform): cell for cell in prior}
+    shared_keys = tuple(sorted(current_keys & prior_keys))
+    same_text = tuple(
+        key
+        for key in shared_keys
+        if current_by_key[key].query_text.strip() == prior_by_key[key].query_text.strip()
+    )
+    same_sample_shape = tuple(
+        key
+        for key in same_text
+        if current_by_key[key].attempts_used > 0
+        and prior_by_key[key].attempts_used > 0
+        and current_by_key[key].attempts_used == prior_by_key[key].attempts_used
+    )
     matched = tuple(
         key
-        for key in sorted(current_keys & prior_keys)
-        if current_by_key[key].attempts_used > 0 and prior_by_key[key].attempts_used > 0
+        for key in same_sample_shape
     )
     matched_keys = set(matched)
     if any(not any(key[1] == platform for key in matched) for platform in current_platforms):
+        if any(
+            not any(key[1] == platform for key in same_text)
+            and any(key[1] == platform for key in shared_keys)
+            for platform in current_platforms
+        ):
+            reason = "QUERY_TEXT_CHANGED"
+        elif any(
+            not any(key[1] == platform for key in same_sample_shape)
+            and any(
+                key[1] == platform
+                and current_by_key[key].attempts_used > 0
+                and prior_by_key[key].attempts_used > 0
+                for key in same_text
+            )
+            for platform in current_platforms
+        ):
+            reason = "SAMPLE_SHAPE_CHANGED"
+        else:
+            reason = "NO_MATCHED_CELLS"
         return _non_comparable(
-            "NO_MATCHED_CELLS",
+            reason,
             current_unmatched=len(current_keys - matched_keys),
             prior_unmatched=len(prior_keys - matched_keys),
         )
@@ -267,7 +300,7 @@ def _comparison(
     def _models(cell: ManifestCellInput) -> tuple[str | None, ...]:
         return tuple(
             sorted(
-                {attempt.answer_model for attempt in cell.successful_attempts},
+                (attempt.answer_model for attempt in cell.successful_attempts),
                 key=lambda value: (value is None, value or ""),
             )
         )
@@ -403,4 +436,7 @@ def build_monthly_sov(
             info=_segment(cells, platforms, "INFO"),
         ),
         comparison=comparison,
+        comparison_cell_keys=frozenset(
+            (cell.query_key, cell.platform) for cell in result.matched_current_cells
+        ),
     )

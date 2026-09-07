@@ -154,7 +154,7 @@ test('host-scope sitemap returns an empty list when apiBase is missing (no platf
   })
 })
 
-test('all-scope sitemap keeps the platform base entries plus each hospital', async () => {
+test('all-scope sitemap contains only URLs owned by the platform root', async () => {
   await withPlatform(async () => {
     const restore = installFetchMock({
       hospitals: new Response(
@@ -170,15 +170,14 @@ test('all-scope sitemap keeps the platform base entries plus each hospital', asy
       // 플랫폼 sitemap에는 플랫폼 루트 + /llms.txt가 그대로 유지된다.
       assert.ok(urls.includes(PLATFORM))
       assert.ok(urls.includes(`${PLATFORM}/llms.txt`))
-      // aeo_domain 없는 병원은 플랫폼 호스트 경로로 실린다.
-      assert.ok(urls.includes(`${PLATFORM}/jang-clinic`))
+      assert.deepEqual(urls, [PLATFORM, `${PLATFORM}/llms.txt`])
     } finally {
       restore()
     }
   })
 })
 
-test('all-scope sitemap drops custom-domain hospitals (their canonical lives on another host)', async () => {
+test('all-scope sitemap never cross-lists tenant origins', async () => {
   await withPlatform(async () => {
     const restore = installFetchMock({
       hospitals: new Response(
@@ -199,8 +198,7 @@ test('all-scope sitemap drops custom-domain hospitals (their canonical lives on 
         urls.every((url) => !url.includes('custom-clinic')),
         '자체 도메인 병원은 플랫폼 sitemap에서 제외되어야 한다',
       )
-      assert.ok(urls.includes(`${PLATFORM}/platform-clinic`))
-      assert.ok(urls.every((url) => url === PLATFORM || url.startsWith(`${PLATFORM}/`)))
+      assert.deepEqual(urls, [PLATFORM, `${PLATFORM}/llms.txt`])
     } finally {
       restore()
     }

@@ -89,9 +89,15 @@ def test_platform_subdomain_and_base_url_derive_from_site_base_url():
     assert platform_public_base_url("jangpyeonhan") == f"https://jangpyeonhan.{PLATFORM_HOST}/"
 
 
-@pytest.mark.parametrize("slug", [None, "", "www", "a.b"])
+@pytest.mark.parametrize("slug", [None, "", "www", "a.b", "x" * 64])
 def test_platform_subdomain_rejects_non_slug_labels(slug):
     assert platform_subdomain_host(slug) is None
+
+
+def test_platform_subdomain_is_disabled_for_local_path_routing(monkeypatch):
+    monkeypatch.setattr(settings, "SITE_BASE_URL", "http://localhost:3000")
+    assert platform_subdomain_host("demo-clinic") is None
+    assert platform_public_base_url("demo-clinic") is None
 
 
 def test_surface_roots_cover_path_subdomain_and_custom_domain():

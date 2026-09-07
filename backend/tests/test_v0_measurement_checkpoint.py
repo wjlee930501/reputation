@@ -270,7 +270,20 @@ def test_retry_after_pdf_failure_reuses_the_measurement_and_finishes_the_report(
     report = harness.session.reports[0]
     assert report.report_type == "V0"
     # 재사용된 측정으로 계산해도 숫자는 같아야 한다(4건 중 2건 언급 = 50%).
-    assert report.sov_summary == {"sov_pct": 50.0, "platforms": ["chatgpt"]}
+    assert report.sov_summary["sov_pct"] == 50.0
+    assert report.sov_summary["platforms"] == ["chatgpt"]
+    assert report.sov_summary["baseline_basis"]["measurement_run_id"] == str(
+        harness.session.measurement_runs[0].id
+    )
+    assert report.sov_summary["baseline_basis"]["measurement_protocol"]
+    assert report.sov_summary["baseline_basis"]["query_snapshot"] == [
+        {
+            "query_id": str(query.id),
+            "query_text": query.query_text,
+            "query_intent": query.query_intent,
+        }
+        for query in harness.session.queries
+    ]
     assert harness.pdf_calls[-1] == tasks.V0_REPEAT_COUNT
 
 

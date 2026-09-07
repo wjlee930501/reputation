@@ -852,6 +852,15 @@ def _appendix_rows(
         for key in ("prior_attempts_used", "prior_mentioned_attempts",
                     "current_attempts_used", "current_mentioned_attempts"):
             combined[key] = int(combined.get(key) or 0) + int(row.get(key) or 0)
+        combined["prior_measured"] = bool(combined.get("prior_measured")) or bool(
+            row.get("prior_measured")
+        )
+        row_comparable = bool(
+            row.get("prior_comparable", row.get("prior_measured", False))
+        )
+        combined["prior_comparable"] = bool(
+            combined.get("prior_comparable", True)
+        ) and row_comparable
     rows: list[DoctorAppendixRow] = []
     for row in list(grouped.values())[:DOCTOR_APPENDIX_ROW_LIMIT]:
         text = str(row.get("query_text") or "").strip()
@@ -864,8 +873,12 @@ def _appendix_rows(
                     int(row.get("prior_attempts_used") or 0),
                     int(row.get("prior_mentioned_attempts") or 0),
                 )
-                if has_prior_month
-                else "측정 없음"
+                if has_prior_month and bool(row.get("prior_comparable"))
+                else (
+                    "비교 불가"
+                    if has_prior_month and bool(row.get("prior_measured"))
+                    else "측정 없음"
+                )
             ),
             "current_label": _appendix_count_label(
                 int(row.get("current_attempts_used") or 0),
@@ -900,8 +913,12 @@ def _v0_footnote() -> str:
 def _talking_points(
     *,
     measured: bool,
-    published_count: int,
+    actual_published_count: int,
+    contract_published_count: int,
     plan_quota: int | None,
+    supplementary_count: int,
+    early_publication_count: int,
+    late_recovery_count: int,
     published_items: Sequence[DoctorPublishedItem],
     citations: CitationSummaryPayload | None,
     this_count: int | None,
@@ -910,11 +927,22 @@ def _talking_points(
     ours: Sequence[str],
 ) -> list[str]:
     """AE가 원장 앞에서 그대로 읽을 수 있는 3문장. 숫자는 전부 뷰에서 바인딩한다."""
-    volume = (
-        f"이번 달 {published_count}편을 발행했습니다."
-        if plan_quota is None
-        else f"이번 달 약정 {plan_quota}편 중 {published_count}편을 발행했습니다."
-    )
+    if plan_quota is None:
+        volume = f"대상 기간에 실제 {actual_published_count}편을 공개했습니다."
+    else:
+        volume = (
+            f"대상 월 약정 {plan_quota}편 중 현재 {contract_published_count}편을 이행했습니다. "
+            f"대상 기간에는 실제 {actual_published_count}편을 공개했습니다."
+        )
+    timing = []
+    if supplementary_count:
+        timing.append(f"이전 월 보충 {supplementary_count}편 포함")
+    if early_publication_count:
+        timing.append(f"약정분 기간 전 공개 {early_publication_count}편")
+    if late_recovery_count:
+        timing.append(f"약정분 마감 후 보충 {late_recovery_count}편")
+    if timing:
+        volume = f"{volume} {' · '.join(timing)}입니다."
     if published_items:
         volume = f"{volume[:-1]}, 대표 글은 “{published_items[0]['title']}”입니다."
     if citations:
@@ -987,6 +1015,7 @@ def build_doctor_report_view(
     supplementary_count: int = 0,
     early_publication_count: int = 0,
     late_recovery_count: int = 0,
+    contract_published_count: int | None = None,
 ) -> DoctorReportView:
     """원장에게 보낼 1페이지(+선택적 2쪽 부록)의 모든 문구와 숫자를 만든다.
 
@@ -1017,7 +1046,16 @@ def build_doctor_report_view(
     ):
         delta_sentence = "이번 달이 기준선입니다"
     elif comparison_reason not in (None, "MATCHED_COHORT"):
-        delta_sentence = "측정 기준이 바뀌어 다음 달부터 비교합니다"
+        delta_sentence = {
+            "PLATFORM_COHORT_MISSING": "확인한 AI 서비스 구성이 달라 이번 달 수치만 봅니다",
+            "NO_MATCHED_CELLS": "두 달에 공통으로 확인된 질문이 없어 이번 달 수치만 봅니다",
+            "INTENT_SNAPSHOT_MISSING": "지난달 질문 유형 기록이 없어 이번 달 수치만 봅니다",
+            "MEASUREMENT_POLICY_CHANGED": "측정 기준이 바뀌어 다음 달부터 비교합니다",
+            "ANSWER_MODEL_CHANGED": "응답한 AI 모델이 달라 이번 달 수치만 봅니다",
+            "ANSWER_MODEL_UNKNOWN": "응답한 AI 모델 기록이 없어 이번 달 수치만 봅니다",
+            "QUERY_TEXT_CHANGED": "추적 질문 문장이 달라 이번 달 수치만 봅니다",
+            "SAMPLE_SHAPE_CHANGED": "질문별 확인 횟수가 달라 이번 달 수치만 봅니다",
+        }.get(comparison_reason, "같은 조건의 지난달 결과가 없어 이번 달 수치만 봅니다")
     elif delta is None:
         delta_sentence = "이번 달이 기준선입니다"
     else:
@@ -1060,17 +1098,26 @@ def build_doctor_report_view(
         else []
     )
 
+    fulfilled_count = (
+        published_count - supplementary_count
+        if contract_published_count is None
+        else contract_published_count
+    )
+    publication_hint_parts = [f"대상 기간 실제 공개 {published_count}편"]
+    if supplementary_count:
+        publication_hint_parts.append(f"이전 월 보충 {supplementary_count}편 포함")
+    if early_publication_count:
+        publication_hint_parts.append(f"약정분 기간 전 공개 {early_publication_count}편")
+    if late_recovery_count:
+        publication_hint_parts.append(f"약정분 마감 후 보충 완료 {late_recovery_count}편")
     tiles: list[DoctorTile] = [
         {
-            "label": "이번 달 발행한 글",
+            "label": "대상 월 약정 이행" if plan_quota is not None else "대상 기간 공개한 글",
             "value": (
                 f"{published_count}편" if plan_quota is None
-                else f"{plan_quota}편 중 {published_count - supplementary_count}편"
+                else f"{plan_quota}편 중 {fulfilled_count}편"
             ),
-            "hint": (
-                f"이전 월 보충 {supplementary_count}편 별도 · 총 {published_count}편 공개"
-                if supplementary_count else "약정한 편수 대비 진행률입니다."
-            ),
+            "hint": " · ".join(publication_hint_parts) + ".",
         },
     ]
     platform_results = {row["platform"]: row for row in coverage.get("platforms", [])}
@@ -1106,14 +1153,6 @@ def build_doctor_report_view(
         "측정 기준이 바뀌어 다음 달부터 비교합니다",
     }:
         summary = f"{delta_sentence}. 이번 달 현재는 환자 질문 100번 중 {this_count}번입니다."
-
-    timing_notes = []
-    if early_publication_count:
-        timing_notes.append(f"기간 전 공개 {early_publication_count}편")
-    if late_recovery_count:
-        timing_notes.append(f"마감 후 보충 완료 {late_recovery_count}편")
-    if timing_notes:
-        tiles[0]["hint"] += " " + " · ".join(timing_notes) + "."
 
     ours = ["다음 달에도 계획한 글을 예정대로 발행합니다."]
     if lost_mention_sentences:
@@ -1156,8 +1195,8 @@ def build_doctor_report_view(
         )
     if non_comparable_questions:
         footnotes.append(
-            f"지난달 측정이 끝나지 않은 질문 {non_comparable_questions}개는 비교에서 제외했습니다. "
-            "다음 달 정상 측정 후 비교합니다."
+            f"같은 조건으로 비교할 수 없는 질문·AI 서비스 조합 {non_comparable_questions}개는 "
+            "새 언급과 빠진 언급 계산에서 제외했습니다."
         )
 
     evidence = _pick_evidence(records, getattr(hospital, "name", "") or "")
@@ -1340,7 +1379,9 @@ def build_doctor_report_view(
         "citation_line": citation_line,
         "new_mention_sentences": new_mention_sentences,
         "new_mention_empty_text": (
-            "이번 달에는 지난달과 같은 질문에서 새로 확인된 병원 언급이 없습니다."
+            "이번 달에는 지난달과 같은 조건에서 새로 확인된 병원 언급이 없습니다."
+            if comparison_reason in (None, "MATCHED_COHORT")
+            else "이번 달은 지난달과 같은 조건의 새 언급을 계산하지 않았습니다."
         ),
         "lost_mention_sentences": lost_mention_sentences,
         "v0_baseline": v0_baseline,
@@ -1360,8 +1401,12 @@ def build_doctor_report_view(
         ],
         "talking_points": _talking_points(
             measured=measured,
-            published_count=published_count - supplementary_count,
+            actual_published_count=published_count,
+            contract_published_count=fulfilled_count,
             plan_quota=plan_quota,
+            supplementary_count=supplementary_count,
+            early_publication_count=early_publication_count,
+            late_recovery_count=late_recovery_count,
             published_items=published_items,
             citations=citations,
             this_count=this_count,

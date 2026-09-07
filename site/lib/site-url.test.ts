@@ -5,6 +5,7 @@ import {
   canonicalBase,
   canonicalHospitalUrl,
   normalizeCustomDomain,
+  platformHospitalUrl,
   platformSiteUrl,
 } from './site-url.ts'
 
@@ -120,9 +121,27 @@ test('canonicalHospitalUrl hides the internal slug on a custom domain', () => {
   )
 })
 
-test('canonicalHospitalUrl keeps the slug on the platform domain', () => {
+test('canonicalHospitalUrl uses the managed tenant subdomain', () => {
+  assert.equal(platformHospitalUrl('demo-clinic'), 'https://demo-clinic.reputation.motionlabs.kr')
   assert.equal(
     canonicalHospitalUrl({}, 'demo-clinic', 'doctor'),
-    `${platformSiteUrl()}/demo-clinic/doctor`,
+    'https://demo-clinic.reputation.motionlabs.kr/doctor',
   )
+  assert.equal(
+    canonicalBase({}, 'demo-clinic'),
+    'https://demo-clinic.reputation.motionlabs.kr',
+  )
+})
+
+test('platformHospitalUrl keeps local and unsupported labels on a path route', () => {
+  const original = process.env.NEXT_PUBLIC_SITE_URL
+  try {
+    setEnv('NEXT_PUBLIC_SITE_URL', 'http://localhost:3000')
+    assert.equal(platformHospitalUrl('demo-clinic'), 'http://localhost:3000/demo-clinic')
+    setEnv('NEXT_PUBLIC_SITE_URL', 'https://example.com')
+    assert.equal(platformHospitalUrl('api'), 'https://example.com/api')
+    assert.equal(platformHospitalUrl('x'.repeat(64)), `https://example.com/${'x'.repeat(64)}`)
+  } finally {
+    setEnv('NEXT_PUBLIC_SITE_URL', original)
+  }
 })

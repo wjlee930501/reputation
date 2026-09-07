@@ -13,14 +13,15 @@ WHERE 절의 실제 SQL 동작이기 때문이다.
 """
 
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.content import ContentStatus
+from app.models.content import ContentItem, ContentStatus
+from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, NotificationOutbox, OperationRun, OperationRunState
 from app.workers import generation_incident_control, tasks
@@ -98,6 +99,77 @@ def test_write_back_applies_while_the_item_is_still_a_draft(pg_conn, pg_session)
     assert row.status == "DRAFT"
     assert row.title == "대장내시경 전 준비"
     assert row.body == "본문"
+
+
+def _seed_complete_recovery_item(pg_conn, pg_session, *, references, faq_question):
+    item_id = _seed_item(pg_conn, status="DRAFT")
+    item = pg_session.get(ContentItem, item_id)
+    philosophy = HospitalContentPhilosophy(
+        hospital_id=item.hospital_id,
+        version=1,
+        status=PhilosophyStatus.APPROVED,
+        content_principles=[],
+        tone_guidelines=[],
+        must_use_messages=[],
+        avoid_messages=[],
+        treatment_narratives=[],
+        local_context={},
+        medical_ad_risk_rules=[],
+        evidence_map={},
+        source_asset_ids=[],
+        unsupported_gaps=[],
+        conflict_notes=[],
+    )
+    pg_session.add(philosophy)
+    pg_session.flush()
+    item.title = "완성된 FAQ"
+    item.body = "완성된 본문"
+    item.image_url = "gs://bucket/reviewed.png"
+    item.image_policy_verified_at = datetime.now(timezone.utc)
+    item.faq_question = faq_question
+    item.faq_answer_summary = "진료 전에 상태를 확인합니다."
+    item.references_list = references
+    item.content_philosophy_id = philosophy.id
+    item.essence_status = "ALIGNED"
+    pg_session.flush()
+    return item_id
+
+
+def test_nightly_selector_handles_json_null_and_selects_only_repairable_items(
+    pg_conn, pg_session
+):
+    """Complete content is skipped while FAQ/JSON-null defects re-enter recovery."""
+
+    valid_reference = [{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}]
+    missing_faq_id = _seed_complete_recovery_item(
+        pg_conn,
+        pg_session,
+        references=valid_reference,
+        faq_question=None,
+    )
+    json_null_reference_id = _seed_complete_recovery_item(
+        pg_conn,
+        pg_session,
+        references=None,
+        faq_question="언제 진료받아야 하나요?",
+    )
+    valid_id = _seed_complete_recovery_item(
+        pg_conn,
+        pg_session,
+        references=valid_reference,
+        faq_question="언제 진료받아야 하나요?",
+    )
+
+    selected_ids = {
+        item.id
+        for item in pg_session.scalars(
+            tasks._nightly_generation_stmt(date(2026, 7, 15), date(2026, 7, 15))
+        )
+    }
+
+    assert missing_faq_id in selected_ids
+    assert json_null_reference_id in selected_ids
+    assert valid_id not in selected_ids
 
 
 def test_write_back_cannot_resurrect_content_cancelled_during_generation(pg_conn, pg_session):

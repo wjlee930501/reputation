@@ -664,7 +664,14 @@ def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery
 
     class FakeMonthlySov:
         sov_pct = 47.0
-        comparison = SimpleNamespace(prior_sov_pct=None, change_pct=None)
+        sov_pct_all_cells = 47.0
+        comparison = SimpleNamespace(
+            prior_sov_pct=None,
+            change_pct=None,
+            reason="NO_PRIOR_MANIFEST",
+            status="NON_COMPARABLE",
+        )
+        comparison_cell_keys = frozenset()
 
         def to_payload(self):
             return payload

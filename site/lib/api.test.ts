@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   ContentNotFoundError,
   fetchContent,
+  fetchAllContents,
   fetchContents,
   fetchHospital,
   HospitalNotFoundError,
@@ -195,6 +196,31 @@ test('fetchContents rejects malformed backend payloads at runtime', async () => 
     })) as typeof fetch
   try {
     await assert.rejects(() => fetchContents('demo-clinic'), /Invalid contents payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchAllContents follows offsets until the final short page', async () => {
+  const originalFetch = globalThis.fetch
+  const seen: string[] = []
+  const first = Array.from({ length: 500 }, (_, index) =>
+    contentPayload({ id: `item-${index}`, body: undefined }),
+  )
+  const second = [contentPayload({ id: 'item-500', body: undefined })]
+  globalThis.fetch = (async (input) => {
+    const url = String(input)
+    seen.push(url)
+    return new Response(JSON.stringify(url.includes('offset=500') ? second : first), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }) as typeof fetch
+  try {
+    const contents = await fetchAllContents('demo-clinic')
+    assert.equal(contents.length, 501)
+    assert.ok(!seen[0].includes('offset='))
+    assert.ok(seen[1].includes('offset=500'))
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -46,6 +46,7 @@ class QuestionRowPayload(TypedDict):
     prior_attempts_used: int
     prior_mentioned_attempts: int
     prior_measured: bool
+    prior_comparable: bool
 
 
 class ContentAttributionPayload(TypedDict):
@@ -68,6 +69,8 @@ class ContentAttributionPayload(TypedDict):
     sov_pct: float | None
     prev_sov_pct: float | None
     change_pct: float | None
+    comparison_reason: str | None
+    new_mention_empty_text: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +83,8 @@ class ContentAttributionInput:
     prev_sov_pct: float | None
     change_pct: float | None
     max_visible_cells: int = 5
+    comparison_reason: str | None = None
+    comparable_cell_keys: frozenset[tuple[str, str]] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,7 +108,7 @@ FIRST_MEASURED_COPY: Final = AttributionCopy(
 NON_COMPARABLE_COPY: Final = AttributionCopy(
     "NON_COMPARABLE",
     "지난달과 비교할 수 없는 언급",
-    "지난달 같은 질문의 측정이 완료되지 않았습니다.",
+    "지난달과 이번 달의 같은 질문을 같은 측정 조건으로 비교할 수 없습니다.",
     "새로 좋아진 결과로 설명할 수 없어 새 언급 수에서 제외했습니다.",
     "이번 결과는 현재 상태로만 전달하고 다음 달 정상 측정 후 비교하세요.",
 )
@@ -198,13 +203,25 @@ def build_content_attribution_summary(
         if request.prior_cells is not None
         else {}
     )
+    comparable_cell_keys = request.comparable_cell_keys
+    if (
+        comparable_cell_keys is None
+        and request.comparison_reason not in (None, "MATCHED_COHORT")
+    ):
+        comparable_cell_keys = frozenset()
     new_mentions: list[MentionCellPayload] = []
     first_measured: list[MentionCellPayload] = []
     non_comparable: list[MentionCellPayload] = []
     lost_mentions: list[MentionCellPayload] = []
     for cell in sorted(request.current_cells, key=lambda row: (row.query_key, row.platform)):
-        prior_cell = prior_by_key.get((cell.query_key, cell.platform))
-        if _is_lost_mention(cell, prior_cell):
+        key = (cell.query_key, cell.platform)
+        prior_cell = prior_by_key.get(key)
+        comparison_eligible = (
+            key in comparable_cell_keys
+            if comparable_cell_keys is not None
+            else prior_cell is not None and prior_cell.selected_attempt is not None
+        )
+        if comparison_eligible and _is_lost_mention(cell, prior_cell):
             lost_mentions.append(_payload(
                 cell,
                 request.published_contents,
@@ -219,6 +236,13 @@ def build_content_attribution_summary(
                 cell,
                 request.published_contents,
                 FIRST_MEASURED_COPY,
+            ))
+            continue
+        if not comparison_eligible:
+            non_comparable.append(_payload(
+                cell,
+                request.published_contents,
+                NON_COMPARABLE_COPY,
             ))
             continue
         prior_attempt = prior.selected_attempt
@@ -252,10 +276,20 @@ def build_content_attribution_summary(
         "non_comparable_count": len(non_comparable),
         "lost_mention_count": len(lost_mentions),
         "has_prior_month": request.prior_cells is not None,
-        "question_rows": _question_rows(request.current_cells, prior_by_key),
+        "question_rows": _question_rows(
+            request.current_cells,
+            prior_by_key,
+            comparable_cell_keys,
+        ),
         "sov_pct": request.sov_pct,
         "prev_sov_pct": request.prev_sov_pct,
         "change_pct": request.change_pct,
+        "comparison_reason": request.comparison_reason,
+        "new_mention_empty_text": (
+            "지난달과 같은 기준으로 새로 확인된 언급은 없습니다."
+            if request.comparison_reason in (None, "MATCHED_COHORT")
+            else "지난달과 같은 조건으로 비교할 수 없어 새 언급을 계산하지 않았습니다."
+        ),
     }
 
 
@@ -282,6 +316,7 @@ def _is_lost_mention(
 def _question_rows(
     current_cells: tuple[ManifestCellInput, ...],
     prior_by_key: Mapping[tuple[str, str], ManifestCellInput],
+    comparable_cell_keys: frozenset[tuple[str, str]] | None,
 ) -> list[QuestionRowPayload]:
     """질문 단위(플랫폼 합산) 지난달·이번달 표. 원장 리포트 2쪽 부록이 읽는다."""
     rows: dict[str, QuestionRowPayload] = {}
@@ -296,15 +331,23 @@ def _question_rows(
                 "prior_attempts_used": 0,
                 "prior_mentioned_attempts": 0,
                 "prior_measured": False,
+                "prior_comparable": True,
             }
             rows[cell.query_key] = row
         row["current_attempts_used"] += cell.attempts_used
         row["current_mentioned_attempts"] += cell.mentioned_attempts
         prior = prior_by_key.get((cell.query_key, cell.platform))
+        key = (cell.query_key, cell.platform)
         if prior is not None:
             row["prior_attempts_used"] += prior.attempts_used
             row["prior_mentioned_attempts"] += prior.mentioned_attempts
             row["prior_measured"] = row["prior_measured"] or prior.attempts_used > 0
+        cell_comparable = (
+            key in comparable_cell_keys
+            if comparable_cell_keys is not None
+            else prior is not None and prior.attempts_used > 0
+        )
+        row["prior_comparable"] = row["prior_comparable"] and cell_comparable
     return list(rows.values())
 
 

@@ -345,6 +345,86 @@ def test_real_doctor_artifact_is_a4_with_korean_font_text_and_link(
         )
 
 
+@pytest.mark.skipif(
+    os.getenv("REQUIRE_PDF_RENDER") is None,
+    reason="WeasyPrint 네이티브 의존성이 필요하다. CI에서 REQUIRE_PDF_RENDER=1로 강제한다.",
+)
+def test_real_builder_renders_contract_timing_and_noncomparable_appendix() -> None:
+    from app.services.report_engine import build_doctor_report_view
+
+    hospital = SimpleNamespace(name="장편한외과의원")
+    view = build_doctor_report_view(
+        hospital=hospital,
+        sov_pct=47.0,
+        prev_sov_pct=None,
+        published_count=9,
+        plan_quota=12,
+        supplementary_count=2,
+        early_publication_count=1,
+        late_recovery_count=4,
+        contract_published_count=12,
+        comparison_reason="ANSWER_MODEL_CHANGED",
+        attribution={
+            "new_mention_count": 0,
+            "first_measured_mention_count": 0,
+            "non_comparable_count": 1,
+            "lost_mention_count": 0,
+            "has_prior_month": True,
+            "new_mention_cells": [],
+            "lost_mention_cells": [],
+            "question_rows": [{
+                "query_key": "q1",
+                "query_text": "강남 치질 병원",
+                "current_attempts_used": 5,
+                "current_mentioned_attempts": 2,
+                "prior_attempts_used": 5,
+                "prior_mentioned_attempts": 0,
+                "prior_measured": True,
+                "prior_comparable": False,
+            }],
+        },
+        records=[],
+        platforms=["chatgpt", "gemini"],
+        sov_coverage={
+            "planned_count": 2,
+            "success_count": 2,
+            "platforms": [],
+            "measurement_basis": {},
+        },
+    )
+    public_url = "https://reputation.motionlabs.kr/jangpyeonhan"
+    caveat = "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다."
+    rendered = render_validated_doctor_pdf(
+        view=view,
+        period_label="2026-08",
+        public_url=public_url,
+        expectation=DoctorPdfExpectation(
+            hospital_name=hospital.name,
+            coverage_text=view["coverage_text"],
+            caveat_text=caveat,
+            public_url=public_url,
+            appendix_expected=True,
+        ),
+    )
+
+    assert view["tiles"][0] == {
+        "label": "대상 월 약정 이행",
+        "value": "12편 중 12편",
+        "hint": (
+            "대상 기간 실제 공개 9편 · 이전 월 보충 2편 포함 · "
+            "약정분 기간 전 공개 1편 · 약정분 마감 후 보충 완료 4편."
+        ),
+    }
+    assert view["appendix_rows"][0]["prev_label"] == "비교 불가"
+    assert rendered.metadata.page_count == 2
+    if evidence_root := os.getenv("PDF_EVIDENCE_DIR"):
+        output_dir = Path(evidence_root)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "doctor-contract-timing-noncomparable.pdf").write_bytes(
+            rendered.pdf_bytes
+        )
+
+
 # ── 최대 밀도 리포트가 실제로 1쪽(+부록 1쪽)에 들어가는가 ─────────────────
 
 

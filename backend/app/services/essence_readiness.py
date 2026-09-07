@@ -1,9 +1,12 @@
 """Resolve approved clinic writing standards for write and public-read gates.
 
-Approval alone is insufficient: processed sources can change after approval.
-Generation, publication, and public reads may keep using the intact approved
-processed-source baseline while a new source is pending, but must stop if that
-approved baseline changes.
+``current`` is deliberately strict: every required text source must be processed
+and the approved snapshot must match the complete current source set. It is the
+only philosophy suitable for generation or publication.
+
+``public_philosophy`` preserves already-published historical content while a new
+source is being processed or approved, provided every source in the approved
+baseline is still processed and unchanged. It must never be used for a write.
 """
 
 from __future__ import annotations
@@ -83,7 +86,7 @@ def resolve_essence_readiness(
         public_philosophy = approved if processed_snapshot_matches else None
     return EssenceReadiness(
         approved=approved,
-        current=public_philosophy,
+        current=approved if fresh else None,
         public_philosophy=public_philosophy,
         processed_source_count=len(processed_sources),
         required_source_count=len(required_sources),
@@ -152,13 +155,37 @@ async def get_current_approved_philosophy_id(
     db: AsyncSession,
     hospital_id: uuid.UUID,
 ) -> uuid.UUID | None:
-    """공개 표면 전용 최소 조회: "지금 신선한 승인 철학의 id"만 필요할 때.
+    """Return the strict current-snapshot approval id without source text.
 
     `get_essence_readiness()`와 동일한 신선도 규칙(§resolve_essence_readiness)을 쓰지만,
     소스 자산을 스냅샷 해시 계산에 필요한 4개 컬럼(id·content_hash·status·processed_at)만
-    선택해 `raw_text`·`operator_note` 같은 대용량 컬럼을 읽지 않는다. 콘텐츠 목록·이미지
-    프록시처럼 요청당 반복 호출되는 공개 GET에서 쓴다.
+    선택해 `raw_text`·`operator_note` 같은 대용량 컬럼을 읽지 않는다. 생성·수정·발행을
+    허용하는 쓰기 게이트에서만 사용한다.
     """
+    approved_id, readiness = await _get_lightweight_essence_readiness(db, hospital_id)
+    return approved_id if readiness and readiness.current is not None else None
+
+
+async def get_public_approved_philosophy_id(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+) -> uuid.UUID | None:
+    """Return an intact historical approval id for read-only public serving.
+
+    A new source may await automated processing and approval without hiding
+    already-published content. The helper returns ``None`` as soon as a source in
+    the approved baseline is excluded, unprocessed, or changed. It must never
+    authorize generation, editing, or publication.
+    """
+    approved_id, readiness = await _get_lightweight_essence_readiness(db, hospital_id)
+    return approved_id if readiness and readiness.public_philosophy is not None else None
+
+
+async def _get_lightweight_essence_readiness(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+) -> tuple[uuid.UUID | None, EssenceReadiness | None]:
+    """Load only columns needed to evaluate current and historical read gates."""
     approved_row = (
         await db.execute(
             select(
@@ -172,7 +199,7 @@ async def get_current_approved_philosophy_id(
         )
     ).one_or_none()
     if approved_row is None:
-        return None
+        return None, None
     approved_id, source_snapshot_hash, source_asset_ids = approved_row
 
     sources_result = await db.execute(
@@ -201,4 +228,4 @@ async def get_current_approved_philosophy_id(
         source_asset_ids=source_asset_ids,
     )
     readiness = resolve_essence_readiness(approved_stub, required_sources)
-    return approved_id if readiness.current is not None else None
+    return approved_id, readiness

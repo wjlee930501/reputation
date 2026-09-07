@@ -58,7 +58,7 @@ def test_generation_failure_names_customer_impact_and_one_recovery_control() -> 
     assert "개발팀 문의용 정보 복사" not in action
 
 
-def test_generation_prerequisites_do_not_promise_an_unavailable_retry() -> None:
+def test_generation_prerequisites_describe_automatic_recovery_before_human_action() -> None:
     # Given / When
     _, essence_action = generation_incident_control._generation_operator_copy(
         "MISSING_APPROVED_ESSENCE"
@@ -70,9 +70,10 @@ def test_generation_prerequisites_do_not_promise_an_unavailable_retry() -> None:
 
     # Then
     assert "운영 기준" in essence_action
-    assert "한 번 승인" in essence_action
-    assert "승인 전에는 재시도할 필요가 없" in essence_action
-    assert "자동으로 다시 생성" in essence_action
+    assert "자동으로" in essence_action
+    assert "검토·승인" in essence_action
+    assert "발행 지연이 계속되는 병원만" in essence_action
+    assert "한 번 승인" not in essence_action
     assert "비용·자동 작업 안전장치" in cost_action
     assert "중지 해제" in cost_action
     assert "계정 소유자" in cost_action
@@ -94,6 +95,7 @@ def test_publication_blockers_name_the_exact_operator_recovery() -> None:
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현",
         "ESSENCE_NOT_ALIGNED": "운영 기준",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지 다시 생성",
+        "CONTENT_IMAGE_NOT_VERIFIED": "자동 정책 검사 완료",
     }
 
     for code, instruction in expected.items():
@@ -443,6 +445,7 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
         "ESSENCE_NOT_ALIGNED",
         "MISSING_REFERENCES",
         "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
         "IMAGE_GENERATION_FAILED",
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
@@ -503,6 +506,13 @@ def test_morning_cutoff_requires_due_date_and_exact_missing_artifact() -> None:
     due.image_url = "https://cdn.example.test/image.jpg"
     assert not generation_incident_control._morning_notification_due(
         code="CONTENT_IMAGE_NOT_READY", item=due, observed_at=cutoff
+    )
+    assert generation_incident_control._morning_notification_due(
+        code="CONTENT_IMAGE_NOT_VERIFIED", item=due, observed_at=cutoff
+    )
+    due.image_policy_verified_at = cutoff
+    assert not generation_incident_control._morning_notification_due(
+        code="CONTENT_IMAGE_NOT_VERIFIED", item=due, observed_at=cutoff
     )
 
     due.scheduled_date = datetime(2026, 8, 20).date()

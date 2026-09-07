@@ -1,5 +1,6 @@
+import hashlib
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -40,6 +41,37 @@ def test_process_source_asset_extracts_only_source_backed_notes():
     assert all(note.source_excerpt in asset.raw_text or note.source_excerpt in asset.operator_note for note in notes)
     assert any(note.note_type == EvidenceNoteType.DOCTOR_PHILOSOPHY for note in notes)
     assert any(note.note_type == EvidenceNoteType.RISK_SIGNAL for note in notes)
+
+
+def test_source_snapshot_hash_normalizes_the_same_instant_to_utc():
+    source_id = uuid.uuid4()
+    processed_utc = datetime(2026, 9, 7, 1, 30, tzinfo=timezone.utc)
+
+    def source(processed_at):
+        return SimpleNamespace(
+            id=source_id,
+            content_hash="content-hash",
+            status=SourceStatus.PROCESSED,
+            processed_at=processed_at,
+        )
+
+    utc_hash = compute_sources_snapshot_hash([source(processed_utc)])
+    kst_hash = compute_sources_snapshot_hash(
+        [source(processed_utc.astimezone(timezone(timedelta(hours=9))))]
+    )
+    naive_legacy_hash = compute_sources_snapshot_hash(
+        [source(processed_utc.replace(tzinfo=None))]
+    )
+
+    assert kst_hash == utc_hash
+    assert naive_legacy_hash == utc_hash
+
+    # Keep approved snapshots already produced from UTC-aware application values
+    # byte-for-byte compatible with the pre-normalization implementation.
+    legacy_part = "|".join(
+        [str(source_id), "content-hash", SourceStatus.PROCESSED.value, processed_utc.isoformat()]
+    )
+    assert utc_hash == hashlib.sha256(legacy_part.encode("utf-8")).hexdigest()
 
 
 def test_deterministic_fallback_does_not_misclassify_common_si_syllable_as_local():

@@ -4,7 +4,6 @@ import { Suspense } from 'react'
 
 import { fetchContents, fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
-import { buildFaqPageJsonLd } from '@/lib/schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
@@ -79,15 +78,13 @@ export default async function ContentsLibraryPage({ params: paramsPromise }: Pro
       '@type': 'Article',
       headline: content.title,
       url: `${hospitalRootUrl}/contents/${content.id}`,
-      datePublished: content.published_at || content.scheduled_date,
+      datePublished: content.published_at || undefined,
     })),
   }
 
-  const faqJsonLd = buildFaqPageJsonLd(contents, hospitalRootUrl)
   const pageJsonLd = [
     collectionJsonLd,
     buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl),
-    ...(faqJsonLd ? [faqJsonLd] : []),
   ]
 
   return (

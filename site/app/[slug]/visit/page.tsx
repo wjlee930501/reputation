@@ -4,7 +4,7 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
 import { clinicGalleryPolicy } from '@/lib/clinic-design'
-import { buildAddressRegionFields } from '@/lib/clinic-schema'
+import { buildPostalAddress } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { selectVisitFacilityPhotos } from '@/lib/visit-photos'
@@ -86,18 +86,13 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     // 같은 @id로 병합되는 노드끼리 엔티티 필드가 어긋나지 않도록 허브 페이지와 같은 값.
     logo: hospital.logo_url ?? undefined,
     mainEntityOfPage: `${hospitalRootUrl}/visit`,
-    address: {
-      '@type': 'PostalAddress',
-      streetAddress: hospital.address,
-      addressCountry: 'KR',
-      ...buildAddressRegionFields(hospital.region),
-    },
+    address: buildPostalAddress(hospital.address),
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,
     openingHoursSpecification: buildOpeningHoursSpec(hospital.business_hours),
     hasMap: hospital.google_maps_url || undefined,
     geo:
-      hospital.latitude && hospital.longitude
+      hospital.latitude !== null && hospital.longitude !== null
         ? { '@type': 'GeoCoordinates', latitude: hospital.latitude, longitude: hospital.longitude }
         : undefined,
     sameAs: sameAs.length > 0 ? sameAs : undefined,

@@ -121,6 +121,15 @@ test('no FAQ at all means no FAQPage node', () => {
   )
 })
 
+test('each FAQ detail page gets its own node identity', () => {
+  const result = buildFaqPageJsonLd(
+    [faq(1)],
+    'https://clinic.example',
+    'https://clinic.example/contents/1',
+  )
+  assert.equal(result?.['@id'], 'https://clinic.example/contents/1#faq')
+})
+
 test('content detail uses approved FAQ fields for both visible FAQ and JSON-LD', () => {
   const detail = readFileSync(
     join(HERE, '..', 'app', '[slug]', 'contents', '[contentId]', 'page.tsx'),
@@ -128,11 +137,32 @@ test('content detail uses approved FAQ fields for both visible FAQ and JSON-LD',
   )
 
   assert.match(detail, /const faqEntries = selectFaqEntries\(\[content\], hospitalRootUrl, 1\)/)
-  assert.match(detail, /buildFaqPageJsonLd\(\[content\], hospitalRootUrl\)/)
+  assert.match(detail, /buildFaqPageJsonLd\(\[content\], hospitalRootUrl, articleUrl\)/)
   assert.match(detail, /visibleFaq\.question/)
   assert.match(detail, /visibleFaq\.answer/)
   assert.doesNotMatch(detail, /faq_question\s*\|\|\s*content\.title/)
   assert.doesNotMatch(detail, /faq_answer_summary\s*\|\|\s*content\.meta_description/)
+})
+
+test('the contents listing does not declare answers it does not visibly render', () => {
+  const listing = readFileSync(
+    join(HERE, '..', 'app', '[slug]', 'contents', 'page.tsx'),
+    'utf8',
+  )
+  assert.doesNotMatch(listing, /buildFaqPageJsonLd/)
+})
+
+test('article schema uses supported, attributable publication fields', () => {
+  const detail = readFileSync(
+    join(HERE, '..', 'app', '[slug]', 'contents', '[contentId]', 'page.tsx'),
+    'utf8',
+  )
+  assert.match(detail, /datePublished = content\.published_at \|\| undefined/)
+  assert.match(detail, /url: hospitalRootUrl/)
+  assert.match(detail, /inLanguage: 'ko-KR'/)
+  assert.doesNotMatch(detail, /SpeakableSpecification/)
+  assert.doesNotMatch(detail, /'@type': 'HowTo'/)
+  assert.doesNotMatch(detail, /creator:\s*\{\s*'@type': 'MedicalClinic'/)
 })
 
 test('the hospital home renders the same FAQ entries it declares in JSON-LD', () => {

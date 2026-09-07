@@ -68,6 +68,14 @@ def count_citable_references(item: ContentItem) -> int:
     )
 
 
+def has_required_faq_fields(item: ContentItem) -> bool:
+    if _type_value(getattr(item, "content_type", None)) != "FAQ":
+        return True
+    question = str(getattr(item, "faq_question", None) or "").strip()
+    answer = str(getattr(item, "faq_answer_summary", None) or "").strip()
+    return bool(question.endswith("?") and answer)
+
+
 # 참고 자료 제목도 공개 표면에 그대로 렌더되고(콘텐츠 상세의 "참고 자료" 섹션)
 # JSON-LD citation.name으로도 나간다. 제목은 모델 자유 출력인데 URL만 화이트리스트
 # 검증을 거치고 제목은 길이 절단만 됐다 — 금지 표현 검사기가 한 번도 본 적이 없었다.
@@ -96,6 +104,13 @@ def assess_content_publication(
         return _blocked(
             code="CONTENT_NOT_GENERATED",
             message="제목과 본문이 아직 생성되지 않았습니다.",
+            item=item,
+            philosophy=philosophy,
+        )
+    if not has_required_faq_fields(item):
+        return _blocked(
+            code="FAQ_FIELDS_MISSING",
+            message="FAQ 질문과 직접 답변 요약이 필요합니다.",
             item=item,
             philosophy=philosophy,
         )
@@ -144,6 +159,13 @@ def assess_content_publication(
         return _blocked(
             code="CONTENT_IMAGE_NOT_READY",
             message="대표 이미지가 아직 준비되지 않았습니다.",
+            item=item,
+            philosophy=philosophy,
+        )
+    if not getattr(item, "image_policy_verified_at", None):
+        return _blocked(
+            code="CONTENT_IMAGE_NOT_VERIFIED",
+            message="대표 이미지의 자동 정책 검사가 아직 완료되지 않았습니다.",
             item=item,
             philosophy=philosophy,
         )

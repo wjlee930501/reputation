@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { fetchHospital, fetchContents, TYPE_LABELS } from '@/lib/api'
+import { fetchAllContents, fetchHospital, TYPE_LABELS } from '@/lib/api'
 import { llmsBusinessHoursLines, llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
@@ -27,7 +27,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
   try {
     const [hospital, contents] = await Promise.all([
       fetchHospital(params.slug),
-      fetchContents(params.slug, 500),
+      fetchAllContents(params.slug),
     ])
 
     // 커스텀 도메인 연결 병원은 절대 링크를 해당 도메인 기준으로 출력 (canonical 정책 공유).

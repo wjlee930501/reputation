@@ -7,6 +7,7 @@ from app.services.monthly_sov_payload import (
     CellState,
     ComparabilityStatus,
     ComparisonPayload,
+    ComparisonReason,
     MeasurementBasisPayload,
     MonthlySovPayload,
     PlatformPayload,
@@ -247,7 +248,7 @@ class QuerySummary:
 @dataclass(frozen=True, slots=True)
 class ComparisonSummary:
     status: ComparabilityStatus
-    reason: str
+    reason: ComparisonReason
     current_sov_pct: float | None
     prior_sov_pct: float | None
     change_pct: float | None
@@ -342,6 +343,9 @@ class MonthlySovSummary:
     queries: tuple[QuerySummary, ...]
     segments: SegmentCollection
     comparison: ComparisonSummary
+    # 전월 변화 판정에 실제로 사용한 질문×플랫폼 셀. 의사 리포트의 새 언급/빠진
+    # 언급도 이 집합만 비교해야 헤드라인과 서로 다른 기준을 말하지 않는다.
+    comparison_cell_keys: frozenset[tuple[str, str]]
 
     @property
     def mention_frequency(self) -> float | None:

@@ -1029,6 +1029,46 @@ def test_daily_close_does_not_duplicate_terminal_report_run(
     )
 
 
+def test_daily_close_self_heals_complete_report_with_missing_artifact(monkeypatch):
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="아티팩트자가복구의원", monthly_sov_cohort=True
+    )
+    built = _patch_monthly_report_batch(
+        monkeypatch,
+        [hospital],
+        now=tasks.arrow.get(2026, 9, 2, 0, 15, tzinfo="Asia/Seoul"),
+        succeeded_ids={hospital.id},
+    )
+    report = SimpleNamespace(
+        quality="COMPLETE",
+        planned_count=10,
+        success_count=10,
+        failed_count=0,
+        excluded_count=0,
+    )
+    dispatches = []
+    monkeypatch.setattr(
+        tasks,
+        "_latest_monthly_report_operation_run",
+        lambda *_args: SimpleNamespace(state=OperationRunState.SUCCEEDED),
+    )
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_args: report)
+    monkeypatch.setattr(tasks, "_has_valid_doctor_artifact", lambda *_args: False)
+    monkeypatch.setattr(tasks, "is_monthly_recovery_window", lambda *_args: True)
+    monkeypatch.setattr(
+        tasks,
+        "_dispatch_automatic_monthly_report_recovery",
+        lambda *args: dispatches.append(args),
+    )
+
+    result = tasks.run_monthly_reports.run()
+
+    assert built == []
+    assert result["status"] == "PARTIAL"
+    assert len(dispatches) == 1
+    assert dispatches[0][1:] == (hospital, 2026, 8)
+
+
 def test_latest_report_run_resolution_uses_the_requested_period():
     hospital_id = uuid.uuid4()
     other = SimpleNamespace(
@@ -1052,6 +1092,32 @@ def test_latest_report_run_resolution_uses_the_requested_period():
         tasks._latest_monthly_report_operation_run(_DB(), hospital_id, 2026, 8)
         is requested
     )
+
+
+def test_future_or_missing_publication_time_cannot_fulfill_monthly_contract():
+    observed_at = datetime(2026, 9, 3, tzinfo=UTC)
+    already_public = SimpleNamespace(published_at=observed_at - timedelta(seconds=1))
+    future_public = SimpleNamespace(published_at=observed_at + timedelta(seconds=1))
+    missing_time = SimpleNamespace(published_at=None)
+
+    assert tasks._observed_contract_publications(
+        [already_public, future_public, missing_time], observed_at
+    ) == [already_public]
+
+
+def test_contract_publication_timing_uses_closed_month_boundaries():
+    period_start = tasks.arrow.get(2026, 8, 1, tzinfo="Asia/Seoul").datetime
+    period_end = tasks.arrow.get(2026, 9, 1, tzinfo="Asia/Seoul").datetime
+    items = [
+        SimpleNamespace(published_at=period_start - timedelta(microseconds=1)),
+        SimpleNamespace(published_at=period_start),
+        SimpleNamespace(published_at=period_end - timedelta(microseconds=1)),
+        SimpleNamespace(published_at=period_end),
+    ]
+
+    assert tasks._contract_publication_timing_counts(
+        items, period_start, period_end
+    ) == (1, 1)
 
 
 def _coverage_recovery_db(existing):
@@ -1162,6 +1228,7 @@ def test_complete_report_skips_coverage_recovery_redispatch(monkeypatch):
     db = _coverage_recovery_db(existing)
     dispatches = []
     monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: report)
+    monkeypatch.setattr(tasks, "_has_valid_doctor_artifact", lambda *_a, **_k: True)
     monkeypatch.setattr(
         tasks.generate_monthly_report_for_hospital,
         "apply_async",
@@ -1193,6 +1260,7 @@ def test_succeeded_complete_coverage_recovery_does_not_redispatch(monkeypatch):
     db = _coverage_recovery_db(existing)
     dispatches = []
     monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: report)
+    monkeypatch.setattr(tasks, "_has_valid_doctor_artifact", lambda *_a, **_k: True)
     monkeypatch.setattr(
         tasks.generate_monthly_report_for_hospital,
         "apply_async",
@@ -1204,6 +1272,60 @@ def test_succeeded_complete_coverage_recovery_does_not_redispatch(monkeypatch):
     assert existing.state == OperationRunState.SUCCEEDED
     assert existing.task_id == "done-task"
     assert existing.version == 5
+
+
+def test_complete_report_with_missing_doctor_artifact_rearms_recovery(monkeypatch):
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="아티팩트복구의원")
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.SUCCEEDED,
+        idempotency_key=f"coverage-recovery:{hospital.id}:2026-08",
+        task_id="old-task",
+        requested_at=datetime(2026, 9, 1, tzinfo=UTC),
+        queued_at=datetime(2026, 9, 1, tzinfo=UTC),
+        started_at=datetime(2026, 9, 1, tzinfo=UTC),
+        completed_at=datetime(2026, 9, 1, tzinfo=UTC),
+        heartbeat_at=None,
+        lease_owner=None,
+        lease_expires_at=None,
+        total_count=1,
+        success_count=1,
+        failure_count=0,
+        skipped_count=0,
+        safe_error_code=None,
+        safe_error_message=None,
+        request_payload={},
+        result_summary={"period_year": 2026, "period_month": 8},
+        attempt_count=1,
+        version=2,
+    )
+    report = SimpleNamespace(
+        quality="COMPLETE",
+        planned_count=10,
+        success_count=10,
+        failed_count=0,
+        excluded_count=0,
+    )
+    db = _coverage_recovery_db(existing)
+    dispatches = []
+    monkeypatch.setattr(tasks, "_latest_monthly_report", lambda *_a, **_k: report)
+    monkeypatch.setattr(tasks, "_has_valid_doctor_artifact", lambda *_a, **_k: False)
+    monkeypatch.setattr(
+        tasks.generate_monthly_report_for_hospital,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+    monkeypatch.setattr(tasks, "build_dispatch_headers", lambda *_a, **_k: {})
+    monkeypatch.setattr(tasks, "_mark_weekly_sov_operation_queued", lambda *_a, **_k: None)
+
+    run = tasks._dispatch_automatic_monthly_report_recovery(db, hospital, 2026, 8)
+
+    assert run is existing
+    assert run.state == OperationRunState.REQUESTED
+    assert run.version == 3
+    assert len(dispatches) == 1
 
 
 @pytest.mark.parametrize(

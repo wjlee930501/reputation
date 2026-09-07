@@ -43,6 +43,7 @@ _HUB_PAGE_LABELS: Mapping[str, str] = {
 HOME_PAGE_KEY = "home"
 
 _MULTI_SLASH = re.compile(r"/{2,}")
+_TENANT_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,7 +97,13 @@ def platform_subdomain_host(slug: str | None) -> str | None:
     """기본 서브도메인 호스트 {slug}.{platform host}. 만들 수 없으면 None."""
     base = platform_site_host()
     label = (slug or "").strip().lower()
-    if not base or not label or "." in label or label in _RESERVED_PLATFORM_LABELS:
+    if (
+        not base
+        or base in {"localhost", "127.0.0.1", "::1"}
+        or base.endswith(".localhost")
+        or not _TENANT_LABEL.fullmatch(label)
+        or label in _RESERVED_PLATFORM_LABELS
+    ):
         return None
     return f"{label}.{base}"
 

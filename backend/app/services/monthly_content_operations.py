@@ -41,6 +41,9 @@ def build_monthly_content_operations_snapshot(
     published_items: Sequence[MonthlyContentOperationItem],
     cutoff_at: datetime,
     supplementary_count: int = 0,
+    contract_published_count: int | None = None,
+    early_publication_count: int = 0,
+    late_recovery_count: int = 0,
 ) -> MonthlyContentOperationSnapshot:
     """Summarize closed-month content operations for report delivery control."""
     plan_quota = monthly_quota_for_plan(plan)
@@ -71,7 +74,11 @@ def build_monthly_content_operations_snapshot(
         and item.published_at + POST_PUBLISH_REVIEW_OVERDUE_AFTER <= cutoff_at
     ]
 
-    contracted_published_count = published_count - supplementary_count
+    contracted_published_count = (
+        published_count - supplementary_count
+        if contract_published_count is None
+        else contract_published_count
+    )
     shortfall = max((plan_quota or 0) - contracted_published_count, 0) if plan_quota is not None else 0
     # 이 스냅샷은 전달을 막는 blocker를 만들지 않는다(e217e02). 닫힌 달의 운영 결과는
     # 뒤늦게 채워 지울 수 없고, 사후검수는 관찰용 표본일 뿐 두 번째 승인 큐가 아니다
@@ -96,6 +103,8 @@ def build_monthly_content_operations_snapshot(
         "published_count": published_count,
         "contracted_published_count": contracted_published_count,
         "supplementary_count": supplementary_count,
+        "early_publication_count": early_publication_count,
+        "late_recovery_count": late_recovery_count,
         "shortfall_count": shortfall,
         "scheduled_slot_count": len(scheduled_items),
         "scheduled_slot_state_counts": dict(sorted(slot_counts.items())),

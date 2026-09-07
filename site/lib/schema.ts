@@ -79,6 +79,7 @@ export function selectFaqEntries(
 export function buildFaqPageJsonLd(
   contents: ContentSummary[],
   hospitalRootUrl: string,
+  pageUrl: string = hospitalRootUrl,
 ): Record<string, unknown> | null {
   const entries = selectFaqEntries(contents, hospitalRootUrl)
   if (entries.length === 0) return null
@@ -86,7 +87,7 @@ export function buildFaqPageJsonLd(
   return {
     '@context': 'https://schema.org',
     '@type': 'FAQPage',
-    '@id': `${hospitalRootUrl}#faq`,
+    '@id': `${pageUrl}#faq`,
     mainEntity: entries.map((entry) => ({
       '@type': 'Question',
       name: entry.question,

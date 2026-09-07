@@ -1,5 +1,8 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
+
+import pytest
 
 from app.models.content import ContentType
 from app.services import content_publication
@@ -10,6 +13,7 @@ def _item(**overrides):
         "title": "치질 진료 전 확인할 점",
         "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
         "image_url": "https://storage.googleapis.com/reputation/content.png",
+        "image_policy_verified_at": datetime.now(timezone.utc),
         "meta_description": "진료 전 확인할 내용을 정리합니다.",
         "faq_question": None,
         "faq_answer_summary": None,
@@ -67,6 +71,37 @@ def test_publication_policy_blocks_missing_representative_image(monkeypatch):
     assert assessment.publishable is False
     assert assessment.code == "CONTENT_IMAGE_NOT_READY"
     assert assessment.essence_summary["blocking"] is True
+
+
+def test_publication_policy_blocks_unverified_representative_image(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _item(image_policy_verified_at=None), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [(None, "답변"), ("질문인가요?", None), ("물음표 없는 질문", "답변")],
+)
+def test_publication_policy_blocks_incomplete_faq_schema(monkeypatch, question, answer):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _item(
+            content_type=ContentType.FAQ,
+            faq_question=question,
+            faq_answer_summary=answer,
+        ),
+        _philosophy(),
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "FAQ_FIELDS_MISSING"
 
 
 def test_publication_policy_blocks_forbidden_expression_across_public_fields(monkeypatch):
@@ -176,7 +211,12 @@ def test_notice_does_not_require_references_but_other_types_do(monkeypatch):
     )
 
     # 의료 안내 유형은 여전히 근거를 요구한다.
-    faq = _item(content_type=ContentType.FAQ, references_list=[])
+    faq = _item(
+        content_type=ContentType.FAQ,
+        references_list=[],
+        faq_question="복통은 언제 진료받아야 하나요?",
+        faq_answer_summary="증상이 이어지면 진료로 원인을 확인합니다.",
+    )
     faq_assessment = content_publication.assess_content_publication(faq, _philosophy())
     assert faq_assessment.publishable is False
     assert faq_assessment.code == "MISSING_REFERENCES"

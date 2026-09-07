@@ -10,7 +10,7 @@ import {
   resolveClinicAccessMode,
   resolveClinicMediaMode,
 } from '@/lib/clinic-design'
-import { buildAddressRegionFields } from '@/lib/clinic-schema'
+import { buildPostalAddress } from '@/lib/clinic-schema'
 import {
   buildClinicThemeStyle,
   selectClinicDirectorImage,
@@ -153,9 +153,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   // 승인된 운영 기준에서 의료광고 검수를 통과한 about 서사 (없으면 null) — description/slogan에 사용.
   const publicAbout = hospital.public_about?.trim() || null
 
-  // region([시/도, 구/시])을 PostalAddress·areaServed로 보강. 자유 입력 좌표는 fabricate하지 않는다.
-  const areaServed = (hospital.region || []).map((r) => (r || '').trim()).filter(Boolean)
-
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
@@ -170,37 +167,33 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     description: publicAbout ?? undefined,
     slogan: publicAbout ?? undefined,
     sameAs,
-    address: {
-      '@type': 'PostalAddress',
-      streetAddress: hospital.address,
-      addressCountry: 'KR',
-      ...buildAddressRegionFields(hospital.region),
-    },
-    areaServed: areaServed.length > 0 ? areaServed : undefined,
+    address: buildPostalAddress(hospital.address),
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,
     openingHoursSpecification: buildOpeningHoursSpec(hospital.business_hours),
     hasMap: hospital.google_maps_url || undefined,
     geo:
-      hospital.latitude && hospital.longitude
+      hospital.latitude !== null && hospital.longitude !== null
         ? {
             '@type': 'GeoCoordinates',
             latitude: hospital.latitude,
             longitude: hospital.longitude,
           }
         : undefined,
-    physician: {
-      '@type': 'Physician',
-      '@id': `${hospitalRootUrl}/doctor#physician`,
-      name: hospital.director_name,
-      jobTitle: '원장',
-      description: hospital.director_career,
-      image: selectClinicDirectorImage(hospital) ?? undefined,
-      url: `${hospitalRootUrl}/doctor`,
-      // 자격·학회·전문영역 신뢰축을 최우선순위 URL(랜딩)에도 실어 /doctor에만
-      // 의존하지 않게 한다.
-      ...buildPhysicianCredentials(hospital),
-    },
+    physician: hospital.director_name
+      ? {
+          '@type': 'Physician',
+          '@id': `${hospitalRootUrl}/doctor#physician`,
+          name: hospital.director_name,
+          jobTitle: '원장',
+          description: hospital.director_career || undefined,
+          image: selectClinicDirectorImage(hospital) ?? undefined,
+          url: `${hospitalRootUrl}/doctor`,
+          // 자격·학회·전문영역 신뢰축을 최우선순위 URL(랜딩)에도 실어 /doctor에만
+          // 의존하지 않게 한다.
+          ...buildPhysicianCredentials(hospital),
+        }
+      : undefined,
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
       name: treatment.name,

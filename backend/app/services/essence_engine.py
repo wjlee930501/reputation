@@ -175,6 +175,24 @@ def compute_source_content_hash(
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
+def _snapshot_datetime(value: datetime | None) -> str:
+    """Serialize one instant consistently across DB/session time zones.
+
+    PostgreSQL may return the same ``timestamptz`` using the connection's local
+    offset.  Snapshot identity must follow the instant, not that presentation.
+    Legacy naive values are interpreted as UTC, matching the application's
+    historical timestamp convention and the old UTC-aware hash representation.
+    """
+
+    if value is None:
+        return ""
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    else:
+        value = value.astimezone(timezone.utc)
+    return value.isoformat()
+
+
 def compute_sources_snapshot_hash(sources: Iterable[HospitalSourceAsset]) -> str:
     parts = []
     for source in sorted(sources, key=lambda item: str(item.id)):
@@ -184,7 +202,7 @@ def compute_sources_snapshot_hash(sources: Iterable[HospitalSourceAsset]) -> str
                     str(source.id),
                     source.content_hash or "",
                     source.status.value if hasattr(source.status, "value") else str(source.status),
-                    source.processed_at.isoformat() if source.processed_at else "",
+                    _snapshot_datetime(source.processed_at),
                 ]
             )
         )

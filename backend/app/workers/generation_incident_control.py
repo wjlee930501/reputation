@@ -48,6 +48,7 @@ _MORNING_STORED_GATE_NOTIFICATION_CODES = {
 }
 _MORNING_IMAGE_NOTIFICATION_CODES = {
     "CONTENT_IMAGE_NOT_READY",
+    "CONTENT_IMAGE_NOT_VERIFIED",
     "IMAGE_GENERATION_FAILED",
 }
 # The cost guard owns its hard-stop incident/outbox projection.  Generation still
@@ -74,6 +75,7 @@ _PROVIDER_TRANSIENT_NOTIFICATION_CODES = frozenset(
         "STALE_GENERATION_CLAIM",
         "IMAGE_GENERATION_FAILED",
         "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
     }
 )
 # One Slack digest per morning batch replaces the per-content-item pages.
@@ -117,8 +119,9 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             "운영 센터에서 게이트 문구와 승인된 병원 정보를 확인하세요."
         ),
         "MISSING_APPROVED_ESSENCE": (
-            "병원별로 근거 자료를 처리하고 운영 기준을 한 번 승인하세요. 승인 전에는 재시도할 "
-            "필요가 없으며, 승인 후 다음 예약 배치에서 자동으로 다시 생성합니다."
+            "시스템이 새 자료 처리와 최신 전체 자료 기반 운영 기준 검토·승인을 자동으로 "
+            "이어갑니다. 발행 지연이 계속되는 병원만 운영 센터에서 원자료 수집 오류를 "
+            "확인하세요."
         ),
         "COST_BLOCKED": (
             "운영 센터 하단의 “비용·자동 작업 안전장치”를 펼치세요. 전체 중지 상태면 “중지 해제”를 "
@@ -149,6 +152,10 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
         "CONTENT_IMAGE_NOT_READY": (
             "운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 누르고 완료 결과를 확인하세요."
         ),
+        "CONTENT_IMAGE_NOT_VERIFIED": (
+            "운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 누르고 자동 정책 검사 완료를 "
+            "확인하세요."
+        ),
         "IMAGE_GENERATION_FAILED": (
             "본문은 저장되어 있습니다. 운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 한 번 누르세요."
         ),
@@ -177,6 +184,7 @@ def _generation_safe_cause(code: str) -> str:
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
+        "CONTENT_IMAGE_NOT_VERIFIED": "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다.",
     }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
 
 
@@ -210,6 +218,7 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "FORBIDDEN_EXPRESSION": IncidentFingerprint.SAFETY_BLOCKED,
         "ESSENCE_NOT_ALIGNED": IncidentFingerprint.VALIDATION_FAILED,
         "CONTENT_IMAGE_NOT_READY": IncidentFingerprint.RENDER_FAILED,
+        "CONTENT_IMAGE_NOT_VERIFIED": IncidentFingerprint.RENDER_FAILED,
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 
@@ -252,6 +261,12 @@ def _morning_notification_due(
     image_present = bool(str(getattr(item, "image_url", "") or "").strip())
     if code in _MORNING_BODY_NOTIFICATION_CODES:
         return not body_present
+    if code == "CONTENT_IMAGE_NOT_VERIFIED":
+        return (
+            body_present
+            and image_present
+            and not bool(getattr(item, "image_policy_verified_at", None))
+        )
     if code in _MORNING_IMAGE_NOTIFICATION_CODES:
         return body_present and not image_present
     return body_present
