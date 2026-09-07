@@ -897,7 +897,10 @@ def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry():
     hospital = SimpleNamespace(id=uuid.uuid4())
 
     run = tasks._ensure_monthly_sov_operation_run(
-        db, hospital, "2026-08", datetime.now(UTC)
+        db,
+        hospital,
+        "2026-08",
+        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
     )
 
     assert run is existing

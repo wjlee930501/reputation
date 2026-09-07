@@ -19,7 +19,10 @@ from app.models.hospital import Hospital
 from app.services import indexnow
 from app.services.image_direction import hospital_image_direction
 from app.services.image_engine import (
+    IMAGE_POLICY_REPAIR_PROMPT_VERSION,
     IMAGE_POLICY_VERSION,
+    ImagePolicyRejectionDiagnostic,
+    ImagePolicyStage,
     certify_existing_image_artifact,
     generate_image,
     image_content_hash_from_url,
@@ -35,6 +38,34 @@ _MAX_BATCH = 25
 _MAX_REVIEW_ATTEMPTS = 3
 _MAX_REPLACEMENT_ATTEMPTS = 2
 logger = logging.getLogger(__name__)
+
+_POLICY_ASSESSMENT_FIELDS = (
+    "has_text",
+    "has_logo",
+    "has_recognizable_people",
+    "impersonates_real_clinic",
+    "topic_relevant",
+)
+
+
+def _durable_replacement_diagnostic(
+    diagnostics: dict[str, object],
+) -> dict[str, str | bool] | None:
+    raw = diagnostics.get("policy_rejection")
+    if not isinstance(raw, dict):
+        return None
+    if not all(isinstance(raw.get(field), bool) for field in _POLICY_ASSESSMENT_FIELDS):
+        return None
+    result: dict[str, str | bool] = {
+        "reason": "POLICY_REJECTED",
+        "stage": str(raw.get("stage") or "UNKNOWN")[:40],
+        "prompt_version": str(raw.get("prompt_version") or "UNKNOWN")[:40],
+    }
+    result.update({field: bool(raw[field]) for field in _POLICY_ASSESSMENT_FIELDS})
+    prior_failure = raw.get("prior_failure")
+    if isinstance(prior_failure, str) and prior_failure:
+        result["prior_failure"] = prior_failure[:40]
+    return result
 
 
 @dataclass(frozen=True)
@@ -328,10 +359,16 @@ def _review_and_copy(
                     hospital_id=item.hospital_id,
                 )
             )
-        except ImagePolicyRejectedError:
+        except ImagePolicyRejectedError as exc:
             state.update(
                 {
                     "status": "REPLACEMENT_REQUIRED",
+                    "last_error": "POLICY_REJECTED",
+                    "source_diagnostic": ImagePolicyRejectionDiagnostic(
+                        stage=ImagePolicyStage.EXISTING_IMAGE_REVIEW,
+                        assessment=exc.assessment,
+                        prompt_version=IMAGE_POLICY_VERSION,
+                    ).to_state(),
                     "observed_at": datetime.now(timezone.utc).isoformat(),
                 }
             )
@@ -439,10 +476,15 @@ def _replace_unsafe(
     if attempts >= _MAX_REPLACEMENT_ATTEMPTS:
         _release(db, item.id, token)
         return "replacement_exhausted"
+    policy_repair = attempts > 0
+    previous_prompt_version = state.get("replacement_prompt_version")
     state["replacement_attempts"] = attempts + 1
+    state["replacement_prompt_version"] = (
+        IMAGE_POLICY_REPAIR_PROMPT_VERSION if policy_repair else "primary-v1"
+    )
     if not _checkpoint_state(db, item, expected, state, release=False):
         return "cas_stale"
-    diagnostics: dict[str, str] = {}
+    diagnostics: dict[str, object] = {}
     replacement_url, prompt = bridge.run(
         generate_image(
             item.content_type,
@@ -451,15 +493,33 @@ def _replace_unsafe(
             direction=hospital_image_direction(item.hospital),
             hospital_id=item.hospital_id,
             diagnostics=diagnostics,
+            policy_repair=policy_repair,
+            prior_policy_rejection=(
+                state.get("replacement_diagnostic")
+                if isinstance(state.get("replacement_diagnostic"), dict)
+                else None
+            ),
         )
     )
     if not replacement_url:
         if diagnostics.get("reason") == "COST_BLOCKED":
             state["replacement_attempts"] = attempts
+            if previous_prompt_version is None:
+                state.pop("replacement_prompt_version", None)
+            else:
+                state["replacement_prompt_version"] = previous_prompt_version
             state["last_error"] = "COST_BLOCKED"
             if not _checkpoint_state(db, item, expected, state, release=True):
                 return "cas_stale"
             return "cost_blocked"
+        state["last_error"] = str(
+            diagnostics.get("reason") or "IMAGE_GENERATION_FAILED"
+        )[:100]
+        durable_diagnostic = _durable_replacement_diagnostic(diagnostics)
+        if durable_diagnostic is not None:
+            state["replacement_diagnostic"] = durable_diagnostic
+        else:
+            state.pop("replacement_diagnostic", None)
         state["status"] = (
             "REPLACEMENT_EXHAUSTED"
             if state["replacement_attempts"] >= _MAX_REPLACEMENT_ATTEMPTS
@@ -480,6 +540,7 @@ def _replace_unsafe(
             else "REPLACEMENT_REQUIRED"
         )
         state["last_error"] = "REPLACEMENT_HASH_MISSING"
+        state.pop("replacement_diagnostic", None)
         if not _checkpoint_state(db, item, expected, state, release=True):
             return "cas_stale"
         return (

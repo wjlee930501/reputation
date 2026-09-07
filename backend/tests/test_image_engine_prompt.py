@@ -1,6 +1,14 @@
 from app.models.content import ContentType
 from app.services.image_direction import HospitalImageDirection
-from app.services.image_engine import _build_google_image_prompt, _build_openai_image_prompt
+from app.services.image_engine import (
+    IMAGE_POLICY_FALLBACK_PROMPT_VERSION,
+    IMAGE_POLICY_REPAIR_PROMPT_VERSION,
+    _build_google_image_prompt,
+    _build_google_policy_repair_prompt,
+    _build_google_safety_fallback_prompt,
+    _build_openai_image_prompt,
+    _safe_google_visual_scene,
+)
 
 
 def test_gpt_image_prompt_uses_editorial_illustration_and_hospital_palette():
@@ -55,3 +63,82 @@ def test_google_prompt_keeps_operator_direction_inside_non_overridable_editorial
 
     assert prompt.index("따뜻한 종이 질감") < prompt.index("No real clinic documentary claim")
     assert "No recognizable face or named person" in prompt
+
+
+def test_policy_repair_prompt_keeps_palette_but_drops_clinic_identity_and_freeform_direction():
+    direction = HospitalImageDirection(
+        clinic_name="노원탑365의원",
+        specialties=("척추", "무릎 재활"),
+        care_philosophy="환자가 이해할 때까지 차분히 설명한다",
+        visual_direction="의료진 얼굴과 병원 간판 중심",
+        primary_color="#17365D",
+        accent_color="#B79045",
+    )
+
+    prompt = _build_google_safety_fallback_prompt(
+        ContentType.TREATMENT, "손목 통증 재활", direction
+    )
+
+    assert "plain resistance band" in prompt
+    assert "#17365D" in prompt
+    assert "#B79045" in prompt
+    assert "노원탑365의원" not in prompt
+    assert "척추" not in prompt
+    assert "무릎 재활" not in prompt
+    assert "환자가 이해" not in prompt
+    assert "의료진 얼굴" not in prompt
+    assert "손목 통증 재활" not in prompt
+    assert IMAGE_POLICY_FALLBACK_PROMPT_VERSION == "topical-no-text-v1"
+
+
+def test_second_policy_repair_prompt_is_distinct_and_uses_prior_typed_facts():
+    prompt = _build_google_policy_repair_prompt(
+        ContentType.TREATMENT,
+        "무릎 재활",
+        prior_rejection={"topic_relevant": False, "has_text": True},
+    )
+
+    assert "single dominant subject" in prompt
+    assert "large, clear, and unobscured" in prompt
+    assert "remove every mark or glyph-like detail" in prompt
+    assert IMAGE_POLICY_REPAIR_PROMPT_VERSION == "topical-no-text-repair-v3"
+
+
+def test_safe_scene_maps_common_orthopedic_topics_to_no_text_objects():
+    for topic in ("손목 터널 증후군", "무릎 관절 통증", "수술 후 재활 운동"):
+        scene = _safe_google_visual_scene(topic, ContentType.TREATMENT)
+        assert "resistance band" in scene
+        assert not any(
+            risky in scene for risky in ("text", "thermometer", "monitor", "calendar", "card")
+        )
+
+
+def test_safe_scene_routes_anonymized_repair_topics_before_generic_defaults():
+    cases = (
+        ("소아 탈수 치료 비용 안내", ContentType.COLUMN, "water pitcher"),
+        ("소아 발열 치료 비용 안내", ContentType.COLUMN, "cool pack"),
+        ("간질환 전문의와 진료과 선택", ContentType.FAQ, "sample tubes"),
+        ("간질환 초음파와 혈액검사 흐름", ContentType.LOCAL, "sample tubes"),
+        ("체외충격파 치료와 통증 진단", ContentType.DISEASE, "therapy applicator"),
+        ("지역 응급의학과 외상 진료", ContentType.LOCAL, "wooden splint"),
+        ("외상 골절 통증 종합 진단", ContentType.COLUMN, "wooden splint"),
+        ("야간 응급 외상 진료 안내", ContentType.HEALTH, "wooden splint"),
+        ("스포츠 외상 검사와 치료", ContentType.LOCAL, "resistance band"),
+    )
+    generic_fragments = ("small green plant", "welcoming doorway", "leafy vegetables")
+    risky_fragments = ("text", "screen", "monitor", "calendar", "form", "sign", "packaging")
+
+    for title, content_type, expected in cases:
+        scene = _safe_google_visual_scene(title, content_type)
+        assert expected in scene
+        assert not any(fragment in scene for fragment in generic_fragments)
+        assert not any(fragment in scene for fragment in risky_fragments)
+
+
+def test_generic_gastroenterology_colonoscopy_keeps_colorectal_scene():
+    scene = _safe_google_visual_scene(
+        "소화기내과 대장내시경 준비 안내", ContentType.TREATMENT
+    )
+
+    assert "leafy vegetables and whole grains" in scene
+    assert "sample tubes" not in scene

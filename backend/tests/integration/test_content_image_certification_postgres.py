@@ -480,6 +480,8 @@ def test_replacement_failure_retries_without_second_policy_review(
     content_id = _seed_legacy_public_image(pg_conn)
     reviews = 0
     generations = 0
+    repair_modes = []
+    prior_rejections = []
     rejected = ImagePolicyAssessment(
         has_text=True,
         has_logo=False,
@@ -493,10 +495,27 @@ def test_replacement_failure_retries_without_second_policy_review(
         reviews += 1
         raise ImagePolicyRejectedError(rejected)
 
-    async def generate(*_args, **_kwargs):
+    async def generate(*_args, **kwargs):
         nonlocal generations
         generations += 1
+        repair_modes.append(kwargs["policy_repair"])
+        prior_rejections.append(kwargs["prior_policy_rejection"])
         if generations == 1:
+            kwargs["diagnostics"].update(
+                {
+                    "reason": "POLICY_REJECTED",
+                    "policy_rejection": {
+                        "reason": "POLICY_REJECTED",
+                        "stage": "GOOGLE_PRIMARY",
+                        "prompt_version": "google-primary-v1",
+                        "has_text": False,
+                        "has_logo": False,
+                        "has_recognizable_people": False,
+                        "impersonates_real_clinic": False,
+                        "topic_relevant": False,
+                    },
+                }
+            )
             return "", ""
         return "gs://new-bucket/" + "c" * 64 + "-replacement.png", "safe prompt"
 
@@ -515,6 +534,93 @@ def test_replacement_failure_retries_without_second_policy_review(
     assert second.replaced == 1
     assert reviews == 1
     assert generations == 2
+    assert repair_modes == [False, True]
+    assert prior_rejections[0] is None
+    assert prior_rejections[1]["topic_relevant"] is False
+
+
+def test_replacement_diagnostic_is_durable_and_two_attempt_cap_never_resets(
+    pg_conn, pg_session, monkeypatch
+):
+    content_id = _seed_legacy_public_image(pg_conn)
+    reviews = 0
+    generations = 0
+    repair_modes = []
+    rejected = ImagePolicyAssessment(
+        has_text=False,
+        has_logo=False,
+        has_recognizable_people=False,
+        impersonates_real_clinic=False,
+        topic_relevant=False,
+    )
+
+    async def unsafe(*_args, **_kwargs):
+        nonlocal reviews
+        reviews += 1
+        raise ImagePolicyRejectedError(rejected)
+
+    async def generate(*_args, **kwargs):
+        nonlocal generations
+        generations += 1
+        repair_modes.append(kwargs["policy_repair"])
+        kwargs["diagnostics"].update(
+            {
+                "reason": "POLICY_REJECTED",
+                "policy_rejection": {
+                    "reason": "POLICY_REJECTED",
+                    "stage": "GOOGLE_REPAIR" if kwargs["policy_repair"] else "GOOGLE_PRIMARY",
+                    "prompt_version": (
+                        "topical-no-text-repair-v3"
+                        if kwargs["policy_repair"]
+                        else "google-primary-v1"
+                    ),
+                    "has_text": False,
+                    "has_logo": False,
+                    "has_recognizable_people": False,
+                    "impersonates_real_clinic": False,
+                    "topic_relevant": False,
+                },
+            }
+        )
+        return "", ""
+
+    monkeypatch.setattr(backfill, "certify_existing_image_artifact", unsafe)
+    monkeypatch.setattr(backfill, "generate_image", generate)
+    monkeypatch.setattr(backfill.indexnow, "enqueue_content_published_sync", lambda *_a, **_k: None)
+
+    first = backfill.run_legacy_image_certification_backfill(
+        pg_session, content_ids={content_id}, dry_run=False
+    )
+    second = backfill.run_legacy_image_certification_backfill(
+        pg_session, content_ids={content_id}, dry_run=False
+    )
+    replay = backfill.run_legacy_image_certification_backfill(
+        pg_session, content_ids={content_id}, dry_run=False
+    )
+
+    assert first.replacement_required == 1
+    assert second.replacement_exhausted == 1
+    assert replay.replacement_exhausted == 1
+    assert reviews == 1
+    assert generations == 2
+    assert repair_modes == [False, True]
+    state = pg_conn.execute(
+        text("SELECT essence_check_summary FROM content_items WHERE id = :id"),
+        {"id": content_id},
+    ).scalar_one()["legacy_image_certification"]
+    assert state["replacement_attempts"] == 2
+    assert state["replacement_prompt_version"] == "topical-no-text-repair-v3"
+    assert state["replacement_diagnostic"] == {
+        "reason": "POLICY_REJECTED",
+        "stage": "GOOGLE_REPAIR",
+        "prompt_version": "topical-no-text-repair-v3",
+        "has_text": False,
+        "has_logo": False,
+        "has_recognizable_people": False,
+        "impersonates_real_clinic": False,
+        "topic_relevant": False,
+    }
+    assert state["source_diagnostic"]["stage"] == "EXISTING_IMAGE_REVIEW"
 
 
 def test_two_items_share_real_redis_loop_and_settle_both_reservations(
