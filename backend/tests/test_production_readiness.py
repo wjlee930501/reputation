@@ -1,5 +1,9 @@
 import json
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -162,6 +166,32 @@ def test_previous_release_or_fifteen_minute_old_canary_never_marks_ready(monkeyp
 
 def test_workflow_registry_contains_onboarding_automation() -> None:
     assert all(production_readiness._workflow_facts().values())
+
+
+def test_workflow_registry_loads_lazy_included_drains_in_a_fresh_process() -> None:
+    script = """
+from app.utils import production_readiness
+
+expected_lazy_tasks = {
+    "app.workers.indexnow_retry.drain",
+    "app.workers.provider_usage_recovery.drain",
+}
+assert expected_lazy_tasks.isdisjoint(production_readiness.celery_app.tasks)
+facts = production_readiness._workflow_facts()
+assert expected_lazy_tasks <= set(production_readiness.celery_app.tasks)
+assert facts["required_tasks_registered"] is True
+"""
+    environment = os.environ.copy()
+    environment["APP_ENV"] = "test"
+    environment["ADMIN_SECRET_KEY"] = "test-admin-key"
+
+    subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        timeout=30,
+    )
 
 
 def test_build_report_requires_schema_owner_and_runtime_dependencies(monkeypatch) -> None:
