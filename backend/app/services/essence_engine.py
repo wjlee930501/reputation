@@ -258,7 +258,9 @@ _SOURCE_PROCESSING_SYSTEM = """\
    DOCTOR_PHILOSOPHY(원장의 진료 철학·원칙),
    LOCAL_CONTEXT(지역 맥락),
    PROOF_POINT(검증 가능한 근거·실적),
-   CONFLICT(상충하는 서술).
+   CONFLICT(같은 사실에 대한 서로 양립할 수 없는 서술).
+   질환별 증상이 비슷하거나 두 질환이 함께 있을 수 있다는 감별진단 설명은
+   자료 간 모순이 아닙니다. 이런 검사·진료 안내는 TREATMENT_SIGNAL로 분류합니다.
 3. claim은 그 발췌가 뒷받침하는 짧은 명제(한국어 한 문장)입니다.
 4. confidence는 0~1 사이 숫자입니다.
 5. 의료광고 금지 표현(1등/최고/유일/완치/100%/성공률/부작용 없는 등)이 보이면
@@ -480,6 +482,9 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
 
         metadata = raw_note.get("note_metadata")
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        if note_type == EvidenceNoteType.CONFLICT and _is_differential_diagnosis_caution(excerpt):
+            note_type = EvidenceNoteType.TREATMENT_SIGNAL
+            metadata["classification_correction"] = "differential_diagnosis_not_source_conflict"
         violations = check_forbidden(excerpt)
         if violations:
             note_type = EvidenceNoteType.RISK_SIGNAL
@@ -629,7 +634,9 @@ _SYNTHESIS_SYSTEM = """\
    근거 노트에서 도출된 실제 환자 언어와 주의사항을 담습니다(상수 문구 금지).
 4. 의료광고 금지 표현(1등/최고/유일/완치/100%/성공률/부작용 없는 등)은 출력에 쓰지 않습니다.
    환자에게 결과를 보장하는 약속도 만들지 않습니다.
-5. 상충하는 근거는 conflict_notes에 남기고 임의로 결론내리지 않습니다.
+5. 같은 사실에 대해 서로 양립할 수 없는 근거는 conflict_notes에 남기고 임의로 결론내리지 않습니다.
+   서로 다른 질환의 증상이 비슷하거나 함께 나타날 수 있다는 감별진단·검사 안내는
+   자료 간 모순이 아니므로 conflict_notes로 만들지 않습니다.
 6. 제목만 있거나 문장이 중간에 잘린 발췌는 긍정 운영 기준에 사용하지 않고
    unsupported_gap으로 남깁니다. 모든 note를 억지로 출력에 포함하지 않습니다.
 7. 핵심 운영 기준만 최대 14개 entry로 압축합니다. 모든 근거 노트를 억지로 반영하지 말고,
@@ -1564,6 +1571,18 @@ def _candidate_excerpts(asset: HospitalSourceAsset) -> list[str]:
             if excerpt in text and excerpt not in excerpts:
                 excerpts.append(excerpt)
     return excerpts[:30]
+
+
+def _is_differential_diagnosis_caution(excerpt: str) -> bool:
+    """A source-backed caution about overlapping symptoms is not conflicting sources."""
+    if _has_any(excerpt, ["자료", "홈페이지", "기록", "모순", "불일치", "반대", "상충"]):
+        return False
+    return (
+        "증상만으로" in excerpt
+        and _has_any(excerpt, ["단정", "진단"])
+        and _has_any(excerpt, ["진료", "검사"])
+        and _has_any(excerpt, ["함께", "비슷", "겹", "구분"])
+    )
 
 
 def _classify_excerpt(excerpt: str) -> EvidenceNoteType:

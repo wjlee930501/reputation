@@ -451,3 +451,20 @@ def test_anthropic_client_is_reused_across_calls(monkeypatch, llm_key):
     assert first is second
     assert len(created) == 1
     assert created[0]["max_retries"] == 0
+
+
+@pytest.mark.parametrize('excerpt,expected', [
+    ('목디스크와 어깨 질환이 함께 나타나는 경우가 많으므로 증상만으로 단정하기보다 진료를 통해 확인이 필요합니다.', EvidenceNoteType.TREATMENT_SIGNAL),
+    ('목디스크와 경추 협착증은 초기 증상이 비슷하고 두 질환이 함께 있는 경우도 있어 증상만으로 단정하지 말고 진료로 확인해야 합니다.', EvidenceNoteType.TREATMENT_SIGNAL),
+    ('홈페이지 자료는 두 질환이 함께 있다고 하나 기록은 반대이며 증상만으로 단정하지 말고 진료를 확인해야 합니다.', EvidenceNoteType.CONFLICT),
+    ('홈페이지의 일요일 진료시간과 원장 인터뷰의 일요일 휴진 안내가 서로 다릅니다.', EvidenceNoteType.CONFLICT),
+])
+def test_differential_diagnosis_is_not_a_source_conflict(monkeypatch, llm_key, excerpt, expected):
+    _patch_client(monkeypatch, json.dumps({'evidence_notes': [{
+        'note_type': 'CONFLICT', 'claim': excerpt, 'source_excerpt': excerpt,
+        'confidence': 0.9, 'note_metadata': {},
+    }]}))
+    notes = process_source_asset(SimpleNamespace(raw_text=excerpt, operator_note=None))
+    assert len(notes) == 1
+    assert notes[0].note_type == expected
+    assert notes[0].source_excerpt == excerpt
