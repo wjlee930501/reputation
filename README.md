@@ -1,122 +1,58 @@
 # Re:putation
 
-병의원이 ChatGPT·Gemini 같은 AI 답변에서 더 잘 이해되고 언급되도록 돕는 AI 노출(AEO) 컨설팅·콘텐츠 운영 시스템이다.
-운영사: **MotionLabs Inc.**
+병원의 공식 자료를 근거가 있는 콘텐츠로 바꾸고, AI 답변의 병원 언급을 측정해 콘텐츠 보완과 월간 보고로 연결하는 MotionLabs의 관리형 서비스다. 운영 목표는 **최소한의 사람 개입, 자동 복구, 필요한 알림만 전달**이다.
 
-전체 제품 플로우(계약 → 프로파일 입력 → V0 리포트 → 콘텐츠 허브 준비 → 운영 기준 승인 → 스케줄 설정 →
-활성화 → 콘텐츠 자동 생성/발행 → 월간 리포트)는 [`CLAUDE.md`](./CLAUDE.md)에 상세히 정리되어 있다.
-개발 전 반드시 먼저 읽는다.
+문서 버전: **2.0** · 갱신일: **2026-09-07 (Asia/Seoul)**
+구현 기준: **`345a6420998bcba21169519cf5ad77600cbfa94b`**
 
----
+## 먼저 읽을 문서
 
-## 아키텍처 개요
+- [현재 시스템 구조](docs/architecture/system-map.md): 데이터·생성·발행·측정·리포트·복구의 전체 연결과 확인된 한계
+- [개발 안내](CLAUDE.md): 변경 시 함께 지켜야 할 계약과 검증 방법
+- [문서 인덱스](docs/README.md): 현재 안내와 과거 계획·검수 기록 구분
+- [마케터 운영](docs/ops/marketer-operations-runbook.md), [알림 정책](docs/ops/slack-notification-policy.md), [배포·헬스체크](docs/ops/deployment-runbook.md)
 
-```
-backend/   FastAPI (Python 3.11) — Admin API + Public API + Celery 워커/스케줄러
-admin/     Next.js — AE(운영자)가 병원 프로파일·콘텐츠·스케줄·리포트를 다루는 내부 Admin 콘솔
-site/      Next.js — 병원별 공개 정보·콘텐츠 허브 (AI/검색엔진이 참고하는 공개 표면)
-terraform/ GCP 인프라 정의 (Cloud Run, Cloud SQL, Redis, Load Balancer, 인증서 등)
-scripts/   배포·점검용 셸/파이썬 스크립트 (setup-gcp.sh, deploy.sh, copy-guard 등)
-docs/      제품 PRD, 배포 런북, 계획 문서
-```
+## 현재 구성
 
-- **backend**: FastAPI + SQLAlchemy(async) + Alembic + PostgreSQL. Celery + Redis로 야간 콘텐츠 생성,
-  SoV(AI 답변 언급률) 측정, 월간 리포트 등을 스케줄링한다. Anthropic Claude(콘텐츠 생성),
-  OpenAI(SoV 측정 + 이미지 생성), Gemini(SoV 측정), Google Cloud(Imagen 3 폴백 + GCS)를 사용한다.
-- **admin**: AE가 병원 온보딩·프로파일 편집·콘텐츠 자동 발행 후행 점검·스케줄 설정·리포트 확인을 수행하는 내부 도구.
-- **site**: 병원별 슬러그 라우팅으로 공개 콘텐츠·병원 정보·Schema.org 마크업을 서빙하는 AEO 표면. 별도
-  홈페이지 납품물이 아니라 AI가 참고하는 콘텐츠 허브 운영 상태 그 자체다.
+| 영역 | 역할 |
+|---|---|
+| `backend/` | FastAPI API, PostgreSQL 상태·근거, Celery 작업과 자동 복구, PDF |
+| `admin/` | Next.js 내부 운영 콘솔과 인증 BFF |
+| `site/` | Next.js 공통 병원 사이트·ISR·호스트 라우팅·검색 표면·무료 진단 |
+| `terraform/` | GCP Cloud Run·Cloud SQL·Redis·Load Balancer·저장소 정의 |
+| `scripts/` | 배포·헬스체크·연결 예산·문구 검사 |
 
-## 로컬 퀵스타트
+API/Worker/Beat/Admin/Site는 모두 Cloud Run에 배포한다. 병원별 HTML 파일을 새로 만드는 구조가 아니라 공통 Site가 공개 자격을 통과한 병원 데이터를 렌더링한다. Next 잠금 버전은 16.3.1이다. API의 async DB와 Worker의 sync DB가 공존한다.
 
-### 사전 준비물
-- Docker / Docker Compose
-- (로컬 Python 테스트를 직접 돌리려면) Python 3.11 가상환경 — `backend/.venv`
-- Node.js (admin/site 프론트엔드 테스트·빌드용)
+자료 처리 → 근거 추출 → Essence 자동 검토·승인 → 일정·노출 타깃 계획 → 본문·이미지 생성 → 안전 검사 → 자동 발행이 콘텐츠 흐름이다. 월간 측정은 고정 질문·플랫폼과 반복 시도를 보존하며, 내부용·원장용 PDF 및 전달 기록을 구분한다. 정상 생성·발행은 Slack으로 매번 알리지 않는다.
 
-### 1) 환경 구성 + 서비스 기동
+## 로컬 실행과 검증
+
+Docker Compose, Python 3.11 환경, 프론트엔드 테스트에 필요한 Node 환경을 준비한다. 최초 환경은 `.env.example`을 참고하되 실제 설정 정의는 [config.py](backend/app/core/config.py)에서 확인한다. 로컬은 `APP_ENV=development`로 설정하고 비밀 값을 커밋하지 않는다.
+
 ```bash
-make setup
+# .env가 이미 있으면 보존한다.
+test -f .env || cp .env.example .env
+docker compose up -d
+docker compose exec api alembic upgrade head
 ```
-`.env.example`을 `.env`로 복사하고 `db`/`redis`를 먼저 띄운 뒤 전체 스택(`docker compose up -d`)을 기동,
-Alembic 마이그레이션(`alembic upgrade head`)까지 자동 적용한다. 완료되면:
-- API 문서: http://localhost:8000/docs
-- Flower(Celery 모니터링): http://localhost:5555
 
-`.env` 안의 `REPLACE_ME` 항목(ANTHROPIC_API_KEY, OPENAI_API_KEY, GCP_PROJECT_ID 등)은 실제 키로 교체해야
-콘텐츠 생성·SoV 측정·이미지 생성이 정상 동작한다. 전체 환경변수 목록과 설명은 [`.env.example`](./.env.example)을 참고한다.
+API 문서는 `http://localhost:8000/docs`, Flower는 `http://localhost:5555`다. 외부 모델 키가 없으면 생성·측정까지 정상 작동하지 않는다. `make setup`도 있지만 기존 `.env`를 덮어쓰므로 신규 환경에서만 사용한다.
 
-### 2) 마이그레이션만 다시 적용하고 싶을 때
 ```bash
-make migrate      # alembic upgrade head
-make revision     # 새 마이그레이션 파일 생성 (autogenerate)
+make test-local           # backend + frontend + copy guard
+make test-backend-local   # DB 예산 검사, ruff, pytest
+make test-frontend        # Site/Admin test, lint, typecheck
+make build-frontend      # Site/Admin production build
+make copy-guard
 ```
 
-### 3) 테스트 실행
-```bash
-make test-local        # 백엔드(ruff + pytest) + 프론트엔드(site/admin test·lint·typecheck) + copy-guard
-make test-backend-local  # 백엔드만: ruff check backend && pytest
-make test-frontend       # site/admin: npm test, npm run lint, npm run typecheck
-make copy-guard          # 사용자 노출 문구(의료광고 금지 표현 등) 정적 검사 (scripts/check_user_facing_terms.py)
-```
-백엔드 테스트만 직접 돌리려면:
-```bash
-backend/.venv/bin/python -m ruff check backend
-backend/.venv/bin/python -m pytest -q
-```
-(Docker 컨테이너 안에서 돌리려면 `make test` — api 이미지는 `uv sync --locked --no-dev`로 빌드되어
-pytest가 없으므로, 먼저 컨테이너 안에서 dev extra를 동기화한 뒤 `uv run --no-sync pytest -v`로 실행한다)
+Backend 통합 검증은 테스트 PostgreSQL/Redis와 PDF 의존성이 필요하다. skip이 있는 결과를 전체 통합 검증 완료로 보고하지 않는다. 호스트의 `make test-backend-local`이 전체 스위트 진입점이며, Docker의 `make test`에는 저장소 마운트·테스트 DB 연결에 관한 알려진 제약이 있다. 자세한 내용은 [Makefile](Makefile)과 [CI](.github/workflows/ci.yml)를 본다.
 
-### 기타 유용한 타깃
-```bash
-make demo-seed          # 데모용 시드 데이터 생성
-make essence-backfill   # 기존 병원 콘텐츠 운영 기준(essence) 백필
-make admin-create-owner # Admin 콘솔 최초 OWNER 계정 생성/회전
-make v0 / build-site / gen-content-now / monthly-report   # 개별 Celery 태스크 수동 실행
-```
+## 운영 설정·배포
 
-## 주요 환경변수
+콘텐츠 기본 모델은 Anthropic Claude, 이미지 기본 경로는 Google Vertex Gemini다. OpenAI/Gemini API로 AI 답변을 측정한다. 정확한 모델 기본값과 배포 환경값의 구분은 [시스템 구조 12절](docs/architecture/system-map.md#12-모델-설정-코드-기본값과-운영값-구분)을 본다.
 
-모든 환경변수와 발급 링크는 [`.env.example`](./.env.example)에 정리되어 있다. 프로덕션/배포용 값은
-[`.env.production.example`](./.env.production.example), Vercel+Supabase 조합 배포는
-[`.env.vercel-supabase.example`](./.env.vercel-supabase.example)을 참고한다. 핵심 그룹:
+배포 진입점은 `bash scripts/deploy.sh all`이며, API 배포는 Worker/Beat 호환성·마이그레이션·RedBeat 재조정·준비 검사를 함께 고려한다. 상세 순서와 롤백 한계는 [배포 안내](docs/ops/deployment-runbook.md), 마지막 확인 상태는 [2026-09-07 릴리스](docs/releases/2026-09-07-345a642.md)에 기록했다.
 
-- **DB/Redis**: `DATABASE_URL`, `SYNC_DATABASE_URL`, `REDIS_URL`
-- **AI — 콘텐츠 생성**: `ANTHROPIC_API_KEY`, `CLAUDE_MODEL`, `CLAUDE_MODEL_FAST`
-- **AI — SoV 측정**: `OPENAI_API_KEY`, `OPENAI_MODEL_QUERY`, `OPENAI_MODEL_PARSE`, `GEMINI_API_KEY`
-- **이미지 생성**: `IMAGE_PROVIDER`(openai/imagen), `OPENAI_IMAGE_MODEL`, GCP `GCP_PROJECT_ID`/`GCP_STORAGE_BUCKET`
-- **Slack 알림**: `SLACK_WEBHOOK_URL`
-- **Admin 인증**: `ADMIN_SECRET_KEY` 등
-
-## 배포 개요
-
-프로덕션은 GCP Cloud Run(backend API/Worker/Beat) + Cloud Run(admin/site Next.js standalone) +
-Cloud SQL + Redis 구성이며, Terraform으로 인프라를 관리한다.
-
-1. **인프라 최초 셋업 (1회)**: `bash scripts/setup-gcp.sh` — Artifact Registry, 서비스 계정, GCP API 활성화 등
-2. **Terraform 적용**: [`terraform/`](./terraform) — Cloud Run, Cloud SQL, Redis, Load Balancer, 인증서, 모니터링 정의
-   (`terraform.tfvars.example` 참고)
-3. **배포**: `bash scripts/deploy.sh {api|worker|beat|site|admin|all|migrate}` 또는 대응하는
-   `make deploy-api` / `make deploy-worker` / `make deploy-beat` / `make deploy-all` / `make deploy-migrate`
-4. **배포 전 안전장치**: `make db-budget-guard`(Cloud SQL 연결 예산 검사), `make copy-guard`(사용자 노출 문구 검사)
-
-세부 런북과 변경 이력은 [`docs/plans/`](./docs/plans)에서 날짜순으로 확인할 수 있다
-(`2026-06-09-gcp-full-deployment-runbook.md`, `2026-06-11-custom-domain-runbook.md`,
-`2026-06-23-certificate-manager-hybrid-domains.md` 등).
-
-## 문서 인덱스 (`docs/`)
-
-- [`docs/prd/`](./docs/prd) — 제품 요구사항 정의서 (플랫폼 백엔드, AI 엔진, 프론트엔드, 온보딩 운영, UI/UX 브랜드 등)
-- [`docs/plans/`](./docs/plans) — 안정화·배포·도메인 관련 실행 계획 및 런북
-- [`docs/sales/`](./docs/sales) — 영업/소개 자료
-- [`DESIGN.md`](./DESIGN.md) — `/site` 공개 표면 디자인 소스 오브 트루스
-
-## 코드 규칙 (요약)
-
-전체 규칙은 [`CLAUDE.md`](./CLAUDE.md)에 있다. 핵심만 요약하면:
-
-1. 모든 DB/외부 API 호출은 async
-2. 모든 함수에 타입 힌트
-3. 콘텐츠 생성 후 의료광고 금지 표현 자동 필터 필수
-4. 외부 API 호출은 tenacity로 최대 3회 재시도
-5. 주요 이벤트마다 Slack 알림 발송
+`docs/plans`, `docs/prd`와 Vercel/Supabase 예제는 과거 설계·대체 구성 자료다. 현재 동작이나 배포 환경의 정본으로 사용하지 않는다.
