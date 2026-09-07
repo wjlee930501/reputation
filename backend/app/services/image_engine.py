@@ -15,6 +15,7 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass
+from enum import StrEnum
 from io import BytesIO
 
 from pydantic import ValidationError
@@ -22,7 +23,11 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from app.core.config import settings
 from app.models.content import ContentType
-from app.services.image_direction import HospitalImageDirection, image_direction_prompt
+from app.services.image_direction import (
+    HospitalImageDirection,
+    image_direction_prompt,
+    image_repair_direction_prompt,
+)
 from app.services.image_policy import (
     ImagePolicyAssessment,
     ImagePolicyRejectedError,
@@ -32,6 +37,8 @@ from app.services.image_policy import (
 
 logger = logging.getLogger(__name__)
 IMAGE_POLICY_VERSION = "image-policy-v2"
+IMAGE_POLICY_FALLBACK_PROMPT_VERSION = "topical-no-text-v1"
+IMAGE_POLICY_REPAIR_PROMPT_VERSION = "topical-no-text-repair-v2"
 
 
 @dataclass(frozen=True)
@@ -39,6 +46,55 @@ class CertifiedImageArtifact:
     image_bytes: bytes
     content_hash: str
     subject_hash: str
+
+
+class ImagePolicyStage(StrEnum):
+    EXISTING_IMAGE_REVIEW = "EXISTING_IMAGE_REVIEW"
+    OPENAI_PRIMARY = "OPENAI_PRIMARY"
+    OPENAI_REPAIR = "OPENAI_REPAIR"
+    GOOGLE_PRIMARY = "GOOGLE_PRIMARY"
+    GOOGLE_FALLBACK = "GOOGLE_FALLBACK"
+    GOOGLE_REPAIR = "GOOGLE_REPAIR"
+
+
+@dataclass(frozen=True, slots=True)
+class ImagePolicyRejectionDiagnostic:
+    stage: ImagePolicyStage
+    assessment: ImagePolicyAssessment
+    prompt_version: str
+    prior_failure: str | None = None
+
+    def to_state(self) -> dict[str, str | bool]:
+        return {
+            "reason": "POLICY_REJECTED",
+            "stage": self.stage.value,
+            "prompt_version": self.prompt_version,
+            "has_text": self.assessment.has_text,
+            "has_logo": self.assessment.has_logo,
+            "has_recognizable_people": self.assessment.has_recognizable_people,
+            "impersonates_real_clinic": self.assessment.impersonates_real_clinic,
+            "topic_relevant": self.assessment.topic_relevant,
+            **({"prior_failure": self.prior_failure} if self.prior_failure else {}),
+        }
+
+
+def _record_policy_rejection(
+    diagnostics: dict[str, object] | None,
+    exc: ImagePolicyRejectedError,
+    *,
+    stage: ImagePolicyStage,
+    prompt_version: str,
+    prior_failure: str | None = None,
+) -> None:
+    if diagnostics is None:
+        return
+    diagnostics["reason"] = "POLICY_REJECTED"
+    diagnostics["policy_rejection"] = ImagePolicyRejectionDiagnostic(
+        stage=stage,
+        assessment=exc.assessment,
+        prompt_version=prompt_version,
+        prior_failure=prior_failure,
+    ).to_state()
 
 # ── 공급자 클라이언트 lazy 싱글턴 ────────────────────────────────────────
 # 시도마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 세션을 매번 버린다.
@@ -251,13 +307,11 @@ IMAGE_PROMPTS = {
     ),
 }
 
-# 모델이 안전한 의료 제목까지 IMAGE_SAFETY로 오탐할 때 쓰는 최종 장면. 진단명·신체·
-# 실존 병원·인물을 전혀 언급하지 않아 카드가 이미지 없이 영구 차단되는 것을 막는다.
+# The fallback keeps safe topical objects. A generic abstract composition cannot
+# truthfully pass the separate topic-relevance gate for a concrete medical article.
 GOOGLE_SAFETY_FALLBACK_PROMPT = (
-    "Abstract editorial still life made from layered ivory paper, soft navy geometric curves, "
-    "and one muted gold circle, calm balanced composition, subtle natural shadows, no people, "
-    "no body parts, no medical procedure, no building, no text, no letters, no numbers, no logo, "
-    "no watermark, family friendly, original artwork, 16:9 banner"
+    "Create one topic-specific editorial still life using only the listed unmarked objects. "
+    "Do not add symbols, screens, forms, charts, packaging, signs, or printed surfaces"
 )
 
 GOOGLE_EDITORIAL_SAFETY = (
@@ -274,11 +328,63 @@ def _build_google_image_prompt(
 ) -> str:
     parts = [IMAGE_PROMPTS.get(content_type, IMAGE_PROMPTS[ContentType.FAQ])]
     if topic:
-        parts.append(f"Specific visual scene: {_safe_google_visual_scene(topic)}")
+        parts.append(
+            f"Specific visual scene: {_safe_google_visual_scene(topic, content_type)}"
+        )
     clinic_direction = image_direction_prompt(direction)
     if clinic_direction:
         parts.append(clinic_direction)
     # The non-overridable safety/semantics contract comes after operator direction.
+    parts.append(GOOGLE_EDITORIAL_SAFETY)
+    return ". ".join(parts)
+
+
+def _build_google_safety_fallback_prompt(
+    content_type: ContentType,
+    topic: str | None,
+    direction: HospitalImageDirection | None = None,
+) -> str:
+    """Build a topical repair prompt without clinic identity or free-form direction."""
+
+    parts = [
+        GOOGLE_SAFETY_FALLBACK_PROMPT,
+        f"Specific visual scene: {_safe_google_visual_scene(topic or '', content_type)}",
+    ]
+    repair_direction = image_repair_direction_prompt(direction)
+    if repair_direction:
+        parts.append(repair_direction)
+    parts.append(GOOGLE_EDITORIAL_SAFETY)
+    return ". ".join(parts)
+
+
+def _build_google_policy_repair_prompt(
+    content_type: ContentType,
+    topic: str | None,
+    direction: HospitalImageDirection | None = None,
+    prior_rejection: dict[str, object] | None = None,
+) -> str:
+    """Build a distinct second-attempt prompt from bounded prior policy facts."""
+
+    scene = _safe_google_visual_scene(topic or "", content_type)
+    parts = [
+        GOOGLE_SAFETY_FALLBACK_PROMPT,
+        f"Make this exact object group the single dominant subject: {scene}",
+        "Use a plain textile background with no flat writable or printed surfaces",
+    ]
+    repair_direction = image_repair_direction_prompt(direction)
+    if repair_direction:
+        parts.append(repair_direction)
+    if prior_rejection:
+        if prior_rejection.get("topic_relevant") is False:
+            parts.append("Keep every listed topical object large, clear, and unobscured")
+        if prior_rejection.get("has_text") is True:
+            parts.append("Use organic textures only and remove every mark or glyph-like detail")
+        if prior_rejection.get("has_logo") is True:
+            parts.append("Use generic natural materials with no branded product shapes")
+        if prior_rejection.get("has_recognizable_people") is True:
+            parts.append("Objects only, with no people, hands, faces, or silhouettes")
+        if prior_rejection.get("impersonates_real_clinic") is True:
+            parts.append("Use no clinic interior, exterior, uniform, or documentary photography")
     parts.append(GOOGLE_EDITORIAL_SAFETY)
     return ". ".join(parts)
 
@@ -383,7 +489,9 @@ async def generate_image(
     topic: str | None = None,
     direction: HospitalImageDirection | None = None,
     hospital_id: uuid.UUID | str | None = None,
-    diagnostics: dict[str, str] | None = None,
+    diagnostics: dict[str, object] | None = None,
+    policy_repair: bool = False,
+    prior_policy_rejection: dict[str, object] | None = None,
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
@@ -424,7 +532,18 @@ async def generate_image(
     attempts = _CallCounter()
 
     if provider == "openai" and settings.OPENAI_API_KEY:
-        prompt = _build_openai_image_prompt(content_type, topic, direction)
+        prompt = (
+            _build_google_policy_repair_prompt(
+                content_type, topic, direction, prior_policy_rejection
+            )
+            if policy_repair
+            else _build_openai_image_prompt(content_type, topic, direction)
+        )
+        openai_stage = (
+            ImagePolicyStage.OPENAI_REPAIR
+            if policy_repair
+            else ImagePolicyStage.OPENAI_PRIMARY
+        )
         try:
             url = await loop.run_in_executor(
                 None,
@@ -443,6 +562,9 @@ async def generate_image(
                 )
                 return url, prompt
         except ImagePolicyUnavailableError as e:
+            if diagnostics is not None:
+                diagnostics["reason"] = "POLICY_UNAVAILABLE"
+                diagnostics["stage"] = openai_stage.value
             logger.error("Image policy review unavailable: %s", e)
             await _settle_image_reservations(
                 attempts,
@@ -450,7 +572,17 @@ async def generate_image(
                 review_receipt=review_decision.receipt,
             )
             return ("", "")
-        except ImagePolicyRejectedError:
+        except ImagePolicyRejectedError as exc:
+            _record_policy_rejection(
+                diagnostics,
+                exc,
+                stage=openai_stage,
+                prompt_version=(
+                    IMAGE_POLICY_REPAIR_PROMPT_VERSION
+                    if policy_repair
+                    else "openai-primary-v1"
+                ),
+            )
             logger.warning("Generated OpenAI image failed semantic policy review")
             await _settle_image_reservations(
                 attempts,
@@ -473,7 +605,18 @@ async def generate_image(
         )
         return ("", "")
 
-    prompt = _build_google_image_prompt(content_type, topic, direction)
+    prompt = (
+        _build_google_policy_repair_prompt(
+            content_type, topic, direction, prior_policy_rejection
+        )
+        if policy_repair
+        else _build_google_image_prompt(content_type, topic, direction)
+    )
+    google_stage = (
+        ImagePolicyStage.GOOGLE_REPAIR
+        if policy_repair
+        else ImagePolicyStage.GOOGLE_PRIMARY
+    )
     fallback_attempts = _CallCounter()
     try:
         url = await loop.run_in_executor(
@@ -485,27 +628,85 @@ async def generate_image(
                 counter=fallback_attempts,
             ),
         )
+        if not url and diagnostics is not None:
+            diagnostics["reason"] = "PROVIDER_EMPTY"
+            diagnostics["stage"] = google_stage.value
         return url, prompt
     except ImagePolicyUnavailableError as e:
+        if diagnostics is not None:
+            diagnostics["reason"] = "POLICY_UNAVAILABLE"
+            diagnostics["stage"] = google_stage.value
         logger.error("Image policy review unavailable: %s", e)
         return ("", "")
-    except ImagePolicyRejectedError:
+    except ImagePolicyRejectedError as exc:
+        _record_policy_rejection(
+            diagnostics,
+            exc,
+            stage=google_stage,
+            prompt_version=(
+                IMAGE_POLICY_REPAIR_PROMPT_VERSION
+                if policy_repair
+                else "google-primary-v1"
+            ),
+        )
         logger.warning("Generated Google image failed semantic policy review")
         return ("", "")
     except Exception as e:  # noqa: BLE001
+        primary_failure = (
+            "IMAGE_SAFETY"
+            if isinstance(e, ImageSafetyBlockedError) or _looks_like_policy_block(e)
+            else "PROVIDER_ERROR"
+        )
+        if diagnostics is not None:
+            diagnostics["reason"] = primary_failure
+            diagnostics["stage"] = google_stage.value
+        if policy_repair:
+            logger.warning("Google policy repair image failed: %s", type(e).__name__)
+            return ("", "")
         logger.warning("Google topic image failed; trying safety-neutral fallback: %s", e)
+        fallback_prompt = _build_google_safety_fallback_prompt(
+            content_type, topic, direction
+        )
         try:
             url = await loop.run_in_executor(
                 None,
                 lambda: _generate_and_upload(
-                    GOOGLE_SAFETY_FALLBACK_PROMPT,
+                    fallback_prompt,
                     hospital_name,
                     expected_topic=topic,
                     counter=fallback_attempts,
                 ),
             )
-            return url, GOOGLE_SAFETY_FALLBACK_PROMPT
+            if not url and diagnostics is not None:
+                diagnostics["reason"] = "PROVIDER_EMPTY"
+                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+            return url, fallback_prompt
+        except ImagePolicyRejectedError as fallback_exc:
+            _record_policy_rejection(
+                diagnostics,
+                fallback_exc,
+                stage=ImagePolicyStage.GOOGLE_FALLBACK,
+                prompt_version=IMAGE_POLICY_FALLBACK_PROMPT_VERSION,
+                prior_failure=primary_failure,
+            )
+            logger.warning("Google topical fallback failed semantic policy review")
+            return ("", "")
+        except ImagePolicyUnavailableError as fallback_exc:
+            if diagnostics is not None:
+                diagnostics["reason"] = "POLICY_UNAVAILABLE"
+                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+            logger.error("Google image fallback policy review unavailable: %s", fallback_exc)
+            return ("", "")
+        except ImageSafetyBlockedError as fallback_exc:
+            if diagnostics is not None:
+                diagnostics["reason"] = "IMAGE_SAFETY"
+                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+            logger.warning("Google topical fallback blocked by image safety: %s", fallback_exc)
+            return ("", "")
         except Exception as fallback_exc:  # noqa: BLE001
+            if diagnostics is not None:
+                diagnostics["reason"] = "PROVIDER_ERROR"
+                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
             logger.error("Google image fallback failed: %s", fallback_exc)
             return ("", "")
     finally:
@@ -718,7 +919,10 @@ def _validate_generated_image(
     return assessment
 
 
-def _safe_google_visual_scene(topic: str) -> str:
+def _safe_google_visual_scene(
+    topic: str,
+    content_type: ContentType | None = None,
+) -> str:
     """Map medical titles to non-sensitive, anonymous editorial still lifes.
 
     Raw titles such as pediatric fever or proctology terms can trigger an image
@@ -728,11 +932,11 @@ def _safe_google_visual_scene(topic: str) -> str:
     """
     compact = "".join(topic.lower().split())
     if any(keyword in compact for keyword in ("발열", "탈수", "수분")):
-        return "a glass of water and a digital thermometer arranged on a clean desk"
+        return "a clear glass of water and a folded cool cloth on a sunlit bedside table"
     if any(keyword in compact for keyword in ("유방초음파", "초음파")):
-        return "an ultrasound monitor and folded towel in an empty bright examination room"
+        return "an unpowered ultrasound probe, a plain gel bowl, and a folded neutral towel"
     if any(keyword in compact for keyword in ("건강검진", "검진")):
-        return "a stethoscope, blank clipboard, and calendar blocks on a bright desk"
+        return "a stethoscope, plain wooden blocks, and a folded cloth on a bright desk"
     if any(
         keyword in compact
         for keyword in (
@@ -747,8 +951,56 @@ def _safe_google_visual_scene(topic: str) -> str:
             "출혈",
         )
     ):
-        return "a glass of water, a blank appointment card, and a folded neutral towel"
-    return "a blank appointment card and calm clinic objects arranged as a wellness still life"
+        return (
+            "a clear glass of water, a bowl of leafy vegetables and whole grains, "
+            "a neutral seat cushion, and a folded towel"
+        )
+    if any(
+        keyword in compact
+        for keyword in (
+            "손목",
+            "손가락",
+            "팔꿈치",
+            "어깨",
+            "무릎",
+            "관절",
+            "연골",
+            "척추",
+            "허리",
+            "목디스크",
+            "재활",
+            "도수",
+            "물리치료",
+            "스트레칭",
+        )
+    ):
+        return "a plain resistance band, a cork therapy ball, and a folded exercise towel"
+    if any(keyword in compact for keyword in ("예방접종", "백신", "접종")):
+        return "a plain adhesive bandage, a cotton pad, and a soft reusable cool pack"
+    if any(keyword in compact for keyword in ("감기", "기침", "비염", "호흡", "천식")):
+        return "a warm ceramic steam bowl, a folded scarf, and a clear glass of water"
+    if any(keyword in compact for keyword in ("피부", "아토피", "여드름", "습진")):
+        return "an aloe leaf, a plain ceramic lotion jar, and a soft cotton cloth"
+    if any(keyword in compact for keyword in ("당뇨", "혈압", "콜레스테롤")):
+        return "a bowl of whole grains, leafy vegetables, and unbranded walking shoes"
+    default_scenes = {
+        ContentType.TREATMENT: (
+            "a folded care towel, a cork therapy ball, and a plain ceramic bowl"
+        ),
+        ContentType.HEALTH: (
+            "leafy vegetables, a clear water glass, and unbranded walking shoes"
+        ),
+        ContentType.LOCAL: (
+            "a welcoming doorway, a small planter, and a sunlit pedestrian path without signs"
+        ),
+        ContentType.NOTICE: (
+            "layered blank paper, a plain wooden tray, and one muted gold circle"
+        ),
+    }
+    return default_scenes.get(
+        content_type,
+        "a clear water glass, a folded care towel, and a small green plant",
+    )
 
 
 @retry(

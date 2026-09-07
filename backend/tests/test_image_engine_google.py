@@ -174,6 +174,40 @@ def test_semantic_policy_rejection_prevents_upload_and_same_prompt_retry(monkeyp
     assert calls == {"generation": 1, "upload": 0}
 
 
+def test_policy_rejection_diagnostic_preserves_stage_and_typed_assessment():
+    assessment = ImagePolicyAssessment(
+        has_text=True,
+        has_logo=False,
+        has_recognizable_people=False,
+        impersonates_real_clinic=False,
+        topic_relevant=True,
+    )
+    diagnostics = {}
+
+    image_engine._record_policy_rejection(
+        diagnostics,
+        ImagePolicyRejectedError(assessment),
+        stage=image_engine.ImagePolicyStage.GOOGLE_FALLBACK,
+        prompt_version=image_engine.IMAGE_POLICY_REPAIR_PROMPT_VERSION,
+        prior_failure="IMAGE_SAFETY",
+    )
+
+    assert diagnostics == {
+        "reason": "POLICY_REJECTED",
+        "policy_rejection": {
+            "reason": "POLICY_REJECTED",
+            "stage": "GOOGLE_FALLBACK",
+            "prompt_version": "topical-no-text-repair-v2",
+            "has_text": True,
+            "has_logo": False,
+            "has_recognizable_people": False,
+            "impersonates_real_clinic": False,
+            "topic_relevant": True,
+            "prior_failure": "IMAGE_SAFETY",
+        },
+    }
+
+
 def test_transient_upload_retry_reuses_the_verified_candidate(monkeypatch):
     calls = {"generation": 0, "review": 0, "upload": 0}
 
@@ -271,6 +305,6 @@ def test_google_visual_scene_does_not_echo_sensitive_medical_title():
 
 
 def test_google_visual_scene_preserves_safe_topic_variety():
-    assert "thermometer" in image_engine._safe_google_visual_scene("소아 발열 치료")
-    assert "ultrasound monitor" in image_engine._safe_google_visual_scene("유방초음파 비용")
-    assert "clipboard" in image_engine._safe_google_visual_scene("건강검진 준비")
+    assert "cool cloth" in image_engine._safe_google_visual_scene("소아 발열 치료")
+    assert "unpowered ultrasound probe" in image_engine._safe_google_visual_scene("유방초음파 비용")
+    assert "plain wooden blocks" in image_engine._safe_google_visual_scene("건강검진 준비")

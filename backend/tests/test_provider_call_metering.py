@@ -14,6 +14,7 @@ import pytest
 
 from app.models.content import ContentType
 from app.services import content_engine, image_engine, sov_engine
+from app.services.image_policy import ImagePolicyAssessment, ImagePolicyRejectedError
 
 
 class RecordedCalls:
@@ -210,9 +211,118 @@ def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded
     )
 
     assert url == "gs://bucket/neutral.png"
-    assert prompt == image_engine.GOOGLE_SAFETY_FALLBACK_PROMPT
-    assert prompts[1] == image_engine.GOOGLE_SAFETY_FALLBACK_PROMPT
+    expected = image_engine._build_google_safety_fallback_prompt(
+        ContentType.LOCAL, "간질환 진료 흐름"
+    )
+    assert prompt == expected
+    assert prompts[1] == expected
+    assert "welcoming doorway" in prompt
     assert recorded.by_category["image"] == 2
+
+
+def test_second_policy_repair_uses_one_distinct_prompt_without_another_fallback(
+    monkeypatch, recorded
+):
+    async def allowed(category, **_kwargs):
+        return SimpleNamespace(
+            allowed=True, reason=None, receipt=SimpleNamespace(category=category)
+        )
+
+    async def settle(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    prompts = []
+
+    def blocked(prompt, _hospital, *, expected_topic=None, counter=None):
+        prompts.append(prompt)
+        if counter is not None:
+            counter.tick()
+        raise image_engine.ImageSafetyBlockedError()
+
+    monkeypatch.setattr(image_engine, "_generate_and_upload", blocked)
+    diagnostics = {}
+
+    result = asyncio.run(
+        image_engine.generate_image(
+            ContentType.TREATMENT,
+            "병원",
+            topic="무릎 재활",
+            diagnostics=diagnostics,
+            policy_repair=True,
+            prior_policy_rejection={"topic_relevant": False, "has_text": True},
+        )
+    )
+
+    assert result == ("", "")
+    assert len(prompts) == 1
+    assert "single dominant subject" in prompts[0]
+    assert "large, clear, and unobscured" in prompts[0]
+    assert diagnostics == {"reason": "IMAGE_SAFETY", "stage": "GOOGLE_REPAIR"}
+    assert recorded.by_category["image"] == 1
+
+
+def test_fallback_policy_rejection_keeps_prior_safety_and_typed_assessment(
+    monkeypatch, recorded
+):
+    async def allowed(category, **_kwargs):
+        return SimpleNamespace(
+            allowed=True, reason=None, receipt=SimpleNamespace(category=category)
+        )
+
+    async def settle(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    assessment = ImagePolicyAssessment(
+        has_text=False,
+        has_logo=False,
+        has_recognizable_people=False,
+        impersonates_real_clinic=False,
+        topic_relevant=False,
+    )
+    calls = 0
+
+    def safety_then_reject(_prompt, _hospital, *, expected_topic=None, counter=None):
+        nonlocal calls
+        calls += 1
+        if counter is not None:
+            counter.tick()
+        if calls == 1:
+            raise image_engine.ImageSafetyBlockedError()
+        raise ImagePolicyRejectedError(assessment)
+
+    monkeypatch.setattr(image_engine, "_generate_and_upload", safety_then_reject)
+    diagnostics = {}
+
+    result = asyncio.run(
+        image_engine.generate_image(
+            ContentType.DISEASE,
+            "병원",
+            topic="손목 통증",
+            diagnostics=diagnostics,
+        )
+    )
+
+    assert result == ("", "")
+    assert calls == 2
+    assert diagnostics["policy_rejection"] == {
+        "reason": "POLICY_REJECTED",
+        "stage": "GOOGLE_FALLBACK",
+        "prompt_version": "topical-no-text-v1",
+        "has_text": False,
+        "has_logo": False,
+        "has_recognizable_people": False,
+        "impersonates_real_clinic": False,
+        "topic_relevant": False,
+        "prior_failure": "IMAGE_SAFETY",
+    }
 
 
 def test_blocked_image_generation_records_no_provider_call(monkeypatch, recorded):

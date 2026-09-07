@@ -62,3 +62,18 @@ def image_direction_prompt(direction: HospitalImageDirection | None) -> str:
     if palette:
         parts.append(f"Use these approved colors as restrained accents only: {', '.join(palette)}.")
     return " ".join(parts)
+
+
+def image_repair_direction_prompt(direction: HospitalImageDirection | None) -> str:
+    """Return the policy-safe subset of clinic direction for a repair attempt."""
+
+    if direction is None:
+        return ""
+    palette = [
+        color
+        for color in (direction.primary_color, direction.accent_color)
+        if color and re.fullmatch(r"#[0-9A-Fa-f]{6}", color)
+    ]
+    if not palette:
+        return ""
+    return f"Use these approved colors as restrained accents only: {', '.join(palette)}."
