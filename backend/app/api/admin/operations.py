@@ -479,9 +479,7 @@ async def trigger_v0_report_operation(
                         "진행 상태에서 결과를 확인하세요."
                     ),
                     "operation_run_id": str(active.id) if active is not None else None,
-                    "operation_state": (
-                        active.state.value if active is not None else "ANALYZING"
-                    ),
+                    "operation_state": str(active.state) if active is not None else "ANALYZING",
                 },
             )
     if hospital.v0_report_done:
