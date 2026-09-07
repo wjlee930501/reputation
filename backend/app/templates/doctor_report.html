@@ -16,15 +16,19 @@
   @font-face {
     font-family: 'Pretendard';
     src: url('../assets/fonts/PretendardVariable.woff2') format('woff2');
-    font-weight: 100 900;
+    font-weight: 400;
   }
   @page { size: A4; margin: 11mm 12mm 10mm; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Pretendard', sans-serif;
          font-size: 9.2pt; color: #233044; line-height: 1.38; }
+  .tiles { table-layout: fixed; }
+  .head, .headline, .tiles, .case, tr { break-inside: avoid; }
+  h2 { break-after: avoid; }
+  th, td, .q, .a { overflow-wrap: anywhere; }
 
   .head { border-bottom: 2px solid #1A4B8C; padding-bottom: 7px; margin-bottom: 9px; }
-  .head .who { font-size: 15pt; font-weight: 750; color: #1A4B8C; }
+  .head .who { font-size: 15pt; font-weight: 700; color: #1A4B8C; }
   .head .when { font-size: 8pt; color: #667085; margin-top: 2px; }
 
   h2 { font-size: 10pt; color: #1A4B8C; margin: 9px 0 4px; }
@@ -42,13 +46,13 @@
   .tiles { width: 100%; border-collapse: separate; border-spacing: 5px 0; margin-top: 4px; }
   .tiles td { background: #F7F8FA; border-radius: 5px; padding: 7px; vertical-align: top; }
   .tiles .lbl { font-size: 7.5pt; color: #667085; }
-  .tiles .val { font-size: 11pt; font-weight: 750; color: #1A4B8C; margin: 2px 0; }
+  .tiles .val { font-size: 11pt; font-weight: 700; color: #1A4B8C; margin: 2px 0; }
   .tiles .hint { font-size: 7.8pt; color: #667085; line-height: 1.3; }
 
   .panel { background: #F2F6FC; border-radius: 5px; padding: 7px 10px; }
   .panel li { font-size: 8.2pt; margin-bottom: 3px; }
   .panel .platform { color: #667085; font-size: 7.5pt; }
-  .panel .tag { color: #1A4B8C; font-size: 7.5pt; font-weight: 650; }
+  .panel .tag { color: #1A4B8C; font-size: 7.5pt; font-weight: 600; }
   .panel .cite { font-size: 8.2pt; color: #344054; margin-top: 4px; }
   .panel.miss { background: #FDF7F2; }
   .panel .sub { font-size: 8pt; font-weight: 700; color: #344054; margin-bottom: 2px; }
@@ -65,7 +69,7 @@
   .foot { margin-top: 8px; border-top: 1px solid #D0D5DD; padding-top: 5px; font-size: 8pt; color: #667085; }
   .foot li { margin-bottom: 1px; }
   .public-link { margin-top: 4px; }
-  .public-link a { color: #1A4B8C; font-weight: 650; text-decoration: underline; }
+  .public-link a { color: #1A4B8C; font-weight: 600; text-decoration: underline; }
 
   .appendix { page-break-before: always; }
   table.rows { width: 100%; border-collapse: collapse; margin-top: 5px; font-size: 7.6pt; }
@@ -84,7 +88,7 @@
 <div class="coverage">{{ view.coverage_text }}</div>
 
 {# ── 막 1 ─────────────────────────────────────────────────────────── #}
-<h2><span class="act">막 1</span> 이번 달 저희가 한 일</h2>
+<h2>이번 달 운영 실적과 AI 노출</h2>
 <table class="tiles">
   <tr>
     {% for tile in view.tiles %}
@@ -110,7 +114,7 @@
 {% endif %}
 
 {# ── 막 2 ─────────────────────────────────────────────────────────── #}
-<h2><span class="act">막 2</span> 무엇이 달라졌나요?</h2>
+<h2>지난달과 비교해 무엇이 달라졌나요?</h2>
 <div class="headline">
   {% if view.measured %}
     <div class="num">{{ view.headline.delta_sentence }}</div>
@@ -166,21 +170,19 @@
   <div class="q">아직 안 나오는 사례 — “{{ view.evidence.missing.question }}”</div>
   <div class="a">{{ view.evidence.missing.excerpt }}</div>
   <div class="src">
-    그래서 이번 달 이 주제의 글을 씁니다.
+    {{ view.evidence.missing.platform }}
+    {% if view.evidence.missing.measured_at %} · {{ view.evidence.missing.measured_at.strftime('%Y년 %m월 %d일') }} 확인{% endif %}
   </div>
 </div>
 {% endif %}
 {% endif %}
 
 {# ── 막 3 ─────────────────────────────────────────────────────────── #}
-<h2><span class="act">막 3</span> 다음 달에는 무엇을 하나요?</h2>
+<h2>다음 달 운영 계획</h2>
 <div class="panel">
   <ul>
     {% for line in view.next_actions.ours %}<li>{{ line }}</li>{% endfor %}
   </ul>
-  {% if view.next_actions.yours %}
-  <div class="cite">원장님께 부탁드릴 한 가지 — {{ view.next_actions.yours[0] }}</div>
-  {% endif %}
 </div>
 
 <div class="foot">
@@ -215,7 +217,7 @@
     {% endfor %}
   </table>
   <div class="foot">
-    같은 질문을 여러 번 물어 나온 횟수입니다. 비어 있는 칸은 확인된 결과가 없다는 뜻입니다.
+    같은 질문에 대한 챗GPT·제미나이 답변을 합산한 횟수입니다. 비어 있는 칸은 확인된 결과가 없다는 뜻입니다.
   </div>
 </div>
 {% endif %}

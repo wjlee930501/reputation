@@ -15,7 +15,7 @@ from app.workers.dispatch_auth import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-09-04.1"
+REDBEAT_SCHEDULE_VERSION = "2026-09-07.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -249,6 +249,13 @@ celery_app.conf.update(
         "monthly-slot-generation": {
             "task": "app.workers.tasks.monthly_slot_generation",
             "schedule": crontab(hour="*/6", minute=0, day_of_month="25-31"),
+            "options": {"headers": build_dispatch_headers("monthly-slot-generation")},
+        },
+        # Recover missing current-month slots before the 22:30 backlog planner.
+        "current-month-slot-reconciliation": {
+            "task": "app.workers.tasks.monthly_slot_generation",
+            "schedule": crontab(hour=21, minute=30),
+            "kwargs": {"current_month": True},
             "options": {"headers": build_dispatch_headers("monthly-slot-generation")},
         },
         # 매일 04:00 — 보관기간 만료 리드 자동 파기 (개인정보보호법 제21조)

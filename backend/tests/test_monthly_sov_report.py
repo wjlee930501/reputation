@@ -202,3 +202,17 @@ def test_ae_pdf_still_renders_a_legacy_payload_without_the_new_keys() -> None:
 
     assert "95% 신뢰구간" not in html
     assert "계획한 2개 조합 중 2개를 측정했고" in html
+
+
+def test_platform_specific_variants_are_one_patient_question_in_the_basis():
+    from dataclasses import replace
+    cells = tuple(
+        replace(_cell(f"variant-{platform}", platform, state="SUCCESS", repeats=5),
+                query_text="강남 내과 추천해줘")
+        for platform in ("chatgpt", "gemini")
+    )
+    basis = build_monthly_sov(cells, ("chatgpt", "gemini")).measurement_basis
+    assert basis.question_count == 1
+    assert basis.platform_count == 2
+    assert basis.cell_count == 2
+    assert basis.attempts_used == 10

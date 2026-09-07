@@ -150,3 +150,15 @@ def test_monthly_content_operations_distinguishes_pending_from_overdue():
 
     assert snapshot.payload["post_publish_review"]["pending_count"] == 1
     assert snapshot.payload["post_publish_review"]["overdue_count"] == 0
+
+
+def test_prior_month_supplements_do_not_hide_current_month_shortfall():
+    snapshot = build_monthly_content_operations_snapshot(
+        plan='PLAN_12', scheduled_items=[],
+        published_items=[_item(sequence_no=3)] * 13,
+        cutoff_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        supplementary_count=2,
+    )
+    assert snapshot.payload['published_count'] == 13
+    assert snapshot.payload['contracted_published_count'] == 11
+    assert snapshot.payload['shortfall_count'] == 1

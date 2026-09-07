@@ -5,7 +5,8 @@
 <style>
   @page { size: A4; margin: 18mm; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'NanumGothic', 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif; font-size: 11pt; color: #2d2d2d; }
+  @font-face { font-family: 'Pretendard'; src: url('../assets/fonts/PretendardVariable.woff2') format('woff2'); font-weight: 400; }
+  body { font-family: 'Pretendard', sans-serif; font-size: 10pt; color: #2d2d2d; line-height: 1.5; overflow-wrap: anywhere; }
 
   .cover { background: #1A4B8C; color: white; padding: 36px; border-radius: 4px; margin-bottom: 28px; }
   .cover .badge { font-size: 9pt; background: rgba(255,255,255,0.2); display: inline-block; padding: 4px 10px; border-radius: 20px; margin-bottom: 10px; }
@@ -15,7 +16,10 @@
   h2 { font-size: 14pt; color: #1A4B8C; border-bottom: 2px solid #1A4B8C; padding-bottom: 5px; margin: 22px 0 12px; }
   h3 { font-size: 11.5pt; color: #1A4B8C; margin: 16px 0 6px; }
 
-  .kpi-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; margin: 14px 0; }
+  .kpi-grid { display: table; width: 100%; table-layout: fixed; border-spacing: 8px 0; margin: 14px 0; }
+  .kpi-grid > .kpi { display: table-cell; vertical-align: top; }
+  tr, .kpi-grid { break-inside: avoid; }
+  th, td { overflow-wrap: anywhere; }
   .kpi { background: #E8F0FB; border-radius: 6px; padding: 16px; text-align: center; }
   .kpi .val { font-size: 26pt; font-weight: bold; color: #1A4B8C; }
   .kpi .lbl { font-size: 9pt; color: #666; margin-top: 4px; }
@@ -37,7 +41,7 @@
 <body>
 
 <div class="cover">
-  <div class="badge">{% if report_type == 'V0' %}V0 AI 검색 진단 리포트{% else %}월간 AI 노출 콘텐츠 운영 리포트{% endif %}</div>
+  <div class="badge">{% if report_type == 'V0' %}V0 AI 검색 진단 리포트{% else %}월간 AI 노출 콘텐츠 운영 리포트 · 내부 검수용 · 원장 전달 불가{% endif %}</div>
   <h1>{{ hospital.name }}</h1>
   <div class="meta">
     분석 기간: {{ period_start.strftime('%Y년 %m월 %d일') }} ~ {{ period_end.strftime('%Y년 %m월 %d일') }}<br>
@@ -52,7 +56,7 @@
 </div>
 {% endif %}
 
-<h2>📊 AI 답변 내 병원 언급률</h2>
+<h2> AI 답변 내 병원 언급률</h2>
 <div class="kpi-grid">
   <div class="kpi">
     <div class="val">{% if sov_measured %}{{ "%.1f"|format(sov_pct) }}%{% else %}측정 데이터 없음{% endif %}</div>
@@ -156,7 +160,7 @@
 {% endif %}
 
 {% if report_type == 'MONTHLY' %}
-<h2>📝 이번 달 콘텐츠 발행 현황</h2>
+<h2> 이번 달 콘텐츠 발행 현황</h2>
 <div class="kpi-grid">
   <div class="kpi">
     <div class="val">{{ published_count }}</div>
@@ -190,7 +194,7 @@
 {% endif %}
 
 {% if report_type == 'MONTHLY' and talking_points %}
-<h2>🗣️ 원장 미팅 토킹 포인트</h2>
+<h2> 원장 미팅 토킹 포인트</h2>
 <p class="note">
   원장님 보고 자리에서 그대로 읽을 수 있게 만든 3문장입니다. 숫자는 이 리포트의 값에서 그대로
   가져왔으며 문장을 새로 쓰지 않았습니다. 이 섹션은 원장 전달용 PDF에는 들어가지 않습니다.
@@ -201,7 +205,7 @@
 {% endif %}
 
 {% if report_type == 'MONTHLY' and attribution %}
-<h2>🔗 콘텐츠 발행과 AI 언급 변화</h2>
+<h2> 콘텐츠 발행과 AI 언급 변화</h2>
 <p class="note">
   아래는 이번 기간에 발행된 콘텐츠와 같은 기간에 관찰한 AI 답변 내 병원 언급 변화를 나란히 정리한 자료입니다.
   콘텐츠 발행이 언급의 원인이라고 단정하지 않으며, 같은 기간에 함께 관찰된 상관 데이터로만 제공합니다.
@@ -268,7 +272,7 @@
 {% endif %}
 
 {% if report_type == 'MONTHLY' and citations %}
-<h2>📄 AI가 인용한 우리 글</h2>
+<h2> AI가 인용한 우리 글</h2>
 <p class="note">
   이번 기간에 측정한 답변 {{ citations.measured_cell_count }}건 중
   {{ citations.cited_cell_count }}건이 병원 공개 표면(허브 페이지 또는 발행한 글)을 근거로 인용했습니다.
@@ -306,7 +310,7 @@
 {% endif %}
 
 {% if report_type == 'MONTHLY' and strategy %}
-<h2>🎯 환자 질문 목표별 AI 노출 결과</h2>
+<h2> 환자 질문 목표별 AI 노출 결과</h2>
 {% if strategy.query_targets %}
 <table>
   <tr><th>환자 질문 목표</th><th>AI 서비스별 병원 언급률</th><th>통합 병원 언급률</th><th>경쟁 병원 언급</th><th>검색 근거 URL</th><th>병원 공식 채널 인용</th></tr>
@@ -337,7 +341,7 @@
 </table>
 {% else %}<p class="note">이번 기간에 연결된 환자 질문 목표 측정 결과가 없습니다.</p>{% endif %}
 
-<h2>🔎 확인된 AI 노출 갭</h2>
+<h2> 확인된 AI 노출 갭</h2>
 {% if strategy.exposure_gaps %}
 <table>
   <tr><th>환자 질문 목표</th><th>갭</th><th>심각도</th></tr>
@@ -347,7 +351,7 @@
 </table>
 {% else %}<p class="note">현재 열려 있는 AI 노출 갭이 없습니다.</p>{% endif %}
 
-<h2>✅ 이번 달 완료 액션</h2>
+<h2> 이번 달 완료 액션</h2>
 {% if strategy.completed_actions %}
 <table>
   <tr><th>완료 항목</th><th>환자 질문 목표</th><th>연결 콘텐츠</th></tr>
@@ -357,7 +361,7 @@
 </table>
 {% else %}<p class="note">이번 기간에 완료 처리된 노출 개선 액션이 없습니다.</p>{% endif %}
 
-<h2>🚀 {{ strategy.next_month }} Top 3 실행안</h2>
+<h2> {{ strategy.next_month }} Top 3 실행안</h2>
 {% if strategy.next_month_actions %}
 <table>
   <tr><th>순위</th><th>실행안</th><th>담당 / 기한</th></tr>

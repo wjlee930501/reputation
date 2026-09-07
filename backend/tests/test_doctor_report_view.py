@@ -281,7 +281,7 @@ def test_act_one_citation_line_counts_answers_not_invented_questions():
     view = _view(citations=_citations())
 
     assert view["citation_line"] == (
-        "AI 답변이 저희 병원 글·페이지를 인용한 횟수: 4건(확인한 답변 30개 중)"
+        "병원 글·페이지가 인용된 질문·서비스 조합: 4개(확인한 조합 30개 중)"
     )
     assert view["cited_cells"] == 4
     assert view["cited_content_count"] == 2
@@ -350,7 +350,7 @@ def test_next_actions_separate_what_we_do_from_what_the_doctor_does():
     actions = _view()["next_actions"]
 
     assert len(actions["ours"]) == 2
-    assert len(actions["yours"]) == 1
+    assert actions["yours"] == []
     assert "원장" not in " ".join(actions["ours"])
 
 
@@ -751,7 +751,7 @@ def test_footnote_trimming_drops_the_extras_and_keeps_the_v0_caveat():
     assert "V0_BASELINE" not in view["trimmed"]
     assert view["v0_baseline"] == V0_BASELINE
     assert _v0_footnote() in view["footnotes"]
-    assert not any("처음 확인된 질문" in note for note in view["footnotes"])
+    assert len(view["footnotes"]) <= 5
     assert not any("비교에서 제외" in note for note in view["footnotes"])
 
 
@@ -805,7 +805,7 @@ def test_the_last_rung_shortens_next_month_plan_to_one_line():
 
     assert view["trimmed"][-1] == "NEXT_ACTIONS"
     assert len(view["next_actions"]["ours"]) == 1
-    assert len(view["next_actions"]["yours"]) == 1  # 원장이 할 일은 끝까지 남는다
+    assert view["next_actions"]["yours"] == []
 
 
 def test_every_trimming_rung_is_reachable_by_some_real_input():
@@ -1016,13 +1016,13 @@ def test_template_renders_the_headline_and_evidence():
     assert "강남 치질 병원 추천해줘" in text
     assert "강남 대장내시경" in text and "장편한외과의원이 좋습니다" in text
     assert "치질 진료 정보를 확인하세요" in text
-    assert "그래서 이번 달 이 주제의 글을 씁니다" in text
+    assert "그래서 이번 달 이 주제의 글을 씁니다" not in text
     assert "대신 A의원이(가) 언급됐습니다" not in text
     # 3막이 전부 렌더된다 — 예전에는 막 2만 있었다.
-    assert "이번 달 저희가 한 일" in text
+    assert "이번 달 운영 실적과 AI 노출" in text
     assert "무엇이 달라졌나요?" in text
-    assert "다음 달에는 무엇을 하나요?" in text
-    assert "원장님께 부탁드릴 한 가지" in text
+    assert "다음 달 운영 계획" in text
+    assert "원장님께 부탁드릴 한 가지" not in text
 
 
 def test_rendered_report_never_shows_a_percent_sign_to_the_doctor():
@@ -1035,3 +1035,57 @@ def test_template_handles_an_unmeasured_month_without_showing_zero():
 
     assert "측정이 충분히 이뤄지지 않았습니다" in text
     assert "0번" not in text
+
+
+def test_each_ai_platform_exposes_its_actual_rate_and_sample_size():
+    view = _view(sov_coverage={
+        'planned_count': 30, 'success_count': 30,
+        'platforms': [
+            {'platform': 'chatgpt', 'mention_rate': 25.33, 'attempts_used': 75, 'mentioned_attempts': 19},
+            {'platform': 'gemini', 'mention_rate': 54.67, 'attempts_used': 75, 'mentioned_attempts': 41},
+        ],
+    })
+    assert [tile['value'] for tile in view['tiles'][1:]] == ['25.3%', '54.7%']
+    assert '75개 중 언급 19개' in view['tiles'][1]['hint']
+    text = _body_text(_render(view))
+    assert '25.3%' in text and '54.7%' in text
+    assert '월 1회' not in text and 'Admin' not in text
+
+
+def test_failed_platform_is_never_reported_as_zero_exposure():
+    view = _view(sov_coverage={
+        'planned_count': 30, 'success_count': 15,
+        'platforms': [
+            {'platform': 'gemini', 'mention_rate': 0.0, 'attempts_used': 75, 'mentioned_attempts': 0},
+        ],
+    })
+    assert [tile['value'] for tile in view['tiles'][1:]] == ['측정 미완료', '0.0%']
+
+
+def test_supplementary_posts_do_not_fill_the_current_contract():
+    view = _view(published_count=13, plan_quota=12, supplementary_count=2)
+    assert view['tiles'][0]['value'] == '12편 중 11편'
+    assert '이전 월 보충 2편 별도' in view['tiles'][0]['hint']
+    assert '약정 12편 중 11편' in view['talking_points'][0]
+
+
+def test_answer_markdown_is_readable_plain_text_with_original_wording():
+    view = _view(records=[_record(mentioned=True, raw='### 추천\n**장편한외과의원**은 [공식 안내](https://example.org/clinic)를 확인하세요.')])
+    assert view['evidence']['found']['excerpt'] == '추천 장편한외과의원은 공식 안내를 확인하세요.'
+
+
+def test_appendix_merges_platform_variants_before_limiting_questions():
+    rows = [
+        {'query_text': f'환자 질문 {i}', 'current_attempts_used': 5,
+         'current_mentioned_attempts': mentioned}
+        for mentioned in (1, 2) for i in range(15)
+    ]
+    view = _view(attribution={'question_rows': rows, 'has_prior_month': False})
+    assert len(view['appendix_rows']) == 15
+    assert {row['query_text'] for row in view['appendix_rows']} == {f'환자 질문 {i}' for i in range(15)}
+    assert all(row['current_label'] == '10번 중 3번' for row in view['appendix_rows'])
+
+
+def test_answer_decorative_emoji_cannot_break_the_pdf_font_encoding():
+    view = _view(records=[_record(mentioned=True, raw="장편한외과의원 💡 방문 안내 ✅ 준비물")])
+    assert view['evidence']['found']['excerpt'] == '장편한외과의원 방문 안내 준비물'

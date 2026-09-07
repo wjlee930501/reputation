@@ -1,5 +1,6 @@
 """PDF 리포트 생성 엔진 — V0 및 월간 리포트"""
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Sequence
 from datetime import datetime
@@ -506,7 +507,7 @@ def generate_pdf_report(
         generated_at=now.datetime,
     )
 
-    HTML(string=html).write_pdf(str(local_pdf_path))
+    HTML(string=html, base_url=str(TEMPLATE_DIR)).write_pdf(str(local_pdf_path))
     logger.info(f"PDF generated: {local_pdf_path}")
 
     # GCS 업로드
@@ -570,7 +571,16 @@ def _as_hundred(pct: float | None) -> int | None:
 
 def _excerpt_around(text: str, needle: str, *, width: int = DOCTOR_EXCERPT_CHARS) -> str:
     """답변 원문에서 병원명 주변을 잘라낸다. 못 찾으면 앞부분을 준다."""
-    body = " ".join((text or "").split())
+    # Preserve the answer's wording while removing Markdown presentation syntax.
+    # Raw link destinations and heading markers made the customer PDF unreadable.
+    body = re.sub(r"!?\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", text or "")
+    body = re.sub(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)", "", body)
+    body = re.sub(r"(\*\*|__|~~|`)", "", body)
+    body = re.sub(r"(?m)^\s*[-*_]{3,}\s*$", "", body)
+    # Decorative emoji force a custom CID encoding in the production font stack,
+    # corrupting text extraction for the entire Korean font. Keep answer words.
+    body = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D]", "", body)
+    body = " ".join(body.split())
     if not body:
         return ""
     index = body.find(needle) if needle else -1
@@ -750,8 +760,8 @@ def _citation_line(citations: CitationSummaryPayload | None) -> str | None:
         return None
     cited = int(citations.get("cited_cell_count") or 0)
     return (
-        f"AI 답변이 저희 병원 글·페이지를 인용한 횟수: {cited}건"
-        f"(확인한 답변 {measured}개 중)"
+        f"병원 글·페이지가 인용된 질문·서비스 조합: {cited}개"
+        f"(확인한 조합 {measured}개 중)"
     )
 
 
@@ -829,8 +839,19 @@ def _appendix_rows(
     행 수(15)와 **칸당 글자 수**를 함께 묶는다. 행 수만 묶으면 긴 질문·긴 글 제목이
     좁은 열에서 3~4줄로 접혀 부록이 3쪽으로 넘치고, 그 PDF는 검증에서 버려진다.
     """
+    # Collapse platform-specific variants before the page limit: otherwise the
+    # first 15 of 30 cells silently omit half the questions and mix AI platforms.
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in question_rows:
+        text = str(row.get("query_text") or "").strip()
+        if not text:
+            continue
+        combined = grouped.setdefault(text, {"query_text": text})
+        for key in ("prior_attempts_used", "prior_mentioned_attempts",
+                    "current_attempts_used", "current_mentioned_attempts"):
+            combined[key] = int(combined.get(key) or 0) + int(row.get(key) or 0)
     rows: list[DoctorAppendixRow] = []
-    for row in question_rows[:DOCTOR_APPENDIX_ROW_LIMIT]:
+    for row in list(grouped.values())[:DOCTOR_APPENDIX_ROW_LIMIT]:
         text = str(row.get("query_text") or "").strip()
         if not text:
             continue
@@ -961,6 +982,7 @@ def build_doctor_report_view(
     sov_coverage: MonthlySovPayload | None = None,
     comparison_reason: str | None = None,
     significance: DeltaSignificance | None = None,
+    supplementary_count: int = 0,
 ) -> DoctorReportView:
     """원장에게 보낼 1페이지(+선택적 2쪽 부록)의 모든 문구와 숫자를 만든다.
 
@@ -1037,10 +1059,30 @@ def build_doctor_report_view(
     tiles: list[DoctorTile] = [
         {
             "label": "이번 달 발행한 글",
-            "value": f"{published_count}편" if plan_quota is None else f"{plan_quota}편 중 {published_count}편",
-            "hint": "약정한 편수 대비 진행률입니다.",
+            "value": (
+                f"{published_count}편" if plan_quota is None
+                else f"{plan_quota}편 중 {published_count - supplementary_count}편"
+            ),
+            "hint": (
+                f"이전 월 보충 {supplementary_count}편 별도 · 총 {published_count}편 공개"
+                if supplementary_count else "약정한 편수 대비 진행률입니다."
+            ),
         },
     ]
+    platform_results = {row["platform"]: row for row in coverage.get("platforms", [])}
+    for platform_id in ("chatgpt", "gemini"):
+        platform = platform_results.get(platform_id, {})
+        rate = platform.get("mention_rate")
+        attempts = int(platform.get("attempts_used") or 0)
+        mentions = int(platform.get("mentioned_attempts") or 0)
+        tiles.append({
+            "label": f"{_platform_label(platform_id)} 노출도",
+            "value": f"{rate:.1f}%" if rate is not None and attempts else "측정 미완료",
+            "hint": (
+                f"질문별 평균 · 답변 {attempts}개 중 언급 {mentions}개"
+                if attempts else "확인된 측정 결과가 없습니다."
+            ),
+        })
 
     cited_titles_by_question = _cited_title_by_question(citations)
     published_items = _published_items(
@@ -1070,9 +1112,7 @@ def build_doctor_report_view(
         ours.append("아직 병원이 나오지 않는 질문을 추려 다음 글의 주제를 정합니다.")
     next_actions: DoctorNextActions = {
         "ours": _medical_safe_lines(ours)[:2],
-        "yours": _medical_safe_lines(
-            ["월 1회 30분 통화로 요즘 환자분들이 많이 묻는 것을 알려주세요."]
-        )[:1],
+        "yours": [],
     }
 
     platform_names = ", ".join(_platform_label(p) for p in (platforms or [])) or "챗GPT, 제미나이"
@@ -1080,7 +1120,7 @@ def build_doctor_report_view(
         coverage_text = f"측정 범위: {platform_names}에서 확인한 AI 답변을 사용했습니다."
     else:
         coverage_text = (
-            f"측정 범위: {platform_names}에서 계획한 답변 {sov_coverage['planned_count']}개 중 "
+            f"측정 범위: {platform_names}의 질문·서비스 조합 {sov_coverage['planned_count']}개 중 "
             f"{sov_coverage['success_count']}개를 확인했습니다."
         )
 
@@ -1089,6 +1129,12 @@ def build_doctor_report_view(
         _error_margin_footnote(margin_of_hundred, basis),
         "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
     ]
+    measured_dates = sorted({
+        arrow.get(record.measured_at).to("Asia/Seoul").format("YYYY-MM-DD")
+        for record in records if getattr(record, "measured_at", None) is not None
+    })
+    if measured_dates:
+        coverage_text += f" 실제 확인일: {measured_dates[0]} ~ {measured_dates[-1]}."
     if v0_baseline is not None:
         footnotes.append(_v0_footnote())
     if first_measured_questions:
@@ -1302,7 +1348,7 @@ def build_doctor_report_view(
         ],
         "talking_points": _talking_points(
             measured=measured,
-            published_count=published_count,
+            published_count=published_count - supplementary_count,
             plan_quota=plan_quota,
             published_items=published_items,
             citations=citations,

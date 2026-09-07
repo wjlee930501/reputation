@@ -372,7 +372,7 @@ def build_monthly_sov(
         ci95_high=None if interval is None else interval.high_pct,
         margin_of_hundred=None if interval is None else interval.margin_of_hundred,
         measurement_basis=MeasurementBasis(
-            question_count=len({cell.query_key for cell in scored}),
+            question_count=len({cell.query_text.strip() for cell in scored}),
             platform_count=len({cell.platform for cell in scored}),
             cell_count=len(scored),
             # 셀당 평균 반복 수. 구버전 manifest(1회)는 1, 현행은 5다.

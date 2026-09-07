@@ -209,8 +209,8 @@ def test_activation_inside_target_month_only_uses_dates_from_active_from(db):
     assert min(dates) >= date(2026, 8, 10)
 
 
-def test_active_from_on_the_last_day_creates_the_one_available_slot(db):
-    """Worker reconciliation uses every positive-capacity date, even below plan quota."""
+def test_active_from_on_the_last_day_preserves_the_contract(db):
+    """Late activation keeps the purchased quantity even if dates must be shared."""
     schedule = _make_schedule(db, plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6],
                               active_from=MONTH_END)
 
@@ -218,10 +218,10 @@ def test_active_from_on_the_last_day_creates_the_one_available_slot(db):
     rows = db.execute(
         select(ContentItem).where(ContentItem.schedule_id == schedule.id)
     ).scalars().all()
-    assert len(rows) == 1
-    assert rows[0].scheduled_date == MONTH_END
-    assert rows[0].sequence_no == 1
-    assert rows[0].total_count == 1
+    assert len(rows) == 12
+    assert all(row.scheduled_date == MONTH_END for row in rows)
+    assert {row.sequence_no for row in rows} == set(range(1, 13))
+    assert all(row.total_count == 12 for row in rows)
 
 
 def test_zero_publishable_days_still_raise(db):
@@ -236,7 +236,7 @@ def test_zero_publishable_days_still_raise(db):
         _run(db, schedule)
 
 
-def test_short_month_creates_actual_capacity_and_is_idempotent(db):
+def test_short_month_preserves_contract_and_is_idempotent(db):
     month = arrow.get("2026-09-01")
     month_start = date(2026, 9, 1)
     month_end = date(2026, 9, 30)
@@ -258,9 +258,9 @@ def test_short_month_creates_actual_capacity_and_is_idempotent(db):
         )
         .order_by(ContentItem.sequence_no)
     ).scalars().all()
-    assert len(rows) == 9
-    assert [row.sequence_no for row in rows] == list(range(1, 10))
-    assert all(row.total_count == 9 for row in rows)
+    assert len(rows) == 12
+    assert [row.sequence_no for row in rows] == list(range(1, 13))
+    assert all(row.total_count == 12 for row in rows)
 
 
 def test_inactive_hospital_status_is_skipped(db):
@@ -268,3 +268,25 @@ def test_inactive_hospital_status_is_skipped(db):
 
     assert _run(db, schedule) is False
     assert _planned_sequences(db, schedule) == set()
+
+
+def test_carried_out_slot_is_not_recreated_in_its_original_month(db):
+    schedule = _make_schedule(db)
+    _add_item(db, schedule, scheduled_date=date(2026, 9, 2),
+              sequence_no=1, carried_over_from=date(2026, 8, 3))
+    assert _run(db, schedule) is True
+    assert _run(db, schedule) is False
+    rows = db.scalars(select(ContentItem).where(ContentItem.schedule_id == schedule.id)).all()
+    assert len(rows) == 16
+    assert sum(row.sequence_no == 1 for row in rows) == 1
+
+
+def test_reconciliation_corrects_truncated_total_on_existing_posts(db):
+    schedule = _make_schedule(db, plan="PLAN_12", publish_days=[1, 4])
+    item = _add_item(db, schedule, scheduled_date=date(2026, 8, 4), sequence_no=1)
+    item.total_count = 8
+    db.flush()
+    assert _run(db, schedule) is True
+    db.refresh(item)
+    assert item.total_count == 12
+    assert item.scheduled_date == date(2026, 8, 4)

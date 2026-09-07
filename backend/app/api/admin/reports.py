@@ -434,7 +434,7 @@ def _content_disposition(ascii_name: str, display_name: str) -> str:
 async def download_report(
     hospital_id: uuid.UUID,
     report_id: uuid.UUID,
-    audience: str = Query(default="ae", pattern="^(ae|doctor)$"),
+    audience: str | None = Query(default=None, pattern="^(ae|doctor)$"),
     db: AsyncSession = Depends(get_db),
     actor: AdminUser = Depends(require_active_account),
 ):
@@ -449,7 +449,9 @@ async def download_report(
     if not r or r.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Report not found")
 
-    is_doctor = audience == "doctor"
+    # Unqualified monthly links must never hand an internal checklist to a doctor.
+    # V0 still uses its single diagnostic artifact.
+    is_doctor = audience == "doctor" or (audience is None and r.report_type == "MONTHLY")
     pdf_path = r.doctor_pdf_path if is_doctor else r.pdf_path
     if is_doctor:
         await _assert_delivery_actor(db, r.hospital_id, actor)
@@ -915,7 +917,7 @@ def _serialize(
         "doctor_artifact_sha256": artifact.sha256
         if artifact_state is ReportArtifactState.VALID and artifact is not None
         else None,
-        "download_url": f"/api/admin/hospitals/{r.hospital_id}/reports/{r.id}/download"
+        "download_url": f"/api/admin/hospitals/{r.hospital_id}/reports/{r.id}/download?audience=ae"
         if r.pdf_path
         else None,
         "sov_summary": r.sov_summary if full else None,

@@ -40,6 +40,7 @@ def build_monthly_content_operations_snapshot(
     scheduled_items: Sequence[MonthlyContentOperationItem],
     published_items: Sequence[MonthlyContentOperationItem],
     cutoff_at: datetime,
+    supplementary_count: int = 0,
 ) -> MonthlyContentOperationSnapshot:
     """Summarize closed-month content operations for report delivery control."""
     plan_quota = monthly_quota_for_plan(plan)
@@ -70,7 +71,8 @@ def build_monthly_content_operations_snapshot(
         and item.published_at + POST_PUBLISH_REVIEW_OVERDUE_AFTER <= cutoff_at
     ]
 
-    shortfall = max((plan_quota or 0) - published_count, 0) if plan_quota is not None else 0
+    contracted_published_count = published_count - supplementary_count
+    shortfall = max((plan_quota or 0) - contracted_published_count, 0) if plan_quota is not None else 0
     # 이 스냅샷은 전달을 막는 blocker를 만들지 않는다(e217e02). 닫힌 달의 운영 결과는
     # 뒤늦게 채워 지울 수 없고, 사후검수는 관찰용 표본일 뿐 두 번째 승인 큐가 아니다
     # (post_publish_review_policy.py). 전부 경고로만 남겨 AE가 원장 앞에서 설명하거나
@@ -79,7 +81,7 @@ def build_monthly_content_operations_snapshot(
     if plan_quota is None:
         warnings.append("요금제별 약정 콘텐츠 편수를 확인할 수 없습니다.")
     elif shortfall > 0:
-        warnings.append(f"약정 콘텐츠 {plan_quota}편 중 {published_count}편만 발행되었습니다.")
+        warnings.append(f"약정 콘텐츠 {plan_quota}편 중 {contracted_published_count}편만 발행되었습니다.")
     if pending_samples:
         # 사후검수는 발행을 이미 통과한 콘텐츠에 대한 관찰용 표본이지 두 번째 승인
         # 큐가 아니다(post_publish_review_policy.py 참고) — 표본 미완료로 원장 전달을
@@ -92,6 +94,8 @@ def build_monthly_content_operations_snapshot(
         "schema_version": 1,
         "plan_quota": plan_quota,
         "published_count": published_count,
+        "contracted_published_count": contracted_published_count,
+        "supplementary_count": supplementary_count,
         "shortfall_count": shortfall,
         "scheduled_slot_count": len(scheduled_items),
         "scheduled_slot_state_counts": dict(sorted(slot_counts.items())),

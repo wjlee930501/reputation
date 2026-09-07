@@ -2354,8 +2354,8 @@ def test_monthly_slot_generation_isolates_other_exceptions_and_opens_incident(mo
 
     calls = {"n": 0}
 
-    def fake_generate(plan, publish_days, next_month, start_date=None, *, allow_shortfall=False):
-        assert allow_shortfall is True
+    def fake_generate(plan, publish_days, next_month, start_date=None, *, ensure_quota=False):
+        assert ensure_quota is True
         calls["n"] += 1
         if publish_days == [1]:
             raise RuntimeError("unexpected calendar failure")
@@ -2425,9 +2425,9 @@ def test_monthly_slot_generation_recovers_positive_shortfall_without_incident(mo
 
     tasks.monthly_slot_generation()
 
-    assert len(db.persisted) == 9
-    assert [item.sequence_no for item in db.persisted] == list(range(1, 10))
-    assert all(item.total_count == 9 for item in db.persisted)
+    assert len(db.persisted) == 12
+    assert [item.sequence_no for item in db.persisted] == list(range(1, 13))
+    assert all(item.total_count == 12 for item in db.persisted)
     assert opened == []
     assert recovered == [{"hospital_id": "h1", "period_key": "2026-09"}]
 

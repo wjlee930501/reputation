@@ -13,6 +13,7 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 import uuid  # noqa: E402
+from collections import Counter  # noqa: E402
 from itertools import groupby  # noqa: E402
 
 import arrow  # noqa: E402
@@ -157,24 +158,24 @@ def test_generate_monthly_slots_spreads_across_allowed_weekdays():
     assert dates[-1].day >= 25
 
 
-def test_generate_monthly_slots_allows_positive_worker_shortfall():
+def test_generate_monthly_slots_fills_weekday_gaps_to_preserve_contract():
     slots = generate_monthly_slots(
         "PLAN_12",
         [1, 4],
         arrow.get("2026-09-01").floor("month"),
-        allow_shortfall=True,
+        ensure_quota=True,
     )
 
-    assert len(slots) == 9
-    assert [sequence_no for _, _, sequence_no, _ in slots] == list(range(1, 10))
-    assert all(total_count == 9 for _, _, _, total_count in slots)
-    assert [scheduled_date for scheduled_date, *_ in slots] == [
+    assert len(slots) == 12
+    assert [sequence_no for _, _, sequence_no, _ in slots] == list(range(1, 13))
+    assert all(total_count == 12 for _, _, _, total_count in slots)
+    assert set(scheduled_date for scheduled_date, *_ in slots) >= set([
         day.date()
         for day in arrow.Arrow.range(
             "day", arrow.get("2026-09-01"), arrow.get("2026-09-30")
         )
         if day.weekday() in {1, 4}
-    ]
+    ])
 
 
 def test_generate_monthly_slots_still_rejects_zero_publishable_days():
@@ -183,5 +184,23 @@ def test_generate_monthly_slots_still_rejects_zero_publishable_days():
             "PLAN_12",
             [],
             arrow.get("2026-09-01").floor("month"),
-            allow_shortfall=True,
+            ensure_quota=True,
         )
+
+
+@pytest.mark.parametrize('plan', ALL_PLANS)
+@pytest.mark.parametrize('month', ['2026-02-01', '2026-08-01', '2026-09-01', '2028-02-01'])
+def test_worker_preserves_full_contract_in_short_months(plan, month):
+    slots = generate_monthly_slots(plan, [1, 4], arrow.get(month), ensure_quota=True)
+    assert len(slots) == _monthly_count(plan)
+    assert len({row[0] for row in slots}) == len(slots)
+    assert Counter(row[1] for row in slots) == Counter({k: v for k, v in _expected(plan).items() if v})
+
+
+def test_late_start_keeps_contract_and_never_uses_pre_contract_dates():
+    start = arrow.get('2026-09-28').date()
+    slots = generate_monthly_slots('PLAN_20', [0, 1, 2], arrow.get('2026-09-01'), start, ensure_quota=True)
+    assert len(slots) == 20
+    assert all(start <= row[0] <= arrow.get('2026-09-30').date() for row in slots)
+    counts = Counter(row[0] for row in slots)
+    assert max(counts.values()) - min(counts.values()) <= 1

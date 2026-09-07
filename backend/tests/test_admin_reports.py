@@ -295,7 +295,7 @@ def test_report_list_hides_internal_summaries_but_keeps_pdf_contract():
     }
     assert (
         payload["download_url"]
-        == f"/api/admin/hospitals/{report.hospital_id}/reports/{report.id}/download"
+        == f"/api/admin/hospitals/{report.hospital_id}/reports/{report.id}/download?audience=ae"
     )
     assert payload["sov_summary"] is None
     assert payload["content_summary"] is None
@@ -957,7 +957,8 @@ async def test_download_report_uses_one_hour_signed_url(monkeypatch):
     assert "report-2026-05.pdf" in response.headers["content-disposition"]
 
 
-async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch):
+@pytest.mark.parametrize("audience", ["doctor", None])
+async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch, audience):
     """원장용은 같은 데이터를 다른 편집으로 렌더한 별도 파일이다 — 경로도 파일명도 다르다."""
     hospital = _hospital()
     report = _report(hospital_id=hospital.id)
@@ -982,7 +983,7 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch)
     monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
     monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
     response = await reports_api.download_report(
-        hospital.id, report.id, audience="doctor", db=db, actor=_actor()
+        hospital.id, report.id, audience=audience, db=db, actor=_actor()
     )
 
     # 헤더는 latin-1만 담을 수 있다 — 한글 이름은 RFC 5987 filename*으로만 나간다.

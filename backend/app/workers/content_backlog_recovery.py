@@ -1,4 +1,4 @@
-"""Move missed, ungenerated content back into a safe publication window.
+"""Move missed content back into a safe publication window.
 
 The normal generator and publisher intentionally look back only seven days.  That
 keeps a long outage from dumping a month of stale posts in one morning, but it also
@@ -15,13 +15,17 @@ from typing import Final
 
 import arrow
 from celery import current_task
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 
 from app.core.celery_app import celery_app
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentSchedule
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.audit_log import write_audit_log_sync
+from app.services.post_publish_review_policy import (
+    AUTO_PUBLISHABLE_STATUSES,
+    auto_publish_catchup_start,
+)
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.nightly_generation_batch import (
@@ -41,7 +45,13 @@ def _stranded_content_stmt(today: date):
         .where(
             ContentItem.scheduled_date <= today,
             ContentItem.status.in_(RECOVERABLE_STATUSES),
-            _needs_generation_recovery(),
+            or_(
+                _needs_generation_recovery(),
+                and_(
+                    ContentItem.status.in_(AUTO_PUBLISHABLE_STATUSES),
+                    ContentItem.scheduled_date < auto_publish_catchup_start(today),
+                ),
+            ),
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
             or_(ContentSchedule.is_active.is_(True), ContentItem.carried_over_from.is_not(None)),
@@ -124,7 +134,7 @@ def reconcile() -> dict[str, int]:
                         "previous_scheduled_date": str(previous_date),
                         "scheduled_date": str(recovery_date),
                         "status": item.status.value,
-                        "reason": "missed_generation_window",
+                        "reason": "missed_generation_or_publication_window",
                     },
                 )
                 moved += 1

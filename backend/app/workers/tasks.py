@@ -4745,15 +4745,15 @@ def _normalize_platform(platform: str) -> str:
     soft_time_limit=1200,
     time_limit=1500,
 )
-def monthly_slot_generation():
-    """매월 25일 이후 반복 실행해 다음 달의 누락 슬롯을 자동 보충한다."""
+def monthly_slot_generation(current_month: bool = False):
+    """Reconcile the current contract daily and prepare next month after the 25th."""
     require_dispatch(current_task, "monthly-slot-generation")
     today = arrow.now("Asia/Seoul")
-    if today.day < 25:
+    if not current_month and today.day < 25:
         logger.info("Next-month slot reconciliation is not due: %s", today.date())
         return
 
-    next_month = today.shift(months=1).floor("month")
+    next_month = today.shift(months=0 if current_month else 1).floor("month")
     next_month_start = next_month.date()
     next_month_end = next_month.ceil("month").date()
 
@@ -6005,6 +6005,10 @@ def _build_monthly_report_for_hospital(
     )
     content_result = db.execute(content_stmt)
     published_contents = content_result.scalars().all()
+    supplementary_count = sum(
+        1 for item in published_contents
+        if item.carried_over_from is not None and item.carried_over_from < period_start.date()
+    )
     scheduled_content_stmt = select(ContentItem).where(
         ContentItem.hospital_id == h.id,
         ContentItem.scheduled_date >= period_start.date(),
@@ -6012,11 +6016,22 @@ def _build_monthly_report_for_hospital(
     )
     scheduled_content_result = db.execute(scheduled_content_stmt)
     scheduled_contents = scheduled_content_result.scalars().all()
+    # A September upgrade must not rewrite the August contractual denominator.
+    period_plan = db.execute(
+        select(ContentSchedule.plan)
+        .where(
+            ContentSchedule.hospital_id == h.id,
+            ContentSchedule.active_from < period_end.date(),
+        )
+        .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
     content_operations = build_monthly_content_operations_snapshot(
-        plan=h.plan,
+        plan=period_plan,
         scheduled_items=scheduled_contents,
         published_items=published_contents,
         cutoff_at=actual_now,
+        supplementary_count=supplementary_count,
     )
 
     # 전월 발행 콘텐츠(유형별 발행 누적을 전월과 나란히 비교하기 위함)
@@ -6142,7 +6157,8 @@ def _build_monthly_report_for_hospital(
         sov_pct=sov_pct,
         prev_sov_pct=prev_sov,
         published_count=len(published_contents),
-        plan_quota=monthly_quota_for_plan(h.plan),
+        plan_quota=monthly_quota_for_plan(period_plan),
+        supplementary_count=supplementary_count,
         attribution=attribution,
         citations=citations,
         published_contents=list(published_contents),

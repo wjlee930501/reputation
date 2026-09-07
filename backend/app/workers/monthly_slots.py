@@ -2,7 +2,7 @@ import logging
 from datetime import date
 
 import arrow
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.models.content import PLAN_DISTRIBUTION, ContentItem, ContentSchedule, ContentStatus
@@ -15,6 +15,7 @@ from app.services.gap_driven_slots import (
     gap_target_rows_stmt,
     plan_gap_driven_slots,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def create_next_month_slots_for_schedule(
     hospital = schedule.hospital
     if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
         return False
+    acquire_hospital_advisory_lock_sync(db, hospital.id)
 
     # 스케줄 활성화 전 달은 발행 대상이 아니다. active_from이 대상 월보다 완전히 뒤면
     # (예: 7/25 배치가 8월분을 만드는데 active_from=2026-09-01) 슬롯을 만드는 순간
@@ -42,19 +44,29 @@ def create_next_month_slots_for_schedule(
     # "이 스케줄의 이번 달 계획 슬롯이 이미 만들어졌는가"로만 판정한다.
     # 월 전체에 아이템이 1건이라도 있으면 건너뛰던 과거 조건은, 지난달에서 이월된
     # (carried_over_from) 1건이나 다른 스케줄의 행 하나가 다음 달 약정 편수 전체 생성을
-    # 통째로 막았다. 이월 슬롯은 계획 편수에 포함되지 않으므로 판정에서 제외한다.
-    existing_rows = db.execute(
+    # 통째로 막았다. 다른 달의 이월 슬롯은 제외하고, 이 달에서 넘어간 슬롯은 원래 계약에 포함한다.
+    existing_stmt = (
         select(
             ContentItem.sequence_no,
             ContentItem.content_type,
             ContentItem.query_target_id,
+            ContentItem.total_count,
         ).where(
             ContentItem.schedule_id == schedule.id,
-            ContentItem.carried_over_from.is_(None),
-            ContentItem.scheduled_date >= next_month_start,
-            ContentItem.scheduled_date <= next_month_end,
+            or_(
+                and_(
+                    ContentItem.carried_over_from.is_(None),
+                    ContentItem.scheduled_date >= next_month_start,
+                    ContentItem.scheduled_date <= next_month_end,
+                ),
+                and_(
+                    ContentItem.carried_over_from >= next_month_start,
+                    ContentItem.carried_over_from <= next_month_end,
+                ),
+            ),
         )
-    ).all()
+    )
+    existing_rows = db.execute(existing_stmt).all()
     existing_slots = [
         ExistingSlot(
             sequence_no=row.sequence_no,
@@ -65,6 +77,10 @@ def create_next_month_slots_for_schedule(
     ]
     existing_sequences = {slot.sequence_no for slot in existing_slots}
     planned_total = sum(PLAN_DISTRIBUTION.get(schedule.plan, {}).values())
+    if planned_total and any(row.total_count != planned_total for row in existing_rows):
+        db.execute(
+            update(ContentItem).where(existing_stmt.whereclause).values(total_count=planned_total)
+        )
     if planned_total and len(existing_sequences) >= planned_total:
         return False
 
@@ -73,7 +89,7 @@ def create_next_month_slots_for_schedule(
         schedule.publish_days,
         next_month,
         start_date,
-        allow_shortfall=True,
+        ensure_quota=True,
     )
 
     # 측정된 미언급 격차가 유형과 대상 질문을 정하게 한다. 월 전체 슬롯을 놓고 계산해야
