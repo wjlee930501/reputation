@@ -38,6 +38,28 @@ class PublicationAssessment:
     philosophy_id: object | None
 
 
+def record_publication_identity(
+    item: ContentItem,
+    *,
+    published_at: datetime,
+    published_by: str,
+) -> datetime:
+    """Record the current edition and preserve the immutable first publication fact."""
+
+    known_published_at = getattr(item, "published_at", None)
+    known_published_by = getattr(item, "published_by", None)
+    if getattr(item, "first_published_at", None) is None:
+        # During a rolling deploy an older publisher may have populated only published_at.
+        # Preserve that known earlier fact instead of assigning this deployment's clock time.
+        item.first_published_at = known_published_at or published_at
+        item.first_published_by = (
+            known_published_by if known_published_at is not None else published_by
+        )
+    item.published_at = published_at
+    item.published_by = published_by
+    return published_at
+
+
 def _type_value(content_type: object) -> str:
     """ContentType enum / 문자열 / value 속성을 가진 객체를 공통 문자열로 정규화."""
     return str(getattr(content_type, "value", content_type) or "").upper()

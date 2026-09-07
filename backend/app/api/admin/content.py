@@ -50,6 +50,7 @@ from app.services.content_publication import (
     count_citable_references,
     has_required_references,
     publication_field_values,
+    record_publication_identity,
 )
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
@@ -843,8 +844,11 @@ async def publish_content(
     # published row through guarded regeneration. Preserve its actual first
     # publication identity so contract-month and notification history remain
     # truthful when the corrected edition is restored.
-    item.published_at = item.published_at or datetime.now(timezone.utc)
-    item.published_by = item.published_by or body.published_by
+    record_publication_identity(
+        item,
+        published_at=datetime.now(timezone.utc),
+        published_by=body.published_by,
+    )
     item.post_publish_notified_at = None
     item.post_publish_reviewed_at = None
     item.post_publish_reviewed_by = None
@@ -977,6 +981,11 @@ async def reject_content(
     # 새 본문에 잘못 남는 것 방지. 다만 캐시 무효화 복구는 "어느 판이 캐시에 남아 있는가"를
     # 알아야 하므로 지우기 전 값을 붙잡아 revalidate 호출에 넘긴다.
     previous_published_at = item.published_at
+    if getattr(item, "first_published_at", None) is None and previous_published_at is not None:
+        # An older publisher can still populate only published_at during a rolling deploy.
+        # Capture that known identity before the current edition is cleared.
+        item.first_published_at = previous_published_at
+        item.first_published_by = item.published_by
     item.published_at = None
     item.published_by = None
     item.post_publish_notified_at = None

@@ -97,6 +97,31 @@ def test_content_type_counts_covers_all_seven_types():
     assert summary["published_count"] == 4
 
 
+def test_historical_publication_counts_do_not_expose_withheld_title():
+    target_id = uuid.uuid4()
+    visible = _content("FAQ", "현재 공개 글", target_id=target_id)
+    withheld = _content("DISEASE", "반려되어 숨긴 제목", target_id=target_id)
+    summary = build_content_attribution_summary(
+        ContentAttributionInput(
+            published_contents=[visible],
+            prev_published_contents=[],
+            actual_publication_contents=[visible, withheld],
+            current_cells=(_cell("A", mentioned=True, target_id=target_id),),
+            prior_cells=None,
+            sov_pct=10.0,
+            prev_sov_pct=None,
+            change_pct=None,
+        )
+    )
+
+    assert summary["published_count"] == 2
+    assert summary["content_type_counts"]["FAQ"] == 1
+    assert summary["content_type_counts"]["DISEASE"] == 1
+    assert summary["first_measured_mention_cells"][0]["related_contents"] == [
+        "현재 공개 글"
+    ]
+
+
 # ── 고정 셀 기준 언급 변화 판정 ─────────────────────────────────
 @pytest.mark.parametrize(
     ("prior", "expected_counts"),

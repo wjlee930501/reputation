@@ -2992,6 +2992,8 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     assert item.status == tasks.ContentStatus.PUBLISHED
     assert item.published_by == tasks.AUTO_PUBLISH_ACTOR
     assert item.published_at is not None
+    assert item.first_published_at == item.published_at
+    assert item.first_published_by == tasks.AUTO_PUBLISH_ACTOR
     assert payload["public_url"] == f"https://test.example.com/contents/{content_id}"
     assert audits[0]["action"] == "auto_publish_content"
     outbox = [value for value in db.added if isinstance(value, NotificationOutbox)]

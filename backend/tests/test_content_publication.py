@@ -315,3 +315,59 @@ def test_edit_cannot_discard_prior_hard_finding_by_hash_mismatch(monkeypatch):
 
     assert assessment.publishable is False
     assert assessment.code == "CONTENT_AI_REVIEW_STALE"
+
+
+def test_publication_identity_is_set_once_across_republished_editions():
+    first_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    replacement_at = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    item = _item(
+        published_at=None,
+        published_by=None,
+        first_published_at=None,
+        first_published_by=None,
+    )
+
+    content_publication.record_publication_identity(
+        item, published_at=first_at, published_by="FIRST_AE"
+    )
+    item.published_at = None
+    item.published_by = None
+    content_publication.record_publication_identity(
+        item, published_at=replacement_at, published_by="REPAIR_AE"
+    )
+
+    assert item.first_published_at == first_at
+    assert item.first_published_by == "FIRST_AE"
+    assert item.published_at == replacement_at
+    assert item.published_by == "REPAIR_AE"
+
+
+def test_publication_identity_uses_known_current_date_during_rolling_deploy():
+    known_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    item = _item(published_at=known_at, published_by="OLD_API")
+
+    content_publication.record_publication_identity(
+        item,
+        published_at=datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc),
+        published_by="NEW_API",
+    )
+
+    assert item.first_published_at == known_at
+    assert item.first_published_by == "OLD_API"
+    assert item.published_at == datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    assert item.published_by == "NEW_API"
+
+
+def test_publication_identity_does_not_invent_missing_legacy_first_actor():
+    known_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    item = _item(published_at=known_at, published_by=None)
+
+    content_publication.record_publication_identity(
+        item,
+        published_at=datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc),
+        published_by="NEW_API",
+    )
+
+    assert item.first_published_at == known_at
+    assert item.first_published_by is None
+    assert item.published_by == "NEW_API"

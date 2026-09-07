@@ -1,6 +1,6 @@
 # Re:putation 현재 시스템 구조
 
-문서 버전: **2.2** · 조사·갱신일: **2026-09-07 (Asia/Seoul)**
+문서 버전: **2.3** · 조사·갱신일: **2026-09-07 (Asia/Seoul)**
 소스 기준선: **`39dc1f8a98abe9193a8e2202395d2272c370fe8e`**
 구현 상태: **기준선 위 작업 로컬 검증·독립 리뷰 완료. 커밋·운영 전환·배포 전**
 
@@ -129,10 +129,10 @@ flowchart LR
 2. 질문 타깃·보완 행동·최근 제목을 바탕으로 brief를 만들고 현재 Essence·source snapshot과 치료별 환자 설명·주의·근거를 writer와 reviewer에 같은 입력으로 넣는다. 생성 당시와 최근 재검사 Essence ID는 따로 보존한다.
 3. Anthropic Claude로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다.
 4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 운영 전환 preflight의 공개 글 115건은 미해결 22건(REVISE 19, UNAVAILABLE 3)과 AI 검수 레거시 기준 허용 93건(ABSENT 92, PASS 1)으로 분류됐다. 배포 전 exact allowlist가 FAQ 질문 끝 물음표만 3건 CAS 수정한 뒤 미해결 후보 22건을 독립 재검수한다. AI 검수 레거시 93건은 과거 상태만을 이유로 공급자 재검수하지 않고, 전체 전환 뒤 exact baseline ID의 새 엄격 공개 gate 결과를 read-only로 확인한다.
-5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 운영 점검에서는 공개 글 115건 중 109건에 이 결합 인증이 없었고, 나머지 6건도 기존 검수 시각만 가진 상태였다. 배포 전 일회성 Job/CLI가 115건 모두의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장하거나 안전하지 않은 이미지를 교체해야 한다. 기존 검수 시각 호환은 복구 중 구 API의 전환 구간에만 허용한다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다.
+5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 운영 점검에서는 공개 글 115건 중 109건에 이 결합 인증이 없었고, 나머지 6건도 기존 검수 시각만 가진 상태였다. 배포 전 일회성 Job/CLI가 115건 모두의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장하거나 안전하지 않은 이미지를 교체해야 한다. 공개 GCS 이미지 프록시 URL에는 인증된 내용 hash를 `?v=`로 붙인다. Site 이미지 최적화 캐시의 최소 TTL이 86,400초이므로 교체된 바이트의 hash가 URL cache key도 바꾼다. 기존 검수 시각 호환은 복구 중 구 API의 전환 구간에만 허용한다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다.
 6. 결과 저장은 `generation_claim_token`과 `content_revision`을 조건부 UPDATE로 확인한다. 운영자 편집·취소·발행이나 새 claim 뒤에 도착한 늦은 응답은 현재 행을 덮어쓰지 않는다.
 
-근거: [계획](../../backend/app/services/content_target_planner.py), [본문 엔진](../../backend/app/services/content_engine.py), [이미지 엔진](../../backend/app/services/image_engine.py), [배치 claim·writeback](../../backend/app/workers/nightly_generation_batch.py), [의료 표현 검사](../../backend/app/utils/medical_filter.py).
+근거: [계획](../../backend/app/services/content_target_planner.py), [본문 엔진](../../backend/app/services/content_engine.py), [이미지 엔진](../../backend/app/services/image_engine.py), [공개 이미지 URL](../../backend/app/api/public/site.py), [Site 이미지 캐시](../../site/next.config.mjs), [배치 claim·writeback](../../backend/app/workers/nightly_generation_batch.py), [의료 표현 검사](../../backend/app/utils/medical_filter.py).
 
 ### 발행과 복구
 
@@ -140,7 +140,7 @@ flowchart LR
 
 자동 발행은 예정일 범위로 대상을 선택한 뒤 병원·콘텐츠를 잠그고 현재 상태, ACTIVE/live와 예정일을 다시 확인한다. 발행 상태와 감사 기록을 commit한 뒤 Site 캐시 재검증과 IndexNow intent를 저장한다. 캐시 실패는 공개 성공을 되돌리지 않고 복구 작업으로 남긴다. IndexNow는 host·URL·revision별로 합쳐 1분 drain에서 최대 5회 재시도한다. 정상 발행과 재시도 중인 IndexNow는 Slack으로 알리지 않는다.
 
-후행 검수는 첫 순번 또는 공개 후 본문 수정 같은 조건의 표본 검수다. 매 글 승인이나 월간 보고 차단의 전제는 아니다. 지연 복구는 실제 예정일을 앞으로 옮기고 월을 넘으면 `carried_over_from`으로 원래 월을 보존한다. `published_at`을 과거로 조작하지 않는다. 생성 당시 `generation_philosophy_id`와 최근 `last_reviewed_philosophy_id`를 함께 보아야 한다.
+후행 검수는 첫 순번 또는 공개 후 본문 수정 같은 조건의 표본 검수다. 매 글 승인이나 월간 보고 차단의 전제는 아니다. 지연 복구는 실제 예정일을 앞으로 옮기고 월을 넘으면 `carried_over_from`으로 원래 월을 보존한다. `published_at`을 과거로 조작하지 않는다. 최초 공개 사실은 `first_published_at`·`first_published_by`에 한 번만 기록하고, 반려 뒤 새 판의 `published_at`·`published_by`와 분리해 닫힌 월을 집계한다. 전환 시점에 남아 있던 `published_at`만 최초 사실로 백필하며, 그 전에 수동 반려가 이미 지운 과거 발행일은 추정하지 않으므로 복원할 수 없다. 생성 당시 `generation_philosophy_id`와 최근 `last_reviewed_philosophy_id`를 함께 보아야 한다.
 
 **경로 차이:** 수동 발행은 공통 콘텐츠 정책을 쓰지만 자동 발행의 ACTIVE/live·예약일 선택 조건을 모두 강제하지 않는다. 공개 API는 다시 병원 활성화·일정·승인 근거·ALIGNED·본문·참고자료 등을 확인한다. 따라서 DB PUBLISHED와 환자에게 실제 공개된 상태는 같지 않다.
 
@@ -158,7 +158,7 @@ flowchart LR
 
 리포트는 다음 흐름으로 생성된다.
 
-1. 전월 서비스 구간·계약 편수·실제 발행과 보충 발행을 구분하여 집계한다. 늦게 발행한 글은 원 계약 월의 보충 실적으로 기록하고 실제 발행 월도 유지한다.
+1. 전월 서비스 구간·계약 편수·실제 발행과 보충 발행을 구분하여 집계한다. 실제 발행·계약 이행·귀속은 `first_published_at`을 우선 사용하고, 현재도 공개 중인 글만 링크 제목을 노출한다. 늦게 발행한 글은 원 계약 월의 보충 실적으로 기록하고 실제 최초 발행 월도 유지한다.
 2. 동결된 측정 근거와 비교 가능성을 읽고 내부 검수용 PDF와 원장용 PDF를 분리한다. 원장용은 핵심 본문 1쪽과 필요 시 부록을 사용한다.
 3. Artifact에 경로·hash·크기·검증 상태를 저장한다. 원장용에는 내부 오류·명령어·운영 검수 체크리스트를 넣지 않는다.
 4. 고객 전달 가능 여부는 집계 COMPLETE만으로 열리지 않는다. manifest 마감, 셀 커버리지·실패, 유효한 원장용 artifact, 현재 차단 상태를 서버가 재검사한다.

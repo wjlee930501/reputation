@@ -35,9 +35,10 @@ PROVIDER_USAGE = "0065_provider_usage"
 CONTENT_CONTRACTS = "0066_content_contracts"
 MEASUREMENT_SLOTS = "0067_measurement_slots"
 LEAD_COST_DEFERRAL = "0068_lead_cost_deferral"
+CONTENT_FIRST_PUBLICATION = "0069_content_first_publication"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = LEAD_COST_DEFERRAL
+HEAD = CONTENT_FIRST_PUBLICATION
 
 
 def _script_directory() -> ScriptDirectory:
@@ -96,6 +97,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         CONTENT_CONTRACTS,
         MEASUREMENT_SLOTS,
         LEAD_COST_DEFERRAL,
+        CONTENT_FIRST_PUBLICATION,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -118,6 +120,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         CONTENT_CONTRACTS: PROVIDER_USAGE,
         MEASUREMENT_SLOTS: CONTENT_CONTRACTS,
         LEAD_COST_DEFERRAL: MEASUREMENT_SLOTS,
+        CONTENT_FIRST_PUBLICATION: LEAD_COST_DEFERRAL,
     }
 
 
@@ -129,6 +132,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        CONTENT_FIRST_PUBLICATION,
         LEAD_COST_DEFERRAL,
         MEASUREMENT_SLOTS,
         CONTENT_CONTRACTS,
@@ -154,7 +158,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-17:] == [
+    assert applied[-18:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -172,4 +176,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         CONTENT_CONTRACTS,
         MEASUREMENT_SLOTS,
         LEAD_COST_DEFERRAL,
+        CONTENT_FIRST_PUBLICATION,
     ]

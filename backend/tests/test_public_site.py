@@ -419,15 +419,17 @@ def test_serialize_item_includes_authoritative_query_target_treatment_linkage():
     assert serialized["query_target_treatment"] == "척추관협착증"
 
 
-def test_serialize_item_uses_stable_content_image_proxy_url():
+def test_serialize_item_versions_stable_content_image_proxy_url_by_certified_bytes():
     # 콘텐츠 대표 이미지는 만료되는 signed GCS URL이 아니라 안정 프록시 경로로 노출해야
     # SSG/CDN 캐시 HTML이 만료 URL을 박아 이미지가 깨지는 일을 막는다.
+    first_hash = "c" * 64
     item = SimpleNamespace(
         id="abc-123",
         content_type="FAQ",
         title="t",
         meta_description="m",
-        image_url="gs://reputation-images/content/x/y.png",
+        image_url=f"gs://reputation-images/content/{first_hash}-reviewed.png",
+        image_content_hash=first_hash,
         scheduled_date=date(2026, 6, 1),
         published_at=datetime(2026, 6, 1, 8, 0, 0),
         body_updated_at=None,
@@ -440,8 +442,17 @@ def test_serialize_item_uses_stable_content_image_proxy_url():
     assert (
         serialized["image_url"]
         == "/api/v1/public/hospitals/jangpyeonhanoegwayiweon/contents/abc-123/image"
+        f"?v={first_hash}"
     )
     assert "storage.googleapis.com" not in (serialized["image_url"] or "")
+
+    second_hash = "d" * 64
+    item.image_url = f"gs://reputation-images/content/{second_hash}-reviewed.png"
+    item.image_content_hash = second_hash
+    replaced = _serialize_item(item, "jangpyeonhanoegwayiweon")
+
+    assert replaced["image_url"] != serialized["image_url"]
+    assert replaced["image_url"].endswith(f"?v={second_hash}")
 
 
 def test_serialize_item_passes_through_non_gcs_image_url():

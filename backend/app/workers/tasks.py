@@ -76,6 +76,7 @@ from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
+    record_publication_identity,
 )
 from app.services.content_publish_notifications import (
     enqueue_generation_blocked_digest_sync,
@@ -4468,10 +4469,12 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         # transaction invisible. Check only after blocker projection so a missing body/image
         # still reaches Operations Center even when the revalidation dependency is unavailable.
         ensure_site_revalidate_configured()
-        published_at = item.published_at or datetime.now(timezone.utc)
         item.status = ContentStatus.PUBLISHED
-        item.published_at = published_at
-        item.published_by = item.published_by or AUTO_PUBLISH_ACTOR
+        record_publication_identity(
+            item,
+            published_at=datetime.now(timezone.utc),
+            published_by=AUTO_PUBLISH_ACTOR,
+        )
         item.post_publish_notified_at = None
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
@@ -7471,12 +7474,17 @@ def _fail_monthly_operation_run(
     _finish_monthly_operation_run(db, run_id, hospital_id, year, month, "failed")
 
 
+def _first_publication_at(item: ContentItem) -> datetime | None:
+    return getattr(item, "first_published_at", None) or item.published_at
+
+
 def _observed_contract_publications(items: Iterable[ContentItem], observed_at: datetime) -> list:
     """Only publications that had actually happened at report-build time fulfill a contract."""
     return [
         item
         for item in items
-        if item.published_at is not None and item.published_at <= observed_at
+        if _first_publication_at(item) is not None
+        and _first_publication_at(item) <= observed_at
     ]
 
 
@@ -7489,11 +7497,12 @@ def _contract_publication_timing_counts(
     early = 0
     late = 0
     for item in items:
-        if item.published_at is None:
+        first_published_at = _first_publication_at(item)
+        if first_published_at is None:
             continue
-        if item.published_at < period_start:
+        if first_published_at < period_start:
             early += 1
-        elif item.published_at >= period_end:
+        elif first_published_at >= period_end:
             late += 1
     return early, late
 
@@ -7506,14 +7515,18 @@ def _load_monthly_publication_facts(
     observed_at: datetime,
 ) -> tuple[list[ContentItem], list[ContentItem], list[ContentItem]]:
     """Load immutable publication facts separately from currently visible rows."""
+    first_publication_at = func.coalesce(
+        ContentItem.first_published_at,
+        ContentItem.published_at,
+    )
     actual_publications = list(
         db.execute(
             select(ContentItem).where(
                 ContentItem.hospital_id == hospital_id,
-                ContentItem.published_at.is_not(None),
-                ContentItem.published_at >= period_start,
-                ContentItem.published_at < period_end,
-                ContentItem.published_at <= observed_at,
+                first_publication_at.is_not(None),
+                first_publication_at >= period_start,
+                first_publication_at < period_end,
+                first_publication_at <= observed_at,
             )
         ).scalars()
     )
@@ -7524,8 +7537,8 @@ def _load_monthly_publication_facts(
         db.execute(
             select(ContentItem).where(
                 ContentItem.hospital_id == hospital_id,
-                ContentItem.published_at.is_not(None),
-                ContentItem.published_at <= observed_at,
+                first_publication_at.is_not(None),
+                first_publication_at <= observed_at,
                 func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
                 >= period_start.date(),
                 func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
@@ -7705,11 +7718,14 @@ def _build_monthly_report_for_hospital(
     )
 
     # 전월 발행 콘텐츠(유형별 발행 누적을 전월과 나란히 비교하기 위함)
+    previous_first_publication_at = func.coalesce(
+        ContentItem.first_published_at,
+        ContentItem.published_at,
+    )
     prev_content_stmt = select(ContentItem).where(
         ContentItem.hospital_id == h.id,
-        ContentItem.status == ContentStatus.PUBLISHED,
-        ContentItem.published_at >= prev_start,
-        ContentItem.published_at < prev_end,
+        previous_first_publication_at >= prev_start,
+        previous_first_publication_at < prev_end,
     )
     prev_content_result = db.execute(prev_content_stmt)
     prev_published_contents = prev_content_result.scalars().all()
@@ -7719,6 +7735,7 @@ def _build_monthly_report_for_hospital(
         ContentAttributionInput(
             published_contents=published_contents,
             prev_published_contents=prev_published_contents,
+            actual_publication_contents=actual_published_contents,
             current_cells=current_loaded.cells if current_loaded is not None else (),
             prior_cells=prior_loaded.cells if prior_loaded is not None else None,
             sov_pct=sov_pct,

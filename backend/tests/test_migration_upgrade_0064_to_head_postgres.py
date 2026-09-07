@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -56,6 +57,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
     hospital_id = uuid.UUID("a6500000-0000-0000-0000-000000000001")
     schedule_id = uuid.UUID("a6500000-0000-0000-0000-000000000002")
     content_id = uuid.UUID("a6500000-0000-0000-0000-000000000003")
+    erased_content_id = uuid.UUID("a6500000-0000-0000-0000-000000000012")
     query_id = uuid.UUID("a6500000-0000-0000-0000-000000000004")
     run_id = uuid.UUID("a6500000-0000-0000-0000-000000000005")
     sov_id = uuid.UUID("a6500000-0000-0000-0000-000000000006")
@@ -88,12 +90,28 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                 text(
                     "INSERT INTO content_items "
                     "(id, hospital_id, schedule_id, content_type, sequence_no, total_count, "
-                    "title, image_url, image_policy_verified_at, scheduled_date) VALUES "
+                    "title, image_url, image_policy_verified_at, scheduled_date, status, "
+                    "published_at, published_by) VALUES "
                     "(:id, :hospital_id, :schedule_id, 'FAQ', 1, 12, '기존 글', "
                     "'https://cdn.example/image.png', TIMESTAMPTZ '2026-08-31 14:59:00+00', "
-                    "DATE '2026-08-31')"
+                    "DATE '2026-08-31', 'PUBLISHED', "
+                    "TIMESTAMPTZ '2026-08-31 15:00:00+00', 'LEGACY_AE')"
                 ),
                 {"id": content_id, "hospital_id": hospital_id, "schedule_id": schedule_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO content_items "
+                    "(id, hospital_id, schedule_id, content_type, sequence_no, total_count, "
+                    "title, scheduled_date, status, published_at, published_by) VALUES "
+                    "(:id, :hospital_id, :schedule_id, 'FAQ', 2, 12, NULL, "
+                    "DATE '2026-08-30', 'REJECTED', NULL, NULL)"
+                ),
+                {
+                    "id": erased_content_id,
+                    "hospital_id": hospital_id,
+                    "schedule_id": schedule_id,
+                },
             )
             connection.execute(
                 text(
@@ -173,13 +191,14 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "0068_lead_cost_deferral"
+                "0069_content_first_publication"
             )
             content = connection.execute(
                 text(
                     "SELECT image_url, image_policy_verified_at, generation_philosophy_id, "
                     "last_reviewed_philosophy_id, content_revision, image_content_hash, "
-                    "image_subject_hash, image_policy_version FROM content_items WHERE id=:id"
+                    "image_subject_hash, image_policy_version, first_published_at, "
+                    "first_published_by FROM content_items WHERE id=:id"
                 ),
                 {"id": content_id},
             ).one()
@@ -191,6 +210,19 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
             assert content.image_content_hash is None
             assert content.image_subject_hash is None
             assert content.image_policy_version is None
+            assert content.first_published_at.astimezone(timezone.utc) == datetime(
+                2026, 8, 31, 15, 0, tzinfo=timezone.utc
+            )
+            assert content.first_published_by == "LEGACY_AE"
+            erased_content = connection.execute(
+                text(
+                    "SELECT first_published_at, first_published_by "
+                    "FROM content_items WHERE id=:id"
+                ),
+                {"id": erased_content_id},
+            ).one()
+            assert erased_content.first_published_at is None
+            assert erased_content.first_published_by is None
             assert connection.execute(
                 text("SELECT count(*) FROM measurement_observation_slots")
             ).scalar_one() == 0

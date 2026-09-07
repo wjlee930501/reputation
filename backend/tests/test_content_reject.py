@@ -42,6 +42,8 @@ def _item(scheduled_date, status=ContentStatus.PUBLISHED, carried_over_from=None
         image_url="gs://bucket/img.png",
         published_at=datetime.now(timezone.utc),
         published_by="AE",
+        first_published_at=None,
+        first_published_by=None,
         generated_at=datetime.now(timezone.utc),
         scheduled_date=scheduled_date,
         carried_over_from=carried_over_from,
@@ -71,6 +73,8 @@ async def test_reject_on_publish_day_reschedules_to_tomorrow():
     assert item.body is None and item.title is None and item.image_url is None
     # 발행 메타 초기화 — 재생성 후 재발행 시 이전 발행 기록이 남지 않는다.
     assert item.published_at is None and item.published_by is None and item.generated_at is None
+    assert item.first_published_at is not None
+    assert item.first_published_by == "AE"
     # 야간 생성은 scheduled_date == 내일 만 집으므로 당일 반려는 내일로 재스케줄.
     assert item.scheduled_date == tomorrow
     assert db.committed

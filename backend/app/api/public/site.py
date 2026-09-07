@@ -674,7 +674,14 @@ def _content_image_url(slug: str, item: ContentItem) -> str:
     # 프록시로 감싸면 _asset_response가 처리 못 해 404가 나므로 그대로 통과시킨다.
     ref = item.image_url or ""
     if ref.startswith("gs://"):
-        return f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
+        proxy_url = f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
+        content_hash = str(getattr(item, "image_content_hash", "") or "").strip()
+        # The proxy route remains stable and performs the tenant/public-safety check.
+        # Version only by the certified bytes so Next/browser image caches cannot keep
+        # serving a replaced unsafe image under the old optimizer cache key.
+        if re.fullmatch(r"[0-9a-f]{64}", content_hash):
+            return f"{proxy_url}?v={content_hash}"
+        return proxy_url
     return ref
 
 

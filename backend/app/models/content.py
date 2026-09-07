@@ -131,6 +131,7 @@ class ContentItem(Base):
         ),
         Index("ix_content_items_hospital_status", "hospital_id", "status"),
         Index("ix_content_items_hospital_scheduled", "hospital_id", "scheduled_date"),
+        Index("ix_content_items_hospital_first_published", "hospital_id", "first_published_at"),
         Index("ix_content_items_scheduled_date", "scheduled_date"),
         Index("ix_content_items_status", "status"),
     )
@@ -207,6 +208,10 @@ class ContentItem(Base):
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
+    # 최초 공개 사실은 반려 후 새 판을 재발행해도 바뀌지 않는다. published_*는 현재
+    # 판의 생애주기이고 first_published_*는 닫힌 월의 실제 발행 이력이다.
+    first_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_published_by: Mapped[str | None] = mapped_column(String(100))
     # 과거 콘텐츠별 Slack 발행 알림의 전달 시각. 신규 발행은 정상 성공을
     # 무음 처리하므로 NULL이 정상이며, 기존 알림 이력 표시에만 유지한다.
     post_publish_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

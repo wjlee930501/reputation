@@ -32,6 +32,7 @@ from app.models.monthly_control import (
 from app.models.operations import Incident, NotificationOutbox, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.services.content_provenance import mark_removed_source_dependency
+from app.services.content_publication import record_publication_identity
 from app.services.monthly_period import ReportBuildReason
 from app.services.report_artifact_validation import (
     DOCTOR_ARTIFACT_VALIDATION_VERSION,
@@ -1128,6 +1129,9 @@ def test_monthly_publication_fact_survives_source_withdrawal_and_repair(
         scheduled_date=datetime(2026, 8, 31).date(),
         status=ContentStatus.PUBLISHED,
         published_at=first_published_at,
+        published_by="FIRST_AE",
+        first_published_at=first_published_at,
+        first_published_by="FIRST_AE",
         essence_check_summary={
             "generation_provenance": {"evidence_source_asset_ids": ["withdrawn-source"]}
         },
@@ -1155,14 +1159,104 @@ def test_monthly_publication_fact_survives_source_withdrawal_and_repair(
     assert tuple(len(rows) for rows in during) == (1, 0, 1)
     assert item.status == ContentStatus.REJECTED
     assert item.published_at == first_published_at
+    assert item.first_published_at == first_published_at
 
+    repaired_at = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
     item.status = ContentStatus.PUBLISHED
+    record_publication_identity(
+        item,
+        published_at=repaired_at,
+        published_by="REPAIR_AE",
+    )
     monthly_pg_session.commit()
     after = tasks._load_monthly_publication_facts(
         monthly_pg_session, hospital.id, period_start, period_end, observed_at
     )
     assert tuple(len(rows) for rows in after) == (1, 1, 1)
-    assert item.published_at == first_published_at
+    assert item.published_at == repaired_at
+    assert item.first_published_at == first_published_at
+
+
+def test_closed_month_counts_first_publication_once_after_cross_month_republish(
+    monthly_pg_session: Session,
+) -> None:
+    hospital = Hospital(
+        name="교체 판 발행 이력 의원",
+        slug=f"monthly-edition-history-{uuid.uuid4().hex}",
+    )
+    monthly_pg_session.add(hospital)
+    monthly_pg_session.flush()
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=[0],
+        active_from=datetime(2026, 8, 1).date(),
+        is_active=True,
+    )
+    monthly_pg_session.add(schedule)
+    monthly_pg_session.flush()
+    august_publication = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    september_republication = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    item = ContentItem(
+        hospital_id=hospital.id,
+        schedule_id=schedule.id,
+        content_type=ContentType.FAQ,
+        sequence_no=1,
+        total_count=12,
+        title="최초 공개 제목",
+        scheduled_date=datetime(2026, 8, 31).date(),
+        status=ContentStatus.PUBLISHED,
+        published_at=august_publication,
+        published_by="FIRST_AE",
+        first_published_at=august_publication,
+        first_published_by="FIRST_AE",
+    )
+    monthly_pg_session.add(item)
+    monthly_pg_session.commit()
+    period_start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    period_end = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    observed_at = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+    item.status = ContentStatus.REJECTED
+    item.published_at = None
+    item.published_by = None
+    item.scheduled_date = datetime(2026, 9, 2).date()
+    item.carried_over_from = datetime(2026, 8, 31).date()
+    monthly_pg_session.commit()
+    rejected = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+    assert tuple(len(rows) for rows in rejected) == (1, 0, 1)
+
+    item.status = ContentStatus.PUBLISHED
+    record_publication_identity(
+        item,
+        published_at=september_republication,
+        published_by="REPAIR_AE",
+    )
+    monthly_pg_session.commit()
+    repaired = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+
+    assert tuple(len(rows) for rows in repaired) == (1, 1, 1)
+    assert [row.id for row in repaired[0]] == [item.id]
+    assert [row.id for row in repaired[2]] == [item.id]
+    assert tasks._contract_publication_timing_counts(
+        repaired[2], period_start, period_end
+    ) == (0, 0)
+    assert item.first_published_at == august_publication
+    assert item.first_published_by == "FIRST_AE"
+    assert item.published_at == september_republication
+    assert item.published_by == "REPAIR_AE"
+    september = tasks._load_monthly_publication_facts(
+        monthly_pg_session,
+        hospital.id,
+        datetime(2026, 9, 1, tzinfo=timezone.utc),
+        datetime(2026, 10, 1, tzinfo=timezone.utc),
+        observed_at,
+    )
+    assert tuple(len(rows) for rows in september) == (0, 0, 0)
 
 
 def test_manual_run_moves_from_queue_to_running_before_report_build(
