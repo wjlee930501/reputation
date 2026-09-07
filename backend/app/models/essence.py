@@ -236,4 +236,7 @@ class HospitalContentPhilosophy(Base):
     )
 
     hospital: Mapped["Hospital"] = relationship(back_populates="content_philosophies")
-    content_items: Mapped[list["ContentItem"]] = relationship(back_populates="content_philosophy")
+    content_items: Mapped[list["ContentItem"]] = relationship(
+        back_populates="content_philosophy",
+        foreign_keys="ContentItem.content_philosophy_id",
+    )

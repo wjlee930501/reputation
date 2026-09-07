@@ -39,6 +39,7 @@ _OVERVIEW_SIZE = 5
 
 @router.get("/overview", response_model=OperationsOverviewResponse)
 async def get_operations_overview(
+    hospital_id: uuid.UUID | None = None,
     owner: str | None = None,
     status: str | None = None,
     severity: str | None = None,
@@ -49,6 +50,7 @@ async def get_operations_overview(
 ) -> OperationsOverviewResponse:
     """Return all queue counts plus the first five tasks in four fixed queries."""
     filters = normalize_filters(
+        hospital_id=hospital_id,
         owner=owner, status=status, severity=severity, sla=sla, recovery=recovery
     )
     summaries: list[OperationsQueueSummary] = []
@@ -71,6 +73,7 @@ async def get_operations_overview(
 @router.get("/queues/{queue}", response_model=OperationsQueueResponse)
 async def get_operations_queue(
     queue: OperationsQueue,
+    hospital_id: uuid.UUID | None = None,
     owner: str | None = None,
     status: str | None = None,
     severity: str | None = None,
@@ -83,6 +86,7 @@ async def get_operations_queue(
 ) -> OperationsQueueResponse:
     """Return one filtered queue using at most COUNT plus page SQL."""
     filters = normalize_filters(
+        hospital_id=hospital_id,
         owner=owner, status=status, severity=severity, sla=sla, recovery=recovery
     )
     total, items = await load_operations_queue(

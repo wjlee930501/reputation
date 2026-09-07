@@ -143,7 +143,7 @@ test('the onboarding form marks itself dirty on edit and clears it only after sa
   assert.match(onboardingPage, /setDirty\(true\)\s*\n\s*setForm/)
   const saveStart = onboardingPage.indexOf('async function save(event: React.FormEvent)')
   const clearsDirty = onboardingPage.indexOf('setDirty(false)', saveStart)
-  const feedback = onboardingPage.indexOf('공개 표면 시각 요소를 저장했습니다', saveStart)
+  const feedback = onboardingPage.indexOf('공개 화면 디자인을 저장했습니다', saveStart)
 
   assert.ok(saveStart >= 0)
   assert.ok(clearsDirty > saveStart && clearsDirty < feedback)

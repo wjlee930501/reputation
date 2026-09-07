@@ -64,6 +64,9 @@ TASK_PURPOSES = {
     "app.workers.canary_tasks.canary_reports": "canary-reports",
     "app.workers.canary_tasks.canary_leadgen": "canary-leadgen",
     "app.workers.canary_tasks.canary_certificates": "canary-certificates",
+    "app.workers.canary_tasks.canary_control": "canary-control",
+    "app.workers.indexnow_retry.drain": "drain-indexnow-retries",
+    "app.workers.provider_usage_recovery.drain": "drain-provider-usage-spool",
 }
 
 FIRST_ARG_TARGET_TASKS = frozenset(

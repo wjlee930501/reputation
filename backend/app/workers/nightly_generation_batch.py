@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -20,7 +21,14 @@ GENERATION_WRITE_BACK_STATUSES = (
 )
 
 
-def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
+def write_back_generated_content(
+    db,
+    *,
+    item_id,
+    values: dict[str, Any],
+    expected_revision: int | None = None,
+    expected_claim_token: uuid.UUID | None = None,
+) -> int:
     """생성 결과를 **상태 가드와 함께** 쓴다. 반환값은 갱신된 행 수.
 
     0이면 생성이 도는 동안 운영자가 상태를 바꾼 것(취소 등)이므로 호출부는 결과를 버려야 한다.
@@ -30,13 +38,20 @@ def write_back_generated_content(db, *, item_id, values: dict[str, Any]) -> int:
     execute/commit 앞에서 autoflush로 그것을 먼저 써버려 가드가 무력화된다.
     반드시 이 함수 하나로만 쓰고, 추적 객체는 이후 refresh 한다.
     """
+    predicates = [
+        ContentItem.id == item_id,
+        ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+    ]
+    if expected_revision is not None:
+        predicates.append(ContentItem.content_revision == expected_revision)
+    if expected_claim_token is not None:
+        predicates.append(ContentItem.generation_claim_token == expected_claim_token)
+    guarded_values = dict(values)
+    guarded_values["content_revision"] = ContentItem.content_revision + 1
     result = db.execute(
         update(ContentItem)
-        .where(
-            ContentItem.id == item_id,
-            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
-        )
-        .values(**values)
+        .where(*predicates)
+        .values(**guarded_values)
         .execution_options(synchronize_session=False)
     )
     return result.rowcount
@@ -48,6 +63,8 @@ def write_back_generated_image(
     item_id,
     expected_title: str | None,
     values: dict[str, Any],
+    expected_revision: int | None = None,
+    expected_claim_token: uuid.UUID | None = None,
 ) -> int:
     """Persist a generated image only while its source title still matches."""
     title_clause = (
@@ -55,14 +72,27 @@ def write_back_generated_image(
         if expected_title is None
         else ContentItem.title == expected_title
     )
+    predicates = [
+        ContentItem.id == item_id,
+        ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+        title_clause,
+    ]
+    if expected_revision is not None:
+        predicates.append(ContentItem.content_revision == expected_revision)
+    if expected_claim_token is not None:
+        predicates.append(ContentItem.generation_claim_token == expected_claim_token)
+    guarded_values = dict(values)
+    guarded_values.update(
+        {
+            "content_revision": ContentItem.content_revision + 1,
+            "generation_claimed_at": None,
+            "generation_claim_token": None,
+        }
+    )
     result = db.execute(
         update(ContentItem)
-        .where(
-            ContentItem.id == item_id,
-            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
-            title_clause,
-        )
-        .values(**values)
+        .where(*predicates)
+        .values(**guarded_values)
         .execution_options(synchronize_session=False)
     )
     return result.rowcount
@@ -82,6 +112,39 @@ def _nightly_generation_claim_filter(claim_cutoff: datetime):
         ContentItem.generation_claimed_at.is_(None),
         ContentItem.generation_claimed_at < claim_cutoff,
     )
+
+
+def claim_generation_lease(
+    db,
+    item_id,
+    *,
+    now: datetime | None = None,
+) -> tuple[ContentItem, uuid.UUID] | None:
+    """Atomically claim one content row before any provider work."""
+
+    observed_at = now or datetime.now(timezone.utc)
+    item = db.execute(
+        select(ContentItem)
+        .where(ContentItem.id == item_id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if item is None or item.status not in GENERATION_WRITE_BACK_STATUSES:
+        db.rollback()
+        return None
+    claim_cutoff = observed_at - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS)
+    if (
+        item.generation_claim_token is not None
+        and item.generation_claimed_at is not None
+        and item.generation_claimed_at >= claim_cutoff
+    ):
+        db.rollback()
+        return None
+    claim_token = uuid.uuid4()
+    item.generation_claimed_at = observed_at
+    item.generation_claim_token = claim_token
+    db.commit()
+    return item, claim_token
 
 
 def _needs_generation_recovery():
@@ -133,6 +196,19 @@ def _needs_generation_recovery():
             HospitalContentPhilosophy.status != PhilosophyStatus.APPROVED
         ),
     )
+    ai_review = ContentItem.essence_check_summary["ai_review"]
+    unresolved_ai_review = and_(
+        or_(
+            ai_review["status"].as_string() == "UNAVAILABLE",
+            and_(
+                ai_review["status"].as_string() == "REVISE",
+                or_(
+                    ai_review["blocking"].as_boolean().is_(True),
+                    ai_review["schema_version"].as_string().is_(None),
+                ),
+            ),
+        ),
+    )
     return or_(
         ContentItem.body.is_(None),
         ContentItem.image_url.is_(None),
@@ -140,6 +216,7 @@ def _needs_generation_recovery():
         faq_needs_repair,
         references_need_repair,
         body_uses_unapproved_essence,
+        unresolved_ai_review,
         and_(
             ContentItem.essence_status.is_not(None),
             ContentItem.essence_status != "ALIGNED",
@@ -199,7 +276,10 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
         # SQLAlchemy에 영속화되지 않는 시도 메타데이터. 새 배치가 만료 claim을
         # 인수했는지와 finally가 해제할 정확한 lease 시각을 호출부에 전달한다.
         item._generation_reclaimed_stale = getattr(item, "generation_claimed_at", None) is not None
+        claim_token = uuid.uuid4()
         item.generation_claimed_at = now
+        item.generation_claim_token = claim_token
+        item._generation_claim_token = claim_token
     if claimed_items:
         db.commit()
     return claimed_items, truncated_count
@@ -210,6 +290,7 @@ def release_unfinished_claims(
     item_ids: list,
     *,
     expected_claimed_at: datetime | None = None,
+    expected_claim_token: uuid.UUID | None = None,
 ) -> int:
     """생성되지 않은 채 남은 claim을 즉시 해제한다. 반환값은 해제된 건수.
 
@@ -228,10 +309,27 @@ def release_unfinished_claims(
     ]
     if expected_claimed_at is not None:
         predicates.append(ContentItem.generation_claimed_at == expected_claimed_at)
+    if expected_claim_token is not None:
+        predicates.append(ContentItem.generation_claim_token == expected_claim_token)
     result = db.execute(
         update(ContentItem)
         .where(*predicates)
-        .values(generation_claimed_at=None)
+        .values(generation_claimed_at=None, generation_claim_token=None)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
+
+
+def release_generation_claim(db, item_id, claim_token: uuid.UUID) -> int:
+    """Release only the caller's lease, regardless of the item's current defects."""
+
+    result = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id == item_id,
+            ContentItem.generation_claim_token == claim_token,
+        )
+        .values(generation_claimed_at=None, generation_claim_token=None)
         .execution_options(synchronize_session=False)
     )
     return result.rowcount

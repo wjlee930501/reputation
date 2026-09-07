@@ -9,9 +9,11 @@ import {
   type OperationsSlackState,
 } from '../types/index.ts'
 import { isRecord } from './type-guards.ts'
+import { getOrCreatePendingActionKey } from './pending-action-key.ts'
 
 export interface OperationsQuery {
   readonly queue: OperationsQueueParam
+  readonly hospitalId: string
   readonly owner: string
   readonly status: string
   readonly severity: string
@@ -51,7 +53,7 @@ export interface OperationsMutationDescriptor {
   readonly requiresIdempotencyKey: boolean
 }
 const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'today', 'reports', 'incidents']
-const FILTER_KEYS = ['queue', 'owner', 'status', 'severity', 'sla', 'recovery', 'q', 'detail', 'page'] as const
+const FILTER_KEYS = ['queue', 'hospitalId', 'owner', 'status', 'severity', 'sla', 'recovery', 'q', 'detail', 'page'] as const
 
 function bounded(value: string | null, max: number): string {
   return value?.trim().slice(0, max) ?? ''
@@ -67,6 +69,7 @@ export function readOperationsQuery(source: URLSearchParams): OperationsQuery {
   const pageValue = Number.parseInt(source.get('page') ?? '', 10)
   return {
     queue: queueValue(source.get('queue')),
+    hospitalId: bounded(source.get('hospital_id'), 36),
     owner: bounded(source.get('owner'), 120),
     status: bounded(source.get('status'), 60).toUpperCase(),
     severity: bounded(source.get('severity'), 20).toUpperCase(),
@@ -82,6 +85,7 @@ export function canonicalizeOperationsQuery(source: URLSearchParams): URLSearchP
   const query = readOperationsQuery(source)
   const result = new URLSearchParams()
   result.set('queue', query.queue)
+  if (query.hospitalId) result.set('hospital_id', query.hospitalId)
   if (query.owner) result.set('owner', query.owner)
   if (query.status) result.set('status', query.status)
   if (query.severity) result.set('severity', query.severity)
@@ -103,11 +107,12 @@ export function updateOperationsQuery(
   for (const key of FILTER_KEYS) {
     if (!(key in patch)) continue
     const value = patch[key]
-    if (value === null || value === '') next.delete(key)
-    else if (value !== undefined) next.set(key, String(value))
+    const queryKey = key === 'hospitalId' ? 'hospital_id' : key
+    if (value === null || value === '') next.delete(queryKey)
+    else if (value !== undefined) next.set(queryKey, String(value))
   }
   const changedQueue = patch.queue !== undefined
-  const changedFilter = ['owner', 'status', 'severity', 'sla', 'recovery', 'q'].some((key) => key in patch)
+  const changedFilter = ['hospitalId', 'owner', 'status', 'severity', 'sla', 'recovery', 'q'].some((key) => key in patch)
   if (changedQueue && patch.detail === undefined) next.delete('detail')
   if (changedQueue || changedFilter) next.delete('page')
   return canonicalizeOperationsQuery(next)
@@ -143,6 +148,30 @@ export function actionableOperationsCount(
   items: readonly Pick<OperationsQueueRow, 'requires_operator_action'>[],
 ): number {
   return partitionOperationsRows(items).actionable.length
+}
+
+export function hospitalOperationsHref(
+  hospitalId: string,
+  path = '/operations?queue=reports',
+): string {
+  const [pathname, rawQuery = ''] = path.split('?', 2)
+  const query = new URLSearchParams(rawQuery)
+  query.set('hospital_id', hospitalId)
+  return `${pathname || '/operations'}?${query.toString()}`
+}
+
+export function reportOperationsHref(
+  hospitalId: string,
+  reportId: string | null,
+  periodYear: number,
+  periodMonth: number,
+): string {
+  const rowSubject = reportId || hospitalId
+  const detail = `report:${rowSubject}:${periodYear}-${String(periodMonth).padStart(2, '0')}`
+  return hospitalOperationsHref(
+    hospitalId,
+    `/operations?queue=reports&detail=${encodeURIComponent(detail)}`,
+  )
 }
 
 function actionPriority(item: OperationsQueueRow): number {
@@ -196,7 +225,7 @@ export function operationStatusLabel(status: string): string {
     case 'MANIFEST_OPEN': return '측정 집계 마감 대기'
     case 'DOCTOR_ARTIFACT_MISSING': return '원장 전달용 PDF 없음'
     case 'DOCTOR_ARTIFACT_INVALID': return '원장 전달용 PDF 검증 실패'
-    case 'REPORT_BLOCKED': return '리포트 전달 차단'
+    case 'REPORT_BLOCKED': return '보고서 전달 차단'
     case 'DELIVERY_PENDING': return '원장 전달 검수 대기'
     case 'OPEN': return '처리 필요'
     case 'RETRYING': return '복구 재시도 중'
@@ -233,10 +262,11 @@ const UNKNOWN_SAFE_CAUSE = '원인 설명을 확인할 수 없습니다. 아래 
  */
 export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 초기 진단(V0) 측정
-  V0_REPORT_RETRIES_EXHAUSTED: '외부 AI 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
-  V0_PROVIDER_AUTH_OR_MODEL: 'AI 측정 공급자의 인증 또는 모델 설정을 확인해야 합니다.',
-  V0_PROVIDER_UNAVAILABLE: '외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
-  V0_JUDGE_FAILED: 'AI 답변은 받았지만 공통 언급 판정 단계에서 처리하지 못했습니다.',
+  V0_REPORT_RETRIES_EXHAUSTED: '외부 답변 측정 재시도를 모두 사용했지만 초기 진단을 완료하지 못했습니다.',
+  V0_COST_DEFERRED: '비용·자동 작업 안전장치가 이번 초기 진단 측정을 다음 실행으로 미뤘습니다.',
+  V0_PROVIDER_AUTH_OR_MODEL: '답변 측정 서비스의 인증 또는 모델 설정을 확인해야 합니다.',
+  V0_PROVIDER_UNAVAILABLE: '외부 답변 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.',
+  V0_JUDGE_FAILED: '측정 답변은 받았지만 병원 언급 여부를 판정하지 못했습니다.',
   SOV_HIGH_PRIORITY_CAP_EXCEEDED: '이번 측정에 배정된 질문 수가 한도를 넘어 일부 질문을 측정하지 않았습니다.',
   // 콘텐츠 생성·발행
   PROVIDER_TIMEOUT: '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',
@@ -256,18 +286,18 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   MISSING_REFERENCES: '의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.',
   FORBIDDEN_EXPRESSION: '의료광고 금지 표현이 발견되어 공개를 중단했습니다.',
   ESSENCE_NOT_ALIGNED: '콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.',
-  MONTHLY_SLOT_GENERATION_FAILED: '이번 달 발행 슬롯의 콘텐츠 생성이 완료되지 않았습니다.',
+  MONTHLY_SLOT_GENERATION_FAILED: '이번 달 발행 예정 콘텐츠를 만들지 못했습니다.',
   // 운영 기준
   ESSENCE_AUTO_REVIEW_FAILED: '콘텐츠 운영 기준 자동 검수를 완료하지 못했습니다.',
   ESSENCE_AUTO_REVIEW_ESCALATED: '콘텐츠 운영 기준 자동 검수가 초안을 보류해 사람 확인이 필요합니다.',
   // 비용 안전장치
   COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
   COST_GUARD_LIMIT_REACHED: '오늘 설정된 사용 한도에 도달해 자동 작업을 보류했습니다.',
-  // 리포트·공개 표면·도메인
+  // 보고서·공개 표면·도메인
   MONTHLY_MEASUREMENT_INCOMPLETE: '필수 측정이 완료되지 않아 실패한 항목만 복구해야 합니다.',
-  MONTHLY_REPORT_FAILED: '월간 리포트를 만드는 중 작업이 완료되지 않았습니다.',
+  MONTHLY_REPORT_FAILED: '월간 보고서를 만드는 중 작업이 완료되지 않았습니다.',
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
-  CACHE_REVALIDATION_FAILED: '공개 표면의 내용 갱신을 확인하지 못했습니다.',
+  CACHE_REVALIDATION_FAILED: '공개 사이트의 내용 갱신을 확인하지 못했습니다.',
   DOMAIN_UNHEALTHY: '공개 주소가 정상으로 응답하지 않습니다.',
   // 알림·전달
   PUBLISH_NOTIFICATION_FAILED: '발행은 됐지만 담당자 알림을 보내지 못했습니다.',
@@ -277,8 +307,8 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 상담 요청 무료 진단
   LEAD_DIAGNOSIS_FAILED: '상담 요청의 무료 진단 측정을 완료하지 못했습니다.',
   LEAD_DIAGNOSIS_RETRIES_EXHAUSTED: '무료 진단 재시도를 모두 사용했지만 측정을 완료하지 못했습니다.',
-  LEAD_REPORT_RETRIES_EXHAUSTED: '무료 진단 리포트 재시도를 모두 사용했지만 리포트를 만들지 못했습니다.',
-  LEAD_DELIVERY_ABANDONED: '무료 진단 리포트를 신청자에게 전달하지 못한 채 중단했습니다.',
+  LEAD_REPORT_RETRIES_EXHAUSTED: '무료 진단 보고서 재시도를 모두 사용했지만 보고서를 만들지 못했습니다.',
+  LEAD_DELIVERY_ABANDONED: '무료 진단 보고서를 신청자에게 전달하지 못한 채 중단했습니다.',
   // 자료 수집
   NAVER_ITEMS_FAILED: '자료 수집에서 일부 글을 가져오지 못했습니다.',
   // 그 밖의 작업 실패
@@ -303,7 +333,7 @@ export function safeCauseText(value: string | null | undefined): string {
 /**
  * 알려진 원인이 있으면 그 설명, 없으면 null.
  *
- * 운영 센터의 큐에는 사건만 있는 것이 아니다 — 온보딩 진행, 오늘 발행, 리포트 준비처럼
+ * 운영 센터의 큐에는 사건만 있는 것이 아니다 — 온보딩 진행, 오늘 발행, 보고서 준비처럼
  * 예정된 일감은 원인이라는 개념 자체가 없어 서버가 `safe_cause`를 비워 보낸다. 그 자리를
  * 늘 채우면 정상 행까지 `원인 설명을 확인할 수 없습니다`가 붙어 전부 장애처럼 읽히고,
  * 그 문구는 조치가 아니라 개발팀 문의를 가리킨다(G-1). 없을 때는 없다고 말한다.
@@ -380,6 +410,32 @@ export function shouldAutoRetrySlack(state: OperationsSlackState): boolean {
 
 export function createUserActionKey(kind: string, targetId: string, nonce: string): string {
   return `admin:${kind}:${targetId}:${nonce}`.slice(0, 255)
+}
+
+export function operationsMutationFingerprint(
+  mutation: Pick<OperationsMutationDescriptor, 'kind' | 'path' | 'targetId' | 'version' | 'reason'>,
+): string {
+  return JSON.stringify([
+    mutation.kind,
+    mutation.path,
+    mutation.targetId,
+    mutation.version,
+    mutation.reason.trim(),
+  ])
+}
+
+export function getOrCreateOperationsMutationKey(
+  keys: Map<string, string>,
+  mutation: Pick<OperationsMutationDescriptor, 'kind' | 'path' | 'targetId' | 'version' | 'reason'>,
+  nonce: string,
+): { readonly fingerprint: string; readonly key: string } {
+  const fingerprint = operationsMutationFingerprint(mutation)
+  const key = getOrCreatePendingActionKey(
+    keys,
+    fingerprint,
+    () => createUserActionKey(mutation.kind, mutation.targetId, nonce),
+  )
+  return { fingerprint, key }
 }
 
 export function enabledPostAction(action: OperationsAction | null): OperationsAction | null {
@@ -534,7 +590,7 @@ export function describeOperationsDeadline(
 const QUEUE_WORK_LABELS: Record<string, string> = {
   ONBOARDING: '온보딩 진행',
   TODAY: '오늘의 운영',
-  REPORTS: '월간 리포트',
+  REPORTS: '월간 보고서',
   INCIDENTS: '문제·복구',
 }
 

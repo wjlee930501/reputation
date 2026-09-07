@@ -11,13 +11,28 @@
 
 import type { MetadataRoute } from 'next'
 
-import { REVALIDATE_SECONDS } from './fetch-policy.ts'
 import type { SitemapScope } from './sitemap-host.ts'
 import { platformSiteUrl } from './site-url.ts'
 import { buildTreatmentSlug } from './treatment-slug.ts'
 
 // 백엔드 /contents 목록의 하드캡과 동일 — offset으로 페이지를 넘겨 전체 발행 콘텐츠를 순회한다.
 const CONTENT_PAGE_SIZE = 500
+
+/** Upstream failure that must not be turned into a complete, cacheable sitemap. */
+export class SitemapTransientError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options)
+    this.name = 'SitemapTransientError'
+  }
+}
+
+/** The tenant or its public content disappeared while the sitemap was being assembled. */
+class SitemapPrivateVisibilityError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SitemapPrivateVisibilityError'
+  }
+}
 
 export interface HospitalEntry {
   slug: string
@@ -57,26 +72,41 @@ async function fetchAllContents(apiBase: string, slug: string): Promise<ContentE
   let offset = 0
   for (;;) {
     let page: ContentEntry[]
+    const url =
+      offset === 0
+        ? `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}`
+        : `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}&offset=${offset}`
     try {
       // 첫 페이지(offset=0)는 lib/api.ts의 fetchContents(slug, 500)와 정확히 같은 URL
       // 모양(`?limit=500`, offset 파라미터 없음)을 써서 같은 Next data cache 키를
       // 공유한다 — offset=0을 명시하면 별도 키로 갈라져 같은 병원 콘텐츠를 캐시가
       // 두 번 들고 있게 된다.
-      const url =
-        offset === 0
-          ? `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}`
-          : `${apiBase}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENT_PAGE_SIZE}&offset=${offset}`
-      const res = await fetch(url, { next: { revalidate: REVALIDATE_SECONDS } })
-      if (!res.ok) {
-        console.warn(
-          `[sitemap] Failed to fetch contents for ${slug} at offset ${offset}: HTTP ${res.status}`,
+      const res = await fetch(url, { cache: 'no-store' })
+      if (res.status === 404) {
+        throw new SitemapPrivateVisibilityError(
+          `Hospital ${slug} became private while building its sitemap`,
         )
-        break
       }
-      page = await res.json()
+      if (!res.ok) {
+        throw new SitemapTransientError(
+          `Contents upstream failed for ${slug} at offset ${offset}: HTTP ${res.status}`,
+        )
+      }
+      const payload: unknown = await res.json()
+      if (!Array.isArray(payload)) {
+        throw new SitemapTransientError(
+          `Invalid contents payload for ${slug} at offset ${offset}`,
+        )
+      }
+      page = payload as ContentEntry[]
     } catch (err) {
-      console.warn(`[sitemap] Error fetching contents for ${slug} at offset ${offset}:`, err)
-      break
+      if (err instanceof SitemapPrivateVisibilityError || err instanceof SitemapTransientError) {
+        throw err
+      }
+      throw new SitemapTransientError(
+        `Contents upstream unavailable for ${slug} at offset ${offset}`,
+        { cause: err },
+      )
     }
     all.push(...page)
     if (page.length < CONTENT_PAGE_SIZE) break
@@ -102,43 +132,6 @@ export async function appendHospitalEntries(
   // 플랫폼 scope는 `/{slug}`를 쓴다.
   const base = `${scopeBase}${hospitalPathPrefix}`
 
-  entries.push({
-    url: base,
-    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
-    changeFrequency: 'weekly',
-    priority: 0.8,
-  })
-  entries.push({
-    url: `${base}/contents`,
-    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
-    changeFrequency: 'weekly',
-    priority: 0.7,
-  })
-  entries.push({
-    url: `${base}/doctor`,
-    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
-    changeFrequency: 'monthly',
-    priority: 0.6,
-  })
-  entries.push({
-    url: `${base}/treatments`,
-    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
-    changeFrequency: 'monthly',
-    priority: 0.6,
-  })
-  entries.push({
-    url: `${base}/visit`,
-    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
-    changeFrequency: 'monthly',
-    priority: 0.6,
-  })
-  entries.push({
-    url: `${base}/llms.txt`,
-    ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
-    changeFrequency: 'daily',
-    priority: 0.5,
-  })
-
   // Treatment pillar pages (cluster hubs).
   // List endpoint returns minimal projection; pillar slugs need treatments[].
   // We fetch hospital detail only when the list response omits treatments.
@@ -146,20 +139,80 @@ export async function appendHospitalEntries(
   if (!treatments) {
     try {
       const detailRes = await fetch(`${apiBase}/hospitals/${encodeURIComponent(hospital.slug)}`, {
-        next: { revalidate: REVALIDATE_SECONDS },
+        cache: 'no-store',
       })
-      if (detailRes.ok) {
-        const detail = await detailRes.json()
-        treatments = detail.treatments ?? []
+      if (detailRes.status === 404) {
+        throw new SitemapPrivateVisibilityError(
+          `Hospital ${hospital.slug} became private while building its sitemap`,
+        )
       }
-    } catch {
-      treatments = []
+      if (!detailRes.ok) {
+        throw new SitemapTransientError(
+          `Hospital detail upstream failed for ${hospital.slug}: HTTP ${detailRes.status}`,
+        )
+      }
+      const detail: unknown = await detailRes.json()
+      if (typeof detail !== 'object' || detail === null) {
+        throw new SitemapTransientError(`Invalid hospital detail for ${hospital.slug}`)
+      }
+      treatments = 'treatments' in detail && Array.isArray(detail.treatments)
+        ? detail.treatments as Array<{ name: string }>
+        : []
+    } catch (err) {
+      if (err instanceof SitemapPrivateVisibilityError || err instanceof SitemapTransientError) {
+        throw err
+      }
+      throw new SitemapTransientError(`Hospital detail unavailable for ${hospital.slug}`, {
+        cause: err,
+      })
     }
   }
+
+  // All upstream reads finish before mutating the caller's array. A later pagination failure
+  // therefore cannot escape as a valid-looking prefix of the sitemap.
+  const contents = await fetchAllContents(apiBase, hospital.slug)
+  const completeEntries: MetadataRoute.Sitemap = [
+    {
+      url: base,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
+      changeFrequency: 'weekly',
+      priority: 0.8,
+    },
+    {
+      url: `${base}/contents`,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
+      changeFrequency: 'weekly',
+      priority: 0.7,
+    },
+    {
+      url: `${base}/doctor`,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    },
+    {
+      url: `${base}/treatments`,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    },
+    {
+      url: `${base}/visit`,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
+      changeFrequency: 'monthly',
+      priority: 0.6,
+    },
+    {
+      url: `${base}/llms.txt`,
+      ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
+      changeFrequency: 'daily',
+      priority: 0.5,
+    },
+  ]
   for (const treatment of treatments ?? []) {
     const treatmentSlug = buildTreatmentSlug(treatment.name)
     if (!treatmentSlug) continue
-    entries.push({
+    completeEntries.push({
       url: `${base}/treatments/${treatmentSlug}`,
       ...(hospitalLastModified ? { lastModified: hospitalLastModified } : {}),
       changeFrequency: 'weekly',
@@ -168,9 +221,8 @@ export async function appendHospitalEntries(
   }
 
   // Hospital contents — 발행된 콘텐츠 전체(500건 하드캡을 offset으로 순회).
-  const contents = await fetchAllContents(apiBase, hospital.slug)
   for (const content of contents) {
-    entries.push({
+    completeEntries.push({
       url: `${base}/contents/${content.id}`,
       lastModified:
         validDate(content.body_updated_at) ||
@@ -179,6 +231,7 @@ export async function appendHospitalEntries(
       priority: 0.6,
     })
   }
+  entries.push(...completeEntries)
 }
 
 function validDate(value: string | null | undefined): Date | undefined {
@@ -192,30 +245,45 @@ async function resolveHostSlug(apiBase: string, hostname: string): Promise<strin
   try {
     const res = await fetch(
       `${apiBase}/site/hospitals/by-domain/${encodeURIComponent(hostname)}`,
-      { next: { revalidate: 300 } },
+      { cache: 'no-store' },
     )
-    if (res.ok) {
-      const data: unknown = await res.json()
-      return typeof data === 'object' && data !== null && 'slug' in data && typeof data.slug === 'string'
-        ? data.slug
-        : null
+    if (res.status === 404) return null
+    if (!res.ok) {
+      throw new SitemapTransientError(
+        `Host resolution upstream failed for ${hostname}: HTTP ${res.status}`,
+      )
     }
+    const data: unknown = await res.json()
+    if (typeof data === 'object' && data !== null && 'slug' in data && typeof data.slug === 'string') {
+      return data.slug
+    }
+    throw new SitemapTransientError(`Invalid host resolution payload for ${hostname}`)
   } catch (err) {
-    console.error(`[sitemap] Error resolving host ${hostname} to a hospital:`, err)
+    if (err instanceof SitemapTransientError) throw err
+    throw new SitemapTransientError(`Host resolution unavailable for ${hostname}`, { cause: err })
   }
-  return null
 }
 
 async function fetchHospitalDetail(apiBase: string, slug: string): Promise<HospitalEntry | null> {
   try {
     const detailRes = await fetch(`${apiBase}/hospitals/${encodeURIComponent(slug)}`, {
-      next: { revalidate: REVALIDATE_SECONDS },
+      cache: 'no-store',
     })
-    if (detailRes.ok) return (await detailRes.json()) as HospitalEntry
+    if (detailRes.status === 404) return null
+    if (!detailRes.ok) {
+      throw new SitemapTransientError(
+        `Hospital detail upstream failed for ${slug}: HTTP ${detailRes.status}`,
+      )
+    }
+    const payload: unknown = await detailRes.json()
+    if (typeof payload !== 'object' || payload === null || !('slug' in payload)) {
+      throw new SitemapTransientError(`Invalid hospital detail payload for ${slug}`)
+    }
+    return payload as HospitalEntry
   } catch (err) {
-    console.error(`[sitemap] Error fetching hospital detail for ${slug}:`, err)
+    if (err instanceof SitemapTransientError) throw err
+    throw new SitemapTransientError(`Hospital detail unavailable for ${slug}`, { cause: err })
   }
-  return null
 }
 
 export async function buildSitemap(
@@ -224,7 +292,10 @@ export async function buildSitemap(
 ): Promise<MetadataRoute.Sitemap> {
   if (!apiBase) {
     // apiBase 미설정(서버 오설정): 커스텀 도메인이면 플랫폼 URL을 노출하지 않도록 빈 sitemap.
-    return scope.kind === 'host' ? [] : platformBaseEntries()
+    if (scope.kind === 'host') {
+      throw new SitemapTransientError('API base is missing for a tenant sitemap')
+    }
+    return platformBaseEntries()
   }
 
   if (scope.kind === 'host') {
@@ -239,7 +310,14 @@ export async function buildSitemap(
     if (!hospital) return entries
 
     // host scope의 공개 경로에는 slug 접두어가 없다 — middleware가 `/{slug}`를 308로 떼어낸다.
-    await appendHospitalEntries(entries, apiBase, hospital, `https://${scope.hostname}`, '')
+    try {
+      await appendHospitalEntries(entries, apiBase, hospital, `https://${scope.hostname}`, '')
+    } catch (err) {
+      // A tenant that becomes private during pagination must produce a complete empty sitemap,
+      // never a cached prefix containing content that is no longer public.
+      if (err instanceof SitemapPrivateVisibilityError) return []
+      throw err
+    }
     return entries
   }
 

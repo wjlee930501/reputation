@@ -30,7 +30,16 @@ import { formatDate, formatDateTime } from '@/lib/format'
 import { platformSubdomainHost } from '@/lib/platform-domain'
 import { fetchCurrentAccount } from '@/lib/current-account'
 import { buildManualPublishPayload, resolveAuditActorName } from '@/lib/publishing'
-import { AIQueryTarget, ContentItem, ContentReference, ExposureAction, TYPE_LABELS } from '@/types'
+import { getOrCreatePendingActionKey } from '@/lib/pending-action-key'
+import {
+  AIQueryTarget,
+  ContentItem,
+  ContentReference,
+  ExposureAction,
+  OperationResponse,
+  OperationsRunSummary,
+  TYPE_LABELS,
+} from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
@@ -179,7 +188,7 @@ function getReviewState(item: ContentItem): ReviewState {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
   }
   if (item.status === 'CANCELLED') {
-    return { key: 'cancelled', label: displayLabel ?? '종료됨', badge: 'bg-slate-100 text-slate-600', reason: displayReason ?? '중복·노후 슬롯', publishable: false }
+    return { key: 'cancelled', label: displayLabel ?? '종료됨', badge: 'bg-slate-100 text-slate-600', reason: displayReason ?? '중복되거나 오래된 콘텐츠', publishable: false }
   }
   if (!item.title) {
     return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-slate-100 text-slate-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
@@ -267,6 +276,12 @@ export default function ContentPage() {
   // 페이지 단위 액션 피드백 — 모달이 닫혀 있어도 행 단위 발행/반려 결과를 보여준다.
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
+  const [regenerationRuns, setRegenerationRuns] = useState<Record<string, {
+    itemId: string
+    runId: string
+    kind: 'content' | 'image'
+  }>>({})
+  const regenerationKeys = useRef(new Map<string, string>())
 
   const load = useCallback(() => {
     setLoading(true)
@@ -406,7 +421,7 @@ export default function ContentPage() {
       })
   }, [id])
 
-  // 전월 이월 슬롯은 이번 달 최우선 처리 대상 — 목록 맨 위로 끌어올린다 (나머지는 기존 순서 유지).
+  // 전월 이월 콘텐츠 항목은 이번 달 최우선 처리 대상 — 목록 맨 위로 끌어올린다 (나머지는 기존 순서 유지).
   const sortedItems = useMemo(() => sortCarriedOverFirst(items), [items])
   const filteredItems = useMemo(
     () => sortedItems.filter((item) => matchesContentOperationsFilter(item, activeFilter)),
@@ -445,23 +460,88 @@ export default function ContentPage() {
 
   // 단건 액션 후 월 전체를 다시 불러오는 대신, 바뀐 아이템 하나만 다시 받아 목록/상세에
   // 병합한다. 실패해도 조용히 넘어간다 — 다음 자연스러운 새로고침에서 맞춰진다.
-  const refreshItem = useCallback(async (itemId: string) => {
+  const refreshItem = useCallback(async (
+    itemId: string,
+    { preserveOpenEditor = false }: { preserveOpenEditor?: boolean } = {},
+  ) => {
     try {
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
-      // 반려(reject)는 scheduled_date가 오늘 이하면 내일로 재스케줄한다 — 월말 반려는 다음
-      // 달로 넘어간다. 그 결과를 이번 달 목록에 그대로 병합하면 다음 달 슬롯이 이번 달
+      // 반려(reject)는 scheduled_date가 오늘 이하면 내일로 재발행 일정한다 — 월말 반려는 다음
+      // 달로 넘어간다. 그 결과를 이번 달 목록에 그대로 병합하면 다음 달 콘텐츠 항목이 이번 달
       // 화면에 유령처럼 남으므로, 조회 중인 연/월과 다르면 병합 대신 제거한다.
       if (!belongsToMonthView(full, year, month)) {
         setItems((prev) => prev.filter((it) => it.id !== full.id))
         setSelected((prev) => (prev && prev.id === full.id ? null : prev))
-        return
+        return true
       }
       setItems((prev) => prev.map((it) => (it.id === full.id ? full : it)))
-      setSelected((prev) => (prev && prev.id === full.id ? full : prev))
+      setSelected((prev) => {
+        if (!prev || prev.id !== full.id) return prev
+        if (preserveOpenEditor && (editMode || briefEditMode)) return prev
+        return full
+      })
+      return true
     } catch {
-      // best-effort
+      return false
     }
-  }, [id, year, month])
+  }, [briefEditMode, editMode, id, year, month])
+
+  const retryRefreshItem = useCallback((itemId: string) => {
+    let attempt = 0
+    const retry = () => {
+      void refreshItem(itemId, { preserveOpenEditor: true }).then((updated) => {
+        if (updated || attempt >= 5) return
+        attempt += 1
+        window.setTimeout(retry, 5000)
+      })
+    }
+    retry()
+  }, [refreshItem])
+
+  useEffect(() => {
+    const tracked = Object.entries(regenerationRuns)
+    if (tracked.length === 0) return
+    let cancelled = false
+    const checkRuns = async () => {
+      await Promise.all(tracked.map(async ([trackingKey, trackedRun]) => {
+        try {
+          const run = await fetchAPI<OperationsRunSummary>(
+            `/admin/operations/hospitals/${id}/runs/${trackedRun.runId}`,
+          )
+          if (cancelled || ['REQUESTED', 'QUEUED', 'RUNNING'].includes(run.state)) return
+          if (run.state === 'SUCCEEDED') {
+            setActionSuccess(
+              trackedRun.kind === 'image'
+                ? '새 대표 이미지가 준비됐습니다. 편집 중인 본문은 그대로 두었습니다.'
+                : '새 초안이 준비됐습니다. 편집 중인 내용은 그대로 두었습니다.',
+            )
+          } else {
+            setActionError('자동 작업을 완료하지 못했습니다. 운영 센터에서 원인과 다음 조치를 확인해 주세요.')
+          }
+          setRegenerationRuns((current) => {
+            if (current[trackingKey]?.runId !== trackedRun.runId) return current
+            const next = { ...current }
+            delete next[trackingKey]
+            return next
+          })
+          if (run.state === 'SUCCEEDED') {
+            await refreshItem(trackedRun.itemId, { preserveOpenEditor: true })
+          }
+        } catch {
+          // 요청은 이미 접수됐다. 조회 장애 때 같은 생성 요청을 다시 보내지 않고 다음
+          // 폴링에서 이 실행 기록만 다시 확인한다.
+        }
+      }))
+    }
+    void checkRuns()
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void checkRuns()
+    }, 5000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [id, refreshItem, regenerationRuns])
 
   async function handlePublish(itemId: string) {
     const payload = buildManualPublishPayload(currentOperatorName ?? '')
@@ -515,11 +595,18 @@ export default function ContentPage() {
         body: JSON.stringify({}),
       })
       setActionSuccess('공개 내용 확인을 완료로 기록했습니다.')
+    } catch (e: unknown) {
+      setEditError(safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
+      setActionLoading(false)
+      return
+    }
+    try {
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
       setSelected(full)
       setItems((prev) => prev.map((it) => (it.id === full.id ? full : it)))
-    } catch (e: unknown) {
-      setEditError(safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
+    } catch {
+      setActionSuccess('공개 내용 확인을 완료로 기록했습니다. 최신 표시만 다시 불러오는 중입니다.')
+      retryRefreshItem(itemId)
     } finally {
       setActionLoading(false)
     }
@@ -548,13 +635,29 @@ export default function ContentPage() {
     setActionLoading(true)
     setConfirmAction(null)
     clearActionFeedback()
+    const fingerprint = `content\u0000${itemId}`
+    const requestKey = getOrCreatePendingActionKey(
+      regenerationKeys.current,
+      fingerprint,
+      () => `admin:regenerate-content:${itemId}:${crypto.randomUUID()}`,
+    )
     try {
-      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate`, { method: 'POST' })
-      setActionSuccess('재생성 요청을 등록했습니다. 잠시 후 초안이 갱신됩니다.')
+      const result = await fetchAPI<OperationResponse>(
+        `/admin/hospitals/${id}/content/${itemId}/regenerate`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': requestKey },
+        },
+      )
+      regenerationKeys.current.delete(fingerprint)
+      if (result.operation_run_id) {
+        setRegenerationRuns((current) => ({
+          ...current,
+          [`${itemId}:content`]: { itemId, runId: result.operation_run_id!, kind: 'content' },
+        }))
+      }
+      setActionSuccess('새 초안을 준비하고 있습니다. 완료되면 이 화면에 자동으로 반영됩니다.')
       void refetchHeader()
-      // 재생성은 비동기 큐잉만 하고 이 응답 시점엔 서버 상태가 아직 그대로다 —
-      // 다시 불러와도 보여줄 변화가 없다. 다음 자연스러운 새로고침에서 반영된다.
-      setSelected(null)
     } catch (e: unknown) {
       const message = safeOperatorError('content', '콘텐츠 목록을 다시 불러온 뒤 ‘다시 만들기’를 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
@@ -565,7 +668,7 @@ export default function ContentPage() {
   }
 
   // 아래 셋은 백엔드에 이미 있던 복구 경로인데 화면이 없어 AE가 쓸 수 없었다.
-  // 휴일·장애로 밀린 슬롯 이동, 중복 슬롯 정리, 본문은 멀쩡한데 이미지만 실패한 경우.
+  // 휴일·장애로 밀린 콘텐츠 항목 이동, 중복 콘텐츠 항목 정리, 본문은 멀쩡한데 이미지만 실패한 경우.
   async function handleReschedule(itemId: string, scheduledDate: string) {
     setActionLoading(true)
     clearActionFeedback()
@@ -592,12 +695,12 @@ export default function ContentPage() {
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/cancel`, { method: 'POST' })
-      setActionSuccess('슬롯을 종료했습니다. 자동 생성·발행 대상에서 빠집니다.')
+      setActionSuccess('콘텐츠 항목을 종료했습니다. 자동 생성·발행 대상에서 빠집니다.')
       void refetchHeader()
       load()
       setSelected(null)
     } catch (e: unknown) {
-      const message = safeOperatorError('content', '최신 상태를 확인한 뒤 ‘슬롯 종료’를 다시 누르세요.')
+      const message = safeOperatorError('content', '최신 상태를 확인한 뒤 ‘콘텐츠 항목 종료’를 다시 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
       else setActionError(message)
     } finally {
@@ -608,12 +711,28 @@ export default function ContentPage() {
   async function handleRegenerateImage(itemId: string) {
     setActionLoading(true)
     clearActionFeedback()
+    const fingerprint = `image\u0000${itemId}`
+    const requestKey = getOrCreatePendingActionKey(
+      regenerationKeys.current,
+      fingerprint,
+      () => `admin:regenerate-image:${itemId}:${crypto.randomUUID()}`,
+    )
     try {
-      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/regenerate-image`, {
-        method: 'POST',
-      })
-      setActionSuccess('이미지 재생성을 요청했습니다. 본문은 그대로 유지됩니다.')
-      // 이미지 재생성도 비동기 큐잉 — 이 시점엔 아직 반영할 서버 변화가 없다.
+      const result = await fetchAPI<OperationResponse>(
+        `/admin/hospitals/${id}/content/${itemId}/regenerate-image`,
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': requestKey },
+        },
+      )
+      regenerationKeys.current.delete(fingerprint)
+      if (result.operation_run_id) {
+        setRegenerationRuns((current) => ({
+          ...current,
+          [`${itemId}:image`]: { itemId, runId: result.operation_run_id!, kind: 'image' },
+        }))
+      }
+      setActionSuccess('새 대표 이미지를 준비하고 있습니다. 본문은 그대로 유지됩니다.')
     } catch (e: unknown) {
       const message = safeOperatorError('content', '본문 상태를 확인한 뒤 ‘이미지만 다시 만들기’를 누르세요.')
       if (selected && selected.id === itemId) setEditError(message)
@@ -828,6 +947,8 @@ export default function ContentPage() {
   const selectedReview = selected ? getReviewState(selected) : null
   const selectedNotification = selected ? getPublishNotificationPresentation(selected) : null
   const selectedPublicUrl = selected ? buildPublicContentUrl(publicHost, selected.id) : null
+  const contentRegenerationActive = Boolean(selected && regenerationRuns[`${selected.id}:content`])
+  const imageRegenerationActive = Boolean(selected && regenerationRuns[`${selected.id}:image`])
   // 금지 표현 검출도 backend compliance가 단일 기준 (FAQ 분리 필드까지 포함해 검사한다).
   // FORBIDDEN_RULES는 편집 모드의 실시간 힌트 용도로만 유지.
   const selectedTextViolations = selected?.compliance.forbidden_violations ?? []
@@ -898,7 +1019,7 @@ export default function ContentPage() {
             <SummaryCard label="Slack 알림 확인 필요" value={summary.notificationPending} tone="amber" hint="알림 상태와 처리 방법 확인" filter="notificationPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="정상 발행" value={summary.published} tone="green" hint="자동 검증 통과·공개 완료" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복·노후 슬롯" filter="cancelled" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복되거나 오래된 콘텐츠" filter="cancelled" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
           </div>
         </details>
         {activeFilter !== 'all' && (
@@ -1020,7 +1141,7 @@ export default function ContentPage() {
                   <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
                     {items.length === 0 ? '이번 달 콘텐츠가 아직 없습니다.' : '선택한 상태의 콘텐츠가 없습니다.'}
                     <br />
-                    {items.length === 0 && <span className="text-slate-500">스케줄 탭에서 월간 슬롯을 만들거나 야간 생성 결과를 기다려 주세요.</span>}
+                    {items.length === 0 && <span className="text-slate-500">발행 일정 탭에서 월간 콘텐츠 항목을 만들거나 야간 생성 결과를 기다려 주세요.</span>}
                   </td>
                 </tr>
               )}
@@ -1142,7 +1263,7 @@ export default function ContentPage() {
                   </span>
                 )}
                 {!editMode && !briefEditMode && (
-                  <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">{selected.title ?? '생성 전 슬롯'}</h3>
+                  <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">{selected.title ?? '생성 전 콘텐츠 항목'}</h3>
                 )}
                 {editMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 편집</h3>}
                 {briefEditMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 가이드 편집</h3>}
@@ -1450,7 +1571,7 @@ export default function ContentPage() {
               <div className="p-6">
                 <div className="mb-5 border border-slate-200 rounded-lg overflow-hidden">
                   <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase tracking-wide">
-                    AI 노출 콘텐츠 가이드
+                    답변 노출 콘텐츠 가이드
                   </div>
                   <div className="p-4 space-y-3 text-sm">
                     <div className="flex flex-wrap items-center gap-2">
@@ -1636,14 +1757,14 @@ export default function ContentPage() {
                       {confirmAction === 'reject'
                         ? '이 콘텐츠를 즉시 비공개할까요?'
                         : confirmAction === 'cancel'
-                          ? '이 슬롯을 종료할까요?'
+                          ? '이 콘텐츠 항목을 종료할까요?'
                           : '이 콘텐츠를 즉시 재생성할까요?'}
                     </p>
                     <p className="mt-1 text-xs leading-relaxed text-red-700">
                       {confirmAction === 'reject'
                         ? '공개 사이트에서 바로 제거되고 반려 상태로 기록됩니다. 새 콘텐츠는 야간 재생성 주기에 만들어집니다.'
                         : confirmAction === 'cancel'
-                          ? '이 슬롯은 자동 생성·발행 대상에서 영구히 빠집니다. 이번 달 편수에서 한 편이 줄어듭니다.'
+                          ? '이 콘텐츠 항목은 자동 생성·발행 대상에서 영구히 빠집니다. 이번 달 편수에서 한 편이 줄어듭니다.'
                           : '현재 콘텐츠가 재생성 대기열에 등록되고, 생성이 끝나면 새 초안으로 교체됩니다.'}
                     </p>
                     <div className="mt-3 flex justify-end gap-2">
@@ -1656,15 +1777,17 @@ export default function ContentPage() {
                           else if (confirmAction === 'cancel') handleCancelSlot(selected.id)
                           else handleRegenerate(selected.id)
                         }}
-                        disabled={actionLoading}
+                        disabled={actionLoading || (confirmAction === 'regenerate' && contentRegenerationActive)}
                         className="min-h-11 rounded-lg bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
                       >
-                        {actionLoading
+                        {contentRegenerationActive && confirmAction === 'regenerate'
+                          ? '새 초안 준비 중'
+                          : actionLoading
                           ? '처리 중...'
                           : confirmAction === 'reject'
                             ? '비공개 후 재생성'
                             : confirmAction === 'cancel'
-                              ? '슬롯 종료'
+                              ? '콘텐츠 항목 종료'
                               : '재생성 요청'}
                       </button>
                     </div>
@@ -1695,7 +1818,7 @@ export default function ContentPage() {
                   </div>
                 ) : selected.status === 'CANCELLED' ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    이 슬롯은 중복·노후 백로그로 종료되어 자동 생성과 발행에서 제외됩니다.
+                    이 콘텐츠 항목은 중복되었거나 발행 시점이 지나 종료됐으며, 자동 생성과 발행에서 제외됩니다.
                   </div>
                 ) : (
                   <div className="flex flex-wrap gap-3">
@@ -1708,10 +1831,10 @@ export default function ContentPage() {
                     </button>
                     <button
                       onClick={() => setConfirmAction('regenerate')}
-                      disabled={actionLoading}
+                      disabled={actionLoading || contentRegenerationActive}
                       className="min-h-11 flex-1 min-w-44 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
                     >
-                      즉시 재생성
+                      {contentRegenerationActive ? '새 초안 준비 중' : '즉시 재생성'}
                     </button>
                     <div className="w-full border-t border-slate-200 pt-3">
                       <p className="text-xs font-medium text-slate-500">운영 복구</p>
@@ -1734,10 +1857,10 @@ export default function ContentPage() {
                         <button
                           type="button"
                           onClick={() => handleRegenerateImage(selected.id)}
-                          disabled={actionLoading}
+                          disabled={actionLoading || imageRegenerationActive}
                           className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
                         >
-                          이미지만 재생성
+                          {imageRegenerationActive ? '새 이미지 준비 중' : '이미지만 재생성'}
                         </button>
                         <button
                           type="button"
@@ -1745,12 +1868,12 @@ export default function ContentPage() {
                           disabled={actionLoading}
                           className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-40"
                         >
-                          슬롯 종료
+                          콘텐츠 항목 종료
                         </button>
                       </div>
                       <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
                         휴일·장애로 밀렸으면 발행일을 옮기고, 본문은 괜찮은데 이미지만 실패했으면
-                        이미지만 다시 만듭니다. 중복이거나 이미 지난 슬롯은 종료해 자동 생성 대상에서 뺍니다.
+                        이미지만 다시 만듭니다. 중복되었거나 발행 시점이 지난 콘텐츠 항목은 종료해 자동 생성 대상에서 뺍니다.
                       </p>
                     </div>
                   </div>

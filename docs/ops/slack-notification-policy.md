@@ -1,8 +1,9 @@
 # Re:putation Slack 알림 정책
 
-문서 버전: **2.0** · 갱신일: **2026-09-07 (Asia/Seoul)**
-구현 기준: **`345a6420998bcba21169519cf5ad77600cbfa94b`**
-범위: 현재 알림 정책과 코드 경계. 실제 수신 채널은 webhook 설정으로 결정되며 이번 구조 조사에서 Slack 메시지를 보내지 않았다.
+문서 버전: **2.3** · 갱신일: **2026-09-07 (Asia/Seoul)**
+소스 기준선: **`39dc1f8a98abe9193a8e2202395d2272c370fe8e`**
+구현 상태: **기준선 위 작업 로컬 검증 완료. 운영 전환·배포 전**
+범위: 현재 알림 정책과 코드 경계. 실제 수신 채널은 webhook 설정으로 결정되며 이번 문서 갱신에서 Slack 메시지를 보내지 않았다.
 
 운영 채널은 `#mkt-reputation`이며, `SLACK_WEBHOOK_URL`이 연결된 채널이 실제 수신처다.
 Incoming Webhook은 코드에서 채널을 바꾸지 못하므로 배포 전 웹훅이 이 채널에 연결됐는지
@@ -40,6 +41,9 @@ Slack은 로그 저장소가 아니라 사람이 행동을 결정하는 화면�
 | 시각/실행 | 메시지 수 | 내용 |
 |---|---:|---|
 | 매일 23:00 및 01:00·04:00·07:00 생성/복구 | 0건 | 생성 성공, 자료 처리·운영 기준 갱신 대기, 자동 재시도 중인 오류는 DB·감사 로그에만 기록한다 |
+| 매 1분 백그라운드 복구 | 0건 | 정상 자료 처리 재개, IndexNow 재시도, 공급자 사용량 임시 큐 복구, 예산 초기화 뒤 무료 진단 재개는 상태·구조화 로그에만 기록한다 |
+| 배포 전 FAQ·본문 검수 Job | 0건 | FAQ 3건 CAS 수정과 AI 검수 22건의 정상 처리·bounded 재시도는 실행 증거에만 기록한다. 최종 미종결 배포 차단만 묶어서 알린다 |
+| 배포 전 기존 이미지 인증 Job | 0건 | 정상 처리·batch 재시도는 실행 증거에만 기록하고, 개별 글마다 Slack을 보내지 않는다. 종결하지 못해 배포를 차단하는 예외만 묶어서 알린다 |
 | 매일 07:45 발행 전 마감 | 차단 요약 최대 1건 | 당일 발행 슬롯 중 저장된 안전·근거·운영 기준 차단을 병원별로 묶는다. 아직 자동 복구가 맡은 공급자·이미지 오류는 제외한다 |
 | 매일 08:00 발행 | 차단 요약 최대 1건 | 모든 예약 복구 뒤에도 공개를 막는 항목만 묶는다. 정상 자동 발행은 알리지 않는다 |
 | 매주 네이버 자산 수집 | 실패가 있을 때 최대 1건 | 실패 병원과 건수를 묶는다. 정상 수집·자료 처리·Essence 재검토·승인은 로그에만 남긴다 |
@@ -126,7 +130,9 @@ AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, 
 - 생성·측정 대상이 0건인 정상 실행
 - 이미 처리된 멱등 작업
 - 자동 재시도 중이며 아직 최종 실패가 아닌 외부 API 오류
+- 답변 저장 뒤 판정만 재개되는 측정, 비용 차단 재개 시각 대기와 예산 초기화 뒤 자동 재개
 - 네이버 자료의 정상 수집·처리, 최신 전체 snapshot 기반 Essence 자동 합성·검토·승인
+- IndexNow 제출 의도 기록·재시도 성공과 공급자 사용량 임시 큐의 복구 성공
 - 콘텐츠 자동 발행 및 수동 복구 발행 성공. 현재 두 발행 경로 모두 `CONTENT_PUBLISHED`
   Slack outbox를 만들지 않으며, 공개 상태·감사 로그·재검증 결과가 실행 증적이다.
 - `INCIDENT_OPEN` 공지가 나간 적 없는 인시던트의 복구 사실 (위 “자동 복구는 사람의 확인을
@@ -142,7 +148,7 @@ AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, 
 3. 23:00·01:00·04:00·07:00 생성/복구는 알림이 없고, 07:45·08:00 차단은 병원 수와
    관계없이 배치별 최대 한 메시지인지 확인
 4. Slack 실패 시 DB의 `notification_outbox.state`가 `FAILED`로 남고 신청 응답 자체는 성공하는지 확인
-5. 온보딩·월간 요약에 안정적인 ID, owner/SLA/impact, fallback text와 Admin 링크가 정확히 한
+5. 온보딩·월간 요약에 안정적인 ID, 담당자·처리 기한·고객 영향, fallback text와 Admin 링크가 정확히 한
    개인지 확인
 6. 월간 `COMPLETE`만으로 `CUSTOMER_READY`가 발행되지 않고, 원장용 산출물 검증과 현재 차단
    게이트를 모두 통과한 경우에만 발행되는지 확인
@@ -152,4 +158,4 @@ AE가 고칠 수 없는 순수 인프라 인시던트(`BACKGROUND_TASK_FAILED`, 
 
 ## 구현 근거
 
-[알림 facade](../../backend/app/services/notification_outbox.py), [인시던트 복구](../../backend/app/services/ops_incident_alerts.py), [전송](../../backend/app/services/notification_transport.py), [발행 차단](../../backend/app/workers/content_publication_block_control.py), [월간 공백 요약](../../backend/app/services/monthly_report_gap_notifications.py), [Beat 스케줄](../../backend/app/core/celery_app.py). 현재 코드와 정책이 다른 세부 경로는 [시스템 구조](../architecture/system-map.md)에 함께 기록한다.
+[알림 facade](../../backend/app/services/notification_outbox.py), [인시던트 복구](../../backend/app/services/ops_incident_alerts.py), [전송](../../backend/app/services/notification_transport.py), [발행 차단](../../backend/app/workers/content_publication_block_control.py), [월간 공백 요약](../../backend/app/services/monthly_report_gap_notifications.py), [IndexNow 복구](../../backend/app/workers/indexnow_retry.py), [공급자 사용량 복구](../../backend/app/workers/provider_usage_recovery.py), [Beat 스케줄](../../backend/app/core/celery_app.py). 현재 코드와 정책이 다른 세부 경로는 [시스템 구조](../architecture/system-map.md)에 함께 기록한다.

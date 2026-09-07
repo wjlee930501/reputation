@@ -76,6 +76,19 @@ def test_all_task_routes_target_consumed_queues():
         )
 
 
+def test_redis_priority_contract_puts_control_before_background_recovery():
+    routes = celery_app.conf.task_routes
+
+    assert celery_app.conf.task_queue_max_priority == 9
+    assert celery_app.conf.task_default_priority == 4
+    assert celery_app.conf.broker_transport_options["queue_order_strategy"] == "priority"
+    assert routes["app.workers.tasks.morning_content_auto_publish"]["priority"] == 0
+    assert routes["app.workers.tasks.retry_site_revalidation"]["priority"] == 0
+    assert routes["app.workers.autonomous_recovery.reconcile"]["priority"] == 0
+    assert routes["app.workers.indexnow_retry.drain"]["priority"] == 9
+    assert routes["app.workers.provider_usage_recovery.drain"]["priority"] == 9
+
+
 def test_every_registered_worker_task_has_a_task_routes_entry():
     """등록된 태스크에 라우팅이 없으면 명시적 queue= 없는 호출이 기본 'celery' 큐로 떨어져
     영원히 실행되지 않는다 — 회귀 사례: generate_content_image, process_source_asset_task,

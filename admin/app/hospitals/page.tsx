@@ -91,7 +91,7 @@ export default function HospitalsPage() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">병원 목록</h1>
             <p className="text-sm text-slate-500 mt-1">
-              MotionLabs가 운영 중인 병원 워크스페이스 — 클릭하여 대시보드로 이동합니다.
+              MotionLabs가 관리하는 병원 운영 화면입니다. 병원을 선택하면 운영 요약을 볼 수 있습니다.
             </p>
           </div>
           <Link
@@ -172,8 +172,8 @@ export default function HospitalsPage() {
               </div>
               <ul className="mt-2 divide-y divide-slate-100">
                 {[
-                  ...attention.reports.missing.map((row) => ({ row, label: '리포트 없음' })),
-                  ...attention.reports.undelivered.map((row) => ({ row, label: '원장 미전달' })),
+                  ...attention.reports.missing.map((row) => ({ row, label: '보고서 없음' })),
+                  ...attention.reports.undelivered.map((row) => ({ row, label: '원장에게 전달하지 않음' })),
                 ]
                   .slice(0, ATTENTION_VISIBLE_ROWS)
                   .map(({ row, label }) => (
@@ -203,7 +203,7 @@ export default function HospitalsPage() {
         <div className="bg-white border border-dashed border-slate-300 rounded-xl py-16 px-6 text-center">
           <p className="text-base font-semibold text-slate-700">아직 등록된 병원이 없습니다.</p>
           <p className="text-sm text-slate-500 mt-2 max-w-md mx-auto">
-            계약이 체결된 병원을 등록하면 초기 진단 리포트 → 병원 정보 허브 준비 → 콘텐츠 자동 생성 순서로 진행됩니다.
+            계약이 체결된 병원을 등록하면 초기 진단 보고서 → 병원 정보 허브 준비 → 콘텐츠 자동 생성 순서로 진행됩니다.
           </p>
           <Link
             href="/hospitals/new"
@@ -243,7 +243,7 @@ export default function HospitalsPage() {
                   <th className="text-left px-6 py-3 text-slate-600 font-medium">월간 운영량</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 기본 정보</th>
                   <th className="text-center px-4 py-3 text-slate-600 font-medium">병원 정보 허브</th>
-                  <th className="text-center px-4 py-3 text-slate-600 font-medium">스케줄</th>
+                  <th className="text-center px-4 py-3 text-slate-600 font-medium">발행 일정</th>
                   <th className="px-4 py-3"></th>
                 </tr>
               </thead>
@@ -328,7 +328,7 @@ export default function HospitalsPage() {
                       <td className="px-4 py-4 text-center" data-label="정보 허브">
                         <CheckCell done={h.site_live} />
                       </td>
-                      <td className="px-4 py-4 text-center" data-label="스케줄">
+                      <td className="px-4 py-4 text-center" data-label="발행 일정">
                         <CheckCell done={h.schedule_set} />
                       </td>
                       <td className="px-4 py-4 text-right" data-label="">

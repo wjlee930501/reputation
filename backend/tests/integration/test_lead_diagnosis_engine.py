@@ -4,12 +4,14 @@
 "두 번째 병원이 공급자를 부르지 않는다"에 있는데, 그건 실제 조회·삽입이 돌아야
 관측된다.
 """
+import asyncio
 import itertools
 import uuid
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import func, select
+import redis.asyncio as redis_async
+from sqlalchemy import delete, func, select
 
 from app.core.config import settings
 from app.models.lead import SalesLead
@@ -27,8 +29,10 @@ from app.services import (
     sov_engine,
 )
 from app.services.query_mapper import build_lead_diagnosis_queries
+from app.workers import lead_diagnosis_tasks
 
 _slot_sequence = itertools.count(1)
+_real_singleflight_fetch_answer = lead_query_cache.singleflight_fetch_answer
 
 
 async def _noop_alert(**_kwargs):
@@ -43,7 +47,7 @@ class _ProviderSpy:
         self.text = text
         self.fail_platforms = set(fail_platforms)
 
-    async def fetch_answer(self, query_text, platform, *, pool=None, requested_model=None):
+    async def fetch_answer(self, query_text, platform, **_kwargs):
         self.calls.append((platform, query_text))
         if platform in self.fail_platforms:
             return {
@@ -109,10 +113,18 @@ def allow_leadgen_budget_by_default(monkeypatch):
     각자 `_GuardSpy`로 덮어쓴다.
     """
 
-    async def _allow(category, *, count=1, redis_client=None):
+    async def _allow(category, *, count=1, **_kwargs):
         return cost_guard.CostGuardDecision(True, None)
 
-    monkeypatch.setattr(cost_guard, "check_and_increment", _allow)
+    async def _settle(_receipt, *, consumed_units, **_kwargs):
+        return None
+
+    async def _direct_singleflight(*, fetch, **_kwargs):
+        return lead_query_cache.SingleFlightAnswer(await fetch(), owner=True)
+
+    monkeypatch.setattr(cost_guard, "reserve", _allow)
+    monkeypatch.setattr(cost_guard, "settle_reservation", _settle)
+    monkeypatch.setattr(lead_query_cache, "singleflight_fetch_answer", _direct_singleflight)
 
 
 async def _seed_diagnosis(
@@ -162,7 +174,7 @@ class _GuardSpy:
         self.allowed = allowed
         self.reason = reason
 
-    async def check_and_increment(self, category, *, count=1, redis_client=None):
+    async def reserve(self, category, *, count=1, **_kwargs):
         self.reservations.append((category, count))
         return cost_guard.CostGuardDecision(self.allowed, self.reason)
 
@@ -183,13 +195,14 @@ class TestCallBudget:
         self, pg_async_session, spy, monkeypatch
     ):
         guard = _GuardSpy()
-        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        monkeypatch.setattr(cost_guard, "reserve", guard.reserve)
 
         diagnosis = await _seed_diagnosis(pg_async_session)
         await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
 
-        # 진단 1건이 아니라 답변 호출 18건을 예약해야 한다.
-        assert guard.leadgen_count == 18
+        # 답변과 병원별 판정을 각각 checkpoint 경계에서 예약한다.
+        assert guard.reservations == [("leadgen", 18), ("leadgen", 18)]
+        assert guard.leadgen_count == 36
 
     async def test_cache_hits_are_not_charged(self, pg_async_session, spy, monkeypatch):
         """캐시에서 온 답변은 돈을 쓰지 않는다 — 예산에도 그렇게 반영돼야 한다.
@@ -201,10 +214,11 @@ class TestCallBudget:
         await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, first)
 
         guard = _GuardSpy()
-        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        monkeypatch.setattr(cost_guard, "reserve", guard.reserve)
         second = await _seed_diagnosis(pg_async_session, hospital_name="같은질의의원")
         await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, second)
 
+        assert guard.reservations == [("leadgen", 0), ("leadgen", 0)]
         assert guard.leadgen_count == 0
 
     async def test_blocked_budget_stops_before_any_provider_call(
@@ -212,7 +226,7 @@ class TestCallBudget:
     ):
         """차단은 호출 **전에** 일어나야 한다 — 후에 막으면 돈은 이미 나갔다."""
         guard = _GuardSpy(allowed=False, reason="일일 호출 상한(500건)에 도달했습니다.")
-        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        monkeypatch.setattr(cost_guard, "reserve", guard.reserve)
         alerts: list[dict] = []
 
         async def _capture(**kwargs):
@@ -227,18 +241,21 @@ class TestCallBudget:
 
         assert spy.calls == []
         assert result["blocked"] == "cost_guard"
-        assert diagnosis.execution_status == ExecutionStatus.FAILED.value
-        assert "예산" in (diagnosis.error or "")
-        # 조용히 실패하면 신청자는 리포트를 못 받고 아무도 이유를 모른다.
+        assert diagnosis.execution_status == ExecutionStatus.PENDING.value
+        assert diagnosis.execution_attempts == 0
+        assert diagnosis.cost_deferred_until is not None
+        assert diagnosis.cost_defer_reason
+        assert "자동 재개" in (diagnosis.error or "")
+        # Incident is durable and deduplicated, but a routine budget wait stays quiet.
         assert len(alerts) == 1
-        assert alerts[0].get("notify", True) is True
+        assert alerts[0]["notify"] is False
 
     async def test_blocked_budget_writes_no_measurement_rows(
         self, pg_async_session, spy, monkeypatch
     ):
         """0건 측정을 행으로 남기면 리포트가 분모 0으로 만들어질 여지가 생긴다."""
         guard = _GuardSpy(allowed=False, reason="상한 도달")
-        monkeypatch.setattr(cost_guard, "check_and_increment", guard.check_and_increment)
+        monkeypatch.setattr(cost_guard, "reserve", guard.reserve)
         monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _noop_alert)
 
         diagnosis = await _seed_diagnosis(pg_async_session)
@@ -252,6 +269,144 @@ class TestCallBudget:
             )
         )
         assert rows == 0
+
+    async def test_cached_answers_still_obey_kill_switch_before_paid_judgment(
+        self, pg_async_session, monkeypatch
+    ):
+        provider = _ProviderSpy(text="수서역에는 가나의원과 다라의원이 있습니다.")
+        judged: list[str] = []
+
+        async def judge(hospital_name, response_text, region=""):
+            judged.append(hospital_name)
+            return _verdict_for(hospital_name in response_text)
+
+        monkeypatch.setattr(sov_engine, "fetch_answer", provider.fetch_answer)
+        monkeypatch.setattr(sov_engine, "judge_mention", judge)
+        first = await _seed_diagnosis(pg_async_session, hospital_name="가나의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, first)
+        assert len(provider.calls) == 18
+        judged.clear()
+        provider.calls.clear()
+
+        guard = _GuardSpy(allowed=False, reason="kill switch")
+        monkeypatch.setattr(cost_guard, "reserve", guard.reserve)
+        monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _noop_alert)
+        second = await _seed_diagnosis(pg_async_session, hospital_name="다라의원")
+        result = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, second
+        )
+
+        # Cached answer lookup itself costs zero, but reserve(count=0) still checks the
+        # global kill switch before the pending paid judgment can run.
+        assert guard.reservations == [("leadgen", 0)]
+        assert provider.calls == []
+        assert judged == []
+        assert result["blocked"] == "cost_guard"
+
+    async def test_daily_budget_reset_resumes_same_diagnosis_automatically(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        guard = _GuardSpy(
+            allowed=False,
+            reason="무료 진단 측정 일일 호출 상한(500건)에 도달했습니다.",
+        )
+        monkeypatch.setattr(cost_guard, "reserve", guard.reserve)
+        monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _noop_alert)
+        recovered: list[dict] = []
+
+        async def _recover(**kwargs):
+            recovered.append(kwargs)
+
+        monkeypatch.setattr(lead_diagnosis_engine, "recover_ops_incident", _recover)
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        diagnosis_id = diagnosis.id
+
+        blocked = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+        assert blocked["blocked"] == "cost_guard"
+        assert diagnosis.execution_status == ExecutionStatus.PENDING.value
+        assert diagnosis.execution_attempts == 0
+        assert diagnosis_id not in {
+            uuid.UUID(value)
+            for value in await lead_diagnosis_tasks._pending_to_dispatch(pg_async_session)
+        }
+
+        # The minute drain sees the same durable row once the KST reset is past.
+        diagnosis.cost_deferred_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await pg_async_session.commit()
+        assert diagnosis_id in {
+            uuid.UUID(value)
+            for value in await lead_diagnosis_tasks._pending_to_dispatch(pg_async_session)
+        }
+        assert await lead_diagnosis_tasks._claim_for_execution(
+            pg_async_session, diagnosis_id
+        )
+
+        guard.allowed = True
+        guard.reason = None
+        resumed = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert resumed["status"] == ExecutionStatus.SUCCEEDED.value
+        assert diagnosis.execution_attempts == 1
+        assert diagnosis.cost_deferred_until is None
+        assert diagnosis.cost_defer_reason is None
+        assert len(spy.calls) == 18
+        assert len(recovered) == 1
+
+    async def test_judgment_budget_deferral_keeps_purchased_answers(
+        self, pg_async_session, spy, monkeypatch
+    ):
+        reservations: list[int] = []
+
+        async def allow_answer_then_block_judgment(category, *, count=1, **_kwargs):
+            reservations.append(count)
+            if len(reservations) == 1:
+                return cost_guard.CostGuardDecision(True, None)
+            return cost_guard.CostGuardDecision(False, "일일 호출 상한")
+
+        judge_calls = 0
+
+        async def judge(hospital_name, response_text, region=""):
+            nonlocal judge_calls
+            judge_calls += 1
+            return await _judge_matched(hospital_name, response_text, region)
+
+        monkeypatch.setattr(cost_guard, "reserve", allow_answer_then_block_judgment)
+        monkeypatch.setattr(sov_engine, "judge_mention", judge)
+        monkeypatch.setattr(lead_diagnosis_engine, "open_ops_incident", _noop_alert)
+        monkeypatch.setattr(lead_diagnosis_engine, "recover_ops_incident", _noop_alert)
+        diagnosis = await _seed_diagnosis(pg_async_session)
+
+        blocked = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert blocked["blocked"] == "cost_guard"
+        assert reservations == [18, 18]
+        assert len(spy.calls) == 18
+        assert judge_calls == 0
+        assert diagnosis.execution_attempts == 1
+
+        async def allow(*_args, **_kwargs):
+            return cost_guard.CostGuardDecision(True, None)
+
+        monkeypatch.setattr(cost_guard, "reserve", allow)
+        diagnosis.cost_deferred_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+        await pg_async_session.commit()
+        assert await lead_diagnosis_tasks._claim_for_execution(
+            pg_async_session, diagnosis.id
+        )
+        resumed = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert resumed["status"] == ExecutionStatus.SUCCEEDED.value
+        assert diagnosis.execution_attempts == 2
+        assert len(spy.calls) == 18
+        assert judge_calls == 18
 
     async def test_leadgen_budget_is_separate_from_the_operations_sov_budget(self):
         """1단 폭주가 계약 병원의 월간 측정을 차단하면 안 된다(설계 §0의 두 단 분리)."""
@@ -325,7 +480,7 @@ class TestExecutionStatus:
         """플랫폼당 결측 1건까지는 리포트를 만든다 — 하한(8/9)이 허용하는 범위다."""
         failed_by_platform: dict[str, int] = {}
 
-        async def fetch(query_text, platform, *, pool=None, requested_model=None):
+        async def fetch(query_text, platform, **_kwargs):
             if failed_by_platform.get(platform, 0) < 1:
                 failed_by_platform[platform] = failed_by_platform.get(platform, 0) + 1
                 return {
@@ -360,7 +515,7 @@ class TestExecutionStatus:
         """
         flaky = itertools.count()
 
-        async def fetch(query_text, platform, *, pool=None, requested_model=None):
+        async def fetch(query_text, platform, **_kwargs):
             # 3번째 호출마다 실패 — 플랫폼당 3건씩 빠져 하한(8/9) 미달.
             if next(flaky) % 3 == 0:
                 return {
@@ -480,9 +635,105 @@ class TestExecutionStatus:
         assert all(r.is_mentioned is None for r in rows)
         assert diagnosis.execution_status == ExecutionStatus.FAILED.value
 
+        # Remove the shared query cache to prove the per-result answer checkpoint itself is
+        # enough to resume after a judge outage without purchasing any answer again.
+        await pg_async_session.execute(delete(LeadQueryAnswer))
+        await pg_async_session.commit()
+        diagnosis.execution_attempts = 2
+        diagnosis.execution_status = ExecutionStatus.RUNNING.value
+        monkeypatch.setattr(sov_engine, "judge_mention", _judge_matched)
+
+        retried = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert retried["succeeded"] == 18
+        assert len(spy.calls) == 18
+        retry_rows = (
+            await pg_async_session.execute(
+                select(LeadDiagnosisResult).where(
+                    LeadDiagnosisResult.diagnosis_id == diagnosis.id,
+                    LeadDiagnosisResult.attempt_no == 2,
+                )
+            )
+        ).scalars().all()
+        assert len(retry_rows) == 18
+        assert all(row.judgment_input_fingerprint for row in retry_rows)
+
+    async def test_ambiguous_checkpoint_is_reused_without_resampling(
+        self, pg_async_session, monkeypatch
+    ):
+        provider = _ProviderSpy()
+        monkeypatch.setattr(sov_engine, "fetch_answer", provider.fetch_answer)
+        monkeypatch.setattr(sov_engine, "judge_mention", _judge_ambiguous)
+        diagnosis = await _seed_diagnosis(pg_async_session)
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, diagnosis)
+        await pg_async_session.execute(delete(LeadQueryAnswer))
+        await pg_async_session.commit()
+
+        judge_calls = 0
+
+        async def should_not_resample(*_args, **_kwargs):
+            nonlocal judge_calls
+            judge_calls += 1
+            raise AssertionError("completed ambiguous judgment was resampled")
+
+        monkeypatch.setattr(sov_engine, "judge_mention", should_not_resample)
+        diagnosis.execution_attempts = 2
+        diagnosis.execution_status = ExecutionStatus.RUNNING.value
+        retried = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert len(provider.calls) == 18
+        assert judge_calls == 0
+        assert retried["ambiguous"] == 18
+        retry_rows = (
+            await pg_async_session.execute(
+                select(LeadDiagnosisResult).where(
+                    LeadDiagnosisResult.diagnosis_id == diagnosis.id,
+                    LeadDiagnosisResult.attempt_no == 2,
+                )
+            )
+        ).scalars().all()
+        assert len(retry_rows) == 18
+        assert all(row.mention_verdict == "AMBIGUOUS" for row in retry_rows)
+
 
 @pytest.mark.asyncio
 class TestSharedQueryCache:
+    async def test_redis_handoff_survives_owner_crash_by_backfilling_db_cache(
+        self, pg_async_session, monkeypatch
+    ):
+        provider = _ProviderSpy()
+
+        async def handed_off(*, fetch, **_kwargs):
+            return lead_query_cache.SingleFlightAnswer(
+                {
+                    "raw_response": "장편한외과의원이 있습니다.",
+                    "source_urls": [],
+                    "answer_model": "handoff-model",
+                    "measurement_status": "SUCCESS",
+                    "failure_reason": None,
+                },
+                owner=False,
+            )
+
+        monkeypatch.setattr(sov_engine, "fetch_answer", provider.fetch_answer)
+        monkeypatch.setattr(sov_engine, "judge_mention", _judge_matched)
+        monkeypatch.setattr(lead_query_cache, "singleflight_fetch_answer", handed_off)
+        diagnosis = await _seed_diagnosis(pg_async_session)
+
+        result = await lead_diagnosis_engine.run_diagnosis_measurements(
+            pg_async_session, diagnosis
+        )
+
+        assert result["succeeded"] == 18
+        assert provider.calls == []
+        assert await pg_async_session.scalar(
+            select(func.count()).select_from(LeadQueryAnswer)
+        ) == 18
+
     async def test_second_hospital_with_the_same_queries_calls_no_provider(
         self, pg_async_session, spy
     ):
@@ -502,6 +753,39 @@ class TestSharedQueryCache:
         assert spy.calls == []
         assert result["cached"] == 18
         assert second.execution_status == ExecutionStatus.SUCCEEDED.value
+
+    async def test_cached_judgment_uses_and_resets_leadgen_attribution(
+        self, pg_async_session, monkeypatch
+    ):
+        provider = _ProviderSpy(text="수서역에는 가나의원과 다라의원이 있습니다.")
+        contexts: list[tuple[str, object, str]] = []
+
+        async def judge(hospital_name, response_text, region=""):
+            contexts.append(
+                (
+                    sov_engine._provider_cost_category.get(),
+                    sov_engine._provider_lead_id.get(),
+                    sov_engine._provider_workflow.get(),
+                )
+            )
+            return _verdict_for(hospital_name in response_text)
+
+        monkeypatch.setattr(sov_engine, "fetch_answer", provider.fetch_answer)
+        monkeypatch.setattr(sov_engine, "judge_mention", judge)
+        first = await _seed_diagnosis(pg_async_session, hospital_name="가나의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, first)
+        contexts.clear()
+        provider.calls.clear()
+
+        second = await _seed_diagnosis(pg_async_session, hospital_name="다라의원")
+        await lead_diagnosis_engine.run_diagnosis_measurements(pg_async_session, second)
+
+        assert provider.calls == []
+        assert contexts == [
+            (sov_engine.POOL_LEADGEN, second.lead_id, "lead_diagnosis_judgment")
+        ] * 18
+        assert sov_engine._provider_cost_category.get() == sov_engine.POOL_SOV
+        assert sov_engine._provider_lead_id.get() is None
 
     async def test_cached_results_keep_the_original_measurement_time(
         self, pg_async_session, spy
@@ -706,3 +990,119 @@ class TestCacheConflictIsolation:
             await pg_async_session.scalar(select(func.count()).select_from(LeadQueryAnswer))
         )
         assert after == before, "충돌한 캐시 행이 중복 저장됐다"
+
+
+@pytest.mark.asyncio
+class TestRedisSingleFlight:
+    @staticmethod
+    async def _clean(client, query_text: str) -> None:
+        cache_key = lead_query_cache.query_cache_key(
+            query_text=query_text,
+            platform="chatgpt",
+            requested_model=settings.OPENAI_MODEL_QUERY,
+        )
+        lease_key, result_key = lead_query_cache._flight_keys(cache_key, 1)
+        await client.delete(lease_key, result_key)
+
+    async def test_same_cache_key_has_one_owner_and_durable_handoff(self):
+        client = redis_async.from_url(settings.REDIS_URL)
+        query_text = f"singleflight-{uuid.uuid4()}"
+        await self._clean(client, query_text)
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.05)
+            return {
+                "raw_response": f"answer-{calls}",
+                "measurement_status": "SUCCESS",
+            }
+
+        async def one():
+            return await _real_singleflight_fetch_answer(
+                query_text=query_text,
+                platform="chatgpt",
+                requested_model=settings.OPENAI_MODEL_QUERY,
+                repeat_no=1,
+                fetch=fetch,
+                redis_client=client,
+            )
+
+        try:
+            first_wave = await asyncio.gather(*(one() for _ in range(12)))
+            assert calls == 1
+            assert sum(result.owner for result in first_wave) == 1
+            assert {result.answer["raw_response"] for result in first_wave} == {"answer-1"}
+
+            # The owner may die after publishing to Redis but before the DB checkpoint. The
+            # short handoff remains reusable for this exact cache identity, so a worker retry
+            # does not buy the successful answer again.
+            second_wave = await asyncio.gather(*(one() for _ in range(12)))
+            assert calls == 1
+            assert sum(result.owner for result in second_wave) == 0
+            assert {result.answer["raw_response"] for result in second_wave} == {"answer-1"}
+        finally:
+            await self._clean(client, query_text)
+            await client.aclose()
+
+    async def test_provider_exception_is_not_refetched_as_a_redis_failure(self):
+        client = redis_async.from_url(settings.REDIS_URL)
+        query_text = f"singleflight-error-{uuid.uuid4()}"
+        await self._clean(client, query_text)
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("provider failed")
+
+        try:
+            with pytest.raises(RuntimeError, match="provider failed"):
+                await _real_singleflight_fetch_answer(
+                    query_text=query_text,
+                    platform="chatgpt",
+                    requested_model=settings.OPENAI_MODEL_QUERY,
+                    repeat_no=1,
+                    fetch=fetch,
+                    redis_client=client,
+                )
+            assert calls == 1
+        finally:
+            await self._clean(client, query_text)
+            await client.aclose()
+
+    async def test_waiter_recovers_after_owner_lease_expires(self, monkeypatch):
+        client = redis_async.from_url(settings.REDIS_URL)
+        query_text = f"singleflight-recovery-{uuid.uuid4()}"
+        await self._clean(client, query_text)
+        cache_key = lead_query_cache.query_cache_key(
+            query_text=query_text,
+            platform="chatgpt",
+            requested_model=settings.OPENAI_MODEL_QUERY,
+        )
+        lease_key, _result_key = lead_query_cache._flight_keys(cache_key, 1)
+        await client.set(lease_key, "dead-owner", ex=1)
+        monkeypatch.setattr(lead_query_cache, "_FLIGHT_POLL_SECONDS", 0.01)
+        calls = 0
+
+        async def fetch():
+            nonlocal calls
+            calls += 1
+            return {"raw_response": "recovered", "measurement_status": "SUCCESS"}
+
+        try:
+            result = await _real_singleflight_fetch_answer(
+                query_text=query_text,
+                platform="chatgpt",
+                requested_model=settings.OPENAI_MODEL_QUERY,
+                repeat_no=1,
+                fetch=fetch,
+                redis_client=client,
+            )
+            assert result.owner is True
+            assert result.answer["raw_response"] == "recovered"
+            assert calls == 1
+        finally:
+            await self._clean(client, query_text)
+            await client.aclose()

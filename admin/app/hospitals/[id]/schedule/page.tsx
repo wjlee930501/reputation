@@ -70,7 +70,7 @@ export default function SchedulePage() {
   const [result, setResult] = useState<{ slots_created: number; first_publish_date: string } | null>(null)
   const [confirmingReplacement, setConfirmingReplacement] = useState(false)
 
-  // 현재 운영 중인 스케줄 — 404는 "아직 스케줄 없음"으로 처리
+  // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
   const [existing, setExisting] = useState<ScheduleInfo | null>(null)
   const [existingLoading, setExistingLoading] = useState(true)
   const [existingError, setExistingError] = useState<string | null>(null)
@@ -85,7 +85,7 @@ export default function SchedulePage() {
       .then((schedule) => {
         if (cancelled || !schedule) return
         setExisting(schedule)
-        // 기존 스케줄로 폼을 미리 채워 실수로 다른 값으로 덮어쓰지 않게 한다.
+        // 기존 발행 일정으로 폼을 미리 채워 실수로 다른 값으로 덮어쓰지 않게 한다.
         setPlan(schedule.plan)
         setSelectedDays([...schedule.publish_days].sort((a, b) => a - b))
         // 시작일은 미래 날짜만 이어받는다 — 과거 날짜로 재저장하면 지난 달 슬롯을 다시 만들게 된다.
@@ -97,7 +97,7 @@ export default function SchedulePage() {
       .catch((e: unknown) => {
         if (cancelled) return
         if (e instanceof ApiError && e.status === 404) {
-          setExisting(null) // 아직 설정된 스케줄 없음 — 정상 흐름
+          setExisting(null) // 아직 설정된 발행 일정 없음 — 정상 흐름
         } else {
           if (!isExpectedOperatorRequestFailure(e)) throw e
           setExistingError(safeOperatorError('onboarding', '운영 화면을 다시 불러 현재 콘텐츠 발행 일정을 확인하세요.'))
@@ -142,7 +142,7 @@ export default function SchedulePage() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!canSubmitSchedule(existingLoading, existingError)) {
-      setError('기존 스케줄 상태를 확인한 뒤 다시 시도해 주세요.')
+      setError('기존 발행 일정 상태를 확인한 뒤 다시 시도해 주세요.')
       return
     }
     if (readinessLoading || readinessError) {
@@ -150,7 +150,7 @@ export default function SchedulePage() {
       return
     }
     if (readinessBlockers.length > 0) {
-      setError(`콘텐츠 스케줄 설정 전 필요한 작업이 남아 있습니다.\n- ${readinessBlockers.join('\n- ')}`)
+      setError(`콘텐츠 발행 일정 설정 전 필요한 작업이 남아 있습니다.\n- ${readinessBlockers.join('\n- ')}`)
       return
     }
     if (selectedDays.length === 0) {
@@ -199,7 +199,7 @@ export default function SchedulePage() {
 
   return (
     <div className="max-w-5xl p-4 sm:p-6 lg:p-8">
-      <h2 className="text-xl font-bold text-slate-900 mb-2">콘텐츠 운영 스케줄</h2>
+      <h2 className="text-xl font-bold text-slate-900 mb-2">콘텐츠 발행 일정</h2>
       <p className="text-sm text-slate-600 mb-6">
         병원 콘텐츠 허브에 발행할 월간 콘텐츠 수와 운영 요일을 설정합니다.
       </p>
@@ -208,7 +208,7 @@ export default function SchedulePage() {
       <div className="min-w-0">
       {existingLoading && (
         <div className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
-          현재 운영 중인 스케줄을 확인하는 중...
+          현재 운영 중인 발행 일정을 확인하는 중...
         </div>
       )}
       {existingError && (
@@ -219,7 +219,7 @@ export default function SchedulePage() {
       )}
       {!readinessLoading && readinessBlockers.length > 0 && (
         <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-          <p className="text-sm font-semibold text-amber-900">스케줄 설정 전 완료할 작업</p>
+          <p className="text-sm font-semibold text-amber-900">발행 일정 설정 전 완료할 작업</p>
           <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-900">
             {readinessBlockers.map((blocker) => (
               <li key={blocker}>{blocker}</li>
@@ -229,7 +229,7 @@ export default function SchedulePage() {
       )}
       {!existingLoading && existing && (
         <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-          <p className="text-sm font-semibold text-blue-900">현재 운영 중인 스케줄</p>
+          <p className="text-sm font-semibold text-blue-900">현재 운영 중인 발행 일정</p>
           <dl className="mt-2 space-y-1 text-sm text-blue-900">
             <div className="flex justify-between gap-2">
               <dt className="text-blue-700">월간 운영량</dt>
@@ -247,21 +247,21 @@ export default function SchedulePage() {
             </div>
           </dl>
           <p className="mt-2 text-xs text-blue-700">
-            새로 저장하면 기존 스케줄이 교체되고, 아직 생성되지 않은 미발행 초안 슬롯이 재생성됩니다.
+            새로 저장하면 기존 발행 일정이 교체되고, 아직 발행하지 않은 콘텐츠 항목이 새 기준으로 만들어집니다.
           </p>
         </div>
       )}
       {!existingLoading && !existing && !existingError && (
         <div className="mb-4 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-          아직 설정된 스케줄이 없습니다. 첫 스케줄을 저장하면 해당 월의 콘텐츠 슬롯이 자동 생성됩니다.
+          아직 설정된 발행 일정이 없습니다. 첫 발행 일정을 저장하면 해당 월의 콘텐츠 항목이 자동으로 만들어집니다.
         </div>
       )}
 
       {result ? (
         <div className="bg-green-50 border border-green-200 rounded-xl p-6">
-          <p className="text-green-800 font-medium text-lg">스케줄 설정 완료</p>
+          <p className="text-green-800 font-medium text-lg">발행 일정 설정 완료</p>
           <p className="text-green-700 text-sm mt-2">
-            {result.slots_created}개의 콘텐츠 슬롯이 생성되었습니다.
+            {result.slots_created}개의 콘텐츠 항목이 만들어졌습니다.
           </p>
           {result.first_publish_date && (
             <p className="text-green-700 text-sm mt-1">
@@ -335,7 +335,7 @@ export default function SchedulePage() {
           {/* 시작일 */}
           <div>
             <label htmlFor="schedule-active-from" className="block text-sm font-medium text-slate-700 mb-2">시작일</label>
-            <div className="mb-2 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="스케줄 연월 이동">
+            <div className="mb-2 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 p-1" aria-label="발행 일정 월 이동">
               <button
                 type="button"
                 onClick={() => setActiveFrom((current) => moveScheduleMonth(current, -1))}
@@ -374,7 +374,7 @@ export default function SchedulePage() {
             disabled={loading || !canSaveSchedule}
             className="w-full py-2.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors"
           >
-            {loading ? '저장 중...' : existing ? '스케줄 교체 및 슬롯 재생성' : '스케줄 저장 및 슬롯 생성'}
+            {loading ? '저장 중...' : existing ? '발행 일정 교체 및 항목 다시 만들기' : '발행 일정 저장 및 항목 만들기'}
           </button>
         </form>
       )}
@@ -410,7 +410,7 @@ export default function SchedulePage() {
         </div>
 
         <p className="mt-5 rounded-lg bg-white px-3 py-2.5 text-xs leading-5 text-slate-600">
-          저장 시 선택한 시작월의 슬롯이 생성됩니다. 운영 중인 스케줄을 바꾸면 미발행 슬롯만 새 기준으로 재생성됩니다.
+          저장 시 선택한 시작월의 콘텐츠 항목이 만들어집니다. 운영 중인 발행 일정을 바꾸면 아직 발행하지 않은 항목만 새 기준으로 다시 만듭니다.
         </p>
       </aside>
       </div>
@@ -424,10 +424,10 @@ export default function SchedulePage() {
             className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
           >
             <h3 id="schedule-replacement-title" className="text-lg font-bold text-slate-900">
-              기존 스케줄을 교체할까요?
+              기존 발행 일정을 교체할까요?
             </h3>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              저장하면 기존 설정이 아래 새 기준으로 바뀌고 미발행 초안 슬롯이 재생성됩니다.
+              저장하면 기존 설정이 아래 새 기준으로 바뀌고 아직 발행하지 않은 콘텐츠 항목이 다시 만들어집니다.
               이 변경은 자동으로 되돌릴 수 없습니다.
             </p>
             <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 px-4 text-sm">
@@ -463,7 +463,7 @@ export default function SchedulePage() {
                 disabled={loading}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {loading ? '교체 중...' : '교체하고 슬롯 재생성'}
+                {loading ? '교체 중...' : '교체하고 항목 다시 만들기'}
               </button>
             </div>
           </div>

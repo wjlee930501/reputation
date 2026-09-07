@@ -20,7 +20,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account, require_owner_account
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.handoff import HospitalHandoff
@@ -46,6 +45,13 @@ from app.services.gcs_utils import get_signed_url
 from app.services.monthly_delivery_projection import (
     delivery_is_effective,
     effective_delivery_event,
+)
+from app.services.monthly_report_delivery import (
+    DeliveryGate,
+    monthly_doctor_artifact_is_valid,
+    monthly_report_delivery_blockers,
+    monthly_report_delivery_gate,
+    safe_local_report_path,
 )
 from app.services.report_artifact_validation import parse_doctor_artifact_metadata
 from app.services.report_review_evidence import build_report_review_evidence
@@ -79,23 +85,6 @@ def _report_type_label(report_type: str | None) -> str | None:
     return REPORT_TYPE_DISPLAY_LABELS.get(report_type) or report_type
 
 
-@dataclass(frozen=True, slots=True)
-class DeliveryGate:
-    ready: bool
-    code: str | None
-    message: str | None
-    # 게이트를 막은 이유 **전부**. `message`는 그중 첫 줄(기존 호환용)이다.
-    # report_blocked는 보통 여러 이유가 동시에 성립하는데, 첫 줄만 노출하면
-    # AE가 하나를 고친 뒤 다시 저장하고서야 다음 이유를 알게 된다.
-    messages: tuple[str, ...] = ()
-
-    @property
-    def all_messages(self) -> tuple[str, ...]:
-        if self.messages:
-            return self.messages
-        return (self.message,) if self.message else ()
-
-
 def _screening_status(r: MonthlyReport, *, delivered: bool | None = None) -> str:
     if delivered if delivered is not None else bool(r.sent_at):
         return "DELIVERED"
@@ -113,20 +102,7 @@ def _pdf_status(r: MonthlyReport) -> str:
 
 
 def _safe_local_report_path(pdf_path: str) -> Path | None:
-    try:
-        report_root = Path(settings.REPORT_OUTPUT_DIR).resolve(strict=False)
-        candidate = Path(pdf_path).resolve(strict=False)
-    except (OSError, RuntimeError):
-        return None
-
-    try:
-        candidate.relative_to(report_root)
-    except ValueError:
-        return None
-
-    if not candidate.exists() or not candidate.is_file():
-        return None
-    return candidate
+    return safe_local_report_path(pdf_path)
 
 
 def _serialize_display(r: MonthlyReport, *, delivered: bool | None = None) -> dict:
@@ -148,48 +124,15 @@ def _report_delivery_blockers(r: MonthlyReport) -> list[str]:
     reports, however, are customer deliverables and must contain a complete,
     current, medically screened operating snapshot.
     """
-    blockers: list[str] = []
-    if _pdf_status(r) != "READY":
-        blockers.append("PDF 다운로드 파일이 준비되지 않았습니다.")
-
-    sov_summary = r.sov_summary if isinstance(r.sov_summary, dict) else {}
-    if sov_summary.get("sov_pct") is None:
-        blockers.append("AI 언급률 요약이 없습니다.")
-
     if r.report_type != "MONTHLY":
+        blockers: list[str] = []
+        if _pdf_status(r) != "READY":
+            blockers.append("PDF 다운로드 파일이 준비되지 않았습니다.")
+        sov_summary = r.sov_summary if isinstance(r.sov_summary, dict) else {}
+        if sov_summary.get("sov_pct") is None:
+            blockers.append("AI 언급률 요약이 없습니다.")
         return blockers
-
-    content_summary = r.content_summary if isinstance(r.content_summary, dict) else {}
-    if "published_count" not in content_summary:
-        blockers.append("월간 콘텐츠 발행 요약이 없습니다.")
-    operations_summary = content_summary.get("operations")
-    if isinstance(operations_summary, dict):
-        for blocker in operations_summary.get("delivery_blockers") or []:
-            if isinstance(blocker, str) and blocker:
-                blockers.append(blocker)
-    else:
-        blockers.append("월간 콘텐츠 운영 검수 요약이 없습니다.")
-
-    essence = r.essence_summary if isinstance(r.essence_summary, dict) else {}
-    if not essence.get("approved_philosophy_exists"):
-        blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
-    if essence.get("source_stale"):
-        blockers.append("리포트의 콘텐츠 운영 기준이 현재 자료와 일치하지 않습니다.")
-
-    source_count = essence.get("source_count")
-    processed_count = essence.get("processed_source_count")
-    if not isinstance(source_count, int) or source_count < 1:
-        blockers.append("리포트에 반영된 온보딩 자료가 없습니다.")
-    elif processed_count != source_count:
-        blockers.append("처리되지 않은 온보딩 자료가 남아 있습니다.")
-
-    if (essence.get("needs_review_content_count") or 0) > 0:
-        blockers.append("운영 기준 재검수가 필요한 콘텐츠가 남아 있습니다.")
-    if (essence.get("missing_philosophy_content_count") or 0) > 0:
-        blockers.append("승인된 운영 기준 없이 생성된 콘텐츠가 남아 있습니다.")
-    if essence.get("medical_risk_findings"):
-        blockers.append("의료광고 리스크 표현이 발견된 콘텐츠가 있습니다.")
-    return blockers
+    return monthly_report_delivery_blockers(r)
 
 
 def _report_delivery_warnings(r: MonthlyReport) -> list[str]:
@@ -200,11 +143,19 @@ def _report_delivery_warnings(r: MonthlyReport) -> list[str]:
     them cast doubt on the report's SoV numbers, so unlike _report_delivery_blockers
     they never gate mark-sent.
     """
+    sov_summary = r.sov_summary if isinstance(r.sov_summary, dict) else {}
+    adequacy = sov_summary.get("observation_adequacy")
+    warnings: list[str] = []
+    if isinstance(adequacy, dict) and adequacy.get("status") == "LIMITED":
+        warnings.append(
+            "일부 반복 측정이 모호하거나 실패해 확정된 표본만으로 제한된 결과를 제공합니다."
+        )
+    if isinstance(adequacy, dict) and adequacy.get("status") == "UNAVAILABLE":
+        warnings.append("확정 가능한 측정 표본을 확보하지 못해 언급률을 산출하지 않았습니다.")
     if r.report_type != "MONTHLY":
-        return []
+        return warnings
     content_summary = r.content_summary if isinstance(r.content_summary, dict) else {}
     operations_summary = content_summary.get("operations")
-    warnings: list[str] = []
     if isinstance(operations_summary, dict):
         for warning in operations_summary.get("delivery_warnings") or []:
             if isinstance(warning, str) and warning:
@@ -217,19 +168,23 @@ def _artifact_state(
 ) -> ReportArtifactState:
     if artifact is None:
         return ReportArtifactState.MISSING
-    metadata = parse_doctor_artifact_metadata(artifact.validation_metadata)
-    valid = (
-        artifact.report_id == report.id
-        and artifact.audience == "DOCTOR"
-        and artifact.path == report.doctor_pdf_path
-        and artifact.validated is True
-        and len(artifact.sha256) == 64
-        and all(character in "0123456789abcdef" for character in artifact.sha256)
-        and artifact.byte_size > 0
-        and metadata is not None
-        and metadata.sha256 == artifact.sha256
-        and metadata.byte_size == artifact.byte_size
-    )
+    if report.report_type == "V0":
+        metadata = artifact.validation_metadata if isinstance(artifact.validation_metadata, dict) else {}
+        valid = (
+            artifact.report_id == report.id
+            and artifact.audience == "DOCTOR"
+            and artifact.path == report.doctor_pdf_path == report.pdf_path
+            and artifact.validated is True
+            and metadata.get("validation_version") == "v0-pdf-v1"
+            and metadata.get("validation_source") == "SYSTEM"
+            and metadata.get("sha256") == artifact.sha256
+            and metadata.get("byte_size") == artifact.byte_size
+            and len(artifact.sha256) == 64
+            and all(character in "0123456789abcdef" for character in artifact.sha256)
+            and artifact.byte_size > 0
+        )
+        return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
+    valid = monthly_doctor_artifact_is_valid(report, artifact)
     return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
 
 
@@ -240,12 +195,9 @@ def _delivery_gate(
 ) -> DeliveryGate:
     """Derive customer readiness only from server-owned persisted facts.
 
-    검증된 원장 보고용 PDF(MonthlyReportArtifact) 요구는 **월간 리포트 전용**이다.
-    초기 진단(V0)에는 그 아티팩트를 만드는 경로가 아예 없어서(workers/tasks.py의 V0
-    분기는 pdf_path만 남긴다), 모든 조건을 통과한 V0 리포트가 영구히
-    `검증된 원장 보고용 PDF가 없습니다`로 남았다 — 온보딩 3단계는 완료인데 리포트
-    화면만 조치 필요로 보이던 모순의 원인이다. V0의 원장 보고 자료는 생성된 PDF
-    자체이므로(CLAUDE.md STEP 3: AE가 직접 원장에게 보고), V0는 그 사실로 판정한다.
+    V0 and monthly reports both require a hash-bound doctor artifact. V0 carries
+    its own lighter system validation metadata because it is a single generated PDF;
+    monthly reports retain their stricter doctor-edition rendering contract.
     """
     if report.report_type != "MONTHLY":
         if not report.pdf_path:
@@ -254,48 +206,21 @@ def _delivery_gate(
                 "v0_pdf_missing",
                 "초기 진단 PDF가 아직 만들어지지 않았습니다.",
             )
+        state = _artifact_state(report, artifact)
+        if state is ReportArtifactState.MISSING:
+            return DeliveryGate(False, "doctor_artifact_missing", "검증된 초기 진단 PDF가 없습니다.")
+        if state is ReportArtifactState.INVALID:
+            return DeliveryGate(False, "doctor_artifact_invalid", "초기 진단 PDF 검증 정보가 유효하지 않습니다.")
+        adequacy = (report.sov_summary or {}).get("observation_adequacy")
+        if not isinstance(adequacy, dict) or adequacy.get("status") not in {
+            "COMPLETE",
+            "LIMITED",
+            "UNAVAILABLE",
+        }:
+            return DeliveryGate(False, "v0_sample_unverified", "초기 진단 표본 상태를 확인할 수 없습니다.")
         return DeliveryGate(True, None, None)
 
-    counts_complete = (
-        report.planned_count > 0
-        and report.success_count == report.planned_count
-        and report.failed_count == 0
-    )
-    if report.quality != "COMPLETE" or not counts_complete or manifest is None:
-        return DeliveryGate(
-            False,
-            "coverage_incomplete",
-            "이번 달 필수 질문 측정이 모두 끝나지 않았습니다.",
-        )
-    manifest_matches = (
-        manifest.id == report.manifest_id
-        and manifest.hospital_id == report.hospital_id
-        and manifest.period_year == report.period_year
-        and manifest.period_month == report.period_month
-    )
-    if not manifest_matches:
-        return DeliveryGate(
-            False,
-            "manifest_mismatch",
-            "이번 달 필수 측정 결과가 이 병원과 보고 기간에 연결되지 않았습니다.",
-        )
-    if manifest.closed_at is None:
-        return DeliveryGate(
-            False,
-            "manifest_open",
-            "이번 달 필수 측정 집계가 아직 끝나지 않았습니다.",
-        )
-
-    state = _artifact_state(report, artifact)
-    if state is ReportArtifactState.MISSING:
-        return DeliveryGate(False, "doctor_artifact_missing", "검증된 원장 보고용 PDF가 없습니다.")
-    if state is ReportArtifactState.INVALID:
-        return DeliveryGate(False, "doctor_artifact_invalid", "원장 보고용 PDF 검증 정보가 유효하지 않습니다.")
-
-    blockers = _report_delivery_blockers(report)
-    if blockers:
-        return DeliveryGate(False, "report_blocked", blockers[0], tuple(blockers))
-    return DeliveryGate(True, None, None)
+    return monthly_report_delivery_gate(report, manifest, artifact)
 
 
 def _current_essence_delivery_blockers(
@@ -880,7 +805,17 @@ def _serialize(
     artifact_state = _artifact_state(r, artifact)
     artifact_metadata = (
         parse_doctor_artifact_metadata(artifact.validation_metadata)
-        if artifact_state is ReportArtifactState.VALID and artifact is not None
+        if artifact_state is ReportArtifactState.VALID
+        and artifact is not None
+        and r.report_type == "MONTHLY"
+        else None
+    )
+    v0_artifact_metadata = (
+        artifact.validation_metadata
+        if artifact_state is ReportArtifactState.VALID
+        and artifact is not None
+        and r.report_type == "V0"
+        and isinstance(artifact.validation_metadata, dict)
         else None
     )
 
@@ -908,10 +843,7 @@ def _serialize(
         "report_type": r.report_type,
         "display": _serialize_display(r, delivered=delivered),
         "has_pdf": r.pdf_path is not None,
-        # 검증본 sha256에 묶인 전달 기록 파이프라인의 대상인지. 월간만 해당한다 —
-        # 초기 진단(V0)은 AE가 PDF를 직접 원장에게 전달하므로 전달 이벤트를 남기지
-        # 않는다. 화면이 이 값을 보고 V0에 전달 버튼을 제안하지 않는다.
-        "delivery_tracked": r.report_type == "MONTHLY",
+        "delivery_tracked": True,
         "has_doctor_pdf": artifact_state is ReportArtifactState.VALID,
         "doctor_artifact_state": artifact_state.value,
         "doctor_artifact_sha256": artifact.sha256
@@ -936,16 +868,26 @@ def _serialize(
         d["doctor_artifact"] = {
             "state": artifact_state.value,
             "state_label": DOCTOR_ARTIFACT_STATE_LABELS[artifact_state],
-            "sha256": artifact.sha256 if artifact_metadata is not None and artifact else None,
-            "byte_size": artifact.byte_size if artifact_metadata is not None and artifact else None,
+            "sha256": artifact.sha256
+            if (artifact_metadata is not None or v0_artifact_metadata is not None) and artifact
+            else None,
+            "byte_size": artifact.byte_size
+            if (artifact_metadata is not None or v0_artifact_metadata is not None) and artifact
+            else None,
             "page_count": artifact_metadata.page_count if artifact_metadata else None,
             "validated_at": (
                 artifact.validated_at.isoformat()
-                if artifact_metadata is not None and artifact and artifact.validated_at
+                if (artifact_metadata is not None or v0_artifact_metadata is not None)
+                and artifact
+                and artifact.validated_at
                 else None
             ),
             "validation_version": (
-                artifact_metadata.validation_version if artifact_metadata else None
+                artifact_metadata.validation_version
+                if artifact_metadata
+                else v0_artifact_metadata.get("validation_version")
+                if v0_artifact_metadata
+                else None
             ),
         }
         d["review_evidence"] = review_evidence

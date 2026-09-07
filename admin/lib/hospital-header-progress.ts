@@ -39,9 +39,9 @@ export function summarizeHeaderProgress(
 ): HeaderProgressSummary {
   const items: HeaderProgressItem[] = [
     { label: '필수 병원 정보', done: Boolean(hospital?.profile_complete) },
-    { label: '초기 진단 리포트', done: Boolean(hospital?.v0_report_done) },
+    { label: '초기 진단 보고서', done: Boolean(hospital?.v0_report_done) },
     { label: '콘텐츠 허브 준비', done: Boolean(hospital?.site_built) },
-    { label: '스케줄 설정', done: Boolean(hospital?.schedule_set) },
+    { label: '발행 일정 설정', done: Boolean(hospital?.schedule_set) },
     { label: '병원 정보 허브', done: Boolean(hospital?.site_live) },
   ]
   const doneCount = items.filter((item) => item.done).length

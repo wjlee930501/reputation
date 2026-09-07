@@ -52,6 +52,8 @@ async def load_onboarding_queue(
             Hospital.schedule_set.is_(False),
         ),
     ]
+    if filters.hospital_id is not None:
+        predicates.append(Hospital.id == filters.hospital_id)
     owner_filter = owner_predicate(assignee, filters.owner)
     sla_filter = sla_predicate(HospitalHandoff.sla_due_at, filters.sla, now)
     severity = case(

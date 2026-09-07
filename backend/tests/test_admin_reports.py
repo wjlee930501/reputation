@@ -114,6 +114,27 @@ def _doctor_artifact(**overrides):
     return SimpleNamespace(**base)
 
 
+def _v0_artifact(report, **overrides):
+    base = {
+        "id": uuid.uuid4(),
+        "report_id": report.id,
+        "audience": "DOCTOR",
+        "path": report.pdf_path,
+        "sha256": "b" * 64,
+        "byte_size": 2048,
+        "validated": True,
+        "validated_at": datetime(2026, 5, 5, 12, 35, tzinfo=timezone.utc),
+        "validation_metadata": {
+            "validation_version": "v0-pdf-v1",
+            "validation_source": "SYSTEM",
+            "sha256": "b" * 64,
+            "byte_size": 2048,
+        },
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
 @pytest.mark.parametrize(
     ("report_overrides", "manifest", "artifact", "expected_code"),
     [
@@ -162,6 +183,34 @@ def test_monthly_customer_delivery_requires_matching_valid_doctor_artifact():
 
     assert gate.ready is True
     assert gate.code is None
+
+
+def test_monthly_limited_sample_is_deliverable_with_confirmed_evidence_and_valid_pdf():
+    report = _report(
+        quality="DEGRADED",
+        planned_count=1,
+        success_count=1,
+        failed_count=0,
+        sov_summary={
+            "sov_pct": 40.0,
+            "observation_adequacy": {
+                "status": "LIMITED",
+                "planned_slots": 5,
+                "confirmed_slots": 4,
+                "ambiguous_slots": 1,
+            },
+        },
+    )
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+
+    gate = _delivery_gate(report, _bind_manifest(report, _manifest()), artifact)
+
+    assert gate.ready is True
+    assert gate.code is None
+    assert any(
+        "제한된 결과" in message
+        for message in reports_api._report_delivery_warnings(report)
+    )
 
 
 @pytest.mark.parametrize(
@@ -453,6 +502,26 @@ def _ready_db(*, role=ROLE_OWNER):
     )
 
 
+def _ready_v0_db(*, role=ROLE_OWNER):
+    hospital = _hospital()
+    report = _report(
+        hospital_id=hospital.id,
+        report_type="V0",
+        manifest_id=None,
+        doctor_pdf_path="gs://reputation-reports/demo.pdf",
+        sov_summary={
+            "sov_pct": 42.0,
+            "observation_adequacy": {"status": "COMPLETE", "confirmed_slots": 5},
+        },
+    )
+    artifact = _v0_artifact(report)
+    actor = _actor(role=role)
+    handoff = SimpleNamespace(hospital_id=hospital.id, ae_owner_id=actor.id)
+    return hospital, report, actor, _FakeDB(
+        hospital, report, artifact=artifact, handoff=handoff
+    )
+
+
 async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
     hospital, report, actor, db = _ready_db()
 
@@ -494,6 +563,52 @@ async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
     assert event.metadata_json["artifact_sha256"] == db.artifact.sha256
     assert len(event.metadata_json["artifact_path_hash"]) == 64
     assert payload["effective_delivery"]["operator"] == actor.email
+
+
+async def test_v0_generation_artifact_can_be_recorded_as_delivered(monkeypatch):
+    hospital, report, actor, db = _ready_v0_db()
+
+    payload = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256,
+            recipient_label="김원장",
+            channel="대면",
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    assert payload["display"]["screening_status"] == "DELIVERED"
+    assert db.events[-1].artifact_id == db.artifact.id
+    assert db.events[-1].metadata_json["artifact_sha256"] == db.artifact.sha256
+    assert payload["effective_delivery"]["operator"] == actor.email
+
+
+async def test_v0_generation_artifact_is_the_doctor_download(monkeypatch):
+    hospital, report, actor, db = _ready_v0_db()
+    calls = []
+
+    def fake_signed_url(path, expiration_hours=24, response_disposition=None):
+        calls.append((path, expiration_hours, response_disposition))
+        return "https://storage.example/v0.pdf"
+
+    monkeypatch.setattr(reports_api, "get_signed_url", fake_signed_url)
+
+    response = await reports_api.download_report(
+        hospital.id,
+        report.id,
+        audience="doctor",
+        db=db,
+        actor=actor,
+    )
+
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://storage.example/v0.pdf"
+    assert calls[0][0] == report.pdf_path == db.artifact.path
+    assert calls[0][1] == 1
+    assert 'filename="report-2026-05-doctor.pdf"' in calls[0][2]
 
 
 async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(monkeypatch):
@@ -1093,19 +1208,33 @@ async def test_report_list_reports_whether_the_doctor_edition_exists():
     assert valid["has_doctor_pdf"] is True
 
 
-def test_v0_report_is_ready_on_its_own_pdf_not_a_monthly_doctor_artifact():
-    """A-7 — V0에는 검증된 원장 보고용 PDF를 만드는 경로가 아예 없다.
+def test_v0_report_requires_its_hash_bound_generated_artifact():
+    report = _report(
+        report_type="V0",
+        doctor_pdf_path="gs://reputation-reports/demo.pdf",
+        manifest_id=None,
+        sov_summary={
+            "sov_pct": 42.0,
+            "observation_adequacy": {"status": "COMPLETE", "confirmed_slots": 5},
+        },
+    )
 
-    그런데 전달 게이트가 리포트 종류를 가리지 않고 그 아티팩트를 요구해서, 측정도 PDF도
-    끝난 V0가 영구히 `검증된 원장 보고용 PDF가 없습니다`로 남았다 — 온보딩 3단계는
-    완료인데 리포트 화면만 조치 필요로 보이던 모순의 원인이다.
-    """
-    report = _report(report_type="V0", doctor_pdf_path=None, manifest_id=None)
-
-    gate = _delivery_gate(report, None, None)
+    gate = _delivery_gate(report, None, _v0_artifact(report))
 
     assert gate.ready is True
     assert gate.code is None
+
+    stale = _v0_artifact(
+        report,
+        sha256="c" * 64,
+        validation_metadata={
+            "validation_version": "v0-pdf-v1",
+            "validation_source": "SYSTEM",
+            "sha256": "b" * 64,
+            "byte_size": 2048,
+        },
+    )
+    assert _delivery_gate(report, None, stale).code == "doctor_artifact_invalid"
 
 
 def test_v0_report_without_a_pdf_says_so_in_its_own_words():
@@ -1118,13 +1247,13 @@ def test_v0_report_without_a_pdf_says_so_in_its_own_words():
     assert "초기 진단" in gate.message
 
 
-def test_only_monthly_reports_are_tracked_by_the_delivery_receipt_pipeline():
-    """화면이 V0에 전달 버튼·전달 서사를 제안하지 않도록 종류를 실어 보낸다."""
+def test_v0_and_monthly_reports_are_tracked_by_the_delivery_receipt_pipeline():
+    """Both customer-facing report types record the AE's actual delivery."""
     monthly = _serialize(_report())
     v0 = _serialize(_report(report_type="V0", doctor_pdf_path=None, manifest_id=None))
 
     assert monthly["delivery_tracked"] is True
-    assert v0["delivery_tracked"] is False
+    assert v0["delivery_tracked"] is True
 
 
 class _ListFakeResult:

@@ -71,10 +71,13 @@ export class ContentNotFoundError extends Error {
   }
 }
 
-export async function fetchHospital(slug: string): Promise<Hospital> {
+export async function fetchHospital(
+  slug: string,
+  init: RequestInit = publicFetchInit(),
+): Promise<Hospital> {
   // 경로 세그먼트는 항상 인코딩 — 라우트 파라미터는 URL 디코드된 값이라 ?/#/%2F 류가
   // 백엔드 요청의 쿼리·경로로 주입될 수 있다 (admin BFF buildSafeAdminProxyPath와 동일 정책).
-  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, publicFetchInit())
+  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, init)
   if (res.status === 404) throw new HospitalNotFoundError(slug)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)
   const hospital = parseHospitalPayload(await res.json())
@@ -126,10 +129,14 @@ function isContentDetailPayload(value: unknown): value is ContentDetail {
   return isRecord(value) && isContentSummaryPayload(value) && typeof value.body === 'string'
 }
 
-async function fetchContentsPage(slug: string, offset: number): Promise<ContentSummary[]> {
+async function fetchContentsPage(
+  slug: string,
+  offset: number,
+  init: RequestInit = publicFetchInit(),
+): Promise<ContentSummary[]> {
   const offsetQuery = offset > 0 ? `&offset=${offset}` : ''
   const url = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENTS_FETCH_LIMIT}${offsetQuery}`
-  const res = await fetch(url, publicFetchInit())
+  const res = await fetch(url, init)
   // 404는 "콘텐츠 0건"이 아니라 병원 자체가 없거나 비활성 상태라는 뜻이다(콘텐츠가 0건이면
   // 백엔드가 200 []를 내려준다) — fetchHospital과 동일한 타입으로 던져 페이지의 notFound()
   // 분기와 맞물리게 한다. 그 외 !res.ok(5xx/429 등)를 조용히 []로 삼키면 ISR 캐시가
@@ -150,11 +157,14 @@ export async function fetchContents(slug: string, limit?: number): Promise<Conte
 }
 
 /** 누적 500건을 넘은 병원도 llms.txt에서 발행 콘텐츠 전체를 발견할 수 있게 순회한다. */
-export async function fetchAllContents(slug: string): Promise<ContentSummary[]> {
+export async function fetchAllContents(
+  slug: string,
+  init: RequestInit = publicFetchInit(),
+): Promise<ContentSummary[]> {
   const all: ContentSummary[] = []
   let offset = 0
   for (;;) {
-    const page = await fetchContentsPage(slug, offset)
+    const page = await fetchContentsPage(slug, offset, init)
     all.push(...page)
     if (page.length < CONTENTS_FETCH_LIMIT) return all
     offset += CONTENTS_FETCH_LIMIT

@@ -588,6 +588,35 @@ def test_publication_slot_becomes_operator_work_once_the_publisher_has_had_its_t
     assert today_queries.publish_due_requires_operator_action(_TODAY, _TODAY, moment)
 
 
+def test_running_publication_and_linked_incident_stay_observable_without_duplicate_work() -> None:
+    after_publisher = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)  # 09:00 KST
+
+    assert not today_queries.publish_due_requires_operator_action(
+        _TODAY,
+        _TODAY,
+        after_publisher,
+        run_state="RUNNING",
+    )
+    assert not today_queries.publish_due_requires_operator_action(
+        _TODAY,
+        _TODAY,
+        after_publisher,
+        run_state="FAILED",
+        has_related_incident=True,
+    )
+
+
+def test_running_publication_becomes_operator_work_after_its_deadline() -> None:
+    after_publisher = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
+
+    assert today_queries.publish_due_requires_operator_action(
+        _TODAY - timedelta(days=1),
+        _TODAY,
+        after_publisher,
+        run_state="RUNNING",
+    )
+
+
 def test_due_publish_query_predicate_never_drops_the_pre_eight_am_rows() -> None:
     """The fold is a per-row flag, not a WHERE clause — the row must stay in the page.
 

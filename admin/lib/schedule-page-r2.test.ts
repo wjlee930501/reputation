@@ -8,6 +8,6 @@ test('schedule UI has year-month navigation and a destructive replacement dialog
   assert.match(page, /moveScheduleMonth\(current, -1\)/)
   assert.match(page, /moveScheduleMonth\(current, 1\)/)
   assert.match(page, /role="dialog"/)
-  assert.match(page, /미발행 초안 슬롯이 재생성/)
+  assert.match(page, /아직 발행하지 않은 콘텐츠 항목이 다시 만들어집니다/)
   assert.doesNotMatch(page, /\bconfirm\(/)
 })

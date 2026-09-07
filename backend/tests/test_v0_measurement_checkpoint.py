@@ -19,8 +19,11 @@ import pytest
 from sqlalchemy.dialects import postgresql
 
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.monthly_control import MeasurementObservationSlot, MonthlyReportArtifact
 from app.models.report import MonthlyReport
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
+from app.services.measurement_slots import protocol_fingerprint
+from app.services.report_engine import GeneratedPdfArtifact
 from app.workers import tasks, v0_checkpoint
 
 # ──────────────────────────────────────────────────────────────────
@@ -34,6 +37,9 @@ class _Result:
 
     def scalars(self) -> "_Result":
         return self
+
+    def __iter__(self):
+        return iter(self._rows)
 
     def all(self) -> list[Any]:
         return list(self._rows)
@@ -56,6 +62,8 @@ class FakeSession:
         self.queries = queries
         self.measurement_runs: list[MeasurementRun] = []
         self.sov_records: list[SovRecord] = []
+        self.measurement_slots: list[MeasurementObservationSlot] = []
+        self.artifacts: list[MonthlyReportArtifact] = []
         self.reports: list[MonthlyReport] = []
         self.commits = 0
 
@@ -70,6 +78,8 @@ class FakeSession:
     def get(self, model: type, ident: uuid.UUID) -> Any:
         if model is Hospital and ident == self.hospital.id:
             return self.hospital
+        if model is SovRecord:
+            return next((row for row in self.sov_records if row.id == ident), None)
         return None
 
     def add(self, obj: Any) -> None:
@@ -83,6 +93,8 @@ class FakeSession:
             if obj.created_at is None:
                 obj.created_at = datetime.now(UTC)
             self.reports.append(obj)
+        elif isinstance(obj, MonthlyReportArtifact):
+            self.artifacts.append(obj)
 
     def flush(self) -> None:
         return None
@@ -115,12 +127,18 @@ class FakeSession:
         if "FROM measurement_runs" in sql:
             # 상태·완료시각 필터는 SQL이 담당한다. 여기서는 그 SQL이 실제로 그렇게
             # 컴파일되는지를 별도 테스트로 못 박고, 세션은 후보 목록만 돌려준다.
-            candidates = [
-                run
-                for run in self.measurement_runs
-                if run.status in v0_checkpoint.REUSABLE_RUN_STATUSES
-                and run.completed_at is not None
-            ]
+            compiled = stmt.compile(dialect=postgresql.dialect())
+            if 1 in compiled.params.values():
+                # This harness exercises completed-checkpoint reuse. Incomplete
+                # same-lineage recovery has a dedicated real-Postgres slot test.
+                candidates = []
+            else:
+                candidates = [
+                    run
+                    for run in self.measurement_runs
+                    if run.status in v0_checkpoint.REUSABLE_RUN_STATUSES
+                    and run.completed_at is not None
+                ]
             return _Result(
                 sorted(candidates, key=lambda run: run.completed_at, reverse=True)
             )
@@ -206,17 +224,91 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
 
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow)
 
-    async def _fake_run_single_query(_name, query_text, platform, **kwargs):
-        provider_calls.append(f"{platform}:{query_text}")
-        return [_measurement_result(True), _measurement_result(False)]
+    def _ensure_slots(
+        db,
+        *,
+        hospital_id,
+        measurement_run_id,
+        query_id,
+        platform,
+        repeat_count,
+        protocol,
+    ):
+        rows = [
+            slot
+            for slot in db.measurement_slots
+            if slot.measurement_run_id == measurement_run_id
+            and slot.query_id == query_id
+            and slot.platform == platform
+        ]
+        if rows:
+            return rows
+        for repeat_no in range(1, repeat_count + 1):
+            slot = MeasurementObservationSlot(
+                scope="V0",
+                hospital_id=hospital_id,
+                measurement_run_id=measurement_run_id,
+                query_id=query_id,
+                platform=platform,
+                repeat_no=repeat_no,
+                protocol_hash=protocol_fingerprint(protocol),
+                answer_status="PENDING",
+                answer_attempt_count=0,
+                judgment_status="PENDING",
+                judgment_attempt_count=0,
+                version=1,
+            )
+            slot.id = uuid.uuid4()
+            db.measurement_slots.append(slot)
+            rows.append(slot)
+        return rows
 
-    monkeypatch.setattr(tasks, "run_single_query", _fake_run_single_query)
+    def _execute_slot(db, *, slot, query_text, **_kwargs):
+        provider_calls.append(f"{slot.platform}:{query_text}:{slot.repeat_no}")
+        # The production path owns one answer and one judgment reservation per
+        # unresolved slot. This harness records that split while keeping its fake
+        # provider deliberately small.
+        cost_reservations.extend([1, 1])
+        result = _measurement_result(slot.repeat_no % 2 == 1)
+        record = tasks._build_sov_record_from_result(
+            hospital_id=slot.hospital_id,
+            query_id=slot.query_id,
+            measurement_run_id=slot.measurement_run_id,
+            platform=slot.platform,
+            result=result,
+        )
+        db.add(record)
+        slot.answer_status = "RECEIVED"
+        slot.raw_response = result["raw_response"]
+        slot.judgment_status = "CONFIRMED"
+        slot.sov_record_id = record.id
+        return result
+
+    monkeypatch.setattr(tasks, "ensure_v0_slots", _ensure_slots)
+    monkeypatch.setattr(tasks, "_execute_paid_observation_slot", _execute_slot)
+    monkeypatch.setattr(
+        tasks,
+        "slots_for_run",
+        lambda db, run_id: [
+            slot for slot in db.measurement_slots if slot.measurement_run_id == run_id
+        ],
+    )
 
     def _fake_pdf(**kwargs):
         pdf_calls.append(kwargs.get("repeat_count"))
         if pdf_failures[0]:
             raise RuntimeError("WeasyPrint가 렌더에 실패했습니다")
-        return "/tmp/reports/v0.pdf"
+        return GeneratedPdfArtifact(
+            path="/tmp/reports/v0.pdf",
+            sha256="a" * 64,
+            byte_size=1024,
+            validation_metadata={
+                "validation_version": "v0-pdf-v1",
+                "validation_source": "SYSTEM",
+                "sha256": "a" * 64,
+                "byte_size": 1024,
+            },
+        )
 
     monkeypatch.setattr(tasks, "generate_pdf_report", _fake_pdf)
 
@@ -253,7 +345,7 @@ def test_retry_after_pdf_failure_reuses_the_measurement_and_finishes_the_report(
         _run_task(harness.hospital.id, operation_run_id=operation_run_id)
 
     first_attempt_calls = len(harness.provider_calls)
-    assert first_attempt_calls == 2, "첫 시도는 질의 × 플랫폼만큼 공급자를 부른다"
+    assert first_attempt_calls == 10, "첫 시도는 질의 × 플랫폼 × 반복 슬롯만큼 답변을 산다"
     assert harness.hospital.v0_report_done is False
     assert harness.session.reports == []
 
@@ -263,14 +355,14 @@ def test_retry_after_pdf_failure_reuses_the_measurement_and_finishes_the_report(
     assert len(harness.provider_calls) == first_attempt_calls, (
         "재시도가 공급자를 다시 불렀다 — 체크포인트가 동작하지 않는다"
     )
-    assert len(harness.cost_reservations) == 1, "비용 가드 예약이 두 번 잡혔다"
+    assert len(harness.cost_reservations) == 20, "완료 슬롯의 비용 예약이 재시도에서 반복됐다"
     assert len(harness.session.measurement_runs) == 1, "재시도가 새 측정 실행을 만들었다"
     assert harness.hospital.v0_report_done is True
     assert len(harness.session.reports) == 1
     report = harness.session.reports[0]
     assert report.report_type == "V0"
-    # 재사용된 측정으로 계산해도 숫자는 같아야 한다(4건 중 2건 언급 = 50%).
-    assert report.sov_summary["sov_pct"] == 50.0
+    # 재사용된 측정으로 계산해도 숫자는 같아야 한다(10건 중 6건 언급 = 60%).
+    assert report.sov_summary["sov_pct"] == 60.0
     assert report.sov_summary["platforms"] == ["chatgpt"]
     assert report.sov_summary["baseline_basis"]["measurement_run_id"] == str(
         harness.session.measurement_runs[0].id
@@ -295,10 +387,8 @@ def test_retry_after_pdf_failure_reuses_the_measurement_and_finishes_the_report(
 def test_a_fresh_trigger_still_measures(harness):
     _run_task(harness.hospital.id, operation_run_id=uuid.uuid4())
 
-    assert len(harness.provider_calls) == 2
-    assert harness.cost_reservations == [
-        tasks.sov_budget_units(query_count=2, platform_count=1, repeat_count=tasks.V0_REPEAT_COUNT)
-    ]
+    assert len(harness.provider_calls) == 10
+    assert harness.cost_reservations == [1, 1] * 10
     assert len(harness.session.measurement_runs) == 1
     assert harness.session.measurement_runs[0].status == "COMPLETED"
     assert harness.hospital.v0_report_done is True
@@ -314,7 +404,7 @@ def test_a_different_v0_request_does_not_inherit_the_previous_measurement(harnes
     harness.hospital.v0_report_done = False
     _run_task(harness.hospital.id, operation_run_id=uuid.uuid4())
 
-    assert len(harness.provider_calls) == 4, "다른 요청인데 옛 측정을 재사용했다"
+    assert len(harness.provider_calls) == 20, "다른 요청인데 옛 측정을 재사용했다"
     assert len(harness.session.measurement_runs) == 2
 
 

@@ -18,6 +18,7 @@ from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     PLANNING_REASON_KEY,
     build_content_brief,
+    content_brief_matches_inputs,
 )
 from app.services.exposure_content_linker import BRIEF_CAPABLE_ACTION_TYPES
 from app.services.query_target_structure import (
@@ -51,15 +52,11 @@ def prepare_automatic_content_brief_sync(
     """
     scheduled_date = getattr(item, "scheduled_date", None)
     planned_publish_date = scheduled_date.isoformat() if scheduled_date else None
-    if item.brief_status == BRIEF_STATUS_APPROVED and isinstance(item.content_brief, dict):
-        return {
-            **item.content_brief,
-            "planned_publish_date": planned_publish_date,
-        }
-
     # Lightweight stubs and imported legacy rows may not expose the linkage columns.
     # They still receive a philosophy-backed generic brief without attempting DB planning.
     if not hasattr(item, "query_target_id"):
+        if item.brief_status == BRIEF_STATUS_APPROVED and isinstance(item.content_brief, dict):
+            return {**item.content_brief, "planned_publish_date": planned_publish_date}
         brief = build_content_brief(
             hospital=hospital,
             content_item=item,
@@ -67,6 +64,8 @@ def prepare_automatic_content_brief_sync(
         )
         item.content_brief = brief
         item.brief_status = BRIEF_STATUS_APPROVED
+        if hasattr(item, "content_revision"):
+            item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
         return brief
 
     target = _load_target(db, getattr(item, "query_target_id", None), hospital.id)
@@ -74,6 +73,20 @@ def prepare_automatic_content_brief_sync(
         target = _choose_target(db, item=item, hospital_id=hospital.id)
         if target is not None:
             item.query_target_id = target.id
+
+    if (
+        item.brief_status == BRIEF_STATUS_APPROVED
+        and isinstance(item.content_brief, dict)
+        and content_brief_matches_inputs(
+            item.content_brief,
+            philosophy=philosophy,
+            query_target=target,
+        )
+    ):
+        return {
+            **item.content_brief,
+            "planned_publish_date": planned_publish_date,
+        }
 
     action = _load_or_choose_action(db, item=item, target=target, hospital_id=hospital.id)
     if action is not None:
@@ -101,10 +114,21 @@ def prepare_automatic_content_brief_sync(
     if planning_reason:
         brief[PLANNING_REASON_KEY] = planning_reason
     brief["operator_notes"] = list(previous_brief.get("operator_notes") or [])
+    if previous_brief and getattr(item, "brief_approved_by", None) not in {
+        None,
+        "SYSTEM_EXPOSURE_PLANNER",
+    }:
+        # Human notes remain authoritative prose input. Derived fact fields are
+        # rebuilt from the current approved Essence/target so a withdrawn claim
+        # cannot re-enter through an old approved brief.
+        brief["source"]["reconciled_operator_brief"] = True
+        brief["source"]["previous_approved_by"] = str(item.brief_approved_by)
     item.content_brief = brief
     item.brief_status = BRIEF_STATUS_APPROVED
     item.brief_approved_at = datetime.now(timezone.utc)
     item.brief_approved_by = "SYSTEM_EXPOSURE_PLANNER"
+    if hasattr(item, "content_revision"):
+        item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
     return brief
 
 

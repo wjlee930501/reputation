@@ -41,22 +41,25 @@ export function resolveEssenceNextAction(state: EssenceNextActionState): Essence
     return { section: ESSENCE_SECTIONS.INPUT, text: '근거로 쓸 자료를 1개 이상 입력하세요.' }
   }
   if (state.processedTextCount === 0) {
-    return { section: ESSENCE_SECTIONS.EXTRACT, text: '자료의 [근거 추출]을 실행하세요.' }
+    return {
+      section: ESSENCE_SECTIONS.EXTRACT,
+      text: '저장된 자료에서 근거를 추출하고 있습니다. 오류로 표시된 자료만 확인하세요.',
+    }
   }
   if (!state.hasSelectedDraft && !state.hasApproved) {
     return {
-      section: ESSENCE_SECTIONS.EXTRACT,
-      text: '처리한 자료를 선택하고 [선택한 자료로 초안 만들기]를 누르세요.',
+      section: ESSENCE_SECTIONS.REVIEW,
+      text: '처리된 자료로 운영 기준을 준비하고 안전 검수하고 있습니다.',
     }
   }
   if (state.selectedIsReviewDraft) {
     return {
       section: ESSENCE_SECTIONS.REVIEW,
-      text: 'AI 안전 검수가 보류한 최신 초안의 근거와 차단 사유를 확인하세요.',
+      text: '자동 검수가 보류한 최신 초안의 근거와 차단 사유를 확인하세요.',
     }
   }
   if (state.hasApproved) {
-    return { section: null, text: '운영 중 — 새 자료를 추가하면 새 버전 초안을 만들 수 있습니다.' }
+    return { section: null, text: '운영 중 — 새 자료가 처리되면 운영 기준도 자동으로 갱신됩니다.' }
   }
   return null
 }

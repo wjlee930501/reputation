@@ -47,9 +47,9 @@ interface SourceDetail extends Source {
 
 const NOTE_TYPE_LABELS: Record<string, string> = {
   KEY_MESSAGE: '핵심 메시지',
-  TONE_SIGNAL: '말투 시그널',
-  TREATMENT_SIGNAL: '치료 시그널',
-  RISK_SIGNAL: '리스크 시그널',
+  TONE_SIGNAL: '말투 기준',
+  TREATMENT_SIGNAL: '진료 설명 근거',
+  RISK_SIGNAL: '주의 표현',
   PATIENT_PROMISE: '환자 약속',
   DOCTOR_PHILOSOPHY: '의료진 철학',
   LOCAL_CONTEXT: '지역 맥락',
@@ -129,7 +129,7 @@ export default function WikiPage() {
       setDetails(next)
       setSelectedNoteIds(new Set())
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '로딩 실패')
+      setError(e instanceof Error ? e.message : '자료 모음을 불러오지 못했습니다.')
     } finally {
       setLoading(false)
     }
@@ -152,7 +152,7 @@ export default function WikiPage() {
         notes.push({
           ...note,
           source_title: s.title,
-          source_type_label: s.display?.source_type_label ?? s.source_type,
+          source_type_label: s.display?.source_type_label ?? '자료 유형 확인 필요',
         })
       }
     }
@@ -211,7 +211,7 @@ export default function WikiPage() {
       })
       await refresh()
     } catch (e: unknown) {
-      const message = e instanceof Error ? e.message : '토글 실패'
+      const message = e instanceof Error ? e.message : '사진 공개 상태를 바꾸지 못했습니다.'
       setToggleErrors((prev) => ({ ...prev, [photoId]: message }))
     } finally {
       setPendingToggleId(null)
@@ -229,7 +229,7 @@ export default function WikiPage() {
       })
       await refresh()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '노이즈 표시를 저장하지 못했습니다.')
+      setError(e instanceof Error ? e.message : '제외 표시를 저장하지 못했습니다.')
     } finally {
       setMarkingNoise(false)
     }
@@ -248,12 +248,12 @@ export default function WikiPage() {
     <main className="min-h-full space-y-6 bg-slate-50 p-4 sm:p-6 lg:p-8">
       <header className="rounded-2xl bg-white border border-slate-200 p-4 sm:p-6">
         <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-blue-600">
-          Wiki — 검증된 사실 모음
+          자료 모음 — 검증된 사실
         </p>
-        <h2 className="mt-2 text-2xl font-bold text-slate-900">병원 자산 Wiki</h2>
+        <h2 className="mt-2 text-2xl font-bold text-slate-900">병원 자료 모음</h2>
         <p className="mt-2 text-sm text-slate-600 max-w-2xl">
-          AE가 인입한 자료에서 추출된 근거 노트(claim + 출처 발췌)를 카테고리별로 모았습니다.
-          사진 자산의 사용 권리 기록과 현재 병원 사이트 표시 상태도 함께 확인합니다.
+          운영자가 등록한 자료에서 추출한 근거 노트(주장과 출처 발췌)를 카테고리별로 모았습니다.
+          사진 자료의 사용 권리 기록과 현재 병원 사이트 표시 상태도 함께 확인합니다.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-slate-600">
           <span>
@@ -278,9 +278,9 @@ export default function WikiPage() {
         <div className="flex items-start justify-between gap-3 px-6 py-5 border-b border-slate-100">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-blue-600">
-              Photos · 병원 사이트 표시 상태
+              사진 자료 · 병원 사이트 표시 상태
             </p>
-            <h2 className="mt-1 text-lg font-bold text-slate-900">사진 자산 ({photos.length})</h2>
+            <h2 className="mt-1 text-lg font-bold text-slate-900">사진 자료 ({photos.length})</h2>
             <p className="mt-1 max-w-2xl text-sm text-slate-600">{PHOTO_PUBLIC_GATE_COPY}</p>
           </div>
         </div>
@@ -307,7 +307,7 @@ export default function WikiPage() {
                     </div>
                     <div className="p-3 space-y-2">
                       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                        {p.display?.source_type_label ?? p.source_type}
+                        {p.display?.source_type_label ?? '사진 유형 확인 필요'}
                       </p>
                       <p className="text-sm font-medium text-slate-900 truncate">{p.title}</p>
                       <span
@@ -420,7 +420,7 @@ export default function WikiPage() {
               onClick={() => void markSelectedAsNoise()}
               className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-900 disabled:cursor-not-allowed disabled:opacity-45"
             >
-              {markingNoise ? '저장 중…' : `선택 ${selectedNoteIds.size}건 노이즈로 표시`}
+              {markingNoise ? '저장 중…' : `선택한 ${selectedNoteIds.size}건을 제외 자료로 표시`}
             </button>
           </div>
         </section>
@@ -433,7 +433,7 @@ export default function WikiPage() {
         <section className="rounded-2xl bg-white border border-slate-200 p-10 text-center">
           <p className="text-base font-semibold text-slate-700">아직 추출된 근거 노트가 없습니다</p>
           <p className="mt-2 text-sm text-slate-500">
-            온보딩 화면에서 자료를 인입하고 처리하면 이 자리에 카테고리별로 정리됩니다.
+            온보딩 화면에서 자료를 등록하고 처리하면 이 자리에 카테고리별로 정리됩니다.
           </p>
           <Link
             href={`/hospitals/${id}/onboarding`}

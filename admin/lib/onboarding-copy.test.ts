@@ -45,7 +45,7 @@ test('the completed KEEP-8 header becomes status copy instead of another require
 test('new hospital copy matches navigation and explains create plus acceptance', () => {
   assert.match(NEW_HOSPITAL_PAGE, /<h1[^>]*>신규 병원 온보딩<\/h1>/)
   assert.match(ADMIN_SHELL, /label: '신규 병원 온보딩'/)
-  assert.match(NEW_HOSPITAL_PAGE, /병원을 생성하고 고객 인수를 승인한 뒤 온보딩 화면으로 이동합니다\./)
+  assert.match(NEW_HOSPITAL_PAGE, /병원을 생성하고 고객 인수를 승인한 뒤 병원 운영 화면으로 이동합니다\./)
   assert.doesNotMatch(
     ADMIN_SHELL,
     /병원 자료, 운영 기준 자동 준비, 콘텐츠 자동 발행·공개 내용 확인, 월간 리포트 순서/,

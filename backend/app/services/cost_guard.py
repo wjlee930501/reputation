@@ -17,7 +17,8 @@
 KST 기준이므로 일/월 경계도 KST로 맞춰야 집계가 직관적이다.
 """
 import logging
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
@@ -41,6 +42,7 @@ _KST = ZoneInfo("Asia/Seoul")
 # 카운터 보존 기간 — 경계 직후에도 직전 기간 값을 잠깐 조회할 수 있게 여유를 둔다.
 _DAILY_TTL_SECONDS = 2 * 24 * 60 * 60       # 2일
 _MONTHLY_TTL_SECONDS = 40 * 24 * 60 * 60    # 40일
+_RESERVATION_TTL_SECONDS = 45 * 24 * 60 * 60
 
 _SOFT_RATIO = 0.8  # 하드 상한의 80% 도달 시 조기 경고
 
@@ -94,6 +96,86 @@ end
 return 1
 """
 
+# 예약 ID가 있으면 같은 논리 작업의 재전달/API-worker 중첩 진입도 한 번만 예약한다.
+# receipt에 원래 KST 일/월 key를 저장하므로 자정·월말 뒤 정산도 새 기간을 건드리지 않는다.
+_RESERVE_WITH_RECEIPT_SCRIPT = """
+if redis.call('EXISTS', KEYS[3]) == 1 then
+  local existing_category = redis.call('HGET', KEYS[3], 'category') or ''
+  local existing_count = tonumber(redis.call('HGET', KEYS[3], 'reserved_units') or '-1')
+  if existing_category ~= ARGV[6] or existing_count ~= tonumber(ARGV[1]) then
+    return {-1, 'conflict', 0, 0, ARGV[7], ARGV[8]}
+  end
+  local original_daily_key = redis.call('HGET', KEYS[3], 'daily_key')
+  local original_monthly_key = redis.call('HGET', KEYS[3], 'monthly_key')
+  local existing_consumed = redis.call('HGET', KEYS[3], 'consumed_units') or ''
+  local existing_released = redis.call('HGET', KEYS[3], 'released_units') or ''
+  local duplicate_status = 2
+  if existing_consumed ~= '' then duplicate_status = 3 end
+  return {duplicate_status, '', tonumber(redis.call('GET', original_daily_key) or '0'),
+    tonumber(redis.call('GET', original_monthly_key) or '0'),
+    redis.call('HGET', KEYS[3], 'daily_period'),
+    redis.call('HGET', KEYS[3], 'monthly_period'), existing_consumed, existing_released}
+end
+
+local daily = tonumber(redis.call('GET', KEYS[1]) or '0')
+local monthly = tonumber(redis.call('GET', KEYS[2]) or '0')
+local count = tonumber(ARGV[1])
+local daily_limit = tonumber(ARGV[2])
+local monthly_limit = tonumber(ARGV[3])
+
+if monthly_limit > 0 and monthly + count > monthly_limit then
+  return {0, 'monthly', daily, monthly, ARGV[7], ARGV[8]}
+end
+if daily_limit > 0 and daily + count > daily_limit then
+  return {0, 'daily', daily, monthly, ARGV[7], ARGV[8]}
+end
+
+local new_daily = redis.call('INCRBY', KEYS[1], count)
+local new_monthly = redis.call('INCRBY', KEYS[2], count)
+if daily == 0 then redis.call('EXPIRE', KEYS[1], ARGV[4]) end
+if monthly == 0 then redis.call('EXPIRE', KEYS[2], ARGV[5]) end
+redis.call('HSET', KEYS[3],
+  'category', ARGV[6],
+  'daily_period', ARGV[7],
+  'monthly_period', ARGV[8],
+  'daily_key', KEYS[1],
+  'monthly_key', KEYS[2],
+  'reserved_units', count,
+  'consumed_units', '',
+  'released_units', '')
+redis.call('EXPIRE', KEYS[3], ARGV[9])
+return {1, '', new_daily, new_monthly, ARGV[7], ARGV[8]}
+"""
+
+_SETTLE_RESERVATION_SCRIPT = """
+if redis.call('EXISTS', KEYS[1]) == 0 then return {0, 'missing'} end
+local category = redis.call('HGET', KEYS[1], 'category') or ''
+local daily_period = redis.call('HGET', KEYS[1], 'daily_period') or ''
+local monthly_period = redis.call('HGET', KEYS[1], 'monthly_period') or ''
+local reserved = tonumber(redis.call('HGET', KEYS[1], 'reserved_units') or '-1')
+if category ~= ARGV[1] or daily_period ~= ARGV[2] or monthly_period ~= ARGV[3]
+  or reserved ~= tonumber(ARGV[4]) then
+  return {-1, 'receipt_mismatch'}
+end
+local prior = redis.call('HGET', KEYS[1], 'consumed_units')
+local consumed = tonumber(ARGV[5])
+if prior and prior ~= '' then
+  local released = tonumber(redis.call('HGET', KEYS[1], 'released_units') or '0')
+  if tonumber(prior) == consumed then return {2, 'duplicate', tonumber(prior), released} end
+  return {3, 'already_settled', tonumber(prior), released}
+end
+local released = reserved - consumed
+local daily_key = redis.call('HGET', KEYS[1], 'daily_key')
+local monthly_key = redis.call('HGET', KEYS[1], 'monthly_key')
+for _, key in ipairs({daily_key, monthly_key}) do
+  local current = tonumber(redis.call('GET', key) or '0')
+  local decrement = math.min(current, released)
+  if decrement > 0 then redis.call('DECRBY', key, decrement) end
+end
+redis.call('HSET', KEYS[1], 'consumed_units', consumed, 'released_units', released)
+return {1, 'settled', consumed, released}
+"""
+
 _UNLIMITED_REMAINING = 2**63 - 1
 
 
@@ -101,6 +183,24 @@ _UNLIMITED_REMAINING = 2**63 - 1
 class CostGuardDecision:
     allowed: bool
     reason: str | None = None
+    receipt: "ReservationReceipt | None" = None
+
+
+@dataclass(frozen=True)
+class ReservationReceipt:
+    """One durable, idempotently settleable reservation in its original KST periods."""
+
+    id: str
+    category: str
+    daily_period: str
+    monthly_period: str
+    reserved_units: int
+    consumed_units: int | None = None
+    released_units: int | None = None
+
+
+def _reservation_key(reservation_id: str) -> str:
+    return f"cost_guard:reservation:{reservation_id}"
 
 
 _redis_client: redis_async.Redis | None = None
@@ -283,14 +383,12 @@ async def check_and_increment(
 
     count는 한 번에 여러 호출을 예약할 때(예: AI 언급률 측정의 실제 호출 개수) 사용한다.
     """
-    if count < 0:
-        raise ValueError("cost_guard count must be non-negative")
-    if count == 0:
-        return CostGuardDecision(True, None)
-    if not settings.COST_GUARD_ENABLED:
-        return CostGuardDecision(True, None)
     if category not in _CATEGORY_LABELS:
         raise ValueError(f"unknown cost_guard category: {category}")
+    if count < 0:
+        raise ValueError("cost_guard count must be non-negative")
+    if not settings.COST_GUARD_ENABLED:
+        return CostGuardDecision(True, None)
 
     client = redis_client or _client()
     label = _CATEGORY_LABELS[category]
@@ -298,6 +396,11 @@ async def check_and_increment(
     try:
         if await _is_kill_switch_active(client):
             return CostGuardDecision(False, "비용 가드 킬스위치가 활성화되어 모든 자동 호출이 차단됐습니다.")
+
+        # 캐시된 답변 뒤 판정처럼 이 함수가 예약할 단위는 0이어도, 이후 유료 호출이
+        # 존재할 수 있다. 그래서 kill switch 확인 뒤에만 0건 no-op을 허용한다.
+        if count == 0:
+            return CostGuardDecision(True, None)
 
         now = _now()
         daily_period = _daily_period(now)
@@ -358,6 +461,194 @@ async def check_and_increment(
             exc.__class__.__name__,
         )
         return CostGuardDecision(True, None)
+
+
+async def reserve(
+    category: str,
+    *,
+    count: int = 1,
+    reservation_id: str | uuid.UUID | None = None,
+    reserved_at: datetime | None = None,
+    redis_client: redis_async.Redis | None = None,
+) -> CostGuardDecision:
+    """Reserve paid-call units once and return an immutable settlement receipt.
+
+    ``reservation_id`` should identify one logical execution attempt. Reusing it with the
+    same category/count returns the original receipt without incrementing counters. Reusing
+    it for different inputs is rejected. A zero-unit request still evaluates the kill switch,
+    which protects cached workflows that perform a paid judgment after answer lookup.
+
+    Redis remains explicitly fail-open. In that case ``allowed`` is true and ``receipt`` is
+    absent, so callers can continue without pretending that a durable reservation exists.
+    """
+    if category not in _CATEGORY_LABELS:
+        raise ValueError(f"unknown cost_guard category: {category}")
+    if count < 0:
+        raise ValueError("cost_guard count must be non-negative")
+    if not settings.COST_GUARD_ENABLED:
+        return CostGuardDecision(True, None)
+
+    client = redis_client or _client()
+    label = _CATEGORY_LABELS[category]
+    try:
+        if await _is_kill_switch_active(client):
+            return CostGuardDecision(
+                False, "비용 가드 킬스위치가 활성화되어 모든 자동 호출이 차단됐습니다."
+            )
+        if count == 0:
+            return CostGuardDecision(True, None)
+
+        now = (reserved_at or _now()).astimezone(_KST)
+        daily_period = _daily_period(now)
+        monthly_period = _monthly_period(now)
+        daily_limit, monthly_limit = _limits(category)
+        daily_limit = await _effective_daily_limit(
+            client, category, daily_period, daily_limit
+        )
+        receipt_id = str(reservation_id or uuid.uuid4())
+        if not receipt_id or len(receipt_id) > 200:
+            raise ValueError("reservation_id must contain 1..200 characters")
+
+        result = await client.eval(
+            _RESERVE_WITH_RECEIPT_SCRIPT,
+            3,
+            _daily_key(category, daily_period),
+            _monthly_key(category, monthly_period),
+            _reservation_key(receipt_id),
+            count,
+            daily_limit,
+            monthly_limit,
+            _DAILY_TTL_SECONDS,
+            _MONTHLY_TTL_SECONDS,
+            category,
+            daily_period,
+            monthly_period,
+            _RESERVATION_TTL_SECONDS,
+        )
+        status = int(result[0])
+        scope_raw = result[1]
+        scope = scope_raw.decode() if isinstance(scope_raw, bytes) else str(scope_raw)
+        daily_value = int(result[2])
+        monthly_value = int(result[3])
+        original_daily_period = result[4]
+        original_monthly_period = result[5]
+        if isinstance(original_daily_period, bytes):
+            original_daily_period = original_daily_period.decode()
+        if isinstance(original_monthly_period, bytes):
+            original_monthly_period = original_monthly_period.decode()
+        if status == -1:
+            raise ValueError(
+                f"reservation_id already belongs to different inputs: {receipt_id}"
+            )
+        if status == 0:
+            value = monthly_value if scope == "monthly" else daily_value
+            limit = monthly_limit if scope == "monthly" else daily_limit
+            period = monthly_period if scope == "monthly" else daily_period
+            await _best_effort_alert(
+                client, category, scope, period, value, limit, hard=True
+            )
+            scope_label = "월간" if scope == "monthly" else "일일"
+            return CostGuardDecision(
+                False, f"{label} {scope_label} 호출 상한({limit}건)에 도달했습니다."
+            )
+
+        receipt = ReservationReceipt(
+            id=receipt_id,
+            category=category,
+            daily_period=str(original_daily_period),
+            monthly_period=str(original_monthly_period),
+            reserved_units=count,
+        )
+        if status == 3:
+            consumed_raw = result[6]
+            released_raw = result[7]
+            consumed_units = int(consumed_raw) if str(consumed_raw) else None
+            released_units = int(released_raw) if str(released_raw) else None
+            settled_receipt = replace(
+                receipt,
+                consumed_units=consumed_units,
+                released_units=released_units,
+            )
+            return CostGuardDecision(
+                False,
+                "동일한 비용 예약은 이미 정산됐습니다. 새 실행 시도 ID가 필요합니다.",
+                settled_receipt,
+            )
+        if status == 1:
+            await _evaluate_scope_alert(
+                client, category, "monthly", monthly_period, monthly_value, monthly_limit
+            )
+            await _evaluate_scope_alert(
+                client, category, "daily", daily_period, daily_value, daily_limit
+            )
+        return CostGuardDecision(True, None, receipt)
+    except ValueError:
+        raise
+    except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+        logger.warning(
+            "cost_guard reservation fail-open (redis unavailable): category=%s error=%s",
+            category,
+            exc.__class__.__name__,
+        )
+        return CostGuardDecision(True, None)
+
+
+async def settle_reservation(
+    receipt: ReservationReceipt | None,
+    *,
+    consumed_units: int,
+    redis_client: redis_async.Redis | None = None,
+) -> ReservationReceipt | None:
+    """Settle a receipt once against its original KST day/month counters.
+
+    Returns the receipt with consumed/released units for a new or duplicate identical
+    settlement. Missing/expired receipts and Redis failures return ``None`` without
+    disrupting the completed business operation.
+    """
+    if receipt is None or not settings.COST_GUARD_ENABLED:
+        return None
+    if consumed_units < 0 or consumed_units > receipt.reserved_units:
+        raise ValueError("consumed_units must be between zero and reserved_units")
+    client = redis_client or _client()
+    try:
+        result = await client.eval(
+            _SETTLE_RESERVATION_SCRIPT,
+            1,
+            _reservation_key(receipt.id),
+            receipt.category,
+            receipt.daily_period,
+            receipt.monthly_period,
+            receipt.reserved_units,
+            consumed_units,
+        )
+        status = int(result[0])
+        if status == -1:
+            reason = result[1]
+            if isinstance(reason, bytes):
+                reason = reason.decode()
+            logger.warning(
+                "cost_guard reservation settlement rejected: id=%s reason=%s",
+                receipt.id,
+                reason,
+            )
+            return None
+        if status == 0:
+            logger.warning("cost_guard reservation receipt missing: id=%s", receipt.id)
+            return None
+        actual_consumed = int(result[2])
+        actual_released = int(result[3])
+        return replace(
+            receipt,
+            consumed_units=actual_consumed,
+            released_units=actual_released,
+        )
+    except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+        logger.warning(
+            "cost_guard reservation settlement skipped: id=%s error=%s",
+            receipt.id,
+            exc.__class__.__name__,
+        )
+        return None
 
 
 async def remaining_units(

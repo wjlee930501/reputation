@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, text
 
+from app.core.config import settings
 from app.models.monthly_control import (
     MonthlyMeasurementAttempt,
     MonthlyMeasurementCell,
@@ -13,11 +14,20 @@ from app.models.monthly_control import (
 )
 from app.models.report import MonthlyReport
 from app.services import sov_engine
+from app.services.measurement_slots import summarize_observation_slots
 from app.services.monthly_period import is_monthly_recovery_window
 
 EXCLUSION_REASONS: Final[frozenset[str]] = frozenset(
     {"DUPLICATE_TARGET", "RETIRED_BEFORE_MEASUREMENT", "LEGAL_REMOVAL"}
 )
+OBSERVATION_SLOT_CONTRACT_VERSION: Final[int] = 1
+
+
+def _observation_slot_contract() -> dict[str, int]:
+    return {
+        "version": OBSERVATION_SLOT_CONTRACT_VERSION,
+        "repeat_count": min(settings.SOV_REPEAT_COUNT_WEEKLY, 20),
+    }
 
 
 class ManifestError(RuntimeError):
@@ -171,6 +181,7 @@ def _replace_manifest_freeze(
         "gemini": "CONFIGURED" if "gemini" in platforms else "NOT_CONFIGURED",
         "query_intents": {spec.query_key: spec.query_intent for spec in specs},
         "measurement_protocol": protocol,
+        "observation_slots": _observation_slot_contract(),
     }
     manifest.frozen_at = datetime.now(timezone.utc)
     manifest.closes_at = _month_close(year, month)
@@ -219,19 +230,25 @@ def freeze_monthly_manifest(
             platforms=platforms,
             protocol=protocol,
         )
+    platform_provenance = {
+        "chatgpt": "ALWAYS",
+        "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
+        "query_intents": {spec.query_key: spec.query_intent for spec in specs},
+        # 동결 시점의 측정 정책. 전월 대비 비교는 두 달의 이 스냅샷이 같을 때만
+        # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
+        "measurement_protocol": protocol,
+    }
+    # Observation slots belong to the authoritative month-end measurement freeze.
+    # Weekly manifests remain on their historical lineage so a weekly result cannot
+    # accidentally become the terminal repeat for the monthly contract.
+    if _is_month_end_tracking_protocol(protocol):
+        platform_provenance["observation_slots"] = _observation_slot_contract()
     manifest = MonthlyMeasurementManifest(
         hospital_id=hospital_id,
         period_year=year,
         period_month=month,
         configured_platforms=platforms,
-        platform_provenance={
-            "chatgpt": "ALWAYS",
-            "gemini": "CONFIGURED" if gemini_configured else "NOT_CONFIGURED",
-            "query_intents": {spec.query_key: spec.query_intent for spec in specs},
-            # 동결 시점의 측정 정책. 전월 대비 비교는 두 달의 이 스냅샷이 같을 때만
-            # 성립한다 — 정책이 바뀐 달을 성과 변화로 붙여 팔 수 없다.
-            "measurement_protocol": protocol,
-        },
+        platform_provenance=platform_provenance,
         closes_at=_month_close(year, month),
     )
     manifest.cells = cells
@@ -310,6 +327,43 @@ def summarize_manifest(
     quality = "BLOCKED"
     if closed and planned > 0 and success > 0 and not platform_gap:
         quality = "COMPLETE" if success == planned else "DEGRADED"
+    slotted_cells = [
+        cell
+        for cell in rows
+        if cell.state != "EXCLUDED" and list(getattr(cell, "observation_slots", ()) or ())
+    ]
+    provenance = getattr(next(iter(rows), None), "manifest", None)
+    provenance = getattr(provenance, "platform_provenance", None)
+    slot_contract = provenance.get("observation_slots") if isinstance(provenance, dict) else None
+    contract_repeat_count = (
+        slot_contract.get("repeat_count") if isinstance(slot_contract, dict) else None
+    )
+    has_slot_contract = (
+        isinstance(slot_contract, dict)
+        and slot_contract.get("version") == OBSERVATION_SLOT_CONTRACT_VERSION
+        and isinstance(contract_repeat_count, int)
+        and not isinstance(contract_repeat_count, bool)
+        and contract_repeat_count > 0
+    )
+    # Manifests frozen before the slot contract keep their legacy quality. We do
+    # not backfill repeat lineage. A new contract manifest stays incomplete until
+    # every planned cell has every frozen repeat slot, including after a hard kill.
+    if has_slot_contract:
+        expected_slots = planned * contract_repeat_count
+        actual_slots = sum(len(cell.observation_slots) for cell in slotted_cells)
+        adequacy = summarize_observation_slots(
+            (slot for cell in slotted_cells for slot in cell.observation_slots),
+            deadline_reached=closed,
+        )
+        slot_set_complete = len(slotted_cells) == planned and actual_slots == expected_slots
+        if slot_set_complete and adequacy.status == "COMPLETE" and success == planned and not platform_gap:
+            quality = "COMPLETE" if closed else "BLOCKED"
+        elif slot_set_complete and adequacy.status == "LIMITED":
+            quality = "DEGRADED"
+        elif slot_set_complete and adequacy.status == "UNAVAILABLE":
+            quality = "BLOCKED"
+        else:
+            quality = "BLOCKED"
     blockers: list[str] = []
     if not closed:
         blockers.append("MANIFEST_OPEN")
@@ -319,6 +373,15 @@ def summarize_manifest(
         blockers.append("MANIFEST_EMPTY")
     elif failed:
         blockers.append("MANIFEST_CELL_FAILURES")
+    if has_slot_contract:
+        if not slot_set_complete:
+            blockers.append("MEASUREMENT_SLOT_SET_INCOMPLETE")
+        elif adequacy.status == "LIMITED":
+            blockers.append("MEASUREMENT_SAMPLE_LIMITED")
+        elif adequacy.status == "UNAVAILABLE":
+            blockers.append("MEASUREMENT_SAMPLE_UNAVAILABLE")
+        elif adequacy.status == "IN_PROGRESS":
+            blockers.append("MEASUREMENT_SLOTS_PENDING")
     blockers.append("DOCTOR_ARTIFACT_UNVALIDATED")
     return ManifestSummary(planned, success, failed, excluded, quality, tuple(blockers))
 

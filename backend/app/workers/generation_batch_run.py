@@ -7,10 +7,14 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.models.operations import JSONValue, OperationRun, OperationRunState
+from app.workers.generation_retry_policy import (
+    GenerationRetryClass,
+    next_recovery_sweep,
+    retry_class_for,
+)
 from app.workers.generation_run_control import GenerationItemState, create_item_run
 
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
-_NEXT_RETRY_DELAY = timedelta(minutes=15)
 
 
 class GenerationBatchRecorder:
@@ -75,7 +79,10 @@ class GenerationBatchRecorder:
         if safe_error_code is not None:
             payload["safe_error_code"] = safe_error_code
             payload["safe_error_message"] = safe_error_message
-            payload["next_retry_at"] = (datetime.now(UTC) + _NEXT_RETRY_DELAY).isoformat()
+            retry_class = retry_class_for(safe_error_code)
+            payload["retry_class"] = retry_class.value
+            if retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+                payload["next_retry_at"] = next_recovery_sweep().isoformat()
         self.items[str(item_id)] = payload
         self._persist(terminal=False)
 

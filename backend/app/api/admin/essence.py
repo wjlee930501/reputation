@@ -28,6 +28,7 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import OperationRun
 from app.schemas.essence import (
     ApprovedPhilosophyResponse,
     PhilosophyApprove,
@@ -42,7 +43,6 @@ from app.schemas.essence import (
 from app.services import cost_guard
 from app.services.asset_extractor import (
     detect_extractor_for,
-    evidence_text_is_acceptable,
     extract_docx_text,
     extract_pdf_text,
     fetch_url_text,
@@ -60,11 +60,8 @@ from app.services.essence_engine import (
     find_error_marker_fields,
     mandatory_safety_findings,
     metered_llm_calls,
-    process_source_asset,
-    screen_content_against_philosophy,
     synthesize_philosophy,
     validate_philosophy_grounding,
-    validate_source_excerpt,
 )
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
@@ -100,6 +97,17 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.services.source_processing_runs import (
+    SOURCE_PROCESSING_OPERATION,
+    client_source_metadata,
+    create_or_get_source_processing_run,
+    merge_source_metadata_patch,
+    prepare_next_source_run_item,
+    processing_input_hash,
+    release_source_run_dispatch,
+    serialize_source_processing_run,
+    source_patch_changed_fields,
+)
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.workers.dispatch_auth import build_dispatch_headers
 
@@ -125,6 +133,73 @@ def _enqueue_essence_review_best_effort(hospital_id: uuid.UUID) -> None:
             "periodic reconciliation will retry",
             hospital_id,
         )
+
+
+async def _dispatch_source_processing_run_best_effort(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+) -> bool:
+    prepared = await prepare_next_source_run_item(db, run_id)
+    if prepared is None:
+        return False
+    _run, source_id, dispatch_token = prepared
+    try:
+        celery_app.send_task(
+            "app.workers.tasks.process_source_asset_task",
+            args=[source_id, str(run_id), dispatch_token],
+            queue="default",
+            headers=build_dispatch_headers(
+                "app.workers.tasks.process_source_asset_task", source_id
+            ),
+        )
+        return True
+    except Exception as exc:
+        await release_source_run_dispatch(
+            db,
+            run_id,
+            source_id=source_id,
+            dispatch_token=dispatch_token,
+            error=str(exc),
+        )
+        logger.exception("Failed to dispatch source-processing run %s", run_id)
+        return False
+
+
+async def _start_source_processing_best_effort(
+    db: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    source_ids: list[uuid.UUID],
+    source_identities: list[str] | None = None,
+) -> OperationRun | None:
+    if not source_ids:
+        return None
+    # Serialize only durable run creation. Provider work happens later in the
+    # worker after this transaction has committed and released the hospital lock.
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    if source_identities is None:
+        rows = list(
+            (
+                await db.execute(
+                    select(HospitalSourceAsset).where(HospitalSourceAsset.id.in_(source_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        source_identities = [
+            f"{source.id}:{processing_input_hash(source, compute_source_content_hash(source.title, source.url, source.raw_text, source.operator_note))}"
+            for source in rows
+        ]
+    run, _created = await create_or_get_source_processing_run(
+        db,
+        hospital_id=hospital_id,
+        source_ids=source_ids,
+        source_identities=source_identities,
+    )
+    await _dispatch_source_processing_run_best_effort(db, run.id)
+    await db.refresh(run)
+    return run
 
 
 async def _read_upload_within_limit(file: UploadFile) -> bytes:
@@ -386,6 +461,12 @@ class NaverRetryBody(BaseModel):
 class BulkSourceProcessResult(BaseModel):
     queued: int
     source_ids: list[str]
+    run_id: str | None = None
+    state: str | None = None
+    total_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    skipped_count: int = 0
 
 
 class BulkEvidenceNoiseRequest(BaseModel):
@@ -523,16 +604,16 @@ async def create_source(
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=body.source_type,
-        title=body.title,
+        title=body.title.strip(),
         url=_clean_optional(body.url),
         raw_text=_clean_optional(body.raw_text),
         operator_note=_clean_optional(body.operator_note),
-        source_metadata=body.source_metadata or {},
+        source_metadata=merge_source_metadata_patch({}, body.source_metadata),
         content_hash=compute_source_content_hash(
-            body.title,
-            body.url,
-            body.raw_text,
-            body.operator_note,
+            body.title.strip(),
+            _clean_optional(body.url),
+            _clean_optional(body.raw_text),
+            _clean_optional(body.operator_note),
         ),
         status=SourceStatus.PENDING,
         created_by=body.created_by,
@@ -540,6 +621,10 @@ async def create_source(
     db.add(source)
     await db.commit()
     await db.refresh(source)
+    if source.raw_text and source.raw_text.strip():
+        await _start_source_processing_best_effort(
+            db, hospital_id=hospital_id, source_ids=[source.id]
+        )
     return _serialize_source(source)
 
 
@@ -571,6 +656,11 @@ async def patch_source(
             source.source_metadata,
             update["source_metadata"],
         )
+    if "source_metadata" in update:
+        update["source_metadata"] = merge_source_metadata_patch(
+            source.source_metadata,
+            update["source_metadata"],
+        )
     material_fields = {
         "source_type",
         "title",
@@ -579,15 +669,23 @@ async def patch_source(
         "operator_note",
         "source_metadata",
     }
-    material_changed = bool(material_fields.intersection(update.keys()))
-    classification_only = is_photo_classification_only(pending_source_type, set(update.keys()))
+    changed_fields = source_patch_changed_fields(source, update)
+    material_changed = bool(material_fields.intersection(changed_fields))
+    classification_only = is_photo_classification_only(pending_source_type, changed_fields)
+    if not changed_fields:
+        notes = await _get_notes_for_source(db, source.id)
+        return _serialize_source(
+            source, evidence_notes=notes, evidence_note_count=len(notes)
+        )
     hospital = await _get_hospital_or_404(db, hospital_id) if material_changed else None
     should_revalidate = bool(hospital and _has_public_site(hospital))
     if should_revalidate:
         ensure_site_revalidate_configured()
 
     for field_name, value in update.items():
-        if field_name in {"url", "raw_text", "operator_note"}:
+        if field_name not in changed_fields:
+            continue
+        if field_name in {"title", "url", "raw_text", "operator_note"}:
             value = _clean_optional(value)
         setattr(source, field_name, value)
 
@@ -617,6 +715,16 @@ async def patch_source(
 
     await db.commit()
     await db.refresh(source)
+    if (
+        material_changed
+        and not classification_only
+        and source.raw_text
+        and source.raw_text.strip()
+        and source.source_type not in PHOTO_SOURCE_TYPES
+    ):
+        await _start_source_processing_best_effort(
+            db, hospital_id=hospital_id, source_ids=[source.id]
+        )
     if should_revalidate and hospital:
         await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
     return _serialize_source(source)
@@ -628,12 +736,8 @@ async def process_source(
     source_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    await acquire_hospital_advisory_lock(db, hospital_id)
     source = await _get_source_or_404(db, hospital_id, source_id)
-    hospital = await _get_hospital_or_404(db, hospital_id)
-    should_revalidate = _has_public_site(hospital)
-    if should_revalidate:
-        ensure_site_revalidate_configured()
+    await _get_hospital_or_404(db, hospital_id)
     if source.status == SourceStatus.EXCLUDED:
         raise HTTPException(status_code=400, detail="제외 처리된 자료는 처리할 수 없습니다.")
     if not source.raw_text or not source.raw_text.strip():
@@ -647,86 +751,38 @@ async def process_source(
     current_hash = compute_source_content_hash(
         source.title, source.url, source.raw_text, source.operator_note
     )
-    if source.status == SourceStatus.PROCESSED and source.content_hash == current_hash:
+    current_input_hash = processing_input_hash(source, current_hash)
+    if (
+        source.status == SourceStatus.PROCESSED
+        and source.content_hash == current_hash
+        and (source.source_metadata or {}).get("extraction_input_hash")
+        == current_input_hash
+    ):
         existing_notes = await _get_notes_for_source(db, source.id)
         return _serialize_source(
             source, evidence_notes=existing_notes, evidence_note_count=len(existing_notes)
         )
 
-    # 일괄 처리(process_source_asset_task)와 같은 유료 호출 예산을 쓴다 — 예약 없이
-    # metered_llm_calls만 쓰면 실제 호출 관측만 될 뿐 킬스위치/상한을 무시하고 나간다.
-    decision = await cost_guard.check_and_increment("content")
-    if not decision.allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=decision.reason or "비용 가드 상한으로 자료 처리가 차단되었습니다.",
-        )
-
-    try:
-        # 동기 LLM 호출을 워커 스레드로 — 단일 uvicorn worker의 이벤트 루프 블로킹 방지
-        # (이 파일의 PDF/DOCX 추출도 동일하게 to_thread 사용).
-        async with metered_llm_calls(hospital_id):
-            payloads = await asyncio.to_thread(process_source_asset, source)
-        payloads = [
-            payload
-            for payload in payloads
-            if evidence_text_is_acceptable(payload.claim, payload.source_excerpt)
-        ]
-        for payload in payloads:
-            if not validate_source_excerpt(source, payload.source_excerpt):
-                raise ValueError(
-                    f"source_excerpt가 원문에 존재하지 않습니다: {payload.source_excerpt[:80]}"
-                )
-
-        await db.execute(
-            delete(HospitalSourceEvidenceNote).where(
-                HospitalSourceEvidenceNote.source_asset_id == source.id
-            )
-        )
-        notes = [
-            HospitalSourceEvidenceNote(
-                hospital_id=hospital_id,
-                source_asset_id=source.id,
-                note_type=payload.note_type,
-                claim=payload.claim,
-                source_excerpt=payload.source_excerpt,
-                excerpt_start=payload.excerpt_start,
-                excerpt_end=payload.excerpt_end,
-                confidence=payload.confidence,
-                note_metadata=payload.note_metadata,
-            )
-            for payload in payloads
-        ]
-        db.add_all(notes)
-        source.status = SourceStatus.PROCESSED
-        source.process_error = None
-        source.processed_at = datetime.now(timezone.utc)
-        source.content_hash = compute_source_content_hash(
-            source.title,
-            source.url,
-            source.raw_text,
-            source.operator_note,
-        )
-        await db.commit()
-        await db.refresh(source)
-        _enqueue_essence_review_best_effort(hospital_id)
-        if should_revalidate:
-            await trigger_hospital_site_revalidate_safe(hospital.slug, hospital_name=hospital.name)
-        return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
-    except ValueError as exc:
-        source.status = SourceStatus.ERROR
-        source.process_error = str(exc)
-        await db.commit()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await _start_source_processing_best_effort(
+        db, hospital_id=hospital_id, source_ids=[source.id]
+    )
+    await db.refresh(source)
+    notes = await _get_notes_for_source(db, source.id)
+    return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
 
 
 @router.post("/sources/process-pending", response_model=BulkSourceProcessResult)
 async def process_pending_sources(
     hospital_id: uuid.UUID,
-    limit: int = Query(default=20, ge=1, le=50),
+    limit: int | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
 ):
-    """본문이 있는 검토 대기 자료를 워커에 일괄 큐잉한다."""
+    """Snapshot every eligible source and start a server-owned bounded drain.
+
+    ``limit`` is retained only so older clients keep working; server-side draining
+    always owns the complete snapshot.
+    """
+    _ = limit
     await _get_hospital_or_404(db, hospital_id)
     result = await db.execute(
         select(HospitalSourceAsset)
@@ -736,12 +792,24 @@ async def process_pending_sources(
             HospitalSourceAsset.raw_text.isnot(None),
         )
         .order_by(HospitalSourceAsset.created_at.asc())
-        .limit(limit)
     )
     sources = [source for source in result.scalars().all() if source.raw_text.strip()]
     source_ids = [str(source.id) for source in sources]
     if not source_ids:
-        return BulkSourceProcessResult(queued=0, source_ids=[])
+        latest = await db.scalar(
+            select(OperationRun)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.operation_type == SOURCE_PROCESSING_OPERATION,
+            )
+            .order_by(OperationRun.created_at.desc())
+            .limit(1)
+        )
+        return BulkSourceProcessResult(
+            queued=0,
+            source_ids=[],
+            **(serialize_source_processing_run(latest) if latest else {}),
+        )
 
     await write_audit_log(
         db,
@@ -754,19 +822,67 @@ async def process_pending_sources(
     )
     await db.commit()
 
-    try:
-        for source_id in source_ids:
-            celery_app.send_task(
-                "app.workers.tasks.process_source_asset_task",
-                args=[source_id],
-                queue="default",
-            )
-    except Exception as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"자료 처리 큐잉에 실패했습니다: {str(exc)[:200]}",
-        ) from exc
-    return BulkSourceProcessResult(queued=len(source_ids), source_ids=source_ids)
+    run = await _start_source_processing_best_effort(
+        db,
+        hospital_id=hospital_id,
+        source_ids=[source.id for source in sources],
+        source_identities=[
+            f"{source.id}:{processing_input_hash(source, compute_source_content_hash(source.title, source.url, source.raw_text, source.operator_note))}"
+            for source in sources
+        ],
+    )
+    assert run is not None
+    summary = serialize_source_processing_run(run)
+    return BulkSourceProcessResult(
+        queued=1 if str(run.state) in {"QUEUED", "OperationRunState.QUEUED"} else 0,
+        source_ids=source_ids,
+        **summary,
+    )
+
+
+@router.get("/source-processing-runs/latest", response_model=BulkSourceProcessResult | None)
+async def latest_source_processing_run(
+    hospital_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_hospital_or_404(db, hospital_id)
+    run = await db.scalar(
+        select(OperationRun)
+        .where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == SOURCE_PROCESSING_OPERATION,
+        )
+        .order_by(OperationRun.created_at.desc())
+        .limit(1)
+    )
+    if run is None:
+        return None
+    return BulkSourceProcessResult(
+        queued=0,
+        source_ids=[str(item) for item in (run.request_payload or {}).get("source_ids", [])],
+        **serialize_source_processing_run(run),
+    )
+
+
+@router.get("/source-processing-runs/{run_id}", response_model=BulkSourceProcessResult)
+async def get_source_processing_run(
+    hospital_id: uuid.UUID,
+    run_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    await _get_hospital_or_404(db, hospital_id)
+    run = await db.get(OperationRun, run_id)
+    if (
+        run is None
+        or run.hospital_id != hospital_id
+        or run.operation_type != SOURCE_PROCESSING_OPERATION
+    ):
+        raise HTTPException(status_code=404, detail="자료 처리 실행을 찾을 수 없습니다.")
+    return BulkSourceProcessResult(
+        queued=0,
+        source_ids=[str(item) for item in (run.request_payload or {}).get("source_ids", [])],
+        **serialize_source_processing_run(run),
+    )
 
 
 @router.post("/sources/{source_id}/exclude", response_model=SourceAssetResponse)
@@ -850,6 +966,15 @@ async def reinclude_source(
     )
     await db.commit()
     await db.refresh(source)
+    if (
+        restored_status == SourceStatus.PENDING
+        and source.raw_text
+        and source.raw_text.strip()
+        and source.source_type not in PHOTO_SOURCE_TYPES
+    ):
+        await _start_source_processing_best_effort(
+            db, hospital_id=hospital_id, source_ids=[source.id]
+        )
     _enqueue_essence_review_best_effort(hospital_id)
     if should_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
@@ -997,6 +1122,10 @@ async def upload_source_file(
     )
     await db.commit()
     await db.refresh(source)
+    if raw_text and raw_text.strip() and not is_photo_type:
+        await _start_source_processing_best_effort(
+            db, hospital_id=hospital_id, source_ids=[source.id]
+        )
     if should_revalidate:
         await trigger_hospital_site_revalidate_safe(
             hospital.slug, hospital_name=hospital.name
@@ -1104,6 +1233,10 @@ async def crawl_source_url(
     )
     await db.commit()
     await db.refresh(source)
+    if source.raw_text and source.raw_text.strip():
+        await _start_source_processing_best_effort(
+            db, hospital_id=hospital_id, source_ids=[source.id]
+        )
     return _serialize_source(source)
 
 
@@ -1598,8 +1731,29 @@ async def approve_philosophy(
             ContentItem.hospital_id == hospital_id,
             ContentItem.body.isnot(None),
         )
+        .with_for_update(of=ContentItem)
+        .execution_options(populate_existing=True)
     )
-    rescreened = _rescreen_content_items(content_result.scalars().all(), philosophy)
+    from app.models.content import ContentStatus
+
+    content_items = list(content_result.scalars().all())
+    previously_published = {
+        item.id for item in content_items if item.status == ContentStatus.PUBLISHED
+    }
+    rescreened = _rescreen_content_items(content_items, philosophy)
+    if previously_published:
+        from app.services import indexnow
+
+        for item in content_items:
+            if item.id in previously_published and item.status != ContentStatus.PUBLISHED:
+                await indexnow.enqueue_content_published(
+                    db,
+                    slug=hospital.slug,
+                    content_id=item.id,
+                    aeo_domain=hospital.aeo_domain,
+                    treatments=hospital.treatments,
+                    revision=int(item.content_revision or 1),
+                )
     needs_site_revalidate = _has_public_site(hospital)
     if needs_site_revalidate:
         ensure_site_revalidate_configured()
@@ -1663,14 +1817,22 @@ def _rescreen_content_items(
     items: list[ContentItem],
     philosophy: HospitalContentPhilosophy,
 ) -> dict[str, int]:
+    # Function-local import avoids coupling the ingestion/review module import
+    # graph to publication while preserving unresolved independent findings.
+    from app.services.content_provenance import mark_removed_source_dependency
+    from app.services.content_publication import (
+        apply_essence_revalidation,
+    )
+
     counts = {"total": 0, "aligned": 0, "needs_review": 0}
     for item in items:
-        screening = screen_content_against_philosophy(item, philosophy)
-        item.content_philosophy_id = philosophy.id
-        item.essence_status = screening.status
-        item.essence_check_summary = screening.summary
+        if mark_removed_source_dependency(item, philosophy):
+            counts["total"] += 1
+            counts["needs_review"] += 1
+            continue
+        essence_status = apply_essence_revalidation(item, philosophy)
         counts["total"] += 1
-        if screening.status == "ALIGNED":
+        if essence_status == "ALIGNED":
             counts["aligned"] += 1
         else:
             counts["needs_review"] += 1
@@ -1858,7 +2020,7 @@ def _serialize_source(
         "url": source.url,
         "raw_text": source.raw_text,
         "operator_note": source.operator_note,
-        "source_metadata": source.source_metadata or {},
+        "source_metadata": client_source_metadata(source.source_metadata),
         "content_hash": source.content_hash,
         "status": source.status,
         "process_error": source.process_error,

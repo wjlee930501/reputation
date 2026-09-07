@@ -7,7 +7,10 @@ from fastapi import HTTPException
 from app.api.admin import exposure_actions as exposure_actions_api
 from app.services import exposure_action_engine
 from app.services.exposure_action_engine import (
+    _build_target_diagnoses,
+    _group_records_by_target,
     _is_successful_measurement,
+    _load_recent_sov_records,
     _reconcile_stale_work,
     build_exposure_recommendations,
 )
@@ -53,9 +56,10 @@ class _FakeDB:
 
 
 def _target(*, priority="HIGH", status="ACTIVE", target_month="2026-05"):
-    return SimpleNamespace(
+    hospital_id = uuid.uuid4()
+    target = SimpleNamespace(
         id=uuid.uuid4(),
-        hospital_id=uuid.uuid4(),
+        hospital_id=hospital_id,
         name="강남 치질 수술 추천",
         target_intent="추천형",
         priority=priority,
@@ -63,17 +67,80 @@ def _target(*, priority="HIGH", status="ACTIVE", target_month="2026-05"):
         target_month=target_month,
         variants=[],
     )
+    target.hospital = SimpleNamespace(
+        id=hospital_id,
+        slug="test-clinic",
+        website_url="https://example.test",
+        blog_url=None,
+        kakao_channel_url=None,
+        google_business_profile_url=None,
+        google_maps_url=None,
+        naver_place_url=None,
+        aeo_domain=None,
+    )
+    return target
 
 
-def _record(target_id, *, is_mentioned=False, competitors=None, source_urls=None):
+def _record(
+    target_id,
+    *,
+    is_mentioned=False,
+    competitors=None,
+    source_urls=None,
+    search_calls=1,
+    measured_at=None,
+    policy_version="exposure-test-v1",
+    run_id="exposure-test-run",
+    query_text="강남 치질 수술 회복 기간은?",
+    answer_model="answer-model-v1",
+    platform="chatgpt",
+    query_id=None,
+    explicit_target_id=None,
+    has_explicit_target=True,
+    tracking_set_fingerprint=None,
+):
+    frozen_query_id = query_id or target_id
     return SimpleNamespace(
-        ai_query_target_id=target_id,
-        query_id=None,
+        id=uuid.uuid4(),
+        ai_query_target_id=(
+            explicit_target_id or target_id if has_explicit_target else None
+        ),
+        ai_query_variant_id=None,
+        query_id=frozen_query_id,
+        ai_platform=platform,
         measurement_status="SUCCESS",
         is_mentioned=is_mentioned,
         competitor_mentions=competitors or [],
         source_urls=source_urls,
-        measured_at=datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+        search_calls=search_calls,
+        measured_at=measured_at or datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc),
+        measurement_run=SimpleNamespace(
+            id=run_id,
+            config={
+                "measurement_protocol": {
+                    "policy_version": policy_version,
+                    "prompt_fingerprint": "prompt-v1",
+                    "judge_prompt_fingerprint": "judge-v1",
+                    **(
+                        {
+                            "measurement_window": "month_end",
+                            "tracking_set_fingerprint": tracking_set_fingerprint,
+                            "tracking_set_size": 10,
+                        }
+                        if tracking_set_fingerprint
+                        else {}
+                    ),
+                },
+                "query_snapshot": [
+                    {
+                        "query_id": str(frozen_query_id),
+                        "query_text": query_text,
+                        "query_intent": "LOCAL",
+                    }
+                ],
+            },
+        ),
+        answer_model=answer_model,
     )
 
 
@@ -221,7 +288,13 @@ def test_unmeasured_targets_do_not_outrank_real_exposure_gaps():
     unmeasured.hospital_id = missing_mention.hospital_id
     unmeasured.name = "미측정 질문"
     records = [
-        _record(missing_mention.id, is_mentioned=False, source_urls=["https://example.test"])
+        _record(missing_mention.id, is_mentioned=False, source_urls=["https://example.test"]),
+        _record(
+            missing_mention.id,
+            is_mentioned=False,
+            source_urls=["https://example.test/faq"],
+            measured_at=datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc),
+        ),
     ]
 
     recommendations = build_exposure_recommendations(
@@ -252,7 +325,15 @@ def test_unmeasured_high_priority_targets_cannot_fill_the_whole_creation_budget(
     real_gap = _target(priority="NORMAL", target_month="2026-05")
     real_gap.hospital_id = hospital_id
     real_gap.name = "실제 미언급 질문"
-    records = [_record(real_gap.id, is_mentioned=False, source_urls=["https://example.test"])]
+    records = [
+        _record(real_gap.id, is_mentioned=False, source_urls=["https://example.test"]),
+        _record(
+            real_gap.id,
+            is_mentioned=False,
+            source_urls=["https://example.test/faq"],
+            measured_at=datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc),
+        ),
+    ]
 
     recommendations = build_exposure_recommendations(
         [*unmeasured, real_gap], records, today=date(2026, 5, 3)
@@ -290,7 +371,7 @@ def test_no_successful_measurement_still_fires_before_the_first_measurement():
     assert [r.gap_type for r in recommendations] == ["NO_SUCCESSFUL_MEASUREMENT"]
 
 
-def test_builds_content_webblog_and_source_actions_from_missing_mentions():
+def test_builds_content_and_webblog_actions_from_missing_mentions():
     target = _target(priority="HIGH")
     records = [
         _record(
@@ -310,11 +391,66 @@ def test_builds_content_webblog_and_source_actions_from_missing_mentions():
     recommendations = build_exposure_recommendations([target], records, today=date(2026, 5, 3))
 
     action_types = [recommendation.action_type for recommendation in recommendations]
-    assert action_types == ["CONTENT", "WEBBLOG_IA", "SOURCE"]
+    assert action_types == ["CONTENT", "WEBBLOG_IA"]
     assert recommendations[0].gap_type == "MISSING_MENTION"
     assert recommendations[0].evidence["mention_rate"] == 0.0
     assert recommendations[1].gap_type == "COMPETITOR_VISIBILITY"
-    assert recommendations[2].gap_type == "SOURCE_SIGNAL_GAP"
+    source_counts = recommendations[0].evidence["source_observation_counts"]
+    assert source_counts["searched_missing_sources"] == 2
+    assert source_counts["no_search"] == 0
+
+
+def test_source_gap_requires_observed_search_with_other_citations():
+    target = _target(priority="HIGH")
+    records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/article-a"],
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/article-b"],
+            measured_at=datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc),
+        ),
+    ]
+
+    recommendations = build_exposure_recommendations([target], records, today=date(2026, 5, 3))
+
+    assert [item.gap_type for item in recommendations] == ["SOURCE_SIGNAL_GAP"]
+    evidence = recommendations[0].evidence
+    assert evidence["source_observation_counts"] == {
+        "no_search": 0,
+        "unknown_search": 0,
+        "searched_missing_sources": 0,
+        "searched_other_citation": 2,
+        "searched_owned_citation": 0,
+        "searched_citation_ownership_unknown": 0,
+    }
+    assert evidence["owned_citation_share"] == 0.0
+
+
+def test_no_search_and_unknown_search_do_not_create_source_work():
+    target = _target(priority="HIGH")
+    records = [
+        _record(target.id, is_mentioned=True, source_urls=[], search_calls=0),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=[],
+            search_calls=None,
+            measured_at=datetime(2026, 5, 2, 12, 0, tzinfo=timezone.utc),
+        ),
+    ]
+
+    recommendations = build_exposure_recommendations([target], records, today=date(2026, 5, 3))
+
+    assert recommendations == []
+    diagnosis = _build_target_diagnoses([target], records, today=date(2026, 5, 3))[0]
+    assert diagnosis.evidence["source_observation_counts"]["no_search"] == 1
+    assert diagnosis.evidence["source_observation_counts"]["unknown_search"] == 1
+    assert diagnosis.evidence["source_evaluable_count"] == 0
 
 
 def test_competitor_mention_count_is_per_record_binary():
@@ -361,7 +497,7 @@ def test_competitor_gap_not_triggered_by_many_competitors_in_single_record():
     assert "COMPETITOR_VISIBILITY" not in gap_types
 
 
-def test_reconciliation_closes_gap_and_action_after_measurement_recovers():
+def test_reconciliation_does_not_treat_missing_evidence_as_recovery():
     completed_at = datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc)
     action = SimpleNamespace(
         action_type="CONTENT",
@@ -377,10 +513,420 @@ def test_reconciliation_closes_gap_and_action_after_measurement_recovers():
 
     changed = _reconcile_stale_work([gap], [], completed_at=completed_at)
 
+    assert changed is False
+    assert gap.status == "OPEN"
+    assert action.status == "IN_PROGRESS"
+    assert action.completed_at is None
+
+
+def _gap_from_recommendation(recommendation, *, status="OPEN"):
+    action = SimpleNamespace(
+        action_type=recommendation.action_type,
+        status="IN_PROGRESS",
+        completed_at=None,
+    )
+    return SimpleNamespace(
+        query_target_id=recommendation.query_target_id,
+        gap_type=recommendation.gap_type,
+        evidence=dict(recommendation.evidence),
+        status=status,
+        actions=[action],
+    )
+
+
+def test_later_same_policy_target_improvement_resolves_gap_with_provenance():
+    target = _target(priority="HIGH")
+    initial_records = [
+        _record(
+            target.id,
+            is_mentioned=False,
+            source_urls=["https://example.test/a"],
+            measured_at=datetime(2026, 5, 1, 10, 0, tzinfo=timezone.utc),
+        ),
+        _record(
+            target.id,
+            is_mentioned=False,
+            source_urls=["https://example.test/b"],
+            measured_at=datetime(2026, 5, 1, 11, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    initial = build_exposure_recommendations([target], initial_records)[0]
+    assert initial.gap_type == "MISSING_MENTION"
+    gap = _gap_from_recommendation(initial)
+
+    improved_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/a"],
+            measured_at=datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc),
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/b"],
+            measured_at=datetime(2026, 5, 8, 11, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    diagnoses = _build_target_diagnoses([target], improved_records)
+    current = [item for diagnosis in diagnoses for item in diagnosis.recommendations]
+    completed_at = datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc)
+
+    changed = _reconcile_stale_work(
+        [gap], current, completed_at=completed_at, diagnoses=diagnoses
+    )
+
     assert changed is True
     assert gap.status == "RESOLVED"
-    assert action.status == "COMPLETED"
-    assert action.completed_at == completed_at
+    assert gap.actions[0].status == "COMPLETED"
+    assert gap.actions[0].completed_at == completed_at
+    resolution = gap.evidence["resolution_observation"]
+    assert resolution["basis"] == "later_comparable_target_observation"
+    assert resolution["mention_rate"] == 100.0
+    assert resolution["cohort_policy_fingerprint"] == initial.evidence[
+        "cohort_policy_fingerprint"
+    ]
+
+
+def test_changed_tracking_set_policy_does_not_resolve_existing_gap():
+    target = _target(priority="HIGH")
+    initial_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/a"],
+            tracking_set_fingerprint="tracking-a",
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/b"],
+            tracking_set_fingerprint="tracking-a",
+            measured_at=datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    initial = build_exposure_recommendations([target], initial_records)[0]
+    assert initial.gap_type == "SOURCE_SIGNAL_GAP"
+    gap = _gap_from_recommendation(initial)
+    changed_policy_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/a"],
+            tracking_set_fingerprint="tracking-b",
+            measured_at=datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc),
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/b"],
+            tracking_set_fingerprint="tracking-b",
+            measured_at=datetime(2026, 5, 8, 11, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    diagnoses = _build_target_diagnoses([target], changed_policy_records)
+
+    changed = _reconcile_stale_work(
+        [gap],
+        [],
+        completed_at=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
+        diagnoses=diagnoses,
+    )
+
+    assert changed is False
+    assert gap.status == "OPEN"
+    assert gap.actions[0].status == "IN_PROGRESS"
+
+
+def test_changed_frozen_question_and_actual_model_do_not_resolve_existing_gap():
+    target = _target(priority="HIGH")
+    initial_records = [
+        _record(target.id, is_mentioned=False, query_text="질문 A", answer_model="model-a"),
+        _record(
+            target.id,
+            is_mentioned=False,
+            query_text="질문 A",
+            answer_model="model-a",
+            measured_at=datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    initial = build_exposure_recommendations([target], initial_records)[0]
+    gap = _gap_from_recommendation(initial)
+    apparent_improvement = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/a"],
+            query_text="질문 B",
+            answer_model="model-b",
+            measured_at=datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc),
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/b"],
+            query_text="질문 B",
+            answer_model="model-b",
+            measured_at=datetime(2026, 5, 8, 11, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    diagnoses = _build_target_diagnoses([target], apparent_improvement)
+    assert diagnoses[0].policy_fingerprint == initial.evidence["cohort_policy_fingerprint"]
+    assert diagnoses[0].cohort_fingerprint != initial.evidence[
+        "cohort_comparability_fingerprint"
+    ]
+
+    changed = _reconcile_stale_work(
+        [gap],
+        [],
+        completed_at=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
+        diagnoses=diagnoses,
+    )
+
+    assert changed is False
+    assert gap.status == "OPEN"
+    assert gap.actions[0].status == "IN_PROGRESS"
+
+
+def test_no_search_cohort_does_not_resolve_existing_source_gap():
+    target = _target(priority="HIGH")
+    initial_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/a"],
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/b"],
+            measured_at=datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    initial = build_exposure_recommendations([target], initial_records)[0]
+    gap = _gap_from_recommendation(initial)
+    no_search_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=[],
+            search_calls=0,
+            measured_at=datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc),
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=[],
+            search_calls=0,
+            measured_at=datetime(2026, 5, 8, 11, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    diagnoses = _build_target_diagnoses([target], no_search_records)
+    assert diagnoses[0].recommendations == ()
+
+    changed = _reconcile_stale_work(
+        [gap],
+        [],
+        completed_at=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
+        diagnoses=diagnoses,
+    )
+
+    assert changed is False
+    assert gap.status == "OPEN"
+
+
+def test_later_same_policy_owned_citations_resolve_source_gap():
+    target = _target(priority="HIGH")
+    initial_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/a"],
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://independent.example/b"],
+            measured_at=datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    initial = build_exposure_recommendations([target], initial_records)[0]
+    gap = _gap_from_recommendation(initial)
+    owned_records = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/a"],
+            measured_at=datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc),
+        ),
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/b"],
+            measured_at=datetime(2026, 5, 8, 11, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    diagnoses = _build_target_diagnoses([target], owned_records)
+
+    changed = _reconcile_stale_work(
+        [gap],
+        [],
+        completed_at=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
+        diagnoses=diagnoses,
+    )
+
+    assert changed is True
+    assert gap.status == "RESOLVED"
+    assert gap.actions[0].status == "COMPLETED"
+    resolution = gap.evidence["resolution_observation"]
+    assert resolution["owned_citation_share"] == 100.0
+    assert resolution["source_observation_counts"]["searched_owned_citation"] == 2
+
+
+def test_one_new_observation_is_insufficient_and_does_not_imply_resolution():
+    target = _target(priority="HIGH")
+    initial_records = [
+        _record(target.id, is_mentioned=False),
+        _record(
+            target.id,
+            is_mentioned=False,
+            measured_at=datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    initial = build_exposure_recommendations([target], initial_records)[0]
+    gap = _gap_from_recommendation(initial)
+    one_record = [
+        _record(
+            target.id,
+            is_mentioned=True,
+            source_urls=["https://example.test/a"],
+            measured_at=datetime(2026, 5, 8, 10, 0, tzinfo=timezone.utc),
+        )
+    ]
+    diagnoses = _build_target_diagnoses([target], one_record)
+    assert diagnoses[0].recommendations == ()
+    assert diagnoses[0].evidence["diagnosis_state"] == "INSUFFICIENT_COMPARABLE_EVIDENCE"
+
+    changed = _reconcile_stale_work(
+        [gap],
+        [],
+        completed_at=datetime(2026, 5, 8, 12, 0, tzinfo=timezone.utc),
+        diagnoses=diagnoses,
+    )
+
+    assert changed is False
+    assert gap.status == "OPEN"
+
+
+def test_legacy_records_without_frozen_question_text_are_not_made_comparable():
+    target = _target(priority="HIGH")
+    records = [
+        _record(target.id, is_mentioned=False),
+        _record(
+            target.id,
+            is_mentioned=False,
+            measured_at=datetime(2026, 5, 1, 13, 0, tzinfo=timezone.utc),
+        ),
+    ]
+    for record in records:
+        record.measurement_run.config.pop("query_snapshot")
+
+    diagnosis = _build_target_diagnoses([target], records)[0]
+
+    assert diagnosis.comparable is False
+    assert diagnosis.cohort_fingerprint is None
+    assert diagnosis.recommendations == ()
+    assert diagnosis.evidence["diagnosis_state"] == "INSUFFICIENT_COMPARABLE_EVIDENCE"
+
+
+async def test_record_loader_has_no_hospital_wide_latest_1000_cutoff():
+    target = _target(priority="HIGH")
+    query_id = uuid.uuid4()
+    target.variants = [SimpleNamespace(query_matrix_id=query_id)]
+    captured = []
+
+    class _Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return []
+
+    class _CaptureDB:
+        async def execute(self, statement):
+            captured.append(str(statement))
+            return _Result()
+
+    await _load_recent_sov_records(_CaptureDB(), target.hospital_id, [target])
+
+    sql = captured[0].upper()
+    assert "LIMIT" not in sql
+    assert "ROW_NUMBER() OVER" in sql
+    assert "PARTITION BY" in sql
+    assert "AI_QUERY_TARGET_ID" in sql
+    assert "QUERY_ID" in sql
+
+
+def test_query_fallback_never_reassigns_a_record_with_an_explicit_other_target():
+    active = _target(priority="HIGH")
+    query_id = uuid.uuid4()
+    active.variants = [SimpleNamespace(query_matrix_id=query_id)]
+    explicit_other = _record(
+        active.id,
+        query_id=query_id,
+        explicit_target_id=uuid.uuid4(),
+    )
+    legacy_without_target = _record(
+        active.id,
+        query_id=query_id,
+        has_explicit_target=False,
+    )
+
+    grouped = _group_records_by_target([active], [explicit_other, legacy_without_target])
+
+    assert grouped[str(active.id)] == [legacy_without_target]
+
+
+def test_query_fallback_excludes_ambiguous_legacy_owner_and_keeps_explicit_owners():
+    first = _target(priority="HIGH")
+    second = _target(priority="HIGH")
+    second.hospital_id = first.hospital_id
+    shared_query_id = uuid.uuid4()
+    first_only_query_id = uuid.uuid4()
+    first.variants = [
+        SimpleNamespace(query_matrix_id=shared_query_id),
+        SimpleNamespace(query_matrix_id=first_only_query_id),
+    ]
+    second.variants = [SimpleNamespace(query_matrix_id=shared_query_id)]
+
+    explicit_first = _record(first.id, query_id=shared_query_id)
+    explicit_second = _record(second.id, query_id=shared_query_id)
+    ambiguous_legacy = _record(
+        first.id,
+        query_id=shared_query_id,
+        has_explicit_target=False,
+    )
+    unique_legacy = _record(
+        first.id,
+        query_id=first_only_query_id,
+        has_explicit_target=False,
+    )
+
+    grouped = _group_records_by_target(
+        [first, second],
+        [explicit_first, explicit_second, ambiguous_legacy, unique_legacy],
+    )
+
+    assert {record.id for record in grouped[str(first.id)]} == {
+        explicit_first.id,
+        unique_legacy.id,
+    }
+    assert [record.id for record in grouped[str(second.id)]] == [explicit_second.id]
+    assert all(
+        ambiguous_legacy.id != record.id
+        for records in grouped.values()
+        for record in records
+    )
 
 
 async def test_exposure_actions_endpoint_shape(monkeypatch):

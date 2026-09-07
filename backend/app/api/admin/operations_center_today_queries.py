@@ -6,7 +6,7 @@ from datetime import date, datetime, time, timedelta
 from typing import Final, assert_never
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import and_, case, false, func, or_, select
+from sqlalchemy import String, and_, case, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -20,6 +20,7 @@ from app.models.admin_user import AdminUser
 from app.models.content import ContentItem
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
+from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.schemas.operations import (
     OperationsAction,
     OperationsCustomer,
@@ -54,7 +55,12 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
 
 
 def publish_due_requires_operator_action(
-    scheduled_date: date, today: date, now: datetime
+    scheduled_date: date,
+    today: date,
+    now: datetime,
+    *,
+    run_state: str | None = None,
+    has_related_incident: bool = False,
 ) -> bool:
     """Return whether a due-publish slot is work a person must do right now.
 
@@ -67,8 +73,16 @@ def publish_due_requires_operator_action(
     A slot whose scheduled date already passed is real work at every hour.
     """
 
+    if has_related_incident:
+        return False
     if scheduled_date < today:
         return True
+    if run_state in {
+        OperationRunState.REQUESTED.value,
+        OperationRunState.QUEUED.value,
+        OperationRunState.RUNNING.value,
+    }:
+        return False
     return now.astimezone(_SEOUL).time() >= _AUTO_PUBLISH_HOUR
 
 
@@ -87,6 +101,8 @@ async def load_today_queue(
     contract; their independent meanings make a compact parameter object misleading.
     """
     assignee = aliased(AdminUser)
+    related_run = aliased(OperationRun)
+    related_incident = aliased(Incident)
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
     waiting_review = human_post_publish_review_predicate()
@@ -107,6 +123,8 @@ async def load_today_queue(
         publicly_operational_hospital_predicate(),
         or_(waiting_review, due_publish),
     ]
+    if filters.hospital_id is not None:
+        predicates.append(Hospital.id == filters.hospital_id)
     owner_filter = owner_predicate(assignee, filters.owner)
     if owner_filter is not None:
         predicates.append(owner_filter)
@@ -144,12 +162,45 @@ async def load_today_queue(
             Hospital,
             HospitalHandoff,
             assignee,
+            related_run,
+            related_incident,
             task_state.label("task_state"),
             func.count().over().label("_total"),
         )
         .join(Hospital, Hospital.id == ContentItem.hospital_id)
         .outerjoin(HospitalHandoff, HospitalHandoff.hospital_id == Hospital.id)
         .outerjoin(assignee, assignee.id == HospitalHandoff.ae_owner_id)
+        .outerjoin(
+            related_run,
+            related_run.id
+            == select(OperationRun.id)
+            .where(
+                OperationRun.hospital_id == ContentItem.hospital_id,
+                OperationRun.operation_type.in_(
+                    ("REGENERATE_CONTENT", "REGENERATE_CONTENT_IMAGE")
+                ),
+                OperationRun.request_payload["source_id"].as_string()
+                == ContentItem.id.cast(String),
+            )
+            .order_by(OperationRun.requested_at.desc(), OperationRun.id.desc())
+            .limit(1)
+            .correlate(ContentItem)
+            .scalar_subquery(),
+        )
+        .outerjoin(
+            related_incident,
+            related_incident.id
+            == select(Incident.id)
+            .where(
+                Incident.hospital_id == ContentItem.hospital_id,
+                Incident.source_id == ContentItem.id.cast(String),
+                Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
+            )
+            .order_by(Incident.last_seen_at.desc(), Incident.id.desc())
+            .limit(1)
+            .correlate(ContentItem)
+            .scalar_subquery(),
+        )
         .where(*predicates)
     )
     page_stmt = (
@@ -175,7 +226,7 @@ async def load_today_queue(
         rows = list((await db.execute(page_stmt)).all())
 
     items: list[OperationsQueueRow] = []
-    for content, hospital, handoff, actor, state, _total in rows:
+    for content, hospital, handoff, actor, run, incident, state, _total in rows:
         overdue = state == "OVERDUE_REVIEW"
         review = state in {"OVERDUE_REVIEW", "REVIEW_PENDING"}
         # 이 행의 기한은 콘텐츠 작업의 기한이다. 예전에는 계약 인수 기한을 보여 주면서
@@ -212,14 +263,18 @@ async def load_today_queue(
                 requires_operator_action=(
                     review
                     or publish_due_requires_operator_action(
-                        content.scheduled_date, today, now
+                        content.scheduled_date,
+                        today,
+                        now,
+                        run_state=run.state if run is not None else None,
+                        has_related_incident=incident is not None,
                     )
                 ),
                 action=OperationsAction(
                     kind="REVIEW_CONTENT",
                     label=_TODAY_ACTION_LABEL,
                     method="GET",
-                    path=f"/hospitals/{hospital.id}/content?item={content.id}",
+                    path=f"/hospitals/{hospital.id}/content?content={content.id}",
                 ),
                 retry=None,
                 safe_cause=None,
@@ -229,6 +284,8 @@ async def load_today_queue(
                     )
                 ],
                 slack=None,
+                incident_id=incident.id if incident is not None else None,
+                operation_run_id=run.id if run is not None else None,
                 content_id=content.id,
                 occurred_at=occurred_at,
             )

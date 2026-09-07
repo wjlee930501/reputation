@@ -43,14 +43,14 @@ export function ReportRunCard({
           {run.primaryAction === 'operations' && (
             <Link href={operationsHref} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">운영 센터에서 차단 사유 확인</Link>
           )}
-          {run.canRebuild && !reasonOpen && <Action onClick={() => setReasonOpen(true)} disabled={disabled} primary={run.primaryAction === 'rebuild'}>리포트 다시 만들기</Action>}
+          {run.canRebuild && !reasonOpen && <Action onClick={() => setReasonOpen(true)} disabled={disabled} primary={run.primaryAction === 'rebuild'}>보고서 다시 만들기</Action>}
           <Action onClick={onCopy}>개발팀 문의용 정보 복사</Action>
         </div>
       )}
       {reasonOpen && (
         <div className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3">
           <label htmlFor={`reason-${run.runId}`} className="text-sm font-bold text-[var(--color-revisit-text-title)]">새 버전을 만드는 이유</label>
-          <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)]">기존 리포트는 지우지 않고 보존합니다. 반영할 내용을 3자 이상 적어 주세요.</p>
+          <p className="mt-1 text-xs leading-5 text-[var(--color-revisit-text-helper)]">기존 보고서는 지우지 않고 보존합니다. 반영할 내용을 3자 이상 적어 주세요.</p>
           <textarea id={`reason-${run.runId}`} value={reason} onChange={(event) => setReason(event.target.value)} maxLength={200} rows={2} className="mt-2 w-full rounded-lg border border-[var(--color-revisit-coolgrey-20)] bg-white p-3 text-sm" />
           <div className="mt-2 flex flex-col gap-2 sm:flex-row">
             <Action onClick={() => onRebuild(reason.trim())} disabled={disabled || !isValidReportRebuildReason(reason)} primary>이 사유로 새 버전 만들기</Action>

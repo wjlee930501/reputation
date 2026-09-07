@@ -24,6 +24,7 @@ class IncidentRecoveryFilter(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class OperationsFilters:
+    hospital_id: uuid.UUID | None = None
     owner: str | None = None
     status: str | None = None
     severity: str | None = None
@@ -33,6 +34,7 @@ class OperationsFilters:
 
 def normalize_filters(
     *,
+    hospital_id: uuid.UUID | None = None,
     owner: str | None,
     status: str | None,
     severity: str | None,
@@ -63,6 +65,7 @@ def normalize_filters(
             },
         ) from exc
     return OperationsFilters(
+        hospital_id=hospital_id,
         owner=owner.strip() if owner else None,
         status=status.upper() if status else None,
         severity=severity.upper() if severity else None,

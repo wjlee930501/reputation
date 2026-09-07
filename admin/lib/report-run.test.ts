@@ -30,12 +30,12 @@ test('report runs translate internal states into a three-part Korean action card
   const [run] = parseReportRuns(payload)
 
   // Then: operators see a plain-language problem, impact, and exact action
-  assert.equal(run?.statusLabel, '리포트를 만들지 못했습니다')
+  assert.equal(run?.statusLabel, '보고서를 만들지 못했습니다')
   assert.match(run?.whatHappened ?? '', /만들지\s못/)
   assert.match(run?.customerImpact ?? '', /원장님/)
   assert.equal(
     run?.nextAction,
-    '‘리포트 다시 만들기’를 눌러 주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’로 전달해 주세요.',
+    '‘보고서 다시 만들기’를 눌러 주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’를 눌러 개발팀에 전달해 주세요.',
   )
   assert.doesNotMatch(JSON.stringify(run), /SLA|CUSTOMER_READY|PARTIAL/)
   assert.equal(run?.primaryAction, 'rebuild')
@@ -63,7 +63,7 @@ test('versioned rebuild names the prior report without exposing raw state', () =
 
   // Then: the new version and validation action are explicit
   assert.equal(run?.statusLabel, '원장 전달용 PDF 확인이 필요합니다')
-  assert.equal(run?.versionLabel, '새 버전 2 · 이전 리포트 보존')
+  assert.equal(run?.versionLabel, '새 버전 2 · 이전 보고서 보존')
   assert.equal(run?.canRebuild, false)
   assert.equal(run?.primaryAction, 'review')
   assert.equal(run?.attentionLabel, '검수 필요')
@@ -79,7 +79,7 @@ test('validated PDF stage stays distinct from final delivery readiness', () => {
 
   assert.equal(run?.statusLabel, '원장 전달용 PDF 검증 완료')
   assert.equal(run?.customerImpact, '최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.')
-  assert.equal(run?.nextAction, '리포트 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.')
+  assert.equal(run?.nextAction, '보고서 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.')
   assert.doesNotMatch(JSON.stringify(run), /CUSTOMER_READY|SLA/)
 })
 

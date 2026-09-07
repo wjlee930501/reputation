@@ -31,7 +31,7 @@ export interface ServerActivationBlocker {
 
 const DISPLAY_PREREQUISITES: readonly ActivationPrerequisite[] = [
   { key: 'profile_complete', label: '병원 기본 정보 완료', hrefSuffix: 'profile' },
-  { key: 'v0_report_done', label: '초기 진단 리포트 생성', hrefSuffix: 'reports' },
+  { key: 'v0_report_done', label: '초기 진단 보고서 생성', hrefSuffix: 'reports' },
   { key: 'site_built', label: '콘텐츠 허브 준비', hrefSuffix: 'profile' },
 ]
 

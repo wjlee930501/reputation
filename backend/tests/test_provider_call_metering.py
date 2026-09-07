@@ -8,6 +8,7 @@
 여기서 검증하는 것은 "재시도·폴백이 각각 실제 호출로 잡히는가"다.
 """
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,12 +75,16 @@ def test_openai_image_retries_each_count_as_a_paid_call(monkeypatch):
 def test_image_generation_records_every_attempt_including_the_fallback(monkeypatch, recorded):
     """OpenAI 3회 전부 실패 후 Google 1회 성공 → 실제 호출 4회로 기록된다."""
 
-    async def allowed(*_a, **_k):
-        from app.services.cost_guard import CostGuardDecision
+    async def allowed(category, **_k):
+        return SimpleNamespace(
+            allowed=True, reason=None, receipt=SimpleNamespace(category=category)
+        )
 
-        return CostGuardDecision(True, None)
+    async def settle(*_a, **_k):
+        return None
 
-    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
+    monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "openai")
     monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
@@ -118,18 +123,49 @@ def test_image_policy_review_uses_content_meter_instead_of_image_meter(
     assert recorded.by_category == {"image": 1, "content": 1}
 
 
+def test_image_meter_records_sdk_usage_without_fabricating_failed_attempt_usage(
+    monkeypatch, recorded
+):
+    captured = []
+
+    async def capture(**kwargs):
+        captured.append(kwargs)
+        return True
+
+    monkeypatch.setattr("app.services.provider_usage.record_attempt", capture)
+    counter = image_engine._CallCounter()
+    failed = counter.tick("google", "image-model")
+    succeeded = counter.tick_review("google", "review-model")
+    succeeded["usage"] = SimpleNamespace(prompt_token_count=12, candidates_token_count=3)
+    succeeded["provider_request_id"] = "response-1"
+
+    asyncio.run(image_engine._record_image_calls(counter))
+
+    assert len(captured) == 2
+    assert captured[0]["usage"] is None
+    assert captured[0]["usage_known"] is None
+    assert captured[0]["image_units"] is None
+    assert captured[1]["usage"] is succeeded["usage"]
+    assert captured[1]["provider_request_id"] == "response-1"
+    assert failed.get("usage") is None
+
+
 def test_image_generation_reserves_existing_content_budget_for_policy_review(
     monkeypatch, recorded
 ):
     reserved = []
 
     async def allowed(category, **_kwargs):
-        from app.services.cost_guard import CostGuardDecision
-
         reserved.append(category)
-        return CostGuardDecision(True, None)
+        return SimpleNamespace(
+            allowed=True, reason=None, receipt=SimpleNamespace(category=category)
+        )
 
-    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
+    async def settle(*_a, **_k):
+        return None
+
+    monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
     monkeypatch.setattr(
@@ -145,12 +181,16 @@ def test_image_generation_reserves_existing_content_budget_for_policy_review(
 
 
 def test_google_topic_safety_failure_uses_neutral_fallback(monkeypatch, recorded):
-    async def allowed(*_a, **_k):
-        from app.services.cost_guard import CostGuardDecision
+    async def allowed(category, **_k):
+        return SimpleNamespace(
+            allowed=True, reason=None, receipt=SimpleNamespace(category=category)
+        )
 
-        return CostGuardDecision(True, None)
+    async def settle(*_a, **_k):
+        return None
 
-    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
+    monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
     prompts = []
@@ -179,11 +219,9 @@ def test_blocked_image_generation_records_no_provider_call(monkeypatch, recorded
     """가드에 막히면 공급자에 아무것도 나가지 않는다 — 계수도 0이어야 한다."""
 
     async def blocked(*_a, **_k):
-        from app.services.cost_guard import CostGuardDecision
+        return SimpleNamespace(allowed=False, reason="일일 상한 도달", receipt=None)
 
-        return CostGuardDecision(False, "일일 상한 도달")
-
-    monkeypatch.setattr("app.services.cost_guard.check_and_increment", blocked)
+    monkeypatch.setattr("app.services.cost_guard.reserve", blocked)
 
     url, prompt = asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원"))
 
@@ -193,42 +231,45 @@ def test_blocked_image_generation_records_no_provider_call(monkeypatch, recorded
 
 def test_blocked_image_review_refunds_the_unused_image_reservation(monkeypatch, recorded):
     decisions = iter((True, False))
-    released = []
+    settled = []
 
-    async def decide(*_args, **_kwargs):
-        from app.services.cost_guard import CostGuardDecision
+    async def decide(category, **_kwargs):
+        allowed = next(decisions)
+        return SimpleNamespace(
+            allowed=allowed,
+            reason="review cap",
+            receipt=SimpleNamespace(category=category) if allowed else None,
+        )
 
-        return CostGuardDecision(next(decisions), "review cap")
+    async def settle(receipt, *, consumed_units):
+        settled.append((receipt.category, consumed_units))
 
-    async def release(category, count):
-        released.append((category, count))
-
-    monkeypatch.setattr("app.services.cost_guard.check_and_increment", decide)
-    monkeypatch.setattr("app.services.cost_guard.release_reservation", release)
+    monkeypatch.setattr("app.services.cost_guard.reserve", decide)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
 
     assert asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원")) == ("", "")
-    assert released == [("image", 1)]
+    assert settled == [("image", 0)]
     assert recorded.total == 0
 
 
 def test_no_usable_image_provider_refunds_both_reservations(monkeypatch, recorded):
-    released = []
+    settled = []
 
-    async def allowed(*_args, **_kwargs):
-        from app.services.cost_guard import CostGuardDecision
+    async def allowed(category, **_kwargs):
+        return SimpleNamespace(
+            allowed=True, reason=None, receipt=SimpleNamespace(category=category)
+        )
 
-        return CostGuardDecision(True, None)
+    async def settle(receipt, *, consumed_units):
+        settled.append((receipt.category, consumed_units))
 
-    async def release(category, count):
-        released.append((category, count))
-
-    monkeypatch.setattr("app.services.cost_guard.check_and_increment", allowed)
-    monkeypatch.setattr("app.services.cost_guard.release_reservation", release)
+    monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
+    monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
 
     assert asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원")) == ("", "")
-    assert released == [("image", 1), ("content", 1)]
+    assert settled == [("image", 0), ("content", 0)]
     assert recorded.total == 0
 
 

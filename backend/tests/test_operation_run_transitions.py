@@ -1,5 +1,6 @@
 """Lease and terminal compare-and-swap proofs for OperationRun."""
 
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -21,8 +22,9 @@ from app.services.operation_runs import (
     heartbeat_operation_run,
 )
 
-_DATABASE_URL = (
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_DATABASE_URL = os.getenv(
+    "OPERATION_RUN_TRANSITIONS_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
 )
 
 

@@ -143,7 +143,7 @@ export function CostGuardPanel({ canRaiseLimit }: { readonly canRaiseLimit: bool
         {status?.availability === 'AVAILABLE' ? (
           <>
             <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3">
-              <div><p className="font-semibold text-slate-800">전체 자동 작업</p><p className="mt-0.5 text-xs text-slate-500">콘텐츠·이미지·AI 언급률 측정</p></div>
+              <div><p className="font-semibold text-slate-800">전체 자동 작업</p><p className="mt-0.5 text-xs text-slate-500">콘텐츠·이미지·답변 내 병원 언급률 측정</p></div>
               <button type="button" disabled={busy === 'kill'} onClick={() => void toggleKillSwitch()} className={`ops-control rounded-lg px-4 text-sm font-bold text-white disabled:opacity-45 ${status.kill_switch_active ? 'bg-emerald-700' : 'bg-red-700'}`}>{busy === 'kill' ? '확인 중…' : status.kill_switch_active ? '중지 해제' : '전체 중지'}</button>
             </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-3">

@@ -3,18 +3,21 @@
 한 진단 = 질의 3개 × 플랫폼 2개 × 반복 3회 = **18 측정**으로 고정이다.
 고정이어야 원가(§6)와 SLA(§7)가 계산 가능하다.
 
-세 단계로 나눈다. 네트워크 단계에서 DB 세션을 건드리지 않기 위해서다 —
-AsyncSession은 동시 사용이 안전하지 않은데, 측정은 동시에 던져야 15분 안에 끝난다.
+네트워크 호출은 동시로 실행하되, 완료 결과는 한 세션에서 순차로 커밋한다. 답변과 판정을
+각각 체크포인트하므로 판정 장애나 worker 재시작이 이미 받은 답변을 다시 구매하지 않는다.
 
-  1. 읽기   캐시 조회 (DB, 순차)
-  2. 측정   캐시 미적중분 공급자 호출 + 전 건 판정 (네트워크, 동시)
-  3. 쓰기   결과 행 + 캐시 적재 + 상태 확정 (DB, 단일 커밋)
+  1. 읽기   캐시와 이전 시도 체크포인트 조회 (DB, 순차)
+  2. 답변   캐시 미적중 공급자 호출 (네트워크, 동시) → 건별 커밋
+  3. 판정   미완료 판정 호출 (네트워크, 동시) → 건별 커밋
+  4. 확정   전체 실행 상태와 비용 예약 정산
 """
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.lead_diagnosis import (
@@ -24,7 +27,8 @@ from app.models.lead_diagnosis import (
     LeadDiagnosisResult,
 )
 from app.services import cost_guard, lead_query_cache, sov_engine
-from app.services.ops_incident_alerts import open_ops_incident
+from app.services.incident_types import IncidentFingerprint
+from app.services.ops_incident_alerts import open_ops_incident, recover_ops_incident
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +42,8 @@ MEASUREMENT_FAILED = "FAILED"
 # 플랫폼당 허용하는 미확정(실패 + 판정 보류) 최대 건수. 계획 9건 기준 하한 8건.
 # 이 값을 올리면 결측이 숫자를 흔드는 폭이 커진다 — resolve_execution_status 참고.
 MAX_UNCONFIRMED_PER_PLATFORM = 1
+_KST = ZoneInfo("Asia/Seoul")
+_COST_SWITCH_RECHECK = timedelta(minutes=15)
 
 
 def min_confirmed_for(planned_count: int) -> int:
@@ -68,6 +74,9 @@ class _Measurement:
     mention_verdict: str | None = None
     measurement_status: str = MEASUREMENT_FAILED
     failure_reason: str | None = None
+    judgment_input_fingerprint: str | None = None
+    judgment_reused: bool = False
+    provider_calls: int = 0
 
     # 캐시에 새로 적재할 대상인지 — 캐시에서 읽은 것을 다시 쓰지 않기 위해.
     cache_on_write: bool = False
@@ -136,54 +145,162 @@ async def _load_cached(db: AsyncSession, diagnosis: LeadDiagnosis, planned: list
             sibling.measured_at = hit.measured_at
 
 
-async def _measure_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> None:
-    """2단계 — 답변 확보(캐시 미적중 시에만 호출) + 판정(항상)."""
-    if not measurement.raw_response:
-        answer = await sov_engine.fetch_answer(
+async def _load_prior_checkpoints(
+    db: AsyncSession,
+    diagnosis: LeadDiagnosis,
+    planned: list[_Measurement],
+) -> None:
+    """Reuse received answers, and reuse judgments only with an exact stored fingerprint."""
+    rows = list(
+        (
+            await db.execute(
+                select(LeadDiagnosisResult)
+                .where(LeadDiagnosisResult.diagnosis_id == diagnosis.id)
+                .order_by(LeadDiagnosisResult.attempt_no.desc(), LeadDiagnosisResult.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    latest: dict[tuple[str, int, int], LeadDiagnosisResult] = {}
+    for row in rows:
+        latest.setdefault((row.platform, row.query_slot, row.repeat_no), row)
+
+    for measurement in planned:
+        row = latest.get((measurement.platform, measurement.query_slot, measurement.repeat_no))
+        if (
+            row is None
+            or not (row.raw_response or "").strip()
+            or row.query_text != measurement.query_text[:500]
+            or row.requested_model != measurement.requested_model
+        ):
+            continue
+        measurement.answer_source = row.answer_source
+        measurement.measured_at = row.measured_at
+        measurement.raw_response = row.raw_response
+        measurement.answer_model = row.answer_model
+        measurement.source_urls = row.source_urls or []
+        measurement.search_calls = row.search_calls
+        measurement.input_tokens = row.input_tokens
+        measurement.output_tokens = row.output_tokens
+
+        fingerprint = sov_engine.judgment_input_fingerprint(
+            hospital_identity=str(diagnosis.id),
+            hospital_name=diagnosis.subject_hospital_name,
+            response_text=row.raw_response,
+            region=diagnosis.subject_region,
+            policy=diagnosis.measurement_config or sov_engine.measurement_protocol(),
+        )
+        if (
+            row.judgment_input_fingerprint == fingerprint
+            and row.measurement_status == MEASUREMENT_SUCCESS
+            and row.mention_verdict in {"MATCHED", "NOT_MATCHED", "AMBIGUOUS"}
+        ):
+            measurement.is_mentioned = row.is_mentioned
+            measurement.mention_verdict = row.mention_verdict
+            measurement.measurement_status = MEASUREMENT_SUCCESS
+            measurement.failure_reason = None
+            measurement.judgment_input_fingerprint = fingerprint
+            measurement.judgment_reused = True
+
+
+async def _fetch_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> _Measurement:
+    """Acquire only the answer stage; shared misses use a crash-recoverable single flight."""
+    if measurement.raw_response:
+        return measurement
+
+    async def _fetch() -> dict:
+        return await sov_engine.fetch_answer(
             measurement.query_text,
             measurement.platform,
             pool=sov_engine.POOL_LEADGEN,
-            # 접수 시점에 고정한 모델. 실행 시점 전역 설정과 다르면 호출하지 않는다 —
-            # 캐시 키와 리포트 표기가 실제 호출 모델과 어긋나면 안 된다.
             requested_model=measurement.requested_model,
+            lead_id=diagnosis.lead_id,
+            workflow="lead_diagnosis_answer",
+            run_id=str(diagnosis.id),
+            item_id=f"{measurement.platform}:{measurement.query_slot}:{measurement.repeat_no}",
+            attempt_id=str(diagnosis.execution_attempts or 1),
         )
-        measurement.measured_at = datetime.now(timezone.utc)
-        measurement.source_urls = answer.get("source_urls") or []
-        if answer.get("measurement_status") != MEASUREMENT_SUCCESS:
-            measurement.measurement_status = MEASUREMENT_FAILED
-            measurement.failure_reason = answer.get("failure_reason")
-            return
-        measurement.raw_response = answer["text"]
-        measurement.answer_model = answer.get("answer_model")
-        measurement.search_calls = answer.get("search_calls")
-        measurement.input_tokens = answer.get("input_tokens")
-        measurement.output_tokens = answer.get("output_tokens")
-        # 답변 자체는 병원과 무관하므로, 판정이 실패해도 이 답변은 캐시할 값어치가 있다.
-        measurement.cache_on_write = True
 
+    flight = await lead_query_cache.singleflight_fetch_answer(
+        query_text=measurement.query_text,
+        platform=measurement.platform,
+        requested_model=measurement.requested_model,
+        repeat_no=measurement.repeat_no,
+        fetch=_fetch,
+    )
+    answer = flight.answer
+    measurement.provider_calls += int(answer.get("provider_calls", 1) if flight.owner else 0)
+    measurement.measured_at = datetime.now(timezone.utc)
+    measurement.source_urls = answer.get("source_urls") or []
+    if answer.get("measurement_status") != MEASUREMENT_SUCCESS:
+        measurement.measurement_status = MEASUREMENT_FAILED
+        measurement.failure_reason = answer.get("failure_reason")
+        return measurement
+    measurement.raw_response = str(answer.get("raw_response") or answer.get("text") or "")
+    measurement.answer_model = answer.get("answer_model")
+    measurement.search_calls = answer.get("search_calls")
+    measurement.input_tokens = answer.get("input_tokens")
+    measurement.output_tokens = answer.get("output_tokens")
+    measurement.answer_source = (
+        AnswerSource.LIVE.value if flight.owner else AnswerSource.CACHED.value
+    )
+    # 답변은 병원과 무관하므로 판정 실패와 별개로 즉시 캐시/checkpoint할 가치가 있다.
+    # A non-owner can be resuming the prior owner's Redis handoff after that worker died
+    # before committing the shared DB cache. Persist every successful miss-path handoff;
+    # store_answer isolates uniqueness conflicts when the original owner did commit.
+    measurement.cache_on_write = True
+    measurement.failure_reason = "mention_parse_pending"
+    return measurement
+
+
+async def _judge_one(diagnosis: LeadDiagnosis, measurement: _Measurement) -> _Measurement:
+    """Run only the judgment stage; an exact prior judgment is terminal, including AMBIGUOUS."""
+    if not measurement.raw_response or measurement.judgment_reused:
+        return measurement
+
+    fingerprint = sov_engine.judgment_input_fingerprint(
+        hospital_identity=str(diagnosis.id),
+        hospital_name=diagnosis.subject_hospital_name,
+        response_text=measurement.raw_response,
+        region=diagnosis.subject_region,
+        policy=diagnosis.measurement_config or sov_engine.measurement_protocol(),
+    )
+    measurement.judgment_input_fingerprint = fingerprint
+    # Keep the compatibility wrapper here so existing isolated tests can replace the judge,
+    # while explicitly establishing leadgen attribution for cached as well as live answers.
+    provider_calls = sov_engine.estimate_judgment_provider_calls(
+        diagnosis.subject_hospital_name,
+        measurement.raw_response,
+    )
     try:
-        parsed = await sov_engine.judge_mention(
-            diagnosis.subject_hospital_name,
-            measurement.raw_response,
-            diagnosis.subject_region,
-        )
+        with sov_engine.provider_execution_context(
+            pool=sov_engine.POOL_LEADGEN,
+            lead_id=diagnosis.lead_id,
+            workflow="lead_diagnosis_judgment",
+            run_id=str(diagnosis.id),
+            item_id=f"{measurement.platform}:{measurement.query_slot}:{measurement.repeat_no}",
+            attempt_id=str(diagnosis.execution_attempts or 1),
+        ):
+            async with sov_engine._get_semaphore(f"{sov_engine.POOL_LEADGEN}:openai-judge"):
+                parsed = await sov_engine.judge_mention(
+                    diagnosis.subject_hospital_name,
+                    measurement.raw_response,
+                    diagnosis.subject_region,
+                )
     except Exception as exc:  # noqa: BLE001
-        # 응답 수신과 언급 판정 성공은 별개다. 판정 실패를 '미언급 0%'로 넣지 않는다 —
-        # 그렇게 하면 도구 장애가 병원 성과처럼 보인다.
-        logger.warning("lead diagnosis judge failed: %s", exc)
+        logger.warning("lead diagnosis judge failed: %s", type(exc).__name__)
+        measurement.provider_calls += provider_calls
         measurement.measurement_status = MEASUREMENT_FAILED
         measurement.failure_reason = "mention_parse_failed"
-        return
+        return measurement
 
-    # 판정 3값을 그대로 들고 온다. AMBIGUOUS의 is_mentioned는 None이고, 집계는
-    # 이 None을 분자에서도 분모에서도 뺀다 — 확정하지 못한 것을 세지 않기 위해서다.
+    measurement.provider_calls += provider_calls
     measurement.mention_verdict = parsed["verdict"]
     measurement.is_mentioned = parsed.get("is_mentioned")
-    # 측정(답변 수신 + 판정 수행)은 성공했다. 판정이 '확정 불가'인 것은 측정 실패가
-    # 아니라 판정 결과이므로 여기서 FAILED로 접지 않는다 — 섞으면 공급자 장애와
-    # 이름 모호성을 같은 칸에 넣게 되고, 어느 쪽이 문제인지 영영 못 가른다.
     measurement.measurement_status = MEASUREMENT_SUCCESS
     measurement.failure_reason = None
+    return measurement
 
 
 def is_confirmed(measurement: _Measurement) -> bool:
@@ -243,7 +360,7 @@ def resolve_execution_status(diagnosis: LeadDiagnosis, planned: list[_Measuremen
 async def _notify_budget_blocked(
     diagnosis: LeadDiagnosis, live_calls: int, reason: str | None
 ) -> None:
-    """예산 차단은 자동 복구 대상이 아니다 — 상한을 올릴지 사과할지는 사람이 정한다."""
+    """Persist one deduplicated incident; the deferred row recovers without human polling."""
     try:
         await open_ops_incident(
             pipeline="lead_diagnosis",
@@ -253,13 +370,172 @@ async def _notify_budget_blocked(
             safe_error_code="COST_BLOCKED",
             problem="무료 진단 측정이 호출 예산 안전장치로 시작되지 않았습니다.",
             customer_impact="신청자에게 진단 리포트를 전달할 수 없습니다.",
-            next_action="비용 안전장치 상태를 확인하고 상한 조정 여부를 결정한 뒤 진단을 재실행하세요.",
+            next_action="비용 안전장치가 허용하는 시점에 시스템이 진단을 자동 재개합니다.",
             source_type="LEAD_DIAGNOSIS",
             hospital_name=diagnosis.subject_hospital_name,
             actor="lead-diagnosis-worker",
+            fingerprint=IncidentFingerprint.COST_BLOCKED,
+            notify=False,
         )
     except Exception:  # noqa: BLE001 — 알림 실패가 상태 확정을 되돌리지 않는다.
         logger.warning("lead diagnosis budget-block alert delivery failed")
+
+
+async def _recover_budget_incident(diagnosis: LeadDiagnosis) -> None:
+    try:
+        await recover_ops_incident(
+            pipeline="lead_diagnosis",
+            object_type="diagnosis",
+            object_id=str(diagnosis.id),
+            fingerprint=IncidentFingerprint.COST_BLOCKED,
+            hospital_name=diagnosis.subject_hospital_name,
+            actor="lead-diagnosis-worker",
+            reason="deferred lead diagnosis resumed after cost guard allowed it",
+            notify=False,
+        )
+    except Exception:  # noqa: BLE001 - incident state never rolls back completed work.
+        logger.warning("lead diagnosis budget incident recovery skipped")
+
+
+def cost_retry_at(reason: str | None, *, now: datetime | None = None) -> datetime:
+    """Return the earliest automatic retry for the guard scope that blocked the call."""
+    current = (now or datetime.now(timezone.utc)).astimezone(_KST)
+    detail = reason or ""
+    if "월간" in detail:
+        if current.month == 12:
+            boundary = current.replace(
+                year=current.year + 1, month=1, day=1, hour=0, minute=1,
+                second=0, microsecond=0,
+            )
+        else:
+            boundary = current.replace(
+                month=current.month + 1, day=1, hour=0, minute=1,
+                second=0, microsecond=0,
+            )
+        return boundary.astimezone(timezone.utc)
+    if "일일" in detail:
+        boundary = (current + timedelta(days=1)).replace(
+            hour=0, minute=1, second=0, microsecond=0
+        )
+        return boundary.astimezone(timezone.utc)
+    return (current + _COST_SWITCH_RECHECK).astimezone(timezone.utc)
+
+
+def _result_row(diagnosis: LeadDiagnosis, measurement: _Measurement) -> LeadDiagnosisResult:
+    return LeadDiagnosisResult(
+        diagnosis_id=diagnosis.id,
+        platform=measurement.platform,
+        query_slot=measurement.query_slot,
+        repeat_no=measurement.repeat_no,
+        attempt_no=diagnosis.execution_attempts or 1,
+        query_text=measurement.query_text[:500],
+        requested_model=measurement.requested_model,
+        answer_model=measurement.answer_model,
+        is_mentioned=measurement.is_mentioned,
+        mention_verdict=measurement.mention_verdict,
+        measurement_status=measurement.measurement_status,
+        failure_reason=measurement.failure_reason,
+        raw_response=measurement.raw_response or "",
+        source_urls=measurement.source_urls or None,
+        search_calls=measurement.search_calls,
+        input_tokens=measurement.input_tokens,
+        output_tokens=measurement.output_tokens,
+        answer_source=measurement.answer_source,
+        measured_at=measurement.measured_at or datetime.now(timezone.utc),
+        judgment_input_fingerprint=measurement.judgment_input_fingerprint,
+    )
+
+
+def _sync_result_row(row: LeadDiagnosisResult, measurement: _Measurement) -> None:
+    row.answer_model = measurement.answer_model
+    row.is_mentioned = measurement.is_mentioned
+    row.mention_verdict = measurement.mention_verdict
+    row.measurement_status = measurement.measurement_status
+    row.failure_reason = measurement.failure_reason
+    row.raw_response = measurement.raw_response or ""
+    row.source_urls = measurement.source_urls or None
+    row.search_calls = measurement.search_calls
+    row.input_tokens = measurement.input_tokens
+    row.output_tokens = measurement.output_tokens
+    row.answer_source = measurement.answer_source
+    row.measured_at = measurement.measured_at or row.measured_at
+    row.judgment_input_fingerprint = measurement.judgment_input_fingerprint
+
+
+async def _checkpoint_answer(
+    db: AsyncSession,
+    diagnosis: LeadDiagnosis,
+    measurement: _Measurement,
+    rows: dict[tuple[str, int, int], LeadDiagnosisResult],
+) -> None:
+    key = (measurement.platform, measurement.query_slot, measurement.repeat_no)
+    row = rows.get(key)
+    if row is None:
+        row = _result_row(diagnosis, measurement)
+        rows[key] = row
+        db.add(row)
+    else:
+        _sync_result_row(row, measurement)
+
+    if measurement.cache_on_write and measurement.raw_response:
+        await lead_query_cache.store_answer(
+            db,
+            query_text=measurement.query_text,
+            platform=measurement.platform,
+            requested_model=measurement.requested_model,
+            repeat_no=measurement.repeat_no,
+            answer_model=measurement.answer_model,
+            raw_response=measurement.raw_response,
+            source_urls=measurement.source_urls,
+            search_calls=measurement.search_calls,
+            input_tokens=measurement.input_tokens,
+            output_tokens=measurement.output_tokens,
+            measured_at=measurement.measured_at,
+        )
+    # Each received answer is durable before its judgment starts. A worker death after this
+    # commit resumes from the stored answer and never purchases it again.
+    await db.commit()
+
+
+async def _defer_cost_block(
+    db: AsyncSession,
+    diagnosis: LeadDiagnosis,
+    planned: list[_Measurement],
+    *,
+    decision: cost_guard.CostGuardDecision,
+    reserved_units: int,
+    provider_calls_made: int,
+) -> dict:
+    # Restore the claim only when this run made no provider call at all. If the answer stage
+    # spent calls before the judgment guard closed, those received answers are checkpointed
+    # and the run legitimately consumed one bounded execution attempt.
+    if provider_calls_made == 0:
+        diagnosis.execution_attempts = max(0, int(diagnosis.execution_attempts or 0) - 1)
+    diagnosis.execution_status = ExecutionStatus.PENDING.value
+    diagnosis.error = f"비용 안전장치로 자동 재개 대기 중: {decision.reason}"
+    diagnosis.finished_at = None
+    diagnosis.running_since = None
+    diagnosis.cost_deferred_until = cost_retry_at(decision.reason)
+    diagnosis.cost_defer_reason = (decision.reason or "cost_guard")[:100]
+    await db.commit()
+    await _notify_budget_blocked(diagnosis, reserved_units, decision.reason)
+    return {
+        "planned": len(planned),
+        "succeeded": 0,
+        "cached": sum(1 for m in planned if m.answer_source == AnswerSource.CACHED.value),
+        "status": diagnosis.execution_status,
+        "blocked": "cost_guard",
+        "deferred_until": diagnosis.cost_deferred_until.isoformat(),
+    }
+
+
+async def _cancel_unfinished(tasks: list[asyncio.Task]) -> None:
+    """Stop sibling provider work when persistence can no longer checkpoint its result."""
+    unfinished = [task for task in tasks if not task.done()]
+    for task in unfinished:
+        task.cancel()
+    if unfinished:
+        await asyncio.gather(*unfinished, return_exceptions=True)
 
 
 async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis) -> dict:
@@ -305,77 +581,117 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
         }
 
     await _load_cached(db, diagnosis, planned)
+    await _load_prior_checkpoints(db, diagnosis, planned)
 
     # ── 호출 예산 예약 (설계 §6).
     # **선착순 자리 수는 호출 상한이 아니다.** 자리 20개는 접수를 20건으로 묶지만, 측정
     # 재시도(최대 3회)까지 겹치면 하루 공급자 호출은 1,000건을 넘을 수 있다. 자리 카운터는
     # 그것을 세지 않는다.
     #
-    # 예약 단위는 **캐시 미적중분**이다 — 캐시에서 온 답변은 돈을 쓰지 않으므로, 공유 캐시의
-    # 절감이 예산에도 그대로 반영된다. 판정 호출(콜당 0.26원, 답변 모델의 1/370)은 세지 않는다.
+    # 답변과 판정은 별도 stage로 예약한다. 그래야 답변 체크포인트 뒤 판정만 재개할 때
+    # 답변 예산을 다시 잡지 않고, 자사/경쟁사 prefilter가 실제로 열어 둔 판정 batch만
+    # 예약할 수 있다. count=0도 kill switch를 검사한다.
     live_calls = sum(1 for m in planned if not m.raw_response)
-    decision = await cost_guard.check_and_increment("leadgen", count=live_calls)
-    if not decision.allowed:
-        # 예산 소진은 측정 실패가 아니다. 그런데 여기서 조용히 물러나면 신청자는 리포트를
-        # 못 받고 아무도 그 이유를 모른다 — FAILED로 종결하고 사람을 부른다.
-        diagnosis.execution_status = ExecutionStatus.FAILED.value
-        diagnosis.error = f"호출 예산 초과로 측정을 중단했습니다: {decision.reason}"
-        diagnosis.finished_at = datetime.now(timezone.utc)
-        diagnosis.running_since = None
-        await db.commit()
-        await _notify_budget_blocked(diagnosis, live_calls, decision.reason)
-        return {
-            "planned": len(planned),
-            "succeeded": 0,
-            "cached": sum(1 for m in planned if m.answer_source == AnswerSource.CACHED.value),
-            "status": diagnosis.execution_status,
-            "blocked": "cost_guard",
-        }
+    attempt_id = diagnosis.execution_attempts or 1
+    answer_decision = await cost_guard.reserve(
+        "leadgen",
+        count=live_calls,
+        reservation_id=f"lead-diagnosis:{diagnosis.id}:attempt:{attempt_id}:answer",
+    )
+    if not answer_decision.allowed:
+        return await _defer_cost_block(
+            db,
+            diagnosis,
+            planned,
+            decision=answer_decision,
+            reserved_units=live_calls,
+            provider_calls_made=0,
+        )
 
-    await asyncio.gather(*(_measure_one(diagnosis, m) for m in planned))
-
-    for measurement in planned:
-        db.add(
-            LeadDiagnosisResult(
-                diagnosis_id=diagnosis.id,
-                platform=measurement.platform,
-                query_slot=measurement.query_slot,
-                repeat_no=measurement.repeat_no,
-                attempt_no=diagnosis.execution_attempts or 1,
-                query_text=measurement.query_text[:500],
-                requested_model=measurement.requested_model,
-                answer_model=measurement.answer_model,
-                is_mentioned=measurement.is_mentioned,
-                mention_verdict=measurement.mention_verdict,
-                measurement_status=measurement.measurement_status,
-                failure_reason=measurement.failure_reason,
-                raw_response=measurement.raw_response or "",
-                source_urls=measurement.source_urls or None,
-                search_calls=measurement.search_calls,
-                input_tokens=measurement.input_tokens,
-                output_tokens=measurement.output_tokens,
-                answer_source=measurement.answer_source,
-                measured_at=measurement.measured_at or datetime.now(timezone.utc),
+    current_rows = list(
+        (
+            await db.execute(
+                select(LeadDiagnosisResult).where(
+                    LeadDiagnosisResult.diagnosis_id == diagnosis.id,
+                    LeadDiagnosisResult.attempt_no == (diagnosis.execution_attempts or 1),
+                )
             )
         )
+        .scalars()
+        .all()
+    )
+    rows: dict[tuple[str, int, int], LeadDiagnosisResult] = {
+        (row.platform, row.query_slot, row.repeat_no): row for row in current_rows
+    }
 
-    for measurement in planned:
-        if not measurement.cache_on_write:
-            continue
-        await lead_query_cache.store_answer(
-            db,
-            query_text=measurement.query_text,
-            platform=measurement.platform,
-            requested_model=measurement.requested_model,
-            repeat_no=measurement.repeat_no,
-            answer_model=measurement.answer_model,
-            raw_response=measurement.raw_response,
-            source_urls=measurement.source_urls,
-            search_calls=measurement.search_calls,
-            input_tokens=measurement.input_tokens,
-            output_tokens=measurement.output_tokens,
-            measured_at=measurement.measured_at,
+    async def _fetch(measurement: _Measurement) -> _Measurement:
+        return await _fetch_one(diagnosis, measurement)
+
+    fetch_tasks = [asyncio.create_task(_fetch(measurement)) for measurement in planned]
+    try:
+        for completed in asyncio.as_completed(fetch_tasks):
+            measurement = await completed
+            await _checkpoint_answer(db, diagnosis, measurement, rows)
+    except BaseException:
+        # A failed commit cannot preserve later answers. Stop uncheckpointed calls instead of
+        # leaving them alive on the Celery thread's reused event loop.
+        await _cancel_unfinished(fetch_tasks)
+        raise
+
+    answer_calls = sum(measurement.provider_calls for measurement in planned)
+    await cost_guard.settle_reservation(
+        answer_decision.receipt,
+        consumed_units=min(answer_calls, live_calls),
+    )
+
+    judgment_units = sum(
+        sov_engine.estimate_judgment_provider_calls(
+            diagnosis.subject_hospital_name,
+            measurement.raw_response,
         )
+        for measurement in planned
+        if measurement.raw_response and not measurement.judgment_reused
+    )
+    judgment_decision = await cost_guard.reserve(
+        "leadgen",
+        count=judgment_units,
+        reservation_id=f"lead-diagnosis:{diagnosis.id}:attempt:{attempt_id}:judgment",
+    )
+    if not judgment_decision.allowed:
+        return await _defer_cost_block(
+            db,
+            diagnosis,
+            planned,
+            decision=judgment_decision,
+            reserved_units=judgment_units,
+            provider_calls_made=answer_calls,
+        )
+
+    if diagnosis.cost_defer_reason:
+        diagnosis.cost_deferred_until = None
+        diagnosis.cost_defer_reason = None
+        await db.commit()
+        await _recover_budget_incident(diagnosis)
+
+    async def _judge(measurement: _Measurement) -> _Measurement:
+        return await _judge_one(diagnosis, measurement)
+
+    judge_tasks = [
+        asyncio.create_task(_judge(measurement))
+        for measurement in planned
+        if measurement.raw_response and not measurement.judgment_reused
+    ]
+    try:
+        for completed in asyncio.as_completed(judge_tasks):
+            measurement = await completed
+            row = rows[(measurement.platform, measurement.query_slot, measurement.repeat_no)]
+            _sync_result_row(row, measurement)
+            # Judgment outcome is its own durable checkpoint. AMBIGUOUS is a completed sampled
+            # outcome, so later attempts preserve it rather than resampling until a preferred answer.
+            await db.commit()
+    except BaseException:
+        await _cancel_unfinished(judge_tasks)
+        raise
 
     diagnosis.execution_status = resolve_execution_status(diagnosis, planned)
     diagnosis.finished_at = datetime.now(timezone.utc)
@@ -393,6 +709,12 @@ async def run_diagnosis_measurements(db: AsyncSession, diagnosis: LeadDiagnosis)
         diagnosis.error = None
 
     await db.commit()
+
+    judgment_calls = sum(measurement.provider_calls for measurement in planned) - answer_calls
+    await cost_guard.settle_reservation(
+        judgment_decision.receipt,
+        consumed_units=min(judgment_calls, judgment_units),
+    )
 
     succeeded = sum(1 for m in planned if m.measurement_status == MEASUREMENT_SUCCESS)
     confirmed = sum(1 for m in planned if is_confirmed(m))

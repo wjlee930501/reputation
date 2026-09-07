@@ -51,8 +51,8 @@ export function summarizeExposureActions(
 /** 두 화면의 요약 문구 — 같은 숫자를 같은 이름으로 부른다. */
 export function describeExposureActions(summary: ExposureActionCountSummary): string {
   if (summary.loaded === 0) return '진단된 보완 작업이 없습니다'
-  const parts = [`대기 ${summary.waiting}건`, `진행중 ${summary.inProgress}건`]
-  if (summary.blocked > 0) parts.push(`확인필요 ${summary.blocked}건`)
+  const parts = [`대기 ${summary.waiting}건`, `진행 중 ${summary.inProgress}건`]
+  if (summary.blocked > 0) parts.push(`확인 필요 ${summary.blocked}건`)
   const text = parts.join(' · ')
   return summary.truncated ? `${text} (상위 ${summary.loaded}건 기준)` : text
 }

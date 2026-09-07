@@ -31,7 +31,7 @@ test('all three axes are always shown', () => {
   const badges = diagnosisBadges(make())
   assert.deepEqual(
     badges.map((b) => b.axis),
-    ['측정', '리포트', '발송'],
+    ['측정', '보고서', '고객 발송'],
   )
 })
 
@@ -70,7 +70,7 @@ test('복구 사유 최소 길이는 API 계약과 같은 3자다', () => {
 test('복구 모달은 개발 용어 없이 운영자가 확인한 사실을 적게 한다', () => {
   assert.doesNotMatch(LEADS_PAGE, /공급자 설정|PDF 렌더링/)
   assert.match(LEADS_PAGE, /같은 질문으로 다시 확인이 필요해 재측정/)
-  assert.match(LEADS_PAGE, /리포트가 열리지 않아 다시 만들기/)
+  assert.match(LEADS_PAGE, /보고서가 열리지 않아 다시 만들기/)
 })
 
 test('복구 모달 실행과 취소 버튼은 44px 조작 영역을 가진다', () => {
@@ -130,7 +130,7 @@ test('an already released lock is not offered again', () => {
 // ── 한 줄 안내 ───────────────────────────────────────────────────────
 test('the hint names the action for each terminal failure', () => {
   assert.match(diagnosisHint(make({ execution_status: 'FAILED' })), /측정이/)
-  assert.match(diagnosisHint(make({ report_status: 'BLOCKED' })), /리포트 생성/)
+  assert.match(diagnosisHint(make({ report_status: 'BLOCKED' })), /보고서 생성/)
   assert.match(diagnosisHint(make({ delivery_status: 'FAILED' })), /재발송/)
 })
 
@@ -174,7 +174,7 @@ test('a blocked report exposes rebuild only after usable measurement', () => {
   )
   assert.equal(action?.kind, 'rebuild')
   assert.equal(action?.enabled, true)
-  assert.equal(action?.description, '기존 리포트는 보관하고 새 리포트를 만듭니다.')
+  assert.equal(action?.description, '기존 보고서는 보관하고 새 보고서를 만듭니다.')
 })
 
 test('an active recovery replaces the button with an authoritative progress outcome', () => {
@@ -199,5 +199,5 @@ test('an unsafe sent report rebuild is disabled with an operations-center handof
   )
   assert.equal(action?.kind, 'support')
   assert.equal(action?.enabled, false)
-  assert.match(action?.description ?? '', /이미 전달/)
+  assert.match(action?.description ?? '', /고객에게 발송/)
 })

@@ -88,10 +88,13 @@ def test_process_source_asset_inserts_key_message_when_absent():
     assert notes[0].note_metadata.get("derived_from_first_evidence") is True
 
 
-def test_process_source_asset_caps_at_twenty_payloads():
+def test_process_source_asset_preserves_more_than_one_hundred_independent_notes():
     sentences = " ".join(
-        f"환자분들께 {i}번째로 친절히 설명드리는 진료 원칙을 지킵니다." for i in range(1, 30)
+        f"환자분들께 {i}번째로 친절히 설명드리는 진료 원칙을 지킵니다."
+        for i in range(1, 106)
     )
     notes = process_source_asset(_make_asset(raw_text=sentences))
 
-    assert len(notes) <= 21  # 20개 + KEY_MESSAGE 자동 삽입 1개
+    # 105개 원문 근거와 자동 생성 KEY_MESSAGE 하나를 모두 보존한다.
+    assert len(notes) == 106
+    assert any("105번째" in note.source_excerpt for note in notes)

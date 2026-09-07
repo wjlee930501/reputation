@@ -137,6 +137,8 @@ class LeadDiagnosis(Base):
         Integer, nullable=False, default=0, server_default="0"
     )
     running_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cost_deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cost_defer_reason: Mapped[str | None] = mapped_column(String(100))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -240,6 +242,9 @@ class LeadDiagnosisResult(Base):
     search_calls: Mapped[int | None] = mapped_column(Integer)
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # Reuse a paid judgment only when answer + hospital identity + policy inputs match.
+    # Existing rows remain NULL rather than receiving invented lineage.
+    judgment_input_fingerprint: Mapped[str | None] = mapped_column(String(64))
 
     # 캐시에서 왔는지, 그 답변이 실제로 언제 측정된 것인지. 없으면 원가 검증도
     # 신선도 검증도 못 한다. CACHED면 measured_at은 **원본 측정 시각**이지 오늘이 아니다.

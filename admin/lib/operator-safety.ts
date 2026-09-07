@@ -74,9 +74,9 @@ export interface ReportReviewState {
 export function reportDeliveryBlockers(state: ReportReviewState): string[] {
   return [
     !state.hasPdf ? 'PDF 생성이 끝난 뒤 최종 검수할 수 있습니다.' : null,
-    state.requireOperationalSummaries && !state.hasSov ? 'AI 답변 언급률 요약이 없어 측정 결과를 먼저 확인해야 합니다.' : null,
+    state.requireOperationalSummaries && !state.hasSov ? '병원 언급률 요약이 없어 측정 결과를 먼저 확인해야 합니다.' : null,
     state.requireOperationalSummaries && !state.hasContent ? '콘텐츠 성과 요약이 없어 발행 콘텐츠 상태를 먼저 확인해야 합니다.' : null,
-    state.requireOperationalSummaries && state.hasContent && !state.hasStrategy ? '환자 질문 목표별 운영 전략이 없어 리포트를 다시 생성해야 합니다.' : null,
+    state.requireOperationalSummaries && state.hasContent && !state.hasStrategy ? '환자 질문별 운영 전략이 없어 보고서를 다시 만들어야 합니다.' : null,
     state.requireOperationalSummaries && !state.hasEssence ? '운영 기준 요약이 없어 승인된 콘텐츠 운영 기준과 자료 검토 상태를 먼저 확인해야 합니다.' : null,
     state.requireOperationalSummaries && state.hasEssence && !state.approvedPhilosophy ? '승인된 콘텐츠 운영 기준이 없습니다.' : null,
     state.requireOperationalSummaries && state.hasEssence && state.sourceCount > 0 && state.processedSourceCount < state.sourceCount
@@ -101,7 +101,7 @@ export interface ActivationReadiness {
 export function activationBlockers(readiness: ActivationReadiness): string[] {
   return [
     !readiness.profile_complete ? '병원 프로필' : null,
-    !readiness.v0_report_done ? '초기 진단 리포트' : null,
+    !readiness.v0_report_done ? '초기 진단 보고서' : null,
     !readiness.site_built ? '병원 정보 허브' : null,
   ].filter((item): item is string => Boolean(item))
 }

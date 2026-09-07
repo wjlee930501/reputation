@@ -46,27 +46,35 @@ export async function GET() {
   ]
 
   if (!apiBase) {
-    header.push('- Hospital index temporarily unavailable')
-    return new NextResponse(header.join('\n'), {
+    return new NextResponse('Hospital index temporarily unavailable', {
+      status: 503,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=3600',
+        'Cache-Control': 'no-store',
+        'Retry-After': '60',
       },
     })
   }
 
   let hospitals: HospitalEntry[] = []
   try {
-    const res = await fetch(`${apiBase}/hospitals`, { next: { revalidate: 3600 } })
-    if (res.ok) {
-      hospitals = await res.json()
+    const res = await fetch(`${apiBase}/hospitals`, { cache: 'no-store' })
+    if (!res.ok) {
+      throw new Error(`Hospital index upstream failed: HTTP ${res.status}`)
     }
-  } catch {
-    header.push('- Hospital index temporarily unavailable')
-    return new NextResponse(header.join('\n'), {
+    const payload: unknown = await res.json()
+    if (!Array.isArray(payload)) {
+      throw new Error('Invalid hospital index payload')
+    }
+    hospitals = payload as HospitalEntry[]
+  } catch (error) {
+    console.error('[llms.txt] Hospital index upstream unavailable:', error)
+    return new NextResponse('Hospital index temporarily unavailable', {
+      status: 503,
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
-        'Cache-Control': 'public, max-age=3600',
+        'Cache-Control': 'no-store',
+        'Retry-After': '60',
       },
     })
   }
@@ -98,7 +106,7 @@ export async function GET() {
   return new NextResponse(lines.join('\n'), {
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
-      'Cache-Control': 'public, max-age=3600',
+      'Cache-Control': 'no-store',
       'X-Generated-At': generatedAt,
     },
   })

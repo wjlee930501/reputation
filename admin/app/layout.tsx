@@ -9,7 +9,7 @@ export const viewport: Viewport = {
 
 export const metadata: Metadata = {
   title: 'Re:putation Ops · MotionLabs',
-  description: 'MotionLabs 병원 AI 노출 운영 내부 콘솔',
+  description: 'MotionLabs 병원 콘텐츠와 AI 답변 노출을 관리하는 내부 운영 화면',
 }
 
 export default function RootLayout({

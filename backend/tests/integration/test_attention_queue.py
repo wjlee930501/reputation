@@ -493,6 +493,30 @@ async def test_operations_reports_queue_reads_only_latest_report_version(pg_asyn
     assert row.report_id == latest.id
 
 
+async def test_report_hospital_scope_puts_the_deep_link_target_on_the_first_page(
+    pg_async_session,
+):
+    db = pg_async_session
+    target = await _active_hospital(db, "보고서 링크 대상 의원")
+    await _active_hospital(db, "다른 보고서 의원")
+    now = datetime.now(UTC)
+    year, month = _previous_month(now)
+
+    total, rows = await report_queries.load_reports_queue(
+        db,
+        OperationsFilters(hospital_id=target.id),
+        page=1,
+        page_size=1,
+        overview=False,
+        now=now,
+    )
+
+    assert total == 1
+    assert len(rows) == 1
+    assert rows[0].customer.hospital_id == target.id
+    assert rows[0].id == f"report:{target.id}:{year}-{month:02d}"
+
+
 async def test_a_hospital_that_did_not_exist_yet_is_not_blamed(pg_async_session):
     """이번 달에 막 온보딩한 병원에 지난달 리포트가 없는 건 정상이다."""
     db = pg_async_session
@@ -1313,6 +1337,73 @@ async def test_today_queue_folds_the_pre_eight_am_slot_instead_of_dropping_it(pg
 
     later = next(item for item in later_rows if item.content_id == due_today.id)
     assert later.requires_operator_action is True
+
+
+async def test_today_queue_uses_the_active_content_run_after_eight_and_keeps_deadline(
+    pg_async_session,
+):
+    db = pg_async_session
+    hospital = await _hospital(db, "자동 발행 실행 중 의원")
+    content = await _content(
+        db, hospital, status=ContentStatus.DRAFT, published_hours_ago=None
+    )
+    run = OperationRun(
+        hospital_id=hospital.id,
+        operation_type="REGENERATE_CONTENT",
+        state="RUNNING",
+        request_payload=build_request_payload(
+            DispatchPayload("content_item", str(content.id), "content", (str(content.id),))
+        ),
+        started_at=datetime.now(UTC),
+    )
+    db.add(run)
+    await db.flush()
+    seoul = ZoneInfo("Asia/Seoul")
+    after = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+
+    total, rows = await today_queries.load_today_queue(
+        db,
+        OperationsFilters(hospital_id=hospital.id),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=after,
+    )
+
+    assert total == 1
+    row = rows[0]
+    assert row.operation_run_id == run.id
+    assert row.requires_operator_action is False
+    assert row.sla_due_at is not None
+    assert row.action.path.endswith(f"?content={content.id}")
+
+
+async def test_today_queue_leaves_linked_incident_as_the_single_operator_task(
+    pg_async_session,
+):
+    db = pg_async_session
+    hospital = await _hospital(db, "발행 문제 연결 의원")
+    content = await _content(
+        db, hospital, status=ContentStatus.DRAFT, published_hours_ago=None
+    )
+    incident = await _incident(db, hospital)
+    incident.source_id = str(content.id)
+    await db.flush()
+    seoul = ZoneInfo("Asia/Seoul")
+    after = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+
+    _total, rows = await today_queries.load_today_queue(
+        db,
+        OperationsFilters(hospital_id=hospital.id),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=after,
+    )
+
+    row = next(item for item in rows if item.content_id == content.id)
+    assert row.incident_id == incident.id
+    assert row.requires_operator_action is False
 
 
 async def test_today_queue_marks_a_review_past_the_window_as_overdue(pg_async_session):

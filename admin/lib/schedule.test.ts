@@ -20,8 +20,8 @@ test('every current tier has enough default days for its monthly volume', () => 
 test('schedule validation catches too few publish days before the API call', () => {
   const error = validateScheduleCapacity('PLAN_16', [1, 4], '2026-05-11')
 
-  assert.match(error ?? '', /6개 슬롯/)
-  assert.match(error ?? '', /16개 슬롯/)
+  assert.match(error ?? '', /콘텐츠 항목 6개만 만들 수 있습니다/)
+  assert.match(error ?? '', /16개가 필요/)
 })
 
 test('localDateInputValue does not shift the selected day through UTC conversion', () => {

@@ -13,6 +13,7 @@ import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
 import { describeLeadAging, sortLeadsByAttention } from '@/lib/lead-aging'
 import { leadEmptyState, type RealLeadSummary } from '@/lib/lead-list'
+import { safeCauseText } from '@/lib/operations-center'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -26,7 +27,7 @@ import {
 } from '@/lib/lead-diagnosis-status'
 
 // backend GET /admin/leads — limit(기본 50, 최대 200) + offset 지원.
-// "더 보기"는 offset append 방식이라 오래된 리드(파기 워크플로 대상 포함)까지 도달 가능.
+// "더 보기"는 offset append 방식이라 오래된 상담 요청(파기 워크플로 대상 포함)까지 도달 가능.
 const PAGE_SIZE = 50
 // 파기 후 전체 재조회 시 백엔드 limit 상한.
 const RELOAD_MAX = 200
@@ -63,8 +64,8 @@ const ACTION_COPY: Record<
   { title: string; description: string; placeholder: string; submit: string }
 > = {
   retry: {
-    title: '리포트 재발송',
-    description: '준비된 리포트를 같은 주소로 다시 보내도록 접수합니다. 이후 진행 상태를 이 화면에서 확인합니다.',
+    title: '보고서 재발송',
+    description: '준비된 보고서를 같은 주소로 다시 보내도록 접수합니다. 이후 진행 상태를 이 화면에서 확인합니다.',
     placeholder: '예) 메일 발송 설정 수정 후 재발송',
     submit: '재발송',
   },
@@ -75,16 +76,16 @@ const ACTION_COPY: Record<
     submit: '제한 해제',
   },
   remeasure: {
-    title: 'AI 답변 다시 측정',
+    title: 'AI 답변 다시 확인',
     description: '같은 환자 질문을 AI에 다시 물어 병원명이 확인되는지 측정합니다.',
     placeholder: '예) 같은 질문으로 다시 확인이 필요해 재측정',
     submit: '다시 측정',
   },
   rebuild: {
-    title: '리포트 다시 만들기',
-    description: '기존 리포트는 보관하고 새 리포트를 만듭니다.',
-    placeholder: '예) 리포트가 열리지 않아 다시 만들기',
-    submit: '리포트 다시 만들기',
+    title: '보고서 다시 만들기',
+    description: '기존 보고서는 보관하고 새 보고서를 만듭니다.',
+    placeholder: '예) 보고서가 열리지 않아 다시 만들기',
+    submit: '보고서 다시 만들기',
   },
 }
 
@@ -301,7 +302,7 @@ export default function LeadsPage() {
 
   async function handleErase(lead: SalesLead) {
     const confirmed = confirm(
-      `${lead.clinic_name} 리드의 개인정보(연락처·문의 내용)를 즉시 파기합니다.\n파기 후에는 되돌릴 수 없습니다. 계속할까요?`,
+      `${lead.clinic_name} 상담 요청의 개인정보(연락처·문의 내용)를 즉시 파기합니다.\n파기 후에는 되돌릴 수 없습니다. 계속할까요?`,
     )
     if (!confirmed) return
     setErasingLeadId(lead.id)
@@ -363,7 +364,7 @@ export default function LeadsPage() {
         retry: '재발송을 접수했습니다. 이후 진행 상태를 이 화면에서 확인해 주세요.',
         release: '무료 진단 1회 제한을 해제했습니다.',
         remeasure: '다시 측정하도록 접수했습니다. 진행 상태를 이 화면에서 확인할 수 있습니다.',
-        rebuild: '새 리포트를 만들도록 접수했습니다. 기존 리포트와 전달 이력은 유지됩니다.',
+        rebuild: '새 보고서를 만들도록 접수했습니다. 기존 보고서와 고객 전달 이력은 유지됩니다.',
       }
       setActionNotice(notices[kind])
       await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
@@ -393,7 +394,7 @@ export default function LeadsPage() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">상담 요청</h1>
           <p className="mt-1 text-sm text-slate-500">
-            공개 페이지에서 접수된 병원 문의와 무료 AI 노출 진단 신청을 확인합니다.
+            공개 페이지에서 접수된 병원 문의와 무료 AI 답변 노출 진단 신청을 확인합니다.
           </p>
         </div>
         <div className="flex items-end gap-3">
@@ -457,7 +458,7 @@ export default function LeadsPage() {
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">문의</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">유입</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600">무료 진단</th>
-                <th className="px-6 py-3 text-right font-medium text-slate-600">다음 액션</th>
+                <th className="px-6 py-3 text-right font-medium text-slate-600">다음 작업</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -554,7 +555,7 @@ export default function LeadsPage() {
                             </p>
                             {needsAttention(diagnosis) && (
                               <p className="mt-1 break-keep text-pretty text-[11px] leading-5 text-red-700">
-                                고객 영향: 신청자가 정확한 진단 리포트를 받지 못합니다.
+                              고객 영향: 신청자가 정확한 진단 보고서를 받지 못합니다.
                               </p>
                             )}
                             <p className="mt-0.5 text-[11px] text-slate-400">
@@ -571,7 +572,7 @@ export default function LeadsPage() {
                                 rel="noopener noreferrer"
                                 className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-white px-3 py-2 text-xs font-semibold text-blue-700 shadow-sm hover:bg-blue-50"
                               >
-                                리포트 열기
+                                보고서 열기
                               </a>
                             )}
                             {(() => {
@@ -605,31 +606,44 @@ export default function LeadsPage() {
                                   <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
                                     <p className="text-xs font-semibold text-blue-800">복구 작업 진행 중</p>
                                     <p className="mt-1 text-xs leading-5 text-slate-600">
-                                      신청자에게는 아직 리포트가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.
+                                      신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.
                                     </p>
                                     <Link href="/operations" className="mt-2 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 hover:underline">
-                                      운영센터에서 상세 확인
+                                      운영 센터에서 상세 확인
                                     </Link>
                                   </div>
                                 )
                               }
                               if (recovery?.kind === 'support') {
+                                const safeErrorCode = recovery.run?.safe_error_code?.trim() ?? ''
+                                const safeCause = safeErrorCode ? safeCauseText(safeErrorCode) : null
+                                const diagnosticCode = (
+                                  safeErrorCode
+                                  && /^[A-Z0-9_:-]+$/.test(safeErrorCode)
+                                  && safeCause?.startsWith('원인 설명을 확인할 수 없습니다')
+                                ) ? `지원 코드 ${safeErrorCode}` : null
                                 const supportInfo = [
                                   `진단 ${diagnosis.id}`,
                                   recovery.run ? `작업 ${recovery.run.id}` : null,
-                                  recovery.run?.safe_error_code ? `분류 ${recovery.run.safe_error_code}` : null,
+                                  safeCause ? `원인 ${safeCause}` : null,
+                                  diagnosticCode,
                                 ].filter(Boolean).join(' · ')
                                 return (
                                   <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
                                     <p className="text-xs font-semibold text-amber-900">{recovery.label}</p>
                                     <p className="mt-1 text-xs leading-5 text-amber-900">{recovery.description}</p>
+                                    {safeCause && (
+                                      <p className="mt-1 text-xs leading-5 text-amber-900">
+                                        원인: {safeCause}
+                                      </p>
+                                    )}
                                     <div className="mt-2 flex flex-wrap gap-2">
                                       <button
                                         type="button"
                                         onClick={() => {
                                           void navigator.clipboard.writeText(supportInfo).then(
                                             () => setActionNotice('개발팀 문의 정보를 복사했습니다.'),
-                                            () => setActionNotice('복사하지 못했습니다. 운영센터에서 진단 번호를 확인해 주세요.'),
+                                            () => setActionNotice('복사하지 못했습니다. 운영 센터에서 진단 번호를 확인해 주세요.'),
                                           )
                                         }}
                                         className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-semibold text-amber-900"
@@ -637,7 +651,7 @@ export default function LeadsPage() {
                                         문의 정보 복사
                                       </button>
                                       <Link href="/operations" className="inline-flex min-h-11 items-center px-2 text-xs font-semibold text-amber-900 hover:underline">
-                                        운영센터 상세
+                                        운영 센터 상세
                                       </Link>
                                     </div>
                                   </div>
@@ -651,7 +665,7 @@ export default function LeadsPage() {
                                       onClick={() => openAction(lead, diagnosis, 'retry')}
                                       className="inline-flex min-h-11 items-center text-[11px] font-semibold text-blue-600 hover:underline"
                                     >
-                                      리포트 재발송
+                                      보고서 재발송
                                     </button>
                                   )}
                                   {canReleaseLock(diagnosis) && (
@@ -673,7 +687,7 @@ export default function LeadsPage() {
                       </div>
                     )}
                   </td>
-                  <td className="px-6 py-4 text-right" data-label="다음 액션">
+                  <td className="px-6 py-4 text-right" data-label="다음 작업">
                     {lead.converted_hospital_id ? (
                       <Link
                         href={`/hospitals/${lead.converted_hospital_id}/onboarding`}
@@ -692,7 +706,7 @@ export default function LeadsPage() {
                     )}
                     {/* 전환은 언제나 기존 병원 확인부터 시작한다 — 모달이 같은 병원으로
                         보이는 후보를 먼저 보여 주고, 있으면 새로 만드는 대신 연결한다.
-                        여기서 "병원 생성"이라고만 하면 이미 운영 중인 병원을 가진 리드에서
+                        여기서 "병원 생성"이라고만 하면 이미 운영 중인 병원을 가진 상담 요청에서
                         중복 생성이 유일한 길처럼 읽힌다(F-1). */}
                     <p className="mt-1 text-[11px] text-slate-400">
                       {lead.converted_hospital_id ? '연결 병원으로 이동' : '기존 병원 확인 후 연결 또는 생성'}
@@ -849,7 +863,7 @@ export default function LeadsPage() {
                   온보딩 전환 — {convertLead.clinic_name}
                 </h3>
                 <p className="mt-0.5 text-xs text-slate-500">
-                  전환하면 병원 워크스페이스가 만들어지고 온보딩 화면으로 이동합니다.
+                  전환하면 병원 운영 화면이 만들어지고 온보딩 화면으로 이동합니다.
                 </p>
               </div>
               <button

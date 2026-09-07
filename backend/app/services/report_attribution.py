@@ -82,6 +82,7 @@ class ContentAttributionInput:
     sov_pct: float | None
     prev_sov_pct: float | None
     change_pct: float | None
+    actual_publication_contents: Sequence[AttributionContent] | None = None
     max_visible_cells: int = 5
     comparison_reason: str | None = None
     comparable_cell_keys: frozenset[tuple[str, str]] | None = None
@@ -261,10 +262,15 @@ def build_content_attribution_summary(
             ))
 
     visible = request.max_visible_cells
+    actual_publications = (
+        request.published_contents
+        if request.actual_publication_contents is None
+        else request.actual_publication_contents
+    )
     return {
-        "content_type_counts": _content_type_counts(request.published_contents),
+        "content_type_counts": _content_type_counts(actual_publications),
         "prev_content_type_counts": _content_type_counts(request.prev_published_contents),
-        "published_count": len(request.published_contents),
+        "published_count": len(actual_publications),
         "prev_published_count": len(request.prev_published_contents),
         "new_mention_cells": new_mentions[:visible],
         "first_measured_mention_cells": first_measured[:visible],

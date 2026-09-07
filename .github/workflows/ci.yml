@@ -97,6 +97,9 @@ jobs:
       # os.getenv가 None이라 pytest.skip으로 조용히 빠져 CI에서 한 번도 돌지 않는다.
       INCIDENT_TEST_DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
       OPERATIONS_TEST_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test
+      MIGRATION_UPGRADE_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_autonomy_migration
+      COST_GUARD_REDIS_URL: redis://localhost:6379/2
+      INTEGRATION_REDIS_URL: redis://localhost:6379/3
       # 블러 리포트 검사(F5-3)는 실제 PDF에서 텍스트를 추출해 가림 대상이 0회 등장하는지
       # 본다. 이 값이 없으면 그 테스트가 조용히 skip되어, 가장 중요한 검사가 어디에서도
       # 돌지 않게 된다 — CI에서는 네이티브 의존성을 깔고 강제 실행한다.
@@ -139,6 +142,26 @@ jobs:
       # different dependency graph than the one that ships to production.
       - name: Install dependencies
         run: uv sync --locked --extra dev
+
+      - name: Create migration acceptance database
+        run: |
+          uv run --no-sync python - <<'PY'
+          import psycopg2
+
+          connection = psycopg2.connect(
+              host="localhost",
+              port=5434,
+              user="reputation",
+              password="reputation",
+              dbname="reputation_test",
+          )
+          connection.autocommit = True
+          try:
+              with connection.cursor() as cursor:
+                  cursor.execute("CREATE DATABASE reputation_autonomy_migration")
+          finally:
+              connection.close()
+          PY
 
       - name: Ruff
         run: uv run --no-sync ruff check .

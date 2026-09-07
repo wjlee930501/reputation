@@ -1,8 +1,8 @@
 /**
  * 무료 진단(1단) 상태 표시 규칙.
  *
- * 백엔드는 상태를 **3축으로 분리해서** 준다 — 측정(execution) / 리포트(report) / 발송(delivery).
- * 단일 상태로 접으면 "측정은 일부 실패했지만 리포트는 나갔다" 같은 상태가 사라지는데,
+ * 백엔드는 상태를 **3축으로 분리해서** 준다 — 측정(execution) / 보고서(report) / 고객 발송(delivery).
+ * 단일 상태로 접으면 "측정은 일부 실패했지만 보고서는 고객에게 발송됐다" 같은 상태가 사라지는데,
  * 그 구분이 AE가 원장에게 무엇을 말할지 결정하는 정보다.
  *
  * 화면이 판정을 직접 하면 세 곳에서 조금씩 다르게 판정하게 되므로 여기 모아 둔다.
@@ -69,7 +69,7 @@ export type DiagnosisRecoveryAction =
 export type Tone = 'ok' | 'progress' | 'warn' | 'danger' | 'muted'
 
 export interface AxisBadge {
-  axis: '측정' | '리포트' | '발송'
+  axis: '측정' | '보고서' | '고객 발송'
   label: string
   tone: Tone
 }
@@ -78,7 +78,7 @@ const EXECUTION: Record<string, { label: string; tone: Tone }> = {
   PENDING: { label: '대기', tone: 'muted' },
   RUNNING: { label: '측정 중', tone: 'progress' },
   SUCCEEDED: { label: '완료', tone: 'ok' },
-  // PARTIAL은 리포트를 낼 수 있지만 계획 미달이다 — 초록으로 칠하면 AE가 그 사실을 모른다.
+  // PARTIAL은 보고서를 낼 수 있지만 계획 미달이다 — 초록으로 칠하면 AE가 그 사실을 모른다.
   PARTIAL: { label: '일부 실패', tone: 'warn' },
   FAILED: { label: '실패', tone: 'danger' },
 }
@@ -110,8 +110,8 @@ function badge(
 export function diagnosisBadges(diagnosis: LeadDiagnosisSummary): AxisBadge[] {
   return [
     badge('측정', EXECUTION, diagnosis.execution_status),
-    badge('리포트', REPORT, diagnosis.report_status),
-    badge('발송', DELIVERY, diagnosis.delivery_status),
+    badge('보고서', REPORT, diagnosis.report_status),
+    badge('고객 발송', DELIVERY, diagnosis.delivery_status),
   ]
 }
 
@@ -125,7 +125,7 @@ export function needsAttention(diagnosis: LeadDiagnosisSummary): boolean {
   )
 }
 
-/** 재발송 버튼을 보여줄지. 리포트가 있어야 보낼 것이 있다. */
+/** 재발송 버튼을 보여줄지. 보고서가 있어야 보낼 것이 있다. */
 export function canRetryDelivery(diagnosis: LeadDiagnosisSummary): boolean {
   return (
     diagnosis.report_status === 'READY' &&
@@ -133,7 +133,7 @@ export function canRetryDelivery(diagnosis: LeadDiagnosisSummary): boolean {
   )
 }
 
-/** 준비된 리포트만 인증된 Admin PDF 경로로 연다. 고객용 토큰은 화면에 노출하지 않는다. */
+/** 준비된 보고서만 인증된 Admin PDF 경로로 연다. 고객용 토큰은 화면에 노출하지 않는다. */
 export function diagnosisReportHref(
   leadId: string,
   diagnosis: LeadDiagnosisSummary,
@@ -187,7 +187,7 @@ export function recoveryAction(
         kind: 'support',
         enabled: false,
         label: '개발팀 확인 필요',
-        description: '이미 준비되었거나 전달된 리포트가 있어 자동 재측정으로 바꿀 수 없습니다.',
+        description: '이미 준비되었거나 고객에게 발송된 보고서가 있어 자동 재측정으로 바꿀 수 없습니다.',
         run: measurementRun,
       }
     }
@@ -206,7 +206,7 @@ export function recoveryAction(
       kind: 'support',
       enabled: false,
       label: '개발팀 확인 필요',
-      description: '이미 전달된 리포트 이력이 있어 자동으로 새 파일을 연결할 수 없습니다.',
+      description: '이미 고객에게 발송된 보고서 이력이 있어 자동으로 새 파일을 연결할 수 없습니다.',
       run: reportRun,
     }
   }
@@ -218,15 +218,15 @@ export function recoveryAction(
       kind: 'support',
       enabled: false,
       label: '측정 결과 확인 필요',
-      description: '리포트를 만들 수 있는 측정 결과가 없어 운영센터에서 확인해야 합니다.',
+      description: '보고서를 만들 수 있는 측정 결과가 없어 운영 센터에서 확인해야 합니다.',
       run: reportRun,
     }
   }
   return {
     kind: 'rebuild',
     enabled: true,
-    label: '리포트 다시 만들기',
-    description: '기존 리포트는 보관하고 새 리포트를 만듭니다.',
+    label: '보고서 다시 만들기',
+    description: '기존 보고서는 보관하고 새 보고서를 만듭니다.',
     previousRun: reportRun?.state === 'FAILED' ? reportRun : null,
   }
 }
@@ -239,13 +239,13 @@ export function recoveryAction(
 export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
   if (diagnosis.report_status === 'PURGED') return '개인정보가 파기된 진단입니다.'
   if (diagnosis.execution_status === 'FAILED') {
-    return '측정이 다시 실패해 리포트를 만들지 못했습니다.'
+    return '측정이 다시 실패해 보고서를 만들지 못했습니다.'
   }
   if (diagnosis.report_status === 'BLOCKED') {
-    return '리포트 생성이 재시도까지 실패했습니다. 신청자에게 메일이 나가지 않았습니다.'
+    return '보고서 생성이 재시도까지 실패했습니다. 신청자에게 이메일이 발송되지 않았습니다.'
   }
   if (diagnosis.delivery_status === 'FAILED') {
-    return '리포트는 준비됐지만 메일 발송이 실패했습니다. 재발송이 필요합니다.'
+    return '보고서는 준비됐지만 이메일 발송이 실패했습니다. 재발송이 필요합니다.'
   }
   if (diagnosis.delivery_status === 'SENT') {
     return diagnosis.execution_status === 'PARTIAL'
@@ -258,7 +258,7 @@ export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
   return '대기 중입니다.'
 }
 
-/** 이 리드 전체를 대표하는 상태 — 목록 정렬·필터용. */
+/** 이 상담 요청 전체를 대표하는 상태 — 목록 정렬·필터용. */
 export function leadNeedsAttention(diagnoses: LeadDiagnosisSummary[] | undefined): boolean {
   return (diagnoses ?? []).some(needsAttention)
 }

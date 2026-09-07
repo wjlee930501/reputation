@@ -22,11 +22,11 @@ export interface MeasurementRunCounts {
 
 /** 언급률 분모에서 빠지는 조건 — 백엔드 `record_is_confirmed`와 같은 말을 쓴다. */
 export const MENTION_RATE_EXCLUSION_COPY =
-  '성공한 측정은 AI 언급률에 그대로 반영되고, 실패한 측정과 판정이 확정되지 않은 측정만 분모에서 빠집니다. 아래 성공·실패 집계는 측정 안정성을 보는 별도 지표입니다.'
+  '성공한 측정은 병원 언급률에 그대로 반영되고, 실패한 측정과 판정이 확정되지 않은 측정만 분모에서 빠집니다. 아래 성공·실패 집계는 측정 안정성을 보는 별도 지표입니다.'
 
 /** 누적 실패 알림 — 실패가 실행 전체를 무효로 만들지 않는다는 점을 분명히 한다. */
 export const MENTION_RATE_FAILURE_ALERT_COPY =
-  '실패한 측정만 언급률 분모에서 빠지고, 같은 실행에서 성공한 측정은 언급률에 반영됩니다.'
+  '실패한 측정만 병원 언급률 분모에서 빠지고, 같은 실행에서 성공한 측정은 병원 언급률에 반영됩니다.'
 
 /**
  * 실행 한 건의 실패율 아래에 붙는 문구.
@@ -52,16 +52,16 @@ export function describeMeasurementRunMentionRateImpact(run: MeasurementRunCount
   const rateText = `실패율 ${failureRate.toFixed(1)}%`
 
   if (confirmedCount === 0) {
-    return `${rateText} · 확정된 성공 측정이 없어 이 실행은 AI 언급률에 반영되지 않습니다`
+    return `${rateText} · 확정된 성공 측정이 없어 이 실행은 병원 언급률에 반영되지 않습니다`
   }
   if (ambiguousCount > 0) {
     const excluded = failureCount > 0
       ? `실패 ${failureCount}건과 판정 미확정 ${ambiguousCount}건은 분모에서 빠지고`
       : `판정 미확정 ${ambiguousCount}건은 분모에서 빠지고`
-    return `${rateText} · ${excluded} 확정 성공 ${confirmedCount}건은 AI 언급률에 반영됩니다`
+    return `${rateText} · ${excluded} 확정 성공 ${confirmedCount}건은 병원 언급률에 반영됩니다`
   }
   if (failureCount === 0) {
-    return `${rateText} · 성공 ${confirmedCount}건이 모두 AI 언급률에 반영됩니다`
+    return `${rateText} · 성공 ${confirmedCount}건이 모두 병원 언급률에 반영됩니다`
   }
-  return `${rateText} · 실패 ${failureCount}건만 분모에서 빠지고 성공 ${confirmedCount}건은 AI 언급률에 반영됩니다`
+  return `${rateText} · 실패 ${failureCount}건만 분모에서 빠지고 성공 ${confirmedCount}건은 병원 언급률에 반영됩니다`
 }

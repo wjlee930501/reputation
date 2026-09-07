@@ -1,8 +1,10 @@
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.api.admin.essence import _rescreen_content_items
 from app.models.essence import PhilosophyStatus
+from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
 
 
 def test_new_philosophy_rescreens_and_relinks_existing_content():
@@ -53,3 +55,57 @@ def test_new_philosophy_rescreens_and_relinks_existing_content():
     assert safe.essence_status == "ALIGNED"
     assert unsafe.content_philosophy_id == new_id
     assert unsafe.essence_status == "NEEDS_ESSENCE_REVIEW"
+
+
+def test_essence_approval_cannot_erase_unresolved_independent_review() -> None:
+    current = SimpleNamespace(
+        id=uuid.uuid4(),
+        version=2,
+        status=PhilosophyStatus.APPROVED,
+        positioning_statement="근거 중심 설명",
+        doctor_voice="차분한 설명",
+        patient_promise="개인차 안내",
+        content_principles=[],
+        tone_guidelines=[],
+        must_use_messages=[],
+        avoid_messages=[],
+        treatment_narratives=[],
+        local_context={},
+        medical_ad_risk_rules=[],
+    )
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        title="진료 안내",
+        body="진찰 결과에 따라 치료 선택지를 설명합니다.",
+        meta_description="진료 안내",
+        faq_question=None,
+        faq_answer_summary=None,
+        references_list=[],
+        content_philosophy_id=uuid.uuid4(),
+        essence_status="ALIGNED",
+        essence_check_summary={},
+    )
+    item.essence_check_summary = {
+        "ai_review": {
+            "status": "REVISE",
+            "blocking": True,
+            "schema_version": "content-review-v2",
+            "candidate_sha256": candidate_sha256(item),
+            "coverage": candidate_review_coverage(item),
+            "findings": [
+                {
+                    "severity": "HARD",
+                    "kind": "HOSPITAL_FACT",
+                    "message": "병원 사실 근거가 부족합니다.",
+                }
+            ],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+    }
+
+    counts = _rescreen_content_items([item], current)
+
+    assert counts == {"total": 1, "aligned": 0, "needs_review": 1}
+    assert item.essence_status == "NEEDS_ESSENCE_REVIEW"
+    assert item.essence_check_summary["ai_review"]["status"] == "REVISE"
+    assert item.essence_check_summary["blocking"] is True

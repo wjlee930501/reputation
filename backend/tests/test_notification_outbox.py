@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -46,7 +47,10 @@ from app.services.notification_outbox import (
 from app.services.notification_success_hooks import reconcile_sent_notification_incidents
 from app.workers import notification_tasks
 
-_DATABASE_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_DATABASE_URL = os.getenv(
+    "NOTIFICATION_OUTBOX_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
+)
 _NOW = datetime(2026, 8, 10, 9, 0, tzinfo=UTC)
 
 

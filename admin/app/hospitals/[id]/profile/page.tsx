@@ -249,9 +249,9 @@ function AutofillModal({
     >
       <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-100">
-          <h3 className="text-base font-semibold text-slate-900">자동 채우기</h3>
+          <h3 className="text-base font-semibold text-slate-900">병원 정보 자동 입력</h3>
           <p className="text-xs text-slate-500 mt-1">
-            홈페이지·블로그·네이버 플레이스를 확인해 병원 기본 정보를 자동으로 채웁니다.
+            홈페이지·블로그·네이버 플레이스를 확인해 병원 기본 정보를 자동으로 입력합니다.
             빈 필드만 채우며, 이미 입력된 내용은 덮어쓰지 않습니다.
             <span className="block mt-1 text-slate-400">수집에 약 20~40초가 소요될 수 있습니다.</span>
           </p>
@@ -335,7 +335,7 @@ function AiBadge({ meta }: AiBadgeProps) {
       title={`출처: ${label} · 신뢰도 ${pct}%`}
       className="inline-flex items-center px-1.5 py-0.5 text-[10px] font-semibold rounded-full border bg-violet-50 text-violet-700 border-violet-200 cursor-default"
     >
-      AI {pct}%
+      AI 제안 {pct}%
     </span>
   )
 }
@@ -578,7 +578,7 @@ export default function ProfilePage() {
       setAutofillOpen(false)
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
-      setError(safeOperatorError('onboarding', '공식 주소를 확인한 뒤 ‘자동 채우기’를 다시 누르세요.'))
+      setError(safeOperatorError('onboarding', '공식 주소를 확인한 뒤 ‘병원 정보 자동 입력’을 다시 실행하세요.'))
     } finally {
       setAutofillLoading(false)
     }
@@ -656,7 +656,7 @@ export default function ProfilePage() {
             disabled={saving || autofillLoading}
             className="min-h-11 flex-1 px-4 py-2 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50 transition-colors sm:flex-none"
           >
-            자동 채우기
+            병원 정보 자동 입력
           </button>
           <button
             type="submit"
@@ -703,10 +703,10 @@ export default function ProfilePage() {
         <div className="profile-full bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
           {autofillResult.draft && Object.keys(autofillResult.draft).length === 0 ? (
             <p className="text-sm text-slate-600">
-              온라인에서 자동으로 채울 정보를 찾지 못했습니다. URL을 확인하거나 직접 입력해 주세요.
+              온라인에서 자동으로 입력할 정보를 찾지 못했습니다. URL을 확인하거나 직접 입력해 주세요.
             </p>
           ) : (
-            <p className="text-sm font-medium text-slate-700 mb-2">자동 채우기 결과</p>
+            <p className="text-sm font-medium text-slate-700 mb-2">자동 입력 결과</p>
           )}
           <ul className="flex flex-wrap gap-x-4 gap-y-1">
             {autofillResult.sources.map((src) => (
@@ -735,7 +735,7 @@ export default function ProfilePage() {
               <p className="text-xs text-slate-600 mt-1">
                 {nextActionLabel
                   ? <>다음 작업: <span className="font-medium text-slate-800">{nextActionLabel}</span></>
-                  : '모든 항목이 채워졌습니다. 하단의 온보딩 완료 카드에서 초기 진단 리포트와 병원 정보 허브 준비를 시작하세요.'}
+                  : '모든 항목이 채워졌습니다. 하단의 온보딩 완료 카드에서 초기 진단 보고서와 병원 정보 허브 준비를 시작하세요.'}
               </p>
             </div>
             <div className="text-right shrink-0">
@@ -1121,10 +1121,10 @@ export default function ProfilePage() {
         </div>
       </section>
 
-      {/* AI가 참고할 외부 채널 */}
+      {/* 외부 공식 채널 */}
       <section className="bg-white rounded-xl border border-slate-200 p-4 space-y-4 sm:p-6">
         <div>
-          <h3 className="text-base font-semibold text-slate-800">AI가 참고할 외부 채널</h3>
+          <h3 className="text-base font-semibold text-slate-800">외부 공식 채널</h3>
           <p className="text-xs text-slate-500 mt-0.5">
             네이버 플레이스·구글 지도/병원 정보 URL과 좌표는 AI 답변과 로컬 검색에서 우리 병원을 인식시키는 기본 자료입니다.
           </p>
@@ -1247,7 +1247,7 @@ export default function ProfilePage() {
         <div>
           <h3 className="text-base font-semibold text-slate-800">운영 기준 정보</h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            지역·전문과목·키워드는 콘텐츠 운영 주제와 AI 언급률 측정 질문을 정리하는 기준으로 사용됩니다. 경쟁 병원은 비교 리포트 정확도를 높입니다.
+            지역·전문과목·키워드는 콘텐츠 운영 주제와 병원 언급률 측정 질문을 정리하는 기준으로 사용됩니다. 경쟁 병원은 비교 보고서의 정확도를 높입니다.
           </p>
         </div>
         <TagInput
@@ -1343,7 +1343,7 @@ export default function ProfilePage() {
         </div>
       )}
 
-      {/* 온보딩 완료 및 초기 리포트/콘텐츠 허브 노출 준비 시작 */}
+      {/* 온보딩 완료 및 초기 보고서·콘텐츠 허브 노출 준비 시작 */}
       <section
         className={`profile-full rounded-xl border overflow-hidden ${
           requiredReady
@@ -1354,9 +1354,9 @@ export default function ProfilePage() {
         <div className="px-6 py-5 border-b border-slate-100/80">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h3 className="text-base font-semibold text-slate-900">온보딩 완료 및 초기 진단 리포트·병원 정보 허브 준비 시작</h3>
+              <h3 className="text-base font-semibold text-slate-900">온보딩 완료 및 초기 진단 보고서·병원 정보 허브 준비 시작</h3>
               <p className="text-xs text-slate-600 mt-1">
-                체크 후 저장하면 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다.
+                확인 후 저장하면 초기 진단 보고서 생성과 병원 정보 허브 준비가 자동으로 시작됩니다.
                 필수 항목을 모두 채운 뒤 진행하세요.
               </p>
             </div>
@@ -1389,7 +1389,7 @@ export default function ProfilePage() {
                 ))}
               </ul>
               <p className="text-[11px] text-amber-700 mt-2">
-                필수 항목이 비어 있으면 초기 진단 리포트 정확도가 떨어지고 병원 정보 허브 결과물이 부실해질 수 있습니다.
+                필수 항목이 비어 있으면 초기 진단 보고서의 정확도가 떨어지고 병원 정보 허브 결과물이 부실해질 수 있습니다.
               </p>
             </div>
           )}
@@ -1399,7 +1399,7 @@ export default function ProfilePage() {
               <div className="flex items-center gap-2">
                 <span className="inline-block w-2 h-2 rounded-full bg-emerald-500" />
                 <p className="text-xs font-semibold text-emerald-800">
-                  필수 항목이 모두 준비되었습니다. 초기 진단 리포트와 병원 정보 허브 준비를 시작할 수 있습니다.
+                  필수 항목이 모두 준비되었습니다. 초기 진단 보고서와 병원 정보 허브 준비를 시작할 수 있습니다.
                 </p>
               </div>
             </div>
@@ -1423,7 +1423,7 @@ export default function ProfilePage() {
             <div>
               <span className="text-sm font-medium text-slate-800">병원 기본 정보 완료로 표시</span>
               <p className="text-xs text-slate-500 mt-0.5">
-                저장 시점에 초기 진단 리포트 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 운영 알림으로 결과를 확인합니다.
+                저장 시점에 초기 진단 보고서 생성과 병원 정보 허브 준비가 자동으로 시작됩니다. 운영 요약에서 진행 상태를 확인합니다.
               </p>
               {!requiredReady && !(profile.profile_complete ?? false) && (
                 <p className="text-[11px] text-amber-700 mt-1.5">

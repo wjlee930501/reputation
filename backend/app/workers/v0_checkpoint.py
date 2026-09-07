@@ -45,9 +45,13 @@ V0_MEASUREMENT_SOURCE = "trigger_v0_report"
 #: 6시간이면 같은 요청의 모든 재시도를 넉넉히 덮는다. 그보다 오래된 측정은 "지금의 진단"
 #: 이라고 부를 수 없으므로 다시 측정한다.
 V0_CHECKPOINT_MAX_AGE_SECONDS = 6 * 3600
+# Incomplete runs may pause at a cost window without changing their frozen sample.
+# Keep that exact lineage long enough to cross several daily reset boundaries.
+V0_RESUME_MAX_AGE_SECONDS = 7 * 24 * 3600
 
 #: 재사용 가능한 상태. FAILED는 성공 측정이 0건이라 재사용해도 리포트를 만들 수 없다.
 REUSABLE_RUN_STATUSES = ("COMPLETED", "PARTIAL")
+RESUMABLE_RUN_STATUSES = ("RUNNING", "FAILED", "PARTIAL")
 
 #: 후보 스캔 상한 — 6시간 창 안의 V0 측정이 이보다 많을 수는 없다.
 _CANDIDATE_SCAN_LIMIT = 20
@@ -165,6 +169,40 @@ def find_reusable_v0_measurement_run(
             continue
         return run
     return None
+
+
+def find_resumable_v0_measurement_run(
+    db,
+    hospital_id: uuid.UUID,
+    *,
+    operation_run_id: uuid.UUID | None,
+    now: datetime | None = None,
+) -> MeasurementRun | None:
+    """Incomplete run owned by the same V0 request, including a hard-killed run."""
+    if operation_run_id is None:
+        return None
+    moment = now or datetime.now(UTC)
+    cutoff = moment - timedelta(seconds=V0_RESUME_MAX_AGE_SECONDS)
+    candidates = (
+        db.execute(
+            select(MeasurementRun)
+            .where(
+                MeasurementRun.hospital_id == hospital_id,
+                MeasurementRun.status.in_(RESUMABLE_RUN_STATUSES),
+                MeasurementRun.created_at >= cutoff,
+                MeasurementRun.config["source"].as_string() == V0_MEASUREMENT_SOURCE,
+                MeasurementRun.config["operation_run_id"].as_string()
+                == str(operation_run_id),
+            )
+            .order_by(MeasurementRun.created_at.desc())
+            .limit(1)
+        )
+        .scalars()
+        .scalar_one_or_none()
+    )
+    if candidates is None or _already_consumed_by_report(db, candidates):
+        return None
+    return candidates
 
 
 def _record_to_result(record: SovRecord, query_intent: str | None) -> dict[str, Any]:

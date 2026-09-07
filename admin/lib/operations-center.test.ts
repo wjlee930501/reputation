@@ -13,6 +13,9 @@ import {
   actionableOperationsCount,
   enabledPostAction,
   effectiveSafeCause,
+  hospitalOperationsHref,
+  getOrCreateOperationsMutationKey,
+  reportOperationsHref,
   interpretOperationsConflict,
   operationStatusLabel,
   partitionOperationsRows,
@@ -76,6 +79,51 @@ test('canonical query parses supported values and drops unsafe noise', () => {
   assert.equal(canonical.toString(), 'queue=incidents&status=OPEN&detail=i-1')
 })
 
+test('report deep links preserve the hospital scope through canonicalization', () => {
+  const source = new URLSearchParams(
+    'queue=REPORTS&hospital_id=123e4567-e89b-12d3-a456-426614174000',
+  )
+
+  const canonical = canonicalizeOperationsQuery(source)
+
+  assert.equal(
+    canonical.toString(),
+    'queue=reports&hospital_id=123e4567-e89b-12d3-a456-426614174000',
+  )
+  assert.equal(
+    readOperationsQuery(canonical).hospitalId,
+    '123e4567-e89b-12d3-a456-426614174000',
+  )
+})
+
+test('hospital report links preserve an exact incident while adding tenant context', () => {
+  assert.equal(
+    hospitalOperationsHref(
+      'hospital-51',
+      '/operations?queue=reports&detail=report%3Amonthly-1',
+    ),
+    '/operations?queue=reports&detail=report%3Amonthly-1&hospital_id=hospital-51',
+  )
+})
+
+test('report links address the exact monthly report row', () => {
+  assert.equal(
+    reportOperationsHref('hospital-51', 'monthly-1', 2026, 8),
+    '/operations?queue=reports&detail=report%3Amonthly-1%3A2026-08&hospital_id=hospital-51',
+  )
+})
+
+test('the operations screen makes hospital-scoped deep links visible and clearable', () => {
+  const filters = readFileSync(
+    new URL('../app/operations/OperationsFilters.tsx', import.meta.url),
+    'utf8',
+  )
+
+  assert.match(filters, /query\.hospitalId/)
+  assert.match(filters, /선택한 병원만 보고 있습니다/)
+  assert.match(filters, /hospitalId: null, detail: null/)
+})
+
 test('recovered incidents use a separate canonical view and reset paging', () => {
   const source = new URLSearchParams('queue=incidents&page=3')
 
@@ -115,7 +163,7 @@ test('generic incident cause falls through to a classified run cause', () => {
     },
   })
 
-  assert.equal(cause, '외부 AI 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.')
+  assert.equal(cause, '외부 답변 측정 서비스가 응답하지 않거나 일시적으로 제한되었습니다.')
 })
 
 test('changing a quick filter resets page while preserving detail', () => {
@@ -224,7 +272,7 @@ test('customer-facing operation labels never expose raw backend states', () => {
     '온보딩 진행 중', 'AI 진단 분석 중', '콘텐츠 허브 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
     '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '지난달 보고서 미생성',
     '필수 측정 미완료', '측정 집계 연결 오류', '측정 집계 마감 대기', '원장 전달용 PDF 없음',
-    '원장 전달용 PDF 검증 실패', '리포트 전달 차단', '원장 전달 검수 대기',
+    '원장 전달용 PDF 검증 실패', '보고서 전달 차단', '원장 전달 검수 대기',
     '처리 필요', '복구 재시도 중', '복구 확인됨', '확인 완료',
   ])
   assert.equal(operationStatusLabel('UNRECOGNIZED'), '상태 확인 필요')
@@ -273,6 +321,28 @@ test('one user action gets one stable idempotency key', () => {
   // Then
   assert.equal(first, repeated)
   assert.notEqual(first, createUserActionKey('RETRY_RUN', 'run-1', 'nonce-2'))
+})
+
+test('an uncertain operations response reuses its request key until the payload changes', () => {
+  const keys = new Map<string, string>()
+  const mutation = {
+    kind: 'RETRY_RUN' as const,
+    path: '/admin/operations/hospitals/hospital-1/runs/run-1/retry',
+    targetId: 'run-1',
+    version: null,
+    reason: '일시 장애 뒤 안전하게 다시 실행',
+  }
+
+  const first = getOrCreateOperationsMutationKey(keys, mutation, 'nonce-1')
+  const afterLostResponse = getOrCreateOperationsMutationKey(keys, mutation, 'nonce-2')
+  const changedPayload = getOrCreateOperationsMutationKey(
+    keys,
+    { ...mutation, reason: '원인을 확인한 뒤 새 조건으로 다시 실행' },
+    'nonce-3',
+  )
+
+  assert.equal(afterLostResponse.key, first.key)
+  assert.notEqual(changedPayload.key, first.key)
 })
 
 test('server action descriptor controls permission and exact mutation path', () => {
@@ -443,7 +513,7 @@ test('two rows for the same hospital have different titles', () => {
 test('an unknown status falls back to the queue name rather than a bare warning', () => {
   const title = operationsRowTitle(row('x', { queue: 'REPORTS', status: 'SOMETHING_NEW' }))
 
-  assert.match(title, /월간 리포트/)
+  assert.match(title, /월간 보고서/)
   assert.doesNotMatch(title, /상태 확인 필요/)
 })
 
@@ -465,11 +535,12 @@ test('the current action is chosen from the actionable rows of the queue on scre
   assert.doesNotMatch(page, /selectCurrentAction\(center\.overview/)
 })
 
-test('the queue list folds pre-08:00 auto-publish rows out of the actionable list', () => {
+test('the queue list folds automatic work while keeping its deadline visible', () => {
   const queue = readFileSync(new URL('../app/operations/OperationsQueue.tsx', import.meta.url), 'utf8')
 
   assert.match(queue, /partitionOperationsRows\(visibleItems\)/)
-  assert.match(queue, /예정 \(08:00 자동 발행 대기\)/)
+  assert.match(queue, /자동 처리 중 · 예정/)
+  assert.match(queue, /describeOperationsDeadline\(item, checkedAt/)
   assert.doesNotMatch(queue, /visibleItems\.map/)
 })
 

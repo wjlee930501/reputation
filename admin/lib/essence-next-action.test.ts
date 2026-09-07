@@ -37,10 +37,10 @@ test('the blocked draft step is section 3 — there is no fourth section', () =>
   const action = resolveEssenceNextAction({ ...base, selectedIsReviewDraft: true })
 
   assert.equal(action?.section, ESSENCE_SECTIONS.REVIEW)
-  assert.equal(formatEssenceNextAction(action!), '3단계 — AI 안전 검수가 보류한 최신 초안의 근거와 차단 사유를 확인하세요.')
+  assert.equal(formatEssenceNextAction(action!), '3단계 — 자동 검수가 보류한 최신 초안의 근거와 차단 사유를 확인하세요.')
 })
 
-test('the guidance walks input, extract, draft in order', () => {
+test('the guidance walks input and automatic preparation without inventing manual work', () => {
   assert.equal(
     formatEssenceNextAction(
       resolveEssenceNextAction({ ...base, textSourceCount: 0, processedTextCount: 0, hasSelectedDraft: false })!,
@@ -51,11 +51,11 @@ test('the guidance walks input, extract, draft in order', () => {
     formatEssenceNextAction(
       resolveEssenceNextAction({ ...base, processedTextCount: 0, hasSelectedDraft: false })!,
     ),
-    '2단계 — 자료의 [근거 추출]을 실행하세요.',
+    '2단계 — 저장된 자료에서 근거를 추출하고 있습니다. 오류로 표시된 자료만 확인하세요.',
   )
   assert.equal(
     formatEssenceNextAction(resolveEssenceNextAction({ ...base, hasSelectedDraft: false })!),
-    '2단계 — 처리한 자료를 선택하고 [선택한 자료로 초안 만들기]를 누르세요.',
+    '3단계 — 처리된 자료로 운영 기준을 준비하고 안전 검수하고 있습니다.',
   )
 })
 
@@ -63,7 +63,7 @@ test('a running standard has no section number to send the operator to', () => {
   const action = resolveEssenceNextAction({ ...base, hasApproved: true, hasSelectedDraft: false })
 
   assert.equal(action?.section, null)
-  assert.equal(formatEssenceNextAction(action!), '운영 중 — 새 자료를 추가하면 새 버전 초안을 만들 수 있습니다.')
+  assert.equal(formatEssenceNextAction(action!), '운영 중 — 새 자료가 처리되면 운영 기준도 자동으로 갱신됩니다.')
 })
 
 test('photos alone never satisfy the first step, because the count excludes them', () => {

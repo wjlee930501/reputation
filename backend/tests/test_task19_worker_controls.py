@@ -144,8 +144,8 @@ def test_site_revalidation_worker_retries_cache_only_at_control_delay(monkeypatc
     monkeypatch.setattr(
         tasks.retry_site_revalidation,
         "apply_async",
-        lambda *, args, queue, countdown, headers: scheduled.append(
-            (args, queue, countdown, headers)
+        lambda *, args, queue, priority, countdown, headers: scheduled.append(
+            (args, queue, priority, countdown, headers)
         ),
     )
 
@@ -155,7 +155,8 @@ def test_site_revalidation_worker_retries_cache_only_at_control_delay(monkeypatc
     assert scheduled == [
         (
             [str(run_id), 1],
-            "default",
+            "control",
+            0,
             300,
             tasks.build_dispatch_headers("retry-site-revalidation", str(run_id)),
         )

@@ -90,7 +90,8 @@ def _enqueue_created_drafts(item_ids: list[str]) -> None:
 
     try:
         morning_content_auto_publish.apply_async(
-            queue="content",
+            queue="control",
+            priority=0,
             headers=build_dispatch_headers("morning-content-auto-publish"),
         )
     except Exception:

@@ -7,6 +7,7 @@
 여기서는 병원 A·B를 실제로 시드하고 라우트 함수를 실제 AsyncSession으로 호출해,
 B의 slug로 A의 자원을 요청하면 404가 나고 B의 목록에 A의 항목이 섞이지 않는지 확인한다.
 """
+import hashlib
 import uuid
 from datetime import date, datetime, timezone
 
@@ -24,6 +25,11 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
+from app.services.image_engine import (
+    IMAGE_POLICY_VERSION,
+    image_content_hash_from_url,
+    image_subject_hash,
+)
 
 # slowapi @limiter.limit 우회 — 라우트를 FastAPI 요청 라이프사이클 밖에서 직접 호출한다
 # (tests/test_public_site.py와 동일 패턴).
@@ -121,14 +127,18 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
     session.add_all([philosophy, schedule])
     await session.flush()
 
+    content_title = f"{label} 병원 전용 콘텐츠"
+    content_type = ContentType.FAQ
+    image_hash = hashlib.sha256(f"{label}-{suffix}-content-image".encode()).hexdigest()
+    image_url = f"gs://reputation-images/content/{image_hash}-fixture.png"
     content = ContentItem(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
         schedule_id=schedule.id,
-        content_type=ContentType.FAQ,
+        content_type=content_type,
         sequence_no=1,
         total_count=8,
-        title=f"{label} 병원 전용 콘텐츠",
+        title=content_title,
         body="본문",
         references_list=[
             {
@@ -138,7 +148,11 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         ],
         faq_question=f"{label} 병원 진료 정보는 어디에서 확인하나요?",
         faq_answer_summary="병원 공식 안내와 의료진 상담을 통해 확인할 수 있습니다.",
-        image_url="gs://reputation-images/content/x.png",
+        image_url=image_url,
+        image_policy_verified_at=processed_at,
+        image_content_hash=image_content_hash_from_url(image_url),
+        image_subject_hash=image_subject_hash(content_type, content_title),
+        image_policy_version=IMAGE_POLICY_VERSION,
         scheduled_date=date(2026, 7, 15),
         status=ContentStatus.PUBLISHED,
         published_at=processed_at,
@@ -152,11 +166,14 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
 
 async def _seed_content(session, tenant: _Tenant, *, philosophy_id, title: str) -> ContentItem:
     """tenant 소유 발행 콘텐츠 1건 — 운영 기준 연결만 호출부가 지정한다."""
+    content_type = ContentType.DISEASE
+    image_hash = hashlib.sha256(f"{tenant.slug}-{title}-content-image".encode()).hexdigest()
+    image_url = f"gs://reputation-images/content/{image_hash}-fixture.png"
     item = ContentItem(
         id=uuid.uuid4(),
         hospital_id=tenant.hospital.id,
         schedule_id=tenant.schedule.id,
-        content_type=ContentType.DISEASE,
+        content_type=content_type,
         sequence_no=2,
         total_count=8,
         title=title,
@@ -170,6 +187,11 @@ async def _seed_content(session, tenant: _Tenant, *, philosophy_id, title: str) 
         scheduled_date=date(2026, 7, 22),
         status=ContentStatus.PUBLISHED,
         published_at=datetime(2026, 7, 22, 8, 0, tzinfo=timezone.utc),
+        image_url=image_url,
+        image_policy_verified_at=datetime(2026, 7, 22, 7, 59, tzinfo=timezone.utc),
+        image_content_hash=image_content_hash_from_url(image_url),
+        image_subject_hash=image_subject_hash(content_type, title),
+        image_policy_version=IMAGE_POLICY_VERSION,
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=philosophy_id,
     )

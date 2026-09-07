@@ -28,6 +28,7 @@ from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
+from app.services import indexnow
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
@@ -49,10 +50,11 @@ from app.services.content_publication import (
     count_citable_references,
     has_required_references,
     publication_field_values,
+    record_publication_identity,
 )
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
-from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, screen_content_against_philosophy
+from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     EssenceReadiness,
     get_current_approved_philosophy,
@@ -68,6 +70,7 @@ from app.services.gap_driven_slots import (
     plan_gap_driven_slots,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.image_engine import image_subject_hash
 from app.services.ops_incident_alerts import open_ops_incident
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -476,6 +479,16 @@ async def update_content(
     저장 시 의료광고 금지표현 검사 → 위반 시 400 + 위반 목록 반환.
     """
     item = await _get_content(db, content_id, hospital_id)
+    if isinstance(item, ContentItem):
+        locked_result = await db.execute(
+            select(ContentItem)
+            .where(ContentItem.id == content_id, ContentItem.hospital_id == hospital_id)
+            .with_for_update(of=ContentItem)
+            .execution_options(populate_existing=True)
+        )
+        item = locked_result.scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="Content not found")
     hospital = await _get_hospital(db, hospital_id)
     was_published = item.status == ContentStatus.PUBLISHED
     should_revalidate = was_published and _has_public_site(hospital)
@@ -505,6 +518,10 @@ async def update_content(
 
     # 참고 자료 (A1) — 생성 경로와 동일한 정규화/화이트리스트 검증을 거친다.
     # 일부가 탈락하면 운영자가 모르는 채 저장되는 것보다 명시적으로 거절하는 편이 안전.
+    previous_ai_review = None
+    if isinstance(item.essence_check_summary, dict):
+        previous_ai_review = item.essence_check_summary.get("ai_review")
+
     if body.references is not None:
         raw_refs = [ref.model_dump() for ref in body.references]
         normalized_refs = _normalize_references(raw_refs)
@@ -544,6 +561,7 @@ async def update_content(
             )
 
     body_changed = False
+    previous_image_subject = image_subject_hash(item.content_type, item.title)
     if body.title is not None:
         item.title = body.title
     if body.body is not None and body.body != item.body:
@@ -568,11 +586,33 @@ async def update_content(
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
 
+    if public_fields_changed:
+        item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
+        if image_subject_hash(item.content_type, item.title) != previous_image_subject:
+            # Keep the uploaded asset for cheap re-review, but its previous subject
+            # certificate cannot authorize a changed title.
+            item.image_policy_verified_at = None
+            item.image_content_hash = None
+            item.image_subject_hash = None
+            item.image_policy_version = None
+
     philosophy = await _get_approved_philosophy(db, hospital_id)
-    screening = screen_content_against_philosophy(item, philosophy)
-    item.content_philosophy_id = philosophy.id if philosophy else None
-    item.essence_status = screening.status
-    item.essence_check_summary = screening.summary
+    assessment = assess_content_publication(item, philosophy)
+    apply_publication_assessment(item, assessment)
+    if previous_ai_review is not None and isinstance(item.essence_check_summary, dict):
+        # apply_publication_assessment normally preserves this. Keep the explicit
+        # fallback for rolling workers returning a legacy screening-only summary.
+        item.essence_check_summary.setdefault("ai_review", previous_ai_review)
+
+    if was_published and public_fields_changed and isinstance(item, ContentItem):
+        await indexnow.enqueue_content_published(
+            db,
+            slug=hospital.slug,
+            content_id=item.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=int(getattr(item, "content_revision", 1) or 1),
+        )
 
     await db.commit()
     await db.refresh(item)
@@ -594,6 +634,7 @@ async def update_content_brief(
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
     await _apply_content_brief_update(db, hospital, item, body)
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
 
     await db.commit()
     await db.refresh(item)
@@ -634,6 +675,7 @@ async def reschedule_content(
 
     previous_date = item.scheduled_date
     item.scheduled_date = body.scheduled_date
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
     if (
         previous_date
         and (previous_date.year, previous_date.month)
@@ -680,6 +722,8 @@ async def cancel_content(
     previous_status = _enum_value(item.status)
     item.status = ContentStatus.CANCELLED
     item.generation_claimed_at = None
+    item.generation_claim_token = None
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
     await write_audit_log(
         db,
         action="cancel_content",
@@ -796,8 +840,15 @@ async def publish_content(
         )
 
     item.status = ContentStatus.PUBLISHED
-    item.published_at = datetime.now(timezone.utc)
-    item.published_by = body.published_by
+    # A selectively withdrawn source may have temporarily moved a previously
+    # published row through guarded regeneration. Preserve its actual first
+    # publication identity so contract-month and notification history remain
+    # truthful when the corrected edition is restored.
+    record_publication_identity(
+        item,
+        published_at=datetime.now(timezone.utc),
+        published_by=body.published_by,
+    )
     item.post_publish_notified_at = None
     item.post_publish_reviewed_at = None
     item.post_publish_reviewed_by = None
@@ -817,6 +868,15 @@ async def publish_content(
             "mode": "manual_recovery",
         },
     )
+    if isinstance(item, ContentItem):
+        await indexnow.enqueue_content_published(
+            db,
+            slug=hospital.slug,
+            content_id=item.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=int(getattr(item, "content_revision", 1) or 1),
+        )
     await db.commit()
 
     # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
@@ -833,6 +893,7 @@ async def publish_content(
     return {
         "detail": "Published",
         "published_at": item.published_at.isoformat(),
+        "content_revision": int(getattr(item, "content_revision", 1) or 1),
         "notification_state": "NOT_REQUIRED",
     }
 
@@ -909,10 +970,22 @@ async def reject_content(
     item.body = None  # 초기화 → 야간 생성 태스크가 다시 처리
     item.title = None
     item.image_url = None
+    item.image_policy_verified_at = None
+    item.image_content_hash = None
+    item.image_subject_hash = None
+    item.image_policy_version = None
+    item.generation_claimed_at = None
+    item.generation_claim_token = None
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
     # 발행됐던 아이템을 반려하면 발행 메타도 초기화 — 재생성·재발행 시 이전 발행 기록이
     # 새 본문에 잘못 남는 것 방지. 다만 캐시 무효화 복구는 "어느 판이 캐시에 남아 있는가"를
     # 알아야 하므로 지우기 전 값을 붙잡아 revalidate 호출에 넘긴다.
     previous_published_at = item.published_at
+    if getattr(item, "first_published_at", None) is None and previous_published_at is not None:
+        # An older publisher can still populate only published_at during a rolling deploy.
+        # Capture that known identity before the current edition is cleared.
+        item.first_published_at = previous_published_at
+        item.first_published_by = item.published_by
     item.published_at = None
     item.published_by = None
     item.post_publish_notified_at = None
@@ -948,6 +1021,15 @@ async def reject_content(
             "carried_over_from": str(item.carried_over_from) if item.carried_over_from else None,
         },
     )
+    if should_revalidate and isinstance(item, ContentItem):
+        await indexnow.enqueue_content_published(
+            db,
+            slug=hospital.slug,
+            content_id=item.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=int(getattr(item, "content_revision", 1) or 1),
+        )
     await db.commit()
     if should_revalidate:
         # 내림(unpublish)도 올림과 동일한 경로 집합을 무효화한다. 실패 시 previous_published_at이

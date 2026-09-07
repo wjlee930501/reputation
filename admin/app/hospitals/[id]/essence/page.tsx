@@ -107,16 +107,16 @@ function statusBadge(status: string) {
 }
 
 function getSourceTypeLabel(source: SourceAsset): string {
-  return source.display?.source_type_label ?? SOURCE_TYPE_LABELS[source.source_type] ?? source.source_type
+  return source.display?.source_type_label ?? SOURCE_TYPE_LABELS[source.source_type] ?? '자료 유형 확인 필요'
 }
 
 function getSourceStatusStyle(source: SourceAsset): { label: string; color: string } {
-  const fallback = SOURCE_STATUS_STYLE[source.status] ?? { label: source.status, color: 'bg-slate-100 text-slate-700' }
+  const fallback = SOURCE_STATUS_STYLE[source.status] ?? { label: '자료 상태 확인 필요', color: 'bg-slate-100 text-slate-700' }
   return { ...fallback, label: source.display?.status_label ?? fallback.label }
 }
 
 function getPhilosophyStatusLabel(philosophy: ContentPhilosophy): string {
-  return philosophy.display?.status_label ?? PHILOSOPHY_STATUS_LABELS[philosophy.status] ?? philosophy.status
+  return philosophy.display?.status_label ?? PHILOSOPHY_STATUS_LABELS[philosophy.status] ?? '운영 기준 상태 확인 필요'
 }
 
 export default function EssencePage() {
@@ -353,7 +353,7 @@ export default function EssencePage() {
       setSourceUrl('')
       setSourceRawText('')
       setSourceOperatorNote('')
-      setNotice('자료가 저장되었습니다. [근거 추출]을 실행해 다음 단계로 진행하세요.')
+      setNotice('자료를 저장했습니다. 근거 추출과 운영 기준 준비를 자동으로 시작합니다.')
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '자료 저장에 실패했습니다.')
@@ -538,7 +538,7 @@ export default function EssencePage() {
         <div className="min-w-0">
           <h2 className="text-xl font-bold text-slate-900">콘텐츠 운영 기준</h2>
           <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            병원 자료에서 AI가 참고할 근거를 뽑고, 콘텐츠가 지켜야 할 말투와 메시지를 운영 기준으로 고정합니다.
+            병원 자료에서 콘텐츠 작성에 쓸 근거를 뽑고, 지켜야 할 말투와 메시지를 운영 기준으로 고정합니다.
             승인 전에는 자동 콘텐츠가 발행 차단됩니다.
           </p>
         </div>
@@ -584,7 +584,7 @@ export default function EssencePage() {
             <span>{formatEssenceNextAction(nextAction)}</span>
             {autoReviewBlockReasons.length > 0 && (
               <>
-                <span className="mt-2 block font-semibold">AI 안전 검수가 보류한 사유</span>
+                <span className="mt-2 block font-semibold">자동 검수가 보류한 사유</span>
                 <ul className="mt-1 list-disc space-y-0.5 pl-5 text-[13px] leading-relaxed">
                   {autoReviewBlockReasons.map((reason) => (
                     <li key={reason}>{reason}</li>
@@ -640,7 +640,7 @@ export default function EssencePage() {
           <header>
             <StepLabel index={1} label="자료 입력" />
             <p className="text-xs text-slate-500 mt-1.5">
-              인터뷰·블로그·기존 홈페이지 등 원장 목소리가 담긴 자료를 입력합니다. AI가 참고할 근거를 뽑으려면 원문 텍스트를 붙여넣어야 합니다.
+              인터뷰·블로그·기존 홈페이지 등 원장 목소리가 담긴 자료를 입력합니다. 콘텐츠 작성에 쓸 근거를 뽑으려면 원문 텍스트를 붙여넣어야 합니다.
             </p>
           </header>
           <div>
@@ -724,9 +724,9 @@ export default function EssencePage() {
         <section className="admin-responsive-table-wrap bg-white rounded-xl border border-slate-200 overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-start justify-between gap-4 flex-wrap">
             <div className="min-w-0">
-              <StepLabel index={2} label="근거 추출 · 초안 만들기" />
+              <StepLabel index={2} label="근거 추출 · 자동 준비" />
               <p className="text-xs text-slate-500 mt-1.5">
-                각 자료의 [근거 추출]을 실행한 뒤, 사용할 자료를 체크해 콘텐츠 운영 기준 초안을 만듭니다.
+                저장한 자료는 자동으로 처리됩니다. 오류가 난 자료를 다시 처리하거나, 자동 준비가 막힌 경우에만 수동 초안을 만드세요.
               </p>
             </div>
             <button
@@ -737,7 +737,7 @@ export default function EssencePage() {
             >
               {actionLoading === 'create-draft'
                 ? '생성 중...'
-                : `선택한 ${selectedSourceIds.size}개 자료로 초안 만들기`}
+                : `선택한 ${selectedSourceIds.size}개로 수동 초안 만들기`}
             </button>
           </div>
           <table className="admin-responsive-table w-full text-sm">
@@ -878,7 +878,7 @@ export default function EssencePage() {
           <div>
             <StepLabel index={3} label="콘텐츠 운영 기준 자동 준비 및 예외 검토" />
             <p className="text-xs text-slate-500 mt-1.5">
-              AI 이중 검수와 안전 규칙을 통과한 기준은 자동 승인됩니다. 보류된 초안만 근거를 확인해 주세요.
+              두 단계 자동 검수와 안전 규칙을 통과한 기준은 자동 승인됩니다. 보류된 초안만 근거를 확인해 주세요.
             </p>
           </div>
           {philosophies.length > 0 && (
@@ -907,7 +907,7 @@ export default function EssencePage() {
           <div className="bg-blue-50 border border-blue-200 rounded-lg p-5 text-sm text-blue-900 space-y-2">
             <p className="font-semibold">검토 대기 중인 초안이 없습니다.</p>
             <p>
-              승인된 v{approved.version} 콘텐츠 운영 기준이 자동 생성 기준으로 사용됩니다. 신규 자료를 처리한 뒤 위에서 “선택한 N개로 초안 만들기”를 눌러 새 버전을 만들 수 있습니다.
+              승인된 v{approved.version} 콘텐츠 운영 기준을 사용하고 있습니다. 새 자료가 처리되면 새 버전도 자동으로 준비됩니다.
             </p>
           </div>
         )}
@@ -916,8 +916,8 @@ export default function EssencePage() {
           <div className="bg-slate-50 border border-dashed border-slate-300 rounded-lg p-10 text-center text-slate-500 space-y-2">
             <p className="text-sm font-medium text-slate-600">승인된 콘텐츠 운영 기준이 없습니다.</p>
             <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
-              자료를 1개 이상 입력 → 근거 추출 → “선택 자료로 초안 만들기” 순서로 진행하세요.
-              승인 전에는 자동 콘텐츠가 발행 차단됩니다.
+              자료를 입력하면 근거 추출, 운영 기준 작성, 안전 검수를 차례로 진행합니다.
+              자동 처리가 보류한 예외만 이 화면에서 확인하세요.
             </p>
           </div>
         )}
@@ -984,7 +984,7 @@ export default function EssencePage() {
                 <div className="bg-white border border-emerald-200 rounded-lg p-4 space-y-3">
                   <p className="text-sm font-semibold text-slate-900">자동 보류 예외 승인</p>
                   <p className="text-[11px] text-slate-500 leading-relaxed">
-                    정상 경로는 AI 시스템 자동 승인입니다. 자동 검수가 보류한 이 초안을 override할 때만 ① 항목별 근거 연결 ② 의료광고 금지 표현 충돌 ③ 근거 부족 항목을 확인하세요.
+                    정상 경로에서는 자동으로 승인됩니다. 보류된 이 초안을 수동 승인할 때만 ① 항목별 근거 연결 ② 의료광고 금지 표현 충돌 ③ 근거 부족 항목을 확인하세요.
                   </p>
                   <div>
                     <p className="mb-1 text-xs font-medium text-slate-600">검토자</p>

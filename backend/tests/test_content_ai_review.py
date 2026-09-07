@@ -5,7 +5,11 @@ import pytest
 
 from app.services import content_ai_review
 from app.services.ai_prompt_boundary import untrusted_json_block
-from app.services.content_ai_review import ContentAiReviewStatus
+from app.services.content_ai_review import (
+    ContentAiFindingKind,
+    ContentAiFindingSeverity,
+    ContentAiReviewStatus,
+)
 
 
 def test_high_confidence_pass_is_accepted() -> None:
@@ -62,7 +66,7 @@ async def test_cost_block_returns_unavailable_without_provider_call(monkeypatch)
     async def unexpected(*_args, **_kwargs):
         raise AssertionError("provider call must not be counted or attempted")
 
-    monkeypatch.setattr(content_ai_review.cost_guard, "check_and_increment", blocked)
+    monkeypatch.setattr(content_ai_review.cost_guard, "reserve", blocked)
     monkeypatch.setattr(content_ai_review.cost_guard, "record_provider_call", unexpected)
 
     result = await content_ai_review.review_generated_content(
@@ -74,6 +78,31 @@ async def test_cost_block_returns_unavailable_without_provider_call(monkeypatch)
 
     assert result.status == ContentAiReviewStatus.UNAVAILABLE
     assert result.confidence == 0.0
+
+
+async def test_unconfigured_reviewer_settles_unused_reservation(monkeypatch) -> None:
+    receipt = SimpleNamespace(category="content")
+    settled: list[tuple[object, int]] = []
+
+    async def allowed(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True, receipt=receipt)
+
+    async def settle(value, *, consumed_units):
+        settled.append((value, consumed_units))
+
+    monkeypatch.setattr(content_ai_review.cost_guard, "reserve", allowed)
+    monkeypatch.setattr(content_ai_review.cost_guard, "settle_reservation", settle)
+    monkeypatch.setattr(content_ai_review.settings, "ANTHROPIC_API_KEY", "")
+
+    result = await content_ai_review.review_generated_content(
+        hospital=SimpleNamespace(),
+        philosophy=SimpleNamespace(),
+        content={"title": "안내", "body": "환자마다 다릅니다."},
+        content_brief=None,
+    )
+
+    assert result.status == ContentAiReviewStatus.UNAVAILABLE
+    assert settled == [(receipt, 0)]
 
 
 def test_review_payload_keeps_untrusted_content_inside_data_boundary() -> None:
@@ -118,3 +147,133 @@ def test_untrusted_prompt_text_cannot_close_the_data_boundary() -> None:
     assert "<system>" not in payload
     assert "\\u003c/DATA_BLOCK\\u003e" in payload
     assert "\\u003csystem\\u003e" in payload
+
+
+def test_review_payload_covers_tail_and_records_candidate_hash() -> None:
+    tail = "검수 후반부의 근거 없는 장비 주장"
+    content = {"title": "안내", "body": f"{'안전한 설명' * 1200}{tail}"}
+
+    data = content_ai_review._review_data(
+        hospital=SimpleNamespace(name="병원"),
+        philosophy=SimpleNamespace(),
+        content=content,
+        content_brief={"treatment_narrative": {"cautions": ["회복은 개인차가 큼"]}},
+    )
+
+    assert tail in data["candidate"]["body"]
+    assert data["candidate_sha256"] == content_ai_review.candidate_sha256(content)
+    assert data["coverage"]["body"] == len(content["body"])
+    assert data["approved_brief"]["treatment_narrative"]["cautions"] == [
+        "회복은 개인차가 큼"
+    ]
+
+
+def test_typed_soft_finding_does_not_become_a_hard_block() -> None:
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "REVISE",
+                "confidence": 0.98,
+                "findings": [
+                    {
+                        "severity": "SOFT",
+                        "kind": "STYLE",
+                        "message": "문장을 간결하게 다듬으세요.",
+                    }
+                ],
+                "summary": "문체 개선",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+    assert result.findings[0].kind == ContentAiFindingKind.STYLE
+    assert result.blocking_findings == ()
+    assert result.payload()["blocking"] is False
+
+
+@pytest.mark.parametrize("decision", ["REVISE", "UNKNOWN", ""])
+def test_unexplained_non_pass_is_blocking_uncertainty(decision: str) -> None:
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": decision,
+                "confidence": 0.99,
+                "findings": [],
+                "summary": "설명 없는 판정",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.UNCERTAIN
+
+
+def test_low_confidence_soft_only_review_adds_blocking_uncertainty() -> None:
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "REVISE",
+                "confidence": 0.4,
+                "findings": [
+                    {"severity": "SOFT", "kind": "STYLE", "message": "문장을 다듬으세요."}
+                ],
+                "summary": "낮은 확신",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert [finding.severity for finding in result.findings] == [
+        ContentAiFindingSeverity.SOFT,
+        ContentAiFindingSeverity.UNCERTAIN,
+    ]
+    assert result.payload()["blocking"] is True
+
+
+def test_hard_finding_after_soft_display_cap_is_never_discarded() -> None:
+    findings = [
+        {"severity": "SOFT", "kind": "STYLE", "message": f"문체 {index}"}
+        for index in range(5)
+    ]
+    findings.append(
+        {
+            "severity": "HARD",
+            "kind": "HOSPITAL_FACT",
+            "message": "근거 없는 병원 장비 주장",
+        }
+    )
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "REVISE",
+                "confidence": 0.99,
+                "findings": findings,
+                "summary": "혼합 지적",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert any(
+        finding.message == "근거 없는 병원 장비 주장"
+        for finding in result.blocking_findings
+    )
+
+
+@pytest.mark.parametrize("malformed", [{}, "형식 오류", None])
+def test_malformed_findings_cannot_be_treated_as_an_empty_pass(malformed: object) -> None:
+    with pytest.raises(ValueError, match="findings must be a list"):
+        content_ai_review._parse_response(
+            json.dumps(
+                {
+                    "decision": "PASS",
+                    "confidence": 0.99,
+                    "findings": malformed,
+                    "summary": "검수 통과",
+                }
+            ),
+            reviewed_content={"title": "안내", "body": "본문"},
+        )

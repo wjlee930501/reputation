@@ -469,6 +469,8 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     assert item.status == content_api.ContentStatus.PUBLISHED
     assert item.published_at is not None
     assert item.published_by == "김민지 AE"
+    assert item.first_published_at == item.published_at
+    assert item.first_published_by == "김민지 AE"
     assert db.commit_calls == 1
     assert audit_calls == [
         {

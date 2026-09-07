@@ -24,6 +24,7 @@ from app.services.notification_messages import build_open_incident_notification
 from app.workers.dispatch_auth import require_dispatch
 
 EXPECTED_QUEUES: Final = (
+    "control",
     "default",
     "content",
     "sov",
@@ -174,6 +175,11 @@ def canary_leadgen(task: Task) -> CanaryPayload:
 @celery_app.task(name="app.workers.canary_tasks.canary_certificates", bind=True)
 def canary_certificates(task: Task) -> CanaryPayload:
     return _run_canary(task, "certificates")
+
+
+@celery_app.task(name="app.workers.canary_tasks.canary_control", bind=True)
+def canary_control(task: Task) -> CanaryPayload:
+    return _run_canary(task, "control")
 
 
 def read_queue_canaries(*, now: datetime | None = None) -> QueueCanaryFacts:

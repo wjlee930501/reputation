@@ -117,6 +117,27 @@ interface Philosophy {
   positioning_statement: string | null
 }
 
+interface SourceProcessingRun {
+  run_id: string
+  state: 'REQUESTED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED' | 'CANCELLED'
+  total_count: number
+  success_count: number
+  failure_count: number
+  skipped_count: number
+}
+
+function sourceProcessingCompletionCopy(run: SourceProcessingRun): string {
+  const handled = run.success_count + run.failure_count + run.skipped_count
+  if (run.state === 'SUCCEEDED') return `${run.total_count}개 자료 처리를 마쳤습니다.`
+  if (run.state === 'PARTIAL') {
+    return run.failure_count > 0
+      ? `자료 ${handled}/${run.total_count}개 처리를 마쳤습니다. 오류 ${run.failure_count}개만 확인하세요.`
+      : `자료 ${handled}/${run.total_count}개 처리를 마쳤고 ${run.skipped_count}개는 변경되어 건너뛰었습니다.`
+  }
+  if (run.state === 'CANCELLED') return `자료 처리가 취소됐습니다. 완료 ${run.success_count}개, 미완료 ${run.total_count - handled}개입니다.`
+  return `자료 처리를 완료하지 못했습니다. 완료 ${run.success_count}개, 오류 ${run.failure_count}개입니다. 운영 센터에서 원인과 다음 조치를 확인하세요.`
+}
+
 const SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string; group: 'TEXT' | 'PHOTO' }> = [
   { value: 'HOMEPAGE', label: '병원 홈페이지', group: 'TEXT' },
   { value: 'NAVER_BLOG', label: '네이버 블로그', group: 'TEXT' },
@@ -372,7 +393,7 @@ export default function OnboardingPage() {
   const [readiness, setReadiness] = useState<LifecycleReadiness | null>(null)
   const [handoff, setHandoff] = useState<Handoff | null>(null)
   const [measurementRuns, setMeasurementRuns] = useState<MeasurementRun[]>([])
-  // 단계 아코디언이 보여줄 결과물 — 리포트 PDF와 발행 스케줄(B-3).
+  // 단계 아코디언이 보여줄 결과물 — 보고서 PDF와 발행 일정(B-3).
   const [reportsState, setReportsState] = useState<
     OnboardingArtifactLoadState<ReportArtifactLike[]>
   >({ status: 'loading' })
@@ -487,7 +508,7 @@ export default function OnboardingPage() {
     : null
   const v0IsCurrent = steps.some((step) => step.key === 'v0' && step.status === 'current')
   const blockedReason = v0IsCurrent && latestMeasurementRun?.status === 'FAILED'
-    ? `${latestV0Message ?? '외부 AI 측정을 완료하지 못했습니다.'} 성공 ${latestMeasurementRun.success_count}건·실패 ${latestMeasurementRun.failure_count}건·예정 ${measurementPlannedCount(latestMeasurementRun)}건 중 나머지는 추가 비용을 막기 위해 중단했으며, 사람 확인이 필요합니다.`
+    ? `${latestV0Message ?? '외부 답변 측정을 완료하지 못했습니다.'} 성공 ${latestMeasurementRun.success_count}건·실패 ${latestMeasurementRun.failure_count}건·예정 ${measurementPlannedCount(latestMeasurementRun)}건 중 나머지는 추가 비용을 막기 위해 중단했으며, 사람 확인이 필요합니다.`
     : summary.blockedReason
   const onboardingSteps = steps.filter((step) => step.phase === 'onboarding')
   const outcomeSteps = steps.filter((step) => step.phase === 'post_onboarding')
@@ -501,7 +522,7 @@ export default function OnboardingPage() {
         <p className="hidden text-xs font-semibold text-blue-200 sm:block">신규 병원 온보딩</p>
         <h2 className="hidden text-xl font-bold sm:mt-2 sm:block sm:text-2xl">{hospital?.name ?? '온보딩'}</h2>
         <p className="mt-2 hidden max-w-2xl text-sm leading-6 text-blue-50/90 sm:block">
-          계약 인수부터 스케줄, 도메인과 공개 운영 시작까지 실제 운영 순서로 확인합니다.
+          계약 인수부터 발행 일정, 도메인과 공개 운영 시작까지 실제 운영 순서로 확인합니다.
         </p>
         <div data-current-task className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 sm:mt-5 sm:p-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
@@ -602,7 +623,7 @@ export default function OnboardingPage() {
           ))}
           <section aria-labelledby="post-onboarding-title" className="mt-8 border-t border-slate-300 pt-6">
             <h2 id="post-onboarding-title" className="text-lg font-bold text-slate-900">온보딩 이후 정기 운영 성과</h2>
-            <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 AI 답변 언급률 측정은 공개 운영 시작 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
+            <p className="mt-1 text-sm text-slate-600">첫 발행과 첫 답변 내 병원 언급률 측정은 공개 운영 시작 이후의 성과이며 온보딩 완료를 막지 않습니다.</p>
             <div className="mt-4 space-y-4">
               {outcomeSteps.map((step) => (
                 <StepCard key={step.key} step={step} hospital={hospital} sources={sources} philosophies={philosophies} hospitalId={id} loading={loading} onChanged={refresh} onSourcesChanged={refreshSources} handoff={handoff} reportsState={reportsState} scheduleState={scheduleState} />
@@ -751,7 +772,7 @@ function StepCard({
 /**
  * 단계별로 무엇을 보여줄지 고른다.
  *
- * 초기 진단은 리포트 PDF, 콘텐츠 허브·도메인은 공개 주소, 스케줄은 요금제와 발행
+ * 초기 진단은 보고서 PDF, 콘텐츠 허브·도메인은 공개 주소, 발행 일정은 요금제와 발행
  * 요일이다. 나머지 단계(첫 발행·첫 측정)는 이 화면이 보여줄 결과물이 없다.
  */
 function operationalStepArtifacts(
@@ -896,7 +917,7 @@ function ProfileStepBody({
         <ul className="text-sm text-slate-700 space-y-1">
           <li>· 필수 병원 정보 완료: {hospital?.profile_complete ? '✓' : '미완료'}</li>
           <li>
-            · 공개 표면 시각 승인:{' '}
+            · 공개 화면 디자인 승인:{' '}
             {pendingVisual.length === 0
               ? '✓'
               : `${pendingVisual.length}건 승인 필요 (${pendingVisual.map((item) => item.label).join(', ')})`}
@@ -1021,7 +1042,7 @@ function ClinicVisualForm({
       })
       // 저장에 성공한 뒤에야 서버 값(정규화된 결과)과 다시 동기화한다.
       setDirty(false)
-      setFeedback('공개 표면 시각 요소를 저장했습니다. 다음 사이트 갱신부터 반영됩니다.')
+      setFeedback('공개 화면 디자인을 저장했습니다. 다음 사이트 갱신부터 반영됩니다.')
       onSaved()
     } catch (e: unknown) {
       setError(
@@ -1037,7 +1058,7 @@ function ClinicVisualForm({
   return (
     <form onSubmit={save} className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
       <div>
-        <h3 className="text-sm font-bold text-slate-900">공개 표면 시각 요소</h3>
+        <h3 className="text-sm font-bold text-slate-900">공개 화면 디자인</h3>
         <p className="mt-1 text-xs leading-5 text-slate-600">
           공식 로고, 대표색, 첫 화면 카피, 정보 우선순위를 <strong>각각</strong> 승인해야 이 단계가 끝납니다.
           대표색은 하나만 정하면 나머지 밝기 단계와 대비 안전 색상은 공개 화면이 파생합니다.
@@ -2326,38 +2347,70 @@ function ProcessingStepBody({
   const excluded = sources.filter((s) => s.status === 'EXCLUDED')
   const [busyId, setBusyId] = useState<string | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
-  const [bulkTracking, setBulkTracking] = useState(false)
   const [processingActive, setProcessingActive] = useState(false)
+  const [processingRun, setProcessingRun] = useState<SourceProcessingRun | null>(null)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [bulkFeedback, setBulkFeedback] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const finishedRunRef = useRef<string | null>(null)
+  const runActive = Boolean(
+    processingRun && ['REQUESTED', 'QUEUED', 'RUNNING'].includes(processingRun.state),
+  )
+
+  const fetchLatestRun = useCallback(() => {
+    return fetchAPI<SourceProcessingRun | null>(
+      `/admin/hospitals/${hospitalId}/essence/source-processing-runs/latest`,
+    )
+  }, [hospitalId])
 
   useEffect(() => {
-    if (!processingActive) {
+    let cancelled = false
+    void fetchLatestRun().then((run) => {
+      if (!cancelled) setProcessingRun(run)
+    }).catch(() => {
+      if (!cancelled) {
+        setBulkFeedback('자료 처리 기록을 불러오지 못했습니다. 잠시 뒤 자동으로 다시 확인합니다.')
+      }
+    })
+    return () => { cancelled = true }
+  }, [fetchLatestRun])
+
+  useEffect(() => {
+    if (!processingActive && !runActive) {
       setElapsedSeconds(0)
       return
     }
     const timer = window.setInterval(() => setElapsedSeconds((value) => value + 1), 1000)
     return () => window.clearInterval(timer)
-  }, [processingActive])
+  }, [processingActive, runActive])
 
   useEffect(() => {
-    if (!bulkTracking) return
-    if (pending.length === 0) {
-      setBulkTracking(false)
+    if (!processingRun) return
+    if (!runActive) {
+      if (finishedRunRef.current === processingRun.run_id) return
+      finishedRunRef.current = processingRun.run_id
       setProcessingActive(false)
-      setBulkFeedback('대기 자료 처리가 끝났습니다. 완료·오류 상태를 확인해 주세요.')
-      // 처리가 끝난 시점에만 전체 새로고침 한 번 — readiness·philosophy 등 다른 단계
-      // 상태도 이 시점에 함께 맞춘다. 추적 중에는 sources만 가볍게 폴링했다(아래).
+      setBulkFeedback(sourceProcessingCompletionCopy(processingRun))
       onChanged()
       return
     }
-    const timer = window.setInterval(onSourcesChanged, 5000)
+    const refreshRun = async () => {
+      try {
+        const run = await fetchAPI<SourceProcessingRun>(
+          `/admin/hospitals/${hospitalId}/essence/source-processing-runs/${processingRun.run_id}`,
+        )
+        setProcessingRun(run)
+        onSourcesChanged()
+      } catch {
+        setBulkFeedback('자료 처리는 계속 진행 중입니다. 진행 기록만 잠시 불러오지 못해 다시 확인합니다.')
+      }
+    }
+    const timer = window.setInterval(() => void refreshRun(), 5000)
     return () => window.clearInterval(timer)
-  }, [bulkTracking, onChanged, onSourcesChanged, pending.length])
+  }, [hospitalId, onChanged, onSourcesChanged, processingRun, runActive])
 
   async function process(sourceId: string) {
-    if (busyId || bulkTracking) return
+    if (busyId || runActive) return
     setBusyId(sourceId)
     setElapsedSeconds(0)
     setProcessingActive(true)
@@ -2370,6 +2423,7 @@ function ProcessingStepBody({
       await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${sourceId}/process`, {
         method: 'POST',
       })
+      setProcessingRun(await fetchLatestRun())
       onChanged()
     } catch (e: unknown) {
       const message = safeOperatorError('onboarding', '해당 자료의 ‘다시 처리’를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.')
@@ -2384,17 +2438,17 @@ function ProcessingStepBody({
     setBulkBusy(true)
     setBulkFeedback(null)
     try {
-      const result = (await fetchAPI(
-        `/admin/hospitals/${hospitalId}/essence/sources/process-pending?limit=50`,
+      const result = await fetchAPI<SourceProcessingRun & { queued: number; source_ids: string[] }>(
+        `/admin/hospitals/${hospitalId}/essence/sources/process-pending`,
         { method: 'POST' },
-      )) as { queued: number }
+      )
+      setProcessingRun(result.run_id ? result : null)
       setBulkFeedback(
-        result.queued > 0
-          ? `${result.queued}개 자료를 처리 대기열에 넣었습니다. 잠시 뒤 상태를 새로 확인해 주세요.`
+        result.total_count > 0
+          ? `${result.total_count}개 자료 처리를 시작했습니다. 이 화면을 나갔다 돌아와도 진행 상태가 이어집니다.`
           : '처리할 대기 자료가 없습니다.',
       )
-      if (result.queued > 0) {
-        setBulkTracking(true)
+      if (result.total_count > 0) {
         setElapsedSeconds(0)
         setProcessingActive(true)
         window.setTimeout(onSourcesChanged, 2500)
@@ -2407,7 +2461,7 @@ function ProcessingStepBody({
   }
 
   if (sources.length === 0) {
-    return <p className="text-sm text-slate-500">먼저 자료를 인입해 주세요.</p>
+    return <p className="text-sm text-slate-500">먼저 자료를 등록해 주세요.</p>
   }
   return (
     <div className="space-y-3">
@@ -2415,28 +2469,30 @@ function ProcessingStepBody({
         처리 가능: <strong>{pending.length}</strong>개 · 완료: <strong>{processed.length}</strong>개 ·
         오류: <strong>{errored.length}</strong>개 · 차단: <strong>{blocked.length}</strong>개 · 제외: <strong>{excluded.length}</strong>개
       </p>
-      {(busyId || bulkTracking) && (
+      {(busyId || runActive) && (
         <div role="status" className="rounded-lg border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
-          근거를 추출하는 중입니다 · {elapsedSeconds}초 경과
-          <span className="mt-1 block text-xs text-blue-700">자료 1건은 보통 1~2분 걸립니다. 완료될 때까지 다른 처리 버튼은 잠깁니다.</span>
+          {runActive && processingRun
+            ? `자료 처리 중 · ${processingRun.success_count + processingRun.failure_count + processingRun.skipped_count}/${processingRun.total_count}개 완료 · ${elapsedSeconds}초 경과`
+            : `근거를 추출하는 중입니다 · ${elapsedSeconds}초 경과`}
+          <span className="mt-1 block text-xs text-blue-700">처리는 서버에서 이어집니다. 다른 화면으로 이동해도 중단되지 않습니다.</span>
         </div>
       )}
-      {pending.length > 1 && (
+      {pending.length > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 p-3">
           <button
             type="button"
             onClick={processAllPending}
-            disabled={bulkBusy || bulkTracking || busyId !== null}
+            disabled={bulkBusy || runActive || busyId !== null}
             className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
-            {bulkBusy ? '일괄 처리 요청 중…' : bulkTracking ? '일괄 처리 진행 중…' : `대기 자료 ${pending.length}개 일괄 처리`}
+            {bulkBusy ? '처리 시작 중…' : runActive ? '자료 처리 중…' : `대기 자료 ${pending.length}개 처리 시작`}
           </button>
           {bulkFeedback && <span className="text-xs text-blue-900">{bulkFeedback}</span>}
         </div>
       )}
       {processed.length > 0 && pending.length === 0 && errored.length === 0 && blocked.length === 0 && (
         <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-green-800">
-          근거 추출이 완료됐습니다. 운영 기준 초안 생성 단계로 진행할 수 있습니다.
+          근거 추출이 완료됐습니다. 운영 기준 준비와 안전 검수가 자동으로 이어집니다.
         </div>
       )}
       {pending.length > 0 && (
@@ -2450,7 +2506,7 @@ function ProcessingStepBody({
                 <span className="truncate">{s.title}</span>
                 <button
                   onClick={() => process(s.id)}
-                  disabled={busyId !== null || bulkTracking}
+                  disabled={busyId !== null || runActive}
                   className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
                 >
                   {busyId === s.id ? '처리 중…' : '처리'}
@@ -2501,7 +2557,7 @@ function ProcessingStepBody({
                   <span className="truncate font-medium text-slate-900">{s.title}</span>
                   <button
                     onClick={() => process(s.id)}
-                    disabled={busyId !== null || bulkTracking}
+                    disabled={busyId !== null || runActive}
                     className="rounded bg-red-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-red-700 disabled:opacity-50"
                   >
                     {busyId === s.id ? '재시도 중…' : '다시 처리'}
@@ -2589,7 +2645,7 @@ function PhilosophyStepBody({
           href={`/hospitals/${hospitalId}/schedule`}
           className="inline-flex items-center gap-1 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
         >
-          콘텐츠 스케줄 설정으로 →
+          콘텐츠 발행 일정 설정으로 →
         </Link>
       </div>
     )
@@ -2597,7 +2653,7 @@ function PhilosophyStepBody({
   if (draft) {
     return (
       <p className="text-sm text-slate-700">
-        AI 안전검수가 v{draft.version} 초안을 보류했습니다.{' '}
+        자동 검수가 v{draft.version} 초안을 보류했습니다.{' '}
         <Link href={`/hospitals/${hospitalId}/essence`} className="text-blue-600 underline">
           예외 근거만 확인 →
         </Link>

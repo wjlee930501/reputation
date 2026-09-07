@@ -3,7 +3,9 @@ import logging
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,14 @@ from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 TEMPLATE_DIR = Path(__file__).parent.parent / "templates"
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedPdfArtifact:
+    path: str
+    sha256: str
+    byte_size: int
+    validation_metadata: dict[str, Any]
 
 # 7가지 콘텐츠 유형 — 리포트 표 노출 순서(요금제 배분 순서와 동일).
 ACTIVE_GAP_STATUSES = {"OPEN", "WATCHING"}
@@ -456,7 +466,8 @@ def generate_pdf_report(
     citations: CitationSummaryPayload | None = None,
     talking_points: list[str] | None = None,
     report_version: int | None = None,
-) -> str:
+    return_artifact: bool = False,
+) -> str | GeneratedPdfArtifact:
     """
     PDF 리포트 생성 후 GCS에 업로드.
     Returns: gs://reputation-reports/reports/{slug}/{filename} 경로
@@ -509,6 +520,7 @@ def generate_pdf_report(
 
     HTML(string=html, base_url=str(TEMPLATE_DIR)).write_pdf(str(local_pdf_path))
     logger.info(f"PDF generated: {local_pdf_path}")
+    pdf_bytes = local_pdf_path.read_bytes() if return_artifact else b""
 
     # GCS 업로드
     gcs_path = _upload_to_gcs(local_pdf_path, hospital.slug, filename)
@@ -520,7 +532,20 @@ def generate_pdf_report(
         except Exception as e:
             logger.warning(f"Failed to delete local PDF {local_pdf_path}: {e}")
 
-    return gcs_path
+    if not return_artifact:
+        return gcs_path
+    digest = sha256(pdf_bytes).hexdigest()
+    return GeneratedPdfArtifact(
+        path=gcs_path,
+        sha256=digest,
+        byte_size=len(pdf_bytes),
+        validation_metadata={
+            "validation_version": "v0-pdf-v1",
+            "validation_source": "SYSTEM",
+            "sha256": digest,
+            "byte_size": len(pdf_bytes),
+        },
+    )
 
 
 def _upload_to_gcs(local_path: Path, slug: str, filename: str) -> str:

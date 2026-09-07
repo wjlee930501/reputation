@@ -36,13 +36,13 @@ test('a short list never claims to be truncated', () => {
   const summary = summarizeExposureActions(sample)
 
   assert.equal(summary.truncated, false)
-  assert.equal(describeExposureActions(summary), '대기 2건 · 진행중 1건 · 확인필요 1건')
+  assert.equal(describeExposureActions(summary), '대기 2건 · 진행 중 1건 · 확인 필요 1건')
 })
 
 test('the summary hides the blocked clause when nothing is blocked', () => {
   const summary = summarizeExposureActions([{ status: 'OPEN' }, { status: 'IN_PROGRESS' }])
 
-  assert.equal(describeExposureActions(summary), '대기 1건 · 진행중 1건')
+  assert.equal(describeExposureActions(summary), '대기 1건 · 진행 중 1건')
 })
 
 test('an empty queue says so rather than reporting zeroes', () => {

@@ -8,7 +8,7 @@ import { fetchCurrentAccount } from '@/lib/current-account'
 import { safeOperatorError } from '@/lib/operations-journey'
 import {
   canonicalizeOperationsQuery,
-  createUserActionKey,
+  getOrCreateOperationsMutationKey,
   interpretOperationsConflict,
   readOperationsQuery,
   shouldPollRun,
@@ -72,6 +72,7 @@ export function useOperationsCenter() {
   const [canRaiseLimit, setCanRaiseLimit] = useState(false)
   const centerAbort = useRef<AbortController | null>(null)
   const detailAbort = useRef<AbortController | null>(null)
+  const mutationKeys = useRef(new Map<string, string>())
 
   const patchQuery = useCallback((patch: OperationsQueryPatch) => {
     const next = updateOperationsQuery(new URLSearchParams(rawQuery), patch)
@@ -93,6 +94,7 @@ export function useOperationsCenter() {
     centerAbort.current = controller
     if (!silent) setLoading(true)
     const filters = new URLSearchParams()
+    if (query.hospitalId) filters.set('hospital_id', query.hospitalId)
     if (query.owner) filters.set('owner', query.owner)
     if (query.status) filters.set('status', query.status)
     if (query.severity) filters.set('severity', query.severity)
@@ -116,7 +118,7 @@ export function useOperationsCenter() {
     } finally {
       if (!silent && !controller.signal.aborted) setLoading(false)
     }
-  }, [query.owner, query.page, query.queue, query.recovery, query.severity, query.sla, query.status])
+  }, [query.hospitalId, query.owner, query.page, query.queue, query.recovery, query.severity, query.sla, query.status])
 
   useEffect(() => {
     void loadCenter(false)
@@ -210,17 +212,22 @@ export function useOperationsCenter() {
     setActionError('')
     setPermissionDenied(false)
     const body = mutation.kind === 'RETRY_RUN' || mutation.kind === 'POST_ACTION'
-      ? { reason: mutation.reason }
-      : { expected_version: mutation.version, reason: mutation.reason }
-    const headers = mutation.requiresIdempotencyKey
-      ? { 'Idempotency-Key': createUserActionKey(mutation.kind, mutation.targetId, crypto.randomUUID()) }
-      : undefined
+      ? { reason: mutation.reason.trim() }
+      : { expected_version: mutation.version, reason: mutation.reason.trim() }
+    const attempt = mutation.requiresIdempotencyKey
+      ? getOrCreateOperationsMutationKey(mutationKeys.current, mutation, crypto.randomUUID())
+      : null
+    const headers = attempt ? { 'Idempotency-Key': attempt.key } : undefined
     try {
       await fetchAPI(mutation.path, { method: 'POST', headers, body: JSON.stringify(body) })
+      // POST 응답을 받았으면 이 요청의 결과는 확정됐다. 뒤따르는 조회가 실패해도 같은
+      // 변경을 다시 요청하지 않도록 여기서 요청 키의 수명을 끝낸다.
+      if (attempt) mutationKeys.current.delete(attempt.fingerprint)
       if (selectedRow) await loadDetail(selectedRow)
       await loadCenter(true)
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
+        if (attempt) mutationKeys.current.delete(attempt.fingerprint)
         const conflict = interpretOperationsConflict(error.detail)
         setActionError(conflict.message)
         if (selectedRow) await loadDetail(selectedRow)
@@ -231,12 +238,13 @@ export function useOperationsCenter() {
           ;(current ?? queue)?.focus()
         })
       } else if (error instanceof ApiError && error.status === 403) {
+        if (attempt) mutationKeys.current.delete(attempt.fingerprint)
         setActionError('이 작업은 권한 있는 담당자만 처리할 수 있습니다. 담당자에게 요청하거나 개발팀 문의 정보를 복사하세요.')
         setPermissionDenied(true)
       } else {
         setActionError(safeOperatorError(
           'operations',
-          '같은 처리 버튼을 다시 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.',
+          '같은 처리 버튼을 다시 누르면 처음 요청과 같은 번호로 결과를 확인합니다. 계속 실패하면 개발팀 문의용 정보를 복사하세요.',
         ))
       }
     } finally {

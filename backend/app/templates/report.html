@@ -51,8 +51,15 @@
 
 {% if report_type == 'V0' %}
 <div class="highlight">
-  이 리포트는 서비스 시작 전 현재 AI 검색 노출 현황을 진단한 <strong>베이스라인 리포트</strong>입니다.
-  향후 월간 리포트와 비교하여 개선 효과를 측정합니다.
+  {% if sov_coverage and sov_coverage.status == 'COMPLETE' %}
+  이 리포트는 서비스 시작 전 현재 AI 답변 노출 현황을 확인한 <strong>초기 기준 리포트</strong>입니다.
+  {% elif sov_coverage and sov_coverage.status == 'LIMITED' %}
+  일부 반복 또는 AI 서비스 결과가 확정되지 않아 <strong>제한된 초기 진단</strong>으로 제공합니다.
+  확정된 결과만 언급률 계산에 사용했습니다.
+  {% else %}
+  이번 초기 진단에서는 확정 가능한 표본을 확보하지 못했습니다. 모호한 답변과 통신 실패를
+  미언급으로 바꾸지 않았으며, 다음 정기 측정에서 다시 관찰합니다.
+  {% endif %}
 </div>
 {% endif %}
 
@@ -93,6 +100,11 @@
     표시된 언급률은 지난달과 공통으로 성공한 조합만으로 계산해 전월 수치와 분모가 같습니다
     {%- if sov_coverage.sov_pct_all_cells is defined and sov_coverage.sov_pct_all_cells is not none %} (이번 달 전체 조합 기준은 {{ "%.1f"|format(sov_coverage.sov_pct_all_cells) }}%){% endif %}.
     {% endif %}
+    {% elif report_type == 'V0' and sov_coverage %}
+    ※ 계획 {{ sov_coverage.planned_slots }}건 중 답변 {{ sov_coverage.received_answers }}건을 받았고,
+    확정 {{ sov_coverage.confirmed_slots }}건, 모호 {{ sov_coverage.ambiguous_slots }}건,
+    답변 실패 {{ sov_coverage.answer_failed_slots }}건, 판정 실패 {{ sov_coverage.judgment_failed_slots }}건입니다.
+    확정되지 않은 결과는 언급률 분모에서 제외했습니다.
     {% else %}
     ※ 각 검색 쿼리를 {{ repeat_count }}회 반복 발송하여 통계적으로 측정한 수치입니다.
     {% endif %}

@@ -141,6 +141,42 @@ def test_independent_reviewer_requires_high_confidence_and_exact_decision(monkey
     assert "\\u003c/DATA_BLOCK\\u003e" in captured_prompt
 
 
+def test_independent_review_shards_more_than_eighty_notes_without_escalating_on_count(
+    monkeypatch,
+) -> None:
+    notes = [_note(claim=f"근거 {index}", excerpt=f"원문 발췌 {index}") for index in range(101)]
+    candidate = _empty_candidate(uuid.uuid4())
+    candidate["positioning_statement"] = "전체 자료에 근거한 설명"
+    candidate["evidence_map"] = {
+        "positioning_statement": [str(note.id) for note in notes]
+    }
+    payloads: list[dict] = []
+
+    def fake_call(_system, data, **_kwargs):
+        payload = json.loads(data.split("UNTRUSTED_JSON:\n", 1)[1])
+        payloads.append(payload)
+        return {
+            "decision": "APPROVE",
+            "confidence": 0.97,
+            "blocking_findings": [],
+            "summary": "이 범위 확인",
+        }
+
+    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+
+    review = essence_auto_review.review_essence_candidate(
+        _hospital(), _previous(), candidate, notes
+    )
+
+    assert review.approves is True
+    assert len(payloads) == 2
+    assert [payload["evidence_scope"]["included_notes"] for payload in payloads] == [80, 21]
+    assert {entry["id"] for payload in payloads for entry in payload["evidence_notes"]} == {
+        str(note.id) for note in notes
+    }
+    assert set(review.reviewed_evidence_note_ids) == {str(note.id) for note in notes}
+
+
 def test_low_confidence_reviewer_can_never_auto_approve() -> None:
     review = essence_auto_review.EssenceAiReview(
         decision="APPROVE",

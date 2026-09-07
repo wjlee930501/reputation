@@ -1,5 +1,6 @@
 """Real-Postgres contract tests for truthful operational commands."""
 
+import os
 import uuid
 from dataclasses import replace
 from types import SimpleNamespace
@@ -20,8 +21,9 @@ from app.services.operation_runs import (
     retry_operation_run,
 )
 
-_DATABASE_URL = (
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_DATABASE_URL = os.getenv(
+    "OPERATION_RUNS_DATABASE_URL",
+    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
 )
 
 

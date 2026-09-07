@@ -131,6 +131,7 @@ class ContentItem(Base):
         ),
         Index("ix_content_items_hospital_status", "hospital_id", "status"),
         Index("ix_content_items_hospital_scheduled", "hospital_id", "scheduled_date"),
+        Index("ix_content_items_hospital_first_published", "hospital_id", "first_published_at"),
         Index("ix_content_items_scheduled_date", "scheduled_date"),
         Index("ix_content_items_status", "status"),
     )
@@ -160,6 +161,17 @@ class ContentItem(Base):
     status: Mapped[ContentStatus] = mapped_column(Enum(ContentStatus), default=ContentStatus.DRAFT)
     content_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    # Immutable generation provenance and the newest completed revalidation are
+    # distinct from the compatibility field above, which remains the publication gate.
+    generation_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    last_reviewed_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    content_revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
     )
     query_target_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("ai_query_targets.id", ondelete="SET NULL")
@@ -196,6 +208,10 @@ class ContentItem(Base):
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
+    # 최초 공개 사실은 반려 후 새 판을 재발행해도 바뀌지 않는다. published_*는 현재
+    # 판의 생애주기이고 first_published_*는 닫힌 월의 실제 발행 이력이다.
+    first_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_published_by: Mapped[str | None] = mapped_column(String(100))
     # 과거 콘텐츠별 Slack 발행 알림의 전달 시각. 신규 발행은 정상 성공을
     # 무음 처리하므로 NULL이 정상이며, 기존 알림 이력 표시에만 유지한다.
     post_publish_notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -204,15 +220,19 @@ class ContentItem(Base):
     post_publish_reviewed_by: Mapped[str | None] = mapped_column(String(100))
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    generation_claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     # 생성 이미지가 의미론적(semantic) 정책 검수를 통과한 시각. migration 0053.
     image_policy_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    image_content_hash: Mapped[str | None] = mapped_column(String(64))
+    image_subject_hash: Mapped[str | None] = mapped_column(String(64))
+    image_policy_version: Mapped[str | None] = mapped_column(String(40))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     hospital: Mapped["Hospital"] = relationship(back_populates="content_items")
     schedule: Mapped["ContentSchedule"] = relationship(back_populates="content_items")
     content_philosophy: Mapped["HospitalContentPhilosophy | None"] = relationship(
-        back_populates="content_items"
+        back_populates="content_items", foreign_keys=[content_philosophy_id]
     )
     query_target: Mapped["AIQueryTarget | None"] = relationship()
     exposure_action: Mapped["ExposureAction | None"] = relationship(

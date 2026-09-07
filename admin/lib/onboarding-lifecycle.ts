@@ -194,9 +194,9 @@ export function deriveOnboardingSteps(
     {
       key: 'v0',
       phase: 'onboarding',
-      title: '초기 진단 리포트',
+      title: '초기 진단 보고서',
       description: readiness?.v0_report_pdf_count === 0
-        ? '초기 AI 답변 노출 진단 리포트 PDF가 아직 없습니다. 월간 리포트가 아니라 초기 진단 PDF까지 만들어야 이 단계가 끝납니다.'
+        ? '초기 AI 답변 노출 진단 보고서 PDF가 아직 없습니다. 월간 보고서가 아니라 초기 진단 PDF까지 만들어야 이 단계가 끝납니다.'
         : '초기 AI 답변 노출 진단과 PDF 생성을 확인합니다.',
       href: `/hospitals/${hospitalId}/dashboard#v0-measurement-runs`,
       // 단계 설명이 초기 진단 + PDF를 요구하므로 완료 판정도 둘을 본다. 측정만 끝나고
@@ -235,8 +235,8 @@ export function deriveOnboardingSteps(
     {
       key: 'philosophy_approved',
       phase: 'onboarding',
-      title: '콘텐츠 운영 기준 자동 준비',
-      description: 'AI 이중 검수와 안전 규칙으로 현재 근거 자료에 맞는 운영 기준을 자동 준비합니다.',
+      title: '콘텐츠 운영 기준 준비',
+      description: '자동 이중 검토와 안전 규칙으로 현재 근거 자료에 맞는 운영 기준을 준비합니다.',
       href: `/hospitals/${hospitalId}/essence`,
       done: approvedCurrent && readinessCheck(readiness, 'essence_freshness') !== false,
       badge: pendingDraftCount > 0 ? `승인 대기 초안 ${pendingDraftCount}건` : undefined,
@@ -244,8 +244,8 @@ export function deriveOnboardingSteps(
     {
       key: 'schedule',
       phase: 'onboarding',
-      title: '콘텐츠 스케줄 설정',
-      description: '요금제와 발행 요일을 저장하고 첫 달 콘텐츠 캘린더를 생성합니다.',
+      title: '콘텐츠 발행 일정 설정',
+      description: '요금제와 발행 요일을 저장하고 첫 달 발행 일정을 만듭니다.',
       href: `/hospitals/${hospitalId}/schedule`,
       done: Boolean(hospital?.schedule_set) && readinessCheck(readiness, 'schedule') !== false,
     },
@@ -260,8 +260,8 @@ export function deriveOnboardingSteps(
     {
       key: 'sov',
       phase: 'post_onboarding',
-      title: '첫 AI 답변 언급률 측정',
-      description: '온보딩 이후 첫 ChatGPT·Gemini 측정 기록을 확인합니다.',
+      title: '첫 병원 언급률 측정',
+      description: '온보딩 이후 첫 병원 언급률 측정 기록을 확인합니다.',
       href: `/hospitals/${hospitalId}/dashboard`,
       done: (readiness?.sov_record_count ?? 0) > 0 && readinessCheck(readiness, 'sov_data') !== false,
     },
@@ -345,7 +345,7 @@ export function deriveOnboardingSummary(
       stateLabel: '온보딩 완료',
       stateClassName: 'bg-green-100 text-green-800',
       headline: '공개 운영 시작까지 온보딩을 완료했습니다.',
-      detail: 'KEEP-8 필수 작업은 모두 끝났습니다. 첫 발행과 AI 답변 언급률은 온보딩과 분리된 정기 운영 성과로 관리합니다.',
+      detail: 'KEEP-8 필수 작업은 모두 끝났습니다. 첫 발행과 병원 언급률은 온보딩과 분리된 정기 운영 성과로 관리합니다.',
       nextActionLabel: '',
       nextActionHref: null,
       blockedReason: null,
@@ -356,7 +356,7 @@ export function deriveOnboardingSummary(
     stateLabel: '정기 운영 중',
     stateClassName: 'bg-green-100 text-green-800',
     headline: '온보딩과 첫 정기 운영 성과를 확인했습니다.',
-    detail: '콘텐츠 발행과 AI 답변 언급률 측정을 정기 운영 대시보드에서 관리합니다.',
+    detail: '콘텐츠 발행과 병원 언급률 측정을 정기 운영 화면에서 관리합니다.',
     nextActionLabel: '',
     nextActionHref: null,
     blockedReason: null,

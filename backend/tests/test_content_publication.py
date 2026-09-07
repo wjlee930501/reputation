@@ -9,11 +9,15 @@ from app.services import content_publication
 
 
 def _item(**overrides):
+    image_hash = "a" * 64
     base = {
+        "content_type": ContentType.DISEASE,
         "title": "치질 진료 전 확인할 점",
         "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
-        "image_url": "https://storage.googleapis.com/reputation/content.png",
+        "image_url": f"gs://reputation-images/content/{image_hash}-content.png",
+        "image_content_hash": image_hash,
         "image_policy_verified_at": datetime.now(timezone.utc),
+        "image_policy_version": content_publication.IMAGE_POLICY_VERSION,
         "meta_description": "진료 전 확인할 내용을 정리합니다.",
         "faq_question": None,
         "faq_answer_summary": None,
@@ -23,6 +27,10 @@ def _item(**overrides):
         "essence_check_summary": None,
     }
     base.update(overrides)
+    if "image_subject_hash" not in overrides:
+        base["image_subject_hash"] = content_publication.image_subject_hash(
+            base["content_type"], base["title"]
+        )
     return SimpleNamespace(**base)
 
 
@@ -150,6 +158,28 @@ def test_publication_assessment_preserves_ai_review_provenance_but_not_old_block
     }
 
 
+def test_essence_writers_preserve_durable_image_certification_attempt(monkeypatch):
+    _aligned(monkeypatch)
+    state = {
+        "fingerprint": "same-image-subject",
+        "review_attempts": 2,
+        "status": "PENDING_REVIEW",
+    }
+    item = _item(
+        content_revision=4,
+        essence_check_summary={"legacy_image_certification": state},
+    )
+    philosophy = _philosophy()
+
+    assessment = content_publication.assess_content_publication(item, philosophy)
+    content_publication.apply_publication_assessment(item, assessment)
+    assert item.essence_check_summary["legacy_image_certification"] == state
+
+    content_publication.apply_essence_revalidation(item, philosophy)
+    assert item.content_revision == 5
+    assert item.essence_check_summary["legacy_image_certification"] == state
+
+
 def test_publication_gate_uses_the_render_aware_check_for_the_body(monkeypatch):
     """발행 게이트는 본문을 **렌더 결과 기준**으로 검사해야 한다.
 
@@ -220,3 +250,124 @@ def test_notice_does_not_require_references_but_other_types_do(monkeypatch):
     faq_assessment = content_publication.assess_content_publication(faq, _philosophy())
     assert faq_assessment.publishable is False
     assert faq_assessment.code == "MISSING_REFERENCES"
+
+
+def _reviewed_item(review: dict):
+    item = _item(content_type=ContentType.NOTICE, references_list=[])
+    review["candidate_sha256"] = content_publication.candidate_sha256(item)
+    review["coverage"] = content_publication.candidate_review_coverage(item)
+    item.essence_check_summary = {"ai_review": review}
+    return item
+
+
+def test_current_hard_ai_finding_blocks_publication(monkeypatch):
+    _aligned(monkeypatch)
+    item = _reviewed_item(
+        {
+            "status": "REVISE",
+            "schema_version": "content-review-v2",
+            "blocking": True,
+            "findings": [
+                {
+                    "severity": "HARD",
+                    "kind": "HOSPITAL_FACT",
+                    "message": "확인되지 않은 장비 주장",
+                }
+            ],
+        }
+    )
+
+    assessment = content_publication.assess_content_publication(item, _philosophy())
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_AI_HARD_FINDING"
+
+
+def test_soft_ai_finding_allows_deterministically_safe_content(monkeypatch):
+    _aligned(monkeypatch)
+    item = _reviewed_item(
+        {
+            "status": "REVISE",
+            "schema_version": "content-review-v2",
+            "blocking": False,
+            "findings": [
+                {"severity": "SOFT", "kind": "STYLE", "message": "문장이 깁니다."}
+            ],
+        }
+    )
+
+    assert content_publication.assess_content_publication(item, _philosophy()).publishable
+
+
+def test_edit_cannot_discard_prior_hard_finding_by_hash_mismatch(monkeypatch):
+    _aligned(monkeypatch)
+    item = _reviewed_item(
+        {
+            "status": "REVISE",
+            "schema_version": "content-review-v2",
+            "blocking": True,
+            "findings": [],
+        }
+    )
+    item.body += " 수정"
+
+    assessment = content_publication.assess_content_publication(item, _philosophy())
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_AI_REVIEW_STALE"
+
+
+def test_publication_identity_is_set_once_across_republished_editions():
+    first_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    replacement_at = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    item = _item(
+        published_at=None,
+        published_by=None,
+        first_published_at=None,
+        first_published_by=None,
+    )
+
+    content_publication.record_publication_identity(
+        item, published_at=first_at, published_by="FIRST_AE"
+    )
+    item.published_at = None
+    item.published_by = None
+    content_publication.record_publication_identity(
+        item, published_at=replacement_at, published_by="REPAIR_AE"
+    )
+
+    assert item.first_published_at == first_at
+    assert item.first_published_by == "FIRST_AE"
+    assert item.published_at == replacement_at
+    assert item.published_by == "REPAIR_AE"
+
+
+def test_publication_identity_uses_known_current_date_during_rolling_deploy():
+    known_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    item = _item(published_at=known_at, published_by="OLD_API")
+
+    content_publication.record_publication_identity(
+        item,
+        published_at=datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc),
+        published_by="NEW_API",
+    )
+
+    assert item.first_published_at == known_at
+    assert item.first_published_by == "OLD_API"
+    assert item.published_at == datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    assert item.published_by == "NEW_API"
+
+
+def test_publication_identity_does_not_invent_missing_legacy_first_actor():
+    known_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    item = _item(published_at=known_at, published_by=None)
+
+    content_publication.record_publication_identity(
+        item,
+        published_at=datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc),
+        published_by="NEW_API",
+    )
+
+    assert item.first_published_at == known_at
+    assert item.first_published_by is None
+    assert item.published_by == "NEW_API"

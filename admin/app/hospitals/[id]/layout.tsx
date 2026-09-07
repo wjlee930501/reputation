@@ -20,19 +20,19 @@ import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
-  { label: '대시보드', path: 'dashboard', hint: 'AI 언급률과 운영 준비 상태 한눈에 보기' },
-  { label: '온보딩', path: 'onboarding', hint: '병원 자료 입력과 운영 기준 자동 준비' },
+  { label: '운영 요약', path: 'dashboard', hint: 'AI 답변에서 병원이 언급되는 정도와 운영 준비 상태를 한눈에 봅니다.' },
+  { label: '온보딩', path: 'onboarding', hint: '병원 자료를 입력하고 콘텐츠 운영 기준을 준비합니다.' },
   { label: '병원 기본 정보', path: 'profile', hint: '병원과 원장 기본 정보' },
   { label: '콘텐츠', path: 'content', hint: '자동 발행·공개 내용 확인' },
-  { label: '스케줄', path: 'schedule', hint: '발행 캘린더' },
-  { label: '리포트', path: 'reports', hint: '월간 리포트' },
+  { label: '발행 일정', path: 'schedule', hint: '월간 발행량과 발행 요일' },
+  { label: '보고서', path: 'reports', hint: '월간 보고서' },
 ]
 
 const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
-  { label: 'Wiki', path: 'wiki', hint: '검증된 근거 노트 + 사진 권리·공개 상태' },
-  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준 자동 준비·예외 확인' },
-  { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini 같은 AI 답변 서비스에 노출시킬 환자 질문 정의' },
-  { label: '노출 보완', path: 'exposure-actions', hint: 'AI에 더 잘 노출되도록 보완할 작업과 콘텐츠 가이드 연결' },
+  { label: '자료 모음', path: 'wiki', hint: '검증된 근거 노트와 사진 권리·공개 상태' },
+  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준 준비와 예외 확인' },
+  { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini에 확인할 환자 질문 정의' },
+  { label: '노출 보완', path: 'exposure-actions', hint: 'AI 답변에서 병원이 덜 언급되는 이유와 보완 작업' },
 ]
 
 export default function HospitalLayout({
@@ -176,10 +176,10 @@ export default function HospitalLayout({
                     <ProgressDot label="필수 병원 정보" done={hospital.profile_complete} />
                     <ProgressDot label="초기 진단 리포트" done={hospital.v0_report_done} />
                     <ProgressDot label="콘텐츠 허브 준비" done={hospital.site_built} />
-                    <ProgressDot label="스케줄 설정" done={hospital.schedule_set} />
+                    <ProgressDot label="발행 일정 설정" done={hospital.schedule_set} />
                     <ProgressDot label="병원 정보 허브" done={hospital.site_live} />
                   </div>
-                  {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">운영량 {planLabel}</p>}
+                  {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">월간 발행량 {planLabel}</p>}
                 </div>
               </details>
             )}
@@ -264,7 +264,7 @@ export default function HospitalLayout({
                 ) : hospital.site_live ? (
                   <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    허브 운영 중
+                    정보 허브 운영 중
                   </span>
                 ) : null}
               </div>
@@ -361,7 +361,7 @@ export default function HospitalLayout({
             onClick={() => void refetch()}
             className="min-h-11 shrink-0 rounded-md border border-amber-300 bg-white px-3 py-2 text-xs font-medium text-amber-800 hover:bg-amber-100"
           >
-            다시 시도
+            병원 정보 다시 불러오기
           </button>
         </div>
       )}

@@ -6,7 +6,7 @@ import copy
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Callable
 
@@ -24,8 +24,13 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import OperationRun, OperationRunState
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.audit_log import write_audit_log_sync
+from app.services.content_provenance import mark_removed_source_dependency
+from app.services.content_publication import (
+    apply_essence_revalidation,
+)
 from app.services.enum_values import enum_value
 from app.services.essence_engine import (
     _call_anthropic_json,
@@ -33,7 +38,6 @@ from app.services.essence_engine import (
     compute_sources_snapshot_hash,
     find_error_marker_fields,
     mandatory_safety_findings,
-    screen_content_against_philosophy,
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
@@ -51,6 +55,8 @@ _MAX_REVIEW_NOTES = 80
 # 2차 재정은 1차가 지목한 blocker만 다시 본다. 전체 근거를 재전송하면 같은 최대 96K자를
 # 두 번 사는 셈이라, 대조에 필요한 노트만 상한 안에서 담는다.
 _MAX_ADJUDICATION_NOTES = 25
+_ESSENCE_REFRESH_OPERATION = "ESSENCE_SNAPSHOT_REFRESH"
+_ESSENCE_REFRESH_LEASE = timedelta(minutes=15)
 # 후보에서 근거에 묶이는 운영 필드 — finding이 지목한 필드의 근거만 추리는 데 쓴다.
 _GROUNDED_CANDIDATE_FIELDS = (
     "positioning_statement",
@@ -610,8 +616,10 @@ def _review_payload(
     previous: HospitalContentPhilosophy | None,
     candidate: dict[str, Any],
     notes: list[HospitalSourceEvidenceNote],
+    *,
+    evidence_scope: dict[str, int] | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "hospital": {"id": str(hospital.id), "name": hospital.name},
         "previous_approved": (
             {
@@ -647,6 +655,9 @@ def _review_payload(
         },
         "evidence_notes": [_evidence_note_entry(note) for note in notes[:_MAX_REVIEW_NOTES]],
     }
+    if evidence_scope is not None:
+        payload["evidence_scope"] = evidence_scope
+    return payload
 
 
 def _selected_review_notes(
@@ -659,6 +670,56 @@ def _selected_review_notes(
     required = [note for note in notes if str(note.id) in required_ids]
     context = [note for note in notes if str(note.id) not in required_ids]
     return (required + context)[:_MAX_REVIEW_NOTES]
+
+
+def _review_note_shards(
+    candidate: dict[str, Any],
+    notes: list[HospitalSourceEvidenceNote],
+) -> tuple[tuple[HospitalSourceEvidenceNote, ...], ...]:
+    """Partition the complete evidence set without dropping candidate-linked notes."""
+
+    required_ids = _candidate_evidence_ids(candidate)
+    ordered = [note for note in notes if str(note.id) in required_ids]
+    ordered.extend(note for note in notes if str(note.id) not in required_ids)
+    if not ordered:
+        return ((),)
+    return tuple(
+        tuple(ordered[index : index + _MAX_REVIEW_NOTES])
+        for index in range(0, len(ordered), _MAX_REVIEW_NOTES)
+    )
+
+
+def _candidate_for_review_shard(
+    candidate: dict[str, Any],
+    shard_note_ids: set[str],
+) -> dict[str, Any]:
+    """Keep candidate text intact while showing only evidence IDs present in this shard."""
+
+    scoped = copy.deepcopy(candidate)
+    evidence_map = scoped.get("evidence_map")
+    if isinstance(evidence_map, dict):
+        scoped["evidence_map"] = {
+            field: [str(item) for item in (items if isinstance(items, list) else [items])
+                    if str(item) in shard_note_ids]
+            for field, items in evidence_map.items()
+        }
+    narratives = scoped.get("treatment_narratives")
+    if isinstance(narratives, list):
+        for narrative in narratives:
+            if isinstance(narrative, dict) and isinstance(narrative.get("evidence_note_ids"), list):
+                narrative["evidence_note_ids"] = [
+                    str(item)
+                    for item in narrative["evidence_note_ids"]
+                    if str(item) in shard_note_ids
+                ]
+    local_context = scoped.get("local_context")
+    if isinstance(local_context, dict) and isinstance(local_context.get("evidence_note_ids"), list):
+        local_context["evidence_note_ids"] = [
+            str(item)
+            for item in local_context["evidence_note_ids"]
+            if str(item) in shard_note_ids
+        ]
+    return scoped
 
 
 def _fields_named_in_findings(
@@ -738,25 +799,29 @@ def _review_confidence(response: dict[str, Any]) -> float:
         return 0.0
 
 
-def review_essence_candidate(
+def _review_essence_candidate_shard(
     hospital: Hospital,
     previous: HospitalContentPhilosophy | None,
     candidate: dict[str, Any],
     notes: list[HospitalSourceEvidenceNote],
+    *,
+    shard_index: int,
+    shard_count: int,
+    total_note_count: int,
 ) -> EssenceAiReview:
-    selected_notes = _selected_review_notes(candidate, notes)
-    required_ids = _candidate_evidence_ids(candidate)
-    selected_ids = {str(note.id) for note in selected_notes}
-    if not required_ids.issubset(selected_ids):
-        return EssenceAiReview(
-            decision="ESCALATE",
-            confidence=0.0,
-            findings=("후보의 전체 연결 근거를 단일 독립 검수 범위에 담을 수 없습니다.",),
-            reviewed_evidence_note_ids=tuple(sorted(selected_ids & required_ids)),
-            summary="독립 검수 입력 범위 초과",
-            model=settings.CLAUDE_MODEL_FAST,
-        )
-    review_payload = _review_payload(hospital, previous, candidate, selected_notes)
+    reviewed_ids = {str(note.id) for note in notes}
+    review_payload = _review_payload(
+        hospital,
+        previous,
+        candidate,
+        notes,
+        evidence_scope={
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "included_notes": len(notes),
+            "total_notes": total_note_count,
+        },
+    )
     data = untrusted_json_block(review_payload)
     response = _call_anthropic_json(
         _REVIEW_SYSTEM_PROMPT,
@@ -771,7 +836,7 @@ def review_essence_candidate(
         findings=_review_findings(response),
         # Coverage is established by the server-side prompt construction above,
         # not by asking the model to copy dozens of UUIDs without omission.
-        reviewed_evidence_note_ids=tuple(sorted(required_ids)),
+        reviewed_evidence_note_ids=tuple(sorted(reviewed_ids)),
         summary=" ".join(str(response.get("summary") or "").split())[:300],
         model=settings.CLAUDE_MODEL_FAST,
     )
@@ -782,7 +847,7 @@ def review_essence_candidate(
     # 전체(근거 노트 최대 80건)를 그대로 재전송해 같은 토큰을 두 번 샀다. 판정 의미는
     # 그대로다 — 필요한 근거가 없으면 재정자는 CONFIRM_ESCALATION으로 fail-closed한다.
     adjudication_note_ids = set(
-        _adjudication_note_ids(candidate, selected_notes, response, primary.findings)
+        _adjudication_note_ids(candidate, notes, response, primary.findings)
     )
     if not adjudication_note_ids:
         # blocker와 연결된 근거를 특정하지 못했다. 무관한 근거를 채워 재정을 사면
@@ -791,13 +856,13 @@ def review_essence_candidate(
             decision="ESCALATE",
             confidence=primary.confidence,
             findings=primary.findings or ("2차 독립 AI 검수가 자동 승인을 보류했습니다.",),
-            reviewed_evidence_note_ids=tuple(sorted(required_ids)),
+            reviewed_evidence_note_ids=tuple(sorted(reviewed_ids)),
             summary="관련 근거 미확인 — 1차 blocker와 연결된 근거를 특정하지 못해 2차 재정을 생략했습니다.",
             model=settings.CLAUDE_MODEL_FAST,
         )
 
     adjudication_notes = [
-        note for note in selected_notes if str(note.id) in adjudication_note_ids
+        note for note in notes if str(note.id) in adjudication_note_ids
     ]
     adjudication_data = untrusted_json_block(
         {
@@ -809,7 +874,7 @@ def review_essence_candidate(
             "evidence_notes": [_evidence_note_entry(note) for note in adjudication_notes],
             "evidence_scope": {
                 "included_notes": len(adjudication_notes),
-                "reviewed_notes": len(selected_notes),
+                "reviewed_notes": len(notes),
                 "selection": "1차 blocker와 연결된 근거 노트만 포함",
             },
             "primary_review": {
@@ -843,8 +908,75 @@ def review_essence_candidate(
         decision="APPROVE" if overrides else "ESCALATE",
         confidence=adjudication_confidence,
         findings=final_findings,
-        reviewed_evidence_note_ids=tuple(sorted(required_ids)),
+        reviewed_evidence_note_ids=tuple(sorted(reviewed_ids)),
         summary=" ".join(str(adjudication.get("summary") or "").split())[:300],
+        model=settings.CLAUDE_MODEL_FAST,
+    )
+
+
+def review_essence_candidate(
+    hospital: Hospital,
+    previous: HospitalContentPhilosophy | None,
+    candidate: dict[str, Any],
+    notes: list[HospitalSourceEvidenceNote],
+) -> EssenceAiReview:
+    """Review all evidence in bounded calls and combine them fail-closed."""
+
+    shards = _review_note_shards(candidate, notes)
+    required_ids = _candidate_evidence_ids(candidate)
+    all_note_ids = {str(note.id) for note in notes}
+    reviews: list[EssenceAiReview] = []
+    for index, shard in enumerate(shards, start=1):
+        shard_ids = {str(note.id) for note in shard}
+        scoped_candidate = _candidate_for_review_shard(candidate, shard_ids)
+        review = _review_essence_candidate_shard(
+            hospital,
+            previous,
+            scoped_candidate,
+            list(shard),
+            shard_index=index,
+            shard_count=len(shards),
+            total_note_count=len(notes),
+        )
+        reviews.append(review)
+        if not review.approves:
+            return EssenceAiReview(
+                decision="ESCALATE",
+                confidence=review.confidence,
+                findings=review.findings,
+                reviewed_evidence_note_ids=tuple(
+                    sorted(
+                        note_id
+                        for completed in reviews
+                        for note_id in completed.reviewed_evidence_note_ids
+                    )
+                ),
+                summary=f"독립 검수 {index}/{len(shards)} 보류: {review.summary}"[:300],
+                model=settings.CLAUDE_MODEL_FAST,
+            )
+
+    reviewed_required_ids = {
+        note_id for review in reviews for note_id in review.reviewed_evidence_note_ids
+    }
+    if not required_ids.issubset(reviewed_required_ids):
+        return EssenceAiReview(
+            decision="ESCALATE",
+            confidence=0.0,
+            findings=("후보의 연결 근거 중 독립 검수가 완료되지 않은 항목이 있습니다.",),
+            reviewed_evidence_note_ids=tuple(sorted(reviewed_required_ids & required_ids)),
+            summary="독립 검수 coverage 미완료",
+            model=settings.CLAUDE_MODEL_FAST,
+        )
+    return EssenceAiReview(
+        decision="APPROVE",
+        confidence=min(review.confidence for review in reviews),
+        findings=(),
+        reviewed_evidence_note_ids=tuple(sorted(all_note_ids)),
+        summary=(
+            reviews[0].summary
+            if len(reviews) == 1
+            else f"전체 근거 {len(notes)}건을 {len(reviews)}개 독립 검수 범위로 확인했습니다."
+        ),
         model=settings.CLAUDE_MODEL_FAST,
     )
 
@@ -858,29 +990,189 @@ def _next_version(db: Session, hospital_id: uuid.UUID) -> int:
     return int(value or 0) + 1
 
 
+def _claim_essence_refresh(
+    db: Session,
+    *,
+    hospital_id: uuid.UUID,
+    snapshot_hash: str,
+    previous_id: uuid.UUID | None,
+    claim_token: str,
+) -> bool:
+    """Persist an input-bound lease, then commit so provider calls hold no DB lock."""
+
+    key = f"{snapshot_hash}:{previous_id or 'initial'}"
+    run = db.scalar(
+        select(OperationRun)
+        .where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == _ESSENCE_REFRESH_OPERATION,
+            OperationRun.idempotency_key == key,
+        )
+        .with_for_update()
+    )
+    now = datetime.now(timezone.utc)
+    if (
+        run is not None
+        and run.state
+        in {
+            OperationRunState.REQUESTED,
+            OperationRunState.QUEUED,
+            OperationRunState.RUNNING,
+        }
+        and run.lease_expires_at is not None
+        and run.lease_expires_at > now
+    ):
+        db.rollback()
+        return False
+    if run is None:
+        run = OperationRun(
+            hospital_id=hospital_id,
+            operation_type=_ESSENCE_REFRESH_OPERATION,
+            idempotency_key=key,
+            total_count=1,
+            request_payload={},
+            requested_at=now,
+        )
+        db.add(run)
+    run.state = OperationRunState.RUNNING
+    run.started_at = run.started_at or now
+    run.completed_at = None
+    run.success_count = 0
+    run.failure_count = 0
+    run.skipped_count = 0
+    run.attempt_count = int(run.attempt_count or 0) + 1
+    run.lease_owner = claim_token
+    run.lease_expires_at = now + _ESSENCE_REFRESH_LEASE
+    run.request_payload = {
+        "source_snapshot_hash": snapshot_hash,
+        "previous_philosophy_id": str(previous_id) if previous_id else None,
+    }
+    run.safe_error_code = None
+    run.safe_error_message = None
+    db.commit()
+    return True
+
+
+def _essence_refresh_claim_matches(
+    db: Session,
+    *,
+    hospital_id: uuid.UUID,
+    snapshot_hash: str,
+    previous_id: uuid.UUID | None,
+    claim_token: str,
+) -> OperationRun | None:
+    key = f"{snapshot_hash}:{previous_id or 'initial'}"
+    run = db.scalar(
+        select(OperationRun)
+        .where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == _ESSENCE_REFRESH_OPERATION,
+            OperationRun.idempotency_key == key,
+        )
+        .with_for_update()
+    )
+    if (
+        run is None
+        or run.state != OperationRunState.RUNNING
+        or run.lease_owner != claim_token
+        or (run.request_payload or {}).get("source_snapshot_hash") != snapshot_hash
+        or (run.request_payload or {}).get("previous_philosophy_id")
+        != (str(previous_id) if previous_id else None)
+    ):
+        return None
+    return run
+
+
+def release_essence_refresh_claim(
+    db: Session,
+    *,
+    hospital_id: uuid.UUID,
+    claim_token: str,
+    error_code: str,
+    error_message: str,
+) -> bool:
+    """Rearm a failed provider attempt so a new retry epoch can claim it."""
+
+    run = db.scalar(
+        select(OperationRun)
+        .where(
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.operation_type == _ESSENCE_REFRESH_OPERATION,
+            OperationRun.state == OperationRunState.RUNNING,
+            OperationRun.lease_owner == claim_token,
+        )
+        .with_for_update()
+    )
+    if run is None:
+        return False
+    run.state = OperationRunState.REQUESTED
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.safe_error_code = error_code
+    run.safe_error_message = error_message[:500]
+    db.commit()
+    return True
+
+
+def _finish_essence_refresh_claim(
+    run: OperationRun,
+    *,
+    state: OperationRunState,
+    error_code: str | None = None,
+    error_message: str | None = None,
+) -> None:
+    run.state = state
+    run.success_count = 1 if state == OperationRunState.SUCCEEDED else 0
+    run.skipped_count = 1 if state == OperationRunState.CANCELLED else 0
+    run.failure_count = 1 if state == OperationRunState.FAILED else 0
+    run.completed_at = datetime.now(timezone.utc)
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.safe_error_code = error_code
+    run.safe_error_message = error_message
+
+
 def _rescreen_content(
     db: Session,
     hospital_id: uuid.UUID,
     philosophy: HospitalContentPhilosophy,
 ) -> dict[str, int]:
+    from app.services import indexnow
+
+    hospital = db.get(Hospital, hospital_id)
     items = list(
         db.execute(
             select(ContentItem).where(
                 ContentItem.hospital_id == hospital_id,
                 ContentItem.body.isnot(None),
             )
+            .with_for_update(of=ContentItem)
+            .execution_options(populate_existing=True)
         )
         .scalars()
         .all()
     )
     counts = {"total": 0, "aligned": 0, "needs_review": 0}
     for item in items:
-        screening = screen_content_against_philosophy(item, philosophy)
-        item.content_philosophy_id = philosophy.id
-        item.essence_status = screening.status
-        item.essence_check_summary = screening.summary
+        was_published = enum_value(getattr(item, "status", None)) == "PUBLISHED"
+        if mark_removed_source_dependency(item, philosophy):
+            if was_published and hospital is not None:
+                indexnow.enqueue_content_published_sync(
+                    db,
+                    slug=hospital.slug,
+                    content_id=item.id,
+                    aeo_domain=hospital.aeo_domain,
+                    treatments=hospital.treatments,
+                    revision=int(getattr(item, "content_revision", 1) or 1),
+                )
+            counts["total"] += 1
+            counts["needs_review"] += 1
+            continue
+        essence_status = apply_essence_revalidation(item, philosophy)
         counts["total"] += 1
-        counts["aligned" if screening.status == "ALIGNED" else "needs_review"] += 1
+        counts[
+            "aligned" if essence_status == "ALIGNED" else "needs_review"
+        ] += 1
     return counts
 
 
@@ -916,8 +1208,9 @@ def refresh_essence_snapshot(
     *,
     synthesizer: Callable[..., dict[str, Any]] = synthesize_philosophy,
     reviewer: Callable[..., EssenceAiReview] = review_essence_candidate,
+    claim_token: str | None = None,
 ) -> EssenceRefreshResult:
-    """Approve an initial or refresh a changed snapshot under a hospital lock."""
+    """Approve a snapshot with provider work outside the hospital transaction lock."""
 
     acquire_hospital_advisory_lock_sync(db, hospital_id)
     hospital = db.get(Hospital, hospital_id)
@@ -973,6 +1266,23 @@ def refresh_essence_snapshot(
             findings=("현재 전체 자료에 연결된 근거 노트가 없습니다.",),
         )
 
+    previous_id = previous.id if previous else None
+    refresh_claim_token = claim_token or str(uuid.uuid4())
+    if not _claim_essence_refresh(
+        db,
+        hospital_id=hospital_id,
+        snapshot_hash=snapshot_hash,
+        previous_id=previous_id,
+        claim_token=refresh_claim_token,
+    ):
+        return EssenceRefreshResult(
+            EssenceRefreshStatus.SNAPSHOT_CHANGED,
+            hospital_id,
+            snapshot_hash=snapshot_hash,
+            previous_philosophy_id=previous_id,
+            findings=("동일 자료 snapshot의 자동 검수가 이미 진행 중입니다.",),
+        )
+
     synthesis_attempts = 0
     operator_note: str | None = None
     payload: dict[str, Any] = {}
@@ -1015,11 +1325,27 @@ def refresh_essence_snapshot(
         ):
             break
         operator_note = _automatic_remediation_note(findings)
-    previous_id = previous.id if previous else None
-
-    # Re-read current truth immediately before promotion. This protects against
-    # any source mutation path that has not yet adopted the shared advisory lock.
+    # Reacquire only for conditional writeback. Provider calls above run after
+    # _claim_essence_refresh committed and released the transaction lock.
+    acquire_hospital_advisory_lock_sync(db, hospital_id)
     db.expire_all()
+    claim_run = _essence_refresh_claim_matches(
+        db,
+        hospital_id=hospital_id,
+        snapshot_hash=snapshot_hash,
+        previous_id=previous_id,
+        claim_token=refresh_claim_token,
+    )
+    if claim_run is None:
+        db.rollback()
+        return EssenceRefreshResult(
+            EssenceRefreshStatus.SNAPSHOT_CHANGED,
+            hospital_id,
+            snapshot_hash=snapshot_hash,
+            previous_philosophy_id=previous_id,
+            reviewer=ai_review,
+            synthesis_attempts=synthesis_attempts,
+        )
     current_sources = _required_sources(db, hospital_id)
     if (
         any(
@@ -1028,7 +1354,13 @@ def refresh_essence_snapshot(
         )
         or compute_sources_snapshot_hash(current_sources) != snapshot_hash
     ):
-        db.rollback()
+        _finish_essence_refresh_claim(
+            claim_run,
+            state=OperationRunState.CANCELLED,
+            error_code="ESSENCE_SNAPSHOT_CHANGED",
+            error_message="외부 검수 중 자료 snapshot이 변경되었습니다.",
+        )
+        db.commit()
         return EssenceRefreshResult(
             EssenceRefreshStatus.SNAPSHOT_CHANGED,
             hospital_id,
@@ -1048,6 +1380,8 @@ def refresh_essence_snapshot(
     ]
     if competing_drafts:
         existing_draft = competing_drafts[0]
+        _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
+        db.commit()
         return EssenceRefreshResult(
             EssenceRefreshStatus.ESCALATED,
             hospital_id,
@@ -1085,7 +1419,8 @@ def refresh_essence_snapshot(
         # unique index. The hospital lock + APPROVED row lock serialize competitors.
         current_previous = _approved(db, hospital_id)
         if current_previous is not None and current_previous.source_snapshot_hash == snapshot_hash:
-            db.rollback()
+            _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
+            db.commit()
             return EssenceRefreshResult(
                 EssenceRefreshStatus.UP_TO_DATE,
                 hospital_id,
@@ -1098,7 +1433,13 @@ def refresh_essence_snapshot(
             previous_id is not None
             and (current_previous is None or current_previous.id != previous_id)
         ):
-            db.rollback()
+            _finish_essence_refresh_claim(
+                claim_run,
+                state=OperationRunState.CANCELLED,
+                error_code="ESSENCE_APPROVAL_CHANGED",
+                error_message="외부 검수 중 승인본이 변경되었습니다.",
+            )
+            db.commit()
             return EssenceRefreshResult(
                 EssenceRefreshStatus.SNAPSHOT_CHANGED,
                 hospital_id,
@@ -1147,6 +1488,7 @@ def refresh_essence_snapshot(
                 "content_rescreened": rescreened,
             },
         )
+        _finish_essence_refresh_claim(claim_run, state=OperationRunState.SUCCEEDED)
         db.commit()
         return EssenceRefreshResult(
             EssenceRefreshStatus.AUTO_APPROVED,
@@ -1201,6 +1543,7 @@ def refresh_essence_snapshot(
             "findings": findings[:_MAX_REVIEW_FINDINGS],
         },
     )
+    _finish_essence_refresh_claim(claim_run, state=OperationRunState.SUCCEEDED)
     db.commit()
     return EssenceRefreshResult(
         EssenceRefreshStatus.ESCALATED,
@@ -1226,4 +1569,5 @@ __all__ = (
     "essence_refresh_needed",
     "refresh_essence_snapshot",
     "review_essence_candidate",
+    "release_essence_refresh_claim",
 )

@@ -104,6 +104,11 @@ def mandatory_safety_findings(payload: Any) -> list[str]:
 # content_engine.py와 동일한 sync Anthropic 클라이언트 패턴 — tenacity가 재시도를 관리하므로
 # SDK 내부 재시도는 끈다. 키가 없으면 lazy하게 None을 유지해 deterministic 폴백으로 떨어진다.
 _RAW_TEXT_FOR_LLM_LIMIT = 24_000
+# Every character must be offered to extraction.  The limit above is a per-call
+# provider budget, not a document truncation policy.  A small overlap keeps a
+# sentence that crosses a boundary intact; exact note de-duplication below makes
+# the overlap free of duplicate evidence rows.
+_RAW_TEXT_CHUNK_OVERLAP = 800
 _VALID_NOTE_TYPES = {note_type.value for note_type in EvidenceNoteType}
 _LOCAL_CONTEXT_PATTERN = re.compile(
     r"(?<![가-힣])(?:"
@@ -338,23 +343,36 @@ _SOURCE_PROCESSING_OUTPUT_SCHEMA: dict[str, Any] = {
 
 
 class _LlmCallCounter:
-    __slots__ = ("count", "provider_usage")
+    __slots__ = ("count", "events", "logical_call_count")
 
     def __init__(self) -> None:
         self.count = 0
-        self.provider_usage: list[tuple[int, int]] = []
+        self.logical_call_count = 0
+        self.events: list[dict[str, Any]] = []
 
-    def tick(self) -> None:
+    def begin_logical_call(self) -> int:
+        self.logical_call_count += 1
+        return self.logical_call_count
+
+    def tick(self, *, logical_call: int, http_attempt: int) -> dict[str, Any]:
         self.count += 1
+        event: dict[str, Any] = {
+            "logical_call": logical_call,
+            "http_attempt": http_attempt,
+            "usage": None,
+            "usage_known": False,
+            "provider_request_id": None,
+        }
+        self.events.append(event)
+        return event
 
-    def record_response(self, response: Any) -> None:
+    def record_response(self, event: dict[str, Any], response: Any) -> None:
         usage = getattr(response, "usage", None)
-        self.provider_usage.append(
-            (
-                _provider_token(getattr(usage, "input_tokens", 0)),
-                _provider_token(getattr(usage, "output_tokens", 0)),
-            )
-        )
+        event["usage"] = usage
+        # Let provider_usage infer knownness from normalized non-null fields;
+        # some SDK responses expose an empty usage object.
+        event["usage_known"] = None
+        event["provider_request_id"] = str(getattr(response, "id", "") or "") or None
 
 
 # 이 모듈의 Anthropic 호출은 전부 _call_anthropic_json 하나를 지난다. 동기 코드라
@@ -375,6 +393,11 @@ def _provider_token(value: Any) -> int:
 @asynccontextmanager
 async def metered_llm_calls(
     hospital_id: uuid.UUID | str | None = None,
+    *,
+    workflow: str = "essence_engine",
+    run_id: uuid.UUID | str | None = None,
+    item_id: uuid.UUID | str | None = None,
+    attempt_id: str | None = None,
 ) -> AsyncIterator[_LlmCallCounter]:
     """블록 안에서 나간 Anthropic 호출을 content 예산의 '실제 호출'로 기록한다.
 
@@ -388,23 +411,36 @@ async def metered_llm_calls(
     finally:
         _llm_call_counter.reset(token)
         if counter.count:
-            from app.services import cost_guard
+            from app.services import cost_guard, provider_usage
 
             await cost_guard.record_provider_call("content", count=counter.count)
-            if hospital_id is not None:
-                from app.services.hospital_usage import record_usage
-
-                usages = iter(counter.provider_usage)
-                for _ in range(counter.count):
-                    input_tokens, output_tokens = next(usages, (0, 0))
-                    await record_usage(
-                        hospital_id=hospital_id,
-                        # 운영 기준 처리는 cost_guard에서도 content 예산으로 센다.
-                        # 온보딩 kind는 프로파일 자동 채움 전용이다.
-                        kind="content",
-                        input_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                    )
+            for event in counter.events:
+                logical_call_id = (
+                    f"{attempt_id}:call:{event['logical_call']}"
+                    if attempt_id
+                    else None
+                )
+                idempotency_key = (
+                    f"essence:{logical_call_id}:http:{event['http_attempt']}"
+                    if logical_call_id
+                    else None
+                )
+                await provider_usage.record_attempt(
+                    provider="anthropic",
+                    model=settings.CLAUDE_MODEL_FAST,
+                    workflow=workflow,
+                    cost_category="content",
+                    hospital_id=hospital_id,
+                    run_id=run_id,
+                    item_id=item_id,
+                    attempt_id=attempt_id,
+                    logical_call_id=logical_call_id,
+                    http_attempt=event["http_attempt"],
+                    provider_request_id=event["provider_request_id"],
+                    usage=event["usage"],
+                    usage_known=event["usage_known"],
+                    idempotency_key=idempotency_key,
+                )
 
 
 def _call_anthropic_json(
@@ -419,6 +455,8 @@ def _call_anthropic_json(
     """Call the fast model with bounded retries and schema-constrained JSON."""
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
+    counter = _llm_call_counter.get()
+    logical_call = counter.begin_logical_call() if counter is not None else 0
     for attempt in Retrying(
         stop=stop_after_attempt(attempts),
         wait=wait_exponential(min=1, max=4),
@@ -431,9 +469,14 @@ def _call_anthropic_json(
             client = _anthropic_client()
             if client is None:  # pragma: no cover — llm_enabled() 가드 후에만 호출됨
                 raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
-            counter = _llm_call_counter.get()
-            if counter is not None:
-                counter.tick()
+            event = (
+                counter.tick(
+                    logical_call=logical_call,
+                    http_attempt=attempt.retry_state.attempt_number,
+                )
+                if counter is not None
+                else None
+            )
             request: dict[str, Any] = {
                 "model": settings.CLAUDE_MODEL_FAST,
                 "max_tokens": max_tokens,
@@ -444,9 +487,14 @@ def _call_anthropic_json(
                 request["output_config"] = {
                     "format": {"type": "json_schema", "schema": output_schema}
                 }
-            response = client.messages.create(**request, timeout=timeout_seconds)
-            if counter is not None:
-                counter.record_response(response)
+            try:
+                response = client.messages.create(**request, timeout=timeout_seconds)
+            except Exception:
+                # The event was appended before the HTTP call, so failed provider
+                # attempts remain visible with usage_known=False.
+                raise
+            if counter is not None and event is not None:
+                counter.record_response(event, response)
             stop_reason = getattr(response, "stop_reason", None)
             if stop_reason in {"max_tokens", "refusal"}:
                 raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")
@@ -464,24 +512,45 @@ def _call_anthropic_json(
     raise RuntimeError("essence LLM retry loop ended without a result")  # pragma: no cover
 
 
-def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
-    """Claude로 근거 노트를 추출하고, 원문 verbatim 가드를 통과한 노트만 남긴다."""
-    raw_text = (asset.raw_text or "")[:_RAW_TEXT_FOR_LLM_LIMIT]
-    operator_note = (asset.operator_note or "").strip()
-    user_message = (
-        f"[원문 raw_text]\n{raw_text}\n\n"
-        + (f"[운영자 메모 operator_note]\n{operator_note}\n\n" if operator_note else "")
-        + "위 원문에서만 근거 노트를 추출해 JSON으로 출력하세요."
-    )
-    data = _call_anthropic_json(
-        _SOURCE_PROCESSING_SYSTEM,
-        user_message,
-        max_tokens=3000,
-        output_schema=_SOURCE_PROCESSING_OUTPUT_SCHEMA,
-    )
+def source_processing_ranges(raw_text: str | None) -> tuple[tuple[int, int], ...]:
+    """Return overlapping provider-call ranges whose union covers the document."""
 
+    text_length = len(raw_text or "")
+    if text_length == 0:
+        return ()
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    while start < text_length:
+        end = min(start + _RAW_TEXT_FOR_LLM_LIMIT, text_length)
+        ranges.append((start, end))
+        if end == text_length:
+            break
+        start = end - _RAW_TEXT_CHUNK_OVERLAP
+    return tuple(ranges)
+
+
+def source_processing_coverage(raw_text: str | None) -> dict[str, Any]:
+    """Serializable proof that extraction scheduled the complete source range."""
+
+    ranges = source_processing_ranges(raw_text)
+    return {
+        "version": 2,
+        "document_length": len(raw_text or ""),
+        "ranges": [[start, end] for start, end in ranges],
+        "complete": bool(ranges) and ranges[0][0] == 0 and ranges[-1][1] == len(raw_text or ""),
+    }
+
+
+def _llm_payloads_from_response(
+    asset: HospitalSourceAsset,
+    data: dict[str, Any],
+    *,
+    chunk_index: int,
+    chunk_count: int,
+    chunk_start: int,
+    chunk_end: int,
+) -> list[EvidenceNotePayload]:
     payloads: list[EvidenceNotePayload] = []
-    seen: set[tuple[str, str]] = set()
     for raw_note in _as_list(data.get("evidence_notes")):
         if not isinstance(raw_note, dict):
             continue
@@ -500,6 +569,14 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
 
         metadata = raw_note.get("note_metadata")
         metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        metadata["extraction_coverage"] = {
+            "version": 2,
+            "chunk_index": chunk_index,
+            "chunk_count": chunk_count,
+            "range_start": chunk_start,
+            "range_end": chunk_end,
+            "document_length": len(asset.raw_text or ""),
+        }
         if note_type == EvidenceNoteType.CONFLICT and _is_differential_diagnosis_caution(excerpt):
             note_type = EvidenceNoteType.TREATMENT_SIGNAL
             metadata["classification_correction"] = "differential_diagnosis_not_source_conflict"
@@ -507,11 +584,6 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
         if violations:
             note_type = EvidenceNoteType.RISK_SIGNAL
             metadata.setdefault("violations", violations)
-
-        key = (note_type.value, excerpt)
-        if key in seen:
-            continue
-        seen.add(key)
 
         claim = raw_note.get("claim")
         claim = (
@@ -530,8 +602,47 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
                 note_metadata=metadata,
             )
         )
-        if len(payloads) >= 20:
-            break
+    return payloads
+
+
+def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePayload]:
+    """Extract every raw-text range and de-duplicate notes from overlap."""
+
+    raw_text = asset.raw_text or ""
+    ranges = source_processing_ranges(raw_text)
+    operator_note = (asset.operator_note or "").strip()
+    payloads: list[EvidenceNotePayload] = []
+    seen: set[tuple[str, str]] = set()
+    for chunk_index, (chunk_start, chunk_end) in enumerate(ranges):
+        chunk = raw_text[chunk_start:chunk_end]
+        user_message = (
+            f"[원문 raw_text {chunk_start}:{chunk_end} / {len(raw_text)}]\n{chunk}\n\n"
+            + (
+                f"[운영자 메모 operator_note]\n{operator_note}\n\n"
+                if operator_note and chunk_index == 0
+                else ""
+            )
+            + "위 범위의 원문에서만 근거 노트를 추출해 JSON으로 출력하세요."
+        )
+        data = _call_anthropic_json(
+            _SOURCE_PROCESSING_SYSTEM,
+            user_message,
+            max_tokens=3000,
+            output_schema=_SOURCE_PROCESSING_OUTPUT_SCHEMA,
+        )
+        for payload in _llm_payloads_from_response(
+            asset,
+            data,
+            chunk_index=chunk_index,
+            chunk_count=len(ranges),
+            chunk_start=chunk_start,
+            chunk_end=chunk_end,
+        ):
+            key = (payload.note_type.value, payload.source_excerpt)
+            if key in seen:
+                continue
+            seen.add(key)
+            payloads.append(payload)
     return payloads
 
 
@@ -570,9 +681,6 @@ def _process_source_asset_deterministic(asset: HospitalSourceAsset) -> list[Evid
                 note_metadata=metadata,
             )
         )
-
-        if len(payloads) >= 20:
-            break
 
     if payloads and not any(p.note_type == EvidenceNoteType.KEY_MESSAGE for p in payloads):
         first = payloads[0]
@@ -1569,6 +1677,7 @@ def build_monthly_essence_summary(
 
 def _candidate_excerpts(asset: HospitalSourceAsset) -> list[str]:
     excerpts: list[str] = []
+    seen: set[str] = set()
     for text in [asset.raw_text or "", asset.operator_note or ""]:
         for match in re.finditer(r"[^.!?\n。！？]+[.!?。！？]?", text):
             excerpt = match.group(0).strip()
@@ -1586,9 +1695,10 @@ def _candidate_excerpts(asset: HospitalSourceAsset) -> list[str]:
                 excerpt = excerpt[:220].strip()
             if len(excerpt) < 12 and not check_forbidden(excerpt):
                 continue
-            if excerpt in text and excerpt not in excerpts:
+            if excerpt in text and excerpt not in seen:
+                seen.add(excerpt)
                 excerpts.append(excerpt)
-    return excerpts[:30]
+    return excerpts
 
 
 def _is_differential_diagnosis_caution(excerpt: str) -> bool:

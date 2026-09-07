@@ -46,7 +46,7 @@ function formatDate(value: string | null): string {
 const COST_CATEGORY_LABELS: Record<string, string> = {
   content: '콘텐츠 생성',
   image: '이미지 생성',
-  sov: 'AI 답변 언급률 측정',
+  sov: '답변 내 병원 언급률 측정',
   leadgen: '무료 진단 측정',
 }
 
@@ -136,7 +136,7 @@ function ProblemBlock({ item, canRaiseLimit }: { readonly item: OperationsQueueR
         ) : null}
       </div>
       {/* 원인은 원인이 있는 행에만 붙인다.
-          온보딩·오늘 발행·리포트 큐는 사건이 아니라 예정된 일감이라 safe_cause가 없다.
+          온보딩·오늘 발행·보고서 큐는 사건이 아니라 예정된 일감이라 safe_cause가 없다.
           그런데 이 자리를 늘 채우면 그 행들까지 `원인 설명을 확인할 수 없습니다`가 붙어,
           아무 문제 없는 줄이 전부 장애처럼 읽히고 조치 대신 개발팀 문의를 가리켰다(G-1). */}
       {item.safe_cause && (
@@ -196,12 +196,11 @@ function SelectButton({ item, selectedId, onSelect }: {
   )
 }
 
-// 08:00 자동 발행 전의 당일 발행 예정 행은 사람이 지금 처리할 수 없는 정상 상태다.
-// 접어서 아래에 남겨 두되, 처리 목록·검색 결과 판단에서는 빼야 "N건 처리 필요"가
-// 아직 할 수 없는 일까지 세지 않는다.
-const PENDING_SECTION_TITLE = '예정 (08:00 자동 발행 대기)'
+// 자동 발행과 자동 복구가 맡은 행은 사람이 지금 처리할 일이 아니다. 응답에서는
+// 사라지지 않게 접어 두고, 각 작업의 약속 시각도 계속 보여 준다.
+const PENDING_SECTION_TITLE = '자동 처리 중 · 예정'
 
-function PendingSection({ items }: { readonly items: readonly OperationsQueueRow[] }) {
+function PendingSection({ items, checkedAt }: { readonly items: readonly OperationsQueueRow[]; readonly checkedAt: number }) {
   if (items.length === 0) return null
   return (
     <details className="ops-queue-pending mt-4 rounded-xl border border-slate-200 bg-slate-50">
@@ -210,13 +209,14 @@ function PendingSection({ items }: { readonly items: readonly OperationsQueueRow
       </summary>
       <div className="border-t border-slate-200 p-4">
         <p className="text-xs leading-5 text-slate-500">
-          08:00 자동 발행 전까지는 처리할 작업이 아닙니다. 자동 발행 이후에도 공개되지 않은 채 남아 있으면 위 목록에 다시 나타납니다.
+          자동 작업이 진행 중이거나 정해진 시각을 기다리고 있습니다. 자동 처리나 복구가 끝난 뒤에도 해결되지 않은 항목만 처리 목록으로 이동합니다.
         </p>
         <ul className="mt-3 space-y-2">
           {items.map((item) => (
             <li key={item.id} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
               <p className="ops-readable text-sm font-semibold text-slate-800">{operationsRowTitle(item)}</p>
               <p className="ops-readable mt-1 text-xs leading-5 text-slate-500">{item.impact}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-600">{describeOperationsDeadline(item, checkedAt, formatDate).text}</p>
             </li>
           ))}
         </ul>
@@ -268,7 +268,7 @@ export function OperationsQueueList(props: QueueProps) {
       {actionable.length === 0 ? (
         <div className="ops-queue-state">
           <p className="font-semibold text-slate-800">지금 이 조건에서 처리할 일이 없습니다.</p>
-          <p className="mt-1 text-sm text-slate-500">아래 예정 항목은 08:00 자동 발행 후 처리가 필요하면 다시 나타납니다.</p>
+          <p className="mt-1 text-sm text-slate-500">아래 항목은 자동 처리 중이거나 정해진 시각을 기다리고 있습니다.</p>
         </div>
       ) : (
         <>
@@ -299,7 +299,7 @@ export function OperationsQueueList(props: QueueProps) {
           </div>
         </>
       )}
-      <PendingSection items={pending} />
+      <PendingSection items={pending} checkedAt={checkedAt} />
       {data && data.total > data.page_size ? (
         <nav aria-label="운영 목록 페이지" className="mt-4 flex items-center justify-between gap-3">
           <button type="button" disabled={data.page <= 1} onClick={() => onPage(data.page - 1)} className="ops-control rounded-lg border border-slate-300 px-4 text-sm disabled:opacity-40">이전</button>

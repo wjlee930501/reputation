@@ -116,6 +116,8 @@ async def load_incidents_queue(
     """Load one incident page using one page query plus an optional count query."""
     assignee = aliased(AdminUser)
     predicates: list[ColumnElement[bool]] = []
+    if filters.hospital_id is not None:
+        predicates.append(Incident.hospital_id == filters.hospital_id)
     if incident_id is not None:
         predicates.append(Incident.id == incident_id)
     scope_predicate = _hospital_scope_predicate(hospital_scope)

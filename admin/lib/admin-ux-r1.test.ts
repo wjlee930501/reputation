@@ -63,5 +63,5 @@ test('photo guidance describes automatic publication and current state, not a re
   assert.doesNotMatch(hospitalLayout, /사진 공개 토글/)
   assert.match(hospitalLayout, /사진 권리·공개 상태/)
   assert.doesNotMatch(wikiPage, /사진 자산은 토글로/)
-  assert.match(wikiPage, /사진 자산의 사용 권리 기록과 현재 병원 사이트 표시 상태/)
+  assert.match(wikiPage, /사진 자료의 사용 권리 기록과 현재 병원 사이트 표시 상태/)
 })

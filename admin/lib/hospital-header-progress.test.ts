@@ -20,8 +20,8 @@ test('the collapsed line names what is still missing, so folding loses nothing',
 
   assert.equal(summary.doneCount, 2)
   assert.equal(summary.total, 5)
-  assert.deepEqual(summary.pendingLabels, ['콘텐츠 허브 준비', '스케줄 설정', '병원 정보 허브'])
-  assert.equal(summary.label, '운영 준비 2/5 · 남은 항목 콘텐츠 허브 준비, 스케줄 설정, 병원 정보 허브')
+  assert.deepEqual(summary.pendingLabels, ['콘텐츠 허브 준비', '발행 일정 설정', '병원 정보 허브'])
+  assert.equal(summary.label, '운영 준비 2/5 · 남은 항목 콘텐츠 허브 준비, 발행 일정 설정, 병원 정보 허브')
 })
 
 test('a fully ready hospital says so without listing an empty remainder', () => {
@@ -47,7 +47,7 @@ test('a missing hospital counts nothing as done rather than guessing', () => {
 test('the five progress items keep their order and their names', () => {
   assert.deepEqual(
     summarizeHeaderProgress(null).items.map((item) => item.label),
-    ['필수 병원 정보', '초기 진단 리포트', '콘텐츠 허브 준비', '스케줄 설정', '병원 정보 허브'],
+    ['필수 병원 정보', '초기 진단 보고서', '콘텐츠 허브 준비', '발행 일정 설정', '병원 정보 허브'],
   )
 })
 

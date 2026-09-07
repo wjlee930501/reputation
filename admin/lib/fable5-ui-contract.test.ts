@@ -20,7 +20,7 @@ test('rate limiting is an error state with Korean scope and a retry action', () 
   assert.match(layout, /요청이 잠시 제한되었습니다/)
   assert.match(layout, /병원 정보 확인 필요/)
   assert.match(layout, /onClick=\{\(\) => void refetch\(\)\}/)
-  assert.match(layout, /다시 시도/)
+  assert.match(layout, /다시 불러오기/)
   assert.doesNotMatch(layout, /Too many requests/)
 })
 
@@ -41,7 +41,7 @@ test('manual essence action is explicitly an exception to automatic approval', (
     'utf8',
   )
 
-  assert.match(page, /정상 경로는 AI 시스템 자동 승인입니다/)
+  assert.match(page, /정상 경로에서는 자동으로 승인됩니다/)
   assert.match(page, /자동 보류 예외 승인/)
   assert.doesNotMatch(page, /사람 승인 아님/)
 })

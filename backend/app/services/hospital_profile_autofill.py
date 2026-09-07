@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 import anthropic
@@ -138,6 +139,21 @@ class AutofillResult:
     rejected_fields: list[dict] = field(default_factory=list)
 
 
+@dataclass
+class _ProviderAttemptContext:
+    logical_call_id: str
+    http_attempt: int = 0
+
+    def next_attempt(self) -> int:
+        self.http_attempt += 1
+        return self.http_attempt
+
+
+_provider_attempt_context: ContextVar[_ProviderAttemptContext | None] = ContextVar(
+    "profile_autofill_provider_attempt", default=None
+)
+
+
 async def _gather_sources(
     name: str, website_url: str | None, blog_url: str | None
 ) -> tuple[list[str], list[SourceStatus], naver_place.NaverPlaceResult]:
@@ -202,25 +218,53 @@ async def _extract_with_claude(
     from app.services import cost_guard
 
     await cost_guard.record_provider_call("content")
+    model = _autofill_model()
+    attempt_context = _provider_attempt_context.get()
+    if attempt_context is None:
+        attempt_context = _ProviderAttemptContext(f"profile-autofill:{uuid.uuid4()}")
+    http_attempt = attempt_context.next_attempt()
 
     loop = asyncio.get_running_loop()
-    response = await loop.run_in_executor(
-        None,
-        lambda: _client.messages.create(
-            model=_autofill_model(),
-            max_tokens=3000,
-            system=EXTRACTION_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        ),
-    )
-    from app.services.hospital_usage import record_usage
+    from app.services import provider_usage
+
+    try:
+        response = await loop.run_in_executor(
+            None,
+            lambda: _client.messages.create(
+                model=model,
+                max_tokens=3000,
+                system=EXTRACTION_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            ),
+        )
+    except Exception:
+        await provider_usage.record_attempt(
+            provider="anthropic",
+            model=model,
+            workflow="PROFILE_AUTOFILL",
+            cost_category="content",
+            hospital_id=hospital_id,
+            logical_call_id=attempt_context.logical_call_id,
+            http_attempt=http_attempt,
+            usage_known=False,
+            idempotency_key=(
+                f"{attempt_context.logical_call_id}:http-attempt:{http_attempt}"
+            ),
+        )
+        raise
 
     usage = getattr(response, "usage", None)
-    await record_usage(
+    await provider_usage.record_attempt(
+        provider="anthropic",
+        model=model,
+        workflow="PROFILE_AUTOFILL",
+        cost_category="content",
         hospital_id=hospital_id,
-        kind="onboarding",
-        input_tokens=getattr(usage, "input_tokens", 0),
-        output_tokens=getattr(usage, "output_tokens", 0),
+        logical_call_id=attempt_context.logical_call_id,
+        http_attempt=http_attempt,
+        provider_request_id=str(getattr(response, "id", "") or "") or None,
+        usage=usage,
+        idempotency_key=f"{attempt_context.logical_call_id}:http-attempt:{http_attempt}",
     )
     raw = response.content[0].text
     parsed = _parse_json_response(raw, json_module=json)
@@ -382,11 +426,17 @@ async def autofill_profile(
         return result  # 모든 소스 실패 — 빈 초안 + 사유만 반환
 
     aggregated = "\n\n".join(blocks)
+    attempt_context = _ProviderAttemptContext(
+        f"profile-autofill:{hospital_id or 'unassigned'}:{uuid.uuid4()}"
+    )
+    attempt_token = _provider_attempt_context.set(attempt_context)
     try:
         fields = await _extract_with_claude(name, aggregated, hospital_id=hospital_id)
     except Exception as exc:  # noqa: BLE001 — 추출 실패는 치명적이지 않음
         logger.warning("autofill extraction failed for %s: %s", name, exc)
         return result
+    finally:
+        _provider_attempt_context.reset(attempt_token)
 
     draft, meta, rejected = _normalize_fields(fields, aggregated)
 

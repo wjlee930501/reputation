@@ -442,3 +442,71 @@ def test_screen_content_blocks_polluted_legacy_approved_philosophy():
     assert screening.status == ESSENCE_STATUS_NEEDS_REVIEW
     assert screening.summary["blocking"] is True
     assert "오류 페이지" in screening.summary["findings"][0]
+def test_source_processing_ranges_cover_long_document_without_gaps() -> None:
+    raw_text = "가" * 55_000
+
+    ranges = essence_engine.source_processing_ranges(raw_text)
+
+    assert len(ranges) == 3
+    assert ranges[0][0] == 0
+    assert ranges[-1][1] == len(raw_text)
+    assert all(next_start <= end for (_start, end), (next_start, _next_end) in zip(ranges, ranges[1:]))
+    assert essence_engine.source_processing_coverage(raw_text)["complete"] is True
+
+
+def test_llm_source_processing_visits_tail_and_deduplicates_overlap(monkeypatch) -> None:
+    marker = "문서 마지막 근거"
+    raw_text = "앞" * 50_000 + marker
+    asset = SimpleNamespace(raw_text=raw_text, operator_note=None)
+    visited: list[str] = []
+
+    def fake_call(_system, user_message, **_kwargs):
+        visited.append(user_message)
+        if marker not in user_message:
+            return {"evidence_notes": []}
+        return {
+            "evidence_notes": [
+                {
+                    "note_type": "KEY_MESSAGE",
+                    "claim": "마지막 근거가 있다.",
+                    "source_excerpt": marker,
+                    "confidence": 0.9,
+                    "note_metadata": {},
+                }
+            ]
+        }
+
+    monkeypatch.setattr(essence_engine, "_call_anthropic_json", fake_call)
+
+    notes = essence_engine._process_source_asset_llm(asset)
+
+    assert len(visited) == len(essence_engine.source_processing_ranges(raw_text))
+    assert [note.source_excerpt for note in notes] == [marker]
+    assert notes[0].note_metadata["extraction_coverage"]["range_end"] == len(raw_text)
+
+
+def test_llm_source_processing_keeps_every_valid_note_returned_for_a_chunk(
+    monkeypatch,
+) -> None:
+    excerpts = [f"근거-{index:02d}" for index in range(25)]
+    asset = SimpleNamespace(raw_text=" / ".join(excerpts), operator_note=None)
+
+    def fake_call(*_args, **_kwargs):
+        return {
+            "evidence_notes": [
+                {
+                    "note_type": "KEY_MESSAGE",
+                    "claim": excerpt,
+                    "source_excerpt": excerpt,
+                    "confidence": 0.9,
+                    "note_metadata": {},
+                }
+                for excerpt in excerpts
+            ]
+        }
+
+    monkeypatch.setattr(essence_engine, "_call_anthropic_json", fake_call)
+
+    notes = essence_engine._process_source_asset_llm(asset)
+
+    assert [note.source_excerpt for note in notes] == excerpts

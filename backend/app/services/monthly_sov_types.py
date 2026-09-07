@@ -71,6 +71,14 @@ class ManifestCellInput:
     query_variant_id: UUID | None
     query_intent_source: QueryIntentSource
     attempts: tuple[CellAttempt, ...]
+    planned_repeat_count: int = 0
+    received_answer_count: int = 0
+    confirmed_slot_count: int = 0
+    ambiguous_slot_count: int = 0
+    answer_failed_slot_count: int = 0
+    judgment_failed_slot_count: int = 0
+    pending_slot_count: int = 0
+    slot_lineage: str = "LEGACY_UNKNOWN"
 
     @property
     def successful_attempts(self) -> tuple[CellAttempt, ...]:
@@ -128,7 +136,7 @@ class ManifestCellInput:
 
     def to_payload(self) -> CellPayload:
         selected = self.selected_attempt
-        return {
+        payload: CellPayload = {
             "query_key": self.query_key,
             "query_text": self.query_text,
             "query_intent_label": _query_intent_label(self.query_intent),
@@ -146,6 +154,18 @@ class ManifestCellInput:
                 else round(self.mention_frequency, 4)
             ),
         }
+        if self.slot_lineage == "SLOTTED":
+            payload["observation_slots"] = {
+                "planned": self.planned_repeat_count,
+                "answers_received": self.received_answer_count,
+                "confirmed": self.confirmed_slot_count,
+                "ambiguous": self.ambiguous_slot_count,
+                "answer_failed": self.answer_failed_slot_count,
+                "judgment_failed": self.judgment_failed_slot_count,
+                "pending": self.pending_slot_count,
+                "lineage": self.slot_lineage,
+            }
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -343,6 +363,7 @@ class MonthlySovSummary:
     queries: tuple[QuerySummary, ...]
     segments: SegmentCollection
     comparison: ComparisonSummary
+    observation_adequacy: dict[str, int | str]
     # 전월 변화 판정에 실제로 사용한 질문×플랫폼 셀. 의사 리포트의 새 언급/빠진
     # 언급도 이 집합만 비교해야 헤드라인과 서로 다른 기준을 말하지 않는다.
     comparison_cell_keys: frozenset[tuple[str, str]]
@@ -387,4 +408,5 @@ class MonthlySovSummary:
                 "INFO": self.segments.info.to_payload(),
             },
             "comparison": self.comparison.to_payload(),
+            "observation_adequacy": dict(self.observation_adequacy),
         }

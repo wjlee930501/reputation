@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from app.api.admin import operations
+from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital
 from app.models.monthly_control import (
     HospitalServiceInterval,
@@ -30,6 +31,8 @@ from app.models.monthly_control import (
 )
 from app.models.operations import Incident, NotificationOutbox, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
+from app.services.content_provenance import mark_removed_source_dependency
+from app.services.content_publication import record_publication_identity
 from app.services.monthly_period import ReportBuildReason
 from app.services.report_artifact_validation import (
     DOCTOR_ARTIFACT_VALIDATION_VERSION,
@@ -59,6 +62,44 @@ def _valid_artifact_metadata(sha: str = "a" * 64, byte_size: int = 4096) -> dict
         "sha256": sha,
         "byte_size": byte_size,
     }
+
+
+def _delivery_ready_content_summary() -> dict:
+    return {"published_count": 8, "operations": {"delivery_blockers": []}}
+
+
+def _delivery_ready_essence_summary() -> dict:
+    return {
+        "approved_philosophy_exists": True,
+        "source_stale": False,
+        "source_count": 4,
+        "processed_source_count": 4,
+        "needs_review_content_count": 0,
+        "missing_philosophy_content_count": 0,
+        "medical_risk_findings": [],
+    }
+
+
+def _closed_manifest(
+    session: Session,
+    hospital_id: uuid.UUID,
+    *,
+    year: int = 2026,
+    month: int = 7,
+    closed: bool = True,
+) -> MonthlyMeasurementManifest:
+    manifest = MonthlyMeasurementManifest(
+        hospital_id=hospital_id,
+        period_year=year,
+        period_month=month,
+        configured_platforms=["chatgpt"],
+        platform_provenance={"source": "test"},
+        closes_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        closed_at=datetime(2026, 8, 1, tzinfo=timezone.utc) if closed else None,
+    )
+    session.add(manifest)
+    session.flush()
+    return manifest
 
 
 class FakeSession:
@@ -819,6 +860,7 @@ def test_rebuild_run_links_new_report_version_and_records_validated_artifact(
     hospital = Hospital(name="월간 복구 검증 의원", slug=f"monthly-run-{uuid.uuid4().hex}")
     monthly_pg_session.add(hospital)
     monthly_pg_session.flush()
+    manifest = _closed_manifest(monthly_pg_session, hospital.id)
     previous = MonthlyReport(
         hospital_id=hospital.id,
         period_year=2026,
@@ -837,13 +879,18 @@ def test_rebuild_run_links_new_report_version_and_records_validated_artifact(
         period_year=2026,
         period_month=7,
         report_type="MONTHLY",
+        manifest_id=manifest.id,
         version=2,
         supersedes_report_id=previous.id,
         quality="COMPLETE",
         planned_count=20,
         success_count=20,
         failed_count=0,
+        pdf_path="gs://qa-private/rebuilt-ae.pdf",
         doctor_pdf_path="gs://qa-private/rebuilt-doctor.pdf",
+        sov_summary={"sov_pct": 47.0},
+        content_summary=_delivery_ready_content_summary(),
+        essence_summary=_delivery_ready_essence_summary(),
     )
     run = OperationRun(
         hospital_id=hospital.id,
@@ -889,6 +936,327 @@ def test_rebuild_run_links_new_report_version_and_records_validated_artifact(
     assert run.result_summary["report_version"] == 2
     assert run.result_summary["supersedes_report_id"] == str(previous.id)
     assert "CUSTOMER_READY" not in str(run.result_summary)
+
+
+def test_limited_measurement_with_valid_pdf_finishes_quietly(
+    monthly_pg_session: Session,
+) -> None:
+    """Four confirmed repeats plus one terminal ambiguous repeat is deliverable."""
+    hospital = Hospital(
+        name="제한 표본 원장 보고 의원",
+        slug=f"monthly-limited-{uuid.uuid4().hex}",
+    )
+    monthly_pg_session.add(hospital)
+    monthly_pg_session.flush()
+    manifest = _closed_manifest(monthly_pg_session, hospital.id)
+    report = MonthlyReport(
+        hospital_id=hospital.id,
+        period_year=2026,
+        period_month=7,
+        report_type="MONTHLY",
+        manifest_id=manifest.id,
+        version=1,
+        quality="DEGRADED",
+        planned_count=1,
+        success_count=1,
+        failed_count=0,
+        excluded_count=0,
+        pdf_path="gs://qa-private/limited-ae.pdf",
+        doctor_pdf_path="gs://qa-private/limited-doctor.pdf",
+        sov_summary={
+            "sov_pct": 50.0,
+            "observation_adequacy": {
+                "status": "LIMITED",
+                "planned_slots": 5,
+                "confirmed_slots": 4,
+                "ambiguous_slots": 1,
+                "pending_slots": 0,
+            },
+        },
+        content_summary=_delivery_ready_content_summary(),
+        essence_summary=_delivery_ready_essence_summary(),
+    )
+    run = OperationRun(
+        hospital_id=hospital.id,
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.RUNNING,
+        attempt_count=1,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload={"source_type": "hospital", "source_id": str(hospital.id)},
+    )
+    monthly_pg_session.add_all((report, run))
+    monthly_pg_session.flush()
+    monthly_pg_session.add(
+        MonthlyReportArtifact(
+            report_id=report.id,
+            audience="DOCTOR",
+            path=report.doctor_pdf_path,
+            sha256="a" * 64,
+            byte_size=4096,
+            validated=True,
+            validated_at=datetime.now(timezone.utc),
+            validation_metadata=_valid_artifact_metadata(),
+        )
+    )
+    monthly_pg_session.commit()
+
+    tasks._finish_monthly_operation_run(
+        monthly_pg_session,
+        run.id,
+        hospital.id,
+        2026,
+        7,
+        "created",
+    )
+
+    monthly_pg_session.refresh(run)
+    assert run.state == OperationRunState.SUCCEEDED
+    assert run.safe_error_code is None
+    assert run.result_summary["stage"] == "ARTIFACT_VALIDATED"
+    assert run.result_summary["measurement_quality"] == "LIMITED"
+    assert run.result_summary["observation_adequacy"]["confirmed_slots"] == 4
+    assert run.result_summary["milestones"] == [
+        "MEASUREMENT_LIMITED",
+        "ARTIFACT_VALIDATED",
+    ]
+
+
+@pytest.mark.parametrize("invalid_fact", ["manifest_open", "manifest_mismatch", "report_blocker"])
+def test_worker_does_not_finish_when_persisted_delivery_fact_is_invalid(
+    monthly_pg_session: Session,
+    invalid_fact: str,
+) -> None:
+    hospital = Hospital(
+        name=f"전달 근거 차단 {invalid_fact}",
+        slug=f"monthly-gate-{invalid_fact}-{uuid.uuid4().hex}",
+    )
+    monthly_pg_session.add(hospital)
+    monthly_pg_session.flush()
+    manifest = _closed_manifest(
+        monthly_pg_session,
+        hospital.id,
+        month=6 if invalid_fact == "manifest_mismatch" else 7,
+        closed=invalid_fact != "manifest_open",
+    )
+
+    content_summary = _delivery_ready_content_summary()
+    if invalid_fact == "report_blocker":
+        content_summary["operations"]["delivery_blockers"] = ["운영 검수 차단"]
+    report = MonthlyReport(
+        hospital_id=hospital.id,
+        period_year=2026,
+        period_month=7,
+        report_type="MONTHLY",
+        manifest_id=manifest.id,
+        version=1,
+        quality="COMPLETE",
+        planned_count=20,
+        success_count=20,
+        failed_count=0,
+        excluded_count=0,
+        pdf_path=f"gs://qa-private/{invalid_fact}-ae.pdf",
+        doctor_pdf_path=f"gs://qa-private/{invalid_fact}-doctor.pdf",
+        sov_summary={"sov_pct": 47.0},
+        content_summary=content_summary,
+        essence_summary=_delivery_ready_essence_summary(),
+    )
+    run = OperationRun(
+        hospital_id=hospital.id,
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.RUNNING,
+        attempt_count=1,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload={"source_type": "hospital", "source_id": str(hospital.id)},
+    )
+    monthly_pg_session.add_all((report, run))
+    monthly_pg_session.flush()
+    monthly_pg_session.add(
+        MonthlyReportArtifact(
+            report_id=report.id,
+            audience="DOCTOR",
+            path=report.doctor_pdf_path,
+            sha256="a" * 64,
+            byte_size=4096,
+            validated=True,
+            validated_at=datetime.now(timezone.utc),
+            validation_metadata=_valid_artifact_metadata(),
+        )
+    )
+    monthly_pg_session.commit()
+
+    tasks._finish_monthly_operation_run(
+        monthly_pg_session, run.id, hospital.id, 2026, 7, "created"
+    )
+
+    monthly_pg_session.refresh(run)
+    assert run.state == OperationRunState.PARTIAL
+    assert run.result_summary["stage"] == "BLOCKED"
+    assert run.safe_error_code == "MONTHLY_REPORT_BLOCKED"
+
+
+def test_monthly_publication_fact_survives_source_withdrawal_and_repair(
+    monthly_pg_session: Session,
+) -> None:
+    hospital = Hospital(
+        name="발행 이력 보존 의원",
+        slug=f"monthly-publication-history-{uuid.uuid4().hex}",
+    )
+    monthly_pg_session.add(hospital)
+    monthly_pg_session.flush()
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=[0],
+        active_from=datetime(2026, 8, 1).date(),
+        is_active=True,
+    )
+    monthly_pg_session.add(schedule)
+    monthly_pg_session.flush()
+    first_published_at = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    item = ContentItem(
+        hospital_id=hospital.id,
+        schedule_id=schedule.id,
+        content_type=ContentType.FAQ,
+        sequence_no=1,
+        total_count=12,
+        title="철회 전 공개 제목",
+        scheduled_date=datetime(2026, 8, 31).date(),
+        status=ContentStatus.PUBLISHED,
+        published_at=first_published_at,
+        published_by="FIRST_AE",
+        first_published_at=first_published_at,
+        first_published_by="FIRST_AE",
+        essence_check_summary={
+            "generation_provenance": {"evidence_source_asset_ids": ["withdrawn-source"]}
+        },
+    )
+    monthly_pg_session.add(item)
+    monthly_pg_session.commit()
+    period_start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    period_end = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    observed_at = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+    before = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+    assert tuple(len(rows) for rows in before) == (1, 1, 1)
+
+    removed = mark_removed_source_dependency(
+        item,
+        SimpleNamespace(id=None, source_asset_ids=[]),
+    )
+    monthly_pg_session.commit()
+    during = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+    assert removed == ("withdrawn-source",)
+    assert tuple(len(rows) for rows in during) == (1, 0, 1)
+    assert item.status == ContentStatus.REJECTED
+    assert item.published_at == first_published_at
+    assert item.first_published_at == first_published_at
+
+    repaired_at = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    item.status = ContentStatus.PUBLISHED
+    record_publication_identity(
+        item,
+        published_at=repaired_at,
+        published_by="REPAIR_AE",
+    )
+    monthly_pg_session.commit()
+    after = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+    assert tuple(len(rows) for rows in after) == (1, 1, 1)
+    assert item.published_at == repaired_at
+    assert item.first_published_at == first_published_at
+
+
+def test_closed_month_counts_first_publication_once_after_cross_month_republish(
+    monthly_pg_session: Session,
+) -> None:
+    hospital = Hospital(
+        name="교체 판 발행 이력 의원",
+        slug=f"monthly-edition-history-{uuid.uuid4().hex}",
+    )
+    monthly_pg_session.add(hospital)
+    monthly_pg_session.flush()
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=[0],
+        active_from=datetime(2026, 8, 1).date(),
+        is_active=True,
+    )
+    monthly_pg_session.add(schedule)
+    monthly_pg_session.flush()
+    august_publication = datetime(2026, 8, 31, 3, 0, tzinfo=timezone.utc)
+    september_republication = datetime(2026, 9, 2, 3, 0, tzinfo=timezone.utc)
+    item = ContentItem(
+        hospital_id=hospital.id,
+        schedule_id=schedule.id,
+        content_type=ContentType.FAQ,
+        sequence_no=1,
+        total_count=12,
+        title="최초 공개 제목",
+        scheduled_date=datetime(2026, 8, 31).date(),
+        status=ContentStatus.PUBLISHED,
+        published_at=august_publication,
+        published_by="FIRST_AE",
+        first_published_at=august_publication,
+        first_published_by="FIRST_AE",
+    )
+    monthly_pg_session.add(item)
+    monthly_pg_session.commit()
+    period_start = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    period_end = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    observed_at = datetime(2026, 9, 7, tzinfo=timezone.utc)
+
+    item.status = ContentStatus.REJECTED
+    item.published_at = None
+    item.published_by = None
+    item.scheduled_date = datetime(2026, 9, 2).date()
+    item.carried_over_from = datetime(2026, 8, 31).date()
+    monthly_pg_session.commit()
+    rejected = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+    assert tuple(len(rows) for rows in rejected) == (1, 0, 1)
+
+    item.status = ContentStatus.PUBLISHED
+    record_publication_identity(
+        item,
+        published_at=september_republication,
+        published_by="REPAIR_AE",
+    )
+    monthly_pg_session.commit()
+    repaired = tasks._load_monthly_publication_facts(
+        monthly_pg_session, hospital.id, period_start, period_end, observed_at
+    )
+
+    assert tuple(len(rows) for rows in repaired) == (1, 1, 1)
+    assert [row.id for row in repaired[0]] == [item.id]
+    assert [row.id for row in repaired[2]] == [item.id]
+    assert tasks._contract_publication_timing_counts(
+        repaired[2], period_start, period_end
+    ) == (0, 0)
+    assert item.first_published_at == august_publication
+    assert item.first_published_by == "FIRST_AE"
+    assert item.published_at == september_republication
+    assert item.published_by == "REPAIR_AE"
+    september = tasks._load_monthly_publication_facts(
+        monthly_pg_session,
+        hospital.id,
+        datetime(2026, 9, 1, tzinfo=timezone.utc),
+        datetime(2026, 10, 1, tzinfo=timezone.utc),
+        observed_at,
+    )
+    assert tuple(len(rows) for rows in september) == (0, 0, 0)
 
 
 def test_manual_run_moves_from_queue_to_running_before_report_build(
@@ -985,17 +1353,23 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
             )
             db.commit()
             return "blocked_artifact"
+        manifest = _closed_manifest(db, hospital.id, year=now.year, month=now.month)
         report = MonthlyReport(
             hospital_id=hospital.id,
             period_year=now.year,
             period_month=now.month,
             report_type="MONTHLY",
+            manifest_id=manifest.id,
             version=1,
             quality="COMPLETE",
             planned_count=20,
             success_count=20,
             failed_count=0,
+            pdf_path="gs://qa-private/scheduled-ae.pdf",
             doctor_pdf_path="gs://qa-private/scheduled-doctor.pdf",
+            sov_summary={"sov_pct": 47.0},
+            content_summary=_delivery_ready_content_summary(),
+            essence_summary=_delivery_ready_essence_summary(),
         )
         db.add(report)
         db.flush()
@@ -1086,17 +1460,25 @@ def test_first_day_close_uses_historical_service_interval_not_current_status(
 
     def fake_build(db, hospital, anchor, **_kwargs):
         built.append((hospital.id, anchor.year, anchor.month))
+        manifest = _closed_manifest(
+            db, hospital.id, year=anchor.year, month=anchor.month
+        )
         report = MonthlyReport(
             hospital_id=hospital.id,
             period_year=anchor.year,
             period_month=anchor.month,
             report_type="MONTHLY",
+            manifest_id=manifest.id,
             version=1,
             quality="COMPLETE",
             planned_count=20,
             success_count=20,
             failed_count=0,
+            pdf_path="gs://qa-private/historical-ae.pdf",
             doctor_pdf_path="gs://qa-private/historical-doctor.pdf",
+            sov_summary={"sov_pct": 47.0},
+            content_summary=_delivery_ready_content_summary(),
+            essence_summary=_delivery_ready_essence_summary(),
         )
         db.add(report)
         db.flush()
@@ -1178,17 +1560,28 @@ def test_scheduled_replay_reclaims_a_prior_failure(
     monkeypatch.setattr(tasks, "SyncSessionLocal", SessionContext)
 
     def fake_build(db, observed_hospital, anchor, **_kwargs):
+        manifest = _closed_manifest(
+            db,
+            observed_hospital.id,
+            year=anchor.year,
+            month=anchor.month,
+        )
         report = MonthlyReport(
             hospital_id=observed_hospital.id,
             period_year=anchor.year,
             period_month=anchor.month,
             report_type="MONTHLY",
+            manifest_id=manifest.id,
             version=1,
             quality="COMPLETE",
             planned_count=20,
             success_count=20,
             failed_count=0,
+            pdf_path="gs://qa-private/recovered-ae.pdf",
             doctor_pdf_path="gs://qa-private/recovered-doctor.pdf",
+            sov_summary={"sov_pct": 47.0},
+            content_summary=_delivery_ready_content_summary(),
+            essence_summary=_delivery_ready_essence_summary(),
         )
         db.add(report)
         db.flush()
