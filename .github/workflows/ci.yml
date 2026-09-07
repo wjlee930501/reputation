@@ -93,6 +93,7 @@ jobs:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test
       SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
       INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/reputation_test
+      TASK22_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
       # 인시던트·operations 제약 증명 테스트는 위 postgres_aux(5434)를 쓴다. 없으면
       # os.getenv가 None이라 pytest.skip으로 조용히 빠져 CI에서 한 번도 돌지 않는다.
       INCIDENT_TEST_DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
