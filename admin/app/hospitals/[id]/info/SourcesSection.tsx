@@ -151,7 +151,8 @@ export function SourcesSection({
 
       <SourceUploadForm hospitalId={hospitalId} onUploaded={() => { void refresh(); void readRun() }} />
 
-      <NaverBlogBulkForm hospitalId={hospitalId} onCreated={() => void refresh()} />
+      {/* 병원 정보 화면에서 사람이 하는 일은 토글뿐이다 — 다시 수집은 온보딩에만 둔다. */}
+      <NaverBlogBulkForm hospitalId={hospitalId} allowRetry={false} onCreated={() => void refresh()} />
 
       {loadError && <p className="text-sm font-semibold text-red-700">{loadError}</p>}
       {loading ? (
@@ -189,6 +190,9 @@ function SourceRow({
   const [error, setError] = useState<string | null>(null)
   const [notes, setNotes] = useState<NoteRow[] | null>(null)
   const [notesLoading, setNotesLoading] = useState(false)
+  // 저장 중인 노트는 그 노트의 체크박스만 잠근다 — 같은 노트에 두 요청이 겹치면
+  // 늦게 도착한 쪽이 이기고, 화면과 서버가 반대로 남는다.
+  const [pendingNoteIds, setPendingNoteIds] = useState<string[]>([])
   const status = sourceRowStatus(source)
   const incidentHref = sourceIncidentHref(hospitalId, source)
   const href = source.url ?? source.file_access_url ?? source.file_url
@@ -247,6 +251,7 @@ function SourceRow({
       )
     apply(isNoise)
     setError(null)
+    setPendingNoteIds((prev) => [...prev, noteId])
     try {
       await fetchAPI(`/admin/hospitals/${hospitalId}/essence/evidence-notes/noise`, {
         method: 'PATCH',
@@ -255,6 +260,8 @@ function SourceRow({
     } catch {
       apply(!isNoise)
       setError(safeOperatorError('onboarding', `${ADMIN_COPY.evidenceNote} 제외 표시를 다시 저장하세요.`))
+    } finally {
+      setPendingNoteIds((prev) => prev.filter((id) => id !== noteId))
     }
   }
 
@@ -336,8 +343,9 @@ function SourceRow({
                           <input
                             type="checkbox"
                             checked={isNoiseNote(note)}
+                            disabled={pendingNoteIds.includes(note.id)}
                             onChange={(e) => void toggleNoise(note.id, e.target.checked)}
-                            className="rounded border-slate-300"
+                            className="rounded border-slate-300 disabled:opacity-50"
                           />
                           제외 자료로 표시
                           {note.confidence !== null && (
@@ -442,6 +450,7 @@ function SourceUploadForm({
       <input
         id="info-source-file"
         required
+        aria-label="올릴 문서 파일 (PDF·DOCX)"
         type="file"
         multiple
         accept="application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"

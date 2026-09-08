@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { fetchAPI } from '@/lib/api'
+import { ApiError, fetchAPI } from '@/lib/api'
 import { defaultAssetTitles } from '@/lib/asset-title'
 import {
   PHOTO_SOURCE_TYPE_OPTIONS,
@@ -332,6 +332,9 @@ function PhotoUploadForm({
   const [isPublic, setIsPublic] = useState(true)
   const [busy, setBusy] = useState(false)
   const [feedback, setFeedback] = useState<string | null>(null)
+  // 여러 장 저장 뒤의 갱신 요청이 실패하면 자동으로 다시 요청하는 배경 작업이 없다.
+  // 사실대로 알리고, 다음 저장이 그 요청을 대신 보내게 한다.
+  const [revalidateFailed, setRevalidateFailed] = useState(false)
 
   function selectFiles(picked: FileList | null) {
     const list = picked ? Array.from(picked) : []
@@ -345,6 +348,9 @@ function PhotoUploadForm({
     setBusy(true)
     setFeedback(null)
 
+    // 이전 저장의 갱신 요청이 실패했다면 이번 저장에서 다시 보낸다. 한 장이면 서버가
+    // 저장과 함께 갱신하므로 그것으로 밀린 요청도 해소된다.
+    const batched = files.length > 1
     let succeeded = 0
     for (let i = 0; i < files.length; i++) {
       const body = photoUploadFormData({
@@ -360,7 +366,7 @@ function PhotoUploadForm({
         // 여러 장이면 마지막에 한 번만 재검증한다 — 장마다 돌리면 같은 일을 N번 한다.
         await fetchAPI(
           `/admin/hospitals/${hospitalId}/essence/sources/upload${
-            files.length > 1 ? '?skip_revalidate=true' : ''
+            batched ? '?skip_revalidate=true' : ''
           }`,
           { method: 'POST', body },
         )
@@ -370,11 +376,17 @@ function PhotoUploadForm({
       }
     }
 
-    if (succeeded > 0 && files.length > 1) {
-      try {
-        await fetchAPI(`/admin/hospitals/${hospitalId}/essence/revalidate`, { method: 'POST' })
-      } catch {
-        // 재검증 실패는 다음 저장에서 회복된다.
+    if (succeeded > 0) {
+      if (batched || revalidateFailed) {
+        try {
+          await fetchAPI(`/admin/hospitals/${hospitalId}/essence/revalidate`, { method: 'POST' })
+          setRevalidateFailed(false)
+        } catch (e: unknown) {
+          // 공개 사이트가 아직 없는 병원은 갱신할 페이지도 없다 — 실패가 아니다.
+          setRevalidateFailed(!(e instanceof ApiError && e.status === 400))
+        }
+      } else {
+        setRevalidateFailed(false)
       }
     }
 
@@ -423,6 +435,7 @@ function PhotoUploadForm({
       <input
         id="info-photo-file"
         required
+        aria-label="올릴 사진 파일"
         type="file"
         multiple
         accept="image/*"
@@ -475,6 +488,12 @@ function PhotoUploadForm({
         </button>
         {feedback && <span className="text-xs text-slate-600">{feedback}</span>}
       </div>
+
+      {revalidateFailed && (
+        <p role="alert" className="rounded bg-amber-50 px-2 py-1 text-xs leading-5 text-amber-900">
+          사진은 저장됐지만 공개 페이지 갱신 요청이 실패했습니다 — 다시 저장하면 재요청합니다.
+        </p>
+      )}
     </form>
   )
 }

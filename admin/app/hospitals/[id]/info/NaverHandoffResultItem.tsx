@@ -15,6 +15,11 @@ const TONE_CLASSES: Record<NaverItemCopy['tone'], string> = {
 interface NaverHandoffResultItemProps {
   hospitalId: string
   item: NaverHandoffItem
+  /**
+   * 다시 수집 버튼을 그릴지. 병원 정보 화면에서 사람이 하는 일은 토글뿐이므로
+   * false로 받고, 실패는 사유가 적힌 글로만 남긴다.
+   */
+  allowRetry: boolean
   retrying: boolean
   onRetry: () => void
   onCopy: () => void
@@ -23,6 +28,7 @@ interface NaverHandoffResultItemProps {
 export default function NaverHandoffResultItem({
   hospitalId,
   item,
+  allowRetry,
   retrying,
   onRetry,
   onCopy,
@@ -30,6 +36,11 @@ export default function NaverHandoffResultItem({
   const copy = naverItemCopy(item)
   const needsDeveloperContext = item.state === 'FAILED'
     || (item.state === 'SKIPPED' && item.safeErrorCode !== 'DUPLICATE_SOURCE')
+  // 다시 수집을 누를 수 없는 화면에서는 그렇게 하라고 적지 않는다.
+  const failedWithoutRetry = item.state === 'FAILED' && !allowRetry
+  const action = failedWithoutRetry
+    ? '아래 정보를 복사해 개발팀에 문의해 주세요.'
+    : copy.action
 
   return (
     <li className="min-w-0 rounded-lg border border-slate-200 bg-white p-4">
@@ -48,9 +59,9 @@ export default function NaverHandoffResultItem({
             {item.url}
           </a>
           <p className="break-keep text-sm leading-6 text-slate-700">영향: {copy.impact}</p>
-          <p className="break-keep text-sm font-medium leading-6 text-slate-900">다음 행동: {copy.action}</p>
+          <p className="break-keep text-sm font-medium leading-6 text-slate-900">다음 행동: {action}</p>
         </div>
-        {item.state === 'FAILED' && (
+        {allowRetry && item.state === 'FAILED' && (
           <button
             type="button"
             disabled={retrying}

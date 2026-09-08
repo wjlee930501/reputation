@@ -931,7 +931,7 @@ function SourcesStepBody({
     <div className="space-y-5">
       <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
-      <NaverBlogBulkForm hospitalId={hospitalId} onCreated={onChanged} />
+      <NaverBlogBulkForm hospitalId={hospitalId} allowRetry onCreated={onChanged} />
       <UploadForm
         hospitalId={hospitalId}
         hospitalName={hospital?.name ?? null}

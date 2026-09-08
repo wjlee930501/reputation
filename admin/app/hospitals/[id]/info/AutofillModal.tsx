@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 export interface AutofillModalProps {
   hospitalName: string
@@ -23,6 +23,17 @@ export function AutofillModal({
   const [name, setName] = useState(hospitalName)
   const [website, setWebsite] = useState(websiteUrl)
   const [blog, setBlog] = useState(blogUrl)
+  const firstFieldRef = useRef<HTMLInputElement>(null)
+
+  // 열 때 첫 칸으로 이동하고, 닫을 때 열었던 버튼으로 돌려준다 — 키보드만 쓰는
+  // 운영자가 목록 맨 위부터 다시 내려오지 않게.
+  useEffect(() => {
+    const opener = document.activeElement
+    firstFieldRef.current?.focus()
+    return () => {
+      if (opener instanceof HTMLElement) opener.focus()
+    }
+  }, [])
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -33,10 +44,16 @@ export function AutofillModal({
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
       onClick={(e) => { if (e.target === e.currentTarget && !loading) onClose() }}
+      onKeyDown={(e) => { if (e.key === 'Escape' && !loading) onClose() }}
     >
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="info-autofill-title"
+        className="bg-white rounded-xl shadow-xl w-full max-w-md mx-4 overflow-hidden"
+      >
         <div className="px-6 py-5 border-b border-slate-100">
-          <h3 className="text-base font-semibold text-slate-900">병원 정보 자동 입력</h3>
+          <h3 id="info-autofill-title" className="text-base font-semibold text-slate-900">병원 정보 자동 입력</h3>
           <p className="text-xs text-slate-500 mt-1">
             홈페이지·블로그·네이버 플레이스를 확인해 병원 기본 정보를 자동으로 입력합니다.
             빈 필드만 채우며, 이미 입력된 내용은 덮어쓰지 않습니다.
@@ -47,6 +64,7 @@ export function AutofillModal({
           <div>
             <label htmlFor="info-autofill-name" className="block text-sm font-medium text-slate-700 mb-1.5">병원명</label>
             <input
+              ref={firstFieldRef}
               type="text"
               id="info-autofill-name"
               value={name}

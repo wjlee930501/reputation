@@ -172,19 +172,41 @@ def resolve_upload_is_public(
     *,
     provenance_complete: bool = True,
 ) -> bool:
-    """권리 근거가 완전한 사진 업로드는 즉시 공개한다.
+    """운영자가 요청한 공개 여부를 지키되, 권리 근거가 없으면 공개하지 않는다.
 
-    권리 근거가 없는 사진은 공개로 저장될 수 없다(0052의 CHECK 제약). 공개를 명시적으로
-    요청한 경우는 호출자가 먼저 422로 돌려보내므로, 여기서 비공개로 낮추는 것은 공개를
-    요청하지 않은 불완전한 업로드뿐이다. 완전한 근거를 함께 보낸 사진은 예전 폼 값과
-    무관하게 공개해, 업로드 뒤 별도 공개 PATCH가 필요하지 않게 한다. 운영자는 저장 후
-    공개 상태를 다시 끌 수 있다.
+    공개는 사람의 결정이다. 근거가 완전하다는 이유로 "공개 안 함"으로 올린 사진을
+    공개로 저장하면, 운영자는 비공개인 줄 아는 사진이 병원 공개 페이지에 뜬다.
+    권리 근거가 없는 사진은 공개로 저장될 수 없고(0052의 CHECK 제약), 공개를 명시적으로
+    요청한 경우는 호출자가 먼저 422로 돌려보낸다.
     """
     if source_type not in PHOTO_SOURCE_TYPES:
         return False
-    if not provenance_complete:
+    if not is_public_form:
         return False
-    return True
+    return provenance_complete
+
+
+#: 브라우저가 문서로 실행할 수 없는, 그대로 열어도 안전한 이미지 형식.
+INLINE_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
+def source_file_safety_headers(
+    source_type: SourceType,
+    mime_type: str | None,
+) -> dict[str, str]:
+    """올라온 MIME 그대로 inline으로 돌려주지 않는다.
+
+    자료 파일은 운영자가 올린 바이트다. 그 MIME을 믿고 inline으로 내보내면 한 운영자가
+    올린 파일이 다른 운영자의 브라우저에서 실행된다. 사진만, 그것도 허용된 이미지
+    형식일 때만 inline으로 두고 나머지는 내려받게 한다.
+    """
+    inline = source_type in PHOTO_SOURCE_TYPES and (mime_type or "").lower() in (
+        INLINE_IMAGE_MIME_TYPES
+    )
+    return {
+        "Content-Disposition": "inline" if inline else "attachment",
+        "X-Content-Type-Options": "nosniff",
+    }
 
 
 def build_photo_source_metadata(
@@ -993,6 +1015,10 @@ async def upload_source_file(
         raise HTTPException(
             status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요."
         )
+    if not is_photo_type and extractor_kind == "UNKNOWN":
+        # 추출기가 없는 바이트는 본문도 못 뽑고, 나중에 올라온 MIME 그대로 다시 내려간다
+        # — .html 한 장이면 다른 운영자의 브라우저에서 실행된다. 저장하지 않는다.
+        raise HTTPException(status_code=422, detail="PDF·DOCX 파일만 올릴 수 있습니다.")
 
     provenance = read_photo_provenance_input(
         photo_source_owner, photo_rights_basis, photo_evidence_reference
@@ -1400,7 +1426,12 @@ async def get_source_file(
     source = await _get_source_or_404(db, hospital_id, source_id)
     if not source.file_url:
         raise HTTPException(status_code=404, detail="Source file not found")
-    return _asset_response(source.file_url, hospital_id=hospital_id, media_type=source.mime_type)
+    return _asset_response(
+        source.file_url,
+        hospital_id=hospital_id,
+        media_type=source.mime_type,
+        headers=source_file_safety_headers(source.source_type, source.mime_type),
+    )
 
 
 @router.get("/philosophies", response_model=list[PhilosophyResponse])
@@ -2008,24 +2039,30 @@ def _is_legacy_public_url(value: str | None) -> bool:
     )
 
 
-def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None):
+def _asset_response(
+    asset_ref: str,
+    *,
+    hospital_id: uuid.UUID,
+    media_type: str | None,
+    headers: dict[str, str] | None = None,
+):
     if asset_ref.startswith("local://"):
         path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
         if not path or not path.exists():
             raise HTTPException(status_code=404, detail="Source file not found")
-        return FileResponse(path, media_type=media_type)
+        return FileResponse(path, media_type=media_type, headers=headers)
     if asset_ref.startswith("gs://"):
         signed_url = get_signed_url(asset_ref)
         if not signed_url or signed_url == asset_ref:
             raise HTTPException(status_code=503, detail="Could not create signed asset URL")
-        return RedirectResponse(url=signed_url, status_code=302)
+        return RedirectResponse(url=signed_url, status_code=302, headers=headers)
     if asset_ref.startswith("/assets/"):
         path = resolve_legacy_asset_path(asset_ref, expected_hospital_id=hospital_id)
         if path and path.exists():
-            return FileResponse(path, media_type=media_type)
+            return FileResponse(path, media_type=media_type, headers=headers)
         raise HTTPException(status_code=404, detail="Source file not found")
     if asset_ref.startswith("http://") or asset_ref.startswith("https://"):
-        return RedirectResponse(url=asset_ref, status_code=302)
+        return RedirectResponse(url=asset_ref, status_code=302, headers=headers)
     raise HTTPException(status_code=404, detail="Source file not found")
 
 

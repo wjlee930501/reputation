@@ -195,6 +195,45 @@ test('근거 노트 제외 표시는 켜고 끄는 양방향이다', () => {
   assert.match(sourcesSection, /groupNotesByType/)
 })
 
+test('저장 중인 근거 노트는 그 체크박스만 잠근다', () => {
+  // 같은 노트에 두 요청이 겹치면 늦게 도착한 쪽이 이겨 화면과 서버가 반대로 남는다.
+  assert.match(sourcesSection, /pendingNoteIds/)
+  assert.match(sourcesSection, /disabled=\{pendingNoteIds\.includes\(note\.id\)\}/)
+  // 실패하면 되돌리는 동작은 그대로 남아 있어야 한다.
+  assert.match(sourcesSection, /apply\(!isNoise\)/)
+})
+
+test('여러 장 저장 뒤 갱신 요청이 실패하면 사실대로 알리고 다음 저장이 다시 보낸다', () => {
+  assert.match(photosSection, /revalidateFailed/)
+  assert.match(photosSection, /batched \|\| revalidateFailed/)
+  assert.match(photosSection, /공개 페이지 갱신 요청이 실패했습니다 — 다시 저장하면 재요청합니다/)
+  // 자동으로 다시 요청하는 배경 작업은 없다 — 있다고 말하지 않는다.
+  assert.doesNotMatch(photosSection, /자동 재조정/)
+})
+
+test('병원 정보 화면에는 실패한 글을 사람이 다시 수집하는 버튼이 없다', () => {
+  assert.match(sourcesSection, /allowRetry=\{false\}/)
+  const handoffItem = infoFile('NaverHandoffResultItem.tsx')
+  assert.match(handoffItem, /allowRetry && item\.state === 'FAILED'/)
+  // 누를 버튼이 없는 화면에서 다시 수집하라고 적지 않는다.
+  assert.match(handoffItem, /failedWithoutRetry/)
+})
+
+test('자동 입력 창은 대화상자로 열리고 키보드로 빠져나올 수 있다', () => {
+  const modal = infoFile('AutofillModal.tsx')
+  assert.match(modal, /role="dialog"/)
+  assert.match(modal, /aria-modal="true"/)
+  assert.match(modal, /aria-labelledby="info-autofill-title"/)
+  assert.match(modal, /firstFieldRef\.current\?\.focus\(\)/)
+  assert.match(modal, /e\.key === 'Escape'/)
+  assert.match(modal, /opener\.focus\(\)/)
+})
+
+test('파일 고르는 칸은 이름이 있다', () => {
+  assert.match(photosSection, /id="info-photo-file"[\s\S]{0,80}aria-label="올릴 사진 파일"/)
+  assert.match(sourcesSection, /id="info-source-file"[\s\S]{0,80}aria-label="올릴 문서 파일/)
+})
+
 test('근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다', () => {
   const domain = infoPage.indexOf('<DomainSetupPanel')
   const sources = infoPage.indexOf('<SourcesSection')
