@@ -447,7 +447,7 @@ export default function EssencePage() {
       )
       setNotice(
         result.re_review_dispatched === false
-          ? '초안을 보관했습니다. 자동 재검수는 최대 15분 안에 시작됩니다.'
+          ? '초안을 보관했습니다. 자동 재검수는 다음 자동 재조정에서 시작됩니다(15분 주기, 병원 200곳 단위로 순환하므로 병원 수에 따라 더 걸릴 수 있습니다).'
           : '초안을 보관하고 자동 검수를 다시 요청했습니다. 결과는 이 화면과 운영 센터에 표시됩니다.',
       )
       await load()

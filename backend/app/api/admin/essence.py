@@ -1669,8 +1669,9 @@ async def request_philosophy_re_review(
     승인(H-03)을 쓴다.
 
     한 번의 요청이 유료 합성을 최대 두 번 부르므로 병원별로 30분 쿨다운을 둔다.
-    dispatch 실패 시에도 보관은 유효하며 15분 `reconcile_essence_snapshots`가
-    재검수를 회수한다.
+    dispatch 실패 시에도 보관은 유효하며 `reconcile_essence_snapshots`가 재검수를
+    회수한다. 다만 이 태스크는 15분마다 병원 200곳씩만 순환하므로, 회수까지
+    걸리는 시간은 병원 수에 따라 ceil(N/200) × 15분까지 늘어난다.
     """
     await acquire_hospital_advisory_lock(db, hospital_id)
     hospital = await _get_hospital_or_404(db, hospital_id)
