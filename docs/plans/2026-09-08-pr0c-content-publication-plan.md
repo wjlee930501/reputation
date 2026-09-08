@@ -23,6 +23,7 @@
 | 4 | H-09 | `907a33e` → `1e95338` | Codex: 우회 없음. admin이 409 게이트 문구를 의료광고 안내로 덮던 것 수정. Low 3건(테스트 보강) 등록부 |
 | 5 | H-14 | `4cba988` → `320ace8` | Codex High: 계약 정정이 활성 일정 plan을 동기화하지 않음 → `_sync_active_schedule_plan`(감사 기록). 다운그레이드 시 현재 월 slot 상한만 갱신되는 reconciler 동작은 기존 그대로(LOW 등록) |
 | 6 | M-15·M-21·M-22 | `3553105` → `320ace8` | 계획의 M-15 줄 참조 오류(콘텐츠 편집 게이트가 아니라 brief 편집)를 구현자가 잡아 정정. NOT_REQUIRED 알림·비본문 편집도 표본 규칙에 정렬 |
+| 7 | 전체 검증 | `1d1d881` | 깨끗한 5432 DB 재생성(head 0070) 후 backend **3,249 passed / 1 failed** → 실패는 새 task의 production readiness 미등록(수정 후 통과), 순서 의존 flake 0; ruff clean; admin **565/565**, site **310/310**; copy-guard OK; db-budget-guard 75/80 |
 | 테스트 위생 | LOW 2건 | `adff1e6` | `recover_ops_incident`가 만든 전역 async 엔진이 닫힌 루프에 남아 `provider_usage._persist`가 예외를 삼키던 문제(루트 conftest dispose fixture) + 두 모듈의 롤백 밖 커밋 행 정리 |
 
 ## 환경 준비
