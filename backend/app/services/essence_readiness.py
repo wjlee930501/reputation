@@ -20,13 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.essence import (
-    PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     PhilosophyStatus,
     SourceStatus,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.essence_sources import required_text_source_predicate
 from app.services.evidence_noise import (
     load_evidence_noise_hash,
     load_evidence_noise_hash_sync,
@@ -128,8 +128,7 @@ async def get_essence_readiness(
     sources_result = await db.execute(
         select(HospitalSourceAsset).where(
             HospitalSourceAsset.hospital_id == hospital_id,
-            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            required_text_source_predicate(),
         )
     )
     return resolve_essence_readiness(
@@ -158,8 +157,7 @@ async def get_public_essence_readiness(
     sources_result = await db.execute(
         select(HospitalSourceAsset).where(
             HospitalSourceAsset.hospital_id == hospital_id,
-            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            required_text_source_predicate(),
         )
     )
     return resolve_essence_readiness(
@@ -178,8 +176,7 @@ def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceRe
         db.execute(
             select(HospitalSourceAsset).where(
                 HospitalSourceAsset.hospital_id == hospital_id,
-                HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-                HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+                required_text_source_predicate(),
             )
         )
         .scalars()
@@ -277,8 +274,7 @@ async def _get_lightweight_essence_readiness(
             HospitalSourceAsset.processed_at,
         ).where(
             HospitalSourceAsset.hospital_id == hospital_id,
-            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            required_text_source_predicate(),
         )
     )
     required_sources = [

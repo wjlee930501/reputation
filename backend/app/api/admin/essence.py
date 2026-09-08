@@ -62,6 +62,7 @@ from app.services.essence_engine import (
     mandatory_safety_findings,
     validate_philosophy_grounding,
 )
+from app.services.essence_sources import required_text_source_predicate
 from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
@@ -1772,8 +1773,7 @@ async def approve_philosophy(
     required_result = await db.execute(
         select(HospitalSourceAsset).where(
             HospitalSourceAsset.hospital_id == hospital_id,
-            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            required_text_source_predicate(),
         )
     )
     required_sources = list(required_result.scalars().all())

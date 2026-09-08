@@ -18,12 +18,8 @@ from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.essence import (
-    PHOTO_SOURCE_TYPES,
-    HospitalSourceAsset,
-    HospitalSourceEvidenceNote,
-    SourceStatus,
-)
+from app.models.essence import HospitalSourceAsset, HospitalSourceEvidenceNote
+from app.services.essence_sources import required_text_source_predicate
 
 
 def is_noise_note(note: Any) -> bool:
@@ -57,8 +53,6 @@ def _excluded_note_ids_stmt(hospital_id: uuid.UUID):
     제외된 자료나 사진 자료의 노트를 세면, readiness가 보지 않는 자료의 노트 토글만으로
     승인이 stale이 된다.
     """
-    # PR-0B Task 6이 essence_readiness에 required_text_source_predicate()를 만들면 그것으로
-    # 교체한다. 지금 거기서 import하면 readiness가 이 모듈을 쓰는 순간 순환이 된다.
     return (
         select(HospitalSourceEvidenceNote.id)
         .join(
@@ -67,8 +61,7 @@ def _excluded_note_ids_stmt(hospital_id: uuid.UUID):
         )
         .where(
             HospitalSourceEvidenceNote.hospital_id == hospital_id,
-            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            required_text_source_predicate(),
             noise_note_predicate(),
         )
     )

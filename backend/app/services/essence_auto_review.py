@@ -18,7 +18,6 @@ from app.models.content import ContentItem
 from app.models.essence import (
     AUTO_RECOVERY_CYCLE_GAP_FIELD,
     AUTO_REVIEW_GAP_FIELD,
-    PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -43,6 +42,7 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
+from app.services.essence_sources import required_text_source_predicate
 from app.services.evidence_noise import (
     load_evidence_noise_hash_sync,
     not_noise_note_predicate,
@@ -274,8 +274,7 @@ def _required_sources(db: Session, hospital_id: uuid.UUID) -> list[HospitalSourc
             select(HospitalSourceAsset)
             .where(
                 HospitalSourceAsset.hospital_id == hospital_id,
-                HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-                HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+                required_text_source_predicate(),
             )
             .order_by(HospitalSourceAsset.id)
         )
