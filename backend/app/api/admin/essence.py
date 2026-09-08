@@ -553,6 +553,9 @@ async def mark_evidence_notes_as_noise(
     db: AsyncSession = Depends(get_db),
 ):
     """Bulk hide/unhide extracted noise without deleting its audit evidence."""
+    # 검수 checkpoint가 노이즈 hash를 읽고 commit하는 구간과 같은 잠금을 잡는다 —
+    # 그 사이에 토글이 끼면 stale 검수가 남는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     await _get_hospital_or_404(db, hospital_id)
     requested_ids = list(dict.fromkeys(body.note_ids))
     result = await db.execute(
