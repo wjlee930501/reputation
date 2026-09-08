@@ -11,15 +11,17 @@ import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/opera
 import {
   belongsToMonthView,
   buildPublicContentUrl,
-  ContentOperationsFilter,
-  ContentOperationsState,
-  countCarriedOver,
-  getContentOperationsBucket,
-  getContentOperationsState,
   getPublishNotificationPresentation,
-  matchesContentOperationsFilter,
   sortCarriedOverFirst,
 } from '@/lib/content'
+import {
+  ContentRowFilter,
+  RowTone,
+  canConfirmSample,
+  describeRowState,
+  matchesRowFilter,
+  summarizeRows,
+} from '@/lib/content-rows'
 import {
   ContentDraftSnapshot,
   clearDraftSnapshot,
@@ -32,16 +34,7 @@ import { formatDate, formatDateTime } from '@/lib/format'
 import { platformSubdomainHost } from '@/lib/platform-domain'
 import { fetchCurrentAccount } from '@/lib/current-account'
 import { resolveAuditActorName } from '@/lib/publishing'
-import { getOrCreatePendingActionKey } from '@/lib/pending-action-key'
-import {
-  AIQueryTarget,
-  ContentItem,
-  ContentReference,
-  ExposureAction,
-  OperationResponse,
-  OperationsRunSummary,
-  TYPE_LABELS,
-} from '@/types'
+import { ContentItem, ContentReference, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
@@ -52,15 +45,15 @@ const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
 
 const ESSENCE_FALLBACK = { label: '미검수', color: 'bg-slate-100 text-slate-500' }
 
-type BriefStatus = 'DRAFT' | 'APPROVED' | 'NEEDS_REVIEW'
-
-const BRIEF_LABELS: Record<BriefStatus, { label: string; color: string }> = {
-  DRAFT: { label: '콘텐츠 가이드 작성중', color: 'bg-slate-100 text-slate-600' },
-  APPROVED: { label: '콘텐츠 가이드 승인', color: 'bg-green-100 text-green-700' },
-  NEEDS_REVIEW: { label: '콘텐츠 가이드 재검토', color: 'bg-orange-100 text-orange-700' },
+// 행 상태의 톤 하나로 배지 색을 정한다 — 화면이 상태별 색을 따로 짓지 않는다.
+const ROW_TONE_BADGES: Record<RowTone, string> = {
+  good: 'bg-green-100 text-green-700',
+  neutral: 'bg-slate-100 text-slate-600',
+  warn: 'bg-amber-100 text-amber-800',
+  paused: 'bg-slate-100 text-slate-500',
 }
 
-const BRIEF_FALLBACK = { label: '콘텐츠 가이드 없음', color: 'bg-slate-50 text-slate-400 border border-slate-200' }
+const EDIT_SAVE_NOTICE = '저장하면 자동 안전검사·재검수, 공개 글은 이미지 재인증까지 자동으로 진행됩니다.'
 
 // 프론트엔드 미리보기용 금지 표현 목록 — backend/app/utils/medical_filter.py의
 // FORBIDDEN_PATTERNS와 정규식이 동기화됨. 단순 포함 검사 대신 정규식으로 변형까지 포착.
@@ -90,16 +83,6 @@ const FORBIDDEN_RULES: ForbiddenRule[] = [
   { label: '통증 없는', pattern: /통증\s*없[는이]|무통[증]?[의]?\s*(시술|수술|치료)|아프지\s*않[은는]/ },
   { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
-
-const PUBLISH_GATE_CODES = new Set(['HOSPITAL_NOT_PUBLIC', 'SCHEDULE_NOT_SET'])
-
-function readPublishGateMessage(error: unknown): string | null {
-  if (!(error instanceof ApiError) || error.status !== 409) return null
-  const detail = error.detail as { code?: unknown; message?: unknown } | null
-  if (!detail || typeof detail !== 'object') return null
-  if (typeof detail.code !== 'string' || !PUBLISH_GATE_CODES.has(detail.code)) return null
-  return typeof detail.message === 'string' ? detail.message : null
-}
 
 function readViolationsFromError(error: unknown): string[] {
   if (!(error instanceof ApiError)) return []
@@ -131,103 +114,6 @@ function highlightForbidden(text: string, violations: string[]): string {
   return result
 }
 
-function washContentGuideText(text: string): string {
-  return text
-    .split('FAQ/질환/치료 콘텐츠').join('자주 묻는 질문/질환/치료 안내 콘텐츠')
-    .split('FAQ 콘텐츠').join('자주 묻는 질문 콘텐츠')
-}
-
-function washContentGuideValue(value: unknown): unknown {
-  if (typeof value === 'string') return washContentGuideText(value)
-  if (Array.isArray(value)) return value.map(washContentGuideValue)
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, washContentGuideValue(nested)]),
-    )
-  }
-  return value
-}
-
-function formatBriefValue(value: unknown): string {
-  if (value == null || value === '') return '미작성'
-  if (typeof value === 'string') return washContentGuideText(value)
-  if (typeof value === 'object' && !Array.isArray(value)) {
-    const record = value as Record<string, unknown>
-    if (typeof record.path === 'string') return record.path
-    if (typeof record.label === 'string') return record.label
-    if (typeof record.title === 'string') return record.title
-  }
-  return JSON.stringify(washContentGuideValue(value))
-}
-
-interface ReviewState {
-  key: ContentOperationsState
-  label: string
-  badge: string
-  reason?: string
-  publishable: boolean
-}
-
-function getReviewState(item: ContentItem): ReviewState {
-  const displayReview = item.display?.review
-  const displayLabel = displayReview?.label ?? undefined
-  const displayReason = displayReview?.reason ?? undefined
-  if (item.status === 'PUBLISHED') {
-    // 공개 사이트가 실제로 숨기는 글에는 초록 배지를 달지 않는다 — 같은 판정을 그대로 쓴다.
-    // 판정 자체가 없으면 공개 중이라고 단정하지 않는다(fail-closed).
-    const visibility = item.compliance?.public_visibility
-    if (visibility?.visible !== true) {
-      const labels = visibility?.blocker_labels ?? []
-      return { key: 'withheld', label: '공개 보류', badge: 'bg-amber-100 text-amber-800', reason: (labels.length > 0 ? labels : ['공개 가시성 정보 없음']).join(' · '), publishable: false }
-    }
-    if (item.post_publish_reviewed_at) {
-      return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
-    }
-    if (getContentOperationsState(item) === 'notificationPending') {
-      const notification = getPublishNotificationPresentation(item)
-      const needsAttention = notification.state === 'FAILED' || notification.state === 'HOLD'
-      return {
-        key: 'notificationPending',
-        label: notification.label,
-        badge: needsAttention ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800',
-        reason: [notification.problem, notification.publication_impact, notification.next_action]
-          .filter(Boolean)
-          .join(' '),
-        publishable: false,
-      }
-    }
-    if (getContentOperationsState(item) === 'postReviewPending' && item.post_publish_review_required === true) {
-      return { key: 'postReviewPending', label: '공개 내용 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
-    }
-    // 사람이 보는 표본(첫 순번·공개 후 편집)이 아닌 글에 확인 대기 배지를 달면,
-    // 아무도 처리하지 않는 할 일이 매달 쌓여 진짜 표본이 묻힌다(M-21).
-    return { key: 'published', label: '공개 중', badge: 'bg-green-100 text-green-700', publishable: false }
-  }
-  if (item.status === 'REJECTED') {
-    return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
-  }
-  if (item.status === 'CANCELLED') {
-    return { key: 'cancelled', label: displayLabel ?? '종료됨', badge: 'bg-slate-100 text-slate-600', reason: displayReason ?? '중복되거나 오래된 콘텐츠', publishable: false }
-  }
-  if (!item.title) {
-    return { key: 'notGenerated', label: displayLabel ?? '생성 전', badge: 'bg-slate-100 text-slate-500', reason: displayReason ?? '야간 자동 생성 대기', publishable: false }
-  }
-  // 발행 가능 여부는 백엔드 compliance 요약이 단일 기준이다.
-  // (display.review와 달리 참고 자료·금지 표현까지 발행 게이트 전체를 반영한다.)
-  if (!item.compliance.publishable) {
-    const reason = item.compliance.blockers.length > 0 ? item.compliance.blockers.join(' · ') : displayReason ?? '발행 차단 사유 확인 필요'
-    return { key: 'needsReview', label: '자동 발행 차단', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
-  }
-  return { key: 'publishable', label: '자동 발행 대기', badge: 'bg-green-100 text-green-700', publishable: true }
-}
-
-/** 공개 시각 한 줄. 보류 중인 판을 "공개"라고만 쓰면 화면이 사실과 다른 말을 한다(H-01). */
-function publicationTimeLine(review: ReviewState, publishedAt: string): string {
-  return review.key === 'withheld'
-    ? `공개 보류 · ${formatDateTime(publishedAt)} 공개분`
-    : `공개 ${formatDateTime(publishedAt)}`
-}
-
 function getContentTypeLabel(item: ContentItem): string {
   return item.display?.content_type_label ?? TYPE_LABELS[item.content_type] ?? '콘텐츠 유형 확인 필요'
 }
@@ -238,15 +124,15 @@ function getEssenceLabel(item: ContentItem): { label: string; color: string } {
   return { ...fallback, label: item.display?.essence_status_label ?? fallback.label }
 }
 
-function getBriefLabel(item: ContentItem): { label: string; color: string } {
-  if (!item.brief_status) return BRIEF_FALLBACK
-  const fallback = BRIEF_LABELS[item.brief_status] ?? { label: '콘텐츠 가이드 확인 필요', color: 'bg-slate-100 text-slate-700' }
-  return { ...fallback, label: item.display?.brief_status_label ?? fallback.label }
+/** 연결 여부만 읽기 전용으로 보여 준다 — 내부 식별자는 화면에 흘리지 않는다. */
+function describeGuideLink(text: unknown, linkedId: string | null | undefined): string {
+  if (typeof text === 'string' && text.trim()) return text.trim()
+  return linkedId ? '연결됨' : '미연결'
 }
 
 export default function ContentPage() {
   const { id } = useParams<{ id: string }>()
-  // 레이아웃이 이미 병원 정보를 들고 있다 — 발행 완료 링크(aeo_domain/slug)도 여기서 읽는다.
+  // 레이아웃이 이미 병원 정보를 들고 있다 — 공개 링크(aeo_domain/공개 주소)도 여기서 읽는다.
   const { hospital, refetch: refetchHeader } = useHospitalHeader()
   const aeoDomain = hospital?.aeo_domain ?? null
   const publicHost = aeoDomain ?? platformSubdomainHost(hospital?.slug)
@@ -257,11 +143,9 @@ export default function ContentPage() {
 
   // List state
   const [items, setItems] = useState<ContentItem[]>([])
-  const [activeFilter, setActiveFilter] = useState<ContentOperationsFilter>('all')
+  const [activeFilter, setActiveFilter] = useState<ContentRowFilter>('all')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [queryTargets, setQueryTargets] = useState<AIQueryTarget[]>([])
-  const [exposureActions, setExposureActions] = useState<ExposureAction[]>([])
   const [currentOperatorName, setCurrentOperatorName] = useState<string | null>(null)
 
   // Detail / edit modal
@@ -272,17 +156,9 @@ export default function ContentPage() {
   const destructiveConfirmRef = useRef<HTMLButtonElement>(null)
   const deepLinkOpenedRef = useRef(false)
   const [actionLoading, setActionLoading] = useState(false)
-  const [confirmAction, setConfirmAction] = useState<'reject' | 'regenerate' | 'cancel' | null>(null)
-  const confirmActionRef = useRef<'reject' | 'regenerate' | 'cancel' | null>(null)
-  const [rescheduleDate, setRescheduleDate] = useState('')
-  const [briefEditMode, setBriefEditMode] = useState(false)
-  const [briefQueryTargetId, setBriefQueryTargetId] = useState('')
-  const [briefExposureActionId, setBriefExposureActionId] = useState('')
-  const [briefStatus, setBriefStatus] = useState<BriefStatus>('DRAFT')
-  const [briefApprovedBy, setBriefApprovedBy] = useState('')
-  const [briefJson, setBriefJson] = useState('')
-  const [briefSaving, setBriefSaving] = useState(false)
-  const [briefError, setBriefError] = useState<string | null>(null)
+  // 사람이 되돌릴 수 없게 만드는 유일한 조작 — 표본에서 문제를 찾았을 때의 비공개.
+  const [confirmAction, setConfirmAction] = useState<'reject' | null>(null)
+  const confirmActionRef = useRef<'reject' | null>(null)
 
   // Inline edit
   const [editMode, setEditMode] = useState(false)
@@ -297,17 +173,9 @@ export default function ContentPage() {
   // 복구 가능한 초안이 있을 때만 편집 화면 상단에 배너로 안내한다.
   const [recoverableDraft, setRecoverableDraft] = useState<ContentDraftSnapshot | null>(null)
 
-  const [publishSuccessId, setPublishSuccessId] = useState<string | null>(null)
-
-  // 페이지 단위 액션 피드백 — 모달이 닫혀 있어도 행 단위 발행/반려 결과를 보여준다.
+  // 페이지 단위 액션 피드백 — 모달이 닫혀 있어도 결과를 보여준다.
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSuccess, setActionSuccess] = useState<string | null>(null)
-  const [regenerationRuns, setRegenerationRuns] = useState<Record<string, {
-    itemId: string
-    runId: string
-    kind: 'content' | 'image'
-  }>>({})
-  const regenerationKeys = useRef(new Map<string, string>())
 
   const load = useCallback(() => {
     setLoading(true)
@@ -324,8 +192,6 @@ export default function ContentPage() {
   const closeDetail = useCallback(() => {
     setSelected(null)
     setEditMode(false)
-    setBriefEditMode(false)
-    setPublishSuccessId(null)
     setRecoverableDraft(null)
     setConfirmAction(null)
   }, [])
@@ -420,64 +286,29 @@ export default function ContentPage() {
     }
   }, [closeDetail, selected])
 
-  useEffect(() => {
-    Promise.all([
-      fetchAPI<AIQueryTarget[]>(`/admin/hospitals/${id}/query-targets`).catch(() => [] as AIQueryTarget[]),
-      fetchAPI<ExposureAction[]>(`/admin/hospitals/${id}/exposure-actions?limit=20`).catch(() => [] as ExposureAction[]),
-    ]).then(([targets, actions]) => {
-      setQueryTargets(targets)
-      setExposureActions(actions)
-    })
-  }, [id])
-
+  // 운영 센터의 콘텐츠 딥링크(?content=)로 들어오면 그 글을 바로 연다.
   useEffect(() => {
     if (deepLinkOpenedRef.current) return
     const contentId = new URLSearchParams(window.location.search).get('content')
     if (!contentId) return
     deepLinkOpenedRef.current = true
     setEditMode(false)
-    setBriefEditMode(false)
     setEditError(null)
-    setBriefError(null)
     setViolations([])
     void fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${contentId}`)
       .then(setSelected)
-      .catch((reason: unknown) => {
-        setActionError(safeOperatorError('content', '목록에서 해당 콘텐츠의 ‘상세 보기’를 다시 누르세요.'))
+      .catch(() => {
+        setActionError(safeOperatorError('content', '목록에서 해당 콘텐츠의 ‘상세’를 다시 누르세요.'))
       })
   }, [id])
 
   // 전월 이월 콘텐츠 항목은 이번 달 최우선 처리 대상 — 목록 맨 위로 끌어올린다 (나머지는 기존 순서 유지).
   const sortedItems = useMemo(() => sortCarriedOverFirst(items), [items])
   const filteredItems = useMemo(
-    () => sortedItems.filter((item) => matchesContentOperationsFilter(item, activeFilter)),
+    () => sortedItems.filter((item) => matchesRowFilter(item, activeFilter)),
     [activeFilter, sortedItems],
   )
-  const carriedCount = useMemo(() => countCarriedOver(items), [items])
-
-  // Per-item review state, computed once per render
-  const reviewByItem = useMemo(() => {
-    const map = new Map<string, ReviewState>()
-    for (const item of items) map.set(item.id, getReviewState(item))
-    return map
-  }, [items])
-
-  const summary = useMemo(() => {
-    const totals = {
-      publishable: 0,
-      needsReview: 0,
-      notGenerated: 0,
-      published: 0,
-      rejected: 0,
-      cancelled: 0,
-      notificationPending: 0,
-      postReviewPending: 0,
-    }
-    for (const item of items) {
-      totals[getContentOperationsBucket(item)]++
-    }
-    return totals
-  }, [items])
+  const summary = useMemo(() => summarizeRows(items), [items])
 
   function clearActionFeedback() {
     setActionError(null)
@@ -492,7 +323,7 @@ export default function ContentPage() {
   ) => {
     try {
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${itemId}`)
-      // 반려(reject)는 scheduled_date가 오늘 이하면 내일로 재발행 일정한다 — 월말 반려는 다음
+      // 반려는 scheduled_date가 오늘 이하면 내일로 재발행 일정한다 — 월말 반려는 다음
       // 달로 넘어간다. 그 결과를 이번 달 목록에 그대로 병합하면 다음 달 콘텐츠 항목이 이번 달
       // 화면에 유령처럼 남으므로, 조회 중인 연/월과 다르면 병합 대신 제거한다.
       if (!belongsToMonthView(full, year, month)) {
@@ -503,14 +334,14 @@ export default function ContentPage() {
       setItems((prev) => prev.map((it) => (it.id === full.id ? full : it)))
       setSelected((prev) => {
         if (!prev || prev.id !== full.id) return prev
-        if (preserveOpenEditor && (editMode || briefEditMode)) return prev
+        if (preserveOpenEditor && editMode) return prev
         return full
       })
       return true
     } catch {
       return false
     }
-  }, [briefEditMode, editMode, id, year, month])
+  }, [editMode, id, year, month])
 
   const retryRefreshItem = useCallback((itemId: string) => {
     let attempt = 0
@@ -523,92 +354,6 @@ export default function ContentPage() {
     }
     retry()
   }, [refreshItem])
-
-  useEffect(() => {
-    const tracked = Object.entries(regenerationRuns)
-    if (tracked.length === 0) return
-    let cancelled = false
-    const checkRuns = async () => {
-      await Promise.all(tracked.map(async ([trackingKey, trackedRun]) => {
-        try {
-          const run = await fetchAPI<OperationsRunSummary>(
-            `/admin/operations/hospitals/${id}/runs/${trackedRun.runId}`,
-          )
-          if (cancelled || ['REQUESTED', 'QUEUED', 'RUNNING'].includes(run.state)) return
-          if (run.state === 'SUCCEEDED') {
-            setActionSuccess(
-              trackedRun.kind === 'image'
-                ? '새 대표 이미지가 준비됐습니다. 편집 중인 본문은 그대로 두었습니다.'
-                : '새 초안이 준비됐습니다. 편집 중인 내용은 그대로 두었습니다.',
-            )
-          } else {
-            setActionError('자동 작업을 완료하지 못했습니다. 운영 센터에서 원인과 다음 조치를 확인해 주세요.')
-          }
-          setRegenerationRuns((current) => {
-            if (current[trackingKey]?.runId !== trackedRun.runId) return current
-            const next = { ...current }
-            delete next[trackingKey]
-            return next
-          })
-          if (run.state === 'SUCCEEDED') {
-            await refreshItem(trackedRun.itemId, { preserveOpenEditor: true })
-          }
-        } catch {
-          // 요청은 이미 접수됐다. 조회 장애 때 같은 생성 요청을 다시 보내지 않고 다음
-          // 폴링에서 이 실행 기록만 다시 확인한다.
-        }
-      }))
-    }
-    void checkRuns()
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void checkRuns()
-    }, 5000)
-    return () => {
-      cancelled = true
-      window.clearInterval(timer)
-    }
-  }, [id, refreshItem, regenerationRuns])
-
-  async function handlePublish(itemId: string) {
-    // 발행자는 서버가 확인된 로그인 actor로 기록한다. 본문으로 이름을 보내지 않는다 (H-09).
-    setActionLoading(true)
-    clearActionFeedback()
-    try {
-      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      })
-      setPublishSuccessId(itemId)
-      setActionSuccess('운영 복구 발행을 완료했습니다.')
-      void refetchHeader()
-      void refreshItem(itemId)
-    } catch (e: unknown) {
-      // 병원 게이트(일시정지·일정 미설정)의 409는 서버가 할 일을 이미 문장으로 준다 — 의료광고
-      // 안내로 덮으면 운영자는 재개·일정 설정 대신 본문만 다시 본다 (H-09).
-      const gateMessage = readPublishGateMessage(e)
-      const message =
-        gateMessage ?? safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
-      const violationList = readViolationsFromError(e)
-      // 편집 모드 전환은 해당 콘텐츠가 모달에 열려 있을 때만 — 닫힌 모달의 상태를 건드리지 않는다.
-      if (selected && selected.id === itemId) {
-        if (violationList.length > 0) {
-          setViolations(violationList)
-          setEditError(`문제: 의료광고 금지 표현이 발견됐습니다: ${violationList.join(', ')}\n고객 영향: 이 상태의 글은 공개하지 않습니다.\n지금 할 일: 표시된 표현을 수정하고 저장한 뒤 다시 발행하세요.`)
-          setEditMode(true)
-          setEditTitle(selected.title ?? '')
-          setEditBody(selected.body ?? '')
-          setEditMeta(selected.meta_description ?? '')
-          setEditReferences(selected.references ?? [])
-        } else {
-          setEditError(message)
-        }
-      } else {
-        setActionError(message)
-      }
-    } finally {
-      setActionLoading(false)
-    }
-  }
 
   async function handlePostPublishReview(itemId: string) {
     setActionLoading(true)
@@ -647,7 +392,7 @@ export default function ContentPage() {
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reject`, { method: 'POST' })
-      setActionSuccess('콘텐츠를 반려했습니다. 야간에 재생성됩니다.')
+      setActionSuccess('콘텐츠를 비공개했습니다. 야간에 재생성됩니다.')
       void refetchHeader()
       void refreshItem(itemId)
       setSelected(null)
@@ -660,122 +405,9 @@ export default function ContentPage() {
     }
   }
 
-  async function handleRegenerate(itemId: string) {
-    setActionLoading(true)
-    setConfirmAction(null)
-    clearActionFeedback()
-    const fingerprint = `content\u0000${itemId}`
-    const requestKey = getOrCreatePendingActionKey(
-      regenerationKeys.current,
-      fingerprint,
-      () => `admin:regenerate-content:${itemId}:${crypto.randomUUID()}`,
-    )
-    try {
-      const result = await fetchAPI<OperationResponse>(
-        `/admin/hospitals/${id}/content/${itemId}/regenerate`,
-        {
-          method: 'POST',
-          headers: { 'Idempotency-Key': requestKey },
-        },
-      )
-      regenerationKeys.current.delete(fingerprint)
-      if (result.operation_run_id) {
-        setRegenerationRuns((current) => ({
-          ...current,
-          [`${itemId}:content`]: { itemId, runId: result.operation_run_id!, kind: 'content' },
-        }))
-      }
-      setActionSuccess('새 초안을 준비하고 있습니다. 완료되면 이 화면에 자동으로 반영됩니다.')
-      void refetchHeader()
-    } catch (e: unknown) {
-      const message = safeOperatorError('content', '콘텐츠 목록을 다시 불러온 뒤 ‘다시 만들기’를 누르세요.')
-      if (selected && selected.id === itemId) setEditError(message)
-      else setActionError(message)
-    } finally {
-      setActionLoading(false)
-    }
-  }
-
-  // 아래 셋은 백엔드에 이미 있던 복구 경로인데 화면이 없어 AE가 쓸 수 없었다.
-  // 휴일·장애로 밀린 콘텐츠 항목 이동, 중복 콘텐츠 항목 정리, 본문은 멀쩡한데 이미지만 실패한 경우.
-  async function handleReschedule(itemId: string, scheduledDate: string) {
-    setActionLoading(true)
-    clearActionFeedback()
-    try {
-      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reschedule`, {
-        method: 'POST',
-        body: JSON.stringify({ scheduled_date: scheduledDate }),
-      })
-      setActionSuccess(`발행 예정일을 ${scheduledDate}로 옮겼습니다.`)
-      load()
-      setSelected(null)
-    } catch (e: unknown) {
-      const message = safeOperatorError('content', '날짜를 확인한 뒤 ‘발행일 변경’을 다시 누르세요.')
-      if (selected && selected.id === itemId) setEditError(message)
-      else setActionError(message)
-    } finally {
-      setActionLoading(false)
-    }
-  }
-
-  async function handleCancelSlot(itemId: string) {
-    setActionLoading(true)
-    setConfirmAction(null)
-    clearActionFeedback()
-    try {
-      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/cancel`, { method: 'POST' })
-      setActionSuccess('콘텐츠 항목을 종료했습니다. 자동 생성·발행 대상에서 빠집니다.')
-      void refetchHeader()
-      load()
-      setSelected(null)
-    } catch (e: unknown) {
-      const message = safeOperatorError('content', '최신 상태를 확인한 뒤 ‘콘텐츠 항목 종료’를 다시 누르세요.')
-      if (selected && selected.id === itemId) setEditError(message)
-      else setActionError(message)
-    } finally {
-      setActionLoading(false)
-    }
-  }
-
-  async function handleRegenerateImage(itemId: string) {
-    setActionLoading(true)
-    clearActionFeedback()
-    const fingerprint = `image\u0000${itemId}`
-    const requestKey = getOrCreatePendingActionKey(
-      regenerationKeys.current,
-      fingerprint,
-      () => `admin:regenerate-image:${itemId}:${crypto.randomUUID()}`,
-    )
-    try {
-      const result = await fetchAPI<OperationResponse>(
-        `/admin/hospitals/${id}/content/${itemId}/regenerate-image`,
-        {
-          method: 'POST',
-          headers: { 'Idempotency-Key': requestKey },
-        },
-      )
-      regenerationKeys.current.delete(fingerprint)
-      if (result.operation_run_id) {
-        setRegenerationRuns((current) => ({
-          ...current,
-          [`${itemId}:image`]: { itemId, runId: result.operation_run_id!, kind: 'image' },
-        }))
-      }
-      setActionSuccess('새 대표 이미지를 준비하고 있습니다. 본문은 그대로 유지됩니다.')
-    } catch (e: unknown) {
-      const message = safeOperatorError('content', '본문 상태를 확인한 뒤 ‘이미지만 다시 만들기’를 누르세요.')
-      if (selected && selected.id === itemId) setEditError(message)
-      else setActionError(message)
-    } finally {
-      setActionLoading(false)
-    }
-  }
-
   async function openDetail(item: ContentItem) {
     setEditMode(false)
-    setBriefEditMode(false)
     setEditError(null)
-    setBriefError(null)
     setViolations([])
     try {
       const full = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${item.id}`)
@@ -846,17 +478,6 @@ export default function ContentPage() {
     setEditReferences((prev) => prev.filter((_, i) => i !== index))
   }
 
-  function enterBriefEditMode() {
-    if (!selected) return
-    setBriefQueryTargetId(selected.query_target_id ?? '')
-    setBriefExposureActionId(selected.exposure_action_id ?? '')
-    setBriefStatus((selected.brief_status as BriefStatus | null) ?? 'DRAFT')
-    setBriefApprovedBy(selected.brief_approved_by ?? currentOperatorName ?? '')
-    setBriefJson(selected.content_brief ? JSON.stringify(washContentGuideValue(selected.content_brief), null, 2) : '')
-    setBriefError(null)
-    setBriefEditMode(true)
-  }
-
   function handleEditBodyChange(val: string) {
     setEditBody(val)
     const found = checkForbidden(`${editTitle} ${val} ${editMeta}`)
@@ -905,9 +526,6 @@ export default function ContentPage() {
       })
       clearDraftSnapshot(id, selected.id)
       setRecoverableDraft(null)
-      // 공개 필드를 고치면 서버가 이미지 인증을 무효화해 이 판이 공개에서 내려갈 수 있다.
-      // 직전 발행 성공 배너는 그 사실을 모른 채 "공개 사이트에 게시됨"이라고 계속 말한다.
-      setPublishSuccessId((prev) => (prev === updated.id ? null : prev))
       setSelected(updated)
       setEditMode(false)
       setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
@@ -924,76 +542,22 @@ export default function ContentPage() {
     }
   }
 
-  async function handleSaveBrief() {
-    if (!selected) return
-    let parsedBrief: Record<string, unknown> | undefined
-    const approvedBy = briefStatus === 'APPROVED'
-      ? resolveAuditActorName(currentOperatorName)
-      : null
-    if (briefStatus === 'APPROVED' && !approvedBy) {
-      setBriefError('로그인 운영자 정보를 확인할 수 없어 승인자를 기록하지 못합니다. 다시 로그인한 뒤 승인해 주세요.')
-      return
-    }
-    const trimmed = briefJson.trim()
-    if (trimmed) {
-      try {
-        const parsed = JSON.parse(trimmed)
-        if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-          setBriefError('콘텐츠 가이드 원본은 객체 형태여야 합니다.')
-          return
-        }
-        parsedBrief = parsed as Record<string, unknown>
-      } catch {
-        setBriefError('콘텐츠 가이드 원본 형식이 올바르지 않습니다.')
-        return
-      }
-    }
-
-    setBriefSaving(true)
-    setBriefError(null)
-    try {
-      const updated = await fetchAPI<ContentItem>(`/admin/hospitals/${id}/content/${selected.id}/brief`, {
-        method: 'PATCH',
-        body: JSON.stringify({
-          query_target_id: briefQueryTargetId || null,
-          exposure_action_id: briefExposureActionId || null,
-          brief_status: briefStatus,
-          brief_approved_by: approvedBy,
-          ...(parsedBrief ? { content_brief: parsedBrief } : { regenerate_brief: true }),
-        }),
-      })
-      setSelected(updated)
-      setBriefEditMode(false)
-      setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
-    } catch (e: unknown) {
-      setBriefError(safeOperatorError('content', '콘텐츠 가이드 내용을 확인한 뒤 ‘저장’을 다시 누르세요.'))
-    } finally {
-      setBriefSaving(false)
-    }
-  }
-
   const currentYear = new Date().getFullYear()
   const yearOptions = [currentYear - 1, currentYear, currentYear + 1]
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
 
-  const selectedReview = selected ? getReviewState(selected) : null
+  const selectedRow = selected ? describeRowState(selected.row_state) : null
   const selectedNotification = selected ? getPublishNotificationPresentation(selected) : null
   const selectedPublicUrl = selected ? buildPublicContentUrl(publicHost, selected.id) : null
-  const contentRegenerationActive = Boolean(selected && regenerationRuns[`${selected.id}:content`])
-  const imageRegenerationActive = Boolean(selected && regenerationRuns[`${selected.id}:image`])
+  const selectedVisible = selected?.compliance?.public_visibility?.visible === true
+  const selectedSample = selected ? canConfirmSample(selected) : false
   // 금지 표현 검출도 backend compliance가 단일 기준 (FAQ 분리 필드까지 포함해 검사한다).
   // FORBIDDEN_RULES는 편집 모드의 실시간 힌트 용도로만 유지.
   const selectedTextViolations = selected?.compliance.forbidden_violations ?? []
   const selectedFindings: string[] = Array.isArray(selected?.essence_check_summary?.findings)
     ? (selected!.essence_check_summary!.findings as unknown[]).map((f) => String(f))
     : []
-  const selectedTarget = selected?.query_target_id
-    ? queryTargets.find((target) => target.id === selected.query_target_id) ?? null
-    : null
-  const selectedAction = selected?.exposure_action_id
-    ? exposureActions.find((action) => action.id === selected.exposure_action_id) ?? null
-    : null
-  const applyOperationsFilter = (filter: ContentOperationsFilter) => {
+  const applyRowFilter = (filter: ContentRowFilter) => {
     setActiveFilter(filter)
     window.requestAnimationFrame(() => {
       document.getElementById('content-operations-list')?.scrollIntoView({
@@ -1002,19 +566,6 @@ export default function ContentPage() {
       })
     })
   }
-  const primaryOperation: {
-    label: string
-    value: number
-    tone: 'green' | 'orange' | 'gray' | 'blue' | 'amber' | 'red'
-    hint: string
-    filter: ContentOperationsFilter
-  } = summary.needsReview > 0
-    ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '공개 전 차단·공개 보류 사유를 확인하고 조치', filter: 'needsReview' }
-    : summary.notificationPending > 0
-      ? { label: '지금 확인: Slack 알림 확인 필요', value: summary.notificationPending, tone: 'amber', hint: '눌러 아래 항목의 알림 상태와 처리 방법 확인', filter: 'notificationPending' }
-      : summary.postReviewPending > 0
-        ? { label: '지금 확인: 공개 내용', value: summary.postReviewPending, tone: 'blue', hint: '공개된 글에 문제가 없는지 확인', filter: 'postReviewPending' }
-        : { label: '현재 자동 발행 대기', value: summary.publishable, tone: 'green', hint: '공개 전 안전 확인을 통과한 콘텐츠', filter: 'publishable' }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -1022,9 +573,9 @@ export default function ContentPage() {
       <div className="mb-6">
         <div data-current-task className="flex flex-wrap items-end justify-between gap-4">
           <div>
-            <h2 className="text-2xl font-bold text-slate-900">자동 발행 · 예외 관제</h2>
+            <h2 className="text-2xl font-bold text-slate-900">콘텐츠</h2>
             <p className="text-sm text-slate-500 mt-1">
-              예약 콘텐츠는 발행일 08시에 자동 검증·공개됩니다. 자동 복구로 해결할 수 없는 예외만 확인하세요.
+              발행일 08:00 자동 공개, 사람은 표본 확인만 합니다.
             </p>
           </div>
         </div>
@@ -1036,24 +587,17 @@ export default function ContentPage() {
           <DismissibleBanner tone="success" message={actionSuccess} dismissLabel="완료 메시지 닫기" onClose={() => setActionSuccess(null)} />
         )}
 
-        {/* 현재 할 일에 시각적 우선순위를 주고, 정상/기록 상태는 펼침 안으로 보낸다. */}
-        <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <SummaryCard {...primaryOperation} featured activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-          <SummaryCard label="자동 발행 대기" value={summary.publishable} tone="green" hint="공개 전 안전 확인 통과" filter="publishable" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-          <SummaryCard label="공개 내용 확인 대기" value={summary.postReviewPending} tone="blue" hint="Slack 알림 후 공개 글 확인" filter="postReviewPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+        {/* 카드는 공개 사이트와 같은 판정을 그대로 센다 — 화면이 따로 묶지 않는다. */}
+        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+          <SummaryCard label="공개 중" value={summary.public} tone="green" hint="공개 페이지에 게시됨" filter="public" activeFilter={activeFilter} onFilter={applyRowFilter} />
+          <SummaryCard label="공개 보류" value={summary.withheld} tone="amber" hint="발행됐지만 공개 페이지에 없음" filter="withheld" activeFilter={activeFilter} onFilter={applyRowFilter} />
+          <SummaryCard label="예정" value={summary.scheduled} tone="blue" hint="발행일 08:00 자동 공개" filter="scheduled" activeFilter={activeFilter} onFilter={applyRowFilter} />
+          <SummaryCard label="초안 생성 중" value={summary.generating} tone="gray" hint="자동 생성 대기" filter="generating" activeFilter={activeFilter} onFilter={applyRowFilter} />
+          <SummaryCard label="차단" value={summary.blocked} tone="orange" hint="운영 센터에서 조치" filter="blocked" activeFilter={activeFilter} onFilter={applyRowFilter} />
+          {summary.carried > 0 && (
+            <SummaryCard label="이월" value={summary.carried} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={applyRowFilter} />
+          )}
         </div>
-        <details className="admin-disclosure mt-3">
-          <summary>전체 처리 상태</summary>
-          <div className="grid grid-cols-2 gap-3 p-3 md:grid-cols-3 xl:grid-cols-6">
-            {carriedCount > 0 && <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={applyOperationsFilter} />}
-            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 차단·공개 보류" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="Slack 알림 확인 필요" value={summary.notificationPending} tone="amber" hint="알림 상태와 처리 방법 확인" filter="notificationPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="정상 발행" value={summary.published} tone="green" hint="자동 검증 통과·공개 완료" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="재생성 대기" value={summary.rejected} tone="red" hint="반려됨 · 야간 재생성" filter="rejected" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-            <SummaryCard label="종료" value={summary.cancelled} tone="gray" hint="중복되거나 오래된 콘텐츠" filter="cancelled" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
-          </div>
-        </details>
         {activeFilter !== 'all' && (
           <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-800">
             <span>선택한 상태만 표시 중 · {filteredItems.length}건</span>
@@ -1114,7 +658,7 @@ export default function ContentPage() {
               </div>
             )}
             {filteredItems.map((item) => {
-              const review = reviewByItem.get(item.id) ?? getReviewState(item)
+              const row = describeRowState(item.row_state)
               return (
                 <article key={item.id} className="p-4 sm:p-5">
                   <div className="flex items-start justify-between gap-3">
@@ -1127,18 +671,20 @@ export default function ContentPage() {
                         <span>{item.sequence_no}/{item.total_count}</span>
                       </div>
                       <h3 className="mt-2 text-sm font-semibold text-slate-900">
-                        {item.title ?? <span className="font-normal italic text-slate-400">생성 전</span>}
+                        {item.title ?? <span className="font-normal italic text-slate-400">제목 준비 중</span>}
                       </h3>
                     </div>
-                    <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${review.badge}`}>
-                      {review.label}
+                    <span className={`inline-flex shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${ROW_TONE_BADGES[row.tone]}`}>
+                      {row.label}
                     </span>
                   </div>
-                  {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
-                    <p className="mt-2 text-xs text-slate-500">Slack 알림 {formatDateTime(item.post_publish_notified_at)}</p>
+                  {row.detail && (
+                    <p className="mt-2 break-keep [overflow-wrap:anywhere] text-xs text-slate-600">{row.detail}</p>
                   )}
-                  {review.key === 'withheld' && (
-                    <p className="mt-2 break-keep [overflow-wrap:anywhere] text-xs text-amber-800">공개 페이지에서 보류 중 — {review.reason}</p>
+                  {row.href && (
+                    <a href={row.href} className="mt-1 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 underline underline-offset-2">
+                      운영 센터에서 조치
+                    </a>
                   )}
                   {item.carried_over_from && (
                     <span className="mt-2 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
@@ -1150,7 +696,7 @@ export default function ContentPage() {
                     onClick={() => openDetail(item)}
                     className="mt-3 inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                   >
-                    {review.key === 'withheld' ? '보류 사유 확인' : getContentOperationsState(item) === 'notificationPending' ? '알림 상태 확인' : getContentOperationsState(item) === 'postReviewPending' ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
+                    {canConfirmSample(item) ? '확인' : '상세'}
                   </button>
                 </article>
               )
@@ -1160,35 +706,31 @@ export default function ContentPage() {
           <table className="min-w-[1080px] w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="whitespace-nowrap break-keep text-left px-6 py-3 text-slate-600 font-medium">발행예정일</th>
+                <th className="whitespace-nowrap break-keep text-left px-6 py-3 text-slate-600 font-medium">발행일</th>
                 <th className="whitespace-nowrap break-keep text-left px-6 py-3 text-slate-600 font-medium">유형</th>
                 <th className="text-left px-6 py-3 text-slate-600 font-medium">제목</th>
                 <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">순번</th>
-                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">자동 발행 / 공개 내용 확인</th>
-                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">운영 기준</th>
-                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">콘텐츠 가이드</th>
+                <th className="whitespace-nowrap break-keep text-center px-6 py-3 text-slate-600 font-medium">상태</th>
                 <th className="whitespace-nowrap break-keep text-right px-6 py-3 text-slate-600 font-medium">액션</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredItems.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="text-center py-12 text-slate-400 text-sm">
+                  <td colSpan={6} className="text-center py-12 text-slate-400 text-sm">
                     {items.length === 0 ? '이번 달 콘텐츠가 아직 없습니다.' : '선택한 상태의 콘텐츠가 없습니다.'}
                     <br />
-                    {items.length === 0 && <span className="text-slate-500">발행 일정 탭에서 월간 콘텐츠 항목을 만들거나 야간 생성 결과를 기다려 주세요.</span>}
+                    {items.length === 0 && <span className="text-slate-500">발행 일정 탭에서 월 발행 편수를 확인하거나 야간 생성 결과를 기다려 주세요.</span>}
                   </td>
                 </tr>
               )}
               {filteredItems.map((item) => {
-                const review = reviewByItem.get(item.id) ?? getReviewState(item)
-                const essence = getEssenceLabel(item)
-                const brief = getBriefLabel(item)
+                const row = describeRowState(item.row_state)
                 return (
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 text-slate-600">
                       <div>{item.scheduled_date}</div>
-                      {item.published_at && <span className="mt-1 block text-[11px] text-slate-400">{publicationTimeLine(review, item.published_at)}</span>}
+                      {item.published_at && <span className="mt-1 block text-[11px] text-slate-400">{formatDateTime(item.published_at)} 공개분</span>}
                       {item.carried_over_from && (
                         <span
                           title={`원래 예정일: ${formatDate(item.carried_over_from)}`}
@@ -1201,72 +743,32 @@ export default function ContentPage() {
                     <td className="whitespace-nowrap break-keep px-6 py-4 text-slate-600">{getContentTypeLabel(item)}</td>
                     <td className="px-6 py-4">
                       <button onClick={() => openDetail(item)} className="inline-flex min-h-11 items-center text-left text-blue-600 hover:underline">
-                        {item.title ?? <span className="text-slate-400 italic">생성 전</span>}
+                        {item.title ?? <span className="text-slate-400 italic">제목 준비 중</span>}
                       </button>
                     </td>
                     <td className="px-6 py-4 text-center text-slate-500">
                       {item.sequence_no}/{item.total_count}
                     </td>
                     <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${review.badge}`}>
-                        {review.label}
+                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${ROW_TONE_BADGES[row.tone]}`}>
+                        {row.label}
                       </span>
-                      {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
-                        <span className="mt-1 block text-[11px] text-slate-500">알림 {formatDateTime(item.post_publish_notified_at)}</span>
+                      {row.detail && (
+                        <span className="mt-1 block break-keep [overflow-wrap:anywhere] text-[11px] text-slate-600">{row.detail}</span>
                       )}
-                      {review.key === 'withheld' && (
-                        <span className="mt-1 block break-keep [overflow-wrap:anywhere] text-[11px] text-amber-800">{review.reason}</span>
+                      {row.href && (
+                        <a href={row.href} className="mt-1 inline-flex min-h-11 items-center text-[11px] font-semibold text-blue-700 underline underline-offset-2">
+                          운영 센터에서 조치
+                        </a>
                       )}
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${essence.color}`}>
-                        {essence.label}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${brief.color}`}>
-                        {brief.label}
-                      </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      {review.key === 'withheld' ? (
-                        <button
-                          onClick={() => openDetail(item)}
-                          className="inline-flex min-h-11 items-center whitespace-nowrap break-keep rounded-md px-2.5 text-xs font-medium text-amber-800 hover:bg-amber-50"
-                        >
-                          보류 사유 확인
-                        </button>
-                      ) : getContentOperationsState(item) === 'notificationPending' ? (
-                        <button
-                          onClick={() => openDetail(item)}
-                          className="inline-flex min-h-11 items-center whitespace-nowrap break-keep rounded-md px-2.5 text-xs font-medium text-amber-800 hover:bg-amber-50"
-                        >
-                          알림 상태 확인
-                        </button>
-                      ) : getContentOperationsState(item) === 'postReviewPending' ? (
-                        <button
-                          onClick={() => openDetail(item)}
-                          className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
-                        >
-                          공개 내용 확인
-                        </button>
-                      ) : item.status === 'PUBLISHED' ? (
-                        // 아무도 보지 않은 글을 "확인 완료"라고 쓰면 목록이 사실과 다른 말을 한다(M-21).
-                        <span className="text-xs text-green-700">
-                          {item.post_publish_reviewed_at ? '확인 완료' : '공개 중'}
-                        </span>
-                      ) : review.key === 'needsReview' && item.title ? (
-                        <button
-                          onClick={() => openDetail(item)}
-                          className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium text-orange-700 hover:bg-orange-50"
-                        >
-                          차단 사유 확인
-                        </button>
-                      ) : (
-                        <button onClick={() => openDetail(item)} className="inline-flex min-h-11 items-center rounded-md px-2.5 text-xs text-slate-600 hover:bg-slate-100">
-                          상세 확인
-                        </button>
-                      )}
+                      <button
+                        onClick={() => openDetail(item)}
+                        className={`inline-flex min-h-11 items-center rounded-md px-2.5 text-xs font-medium hover:bg-slate-100 ${canConfirmSample(item) ? 'text-blue-700' : 'text-slate-600'}`}
+                      >
+                        {canConfirmSample(item) ? '확인' : '상세'}
+                      </button>
                     </td>
                   </tr>
                 )
@@ -1278,7 +780,7 @@ export default function ContentPage() {
       )}
 
       {/* Detail / Edit Modal */}
-      {selected && selectedReview && createPortal((
+      {selected && selectedRow && createPortal((
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           role="presentation"
@@ -1294,7 +796,7 @@ export default function ContentPage() {
             aria-modal="true"
             aria-labelledby="content-dialog-title"
             aria-describedby="content-dialog-status"
-            className={`flex max-h-[90vh] w-full flex-col overflow-hidden rounded-xl bg-white shadow-xl ${editMode || briefEditMode ? 'max-w-5xl' : 'max-w-2xl'}`}
+            className={`flex max-h-[90vh] w-full flex-col overflow-hidden rounded-xl bg-white shadow-xl ${editMode ? 'max-w-5xl' : 'max-w-2xl'}`}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 p-4 sm:p-6">
@@ -1310,31 +812,18 @@ export default function ContentPage() {
                     전월 이월 — 우선 처리
                   </span>
                 )}
-                {!editMode && !briefEditMode && (
-                  <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">{selected.title ?? '생성 전 콘텐츠 항목'}</h3>
+                {!editMode && (
+                  <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">{selected.title ?? '제목 준비 중'}</h3>
                 )}
                 {editMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 편집</h3>}
-                {briefEditMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 가이드 편집</h3>}
                 <p id="content-dialog-status" className="mt-1 text-xs text-slate-500">
                   {selected.published_at
-                    ? (selectedReview.key === 'withheld'
-                        ? publicationTimeLine(selectedReview, selected.published_at)
-                        : `${selectedReview.label} · ${formatDateTime(selected.published_at)} 공개`)
-                    : `${selectedReview.label} · ${selected.scheduled_date} 예정`}
+                    ? `${selectedRow.label} · ${formatDateTime(selected.published_at)} 공개분`
+                    : `${selectedRow.label} · ${selected.scheduled_date} 예정`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {/* 콘텐츠 가이드는 아직 생성되지 않은 초안을 위한 입력이다. 공개된 글에서 열어도
-                    저장이 서버에서 막히므로 버튼을 띄우지 않는다(M-15). */}
-                {!editMode && !briefEditMode && selected.status === 'DRAFT' && (
-                  <button
-                    onClick={enterBriefEditMode}
-                    className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 sm:inline-flex sm:items-center"
-                  >
-                    콘텐츠 가이드 편집
-                  </button>
-                )}
-                {!editMode && !briefEditMode && (selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
+                {!editMode && (selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
                   <button
                     onClick={enterEditMode}
                     className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 sm:inline-flex sm:items-center"
@@ -1354,22 +843,6 @@ export default function ContentPage() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {/* 발행 성공 배너는 "지금 공개 사이트에 있다"는 주장이다 — 이 판이 보류로
-                바뀌었거나 다른 항목을 열었다면 그 주장은 더 이상 사실이 아니다. */}
-            {publishSuccessId === selected.id && selectedPublicUrl && selectedReview.key !== 'withheld' && (
-              <div className="mx-6 mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
-                <p className="text-sm font-medium text-green-800">발행 완료 — 콘텐츠가 공개 사이트에 게시되었습니다.</p>
-                <a
-                  href={selectedPublicUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-1 inline-flex items-center gap-1 text-sm font-medium text-green-700 underline underline-offset-2 hover:text-green-800"
-                >
-                  사이트에서 보기 ↗
-                </a>
-              </div>
-            )}
-
             {editError && (
               <div className="mx-6 mt-4">
                 <OperatorIssuePanel message={editError} surface="content" />
@@ -1380,98 +853,8 @@ export default function ContentPage() {
                 )}
               </div>
             )}
-            {briefError && (
-              <div className="mx-6 mt-4"><OperatorIssuePanel message={briefError} surface="content" /></div>
-            )}
 
-            {briefEditMode ? (
-              <div className="p-6 space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">연결할 환자 질문</label>
-                    <select
-                      value={briefQueryTargetId}
-                      onChange={(e) => setBriefQueryTargetId(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="">연결 안 함</option>
-                      {queryTargets.map((target) => (
-                        <option key={target.id} value={target.id}>
-                          {target.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">연결할 노출 보완 작업</label>
-                    <select
-                      value={briefExposureActionId}
-                      onChange={(e) => setBriefExposureActionId(e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="">연결 안 함</option>
-                      {exposureActions.map((action) => (
-                        <option key={action.id} value={action.id}>
-                          {action.title}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">콘텐츠 가이드 상태</label>
-                    <select
-                      value={briefStatus}
-                      onChange={(e) => setBriefStatus(e.target.value as BriefStatus)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    >
-                      <option value="DRAFT">작성중</option>
-                      <option value="APPROVED">승인</option>
-                      <option value="NEEDS_REVIEW">재검토</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">승인자</label>
-                    <input
-                      type="text"
-                      value={briefStatus === 'APPROVED' ? (currentOperatorName ?? '') : briefApprovedBy}
-                      readOnly
-                      disabled={briefStatus !== 'APPROVED'}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-50 disabled:text-slate-400"
-                    />
-                  </div>
-                </div>
-                <details className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                  <summary className="cursor-pointer text-sm font-medium text-slate-700">
-                    콘텐츠 가이드 고급 편집 열기
-                  </summary>
-                  <p className="mt-2 text-xs text-slate-500">
-                    보통은 위의 환자 질문·노출 보완 작업 연결만 조정하면 됩니다. 원본 구조를 직접 수정해야 할 때만 펼쳐서 사용하세요.
-                  </p>
-                  <textarea
-                    value={briefJson}
-                    onChange={(e) => setBriefJson(e.target.value)}
-                    rows={18}
-                    placeholder="비워두면 연결한 환자 질문과 노출 보완 작업을 기준으로 콘텐츠 가이드 초안이 자동 생성됩니다."
-                    className="mt-3 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none bg-white"
-                  />
-                </details>
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleSaveBrief}
-                    disabled={briefSaving}
-                    className="px-5 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
-                  >
-                    {briefSaving ? '저장 중...' : '콘텐츠 가이드 저장'}
-                  </button>
-                  <button
-                    onClick={() => { setBriefEditMode(false); setBriefError(null) }}
-                    className="px-5 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200"
-                  >
-                    취소
-                  </button>
-                </div>
-              </div>
-            ) : editMode ? (
+            {editMode ? (
               /* Edit split view */
               <div className="p-6">
                 {recoverableDraft && (
@@ -1598,6 +981,7 @@ export default function ContentPage() {
                     ))}
                   </div>
                 </div>
+                <p className="mb-3 text-xs text-slate-500">{EDIT_SAVE_NOTICE}</p>
                 <div className="flex gap-3">
                   <button
                     onClick={handleSaveEdit}
@@ -1630,29 +1014,14 @@ export default function ContentPage() {
                     답변 노출 콘텐츠 가이드
                   </div>
                   <div className="p-4 space-y-3 text-sm">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        getBriefLabel(selected).color
-                      }`}>
-                        {getBriefLabel(selected).label}
-                      </span>
-                      {selected.brief_approved_at && (
-                        <span className="text-xs text-slate-500">
-                          {selected.brief_approved_by ?? 'AE'} · {selected.brief_approved_at}
-                        </span>
-                      )}
-                    </div>
-                    <BriefField label="연결된 환자 질문" value={selectedTarget?.name ?? selected.query_target_id ?? '미연결'} />
-                    <BriefField label="연결된 노출 보완 작업" value={selectedAction?.title ?? selected.exposure_action_id ?? '미연결'} />
-                    <BriefField label="환자 질문" value={String(selected.content_brief?.target_query ?? '미작성')} />
-                    <BriefField label="환자 의도" value={String(selected.content_brief?.patient_intent ?? '미작성')} />
                     <BriefField
-                      label="내부 링크"
-                      value={formatBriefValue(selected.content_brief?.internal_link_target)}
+                      label="연결된 환자 질문"
+                      value={describeGuideLink(selected.content_brief?.target_query, selected.query_target_id)}
                     />
-                    <BriefList label="반드시 담을 메시지" values={selected.content_brief?.must_use_messages} />
-                    <BriefList label="피해야 할 표현" values={selected.content_brief?.avoid_messages} />
-                    <BriefList label="의료광고 리스크 규칙" values={selected.content_brief?.medical_risk_rules} />
+                    <BriefField
+                      label="연결된 노출 보완 작업"
+                      value={describeGuideLink(null, selected.exposure_action_id)}
+                    />
                   </div>
                 </div>
 
@@ -1712,34 +1081,12 @@ export default function ContentPage() {
                         ))}
                       </ul>
                     )}
+                    {/* 공개 여부는 공개 사이트와 같은 판정을 그대로 쓴다(H-01). */}
                     <CheckRow
-                      label={selected.status === 'PUBLISHED' ? '공개·알림 상태' : selectedReview.key === 'rejected' ? '공개 상태' : '자동 발행 상태'}
-                      value={
-                        selectedReview.publishable
-                          ? '발행일 08:00 자동 공개 예정'
-                          : selectedReview.label
-                      }
-                      tone={
-                        selectedReview.key === 'notificationPending' || selectedReview.key === 'rejected'
-                          ? 'bad'
-                          // 발행 상태라도 공개 페이지가 숨기는 중이면 정상이 아니다(H-01).
-                          : selectedReview.key === 'withheld'
-                            ? 'warn'
-                            : selectedReview.publishable || selected.status === 'PUBLISHED'
-                              ? 'ok'
-                              : 'warn'
-                      }
+                      label="공개 상태"
+                      value={selectedRow.detail ? `${selectedRow.label} — ${selectedRow.detail}` : selectedRow.label}
+                      tone={selectedRow.tone === 'good' ? 'ok' : selectedRow.tone === 'warn' ? 'bad' : 'warn'}
                     />
-                    {selected.compliance.blockers.length > 0 && (
-                      <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2">
-                        <p className="text-xs font-semibold text-orange-800">발행 차단 사유</p>
-                        <ul className="mt-1 list-disc list-inside text-xs text-orange-700">
-                          {selected.compliance.blockers.map((blocker, idx) => (
-                            <li key={`${blocker}-${idx}`}>{blocker}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
                   </div>
                 </div>
 
@@ -1758,18 +1105,17 @@ export default function ContentPage() {
 
             </div>
 
-            {!editMode && !briefEditMode && (
+            {!editMode && (
               <div className="shrink-0 border-t border-slate-200 bg-white p-4 shadow-[0_-8px_24px_rgba(15,23,42,0.08)] sm:p-5">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <div className="text-xs text-slate-600">
-                    <span className={`mr-2 inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedReview.badge}`}>{selectedReview.label}</span>
+                    <span className={`mr-2 inline-flex rounded-full px-2.5 py-1 font-semibold ${ROW_TONE_BADGES[selectedRow.tone]}`}>{selectedRow.label}</span>
                     {selected.status === 'PUBLISHED' && selectedNotification?.state === 'SENT' && selected.post_publish_notified_at && `Slack 전달 ${formatDateTime(selected.post_publish_notified_at)}`}
                   </div>
                   {/* 공개 페이지가 숨기는 글에 링크를 걸면 AE는 404를 보고 원인을 모른다.
-                      판정이 없으면 링크를 걸지 않는다 — 배지와 같은 fail-closed 기준이고,
-                      사유 문구도 배지의 판정(getReviewState)을 그대로 쓴다. */}
+                      판정이 없으면 링크를 걸지 않는다 — 행 상태와 같은 fail-closed 기준이다. */}
                   {selected.status === 'PUBLISHED' &&
-                    (selected.compliance?.public_visibility?.visible === true ? (
+                    (selectedVisible ? (
                       selectedPublicUrl && (
                         <a
                           href={selectedPublicUrl}
@@ -1782,13 +1128,14 @@ export default function ContentPage() {
                       )
                     ) : (
                       <span className="text-sm text-amber-800">
-                        공개 페이지에서 보류 중 — {selectedReview.reason}
+                        공개 페이지에서 보류 중 — {selectedRow.detail ?? selectedRow.label}
                       </span>
                     ))}
                 </div>
                 {selected.status === 'PUBLISHED' && !['SENT', 'NOT_REQUIRED'].includes(selectedNotification?.state ?? '') && (
                   <div className="mb-3 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
-                    {selectedNotification?.problem && <p><strong>무슨 문제인가요?</strong> {selectedNotification.problem}</p>}
+                    <p className="font-semibold">Slack 알림 확인 필요</p>
+                    {selectedNotification?.problem && <p className="mt-1"><strong>무슨 문제인가요?</strong> {selectedNotification.problem}</p>}
                     <p className="mt-1"><strong>발행 영향</strong> {selectedNotification?.publication_impact}</p>
                     <p className="mt-1"><strong>지금 할 일</strong> {selectedNotification?.next_action}</p>
                     <a href="/operations?queue=incidents" className="mt-2 inline-flex min-h-11 items-center font-semibold text-blue-700 underline underline-offset-2">
@@ -1796,7 +1143,14 @@ export default function ContentPage() {
                     </a>
                   </div>
                 )}
-                {!['PUBLISHED', 'CANCELLED'].includes(selected.status) && !selectedReview.publishable && (
+                {selectedRow.href && (
+                  <div className="mb-3 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-800">
+                    <a href={selectedRow.href} className="inline-flex min-h-11 items-center font-semibold underline underline-offset-2">
+                      운영 센터에서 조치: {selectedRow.detail ?? selectedRow.label}
+                    </a>
+                  </div>
+                )}
+                {selected.row_state.kind === 'blocked' && !['PUBLISHED', 'CANCELLED'].includes(selected.status) && (
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-orange-200 bg-orange-50 px-3 py-2">
                     <p className="text-xs text-orange-800">공개되지 않았습니다. 수정 저장 후 자동 안전검사를 다시 수행합니다.</p>
                     <button
@@ -1804,20 +1158,16 @@ export default function ContentPage() {
                       onClick={(selected.references?.length ?? 0) === 0 ? enterReferenceEditMode : enterEditMode}
                       className="inline-flex min-h-11 items-center rounded-md bg-white px-3 text-xs font-semibold text-orange-800 shadow-sm ring-1 ring-orange-200 hover:bg-orange-100"
                     >
-                      {(selected.references?.length ?? 0) === 0 ? '참고 자료 추가' : '콘텐츠 수정'}
+                      콘텐츠 수정
                     </button>
                   </div>
                 )}
-                {!['PUBLISHED', 'CANCELLED'].includes(selected.status) && selectedReview.publishable && (
+                {selected.row_state.kind === 'scheduled' && (
                   <p className="mb-3 text-xs text-slate-500">
                     사전 승인 작업은 필요하지 않습니다. 발행 예정일 08:00에 자동 검증·공개되며, 예외가 남을 때만 Slack으로 알려드립니다.
                   </p>
                 )}
                 <div className="mb-3 flex gap-2 sm:hidden">
-                  {/* 콘텐츠 가이드는 생성 전 초안에만 의미가 있다 — 공개 글에서 열면 저장이 막힌다(M-15). */}
-                  {selected.status === 'DRAFT' && (
-                    <button type="button" onClick={enterBriefEditMode} className="min-h-11 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
-                  )}
                   {(selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
                     <button type="button" onClick={enterEditMode} className="min-h-11 flex-1 rounded-lg border border-blue-300 px-3 text-sm font-medium text-blue-700">콘텐츠 편집</button>
                   )}
@@ -1826,139 +1176,60 @@ export default function ContentPage() {
                 {confirmAction ? (
                   <div role="alertdialog" aria-labelledby="destructive-action-title" className="rounded-lg border border-red-200 bg-red-50 p-3">
                     <p id="destructive-action-title" className="text-sm font-bold text-red-800">
-                      {confirmAction === 'reject'
-                        ? '이 콘텐츠를 즉시 비공개할까요?'
-                        : confirmAction === 'cancel'
-                          ? '이 콘텐츠 항목을 종료할까요?'
-                          : '이 콘텐츠를 즉시 재생성할까요?'}
+                      이 콘텐츠를 즉시 비공개할까요?
                     </p>
                     <p className="mt-1 text-xs leading-relaxed text-red-700">
-                      {confirmAction === 'reject'
-                        ? '공개 사이트에서 바로 제거되고 반려 상태로 기록됩니다. 새 콘텐츠는 야간 재생성 주기에 만들어집니다.'
-                        : confirmAction === 'cancel'
-                          ? '이 콘텐츠 항목은 자동 생성·발행 대상에서 영구히 빠집니다. 이번 달 편수에서 한 편이 줄어듭니다.'
-                          : '현재 콘텐츠가 재생성 대기열에 등록되고, 생성이 끝나면 새 초안으로 교체됩니다.'}
+                      공개 사이트에서 바로 제거되고, 새 콘텐츠는 야간 재생성 주기에 만들어집니다.
                     </p>
                     <div className="mt-3 flex justify-end gap-2">
                       <button type="button" onClick={() => setConfirmAction(null)} className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">취소</button>
                       <button
                         type="button"
                         ref={destructiveConfirmRef}
-                        onClick={() => {
-                          if (confirmAction === 'reject') handleReject(selected.id)
-                          else if (confirmAction === 'cancel') handleCancelSlot(selected.id)
-                          else handleRegenerate(selected.id)
-                        }}
-                        disabled={actionLoading || (confirmAction === 'regenerate' && contentRegenerationActive)}
+                        onClick={() => handleReject(selected.id)}
+                        disabled={actionLoading}
                         className="min-h-11 rounded-lg bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
                       >
-                        {contentRegenerationActive && confirmAction === 'regenerate'
-                          ? '새 초안 준비 중'
-                          : actionLoading
-                          ? '처리 중...'
-                          : confirmAction === 'reject'
-                            ? '비공개 후 재생성'
-                            : confirmAction === 'cancel'
-                              ? '콘텐츠 항목 종료'
-                              : '재생성 요청'}
+                        {actionLoading ? '처리 중...' : '비공개 후 재생성'}
                       </button>
                     </div>
                   </div>
                 ) : selected.status === 'PUBLISHED' ? (
                   <div className="flex flex-wrap gap-3">
-                    {selectedReview.key === 'withheld' ? (
-                      // 공개 페이지에 없는 글에 "공개 내용 확인"은 성립하지 않는다 — backend도 409로 막는다.
-                      <div className="flex-1 min-w-48 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-950">
-                        공개 페이지에서 보류 중 — {selectedReview.reason}
+                    {selected.post_publish_reviewed_at ? (
+                      <div className="flex-1 min-w-48 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-sm font-medium text-green-700">
+                        {selected.post_publish_reviewed_by ?? currentOperatorName ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
                       </div>
-                    ) : (
+                    ) : selectedSample ? (
                       <>
-                        {!selected.post_publish_reviewed_at && selected.post_publish_review_required === true && (
-                          <button
-                            onClick={() => handlePostPublishReview(selected.id)}
-                            disabled={actionLoading}
-                            className="min-h-11 flex-1 min-w-48 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                          >
-                            문제 없음 · 공개 내용 확인 완료
-                          </button>
-                        )}
-                        {selected.post_publish_reviewed_at && (
-                          <div className="flex-1 min-w-48 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-sm font-medium text-green-700">
-                            {selected.post_publish_reviewed_by ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
-                          </div>
-                        )}
+                        <button
+                          onClick={() => handlePostPublishReview(selected.id)}
+                          disabled={actionLoading}
+                          className="min-h-11 flex-1 min-w-48 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                        >
+                          문제 없음 · 확인 완료
+                        </button>
+                        <button
+                          onClick={() => setConfirmAction('reject')}
+                          disabled={actionLoading}
+                          className="min-h-11 flex-1 min-w-48 rounded-lg bg-red-100 px-4 text-sm font-medium text-red-700 hover:bg-red-200 disabled:opacity-50"
+                        >
+                          문제 발견 · 비공개 후 재생성
+                        </button>
                       </>
+                    ) : (
+                      <div className="flex-1 min-w-48 break-keep [overflow-wrap:anywhere] rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm text-slate-600">
+                        {selectedVisible
+                          ? '표본 확인 대상이 아닙니다. 사람이 할 일은 없습니다.'
+                          : `공개 페이지에서 보류 중 — ${selectedRow.detail ?? selectedRow.label}`}
+                      </div>
                     )}
-                    <button
-                      onClick={() => setConfirmAction('reject')}
-                      disabled={actionLoading}
-                      className="min-h-11 flex-1 min-w-48 rounded-lg bg-red-100 px-4 text-sm font-medium text-red-700 hover:bg-red-200 disabled:opacity-50"
-                    >
-                      문제 발견 · 비공개 후 재생성
-                    </button>
                   </div>
                 ) : selected.status === 'CANCELLED' ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                     이 콘텐츠 항목은 중복되었거나 발행 시점이 지나 종료됐으며, 자동 생성과 발행에서 제외됩니다.
                   </div>
-                ) : (
-                  <div className="flex flex-wrap gap-3">
-                    <button
-                      onClick={() => handlePublish(selected.id)}
-                      disabled={actionLoading || !selectedReview.publishable || !selected.title}
-                      className="min-h-11 flex-1 min-w-44 py-2.5 bg-slate-100 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      지금 발행 (운영 복구)
-                    </button>
-                    <button
-                      onClick={() => setConfirmAction('regenerate')}
-                      disabled={actionLoading || contentRegenerationActive}
-                      className="min-h-11 flex-1 min-w-44 py-2.5 bg-slate-900 text-white text-sm font-medium rounded-lg hover:bg-slate-800 disabled:opacity-50"
-                    >
-                      {contentRegenerationActive ? '새 초안 준비 중' : '즉시 재생성'}
-                    </button>
-                    <div className="w-full border-t border-slate-200 pt-3">
-                      <p className="text-xs font-medium text-slate-500">운영 복구</p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <input
-                          type="date"
-                          value={rescheduleDate}
-                          onChange={(e) => setRescheduleDate(e.target.value)}
-                          aria-label="새 발행 예정일"
-                          className="rounded-lg border border-slate-300 px-2 py-1.5 text-sm"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => handleReschedule(selected.id, rescheduleDate)}
-                          disabled={actionLoading || !rescheduleDate}
-                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                        >
-                          발행일 옮기기
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleRegenerateImage(selected.id)}
-                          disabled={actionLoading || imageRegenerationActive}
-                          className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-40"
-                        >
-                          {imageRegenerationActive ? '새 이미지 준비 중' : '이미지만 재생성'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setConfirmAction('cancel')}
-                          disabled={actionLoading}
-                          className="rounded-lg border border-red-200 px-3 py-1.5 text-xs text-red-700 hover:bg-red-50 disabled:opacity-40"
-                        >
-                          콘텐츠 항목 종료
-                        </button>
-                      </div>
-                      <p className="mt-2 text-[11px] leading-relaxed text-slate-500">
-                        휴일·장애로 밀렸으면 발행일을 옮기고, 본문은 괜찮은데 이미지만 실패했으면
-                        이미지만 다시 만듭니다. 중복되었거나 발행 시점이 지난 콘텐츠 항목은 종료해 자동 생성 대상에서 뺍니다.
-                      </p>
-                    </div>
-                  </div>
-                )}
+                ) : null}
               </div>
             )}
           </div>
@@ -2009,16 +1280,14 @@ function SummaryCard({
   filter,
   activeFilter,
   onFilter,
-  featured = false,
 }: {
   label: string
   value: number
-  tone: 'green' | 'orange' | 'gray' | 'blue' | 'amber' | 'red'
+  tone: 'green' | 'orange' | 'gray' | 'blue' | 'amber'
   hint: string
-  filter: ContentOperationsFilter
-  activeFilter: ContentOperationsFilter
-  onFilter: (filter: ContentOperationsFilter) => void
-  featured?: boolean
+  filter: ContentRowFilter
+  activeFilter: ContentRowFilter
+  onFilter: (filter: ContentRowFilter) => void
 }) {
   const tones: Record<string, string> = {
     green: 'border-green-200 bg-green-50',
@@ -2026,7 +1295,6 @@ function SummaryCard({
     gray: 'border-slate-200 bg-slate-50',
     blue: 'border-blue-200 bg-blue-50',
     amber: 'border-amber-200 bg-amber-50',
-    red: 'border-red-200 bg-red-50',
   }
   const numTones: Record<string, string> = {
     green: 'text-green-700',
@@ -2034,16 +1302,14 @@ function SummaryCard({
     gray: 'text-slate-700',
     blue: 'text-blue-700',
     amber: 'text-amber-700',
-    red: 'text-red-700',
   }
   const active = activeFilter === filter
   return (
     <button
-      data-current-task={featured ? '' : undefined}
       type="button"
       aria-pressed={active}
       onClick={() => onFilter(active ? 'all' : filter)}
-      className={`min-h-24 rounded-xl border px-4 py-3 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${featured ? 'sm:col-span-2 lg:min-h-28' : ''} ${tones[tone]} ${active ? 'ring-2 ring-blue-600 ring-offset-2' : ''}`}
+      className={`min-h-24 rounded-xl border px-4 py-3 text-left transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${tones[tone]} ${active ? 'ring-2 ring-blue-600 ring-offset-2' : ''}`}
     >
       <p className="text-xs font-medium text-slate-600">{label}</p>
       <p className={`text-2xl font-bold mt-1 ${numTones[tone]}`}>{value}</p>
@@ -2057,24 +1323,6 @@ function BriefField({ label, value }: { label: string; value: string }) {
     <div>
       <div className="text-xs text-slate-500">{label}</div>
       <div className="mt-0.5 text-sm text-slate-800 break-words">{value}</div>
-    </div>
-  )
-}
-
-function BriefList({ label, values }: { label: string; values: unknown }) {
-  const items = Array.isArray(values) ? values.map((value) => formatBriefValue(value)).filter(Boolean) : []
-  return (
-    <div>
-      <div className="text-xs text-slate-500">{label}</div>
-      {items.length > 0 ? (
-        <ul className="mt-0.5 list-disc list-inside text-sm text-slate-800 space-y-0.5">
-          {items.map((item, idx) => (
-            <li key={`${label}-${idx}`}>{item}</li>
-          ))}
-        </ul>
-      ) : (
-        <div className="mt-0.5 text-sm text-slate-400">미작성</div>
-      )}
     </div>
   )
 }

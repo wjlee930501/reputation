@@ -115,6 +115,9 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/lib/info-sections.ts",
     # 공식 채널 칸의 안내 문구가 사는 곳. 화면(FactsSection)이 이 상수를 그대로 그린다.
     "admin/lib/external-channel-urls.ts",
+    "admin/app/hospitals/[id]/content/page.tsx",
+    # 월 표의 행 상태 라벨이 사는 곳. 화면이 이 값을 그대로 그린다.
+    "admin/lib/content-rows.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"

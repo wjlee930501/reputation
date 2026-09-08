@@ -208,6 +208,23 @@ export interface ContentReference {
   publisher?: string | null
 }
 
+// 월 표의 행 상태 — backend content_row_state.py가 라벨까지 정해서 내려준다.
+export type ContentRowStateKind =
+  | 'public'
+  | 'withheld'
+  | 'scheduled'
+  | 'generating'
+  | 'blocked'
+  | 'closed'
+
+export interface ContentRowState {
+  kind: ContentRowStateKind
+  label: string
+  reason: string | null
+  // 차단·보류로 막힌 글에만 붙는 운영 센터 링크.
+  link: { kind: 'incident' | 'run'; href: string; next_action?: string | null } | null
+}
+
 export interface ContentItem {
   id: string
   content_type: 'FAQ' | 'DISEASE' | 'TREATMENT' | 'COLUMN' | 'HEALTH' | 'LOCAL' | 'NOTICE'
@@ -267,6 +284,8 @@ export interface ContentItem {
     // 화면은 "공개 중"이 아니라 보류로 취급해야 한다(H-01).
     public_visibility: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
+  // 서버가 목록·상세·PATCH 응답 모두에 항상 내려주는 행 판정이다.
+  row_state: ContentRowState
   body?: string | null
   image_prompt?: string | null
 }
