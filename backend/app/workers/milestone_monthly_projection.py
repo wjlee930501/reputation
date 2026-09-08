@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -20,6 +21,7 @@ from app.services.monthly_events import (
     monthly_headline_label,
     project_monthly_event,
 )
+from app.services.monthly_report_delivery import coverage_is_final
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import MilestoneKind, MilestoneProjection
 from app.workers.milestone_monthly_facts import ReportFacts, load_report_facts
@@ -30,6 +32,8 @@ from app.workers.milestone_projection_support import (
     in_window,
     state_uuid,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,10 +70,15 @@ async def observe_monthly_milestones(
     """Return current report transitions plus unseen append-only delivery facts."""
 
     facts_by_report = await load_report_facts(db)
-    current = tuple(
-        (facts, _project_observed_current(facts, observed_at))
-        for facts in facts_by_report.values()
-    )
+    observed: list[tuple[ReportFacts, tuple[str, MilestoneProjection]]] = []
+    for facts in facts_by_report.values():
+        try:
+            observed.append((facts, _project_observed_current(facts, observed_at)))
+        except NotificationPayloadError as exc:
+            # 한 리포트의 게이트 불일치가 다른 병원의 알림까지 멈추면 안 된다. 이 리포트만
+            # 이번 창에서 건너뛰고 로그로 남긴다 — 다음 창에서 다시 시도한다.
+            logger.warning("monthly milestone skipped: report=%s reason=%s", facts.report.id, exc)
+    current = tuple(observed)
     states = {key: projection.stable_id for _facts, (key, projection) in current}
     changed = tuple(
         projection
@@ -101,7 +110,9 @@ async def _project_delivery_events(
     projections: list[MilestoneProjection] = []
     for delivery in deliveries:
         facts = facts_by_report.get(delivery.report_id)
-        if facts is not None:
+        if facts is None:
+            continue
+        try:
             projections.append(
                 project_monthly_event(
                     _monthly_event(
@@ -113,6 +124,11 @@ async def _project_delivery_events(
                         )
                     )
                 )
+            )
+        except NotificationPayloadError as exc:
+            # 전달 기록 하나가 투영되지 않아도 나머지 병원의 기록은 그대로 나간다.
+            logger.warning(
+                "monthly delivery milestone skipped: delivery=%s reason=%s", delivery.id, exc
             )
     return tuple(projections)
 
@@ -151,10 +167,7 @@ def _current_state(facts: ReportFacts) -> MonthlyEventType:
     if facts.ready and facts.artifact is not None:
         return MonthlyEventType.CUSTOMER_READY
     coverage_complete = (
-        report.quality == "COMPLETE"
-        and report.planned_count > 0
-        and report.success_count == report.planned_count
-        and report.failed_count == 0
+        coverage_is_final(report)
         and facts.manifest is not None
         and facts.manifest.closed_at is not None
     )
@@ -209,6 +222,7 @@ def _monthly_event(request: _MonthlyEventRequest) -> MonthlyEvent:
         report.planned_count,
         report.success_count,
         report.failed_count,
+        coverage_is_final(report),
         facts.manifest is not None and facts.manifest.closed_at is not None,
         facts.artifact_state,
         artifact.id if artifact is not None else None,

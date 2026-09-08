@@ -1503,7 +1503,14 @@ def test_scheduled_batch_does_not_rebuild_existing_degraded_report(monkeypatch):
     hospital = SimpleNamespace(id=uuid.uuid4(), name="불완전 측정 의원")
     run_id = uuid.uuid4()
     run = SimpleNamespace(state=OperationRunState.RUNNING)
-    degraded = SimpleNamespace(quality="DEGRADED")
+    # coverage_is_final이 보는 필드까지 갖춘 '최종이 아닌' 측정 스냅샷.
+    degraded = SimpleNamespace(
+        quality="DEGRADED",
+        planned_count=20,
+        success_count=12,
+        failed_count=8,
+        sov_summary={},
+    )
 
     class _Result:
         def scalars(self):

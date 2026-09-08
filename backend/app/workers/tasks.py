@@ -181,6 +181,7 @@ from app.services.monthly_period import (
     scheduled_report_period,
 )
 from app.services.monthly_report_delivery import (
+    coverage_is_final,
     monthly_doctor_artifact_is_valid,
     monthly_report_delivery_gate,
 )
@@ -9154,7 +9155,7 @@ def run_monthly_reports(self):
             try:
                 latest = _latest_monthly_report(db, h.id, anchor.year, anchor.month)
                 rebuilding = latest is not None
-                if latest is not None and latest.quality != "COMPLETE":
+                if latest is not None and not coverage_is_final(latest):
                     outcome = "coverage_incomplete"
                 else:
                     outcome = _build_monthly_report_for_hospital(

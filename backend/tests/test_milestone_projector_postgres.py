@@ -30,6 +30,7 @@ from app.models.operations import (
 )
 from app.models.report import MonthlyReport
 from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_outbox import dispatch_notification_batch
 from app.services.report_artifact_validation import DOCTOR_ARTIFACT_VALIDATION_VERSION
 from app.workers import milestone_monthly_projection
@@ -375,3 +376,106 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
 
 async def _no_pause() -> None:
     return None
+
+
+class _NoDeliveries:
+    def scalars(self):
+        return ()
+
+
+class _NoDeliveryDB:
+    async def execute(self, _statement):
+        return _NoDeliveries()
+
+
+def _observed_facts(
+    *,
+    quality: str,
+    sov_summary: dict[str, object] | None,
+    planned: int = 20,
+    success: int = 20,
+    failed: int = 0,
+) -> ReportFacts:
+    """전달 게이트를 통과한(ready) 리포트 하나. 병원·리포트 ID는 매번 새로 만든다."""
+    at = datetime(2026, 8, 10, tzinfo=UTC)
+    return ReportFacts(
+        report=SimpleNamespace(
+            id=uuid.uuid4(),
+            quality=quality,
+            planned_count=planned,
+            success_count=success,
+            failed_count=failed,
+            created_at=at,
+            period_year=2026,
+            period_month=7,
+            sov_summary=sov_summary,
+        ),
+        hospital=SimpleNamespace(id=uuid.uuid4(), name="표본부족의원"),
+        manifest=SimpleNamespace(closed_at=at),
+        artifact=SimpleNamespace(id=uuid.uuid4(), validated_at=at, created_at=at),
+        artifact_state=ReportArtifactState.VALID,
+        ready=True,
+        delivered=False,
+        blockers=(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_limited_report_does_not_stop_other_hospitals_milestones(monkeypatch) -> None:
+    """H-11: LIMITED 리포트가 CUSTOMER_READY 게이트에서 예외를 던져도 다른 병원은 투영된다."""
+    limited = _observed_facts(
+        quality="DEGRADED",
+        sov_summary={
+            "sov_pct": 12.0,
+            "observation_adequacy": {"status": "LIMITED", "confirmed_slots": 3},
+        },
+        success=12,
+        failed=8,
+    )
+    complete = _observed_facts(quality="COMPLETE", sov_summary={"sov_pct": 20.0})
+
+    async def load(_db):
+        return {limited.report.id: limited, complete.report.id: complete}
+
+    monkeypatch.setattr(milestone_monthly_projection, "load_report_facts", load)
+    scan = await observe_monthly_milestones(
+        _NoDeliveryDB(),
+        datetime(2026, 8, 10, 3, tzinfo=UTC),
+        {},
+        datetime(2026, 8, 10, 2, tzinfo=UTC),
+    )
+
+    keys = {projection.hospital_id for projection in scan.milestones}
+    assert complete.hospital.id in keys
+    # LIMITED는 이제 최종으로 취급돼 CUSTOMER_READY로 투영된다.
+    assert limited.hospital.id in keys
+
+
+@pytest.mark.asyncio
+async def test_one_failing_report_projection_does_not_stop_other_hospitals_milestones(
+    monkeypatch,
+) -> None:
+    """H-11: 리포트 한 건의 투영 예외는 그 리포트만 건너뛴다."""
+    broken = _observed_facts(quality="COMPLETE", sov_summary={"sov_pct": 11.0})
+    healthy = _observed_facts(quality="COMPLETE", sov_summary={"sov_pct": 22.0})
+    project_current = milestone_monthly_projection._project_observed_current
+
+    def failing(facts: ReportFacts, observed_at: datetime):
+        if facts.report.id == broken.report.id:
+            raise NotificationPayloadError("CUSTOMER_READY_GATE_BLOCKED")
+        return project_current(facts, observed_at)
+
+    async def load(_db):
+        return {broken.report.id: broken, healthy.report.id: healthy}
+
+    monkeypatch.setattr(milestone_monthly_projection, "load_report_facts", load)
+    monkeypatch.setattr(milestone_monthly_projection, "_project_observed_current", failing)
+    scan = await observe_monthly_milestones(
+        _NoDeliveryDB(),
+        datetime(2026, 8, 10, 3, tzinfo=UTC),
+        {},
+        datetime(2026, 8, 10, 2, tzinfo=UTC),
+    )
+
+    assert [projection.hospital_id for projection in scan.milestones] == [healthy.hospital.id]
+    assert f"monthly:{broken.report.id}" not in scan.states

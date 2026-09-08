@@ -159,6 +159,8 @@ class MonthlyEvent:
     planned_count: int
     success_count: int
     failed_count: int
+    # `monthly_report_delivery.coverage_is_final` 결과. 투영이 자체 정의를 다시 만들지 않는다.
+    coverage_final: bool
     manifest_closed: bool
     artifact_state: ReportArtifactState
     doctor_artifact_id: uuid.UUID | None
@@ -174,13 +176,7 @@ class MonthlyEvent:
 def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
     if event.occurred_at.tzinfo is None:
         raise NotificationPayloadError("MONTHLY_EVENT_TIME_REQUIRED")
-    coverage_complete = (
-        event.quality == "COMPLETE"
-        and event.planned_count > 0
-        and event.success_count == event.planned_count
-        and event.failed_count == 0
-        and event.manifest_closed
-    )
+    coverage_complete = event.coverage_final and event.manifest_closed
     artifact_valid = (
         event.artifact_state is ReportArtifactState.VALID and event.doctor_artifact_id is not None
     )
