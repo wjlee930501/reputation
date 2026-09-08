@@ -25,6 +25,8 @@ from app.services.essence_auto_review import (
     refresh_essence_snapshot,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.essence_readiness import get_essence_readiness_sync
+from app.services.evidence_noise import compute_evidence_noise_hash
 
 
 @pytest.fixture
@@ -708,3 +710,76 @@ def test_source_change_during_review_aborts_promotion(pg_session) -> None:
     assert [(item.id, item.status) for item in records] == [
         (previous_id, PhilosophyStatus.APPROVED)
     ]
+
+
+def test_marking_a_note_as_noise_requests_refresh_but_keeps_public_baseline(pg_session) -> None:
+    """H-02: 노이즈 제외 → 재검수 필요 + 엄격 current 없음, 공개 근거는 유지."""
+    hospital, source, note, approved = _seed_baseline(pg_session, label="noise")
+    # 제외 후에도 합성할 근거가 남아 있어야 재검수가 의미 있다.
+    remaining = HospitalSourceEvidenceNote(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        source_asset_id=source.id,
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        claim="선택지를 함께 정한다.",
+        source_excerpt=source.raw_text[:10],
+        confidence=0.9,
+        note_metadata={},
+    )
+    pg_session.add(remaining)
+    approved.source_snapshot_hash = compute_sources_snapshot_hash([source])
+    approved.evidence_noise_hash = compute_evidence_noise_hash([])
+    pg_session.commit()
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+
+    note.note_metadata = {**(note.note_metadata or {}), "is_noise": True}
+    pg_session.commit()
+
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    readiness = get_essence_readiness_sync(pg_session, hospital.id)
+    assert readiness.current is None
+    assert readiness.public_philosophy is not None and readiness.public_philosophy.id == approved.id
+
+
+def test_legacy_approval_without_noise_hash_is_refreshed_once(pg_session) -> None:
+    hospital, source, note, approved = _seed_baseline(pg_session, label="legacy-null")
+    approved.source_snapshot_hash = compute_sources_snapshot_hash([source])
+    approved.evidence_noise_hash = None
+    pg_session.commit()
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+
+
+def test_refresh_stores_the_noise_hash_and_skips_noise_notes(pg_session) -> None:
+    """새 승인은 현재 노이즈 집합 hash를 기록하고 합성·검수 입력에서 노이즈 노트를 뺀다."""
+    hospital, source, note, approved = _seed_baseline(pg_session, label="noise-store")
+    noise = HospitalSourceEvidenceNote(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        source_asset_id=source.id,
+        note_type=EvidenceNoteType.KEY_MESSAGE,
+        claim="광고성 문구",
+        source_excerpt=source.raw_text[:10],
+        confidence=0.5,
+        note_metadata={"is_noise": True},
+    )
+    pg_session.add(noise)
+    approved.status = PhilosophyStatus.ARCHIVED
+    pg_session.commit()
+
+    seen_note_ids: list[str] = []
+
+    def _synth(_hospital, _sources, notes, **_kwargs):
+        seen_note_ids.extend(str(item.id) for item in notes)
+        return _candidate_payload(source, note)
+
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=_synth,
+        reviewer=lambda *_args, **_kwargs: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert str(noise.id) not in seen_note_ids
+    stored = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
+    assert stored.evidence_noise_hash == compute_evidence_noise_hash([noise.id])

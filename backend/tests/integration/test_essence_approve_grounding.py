@@ -33,6 +33,7 @@ from app.services.essence_engine import (
     MANDATORY_MEDICAL_AD_RISK_RULES,
     compute_sources_snapshot_hash,
 )
+from app.services.evidence_noise import compute_evidence_noise_hash
 
 
 async def _seed_draft(db, *, mapped_note_ids: list[str]):
@@ -153,6 +154,8 @@ async def test_approve_succeeds_when_every_reference_resolves(pg_async_session):
     result = await _approve_as_verified(pg_async_session, hospital.id, draft.id)
 
     assert result["status"] == PhilosophyStatus.APPROVED.value
+    # 수동 승인도 그 시점의 제외 집합(여기서는 비어 있음)을 함께 기록한다.
+    assert draft.evidence_noise_hash == compute_evidence_noise_hash([])
 
 
 @pytest.mark.asyncio

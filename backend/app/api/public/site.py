@@ -245,8 +245,8 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
 
     # 승인된 콘텐츠 운영 기준(positioning/promise)만 공개 about 서사로 노출한다.
     # 자유 입력 director_philosophy와 달리 근거 기반 검수를 거친 필드다.
-    essence = await get_public_essence_readiness(db, h.id)
-    return _serialize_hospital(h, photos, essence.public_philosophy)
+    public_philosophy = await get_public_essence_readiness(db, h.id)
+    return _serialize_hospital(h, photos, public_philosophy)
 
 
 @router.get("/{slug}/assets/{source_id}")
@@ -312,8 +312,7 @@ async def list_published_contents(
     h = await _get_active_hospital(db, slug)
     if not h.schedule_set:
         return []
-    essence = await get_public_essence_readiness(db, h.id)
-    public_philosophy = essence.public_philosophy
+    public_philosophy = await get_public_essence_readiness(db, h.id)
     if public_philosophy is None:
         return []
 
@@ -341,8 +340,7 @@ async def get_content_public(
     h = await _get_active_hospital(db, slug)
     if not h.schedule_set:
         raise HTTPException(status_code=404, detail="Content not found")
-    essence = await get_public_essence_readiness(db, h.id)
-    public_philosophy = essence.public_philosophy
+    public_philosophy = await get_public_essence_readiness(db, h.id)
 
     item_result = await db.execute(
         select(ContentItem)

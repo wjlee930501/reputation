@@ -41,6 +41,10 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
+from app.services.evidence_noise import (
+    load_evidence_noise_hash_sync,
+    not_noise_note_predicate,
+)
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.utils.medical_filter import check_forbidden
 
@@ -245,6 +249,24 @@ def _status_value(value: object) -> str:
     return str(enum_value(value) or "")
 
 
+def _noise_hash_matches(
+    db: Session,
+    hospital_id: uuid.UUID,
+    previous: HospitalContentPhilosophy,
+) -> bool:
+    """저장된 노이즈 집합 hash가 현재와 같은가.
+
+    NULL(컬럼 이전 승인)은 readiness에서는 관대하게(생성 차단 없음) 다루지만, 여기서는
+    **한 번 재검수해 실제 값을 쓰도록** False를 돌려준다 — 그러지 않으면 기존 병원은
+    자료가 바뀔 때까지 노이즈 제외가 승인에 반영되지 않는 H-02 구멍이 그대로 남는다.
+    운영 병원 수만큼 1회성 유료 재검수가 발생한다.
+    """
+    stored = getattr(previous, "evidence_noise_hash", None)
+    if stored is None:
+        return False
+    return stored == load_evidence_noise_hash_sync(db, hospital_id)
+
+
 def _required_sources(db: Session, hospital_id: uuid.UUID) -> list[HospitalSourceAsset]:
     return list(
         db.execute(
@@ -296,6 +318,8 @@ def _notes_for_sources(
             .where(
                 HospitalSourceEvidenceNote.hospital_id == hospital_id,
                 HospitalSourceEvidenceNote.source_asset_id.in_(source_ids),
+                # 운영자가 노이즈로 뺀 주장은 합성·검수 입력에서 제외한다.
+                not_noise_note_predicate(),
             )
             .order_by(HospitalSourceEvidenceNote.id)
         )
@@ -1186,7 +1210,11 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
     ):
         return False
     snapshot_hash = compute_sources_snapshot_hash(sources)
-    if previous is not None and previous.source_snapshot_hash == snapshot_hash:
+    if (
+        previous is not None
+        and previous.source_snapshot_hash == snapshot_hash
+        and _noise_hash_matches(db, hospital_id, previous)
+    ):
         return False
     existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
     if existing_drafts:
@@ -1228,7 +1256,13 @@ def refresh_essence_snapshot(
             previous_philosophy_id=previous.id if previous else None,
         )
     snapshot_hash = compute_sources_snapshot_hash(sources)
-    if previous is not None and previous.source_snapshot_hash == snapshot_hash:
+    # 자료 snapshot과 같은 잠금 안에서 읽어야 CAS가 성립한다.
+    noise_hash = load_evidence_noise_hash_sync(db, hospital_id)
+    if (
+        previous is not None
+        and previous.source_snapshot_hash == snapshot_hash
+        and _noise_hash_matches(db, hospital_id, previous)
+    ):
         return EssenceRefreshResult(
             EssenceRefreshStatus.UP_TO_DATE,
             hospital_id,
@@ -1353,6 +1387,8 @@ def refresh_essence_snapshot(
             for source in current_sources
         )
         or compute_sources_snapshot_hash(current_sources) != snapshot_hash
+        # 검수 중 노이즈 제외 집합이 바뀌었다면 검수한 근거와 다른 입력이다.
+        or load_evidence_noise_hash_sync(db, hospital_id) != noise_hash
     ):
         _finish_essence_refresh_claim(
             claim_run,
@@ -1452,6 +1488,7 @@ def refresh_essence_snapshot(
             current_previous.status = PhilosophyStatus.ARCHIVED
             db.flush()
         candidate.status = PhilosophyStatus.APPROVED
+        candidate.evidence_noise_hash = noise_hash
         candidate.reviewed_by = AUTO_ESSENCE_ACTOR
         candidate.approved_at = datetime.now(timezone.utc)
         candidate.approval_note = (

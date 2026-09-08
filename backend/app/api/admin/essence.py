@@ -63,7 +63,7 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
-from app.services.evidence_noise import not_noise_note_predicate
+from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.naver_handoff import (
@@ -1721,6 +1721,8 @@ async def approve_philosophy(
     await db.flush()
 
     philosophy.status = PhilosophyStatus.APPROVED
+    # 승인은 그 시점에 운영자가 근거에서 뺀 집합까지 확정한다(H-02).
+    philosophy.evidence_noise_hash = await load_evidence_noise_hash(db, hospital_id)
     # 검토자는 확인된 로그인 계정만 기록한다. 요청 본문의 이름은 감사 비교용 주장일 뿐,
     # 승인 권한이나 기록된 승인자 identity의 대체값이 될 수 없다(C-3).
     philosophy.reviewed_by = reviewer

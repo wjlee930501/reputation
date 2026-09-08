@@ -142,11 +142,11 @@ async def get_essence_readiness(
 async def get_public_essence_readiness(
     db: AsyncSession,
     hospital_id: uuid.UUID,
-) -> EssenceReadiness:
-    """공개 읽기 전용: `public_philosophy`만 필요하므로 노이즈 집합을 조회하지 않는다.
+) -> HospitalContentPhilosophy | None:
+    """공개 읽기는 `public_philosophy`만 받는다 — 관대하게 계산된 `current`를 실수로 읽을 수 없게 한다.
 
-    엄격한 `current`는 이 결과에서 읽지 않는다 — 노이즈 hash를 넘기지 않아 관대하게 계산되므로
-    생성/발행 게이트에 쓰면 H-02가 다시 열린다.
+    노이즈 집합을 조회하지 않으므로 이 호출의 `current`는 신뢰할 수 없다. 그래서 아예
+    돌려주지 않는다 — 생성/발행 게이트에 쓰이면 H-02가 다시 열린다.
     """
     approved_result = await db.execute(
         select(HospitalContentPhilosophy).where(
@@ -162,7 +162,9 @@ async def get_public_essence_readiness(
             HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
         )
     )
-    return resolve_essence_readiness(approved, list(sources_result.scalars().all()))
+    return resolve_essence_readiness(
+        approved, list(sources_result.scalars().all())
+    ).public_philosophy
 
 
 def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceReadiness:

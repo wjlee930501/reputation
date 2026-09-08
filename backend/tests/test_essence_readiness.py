@@ -242,7 +242,7 @@ async def test_public_readiness_skips_the_noise_query_the_strict_one_pays():
     public = await get_public_essence_readiness(public_db, uuid.uuid4())
     strict = await get_essence_readiness(strict_db, uuid.uuid4())
 
-    assert public.public_philosophy is approved
+    assert public is approved
     assert public_db.query_count == 2
     assert strict.current is approved
     assert strict_db.query_count == 3
