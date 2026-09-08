@@ -37,7 +37,7 @@ gcloud secrets add-iam-policy-binding BFF_ACTOR_SECRET --project mso-platform-48
   --member="serviceAccount:$(terraform -chdir=terraform output -raw frontend_service_account_email)" --role=roles/secretmanager.secretAccessor
 ```
 
-배포 순서상 API가 Admin보다 먼저 새 리비전을 받는다. **이미 열려 있던 admin 탭은 이전 JS라 단언을 보내지 않으므로 첫 저장에서 403 `ACTOR_ASSERTION_REQUIRED`("관리 화면을 새로고침한 뒤 다시 시도해 주세요")를 한 번 받는다.** 새로고침하면 복구된다 — 롤아웃 직후 운영자에게 이 사실을 알린다. 배치·CLI 호출은 `X-Admin-Actor-System: <job>` 헤더로 통과하며 감사 기록에는 `system:<job>`으로 남는다. 이 시스템 호출에는 **사람 계정이 없다** — 함께 보낸 `X-Admin-Actor`는 인가·감사 어디에도 채택되지 않고, 활성 운영자 계정을 요구하는 라우트(계정 관리·인수·운영센터 조치 등)는 403 `SYSTEM_ACTOR_NOT_ALLOWED`로 거부된다. 사람 요청에서 `X-Admin-Actor`가 단언의 이메일과 다르면 403 `ACTOR_ASSERTION_MISMATCH`다(BFF는 두 값을 같은 세션 이메일로 채우므로 정상 트래픽은 걸리지 않는다).
+배포 순서상 API가 Admin보다 먼저 새 리비전을 받는다. 단언은 브라우저가 아니라 Admin BFF(서버)가 서명하므로, **새 API가 뜬 뒤 새 Admin 리비전이 트래픽을 받기 전까지(보통 수 분) 모든 admin 변경 요청이 403 `ACTOR_ASSERTION_REQUIRED`("관리 화면을 새로고침한 뒤 다시 시도해 주세요")를 받는다.** Admin 리비전 교체가 끝나면 열려 있던 탭도 그대로 복구된다(새로고침 불필요). 다만 옛 콘텐츠 화면을 열어 둔 탭은 반려 요청에 사유 본문이 없어 새 API에서 422를 받으므로 새로고침이 필요하다 — 롤아웃 직후 운영자에게 두 사실을 알린다. 배치·CLI 호출은 `X-Admin-Actor-System: <job>` 헤더로 통과하며 감사 기록에는 `system:<job>`으로 남는다. 이 시스템 호출에는 **사람 계정이 없다** — 함께 보낸 `X-Admin-Actor`는 인가·감사 어디에도 채택되지 않고, 활성 운영자 계정을 요구하는 라우트(계정 관리·인수·운영센터 조치 등)는 403 `SYSTEM_ACTOR_NOT_ALLOWED`로 거부된다. 사람 요청에서 `X-Admin-Actor`가 단언의 이메일과 다르면 403 `ACTOR_ASSERTION_MISMATCH`다(BFF는 두 값을 같은 세션 이메일로 채우므로 정상 트래픽은 걸리지 않는다).
 
 ```bash
 make db-budget-guard
