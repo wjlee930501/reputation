@@ -33,6 +33,8 @@ from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 
+AUTO_REMEDIATION_MAX_GENERATIONS = 2
+
 _MORNING_BODY_NOTIFICATION_CODES = {
     "PROVIDER_TIMEOUT",
     "PROVIDER_UNAVAILABLE",
@@ -93,9 +95,25 @@ def is_provider_transient_generation_code(code: str) -> bool:
     return code in _PROVIDER_TRANSIENT_NOTIFICATION_CODES
 
 
-def generation_block_digest_due(code: str, *, batch: str) -> bool:
+def essence_remediation_exhausted(summary) -> bool:
+    attempts = (summary or {}).get("automatic_remediation_attempts", 0)
+    return (
+        isinstance(attempts, int)
+        and not isinstance(attempts, bool)
+        and attempts >= AUTO_REMEDIATION_MAX_GENERATIONS
+    )
+
+
+def generation_block_digest_due(
+    code: str, *, batch: str, remediation_exhausted: bool = False
+) -> bool:
     """Return whether one blocked slot belongs in this morning batch's digest."""
 
+    # The auto-review task owns snapshot-keyed ESCALATED notifications.
+    if code == "MISSING_APPROVED_ESSENCE":
+        return False
+    if code == "ESSENCE_NOT_ALIGNED" and not remediation_exhausted:
+        return False
     if code not in _MORNING_GENERATION_NOTIFICATION_CODES | _MORNING_DIGEST_ONLY_CODES:
         return False
     if batch == PREPUBLISH_MORNING_BATCH and is_provider_transient_generation_code(code):
@@ -290,6 +308,10 @@ def _morning_notification_due(
         return True
     if code not in _MORNING_GENERATION_NOTIFICATION_CODES or item is None:
         return False
+    if code == "ESSENCE_NOT_ALIGNED" and not essence_remediation_exhausted(
+        getattr(item, "essence_check_summary", None)
+    ):
+        return False
     local_now = observed_at.astimezone(_KST)
     scheduled_date = getattr(item, "scheduled_date", None)
     if scheduled_date is None or scheduled_date > local_now.date():
@@ -461,6 +483,18 @@ async def open_generation_incident(
                 reason="generation attempt failed",
             )
             notification_code = code
+        if notification_code == "MISSING_APPROVED_ESSENCE":
+            # This incident records system work. Human action is represented by
+            # the separate snapshot-keyed ESCALATED incident, including its SLA.
+            retrying = await mark_retrying(
+                db, incident.id, expected_version=incident.version,
+                actor="content-generation-worker",
+                reason="source processing and essence auto-review own recovery",
+            )
+            if isinstance(retrying, Incident):
+                incident = retrying
+                incident.sla_due_at = None
+                incident.severity = IncidentSeverity.MEDIUM
         observed_at = datetime.now(UTC)
         get_item = getattr(db, "get", None)
         item = await get_item(ContentItem, item_id) if get_item is not None else None

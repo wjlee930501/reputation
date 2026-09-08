@@ -277,8 +277,10 @@ from app.workers.dispatch_auth import (
 )
 from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
+    AUTO_REMEDIATION_MAX_GENERATIONS,
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
+    essence_remediation_exhausted,
     generation_block_digest_due,
     generation_notify_requested,
     generation_safe_cause,
@@ -356,7 +358,6 @@ logger = logging.getLogger(__name__)
 
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
 V0_QUERY_TARGET_SEED_ACTOR = "SYSTEM_V0_QUERY_SEED"
-AUTO_REMEDIATION_MAX_GENERATIONS = 2
 MORNING_CLOSE_START = time(7, 45)
 
 
@@ -5262,6 +5263,39 @@ def _persist_publication_readiness(
     )
 
 
+def _heal_missing_essence_for_digest(hospital_id, healed_hospitals: set) -> None:
+    """Queue source resume and targeted review before omitting a missing slot.
+
+    Reconcile resumes orphan/stalled source work; targeted review avoids waiting
+    for its rotating hospital scan. Existing claims and snapshot incidents own
+    concurrency control and ESCALATED notification dedupe.
+    """
+    if hospital_id in healed_hospitals:
+        return
+    if not healed_hospitals:
+        reconcile_essence_snapshots.apply_async(
+            queue="content",
+            headers=build_dispatch_headers("reconcile-essence-snapshots"),
+        )
+    hospital_key = str(hospital_id)
+    auto_review_essence_snapshot.apply_async(
+        args=[hospital_key],
+        queue="content",
+        headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_key),
+    )
+    healed_hospitals.add(hospital_id)
+
+
+def _publication_digest_cause(code: str, summary) -> str:
+    cause = generation_safe_cause(code)
+    findings = (summary or {}).get("findings") or []
+    if code == "ESSENCE_NOT_ALIGNED" and findings and isinstance(findings[0], str):
+        # The digest renderer escapes Slack markup and truncates the whole cause.
+        finding = " ".join(findings[0].split())[:120]
+        cause = f"{cause} {finding}"
+    return cause
+
+
 def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     """At 07:45, record the persisted blockers and summarize them in one Slack message.
 
@@ -5291,6 +5325,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     )
     paged = 0
     blocked_outcomes: list[dict[str, object]] = []
+    healed_hospitals: set = set()
     for item in items:
         hospital = item.hospital
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
@@ -5320,7 +5355,13 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                 notify=False,
             )
         )
-        if generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH):
+        if code == "MISSING_APPROVED_ESSENCE":
+            _heal_missing_essence_for_digest(hospital.id, healed_hospitals)
+        summary = item.essence_check_summary or {}
+        if generation_block_digest_due(
+            code, batch=PREPUBLISH_MORNING_BATCH,
+            remediation_exhausted=essence_remediation_exhausted(summary),
+        ):
             blocked_outcomes.append(
                 {
                     "hospital_id": hospital.id,
@@ -5329,7 +5370,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                     "scheduled_date": str(item.scheduled_date),
                     "title": item.title,
                     "code": code,
-                    "cause": generation_safe_cause(code),
+                    "cause": _publication_digest_cause(code, summary),
                     "attempt_fingerprint": _stored_generation_attempt(item).get(
                         "context"
                     ),
@@ -5362,6 +5403,7 @@ def morning_content_auto_publish(self):
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
         blocked_outcomes: list[dict[str, object]] = []
+        healed_hospitals: set = set()
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
@@ -5380,8 +5422,12 @@ def morning_content_auto_publish(self):
                         notify=False,
                     )
                 )
+                if outcome["code"] == "MISSING_APPROVED_ESSENCE":
+                    _heal_missing_essence_for_digest(outcome["hospital_id"], healed_hospitals)
+                summary = outcome.get("essence_check_summary") or {}
                 if generation_block_digest_due(
-                    outcome["code"], batch=PUBLISH_MORNING_BATCH
+                    outcome["code"], batch=PUBLISH_MORNING_BATCH,
+                    remediation_exhausted=essence_remediation_exhausted(summary),
                 ):
                     blocked_outcomes.append(
                         {
@@ -5391,7 +5437,7 @@ def morning_content_auto_publish(self):
                             "scheduled_date": outcome.get("scheduled_date"),
                             "title": outcome.get("title"),
                             "code": outcome["code"],
-                            "cause": generation_safe_cause(outcome["code"]),
+                            "cause": _publication_digest_cause(outcome["code"], summary),
                             "attempt_fingerprint": outcome.get("attempt_fingerprint"),
                         }
                     )
@@ -5517,6 +5563,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 "code": code,
                 "message": message,
                 "reason": operator_reason,
+                "essence_check_summary": item.essence_check_summary,
                 "hospital_id": hospital.id,
                 "hospital_name": hospital.name,
                 "title": item.title,

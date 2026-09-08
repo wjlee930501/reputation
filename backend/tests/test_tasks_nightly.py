@@ -1549,7 +1549,16 @@ def test_nightly_missing_essence_has_no_slack_before_seven_forty_five(monkeypatc
     assert not [value for value in db.added if isinstance(value, NotificationOutbox)]
 
 
-def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch):
+@pytest.mark.parametrize("code,attempts,expected", [
+    ("CONTENT_NOT_GENERATED", 0, True),
+    ("ESSENCE_NOT_ALIGNED", 0, False),
+    ("ESSENCE_NOT_ALIGNED", 1, False),
+    ("ESSENCE_NOT_ALIGNED", 2, True),
+    ("PROVIDER_UNAVAILABLE", 2, False),
+])
+def test_seven_forty_five_pages_stored_empty_slot_without_publishing(
+    monkeypatch, code, attempts, expected
+):
     hospital = SimpleNamespace(id=uuid.uuid4(), name="게이트확인의원")
     item = SimpleNamespace(
         id=uuid.uuid4(),
@@ -1560,7 +1569,8 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
         title=None,
         body=None,
         image_url=None,
-        essence_check_summary=None,
+        essence_check_summary={"automatic_remediation_attempts": attempts,
+                               "findings": ["피해야 할 문구 <!channel>" + "가" * 200]},
     )
 
     class Result:
@@ -1590,7 +1600,7 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
 
     assessment = SimpleNamespace(
         publishable=False,
-        code="CONTENT_NOT_GENERATED",
+        code=code,
         message="제목과 본문이 아직 생성되지 않았습니다.",
     )
     incident_calls = []
@@ -1618,14 +1628,21 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(monkeypatch
 
     assert paged == 1
     assert len(incident_calls) == 1
-    assert incident_calls[0]["code"] == "CONTENT_NOT_GENERATED"
+    assert incident_calls[0]["code"] == code
     # The incident still opens per item, but Slack gets exactly one batch digest.
     assert incident_calls[0]["notify"] is False
     digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
+    if not expected:
+        assert digests == []
+        return
     assert len(digests) == 1
     assert digests[0].notification_type == "GENERATION_BLOCKED_DIGEST"
     assert "게이트확인의원" in str(digests[0].payload)
     assert "제목 없는 콘텐츠" in str(digests[0].payload)
+    if code == "ESSENCE_NOT_ALIGNED":
+        assert "피해야 할 문구" in str(digests[0].payload)
+        assert "<!channel>" not in str(digests[0].payload)
+        assert "가" * 200 not in str(digests[0].payload)
 
 
 @pytest.mark.parametrize(
@@ -1698,6 +1715,11 @@ def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
     )
     monkeypatch.setattr(tasks, "_run_async", lambda value: value)
 
+    heals = []
+    monkeypatch.setattr(tasks.reconcile_essence_snapshots, "apply_async",
+                        lambda **kwargs: heals.append(("reconcile", kwargs)))
+    monkeypatch.setattr(tasks.auto_review_essence_snapshot, "apply_async",
+                        lambda **kwargs: heals.append(("review", kwargs)))
     db = DB()
     paged = tasks._page_morning_stored_publication_gates(
         db,
@@ -1708,6 +1730,12 @@ def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
     assert incident_calls[0]["code"] == stored_code
     assert incident_calls[0]["notify"] is False
     digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
+    if stored_code == "MISSING_APPROVED_ESSENCE":
+        assert digests == []
+        assert [kind for kind, _ in heals] == ["reconcile", "review"]
+        assert heals[1][1]["args"] == [str(hospital.id)]
+        return
+    assert heals == []
     assert len(digests) == 1
     assert visible_cause in str(digests[0].payload)
     if stored_code == "GENERATION_REJECTED":
@@ -3294,7 +3322,7 @@ def test_auto_publish_blocks_when_no_approved_philosophy(monkeypatch):
     payload = tasks._auto_publish_one(item.id)
 
     assert payload["kind"] == "blocked"
-    assert payload["code"] == "ESSENCE_NOT_ALIGNED"
+    assert payload["code"] == "MISSING_APPROVED_ESSENCE"
     assert payload["reason"] == item.essence_check_summary["findings"][0]
     assert item.status is tasks.ContentStatus.DRAFT
     assert item.published_at is None
@@ -3487,3 +3515,52 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
     # 추적 객체가 오염되지 않아야 다음 반복이 안전하다.
     assert item.title is None
     assert item.body is None
+
+
+@pytest.mark.parametrize("code,attempts,expected", [
+    ("MISSING_APPROVED_ESSENCE", 0, False),
+    ("ESSENCE_NOT_ALIGNED", 0, False),
+    ("ESSENCE_NOT_ALIGNED", 1, False),
+    ("ESSENCE_NOT_ALIGNED", 2, True),
+    ("PROVIDER_UNAVAILABLE", 0, True),
+])
+def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
+    content_ids = [uuid.uuid4(), uuid.uuid4()]
+    hospital_id = uuid.uuid4()
+    class DB:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            pass
+        def execute(self, _stmt):
+            return _Result(items=content_ids)
+        def commit(self):
+            pass
+    heals, digests, incidents = [], [], []
+    monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: {
+        "kind": "blocked", "code": code, "message": "blocked",
+        "hospital_id": hospital_id, "hospital_name": "자율복구의원",
+        "run_id": uuid.uuid4(), "title": "진료 안내",
+        "essence_check_summary": {"automatic_remediation_attempts": attempts,
+                                  "findings": ["피해야 할 문구"]},
+    })
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+    monkeypatch.setattr(tasks, "open_generation_incident",
+                        lambda **kwargs: incidents.append(kwargs))
+    monkeypatch.setattr(tasks.reconcile_essence_snapshots, "apply_async",
+                        lambda **kwargs: heals.append("reconcile"))
+    monkeypatch.setattr(tasks.auto_review_essence_snapshot, "apply_async",
+                        lambda **kwargs: heals.append(kwargs["args"]))
+    monkeypatch.setattr(tasks, "enqueue_generation_blocked_digest_sync",
+                        lambda db, day, batch, outcomes: digests.extend(outcomes))
+    tasks.morning_content_auto_publish.run()
+    assert all(not incident["notify"] for incident in incidents)
+    assert len(digests) == (2 if expected else 0)
+    if code == "MISSING_APPROVED_ESSENCE":
+        assert heals == ["reconcile", [str(hospital_id)]]
+    else:
+        assert heals == []
+    if expected and code == "ESSENCE_NOT_ALIGNED":
+        assert "피해야 할 문구" in digests[0]["cause"]
