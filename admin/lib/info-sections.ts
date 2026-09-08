@@ -35,7 +35,9 @@ const REQUIREMENT_SECTIONS: Record<string, InfoSectionId> = {
   contact: 'contact',
   web_channels: 'channels',
   ai_channels: 'channels',
-  geo: 'channels',
+  // 좌표는 주소를 저장할 때 서버가 변환한다 — `geo`에서 사람이 채우는 것은 지역뿐이고,
+  // 그 칸은 운영 기준 정보 섹션에 있다. 앵커는 실제로 입력할 곳을 가리킨다.
+  geo: 'targeting',
   targeting: 'targeting',
   treatments: 'treatments',
 }
@@ -137,21 +139,40 @@ export function isTextSource(source: { source_type: string }): boolean {
 export type SourceRowTone = 'neutral' | 'good' | 'paused' | 'warn'
 
 /*
-  처리는 자동이다. 오류도 자동 재시도 대상이므로 사람이 눌러야 할 버튼이 아니라
-  현재 상태로만 말한다. 실패 원인(process_error)은 여기 붙이지 않는다 — 사람이 손대야
-  하는 사건이라면 현황 화면의 인시던트가 따로 알린다.
+  처리는 자동이다. 사람이 누를 버튼이 아니라 지금 상태로만 말한다. 실패 원문
+  (process_error)은 붙이지 않는다. 다만 ERROR는 자동 재시도가 끝난 종착지다 —
+  "재시도 중"이라고 말하면 하지 않는 일을 한다고 말하는 것이므로, 사람이 갈 곳을 가리킨다.
 */
 const SOURCE_ROW_STATUS: Record<string, { label: string; tone: SourceRowTone }> = {
   PENDING: { label: '처리 대기 (자동)', tone: 'neutral' },
   PROCESSED: { label: '처리 완료', tone: 'good' },
   EXCLUDED: { label: '제외', tone: 'paused' },
-  ERROR: { label: '처리 실패 — 자동 재시도 중', tone: 'warn' },
+  ERROR: { label: '처리 실패 — 운영 센터 확인', tone: 'warn' },
 }
 
-export function sourceRowStatus(
-  source: { status: string },
-): { label: string; tone: SourceRowTone } {
+/** 아직 본문을 받아오지 못한 채널 자료. PENDING이지만 처리 대기와 다른 단계다. */
+const FETCH_ROW_STATUS: Record<string, { label: string; tone: SourceRowTone }> = {
+  QUEUED: { label: '주소 내용 가져오는 중 (자동)', tone: 'neutral' },
+  FAILED: { label: '가져오기 재시도 대기', tone: 'warn' },
+}
+
+export interface SourceRowLike {
+  status: string
+  source_metadata?: { fetch_state?: string; incident_id?: string } | null
+}
+
+export function sourceRowStatus(source: SourceRowLike): { label: string; tone: SourceRowTone } {
+  const fetchState = source.source_metadata?.fetch_state
+  if (source.status === 'PENDING' && fetchState && fetchState in FETCH_ROW_STATUS) {
+    return FETCH_ROW_STATUS[fetchState]
+  }
   return SOURCE_ROW_STATUS[source.status] ?? { label: '처리 상태 확인 필요', tone: 'neutral' }
+}
+
+/** 실제로 열린 예외가 있을 때만 운영 센터로 보낸다 — 없는 화면을 가리키지 않는다. */
+export function sourceIncidentHref(hospitalId: string, source: SourceRowLike): string | null {
+  if (source.status !== 'ERROR' || !source.source_metadata?.incident_id) return null
+  return `/operations?queue=incidents&hospital_id=${hospitalId}`
 }
 
 /** 근거 노트 분류 라벨과 표시 순서. 자료 화면과 병원 자료 화면이 같은 값을 쓴다. */

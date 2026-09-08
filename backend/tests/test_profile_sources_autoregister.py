@@ -1,7 +1,8 @@
-"""공식 채널 URL을 저장하면 그 자리에서 근거 자료로 등록·처리된다(설계 §4.3).
+"""공식 채널 URL을 저장하면 그 자리에서 근거 자료 행이 생기고 본문은 워커가 받아 온다(설계 §4.3).
 
-'자료로 추가' 버튼은 없다. 저장이 곧 등록이므로, 저장 성공은 등록 실패로 되돌아가지
-않고 결과만 응답에 실린다.
+'자료로 추가' 버튼은 없다. 저장 요청은 fetch를 기다리지 않고, 응답의 QUEUED는 커밋된 행이
+실제로 있다는 뜻이다. 지난번 등록이 실패해 행이 없다면 같은 값을 다시 저장하는 것만으로
+회복된다.
 """
 
 import uuid
@@ -15,15 +16,15 @@ from app.models.audit import AdminAuditLog
 from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
 from app.models.handoff import HandoffState
 from app.services import essence_sources as essence_sources_service
-from app.services.asset_extractor import FetchQuality
 
 
 class FakeDB:
     """자료 중복 조회와 병원 advisory lock만 구분하면 되는 최소 세션."""
 
-    def __init__(self, hospital, existing_source_id=None):
+    def __init__(self, hospital, existing_sources=()):
         self.hospital = hospital
-        self.existing_source_id = existing_source_id
+        #: (source_id, url) 튜플 — 제외되지 않은 기존 자료.
+        self.existing_sources = list(existing_sources)
         self.handoff = SimpleNamespace(state=HandoffState.HANDOFF_ACCEPTED)
         self.added = []
         self.commits = 0
@@ -33,16 +34,18 @@ class FakeDB:
         return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
     async def execute(self, stmt):
+        text = str(stmt)
+        if "hospital_source_assets" in text:
+            return SimpleNamespace(all=lambda: list(self.existing_sources))
         return SimpleNamespace(
             scalar_one=lambda: None,
             scalar=lambda: None,
             scalar_one_or_none=lambda: self.handoff,
+            all=list,
         )
 
     async def scalar(self, stmt):
-        # 자료 중복 조회만 이 경로로 온다.
-        assert "hospital_source_assets" in str(stmt)
-        return self.existing_source_id
+        return None
 
     async def get(self, _model, object_id):
         return self.hospital if self.hospital.id == object_id else None
@@ -50,12 +53,15 @@ class FakeDB:
     def add(self, item):
         self.added.append(item)
 
-    async def commit(self):
-        self.commits += 1
-        # 실제 flush처럼 서버 기본값(uuid)을 채워 준다 — 응답이 source_id를 실어야 한다.
+    async def flush(self):
+        # 실제 flush처럼 기본값(uuid)을 채워 준다 — 응답이 source_id를 실어야 한다.
         for item in self.added:
             if getattr(item, "id", None) is None:
                 item.id = uuid.uuid4()
+
+    async def commit(self):
+        self.commits += 1
+        await self.flush()
 
     async def rollback(self):
         self.rolled_back = True
@@ -121,25 +127,22 @@ def _hospital(**overrides):
 
 
 @pytest.fixture
-def crawl(monkeypatch):
-    """fetch와 처리 디스패치를 대신한다 — 네트워크·큐를 쓰지 않는다."""
-    calls = {"fetch": [], "dispatch": []}
+def worker(monkeypatch):
+    """워커 발행과 V0 큐잉을 대신한다 — 네트워크·큐를 쓰지 않는다."""
+    calls = {"dispatch": [], "fetch": []}
 
-    async def fake_fetch(url):
+    def fake_send_task(name, args=None, **_kwargs):
+        calls["dispatch"].append((name, list(args or [])))
+
+    async def fail_if_fetched(url):
         calls["fetch"].append(url)
-        return "병원 소개 본문", None, FetchQuality(200, False, 0.0, "병원 홈페이지")
-
-    async def fake_dispatch(_db, *, hospital_id, source_ids, source_identities=None):
-        calls["dispatch"].append((hospital_id, list(source_ids)))
-        return None
+        raise AssertionError("저장 요청은 URL을 fetch하지 않는다")
 
     async def fake_operation_dispatch(_db, _command, _task):
         return None
 
-    monkeypatch.setattr(essence_sources_service, "fetch_url_text", fake_fetch)
-    monkeypatch.setattr(
-        essence_sources_service, "start_source_processing_best_effort", fake_dispatch
-    )
+    monkeypatch.setattr(hospitals_api.celery_app, "send_task", fake_send_task)
+    monkeypatch.setattr(essence_sources_service, "fetch_url_text", fail_if_fetched)
     monkeypatch.setattr(hospitals_api, "dispatch_operation", fake_operation_dispatch)
     return calls
 
@@ -153,7 +156,7 @@ async def _patch(db, hospital, **fields):
     )
 
 
-async def test_new_website_url_becomes_a_processed_source(crawl):
+async def test_new_website_url_creates_a_pending_row_and_hands_the_fetch_to_a_worker(worker):
     hospital = _hospital()
     db = FakeDB(hospital)
 
@@ -165,11 +168,20 @@ async def test_new_website_url_becomes_a_processed_source(crawl):
     assert source.source_type == SourceType.HOMEPAGE
     assert source.url == "https://clinic.example.com"
     assert source.status == SourceStatus.PENDING
-    assert crawl["dispatch"] == [(hospital.id, [source.id])]
+    assert source.raw_text is None
+    assert source.source_metadata["channel_field"] == "website_url"
+    assert source.source_metadata["fetch_state"] == "QUEUED"
+    assert source.source_metadata["registered_from"] == "profile"
+    assert source.source_metadata["normalized_url"] == "https://clinic.example.com"
+    # 요청 안에서 fetch하지 않는다 — 채널 한 곳에 12초까지 걸리기 때문이다.
+    assert worker["fetch"] == []
+    assert worker["dispatch"] == [
+        ("app.workers.tasks.fetch_channel_source", [str(source.id)]),
+    ]
     assert result["source_registration"] == [
         {
             "field": "website_url",
-            "status": "REGISTERED",
+            "status": "QUEUED",
             "source_id": source.id,
             "message": None,
         }
@@ -177,70 +189,105 @@ async def test_new_website_url_becomes_a_processed_source(crawl):
     audits = db.audits("profile_channel_source_registered")
     assert len(audits) == 1
     assert audits[0].detail["field"] == "website_url"
-    assert audits[0].detail["status"] == "REGISTERED"
+    assert audits[0].detail["status"] == "QUEUED"
 
 
-async def test_blog_url_registers_as_naver_blog(crawl):
+async def test_blog_url_registers_as_naver_blog(worker):
     hospital = _hospital()
     db = FakeDB(hospital)
 
     result = await _patch(db, hospital, blog_url="https://blog.naver.com/clinic")
 
     assert [source.source_type for source in db.sources()] == [SourceType.NAVER_BLOG]
-    assert [entry["status"] for entry in result["source_registration"]] == ["REGISTERED"]
+    assert [entry["status"] for entry in result["source_registration"]] == ["QUEUED"]
 
 
-async def test_resending_the_same_url_registers_nothing(crawl):
-    """바뀐 필드만 등록 대상이다 — 프로파일 전체 PATCH가 매번 재크롤을 부르면 안 된다."""
+async def test_resending_the_same_url_registers_nothing(worker):
+    """값도 그대로고 자료도 이미 있으면 이번 저장이 한 일이 없다."""
     hospital = _hospital(website_url="https://clinic.example.com")
-    db = FakeDB(hospital)
+    db = FakeDB(
+        hospital, existing_sources=[(uuid.uuid4(), "https://clinic.example.com")]
+    )
 
     result = await _patch(db, hospital, website_url="https://clinic.example.com")
 
     assert db.sources() == []
-    assert crawl["fetch"] == []
-    assert crawl["dispatch"] == []
+    assert worker["dispatch"] == []
     assert result["source_registration"] == []
 
 
-async def test_url_already_registered_as_a_source_is_skipped(crawl):
+@pytest.mark.parametrize(
+    "stored_url",
+    [
+        "https://clinic.example.com/",
+        "https://WWW.Clinic.example.com",
+        "https://www.clinic.example.com/",
+    ],
+)
+async def test_equivalent_urls_are_not_registered_twice(worker, stored_url):
+    """끝 슬래시·대소문자·www만 다른 주소는 같은 페이지다 — 행을 두 번 만들지 않는다."""
     existing_id = uuid.uuid4()
     hospital = _hospital()
-    db = FakeDB(hospital, existing_source_id=existing_id)
+    db = FakeDB(hospital, existing_sources=[(existing_id, stored_url)])
 
     result = await _patch(db, hospital, website_url="https://clinic.example.com")
 
     assert db.sources() == []
-    assert crawl["fetch"] == []
     entry = result["source_registration"][0]
     assert entry["status"] == "SKIPPED"
     assert entry["source_id"] == existing_id
     assert entry["message"]
 
 
-async def test_fetch_failure_keeps_the_profile_saved(monkeypatch, crawl):
-    async def failing_fetch(_url):
-        return "", "연결할 수 없습니다", None
+async def test_resaving_after_a_failed_registration_dispatches_again(worker):
+    """지난번 등록이 실패해 자료 행이 없으면, 같은 값을 다시 저장하는 것만으로 회복된다."""
+    hospital = _hospital(website_url="https://clinic.example.com")
+    db = FakeDB(hospital, existing_sources=[])
 
-    monkeypatch.setattr(essence_sources_service, "fetch_url_text", failing_fetch)
+    result = await _patch(db, hospital, website_url="https://clinic.example.com")
+
+    assert len(db.sources()) == 1
+    assert [entry["status"] for entry in result["source_registration"]] == ["QUEUED"]
+    assert len(worker["dispatch"]) == 1
+
+
+async def test_excluded_rows_do_not_block_a_new_registration(worker):
+    """제외한 자료는 근거가 아니다 — 같은 주소를 다시 저장하면 새로 등록한다."""
+    hospital = _hospital()
+    # 제외 행은 조회에서 이미 빠진다(status != EXCLUDED).
+    db = FakeDB(hospital, existing_sources=[])
+
+    result = await _patch(db, hospital, website_url="https://clinic.example.com")
+
+    assert len(db.sources()) == 1
+    assert result["source_registration"][0]["status"] == "QUEUED"
+
+
+async def test_a_row_that_could_not_be_created_reports_failed(monkeypatch, worker):
+    """응답의 FAILED는 '행조차 만들지 못했다'는 뜻이다 — 커밋된 행을 실패라 말하지 않는다."""
+
+    async def failing_create(*_args, **_kwargs):
+        raise RuntimeError("insert failed")
+
+    monkeypatch.setattr(hospitals_api, "create_pending_channel_source", failing_create)
     hospital = _hospital()
     db = FakeDB(hospital)
 
     result = await _patch(db, hospital, website_url="https://clinic.example.com")
 
     assert hospital.website_url == "https://clinic.example.com"
-    assert db.sources() == []
+    assert db.rolled_back is True
+    assert worker["dispatch"] == []
     entry = result["source_registration"][0]
     assert entry == {
         "field": "website_url",
         "status": "FAILED",
         "source_id": None,
-        "message": "URL 크롤링 실패: 연결할 수 없습니다",
+        "message": "자료 등록에 실패했습니다. 자료 화면에서 직접 등록해 주세요.",
     }
     audits = db.audits("profile_channel_source_registered")
     assert len(audits) == 1
     assert audits[0].detail["status"] == "FAILED"
-    assert audits[0].detail["message"] == entry["message"]
 
 
 @pytest.mark.parametrize(
@@ -252,7 +299,7 @@ async def test_fetch_failure_keeps_the_profile_saved(monkeypatch, crawl):
         ("kakao_channel_url", "https://pf.kakao.com/clinic"),
     ],
 )
-async def test_profile_only_channels_never_register(crawl, field, url):
+async def test_profile_only_channels_never_register(worker, field, url):
     assert field in hospitals_api.PROFILE_ONLY_CHANNEL_FIELDS
     hospital = _hospital()
     db = FakeDB(hospital)
@@ -260,11 +307,25 @@ async def test_profile_only_channels_never_register(crawl, field, url):
     result = await _patch(db, hospital, **{field: url})
 
     assert db.sources() == []
-    assert crawl["fetch"] == []
+    assert worker["dispatch"] == []
     assert result["source_registration"] == []
 
 
-async def test_registration_error_message_is_safe_and_typed():
+def test_registration_error_message_is_safe_and_typed():
     error = essence_sources_service.SourceRegistrationError("제목을 찾지 못했습니다.", status_code=422)
     assert error.status_code == 422
     assert error.message == "제목을 찾지 못했습니다."
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://clinic.example.com/", "https://clinic.example.com"),
+        ("HTTPS://WWW.Clinic.Example.com/path/", "https://clinic.example.com/path"),
+        ("https://clinic.example.com/a?b=1#frag", "https://clinic.example.com/a?b=1"),
+        ("  https://clinic.example.com  ", "https://clinic.example.com"),
+        ("", ""),
+    ],
+)
+def test_url_normalization_only_folds_what_points_at_the_same_page(url, expected):
+    assert essence_sources_service.normalize_source_url(url) == expected

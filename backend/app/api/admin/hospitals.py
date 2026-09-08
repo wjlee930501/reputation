@@ -27,7 +27,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slugify import slugify
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -39,10 +39,11 @@ from app.api.admin.domain import (
     domain_dns_strategy_for_hospital,
 )
 from app.api.admin.operations_center_incident_queries import count_operator_incidents
+from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
-from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
+from app.models.essence import SourceType
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
@@ -70,7 +71,10 @@ from app.services.essence_readiness import (
     get_essence_readiness_states,
     get_public_approved_philosophy_id,
 )
-from app.services.essence_sources import SourceRegistrationError, register_url_source
+from app.services.essence_sources import (
+    create_pending_channel_source,
+    find_active_source_id_by_url,
+)
 from app.services.hospital_activation import (
     ActivationOutcome,
     HospitalNotActivatable,
@@ -178,6 +182,10 @@ async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
 
 
 class HospitalProfileUpdate(BaseModel):
+    # 모르는 필드는 조용히 버리지 않고 422로 되돌린다 — 화면이 병원 전체 스냅샷을 그대로
+    # 보내면 완료 플래그·다른 섹션의 값까지 함께 실려 오기 때문이다(설계 §4.5).
+    model_config = ConfigDict(extra="forbid")
+
     # 연락처
     address: str | None = Field(None, max_length=500)
     phone: str | None = Field(None, max_length=50)
@@ -431,6 +439,11 @@ CHANNEL_SOURCE_TYPES: dict[str, SourceType] = {
     "website_url": SourceType.HOMEPAGE,
     "blog_url": SourceType.NAVER_BLOG,
 }
+# 본문을 받아오기 전까지 쓰는 제목. 워커가 페이지 <title>로 바꿔 준다.
+CHANNEL_SOURCE_PROVISIONAL_TITLES: dict[str, str] = {
+    "website_url": "병원 홈페이지",
+    "blog_url": "네이버 블로그",
+}
 # 지도·채널 주소는 프로파일 표기 전용이다. 본문이 없어 근거로 쓸 수 없다 —
 # admin/lib/onboarding-candidate.ts의 PROFILE_ONLY_CANDIDATE_KEYS와 같은 목록이다.
 PROFILE_ONLY_CHANNEL_FIELDS = frozenset(
@@ -443,60 +456,64 @@ PROFILE_ONLY_CHANNEL_FIELDS = frozenset(
 )
 
 
-def _changed_channel_urls(
+def _submitted_channel_urls(
     hospital: Hospital, body: HospitalProfileUpdate, update_data: dict
-) -> dict[str, str]:
-    """저장 전에 비교해야 '바뀐 채널'을 알 수 있다 — 적용 뒤에는 이전 값이 남지 않는다."""
-    changed: dict[str, str] = {}
-    for field in CHANNEL_SOURCE_TYPES:
+) -> dict[str, tuple[str, bool]]:
+    """이번 저장이 보낸 공식 채널 주소와, 그것이 바뀐 값인지.
+
+    저장 전에 비교해야 '바뀐 채널'을 알 수 있다 — 적용 뒤에는 이전 값이 남지 않는다.
+    바뀌지 않은 주소도 함께 돌려준다: 지난번 등록이 실패해 자료 행이 없다면 같은 값을
+    다시 저장하는 것만으로 스스로 회복되어야 한다.
+    """
+    submitted: dict[str, tuple[str, bool]] = {}
+    # 지도·플레이스 주소는 이 화면에도 있지만 근거가 아니다. 목록을 명시적으로 건너뛰어야
+    # 새 채널 칸이 생겼을 때 "왜 등록되지 않는지"가 코드에 남는다.
+    for field in (*CHANNEL_SOURCE_TYPES, *sorted(PROFILE_ONLY_CHANNEL_FIELDS)):
+        if field in PROFILE_ONLY_CHANNEL_FIELDS:
+            continue
         if field not in body.model_fields_set:
             continue
         new_url = (update_data.get(field) or "").strip()
         old_url = (getattr(hospital, field, None) or "").strip()
-        if new_url and new_url != old_url:
-            changed[field] = new_url
-    return changed
+        if new_url:
+            submitted[field] = (new_url, new_url != old_url)
+    return submitted
 
 
-async def _register_changed_channel_sources(
-    db: AsyncSession, hospital: Hospital, changed_channels: dict[str, str]
+async def _register_channel_sources(
+    db: AsyncSession, hospital: Hospital, submitted_channels: dict[str, tuple[str, bool]]
 ) -> list[dict]:
-    """바뀐 공식 채널 주소를 근거 자료로 등록한다.
+    """공식 채널 주소를 근거 자료로 등록하고 본문 수집은 워커에 넘긴다.
 
-    저장은 이미 커밋됐다. 등록 실패는 저장을 되돌리지 않고 결과만 응답과 감사 기록에 남긴다.
+    저장은 이미 커밋됐다. 여기서 만드는 것은 본문 없는 PENDING 행뿐이라 요청은 즉시 끝나고,
+    fetch 실패는 워커의 재시도 예산과 운영 예외가 처리한다. 응답의 QUEUED는 커밋된 행이
+    실제로 있다는 뜻이고, FAILED는 그 행조차 만들지 못했다는 뜻이다.
     """
     entries: list[dict] = []
-    for field, url in changed_channels.items():
-        existing_id = await db.scalar(
-            select(HospitalSourceAsset.id)
-            .where(
-                HospitalSourceAsset.hospital_id == hospital.id,
-                HospitalSourceAsset.url == url,
-                HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            )
-            .limit(1)
-        )
+    dispatch_ids: list[uuid.UUID] = []
+    for field, (url, changed) in submitted_channels.items():
+        existing_id = await find_active_source_id_by_url(db, hospital_id=hospital.id, url=url)
         if existing_id is not None:
-            entries.append(
-                {
-                    "field": field,
-                    "status": "SKIPPED",
-                    "source_id": existing_id,
-                    "message": "이미 자료로 등록된 주소입니다.",
-                }
-            )
+            # 값이 그대로면 이번 저장이 한 일이 없다 — 화면에 알릴 것도 없다.
+            if changed:
+                entries.append(
+                    {
+                        "field": field,
+                        "status": "SKIPPED",
+                        "source_id": existing_id,
+                        "message": "이미 자료로 등록된 주소입니다.",
+                    }
+                )
             continue
         try:
-            source = await register_url_source(
+            source = await create_pending_channel_source(
                 db,
                 hospital_id=hospital.id,
                 source_type=CHANNEL_SOURCE_TYPES[field],
                 url=url,
+                title=CHANNEL_SOURCE_PROVISIONAL_TITLES[field],
+                channel_field=field,
                 created_by=default_actor(),
-            )
-        except SourceRegistrationError as exc:
-            entries.append(
-                {"field": field, "status": "FAILED", "source_id": None, "message": exc.message}
             )
         except Exception:
             logger.warning(
@@ -516,10 +533,11 @@ async def _register_changed_channel_sources(
                 }
             )
         else:
+            dispatch_ids.append(source.id)
             entries.append(
                 {
                     "field": field,
-                    "status": "REGISTERED",
+                    "status": "QUEUED",
                     "source_id": source.id,
                     "message": None,
                 }
@@ -542,6 +560,20 @@ async def _register_changed_channel_sources(
         )
     if entries:
         await db.commit()
+    # 커밋 뒤에 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다. 발행 실패는 응답을
+    # 바꾸지 않는다: 행은 이미 durable하고, 정기 복구가 같은 fetch를 다시 건다.
+    for source_id in dispatch_ids:
+        try:
+            celery_app.send_task(
+                "app.workers.tasks.fetch_channel_source",
+                args=[str(source_id)],
+                queue="content",
+                headers=build_dispatch_headers("fetch-channel-source", str(source_id)),
+            )
+        except Exception:
+            logger.warning(
+                "Channel source fetch dispatch failed for source %s", source_id, exc_info=True
+            )
     return entries
 
 
@@ -983,8 +1015,11 @@ async def update_profile(
                 "message": EXTERNAL_LOGO_URL_MESSAGE,
             },
         )
-    changed_channels = _changed_channel_urls(h, body, update_data)
+    submitted_channels = _submitted_channel_urls(h, body, update_data)
     was_complete = h.profile_complete
+    # 이 저장이 비운 항목만 완료를 되돌린다. 저장 전 이미 비어 있던 항목(레거시)까지 세면,
+    # 무관한 칸 하나를 고치려다 공개 중인 병원이 차단되거나 완료가 풀린다.
+    missing_before = set(missing_profile_requirement_keys(h))
     changed_fields: list[str] = []
     for field, value in update_data.items():
         if field not in PROFILE_FIELDS:
@@ -1006,22 +1041,37 @@ async def update_profile(
 
     # 완료 여부는 body가 아니라 저장 결과에서 파생한다 — 화면에 '완료로 표시'가 없으므로
     # 손으로 만든 요청이 불완전한 병원을 완료 처리할 경로도 함께 사라진다(설계 §4.5).
-    missing_requirements = missing_profile_requirement_keys(h)
+    requirements_after = profile_requirements(h)
+    missing_requirements = [item.key for item in requirements_after if not item.passed]
     derived = not missing_requirements
+    newly_missing = [
+        item for item in requirements_after if not item.passed and item.key not in missing_before
+    ]
 
-    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 필수 항목을
-    # 비우면 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다. 먼저 일시정지하게 한다.
-    if was_complete and not derived and _has_public_site(h):
+    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 이 저장이
+    # 필수 항목을 비우면 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다.
+    if was_complete and newly_missing and _has_public_site(h):
+        labels = [item.label for item in newly_missing]
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE",
-                "message": "공개 운영 중인 병원은 기본 정보 완료를 해제할 수 없습니다. 먼저 운영을 일시정지해 주세요.",
+                "message": f"공개 중인 병원의 필수 항목은 비울 수 없습니다: {', '.join(labels)}",
+                "missing": labels,
             },
         )
 
-    transitioned = derived and not was_complete
-    h.profile_complete = derived
+    if was_complete and newly_missing:
+        next_complete = False
+    elif was_complete:
+        # 이 저장이 비우지 않은 레거시 공백은 완료를 되돌리지 않는다. 남은 항목은 응답의
+        # missing_profile_requirements가 그대로 말한다.
+        next_complete = True
+    else:
+        next_complete = derived
+
+    transitioned = next_complete and not was_complete
+    h.profile_complete = next_complete
 
     # 완료 전환이 V0·사이트 파이프라인을 여는 지점이므로, 인수 승인은 여기서만 막는다.
     if transitioned:
@@ -1045,7 +1095,10 @@ async def update_profile(
                 "changed_fields": changed_fields,
                 "profile_complete_transition": transitioned,
                 "profile_complete_derived": derived,
+                # 레거시 공백을 남겨 둔 채 완료를 유지한 저장은 파생값과 저장값이 다르다.
+                "profile_complete_applied": next_complete,
                 "missing_requirements": missing_requirements,
+                "newly_missing_requirements": [item.key for item in newly_missing],
             },
         )
 
@@ -1092,9 +1145,7 @@ async def update_profile(
 
     payload = _serialize(h)
     # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다.
-    payload["source_registration"] = await _register_changed_channel_sources(
-        db, h, changed_channels
-    )
+    payload["source_registration"] = await _register_channel_sources(db, h, submitted_channels)
     return payload
 
 

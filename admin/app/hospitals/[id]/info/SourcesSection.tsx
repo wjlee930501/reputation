@@ -10,11 +10,12 @@ import {
   groupNotesByType,
   isTextSource,
   processingSummary,
+  sourceIncidentHref,
   sourceRowStatus,
   type SourceProcessingRunSummary,
 } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
-import NaverBlogBulkForm from '../onboarding/NaverBlogBulkForm'
+import NaverBlogBulkForm from './NaverBlogBulkForm'
 
 interface NoteRow {
   id: string
@@ -34,6 +35,8 @@ interface TextSourceRow {
   file_url: string | null
   file_access_url: string | null
   evidence_note_count: number
+  //: 채널 자료의 fetch 진행 상태와, 자동 복구가 끝났을 때 열린 예외 id.
+  source_metadata?: { fetch_state?: string; incident_id?: string } | null
   display: { source_type_label: string } | null
 }
 
@@ -64,7 +67,14 @@ function isNoiseNote(note: NoteRow): boolean {
  * 공식 채널은 병원 정보 저장이 자동으로 등록하고, 등록된 자료의 처리도 서버가 한다.
  * 사람이 하는 일은 파일을 올리는 것과, 쓰지 않을 자료·노트를 빼는 것뿐이다.
  */
-export function SourcesSection({ hospitalId }: { hospitalId: string }) {
+export function SourcesSection({
+  hospitalId,
+  refreshKey = 0,
+}: {
+  hospitalId: string
+  /** 기본 정보 저장이 새 자료를 등록하면 값이 올라간다 — 그때 목록과 진행을 다시 읽는다. */
+  refreshKey?: number
+}) {
   const [sources, setSources] = useState<TextSourceRow[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -97,19 +107,25 @@ export function SourcesSection({ hospitalId }: { hospitalId: string }) {
   useEffect(() => {
     void refresh()
     void readRun()
-  }, [refresh, readRun])
+  }, [refresh, readRun, refreshKey])
 
   const summary = processingSummary(run)
 
+  // 아직 본문을 받는 중인 자료는 처리 run이 없다 — 그 단계도 진행 중으로 세야
+  // 저장 직후 화면이 멈춰 있지 않다.
+  const fetching = sources.some(
+    (source) => source.status === 'PENDING' && source.source_metadata?.fetch_state === 'QUEUED',
+  )
+
   // 진행 중일 때만 다시 읽는다 — 끝난 뒤에는 표의 상태가 이미 결과를 말한다.
   useEffect(() => {
-    if (!summary) return
+    if (!summary && !fetching) return
     const timer = window.setInterval(() => {
       void readRun()
       void refresh()
     }, 15000)
     return () => window.clearInterval(timer)
-  }, [summary, readRun, refresh])
+  }, [summary, fetching, readRun, refresh])
 
   return (
     <section
@@ -174,6 +190,7 @@ function SourceRow({
   const [notes, setNotes] = useState<NoteRow[] | null>(null)
   const [notesLoading, setNotesLoading] = useState(false)
   const status = sourceRowStatus(source)
+  const incidentHref = sourceIncidentHref(hospitalId, source)
   const href = source.url ?? source.file_access_url ?? source.file_url
   const excluded = source.status === 'EXCLUDED'
 
@@ -264,9 +281,18 @@ function SourceRow({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <span className={`rounded-full px-2 py-1 text-xs font-semibold ${TONE_CLASS[status.tone]}`}>
-            {status.label}
-          </span>
+          {incidentHref ? (
+            <a
+              href={incidentHref}
+              className={`rounded-full px-2 py-1 text-xs font-semibold underline underline-offset-2 ${TONE_CLASS[status.tone]}`}
+            >
+              {status.label}
+            </a>
+          ) : (
+            <span className={`rounded-full px-2 py-1 text-xs font-semibold ${TONE_CLASS[status.tone]}`}>
+              {status.label}
+            </span>
+          )}
           <button
             type="button"
             onClick={() => void setExcluded(!excluded)}

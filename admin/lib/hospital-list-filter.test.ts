@@ -16,6 +16,7 @@ function hospital(id: string, status: Hospital['status'], visual = 0): Hospital 
     status,
     plan: null,
     profile_complete: false,
+    missing_profile_requirements: [],
     visual_approval_missing: Array.from({ length: visual }, (_, index) => `visual-${index}`),
     v0_report_done: false,
     site_live: false,

@@ -165,6 +165,7 @@ celery_app.conf.update(
         "app.workers.tasks.generate_content_image": {"queue": "content"},
         "app.workers.tasks.recertify_published_content_image": {"queue": "content"},
         "app.workers.tasks.process_source_asset_task": {"queue": "default"},
+        "app.workers.tasks.fetch_channel_source": {"queue": "content"},
         "app.workers.tasks.auto_review_essence_snapshot": {"queue": "content"},
         "app.workers.tasks.reconcile_essence_snapshots": {"queue": "default"},
         "app.workers.tasks.morning_content_auto_publish": {

@@ -31,10 +31,14 @@ class ProfileRequirementItem(BaseModel):
 
 
 class SourceRegistrationItem(BaseModel):
-    """저장한 공식 채널 주소를 근거 자료로 등록한 결과. PATCH 응답에만 실린다(설계 §4.3)."""
+    """저장한 공식 채널 주소를 근거 자료로 등록한 결과. PATCH 응답에만 실린다(설계 §4.3).
+
+    QUEUED는 자료 행이 커밋됐고 본문 수집을 워커에 넘겼다는 뜻이다. FAILED는 그 행조차
+    만들지 못했다는 뜻이라, 응답이 커밋된 행을 실패라고 말하는 일이 없다.
+    """
 
     field: str
-    status: Literal["REGISTERED", "SKIPPED", "FAILED"]
+    status: Literal["QUEUED", "SKIPPED", "FAILED"]
     source_id: Optional[uuid.UUID] = None
     message: Optional[str] = None
 

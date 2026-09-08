@@ -5,8 +5,10 @@
 되어 승인이 stale이 된다. `required_text_source_predicate`는 readiness·자동 검수·승인·노이즈 hash가
 모두 같은 경계를 쓰도록 여기 한 곳에 둔다.
 
-URL 등록(`register_url_source`)은 자료 화면(essence 라우트)과 기본 정보 저장(hospitals 라우트)이
-같은 fetch·검증·처리 경로를 쓰게 한다. 라우트 모듈은 절대 import하지 않는다 —
+URL 등록은 두 갈래다. 자료 화면의 크롤 라우트는 사람이 결과를 기다리므로 `register_url_source`가
+그 자리에서 fetch까지 한다. 기본 정보 저장은 사람을 기다리게 하지 않는다 — 본문 없는 PENDING 행만
+만들고(`create_pending_channel_source`) fetch는 워커(`fetch_channel_source`)가 한다. 두 경로 모두
+`fetch_source_content` 하나를 쓰므로 검증 규칙은 한 벌이다. 라우트 모듈은 절대 import하지 않는다 —
 `app.services.essence_engine`이 이 모듈을 가져가므로 그쪽도 함수 안에서만 늦게 import한다.
 """
 
@@ -14,8 +16,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -73,6 +76,35 @@ class SourceRegistrationError(Exception):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+
+
+#: 채널 주소 행의 fetch 진행 상태. `source_metadata["fetch_state"]`에 그대로 들어간다.
+FETCH_STATE_QUEUED = "QUEUED"
+FETCH_STATE_FETCHED = "FETCHED"
+FETCH_STATE_FAILED = "FAILED"
+#: 워커가 같은 주소를 다시 받아오는 횟수 상한. 넘으면 ERROR + 운영 예외 1건이다.
+CHANNEL_FETCH_ATTEMPT_BUDGET = 3
+
+
+def normalize_source_url(url: str) -> str:
+    """중복 판정용 정규화. 표시·저장은 사람이 입력한 원문을 그대로 쓴다.
+
+    같은 페이지를 가리키는 `http://WWW.a.com/`과 `https://a.com`이 서로 다른 자료로 두 번
+    등록되면, 실패한 등록이 저장할 때마다 새 행을 만든다.
+    """
+    cleaned = (url or "").strip()
+    if not cleaned:
+        return ""
+    parsed = urlparse(cleaned)
+    if not parsed.netloc:
+        return cleaned.rstrip("/").lower()
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = (parsed.path or "").rstrip("/")
+    return urlunparse(
+        (parsed.scheme.lower(), host, path, parsed.params, parsed.query, "")
+    )
 
 
 def is_youtube_channel_home(url: str) -> bool:
@@ -176,23 +208,30 @@ async def start_source_processing_best_effort(
     return run
 
 
-async def register_url_source(
-    db: AsyncSession,
+@dataclass(frozen=True)
+class FetchedSourceContent:
+    """fetch 결과 중 자료 행에 그대로 들어가는 두 값."""
+
+    title: str
+    text: str
+
+
+class TransientSourceFetchError(Exception):
+    """네트워크·타임아웃처럼 다시 시도하면 달라질 수 있는 실패. 재시도 예산을 쓴다."""
+
+
+async def fetch_source_content(
     *,
-    hospital_id: uuid.UUID,
     source_type: SourceType,
     url: str,
     title: str | None = None,
-    operator_note: str | None = None,
-    created_by: str | None = None,
-) -> HospitalSourceAsset:
-    """URL을 fetch해 근거 자료로 등록하고 처리까지 이어 준다.
+) -> FetchedSourceContent:
+    """URL을 fetch해 근거로 쓸 제목과 본문을 만든다.
 
-    검증 실패는 `SourceRegistrationError`로만 알린다 — 호출자가 HTTP로 옮기든 저장 응답에
-    실어 보내든 같은 문장을 쓰게 하기 위해서다.
+    영구 실패(사진 유형·채널 홈·셸 페이지·제목 없음)는 `SourceRegistrationError`로,
+    다시 시도할 값이 있는 실패는 `TransientSourceFetchError`로 구분해 알린다. 호출자가
+    HTTP로 옮기든 워커 재시도로 옮기든 같은 문장을 쓴다.
     """
-    from app.services.essence_engine import compute_source_content_hash
-
     if source_type in PHOTO_SOURCE_TYPES:
         raise SourceRegistrationError(
             "사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요."
@@ -205,7 +244,7 @@ async def register_url_source(
 
     text, error, quality = await fetch_url_text(url)
     if error:
-        raise SourceRegistrationError(f"URL 크롤링 실패: {error}")
+        raise TransientSourceFetchError(f"URL 크롤링 실패: {error}")
     # 네이버 등에서 본문 대신 빈 프레임셋 셸만 받아온 경우 — junk 저장 대신 명확히 거부한다.
     if quality is not None and quality.looks_like_shell:
         if source_type == SourceType.NAVER_BLOG:
@@ -222,7 +261,94 @@ async def register_url_source(
             "페이지 제목을 찾지 못했습니다. 자료 제목을 직접 입력해 주세요.",
             status_code=422,
         )
+    return FetchedSourceContent(title=final_title, text=text)
 
+
+async def find_active_source_id_by_url(
+    db: AsyncSession, *, hospital_id: uuid.UUID, url: str
+) -> uuid.UUID | None:
+    """같은 주소의, 제외되지 않은 자료 id. 없으면 None.
+
+    정규화 비교라 SQL 한 줄로 끝나지 않는다. 병원 한 곳의 자료 수는 화면에 다 그리는
+    규모라 Python에서 비교해도 된다.
+    """
+    target = normalize_source_url(url)
+    if not target:
+        return None
+    rows = (
+        await db.execute(
+            select(HospitalSourceAsset.id, HospitalSourceAsset.url).where(
+                HospitalSourceAsset.hospital_id == hospital_id,
+                HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+                HospitalSourceAsset.url.isnot(None),
+            )
+        )
+    ).all()
+    for source_id, stored_url in rows:
+        if normalize_source_url(stored_url or "") == target:
+            return source_id
+    return None
+
+
+async def create_pending_channel_source(
+    db: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    source_type: SourceType,
+    url: str,
+    title: str,
+    channel_field: str,
+    created_by: str | None = None,
+) -> HospitalSourceAsset:
+    """fetch 없이 근거 자료 행만 만든다 — 저장 응답을 기다리게 하지 않기 위해서다.
+
+    본문은 워커(`fetch_channel_source`)가 채운다. 커밋은 호출자가 한다: 프로파일 저장과
+    같은 트랜잭션에서 만들어야 "행은 없는데 응답은 등록됐다고 말하는" 상태가 없다.
+    """
+    source = HospitalSourceAsset(
+        hospital_id=hospital_id,
+        source_type=source_type,
+        title=title,
+        url=url.strip(),
+        raw_text=None,
+        source_metadata={
+            "channel_field": channel_field,
+            "fetch_state": FETCH_STATE_QUEUED,
+            "registered_from": "profile",
+            "normalized_url": normalize_source_url(url),
+        },
+        status=SourceStatus.PENDING,
+        created_by=created_by,
+    )
+    db.add(source)
+    await db.flush()
+    return source
+
+
+async def register_url_source(
+    db: AsyncSession,
+    *,
+    hospital_id: uuid.UUID,
+    source_type: SourceType,
+    url: str,
+    title: str | None = None,
+    operator_note: str | None = None,
+    created_by: str | None = None,
+) -> HospitalSourceAsset:
+    """URL을 그 자리에서 fetch해 근거 자료로 등록하고 처리까지 이어 준다.
+
+    사람이 결과를 기다리는 크롤 라우트 전용이다. 프로파일 저장은 이 동기 경로를 쓰지
+    않는다 — 채널 한 곳에 최대 12초가 걸리기 때문이다.
+    """
+    from app.services.essence_engine import compute_source_content_hash
+
+    try:
+        fetched = await fetch_source_content(source_type=source_type, url=url, title=title)
+    except TransientSourceFetchError as exc:
+        raise SourceRegistrationError(str(exc)) from exc
+
+    final_title = fetched.title
+    text = fetched.text
     crawled_text = normalized_optional_text(text)
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(

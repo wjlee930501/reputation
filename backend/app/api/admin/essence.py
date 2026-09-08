@@ -855,6 +855,24 @@ async def exclude_source(
     )
     await db.commit()
     await db.refresh(source)
+    # 제외는 실패한 자료를 사람이 정리한 결과다 — 열려 있던 운영 예외도 함께 닫는다.
+    for pipeline in ("source_fetch", "source_processing"):
+        try:
+            await recover_ops_incident(
+                pipeline=pipeline,
+                object_type="source_asset",
+                object_id=str(source.id),
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                hospital_name=hospital.name,
+                reason="operator excluded the source",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to recover %s incident after exclusion of %s",
+                pipeline,
+                source.id,
+                exc_info=True,
+            )
     _enqueue_essence_review_best_effort(hospital_id)
     if should_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).

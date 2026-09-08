@@ -110,6 +110,8 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/app/hospitals/[id]/info/ClinicVisualForm.tsx",
     "admin/app/hospitals/[id]/info/ClinicLogoField.tsx",
     "admin/app/hospitals/[id]/info/PhotoRightsFields.tsx",
+    "admin/app/hospitals/[id]/info/NaverBlogBulkForm.tsx",
+    "admin/app/hospitals/[id]/info/NaverHandoffResultItem.tsx",
     "admin/lib/info-sections.ts",
     # 공식 채널 칸의 안내 문구가 사는 곳. 화면(FactsSection)이 이 상수를 그대로 그린다.
     "admin/lib/external-channel-urls.ts",

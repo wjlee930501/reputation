@@ -16,6 +16,7 @@ import {
   processingSummary,
   remainingRequirementsSummary,
   sectionForRequirement,
+  sourceIncidentHref,
   sourceRowStatus,
 } from './info-sections.ts'
 
@@ -39,7 +40,8 @@ test('서버 필수 항목 키 8개가 모두 섹션을 가진다', () => {
   assert.equal(sectionForRequirement('contact'), 'contact')
   assert.equal(sectionForRequirement('web_channels'), 'channels')
   assert.equal(sectionForRequirement('ai_channels'), 'channels')
-  assert.equal(sectionForRequirement('geo'), 'channels')
+  // 좌표는 주소 저장이 자동 변환한다 — 사람이 채우는 지역 칸이 있는 섹션으로 보낸다.
+  assert.equal(sectionForRequirement('geo'), 'targeting')
   assert.equal(sectionForRequirement('targeting'), 'targeting')
   assert.equal(sectionForRequirement('treatments'), 'treatments')
 })
@@ -142,18 +144,49 @@ test('자료 상태는 사람이 누를 일이 아니라 지금 상태로만 말
   })
   assert.deepEqual(sourceRowStatus({ status: 'PROCESSED' }), { label: '처리 완료', tone: 'good' })
   assert.deepEqual(sourceRowStatus({ status: 'EXCLUDED' }), { label: '제외', tone: 'paused' })
+  // ERROR는 자동 재시도가 끝난 자리다 — 하지 않는 일을 한다고 말하지 않는다.
   assert.deepEqual(sourceRowStatus({ status: 'ERROR' }), {
-    label: '처리 실패 — 자동 재시도 중',
+    label: '처리 실패 — 운영 센터 확인',
     tone: 'warn',
   })
   // 모르는 상태도 화면이 비지 않는다.
   assert.equal(sourceRowStatus({ status: 'WHATEVER' }).tone, 'neutral')
 })
 
+test('본문을 아직 못 받은 채널 자료는 처리 대기와 다른 단계로 말한다', () => {
+  assert.deepEqual(
+    sourceRowStatus({ status: 'PENDING', source_metadata: { fetch_state: 'QUEUED' } }),
+    { label: '주소 내용 가져오는 중 (자동)', tone: 'neutral' },
+  )
+  assert.deepEqual(
+    sourceRowStatus({ status: 'PENDING', source_metadata: { fetch_state: 'FAILED' } }),
+    { label: '가져오기 재시도 대기', tone: 'warn' },
+  )
+  // 본문을 받은 뒤에는 다시 처리 대기다.
+  assert.equal(
+    sourceRowStatus({ status: 'PENDING', source_metadata: { fetch_state: 'FETCHED' } }).label,
+    '처리 대기 (자동)',
+  )
+})
+
 test('오류 상태에 실패 원문을 붙이지 않는다', () => {
   assert.equal(
     sourceRowStatus({ status: 'ERROR', process_error: 'TimeoutError' } as { status: string }).label,
-    '처리 실패 — 자동 재시도 중',
+    '처리 실패 — 운영 센터 확인',
+  )
+})
+
+test('운영 센터 링크는 실제로 열린 예외가 있을 때만 만든다', () => {
+  assert.equal(
+    sourceIncidentHref('h-1', { status: 'ERROR', source_metadata: { incident_id: 'i-1' } }),
+    '/operations?queue=incidents&hospital_id=h-1',
+  )
+  // 예외가 없으면 갈 곳도 없다 — 빈 화면으로 보내지 않는다.
+  assert.equal(sourceIncidentHref('h-1', { status: 'ERROR' }), null)
+  assert.equal(sourceIncidentHref('h-1', { status: 'ERROR', source_metadata: {} }), null)
+  assert.equal(
+    sourceIncidentHref('h-1', { status: 'PENDING', source_metadata: { incident_id: 'i-1' } }),
+    null,
   )
 })
 

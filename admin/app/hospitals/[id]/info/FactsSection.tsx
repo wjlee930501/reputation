@@ -45,7 +45,7 @@ export interface HospitalInfoProfile {
   competitors: string[]
   treatments: Treatment[]
   // 이 화면이 편집하지는 않지만 헤더 스냅샷을 그대로 시드로 쓰기 때문에 폼 상태에
-  // 섞여 들어온다. 저장 직전에 profilePatchPayload가 걷어낸다(업로드 쪽이 소유).
+  // 섞여 들어온다. 저장 직전에 factsPatchPayload가 걷어낸다(업로드 쪽이 소유).
   logo_url?: string | null
 }
 
@@ -173,20 +173,28 @@ function SectionShell({
   )
 }
 
-/** 공식 채널 저장이 자료 자동 등록에 실패했을 때만 해당 칸 옆에 사실을 남긴다. */
-function SourceRegistrationWarning({
+/** 이번 저장이 이 칸에 대해 실제로 한 일. 한 일이 없으면 아무것도 그리지 않는다. */
+function SourceRegistrationNotice({
   field,
   results,
 }: {
   field: string
   results: ProfileSourceRegistration[]
 }) {
-  const failed = results.find((item) => item.field === field && item.status === 'FAILED')
-  if (!failed) return null
+  const entry = results.find((item) => item.field === field)
+  if (!entry) return null
+  if (entry.status === 'QUEUED') {
+    return (
+      <p className="mt-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs text-blue-800">
+        {ADMIN_COPY.evidence} 등록됨 — 자동 처리 중
+      </p>
+    )
+  }
+  if (entry.status !== 'FAILED') return null
   return (
     <p className="mt-1 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
       주소는 저장했지만 {ADMIN_COPY.evidence}로 자동 등록하지 못했습니다.
-      {failed.message ? ` (${failed.message})` : ''}
+      {entry.message ? ` (${entry.message})` : ''}
     </p>
   )
 }
@@ -449,7 +457,7 @@ export function FactsSection({
               onChange={(e) => onFieldChange('website_url', e.target.value)}
               className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('website_url', !!aiFilled.website_url)}`}
             />
-            <SourceRegistrationWarning field="website_url" results={sourceRegistration} />
+            <SourceRegistrationNotice field="website_url" results={sourceRegistration} />
           </div>
           <div>
             <label htmlFor="info-blog-url" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
@@ -463,7 +471,7 @@ export function FactsSection({
               onChange={(e) => onFieldChange('blog_url', e.target.value)}
               className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('blog_url', !!aiFilled.blog_url)}`}
             />
-            <SourceRegistrationWarning field="blog_url" results={sourceRegistration} />
+            <SourceRegistrationNotice field="blog_url" results={sourceRegistration} />
           </div>
           <div>
             <label htmlFor="info-google-business-url" className="block text-sm font-medium text-slate-700 mb-1.5">구글 병원 정보 URL</label>

@@ -50,7 +50,7 @@ import {
   photoRightsReady,
   type PhotoRightsDraft,
 } from '../info/PhotoRightsFields'
-import NaverBlogBulkForm from './NaverBlogBulkForm'
+import NaverBlogBulkForm from '../info/NaverBlogBulkForm'
 
 interface Hospital {
   id: string

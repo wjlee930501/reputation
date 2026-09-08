@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
+from pydantic import ValidationError
 
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffState
@@ -154,20 +155,20 @@ async def test_missing_requirements_are_labelled():
     assert db.committed is True
 
 
-async def test_body_cannot_set_profile_complete():
-    """body의 완료 플래그는 필드가 없어 무시되고, 파생 판정이 이긴다."""
+def test_body_cannot_set_profile_complete():
+    """완료 플래그는 조용히 무시되지 않고 요청 자체가 거부된다 — 보낸 쪽이 알아야 한다."""
     assert "profile_complete" not in hospitals_api.HospitalProfileUpdate.model_fields
 
-    hospital = _hospital(profile_complete=False, treatments=[])
-    db = FakeDB(hospital)
-    body = hospitals_api.HospitalProfileUpdate(profile_complete=True)
+    with pytest.raises(ValidationError) as exc:
+        hospitals_api.HospitalProfileUpdate(profile_complete=True)
 
-    assert "profile_complete" not in body.model_dump(exclude_unset=True)
+    assert exc.value.errors()[0]["type"] == "extra_forbidden"
 
-    result = await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
 
-    assert result["profile_complete"] is False
-    assert hospital.profile_complete is False
+def test_unknown_fields_are_rejected_instead_of_dropped():
+    """화면이 병원 전체 스냅샷을 그대로 보내면 다른 섹션의 값까지 실려 온다."""
+    with pytest.raises(ValidationError):
+        hospitals_api.HospitalProfileUpdate(name="테스트의원")
 
 
 async def test_address_change_geocodes_once_and_persists_coordinates(monkeypatch):
@@ -296,6 +297,11 @@ async def test_patch_cannot_unset_profile_complete_while_publicly_serving(patch_
 
     assert exc.value.status_code == 409
     assert exc.value.detail["code"] == "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE"
+    # 어떤 칸이 문제인지 말하고, 일시정지하라는 우회 지시는 하지 않는다.
+    assert exc.value.detail["missing"]
+    for label in exc.value.detail["missing"]:
+        assert label in exc.value.detail["message"]
+    assert "일시정지" not in exc.value.detail["message"]
     assert db.committed is False
     # 판정 자체가 잠금 아래서 일어나야 재개(`/resume`)와 교차하지 않는다.
     assert db.locks == [hospital.id]
@@ -313,3 +319,61 @@ async def test_patch_can_unset_profile_complete_when_paused():
     assert db.committed is True
     assert db.locks == [hospital.id]
     assert db.locked_before_first_read is True
+
+
+async def test_a_legacy_gap_this_patch_did_not_create_keeps_the_live_hospital_saving():
+    """저장 전에 이미 비어 있던 항목 때문에 무관한 칸 수정이 409가 되면 안 된다."""
+    hospital = _hospital(
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        profile_complete=True,
+        director_philosophy=None,
+    )
+    db = FakeDB(hospital)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(phone="02-111-2222"),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    # 완료는 그대로 두고, 남은 항목은 응답이 말한다.
+    assert hospital.profile_complete is True
+    assert result["profile_complete"] is True
+    assert [item["key"] for item in result["missing_profile_requirements"]] == [
+        "director_philosophy"
+    ]
+    assert db.committed is True
+
+
+async def test_a_legacy_gap_does_not_flip_completion_off_for_a_non_live_hospital():
+    hospital = _hospital(profile_complete=True, director_philosophy=None)
+    db = FakeDB(hospital)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(phone="02-111-2222"),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.profile_complete is True
+    assert result["missing_profile_requirements"] == [
+        {"key": "director_philosophy", "label": "진료 철학"}
+    ]
+
+
+async def test_this_patch_emptying_a_requirement_flips_completion_off_when_not_live():
+    hospital = _hospital(profile_complete=True)
+    db = FakeDB(hospital)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(keywords=[]),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.profile_complete is False
+    assert result["profile_complete"] is False

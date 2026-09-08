@@ -1,11 +1,11 @@
 'use client'
 
 import { useParams } from 'next/navigation'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ApiError, fetchAPI, autofillProfile } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
-import { profilePatchPayload } from '@/lib/profile-patch'
+import { factsPatchPayload } from '@/lib/profile-patch'
 import { profileSaveErrorMessage } from '@/lib/profile-save-error'
 import {
   INFO_SECTION_TITLES,
@@ -74,6 +74,9 @@ export default function HospitalInfoPage() {
   const hospitalId = params.id
   const { hospital, loading: headerLoading, refetch: refetchHeader } = useHospitalHeader()
   const [profile, setProfile] = useState<InfoFormProfile>({})
+  // 이 폼에 저장하지 않은 입력이 있는지. 다른 섹션이 저장한 뒤 오는 새 헤더로 다시 채울지를
+  // 이 값 하나로 정한다 — 사람이 타이핑하던 내용을 서버 스냅샷이 덮지 않게.
+  const [factsDirty, setFactsDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -81,6 +84,7 @@ export default function HospitalInfoPage() {
   const [coordinatesManuallyEdited, setCoordinatesManuallyEdited] = useState(false)
   const [coordinateNotice, setCoordinateNotice] = useState<string | null>(null)
   const [sourceRegistration, setSourceRegistration] = useState<ProfileSourceRegistration[]>([])
+  const [sourcesRefreshKey, setSourcesRefreshKey] = useState(0)
 
   const [autofillOpen, setAutofillOpen] = useState(false)
   const [autofillLoading, setAutofillLoading] = useState(false)
@@ -88,12 +92,11 @@ export default function HospitalInfoPage() {
   const [aiFilled, setAiFilled] = useState<Record<string, AutofillFieldMeta>>({})
 
   // 레이아웃이 이미 같은 GET /admin/hospitals/{id}를 받아 컨텍스트에 들고 있다 — 폼을
-  // 그걸로 한 번만 채운다. ref로 "한 번만"을 지켜야 저장 직후 refetch가 편집 중인
-  // 내용을 서버 스냅샷으로 덮어쓰지 않는다.
-  const seededFromHeaderRef = useRef(false)
+  // 그걸로 채운다. 다른 섹션(브랜드·사진·도메인)이 저장한 뒤에도 헤더가 새로 오므로,
+  // 입력 중이 아닐 때는 그 최신 스냅샷으로 다시 채워야 화면이 서버와 어긋나지 않는다.
+  // 편집 중(dirty)에는 덮지 않는다.
   useEffect(() => {
-    if (seededFromHeaderRef.current || !hospital) return
-    seededFromHeaderRef.current = true
+    if (!hospital || factsDirty) return
     const data = hospital as unknown as HospitalInfoProfile
     setProfile({
       ...data,
@@ -107,9 +110,10 @@ export default function HospitalInfoPage() {
       longitude: data.longitude ?? null,
     })
     setSavedAddress(data.address ?? '')
-  }, [hospital])
+  }, [hospital, factsDirty])
 
   function updateField<K extends keyof HospitalInfoProfile>(key: K, value: HospitalInfoProfile[K]) {
+    setFactsDirty(true)
     setProfile((prev) => ({ ...prev, [key]: value }))
   }
 
@@ -135,10 +139,10 @@ export default function HospitalInfoPage() {
       const addressChanged = (profile.address ?? '').trim() !== savedAddress.trim()
       const saved = await fetchAPI<ProfileSaveResponse>(`/admin/hospitals/${hospitalId}/profile`, {
         method: 'PATCH',
-        // 로고는 업로드 엔드포인트가 소유한다 — 여기서 함께 보내면 오래된 폼 값이
-        // 방금 올린 파일 참조를 지운다.
+        // 사실 칸만 보낸다. 폼 상태에는 헤더 스냅샷에서 온 브랜드 값도 섞여 있는데,
+        // 그것까지 보내면 브랜드 섹션이 방금 저장한 값을 오래된 스냅샷으로 덮어쓴다.
         body: JSON.stringify({
-          ...profilePatchPayload(profile),
+          ...factsPatchPayload(profile),
           geocode_address: !coordinatesManuallyEdited,
         }),
       })
@@ -158,8 +162,14 @@ export default function HospitalInfoPage() {
       }
       setCoordinatesManuallyEdited(false)
       setSuccess(true)
-      // 남은 필수 항목과 헤더 상태는 서버 판정이다 — 저장 후 다시 받는다.
-      void refetchHeader()
+      if (saved.source_registration?.some((entry) => entry.status === 'QUEUED')) {
+        // 새 자료 행이 생겼다 — 근거 자료 표가 그 행과 처리 진행을 바로 보게 한다.
+        setSourcesRefreshKey((key) => key + 1)
+      }
+      // 남은 필수 항목과 헤더 상태는 서버 판정이다 — 저장 후 다시 받는다. 새 헤더가
+      // 도착한 뒤에 dirty를 풀어야, 실패한 refetch가 화면을 옛 값으로 되돌리지 않는다.
+      await refetchHeader()
+      setFactsDirty(false)
       setTimeout(() => setSuccess(false), 3000)
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
@@ -203,6 +213,8 @@ export default function HospitalInfoPage() {
       const { draft, field_meta } = result
       const newAiFilled: Record<string, AutofillFieldMeta> = { ...aiFilled }
 
+      // 자동 입력은 아직 저장되지 않은 제안이다 — 헤더가 새로 와도 덮지 않게 표시한다.
+      setFactsDirty(true)
       setProfile((prev) => {
         const next = { ...prev }
 
@@ -434,13 +446,16 @@ export default function HospitalInfoPage() {
             hospitalId={hospitalId}
             profile={profile}
             activationReadiness={hospital}
-            onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
+            onProfileChange={(patch) => {
+              setFactsDirty(true)
+              setProfile((prev) => ({ ...prev, ...patch }))
+            }}
             onHeaderRefresh={() => void refetchHeader()}
           />
         </div>
       )}
 
-      <SourcesSection hospitalId={hospitalId} />
+      <SourcesSection hospitalId={hospitalId} refreshKey={sourcesRefreshKey} />
       </div>
     </>
   )

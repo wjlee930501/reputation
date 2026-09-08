@@ -116,7 +116,16 @@ from app.services.essence_readiness import (
     get_current_approved_philosophy_sync,
     get_essence_readiness_sync,
 )
-from app.services.essence_sources import required_text_source_predicate
+from app.services.essence_sources import (
+    CHANNEL_FETCH_ATTEMPT_BUDGET,
+    FETCH_STATE_FAILED,
+    FETCH_STATE_FETCHED,
+    FETCH_STATE_QUEUED,
+    SourceRegistrationError,
+    fetch_source_content,
+    required_text_source_predicate,
+    start_source_processing_best_effort,
+)
 from app.services.hospital_activation import (
     AUTO_ACTIVATE_ACTOR,
     activate_hospital_sync,
@@ -2055,6 +2064,239 @@ def _defer_source_processing_run_item(
         return True
 
 
+SOURCE_FETCH_PIPELINE = "source_fetch"
+SOURCE_PROCESSING_PIPELINE = "source_processing"
+CHANNEL_FETCH_COOLDOWN = timedelta(minutes=15)
+SOURCE_FETCH_NEXT_ACTION = "공식 채널 주소를 확인하거나 자료 파일을 직접 올려 주세요."
+SOURCE_PROCESSING_NEXT_ACTION = "자료 내용을 확인하고 다시 올리거나 제외해 주세요."
+
+
+def _open_source_incident(
+    *,
+    pipeline: str,
+    source_id: uuid.UUID,
+    hospital_id: uuid.UUID | None,
+    hospital_name: str,
+    incident_type: str,
+    safe_error_code: str,
+    problem: str,
+    next_action: str,
+) -> uuid.UUID | None:
+    """자동 복구가 끝난 자료 하나를 사람의 할 일로 올린다.
+
+    dedupe는 자료 id 하나다 — 같은 자료가 여러 번 실패해도 운영 센터에는 한 줄이다.
+    """
+    # 저장 경로는 앵커(#)를 허용하지 않는다(incident_safety.normalize_admin_path) —
+    # 근거 자료 섹션까지 데려가는 것은 화면의 링크가 하고, 여기는 그 화면까지만 가리킨다.
+    admin_path = f"/hospitals/{hospital_id}/info" if hospital_id else "/operations"
+    try:
+        return _run_async(
+            open_ops_incident(
+                pipeline=pipeline,
+                object_type="source_asset",
+                object_id=str(source_id),
+                incident_type=incident_type,
+                safe_error_code=safe_error_code,
+                problem=problem,
+                customer_impact="이 자료는 새 글의 근거로 쓰이지 않습니다.",
+                next_action=next_action,
+                source_type="HOSPITAL_SOURCE_ASSET",
+                hospital_name=hospital_name,
+                hospital_id=hospital_id,
+                admin_path=admin_path,
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                severity=IncidentSeverity.MEDIUM,
+            )
+        )
+    except Exception:
+        # 예외 기록 실패가 자료 상태 저장을 되돌리지 않는다 — 다음 스윕이 다시 시도한다.
+        logger.exception("Failed to open %s incident for source %s", pipeline, source_id)
+        return None
+
+
+def _recover_source_incident(*, pipeline: str, source_id: uuid.UUID, hospital_name: str) -> None:
+    try:
+        _run_async(
+            recover_ops_incident(
+                pipeline=pipeline,
+                object_type="source_asset",
+                object_id=str(source_id),
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                hospital_name=hospital_name,
+                reason="source asset is no longer failing",
+            )
+        )
+    except Exception:
+        logger.exception("Failed to recover %s incident for source %s", pipeline, source_id)
+
+
+def _source_hospital_identity(source_uuid: uuid.UUID) -> tuple[uuid.UUID | None, str]:
+    """예외 한 줄이 어느 병원의 일인지 말할 수 있게 한다."""
+    with SyncSessionLocal() as db:
+        source = db.get(HospitalSourceAsset, source_uuid)
+        if source is None:
+            return None, "이름 미확인 병원"
+        hospital = db.get(Hospital, source.hospital_id)
+        return source.hospital_id, (hospital.name if hospital is not None else "이름 미확인 병원")
+
+
+def _merged_source_metadata(
+    source: HospitalSourceAsset, **patch: object
+) -> dict[str, object]:
+    """JSONB 컬럼은 새 dict를 넣어야 SQLAlchemy가 변경으로 본다."""
+    metadata = dict(source.source_metadata or {})
+    metadata.update(patch)
+    return metadata
+
+
+@celery_app.task(
+    name="app.workers.tasks.fetch_channel_source",
+    bind=True,
+    max_retries=3,
+    soft_time_limit=120,
+    time_limit=150,
+)
+def fetch_channel_source(self, source_id: str) -> dict[str, object]:
+    """프로파일 저장이 만든 채널 자료 행의 본문을 받아 온다.
+
+    저장 요청은 행만 만들고 끝난다. 주소 하나에 12초까지 걸리는 fetch는 여기서 하고,
+    성공하면 곧바로 자료 처리로 이어 준다. 영구 실패와 예산을 다 쓴 실패만 사람에게
+    올리고, 그 사이의 실패는 스윕이 조용히 다시 건다.
+    """
+    require_dispatch(self, "fetch-channel-source", source_id)
+    source_uuid = uuid.UUID(source_id)
+
+    with SyncSessionLocal() as db:
+        source = db.get(HospitalSourceAsset, source_uuid)
+        if source is None:
+            logger.warning("Channel source not found; skipping fetch: %s", source_uuid)
+            return {"source_id": source_id, "status": "NOT_FOUND"}
+        metadata = dict(source.source_metadata or {})
+        if metadata.get("fetch_state") == FETCH_STATE_FETCHED:
+            return {"source_id": source_id, "status": "ALREADY_FETCHED"}
+        if source.status == SourceStatus.EXCLUDED:
+            return {"source_id": source_id, "status": SourceStatus.EXCLUDED.value}
+        hospital = db.get(Hospital, source.hospital_id)
+        hospital_id = source.hospital_id
+        hospital_name = hospital.name if hospital is not None else "이름 미확인 병원"
+        source_type = source.source_type
+        url = source.url or ""
+        attempts = int(metadata.get("fetch_attempts") or 0)
+        if int(self.request.retries or 0) == 0:
+            # 예산은 태스크 내부 재시도가 아니라 '다시 걸린 횟수'를 센다.
+            attempts += 1
+            source.source_metadata = _merged_source_metadata(
+                source,
+                fetch_attempts=attempts,
+                last_fetch_attempt_at=datetime.now(timezone.utc).isoformat(),
+            )
+            db.commit()
+
+    if not url:
+        return {"source_id": source_id, "status": "NO_URL"}
+
+    try:
+        fetched = _run_async(fetch_source_content(source_type=source_type, url=url))
+    except SourceRegistrationError as exc:
+        _fail_channel_source_fetch(source_uuid, message=exc.message, terminal=True)
+        incident_id = _open_source_incident(
+            pipeline=SOURCE_FETCH_PIPELINE,
+            source_id=source_uuid,
+            hospital_id=hospital_id,
+            hospital_name=hospital_name,
+            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
+            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
+            problem=exc.message,
+            next_action=SOURCE_FETCH_NEXT_ACTION,
+        )
+        _attach_source_incident(source_uuid, incident_id)
+        return {"source_id": source_id, "status": SourceStatus.ERROR.value, "error": exc.message}
+    except Exception as exc:
+        # TransientSourceFetchError(네트워크·타임아웃)와 예상 못 한 오류를 같게 다룬다:
+        # 둘 다 다시 걸면 달라질 수 있다. 영구 실패만 위에서 이미 갈라졌다.
+        message = str(exc)
+        _fail_channel_source_fetch(source_uuid, message=message, terminal=False)
+        if int(self.request.retries or 0) < self.max_retries:
+            raise self.retry(exc=exc, countdown=30 * (int(self.request.retries or 0) + 1))
+        logger.warning("Channel source fetch failed for %s: %s", source_uuid, message)
+        return {"source_id": source_id, "status": FETCH_STATE_FAILED, "error": message}
+
+    from app.services.source_processing_runs import normalized_optional_text
+
+    crawled_text = normalized_optional_text(fetched.text)
+    with SyncSessionLocal() as db:
+        source = db.get(HospitalSourceAsset, source_uuid)
+        if source is None or source.status == SourceStatus.EXCLUDED:
+            return {"source_id": source_id, "status": "GONE"}
+        source.title = fetched.title
+        source.raw_text = crawled_text
+        source.content_hash = compute_source_content_hash(
+            fetched.title, url, crawled_text, source.operator_note
+        )
+        source.process_error = None
+        source.status = SourceStatus.PENDING
+        source.source_metadata = _merged_source_metadata(
+            source,
+            fetch_state=FETCH_STATE_FETCHED,
+            crawled_at=datetime.now(timezone.utc).isoformat(),
+            fetch_error=None,
+        )
+        db.commit()
+
+    _recover_source_incident(
+        pipeline=SOURCE_FETCH_PIPELINE, source_id=source_uuid, hospital_name=hospital_name
+    )
+    if crawled_text:
+        _start_source_processing_sync(hospital_id, source_uuid)
+    return {"source_id": source_id, "status": FETCH_STATE_FETCHED}
+
+
+def _fail_channel_source_fetch(
+    source_uuid: uuid.UUID, *, message: str, terminal: bool
+) -> None:
+    """fetch 실패를 자료 행에 남긴다. 영구 실패만 ERROR로 굳힌다."""
+    with SyncSessionLocal() as db:
+        source = db.get(HospitalSourceAsset, source_uuid)
+        if source is None:
+            return
+        source.source_metadata = _merged_source_metadata(
+            source, fetch_state=FETCH_STATE_FAILED, fetch_error=message
+        )
+        if terminal:
+            source.status = SourceStatus.ERROR
+            source.process_error = message
+        db.commit()
+
+
+def _attach_source_incident(source_uuid: uuid.UUID, incident_id: uuid.UUID | None) -> None:
+    """화면이 '운영 센터 확인' 링크를 걸 수 있게, 실제로 열린 예외만 자료에 붙인다."""
+    if incident_id is None:
+        return
+    with SyncSessionLocal() as db:
+        source = db.get(HospitalSourceAsset, source_uuid)
+        if source is None:
+            return
+        source.source_metadata = _merged_source_metadata(source, incident_id=str(incident_id))
+        db.commit()
+
+
+def _start_source_processing_sync(hospital_id: uuid.UUID, source_uuid: uuid.UUID) -> None:
+    """본문이 생긴 자료를 곧바로 처리 run에 연결한다(자료 화면의 크롤 경로와 같은 함수)."""
+    from app.core.database import get_async_sessionmaker
+
+    async def _run() -> None:
+        async with get_async_sessionmaker()() as async_db:
+            await start_source_processing_best_effort(
+                async_db, hospital_id=hospital_id, source_ids=[source_uuid]
+            )
+
+    try:
+        _run_async(_run())
+    except Exception:
+        # 본문은 이미 durable하다. 다음 정기 복구가 처리 run을 만든다.
+        logger.exception("Failed to start processing for fetched source %s", source_uuid)
+
+
 @celery_app.task(
     name="app.workers.tasks.process_source_asset_task",
     bind=True,
@@ -2152,6 +2394,13 @@ def process_source_asset_task(
                     "Failed to enqueue Essence snapshot review for hospital %s",
                     hospital_id_for_review,
                 )
+        if outcome == SourceStatus.PROCESSED.value:
+            # 앞선 실패로 열어 둔 예외는 이 성공으로 닫힌다 — 사람이 확인 버튼을 누를 일이 없다.
+            _recover_source_incident(
+                pipeline=SOURCE_PROCESSING_PIPELINE,
+                source_id=source_uuid,
+                hospital_name=hospital_name or "이름 미확인 병원",
+            )
         _complete_source_processing_run_item(
             run_uuid,
             source_uuid,
@@ -2194,6 +2443,20 @@ def process_source_asset_task(
             dispatch_token=run_dispatch_token,
         )
         logger.warning("Source processing rejected for %s: %s", source_uuid, exc)
+        # ERROR는 자동 재시도가 없는 종착지다. 사람이 자료를 고치거나 빼기 전에는 이 자료가
+        # 근거로 쓰이지 않으므로, 현황·운영 센터가 그 사실을 들고 있어야 한다(I-3).
+        error_hospital_id, error_hospital_name = _source_hospital_identity(source_uuid)
+        incident_id = _open_source_incident(
+            pipeline=SOURCE_PROCESSING_PIPELINE,
+            source_id=source_uuid,
+            hospital_id=error_hospital_id,
+            hospital_name=error_hospital_name,
+            incident_type="SOURCE_PROCESSING_FAILED",
+            safe_error_code="SOURCE_PROCESSING_FAILED",
+            problem=str(exc),
+            next_action=SOURCE_PROCESSING_NEXT_ACTION,
+        )
+        _attach_source_incident(source_uuid, incident_id)
         return {"source_id": source_id, "status": SourceStatus.ERROR.value, "error": str(exc)}
     except Exception as exc:
         if self.request.retries < self.max_retries:
@@ -2544,6 +2807,93 @@ def _resume_source_processing_runs(now: datetime, *, limit: int = 200) -> int:
     return sum(_dispatch_next_source_processing_run_item(run_id) for run_id in resumable_ids)
 
 
+def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
+    """본문을 아직 못 받은 채널 자료의 fetch를 다시 건다.
+
+    `_create_runs_for_orphan_pending_sources`는 본문이 있는 자료만 본다 — 본문이 없는 이
+    행들은 처리할 것이 없으므로 그쪽이 아니라 여기가 맡는다. 예산을 다 쓰면 자동 복구를
+    끝내고 사람의 할 일로 넘긴다.
+    """
+    now = datetime.now(timezone.utc)
+    to_dispatch: list[uuid.UUID] = []
+    exhausted: list[tuple[uuid.UUID, uuid.UUID, str, str]] = []
+    with SyncSessionLocal() as db:
+        candidates = list(
+            db.execute(
+                select(HospitalSourceAsset)
+                .where(
+                    HospitalSourceAsset.status == SourceStatus.PENDING,
+                    HospitalSourceAsset.raw_text.is_(None),
+                    HospitalSourceAsset.url.isnot(None),
+                )
+                .order_by(HospitalSourceAsset.created_at.asc())
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+        for source in candidates:
+            metadata = dict(source.source_metadata or {})
+            if metadata.get("fetch_state") not in (FETCH_STATE_QUEUED, FETCH_STATE_FAILED):
+                continue
+            attempts = int(metadata.get("fetch_attempts") or 0)
+            if attempts >= CHANNEL_FETCH_ATTEMPT_BUDGET:
+                message = str(
+                    metadata.get("fetch_error") or "공식 채널 주소의 본문을 가져오지 못했습니다."
+                )
+                source.status = SourceStatus.ERROR
+                source.process_error = message
+                hospital = db.get(Hospital, source.hospital_id)
+                exhausted.append(
+                    (
+                        source.id,
+                        source.hospital_id,
+                        hospital.name if hospital is not None else "이름 미확인 병원",
+                        message,
+                    )
+                )
+                continue
+            last_attempt = metadata.get("last_fetch_attempt_at")
+            if last_attempt:
+                try:
+                    attempted_at = datetime.fromisoformat(str(last_attempt))
+                except ValueError:
+                    attempted_at = None
+                if (
+                    attempted_at is not None
+                    and now - attempted_at.astimezone(timezone.utc) < CHANNEL_FETCH_COOLDOWN
+                ):
+                    continue
+            to_dispatch.append(source.id)
+        db.commit()
+
+    for source_id, hospital_id, hospital_name, message in exhausted:
+        incident_id = _open_source_incident(
+            pipeline=SOURCE_FETCH_PIPELINE,
+            source_id=source_id,
+            hospital_id=hospital_id,
+            hospital_name=hospital_name,
+            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
+            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
+            problem=message,
+            next_action=SOURCE_FETCH_NEXT_ACTION,
+        )
+        _attach_source_incident(source_id, incident_id)
+
+    dispatched = 0
+    for source_id in to_dispatch:
+        try:
+            fetch_channel_source.apply_async(
+                args=[str(source_id)],
+                queue="content",
+                headers=build_dispatch_headers("fetch-channel-source", str(source_id)),
+            )
+            dispatched += 1
+        except Exception:
+            logger.exception("Failed to redispatch channel source fetch %s", source_id)
+    return dispatched
+
+
 def _create_runs_for_orphan_pending_sources(*, limit: int = 200) -> list[uuid.UUID]:
     """Adopt legacy/Naver PENDING rows that were queued without a durable run."""
 
@@ -2576,6 +2926,8 @@ def _create_runs_for_orphan_pending_sources(*, limit: int = 200) -> list[uuid.UU
                     HospitalSourceAsset.status == SourceStatus.PENDING,
                     # 본문 없는 행을 LIMIT 뒤 Python에서 걸러내면, 앞줄이 전부 URL 전용일 때
                     # 뒤의 처리 가능한 자료가 영원히 굶는다. 필수 판정은 SQL에서 한 번에 한다.
+                    # 본문을 아직 못 받은 채널 행은 처리할 것이 없다 —
+                    # `_redispatch_stalled_channel_source_fetches`가 fetch부터 다시 건다.
                     required_text_source_predicate(),
                 )
                 .order_by(HospitalSourceAsset.created_at.asc())
@@ -2654,6 +3006,7 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
     """Recover lost immediate dispatches for initial and changed snapshots."""
 
     require_dispatch(self, "reconcile-essence-snapshots")
+    redispatched_fetches = _redispatch_stalled_channel_source_fetches()
     created_source_runs = _create_runs_for_orphan_pending_sources()
     resumed_source_runs = _resume_source_processing_runs(datetime.now(timezone.utc))
     with SyncSessionLocal() as db:
@@ -2678,6 +3031,7 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
         queued += 1
     return {
         "queued": queued,
+        "source_fetches_redispatched": redispatched_fetches,
         "source_runs_created": len(created_source_runs),
         "source_runs_resumed": resumed_source_runs,
     }

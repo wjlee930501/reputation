@@ -30,11 +30,34 @@ test('남은 필수 항목은 서버 판정을 그대로 읽는다', () => {
   assert.match(infoPage, /remainingRequirementsSummary/)
 })
 
-test('저장 본문은 기존 프로필 PATCH 규칙을 재사용한다', () => {
-  assert.match(infoPage, /profilePatchPayload\(/)
+test('사실 저장은 사실 칸만 보내고, 다른 섹션의 값은 건드리지 않는다', () => {
+  assert.match(infoPage, /factsPatchPayload\(/)
+  assert.doesNotMatch(infoPage, /profilePatchPayload\(/)
+  assert.doesNotMatch(infoPage, /brandPatchPayload\(/)
   assert.match(infoPage, /geocode_address/)
   assert.match(infoPage, /REGION_KEYWORD_MIXED/)
   assert.match(infoPage, /profileSaveErrorMessage/)
+})
+
+test('다른 섹션이 저장한 뒤에는 사실 칸도 새 헤더로 다시 채운다', () => {
+  // 한 번만 채우는 ref 가드는 사라졌다 — 입력 중(dirty)일 때만 덮지 않는다.
+  assert.doesNotMatch(infoPage, /seededFromHeaderRef/)
+  assert.match(infoPage, /if \(!hospital \|\| factsDirty\) return/)
+  assert.match(infoPage, /\}, \[hospital, factsDirty\]\)/)
+  // 새 헤더가 도착한 뒤에 dirty를 푼다 — 실패한 refetch가 화면을 되돌리지 않게.
+  assert.match(infoPage, /await refetchHeader\(\)\s*\n\s*setFactsDirty\(false\)/)
+})
+
+test('자료를 등록한 저장은 근거 자료 표를 다시 읽게 한다', () => {
+  assert.match(infoPage, /status === 'QUEUED'/)
+  assert.match(infoPage, /setSourcesRefreshKey/)
+  assert.match(infoPage, /<SourcesSection hospitalId=\{hospitalId\} refreshKey=\{sourcesRefreshKey\}/)
+  assert.match(sourcesSection, /refreshKey/)
+})
+
+test('저장이 등록한 자료는 그 칸 옆에서 등록됐다고 말한다', () => {
+  assert.match(factsSection, /자동 처리 중/)
+  assert.match(factsSection, /SourceRegistrationNotice/)
 })
 
 test('완료 여부는 사람이 표시하지 않는다 — 체크박스도 클라이언트 체크리스트도 없다', () => {
@@ -140,7 +163,17 @@ test('근거 자료 표는 읽고, 올리고, 제외하는 것만 한다', () =>
   assert.match(sourcesSection, /\/reinclude/)
   assert.match(sourcesSection, /evidence-notes\/noise/)
   assert.match(sourcesSection, /source-processing-runs\/latest/)
-  assert.match(sourcesSection, /NaverBlogBulkForm/)
+  // 네이버 일괄 등록 폼은 이 화면 폴더 안에 산다 — 온보딩이 여기서 가져다 쓴다.
+  assert.match(sourcesSection, /from '\.\/NaverBlogBulkForm'/)
+  assert.ok(infoFile('NaverBlogBulkForm.tsx').length > 0)
+  assert.ok(infoFile('NaverHandoffResultItem.tsx').length > 0)
+})
+
+test('사진 권리 칸은 한 구현을 업로드와 개별 사진이 함께 쓴다', () => {
+  assert.match(photosSection, /PhotoRightsFields/)
+  // 공개는 사람이 체크했을 때만 바뀐다 — 권리 저장이 몰래 공개하지 않는다.
+  assert.doesNotMatch(photosSection, /is_public: true,\n/)
+  assert.match(photosSection, /makePublic \? \{ is_public: true \} : \{\}/)
 })
 
 test('처리·크롤·제목 수정·유형 변경 버튼은 없다', () => {

@@ -58,10 +58,16 @@ export interface MissingProfileRequirement {
   label: string
 }
 
-/** 공식 채널 URL을 저장할 때 서버가 근거 자료로 자동 등록한 결과. */
+/**
+ * 공식 채널 URL을 저장할 때 서버가 근거 자료로 등록한 결과.
+ *
+ * `QUEUED`는 자료 행이 커밋됐고 본문 수집을 워커에 넘겼다는 뜻이고, `FAILED`는 그 행조차
+ * 만들지 못했다는 뜻이다 — 커밋된 행을 실패라고 말하지 않는다.
+ */
 export interface ProfileSourceRegistration {
   field: string
-  status: 'REGISTERED' | 'SKIPPED' | 'FAILED'
+  status: 'QUEUED' | 'SKIPPED' | 'FAILED'
+  source_id?: string | null
   message?: string | null
 }
 
@@ -74,9 +80,10 @@ export interface Hospital {
   profile_complete: boolean
   /**
    * 아직 비어 있는 필수 항목. 서버가 `profile_complete`를 파생하면서 함께 내려준다 —
-   * 화면은 이 목록만 세고, 완료 여부를 스스로 계산하지 않는다.
+   * 화면은 이 목록만 세고, 완료 여부를 스스로 계산하지 않는다. 항상 내려오므로
+   * 선택 항목이 아니다 — 없으면 화면이 "남은 항목 없음"을 잘못 말한다.
    */
-  missing_profile_requirements?: MissingProfileRequirement[]
+  missing_profile_requirements: MissingProfileRequirement[]
   /** 프로필 저장 응답에만 실린다. */
   source_registration?: ProfileSourceRegistration[]
   /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
@@ -141,7 +148,11 @@ export interface HospitalAeOwner {
  * `GET /admin/hospitals` 행. 상세 응답(`Hospital`)에는 없는 3상태·예외 수·담당 AE를
  * 목록만 함께 받는다 — 판정은 서버가 하고 목록은 라벨만 붙인다.
  */
-export interface HospitalListRow extends Hospital {
+/**
+ * 목록 한 줄. 남은 필수 항목은 상세 응답에만 있으므로 이 타입에서 뺀다 —
+ * 없는 값을 있다고 말하면 목록이 "남은 항목 없음"을 잘못 그린다.
+ */
+export interface HospitalListRow extends Omit<Hospital, 'missing_profile_requirements'> {
   public_service_state: PublicServiceStateValue
   content_state: ContentStateValue
   domain_state: DomainStateValue

@@ -13,7 +13,7 @@ import { safeOperatorError } from '@/lib/operations-journey'
 import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from '@/lib/photo-public-gate'
 import { formatActorLabel } from '@/lib/actor-display'
 import {
-  PHOTO_RIGHTS_BASIS_OPTIONS,
+  PhotoRightsFields,
   photoRightsReady,
   type PhotoRightsDraft,
 } from './PhotoRightsFields'
@@ -237,10 +237,12 @@ function PhotoRow({
         <PhotoRightsEntry
           photo={photo}
           busy={busy}
-          onSubmit={(rights) =>
+          onSubmit={(rights, makePublic) =>
             void patchPublic(
               {
-                is_public: true,
+                // 공개는 사람이 체크했을 때만 바뀐다 — 권리 기록을 남긴 것이 곧
+                // 공개 결정은 아니다.
+                ...(makePublic ? { is_public: true } : {}),
                 photo_source_owner: rights.owner.trim(),
                 photo_rights_basis: rights.basis,
                 photo_evidence_reference: rights.reference.trim(),
@@ -256,7 +258,7 @@ function PhotoRow({
   )
 }
 
-/** 권리 기록이 빈 사진만 다시 묻는다. 저장과 공개는 한 요청이다. */
+/** 권리 기록이 빈 사진만 다시 묻는다. 공개는 별도의 결정이므로 체크했을 때만 함께 바꾼다. */
 function PhotoRightsEntry({
   photo,
   busy,
@@ -264,7 +266,7 @@ function PhotoRightsEntry({
 }: {
   photo: PhotoSource
   busy: boolean
-  onSubmit: (rights: PhotoRightsDraft) => void
+  onSubmit: (rights: PhotoRightsDraft, makePublic: boolean) => void
 }) {
   const provenance = photo.photo_provenance ?? null
   const [draft, setDraft] = useState<PhotoRightsDraft>({
@@ -272,6 +274,7 @@ function PhotoRightsEntry({
     basis: provenance?.rights_basis ?? '',
     reference: provenance?.evidence_reference ?? '',
   })
+  const [makePublic, setMakePublic] = useState(false)
 
   return (
     <div className="space-y-2 rounded-lg border border-amber-200 bg-amber-50 p-3">
@@ -279,40 +282,29 @@ function PhotoRightsEntry({
         {provenance?.missing_message
           ?? '이 사진을 공개하려면 소유자와 사용 근거를 먼저 입력해야 합니다.'}
       </p>
-      <div className="grid gap-2 md:grid-cols-2">
-        <input
-          value={draft.owner}
-          onChange={(e) => setDraft({ ...draft, owner: e.target.value })}
-          placeholder="사진 소유자"
-          aria-label={`${photo.title} 사진 소유자`}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
-        />
-        <select
-          value={draft.basis}
-          onChange={(e) => setDraft({ ...draft, basis: e.target.value })}
-          aria-label={`${photo.title} 사진 사용 권리 근거`}
-          className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
-        >
-          <option value="">권리 근거 선택</option>
-          {PHOTO_RIGHTS_BASIS_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-      </div>
-      <input
-        value={draft.reference}
-        onChange={(e) => setDraft({ ...draft, reference: e.target.value })}
-        placeholder="증빙 위치 (계약 조항, 동의서 파일명 등)"
-        aria-label={`${photo.title} 사진 사용 권리 증빙 위치`}
-        className="w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs"
+      <PhotoRightsFields
+        idPrefix={`photo-${photo.id}`}
+        value={draft}
+        hospitalName={null}
+        onChange={setDraft}
       />
+      <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs text-amber-900">
+        <input
+          type="checkbox"
+          checked={makePublic}
+          onChange={(e) => setMakePublic(e.target.checked)}
+          aria-label={`${photo.title} 저장과 함께 공개`}
+          className="rounded border-slate-300"
+        />
+        저장과 함께 공개 페이지에 표시
+      </label>
       <button
         type="button"
         disabled={busy || !photoRightsReady(draft)}
-        onClick={() => onSubmit(draft)}
+        onClick={() => onSubmit(draft, makePublic)}
         className="min-h-11 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
       >
-        {busy ? '저장 중…' : '권리 정보 저장하고 공개'}
+        {busy ? '저장 중…' : makePublic ? '권리 정보 저장하고 공개' : '권리 정보 저장'}
       </button>
     </div>
   )
@@ -421,36 +413,12 @@ function PhotoUploadForm({
         </p>
       </div>
 
-      <div className="grid gap-2 rounded-lg border border-slate-200 bg-white p-3 md:grid-cols-2">
-        <input
-          required
-          value={rights.owner}
-          onChange={(e) => setRights({ ...rights, owner: e.target.value })}
-          placeholder={hospitalName ? `사진 소유자 (예: ${hospitalName})` : '사진 소유자'}
-          aria-label="사진 소유자"
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-        />
-        <select
-          required
-          value={rights.basis}
-          onChange={(e) => setRights({ ...rights, basis: e.target.value })}
-          aria-label="사진 사용 권리 근거"
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-        >
-          <option value="">권리 근거 선택</option>
-          {PHOTO_RIGHTS_BASIS_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>{option.label}</option>
-          ))}
-        </select>
-        <input
-          required
-          value={rights.reference}
-          onChange={(e) => setRights({ ...rights, reference: e.target.value })}
-          placeholder="증빙 위치 (계약 조항, 동의서 파일명 등)"
-          aria-label="사진 사용 권리 증빙 위치"
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm md:col-span-2"
-        />
-      </div>
+      <PhotoRightsFields
+        idPrefix="info-photo"
+        value={rights}
+        hospitalName={hospitalName}
+        onChange={setRights}
+      />
 
       <input
         id="info-photo-file"
