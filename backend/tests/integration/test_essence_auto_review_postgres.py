@@ -749,37 +749,83 @@ def test_legacy_approval_without_noise_hash_is_refreshed_once(pg_session) -> Non
     assert essence_refresh_needed(pg_session, hospital.id) is True
 
 
-def test_refresh_stores_the_noise_hash_and_skips_noise_notes(pg_session) -> None:
-    """새 승인은 현재 노이즈 집합 hash를 기록하고 합성·검수 입력에서 노이즈 노트를 뺀다."""
-    hospital, source, note, approved = _seed_baseline(pg_session, label="noise-store")
-    noise = HospitalSourceEvidenceNote(
+def test_noise_only_change_refreshes_and_stores_hash_then_settles(pg_session) -> None:
+    """노이즈-only 변경도 실제로 승인까지 가고, 두 번째 preflight에서 멈춘다.
+
+    자료 snapshot은 그대로이므로, 승인 블록이 자료 hash만 비교하면 UP_TO_DATE로 돌아가
+    `evidence_noise_hash`가 끝내 기록되지 않고 15분마다 유료 합성이 반복된다(H-02).
+    """
+    hospital, source, noise_note, approved = _seed_baseline(pg_session, label="noise-only")
+    # 제외 후에도 합성할 근거가 남아 있어야 재검수가 의미 있다.
+    remaining = HospitalSourceEvidenceNote(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
         source_asset_id=source.id,
         note_type=EvidenceNoteType.KEY_MESSAGE,
-        claim="광고성 문구",
+        claim="선택지를 함께 정한다.",
         source_excerpt=source.raw_text[:10],
-        confidence=0.5,
-        note_metadata={"is_noise": True},
+        confidence=0.9,
+        note_metadata={},
     )
-    pg_session.add(noise)
-    approved.status = PhilosophyStatus.ARCHIVED
+    pg_session.add(remaining)
+    approved.source_snapshot_hash = compute_sources_snapshot_hash([source])
+    approved.evidence_noise_hash = compute_evidence_noise_hash([])
     pg_session.commit()
 
-    seen_note_ids: list[str] = []
+    noise_note.note_metadata = {**(noise_note.note_metadata or {}), "is_noise": True}
+    pg_session.commit()
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+
+    synthesized_note_ids: list[str] = []
+    reviewed_note_ids: list[str] = []
 
     def _synth(_hospital, _sources, notes, **_kwargs):
-        seen_note_ids.extend(str(item.id) for item in notes)
-        return _candidate_payload(source, note)
+        synthesized_note_ids.extend(str(item.id) for item in notes)
+        return _candidate_payload(source, remaining)
+
+    def _review(_hospital, _previous, _payload, notes, **_kwargs):
+        reviewed_note_ids.extend(str(item.id) for item in notes)
+        return _approved_review(remaining)
 
     result = refresh_essence_snapshot(
         pg_session,
         hospital.id,
         synthesizer=_synth,
+        reviewer=_review,
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    stored = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
+    assert stored.evidence_noise_hash == compute_evidence_noise_hash([noise_note.id])
+    pg_session.refresh(approved)
+    assert approved.status == PhilosophyStatus.ARCHIVED
+    # 제외한 주장은 합성에도 검수에도 들어가지 않는다.
+    assert str(noise_note.id) not in synthesized_note_ids
+    assert str(noise_note.id) not in reviewed_note_ids
+    assert str(remaining.id) in synthesized_note_ids
+    assert str(remaining.id) in reviewed_note_ids
+    # 다음 preflight가 가라앉아야 15분 주기 재합성 루프가 아니다.
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+
+
+def test_legacy_null_hash_refreshes_once_and_settles(pg_session) -> None:
+    """컬럼 이전 승인(NULL)은 한 번 재검수해 실제 값을 쓰고 그 다음엔 조용해진다."""
+    hospital, source, note, approved = _seed_baseline(pg_session, label="legacy-null-settle")
+    approved.source_snapshot_hash = compute_sources_snapshot_hash([source])
+    approved.evidence_noise_hash = None
+    pg_session.commit()
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: _candidate_payload(source, note),
         reviewer=lambda *_args, **_kwargs: _approved_review(note),
     )
 
     assert result.status == EssenceRefreshStatus.AUTO_APPROVED
-    assert str(noise.id) not in seen_note_ids
     stored = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
-    assert stored.evidence_noise_hash == compute_evidence_noise_hash([noise.id])
+    assert stored.evidence_noise_hash == compute_evidence_noise_hash([])
+    pg_session.refresh(approved)
+    assert approved.status == PhilosophyStatus.ARCHIVED
+    assert essence_refresh_needed(pg_session, hospital.id) is False

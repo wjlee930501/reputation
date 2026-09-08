@@ -1454,7 +1454,13 @@ def refresh_essence_snapshot(
         # Archive first and flush before promotion to satisfy the one-APPROVED partial
         # unique index. The hospital lock + APPROVED row lock serialize competitors.
         current_previous = _approved(db, hospital_id)
-        if current_previous is not None and current_previous.source_snapshot_hash == snapshot_hash:
+        # 자료 hash만 같다고 UP_TO_DATE로 돌아가면 노이즈-only 변경·NULL 승인은 영원히
+        # 승인되지 않고 15분마다 유료 합성이 반복된다.
+        if (
+            current_previous is not None
+            and current_previous.source_snapshot_hash == snapshot_hash
+            and _noise_hash_matches(db, hospital_id, current_previous)
+        ):
             _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
             db.commit()
             return EssenceRefreshResult(
