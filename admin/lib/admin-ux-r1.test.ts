@@ -11,9 +11,9 @@ const photosSection = readFileSync(
   'utf8',
 )
 
-test('new onboarding contract reference is generated but remains editable', () => {
-  assert.match(newHospitalPage, /defaultContractReference\(creationRequestId\)/)
-  assert.match(newHospitalPage, /value=\{contractReference\} onChange=\{\(e\) => setContractReference/)
+test('the suggested contract reference stays editable on the registration screen', () => {
+  assert.match(newHospitalPage, /useState\(\(\) => suggestContractReference\(\)\)/)
+  assert.match(newHospitalPage, /onChange=\{\(e\) => setContractReference\(e\.target\.value\)\}/)
 })
 
 test('photo guidance describes automatic publication and current state, not a required toggle', () => {

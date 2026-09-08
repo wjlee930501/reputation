@@ -1,24 +1,42 @@
 """Explicit, audited customer handoff transitions."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
 from app.api.admin.accounts import require_active_account, require_owner_account
+from app.api.admin.hospitals import (
+    allocate_hospital_slug,
+    serialize_handoff_summary,
+    serialize_hospital_detail,
+)
 from app.core.database import get_db
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.content import ContentSchedule
-from app.models.handoff import HandoffState, HospitalHandoff
+from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
-from app.schemas.handoff import HandoffAccept, HandoffContract, HandoffResponse
-from app.services.audit_log import write_audit_log
+from app.schemas.handoff import (
+    ContractRegistration,
+    HandoffAccept,
+    HandoffContract,
+    HandoffResponse,
+)
+from app.services.audit_log import verified_request_actor, write_audit_log
+from app.services.hospital_duplicates import find_duplicate_hospitals
 
 router = APIRouter(prefix="/admin/handoffs", tags=["Admin — Handoffs"])
+
+#: 계약 등록은 `/admin/hospitals` 아래에 산다 — 운영자에게는 "병원을 만드는 일"이고,
+#: 상태 전이 코드는 이 파일이 정본이라 두 라우터를 한 모듈에서 유지한다.
+hospitals_router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Handoffs"])
+
+KST = timezone(timedelta(hours=9))
 
 
 class HandoffCorrection(BaseModel):
@@ -41,6 +59,17 @@ def stale_handoff_error() -> HTTPException:
             "reload": True,
         },
     )
+
+
+def _hospital_exists(hospital_id: uuid.UUID | None) -> dict[str, object]:
+    """중복 병원 409 본문. 화면은 재시도 대신 기존 병원을 여는 선택지를 그린다."""
+    detail: dict[str, object] = {
+        "code": "HOSPITAL_EXISTS",
+        "message": "이미 등록된 병원입니다.",
+    }
+    if hospital_id is not None:
+        detail["hospital_id"] = str(hospital_id)
+    return detail
 
 
 async def _get_or_404(db: AsyncSession, handoff_id: uuid.UUID) -> HospitalHandoff:
@@ -364,3 +393,153 @@ async def correct_contract(
     await _commit_transition(db)
     await db.refresh(handoff)
     return await _payload(db, handoff)
+
+
+@hospitals_router.post("/register-contract", status_code=status.HTTP_201_CREATED)
+async def register_contract(
+    body: ContractRegistration,
+    db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_active_account),
+) -> dict[str, object]:
+    """한 화면 계약 등록 — 병원 생성·계약 기록·인수 수락을 한 트랜잭션에서 끝낸다.
+
+    어느 단계가 실패해도 전부 되돌린다. 병원만 만들어지고 계약이 없는 행은 운영자가
+    화면에서 고칠 수 없는 상태이므로, 부분 성공을 남기지 않는 것이 이 라우트의 계약이다.
+    """
+    # 승인자는 감사 판단의 근거다 — 클라이언트가 보낸 이름이 아니라 확인된 계정만 쓴다.
+    audit_actor = verified_request_actor()
+    if audit_actor is None:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "VERIFIED_ACTOR_REQUIRED",
+                "message": "운영자 계정을 확인할 수 없습니다. 다시 로그인한 뒤 시도해 주세요.",
+            },
+        )
+    if actor.role not in {ROLE_OWNER, ROLE_OPERATOR}:
+        raise HTTPException(status_code=403, detail={"code": "HANDOFF_ROLE_FORBIDDEN"})
+    # 인수 수락은 담당 AE 본인이 한다. OWNER는 대신 등록할 수 있고 그 사실만 감사에 남긴다
+    # (별도 수락 라우트와 달리 여기서는 등록 행위 자체가 OWNER의 것이라 사유 칸이 없다).
+    accepting_for_other = actor.id != body.ae_owner_id
+    if actor.role == ROLE_OPERATOR and accepting_for_other:
+        raise HTTPException(status_code=403, detail={"code": "HANDOFF_NOT_ASSIGNED"})
+
+    sales_owner_id = body.sales_owner_id or actor.id
+    await _active_owner(db, body.ae_owner_id)
+    await _active_owner(db, sales_owner_id)
+
+    name = body.name.strip()
+    duplicates = await find_duplicate_hospitals(db, name=name)
+    if duplicates:
+        raise HTTPException(status_code=409, detail=_hospital_exists(duplicates[0].id))
+
+    contract_reference = body.contract_reference.strip()
+    taken = (
+        await db.execute(
+            select(HospitalHandoff).where(
+                HospitalHandoff.contract_reference == contract_reference
+            )
+        )
+    ).scalars().first()
+    if taken is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTRACT_REFERENCE_EXISTS",
+                "hospital_id": str(taken.hospital_id),
+                "message": "이미 사용된 계약 번호입니다. 다른 번호를 입력해 주세요.",
+            },
+        )
+
+    accepted_at = datetime.now(UTC)
+    hospital = Hospital(
+        name=name,
+        slug=await allocate_hospital_slug(db, name),
+        plan=body.plan,
+        source_lead_id=body.lead_id,
+        onboarding_note="Created from admin contract registration.",
+    )
+    handoff = HospitalHandoff(
+        state=HandoffState.HANDOFF_ACCEPTED,
+        acceptance_source=(
+            HandoffSource.LEAD_CONVERSION if body.lead_id else HandoffSource.DIRECT_CREATE
+        ),
+        sales_owner_id=sales_owner_id,
+        ae_owner_id=body.ae_owner_id,
+        contract_reference=contract_reference,
+        contract_effective_at=datetime.combine(body.contract_effective_at, time.min, tzinfo=KST),
+        plan=body.plan,
+        # 기한과 승인 시각이 같다 — 이 요청에서 담당 AE가 바로 인수했다는 사실 그대로다.
+        sla_due_at=accepted_at,
+        accepted_by_id=actor.id,
+        accepted_at=accepted_at,
+    )
+    try:
+        db.add(hospital)
+        await db.flush()
+        handoff.hospital_id = hospital.id
+        db.add(handoff)
+        await db.flush()
+        # 감사 3건은 기존 3개 라우트가 남기던 것과 같은 action·detail을 유지한다 —
+        # 한 화면으로 합쳤다고 해서 감사 이력의 모양이 달라지면 안 된다.
+        await write_audit_log(
+            db,
+            action="create_hospital",
+            hospital_id=hospital.id,
+            actor=audit_actor,
+            target_type="hospital",
+            target_id=hospital.id,
+            detail={
+                "name": hospital.name,
+                "slug": hospital.slug,
+                "plan": body.plan.value,
+                "source_lead_id": str(body.lead_id) if body.lead_id else None,
+            },
+        )
+        await write_audit_log(
+            db,
+            action="handoff_contracted",
+            hospital_id=hospital.id,
+            actor=audit_actor,
+            target_type="hospital_handoff",
+            target_id=handoff.id,
+            detail={
+                "from": "CONTRACT_PENDING",
+                "to": "CONTRACTED",
+                "version": handoff.version,
+                "owner_override": actor.id not in {sales_owner_id, body.ae_owner_id},
+            },
+        )
+        await write_audit_log(
+            db,
+            action="handoff_accepted",
+            hospital_id=hospital.id,
+            actor=audit_actor,
+            target_type="hospital_handoff",
+            target_id=handoff.id,
+            detail={
+                "from": "CONTRACTED",
+                "to": "HANDOFF_ACCEPTED",
+                "version": handoff.version,
+                "owner_override": accepting_for_other,
+                "reason": None,
+            },
+        )
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raced = await find_duplicate_hospitals(db, name=name)
+        raise HTTPException(
+            status_code=409,
+            detail=_hospital_exists(raced[0].id if raced else None),
+        ) from exc
+    except Exception:
+        # 계약 기록이나 인수 수락이 실패하면 병원도 남기지 않는다.
+        await db.rollback()
+        raise
+    await db.refresh(hospital)
+    await db.refresh(handoff)
+    return {
+        **serialize_hospital_detail(hospital),
+        "handoff": serialize_handoff_summary(handoff),
+    }

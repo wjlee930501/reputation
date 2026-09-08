@@ -696,30 +696,19 @@ export default function LeadsPage() {
                         온보딩 허브
                       </Link>
                     ) : (
-                      <button
-                        type="button"
-                        onClick={() => openConvertModal(lead)}
+                      <Link
+                        href={getOnboardingHref(lead)}
                         className="inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-blue-700"
                       >
-                        온보딩 시작
-                      </button>
+                        계약 등록
+                      </Link>
                     )}
-                    {/* 전환은 언제나 기존 병원 확인부터 시작한다 — 모달이 같은 병원으로
-                        보이는 후보를 먼저 보여 주고, 있으면 새로 만드는 대신 연결한다.
-                        여기서 "병원 생성"이라고만 하면 이미 운영 중인 병원을 가진 상담 요청에서
-                        중복 생성이 유일한 길처럼 읽힌다(F-1). */}
+                    {/* 같은 이름의 병원이 이미 있으면 계약 등록 화면이 409로 막고 그 병원을
+                        여는 선택지를 준다 — 여기서 중복 생성이 유일한 길처럼 읽히지 않게 한다(F-1). */}
                     <p className="mt-1 text-[11px] text-slate-400">
-                      {lead.converted_hospital_id ? '연결 병원으로 이동' : '기존 병원 확인 후 연결 또는 생성'}
+                      {lead.converted_hospital_id ? '연결 병원으로 이동' : '계약 정보를 입력해 병원을 만듭니다'}
                     </p>
                     <div className="mt-1 flex items-center justify-end gap-2">
-                      {!lead.converted_hospital_id && (
-                        <Link
-                          href={getOnboardingHref(lead)}
-                          className="inline-flex min-h-11 items-center text-[11px] font-medium text-slate-400 hover:text-slate-600 hover:underline"
-                        >
-                          수동 등록
-                        </Link>
-                      )}
                       <button
                         type="button"
                         onClick={() => handleErase(lead)}

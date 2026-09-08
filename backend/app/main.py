@@ -173,6 +173,9 @@ admin_deps = [
 app.include_router(admin_hospitals.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_hospital_overview.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_handoffs.router, prefix="/api/v1", dependencies=admin_deps)
+# 계약 등록(`POST /admin/hospitals/register-contract`)은 상태 전이 코드와 함께 살지만
+# 운영자 URL은 병원 아래에 둔다.
+app.include_router(admin_handoffs.hospitals_router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_auth.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_accounts.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)

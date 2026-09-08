@@ -5,7 +5,11 @@ from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 
 from app.api.admin import hospitals as hospitals_api
-from app.api.admin.hospitals import HospitalProfileUpdate, _serialize, update_profile
+from app.api.admin.hospitals import (
+    HospitalProfileUpdate,
+    serialize_hospital_detail,
+    update_profile,
+)
 from app.services.hospital_logo import EXTERNAL_LOGO_URL_MESSAGE
 
 VISUAL_FIELDS = (
@@ -96,7 +100,7 @@ def test_every_visual_field_survives_the_admin_round_trip():
     assert set(submitted) == set(VISUAL_FIELDS)
 
     hospital = _FakeHospital(**submitted)
-    serialized = _serialize(hospital)
+    serialized = serialize_hospital_detail(hospital)
 
     for field in VISUAL_FIELDS:
         assert serialized[field] == submitted[field]
@@ -123,7 +127,7 @@ async def test_saving_the_profile_persists_and_clears_visual_fields():
     assert hospital.brand_primary_color == "#006772"
     assert hospital.site_access_mode == "urgent"
     assert hospital.hero_media_kind == "BRAND_GRAPHIC"
-    assert _serialize(hospital)["hero_headline"].startswith("야간·주말")
+    assert serialize_hospital_detail(hospital)["hero_headline"].startswith("야간·주말")
 
     # Resetting the dropdowns to '자동 선택' clears them and leaves the rest intact.
     await update_profile(
@@ -230,8 +234,8 @@ async def test_active_complete_profile_saves_unrelated_edits_with_unchanged_lega
     )
 
     assert db.committed is True
-    assert _serialize(hospital)["specialties"] == ["정형외과", "마취통증의학과", "응급의학과"]
-    assert _serialize(hospital)["hero_description"] == "척추·관절 통증부터 경증 응급까지 진료합니다."
+    assert serialize_hospital_detail(hospital)["specialties"] == ["정형외과", "마취통증의학과", "응급의학과"]
+    assert serialize_hospital_detail(hospital)["hero_description"] == "척추·관절 통증부터 경증 응급까지 진료합니다."
     assert hospital.logo_url == legacy_logo_url
 
 

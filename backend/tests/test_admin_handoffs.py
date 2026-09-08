@@ -593,3 +593,261 @@ def test_list_handoffs_offset_query_parameter_defaults_to_zero() -> None:
     offset_default = signature.parameters["offset"].default
     assert offset_default.default == 0
     assert offset_default.metadata[0].ge == 0
+
+
+# ── 한 화면 계약 등록 (POST /admin/hospitals/register-contract) ────────────
+class _RegisterResult:
+    def __init__(self, rows: list, single=None):
+        self._rows = rows
+        self._single = single
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+    def first(self):
+        return self._rows[0] if self._rows else None
+
+    def scalar_one_or_none(self):
+        return self._single
+
+
+class _RegisterDB:
+    """계약 등록이 만지는 것만 흉내 낸다 — 중복 조회·slug 조회·flush·commit/rollback."""
+
+    def __init__(
+        self,
+        accounts: list[AdminUser],
+        *,
+        duplicates: list[Hospital] | None = None,
+        reference_rows: list[HospitalHandoff] | None = None,
+    ):
+        self.accounts = {account.id: account for account in accounts}
+        self.duplicates = duplicates or []
+        self.reference_rows = reference_rows or []
+        self.added: list = []
+        self.committed = False
+        self.rolled_back = False
+
+    async def get(self, model, object_id):
+        if model is AdminUser:
+            return self.accounts.get(object_id)
+        return None
+
+    async def execute(self, stmt):
+        entity = stmt.column_descriptions[0]["entity"]
+        if entity is HospitalHandoff:
+            return _RegisterResult(self.reference_rows)
+        # 같은 Hospital select라도 중복 검사는 scalars().all(), slug 검사는
+        # scalar_one_or_none()을 쓴다 — 한 결과 객체가 둘 다 답한다.
+        return _RegisterResult(self.duplicates, single=None)
+
+    def add(self, item):
+        self.added.append(item)
+
+    async def flush(self):
+        # 실제 INSERT가 채우는 기본 PK를 흉내 낸다.
+        for item in self.added:
+            if getattr(item, "id", None) is None:
+                item.id = uuid.uuid4()
+
+    async def commit(self):
+        self.committed = True
+
+    async def rollback(self):
+        self.rolled_back = True
+
+    async def refresh(self, _item):
+        return None
+
+
+def _registration(ae: AdminUser, sales: AdminUser | None = None, **overrides):
+    from app.schemas.handoff import ContractRegistration
+
+    payload = {
+        "name": "장편한외과의원",
+        "contract_reference": "RP-202609-a1b2",
+        "contract_effective_at": date(2026, 9, 9),
+        "plan": Plan.PLAN_16,
+        "ae_owner_id": ae.id,
+        "sales_owner_id": sales.id if sales else None,
+    }
+    payload.update(overrides)
+    return ContractRegistration(**payload)
+
+
+@pytest.fixture
+def _verified_actor():
+    from app.services import audit_log
+
+    token = audit_log.set_request_actor("ae@example.test")
+    try:
+        yield "ae@example.test"
+    finally:
+        audit_log.reset_request_actor(token)
+
+
+def _audit_actions(db: _RegisterDB) -> list[str]:
+    return [getattr(row, "action", None) for row in db.added if getattr(row, "action", None)]
+
+
+async def test_register_contract_creates_hospital_and_accepts_in_one_commit(
+    _verified_actor,
+) -> None:
+    ae = _account("OPERATOR")
+    sales = _account("OPERATOR")
+    db = _RegisterDB([ae, sales])
+
+    response = await handoffs_api.register_contract(
+        _registration(ae, sales), db=db, actor=ae
+    )
+
+    assert db.committed is True and db.rolled_back is False
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    handoff = next(row for row in db.added if isinstance(row, HospitalHandoff))
+    assert handoff.hospital_id == hospital.id
+    assert handoff.state is HandoffState.HANDOFF_ACCEPTED
+    assert handoff.acceptance_source is HandoffSource.DIRECT_CREATE
+    assert handoff.contract_reference == "RP-202609-a1b2"
+    assert handoff.plan is Plan.PLAN_16
+    assert handoff.ae_owner_id == ae.id and handoff.sales_owner_id == sales.id
+    assert handoff.accepted_by_id == ae.id
+    # 인수 처리 기한은 승인 시각 그대로다 — 이 요청에서 인수까지 끝났다.
+    assert handoff.sla_due_at == handoff.accepted_at
+    assert handoff.contract_effective_at.date() == date(2026, 9, 9)
+    assert _audit_actions(db) == ["create_hospital", "handoff_contracted", "handoff_accepted"]
+    assert all(row.actor == "ae@example.test" for row in db.added if hasattr(row, "action"))
+    assert response["handoff"]["state"] is HandoffState.HANDOFF_ACCEPTED
+    assert response["id"] == str(hospital.id)
+
+
+async def test_register_contract_links_the_lead_and_records_the_conversion_source(
+    _verified_actor,
+) -> None:
+    ae = _account("OPERATOR")
+    lead_id = uuid.uuid4()
+    db = _RegisterDB([ae])
+
+    await handoffs_api.register_contract(
+        _registration(ae, lead_id=lead_id), db=db, actor=ae
+    )
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    handoff = next(row for row in db.added if isinstance(row, HospitalHandoff))
+    assert hospital.source_lead_id == lead_id
+    assert handoff.acceptance_source is HandoffSource.LEAD_CONVERSION
+    # 영업 담당이 비어 있으면 등록한 운영자가 맡는다.
+    assert handoff.sales_owner_id == ae.id
+
+
+async def test_register_contract_refuses_a_duplicate_hospital_without_creating_rows(
+    _verified_actor,
+) -> None:
+    ae = _account("OPERATOR")
+    existing = Hospital(id=uuid.uuid4(), name="장편한외과의원", slug="jang")
+    db = _RegisterDB([ae], duplicates=[existing])
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "HOSPITAL_EXISTS"
+    assert exc.value.detail["hospital_id"] == str(existing.id)
+    assert db.added == [] and db.committed is False
+
+
+async def test_register_contract_refuses_a_reused_contract_reference(_verified_actor) -> None:
+    ae = _account("OPERATOR")
+    other = HospitalHandoff(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), contract_reference="RP-202609-a1b2"
+    )
+    db = _RegisterDB([ae], reference_rows=[other])
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "CONTRACT_REFERENCE_EXISTS"
+    assert db.added == [] and db.committed is False
+
+
+async def test_register_contract_rejects_an_invalid_plan_or_empty_reference() -> None:
+    from pydantic import ValidationError
+
+    ae = _account("OPERATOR")
+    for overrides in ({"plan": "PLAN_9"}, {"contract_reference": ""}):
+        with pytest.raises(ValidationError):
+            _registration(ae, **overrides)
+
+
+async def test_register_contract_rolls_everything_back_when_the_contract_step_fails(
+    monkeypatch, _verified_actor
+) -> None:
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    async def _boom(*_args, **kwargs):
+        if kwargs.get("action") == "handoff_contracted":
+            raise RuntimeError("계약 기록 실패")
+        return None
+
+    monkeypatch.setattr(handoffs_api, "write_audit_log", _boom)
+
+    with pytest.raises(RuntimeError):
+        await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    assert db.committed is False and db.rolled_back is True
+
+
+async def test_register_contract_blocks_an_operator_accepting_for_another_ae(
+    _verified_actor,
+) -> None:
+    actor = _account("OPERATOR")
+    other_ae = _account("OPERATOR")
+    db = _RegisterDB([actor, other_ae])
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(_registration(other_ae), db=db, actor=actor)
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "HANDOFF_NOT_ASSIGNED"
+    assert db.added == []
+
+
+async def test_register_contract_lets_an_owner_register_for_another_ae_with_an_audited_override(
+    _verified_actor,
+) -> None:
+    owner = _account("OWNER")
+    ae = _account("OPERATOR")
+    db = _RegisterDB([owner, ae])
+
+    await handoffs_api.register_contract(_registration(ae), db=db, actor=owner)
+
+    accepted = next(row for row in db.added if getattr(row, "action", None) == "handoff_accepted")
+    assert accepted.detail["owner_override"] is True
+
+
+async def test_register_contract_requires_a_verified_actor() -> None:
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "VERIFIED_ACTOR_REQUIRED"
+
+
+async def test_register_contract_refuses_an_inactive_owner(_verified_actor) -> None:
+    ae = _account("OPERATOR")
+    ae.is_active = False
+    db = _RegisterDB([ae])
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["code"] == "ACTIVE_OWNER_REQUIRED"
+    assert db.added == []

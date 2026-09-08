@@ -367,7 +367,7 @@ async def test_disconnecting_the_domain_forgets_the_observation():
 def test_hospital_detail_serializes_domain_metadata_defaults_for_legacy_rows():
     hospital = _hospital(aeo_domain="clinic.example.com")
 
-    result = hospitals_api._serialize(hospital)
+    result = hospitals_api.serialize_hospital_detail(hospital)
 
     assert result["domain_management_mode"] == "HOSPITAL_MANAGED"
     assert result["domain_dns_strategy"] == "CNAME"

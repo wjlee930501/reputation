@@ -152,6 +152,9 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/lib/report-run.ts",
     "admin/lib/report-period.ts",
     "admin/lib/report-component-behavior.ts",
+    # 한 화면 계약 등록(PR-1E Task 4)과 그 화면 문구가 사는 순수 모듈.
+    "admin/app/hospitals/new/page.tsx",
+    "admin/lib/contract-registration.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
