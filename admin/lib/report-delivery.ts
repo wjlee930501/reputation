@@ -69,6 +69,25 @@ export function shouldShowDeliveryProblem(report: DeliveryContract): boolean {
   return !(isDeliveryTracked(report) && isEffectivelyDelivered(report))
 }
 
+/**
+ * 원장 전달용 파일을 화면이 직접 내려받고, 그 바이트의 SHA-256(소문자 hex)을 만든다.
+ *
+ * 전달 기록은 이 값에만 결합한다. 서버가 알려 준 확인 번호를 그대로 되돌려 보내면
+ * 담당자가 실제로 어떤 파일을 열어 봤는지 기록이 증명하지 못한다.
+ * `onBytes`는 지금 해시한 바로 그 바이트를 화면에 띄우는 데 쓴다.
+ */
+export async function sha256OfDownloadedPdf(
+  url: string,
+  onBytes?: (blob: Blob) => void,
+): Promise<string> {
+  const response = await fetch(url, { credentials: 'same-origin' })
+  if (!response.ok) throw new Error(`원장 전달용 파일을 내려받지 못했습니다. (${response.status})`)
+  const bytes = await response.arrayBuffer()
+  onBytes?.(new Blob([bytes], { type: 'application/pdf' }))
+  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -132,6 +151,12 @@ export function deliveryEventLabel(value: string): string {
   return labels[value] ?? '고객 전달 이력 확인 필요'
 }
 
+/** 서버가 확인 번호 불일치를 알린 응답인지. 화면에 남은 내려받기 기록을 지워야 한다. */
+export function isArtifactMismatch(detail: unknown): boolean {
+  const code = record(detail)?.code
+  return code === 'artifact_mismatch' || code === 'doctor_artifact_missing' || code === 'doctor_artifact_invalid'
+}
+
 export function deliveryConflict(detail: unknown): DeliveryIssue {
   const root = record(detail)
   const code = typeof root?.code === 'string' ? root.code : ''
@@ -148,12 +173,12 @@ export function deliveryConflict(detail: unknown): DeliveryIssue {
       action: 'refresh',
     }
   }
-  if (code === 'artifact_mismatch' || code === 'doctor_artifact_missing' || code === 'doctor_artifact_invalid') {
+  if (isArtifactMismatch(detail)) {
     return {
       title: '원장 전달용 파일이 바뀌었습니다',
-      problem: serverProblem ?? '화면에서 확인한 파일과 서버의 최신 검증본이 일치하지 않습니다.',
+      problem: serverProblem ?? '화면에서 내려받은 파일과 서버의 최신 검증본이 일치하지 않습니다.',
       customerImpact: '이전 파일을 보내면 최신 검증 내용과 다른 자료가 전달될 수 있습니다.',
-      nextAction: '최신 상태를 다시 불러온 뒤 원장 전달용 파일을 다시 열어 확인해 주세요.',
+      nextAction: '파일이 바뀌었습니다 — 다시 내려받아 주세요.',
       action: 'refresh',
     }
   }

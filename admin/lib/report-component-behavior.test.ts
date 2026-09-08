@@ -52,3 +52,20 @@ test('page and dialog components wire the tested preflight and focus behavior', 
   assert.match(dialog, /previous\?\.focus\(\)/)
   assert.match(dialog, /issueRef\.current\?\.focus\(\)/)
 })
+
+test('the delivery record binds to the downloaded bytes, never to the server hash echo', () => {
+  // M-08: 화면이 서버가 준 확인 번호를 그대로 되돌려 보내면 전달 기록이 무엇을
+  // 증명하는지 사라진다. 담당자가 이 화면에서 실제로 내려받은 파일에만 결합한다.
+  const page = readFileSync(new URL('../app/hospitals/[id]/reports/page.tsx', import.meta.url), 'utf8')
+  const delivery = readFileSync(new URL('../app/hospitals/[id]/reports/ReportDelivery.tsx', import.meta.url), 'utf8')
+
+  assert.match(page, /artifact_sha256: action\.artifactSha256/)
+  assert.equal(page.includes('fresh.doctorArtifact.sha256'), false)
+  assert.match(page, /isArtifactMismatch\(caught\.detail\)\) setDownloadedSha256\(null\)/)
+
+  assert.match(delivery, /sha256OfDownloadedPdf\(doctorUrl/)
+  assert.match(delivery, /URL\.createObjectURL\(blob\)/)
+  assert.match(delivery, /URL\.revokeObjectURL\(objectUrl\)/)
+  assert.match(delivery, /disabled=\{busy \|\| !doctorUrl \|\| !deliveryValid \|\| !downloadedSha256\}/)
+  assert.match(delivery, /먼저 원장 전달용 파일을 여기서 내려받아야 합니다/)
+})

@@ -7,13 +7,16 @@ import {
   getInternalReportLabel,
   isEffectivelyDelivered,
   latestDeliveryEvent,
+  sha256OfDownloadedPdf,
 } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
 
 export type DeliveryAction =
-  | { kind: 'deliver'; recipient: string; channel: string; note?: string }
-  | { kind: 'correct'; recipient: string; channel: string; note?: string; reason: string }
+  | { kind: 'deliver'; artifactSha256: string; recipient: string; channel: string; note?: string }
+  | { kind: 'correct'; artifactSha256: string; recipient: string; channel: string; note?: string; reason: string }
   | { kind: 'rescind'; reason: string }
+
+const DOWNLOAD_REQUIRED = '먼저 원장 전달용 파일을 여기서 내려받아야 합니다'
 
 function format(value: string | null): string {
   return value ? new Date(value).toLocaleString('ko-KR') : '-'
@@ -23,11 +26,16 @@ export function ReportDelivery({
   report,
   isOwner,
   busy,
+  downloadedSha256,
+  onDownloaded,
   onAction,
 }: {
   report: ReportView
   isOwner: boolean
   busy: boolean
+  /** 이 화면이 실제로 내려받은 파일의 확인 번호. 전달 기록은 이 값에만 결합한다. */
+  downloadedSha256: string | null
+  onDownloaded: (sha256: string) => void
   onAction: (action: DeliveryAction) => void
 }) {
   const delivered = isEffectivelyDelivered(report)
@@ -38,8 +46,36 @@ export function ReportDelivery({
   const [note, setNote] = useState('')
   const [reason, setReason] = useState('')
   const [mode, setMode] = useState<'none' | 'correct' | 'rescind'>('none')
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
   const deliveryValid = recipient.trim().length > 0 && channel.trim().length > 0
   const reasonValid = reason.trim().length >= 2
+
+  function openDoctorReport() {
+    if (!doctorUrl || downloading) return
+    // 팝업 차단을 피하려면 클릭과 같은 순간에 탭을 열어야 한다. 내려받기가 끝난 뒤 주소를 넣는다.
+    const tab = window.open('', '_blank')
+    setDownloading(true)
+    setDownloadError(null)
+    sha256OfDownloadedPdf(doctorUrl, (blob) => {
+      const objectUrl = URL.createObjectURL(blob)
+      if (tab) tab.location.href = objectUrl
+      else {
+        // 탭이 막힌 브라우저에서는 같은 바이트를 파일로 내려준다.
+        const link = document.createElement('a')
+        link.href = objectUrl
+        link.download = `${report.periodYear}-${String(report.periodMonth).padStart(2, '0')}-doctor-report.pdf`
+        link.click()
+      }
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000)
+    })
+      .then(onDownloaded)
+      .catch(() => {
+        tab?.close()
+        setDownloadError('원장 전달용 파일을 내려받지 못했습니다. 잠시 뒤 다시 눌러 주세요.')
+      })
+      .finally(() => setDownloading(false))
+  }
 
   return (
     <section className="rounded-xl border-2 border-[var(--color-revisit-primary-40)] p-4" aria-labelledby="delivery-heading" data-review-section="delivery">
@@ -50,7 +86,7 @@ export function ReportDelivery({
       </p>
       <div className="mt-4 grid gap-2">
         {doctorUrl ? (
-          <a href={doctorUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white">원장 전달용 보고서 열기</a>
+          <button type="button" onClick={openDoctorReport} disabled={downloading} className="inline-flex min-h-11 items-center justify-center rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-40">{downloading ? '원장 전달용 보고서를 내려받는 중' : '원장 전달용 보고서 열기'}</button>
         ) : (
           <div className="rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3 text-sm leading-6">
             <strong>문제:</strong> 검증된 원장 전달용 보고서를 열 수 없습니다.<br />
@@ -59,6 +95,8 @@ export function ReportDelivery({
           </div>
         )}
         {report.internalDownloadUrl && <a href={report.internalDownloadUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center justify-center rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 text-sm font-bold text-[var(--color-revisit-text-helper)]">{getInternalReportLabel(true, report.hasPdf)}</a>}
+        {downloadError && <p className="text-sm text-[var(--color-revisit-red-50)]" role="alert">{downloadError}</p>}
+        {downloadedSha256 && <p className="text-sm text-[var(--color-revisit-text-helper)]">내려받은 파일 확인 번호 · 앞 12자리 {downloadedSha256.slice(0, 12)}</p>}
       </div>
 
       {delivered ? (
@@ -73,8 +111,8 @@ export function ReportDelivery({
       )}
 
       {!delivered && (
-        <button type="button" disabled={busy || !doctorUrl || !deliveryValid} onClick={() => onAction({ kind: 'deliver', recipient: recipient.trim(), channel: channel.trim(), note: note.trim() || undefined })} className="mt-3 min-h-11 w-full rounded-lg bg-[var(--color-revisit-green-50)] px-4 text-sm font-bold text-white disabled:opacity-40">
-          {busy ? '최신 상태 확인 중' : report.deliveryReady ? '이 파일의 원장 전달 기록 남기기' : '차단 항목을 해결한 뒤 기록할 수 있습니다'}
+        <button type="button" disabled={busy || !doctorUrl || !deliveryValid || !downloadedSha256} onClick={() => downloadedSha256 && onAction({ kind: 'deliver', artifactSha256: downloadedSha256, recipient: recipient.trim(), channel: channel.trim(), note: note.trim() || undefined })} className="mt-3 min-h-11 w-full rounded-lg bg-[var(--color-revisit-green-50)] px-4 text-sm font-bold text-white disabled:opacity-40">
+          {busy ? '최신 상태 확인 중' : !report.deliveryReady ? '차단 항목을 해결한 뒤 기록할 수 있습니다' : !downloadedSha256 ? DOWNLOAD_REQUIRED : '이 파일의 원장 전달 기록 남기기'}
         </button>
       )}
 
@@ -97,7 +135,8 @@ export function ReportDelivery({
           <p className="text-sm leading-6">기존 기록은 지우지 않고 수정 기록을 덧붙입니다.</p>
           <DeliveryFields recipient={recipient} channel={channel} note={note} onRecipient={setRecipient} onChannel={setChannel} onNote={setNote} />
           <Reason value={reason} onChange={setReason} label="수정 이유" />
-          <button type="button" disabled={busy || !deliveryValid || !reasonValid} onClick={() => onAction({ kind: 'correct', recipient: recipient.trim(), channel: channel.trim(), note: note.trim() || undefined, reason: reason.trim() })} className="mt-3 min-h-11 w-full rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-40">수정 기록 추가</button>
+          {!downloadedSha256 && <p className="mt-2 text-sm text-[var(--color-revisit-text-helper)]">{DOWNLOAD_REQUIRED}</p>}
+          <button type="button" disabled={busy || !deliveryValid || !reasonValid || !downloadedSha256} onClick={() => downloadedSha256 && onAction({ kind: 'correct', artifactSha256: downloadedSha256, recipient: recipient.trim(), channel: channel.trim(), note: note.trim() || undefined, reason: reason.trim() })} className="mt-3 min-h-11 w-full rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-sm font-bold text-white disabled:opacity-40">수정 기록 추가</button>
         </div>
       )}
       {mode === 'rescind' && (

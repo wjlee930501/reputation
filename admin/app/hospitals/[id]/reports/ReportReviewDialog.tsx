@@ -15,6 +15,8 @@ export function ReportReviewDialog({
   issue,
   isOwner,
   busy,
+  downloadedSha256,
+  onDownloaded,
   onClose,
   onRefresh,
   onAction,
@@ -25,6 +27,8 @@ export function ReportReviewDialog({
   issue: DeliveryIssue | null
   isOwner: boolean
   busy: boolean
+  downloadedSha256: string | null
+  onDownloaded: (sha256: string) => void
   onClose: () => void
   onRefresh: () => void
   onAction: (action: DeliveryAction) => void
@@ -105,7 +109,7 @@ export function ReportReviewDialog({
             </div>
           )}
           <ReportEvidence report={report} onCopyNotification={onCopyNotification} />
-          <ReportDelivery report={report} isOwner={isOwner} busy={busy} onAction={onAction} />
+          <ReportDelivery report={report} isOwner={isOwner} busy={busy} downloadedSha256={downloadedSha256} onDownloaded={onDownloaded} onAction={onAction} />
         </div>
       </div>
     </div>,
