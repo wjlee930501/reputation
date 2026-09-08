@@ -15,6 +15,10 @@ from app.models.monthly_control import HospitalServiceInterval
 from app.schemas.domain import DomainVerifyResponse as SchemaDomainVerifyResponse
 from app.workers import tasks
 
+#: verify 경로에서 실제로 일어난 순서(commit / revalidate). 테스트당 세션은 하나뿐이라
+#: 모듈 한 벌을 새 FakeDB마다 비워 쓰고, revalidate 스텁도 같은 리스트에 덧붙인다.
+_EVENTS: list[str] = []
+
 
 class FakeDB:
     def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED):
@@ -22,6 +26,8 @@ class FakeDB:
         self.handoff_state = handoff_state
         self.committed = False
         self.added = []
+        _EVENTS.clear()
+        self.events = _EVENTS
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
@@ -41,6 +47,7 @@ class FakeDB:
 
     async def commit(self):
         self.committed = True
+        self.events.append("commit")
 
 
 def test_live_domain_check_rejects_redirect_without_following_it():
@@ -402,13 +409,18 @@ async def test_verify_domain_blocks_each_authoritative_gate(
     assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture
 def _record_site_revalidate(monkeypatch):
-    """모든 verify 테스트에서 공개 사이트 캐시 갱신 호출을 기록만 하고 네트워크는 타지 않는다."""
+    """공개 사이트 캐시 갱신 호출을 기록만 하고 네트워크는 타지 않는다.
+
+    호출 인자와 함께 `FakeDB.events`에도 "revalidate"를 남겨, commit 이후에 호출됐는지
+    (순서)까지 테스트가 확인할 수 있게 한다. 이 스텁이 필요한 테스트만 명시적으로 요청한다.
+    """
     calls: list[tuple[str, str | None]] = []
 
     async def _fake(slug, treatments=None, *, hospital_name=None):
         calls.append((slug, hospital_name))
+        _EVENTS.append("revalidate")
         return True
 
     monkeypatch.setattr(domain_verification_module, "trigger_hospital_site_revalidate_safe", _fake)
@@ -442,6 +454,9 @@ async def test_verify_domain_revalidates_public_site_once_after_activation(monke
 
     assert hospital.status == HospitalStatus.ACTIVE
     assert _record_site_revalidate == [(hospital.slug, hospital.name)]
+    # 갱신은 반드시 커밋 뒤다 — 순서가 뒤집히면 커밋되지 않은 상태로 공개 캐시를 채운다.
+    assert db.events[-1] == "revalidate"
+    assert "commit" in db.events[:-1]
 
 
 async def test_verify_domain_does_not_revalidate_when_already_live(monkeypatch, _record_site_revalidate):
@@ -453,3 +468,32 @@ async def test_verify_domain_does_not_revalidate_when_already_live(monkeypatch, 
     await domain_api.verify_domain(hospital.id, db=db)
 
     assert _record_site_revalidate == []
+
+
+async def test_verify_domain_keeps_a_paused_live_hospital_paused_but_still_verifies_certificate(
+    monkeypatch, _record_site_revalidate
+):
+    """ACTIVE에서 일시정지된 병원(site_live=True): DNS 재확인은 인증서 작업만 이어간다.
+
+    전환할 것이 없으므로 409도, 상태 변경도, 공개 캐시 갱신도 없다 — 일시정지가
+    도메인 검증으로 풀리지 않으면서 인증서 갱신 경로는 그대로 살아 있어야 한다.
+    """
+    hospital = _hospital(status=HospitalStatus.PAUSED, site_live=True)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    dispatches: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        domain_api.provision_domain_certificate,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    response = await domain_api.verify_domain(hospital.id, db=db)
+
+    assert response.verified is True
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.site_live is True
+    assert _record_site_revalidate == []
+    assert len(dispatches) == 1
+    assert dispatches[0]["queue"] == "certificates"

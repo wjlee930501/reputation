@@ -13,6 +13,10 @@ Slack이 두 건 붙어 있었다. 기본 플랫폼 주소는 DNS도 인증서�
 
 엔드포인트(async)와 Celery 워커(sync)는 세션 종류가 달라서 커밋 경로만 두 벌이고,
 "활성화해도 되는가"와 "무엇을 바꾸는가"는 이 모듈 한 곳에서만 결정한다.
+
+유일한 예외는 `resume_hospital`(app/api/admin/hospitals.py)이다 — 게이트와 자기 도메인
+DNS를 다시 확인한 뒤 `AUTO_ACTIVATABLE_STATUSES` 밖인 PAUSED→ACTIVE를 일부러 수행하며,
+이 모듈 바깥에서 `status = ACTIVE`를 쓰는 다른 하나의 자리다.
 """
 
 from __future__ import annotations
@@ -184,7 +188,7 @@ def ensure_activatable(hospital: Hospital) -> None:
         raise HospitalNotActivatable(hospital.status)
 
 
-def apply_activation_transition(hospital: Hospital) -> str:
+def _apply_activation_transition(hospital: Hospital) -> str:
     """행을 ACTIVE·site_live로 바꾸고 직전 상태 문자열을 돌려준다.
 
     `status = ACTIVE` / `site_live = True`를 쓰는 곳은 이 함수와 `resume_hospital`뿐이어야 한다.
@@ -195,6 +199,19 @@ def apply_activation_transition(hospital: Hospital) -> str:
     hospital.status = HospitalStatus.ACTIVE
     hospital.site_live = True
     return previous_status
+
+
+def transition_to_active(hospital: Hospital) -> str:
+    """ACTIVE 전환의 유일한 공개 진입점: 상태 가드(`ensure_activatable`) 뒤 전환.
+
+    가드 없는 원시 변경은 이 모듈 밖으로 내보내지 않는다 — 도메인 검증이 직접 status를
+    쓰다가 일시정지를 우회했던 H-05를 다른 호출자가 반복하지 못하게 하기 위해서다.
+    이미 ACTIVE면 그대로 두고 현재 상태 문자열을 돌려준다(멱등).
+    """
+    ensure_activatable(hospital)
+    if hospital.status is HospitalStatus.ACTIVE:
+        return HospitalStatus.ACTIVE.value
+    return _apply_activation_transition(hospital)
 
 
 def _audit_detail(
@@ -237,7 +254,7 @@ async def activate_hospital(
             ActivationOutcome.BLOCKED, hospital.status, bool(hospital.site_live), gate
         )
 
-    previous_status = apply_activation_transition(hospital)
+    previous_status = transition_to_active(hospital)
     await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
     await write_audit_log(
         db,
@@ -271,7 +288,7 @@ def activate_hospital_sync(
             ActivationOutcome.BLOCKED, hospital.status, bool(hospital.site_live), gate
         )
 
-    previous_status = apply_activation_transition(hospital)
+    previous_status = transition_to_active(hospital)
     _open_service_interval_sync(db, hospital.id)
     write_audit_log_sync(
         db,

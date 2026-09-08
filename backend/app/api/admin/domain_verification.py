@@ -36,8 +36,8 @@ from app.services.domain_dns import DomainDnsCheck, strategy_for_hospital
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.hospital_activation import (
     HospitalNotActivatable,
-    apply_activation_transition,
     ensure_activatable,
+    transition_to_active,
 )
 from app.services.hospital_lifecycle import (
     ActivationGateSnapshot,
@@ -128,13 +128,18 @@ async def verify_domain_for_hospital(
         LiveDomainCheck(domain=domain, healthy=True, reason="dns_ok", checked_at=now),
     )
 
-    previous_site_live = bool(hospital.site_live)
-    if not hospital.site_live:
-        previous_status = apply_activation_transition(hospital)
+    # 활성화를 아는 자리는 여기 한 곳뿐이다 — 전환·구간 개시·감사행이 같은 조건 아래 있다.
+    activated_now = not hospital.site_live
+    if activated_now:
+        previous_status = transition_to_active(hospital)
         await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
-    else:
-        previous_status = (
-            hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+        await audit_activation(
+            db,
+            hospital,
+            domain,
+            dns_check,
+            previous_status,
+            gate,
         )
 
     job = claim_locked_domain_certificate_job(hospital, request)
@@ -158,30 +163,23 @@ async def verify_domain_for_hospital(
         case unreachable:
             assert_never(unreachable)
 
-    if not previous_site_live:
-        await audit_activation(
+    await db.commit()
+    try:
+        cert_job_state, cert_job_started_at = await _dispatch_or_describe_job(
             db,
             hospital,
             domain,
-            dns_check,
-            previous_status,
-            gate,
+            job,
+            now,
+            dependencies.provision_task,
         )
-
-    await db.commit()
-    if not previous_site_live:
-        # 커밋 이후이므로 실패해도 raise하지 않는다 — 활성화는 이미 성공했다.
-        await trigger_hospital_site_revalidate_safe(
-            hospital.slug, hospital.treatments, hospital_name=hospital.name
-        )
-    cert_job_state, cert_job_started_at = await _dispatch_or_describe_job(
-        db,
-        hospital,
-        domain,
-        job,
-        now,
-        dependencies.provision_task,
-    )
+    finally:
+        if activated_now:
+            # 활성화는 이미 커밋됐다 — 인증서 작업 dispatch가 실패해도 공개 캐시는 갱신한다.
+            # 실패해도 raise하지 않는 _safe 경로.
+            await trigger_hospital_site_revalidate_safe(
+                hospital.slug, hospital.treatments, hospital_name=hospital.name
+            )
     return dns_success_response(
         domain,
         dns_check,
