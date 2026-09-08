@@ -12,6 +12,19 @@
 
 ---
 
+## 실행 결과 (2026-09-08)
+
+| Task | 커밋 | 검수 |
+|---|---|---|
+| 1 백엔드 3상태·배치 준비도 | `63b9e7c` | 4쿼리 상수, 노이즈 hash 배치를 `evidence_noise`의 단건 statement builder와 공유 |
+| 4 용어 사전·가드 | `785aa4e` | `ADMIN_COPY` +11, `NEW_SURFACE_BANNED_PATTERNS` 11개, 언어 가이드 통일안 표 |
+| 2 목록 API | `0421e93` | 7쿼리 상수; `HospitalItemBase` 분리로 상세 응답 불변 |
+| 3 overview API | `a21bbd2` → `af0a8b5` | Codex Medium 6건 반영(운영자 예외 규칙 단일화·서비스 게이트·계약 요금제 편수·측정일) → 11쿼리 |
+| 5 헤더·목록 | `009f858` → `15b955a` | Fable Important 5 + Codex High/Medium 3 반영: 원인 그룹화 전 필터, 현재 snapshot 한정 예외 초안, 자료 0건=사람 몫, 일시정지≠자동 발행, 헤더 상태 뱃지 → 공개 서비스 칩(실패 시 명시), 사진 승인 대기 pill 복원, 타입 정합 |
+| 6 검증 | — | 깨끗한 DB: backend **3,286 passed**, admin **568/568**, site **310/310**, ruff clean, copy-guard OK, db-budget-guard 75/80 |
+
+기록만 한 지적: overview 예산 상한만 검사(빈 집합이면 9~11); 예외 초안이 있는 ACTIVE 병원은 인시던트+초안 카드 2건(설계 §4.3 허용); `sov.py`가 서비스의 `_`-private clause를 import; 가드가 TSX 주석을 건너뛰지 않음; `hospital-states-wiring.test.ts`는 소스 텍스트 계약; `layout.tsx`는 `자료 모음`·`월간 발행량` 탭 문구 때문에 PR-1E까지 가드 제외.
+
 ## 환경 준비
 
 PR-0C 계획의 "환경 준비" 명령을 그대로 쓴다(5432 `reputation_test` head `0070`, 5434, Redis). backend 테스트는 그 env로만 실행하고 전체 suite는 Task 6에서만 돈다. admin은 `cd admin && npm test && npm run lint && npm run typecheck`.
