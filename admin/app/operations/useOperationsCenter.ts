@@ -10,7 +10,9 @@ import {
   canonicalizeOperationsQuery,
   getOrCreateOperationsMutationKey,
   interpretOperationsConflict,
+  mutationRequestBody,
   readOperationsQuery,
+  resolveOperationsDetail,
   shouldPollRun,
   updateOperationsQuery,
   type OperationsQueryPatch,
@@ -49,6 +51,12 @@ function errorMessage(error: unknown): string {
     ? '권한 있는 담당자에게 요청하고, 처리할 수 없으면 개발팀 문의용 정보를 복사하세요.'
     : '운영 목록 다시 불러오기를 누르고, 계속 실패하면 개발팀 문의용 정보를 복사하세요.'
   return safeOperatorError('operations', action)
+}
+
+function incidentDetailPath(hospitalId: string | null, incidentId: string): string {
+  return hospitalId
+    ? `/admin/operations/hospitals/${hospitalId}/incidents/${incidentId}`
+    : `/admin/operations/incidents/${incidentId}`
 }
 
 function isAbort(error: unknown): boolean {
@@ -132,41 +140,74 @@ export function useOperationsCenter() {
     return () => window.clearInterval(timer)
   }, [loadCenter])
 
-  const selectedRow = useMemo(() => {
-    if (!query.detail) return null
-    return page?.items.find((item) => item.id === query.detail)
-      ?? overview?.items.find((item) => item.id === query.detail)
-      ?? null
-  }, [overview, page, query.detail])
+  const resolution = useMemo(
+    () => resolveOperationsDetail(
+      query.detail,
+      [...(page?.items ?? []), ...(overview?.items ?? [])],
+      query.hospitalId,
+    ),
+    [overview, page, query.detail, query.hospitalId],
+  )
+  const selectedRow = resolution.kind === 'row' ? resolution.row : null
 
   const loadDetail = useCallback(async (row: OperationsQueueRow) => {
     detailAbort.current?.abort()
     const controller = new AbortController()
     detailAbort.current = controller
     if (row.operation_run_id && row.customer.hospital_id) {
-      try {
-        const run = await fetchAPI<OperationsRunSummary>(
+      // 작업 기록만 읽으면 상세는 담당 후보(`assignable_accounts`)를 영영 받지 못해
+      // 담당 지정 폼을 그릴 수 없다. 두 조회를 함께 낸다 — 하나가 실패해도 나머지는 쓴다.
+      const [run, incident] = await Promise.all([
+        fetchAPI<OperationsRunSummary>(
           `/admin/operations/hospitals/${row.customer.hospital_id}/runs/${row.operation_run_id}`,
           { signal: controller.signal },
-        )
-        setDetail({ incident: row, run })
-      } catch (error) {
-        if (!isAbort(error)) setActionError(errorMessage(error))
-        setDetail({ incident: row, run: null })
-      }
+        ).catch((error: unknown) => {
+          if (!isAbort(error)) setActionError(errorMessage(error))
+          return null
+        }),
+        row.incident_id
+          ? fetchAPI<OperationsIncidentDetail>(
+              incidentDetailPath(row.customer.hospital_id, row.incident_id),
+              { signal: controller.signal },
+            ).catch(() => null)
+          : Promise.resolve(null),
+      ])
+      if (controller.signal.aborted) return
+      setDetail({
+        incident: row,
+        run,
+        // 조회에 실패했으면 빈 배열로 확정한다 — undefined로 두면 화면이 영원히
+        // "담당자 정보를 불러오는 중"에 머문다.
+        assignable_accounts: incident?.assignable_accounts ?? [],
+      })
       return
     }
     if (!row.incident_id) {
-      setDetail({ incident: row, run: null })
+      setDetail({ incident: row, run: null, assignable_accounts: [] })
       return
     }
-    const path = row.customer.hospital_id
-      ? `/admin/operations/hospitals/${row.customer.hospital_id}/incidents/${row.incident_id}`
-      : `/admin/operations/incidents/${row.incident_id}`
     try {
-      setDetail(await fetchAPI<OperationsIncidentDetail>(path, { signal: controller.signal }))
+      setDetail(await fetchAPI<OperationsIncidentDetail>(
+        incidentDetailPath(row.customer.hospital_id, row.incident_id),
+        { signal: controller.signal },
+      ))
     } catch (error) {
       if (!isAbort(error)) setActionError(errorMessage(error))
+    }
+  }, [])
+
+  const loadIncidentById = useCallback(async (hospitalId: string, incidentId: string) => {
+    detailAbort.current?.abort()
+    const controller = new AbortController()
+    detailAbort.current = controller
+    try {
+      setDetail(await fetchAPI<OperationsIncidentDetail>(
+        incidentDetailPath(hospitalId, incidentId),
+        { signal: controller.signal },
+      ))
+    } catch (error) {
+      if (!isAbort(error)) setActionError(errorMessage(error))
+      setDetail(null)
     }
   }, [])
 
@@ -185,10 +226,14 @@ export function useOperationsCenter() {
   }, [loadCenter, loadDetail, page, selectedRow])
 
   useEffect(() => {
-    if (selectedRow) void loadDetail(selectedRow)
-    else setDetail(null)
+    // 링크가 가리키는 인시던트가 현재 쪽의 행과 맞지 않으면 그 건을 직접 읽는다 —
+    // 묶여서 접혔거나 다음 쪽에 있다고 상세가 열리지 않으면 안 된다.
+    if (resolution.kind === 'row') void loadDetail(resolution.row)
+    else if (resolution.kind === 'fetch') {
+      void loadIncidentById(resolution.hospitalId, resolution.incidentId)
+    } else setDetail(null)
     return () => detailAbort.current?.abort()
-  }, [loadDetail, selectedRow])
+  }, [loadDetail, loadIncidentById, resolution])
 
   useEffect(() => {
     // shouldPollRun(state) is false for every terminal run state (SUCCEEDED/PARTIAL/
@@ -211,9 +256,13 @@ export function useOperationsCenter() {
     setBusy(true)
     setActionError('')
     setPermissionDenied(false)
-    const body = mutation.kind === 'RETRY_RUN' || mutation.kind === 'POST_ACTION'
-      ? { reason: mutation.reason.trim() }
-      : { expected_version: mutation.version, reason: mutation.reason.trim() }
+    const assigning = mutation.kind === 'ASSIGN_INCIDENT'
+    const body = mutationRequestBody(mutation.kind, {
+      reason: mutation.reason,
+      expectedVersion: mutation.version,
+      ownerId: assigning ? mutation.ownerId ?? null : null,
+      slaDueAt: assigning ? mutation.slaDueAt ?? null : null,
+    })
     const attempt = mutation.requiresIdempotencyKey
       ? getOrCreateOperationsMutationKey(mutationKeys.current, mutation, crypto.randomUUID())
       : null
@@ -241,6 +290,9 @@ export function useOperationsCenter() {
         if (attempt) mutationKeys.current.delete(attempt.fingerprint)
         setActionError('이 작업은 권한 있는 담당자만 처리할 수 있습니다. 담당자에게 요청하거나 개발팀 문의 정보를 복사하세요.')
         setPermissionDenied(true)
+        // 서버가 거절한 행동은 화면에도 남아 있으면 안 된다 — 최신 인가로 다시 그린다.
+        if (selectedRow) await loadDetail(selectedRow)
+        await loadCenter(true)
       } else {
         setActionError(safeOperatorError(
           'operations',

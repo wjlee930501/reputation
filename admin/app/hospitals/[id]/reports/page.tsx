@@ -7,14 +7,14 @@ import { fetchCurrentAccount } from '@/lib/current-account'
 import {
   deliveryConflict,
   deliveryDeveloperNote,
+  isArtifactMismatch,
   reportListDeveloperNote,
   type DeliveryIssue,
 } from '@/lib/report-delivery'
 import { parseReport, parseReports, type ReportView } from '@/lib/report-review'
 import { preflightDeliveryAction } from '@/lib/report-component-behavior'
 import { ReportList } from './ReportList'
-import { type DeliveryAction } from './ReportDelivery'
-import { ReportReviewDialog } from './ReportReviewDialog'
+import { ReportDialog, type DeliveryAction } from './ReportDialog'
 import { ReportRunStatus } from './ReportRunStatus'
 
 const LOAD_ERROR: DeliveryIssue = {
@@ -36,6 +36,8 @@ export default function ReportsPage() {
   const [busy, setBusy] = useState(false)
   const [isOwner, setIsOwner] = useState(false)
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
+  // 이 화면이 실제로 내려받은 원장 전달용 파일의 확인 번호. 전달 기록은 이 값에만 결합한다.
+  const [downloadedSha256, setDownloadedSha256] = useState<string | null>(null)
 
   const loadDetail = useCallback(async (reportId: string): Promise<ReportView> => {
     const payload = await fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports/${reportId}`)
@@ -52,6 +54,7 @@ export default function ReportsPage() {
   const openReport = useCallback(async (reportId: string) => {
     setLoadingId(reportId)
     setIssue(null)
+    setDownloadedSha256(null)
     try { applyReport(await loadDetail(reportId)) }
     catch { setPageError('보고서 상세를 불러오지 못했습니다. 고객 영향: 최신 근거를 확인할 수 없습니다. 지금 할 일: 다시 시도하고 계속 실패하면 개발팀에 문의해 주세요.') }
     finally { setLoadingId(null) }
@@ -99,7 +102,7 @@ export default function ReportsPage() {
       const body = action.kind === 'rescind'
         ? { reason: action.reason }
         : {
-            artifact_sha256: fresh.doctorArtifact.sha256,
+            artifact_sha256: action.artifactSha256,
             recipient_label: action.recipient,
             channel: action.channel,
             note: action.note,
@@ -112,6 +115,7 @@ export default function ReportsPage() {
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 409) {
         try { applyReport(await loadDetail(selected.id)) } catch { /* conflict copy still remains actionable */ }
+        if (isArtifactMismatch(caught.detail)) setDownloadedSha256(null)
         setIssue(deliveryConflict(caught.detail))
       } else if (caught instanceof ApiError && caught.status === 403) {
         setIssue({ title: '이 작업을 실행할 권한이 없습니다', problem: '현재 계정은 이 전달 기록을 수정할 수 없습니다.', customerImpact: '전달 이력은 변경되지 않았습니다.', nextAction: '관리자에게 이 보고서 기간과 필요한 조치를 알려 주세요.', action: 'developer' })
@@ -119,7 +123,7 @@ export default function ReportsPage() {
     } finally { setBusy(false) }
   }, [applyReport, busy, hospitalId, loadDetail, selected])
 
-  const closeDialog = useCallback(() => { setSelected(null); setIssue(null) }, [])
+  const closeDialog = useCallback(() => { setSelected(null); setIssue(null); setDownloadedSha256(null) }, [])
   async function copyDeveloperInfo() {
     try {
       const note = selected
@@ -132,7 +136,7 @@ export default function ReportsPage() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
-      <header data-current-task className="mb-5"><h2 className="text-xl font-bold text-[var(--color-revisit-text-title)]">월간 보고서 검수와 전달</h2><p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">측정 근거와 원장 전달용 파일을 먼저 확인하고, 같은 화면에서 전달 이력을 남깁니다.</p></header>
+      <header data-current-task className="mb-5"><h2 className="text-xl font-bold text-[var(--color-revisit-text-title)]">보고서</h2><p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">보고서를 열어 원장용 파일을 확인하고, 같은 화면에서 전달 기록과 이력을 남깁니다.</p></header>
       <ReportRunStatus
         hospitalId={hospitalId}
         reportPeriods={reports.map((report) => ({
@@ -144,7 +148,7 @@ export default function ReportsPage() {
       {statusMessage && <p className="mb-4 rounded-lg bg-[var(--color-revisit-primary-95)] p-3 text-sm" role="status">{statusMessage}</p>}
       {pageError && <div className="mb-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p>{pageError}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">보고서 목록 다시 시도</button><button type="button" onClick={() => void copyDeveloperInfo()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
       {loading ? <p className="py-12 text-center text-sm" role="status">보고서 목록을 불러오는 중입니다.</p> : <ReportList reports={reports} loadingId={loadingId} onOpen={(report) => void openReport(report.id)} />}
-      {selected && <ReportReviewDialog report={selected} issue={issue} isOwner={isOwner} busy={busy} onClose={closeDialog} onRefresh={() => void refreshSelected()} onAction={(action) => void handleAction(action)} onCopyIssue={() => void copyDeveloperInfo()} onCopyNotification={() => void copyDeveloperInfo()} />}
+      {selected && <ReportDialog report={selected} issue={issue} isOwner={isOwner} busy={busy} downloadedSha256={downloadedSha256} onDownloaded={setDownloadedSha256} onClose={closeDialog} onRefresh={() => void refreshSelected()} onAction={(action) => void handleAction(action)} onCopyDeveloperInfo={() => void copyDeveloperInfo()} />}
     </div>
   )
 }

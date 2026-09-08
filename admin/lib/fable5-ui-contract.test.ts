@@ -23,25 +23,3 @@ test('rate limiting is an error state with Korean scope and a retry action', () 
   assert.match(layout, /다시 불러오기/)
   assert.doesNotMatch(layout, /Too many requests/)
 })
-
-test('mobile exposure refresh keeps its Hangul label on one line', () => {
-  const page = readFileSync(
-    new URL('../app/hospitals/[id]/exposure-actions/page.tsx', import.meta.url),
-    'utf8',
-  )
-
-  assert.match(page, /min-w-fit/)
-  assert.match(page, /whitespace-nowrap/)
-  assert.match(page, />\s*새로고침\s*</)
-})
-
-test('manual essence action is explicitly an exception to automatic approval', () => {
-  const page = readFileSync(
-    new URL('../app/hospitals/[id]/essence/page.tsx', import.meta.url),
-    'utf8',
-  )
-
-  assert.match(page, /정상 경로에서는 자동으로 승인됩니다/)
-  assert.match(page, /자동 보류 예외 승인/)
-  assert.doesNotMatch(page, /사람 승인 아님/)
-})

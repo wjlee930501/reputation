@@ -444,7 +444,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         <div className="flex items-start justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-900">자기 도메인 연결 <span className="text-slate-400 font-normal">(선택)</span></h3>
-            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 병원 기본 정보와 콘텐츠 허브 준비가 끝나면 자동으로 운영이 시작되고, 병원 자기 도메인 연결만 담당자가 입력·확인합니다. 초기 진단은 별도로 백그라운드에서 계속됩니다.</p>
+            <p className="text-sm text-slate-700 mt-1">기본 플랫폼 주소는 병원 기본 정보와 병원 공개 페이지 준비가 끝나면 자동으로 운영이 시작되고, 병원 자기 도메인 연결만 담당자가 입력·확인합니다. 초기 진단은 별도로 백그라운드에서 계속됩니다.</p>
           </div>
           <div className="shrink-0 text-right">
             <span className={`inline-flex items-center px-2.5 py-1 text-xs font-medium rounded-full border ${badge.cls}`}>
@@ -481,7 +481,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
               <p className="mt-1 text-xs text-emerald-700/80">이 주소로 현재 공개 중입니다. 아래 자기 도메인 연결은 선택입니다.</p>
             ) : platformMode === 'automatic' ? (
               <p className="mt-1 text-xs text-emerald-700/80" data-testid="platform-auto-activation">
-                선행 단계가 모두 통과했습니다. 기본 주소는 콘텐츠 허브 준비가 끝나는 즉시 시스템이 운영을 시작하므로 담당자가 누를 것은 없습니다.
+                선행 단계가 모두 통과했습니다. 기본 주소는 병원 공개 페이지 준비가 끝나는 즉시 시스템이 운영을 시작하므로 담당자가 누를 것은 없습니다.
               </p>
             ) : (
               <div className="mt-2 space-y-2">
@@ -602,7 +602,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
         {profile.domain_cert_job_state === 'DONE' && customDomainUrl ? (
           <>
             <a href={customDomainUrl} target="_blank" rel="noopener noreferrer" className="block rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
-              병원 정보 허브 운영 중 · {currentDomain}
+              병원 공개 페이지 운영 중 · {currentDomain}
             </a>
             <button
               type="button"

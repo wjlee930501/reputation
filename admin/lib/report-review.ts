@@ -1,3 +1,5 @@
+import { ADMIN_COPY } from './admin-copy.ts'
+
 export type MeasurementCell = {
   queryKey: string
   queryText: string
@@ -76,7 +78,7 @@ export type ReportView = {
   deliveryReady: boolean
   deliveryBlockers: readonly string[]
   /**
-   * 전달을 막지 않는 경고(약정 미달, 사후검수 표본 미완료, 운영 기준 버전 갱신 등).
+   * 전달을 막지 않는 경고(약정 미달, 공개 후 확인 표본 미완료, 운영 기준 버전 갱신 등).
    * deliveryBlockers와 달리 존재해도 전달 버튼을 비활성화하지 않는다 — 소프트 스타일로만
    * 표시한다.
    */
@@ -118,7 +120,7 @@ export type ReportView = {
   /**
    * AI 답변이 병원 공개 정보(허브·발행 글)를 인용했는지 모은 결과.
    *
-   * `citations` 키가 없던 과거 리포트는 null이다 — 화면은 이 경우 줄을 감춘다.
+   * `citations` 키가 없던 과거 보고서는 null이다 — 화면은 이 경우 줄을 감춘다.
    */
   citations: CitationEvidence | null
   contentOperations: ContentOperationsEvidence | null
@@ -126,13 +128,12 @@ export type ReportView = {
   effectiveEventType: string | null
 }
 
-export const REPORT_REVIEW_SECTION_ORDER = [
-  'status',
-  'measurement',
-  'operations',
-  'artifact',
-  'notification',
+/** 보고서 다이얼로그의 유일한 구획 순서. 내부 검수 근거는 맨 아래 접힌 칸에만 있다. */
+export const REPORT_DIALOG_SECTION_ORDER = [
+  'open',
   'delivery',
+  'history',
+  'internal',
 ] as const
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -277,6 +278,13 @@ function parseContentOperations(value: unknown): ContentOperationsEvidence | nul
   }
 }
 
+/** 서버 표시 라벨은 아직 통일 전 용어를 쓴다. 화면에 나가는 이름은 여기서 통일한다. */
+function reportTypeLabel(reportType: string, serverLabel: string): string {
+  if (reportType === 'V0') return ADMIN_COPY.initialReport
+  if (reportType === 'MONTHLY') return ADMIN_COPY.monthlyReport
+  return serverLabel || ADMIN_COPY.monthlyReport
+}
+
 export function parseReport(value: unknown): ReportView | null {
   const root = record(value)
   const id = text(root?.id)
@@ -296,7 +304,7 @@ export function parseReport(value: unknown): ReportView | null {
     hospitalId,
     periodYear: number(root.period_year),
     periodMonth: number(root.period_month),
-    typeLabel: text(display?.report_type_label, text(root.report_type, '보고서')),
+    typeLabel: reportTypeLabel(text(root.report_type), text(display?.report_type_label)),
     statusLabel: text(display?.screening_status_label, '검수 필요'),
     hasPdf: root.has_pdf === true,
     internalDownloadUrl: text(root.download_url) || null,

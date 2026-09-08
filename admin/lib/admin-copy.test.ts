@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { ADMIN_COPY, describeMentionRate, describeUnknownCount } from './admin-copy.ts'
+import { STATUS_LABELS } from '../types/index.ts'
 
 test('admin copy uses operator terms instead of implementation labels', () => {
   assert.equal(ADMIN_COPY.aiMentionRate, '병원 언급률')
@@ -25,6 +26,13 @@ test('one term per concept: new screens read these keys instead of inventing var
   assert.equal(ADMIN_COPY.aeOwner, '담당 AE')
   assert.equal(ADMIN_COPY.postPublishReview, '공개 후 확인')
   assert.equal(ADMIN_COPY.postPublishReviewed, '확인 완료')
+})
+
+test('hospital status labels say the same thing the rest of admin says', () => {
+  assert.equal(STATUS_LABELS.ANALYZING.label, '초기 진단 보고서 준비 중')
+  assert.equal(STATUS_LABELS.BUILDING.label, '병원 공개 페이지 준비 중')
+  assert.ok(STATUS_LABELS.ANALYZING.label.startsWith(ADMIN_COPY.initialReport))
+  assert.ok(STATUS_LABELS.BUILDING.label.startsWith(ADMIN_COPY.publicPage))
 })
 
 test('mention rate keeps unavailable results separate from zero', () => {

@@ -28,7 +28,7 @@ const NAV_ITEMS = [
   },
   {
     href: '/hospitals/new',
-    label: '신규 병원 온보딩',
+    label: '계약 등록',
     icon: (
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
         <path d="M10 4v12M4 10h12" />

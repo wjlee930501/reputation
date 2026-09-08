@@ -96,7 +96,7 @@ test('fallback setup plan gives operators a usable CNAME record before backend s
       registrar_host: 'ai',
       value: 'cname.reputation.motionlabs.kr.',
       ttl: '300 (또는 등록기관 최소값)',
-      purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
+      purpose: '병원 공개 페이지 트래픽을 Reputation 플랫폼으로 연결',
     },
   ])
   // fallback은 서버가 돌려주는 것과 같은 다섯 단계를 같은 순서로 갖는다 — 응답이 실패한

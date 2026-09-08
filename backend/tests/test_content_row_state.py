@@ -108,6 +108,38 @@ def test_withheld_published_row_keeps_the_blocked_link():
     assert state.kind == "withheld" and state.link == link
 
 
+def test_withheld_row_link_is_a_routable_operations_address():
+    """공개 보류 행의 링크는 실제로 열리는 운영 센터 주소여야 한다."""
+    link = {
+        "kind": "run",
+        "href": "/operations?queue=incidents&hospital_id=h",
+        "next_action": None,
+    }
+    state = content_row_state(
+        _item(), WITHHELD, compliance_blockers=(), blocked_link=link, today=date(2026, 9, 9)
+    )
+    assert state.link["href"].startswith("/operations?queue=incidents&hospital_id=")
+
+
+def test_overdue_empty_draft_is_blocked_not_generating():
+    """발행일이 지난 빈 초안은 "생성 중"이 아니다 — 야간 생성이 이미 지나갔다."""
+    late = _item(
+        status=ContentStatus.DRAFT,
+        published_at=None,
+        title=None,
+        body=None,
+        scheduled_date=date(2026, 9, 5),
+    )
+    state = content_row_state(
+        late,
+        VISIBLE,
+        compliance_blockers=("본문 생성이 필요합니다.",),
+        blocked_link=None,
+        today=date(2026, 9, 9),
+    )
+    assert state == RowState("blocked", "발행일이 지났지만 아직 생성되지 않았습니다.", None)
+
+
 def test_overdue_draft_is_not_called_scheduled():
     """발행일이 지났는데 아직 초안이면 "예정"이 아니다 — 08:00 자동 공개가 실패한 것이다."""
     late = _item(

@@ -59,8 +59,8 @@ from app.services.report_review_evidence import build_report_review_evidence
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
 
 REPORT_TYPE_DISPLAY_LABELS = {
-    "V0": "초기 진단 리포트",
-    "MONTHLY": "월간 리포트",
+    "V0": "초기 진단 보고서",
+    "MONTHLY": "월간 보고서",
 }
 SCREENING_STATUS_DISPLAY = {
     "PDF_PENDING": {"label": "PDF 생성 중"},

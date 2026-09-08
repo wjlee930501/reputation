@@ -666,7 +666,21 @@ async def _load_replayed_onboarding_request(
             },
         )
 
-    return {**_serialize(prior), "handoff": _serialize_handoff_summary(prior_handoff)}
+    return {**serialize_hospital_detail(prior), "handoff": serialize_handoff_summary(prior_handoff)}
+
+
+async def allocate_hospital_slug(db: AsyncSession, name: str) -> str:
+    """병원명에서 공개 주소 slug를 만든다. 계약 등록 라우트(handoffs.py)와 공유한다."""
+    slug = slugify(name, separator="-")
+    # 공개 표면의 예약 경로와 겹치면 그 병원 페이지가 통째로 가려진다.
+    # 예: slug가 'ai-diagnosis'인 병원은 무료 진단 퍼널에 먹혀 영원히 열리지 않는다 (PRD F1-3).
+    if slug in RESERVED_SITE_SLUGS:
+        slug = f"{slug}-{uuid.uuid4().hex[:4]}"
+    # slug 중복 방지
+    existing = await db.execute(select(Hospital).where(Hospital.slug == slug))
+    if existing.scalar_one_or_none():
+        slug = f"{slug}-{uuid.uuid4().hex[:4]}"
+    return slug
 
 
 # ── 엔드포인트 ────────────────────────────────────────────────────
@@ -708,15 +722,7 @@ async def create_hospital(
             },
         )
 
-    slug = slugify(body.name, separator="-")
-    # 공개 표면의 예약 경로와 겹치면 그 병원 페이지가 통째로 가려진다.
-    # 예: slug가 'ai-diagnosis'인 병원은 무료 진단 퍼널에 먹혀 영원히 열리지 않는다 (PRD F1-3).
-    if slug in RESERVED_SITE_SLUGS:
-        slug = f"{slug}-{uuid.uuid4().hex[:4]}"
-    # slug 중복 방지
-    existing = await db.execute(select(Hospital).where(Hospital.slug == slug))
-    if existing.scalar_one_or_none():
-        slug = f"{slug}-{uuid.uuid4().hex[:4]}"
+    slug = await allocate_hospital_slug(db, body.name)
 
     hospital = Hospital(
         id=body.onboarding_request_id or uuid.uuid4(),
@@ -778,8 +784,8 @@ async def create_hospital(
         ) from exc
     await db.refresh(hospital)
     return {
-        **_serialize(hospital),
-        "handoff": _serialize_handoff_summary(handoff),
+        **serialize_hospital_detail(hospital),
+        "handoff": serialize_handoff_summary(handoff),
     }
 
 
@@ -860,7 +866,7 @@ async def _ae_owners(
 @router.get("/{hospital_id}", response_model=HospitalDetail)
 async def get_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     h = await _get_or_404(db, hospital_id)
-    return _serialize(h)
+    return serialize_hospital_detail(h)
 
 
 @router.get("/{hospital_id}/usage", response_model=HospitalUsageResponse)
@@ -1170,7 +1176,7 @@ async def update_profile(
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
-    payload = _serialize(h)
+    payload = serialize_hospital_detail(h)
     # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다 — 커밋된 사실만 담는다.
     payload["source_registration"] = source_registration
     return payload
@@ -1398,7 +1404,7 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
     await db.refresh(h)
     # 커밋 이후이므로 실패해도 raise하지 않는다 — 일시정지는 이미 성공했다.
     await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
-    return _serialize(h)
+    return serialize_hospital_detail(h)
 
 
 @router.post("/{hospital_id}/resume", response_model=HospitalDetail)
@@ -1492,7 +1498,7 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     await db.refresh(h)
     # 커밋 이후이므로 실패해도 raise하지 않는다 — 재개는 이미 성공했다.
     await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
-    return _serialize(h)
+    return serialize_hospital_detail(h)
 
 
 @router.get("/{hospital_id}/readiness")
@@ -1654,14 +1660,14 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ),
         ReadinessCheck(
             "v0_report",
-            "초기 진단 리포트",
+            "초기 진단 보고서",
             v0_report_pdf_count > 0,
             12,
             readiness_actions["v0_report"],
         ),
         ReadinessCheck(
             "site_built",
-            "콘텐츠 허브 노출 준비",
+            "병원 공개 페이지 준비",
             bool(h.site_built),
             10,
             readiness_actions["site_built"],
@@ -1755,7 +1761,7 @@ def _has_public_site(h: Hospital) -> bool:
     return h.status == HospitalStatus.ACTIVE and bool(h.site_live)
 
 
-def _serialize(h: Hospital) -> dict:
+def serialize_hospital_detail(h: Hospital) -> dict:
     return {
         "id": str(h.id),
         "name": h.name,
@@ -1913,7 +1919,7 @@ def _serialize_domain_live_check(h: Hospital) -> dict:
     }
 
 
-def _serialize_handoff_summary(handoff: HospitalHandoff) -> dict[str, object]:
+def serialize_handoff_summary(handoff: HospitalHandoff) -> dict[str, object]:
     return {
         "id": handoff.id,
         "hospital_id": handoff.hospital_id,

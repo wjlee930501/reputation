@@ -64,12 +64,7 @@ test('an empty value asks for confirmation instead of printing a dash as a name'
 })
 
 test('every screen that shows a confirmer runs the value through the shared helper', () => {
-  const surfaces = [
-    '../app/hospitals/[id]/essence/page.tsx',
-    '../app/hospitals/[id]/onboarding/page.tsx',
-    '../app/hospitals/[id]/wiki/page.tsx',
-    '../app/hospitals/[id]/dashboard/page.tsx',
-  ]
+  const surfaces = ['../app/hospitals/[id]/info/PhotosSection.tsx']
 
   for (const surface of surfaces) {
     const source = readFileSync(new URL(surface, import.meta.url), 'utf8')

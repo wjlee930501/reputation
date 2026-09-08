@@ -721,7 +721,7 @@ def test_report_queue_does_not_hide_stale_monthly_runs() -> None:
 def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     hospital = Hospital(id=uuid.uuid4(), name="테스트의원", slug="test-clinic")
 
-    assert "병원 기본 정보 탭" in next_onboarding_step(hospital)
+    assert "병원 정보 탭" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.profile_complete = True
     assert "공개 정보" in next_onboarding_step(hospital)
@@ -739,6 +739,27 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     assert "첫 발행" in next_onboarding_step(hospital)
 
 
+def test_onboarding_steps_point_at_screens_that_still_exist() -> None:
+    """안내가 부르는 화면 이름은 현재 화면 구성과 같아야 한다 — 없는 화면을 찾게 두지 않는다."""
+    # Given
+    hospital = Hospital(id=uuid.uuid4(), name="테스트의원", slug="test-clinic")
+    steps = [next_onboarding_step(hospital)]
+    for flag in ("profile_complete", "site_built", "site_live", "schedule_set"):
+        setattr(hospital, flag, True)
+        steps.append(next_onboarding_step(hospital))
+
+    # Then
+    assert all(
+        gone not in step
+        for step in steps
+        for gone in ("허브", "스케줄", "리포트", "체크리스트")
+    )
+    assert "병원 공개 페이지" in steps[1]
+    assert "병원 정보 화면의 자기 도메인" in steps[2]
+    assert "병원 정보 화면의 남은 필수 항목" in steps[3]
+    assert "콘텐츠 화면의 발행 요일" in steps[3]
+
+
 def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -> None:
     # Given / When
     actions = readiness_next_actions()
@@ -748,7 +769,7 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert all("해당 버튼이 없으면" not in action for action in actions.values())
     assert all("개발팀에 병원명" not in action for action in actions.values())
     assert "“저장”" in actions["core_profile"]
-    assert "병원 기본 정보 탭" in actions["core_profile"]
+    assert "병원 정보 탭" in actions["core_profile"]
     assert all("프로파일" not in action for action in actions.values())
     assert "“근거 추출”" in actions["essence_sources"]
     assert "시스템 자동 검수" in actions["essence_philosophy"]
@@ -757,10 +778,10 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "백그라운드에서 자동으로" in actions["v0_report"]
     assert "설정을 계속 진행" in actions["v0_report"]
     assert "다시 만들기" not in actions["v0_report"]
-    assert "“스케줄 저장 및 슬롯 생성”" in actions["schedule"]
+    assert "“발행 일정 저장 및 항목 만들기”" in actions["schedule"]
     assert "“DNS 확인하고 운영 시작”" in actions["domain"]
     assert "지금 발행" not in actions["published_content"]
-    assert "스케줄 탭" in actions["published_content"]
+    assert "콘텐츠 탭의 발행 일정" in actions["published_content"]
     assert "예약 콘텐츠" in readiness_next_actions(has_content_slots=True)["published_content"]
 
 

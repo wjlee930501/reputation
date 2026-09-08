@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { parseReport, REPORT_REVIEW_SECTION_ORDER } from './report-review.ts'
+import { parseReport, REPORT_DIALOG_SECTION_ORDER } from './report-review.ts'
 
 const payload = {
   id: 'report-2', hospital_id: 'hospital-1', period_year: 2026, period_month: 7,
-  report_type: 'MONTHLY', display: { report_type_label: '월간 리포트', screening_status_label: '검수 대기' },
+  report_type: 'MONTHLY', display: { report_type_label: '월간 보고서', screening_status_label: '검수 대기' },
   has_pdf: true, download_url: '/internal.pdf', created_at: '2026-08-10T00:00:00Z', sent_at: null,
   delivery_ready: true, delivery_blockers: [],
   delivery_warnings: ['약정 콘텐츠 16편 중 15편만 발행되었습니다.', '운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요.'],
@@ -59,12 +59,16 @@ test('strict report boundary preserves frozen cells, version lineage, and honest
   assert.doesNotMatch(JSON.stringify(report), /SLA|CUSTOMER_READY|raw_response/)
 })
 
-test('evidence sections are rendered before every delivery control', () => {
-  const deliveryIndex = REPORT_REVIEW_SECTION_ORDER.indexOf('delivery')
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('measurement') < deliveryIndex)
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('operations') < deliveryIndex)
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('artifact') < deliveryIndex)
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('notification') < deliveryIndex)
+test('the one dialog runs open, then delivery, then history, with internal state last', () => {
+  assert.deepEqual([...REPORT_DIALOG_SECTION_ORDER], ['open', 'delivery', 'history', 'internal'])
+})
+
+test('the screen name of a report never keeps the pre-unification server label', () => {
+  assert.equal(parseReport(payload)?.typeLabel, '보고서')
+  assert.equal(
+    parseReport({ ...payload, report_type: 'V0', display: { report_type_label: '초기 진단 보고서' } })?.typeLabel,
+    '초기 진단 보고서',
+  )
 })
 
 test('malformed report payload fails closed', () => {

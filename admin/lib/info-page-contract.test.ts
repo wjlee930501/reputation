@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import test from 'node:test'
 
 import { brandDefaultsNotice } from './info-sections.ts'
@@ -97,6 +97,30 @@ test('브랜드 섹션은 온보딩과 같은 칸을 쓰고 로고는 업로드�
   assert.match(brandSources, /`\/admin\/hospitals\/\$\{hospitalId\}\/logo`[\s\S]{0,60}method: 'POST'/)
 })
 
+test('시각 요소 폼은 프로파일 PATCH로 저장하고 로고는 되돌려 보내지 않는다', () => {
+  const form = infoFile('ClinicVisualForm.tsx')
+
+  assert.match(form, /`\/admin\/hospitals\/\$\{hospitalId\}\/profile`[\s\S]{0,120}method: 'PATCH'/)
+  // logo_url은 업로드 엔드포인트가 소유한다 — 폼이 되돌려 보내면 자산 참조를 덮어쓴다.
+  assert.doesNotMatch(form, /logo_url:/)
+  // 대표색은 하나만 묻는다.
+  assert.doesNotMatch(form, /brand_accent_color/)
+})
+
+test('시각 설정을 위한 새 병원 화면은 열지 않는다', () => {
+  const routes = readdirSync(new URL('../app/hospitals/[id]/', import.meta.url), {
+    withFileTypes: true,
+  })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+
+  assert.deepEqual(
+    routes.filter((route) => /visual|brand|theme|palette|design|logo/i.test(route)),
+    [],
+  )
+  assert.ok(routes.includes('info'))
+})
+
 test('비어 있는 브랜드 값은 승인 대기가 아니라 기본값 사용 중으로 말한다', () => {
   assert.match(brandSection, /visual_approval_missing/)
   assert.match(brandSection, /brandDefaultsNotice/)
@@ -167,6 +191,17 @@ test('근거 자료 표는 읽고, 올리고, 제외하는 것만 한다', () =>
   assert.match(sourcesSection, /from '\.\/NaverBlogBulkForm'/)
   assert.ok(infoFile('NaverBlogBulkForm.tsx').length > 0)
   assert.ok(infoFile('NaverHandoffResultItem.tsx').length > 0)
+})
+
+test('권리 근거는 서버가 받는 두 값만 고를 수 있다', () => {
+  // 서버가 허용하는 두 값 외에는 고를 수 없어야 저장 단계에서 막히지 않는다.
+  const options = infoFile('PhotoRightsFields.tsx').match(
+    /const PHOTO_RIGHTS_BASIS_OPTIONS = \[([\s\S]*?)\]/,
+  )?.[1]
+
+  assert.ok(options, 'PHOTO_RIGHTS_BASIS_OPTIONS를 찾지 못했다')
+  assert.match(options, /'LICENSE'/)
+  assert.match(options, /'OWNER_CONSENT'/)
 })
 
 test('사진 권리 칸은 한 구현을 업로드와 개별 사진이 함께 쓴다', () => {

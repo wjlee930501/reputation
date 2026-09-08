@@ -114,26 +114,39 @@ def monthly_doctor_artifact_is_valid(
     )
 
 
+def coverage_is_final(report: MonthlyReport) -> bool:
+    """이번 달 측정을 '최종'으로 볼 수 있는가 — 전달 게이트·milestone·월간 마감이 같은 정의를 쓴다.
+
+    COMPLETE(전 슬롯 성공) 또는 LIMITED(표본은 부족하지만 확정 슬롯이 있고 관측 적정성이
+    LIMITED로 닫힘). 세 곳이 각자 정의하면 전달 가능한 리포트를 계속 '측정 미완료'로
+    되돌리거나(M-02), 한 리포트의 게이트 예외가 전 병원의 알림을 멈춘다(H-11).
+
+    '더 기다릴 필요가 있는가'만 판정한다. LIMITED를 COMPLETE와 같은 품질로 표시하는 근거가
+    아니며 품질 구분은 `report.quality`와 관측 적정성이 그대로 유지한다.
+    """
+    counts_complete = (
+        report.planned_count > 0
+        and report.success_count == report.planned_count
+        and report.failed_count == 0
+    )
+    if report.quality == "COMPLETE":
+        return counts_complete
+    adequacy = (report.sov_summary or {}).get("observation_adequacy")
+    return (
+        report.quality == "DEGRADED"
+        and isinstance(adequacy, dict)
+        and adequacy.get("status") == "LIMITED"
+        and int(adequacy.get("confirmed_slots") or 0) > 0
+    )
+
+
 def monthly_report_delivery_gate(
     report: MonthlyReport,
     manifest: MonthlyMeasurementManifest | None,
     artifact: MonthlyReportArtifact | None,
 ) -> DeliveryGate:
     """Decide readiness from the same persisted facts in every server process."""
-    counts_complete = (
-        report.planned_count > 0
-        and report.success_count == report.planned_count
-        and report.failed_count == 0
-    )
-    adequacy = (report.sov_summary or {}).get("observation_adequacy")
-    sample_complete = report.quality == "COMPLETE" and counts_complete
-    sample_limited = (
-        report.quality == "DEGRADED"
-        and isinstance(adequacy, dict)
-        and adequacy.get("status") == "LIMITED"
-        and int(adequacy.get("confirmed_slots") or 0) > 0
-    )
-    if (not sample_complete and not sample_limited) or manifest is None:
+    if not coverage_is_final(report) or manifest is None:
         return DeliveryGate(
             False,
             "coverage_incomplete",

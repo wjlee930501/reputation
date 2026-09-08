@@ -19,7 +19,7 @@ from app.api.admin.operations_center_serializers import (
     sla_state,
 )
 from app.models.admin_user import AdminUser
-from app.models.handoff import HospitalHandoff
+from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRun
 from app.schemas.operations import (
@@ -29,6 +29,22 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
+
+#: 인수 처리 기한은 담당 AE의 **수락을 기다리는 동안**에만 뜻이 있다. 수락된 뒤의
+#: `sla_due_at`은 이미 지켜진 약속의 기록이므로 기한 초과로 읽으면 안 된다 — 한 화면
+#: 계약 등록은 수락 시각을 그대로 기한으로 남기므로, 상태를 보지 않으면 등록된 모든
+#: 병원이 온보딩 큐에서 기한 초과·HIGH로 뜬다.
+_PENDING_ACCEPTANCE_DUE_AT = case(
+    (HospitalHandoff.state == HandoffState.CONTRACTED, HospitalHandoff.sla_due_at),
+    else_=None,
+)
+
+
+def _pending_acceptance_due_at(handoff: HospitalHandoff | None) -> datetime | None:
+    """`_PENDING_ACCEPTANCE_DUE_AT`의 행 단위 판정 — 두 판정이 갈리면 안 된다."""
+    if handoff is None or handoff.state is not HandoffState.CONTRACTED:
+        return None
+    return handoff.sla_due_at
 
 
 async def load_onboarding_queue(
@@ -55,9 +71,9 @@ async def load_onboarding_queue(
     if filters.hospital_id is not None:
         predicates.append(Hospital.id == filters.hospital_id)
     owner_filter = owner_predicate(assignee, filters.owner)
-    sla_filter = sla_predicate(HospitalHandoff.sla_due_at, filters.sla, now)
+    sla_filter = sla_predicate(_PENDING_ACCEPTANCE_DUE_AT, filters.sla, now)
     severity = case(
-        (HospitalHandoff.sla_due_at < now, "HIGH"),
+        (_PENDING_ACCEPTANCE_DUE_AT < now, "HIGH"),
         else_="MEDIUM",
     )
     if owner_filter is not None:
@@ -81,7 +97,7 @@ async def load_onboarding_queue(
         .outerjoin(HospitalHandoff, HospitalHandoff.hospital_id == Hospital.id)
         .outerjoin(assignee, assignee.id == HospitalHandoff.ae_owner_id)
         .where(*predicates)
-        .order_by(HospitalHandoff.sla_due_at.asc().nullslast(), Hospital.created_at)
+        .order_by(_PENDING_ACCEPTANCE_DUE_AT.asc().nullslast(), Hospital.created_at)
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
@@ -119,12 +135,12 @@ async def load_onboarding_queue(
             ),
             status=hospital.status.value,
             severity="HIGH"
-            if sla_state(handoff.sla_due_at if handoff else None, now) == "OVERDUE"
+            if sla_state(_pending_acceptance_due_at(handoff), now) == "OVERDUE"
             else "MEDIUM",
             impact="필수 온보딩이 남아 있어 자동 콘텐츠 운영 준비가 완료되지 않았습니다.",
             owner=owner_projection(actor),
-            sla_due_at=handoff.sla_due_at if handoff else None,
-            sla_state=sla_state(handoff.sla_due_at if handoff else None, now),
+            sla_due_at=_pending_acceptance_due_at(handoff),
+            sla_state=sla_state(_pending_acceptance_due_at(handoff), now),
             next_action=(
                 "운영 센터의 “온보딩 계속”을 눌러 표시된 다음 단계의 저장 또는 승인을 "
                 f"완료하세요. 다음 단계: {next_onboarding_step(hospital)} "

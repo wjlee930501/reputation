@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   SAFE_CAUSE_CODE_MESSAGES,
+  assignAction,
   buildDevelopmentSupportSummary,
   canonicalizeOperationsQuery,
   createUserActionKey,
@@ -17,11 +18,13 @@ import {
   getOrCreateOperationsMutationKey,
   reportOperationsHref,
   interpretOperationsConflict,
+  mutationRequestBody,
   operationStatusLabel,
   partitionOperationsRows,
   primaryOperationsMutation,
   readOperationsQuery,
   requiresOperatorAction,
+  resolveOperationsDetail,
   runStateLabel,
   safeCauseText,
   selectCurrentAction,
@@ -269,7 +272,7 @@ test('customer-facing operation labels never expose raw backend states', () => {
   const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'REVIEW_PENDING', 'OVERDUE_REVIEW', 'WITHHELD_PUBLIC', 'MISSING', 'COVERAGE_INCOMPLETE', 'MANIFEST_MISMATCH', 'MANIFEST_OPEN', 'DOCTOR_ARTIFACT_MISSING', 'DOCTOR_ARTIFACT_INVALID', 'REPORT_BLOCKED', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
 
   assert.deepEqual(states.map(operationStatusLabel), [
-    '온보딩 진행 중', 'AI 진단 분석 중', '콘텐츠 허브 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
+    '온보딩 진행 중', '초기 진단 보고서 준비 중', '병원 공개 페이지 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
     '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '공개 보류', '지난달 보고서 미생성',
     '필수 측정 미완료', '측정 집계 연결 오류', '측정 집계 마감 대기', '원장 전달용 PDF 없음',
     '원장 전달용 PDF 검증 실패', '보고서 전달 차단', '원장 전달 검수 대기',
@@ -557,4 +560,170 @@ test('the detail panel shows who owns the task and when it is due', () => {
   assert.match(detail, /담당자 · 처리 기한/)
   assert.match(detail, /row\.owner\?\.name \?\? '미지정'/)
   assert.match(detail, /describeOperationsDeadline/)
+})
+
+test('each request body carries exactly the fields its route accepts', () => {
+  const input = { reason: ' 담당을 옮깁니다 ', expectedVersion: 4, ownerId: 'account-9', slaDueAt: '2026-09-10T00:00:00Z' }
+
+  assert.deepEqual(mutationRequestBody('RETRY_RUN', input), { reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('POST_ACTION', input), { reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('RECOVER_INCIDENT', input), { expected_version: 4, reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('ACK_INCIDENT', input), { expected_version: 4, reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('RETRY_SLACK', input), { expected_version: 4, reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('ASSIGN_INCIDENT', input), {
+    expected_version: 4,
+    reason: '담당을 옮깁니다',
+    owner_id: 'account-9',
+    // 담당 지정 라우트는 처리 기한도 함께 받는다. 빼면 요청이 거절되고 null로 보내면
+    // 남아 있던 기한이 지워지므로, 지금 기한을 그대로 다시 실어 보낸다.
+    sla_due_at: '2026-09-10T00:00:00Z',
+  })
+})
+
+test('clearing the owner is an explicit choice, not a missing field', () => {
+  assert.deepEqual(
+    mutationRequestBody('ASSIGN_INCIDENT', { reason: '담당 해제', expectedVersion: 2, ownerId: null, slaDueAt: null }),
+    { expected_version: 2, reason: '담당 해제', owner_id: null, sla_due_at: null },
+  )
+})
+
+test('the server decides which transition an incident can take right now', () => {
+  const incident = row('incident:9', {
+    queue: 'INCIDENTS',
+    status: 'RETRYING',
+    incident_id: 'incident-9',
+    version: 3,
+    action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1', enabled: true },
+    resolve: {
+      kind: 'RECOVER_INCIDENT', label: '복구 확인 완료', method: 'POST',
+      path: '/admin/operations/hospitals/hospital-1/incidents/incident-9/recover',
+      enabled: true, reason_required: true, requires_version: true,
+    },
+  })
+
+  const mutation = primaryOperationsMutation({ incident, run: null }, '복구를 확인했습니다')
+
+  assert.equal(mutation?.kind, 'RECOVER_INCIDENT')
+  assert.equal(mutation?.path, '/admin/operations/hospitals/hospital-1/incidents/incident-9/recover')
+  assert.equal(mutation?.version, 3)
+  assert.equal(mutation?.targetId, 'incident-9')
+})
+
+test('a transition the server has closed is not offered by the old client derivation', () => {
+  const blocked = row('incident:10', {
+    queue: 'INCIDENTS', status: 'RECOVERED', incident_id: 'incident-10', version: 5,
+    action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1', enabled: true },
+    resolve: {
+      kind: 'ACK_INCIDENT', label: '문제 확인 완료', method: 'POST',
+      path: '/admin/operations/hospitals/hospital-1/incidents/incident-10/ack',
+      enabled: false, reason_required: true, requires_version: true,
+    },
+  })
+
+  assert.equal(primaryOperationsMutation({ incident: blocked, run: null }, '확인했습니다'), null)
+})
+
+test('a response without the server transition still derives the acknowledgement', () => {
+  const legacy = row('incident:11', {
+    queue: 'INCIDENTS', status: 'RECOVERED', incident_id: 'incident-11', version: 7,
+    action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1', enabled: true },
+  })
+
+  const mutation = primaryOperationsMutation({ incident: legacy, run: null }, '확인했습니다')
+
+  assert.equal(mutation?.kind, 'ACK_INCIDENT')
+  assert.equal(mutation?.path, '/admin/operations/hospitals/hospital-1/incidents/incident-11/ack')
+  assert.equal(mutation?.version, 7)
+})
+
+test('the assignment form appears only where the server allows the assignment', () => {
+  const assign = {
+    kind: 'ASSIGN_INCIDENT', label: '담당 지정', method: 'POST' as const,
+    path: '/admin/operations/hospitals/hospital-1/incidents/incident-9/assign',
+    enabled: true, reason_required: true, requires_version: true,
+  }
+
+  assert.equal(assignAction(row('a', { assign }))?.path, assign.path)
+  assert.equal(assignAction(row('b', { assign: { ...assign, enabled: false } })), null)
+  assert.equal(assignAction(row('c')), null)
+})
+
+test('the detail panel assigns the owner instead of sending the operator elsewhere', () => {
+  const detail = readFileSync(new URL('../app/operations/OperationDetail.tsx', import.meta.url), 'utf8')
+
+  assert.match(detail, /assignable_accounts/)
+  assert.match(detail, /ASSIGN_INCIDENT/)
+  assert.match(detail, /담당 지정/)
+  // 문구는 화면마다 다시 쓰지 않는다 — 현황 카드와 같은 한 곳에서 가져온다(A3).
+  assert.match(detail, /actionDisabledReason\('ASSIGN_INCIDENT'\)/)
+  // 상세를 아직 못 읽었을 때는 권한 문제로 읽히지 않게 불러오는 중임을 말한다(A1).
+  assert.match(detail, /담당자 정보를 불러오는 중/)
+  assert.doesNotMatch(detail, /인수 대기열/)
+})
+
+test('깊은 링크는 접힌 묶음과 다음 쪽에서도 그 인시던트를 찾아간다', () => {
+  // 큐는 같은 원인을 대표 행 하나로 접고 쪽을 나눈다. 행 id가 그대로 맞기를 기대하면
+  // 다른 화면이 만든 `detail=incident:{id}` 링크는 조용히 아무것도 열지 못한다.
+  const single = row('incident:a-1', { incident_id: 'a-1' })
+  const grouped = row('cause:COST_LIMIT_EXHAUSTED', {
+    incident_id: 'b-1',
+    member_incident_ids: ['b-1', 'b-2'],
+  })
+  const rows = [single, grouped]
+
+  assert.deepEqual(resolveOperationsDetail('incident:a-1', rows, 'hospital-1'), {
+    kind: 'row',
+    row: single,
+  })
+  assert.deepEqual(resolveOperationsDetail('incident:b-2', rows, 'hospital-1'), {
+    kind: 'row',
+    row: grouped,
+  })
+  assert.deepEqual(resolveOperationsDetail('incident:c-9', rows, 'hospital-1'), {
+    kind: 'fetch',
+    hospitalId: 'hospital-1',
+    incidentId: 'c-9',
+  })
+  // 병원을 특정할 수 없으면 직접 읽을 주소를 만들 수 없다.
+  assert.deepEqual(resolveOperationsDetail('incident:c-9', rows, ''), { kind: 'none' })
+  // 인시던트가 아닌 행 id(리포트 등)는 예전처럼 정확히 맞을 때만 연다.
+  assert.deepEqual(resolveOperationsDetail('report:x:2026-09', rows, 'hospital-1'), {
+    kind: 'none',
+  })
+  assert.deepEqual(resolveOperationsDetail('', rows, 'hospital-1'), { kind: 'none' })
+})
+
+test('409는 경합·복구 미관측·예산 차단을 구분해 읽는다', () => {
+  // 전부 "다른 운영자가 먼저 변경했습니다"로 덮으면 운영자는 없는 경합을 찾다가
+  // 같은 버튼을 다시 누른다.
+  assert.match(
+    interpretOperationsConflict({ code: 'INCIDENT_RECOVERY_NOT_OBSERVED' }).message,
+    /연결된 작업이 아직 성공하지 않았습니다/,
+  )
+  assert.equal(
+    interpretOperationsConflict({
+      code: 'RETRY_BUDGET_EXHAUSTED',
+      message: '이 글의 재검수 예산을 이미 사용했습니다.',
+    }).message,
+    '이 글의 재검수 예산을 이미 사용했습니다.',
+  )
+  assert.match(
+    interpretOperationsConflict({
+      code: 'INCIDENT_VERSION_CONFLICT',
+      current_version: 4,
+      refetch_path: '/api/admin/operations/incidents/x',
+    }).message,
+    /다른 운영자가 먼저 변경했습니다/,
+  )
+  // 코드가 없는 옛 응답도 예전 문구 그대로다.
+  assert.match(interpretOperationsConflict({}).message, /다른 운영자가 먼저 변경했습니다/)
+})
+
+test('운영 센터 훅은 깊은 링크를 해석기 한 곳으로 처리한다', () => {
+  const hook = readFileSync(new URL('../app/operations/useOperationsCenter.ts', import.meta.url), 'utf8')
+
+  assert.match(hook, /resolveOperationsDetail\(/)
+  assert.match(hook, /loadIncidentById\(resolution\.hospitalId, resolution\.incidentId\)/)
+  // 작업 기록만 읽고 끝내면 상세가 담당 후보를 못 받아 담당 지정 폼을 그릴 수 없다.
+  assert.match(hook, /assignable_accounts: incident\?\.assignable_accounts \?\? \[\]/)
 })

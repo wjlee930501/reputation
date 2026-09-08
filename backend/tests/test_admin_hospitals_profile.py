@@ -275,7 +275,7 @@ def test_detail_serializes_visual_approval_missing():
     """상세와 목록이 같은 시각 승인 판정을 내려야 화면이 갈리지 않는다(O-2)."""
     hospital = _hospital()
 
-    detail = hospitals_api._serialize(hospital)
+    detail = hospitals_api.serialize_hospital_detail(hospital)
     listed = hospitals_api._serialize_list(
         hospital,
         readiness_state=EssenceReadinessState(

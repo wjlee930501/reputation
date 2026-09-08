@@ -182,18 +182,31 @@ def raise_incident_conflict(
             assert_never(unreachable)
 
 
+async def run_retry_enabled(
+    db: AsyncSession, actor: AdminUser | None, run: OperationRun
+) -> bool:
+    """이 요청자가 이 작업을 다시 시도할 수 있는가 — 재시도 라우트와 같은 판정.
+
+    요청자를 모르는 호출(기존 경로)에서는 예전처럼 열어 둔다. 화면이 이 값을 그대로
+    버튼의 활성 여부로 쓰므로, 서버 인가와 갈리면 눌러야 알 수 있는 403이 된다.
+    """
+
+    if actor is None or actor.role == ROLE_OWNER:
+        return True
+    return bool(
+        await db.scalar(
+            select(func.count(Incident.id)).where(
+                Incident.operation_run_id == run.id,
+                Incident.owner_id == actor.id,
+            )
+        )
+    )
+
+
 async def authorize_run_retry(db: AsyncSession, actor: AdminUser, run: OperationRun) -> None:
     """Allow a retry to an owner or the assignee of the linked incident."""
 
-    if actor.role == ROLE_OWNER:
-        return
-    assigned = await db.scalar(
-        select(func.count(Incident.id)).where(
-            Incident.operation_run_id == run.id,
-            Incident.owner_id == actor.id,
-        )
-    )
-    if not assigned:
+    if not await run_retry_enabled(db, actor, run):
         raise operations_error(
             403,
             "ASSIGNEE_OR_OWNER_REQUIRED",

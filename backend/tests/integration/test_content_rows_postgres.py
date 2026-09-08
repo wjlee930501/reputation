@@ -138,12 +138,20 @@ async def _content(
     return item
 
 
-async def _incident(db, hospital: Hospital, item: ContentItem) -> Incident:
+async def _incident(
+    db,
+    hospital: Hospital,
+    item: ContentItem,
+    *,
+    state: str = "OPEN",
+    sla_due_at: datetime | None = None,
+) -> Incident:
     incident = Incident(
         hospital_id=hospital.id,
         dedupe_key=f"qa:{uuid.uuid4()}",
         incident_type="PROVIDER_TIMEOUT",
-        state="OPEN",
+        state=state,
+        sla_due_at=sla_due_at,
         severity=IncidentSeverity.HIGH,
         customer_impact="오늘 콘텐츠 초안 생성이 멈췄습니다.",
         source_type="content_item",
@@ -159,25 +167,32 @@ async def _incident(db, hospital: Hospital, item: ContentItem) -> Incident:
 
 
 async def _failed_run(
-    db, hospital: Hospital, item: ContentItem, operation_type: str
+    db,
+    hospital: Hospital,
+    item: ContentItem,
+    operation_type: str,
+    *,
+    state: str = OperationRunState.FAILED.value,
+    requested_at: datetime | None = None,
 ) -> OperationRun:
+    succeeded = state == OperationRunState.SUCCEEDED.value
     run = OperationRun(
         hospital_id=hospital.id,
         operation_type=operation_type,
-        state=OperationRunState.FAILED.value,
+        state=state,
         idempotency_key=f"qa:{uuid.uuid4()}",
         request_payload=build_request_payload(
             DispatchPayload("content_item", str(item.id), "content", (str(item.id),))
         ),
         attempt_count=1,
         total_count=1,
-        success_count=0,
-        failure_count=1,
+        success_count=1 if succeeded else 0,
+        failure_count=0 if succeeded else 1,
         skipped_count=0,
-        safe_error_code="CONTENT_IMAGE_NOT_VERIFIED",
-        safe_error_message="대표 이미지 인증이 만료됐습니다.",
-        requested_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
+        safe_error_code=None if succeeded else "CONTENT_IMAGE_NOT_VERIFIED",
+        safe_error_message=None if succeeded else "대표 이미지 인증이 만료됐습니다.",
+        requested_at=requested_at or datetime.now(UTC),
+        completed_at=requested_at or datetime.now(UTC),
         version=1,
     )
     db.add(run)
@@ -217,14 +232,17 @@ async def _seed_month(db, hospital: Hospital) -> dict[str, ContentItem]:
     )
     # 초안 두 건은 열린 인시던트로 막혔고, 공개 보류 글은 이미지 재인증 실행이 실패했다.
     # 초안 1건에는 실패한 재생성 실행도 같이 있다 — 사람에게는 인시던트가 먼저다.
-    await _incident(db, hospital, drafts[0])
-    await _incident(db, hospital, drafts[1])
+    incidents = [
+        await _incident(db, hospital, drafts[0]),
+        await _incident(db, hospital, drafts[1]),
+    ]
     await _failed_run(db, hospital, drafts[0], "REGENERATE_CONTENT")
     await _failed_run(db, hospital, withheld, "RECERTIFY_PUBLISHED_IMAGE")
     return {
         "published": published,
         "withheld": withheld,
         "drafts": drafts,
+        "incidents": incidents,
         "rejected": rejected,
         "cancelled": cancelled,
     }
@@ -251,17 +269,19 @@ async def test_every_row_carries_the_site_judgment_and_its_block_link(pg_async_s
     assert withheld["label"] == "공개 보류"
     assert withheld["reason"] == "대표 이미지 재인증 대기"
     assert withheld["link"]["kind"] == "run"
-    assert withheld["link"]["href"].startswith(f"/operations/hospitals/{hospital.id}/runs/")
+    # run 전용 화면은 없다 — 그 병원의 인시던트 큐로 보낸다.
+    assert withheld["link"]["href"] == f"/operations?queue=incidents&hospital_id={hospital.id}"
     assert withheld["link"]["next_action"] == "대표 이미지 인증이 만료됐습니다."
 
-    for draft in seeded["drafts"]:
+    for draft, incident in zip(seeded["drafts"], seeded["incidents"], strict=True):
         state = rows[str(draft.id)]["row_state"]
         assert state["kind"] == "blocked"
         assert state["label"] == "차단"
         # 인시던트가 실패한 실행보다 앞선다 — 사람이 읽을 조치 문장이 거기에 있다.
         assert state["link"]["kind"] == "incident"
-        assert state["link"]["href"].startswith(
-            f"/operations/hospitals/{hospital.id}/incidents/"
+        assert state["link"]["href"] == (
+            f"/operations?queue=incidents&hospital_id={hospital.id}"
+            f"&detail=incident:{incident.id}"
         )
         assert state["reason"] == "작업을 다시 시도해 주세요."
 
@@ -297,6 +317,134 @@ async def test_a_paused_hospitals_published_rows_are_withheld_with_the_hospital_
     }
     assert row["row_state"]["kind"] == "withheld"
     assert row["row_state"]["reason"] == "병원 공개 서비스 중이 아님"
+
+
+async def test_retrying_incident_inside_its_window_is_not_operator_work(pg_async_session):
+    """약속한 시간 안에서 재시도 중인 인시던트는 자동 복구다 — 행을 차단으로 만들지 않는다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "자동 복구 의원")
+    _, upcoming, _ = _month_bounds()
+    draft = await _content(db, hospital, status=ContentStatus.DRAFT, scheduled_date=upcoming)
+    await _incident(
+        db,
+        hospital,
+        draft,
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) + timedelta(hours=2),
+    )
+
+    state = (await _rows(db, hospital))[str(draft.id)]["row_state"]
+
+    assert state["kind"] == "scheduled"
+    assert state["link"] is None
+
+
+async def test_retrying_incident_past_its_deadline_becomes_operator_work(pg_async_session):
+    """약속한 시각이 지나도 안 풀린 재시도는 사람의 할 일이다 — 큐와 같은 기준."""
+    db = pg_async_session
+    hospital = await _hospital(db, "기한 초과 의원")
+    _, upcoming, _ = _month_bounds()
+    draft = await _content(db, hospital, status=ContentStatus.DRAFT, scheduled_date=upcoming)
+    incident = await _incident(
+        db,
+        hospital,
+        draft,
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+
+    state = (await _rows(db, hospital))[str(draft.id)]["row_state"]
+
+    assert state["kind"] == "blocked"
+    assert state["link"]["href"] == (
+        f"/operations?queue=incidents&hospital_id={hospital.id}&detail=incident:{incident.id}"
+    )
+
+
+async def test_a_failed_run_stays_quiet_while_a_retrying_incident_owns_it(pg_async_session):
+    """자동 복구가 아직 쥔 실패 run은 행을 차단으로 만들지 않는다 (Astra B4).
+
+    첫 일시 실패는 쿨다운 뒤 스윕이 다시 집어 간다. 그동안 인시던트는 기한 안의
+    RETRYING이고, 실패 run만 보고 "운영 센터에서 조치"를 띄우면 기계가 소유한 복구가
+    사람의 할 일로 새어 나간다.
+    """
+    db = pg_async_session
+    hospital = await _hospital(db, "쿨다운 의원")
+    _, upcoming, _ = _month_bounds()
+    draft = await _content(db, hospital, status=ContentStatus.DRAFT, scheduled_date=upcoming)
+    await _failed_run(db, hospital, draft, "REGENERATE_CONTENT")
+    await _incident(
+        db,
+        hospital,
+        draft,
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) + timedelta(hours=2),
+    )
+
+    state = (await _rows(db, hospital))[str(draft.id)]["row_state"]
+
+    assert state["kind"] == "scheduled"
+    assert state["link"] is None
+
+
+async def test_a_failed_run_with_an_open_incident_links_to_the_incident(pg_async_session):
+    """열린 인시던트가 있으면 그 인시던트가 링크다 — run 대체 링크는 중복이다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "열린 사고 의원")
+    _, upcoming, _ = _month_bounds()
+    draft = await _content(db, hospital, status=ContentStatus.DRAFT, scheduled_date=upcoming)
+    await _failed_run(db, hospital, draft, "REGENERATE_CONTENT")
+    incident = await _incident(db, hospital, draft)
+
+    state = (await _rows(db, hospital))[str(draft.id)]["row_state"]
+
+    assert state["kind"] == "blocked"
+    assert state["link"]["kind"] == "incident"
+    assert state["link"]["href"] == (
+        f"/operations?queue=incidents&hospital_id={hospital.id}&detail=incident:{incident.id}"
+    )
+    assert state["reason"] == "작업을 다시 시도해 주세요."
+
+
+async def test_a_failed_run_without_any_incident_still_links_to_the_run(pg_async_session):
+    """인시던트가 아예 없는 실패는 사람이 볼 수 있는 유일한 흔적이다 — 그것마저 지우지 않는다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "사고 없는 실패 의원")
+    _, upcoming, _ = _month_bounds()
+    draft = await _content(db, hospital, status=ContentStatus.DRAFT, scheduled_date=upcoming)
+    await _failed_run(db, hospital, draft, "REGENERATE_CONTENT")
+
+    state = (await _rows(db, hospital))[str(draft.id)]["row_state"]
+
+    assert state["kind"] == "blocked"
+    assert state["link"]["kind"] == "run"
+    assert state["link"]["href"] == f"/operations?queue=incidents&hospital_id={hospital.id}"
+    assert state["link"]["next_action"] == "대표 이미지 인증이 만료됐습니다."
+
+
+async def test_a_superseded_failed_run_does_not_block_a_healthy_draft(pg_async_session):
+    """실패 뒤에 성공한 재시도가 있으면 지난 실패는 이미 지나간 일이다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "복구 완료 의원")
+    _, upcoming, _ = _month_bounds()
+    draft = await _content(db, hospital, status=ContentStatus.DRAFT, scheduled_date=upcoming)
+    now = datetime.now(UTC)
+    await _failed_run(
+        db, hospital, draft, "REGENERATE_CONTENT", requested_at=now - timedelta(hours=3)
+    )
+    await _failed_run(
+        db,
+        hospital,
+        draft,
+        "REGENERATE_CONTENT",
+        state=OperationRunState.SUCCEEDED.value,
+        requested_at=now - timedelta(hours=1),
+    )
+
+    state = (await _rows(db, hospital))[str(draft.id)]["row_state"]
+
+    assert state["kind"] == "scheduled"
+    assert state["link"] is None
 
 
 async def test_block_links_do_not_leak_to_other_rows_or_hospitals(pg_async_session):

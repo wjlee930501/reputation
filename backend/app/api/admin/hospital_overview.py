@@ -16,9 +16,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.admin.operations_center_actions import require_operations_account
 from app.api.admin.operations_center_incident_queries import load_operator_incident_groups
+from app.api.admin.operations_center_serializers import incident_actions
 from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
+from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, monthly_quota_for_plan
 from app.models.hospital import Hospital
 from app.schemas.hospital_overview import (
@@ -50,13 +53,22 @@ _DOMAIN_LABELS = {
 # 다시 쓰면 "자동 진행 중인 일"이 운영자의 할 일 링크로 새어 나간다 — 링크는 사람 몫에만
 # 붙인다. (`{hospital_id}`는 아래에서 채운다.)
 _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
-    "profile_complete": ("필수 병원 정보 입력", "human", "/hospitals/{hospital_id}/profile"),
+    # 링크는 실제로 그 값을 채우는 칸으로 보낸다. 화면 위쪽만 가리키면 사람이 다시 찾는다.
+    "profile_complete": (
+        "필수 병원 정보 입력",
+        "human",
+        "/hospitals/{hospital_id}/info#info-director",
+    ),
     "site_built": ("공개 페이지 준비", "system", None),
-    "schedule": ("발행 요일 설정", "human", "/hospitals/{hospital_id}/schedule"),
+    "schedule": ("발행 요일 설정", "human", "/hospitals/{hospital_id}/content#content-schedule"),
     "sources": ("근거 자료 처리 {count}건", "system", None),
     "essence_review": ("콘텐츠 운영 기준 자동 검수", "system", None),
     # 자료가 하나도 없으면 자동 검수가 기다리기만 한다 — 사람이 채워야 다음이 있다.
-    "sources_required": ("공식 채널·근거 자료 등록", "human", "/hospitals/{hospital_id}/profile"),
+    "sources_required": (
+        "공식 채널·근거 자료 등록",
+        "human",
+        "/hospitals/{hospital_id}/info#info-channels",
+    ),
     # 재개는 헤더의 버튼이 한다. 조건 줄에 링크를 붙이면 같은 일이 두 곳이 된다.
     "service_paused": ("서비스 재개", "human", None),
     "public_service": ("공개 서비스 시작 후 자동 발행", "system", None),
@@ -89,30 +101,59 @@ async def _get_or_404(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
     return hospital
 
 
-async def _incident_cards(db: AsyncSession, hospital_id: uuid.UUID) -> list[ExceptionCard]:
+def _operations_href(hospital_id: uuid.UUID, row_id: str) -> str:
+    """운영 센터에서 이 행 하나를 펼친 상태의 주소.
+
+    운영 센터 화면은 `detail` 질의값을 큐 행의 `id`와 그대로 맞춰 본다
+    (`admin/app/operations/useOperationsCenter.ts`). 그래서 백엔드가 만든 행 id를
+    그대로 싣는다 — 단건은 `incident:<id>`, 같은 원인 묶음은 `cause:<key>`다.
+    """
+    return f"/operations?queue=incidents&hospital_id={hospital_id}&detail={row_id}"
+
+
+async def _incident_cards(
+    db: AsyncSession, hospital_id: uuid.UUID, actor: AdminUser
+) -> list[ExceptionCard]:
     """운영 센터 인시던트 큐를 이 병원으로 좁혀 그대로 읽는다.
 
     현황 화면이 자기만의 인시던트 SQL을 쓰면 운영 센터와 다른 목록·다른 허용 행동을
-    보여준다. 행동은 서버가 지금 허용한 것만 싣는다 — 비활성 행동을 버튼으로 만들면
-    누르는 순간 실패한다.
+    보여준다. 행동 서술자도 운영 센터의 직렬화가 만든 것을 그대로 싣는다 — 요청 actor의
+    권한까지 서버가 판정하므로 화면이 인가 규칙을 다시 쓰지 않는다.
 
     자동 복구 중인 건(`requires_operator_action=False`)은 카드로 만들지 않는다 —
     약속한 재시도 창이 남은 RETRYING은 AE의 할 일이 아니다. 병원 목록의 예외 수도
     같은 파이프라인(`count_operator_incidents`)의 묶음 수이므로 두 화면의 숫자가 같다.
     """
-    rows = await load_operator_incident_groups(db, hospital_id, now=datetime.now(UTC))
-    return [
-        ExceptionCard(
-            kind="incident",
-            id=str(row.incident_id or row.id),
-            title=row.impact,
-            evidence=row.safe_cause or row.cause_message,
-            next_action=row.next_action,
-            allowed_actions=[row.action.kind] if row.action and row.action.enabled else [],
-            href=row.action.path,
+    rows = await load_operator_incident_groups(
+        db, hospital_id, now=datetime.now(UTC), actor=actor
+    )
+    cards: list[ExceptionCard] = []
+    for row in rows:
+        href = _operations_href(hospital_id, row.id)
+        # 여는 링크(GET)만 화면 라우트로 바꾼다. 나머지는 BFF mutation 경로 그대로다.
+        actions = [
+            action.model_copy(update={"path": href}) if action.method == "GET" else action
+            for action in incident_actions(row)
+        ]
+        cards.append(
+            ExceptionCard(
+                kind="incident",
+                id=str(row.incident_id or row.id),
+                title=row.impact,
+                evidence=row.safe_cause or row.cause_message,
+                next_action=row.next_action,
+                allowed_actions=[action.kind for action in actions if action.enabled],
+                href=href,
+                hospital_id=hospital_id,
+                incident_id=row.incident_id,
+                operation_run_id=row.operation_run_id,
+                content_id=row.content_id,
+                version=row.version,
+                same_type_count=row.same_type_count,
+                actions=actions,
+            )
         )
-        for row in rows
-    ]
+    return cards
 
 
 def _escalated_draft_card(
@@ -123,6 +164,9 @@ def _escalated_draft_card(
 
     초안과 사유는 상태 판정과 같은 묶음 조회(`get_essence_readiness_states`)가 이미 읽었다 —
     여기서 다시 조회하면 같은 JSONB 필터가 두 벌이 되고 쿼리도 하나 더 나간다.
+
+    `actions`는 비운다 — 재검수·예외 승인은 운영 센터의 인시던트 mutation이 아니라
+    essence 라우트이고, 카드가 그 폼(사유 길이·근거 확인)을 직접 다룬다.
     """
     if readiness.escalated_draft_id is None or not readiness.escalated_draft_findings:
         return None
@@ -134,6 +178,8 @@ def _escalated_draft_card(
         next_action="초안을 고쳐 재검수를 받거나, 확인한 근거를 적어 예외 승인하세요.",
         allowed_actions=list(_ESCALATED_DRAFT_ACTIONS),
         href=f"/hospitals/{hospital_id}/essence",
+        hospital_id=hospital_id,
+        actions=[],
     )
 
 
@@ -206,8 +252,12 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
 async def get_hospital_overview(
     hospital_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    actor: AdminUser = Depends(require_operations_account),
 ) -> HospitalOverviewResponse:
-    """현황 화면 한 장을 채우는 유일한 호출."""
+    """현황 화면 한 장을 채우는 유일한 호출.
+
+    예외 카드의 행동 가능 여부는 요청한 운영자에 달렸으므로 actor를 확인한다.
+    """
     hospital = await _get_or_404(db, hospital_id)
     readiness = (await get_essence_readiness_states(db, [hospital_id]))[hospital_id]
 
@@ -221,7 +271,7 @@ async def get_hospital_overview(
     )
     domain = domain_state(hospital)
 
-    exceptions = await _incident_cards(db, hospital_id)
+    exceptions = await _incident_cards(db, hospital_id, actor)
     draft_card = _escalated_draft_card(hospital_id, readiness)
     if draft_card is not None:
         exceptions.append(draft_card)

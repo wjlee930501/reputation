@@ -66,16 +66,21 @@ def content_row_state(
     if status_value == ContentStatus.REJECTED.value:
         return RowState("generating", "야간 재생성 대기", None)
 
+    scheduled_date = getattr(item, "scheduled_date", None)
+    overdue = scheduled_date is not None and scheduled_date < today
     if not (getattr(item, "title", None) or "").strip() or not (
         getattr(item, "body", None) or ""
     ).strip():
+        if overdue:
+            # 전날 23:00 자동 생성이 지나갔는데 본문이 없다. "생성 중"으로 두면 이미
+            # 놓친 날짜가 앞으로 알아서 처리될 일처럼 보인다.
+            return RowState("blocked", "발행일이 지났지만 아직 생성되지 않았습니다.", None)
         return RowState("generating", "발행 전날 23:00 자동 생성", None)
 
     if compliance_blockers:
         return RowState("blocked", blockers_text, None)
 
-    scheduled_date = getattr(item, "scheduled_date", None)
-    if scheduled_date is not None and scheduled_date < today:
+    if overdue:
         # 08:00 자동 공개가 지나갔는데 아직 초안이다. "예정"으로 두면 이미 놓친 날짜가
         # 앞으로 처리될 일처럼 보인다.
         return RowState("blocked", "발행일이 지났지만 아직 공개되지 않았습니다.", None)

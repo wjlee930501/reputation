@@ -248,7 +248,7 @@ async def test_verify_domain_blocks_live_without_profile_complete(
 @pytest.mark.parametrize(
     "overrides,expected_label",
     [
-        ({"site_built": False}, "콘텐츠 허브 준비"),
+        ({"site_built": False}, "병원 공개 페이지 준비"),
     ],
 )
 async def test_verify_domain_blocks_live_without_prerequisites(

@@ -177,7 +177,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
 
   // 커스텀 도메인 없음: 기본 주소 또는 미설정 (site_live/site_built 사용)
   if (hospital.site_built || hospital.site_live) {
-    const slug = normalizedDomain(hospital.slug) || 'slug'
+    const slug = normalizedDomain(hospital.slug) || '주소-미정'
     return {
       label: '기본 주소',
       detail: `${slug}.${platformSiteHost()}`,

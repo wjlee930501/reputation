@@ -118,8 +118,8 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
           <dl className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Count label="약정 미달" value={report.contentOperations.shortfallCount} />
             <Count label="발행 예정 콘텐츠" value={report.contentOperations.scheduledSlotCount} />
-            <Count label="사후검수 완료" value={report.contentOperations.reviewedCount} />
-            <Count label="사후검수 대기" value={report.contentOperations.pendingReviewCount} />
+            <Count label="공개 후 확인 완료" value={report.contentOperations.reviewedCount} />
+            <Count label="공개 후 확인 대기" value={report.contentOperations.pendingReviewCount} />
           </dl>
           <details className="mt-4 rounded-lg bg-[var(--color-revisit-coolgrey-90)] p-3">
             <summary className="flex min-h-11 cursor-pointer items-center font-bold text-[var(--color-revisit-text-title)]">발행 상태와 검수 기준 확인</summary>
@@ -133,7 +133,7 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
                 </p>
               </div>
               <div>
-                <p className="font-bold">필수 사후검수 샘플</p>
+                <p className="font-bold">필수 공개 후 확인 표본</p>
                 <p className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
                   대상 {report.contentOperations.requiredReviewCount}건 · 완료 {report.contentOperations.reviewedCount}건 · 대기 {report.contentOperations.pendingReviewCount}건 · 기한 지남 {report.contentOperations.overdueReviewCount}건
                 </p>

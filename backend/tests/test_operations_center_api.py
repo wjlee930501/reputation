@@ -447,3 +447,151 @@ def test_same_cause_incidents_collapse_with_distinct_hospital_count() -> None:
     assert grouped[0].id == "cause:COST_LIMIT_EXHAUSTED:sov"
     assert grouped[0].same_type_count == 3
     assert grouped[0].affected_hospital_count == 2
+
+
+def _operator(role: str, *, user_id: uuid.UUID | None = None):
+    from app.models.admin_user import AdminUser
+
+    return AdminUser(
+        id=user_id or uuid.uuid4(),
+        email=f"{uuid.uuid4().hex}@example.test",
+        name="운영자",
+        role=role,
+        password_hash="not-a-real-hash",
+        is_active=True,
+    )
+
+
+def _failed_run(hospital_id: uuid.UUID):
+    from app.models.operations import OperationRun
+
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="REGENERATE_CONTENT",
+        state="FAILED",
+        request_payload={},
+    )
+
+
+def test_incident_row_actions_follow_the_authorization_the_routes_enforce() -> None:
+    """행이 싣는 행동의 활성 여부 = `require_owner`·`authorize_run_retry`의 답."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+    from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER
+
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="지연")
+    run = _failed_run(incident.hospital_id)
+    assignee = _operator(ROLE_OPERATOR)
+    incident.owner_id = assignee.id
+
+    owner_row = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=_operator(ROLE_OWNER)
+    )
+    assignee_row = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=assignee
+    )
+    stranger_row = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=_operator(ROLE_OPERATOR)
+    )
+
+    assert owner_row.assign is not None
+    assert owner_row.assign.kind == "ASSIGN_INCIDENT"
+    assert owner_row.assign.requires_version is True
+    assert owner_row.assign.reason_required is True
+    assert owner_row.assign.enabled is True
+    # 담당 지정은 OWNER 전용이지만, 재시도는 담당자에게도 열려 있다.
+    assert assignee_row.assign is not None and assignee_row.assign.enabled is False
+    assert assignee_row.retry is not None and assignee_row.retry.enabled is True
+    assert stranger_row.retry is not None and stranger_row.retry.enabled is False
+
+
+def test_incident_row_without_a_known_actor_keeps_the_previous_contract() -> None:
+    """요청자를 모르는 호출(배치·기존 경로)은 인가에 달린 행동을 만들지 않는다."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="지연")
+    run = _failed_run(incident.hospital_id)
+
+    row = serialize_incident_row(incident, None, None, run, None, incident.last_seen_at)
+
+    assert row.assign is None
+    assert row.resolve is None
+    assert row.retry is not None and row.retry.enabled is True
+
+
+def test_recovery_confirmation_waits_for_the_linked_run_to_succeed() -> None:
+    """복구 확인은 연결 작업 성공이 관측돼야 서버가 받는다 — 버튼도 그때 켜진다."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+    from app.models.admin_user import ROLE_OWNER
+
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="지연")
+    incident.state = "RETRYING"
+    run = _failed_run(incident.hospital_id)
+    owner = _operator(ROLE_OWNER)
+
+    while_failing = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=owner
+    )
+    run.state = "SUCCEEDED"
+    after_success = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=owner
+    )
+    incident.state = "RECOVERED"
+    recovered = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=owner
+    )
+
+    assert while_failing.resolve is not None
+    assert while_failing.resolve.kind == "RECOVER_INCIDENT"
+    assert while_failing.resolve.enabled is False
+    assert after_success.resolve is not None and after_success.resolve.enabled is True
+    assert after_success.resolve.path.endswith("/recover")
+    assert recovered.resolve is not None
+    assert recovered.resolve.kind == "ACK_INCIDENT"
+    assert recovered.resolve.enabled is True
+
+
+def test_run_projection_retry_follows_the_same_authorization_as_the_route() -> None:
+    """화면은 행의 `retry`보다 작업 상세의 `retry`를 우선한다.
+
+    그 자리를 언제나 활성으로 내보내면 상세 화면만 서버보다 관대해지고, 담당이 아닌
+    운영자는 눌러야 403을 알게 된다.
+    """
+    from app.api.admin.operations_center_serializers import run_summary
+
+    run = _failed_run(uuid.uuid4())
+    run.attempt_count = run.total_count = run.success_count = 0
+    run.failure_count = run.skipped_count = 0
+    run.requested_at = datetime(2026, 9, 9, tzinfo=UTC)
+    run.version = 1
+
+    allowed = run_summary(run.hospital_id, run, retry_enabled=True)
+    blocked = run_summary(run.hospital_id, run, retry_enabled=False)
+
+    assert allowed is not None and allowed.retry is not None
+    assert allowed.retry.enabled is True
+    assert blocked is not None and blocked.retry is not None
+    assert blocked.retry.enabled is False
+
+
+async def test_run_retry_enabled_matches_owner_and_assignee_only() -> None:
+    """`authorize_run_retry`와 같은 판정 하나를 화면과 라우트가 나눠 쓴다."""
+    from app.api.admin.operations_center_actions import run_retry_enabled
+    from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER
+
+    run = _failed_run(uuid.uuid4())
+    assignee = _operator(ROLE_OPERATOR)
+    stranger = _operator(ROLE_OPERATOR)
+
+    class _AssignedOnlyDB:
+        async def scalar(self, statement):
+            bound = statement.compile().params.values()
+            return 1 if assignee.id in bound else 0
+
+    db = _AssignedOnlyDB()
+
+    assert await run_retry_enabled(db, _operator(ROLE_OWNER), run) is True
+    assert await run_retry_enabled(db, assignee, run) is True
+    assert await run_retry_enabled(db, stranger, run) is False
+    # 요청자를 모르는 호출(배치·기존 경로)은 예전 계약 그대로 열어 둔다.
+    assert await run_retry_enabled(db, None, run) is True

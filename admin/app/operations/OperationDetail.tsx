@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 
 import {
+  assignAction,
   buildDevelopmentSupportSummary,
   describeOperationsDeadline,
   knownSafeCause,
@@ -16,6 +17,7 @@ import {
   slackStateLabel,
   type OperationsMutationDescriptor,
 } from '@/lib/operations-center'
+import { actionDisabledReason } from '@/lib/status-screen'
 import type { OperationsIncidentDetail, OperationsQueueRow } from '@/types'
 
 export type OperationMutation = OperationsMutationDescriptor | {
@@ -58,6 +60,7 @@ function mutationLabel(mutation: OperationMutation): string {
     case 'RETRY_RUN': return '작업 다시 시도'
     case 'RECOVER_INCIDENT': return '복구 확인 완료'
     case 'ACK_INCIDENT': return '문제 확인 완료'
+    case 'ASSIGN_INCIDENT': return mutation.label
     case 'POST_ACTION': return mutation.label
     case 'RETRY_SLACK': return 'Slack 다시 보내기'
   }
@@ -66,11 +69,16 @@ function mutationLabel(mutation: OperationMutation): string {
 export function OperationDetail(props: Props) {
   const { detail, fallback, busy, error, permissionDenied, onClose, onMutate, checkedAt } = props
   const [reason, setReason] = useState('')
+  const [assignReason, setAssignReason] = useState('')
+  /** null이면 아직 고르지 않았다는 뜻 — 지금 담당자를 그대로 보여준다. */
+  const [ownerId, setOwnerId] = useState<string | null>(null)
   const [copyStatus, setCopyStatus] = useState('')
   const copyButton = useRef<HTMLButtonElement>(null)
   const row = detail?.incident ?? fallback
   useEffect(() => {
     setReason('')
+    setAssignReason('')
+    setOwnerId(null)
     setCopyStatus('')
   }, [row?.id])
   useEffect(() => {
@@ -96,6 +104,13 @@ export function OperationDetail(props: Props) {
   } : null
   const mutation = primaryOperationsMutation(effectiveDetail, reason) ?? slackRetry
   const directLink = !mutation && isOperatorNavigation(row)
+  // 담당 지정은 서버가 열어 준 행에서만, 고를 수 있는 계정을 함께 받은 상세에서만 그린다.
+  const assign = assignAction(row)
+  // undefined는 "아직 못 읽었다", 빈 배열은 "읽었고 고를 계정이 없다"이다. 둘을 섞으면
+  // 불러오는 중인 화면이 "OWNER만 할 수 있습니다"로 보여 권한 문제처럼 읽힌다.
+  const assignableAccounts = effectiveDetail.assignable_accounts
+  const accountsPending = assignableAccounts === undefined
+  const assignLabel = row.owner ? '담당 변경' : '담당 지정'
   const deadline = describeOperationsDeadline(row, checkedAt, formatDate)
   const waitUntil = slack?.state === 'RETRYING' && slack.next_attempt_at
     ? `${formatDate(slack.next_attempt_at)}까지`
@@ -148,7 +163,7 @@ export function OperationDetail(props: Props) {
         </p>
         {!row.owner && (
           <p className="ops-readable mt-1 text-xs leading-5 text-slate-500">
-            이 병원의 계약 인수에 담당 AE가 지정되지 않았습니다. 인수 대기열에서 담당자를 먼저 지정해 주세요.
+            이 병원의 계약 인수에 담당 AE가 없어 자동 배정되지 않았습니다. 여기서 담당을 지정하세요.
           </p>
         )}
         <p
@@ -162,6 +177,49 @@ export function OperationDetail(props: Props) {
         >
           {deadline.text}
         </p>
+        {assign && assignableAccounts !== undefined && assignableAccounts.length > 0 ? (
+          <div className="mt-3">
+            <label className="block text-xs font-semibold text-slate-600" htmlFor="ops-assign-owner">담당 계정</label>
+            <select
+              id="ops-assign-owner"
+              value={ownerId ?? row.owner?.id ?? ''}
+              onChange={(event) => setOwnerId(event.target.value)}
+              className="ops-control mt-1 w-full rounded-lg border border-slate-300 px-3 text-sm"
+            >
+              <option value="">담당 없음</option>
+              {(assignableAccounts ?? []).map((account) => (
+                <option key={account.id} value={account.id}>{account.name} · {account.email}</option>
+              ))}
+            </select>
+            <label className="mt-2 block text-xs font-semibold text-slate-600" htmlFor="ops-assign-reason">담당 지정 사유</label>
+            <textarea id="ops-assign-reason" value={assignReason} onChange={(event) => setAssignReason(event.target.value)} rows={2} maxLength={200} placeholder="3자 이상 기록해 주세요" className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" />
+            <button
+              type="button"
+              disabled={busy || assignReason.trim().length < 3}
+              onClick={() => onMutate({
+                kind: 'ASSIGN_INCIDENT',
+                path: assign.path,
+                targetId: row.incident_id ?? row.id,
+                version: row.version,
+                reason: assignReason,
+                label: assignLabel,
+                requiresIdempotencyKey: false,
+                ownerId: (ownerId ?? row.owner?.id ?? '') || null,
+                // 담당만 바꾸는 자리다. 지금 처리 기한을 그대로 다시 보내 지워지지 않게 한다.
+                slaDueAt: row.sla_due_at,
+              })}
+              className="ops-control mt-2 w-full rounded-lg border border-blue-300 bg-blue-50 px-4 text-sm font-bold text-blue-800 disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {busy ? '서버 확인 중…' : assignLabel}
+            </button>
+          </div>
+        ) : row.assign && accountsPending ? (
+          <p className="ops-readable mt-2 text-xs leading-5 text-slate-500">담당자 정보를 불러오는 중</p>
+        ) : row.assign ? (
+          <p className="ops-readable mt-2 text-xs leading-5 text-slate-500">
+            {actionDisabledReason('ASSIGN_INCIDENT')}
+          </p>
+        ) : null}
       </section>
 
       <section className="ops-detail-section">

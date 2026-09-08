@@ -70,6 +70,16 @@ resource "google_secret_manager_secret" "admin_session_secret" {
   }
 }
 
+# H-10: Admin BFF가 세션 인증 뒤 "누가 이 변경을 요청했는지"를 서명할 HMAC 키.
+# API와 Admin 두 서비스가 같은 값을 읽어야 백엔드가 그 서명을 검증할 수 있다.
+resource "google_secret_manager_secret" "bff_actor_secret" {
+  secret_id = "BFF_ACTOR_SECRET"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 resource "google_secret_manager_secret" "db_password" {
   secret_id = "DB_PASSWORD"
   project   = var.project_id
@@ -151,6 +161,7 @@ locals {
     ADMIN_SECRET_KEY         = google_secret_manager_secret.admin_secret_key.secret_id
     WORKER_DISPATCH_SECRET   = google_secret_manager_secret.worker_dispatch_secret.secret_id
     ADMIN_SESSION_SECRET     = google_secret_manager_secret.admin_session_secret.secret_id
+    BFF_ACTOR_SECRET         = google_secret_manager_secret.bff_actor_secret.secret_id
     DB_PASSWORD              = google_secret_manager_secret.db_password.secret_id
     SITE_REVALIDATE_SECRET   = google_secret_manager_secret.site_revalidate_secret.secret_id
     SITE_BFF_SECRET          = google_secret_manager_secret.site_bff_secret.secret_id
@@ -165,6 +176,8 @@ locals {
   admin_secret_env = {
     ADMIN_SECRET_KEY     = google_secret_manager_secret.admin_secret_key.secret_id
     ADMIN_SESSION_SECRET = google_secret_manager_secret.admin_session_secret.secret_id
+    # 백엔드가 사람 변경에 요구하는 actor 단언의 서명 키 — API와 같은 값이어야 한다.
+    BFF_ACTOR_SECRET = google_secret_manager_secret.bff_actor_secret.secret_id
     # 로그인 BFF가 방문자 IP를 X-BFF-Auth/X-Visitor-IP로 인증 전달할 때 사용
     # (없으면 backend 로그인 IP 스로틀이 BFF egress IP 공유 버킷으로 묶인다)
     SITE_BFF_SECRET = google_secret_manager_secret.site_bff_secret.secret_id

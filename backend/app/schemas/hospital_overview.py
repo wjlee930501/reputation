@@ -12,6 +12,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.schemas.operations import OperationsAction
+
 
 class RemainingCondition(BaseModel):
     """아직 채워지지 않은 조건 하나. `href`는 사람 몫일 때만 준다 — 자동 진행 중인 일을
@@ -34,7 +36,13 @@ class StateCard(BaseModel):
 
 
 class ExceptionCard(BaseModel):
-    """사람이 손대야 풀리는 건. `allowed_actions`에는 서버가 지금 허용한 행동 코드만 담는다."""
+    """사람이 손대야 풀리는 건.
+
+    `actions`는 운영 센터가 이 인시던트에 대해 실제로 등록한 mutation 서술자 그대로다 —
+    카드가 자기만의 경로·조건을 만들면 버튼과 서버 인가가 갈린다. 지금 실행할 수 없는
+    행동도 `enabled=False`로 함께 실어 왜 못 하는지 보여줄 수 있게 한다.
+    `allowed_actions`는 그중 실행 가능한 코드만 담은 하위 호환 요약이다.
+    """
 
     kind: Literal["incident", "escalated_draft"]
     id: str
@@ -43,6 +51,16 @@ class ExceptionCard(BaseModel):
     next_action: str
     allowed_actions: list[str]
     href: str
+    hospital_id: uuid.UUID
+    incident_id: uuid.UUID | None = None
+    operation_run_id: uuid.UUID | None = None
+    content_id: uuid.UUID | None = None
+    # 인시던트의 낙관적 잠금 값. 상태를 바꾸는 행동은 이 값을 함께 보내야 한다.
+    version: int | None = None
+    # 이 카드에 접힌 같은 원인 인시던트 수. 행동은 대표 인시던트 하나에만 적용되므로
+    # 2건 이상이면 화면이 그 사실을 말해야 한다.
+    same_type_count: int = 1
+    actions: list[OperationsAction] = []
 
 
 class MonthSummary(BaseModel):

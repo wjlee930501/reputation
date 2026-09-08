@@ -24,6 +24,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.admin.operations_center_serializers import requires_operator_action
+from app.api.admin.operations_links import hospital_incidents_href, incident_href
 from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
@@ -200,6 +202,16 @@ class PublishBody(BaseModel):
 
 class PostPublishReviewBody(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
+
+
+class RejectBody(BaseModel):
+    """비공개(반려)는 공개 글을 내리고 본문까지 지우는 되돌릴 수 없는 조작이다.
+
+    누가 왜 내렸는지가 남아야 나중에 판단을 되짚을 수 있다. 반려자는 요청 본문이 아니라
+    확인된 요청 actor로 기록한다 (H-09, 발행과 같은 규칙).
+    """
+
+    reason: str = Field(min_length=3, max_length=500)
 
 
 class ContentRescheduleBody(BaseModel):
@@ -1084,9 +1096,18 @@ async def complete_post_publish_review(
 async def reject_content(
     hospital_id: uuid.UUID,
     content_id: uuid.UUID,
+    body: RejectBody,
     db: AsyncSession = Depends(get_db),
 ):
     """반려 — 야간 재생성 큐에 다시 들어감"""
+    # 공개 글을 내리고 본문을 지우는 되돌릴 수 없는 조작이다. 발행과 같은 규칙으로
+    # 확인된 요청 actor만 허용한다 (H-09).
+    rejected_by = verified_request_actor()
+    if rejected_by is None:
+        raise HTTPException(
+            status_code=403,
+            detail="비공개 처리자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
+        )
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.CANCELLED:
@@ -1143,7 +1164,7 @@ async def reject_content(
         db,
         action="reject_content",
         hospital_id=hospital_id,
-        actor=default_actor(),
+        actor=rejected_by,
         target_type="content_item",
         target_id=content_id,
         detail={
@@ -1151,6 +1172,8 @@ async def reject_content(
             "previous_status": previous_status,
             "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
             "carried_over_from": str(item.carried_over_from) if item.carried_over_from else None,
+            "reason": body.reason.strip(),
+            "rejected_by": rejected_by,
         },
     )
     if should_revalidate and isinstance(item, ContentItem):
@@ -1538,19 +1561,40 @@ async def _blocked_links_for(
 ) -> dict[uuid.UUID, dict[str, Any]]:
     """글별 "운영 센터에서 조치" 링크 — 항목 수와 무관하게 쿼리 2회.
 
-    경로는 운영 센터가 쓰는 상세 경로 규칙 그대로다
-    (`operations_center_serializers.serialize_incident_row`의 detail_path,
-    `retry_action`의 run 경로). 화면마다 주소를 새로 지으면 링크가 죽는다.
+    주소는 `operations_links`가 정한다 — 운영 센터 화면은 `/operations` 하나뿐이고
+    상세는 질의값으로 연다. 화면마다 주소를 새로 지으면 링크는 없는 경로로 간다.
+
+    인시던트는 `requires_operator_action`(운영 센터 큐·현황 카드와 같은 정의)이 참일
+    때만 링크한다 — 약속한 시간 안에서 재시도 중인 인시던트는 자동 복구이고, 그것을
+    사람의 할 일로 새어 나가게 하면 안 된다. run은 그 글의 **가장 최근** 실행만 본다.
+    실패 뒤에 성공한 재시도가 있으면 지난 실패는 이미 지나간 일이다.
     사람이 볼 원인은 인시던트가 실패 run보다 앞선다 — 인시던트에는 조치 문장이 있다.
+
+    실패 run 링크는 **그 글에 열린(OPEN/RETRYING) 인시던트가 하나도 없을 때만** 만든다
+    (설계 판단, Astra B4). 실패했다고 곧바로 사람의 할 일이 되는 것이 아니다 — 첫
+    일시 실패는 쿨다운 뒤 스윕이 다시 집어 가고(`published_image_recertification.
+    sweep_may_dispatch`), 그동안 인시던트는 기한 안의 RETRYING이다. 재시도 예산이
+    실제로 남았는지는 그 글의 모든 run과 subject hash가 있어야 알 수 있어 이 두 문장
+    질의로는 못 구한다. 그래서 "기계가 아직 쥐고 있는가"의 대리 신호로 인시던트의
+    존재를 쓴다: 기한 안 RETRYING이면 자동 복구이므로 아무 링크도 만들지 않고, OPEN이나
+    기한 지난 RETRYING이면 아래 인시던트 링크가 조치 문장과 함께 그 자리를 채운다.
+    인시던트가 아예 없는 실패만 사람이 볼 수 있는 유일한 흔적이라 run으로 링크한다.
     """
     if not item_ids:
         return {}
     keys = [str(item_id) for item_id in item_ids]
+    now = datetime.now(timezone.utc)
     run_source = OperationRun.request_payload["source_id"].as_string()
 
     incident_rows = (
         await db.execute(
-            select(Incident.source_id, Incident.id, Incident.next_action)
+            select(
+                Incident.source_id,
+                Incident.id,
+                Incident.next_action,
+                Incident.state,
+                Incident.sla_due_at,
+            )
             .where(
                 Incident.hospital_id == hospital_id,
                 Incident.source_id.in_(keys),
@@ -1561,10 +1605,13 @@ async def _blocked_links_for(
     ).all()
     run_rows = (
         await db.execute(
-            select(run_source, OperationRun.id, OperationRun.safe_error_message)
+            select(
+                run_source,
+                OperationRun.safe_error_message,
+                OperationRun.state,
+            )
             .where(
                 OperationRun.hospital_id == hospital_id,
-                OperationRun.state == OperationRunState.FAILED.value,
                 OperationRun.operation_type.in_(_CONTENT_BLOCK_OPERATIONS),
                 run_source.in_(keys),
             )
@@ -1572,23 +1619,36 @@ async def _blocked_links_for(
         )
     ).all()
 
+    # 열린 인시던트가 있는 글은 그 인시던트가 결말을 말한다 — 자동 복구 중이면 조용히,
+    # 사람의 일이면 아래 인시던트 링크로. 실패 run 대체 링크는 여기에 없는 글만 만든다.
+    open_incident_items = {uuid.UUID(row[0]) for row in incident_rows}
+
     run_links: dict[uuid.UUID, dict[str, Any]] = {}
-    for source_id, run_id, message in run_rows:
-        run_links.setdefault(
-            uuid.UUID(source_id),
-            {
-                "kind": "run",
-                "href": f"/operations/hospitals/{hospital_id}/runs/{run_id}",
-                "next_action": message,
-            },
-        )
+    newest_seen: set[uuid.UUID] = set()
+    for source_id, message, run_state in run_rows:
+        item_id = uuid.UUID(source_id)
+        if item_id in newest_seen:
+            continue
+        newest_seen.add(item_id)
+        if run_state != OperationRunState.FAILED.value:
+            # 최신 실행이 실패가 아니면 이 글은 이미 복구됐다.
+            continue
+        if item_id in open_incident_items:
+            continue
+        run_links[item_id] = {
+            "kind": "run",
+            "href": hospital_incidents_href(hospital_id),
+            "next_action": message,
+        }
     incident_links: dict[uuid.UUID, dict[str, Any]] = {}
-    for source_id, incident_id, next_action in incident_rows:
+    for source_id, incident_id, next_action, incident_state, sla_due_at in incident_rows:
+        if not requires_operator_action(incident_state, sla_due_at, now):
+            continue
         incident_links.setdefault(
             uuid.UUID(source_id),
             {
                 "kind": "incident",
-                "href": f"/operations/hospitals/{hospital_id}/incidents/{incident_id}",
+                "href": incident_href(hospital_id, incident_id),
                 "next_action": next_action,
             },
         )

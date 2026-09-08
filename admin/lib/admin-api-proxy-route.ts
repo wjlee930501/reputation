@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server.js'
 
+import { buildActorAssertion } from './actor-assertion.ts'
 import {
   adminProxyTimeoutMsForPath,
   buildAdminProxyFetchInit,
@@ -88,6 +89,12 @@ export async function handleAdminApiProxy(
   if (!sessionSecret) {
     return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
   }
+  // 백엔드는 사람 변경에 서명된 actor 단언을 요구한다 — 키가 없으면 프록시가 만들 수 없다.
+  // 백엔드와 같은 정규화: 시크릿 값 끝의 개행·공백을 제거해 같은 키로 서명한다.
+  const actorSecret = (process.env.BFF_ACTOR_SECRET ?? '').trim()
+  if (!actorSecret) {
+    return jsonNoStore({ error: 'Server misconfigured' }, { status: 500 })
+  }
 
   if (!hasValidSameOrigin(req)) {
     return textNoStore('Forbidden', { status: 403 })
@@ -157,6 +164,10 @@ export async function handleAdminApiProxy(
   const headers: Record<string, string> = {
     'X-Admin-Key': adminKey,
     'X-Admin-Actor': session.email,
+    'X-Admin-Actor-Assertion': await buildActorAssertion(actorSecret, {
+      email: session.email,
+      role: session.role,
+    }),
   }
 
   const contentType = req.headers.get('content-type')

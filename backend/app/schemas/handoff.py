@@ -1,10 +1,39 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from app.models.handoff import HandoffSource, HandoffState
 from app.models.hospital import Plan
+
+
+class ContractRegistration(BaseModel):
+    """한 화면 계약 등록 — 병원 생성·계약 기록·인수 수락을 한 요청으로 받는다.
+
+    인수 처리 기한(`sla_due_at`)은 받지 않는다. 같은 요청에서 담당 AE가 인수까지
+    끝내므로 기한은 승인 시각 자체이고, 화면에 기한 칸을 두면 이미 지난 약속을
+    운영자가 지어내게 된다.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    name: str = Field(min_length=1, max_length=200)
+    lead_id: UUID | None = None
+    contract_reference: str = Field(min_length=1, max_length=200)
+    contract_effective_at: date
+    plan: Plan
+    ae_owner_id: UUID
+    sales_owner_id: UUID | None = None
+
+    @field_validator("name", "contract_reference")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        # 공백만 넣은 값은 min_length를 통과한다 — 이름 없는 병원과 빈 계약 번호가
+        # 그대로 저장되면 화면에서 고칠 수 없으므로 여기서 막는다.
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("값을 입력해 주세요.")
+        return cleaned
 
 
 class HandoffContract(BaseModel):

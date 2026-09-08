@@ -3,7 +3,7 @@
 커버 범위:
 - seed_query_targets_from_matrix: 생성, 멱등, SoV 갭 기반 priority 정렬
 - 엔드포인트 seed-from-matrix: 기본 동작
-- tasks._seed_query_targets_from_matrix_sync: V0 실패 시 비전파 (non-fatal)
+- tasks._seed_query_targets_from_matrix_sync: 질문이 비었을 때만 시드, 감사 기록, 실패 비전파
 - V0 완료 후 exposure_actions가 비어 있지 않음 (통합 시나리오 모의)
 """
 import uuid
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.api.admin.query_targets import seed_query_targets_from_matrix
+from app.services.query_target_seed import seed_query_targets_from_matrix
 from app.workers import tasks
 
 # ─────────────────────────────────────────────
@@ -370,3 +370,109 @@ async def test_seed_backfills_structure_on_existing_targets():
     assert result["skipped"] == 1
     assert existing.condition_or_symptom == "허리디스크"
     assert existing.region_terms == ["강남역"]
+
+
+# ─────────────────────────────────────────────
+# 9. V0 완료 훅 — 질문이 비었을 때만 시드하고 감사 기록을 남긴다 (M-18)
+# ─────────────────────────────────────────────
+
+class _FakeSeedSession:
+    """_seed_query_targets_from_matrix_sync가 여는 AsyncSession 대역."""
+
+    def __init__(self):
+        self.commits = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def commit(self):
+        self.commits += 1
+
+
+def _patch_seed_hook(
+    monkeypatch,
+    *,
+    live_targets: int,
+    created: int = 0,
+    seed_error: Exception | None = None,
+):
+    """훅이 늦게 import하는 협력자들을 대역으로 바꾼다. 반환: (session, calls)."""
+    from app.core import database as core_database
+    from app.services import audit_log, exposure_action_engine, query_target_seed
+
+    session = _FakeSeedSession()
+    calls: dict = {"seeded": 0, "audits": [], "exposure": 0}
+
+    monkeypatch.setattr(core_database, "get_async_sessionmaker", lambda: (lambda: session))
+
+    async def _count(_db, _hospital_id):
+        return live_targets
+
+    async def _seed(_db, _hospital_id):
+        if seed_error is not None:
+            raise seed_error
+        calls["seeded"] += 1
+        return {"created": created, "skipped": 0, "backfilled": 0}
+
+    async def _audit(_db, **kwargs):
+        calls["audits"].append(kwargs)
+        return None
+
+    async def _exposure(_db, _hospital_id):
+        calls["exposure"] += 1
+        return None
+
+    monkeypatch.setattr(query_target_seed, "count_live_query_targets", _count)
+    monkeypatch.setattr(query_target_seed, "seed_query_targets_from_matrix", _seed)
+    monkeypatch.setattr(audit_log, "write_audit_log", _audit)
+    monkeypatch.setattr(
+        exposure_action_engine, "ensure_hospital_exposure_actions", _exposure
+    )
+    return session, calls
+
+
+def test_v0_completion_seeds_when_hospital_has_no_query_targets(monkeypatch):
+    """질문이 0개면 시스템이 시드하고 감사 기록에 생성 수를 남긴다."""
+    hospital_id = uuid.uuid4()
+    session, calls = _patch_seed_hook(monkeypatch, live_targets=0, created=7)
+
+    tasks._seed_query_targets_from_matrix_sync(hospital_id)
+
+    assert calls["seeded"] == 1
+    assert len(calls["audits"]) == 1
+    audit = calls["audits"][0]
+    assert audit["action"] == "query_targets_seeded_from_matrix"
+    assert audit["hospital_id"] == hospital_id
+    assert audit["actor"] == tasks.V0_QUERY_TARGET_SEED_ACTOR
+    assert audit["detail"]["created"] == 7
+    assert session.commits == 1
+    assert calls["exposure"] == 1
+
+
+def test_v0_completion_does_not_reseed_when_query_targets_exist(monkeypatch):
+    """보관되지 않은 질문이 이미 있으면 다시 시드하지 않는다(주기 복구 안전)."""
+    hospital_id = uuid.uuid4()
+    session, calls = _patch_seed_hook(monkeypatch, live_targets=12, created=5)
+
+    tasks._seed_query_targets_from_matrix_sync(hospital_id)
+
+    assert calls["seeded"] == 0
+    assert calls["audits"] == []
+    assert session.commits == 0
+    # 시드를 건너뛰어도 노출 보완 큐 갱신은 그대로 수행한다.
+    assert calls["exposure"] == 1
+
+
+def test_v0_completion_survives_a_failing_seed(monkeypatch):
+    """시드가 실패해도 V0 완료는 되돌아가지 않는다(예외 비전파)."""
+    hospital_id = uuid.uuid4()
+    _session, calls = _patch_seed_hook(
+        monkeypatch, live_targets=0, seed_error=RuntimeError("matrix 조회 실패")
+    )
+
+    tasks._seed_query_targets_from_matrix_sync(hospital_id)
+
+    assert calls["audits"] == []

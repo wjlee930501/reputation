@@ -114,6 +114,23 @@ def _hospital(**overrides):
         domain_cert_job_token=None,
         domain_cert_job_domain=None,
         domain_cert_dns_verified_at=None,
+        # missing_profile_requirement_keys가 읽는 프로필 필드 — 기본은 미입력이다.
+        director_name=None,
+        director_career=None,
+        director_philosophy=None,
+        address=None,
+        phone=None,
+        business_hours=None,
+        website_url=None,
+        blog_url=None,
+        naver_place_url=None,
+        google_maps_url=None,
+        google_business_profile_url=None,
+        latitude=None,
+        longitude=None,
+        region=None,
+        specialties=None,
+        keywords=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -643,6 +660,29 @@ async def test_trigger_v0_rejects_a_hospital_that_already_has_one(monkeypatch):
     assert exc.value.status_code == 409
     assert queued == [], "거절된 요청은 큐에 들어가면 안 된다"
     assert not db.committed, "거절된 요청은 감사 로그도 남기지 않는다"
+
+
+async def test_trigger_v0_refuses_before_profile_complete(monkeypatch):
+    """프로필 미완이면 워커도 시작하지 않는다 — 큐에 넣지 말고 남은 항목을 알려준다."""
+    hospital = _hospital(profile_complete=False, v0_report_done=False)
+    db = FakeDB(hospital=hospital)
+    queued = []
+
+    monkeypatch.setattr(
+        operations_api.trigger_v0_report,
+        "apply_async",
+        lambda **kwargs: queued.append(kwargs),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.trigger_v0_report_operation(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "PROFILE_INCOMPLETE"
+    assert "병원 기본 정보" in exc.value.detail["message"]
+    assert "contact" in exc.value.detail["missing"]
+    assert queued == [], "거절된 요청은 큐에 들어가면 안 된다"
+    assert not db.committed
 
 
 async def test_trigger_v0_still_works_for_a_failed_or_pending_report(monkeypatch):

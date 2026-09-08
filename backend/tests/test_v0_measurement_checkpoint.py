@@ -20,6 +20,7 @@ from sqlalchemy.dialects import postgresql
 
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import MeasurementObservationSlot, MonthlyReportArtifact
+from app.models.operations import OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import MeasurementRun, QueryMatrix, SovRecord
 from app.services.measurement_slots import protocol_fingerprint
@@ -607,6 +608,68 @@ def test_a_different_v0_request_does_not_inherit_the_previous_measurement(harnes
 
     assert len(harness.provider_calls) == 20, "다른 요청인데 옛 측정을 재사용했다"
     assert len(harness.session.measurement_runs) == 2
+
+
+# ──────────────────────────────────────────────────────────────────
+# (b-2) 시작 게이트와 비용 보류 사유
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_v0_does_not_start_before_the_profile_is_complete(
+    harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """프로필 미완이면 측정을 시작하지 않고 실행을 사유와 함께 끝낸다."""
+    harness.hospital.profile_complete = False
+    finished: list[dict[str, Any]] = []
+
+    def _finish(_db, _task, item_id, state, *, safe_error_code=None, safe_error_message=None):
+        finished.append(
+            {
+                "item_id": item_id,
+                "state": state,
+                "safe_error_code": safe_error_code,
+                "safe_error_message": safe_error_message,
+            }
+        )
+        return None
+
+    monkeypatch.setattr(tasks, "finish_explicit_run", _finish)
+
+    _run_task(harness.hospital.id, operation_run_id=uuid.uuid4())
+
+    assert harness.provider_calls == []
+    assert harness.session.measurement_runs == []
+    assert harness.session.measurement_slots == []
+    assert harness.hospital.status is HospitalStatus.ONBOARDING
+    assert harness.hospital.v0_report_done is False
+    assert len(finished) == 1
+    assert finished[0]["item_id"] == harness.hospital.id
+    assert finished[0]["state"] is OperationRunState.FAILED
+    assert finished[0]["safe_error_code"] == "PROFILE_INCOMPLETE"
+    assert "병원 기본 정보" in finished[0]["safe_error_message"]
+
+
+def test_cost_deferred_measurement_says_when_it_continues(
+    harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """비용 가드로 멈춘 측정은 자동으로 이어간다는 사실을 실행 기록에 남긴다."""
+
+    def _blocked(_db, **_kwargs):
+        return {"failure_reason": "cost_guard_blocked"}
+
+    monkeypatch.setattr(tasks, "_execute_paid_observation_slot", _blocked)
+    monkeypatch.setattr(
+        tasks.trigger_v0_report,
+        "retry",
+        lambda **kwargs: (_ for _ in ()).throw(kwargs["exc"]),
+    )
+
+    with pytest.raises(tasks.V0CostDeferred):
+        _run_task(harness.hospital.id, operation_run_id=uuid.uuid4())
+
+    summary = harness.session.measurement_runs[0].error_summary
+    assert summary["safe_error_code"] == "V0_COST_DEFERRED"
+    assert "다음 비용 창에서 자동으로 이어갑니다" in summary["safe_error_message"]
 
 
 # ──────────────────────────────────────────────────────────────────

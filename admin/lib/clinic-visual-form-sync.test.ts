@@ -12,11 +12,7 @@ import {
   shouldSyncFromServer,
 } from './clinic-visual-form-sync.ts'
 
-const onboardingPage = readFileSync(
-  new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url),
-  'utf8',
-)
-// 온보딩과 병원 정보 화면이 같은 폼을 쓴다 — 리셋 판단도 그 한 곳에만 있어야 한다.
+// 리셋 판단은 폼 한 곳에만 있어야 한다.
 const clinicVisualForm = readFileSync(
   new URL('../app/hospitals/[id]/info/ClinicVisualForm.tsx', import.meta.url),
   'utf8',
@@ -155,7 +151,6 @@ test('the shared visual form marks itself dirty on edit and clears it only after
   // 리셋 판단은 순수 함수 한 곳에서만 한다 — 폼이 참조 변경으로 초기화되지 않는다.
   assert.match(clinicVisualForm, /const sync = shouldSyncFromServer\(\{/)
   assert.doesNotMatch(clinicVisualForm, /\}, \[hospital\]\)/)
-  assert.doesNotMatch(onboardingPage, /\}, \[hospital\]\)/)
   // 병원이 바뀌면 이전 병원의 초안과 dirty 표시를 함께 버린다.
   assert.match(clinicVisualForm, /if \(switchedHospital\) setDirty\(false\)/)
 })

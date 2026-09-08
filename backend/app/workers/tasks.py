@@ -181,6 +181,7 @@ from app.services.monthly_period import (
     scheduled_report_period,
 )
 from app.services.monthly_report_delivery import (
+    coverage_is_final,
     monthly_doctor_artifact_is_valid,
     monthly_report_delivery_gate,
 )
@@ -354,6 +355,7 @@ def _is_even_measurement_week(today: date) -> bool:
 logger = logging.getLogger(__name__)
 
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
+V0_QUERY_TARGET_SEED_ACTOR = "SYSTEM_V0_QUERY_SEED"
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 MORNING_CLOSE_START = time(7, 45)
 
@@ -3200,6 +3202,26 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                 if not hospital:
                     return
 
+                # 프로필 미완 병원의 V0는 시작하지 않는다. 질의 매트릭스·측정 슬롯이
+                # 미완 정보로 만들어지면 이후 재실행이 그 lineage를 그대로 물려받는다.
+                # 상태를 ANALYZING으로 클레임하기 전에 사유를 남기고 끝낸다.
+                if not hospital.profile_complete:
+                    logger.info(
+                        "V0 report requested before profile completion for %s; refusing",
+                        hospital.name,
+                    )
+                    finish_explicit_run(
+                        db,
+                        self,
+                        hospital.id,
+                        OperationRunState.FAILED,
+                        safe_error_code="PROFILE_INCOMPLETE",
+                        safe_error_message=(
+                            "병원 기본 정보가 완료되지 않아 초기 진단을 시작하지 않았습니다."
+                        ),
+                    )
+                    return
+
                 # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
                 if hospital.v0_report_done:
                     logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
@@ -3425,6 +3447,10 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                                     all_slots, deadline_reached=False
                                 ).to_payload(),
                                 "safe_error_code": "V0_COST_DEFERRED",
+                                "safe_error_message": (
+                                    "비용 한도로 초기 진단 측정을 잠시 멈췄습니다. "
+                                    "다음 비용 창에서 자동으로 이어갑니다."
+                                ),
                             }
                             db.commit()
                             raise V0CostDeferred("V0 measurement deferred by cost guard")
@@ -3599,7 +3625,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             )
             db.commit()
 
-            # V0 QueryMatrix → AIQueryTarget 자동 시드 (노출 보완 탭 즉시 활성화)
+            # V0 QueryMatrix → AIQueryTarget 자동 시드 (질문이 비어 있을 때만).
             # V0 리포트·Slack outbox가 이미 함께 커밋된 뒤 실행하므로, 시드 실패는
             # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
             _seed_query_targets_from_matrix_sync(hospital.id)
@@ -7233,7 +7259,11 @@ def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant
 
 
 def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
-    """V0 완료 후 QueryMatrix → AIQueryTarget 시드 + 노출 보완 큐 생성.
+    """환자 질문이 하나도 없으면 QueryMatrix에서 시드하고 노출 보완 큐를 채운다.
+
+    환자 질문은 사람이 만들지 않는다 — V0가 끝나면 시스템이 채운다. 다만 이미 질문이
+    있으면(보관 제외) 다시 시드하지 않는다. 재실행·주기 복구가 AE가 정리한 질문 구성에
+    덮어써 들어가면 안 되기 때문이다.
 
     V0 리포트가 이미 커밋된 뒤에 실행되는 post-commit 사이드 이펙트다.
     실패해도 V0 결과를 건드리지 않고 로그만 남긴다.
@@ -7241,13 +7271,30 @@ def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
     exposure_action_engine은 AsyncSession만 지원하므로 별도 async 루프로 실행한다.
     """
     try:
-        from app.api.admin.query_targets import seed_query_targets_from_matrix
         from app.core.database import get_async_sessionmaker
+        from app.services.audit_log import write_audit_log
         from app.services.exposure_action_engine import ensure_hospital_exposure_actions
+        from app.services.query_target_seed import (
+            count_live_query_targets,
+            seed_query_targets_from_matrix,
+        )
 
         async def _run(h_id: uuid.UUID) -> None:
             async with get_async_sessionmaker()() as async_db:
-                await seed_query_targets_from_matrix(async_db, h_id)
+                if await count_live_query_targets(async_db, h_id) == 0:
+                    result = await seed_query_targets_from_matrix(async_db, h_id)
+                    created = int(result.get("created") or 0)
+                    if created:
+                        # 사람이 만들지 않은 질문이 어디서 왔는지 화면에서 되짚을 수 있어야 한다.
+                        await write_audit_log(
+                            async_db,
+                            action="query_targets_seeded_from_matrix",
+                            hospital_id=h_id,
+                            actor=V0_QUERY_TARGET_SEED_ACTOR,
+                            target_type="ai_query_target",
+                            detail={"created": created, "trigger": "v0_report_done"},
+                        )
+                        await async_db.commit()
                 await ensure_hospital_exposure_actions(async_db, h_id)
 
         _run_async(_run(hospital_id))
@@ -9154,7 +9201,7 @@ def run_monthly_reports(self):
             try:
                 latest = _latest_monthly_report(db, h.id, anchor.year, anchor.month)
                 rebuilding = latest is not None
-                if latest is not None and latest.quality != "COMPLETE":
+                if latest is not None and not coverage_is_final(latest):
                     outcome = "coverage_incomplete"
                 else:
                     outcome = _build_monthly_report_for_hospital(

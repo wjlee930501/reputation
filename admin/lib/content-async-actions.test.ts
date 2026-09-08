@@ -27,16 +27,9 @@ test('post-publish review never repeats a confirmed POST when its follow-up GET 
   assert.doesNotMatch(source.slice(followUpGet), /문제 없음.*다시 누르세요/)
 })
 
-test('regeneration polls the accepted run and refreshes without replacing an open editor', () => {
-  assert.match(contentPage, /\/admin\/operations\/hospitals\/\$\{id\}\/runs\/\$\{trackedRun\.runId\}/)
-  assert.match(contentPage, /\['REQUESTED', 'QUEUED', 'RUNNING'\]\.includes\(run\.state\)/)
-  assert.match(contentPage, /refreshItem\(trackedRun\.itemId, \{ preserveOpenEditor: true \}\)/)
-  assert.match(contentPage, /if \(preserveOpenEditor && \(editMode \|\| briefEditMode\)\) return prev/)
-})
+// 재생성 폴링과 그 버튼은 콘텐츠 화면에서 사라졌다(운영 센터가 맡는다).
+// 남아 있지 않다는 계약은 content-page-contract.test.ts가 지킨다.
 
-test('an active regeneration disables both duplicate content and image requests', () => {
-  assert.match(contentPage, /disabled=\{actionLoading \|\| contentRegenerationActive\}/)
-  assert.match(contentPage, /disabled=\{actionLoading \|\| imageRegenerationActive\}/)
-  assert.match(contentPage, /contentRegenerationActive \? '새 초안 준비 중' : '즉시 재생성'/)
-  assert.match(contentPage, /imageRegenerationActive \? '새 이미지 준비 중' : '이미지만 재생성'/)
+test('a single-item refresh never replaces an open editor', () => {
+  assert.match(contentPage, /if \(preserveOpenEditor && editMode\) return prev/)
 })

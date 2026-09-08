@@ -139,8 +139,19 @@ def _current_event(
         event_type = OnboardingEventType.HANDOFF_OVERDUE
     else:
         return None
+    # 인수 처리 기한은 수락을 기다리는 동안에만 유효하다. 수락된 뒤에도 기한을 실으면
+    # 운영자는 이미 지켜진 약속을 남은 기한으로 읽고, 기한 초과 사실이 없었던 인수까지
+    # "기한 초과에서 복구됨"으로 알린다 — 계약 등록은 수락 시각을 그대로 기한으로 남긴다.
+    pending_due_at = (
+        handoff.sla_due_at if handoff.state is HandoffState.CONTRACTED else None
+    )
     recovered_from = None
-    if event_type is OnboardingEventType.HANDOFF_ACCEPTED and handoff.sla_due_at is not None:
+    if (
+        event_type is OnboardingEventType.HANDOFF_ACCEPTED
+        and handoff.sla_due_at is not None
+        and handoff.accepted_at is not None
+        and handoff.accepted_at > handoff.sla_due_at
+    ):
         overdue_at = handoff.sla_due_at + timedelta(microseconds=1)
         recovered_from = event_uuid("HANDOFF_OVERDUE", handoff.id, overdue_at)
     event_id = (
@@ -155,6 +166,6 @@ def _current_event(
         hospital.name,
         "담당 AE",
         occurred_at,
-        handoff.sla_due_at,
+        pending_due_at,
         recovered_from,
     )

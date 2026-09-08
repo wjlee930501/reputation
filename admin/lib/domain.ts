@@ -120,7 +120,7 @@ export function buildFallbackDomainSetupPlan(domain: string, expectedCname: stri
         registrar_host: domain.split('.')[0] || null,
         value: cnameValueWithDot,
         ttl: '300 (또는 등록기관 최소값)',
-        purpose: '병원 정보 허브 트래픽을 Reputation 플랫폼으로 연결',
+        purpose: '병원 공개 페이지 트래픽을 Reputation 플랫폼으로 연결',
       },
     ],
     // 번호는 라벨에 박지 않는다. 서버가 돌려주는 목록은 다섯 단계인데 이 fallback은
@@ -167,7 +167,7 @@ export function extractMissingSteps(detail: unknown): string[] {
 }
 
 /**
- * detail이 구조화 목록 없이 "...단계가 남아 있습니다: V0 리포트, 콘텐츠 스케줄"처럼
+ * detail이 구조화 목록 없이 "...단계가 남아 있습니다: 초기 진단 보고서, 콘텐츠 발행 일정"처럼
  * 문자열 한 줄로 내려오는 경우, 콜론 뒤 항목을 체크리스트로 분해한다.
  */
 export function parseStepsFromMessage(message: string): string[] {

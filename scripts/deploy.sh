@@ -124,6 +124,9 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   "ADMIN_SECRET_KEY"
   "WORKER_DISPATCH_SECRET"
   "ADMIN_SESSION_SECRET"
+  # Admin BFF가 서명한 actor 단언의 검증 키. 비어 있으면 사람 변경 검증이 꺼지므로
+  # config.py가 프로덕션 부팅을 막는다(H-10). Admin과 반드시 같은 값이어야 한다.
+  "BFF_ACTOR_SECRET"
   "SITE_BFF_SECRET"
   "REDIS_URL"
   # 아침 자동 발행은 캐시 무효화 경로가 없으면 프로덕션에서 배치 전체를 중단한다
@@ -168,6 +171,7 @@ SITE_OPTIONAL_SECRET_NAMES=(
 ADMIN_REQUIRED_SECRET_NAMES=(
   "ADMIN_SESSION_SECRET"
   "ADMIN_SECRET_KEY"
+  "BFF_ACTOR_SECRET"
   "SITE_BFF_SECRET"
 )
 
@@ -776,7 +780,7 @@ deploy_admin() {
     --ingress=internal-and-cloud-load-balancing \
     --allow-unauthenticated \
     --set-env-vars="BACKEND_URL=https://${PUBLIC_DOMAIN},NEXT_PUBLIC_BACKEND_URL=https://${PUBLIC_DOMAIN}" \
-    --set-secrets="ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,ADMIN_SECRET_KEY=ADMIN_SECRET_KEY:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
+    --set-secrets="ADMIN_SESSION_SECRET=ADMIN_SESSION_SECRET:latest,ADMIN_SECRET_KEY=ADMIN_SECRET_KEY:latest,BFF_ACTOR_SECRET=BFF_ACTOR_SECRET:latest,SITE_BFF_SECRET=SITE_BFF_SECRET:latest" \
     --port=8080 \
     --timeout=60 \
     --cpu-boost

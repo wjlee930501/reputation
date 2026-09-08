@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 
 import {
@@ -6,12 +7,14 @@ import {
   deliveryEventLabel,
   getDoctorDownload,
   getInternalReportLabel,
+  isArtifactMismatch,
   isEffectivelyDelivered,
   latestDeliveryEvent,
   readReportDeliveryState,
   reportListDeveloperNote,
   reportStatusLabel,
   reportSummaryCounts,
+  sha256OfDownloadedPdf,
   shouldShowDeliveryProblem,
 } from './report-delivery.ts'
 
@@ -123,4 +126,50 @@ test('page-level developer copy works without a selected report and contains no 
   assert.match(note, /hospital-1/)
   assert.match(note, /2026-08-10T00:00:00.000Z/)
   assert.doesNotMatch(note, /SLA|CUSTOMER_READY|payload|raw_response/)
+})
+
+test('the delivery hash comes from the bytes this screen downloaded, not from the server echo', async () => {
+  // M-08: 전달 기록이 서버가 알려 준 확인 번호를 되돌려 받으면, 담당자가 어떤 파일을
+  // 열어 봤는지 기록이 증명하지 못한다. 화면이 받은 바이트에서만 만든다.
+  const bytes = new TextEncoder().encode('%PDF-1.7 doctor report bytes')
+  const expected = createHash('sha256').update(bytes).digest('hex')
+  const calls: Array<[string, RequestInit | undefined]> = []
+  const original = globalThis.fetch
+  globalThis.fetch = (async (url: string, init?: RequestInit) => {
+    calls.push([url, init])
+    return { ok: true, status: 200, arrayBuffer: async () => bytes.buffer }
+  }) as unknown as typeof globalThis.fetch
+
+  try {
+    let opened: Blob | null = null
+    const hex = await sha256OfDownloadedPdf('/api/admin/hospitals/h1/reports/r1/download?audience=doctor', (blob) => { opened = blob })
+
+    assert.equal(hex, expected)
+    assert.match(hex, /^[0-9a-f]{64}$/)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0][0], '/api/admin/hospitals/h1/reports/r1/download?audience=doctor')
+    assert.equal(calls[0][1]?.credentials, 'same-origin')
+    // 새 탭에 띄우는 바이트는 해시한 바로 그 바이트여야 한다.
+    assert.equal(await (opened as unknown as Blob).arrayBuffer().then((buffer: ArrayBuffer) => createHash('sha256').update(new Uint8Array(buffer)).digest('hex')), expected)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('a failed download never yields a hash to record', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => ({ ok: false, status: 409, arrayBuffer: async () => new ArrayBuffer(0) })) as unknown as typeof globalThis.fetch
+  try {
+    await assert.rejects(sha256OfDownloadedPdf('/download'), /내려받지 못했습니다/)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('the server hash rejection is recognized so the screen can drop the stale download', () => {
+  assert.equal(isArtifactMismatch({ code: 'artifact_mismatch' }), true)
+  assert.equal(isArtifactMismatch({ code: 'doctor_artifact_invalid' }), true)
+  assert.equal(isArtifactMismatch({ code: 'already_delivered' }), false)
+  assert.equal(isArtifactMismatch(null), false)
+  assert.equal(deliveryConflict({ code: 'artifact_mismatch' }).nextAction, '파일이 바뀌었습니다 — 다시 내려받아 주세요.')
 })

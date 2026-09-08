@@ -8,11 +8,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.admin_user import AdminUser
 from app.models.audit import AdminAuditLog
+from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
 from app.models.operations import (
     Incident,
@@ -304,9 +305,12 @@ async def test_retry_recovery_ack_and_recurrence_reopen_with_audit(db: AsyncSess
             )
         ).all()
     )
+    # 재open은 담당자를 다시 정하지 않는다 — 자동 배정은 첫 open 한 번뿐이다.
+    assert reopened.owner_id == owner.id
     assert Counter(log.action for log in logs) == Counter(
         {
             "incident_occurrence_recorded": 2,
+            "incident_assigned": 1,
             "incident_retrying": 1,
             "incident_recovered": 1,
             "incident_acknowledged": 1,
@@ -699,3 +703,177 @@ async def test_system_acknowledgement_closes_a_recovered_incident_without_a_pers
         ).scalars()
     ]
     assert "incident_auto_acknowledged" in actions
+
+
+async def _assignment_detail(db: AsyncSession, incident: Incident) -> dict | None:
+    """자동 배정이 남긴 감사 기록 하나. 사람이 지정한 배정과 같은 writer를 쓴다."""
+    logs = (
+        await db.scalars(
+            select(AdminAuditLog).where(
+                AdminAuditLog.target_id == str(incident.id),
+                AdminAuditLog.action == "incident_assigned",
+            )
+        )
+    ).all()
+    return logs[0].detail if logs else None
+
+
+async def _only_candidate_owner(db: AsyncSession) -> AdminUser:
+    """이 트랜잭션에서 유일한 활성 OWNER를 만든다.
+
+    테스트 DB에 남아 있는 계정이 후보로 끼어들면 "한 명뿐일 때" 규칙을 확인할 수 없다.
+    """
+    await db.execute(update(AdminUser).values(is_active=False))
+    suffix = uuid.uuid4().hex
+    excluded = [
+        AdminUser(
+            email=f"auto-inactive-{suffix}@example.test",
+            name="Inactive Owner",
+            role="OWNER",
+            password_hash="not-a-real-hash",
+            is_active=False,
+        ),
+        AdminUser(
+            email=f"auto-qa-{suffix}@example.test",
+            name="Ops QA Owner",
+            role="OWNER",
+            password_hash="not-a-real-hash",
+            is_active=True,
+            is_operations_test=True,
+        ),
+        AdminUser(
+            email=f"auto-operator-{suffix}@example.test",
+            name="Operator",
+            role="OPERATOR",
+            password_hash="not-a-real-hash",
+            is_active=True,
+        ),
+    ]
+    owner = AdminUser(
+        email=f"auto-owner-{suffix}@example.test",
+        name="Only Owner",
+        role="OWNER",
+        password_hash="not-a-real-hash",
+        is_active=True,
+    )
+    db.add_all([*excluded, owner])
+    await db.flush()
+    return owner
+
+
+@pytest.mark.asyncio
+async def test_first_open_assigns_the_hospitals_handoff_ae(db: AsyncSession) -> None:
+    # Given: 병원의 계약 인수 AE가 정해져 있다
+    sales, ae, hospital = await _actors_and_hospital(db)
+    db.add(
+        HospitalHandoff.pending(hospital.id, sales_owner_id=sales.id, ae_owner_id=ae.id)
+    )
+    await db.flush()
+
+    # When: 그 병원의 예외가 처음 열린다
+    incident = await open_or_touch_incident(db, _request(hospital), actor="worker")
+
+    # Then: 주인 없는 예외로 남지 않고, 자동 배정 사실이 감사 기록에 남는다
+    assert incident.owner_id == ae.id
+    detail = await _assignment_detail(db, incident)
+    assert detail is not None
+    assert detail["auto_assigned"] is True
+    assert detail["auto_assigned_to"] == str(ae.id)
+
+
+@pytest.mark.asyncio
+async def test_first_open_without_handoff_falls_back_to_the_active_owner(
+    db: AsyncSession,
+) -> None:
+    # Given: 인수 기록이 없는 병원과 활성 OWNER 한 명(정지·운영 점검 계정은 후보 아님)
+    _, _, hospital = await _actors_and_hospital(db)
+    owner = await _only_candidate_owner(db)
+
+    # When
+    incident = await open_or_touch_incident(db, _request(hospital), actor="worker")
+
+    # Then
+    assert incident.owner_id == owner.id
+
+
+@pytest.mark.asyncio
+async def test_first_open_skips_a_deactivated_handoff_ae(db: AsyncSession) -> None:
+    # Given: 인수 AE가 정지된 계정이고, 배정 가능한 사람은 활성 OWNER 한 명뿐이다
+    sales, ae, hospital = await _actors_and_hospital(db)
+    db.add(
+        HospitalHandoff.pending(hospital.id, sales_owner_id=sales.id, ae_owner_id=ae.id)
+    )
+    await db.flush()
+    owner = await _only_candidate_owner(db)  # 이전 계정을 모두 비활성으로 만든다 — ae 포함
+
+    # When: 그 병원의 예외가 처음 열린다
+    incident = await open_or_touch_incident(db, _request(hospital), actor="worker")
+
+    # Then: 아무도 보지 않는 계정에 맡기지 않고 OWNER 규칙으로 내려간다
+    assert incident.owner_id == owner.id
+    detail = await _assignment_detail(db, incident)
+    assert detail is not None
+    assert detail["auto_assigned_to"] == str(owner.id)
+
+
+@pytest.mark.asyncio
+async def test_reopen_keeps_the_person_already_holding_the_incident(
+    db: AsyncSession,
+) -> None:
+    # Given: 첫 open 뒤 사람이 담당을 바꿔 둔 예외가 복구·확인까지 끝났다
+    sales, ae, hospital = await _actors_and_hospital(db)
+    db.add(
+        HospitalHandoff.pending(hospital.id, sales_owner_id=sales.id, ae_owner_id=ae.id)
+    )
+    await db.flush()
+    started = datetime(2026, 8, 20, 9, 0, tzinfo=UTC)
+    incident = await open_or_touch_incident(db, _request(hospital), now=started)
+    reassigned = await assign_incident(
+        db,
+        incident.id,
+        expected_version=incident.version,
+        owner_id=sales.id,
+        sla_due_at=None,
+        actor="AE QA",
+        reason="당일 담당 교대",
+        now=started,
+    )
+    assert isinstance(reassigned, Incident)
+    retrying = await mark_retrying(
+        db, incident.id, expected_version=reassigned.version, actor="worker", reason="재시도"
+    )
+    assert isinstance(retrying, Incident)
+    recovered = await mark_recovered(
+        db,
+        incident.id,
+        expected_version=retrying.version,
+        observed_success=True,
+        actor="worker",
+        reason="성공 확인",
+        now=started,
+    )
+    assert isinstance(recovered, Incident)
+
+    # When: 같은 원인이 재발해 다시 열린다
+    reopened = await open_or_touch_incident(
+        db, _request(hospital), now=started + timedelta(hours=1)
+    )
+
+    # Then: 자동 배정이 사람이 정한 담당을 덮지 않는다
+    assert reopened.episode_seq == 2
+    assert reopened.owner_id == sales.id
+
+
+@pytest.mark.asyncio
+async def test_incident_stays_unassigned_when_no_candidate_exists(db: AsyncSession) -> None:
+    # Given: 인수 기록도, 배정 가능한 OWNER도 없다
+    _, _, hospital = await _actors_and_hospital(db)
+    await db.execute(update(AdminUser).values(is_active=False))
+
+    # When
+    incident = await open_or_touch_incident(db, _request(hospital), actor="worker")
+
+    # Then: 예외를 여는 일 자체는 실패하지 않는다
+    assert incident.owner_id is None
+    assert incident.state == IncidentState.OPEN.value
+    assert await _assignment_detail(db, incident) is None

@@ -132,6 +132,8 @@ declare -A SECRETS=(
   # mount하므로 컨테이너와 버전(빈 문자열이라도)은 있어야 한다.
   ["SLACK_WEBHOOK_URL_DEV"]="개발팀 전용 Slack 웹훅 URL (미설정 시 개발 알림 HOLD)"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
+  # API와 Admin이 같은 값을 읽어야 한다 — Admin BFF가 사람 변경 요청의 actor 단언을 서명하고 API가 검증한다.
+  ["BFF_ACTOR_SECRET"]="Admin BFF actor 단언 서명키 (API·Admin 공통, 개행 없이 저장)"
   ["DB_PASSWORD"]="Cloud SQL 앱 사용자 비밀번호"
   # REDIS_URL은 deploy.sh REQUIRED_SECRET_NAMES에 포함되므로 여기서 반드시 컨테이너를
   # 만들어 둔다 (누락 시 표준 순서의 첫 배포가 build_secret_args에서 무조건 실패).
@@ -150,6 +152,7 @@ declare -A SECRETS=(
 FRONTEND_SECRET_NAMES=(
   "ADMIN_SECRET_KEY"
   "ADMIN_SESSION_SECRET"
+  "BFF_ACTOR_SECRET"
   "SITE_REVALIDATE_SECRET"
   "SITE_BFF_SECRET"
 )

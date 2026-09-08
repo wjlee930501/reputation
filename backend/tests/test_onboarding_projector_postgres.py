@@ -188,3 +188,62 @@ async def test_real_postgres_scan_keeps_only_highest_state_and_summary_dedupes(
             {"pattern": f"%{_PREFIX}%"},
         )
         assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_same_request_acceptance_is_not_a_deadline_or_an_overdue_recovery(
+    onboarding_sessions,
+) -> None:
+    """한 화면 계약 등록은 수락 시각을 그대로 `sla_due_at`에 남긴다.
+
+    그 값을 남은 기한처럼 싣거나 "기한 초과에서 복구됨"으로 알리면, 늦은 적이 없는
+    인수가 운영 알림에서 지연 복구로 읽힌다.
+    """
+    window = canonical_projection_window(datetime(2026, 8, 10, 2, 47, tzinfo=UTC))
+    owner_id = uuid.UUID("a1330000-0000-0000-0000-000000000002")
+    accepted_at = window.start + timedelta(minutes=5)
+    async with onboarding_sessions() as db:
+        db.add(
+            AdminUser(
+                id=owner_id,
+                email="ops-qa-t13@example.invalid",
+                name="QA AE",
+                role="OPERATOR",
+                password_hash="x",
+            )
+        )
+        hospital = Hospital(
+            name=f"{_PREFIX}-REGISTERED",
+            slug="ops-qa-t13-onboarding-registered",
+            status=HospitalStatus.ONBOARDING,
+        )
+        db.add(hospital)
+        await db.flush()
+        db.add(
+            HospitalHandoff(
+                id=uuid.UUID("a1330000-0000-0000-0000-000000000020"),
+                hospital_id=hospital.id,
+                state=HandoffState.HANDOFF_ACCEPTED,
+                sales_owner_id=owner_id,
+                ae_owner_id=owner_id,
+                contract_reference="QA-REGISTERED",
+                contract_effective_at=window.start,
+                plan=Plan.PLAN_12,
+                # 등록과 인수가 같은 요청이라 기한 = 승인 시각이다.
+                sla_due_at=accepted_at,
+                accepted_by_id=owner_id,
+                accepted_at=accepted_at,
+                acceptance_source=HandoffSource.DIRECT_CREATE,
+                created_at=window.start,
+                updated_at=accepted_at,
+            )
+        )
+        await db.commit()
+
+    async with onboarding_sessions() as db:
+        projections = await scan_onboarding_milestones(db, window)
+
+    accepted = next(item for item in projections if item.kind.value == "HANDOFF_ACCEPTED")
+    assert accepted.recovery_of is None
+    assert accepted.is_recovery is False
+    assert accepted.sla_label == "기한 없음"

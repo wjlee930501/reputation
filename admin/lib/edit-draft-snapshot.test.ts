@@ -40,10 +40,19 @@ test('parseDraftSnapshot rejects null, malformed JSON, and missing/invalid field
   assert.equal(parseDraftSnapshot(JSON.stringify({ title: '제목', body: '본문', meta_description: '설명', references: 'oops', savedAt: 1 })), null)
 })
 
-test('draftDiffersFromCurrent flags a change only when title/body/meta differ', () => {
+test('draftDiffersFromCurrent flags a change when title/body/meta or references differ', () => {
   const draft = { title: 'A', body: 'B', meta_description: 'C', references: [], savedAt: 1 }
-  assert.equal(draftDiffersFromCurrent(draft, { title: 'A', body: 'B', meta_description: 'C' }), false)
-  assert.equal(draftDiffersFromCurrent(draft, { title: 'A', body: '다른 본문', meta_description: 'C' }), true)
+  const current = { title: 'A', body: 'B', meta_description: 'C', references: [] }
+  assert.equal(draftDiffersFromCurrent(draft, current), false)
+  assert.equal(draftDiffersFromCurrent(draft, { ...current, body: '다른 본문' }), true)
+  // 참고 자료만 고친 초안도 복구 배너로 이어져야 한다 — 여기서 빠지면 조용히 사라진다.
+  assert.equal(
+    draftDiffersFromCurrent(
+      { ...draft, references: [{ title: '학회', url: 'https://a.example' }] },
+      current,
+    ),
+    true,
+  )
 })
 
 test('editFieldsDiffer is false when the edit matches the original (title/body/meta/references)', () => {

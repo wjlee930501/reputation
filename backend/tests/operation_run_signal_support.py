@@ -107,13 +107,14 @@ async def dispatch_test_run(
     hospital_id: UUID,
     task: DispatchTask,
     request_key: str,
+    operation_type: str = "REBUILD_SITE",
 ) -> OperationRun:
     async with factory() as db:
         result = await dispatch_operation(
             db,
             OperationCommand(
                 hospital_id=hospital_id,
-                operation_type="REBUILD_SITE",
+                operation_type=operation_type,
                 idempotency_key=request_key,
                 requested_by_id=None,
                 audit_actor="system@motionlabs.kr",

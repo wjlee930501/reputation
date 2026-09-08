@@ -99,6 +99,7 @@ test('the auth proxy leaves login and auth API paths public while guarding the c
 test('the routed admin handler rejects cross-origin requests with a no-store 403', async () => {
   process.env.ADMIN_SECRET_KEY = 'test-admin-key'
   process.env.ADMIN_SESSION_SECRET = 'test-session-secret'
+  process.env.BFF_ACTOR_SECRET = 'test-actor-secret'
   const originalFetch = globalThis.fetch
   let fetchCalled = false
   globalThis.fetch = (async () => {

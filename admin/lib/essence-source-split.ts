@@ -1,7 +1,7 @@
 /**
  * 근거 자료와 사진 자산을 나눈다.
  *
- * 사진은 공개 표면에 쓰는 자산이고, 본문 근거를 뽑는 대상이 아니다. 백엔드도 그렇게
+ * 사진은 병원 공개 페이지에 쓰는 자산이고, 본문 근거를 뽑는 대상이 아니다. 백엔드도 그렇게
  * 본다 — 승인 게이트(`essence.py`)와 월간 완결성 집계(`essence_engine.py`)는
  * `PHOTO_*`를 필수 자료 분모에서 뺀다. 그런데 운영 기준 화면은 사진을 근거 추출 표에
  * 같이 세워 두고 "처리된 자료 3 / 12"의 분모에도 넣었다. 그래서 사진을 여러 장 올린
@@ -57,7 +57,7 @@ export function isRequiredTextSource(source: {
 export interface EssenceSourceSplit<T extends EssenceSourceLike> {
   /** 근거 추출 대상 — 사진이 아닌 자료 */
   textSources: T[]
-  /** 공개 표면용 사진 자산 */
+  /** 병원 공개 페이지용 사진 자산 */
   photoSources: T[]
   /** 근거 추출을 마친 자료 수 (서버의 필수 자료 기준) */
   processedTextCount: number
@@ -91,5 +91,5 @@ export function splitEssenceSources<T extends EssenceSourceLike>(
 /** 사진이 근거 표에서 빠졌다는 사실을 화면이 직접 말한다. */
 export function describePhotoSourceExclusion(photoCount: number): string | null {
   if (photoCount <= 0) return null
-  return `사진 ${photoCount}장은 공개 표면용 자산이라 이 표와 처리 집계에서 제외했습니다. 온보딩 화면에서 관리합니다.`
+  return `사진 ${photoCount}장은 병원 공개 페이지용 자산이라 이 표와 처리 집계에서 제외했습니다. 온보딩 화면에서 관리합니다.`
 }

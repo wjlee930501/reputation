@@ -41,6 +41,7 @@ export type OperationsMutationKind =
   | 'RETRY_RUN'
   | 'RECOVER_INCIDENT'
   | 'ACK_INCIDENT'
+  | 'ASSIGN_INCIDENT'
   | 'POST_ACTION'
 
 export interface OperationsMutationDescriptor {
@@ -51,6 +52,41 @@ export interface OperationsMutationDescriptor {
   readonly reason: string
   readonly label: string
   readonly requiresIdempotencyKey: boolean
+  /** 담당 지정에만 쓴다. null은 "담당 없음"이라는 선택이다. */
+  readonly ownerId?: string | null
+  readonly slaDueAt?: string | null
+}
+
+export interface OperationsMutationBody {
+  readonly reason: string
+  readonly expectedVersion?: number | null
+  readonly ownerId?: string | null
+  readonly slaDueAt?: string | null
+}
+
+/**
+ * 요청 본문은 종류마다 다르다. 재시도와 그 밖의 POST 행동은 사유만 보내고, 상태 전이는
+ * 낙관적 잠금 버전을 함께 보낸다.
+ *
+ * 담당 지정 라우트는 담당과 처리 기한을 한 번에 받는다(`IncidentAssignRequest`). 기한을
+ * 빼면 요청 자체가 거절되고, null로 보내면 남아 있던 기한이 지워진다 — 담당만 바꾸는
+ * 화면이므로 지금 기한을 그대로 다시 실어 보낸다.
+ */
+export function mutationRequestBody(
+  kind: OperationsMutationKind | 'RETRY_SLACK',
+  input: OperationsMutationBody,
+): Record<string, unknown> {
+  const reason = input.reason.trim()
+  if (kind === 'RETRY_RUN' || kind === 'POST_ACTION') return { reason }
+  if (kind === 'ASSIGN_INCIDENT') {
+    return {
+      expected_version: input.expectedVersion ?? null,
+      reason,
+      owner_id: input.ownerId ?? null,
+      sla_due_at: input.slaDueAt ?? null,
+    }
+  }
+  return { expected_version: input.expectedVersion ?? null, reason }
 }
 const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'today', 'reports', 'incidents']
 const FILTER_KEYS = ['queue', 'hospitalId', 'owner', 'status', 'severity', 'sla', 'recovery', 'q', 'detail', 'page'] as const
@@ -148,6 +184,40 @@ export function actionableOperationsCount(
   items: readonly Pick<OperationsQueueRow, 'requires_operator_action'>[],
 ): number {
   return partitionOperationsRows(items).actionable.length
+}
+
+/**
+ * 깊은 링크(`detail=incident:{id}`)가 가리키는 상세를 어디서 찾을지.
+ *
+ * 다른 화면이 만든 링크는 인시던트 하나를 가리키는데, 큐는 같은 원인을 대표 행 하나로
+ * 접고 쪽을 나눈다. 행 id가 그대로 맞기를 기대하면 링크는 조용히 아무것도 열지 못한다 —
+ * 접혔거나, 다음 쪽에 있거나, 지금 필터 밖이라서.
+ *
+ * 1) 행 id가 그대로 맞으면 그 행. 2) 접힌 묶음의 소속 인시던트면 그 대표 행.
+ * 3) 둘 다 아니면 그 인시던트를 직접 읽는다 — 현재 쪽에 없어도 상세는 열린다.
+ */
+export type OperationsDetailResolution =
+  | { readonly kind: 'row'; readonly row: OperationsQueueRow }
+  | { readonly kind: 'fetch'; readonly hospitalId: string; readonly incidentId: string }
+  | { readonly kind: 'none' }
+
+const INCIDENT_DETAIL_PREFIX = 'incident:'
+
+export function resolveOperationsDetail(
+  detail: string,
+  rows: readonly OperationsQueueRow[],
+  hospitalId: string,
+): OperationsDetailResolution {
+  if (!detail) return { kind: 'none' }
+  const exact = rows.find((row) => row.id === detail)
+  if (exact) return { kind: 'row', row: exact }
+  if (!detail.startsWith(INCIDENT_DETAIL_PREFIX)) return { kind: 'none' }
+  const incidentId = detail.slice(INCIDENT_DETAIL_PREFIX.length)
+  if (!incidentId) return { kind: 'none' }
+  const grouped = rows.find((row) => (row.member_incident_ids ?? []).includes(incidentId))
+  if (grouped) return { kind: 'row', row: grouped }
+  if (!hospitalId) return { kind: 'none' }
+  return { kind: 'fetch', hospitalId, incidentId }
 }
 
 export function hospitalOperationsHref(
@@ -272,6 +342,7 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   V0_MEASUREMENT_IN_PROGRESS: '초기 진단 측정이 백그라운드에서 이어지고 있습니다. 다른 설정과 공개 운영을 계속할 수 있습니다.',
   V0_MEASUREMENT_POLICY_DRIFT: '초기 진단 도중 측정 안전 기준이 바뀌어 안전하게 중단했습니다. 기존 측정 근거는 보존되며 현재 배포 기준을 확인해야 합니다.',
   SOV_HIGH_PRIORITY_CAP_EXCEEDED: '이번 측정에 배정된 질문 수가 한도를 넘어 일부 질문을 측정하지 않았습니다.',
+  PROFILE_INCOMPLETE: '병원 기본 정보가 완료되지 않아 초기 진단을 시작하지 않았습니다. 기본 정보 탭에서 필수 항목을 채우면 다시 시작합니다.',
   // 콘텐츠 생성·발행
   PROVIDER_TIMEOUT: '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',
   PROVIDER_UNAVAILABLE: '콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.',
@@ -300,9 +371,11 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 비용 안전장치
   COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
   COST_GUARD_LIMIT_REACHED: '오늘 설정된 사용 한도에 도달해 자동 작업을 보류했습니다.',
-  // 보고서·공개 표면·도메인
+  // 보고서·병원 공개 페이지·도메인
   MONTHLY_MEASUREMENT_INCOMPLETE: '필수 측정이 완료되지 않아 실패한 항목만 복구해야 합니다.',
   MONTHLY_REPORT_FAILED: '월간 보고서를 만드는 중 작업이 완료되지 않았습니다.',
+  SITE_BUILD_RETRIES_EXHAUSTED: '병원 공개 페이지 준비가 하루 안에 세 번 실패해 자동 재시도를 멈췄습니다. 실패한 작업의 원인을 해결한 뒤 운영 센터에서 다시 시도하세요.',
+  SITE_BUILD_FAILED: '병원 공개 페이지 준비 작업이 실패했습니다. 실패한 작업의 원인을 해결한 뒤 운영 센터에서 다시 시도하세요.',
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
   CACHE_REVALIDATION_FAILED: '공개 사이트의 내용 갱신을 확인하지 못했습니다.',
   DOMAIN_UNHEALTHY: '공개 주소가 정상으로 응답하지 않습니다.',
@@ -472,6 +545,16 @@ function mutationFromPostAction(
   }
 }
 
+/**
+ * 담당 지정/변경. 서버는 OWNER에게만 열어 주므로(`assign_action`) 버튼도 그 판단을
+ * 그대로 따른다 — 눌러야 알 수 있는 403을 만들지 않는다.
+ */
+export function assignAction(
+  row: Pick<OperationsQueueRow, 'assign'>,
+): OperationsAction | null {
+  return enabledPostAction(row.assign ?? null)
+}
+
 export function primaryOperationsMutation(
   detail: OperationsIncidentDetail,
   reason: string,
@@ -490,6 +573,20 @@ export function primaryOperationsMutation(
       requiresIdempotencyKey: true,
     }
   }
+  // 서버가 이 행이 지금 받을 수 있는 상태 전이를 직접 실어 보낸다(`resolve_action`).
+  // 그 판단이 화면의 상태 추론보다 정확하다 — 인가와 복구 관측까지 보고 정한 값이다.
+  const resolve = enabledPostAction(row.resolve ?? null)
+  if (resolve?.kind === 'RECOVER_INCIDENT' || resolve?.kind === 'ACK_INCIDENT') {
+    return {
+      kind: resolve.kind,
+      path: resolve.path,
+      targetId: row.incident_id ?? row.id,
+      version: row.version,
+      reason,
+      label: resolve.label,
+      requiresIdempotencyKey: false,
+    }
+  }
   const action = enabledPostAction(row.action)
   if (action?.kind === 'RECOVER_INCIDENT' || action?.kind === 'ACK_INCIDENT') {
     return {
@@ -503,6 +600,10 @@ export function primaryOperationsMutation(
     }
   }
   if (action) return mutationFromPostAction(action, row, reason)
+  // 전이 자리를 실어 보낸 응답이면 그것이 정답이다. 서버가 막아 둔 전이를 화면이 상태만
+  // 보고 되살리면 눌러야 알 수 있는 403·409가 된다. 아래 추론은 그 자리가 아예 없는
+  // 옛 응답에만 남긴다.
+  if (row.resolve !== undefined) return null
   if (run?.state === 'SUCCEEDED' && row.status === 'RETRYING') {
     return {
       kind: 'RECOVER_INCIDENT',
@@ -528,10 +629,31 @@ export function primaryOperationsMutation(
   return null
 }
 
+export const VERSION_CONFLICT_MESSAGE =
+  '다른 운영자가 먼저 변경했습니다. 최신 상태로 갱신했습니다. 다시 확인해 주세요.'
+export const RECOVERY_NOT_OBSERVED_MESSAGE =
+  '연결된 작업이 아직 성공하지 않았습니다. 작업이 성공한 뒤에 복구 확인을 눌러 주세요.'
+
+/**
+ * 409는 "다른 사람이 먼저 바꿨다"만 뜻하지 않는다.
+ *
+ * 복구 확인은 연결된 작업의 성공이 관측돼야 서버가 받고(`INCIDENT_RECOVERY_NOT_OBSERVED`),
+ * 예산·선행조건 차단은 서버가 이유를 문장으로 보낸다. 전부 "다른 운영자가 먼저 변경했습니다"로
+ * 덮으면 운영자는 없는 경합을 찾다가 같은 버튼을 다시 누른다.
+ */
 export function interpretOperationsConflict(detail: unknown): OperationsConflict {
   const record = isRecord(detail) ? detail : {}
+  const code = typeof record.code === 'string' ? record.code : null
+  const serverMessage =
+    typeof record.message === 'string' && record.message.trim() ? record.message.trim() : null
+  const message =
+    code === 'INCIDENT_RECOVERY_NOT_OBSERVED'
+      ? RECOVERY_NOT_OBSERVED_MESSAGE
+      : code !== null && code !== 'INCIDENT_VERSION_CONFLICT' && serverMessage !== null
+        ? serverMessage
+        : VERSION_CONFLICT_MESSAGE
   return {
-    message: '다른 운영자가 먼저 변경했습니다. 최신 상태로 갱신했습니다. 다시 확인해 주세요.',
+    message,
     refetchPath: typeof record.refetch_path === 'string' ? record.refetch_path : null,
     currentVersion: typeof record.current_version === 'number' ? record.current_version : null,
     currentState: typeof record.current_state === 'string' ? record.current_state : null,

@@ -26,6 +26,20 @@
 
 저장소 루트의 `.env.production`과 접근 가능한 Secret Manager 설정을 준비한다. 비밀 값을 추적 파일에 넣지 않는다. `scripts/deploy.sh`는 Git 소스 버전을 고정하고 필수 환경·secret·DB 연결·공개 도메인 등을 검사한다.
 
+**다음 배포 전 1회 — `BFF_ACTOR_SECRET` 생성(H-10).** 백엔드는 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)에 Admin BFF가 서명한 actor 단언을 요구하고, 이 값이 비어 있으면 API가 프로덕션에서 부팅에 실패한다. API와 Admin이 **같은 값**을 읽어야 서명이 검증된다. Terraform이 secret 리소스와 두 서비스 주입·IAM을 선언하고(`terraform/secretmanager.tf`), `scripts/deploy.sh`도 API·Admin 필수 시크릿 목록에 넣어 값이 없으면 배포 전 검사에서 멈춘다. 배포 전에 값만 만들어 둔다.
+
+```bash
+# 개행 없이 저장한다(openssl 출력 끝의 줄바꿈이 값에 들어가면 안 된다 — API·Admin 모두 값을 trim하지만 저장값 자체를 깨끗하게 둔다).
+gcloud secrets create BFF_ACTOR_SECRET --project mso-platform-481505 --replication-policy=automatic --data-file=<(openssl rand -hex 32 | tr -d '\n')
+# 접근 권한은 ADMIN_SESSION_SECRET과 같은 두 서비스 계정에 준다(terraform apply가 동일하게 부여한다).
+gcloud secrets add-iam-policy-binding BFF_ACTOR_SECRET --project mso-platform-481505 \
+  --member="serviceAccount:$(terraform -chdir=terraform output -raw service_account_email)" --role=roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding BFF_ACTOR_SECRET --project mso-platform-481505 \
+  --member="serviceAccount:$(terraform -chdir=terraform output -raw frontend_service_account_email)" --role=roles/secretmanager.secretAccessor
+```
+
+배포 순서상 API가 Admin보다 먼저 새 리비전을 받는다. 단언은 브라우저가 아니라 Admin BFF(서버)가 서명하므로, **새 API가 뜬 뒤 새 Admin 리비전이 트래픽을 받기 전까지(보통 수 분) 모든 admin 변경 요청이 403 `ACTOR_ASSERTION_REQUIRED`("관리 화면을 새로고침한 뒤 다시 시도해 주세요")를 받는다.** Admin 리비전 교체가 끝나면 열려 있던 탭도 그대로 복구된다(새로고침 불필요). 다만 옛 콘텐츠 화면을 열어 둔 탭은 반려 요청에 사유 본문이 없어 새 API에서 422를 받으므로 새로고침이 필요하다 — 롤아웃 직후 운영자에게 두 사실을 알린다. 배치·CLI 호출은 `X-Admin-Actor-System: <job>` 헤더로 통과하며 감사 기록에는 `system:<job>`으로 남는다. 이 시스템 호출에는 **사람 계정이 없다** — 함께 보낸 `X-Admin-Actor`는 인가·감사 어디에도 채택되지 않고, 활성 운영자 계정을 요구하는 라우트(계정 관리·인수·운영센터 조치 등)는 403 `SYSTEM_ACTOR_NOT_ALLOWED`로 거부된다. 사람 요청에서 `X-Admin-Actor`가 단언의 이메일과 다르면 403 `ACTOR_ASSERTION_MISMATCH`다(BFF는 두 값을 같은 세션 이메일로 채우므로 정상 트래픽은 걸리지 않는다).
+
 ```bash
 make db-budget-guard
 make copy-guard
@@ -43,7 +57,7 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
-현재 운영 DB의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication` → `0070_essence_evidence_noise_hash`이고 expected head는 `0070_essence_evidence_noise_hash`다(2026-09-09 체크포인트부터; 추가형 컬럼 1개). `0070`은 승인 당시 노이즈로 제외한 근거 노트 집합 hash를 기록한다 — 기존 승인 행은 NULL이며 다음 재조정에서 병원당 1회 유료 재검수가 발생한다(운영 7곳). 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가했다. `0069`는 남아 있던 `published_at`·`published_by`만 최초 공개 사실로 백필했다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남겼다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
+현재 운영 DB의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication` → `0070_essence_evidence_noise_hash` → `0071_plan_enum_cleanup`이고 expected head는 `0071_plan_enum_cleanup`다. `0071`은 남은 `PLAN_8` 행을 `PLAN_12`로 옮긴 뒤 `hospitals.plan`·`content_schedules.plan`에 12/16/20 CHECK만 건다. `plan` enum 타입은 손대지 않고 폐기 label도 타입에 남긴다 — 값을 지우려면 타입 rename-swap이 필요한데 그러면 타입 OID가 바뀌어, 롤링 중 아직 도는 옛 API·Worker 리비전의 asyncpg/psycopg2 연결 풀이 들고 있는 타입 OID·prepared statement 캐시가 깨진다(stale type OID / `InvalidCachedStatementError`). 제약 추가는 타입 정체성을 바꾸지 않으므로 롤링 중 실행해도 안전하고, 두 컬럼 모두 CHECK가 막으므로 어떤 행도 `PLAN_8`을 가질 수 없다(코드의 `Plan`도 12/16/20뿐). `0070`은 승인 당시 노이즈로 제외한 근거 노트 집합 hash를 기록한다 — 기존 승인 행은 NULL이며 다음 재조정에서 병원당 1회 유료 재검수가 발생한다(운영 7곳). 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가했다. `0069`는 남아 있던 `published_at`·`published_by`만 최초 공개 사실로 백필했다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남겼다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
 
 ### 2026-09-07~08 기존 공개 콘텐츠 전환
 
@@ -81,6 +95,8 @@ Worker는 `control,default,content,sov,reports,leadgen,certificates` 7개 큐를
 RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매 1분 추가된다. 영속 스케줄 재조정 뒤 등록 이름·task route·서명 목적이 새 이미지와 맞는지 확인한다. 정상 drain·복구를 Slack 메시지로 시험하지 말고 DB 실행 상태와 구조화 로그를 사용한다. 2026-09-07~08 기존 이미지 인증은 주기 작업이 아니라 완료 후 제거한 일회성 Job/CLI였다. 최종 실패나 사람이 결정할 예외만 [알림 정책](slack-notification-policy.md)에 따라 확인한다.
 
 2026-09-08 운영 전환 runtime `ede3d8f5a8adec849c987d21c1491afef03edbca`의 [PR #86 CI](https://github.com/wjlee930501/reputation/actions/runs/34142628859)는 9/9 통과했다. Backend는 3,095 passed, 0 failed, 0 skipped, 17 warnings, coverage 83.03%였고 Admin·Site 검사와 컨테이너 빌드도 통과했다. 운영에서는 5개 서비스·3개 영속 Job, DB head, 7개 큐 readiness, 공개 115건과 실제 이미지 바이트를 확인했다. 이 완료 범위와 남은 장기 WATCH는 [후속 구현 기록](../reviews/2026-09-07-purpose-autonomy-efficiency-implementation.md)에 분리한다.
+
+2026-09-09 체크포인트 1 runtime `4bd1e0312a9178ad53c2f1065ec42798d81d7c7c`(PR #91, CI 9/9)는 `scripts/deploy.sh all`로 마이그레이션(0070) → Worker → RedBeat 재조정 → Beat → readiness(7개 큐 canary, `recertify_candidate_count 0`, `null_noise_hash_approvals 8`) → API/Site/Admin 순으로 배포했고, 8개 병원 헬스·대표 글·이미지 200과 새 리비전 오류 0건을 확인했다. 상세는 [체크포인트 1 기록](../releases/2026-09-09-checkpoint-1.md).
 
 ## 롤백과 문서 변경
 

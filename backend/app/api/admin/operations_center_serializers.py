@@ -6,9 +6,15 @@ import uuid
 from datetime import datetime
 from typing import Final, Literal
 
-from app.models.admin_user import AdminUser
+from app.models.admin_user import ROLE_OWNER, AdminUser
 from app.models.hospital import Hospital
-from app.models.operations import Incident, IncidentState, NotificationOutbox, OperationRun
+from app.models.operations import (
+    Incident,
+    IncidentState,
+    NotificationOutbox,
+    OperationRun,
+    OperationRunState,
+)
 from app.schemas.operations import (
     OperationsAction,
     OperationsCustomer,
@@ -22,9 +28,12 @@ from app.schemas.operations import (
 from app.services import published_image_recertification as recertification
 
 __all__ = (
+    "assign_action",
     "history",
+    "incident_actions",
     "next_onboarding_step",
     "owner_projection",
+    "resolve_action",
     "retry_action",
     "run_summary",
     "requires_operator_action",
@@ -34,6 +43,7 @@ __all__ = (
 )
 
 SlaState = Literal["NONE", "OVERDUE", "DUE"]
+_BFF_OPERATIONS_PREFIX: Final = "/api/admin/operations"
 _RETRYABLE_RUN_STATES: Final = frozenset({"PARTIAL", "FAILED", "CANCELLED"})
 _RETRYABLE_OPERATION_TYPES: Final = frozenset(
     {
@@ -151,7 +161,12 @@ def slack_state(outbox: NotificationOutbox | None) -> OperationsSlackState | Non
     )
 
 
-def retry_action(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsAction | None:
+def retry_action(
+    hospital_id: uuid.UUID,
+    run: OperationRun | None,
+    *,
+    enabled: bool = True,
+) -> OperationsAction | None:
     """Return the Admin BFF retry mutation descriptor only for supported failed runs."""
     if (
         run is None
@@ -170,14 +185,113 @@ def retry_action(hospital_id: uuid.UUID, run: OperationRun | None) -> Operations
         kind="RETRY_RUN",
         label="작업 다시 시도",
         method="POST",
-        path=f"/api/admin/operations/hospitals/{hospital_id}/runs/{run.id}/retry",
+        path=f"{_BFF_OPERATIONS_PREFIX}/hospitals/{hospital_id}/runs/{run.id}/retry",
+        enabled=enabled,
         reason_required=True,
         requires_idempotency_key=True,
     )
 
 
-def run_summary(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsRunSummary | None:
-    """Project a durable operation run and its eligible retry affordance."""
+def _incident_base_path(hospital_id: uuid.UUID | None, incident_id: uuid.UUID) -> str:
+    """인시던트 변경 라우트의 공통 앞부분 — 라우터가 실제로 등록한 두 형태뿐이다.
+
+    CAS 충돌 응답의 `incident_refetch_path`(`operations_center_actions`)와 같은 주소다.
+    """
+    if hospital_id is None:
+        return f"{_BFF_OPERATIONS_PREFIX}/incidents/{incident_id}"
+    return f"{_BFF_OPERATIONS_PREFIX}/hospitals/{hospital_id}/incidents/{incident_id}"
+
+
+def _may_act(actor: AdminUser | None, incident: Incident) -> bool:
+    """이 인시던트에 손댈 수 있는가 — 서버 가드와 같은 규칙.
+
+    `require_owner`(전체 시스템 인시던트)·`require_assignee_or_owner`(병원 인시던트)와
+    `authorize_run_retry`(연결 run의 담당자)가 모두 이 판정으로 수렴한다.
+
+    화면의 버튼과 서버 인가가 갈리면 눌러야 알 수 있는 403이 된다.
+    """
+    if actor is None:
+        return False
+    if actor.role == ROLE_OWNER:
+        return True
+    return incident.hospital_id is not None and incident.owner_id == actor.id
+
+
+def resolve_action(
+    incident: Incident,
+    run: OperationRun | None,
+    *,
+    actor: AdminUser | None,
+) -> OperationsAction | None:
+    """지금 이 인시던트가 받을 수 있는 상태 전이 하나.
+
+    RETRYING은 복구 확인, RECOVERED는 문제 확인이다. 두 전이는 상태로 배타적이라 한
+    자리면 충분하다. 복구 확인은 연결 작업의 성공이 관측돼야 서버가 받아 주므로
+    (`_recover`의 `INCIDENT_RECOVERY_NOT_OBSERVED`) 여기서도 같은 조건을 본다.
+    """
+    if actor is None:
+        return None
+    base = _incident_base_path(incident.hospital_id, incident.id)
+    allowed = _may_act(actor, incident)
+    if incident.state == IncidentState.RETRYING.value:
+        return OperationsAction(
+            kind="RECOVER_INCIDENT",
+            label="복구 확인 완료",
+            method="POST",
+            path=f"{base}/recover",
+            enabled=allowed and run is not None and run.state == OperationRunState.SUCCEEDED,
+            reason_required=True,
+            requires_version=True,
+        )
+    if incident.state == IncidentState.RECOVERED.value:
+        return OperationsAction(
+            kind="ACK_INCIDENT",
+            label="문제 확인 완료",
+            method="POST",
+            path=f"{base}/ack",
+            enabled=allowed,
+            reason_required=True,
+            requires_version=True,
+        )
+    return None
+
+
+def assign_action(incident: Incident, *, actor: AdminUser | None) -> OperationsAction | None:
+    """담당 지정/변경(H-15). OWNER만 실행할 수 있다(`require_owner`)."""
+    if actor is None:
+        return None
+    return OperationsAction(
+        kind="ASSIGN_INCIDENT",
+        label="담당 지정",
+        method="POST",
+        path=f"{_incident_base_path(incident.hospital_id, incident.id)}/assign",
+        enabled=actor.role == ROLE_OWNER,
+        reason_required=True,
+        requires_version=True,
+    )
+
+
+def incident_actions(row: OperationsQueueRow) -> list[OperationsAction]:
+    """행이 싣고 있는 실행 가능한 행동을 표시 순서대로 — 현황 예외 카드의 정본."""
+    return [
+        action
+        for action in (row.action, row.retry, row.resolve, row.assign)
+        if action is not None
+    ]
+
+
+def run_summary(
+    hospital_id: uuid.UUID,
+    run: OperationRun | None,
+    *,
+    retry_enabled: bool = True,
+) -> OperationsRunSummary | None:
+    """Project a durable operation run and its eligible retry affordance.
+
+    화면은 행의 `retry`보다 이 자리의 `retry`를 우선한다. 그래서 요청자를 아는 호출은
+    `authorize_run_retry`와 같은 판정(`run_retry_enabled`)을 넘겨야 한다 — 기본값을
+    그대로 내보내면 상세 화면만 서버보다 관대해지고, 버튼은 눌러야 403을 알려준다.
+    """
     if run is None:
         return None
     return OperationsRunSummary(
@@ -197,7 +311,7 @@ def run_summary(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsR
         started_at=run.started_at,
         completed_at=run.completed_at,
         version=run.version,
-        retry=retry_action(hospital_id, run),
+        retry=retry_action(hospital_id, run, enabled=retry_enabled),
     )
 
 
@@ -227,8 +341,13 @@ def serialize_incident_row(
     cause_group_key: str | None = None,
     same_type_count: int = 1,
     affected_hospital_count: int | None = None,
+    actor: AdminUser | None = None,
 ) -> OperationsQueueRow:
-    """Build the operations queue projection for one incident and its related records."""
+    """Build the operations queue projection for one incident and its related records.
+
+    `actor`를 모르면 인가에 달린 행동(재시도 활성 여부·복구/확인·담당 지정)은 예전
+    그대로 둔다 — 요청자를 모른 채 "가능하다"고 내보내면 화면이 서버보다 관대해진다.
+    """
     hospital_id = incident.hospital_id
     customer_name = hospital.name if hospital is not None else "전체 시스템"
     customer_path = f"/hospitals/{hospital_id}" if hospital_id else "/operations"
@@ -269,7 +388,18 @@ def serialize_incident_row(
         action=OperationsAction(
             kind="OPEN_INCIDENT", label="문제와 조치 확인", method="GET", path=detail_path
         ),
-        retry=retry_action(hospital_id, run) if hospital_id else None,
+        retry=(
+            retry_action(
+                hospital_id,
+                run,
+                # `authorize_run_retry`와 같은 규칙 — OWNER이거나 이 인시던트의 담당자.
+                enabled=True if actor is None else _may_act(actor, incident),
+            )
+            if hospital_id
+            else None
+        ),
+        resolve=resolve_action(incident, run, actor=actor),
+        assign=assign_action(incident, actor=actor),
         cause_code=projected_code,
         cause_message=projected_message,
         cause_group_key=projected_group_key,
@@ -298,16 +428,19 @@ def next_onboarding_step(hospital: Hospital) -> str:
 
     V0 is an independently recovering background diagnostic, so it never displaces
     a site, domain, or content-setup action that the operator can complete now.
+
+    안내가 가리키는 곳은 지금 화면 구성 그대로여야 한다 — 사라진 허브·스케줄 탭·체크리스트
+    이름을 남겨 두면 운영자가 없는 화면을 찾는다.
     """
     if not hospital.profile_complete:
-        return "병원 기본 정보 탭에서 필수 병원 정보를 입력하고 저장하세요."
+        return "병원 정보 탭에서 필수 병원 정보를 입력하고 저장하세요."
     if not hospital.site_built:
-        return "콘텐츠 허브에 노출할 병원 공개 정보를 확인하세요."
+        return "병원 공개 페이지에 노출할 병원 공개 정보를 확인하세요."
     if not hospital.site_live:
-        return "도메인 화면에서 공개 주소를 검증하고 운영 시작을 완료하세요."
+        return "병원 정보 화면의 자기 도메인에서 공개 주소를 검증하고 운영 시작을 완료하세요."
     if not hospital.schedule_set:
         return (
-            "온보딩 체크리스트에서 근거 자료 처리와 콘텐츠 운영 기준 자동 승인을 완료한 뒤 "
-            "스케줄 탭에서 월간 콘텐츠 일정과 발행 요일을 저장하세요."
+            "병원 정보 화면의 남은 필수 항목에서 근거 자료 처리와 콘텐츠 운영 기준 자동 "
+            "승인을 완료한 뒤 콘텐츠 화면의 발행 요일에서 월간 콘텐츠 일정을 저장하세요."
         )
     return "콘텐츠 운영 상태를 확인하고 첫 발행 준비를 진행하세요."

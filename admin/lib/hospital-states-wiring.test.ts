@@ -23,7 +23,7 @@ test('the hospital list reads the server states instead of judging its own', () 
   // 사진 승인은 사람만 풀 수 있다 — 목록에서 사라지면 병원을 열기 전에는 알 수 없다(O-2).
   assert.match(hospitalsList, /visual_approval_missing\?\.length/)
   assert.match(hospitalsList, /사진 승인 대기/)
-  assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/onboarding/)
+  assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/info/)
   // 링크는 사람이 결정할 문제에만 붙는다 — 연결됨·확인 중은 누를 곳이 아니다.
   assert.match(hospitalsList, /h\.domain_state\.kind === 'problem'/)
 })

@@ -4,8 +4,8 @@ import test from 'node:test'
 
 import { defaultAssetTitle, defaultAssetTitles, duplicateAssetTitles } from './asset-title.ts'
 
-const onboardingPage = readFileSync(
-  new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url),
+const photosSection = readFileSync(
+  new URL('../app/hospitals/[id]/info/PhotosSection.tsx', import.meta.url),
   'utf8',
 )
 
@@ -53,16 +53,9 @@ test('duplicateAssetTitles ignores blank titles that the server will fill in', (
 })
 
 test('the upload form sends the per-file title rather than one shared title', () => {
-  assert.match(onboardingPage, /fd\.append\('title', \(titles\[i\] \?\? ''\)\.trim\(\)\)/)
+  assert.match(photosSection, /setTitles\(defaultAssetTitles\(/)
+  assert.match(photosSection, /title: titles\[i\] \?\? '',/)
   // 공통 제목 상태가 남아 있으면 모든 파일이 다시 같은 제목으로 저장된다.
-  assert.doesNotMatch(onboardingPage, /const \[title, setTitle\] = useState\(''\)\n\s*const \[rightsOwner/)
-  assert.match(onboardingPage, /파일별 제목/)
-})
-
-test('existing photos can be renamed in place through the source PATCH', () => {
-  assert.match(
-    onboardingPage,
-    /`\/admin\/hospitals\/\$\{hospitalId\}\/essence\/sources\/\$\{source\.id\}`[\s\S]{0,120}method: 'PATCH'[\s\S]{0,120}JSON\.stringify\(\{ title: next \}\)/,
-  )
-  assert.match(onboardingPage, /제목 수정/)
+  assert.doesNotMatch(photosSection, /const \[title, setTitle\]/)
+  assert.match(photosSection, /id=\{`info-photo-title-\$\{index\}`\}/)
 })

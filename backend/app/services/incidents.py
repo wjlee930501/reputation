@@ -11,6 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.operations import Incident, IncidentState
 from app.services.audit_log import write_audit_log
+from app.services.incident_assignment import (
+    needs_auto_assign,
+    resolve_auto_assign_owner,
+)
 from app.services.incident_safety import (
     build_incident_key,
     incident_filter_expressions,
@@ -36,7 +40,7 @@ __all__ = (
     "IncidentNotFound",
     "IncidentOpenRequest", "IncidentTransitionConflict", "IncidentVersionConflict",
     "acknowledge_incident", "assign_incident",
-    "auto_acknowledge_incident",
+    "auto_acknowledge_incident", "auto_assign_owner",
     "build_incident_key",
     "incident_filter_expressions",
     "mark_recovered", "mark_retrying", "open_or_touch_incident",
@@ -142,7 +146,40 @@ async def open_or_touch_incident(
     ).returning(Incident).execution_options(populate_existing=True)
     incident = (await db.execute(statement)).scalar_one()
     await _audit(db, incident, actor, "incident_occurrence_recorded", reason)
-    return incident
+    return await auto_assign_owner(db, incident, observed_at=observed_at, actor=actor)
+
+
+async def auto_assign_owner(
+    db: AsyncSession,
+    incident: Incident,
+    *,
+    observed_at: datetime,
+    actor: str = "system",
+) -> Incident:
+    """새 에피소드가 열릴 때 담당자를 정해 둔다 (H-15).
+
+    후보 규칙과 "첫 open만" 조건은 worker 경로와 공유한다
+    (`services/incident_assignment`). 여기서만 다른 것은 배정을 낙관적 잠금으로
+    기록하고 감사 로그를 남긴다는 점뿐이다.
+    """
+    if not needs_auto_assign(incident.owner_id, incident.first_seen_at, observed_at):
+        return incident
+    owner_id = await resolve_auto_assign_owner(db, incident.hospital_id)
+    if owner_id is None:
+        return incident
+    assigned = await _mutate(
+        db,
+        incident.id,
+        incident.version,
+        None,
+        {"owner_id": owner_id},
+        actor,
+        "incident_assigned",
+        "auto-assigned on first open",
+        observed_at,
+        detail_extra={"auto_assigned": True, "auto_assigned_to": str(owner_id)},
+    )
+    return assigned if isinstance(assigned, Incident) else incident
 
 
 async def assign_incident(
@@ -265,6 +302,7 @@ async def _mutate(
     db: AsyncSession, incident_id: uuid.UUID, expected_version: int,
     required_state: IncidentState | None, values: dict[str, str | uuid.UUID | datetime | None],
     actor: str, action: str, reason: str, now: datetime | None,
+    *, detail_extra: dict[str, str | bool] | None = None,
 ) -> IncidentMutationResult:
     changed_at = now or datetime.now(UTC)
     predicates = [Incident.id == incident_id, Incident.version == expected_version]
@@ -276,7 +314,7 @@ async def _mutate(
     incident = (await db.execute(statement)).scalar_one_or_none()
     if incident is None:
         return await _conflict(db, incident_id, expected_version, required_state)
-    await _audit(db, incident, actor, action, reason)
+    await _audit(db, incident, actor, action, reason, detail_extra)
     return incident
 
 
@@ -320,13 +358,15 @@ async def _transition_error(
 
 
 async def _audit(
-    db: AsyncSession, incident: Incident, actor: str, action: str, reason: str | None
+    db: AsyncSession, incident: Incident, actor: str, action: str, reason: str | None,
+    detail_extra: dict[str, str | bool] | None = None,
 ) -> None:
     await write_audit_log(
         db, action=action, hospital_id=incident.hospital_id, actor=actor,
         target_type="incident", target_id=incident.id,
         detail={"state": incident.state, "version": incident.version,
                 "occurrence_count": incident.occurrence_count,
-                "reason": sanitize_operator_text(reason, limit=200) if reason else None},
+                "reason": sanitize_operator_text(reason, limit=200) if reason else None,
+                **(detail_extra or {})},
     )
     await db.flush()

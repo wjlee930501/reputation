@@ -26,7 +26,7 @@ from app.api.admin.operations_center_serializers import (
 from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
-from app.schemas.operations import OperationsQueueRow
+from app.schemas.operations import OperationsOwner, OperationsQueueRow
 
 HospitalScope = uuid.UUID | None | EllipsisType
 
@@ -39,6 +39,14 @@ ACTIVE_INCIDENT_STATES = ("OPEN", "RETRYING")
 # 없이 센다 — 카드가 잘렸다고 병원이 가진 예외 수까지 줄여 말하지 않는다.
 _OPERATOR_GROUP_CAP = 100
 
+# 한 행이 실어 보내는 소속 인시던트 id 상한. 깊은 링크(`detail=incident:{id}`)가 묶음
+# 대표 행으로 접혀도 그 행을 찾을 수 있게 하려는 값이라, 목록이 아니라 조회용이다.
+_MEMBER_INCIDENT_ID_CAP = 100
+
+# "조치 필요" 화면이 함께 싣는, 지금은 자동 복구가 맡은 묶음 수 상한. 사람 몫 목록의
+# 페이지·총계는 이 행들을 세지 않는다 — 맥락일 뿐 할 일이 아니다.
+_PENDING_GROUP_CAP = 25
+
 # 인시던트 정렬 — 기한이 임박한 것부터. 원인 묶음의 대표 행도 이 순서의 첫 건이다.
 _INCIDENT_ORDER_BY = (
     Incident.sla_due_at.asc().nullslast(),
@@ -50,11 +58,12 @@ _INCIDENT_ORDER_BY = (
 def _group_incident_rows(
     rows: list[tuple[Incident, Hospital | None, AdminUser | None, OperationRun | None, NotificationOutbox | None]],
     now: datetime,
+    actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """Collapse repeated symptoms into one stable root-cause projection."""
     grouped: dict[str, list[OperationsQueueRow]] = {}
-    for incident, hospital, actor, run, outbox in rows:
-        row = serialize_incident_row(incident, hospital, actor, run, outbox, now)
+    for incident, hospital, owner, run, outbox in rows:
+        row = serialize_incident_row(incident, hospital, owner, run, outbox, now, actor=actor)
         key = row.cause_group_key or row.cause_code or incident.incident_type
         grouped.setdefault(key, []).append(row)
 
@@ -73,6 +82,14 @@ def _group_incident_rows(
                     "cause_group_key": key,
                     "same_type_count": len(members),
                     "affected_hospital_count": len(hospitals),
+                    # 묶음에 접힌 인시던트 id 전부. 깊은 링크가 대표 행을 찾는 근거다 —
+                    # 이 값이 없으면 `detail=incident:{id}`는 묶인 순간 아무 행과도
+                    # 맞지 않아 상세가 열리지 않는다.
+                    "member_incident_ids": [
+                        member.incident_id
+                        for member in members
+                        if member.incident_id is not None
+                    ][:_MEMBER_INCIDENT_ID_CAP],
                 }
             )
         )
@@ -129,6 +146,7 @@ async def load_incidents_queue(
     now: datetime,
     incident_id: uuid.UUID | None = None,
     hospital_scope: HospitalScope = ...,
+    actor: AdminUser | None = None,
 ) -> tuple[int, list[OperationsQueueRow]]:
     """Load one incident page using one page query plus an optional count query."""
     assignee = aliased(AdminUser)
@@ -168,6 +186,8 @@ async def load_incidents_queue(
     group_statement = (
         select(
             Incident.id,
+            Incident.state,
+            Incident.sla_due_at,
             Incident.safe_error_code,
             Incident.incident_type,
             Incident.source_type,
@@ -183,9 +203,17 @@ async def load_incidents_queue(
     )
     group_rows = (await db.execute(group_statement)).all()
 
+    # 기본 "조치 필요" 화면에서는 거르기가 묶기보다 먼저다(현황 카드와 같은 순서,
+    # `_operator_incident_groups`). 순서가 반대면 약속한 재시도 창이 남은 RETRYING
+    # 스물다섯 건이 1페이지를 채우고 사람이 손대야 하는 OPEN 한 건을 다음 페이지로
+    # 밀어낸다. 총계도 기계가 맡은 일을 사람의 할 일처럼 세게 된다.
+    actionable_first = filters.status is None and filters.recovery == IncidentRecoveryFilter.ACTIVE
     groups: dict[str, list[uuid.UUID]] = {}
+    pending_groups: dict[str, list[uuid.UUID]] = {}
     for (
         row_id,
+        state,
+        sla_due_at,
         incident_code,
         incident_type,
         source_type,
@@ -201,6 +229,9 @@ async def load_incidents_queue(
             run_safe_error_code=run_code,
             run_operation_type=run_operation_type,
         )
+        if actionable_first and not requires_operator_action(state, sla_due_at, now):
+            pending_groups.setdefault(key, []).append(row_id)
+            continue
         groups.setdefault(key, []).append(row_id)
 
     total = len(groups)
@@ -210,13 +241,35 @@ async def load_incidents_queue(
         for key in list(groups.keys())[start : start + page_size]
         for incident_id in groups[key]
     ]
-    if not page_incident_ids:
+    # 자동 복구가 맡은 묶음은 버리지 않고 맥락으로 함께 싣는다 — 화면은 이 행들을
+    # `requires_operator_action=False`로 보고 접어서 보여준다(FE `partitionOperationsRows`).
+    # 사람 몫 묶음이 하나라도 있는 원인은 이미 위에서 조치 대상으로 셌으므로 제외한다.
+    # overview는 큐마다 앞 5건만 읽는 요약이라 맥락 행을 싣지 않는다.
+    pending_incident_ids = (
+        []
+        if overview
+        else [
+            incident_id
+            for key in [key for key in pending_groups if key not in groups][:_PENDING_GROUP_CAP]
+            for incident_id in pending_groups[key]
+        ]
+    )
+    if not page_incident_ids and not pending_incident_ids:
         return total, []
 
     # Pass 2 — load the full projection (Hospital/AdminUser/OperationRun/
     # NotificationOutbox) only for the incidents whose groups landed on this page,
     # instead of for every incident that matched the filter.
-    return total, await _load_grouped_rows(db, page_incident_ids, now=now)
+    rows = (
+        await _load_grouped_rows(db, page_incident_ids, now=now, actor=actor)
+        if page_incident_ids
+        else []
+    )
+    if pending_incident_ids:
+        rows.extend(
+            await _load_grouped_rows(db, pending_incident_ids, now=now, actor=actor)
+        )
+    return total, rows
 
 
 async def _load_grouped_rows(
@@ -224,6 +277,7 @@ async def _load_grouped_rows(
     incident_ids: list[uuid.UUID],
     *,
     now: datetime,
+    actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """Project the named incidents with their related records and collapse the groups."""
     owner = aliased(AdminUser)
@@ -251,7 +305,7 @@ async def _load_grouped_rows(
         .order_by(*_INCIDENT_ORDER_BY)
     )
     raw_rows = [tuple(row) for row in (await db.execute(statement)).all()]
-    return _group_incident_rows(raw_rows, now)
+    return _group_incident_rows(raw_rows, now, actor)
 
 
 async def _operator_incident_groups(
@@ -343,6 +397,7 @@ async def load_operator_incident_groups(
     hospital_id: uuid.UUID,
     *,
     now: datetime,
+    actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """한 병원의 사람 몫 예외 — 원인 묶음 하나가 행 하나다(현황 화면의 예외 카드).
 
@@ -357,13 +412,37 @@ async def load_operator_incident_groups(
     ]
     if not incident_ids:
         return []
-    return await _load_grouped_rows(db, incident_ids, now=now)
+    return await _load_grouped_rows(db, incident_ids, now=now, actor=actor)
+
+
+async def load_assignable_accounts(db: AsyncSession) -> list[OperationsOwner]:
+    """담당으로 고를 수 있는 계정 — 활성 운영자에서 운영 점검 계정을 뺀 목록.
+
+    배정 라우트가 활성 계정만 받으므로(`INVALID_OWNER`) 여기서 같은 조건을 쓴다.
+    운영 점검 계정 제외는 실운영 인원 지표(`utils/production_readiness.py`)와 같은 기준이다.
+    """
+    accounts = (
+        (
+            await db.execute(
+                select(AdminUser)
+                .where(
+                    AdminUser.is_active.is_(True),
+                    AdminUser.is_operations_test.is_(False),
+                )
+                .order_by(AdminUser.name.asc(), AdminUser.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [OperationsOwner(id=user.id, name=user.name, email=user.email) for user in accounts]
 
 
 __all__ = (
     "ACTIVE_INCIDENT_STATES",
     "HospitalScope",
     "count_operator_incidents",
+    "load_assignable_accounts",
     "load_incidents_queue",
     "load_operator_incident_groups",
 )

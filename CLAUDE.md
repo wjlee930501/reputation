@@ -1,8 +1,8 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-문서 버전: **2.5** · 갱신일: **2026-09-08 (Asia/Seoul)**
+문서 버전: **2.6** · 갱신일: **2026-09-09 (Asia/Seoul)**
 소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
-구현 상태: **기준선 위 V0 공개 게이트 분리·자동 이어가기 구현 및 검증 중. 운영 배포 전**
+구현 상태: **체크포인트 1(Phase 0 + PR-1A/1B, `4bd1e03`) 운영 배포 완료. 체크포인트 2(PR-1C~1E admin 재구성·PR-0D 측정·복구·보안) 검증·배포 중**
 
 이 파일은 과거 제품 브리프를 현재 코드 기준의 개발 안내로 교체한 것이다. 전체 흐름과 근거 파일은 [현재 시스템 구조](docs/architecture/system-map.md), 문서의 지위는 [문서 인덱스](docs/README.md)에서 확인한다. 코드 기본값과 운영 환경, 목표 정책과 현재 구현 차이를 구분한다.
 
@@ -16,7 +16,7 @@
 ## 현재 기술·책임 경계
 
 - Backend: Python 3.11/FastAPI, PostgreSQL/SQLAlchemy/Alembic, Celery/Redis/RedBeat, Jinja2/WeasyPrint. API async와 Worker sync 세션이 공존한다.
-- Admin/Site: Next App Router, 조사 기준 Next 16.3.1, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다.
+- Admin/Site: Next App Router, 조사 기준 Next 16.3.1, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다. 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)은 BFF가 서명한 actor 단언(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET`, 120초)을 요구하며, 배치·CLI는 `X-Admin-Actor-System`으로 감사에 `system:<job>`으로 남는다. 공유 `X-Admin-Key`만으로 actor를 고르는 경로는 없다.
 - 운영 배포: API, Worker, Beat, Admin, Site 모두 GCP Cloud Run. Cloud SQL, Memorystore, GCS, HTTPS Load Balancer와 인증서 구성을 사용한다.
 - 콘텐츠는 Anthropic Claude, 기본 이미지 경로는 Vertex Gemini, 측정은 OpenAI/Gemini API다. 개발 에이전트 모델과 서비스의 모델을 혼동하지 않는다. 실제 모델은 `backend/app/core/config.py`와 배포 설정으로 확인한다.
 - `build_aeo_site`는 상태 준비·자동 활성화 작업이다. 별도의 `site_builder.py`나 병원별 HTML/CSS 생성기를 전제로 개발하지 않는다.
@@ -42,6 +42,13 @@
 - 2026-09-07~08 기존 공개 글 전환은 고정된 운영 manifest와 CAS로 수행했다. FAQ 3건 구두점 수리, 본문 22건 독립 검수, 이미지 115건 인증 뒤 정확한 공개 ID 집합과 새 엄격 공개 gate를 read-only로 검증했다. AI 검수 메타데이터가 레거시인 글을 그 이유만으로 유료 재검수하지 않는 원칙을 유지한다. 상세 수치와 증거는 [운영 전환 기록](docs/releases/2026-09-07-eb55518-partial.md)을 본다.
 - 지연 발행은 원 계약 월을 보존한다. `published_at`·`published_by`는 현재 공개 판을 나타내고, 처음 공개한 사실은 `first_published_at`·`first_published_by`에 한 번만 기록해 실제 발행·계약 이행·귀속의 닫힌 월 집계에 사용한다. 반려나 근거 철회로 현재 공개 판이 내려가도 최초 사실을 지우지 않으며 재발행은 현재 판 시각만 갱신한다. 마이그레이션 전에 반려가 이미 지운 발행일은 추정해 복원하지 않는다.
 - 후행 검수는 조건부 표본 확인이다. 모든 글의 수동 승인이나 월간 보고 차단으로 확대하지 않는다.
+
+### Admin 화면과 사람의 일
+
+- 병원 화면은 `/hospitals/{id}` 아래 탭 4개(`현황 · 병원 정보 · 콘텐츠 · 보고서`)뿐이다. 옛 8개 경로(`dashboard, onboarding, profile, schedule, wiki, essence, query-targets, exposure-actions`)는 `admin/lib/route-redirects.ts`의 매핑으로 새 탭에 redirect되며 2026-10-09에 제거한다. 그 전에 백엔드가 만드는 admin 딥링크도 새 경로로 옮긴다. 새 탭·화면·전용 lib를 만들 때 옛 경로를 되살리지 않는다.
+- 병원 상태는 `hospital_states.py`의 3상태(`준비 중 · 운영 중 · 일시정지`)와 `hospital_overview`의 예외 카드로만 표현한다. 사람의 할 일은 `requires_operator_action`(운영센터 직렬화기) 한 규칙으로 판정하고 현황·콘텐츠·운영센터·Slack이 같은 판정을 쓴다. 기한 안의 자동 재시도(`RETRYING`)와 `RUNNING`을 사람의 일로 표시하지 않으며, 스윕이 소유한 복구(예: 사이트 준비 재시도)는 시도마다 인시던트를 열지 않고 예산 소진 시 원인별 인시던트 하나만 연다.
+- 사람이 하는 일은 계약 등록(한 화면 `/hospitals/new` → 병원 생성·계약 기록·인수 수락 한 트랜잭션), 병원 정보·공개 주소 결정, 예외 카드의 서버 허용 행동, 보고서 전달 기록이다. 운영자 문구는 `admin/lib/admin-copy.ts`의 `ADMIN_COPY`만 쓰고, `scripts/check_user_facing_terms.py`가 `admin/app`·`admin/lib`·`admin/types` 전체에서 통일 전 용어를 막는다. 백엔드가 만드는 운영자 문구(`readiness_operator_copy.py` 등)는 가드 밖이므로 존재하는 탭 이름만 쓰는지 검토 때 확인한다.
+- 계약 등록으로 태어난 인수 기록은 `HANDOFF_ACCEPTED`이며 `sla_due_at`은 인수 기한이라 수락 뒤에는 온보딩 큐·마일스톤에서 기한 초과로 읽지 않는다.
 
 ### 측정·리포트
 

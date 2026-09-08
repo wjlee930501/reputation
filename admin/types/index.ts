@@ -86,7 +86,7 @@ export interface Hospital {
   missing_profile_requirements: MissingProfileRequirement[]
   /** 프로필 저장 응답에만 실린다. */
   source_registration?: ProfileSourceRegistration[]
-  /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
+  /** 승인이 남은 병원 공개 페이지 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
   visual_approval_missing?: string[]
   v0_report_done: boolean
   site_built?: boolean
@@ -169,6 +169,19 @@ export interface HospitalOverviewException {
   /** 서버가 지금 허용한 행동만. 비어 있으면 버튼을 만들지 않는다. */
   allowed_actions: string[]
   href: string
+  hospital_id: string
+  incident_id: string | null
+  operation_run_id: string | null
+  content_id: string | null
+  /** 인시던트의 낙관적 잠금 값. 상태를 바꾸는 요청이 이 값을 함께 보낸다. */
+  version: number | null
+  /** 이 카드에 접힌 같은 원인 인시던트 수. 행동은 대표 인시던트 하나에만 적용된다. */
+  same_type_count?: number
+  /**
+   * 서버가 이 카드에 등록한 mutation 서술자 그대로. 지금 못 하는 행동도
+   * `enabled: false`로 함께 온다 — 화면이 경로·권한을 새로 쓰지 않는다.
+   */
+  actions: OperationsAction[]
 }
 
 export interface HospitalOverviewMonth {
@@ -206,6 +219,23 @@ export interface ContentReference {
   title: string
   url: string
   publisher?: string | null
+}
+
+// 월 표의 행 상태 — backend content_row_state.py가 라벨까지 정해서 내려준다.
+export type ContentRowStateKind =
+  | 'public'
+  | 'withheld'
+  | 'scheduled'
+  | 'generating'
+  | 'blocked'
+  | 'closed'
+
+export interface ContentRowState {
+  kind: ContentRowStateKind
+  label: string
+  reason: string | null
+  // 차단·보류로 막힌 글에만 붙는 운영 센터 링크.
+  link: { kind: 'incident' | 'run'; href: string; next_action?: string | null } | null
 }
 
 export interface ContentItem {
@@ -262,11 +292,13 @@ export interface ContentItem {
     references_count?: number
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
-    // 공개 사이트가 이 글을 실제로 내보내는지 — 공개 표면과 같은 판정 함수의 결과다.
+    // 공개 사이트가 이 글을 실제로 내보내는지 — 병원 공개 페이지와 같은 판정 함수의 결과다.
     // 서버가 항상 내려주므로 선택 필드가 아니다. 값이 없다면 계약이 깨진 것이고,
     // 화면은 "공개 중"이 아니라 보류로 취급해야 한다(H-01).
     public_visibility: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
+  // 서버가 목록·상세·PATCH 응답 모두에 항상 내려주는 행 판정이다.
+  row_state: ContentRowState
   body?: string | null
   image_prompt?: string | null
 }
@@ -563,7 +595,7 @@ export interface ExposureActionCreateBriefResponse {
   }
 }
 
-// GET /admin/hospitals/{id}/schedule — 활성 스케줄 (없으면 404)
+// GET /admin/hospitals/{id}/schedule — 활성 발행 일정 (없으면 404)
 export interface ScheduleInfo {
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
   publish_days: number[]
@@ -573,8 +605,8 @@ export interface ScheduleInfo {
 
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   ONBOARDING: { label: '온보딩 진행 중', color: 'bg-gray-100 text-gray-700' },
-  ANALYZING: { label: 'AI 진단 분석 중', color: 'bg-blue-100 text-blue-700' },
-  BUILDING: { label: '콘텐츠 허브 준비 중', color: 'bg-orange-100 text-orange-700' },
+  ANALYZING: { label: '초기 진단 보고서 준비 중', color: 'bg-blue-100 text-blue-700' },
+  BUILDING: { label: '병원 공개 페이지 준비 중', color: 'bg-orange-100 text-orange-700' },
   PENDING_DOMAIN: { label: '공개 주소 확인 대기', color: 'bg-yellow-100 text-yellow-700' },
   ACTIVE: { label: '운영 중', color: 'bg-green-100 text-green-700' },
   PAUSED: { label: '운영 일시 정지', color: 'bg-red-100 text-red-700' },
@@ -704,10 +736,22 @@ export interface OperationsQueueRow {
   readonly next_action: string
   readonly action: OperationsAction
   readonly retry: OperationsAction | null
+  /**
+   * 이 행이 지금 받을 수 있는 상태 전이 하나(복구 확인 → 문제 확인)와 담당 지정.
+   * 요청한 계정의 권한을 모르는 옛 응답에는 둘 다 없다 — 없으면 화면이 예전처럼
+   * 상태에서 직접 유추한다.
+   */
+  readonly resolve?: OperationsAction | null
+  readonly assign?: OperationsAction | null
   readonly cause_code: string | null
   readonly cause_message: string | null
   readonly cause_group_key: string | null
   readonly same_type_count: number
+  /**
+   * 이 행에 접힌 인시던트 id 전부(묶음 상한까지). 깊은 링크(`detail=incident:{id}`)가
+   * 대표 행으로 접힌 건을 찾는 근거다. 옛 응답에는 없다.
+   */
+  readonly member_incident_ids?: readonly string[]
   readonly affected_hospital_count: number
   readonly cost_guard_category: string | null
   /**
@@ -767,4 +811,9 @@ export interface OperationsRunSummary {
 export interface OperationsIncidentDetail {
   readonly incident: OperationsQueueRow
   readonly run: OperationsRunSummary | null
+  /**
+   * 담당으로 고를 수 있는 계정. 사건 상세 응답에만 있다 — 목록 행만 가지고 화면이
+   * 임시로 만든 상세에는 없으므로, 없을 때는 담당 선택을 그리지 않는다.
+   */
+  readonly assignable_accounts?: readonly OperationsOwner[]
 }

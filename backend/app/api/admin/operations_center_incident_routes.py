@@ -55,8 +55,15 @@ async def _assign(
     require_owner(actor)
     await _load_incident(db, hospital_id, incident_id)
     if body.owner_id is not None:
+        # 고를 수 있는 목록(`load_assignable_accounts`)과 같은 조건이어야 한다. 운영 점검
+        # 계정은 화면에 뜨지 않는데 요청 본문으로는 지정할 수 있으면, 담당자는 있는데
+        # 아무도 보지 않는 예외가 만들어진다.
         owner = await db.scalar(
-            select(AdminUser).where(AdminUser.id == body.owner_id, AdminUser.is_active.is_(True))
+            select(AdminUser).where(
+                AdminUser.id == body.owner_id,
+                AdminUser.is_active.is_(True),
+                AdminUser.is_operations_test.is_(False),
+            )
         )
         if owner is None:
             raise operations_error(
@@ -74,7 +81,7 @@ async def _assign(
     if not isinstance(result, Incident):
         raise_incident_conflict(result, hospital_id)
     await db.commit()
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 async def _acknowledge(
@@ -100,7 +107,7 @@ async def _acknowledge(
     if not isinstance(result, Incident):
         raise_incident_conflict(result, hospital_id)
     await db.commit()
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 async def _recover(
@@ -156,7 +163,7 @@ async def _recover(
     if not isinstance(result, Incident):
         raise_incident_conflict(result, hospital_id)
     await db.commit()
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 @router.post(
