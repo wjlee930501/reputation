@@ -706,7 +706,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 5: 수동 초안 생성 삭제, 보관·재검수 요청 추가 (H-04)
 
-> **실행 기록 (2026-09-08):** Task 4 검토의 잔여 지적을 이 Task의 **Step 0**(별도 커밋)으로 흡수 — ① `automatic_ai_review`·자동 복구 사이클 gap 필드명을 `app/models/essence.py`의 공유 상수로(두 모듈의 리터럴 중복 제거) ② `override_reason`은 strip 후 검증(공백 20자 불허) ③ 사유가 있어도 snapshot 변경 409가 우선함을 증명하는 테스트 ④ 대시보드 감사 기록 줄에 예외 승인 사유·보류 사유 표시. 재검수 요청의 계약을 명시: 초안 본문 수정은 재합성 입력이 아니며(근거 노트·자료가 입력), 사람이 고친 문장을 채택하려면 예외 승인을 쓴다.
+> **실행 기록 (2026-09-08):** Task 4 검토의 잔여 지적을 이 Task의 **Step 0**(별도 커밋)으로 흡수 — ① `automatic_ai_review`·자동 복구 사이클 gap 필드명을 `app/models/essence.py`의 공유 상수로(두 모듈의 리터럴 중복 제거) ② `override_reason`은 strip 후 검증(공백 20자 불허) ③ 사유가 있어도 snapshot 변경 409가 우선함을 증명하는 테스트 ④ 대시보드 감사 기록 줄에 예외 승인 사유·보류 사유 표시. 재검수 요청의 계약을 명시: 초안 본문 수정은 재합성 입력이 아니며(근거 노트·자료가 입력), 사람이 고친 문장을 채택하려면 예외 승인을 쓴다. 구현 `8c6e1b1`(Step 0)·`6270576`(본) 뒤 Codex REQUEST_CHANGES → 후속 커밋에서 ① 커밋 후 broker 장애는 500 대신 200 + `re_review_dispatched=false`(15분 재조정이 회수) ② 병원당 30분 쿨다운(감사 기록 기반, 429 `RE_REVIEW_COOLDOWN`) + 유료 호출을 명시한 확인 대화상자 ③ 버튼 "자료 기준 자동 재검수"로 문구 정렬 ④ admin에 `AUTO_REVIEW_GAP_FIELD` 상수. 결정적 finding이 사람 조작 없이 반복 비용을 만들지 않는 것은 확인됨(재에스컬레이션은 복구 마커 8을 저장하고 자동 복구는 <8만 대상).
 
 **Files:**
 - Modify: `backend/app/api/admin/essence.py` — `create_philosophy_draft`(1539-1607) 삭제, `archive`/`re-review` 라우트 추가
