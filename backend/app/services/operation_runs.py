@@ -173,8 +173,12 @@ async def retry_operation_run(
     retry_key = run_keys.retry_operation_key(previous.id, retry.request_key)
     if retry_key is None:
         raise transitions.OperationTransitionRejected(previous.id, "MISSING_RETRY_KEY")
-    # 재시도 실행도 원 실행과 같은 판으로 세어야 예산이 재시도로 새지 않는다.
-    revision = previous.request_payload.get("revision")
+    # 재시도 실행도 원 실행과 같은 대상으로 세어야 예산이 재시도로 새지 않는다.
+    carried = {
+        key: value
+        for key in ("subject_hash", "title", "revision")
+        if (value := previous.request_payload.get(key)) is not None
+    }
     command = OperationCommand(
         operation_type=previous.operation_type,
         hospital_id=previous.hospital_id,
@@ -186,7 +190,7 @@ async def retry_operation_run(
         queue=dispatch.queue,
         task_args=dispatch.task_args,
         parent_run_id=previous.id,
-        request_payload_extra={"revision": revision} if type(revision) is int else None,
+        request_payload_extra=carried or None,
     )
     return await dispatch_operation(db, command, task)
 

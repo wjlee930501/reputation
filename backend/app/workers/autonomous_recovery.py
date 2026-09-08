@@ -300,7 +300,7 @@ def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int
 
     태스크는 실행 하나당 공급자를 많아야 한 번 부르므로 재실행은 이 sweep만 만든다.
     쿨다운·진행 중 판정·예산은 모두 `published_image_recertification`의 한 규칙이라,
-    PATCH·sweep·운영자 재시도가 겹쳐도 (글, 판)당 유료 호출이 늘지 않는다.
+    PATCH·sweep·운영자 재시도가 겹쳐도 (글, subject)당 유료 호출이 늘지 않는다.
     """
     candidates = _cleared_certificate_candidates(db)
     runs_by_item = _recertify_runs_by_item(db, candidates)
@@ -308,11 +308,11 @@ def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int
     for item in candidates:
         if dispatched >= _RECERTIFY_DISPATCH_LIMIT:
             break
-        revision = int(getattr(item, "content_revision", 1) or 1)
+        subject = recertification.subject_hash_of(item)
         runs = runs_by_item.get(str(item.id), [])
-        if not recertification.sweep_may_dispatch(runs, revision, now=observed_at):
+        if not recertification.sweep_may_dispatch(runs, subject, now=observed_at):
             continue
-        if _start_recertify_run(db, item, revision, runs, observed_at):
+        if _start_recertify_run(db, item, subject, runs, observed_at):
             dispatched += 1
     return dispatched
 
@@ -320,7 +320,7 @@ def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int
 def _start_recertify_run(
     db,
     item: ContentItem,
-    revision: int,
+    subject_hash: str,
     runs: list[OperationRun],
     observed_at: datetime,
 ) -> bool:
@@ -328,7 +328,7 @@ def _start_recertify_run(
 
     worker가 publish를 먼저 집어도 claim할 행이 있어야 한다. publish가 실패해도 남은
     REQUESTED run을 이 파일의 재배달 sweep이 잇는다. 두 reconcile이 겹쳐 같은 키를
-    만들면 뒤에 온 쪽은 건너뛴다 — 같은 판을 두 번 사지 않기 위해서다.
+    만들면 뒤에 온 쪽은 건너뛴다 — 같은 subject를 두 번 사지 않기 위해서다.
     """
     target_id = str(item.id)
     task_id = str(uuid.uuid4())
@@ -337,7 +337,7 @@ def _start_recertify_run(
         hospital_id=item.hospital_id,
         operation_type=recertification.RECERTIFY_OPERATION,
         state=OperationRunState.REQUESTED,
-        idempotency_key=recertification.next_sweep_key(item.id, revision, runs),
+        idempotency_key=recertification.next_sweep_key(item.id, subject_hash, runs),
         requested_by_id=None,
         task_id=task_id,
         requested_at=observed_at,
@@ -346,7 +346,12 @@ def _start_recertify_run(
         success_count=0,
         failure_count=0,
         skipped_count=0,
-        request_payload=recertification.request_payload(item.id, revision),
+        request_payload=recertification.request_payload(
+            item.id,
+            subject_hash=subject_hash,
+            title=item.title,
+            revision=int(getattr(item, "content_revision", 1) or 1),
+        ),
         version=1,
     )
     savepoint = db.begin_nested()

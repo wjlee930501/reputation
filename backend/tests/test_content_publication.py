@@ -180,6 +180,27 @@ def test_essence_writers_preserve_durable_image_certification_attempt(monkeypatc
     assert item.essence_check_summary["legacy_image_certification"] == state
 
 
+def test_essence_writers_keep_the_published_image_recertification_block(monkeypatch):
+    """재승인·본문 편집은 제목을 바꾸지 않는다. 재인증 차단 표시를 지우면 안 된다 (H-01)."""
+    _aligned(monkeypatch)
+    marker = {
+        "subject_hash": "a" * 64,
+        "title": "치질 증상과 진료 시점",
+        "blocked": True,
+        "code": "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+    }
+    item = _item(content_revision=4, essence_check_summary={"image_recertification": marker})
+    philosophy = _philosophy()
+
+    assessment = content_publication.assess_content_publication(item, philosophy)
+    content_publication.apply_publication_assessment(item, assessment)
+    assert item.essence_check_summary["image_recertification"] == marker
+
+    content_publication.apply_essence_revalidation(item, philosophy)
+    assert item.content_revision == 5
+    assert item.essence_check_summary["image_recertification"] == marker
+
+
 def test_publication_gate_uses_the_render_aware_check_for_the_body(monkeypatch):
     """발행 게이트는 본문을 **렌더 결과 기준**으로 검사해야 한다.
 

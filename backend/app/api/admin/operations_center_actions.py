@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Final, assert_never
 
 from fastapi import Depends, HTTPException, Request
@@ -203,14 +204,14 @@ async def authorize_run_retry(db: AsyncSession, actor: AdminUser, run: Operation
 async def require_retry_within_budget(db: AsyncSession, run: OperationRun) -> None:
     """Hold an operator retry to the same rule the automatic paths follow.
 
-    공개 이미지 재인증은 (글, 판)당 유료 재검수 예산이 하나뿐이다. 사람이 버튼을 눌러
-    그 예산 밖에서 같은 답을 다시 사게 두면 자동 경로의 상한이 무의미해진다.
+    공개 이미지 재인증은 (글, 이미지 subject)당 유료 재검수 예산이 하나뿐이다. 사람이
+    버튼을 눌러 그 예산 밖에서 같은 답을 다시 사게 두면 자동 경로의 상한이 무의미해진다.
     """
 
     if run.operation_type != recertification.RECERTIFY_OPERATION:
         return
-    revision = recertification.payload_revision(run)
-    if revision is None or run.safe_error_code in recertification.OPERATOR_REQUIRED_CODES:
+    subject = recertification.payload_subject_hash(run)
+    if subject is None or run.safe_error_code in recertification.OPERATOR_REQUIRED_CODES:
         raise operations_error(
             409,
             "OPERATION_NOT_RETRYABLE",
@@ -234,11 +235,22 @@ async def require_retry_within_budget(db: AsyncSession, run: OperationRun) -> No
         for candidate in runs
         if recertification.payload_source_id(candidate) == source_id
     ]
-    if recertification.attempts_spent(item_runs, revision) >= recertification.ATTEMPT_BUDGET:
+    now = datetime.now(UTC)
+    if recertification.in_flight(item_runs, subject, now=now):
         raise operations_error(
             409,
             "OPERATION_NOT_RETRYABLE",
-            f"이 판의 자동 재인증을 정해진 횟수만큼 이미 시도했습니다. {recertification.OPERATOR_ACTION}",
+            "같은 글의 자동 재인증이 진행 중입니다. 완료된 뒤 다시 확인하세요.",
+        )
+    if (
+        recertification.attempts_spent(item_runs, subject, now=now)
+        >= recertification.ATTEMPT_BUDGET
+    ):
+        raise operations_error(
+            409,
+            "OPERATION_NOT_RETRYABLE",
+            f"이 제목의 자동 재인증을 정해진 횟수만큼 이미 시도했습니다. "
+            f"{recertification.OPERATOR_ACTION}",
         )
 
 

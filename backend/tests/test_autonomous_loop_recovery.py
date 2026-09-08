@@ -7,9 +7,10 @@ from types import SimpleNamespace
 import arrow
 
 from app.core.celery_app import celery_app
-from app.models.content import ContentItem
+from app.models.content import ContentItem, ContentType
 from app.models.hospital import Hospital
 from app.models.operations import Incident, OperationRun, OperationRunState
+from app.services.image_engine import image_subject_hash
 from app.workers import autonomous_recovery, tasks
 
 
@@ -858,9 +859,13 @@ def test_failed_scheduled_monthly_run_is_reclaimed_automatically() -> None:
 _RECERTIFY_NOW = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
 
 
-def _withheld_item(revision: int = 3):
+def _withheld_item(revision: int = 3, title: str = "치질 증상"):
     return SimpleNamespace(
-        id=uuid.uuid4(), hospital_id=uuid.uuid4(), content_revision=revision
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        content_revision=revision,
+        content_type=ContentType.DISEASE,
+        title=title,
     )
 
 
@@ -869,7 +874,7 @@ def _recertify_run(
     *,
     state,
     safe_error_code=None,
-    revision=None,
+    title=None,
     finished_minutes_ago=60,
     active_minutes_ago=1,
 ):
@@ -885,7 +890,9 @@ def _recertify_run(
         safe_error_code=safe_error_code,
         request_payload={
             "source_id": str(item.id),
-            "revision": item.content_revision if revision is None else revision,
+            "subject_hash": image_subject_hash(
+                item.content_type, item.title if title is None else title
+            ),
         },
         completed_at=(
             _RECERTIFY_NOW - timedelta(minutes=finished_minutes_ago) if terminal else None
@@ -923,8 +930,10 @@ def test_recertify_sweep_redispatches_a_cleared_certificate(monkeypatch) -> None
     run = session.added[0]
     assert run.operation_type == "RECERTIFY_PUBLISHED_IMAGE"
     assert run.state == OperationRunState.REQUESTED
-    assert run.idempotency_key == f"recertify:{item.id}:3:s1"
-    # 시도 수는 키가 아니라 payload에 적힌 판으로 센다.
+    subject = image_subject_hash(item.content_type, item.title)
+    assert run.idempotency_key == f"recertify:{item.id}:{subject[:16]}:s1"
+    # 시도 수는 키가 아니라 payload에 적힌 subject로 센다.
+    assert run.request_payload["subject_hash"] == subject
     assert run.request_payload["revision"] == 3
     assert kwargs["headers"]["operation_run_id"] == str(run.id)
     assert kwargs["task_id"] == run.task_id
@@ -943,8 +952,11 @@ def test_recertify_sweep_leaves_an_in_flight_run_alone(monkeypatch) -> None:
     assert dispatched == [] and session.added == []
 
 
-def test_recertify_sweep_ignores_a_stranded_run_and_an_older_revision(monkeypatch) -> None:
-    """좌초한 실행과 지난 판의 실행은 지금 판의 자동 복구를 막지 않는다."""
+def test_recertify_sweep_ignores_a_stranded_run_and_an_older_subject(monkeypatch) -> None:
+    """좌초한 실행과 지난 제목의 실행은 지금 제목의 자동 복구를 막지 않는다.
+
+    좌초한 실행은 이미 샀을 수 있어 예산으로는 세지만, 다음 실행을 막지는 않는다.
+    """
     item = _withheld_item()
     session = _RecoverySession(
         recertify_candidates=(item,),
@@ -953,14 +965,16 @@ def test_recertify_sweep_ignores_a_stranded_run_and_an_older_revision(monkeypatc
             _recertify_run(
                 item, state=OperationRunState.RUNNING, active_minutes_ago=120
             ),
-            # 지난 판의 진행 중 실행 — 시작하자마자 현재 판을 보고 끝난다.
-            _recertify_run(item, state=OperationRunState.QUEUED, revision=2),
+            # 지난 제목의 진행 중 실행 — 시작하자마자 현재 subject를 보고 끝난다.
+            _recertify_run(item, state=OperationRunState.QUEUED, title="옛 제목"),
         ),
     )
 
     result, _dispatched = _run_recertify_sweep(monkeypatch, session)
 
     assert result["image_recertifications"] == 1
+    # 좌초한 실행이 시도 하나를 이미 썼으므로 다음 키는 s2다.
+    assert session.added[0].idempotency_key.endswith(":s2")
 
 
 def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) -> None:
@@ -1019,7 +1033,8 @@ def test_recertify_sweep_redispatches_a_failure_the_task_never_reported(monkeypa
     result, _dispatched = _run_recertify_sweep(monkeypatch, session)
 
     assert result["image_recertifications"] == 1
-    assert session.added[0].idempotency_key == f"recertify:{item.id}:3:s2"
+    subject = image_subject_hash(item.content_type, item.title)
+    assert session.added[0].idempotency_key == f"recertify:{item.id}:{subject[:16]}:s2"
 
 
 def test_recertify_sweep_records_the_spent_budget_once_and_then_stops(monkeypatch) -> None:

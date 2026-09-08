@@ -307,6 +307,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # paying again for the same unchanged body/image failure.
             "generation_attempt",
             "legacy_image_certification",
+            # 공개 이미지 재인증 차단 표시는 제목(subject)에 매인 사실이다. 제목을
+            # 건드리지 않는 편집이 지우면 sweep이 같은 답을 다시 사러 간다 (H-01).
+            "image_recertification",
         ):
             value = previous_summary.get(key)
             if value is not None:
@@ -336,6 +339,8 @@ def apply_essence_revalidation(
             "generation_attempt",
             "generation_provenance",
             "legacy_image_certification",
+            # 재승인은 제목을 바꾸지 않는다. 재인증 차단 표시를 지우면 안 된다 (H-01).
+            "image_recertification",
         ):
             if key in previous:
                 summary[key] = previous[key]

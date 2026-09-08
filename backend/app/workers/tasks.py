@@ -4079,10 +4079,10 @@ def _open_published_recertify_incident(
     item_id: uuid.UUID,
     hospital: Hospital,
     run_id: uuid.UUID,
-    revision: int,
+    subject_hash: str,
     code: str,
 ) -> None:
-    """자동 복구가 더 진행하지 않는 재인증 차단을 (글, 판) 한 건의 incident로 남긴다."""
+    """자동 복구가 더 진행하지 않는 재인증 차단을 (글, subject) 한 건의 incident로 남긴다."""
     _run_async(
         open_generation_incident(
             item_id=item_id,
@@ -4091,7 +4091,7 @@ def _open_published_recertify_incident(
             run_id=run_id,
             code=code,
             message=generation_safe_cause(code),
-            revision=revision,
+            subject_hash=subject_hash,
         )
     )
 
@@ -4119,16 +4119,49 @@ def _finish_recertify_block(
     *,
     item_id: uuid.UUID,
     hospital: Hospital | None,
-    revision: int,
+    subject_hash: str,
+    title: str | None,
     code: str,
 ) -> None:
     """유료 호출 없이 끝나는 차단 하나를 닫는다.
 
-    실행을 FAILED로 종결하고, 같은 (글, 판)의 incident 하나를 열거나 갱신하고(세 코드가
-    지문을 공유하므로 두 번째 Slack은 나가지 않는다), sweep이 이 행을 다시 후보로 집지
-    않게 표시를 남긴다.
+    먼저 같은 (글, subject)의 incident 하나를 열거나 갱신한다(세 코드가 지문을 공유하므로
+    두 번째 Slack은 나가지 않는다). 그 다음 표시와 FAILED 종결을 한 커밋으로 쓴다 —
+    사람이 볼 사고 없이 차단만 기록되면 자동 복구도 사람도 그 글을 다시 보지 않는다.
+    incident를 열지 못하면 표시도 차단 코드도 남기지 않고 복구 가능한 실패로 끝내,
+    sweep이 남은 예산 안에서 사고 열기를 다시 시도하게 한다.
     """
-    run_id = finish_explicit_run(
+    context = explicit_run_context(task)
+    run_id = context.run_id if context is not None else None
+    if run_id is not None and hospital is not None:
+        try:
+            _open_published_recertify_incident(
+                item_id=item_id,
+                hospital=hospital,
+                run_id=run_id,
+                subject_hash=subject_hash,
+                code=code,
+            )
+        except Exception as exc:
+            fallback_code, fallback_message = classify_generation_failure(exc)
+            finish_explicit_run(
+                db,
+                task,
+                item_id,
+                OperationRunState.FAILED,
+                safe_error_code=fallback_code,
+                safe_error_message=fallback_message,
+            )
+            logger.error(
+                "recertify incident open failed for %s: %s", item_id, type(exc).__name__
+            )
+            return
+    recertification.mark_blocked(
+        db, item_id=item_id, subject_hash=subject_hash, title=title, code=code
+    )
+    # `finish_explicit_run`이 커밋한다. 표시와 종결 상태가 같은 커밋에 들어가고, 그
+    # 커밋이 곧 이 글의 행 잠금 해제다.
+    finish_explicit_run(
         db,
         task,
         item_id,
@@ -4136,16 +4169,9 @@ def _finish_recertify_block(
         safe_error_code=code,
         safe_error_message=recertification.SAFE_MESSAGES[code],
     )
-    recertification.mark_blocked(db, item_id=item_id, revision=revision, code=code)
-    db.commit()
-    if run_id is not None and hospital is not None:
-        _open_published_recertify_incident(
-            item_id=item_id,
-            hospital=hospital,
-            run_id=run_id,
-            revision=revision,
-            code=code,
-        )
+    if context is None:
+        # 실행 행 없이 서명만으로 온 디스패치. 표시는 그래도 남긴다.
+        db.commit()
 
 
 @celery_app.task(
@@ -4155,10 +4181,12 @@ def recertify_published_content_image(self, content_id: str):
     """공개 글의 제목 편집이 지운 이미지 인증을 저장된 바이트 재검수로 복구한다 (H-01).
 
     한 실행은 공급자를 많아야 한 번 부른다 — 태스크 자체의 재시도는 없고, 재실행은
-    쿨다운을 둔 복구 sweep만 만든다. 시작할 때 사람의 결정을 기다리는 판이거나 예산이
-    끝났으면 돈을 쓰지 않고 FAILED로 끝내며, 예산 소진은 (글, 판) 하나의 incident가 된다.
-    성공하면 공개 페이지가 다시 글을 내보내므로 IndexNow·사이트 캐시를 갱신하고 보류
-    incident를 닫는다. 공개 글의 이미지를 임의로 새로 생성하지 않는다.
+    쿨다운을 둔 복구 sweep만 만든다. 예산·차단·incident는 모두 공급자가 실제로 인증하는
+    subject(유형 + 제목)로 센다. 자기 실행이 만들어진 subject가 지금 제목과 다르면 돈을
+    쓰지 않고 CANCELLED로 끝내고, 사람의 결정을 기다리는 subject이거나 예산이 끝났으면
+    FAILED로 끝내며 예산 소진은 (글, subject) 하나의 incident가 된다. 성공하면 공개
+    페이지가 다시 글을 내보내므로 IndexNow·사이트 캐시를 갱신하고 보류 incident를 닫는다.
+    공개 글의 이미지를 임의로 새로 생성하지 않는다.
     """
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
@@ -4185,9 +4213,20 @@ def recertify_published_content_image(self, content_id: str):
         hospital = db.get(Hospital, item.hospital_id)
         expected_title = item.title
         expected_revision = int(getattr(item, "content_revision", 1) or 1)
+        expected_subject = recertification.subject_hash_of(item)
+        context = explicit_run_context(self)
+        if context is not None:
+            recorded = recertification.payload_subject_hash(
+                db.get(OperationRun, context.run_id)
+            )
+            if recorded is not None and recorded != expected_subject:
+                # 이 실행이 만들어진 뒤 제목이 또 바뀌었다. 지금 제목의 답을 이 실행의
+                # 예산·표시로 사면 산 것과 기록한 것이 어긋난다. 그 편집이 다시 요청한다.
+                finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
+                return
         if image_certification_current(item):
             # 중복 디스패치·재배달. 유효한 인증을 다시 사지 않는다.
-            recertification.clear_marker(db, item_id=item_id, revision=expected_revision)
+            recertification.clear_marker(db, item_id=item_id, title=expected_title)
             db.commit()
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if hospital is not None:
@@ -4201,25 +4240,29 @@ def recertify_published_content_image(self, content_id: str):
                 self,
                 item_id=item_id,
                 hospital=hospital,
-                revision=expected_revision,
+                subject_hash=expected_subject,
+                title=expected_title,
                 code=recertification.PUBLISHED_IMAGE_MISSING,
             )
             return
         runs = _recertify_runs(db, item_id, hospital.id)
-        blocked = recertification.pending_operator_code(runs, expected_revision)
+        blocked = recertification.pending_operator_code(runs, expected_subject)
         if blocked is not None:
-            # 이 판은 이미 사람의 결정을 기다린다. 같은 답을 다시 사지 않는다.
+            # 이 subject는 이미 사람의 결정을 기다린다. 같은 답을 다시 사지 않는다.
             _finish_recertify_block(
                 db,
                 self,
                 item_id=item_id,
                 hospital=hospital,
-                revision=expected_revision,
+                subject_hash=expected_subject,
+                title=expected_title,
                 code=blocked,
             )
             return
         if (
-            recertification.attempts_spent(runs, expected_revision)
+            recertification.attempts_spent(
+                runs, expected_subject, now=datetime.now(timezone.utc)
+            )
             >= recertification.ATTEMPT_BUDGET
         ):
             # 예산 소진. 태스크가 시작조차 못한 실패(TASK_FAILED·BROKER_UNAVAILABLE 등)도
@@ -4229,12 +4272,13 @@ def recertify_published_content_image(self, content_id: str):
                 self,
                 item_id=item_id,
                 hospital=hospital,
-                revision=expected_revision,
+                subject_hash=expected_subject,
+                title=expected_title,
                 code=recertification.PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED,
             )
             return
         try:
-            content_hash, subject_hash = _run_async(
+            content_hash, certified_subject = _run_async(
                 certify_existing_image(
                     item.image_url,
                     content_type=item.content_type,
@@ -4243,20 +4287,22 @@ def recertify_published_content_image(self, content_id: str):
                 )
             )
         except ImagePolicyRejectedError:
-            db.rollback()
+            # 공급자 호출은 `db`를 건드리지 않았다. 되돌릴 것이 없으므로 여기서 커밋을
+            # 나누지 않는다 — 종결 상태와 행 잠금 해제가 같은 커밋이어야 그 사이에 다른
+            # 디스패치가 '아직 아무도 시도하지 않았다'고 보고 다시 사지 않는다.
             _finish_recertify_block(
                 db,
                 self,
                 item_id=item_id,
                 hospital=hospital,
-                revision=expected_revision,
+                subject_hash=expected_subject,
+                title=expected_title,
                 code=recertification.PUBLISHED_IMAGE_RECERTIFY_REJECTED,
             )
             return
         except Exception as exc:
             # 공급자·저장소 일시 오류. 이 실행은 예산 한 번을 쓰고 끝나고, 쿨다운을 둔
             # sweep이 남은 예산 안에서 이어받는다.
-            db.rollback()
             code, message = classify_generation_failure(exc)
             finish_explicit_run(
                 db,
@@ -4279,17 +4325,17 @@ def recertify_published_content_image(self, content_id: str):
             expected_revision=expected_revision,
             values={
                 "image_content_hash": content_hash,
-                "image_subject_hash": subject_hash,
+                "image_subject_hash": certified_subject,
                 "image_policy_version": IMAGE_POLICY_VERSION,
                 "image_policy_verified_at": datetime.now(timezone.utc),
             },
         )
         if written == 0:
-            # 재검수 중 편집이 또 일어났다. 그 편집이 다시 재인증을 요청한다.
-            db.rollback()
+            # 재검수 중 편집이 또 일어났다. 그 편집이 다시 재인증을 요청한다. 저장된 것이
+            # 없으므로 되돌리지 않고, CANCELLED 종결과 잠금 해제를 한 커밋으로 남긴다.
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
-        recertification.clear_marker(db, item_id=item_id, revision=expected_revision)
+        recertification.clear_marker(db, item_id=item_id, title=expected_title)
         indexnow.enqueue_content_published_sync(
             db,
             slug=hospital.slug,

@@ -250,16 +250,20 @@ def _fingerprint(code: str) -> IncidentFingerprint:
 
 
 def _incident_identity(
-    code: str, item_id: uuid.UUID, hospital_id: uuid.UUID, revision: int | None = None
+    code: str,
+    item_id: uuid.UUID,
+    hospital_id: uuid.UUID,
+    subject_hash: str | None = None,
 ) -> tuple[str, str, str]:
     """Use one durable incident per hospital for a hospital-level preparation gate."""
 
     if code == "MISSING_APPROVED_ESSENCE":
         return "hospital", str(hospital_id), f"/hospitals/{hospital_id}/essence"
-    if code in PUBLISHED_IMAGE_RECERTIFY_CODES and revision is not None:
-        # 사람이 내리는 결정은 판(content_revision)마다 다르다. 같은 판의 반복
-        # 디스패치는 한 건으로 묶고, 다음 편집은 새 건으로 연다.
-        return "content_item", f"{item_id}:{revision}", "/operations"
+    if code in PUBLISHED_IMAGE_RECERTIFY_CODES and subject_hash is not None:
+        # 사람이 내리는 결정은 이미지 subject(유형 + 제목)마다 다르다. 같은 subject의
+        # 반복 디스패치는 한 건으로 묶고, 다음 제목 편집은 새 건으로 연다. 판으로 묶으면
+        # 제목과 무관한 편집·Essence 재승인이 같은 거절로 두 번째 건을 연다.
+        return "content_item", f"{item_id}:{subject_hash[:16]}", "/operations"
     return "content_item", str(item_id), "/operations"
 
 
@@ -352,15 +356,15 @@ async def open_generation_incident(
     code: str,
     message: str,
     notify: bool = True,
-    revision: int | None = None,
+    subject_hash: str | None = None,
 ) -> uuid.UUID:
     sessions = get_async_sessionmaker()
     async with sessions() as db:
         object_type, object_id, admin_path = _incident_identity(
-            code, item_id, hospital_id, revision
+            code, item_id, hospital_id, subject_hash
         )
-        # 중복 제거 키만 판을 포함한다. source_id는 글 자체로 남겨 운영 큐 조인과
-        # 성공 시 자동 종료가 판과 무관하게 같은 글을 찾게 한다.
+        # 중복 제거 키만 subject를 포함한다. source_id는 글 자체로 남겨 운영 큐 조인과
+        # 성공 시 자동 종료가 subject와 무관하게 같은 글을 찾게 한다.
         source_id = object_id if object_type == "hospital" else str(item_id)
         dedupe_key = build_incident_key(
             "content_generation", object_type, object_id, _fingerprint(code)

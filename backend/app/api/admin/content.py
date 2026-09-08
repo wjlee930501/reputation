@@ -655,6 +655,7 @@ async def update_content(
         # 제목 편집이 지운 이미지 인증은 시스템이 저장된 바이트 재검수로 되살린다.
         # 운영자의 할 일로 넘기지 않는다 (H-01).
         revision = int(item.content_revision or 1)
+        subject = image_subject_hash(item.content_type, item.title)
         try:
             await dispatch_operation(
                 db,
@@ -662,13 +663,19 @@ async def update_content(
                     operation_type="RECERTIFY_PUBLISHED_IMAGE",
                     hospital_id=hospital.id,
                     requested_by_id=None,
-                    idempotency_key=published_recertify_key(item.id, revision),
+                    idempotency_key=published_recertify_key(item.id, subject),
                     audit_actor=default_actor(),
                     target_type="content_item",
                     target_id=str(item.id),
                     queue="content",
                     task_args=(str(item.id),),
-                    request_payload_extra={"revision": revision},
+                    # 예산·표시·incident는 공급자가 인증하는 subject로 센다. 제목을
+                    # 건드리지 않는 편집이 판을 올려 예산을 되살리지 않게 한다.
+                    request_payload_extra={
+                        "subject_hash": subject,
+                        "title": item.title,
+                        "revision": revision,
+                    },
                 ),
                 recertify_published_content_image,
             )
