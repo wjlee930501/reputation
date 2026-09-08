@@ -465,7 +465,7 @@ def _ensure_rebuild_site_run(
         state=OperationRunState.REQUESTED,
         idempotency_key=(
             f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital.id}"
-            f":{observed_at.date().isoformat()}:{_runs_started_today(recent, observed_at)}"
+            f":{observed_at.astimezone(UTC).date().isoformat()}:{_runs_started_today(recent, observed_at)}"
         ),
         requested_by_id=None,
         task_id=str(uuid.uuid4()),
@@ -505,8 +505,11 @@ def _runs_started_today(recent: list[OperationRun], observed_at: datetime) -> in
     실행은 오늘 안에는 창에서 빠지지 않으므로, 이 수는 날짜 안에서 늘기만 한다.
     """
 
-    today = observed_at.date()
-    return sum(1 for run in recent if run.requested_at.date() == today)
+    # 키의 날짜 부분과 같은 UTC 날짜로 비교한다 — DB 세션 시간대에 기대지 않는다.
+    today = observed_at.astimezone(UTC).date()
+    return sum(
+        1 for run in recent if run.requested_at.astimezone(UTC).date() == today
+    )
 
 
 def _run_observed_at(run: OperationRun) -> datetime:
