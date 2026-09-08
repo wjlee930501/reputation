@@ -132,9 +132,20 @@ def compute_evidence_noise_hash(excluded_note_ids: Iterable[uuid.UUID | str]) ->
 
 
 def _excluded_note_ids_stmt(hospital_id: uuid.UUID):
-    return select(HospitalSourceEvidenceNote.id).where(
-        HospitalSourceEvidenceNote.hospital_id == hospital_id,
-        noise_note_predicate(),
+    """필수 텍스트 자료(비제외·비사진)에 속한 노이즈 노트만 — readiness의 자료 집합과 같은 경계.
+
+    제외된 자료나 사진 자료의 노트를 세면, readiness가 보지 않는 자료의 노트 토글만으로
+    승인이 stale이 된다(Codex 검토 지적). Task 6의 `required_text_source_predicate`로 교체 예정.
+    """
+    return (
+        select(HospitalSourceEvidenceNote.id)
+        .join(HospitalSourceAsset, HospitalSourceAsset.id == HospitalSourceEvidenceNote.source_asset_id)
+        .where(
+            HospitalSourceEvidenceNote.hospital_id == hospital_id,
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            noise_note_predicate(),
+        )
     )
 
 
