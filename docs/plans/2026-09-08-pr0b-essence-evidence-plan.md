@@ -945,7 +945,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 6: 원문 없는 URL 자료는 필수 자료가 아니다 (M-01)
 
-> **실행 기록 (2026-09-08):** predicate는 `essence_readiness.py`가 아니라 새 모듈 **`app/services/essence_sources.py`**(모델만 import)에 둔다 — `essence_readiness`가 `evidence_noise`를 import하므로 `evidence_noise`가 `essence_readiness`를 다시 import하면 순환이 된다. readiness 로더 4개·`_required_sources`·승인 쿼리·`_excluded_note_ids_stmt`가 모두 이 predicate를 쓴다. Step 0로 Task 5 검토의 잔여 문구 지적(재조정은 15분마다 200곳씩 순환하므로 "최대 15분" 보장 불가)을 정정.
+> **실행 기록 (2026-09-08):** predicate는 `essence_readiness.py`가 아니라 새 모듈 **`app/services/essence_sources.py`**(모델만 import)에 둔다 — `essence_readiness`가 `evidence_noise`를 import하므로 `evidence_noise`가 `essence_readiness`를 다시 import하면 순환이 된다. readiness 로더 4개·`_required_sources`·승인 쿼리·`_excluded_note_ids_stmt`가 모두 이 predicate를 쓴다. Step 0로 Task 5 검토의 잔여 문구 지적(재조정은 15분마다 200곳씩 순환하므로 "최대 15분" 보장 불가)을 정정. 구현 `5c65b8d` 뒤 Codex REQUEST_CHANGES → 후속 커밋에서 ① 같은 정의를 써야 할 세 곳 추가 적용(backfill 체크포인트 `content_public_review_backfill.py:511`, 월간 운영기준 요약 `essence_engine.py:1552`, orphan 복구 선택 `tasks.py:2565` — LIMIT 전에 필터) ② 공백 집합을 Python `str.strip()`과 맞춤(NBSP·U+3000 등) + 입력 시 전부 공백이면 `None` ③ admin 카운트·"근거 추출" 버튼에 동일 predicate ④ 승인 시 `source_asset_ids` 집합 일치 요구 ⑤ 반환 타입 주석. 구현자가 스펙의 `btrim` 결함(공백만 제거)을 테스트로 먼저 잡았다.
 
 **Files:**
 - Modify: `backend/app/services/essence_readiness.py` — predicate 추가, 세 로더가 사용
