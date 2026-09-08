@@ -449,3 +449,9 @@ test('an untracked certificate state is not upgraded to 운영 중 by a live che
   assert.equal(domainHeaderStatus(hospital), 'DNS 확인 완료')
   assert.equal(panelStatusOf(hospital), 'dns_verified')
 })
+
+test('a paused hospital on the platform address is never labelled 운영 중', () => {
+  assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }), '운영 일시 정지')
+  assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'ACTIVE' }), '운영 중')
+  assert.notEqual(readHospitalDomainStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }).label, '운영 중')
+})

@@ -15,6 +15,7 @@ import {
   reportGapSummary,
 } from '@/lib/attention-queue'
 import { domainSearchText, readHospitalDomainStatus } from '@/lib/hospital-domain-status'
+import { isPubliclyServing } from '@/lib/public-service-state'
 import {
   hospitalMatchesStatus,
   hospitalStatusCounts,
@@ -326,7 +327,7 @@ export default function HospitalsPage() {
                         )}
                       </td>
                       <td className="px-4 py-4 text-center" data-label="정보 허브">
-                        <CheckCell done={h.site_live} />
+                        <CheckCell done={isPubliclyServing(h)} />
                       </td>
                       <td className="px-4 py-4 text-center" data-label="발행 일정">
                         <CheckCell done={h.schedule_set} />

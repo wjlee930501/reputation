@@ -11,7 +11,10 @@
  * 요약은 몇 개가 남았는지와 무엇이 남았는지를 함께 말한다 — 접었다고 정보를 잃지 않는다.
  */
 
+import { isPubliclyServing } from './public-service-state.ts'
+
 export interface HeaderProgressHospital {
+  status?: string | null
   profile_complete?: boolean | null
   v0_report_done?: boolean | null
   site_built?: boolean | null
@@ -42,7 +45,7 @@ export function summarizeHeaderProgress(
     { label: '초기 진단 보고서', done: Boolean(hospital?.v0_report_done) },
     { label: '콘텐츠 허브 준비', done: Boolean(hospital?.site_built) },
     { label: '발행 일정 설정', done: Boolean(hospital?.schedule_set) },
-    { label: '병원 정보 허브', done: Boolean(hospital?.site_live) },
+    { label: '병원 정보 허브', done: isPubliclyServing(hospital) },
   ]
   const doneCount = items.filter((item) => item.done).length
   const pendingLabels = items.filter((item) => !item.done).map((item) => item.label)

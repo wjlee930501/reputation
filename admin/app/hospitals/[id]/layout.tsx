@@ -16,6 +16,7 @@ import {
   domainLastCheckedLabel,
 } from '@/lib/hospital-domain-status'
 import { summarizeHeaderProgress } from '@/lib/hospital-header-progress'
+import { isPubliclyServing } from '@/lib/public-service-state'
 import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
@@ -177,7 +178,7 @@ export default function HospitalLayout({
                     <ProgressDot label="초기 진단 리포트" done={hospital.v0_report_done} />
                     <ProgressDot label="콘텐츠 허브 준비" done={hospital.site_built} />
                     <ProgressDot label="발행 일정 설정" done={hospital.schedule_set} />
-                    <ProgressDot label="병원 정보 허브" done={hospital.site_live} />
+                    <ProgressDot label="병원 정보 허브" done={isPubliclyServing(hospital)} />
                   </div>
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">월간 발행량 {planLabel}</p>}
                 </div>
@@ -261,10 +262,15 @@ export default function HospitalLayout({
                       </span>
                     )}
                   </>
-                ) : hospital.site_live ? (
+                ) : isPubliclyServing(hospital) ? (
                   <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
                     정보 허브 운영 중
+                  </span>
+                ) : hospital.status === 'PAUSED' ? (
+                  <span className="inline-flex items-center gap-1 text-slate-500">
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                    공개 페이지 일시정지 중
                   </span>
                 ) : null}
               </div>

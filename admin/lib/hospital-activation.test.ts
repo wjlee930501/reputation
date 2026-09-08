@@ -18,9 +18,10 @@ test('client preview follows the STEP 5 activation gate', () => {
   assert.deepEqual(missingActivationPrerequisites(ready), [])
 })
 
-test('site_built preview never makes the public platform address browsable before LIVE', () => {
-  assert.equal(isPlatformAddressBrowsable({ site_live: false }), false)
-  assert.equal(isPlatformAddressBrowsable({ site_live: true }), true)
+test('the platform address is browsable only while ACTIVE and live — pause hides it', () => {
+  assert.equal(isPlatformAddressBrowsable({ site_live: false, status: 'ACTIVE' }), false)
+  assert.equal(isPlatformAddressBrowsable({ site_live: true, status: 'ACTIVE' }), true)
+  assert.equal(isPlatformAddressBrowsable({ site_live: true, status: 'PAUSED' }), false)
 })
 
 test('platform activation preview does not require content scheduling', () => {
@@ -47,7 +48,7 @@ test('server-provided activation blockers remain authoritative and canonically o
 test('platform address activates automatically once the public gates pass', () => {
   const gatesMet = { profile_complete: true, v0_report_done: true, site_built: true }
   assert.equal(platformActivationMode({ ...gatesMet, site_live: false }), 'automatic')
-  assert.equal(platformActivationMode({ ...gatesMet, site_live: true }), 'live')
+  assert.equal(platformActivationMode({ ...gatesMet, site_live: true, status: 'ACTIVE' }), 'live')
 })
 
 test('custom-domain and paused hospitals keep the manual activation path', () => {

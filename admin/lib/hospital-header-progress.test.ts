@@ -26,6 +26,7 @@ test('the collapsed line names what is still missing, so folding loses nothing',
 
 test('a fully ready hospital says so without listing an empty remainder', () => {
   const summary = summarizeHeaderProgress({
+    status: 'ACTIVE',
     profile_complete: true,
     v0_report_done: true,
     site_built: true,
@@ -35,6 +36,20 @@ test('a fully ready hospital says so without listing an empty remainder', () => 
 
   assert.equal(summary.label, '운영 준비 5/5 완료')
   assert.deepEqual(summary.pendingLabels, [])
+})
+
+test('a paused hospital does not count its public page as done even though site_live stays true', () => {
+  const summary = summarizeHeaderProgress({
+    status: 'PAUSED',
+    profile_complete: true,
+    v0_report_done: true,
+    site_built: true,
+    schedule_set: true,
+    site_live: true,
+  })
+
+  assert.equal(summary.doneCount, 4)
+  assert.deepEqual(summary.pendingLabels, ['병원 정보 허브'])
 })
 
 test('a missing hospital counts nothing as done rather than guessing', () => {

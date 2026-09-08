@@ -116,6 +116,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   // 끝난 일을 버튼으로 남겨두면, AE는 자기가 만들지 않은 사실을 확인하는 클릭을 계속한다.
   const platformMode = platformActivationMode(profile)
   const customDomainUrl = customDomainLiveUrl({
+    status: profile.status,
     site_live: profile.site_live,
     aeo_domain: currentDomain,
     hasUnsavedChange,

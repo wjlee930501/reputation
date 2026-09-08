@@ -1,10 +1,12 @@
 import { platformSiteHost } from './platform-domain.ts'
+import { isPubliclyServing } from './public-service-state.ts'
 
 type DomainTone = 'live' | 'waiting' | 'dns_verified' | 'issuing' | 'failed' | 'default' | 'empty'
 
 interface HospitalDomainInput {
   name?: string | null
   slug?: string | null
+  status?: string | null
   aeo_domain?: string | null
   site_built?: boolean | null
   site_live?: boolean | null
@@ -15,7 +17,7 @@ interface HospitalDomainInput {
 }
 
 export interface HospitalDomainStatus {
-  label: '운영 중' | '공개 주소 확인 대기' | 'DNS 확인 완료' | '인증서 발급 중' | '인증서 실패' | '기본 주소' | '미설정'
+  label: '운영 중' | '운영 일시 정지' | '공개 주소 확인 대기' | 'DNS 확인 완료' | '인증서 발급 중' | '인증서 실패' | '기본 주소' | '미설정'
   detail: string
   tone: DomainTone
 }
@@ -227,7 +229,8 @@ export function certificateIssuingCanBeRetried(
 }
 
 interface DomainHeaderInput {
-  site_live?: boolean
+  status?: string | null
+  site_live?: boolean | null
   aeo_domain?: string | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null
@@ -242,8 +245,10 @@ export function domainHeaderIsLive(profile: DomainHeaderInput): boolean {
 export function domainHeaderStatus(profile: DomainHeaderInput) {
   // DM-U3 #4: 커스텀 도메인 행은 DNS/cert 상태로 판단. site_live는 기본 URL 상태.
   if (!profile.aeo_domain) {
-    // 커스텀 도메인이 없으면 site_live로 기본 주소 상태만 표시
-    return profile.site_live ? '운영 중' : '공개 주소 확인 대기'
+    // 기본 주소는 공개 게이트(status ACTIVE + site_live)가 통과해야 실제로 열린다.
+    // 일시정지는 site_live를 그대로 두므로 site_live만 보면 404 나는 주소를 '운영 중'이라 부른다.
+    if (profile.status === 'PAUSED') return '운영 일시 정지'
+    return isPubliclyServing(profile) ? '운영 중' : '공개 주소 확인 대기'
   }
 
   // 커스텀 도메인이 있으면 DNS/cert 상태로 판단. 발급 중·실패는 마지막 관측이 정상이어도
