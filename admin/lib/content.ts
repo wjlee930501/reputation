@@ -23,6 +23,8 @@ export interface ContentOperationsItem extends CarriedOverItem {
   title?: string | null
   post_publish_notified_at?: string | null
   post_publish_reviewed_at?: string | null
+  // 사람이 보는 표본인지 — backend post_publish_review_policy가 단일 기준이다(M-21).
+  post_publish_review_required?: boolean
   display?: {
     review?: {
       label?: string | null
@@ -34,8 +36,15 @@ export interface ContentOperationsItem extends CarriedOverItem {
   } | null
   compliance?: {
     publishable: boolean
+    // 공개 사이트가 이 글을 실제로 내보내는지 (backend/app/services/content_visibility.py).
+    // 여기서는 선택 필드다 — 이 인터페이스는 부분 응답도 받는 구조적 계약이며,
+    // 판정이 없으면 보류로 닫는다.
+    public_visibility?: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
 }
+
+// 'withheld'는 필터 값이 아니라 상태다 — 공개 사이트가 숨기는 중인 발행 글.
+export type ContentOperationsState = Exclude<ContentOperationsFilter, 'all' | 'carried'> | 'withheld'
 
 export interface PublishNotificationPresentation {
   state: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING' | 'NOT_REQUIRED'
@@ -63,13 +72,23 @@ export function getPublishNotificationPresentation(
   return item.display?.review?.notification ?? NOTIFICATION_FALLBACK
 }
 
-export function getContentOperationsState(item: ContentOperationsItem): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
+export function getContentOperationsState(item: ContentOperationsItem): ContentOperationsState {
   if (item.status === 'PUBLISHED') {
+    // 공개 페이지가 숨기는 중인 글은 발행·알림·확인 어느 정상 묶음에도 들어가지 않는다.
+    // 확인이 끝났거나 알림이 밀린 것과 무관하게 이 사실이 먼저다(H-01).
+    // 판정이 아예 없으면(구버전 응답·필드 누락) 공개 중이라고 단정하지 않는다 —
+    // 모르는 상태를 초록으로 칠하면 admin만 공개라고 말하는 그 사고가 그대로 돌아온다.
+    if (item.compliance?.public_visibility?.visible !== true) return 'withheld'
     if (item.post_publish_reviewed_at) return 'published'
-    if (item.display?.review?.notification_state === 'NOT_REQUIRED') return 'published'
-    return item.display?.review?.notification_state === 'SENT'
-      ? 'postReviewPending'
-      : 'notificationPending'
+    if (item.display?.review?.notification_state === 'NOT_REQUIRED') {
+      // Slack 알림이 필요 없는 공개(수동 발행 등)라도 표본이면 backend 예외 큐가 센다.
+      // 여기서 먼저 '공개 중'으로 접으면 화면 숫자가 큐보다 작아 AE가 대기 건을 못 본다.
+      return item.post_publish_review_required === true ? 'postReviewPending' : 'published'
+    }
+    if (item.display?.review?.notification_state !== 'SENT') return 'notificationPending'
+    // 확인 대기 집계는 backend 예외 큐(human_post_publish_review_predicate)와 같은 표본만
+    // 세야 한다 — 아니면 화면 숫자가 큐보다 항상 크고, AE는 처리할 수 없는 건수를 본다.
+    return item.post_publish_review_required === true ? 'postReviewPending' : 'published'
   }
   if (item.status === 'REJECTED') return 'rejected'
   if (item.status === 'CANCELLED') return 'cancelled'
@@ -78,13 +97,22 @@ export function getContentOperationsState(item: ContentOperationsItem): Exclude<
   return 'publishable'
 }
 
+/** 필터·집계용 묶음. 공개 보류는 AE가 손대야 하는 예외이므로 '자동 발행 차단'과 함께 센다
+ * — 별도 칩을 만들지 않되, 정상 발행/확인 대기 묶음에는 절대 넣지 않는다. */
+export function getContentOperationsBucket(
+  item: ContentOperationsItem,
+): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
+  const state = getContentOperationsState(item)
+  return state === 'withheld' ? 'needsReview' : state
+}
+
 export function matchesContentOperationsFilter(
   item: ContentOperationsItem,
   filter: ContentOperationsFilter,
 ): boolean {
   if (filter === 'all') return true
   if (filter === 'carried') return isCarriedOver(item)
-  return getContentOperationsState(item) === filter
+  return getContentOperationsBucket(item) === filter
 }
 
 export function buildPublicContentUrl(domain: string | null | undefined, contentId: string): string | null {

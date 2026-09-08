@@ -74,6 +74,9 @@ export interface UnsupportedGapLike {
   reason?: string | null
 }
 
+/** 자동 검수가 남기는 `unsupported_gaps.field` 값 — 백엔드 `AUTO_REVIEW_GAP_FIELD`와 같아야 한다. */
+export const AUTO_REVIEW_GAP_FIELD = 'automatic_ai_review' as const
+
 /**
  * 자동 검수가 초안을 보류한 이유. `field`가 자동 검수인 항목만 차단 사유다.
  *
@@ -84,7 +87,9 @@ export function essenceAutoReviewBlockReasons(gaps: unknown): string[] {
   return rows
     .filter(
       (gap): gap is UnsupportedGapLike =>
-        typeof gap === 'object' && gap !== null && (gap as UnsupportedGapLike).field === 'automatic_ai_review',
+        typeof gap === 'object' &&
+        gap !== null &&
+        (gap as UnsupportedGapLike).field === AUTO_REVIEW_GAP_FIELD,
     )
     .map((gap) => (typeof gap.reason === 'string' ? gap.reason.trim() : ''))
     .filter((reason) => reason.length > 0)

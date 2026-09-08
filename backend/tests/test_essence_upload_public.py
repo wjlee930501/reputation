@@ -27,13 +27,20 @@ def test_photo_upload_can_be_public(source_type: SourceType):
 
 
 @pytest.mark.parametrize("source_type", PHOTO_SOURCE_TYPES)
-def test_photo_upload_defaults_to_public(source_type: SourceType):
-    assert resolve_upload_is_public(source_type, None) is True
+def test_photo_upload_without_a_public_request_stays_private(source_type: SourceType):
+    """공개 여부를 보내지 않은 업로드는 공개가 아니다 — 공개는 사람이 고르는 값이다."""
+    assert resolve_upload_is_public(source_type, None) is False
 
 
 @pytest.mark.parametrize("source_type", PHOTO_SOURCE_TYPES)
-def test_complete_photo_upload_never_needs_a_followup_publish(source_type: SourceType):
-    assert resolve_upload_is_public(source_type, False, provenance_complete=True) is True
+def test_complete_photo_upload_honours_do_not_publish(source_type: SourceType):
+    """권리 근거가 완전해도 "공개 안 함"으로 올린 사진은 공개되지 않는다.
+
+    근거가 있다는 이유로 공개로 올려 두면, 운영자는 비공개인 줄 아는 사진이 병원
+    공개 페이지에 뜬다.
+    """
+    assert resolve_upload_is_public(source_type, False, provenance_complete=True) is False
+    assert resolve_upload_is_public(source_type, True, provenance_complete=True) is True
 
 
 @pytest.mark.parametrize("source_type", PHOTO_SOURCE_TYPES)

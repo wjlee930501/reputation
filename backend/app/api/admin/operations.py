@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,6 +42,7 @@ from app.schemas.operations import (
 )
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
+from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.incident_safety import sanitize_operator_text
 from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
@@ -229,47 +230,60 @@ async def get_attention_queue(db: AsyncSession = Depends(get_db)):
     자동화가 사람 승인 큐로 되돌아가지 않도록 월간 시퀀스 첫 글과 자동 보완·공개 후 수정
     신호가 있는 글만 드리프트 감시 표본으로 둔다.
 
-    조건은 순수 컬럼 술어(PUBLISHED · 미확인 · 공개시각 존재)라 집계 1회로 끝난다 —
-    발행 가능 여부 재계산 같은 무거운 판정은 여기서 하지 않는다.
+    SQL 술어(PUBLISHED · 미확인 · 공개시각 존재)만으로는 "공개 중"을 말할 수 없다. 공개
+    페이지는 저장된 글을 다시 판정해 숨기므로, 그 글을 '공개 후 확인 필요'로 세면 AE는
+    확인을 누를 때마다 409로 거절당하고 행은 큐에 남아 기한만 넘긴다(H-01). 표본은 위
+    조건으로 이미 병원당 소수라, 각 행을 공개 표면과 같은 판정 함수로 다시 본다. 표본
+    크기는 검수 표본 정책(월 시퀀스 1편 + 공개 후 수정, 미확인)이 묶고 AE가 확인할수록
+    줄어들며, 그 행에서도 판정에 쓰는 컬럼만 싣는다.
     """
     overdue_before = datetime.now(UTC) - timedelta(hours=POST_PUBLISH_REVIEW_OVERDUE_HOURS)
 
     rows = (
         await db.execute(
-            select(
-                Hospital.id,
-                Hospital.name,
-                func.count(ContentItem.id).label("unreviewed_count"),
-                func.count(
-                    case((ContentItem.published_at < overdue_before, 1))
-                ).label("overdue_count"),
-                func.min(ContentItem.published_at).label("oldest_published_at"),
-            )
-            .join(ContentItem, ContentItem.hospital_id == Hospital.id)
+            select(ContentItem, Hospital.id, Hospital.name)
+            .options(visibility_load_only())
+            .join(Hospital, ContentItem.hospital_id == Hospital.id)
             .where(
                 publicly_operational_hospital_predicate(),
                 human_post_publish_review_predicate(),
             )
-            .group_by(Hospital.id, Hospital.name)
-            # 오래 방치된 병원이 위로 — 큐의 정렬 기준은 심각도가 아니라 경과 시간이다.
-            .order_by(func.min(ContentItem.published_at).asc())
         )
     ).all()
+    visibility = await assess_sampled_visibility(db, [row[0] for row in rows])
+
+    samples: dict[uuid.UUID, dict] = {}
+    for item, hospital_id, hospital_name in rows:
+        bucket = samples.setdefault(
+            hospital_id,
+            {"name": hospital_name, "published_at": [], "withheld": 0},
+        )
+        if visibility[item.id].visible:
+            bucket["published_at"].append(item.published_at)
+        else:
+            bucket["withheld"] += 1
 
     hospitals = [
         AttentionHospital(
-            hospital_id=row.id,
-            hospital_name=row.name,
-            unreviewed_count=row.unreviewed_count,
-            overdue_count=row.overdue_count,
-            oldest_published_at=row.oldest_published_at,
+            hospital_id=hospital_id,
+            hospital_name=bucket["name"],
+            unreviewed_count=len(bucket["published_at"]),
+            overdue_count=sum(1 for at in bucket["published_at"] if at < overdue_before),
+            oldest_published_at=min(bucket["published_at"], default=None),
+            withheld_count=bucket["withheld"],
         )
-        for row in rows
+        for hospital_id, bucket in samples.items()
     ]
+    # 오래 방치된 병원이 위로 — 큐의 정렬 기준은 심각도가 아니라 경과 시간이다.
+    # 확인 대상이 하나도 없고 공개 보류만 남은 병원은 비교할 경과 시간이 없어 맨 뒤에 둔다.
+    hospitals.sort(
+        key=lambda h: (h.oldest_published_at is None, h.oldest_published_at or datetime.min)
+    )
     return AttentionQueueResponse(
         unreviewed_total=sum(h.unreviewed_count for h in hospitals),
         overdue_total=sum(h.overdue_count for h in hospitals),
         overdue_hours=POST_PUBLISH_REVIEW_OVERDUE_HOURS,
+        withheld_total=sum(h.withheld_count for h in hospitals),
         hospitals=hospitals,
         reports=await _previous_month_report_gaps(db),
     )

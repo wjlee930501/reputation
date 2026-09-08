@@ -102,6 +102,13 @@ export type HandoffDueStatus = {
 export interface LifecycleReadiness {
   status?: string | null
   published_content_count?: number | null
+  /**
+   * 공개 페이지가 실제로 내보내는 발행 글 수.
+   *
+   * `published_content_count`는 발행했다는 사실일 뿐이다. 공개 표면은 저장된 글을 다시
+   * 판정해 숨기므로, 전 글이 보류 중이면 이 값은 0이다.
+   */
+  public_content_count?: number | null
   sov_record_count?: number | null
   report_count?: number | null
   /**
@@ -256,7 +263,10 @@ export function deriveOnboardingSteps(
       title: '첫 콘텐츠 발행',
       description: '온보딩 이후 첫 초안을 검수하고 실제 공개합니다.',
       href: `/hospitals/${hospitalId}/content`,
-      done: (readiness?.published_content_count ?? 0) > 0 && readinessCheck(readiness, 'published_content') !== false,
+      // "실제 공개"가 단계의 약속이므로 발행 행 수가 아니라 공개 편수를 본다. 값이
+      // 없으면 0으로 두어 완료로 넘기지 않는다 — 검사 누락은 통과시키는 쪽이라
+      // 카운트까지 관대하면 전 글이 보류 중인 병원이 완료로 보인다(H-01).
+      done: (readiness?.public_content_count ?? 0) > 0 && readinessCheck(readiness, 'published_content') !== false,
     },
     {
       key: 'sov',

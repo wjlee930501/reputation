@@ -26,12 +26,19 @@ class ContentItemResponse(BaseModel):
     post_publish_notified_at: Optional[str] = None
     post_publish_reviewed_at: Optional[str] = None
     post_publish_reviewed_by: Optional[str] = None
+    # 사람이 확인해야 하는 표본인지 (post_publish_review_policy). Admin은 이 값이 True일
+    # 때만 "문제 없음 · 공개 내용 확인 완료" 버튼을 띄운다.
+    post_publish_review_required: bool = False
     body_updated_at: Optional[str] = None
     # 참고 자료/FAQ 분리 필드 — Admin 검수·보정(A1)과 컴플라이언스 패널이 사용.
     references: list[dict[str, Any]] = []
     faq_question: Optional[str] = None
     faq_answer_summary: Optional[str] = None
     compliance: Optional[dict[str, Any]] = None
+    # 월 표의 행 상태 — kind/label/reason/link. 공개 사이트와 같은 판정 위에 차단 링크만
+    # 얹은 값이며, Admin은 라벨을 새로 만들지 않는다. 필수 — 빠진 응답이 있으면
+    # 그 화면만 상태를 자기 방식으로 다시 계산하게 된다.
+    row_state: dict[str, Any]
     content_philosophy_id: Optional[str] = None
     query_target_id: Optional[str] = None
     exposure_action_id: Optional[str] = None

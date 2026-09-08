@@ -16,6 +16,7 @@ from app.models.content import (  # noqa: E402
     ContentType,
 )
 from app.models.essence import (  # noqa: E402
+    PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -73,8 +74,17 @@ class FakeSeedDb:
     def execute(self, statement):
         entity = statement.column_descriptions[0].get("entity")
         if entity is HospitalSourceAsset:
+            # 이 fake는 WHERE를 해석하지 못한다. 자료 조회는 서버가 SQL에서 거르는
+            # required_text_source_predicate()와 같은 규칙을 여기서 흉내 낸다.
             return FakeQueryResult(
-                [obj for obj in self.objects if isinstance(obj, HospitalSourceAsset)]
+                [
+                    obj
+                    for obj in self.objects
+                    if isinstance(obj, HospitalSourceAsset)
+                    and obj.status != SourceStatus.EXCLUDED
+                    and obj.source_type not in PHOTO_SOURCE_TYPES
+                    and (obj.raw_text or "").strip()
+                ]
             )
         if entity is HospitalContentPhilosophy:
             return FakeQueryResult(

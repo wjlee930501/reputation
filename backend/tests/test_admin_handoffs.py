@@ -1,5 +1,5 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from unittest.mock import Mock
 
 import pytest
@@ -7,6 +7,7 @@ from fastapi import HTTPException, Response
 
 from app.api.admin import handoffs as handoffs_api
 from app.models.admin_user import AdminUser
+from app.models.content import ContentSchedule
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
 from app.schemas.handoff import HandoffAccept, HandoffContract
@@ -34,16 +35,37 @@ class RejectingDB:
         return None
 
 
+class _ScalarResult:
+    def __init__(self, rows: list):
+        self._rows = rows
+
+    def scalars(self):
+        return self
+
+    def all(self):
+        return list(self._rows)
+
+
 class MemoryDB(RejectingDB):
-    def __init__(self, handoff: HospitalHandoff, accounts: list[AdminUser]):
+    def __init__(
+        self,
+        handoff: HospitalHandoff,
+        accounts: list[AdminUser],
+        schedules: list[ContentSchedule] | None = None,
+    ):
         super().__init__(handoff, accounts)
         self.hospital = Hospital(id=handoff.hospital_id, name="QA", slug=f"qa-{uuid.uuid4()}")
         self.added = []
+        # 활성 발행 일정 조회는 이 목록만 돌려준다 — 계약 정정이 일정 요금제를 맞추는지만 본다.
+        self.schedules = schedules or []
 
     async def get(self, model, object_id):
         if model is Hospital and object_id == self.hospital.id:
             return self.hospital
         return await super().get(model, object_id)
+
+    async def execute(self, _stmt):
+        return _ScalarResult([s for s in self.schedules if s.is_active])
 
     def add(self, item):
         self.added.append(item)
@@ -205,6 +227,86 @@ async def test_owner_correction_updates_handoff_and_hospital_plan_with_audit_rea
     assert db.hospital.plan is Plan.PLAN_20
     audit = next(item for item in db.added if item.action == "handoff_contract_corrected")
     assert audit.detail["reason"] == "계약서 요금제 오기 정정"
+    # 일정이 없으면 동기화 기록도 남기지 않는다.
+    assert "schedule_plan_synced" not in audit.detail
+
+
+async def test_owner_correction_syncs_the_active_schedule_plan_with_audit() -> None:
+    actor = _account("OWNER")
+    handoff = _contracted(actor)
+    handoff.created_at = datetime.now(UTC)
+    handoff.updated_at = datetime.now(UTC)
+    schedule = ContentSchedule(
+        id=uuid.uuid4(),
+        hospital_id=handoff.hospital_id,
+        plan="PLAN_12",
+        publish_days=[1, 4],
+        active_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    retired = ContentSchedule(
+        id=uuid.uuid4(),
+        hospital_id=handoff.hospital_id,
+        plan="PLAN_12",
+        publish_days=[1],
+        active_from=date(2026, 1, 1),
+        is_active=False,
+    )
+    db = MemoryDB(handoff, [actor], schedules=[schedule, retired])
+
+    await handoffs_api.correct_contract(
+        handoff.id,
+        handoffs_api.HandoffCorrection(
+            version=2,
+            reason="계약서 요금제 오기 정정",
+            contract_reference="CTR-2",
+            contract_effective_at=datetime.now(UTC),
+            plan=Plan.PLAN_20,
+            sla_due_at=datetime.now(UTC),
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    # 월 약정 편수는 ContentSchedule.plan을 읽는다 — 정정이 여기까지 오지 않으면
+    # 다음 달도 옛 편수로 슬롯이 생긴다.
+    assert schedule.plan == "PLAN_20"
+    assert retired.plan == "PLAN_12"
+    audit = next(item for item in db.added if item.action == "handoff_contract_corrected")
+    assert audit.detail["schedule_plan_synced"] == [
+        {"schedule_id": str(schedule.id), "from": "PLAN_12", "to": "PLAN_20"}
+    ]
+
+
+async def test_contract_record_syncs_an_existing_active_schedule_plan() -> None:
+    actor = _account("OPERATOR")
+    handoff = _pending(actor)
+    schedule = ContentSchedule(
+        id=uuid.uuid4(),
+        hospital_id=handoff.hospital_id,
+        plan="PLAN_12",
+        publish_days=[1, 4],
+        active_from=date(2026, 9, 1),
+        is_active=True,
+    )
+    db = MemoryDB(handoff, [actor], schedules=[schedule])
+
+    await handoffs_api.contract_handoff(
+        handoff.id,
+        HandoffContract(
+            version=1,
+            contract_reference="CTR-1",
+            contract_effective_at=datetime.now(UTC),
+            plan=Plan.PLAN_16,
+            sla_due_at=datetime.now(UTC),
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    assert schedule.plan == "PLAN_16"
+    audit = next(item for item in db.added if item.action == "handoff_contracted")
+    assert audit.detail["schedule_plan_synced"][0]["to"] == "PLAN_16"
 
 
 async def test_operator_cannot_accept_another_ae_assignment() -> None:

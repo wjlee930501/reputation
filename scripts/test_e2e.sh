@@ -207,11 +207,12 @@ header "3" "V0 리포트 자동 생성 (profile_complete → SoV → PDF → Sla
 # ══════════════════════════════════════════════════════════════════
 
 if has_key "OPENAI_API_KEY"; then
-  info "profile_complete=true 설정 → V0 태스크 자동 트리거..."
+  info "남은 필수 항목(공식 채널) 입력 → 완료 파생 → V0 태스크 자동 트리거..."
 
-  # PATCH /profile with profile_complete=true → trigger_v0_report 자동 큐잉
+  # 완료 플래그는 서버가 파생한다. 마지막 필수 항목(네이버 플레이스·Google 병원 정보)을
+  # 채우는 PATCH가 미완료 → 완료 전환을 만들고 trigger_v0_report를 큐잉한다.
   PROFILE_RES=$(api_patch "/api/v1/admin/hospitals/$HID/profile" \
-    '{"profile_complete": true}')
+    '{"naver_place_url": "https://naver.me/jangpyeonhan", "google_maps_url": "https://maps.google.com/?cid=1234567890"}')
 
   TASK_ID=$(echo "$PROFILE_RES" | python3 -c \
     "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null || echo "")

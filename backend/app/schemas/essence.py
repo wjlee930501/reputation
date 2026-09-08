@@ -82,12 +82,6 @@ class SourcePublicToggle(BaseModel):
     photo_evidence_reference: str | None = Field(default=None, max_length=500)
 
 
-class PhilosophyDraftCreate(BaseModel):
-    source_asset_ids: list[str] | None = None
-    operator_note: str | None = None
-    created_by: str | None = Field(default=None, max_length=100)
-
-
 class PhilosophyPatch(BaseModel):
     positioning_statement: str | None = None
     doctor_voice: str | None = None
@@ -109,6 +103,17 @@ class PhilosophyApprove(BaseModel):
     reviewed_by: str = Field(min_length=1, max_length=100)
     approval_note: str | None = None
     confirm_evidence_reviewed: bool
+    # 자동 검수가 보류한 초안을 사람이 승인할 때의 근거. 20자 미만은 사유가 아니다.
+    override_reason: str | None = Field(default=None, min_length=20, max_length=2000)
+
+    @field_validator("override_reason", mode="before")
+    @classmethod
+    def blank_override_reason_is_no_reason(cls, value: Any) -> Any:
+        # 공백 20자는 사유가 아니다. min_length 검사 전에 다듬어, 빈 값은 None이 되고
+        # 게이트가 그대로 걸리게 한다.
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
     @field_validator("confirm_evidence_reviewed")
     @classmethod
@@ -146,6 +151,8 @@ class PhilosophyResponse(BaseModel):
     approval_note: str | None
     created_at: str | None
     updated_at: str | None
+    # 재검수 요청에서만 채워진다. False면 보관은 끝났고 재검수는 15분 reconcile이 회수한다.
+    re_review_dispatched: bool | None = None
 
 
 class ApprovedPhilosophyResponse(BaseModel):

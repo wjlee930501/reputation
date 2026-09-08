@@ -16,6 +16,7 @@ from app.models.content import ContentItem
 from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
+    HospitalSourceEvidenceNote,
     PhilosophyStatus,
     SourceStatus,
     SourceType,
@@ -1120,6 +1121,46 @@ def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps
 
     assert writer_calls == 1
     assert item.essence_check_summary["generation_attempt"]["reason"] == "PROVIDER_TIMEOUT"
+
+
+def test_rescheduling_a_stranded_slot_does_not_reset_the_attempt_budget():
+    """H-08: 22:30 복구가 scheduled_date를 매일 다시 쓰므로 날짜는 fingerprint가 아니다."""
+
+    philosophy = SimpleNamespace(id="phil-1")
+    before = SimpleNamespace(
+        content_type=SimpleNamespace(value="DISEASE"),
+        scheduled_date=date(2026, 9, 8),
+        query_target_id="q-1",
+    )
+    after = SimpleNamespace(
+        content_type=SimpleNamespace(value="DISEASE"),
+        scheduled_date=date(2026, 9, 9),
+        query_target_id="q-1",
+    )
+    assert tasks._generation_attempt_context(
+        before, philosophy
+    ) == tasks._generation_attempt_context(after, philosophy)
+
+
+def test_changed_essence_or_target_still_grants_a_fresh_attempt():
+    """근거·대상이 바뀌면 여전히 새 시도 예산을 준다."""
+
+    item = SimpleNamespace(
+        content_type=SimpleNamespace(value="DISEASE"),
+        scheduled_date=date(2026, 9, 8),
+        query_target_id="q-1",
+    )
+    assert tasks._generation_attempt_context(
+        item, SimpleNamespace(id="a")
+    ) != tasks._generation_attempt_context(item, SimpleNamespace(id="b"))
+    other_target = SimpleNamespace(
+        content_type=SimpleNamespace(value="DISEASE"),
+        scheduled_date=date(2026, 9, 8),
+        query_target_id="q-2",
+    )
+    assert tasks._generation_attempt_context(
+        item, SimpleNamespace(id="a")
+    ) != tasks._generation_attempt_context(other_target, SimpleNamespace(id="a"))
 
 
 def test_changed_generation_context_allows_exactly_one_retry(monkeypatch):
@@ -2243,6 +2284,9 @@ def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
                 return ScalarResult(self.philosophy)
             if entity is HospitalSourceAsset:
                 return SourcesResult(self.sources)
+            # readiness는 제외된 근거 노트의 noise hash도 확인한다 — 이 병원엔 없다.
+            if entity is HospitalSourceEvidenceNote:
+                return SourcesResult([])
             raise AssertionError(f"unexpected entity: {entity}")
 
         def commit(self):

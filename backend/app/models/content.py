@@ -218,6 +218,9 @@ class ContentItem(Base):
     # 후행 확인은 공개를 막지 않는 비차단 운영 기록이다.
     post_publish_reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     post_publish_reviewed_by: Mapped[str | None] = mapped_column(String(100))
+    # 공개 텍스트(제목·본문·meta·FAQ·참고자료)가 마지막으로 편집된 시각. 컬럼 이름은
+    # 본문이지만 의미는 "공개 표면 텍스트 편집"이다 — 공개 뒤 편집 표본과 Site 재검증
+    # 키가 이 값을 쓰므로 본문 외 공개 필드 편집도 여기에 기록한다.
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

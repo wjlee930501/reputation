@@ -8,13 +8,23 @@
 stdlib만 쓴다: `pytest scripts` 레인은 백엔드 의존성 설치 없이도 돌아야 한다.
 """
 
+import ast
 import re
 from pathlib import Path
+
+from scripts.check_user_facing_terms import (
+    NEW_SURFACE_BANNED_PATTERNS,
+    NEW_SURFACE_PATHS,
+    banned_labels_for_line,
+    iter_scannable_lines,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 _BACKEND_DIAGNOSIS = PROJECT_ROOT / "backend" / "app" / "api" / "public" / "diagnosis.py"
 _SITE_DIAGNOSIS_SLOTS = PROJECT_ROOT / "site" / "lib" / "diagnosis-slots.ts"
+_BACKEND_ESSENCE_SOURCES = PROJECT_ROOT / "backend" / "app" / "services" / "essence_sources.py"
+_ADMIN_ESSENCE_SOURCE_SPLIT = PROJECT_ROOT / "admin" / "lib" / "essence-source-split.ts"
 
 
 def _read_int_constant(path: Path, pattern: str) -> int:
@@ -46,4 +56,117 @@ def test_diagnosis_slot_reset_hour_matches_across_backend_and_site() -> None:
         f"자리 리셋 시각이 갈라졌다: backend/app/api/public/diagnosis.py="
         f"{backend_hour}, site/lib/diagnosis-slots.ts={site_hour}. "
         "둘 다 같은 값으로 맞출 것 — 화면 안내 문구와 실제 배정 경계가 어긋난다."
+    )
+
+
+def _single_match(path: Path, pattern: str, flags: int = re.MULTILINE) -> str:
+    text = path.read_text(encoding="utf-8")
+    matches = re.findall(pattern, text, flags)
+    assert len(matches) == 1, (
+        f"{path.relative_to(PROJECT_ROOT)}에서 {pattern!r}로 선언을 정확히 하나 찾지 못했다 "
+        f"(찾은 개수: {len(matches)}). 선언 형태가 바뀌었으면 이 파서를 함께 고쳐야 한다 — "
+        "파서가 조용히 0건을 반환하면 가드가 통과하면서 아무것도 지키지 않게 된다."
+    )
+    return matches[0]
+
+
+def _backend_blank_chars() -> set[str]:
+    """`_BLANK_CHARS = (...)` 우변을 그대로 평가한다 (암묵적 문자열 연결 포함)."""
+    literal = _single_match(
+        _BACKEND_ESSENCE_SOURCES,
+        r"^_BLANK_CHARS\s*=\s*(\(.*?\))\s*$",
+        re.MULTILINE | re.DOTALL,
+    )
+    return set(ast.literal_eval(literal))
+
+
+def _admin_blank_chars() -> set[str]:
+    """`BLANK_TEXT_RE = /^[...]*$/`의 문자 클래스를 코드포인트 집합으로 푼다."""
+    char_class = _single_match(
+        _ADMIN_ESSENCE_SOURCE_SPLIT,
+        r"^const BLANK_TEXT_RE\s*=\s*/\^\[(.*?)\]\*\$/\s*$",
+    )
+
+    # (코드포인트, 이스케이프 여부). `\uXXXX` 외의 백슬래시 표기를 뒤 문자로 눙치면
+    # `\t`가 문자 `t`로 둔갑해 가드가 엉뚱한 집합을 비교하고도 초록이 된다 — 그 자리에서 실패시킨다.
+    tokens: list[tuple[str, bool]] = []
+    index = 0
+    while index < len(char_class):
+        character = char_class[index]
+        if character == "\\":
+            escape = char_class[index : index + 6]
+            if re.fullmatch(r"\\u[0-9A-Fa-f]{4}", escape) is None:
+                raise ValueError(
+                    f"BLANK_TEXT_RE에 이 파서가 모르는 이스케이프가 있다: "
+                    f"{char_class[index : index + 2]!r}. \\uXXXX만 읽는다 — 표기가 늘었으면 "
+                    "이 파서를 함께 고쳐야 한다."
+                )
+            tokens.append((chr(int(escape[2:], 16)), True))
+            index += 6
+        else:
+            tokens.append((character, False))
+            index += 1
+
+    chars: set[str] = set()
+    position = 0
+    while position < len(tokens):
+        character, escaped = tokens[position]
+        # 범위(`a-z`)는 **이스케이프되지 않은** `-`가 양쪽 토큰 사이에 있을 때만이다.
+        # 위 토큰화가 `\uXXXX` 외의 이스케이프를 전부 거부하므로 `\-`는 여기까지 오지
+        # 못한다(그 자리에서 ValueError). 양끝의 `-`는 리터럴이다.
+        if character == "-" and not escaped and 0 < position < len(tokens) - 1:
+            for code_point in range(ord(tokens[position - 1][0]), ord(tokens[position + 1][0]) + 1):
+                chars.add(chr(code_point))
+            position += 2
+        else:
+            chars.add(character)
+            position += 1
+    return chars
+
+
+def test_blank_text_set_matches_across_backend_and_admin() -> None:
+    """원문이 비어 있다는 판정의 공백 집합은 백엔드와 admin 화면이 같아야 한다.
+
+    어긋나면 NBSP·전각 공백만 든 자료를 두고 한쪽은 "원문 있음", 다른 쪽은 "없음"으로
+    세어 필수 자료 분모가 갈라진다. 화면은 "처리 완료 12/12"인데 서버는 승인 게이트를
+    열어 주지 않고, AE는 무엇이 남았는지 볼 방법이 없다.
+    """
+    backend_chars = _backend_blank_chars()
+    admin_chars = _admin_blank_chars()
+
+    assert backend_chars == admin_chars, (
+        "공백 집합이 갈라졌다: "
+        f"backend에만 있음={sorted(hex(ord(c)) for c in backend_chars - admin_chars)}, "
+        f"admin에만 있음={sorted(hex(ord(c)) for c in admin_chars - backend_chars)}. "
+        "backend/app/services/essence_sources.py의 _BLANK_CHARS와 "
+        "admin/lib/essence-source-split.ts의 BLANK_TEXT_RE를 같은 집합으로 맞출 것."
+    )
+
+
+def test_new_admin_surfaces_use_the_unified_terms() -> None:
+    """새로 만든 admin 화면은 검토 §4에서 하나로 묶은 용어만 쓴다.
+
+    옛 페이지는 PR-1E에서 통째로 사라지므로 전역 스캔을 하지 않는다. 대신
+    `NEW_SURFACE_PATHS`가 다시 만든 화면을 하나씩 받아들이고, 그 경로 안에서만
+    금지 변형을 막는다. 목록이 비어 있는 동안에도 패턴 자체가 사라지지 않았는지는
+    확인한다 — 패턴이 비면 경로를 채운 다음 커밋에서 가드가 조용히 아무것도 안 지킨다.
+    """
+    assert NEW_SURFACE_BANNED_PATTERNS, (
+        "NEW_SURFACE_BANNED_PATTERNS가 비었다. 새 화면 용어 가드가 아무것도 검사하지 않는다."
+    )
+
+    violations: list[str] = []
+    for rel in NEW_SURFACE_PATHS:
+        path = PROJECT_ROOT / rel
+        assert path.exists(), (
+            f"NEW_SURFACE_PATHS의 {rel}이 없다. 화면을 옮겼거나 지웠으면 "
+            "scripts/check_user_facing_terms.py의 목록도 함께 고칠 것."
+        )
+        for lineno, line in iter_scannable_lines(path):
+            for label in banned_labels_for_line(line, NEW_SURFACE_BANNED_PATTERNS):
+                violations.append(f"{rel}:{lineno}: {label}: {line.strip()}")
+
+    assert not violations, (
+        "새 화면에 통일 전 용어가 남았다. admin/lib/admin-copy.ts의 키로 바꿀 것:\n"
+        + "\n".join(violations)
     )

@@ -35,6 +35,11 @@ class _ExecuteResult:
         # set_schedule의 SELECT ... FOR UPDATE가 읽는 병원 행.
         return self._hospital
 
+    def one_or_none(self):
+        # 공개 가시성 판정이 읽는 승인된 운영 기준 행 — 이 더블에는 없다. 기준이 None이면
+        # 대조를 건너뛰는 게 아니라 PHILOSOPHY_MISMATCH로 막힌다(이 테스트는 일정만 본다).
+        return None
+
     def all(self):
         # 이 더블은 스케줄 조회만 모사한다. 격차 타깃 조회(gap_target_rows_stmt)는
         # 행이 없는 병원과 같으므로 빈 목록 — 슬롯은 정적 배분 그대로 만들어진다.
@@ -119,7 +124,7 @@ def test_generate_monthly_slots_respects_active_from_date():
 
 
 async def test_set_schedule_returns_validation_error_for_capacity_shortfall(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False)
+    hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
     db = _FakeDB(hospital)
     _freeze_arrow(monkeypatch, "2026-05-01T12:00:00+09:00")  # active_from은 미래여야 한다 (R2)
     body = content_api.ScheduleCreate(plan="PLAN_16", publish_days=[1, 4], active_from=date(2026, 5, 10))
@@ -200,8 +205,50 @@ def _freeze_arrow(monkeypatch, iso="2026-06-10T12:00:00+09:00"):
     return frozen
 
 
-async def test_set_schedule_syncs_hospital_plan_and_queues_imminent_slots(monkeypatch):
-    """A3: hospital.plan 동기화 / P2-9: 오늘·내일 슬롯은 야간 배치를 못 타므로 즉시 큐잉."""
+async def test_schedule_cannot_change_the_contracted_plan(monkeypatch):
+    """H-14: 일정 저장이 병원 요금제를 바꾸면 계약 기록과 가격이 어긋난다."""
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), site_live=False, schedule_set=False, plan=Plan.PLAN_12
+    )
+    db = _FakeDB(hospital)
+    _freeze_arrow(monkeypatch)
+    body = content_api.ScheduleCreate(
+        plan="PLAN_20",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "PLAN_MISMATCH"
+    assert exc.value.detail["contracted_plan"] == "PLAN_12"
+    assert hospital.plan == Plan.PLAN_12
+    assert db.committed is False
+
+
+async def test_schedule_with_the_contracted_plan_leaves_plan_untouched(monkeypatch):
+    """계약 요금제와 일치하는 일정 저장은 hospital.plan을 건드리지 않는다 (H-14)."""
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), site_live=False, schedule_set=False, plan=Plan.PLAN_12
+    )
+    db = _FakeDB(hospital)
+    _freeze_arrow(monkeypatch)
+    body = content_api.ScheduleCreate(
+        plan="PLAN_12",
+        publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 6, 11),
+    )
+
+    await content_api.set_schedule(hospital.id, body, db=db)
+
+    assert hospital.plan == Plan.PLAN_12
+    assert hospital.schedule_set is True
+
+
+async def test_set_schedule_queues_imminent_slots(monkeypatch):
+    """P2-9: 오늘·내일 슬롯은 야간 배치를 못 타므로 즉시 큐잉."""
     hospital = SimpleNamespace(
         id=uuid.uuid4(),
         status=HospitalStatus.ACTIVE,
@@ -229,7 +276,6 @@ async def test_set_schedule_syncs_hospital_plan_and_queues_imminent_slots(monkey
 
     assert response["slots_created"] == 12
     assert response["first_publish_date"] == "2026-06-11"
-    assert hospital.plan == Plan.PLAN_12
     assert hospital.schedule_set is True
     assert db.committed is True
     # 2026-06-11(내일) 슬롯 1개만 즉시 생성 큐에 적재
@@ -488,6 +534,10 @@ def test_list_content_rejects_out_of_range_month():
     class _EmptyDB:
         async def execute(self, _stmt):
             return _ExecuteResult([])
+
+        async def get(self, _model, _pk):
+            # 직렬화의 병원 공개 게이트 조회 — 이 검증에는 병원 행이 없다.
+            return None
 
     async def override_get_db():
         yield _EmptyDB()

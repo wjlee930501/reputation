@@ -66,6 +66,8 @@ class AttentionHospital(BaseModel):
     unreviewed_count: int
     overdue_count: int
     oldest_published_at: datetime | None
+    # 공개 페이지가 숨기는 중인 발행 글. 확인 대기와 할 일이 다르므로 따로 센다(H-01).
+    withheld_count: int = 0
 
 
 class AttentionReportHospital(BaseModel):
@@ -88,6 +90,7 @@ class AttentionQueueResponse(BaseModel):
     unreviewed_total: int
     overdue_total: int
     overdue_hours: int
+    withheld_total: int = 0
     hospitals: list[AttentionHospital]
     reports: AttentionReports
 

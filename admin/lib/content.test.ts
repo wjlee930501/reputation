@@ -6,6 +6,7 @@ import {
   buildPublicContentUrl,
   countCarriedOver,
   countUnpublishedCarriedOver,
+  getContentOperationsBucket,
   getContentOperationsState,
   getPublishNotificationPresentation,
   isCarriedOver,
@@ -68,17 +69,35 @@ test('countUnpublishedCarriedOver excludes published carried items', () => {
   assert.equal(countUnpublishedCarriedOver(items), 2)
 })
 
+// 공개 사이트가 실제로 내보내는 중이라는 서버 판정. 발행 글의 판정은 이것이 먼저다.
+const VISIBLE = {
+  publishable: false,
+  public_visibility: { visible: true, blockers: [], blocker_labels: [] },
+}
+
 test('content operations state distinguishes Slack retry, post-review, and reviewed states', () => {
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       display: { review: { notification_state: 'NOT_REQUIRED' } },
     }),
     'published',
   )
+  // 알림이 필요 없는 공개(수동 발행)라도 표본이면 backend 예외 큐가 센다.
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
+      post_publish_review_required: true,
+      display: { review: { notification_state: 'NOT_REQUIRED' } },
+    }),
+    'postReviewPending',
+  )
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      compliance: VISIBLE,
       display: { review: { notification_state: 'PENDING' } },
     }),
     'notificationPending',
@@ -86,14 +105,26 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
+      post_publish_review_required: true,
       display: { review: { notification_state: 'SENT' } },
     }),
     'postReviewPending',
+  )
+  // 표본이 아닌 글은 확인 대기로 세지 않는다 — backend 예외 큐와 같은 기준이다(M-21).
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      compliance: VISIBLE,
+      display: { review: { notification_state: 'SENT' } },
+    }),
+    'published',
   )
   // Legacy timestamp must never override the server-authoritative outbox state.
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       post_publish_notified_at: '2026-07-16T08:00:00Z',
       display: { review: { notification_state: 'FAILED' } },
     }),
@@ -102,6 +133,7 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       post_publish_notified_at: '2026-07-16T08:00:00Z',
       post_publish_reviewed_at: '2026-07-16T09:00:00Z',
     }),
@@ -117,6 +149,86 @@ test('content operations state distinguishes Slack retry, post-review, and revie
     'publishable',
   )
   assert.equal(getContentOperationsState({ status: 'CANCELLED', title: 'old draft' }), 'cancelled')
+})
+
+test('a withheld published item is never bucketed as published, post-review, or notification', () => {
+  // 공개 사이트가 숨기는 중인 글 — 확인 기록도 알림 상태도 이 사실을 덮지 못한다(H-01).
+  const withheld = (extra: Record<string, unknown> = {}) => ({
+    status: 'PUBLISHED',
+    compliance: {
+      publishable: false,
+      public_visibility: {
+        visible: false,
+        blockers: ['IMAGE_NOT_CERTIFIED'],
+        blocker_labels: ['대표 이미지 재인증 대기'],
+      },
+    },
+    ...extra,
+  })
+
+  assert.equal(getContentOperationsState(withheld()), 'withheld')
+  assert.equal(
+    getContentOperationsState(withheld({ post_publish_reviewed_at: '2026-07-16T09:00:00Z' })),
+    'withheld',
+  )
+  for (const state of ['PENDING', 'SENT', 'NOT_REQUIRED'] as const) {
+    assert.equal(
+      getContentOperationsState(withheld({ display: { review: { notification_state: state } } })),
+      'withheld',
+    )
+  }
+  // 공개 중인 글의 판정은 그대로다.
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+      compliance: {
+        publishable: false,
+        public_visibility: { visible: true, blockers: [], blocker_labels: [] },
+      },
+    }),
+    'published',
+  )
+})
+
+test('a published item without a visibility judgment is withheld, never published', () => {
+  // 경계는 fail-closed다 — 판정이 없다는 건 "공개 중"이 아니라 "모른다"는 뜻이고,
+  // 모르는 상태를 초록으로 칠하면 admin만 공개라고 말하는 H-01이 그대로 돌아온다.
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+      compliance: { publishable: false },
+    }),
+    'withheld',
+  )
+  assert.equal(getContentOperationsState({ status: 'PUBLISHED' }), 'withheld')
+  assert.equal(
+    getContentOperationsBucket({ status: 'PUBLISHED', compliance: { publishable: false } }),
+    'needsReview',
+  )
+})
+
+test('withheld items are counted and filtered with the blocked bucket, never with published', () => {
+  const item = {
+    status: 'PUBLISHED',
+    post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+    display: { review: { notification_state: 'SENT' as const } },
+    compliance: {
+      publishable: false,
+      public_visibility: {
+        visible: false,
+        blockers: ['FORBIDDEN_EXPRESSION'],
+        blocker_labels: ['의료광고 금지 표현 포함'],
+      },
+    },
+  }
+
+  assert.equal(getContentOperationsBucket(item), 'needsReview')
+  assert.equal(matchesContentOperationsFilter(item, 'needsReview'), true)
+  assert.equal(matchesContentOperationsFilter(item, 'published'), false)
+  assert.equal(matchesContentOperationsFilter(item, 'postReviewPending'), false)
+  assert.equal(matchesContentOperationsFilter(item, 'notificationPending'), false)
 })
 
 test('publish notification presentation is server-authoritative and operator-readable', () => {
@@ -149,7 +261,9 @@ test('content operations filters support actionable summary-card filtering', () 
   const item = {
     status: 'PUBLISHED',
     carried_over_from: '2026-06-30',
+    compliance: VISIBLE,
     post_publish_notified_at: '2026-07-16T08:00:00Z',
+    post_publish_review_required: true,
     display: { review: { notification_state: 'SENT' as const } },
   }
   assert.equal(matchesContentOperationsFilter(item, 'all'), true)

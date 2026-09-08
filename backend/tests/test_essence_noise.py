@@ -26,11 +26,20 @@ class _NoiseDB:
         self.notes = notes
         self.added = []
         self.commits = 0
+        #: 잡힌 병원 advisory lock.
+        self.locks: list[uuid.UUID] = []
+
+    def get_bind(self):
+        # advisory lock 헬퍼는 Postgres 바인딩에서만 동작한다.
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
     async def get(self, _model, item_id):
         return SimpleNamespace(id=item_id) if item_id == self.hospital_id else None
 
     async def execute(self, _statement):
+        if "pg_advisory_xact_lock" in str(_statement):
+            self.locks.append(self.hospital_id)
+            return SimpleNamespace(scalar=lambda: None, scalar_one=lambda: None)
         return _ScalarRows(self.notes)
 
     def add(self, item):
@@ -68,6 +77,7 @@ async def test_bulk_mark_noise_preserves_notes_and_records_actor_audit() -> None
         "is_noise": True,
     }
     assert db.commits == 1
+    assert db.locks == [hospital_id]
 
 
 @pytest.mark.asyncio

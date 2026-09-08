@@ -85,6 +85,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.auto_review_essence_snapshot",
     "app.workers.tasks.backfill_indexnow",
     "app.workers.tasks.build_aeo_site",
+    "app.workers.tasks.fetch_channel_source",
     "app.workers.tasks.generate_content_image",
     "app.workers.tasks.generate_monthly_report_for_hospital",
     "app.workers.tasks.monitor_live_custom_domains",
@@ -96,6 +97,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.process_source_asset_task",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.regenerate_content_item",
+    "app.workers.tasks.recertify_published_content_image",
     "app.workers.tasks.reconcile_essence_snapshots",
     "app.workers.tasks.retry_site_revalidation",
     "app.workers.tasks.run_monthly_reports",
@@ -124,7 +126,29 @@ def _database_facts() -> dict[str, Any]:
         live_site_count = int(
             db.execute(text("SELECT count(*) FROM hospitals WHERE site_live IS TRUE")).scalar_one()
         )
+        # 배포 직후 재인증 sweep이 집을 공개 글 수 — 제목 편집이 아닌 레거시 인증 공백이면
+        # 예상 밖 유료 호출(글·주제당 최대 3회)이므로 배포 증거로 남긴다(2026-09-09 체크포인트).
+        recertify_candidate_count = int(
+            db.execute(
+                text(
+                    "SELECT count(*) FROM content_items c JOIN hospitals h ON h.id = c.hospital_id "
+                    "WHERE c.status = 'PUBLISHED' AND c.image_url IS NOT NULL AND c.image_url <> '' "
+                    "AND c.image_policy_verified_at IS NULL "
+                    "AND h.status = 'ACTIVE' AND h.site_live IS TRUE"
+                )
+            ).scalar_one()
+        )
+        null_noise_hash_approvals = int(
+            db.execute(
+                text(
+                    "SELECT count(*) FROM hospital_content_philosophies "
+                    "WHERE status = 'APPROVED' AND evidence_noise_hash IS NULL"
+                )
+            ).scalar_one()
+        )
     return {
+        "recertify_candidate_count": recertify_candidate_count,
+        "null_noise_hash_approvals": null_noise_hash_approvals,
         "schema_current": current_head == expected_head,
         "schema_revision": current_head,
         "expected_schema_revision": expected_head,

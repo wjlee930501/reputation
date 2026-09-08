@@ -17,6 +17,7 @@ from app.models.operations import (
     IncidentState,
     NotificationOutbox,
 )
+from app.services import published_image_recertification as recertification
 from app.services.incident_types import (
     IncidentFingerprint,
     IncidentOpenRequest,
@@ -51,10 +52,13 @@ _MORNING_IMAGE_NOTIFICATION_CODES = {
     "CONTENT_IMAGE_NOT_VERIFIED",
     "IMAGE_GENERATION_FAILED",
 }
+# 이미 공개했던 글이 이미지 인증이 풀려 공개 페이지에서 내려간 상태다. 예정 슬롯의
+# 아침 마감 게이트와 달리 지금 사람이 결정해야 하므로 첫 open에 한 번 알린다.
+PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = recertification.OPERATOR_REQUIRED_CODES
 # The cost guard owns its hard-stop incident/outbox projection.  Generation still
 # records COST_BLOCKED, but a second generation Slack would violate the one-message
 # hard-stop contract.
-_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = frozenset()
+_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = PUBLISHED_IMAGE_RECERTIFY_CODES
 _MORNING_GENERATION_NOTIFICATION_CODES = frozenset(
     _MORNING_BODY_NOTIFICATION_CODES
     | _MORNING_STORED_GATE_NOTIFICATION_CODES
@@ -105,8 +109,18 @@ def generation_safe_cause(code: str) -> str:
     return _generation_safe_cause(code)
 
 
+def generation_operator_action(code: str) -> str:
+    """Operator-safe Korean next action for one generation blocker code."""
+
+    return _generation_operator_copy(code)[1]
+
+
 def _generation_operator_copy(code: str) -> tuple[str, str]:
-    impact = "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
+    impact = (
+        "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
+        if code in PUBLISHED_IMAGE_RECERTIFY_CODES
+        else "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
+    )
     actions = {
         "PROVIDER_TIMEOUT": (
             "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도하므로 지금은 기다리세요."
@@ -159,6 +173,13 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
         "IMAGE_GENERATION_FAILED": (
             "본문은 저장되어 있습니다. 운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 한 번 누르세요."
         ),
+        # 공개 글에는 관리자 이미지 업로드 경로가 없고 "대표 이미지 다시 생성"은 PUBLISHED를
+        # 거절한다. 실제로 사람이 할 수 있는 조치만 적는다.
+        recertification.PUBLISHED_IMAGE_RECERTIFY_REJECTED: recertification.OPERATOR_ACTION,
+        recertification.PUBLISHED_IMAGE_MISSING: recertification.OPERATOR_ACTION,
+        recertification.PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED: (
+            f"자동 재인증이 반복 실패했습니다. {recertification.OPERATOR_ACTION}"
+        ),
     }
     action = actions.get(
         code,
@@ -185,6 +206,7 @@ def _generation_safe_cause(code: str) -> str:
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
         "CONTENT_IMAGE_NOT_VERIFIED": "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다.",
+        **recertification.SAFE_MESSAGES,
     }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
 
 
@@ -219,16 +241,34 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "ESSENCE_NOT_ALIGNED": IncidentFingerprint.VALIDATION_FAILED,
         "CONTENT_IMAGE_NOT_READY": IncidentFingerprint.RENDER_FAILED,
         "CONTENT_IMAGE_NOT_VERIFIED": IncidentFingerprint.RENDER_FAILED,
+        # 재인증 차단 세 코드는 지문을 공유한다. 예산 소진으로 열린 건 위에 같은 판의
+        # 거절이 겹쳐도 새 incident·새 Slack이 아니라 그 한 건이 갱신된다.
+        **dict.fromkeys(
+            recertification.OPERATOR_REQUIRED_CODES,
+            recertification.INCIDENT_FINGERPRINT,
+        ),
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 
 def _incident_identity(
-    code: str, item_id: uuid.UUID, hospital_id: uuid.UUID
+    code: str,
+    item_id: uuid.UUID,
+    hospital_id: uuid.UUID,
+    subject_hash: str | None = None,
 ) -> tuple[str, str, str]:
     """Use one durable incident per hospital for a hospital-level preparation gate."""
 
     if code == "MISSING_APPROVED_ESSENCE":
         return "hospital", str(hospital_id), f"/hospitals/{hospital_id}/essence"
+    if code in PUBLISHED_IMAGE_RECERTIFY_CODES and subject_hash is not None:
+        # 사람이 내리는 결정은 이미지 subject(유형 + 제목)마다 다르다. 같은 subject의
+        # 반복 디스패치는 한 건으로 묶고, 다음 제목 편집은 새 건으로 연다. 판으로 묶으면
+        # 제목과 무관한 편집·Essence 재승인이 같은 거절로 두 번째 건을 연다.
+        return (
+            recertification.INCIDENT_OBJECT_TYPE,
+            recertification.incident_object_id(item_id, subject_hash),
+            "/operations",
+        )
     return "content_item", str(item_id), "/operations"
 
 
@@ -321,10 +361,16 @@ async def open_generation_incident(
     code: str,
     message: str,
     notify: bool = True,
+    subject_hash: str | None = None,
 ) -> uuid.UUID:
     sessions = get_async_sessionmaker()
     async with sessions() as db:
-        object_type, object_id, admin_path = _incident_identity(code, item_id, hospital_id)
+        object_type, object_id, admin_path = _incident_identity(
+            code, item_id, hospital_id, subject_hash
+        )
+        # 중복 제거 키만 subject를 포함한다. source_id는 글 자체로 남겨 운영 큐 조인과
+        # 성공 시 자동 종료가 subject와 무관하게 같은 글을 찾게 한다.
+        source_id = object_id if object_type == "hospital" else str(item_id)
         dedupe_key = build_incident_key(
             "content_generation", object_type, object_id, _fingerprint(code)
         )
@@ -407,7 +453,7 @@ async def open_generation_incident(
                     admin_path=admin_path,
                     hospital_id=hospital_id,
                     operation_run_id=run_id,
-                    source_id=object_id,
+                    source_id=source_id,
                     safe_error_code=code,
                     safe_error_message=_generation_safe_cause(code),
                 ),
@@ -473,8 +519,13 @@ async def recover_generation_incidents(
     *,
     include_image: bool = True,
     safe_error_codes: tuple[str, ...] | None = None,
+    dedupe_keys: tuple[str, ...] | None = None,
 ) -> int:
-    """Close incidents from observed success without paging humans about healthy recovery."""
+    """Close incidents from observed success without paging humans about healthy recovery.
+
+    `dedupe_keys`로 신원을 좁히면 같은 글에 여러 건이 열려 있어도 성공이 증명한 그 건만
+    닫는다. 재인증처럼 사람이 이미지 subject마다 따로 결정하는 사고에 필요하다.
+    """
 
     sessions = get_async_sessionmaker()
     recovered = 0
@@ -489,6 +540,8 @@ async def recover_generation_incidents(
             source_scope,
             Incident.state.in_((IncidentState.OPEN, IncidentState.RETRYING)),
         )
+        if dedupe_keys is not None:
+            statement = statement.where(Incident.dedupe_key.in_(dedupe_keys))
         if safe_error_codes is not None:
             statement = statement.where(Incident.safe_error_code.in_(safe_error_codes))
         elif not include_image:

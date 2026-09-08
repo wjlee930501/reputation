@@ -2,6 +2,9 @@ import type { Hospital } from '@/types'
 
 export type HospitalStatusFilter = 'all' | 'active' | 'onboarding'
 
+/** 이 필터가 실제로 읽는 것은 상태 하나다 — 목록 행과 상세를 모두 그대로 받는다. */
+type HospitalStatusRow = Pick<Hospital, 'status'>
+
 const ONBOARDING_STATUSES = new Set<Hospital['status']>([
   'ONBOARDING',
   'ANALYZING',
@@ -9,12 +12,12 @@ const ONBOARDING_STATUSES = new Set<Hospital['status']>([
   'PENDING_DOMAIN',
 ])
 
-export function isOnboardingHospital(hospital: Hospital): boolean {
+export function isOnboardingHospital(hospital: HospitalStatusRow): boolean {
   return ONBOARDING_STATUSES.has(hospital.status)
 }
 
 export function hospitalMatchesStatus(
-  hospital: Hospital,
+  hospital: HospitalStatusRow,
   filter: HospitalStatusFilter,
 ): boolean {
   if (filter === 'active') return hospital.status === 'ACTIVE'
@@ -22,7 +25,7 @@ export function hospitalMatchesStatus(
   return true
 }
 
-export function hospitalStatusCounts(hospitals: Hospital[]) {
+export function hospitalStatusCounts(hospitals: HospitalStatusRow[]) {
   return {
     total: hospitals.length,
     active: hospitals.filter((hospital) => hospitalMatchesStatus(hospital, 'active')).length,

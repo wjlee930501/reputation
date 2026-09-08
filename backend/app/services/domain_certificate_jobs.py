@@ -11,7 +11,8 @@ from typing import assert_never
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.hospital import DomainCertJobState, Hospital
+from app.models.hospital import DomainCertJobState, DomainDnsStrategy, Hospital
+from app.services.domain_dns import strategy_for_hospital
 
 # ISSUING 클레임은 이 시간이 지나면 만료로 본다. 커밋 직후 디스패치 전에 워커가
 # 죽으면 아무도 폴링하지 않는 ISSUING이 남고, 만료가 없으면 재검증이 영구히 409로
@@ -25,6 +26,9 @@ class DomainCertificateClaimRequest:
     hospital_id: uuid.UUID
     expected_domain: str
     verified_at: datetime | None = None
+    #: DNS를 실제로 확인할 때 쓴 연결 방식. 주면 잠금 재조회가 도메인과 함께 이 값도
+    #: 대조한다 — 도메인이 그대로여도 방식이 바뀌면 확인한 사실이 아니기 때문이다.
+    dns_strategy: DomainDnsStrategy | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,11 +78,14 @@ class DomainCertificateHospitalMissing(Exception):
 class DomainChangedDuringVerification(Exception):
     expected_domain: str
     current_domain: str | None
+    expected_strategy: DomainDnsStrategy | None = None
+    current_strategy: DomainDnsStrategy | None = None
 
     def __str__(self) -> str:
         return (
             f"domain changed during verification: expected={self.expected_domain} "
-            f"current={self.current_domain}"
+            f"current={self.current_domain} expected_strategy={self.expected_strategy} "
+            f"current_strategy={self.current_strategy}"
         )
 
 
@@ -116,6 +123,16 @@ async def lock_hospital_for_domain_certificate(
         raise DomainCertificateHospitalMissing(request.hospital_id)
     if hospital.aeo_domain != request.expected_domain:
         raise DomainChangedDuringVerification(request.expected_domain, hospital.aeo_domain)
+    # 같은 도메인이라도 연결 방식이 CNAME↔APEX_ADDRESS로 바뀌면 확인한 레코드가 다르다.
+    # 옛 방식의 성공을 새 방식의 근거로 남기면, 검증된 적 없는 설정이 '확인 완료'가 된다.
+    current_strategy = strategy_for_hospital(hospital)
+    if request.dns_strategy is not None and current_strategy != request.dns_strategy:
+        raise DomainChangedDuringVerification(
+            request.expected_domain,
+            hospital.aeo_domain,
+            request.dns_strategy,
+            current_strategy,
+        )
     return hospital
 
 

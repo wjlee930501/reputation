@@ -79,7 +79,7 @@ async def test_complete_profile_returns_machine_blocker_and_enqueues_nothing() -
         competitors=[],
         director_name="김원장",
         director_career="전문의",
-        director_philosophy="충분히 설명합니다.",
+        director_philosophy=None,
         director_credentials=None,
         treatments=[{"name": "진료"}],
         aeo_domain=None,
@@ -90,7 +90,7 @@ async def test_complete_profile_returns_machine_blocker_and_enqueues_nothing() -
     with pytest.raises(HTTPException) as exc:
         await hospitals_api.update_profile(
             hospital.id,
-            hospitals_api.HospitalProfileUpdate(profile_complete=True),
+            hospitals_api.HospitalProfileUpdate(director_philosophy="충분히 설명합니다."),
             tasks,
             db=PendingProfileDB(hospital, handoff),
         )
@@ -114,7 +114,7 @@ async def test_profile_completion_dispatches_site_build_independently_from_v0(
         wikidata_qid=None, gbp_place_id=None, naver_place_id=None, kakao_place_id=None,
         hira_org_id=None, region=["서울"], specialties=["외과"], keywords=["진료"],
         competitors=[], director_name="김원장", director_career="전문의",
-        director_philosophy="충분히 설명합니다.", director_credentials=None,
+        director_philosophy=None, director_credentials=None,
         treatments=[{"name": "진료"}], aeo_domain=None,
     )
     background = BackgroundTasks()
@@ -128,7 +128,7 @@ async def test_profile_completion_dispatches_site_build_independently_from_v0(
 
     await hospitals_api.update_profile(
         hospital.id,
-        hospitals_api.HospitalProfileUpdate(profile_complete=True),
+        hospitals_api.HospitalProfileUpdate(director_philosophy="충분히 설명합니다."),
         background,
         db=PendingProfileDB(
             hospital,

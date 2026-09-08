@@ -15,6 +15,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital
 from app.models.operations import OperationRun, OperationRunState
 from app.schemas.essence import SourceAssetPatch
+from app.services import essence_sources as essence_sources_service
 from app.services.essence_engine import compute_source_content_hash
 from app.services.source_processing_runs import (
     SOURCE_PROCESSING_METADATA_KEY,
@@ -140,8 +141,8 @@ async def test_process_pending_snapshots_every_item_in_one_bounded_run(
         return False
 
     monkeypatch.setattr(
-        essence_api,
-        "_dispatch_source_processing_run_best_effort",
+        essence_sources_service,
+        "dispatch_source_processing_run_best_effort",
         keep_snapshot_undispatched,
     )
     result = await essence_api.process_pending_sources(
@@ -237,8 +238,8 @@ async def test_reinclude_pending_text_source_creates_durable_processing_run(
         return False
 
     monkeypatch.setattr(
-        essence_api,
-        "_dispatch_source_processing_run_best_effort",
+        essence_sources_service,
+        "dispatch_source_processing_run_best_effort",
         keep_snapshot_undispatched,
     )
     monkeypatch.setattr(essence_api, "_enqueue_essence_review_best_effort", lambda *_args: None)

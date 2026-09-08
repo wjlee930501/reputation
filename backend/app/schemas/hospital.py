@@ -1,9 +1,49 @@
-from typing import Any, Optional
+import uuid
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
 
-class HospitalListItem(BaseModel):
+class HospitalStateItem(BaseModel):
+    """공개 서비스·콘텐츠 준비 상태. `remaining`은 아직 채워지지 않은 조건 키다."""
+
+    kind: str
+    remaining: list[str]
+
+
+class HospitalDomainStateItem(BaseModel):
+    kind: str
+    reason: Optional[str] = None
+    last_checked_at: Optional[str] = None
+    last_check_ok: Optional[bool] = None
+
+
+class HospitalAeOwner(BaseModel):
+    id: str
+    name: str
+
+
+class ProfileRequirementItem(BaseModel):
+    """아직 채워지지 않은 필수 항목. 화면은 라벨만 그대로 보여 준다."""
+
+    key: str
+    label: str
+
+
+class SourceRegistrationItem(BaseModel):
+    """저장한 공식 채널 주소를 근거 자료로 등록한 결과. PATCH 응답에만 실린다(설계 §4.3).
+
+    QUEUED는 자료 행이 커밋됐고 본문 수집을 워커에 넘겼다는 뜻이다. FAILED는 그 행조차
+    만들지 못했다는 뜻이라, 응답이 커밋된 행을 실패라고 말하는 일이 없다.
+    """
+
+    field: str
+    status: Literal["QUEUED", "SKIPPED", "FAILED"]
+    source_id: Optional[uuid.UUID] = None
+    message: Optional[str] = None
+
+
+class HospitalItemBase(BaseModel):
     id: str
     name: str
     slug: str
@@ -28,7 +68,22 @@ class HospitalListItem(BaseModel):
     created_at: Optional[str]
 
 
-class HospitalDetail(HospitalListItem):
+class HospitalListItem(HospitalItemBase):
+    # 3상태는 백엔드가 판정해 내려주고 admin은 라벨만 붙인다(설계 §4.2). 화면마다 판정하면
+    # 목록·헤더·현황이 다른 답을 한다(PR-0A H-06). 상세 화면은 `overview`가 따로 답한다.
+    public_service_state: HospitalStateItem
+    content_state: HospitalStateItem
+    domain_state: HospitalDomainStateItem
+    # 인시던트(OPEN·RETRYING·ACKNOWLEDGED) + 사람이 풀어야 하는 예외 초안.
+    open_exception_count: int
+    # 계약이 없거나 담당 AE가 비어 있으면 None이다.
+    ae_owner: Optional[HospitalAeOwner] = None
+
+
+class HospitalDetail(HospitalItemBase):
+    # `profile_complete`는 서버가 이 목록에서 파생한다 — 화면은 "남은 필수 항목 N개"만
+    # 보여 주고 완료를 직접 표시하지 않는다(설계 §4.5).
+    missing_profile_requirements: list[ProfileRequirementItem]
     onboarding_note: Optional[str] = None
     address: Optional[str]
     phone: Optional[str]
@@ -70,3 +125,5 @@ class HospitalDetail(HospitalListItem):
     site_access_mode: Optional[str] = None
     director_credentials: Optional[Any] = None
     treatments: list
+    # 이번 저장이 등록·건너뜀·실패한 자료. 다른 조회 응답에는 없다.
+    source_registration: Optional[list[SourceRegistrationItem]] = None

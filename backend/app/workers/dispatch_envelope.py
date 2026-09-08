@@ -39,7 +39,9 @@ TASK_PURPOSES = {
     "app.workers.tasks.regenerate_content_item": "regenerate-content",
     "app.workers.tasks.auto_review_essence_snapshot": "auto-review-essence-snapshot",
     "app.workers.tasks.reconcile_essence_snapshots": "reconcile-essence-snapshots",
+    "app.workers.tasks.fetch_channel_source": "fetch-channel-source",
     "app.workers.tasks.generate_content_image": "generate-content-image",
+    "app.workers.tasks.recertify_published_content_image": "recertify-published-image",
     "app.workers.tasks.morning_content_auto_publish": "morning-content-auto-publish",
     "app.workers.tasks.run_sov_for_hospital": "run-sov",
     "app.workers.tasks.monthly_slot_generation": "monthly-slot-generation",
@@ -72,11 +74,13 @@ TASK_PURPOSES = {
 FIRST_ARG_TARGET_TASKS = frozenset(
     {
         "app.workers.tasks.process_source_asset_task",
+        "app.workers.tasks.fetch_channel_source",
         "app.workers.tasks.trigger_v0_report",
         "app.workers.tasks.build_aeo_site",
         "app.workers.tasks.regenerate_content_item",
         "app.workers.tasks.auto_review_essence_snapshot",
         "app.workers.tasks.generate_content_image",
+        "app.workers.tasks.recertify_published_content_image",
         "app.workers.tasks.run_sov_for_hospital",
         "app.workers.tasks.generate_monthly_report_for_hospital",
         "app.workers.tasks.retry_site_revalidation",

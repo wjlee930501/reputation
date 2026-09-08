@@ -3,13 +3,13 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
-from urllib.parse import urlparse
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
+from kombu.exceptions import OperationalError as BrokerOperationalError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, false, func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,9 +17,12 @@ from app.api.admin.accounts import require_active_account
 from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import ADMIN_ROLES, AdminUser
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem
 from app.models.essence import (
+    AUTO_REVIEW_GAP_FIELD,
     PHOTO_SOURCE_TYPES,
+    SERVER_OWNED_GAP_FIELDS,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -32,7 +35,6 @@ from app.models.operations import OperationRun
 from app.schemas.essence import (
     ApprovedPhilosophyResponse,
     PhilosophyApprove,
-    PhilosophyDraftCreate,
     PhilosophyPatch,
     PhilosophyResponse,
     SourceAssetCreate,
@@ -40,7 +42,6 @@ from app.schemas.essence import (
     SourceAssetResponse,
     SourcePublicToggle,
 )
-from app.services import cost_guard
 from app.services.asset_extractor import (
     detect_extractor_for,
     extract_docx_text,
@@ -57,12 +58,18 @@ from app.services.essence_engine import (
     compute_source_content_hash,
     compute_sources_snapshot_hash,
     effective_safety_policy,
-    find_error_marker_fields,
     mandatory_safety_findings,
-    metered_llm_calls,
-    synthesize_philosophy,
     validate_philosophy_grounding,
 )
+from app.services.essence_sources import (
+    SourceRegistrationError,
+    register_url_source,
+    required_text_source_predicate,
+)
+from app.services.essence_sources import (
+    start_source_processing_best_effort as _start_source_processing_best_effort,
+)
+from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.naver_handoff import (
@@ -100,19 +107,20 @@ from app.services.site_revalidate import (
 from app.services.source_processing_runs import (
     SOURCE_PROCESSING_OPERATION,
     client_source_metadata,
-    create_or_get_source_processing_run,
     merge_source_metadata_patch,
-    prepare_next_source_run_item,
     processing_input_hash,
-    release_source_run_dispatch,
     serialize_source_processing_run,
     source_patch_changed_fields,
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.workers.dispatch_auth import build_dispatch_headers
+from app.workers.tasks import auto_review_essence_snapshot
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
+# 재검수 한 번은 워커에서 유료 합성을 최대 두 번 부른다. 전역 비용 가드만으로는
+# 한 병원이 클릭 속도만큼 예산을 소진할 수 있어, 병원별 최소 간격을 둔다.
+RE_REVIEW_COOLDOWN = timedelta(minutes=30)
 logger = logging.getLogger(__name__)
 
 
@@ -133,73 +141,6 @@ def _enqueue_essence_review_best_effort(hospital_id: uuid.UUID) -> None:
             "periodic reconciliation will retry",
             hospital_id,
         )
-
-
-async def _dispatch_source_processing_run_best_effort(
-    db: AsyncSession,
-    run_id: uuid.UUID,
-) -> bool:
-    prepared = await prepare_next_source_run_item(db, run_id)
-    if prepared is None:
-        return False
-    _run, source_id, dispatch_token = prepared
-    try:
-        celery_app.send_task(
-            "app.workers.tasks.process_source_asset_task",
-            args=[source_id, str(run_id), dispatch_token],
-            queue="default",
-            headers=build_dispatch_headers(
-                "app.workers.tasks.process_source_asset_task", source_id
-            ),
-        )
-        return True
-    except Exception as exc:
-        await release_source_run_dispatch(
-            db,
-            run_id,
-            source_id=source_id,
-            dispatch_token=dispatch_token,
-            error=str(exc),
-        )
-        logger.exception("Failed to dispatch source-processing run %s", run_id)
-        return False
-
-
-async def _start_source_processing_best_effort(
-    db: AsyncSession,
-    *,
-    hospital_id: uuid.UUID,
-    source_ids: list[uuid.UUID],
-    source_identities: list[str] | None = None,
-) -> OperationRun | None:
-    if not source_ids:
-        return None
-    # Serialize only durable run creation. Provider work happens later in the
-    # worker after this transaction has committed and released the hospital lock.
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    if source_identities is None:
-        rows = list(
-            (
-                await db.execute(
-                    select(HospitalSourceAsset).where(HospitalSourceAsset.id.in_(source_ids))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        source_identities = [
-            f"{source.id}:{processing_input_hash(source, compute_source_content_hash(source.title, source.url, source.raw_text, source.operator_note))}"
-            for source in rows
-        ]
-    run, _created = await create_or_get_source_processing_run(
-        db,
-        hospital_id=hospital_id,
-        source_ids=source_ids,
-        source_identities=source_identities,
-    )
-    await _dispatch_source_processing_run_best_effort(db, run.id)
-    await db.refresh(run)
-    return run
 
 
 async def _read_upload_within_limit(file: UploadFile) -> bytes:
@@ -231,19 +172,41 @@ def resolve_upload_is_public(
     *,
     provenance_complete: bool = True,
 ) -> bool:
-    """권리 근거가 완전한 사진 업로드는 즉시 공개한다.
+    """운영자가 요청한 공개 여부를 지키되, 권리 근거가 없으면 공개하지 않는다.
 
-    권리 근거가 없는 사진은 공개로 저장될 수 없다(0052의 CHECK 제약). 공개를 명시적으로
-    요청한 경우는 호출자가 먼저 422로 돌려보내므로, 여기서 비공개로 낮추는 것은 공개를
-    요청하지 않은 불완전한 업로드뿐이다. 완전한 근거를 함께 보낸 사진은 예전 폼 값과
-    무관하게 공개해, 업로드 뒤 별도 공개 PATCH가 필요하지 않게 한다. 운영자는 저장 후
-    공개 상태를 다시 끌 수 있다.
+    공개는 사람의 결정이다. 근거가 완전하다는 이유로 "공개 안 함"으로 올린 사진을
+    공개로 저장하면, 운영자는 비공개인 줄 아는 사진이 병원 공개 페이지에 뜬다.
+    권리 근거가 없는 사진은 공개로 저장될 수 없고(0052의 CHECK 제약), 공개를 명시적으로
+    요청한 경우는 호출자가 먼저 422로 돌려보낸다.
     """
     if source_type not in PHOTO_SOURCE_TYPES:
         return False
-    if not provenance_complete:
+    if not is_public_form:
         return False
-    return True
+    return provenance_complete
+
+
+#: 브라우저가 문서로 실행할 수 없는, 그대로 열어도 안전한 이미지 형식.
+INLINE_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
+def source_file_safety_headers(
+    source_type: SourceType,
+    mime_type: str | None,
+) -> dict[str, str]:
+    """올라온 MIME 그대로 inline으로 돌려주지 않는다.
+
+    자료 파일은 운영자가 올린 바이트다. 그 MIME을 믿고 inline으로 내보내면 한 운영자가
+    올린 파일이 다른 운영자의 브라우저에서 실행된다. 사진만, 그것도 허용된 이미지
+    형식일 때만 inline으로 두고 나머지는 내려받게 한다.
+    """
+    inline = source_type in PHOTO_SOURCE_TYPES and (mime_type or "").lower() in (
+        INLINE_IMAGE_MIME_TYPES
+    )
+    return {
+        "Content-Disposition": "inline" if inline else "attachment",
+        "X-Content-Type-Options": "nosniff",
+    }
 
 
 def build_photo_source_metadata(
@@ -552,6 +515,9 @@ async def mark_evidence_notes_as_noise(
     db: AsyncSession = Depends(get_db),
 ):
     """Bulk hide/unhide extracted noise without deleting its audit evidence."""
+    # 검수 checkpoint가 노이즈 hash를 읽고 commit하는 구간과 같은 잠금을 잡는다 —
+    # 그 사이에 토글이 끼면 stale 검수가 남는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     await _get_hospital_or_404(db, hospital_id)
     requested_ids = list(dict.fromkeys(body.note_ids))
     result = await db.execute(
@@ -911,6 +877,24 @@ async def exclude_source(
     )
     await db.commit()
     await db.refresh(source)
+    # 제외는 실패한 자료를 사람이 정리한 결과다 — 열려 있던 운영 예외도 함께 닫는다.
+    for pipeline in ("source_fetch", "source_processing"):
+        try:
+            await recover_ops_incident(
+                pipeline=pipeline,
+                object_type="source_asset",
+                object_id=str(source.id),
+                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
+                hospital_name=hospital.name,
+                reason="operator excluded the source",
+            )
+        except Exception:
+            logger.warning(
+                "Failed to recover %s incident after exclusion of %s",
+                pipeline,
+                source.id,
+                exc_info=True,
+            )
     _enqueue_essence_review_best_effort(hospital_id)
     if should_revalidate:
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4).
@@ -1031,6 +1015,10 @@ async def upload_source_file(
         raise HTTPException(
             status_code=400, detail="이미지를 업로드하려면 사진 카테고리(PHOTO_*)를 선택해 주세요."
         )
+    if not is_photo_type and extractor_kind == "UNKNOWN":
+        # 추출기가 없는 바이트는 본문도 못 뽑고, 나중에 올라온 MIME 그대로 다시 내려간다
+        # — .html 한 장이면 다른 운영자의 브라우저에서 실행된다. 저장하지 않는다.
+        raise HTTPException(status_code=422, detail="PDF·DOCX 파일만 올릴 수 있습니다.")
 
     provenance = read_photo_provenance_input(
         photo_source_owner, photo_rights_basis, photo_evidence_reference
@@ -1058,6 +1046,9 @@ async def upload_source_file(
         raw_text = await asyncio.to_thread(extract_pdf_text, data) or None
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
+    # 공백만 뽑힌 추출 결과는 본문이 아니다. 여기서 None으로 눕히지 않으면 처리도 승인도
+    # 할 수 없는 자료가 "본문 있음"으로 저장된다.
+    raw_text = _clean_optional(raw_text)
 
     final_title = resolve_upload_title(title, file.filename)
 
@@ -1134,32 +1125,6 @@ async def upload_source_file(
 
 
 
-def _is_youtube_channel_home(url: str) -> bool:
-    """Channel listing pages have almost no article body and must not become evidence."""
-    try:
-        parsed = urlparse(url.strip())
-    except Exception:
-        return False
-    host = (parsed.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    if host in {"youtu.be", "www.youtu.be"}:
-        return False
-    if host not in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
-        return False
-    path = parsed.path or ""
-    if path.startswith("/watch") or path.startswith("/shorts/") or path.startswith("/embed/") or path.startswith("/live/"):
-        return False
-    if "v=" in (parsed.query or ""):
-        return False
-    return (
-        path.startswith("/@")
-        or path.startswith("/channel/")
-        or path.startswith("/c/")
-        or path.startswith("/user/")
-    )
-
-
 @router.post(
     "/sources/crawl", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse
 )
@@ -1171,72 +1136,18 @@ async def crawl_source_url(
     """URL을 자동 fetch + html2text → raw_text 채움 후 source 생성."""
     await _get_hospital_or_404(db, hospital_id)
 
-    if body.source_type in PHOTO_SOURCE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.",
+    try:
+        source = await register_url_source(
+            db,
+            hospital_id=hospital_id,
+            source_type=body.source_type,
+            url=body.url,
+            title=body.title,
+            operator_note=body.operator_note,
+            created_by=body.created_by,
         )
-    if _is_youtube_channel_home(body.url):
-        raise HTTPException(
-            status_code=422,
-            detail="유튜브 채널 홈은 본문이 없어 근거로 쓰지 않습니다. 개별 영상 URL을 넣어 주세요.",
-        )
-
-    text, error, quality = await fetch_url_text(body.url)
-    if error:
-        raise HTTPException(status_code=400, detail=f"URL 크롤링 실패: {error}")
-    # 네이버 등에서 본문 대신 빈 프레임셋 셸만 받아온 경우 — junk 저장 대신 명확히 거부한다.
-    if quality is not None and quality.looks_like_shell:
-        if body.source_type == SourceType.NAVER_BLOG:
-            raise HTTPException(
-                status_code=400,
-                detail="네이버 블로그 본문을 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
-            )
-        raise HTTPException(
-            status_code=400,
-            detail="페이지 본문을 충분히 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
-        )
-
-    final_title = (body.title or "").strip() or (quality.page_title if quality else None)
-    if not final_title:
-        raise HTTPException(
-            status_code=422,
-            detail="페이지 제목을 찾지 못했습니다. 자료 제목을 직접 입력해 주세요.",
-        )
-
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    source = HospitalSourceAsset(
-        hospital_id=hospital_id,
-        source_type=body.source_type,
-        title=final_title,
-        url=body.url.strip(),
-        raw_text=text or None,
-        operator_note=_clean_optional(body.operator_note),
-        source_metadata={"crawled_at": datetime.now(timezone.utc).isoformat()},
-        content_hash=compute_source_content_hash(final_title, body.url, text, body.operator_note),
-        status=SourceStatus.PENDING,
-        created_by=body.created_by,
-    )
-    db.add(source)
-    await write_audit_log(
-        db,
-        action="crawl_source_url",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="source_asset",
-        target_id=source.id,
-        detail={
-            "source_type": body.source_type.value,
-            "url": body.url,
-            "extracted_chars": len(text),
-        },
-    )
-    await db.commit()
-    await db.refresh(source)
-    if source.raw_text and source.raw_text.strip():
-        await _start_source_processing_best_effort(
-            db, hospital_id=hospital_id, source_ids=[source.id]
-        )
+    except SourceRegistrationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return _serialize_source(source)
 
 
@@ -1515,7 +1426,12 @@ async def get_source_file(
     source = await _get_source_or_404(db, hospital_id, source_id)
     if not source.file_url:
         raise HTTPException(status_code=404, detail="Source file not found")
-    return _asset_response(source.file_url, hospital_id=hospital_id, media_type=source.mime_type)
+    return _asset_response(
+        source.file_url,
+        hospital_id=hospital_id,
+        media_type=source.mime_type,
+        headers=source_file_safety_headers(source.source_type, source.mime_type),
+    )
 
 
 @router.get("/philosophies", response_model=list[PhilosophyResponse])
@@ -1536,77 +1452,6 @@ async def get_approved_philosophy(hospital_id: uuid.UUID, db: AsyncSession = Dep
     return {"approved": _serialize_philosophy(approved) if approved else None}
 
 
-@router.post(
-    "/philosophy/draft", status_code=status.HTTP_201_CREATED, response_model=PhilosophyResponse
-)
-async def create_philosophy_draft(
-    hospital_id: uuid.UUID,
-    body: PhilosophyDraftCreate,
-    db: AsyncSession = Depends(get_db),
-):
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    hospital = await _get_hospital_or_404(db, hospital_id)
-    sources = await _select_processed_sources(db, hospital_id, body.source_asset_ids)
-    if not sources:
-        raise HTTPException(status_code=400, detail="처리된 병원 자료가 1개 이상 필요합니다.")
-
-    notes = await _get_notes_for_sources(db, [source.id for source in sources])
-    if not notes:
-        raise HTTPException(
-            status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다."
-        )
-
-    # 워커의 essence 자동 검수 경로(_cost_guarded_essence_synthesis)와 같은 예산 예약을
-    # 거친다 — 예약 없이 metered_llm_calls만 쓰면 킬스위치/상한이 무시된 채 나간다.
-    decision = await cost_guard.check_and_increment("content")
-    if not decision.allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=decision.reason or "비용 가드 상한으로 운영 기준 초안 생성이 차단되었습니다.",
-        )
-
-    # Claude synthesis is a synchronous SDK call and can take close to its 60s
-    # timeout. Running it on the event loop starves /health/live and Cloud Run
-    # kills the otherwise healthy API instance before the draft can commit.
-    async with metered_llm_calls(hospital_id):
-        payload = await asyncio.to_thread(
-            synthesize_philosophy,
-            hospital,
-            sources,
-            notes,
-            operator_note=body.operator_note,
-        )
-    # 차단·오류 페이지 잔재가 핵심 필드에 남았으면 초안을 만들지 않고 명확한 사유로 거부한다.
-    marker_fields = find_error_marker_fields(payload)
-    if marker_fields:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error_markers": marker_fields,
-                "reason": (
-                    "차단·오류 페이지 잔재가 포함되어 콘텐츠 운영 기준 초안을 생성하지 않았습니다. "
-                    "해당 자료를 제외하거나 본문을 다시 수집한 뒤 시도하세요."
-                ),
-            },
-        )
-    grounding_errors = validate_philosophy_grounding(payload, notes)
-    if grounding_errors:
-        raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
-
-    version = await _next_version(db, hospital_id)
-    philosophy = HospitalContentPhilosophy(
-        hospital_id=hospital_id,
-        version=version,
-        status=PhilosophyStatus.DRAFT,
-        created_by=body.created_by,
-        **payload,
-    )
-    db.add(philosophy)
-    await db.commit()
-    await db.refresh(philosophy)
-    return _serialize_philosophy(philosophy)
-
-
 @router.patch("/philosophy/{philosophy_id}", response_model=PhilosophyResponse)
 async def patch_philosophy(
     hospital_id: uuid.UUID,
@@ -1622,6 +1467,20 @@ async def patch_philosophy(
         )
 
     update = body.model_dump(exclude_unset=True)
+    if "unsupported_gaps" in update:
+        # 자동 검수 finding은 서버 소유다 — 클라이언트가 지워서 예외 승인 게이트를 우회하지
+        # 못하게 저장된 항목을 그대로 보존한다(H-03). 지우는 유일한 경로는 재검수다.
+        stored_server_owned = [
+            gap
+            for gap in (philosophy.unsupported_gaps or [])
+            if isinstance(gap, dict) and gap.get("field") in SERVER_OWNED_GAP_FIELDS
+        ]
+        incoming = [
+            gap
+            for gap in (update["unsupported_gaps"] or [])
+            if not (isinstance(gap, dict) and gap.get("field") in SERVER_OWNED_GAP_FIELDS)
+        ]
+        update["unsupported_gaps"] = incoming + stored_server_owned
     for field_name, value in update.items():
         setattr(philosophy, field_name, value)
 
@@ -1638,6 +1497,124 @@ async def patch_philosophy(
     await db.commit()
     await db.refresh(philosophy)
     return _serialize_philosophy(philosophy)
+
+
+def _archive_draft_or_400(philosophy: HospitalContentPhilosophy) -> str:
+    if philosophy.status != PhilosophyStatus.DRAFT:
+        raise HTTPException(
+            status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 보관할 수 있습니다."
+        )
+    previous_status = (
+        philosophy.status.value if hasattr(philosophy.status, "value") else str(philosophy.status)
+    )
+    philosophy.status = PhilosophyStatus.ARCHIVED
+    return previous_status
+
+
+@router.post("/philosophy/{philosophy_id}/archive", response_model=PhilosophyResponse)
+async def archive_philosophy(
+    hospital_id: uuid.UUID,
+    philosophy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """보류된 초안을 보관한다. 자동 검수는 같은 snapshot의 대기 초안이 없어야 다시 돈다."""
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
+    previous_status = _archive_draft_or_400(philosophy)
+    await write_audit_log(
+        db,
+        action="archive_philosophy",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="philosophy",
+        target_id=philosophy_id,
+        detail={"previous_status": previous_status},
+    )
+    await db.commit()
+    await db.refresh(philosophy)
+    return _serialize_philosophy(philosophy)
+
+
+async def _guard_re_review_cooldown(db: AsyncSession, hospital_id: uuid.UUID) -> None:
+    """감사 로그를 쿨다운의 저장소로 쓴다 — 인스턴스 재시작·다중 인스턴스에도 남는다."""
+
+    last_requested_at = await db.scalar(
+        select(func.max(AdminAuditLog.created_at)).where(
+            AdminAuditLog.action == "request_philosophy_re_review",
+            AdminAuditLog.hospital_id == hospital_id,
+        )
+    )
+    if last_requested_at is None:
+        return
+    if last_requested_at.tzinfo is None:
+        last_requested_at = last_requested_at.replace(tzinfo=timezone.utc)
+    retry_after = last_requested_at + RE_REVIEW_COOLDOWN - datetime.now(timezone.utc)
+    if retry_after <= timedelta(0):
+        return
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "code": "RE_REVIEW_COOLDOWN",
+            "retry_after_seconds": int(retry_after.total_seconds()),
+            "message": (
+                "최근 30분 안에 이미 자동 재검수를 요청했습니다. "
+                "결과를 기다린 뒤 다시 시도해 주세요."
+            ),
+        },
+    )
+
+
+@router.post("/philosophy/{philosophy_id}/re-review", response_model=PhilosophyResponse)
+async def request_philosophy_re_review(
+    hospital_id: uuid.UUID,
+    philosophy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """보류된 초안을 보관하고 자료·근거 노트를 기준으로 자동 재합성·검수를 요청한다.
+
+    사람이 초안을 다시 검수받고 싶을 때의 유일한 경로다. 수동 합성은 없다 —
+    합성·검수·승인은 언제나 워커의 자동 경로가 수행한다(H-04).
+    초안 본문 수정은 재합성 입력이 아니다 — 사람이 고친 문장을 채택하려면 예외
+    승인(H-03)을 쓴다.
+
+    한 번의 요청이 유료 합성을 최대 두 번 부르므로 병원별로 30분 쿨다운을 둔다.
+    dispatch 실패 시에도 보관은 유효하며 `reconcile_essence_snapshots`가 재검수를
+    회수한다. 다만 이 태스크는 15분마다 병원 200곳씩만 순환하므로, 회수까지
+    걸리는 시간은 병원 수에 따라 ceil(N/200) × 15분까지 늘어난다.
+    """
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
+    await _guard_re_review_cooldown(db, hospital_id)
+    previous_status = _archive_draft_or_400(philosophy)
+    await write_audit_log(
+        db,
+        action="request_philosophy_re_review",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="philosophy",
+        target_id=philosophy_id,
+        detail={"previous_status": previous_status},
+    )
+    await db.commit()
+    await db.refresh(philosophy)
+    # 커밋 이후의 외부 효과. 유실되면 15분 reconcile(reconcile_essence_snapshots)이 회수한다.
+    # 여기서 500을 내면 보관은 이미 끝났는데 재시도는 400("초안 상태만")으로 막힌다.
+    dispatched = True
+    try:
+        auto_review_essence_snapshot.apply_async(
+            args=[str(hospital.id)],
+            queue="content",
+            headers=build_dispatch_headers("auto-review-essence-snapshot", str(hospital.id)),
+        )
+    except (BrokerOperationalError, OSError):
+        dispatched = False
+        logger.warning(
+            "Failed to enqueue Essence re-review for hospital %s; "
+            "periodic reconciliation will retry",
+            hospital_id,
+        )
+    return _serialize_philosophy(philosophy) | {"re_review_dispatched": dispatched}
 
 
 @router.post("/philosophy/{philosophy_id}/approve", response_model=PhilosophyResponse)
@@ -1675,13 +1652,36 @@ async def approve_philosophy(
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
+    # 자동 검수가 보류한 사유는 체크박스 하나로 지나칠 수 없다. 자료를 보완해 재검수를
+    # 받거나, 각 사유를 확인한 근거를 예외 승인 사유로 남겨야 한다(H-03).
+    auto_findings = [
+        str(gap.get("reason"))
+        for gap in (philosophy.unsupported_gaps or [])
+        if (
+            isinstance(gap, dict)
+            and gap.get("field") == AUTO_REVIEW_GAP_FIELD
+            and gap.get("reason")
+        )
+    ]
+    if auto_findings and not body.override_reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AUTO_REVIEW_FINDINGS_UNRESOLVED",
+                "findings": auto_findings,
+                "message": (
+                    "자동 검수가 보류한 사유가 남아 있습니다. 초안을 수정해 재검수를 요청하거나, "
+                    "각 사유를 확인한 근거를 예외 승인 사유(20자 이상)에 적어 주세요."
+                ),
+            },
+        )
+
     # A draft may have been created from a selected subset. Approval is only valid
     # for the complete processed-source snapshot that exists at approval time.
     required_result = await db.execute(
         select(HospitalSourceAsset).where(
             HospitalSourceAsset.hospital_id == hospital_id,
-            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
-            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            required_text_source_predicate(),
         )
     )
     required_sources = list(required_result.scalars().all())
@@ -1696,12 +1696,20 @@ async def approve_philosophy(
         )
     current_sources = required_sources
     current_snapshot_hash = compute_sources_snapshot_hash(current_sources)
-    if not current_sources or philosophy.source_snapshot_hash != current_snapshot_hash:
+    # snapshot hash는 지금 필수인 자료들만 요약한다. 초안이 선언한 자료 집합이 그보다
+    # 넓으면(예: 본문 없는 URL 전용 자료) hash는 같아도 승인 근거가 달라진다.
+    draft_source_ids = {str(source_id) for source_id in (philosophy.source_asset_ids or [])}
+    current_source_ids = {str(source.id) for source in current_sources}
+    if (
+        not current_sources
+        or philosophy.source_snapshot_hash != current_snapshot_hash
+        or draft_source_ids != current_source_ids
+    ):
         raise HTTPException(
             status_code=409,
             detail=(
-                "초안 생성 후 처리된 병원 자료가 변경되었습니다. 현재 전체 자료로 "
-                "콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+                "초안 생성 후 처리된 병원 자료가 변경되었습니다(자료 집합이 다릅니다). "
+                "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
             ),
         )
 
@@ -1717,6 +1725,8 @@ async def approve_philosophy(
     await db.flush()
 
     philosophy.status = PhilosophyStatus.APPROVED
+    # 승인은 그 시점에 운영자가 근거에서 뺀 집합까지 확정한다(H-02).
+    philosophy.evidence_noise_hash = await load_evidence_noise_hash(db, hospital_id)
     # 검토자는 확인된 로그인 계정만 기록한다. 요청 본문의 이름은 감사 비교용 주장일 뿐,
     # 승인 권한이나 기록된 승인자 identity의 대체값이 될 수 없다(C-3).
     philosophy.reviewed_by = reviewer
@@ -1770,6 +1780,8 @@ async def approve_philosophy(
             "recorded_reviewer": philosophy.reviewed_by,
             "evidence_reviewed_confirmed": True,
             "approval_note": body.approval_note,
+            "override_reason": body.override_reason,
+            "overridden_auto_review_findings": auto_findings,
             "source_asset_count": len(philosophy.source_asset_ids or []),
             "content_rescreened": rescreened,
         },
@@ -1901,10 +1913,7 @@ def _included_notes_query():
 
 
 def _not_noise_predicate():
-    return func.coalesce(
-        HospitalSourceEvidenceNote.note_metadata["is_noise"].as_boolean(),
-        false(),
-    ).is_(False)
+    return not_noise_note_predicate()
 
 
 async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:
@@ -1975,37 +1984,6 @@ async def _get_notes_for_philosophy(
     return await _get_notes_for_sources(db, source_ids)
 
 
-async def _select_processed_sources(
-    db: AsyncSession,
-    hospital_id: uuid.UUID,
-    source_asset_ids: list[str] | None,
-) -> list[HospitalSourceAsset]:
-    stmt = select(HospitalSourceAsset).where(
-        HospitalSourceAsset.hospital_id == hospital_id,
-        HospitalSourceAsset.status == SourceStatus.PROCESSED,
-    )
-    if source_asset_ids:
-        try:
-            ids = [uuid.UUID(str(item)) for item in source_asset_ids]
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail="선택한 병원 자료 ID 형식이 올바르지 않습니다."
-            ) from exc
-        stmt = stmt.where(HospitalSourceAsset.id.in_(ids))
-    stmt = stmt.order_by(HospitalSourceAsset.processed_at.desc())
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def _next_version(db: AsyncSession, hospital_id: uuid.UUID) -> int:
-    result = await db.execute(
-        select(func.max(HospitalContentPhilosophy.version)).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id
-        )
-    )
-    return int(result.scalar_one() or 0) + 1
-
-
 def _serialize_source(
     source: HospitalSourceAsset,
     evidence_note_count: int = 0,
@@ -2061,24 +2039,30 @@ def _is_legacy_public_url(value: str | None) -> bool:
     )
 
 
-def _asset_response(asset_ref: str, *, hospital_id: uuid.UUID, media_type: str | None):
+def _asset_response(
+    asset_ref: str,
+    *,
+    hospital_id: uuid.UUID,
+    media_type: str | None,
+    headers: dict[str, str] | None = None,
+):
     if asset_ref.startswith("local://"):
         path = resolve_local_asset_path(asset_ref, expected_hospital_id=hospital_id)
         if not path or not path.exists():
             raise HTTPException(status_code=404, detail="Source file not found")
-        return FileResponse(path, media_type=media_type)
+        return FileResponse(path, media_type=media_type, headers=headers)
     if asset_ref.startswith("gs://"):
         signed_url = get_signed_url(asset_ref)
         if not signed_url or signed_url == asset_ref:
             raise HTTPException(status_code=503, detail="Could not create signed asset URL")
-        return RedirectResponse(url=signed_url, status_code=302)
+        return RedirectResponse(url=signed_url, status_code=302, headers=headers)
     if asset_ref.startswith("/assets/"):
         path = resolve_legacy_asset_path(asset_ref, expected_hospital_id=hospital_id)
         if path and path.exists():
-            return FileResponse(path, media_type=media_type)
+            return FileResponse(path, media_type=media_type, headers=headers)
         raise HTTPException(status_code=404, detail="Source file not found")
     if asset_ref.startswith("http://") or asset_ref.startswith("https://"):
-        return RedirectResponse(url=asset_ref, status_code=302)
+        return RedirectResponse(url=asset_ref, status_code=302, headers=headers)
     raise HTTPException(status_code=404, detail="Source file not found")
 
 

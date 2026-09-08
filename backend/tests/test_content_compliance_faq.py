@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import content as content_api
+from app.services.audit_log import reset_request_actor, set_request_actor
 
 
 def _hospital(hospital_id=None, **overrides):
@@ -14,8 +15,11 @@ def _hospital(hospital_id=None, **overrides):
         id=hospital_id or uuid.uuid4(),
         name="테스트의원",
         slug="test-clinic",
-        status="ONBOARDING",
-        site_live=False,
+        status="ACTIVE",
+        site_live=True,
+        schedule_set=True,
+        profile_complete=True,
+        site_built=True,
         treatments=[{"name": "어깨 통증 치료", "description": "상태에 따라 설명합니다."}],
     )
     base.update(overrides)
@@ -60,8 +64,13 @@ def _content_item(**overrides):
 class _NoExecuteDB:
     """행 잠금 fallback 경로(no execute attr)를 타는 최소 fake."""
 
-    def __init__(self):
+    def __init__(self, hospital=None):
         self.committed = False
+        self._hospital = hospital
+
+    async def get(self, _model, _pk):
+        # 직렬화가 병원 공개 게이트를 한 번 읽는다.
+        return self._hospital
 
     async def commit(self):
         self.committed = True
@@ -92,12 +101,16 @@ class _PatchDB(_NoExecuteDB):
 
 
 class _AuditDB(_NoExecuteDB):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, hospital=None):
+        super().__init__(hospital)
         self.added = []
 
     def add(self, value):
         self.added.append(value)
+
+    async def execute(self, statement):
+        # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
+        return _ScalarNone()
 
 
 def _wire(monkeypatch, item, hospital):
@@ -107,8 +120,17 @@ def _wire(monkeypatch, item, hospital):
     async def fake_get_hospital(db, hospital_id):
         return hospital
 
+    async def fake_public_philosophy_id(db, hospital_id):
+        # 이 더블 DB에는 승인된 운영 기준 행이 없다. None은 '대조를 건너뛴다'가 아니라
+        # PHILOSOPHY_MISMATCH 차단이며, 그래서 PUBLISHED 항목은 '공개 보류'로 직렬화된다
+        # (이 테스트들은 그 표시를 보지 않는다).
+        return None
+
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
 
 
 async def test_publish_content_blocks_forbidden_expression_in_faq_fields(monkeypatch):
@@ -122,10 +144,14 @@ async def test_publish_content_blocks_forbidden_expression_in_faq_fields(monkeyp
     _wire(monkeypatch, item, hospital)
     db = _NoExecuteDB()
 
-    with pytest.raises(HTTPException) as exc_info:
-        await content_api.publish_content(
-            hospital.id, item.id, content_api.PublishBody(published_by="AE"), db=db
-        )
+    token = set_request_actor("ae@example.com")
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await content_api.publish_content(
+                hospital.id, item.id, content_api.PublishBody(), db=db
+            )
+    finally:
+        reset_request_actor(token)
 
     assert exc_info.value.status_code == 400
     assert "완치" in exc_info.value.detail["violations"]
@@ -166,7 +192,7 @@ async def test_update_content_edits_faq_fields(monkeypatch):
             faq_question="어깨 통증은 어느 과로 가야 하나요?",
             faq_answer_summary="3주 이상 지속되면 정형외과 진료를 권합니다.",
         ),
-        db=_PatchDB(),
+        db=_PatchDB(hospital),
     )
 
     assert item.faq_question == "어깨 통증은 어느 과로 가야 하나요?"
@@ -186,7 +212,7 @@ async def test_update_content_patches_references_with_whitelisted_source(monkeyp
         content_api.ContentPatch(
             references=[{"title": "질병관리청 어깨 통증 가이드", "url": "https://kdca.go.kr/shoulder"}],
         ),
-        db=_PatchDB(),
+        db=_PatchDB(hospital),
     )
 
     assert len(item.references_list) == 1
@@ -209,7 +235,7 @@ async def test_update_content_rejects_non_whitelisted_reference(monkeypatch):
             content_api.ContentPatch(
                 references=[{"title": "개인 블로그", "url": "https://my-blog.example.com/post"}],
             ),
-            db=_PatchDB(),
+            db=_PatchDB(hospital),
         )
 
     assert exc_info.value.status_code == 400
@@ -225,7 +251,7 @@ async def test_reschedule_content_moves_unpublished_slot_and_audits(monkeypatch)
         carried_over_from=None,
     )
     _wire(monkeypatch, item, hospital)
-    db = _AuditDB()
+    db = _AuditDB(hospital)
 
     response = await content_api.reschedule_content(
         hospital.id,
@@ -251,7 +277,7 @@ async def test_reschedule_content_rejects_published_item(monkeypatch):
             hospital.id,
             item.id,
             content_api.ContentRescheduleBody(scheduled_date=date(2099, 8, 1)),
-            db=_AuditDB(),
+            db=_AuditDB(hospital),
         )
 
     assert exc_info.value.status_code == 409
@@ -264,7 +290,7 @@ async def test_cancel_content_is_terminal_and_audited(monkeypatch):
         generation_claimed_at="in-progress",
     )
     _wire(monkeypatch, item, hospital)
-    db = _AuditDB()
+    db = _AuditDB(hospital)
 
     response = await content_api.cancel_content(hospital.id, item.id, db=db)
 

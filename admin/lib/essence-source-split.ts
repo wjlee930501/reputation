@@ -14,6 +14,7 @@
 export interface EssenceSourceLike {
   source_type: string
   status?: string
+  raw_text?: string | null
   evidence_note_count?: number | null
 }
 
@@ -21,14 +22,46 @@ export function isPhotoSource(source: EssenceSourceLike): boolean {
   return typeof source.source_type === 'string' && source.source_type.startsWith('PHOTO_')
 }
 
+/**
+ * 서버(`essence_sources._BLANK_CHARS`)가 쓰는 공백 집합을 그대로 옮긴 것이다.
+ * JS의 `trim()`을 쓰면 안 된다 — `trim()`은 U+FEFF를 깎지만 U+001C~U+001F·U+0085는
+ * 남기고, Python의 `str.strip()`은 정반대다. 화면과 서버가 같은 본문을 두고 "원문 있음"을
+ * 다르게 판정하면 분모가 갈라진다.
+ */
+const BLANK_TEXT_RE = /^[\u0009\u000a\u000b\u000c\u000d\u001c\u001d\u001e\u001f\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000]*$/
+
+export function isBlankText(value: string | null | undefined): boolean {
+  return BLANK_TEXT_RE.test(value ?? '')
+}
+
+/**
+ * 백엔드의 `required_text_source_predicate()`와 같은 규칙 — 제외되지 않고, 사진이 아니고,
+ * 원문이 있는 자료만 근거 추출·승인의 필수 자료다.
+ *
+ * 사진 판정은 `isPhotoSource`(= `PHOTO_` 접두사)를 그대로 쓴다. 서버의 PHOTO_* enum이
+ * 모두 그 접두사를 가지므로 목록을 따로 두면 두 곳이 갈라지기만 한다.
+ *
+ * 화면이 이 규칙을 쓰지 않으면 분모는 서버보다 크게 보이고, 본문 없는 URL 전용 자료의
+ * [근거 추출]은 눌러도 400("자료 본문이 없는 URL 전용 자료")으로 끝난다.
+ */
+export function isRequiredTextSource(source: {
+  status?: string | null
+  source_type?: string | null
+  raw_text?: string | null
+}): boolean {
+  if (source.status === 'EXCLUDED') return false
+  if (typeof source.source_type !== 'string' || source.source_type.startsWith('PHOTO_')) return false
+  return !isBlankText(source.raw_text)
+}
+
 export interface EssenceSourceSplit<T extends EssenceSourceLike> {
   /** 근거 추출 대상 — 사진이 아닌 자료 */
   textSources: T[]
   /** 공개 표면용 사진 자산 */
   photoSources: T[]
-  /** 근거 추출을 마친 자료 수 (사진 제외) */
+  /** 근거 추출을 마친 자료 수 (서버의 필수 자료 기준) */
   processedTextCount: number
-  /** 근거 추출 대상 자료 수 (사진 제외, 제외 처리한 자료 포함) */
+  /** 서버가 필수로 세는 자료 수 — 사진·제외·원문 없는 URL 전용 자료를 뺀 수 */
   textSourceCount: number
   /** 근거 노트 합계 (사진 제외) */
   evidenceNoteCount: number
@@ -40,12 +73,14 @@ export function splitEssenceSources<T extends EssenceSourceLike>(
   const rows = Array.isArray(sources) ? sources : []
   const textSources = rows.filter((source) => !isPhotoSource(source))
   const photoSources = rows.filter((source) => isPhotoSource(source))
+  // 표는 제외·URL 전용 자료도 보여 줘야 운영자가 조치할 수 있다. 분모만 서버 기준으로 센다.
+  const requiredSources = textSources.filter((source) => isRequiredTextSource(source))
 
   return {
     textSources,
     photoSources,
-    processedTextCount: textSources.filter((source) => source.status === 'PROCESSED').length,
-    textSourceCount: textSources.length,
+    processedTextCount: requiredSources.filter((source) => source.status === 'PROCESSED').length,
+    textSourceCount: requiredSources.length,
     evidenceNoteCount: textSources.reduce(
       (sum, source) => sum + (source.evidence_note_count ?? 0),
       0,

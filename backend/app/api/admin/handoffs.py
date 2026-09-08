@@ -12,6 +12,7 @@ from sqlalchemy.orm.exc import StaleDataError
 from app.api.admin.accounts import require_active_account, require_owner_account
 from app.core.database import get_db
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
+from app.models.content import ContentSchedule
 from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
 from app.schemas.handoff import HandoffAccept, HandoffContract, HandoffResponse
@@ -70,6 +71,33 @@ async def _commit_transition(db: AsyncSession) -> None:
 def _assert_version(handoff: HospitalHandoff, version: int) -> None:
     if handoff.version != version:
         raise stale_handoff_error()
+
+
+async def _sync_active_schedule_plan(
+    db: AsyncSession, hospital_id: uuid.UUID, plan: Plan
+) -> list[dict[str, str]]:
+    """계약 요금제를 활성 발행 일정에 반영하고, 바뀐 일정 기록을 돌려준다.
+
+    월 약정 편수와 격차 배분은 `ContentSchedule.plan`을 읽는다(workers/monthly_slots.py).
+    일정 화면은 더 이상 요금제를 바꿀 수 없으므로(H-14), 계약 정정이 일정을 함께 고치지
+    않으면 정정된 병원은 옛 편수로 계속 다음 달 슬롯을 만든다. 이미 만들어진 이번 달
+    슬롯은 계약 월 보존을 위해 건드리지 않는다 — 재생성은 일정 재설정(교체) 경로가 한다.
+    """
+    result = await db.execute(
+        select(ContentSchedule).where(
+            ContentSchedule.hospital_id == hospital_id,
+            ContentSchedule.is_active,
+        )
+    )
+    synced: list[dict[str, str]] = []
+    for schedule in result.scalars().all():
+        if schedule.plan == plan.value:
+            continue
+        synced.append(
+            {"schedule_id": str(schedule.id), "from": schedule.plan, "to": plan.value}
+        )
+        schedule.plan = plan.value
+    return synced
 
 
 def _payload_from_lookups(
@@ -214,8 +242,21 @@ async def contract_handoff(
     handoff.sla_due_at = body.sla_due_at
     handoff.state = HandoffState.CONTRACTED
     hospital = await db.get(Hospital, handoff.hospital_id)
+    schedule_plan_synced: list[dict[str, str]] = []
     if hospital is not None:
         hospital.plan = body.plan
+        # 계약 기록보다 일정이 먼저 만들어진 병원도 같은 트랜잭션에서 맞춘다.
+        schedule_plan_synced = await _sync_active_schedule_plan(
+            db, handoff.hospital_id, body.plan
+        )
+    detail: dict[str, object] = {
+        "from": "CONTRACT_PENDING",
+        "to": "CONTRACTED",
+        "version": body.version,
+        "owner_override": not assigned,
+    }
+    if schedule_plan_synced:
+        detail["schedule_plan_synced"] = schedule_plan_synced
     await write_audit_log(
         db,
         action="handoff_contracted",
@@ -223,12 +264,7 @@ async def contract_handoff(
         actor=actor.email,
         target_type="hospital_handoff",
         target_id=handoff.id,
-        detail={
-            "from": "CONTRACT_PENDING",
-            "to": "CONTRACTED",
-            "version": body.version,
-            "owner_override": not assigned,
-        },
+        detail=detail,
     )
     await _commit_transition(db)
     await db.refresh(handoff)
@@ -303,8 +339,19 @@ async def correct_contract(
     handoff.plan = body.plan
     handoff.sla_due_at = body.sla_due_at
     hospital = await db.get(Hospital, handoff.hospital_id)
+    schedule_plan_synced: list[dict[str, str]] = []
     if hospital is not None:
         hospital.plan = body.plan
+        schedule_plan_synced = await _sync_active_schedule_plan(
+            db, handoff.hospital_id, body.plan
+        )
+    detail: dict[str, object] = {
+        "reason": body.reason,
+        "before": before,
+        "version": body.version,
+    }
+    if schedule_plan_synced:
+        detail["schedule_plan_synced"] = schedule_plan_synced
     await write_audit_log(
         db,
         action="handoff_contract_corrected",
@@ -312,7 +359,7 @@ async def correct_contract(
         actor=actor.email,
         target_type="hospital_handoff",
         target_id=handoff.id,
-        detail={"reason": body.reason, "before": before, "version": body.version},
+        detail=detail,
     )
     await _commit_transition(db)
     await db.refresh(handoff)

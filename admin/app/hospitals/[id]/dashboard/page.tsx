@@ -93,6 +93,8 @@ interface Readiness {
     status_label?: string | null
   }
   published_content_count: number
+  public_content_count: number
+  withheld_content_count: number
   sov_record_count: number
   report_count: number
   checks: ReadinessCheck[]
@@ -391,7 +393,18 @@ export default function DashboardPage() {
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',
   )
   const hasExposureActions = exposureActions.length > 0
-  const hasBrief = (readiness?.published_content_count ?? 0) > 0
+  const publicContentCount = readiness?.public_content_count ?? 0
+  const withheldContentCount = readiness?.withheld_content_count ?? 0
+  // 콘텐츠 단계의 완료와 다음 작업은 발행 행 수가 아니라 공개 페이지가 실제로 내보내는
+  // 편수로 정한다. 전 글이 보류 중인데 단계가 완료로 바뀌고 다음 작업이 '월간 회고'가
+  // 되면, 운영자는 해야 할 일(보류 사유 해소)을 어디서도 볼 수 없다(H-01).
+  const hasBrief = publicContentCount > 0
+  // 발행은 했는데 공개 페이지가 전부 숨기고 있으면 다음 할 일은 새 가이드 작성이 아니라
+  // 보류 사유 해소다. 문구는 readiness API가 내려주는 운영 안내를 그대로 쓴다
+  // (backend/app/services/readiness_operator_copy.py).
+  const withheldNextAction =
+    readiness?.checks.find((check) => check.key === 'published_content')?.next_action ??
+    `공개 보류 ${withheldContentCount}편 — 콘텐츠 목록에서 보류 사유를 확인하세요.`
 
   const queryTargetsHref = `/hospitals/${id}/query-targets`
   const exposureActionsHref = `/hospitals/${id}/exposure-actions`
@@ -418,11 +431,17 @@ export default function DashboardPage() {
             hint: '측정 결과에서 부족한 부분을 진단하고, AI 답변에서 확인되도록 보완할 작업을 정리합니다.',
           }
         : !hasBrief
-          ? {
-              label: '환자 질문에 맞춘 콘텐츠 가이드 작성',
-              href: contentHref,
-              hint: '확정된 보완 작업을 이번 달 콘텐츠 작성 가이드로 이어 붙입니다.',
-            }
+          ? withheldContentCount > 0
+            ? {
+                label: `공개 보류 ${withheldContentCount}편 — 콘텐츠 목록에서 보류 사유를 확인`,
+                href: contentHref,
+                hint: withheldNextAction,
+              }
+            : {
+                label: '환자 질문에 맞춘 콘텐츠 가이드 작성',
+                href: contentHref,
+                hint: '확정된 보완 작업을 이번 달 콘텐츠 작성 가이드로 이어 붙입니다.',
+              }
           : {
               label: '재측정·월간 회고',
               href: reportsHref,
@@ -512,7 +531,15 @@ export default function DashboardPage() {
       return `반려: ${detail.previous_title}`
     }
     if (action === 'approve_philosophy' && typeof detail.version !== 'undefined') {
-      return `버전 ${detail.version} 승인 (근거 검토 확인)`
+      const base = `버전 ${detail.version} 승인 (근거 검토 확인)`
+      const overrideReason = typeof detail.override_reason === 'string' ? detail.override_reason : null
+      if (!overrideReason) return base
+      // 자동 검수 보류를 넘긴 승인은 그 근거와 넘긴 사유가 기록에 보여야 한다(H-03).
+      const findings = Array.isArray(detail.overridden_auto_review_findings)
+        ? detail.overridden_auto_review_findings.filter((item): item is string => typeof item === 'string')
+        : []
+      const held = findings.length > 0 ? ` (보류 사유: ${findings.join(', ')})` : ''
+      return `${base} · 예외 승인 사유: ${overrideReason}${held}`
     }
     if (action === 'upload_source_asset') {
       const sizeBytes = typeof detail.size_bytes === 'number' ? detail.size_bytes : null
@@ -632,11 +659,13 @@ export default function DashboardPage() {
                 hint={trendSummary.hint}
                 tone={change === null ? 'neutral' : change >= 0 ? 'good' : 'warn'}
               />
+              {/* 발행한 편수가 아니라 공개 페이지가 실제로 내보내는 편수를 센다 — 전 글이
+                  보류 중인데 초록 카드가 뜨면 운영자는 알 방법이 없다(H-01). */}
               <FocusCard
                 label="근거 기반 콘텐츠 상태"
-                value={`${readiness?.published_content_count ?? 0}편`}
-                hint={readiness ? `운영 준비도 ${readiness.score}/100` : '운영 기준 승인 후 발행'}
-                tone={(readiness?.published_content_count ?? 0) > 0 ? 'good' : 'neutral'}
+                value={`${publicContentCount}편`}
+                hint={`${readiness ? `운영 준비도 ${readiness.score}/100` : '운영 기준 승인 후 발행'}${withheldContentCount > 0 ? ` · 공개 보류 ${withheldContentCount}편` : ''}`}
+                tone={publicContentCount > 0 ? 'good' : withheldContentCount > 0 ? 'warn' : 'neutral'}
               />
               <FocusCard
                 label="다음 작업"
@@ -881,11 +910,13 @@ export default function DashboardPage() {
               done={hasBrief}
               summary={
                 readiness
-                  ? `누적 발행 ${readiness.published_content_count}편`
+                  ? `누적 발행 ${readiness.published_content_count}편${
+                      withheldContentCount > 0 ? ` · 공개 보류 ${withheldContentCount}편` : ''
+                    }`
                   : '아직 발행된 콘텐츠가 없습니다.'
               }
               href={contentHref}
-              cta={hasBrief ? '편성' : '콘텐츠 가이드 만들기'}
+              cta={hasBrief ? '편성' : withheldContentCount > 0 ? '보류 사유 확인' : '콘텐츠 가이드 만들기'}
               disabled={!hasExposureActions}
             />
           </ol>

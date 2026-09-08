@@ -649,9 +649,9 @@ async def test_list_published_contents_applies_offset_after_public_filter(monkey
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
-        return SimpleNamespace(public_philosophy=philosophy)
+        return philosophy
 
-    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
+    monkeypatch.setattr(site_api, "get_public_essence_readiness", _fresh)
 
     result = await _list_published_contents(
         SimpleNamespace(), "test-hospital", limit=2, offset=1, db=db
@@ -668,9 +668,9 @@ async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
-        return SimpleNamespace(public_philosophy=philosophy)
+        return philosophy
 
-    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
+    monkeypatch.setattr(site_api, "get_public_essence_readiness", _fresh)
 
     await _list_published_contents(SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db)
 
@@ -686,7 +686,7 @@ async def test_list_published_contents_is_empty_until_schedule_is_set(monkeypatc
     async def _must_not_read_essence(*_args, **_kwargs):
         raise AssertionError("schedule gate must run before essence/content queries")
 
-    monkeypatch.setattr(site_api, "get_essence_readiness", _must_not_read_essence)
+    monkeypatch.setattr(site_api, "get_public_essence_readiness", _must_not_read_essence)
     assert await _list_published_contents(
         SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db
     ) == []
@@ -707,9 +707,9 @@ async def test_list_published_contents_scans_past_a_filtered_raw_page(monkeypatc
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
-        return SimpleNamespace(public_philosophy=philosophy)
+        return philosophy
 
-    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
+    monkeypatch.setattr(site_api, "get_public_essence_readiness", _fresh)
     result = await _list_published_contents(
         SimpleNamespace(), "test-hospital", limit=1, offset=0, db=db
     )
@@ -866,9 +866,9 @@ async def test_list_published_contents_drops_items_that_fail_the_filter(monkeypa
     philosophy = SimpleNamespace(id=uuid.uuid4())
 
     async def _fresh(*_args, **_kwargs):
-        return SimpleNamespace(public_philosophy=philosophy)
+        return philosophy
 
-    monkeypatch.setattr(site_api, "get_essence_readiness", _fresh)
+    monkeypatch.setattr(site_api, "get_public_essence_readiness", _fresh)
 
     result = await _list_published_contents(
         SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db

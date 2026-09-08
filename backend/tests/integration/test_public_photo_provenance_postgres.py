@@ -138,10 +138,14 @@ async def test_public_photo_upload_with_rights_evidence_commits(pg_async_session
     assert stored.photo_evidence_reference == "계약서 부속 합의서 3조"
 
 
-async def test_complete_owner_consent_upload_is_public_without_followup_patch(
+async def test_complete_owner_consent_upload_honours_do_not_publish(
     pg_async_session,
 ):
-    """예전 폼 값이 false여도 완전한 동의 업로드 자체가 공개를 끝내야 한다."""
+    """"공개 안 함"으로 올린 사진은 권리 근거가 완전해도 공개되지 않는다.
+
+    근거가 있다는 이유로 공개로 저장하면, 운영자는 비공개인 줄 아는 사진이 병원
+    공개 페이지에 뜬다. 근거는 그대로 기록되므로 나중에 토글 한 번으로 공개할 수 있다.
+    """
     hospital = await _seed_hospital(pg_async_session)
 
     response = await essence_api.upload_source_file(
@@ -160,12 +164,12 @@ async def test_complete_owner_consent_upload_is_public_without_followup_patch(
         db=pg_async_session,
     )
 
-    assert response["is_public"] is True
+    assert response["is_public"] is False
     assert response["photo_provenance"]["is_complete"] is True
     assert response["photo_provenance"]["rights_basis"] == "OWNER_CONSENT"
 
     stored = await _get_source(pg_async_session, response["id"])
-    assert stored.is_public is True
+    assert stored.is_public is False
     assert stored.photo_verified_by
     assert stored.photo_verified_at
 

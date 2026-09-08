@@ -197,6 +197,7 @@ def test_retry_task_policies_match_celery_routes_and_consumed_queues() -> None:
         "GENERATE_MONTHLY_REPORT": "reports",
         "REGENERATE_CONTENT": "content",
         "REGENERATE_CONTENT_IMAGE": "content",
+        "RECERTIFY_PUBLISHED_IMAGE": "content",
     }
 
     for operation_type, policy in _TASK_POLICIES.items():
@@ -246,6 +247,119 @@ async def test_retry_policy_allows_monthly_rebuild_true_payload_only() -> None:
             await retry_policy(db, run_with_args(invalid_args))
         assert blocked.value.status_code == 422
         assert blocked.value.detail["code"] == "UNSAFE_STORED_DISPATCH"
+
+
+def _recertify_run(
+    *,
+    code: str | None,
+    title: str = "치질 증상",
+    item_id=None,
+    hospital_id=None,
+    state: str = "FAILED",
+):
+    from app.models.content import ContentType
+    from app.models.operations import OperationRun
+    from app.services import published_image_recertification as recertification
+    from app.services.image_engine import image_subject_hash
+
+    item_id = item_id or uuid.uuid4()
+    now = datetime.now(UTC)
+    terminal = state not in ("REQUESTED", "QUEUED", "RUNNING")
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id or uuid.uuid4(),
+        operation_type=recertification.RECERTIFY_OPERATION,
+        state=state,
+        safe_error_code=code,
+        requested_at=now,
+        completed_at=now if terminal else None,
+        request_payload=recertification.request_payload(
+            item_id,
+            subject_hash=image_subject_hash(ContentType.DISEASE, title),
+            title=title,
+            revision=3,
+        ),
+    )
+
+
+class _RunLookup:
+    """재시도 예산 검사가 읽는 실행 이력만 돌려주는 최소 더블."""
+
+    def __init__(self, runs):
+        self._runs = runs
+
+    async def execute(self, _statement):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._runs))
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_is_refused_for_a_recertification_a_human_must_decide() -> None:
+    """거절로 끝난 재인증은 다시 눌러도 같은 답을 유료로 살 뿐이다 (H-01)."""
+    from app.api.admin.operations_center_actions import require_retry_within_budget
+    from app.api.admin.operations_center_serializers import retry_action
+    from app.services import published_image_recertification as recertification
+
+    run = _recertify_run(code=recertification.PUBLISHED_IMAGE_RECERTIFY_REJECTED)
+
+    assert retry_action(run.hospital_id, run) is None
+    with pytest.raises(HTTPException) as refused:
+        await require_retry_within_budget(_RunLookup([run]), run)
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "OPERATION_NOT_RETRYABLE"
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_is_refused_while_the_same_subject_is_in_flight() -> None:
+    """진행 중인 실행 위에 사람이 한 번 더 얹으면 같은 답을 두 번 산다 (H-01)."""
+    from app.api.admin.operations_center_actions import require_retry_within_budget
+
+    item_id, hospital_id = uuid.uuid4(), uuid.uuid4()
+    failed = _recertify_run(
+        code="PROVIDER_UNAVAILABLE", item_id=item_id, hospital_id=hospital_id
+    )
+    running = _recertify_run(
+        code=None, item_id=item_id, hospital_id=hospital_id, state="RUNNING"
+    )
+
+    with pytest.raises(HTTPException) as refused:
+        await require_retry_within_budget(_RunLookup([failed, running]), failed)
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "OPERATION_NOT_RETRYABLE"
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_follows_the_same_attempt_budget_as_the_sweep() -> None:
+    """운영자 재시도도 (글, subject) 예산 안에서만 허용된다."""
+    from app.api.admin.operations_center_actions import require_retry_within_budget
+    from app.api.admin.operations_center_serializers import retry_action
+    from app.services import published_image_recertification as recertification
+
+    item_id, hospital_id = uuid.uuid4(), uuid.uuid4()
+    failed = _recertify_run(
+        code="PROVIDER_UNAVAILABLE", item_id=item_id, hospital_id=hospital_id
+    )
+    assert retry_action(hospital_id, failed) is not None
+    await require_retry_within_budget(_RunLookup([failed]), failed)
+
+    spent = [
+        _recertify_run(
+            code="PROVIDER_UNAVAILABLE", item_id=item_id, hospital_id=hospital_id
+        )
+        for _ in range(recertification.ATTEMPT_BUDGET)
+    ]
+    with pytest.raises(HTTPException) as exhausted:
+        await require_retry_within_budget(_RunLookup(spent), spent[0])
+    assert exhausted.value.status_code == 409
+    assert recertification.OPERATOR_ACTION in exhausted.value.detail["message"]
+
+    # 제목이 바뀌면 새 subject다. 이전 제목의 소진이 새 제목을 막지 않는다.
+    fresh = _recertify_run(
+        code="PROVIDER_UNAVAILABLE",
+        title="다른 제목",
+        item_id=item_id,
+        hospital_id=hospital_id,
+    )
+    await require_retry_within_budget(_RunLookup([*spent, fresh]), fresh)
 
 
 def test_invalid_sla_filter_returns_a_typed_422() -> None:

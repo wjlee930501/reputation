@@ -73,7 +73,7 @@ test('fetchAPI converts grounding_errors detail into readable Korean message', a
 
   try {
     await assert.rejects(
-      () => fetchAPI('/admin/hospitals/demo/essence/philosophy/draft', { method: 'POST' }),
+      () => fetchAPI('/admin/hospitals/demo/essence/philosophy/philosophy-id', { method: 'PATCH' }),
       (err: unknown) => {
         assert.ok(err instanceof ApiError)
         assert.match(err.message, /근거 검증에 실패한 항목이 있습니다\./)

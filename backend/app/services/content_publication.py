@@ -180,7 +180,8 @@ def assess_content_publication(
 ) -> PublicationAssessment:
     """Re-screen the exact stored content immediately before it becomes public."""
 
-    if not item.title or not item.body:
+    # 공백만 남은 제목·본문은 생성된 원고가 아니다 (H-09).
+    if not (item.title or "").strip() or not (item.body or "").strip():
         return _blocked(
             code="CONTENT_NOT_GENERATED",
             message="제목과 본문이 아직 생성되지 않았습니다.",
@@ -307,6 +308,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # paying again for the same unchanged body/image failure.
             "generation_attempt",
             "legacy_image_certification",
+            # 공개 이미지 재인증 차단 표시는 제목(subject)에 매인 사실이다. 제목을
+            # 건드리지 않는 편집이 지우면 sweep이 같은 답을 다시 사러 간다 (H-01).
+            "image_recertification",
         ):
             value = previous_summary.get(key)
             if value is not None:
@@ -336,6 +340,8 @@ def apply_essence_revalidation(
             "generation_attempt",
             "generation_provenance",
             "legacy_image_certification",
+            # 재승인은 제목을 바꾸지 않는다. 재인증 차단 표시를 지우면 안 된다 (H-01).
+            "image_recertification",
         ):
             if key in previous:
                 summary[key] = previous[key]

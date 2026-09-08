@@ -14,17 +14,9 @@ import {
 } from '@/lib/onboarding-candidate'
 import {
   buildClinicVisualChecklist,
-  isExternalLogo,
-  isServableLogo,
   missingClinicVisualItems,
   type ClinicVisualItem,
 } from '@/lib/clinic-visual-readiness'
-import {
-  clinicVisualSignature,
-  clinicVisualValuesOf,
-  shouldSyncFromServer,
-  type ClinicVisualValues,
-} from '@/lib/clinic-visual-form-sync'
 import type { Handoff, MeasurementRun } from '@/types'
 import {
   deriveHandoffDueStatus,
@@ -49,7 +41,16 @@ import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import { formatActorLabel } from '@/lib/actor-display'
 import { describePhotoPublicGate } from '@/lib/photo-public-gate'
 import { useHospitalHeader } from '../hospital-context'
-import NaverBlogBulkForm from './NaverBlogBulkForm'
+// 시각 요소·사진 권리 칸은 병원 정보 화면과 같은 구현을 쓴다 — 여기 사본을 두지 않는다.
+import { ClinicVisualForm } from '../info/ClinicVisualForm'
+import {
+  PHOTO_RIGHTS_BASIS_OPTIONS,
+  PhotoRightsFields,
+  photoAssetKindOptions,
+  photoRightsReady,
+  type PhotoRightsDraft,
+} from '../info/PhotoRightsFields'
+import NaverBlogBulkForm from '../info/NaverBlogBulkForm'
 
 interface Hospital {
   id: string
@@ -162,86 +163,6 @@ const PHOTO_SOURCE_TYPES = new Set([
 
 function isPhotoSourceType(sourceType: string): boolean {
   return PHOTO_SOURCE_TYPES.has(sourceType)
-}
-
-const DOCTOR_ASSET_KIND_OPTIONS = [
-  { value: 'VERIFIED_REAL_PERSON', label: '실제 원장 사진 — 본인 확인 완료' },
-  { value: 'EDITORIAL_GRAPHIC', label: '캐릭터·일러스트 — 의료진 영역 사용 안 함' },
-]
-
-const FACILITY_ASSET_KIND_OPTIONS = [
-  { value: 'VERIFIED_FACILITY', label: '실제 병원 공간 사진 — 장소 확인 완료' },
-  { value: 'EDITORIAL_GRAPHIC', label: '생성·일러스트 이미지 — 콘텐츠 전용' },
-]
-
-function photoAssetKindOptions(sourceType: string) {
-  return sourceType === 'PHOTO_DOCTOR'
-    ? DOCTOR_ASSET_KIND_OPTIONS
-    : FACILITY_ASSET_KIND_OPTIONS
-}
-
-// 공개되는 사진에는 권리 근거가 있어야 저장된다. 값은 서버가 허용하는 두 가지뿐이다.
-const PHOTO_RIGHTS_BASIS_OPTIONS = [
-  { value: 'LICENSE', label: '라이선스 보유 — 촬영·구매 계약이 있음' },
-  { value: 'OWNER_CONSENT', label: '촬영 대상·소유자 동의를 받음' },
-]
-
-interface PhotoRightsDraft {
-  owner: string
-  basis: string
-  reference: string
-}
-
-function photoRightsReady(value: PhotoRightsDraft): boolean {
-  return Boolean(value.owner.trim() && value.basis && value.reference.trim())
-}
-
-function PhotoRightsFields({
-  idPrefix,
-  value,
-  hospitalName,
-  onChange,
-}: {
-  idPrefix: string
-  value: PhotoRightsDraft
-  hospitalName: string | null
-  onChange: (value: PhotoRightsDraft) => void
-}) {
-  return (
-    <div className="grid gap-2 rounded-lg bg-slate-50 p-3 md:grid-cols-2">
-      <input
-        id={`${idPrefix}-rights-owner`}
-        required
-        value={value.owner}
-        onChange={(event) => onChange({ ...value, owner: event.target.value })}
-        placeholder={hospitalName ? `사진 소유자 (예: ${hospitalName})` : '사진 소유자'}
-        aria-label={`${idPrefix} 사진 소유자 예외`}
-        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
-      />
-      <select
-        id={`${idPrefix}-rights-basis`}
-        required
-        value={value.basis}
-        onChange={(event) => onChange({ ...value, basis: event.target.value })}
-        aria-label={`${idPrefix} 사진 사용 권리 근거 예외`}
-        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs"
-      >
-        <option value="">권리 근거 선택</option>
-        {PHOTO_RIGHTS_BASIS_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-      <input
-        id={`${idPrefix}-rights-evidence`}
-        required
-        value={value.reference}
-        onChange={(event) => onChange({ ...value, reference: event.target.value })}
-        placeholder="증빙 위치 (계약 조항, 동의서 파일명 등)"
-        aria-label={`${idPrefix} 사진 사용 권리 증빙 위치 예외`}
-        className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs md:col-span-2"
-      />
-    </div>
-  )
 }
 
 function photoProvenanceIsComplete(source: Source): boolean {
@@ -916,7 +837,15 @@ function ProfileStepBody({
       <ClinicVisualForm
         hospital={hospital}
         hospitalId={hospitalId}
-        sources={sources}
+        intro={<ClinicVisualChecklist hospital={hospital} sources={sources} />}
+        footer={
+          <Link
+            href={`/hospitals/${hospitalId}/profile`}
+            className="text-sm font-semibold text-slate-600 underline-offset-2 hover:underline"
+          >
+            아트 디렉션·대표 이미지까지 편집
+          </Link>
+        }
         onSaved={onChanged}
       />
     </div>
@@ -939,106 +868,29 @@ const VISUAL_STATUS_LABEL: Record<ClinicVisualItem['status'], string> = {
  * 공개 표면 시각 요소를 병원 기본 정보 단계 안에서 바로 승인한다.
  *
  * 별도 단계를 만들지 않고 기존 프로파일 단계에 붙여, AE가 온보딩을 벗어나지 않고
- * 로고·대표색 하나·첫 문장·정보 우선순위를 확정할 수 있게 한다.
+ * 로고·대표색 하나·첫 문장·정보 우선순위를 확정할 수 있게 한다. 폼 자체는 병원 정보
+ * 화면과 공유하고, 승인 체크리스트만 온보딩이 갖는다 — 정보 화면은 승인이 아니라
+ * override라서 같은 자리에 다른 안내(기본값 사용 중)를 넣는다.
  */
-function ClinicVisualForm({
+function ClinicVisualChecklist({
   hospital,
-  hospitalId,
   sources,
-  onSaved,
 }: {
   hospital: Hospital | null
-  hospitalId: string
   sources: Source[]
-  onSaved: () => void
 }) {
-  const [form, setForm] = useState<ClinicVisualValues>(() => clinicVisualValuesOf(hospital))
-  const [dirty, setDirty] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [feedback, setFeedback] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const { logoUrl, primaryColor, heroHeadline, heroDescription, accessMode } = form
-
-  // 자료 처리 추적은 5초마다 refresh()를 돌리고, 다른 자식 폼의 저장 성공도 같은
-  // refresh를 부른다. 그때마다 새 `hospital` 객체가 오므로 값이 그대로여도 참조는
-  // 바뀐다. 같은 병원을 다시 불러온 것이라면 값을 기준으로 비교하고 입력 중(dirty)에는
-  // 덮지 않는다. 반대로 병원 자체가 바뀌면 이전 병원의 초안은 버리고 새로 채운다.
-  const serverValues = clinicVisualValuesOf(hospital)
-  const serverSignature = clinicVisualSignature(serverValues)
-  const syncedSignature = useRef(serverSignature)
-  const syncedHospitalId = useRef<string | null>(hospitalId)
-
-  useEffect(() => {
-    const sync = shouldSyncFromServer({
-      dirty,
-      syncedSignature: syncedSignature.current,
-      serverSignature,
-      syncedHospitalId: syncedHospitalId.current,
-      hospitalId,
-    })
-    if (!sync) return
-    const switchedHospital = syncedHospitalId.current !== hospitalId
-    syncedSignature.current = serverSignature
-    syncedHospitalId.current = hospitalId
-    setForm(serverValues)
-    if (switchedHospital) setDirty(false)
-    // serverValues는 serverSignature와 같은 입력에서 파생된다 — 매 렌더 새로 만들어지는
-    // 객체를 의존성에 넣으면 이 이펙트가 다시 폴링마다 돌게 된다.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverSignature, dirty, hospitalId])
-
-  function update<Field extends keyof ClinicVisualValues>(
-    field: Field,
-    value: ClinicVisualValues[Field],
-  ) {
-    setDirty(true)
-    setForm((current) => ({ ...current, [field]: value }))
-  }
-
   const photoCount = sources.filter((source) => isPhotoSourceType(source.source_type)).length
   const checklist = buildClinicVisualChecklist({
-    logo_url: logoUrl,
-    brand_primary_color: primaryColor,
-    hero_headline: heroHeadline,
-    hero_description: heroDescription,
-    site_access_mode: accessMode,
+    logo_url: hospital?.logo_url,
+    brand_primary_color: hospital?.brand_primary_color,
+    hero_headline: hospital?.hero_headline,
+    hero_description: hospital?.hero_description,
+    site_access_mode: hospital?.site_access_mode,
     photo_count: photoCount,
   })
 
-  async function save(event: React.FormEvent) {
-    event.preventDefault()
-    setSaving(true)
-    setFeedback(null)
-    setError(null)
-    try {
-      await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
-        method: 'PATCH',
-        // logo_url은 업로드 엔드포인트가 소유한다 — 여기서 함께 보내면 화면이 들고 있는
-        // 스냅샷이 방금 업로드한 자산 참조를 덮어쓴다.
-        body: JSON.stringify({
-          brand_primary_color: primaryColor.trim() || null,
-          hero_headline: heroHeadline.trim() || null,
-          hero_description: heroDescription.trim() || null,
-          site_access_mode: accessMode || null,
-        }),
-      })
-      // 저장에 성공한 뒤에야 서버 값(정규화된 결과)과 다시 동기화한다.
-      setDirty(false)
-      setFeedback('공개 화면 디자인을 저장했습니다. 다음 사이트 갱신부터 반영됩니다.')
-      onSaved()
-    } catch (e: unknown) {
-      setError(
-        e instanceof ApiError && e.message
-          ? e.message
-          : safeOperatorError('onboarding', '입력값을 확인한 뒤 다시 저장해 주세요.'),
-      )
-    } finally {
-      setSaving(false)
-    }
-  }
-
   return (
-    <form onSubmit={save} className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+    <div className="space-y-4">
       <div>
         <h3 className="text-sm font-bold text-slate-900">공개 화면 디자인</h3>
         <p className="mt-1 text-xs leading-5 text-slate-600">
@@ -1047,7 +899,6 @@ function ClinicVisualForm({
           실사진은 필수가 아니며, 없어도 정보 중심으로 정상 노출됩니다.
         </p>
       </div>
-
       <ul className="flex flex-wrap gap-2">
         {checklist.map((item) => (
           <li
@@ -1059,201 +910,6 @@ function ClinicVisualForm({
           </li>
         ))}
       </ul>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <ClinicLogoField hospitalId={hospitalId} logoUrl={logoUrl} onUploaded={onSaved} />
-        <label className="text-sm font-medium text-slate-700">
-          승인된 대표색 1개
-          <span className="mt-1.5 flex items-center gap-2">
-            <input
-              type="color"
-              value={primaryColor || '#17365D'}
-              onChange={(e) => update('primaryColor', e.target.value.toUpperCase())}
-              className="h-10 w-12 rounded border border-slate-300 bg-white p-1"
-              aria-label="대표색 선택"
-            />
-            <input
-              type="text"
-              value={primaryColor}
-              onChange={(e) => update('primaryColor', e.target.value)}
-              placeholder="#17365D"
-              pattern="#[0-9A-Fa-f]{6}"
-              className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-sm"
-            />
-          </span>
-        </label>
-      </div>
-
-      <label className="block text-sm font-medium text-slate-700">
-        첫 화면 정보 우선순위
-        <select
-          value={accessMode}
-          onChange={(e) => update('accessMode', e.target.value)}
-          className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-        >
-          <option value="">병원 정보로 자동 선택</option>
-          <option value="urgent">당일·야간 진료형 — 시간·전화 우선</option>
-          <option value="appointment">예약·방문형 — 위치·상담 우선</option>
-          <option value="specialist">전문 진료형 — 의료진·진료 분야 우선</option>
-        </select>
-      </label>
-
-      <label className="block text-sm font-medium text-slate-700">
-        첫 화면 카피
-        <textarea
-          value={heroHeadline}
-          onChange={(e) => update('heroHeadline', e.target.value)}
-          maxLength={160}
-          rows={2}
-          placeholder={'예: 오늘도 문 여는 동네 주치의\n증상과 진료 정보를 방문 전에 확인하세요'}
-          className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
-        />
-        <span className="mt-1 block text-xs font-normal text-slate-500">
-          의료광고 금지 표현이 있으면 저장되지 않습니다.
-        </span>
-      </label>
-
-      <label className="block text-sm font-medium text-slate-700">
-        첫 화면 설명
-        <textarea
-          value={heroDescription}
-          onChange={(e) => update('heroDescription', e.target.value)}
-          maxLength={320}
-          rows={2}
-          placeholder="환자가 방문 전에 알아야 할 사실을 짧게 적어 주세요."
-          className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm leading-6"
-        />
-      </label>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <button
-          type="submit"
-          disabled={saving}
-          className="inline-flex items-center rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-60"
-        >
-          {saving ? '저장 중…' : '시각 요소 저장'}
-        </button>
-        <Link
-          href={`/hospitals/${hospitalId}/profile`}
-          className="text-sm font-semibold text-slate-600 underline-offset-2 hover:underline"
-        >
-          아트 디렉션·대표 이미지까지 편집
-        </Link>
-      </div>
-
-      {dirty && !saving && (
-        <p className="text-xs text-amber-700">
-          저장하지 않은 변경이 있습니다. 자료 처리가 도는 동안에도 입력은 그대로 유지됩니다.
-        </p>
-      )}
-      {feedback && <p className="text-sm font-semibold text-green-700">{feedback}</p>}
-      {error && <p className="text-sm font-semibold text-red-700">{error}</p>}
-    </form>
-  )
-}
-
-/**
- * 공식 로고 — 업로드만 받는다.
- *
- * 예전에는 URL 입력이었다. 그런데 공개 표면은 우리 저장소·백엔드 오리진이 아닌 주소를
- * 쓰지 않으므로, 병원 홈페이지 CDN 로고를 넣으면 `승인됨` 배지만 받고 화면에는 아무
- * 변화가 없었다(L-1). 필수 게이트가 효과 없는 입력을 강제하던 상태라 입력 수단 자체를
- * 바꿨다 — 업로드한 파일은 우리 오리진에서 서빙되므로 상대 CDN 정책과 무관하다.
- */
-function shortHost(value: string): string {
-  try {
-    return new URL(value).hostname
-  } catch {
-    return '외부 주소'
-  }
-}
-
-function ClinicLogoField({
-  hospitalId,
-  logoUrl,
-  onUploaded,
-}: {
-  hospitalId: string
-  logoUrl: string
-  onUploaded: () => void
-}) {
-  const [uploading, setUploading] = useState(false)
-  const [uploadError, setUploadError] = useState<string | null>(null)
-  // 업로드가 저장까지 마쳤다는 즉시 피드백. 다른 필드를 편집 중(dirty)이면 서버 값
-  // 동기화가 미뤄지므로, 그 사이에도 방금 한 일이 반영됐음을 보여 준다.
-  const [justUploaded, setJustUploaded] = useState(false)
-  // 값이 있다는 것과 공개 화면에 뜬다는 것은 다르다 — 외부 주소는 저장돼 있어도
-  // 헤더에 아무것도 그리지 못하므로 "업로드됨"이라고 말하면 안 된다(O-5).
-  const hasLogo = isServableLogo(logoUrl) || justUploaded
-  const needsLogoMigration = !justUploaded && isExternalLogo(logoUrl)
-
-  async function upload(file: File) {
-    setUploading(true)
-    setUploadError(null)
-    try {
-      const body = new FormData()
-      body.append('file', file)
-      // logo_url은 이 엔드포인트가 소유한다 — 시각 요소 폼은 이 필드를 보내지 않는다.
-      // 폼이 공개 라우트 주소를 되돌려 저장하면 저장된 자산 참조를 덮어쓰게 된다.
-      await fetchAPI(`/admin/hospitals/${hospitalId}/logo`, { method: 'POST', body })
-      setJustUploaded(true)
-      onUploaded()
-    } catch (e: unknown) {
-      setUploadError(
-        e instanceof ApiError && e.message
-          ? e.message
-          : safeOperatorError('onboarding', '로고 파일을 다시 선택해 주세요.'),
-      )
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  return (
-    <div className="text-sm font-medium text-slate-700">
-      공식 로고 이미지
-      <div className="mt-1.5 flex items-center gap-3">
-        {hasLogo ? (
-          <span className="inline-flex items-center rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-green-700">
-            업로드됨
-          </span>
-        ) : needsLogoMigration ? (
-          <span className="inline-flex items-center rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-semibold text-amber-800">
-            외부 주소 — 화면에 안 뜸
-          </span>
-        ) : (
-          <span className="inline-flex items-center rounded-lg border border-dashed border-slate-300 px-2 py-1 text-xs text-slate-500">
-            아직 없음
-          </span>
-        )}
-        <label className="inline-flex min-h-11 cursor-pointer items-center rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-          {uploading ? '업로드 중…' : hasLogo ? '다른 파일로 교체' : '로고 파일 선택'}
-          <input
-            type="file"
-            accept="image/png,image/jpeg,image/webp"
-            disabled={uploading}
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              // 같은 파일을 다시 고를 수 있게 값을 비운다 — 실패 후 재시도가 막히지 않는다.
-              e.target.value = ''
-              if (file) void upload(file)
-            }}
-          />
-        </label>
-      </div>
-      {needsLogoMigration && (
-        <p className="mt-1.5 rounded-lg bg-amber-50 px-2.5 py-2 text-xs leading-5 text-amber-900">
-          예전에 등록한 로고 주소가 외부 사이트({shortHost(logoUrl)})를 가리킵니다.
-          공개 화면은 외부 주소의 이미지를 쓰지 않아 지금 헤더에는 병원명만 나옵니다.
-          같은 로고 파일을 업로드하면 바로 반영됩니다.
-        </p>
-      )}
-      <span className="mt-1 block text-xs font-normal text-slate-500">
-        PNG·JPG·WEBP, 1MB 이하. 업로드한 파일은 병원 공개 화면에서 직접 제공되므로
-        외부 사이트 주소와 달리 상대 사이트가 바뀌어도 깨지지 않습니다.
-      </span>
-      {uploadError && <p className="mt-1 text-xs font-semibold text-red-700">{uploadError}</p>}
     </div>
   )
 }
@@ -1275,7 +931,7 @@ function SourcesStepBody({
     <div className="space-y-5">
       <ProfileUrlCandidates hospital={hospital} hospitalId={hospitalId} sources={sources} onChanged={onChanged} />
       <CrawlForm hospitalId={hospitalId} onCreated={onChanged} />
-      <NaverBlogBulkForm hospitalId={hospitalId} onCreated={onChanged} />
+      <NaverBlogBulkForm hospitalId={hospitalId} allowRetry onCreated={onChanged} />
       <UploadForm
         hospitalId={hospitalId}
         hospitalName={hospital?.name ?? null}

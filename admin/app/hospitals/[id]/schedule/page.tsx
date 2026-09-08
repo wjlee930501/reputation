@@ -61,13 +61,17 @@ function contentReadinessBlockers(readiness: ScheduleReadiness | null): string[]
 export default function SchedulePage() {
   const { id } = useParams<{ id: string }>()
   const router = useRouter()
-  const { refetch: refetchHeader } = useHospitalHeader()
-  const [plan, setPlan] = useState('PLAN_12')
-  const [selectedDays, setSelectedDays] = useState<number[]>(DEFAULT_PUBLISH_DAYS_BY_PLAN.PLAN_12)
+  const { hospital, refetch: refetchHeader } = useHospitalHeader()
+  // 요금제는 계약 기록이 정한다 — 이 화면은 계약 값을 읽어 그대로 저장 본문에 싣는다 (H-14).
+  const plan = hospital?.plan ?? ''
+  const [selectedDays, setSelectedDays] = useState<number[]>([])
+  const [daysChosen, setDaysChosen] = useState(false)
   const [activeFrom, setActiveFrom] = useState(firstDayOfNextMonthInputValue())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string } | null>(null)
+  // 슬롯이 하나도 만들어지지 않으면 backend가 first_publish_date를 null로 내려준다
+  // (api/admin/content.py). 타입이 string이면 화면은 없는 날짜를 있다고 말한다(M-22).
+  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null } | null>(null)
   const [confirmingReplacement, setConfirmingReplacement] = useState(false)
 
   // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
@@ -86,8 +90,8 @@ export default function SchedulePage() {
         if (cancelled || !schedule) return
         setExisting(schedule)
         // 기존 발행 일정으로 폼을 미리 채워 실수로 다른 값으로 덮어쓰지 않게 한다.
-        setPlan(schedule.plan)
         setSelectedDays([...schedule.publish_days].sort((a, b) => a - b))
+        setDaysChosen(true)
         // 시작일은 미래 날짜만 이어받는다 — 과거 날짜로 재저장하면 지난 달 슬롯을 다시 만들게 된다.
         const today = new Date().toISOString().slice(0, 10)
         if (schedule.active_from && schedule.active_from >= today) {
@@ -127,13 +131,22 @@ export default function SchedulePage() {
     return () => { cancelled = true }
   }, [id])
 
+  // 계약 요금제를 알게 되면 그 요금제의 기본 발행 요일을 한 번만 채운다.
+  // 기존 일정을 이어받았거나 운영자가 이미 요일을 고른 뒤에는 덮어쓰지 않는다.
+  useEffect(() => {
+    if (!plan || daysChosen || existingLoading || existing) return
+    setSelectedDays(DEFAULT_PUBLISH_DAYS_BY_PLAN[plan] ?? [])
+  }, [plan, daysChosen, existingLoading, existing])
+
   const readinessBlockers = contentReadinessBlockers(readiness)
   const canSaveSchedule = canSubmitSchedule(existingLoading, existingError)
     && !readinessLoading
     && !readinessError
     && readinessBlockers.length === 0
+    && plan !== ''
 
   function toggleDay(idx: number) {
+    setDaysChosen(true)
     setSelectedDays((prev) =>
       prev.includes(idx) ? prev.filter((d) => d !== idx) : [...prev, idx].sort()
     )
@@ -151,6 +164,10 @@ export default function SchedulePage() {
     }
     if (readinessBlockers.length > 0) {
       setError(`콘텐츠 발행 일정 설정 전 필요한 작업이 남아 있습니다.\n- ${readinessBlockers.join('\n- ')}`)
+      return
+    }
+    if (!plan) {
+      setError('계약 요금제를 불러온 뒤 다시 시도해 주세요.')
       return
     }
     if (selectedDays.length === 0) {
@@ -174,7 +191,7 @@ export default function SchedulePage() {
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI<{ slots_created: number; first_publish_date: string; publish_days: number[] }>(
+      const data = await fetchAPI<{ slots_created: number; first_publish_date: string | null; publish_days: number[] }>(
         `/admin/hospitals/${id}/schedule`,
         {
           method: 'POST',
@@ -191,6 +208,17 @@ export default function SchedulePage() {
       void refetchHeader()
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
+      // 계약 요금제와 어긋난 저장은 서버가 막는다 — 운영자가 다음 행동을 알 수 있게 그대로 보여준다.
+      if (e instanceof ApiError && e.detail && typeof e.detail === 'object') {
+        const detail = e.detail as { code?: string; message?: string; contracted_plan?: string }
+        if (detail.code === 'PLAN_MISMATCH') {
+          setError(
+            `${detail.message ?? '요금제는 계약 기록에서만 변경할 수 있습니다.'}`
+            + ` (계약 요금제: ${detail.contracted_plan ?? '확인 필요'})`,
+          )
+          return
+        }
+      }
       setError(safeOperatorError('onboarding', '운영량과 발행 요일을 확인한 뒤 ‘저장’을 다시 누르세요.'))
     } finally {
       setLoading(false)
@@ -263,11 +291,9 @@ export default function SchedulePage() {
           <p className="text-green-700 text-sm mt-2">
             {result.slots_created}개의 콘텐츠 항목이 만들어졌습니다.
           </p>
-          {result.first_publish_date && (
-            <p className="text-green-700 text-sm mt-1">
-              첫 발행 예정일: <strong>{result.first_publish_date}</strong>
-            </p>
-          )}
+          <p className="text-green-700 text-sm mt-1">
+            첫 발행 예정일: <strong>{result.first_publish_date ?? '첫 발행일 미정'}</strong>
+          </p>
           <div className="flex gap-3 mt-4">
             <button
               onClick={() => router.push(`/hospitals/${id}/content`)}
@@ -285,25 +311,13 @@ export default function SchedulePage() {
         </div>
       ) : (
         <form onSubmit={handleSubmit} className="bg-white rounded-xl border border-slate-200 p-4 space-y-6 sm:p-6">
-          {/* 월간 운영량 */}
+          {/* 월간 운영량 — 계약 기록이 정한 값을 읽기 전용으로 보여준다 (H-14) */}
           <div>
-            <label htmlFor="schedule-plan" className="block text-sm font-medium text-slate-700 mb-2">월간 운영량</label>
-            <select
-              id="schedule-plan"
-              value={plan}
-              onChange={(e) => {
-                const nextPlan = e.target.value
-                setPlan(nextPlan)
-                setSelectedDays(DEFAULT_PUBLISH_DAYS_BY_PLAN[nextPlan] ?? [])
-                setResult(null)
-                setError(null)
-              }}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-            >
-              <option value="PLAN_12">{PLAN_CONTRACT_LABELS.PLAN_12}</option>
-              <option value="PLAN_16">{PLAN_CONTRACT_LABELS.PLAN_16}</option>
-              <option value="PLAN_20">{PLAN_CONTRACT_LABELS.PLAN_20}</option>
-            </select>
+            <p className="block text-sm font-medium text-slate-700 mb-2">요금제</p>
+            <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-800">
+              {plan ? PLAN_CONTRACT_LABELS[plan] ?? plan : '계약 요금제를 불러오는 중입니다.'}
+            </p>
+            <p className="mt-1 text-[11px] text-slate-500">요금제는 계약 기록에서만 변경할 수 있습니다. 발행 요일과 시작일만 여기서 정합니다.</p>
           </div>
 
           {/* 발행 요일 */}
@@ -382,7 +396,7 @@ export default function SchedulePage() {
 
       <aside className="rounded-xl border border-slate-200 bg-slate-50 p-4 lg:sticky lg:top-6 sm:p-5">
         <p className="text-xs font-semibold uppercase tracking-[0.12em] text-slate-500">운영 미리보기</p>
-        <h3 className="mt-2 text-base font-semibold text-slate-900">{PLAN_LABELS[plan as keyof typeof PLAN_LABELS] ?? plan}</h3>
+        <h3 className="mt-2 text-base font-semibold text-slate-900">{plan ? PLAN_LABELS[plan] ?? plan : '계약 요금제 확인 중'}</h3>
         <p className="mt-1 text-sm text-slate-600">
           {activeFrom || '시작일 미정'}부터 {selectedDays.length > 0 ? selectedDays.map((day) => `${DAYS[day]}요일`).join(' · ') : '발행 요일 미정'}에 운영합니다.
         </p>
@@ -434,7 +448,12 @@ export default function SchedulePage() {
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
                 <dt className="text-slate-500">월간 운영량</dt>
                 <dd className="font-medium text-slate-900">
-                  {PLAN_LABELS[existing.plan] ?? existing.plan} → {PLAN_LABELS[plan as keyof typeof PLAN_LABELS] ?? plan}
+                  {/* 계약 정정 뒤 일정이 아직 옛 요금제면, 되돌릴 수 없는 교체가 편수까지
+                      바꾼다는 사실을 확인 문구가 감추면 안 된다. */}
+                  {PLAN_LABELS[existing.plan] ?? existing.plan}
+                  {plan && plan !== existing.plan
+                    ? ` → ${PLAN_LABELS[plan] ?? plan}`
+                    : ''}
                 </dd>
               </div>
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">

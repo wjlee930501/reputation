@@ -221,7 +221,6 @@ async def test_active_complete_profile_saves_unrelated_edits_with_unchanged_lega
     await update_profile(
         hospital.id,
         HospitalProfileUpdate(
-            profile_complete=True,
             logo_url=legacy_logo_url,
             specialties=["정형외과", "마취통증의학과", "응급의학과"],
             hero_description="척추·관절 통증부터 경증 응급까지 진료합니다.",
@@ -313,7 +312,24 @@ async def test_null_logo_noop_is_not_a_changed_field_or_revalidation_trigger(mon
     assert db.committed is True
     assert hospital.logo_url is None
     assert audit_details == [
-        {"changed_fields": ["competitors"], "profile_complete_transition": False}
+        {
+            "changed_fields": ["competitors"],
+            "profile_complete_transition": False,
+            "profile_complete_derived": False,
+            "profile_complete_applied": False,
+            "missing_requirements": [
+                "director_basic",
+                "director_philosophy",
+                "contact",
+                "web_channels",
+                "ai_channels",
+                "geo",
+                "targeting",
+                "treatments",
+            ],
+            # 이 저장이 비운 항목은 없다 — 전부 저장 전부터 비어 있던 레거시 공백이다.
+            "newly_missing_requirements": [],
+        }
     ]
     assert revalidation_checks == []
 

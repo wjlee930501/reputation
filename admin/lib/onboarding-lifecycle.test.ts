@@ -27,6 +27,7 @@ const philosophies = [{ status: 'APPROVED' }]
 const readiness = {
   status: 'READY',
   published_content_count: 1,
+  public_content_count: 1,
   sov_record_count: 2,
   report_count: 1,
   v0_report_pdf_count: 1,
@@ -178,7 +179,7 @@ test('LIVE is completed before content scheduling and recurring outcomes do not 
     hospital,
     sources,
     philosophies,
-    { ...readiness, published_content_count: 0, sov_record_count: 0 },
+    { ...readiness, published_content_count: 0, public_content_count: 0, sov_record_count: 0 },
     'hospital-id',
     acceptedHandoff,
   )
@@ -204,6 +205,30 @@ test('8/8 never leaves a next-action CTA even when post-onboarding outcomes are 
   assert.equal(summary.nextActionHref, null)
   assert.equal(summary.nextActionLabel, '')
   assert.equal(summary.blockedReason, null)
+})
+
+// H-01: 발행 행 수는 "발행했다"는 사실일 뿐이고, 단계가 약속한 것은 "실제 공개"다.
+test('first publication needs a publicly served article, not just a published row', () => {
+  const allWithheld = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    { ...readiness, published_content_count: 3, public_content_count: 0 },
+    'hospital-id',
+    acceptedHandoff,
+  )
+  assert.notEqual(allWithheld.find((step) => step.key === 'first_publish')?.status, 'completed')
+
+  // 값이 아예 없는 응답도 완료로 넘기지 않는다.
+  const withoutCount = deriveOnboardingSteps(
+    hospital,
+    sources,
+    philosophies,
+    { ...readiness, public_content_count: undefined },
+    'hospital-id',
+    acceptedHandoff,
+  )
+  assert.notEqual(withoutCount.find((step) => step.key === 'first_publish')?.status, 'completed')
 })
 
 test('stale approved essence and partially processed included sources block readiness', () => {

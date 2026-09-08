@@ -433,7 +433,20 @@ async def test_acknowledged_generation_cause_keeps_the_same_episode(monkeypatch)
 
 
 def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:
-    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == frozenset()
+    # 아침 마감 게이트를 기다리지 않는 것은 이미 공개했다가 내려간 글의 재인증 차단뿐이다.
+    # 그 사실을 동작으로 확인한다 — 사람이 지금 결정해야 하므로 예정일 없이도 알린다.
+    for code in (
+        "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+        "PUBLISHED_IMAGE_MISSING",
+        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
+    ):
+        assert generation_incident_control.generation_notify_requested(code)
+        assert generation_incident_control._morning_notification_due(
+            code=code, item=None, observed_at=datetime(2026, 9, 8, 2, 0, tzinfo=UTC)
+        )
+        assert not generation_incident_control.generation_block_digest_due(
+            code, batch=generation_incident_control.PUBLISH_MORNING_BATCH
+        )
 
     morning_codes = (
         "PROVIDER_TIMEOUT",
@@ -749,6 +762,19 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "지금 발행" not in actions["published_content"]
     assert "스케줄 탭" in actions["published_content"]
     assert "예약 콘텐츠" in readiness_next_actions(has_content_slots=True)["published_content"]
+
+
+def test_withheld_articles_change_the_published_content_action_to_clearing_reasons() -> None:
+    """발행은 했는데 공개 페이지가 숨기고 있으면 할 일은 새 글이 아니라 사유 해소다(H-01)."""
+    # Given / When
+    action = readiness_next_actions(has_content_slots=True, withheld_content_count=3)[
+        "published_content"
+    ]
+
+    # Then
+    assert "공개 보류 3편" in action
+    assert "보류 사유" in action
+    assert "예약 콘텐츠" not in action
 
 
 def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> None:

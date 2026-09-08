@@ -11,6 +11,22 @@ test('admin copy uses operator terms instead of implementation labels', () => {
   assert.equal(ADMIN_COPY.attribution, '연결 근거')
 })
 
+test('one term per concept: new screens read these keys instead of inventing variants', () => {
+  assert.equal(ADMIN_COPY.publicPage, '병원 공개 페이지')
+  assert.equal(ADMIN_COPY.publicUrl, '공개 주소')
+  assert.equal(ADMIN_COPY.operatingStandard, '콘텐츠 운영 기준')
+  assert.equal(ADMIN_COPY.initialReport, '초기 진단 보고서')
+  assert.equal(ADMIN_COPY.monthlyReport, '보고서')
+  assert.equal(ADMIN_COPY.evidence, '근거 자료')
+  assert.equal(ADMIN_COPY.evidenceNote, '근거 노트')
+  assert.equal(ADMIN_COPY.plan, '요금제')
+  assert.equal(ADMIN_COPY.monthlyArticles, '월 발행 편수')
+  assert.equal(ADMIN_COPY.operator, '운영자')
+  assert.equal(ADMIN_COPY.aeOwner, '담당 AE')
+  assert.equal(ADMIN_COPY.postPublishReview, '공개 후 확인')
+  assert.equal(ADMIN_COPY.postPublishReviewed, '확인 완료')
+})
+
 test('mention rate keeps unavailable results separate from zero', () => {
   assert.equal(describeMentionRate(null), '측정 결과 없음')
   assert.equal(describeMentionRate(0), '0.0%')

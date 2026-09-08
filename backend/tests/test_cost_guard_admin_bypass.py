@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from app.api.admin import essence
 from app.api.admin import hospitals as hospitals_api
 from app.models.essence import SourceStatus
+from app.services import cost_guard
 from app.services.cost_guard import CostGuardDecision
 
 
@@ -108,7 +109,7 @@ async def test_process_source_api_only_creates_durable_work(monkeypatch, _stub_s
         async def refresh(self, _obj):
             return None
 
-    monkeypatch.setattr(essence.cost_guard, "check_and_increment", _should_not_reserve)
+    monkeypatch.setattr(cost_guard, "check_and_increment", _should_not_reserve)
     monkeypatch.setattr(essence, "_start_source_processing_best_effort", _start)
     monkeypatch.setattr(essence, "_get_notes_for_source", _notes)
 
@@ -162,7 +163,7 @@ async def test_process_source_skips_reextraction_when_already_processed_unchange
     async def _should_not_reserve(*_args, **_kwargs):
         raise AssertionError("이미 처리된 자료인데 cost_guard 예약을 시도했다")
 
-    monkeypatch.setattr(essence.cost_guard, "check_and_increment", _should_not_reserve)
+    monkeypatch.setattr(cost_guard, "check_and_increment", _should_not_reserve)
 
     async def _should_not_queue(*_args, **_kwargs):
         raise AssertionError("이미 처리된 자료인데 재추출을 큐잉했다")
@@ -177,55 +178,6 @@ async def test_process_source_skips_reextraction_when_already_processed_unchange
     response = await essence.process_source(hospital.id, source.id, db=_FakeDB())
 
     assert response["id"] == str(source.id)
-
-
-# ── essence.py: POST /philosophy/draft ──────────────────────────────────
-
-
-@pytest.fixture
-def _stub_philosophy_inputs(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="테스트병원", slug="test")
-    sources = [SimpleNamespace(id=uuid.uuid4())]
-    notes = [SimpleNamespace(id=uuid.uuid4())]
-
-    async def _hospital(_db, _hospital_id):
-        return hospital
-
-    async def _sources(_db, _hospital_id, _ids):
-        return sources
-
-    async def _notes(_db, _source_ids):
-        return notes
-
-    async def _lock(_db, _hospital_id):
-        return None
-
-    monkeypatch.setattr(essence, "_get_hospital_or_404", _hospital)
-    monkeypatch.setattr(essence, "_select_processed_sources", _sources)
-    monkeypatch.setattr(essence, "_get_notes_for_sources", _notes)
-    monkeypatch.setattr(essence, "acquire_hospital_advisory_lock", _lock)
-    return hospital
-
-
-async def test_create_philosophy_draft_blocked_by_cost_guard_returns_429(
-    monkeypatch, _stub_philosophy_inputs
-):
-    hospital = _stub_philosophy_inputs
-    monkeypatch.setattr(essence.cost_guard, "check_and_increment", _blocked_decision())
-
-    def _should_not_run(*_args, **_kwargs):
-        raise AssertionError("cost_guard가 막았는데 철학 합성을 시도했다")
-
-    monkeypatch.setattr(essence, "synthesize_philosophy", _should_not_run)
-
-    from app.schemas.essence import PhilosophyDraftCreate
-
-    with pytest.raises(HTTPException) as exc_info:
-        await essence.create_philosophy_draft(
-            hospital.id, PhilosophyDraftCreate(created_by="AE"), db=_FakeDB()
-        )
-
-    assert exc_info.value.status_code == 429
 
 
 # ── hospitals.py: POST /{hospital_id}/profile/autofill ──────────────────

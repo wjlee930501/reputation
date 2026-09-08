@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 
-def readiness_next_actions(*, has_content_slots: bool = False) -> Mapping[str, str]:
+def readiness_next_actions(
+    *, has_content_slots: bool = False, withheld_content_count: int = 0
+) -> Mapping[str, str]:
     """Describe impact and controls that exist in the current Admin state."""
     return {
         "core_profile": (
@@ -53,8 +55,11 @@ def readiness_next_actions(*, has_content_slots: bool = False) -> Mapping[str, s
             "발행 일정이 없으면 월간 콘텐츠가 자동 준비되지 않습니다. 스케줄 탭에서 운영량, 발행 요일, "
             "시작일을 선택하고 “스케줄 저장 및 슬롯 생성”을 누르세요."
         ),
+        # 발행했는데 공개 페이지가 숨기고 있으면 할 일은 새 글이 아니라 보류 사유 해소다.
         "published_content": (
-            "공개 콘텐츠가 없으면 AI가 참고할 병원 설명이 쌓이지 않습니다. "
+            f"공개 보류 {withheld_content_count}편 — 콘텐츠 목록에서 보류 사유를 확인하세요."
+            if withheld_content_count > 0
+            else "공개 콘텐츠가 없으면 AI가 참고할 병원 설명이 쌓이지 않습니다. "
             + (
                 "콘텐츠 탭에서 준비된 글의 상태와 예약일을 확인하세요. 예약 콘텐츠는 발행일에 자동 검증·공개됩니다."
                 if has_content_slots

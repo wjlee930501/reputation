@@ -219,6 +219,8 @@ export function operationStatusLabel(status: string): string {
     case 'PUBLISH_DUE': return '오늘 발행 예정'
     case 'REVIEW_PENDING': return '발행 후 확인 대기'
     case 'OVERDUE_REVIEW': return '발행 후 확인 기한 지남'
+    // 발행됐지만 공개 페이지가 숨기는 중 — 확인이 아니라 사유 해소가 할 일이다(H-01).
+    case 'WITHHELD_PUBLIC': return '공개 보류'
     case 'MISSING': return '지난달 보고서 미생성'
     case 'COVERAGE_INCOMPLETE': return '필수 측정 미완료'
     case 'MANIFEST_MISMATCH': return '측정 집계 연결 오류'
@@ -292,6 +294,9 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 운영 기준
   ESSENCE_AUTO_REVIEW_FAILED: '콘텐츠 운영 기준 자동 검수를 완료하지 못했습니다.',
   ESSENCE_AUTO_REVIEW_ESCALATED: '콘텐츠 운영 기준 자동 검수가 초안을 보류해 사람 확인이 필요합니다.',
+  // 근거 자료
+  CHANNEL_SOURCE_FETCH_FAILED: '공식 채널 주소에서 본문을 가져오지 못해 자동 재시도를 끝냈습니다.',
+  SOURCE_PROCESSING_FAILED: '올린 자료에서 근거를 뽑지 못해 이 자료는 새 글에 쓰이지 않습니다.',
   // 비용 안전장치
   COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
   COST_GUARD_LIMIT_REACHED: '오늘 설정된 사용 한도에 도달해 자동 작업을 보류했습니다.',

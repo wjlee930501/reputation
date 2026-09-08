@@ -242,7 +242,8 @@ def _current_essence_delivery_blockers(
     blockers: list[str] = []
     if readiness.current is None:
         blockers.append(
-            "현재 병원 자료와 일치하는 승인된 콘텐츠 운영 기준이 없습니다. 리포트를 다시 생성해 주세요."
+            "콘텐츠 운영 기준이 최신 자료·근거 노트와 다릅니다. "
+            "자동 재검수가 끝나면(또는 예외 승인 뒤) 다시 확인해 주세요."
         )
     if readiness.has_unprocessed_sources:
         blockers.append("현재 처리되지 않은 온보딩 자료가 남아 있습니다.")

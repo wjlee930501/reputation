@@ -16,7 +16,7 @@ from app.api.admin.domain_verification_responses import (
     dns_failure_response,
     dns_success_response,
 )
-from app.models.hospital import DomainCertJobState, DomainDnsStrategy, Hospital, HospitalStatus
+from app.models.hospital import DomainCertJobState, DomainDnsStrategy, Hospital
 from app.schemas.domain import DomainVerifyResponse
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.domain_certificate_jobs import (
@@ -34,11 +34,17 @@ from app.services.domain_certificate_jobs import (
 )
 from app.services.domain_dns import DomainDnsCheck, strategy_for_hospital
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
+from app.services.hospital_activation import (
+    HospitalNotActivatable,
+    ensure_activatable,
+    transition_to_active,
+)
 from app.services.hospital_lifecycle import (
     ActivationGateSnapshot,
     activation_gate_error,
 )
 from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
+from app.services.site_revalidate import trigger_hospital_site_revalidate_safe
 from app.workers.dispatch_auth import build_dispatch_headers
 
 DnsChecker = Callable[[str, DomainDnsStrategy], Awaitable[DomainDnsCheck]]
@@ -95,7 +101,9 @@ async def verify_domain_for_hospital(
         )
 
     now = datetime.now(UTC)
-    request = DomainCertificateClaimRequest(hospital_id, domain, now)
+    # DNS 조회는 잠금 밖에서 끝났다. 그 사이 도메인이나 연결 방식이 바뀌었다면 방금의
+    # 성공은 지금 행의 설정을 설명하지 못하므로, 잠금 재조회가 둘 다 대조하게 한다.
+    request = DomainCertificateClaimRequest(hospital_id, domain, now, dns_strategy=dns_strategy)
     try:
         hospital = await lock_hospital_for_domain_certificate(db, request)
     except DomainCertificateHospitalMissing as exc:
@@ -103,12 +111,20 @@ async def verify_domain_for_hospital(
     except DomainChangedDuringVerification as exc:
         raise HTTPException(
             status_code=409,
-            detail="검증 중 도메인이 변경되었습니다. 화면을 새로고침한 뒤 다시 확인해 주세요.",
+            detail=(
+                "검증 중 도메인 또는 연결 방식이 변경되었습니다. "
+                "화면을 새로고침한 뒤 다시 확인해 주세요."
+            ),
         ) from exc
 
     gate = await dependencies.evaluate_gate(db, hospital)
     if not gate["ready"]:
         raise HTTPException(status_code=409, detail=activation_gate_error(gate))
+    if not hospital.site_live:
+        try:
+            ensure_activatable(hospital)
+        except HospitalNotActivatable as exc:
+            raise HTTPException(status_code=409, detail=exc.as_detail()) from exc
 
     # 운영자가 언제 확인했는지 남긴다. 배지가 어느 시점의 사실을 말하는지 알 수 없으면,
     # 실제로 열리는 주소를 두고 '확인 대기'로 남았던 화면과 똑같이 신뢰할 수 없다.
@@ -117,14 +133,19 @@ async def verify_domain_for_hospital(
         LiveDomainCheck(domain=domain, healthy=True, reason="dns_ok", checked_at=now),
     )
 
-    previous_status = (
-        hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
-    )
-    previous_site_live = bool(hospital.site_live)
-    if not hospital.site_live:
-        hospital.site_live = True
-        hospital.status = HospitalStatus.ACTIVE
+    # 활성화를 아는 자리는 여기 한 곳뿐이다 — 전환·구간 개시·감사행이 같은 조건 아래 있다.
+    activated_now = not hospital.site_live
+    if activated_now:
+        previous_status = transition_to_active(hospital)
         await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
+        await audit_activation(
+            db,
+            hospital,
+            domain,
+            dns_check,
+            previous_status,
+            gate,
+        )
 
     job = claim_locked_domain_certificate_job(hospital, request)
     match job:
@@ -147,25 +168,23 @@ async def verify_domain_for_hospital(
         case unreachable:
             assert_never(unreachable)
 
-    if not previous_site_live:
-        await audit_activation(
+    await db.commit()
+    try:
+        cert_job_state, cert_job_started_at = await _dispatch_or_describe_job(
             db,
             hospital,
             domain,
-            dns_check,
-            previous_status,
-            gate,
+            job,
+            now,
+            dependencies.provision_task,
         )
-
-    await db.commit()
-    cert_job_state, cert_job_started_at = await _dispatch_or_describe_job(
-        db,
-        hospital,
-        domain,
-        job,
-        now,
-        dependencies.provision_task,
-    )
+    finally:
+        if activated_now:
+            # 활성화는 이미 커밋됐다 — 인증서 작업 dispatch가 실패해도 공개 캐시는 갱신한다.
+            # 실패해도 raise하지 않는 _safe 경로.
+            await trigger_hospital_site_revalidate_safe(
+                hospital.slug, hospital.treatments, hospital_name=hospital.name
+            )
     return dns_success_response(
         domain,
         dns_check,

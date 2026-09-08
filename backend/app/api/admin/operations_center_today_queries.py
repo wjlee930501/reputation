@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import date, datetime, time, timedelta
 from typing import Final, assert_never
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import String, and_, case, false, func, or_, select
+from sqlalchemy import (
+    ARRAY,
+    String,
+    all_,
+    and_,
+    any_,
+    bindparam,
+    case,
+    false,
+    func,
+    or_,
+    select,
+    true,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -28,15 +42,26 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
+from app.services import published_image_recertification as recertification
+from app.services.content_visibility import (
+    PublicVisibility,
+    assess_sampled_visibility,
+    visibility_load_only,
+)
 from app.services.post_publish_review_policy import (
     auto_publish_due_predicate,
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
+from app.workers.generation_incident_control import (
+    generation_operator_action,
+    generation_safe_cause,
+)
 
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
 _TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
+_WITHHELD_ACTION_LABEL: Final = "보류 사유 확인"
 # The automatic publisher runs at 08:00 KST; before it does, a due slot is not work.
 _AUTO_PUBLISH_HOUR: Final = time(8, 0)
 
@@ -52,6 +77,28 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
         f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
         "처리할 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
     )
+
+
+def _blocking_recertify_code(run: OperationRun | None) -> str | None:
+    """자동 재인증이 사람 결정으로 끝났을 때만 그 원인 코드를 돌려준다."""
+    code = run.safe_error_code if run is not None else None
+    return code if code in recertification.OPERATOR_REQUIRED_CODES else None
+
+
+def _withheld_next_action(run: OperationRun | None) -> str:
+    """보류 행에는 자동 복구가 멈춘 지점의 구체적 조치를 그대로 보여준다."""
+    code = _blocking_recertify_code(run)
+    if code is not None:
+        return generation_operator_action(code)
+    return (
+        f"운영 센터의 “{_WITHHELD_ACTION_LABEL}”에서 보류 사유를 해소하세요. "
+        "사유가 남아 있는 동안에는 공개 내용 확인을 기록할 수 없습니다."
+    )
+
+
+def _withheld_safe_cause(run: OperationRun | None) -> str | None:
+    code = _blocking_recertify_code(run)
+    return generation_safe_cause(code) if code is not None else None
 
 
 def publish_due_requires_operator_action(
@@ -86,6 +133,44 @@ def publish_due_requires_operator_action(
     return now.astimezone(_SEOUL).time() >= _AUTO_PUBLISH_HOUR
 
 
+async def _withheld_review_samples(
+    db: AsyncSession,
+    filters: OperationsFilters,
+) -> tuple[set[uuid.UUID], dict[uuid.UUID, PublicVisibility]]:
+    """Judge the review candidates before the page query so SQL can label them.
+
+    후보는 공개 운영 중인 병원의 후행 검수 표본뿐이라 병원당 소수다. 표본 크기는 검수
+    표본 정책(월 시퀀스 1편 + 공개 후 수정, 미확인)이 묶고 AE가 확인할수록 줄어든다.
+    그 행에서도 판정에 쓰는 컬럼만 싣는다. 승인 기준 조회는 묶여 있어 병원 수와 무관하게
+    2회다. owner 필터는 여기에 적용하지 않는다 — 판정은 담당자와 무관하고, 후보 집합만
+    넓어질 뿐 결과는 같기 때문이다.
+    """
+    candidates = (
+        (
+            await db.execute(
+                select(ContentItem)
+                .options(visibility_load_only())
+                .join(Hospital, Hospital.id == ContentItem.hospital_id)
+                .where(
+                    publicly_operational_hospital_predicate(),
+                    human_post_publish_review_predicate(),
+                    *(
+                        [Hospital.id == filters.hospital_id]
+                        if filters.hospital_id is not None
+                        else []
+                    ),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    visibility = await assess_sampled_visibility(db, candidates)
+    return {
+        item_id for item_id, judged in visibility.items() if not judged.visible
+    }, visibility
+
+
 async def load_today_queue(
     db: AsyncSession,
     filters: OperationsFilters,
@@ -95,27 +180,47 @@ async def load_today_queue(
     overview: bool,
     now: datetime,
 ) -> tuple[int, list[OperationsQueueRow]]:
-    """Load due publishing and post-publication review work without row-level queries.
+    """Load due publishing and post-publication review work for one page.
+
+    Selection, counting and ordering stay set-based. "Already public" is not a column,
+    so the bounded review sample is judged first and its withheld ids enter the SQL
+    CASE — filters, totals, severity and pagination then read one state.
 
     The explicit pagination and overview inputs mirror the operations-center HTTP
     contract; their independent meanings make a compact parameter object misleading.
     """
     assignee = aliased(AdminUser)
     related_run = aliased(OperationRun)
+    # 보류 문구는 재인증 실행만 근거로 삼는다. 같은 글의 나중 재생성 실행이 최신 실행이
+    # 되면서 사람이 봐야 할 거절 사유를 가리면 안 된다.
+    recertify_run = aliased(OperationRun)
     related_incident = aliased(Incident)
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
     waiting_review = human_post_publish_review_predicate()
     due_publish = auto_publish_due_predicate(today)
+    overdue_review = and_(waiting_review, ContentItem.published_at < overdue_before)
+    # "공개 중"은 컬럼이 아니라 저장된 행 전체를 다시 판정해야 나오는 사실이다. 그 판정을
+    # 페이지를 만든 뒤에 Python에서 덧칠하면 status 필터·total·심각도가 모두 어긋난다 —
+    # status=REVIEW_PENDING이 보류 행을 돌려주고, WITHHELD_PUBLIC은 아무것도 못 찾았다.
+    # 그래서 검수 후보를 먼저 판정해 그 id를 CASE에 넣고, 선택·집계·정렬을 한 기준으로 둔다.
+    # 보류 id는 배열 파라미터 하나로 넘긴다 — 표본이 늘어도 SQL과 파라미터 개수가 같아
+    # 준비된 구문이 표본 크기마다 새로 만들어지지 않는다. 부정은 `!= ALL(...)`이어야 한다.
+    # `NOT (id = ANY(...))`를 SQLAlchemy가 뒤집으면 `id != ANY(...)`가 되어 뜻이 달라진다.
+    withheld_ids, withheld_visibility = await _withheld_review_samples(db, filters)
+    withheld_param = bindparam(
+        "withheld_ids", value=sorted(withheld_ids), type_=ARRAY(ContentItem.id.type)
+    )
+    is_withheld = ContentItem.id == any_(withheld_param) if withheld_ids else false()
+    not_withheld = ContentItem.id != all_(withheld_param) if withheld_ids else true()
     task_state = case(
-        (and_(waiting_review, ContentItem.published_at < overdue_before), "OVERDUE_REVIEW"),
+        *([(is_withheld, "WITHHELD_PUBLIC")] if withheld_ids else []),
+        (overdue_review, "OVERDUE_REVIEW"),
         (waiting_review, "REVIEW_PENDING"),
         else_="PUBLISH_DUE",
     )
-    severity = case(
-        (and_(waiting_review, ContentItem.published_at < overdue_before), "HIGH"),
-        else_="MEDIUM",
-    )
+    # 기록할 수 없는 검수의 기한 초과를 HIGH로 올리지 않는다 — 할 일은 보류 사유 해소다.
+    severity = case((and_(overdue_review, not_withheld), "HIGH"), else_="MEDIUM")
     # 공개할 수 없는 병원의 슬롯을 사람 업무로 만들지 않는다. 자동 발행 worker도
     # ACTIVE + site_live만 처리하므로, 운영센터가 그보다 넓은 집합을 보여주면 사람에게
     # 영원히 해결할 수 없는 가짜 blocker를 만든다.
@@ -139,20 +244,27 @@ async def load_today_queue(
             # 발행 예정일이 이미 지난 슬롯도 기한을 넘긴 일이다 — 행이 그렇게 표시되므로
             # 필터도 같은 기준을 써야 목록과 필터가 어긋나지 않는다.
             predicates.append(
-                or_(
-                    and_(waiting_review, ContentItem.published_at < overdue_before),
-                    and_(due_publish, ContentItem.scheduled_date < today),
+                and_(
+                    not_withheld,
+                    or_(
+                        overdue_review,
+                        and_(due_publish, ContentItem.scheduled_date < today),
+                    ),
                 )
             )
         case SlaFilter.DUE:
             predicates.append(
-                or_(
-                    and_(waiting_review, ContentItem.published_at >= overdue_before),
-                    and_(due_publish, ContentItem.scheduled_date >= today),
+                and_(
+                    not_withheld,
+                    or_(
+                        and_(waiting_review, ContentItem.published_at >= overdue_before),
+                        and_(due_publish, ContentItem.scheduled_date >= today),
+                    ),
                 )
             )
         case SlaFilter.NONE:
-            predicates.append(false())
+            # 보류 행만 기한이 없다 — 기록할 수 없는 검수에 기한을 붙이지 않기 때문이다.
+            predicates.append(is_withheld)
         case unreachable:
             assert_never(unreachable)
 
@@ -163,6 +275,7 @@ async def load_today_queue(
             HospitalHandoff,
             assignee,
             related_run,
+            recertify_run,
             related_incident,
             task_state.label("task_state"),
             func.count().over().label("_total"),
@@ -177,8 +290,27 @@ async def load_today_queue(
             .where(
                 OperationRun.hospital_id == ContentItem.hospital_id,
                 OperationRun.operation_type.in_(
-                    ("REGENERATE_CONTENT", "REGENERATE_CONTENT_IMAGE")
+                    (
+                        "REGENERATE_CONTENT",
+                        "REGENERATE_CONTENT_IMAGE",
+                        "RECERTIFY_PUBLISHED_IMAGE",
+                    )
                 ),
+                OperationRun.request_payload["source_id"].as_string()
+                == ContentItem.id.cast(String),
+            )
+            .order_by(OperationRun.requested_at.desc(), OperationRun.id.desc())
+            .limit(1)
+            .correlate(ContentItem)
+            .scalar_subquery(),
+        )
+        .outerjoin(
+            recertify_run,
+            recertify_run.id
+            == select(OperationRun.id)
+            .where(
+                OperationRun.hospital_id == ContentItem.hospital_id,
+                OperationRun.operation_type == recertification.RECERTIFY_OPERATION,
                 OperationRun.request_payload["source_id"].as_string()
                 == ContentItem.id.cast(String),
             )
@@ -226,19 +358,32 @@ async def load_today_queue(
         rows = list((await db.execute(page_stmt)).all())
 
     items: list[OperationsQueueRow] = []
-    for content, hospital, handoff, actor, run, incident, state, _total in rows:
+    for content, hospital, handoff, actor, run, recertify, incident, state, _total in rows:
+        # 공개 페이지가 숨기는 중인 글에는 "공개 내용 확인"이 성립하지 않는다 — 눌러도 409로
+        # 거절되고 행은 큐에 남아 기한만 넘긴다. 사람에게는 다른 일(보류 사유 해소)로 내보낸다.
+        withheld = withheld_visibility[content.id] if state == "WITHHELD_PUBLIC" else None
         overdue = state == "OVERDUE_REVIEW"
         review = state in {"OVERDUE_REVIEW", "REVIEW_PENDING"}
+        already_public = review or withheld is not None
         # 이 행의 기한은 콘텐츠 작업의 기한이다. 예전에는 계약 인수 기한을 보여 주면서
         # 상태는 발행 후 검수 초과 여부로 정해, 서로 다른 두 기한이 한 줄에 섞였다(G-2).
         # 발행 후 검수는 공개 시각 + 24시간, 발행 예정 글은 예정일이 끝나는 시각이 기한이다.
-        if not review:
+        # 보류 행에는 기한이 없다 — 지금은 기록할 수 없는 검수의 기한이기 때문이다.
+        if withheld is not None:
+            due_at = None
+        elif not review:
             due_at = datetime.combine(content.scheduled_date, time.max, tzinfo=_SEOUL)
         elif content.published_at:
             due_at = content.published_at + timedelta(hours=_OVERDUE_REVIEW_HOURS)
         else:
             due_at = None
-        impact, next_action = _today_operator_copy(review=review)
+        if withheld is not None:
+            impact = "공개 보류 — " + " · ".join(withheld.blocker_labels)
+            next_action = _withheld_next_action(recertify)
+            safe_cause = _withheld_safe_cause(recertify)
+        else:
+            impact, next_action = _today_operator_copy(review=review)
+            safe_cause = None
         occurred_at = content.published_at or content.created_at
         history_at = content.published_at or datetime.combine(
             content.scheduled_date, datetime.min.time(), tzinfo=_SEOUL
@@ -261,7 +406,7 @@ async def load_today_queue(
                 next_action=next_action,
                 # 08:00 자동 발행 전의 당일 슬롯은 응답에 남되 사람 업무로 세지 않는다.
                 requires_operator_action=(
-                    review
+                    already_public
                     or publish_due_requires_operator_action(
                         content.scheduled_date,
                         today,
@@ -271,16 +416,16 @@ async def load_today_queue(
                     )
                 ),
                 action=OperationsAction(
-                    kind="REVIEW_CONTENT",
-                    label=_TODAY_ACTION_LABEL,
+                    kind="REVIEW_CONTENT" if withheld is None else "OPEN_CONTENT",
+                    label=_TODAY_ACTION_LABEL if withheld is None else _WITHHELD_ACTION_LABEL,
                     method="GET",
                     path=f"/hospitals/{hospital.id}/content?content={content.id}",
                 ),
                 retry=None,
-                safe_cause=None,
+                safe_cause=safe_cause,
                 history=[
                     OperationsHistoryEntry(
-                        event="PUBLISHED" if review else "SCHEDULED", at=history_at
+                        event="PUBLISHED" if already_public else "SCHEDULED", at=history_at
                     )
                 ],
                 slack=None,

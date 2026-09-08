@@ -13,6 +13,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -26,7 +27,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from slugify import slugify
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -37,9 +38,12 @@ from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
 )
+from app.api.admin.operations_center_incident_queries import count_operator_incidents
+from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
+from app.models.essence import SourceType
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
@@ -49,11 +53,28 @@ from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
+from app.services.content_visibility import assess_public_visibility, visibility_load_only
+from app.services.domain_certificate_jobs import (
+    DomainCertificateClaimRequest,
+    DomainCertificateHospitalMissing,
+    DomainChangedDuringVerification,
+    lock_hospital_for_domain_certificate,
+)
+from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
 )
-from app.services.essence_readiness import get_essence_readiness
+from app.services.essence_readiness import (
+    EssenceReadinessState,
+    get_essence_readiness,
+    get_essence_readiness_states,
+    get_public_approved_philosophy_id,
+)
+from app.services.essence_sources import (
+    create_pending_channel_source,
+    find_active_source_id_by_url,
+)
 from app.services.hospital_activation import (
     ActivationOutcome,
     HospitalNotActivatable,
@@ -67,6 +88,7 @@ from app.services.hospital_lifecycle import (
     activation_gate_error,
     evaluate_activation_gate,
     missing_profile_requirement_keys,
+    profile_requirements,
 )
 from app.services.hospital_logo import (
     EXTERNAL_LOGO_URL_MESSAGE,
@@ -77,6 +99,14 @@ from app.services.hospital_logo import (
     public_logo_url,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.hospital_states import (
+    ContentState,
+    DomainState,
+    PublicServiceState,
+    content_state,
+    domain_state,
+    public_service_state,
+)
 from app.services.hospital_usage import LEDGER_KINDS, aggregate_usage
 from app.services.keyword_analysis import (
     analyze_keyword,
@@ -99,6 +129,7 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
 from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import build_aeo_site, trigger_v0_report
@@ -151,6 +182,12 @@ async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
 
 
 class HospitalProfileUpdate(BaseModel):
+    # 배포 순서가 api → admin이라, 새 API가 뜬 뒤에도 이전 admin 탭은 병원 전체 스냅샷을
+    # 그대로 PATCH한다(완료 플래그·응답 전용 필드 포함). 그 요청을 422로 되돌리면 화면이
+    # 열려 있던 운영자만 저장에 실패한다 — 전환 기간에는 모르는 필드를 버리고 저장한다.
+    # PR-1E에서 화면이 필요한 필드만 보내게 되면 다시 `extra="forbid"`로 돌린다.
+    model_config = ConfigDict(extra="ignore")
+
     # 연락처
     address: str | None = Field(None, max_length=500)
     phone: str | None = Field(None, max_length=50)
@@ -209,8 +246,19 @@ class HospitalProfileUpdate(BaseModel):
     # 진료 항목
     treatments: list[TreatmentItem] | None = None
 
-    # 완료 플래그 (프로파일 다 입력됐으면 True로)
-    profile_complete: bool | None = None
+    # 완료 플래그는 받지 않는다 — 저장할 때 서버가 필수 항목에서 파생한다(설계 §4.5).
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_deprecated_profile_complete(cls, data: object) -> object:
+        """이전 admin이 보내는 완료 플래그를 버린다 — 파생값만 저장을 결정한다."""
+        if isinstance(data, dict) and "profile_complete" in data:
+            logger.warning(
+                "profile_complete in request body is ignored "
+                "(deprecated since 2026-09-09; removed with PR-1E)"
+            )
+            data = {key: value for key, value in data.items() if key != "profile_complete"}
+        return data
 
     @field_validator("wikidata_qid")
     @classmethod
@@ -399,6 +447,153 @@ PUBLIC_PROFILE_FIELDS = {
     "site_access_mode",
     "treatments",
 }
+
+# 공식 채널 주소는 저장하는 순간 근거 자료로 등록된다 — '자료로 추가' 버튼은 없다(설계 §4.3).
+CHANNEL_SOURCE_TYPES: dict[str, SourceType] = {
+    "website_url": SourceType.HOMEPAGE,
+    "blog_url": SourceType.NAVER_BLOG,
+}
+# 본문을 받아오기 전까지 쓰는 제목. 워커가 페이지 <title>로 바꿔 준다.
+CHANNEL_SOURCE_PROVISIONAL_TITLES: dict[str, str] = {
+    "website_url": "병원 홈페이지",
+    "blog_url": "네이버 블로그",
+}
+# 지도·채널 주소는 프로파일 표기 전용이다. 본문이 없어 근거로 쓸 수 없다 —
+# admin/lib/onboarding-candidate.ts의 PROFILE_ONLY_CANDIDATE_KEYS와 같은 목록이다.
+PROFILE_ONLY_CHANNEL_FIELDS = frozenset(
+    {
+        "naver_place_url",
+        "google_business_profile_url",
+        "google_maps_url",
+        "kakao_channel_url",
+    }
+)
+
+
+def _submitted_channel_urls(
+    hospital: Hospital, body: HospitalProfileUpdate, update_data: dict
+) -> dict[str, tuple[str, bool]]:
+    """이번 저장이 보낸 공식 채널 주소와, 그것이 바뀐 값인지.
+
+    저장 전에 비교해야 '바뀐 채널'을 알 수 있다 — 적용 뒤에는 이전 값이 남지 않는다.
+    바뀌지 않은 주소도 함께 돌려준다: 지난번 등록이 실패해 자료 행이 없다면 같은 값을
+    다시 저장하는 것만으로 스스로 회복되어야 한다.
+    """
+    submitted: dict[str, tuple[str, bool]] = {}
+    # 지도·플레이스 주소는 이 화면에도 있지만 근거가 아니다. 목록을 명시적으로 건너뛰어야
+    # 새 채널 칸이 생겼을 때 "왜 등록되지 않는지"가 코드에 남는다.
+    for field in (*CHANNEL_SOURCE_TYPES, *sorted(PROFILE_ONLY_CHANNEL_FIELDS)):
+        if field in PROFILE_ONLY_CHANNEL_FIELDS:
+            continue
+        if field not in body.model_fields_set:
+            continue
+        new_url = (update_data.get(field) or "").strip()
+        old_url = (getattr(hospital, field, None) or "").strip()
+        if new_url:
+            submitted[field] = (new_url, new_url != old_url)
+    return submitted
+
+
+async def _register_channel_sources(
+    db: AsyncSession, hospital: Hospital, submitted_channels: dict[str, tuple[str, bool]]
+) -> tuple[list[dict], list[uuid.UUID]]:
+    """공식 채널 주소를 근거 자료 행으로 만든다 — 프로파일 저장과 **같은 트랜잭션**에서.
+
+    커밋 뒤에 만들면 그 사이의 실패가 "저장은 됐는데 자료 행은 없는" 병원을 남기고,
+    운영자는 같은 값을 다시 저장하기 전까지 그 사실을 모른다. 채널 하나하나는 SAVEPOINT
+    안에서 만든다 — 한 채널의 실패가 다른 채널이나 프로파일 저장을 되돌리지 않는다.
+    본문 수집은 커밋 뒤 워커가 맡는다. 응답의 QUEUED는 이 트랜잭션이 커밋되면 행이
+    있다는 뜻이고, FAILED는 그 SAVEPOINT가 되돌아가 행이 없다는 뜻이다.
+    """
+    entries: list[dict] = []
+    dispatch_ids: list[uuid.UUID] = []
+    for field, (url, changed) in submitted_channels.items():
+        try:
+            async with db.begin_nested():
+                existing_id = await find_active_source_id_by_url(
+                    db, hospital_id=hospital.id, url=url
+                )
+                created_id: uuid.UUID | None = None
+                if existing_id is None:
+                    source = await create_pending_channel_source(
+                        db,
+                        hospital_id=hospital.id,
+                        source_type=CHANNEL_SOURCE_TYPES[field],
+                        url=url,
+                        title=CHANNEL_SOURCE_PROVISIONAL_TITLES[field],
+                        channel_field=field,
+                        created_by=default_actor(),
+                    )
+                    created_id = source.id
+        except Exception:
+            logger.warning(
+                "Channel source registration failed for hospital %s (%s)",
+                hospital.id,
+                field,
+                exc_info=True,
+            )
+            entries.append(
+                {
+                    "field": field,
+                    "status": "FAILED",
+                    "source_id": None,
+                    "message": "자료 등록에 실패했습니다. 자료 화면에서 직접 등록해 주세요.",
+                }
+            )
+            continue
+        if existing_id is not None:
+            # 값이 그대로면 이번 저장이 한 일이 없다 — 화면에 알릴 것도 없다.
+            if changed:
+                entries.append(
+                    {
+                        "field": field,
+                        "status": "SKIPPED",
+                        "source_id": existing_id,
+                        "message": "이미 자료로 등록된 주소입니다.",
+                    }
+                )
+            continue
+        dispatch_ids.append(created_id)
+        entries.append(
+            {"field": field, "status": "QUEUED", "source_id": created_id, "message": None}
+        )
+
+    for entry in entries:
+        await write_audit_log(
+            db,
+            action="profile_channel_source_registered",
+            hospital_id=hospital.id,
+            actor=default_actor(),
+            target_type="source_asset",
+            target_id=entry["source_id"],
+            detail={
+                "field": entry["field"],
+                "status": entry["status"],
+                "source_id": str(entry["source_id"]) if entry["source_id"] else None,
+                "message": entry["message"],
+            },
+        )
+    return entries, dispatch_ids
+
+
+def _dispatch_channel_source_fetches(source_ids: list[uuid.UUID]) -> None:
+    """커밋된 자료 행의 본문 수집을 워커에 넘긴다 — 반드시 커밋 뒤에 부른다.
+
+    발행 실패는 응답을 바꾸지 않는다: 행은 이미 durable하고 `fetch_state`가 QUEUED이므로
+    정기 스윕이 같은 fetch를 다시 건다.
+    """
+    for source_id in source_ids:
+        try:
+            celery_app.send_task(
+                "app.workers.tasks.fetch_channel_source",
+                args=[str(source_id)],
+                queue="content",
+                headers=build_dispatch_headers("fetch-channel-source", str(source_id)),
+            )
+        except Exception:
+            logger.warning(
+                "Channel source fetch dispatch failed for source %s", source_id, exc_info=True
+            )
 
 
 def _readiness_status_label(status_value: str) -> str:
@@ -619,7 +814,47 @@ async def list_hospitals(
         select(Hospital).order_by(Hospital.created_at.desc()).offset(skip).limit(limit)
     )
     hospitals = result.scalars().all()
-    return [_serialize_list(h) for h in hospitals]
+    # 상태 근거는 페이지 전체를 묶어 읽는다 — 행마다 조회하면 목록 하나가 병원 수에 비례하는
+    # 쿼리를 낸다.
+    hospital_ids = [h.id for h in hospitals]
+    readiness_states = await get_essence_readiness_states(db, hospital_ids)
+    incident_counts = await count_operator_incidents(db, hospital_ids, now=datetime.now(UTC))
+    ae_owners = await _ae_owners(db, hospital_ids)
+    return [
+        _serialize_list(
+            h,
+            readiness_state=readiness_states[h.id],
+            # 자동 검수가 막힌 초안도 사람이 풀어야 하는 예외다 — 현황 화면의 예외 카드와
+            # 같은 규칙으로 센 인시던트 수에 더한다(카드 수 == 이 숫자).
+            open_exception_count=(
+                incident_counts.get(h.id, 0) + int(readiness_states[h.id].escalated_draft)
+            ),
+            ae_owner=ae_owners.get(h.id),
+        )
+        for h in hospitals
+    ]
+
+
+async def _ae_owners(
+    db: AsyncSession, hospital_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, str]]:
+    """담당 AE — `hospital_handoffs.hospital_id`가 unique라 병원당 계약은 한 건뿐이다.
+
+    inner join이므로 담당이 비어 있는 레거시 인수(`LEGACY_BACKFILL`)는 자연히 빠진다.
+    """
+    if not hospital_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(HospitalHandoff.hospital_id, AdminUser.id, AdminUser.name)
+            .join(AdminUser, AdminUser.id == HospitalHandoff.ae_owner_id)
+            .where(HospitalHandoff.hospital_id.in_(hospital_ids))
+        )
+    ).all()
+    return {
+        hospital_id: {"id": str(owner_id), "name": name}
+        for hospital_id, owner_id, name in rows
+    }
 
 
 @router.get("/{hospital_id}", response_model=HospitalDetail)
@@ -658,8 +893,13 @@ async def update_profile(
 ):
     """
     프로파일 수정.
-    profile_complete=True 설정 시 V0 분석과 콘텐츠 허브 준비를 각각 트리거.
+    저장 결과가 필수 항목을 모두 채우면 완료로 파생되고, 그때 V0 분석과 콘텐츠 허브
+    준비를 각각 트리거한다.
     """
+    # 프로필 완료 해제와 활성화/재개/일시정지가 같은 잠금 아래서 결정되게 한다 — 잠금 없이
+    # 읽으면 일시정지 병원에서 '완료 해제'와 '재개'가 교차해 ACTIVE + profile_complete=False
+    # (공개 404)가 될 수 있다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id)
 
     if body.keywords is not None:
@@ -724,7 +964,6 @@ async def update_profile(
         "image_style_direction",
         "site_access_mode",
         "treatments",
-        "profile_complete",
     }
     # exclude_unset: 보내지 않은 필드는 유지하되, 명시적 null/빈 문자열은 '비우기'로
     # 처리한다. exclude_none이었을 때는 잘못 입력된 URL/식별자를 지울 API 경로가 없었다.
@@ -795,7 +1034,11 @@ async def update_profile(
                 "message": EXTERNAL_LOGO_URL_MESSAGE,
             },
         )
+    submitted_channels = _submitted_channel_urls(h, body, update_data)
     was_complete = h.profile_complete
+    # 이 저장이 비운 항목만 완료를 되돌린다. 저장 전 이미 비어 있던 항목(레거시)까지 세면,
+    # 무관한 칸 하나를 고치려다 공개 중인 병원이 차단되거나 완료가 풀린다.
+    missing_before = set(missing_profile_requirement_keys(h))
     changed_fields: list[str] = []
     for field, value in update_data.items():
         if field not in PROFILE_FIELDS:
@@ -815,31 +1058,49 @@ async def update_profile(
             changed_fields.append(field)
         setattr(h, field, value)
 
-    # Admin UI와 동일한 authoritative checklist를 서버에서 강제한다. 직접 API 호출로
-    # 불완전한 병원을 완료 처리해 V0/사이트 파이프라인에 흘려보낼 수 없어야 한다.
-    if h.profile_complete:
-        required_missing = missing_profile_requirement_keys(h)
-        if required_missing:
-            if was_complete:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"프로파일 완료 상태에서는 필수 항목을 비울 수 없습니다: "
-                        f"{', '.join(required_missing)}. 값을 입력하거나 profile_complete를 해제해 주세요."
-                    ),
-                )
-            raise HTTPException(
-                status_code=400,
-                detail=f"프로파일 완료에 필요한 필드 누락: {', '.join(required_missing)}",
-            )
-        if not was_complete:
-            handoff_result = await db.execute(
-                select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
-            )
-            handoff = handoff_result.scalar_one_or_none()
-            blocker = profile_completion_handoff_blocker(h, handoff)
-            if blocker is not None:
-                raise HTTPException(status_code=409, detail=blocker)
+    # 완료 여부는 body가 아니라 저장 결과에서 파생한다 — 화면에 '완료로 표시'가 없으므로
+    # 손으로 만든 요청이 불완전한 병원을 완료 처리할 경로도 함께 사라진다(설계 §4.5).
+    requirements_after = profile_requirements(h)
+    missing_requirements = [item.key for item in requirements_after if not item.passed]
+    derived = not missing_requirements
+    newly_missing = [
+        item for item in requirements_after if not item.passed and item.key not in missing_before
+    ]
+
+    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 이 저장이
+    # 필수 항목을 비우면 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다.
+    if was_complete and newly_missing and _has_public_site(h):
+        labels = [item.label for item in newly_missing]
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE",
+                "message": f"공개 중인 병원의 필수 항목은 비울 수 없습니다: {', '.join(labels)}",
+                "missing": labels,
+            },
+        )
+
+    if was_complete and newly_missing:
+        next_complete = False
+    elif was_complete:
+        # 이 저장이 비우지 않은 레거시 공백은 완료를 되돌리지 않는다. 남은 항목은 응답의
+        # missing_profile_requirements가 그대로 말한다.
+        next_complete = True
+    else:
+        next_complete = derived
+
+    transitioned = next_complete and not was_complete
+    h.profile_complete = next_complete
+
+    # 완료 전환이 V0·사이트 파이프라인을 여는 지점이므로, 인수 승인은 여기서만 막는다.
+    if transitioned:
+        handoff_result = await db.execute(
+            select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
+        )
+        handoff = handoff_result.scalar_one_or_none()
+        blocker = profile_completion_handoff_blocker(h, handoff)
+        if blocker is not None:
+            raise HTTPException(status_code=409, detail=blocker)
 
     if changed_fields:
         await write_audit_log(
@@ -851,7 +1112,12 @@ async def update_profile(
             target_id=hospital_id,
             detail={
                 "changed_fields": changed_fields,
-                "profile_complete_transition": (not was_complete) and bool(h.profile_complete),
+                "profile_complete_transition": transitioned,
+                "profile_complete_derived": derived,
+                # 레거시 공백을 남겨 둔 채 완료를 유지한 저장은 파생값과 저장값이 다르다.
+                "profile_complete_applied": next_complete,
+                "missing_requirements": missing_requirements,
+                "newly_missing_requirements": [item.key for item in newly_missing],
             },
         )
 
@@ -861,13 +1127,21 @@ async def update_profile(
     if needs_site_revalidate:
         ensure_site_revalidate_configured()
 
+    # 자료 행은 프로파일과 같은 커밋에 들어간다 — 저장은 됐는데 근거 자료만 없는 상태가
+    # 생기지 않게 한다.
+    source_registration, fetch_dispatch_ids = await _register_channel_sources(
+        db, h, submitted_channels
+    )
+
     await db.commit()
     await db.refresh(h)
+    # 커밋 뒤에 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다.
+    _dispatch_channel_source_fetches(fetch_dispatch_ids)
 
     # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다. 초기 진단은
     # 장시간 걸릴 수 있는 백그라운드 산출물이므로 그 큐의 지연·실패가 공개 준비를
     # 막아서는 안 된다. 허브 태스크는 자율 복구에서도 멱등 재디스패치된다.
-    if not was_complete and h.profile_complete:
+    if transitioned:
         background_tasks.add_task(
             build_aeo_site.apply_async,
             args=[str(h.id)],
@@ -896,7 +1170,10 @@ async def update_profile(
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
-    return _serialize(h)
+    payload = _serialize(h)
+    # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다 — 커밋된 사실만 담는다.
+    payload["source_registration"] = source_registration
+    return payload
 
 
 @router.post("/{hospital_id}/logo", status_code=status.HTTP_201_CREATED)
@@ -1047,6 +1324,8 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     판정과 전환은 같은 행 잠금 안에서 일어나야 한다 — 게이트를 읽은 뒤 전환하기까지
     사이에 들어온 `/pause` 커밋이 조용히 덮이면 일시 정지가 되살아난다.
     """
+    # 프로필 완료 해제(`PATCH /profile`)와 같은 잠금을 먼저 잡는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id, for_update=True)
     if h.status == HospitalStatus.ACTIVE:
         return {
@@ -1090,6 +1369,8 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
 @router.post("/{hospital_id}/pause", response_model=HospitalDetail)
 async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """병원 운영을 일시 정지 (ACTIVE 또는 PENDING_DOMAIN 상태에서만 허용)."""
+    # 프로필 완료 해제(`PATCH /profile`)와 같은 잠금을 먼저 잡는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id)
 
     if h.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
@@ -1115,6 +1396,8 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
     )
     await db.commit()
     await db.refresh(h)
+    # 커밋 이후이므로 실패해도 raise하지 않는다 — 일시정지는 이미 성공했다.
+    await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
     return _serialize(h)
 
 
@@ -1122,8 +1405,13 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
 async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """일시 정지된 병원을 재개 (PAUSED 상태에서만 허용).
 
-    활성화 게이트와 사용자 도메인의 현재 DNS/인증서를 다시 확인한다.
+    활성화 게이트와, 자기 도메인을 쓰는 경우 그 도메인의 DNS만 다시 확인한다.
+    인증서 발급은 후속 배치의 몫이라 재개를 막지 않는다. DNS 확인 결과는
+    Admin 배지가 읽는 관측 필드에 남긴다.
     """
+    # 게이트 판정 전에 잡는다 — 프로필 완료 해제와 재개가 교차하면 ACTIVE +
+    # profile_complete=False(공개 404)로 끝난다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id)
 
     if h.status != HospitalStatus.PAUSED:
@@ -1135,7 +1423,9 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
 
     # DM-F4: DNS 검증만 확인. 인증서는 후속 작업이므로 재개를 블록하지 않음.
     if h.aeo_domain:
-        dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
+        checked_domain = h.aeo_domain
+        checked_strategy = domain_dns_strategy_for_hospital(h)
+        dns_check = await check_domain_dns(checked_domain, checked_strategy)
         if not dns_check.verified:
             raise HTTPException(
                 status_code=409,
@@ -1144,6 +1434,41 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                     "message": "재개 전 사용자 도메인의 DNS 설정을 확인해 주세요.",
                 },
             )
+        checked_at = datetime.now(UTC)
+        # DNS 조회는 의도적으로 병원 advisory 잠금 안에서 한다 — 프로필 완료 해제와 재개가
+        # 조회 도중 끼어들어 옛 설정의 성공 관측이 새 행에 붙는 것을 막는다. 수동 경로라
+        # 조회 지연(상한 있음)만큼 잠금을 오래 쥐는 비용은 받아들인다.
+        try:
+            h = await lock_hospital_for_domain_certificate(
+                db,
+                DomainCertificateClaimRequest(
+                    hospital_id, checked_domain, dns_strategy=checked_strategy
+                ),
+            )
+        except DomainCertificateHospitalMissing as exc:
+            raise HTTPException(status_code=404, detail="병원을 찾을 수 없습니다.") from exc
+        except DomainChangedDuringVerification as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DOMAIN_CHANGED",
+                    "message": (
+                        "확인 중 도메인 또는 연결 방식이 변경되었습니다. "
+                        "화면을 새로고침한 뒤 다시 재개해 주세요."
+                    ),
+                },
+            ) from exc
+        # 배지·목록이 읽는 관측 필드에 남긴다. 확인만 하고 기록하지 않으면
+        # 살아 있는 주소가 '확인 대기'로 표시된다(A-1 재발 경로).
+        apply_live_domain_check(
+            h,
+            LiveDomainCheck(
+                domain=checked_domain,
+                healthy=True,
+                reason="dns_ok",
+                checked_at=checked_at,
+            ),
+        )
 
     h.status = HospitalStatus.ACTIVE
     h.site_live = True
@@ -1165,6 +1490,8 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     )
     await db.commit()
     await db.refresh(h)
+    # 커밋 이후이므로 실패해도 raise하지 않는다 — 재개는 이미 성공했다.
+    await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
     return _serialize(h)
 
 
@@ -1173,12 +1500,36 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     """병원별 AI 검색 운영 준비도를 계산한다."""
     h = await _get_or_404(db, hospital_id)
 
-    published_count = await _count(
-        db,
-        select(func.count())
-        .select_from(ContentItem)
-        .where(ContentItem.hospital_id == h.id, ContentItem.status == ContentStatus.PUBLISHED),
+    # PUBLISHED 행 수는 "발행했다"는 사실일 뿐 공개 페이지가 그 글을 내보낸다는 뜻이 아니다.
+    # 준비도가 행 수만 세면 전 글이 보류 중인 병원도 "발행 콘텐츠" 통과로 보인다(H-01).
+    # 병원 단위 엔드포인트라 그 병원의 발행 글만 읽어 공개 표면과 같은 함수로 판정한다 —
+    # 이 병원의 공개 목록을 그리는 공개 사이트가 이미 치르는 비용과 같고, 판정에 쓰는
+    # 컬럼만 싣는다.
+    published_items = (
+        (
+            await db.execute(
+                select(ContentItem)
+                .options(visibility_load_only())
+                .where(
+                    ContentItem.hospital_id == h.id,
+                    ContentItem.status == ContentStatus.PUBLISHED,
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
+    published_count = len(published_items)
+    # 발행 글이 없으면 판정할 것도 없다 — 승인 기준을 읽지 않는다.
+    public_philosophy_id = (
+        await get_public_approved_philosophy_id(db, h.id) if published_items else None
+    )
+    public_content_count = sum(
+        1
+        for item in published_items
+        if assess_public_visibility(item, public_philosophy_id).visible
+    )
+    withheld_content_count = published_count - public_content_count
     content_slot_count = await _count(
         db,
         select(func.count())
@@ -1246,7 +1597,10 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     has_external_profiles = bool(
         h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
     )
-    readiness_actions = readiness_next_actions(has_content_slots=content_slot_count > 0)
+    readiness_actions = readiness_next_actions(
+        has_content_slots=content_slot_count > 0,
+        withheld_content_count=withheld_content_count,
+    )
 
     checks = [
         ReadinessCheck(
@@ -1329,7 +1683,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ReadinessCheck(
             "published_content",
             "발행 콘텐츠",
-            published_count > 0,
+            public_content_count > 0,
             12,
             readiness_actions["published_content"],
         ),
@@ -1358,6 +1712,8 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "status_label": _readiness_status_label(readiness_status),
         },
         "published_content_count": published_count,
+        "public_content_count": public_content_count,
+        "withheld_content_count": withheld_content_count,
         "sov_record_count": sov_count,
         "report_count": report_count,
         "v0_report_pdf_count": v0_report_pdf_count,
@@ -1451,6 +1807,14 @@ def _serialize(h: Hospital) -> dict:
         "site_access_mode": getattr(h, "site_access_mode", None),
         "treatments": h.treatments,
         "profile_complete": h.profile_complete,
+        # 화면은 "남은 필수 항목 N개"만 그린다 — 판정과 라벨을 서버가 한 곳에서 준다.
+        "missing_profile_requirements": [
+            {"key": requirement.key, "label": requirement.label}
+            for requirement in profile_requirements(h)
+            if not requirement.passed
+        ],
+        # 목록(_serialize_list)과 같은 값이어야 상세와 다른 말을 하지 않는다(O-2).
+        "visual_approval_missing": list(evaluate_visual_readiness(h).missing_labels),
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         "domain_cert_job_started_at": (
             getattr(h, "domain_cert_job_started_at", None).isoformat()
@@ -1479,7 +1843,13 @@ def _enum_value(value: object, default: str) -> str:
     return str(value)
 
 
-def _serialize_list(h: Hospital) -> dict:
+def _serialize_list(
+    h: Hospital,
+    *,
+    readiness_state: EssenceReadinessState,
+    open_exception_count: int,
+    ae_owner: dict[str, str] | None,
+) -> dict:
     return {
         "id": str(h.id),
         "name": h.name,
@@ -1502,6 +1872,34 @@ def _serialize_list(h: Hospital) -> dict:
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         **_serialize_domain_live_check(h),
         "created_at": h.created_at.isoformat() if h.created_at else None,
+        # 3상태는 `hospital_states`가 유일한 판정이다 — admin은 라벨만 붙인다(설계 §4.2).
+        "public_service_state": _serialize_state(public_service_state(h)),
+        "content_state": _serialize_state(
+            content_state(
+                h,
+                essence_current=readiness_state.current,
+                unprocessed_sources=readiness_state.unprocessed_sources,
+                required_sources=readiness_state.required_sources,
+                escalated_draft=readiness_state.escalated_draft,
+            )
+        ),
+        "domain_state": _serialize_domain_state(domain_state(h)),
+        "open_exception_count": open_exception_count,
+        "ae_owner": ae_owner,
+    }
+
+
+def _serialize_state(state: PublicServiceState | ContentState) -> dict:
+    return {"kind": state.kind, "remaining": list(state.remaining)}
+
+
+def _serialize_domain_state(state: DomainState) -> dict:
+    checked_at = state.last_checked_at
+    return {
+        "kind": state.kind,
+        "reason": state.reason,
+        "last_checked_at": checked_at.isoformat() if checked_at else None,
+        "last_check_ok": state.last_check_ok,
     }
 
 

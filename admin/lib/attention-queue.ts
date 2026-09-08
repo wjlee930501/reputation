@@ -9,6 +9,8 @@ export interface AttentionHospital {
   unreviewed_count: number
   overdue_count: number
   oldest_published_at: string | null
+  /** 공개 페이지가 숨기는 중인 발행 글 — 확인이 아니라 보류 해소가 할 일이다(H-01). */
+  withheld_count: number
 }
 
 export interface AttentionReportHospital {
@@ -29,6 +31,7 @@ export interface AttentionQueue {
   unreviewed_total: number
   overdue_total: number
   overdue_hours: number
+  withheld_total: number
   hospitals: AttentionHospital[]
   reports?: AttentionReports
 }
@@ -55,10 +58,11 @@ export function hasReportGaps(queue: AttentionQueue | null): boolean {
   return Boolean(reports && (reports.missing.length > 0 || reports.undelivered.length > 0))
 }
 
-/** 큐를 띄울지. 확인할 것이 없으면 화면에 아무것도 더하지 않는다. */
+/** 큐를 띄울지. 확인할 것이 없으면 화면에 아무것도 더하지 않는다.
+ * 공개 보류만 남은 상태도 사람이 손대야 할 일이므로 큐를 띄운다. */
 export function hasAttentionWork(queue: AttentionQueue | null): boolean {
   if (!queue) return false
-  return queue.unreviewed_total > 0 || hasReportGaps(queue)
+  return queue.unreviewed_total > 0 || queue.withheld_total > 0 || hasReportGaps(queue)
 }
 
 /** 원장 보고 줄에 붙일 한 마디. 두 상태를 한 줄로 합치지 않는다 — 할 일이 다르다. */

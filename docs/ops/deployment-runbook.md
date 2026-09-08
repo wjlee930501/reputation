@@ -43,7 +43,7 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
-현재 운영 DB의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication`이고 expected head는 `0069_content_first_publication`이다. 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가했다. `0069`는 남아 있던 `published_at`·`published_by`만 최초 공개 사실로 백필했다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남겼다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
+현재 운영 DB의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication` → `0070_essence_evidence_noise_hash`이고 expected head는 `0070_essence_evidence_noise_hash`다(2026-09-09 체크포인트부터; 추가형 컬럼 1개). `0070`은 승인 당시 노이즈로 제외한 근거 노트 집합 hash를 기록한다 — 기존 승인 행은 NULL이며 다음 재조정에서 병원당 1회 유료 재검수가 발생한다(운영 7곳). 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가했다. `0069`는 남아 있던 `published_at`·`published_by`만 최초 공개 사실로 백필했다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남겼다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
 
 ### 2026-09-07~08 기존 공개 콘텐츠 전환
 
@@ -76,7 +76,7 @@ bash scripts/deploy.sh all
 
 `python -m app.utils.production_readiness`와 대기형 `python -m app.utils.wait_production_readiness`는 배포 이미지·운영 연결에서 실행하는 검사다. 공개 페이지 200만으로 DB 연결·스케줄 실행·실제 외부 AI 생성 성공까지 증명하지 않는다. 모델·이메일·Slack의 실제 호출은 별도의 명시된 검증 범위로 기록한다.
 
-Worker는 `control,default,content,sov,reports,leadgen,certificates` 7개 큐를 하나의 서비스에서 소비한다. 발행·캐시 복구·자율 복구가 control priority 0으로 들어가고 IndexNow·usage spool은 낮은 우선순위다. control canary를 포함해 큐별 최신 canary가 현재 release를 가리키는지 확인한다. control은 전용 Worker가 아니므로 부하 중 30초 기준을 충족했는지는 queue wait 구조화 로그로 따로 증명한다.
+Worker는 `control,default,content,sov,reports,leadgen,certificates` 7개 큐를 하나의 서비스에서 소비한다. 2026-09-09 체크포인트에서 `content` 큐에 `recertify_published_content_image`(공개 글 제목 편집 후 이미지 재인증, 유료 호출 (글, 주제)당 최대 3회)와 `fetch_channel_source`(프로필의 공식 채널 URL을 근거 자료로 가져오기, 자료당 3회 예산 뒤 인시던트) 두 task가 추가됐다. 둘 다 `production_readiness.EXPECTED_TASKS`에 등록되어 있고 beat 스케줄은 바뀌지 않았다(재시도 sweep은 기존 `autonomous_recovery.reconcile`·자료 처리 복구 sweep 안에서 돈다). 발행·캐시 복구·자율 복구가 control priority 0으로 들어가고 IndexNow·usage spool은 낮은 우선순위다. control canary를 포함해 큐별 최신 canary가 현재 release를 가리키는지 확인한다. control은 전용 Worker가 아니므로 부하 중 30초 기준을 충족했는지는 queue wait 구조화 로그로 따로 증명한다.
 
 RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매 1분 추가된다. 영속 스케줄 재조정 뒤 등록 이름·task route·서명 목적이 새 이미지와 맞는지 확인한다. 정상 drain·복구를 Slack 메시지로 시험하지 말고 DB 실행 상태와 구조화 로그를 사용한다. 2026-09-07~08 기존 이미지 인증은 주기 작업이 아니라 완료 후 제거한 일회성 Job/CLI였다. 최종 실패나 사람이 결정할 예외만 [알림 정책](slack-notification-policy.md)에 따라 확인한다.
 

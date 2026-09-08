@@ -12,7 +12,9 @@ import {
   belongsToMonthView,
   buildPublicContentUrl,
   ContentOperationsFilter,
+  ContentOperationsState,
   countCarriedOver,
+  getContentOperationsBucket,
   getContentOperationsState,
   getPublishNotificationPresentation,
   matchesContentOperationsFilter,
@@ -29,7 +31,7 @@ import {
 import { formatDate, formatDateTime } from '@/lib/format'
 import { platformSubdomainHost } from '@/lib/platform-domain'
 import { fetchCurrentAccount } from '@/lib/current-account'
-import { buildManualPublishPayload, resolveAuditActorName } from '@/lib/publishing'
+import { resolveAuditActorName } from '@/lib/publishing'
 import { getOrCreatePendingActionKey } from '@/lib/pending-action-key'
 import {
   AIQueryTarget,
@@ -88,6 +90,16 @@ const FORBIDDEN_RULES: ForbiddenRule[] = [
   { label: '통증 없는', pattern: /통증\s*없[는이]|무통[증]?[의]?\s*(시술|수술|치료)|아프지\s*않[은는]/ },
   { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
+
+const PUBLISH_GATE_CODES = new Set(['HOSPITAL_NOT_PUBLIC', 'SCHEDULE_NOT_SET'])
+
+function readPublishGateMessage(error: unknown): string | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null
+  const detail = error.detail as { code?: unknown; message?: unknown } | null
+  if (!detail || typeof detail !== 'object') return null
+  if (typeof detail.code !== 'string' || !PUBLISH_GATE_CODES.has(detail.code)) return null
+  return typeof detail.message === 'string' ? detail.message : null
+}
 
 function readViolationsFromError(error: unknown): string[] {
   if (!(error instanceof ApiError)) return []
@@ -148,10 +160,8 @@ function formatBriefValue(value: unknown): string {
   return JSON.stringify(washContentGuideValue(value))
 }
 
-type ReviewStateKey = Exclude<ContentOperationsFilter, 'all' | 'carried'>
-
 interface ReviewState {
-  key: ReviewStateKey
+  key: ContentOperationsState
   label: string
   badge: string
   reason?: string
@@ -163,11 +173,15 @@ function getReviewState(item: ContentItem): ReviewState {
   const displayLabel = displayReview?.label ?? undefined
   const displayReason = displayReview?.reason ?? undefined
   if (item.status === 'PUBLISHED') {
+    // 공개 사이트가 실제로 숨기는 글에는 초록 배지를 달지 않는다 — 같은 판정을 그대로 쓴다.
+    // 판정 자체가 없으면 공개 중이라고 단정하지 않는다(fail-closed).
+    const visibility = item.compliance?.public_visibility
+    if (visibility?.visible !== true) {
+      const labels = visibility?.blocker_labels ?? []
+      return { key: 'withheld', label: '공개 보류', badge: 'bg-amber-100 text-amber-800', reason: (labels.length > 0 ? labels : ['공개 가시성 정보 없음']).join(' · '), publishable: false }
+    }
     if (item.post_publish_reviewed_at) {
       return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
-    }
-    if (getContentOperationsState(item) === 'published') {
-      return { key: 'published', label: '자동 검증 완료', badge: 'bg-green-100 text-green-700', publishable: false }
     }
     if (getContentOperationsState(item) === 'notificationPending') {
       const notification = getPublishNotificationPresentation(item)
@@ -182,7 +196,12 @@ function getReviewState(item: ContentItem): ReviewState {
         publishable: false,
       }
     }
-    return { key: 'postReviewPending', label: '공개 내용 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    if (getContentOperationsState(item) === 'postReviewPending' && item.post_publish_review_required === true) {
+      return { key: 'postReviewPending', label: '공개 내용 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    }
+    // 사람이 보는 표본(첫 순번·공개 후 편집)이 아닌 글에 확인 대기 배지를 달면,
+    // 아무도 처리하지 않는 할 일이 매달 쌓여 진짜 표본이 묻힌다(M-21).
+    return { key: 'published', label: '공개 중', badge: 'bg-green-100 text-green-700', publishable: false }
   }
   if (item.status === 'REJECTED') {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
@@ -200,6 +219,13 @@ function getReviewState(item: ContentItem): ReviewState {
     return { key: 'needsReview', label: '자동 발행 차단', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
   }
   return { key: 'publishable', label: '자동 발행 대기', badge: 'bg-green-100 text-green-700', publishable: true }
+}
+
+/** 공개 시각 한 줄. 보류 중인 판을 "공개"라고만 쓰면 화면이 사실과 다른 말을 한다(H-01). */
+function publicationTimeLine(review: ReviewState, publishedAt: string): string {
+  return review.key === 'withheld'
+    ? `공개 보류 · ${formatDateTime(publishedAt)} 공개분`
+    : `공개 ${formatDateTime(publishedAt)}`
 }
 
 function getContentTypeLabel(item: ContentItem): string {
@@ -448,7 +474,7 @@ export default function ContentPage() {
       postReviewPending: 0,
     }
     for (const item of items) {
-      totals[getContentOperationsState(item)]++
+      totals[getContentOperationsBucket(item)]++
     }
     return totals
   }, [items])
@@ -544,26 +570,24 @@ export default function ContentPage() {
   }, [id, refreshItem, regenerationRuns])
 
   async function handlePublish(itemId: string) {
-    const payload = buildManualPublishPayload(currentOperatorName ?? '')
-    if (!payload) {
-      const message = '로그인 운영자 정보를 확인할 수 없어 발행자를 기록하지 못합니다. 다시 로그인한 뒤 발행해 주세요.'
-      if (selected && selected.id === itemId) setEditError(message)
-      else setActionError(message)
-      return
-    }
+    // 발행자는 서버가 확인된 로그인 actor로 기록한다. 본문으로 이름을 보내지 않는다 (H-09).
     setActionLoading(true)
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify({}),
       })
       setPublishSuccessId(itemId)
       setActionSuccess('운영 복구 발행을 완료했습니다.')
       void refetchHeader()
       void refreshItem(itemId)
     } catch (e: unknown) {
-      const message = safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
+      // 병원 게이트(일시정지·일정 미설정)의 409는 서버가 할 일을 이미 문장으로 준다 — 의료광고
+      // 안내로 덮으면 운영자는 재개·일정 설정 대신 본문만 다시 본다 (H-09).
+      const gateMessage = readPublishGateMessage(e)
+      const message =
+        gateMessage ?? safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
       const violationList = readViolationsFromError(e)
       // 편집 모드 전환은 해당 콘텐츠가 모달에 열려 있을 때만 — 닫힌 모달의 상태를 건드리지 않는다.
       if (selected && selected.id === itemId) {
@@ -596,7 +620,12 @@ export default function ContentPage() {
       })
       setActionSuccess('공개 내용 확인을 완료로 기록했습니다.')
     } catch (e: unknown) {
-      setEditError(safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
+      // 서버는 보류 사유를 문자열 detail에 담아 409로 거절한다. 일반 안내로 덮으면 AE는
+      // 같은 버튼을 다시 누를 뿐이므로 사유를 그대로 보여 주고, 최신 상태를 다시 읽어
+      // 오래된 탭에서는 버튼 자체가 사라지게 한다.
+      const serverDetail = e instanceof ApiError && typeof e.detail === 'string' ? e.message : null
+      setEditError(serverDetail ?? safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
+      void refreshItem(itemId)
       setActionLoading(false)
       return
     }
@@ -876,6 +905,9 @@ export default function ContentPage() {
       })
       clearDraftSnapshot(id, selected.id)
       setRecoverableDraft(null)
+      // 공개 필드를 고치면 서버가 이미지 인증을 무효화해 이 판이 공개에서 내려갈 수 있다.
+      // 직전 발행 성공 배너는 그 사실을 모른 채 "공개 사이트에 게시됨"이라고 계속 말한다.
+      setPublishSuccessId((prev) => (prev === updated.id ? null : prev))
       setSelected(updated)
       setEditMode(false)
       setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
@@ -977,7 +1009,7 @@ export default function ContentPage() {
     hint: string
     filter: ContentOperationsFilter
   } = summary.needsReview > 0
-    ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '차단 사유를 확인하고 공개 전 조치', filter: 'needsReview' }
+    ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '공개 전 차단·공개 보류 사유를 확인하고 조치', filter: 'needsReview' }
     : summary.notificationPending > 0
       ? { label: '지금 확인: Slack 알림 확인 필요', value: summary.notificationPending, tone: 'amber', hint: '눌러 아래 항목의 알림 상태와 처리 방법 확인', filter: 'notificationPending' }
       : summary.postReviewPending > 0
@@ -1014,7 +1046,7 @@ export default function ContentPage() {
           <summary>전체 처리 상태</summary>
           <div className="grid grid-cols-2 gap-3 p-3 md:grid-cols-3 xl:grid-cols-6">
             {carriedCount > 0 && <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={applyOperationsFilter} />}
-            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 차단·공개 보류" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="Slack 알림 확인 필요" value={summary.notificationPending} tone="amber" hint="알림 상태와 처리 방법 확인" filter="notificationPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="정상 발행" value={summary.published} tone="green" hint="자동 검증 통과·공개 완료" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
@@ -1105,6 +1137,9 @@ export default function ContentPage() {
                   {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
                     <p className="mt-2 text-xs text-slate-500">Slack 알림 {formatDateTime(item.post_publish_notified_at)}</p>
                   )}
+                  {review.key === 'withheld' && (
+                    <p className="mt-2 break-keep [overflow-wrap:anywhere] text-xs text-amber-800">공개 페이지에서 보류 중 — {review.reason}</p>
+                  )}
                   {item.carried_over_from && (
                     <span className="mt-2 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
                       전월 이월 · 우선 처리
@@ -1115,7 +1150,7 @@ export default function ContentPage() {
                     onClick={() => openDetail(item)}
                     className="mt-3 inline-flex min-h-11 w-full items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                   >
-                    {getContentOperationsState(item) === 'notificationPending' ? '알림 상태 확인' : getContentOperationsState(item) === 'postReviewPending' ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
+                    {review.key === 'withheld' ? '보류 사유 확인' : getContentOperationsState(item) === 'notificationPending' ? '알림 상태 확인' : getContentOperationsState(item) === 'postReviewPending' ? '공개 내용 확인' : review.key === 'needsReview' ? '차단 사유 확인' : '상세 확인'}
                   </button>
                 </article>
               )
@@ -1153,7 +1188,7 @@ export default function ContentPage() {
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 text-slate-600">
                       <div>{item.scheduled_date}</div>
-                      {item.published_at && <span className="mt-1 block text-[11px] text-slate-400">공개 {formatDateTime(item.published_at)}</span>}
+                      {item.published_at && <span className="mt-1 block text-[11px] text-slate-400">{publicationTimeLine(review, item.published_at)}</span>}
                       {item.carried_over_from && (
                         <span
                           title={`원래 예정일: ${formatDate(item.carried_over_from)}`}
@@ -1179,6 +1214,9 @@ export default function ContentPage() {
                       {getContentOperationsState(item) === 'postReviewPending' && item.post_publish_notified_at && (
                         <span className="mt-1 block text-[11px] text-slate-500">알림 {formatDateTime(item.post_publish_notified_at)}</span>
                       )}
+                      {review.key === 'withheld' && (
+                        <span className="mt-1 block break-keep [overflow-wrap:anywhere] text-[11px] text-amber-800">{review.reason}</span>
+                      )}
                     </td>
                     <td className="px-6 py-4 text-center">
                       <span className={`inline-flex whitespace-nowrap break-keep px-2.5 py-0.5 rounded-full text-xs font-medium ${essence.color}`}>
@@ -1191,7 +1229,14 @@ export default function ContentPage() {
                       </span>
                     </td>
                     <td className="px-6 py-4 text-right">
-                      {getContentOperationsState(item) === 'notificationPending' ? (
+                      {review.key === 'withheld' ? (
+                        <button
+                          onClick={() => openDetail(item)}
+                          className="inline-flex min-h-11 items-center whitespace-nowrap break-keep rounded-md px-2.5 text-xs font-medium text-amber-800 hover:bg-amber-50"
+                        >
+                          보류 사유 확인
+                        </button>
+                      ) : getContentOperationsState(item) === 'notificationPending' ? (
                         <button
                           onClick={() => openDetail(item)}
                           className="inline-flex min-h-11 items-center whitespace-nowrap break-keep rounded-md px-2.5 text-xs font-medium text-amber-800 hover:bg-amber-50"
@@ -1206,7 +1251,10 @@ export default function ContentPage() {
                           공개 내용 확인
                         </button>
                       ) : item.status === 'PUBLISHED' ? (
-                        <span className="text-xs text-green-700">확인 완료</span>
+                        // 아무도 보지 않은 글을 "확인 완료"라고 쓰면 목록이 사실과 다른 말을 한다(M-21).
+                        <span className="text-xs text-green-700">
+                          {item.post_publish_reviewed_at ? '확인 완료' : '공개 중'}
+                        </span>
                       ) : review.key === 'needsReview' && item.title ? (
                         <button
                           onClick={() => openDetail(item)}
@@ -1268,11 +1316,17 @@ export default function ContentPage() {
                 {editMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 편집</h3>}
                 {briefEditMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 가이드 편집</h3>}
                 <p id="content-dialog-status" className="mt-1 text-xs text-slate-500">
-                  {selectedReview.label}{selected.published_at ? ` · ${formatDateTime(selected.published_at)} 공개` : ` · ${selected.scheduled_date} 예정`}
+                  {selected.published_at
+                    ? (selectedReview.key === 'withheld'
+                        ? publicationTimeLine(selectedReview, selected.published_at)
+                        : `${selectedReview.label} · ${formatDateTime(selected.published_at)} 공개`)
+                    : `${selectedReview.label} · ${selected.scheduled_date} 예정`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {!editMode && !briefEditMode && (
+                {/* 콘텐츠 가이드는 아직 생성되지 않은 초안을 위한 입력이다. 공개된 글에서 열어도
+                    저장이 서버에서 막히므로 버튼을 띄우지 않는다(M-15). */}
+                {!editMode && !briefEditMode && selected.status === 'DRAFT' && (
                   <button
                     onClick={enterBriefEditMode}
                     className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 sm:inline-flex sm:items-center"
@@ -1280,7 +1334,7 @@ export default function ContentPage() {
                     콘텐츠 가이드 편집
                   </button>
                 )}
-                {!editMode && !briefEditMode && ['DRAFT', 'PUBLISHED'].includes(selected.status) && (
+                {!editMode && !briefEditMode && (selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
                   <button
                     onClick={enterEditMode}
                     className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 sm:inline-flex sm:items-center"
@@ -1300,7 +1354,9 @@ export default function ContentPage() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {publishSuccessId && selectedPublicUrl && (
+            {/* 발행 성공 배너는 "지금 공개 사이트에 있다"는 주장이다 — 이 판이 보류로
+                바뀌었거나 다른 항목을 열었다면 그 주장은 더 이상 사실이 아니다. */}
+            {publishSuccessId === selected.id && selectedPublicUrl && selectedReview.key !== 'withheld' && (
               <div className="mx-6 mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
                 <p className="text-sm font-medium text-green-800">발행 완료 — 콘텐츠가 공개 사이트에 게시되었습니다.</p>
                 <a
@@ -1666,9 +1722,12 @@ export default function ContentPage() {
                       tone={
                         selectedReview.key === 'notificationPending' || selectedReview.key === 'rejected'
                           ? 'bad'
-                          : selectedReview.publishable || selected.status === 'PUBLISHED'
-                            ? 'ok'
-                            : 'warn'
+                          // 발행 상태라도 공개 페이지가 숨기는 중이면 정상이 아니다(H-01).
+                          : selectedReview.key === 'withheld'
+                            ? 'warn'
+                            : selectedReview.publishable || selected.status === 'PUBLISHED'
+                              ? 'ok'
+                              : 'warn'
                       }
                     />
                     {selected.compliance.blockers.length > 0 && (
@@ -1706,16 +1765,26 @@ export default function ContentPage() {
                     <span className={`mr-2 inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedReview.badge}`}>{selectedReview.label}</span>
                     {selected.status === 'PUBLISHED' && selectedNotification?.state === 'SENT' && selected.post_publish_notified_at && `Slack 전달 ${formatDateTime(selected.post_publish_notified_at)}`}
                   </div>
-                  {selected.status === 'PUBLISHED' && selectedPublicUrl && (
-                    <a
-                      href={selectedPublicUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                    >
-                      공개 사이트에서 보기 ↗
-                    </a>
-                  )}
+                  {/* 공개 페이지가 숨기는 글에 링크를 걸면 AE는 404를 보고 원인을 모른다.
+                      판정이 없으면 링크를 걸지 않는다 — 배지와 같은 fail-closed 기준이고,
+                      사유 문구도 배지의 판정(getReviewState)을 그대로 쓴다. */}
+                  {selected.status === 'PUBLISHED' &&
+                    (selected.compliance?.public_visibility?.visible === true ? (
+                      selectedPublicUrl && (
+                        <a
+                          href={selectedPublicUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                        >
+                          공개 사이트에서 보기 ↗
+                        </a>
+                      )
+                    ) : (
+                      <span className="text-sm text-amber-800">
+                        공개 페이지에서 보류 중 — {selectedReview.reason}
+                      </span>
+                    ))}
                 </div>
                 {selected.status === 'PUBLISHED' && !['SENT', 'NOT_REQUIRED'].includes(selectedNotification?.state ?? '') && (
                   <div className="mb-3 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
@@ -1745,8 +1814,11 @@ export default function ContentPage() {
                   </p>
                 )}
                 <div className="mb-3 flex gap-2 sm:hidden">
-                  <button type="button" onClick={enterBriefEditMode} className="min-h-11 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
-                  {['DRAFT', 'PUBLISHED'].includes(selected.status) && (
+                  {/* 콘텐츠 가이드는 생성 전 초안에만 의미가 있다 — 공개 글에서 열면 저장이 막힌다(M-15). */}
+                  {selected.status === 'DRAFT' && (
+                    <button type="button" onClick={enterBriefEditMode} className="min-h-11 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
+                  )}
+                  {(selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
                     <button type="button" onClick={enterEditMode} className="min-h-11 flex-1 rounded-lg border border-blue-300 px-3 text-sm font-medium text-blue-700">콘텐츠 편집</button>
                   )}
                 </div>
@@ -1794,19 +1866,28 @@ export default function ContentPage() {
                   </div>
                 ) : selected.status === 'PUBLISHED' ? (
                   <div className="flex flex-wrap gap-3">
-                    {!selected.post_publish_reviewed_at && (
-                      <button
-                        onClick={() => handlePostPublishReview(selected.id)}
-                        disabled={actionLoading}
-                        className="min-h-11 flex-1 min-w-48 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-                      >
-                        문제 없음 · 공개 내용 확인 완료
-                      </button>
-                    )}
-                    {selected.post_publish_reviewed_at && (
-                      <div className="flex-1 min-w-48 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-sm font-medium text-green-700">
-                        {selected.post_publish_reviewed_by ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
+                    {selectedReview.key === 'withheld' ? (
+                      // 공개 페이지에 없는 글에 "공개 내용 확인"은 성립하지 않는다 — backend도 409로 막는다.
+                      <div className="flex-1 min-w-48 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-950">
+                        공개 페이지에서 보류 중 — {selectedReview.reason}
                       </div>
+                    ) : (
+                      <>
+                        {!selected.post_publish_reviewed_at && selected.post_publish_review_required === true && (
+                          <button
+                            onClick={() => handlePostPublishReview(selected.id)}
+                            disabled={actionLoading}
+                            className="min-h-11 flex-1 min-w-48 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
+                          >
+                            문제 없음 · 공개 내용 확인 완료
+                          </button>
+                        )}
+                        {selected.post_publish_reviewed_at && (
+                          <div className="flex-1 min-w-48 rounded-lg border border-green-200 bg-green-50 px-4 py-2.5 text-center text-sm font-medium text-green-700">
+                            {selected.post_publish_reviewed_by ?? '운영자'} · {formatDateTime(selected.post_publish_reviewed_at)} 확인 완료
+                          </div>
+                        )}
+                      </>
                     )}
                     <button
                       onClick={() => setConfirmAction('reject')}

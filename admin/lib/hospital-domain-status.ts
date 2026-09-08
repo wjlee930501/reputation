@@ -1,10 +1,13 @@
 import { platformSiteHost } from './platform-domain.ts'
+import type { HospitalStatusValue } from '../types/index.ts'
+import { isPubliclyServing } from './public-service-state.ts'
 
 type DomainTone = 'live' | 'waiting' | 'dns_verified' | 'issuing' | 'failed' | 'default' | 'empty'
 
 interface HospitalDomainInput {
   name?: string | null
   slug?: string | null
+  status?: HospitalStatusValue | null
   aeo_domain?: string | null
   site_built?: boolean | null
   site_live?: boolean | null
@@ -15,8 +18,13 @@ interface HospitalDomainInput {
 }
 
 export interface HospitalDomainStatus {
-  label: '운영 중' | '공개 주소 확인 대기' | 'DNS 확인 완료' | '인증서 발급 중' | '인증서 실패' | '기본 주소' | '미설정'
+  label: '운영 중' | '운영 일시 정지' | '공개 주소 확인 대기' | 'DNS 확인 완료' | '인증서 발급 중' | '인증서 실패' | '기본 주소' | '미설정'
   detail: string
+  /**
+   * 공개 주소 그 자체. `detail`은 마지막 확인 시각까지 붙인 문구이므로, 상태를 따로 말하는
+   * 화면이 `detail`을 쓰면 같은 사실을 두 번 말하게 된다.
+   */
+  url: string | null
   tone: DomainTone
 }
 
@@ -72,6 +80,24 @@ function liveCheckProvesServing(input: {
   return !certState || certState === 'DONE'
 }
 
+/**
+ * 자기 도메인 자체의 사실 — 병원이 지금 공개 운영 중인지와는 다른 질문이다.
+ *
+ * 일시정지된 병원의 배지는 '운영 일시 정지'가 먼저여야 하지만, 인증서가 발급 중이거나
+ * 실패했다는 사실까지 지우면 재개 전에 무엇을 손봐야 하는지 화면에서 사라진다.
+ */
+function domainFactLabel(input: {
+  domain_cert_job_state?: string | null
+  domain_cert_dns_verified_at?: string | null
+  domain_last_check_ok?: boolean | null
+}): '도메인 연결됨' | '인증서 발급 중' | '인증서 실패' | 'DNS 확인 완료' | 'DNS 미확인' {
+  if (input.domain_cert_job_state === 'ISSUING') return '인증서 발급 중'
+  if (input.domain_cert_job_state === 'FAILED') return '인증서 실패'
+  if (input.domain_cert_job_state === 'DONE' || liveCheckProvesServing(input)) return '도메인 연결됨'
+  if (input.domain_cert_dns_verified_at) return 'DNS 확인 완료'
+  return 'DNS 미확인'
+}
+
 export function readHospitalDomainStatus(hospital: HospitalDomainInput): HospitalDomainStatus {
   const domain = normalizedDomain(hospital.aeo_domain)
   
@@ -80,12 +106,24 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     const certState = hospital.domain_cert_job_state
     const dnsVerified = !!hospital.domain_cert_dns_verified_at
 
+    // 일시정지는 DNS도 인증서도 건드리지 않는다. 도메인 사실만 읽으면 공개가 끊긴 병원을
+    // '운영 중'이라 부르게 되므로, 정지 사실이 먼저고 도메인 사실은 그 뒤에 붙는다.
+    if (hospital.status === 'PAUSED') {
+      return {
+        label: '운영 일시 정지',
+        detail: withLastChecked(hospital, `${domain} · ${domainFactLabel(hospital)}`),
+        url: domain,
+        tone: 'default',
+      }
+    }
+
     // 진행 중이거나 실패한 인증서 작업이 먼저다. 마지막 관측이 정상이더라도 그 사실을
     // 가리면 운영자가 발급 지연·실패를 알아챌 화면이 사라진다.
     if (certState === 'ISSUING') {
       return {
         label: '인증서 발급 중',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'issuing',
       }
     }
@@ -94,6 +132,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '인증서 실패',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'failed',
       }
     }
@@ -102,6 +141,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '운영 중',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'live',
       }
     }
@@ -112,6 +152,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '운영 중',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'live',
       }
     }
@@ -120,6 +161,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: 'DNS 확인 완료',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'dns_verified',
       }
     }
@@ -128,6 +170,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     return {
       label: '공개 주소 확인 대기',
       detail: withLastChecked(hospital, domain),
+      url: domain,
       tone: 'waiting',
     }
   }
@@ -138,6 +181,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     return {
       label: '기본 주소',
       detail: `${slug}.${platformSiteHost()}`,
+      url: `${slug}.${platformSiteHost()}`,
       tone: 'default',
     }
   }
@@ -145,6 +189,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
   return {
     label: '미설정',
     detail: '병원 기본 정보에서 공개 주소 연결',
+    url: null,
     tone: 'empty',
   }
 }
@@ -227,7 +272,8 @@ export function certificateIssuingCanBeRetried(
 }
 
 interface DomainHeaderInput {
-  site_live?: boolean
+  status?: HospitalStatusValue | null
+  site_live?: boolean | null
   aeo_domain?: string | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null
@@ -242,9 +288,14 @@ export function domainHeaderIsLive(profile: DomainHeaderInput): boolean {
 export function domainHeaderStatus(profile: DomainHeaderInput) {
   // DM-U3 #4: 커스텀 도메인 행은 DNS/cert 상태로 판단. site_live는 기본 URL 상태.
   if (!profile.aeo_domain) {
-    // 커스텀 도메인이 없으면 site_live로 기본 주소 상태만 표시
-    return profile.site_live ? '운영 중' : '공개 주소 확인 대기'
+    // 기본 주소는 공개 게이트(status ACTIVE + site_live)가 통과해야 실제로 열린다.
+    // 일시정지는 site_live를 그대로 두므로 site_live만 보면 404 나는 주소를 '운영 중'이라 부른다.
+    if (profile.status === 'PAUSED') return '운영 일시 정지'
+    return isPubliclyServing(profile) ? '운영 중' : '공개 주소 확인 대기'
   }
+
+  // 일시정지는 커스텀 도메인 행에서도 먼저다. 인증서가 DONE이어도 공개 페이지는 닫혀 있다.
+  if (profile.status === 'PAUSED') return `운영 일시 정지 · ${domainFactLabel(profile)}`
 
   // 커스텀 도메인이 있으면 DNS/cert 상태로 판단. 발급 중·실패는 마지막 관측이 정상이어도
   // 그대로 드러낸다 — 그 배지가 사라지면 운영자가 인증서 지연·실패를 알 방법이 없다.

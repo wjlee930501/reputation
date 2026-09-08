@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Final, assert_never
 
 from fastapi import Depends, HTTPException, Request
@@ -16,6 +17,7 @@ from app.models.admin_user import ROLE_OWNER, AdminUser
 from app.models.content import ContentItem
 from app.models.operations import Incident, OperationRun
 from app.services import operation_run_payloads
+from app.services import published_image_recertification as recertification
 from app.services.incident_types import (
     IncidentNotFound,
     IncidentTransitionConflict,
@@ -26,6 +28,7 @@ from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
     generate_monthly_report_for_hospital,
+    recertify_published_content_image,
     regenerate_content_item,
     run_sov_for_hospital,
     trigger_v0_report,
@@ -54,6 +57,9 @@ _TASK_POLICIES: Final[dict[str, _TaskPolicy]] = {
     ),
     "REGENERATE_CONTENT": _TaskPolicy(regenerate_content_item, "content", "content_item", 1),
     "REGENERATE_CONTENT_IMAGE": _TaskPolicy(generate_content_image, "content", "content_item", 1),
+    "RECERTIFY_PUBLISHED_IMAGE": _TaskPolicy(
+        recertify_published_content_image, "content", "content_item", 1
+    ),
 }
 
 
@@ -192,6 +198,59 @@ async def authorize_run_retry(db: AsyncSession, actor: AdminUser, run: Operation
             403,
             "ASSIGNEE_OR_OWNER_REQUIRED",
             "담당자로 지정된 운영자만 재시도할 수 있습니다.",
+        )
+
+
+async def require_retry_within_budget(db: AsyncSession, run: OperationRun) -> None:
+    """Hold an operator retry to the same rule the automatic paths follow.
+
+    공개 이미지 재인증은 (글, 이미지 subject)당 유료 재검수 예산이 하나뿐이다. 사람이
+    버튼을 눌러 그 예산 밖에서 같은 답을 다시 사게 두면 자동 경로의 상한이 무의미해진다.
+    """
+
+    if run.operation_type != recertification.RECERTIFY_OPERATION:
+        return
+    subject = recertification.payload_subject_hash(run)
+    if subject is None or run.safe_error_code in recertification.OPERATOR_REQUIRED_CODES:
+        raise operations_error(
+            409,
+            "OPERATION_NOT_RETRYABLE",
+            f"자동 재인증이 사람의 결정을 기다리는 상태입니다. {recertification.OPERATOR_ACTION}",
+        )
+    source_id = recertification.payload_source_id(run)
+    runs = (
+        (
+            await db.execute(
+                select(OperationRun).where(
+                    OperationRun.hospital_id == run.hospital_id,
+                    OperationRun.operation_type == recertification.RECERTIFY_OPERATION,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    item_runs = [
+        candidate
+        for candidate in runs
+        if recertification.payload_source_id(candidate) == source_id
+    ]
+    now = datetime.now(UTC)
+    if recertification.in_flight(item_runs, subject, now=now):
+        raise operations_error(
+            409,
+            "OPERATION_NOT_RETRYABLE",
+            "같은 글의 자동 재인증이 진행 중입니다. 완료된 뒤 다시 확인하세요.",
+        )
+    if (
+        recertification.attempts_spent(item_runs, subject, now=now)
+        >= recertification.ATTEMPT_BUDGET
+    ):
+        raise operations_error(
+            409,
+            "OPERATION_NOT_RETRYABLE",
+            f"이 제목의 자동 재인증을 정해진 횟수만큼 이미 시도했습니다. "
+            f"{recertification.OPERATOR_ACTION}",
         )
 
 

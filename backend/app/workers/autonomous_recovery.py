@@ -9,11 +9,12 @@ from typing import Final, TypedDict
 
 from celery import current_task
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
-from app.models.content import ContentItem
+from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import (
     Incident,
@@ -23,11 +24,13 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.services import operation_run_payloads
+from app.services import published_image_recertification as recertification
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification_sync
+from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
 from app.services.site_revalidation_control import retry_delay
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
@@ -35,6 +38,7 @@ from app.workers.dispatch_envelope import expected_purpose
 _BATCH_SIZE: Final = 100
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
 _QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=1)
+_RECERTIFY_DISPATCH_LIMIT: Final = 20
 _INTEGER_ARG: Final = object()
 
 
@@ -75,6 +79,9 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
     "REGENERATE_CONTENT_IMAGE": _RedispatchPolicy(
         "app.workers.tasks.generate_content_image", "content", "content_item"
     ),
+    recertification.RECERTIFY_OPERATION: _RedispatchPolicy(
+        "app.workers.tasks.recertify_published_content_image", "content", "content_item"
+    ),
 }
 
 
@@ -82,6 +89,7 @@ class RecoveryCounts(TypedDict):
     site_builds: int
     site_revalidations: int
     operation_runs: int
+    image_recertifications: int
 
 
 def _now() -> datetime:
@@ -223,12 +231,181 @@ def reconcile() -> RecoveryCounts:
             redispatched = _redispatch_operation_run(db, run, observed_at)
             if redispatched:
                 operation_redispatches += 1
+        recertifications = _dispatch_published_image_recertifications(db, observed_at)
         db.commit()
     return {
         "site_builds": len(hospitals),
         "site_revalidations": len(runs),
         "operation_runs": operation_redispatches,
+        "image_recertifications": recertifications,
     }
+
+
+def _cleared_certificate_candidates(db) -> list[ContentItem]:
+    """공개 중인데 이미지 인증이 지워진 글. 제목 편집이 남기는 상태만 SQL로 값싸게 고른다.
+
+    정책 버전 교체는 manifest로 운전하는 별도 작업이므로 여기서 다루지 않는다 — 그 조건을
+    넣으면 롤아웃 때 전체 공개 글이 한꺼번에 이 sweep으로 쏟아진다. hash 불일치도 저장된
+    바이트를 다시 읽어야 알 수 있어 대상이 아니다. 사람의 결정을 기다리고 **그 사고가
+    아직 보이는** 판은 SQL에서 빼, 아직 자동으로 고칠 수 있는 글의 자리를 뺏지 않게 한다.
+    """
+    return list(
+        db.execute(
+            select(ContentItem)
+            .join(Hospital, Hospital.id == ContentItem.hospital_id)
+            .where(
+                publicly_operational_hospital_predicate(),
+                ContentItem.status == ContentStatus.PUBLISHED,
+                ContentItem.image_url.isnot(None),
+                ContentItem.image_url != "",
+                ContentItem.image_policy_verified_at.is_(None),
+                ~recertification.blocked_row_predicate(),
+            )
+            .order_by(ContentItem.published_at, ContentItem.id)
+            .limit(_BATCH_SIZE)
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _recertify_runs_by_item(db, candidates: list[ContentItem]) -> dict[str, list[OperationRun]]:
+    """후보 글들의 재인증 실행 이력을 색인된 컬럼으로 한 번에 읽는다.
+
+    payload 안의 대상·판 비교는 Python에서 한다 — JSON 표현식으로 거르면 색인을 못 쓴다.
+    """
+    if not candidates:
+        return {}
+    hospital_ids = {item.hospital_id for item in candidates}
+    wanted = {str(item.id) for item in candidates}
+    grouped: dict[str, list[OperationRun]] = {}
+    for run in (
+        db.execute(
+            select(OperationRun).where(
+                OperationRun.hospital_id.in_(hospital_ids),
+                OperationRun.operation_type == recertification.RECERTIFY_OPERATION,
+            )
+        )
+        .scalars()
+        .all()
+    ):
+        source_id = recertification.payload_source_id(run)
+        if source_id in wanted:
+            grouped.setdefault(source_id, []).append(run)
+    return grouped
+
+
+def _visible_block_incidents(db, candidates: list[ContentItem]) -> set[str]:
+    """차단이 아직 사람에게 남아 있는 (글, subject)의 사고 키.
+
+    사고가 닫혔는데 실행 이력에는 보류 코드가 남은 subject는 아무도 보지 않는 보류다.
+    그 한 건만 무료 실행으로 되살린다.
+    """
+    if not candidates:
+        return set()
+    keys = {
+        recertification.incident_dedupe_key(
+            item.id, recertification.subject_hash_of(item)
+        )
+        for item in candidates
+    }
+    return set(
+        db.execute(
+            select(Incident.dedupe_key).where(
+                Incident.dedupe_key.in_(keys),
+                Incident.state.in_(recertification.VISIBLE_INCIDENT_STATES),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
+def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int:
+    """인증이 지워진 공개 글의 재인증을 예산 안에서 다시 실행한다 (H-01).
+
+    태스크는 실행 하나당 공급자를 많아야 한 번 부르므로 재실행은 이 sweep만 만든다.
+    쿨다운·진행 중 판정·예산은 모두 `published_image_recertification`의 한 규칙이라,
+    PATCH·sweep·운영자 재시도가 겹쳐도 (글, subject)당 유료 호출이 늘지 않는다.
+    """
+    candidates = _cleared_certificate_candidates(db)
+    runs_by_item = _recertify_runs_by_item(db, candidates)
+    visible_blocks = _visible_block_incidents(db, candidates)
+    dispatched = 0
+    for item in candidates:
+        if dispatched >= _RECERTIFY_DISPATCH_LIMIT:
+            break
+        subject = recertification.subject_hash_of(item)
+        runs = runs_by_item.get(str(item.id), [])
+        if not recertification.sweep_may_dispatch(
+            runs,
+            subject,
+            now=observed_at,
+            block_visible=recertification.incident_dedupe_key(item.id, subject)
+            in visible_blocks,
+        ):
+            continue
+        if _start_recertify_run(db, item, subject, runs, observed_at):
+            dispatched += 1
+    return dispatched
+
+
+def _start_recertify_run(
+    db,
+    item: ContentItem,
+    subject_hash: str,
+    runs: list[OperationRun],
+    observed_at: datetime,
+) -> bool:
+    """REQUESTED run을 먼저 커밋하고 publish한다.
+
+    worker가 publish를 먼저 집어도 claim할 행이 있어야 한다. publish가 실패해도 남은
+    REQUESTED run을 이 파일의 재배달 sweep이 잇는다. 두 reconcile이 겹쳐 같은 키를
+    만들면 뒤에 온 쪽은 건너뛴다 — 같은 subject를 두 번 사지 않기 위해서다.
+    """
+    target_id = str(item.id)
+    task_id = str(uuid.uuid4())
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=item.hospital_id,
+        operation_type=recertification.RECERTIFY_OPERATION,
+        state=OperationRunState.REQUESTED,
+        idempotency_key=recertification.next_sweep_key(item.id, subject_hash, runs),
+        requested_by_id=None,
+        task_id=task_id,
+        requested_at=observed_at,
+        attempt_count=0,
+        total_count=0,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=recertification.request_payload(
+            item.id,
+            subject_hash=subject_hash,
+            title=item.title,
+            revision=int(getattr(item, "content_revision", 1) or 1),
+        ),
+        version=1,
+    )
+    savepoint = db.begin_nested()
+    try:
+        db.add(run)
+        savepoint.commit()
+    except IntegrityError:
+        savepoint.rollback()
+        return False
+    db.commit()
+    celery_app.send_task(
+        "app.workers.tasks.recertify_published_content_image",
+        args=[target_id],
+        queue="content",
+        headers={
+            **build_dispatch_headers("recertify-published-image", target_id),
+            "operation_run_id": str(run.id),
+        },
+        task_id=task_id,
+    )
+    return True
 
 
 def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> bool:

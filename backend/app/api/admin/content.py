@@ -13,8 +13,9 @@ POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Any, Final, Optional
 
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -23,13 +24,15 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
-from app.models.hospital import Hospital, HospitalStatus, Plan
+from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import indexnow
-from app.services.audit_log import default_actor, write_audit_log
+from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -48,17 +51,27 @@ from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
     count_citable_references,
+    has_required_faq_fields,
     has_required_references,
+    image_certification_current,
+    public_candidate_review_safe,
     publication_field_values,
     record_publication_identity,
 )
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
+from app.services.content_row_state import ROW_STATE_LABELS, content_row_state
+from app.services.content_visibility import (
+    PublicVisibility,
+    assess_public_visibility,
+    withheld_by_hospital_gate,
+)
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     EssenceReadiness,
     get_current_approved_philosophy,
     get_essence_readiness,
+    get_public_approved_philosophy_id,
 )
 from app.services.exposure_content_linker import (
     link_content_to_exposure_action,
@@ -71,14 +84,25 @@ from app.services.gap_driven_slots import (
 )
 from app.services.gcs_utils import get_signed_url
 from app.services.image_engine import image_subject_hash
+from app.services.operation_runs import (
+    OperationCommand,
+    OperationQueueUnavailable,
+    dispatch_operation,
+)
 from app.services.ops_incident_alerts import open_ops_incident
+from app.services.post_publish_review_policy import is_human_post_publish_review_sample
+from app.services.published_image_recertification import RECERTIFY_OPERATION
+from app.services.published_image_recertification import (
+    base_key as published_recertify_key,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
-from app.workers.tasks import regenerate_content_item
+from app.workers.tasks import recertify_published_content_image, regenerate_content_item
 
 logger = logging.getLogger(__name__)
 
@@ -171,17 +195,7 @@ class ContentPatch(BaseModel):
 
 
 class PublishBody(BaseModel):
-    published_by: str = Field(min_length=1, max_length=100)
-
-    @field_validator("published_by", mode="before")
-    @classmethod
-    def normalize_published_by(cls, value: object) -> object:
-        if not isinstance(value, str):
-            return value
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("published_by is required")
-        return cleaned
+    """발행자는 요청 본문이 아니라 확인된 요청 actor로 기록한다 (H-09)."""
 
 
 class PostPublishReviewBody(BaseModel):
@@ -203,6 +217,25 @@ async def set_schedule(
     저장 즉시 해당 월의 ContentItem 슬롯을 자동 생성.
     """
     hospital = await _get_hospital_for_schedule_update(db, hospital_id)
+
+    # 요금제는 계약 사실이다 — 월 편수와 가격이 여기에 걸려 있으므로 인수 정정 경로
+    # (handoffs의 계약 정정)만 바꿀 수 있다. 일정 저장이 조용히 덮어쓰면 청구와 월간
+    # 편수 집계가 어긋난다 (H-14). 계약 요금제가 비어 있는 레거시 병원은 body.plan으로
+    # 일정만 만들고 hospital.plan은 정정 경로가 채운다.
+    authoritative_plan = _enum_value(hospital.plan)
+    if authoritative_plan and body.plan != authoritative_plan:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PLAN_MISMATCH",
+                "message": (
+                    "요금제는 계약 기록(인수 정정)에서만 변경할 수 있습니다. "
+                    "일정은 현재 계약 요금제로 저장해 주세요."
+                ),
+                "contracted_plan": authoritative_plan,
+            },
+        )
+
     readiness_blockers = await _schedule_readiness_blockers(db, hospital)
     if readiness_blockers:
         raise HTTPException(
@@ -298,8 +331,6 @@ async def set_schedule(
         created_items.append(item)
 
     hospital.schedule_set = True
-    # 병원 헤더/목록의 plan이 실제 운영 스케줄과 어긋나지 않도록 동기화 (A3).
-    hospital.plan = Plan(body.plan)
     previous_hospital_status = getattr(hospital, "status", None)
     # 이미 ACTIVE인 병원의 스케줄 재설정은 ACTIVE를 유지한다(CLAUDE.md STEP6 예외).
     #
@@ -452,7 +483,19 @@ async def list_content(
     items = result.scalars().all()
     await attach_publish_notification_state(db, items)
 
-    return [_serialize_item(i) for i in items]
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    # 병원 게이트는 요청당 한 번만 본다 — 행마다 다시 읽을 값이 아니다.
+    hospital_serving = is_public_serving_hospital(await db.get(Hospital, hospital_id))
+    links = await _blocked_links_for(db, hospital_id, [i.id for i in items])
+    return [
+        _serialize_item(
+            i,
+            public_philosophy_id=public_philosophy_id,
+            hospital_serving=hospital_serving,
+            blocked_link=links.get(i.id),
+        )
+        for i in items
+    ]
 
 
 @router.get("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
@@ -464,7 +507,7 @@ async def get_content(
     """콘텐츠 상세 (본문 포함)"""
     item = await _get_content(db, content_id, hospital_id)
     await attach_publish_notification_state(db, (item,))
-    return _serialize_item(item, full=True)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.patch("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
@@ -561,6 +604,7 @@ async def update_content(
             )
 
     body_changed = False
+    certificate_invalidated = False
     previous_image_subject = image_subject_hash(item.content_type, item.title)
     if body.title is not None:
         item.title = body.title
@@ -574,14 +618,17 @@ async def update_content(
     if body.faq_answer_summary is not None:
         item.faq_answer_summary = body.faq_answer_summary
 
-    if body_changed:
-        item.body_updated_at = datetime.now(timezone.utc)
-
     # 공개 후 확인 기록은 그 당시 본문에 대한 기록이다. 공개 필드가 바뀌면 이전 확인을
     # 무효화해 Admin 목록에서 다시 공개 내용 확인 대기로 보이게 한다.
     public_fields_changed = bool(body.model_fields_set & set(FORBIDDEN_CHECK_FIELDS)) or (
         "references" in body.model_fields_set
     )
+    # body_updated_at은 컬럼 이름과 달리 "공개 텍스트가 편집된 시각"이다. 제목·meta·FAQ·
+    # 참고자료도 공개 표면에 나가는 텍스트인데 본문 변경만 기록하면, 공개 뒤 제목만 고친
+    # 글이 사람 확인 표본(post_publish_review_policy)과 Site 재검증 키에서 빠진다.
+    if body_changed or (was_published and public_fields_changed):
+        item.body_updated_at = datetime.now(timezone.utc)
+
     if was_published and public_fields_changed:
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
@@ -595,6 +642,7 @@ async def update_content(
             item.image_content_hash = None
             item.image_subject_hash = None
             item.image_policy_version = None
+            certificate_invalidated = True
 
     philosophy = await _get_approved_philosophy(db, hospital_id)
     assessment = assess_content_publication(item, philosophy)
@@ -604,7 +652,14 @@ async def update_content(
         # fallback for rolling workers returning a legacy screening-only summary.
         item.essence_check_summary.setdefault("ai_review", previous_ai_review)
 
-    if was_published and public_fields_changed and isinstance(item, ContentItem):
+    if (
+        was_published
+        and public_fields_changed
+        and not certificate_invalidated
+        and isinstance(item, ContentItem)
+    ):
+        # 인증이 무효화된 판은 공개 표면이 내보내지 않는다. 색인 제출은 재인증
+        # 태스크가 복구에 성공한 뒤에 한다.
         await indexnow.enqueue_content_published(
             db,
             slug=hospital.slug,
@@ -616,11 +671,49 @@ async def update_content(
 
     await db.commit()
     await db.refresh(item)
+    if (
+        was_published
+        and certificate_invalidated
+        and isinstance(item, ContentItem)
+        # 지금 공개 표면이 있는 병원만 즉시 디스패치한다. PAUSED·미공개 병원은 재개 뒤
+        # 복구 sweep이 같은 예산 안에서 이어받는다.
+        and hospital.status == HospitalStatus.ACTIVE
+        and bool(hospital.site_live)
+    ):
+        # 제목 편집이 지운 이미지 인증은 시스템이 저장된 바이트 재검수로 되살린다.
+        # 운영자의 할 일로 넘기지 않는다 (H-01).
+        revision = int(item.content_revision or 1)
+        subject = image_subject_hash(item.content_type, item.title)
+        try:
+            await dispatch_operation(
+                db,
+                OperationCommand(
+                    operation_type="RECERTIFY_PUBLISHED_IMAGE",
+                    hospital_id=hospital.id,
+                    requested_by_id=None,
+                    idempotency_key=published_recertify_key(item.id, subject),
+                    audit_actor=default_actor(),
+                    target_type="content_item",
+                    target_id=str(item.id),
+                    queue="content",
+                    task_args=(str(item.id),),
+                    # 예산·표시·incident는 공급자가 인증하는 subject로 센다. 제목을
+                    # 건드리지 않는 편집이 판을 올려 예산을 되살리지 않게 한다.
+                    request_payload_extra={
+                        "subject_hash": subject,
+                        "title": item.title,
+                        "revision": revision,
+                    },
+                ),
+                recertify_published_content_image,
+            )
+        except OperationQueueUnavailable:
+            logger.warning("Published image recertification enqueue failed for %s", item.id)
     if should_revalidate:
         await trigger_content_site_revalidate_safe(
             hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments
         )
-    return _serialize_item(item, full=True)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.patch("/{hospital_id}/content/{content_id}/brief", response_model=ContentItemDetail)
@@ -638,7 +731,7 @@ async def update_content_brief(
 
     await db.commit()
     await db.refresh(item)
-    return _serialize_item(item, full=True)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.post(
@@ -699,7 +792,7 @@ async def reschedule_content(
     )
     await db.commit()
     await db.refresh(item)
-    return _serialize_item(item, full=True)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.post(
@@ -717,7 +810,7 @@ async def cancel_content(
     if item.status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Published content must be rejected instead")
     if item.status == ContentStatus.CANCELLED:
-        return _serialize_item(item, full=True)
+        return await _serialize_single(db, hospital_id, item)
 
     previous_status = _enum_value(item.status)
     item.status = ContentStatus.CANCELLED
@@ -740,7 +833,7 @@ async def cancel_content(
     )
     await db.commit()
     await db.refresh(item)
-    return _serialize_item(item, full=True)
+    return await _serialize_single(db, hospital_id, item)
 
 
 async def _lock_content_status(
@@ -779,8 +872,34 @@ async def publish_content(
     자동 발행 장애 시 사용하는 수동 복구 발행 경로.
     예약 자동 발행과 동일한 기계적 안전 정책을 적용한다.
     """
+    # 발행자는 "누가 공개했는가"의 근거이므로 요청 본문이 아니라 확인된 요청 actor를 쓴다 (H-09).
+    publisher = verified_request_actor()
+    if publisher is None:
+        raise HTTPException(
+            status_code=403,
+            detail="발행자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
+        )
+    # 자동 발행과 동일하게 병원 행을 잠근 뒤 공개 게이트를 재확인한다. 잠금이 없으면
+    # 공개 중지 요청과 경합해 PAUSED 직후 새 글이 튀어나오는 TOCTOU가 남는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
+    if not _has_public_site(hospital):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "HOSPITAL_NOT_PUBLIC",
+                "message": "공개 운영 중인 병원만 발행할 수 있습니다. 일시정지 상태면 먼저 재개해 주세요.",
+            },
+        )
+    if not hospital.schedule_set:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SCHEDULE_NOT_SET",
+                "message": "발행 일정이 설정된 병원만 발행할 수 있습니다.",
+            },
+        )
 
     # 동시 발행 경합 차단: 행 잠금 후 권위 있는 상태로 재확인.
     current_status = await _lock_content_status(db, hospital_id, content_id, item.status)
@@ -847,7 +966,7 @@ async def publish_content(
     record_publication_identity(
         item,
         published_at=datetime.now(timezone.utc),
-        published_by=body.published_by,
+        published_by=publisher,
     )
     item.post_publish_notified_at = None
     item.post_publish_reviewed_at = None
@@ -863,7 +982,7 @@ async def publish_content(
             "title": item.title,
             "content_type": _enum_value(item.content_type),
             "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
-            "claimed_by": body.published_by,
+            "claimed_by": publisher,
             "essence_status": assessment.essence_status,
             "mode": "manual_recovery",
         },
@@ -920,6 +1039,19 @@ async def complete_post_publish_review(
         item = locked_item
     if item.status != ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Only published content can be post-reviewed")
+    # 공개 페이지가 숨기는 중인 글에는 "공개 내용 확인"이 성립하지 않는다. 기록을 남기면
+    # admin은 확인 완료로 굳고 공개 페이지에는 여전히 그 글이 없다(H-01).
+    visibility = assess_public_visibility(
+        item, await get_public_approved_philosophy_id(db, hospital_id)
+    )
+    if not visibility.visible:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "공개 페이지에서 보류 중인 글은 공개 내용 확인을 기록할 수 없습니다: "
+                + " · ".join(visibility.blocker_labels)
+            ),
+        )
     if item.post_publish_reviewed_at:
         return {
             "detail": "Already reviewed",
@@ -1265,11 +1397,23 @@ def _display_label(labels: dict[str, str], value) -> str | None:
 
 
 def _content_review_display(
-    item: ContentItem, status_value: str | None
+    item: ContentItem, status_value: str | None, visibility: PublicVisibility
 ) -> dict[str, str | bool | None]:
     if status_value == ContentStatus.PUBLISHED.value:
+        if not visibility.visible:
+            # 공개 사이트가 이 글을 숨기는 중이다. "공개 완료"로 표시하면 AE는
+            # 공개 페이지에 없는 글을 있다고 믿고 확인을 끝낸다(H-01).
+            return {
+                "label": "공개 보류",
+                "reason": " · ".join(visibility.blocker_labels),
+                "publishable": False,
+            }
         if getattr(item, "post_publish_reviewed_at", None):
             return {"label": "공개 내용 확인 완료", "reason": None, "publishable": False}
+        if not is_human_post_publish_review_sample(item):
+            # 사람이 보는 표본이 아닌 글까지 "확인 대기"로 두면, 아무도 처리하지 않는
+            # 대기 항목이 매달 쌓여 진짜 표본이 묻힌다(M-21).
+            return {"label": "공개 중", "reason": None, "publishable": False}
         return {
             "label": "공개 내용 확인 대기",
             "reason": "공개된 글에 문제가 없는지 확인해 주세요.",
@@ -1294,9 +1438,12 @@ def _content_review_display(
 
 
 def _serialize_item_display(
-    item: ContentItem, content_type: str | None, status_value: str | None
+    item: ContentItem,
+    content_type: str | None,
+    status_value: str | None,
+    visibility: PublicVisibility,
 ) -> dict:
-    review = _content_review_display(item, status_value)
+    review = _content_review_display(item, status_value, visibility)
     if status_value == ContentStatus.PUBLISHED.value:
         notification = getattr(item, "_publish_notification_projection", None)
         if notification is None:
@@ -1305,9 +1452,19 @@ def _serialize_item_display(
             )
         review["notification_state"] = notification["state"]
         review["notification"] = notification
-        if notification["state"] != "SENT":
-            review["label"] = notification["label"]
-            review["reason"] = notification["problem"] or notification["next_action"]
+        pending_review_sample = is_human_post_publish_review_sample(item) and (
+            getattr(item, "post_publish_reviewed_at", None) is None
+        )
+        if visibility.visible and notification["state"] != "SENT":
+            # 공개 보류는 알림 상태보다 앞선다 — 글 자체가 공개 페이지에 없다는 사실을
+            # 알림 문구가 덮으면 AE는 다시 "무엇이 잘못됐는지" 볼 수 없다.
+            #
+            # 다만 알림이 필요 없는 공개(수동 발행 등, NOT_REQUIRED)에서 "자동 관제 중"이
+            # 표본의 문구를 덮으면, 예외 큐에는 있는 글이 화면에서는 할 일 없는 글로
+            # 보인다. 표본 여부가 알림 없음보다 앞선다(M-21).
+            if not (notification["state"] == "NOT_REQUIRED" and pending_review_sample):
+                review["label"] = notification["label"]
+                review["reason"] = notification["problem"] or notification["next_action"]
     return {
         "content_type_label": _display_label(CONTENT_TYPE_DISPLAY_LABELS, content_type),
         "status_label": _display_label(CONTENT_STATUS_DISPLAY_LABELS, status_value),
@@ -1317,7 +1474,9 @@ def _serialize_item_display(
     }
 
 
-def _build_compliance_summary(item: ContentItem, status_value: str | None) -> dict:
+def _build_compliance_summary(
+    item: ContentItem, status_value: str | None, visibility: PublicVisibility
+) -> dict:
     # Admin 화면의 "발행 가능 여부"와 "금지 표현" 표시는 이 요약이 단일 기준이다
     # (admin/app/hospitals/[id]/content/page.tsx). 따라서 발행 게이트와 **같은 기준**으로
     # 판정해야 한다. 평문 합본으로 검사하면 `최**고**의`가 여기서는 통과해
@@ -1336,6 +1495,12 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         blockers.append("의료광고 금지 표현이 포함되어 있습니다.")
     if item.title and item.body and not _has_required_references(item):
         blockers.append("권위 있는 참고 자료가 1개 이상 필요합니다.")
+    if item.title and item.body and not has_required_faq_fields(item):
+        blockers.append("FAQ 질문과 직접 답변 요약이 필요합니다.")
+    if item.title and item.body and not image_certification_current(item):
+        blockers.append("대표 이미지 자동 정책 검사가 필요합니다.")
+    if not public_candidate_review_safe(item):
+        blockers.append("독립 검수 지적이 해결되지 않았습니다.")
     if item.essence_status != ESSENCE_STATUS_ALIGNED:
         blockers.append("승인된 콘텐츠 운영 기준 검수를 통과해야 합니다.")
 
@@ -1347,12 +1512,128 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         "references_count": count_citable_references(item),
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
+        # 공개 사이트가 실제로 이 글을 내보내는지 — 같은 판정 함수의 결과 그대로다.
+        "public_visibility": {
+            "visible": visibility.visible,
+            "blockers": list(visibility.blockers),
+            "blocker_labels": visibility.blocker_labels,
+        },
     }
 
 
-def _serialize_item(item: ContentItem, full: bool = False) -> dict:
+# 발행이 막힌 글이 만드는 durable run의 종류 — `content_publication_block_control`이
+# 여는 재생성/이미지 재생성과 공개 이미지 재인증. 운영 센터의 콘텐츠 관련 run 집합
+# (`operations_center_today_queries` 289-300)과 같아야 같은 행을 가리킨다.
+_CONTENT_BLOCK_OPERATIONS: Final = (
+    "REGENERATE_CONTENT",
+    "REGENERATE_CONTENT_IMAGE",
+    RECERTIFY_OPERATION,
+)
+
+
+async def _blocked_links_for(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    item_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """글별 "운영 센터에서 조치" 링크 — 항목 수와 무관하게 쿼리 2회.
+
+    경로는 운영 센터가 쓰는 상세 경로 규칙 그대로다
+    (`operations_center_serializers.serialize_incident_row`의 detail_path,
+    `retry_action`의 run 경로). 화면마다 주소를 새로 지으면 링크가 죽는다.
+    사람이 볼 원인은 인시던트가 실패 run보다 앞선다 — 인시던트에는 조치 문장이 있다.
+    """
+    if not item_ids:
+        return {}
+    keys = [str(item_id) for item_id in item_ids]
+    run_source = OperationRun.request_payload["source_id"].as_string()
+
+    incident_rows = (
+        await db.execute(
+            select(Incident.source_id, Incident.id, Incident.next_action)
+            .where(
+                Incident.hospital_id == hospital_id,
+                Incident.source_id.in_(keys),
+                Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
+            )
+            .order_by(Incident.last_seen_at.desc(), Incident.id.desc())
+        )
+    ).all()
+    run_rows = (
+        await db.execute(
+            select(run_source, OperationRun.id, OperationRun.safe_error_message)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.state == OperationRunState.FAILED.value,
+                OperationRun.operation_type.in_(_CONTENT_BLOCK_OPERATIONS),
+                run_source.in_(keys),
+            )
+            .order_by(OperationRun.requested_at.desc(), OperationRun.id.desc())
+        )
+    ).all()
+
+    run_links: dict[uuid.UUID, dict[str, Any]] = {}
+    for source_id, run_id, message in run_rows:
+        run_links.setdefault(
+            uuid.UUID(source_id),
+            {
+                "kind": "run",
+                "href": f"/operations/hospitals/{hospital_id}/runs/{run_id}",
+                "next_action": message,
+            },
+        )
+    incident_links: dict[uuid.UUID, dict[str, Any]] = {}
+    for source_id, incident_id, next_action in incident_rows:
+        incident_links.setdefault(
+            uuid.UUID(source_id),
+            {
+                "kind": "incident",
+                "href": f"/operations/hospitals/{hospital_id}/incidents/{incident_id}",
+                "next_action": next_action,
+            },
+        )
+    return {**run_links, **incident_links}
+
+
+async def _serialize_single(
+    db: AsyncSession, hospital_id: uuid.UUID, item: ContentItem
+) -> dict:
+    """단건 응답 — 목록과 같은 판정·같은 차단 링크를 쓴다."""
+    links = await _blocked_links_for(db, hospital_id, [item.id])
+    return _serialize_item(
+        item,
+        full=True,
+        public_philosophy_id=await get_public_approved_philosophy_id(db, hospital_id),
+        hospital_serving=is_public_serving_hospital(await db.get(Hospital, hospital_id)),
+        blocked_link=links.get(item.id),
+    )
+
+
+def _serialize_item(
+    item: ContentItem,
+    full: bool = False,
+    *,
+    # 기본값을 두지 않는다 — 빠뜨린 호출자가 조용히 기준 대조를 건너뛰면
+    # 그 화면만 "공개 중"으로 갈라진다(H-01).
+    public_philosophy_id: uuid.UUID | None | object,
+    hospital_serving: bool,
+    blocked_link: dict[str, Any] | None = None,
+) -> dict:
     content_type = _enum_value(item.content_type)
     status_value = _enum_value(item.status)
+    visibility = assess_public_visibility(item, public_philosophy_id)
+    if not hospital_serving:
+        # 글 판정만으로는 "공개 중"이 된다 — 일시정지·미활성 병원에서는 사이트가 어떤
+        # 글도 내보내지 않으므로 병원 게이트를 사유로 앞세운다.
+        visibility = withheld_by_hospital_gate(visibility)
+    compliance = _build_compliance_summary(item, status_value, visibility)
+    row_state = content_row_state(
+        item,
+        visibility,
+        compliance_blockers=tuple(compliance["blockers"]),
+        blocked_link=blocked_link,
+        today=arrow.now("Asia/Seoul").date(),
+    )
     d = {
         "id": str(item.id),
         "content_type": content_type,
@@ -1367,7 +1648,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
             str(item.carried_over_from) if getattr(item, "carried_over_from", None) else None
         ),
         "status": status_value,
-        "display": _serialize_item_display(item, content_type, status_value),
+        "display": _serialize_item_display(item, content_type, status_value, visibility),
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "published_by": item.published_by,
@@ -1382,6 +1663,12 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
             else None
         ),
         "post_publish_reviewed_by": getattr(item, "post_publish_reviewed_by", None),
+        # 공개 후 확인은 표본(첫 순번 또는 공개 후 본문 편집)만 사람이 본다. 전체 글에
+        # 확인 버튼을 띄우면 월 12~20번의 불필요한 클릭이 생긴다(M-21).
+        "post_publish_review_required": bool(
+            is_human_post_publish_review_sample(item)
+            and getattr(item, "post_publish_reviewed_at", None) is None
+        ),
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
         "references": item.references_list or [],
         "faq_question": item.faq_question,
@@ -1397,7 +1684,14 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "brief_approved_by": item.brief_approved_by,
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
-        "compliance": _build_compliance_summary(item, status_value),
+        "compliance": compliance,
+        # 월 표의 행 상태 — 라벨까지 여기서 정한다. admin은 붙이기만 한다(PR-1A 원칙).
+        "row_state": {
+            "kind": row_state.kind,
+            "label": ROW_STATE_LABELS[row_state.kind],
+            "reason": row_state.reason,
+            "link": row_state.link,
+        },
     }
     if full:
         d["body"] = item.body

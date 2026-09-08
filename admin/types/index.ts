@@ -1,4 +1,13 @@
 import type { LeadDiagnosisSummary } from '@/lib/lead-diagnosis-status'
+import type {
+  ContentKind,
+  ContentStateValue,
+  DomainKind,
+  DomainStateValue,
+  PublicServiceKind,
+  PublicServiceStateValue,
+  RemainingCondition,
+} from '@/lib/hospital-states'
 
 export type { LeadDiagnosisSummary }
 
@@ -34,13 +43,49 @@ export interface AdminAccountSummary {
   is_operations_test?: boolean
 }
 
+/** 병원 운영 상태. 부분 프로파일만 받는 헬퍼도 이 값의 범위 안에서만 판단해야 한다. */
+export type HospitalStatusValue =
+  | 'ONBOARDING'
+  | 'ANALYZING'
+  | 'BUILDING'
+  | 'PENDING_DOMAIN'
+  | 'ACTIVE'
+  | 'PAUSED'
+
+/** 서버가 판정해 내려주는 남은 필수 항목 한 건(키 + 화면 라벨). */
+export interface MissingProfileRequirement {
+  key: string
+  label: string
+}
+
+/**
+ * 공식 채널 URL을 저장할 때 서버가 근거 자료로 등록한 결과.
+ *
+ * `QUEUED`는 자료 행이 커밋됐고 본문 수집을 워커에 넘겼다는 뜻이고, `FAILED`는 그 행조차
+ * 만들지 못했다는 뜻이다 — 커밋된 행을 실패라고 말하지 않는다.
+ */
+export interface ProfileSourceRegistration {
+  field: string
+  status: 'QUEUED' | 'SKIPPED' | 'FAILED'
+  source_id?: string | null
+  message?: string | null
+}
+
 export interface Hospital {
   id: string
   name: string
   slug: string
-  status: 'ONBOARDING' | 'ANALYZING' | 'BUILDING' | 'PENDING_DOMAIN' | 'ACTIVE' | 'PAUSED'
+  status: HospitalStatusValue
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12' | null
   profile_complete: boolean
+  /**
+   * 아직 비어 있는 필수 항목. 서버가 `profile_complete`를 파생하면서 함께 내려준다 —
+   * 화면은 이 목록만 세고, 완료 여부를 스스로 계산하지 않는다. 항상 내려오므로
+   * 선택 항목이 아니다 — 없으면 화면이 "남은 항목 없음"을 잘못 말한다.
+   */
+  missing_profile_requirements: MissingProfileRequirement[]
+  /** 프로필 저장 응답에만 실린다. */
+  source_registration?: ProfileSourceRegistration[]
   /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
   visual_approval_missing?: string[]
   v0_report_done: boolean
@@ -94,6 +139,69 @@ export interface Hospital {
   site_access_mode?: 'urgent' | 'appointment' | 'specialist' | '' | null
 }
 
+export interface HospitalAeOwner {
+  id: string
+  name: string
+}
+
+/**
+ * `GET /admin/hospitals` 행. 상세 응답(`Hospital`)에는 없는 3상태·예외 수·담당 AE를
+ * 목록만 함께 받는다 — 판정은 서버가 하고 목록은 라벨만 붙인다.
+ */
+/**
+ * 목록 한 줄. 남은 필수 항목은 상세 응답에만 있으므로 이 타입에서 뺀다 —
+ * 없는 값을 있다고 말하면 목록이 "남은 항목 없음"을 잘못 그린다.
+ */
+export interface HospitalListRow extends Omit<Hospital, 'missing_profile_requirements'> {
+  public_service_state: PublicServiceStateValue
+  content_state: ContentStateValue
+  domain_state: DomainStateValue
+  open_exception_count: number
+  ae_owner: HospitalAeOwner | null
+}
+
+export interface HospitalOverviewException {
+  kind: 'incident' | 'escalated_draft'
+  id: string
+  title: string
+  evidence: string | null
+  next_action: string
+  /** 서버가 지금 허용한 행동만. 비어 있으면 버튼을 만들지 않는다. */
+  allowed_actions: string[]
+  href: string
+}
+
+export interface HospitalOverviewMonth {
+  year: number
+  month: number
+  published_count: number
+  /** 공개 사이트가 실제로 내보내는 수. `published_count`(DB PUBLISHED)와 같지 않다. */
+  public_count: number
+  withheld_count: number
+  planned_total: number
+  mention_rate: number | null
+  /** `mention_rate`를 실제로 잰 주의 시작일. 값만 보이면 지난달 수치가 오늘 수치가 된다. */
+  mention_rate_measured_at: string | null
+  next_report_date: string
+}
+
+/** `GET /admin/hospitals/{id}/overview` — 현황 화면 한 장을 채우는 유일한 호출. */
+export interface HospitalOverview {
+  hospital_id: string
+  public_service: { kind: PublicServiceKind; label: string; remaining: RemainingCondition[] }
+  content: { kind: ContentKind; label: string; remaining: RemainingCondition[] }
+  domain: {
+    kind: DomainKind
+    label: string
+    remaining: RemainingCondition[]
+    reason: string | null
+    last_checked_at: string | null
+    last_check_ok: boolean | null
+  }
+  exceptions: HospitalOverviewException[]
+  month: HospitalOverviewMonth
+}
+
 export interface ContentReference {
   title: string
   url: string
@@ -133,6 +241,9 @@ export interface ContentItem {
   post_publish_notified_at?: string | null
   post_publish_reviewed_at?: string | null
   post_publish_reviewed_by?: string | null
+  // 사람이 확인해야 하는 표본인지 (backend post_publish_review_policy). 표본이 아니면
+  // 확인 버튼도 대기 배지도 띄우지 않는다. Pydantic이 항상 내려주는 필수 값이다.
+  post_publish_review_required: boolean
   content_philosophy_id?: string | null
   query_target_id?: string | null
   exposure_action_id?: string | null
@@ -151,6 +262,10 @@ export interface ContentItem {
     references_count?: number
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
+    // 공개 사이트가 이 글을 실제로 내보내는지 — 공개 표면과 같은 판정 함수의 결과다.
+    // 서버가 항상 내려주므로 선택 필드가 아니다. 값이 없다면 계약이 깨진 것이고,
+    // 화면은 "공개 중"이 아니라 보류로 취급해야 한다(H-01).
+    public_visibility: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
   body?: string | null
   image_prompt?: string | null
@@ -248,6 +363,8 @@ export interface ContentPhilosophy {
   approval_note: string | null
   created_at: string | null
   updated_at: string | null
+  /** 재검수 요청 응답에서만 채워진다. false면 보관은 끝났고 재검수는 reconcile이 회수한다. */
+  re_review_dispatched?: boolean | null
 }
 
 export type AIQueryTargetPriority = 'HIGH' | 'NORMAL' | 'LOW'
@@ -294,6 +411,8 @@ export interface AIQueryTarget {
   competitor_names: string[]
   priority: AIQueryTargetPriority
   status: AIQueryTargetStatus
+  // 고정 관측 슬롯에 들어간 질문인지. Pydantic이 항상 내려주는 필수 값이다.
+  in_tracking_set: boolean
   display?: {
     priority_label?: string | null
     status_label?: string | null

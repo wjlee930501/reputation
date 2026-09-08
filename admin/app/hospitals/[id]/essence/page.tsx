@@ -14,6 +14,7 @@ import {
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import {
   describePhotoSourceExclusion,
+  isRequiredTextSource,
   splitEssenceSources,
 } from '@/lib/essence-source-split'
 import {
@@ -126,7 +127,6 @@ export default function EssencePage() {
   const [selectedSource, setSelectedSource] = useState<SourceAsset | null>(null)
   const [philosophies, setPhilosophies] = useState<ContentPhilosophy[]>([])
   const [approved, setApproved] = useState<ContentPhilosophy | null>(null)
-  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set())
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -155,6 +155,7 @@ export default function EssencePage() {
   const [draftRiskRules, setDraftRiskRules] = useState('')
   const reviewedBy = currentOperatorName ?? ''
   const [approvalNote, setApprovalNote] = useState('')
+  const [overrideReason, setOverrideReason] = useState('')
   const [confirmEvidence, setConfirmEvidence] = useState(false)
 
   // 목록 API는 노트 본문을 주지 않는다(evidence_notes: null). 초안의 evidence_map은
@@ -218,10 +219,6 @@ export default function EssencePage() {
       setSources(Array.isArray(sourceData) ? sourceData : [])
       setPhilosophies(Array.isArray(philosophyData) ? philosophyData : [])
       setApproved(approvedData?.approved ?? null)
-      const processedIds = (Array.isArray(sourceData) ? sourceData : [])
-        .filter((source: SourceAsset) => source.status === 'PROCESSED')
-        .map((source: SourceAsset) => source.id)
-      setSelectedSourceIds(new Set(processedIds))
       const philosophyList = Array.isArray(philosophyData) ? philosophyData : []
       const approvedPhilosophy = approvedData?.approved ?? null
       const reviewDraft = philosophyList.find(
@@ -319,6 +316,11 @@ export default function EssencePage() {
     () => (selectedIsReviewDraft ? essenceAutoReviewBlockReasons(selectedDraft?.unsupported_gaps) : []),
     [selectedIsReviewDraft, selectedDraft],
   )
+  // 예외 승인은 이 사유들을 하나씩 확인한 근거를 요구한다(H-03).
+  const autoReviewFindings = useMemo(
+    () => essenceAutoReviewBlockReasons(selectedDraft?.unsupported_gaps),
+    [selectedDraft],
+  )
 
   function setDraftFields(philosophy: ContentPhilosophy) {
     setDraftPositioning(philosophy.positioning_statement ?? '')
@@ -366,6 +368,9 @@ export default function EssencePage() {
     setActionLoading(`process-${sourceId}`)
     setError(null)
     setNotice(null)
+    // 내용이 그대로면 서버는 아무것도 다시 뽑지 않고 기존 처리 결과를 그대로 돌려준다.
+    // 처리 시각이 그대로인지로 그 no-op을 가려내야 "완료" 안내가 거짓말을 하지 않는다.
+    const processedAtBefore = sources.find((source) => source.id === sourceId)?.processed_at ?? null
     try {
       const detail = await fetchAPI<SourceAsset>(`/admin/hospitals/${id}/essence/sources/${sourceId}/process`, {
         method: 'POST',
@@ -374,7 +379,12 @@ export default function EssencePage() {
       // 재처리는 옛 노트를 지우고 새 id를 만든다. 보관함을 그 자리에서 교체해야
       // 사라진 노트가 근거 해석에 남지 않는다.
       rememberSourceDetail(detail)
-      setNotice('근거 추출이 완료되었습니다.')
+      const noop = detail.status === 'PROCESSED' && detail.processed_at === processedAtBefore
+      setNotice(
+        noop
+          ? '이미 최신 상태입니다. 자료 내용이 바뀌지 않아 다시 처리할 것이 없습니다.'
+          : '자료 처리를 시작했습니다. 완료되면 근거 노트가 갱신됩니다.',
+      )
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '자료 처리에 실패했습니다.')
@@ -428,26 +438,47 @@ export default function EssencePage() {
     }
   }
 
-  async function createDraft() {
-    const sourceIds = Array.from(selectedSourceIds)
-    if (sourceIds.length === 0) return
-    setActionLoading('create-draft')
+  async function reReviewDraft(draftId: string) {
+    // 재합성 입력은 자료와 근거 노트다. 초안에 직접 고친 문장은 반영되지 않는다(H-04).
+    if (
+      !confirm(
+        '자료·근거 노트를 기준으로 콘텐츠 운영 기준을 다시 합성·검수합니다(유료 AI 호출). 초안에 직접 고친 문장은 반영되지 않습니다. 계속하시겠습니까?',
+      )
+    )
+      return
+    setActionLoading(`re-review-${draftId}`)
     setError(null)
     setNotice(null)
     try {
-      const draft = await fetchAPI<ContentPhilosophy>(`/admin/hospitals/${id}/essence/philosophy/draft`, {
-        method: 'POST',
-        body: JSON.stringify({
-          source_asset_ids: sourceIds,
-          created_by: currentOperatorName,
-        }),
-      })
-      setSelectedDraftId(draft.id)
-      setDraftFields(draft)
-      setNotice('콘텐츠 운영 기준 초안이 생성되었습니다. 내용을 검토 후 승인하세요.')
+      const result = await fetchAPI<ContentPhilosophy>(
+        `/admin/hospitals/${id}/essence/philosophy/${draftId}/re-review`,
+        { method: 'POST' },
+      )
+      setNotice(
+        result.re_review_dispatched === false
+          ? '초안을 보관했습니다. 자동 재검수는 다음 자동 재조정에서 시작됩니다(15분 주기, 병원 200곳 단위로 순환하므로 병원 수에 따라 더 걸릴 수 있습니다).'
+          : '초안을 보관하고 자동 검수를 다시 요청했습니다. 결과는 이 화면과 운영 센터에 표시됩니다.',
+      )
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '초안 생성에 실패했습니다.')
+      // 429(RE_REVIEW_COOLDOWN)를 포함해 서버가 보낸 사유를 그대로 보여 준다.
+      setError(e instanceof Error ? e.message : '재검수 요청에 실패했습니다.')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  async function archiveDraft(draftId: string) {
+    if (!confirm('이 초안을 보관하면 화면에서 사라지고 승인할 수 없습니다. 계속하시겠습니까?')) return
+    setActionLoading(`archive-${draftId}`)
+    setError(null)
+    setNotice(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${draftId}/archive`, { method: 'POST' })
+      setNotice('초안을 보관했습니다.')
+      await load()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '보관에 실패했습니다.')
     } finally {
       setActionLoading(null)
     }
@@ -504,10 +535,12 @@ export default function EssencePage() {
             reviewed_by: reviewedBy,
             approval_note: approvalNote || null,
             confirm_evidence_reviewed: confirmEvidence,
+            override_reason: overrideReason.trim() || null,
           }),
         }),
       )
       setApprovalNote('')
+      setOverrideReason('')
       setConfirmEvidence(false)
       setNotice('콘텐츠 운영 기준이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')
       await load()
@@ -516,15 +549,6 @@ export default function EssencePage() {
     } finally {
       setActionLoading(null)
     }
-  }
-
-  function toggleSource(sourceId: string) {
-    setSelectedSourceIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(sourceId)) next.delete(sourceId)
-      else next.add(sourceId)
-      return next
-    })
   }
 
   if (loading) {
@@ -553,8 +577,8 @@ export default function EssencePage() {
             value={`${sourceSplit.processedTextCount} / ${sourceSplit.textSourceCount}`}
             hint={
               sourceSplit.photoSources.length > 0
-                ? `처리완료 / 전체 · 사진 ${sourceSplit.photoSources.length}장 제외`
-                : '처리완료 / 전체'
+                ? `처리완료 / 필수 자료 · 사진 ${sourceSplit.photoSources.length}장 제외`
+                : '처리완료 / 필수 자료'
             }
           />
           <SummaryCard
@@ -726,24 +750,13 @@ export default function EssencePage() {
             <div className="min-w-0">
               <StepLabel index={2} label="근거 추출 · 자동 준비" />
               <p className="text-xs text-slate-500 mt-1.5">
-                저장한 자료는 자동으로 처리됩니다. 오류가 난 자료를 다시 처리하거나, 자동 준비가 막힌 경우에만 수동 초안을 만드세요.
+                저장한 자료는 자동으로 처리됩니다. 오류가 난 자료만 다시 처리하세요. 운영 기준 초안은 자동 경로가 만듭니다.
               </p>
             </div>
-            <button
-              onClick={createDraft}
-              disabled={selectedSourceIds.size === 0 || actionLoading === 'create-draft'}
-              className="shrink-0 whitespace-nowrap px-4 py-2 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-              title={selectedSourceIds.size === 0 ? '먼저 처리완료된 자료를 선택하세요.' : ''}
-            >
-              {actionLoading === 'create-draft'
-                ? '생성 중...'
-                : `선택한 ${selectedSourceIds.size}개로 수동 초안 만들기`}
-            </button>
           </div>
           <table className="admin-responsive-table w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 w-10"></th>
                 <th className="text-left px-4 py-3 text-slate-600 font-medium">자료</th>
                 <th className="text-center px-4 py-3 text-slate-600 font-medium whitespace-nowrap">상태</th>
                 <th className="text-center px-4 py-3 text-slate-600 font-medium whitespace-nowrap">근거</th>
@@ -753,25 +766,17 @@ export default function EssencePage() {
             <tbody className="divide-y divide-slate-100">
               {sourceSplit.textSources.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-16 text-center text-slate-400 text-sm">
+                  <td colSpan={4} className="py-16 text-center text-slate-400 text-sm">
                     아직 등록된 근거 자료가 없습니다. 좌측에서 자료를 입력하세요.
                   </td>
                 </tr>
               )}
               {sourceSplit.textSources.map((source) => {
                 const statusStyle = getSourceStatusStyle(source)
+                // 서버가 400으로 돌려보내는 자료에는 버튼을 열어 두지 않는다.
+                const canExtract = isRequiredTextSource(source)
                 return (
                   <tr key={source.id} className="hover:bg-slate-50/70">
-                    <td className="px-4 py-4 align-top" data-label="선택">
-                      <input
-                        type="checkbox"
-                        checked={selectedSourceIds.has(source.id)}
-                        onChange={() => toggleSource(source.id)}
-                        disabled={source.status !== 'PROCESSED'}
-                        title={source.status !== 'PROCESSED' ? '처리완료된 자료만 선택할 수 있습니다.' : ''}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
-                      />
-                    </td>
                     <td className="px-4 py-4" data-primary="true">
                       <p className="font-medium text-slate-900">{source.title}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
@@ -814,9 +819,15 @@ export default function EssencePage() {
                         </button>
                         <button
                           onClick={() => processSource(source.id)}
-                          disabled={actionLoading === `process-${source.id}` || source.status === 'EXCLUDED'}
+                          disabled={actionLoading === `process-${source.id}` || !canExtract}
                           className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs rounded hover:bg-blue-100 border border-blue-200 disabled:opacity-50"
-                          title="원문에서 근거 노트를 추출합니다."
+                          title={
+                            canExtract
+                              ? '원문에서 근거 노트를 추출합니다.'
+                              : source.status === 'EXCLUDED'
+                                ? '제외한 자료는 추출할 수 없습니다.'
+                                : '원문이 없는 자료는 추출할 수 없습니다'
+                          }
                         >
                           {actionLoading === `process-${source.id}`
                             ? '처리중...'
@@ -942,13 +953,28 @@ export default function EssencePage() {
               </div>
               <TextArea label="의료광고 리스크 규칙" value={draftRiskRules} onChange={setDraftRiskRules} disabled={selectedDraft.status !== 'DRAFT'} rows={4} hint="의료광고법 관련 추가 운영 규칙 (한 줄에 하나씩)" />
               {selectedDraft.status === 'DRAFT' && (
-                <div className="flex gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <button
                     onClick={saveDraft}
                     disabled={actionLoading === 'save-draft'}
                     className="px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50"
                   >
                     {actionLoading === 'save-draft' ? '저장 중...' : '초안 저장'}
+                  </button>
+                  {/* 초안을 보관하고 자료·근거 노트로 다시 합성·검수하는 유일한 경로(H-04). */}
+                  <button
+                    onClick={() => reReviewDraft(selectedDraft.id)}
+                    disabled={actionLoading === `re-review-${selectedDraft.id}`}
+                    className="rounded-md border border-blue-200 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    자료 기준 자동 재검수
+                  </button>
+                  <button
+                    onClick={() => archiveDraft(selectedDraft.id)}
+                    disabled={actionLoading === `archive-${selectedDraft.id}`}
+                    className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    보관
                   </button>
                 </div>
               )}
@@ -1009,6 +1035,23 @@ export default function EssencePage() {
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                     />
                   </div>
+                  {autoReviewFindings.length > 0 && (
+                    <div>
+                      <label htmlFor="essence-override-reason" className="block text-xs font-medium text-slate-600 mb-1">
+                        자동 검수 보류 사유별 확인 근거 (20자 이상, 필수)
+                      </label>
+                      <ul className="mb-1 list-disc pl-4 text-[11px] text-amber-800">
+                        {autoReviewFindings.map((finding) => <li key={finding}>{finding}</li>)}
+                      </ul>
+                      <textarea
+                        id="essence-override-reason"
+                        value={overrideReason}
+                        onChange={(e) => setOverrideReason(e.target.value)}
+                        rows={3}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                      />
+                    </div>
+                  )}
                   <label className="flex items-start gap-2 text-xs text-slate-600">
                     <input
                       type="checkbox"
@@ -1032,6 +1075,7 @@ export default function EssencePage() {
                       evidenceBlockers.length > 0 ||
                       !confirmEvidence ||
                       !reviewedBy.trim() ||
+                      (autoReviewFindings.length > 0 && overrideReason.trim().length < 20) ||
                       actionLoading === 'approve-draft'
                     }
                     className="w-full py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"

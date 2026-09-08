@@ -1,3 +1,6 @@
+import { isPubliclyServing, type PublicServiceInput } from './public-service-state.ts'
+import type { HospitalStatusValue } from '../types/index.ts'
+
 export interface HospitalActivationInput {
   profile_complete?: boolean | null
   v0_report_done?: boolean | null
@@ -63,14 +66,14 @@ export function readServerActivationBlockers(
   })
 }
 
-export function isPlatformAddressBrowsable(hospital: { site_live?: boolean | null }): boolean {
-  return hospital.site_live === true
+export function isPlatformAddressBrowsable(hospital: PublicServiceInput): boolean {
+  return isPubliclyServing(hospital)
 }
 
 export interface PlatformActivationInput extends HospitalActivationInput {
   site_live?: boolean | null
   aeo_domain?: string | null
-  status?: string | null
+  status?: HospitalStatusValue | null
 }
 
 /**

@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
-from app.models.hospital import Hospital, HospitalStatus, Plan
+from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus, Plan
 from app.models.monthly_control import HospitalServiceInterval
 
 
@@ -280,14 +280,47 @@ async def test_create_hospital_rejects_concurrent_onboarding_request_payload_mis
 
 # ── pause / resume ───────────────────────────────────────────────
 class _LifecycleDB:
-    def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED, interval=None):
+    def __init__(
+        self,
+        hospital,
+        *,
+        handoff_state=HandoffState.HANDOFF_ACCEPTED,
+        interval=None,
+        events=None,
+        locked_domain=None,
+        locked_strategy=None,
+    ):
         self.hospital = hospital
         self.handoff_state = handoff_state
         self.interval = interval
         self.added = []
         self.committed = False
+        #: 이 세션에서 실제로 일어난 순서(commit / revalidate). revalidate 스텁과 같은
+        #: 리스트를 공유해야 커밋 이후 호출인지까지 확인할 수 있다.
+        self.events = [] if events is None else events
+        #: 잠금 재조회가 돌려줄 도메인·연결 방식. 둘 다 None이면 병원 행 그대로 —
+        #: 경합 없는 정상 경로다.
+        self.locked_domain = locked_domain
+        self.locked_strategy = locked_strategy
+        #: 잠금 아래서 실제로 읽어온 도메인들 — 재조회가 일어났는지 테스트가 확인한다.
+        self.locked_reads = []
+        #: 잡힌 병원 advisory lock. 첫 읽기보다 먼저 잡혔는지까지 확인한다.
+        self.locks = []
+        self.locked_before_first_read = None
 
-    async def get(self, model, object_id):
+    def get_bind(self):
+        # advisory lock 헬퍼는 Postgres 바인딩에서만 동작한다 — 잠금 호출을 관찰하려면 필요하다.
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    async def execute(self, stmt):
+        # 이 fake에 오는 execute는 병원 advisory lock 뿐이다 (나머지 조회는 get/scalar).
+        if "pg_advisory_xact_lock" in str(stmt):
+            self.locks.append(self.hospital.id)
+        return SimpleNamespace(scalar_one=lambda: None, scalar=lambda: None)
+
+    async def get(self, model, object_id, *, with_for_update=False):
+        if self.locked_before_first_read is None:
+            self.locked_before_first_read = bool(self.locks)
         return self.hospital if self.hospital.id == object_id else None
 
     async def scalar(self, stmt):
@@ -296,6 +329,21 @@ class _LifecycleDB:
             return self.handoff_state
         if entity is HospitalServiceInterval:
             return self.interval
+        if entity is Hospital and stmt.column_descriptions[0].get("expr") is Hospital:
+            # resume 의 도메인 재확인(SELECT ... FOR UPDATE). 잠금 시점의 행을 돌려준다.
+            # 구간 잠금이 쓰는 select(Hospital.id) 와 달리 행 전체를 고르는 문장만 해당한다.
+            changed = {}
+            if self.locked_domain is not None:
+                changed["aeo_domain"] = self.locked_domain
+            if self.locked_strategy is not None:
+                changed["domain_dns_strategy"] = self.locked_strategy
+            row = (
+                self.hospital
+                if not changed
+                else SimpleNamespace(**{**vars(self.hospital), **changed})
+            )
+            self.locked_reads.append(row.aeo_domain)
+            return row
         return None
 
     def add(self, item):
@@ -303,6 +351,7 @@ class _LifecycleDB:
 
     async def commit(self):
         self.committed = True
+        self.events.append("commit")
 
     async def refresh(self, item):
         pass
@@ -327,6 +376,10 @@ def _full_hospital(**overrides):
         google_maps_url=None,
         naver_place_url=None,
         aeo_domain=None,
+        domain_cert_dns_verified_at=None,
+        domain_last_checked_at=None,
+        domain_last_check_ok=None,
+        domain_last_check_reason=None,
         latitude=None,
         longitude=None,
         wikidata_qid=None,
@@ -354,6 +407,24 @@ def _full_hospital(**overrides):
     return SimpleNamespace(**base)
 
 
+@pytest.fixture(autouse=True)
+def _record_site_revalidate(monkeypatch):
+    """공개 사이트 캐시 갱신 호출을 기록만 하고 네트워크는 타지 않는다.
+
+    `events` 리스트를 `_LifecycleDB(hospital, events=...)`로 넘기면 commit 과 revalidate 가
+    한 벌에 쌓여, 호출 순서까지 테스트가 확인할 수 있다.
+    """
+    recorder = SimpleNamespace(calls=[], events=[])
+
+    async def _fake(slug, treatments=None, *, hospital_name=None):
+        recorder.calls.append((slug, hospital_name))
+        recorder.events.append("revalidate")
+        return True
+
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake)
+    return recorder
+
+
 @pytest.mark.parametrize("start_status", [HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN])
 async def test_pause_from_active_or_pending(start_status):
     hospital = _full_hospital(status=start_status)
@@ -365,6 +436,9 @@ async def test_pause_from_active_or_pending(start_status):
     assert response["status"] == HospitalStatus.PAUSED
     assert db.committed is True
     assert [a.action for a in db.added] == ["pause_hospital"]
+    # 상태 전환은 프로필 완료 해제와 같은 잠금 아래서 결정돼야 한다.
+    assert db.locks == [hospital.id]
+    assert db.locked_before_first_read is True
 
 
 @pytest.mark.parametrize(
@@ -393,6 +467,9 @@ async def test_resume_to_active_when_gates_and_site_live_met():
     assert response["status"] == HospitalStatus.ACTIVE
     assert db.committed is True
     assert [a.action for a in db.added if hasattr(a, "action")] == ["resume_hospital"]
+    # 게이트 판정 자체가 잠금 아래에 있어야 '완료 해제'와 교차하지 않는다.
+    assert db.locks == [hospital.id]
+    assert db.locked_before_first_read is True
 
 
 async def test_resume_allows_missing_schedule():
@@ -480,3 +557,177 @@ async def test_resume_custom_domain_no_longer_requires_certificate(monkeypatch):
 
     assert result["status"] == "ACTIVE"
     assert hospital.status == HospitalStatus.ACTIVE
+    # 관측을 남기기 전에 잠금 아래서 도메인을 다시 읽고, 같은 도메인임을 확인한다.
+    assert db.locked_reads == ["clinic.example.com"]
+
+
+async def test_pause_revalidates_public_site_after_commit(_record_site_revalidate):
+    """H-06: 일시정지 뒤 공개 페이지가 최대 30분 더 보이면 안 된다."""
+    hospital = _full_hospital(status=HospitalStatus.ACTIVE, site_live=True)
+    db = _LifecycleDB(hospital, events=_record_site_revalidate.events)
+
+    await hospitals_api.pause_hospital(hospital.id, db=db)
+
+    assert db.committed is True
+    assert _record_site_revalidate.calls == [(hospital.slug, hospital.name)]
+    # 갱신은 반드시 커밋 뒤다 — 순서가 뒤집히면 커밋되지 않은 상태로 공개 캐시를 채운다.
+    assert _record_site_revalidate.events == ["commit", "revalidate"]
+
+
+async def test_resume_revalidates_public_site_after_commit(_record_site_revalidate):
+    hospital = _full_hospital(status=HospitalStatus.PAUSED, site_live=True)
+    db = _LifecycleDB(hospital, events=_record_site_revalidate.events)
+
+    await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert _record_site_revalidate.calls == [(hospital.slug, hospital.name)]
+    assert _record_site_revalidate.events == ["commit", "revalidate"]
+
+
+async def test_resume_records_live_domain_evidence_for_custom_domain(monkeypatch):
+    """M-11: 재개가 DNS를 확인했으면 배지가 읽는 관측 필드에도 남겨야 A-1이 재발하지 않는다."""
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        site_live=True,
+        aeo_domain="clinic.example.com",
+    )
+    db = _LifecycleDB(hospital)
+
+    async def _dns_ok(domain, strategy):
+        return SimpleNamespace(verified=True)
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _dns_ok)
+
+    await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert hospital.domain_last_checked_at is not None
+    assert hospital.domain_last_check_reason == "dns_ok"
+    # DNS 조회는 이름이 어디를 가리키는지만 보여줄 뿐 TLS·라우팅을 증명하지 못하므로
+    # domain_last_check_ok 는 판단 보류(None)로 남는다(domain_live_status 규칙).
+    # 배지를 '공개 주소 확인 대기'에서 벗어나게 하는 관측은 DNS 검증 시각 쪽이다.
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_cert_dns_verified_at is not None
+
+
+async def test_resume_refuses_when_domain_changed_during_dns_check(
+    monkeypatch, _record_site_revalidate
+):
+    """확인한 도메인과 기록할 행의 도메인이 다르면 관측을 남기지 않고 409로 막는다.
+
+    DNS 조회는 잠금 밖에서 일어난다. 그 사이 다른 요청이 도메인을 바꿨는데도 그대로
+    기록하면, 한 번도 확인된 적 없는 새 주소가 '확인 완료'로 보인다.
+    """
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        site_live=True,
+        aeo_domain="clinic.example.com",
+    )
+    db = _LifecycleDB(
+        hospital,
+        events=_record_site_revalidate.events,
+        locked_domain="other.example.com",
+    )
+
+    async def _dns_ok(domain, strategy):
+        return SimpleNamespace(verified=True)
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _dns_ok)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "DOMAIN_CHANGED"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None
+    assert db.committed is False
+    assert db.added == []
+    assert _record_site_revalidate.calls == []
+
+
+async def test_resume_refuses_when_dns_strategy_changed_during_check(
+    monkeypatch, _record_site_revalidate
+):
+    """도메인이 그대로여도 연결 방식이 바뀌었으면 관측을 남기지 않고 409로 막는다.
+
+    CNAME으로 확인한 성공을 APEX_ADDRESS 행에 붙이면, 실제로는 확인된 적 없는
+    레코드 설정이 '확인 완료'로 보인다 — 도메인 교체와 같은 종류의 거짓 근거다.
+    """
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        site_live=True,
+        aeo_domain="clinic.example.com",
+        domain_dns_strategy=DomainDnsStrategy.CNAME,
+    )
+    db = _LifecycleDB(
+        hospital,
+        events=_record_site_revalidate.events,
+        locked_strategy=DomainDnsStrategy.APEX_ADDRESS,
+    )
+
+    async def _dns_ok(domain, strategy):
+        assert strategy is DomainDnsStrategy.CNAME
+        return SimpleNamespace(verified=True)
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _dns_ok)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "DOMAIN_CHANGED"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None
+    assert db.committed is False
+    assert db.added == []
+    assert _record_site_revalidate.calls == []
+
+
+async def test_pause_leaves_domain_observation_untouched():
+    """일시정지는 도메인 사실을 바꾸지 않는다 — 관측을 지우면 재개 때 다시 확인해야 한다."""
+    checked_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    hospital = _full_hospital(
+        status=HospitalStatus.ACTIVE,
+        aeo_domain="clinic.example.com",
+        domain_cert_dns_verified_at=checked_at,
+        domain_last_checked_at=checked_at,
+        domain_last_check_ok=True,
+        domain_last_check_reason="dns_ok",
+    )
+    db = _LifecycleDB(hospital)
+
+    await hospitals_api.pause_hospital(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.domain_cert_dns_verified_at == checked_at
+    assert hospital.domain_last_checked_at == checked_at
+    assert hospital.domain_last_check_ok is True
+    assert hospital.domain_last_check_reason == "dns_ok"
+
+
+async def test_resume_without_custom_domain_skips_dns_check(monkeypatch):
+    """기본 플랫폼 주소만 쓰는 병원은 DNS 확인 대상이 아니다 — 조회도 관측도 없다."""
+    hospital = _full_hospital(status=HospitalStatus.PAUSED, site_live=True, aeo_domain=None)
+    db = _LifecycleDB(hospital)
+
+    async def _must_not_be_called(domain, strategy):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _must_not_be_called)
+
+    await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert db.locked_reads == []
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None

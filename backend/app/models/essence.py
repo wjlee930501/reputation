@@ -86,6 +86,14 @@ class PhilosophyStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
+# unsupported_gaps 중 서버만 쓰는 field 이름. 자동 검수(essence_auto_review)가 기록하고
+# Admin API가 클라이언트 PATCH로부터 보호한다 — 두 쪽이 같은 문자열을 봐야 하므로
+# 모델 모듈 한 곳에만 둔다(H-03).
+AUTO_REVIEW_GAP_FIELD = "automatic_ai_review"
+AUTO_RECOVERY_CYCLE_GAP_FIELD = "automatic_recovery_cycle"
+SERVER_OWNED_GAP_FIELDS = (AUTO_REVIEW_GAP_FIELD, AUTO_RECOVERY_CYCLE_GAP_FIELD)
+
+
 class HospitalSourceAsset(Base):
     __tablename__ = "hospital_source_assets"
     __table_args__ = (
@@ -224,6 +232,8 @@ class HospitalContentPhilosophy(Base):
     conflict_notes: Mapped[list] = mapped_column(_jsonb_type(), default=list, nullable=False)
     synthesis_notes: Mapped[str | None] = mapped_column(Text)
     source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    # 승인 시점에 노이즈로 제외돼 있던 근거 노트 집합의 hash. NULL은 이 컬럼 이전 승인.
+    evidence_noise_hash: Mapped[str | None] = mapped_column(String(64))
 
     created_by: Mapped[str | None] = mapped_column(String(100))
     reviewed_by: Mapped[str | None] = mapped_column(String(100))

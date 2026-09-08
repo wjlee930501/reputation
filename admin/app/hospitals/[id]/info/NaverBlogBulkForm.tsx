@@ -18,6 +18,8 @@ import NaverHandoffResultItem from './NaverHandoffResultItem'
 interface NaverBlogBulkFormProps {
   hospitalId: string
   onCreated: () => void
+  /** 실패한 글을 사람이 직접 다시 수집할 수 있는 화면인지. 병원 정보 화면은 false다. */
+  allowRetry: boolean
 }
 
 interface Feedback {
@@ -25,7 +27,7 @@ interface Feedback {
   isError: boolean
 }
 
-export default function NaverBlogBulkForm({ hospitalId, onCreated }: NaverBlogBulkFormProps) {
+export default function NaverBlogBulkForm({ hospitalId, onCreated, allowRetry }: NaverBlogBulkFormProps) {
   const [url, setUrl] = useState('')
   const [maxPosts, setMaxPosts] = useState(5)
   const [busy, setBusy] = useState(false)
@@ -166,6 +168,7 @@ export default function NaverBlogBulkForm({ hospitalId, onCreated }: NaverBlogBu
               key={item.urlHash}
               hospitalId={hospitalId}
               item={item}
+              allowRetry={allowRetry}
               retrying={retryingHash === item.urlHash}
               onRetry={() => retry(item)}
               onCopy={() => copyDeveloperContext(item)}

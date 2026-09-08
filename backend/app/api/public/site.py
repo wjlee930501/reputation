@@ -26,16 +26,13 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
-    has_required_faq_fields,
-    has_required_references,
-    image_certification_current,
-    public_candidate_review_safe,
     publication_field_values,
 )
+from app.services.content_visibility import UNSET_PHILOSOPHY, assess_public_visibility
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
-    get_essence_readiness,
     get_public_approved_philosophy_id,
+    get_public_essence_readiness,
 )
 from app.services.hospital_lifecycle import activation_gate_snapshot
 from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
@@ -245,8 +242,8 @@ async def get_hospital_public(request: Request, slug: str, db: AsyncSession = De
 
     # 승인된 콘텐츠 운영 기준(positioning/promise)만 공개 about 서사로 노출한다.
     # 자유 입력 director_philosophy와 달리 근거 기반 검수를 거친 필드다.
-    essence = await get_essence_readiness(db, h.id)
-    return _serialize_hospital(h, photos, essence.public_philosophy)
+    public_philosophy = await get_public_essence_readiness(db, h.id)
+    return _serialize_hospital(h, photos, public_philosophy)
 
 
 @router.get("/{slug}/assets/{source_id}")
@@ -310,10 +307,9 @@ async def list_published_contents(
     넘어서는 병원(수년 누적)도 호출부(sitemap 등)가 전체 발행 콘텐츠를 순회할 수 있다.
     """
     h = await _get_active_hospital(db, slug)
-    if not h.schedule_set:
+    if not is_public_serving_hospital(h):
         return []
-    essence = await get_essence_readiness(db, h.id)
-    public_philosophy = essence.public_philosophy
+    public_philosophy = await get_public_essence_readiness(db, h.id)
     if public_philosophy is None:
         return []
 
@@ -339,10 +335,9 @@ async def get_content_public(
 ):
     """콘텐츠 상세"""
     h = await _get_active_hospital(db, slug)
-    if not h.schedule_set:
+    if not is_public_serving_hospital(h):
         raise HTTPException(status_code=404, detail="Content not found")
-    essence = await get_essence_readiness(db, h.id)
-    public_philosophy = essence.public_philosophy
+    public_philosophy = await get_public_essence_readiness(db, h.id)
 
     item_result = await db.execute(
         select(ContentItem)
@@ -371,7 +366,7 @@ async def get_public_content_image(
     온전하면 이미 공개된 이미지가 불필요하게 깨지지 않는다.
     """
     h = await _get_active_hospital(db, slug)
-    if not h.schedule_set:
+    if not is_public_serving_hospital(h):
         raise HTTPException(status_code=404, detail="Content image not found")
     public_philosophy_id = await get_public_approved_philosophy_id(db, h.id)
     item = await db.get(ContentItem, content_id)
@@ -402,6 +397,17 @@ def _is_active_public_hospital(hospital: Hospital | None) -> bool:
         and hospital.site_live
         and activation_gate_snapshot(hospital)["ready"]
     )
+
+
+def is_public_serving_hospital(hospital: Hospital | None) -> bool:
+    """공개 페이지가 이 병원의 콘텐츠를 실제로 내보내는가 — 목록·상세·이미지의 병원 게이트.
+
+    ACTIVE + site_live + 활성화 선행조건 + 발행 요일 설정. 글 하나하나의 공개 여부는
+    `content_visibility`가 따로 판정한다. Admin이 "공개 중" 편수를 세려면 같은 조건을
+    다시 쓰는 대신 이 함수를 불러야 한다 — 조건을 옮겨 적으면 일시정지 병원의 발행 글이
+    admin에서만 공개 중으로 보인다.
+    """
+    return _is_active_public_hospital(hospital) and bool(hospital.schedule_set)
 
 
 def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | None:
@@ -616,47 +622,28 @@ def _is_public_safe_content(
     item: ContentItem,
     current_philosophy_id: uuid.UUID | None | object = _CURRENT_PHILOSOPHY_UNSET,
 ) -> bool:
-    current_matches = (
-        True
+    # 판정은 `content_visibility`가 단독으로 갖는다. admin이 같은 함수로 "공개 보류"를
+    # 표시하므로, 여기서 조건을 하나라도 따로 들고 있으면 두 화면이 다시 갈라진다(H-01).
+    visibility = assess_public_visibility(
+        item,
+        UNSET_PHILOSOPHY
         if current_philosophy_id is _CURRENT_PHILOSOPHY_UNSET
-        else current_philosophy_id is not None
-        and item.content_philosophy_id == current_philosophy_id
+        else current_philosophy_id,
     )
-    if not (
-        current_matches
-        and item.status == ContentStatus.PUBLISHED
-        and item.essence_status == ESSENCE_STATUS_ALIGNED
-        and bool((item.title or "").strip())
-        and bool((item.body or "").strip())
-        and item.published_at is not None
-        and has_required_faq_fields(item)
-        and has_required_references(item)
-        and image_certification_current(item)
-        and public_candidate_review_safe(item)
-    ):
-        return False
-    violations = _forbidden_content_violations(item)
-    if violations:
+    if "FORBIDDEN_EXPRESSION" in visibility.blockers:
         # 발행 게이트를 통과한 뒤 본문이 수정됐거나, 필터가 강화되기 전에 발행된 글이
         # 공개 표면에 남아 있을 수 있다. CLAUDE.md가 이 모듈을 세 번째 적용 지점으로
         # 규정한 이유이며, 위반 시 fail-closed — 목록·상세·이미지 모두에서 사라진다.
         logger.warning(
             "Public content withheld by the medical-ad filter: content_id=%s labels=%s",
             getattr(item, "id", None),
-            ",".join(violations),
+            ",".join(
+                check_forbidden_content_fields(
+                    publication_field_values(item), PUBLICATION_CHECK_FIELDS
+                )
+            ),
         )
-        return False
-    return True
-
-
-def _forbidden_content_violations(item: ContentItem) -> list[str]:
-    """공개 직렬화 직전 마지막 의료광고 검사 (아이템당 한 번).
-
-    발행 검사와 같은 공개 필드 매핑을 재사용해 참고자료 제목까지 포함한다.
-    """
-    return check_forbidden_content_fields(
-        publication_field_values(item), PUBLICATION_CHECK_FIELDS
-    )
+    return visibility.visible
 
 
 def _safe_public_text(value: object) -> str | None:

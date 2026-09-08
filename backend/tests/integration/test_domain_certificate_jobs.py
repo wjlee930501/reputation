@@ -13,7 +13,12 @@ from kombu.exceptions import OperationalError as BrokerOperationalError
 from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.models.hospital import DomainCertJobState, Hospital, HospitalStatus
+from app.models.hospital import (
+    DomainCertJobState,
+    DomainDnsStrategy,
+    Hospital,
+    HospitalStatus,
+)
 from app.models.operations import Incident, NotificationOutbox
 from app.services.domain_certificate_manager import DomainCertificateResult
 
@@ -145,6 +150,45 @@ async def test_done_job_is_not_reclaimed(certificate_job_sessions) -> None:
         )
 
     assert isinstance(outcome, jobs.CertificateJobReady)
+
+
+@pytest.mark.asyncio
+async def test_lock_rejects_a_strategy_changed_since_the_dns_check(
+    certificate_job_sessions,
+) -> None:
+    """확인에 쓴 연결 방식을 주면, 잠금 재조회가 도메인과 함께 그 방식도 대조한다.
+
+    도메인이 그대로여도 CNAME↔APEX_ADDRESS가 바뀌면 확인한 레코드가 다르다. 방식을
+    주지 않은 호출(인증서 워커 경로)은 예전처럼 도메인만 보고 통과해야 한다.
+    """
+    jobs = _jobs()
+    sessions, hospital_id, domain = certificate_job_sessions
+    async with sessions() as db:
+        await db.execute(
+            update(Hospital)
+            .where(Hospital.id == hospital_id)
+            .values(domain_dns_strategy=DomainDnsStrategy.APEX_ADDRESS.value)
+        )
+        await db.commit()
+
+    async with sessions() as db:
+        with pytest.raises(jobs.DomainChangedDuringVerification) as exc:
+            await jobs.lock_hospital_for_domain_certificate(
+                db,
+                jobs.DomainCertificateClaimRequest(
+                    hospital_id, domain, dns_strategy=DomainDnsStrategy.CNAME
+                ),
+            )
+
+    assert exc.value.expected_strategy is DomainDnsStrategy.CNAME
+    assert exc.value.current_strategy is DomainDnsStrategy.APEX_ADDRESS
+
+    async with sessions() as db:
+        hospital = await jobs.lock_hospital_for_domain_certificate(
+            db, jobs.DomainCertificateClaimRequest(hospital_id, domain)
+        )
+
+    assert hospital.id == hospital_id
 
 
 @pytest.mark.asyncio

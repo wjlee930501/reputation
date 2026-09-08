@@ -2,15 +2,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { buildManualPublishPayload, normalizePublisherName, resolveAuditActorName } from './publishing.ts'
+import { normalizePublisherName, resolveAuditActorName } from './publishing.ts'
 
 test('normalizePublisherName rejects empty or whitespace-only screener names', () => {
   assert.equal(normalizePublisherName(''), null)
   assert.equal(normalizePublisherName('   '), null)
 })
 
-test('buildManualPublishPayload trims and preserves the explicit screener name', () => {
-  assert.deepEqual(buildManualPublishPayload('  김민지 AE  '), { published_by: '김민지 AE' })
+test('manual publish sends no publisher name — the server records the verified actor', () => {
+  const page = readFileSync(new URL('../app/hospitals/[id]/content/page.tsx', import.meta.url), 'utf8')
+  assert.doesNotMatch(page, /published_by|buildManualPublishPayload/)
 })
 
 test('audit actor normalization fails closed when the authenticated name is unavailable', () => {

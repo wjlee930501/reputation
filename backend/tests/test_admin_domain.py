@@ -8,19 +8,34 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import domain as domain_api
+from app.api.admin import domain_verification as domain_verification_module
 from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
 from app.schemas.domain import DomainVerifyResponse as SchemaDomainVerifyResponse
 from app.workers import tasks
 
+#: verify 경로에서 실제로 일어난 순서(commit / revalidate). 테스트당 세션은 하나뿐이라
+#: 모듈 한 벌을 새 FakeDB마다 비워 쓰고, revalidate 스텁도 같은 리스트에 덧붙인다.
+_EVENTS: list[str] = []
+
 
 class FakeDB:
-    def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED):
+    def __init__(
+        self,
+        hospital,
+        *,
+        handoff_state=HandoffState.HANDOFF_ACCEPTED,
+        locked_strategy=None,
+    ):
         self.hospital = hospital
         self.handoff_state = handoff_state
         self.committed = False
         self.added = []
+        _EVENTS.clear()
+        self.events = _EVENTS
+        #: 잠금 재조회가 돌려줄 연결 방식. None이면 병원 행 그대로 — 경합 없는 정상 경로다.
+        self.locked_strategy = locked_strategy
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
@@ -32,6 +47,15 @@ class FakeDB:
         if entity is HospitalServiceInterval:
             return None
         if entity is Hospital:
+            if (
+                self.locked_strategy is not None
+                and stmt.column_descriptions[0].get("expr") is Hospital
+            ):
+                # 검증의 도메인 재확인(SELECT ... FOR UPDATE)만 해당한다. 행 전체를
+                # 고르는 문장에만 잠금 시점의 연결 방식을 돌려준다.
+                return SimpleNamespace(
+                    **{**vars(self.hospital), "domain_dns_strategy": self.locked_strategy}
+                )
             return self.hospital
         return None
 
@@ -40,6 +64,7 @@ class FakeDB:
 
     async def commit(self):
         self.committed = True
+        self.events.append("commit")
 
 
 def test_live_domain_check_rejects_redirect_without_following_it():
@@ -105,6 +130,8 @@ def _hospital(**overrides):
     base = dict(
         id=uuid.uuid4(),
         name="테스트의원",
+        slug="test-clinic",
+        treatments=[],
         status=HospitalStatus.PENDING_DOMAIN,
         aeo_domain="clinic.example.com",
         v0_report_done=True,
@@ -397,3 +424,119 @@ async def test_verify_domain_blocks_each_authoritative_gate(
     assert hospital.status == HospitalStatus.PENDING_DOMAIN
     assert hospital.site_live is False
     assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
+
+
+@pytest.fixture
+def _record_site_revalidate(monkeypatch):
+    """공개 사이트 캐시 갱신 호출을 기록만 하고 네트워크는 타지 않는다.
+
+    호출 인자와 함께 `FakeDB.events`에도 "revalidate"를 남겨, commit 이후에 호출됐는지
+    (순서)까지 테스트가 확인할 수 있게 한다. 이 스텁이 필요한 테스트만 명시적으로 요청한다.
+    """
+    calls: list[tuple[str, str | None]] = []
+
+    async def _fake(slug, treatments=None, *, hospital_name=None):
+        calls.append((slug, hospital_name))
+        _EVENTS.append("revalidate")
+        return True
+
+    monkeypatch.setattr(domain_verification_module, "trigger_hospital_site_revalidate_safe", _fake)
+    return calls
+
+
+async def test_verify_domain_does_not_reactivate_a_paused_hospital(monkeypatch, _record_site_revalidate):
+    """H-05: PENDING_DOMAIN에서 일시정지된 병원(site_live=False)은 DNS 확인으로 되살아나면 안 된다."""
+    hospital = _hospital(status=HospitalStatus.PAUSED, site_live=False)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await domain_api.verify_domain(hospital.id, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "STATUS_NOT_ACTIVATABLE"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.site_live is False
+    assert db.committed is False
+    assert _record_site_revalidate == []
+
+
+async def test_verify_domain_refuses_when_dns_strategy_changed_during_check(
+    monkeypatch, _record_site_revalidate
+):
+    """도메인이 그대로여도 연결 방식이 바뀌었으면 아무것도 기록하지 않고 409로 막는다.
+
+    DNS 조회는 잠금 밖에서 일어난다. CNAME으로 확인한 성공을 APEX_ADDRESS로 바뀐 행에
+    기록하면, 확인된 적 없는 레코드 설정이 검증 완료로 남는다.
+    """
+    hospital = _hospital(domain_dns_strategy=DomainDnsStrategy.CNAME)
+    db = FakeDB(hospital, locked_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    _patch_dns(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await domain_api.verify_domain(hospital.id, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert "연결 방식" in exc_info.value.detail
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert hospital.site_live is False
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_cert_job_state is None
+    assert db.committed is False
+    assert db.added == []
+    assert _record_site_revalidate == []
+
+
+async def test_verify_domain_revalidates_public_site_once_after_activation(monkeypatch, _record_site_revalidate):
+    """활성화는 커밋 뒤 공개 사이트 캐시를 정확히 한 번 갱신한다."""
+    hospital = _hospital()
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    await domain_api.verify_domain(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert _record_site_revalidate == [(hospital.slug, hospital.name)]
+    # 갱신은 반드시 커밋 뒤다 — 순서가 뒤집히면 커밋되지 않은 상태로 공개 캐시를 채운다.
+    assert db.events[-1] == "revalidate"
+    assert "commit" in db.events[:-1]
+
+
+async def test_verify_domain_does_not_revalidate_when_already_live(monkeypatch, _record_site_revalidate):
+    """이미 공개 중인 병원의 재확인은 상태 전환이 없으므로 캐시도 건드리지 않는다."""
+    hospital = _hospital(status=HospitalStatus.ACTIVE, site_live=True)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    await domain_api.verify_domain(hospital.id, db=db)
+
+    assert _record_site_revalidate == []
+
+
+async def test_verify_domain_keeps_a_paused_live_hospital_paused_but_still_verifies_certificate(
+    monkeypatch, _record_site_revalidate
+):
+    """ACTIVE에서 일시정지된 병원(site_live=True): DNS 재확인은 인증서 작업만 이어간다.
+
+    전환할 것이 없으므로 409도, 상태 변경도, 공개 캐시 갱신도 없다 — 일시정지가
+    도메인 검증으로 풀리지 않으면서 인증서 갱신 경로는 그대로 살아 있어야 한다.
+    """
+    hospital = _hospital(status=HospitalStatus.PAUSED, site_live=True)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    dispatches: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        domain_api.provision_domain_certificate,
+        "apply_async",
+        lambda **kwargs: dispatches.append(kwargs),
+    )
+
+    response = await domain_api.verify_domain(hospital.id, db=db)
+
+    assert response.verified is True
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.site_live is True
+    assert _record_site_revalidate == []
+    assert len(dispatches) == 1
+    assert dispatches[0]["queue"] == "certificates"
