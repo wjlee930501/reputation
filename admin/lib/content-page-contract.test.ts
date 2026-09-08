@@ -6,6 +6,10 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 const page = readFileSync(new URL('../app/hospitals/[id]/content/page.tsx', import.meta.url), 'utf8')
+const signals = readFileSync(
+  new URL('../app/hospitals/[id]/content/ReadOnlySignals.tsx', import.meta.url),
+  'utf8',
+)
 
 const REMOVED = [
   'handlePublish',
@@ -58,6 +62,20 @@ test('반려는 표본 확인 흐름 안에서만 쓰인다', () => {
 test('운영 센터 딥링크와 단건 새로고침은 유지된다', () => {
   assert.match(page, /\?content=|get\('content'\)/)
   assert.match(page, /refreshItem/)
+})
+
+test('화면은 발행 요일 섹션과 하단 읽기 전용 신호를 함께 조립한다', () => {
+  assert.match(page, /<ScheduleSection/)
+  assert.match(page, /<ReadOnlySignals/)
+})
+
+test('하단 환자 질문·노출 보완 제안은 읽기만 한다', () => {
+  assert.match(signals, /\/query-targets/)
+  assert.match(signals, /\/exposure-actions\?limit=/)
+  assert.match(signals, /측정 대상/)
+  // GET 외의 요청은 한 건도 없다 — 이 화면은 정보로만 보여 준다.
+  assert.doesNotMatch(signals, /method:/)
+  assert.doesNotMatch(signals, /'POST'|'PATCH'|'DELETE'/)
 })
 
 test('편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한다', () => {

@@ -30,7 +30,7 @@ const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '병원 정보', path: 'info', hint: '병원·원장·진료·연락처·공식 채널과 근거 자료' },
   { label: '병원 기본 정보', path: 'profile', hint: '병원과 원장 기본 정보' },
   { label: '콘텐츠', path: 'content', hint: '자동 발행·공개 내용 확인' },
-  { label: '발행 일정', path: 'schedule', hint: '월간 발행량과 발행 요일' },
+  { label: '발행 일정', path: 'schedule', hint: '월 발행 편수와 발행 요일' },
   { label: '보고서', path: 'reports', hint: '월간 보고서' },
 ]
 

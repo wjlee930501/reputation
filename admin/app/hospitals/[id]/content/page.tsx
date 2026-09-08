@@ -36,6 +36,8 @@ import { fetchCurrentAccount } from '@/lib/current-account'
 import { resolveAuditActorName } from '@/lib/publishing'
 import { ContentItem, ContentReference, TYPE_LABELS } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
+import { ReadOnlySignals } from './ReadOnlySignals'
+import { ScheduleSection } from './ScheduleSection'
 
 const ESSENCE_LABELS: Record<string, { label: string; color: string }> = {
   ALIGNED: { label: '운영 기준 통과', color: 'bg-green-100 text-green-700' },
@@ -587,6 +589,15 @@ export default function ContentPage() {
           <DismissibleBanner tone="success" message={actionSuccess} dismissLabel="완료 메시지 닫기" onClose={() => setActionSuccess(null)} />
         )}
 
+        {/* 발행 요일은 이 화면에서 정한다 — 저장하면 이번 달 표와 헤더 상태를 다시 읽는다. */}
+        <ScheduleSection
+          hospitalId={id}
+          onSaved={() => {
+            load()
+            void refetchHeader()
+          }}
+        />
+
         {/* 카드는 공개 사이트와 같은 판정을 그대로 센다 — 화면이 따로 묶지 않는다. */}
         <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
           <SummaryCard label="공개 중" value={summary.public} tone="green" hint="공개 페이지에 게시됨" filter="public" activeFilter={activeFilter} onFilter={applyRowFilter} />
@@ -778,6 +789,8 @@ export default function ContentPage() {
           </div>
         </div>
       )}
+
+      <ReadOnlySignals hospitalId={id} year={year} month={month} />
 
       {/* Detail / Edit Modal */}
       {selected && selectedRow && createPortal((

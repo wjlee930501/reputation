@@ -116,8 +116,12 @@ NEW_SURFACE_PATHS: list[str] = [
     # 공식 채널 칸의 안내 문구가 사는 곳. 화면(FactsSection)이 이 상수를 그대로 그린다.
     "admin/lib/external-channel-urls.ts",
     "admin/app/hospitals/[id]/content/page.tsx",
+    "admin/app/hospitals/[id]/content/ScheduleSection.tsx",
+    "admin/app/hospitals/[id]/content/ReadOnlySignals.tsx",
     # 월 표의 행 상태 라벨이 사는 곳. 화면이 이 값을 그대로 그린다.
     "admin/lib/content-rows.ts",
+    # 하단 읽기 전용 신호의 표시 문구가 사는 곳.
+    "admin/lib/content-signals.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
