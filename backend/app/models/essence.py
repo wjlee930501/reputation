@@ -224,6 +224,8 @@ class HospitalContentPhilosophy(Base):
     conflict_notes: Mapped[list] = mapped_column(_jsonb_type(), default=list, nullable=False)
     synthesis_notes: Mapped[str | None] = mapped_column(Text)
     source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    # 승인 시점에 노이즈로 제외돼 있던 근거 노트 집합의 hash. NULL은 이 컬럼 이전 승인.
+    evidence_noise_hash: Mapped[str | None] = mapped_column(String(64))
 
     created_by: Mapped[str | None] = mapped_column(String(100))
     reviewed_by: Mapped[str | None] = mapped_column(String(100))

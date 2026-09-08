@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, false, func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -63,6 +63,7 @@ from app.services.essence_engine import (
     synthesize_philosophy,
     validate_philosophy_grounding,
 )
+from app.services.evidence_noise import not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.naver_handoff import (
@@ -1901,10 +1902,7 @@ def _included_notes_query():
 
 
 def _not_noise_predicate():
-    return func.coalesce(
-        HospitalSourceEvidenceNote.note_metadata["is_noise"].as_boolean(),
-        false(),
-    ).is_(False)
+    return not_noise_note_predicate()
 
 
 async def _note_counts(db: AsyncSession, source_ids: list[uuid.UUID]) -> dict[uuid.UUID, int]:

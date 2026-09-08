@@ -191,7 +191,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "0069_content_first_publication"
+                "0070_essence_evidence_noise_hash"
             )
             content = connection.execute(
                 text(
