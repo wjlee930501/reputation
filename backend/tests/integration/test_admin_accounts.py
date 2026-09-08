@@ -5,6 +5,7 @@
 행을 넣고 엔드포인트를 호출해 **상태가 정말 바뀌었는지 / 바뀌지 않았는지**를 본다.
 """
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException
@@ -20,6 +21,7 @@ from app.api.admin.accounts import (
 )
 from app.api.admin.auth import get_admin_session_revocation
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
+from app.models.audit import AdminAuditLog
 from app.schemas.admin_account import (
     AdminAccountCreateRequest,
     AdminAccountPasswordRequest,
@@ -497,3 +499,150 @@ async def test_session_without_issue_time_is_revoked_once_a_baseline_exists(
         "0" * 64, account_id=target.id, issued_at=None, db=db
     )
     assert after_baseline.revoked is True
+
+
+# ── Astra B2: 계정 라우트의 인가는 확인된 actor에서만 온다 ──────────────────
+
+
+def _sign_assertion(secret: str, *, email: str) -> str:
+    """admin/lib/actor-assertion.ts와 같은 규칙으로 BFF 단언을 만든다."""
+    import base64
+    import hashlib
+    import hmac
+    import json
+    import time
+
+    issued_at = int(time.time() * 1000)
+    payload = {
+        "email": email,
+        "role": "OWNER",
+        "iat": issued_at,
+        "exp": issued_at + 120_000,
+        "nonce": "0123456789abcdef0123456789abcdef",
+    }
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode().rstrip("=")
+    signature = hmac.new(
+        secret.encode("utf-8"), f"v1.{encoded}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return f"v1.{encoded}.{signature}"
+
+
+class WriteRequest:
+    """단언이 강제되는 구간(쓰기 + BFF_ACTOR_SECRET)을 재현하는 요청 스텁."""
+
+    def __init__(self, headers: dict, method: str = "POST"):
+        self.method = method
+        self.headers = headers
+        self.url = SimpleNamespace(path="/api/v1/admin/accounts")
+
+
+@pytest.fixture
+def actor_secret(monkeypatch):
+    from app.core import security
+
+    monkeypatch.setattr(security.settings, "BFF_ACTOR_SECRET", "test-actor-secret")
+    return "test-actor-secret"
+
+
+async def _audit_actors(db, target_id) -> list[str]:
+    rows = await db.execute(
+        select(AdminAuditLog.actor).where(AdminAuditLog.target_id == str(target_id))
+    )
+    return list(rows.scalars().all())
+
+
+async def test_system_call_cannot_act_as_an_admin_account(pg_async_session, actor_secret):
+    """공유 키 보유자가 시스템 헤더 + OWNER 평문 헤더로 계정 라우트를 쓸 수 없다."""
+    from app.core import security
+    from app.services.audit_log import default_actor
+
+    db = pg_async_session
+    owner = await _seed_account(db)
+    request = WriteRequest(
+        {"X-Admin-Actor-System": "cli", "X-Admin-Actor": owner.email}
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await require_active_account(request, db)
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "SYSTEM_ACTOR_NOT_ALLOWED"
+
+    # 감사 actor도 사칭된 OWNER가 아니라 job 이름이어야 한다.
+    gen = security.capture_admin_actor(request, db=db)
+    await gen.__anext__()
+    try:
+        assert default_actor() == "system:cli"
+        assert default_actor() != owner.email
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+
+
+async def test_operator_assertion_with_owner_header_is_rejected(pg_async_session, actor_secret):
+    """OPERATOR의 정상 단언에 OWNER 평문 헤더를 얹어 권한을 올릴 수 없다."""
+    db = pg_async_session
+    owner = await _seed_account(db)
+    operator = await _seed_account(db, role=ROLE_OPERATOR)
+
+    request = WriteRequest(
+        {
+            "X-Admin-Actor-Assertion": _sign_assertion(actor_secret, email=operator.email),
+            "X-Admin-Actor": owner.email,
+        }
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await require_active_account(request, db)
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "ACTOR_ASSERTION_MISMATCH"
+
+
+async def test_operator_assertion_alone_acts_as_the_operator(pg_async_session, actor_secret):
+    """단언만 온 경우 그 신원 그대로 인가한다 — OWNER 전용 작업은 막힌다."""
+    db = pg_async_session
+    operator = await _seed_account(db, role=ROLE_OPERATOR)
+
+    request = WriteRequest(
+        {"X-Admin-Actor-Assertion": _sign_assertion(actor_secret, email=operator.email)}
+    )
+    resolved = await require_active_account(request, db)
+    assert resolved.id == operator.id
+
+    with pytest.raises(HTTPException) as exc:
+        await require_owner_account(resolved)
+    assert exc.value.status_code == 403
+
+
+async def test_owner_assertion_is_authorized_and_audited(pg_async_session, actor_secret):
+    """서명된 OWNER는 계정을 만들 수 있고, 감사 기록은 그 OWNER의 이름으로 남는다."""
+    db = pg_async_session
+    owner = await _seed_account(db)
+    request = WriteRequest(
+        {
+            "X-Admin-Actor-Assertion": _sign_assertion(actor_secret, email=owner.email),
+            # BFF는 같은 세션 이메일로 평문 헤더도 함께 보낸다 — 정상 트래픽이 막히면 안 된다.
+            "X-Admin-Actor": owner.email,
+        }
+    )
+
+    actor = await require_owner_account(await require_active_account(request, db))
+    email = f"{uuid.uuid4().hex}@example.com"
+    created = await create_admin_account(
+        AdminAccountCreateRequest(
+            email=email, name="새 운영자", role=ROLE_OPERATOR, password=VALID_PASSWORD
+        ),
+        db,
+        actor,
+    )
+
+    assert await _audit_actors(db, created.id) == [owner.email]
+
+
+async def test_without_a_secret_the_actor_header_still_resolves(pg_async_session):
+    """시크릿이 없는 로컬/테스트 환경은 종전 동작(X-Admin-Actor)을 그대로 유지한다."""
+    db = pg_async_session
+    owner = await _seed_account(db)
+
+    resolved = await require_active_account(WriteRequest({"X-Admin-Actor": owner.email}), db)
+
+    assert resolved.id == owner.id

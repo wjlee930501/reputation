@@ -257,14 +257,17 @@ async def test_write_without_assertion_is_rejected_with_operator_guidance(_actor
 
 
 async def test_valid_assertion_adopts_the_signed_email_as_actor(_actor_secret):
-    """(b) 서명된 이메일을 actor로 채택하되 활성 계정 매칭은 그대로 적용한다."""
+    """(b) 서명된 이메일을 actor로 채택하되 활성 계정 매칭은 그대로 적용한다.
+
+    Admin BFF는 같은 세션 이메일로 `X-Admin-Actor`도 함께 보낸다(대소문자만 다를 수 있다)
+    — 정상 브라우저 트래픽이 불일치 규칙에 걸리지 않아야 한다.
+    """
     db = _FakeDB(matched="owner@example.com")
     token = _sign_assertion(_actor_secret, _assertion_payload())
 
     actor = await _actor_for(
-        # X-Admin-Actor는 위조 가능하므로 단언이 이긴다.
         _assertion_request(
-            "POST", {"X-Admin-Actor-Assertion": token, "X-Admin-Actor": "ghost@attacker.com"}
+            "POST", {"X-Admin-Actor-Assertion": token, "X-Admin-Actor": "Owner@Example.com"}
         ),
         db,
     )
@@ -342,3 +345,64 @@ async def test_assertion_is_not_enforced_without_a_configured_secret():
     actor = await _actor_for(_assertion_request("POST", {"X-Admin-Actor": "owner@example.com"}), db)
 
     assert actor == "owner@example.com"
+
+
+# ── Astra B2: 확인된 actor만이 인가·감사의 권위다 ──────────────────────────
+
+
+async def test_unsigned_actor_header_that_differs_from_the_assertion_is_rejected(_actor_secret):
+    """OPERATOR의 정상 단언에 OWNER 평문 헤더를 얹어 권한을 올릴 수 없다."""
+    db = _FakeDB(matched="operator@example.com")
+    token = _sign_assertion(_actor_secret, _assertion_payload(email="operator@example.com"))
+
+    gen = security.capture_admin_actor(
+        _assertion_request(
+            "POST",
+            {"X-Admin-Actor-Assertion": token, "X-Admin-Actor": "owner@example.com"},
+        ),
+        db=db,
+    )
+    with pytest.raises(security.HTTPException) as exc:
+        await gen.__anext__()
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "ACTOR_ASSERTION_MISMATCH"
+    assert db.executed == 0
+
+
+async def test_system_call_never_adopts_an_accompanying_actor_header(_actor_secret):
+    """시스템 헤더 + OWNER 평문 헤더 → actor는 job 이름이고, OWNER는 감사에 남지 않는다."""
+    db = _FakeDB(matched="owner@example.com")
+
+    request = _assertion_request(
+        "POST", {"X-Admin-Actor-System": "cli", "X-Admin-Actor": "owner@example.com"}
+    )
+    effective = security.resolve_request_actor(request)
+    actor = await _actor_for(request, db)
+
+    assert actor == "system:cli"
+    assert effective.system_job == "cli"
+    assert effective.email is None
+    # 사칭된 값은 기록용으로만 남고 인가·감사 어디에도 채택되지 않는다.
+    assert effective.claimed_actor == "owner@example.com"
+    assert effective.audit_actor == "system:cli"
+    assert db.executed == 0
+
+
+def test_resolve_request_actor_keeps_header_behaviour_without_a_secret():
+    """시크릿이 없는 로컬/테스트 환경은 종전대로 X-Admin-Actor를 그대로 쓴다."""
+    effective = security.resolve_request_actor(
+        _assertion_request("POST", {"X-Admin-Actor": "owner@example.com"})
+    )
+    assert effective.email == "owner@example.com"
+    assert effective.system_job is None
+    assert effective.verified is False
+
+
+def test_resolve_request_actor_keeps_header_behaviour_on_reads(_actor_secret):
+    """읽기는 단언을 강제하지 않으므로 헤더 불일치도 거부 대상이 아니다."""
+    effective = security.resolve_request_actor(
+        _assertion_request("GET", {"X-Admin-Actor": "owner@example.com"})
+    )
+    assert effective.email == "owner@example.com"
+    assert effective.verified is False

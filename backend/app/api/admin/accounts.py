@@ -5,16 +5,15 @@ CLI뿐이라, AE가 한 명 늘 때마다 개발자가 셸에 들어가야 했�
 
 인가 모델 — 이 OWNER 검사가 **무엇을 막고 무엇을 못 막는지** 분명히 해 둔다.
 
-백엔드 인가의 실제 경계는 공유 `X-Admin-Key` 하나다(core/security.py). 그 키를 가진 쪽은
-이미 병원·콘텐츠·발행 등 모든 Admin API를 호출할 수 있고, `X-Admin-Actor`는 그 키를 아는
-쪽이면 마음대로 위조할 수 있는 평문 헤더다. 게다가 이 라우터의 목록 조회가 OWNER 이메일을
-돌려주므로, **키 보유자에게는 여기 OWNER 검사가 아무 방어도 되지 않는다.**
+쓰기 요청의 행위자는 `core/security.resolve_request_actor`가 결정한다. 시크릿이 설정된
+환경에서 사람의 변경은 BFF가 서명한 단언을 요구하므로, 여기서 보는 이메일은 `X-Admin-Key`만
+아는 쪽이 마음대로 붙일 수 있는 평문 헤더가 아니라 **서명으로 확인된 신원**이다. 평문
+`X-Admin-Actor`는 인가에 쓰지 않으며, 단언과 값이 다르면 요청 자체가 거부된다.
+시스템 호출(`X-Admin-Actor-System`)에는 사람 계정이 없으므로 이 라우터를 쓸 수 없다.
 
-막는 것은 하나다: 정상 경로(Admin BFF)로 들어온 요청. BFF는 서명된 세션 쿠키에서 읽은
-이메일로 `X-Admin-Actor`를 **덮어쓰므로**, 로그인한 OPERATOR가 UI를 조작해 계정을 만들거나
-남의 비밀번호를 바꾸는 것은 확실히 막힌다. 즉 이것은 키 보유자에 대한 보안 경계가 아니라
-로그인 사용자 간의 권한 분리이고, 키 자체의 보호(Secret Manager·유출 대응)가 여전히
-이 라우터를 지키는 유일한 수단이다.
+그래도 남는 한계: 공유 `X-Admin-Key`는 병원·콘텐츠·발행 등 다른 Admin API의 경계이고,
+BFF 서명 키(`BFF_ACTOR_SECRET`)가 함께 새면 여기 OWNER 검사도 우회된다. 두 키의 보호
+(Secret Manager·유출 대응)는 여전히 필수다.
 
 조회는 활성 계정이면 누구나 가능하다(팀 명부 성격). `ADMIN_REJECT_UNVERIFIED_ACTOR`
 설정과 무관하게 여기서는 항상 actor를 검증한다 — 그 플래그는 전역 기본 정책이고,
@@ -28,6 +27,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.security import SYSTEM_ACTOR_NOT_ALLOWED_DETAIL, resolve_request_actor
 from app.models.admin_user import ROLE_OWNER, AdminUser
 from app.schemas.admin_account import (
     AdminAccountCreateRequest,
@@ -40,13 +40,12 @@ from app.services.audit_log import write_audit_log
 
 router = APIRouter(prefix="/admin/accounts", tags=["Admin — Accounts"])
 
-_ACTOR_HEADER = "X-Admin-Actor"
 _TARGET_TYPE = "admin_account"
 
 
-async def _resolve_actor_account(request: Request, db: AsyncSession) -> AdminUser | None:
-    """X-Admin-Actor 헤더가 가리키는 활성 운영자 계정을 조회한다."""
-    raw = (request.headers.get(_ACTOR_HEADER) or "").strip()
+async def _resolve_actor_account(db: AsyncSession, email: str | None) -> AdminUser | None:
+    """확인된 actor 이메일이 가리키는 활성 운영자 계정을 조회한다."""
+    raw = (email or "").strip()
     if not raw or "@" not in raw:
         return None
     result = await db.execute(
@@ -62,7 +61,15 @@ async def require_active_account(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> AdminUser:
-    account = await _resolve_actor_account(request, db)
+    """인가에 쓸 운영자 계정은 **확인된 actor**에서만 온다.
+
+    시스템 호출에는 사람 계정이 없다 — 배치 job 이름으로 사람 권한을 빌릴 수 없어야 하므로
+    여기서 끊는다(403). 배치가 이 경로를 정말 필요로 하면 규칙을 낮추는 대신 전용 경로를 만든다.
+    """
+    effective = resolve_request_actor(request)
+    if effective.system_job:
+        raise HTTPException(status_code=403, detail=SYSTEM_ACTOR_NOT_ALLOWED_DETAIL)
+    account = await _resolve_actor_account(db, effective.email)
     if account is None:
         raise HTTPException(
             status_code=403,
