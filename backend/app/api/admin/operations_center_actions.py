@@ -26,6 +26,7 @@ from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
     generate_monthly_report_for_hospital,
+    recertify_published_content_image,
     regenerate_content_item,
     run_sov_for_hospital,
     trigger_v0_report,
@@ -54,6 +55,9 @@ _TASK_POLICIES: Final[dict[str, _TaskPolicy]] = {
     ),
     "REGENERATE_CONTENT": _TaskPolicy(regenerate_content_item, "content", "content_item", 1),
     "REGENERATE_CONTENT_IMAGE": _TaskPolicy(generate_content_image, "content", "content_item", 1),
+    "RECERTIFY_PUBLISHED_IMAGE": _TaskPolicy(
+        recertify_published_content_image, "content", "content_item", 1
+    ),
 }
 
 

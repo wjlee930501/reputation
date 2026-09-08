@@ -66,6 +66,11 @@ _OPERATION_TASK_POLICIES = {
         "content_item",
         "content",
     ),
+    "app.workers.tasks.recertify_published_content_image": (
+        "RECERTIFY_PUBLISHED_IMAGE",
+        "content_item",
+        "content",
+    ),
     "app.workers.tasks.generate_monthly_report_for_hospital": (
         "GENERATE_MONTHLY_REPORT",
         "hospital",
@@ -85,6 +90,7 @@ _OPERATION_TASK_POLICIES = {
 _OPERATION_RUN_REQUIRED_TASKS = frozenset(
     {
         "app.workers.tasks.generate_content_image",
+        "app.workers.tasks.recertify_published_content_image",
         "app.workers.tasks.generate_monthly_report_for_hospital",
         "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_measurement",
         "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report",
@@ -135,6 +141,8 @@ def explicit_run_matches(
     task: GenerationTask,
     item_id: uuid.UUID | str,
     hospital_id: uuid.UUID | str,
+    *,
+    operation_type: str = "REGENERATE_CONTENT",
 ) -> bool:
     """Prove that the claimed Admin run authorizes this exact tenant target."""
     context = explicit_run_context(task)
@@ -146,7 +154,7 @@ def explicit_run_matches(
     payload = run.request_payload if isinstance(run.request_payload, Mapping) else {}
     state = getattr(run.state, "value", run.state)
     return (
-        run.operation_type == "REGENERATE_CONTENT"
+        run.operation_type == operation_type
         and state == OperationRunState.RUNNING.value
         and run.task_id == context.worker_id
         and run.lease_owner == context.worker_id

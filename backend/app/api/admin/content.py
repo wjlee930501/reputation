@@ -79,6 +79,11 @@ from app.services.gap_driven_slots import (
 )
 from app.services.gcs_utils import get_signed_url
 from app.services.image_engine import image_subject_hash
+from app.services.operation_runs import (
+    OperationCommand,
+    OperationQueueUnavailable,
+    dispatch_operation,
+)
 from app.services.ops_incident_alerts import open_ops_incident
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -86,7 +91,7 @@ from app.services.site_revalidate import (
 )
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
-from app.workers.tasks import regenerate_content_item
+from app.workers.tasks import recertify_published_content_image, regenerate_content_item
 
 logger = logging.getLogger(__name__)
 
@@ -571,6 +576,7 @@ async def update_content(
             )
 
     body_changed = False
+    certificate_invalidated = False
     previous_image_subject = image_subject_hash(item.content_type, item.title)
     if body.title is not None:
         item.title = body.title
@@ -605,6 +611,7 @@ async def update_content(
             item.image_content_hash = None
             item.image_subject_hash = None
             item.image_policy_version = None
+            certificate_invalidated = True
 
     philosophy = await _get_approved_philosophy(db, hospital_id)
     assessment = assess_content_publication(item, philosophy)
@@ -614,7 +621,14 @@ async def update_content(
         # fallback for rolling workers returning a legacy screening-only summary.
         item.essence_check_summary.setdefault("ai_review", previous_ai_review)
 
-    if was_published and public_fields_changed and isinstance(item, ContentItem):
+    if (
+        was_published
+        and public_fields_changed
+        and not certificate_invalidated
+        and isinstance(item, ContentItem)
+    ):
+        # 인증이 무효화된 판은 공개 표면이 내보내지 않는다. 색인 제출은 재인증
+        # 태스크가 복구에 성공한 뒤에 한다.
         await indexnow.enqueue_content_published(
             db,
             slug=hospital.slug,
@@ -626,6 +640,29 @@ async def update_content(
 
     await db.commit()
     await db.refresh(item)
+    if was_published and certificate_invalidated and isinstance(item, ContentItem):
+        # 제목 편집이 지운 이미지 인증은 시스템이 저장된 바이트 재검수로 되살린다.
+        # 운영자의 할 일로 넘기지 않는다 (H-01).
+        try:
+            await dispatch_operation(
+                db,
+                OperationCommand(
+                    operation_type="RECERTIFY_PUBLISHED_IMAGE",
+                    hospital_id=hospital.id,
+                    requested_by_id=None,
+                    idempotency_key=(
+                        f"recertify:{item.id}:{int(item.content_revision or 1)}"
+                    ),
+                    audit_actor=default_actor(),
+                    target_type="content_item",
+                    target_id=str(item.id),
+                    queue="content",
+                    task_args=(str(item.id),),
+                ),
+                recertify_published_content_image,
+            )
+        except OperationQueueUnavailable:
+            logger.warning("Published image recertification enqueue failed for %s", item.id)
     if should_revalidate:
         await trigger_content_site_revalidate_safe(
             hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments

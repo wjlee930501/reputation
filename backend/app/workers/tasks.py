@@ -76,6 +76,7 @@ from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
+    image_certification_current,
     record_publication_identity,
 )
 from app.services.content_publish_notifications import (
@@ -308,6 +309,7 @@ from app.workers.nightly_generation_batch import (
     release_unfinished_claims,
     write_back_generated_content,
     write_back_generated_image,
+    write_back_published_image_certificate,
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
@@ -4051,6 +4053,123 @@ def regenerate_content_item(self, content_id: str):
         run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
         if run_id is not None:
             _run_async(recover_generation_incidents(item_id, hospital.id, hospital.name, run_id))
+
+
+@celery_app.task(
+    name="app.workers.tasks.recertify_published_content_image", bind=True, max_retries=2
+)
+def recertify_published_content_image(self, content_id: str):
+    """공개 글의 제목 편집이 지운 이미지 인증을 저장된 바이트 재검수로 복구한다 (H-01).
+
+    성공하면 공개 페이지가 다시 글을 내보내므로 IndexNow와 사이트 캐시를 갱신한다.
+    정책 거절은 사람의 결정(이미지 교체 또는 제목 되돌리기)이 필요하므로 FAILED로 끝내
+    운영 센터에 남긴다. 공개 글의 이미지를 임의로 새로 생성하지 않는다.
+    """
+    item_id = uuid.UUID(content_id)
+    if explicit_run_context(self) is None:
+        require_dispatch(self, "recertify-published-image", str(item_id))
+    with SyncSessionLocal() as db:
+        item = db.get(ContentItem, item_id)
+        if not item or item.status != ContentStatus.PUBLISHED:
+            finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
+            return
+        if explicit_run_context(self) is not None and not explicit_run_matches(
+            db, self, item_id, item.hospital_id, operation_type="RECERTIFY_PUBLISHED_IMAGE"
+        ):
+            raise PermissionError("operation run does not authorize this content target")
+        if image_certification_current(item):
+            # 중복 디스패치·재배달. 유효한 인증을 다시 사지 않는다.
+            finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+            return
+        hospital = db.get(Hospital, item.hospital_id)
+        if not hospital or not item.image_url:
+            finish_explicit_run(
+                db,
+                self,
+                item_id,
+                OperationRunState.FAILED,
+                safe_error_code="PUBLISHED_IMAGE_MISSING",
+                safe_error_message=(
+                    "공개 글에 대표 이미지가 없어 재인증할 수 없습니다. 이미지를 등록해 주세요."
+                ),
+            )
+            return
+        expected_title = item.title
+        expected_revision = int(getattr(item, "content_revision", 1) or 1)
+        try:
+            content_hash, subject_hash = _run_async(
+                certify_existing_image(
+                    item.image_url,
+                    content_type=item.content_type,
+                    topic=expected_title,
+                    hospital_id=hospital.id,
+                )
+            )
+        except ImagePolicyRejectedError:
+            db.rollback()
+            finish_explicit_run(
+                db,
+                self,
+                item_id,
+                OperationRunState.FAILED,
+                safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+                safe_error_message=(
+                    "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다. "
+                    "이미지를 교체하거나 제목을 되돌려 주세요."
+                ),
+            )
+            return
+        except Exception as exc:
+            # 공급자·저장소 일시 오류. 삼키지 않고 Celery 실패로 올려 운영 센터가 본다.
+            db.rollback()
+            code, message = classify_generation_failure(exc)
+            finish_explicit_run(
+                db,
+                self,
+                item_id,
+                OperationRunState.FAILED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            logger.error(
+                "recertify_published_content_image failed for %s: %s",
+                content_id,
+                type(exc).__name__,
+            )
+            raise
+        written = write_back_published_image_certificate(
+            db,
+            item_id=item.id,
+            expected_title=expected_title,
+            expected_revision=expected_revision,
+            values={
+                "image_content_hash": content_hash,
+                "image_subject_hash": subject_hash,
+                "image_policy_version": IMAGE_POLICY_VERSION,
+                "image_policy_verified_at": datetime.now(timezone.utc),
+            },
+        )
+        if written == 0:
+            # 재검수 중 편집이 또 일어났다. 그 편집이 다시 재인증을 요청한다.
+            db.rollback()
+            finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
+            return
+        indexnow.enqueue_content_published_sync(
+            db,
+            slug=hospital.slug,
+            content_id=item.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=expected_revision,
+        )
+        db.commit()
+        finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+        slug, hospital_name, treatments = hospital.slug, hospital.name, hospital.treatments
+    _run_async(
+        trigger_content_site_revalidate_safe(
+            slug, item_id, hospital_name=hospital_name, treatments=treatments
+        )
+    )
 
 
 @celery_app.task(name="app.workers.tasks.generate_content_image", bind=True, max_retries=1)

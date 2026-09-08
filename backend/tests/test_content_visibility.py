@@ -6,7 +6,8 @@ from types import SimpleNamespace
 
 import app.api.public.site as site
 from app.api.admin import content as admin_content
-from app.models.content import ContentStatus, ContentType
+from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.hospital import HospitalStatus
 from app.services.content_visibility import VISIBILITY_BLOCKER_LABELS, assess_public_visibility
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
@@ -181,6 +182,99 @@ def test_notification_label_never_overwrites_the_withheld_label():
     assert review["label"] == "공개 보류"
     assert "대표 이미지 재인증 대기" in review["reason"]
     assert review["notification_state"] == "PENDING"
+
+
+class _PatchDB:
+    """update_content의 행 잠금 조회만 실제 아이템으로 돌려주는 최소 더블."""
+
+    def __init__(self, item):
+        self._item = item
+        self.committed = False
+
+    async def execute(self, statement):
+        return SimpleNamespace(scalar_one_or_none=lambda: self._item)
+
+    async def commit(self):
+        self.committed = True
+
+    async def refresh(self, item):
+        pass
+
+
+def _published_orm(**overrides):
+    """실제 ContentItem — update_content의 isinstance 게이트를 통과해야 한다."""
+    fields, philosophy_id = _published(**overrides)
+    item = ContentItem()
+    for key, value in vars(fields).items():
+        if not key.startswith("_"):
+            setattr(item, key, value)
+    return item, philosophy_id
+
+
+async def _patch_published(monkeypatch, item, philosophy_id, patch):
+    hospital = SimpleNamespace(
+        id=item.hospital_id,
+        name="재인증의원",
+        slug="recert-clinic",
+        status=HospitalStatus.ACTIVE,
+        site_live=False,
+        aeo_domain=None,
+        treatments=[],
+    )
+    dispatched: list[str] = []
+    submitted: list[uuid.UUID] = []
+
+    async def _get_content(db, content_id, hospital_id):
+        return item
+
+    async def _get_hospital(db, hospital_id):
+        return hospital
+
+    async def _philosophy(db, hospital_id):
+        return None
+
+    async def _dispatch(db, command, task):
+        dispatched.append(command.operation_type)
+
+    async def _enqueue(db, **kwargs):
+        submitted.append(kwargs["content_id"])
+
+    monkeypatch.setattr(admin_content, "_get_content", _get_content)
+    monkeypatch.setattr(admin_content, "_get_hospital", _get_hospital)
+    monkeypatch.setattr(admin_content, "_get_approved_philosophy", _philosophy)
+    monkeypatch.setattr(admin_content, "get_public_approved_philosophy_id", _philosophy)
+    monkeypatch.setattr(admin_content, "dispatch_operation", _dispatch)
+    monkeypatch.setattr(admin_content.indexnow, "enqueue_content_published", _enqueue)
+
+    await admin_content.update_content(
+        hospital.id, item.id, admin_content.ContentPatch(**patch), db=_PatchDB(item)
+    )
+    return dispatched, submitted
+
+
+async def test_title_edit_on_a_published_item_dispatches_image_recertification(monkeypatch):
+    """인증을 지운 편집은 재인증을 예약하고, 아직 숨겨진 판을 색인에 제출하지 않는다."""
+    item, philosophy_id = _published_orm()
+
+    dispatched, submitted = await _patch_published(
+        monkeypatch, item, philosophy_id, {"title": "치질 증상과 진료 시점"}
+    )
+
+    assert item.image_policy_verified_at is None
+    assert dispatched == ["RECERTIFY_PUBLISHED_IMAGE"]
+    assert submitted == []
+
+
+async def test_body_edit_that_keeps_the_certificate_only_resubmits_the_index(monkeypatch):
+    item, philosophy_id = _published_orm()
+
+    dispatched, submitted = await _patch_published(
+        monkeypatch, item, philosophy_id, {"body": "고쳐 쓴 본문 " * 300}
+    )
+
+    assert item.image_policy_verified_at is not None
+    assert dispatched == []
+    assert submitted == [item.id]
 
 
 def test_visible_item_still_shows_the_notification_label_when_not_sent():

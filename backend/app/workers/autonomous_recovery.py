@@ -75,6 +75,9 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
     "REGENERATE_CONTENT_IMAGE": _RedispatchPolicy(
         "app.workers.tasks.generate_content_image", "content", "content_item"
     ),
+    "RECERTIFY_PUBLISHED_IMAGE": _RedispatchPolicy(
+        "app.workers.tasks.recertify_published_content_image", "content", "content_item"
+    ),
 }
 
 

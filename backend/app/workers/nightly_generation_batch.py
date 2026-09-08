@@ -98,6 +98,34 @@ def write_back_generated_image(
     return result.rowcount
 
 
+def write_back_published_image_certificate(
+    db,
+    *,
+    item_id,
+    expected_title: str | None,
+    expected_revision: int,
+    values: dict[str, Any],
+) -> int:
+    """공개 중인 글의 이미지 인증만 갱신한다. 판(content_revision)·claim은 건드리지 않는다.
+
+    `write_back_generated_image`는 생성 상태(DRAFT/REJECTED/READY)만 대상이라 공개 글에는
+    0행을 돌려준다. 공개 글의 재인증은 상태·제목·판이 그대로일 때만 저장한다 — 그 사이
+    편집이 있었다면 그 편집이 다시 재인증을 요청한다.
+    """
+    result = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id == item_id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.title == expected_title,
+            ContentItem.content_revision == expected_revision,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
+
+
 # STEP 7 자동 생성은 공개 활성화가 끝난 병원만 대상으로 한다. PENDING_DOMAIN
 # pre-warm은 공개되지 않을 초안에 비용을 쓰고 STEP 5/6 순서를 우회하므로 제외한다.
 NIGHTLY_GENERATION_HOSPITAL_STATUSES = (HospitalStatus.ACTIVE,)

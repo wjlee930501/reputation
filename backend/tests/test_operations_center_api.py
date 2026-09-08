@@ -197,6 +197,7 @@ def test_retry_task_policies_match_celery_routes_and_consumed_queues() -> None:
         "GENERATE_MONTHLY_REPORT": "reports",
         "REGENERATE_CONTENT": "content",
         "REGENERATE_CONTENT_IMAGE": "content",
+        "RECERTIFY_PUBLISHED_IMAGE": "content",
     }
 
     for operation_type, policy in _TASK_POLICIES.items():
