@@ -12,6 +12,20 @@
 
 ---
 
+## 실행 결과 (2026-09-09)
+
+| Task | 커밋 | 검수 |
+|---|---|---|
+| 1 서버 `profile_complete` 파생 | `1d94791` | body 필드 제거·`missing_profile_requirements` 라벨·`visual_approval_missing` 상세 응답 |
+| 2 채널 저장 → 자료 자동 등록 | `f0b5d72` → `86814c6` | 검토 후 **durable 재설계**: 행 먼저 생성(fetch 없음) → `fetch_channel_source` worker(재시도 3회·15분 쿨다운) → 예산 소진·영구 실패는 인시던트(`source_fetch`), 처리 실패도 인시던트(`source_processing`); URL 정규화 중복 검출; 응답 `QUEUED/SKIPPED/FAILED` |
+| 3 info 사실 입력 | `1032ed9` → `86814c6` | 남은 필수 항목 바·저장 1버튼·자동 입력 모달; 섹션별 allowlist payload(`factsPatchPayload`/`brandPatchPayload`)로 **다른 섹션 값을 덮어쓰지 않음**; 헤더 갱신 시 dirty 아닌 섹션 재시드 |
+| 4 브랜드·로고·사진·도메인 | `3260de7` → `13e9534` | `ClinicVisualForm`·`ClinicLogoField`·`PhotoRightsFields` 추출(온보딩이 import); 승인 칩 대신 "기본값 사용 중"; 사진 업로드가 **"공개 안 함"을 존중**(기존 서버 버그 수정); 문서 업로드 PDF·DOCX만 + `attachment/nosniff` 서빙(저장형 XSS 경로 차단) |
+| 5 근거 자료·노트 | `cf6ceeb` → `86814c6` `13e9534` | 읽기 전용 상태(가져오는 중/재시도 대기/처리 실패—운영 센터)·업로드·제외·행 펼침 노이즈 토글(pending 중 비활성); 네이버 대량 폼 `info/`로 이동, info에서는 재수집 버튼 없음; 자동 입력 모달 a11y |
+| 파생 규칙 | — | 새로 비운 필수 항목 + 운영 중 → 409(라벨 포함, "일시정지" 안내 없음) / 새로 비움 + 비운영 → False / 레거시 공백만 → True 유지·목록에 표시 / 미완료 → 파생값; body `profile_complete`는 422(`extra="forbid"`) |
+| 검증 | — | 아래 체크포인트 검증 참조 |
+
+기록만 한 지적: `DomainSetupPanel`의 수동 도메인 확인·플랫폼 활성화 버튼(§2 밖, 잠정 유지 — PR-1E에서 자동 폴링만 남길지 결정); 업로드 시 자료 유형 선택·제목 입력은 업로드 입력으로 허용; `EDITORIAL_GRAPHIC`은 info에서 업로드 불가(온보딩까지만); 감사 행이 자료당 2건(`crawl_source_url` + `profile_channel_source_registered`); 옛 profile 화면의 "완료로 표시" 체크박스는 무동작(PR-1E 삭제); 정규화 밖의 URL 변형(경로 대소문자 등)은 중복 가능.
+
 ## 환경 준비
 PR-0C 계획의 env 명령. backend 전체 suite는 Task 6에서만.
 
