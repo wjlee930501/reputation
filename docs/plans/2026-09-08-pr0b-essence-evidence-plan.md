@@ -546,6 +546,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 4: 예외 승인은 자동 검수 finding을 재확인하고 사유를 요구한다 (H-03)
 
+> **실행 기록 (2026-09-08):** 구현 `e2fbdd3`. 검수에서 우회 경로 발견 — `PhilosophyPatch.unsupported_gaps`가 편집 가능해 클라이언트가 PATCH로 finding을 비운 뒤 승인하면 게이트를 지나칠 수 있었다(admin의 `persistThenApprove`가 실제로 승인 직전에 PATCH한다). 후속 커밋에서 `automatic_ai_review`·자동 복구 사이클 항목을 **서버 소유 gap 필드**로 정의해 모든 PATCH에서 보존한다. 지우는 유일한 경로는 Task 5의 재검수 요청이다.
+
 **Files:**
 - Modify: `backend/app/schemas/essence.py:108` (`PhilosophyApprove`)
 - Modify: `backend/app/api/admin/essence.py` `approve_philosophy` (grounding 검사 직후)
