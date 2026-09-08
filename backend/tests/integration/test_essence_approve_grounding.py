@@ -558,6 +558,40 @@ async def test_changed_snapshot_still_blocks_an_overridden_approval(pg_async_ses
 
 
 @pytest.mark.asyncio
+async def test_approve_rejects_a_draft_declaring_sources_outside_the_required_set(
+    pg_async_session,
+):
+    """M-01 후속: snapshot hash가 같아도 초안이 선언한 자료 집합이 다르면 승인하지 않는다.
+
+    hash는 지금 필수인 자료만 요약하므로, 초안이 본문 없는 URL 전용 자료까지 근거로
+    선언해 두면 hash 비교만으로는 그 차이를 볼 수 없다.
+    """
+    hospital, draft, note = await _seed_draft(pg_async_session, mapped_note_ids=[])
+    draft.evidence_map = {"positioning_statement": [str(note.id)]}
+    url_only = HospitalSourceAsset(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        source_type=SourceType.HOMEPAGE,
+        title="홈페이지",
+        url="https://clinic.example.com",
+        raw_text=None,
+        content_hash=f"{uuid.uuid4().hex[:8]}-url-only",
+        status=SourceStatus.PENDING,
+    )
+    pg_async_session.add(url_only)
+    draft.source_asset_ids = [*(draft.source_asset_ids or []), str(url_only.id)]
+    await pg_async_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await _approve_as_verified(pg_async_session, hospital.id, draft.id)
+
+    assert exc.value.status_code == 409
+    assert "자료 집합이 다릅니다" in exc.value.detail
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.DRAFT
+
+
+@pytest.mark.asyncio
 async def test_patch_cannot_erase_automatic_review_findings(pg_async_session):
     """H-03: PATCH로 finding을 비우고 승인하는 우회를 막는다."""
     hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)

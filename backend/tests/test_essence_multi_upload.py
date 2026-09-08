@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 
 from app.api.admin.essence import (
+    _clean_optional,
     _filename_without_extension,
     resolve_upload_title,
     should_revalidate_after_public_photo_upload,
@@ -116,3 +117,21 @@ class TestSkipRevalidateContract:
             for _ in range(3)
         ]
         assert skipped == [False, False, False]
+
+
+class TestCleanOptional:
+    """저장 직전 정규화 — 처리할 수 없는 본문이 "본문 있음"으로 들어오지 않게 한다."""
+
+    def test_ascii_whitespace_only_becomes_none(self):
+        assert _clean_optional(" \t\n") is None
+
+    def test_unicode_whitespace_only_becomes_none(self):
+        # 전각 공백·NBSP만 있는 본문도 워커의 .strip() 기준으로는 빈 본문이다.
+        assert _clean_optional("\u3000") is None
+        assert _clean_optional(" \u00a0\u3000") is None
+
+    def test_real_text_keeps_its_content_without_surrounding_space(self):
+        assert _clean_optional("  진료 안내  ") == "진료 안내"
+
+    def test_none_stays_none(self):
+        assert _clean_optional(None) is None

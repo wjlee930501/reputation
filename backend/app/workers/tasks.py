@@ -114,6 +114,7 @@ from app.services.essence_readiness import (
     get_current_approved_philosophy_sync,
     get_essence_readiness_sync,
 )
+from app.services.essence_sources import required_text_source_predicate
 from app.services.hospital_activation import (
     AUTO_ACTIVATE_ACTOR,
     activate_hospital_sync,
@@ -2567,7 +2568,9 @@ def _create_runs_for_orphan_pending_sources(*, limit: int = 200) -> list[uuid.UU
                 select(HospitalSourceAsset)
                 .where(
                     HospitalSourceAsset.status == SourceStatus.PENDING,
-                    HospitalSourceAsset.raw_text.is_not(None),
+                    # 본문 없는 행을 LIMIT 뒤 Python에서 걸러내면, 앞줄이 전부 URL 전용일 때
+                    # 뒤의 처리 가능한 자료가 영원히 굶는다. 필수 판정은 SQL에서 한 번에 한다.
+                    required_text_source_predicate(),
                 )
                 .order_by(HospitalSourceAsset.created_at.asc())
                 .limit(limit)
@@ -2577,7 +2580,7 @@ def _create_runs_for_orphan_pending_sources(*, limit: int = 200) -> list[uuid.UU
         )
         created_ids: list[uuid.UUID] = []
         for source in pending:
-            if str(source.id) in owned_ids or not (source.raw_text or "").strip():
+            if str(source.id) in owned_ids:
                 continue
             # Multiple beat instances may overlap during rollout. Serialize the
             # active-run check and insert so random retry suffixes cannot create

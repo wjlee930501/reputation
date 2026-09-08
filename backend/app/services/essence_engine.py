@@ -30,7 +30,6 @@ from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_expo
 from app.core.config import settings
 from app.models.content import ContentItem
 from app.models.essence import (
-    PHOTO_SOURCE_TYPES,
     EvidenceNoteType,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -39,6 +38,7 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital
+from app.services.essence_sources import required_text_source_predicate
 from app.utils.anthropic_retry import is_retryable_anthropic_error
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
@@ -1549,18 +1549,16 @@ def get_approved_philosophy_sync(db, hospital_id: Any) -> HospitalContentPhiloso
 def build_monthly_essence_summary(
     db, hospital: Hospital, period_start: datetime, period_end: datetime
 ) -> dict[str, Any]:
+    # 사진은 공개 자산 검수 대상이지 글쓰기 기준의 근거 자료가 아니다. 제외 자료와 원문이
+    # 없는 URL 전용 자료 역시 현재 기준의 필수 분모가 아니다. 이 정의는 실시간 게이트와
+    # 반드시 같아야 하므로 readiness·승인과 같은 predicate 하나만 쓴다.
     source_result = db.execute(
-        select(HospitalSourceAsset).where(HospitalSourceAsset.hospital_id == hospital.id)
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.hospital_id == hospital.id,
+            required_text_source_predicate(),
+        )
     )
-    sources = source_result.scalars().all()
-    # 사진은 공개 자산 검수 대상이지 글쓰기 기준의 근거 자료가 아니다. 제외 자료 역시
-    # 현재 기준에서 명시적으로 빠졌으므로 월간 Essence 완결성 분모에 포함하지 않는다.
-    # 이 정의는 services/essence_readiness.py의 실시간 게이트와 반드시 같아야 한다.
-    required_sources = [
-        source
-        for source in sources
-        if source.status != SourceStatus.EXCLUDED and source.source_type not in PHOTO_SOURCE_TYPES
-    ]
+    required_sources = list(source_result.scalars().all())
     processed_sources = [
         source for source in required_sources if source.status == SourceStatus.PROCESSED
     ]

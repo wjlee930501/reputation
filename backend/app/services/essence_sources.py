@@ -8,15 +8,21 @@
 from __future__ import annotations
 
 from sqlalchemy import and_, func
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.essence import PHOTO_SOURCE_TYPES, HospitalSourceAsset, SourceStatus
 
 # btrim은 인자가 하나면 공백만 깎는다. 줄바꿈·탭만 있는 본문도 "없음"으로 봐야 하므로
-# Python의 str.strip()과 같은 공백 집합을 명시한다.
-_BLANK_CHARS = " \t\n\r\f\v"
+# Python의 str.strip()과 같은 공백 집합을 그대로 적는다. 워커는 .strip()이 빈 문자열이면
+# 처리를 거부하므로, 여기서 집합이 좁으면 NBSP·전각 공백만 있는 본문이 "필수인데 처리 불가"가 된다.
+_BLANK_CHARS = (
+    "\t\n\x0b\x0c\r\x1c\x1d\x1e\x1f \x85\xa0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
 
 
-def required_text_source_predicate():
+def required_text_source_predicate() -> ColumnElement[bool]:
     return and_(
         HospitalSourceAsset.status != SourceStatus.EXCLUDED,
         HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),

@@ -1066,6 +1066,9 @@ async def upload_source_file(
         raw_text = await asyncio.to_thread(extract_pdf_text, data) or None
     elif extractor_kind == "DOCX":
         raw_text = await asyncio.to_thread(extract_docx_text, data) or None
+    # 공백만 뽑힌 추출 결과는 본문이 아니다. 여기서 None으로 눕히지 않으면 처리도 승인도
+    # 할 수 없는 자료가 "본문 있음"으로 저장된다.
+    raw_text = _clean_optional(raw_text)
 
     final_title = resolve_upload_title(title, file.filename)
 
@@ -1212,16 +1215,19 @@ async def crawl_source_url(
             detail="페이지 제목을 찾지 못했습니다. 자료 제목을 직접 입력해 주세요.",
         )
 
+    crawled_text = _clean_optional(text)
     await acquire_hospital_advisory_lock(db, hospital_id)
     source = HospitalSourceAsset(
         hospital_id=hospital_id,
         source_type=body.source_type,
         title=final_title,
         url=body.url.strip(),
-        raw_text=text or None,
+        raw_text=crawled_text,
         operator_note=_clean_optional(body.operator_note),
         source_metadata={"crawled_at": datetime.now(timezone.utc).isoformat()},
-        content_hash=compute_source_content_hash(final_title, body.url, text, body.operator_note),
+        content_hash=compute_source_content_hash(
+            final_title, body.url, crawled_text, body.operator_note
+        ),
         status=SourceStatus.PENDING,
         created_by=body.created_by,
     )
@@ -1788,12 +1794,20 @@ async def approve_philosophy(
         )
     current_sources = required_sources
     current_snapshot_hash = compute_sources_snapshot_hash(current_sources)
-    if not current_sources or philosophy.source_snapshot_hash != current_snapshot_hash:
+    # snapshot hash는 지금 필수인 자료들만 요약한다. 초안이 선언한 자료 집합이 그보다
+    # 넓으면(예: 본문 없는 URL 전용 자료) hash는 같아도 승인 근거가 달라진다.
+    draft_source_ids = {str(source_id) for source_id in (philosophy.source_asset_ids or [])}
+    current_source_ids = {str(source.id) for source in current_sources}
+    if (
+        not current_sources
+        or philosophy.source_snapshot_hash != current_snapshot_hash
+        or draft_source_ids != current_source_ids
+    ):
         raise HTTPException(
             status_code=409,
             detail=(
-                "초안 생성 후 처리된 병원 자료가 변경되었습니다. 현재 전체 자료로 "
-                "콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+                "초안 생성 후 처리된 병원 자료가 변경되었습니다(자료 집합이 다릅니다). "
+                "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
             ),
         )
 

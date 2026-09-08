@@ -13,7 +13,10 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
-from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.essence_engine import (
+    build_monthly_essence_summary,
+    compute_sources_snapshot_hash,
+)
 from app.services.essence_readiness import get_essence_readiness
 from app.services.evidence_noise import compute_evidence_noise_hash
 
@@ -97,3 +100,32 @@ async def test_whitespace_only_text_counts_as_no_text(pg_async_session):
     await pg_async_session.commit()
     readiness = await get_essence_readiness(pg_async_session, hospital.id)
     assert readiness.required_source_count == 1
+
+
+@pytest.mark.asyncio
+async def test_unicode_whitespace_only_text_counts_as_no_text(pg_async_session):
+    """워커는 str.strip()으로 빈 본문을 거부한다 — DB 판정이 좁으면 처리 불가 자료가 필수가 된다."""
+    hospital, approved, url_only = await _seed(pg_async_session)
+    # NBSP·전각 공백·줄 구분자 — 모두 Python의 str.strip()이 깎는 문자다.
+    url_only.raw_text = " \u00a0\u3000\u2028\u205f"
+    await pg_async_session.commit()
+    readiness = await get_essence_readiness(pg_async_session, hospital.id)
+    assert readiness.required_source_count == 1
+    assert readiness.current is not None and readiness.current.id == approved.id
+
+
+@pytest.mark.asyncio
+async def test_monthly_summary_uses_the_same_required_source_set(pg_async_session):
+    """월간 완결성 집계도 실시간 게이트와 같은 분모를 써야 한다 — 아니면 매달 stale로 보고된다."""
+    hospital, _approved, _url_only = await _seed(pg_async_session)
+
+    summary = await pg_async_session.run_sync(
+        build_monthly_essence_summary,
+        hospital,
+        datetime(2026, 5, 1, tzinfo=timezone.utc),
+        datetime(2026, 5, 31, tzinfo=timezone.utc),
+    )
+
+    assert summary["source_count"] == 1
+    assert summary["processed_source_count"] == 1
+    assert summary["source_stale"] is False

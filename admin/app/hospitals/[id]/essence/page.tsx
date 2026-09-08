@@ -14,6 +14,7 @@ import {
 import { sourceUrlWarning } from '@/lib/source-url-warnings'
 import {
   describePhotoSourceExclusion,
+  isRequiredTextSource,
   splitEssenceSources,
 } from '@/lib/essence-source-split'
 import {
@@ -568,8 +569,8 @@ export default function EssencePage() {
             value={`${sourceSplit.processedTextCount} / ${sourceSplit.textSourceCount}`}
             hint={
               sourceSplit.photoSources.length > 0
-                ? `처리완료 / 전체 · 사진 ${sourceSplit.photoSources.length}장 제외`
-                : '처리완료 / 전체'
+                ? `처리완료 / 필수 자료 · 사진 ${sourceSplit.photoSources.length}장 제외`
+                : '처리완료 / 필수 자료'
             }
           />
           <SummaryCard
@@ -764,6 +765,8 @@ export default function EssencePage() {
               )}
               {sourceSplit.textSources.map((source) => {
                 const statusStyle = getSourceStatusStyle(source)
+                // 서버가 400으로 돌려보내는 자료에는 버튼을 열어 두지 않는다.
+                const canExtract = isRequiredTextSource(source)
                 return (
                   <tr key={source.id} className="hover:bg-slate-50/70">
                     <td className="px-4 py-4" data-primary="true">
@@ -808,9 +811,15 @@ export default function EssencePage() {
                         </button>
                         <button
                           onClick={() => processSource(source.id)}
-                          disabled={actionLoading === `process-${source.id}` || source.status === 'EXCLUDED'}
+                          disabled={actionLoading === `process-${source.id}` || !canExtract}
                           className="px-2.5 py-1 bg-blue-50 text-blue-700 text-xs rounded hover:bg-blue-100 border border-blue-200 disabled:opacity-50"
-                          title="원문에서 근거 노트를 추출합니다."
+                          title={
+                            canExtract
+                              ? '원문에서 근거 노트를 추출합니다.'
+                              : source.status === 'EXCLUDED'
+                                ? '제외한 자료는 추출할 수 없습니다.'
+                                : '원문이 없는 자료는 추출할 수 없습니다'
+                          }
                         >
                           {actionLoading === `process-${source.id}`
                             ? '처리중...'
