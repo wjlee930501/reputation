@@ -106,11 +106,13 @@ UNIFIED_TERM_PATHS = [
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
 
 # Internal docs/comments that are not shown to operators can be allowed by path.
+# 백엔드 내부 모듈만 제외한다. admin/site 아래에 같은 이름의 디렉터리를 만들어
+# 화면 문구를 숨기는 우회를 막기 위해 backend/ 경로에만 적용한다.
 ALLOW_PATH_FRAGMENTS = {
-    "alembic/",
-    "models/",
-    "schemas/",
-    "tests/",
+    "backend/alembic/",
+    "backend/app/models/",
+    "backend/app/schemas/",
+    "backend/tests/",
 }
 
 
