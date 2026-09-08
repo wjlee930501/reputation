@@ -155,6 +155,41 @@ def test_domain_setup_certificate_step_is_done_when_live_and_no_job_state(monkey
     assert statuses["certificate_ready"] == "DONE"
 
 
+def test_domain_setup_certificate_step_stays_waiting_while_waiting_even_if_live(monkeypatch):
+    """배지와 동일: WAITING은 비어 있는 상태가 아니므로 관측만으로 완료가 아니다."""
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at=datetime(2026, 8, 22, 2, 0, tzinfo=timezone.utc),
+        domain_cert_job_state="WAITING",
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        domain_last_check_ok=True,
+        domain_last_check_reason="https_ok",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    statuses = {item["key"]: item["status"] for item in response.json()["checklist"]}
+    assert statuses["certificate_ready"] == "WAITING"
+
+
+def test_domain_setup_certificate_step_stays_waiting_while_failed_even_if_live(monkeypatch):
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at=datetime(2026, 8, 22, 2, 0, tzinfo=timezone.utc),
+        domain_cert_job_state="FAILED",
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        domain_last_check_ok=True,
+        domain_last_check_reason="https_ok",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    statuses = {item["key"]: item["status"] for item in response.json()["checklist"]}
+    assert statuses["certificate_ready"] == "WAITING"
+
+
 def test_domain_setup_returns_apex_address_plan(monkeypatch):
     monkeypatch.setattr(settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20,2600:1901::1")
     hospital = _hospital(
