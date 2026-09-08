@@ -10,6 +10,18 @@
 
 ---
 
+## 실행 결과 (2026-09-09)
+
+| Task | 커밋 | 검수 |
+|---|---|---|
+| 1 예외 카드 행동·배정 API·자동 배정 | `3ca8d5a` → `b0ffa1d` → `dc537f3` | 행동 enabled 규칙 = 라우트 가드(OWNER/assignee, run SUCCEEDED); `assign`·`resolve`·`member_incident_ids`; 자동 배정은 **세 경로**(async open·generic Celery 실패·unsafe redispatch) 공통 `incident_assignment` 서비스, 비활성 AE 제외, Slack 표시 반영; 큐는 `requires_operator_action` 선필터 후 그룹·페이지(창 내 RETRYING은 pending 별도, 페이지·총계 미점유); 배정 라우트가 테스트 계정 거부; run.retry actor-aware |
+| 2 현황 화면 | `04d8fa8` → `dc537f3` | `overview` 한 호출; 예외 카드가 서버 허용 행동을 직접 실행(상세 로딩 완료 전 제출 불가, SLA echo); 예외 초안 카드는 finding→편집→재검수/예외 승인(근거 자료 게이트 동일); 재검수 안내는 페이지 수준 유지 |
+| 3 운영 센터 배정 UI·용어 | `21d93d4` → `dc537f3` | run 연결 인시던트도 상세를 병렬 로드해 배정 가능; 딥링크 resolver(정확 id → 그룹 멤버 → 직접 조회); 409/403 사유 구분·재조회 |
+| 4 온보딩 문구·비활성 AE | `b0ffa1d` | — |
+| 검토 | — | Fable·Codex 각 1라운드 + 통합 수정(`dc537f3`); 잔여 지적 없음(체크포인트 2 Astra에서 재확인) |
+
+설계 밖 결정: H-15(인시던트 배정)를 PR-0D에서 이 PR로 이동해 구현 완료.
+
 ## 환경 준비
 PR-0C 계획의 env 명령(worktree `reputation-phase1`에서 실행; `.venv`·`node_modules`는 본 체크아웃과 공유). backend 전체 suite는 Task 5에서만.
 

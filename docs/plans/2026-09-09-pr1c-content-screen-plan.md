@@ -14,6 +14,15 @@
 
 ---
 
+## 실행 결과 (2026-09-09)
+
+| Task | 커밋 | 검수 |
+|---|---|---|
+| 1 백엔드 `row_state`·인시던트 링크 | `6375399`(체크포인트 1에 포함) → `acb0686` | 링크를 운영 센터 쿼리 계약(`/operations?queue=incidents&hospital_id=…&detail=incident:{id}`)으로, `requires_operator_action` 적용, 최신 run만·FAILED일 때만 링크, 기한 지난 빈 초안 차단 |
+| 2 월 표·상세 | `c3e8fcc` → `acb0686` → `dc537f3` | 페이지 2,102→1,350줄; 운영 복구 버튼 6종 제거; **설계 판단: 결함이 확인된 공개 글은 표본 여부와 무관하게 사람이 내릴 수 있다**(반려에 사유 필수·검증된 actor 감사) |
+| 3 발행 요일 섹션·읽기 전용 신호 | `0f240b3` → `acb0686` | schedule 페이지 1:1 이식(운영 미리보기 aside 제외), 신호는 GET 전용, KST 측정일 |
+| 검토 | — | Fable·Codex 각 1라운드 + 통합 수정 라운드(`acb0686`, `dc537f3`) |
+
 ## 환경 준비
 PR-0C 계획의 env 명령. backend 전체 suite는 Task 6에서만.
 
