@@ -80,7 +80,11 @@ export function getContentOperationsState(item: ContentOperationsItem): ContentO
     // 모르는 상태를 초록으로 칠하면 admin만 공개라고 말하는 그 사고가 그대로 돌아온다.
     if (item.compliance?.public_visibility?.visible !== true) return 'withheld'
     if (item.post_publish_reviewed_at) return 'published'
-    if (item.display?.review?.notification_state === 'NOT_REQUIRED') return 'published'
+    if (item.display?.review?.notification_state === 'NOT_REQUIRED') {
+      // Slack 알림이 필요 없는 공개(수동 발행 등)라도 표본이면 backend 예외 큐가 센다.
+      // 여기서 먼저 '공개 중'으로 접으면 화면 숫자가 큐보다 작아 AE가 대기 건을 못 본다.
+      return item.post_publish_review_required === true ? 'postReviewPending' : 'published'
+    }
     if (item.display?.review?.notification_state !== 'SENT') return 'notificationPending'
     // 확인 대기 집계는 backend 예외 큐(human_post_publish_review_predicate)와 같은 표본만
     // 세야 한다 — 아니면 화면 숫자가 큐보다 항상 크고, AE는 처리할 수 없는 건수를 본다.

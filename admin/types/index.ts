@@ -143,8 +143,8 @@ export interface ContentItem {
   post_publish_reviewed_at?: string | null
   post_publish_reviewed_by?: string | null
   // 사람이 확인해야 하는 표본인지 (backend post_publish_review_policy). 표본이 아니면
-  // 확인 버튼도 대기 배지도 띄우지 않는다.
-  post_publish_review_required?: boolean
+  // 확인 버튼도 대기 배지도 띄우지 않는다. Pydantic이 항상 내려주는 필수 값이다.
+  post_publish_review_required: boolean
   content_philosophy_id?: string | null
   query_target_id?: string | null
   exposure_action_id?: string | null
@@ -312,7 +312,8 @@ export interface AIQueryTarget {
   competitor_names: string[]
   priority: AIQueryTargetPriority
   status: AIQueryTargetStatus
-  in_tracking_set?: boolean
+  // 고정 관측 슬롯에 들어간 질문인지. Pydantic이 항상 내려주는 필수 값이다.
+  in_tracking_set: boolean
   display?: {
     priority_label?: string | null
     status_label?: string | null

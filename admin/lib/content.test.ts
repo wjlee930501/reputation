@@ -84,6 +84,16 @@ test('content operations state distinguishes Slack retry, post-review, and revie
     }),
     'published',
   )
+  // 알림이 필요 없는 공개(수동 발행)라도 표본이면 backend 예외 큐가 센다.
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      compliance: VISIBLE,
+      post_publish_review_required: true,
+      display: { review: { notification_state: 'NOT_REQUIRED' } },
+    }),
+    'postReviewPending',
+  )
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',

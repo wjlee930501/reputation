@@ -602,14 +602,17 @@ async def update_content(
     if body.faq_answer_summary is not None:
         item.faq_answer_summary = body.faq_answer_summary
 
-    if body_changed:
-        item.body_updated_at = datetime.now(timezone.utc)
-
     # 공개 후 확인 기록은 그 당시 본문에 대한 기록이다. 공개 필드가 바뀌면 이전 확인을
     # 무효화해 Admin 목록에서 다시 공개 내용 확인 대기로 보이게 한다.
     public_fields_changed = bool(body.model_fields_set & set(FORBIDDEN_CHECK_FIELDS)) or (
         "references" in body.model_fields_set
     )
+    # body_updated_at은 컬럼 이름과 달리 "공개 텍스트가 편집된 시각"이다. 제목·meta·FAQ·
+    # 참고자료도 공개 표면에 나가는 텍스트인데 본문 변경만 기록하면, 공개 뒤 제목만 고친
+    # 글이 사람 확인 표본(post_publish_review_policy)과 Site 재검증 키에서 빠진다.
+    if body_changed or (was_published and public_fields_changed):
+        item.body_updated_at = datetime.now(timezone.utc)
+
     if was_published and public_fields_changed:
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
@@ -1441,11 +1444,19 @@ def _serialize_item_display(
             )
         review["notification_state"] = notification["state"]
         review["notification"] = notification
+        pending_review_sample = is_human_post_publish_review_sample(item) and (
+            getattr(item, "post_publish_reviewed_at", None) is None
+        )
         if visibility.visible and notification["state"] != "SENT":
             # 공개 보류는 알림 상태보다 앞선다 — 글 자체가 공개 페이지에 없다는 사실을
             # 알림 문구가 덮으면 AE는 다시 "무엇이 잘못됐는지" 볼 수 없다.
-            review["label"] = notification["label"]
-            review["reason"] = notification["problem"] or notification["next_action"]
+            #
+            # 다만 알림이 필요 없는 공개(수동 발행 등, NOT_REQUIRED)에서 "자동 관제 중"이
+            # 표본의 문구를 덮으면, 예외 큐에는 있는 글이 화면에서는 할 일 없는 글로
+            # 보인다. 표본 여부가 알림 없음보다 앞선다(M-21).
+            if not (notification["state"] == "NOT_REQUIRED" and pending_review_sample):
+                review["label"] = notification["label"]
+                review["reason"] = notification["problem"] or notification["next_action"]
     return {
         "content_type_label": _display_label(CONTENT_TYPE_DISPLAY_LABELS, content_type),
         "status_label": _display_label(CONTENT_STATUS_DISPLAY_LABELS, status_value),

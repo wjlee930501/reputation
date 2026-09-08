@@ -448,7 +448,12 @@ export default function SchedulePage() {
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
                 <dt className="text-slate-500">월간 운영량</dt>
                 <dd className="font-medium text-slate-900">
+                  {/* 계약 정정 뒤 일정이 아직 옛 요금제면, 되돌릴 수 없는 교체가 편수까지
+                      바꾼다는 사실을 확인 문구가 감추면 안 된다. */}
                   {PLAN_LABELS[existing.plan] ?? existing.plan}
+                  {plan && plan !== existing.plan
+                    ? ` → ${PLAN_LABELS[plan] ?? plan}`
+                    : ''}
                 </dd>
               </div>
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">

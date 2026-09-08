@@ -14,6 +14,7 @@ from app.services.image_engine import (
     image_content_hash_from_url,
     image_subject_hash,
 )
+from app.services.post_publish_review_policy import is_human_post_publish_review_sample
 
 
 def _published(**overrides):
@@ -340,6 +341,41 @@ def test_reviewed_sample_no_longer_asks_for_confirmation():
 
     assert serialized["post_publish_review_required"] is False
     assert serialized["display"]["review"]["label"] == "공개 내용 확인 완료"
+
+
+def test_sample_without_a_notification_still_asks_for_confirmation():
+    """알림이 필요 없는 공개(수동 발행)에서도 표본은 확인 대기다 — '자동 관제 중'이 덮으면
+    예외 큐에는 있는 글이 화면에서는 할 일 없는 글로 보인다(M-21)."""
+    item, philosophy_id = _published(sequence_no=1)
+
+    serialized = _serialize(item, philosophy_id)
+
+    review = serialized["display"]["review"]
+    assert serialized["post_publish_review_required"] is True
+    assert review["notification_state"] == "NOT_REQUIRED"
+    assert review["label"] == "공개 내용 확인 대기"
+
+
+def test_non_sample_without_a_notification_stays_under_automatic_control():
+    item, philosophy_id = _published(sequence_no=7)
+
+    review = _serialize(item, philosophy_id)["display"]["review"]
+
+    assert review["notification_state"] == "NOT_REQUIRED"
+    assert review["label"] == "자동 관제 중"
+
+
+async def test_title_only_edit_after_publish_enters_the_review_sample(monkeypatch):
+    """제목·meta·FAQ·참고자료도 공개 표면 텍스트다 — 본문만 봤을 때는 표본에서 빠졌다."""
+    item, philosophy_id = _published_orm(sequence_no=7)
+
+    await _patch_published(
+        monkeypatch, item, philosophy_id, {"title": "치질 증상과 진료 시점"}
+    )
+
+    assert item.body_updated_at is not None
+    assert item.body_updated_at > item.published_at
+    assert is_human_post_publish_review_sample(item) is True
 
 
 def test_withheld_sample_still_reads_as_withheld():
