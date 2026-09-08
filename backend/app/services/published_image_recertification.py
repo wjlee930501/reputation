@@ -8,9 +8,13 @@ PATCH 디스패치(API)·재인증 태스크(worker)·복구 sweep·운영자 �
 실제로 인증하는 것이 subject이고, 판은 제목을 건드리지 않는 편집·Essence 재승인으로도
 올라가 예산을 되살리고 표시를 지우고 같은 거절로 두 번째 incident를 열었다.
 
-불변식: **유료 호출을 한 실행은 어떤 경우에도 세지 않고 넘어갈 수 없다.** 종결된 실행은
-물론, 좌초해(하드 제한 + 여유를 넘도록 종결 기록이 없는) 결과를 남기지 못한 실행도
-이미 돈을 썼을 수 있으므로 시도 하나로 센다.
+불변식: **유료 호출을 한 태스크 실행(execution)은 어떤 경우에도 세지 않고 넘어갈 수
+없다.** 예산은 실행 행(run) 수가 아니라 그 행이 돈 execution 수로 센다 —
+`task_acks_late`·`task_reject_on_worker_lost` 아래에서 worker가 유료 호출 도중 죽으면
+broker가 같은 task를 재배달하고 prerun이 같은 행을 다시 claim하며 `attempt_count`를
+올린다. 행은 하나지만 돈은 두 번 나갈 수 있다. 종결된 실행은 물론, 좌초해(하드 제한 +
+여유를 넘도록 종결 기록이 없는) 결과를 남기지 못한 실행도 이미 돈을 썼을 수 있으므로
+그 `attempt_count`만큼(최소 하나) 센다.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.content import ContentItem, ContentStatus
 from app.models.operations import JSONValue, OperationRun, OperationRunState
 from app.services.image_engine import image_subject_hash
+from app.services.incident_safety import build_incident_key
+from app.services.incident_types import IncidentFingerprint
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
 
 RECERTIFY_OPERATION: Final = "RECERTIFY_PUBLISHED_IMAGE"
@@ -64,6 +70,11 @@ _NON_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
 # 제외해 다른 글의 자리를 뺏지 않게 한다.
 MARKER_FIELD: Final = "image_recertification"
 
+# 차단 incident의 신원. 차단 세 코드는 지문 하나를 공유해 (글, subject)당 한 건이 된다.
+INCIDENT_PIPELINE: Final = "content_generation"
+INCIDENT_OBJECT_TYPE: Final = "content_item"
+INCIDENT_FINGERPRINT: Final = IncidentFingerprint.RENDER_FAILED
+
 SAFE_MESSAGES: Final[dict[str, str]] = {
     PUBLISHED_IMAGE_RECERTIFY_REJECTED: (
         "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다."
@@ -96,6 +107,27 @@ def sweep_key(item_id: uuid.UUID | str, subject_hash: str, attempt: int) -> str:
     """sweep 재실행 키. 종결된 같은 키를 dispatch가 '이미 실행함'으로 오인하지 않게 한다."""
 
     return f"{base_key(item_id, subject_hash)}:s{attempt}"
+
+
+def incident_object_id(item_id: uuid.UUID | str, subject_hash: str) -> str:
+    """사람이 결정하는 단위 — (글, subject). 다음 제목 편집은 다른 건이다."""
+
+    return f"{item_id}:{subject_hash[:16]}"
+
+
+def incident_dedupe_key(item_id: uuid.UUID | str, subject_hash: str) -> str:
+    """이 (글, subject) 차단 incident의 중복 제거 키.
+
+    성공한 subject가 자기 건만 닫도록, 사고를 여는 쪽과 닫는 쪽이 같은 키를 여기서 읽는다.
+    차단 세 코드는 지문을 공유하므로 (글, subject)당 키는 하나다.
+    """
+
+    return build_incident_key(
+        INCIDENT_PIPELINE,
+        INCIDENT_OBJECT_TYPE,
+        incident_object_id(item_id, subject_hash),
+        INCIDENT_FINGERPRINT,
+    )
 
 
 def request_payload(
@@ -168,21 +200,37 @@ def _is_stranded(run: OperationRun, *, now: datetime) -> bool:
     return activity is not None and activity <= now - IN_FLIGHT_TIMEOUT
 
 
+def _executions_spent(run: OperationRun, *, now: datetime) -> int:
+    """이 실행 행이 이미 태운 태스크 실행 수.
+
+    `attempt_count`는 prerun의 claim이 올린다 — 재배달로 같은 행을 다시 claim하면 2가
+    된다. 종결·좌초한 행은 그 execution이 모두 끝났으므로 기록된 수를 그대로 센다(claim
+    기록이 없는 행도 이미 샀을 수 있으므로 최소 하나로 본다). 진행 중인 행은 지금 이
+    execution이 아직 돈을 쓰기 전이라 직전 execution까지만 센다 — 첫 실행은 0, 재배달된
+    실행은 1이다.
+    """
+
+    attempts = int(getattr(run, "attempt_count", 0) or 0)
+    if is_terminal(run) or _is_stranded(run, now=now):
+        return max(attempts, 1)
+    return max(attempts - 1, 0)
+
+
 def attempts_spent(
     runs: Iterable[OperationRun], subject_hash: str, *, now: datetime
 ) -> int:
-    """이 (글, subject)에서 이미 소진한 실행 수 — 예산의 유일한 정의.
+    """이 (글, subject)에서 이미 소진한 태스크 실행 수 — 예산의 유일한 정의.
 
     PATCH·sweep·운영자 재시도를 키 모양과 무관하게 함께 센다. 종결 상태(FAILED,
-    CANCELLED, 인증을 남기지 못한 SUCCEEDED)면 한 번 쓴 것으로 본다. 인증이 살아 있는
-    SUCCEEDED는 호출자가 그 전에 이미 성공으로 끝내므로 이 셈에 도달하지 않는다.
-    좌초한 실행은 결과를 남기지 못했을 뿐 이미 공급자를 불렀을 수 있어 함께 센다.
+    CANCELLED, 인증을 남기지 못한 SUCCEEDED)면 그 행의 execution을 모두 쓴 것으로 본다.
+    인증이 살아 있는 SUCCEEDED는 호출자가 그 전에 이미 성공으로 끝내므로 이 셈에
+    도달하지 않는다. 좌초한 실행은 결과를 남기지 못했을 뿐 이미 공급자를 불렀을 수 있어
+    함께 센다. 진행 중인 자기 실행도 직전 execution만큼 포함되므로, 재배달된 실행은 자기
+    앞의 유료 호출을 스스로 센다.
     """
 
     return sum(
-        1
-        for run in _at_subject(runs, subject_hash)
-        if is_terminal(run) or _is_stranded(run, now=now)
+        _executions_spent(run, now=now) for run in _at_subject(runs, subject_hash)
     )
 
 
@@ -229,24 +277,35 @@ def in_flight(
 
 
 def sweep_may_dispatch(
-    runs: Sequence[OperationRun], subject_hash: str, *, now: datetime
+    runs: Sequence[OperationRun],
+    subject_hash: str,
+    *,
+    now: datetime,
+    block_visible: bool = True,
 ) -> bool:
     """자동 재실행을 하나 더 만들어도 되는가.
 
     예산이 소진된 직후에도 정확히 한 번은 더 만든다 — 그 실행이 유료 호출 없이
     '반복 실패' incident를 열어, 태스크가 아예 시작하지 못한 실패(TASK_FAILED,
     BROKER_UNAVAILABLE 등)도 사람이 볼 수 있는 결말을 갖게 한다.
+
+    `block_visible`은 이 subject의 차단이 사람에게 아직 보이는가다(사고가 미해결).
     """
 
     if in_flight(runs, subject_hash, now=now):
         return False
-    if pending_operator_code(runs, subject_hash) is not None:
-        return False
-    if attempts_spent(runs, subject_hash, now=now) > ATTEMPT_BUDGET:
-        # 예산 소진을 기록한 마지막 실행까지 끝났다. 더 만들지 않는다.
-        return False
     finished_at = latest_terminal_completion(runs, subject_hash)
     if finished_at is not None and finished_at > now - RETRY_COOLDOWN:
+        return False
+    if pending_operator_code(runs, subject_hash) is not None:
+        # 사람의 결정을 기다리는 subject다. 그 사고가 아직 열려 있으면 같은 답을 다시
+        # 사지 않고 멈춘다. 사고가 닫혔는데 차단은 그대로면(다른 subject의 성공이 닫았거나
+        # 사람이 수동으로 닫았다) 아무도 보지 않는 보류가 된다 — 실행 하나를 더 만들어
+        # 태스크의 시작 게이트가 사고와 표시를 다시 남기게 한다. 그 경로는 공급자를
+        # 부르지 않으므로 예산을 쓰지 않는다.
+        return not block_visible
+    if attempts_spent(runs, subject_hash, now=now) > ATTEMPT_BUDGET:
+        # 예산 소진을 기록한 마지막 실행까지 끝났다. 더 만들지 않는다.
         return False
     return True
 

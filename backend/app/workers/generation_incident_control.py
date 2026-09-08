@@ -244,7 +244,8 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         # 재인증 차단 세 코드는 지문을 공유한다. 예산 소진으로 열린 건 위에 같은 판의
         # 거절이 겹쳐도 새 incident·새 Slack이 아니라 그 한 건이 갱신된다.
         **dict.fromkeys(
-            recertification.OPERATOR_REQUIRED_CODES, IncidentFingerprint.RENDER_FAILED
+            recertification.OPERATOR_REQUIRED_CODES,
+            recertification.INCIDENT_FINGERPRINT,
         ),
     }.get(code, IncidentFingerprint.UNKNOWN)
 
@@ -263,7 +264,11 @@ def _incident_identity(
         # 사람이 내리는 결정은 이미지 subject(유형 + 제목)마다 다르다. 같은 subject의
         # 반복 디스패치는 한 건으로 묶고, 다음 제목 편집은 새 건으로 연다. 판으로 묶으면
         # 제목과 무관한 편집·Essence 재승인이 같은 거절로 두 번째 건을 연다.
-        return "content_item", f"{item_id}:{subject_hash[:16]}", "/operations"
+        return (
+            recertification.INCIDENT_OBJECT_TYPE,
+            recertification.incident_object_id(item_id, subject_hash),
+            "/operations",
+        )
     return "content_item", str(item_id), "/operations"
 
 
@@ -514,8 +519,13 @@ async def recover_generation_incidents(
     *,
     include_image: bool = True,
     safe_error_codes: tuple[str, ...] | None = None,
+    dedupe_keys: tuple[str, ...] | None = None,
 ) -> int:
-    """Close incidents from observed success without paging humans about healthy recovery."""
+    """Close incidents from observed success without paging humans about healthy recovery.
+
+    `dedupe_keys`로 신원을 좁히면 같은 글에 여러 건이 열려 있어도 성공이 증명한 그 건만
+    닫는다. 재인증처럼 사람이 이미지 subject마다 따로 결정하는 사고에 필요하다.
+    """
 
     sessions = get_async_sessionmaker()
     recovered = 0
@@ -530,6 +540,8 @@ async def recover_generation_incidents(
             source_scope,
             Incident.state.in_((IncidentState.OPEN, IncidentState.RETRYING)),
         )
+        if dedupe_keys is not None:
+            statement = statement.where(Incident.dedupe_key.in_(dedupe_keys))
         if safe_error_codes is not None:
             statement = statement.where(Incident.safe_error_code.in_(safe_error_codes))
         elif not include_image:

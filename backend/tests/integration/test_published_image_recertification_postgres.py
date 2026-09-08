@@ -192,8 +192,14 @@ def _payload(item, title):
     )
 
 
-def _claimed_run(pg_session, hospital, item, *, title=None, key=None, age_minutes=0):
-    """worker가 이미 claim한 실행. 실제 `finish_explicit_run` 경로를 타게 한다."""
+def _claimed_run(
+    pg_session, hospital, item, *, title=None, key=None, age_minutes=0, attempts=1
+):
+    """worker가 이미 claim한 실행. 실제 `finish_explicit_run` 경로를 타게 한다.
+
+    `attempts`는 prerun의 claim이 올린 `attempt_count`다. 2면 worker 유실로 재배달돼
+    같은 행을 다시 claim한 실행이다.
+    """
 
     worker_id = str(uuid.uuid4())
     title = item.title if title is None else title
@@ -212,7 +218,7 @@ def _claimed_run(pg_session, hospital, item, *, title=None, key=None, age_minute
         queued_at=now,
         started_at=now,
         request_payload=_payload(item, title),
-        attempt_count=1,
+        attempt_count=attempts,
         total_count=1,
         success_count=0,
         failure_count=0,
@@ -911,3 +917,202 @@ def test_a_block_whose_incident_cannot_open_stays_recoverable(pg_session, monkey
         candidate.id
         for candidate in autonomous_recovery._cleared_certificate_candidates(pg_session)
     }
+
+
+def test_a_redelivered_execution_counts_its_earlier_attempt_against_the_budget(
+    pg_session, monkeypatch
+):
+    """worker가 유료 호출 도중 죽어 재배달된 실행은 자기 앞의 호출을 스스로 센다.
+
+    `task_acks_late`·`task_reject_on_worker_lost`에서 broker는 같은 task를 다시 보내고
+    prerun은 같은 행을 다시 claim한다. 행 수로 세면 그 행은 여전히 하나라, 예산 세 번을
+    쓴 subject가 네 번째 유료 재검수를 산다.
+    """
+    hospital, item = _seed_published(pg_session, certified=False)
+    calls: list[str] = []
+
+    async def _never(image_url, *, content_type, topic, hospital_id=None):
+        calls.append(image_url)
+        raise AssertionError("예산이 끝난 뒤에 유료 재검수를 호출했다")
+
+    for _ in range(recertification.ATTEMPT_BUDGET - 1):
+        _terminal_run(pg_session, hospital, item, code="PROVIDER_UNAVAILABLE")
+    _wire_task(monkeypatch, pg_session, _never)
+    _wire_incidents(monkeypatch, pg_session)
+    redelivered, worker_id = _claimed_run(
+        pg_session,
+        hospital,
+        item,
+        key=recertification.sweep_key(item.id, _subject(item), 3),
+        attempts=2,
+    )
+
+    _run_task(item, redelivered, worker_id)
+
+    pg_session.expire_all()
+    assert calls == []
+    assert redelivered.safe_error_code == (
+        recertification.PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED
+    )
+    incidents = _open_incidents(pg_session, hospital)
+    assert [incident.state for incident in incidents] == [IncidentState.OPEN.value]
+
+
+def test_a_redelivered_execution_still_pays_once_while_the_budget_holds(
+    pg_session, monkeypatch
+):
+    """재배달 자체가 유료 재검수를 막지는 않는다 — 예산이 남아 있으면 한 번은 산다."""
+    hospital, item = _seed_published(pg_session, certified=False)
+    calls: list[str] = []
+
+    async def _certify(image_url, *, content_type, topic, hospital_id=None):
+        calls.append(topic)
+        return image_content_hash_from_url(image_url), image_subject_hash(
+            content_type, topic
+        )
+
+    _wire_task(monkeypatch, pg_session, _certify)
+    _wire_incidents(monkeypatch, pg_session)
+    redelivered, worker_id = _claimed_run(pg_session, hospital, item, attempts=2)
+
+    _run_task(item, redelivered, worker_id)
+
+    pg_session.expire_all()
+    assert calls == [item.title]
+    assert redelivered.state == OperationRunState.SUCCEEDED
+    assert image_certification_current(pg_session.get(ContentItem, item.id))
+    # 직전 execution 하나와 이번 하나 — 예산 세 번을 넘지 않는다.
+    runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
+    assert (
+        recertification.attempts_spent(
+            runs, _subject(item), now=datetime.now(timezone.utc)
+        )
+        == 2
+    )
+
+
+def _retitle(pg_session, item, title: str, *, clear_certificate: bool = True):
+    """제목 편집이 남기는 상태 — 인증이 지워진 공개 글."""
+
+    values = {"title": title}
+    if clear_certificate:
+        values |= {
+            "image_policy_verified_at": None,
+            "image_subject_hash": None,
+            "image_content_hash": None,
+            "image_policy_version": None,
+        }
+    pg_session.execute(update(ContentItem).where(ContentItem.id == item.id).values(**values))
+    pg_session.commit()
+    pg_session.expire_all()
+    return pg_session.get(ContentItem, item.id)
+
+
+def test_success_recovers_only_the_succeeding_subjects_incident(pg_session, monkeypatch):
+    """A→B 거절 뒤 A로 되돌린 성공은 B의 사고를 닫지 않는다.
+
+    닫아버리면 운영자가 B를 다시 적용했을 때 — PATCH는 종결된 B 실행의 멱등 재생이라
+    실행이 생기지 않고, sweep은 B의 보류 코드를 보고 거절한다 — 아무도 보지 않는
+    보류가 된다.
+    """
+    hospital, item = _seed_published(pg_session, certified=False)
+    calls: list[str] = []
+
+    async def _certify(image_url, *, content_type, topic, hospital_id=None):
+        calls.append(topic)
+        if topic == "B 제목":
+            raise ImagePolicyRejectedError("subject mismatch")
+        return image_content_hash_from_url(image_url), image_subject_hash(
+            content_type, topic
+        )
+
+    _wire_task(monkeypatch, pg_session, _certify)
+    _wire_incidents(monkeypatch, pg_session)
+
+    item = _retitle(pg_session, item, "B 제목")
+    subject_b = _subject(item)
+    rejected, rejected_worker = _claimed_run(pg_session, hospital, item)
+    _run_task(item, rejected, rejected_worker)
+    assert _marker(pg_session, item)["subject_hash"] == subject_b
+
+    # 운영자가 제목을 A로 되돌린다. 그 subject의 재인증은 성공한다.
+    item = _retitle(pg_session, item, "A 제목")
+    healthy, healthy_worker = _claimed_run(pg_session, hospital, item)
+    _run_task(item, healthy, healthy_worker)
+
+    pg_session.expire_all()
+    assert healthy.state == OperationRunState.SUCCEEDED
+    assert _marker(pg_session, item) is None
+    incidents = _open_incidents(pg_session, hospital)
+    assert len(incidents) == 1
+    assert incidents[0].dedupe_key == recertification.incident_dedupe_key(
+        item.id, subject_b
+    )
+    # B는 여전히 막혀 있다 — 그 사고를 닫는 것은 사실이 아니다.
+    assert incidents[0].state == IncidentState.OPEN.value
+
+    # 운영자가 B를 다시 적용한다. PATCH는 종결된 B 실행의 멱등 재생이라 실행이 없다.
+    item = _retitle(pg_session, item, "B 제목")
+    assert item.id in {
+        candidate.id
+        for candidate in autonomous_recovery._cleared_certificate_candidates(pg_session)
+    }
+    runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
+    later = datetime.now(timezone.utc) + recertification.RETRY_COOLDOWN
+    # 사람이 볼 사고가 살아 있으므로 sweep은 같은 거절을 다시 사지 않는다.
+    assert recertification.incident_dedupe_key(
+        item.id, subject_b
+    ) in autonomous_recovery._visible_block_incidents(pg_session, [item])
+    assert not recertification.sweep_may_dispatch(
+        runs, subject_b, now=later, block_visible=True
+    )
+    assert calls == ["B 제목", "A 제목"]
+
+
+def test_a_manually_closed_block_is_reopened_without_paying(pg_session, monkeypatch):
+    """사람이 닫은 사고 위에 같은 차단이 남아 있으면 무료 실행 하나가 다시 연다."""
+    hospital, item = _seed_published(pg_session, certified=False)
+    calls: list[str] = []
+
+    async def _reject_once(image_url, *, content_type, topic, hospital_id=None):
+        calls.append(topic)
+        raise ImagePolicyRejectedError("subject mismatch")
+
+    _wire_task(monkeypatch, pg_session, _reject_once)
+    _wire_incidents(monkeypatch, pg_session)
+    rejected, rejected_worker = _claimed_run(pg_session, hospital, item)
+    _run_task(item, rejected, rejected_worker)
+    incident = _open_incidents(pg_session, hospital)[0]
+
+    # 운영자가 사고를 닫고 표시도 사라진 상태(다른 subject의 성공이 지운다).
+    pg_session.execute(
+        update(Incident)
+        .where(Incident.id == incident.id)
+        .values(state=IncidentState.RECOVERED.value, recovered_at=datetime.now(timezone.utc))
+    )
+    recertification.clear_marker(pg_session, item_id=item.id, title=item.title)
+    pg_session.commit()
+
+    runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
+    later = datetime.now(timezone.utc) + recertification.RETRY_COOLDOWN
+    visible = autonomous_recovery._visible_block_incidents(pg_session, [item])
+    assert recertification.incident_dedupe_key(item.id, _subject(item)) not in visible
+    assert recertification.sweep_may_dispatch(
+        runs, _subject(item), now=later, block_visible=False
+    )
+
+    free, free_worker = _claimed_run(
+        pg_session,
+        hospital,
+        item,
+        key=recertification.sweep_key(item.id, _subject(item), 2),
+    )
+    _run_task(item, free, free_worker)
+
+    pg_session.expire_all()
+    assert calls == [item.title]  # 무료 실행이다
+    assert free.safe_error_code == recertification.PUBLISHED_IMAGE_RECERTIFY_REJECTED
+    reopened = pg_session.get(Incident, incident.id)
+    assert reopened.state == IncidentState.OPEN.value
+    assert reopened.episode_seq == 2
+    assert _marker(pg_session, item)["blocked"] is True

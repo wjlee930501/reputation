@@ -295,6 +295,38 @@ def _recertify_runs_by_item(db, candidates: list[ContentItem]) -> dict[str, list
     return grouped
 
 
+def _visible_block_incidents(db, candidates: list[ContentItem]) -> set[str]:
+    """차단이 아직 사람에게 남아 있는 (글, subject)의 사고 키.
+
+    사고가 닫혔는데 실행 이력에는 보류 코드가 남은 subject는 아무도 보지 않는 보류다.
+    그 한 건만 무료 실행으로 되살린다.
+    """
+    if not candidates:
+        return set()
+    keys = {
+        recertification.incident_dedupe_key(
+            item.id, recertification.subject_hash_of(item)
+        )
+        for item in candidates
+    }
+    return set(
+        db.execute(
+            select(Incident.dedupe_key).where(
+                Incident.dedupe_key.in_(keys),
+                Incident.state.in_(
+                    (
+                        IncidentState.OPEN.value,
+                        IncidentState.RETRYING.value,
+                        IncidentState.ACKNOWLEDGED.value,
+                    )
+                ),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int:
     """인증이 지워진 공개 글의 재인증을 예산 안에서 다시 실행한다 (H-01).
 
@@ -304,13 +336,20 @@ def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int
     """
     candidates = _cleared_certificate_candidates(db)
     runs_by_item = _recertify_runs_by_item(db, candidates)
+    visible_blocks = _visible_block_incidents(db, candidates)
     dispatched = 0
     for item in candidates:
         if dispatched >= _RECERTIFY_DISPATCH_LIMIT:
             break
         subject = recertification.subject_hash_of(item)
         runs = runs_by_item.get(str(item.id), [])
-        if not recertification.sweep_may_dispatch(runs, subject, now=observed_at):
+        if not recertification.sweep_may_dispatch(
+            runs,
+            subject,
+            now=observed_at,
+            block_visible=recertification.incident_dedupe_key(item.id, subject)
+            in visible_blocks,
+        ):
             continue
         if _start_recertify_run(db, item, subject, runs, observed_at):
             dispatched += 1

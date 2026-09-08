@@ -10,6 +10,7 @@ from app.core.celery_app import celery_app
 from app.models.content import ContentItem, ContentType
 from app.models.hospital import Hospital
 from app.models.operations import Incident, OperationRun, OperationRunState
+from app.services import published_image_recertification as recertification
 from app.services.image_engine import image_subject_hash
 from app.workers import autonomous_recovery, tasks
 
@@ -35,6 +36,7 @@ class _RecoverySession:
         content_items=(),
         recertify_candidates=(),
         recertify_runs=(),
+        visible_block_keys=(),
     ):
         self.hospitals = list(hospitals)
         self.runs = list(runs)
@@ -42,6 +44,8 @@ class _RecoverySession:
         self.content_items = {item.id: item for item in content_items}
         self.recertify_candidates = list(recertify_candidates)
         self.recertify_runs = list(recertify_runs)
+        # 차단이 아직 사람에게 보이는 (글, subject)의 사고 키.
+        self.visible_block_keys = list(visible_block_keys)
         self.added = []
         self.commits = 0
         self._operation_run_reads = 0
@@ -52,6 +56,8 @@ class _RecoverySession:
             return _ScalarResult(self.hospitals)
         if entity is ContentItem:
             return _ScalarResult(self.recertify_candidates)
+        if entity is Incident:
+            return _ScalarResult(self.visible_block_keys)
         if entity is OperationRun:
             self._operation_run_reads += 1
             # 1: SITE_REVALIDATION, 2: 재배달 후보, 3: 재인증 실행 이력.
@@ -977,8 +983,40 @@ def test_recertify_sweep_ignores_a_stranded_run_and_an_older_subject(monkeypatch
     assert session.added[0].idempotency_key.endswith(":s2")
 
 
+def _block_incident_key(item) -> str:
+    return recertification.incident_dedupe_key(
+        item.id, image_subject_hash(item.content_type, item.title)
+    )
+
+
 def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) -> None:
     """거절은 사람의 결정이다 — 다시 사도 같은 답이 나온다."""
+    item = _withheld_item()
+    session = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            _recertify_run(
+                item,
+                state=OperationRunState.FAILED,
+                safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+            ),
+        ),
+        visible_block_keys=(_block_incident_key(item),),
+    )
+
+    result, dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 0
+    assert dispatched == [] and session.added == []
+
+
+def test_recertify_sweep_reopens_a_block_whose_incident_was_closed(monkeypatch) -> None:
+    """차단은 남았는데 사고가 닫혔다 — 아무도 보지 않는 보류가 된다.
+
+    다른 subject의 성공이나 사람의 수동 종료가 사고를 닫을 수 있다. 실행 하나를 더
+    만들어 태스크의 시작 게이트가 사고를 다시 남기게 한다 — 그 경로는 공급자를 부르지
+    않으므로 예산 밖이다.
+    """
     item = _withheld_item()
     session = _RecoverySession(
         recertify_candidates=(item,),
@@ -993,8 +1031,8 @@ def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) ->
 
     result, dispatched = _run_recertify_sweep(monkeypatch, session)
 
-    assert result["image_recertifications"] == 0
-    assert dispatched == [] and session.added == []
+    assert result["image_recertifications"] == 1
+    assert len(dispatched) == 1
 
 
 def test_recertify_sweep_waits_out_the_cooldown(monkeypatch) -> None:
@@ -1062,6 +1100,7 @@ def test_recertify_sweep_records_the_spent_budget_once_and_then_stops(monkeypatc
                 safe_error_code="PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
             ),
         ),
+        visible_block_keys=(_block_incident_key(item),),
     )
 
     exhausted, no_dispatch = _run_recertify_sweep(monkeypatch, closed)

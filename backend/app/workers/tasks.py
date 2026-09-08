@@ -4097,9 +4097,18 @@ def _open_published_recertify_incident(
 
 
 def _recover_published_recertify_incidents(
-    item_id: uuid.UUID, hospital_id: uuid.UUID, hospital_name: str, run_id: uuid.UUID | None
+    item_id: uuid.UUID,
+    hospital_id: uuid.UUID,
+    hospital_name: str,
+    run_id: uuid.UUID | None,
+    *,
+    subject_hash: str,
 ) -> None:
-    """재인증이 성공하면 같은 글의 보류 incident를 사람 개입 없이 닫는다."""
+    """재인증이 성공하면 **그 subject의** 보류 incident만 사람 개입 없이 닫는다.
+
+    성공이 증명하는 것은 지금 제목의 이미지뿐이다. 같은 글에 다른 제목으로 열린 건까지
+    닫으면, 운영자가 그 제목을 다시 적용했을 때 아무도 보지 않는 보류가 된다.
+    """
     if run_id is None:
         return
     _run_async(
@@ -4109,6 +4118,7 @@ def _recover_published_recertify_incidents(
             hospital_name,
             run_id,
             safe_error_codes=tuple(sorted(recertification.OPERATOR_REQUIRED_CODES)),
+            dedupe_keys=(recertification.incident_dedupe_key(item_id, subject_hash),),
         )
     )
 
@@ -4185,7 +4195,8 @@ def recertify_published_content_image(self, content_id: str):
     subject(유형 + 제목)로 센다. 자기 실행이 만들어진 subject가 지금 제목과 다르면 돈을
     쓰지 않고 CANCELLED로 끝내고, 사람의 결정을 기다리는 subject이거나 예산이 끝났으면
     FAILED로 끝내며 예산 소진은 (글, subject) 하나의 incident가 된다. 성공하면 공개
-    페이지가 다시 글을 내보내므로 IndexNow·사이트 캐시를 갱신하고 보류 incident를 닫는다.
+    페이지가 다시 글을 내보내므로 IndexNow·사이트 캐시를 갱신하고 그 subject의 보류
+    incident를 닫는다.
     공개 글의 이미지를 임의로 새로 생성하지 않는다.
     """
     item_id = uuid.UUID(content_id)
@@ -4231,7 +4242,11 @@ def recertify_published_content_image(self, content_id: str):
             run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
             if hospital is not None:
                 _recover_published_recertify_incidents(
-                    item_id, hospital.id, hospital.name, run_id
+                    item_id,
+                    hospital.id,
+                    hospital.name,
+                    run_id,
+                    subject_hash=expected_subject,
                 )
             return
         if hospital is None or not item.image_url:
@@ -4348,7 +4363,9 @@ def recertify_published_content_image(self, content_id: str):
         run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
         hospital_id, slug = hospital.id, hospital.slug
         hospital_name, treatments = hospital.name, hospital.treatments
-    _recover_published_recertify_incidents(item_id, hospital_id, hospital_name, run_id)
+    _recover_published_recertify_incidents(
+        item_id, hospital_id, hospital_name, run_id, subject_hash=expected_subject
+    )
     _run_async(
         trigger_content_site_revalidate_safe(
             slug, item_id, hospital_name=hospital_name, treatments=treatments
