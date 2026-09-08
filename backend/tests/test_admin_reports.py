@@ -638,7 +638,7 @@ async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(mo
         )
 
     assert exc.value.status_code == 409
-    assert any("현재 병원 자료" in blocker for blocker in exc.value.detail["blockers"])
+    assert any("콘텐츠 운영 기준이 최신 자료" in blocker for blocker in exc.value.detail["blockers"])
     assert any("처리되지 않은 온보딩 자료" in blocker for blocker in exc.value.detail["blockers"])
     assert report.sent_at is None
 

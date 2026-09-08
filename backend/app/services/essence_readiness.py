@@ -139,6 +139,32 @@ async def get_essence_readiness(
     )
 
 
+async def get_public_essence_readiness(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+) -> EssenceReadiness:
+    """공개 읽기 전용: `public_philosophy`만 필요하므로 노이즈 집합을 조회하지 않는다.
+
+    엄격한 `current`는 이 결과에서 읽지 않는다 — 노이즈 hash를 넘기지 않아 관대하게 계산되므로
+    생성/발행 게이트에 쓰면 H-02가 다시 열린다.
+    """
+    approved_result = await db.execute(
+        select(HospitalContentPhilosophy).where(
+            HospitalContentPhilosophy.hospital_id == hospital_id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+        )
+    )
+    approved = approved_result.scalar_one_or_none()
+    sources_result = await db.execute(
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.hospital_id == hospital_id,
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+        )
+    )
+    return resolve_essence_readiness(approved, list(sources_result.scalars().all()))
+
+
 def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceReadiness:
     approved = db.execute(
         select(HospitalContentPhilosophy).where(
@@ -189,7 +215,9 @@ async def get_current_approved_philosophy_id(
     선택해 `raw_text`·`operator_note` 같은 대용량 컬럼을 읽지 않는다. 생성·수정·발행을
     허용하는 쓰기 게이트에서만 사용한다.
     """
-    approved_id, readiness = await _get_lightweight_essence_readiness(db, hospital_id)
+    approved_id, readiness = await _get_lightweight_essence_readiness(
+        db, hospital_id, include_noise=True
+    )
     return approved_id if readiness and readiness.current is not None else None
 
 
@@ -204,15 +232,24 @@ async def get_public_approved_philosophy_id(
     the approved baseline is excluded, unprocessed, or changed. It must never
     authorize generation, editing, or publication.
     """
-    approved_id, readiness = await _get_lightweight_essence_readiness(db, hospital_id)
+    approved_id, readiness = await _get_lightweight_essence_readiness(
+        db, hospital_id, include_noise=False
+    )
     return approved_id if readiness and readiness.public_philosophy is not None else None
 
 
 async def _get_lightweight_essence_readiness(
     db: AsyncSession,
     hospital_id: uuid.UUID,
+    *,
+    include_noise: bool,
 ) -> tuple[uuid.UUID | None, EssenceReadiness | None]:
-    """Load only columns needed to evaluate current and historical read gates."""
+    """Load only columns needed to evaluate current and historical read gates.
+
+    `include_noise=False`는 노이즈 집합 조회를 건너뛴다 — 공개 읽기 경로는
+    `public_philosophy`만 보므로 그 쿼리가 결과를 바꾸지 않는다. 엄격한 `current`를
+    읽는 호출자는 반드시 `include_noise=True`로 불러야 한다.
+    """
     approved_row = (
         await db.execute(
             select(
@@ -259,6 +296,8 @@ async def _get_lightweight_essence_readiness(
     readiness = resolve_essence_readiness(
         approved_stub,
         required_sources,
-        excluded_note_hash=await load_evidence_noise_hash(db, hospital_id),
+        excluded_note_hash=(
+            await load_evidence_noise_hash(db, hospital_id) if include_noise else None
+        ),
     )
     return approved_id, readiness

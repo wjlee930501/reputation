@@ -4,11 +4,19 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models.essence import SourceStatus, SourceType
+from app.models.essence import (
+    HospitalContentPhilosophy,
+    HospitalSourceAsset,
+    HospitalSourceEvidenceNote,
+    SourceStatus,
+    SourceType,
+)
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.essence_readiness import (
     get_current_approved_philosophy_id,
+    get_essence_readiness,
     get_public_approved_philosophy_id,
+    get_public_essence_readiness,
     resolve_essence_readiness,
 )
 from app.services.evidence_noise import compute_evidence_noise_hash
@@ -81,6 +89,9 @@ class _AsyncResult:
     def one_or_none(self):
         return self._one
 
+    def scalar_one_or_none(self):
+        return self._one
+
     def all(self):
         return self._rows
 
@@ -89,21 +100,31 @@ class _AsyncResult:
 
 
 class _AsyncReadinessDB:
-    """승인 행 → 자료 행 → 노이즈 노트 id 순서로 응답하는 readiness 조회 더블."""
+    """readiness 조회 더블 — 호출 순서가 아니라 statement가 무엇을 고르는지로 응답한다.
 
-    def __init__(self, approved_row, source_rows):
+    호출 순서로 응답하면 노이즈 조회를 건너뛰는 경로가 자료 행을 승인 행으로 받는 식으로
+    조용히 어긋난다. `query_count`는 각 경로가 실제로 몇 번 조회하는지 확인하는 데 쓴다.
+    """
+
+    def __init__(self, approved_row, source_rows, *, noise_rows=None):
         self._approved_row = approved_row
         self._source_rows = source_rows
-        self._call_count = 0
+        self._noise_rows = noise_rows or []
+        self.query_count = 0
 
-    async def execute(self, _statement):
-        self._call_count += 1
-        step = self._call_count % 3
-        if step == 1:
+    async def execute(self, statement):
+        self.query_count += 1
+        description = statement.column_descriptions[0]
+        entity = description.get("entity")
+        if entity is HospitalContentPhilosophy:
             return _AsyncResult(one=self._approved_row)
-        if step == 2:
+        if entity is HospitalSourceAsset:
             return _AsyncResult(rows=self._source_rows)
-        return _AsyncResult(rows=[])
+        if entity is HospitalSourceEvidenceNote or description.get("expr") is (
+            HospitalSourceEvidenceNote.id
+        ):
+            return _AsyncResult(rows=self._noise_rows)
+        raise AssertionError(f"예상하지 못한 readiness 조회: {description}")
 
 
 @pytest.mark.asyncio
@@ -187,3 +208,41 @@ def test_legacy_approval_without_noise_hash_is_not_stale_by_noise():
     )
 
     assert readiness.current is approved
+
+
+@pytest.mark.asyncio
+async def test_lightweight_strict_id_rejects_a_changed_noise_set():
+    """근거에서 뺀 노트 집합이 승인 이후 달라지면 생성 게이트만 닫히고 공개 baseline은 남는다."""
+    approved_id = uuid.uuid4()
+    original = _source()
+    approved_row = (
+        approved_id,
+        compute_sources_snapshot_hash([original]),
+        [original.id],
+        compute_evidence_noise_hash([]),
+    )
+    db = _AsyncReadinessDB(approved_row, [original], noise_rows=[uuid.uuid4()])
+
+    assert await get_current_approved_philosophy_id(db, uuid.uuid4()) is None
+    assert await get_public_approved_philosophy_id(db, uuid.uuid4()) == approved_id
+
+
+@pytest.mark.asyncio
+async def test_public_readiness_skips_the_noise_query_the_strict_one_pays():
+    """공개 읽기는 `public_philosophy`만 보므로 노이즈 집합 조회를 하지 않는다."""
+    source = _source()
+    approved = SimpleNamespace(
+        source_snapshot_hash=compute_sources_snapshot_hash([source]),
+        evidence_noise_hash=compute_evidence_noise_hash([]),
+        source_asset_ids=[str(source.id)],
+    )
+    public_db = _AsyncReadinessDB(approved, [source])
+    strict_db = _AsyncReadinessDB(approved, [source])
+
+    public = await get_public_essence_readiness(public_db, uuid.uuid4())
+    strict = await get_essence_readiness(strict_db, uuid.uuid4())
+
+    assert public.public_philosophy is approved
+    assert public_db.query_count == 2
+    assert strict.current is approved
+    assert strict_db.query_count == 3

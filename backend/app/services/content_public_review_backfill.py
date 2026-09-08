@@ -52,6 +52,7 @@ from app.services.essence_readiness import (
     get_essence_readiness_sync,
     resolve_essence_readiness,
 )
+from app.services.evidence_noise import load_evidence_noise_hash_sync
 from app.services.sync_async_bridge import SyncAsyncBridge
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 
@@ -521,7 +522,11 @@ def _checkpoint_review(
         .scalars()
         .all()
     )
-    readiness = resolve_essence_readiness(philosophy, sources)
+    readiness = resolve_essence_readiness(
+        philosophy,
+        sources,
+        excluded_note_hash=load_evidence_noise_hash_sync(db, claim.expectation.hospital_id),
+    )
     current = readiness.current
     if (
         hospital is None

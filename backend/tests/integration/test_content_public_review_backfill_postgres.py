@@ -14,8 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.essence import (
+    EvidenceNoteType,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
+    HospitalSourceEvidenceNote,
     PhilosophyStatus,
     SourceStatus,
     SourceType,
@@ -37,6 +39,7 @@ from app.services.content_ai_review import (
 )
 from app.services.cost_guard import CostGuardDecision, ReservationReceipt
 from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.evidence_noise import compute_evidence_noise_hash
 from app.services.sync_async_bridge import SyncAsyncBridge
 
 
@@ -504,6 +507,55 @@ def test_concurrent_candidate_or_context_change_is_stale_and_preserves_editor_st
     run = _run(db, seed)
     assert run.state == OperationRunState.CANCELLED
     assert run.attempt_count == 1
+
+
+def test_noise_marked_during_review_is_stale_and_never_saves_the_result(
+    committed_db, pg_engine
+) -> None:
+    """H-02: 검수 중 근거 노트를 빼면 CAS 체크포인트가 승인을 stale로 보고 결과를 버린다."""
+    db, tracked = committed_db
+    seed = _seed(db, tracked)
+    note = HospitalSourceEvidenceNote(
+        id=uuid.uuid4(),
+        hospital_id=seed.hospital.id,
+        source_asset_id=seed.source.id,
+        note_type=EvidenceNoteType.DOCTOR_PHILOSOPHY,
+        claim="확인된 정보를 충분히 설명한다.",
+        source_excerpt="확인된 병원 소개와 진료 안내",
+        confidence=0.95,
+        note_metadata={"is_noise": False},
+    )
+    db.add(note)
+    seed.philosophy.evidence_noise_hash = compute_evidence_noise_hash([])
+    db.commit()
+    old_review = copy.deepcopy(seed.item.essence_check_summary["ai_review"])
+
+    async def reviewer(**kwargs):
+        with Session(pg_engine) as operator:
+            operator.execute(
+                update(HospitalSourceEvidenceNote)
+                .where(HospitalSourceEvidenceNote.id == note.id)
+                .values(note_metadata={"is_noise": True})
+            )
+            operator.commit()
+        return _review(kwargs)
+
+    result = backfill.run_content_public_review_backfill(
+        db,
+        content_ids={seed.item.id},
+        dry_run=False,
+        reserve=_allow,
+        reviewer=reviewer,
+    )
+
+    assert result.stale == 1
+    item = _refresh(db, ContentItem, seed.item.id)
+    assert item.essence_check_summary["ai_review"] == old_review
+    assert item.content_revision == 10
+    run = _run(db, seed)
+    assert run.state == OperationRunState.CANCELLED
+    assert run.safe_error_code == "SOURCE_CHANGED"
+
 
 
 def test_expired_running_at_attempt_three_never_calls_a_fourth_provider(
