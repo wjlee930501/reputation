@@ -425,12 +425,14 @@ async def test_batched_states_flag_a_hospital_with_an_escalated_draft():
         sources=[source], approved_sources=[source]
     )
     source.hospital_id = hospital_id
+    draft_id = uuid.uuid4()
     db = _AsyncReadinessStatesDB(
         [approved_row],
         [source],
         draft_rows=[
             SimpleNamespace(
                 hospital_id=hospital_id,
+                id=draft_id,
                 unsupported_gaps=[{"field": AUTO_REVIEW_GAP_FIELD, "reason": "근거 없는 효과 표현"}],
             )
         ],
@@ -439,6 +441,9 @@ async def test_batched_states_flag_a_hospital_with_an_escalated_draft():
     states = await get_essence_readiness_states(db, [hospital_id])
 
     assert states[hospital_id].escalated_draft is True
+    # 보류 사유는 현황 화면이 초안을 다시 조회하지 않도록 여기서 함께 실린다.
+    assert states[hospital_id].escalated_draft_id == draft_id
+    assert states[hospital_id].escalated_draft_findings == ("근거 없는 효과 표현",)
     assert states[hospital_id].current is True
     assert (await get_essence_readiness(single_db, hospital_id)).current is not None
 

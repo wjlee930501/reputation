@@ -18,13 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.operations_center_incident_queries import load_incidents_queue
 from app.api.admin.operations_center_query_common import OperationsFilters
+from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, monthly_quota_for_plan
-from app.models.essence import (
-    AUTO_REVIEW_GAP_FIELD,
-    HospitalContentPhilosophy,
-    PhilosophyStatus,
-)
 from app.models.hospital import Hospital
 from app.schemas.hospital_overview import (
     ExceptionCard,
@@ -34,9 +30,9 @@ from app.schemas.hospital_overview import (
     StateCard,
 )
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
-from app.services.essence_readiness import get_essence_readiness_states
+from app.services.essence_readiness import EssenceReadinessState, get_essence_readiness_states
 from app.services.hospital_states import content_state, domain_state, public_service_state
-from app.services.sov_trend import latest_mention_rate, weekly_mention_trend
+from app.services.sov_trend import latest_measured_week, weekly_mention_trend
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — 병원 현황"])
 
@@ -97,6 +93,10 @@ async def _incident_cards(db: AsyncSession, hospital_id: uuid.UUID) -> list[Exce
     현황 화면이 자기만의 인시던트 SQL을 쓰면 운영 센터와 다른 목록·다른 허용 행동을
     보여준다. 행동은 서버가 지금 허용한 것만 싣는다 — 비활성 행동을 버튼으로 만들면
     누르는 순간 실패한다.
+
+    자동 복구 중인 건(`requires_operator_action=False`)은 카드로 만들지 않는다 —
+    약속한 재시도 창이 남은 RETRYING은 AE의 할 일이 아니다. 병원 목록의 예외 수도
+    같은 규칙(`count_operator_incidents`)으로 세므로 두 화면의 숫자가 같다.
     """
     _total, rows = await load_incidents_queue(
         db,
@@ -117,47 +117,33 @@ async def _incident_cards(db: AsyncSession, hospital_id: uuid.UUID) -> list[Exce
             href=row.action.path,
         )
         for row in rows
+        if row.requires_operator_action
     ]
 
 
-async def _escalated_draft_card(
-    db: AsyncSession, hospital_id: uuid.UUID
+def _escalated_draft_card(
+    hospital_id: uuid.UUID, readiness: EssenceReadinessState
 ) -> ExceptionCard | None:
     """자동 검수가 보류 사유를 남긴 초안. 사유 전부가 근거이며 하나라도 지우면 승인 게이트와
-    화면이 어긋난다(`api/admin/essence.py`의 예외 승인 조건과 같은 목록)."""
-    rows = (
-        await db.execute(
-            select(
-                HospitalContentPhilosophy.id,
-                HospitalContentPhilosophy.unsupported_gaps,
-            ).where(
-                HospitalContentPhilosophy.hospital_id == hospital_id,
-                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
-            )
-        )
-    ).all()
-    for row in rows:
-        findings = [
-            str(gap.get("reason"))
-            for gap in (row.unsupported_gaps or [])
-            if isinstance(gap, dict)
-            and gap.get("field") == AUTO_REVIEW_GAP_FIELD
-            and gap.get("reason")
-        ]
-        if findings:
-            return ExceptionCard(
-                kind="escalated_draft",
-                id=str(row.id),
-                title="콘텐츠 운영 기준 자동 검수 보류",
-                evidence="\n".join(findings),
-                next_action="초안을 고쳐 재검수를 받거나, 확인한 근거를 적어 예외 승인하세요.",
-                allowed_actions=list(_ESCALATED_DRAFT_ACTIONS),
-                href=f"/hospitals/{hospital_id}/essence",
-            )
-    return None
+    화면이 어긋난다(`api/admin/essence.py`의 예외 승인 조건과 같은 목록).
+
+    초안과 사유는 상태 판정과 같은 묶음 조회(`get_essence_readiness_states`)가 이미 읽었다 —
+    여기서 다시 조회하면 같은 JSONB 필터가 두 벌이 되고 쿼리도 하나 더 나간다.
+    """
+    if readiness.escalated_draft_id is None or not readiness.escalated_draft_findings:
+        return None
+    return ExceptionCard(
+        kind="escalated_draft",
+        id=str(readiness.escalated_draft_id),
+        title="콘텐츠 운영 기준 자동 검수 보류",
+        evidence="\n".join(readiness.escalated_draft_findings),
+        next_action="초안을 고쳐 재검수를 받거나, 확인한 근거를 적어 예외 승인하세요.",
+        allowed_actions=list(_ESCALATED_DRAFT_ACTIONS),
+        href=f"/hospitals/{hospital_id}/essence",
+    )
 
 
-async def _month_summary(db: AsyncSession, hospital_id: uuid.UUID) -> MonthSummary:
+async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
     """이번 달(KST 계약 월) 발행 실적. 기간 경계는 `api/admin/content.py`의 월별 목록과 같다."""
     now = arrow.now(KST)
     period_start = arrow.Arrow(now.year, now.month, 1).date()
@@ -169,7 +155,7 @@ async def _month_summary(db: AsyncSession, hospital_id: uuid.UUID) -> MonthSumma
                 select(ContentItem)
                 .options(visibility_load_only())
                 .where(
-                    ContentItem.hospital_id == hospital_id,
+                    ContentItem.hospital_id == hospital.id,
                     ContentItem.scheduled_date >= period_start,
                     ContentItem.scheduled_date <= period_end,
                     ContentItem.status == ContentStatus.PUBLISHED,
@@ -179,23 +165,35 @@ async def _month_summary(db: AsyncSession, hospital_id: uuid.UUID) -> MonthSumma
         .scalars()
         .all()
     )
-    # DB PUBLISHED만으로 공개 성공을 선언하지 않는다 — 공개 사이트가 실제로 내보내는지는
-    # 같은 가시성 판정이 답한다.
-    visibility = await assess_sampled_visibility(db, items)
-    public_count = sum(1 for item in items if visibility[item.id].visible)
+    # DB PUBLISHED만으로 공개 성공을 선언하지 않는다 — 공개 API는 병원 게이트를 먼저 보고
+    # 통과한 병원의 글만 내보낸다. 일시정지·준비 중 병원은 발행 글이 몇 편이든 공개 페이지가
+    # 아무것도 내보내지 않으므로 전부 보류다.
+    if is_public_serving_hospital(hospital):
+        visibility = await assess_sampled_visibility(db, items)
+        public_count = sum(1 for item in items if visibility[item.id].visible)
+    else:
+        public_count = 0
 
-    plan = (
-        await db.execute(
-            select(ContentSchedule.plan)
-            .where(
-                ContentSchedule.hospital_id == hospital_id,
-                ContentSchedule.is_active,
+    # 이번 달 약정 편수의 정본은 계약 요금제다(PR-0C H-14: 일정의 plan은 계약에서 동기화된다).
+    # 활성 일정만 보면 다음 달부터 적용될 교체 일정의 편수가 이번 달로 새어 든다.
+    plan = hospital.plan
+    if plan is None:
+        # 요금제가 기록되기 전의 레거시 병원만 일정으로 되돌아간다 — 이번 달에 이미 시작한
+        # 일정만 본다.
+        plan = (
+            await db.execute(
+                select(ContentSchedule.plan)
+                .where(
+                    ContentSchedule.hospital_id == hospital.id,
+                    ContentSchedule.is_active,
+                    ContentSchedule.active_from <= period_end,
+                )
+                .order_by(ContentSchedule.active_from.desc())
+                .limit(1)
             )
-            .order_by(ContentSchedule.active_from.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
+        ).scalar_one_or_none()
 
+    measured = latest_measured_week(await weekly_mention_trend(db, hospital.id))
     next_month = now.shift(months=1)
     return MonthSummary(
         year=now.year,
@@ -204,7 +202,8 @@ async def _month_summary(db: AsyncSession, hospital_id: uuid.UUID) -> MonthSumma
         public_count=public_count,
         withheld_count=len(items) - public_count,
         planned_total=monthly_quota_for_plan(plan) or 0,
-        mention_rate=latest_mention_rate(await weekly_mention_trend(db, hospital_id)),
+        mention_rate=measured[0] if measured else None,
+        mention_rate_measured_at=measured[1] if measured else None,
         next_report_date=date(next_month.year, next_month.month, 1),
     )
 
@@ -228,10 +227,9 @@ async def get_hospital_overview(
     domain = domain_state(hospital)
 
     exceptions = await _incident_cards(db, hospital_id)
-    if readiness.escalated_draft:
-        draft_card = await _escalated_draft_card(db, hospital_id)
-        if draft_card is not None:
-            exceptions.append(draft_card)
+    draft_card = _escalated_draft_card(hospital_id, readiness)
+    if draft_card is not None:
+        exceptions.append(draft_card)
 
     return HospitalOverviewResponse(
         hospital_id=hospital.id,
@@ -253,5 +251,5 @@ async def get_hospital_overview(
             last_checked_at=domain.last_checked_at,
         ),
         exceptions=exceptions,
-        month=await _month_summary(db, hospital_id),
+        month=await _month_summary(db, hospital),
     )

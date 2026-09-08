@@ -20,6 +20,7 @@ from app.api.admin.operations_center_query_common import (
 from app.api.admin.operations_center_serializers import (
     canonical_cause_code,
     cost_guard_category,
+    requires_operator_action,
     serialize_incident_row,
 )
 from app.models.admin_user import AdminUser
@@ -28,6 +29,10 @@ from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.schemas.operations import OperationsQueueRow
 
 HospitalScope = uuid.UUID | None | EllipsisType
+
+# 큐의 ACTIVE("조치 필요") 필터가 보는 상태 집합. 목록 건수와 현황 카드가 같은 집합을
+# 봐야 두 화면의 예외 수가 갈리지 않는다.
+ACTIVE_INCIDENT_STATES = ("OPEN", "RETRYING")
 
 
 def _group_incident_rows(
@@ -135,7 +140,7 @@ async def load_incidents_queue(
         predicates.append(Incident.severity == filters.severity)
     if filters.status is None:
         if filters.recovery == IncidentRecoveryFilter.ACTIVE:
-            predicates.append(Incident.state.in_(("OPEN", "RETRYING")))
+            predicates.append(Incident.state.in_(ACTIVE_INCIDENT_STATES))
         elif filters.recovery == IncidentRecoveryFilter.CONFIRMED:
             predicates.append(Incident.state.in_(("RECOVERED", "ACKNOWLEDGED")))
     order_by = (
@@ -231,4 +236,74 @@ async def load_incidents_queue(
     return total, grouped
 
 
-__all__ = ("HospitalScope", "load_incidents_queue")
+async def count_operator_incidents(
+    db: AsyncSession,
+    hospital_ids: list[uuid.UUID],
+    *,
+    now: datetime,
+) -> dict[uuid.UUID, int]:
+    """병원별 "지금 사람이 손대야 하는" 예외 수를 한 쿼리로.
+
+    병원 목록이 자기만의 상태 집합으로 세면 목록의 숫자와 현황 화면이 실제로 보여주는
+    예외 카드 수가 갈린다. 그래서 세 가지를 현황과 똑같이 쓴다: 상태는 큐의 ACTIVE 필터
+    (`ACTIVE_INCIDENT_STATES`), 사람 몫 판정은 큐 행과 같은 `requires_operator_action`,
+    묶음은 같은 원인 그룹(`_cause_group_key`)이다 — 같은 원인 다섯 건은 현황에서 카드
+    하나이므로 여기서도 1이다. 현황은 그중 앞 `_EXCEPTION_PAGE_SIZE`개만 싣는다.
+    """
+    if not hospital_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                Incident.hospital_id,
+                Incident.state,
+                Incident.sla_due_at,
+                Incident.safe_error_code,
+                Incident.incident_type,
+                Incident.source_type,
+                Incident.source_id,
+                OperationRun.safe_error_code,
+                OperationRun.operation_type,
+            )
+            .select_from(Incident)
+            .outerjoin(OperationRun, OperationRun.id == Incident.operation_run_id)
+            .where(
+                Incident.hospital_id.in_(hospital_ids),
+                Incident.state.in_(ACTIVE_INCIDENT_STATES),
+            )
+        )
+    ).all()
+
+    groups: dict[uuid.UUID, set[str]] = {}
+    for (
+        hospital_id,
+        state,
+        sla_due_at,
+        incident_code,
+        incident_type,
+        source_type,
+        source_id,
+        run_code,
+        run_operation_type,
+    ) in rows:
+        if not requires_operator_action(state, sla_due_at, now):
+            continue
+        groups.setdefault(hospital_id, set()).add(
+            _cause_group_key(
+                incident_safe_error_code=incident_code,
+                incident_type=incident_type,
+                source_type=source_type,
+                source_id=source_id,
+                run_safe_error_code=run_code,
+                run_operation_type=run_operation_type,
+            )
+        )
+    return {hospital_id: len(keys) for hospital_id, keys in groups.items()}
+
+
+__all__ = (
+    "ACTIVE_INCIDENT_STATES",
+    "HospitalScope",
+    "count_operator_incidents",
+    "load_incidents_queue",
+)

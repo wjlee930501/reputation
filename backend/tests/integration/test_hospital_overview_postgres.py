@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import event
 
 from app.api.admin.hospital_overview import get_hospital_overview
+from app.api.admin.operations_center_incident_queries import count_operator_incidents
 from app.api.admin.operations_center_read_routes import get_operations_queue
 from app.models.admin_user import ROLE_OWNER, AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
@@ -24,8 +25,9 @@ from app.models.essence import (
     SourceStatus,
     SourceType,
 )
-from app.models.hospital import Hospital, HospitalStatus
+from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.operations import Incident, IncidentSeverity
+from app.models.sov import QueryMatrix, SovRecord
 from app.schemas.operations import OperationsQueue
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.evidence_noise import compute_evidence_noise_hash
@@ -37,9 +39,10 @@ from app.services.image_engine import (
 
 pytestmark = pytest.mark.asyncio
 
-# 병원 1 + 콘텐츠 준비 묶음 4 + 인시던트 2 + 이번 달 콘텐츠 1 + 공개 기준 묶음 2 +
-# 활성 일정 1 + 주간 언급률 1. 인시던트·콘텐츠가 몇 건이든 이 수는 그대로여야 한다.
-_OVERVIEW_STATEMENT_BUDGET = 12
+# 병원 1 + 콘텐츠 준비 묶음 4(승인·자료·노이즈·예외 초안) + 인시던트 2 + 이번 달 콘텐츠 1 +
+# 공개 기준 묶음 2 + 주간 언급률 1. 인시던트·콘텐츠·예외 초안이 몇 건이든 이 수는 그대로여야
+# 한다 — 예외 초안은 준비 묶음이 이미 읽고, 약정 편수는 계약 요금제라 일정 조회가 없다.
+_OVERVIEW_STATEMENT_BUDGET = 11
 
 
 async def _hospital(
@@ -52,6 +55,7 @@ async def _hospital(
     profile_complete: bool = True,
     schedule_set: bool = True,
     plan: str = "PLAN_12",
+    hospital_plan: Plan | None = Plan.PLAN_12,
     with_schedule: bool = True,
     approved_essence: bool = True,
     unprocessed_source: bool = False,
@@ -65,6 +69,7 @@ async def _hospital(
         site_built=site_built,
         profile_complete=profile_complete,
         schedule_set=schedule_set,
+        plan=hospital_plan,
     )
     db.add(hospital)
     await db.flush()
@@ -188,12 +193,22 @@ async def _operations_actor(db) -> AdminUser:
     return actor
 
 
-async def _incident(db, hospital: Hospital, *, incident_type: str = "PROVIDER_TIMEOUT") -> Incident:
+async def _incident(
+    db,
+    hospital: Hospital,
+    *,
+    incident_type: str = "PROVIDER_TIMEOUT",
+    state: str = "OPEN",
+    sla_due_at: datetime | None = None,
+) -> Incident:
     incident = Incident(
         hospital_id=hospital.id,
         dedupe_key=f"qa:{uuid.uuid4()}",
         incident_type=incident_type,
-        state="OPEN",
+        state=state,
+        sla_due_at=sla_due_at,
+        recovered_at=datetime.now(UTC) if state in ("RECOVERED", "ACKNOWLEDGED") else None,
+        acknowledged_at=datetime.now(UTC) if state == "ACKNOWLEDGED" else None,
         severity=IncidentSeverity.HIGH,
         customer_impact="오늘 콘텐츠 초안 생성이 멈췄습니다.",
         source_type="content_generation",
@@ -262,6 +277,7 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
         site_built=False,
         profile_complete=False,
         schedule_set=False,
+        hospital_plan=None,
         with_schedule=False,
         approved_essence=False,
         unprocessed_source=True,
@@ -287,7 +303,9 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
 
     assert overview.month.published_count == 0
     assert overview.month.planned_total == 0
+    # 측정이 한 번도 없으면 값도 측정 시점도 없다 — 0%로 접지 않는다.
     assert overview.month.mention_rate is None
+    assert overview.month.mention_rate_measured_at is None
 
 
 async def test_preparing_hospital_lists_schedule_and_source_conditions(pg_async_session):
@@ -312,6 +330,142 @@ async def test_preparing_hospital_lists_schedule_and_source_conditions(pg_async_
     assert overview.content.remaining[0].href == f"/hospitals/{hospital.id}/schedule"
 
 
+async def test_overview_and_list_agree_on_what_needs_an_operator(pg_async_session):
+    """자동 복구 중인 건은 예외가 아니다 — 현황의 카드 수와 목록의 예외 수는 같은 규칙이다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "복구 중 의원")
+    await _incident(db, hospital, incident_type="PROVIDER_TIMEOUT")
+    # 복구를 확인해 닫은 건과 약속한 재시도 창이 남은 건은 AE의 할 일이 아니다.
+    await _incident(db, hospital, incident_type="IMAGE_BLOCKED", state="ACKNOWLEDGED")
+    await _incident(
+        db,
+        hospital,
+        incident_type="SITE_BUILD_SLOW",
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) + timedelta(hours=2),
+    )
+
+    overview = await get_hospital_overview(hospital.id, db)
+    counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
+
+    assert [card.kind for card in overview.exceptions] == ["incident"]
+    assert counts[hospital.id] == len(overview.exceptions) == 1
+
+    # 재시도 기한이 지나면 마지막 전이가 여전히 RETRYING이어도 사람의 일이 된다.
+    overdue = await _hospital(db, "기한 지난 의원")
+    await _incident(
+        db,
+        overdue,
+        incident_type="SITE_BUILD_SLOW",
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) - timedelta(hours=2),
+    )
+
+    overdue_overview = await get_hospital_overview(overdue.id, db)
+    overdue_counts = await count_operator_incidents(db, [overdue.id], now=datetime.now(UTC))
+
+    assert overdue_counts[overdue.id] == len(overdue_overview.exceptions) == 1
+
+
+async def test_same_cause_incidents_are_one_exception_on_both_screens(pg_async_session):
+    """같은 원인 두 건은 현황에서 카드 하나다 — 목록도 같은 묶음으로 센다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "같은 원인 의원", escalated_findings=("근거 없는 효과 표현",))
+    await _incident(db, hospital)
+    await _incident(db, hospital)
+
+    overview = await get_hospital_overview(hospital.id, db)
+    counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
+
+    assert [card.kind for card in overview.exceptions] == ["incident", "escalated_draft"]
+    # 목록이 내려보내는 예외 수 = 인시던트 묶음 + 예외 초안(hospitals.list_hospitals와 같은 합).
+    assert counts[hospital.id] + 1 == len(overview.exceptions) == 2
+
+
+async def test_paused_hospital_withholds_every_published_item(pg_async_session):
+    """공개 API가 병원 게이트에서 막으면 발행 글은 한 편도 공개 페이지에 없다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "일시정지 의원", status=HospitalStatus.PAUSED)
+    for _ in range(3):
+        await _content(db, hospital)
+
+    overview = await get_hospital_overview(hospital.id, db)
+
+    assert overview.public_service.kind == "paused"
+    assert overview.month.published_count == 3
+    assert overview.month.public_count == 0
+    assert overview.month.withheld_count == 3
+
+
+async def test_planned_total_is_the_contracted_plan_not_next_month_replacement(pg_async_session):
+    """다음 달부터 적용될 교체 일정의 편수가 이번 달 분모로 새어 들면 안 된다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "요금제 의원")
+    next_month = arrow.now("Asia/Seoul").shift(months=1)
+    db.add(
+        ContentSchedule(
+            hospital_id=hospital.id,
+            plan="PLAN_20",
+            publish_days=[1, 4],
+            active_from=date(next_month.year, next_month.month, 1),
+        )
+    )
+    await db.flush()
+
+    overview = await get_hospital_overview(hospital.id, db)
+
+    assert overview.month.planned_total == 12
+
+
+async def test_planned_total_falls_back_to_the_schedule_already_active(pg_async_session):
+    """계약 요금제가 없는 레거시 병원만 일정으로 되돌아간다 — 이번 달에 시작한 일정만 본다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "레거시 의원", hospital_plan=None, plan="PLAN_16")
+    next_month = arrow.now("Asia/Seoul").shift(months=1)
+    db.add(
+        ContentSchedule(
+            hospital_id=hospital.id,
+            plan="PLAN_20",
+            publish_days=[1, 4],
+            active_from=date(next_month.year, next_month.month, 1),
+        )
+    )
+    await db.flush()
+
+    overview = await get_hospital_overview(hospital.id, db)
+
+    assert overview.month.planned_total == 16
+
+
+async def test_mention_rate_says_which_week_it_was_measured(pg_async_session):
+    """추이의 마지막 버킷은 롤링 7일이라 거의 늘 비어 있다 — 값과 함께 잰 주를 말한다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "측정 의원")
+    query = QueryMatrix(
+        hospital_id=hospital.id, query_text="강남 임플란트 잘하는 곳", query_intent="LOCAL"
+    )
+    db.add(query)
+    await db.flush()
+    db.add(
+        SovRecord(
+            hospital_id=hospital.id,
+            query_id=query.id,
+            ai_platform="chatgpt",
+            measured_at=datetime.now(UTC) - timedelta(days=13),
+            mention_verdict="MATCHED",
+            is_mentioned=True,
+            raw_response="답변에 병원 이름이 있습니다.",
+            measurement_status="SUCCESS",
+        )
+    )
+    await db.flush()
+
+    overview = await get_hospital_overview(hospital.id, db)
+
+    assert overview.month.mention_rate == 100.0
+    assert overview.month.mention_rate_measured_at == arrow.now("Asia/Seoul").shift(weeks=-2).date()
+
+
 async def _overview_query_count(db, hospital_id) -> int:
     statements: list[str] = []
 
@@ -332,13 +486,18 @@ async def _overview_query_count(db, hospital_id) -> int:
 
 async def test_overview_query_count_is_constant_across_incidents_and_content(pg_async_session):
     db = pg_async_session
-    small = await _hospital(db, "쿼리예산 작은 의원")
+    # 예외 초안까지 함께 있는 병원으로 잰다 — 초안 카드가 조회를 하나 더 내면 여기서 잡힌다.
+    small = await _hospital(
+        db, "쿼리예산 작은 의원", escalated_findings=("근거 없는 효과 표현",)
+    )
     await _content(db, small)
     await _incident(db, small)
     # 세션 identity map이 첫 호출의 SQL을 가리지 않도록 두 병원 모두 같은 방식으로 잰다.
     small_count = await _overview_query_count(db, small.id)
 
-    large = await _hospital(db, "쿼리예산 큰 의원")
+    large = await _hospital(
+        db, "쿼리예산 큰 의원", escalated_findings=("근거 없는 효과 표현", "출처 미확인 수치")
+    )
     for index in range(5):
         await _content(db, large, withheld=index == 0)
         await _incident(db, large, incident_type=f"PROVIDER_TIMEOUT_{index}")

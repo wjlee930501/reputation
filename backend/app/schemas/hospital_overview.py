@@ -44,8 +44,17 @@ class ExceptionCard(BaseModel):
 
 
 class MonthSummary(BaseModel):
-    """이번 달 발행 실적. `public_count`는 지금 실제로 공개 페이지에 나가는 글이며
-    `published_count`(DB PUBLISHED)와 같지 않다."""
+    """이번 달 발행 실적.
+
+    `public_count`는 지금 실제로 공개 페이지에 나가는 글이며 `published_count`
+    (DB PUBLISHED)와 같지 않다. `withheld_count`는 "발행했지만 지금 공개 페이지에서
+    볼 수 없는" 글 수다 — 병원이 공개 서비스 중이 아니면(일시정지·준비 중) 공개 API가
+    아무것도 내보내지 않으므로 발행 글 전부가 여기 들어간다.
+
+    `mention_rate`는 마지막으로 실제 측정된 주의 값이고 `mention_rate_measured_at`은
+    그 주의 시작일이다. 측정은 월 1회, 추이 버킷은 롤링 7일이라 "이번 주" 값은 거의 항상
+    비어 있다 — 값과 함께 언제 잰 값인지 보여주지 않으면 지난달 수치가 오늘 수치가 된다.
+    """
 
     year: int
     month: int
@@ -54,6 +63,7 @@ class MonthSummary(BaseModel):
     withheld_count: int
     planned_total: int
     mention_rate: float | None
+    mention_rate_measured_at: date | None
     next_report_date: date
 
 

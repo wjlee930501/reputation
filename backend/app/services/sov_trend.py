@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import date
 
 import arrow
 from sqlalchemy import Integer, and_, cast, func, or_, select
@@ -131,9 +132,14 @@ async def weekly_mention_trend(
     return result
 
 
-def latest_mention_rate(trend: list[dict]) -> float | None:
-    """가장 최근에 실제로 측정된 주의 언급률. 측정이 없으면 None(0%가 아니다)."""
+def latest_measured_week(trend: list[dict]) -> tuple[float, date] | None:
+    """가장 최근에 실제로 측정된 주의 언급률과 그 주 시작일. 측정이 없으면 None.
+
+    추이의 마지막 버킷은 조회 시점 기준 7일 롤링 구간인데 측정은 월 1회라, 마지막 점은
+    거의 항상 None(측정 안 됨)이다. 그래서 뒤에서부터 실제 측정된 주를 찾되 "언제 잰
+    값인지"를 함께 돌려준다 — 화면이 3주 전 수치를 이번 주 수치처럼 말하지 않게 한다.
+    """
     for point in reversed(trend):
         if point["sov_pct"] is not None:
-            return point["sov_pct"]
+            return point["sov_pct"], date.fromisoformat(point["week_start"])
     return None

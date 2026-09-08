@@ -129,21 +129,34 @@ async def _hospital(
     return hospital
 
 
-async def _incident(db, hospital: Hospital, *, state: IncidentState) -> Incident:
+async def _incident(
+    db,
+    hospital: Hospital,
+    *,
+    state: IncidentState,
+    incident_type: str = "PROVIDER_TIMEOUT",
+    sla_due_at: datetime | None = None,
+) -> Incident:
     incident = Incident(
         hospital_id=hospital.id,
         dedupe_key=f"qa:{uuid.uuid4()}",
-        incident_type="PROVIDER_TIMEOUT",
+        incident_type=incident_type,
         state=state,
+        sla_due_at=sla_due_at,
         severity=IncidentSeverity.HIGH,
         customer_impact="오늘 콘텐츠 초안 생성이 멈췄습니다.",
         source_type="content_generation",
-        safe_error_code="PROVIDER_TIMEOUT",
+        safe_error_code=incident_type,
         safe_error_message="AI 공급자 응답이 지연되고 있습니다.",
         next_action="작업을 다시 시도해 주세요.",
         admin_path=f"/hospitals/{hospital.id}/content",
         # ck_incidents_recovery_fact — 복구 상태는 복구 시각을 함께 요구한다.
-        recovered_at=datetime.now(UTC) if state == IncidentState.RECOVERED else None,
+        recovered_at=(
+            datetime.now(UTC)
+            if state in (IncidentState.RECOVERED, IncidentState.ACKNOWLEDGED)
+            else None
+        ),
+        acknowledged_at=datetime.now(UTC) if state == IncidentState.ACKNOWLEDGED else None,
     )
     db.add(incident)
     await db.flush()
@@ -227,10 +240,21 @@ async def test_list_rows_count_open_exceptions_and_name_the_ae_owner(pg_async_se
     db = pg_async_session
     actor = await _admin_user(db)
     excepted = await _hospital(db, "예외 의원", escalated_draft=True)
+    # 같은 원인 두 건은 현황 화면에서 카드 하나다 — 목록도 같은 묶음으로 센다.
     await _incident(db, excepted, state=IncidentState.OPEN)
     await _incident(db, excepted, state=IncidentState.OPEN)
-    # 복구된 인시던트는 사람이 볼 예외가 아니다 — 세면 목록이 상시 빨갛게 된다.
+    await _incident(db, excepted, state=IncidentState.OPEN, incident_type="IMAGE_BLOCKED")
+    # 복구·확인이 끝난 건과 약속한 재시도 창이 남은 건은 사람이 볼 예외가 아니다 —
+    # 세면 목록이 상시 빨갛게 되고 자동 복구가 AE의 할 일이 된다.
     await _incident(db, excepted, state=IncidentState.RECOVERED)
+    await _incident(db, excepted, state=IncidentState.ACKNOWLEDGED)
+    await _incident(
+        db,
+        excepted,
+        state=IncidentState.RETRYING,
+        incident_type="SITE_BUILD_SLOW",
+        sla_due_at=datetime.now(UTC) + timedelta(hours=2),
+    )
     owned = await _hospital(db, "담당 있는 의원", aeo_domain="jangclinic.kr")
     owned.domain_last_check_ok = True
     owned.domain_last_checked_at = datetime.now(UTC)
@@ -240,6 +264,7 @@ async def test_list_rows_count_open_exceptions_and_name_the_ae_owner(pg_async_se
     rows = await _list_rows(db, actor)
 
     assert rows[str(excepted.id)]["content_state"]["kind"] == "exception"
+    # 원인 묶음 2 + 자동 검수 보류 초안 1 — 현황 화면이 보여줄 카드 수와 같다.
     assert rows[str(excepted.id)]["open_exception_count"] == 3
     assert rows[str(excepted.id)]["ae_owner"] is None
     assert rows[str(excepted.id)]["domain_state"]["kind"] == "unused"

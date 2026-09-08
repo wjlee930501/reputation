@@ -38,12 +38,12 @@ from app.api.admin.domain import (
     check_domain_dns,
     domain_dns_strategy_for_hospital,
 )
+from app.api.admin.operations_center_incident_queries import count_operator_incidents
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
-from app.models.operations import Incident, IncidentState
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
@@ -647,13 +647,14 @@ async def list_hospitals(
     # 쿼리를 낸다.
     hospital_ids = [h.id for h in hospitals]
     readiness_states = await get_essence_readiness_states(db, hospital_ids)
-    incident_counts = await _open_incident_counts(db, hospital_ids)
+    incident_counts = await count_operator_incidents(db, hospital_ids, now=datetime.now(UTC))
     ae_owners = await _ae_owners(db, hospital_ids)
     return [
         _serialize_list(
             h,
             readiness_state=readiness_states[h.id],
-            # 자동 검수가 막힌 초안도 사람이 풀어야 하는 예외다 — 인시던트와 함께 센다.
+            # 자동 검수가 막힌 초안도 사람이 풀어야 하는 예외다 — 현황 화면의 예외 카드와
+            # 같은 규칙으로 센 인시던트 수에 더한다(카드 수 == 이 숫자).
             open_exception_count=(
                 incident_counts.get(h.id, 0) + int(readiness_states[h.id].escalated_draft)
             ),
@@ -661,31 +662,6 @@ async def list_hospitals(
         )
         for h in hospitals
     ]
-
-
-async def _open_incident_counts(
-    db: AsyncSession, hospital_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, int]:
-    """사람에게 아직 남은 인시던트만 — RECOVERED는 자동 복구가 끝난 기록이다."""
-    if not hospital_ids:
-        return {}
-    rows = (
-        await db.execute(
-            select(Incident.hospital_id, func.count())
-            .where(
-                Incident.hospital_id.in_(hospital_ids),
-                Incident.state.in_(
-                    (
-                        IncidentState.OPEN,
-                        IncidentState.RETRYING,
-                        IncidentState.ACKNOWLEDGED,
-                    )
-                ),
-            )
-            .group_by(Incident.hospital_id)
-        )
-    ).all()
-    return {hospital_id: count for hospital_id, count in rows}
 
 
 async def _ae_owners(

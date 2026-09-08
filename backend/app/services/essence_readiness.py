@@ -304,9 +304,18 @@ async def get_public_approved_philosophy_ids(
 
 @dataclass(frozen=True, slots=True)
 class EssenceReadinessState:
+    """목록·헤더·현황이 공유하는 병원별 콘텐츠 준비 근거.
+
+    `escalated_draft_findings`는 자동 검수가 남긴 보류 사유 전부다 — 현황 화면이 예외
+    카드를 만들 때 초안을 다시 조회하지 않도록 여기서 함께 싣는다(같은 JSONB 필터가
+    두 곳에 있으면 목록의 예외와 현황의 카드가 갈린다).
+    """
+
     current: bool
     unprocessed_sources: int
     escalated_draft: bool
+    escalated_draft_id: uuid.UUID | None = None
+    escalated_draft_findings: tuple[str, ...] = ()
 
 
 async def get_essence_readiness_states(
@@ -351,7 +360,7 @@ async def get_essence_readiness_states(
         )
     ).all()
     noise_hashes = await load_evidence_noise_hashes(db, ids)
-    escalated_hospital_ids = await _load_escalated_draft_hospital_ids(db, ids)
+    escalated_drafts = await _load_escalated_drafts(db, ids)
 
     # 병원당 APPROVED는 부분 unique 인덱스로 최대 1건이다.
     approved_by_hospital = {row.hospital_id: row for row in approved_rows}
@@ -367,6 +376,7 @@ async def get_essence_readiness_states(
             sources,
             excluded_note_hash=noise_hashes.get(hospital_id),
         )
+        draft_id, findings = escalated_drafts.get(hospital_id, (None, ()))
         resolved[hospital_id] = EssenceReadinessState(
             current=readiness is not None and readiness.current is not None,
             # `resolve_essence_readiness`와 같은 정의(PROCESSED가 아닌 필수 자료). 승인 행이
@@ -374,24 +384,29 @@ async def get_essence_readiness_states(
             unprocessed_sources=sum(
                 1 for row in sources if row.status != SourceStatus.PROCESSED
             ),
-            escalated_draft=hospital_id in escalated_hospital_ids,
+            escalated_draft=hospital_id in escalated_drafts,
+            escalated_draft_id=draft_id,
+            escalated_draft_findings=findings,
         )
     return resolved
 
 
-async def _load_escalated_draft_hospital_ids(
+async def _load_escalated_drafts(
     db: AsyncSession,
     hospital_ids: list[uuid.UUID],
-) -> set[uuid.UUID]:
-    """자동 검수가 보류 사유를 남긴 DRAFT가 있는 병원 — 사람이 손대야 풀리는 예외.
+) -> dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]]:
+    """자동 검수가 보류한 DRAFT — 사람이 손대야 풀리는 예외와 그 보류 사유 전부.
 
     `unsupported_gaps`는 postgres에서만 JSONB인 variant라 컨테인먼트를 SQL로 강제하면 다른
     dialect에서 깨진다. 병원당 초안은 소수이므로 gap 목록만 읽어 파이썬에서 거른다.
+    사유는 하나라도 빠지면 승인 게이트와 화면이 어긋나므로 전부 싣는다
+    (`api/admin/essence.py`의 예외 승인 조건과 같은 목록).
     """
     rows = (
         await db.execute(
             select(
                 HospitalContentPhilosophy.hospital_id,
+                HospitalContentPhilosophy.id,
                 HospitalContentPhilosophy.unsupported_gaps,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(hospital_ids),
@@ -399,14 +414,20 @@ async def _load_escalated_draft_hospital_ids(
             )
         )
     ).all()
-    return {
-        row.hospital_id
-        for row in rows
-        if any(
-            isinstance(gap, dict) and gap.get("field") == AUTO_REVIEW_GAP_FIELD
+    escalated: dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]] = {}
+    for row in rows:
+        gaps = [
+            gap
             for gap in (row.unsupported_gaps or [])
-        )
-    }
+            if isinstance(gap, dict) and gap.get("field") == AUTO_REVIEW_GAP_FIELD
+        ]
+        if not gaps:
+            continue
+        findings = tuple(str(gap["reason"]) for gap in gaps if gap.get("reason"))
+        # 사유를 남긴 초안이 화면이 보여줄 초안이다 — 사유 없는 초안은 예외로만 센다.
+        if row.hospital_id not in escalated or (findings and not escalated[row.hospital_id][1]):
+            escalated[row.hospital_id] = (row.id, findings)
+    return escalated
 
 
 def _public_philosophy_id(

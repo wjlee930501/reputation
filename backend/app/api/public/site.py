@@ -307,7 +307,7 @@ async def list_published_contents(
     넘어서는 병원(수년 누적)도 호출부(sitemap 등)가 전체 발행 콘텐츠를 순회할 수 있다.
     """
     h = await _get_active_hospital(db, slug)
-    if not h.schedule_set:
+    if not is_public_serving_hospital(h):
         return []
     public_philosophy = await get_public_essence_readiness(db, h.id)
     if public_philosophy is None:
@@ -335,7 +335,7 @@ async def get_content_public(
 ):
     """콘텐츠 상세"""
     h = await _get_active_hospital(db, slug)
-    if not h.schedule_set:
+    if not is_public_serving_hospital(h):
         raise HTTPException(status_code=404, detail="Content not found")
     public_philosophy = await get_public_essence_readiness(db, h.id)
 
@@ -366,7 +366,7 @@ async def get_public_content_image(
     온전하면 이미 공개된 이미지가 불필요하게 깨지지 않는다.
     """
     h = await _get_active_hospital(db, slug)
-    if not h.schedule_set:
+    if not is_public_serving_hospital(h):
         raise HTTPException(status_code=404, detail="Content image not found")
     public_philosophy_id = await get_public_approved_philosophy_id(db, h.id)
     item = await db.get(ContentItem, content_id)
@@ -397,6 +397,17 @@ def _is_active_public_hospital(hospital: Hospital | None) -> bool:
         and hospital.site_live
         and activation_gate_snapshot(hospital)["ready"]
     )
+
+
+def is_public_serving_hospital(hospital: Hospital | None) -> bool:
+    """공개 페이지가 이 병원의 콘텐츠를 실제로 내보내는가 — 목록·상세·이미지의 병원 게이트.
+
+    ACTIVE + site_live + 활성화 선행조건 + 발행 요일 설정. 글 하나하나의 공개 여부는
+    `content_visibility`가 따로 판정한다. Admin이 "공개 중" 편수를 세려면 같은 조건을
+    다시 쓰는 대신 이 함수를 불러야 한다 — 조건을 옮겨 적으면 일시정지 병원의 발행 글이
+    admin에서만 공개 중으로 보인다.
+    """
+    return _is_active_public_hospital(hospital) and bool(hospital.schedule_set)
 
 
 def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | None:
