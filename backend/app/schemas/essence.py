@@ -109,6 +109,8 @@ class PhilosophyApprove(BaseModel):
     reviewed_by: str = Field(min_length=1, max_length=100)
     approval_note: str | None = None
     confirm_evidence_reviewed: bool
+    # 자동 검수가 보류한 초안을 사람이 승인할 때의 근거. 20자 미만은 사유가 아니다.
+    override_reason: str | None = Field(default=None, min_length=20, max_length=2000)
 
     @field_validator("confirm_evidence_reviewed")
     @classmethod

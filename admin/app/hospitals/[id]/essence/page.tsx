@@ -155,6 +155,7 @@ export default function EssencePage() {
   const [draftRiskRules, setDraftRiskRules] = useState('')
   const reviewedBy = currentOperatorName ?? ''
   const [approvalNote, setApprovalNote] = useState('')
+  const [overrideReason, setOverrideReason] = useState('')
   const [confirmEvidence, setConfirmEvidence] = useState(false)
 
   // 목록 API는 노트 본문을 주지 않는다(evidence_notes: null). 초안의 evidence_map은
@@ -318,6 +319,11 @@ export default function EssencePage() {
   const autoReviewBlockReasons = useMemo(
     () => (selectedIsReviewDraft ? essenceAutoReviewBlockReasons(selectedDraft?.unsupported_gaps) : []),
     [selectedIsReviewDraft, selectedDraft],
+  )
+  // 예외 승인은 이 사유들을 하나씩 확인한 근거를 요구한다(H-03).
+  const autoReviewFindings = useMemo(
+    () => essenceAutoReviewBlockReasons(selectedDraft?.unsupported_gaps),
+    [selectedDraft],
   )
 
   function setDraftFields(philosophy: ContentPhilosophy) {
@@ -504,10 +510,12 @@ export default function EssencePage() {
             reviewed_by: reviewedBy,
             approval_note: approvalNote || null,
             confirm_evidence_reviewed: confirmEvidence,
+            override_reason: overrideReason.trim() || null,
           }),
         }),
       )
       setApprovalNote('')
+      setOverrideReason('')
       setConfirmEvidence(false)
       setNotice('콘텐츠 운영 기준이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')
       await load()
@@ -1009,6 +1017,23 @@ export default function EssencePage() {
                       className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                     />
                   </div>
+                  {autoReviewFindings.length > 0 && (
+                    <div>
+                      <label htmlFor="essence-override-reason" className="block text-xs font-medium text-slate-600 mb-1">
+                        자동 검수 보류 사유별 확인 근거 (20자 이상, 필수)
+                      </label>
+                      <ul className="mb-1 list-disc pl-4 text-[11px] text-amber-800">
+                        {autoReviewFindings.map((finding) => <li key={finding}>{finding}</li>)}
+                      </ul>
+                      <textarea
+                        id="essence-override-reason"
+                        value={overrideReason}
+                        onChange={(e) => setOverrideReason(e.target.value)}
+                        rows={3}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                      />
+                    </div>
+                  )}
                   <label className="flex items-start gap-2 text-xs text-slate-600">
                     <input
                       type="checkbox"
@@ -1032,6 +1057,7 @@ export default function EssencePage() {
                       evidenceBlockers.length > 0 ||
                       !confirmEvidence ||
                       !reviewedBy.trim() ||
+                      (autoReviewFindings.length > 0 && overrideReason.trim().length < 20) ||
                       actionLoading === 'approve-draft'
                     }
                     className="w-full py-2.5 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"

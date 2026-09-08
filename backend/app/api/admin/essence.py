@@ -1679,6 +1679,26 @@ async def approve_philosophy(
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
+    # 자동 검수가 보류한 사유는 체크박스 하나로 지나칠 수 없다. 초안을 고쳐 재검수를
+    # 받거나, 각 사유를 확인한 근거를 예외 승인 사유로 남겨야 한다(H-03).
+    auto_findings = [
+        str(gap.get("reason"))
+        for gap in (philosophy.unsupported_gaps or [])
+        if isinstance(gap, dict) and gap.get("field") == "automatic_ai_review" and gap.get("reason")
+    ]
+    if auto_findings and not body.override_reason:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "AUTO_REVIEW_FINDINGS_UNRESOLVED",
+                "findings": auto_findings,
+                "message": (
+                    "자동 검수가 보류한 사유가 남아 있습니다. 초안을 수정해 재검수를 요청하거나, "
+                    "각 사유를 확인한 근거를 예외 승인 사유(20자 이상)에 적어 주세요."
+                ),
+            },
+        )
+
     # A draft may have been created from a selected subset. Approval is only valid
     # for the complete processed-source snapshot that exists at approval time.
     required_result = await db.execute(
@@ -1776,6 +1796,8 @@ async def approve_philosophy(
             "recorded_reviewer": philosophy.reviewed_by,
             "evidence_reviewed_confirmed": True,
             "approval_note": body.approval_note,
+            "override_reason": body.override_reason,
+            "overridden_auto_review_findings": auto_findings,
             "source_asset_count": len(philosophy.source_asset_ids or []),
             "content_rescreened": rescreened,
         },

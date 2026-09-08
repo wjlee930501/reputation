@@ -11,8 +11,10 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import select
 
 from app.api.admin import essence as essence_api
+from app.models.audit import AdminAuditLog
 from app.models.essence import (
     EvidenceNoteType,
     HospitalContentPhilosophy,
@@ -227,3 +229,93 @@ async def test_approve_requires_a_request_actor_instead_of_trusting_the_body(pg_
     await pg_async_session.refresh(draft)
     assert draft.status == PhilosophyStatus.DRAFT
     assert draft.reviewed_by is None
+
+
+async def _seed_draft_for_findings(pg_async_session):
+    """근거 연결은 통과하고 자동 검수 보류 사유만 남은 초안."""
+    hospital, draft, note = await _seed_draft(pg_async_session, mapped_note_ids=[])
+    draft.evidence_map = {"positioning_statement": [str(note.id)]}
+    await pg_async_session.commit()
+    return hospital, draft, note
+
+
+def _approve_body(**overrides) -> essence_api.PhilosophyApprove:
+    base = dict(
+        reviewed_by="reviewer@example.com",
+        approval_note=None,
+        confirm_evidence_reviewed=True,
+    )
+    base.update(overrides)
+    return essence_api.PhilosophyApprove(**base)
+
+
+@pytest.mark.asyncio
+async def test_manual_approve_refuses_unresolved_auto_review_findings(pg_async_session):
+    """H-03: 자동 검수가 보류한 사유를 체크박스 하나로 지나칠 수 없다."""
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "근거 없는 효과 주장"}
+    ]
+    await pg_async_session.commit()
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital.id, draft.id, _approve_body(), db=pg_async_session
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "AUTO_REVIEW_FINDINGS_UNRESOLVED"
+    assert "근거 없는 효과 주장" in exc.value.detail["findings"]
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.DRAFT
+
+
+@pytest.mark.asyncio
+async def test_manual_approve_with_override_reason_records_the_overridden_findings(
+    pg_async_session,
+):
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "근거 없는 효과 주장"}
+    ]
+    await pg_async_session.commit()
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        response = await essence_api.approve_philosophy(
+            hospital.id,
+            draft.id,
+            _approve_body(
+                override_reason=(
+                    "원장 인터뷰 원문 2문단에 해당 효과의 근거가 직접 서술되어 있음을 확인함"
+                )
+            ),
+            db=pg_async_session,
+        )
+    finally:
+        reset_request_actor(token)
+
+    assert response["status"] == PhilosophyStatus.APPROVED.value
+    audit = (
+        await pg_async_session.execute(
+            select(AdminAuditLog)
+            .where(AdminAuditLog.action == "approve_philosophy")
+            .order_by(AdminAuditLog.created_at.desc())
+        )
+    ).scalars().first()
+    assert audit.detail["override_reason"].startswith("원장 인터뷰")
+    assert audit.detail["overridden_auto_review_findings"] == ["근거 없는 효과 주장"]
+
+
+def test_manual_approve_rejects_a_short_override_reason():
+    with pytest.raises(ValueError):
+        essence_api.PhilosophyApprove(
+            reviewed_by="r",
+            approval_note=None,
+            confirm_evidence_reviewed=True,
+            override_reason="짧음",
+        )
