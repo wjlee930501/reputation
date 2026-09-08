@@ -233,6 +233,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 2: 엄격한 `current`는 노이즈 hash도 요구하고, 공개 근거는 유지한다 (H-02)
 
+> **실행 기록 (2026-09-08):** 구현 `eb10224` → Codex REQUEST_CHANGES → 후속 커밋에서 ① 공개 사이트 라우트(`site.py:248,315,344`)와 공개 이미지 경로는 노이즈 집합을 조회하지 않는 **`get_public_essence_readiness`**/`include_noise=False`를 쓴다(`public_philosophy`만 필요, 요청당 쿼리 1개 절약) ② 레거시 재검수 backfill의 CAS 체크포인트(`content_public_review_backfill.py:524`)도 sync 노이즈 hash를 넘긴다 ③ 리포트 전달 차단 문구를 "운영 기준 재검수 후 확인"으로 ④ readiness 테스트 fake를 statement 기반 dispatch로. **Task 3가 함께 들어가야** 노이즈 토글로 생긴 stale이 자동으로 회복된다(단독 배포 금지).
+
 **Files:**
 - Modify: `backend/app/services/essence_readiness.py` — `resolve_essence_readiness`(59-96), `get_essence_readiness`(98-116), `get_essence_readiness_sync`(119-137), `_get_lightweight_essence_readiness`(184-231)
 - Test: `backend/tests/test_essence_readiness.py`
