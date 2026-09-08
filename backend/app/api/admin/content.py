@@ -91,6 +91,7 @@ from app.services.site_revalidate import (
 )
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
+from app.workers.generation_retry_policy import published_recertify_key
 from app.workers.tasks import recertify_published_content_image, regenerate_content_item
 
 logger = logging.getLogger(__name__)
@@ -650,8 +651,8 @@ async def update_content(
                     operation_type="RECERTIFY_PUBLISHED_IMAGE",
                     hospital_id=hospital.id,
                     requested_by_id=None,
-                    idempotency_key=(
-                        f"recertify:{item.id}:{int(item.content_revision or 1)}"
+                    idempotency_key=published_recertify_key(
+                        item.id, int(item.content_revision or 1)
                     ),
                     audit_actor=default_actor(),
                     target_type="content_item",

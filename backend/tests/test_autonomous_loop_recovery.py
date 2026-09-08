@@ -25,11 +25,22 @@ class _ScalarResult:
 
 
 class _RecoverySession:
-    def __init__(self, *, hospitals=(), runs=(), operation_runs=(), content_items=()):
+    def __init__(
+        self,
+        *,
+        hospitals=(),
+        runs=(),
+        operation_runs=(),
+        content_items=(),
+        recertify_candidates=(),
+        recertify_runs=(),
+    ):
         self.hospitals = list(hospitals)
         self.runs = list(runs)
         self.operation_runs = list(operation_runs)
         self.content_items = {item.id: item for item in content_items}
+        self.recertify_candidates = list(recertify_candidates)
+        self.recertify_runs = list(recertify_runs)
         self.added = []
         self.commits = 0
         self._operation_run_reads = 0
@@ -38,10 +49,15 @@ class _RecoverySession:
         entity = statement.column_descriptions[0].get("entity")
         if entity is Hospital:
             return _ScalarResult(self.hospitals)
+        if entity is ContentItem:
+            return _ScalarResult(self.recertify_candidates)
         if entity is OperationRun:
             self._operation_run_reads += 1
+            # 1: SITE_REVALIDATION, 2: 재배달 후보, 3: 재인증 실행 이력.
             return _ScalarResult(
-                self.runs if self._operation_run_reads == 1 else self.operation_runs
+                (self.runs, self.operation_runs, self.recertify_runs)[
+                    min(self._operation_run_reads, 3) - 1
+                ]
             )
         return _ScalarResult(())
 
@@ -117,7 +133,12 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result == {"site_builds": 1, "site_revalidations": 1, "operation_runs": 0}
+    assert result == {
+        "site_builds": 1,
+        "site_revalidations": 1,
+        "operation_runs": 0,
+        "image_recertifications": 0,
+    }
     assert dispatched == [
         (
             "app.workers.tasks.build_aeo_site",
@@ -181,7 +202,12 @@ def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 1}
+    assert result == {
+        "site_builds": 0,
+        "site_revalidations": 0,
+        "operation_runs": 1,
+        "image_recertifications": 0,
+    }
     assert dispatched == [
         (
             "app.workers.tasks.build_aeo_site",
@@ -233,7 +259,12 @@ def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 0}
+    assert result == {
+        "site_builds": 0,
+        "site_revalidations": 0,
+        "operation_runs": 0,
+        "image_recertifications": 0,
+    }
     assert run.state == OperationRunState.QUEUED
     assert run.queued_at == now - timedelta(minutes=3)
     assert session.commits == 1
@@ -362,7 +393,12 @@ def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypa
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 1}
+    assert result == {
+        "site_builds": 0,
+        "site_revalidations": 0,
+        "operation_runs": 1,
+        "image_recertifications": 0,
+    }
     assert dispatched == [
         (
             "app.workers.tasks.build_aeo_site",
@@ -423,7 +459,12 @@ def test_reconciler_fails_unrebuildable_dispatch_with_incident_and_open_intent(
 
     result = autonomous_recovery.reconcile.run()
 
-    assert result == {"site_builds": 0, "site_revalidations": 0, "operation_runs": 0}
+    assert result == {
+        "site_builds": 0,
+        "site_revalidations": 0,
+        "operation_runs": 0,
+        "image_recertifications": 0,
+    }
     assert run.state == OperationRunState.FAILED
     assert run.safe_error_code == "UNSAFE_STORED_DISPATCH"
     assert run.completed_at == now
@@ -807,3 +848,135 @@ def test_failed_scheduled_monthly_run_is_reclaimed_automatically() -> None:
     assert failed.safe_error_code is None
     assert failed.completed_at is None
     assert session.commits == 1
+
+
+# ── 공개 글 이미지 재인증 backstop (H-01) ─────────────────────────────────
+
+
+def _withheld_item(revision: int = 3):
+    return SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), content_revision=revision
+    )
+
+
+def _recertify_run(item, *, attempt, state, safe_error_code=None):
+    key = (
+        f"recertify:{item.id}:{item.content_revision}"
+        if attempt == 1
+        else f"recertify:{item.id}:{item.content_revision}:s{attempt}"
+    )
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="RECERTIFY_PUBLISHED_IMAGE",
+        state=state,
+        idempotency_key=key,
+        safe_error_code=safe_error_code,
+        request_payload={"source_id": str(item.id)},
+    )
+
+
+def _run_recertify_sweep(monkeypatch, session):
+    now = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+    dispatched: list[tuple[str, list[str], dict[str, object]]] = []
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda name, args, **kwargs: dispatched.append((name, args, kwargs)),
+    )
+    return autonomous_recovery.reconcile.run(), dispatched
+
+
+def test_recertify_sweep_redispatches_a_cleared_certificate(monkeypatch) -> None:
+    item = _withheld_item()
+    session = _RecoverySession(recertify_candidates=(item,))
+
+    result, dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 1
+    name, args, kwargs = dispatched[0]
+    assert name == "app.workers.tasks.recertify_published_content_image"
+    assert args == [str(item.id)]
+    assert kwargs["queue"] == "content"
+    run = session.added[0]
+    assert run.operation_type == "RECERTIFY_PUBLISHED_IMAGE"
+    assert run.state == OperationRunState.REQUESTED
+    assert run.idempotency_key == f"recertify:{item.id}:3:s1"
+    assert kwargs["headers"]["operation_run_id"] == str(run.id)
+    assert kwargs["task_id"] == run.task_id
+
+
+def test_recertify_sweep_leaves_an_in_flight_run_alone(monkeypatch) -> None:
+    item = _withheld_item()
+    session = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            _recertify_run(item, attempt=1, state=OperationRunState.RUNNING),
+        ),
+    )
+
+    result, dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 0
+    assert dispatched == [] and session.added == []
+
+
+def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) -> None:
+    """거절은 사람의 결정이다 — 다시 사도 같은 답이 나온다."""
+    item = _withheld_item()
+    session = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            _recertify_run(
+                item,
+                attempt=1,
+                state=OperationRunState.FAILED,
+                safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+            ),
+        ),
+    )
+
+    result, dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 0
+    assert dispatched == [] and session.added == []
+
+
+def test_recertify_sweep_retries_a_transient_failure_until_the_budget_is_spent(
+    monkeypatch,
+) -> None:
+    item = _withheld_item()
+    transient = [
+        _recertify_run(
+            item,
+            attempt=attempt,
+            state=OperationRunState.FAILED,
+            safe_error_code="PROVIDER_UNAVAILABLE",
+        )
+        for attempt in (1, 2)
+    ]
+    session = _RecoverySession(recertify_candidates=(item,), recertify_runs=transient)
+
+    result, dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 1
+    assert session.added[0].idempotency_key == f"recertify:{item.id}:3:s3"
+
+    spent = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            *transient,
+            _recertify_run(
+                item,
+                attempt=3,
+                state=OperationRunState.FAILED,
+                safe_error_code="PROVIDER_UNAVAILABLE",
+            ),
+        ),
+    )
+
+    exhausted, no_dispatch = _run_recertify_sweep(monkeypatch, spent)
+
+    assert exhausted["image_recertifications"] == 0
+    assert no_dispatch == [] and spent.added == []

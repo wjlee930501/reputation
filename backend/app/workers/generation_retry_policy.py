@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
@@ -9,6 +10,23 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo("Asia/Seoul")
 RECOVERY_SWEEP_HOURS = (1, 4, 7, 23)
 ENVIRONMENT_ATTEMPT_BUDGET = 4
+# 공개 글 이미지 재인증의 자동 재실행 예산. 지문은 날짜가 아니라 (글, 판)이라
+# 같은 판의 반복 실패가 날짜만 바뀌며 무한히 재시도되지 않는다 (H-08).
+PUBLISHED_RECERTIFY_ATTEMPT_BUDGET = 3
+
+
+def published_recertify_key(item_id: uuid.UUID | str, revision: int) -> str:
+    """PATCH 디스패치와 복구 sweep이 같은 (글, 판)으로 서로를 중복 제거하는 키."""
+
+    return f"recertify:{item_id}:{revision}"
+
+
+def published_recertify_sweep_key(
+    item_id: uuid.UUID | str, revision: int, attempt: int
+) -> str:
+    """sweep 재실행 키. 종결된 같은 키를 dispatch가 '이미 실행함'으로 오인하지 않게 한다."""
+
+    return f"{published_recertify_key(item_id, revision)}:s{attempt}"
 
 
 class GenerationRetryClass(StrEnum):

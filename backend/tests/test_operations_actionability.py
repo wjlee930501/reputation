@@ -433,7 +433,10 @@ async def test_acknowledged_generation_cause_keeps_the_same_episode(monkeypatch)
 
 
 def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:
-    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == frozenset()
+    # 아침 마감 게이트를 기다리지 않는 것은 이미 공개했다가 내려간 글의 재인증 차단뿐이다.
+    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == (
+        generation_incident_control.PUBLISHED_IMAGE_RECERTIFY_CODES
+    )
 
     morning_codes = (
         "PROVIDER_TIMEOUT",

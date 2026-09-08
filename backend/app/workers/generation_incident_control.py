@@ -51,10 +51,19 @@ _MORNING_IMAGE_NOTIFICATION_CODES = {
     "CONTENT_IMAGE_NOT_VERIFIED",
     "IMAGE_GENERATION_FAILED",
 }
+# 이미 공개했던 글이 이미지 인증이 풀려 공개 페이지에서 내려간 상태다. 예정 슬롯의
+# 아침 마감 게이트와 달리 지금 사람이 결정해야 하므로 첫 open에 한 번 알린다.
+PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = frozenset(
+    {
+        "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+        "PUBLISHED_IMAGE_MISSING",
+        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
+    }
+)
 # The cost guard owns its hard-stop incident/outbox projection.  Generation still
 # records COST_BLOCKED, but a second generation Slack would violate the one-message
 # hard-stop contract.
-_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = frozenset()
+_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = PUBLISHED_IMAGE_RECERTIFY_CODES
 _MORNING_GENERATION_NOTIFICATION_CODES = frozenset(
     _MORNING_BODY_NOTIFICATION_CODES
     | _MORNING_STORED_GATE_NOTIFICATION_CODES
@@ -105,8 +114,18 @@ def generation_safe_cause(code: str) -> str:
     return _generation_safe_cause(code)
 
 
+def generation_operator_action(code: str) -> str:
+    """Operator-safe Korean next action for one generation blocker code."""
+
+    return _generation_operator_copy(code)[1]
+
+
 def _generation_operator_copy(code: str) -> tuple[str, str]:
-    impact = "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
+    impact = (
+        "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
+        if code in PUBLISHED_IMAGE_RECERTIFY_CODES
+        else "발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다."
+    )
     actions = {
         "PROVIDER_TIMEOUT": (
             "일시적인 응답 지연입니다. 다음 예약 배치가 자동으로 다시 시도하므로 지금은 기다리세요."
@@ -159,6 +178,15 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
         "IMAGE_GENERATION_FAILED": (
             "본문은 저장되어 있습니다. 운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 한 번 누르세요."
         ),
+        "PUBLISHED_IMAGE_RECERTIFY_REJECTED": (
+            "대표 이미지를 교체하거나 제목을 되돌리세요."
+        ),
+        "PUBLISHED_IMAGE_MISSING": (
+            "해당 항목에 대표 이미지를 등록하세요. 등록하면 시스템이 자동으로 다시 인증합니다."
+        ),
+        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED": (
+            "자동 재인증이 반복 실패했습니다. 대표 이미지를 교체하거나 제목을 되돌리세요."
+        ),
     }
     action = actions.get(
         code,
@@ -185,6 +213,13 @@ def _generation_safe_cause(code: str) -> str:
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
         "CONTENT_IMAGE_NOT_VERIFIED": "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다.",
+        "PUBLISHED_IMAGE_RECERTIFY_REJECTED": (
+            "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다."
+        ),
+        "PUBLISHED_IMAGE_MISSING": "공개 중인 글에 대표 이미지가 없어 재인증할 수 없습니다.",
+        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED": (
+            "대표 이미지 자동 재인증이 정해진 횟수만큼 반복 실패했습니다."
+        ),
     }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
 
 
@@ -219,16 +254,23 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "ESSENCE_NOT_ALIGNED": IncidentFingerprint.VALIDATION_FAILED,
         "CONTENT_IMAGE_NOT_READY": IncidentFingerprint.RENDER_FAILED,
         "CONTENT_IMAGE_NOT_VERIFIED": IncidentFingerprint.RENDER_FAILED,
+        "PUBLISHED_IMAGE_RECERTIFY_REJECTED": IncidentFingerprint.SAFETY_BLOCKED,
+        "PUBLISHED_IMAGE_MISSING": IncidentFingerprint.MISSING_PREREQUISITE,
+        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED": IncidentFingerprint.RENDER_FAILED,
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 
 def _incident_identity(
-    code: str, item_id: uuid.UUID, hospital_id: uuid.UUID
+    code: str, item_id: uuid.UUID, hospital_id: uuid.UUID, revision: int | None = None
 ) -> tuple[str, str, str]:
     """Use one durable incident per hospital for a hospital-level preparation gate."""
 
     if code == "MISSING_APPROVED_ESSENCE":
         return "hospital", str(hospital_id), f"/hospitals/{hospital_id}/essence"
+    if code in PUBLISHED_IMAGE_RECERTIFY_CODES and revision is not None:
+        # 사람이 내리는 결정은 판(content_revision)마다 다르다. 같은 판의 반복
+        # 디스패치는 한 건으로 묶고, 다음 편집은 새 건으로 연다.
+        return "content_item", f"{item_id}:{revision}", "/operations"
     return "content_item", str(item_id), "/operations"
 
 
@@ -321,10 +363,16 @@ async def open_generation_incident(
     code: str,
     message: str,
     notify: bool = True,
+    revision: int | None = None,
 ) -> uuid.UUID:
     sessions = get_async_sessionmaker()
     async with sessions() as db:
-        object_type, object_id, admin_path = _incident_identity(code, item_id, hospital_id)
+        object_type, object_id, admin_path = _incident_identity(
+            code, item_id, hospital_id, revision
+        )
+        # 중복 제거 키만 판을 포함한다. source_id는 글 자체로 남겨 운영 큐 조인과
+        # 성공 시 자동 종료가 판과 무관하게 같은 글을 찾게 한다.
+        source_id = object_id if object_type == "hospital" else str(item_id)
         dedupe_key = build_incident_key(
             "content_generation", object_type, object_id, _fingerprint(code)
         )
@@ -407,7 +455,7 @@ async def open_generation_incident(
                     admin_path=admin_path,
                     hospital_id=hospital_id,
                     operation_run_id=run_id,
-                    source_id=object_id,
+                    source_id=source_id,
                     safe_error_code=code,
                     safe_error_message=_generation_safe_cause(code),
                 ),

@@ -52,6 +52,11 @@ from app.services.post_publish_review_policy import (
     human_post_publish_review_predicate,
     publicly_operational_hospital_predicate,
 )
+from app.workers.generation_incident_control import (
+    PUBLISHED_IMAGE_RECERTIFY_CODES,
+    generation_operator_action,
+    generation_safe_cause,
+)
 
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
@@ -72,6 +77,28 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
         f"운영 센터의 “{_TODAY_ACTION_LABEL}”을 눌러 발행 가능한 상태인지 확인하세요. "
         "처리할 버튼이 없으면 개발팀에 병원명과 현재 화면의 문구를 전달하세요.",
     )
+
+
+def _blocking_recertify_code(run: OperationRun | None) -> str | None:
+    """자동 재인증이 사람 결정으로 끝났을 때만 그 원인 코드를 돌려준다."""
+    code = run.safe_error_code if run is not None else None
+    return code if code in PUBLISHED_IMAGE_RECERTIFY_CODES else None
+
+
+def _withheld_next_action(run: OperationRun | None) -> str:
+    """보류 행에는 자동 복구가 멈춘 지점의 구체적 조치를 그대로 보여준다."""
+    code = _blocking_recertify_code(run)
+    if code is not None:
+        return generation_operator_action(code)
+    return (
+        f"운영 센터의 “{_WITHHELD_ACTION_LABEL}”에서 보류 사유를 해소하세요. "
+        "사유가 남아 있는 동안에는 공개 내용 확인을 기록할 수 없습니다."
+    )
+
+
+def _withheld_safe_cause(run: OperationRun | None) -> str | None:
+    code = _blocking_recertify_code(run)
+    return generation_safe_cause(code) if code is not None else None
 
 
 def publish_due_requires_operator_action(
@@ -259,7 +286,11 @@ async def load_today_queue(
             .where(
                 OperationRun.hospital_id == ContentItem.hospital_id,
                 OperationRun.operation_type.in_(
-                    ("REGENERATE_CONTENT", "REGENERATE_CONTENT_IMAGE")
+                    (
+                        "REGENERATE_CONTENT",
+                        "REGENERATE_CONTENT_IMAGE",
+                        "RECERTIFY_PUBLISHED_IMAGE",
+                    )
                 ),
                 OperationRun.request_payload["source_id"].as_string()
                 == ContentItem.id.cast(String),
@@ -329,12 +360,11 @@ async def load_today_queue(
             due_at = None
         if withheld is not None:
             impact = "공개 보류 — " + " · ".join(withheld.blocker_labels)
-            next_action = (
-                f"운영 센터의 “{_WITHHELD_ACTION_LABEL}”에서 보류 사유를 해소하세요. "
-                "사유가 남아 있는 동안에는 공개 내용 확인을 기록할 수 없습니다."
-            )
+            next_action = _withheld_next_action(run)
+            safe_cause = _withheld_safe_cause(run)
         else:
             impact, next_action = _today_operator_copy(review=review)
+            safe_cause = None
         occurred_at = content.published_at or content.created_at
         history_at = content.published_at or datetime.combine(
             content.scheduled_date, datetime.min.time(), tzinfo=_SEOUL
@@ -373,7 +403,7 @@ async def load_today_queue(
                     path=f"/hospitals/{hospital.id}/content?content={content.id}",
                 ),
                 retry=None,
-                safe_cause=None,
+                safe_cause=safe_cause,
                 history=[
                     OperationsHistoryEntry(
                         event="PUBLISHED" if already_public else "SCHEDULED", at=history_at

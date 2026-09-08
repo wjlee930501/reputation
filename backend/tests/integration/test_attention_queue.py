@@ -1611,6 +1611,46 @@ async def test_today_queue_sends_a_withheld_item_to_the_reason_not_the_confirmat
     assert normal.action.kind == "REVIEW_CONTENT"
 
 
+async def test_today_queue_shows_the_recertification_block_as_the_next_action(
+    pg_async_session,
+):
+    """자동 재인증이 사람 결정으로 끝났으면 그 조치를 보류 행에 그대로 보여준다(H-01)."""
+    db = pg_async_session
+    hospital = await _hospital(db, "재인증 보류 의원")
+    withheld = await _content(db, hospital, published_hours_ago=2, sequence_no=1, withheld=True)
+    db.add(
+        OperationRun(
+            hospital_id=hospital.id,
+            operation_type="RECERTIFY_PUBLISHED_IMAGE",
+            state="FAILED",
+            idempotency_key=f"recertify:{withheld.id}:2",
+            request_payload=build_request_payload(
+                DispatchPayload(
+                    "content_item", str(withheld.id), "content", (str(withheld.id),)
+                )
+            ),
+            safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+            safe_error_message="제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다.",
+            completed_at=datetime.now(UTC),
+        )
+    )
+    await db.flush()
+
+    _total, rows = await today_queries.load_today_queue(
+        db,
+        OperationsFilters(hospital_id=hospital.id),
+        page=1,
+        page_size=100,
+        overview=False,
+        now=datetime.now(UTC),
+    )
+
+    row = next(item for item in rows if item.content_id == withheld.id)
+    assert row.status == "WITHHELD_PUBLIC"
+    assert row.next_action == "대표 이미지를 교체하거나 제목을 되돌리세요."
+    assert row.safe_cause == "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다."
+
+
 async def test_today_queue_status_filter_and_total_agree_on_a_withheld_row(pg_async_session):
     """보류 판정이 SQL 밖에 있으면 status 필터·total·심각도가 서로 다른 답을 낸다(H-01)."""
     db = pg_async_session

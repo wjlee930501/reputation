@@ -268,6 +268,7 @@ from app.workers.generation_batch_run import GenerationBatchRecorder
 from app.workers.generation_incident_control import (
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
+    PUBLISHED_IMAGE_RECERTIFY_CODES,
     generation_block_digest_due,
     generation_notify_requested,
     generation_safe_cause,
@@ -275,8 +276,10 @@ from app.workers.generation_incident_control import (
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
+    PUBLISHED_RECERTIFY_ATTEMPT_BUDGET,
     GenerationRetryClass,
     next_recovery_sweep,
+    published_recertify_key,
     retry_class_for,
     retry_is_due,
 )
@@ -4055,15 +4058,76 @@ def regenerate_content_item(self, content_id: str):
             _run_async(recover_generation_incidents(item_id, hospital.id, hospital.name, run_id))
 
 
+def _published_recertify_attempts_spent(db, item_id: uuid.UUID, revision: int) -> int:
+    """이 (글, 판)에서 이미 소진한 자동 재인증 시도 수. PATCH 1회 + sweep 재실행을 함께 센다."""
+    base = published_recertify_key(item_id, revision)
+    return int(
+        db.execute(
+            select(func.count())
+            .select_from(OperationRun)
+            .where(
+                OperationRun.operation_type == "RECERTIFY_PUBLISHED_IMAGE",
+                OperationRun.state == OperationRunState.FAILED,
+                or_(
+                    OperationRun.idempotency_key == base,
+                    OperationRun.idempotency_key.like(f"{base}:s%"),
+                ),
+            )
+        ).scalar()
+        or 0
+    )
+
+
+def _open_published_recertify_incident(
+    *,
+    item_id: uuid.UUID,
+    hospital: Hospital,
+    run_id: uuid.UUID,
+    revision: int,
+    code: str,
+) -> None:
+    """자동 복구가 더 진행하지 않는 재인증 차단을 (글, 판) 한 건의 incident로 남긴다."""
+    _run_async(
+        open_generation_incident(
+            item_id=item_id,
+            hospital_id=hospital.id,
+            hospital_name=hospital.name,
+            run_id=run_id,
+            code=code,
+            message=generation_safe_cause(code),
+            revision=revision,
+        )
+    )
+
+
+def _recover_published_recertify_incidents(
+    item_id: uuid.UUID, hospital_id: uuid.UUID, hospital_name: str, run_id: uuid.UUID | None
+) -> None:
+    """재인증이 성공하면 같은 글의 보류 incident를 사람 개입 없이 닫는다."""
+    if run_id is None:
+        return
+    _run_async(
+        recover_generation_incidents(
+            item_id,
+            hospital_id,
+            hospital_name,
+            run_id,
+            safe_error_codes=tuple(sorted(PUBLISHED_IMAGE_RECERTIFY_CODES)),
+        )
+    )
+
+
 @celery_app.task(
     name="app.workers.tasks.recertify_published_content_image", bind=True, max_retries=2
 )
 def recertify_published_content_image(self, content_id: str):
     """공개 글의 제목 편집이 지운 이미지 인증을 저장된 바이트 재검수로 복구한다 (H-01).
 
-    성공하면 공개 페이지가 다시 글을 내보내므로 IndexNow와 사이트 캐시를 갱신한다.
-    정책 거절은 사람의 결정(이미지 교체 또는 제목 되돌리기)이 필요하므로 FAILED로 끝내
-    운영 센터에 남긴다. 공개 글의 이미지를 임의로 새로 생성하지 않는다.
+    성공하면 공개 페이지가 다시 글을 내보내므로 IndexNow와 사이트 캐시를 갱신하고 이 글의
+    보류 incident를 닫는다. 정책 거절·이미지 없음은 사람의 결정(이미지 교체 또는 제목
+    되돌리기)이 필요하므로 FAILED로 끝내고 incident를 연다. 일시 오류는 태스크가 제한된
+    횟수만큼 스스로 다시 시도하고, 그래도 안 되면 정기 sweep이 이어받는다.
+    공개 글의 이미지를 임의로 새로 생성하지 않는다.
     """
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
@@ -4077,13 +4141,19 @@ def recertify_published_content_image(self, content_id: str):
             db, self, item_id, item.hospital_id, operation_type="RECERTIFY_PUBLISHED_IMAGE"
         ):
             raise PermissionError("operation run does not authorize this content target")
+        hospital = db.get(Hospital, item.hospital_id)
+        expected_title = item.title
+        expected_revision = int(getattr(item, "content_revision", 1) or 1)
         if image_certification_current(item):
             # 중복 디스패치·재배달. 유효한 인증을 다시 사지 않는다.
-            finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+            run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+            if hospital is not None:
+                _recover_published_recertify_incidents(
+                    item_id, hospital.id, hospital.name, run_id
+                )
             return
-        hospital = db.get(Hospital, item.hospital_id)
         if not hospital or not item.image_url:
-            finish_explicit_run(
+            run_id = finish_explicit_run(
                 db,
                 self,
                 item_id,
@@ -4093,9 +4163,15 @@ def recertify_published_content_image(self, content_id: str):
                     "공개 글에 대표 이미지가 없어 재인증할 수 없습니다. 이미지를 등록해 주세요."
                 ),
             )
+            if run_id is not None and hospital is not None:
+                _open_published_recertify_incident(
+                    item_id=item_id,
+                    hospital=hospital,
+                    run_id=run_id,
+                    revision=expected_revision,
+                    code="PUBLISHED_IMAGE_MISSING",
+                )
             return
-        expected_title = item.title
-        expected_revision = int(getattr(item, "content_revision", 1) or 1)
         try:
             content_hash, subject_hash = _run_async(
                 certify_existing_image(
@@ -4107,7 +4183,7 @@ def recertify_published_content_image(self, content_id: str):
             )
         except ImagePolicyRejectedError:
             db.rollback()
-            finish_explicit_run(
+            run_id = finish_explicit_run(
                 db,
                 self,
                 item_id,
@@ -4118,12 +4194,26 @@ def recertify_published_content_image(self, content_id: str):
                     "이미지를 교체하거나 제목을 되돌려 주세요."
                 ),
             )
+            if run_id is not None:
+                _open_published_recertify_incident(
+                    item_id=item_id,
+                    hospital=hospital,
+                    run_id=run_id,
+                    revision=expected_revision,
+                    code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+                )
             return
         except Exception as exc:
-            # 공급자·저장소 일시 오류. 삼키지 않고 Celery 실패로 올려 운영 센터가 본다.
             db.rollback()
             code, message = classify_generation_failure(exc)
-            finish_explicit_run(
+            recoverable = (
+                retry_class_for(code) is GenerationRetryClass.ENVIRONMENT_RECOVERABLE
+            )
+            if recoverable and self.request.retries < self.max_retries:
+                # 실행을 종결하지 않는다 — RETRY 신호가 run을 QUEUED로 되돌려 같은
+                # 실행이 이어진다. sweep은 이 자기 재시도의 backstop이다.
+                raise self.retry(exc=exc, countdown=60 * (self.request.retries + 1))
+            run_id = finish_explicit_run(
                 db,
                 self,
                 item_id,
@@ -4131,6 +4221,19 @@ def recertify_published_content_image(self, content_id: str):
                 safe_error_code=code,
                 safe_error_message=message,
             )
+            if run_id is not None and (
+                not recoverable
+                or _published_recertify_attempts_spent(db, item_id, expected_revision)
+                >= PUBLISHED_RECERTIFY_ATTEMPT_BUDGET
+            ):
+                # 자동 재실행이 여기서 멈춘다. 멈추는 순간을 사람이 볼 수 있게 남긴다.
+                _open_published_recertify_incident(
+                    item_id=item_id,
+                    hospital=hospital,
+                    run_id=run_id,
+                    revision=expected_revision,
+                    code="PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
+                )
             logger.error(
                 "recertify_published_content_image failed for %s: %s",
                 content_id,
@@ -4163,8 +4266,10 @@ def recertify_published_content_image(self, content_id: str):
             revision=expected_revision,
         )
         db.commit()
-        finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
-        slug, hospital_name, treatments = hospital.slug, hospital.name, hospital.treatments
+        run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+        hospital_id, slug = hospital.id, hospital.slug
+        hospital_name, treatments = hospital.name, hospital.treatments
+    _recover_published_recertify_incidents(item_id, hospital_id, hospital_name, run_id)
     _run_async(
         trigger_content_site_revalidate_safe(
             slug, item_id, hospital_name=hospital_name, treatments=treatments
