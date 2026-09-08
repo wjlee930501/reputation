@@ -48,7 +48,7 @@ async def get_operations_overview(
     db: AsyncSession = Depends(get_db),
     _actor: AdminUser = Depends(require_operations_account),
 ) -> OperationsOverviewResponse:
-    """Return all queue counts plus the first five tasks in four fixed queries."""
+    """Return all queue counts plus the first five tasks in a fixed number of queries."""
     filters = normalize_filters(
         hospital_id=hospital_id,
         owner=owner, status=status, severity=severity, sla=sla, recovery=recovery
@@ -63,8 +63,8 @@ async def get_operations_overview(
         # 그 5건에서 센 숫자는 실제 총계가 아니라 표본이다. 6번째 이후의 초과 건은
         # 언제나 0으로 보고됐고, 화면이 그 숫자를 "N건 초과"로 쓰면 밀린 일을 숨긴다.
         # 총계를 정직하게 세려면 큐마다 조회가 하나 더 필요한데, overview는 12초마다
-        # 폴링되며 쿼리 수 상한(5)이 가드로 고정돼 있다. 그래서 틀린 숫자를 내보내는
-        # 대신 내보내지 않는다.
+        # 폴링되며 쿼리 수 상한이 가드(`_OVERVIEW_STATEMENT_BUDGET`)로 고정돼 있다.
+        # 그래서 틀린 숫자를 내보내는 대신 내보내지 않는다.
         summaries.append(OperationsQueueSummary(queue=queue, total=total))
         items.extend(rows)
     return OperationsOverviewResponse(queues=summaries, items=items)

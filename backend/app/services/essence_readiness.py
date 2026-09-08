@@ -12,8 +12,10 @@ baseline is still processed and unchanged. It must never be used for a write.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -234,7 +236,108 @@ async def get_public_approved_philosophy_id(
     approved_id, readiness = await _get_lightweight_essence_readiness(
         db, hospital_id, include_noise=False
     )
+    return _public_philosophy_id(approved_id, readiness)
+
+
+async def get_public_approved_philosophy_ids(
+    db: AsyncSession,
+    hospital_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """Return the public-serving approval id per hospital in exactly two queries.
+
+    병원 횡단 운영 큐가 병원마다 기준을 조회하면 화면 하나가 병원 수에 비례하는 쿼리를
+    낸다. 승인 행과 필수 자료를 각각 한 번에 읽고 병원별로 묶어, 단건
+    `get_public_approved_philosophy_id`와 같은 `_resolve_lightweight_readiness`로
+    판정한다 — 조회 방식만 다르고 판정은 갈라질 수 없다.
+    """
+    ids = list(dict.fromkeys(hospital_ids))
+    if not ids:
+        return {}
+    approved_rows = (
+        await db.execute(
+            select(
+                HospitalContentPhilosophy.hospital_id,
+                HospitalContentPhilosophy.id,
+                HospitalContentPhilosophy.source_snapshot_hash,
+                HospitalContentPhilosophy.source_asset_ids,
+                HospitalContentPhilosophy.evidence_noise_hash,
+            ).where(
+                HospitalContentPhilosophy.hospital_id.in_(ids),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            )
+        )
+    ).all()
+    source_rows = (
+        await db.execute(
+            select(
+                HospitalSourceAsset.hospital_id,
+                HospitalSourceAsset.id,
+                HospitalSourceAsset.content_hash,
+                HospitalSourceAsset.status,
+                HospitalSourceAsset.processed_at,
+            ).where(
+                HospitalSourceAsset.hospital_id.in_(ids),
+                required_text_source_predicate(),
+            )
+        )
+    ).all()
+    # 병원당 APPROVED는 부분 unique 인덱스로 최대 1건이다.
+    approved_by_hospital = {row.hospital_id: row for row in approved_rows}
+    sources_by_hospital: dict[uuid.UUID, list[Any]] = {}
+    for row in source_rows:
+        sources_by_hospital.setdefault(row.hospital_id, []).append(row)
+
+    resolved: dict[uuid.UUID, uuid.UUID | None] = {}
+    for hospital_id in ids:
+        # 공개 판정은 `public_philosophy`만 보므로 노이즈 집합 조회가 결과를 바꾸지 않는다.
+        resolved[hospital_id] = _public_philosophy_id(
+            *_resolve_lightweight_readiness(
+                approved_by_hospital.get(hospital_id),
+                sources_by_hospital.get(hospital_id, ()),
+                excluded_note_hash=None,
+            )
+        )
+    return resolved
+
+
+def _public_philosophy_id(
+    approved_id: uuid.UUID | None,
+    readiness: EssenceReadiness | None,
+) -> uuid.UUID | None:
+    """공개 읽기가 받아도 되는 승인 id — `current`가 아니라 `public_philosophy`만 본다."""
     return approved_id if readiness and readiness.public_philosophy is not None else None
+
+
+def _resolve_lightweight_readiness(
+    approved_row: Any | None,
+    source_rows: Iterable[Any],
+    *,
+    excluded_note_hash: str | None,
+) -> tuple[uuid.UUID | None, EssenceReadiness | None]:
+    """Evaluate one hospital's lightweight rows with the shared freshness rule.
+
+    단건 조회와 묶음 조회가 각자 stub을 만들면 신선도 규칙이 갈라진다 — 판정은 여기뿐이다.
+    """
+    if approved_row is None:
+        return None, None
+    required_sources = [
+        SimpleNamespace(
+            id=row.id,
+            content_hash=row.content_hash,
+            status=row.status,
+            processed_at=row.processed_at,
+        )
+        for row in source_rows
+    ]
+    approved_stub = SimpleNamespace(
+        source_snapshot_hash=approved_row.source_snapshot_hash,
+        source_asset_ids=approved_row.source_asset_ids,
+        evidence_noise_hash=approved_row.evidence_noise_hash,
+    )
+    readiness = resolve_essence_readiness(
+        approved_stub, required_sources, excluded_note_hash=excluded_note_hash
+    )
+    return approved_row.id, readiness
 
 
 async def _get_lightweight_essence_readiness(
@@ -264,7 +367,6 @@ async def _get_lightweight_essence_readiness(
     ).one_or_none()
     if approved_row is None:
         return None, None
-    approved_id, source_snapshot_hash, source_asset_ids, evidence_noise_hash = approved_row
 
     sources_result = await db.execute(
         select(
@@ -277,25 +379,10 @@ async def _get_lightweight_essence_readiness(
             required_text_source_predicate(),
         )
     )
-    required_sources = [
-        SimpleNamespace(
-            id=row.id,
-            content_hash=row.content_hash,
-            status=row.status,
-            processed_at=row.processed_at,
-        )
-        for row in sources_result.all()
-    ]
-    approved_stub = SimpleNamespace(
-        source_snapshot_hash=source_snapshot_hash,
-        source_asset_ids=source_asset_ids,
-        evidence_noise_hash=evidence_noise_hash,
-    )
-    readiness = resolve_essence_readiness(
-        approved_stub,
-        required_sources,
+    return _resolve_lightweight_readiness(
+        approved_row,
+        sources_result.all(),
         excluded_note_hash=(
             await load_evidence_noise_hash(db, hospital_id) if include_noise else None
         ),
     )
-    return approved_id, readiness

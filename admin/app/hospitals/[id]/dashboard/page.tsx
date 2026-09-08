@@ -93,6 +93,8 @@ interface Readiness {
     status_label?: string | null
   }
   published_content_count: number
+  public_content_count: number
+  withheld_content_count: number
   sov_record_count: number
   report_count: number
   checks: ReadinessCheck[]
@@ -392,6 +394,8 @@ export default function DashboardPage() {
   )
   const hasExposureActions = exposureActions.length > 0
   const hasBrief = (readiness?.published_content_count ?? 0) > 0
+  const publicContentCount = readiness?.public_content_count ?? 0
+  const withheldContentCount = readiness?.withheld_content_count ?? 0
 
   const queryTargetsHref = `/hospitals/${id}/query-targets`
   const exposureActionsHref = `/hospitals/${id}/exposure-actions`
@@ -640,11 +644,13 @@ export default function DashboardPage() {
                 hint={trendSummary.hint}
                 tone={change === null ? 'neutral' : change >= 0 ? 'good' : 'warn'}
               />
+              {/* 발행한 편수가 아니라 공개 페이지가 실제로 내보내는 편수를 센다 — 전 글이
+                  보류 중인데 초록 카드가 뜨면 운영자는 알 방법이 없다(H-01). */}
               <FocusCard
                 label="근거 기반 콘텐츠 상태"
-                value={`${readiness?.published_content_count ?? 0}편`}
-                hint={readiness ? `운영 준비도 ${readiness.score}/100` : '운영 기준 승인 후 발행'}
-                tone={(readiness?.published_content_count ?? 0) > 0 ? 'good' : 'neutral'}
+                value={`${publicContentCount}편`}
+                hint={`${readiness ? `운영 준비도 ${readiness.score}/100` : '운영 기준 승인 후 발행'}${withheldContentCount > 0 ? ` · 공개 보류 ${withheldContentCount}편` : ''}`}
+                tone={publicContentCount > 0 ? 'good' : withheldContentCount > 0 ? 'warn' : 'neutral'}
               />
               <FocusCard
                 label="다음 작업"

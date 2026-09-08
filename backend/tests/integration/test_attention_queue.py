@@ -354,6 +354,47 @@ async def test_paused_or_non_live_hospitals_do_not_create_human_work(pg_async_se
     assert _row(result, non_live) is None
 
 
+# 표본 조회 1 + 승인 기준 묶음 2 + 지난달 원장 보고 1. 공개 가시성은 행마다 판정하지만
+# 병원별 승인 기준을 병원마다 조회하면 이 화면 하나가 병원 수에 비례하는 쿼리를 낸다.
+_ATTENTION_STATEMENT_BUDGET = 4
+
+
+async def _attention_query_count(db) -> int:
+    statements: list[str] = []
+
+    def count_statement(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    engine = db.bind.engine
+    event.listen(engine.sync_engine, "before_cursor_execute", count_statement)
+    try:
+        await get_attention_queue(db)
+    finally:
+        event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
+    return len(statements)
+
+
+async def test_attention_queue_query_count_is_constant_across_hospitals(pg_async_session):
+    db = pg_async_session
+    first = await _hospital(db, "쿼리예산 첫 의원")
+    await _content(db, first, published_hours_ago=1, sequence_no=1)
+    one_count = await _attention_query_count(db)
+
+    for index in range(11):
+        extra = await _hospital(db, f"쿼리예산 {index} 의원")
+        await _content(db, extra, published_hours_ago=1, sequence_no=1)
+        await _content(
+            db, extra, published_hours_ago=2, sequence_no=1, scheduled_days_ago=1, withheld=True
+        )
+    many_count = await _attention_query_count(db)
+
+    result = await get_attention_queue(db)
+    assert result.unreviewed_total == 12
+    assert result.withheld_total == 11
+    assert one_count == _ATTENTION_STATEMENT_BUDGET
+    assert many_count == one_count
+
+
 # ── 지난달 원장 보고 누락·미전달 ──────────────────────────────────────
 # 월말 배치 실패는 Slack 한 줄로 지나가고, 그 병원은 다음 달 마지막 날까지 리포트가
 # 빈 채로 남는다. 만들어졌어도 원장에게 안 갔으면 운영 실패는 같다.
@@ -1251,21 +1292,28 @@ async def _overview_query_count(db, actor: AdminUser) -> int:
     return len(statements)
 
 
+# 온보딩 2(페이지 + 연결 작업) + 오늘 4(보류 후보 1 + 승인 기준 묶음 2 + 페이지 1) +
+# 리포트 1 + 인시던트 2(원인 그룹 → 해당 페이지 상세, `load_incidents_queue`의 2-pass).
+# 병원 수·행 수가 아니라 대기열 수에만 비례해야 한다.
+_OVERVIEW_STATEMENT_BUDGET = 9
+
+
 async def test_operations_overview_query_count_is_constant_for_one_or_many_rows(pg_async_session):
     db = pg_async_session
     actor = await _operations_actor(db)
     hospital = await _active_hospital(db, "첫 예외 의원")
     await _incident(db, hospital, owner=actor)
+    # 오늘의 운영 큐에 후행 검수 표본이 있어야 공개 가시성 판정 경로까지 예산이 지켜진다.
+    await _content(db, hospital, published_hours_ago=1, sequence_no=1)
     one_count = await _overview_query_count(db, actor)
 
     for index in range(24):
         extra = await _active_hospital(db, f"추가 예외 {index} 의원")
         await _incident(db, extra, owner=actor)
+        await _content(db, extra, published_hours_ago=1, sequence_no=1)
     many_count = await _overview_query_count(db, actor)
 
-    # 6 = 온보딩·오늘·리포트 대기열 각 1회 + 인시던트 대기열 2회(원인 그룹 → 해당 페이지
-    # 상세, `load_incidents_queue`의 2-pass). 행 수가 아니라 대기열 수에만 비례해야 한다.
-    assert one_count <= 6
+    assert one_count <= _OVERVIEW_STATEMENT_BUDGET
     assert many_count == one_count
 
 
@@ -1561,6 +1609,50 @@ async def test_today_queue_sends_a_withheld_item_to_the_reason_not_the_confirmat
     normal = next(item for item in rows if item.content_id == visible.id)
     assert normal.status == "REVIEW_PENDING"
     assert normal.action.kind == "REVIEW_CONTENT"
+
+
+async def test_today_queue_status_filter_and_total_agree_on_a_withheld_row(pg_async_session):
+    """보류 판정이 SQL 밖에 있으면 status 필터·total·심각도가 서로 다른 답을 낸다(H-01)."""
+    db = pg_async_session
+    hospital = await _hospital(db, "오늘의운영 필터 의원")
+    # 기한을 넘긴 보류 행 — 예전에는 HIGH + OVERDUE로 기록할 수 없는 검수를 재촉했다.
+    withheld = await _content(db, hospital, published_hours_ago=30, sequence_no=1, withheld=True)
+    visible = await _content(
+        db, hospital, published_hours_ago=3, sequence_no=1, scheduled_days_ago=1
+    )
+    now = datetime.now(UTC)
+
+    async def _load(**filter_kwargs):
+        return await today_queries.load_today_queue(
+            db,
+            OperationsFilters(hospital_id=hospital.id, **filter_kwargs),
+            page=1,
+            page_size=100,
+            overview=False,
+            now=now,
+        )
+
+    all_total, all_rows = await _load()
+    withheld_total, withheld_rows = await _load(status="WITHHELD_PUBLIC")
+    review_total, review_rows = await _load(status="REVIEW_PENDING")
+    high_total, _high_rows = await _load(severity="HIGH")
+    none_total, none_rows = await _load(sla=SlaFilter.NONE)
+    overdue_total, overdue_rows = await _load(sla=SlaFilter.OVERDUE)
+
+    assert all_total == len(all_rows) == 2
+    assert withheld_total == len(withheld_rows) == 1
+    assert withheld_rows[0].content_id == withheld.id
+    assert withheld_rows[0].severity == "MEDIUM"
+    assert withheld_rows[0].sla_due_at is None
+    assert withheld_rows[0].sla_state == "NONE"
+    assert review_total == len(review_rows) == 1
+    assert review_rows[0].content_id == visible.id
+    # 보류 행은 기록할 수 없는 검수라 HIGH·기한 초과 어느 쪽으로도 재촉하지 않는다.
+    assert high_total == 0
+    assert none_total == len(none_rows) == 1
+    assert none_rows[0].content_id == withheld.id
+    assert all(row.content_id != withheld.id for row in overdue_rows)
+    assert overdue_total == len(overdue_rows)
 
 
 async def test_reports_queue_has_no_staff_deadline(pg_async_session):

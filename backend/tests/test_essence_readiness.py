@@ -81,6 +81,18 @@ def test_absorbed_new_processed_source_keeps_public_on_intact_approved_baseline(
     assert readiness.is_stale is True
 
 
+def _approved_row(
+    approved_id, source_snapshot_hash, source_asset_ids, *, evidence_noise_hash=None
+):
+    """SQLAlchemy Row처럼 이름으로 읽히는 승인 행 — 판정 함수가 컬럼 이름으로 읽는다."""
+    return SimpleNamespace(
+        id=approved_id,
+        source_snapshot_hash=source_snapshot_hash,
+        source_asset_ids=source_asset_ids,
+        evidence_noise_hash=evidence_noise_hash,
+    )
+
+
 class _AsyncResult:
     def __init__(self, *, one=None, rows=None):
         self._one = one
@@ -132,12 +144,7 @@ async def test_lightweight_ids_split_strict_write_from_intact_public_baseline():
     approved_id = uuid.uuid4()
     original = _source()
     pending = _source(status=SourceStatus.PENDING)
-    approved_row = (
-        approved_id,
-        compute_sources_snapshot_hash([original]),
-        [original.id],
-        None,
-    )
+    approved_row = _approved_row(approved_id, compute_sources_snapshot_hash([original]), [original.id])
     source_rows = [original, pending]
     db = _AsyncReadinessDB(approved_row, source_rows)
 
@@ -149,12 +156,7 @@ async def test_lightweight_ids_split_strict_write_from_intact_public_baseline():
 async def test_lightweight_public_id_rejects_changed_approved_baseline():
     approved_id = uuid.uuid4()
     original = _source()
-    approved_row = (
-        approved_id,
-        compute_sources_snapshot_hash([original]),
-        [original.id],
-        None,
-    )
+    approved_row = _approved_row(approved_id, compute_sources_snapshot_hash([original]), [original.id])
     changed = SimpleNamespace(**vars(original))
     changed.content_hash = "changed"
     db = _AsyncReadinessDB(approved_row, [changed])
@@ -215,11 +217,11 @@ async def test_lightweight_strict_id_rejects_a_changed_noise_set():
     """근거에서 뺀 노트 집합이 승인 이후 달라지면 생성 게이트만 닫히고 공개 baseline은 남는다."""
     approved_id = uuid.uuid4()
     original = _source()
-    approved_row = (
+    approved_row = _approved_row(
         approved_id,
         compute_sources_snapshot_hash([original]),
         [original.id],
-        compute_evidence_noise_hash([]),
+        evidence_noise_hash=compute_evidence_noise_hash([]),
     )
     db = _AsyncReadinessDB(approved_row, [original], noise_rows=[uuid.uuid4()])
 

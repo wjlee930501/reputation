@@ -132,7 +132,7 @@ export default function HospitalsPage() {
             )}
             {/* 공개 보류는 확인이 아니라 사유 해소가 할 일이다 — 숫자를 섞지 않는다(H-01). */}
             {attention.withheld_total > 0 && (
-              <span className="text-xs font-medium text-amber-800">
+              <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                 공개 보류 {attention.withheld_total}건
               </span>
             )}

@@ -36,6 +36,10 @@ class _ReadinessDB:
 
     async def execute(self, stmt):
         sql = str(stmt)
+        # 발행 글 본문 조회는 공개 가시성 판정용이다. 이 파일은 카운트 배선만 고정하므로
+        # 빈 목록을 준다 — 실제 판정은 `tests/test_content_visibility.py`가 담당한다.
+        if "content_items" in sql and "count(" not in sql:
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
         if "monthly_reports" in sql:
             literal = str(stmt.compile(compile_kwargs={"literal_binds": True}))
             self.report_sql.append(literal)

@@ -50,6 +50,7 @@ from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
+from app.services.content_visibility import assess_public_visibility
 from app.services.domain_certificate_jobs import (
     DomainCertificateClaimRequest,
     DomainCertificateHospitalMissing,
@@ -61,7 +62,10 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
 )
-from app.services.essence_readiness import get_essence_readiness
+from app.services.essence_readiness import (
+    get_essence_readiness,
+    get_public_approved_philosophy_id,
+)
 from app.services.hospital_activation import (
     ActivationOutcome,
     HospitalNotActivatable,
@@ -1247,12 +1251,32 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     """병원별 AI 검색 운영 준비도를 계산한다."""
     h = await _get_or_404(db, hospital_id)
 
-    published_count = await _count(
-        db,
-        select(func.count())
-        .select_from(ContentItem)
-        .where(ContentItem.hospital_id == h.id, ContentItem.status == ContentStatus.PUBLISHED),
+    # PUBLISHED 행 수는 "발행했다"는 사실일 뿐 공개 페이지가 그 글을 내보낸다는 뜻이 아니다.
+    # 준비도가 행 수만 세면 전 글이 보류 중인 병원도 "발행 콘텐츠" 통과로 보인다(H-01).
+    # 병원 단위 엔드포인트라 그 병원의 발행 글만 읽어 공개 표면과 같은 함수로 판정한다.
+    published_items = (
+        (
+            await db.execute(
+                select(ContentItem).where(
+                    ContentItem.hospital_id == h.id,
+                    ContentItem.status == ContentStatus.PUBLISHED,
+                )
+            )
+        )
+        .scalars()
+        .all()
     )
+    published_count = len(published_items)
+    # 발행 글이 없으면 판정할 것도 없다 — 승인 기준을 읽지 않는다.
+    public_philosophy_id = (
+        await get_public_approved_philosophy_id(db, h.id) if published_items else None
+    )
+    public_content_count = sum(
+        1
+        for item in published_items
+        if assess_public_visibility(item, public_philosophy_id).visible
+    )
+    withheld_content_count = published_count - public_content_count
     content_slot_count = await _count(
         db,
         select(func.count())
@@ -1320,7 +1344,10 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     has_external_profiles = bool(
         h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
     )
-    readiness_actions = readiness_next_actions(has_content_slots=content_slot_count > 0)
+    readiness_actions = readiness_next_actions(
+        has_content_slots=content_slot_count > 0,
+        withheld_content_count=withheld_content_count,
+    )
 
     checks = [
         ReadinessCheck(
@@ -1403,7 +1430,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ReadinessCheck(
             "published_content",
             "발행 콘텐츠",
-            published_count > 0,
+            public_content_count > 0,
             12,
             readiness_actions["published_content"],
         ),
@@ -1432,6 +1459,8 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "status_label": _readiness_status_label(readiness_status),
         },
         "published_content_count": published_count,
+        "public_content_count": public_content_count,
+        "withheld_content_count": withheld_content_count,
         "sov_record_count": sov_count,
         "report_count": report_count,
         "v0_report_pdf_count": v0_report_pdf_count,

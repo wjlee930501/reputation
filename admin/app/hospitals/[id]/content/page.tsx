@@ -1750,13 +1750,11 @@ export default function ContentPage() {
                     <span className={`mr-2 inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedReview.badge}`}>{selectedReview.label}</span>
                     {selected.status === 'PUBLISHED' && selectedNotification?.state === 'SENT' && selected.post_publish_notified_at && `Slack 전달 ${formatDateTime(selected.post_publish_notified_at)}`}
                   </div>
-                  {/* 공개 페이지가 숨기는 글에 링크를 걸면 AE는 404를 보고 원인을 모른다. */}
+                  {/* 공개 페이지가 숨기는 글에 링크를 걸면 AE는 404를 보고 원인을 모른다.
+                      판정이 없으면 링크를 걸지 않는다 — 배지와 같은 fail-closed 기준이고,
+                      사유 문구도 배지의 판정(getReviewState)을 그대로 쓴다. */}
                   {selected.status === 'PUBLISHED' &&
-                    (selected.compliance?.public_visibility?.visible === false ? (
-                      <span className="text-sm text-amber-800">
-                        공개 페이지에서 보류 중 — {selected.compliance.public_visibility.blocker_labels.join(' · ')}
-                      </span>
-                    ) : (
+                    (selected.compliance?.public_visibility?.visible === true ? (
                       selectedPublicUrl && (
                         <a
                           href={selectedPublicUrl}
@@ -1767,6 +1765,10 @@ export default function ContentPage() {
                           공개 사이트에서 보기 ↗
                         </a>
                       )
+                    ) : (
+                      <span className="text-sm text-amber-800">
+                        공개 페이지에서 보류 중 — {selectedReview.reason}
+                      </span>
                     ))}
                 </div>
                 {selected.status === 'PUBLISHED' && !['SENT', 'NOT_REQUIRED'].includes(selectedNotification?.state ?? '') && (

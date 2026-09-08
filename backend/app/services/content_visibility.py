@@ -24,7 +24,7 @@ from app.services.content_publication import (
     publication_field_values,
 )
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
-from app.services.essence_readiness import get_public_approved_philosophy_id
+from app.services.essence_readiness import get_public_approved_philosophy_ids
 from app.utils.medical_filter import check_forbidden_content_fields
 
 UNSET_PHILOSOPHY = object()
@@ -93,16 +93,16 @@ async def assess_sampled_visibility(
     db: AsyncSession,
     items: Iterable[Any],
 ) -> dict[uuid.UUID, PublicVisibility]:
-    """표본 행별 공개 가시성 — 병원당 승인 기준은 한 번만 읽는다.
+    """표본 행별 공개 가시성 — 승인 기준 조회는 병원 수와 무관하게 쿼리 2회다.
 
     운영 큐가 각자 자기만의 SQL 조건으로 "공개 중"을 정의하면 화면마다 답이 갈라진다.
-    표본이 작을 때만 쓴다 — 전수 목록에 쓰면 병원 수만큼 기준 조회가 늘어난다.
+    판정 자체는 행마다 하지만, 기준 조회를 묶어 병원 수에 비례하지 않게 한다.
     """
-    philosophy_ids: dict[uuid.UUID, uuid.UUID | None] = {}
-    assessed: dict[uuid.UUID, PublicVisibility] = {}
-    for item in items:
-        hospital_id = item.hospital_id
-        if hospital_id not in philosophy_ids:
-            philosophy_ids[hospital_id] = await get_public_approved_philosophy_id(db, hospital_id)
-        assessed[item.id] = assess_public_visibility(item, philosophy_ids[hospital_id])
-    return assessed
+    sampled = list(items)
+    philosophy_ids = await get_public_approved_philosophy_ids(
+        db, [item.hospital_id for item in sampled]
+    )
+    return {
+        item.id: assess_public_visibility(item, philosophy_ids[item.hospital_id])
+        for item in sampled
+    }
