@@ -129,6 +129,15 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/app/operations/CurrentActionStrip.tsx",
     # 큐 행의 상태·원인 설명이 사는 곳. 화면이 이 값을 그대로 그린다.
     "admin/lib/operations-center.ts",
+    "admin/app/hospitals/[id]/page.tsx",
+    "admin/app/hospitals/[id]/status/StatusCards.tsx",
+    "admin/app/hospitals/[id]/status/ExceptionCards.tsx",
+    "admin/app/hospitals/[id]/status/EscalatedDraftCard.tsx",
+    "admin/app/hospitals/[id]/status/MonthSummary.tsx",
+    # 현황 화면의 요약 줄과 버튼 사유 문구가 사는 곳.
+    "admin/lib/status-screen.ts",
+    # 예외 초안의 확인 문구와 결과 안내가 사는 곳.
+    "admin/lib/essence-actions.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"

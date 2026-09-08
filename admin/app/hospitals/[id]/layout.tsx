@@ -25,6 +25,7 @@ import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
+  { label: '현황', path: '', hint: '3상태 · 예외 · 이번 달 요약' },
   { label: '운영 요약', path: 'dashboard', hint: 'AI 답변에서 병원이 언급되는 정도와 운영 준비 상태를 한눈에 봅니다.' },
   { label: '온보딩', path: 'onboarding', hint: '병원 자료를 입력하고 콘텐츠 운영 기준을 준비합니다.' },
   { label: '병원 정보', path: 'info', hint: '병원·원장·진료·연락처·공식 채널과 근거 자료' },
@@ -33,6 +34,17 @@ const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '발행 일정', path: 'schedule', hint: '월 발행 편수와 발행 요일' },
   { label: '보고서', path: 'reports', hint: '월간 보고서' },
 ]
+
+// 현황은 병원 화면의 첫 주소(`/hospitals/{id}`)라 경로 조각이 없다. 접두 비교만 쓰면
+// 어떤 하위 화면에서도 현황이 함께 켜지므로, 빈 경로만 정확히 일치로 판정한다.
+function tabHref(hospitalId: string, path: string): string {
+  return path ? `/hospitals/${hospitalId}/${path}` : `/hospitals/${hospitalId}`
+}
+
+function isTabActive(pathname: string, hospitalId: string, path: string): boolean {
+  const href = tabHref(hospitalId, path)
+  return path ? pathname.startsWith(href) : pathname === href
+}
 
 const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '자료 모음', path: 'wiki', hint: '검증된 근거 노트와 사진 권리·공개 상태' },
@@ -138,8 +150,8 @@ export default function HospitalLayout({
   const publicAddress = domainStatus ? domainStatus.url ?? domainStatus.detail : null
   // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 일정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
-  const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
-  const activeMainTab = MAIN_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
+  const activeConfigTab = CONFIG_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path))
+  const activeMainTab = MAIN_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path))
   const activeTab = activeConfigTab ?? activeMainTab ?? MAIN_TABS[0]
 
   async function handleLifecycleAction() {
@@ -211,7 +223,7 @@ export default function HospitalLayout({
             <span className="sr-only">현재 병원 작업 화면</span>
             <select
               value={activeTab.path}
-              onChange={(event) => router.push(`/hospitals/${hospitalId}/${event.target.value}`)}
+              onChange={(event) => router.push(tabHref(hospitalId, event.target.value))}
               className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
             >
               <optgroup label="주요 작업">
@@ -297,8 +309,8 @@ export default function HospitalLayout({
         <div className="-mb-px hidden items-end gap-2 lg:flex">
           <nav className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 주요 작업">
             {MAIN_TABS.map((tab) => {
-              const href = `/hospitals/${hospitalId}/${tab.path}`
-              const isActive = pathname.startsWith(href)
+              const href = tabHref(hospitalId, tab.path)
+              const isActive = isTabActive(pathname, hospitalId, tab.path)
               return (
                 <Link
                   key={tab.path}

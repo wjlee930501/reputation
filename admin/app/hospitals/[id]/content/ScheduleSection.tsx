@@ -229,6 +229,7 @@ export function ScheduleSection({
 
   return (
     <details
+      id="content-schedule"
       open={open}
       onToggle={(e) => setOpen(e.currentTarget.open)}
       className="mt-5 rounded-xl border border-slate-200 bg-white"

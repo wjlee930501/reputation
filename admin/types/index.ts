@@ -169,6 +169,17 @@ export interface HospitalOverviewException {
   /** 서버가 지금 허용한 행동만. 비어 있으면 버튼을 만들지 않는다. */
   allowed_actions: string[]
   href: string
+  hospital_id: string
+  incident_id: string | null
+  operation_run_id: string | null
+  content_id: string | null
+  /** 인시던트의 낙관적 잠금 값. 상태를 바꾸는 요청이 이 값을 함께 보낸다. */
+  version: number | null
+  /**
+   * 서버가 이 카드에 등록한 mutation 서술자 그대로. 지금 못 하는 행동도
+   * `enabled: false`로 함께 온다 — 화면이 경로·권한을 새로 쓰지 않는다.
+   */
+  actions: OperationsAction[]
 }
 
 export interface HospitalOverviewMonth {
