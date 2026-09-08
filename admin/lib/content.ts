@@ -23,6 +23,8 @@ export interface ContentOperationsItem extends CarriedOverItem {
   title?: string | null
   post_publish_notified_at?: string | null
   post_publish_reviewed_at?: string | null
+  // 사람이 보는 표본인지 — backend post_publish_review_policy가 단일 기준이다(M-21).
+  post_publish_review_required?: boolean
   display?: {
     review?: {
       label?: string | null
@@ -79,9 +81,10 @@ export function getContentOperationsState(item: ContentOperationsItem): ContentO
     if (item.compliance?.public_visibility?.visible !== true) return 'withheld'
     if (item.post_publish_reviewed_at) return 'published'
     if (item.display?.review?.notification_state === 'NOT_REQUIRED') return 'published'
-    return item.display?.review?.notification_state === 'SENT'
-      ? 'postReviewPending'
-      : 'notificationPending'
+    if (item.display?.review?.notification_state !== 'SENT') return 'notificationPending'
+    // 확인 대기 집계는 backend 예외 큐(human_post_publish_review_predicate)와 같은 표본만
+    // 세야 한다 — 아니면 화면 숫자가 큐보다 항상 크고, AE는 처리할 수 없는 건수를 본다.
+    return item.post_publish_review_required === true ? 'postReviewPending' : 'published'
   }
   if (item.status === 'REJECTED') return 'rejected'
   if (item.status === 'CANCELLED') return 'cancelled'

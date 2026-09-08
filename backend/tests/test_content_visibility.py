@@ -299,3 +299,56 @@ def test_visible_item_still_shows_the_notification_label_when_not_sent():
 
     assert review["label"] == "Slack 전달 대기"
     assert review["reason"] == "잠시 후 자동으로 전달됩니다."
+
+
+_SENT_NOTIFICATION = {
+    "state": "SENT",
+    "label": "Slack 전달 완료",
+    "problem": None,
+    "next_action": "공개된 글에 문제가 없는지 확인해 주세요.",
+}
+
+
+def test_review_sample_is_the_only_published_item_asking_for_confirmation():
+    """표본(첫 순번)만 확인 대기다 — 전체 공개 글에 확인을 요구하면 아무도 처리하지 않는다(M-21)."""
+    item, philosophy_id = _published(sequence_no=1)
+    item._publish_notification_projection = dict(_SENT_NOTIFICATION)
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["post_publish_review_required"] is True
+    assert serialized["display"]["review"]["label"] == "공개 내용 확인 대기"
+
+
+def test_non_sample_published_item_is_public_not_pending_confirmation():
+    item, philosophy_id = _published(sequence_no=7)
+    item._publish_notification_projection = dict(_SENT_NOTIFICATION)
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["post_publish_review_required"] is False
+    assert serialized["display"]["review"]["label"] == "공개 중"
+
+
+def test_reviewed_sample_no_longer_asks_for_confirmation():
+    item, philosophy_id = _published(
+        sequence_no=1, post_publish_reviewed_at=datetime.now(timezone.utc)
+    )
+    item._publish_notification_projection = dict(_SENT_NOTIFICATION)
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["post_publish_review_required"] is False
+    assert serialized["display"]["review"]["label"] == "공개 내용 확인 완료"
+
+
+def test_withheld_sample_still_reads_as_withheld():
+    """공개 보류가 표본 여부보다 앞선다 — 공개 페이지에 없는 글에 확인은 성립하지 않는다."""
+    item, philosophy_id = _published(
+        sequence_no=1, image_policy_verified_at=None, image_content_hash=None
+    )
+    item._publish_notification_projection = dict(_SENT_NOTIFICATION)
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["display"]["review"]["label"] == "공개 보류"

@@ -96,9 +96,19 @@ test('content operations state distinguishes Slack retry, post-review, and revie
     getContentOperationsState({
       status: 'PUBLISHED',
       compliance: VISIBLE,
+      post_publish_review_required: true,
       display: { review: { notification_state: 'SENT' } },
     }),
     'postReviewPending',
+  )
+  // 표본이 아닌 글은 확인 대기로 세지 않는다 — backend 예외 큐와 같은 기준이다(M-21).
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      compliance: VISIBLE,
+      display: { review: { notification_state: 'SENT' } },
+    }),
+    'published',
   )
   // Legacy timestamp must never override the server-authoritative outbox state.
   assert.equal(
@@ -243,6 +253,7 @@ test('content operations filters support actionable summary-card filtering', () 
     carried_over_from: '2026-06-30',
     compliance: VISIBLE,
     post_publish_notified_at: '2026-07-16T08:00:00Z',
+    post_publish_review_required: true,
     display: { review: { notification_state: 'SENT' as const } },
   }
   assert.equal(matchesContentOperationsFilter(item, 'all'), true)

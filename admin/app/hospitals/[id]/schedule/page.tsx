@@ -69,7 +69,9 @@ export default function SchedulePage() {
   const [activeFrom, setActiveFrom] = useState(firstDayOfNextMonthInputValue())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string } | null>(null)
+  // 슬롯이 하나도 만들어지지 않으면 backend가 first_publish_date를 null로 내려준다
+  // (api/admin/content.py). 타입이 string이면 화면은 없는 날짜를 있다고 말한다(M-22).
+  const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null } | null>(null)
   const [confirmingReplacement, setConfirmingReplacement] = useState(false)
 
   // 현재 운영 중인 발행 일정 — 404는 "아직 발행 일정 없음"으로 처리
@@ -189,7 +191,7 @@ export default function SchedulePage() {
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI<{ slots_created: number; first_publish_date: string; publish_days: number[] }>(
+      const data = await fetchAPI<{ slots_created: number; first_publish_date: string | null; publish_days: number[] }>(
         `/admin/hospitals/${id}/schedule`,
         {
           method: 'POST',
@@ -289,11 +291,9 @@ export default function SchedulePage() {
           <p className="text-green-700 text-sm mt-2">
             {result.slots_created}개의 콘텐츠 항목이 만들어졌습니다.
           </p>
-          {result.first_publish_date && (
-            <p className="text-green-700 text-sm mt-1">
-              첫 발행 예정일: <strong>{result.first_publish_date}</strong>
-            </p>
-          )}
+          <p className="text-green-700 text-sm mt-1">
+            첫 발행 예정일: <strong>{result.first_publish_date ?? '첫 발행일 미정'}</strong>
+          </p>
           <div className="flex gap-3 mt-4">
             <button
               onClick={() => router.push(`/hospitals/${id}/content`)}

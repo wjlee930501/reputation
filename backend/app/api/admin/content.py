@@ -85,6 +85,7 @@ from app.services.operation_runs import (
     dispatch_operation,
 )
 from app.services.ops_incident_alerts import open_ops_incident
+from app.services.post_publish_review_policy import is_human_post_publish_review_sample
 from app.services.published_image_recertification import (
     base_key as published_recertify_key,
 )
@@ -1398,6 +1399,10 @@ def _content_review_display(
             }
         if getattr(item, "post_publish_reviewed_at", None):
             return {"label": "공개 내용 확인 완료", "reason": None, "publishable": False}
+        if not is_human_post_publish_review_sample(item):
+            # 사람이 보는 표본이 아닌 글까지 "확인 대기"로 두면, 아무도 처리하지 않는
+            # 대기 항목이 매달 쌓여 진짜 표본이 묻힌다(M-21).
+            return {"label": "공개 중", "reason": None, "publishable": False}
         return {
             "label": "공개 내용 확인 대기",
             "reason": "공개된 글에 문제가 없는지 확인해 주세요.",
@@ -1537,6 +1542,12 @@ def _serialize_item(
             else None
         ),
         "post_publish_reviewed_by": getattr(item, "post_publish_reviewed_by", None),
+        # 공개 후 확인은 표본(첫 순번 또는 공개 후 본문 편집)만 사람이 본다. 전체 글에
+        # 확인 버튼을 띄우면 월 12~20번의 불필요한 클릭이 생긴다(M-21).
+        "post_publish_review_required": bool(
+            is_human_post_publish_review_sample(item)
+            and getattr(item, "post_publish_reviewed_at", None) is None
+        ),
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
         "references": item.references_list or [],
         "faq_question": item.faq_question,

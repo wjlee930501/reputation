@@ -173,9 +173,6 @@ function getReviewState(item: ContentItem): ReviewState {
     if (item.post_publish_reviewed_at) {
       return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
     }
-    if (getContentOperationsState(item) === 'published') {
-      return { key: 'published', label: '자동 검증 완료', badge: 'bg-green-100 text-green-700', publishable: false }
-    }
     if (getContentOperationsState(item) === 'notificationPending') {
       const notification = getPublishNotificationPresentation(item)
       const needsAttention = notification.state === 'FAILED' || notification.state === 'HOLD'
@@ -189,7 +186,12 @@ function getReviewState(item: ContentItem): ReviewState {
         publishable: false,
       }
     }
-    return { key: 'postReviewPending', label: '공개 내용 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    if (getContentOperationsState(item) === 'postReviewPending' && item.post_publish_review_required === true) {
+      return { key: 'postReviewPending', label: '공개 내용 확인 대기', badge: 'bg-blue-100 text-blue-700', publishable: false }
+    }
+    // 사람이 보는 표본(첫 순번·공개 후 편집)이 아닌 글에 확인 대기 배지를 달면,
+    // 아무도 처리하지 않는 할 일이 매달 쌓여 진짜 표본이 묻힌다(M-21).
+    return { key: 'published', label: '공개 중', badge: 'bg-green-100 text-green-700', publishable: false }
   }
   if (item.status === 'REJECTED') {
     return { key: 'rejected', label: displayLabel ?? '반려됨', badge: 'bg-red-100 text-red-700', reason: displayReason ?? '야간 재생성 대기', publishable: false }
@@ -1235,7 +1237,10 @@ export default function ContentPage() {
                           공개 내용 확인
                         </button>
                       ) : item.status === 'PUBLISHED' ? (
-                        <span className="text-xs text-green-700">확인 완료</span>
+                        // 아무도 보지 않은 글을 "확인 완료"라고 쓰면 목록이 사실과 다른 말을 한다(M-21).
+                        <span className="text-xs text-green-700">
+                          {item.post_publish_reviewed_at ? '확인 완료' : '공개 중'}
+                        </span>
                       ) : review.key === 'needsReview' && item.title ? (
                         <button
                           onClick={() => openDetail(item)}
@@ -1305,7 +1310,9 @@ export default function ContentPage() {
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                {!editMode && !briefEditMode && (
+                {/* 콘텐츠 가이드는 아직 생성되지 않은 초안을 위한 입력이다. 공개된 글에서 열어도
+                    저장이 서버에서 막히므로 버튼을 띄우지 않는다(M-15). */}
+                {!editMode && !briefEditMode && selected.status === 'DRAFT' && (
                   <button
                     onClick={enterBriefEditMode}
                     className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-slate-700 border border-slate-300 rounded-lg hover:bg-slate-50 sm:inline-flex sm:items-center"
@@ -1313,7 +1320,7 @@ export default function ContentPage() {
                     콘텐츠 가이드 편집
                   </button>
                 )}
-                {!editMode && !briefEditMode && ['DRAFT', 'PUBLISHED'].includes(selected.status) && (
+                {!editMode && !briefEditMode && (selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
                   <button
                     onClick={enterEditMode}
                     className="hidden min-h-11 px-3 py-1.5 text-sm font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 sm:inline-flex sm:items-center"
@@ -1793,8 +1800,11 @@ export default function ContentPage() {
                   </p>
                 )}
                 <div className="mb-3 flex gap-2 sm:hidden">
-                  <button type="button" onClick={enterBriefEditMode} className="min-h-11 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
-                  {['DRAFT', 'PUBLISHED'].includes(selected.status) && (
+                  {/* 콘텐츠 가이드는 생성 전 초안에만 의미가 있다 — 공개 글에서 열면 저장이 막힌다(M-15). */}
+                  {selected.status === 'DRAFT' && (
+                    <button type="button" onClick={enterBriefEditMode} className="min-h-11 flex-1 rounded-lg border border-slate-300 px-3 text-sm font-medium text-slate-700">콘텐츠 가이드 편집</button>
+                  )}
+                  {(selected.status === 'DRAFT' || selected.status === 'PUBLISHED') && (
                     <button type="button" onClick={enterEditMode} className="min-h-11 flex-1 rounded-lg border border-blue-300 px-3 text-sm font-medium text-blue-700">콘텐츠 편집</button>
                   )}
                 </div>
@@ -1849,7 +1859,7 @@ export default function ContentPage() {
                       </div>
                     ) : (
                       <>
-                        {!selected.post_publish_reviewed_at && (
+                        {!selected.post_publish_reviewed_at && selected.post_publish_review_required === true && (
                           <button
                             onClick={() => handlePostPublishReview(selected.id)}
                             disabled={actionLoading}

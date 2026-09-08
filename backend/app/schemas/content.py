@@ -26,6 +26,9 @@ class ContentItemResponse(BaseModel):
     post_publish_notified_at: Optional[str] = None
     post_publish_reviewed_at: Optional[str] = None
     post_publish_reviewed_by: Optional[str] = None
+    # 사람이 확인해야 하는 표본인지 (post_publish_review_policy). Admin은 이 값이 True일
+    # 때만 "문제 없음 · 공개 내용 확인 완료" 버튼을 띄운다.
+    post_publish_review_required: bool = False
     body_updated_at: Optional[str] = None
     # 참고 자료/FAQ 분리 필드 — Admin 검수·보정(A1)과 컴플라이언스 패널이 사용.
     references: list[dict[str, Any]] = []
