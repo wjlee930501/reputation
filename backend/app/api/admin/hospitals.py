@@ -42,6 +42,7 @@ from app.api.admin.operations_center_incident_queries import count_operator_inci
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
+from app.models.essence import HospitalSourceAsset, SourceStatus, SourceType
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
@@ -69,6 +70,7 @@ from app.services.essence_readiness import (
     get_essence_readiness_states,
     get_public_approved_philosophy_id,
 )
+from app.services.essence_sources import SourceRegistrationError, register_url_source
 from app.services.hospital_activation import (
     ActivationOutcome,
     HospitalNotActivatable,
@@ -423,6 +425,124 @@ PUBLIC_PROFILE_FIELDS = {
     "site_access_mode",
     "treatments",
 }
+
+# 공식 채널 주소는 저장하는 순간 근거 자료로 등록된다 — '자료로 추가' 버튼은 없다(설계 §4.3).
+CHANNEL_SOURCE_TYPES: dict[str, SourceType] = {
+    "website_url": SourceType.HOMEPAGE,
+    "blog_url": SourceType.NAVER_BLOG,
+}
+# 지도·채널 주소는 프로파일 표기 전용이다. 본문이 없어 근거로 쓸 수 없다 —
+# admin/lib/onboarding-candidate.ts의 PROFILE_ONLY_CANDIDATE_KEYS와 같은 목록이다.
+PROFILE_ONLY_CHANNEL_FIELDS = frozenset(
+    {
+        "naver_place_url",
+        "google_business_profile_url",
+        "google_maps_url",
+        "kakao_channel_url",
+    }
+)
+
+
+def _changed_channel_urls(
+    hospital: Hospital, body: HospitalProfileUpdate, update_data: dict
+) -> dict[str, str]:
+    """저장 전에 비교해야 '바뀐 채널'을 알 수 있다 — 적용 뒤에는 이전 값이 남지 않는다."""
+    changed: dict[str, str] = {}
+    for field in CHANNEL_SOURCE_TYPES:
+        if field not in body.model_fields_set:
+            continue
+        new_url = (update_data.get(field) or "").strip()
+        old_url = (getattr(hospital, field, None) or "").strip()
+        if new_url and new_url != old_url:
+            changed[field] = new_url
+    return changed
+
+
+async def _register_changed_channel_sources(
+    db: AsyncSession, hospital: Hospital, changed_channels: dict[str, str]
+) -> list[dict]:
+    """바뀐 공식 채널 주소를 근거 자료로 등록한다.
+
+    저장은 이미 커밋됐다. 등록 실패는 저장을 되돌리지 않고 결과만 응답과 감사 기록에 남긴다.
+    """
+    entries: list[dict] = []
+    for field, url in changed_channels.items():
+        existing_id = await db.scalar(
+            select(HospitalSourceAsset.id)
+            .where(
+                HospitalSourceAsset.hospital_id == hospital.id,
+                HospitalSourceAsset.url == url,
+                HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            )
+            .limit(1)
+        )
+        if existing_id is not None:
+            entries.append(
+                {
+                    "field": field,
+                    "status": "SKIPPED",
+                    "source_id": existing_id,
+                    "message": "이미 자료로 등록된 주소입니다.",
+                }
+            )
+            continue
+        try:
+            source = await register_url_source(
+                db,
+                hospital_id=hospital.id,
+                source_type=CHANNEL_SOURCE_TYPES[field],
+                url=url,
+                created_by=default_actor(),
+            )
+        except SourceRegistrationError as exc:
+            entries.append(
+                {"field": field, "status": "FAILED", "source_id": None, "message": exc.message}
+            )
+        except Exception:
+            logger.warning(
+                "Channel source registration failed for hospital %s (%s)",
+                hospital.id,
+                field,
+                exc_info=True,
+            )
+            # 실패한 트랜잭션을 물고 다음 채널·감사 기록으로 넘어가지 않는다.
+            await db.rollback()
+            entries.append(
+                {
+                    "field": field,
+                    "status": "FAILED",
+                    "source_id": None,
+                    "message": "자료 등록에 실패했습니다. 자료 화면에서 직접 등록해 주세요.",
+                }
+            )
+        else:
+            entries.append(
+                {
+                    "field": field,
+                    "status": "REGISTERED",
+                    "source_id": source.id,
+                    "message": None,
+                }
+            )
+
+    for entry in entries:
+        await write_audit_log(
+            db,
+            action="profile_channel_source_registered",
+            hospital_id=hospital.id,
+            actor=default_actor(),
+            target_type="source_asset",
+            target_id=entry["source_id"],
+            detail={
+                "field": entry["field"],
+                "status": entry["status"],
+                "source_id": str(entry["source_id"]) if entry["source_id"] else None,
+                "message": entry["message"],
+            },
+        )
+    if entries:
+        await db.commit()
+    return entries
 
 
 def _readiness_status_label(status_value: str) -> str:
@@ -863,6 +983,7 @@ async def update_profile(
                 "message": EXTERNAL_LOGO_URL_MESSAGE,
             },
         )
+    changed_channels = _changed_channel_urls(h, body, update_data)
     was_complete = h.profile_complete
     changed_fields: list[str] = []
     for field, value in update_data.items():
@@ -969,7 +1090,12 @@ async def update_profile(
         # 커밋 이후이므로 실패해도 raise하지 않는다 (R4) — 저장은 이미 성공했다.
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
-    return _serialize(h)
+    payload = _serialize(h)
+    # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다.
+    payload["source_registration"] = await _register_changed_channel_sources(
+        db, h, changed_channels
+    )
+    return payload
 
 
 @router.post("/{hospital_id}/logo", status_code=status.HTTP_201_CREATED)

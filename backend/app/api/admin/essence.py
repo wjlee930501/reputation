@@ -4,7 +4,6 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
@@ -62,7 +61,14 @@ from app.services.essence_engine import (
     mandatory_safety_findings,
     validate_philosophy_grounding,
 )
-from app.services.essence_sources import required_text_source_predicate
+from app.services.essence_sources import (
+    SourceRegistrationError,
+    register_url_source,
+    required_text_source_predicate,
+)
+from app.services.essence_sources import (
+    start_source_processing_best_effort as _start_source_processing_best_effort,
+)
 from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
@@ -101,11 +107,8 @@ from app.services.site_revalidate import (
 from app.services.source_processing_runs import (
     SOURCE_PROCESSING_OPERATION,
     client_source_metadata,
-    create_or_get_source_processing_run,
     merge_source_metadata_patch,
-    prepare_next_source_run_item,
     processing_input_hash,
-    release_source_run_dispatch,
     serialize_source_processing_run,
     source_patch_changed_fields,
 )
@@ -138,73 +141,6 @@ def _enqueue_essence_review_best_effort(hospital_id: uuid.UUID) -> None:
             "periodic reconciliation will retry",
             hospital_id,
         )
-
-
-async def _dispatch_source_processing_run_best_effort(
-    db: AsyncSession,
-    run_id: uuid.UUID,
-) -> bool:
-    prepared = await prepare_next_source_run_item(db, run_id)
-    if prepared is None:
-        return False
-    _run, source_id, dispatch_token = prepared
-    try:
-        celery_app.send_task(
-            "app.workers.tasks.process_source_asset_task",
-            args=[source_id, str(run_id), dispatch_token],
-            queue="default",
-            headers=build_dispatch_headers(
-                "app.workers.tasks.process_source_asset_task", source_id
-            ),
-        )
-        return True
-    except Exception as exc:
-        await release_source_run_dispatch(
-            db,
-            run_id,
-            source_id=source_id,
-            dispatch_token=dispatch_token,
-            error=str(exc),
-        )
-        logger.exception("Failed to dispatch source-processing run %s", run_id)
-        return False
-
-
-async def _start_source_processing_best_effort(
-    db: AsyncSession,
-    *,
-    hospital_id: uuid.UUID,
-    source_ids: list[uuid.UUID],
-    source_identities: list[str] | None = None,
-) -> OperationRun | None:
-    if not source_ids:
-        return None
-    # Serialize only durable run creation. Provider work happens later in the
-    # worker after this transaction has committed and released the hospital lock.
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    if source_identities is None:
-        rows = list(
-            (
-                await db.execute(
-                    select(HospitalSourceAsset).where(HospitalSourceAsset.id.in_(source_ids))
-                )
-            )
-            .scalars()
-            .all()
-        )
-        source_identities = [
-            f"{source.id}:{processing_input_hash(source, compute_source_content_hash(source.title, source.url, source.raw_text, source.operator_note))}"
-            for source in rows
-        ]
-    run, _created = await create_or_get_source_processing_run(
-        db,
-        hospital_id=hospital_id,
-        source_ids=source_ids,
-        source_identities=source_identities,
-    )
-    await _dispatch_source_processing_run_best_effort(db, run.id)
-    await db.refresh(run)
-    return run
 
 
 async def _read_upload_within_limit(file: UploadFile) -> bytes:
@@ -1145,32 +1081,6 @@ async def upload_source_file(
 
 
 
-def _is_youtube_channel_home(url: str) -> bool:
-    """Channel listing pages have almost no article body and must not become evidence."""
-    try:
-        parsed = urlparse(url.strip())
-    except Exception:
-        return False
-    host = (parsed.netloc or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    if host in {"youtu.be", "www.youtu.be"}:
-        return False
-    if host not in {"youtube.com", "m.youtube.com", "music.youtube.com"}:
-        return False
-    path = parsed.path or ""
-    if path.startswith("/watch") or path.startswith("/shorts/") or path.startswith("/embed/") or path.startswith("/live/"):
-        return False
-    if "v=" in (parsed.query or ""):
-        return False
-    return (
-        path.startswith("/@")
-        or path.startswith("/channel/")
-        or path.startswith("/c/")
-        or path.startswith("/user/")
-    )
-
-
 @router.post(
     "/sources/crawl", status_code=status.HTTP_201_CREATED, response_model=SourceAssetResponse
 )
@@ -1182,75 +1092,18 @@ async def crawl_source_url(
     """URL을 자동 fetch + html2text → raw_text 채움 후 source 생성."""
     await _get_hospital_or_404(db, hospital_id)
 
-    if body.source_type in PHOTO_SOURCE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail="사진 카테고리는 URL 크롤링을 지원하지 않습니다. 업로드를 사용해 주세요.",
+    try:
+        source = await register_url_source(
+            db,
+            hospital_id=hospital_id,
+            source_type=body.source_type,
+            url=body.url,
+            title=body.title,
+            operator_note=body.operator_note,
+            created_by=body.created_by,
         )
-    if _is_youtube_channel_home(body.url):
-        raise HTTPException(
-            status_code=422,
-            detail="유튜브 채널 홈은 본문이 없어 근거로 쓰지 않습니다. 개별 영상 URL을 넣어 주세요.",
-        )
-
-    text, error, quality = await fetch_url_text(body.url)
-    if error:
-        raise HTTPException(status_code=400, detail=f"URL 크롤링 실패: {error}")
-    # 네이버 등에서 본문 대신 빈 프레임셋 셸만 받아온 경우 — junk 저장 대신 명확히 거부한다.
-    if quality is not None and quality.looks_like_shell:
-        if body.source_type == SourceType.NAVER_BLOG:
-            raise HTTPException(
-                status_code=400,
-                detail="네이버 블로그 본문을 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
-            )
-        raise HTTPException(
-            status_code=400,
-            detail="페이지 본문을 충분히 가져오지 못했습니다 — 본문을 직접 붙여넣어 주세요.",
-        )
-
-    final_title = (body.title or "").strip() or (quality.page_title if quality else None)
-    if not final_title:
-        raise HTTPException(
-            status_code=422,
-            detail="페이지 제목을 찾지 못했습니다. 자료 제목을 직접 입력해 주세요.",
-        )
-
-    crawled_text = _clean_optional(text)
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    source = HospitalSourceAsset(
-        hospital_id=hospital_id,
-        source_type=body.source_type,
-        title=final_title,
-        url=body.url.strip(),
-        raw_text=crawled_text,
-        operator_note=_clean_optional(body.operator_note),
-        source_metadata={"crawled_at": datetime.now(timezone.utc).isoformat()},
-        content_hash=compute_source_content_hash(
-            final_title, body.url, crawled_text, body.operator_note
-        ),
-        status=SourceStatus.PENDING,
-        created_by=body.created_by,
-    )
-    db.add(source)
-    await write_audit_log(
-        db,
-        action="crawl_source_url",
-        hospital_id=hospital_id,
-        actor=default_actor(),
-        target_type="source_asset",
-        target_id=source.id,
-        detail={
-            "source_type": body.source_type.value,
-            "url": body.url,
-            "extracted_chars": len(text),
-        },
-    )
-    await db.commit()
-    await db.refresh(source)
-    if source.raw_text and source.raw_text.strip():
-        await _start_source_processing_best_effort(
-            db, hospital_id=hospital_id, source_ids=[source.id]
-        )
+    except SourceRegistrationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     return _serialize_source(source)
 
 

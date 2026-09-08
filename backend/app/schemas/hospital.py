@@ -1,4 +1,5 @@
-from typing import Any, Optional
+import uuid
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -27,6 +28,15 @@ class ProfileRequirementItem(BaseModel):
 
     key: str
     label: str
+
+
+class SourceRegistrationItem(BaseModel):
+    """저장한 공식 채널 주소를 근거 자료로 등록한 결과. PATCH 응답에만 실린다(설계 §4.3)."""
+
+    field: str
+    status: Literal["REGISTERED", "SKIPPED", "FAILED"]
+    source_id: Optional[uuid.UUID] = None
+    message: Optional[str] = None
 
 
 class HospitalItemBase(BaseModel):
@@ -111,3 +121,5 @@ class HospitalDetail(HospitalItemBase):
     site_access_mode: Optional[str] = None
     director_credentials: Optional[Any] = None
     treatments: list
+    # 이번 저장이 등록·건너뜀·실패한 자료. 다른 조회 응답에는 없다.
+    source_registration: Optional[list[SourceRegistrationItem]] = None
