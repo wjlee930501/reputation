@@ -55,11 +55,14 @@ test('the gate copy names the real condition and denies the review-status one', 
   assert.doesNotMatch(PHOTO_PUBLIC_GATE_COPY, /토글로 .*노출 여부를 결정/)
 })
 
-test('the wiki screen states the real gate and never claims review status decides it', () => {
-  const page = readFileSync(new URL('../app/hospitals/[id]/wiki/page.tsx', import.meta.url), 'utf8')
+test('the photo section states the real gate and never claims review status decides it', () => {
+  const section = readFileSync(
+    new URL('../app/hospitals/[id]/info/PhotosSection.tsx', import.meta.url),
+    'utf8',
+  )
 
-  assert.match(page, /PHOTO_PUBLIC_GATE_COPY/)
-  assert.match(page, /describePhotoPublicGate/)
-  assert.doesNotMatch(page, /검수 완료된 사진만/)
-  assert.doesNotMatch(page, /사진 자산은 토글로/)
+  assert.match(section, /PHOTO_PUBLIC_GATE_COPY/)
+  assert.match(section, /describePhotoPublicGate/)
+  assert.doesNotMatch(section, /검수 완료된 사진만/)
+  assert.doesNotMatch(section, /사진 자산은 토글로/)
 })

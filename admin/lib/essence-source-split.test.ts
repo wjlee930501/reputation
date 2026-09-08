@@ -115,29 +115,7 @@ test('the denominator drops the sources the server never requires', () => {
   assert.equal(split.processedTextCount, 2)
 })
 
-test('the standards screen refuses to offer extraction for a source the API would reject', () => {
-  const page = readFileSync(
-    new URL('../app/hospitals/[id]/essence/page.tsx', import.meta.url),
-    'utf8',
-  )
-
-  assert.match(page, /isRequiredTextSource/)
-  assert.match(page, /원문이 없는 자료는 추출할 수 없습니다/)
-})
-
 test('the screen says where the photos went instead of silently dropping them', () => {
   assert.equal(describePhotoSourceExclusion(0), null)
   assert.match(describePhotoSourceExclusion(6) ?? '', /사진 6장은 공개 표면용 자산/)
-})
-
-test('the standards screen takes its denominators from the split', () => {
-  const page = readFileSync(
-    new URL('../app/hospitals/[id]/essence/page.tsx', import.meta.url),
-    'utf8',
-  )
-
-  assert.match(page, /splitEssenceSources/)
-  assert.match(page, /describePhotoSourceExclusion/)
-  // 표가 다시 사진까지 훑으면 실패한다.
-  assert.doesNotMatch(page, /\{sources\.map\(\(source\)/)
 })

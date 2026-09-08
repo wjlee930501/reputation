@@ -66,9 +66,9 @@ test('normalizeChannelUrl keeps the path, which is what distinguishes two places
   assert.equal(normalizeChannelUrl(null), null)
 })
 
-test('the profile screen explains what each Google field holds and warns on duplicates', () => {
+test('the facts section explains what each Google field holds and warns on duplicates', () => {
   const page = readFileSync(
-    new URL('../app/hospitals/[id]/profile/page.tsx', import.meta.url),
+    new URL('../app/hospitals/[id]/info/FactsSection.tsx', import.meta.url),
     'utf8',
   )
 

@@ -56,7 +56,7 @@ export function ReadOnlySignals({
   const monthLabel = isCurrentKoreanMonth(year, month) ? '이번 달' : `${month}월`
 
   return (
-    <section className="mt-8 grid gap-4 lg:grid-cols-2">
+    <section id="content-signals" className="mt-8 grid scroll-mt-4 gap-4 lg:grid-cols-2">
       {failed.length > 0 && (
         <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 lg:col-span-2">
           {failed.join('·')} 목록을 불러오지 못했습니다. 화면을 다시 불러오면 표시됩니다.

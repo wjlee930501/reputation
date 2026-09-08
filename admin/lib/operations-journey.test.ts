@@ -71,7 +71,6 @@ test('the runbook adapter matrix has one real Admin route and action per support
 test('live marketer surfaces fail closed instead of rendering raw states or exceptions', () => {
   const leads = readFileSync(new URL('../app/leads/page.tsx', import.meta.url), 'utf8')
   const content = readFileSync(new URL('../app/hospitals/[id]/content/page.tsx', import.meta.url), 'utf8')
-  const onboarding = readFileSync(new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url), 'utf8')
   const globalError = readFileSync(new URL('../app/error.tsx', import.meta.url), 'utf8')
   const shell = readFileSync(new URL('../app/AdminShell.tsx', import.meta.url), 'utf8')
   const hospitalLayout = readFileSync(new URL('../app/hospitals/[id]/layout.tsx', import.meta.url), 'utf8')
@@ -79,10 +78,6 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   const currentAction = readFileSync(new URL('../app/operations/CurrentActionStrip.tsx', import.meta.url), 'utf8')
   const hospitalNew = readFileSync(new URL('../app/hospitals/new/page.tsx', import.meta.url), 'utf8')
   const hospitals = readFileSync(new URL('../app/hospitals/page.tsx', import.meta.url), 'utf8')
-  const profile = readFileSync(new URL('../app/hospitals/[id]/profile/page.tsx', import.meta.url), 'utf8')
-  const schedule = readFileSync(new URL('../app/hospitals/[id]/schedule/page.tsx', import.meta.url), 'utf8')
-  const queryTargets = readFileSync(new URL('../app/hospitals/[id]/query-targets/page.tsx', import.meta.url), 'utf8')
-  const dashboard = readFileSync(new URL('../app/hospitals/[id]/dashboard/page.tsx', import.meta.url), 'utf8')
 
   assert.match(leads, /createPortal\(\(/)
   assert.doesNotMatch(leads, /\{lead\.notification_error/)
@@ -102,10 +97,6 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.match(content, /min-h-11[\s\S]{0,220}확인 완료/)
   assert.match(content, /min-h-11[\s\S]{0,220}문제 발견/)
   assert.match(content, /setError\(null\)[\s\S]{0,240}isExpectedOperatorRequestFailure/)
-  assert.doesNotMatch(onboarding, /\?\? s\.(?:source_type|status)/)
-  assert.doesNotMatch(onboarding, /mime_type \?\? 'binary'|ACTIVE 전환|\/site 노출/)
-  assert.doesNotMatch(onboarding, /백엔드 검증|프로파일 URL 자료 후보|프로파일 화면/)
-  assert.match(onboarding, /min-h-11[\s\S]{0,240}제외/)
   assert.doesNotMatch(globalError, /error\.message/)
   assert.match(globalError, /개발팀 문의용 정보 복사|OperatorIssuePanel/)
   assert.match(globalError, /safeOperatorError\('admin'/)
@@ -116,7 +107,6 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   // 상태를 못 받아왔으면 못 받아왔다고 말한다 — 옛 status 배지로 지어내지 않는다.
   assert.doesNotMatch(hospitalLayout, /STATUS_LABELS/)
   assert.match(hospitalLayout, /상태 불러오기 실패/)
-  assert.match(hospitalLayout, /label: '온보딩', path: 'onboarding', hint: '병원 자료를 입력하고 콘텐츠 운영 기준을 준비합니다\.'/)
   assert.match(shell, /break-keep text-pretty \[overflow-wrap:anywhere\]/)
   assert.match(leads, /font-semibold whitespace-nowrap text-slate-900/)
   assert.match(leads, /min-h-11 items-center justify-center whitespace-nowrap[\s\S]{0,500}온보딩 허브/)
@@ -135,11 +125,11 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.doesNotMatch(leads, /\{lead\.source_path/)
   assert.doesNotMatch(`${shell}\n${readFileSync(new URL('../app/hospitals/[id]/DomainSetupPanel.tsx', import.meta.url), 'utf8')}`, /catch\s*\{/)
   assert.doesNotMatch(
-    `${hospitalNew}\n${hospitals}\n${profile}\n${schedule}\n${queryTargets}\n${dashboard}`,
+    `${hospitalNew}\n${hospitals}`,
     /instanceof Error\s*\?[^:\n]*\.message|set[A-Za-z]*Error\([^\n]*(?:reason|err|error|cause|reloadError)\.message/,
   )
   assert.doesNotMatch(
-    `${hospitalNew}\n${hospitals}\n${profile}\n${queryTargets}\n${dashboard}`,
+    `${hospitalNew}\n${hospitals}`,
     /상담 리드|프로파일 온보딩|프로파일 완료로 표시|운영중|DNS 대기|도메인 대기|V0 진단 리포트/,
   )
 

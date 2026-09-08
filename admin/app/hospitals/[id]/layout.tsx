@@ -26,13 +26,9 @@ import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
   { label: '현황', path: '', hint: '3상태 · 예외 · 이번 달 요약' },
-  { label: '운영 요약', path: 'dashboard', hint: 'AI 답변에서 병원이 언급되는 정도와 운영 준비 상태를 한눈에 봅니다.' },
-  { label: '온보딩', path: 'onboarding', hint: '병원 자료를 입력하고 콘텐츠 운영 기준을 준비합니다.' },
-  { label: '병원 정보', path: 'info', hint: '병원·원장·진료·연락처·공식 채널과 근거 자료' },
-  { label: '병원 기본 정보', path: 'profile', hint: '병원과 원장 기본 정보' },
-  { label: '콘텐츠', path: 'content', hint: '자동 발행·공개 내용 확인' },
-  { label: '발행 일정', path: 'schedule', hint: '월 발행 편수와 발행 요일' },
-  { label: '보고서', path: 'reports', hint: '월간 보고서' },
+  { label: '병원 정보', path: 'info', hint: `병원·원장·진료·연락처·공식 채널·${ADMIN_COPY.evidence}` },
+  { label: '콘텐츠', path: 'content', hint: `월 표 · 발행 요일 · ${ADMIN_COPY.postPublishReview}` },
+  { label: '보고서', path: 'reports', hint: `${ADMIN_COPY.initialReport} · 월간 ${ADMIN_COPY.monthlyReport}` },
 ]
 
 // 현황은 병원 화면의 첫 주소(`/hospitals/{id}`)라 경로 조각이 없다. 접두 비교만 쓰면
@@ -45,13 +41,6 @@ function isTabActive(pathname: string, hospitalId: string, path: string): boolea
   const href = tabHref(hospitalId, path)
   return path ? pathname.startsWith(href) : pathname === href
 }
-
-const CONFIG_TABS: Array<{ label: string; path: string; hint: string }> = [
-  { label: '자료 모음', path: 'wiki', hint: '검증된 근거 노트와 사진 권리·공개 상태' },
-  { label: '운영 기준', path: 'essence', hint: '콘텐츠 운영 기준 준비와 예외 확인' },
-  { label: '환자 질문', path: 'query-targets', hint: 'ChatGPT·Gemini에 확인할 환자 질문 정의' },
-  { label: '노출 보완', path: 'exposure-actions', hint: 'AI 답변에서 병원이 덜 언급되는 이유와 보완 작업' },
-]
 
 export default function HospitalLayout({
   children,
@@ -148,11 +137,9 @@ export default function HospitalLayout({
   // 주소는 주소만 말한다 — 마지막 확인 시각은 자기 도메인 상태가 한 번만 말한다.
   const domainStatus = hospital ? readHospitalDomainStatus(hospital) : null
   const publicAddress = domainStatus ? domainStatus.url ?? domainStatus.detail : null
-  // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 일정은 조건이 아니다(H-07).
+  // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 요일 설정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
-  const activeConfigTab = CONFIG_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path))
-  const activeMainTab = MAIN_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path))
-  const activeTab = activeConfigTab ?? activeMainTab ?? MAIN_TABS[0]
+  const activeTab = MAIN_TABS.find((tab) => isTabActive(pathname, hospitalId, tab.path)) ?? MAIN_TABS[0]
 
   async function handleLifecycleAction() {
     if (!hospital || !lifecycleAction) return
@@ -226,12 +213,7 @@ export default function HospitalLayout({
               onChange={(event) => router.push(tabHref(hospitalId, event.target.value))}
               className="min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
             >
-              <optgroup label="주요 작업">
-                {MAIN_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}
-              </optgroup>
-              <optgroup label="운영 설정">
-                {CONFIG_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}
-              </optgroup>
+              {MAIN_TABS.map((tab) => <option key={tab.path} value={tab.path}>{tab.label} — {tab.hint}</option>)}
             </select>
           </label>
         </div>
@@ -307,7 +289,7 @@ export default function HospitalLayout({
 
         {/* Tab navigation */}
         <div className="-mb-px hidden items-end gap-2 lg:flex">
-          <nav className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 주요 작업">
+          <nav className="flex min-w-0 flex-1 items-stretch gap-1 overflow-x-auto pb-px" aria-label="병원 화면">
             {MAIN_TABS.map((tab) => {
               const href = tabHref(hospitalId, tab.path)
               const isActive = isTabActive(pathname, hospitalId, tab.path)
@@ -329,38 +311,6 @@ export default function HospitalLayout({
               )
             })}
           </nav>
-          <details className="group relative shrink-0 pb-px">
-            <summary
-              className={`inline-flex min-h-11 cursor-pointer list-none items-center gap-1.5 border-b-2 px-3 text-sm font-medium [&::-webkit-details-marker]:hidden ${
-                activeConfigTab
-                  ? 'border-purple-500 text-purple-700'
-                  : 'border-transparent text-slate-500 hover:border-slate-200 hover:text-slate-800'
-              }`}
-            >
-              {activeConfigTab?.label ?? '운영 설정'}
-              <span aria-hidden className="text-[10px] transition-transform group-open:rotate-180">▼</span>
-            </summary>
-            <nav
-              aria-label="병원 운영 설정"
-              className="absolute right-0 top-full z-30 mt-2 w-[min(20rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl"
-            >
-              {CONFIG_TABS.map((tab) => {
-                const href = `/hospitals/${hospitalId}/${tab.path}`
-                const isActive = pathname.startsWith(href)
-                return (
-                  <Link
-                    key={tab.path}
-                    href={href}
-                    aria-current={isActive ? 'page' : undefined}
-                    className={`block rounded-lg px-3 py-2.5 ${isActive ? 'bg-purple-50 text-purple-800' : 'text-slate-700 hover:bg-slate-50'}`}
-                  >
-                    <span className="block text-sm font-semibold">{tab.label}</span>
-                    <span className="mt-0.5 block text-xs leading-relaxed text-slate-500">{tab.hint}</span>
-                  </Link>
-                )
-              })}
-            </nav>
-          </details>
         </div>
       </header>
 

@@ -49,22 +49,15 @@ test('an empty queue says so rather than reporting zeroes', () => {
   assert.equal(describeExposureActions(summarizeExposureActions([])), '진단된 보완 작업이 없습니다')
 })
 
-test('both screens read the same limit and the same counter', () => {
-  const dashboard = readFileSync(
-    new URL('../app/hospitals/[id]/dashboard/page.tsx', import.meta.url),
-    'utf8',
-  )
-  const queue = readFileSync(
-    new URL('../app/hospitals/[id]/exposure-actions/page.tsx', import.meta.url),
+test('the read-only signals block reads the shared limit instead of its own', () => {
+  const signals = readFileSync(
+    new URL('../app/hospitals/[id]/content/ReadOnlySignals.tsx', import.meta.url),
     'utf8',
   )
 
-  for (const source of [dashboard, queue]) {
-    assert.match(source, /summarizeExposureActions/)
-    assert.match(source, /EXPOSURE_ACTION_LIST_LIMIT/)
-  }
-  // 대시보드가 다시 5건만 받아 세면 두 화면이 또 갈라진다.
-  assert.doesNotMatch(dashboard, /exposure-actions\?limit=5/)
+  assert.match(signals, /EXPOSURE_ACTION_LIST_LIMIT/)
+  // 화면이 다시 5건만 받아 세면 목록과 개수가 갈라진다.
+  assert.doesNotMatch(signals, /exposure-actions\?limit=5/)
 })
 
 test('the completed status is never counted from a list that cannot contain it', () => {
@@ -73,10 +66,4 @@ test('the completed status is never counted from a list that cannot contain it',
 
   assert.equal(summary.active, 0)
   assert.equal(Object.keys(summary).includes('completed'), false)
-
-  const queue = readFileSync(
-    new URL('../app/hospitals/[id]/exposure-actions/page.tsx', import.meta.url),
-    'utf8',
-  )
-  assert.doesNotMatch(queue, /label="완료"/)
 })
