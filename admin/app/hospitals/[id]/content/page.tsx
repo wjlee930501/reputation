@@ -151,7 +151,8 @@ function formatBriefValue(value: unknown): string {
 type ReviewStateKey = Exclude<ContentOperationsFilter, 'all' | 'carried'>
 
 interface ReviewState {
-  key: ReviewStateKey
+  // 'withheld'는 운영 필터 값이 아니다 — 공개 사이트가 숨기는 중인 발행 글의 표시 상태다.
+  key: ReviewStateKey | 'withheld'
   label: string
   badge: string
   reason?: string
@@ -163,6 +164,11 @@ function getReviewState(item: ContentItem): ReviewState {
   const displayLabel = displayReview?.label ?? undefined
   const displayReason = displayReview?.reason ?? undefined
   if (item.status === 'PUBLISHED') {
+    // 공개 사이트가 실제로 숨기는 글에는 초록 배지를 달지 않는다 — 같은 판정을 그대로 쓴다.
+    const visibility = item.compliance?.public_visibility
+    if (visibility && !visibility.visible) {
+      return { key: 'withheld', label: '공개 보류', badge: 'bg-amber-100 text-amber-800', reason: visibility.blocker_labels.join(' · '), publishable: false }
+    }
     if (item.post_publish_reviewed_at) {
       return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
     }
@@ -1706,16 +1712,24 @@ export default function ContentPage() {
                     <span className={`mr-2 inline-flex rounded-full px-2.5 py-1 font-semibold ${selectedReview.badge}`}>{selectedReview.label}</span>
                     {selected.status === 'PUBLISHED' && selectedNotification?.state === 'SENT' && selected.post_publish_notified_at && `Slack 전달 ${formatDateTime(selected.post_publish_notified_at)}`}
                   </div>
-                  {selected.status === 'PUBLISHED' && selectedPublicUrl && (
-                    <a
-                      href={selectedPublicUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
-                    >
-                      공개 사이트에서 보기 ↗
-                    </a>
-                  )}
+                  {/* 공개 페이지가 숨기는 글에 링크를 걸면 AE는 404를 보고 원인을 모른다. */}
+                  {selected.status === 'PUBLISHED' &&
+                    (selected.compliance?.public_visibility?.visible === false ? (
+                      <span className="text-sm text-amber-800">
+                        공개 페이지에서 보류 중 — {selected.compliance.public_visibility.blocker_labels.join(' · ')}
+                      </span>
+                    ) : (
+                      selectedPublicUrl && (
+                        <a
+                          href={selectedPublicUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex min-h-11 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 text-sm font-semibold text-blue-700 hover:bg-blue-100"
+                        >
+                          공개 사이트에서 보기 ↗
+                        </a>
+                      )
+                    ))}
                 </div>
                 {selected.status === 'PUBLISHED' && !['SENT', 'NOT_REQUIRED'].includes(selectedNotification?.state ?? '') && (
                   <div className="mb-3 break-keep [overflow-wrap:anywhere] rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">

@@ -26,12 +26,9 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
-    has_required_faq_fields,
-    has_required_references,
-    image_certification_current,
-    public_candidate_review_safe,
     publication_field_values,
 )
+from app.services.content_visibility import UNSET_PHILOSOPHY, assess_public_visibility
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     get_public_approved_philosophy_id,
@@ -614,47 +611,28 @@ def _is_public_safe_content(
     item: ContentItem,
     current_philosophy_id: uuid.UUID | None | object = _CURRENT_PHILOSOPHY_UNSET,
 ) -> bool:
-    current_matches = (
-        True
+    # 판정은 `content_visibility`가 단독으로 갖는다. admin이 같은 함수로 "공개 보류"를
+    # 표시하므로, 여기서 조건을 하나라도 따로 들고 있으면 두 화면이 다시 갈라진다(H-01).
+    visibility = assess_public_visibility(
+        item,
+        UNSET_PHILOSOPHY
         if current_philosophy_id is _CURRENT_PHILOSOPHY_UNSET
-        else current_philosophy_id is not None
-        and item.content_philosophy_id == current_philosophy_id
+        else current_philosophy_id,
     )
-    if not (
-        current_matches
-        and item.status == ContentStatus.PUBLISHED
-        and item.essence_status == ESSENCE_STATUS_ALIGNED
-        and bool((item.title or "").strip())
-        and bool((item.body or "").strip())
-        and item.published_at is not None
-        and has_required_faq_fields(item)
-        and has_required_references(item)
-        and image_certification_current(item)
-        and public_candidate_review_safe(item)
-    ):
-        return False
-    violations = _forbidden_content_violations(item)
-    if violations:
+    if "FORBIDDEN_EXPRESSION" in visibility.blockers:
         # 발행 게이트를 통과한 뒤 본문이 수정됐거나, 필터가 강화되기 전에 발행된 글이
         # 공개 표면에 남아 있을 수 있다. CLAUDE.md가 이 모듈을 세 번째 적용 지점으로
         # 규정한 이유이며, 위반 시 fail-closed — 목록·상세·이미지 모두에서 사라진다.
         logger.warning(
             "Public content withheld by the medical-ad filter: content_id=%s labels=%s",
             getattr(item, "id", None),
-            ",".join(violations),
+            ",".join(
+                check_forbidden_content_fields(
+                    publication_field_values(item), PUBLICATION_CHECK_FIELDS
+                )
+            ),
         )
-        return False
-    return True
-
-
-def _forbidden_content_violations(item: ContentItem) -> list[str]:
-    """공개 직렬화 직전 마지막 의료광고 검사 (아이템당 한 번).
-
-    발행 검사와 같은 공개 필드 매핑을 재사용해 참고자료 제목까지 포함한다.
-    """
-    return check_forbidden_content_fields(
-        publication_field_values(item), PUBLICATION_CHECK_FIELDS
-    )
+    return visibility.visible
 
 
 def _safe_public_text(value: object) -> str | None:

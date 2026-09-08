@@ -591,6 +591,14 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
     monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
     monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
 
+    async def fake_public_philosophy_id(db, requested_hospital_id):
+        # 이 더블 DB에는 운영 기준 행이 없다 — 공개 가시성은 기준 대조 없이 판정한다.
+        return None
+
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
+
     db = FakeDB()
     response = await content_api.update_content_brief(
         hospital_id,
@@ -852,6 +860,14 @@ async def test_update_content_brief_reassigns_action_without_stale_links(monkeyp
     monkeypatch.setattr(content_api, "_get_query_target_or_404", fake_get_target)
     monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
 
+    async def fake_public_philosophy_id(db, requested_hospital_id):
+        # 이 더블 DB에는 운영 기준 행이 없다 — 공개 가시성은 기준 대조 없이 판정한다.
+        return None
+
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
+
     db = FakeDB()
     response = await content_api.update_content_brief(
         hospital_id,
@@ -912,6 +928,14 @@ async def test_update_content_brief_unlinks_action_clears_work_queue_link(monkey
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
     monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
+
+    async def fake_public_philosophy_id(db, requested_hospital_id):
+        # 이 더블 DB에는 운영 기준 행이 없다 — 공개 가시성은 기준 대조 없이 판정한다.
+        return None
+
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
 
     db = FakeDB()
     response = await content_api.update_content_brief(

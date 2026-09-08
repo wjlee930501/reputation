@@ -35,6 +35,10 @@ class _ExecuteResult:
         # set_schedule의 SELECT ... FOR UPDATE가 읽는 병원 행.
         return self._hospital
 
+    def one_or_none(self):
+        # 공개 가시성 판정이 읽는 승인된 운영 기준 행 — 이 더블에는 없다.
+        return None
+
     def all(self):
         # 이 더블은 스케줄 조회만 모사한다. 격차 타깃 조회(gap_target_rows_stmt)는
         # 행이 없는 병원과 같으므로 빈 목록 — 슬롯은 정적 배분 그대로 만들어진다.

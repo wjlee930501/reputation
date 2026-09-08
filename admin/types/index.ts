@@ -160,6 +160,9 @@ export interface ContentItem {
     references_count?: number
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
+    // 공개 사이트가 이 글을 실제로 내보내는지 — 공개 표면과 같은 판정 함수의 결과다.
+    // (backend/app/services/content_visibility.py)
+    public_visibility?: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
   body?: string | null
   image_prompt?: string | null

@@ -48,17 +48,26 @@ from app.services.content_publication import (
     apply_publication_assessment,
     assess_content_publication,
     count_citable_references,
+    has_required_faq_fields,
     has_required_references,
+    image_certification_current,
+    public_candidate_review_safe,
     publication_field_values,
     record_publication_identity,
 )
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
+from app.services.content_visibility import (
+    UNSET_PHILOSOPHY,
+    PublicVisibility,
+    assess_public_visibility,
+)
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     EssenceReadiness,
     get_current_approved_philosophy,
     get_essence_readiness,
+    get_public_approved_philosophy_id,
 )
 from app.services.exposure_content_linker import (
     link_content_to_exposure_action,
@@ -452,7 +461,8 @@ async def list_content(
     items = result.scalars().all()
     await attach_publish_notification_state(db, items)
 
-    return [_serialize_item(i) for i in items]
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    return [_serialize_item(i, public_philosophy_id=public_philosophy_id) for i in items]
 
 
 @router.get("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
@@ -464,7 +474,8 @@ async def get_content(
     """콘텐츠 상세 (본문 포함)"""
     item = await _get_content(db, content_id, hospital_id)
     await attach_publish_notification_state(db, (item,))
-    return _serialize_item(item, full=True)
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
 
 
 @router.patch("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
@@ -620,7 +631,8 @@ async def update_content(
         await trigger_content_site_revalidate_safe(
             hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments
         )
-    return _serialize_item(item, full=True)
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
 
 
 @router.patch("/{hospital_id}/content/{content_id}/brief", response_model=ContentItemDetail)
@@ -638,7 +650,8 @@ async def update_content_brief(
 
     await db.commit()
     await db.refresh(item)
-    return _serialize_item(item, full=True)
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
 
 
 @router.post(
@@ -699,7 +712,8 @@ async def reschedule_content(
     )
     await db.commit()
     await db.refresh(item)
-    return _serialize_item(item, full=True)
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
 
 
 @router.post(
@@ -717,7 +731,11 @@ async def cancel_content(
     if item.status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Published content must be rejected instead")
     if item.status == ContentStatus.CANCELLED:
-        return _serialize_item(item, full=True)
+        return _serialize_item(
+            item,
+            full=True,
+            public_philosophy_id=await get_public_approved_philosophy_id(db, hospital_id),
+        )
 
     previous_status = _enum_value(item.status)
     item.status = ContentStatus.CANCELLED
@@ -740,7 +758,8 @@ async def cancel_content(
     )
     await db.commit()
     await db.refresh(item)
-    return _serialize_item(item, full=True)
+    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
 
 
 async def _lock_content_status(
@@ -1265,9 +1284,17 @@ def _display_label(labels: dict[str, str], value) -> str | None:
 
 
 def _content_review_display(
-    item: ContentItem, status_value: str | None
+    item: ContentItem, status_value: str | None, visibility: PublicVisibility
 ) -> dict[str, str | bool | None]:
     if status_value == ContentStatus.PUBLISHED.value:
+        if not visibility.visible:
+            # 공개 사이트가 이 글을 숨기는 중이다. "공개 완료"로 표시하면 AE는
+            # 공개 페이지에 없는 글을 있다고 믿고 확인을 끝낸다(H-01).
+            return {
+                "label": "공개 보류",
+                "reason": ", ".join(visibility.blocker_labels),
+                "publishable": False,
+            }
         if getattr(item, "post_publish_reviewed_at", None):
             return {"label": "공개 내용 확인 완료", "reason": None, "publishable": False}
         return {
@@ -1294,9 +1321,12 @@ def _content_review_display(
 
 
 def _serialize_item_display(
-    item: ContentItem, content_type: str | None, status_value: str | None
+    item: ContentItem,
+    content_type: str | None,
+    status_value: str | None,
+    visibility: PublicVisibility,
 ) -> dict:
-    review = _content_review_display(item, status_value)
+    review = _content_review_display(item, status_value, visibility)
     if status_value == ContentStatus.PUBLISHED.value:
         notification = getattr(item, "_publish_notification_projection", None)
         if notification is None:
@@ -1305,7 +1335,9 @@ def _serialize_item_display(
             )
         review["notification_state"] = notification["state"]
         review["notification"] = notification
-        if notification["state"] != "SENT":
+        if visibility.visible and notification["state"] != "SENT":
+            # 공개 보류는 알림 상태보다 앞선다 — 글 자체가 공개 페이지에 없다는 사실을
+            # 알림 문구가 덮으면 AE는 다시 "무엇이 잘못됐는지" 볼 수 없다.
             review["label"] = notification["label"]
             review["reason"] = notification["problem"] or notification["next_action"]
     return {
@@ -1317,7 +1349,9 @@ def _serialize_item_display(
     }
 
 
-def _build_compliance_summary(item: ContentItem, status_value: str | None) -> dict:
+def _build_compliance_summary(
+    item: ContentItem, status_value: str | None, visibility: PublicVisibility
+) -> dict:
     # Admin 화면의 "발행 가능 여부"와 "금지 표현" 표시는 이 요약이 단일 기준이다
     # (admin/app/hospitals/[id]/content/page.tsx). 따라서 발행 게이트와 **같은 기준**으로
     # 판정해야 한다. 평문 합본으로 검사하면 `최**고**의`가 여기서는 통과해
@@ -1336,6 +1370,12 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         blockers.append("의료광고 금지 표현이 포함되어 있습니다.")
     if item.title and item.body and not _has_required_references(item):
         blockers.append("권위 있는 참고 자료가 1개 이상 필요합니다.")
+    if item.title and item.body and not has_required_faq_fields(item):
+        blockers.append("FAQ 질문과 직접 답변 요약이 필요합니다.")
+    if item.title and item.body and not image_certification_current(item):
+        blockers.append("대표 이미지 자동 정책 검사가 필요합니다.")
+    if not public_candidate_review_safe(item):
+        blockers.append("독립 검수 지적이 해결되지 않았습니다.")
     if item.essence_status != ESSENCE_STATUS_ALIGNED:
         blockers.append("승인된 콘텐츠 운영 기준 검수를 통과해야 합니다.")
 
@@ -1347,12 +1387,24 @@ def _build_compliance_summary(item: ContentItem, status_value: str | None) -> di
         "references_count": count_citable_references(item),
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
+        # 공개 사이트가 실제로 이 글을 내보내는지 — 같은 판정 함수의 결과 그대로다.
+        "public_visibility": {
+            "visible": visibility.visible,
+            "blockers": list(visibility.blockers),
+            "blocker_labels": visibility.blocker_labels,
+        },
     }
 
 
-def _serialize_item(item: ContentItem, full: bool = False) -> dict:
+def _serialize_item(
+    item: ContentItem,
+    full: bool = False,
+    *,
+    public_philosophy_id: uuid.UUID | None | object = UNSET_PHILOSOPHY,
+) -> dict:
     content_type = _enum_value(item.content_type)
     status_value = _enum_value(item.status)
+    visibility = assess_public_visibility(item, public_philosophy_id)
     d = {
         "id": str(item.id),
         "content_type": content_type,
@@ -1367,7 +1419,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
             str(item.carried_over_from) if getattr(item, "carried_over_from", None) else None
         ),
         "status": status_value,
-        "display": _serialize_item_display(item, content_type, status_value),
+        "display": _serialize_item_display(item, content_type, status_value, visibility),
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "published_by": item.published_by,
@@ -1397,7 +1449,7 @@ def _serialize_item(item: ContentItem, full: bool = False) -> dict:
         "brief_approved_by": item.brief_approved_by,
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
-        "compliance": _build_compliance_summary(item, status_value),
+        "compliance": _build_compliance_summary(item, status_value, visibility),
     }
     if full:
         d["body"] = item.body

@@ -107,8 +107,15 @@ def _wire(monkeypatch, item, hospital):
     async def fake_get_hospital(db, hospital_id):
         return hospital
 
+    async def fake_public_philosophy_id(db, hospital_id):
+        # 이 더블 DB는 운영 기준 행을 갖지 않는다 — 공개 가시성은 기준 대조 없이 판정한다.
+        return None
+
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "_get_hospital", fake_get_hospital)
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
 
 
 async def test_publish_content_blocks_forbidden_expression_in_faq_fields(monkeypatch):
