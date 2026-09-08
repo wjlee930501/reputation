@@ -257,6 +257,8 @@ export interface ContentPhilosophy {
   approval_note: string | null
   created_at: string | null
   updated_at: string | null
+  /** 재검수 요청 응답에서만 채워진다. false면 보관은 끝났고 재검수는 reconcile이 회수한다. */
+  re_review_dispatched?: boolean | null
 }
 
 export type AIQueryTargetPriority = 'HIGH' | 'NORMAL' | 'LOW'

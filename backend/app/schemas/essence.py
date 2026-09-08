@@ -151,6 +151,8 @@ class PhilosophyResponse(BaseModel):
     approval_note: str | None
     created_at: str | None
     updated_at: str | None
+    # 재검수 요청에서만 채워진다. False면 보관은 끝났고 재검수는 15분 reconcile이 회수한다.
+    re_review_dispatched: bool | None = None
 
 
 class ApprovedPhilosophyResponse(BaseModel):

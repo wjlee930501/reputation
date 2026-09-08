@@ -3,11 +3,12 @@
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse, RedirectResponse
+from kombu.exceptions import OperationalError as BrokerOperationalError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -17,6 +18,7 @@ from app.api.admin.accounts import require_active_account
 from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import ADMIN_ROLES, AdminUser
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem
 from app.models.essence import (
     AUTO_REVIEW_GAP_FIELD,
@@ -112,6 +114,9 @@ from app.workers.tasks import auto_review_essence_snapshot
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
+# 재검수 한 번은 워커에서 유료 합성을 최대 두 번 부른다. 전역 비용 가드만으로는
+# 한 병원이 클릭 속도만큼 예산을 소진할 수 있어, 병원별 최소 간격을 둔다.
+RE_REVIEW_COOLDOWN = timedelta(minutes=30)
 logger = logging.getLogger(__name__)
 
 
@@ -1621,22 +1626,56 @@ async def archive_philosophy(
     return _serialize_philosophy(philosophy)
 
 
+async def _guard_re_review_cooldown(db: AsyncSession, hospital_id: uuid.UUID) -> None:
+    """감사 로그를 쿨다운의 저장소로 쓴다 — 인스턴스 재시작·다중 인스턴스에도 남는다."""
+
+    last_requested_at = await db.scalar(
+        select(func.max(AdminAuditLog.created_at)).where(
+            AdminAuditLog.action == "request_philosophy_re_review",
+            AdminAuditLog.hospital_id == hospital_id,
+        )
+    )
+    if last_requested_at is None:
+        return
+    if last_requested_at.tzinfo is None:
+        last_requested_at = last_requested_at.replace(tzinfo=timezone.utc)
+    retry_after = last_requested_at + RE_REVIEW_COOLDOWN - datetime.now(timezone.utc)
+    if retry_after <= timedelta(0):
+        return
+    raise HTTPException(
+        status_code=429,
+        detail={
+            "code": "RE_REVIEW_COOLDOWN",
+            "retry_after_seconds": int(retry_after.total_seconds()),
+            "message": (
+                "최근 30분 안에 이미 자동 재검수를 요청했습니다. "
+                "결과를 기다린 뒤 다시 시도해 주세요."
+            ),
+        },
+    )
+
+
 @router.post("/philosophy/{philosophy_id}/re-review", response_model=PhilosophyResponse)
 async def request_philosophy_re_review(
     hospital_id: uuid.UUID,
     philosophy_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ):
-    """보류된 초안을 보관하고 자동 검수를 즉시 다시 요청한다.
+    """보류된 초안을 보관하고 자료·근거 노트를 기준으로 자동 재합성·검수를 요청한다.
 
-    사람이 초안을 고쳐 다시 검수받고 싶을 때의 유일한 경로다. 수동 합성은 없다 —
+    사람이 초안을 다시 검수받고 싶을 때의 유일한 경로다. 수동 합성은 없다 —
     합성·검수·승인은 언제나 워커의 자동 경로가 수행한다(H-04).
-    초안 본문 수정은 재합성 입력이 아니다; 근거 노트·자료가 입력이다. 사람이 고친
-    문장을 그대로 채택하려면 예외 승인을 쓴다.
+    초안 본문 수정은 재합성 입력이 아니다 — 사람이 고친 문장을 채택하려면 예외
+    승인(H-03)을 쓴다.
+
+    한 번의 요청이 유료 합성을 최대 두 번 부르므로 병원별로 30분 쿨다운을 둔다.
+    dispatch 실패 시에도 보관은 유효하며 15분 `reconcile_essence_snapshots`가
+    재검수를 회수한다.
     """
     await acquire_hospital_advisory_lock(db, hospital_id)
     hospital = await _get_hospital_or_404(db, hospital_id)
     philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
+    await _guard_re_review_cooldown(db, hospital_id)
     previous_status = _archive_draft_or_400(philosophy)
     await write_audit_log(
         db,
@@ -1650,12 +1689,22 @@ async def request_philosophy_re_review(
     await db.commit()
     await db.refresh(philosophy)
     # 커밋 이후의 외부 효과. 유실되면 15분 reconcile(reconcile_essence_snapshots)이 회수한다.
-    auto_review_essence_snapshot.apply_async(
-        args=[str(hospital.id)],
-        queue="content",
-        headers=build_dispatch_headers("auto-review-essence-snapshot", str(hospital.id)),
-    )
-    return _serialize_philosophy(philosophy)
+    # 여기서 500을 내면 보관은 이미 끝났는데 재시도는 400("초안 상태만")으로 막힌다.
+    dispatched = True
+    try:
+        auto_review_essence_snapshot.apply_async(
+            args=[str(hospital.id)],
+            queue="content",
+            headers=build_dispatch_headers("auto-review-essence-snapshot", str(hospital.id)),
+        )
+    except (BrokerOperationalError, OSError):
+        dispatched = False
+        logger.warning(
+            "Failed to enqueue Essence re-review for hospital %s; "
+            "periodic reconciliation will retry",
+            hospital_id,
+        )
+    return _serialize_philosophy(philosophy) | {"re_review_dispatched": dispatched}
 
 
 @router.post("/philosophy/{philosophy_id}/approve", response_model=PhilosophyResponse)
@@ -1693,7 +1742,7 @@ async def approve_philosophy(
     if grounding_errors:
         raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
-    # 자동 검수가 보류한 사유는 체크박스 하나로 지나칠 수 없다. 초안을 고쳐 재검수를
+    # 자동 검수가 보류한 사유는 체크박스 하나로 지나칠 수 없다. 자료를 보완해 재검수를
     # 받거나, 각 사유를 확인한 근거를 예외 승인 사유로 남겨야 한다(H-03).
     auto_findings = [
         str(gap.get("reason"))

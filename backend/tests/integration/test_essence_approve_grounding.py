@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 import pytest
 from fastapi import HTTPException
+from kombu.exceptions import OperationalError as BrokerOperationalError
 from sqlalchemy import select
 
 from app.api.admin import essence as essence_api
@@ -30,6 +31,7 @@ from app.services.audit_log import (
     reset_request_actor,
     set_request_actor,
 )
+from app.services.essence_auto_review import essence_refresh_needed
 from app.services.essence_engine import (
     MANDATORY_AVOID_MESSAGES,
     MANDATORY_MEDICAL_AD_RISK_RULES,
@@ -325,7 +327,7 @@ def test_manual_approve_rejects_a_short_override_reason():
 async def test_re_review_archives_the_draft_and_dispatches_auto_review(
     pg_async_session, monkeypatch
 ):
-    """H-04: 사람이 초안을 고쳐 다시 검수받는 유일한 경로."""
+    """H-04: 초안을 보관하고 자료·근거 노트로 다시 합성·검수하는 유일한 경로."""
     hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
     dispatched: list[dict] = []
     monkeypatch.setattr(
@@ -343,6 +345,7 @@ async def test_re_review_archives_the_draft_and_dispatches_auto_review(
         reset_request_actor(token)
 
     assert response["status"] == PhilosophyStatus.ARCHIVED.value
+    assert response["re_review_dispatched"] is True
     assert dispatched
     assert dispatched[0]["args"] == [str(hospital.id)]
     assert dispatched[0]["queue"] == "content"
@@ -354,6 +357,105 @@ async def test_re_review_archives_the_draft_and_dispatches_auto_review(
         )
     ).scalars().first()
     assert audit.detail["previous_status"] == PhilosophyStatus.DRAFT.value
+
+
+@pytest.mark.asyncio
+async def test_re_review_keeps_the_archive_when_the_broker_is_down(
+    pg_async_session, monkeypatch
+):
+    """보관은 커밋됐는데 dispatch가 500이 되면 재시도는 400('초안 상태만')으로 막힌다."""
+
+    def _broker_down(**_kwargs):
+        raise BrokerOperationalError("down")
+
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    monkeypatch.setattr(
+        essence_api.auto_review_essence_snapshot, "apply_async", _broker_down
+    )
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        response = await essence_api.request_philosophy_re_review(
+            hospital.id, draft.id, db=pg_async_session
+        )
+    finally:
+        reset_request_actor(token)
+
+    assert response["status"] == PhilosophyStatus.ARCHIVED.value
+    assert response["re_review_dispatched"] is False
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.ARCHIVED
+
+
+@pytest.mark.asyncio
+async def test_re_review_is_throttled_per_hospital(pg_async_session, monkeypatch):
+    """재검수 한 번이 유료 합성을 최대 두 번 부른다 — 전역 비용 가드만으로는 부족하다."""
+    hospital, first_draft, note = await _seed_draft_for_findings(pg_async_session)
+    second_draft = HospitalContentPhilosophy(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        version=2,
+        status=PhilosophyStatus.DRAFT,
+        positioning_statement="충분한 설명과 개인별 선택지 안내",
+        content_principles=[],
+        tone_guidelines=[],
+        must_use_messages=[],
+        avoid_messages=list(MANDATORY_AVOID_MESSAGES),
+        treatment_narratives=[],
+        local_context={},
+        medical_ad_risk_rules=list(MANDATORY_MEDICAL_AD_RISK_RULES),
+        evidence_map={"positioning_statement": [str(note.id)]},
+        source_asset_ids=first_draft.source_asset_ids,
+        unsupported_gaps=[],
+        conflict_notes=[],
+        source_snapshot_hash=first_draft.source_snapshot_hash,
+    )
+    pg_async_session.add(second_draft)
+    await pg_async_session.commit()
+    monkeypatch.setattr(
+        essence_api.auto_review_essence_snapshot, "apply_async", lambda **_kwargs: None
+    )
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        await essence_api.request_philosophy_re_review(
+            hospital.id, first_draft.id, db=pg_async_session
+        )
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.request_philosophy_re_review(
+                hospital.id, second_draft.id, db=pg_async_session
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 429
+    assert exc.value.detail["code"] == "RE_REVIEW_COOLDOWN"
+    assert exc.value.detail["retry_after_seconds"] > 0
+    await pg_async_session.refresh(second_draft)
+    assert second_draft.status == PhilosophyStatus.DRAFT
+
+
+@pytest.mark.asyncio
+async def test_archiving_the_only_draft_lets_reconciliation_pick_the_snapshot_back_up(
+    pg_async_session,
+):
+    """dispatch가 유실돼도 15분 reconcile이 회수한다 — 그 선행 조건을 고정한다.
+
+    `essence_refresh_needed`는 동기 `Session`만 받는다. 이 파일의 seed·엔드포인트는
+    모두 async라 별도 psycopg2 연결로는 같은 트랜잭션을 볼 수 없으므로,
+    같은 세션의 `run_sync`로 동기 등가물을 호출한다.
+    """
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+
+    assert await pg_async_session.run_sync(essence_refresh_needed, hospital.id) is False
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        await essence_api.archive_philosophy(hospital.id, draft.id, db=pg_async_session)
+    finally:
+        reset_request_actor(token)
+
+    assert await pg_async_session.run_sync(essence_refresh_needed, hospital.id) is True
 
 
 @pytest.mark.asyncio

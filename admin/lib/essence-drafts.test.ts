@@ -17,3 +17,12 @@ test('the essence page offers re-review and archive for a held draft', () => {
   assert.ok(essencePageSource.includes('/re-review'))
   assert.ok(essencePageSource.includes('/archive'))
 })
+
+test('the re-review button says the re-synthesis runs off the sources', () => {
+  assert.ok(essencePageSource.includes('자료 기준 자동 재검수'))
+})
+
+test('re-review asks for confirmation and names the paid call', () => {
+  assert.ok(essencePageSource.includes('유료 AI 호출'))
+  assert.ok(essencePageSource.includes('초안에 직접 고친 문장은 반영되지 않습니다'))
+})

@@ -430,14 +430,29 @@ export default function EssencePage() {
   }
 
   async function reReviewDraft(draftId: string) {
+    // 재합성 입력은 자료와 근거 노트다. 초안에 직접 고친 문장은 반영되지 않는다(H-04).
+    if (
+      !confirm(
+        '자료·근거 노트를 기준으로 콘텐츠 운영 기준을 다시 합성·검수합니다(유료 AI 호출). 초안에 직접 고친 문장은 반영되지 않습니다. 계속하시겠습니까?',
+      )
+    )
+      return
     setActionLoading(`re-review-${draftId}`)
     setError(null)
     setNotice(null)
     try {
-      await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${draftId}/re-review`, { method: 'POST' })
-      setNotice('초안을 보관하고 자동 검수를 다시 요청했습니다. 결과는 이 화면과 운영 센터에 표시됩니다.')
+      const result = await fetchAPI<ContentPhilosophy>(
+        `/admin/hospitals/${id}/essence/philosophy/${draftId}/re-review`,
+        { method: 'POST' },
+      )
+      setNotice(
+        result.re_review_dispatched === false
+          ? '초안을 보관했습니다. 자동 재검수는 최대 15분 안에 시작됩니다.'
+          : '초안을 보관하고 자동 검수를 다시 요청했습니다. 결과는 이 화면과 운영 센터에 표시됩니다.',
+      )
       await load()
     } catch (e: unknown) {
+      // 429(RE_REVIEW_COOLDOWN)를 포함해 서버가 보낸 사유를 그대로 보여 준다.
       setError(e instanceof Error ? e.message : '재검수 요청에 실패했습니다.')
     } finally {
       setActionLoading(null)
@@ -929,13 +944,13 @@ export default function EssencePage() {
                   >
                     {actionLoading === 'save-draft' ? '저장 중...' : '초안 저장'}
                   </button>
-                  {/* 사람이 초안을 고쳐 다시 검수받는 유일한 경로. 수동 합성은 없다(H-04). */}
+                  {/* 초안을 보관하고 자료·근거 노트로 다시 합성·검수하는 유일한 경로(H-04). */}
                   <button
                     onClick={() => reReviewDraft(selectedDraft.id)}
                     disabled={actionLoading === `re-review-${selectedDraft.id}`}
                     className="rounded-md border border-blue-200 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
                   >
-                    자동 재검수 요청
+                    자료 기준 자동 재검수
                   </button>
                   <button
                     onClick={() => archiveDraft(selectedDraft.id)}
