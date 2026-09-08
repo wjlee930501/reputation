@@ -43,6 +43,7 @@ from app.schemas.operations import (
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
+from app.services.hospital_lifecycle import missing_profile_requirement_keys
 from app.services.incident_safety import sanitize_operator_text
 from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
@@ -478,6 +479,20 @@ async def trigger_v0_report_operation(
     idempotency_key: IdempotencyKeyHeader = None,
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
+    # 프로필이 미완인 병원의 V0는 워커도 시작하지 않는다. 큐에 넣으면 유료 측정 없이
+    # 실패만 남으므로, 남은 필수 항목을 알려주고 여기서 거절한다.
+    if not hospital.profile_complete:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROFILE_INCOMPLETE",
+                "message": (
+                    "병원 기본 정보가 완료되면 초기 진단이 자동으로 시작됩니다. "
+                    "먼저 필수 항목을 채워 주세요."
+                ),
+                "missing": missing_profile_requirement_keys(hospital),
+            },
+        )
     # 태스크는 v0_report_done인 병원을 조용히 건너뛴다(중복 리포트·중복 측정 비용 방지).
     # 그대로 큐에 넣으면 화면은 "등록했습니다"라고 알리는데 아무 일도 일어나지 않아,
     # AE가 리포트를 기다리다 놓친다. 큐에 넣기 전에 사실대로 거절한다.

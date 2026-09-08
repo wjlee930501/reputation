@@ -3201,6 +3201,26 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                 if not hospital:
                     return
 
+                # 프로필 미완 병원의 V0는 시작하지 않는다. 질의 매트릭스·측정 슬롯이
+                # 미완 정보로 만들어지면 이후 재실행이 그 lineage를 그대로 물려받는다.
+                # 상태를 ANALYZING으로 클레임하기 전에 사유를 남기고 끝낸다.
+                if not hospital.profile_complete:
+                    logger.info(
+                        "V0 report requested before profile completion for %s; refusing",
+                        hospital.name,
+                    )
+                    finish_explicit_run(
+                        db,
+                        self,
+                        hospital.id,
+                        OperationRunState.FAILED,
+                        safe_error_code="PROFILE_INCOMPLETE",
+                        safe_error_message=(
+                            "병원 기본 정보가 완료되지 않아 초기 진단을 시작하지 않았습니다."
+                        ),
+                    )
+                    return
+
                 # Idempotency: 이미 V0가 완료된 병원은 재트리거/재배달 시 중복 리포트를 만들지 않는다.
                 if hospital.v0_report_done:
                     logger.info("V0 report already done for %s; skipping re-trigger", hospital.name)
@@ -3426,6 +3446,10 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
                                     all_slots, deadline_reached=False
                                 ).to_payload(),
                                 "safe_error_code": "V0_COST_DEFERRED",
+                                "safe_error_message": (
+                                    "비용 한도로 초기 진단 측정을 잠시 멈췄습니다. "
+                                    "다음 비용 창에서 자동으로 이어갑니다."
+                                ),
                             }
                             db.commit()
                             raise V0CostDeferred("V0 measurement deferred by cost guard")
