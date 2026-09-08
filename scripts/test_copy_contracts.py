@@ -80,31 +80,38 @@ def _admin_blank_chars() -> set[str]:
         r"^const BLANK_TEXT_RE\s*=\s*/\^\[(.*?)\]\*\$/\s*$",
     )
 
-    tokens: list[str] = []
+    # (코드포인트, 이스케이프 여부). `\uXXXX` 외의 백슬래시 표기를 뒤 문자로 눙치면
+    # `\t`가 문자 `t`로 둔갑해 가드가 엉뚱한 집합을 비교하고도 초록이 된다 — 그 자리에서 실패시킨다.
+    tokens: list[tuple[str, bool]] = []
     index = 0
     while index < len(char_class):
-        if char_class.startswith("\\u", index):
-            tokens.append(chr(int(char_class[index + 2 : index + 6], 16)))
+        character = char_class[index]
+        if character == "\\":
+            escape = char_class[index : index + 6]
+            if re.fullmatch(r"\\u[0-9A-Fa-f]{4}", escape) is None:
+                raise ValueError(
+                    f"BLANK_TEXT_RE에 이 파서가 모르는 이스케이프가 있다: "
+                    f"{char_class[index : index + 2]!r}. \\uXXXX만 읽는다 — 표기가 늘었으면 "
+                    "이 파서를 함께 고쳐야 한다."
+                )
+            tokens.append((chr(int(escape[2:], 16)), True))
             index += 6
-        elif char_class[index] == "\\":
-            tokens.append(char_class[index + 1])
-            index += 2
         else:
-            tokens.append(char_class[index])
+            tokens.append((character, False))
             index += 1
 
     chars: set[str] = set()
     position = 0
     while position < len(tokens):
-        is_range = (
-            tokens[position] == "-" and 0 < position < len(tokens) - 1 and bool(chars)
-        )
-        if is_range:
-            for code_point in range(ord(tokens[position - 1]), ord(tokens[position + 1]) + 1):
+        character, escaped = tokens[position]
+        # 범위(`a-z`)는 **이스케이프되지 않은** `-`가 양쪽 토큰 사이에 있을 때만이다.
+        # `\-`는 리터럴 하이픈이며, 양끝의 `-`도 리터럴이다.
+        if character == "-" and not escaped and 0 < position < len(tokens) - 1:
+            for code_point in range(ord(tokens[position - 1][0]), ord(tokens[position + 1][0]) + 1):
                 chars.add(chr(code_point))
             position += 2
         else:
-            chars.add(tokens[position])
+            chars.add(character)
             position += 1
     return chars
 

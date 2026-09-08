@@ -31,7 +31,11 @@ async def _dispose_global_async_engine():
     """전역 async 엔진은 lazy 싱글턴이고 asyncpg 풀은 만든 이벤트 루프에 묶인다 —
     pytest-asyncio는 테스트마다 루프를 새로 만들므로, 앞 테스트가 만든 엔진을
     물려받으면 다음 테스트는 'Event loop is closed'를 만난다(예: provider_usage._persist가
-    이 예외를 삼키고 False를 돌려줘 순서에 따라 실패). 테스트 루프가 살아 있을 때 정리한다."""
+    이 예외를 삼키고 False를 돌려줘 순서에 따라 실패). 테스트 루프가 살아 있을 때 정리한다.
+
+    dispose()는 풀에 남은 asyncpg 커넥션을 동기적으로 끊는다(풀의 _close_connection은
+    로그만 남기고 예외를 올리지 않는다) — 다른 루프에서 만들어진 엔진이라도 teardown을
+    실패시키지 않는다."""
     from app.core import database
 
     yield

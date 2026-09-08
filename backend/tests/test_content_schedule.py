@@ -36,7 +36,8 @@ class _ExecuteResult:
         return self._hospital
 
     def one_or_none(self):
-        # 공개 가시성 판정이 읽는 승인된 운영 기준 행 — 이 더블에는 없다.
+        # 공개 가시성 판정이 읽는 승인된 운영 기준 행 — 이 더블에는 없다. 기준이 None이면
+        # 대조를 건너뛰는 게 아니라 PHILOSOPHY_MISMATCH로 막힌다(이 테스트는 일정만 본다).
         return None
 
     def all(self):

@@ -179,7 +179,7 @@ def test_serialize_item_includes_brief_and_query_links():
         brief_approved_by="Ops",
     )
 
-    serialized = content_api._serialize_item(item, full=True)
+    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
 
     assert serialized["query_target_id"] == str(target_id)
     assert serialized["exposure_action_id"] == str(action_id)
@@ -208,7 +208,7 @@ def test_serialize_item_exposes_forbidden_expression_compliance_blocker():
         essence_status="ALIGNED",
     )
 
-    serialized = content_api._serialize_item(item, full=True)
+    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
 
     assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["forbidden_violations"] == ["최고"]
@@ -228,7 +228,7 @@ def test_serialize_item_blocks_publish_without_references():
         image_policy_verified_at=datetime.now(timezone.utc),
     )
 
-    serialized = content_api._serialize_item(item, full=True)
+    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
 
     assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["references_count"] == 0
@@ -248,7 +248,7 @@ def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
         image_policy_verified_at=datetime.now(timezone.utc),
     )
 
-    serialized = content_api._serialize_item(item, full=True)
+    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
 
     assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["references_count"] == 0
@@ -516,9 +516,22 @@ async def test_post_publish_review_records_authenticated_actor_and_is_idempotent
     async def fake_audit(*_args, **kwargs):
         audits.append(kwargs)
 
+    async def fake_public_philosophy_id(db, requested_hospital_id):
+        return None
+
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)
     monkeypatch.setattr(content_api, "write_audit_log", fake_audit)
     monkeypatch.setattr(content_api, "default_actor", lambda: "operator@example.com")
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
+    # 이 테스트는 액터 기록과 멱등성만 본다. 공개 보류 게이트 자체는 바로 아래 테스트가
+    # 실제 판정으로 검증한다.
+    monkeypatch.setattr(
+        content_api,
+        "assess_public_visibility",
+        lambda item, philosophy_id: content_api.PublicVisibility(visible=True, blockers=()),
+    )
     db = FakeDB()
 
     first = await content_api.complete_post_publish_review(
@@ -540,6 +553,64 @@ async def test_post_publish_review_records_authenticated_actor_and_is_idempotent
     assert db.commits == 1
     assert audits[0]["action"] == "post_publish_review_completed"
     assert audits[0]["detail"]["note"] == "공개 페이지 확인"
+
+
+async def test_post_publish_review_is_refused_while_the_public_page_withholds_the_item(
+    monkeypatch,
+):
+    """공개 보류 중인 글에 "공개 내용 확인"을 기록하면 admin만 확인 완료로 굳는다(H-01)."""
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    item = _content_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        title="공개된 글",
+        body="환자 상태에 따라 설명합니다.",
+        status=content_api.ContentStatus.PUBLISHED,
+        published_at=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc),
+        essence_status=content_api.ESSENCE_STATUS_ALIGNED,
+        post_publish_reviewed_at=None,
+        post_publish_reviewed_by=None,
+    )
+    audits = []
+
+    class FakeDB:
+        commits = 0
+
+        async def commit(self):
+            self.commits += 1
+
+    async def fake_get_content(db, requested_item_id, requested_hospital_id):
+        return item
+
+    async def fake_audit(*_args, **kwargs):
+        audits.append(kwargs)
+
+    async def fake_public_philosophy_id(db, requested_hospital_id):
+        return None
+
+    monkeypatch.setattr(content_api, "_get_content", fake_get_content)
+    monkeypatch.setattr(content_api, "write_audit_log", fake_audit)
+    monkeypatch.setattr(
+        content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
+    db = FakeDB()
+
+    with pytest.raises(HTTPException) as excinfo:
+        await content_api.complete_post_publish_review(
+            hospital_id,
+            item_id,
+            content_api.PostPublishReviewBody(note="공개 페이지 확인"),
+            db=db,
+        )
+
+    assert excinfo.value.status_code == 409
+    assert "공개 페이지에서 보류 중인 글" in excinfo.value.detail
+    assert "현재 승인된 콘텐츠 운영 기준과 다른 기준으로 생성됨" in excinfo.value.detail
+    # 기록도 감사 로그도 남지 않는다.
+    assert item.post_publish_reviewed_at is None
+    assert db.commits == 0
+    assert audits == []
 
 
 async def test_update_content_brief_links_action_infers_target_and_approves(monkeypatch):
@@ -592,7 +663,9 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
     monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
 
     async def fake_public_philosophy_id(db, requested_hospital_id):
-        # 이 더블 DB에는 운영 기준 행이 없다 — 공개 가시성은 기준 대조 없이 판정한다.
+        # 이 더블 DB에는 승인된 운영 기준 행이 없다. None은 '대조를 건너뛴다'가 아니라
+        # PHILOSOPHY_MISMATCH 차단이며, 그래서 PUBLISHED 항목은 '공개 보류'로 직렬화된다
+        # (이 테스트들은 그 표시를 보지 않는다).
         return None
 
     monkeypatch.setattr(
@@ -861,7 +934,9 @@ async def test_update_content_brief_reassigns_action_without_stale_links(monkeyp
     monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
 
     async def fake_public_philosophy_id(db, requested_hospital_id):
-        # 이 더블 DB에는 운영 기준 행이 없다 — 공개 가시성은 기준 대조 없이 판정한다.
+        # 이 더블 DB에는 승인된 운영 기준 행이 없다. None은 '대조를 건너뛴다'가 아니라
+        # PHILOSOPHY_MISMATCH 차단이며, 그래서 PUBLISHED 항목은 '공개 보류'로 직렬화된다
+        # (이 테스트들은 그 표시를 보지 않는다).
         return None
 
     monkeypatch.setattr(
@@ -930,7 +1005,9 @@ async def test_update_content_brief_unlinks_action_clears_work_queue_link(monkey
     monkeypatch.setattr(content_api, "_get_exposure_action_or_404", fake_get_action)
 
     async def fake_public_philosophy_id(db, requested_hospital_id):
-        # 이 더블 DB에는 운영 기준 행이 없다 — 공개 가시성은 기준 대조 없이 판정한다.
+        # 이 더블 DB에는 승인된 운영 기준 행이 없다. None은 '대조를 건너뛴다'가 아니라
+        # PHILOSOPHY_MISMATCH 차단이며, 그래서 PUBLISHED 항목은 '공개 보류'로 직렬화된다
+        # (이 테스트들은 그 표시를 보지 않는다).
         return None
 
     monkeypatch.setattr(

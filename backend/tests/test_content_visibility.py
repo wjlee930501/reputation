@@ -1,10 +1,11 @@
 """H-01: 공개 사이트가 숨기는 글을 admin이 '공개 중'이라고 말하지 못하게 하는 단일 판정."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 import app.api.public.site as site
+from app.api.admin import content as admin_content
 from app.models.content import ContentStatus, ContentType
 from app.services.content_visibility import VISIBILITY_BLOCKER_LABELS, assess_public_visibility
 from app.services.image_engine import (
@@ -16,7 +17,9 @@ from app.services.image_engine import (
 
 def _published(**overrides):
     philosophy_id = uuid.uuid4()
-    image_url = f"gs://reputation-images/content/{'a' * 64}-reviewed.png"
+    # https 경로 — admin 직렬화의 get_signed_url이 gs:// 값만 GCS로 들고 가기 때문에
+    # 이 더블은 서명 호출 없이 그대로 통과한다. 인증 hash는 파일명에서 나온다.
+    image_url = f"https://storage.googleapis.com/reputation-images/content/{'a' * 64}-reviewed.png"
     base = dict(
         id=uuid.uuid4(),
         status=ContentStatus.PUBLISHED,
@@ -44,6 +47,25 @@ def _published(**overrides):
         image_policy_version=IMAGE_POLICY_VERSION,
         essence_check_summary={},
         meta_description=None,
+        # admin 직렬화가 읽는 나머지 운영 필드 (가시성 판정에는 쓰이지 않는다).
+        hospital_id=uuid.uuid4(),
+        sequence_no=1,
+        total_count=12,
+        scheduled_date=date(2026, 6, 1),
+        carried_over_from=None,
+        generated_at=datetime.now(timezone.utc),
+        published_by="김민지 AE",
+        post_publish_notified_at=None,
+        post_publish_reviewed_at=None,
+        post_publish_reviewed_by=None,
+        body_updated_at=None,
+        query_target_id=None,
+        exposure_action_id=None,
+        content_brief=None,
+        brief_status=None,
+        brief_approved_at=None,
+        brief_approved_by=None,
+        image_prompt=None,
     )
     base.update(overrides)
     return SimpleNamespace(**base), philosophy_id
@@ -64,18 +86,29 @@ def test_title_edit_that_invalidates_the_image_certificate_withholds_with_a_reas
 
 
 def test_every_blocker_has_a_korean_label_and_a_stable_order():
+    """모든 검사에 걸리는 글은 라벨 표의 키 순서 그대로 사유를 낸다.
+
+    사유 순서는 AE가 읽는 문장의 순서다 — 표와 판정이 갈라지면 라벨 없는 코드가 화면에
+    그대로 노출되거나, 같은 글이 화면마다 다른 순서로 설명된다.
+    """
     item, _ = _published(
+        status=ContentStatus.DRAFT,
+        content_type=ContentType.FAQ,
         title="   ",
         body="",
         published_at=None,
         essence_status="NEEDS_ESSENCE_REVIEW",
-        references_list=[],
+        faq_question=None,
+        # 화이트리스트 밖 출처 + 제목에 금지 표현 — 참고자료와 금지 표현을 동시에 건다.
+        references_list=[{"title": "최고의 병원 광고", "url": "https://ad-blog.example.com/promo"}],
         image_url=None,
+        essence_check_summary={"ai_review": {"status": "UNAVAILABLE"}},
     )
     result = assess_public_visibility(item, uuid.uuid4())
     assert result.visible is False
-    assert result.blockers[0] == "PHILOSOPHY_MISMATCH"
-    assert set(result.blockers) <= set(VISIBILITY_BLOCKER_LABELS)
+    assert result.blockers == tuple(VISIBILITY_BLOCKER_LABELS)
+    assert result.blocker_labels == [VISIBILITY_BLOCKER_LABELS[code] for code in result.blockers]
+    assert result.blocker_labels[0] == "현재 승인된 콘텐츠 운영 기준과 다른 기준으로 생성됨"
 
 
 def test_unset_philosophy_means_no_philosophy_check():
@@ -104,3 +137,63 @@ def test_site_and_admin_read_the_same_answer_from_one_judgment():
     assert assess_public_visibility(certified, certified_pid).visible is True
     assert assess_public_visibility(cleared, cleared_pid).visible is False
     assert "FORBIDDEN_EXPRESSION" in assess_public_visibility(forbidden, forbidden_pid).blockers
+
+
+def test_site_withholds_when_no_approved_philosophy_but_not_when_unasked():
+    """None(승인된 기준 없음)과 UNSET(기준을 묻지 않음)은 다른 답이다."""
+    item, _ = _published()
+    assert site._is_public_safe_content(item, None) is False
+    assert site._is_public_safe_content(item) is True
+
+
+def _serialize(item, philosophy_id):
+    return admin_content._serialize_item(item, full=True, public_philosophy_id=philosophy_id)
+
+
+def test_admin_serializes_a_withheld_published_item_as_withheld():
+    """admin 표시 경로 — 공개 페이지가 숨기는 글에 '공개 완료'가 붙으면 H-01이다."""
+    item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
+
+    serialized = _serialize(item, philosophy_id)
+
+    review = serialized["display"]["review"]
+    assert review["label"] == "공개 보류"
+    assert "대표 이미지 재인증 대기" in review["reason"]
+    assert review["publishable"] is False
+    visibility = serialized["compliance"]["public_visibility"]
+    assert visibility["visible"] is False
+    assert visibility["blockers"] == ["IMAGE_NOT_CERTIFIED"]
+    assert visibility["blocker_labels"] == ["대표 이미지 재인증 대기"]
+
+
+def test_notification_label_never_overwrites_the_withheld_label():
+    """알림 문구가 사유를 덮으면 AE는 글이 공개 페이지에 없다는 사실을 볼 수 없다."""
+    item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
+    item._publish_notification_projection = {
+        "state": "PENDING",
+        "label": "Slack 전달 대기",
+        "problem": None,
+        "next_action": "잠시 후 자동으로 전달됩니다.",
+    }
+
+    review = _serialize(item, philosophy_id)["display"]["review"]
+
+    assert review["label"] == "공개 보류"
+    assert "대표 이미지 재인증 대기" in review["reason"]
+    assert review["notification_state"] == "PENDING"
+
+
+def test_visible_item_still_shows_the_notification_label_when_not_sent():
+    """공개 중인 글에서는 알림 상태 표시가 그대로 살아 있어야 한다."""
+    item, philosophy_id = _published()
+    item._publish_notification_projection = {
+        "state": "PENDING",
+        "label": "Slack 전달 대기",
+        "problem": None,
+        "next_action": "잠시 후 자동으로 전달됩니다.",
+    }
+
+    review = _serialize(item, philosophy_id)["display"]["review"]
+
+    assert review["label"] == "Slack 전달 대기"
+    assert review["reason"] == "잠시 후 자동으로 전달됩니다."

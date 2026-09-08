@@ -6,6 +6,7 @@ import {
   buildPublicContentUrl,
   countCarriedOver,
   countUnpublishedCarriedOver,
+  getContentOperationsBucket,
   getContentOperationsState,
   getPublishNotificationPresentation,
   isCarriedOver,
@@ -117,6 +118,68 @@ test('content operations state distinguishes Slack retry, post-review, and revie
     'publishable',
   )
   assert.equal(getContentOperationsState({ status: 'CANCELLED', title: 'old draft' }), 'cancelled')
+})
+
+test('a withheld published item is never bucketed as published, post-review, or notification', () => {
+  // 공개 사이트가 숨기는 중인 글 — 확인 기록도 알림 상태도 이 사실을 덮지 못한다(H-01).
+  const withheld = (extra: Record<string, unknown> = {}) => ({
+    status: 'PUBLISHED',
+    compliance: {
+      publishable: false,
+      public_visibility: {
+        visible: false,
+        blockers: ['IMAGE_NOT_CERTIFIED'],
+        blocker_labels: ['대표 이미지 재인증 대기'],
+      },
+    },
+    ...extra,
+  })
+
+  assert.equal(getContentOperationsState(withheld()), 'withheld')
+  assert.equal(
+    getContentOperationsState(withheld({ post_publish_reviewed_at: '2026-07-16T09:00:00Z' })),
+    'withheld',
+  )
+  for (const state of ['PENDING', 'SENT', 'NOT_REQUIRED'] as const) {
+    assert.equal(
+      getContentOperationsState(withheld({ display: { review: { notification_state: state } } })),
+      'withheld',
+    )
+  }
+  // 공개 중인 글의 판정은 그대로다.
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+      compliance: {
+        publishable: false,
+        public_visibility: { visible: true, blockers: [], blocker_labels: [] },
+      },
+    }),
+    'published',
+  )
+})
+
+test('withheld items are counted and filtered with the blocked bucket, never with published', () => {
+  const item = {
+    status: 'PUBLISHED',
+    post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+    display: { review: { notification_state: 'SENT' as const } },
+    compliance: {
+      publishable: false,
+      public_visibility: {
+        visible: false,
+        blockers: ['FORBIDDEN_EXPRESSION'],
+        blocker_labels: ['의료광고 금지 표현 포함'],
+      },
+    },
+  }
+
+  assert.equal(getContentOperationsBucket(item), 'needsReview')
+  assert.equal(matchesContentOperationsFilter(item, 'needsReview'), true)
+  assert.equal(matchesContentOperationsFilter(item, 'published'), false)
+  assert.equal(matchesContentOperationsFilter(item, 'postReviewPending'), false)
+  assert.equal(matchesContentOperationsFilter(item, 'notificationPending'), false)
 })
 
 test('publish notification presentation is server-authoritative and operator-readable', () => {

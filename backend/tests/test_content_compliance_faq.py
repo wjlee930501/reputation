@@ -108,7 +108,9 @@ def _wire(monkeypatch, item, hospital):
         return hospital
 
     async def fake_public_philosophy_id(db, hospital_id):
-        # 이 더블 DB는 운영 기준 행을 갖지 않는다 — 공개 가시성은 기준 대조 없이 판정한다.
+        # 이 더블 DB에는 승인된 운영 기준 행이 없다. None은 '대조를 건너뛴다'가 아니라
+        # PHILOSOPHY_MISMATCH 차단이며, 그래서 PUBLISHED 항목은 '공개 보류'로 직렬화된다
+        # (이 테스트들은 그 표시를 보지 않는다).
         return None
 
     monkeypatch.setattr(content_api, "_get_content", fake_get_content)

@@ -58,7 +58,6 @@ from app.services.content_publication import (
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
 from app.services.content_visibility import (
-    UNSET_PHILOSOPHY,
     PublicVisibility,
     assess_public_visibility,
 )
@@ -939,6 +938,19 @@ async def complete_post_publish_review(
         item = locked_item
     if item.status != ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Only published content can be post-reviewed")
+    # 공개 페이지가 숨기는 중인 글에는 "공개 내용 확인"이 성립하지 않는다. 기록을 남기면
+    # admin은 확인 완료로 굳고 공개 페이지에는 여전히 그 글이 없다(H-01).
+    visibility = assess_public_visibility(
+        item, await get_public_approved_philosophy_id(db, hospital_id)
+    )
+    if not visibility.visible:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "공개 페이지에서 보류 중인 글은 공개 내용 확인을 기록할 수 없습니다: "
+                + " · ".join(visibility.blocker_labels)
+            ),
+        )
     if item.post_publish_reviewed_at:
         return {
             "detail": "Already reviewed",
@@ -1292,7 +1304,7 @@ def _content_review_display(
             # 공개 페이지에 없는 글을 있다고 믿고 확인을 끝낸다(H-01).
             return {
                 "label": "공개 보류",
-                "reason": ", ".join(visibility.blocker_labels),
+                "reason": " · ".join(visibility.blocker_labels),
                 "publishable": False,
             }
         if getattr(item, "post_publish_reviewed_at", None):
@@ -1400,7 +1412,9 @@ def _serialize_item(
     item: ContentItem,
     full: bool = False,
     *,
-    public_philosophy_id: uuid.UUID | None | object = UNSET_PHILOSOPHY,
+    # 기본값을 두지 않는다 — 빠뜨린 호출자가 조용히 기준 대조를 건너뛰면
+    # 그 화면만 "공개 중"으로 갈라진다(H-01).
+    public_philosophy_id: uuid.UUID | None | object,
 ) -> dict:
     content_type = _enum_value(item.content_type)
     status_value = _enum_value(item.status)

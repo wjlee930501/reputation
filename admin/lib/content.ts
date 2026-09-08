@@ -34,8 +34,13 @@ export interface ContentOperationsItem extends CarriedOverItem {
   } | null
   compliance?: {
     publishable: boolean
+    // 공개 사이트가 이 글을 실제로 내보내는지 (backend/app/services/content_visibility.py).
+    public_visibility?: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
 }
+
+// 'withheld'는 필터 값이 아니라 상태다 — 공개 사이트가 숨기는 중인 발행 글.
+export type ContentOperationsState = Exclude<ContentOperationsFilter, 'all' | 'carried'> | 'withheld'
 
 export interface PublishNotificationPresentation {
   state: 'PENDING' | 'SENDING' | 'RETRYING' | 'HOLD' | 'SENT' | 'FAILED' | 'MISSING' | 'NOT_REQUIRED'
@@ -63,8 +68,11 @@ export function getPublishNotificationPresentation(
   return item.display?.review?.notification ?? NOTIFICATION_FALLBACK
 }
 
-export function getContentOperationsState(item: ContentOperationsItem): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
+export function getContentOperationsState(item: ContentOperationsItem): ContentOperationsState {
   if (item.status === 'PUBLISHED') {
+    // 공개 페이지가 숨기는 중인 글은 발행·알림·확인 어느 정상 묶음에도 들어가지 않는다.
+    // 확인이 끝났거나 알림이 밀린 것과 무관하게 이 사실이 먼저다(H-01).
+    if (item.compliance?.public_visibility?.visible === false) return 'withheld'
     if (item.post_publish_reviewed_at) return 'published'
     if (item.display?.review?.notification_state === 'NOT_REQUIRED') return 'published'
     return item.display?.review?.notification_state === 'SENT'
@@ -78,13 +86,22 @@ export function getContentOperationsState(item: ContentOperationsItem): Exclude<
   return 'publishable'
 }
 
+/** 필터·집계용 묶음. 공개 보류는 AE가 손대야 하는 예외이므로 '자동 발행 차단'과 함께 센다
+ * — 별도 칩을 만들지 않되, 정상 발행/확인 대기 묶음에는 절대 넣지 않는다. */
+export function getContentOperationsBucket(
+  item: ContentOperationsItem,
+): Exclude<ContentOperationsFilter, 'all' | 'carried'> {
+  const state = getContentOperationsState(item)
+  return state === 'withheld' ? 'needsReview' : state
+}
+
 export function matchesContentOperationsFilter(
   item: ContentOperationsItem,
   filter: ContentOperationsFilter,
 ): boolean {
   if (filter === 'all') return true
   if (filter === 'carried') return isCarriedOver(item)
-  return getContentOperationsState(item) === filter
+  return getContentOperationsBucket(item) === filter
 }
 
 export function buildPublicContentUrl(domain: string | null | undefined, contentId: string): string | null {
