@@ -25,7 +25,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
-from app.models.hospital import Hospital, HospitalStatus, Plan
+from app.models.hospital import Hospital, HospitalStatus
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import indexnow
@@ -210,6 +210,25 @@ async def set_schedule(
     저장 즉시 해당 월의 ContentItem 슬롯을 자동 생성.
     """
     hospital = await _get_hospital_for_schedule_update(db, hospital_id)
+
+    # 요금제는 계약 사실이다 — 월 편수와 가격이 여기에 걸려 있으므로 인수 정정 경로
+    # (handoffs의 계약 정정)만 바꿀 수 있다. 일정 저장이 조용히 덮어쓰면 청구와 월간
+    # 편수 집계가 어긋난다 (H-14). 계약 요금제가 비어 있는 레거시 병원은 body.plan으로
+    # 일정만 만들고 hospital.plan은 정정 경로가 채운다.
+    authoritative_plan = _enum_value(hospital.plan)
+    if authoritative_plan and body.plan != authoritative_plan:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PLAN_MISMATCH",
+                "message": (
+                    "요금제는 계약 기록(인수 정정)에서만 변경할 수 있습니다. "
+                    "일정은 현재 계약 요금제로 저장해 주세요."
+                ),
+                "contracted_plan": authoritative_plan,
+            },
+        )
+
     readiness_blockers = await _schedule_readiness_blockers(db, hospital)
     if readiness_blockers:
         raise HTTPException(
@@ -305,8 +324,6 @@ async def set_schedule(
         created_items.append(item)
 
     hospital.schedule_set = True
-    # 병원 헤더/목록의 plan이 실제 운영 스케줄과 어긋나지 않도록 동기화 (A3).
-    hospital.plan = Plan(body.plan)
     previous_hospital_status = getattr(hospital, "status", None)
     # 이미 ACTIVE인 병원의 스케줄 재설정은 ACTIVE를 유지한다(CLAUDE.md STEP6 예외).
     #
