@@ -13,6 +13,7 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -49,6 +50,7 @@ from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
+from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
@@ -1115,6 +1117,8 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
     )
     await db.commit()
     await db.refresh(h)
+    # 커밋 이후이므로 실패해도 raise하지 않는다 — 일시정지는 이미 성공했다.
+    await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
     return _serialize(h)
 
 
@@ -1144,6 +1148,17 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                     "message": "재개 전 사용자 도메인의 DNS 설정을 확인해 주세요.",
                 },
             )
+        # 배지·목록이 읽는 관측 필드에 남긴다. 확인만 하고 기록하지 않으면
+        # 살아 있는 주소가 '확인 대기'로 표시된다(A-1 재발 경로).
+        apply_live_domain_check(
+            h,
+            LiveDomainCheck(
+                domain=h.aeo_domain,
+                healthy=True,
+                reason="dns_ok",
+                checked_at=datetime.now(UTC),
+            ),
+        )
 
     h.status = HospitalStatus.ACTIVE
     h.site_live = True
@@ -1165,6 +1180,8 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     )
     await db.commit()
     await db.refresh(h)
+    # 커밋 이후이므로 실패해도 raise하지 않는다 — 재개는 이미 성공했다.
+    await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
     return _serialize(h)
 
 

@@ -279,6 +279,11 @@ async def test_create_hospital_rejects_concurrent_onboarding_request_payload_mis
 
 
 # ── pause / resume ───────────────────────────────────────────────
+#: pause/resume 경로에서 실제로 일어난 순서(commit / revalidate). 테스트당 세션은 하나뿐이라
+#: 모듈 한 벌을 새 _LifecycleDB마다 비워 쓰고, revalidate 스텁도 같은 리스트에 덧붙인다.
+_EVENTS: list[str] = []
+
+
 class _LifecycleDB:
     def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED, interval=None):
         self.hospital = hospital
@@ -286,6 +291,8 @@ class _LifecycleDB:
         self.interval = interval
         self.added = []
         self.committed = False
+        _EVENTS.clear()
+        self.events = _EVENTS
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
@@ -303,6 +310,7 @@ class _LifecycleDB:
 
     async def commit(self):
         self.committed = True
+        self.events.append("commit")
 
     async def refresh(self, item):
         pass
@@ -327,6 +335,10 @@ def _full_hospital(**overrides):
         google_maps_url=None,
         naver_place_url=None,
         aeo_domain=None,
+        domain_cert_dns_verified_at=None,
+        domain_last_checked_at=None,
+        domain_last_check_ok=None,
+        domain_last_check_reason=None,
         latitude=None,
         longitude=None,
         wikidata_qid=None,
@@ -352,6 +364,24 @@ def _full_hospital(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+@pytest.fixture(autouse=True)
+def _record_site_revalidate(monkeypatch):
+    """공개 사이트 캐시 갱신 호출을 기록만 하고 네트워크는 타지 않는다.
+
+    호출 인자와 함께 `_LifecycleDB.events`에도 "revalidate"를 남겨, commit 이후에
+    호출됐는지(순서)까지 테스트가 확인할 수 있게 한다.
+    """
+    calls: list[tuple[str, str | None]] = []
+
+    async def _fake(slug, treatments=None, *, hospital_name=None):
+        calls.append((slug, hospital_name))
+        _EVENTS.append("revalidate")
+        return True
+
+    monkeypatch.setattr(hospitals_api, "trigger_hospital_site_revalidate_safe", _fake)
+    return calls
 
 
 @pytest.mark.parametrize("start_status", [HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN])
@@ -480,3 +510,55 @@ async def test_resume_custom_domain_no_longer_requires_certificate(monkeypatch):
 
     assert result["status"] == "ACTIVE"
     assert hospital.status == HospitalStatus.ACTIVE
+
+
+async def test_pause_revalidates_public_site_after_commit(_record_site_revalidate):
+    """H-06: 일시정지 뒤 공개 페이지가 최대 30분 더 보이면 안 된다."""
+    hospital = _full_hospital(status=HospitalStatus.ACTIVE, site_live=True)
+    db = _LifecycleDB(hospital)
+
+    await hospitals_api.pause_hospital(hospital.id, db=db)
+
+    assert db.committed is True
+    assert _record_site_revalidate == [(hospital.slug, hospital.name)]
+    # 갱신은 반드시 커밋 뒤다 — 순서가 뒤집히면 커밋되지 않은 상태로 공개 캐시를 채운다.
+    assert db.events[-1] == "revalidate"
+    assert "commit" in db.events[:-1]
+
+
+async def test_resume_revalidates_public_site_after_commit(_record_site_revalidate):
+    hospital = _full_hospital(status=HospitalStatus.PAUSED, site_live=True)
+    db = _LifecycleDB(hospital)
+
+    await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert _record_site_revalidate == [(hospital.slug, hospital.name)]
+    assert db.events[-1] == "revalidate"
+    assert "commit" in db.events[:-1]
+
+
+async def test_resume_records_live_domain_evidence_for_custom_domain(monkeypatch):
+    """M-11: 재개가 DNS를 확인했으면 배지가 읽는 관측 필드에도 남겨야 A-1이 재발하지 않는다."""
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        site_live=True,
+        aeo_domain="clinic.example.com",
+    )
+    db = _LifecycleDB(hospital)
+
+    async def _dns_ok(domain, strategy):
+        return SimpleNamespace(verified=True)
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _dns_ok)
+
+    await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert hospital.domain_last_checked_at is not None
+    assert hospital.domain_last_check_reason == "dns_ok"
+    # DNS 조회는 이름이 어디를 가리키는지만 보여줄 뿐 TLS·라우팅을 증명하지 못하므로
+    # domain_last_check_ok 는 판단 보류(None)로 남는다(domain_live_status 규칙).
+    # 배지를 '공개 주소 확인 대기'에서 벗어나게 하는 관측은 DNS 검증 시각 쪽이다.
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_cert_dns_verified_at is not None
