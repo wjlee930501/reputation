@@ -172,8 +172,23 @@ def _already_active_result(hospital: Hospital, gate: ActivationGateSnapshot) -> 
     )
 
 
-def _apply_transition(hospital: Hospital) -> str:
-    """행을 ACTIVE·site_live로 바꾸고 직전 상태 문자열을 돌려준다."""
+def ensure_activatable(hospital: Hospital) -> None:
+    """ACTIVE로 바꿔도 되는 상태인지 확인한다. 아니면 `HospitalNotActivatable`.
+
+    이미 ACTIVE면 통과(멱등). PAUSED 등 자동 전환 대상이 아닌 상태는 막는다 —
+    도메인 검증·운영센터·워커가 각자 status를 쓰면 일시정지가 우회된다.
+    """
+    if hospital.status is HospitalStatus.ACTIVE:
+        return
+    if hospital.status not in AUTO_ACTIVATABLE_STATUSES:
+        raise HospitalNotActivatable(hospital.status)
+
+
+def apply_activation_transition(hospital: Hospital) -> str:
+    """행을 ACTIVE·site_live로 바꾸고 직전 상태 문자열을 돌려준다.
+
+    `status = ACTIVE` / `site_live = True`를 쓰는 곳은 이 함수와 `resume_hospital`뿐이어야 한다.
+    """
     previous_status = (
         hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
     )
@@ -222,7 +237,7 @@ async def activate_hospital(
             ActivationOutcome.BLOCKED, hospital.status, bool(hospital.site_live), gate
         )
 
-    previous_status = _apply_transition(hospital)
+    previous_status = apply_activation_transition(hospital)
     await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
     await write_audit_log(
         db,
@@ -256,7 +271,7 @@ def activate_hospital_sync(
             ActivationOutcome.BLOCKED, hospital.status, bool(hospital.site_live), gate
         )
 
-    previous_status = _apply_transition(hospital)
+    previous_status = apply_activation_transition(hospital)
     _open_service_interval_sync(db, hospital.id)
     write_audit_log_sync(
         db,

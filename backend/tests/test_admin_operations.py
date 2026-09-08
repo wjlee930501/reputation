@@ -98,6 +98,9 @@ class FakeDB:
 def _hospital(**overrides):
     base = dict(
         id=uuid.uuid4(),
+        name="테스트의원",
+        slug="test-clinic",
+        treatments=[],
         status=HospitalStatus.PENDING_DOMAIN,
         aeo_domain="clinic.example.com",
         domain_dns_strategy=DomainDnsStrategy.CNAME,

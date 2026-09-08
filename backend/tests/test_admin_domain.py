@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import domain as domain_api
+from app.api.admin import domain_verification as domain_verification_module
 from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
@@ -105,6 +106,8 @@ def _hospital(**overrides):
     base = dict(
         id=uuid.uuid4(),
         name="테스트의원",
+        slug="test-clinic",
+        treatments=[],
         status=HospitalStatus.PENDING_DOMAIN,
         aeo_domain="clinic.example.com",
         v0_report_done=True,
@@ -397,3 +400,56 @@ async def test_verify_domain_blocks_each_authoritative_gate(
     assert hospital.status == HospitalStatus.PENDING_DOMAIN
     assert hospital.site_live is False
     assert not any(isinstance(item, HospitalServiceInterval) for item in db.added)
+
+
+@pytest.fixture(autouse=True)
+def _record_site_revalidate(monkeypatch):
+    """모든 verify 테스트에서 공개 사이트 캐시 갱신 호출을 기록만 하고 네트워크는 타지 않는다."""
+    calls: list[tuple[str, str | None]] = []
+
+    async def _fake(slug, treatments=None, *, hospital_name=None):
+        calls.append((slug, hospital_name))
+        return True
+
+    monkeypatch.setattr(domain_verification_module, "trigger_hospital_site_revalidate_safe", _fake)
+    return calls
+
+
+async def test_verify_domain_does_not_reactivate_a_paused_hospital(monkeypatch, _record_site_revalidate):
+    """H-05: PENDING_DOMAIN에서 일시정지된 병원(site_live=False)은 DNS 확인으로 되살아나면 안 된다."""
+    hospital = _hospital(status=HospitalStatus.PAUSED, site_live=False)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await domain_api.verify_domain(hospital.id, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "STATUS_NOT_ACTIVATABLE"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.site_live is False
+    assert db.committed is False
+    assert _record_site_revalidate == []
+
+
+async def test_verify_domain_revalidates_public_site_once_after_activation(monkeypatch, _record_site_revalidate):
+    """활성화는 커밋 뒤 공개 사이트 캐시를 정확히 한 번 갱신한다."""
+    hospital = _hospital()
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    await domain_api.verify_domain(hospital.id, db=db)
+
+    assert hospital.status == HospitalStatus.ACTIVE
+    assert _record_site_revalidate == [(hospital.slug, hospital.name)]
+
+
+async def test_verify_domain_does_not_revalidate_when_already_live(monkeypatch, _record_site_revalidate):
+    """이미 공개 중인 병원의 재확인은 상태 전환이 없으므로 캐시도 건드리지 않는다."""
+    hospital = _hospital(status=HospitalStatus.ACTIVE, site_live=True)
+    db = FakeDB(hospital)
+    _patch_dns(monkeypatch)
+
+    await domain_api.verify_domain(hospital.id, db=db)
+
+    assert _record_site_revalidate == []

@@ -16,7 +16,7 @@ from app.api.admin.domain_verification_responses import (
     dns_failure_response,
     dns_success_response,
 )
-from app.models.hospital import DomainCertJobState, DomainDnsStrategy, Hospital, HospitalStatus
+from app.models.hospital import DomainCertJobState, DomainDnsStrategy, Hospital
 from app.schemas.domain import DomainVerifyResponse
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.domain_certificate_jobs import (
@@ -34,11 +34,17 @@ from app.services.domain_certificate_jobs import (
 )
 from app.services.domain_dns import DomainDnsCheck, strategy_for_hospital
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
+from app.services.hospital_activation import (
+    HospitalNotActivatable,
+    apply_activation_transition,
+    ensure_activatable,
+)
 from app.services.hospital_lifecycle import (
     ActivationGateSnapshot,
     activation_gate_error,
 )
 from app.services.service_intervals import ServiceIntervalProvenance, open_service_interval
+from app.services.site_revalidate import trigger_hospital_site_revalidate_safe
 from app.workers.dispatch_auth import build_dispatch_headers
 
 DnsChecker = Callable[[str, DomainDnsStrategy], Awaitable[DomainDnsCheck]]
@@ -109,6 +115,11 @@ async def verify_domain_for_hospital(
     gate = await dependencies.evaluate_gate(db, hospital)
     if not gate["ready"]:
         raise HTTPException(status_code=409, detail=activation_gate_error(gate))
+    if not hospital.site_live:
+        try:
+            ensure_activatable(hospital)
+        except HospitalNotActivatable as exc:
+            raise HTTPException(status_code=409, detail=exc.as_detail()) from exc
 
     # 운영자가 언제 확인했는지 남긴다. 배지가 어느 시점의 사실을 말하는지 알 수 없으면,
     # 실제로 열리는 주소를 두고 '확인 대기'로 남았던 화면과 똑같이 신뢰할 수 없다.
@@ -117,14 +128,14 @@ async def verify_domain_for_hospital(
         LiveDomainCheck(domain=domain, healthy=True, reason="dns_ok", checked_at=now),
     )
 
-    previous_status = (
-        hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
-    )
     previous_site_live = bool(hospital.site_live)
     if not hospital.site_live:
-        hospital.site_live = True
-        hospital.status = HospitalStatus.ACTIVE
+        previous_status = apply_activation_transition(hospital)
         await open_service_interval(db, hospital.id, ServiceIntervalProvenance.ACTIVATION)
+    else:
+        previous_status = (
+            hospital.status.value if hasattr(hospital.status, "value") else str(hospital.status)
+        )
 
     job = claim_locked_domain_certificate_job(hospital, request)
     match job:
@@ -158,6 +169,11 @@ async def verify_domain_for_hospital(
         )
 
     await db.commit()
+    if not previous_site_live:
+        # 커밋 이후이므로 실패해도 raise하지 않는다 — 활성화는 이미 성공했다.
+        await trigger_hospital_site_revalidate_safe(
+            hospital.slug, hospital.treatments, hospital_name=hospital.name
+        )
     cert_job_state, cert_job_started_at = await _dispatch_or_describe_job(
         db,
         hospital,
