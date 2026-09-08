@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import (
@@ -26,7 +27,7 @@ from app.models.operations import (
 from app.services import operation_run_payloads
 from app.services import published_image_recertification as recertification
 from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
-from app.services.incident_safety import build_incident_key
+from app.services.incident_safety import build_incident_key, site_build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
@@ -444,7 +445,9 @@ def _ensure_rebuild_site_run(
             return run if _operation_redispatch_is_due(run, observed_at) else None
     failed = [run for run in recent if run.state == OperationRunState.FAILED]
     if len(failed) >= _REBUILD_SITE_ATTEMPT_BUDGET:
-        _open_rebuild_site_incident(db, hospital, failed[0], observed_at)
+        _open_rebuild_site_incident(
+            db, hospital, max(failed, key=_failure_observed_at), observed_at
+        )
         return None
 
     run = OperationRun(
@@ -483,33 +486,100 @@ def _ensure_rebuild_site_run(
     return run
 
 
+def _failure_observed_at(run: OperationRun) -> datetime:
+    """이 실패가 관측된 시각. 종료 기록이 없으면 마지막 상태 변경 시각을 쓴다."""
+
+    return run.completed_at or run.updated_at or run.requested_at
+
+
 def _open_rebuild_site_incident(
-    db, hospital: Hospital, last_failed_run: OperationRun, observed_at: datetime
+    db, hospital: Hospital, newest_failed_run: OperationRun, observed_at: datetime
 ) -> None:
     """예산을 다 쓴 사이트 준비를 병원 하나당 사고 한 건으로 넘긴다 (H-13).
 
-    같은 병원의 사고가 이미 있으면 관측 시각만 갱신한다 — 24시간마다 예산이 다시 열려도
-    같은 문제로 사고와 Slack이 늘지 않게 한다.
+    최종 차단은 원인별로 한 건이지만, 그 한 건이 영원히 같은 값으로 굳어서도 안 된다.
+    이미 열려 있으면 `last_seen_at` 이후에 새로 실패한 실행이 있을 때만 관측을 갱신한다 —
+    tick마다 세면 occurrence_count는 하루 1,400이 되어 재발 횟수라는 뜻을 잃는다. 반대로
+    복구·확인으로 닫힌 건은 새 에피소드로 다시 연다. 같은 문제가 다시 예산을 다 썼는데
+    조용하면 아무도 그 사실을 모른다.
     """
 
-    dedupe_key = build_incident_key(
-        "site_build", "hospital", str(hospital.id), IncidentFingerprint.UNKNOWN
-    )
-    existing = (
+    dedupe_key = site_build_incident_key(hospital.id)
+    incident = _rebuild_site_incident(db, dedupe_key)
+    if incident is None:
+        created = _insert_rebuild_site_incident(
+            db, hospital, newest_failed_run, dedupe_key, observed_at
+        )
+        if created is not None:
+            _notify_rebuild_site_incident(db, hospital, created, observed_at)
+            _audit_rebuild_site_incident(db, created)
+            return
+        # 같은 tick의 다른 replica가 먼저 만들었다 — 병원 잠금은 앞선 commit에서 이미
+        # 풀려 두 sweep이 여기까지 온다. IntegrityError를 그대로 올리면 뒤따르는 병원과
+        # 재인증이 통째로 밀리므로, 상대가 만든 행을 다시 읽어 아래 규칙으로 이어간다.
+        incident = _rebuild_site_incident(db, dedupe_key)
+        if incident is None:
+            return
+    if incident.state in (
+        IncidentState.RECOVERED.value,
+        IncidentState.ACKNOWLEDGED.value,
+    ):
+        _reopen_rebuild_site_incident(incident, newest_failed_run, observed_at)
+        auto_assign_owner_sync(db, incident, observed_at=observed_at)
+        _notify_rebuild_site_incident(db, hospital, incident, observed_at)
+        _audit_rebuild_site_incident(db, incident)
+        return
+    if _failure_observed_at(newest_failed_run) <= incident.last_seen_at:
+        # 이미 센 실패다. 예산이 다시 열릴 때까지 같은 사고를 다시 만지지 않는다.
+        return
+    incident.last_seen_at = observed_at
+    incident.occurrence_count += 1
+    # 조치 버튼이 가장 최근 실패를 가리켜야 운영자가 다시 시도할 실행을 찾는다.
+    incident.operation_run_id = newest_failed_run.id
+    incident.version += 1
+    incident.updated_at = observed_at
+    _audit_rebuild_site_incident(db, incident)
+
+
+def _rebuild_site_incident(db, dedupe_key: str) -> Incident | None:
+    return (
         db.execute(select(Incident).where(Incident.dedupe_key == dedupe_key))
         .scalars()
         .first()
     )
-    if existing is not None:
-        existing.last_seen_at = observed_at
-        existing.occurrence_count += 1
-        existing.updated_at = observed_at
-        return
+
+
+def _reopen_rebuild_site_incident(
+    incident: Incident, newest_failed_run: OperationRun, observed_at: datetime
+) -> None:
+    """닫힌 사고를 같은 원인의 새 에피소드로 되돌린다 (`open_or_touch_incident`와 같은 규칙)."""
+
+    incident.state = IncidentState.OPEN.value
+    incident.episode_seq += 1
+    incident.first_seen_at = observed_at
+    incident.last_seen_at = observed_at
+    incident.occurrence_count += 1
+    incident.operation_run_id = newest_failed_run.id
+    incident.recovered_at = None
+    incident.acknowledged_at = None
+    incident.acknowledged_by_id = None
+    incident.version += 1
+    incident.updated_at = observed_at
+
+
+def _insert_rebuild_site_incident(
+    db,
+    hospital: Hospital,
+    newest_failed_run: OperationRun,
+    dedupe_key: str,
+    observed_at: datetime,
+) -> Incident | None:
+    """새 사고 행 하나. 같은 키를 먼저 만든 tick이 있으면 None."""
 
     incident = Incident(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
-        operation_run_id=last_failed_run.id,
+        operation_run_id=newest_failed_run.id,
         dedupe_key=dedupe_key,
         incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
         state=IncidentState.OPEN.value,
@@ -531,7 +601,21 @@ def _open_rebuild_site_incident(
         episode_seq=1,
     )
     auto_assign_owner_sync(db, incident, observed_at=observed_at)
-    db.add(incident)
+    savepoint = db.begin_nested()
+    try:
+        db.add(incident)
+        savepoint.commit()
+    except IntegrityError:
+        savepoint.rollback()
+        return None
+    return incident
+
+
+def _notify_rebuild_site_incident(
+    db, hospital: Hospital, incident: Incident, observed_at: datetime
+) -> None:
+    """새로 열린 에피소드 하나에 운영자 채널 알림 하나. dedupe 키가 에피소드를 포함한다."""
+
     projection = IncidentSlackProjection(
         incident_id=incident.id,
         hospital_name=hospital.name,
@@ -552,6 +636,24 @@ def _open_rebuild_site_incident(
         db,
         build_open_incident_notification(projection, settings.ADMIN_BASE_URL),
         now=observed_at,
+    )
+
+
+def _audit_rebuild_site_incident(db, incident: Incident) -> None:
+    db.add(
+        AdminAuditLog(
+            hospital_id=incident.hospital_id,
+            actor="system",
+            action="incident_occurrence_recorded",
+            target_type="incident",
+            target_id=str(incident.id),
+            detail={
+                "state": incident.state,
+                "version": incident.version,
+                "occurrence_count": incident.occurrence_count,
+                "episode_seq": incident.episode_seq,
+            },
+        )
     )
 
 

@@ -149,7 +149,11 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
 ) -> None:
     factory, hospital_id = signal_store
     dispatched = RecordingTask()
-    run = await dispatch_test_run(factory, hospital_id, dispatched, "task20-recovery")
+    # generic 경로의 계약을 본다 — sweep이 주인인 REBUILD_SITE는 시도마다 사고를
+    # 열지 않으므로(H-13) 여기서는 일반 작업 유형을 쓴다.
+    run = await dispatch_test_run(
+        factory, hospital_id, dispatched, "task20-recovery", "TRIGGER_V0_REPORT"
+    )
     celery_task = SimpleNamespace(
         request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
     )
@@ -306,7 +310,9 @@ async def test_recovery_stays_silent_when_the_open_notice_never_reached_the_outb
     감사 로그로만 남아야 한다.
     """
     factory, hospital_id = signal_store
-    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "task20-silent")
+    run = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "task20-silent", "TRIGGER_V0_REPORT"
+    )
     celery_task = SimpleNamespace(
         request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
     )
@@ -367,7 +373,9 @@ async def test_generic_task_failure_assigns_the_handoff_ae_and_says_so_in_slack(
     "미지정"으로 알린다 — 아무도 자기 일로 보지 않는다.
     """
     factory, hospital_id = signal_store
-    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "task20-assign")
+    run = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "task20-assign", "TRIGGER_V0_REPORT"
+    )
     celery_task = SimpleNamespace(
         request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
     )

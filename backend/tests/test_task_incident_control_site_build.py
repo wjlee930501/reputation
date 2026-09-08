@@ -1,0 +1,216 @@
+"""사이트 준비(REBUILD_SITE) 실행의 사고 소유권 계약 (H-13).
+
+자동 재실행은 자동 복구 sweep이 예산 아래에서 관리한다. 시도 하나하나가 사람의 할 일이
+되면 안 되고(F1), 운영자가 실패한 실행을 다시 시도해 성공하면 sweep이 남긴 최종 차단이
+닫혀야 한다(F3).
+"""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
+import pytest
+from operation_run_signal_support import (
+    SYNC_DATABASE_URL,
+    RecordingTask,
+    dispatch_test_run,
+)
+from operation_run_signal_support import (
+    signal_store as _signal_store_fixture,  # noqa: F401
+)
+from sqlalchemy import create_engine, delete, select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import settings
+from app.models.operations import (
+    Incident,
+    NotificationOutbox,
+    OperationRun,
+    OperationRunState,
+)
+from app.services.dependency_incident_helpers import incident_projection
+from app.services.incident_safety import site_build_incident_key
+from app.services.notification_messages import build_open_incident_notification
+from app.services.notification_store import enqueue_notification_sync
+from app.workers import operation_run_signals, task_incident_control
+
+
+def _sync_factory() -> sessionmaker[Session]:
+    return sessionmaker(
+        create_engine(SYNC_DATABASE_URL), expire_on_commit=False, class_=Session
+    )
+
+
+def _exhausted_incident(hospital_id: uuid.UUID, run_id: uuid.UUID) -> Incident:
+    now = datetime.now(UTC)
+    return Incident(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_run_id=run_id,
+        dedupe_key=site_build_incident_key(hospital_id),
+        incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
+        state="OPEN",
+        severity="HIGH",
+        customer_impact="병원 공개 페이지 준비가 끝나지 않아 공개가 미뤄지고 있습니다.",
+        source_type="SITE_BUILD",
+        source_id=str(hospital_id),
+        safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
+        safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
+        next_action="병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요.",
+        admin_path=f"/hospitals/{hospital_id}",
+        first_seen_at=now,
+        last_seen_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _cleanup(factory: sessionmaker[Session], incident_id: uuid.UUID) -> None:
+    with factory() as db:
+        db.execute(
+            delete(NotificationOutbox).where(NotificationOutbox.incident_id == incident_id)
+        )
+        db.execute(delete(Incident).where(Incident.id == incident_id))
+        db.commit()
+
+
+@pytest.mark.asyncio
+async def test_site_build_failure_stays_with_the_sweep_and_never_opens_a_generic_incident(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """F1: 자동 시도의 실패는 사람의 할 일이 아니다. run만 FAILED로 남는다.
+
+    시도마다 generic 사고를 열면 예산(하루 3회)을 다 쓰기 전에 조치 요청이 세 번 생기고,
+    뒤이은 자동 성공은 그중 자기 run의 사고 한 건만 닫는다.
+    """
+    factory, hospital_id = signal_store
+    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "site-build-fail")
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    celery_task = SimpleNamespace(
+        request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
+    )
+    operation_run_signals.track_operation_prerun(task_id=run.task_id, task=celery_task)
+    operation_run_signals.track_operation_failure(
+        task_id=run.task_id, task=celery_task, exception=RuntimeError("build failed")
+    )
+    operation_run_signals.track_operation_postrun(
+        task_id=run.task_id, task=celery_task, state="FAILURE"
+    )
+
+    assert task_incident_control.record_task_failure(celery_task, run.task_id) is False
+
+    with sync_factory() as db:
+        # run 종결은 이 반환값과 무관한 별도 신호 다리가 책임진다.
+        stored = db.get(OperationRun, run.id)
+        assert stored is not None
+        assert stored.state == OperationRunState.FAILED.value
+        assert stored.safe_error_code == "TASK_FAILED"
+        assert db.scalar(select(Incident).where(Incident.operation_run_id == run.id)) is None
+        assert (
+            db.scalar(
+                select(Incident).where(
+                    Incident.dedupe_key == task_incident_control._incident_key(run.id)
+                )
+            )
+            is None
+        )
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_success_recovers_the_exhausted_site_build_incident(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """F3: 운영자 재시도의 성공이 병원 단위 최종 차단을 닫는다.
+
+    아무도 닫지 않으면 이미 해결된 일이 사람의 할 일 목록에 영원히 남는다. OPEN 공지가
+    Slack에 나갔으므로 그 짝인 RECOVERED도 따라간다.
+    """
+    factory, hospital_id = signal_store
+    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "site-build-retry")
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    monkeypatch.setattr(
+        task_incident_control, "_audit", lambda *_args, **_kwargs: None
+    )
+    incident = _exhausted_incident(hospital_id, run.id)
+    with sync_factory() as db:
+        db.add(incident)
+        db.flush()
+        enqueue_notification_sync(
+            db,
+            build_open_incident_notification(
+                incident_projection(incident, "재시도 의원", run.id, "확인 필요"),
+                settings.ADMIN_BASE_URL,
+            ),
+        )
+        db.commit()
+    celery_task = SimpleNamespace(
+        request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
+    )
+    try:
+        assert task_incident_control.record_task_success(celery_task, run.task_id) is True
+
+        with sync_factory() as db:
+            closed = db.get(Incident, incident.id)
+            assert closed is not None
+            assert closed.state == "ACKNOWLEDGED"
+            assert closed.recovered_at is not None
+            # 시스템이 닫았다는 표시 — 사람의 "확인 완료" 클릭을 만들지 않는다.
+            assert closed.acknowledged_by_id is None
+            notices = sorted(
+                notice.notification_type
+                for notice in db.scalars(
+                    select(NotificationOutbox).where(
+                        NotificationOutbox.incident_id == incident.id
+                    )
+                )
+            )
+            assert notices == ["INCIDENT_OPEN", "INCIDENT_RECOVERED"]
+
+        # 닫힌 뒤의 같은 성공은 아무것도 바꾸지 않는다.
+        assert task_incident_control.record_task_success(celery_task, run.task_id) is False
+    finally:
+        _cleanup(sync_factory, incident.id)
+
+
+@pytest.mark.asyncio
+async def test_site_build_recovery_stays_silent_when_no_open_notice_reached_slack(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """F3: OPEN 공지가 나간 적 없으면 복구도 Slack이 아니라 DB에만 남는다."""
+    factory, hospital_id = signal_store
+    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "site-build-quiet")
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    monkeypatch.setattr(
+        task_incident_control, "_audit", lambda *_args, **_kwargs: None
+    )
+    incident = _exhausted_incident(hospital_id, run.id)
+    with sync_factory() as db:
+        db.add(incident)
+        db.commit()
+    celery_task = SimpleNamespace(
+        request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
+    )
+    try:
+        assert task_incident_control.record_task_success(celery_task, run.task_id) is True
+
+        with sync_factory() as db:
+            closed = db.get(Incident, incident.id)
+            assert closed is not None and closed.state == "ACKNOWLEDGED"
+            assert (
+                db.scalar(
+                    select(NotificationOutbox).where(
+                        NotificationOutbox.incident_id == incident.id
+                    )
+                )
+                is None
+            )
+    finally:
+        _cleanup(sync_factory, incident.id)

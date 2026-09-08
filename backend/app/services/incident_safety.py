@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import uuid
 from datetime import datetime
 from typing import Final
 
@@ -38,6 +39,19 @@ def build_incident_key(
         failure_class = IncidentFingerprint.UNKNOWN.value
     digest = hashlib.sha256(f"{object_id}\0{failure_class}".encode()).hexdigest()[:32]
     return f"incident:v1:{pipeline_key}:{object_key}:{digest}"
+
+
+def site_build_incident_key(hospital_id: uuid.UUID | str) -> str:
+    """사이트 준비 최종 차단의 사고 키 (H-13).
+
+    예산을 다 써 사고를 여는 자동 복구 sweep과, 운영자 재시도의 성공이 그 사고를 닫는
+    Celery 성공 경로가 반드시 같은 값을 봐야 한다. 두 곳에서 각자 키를 만들면 한쪽만
+    바뀌는 순간 사고는 닫을 사람 없이 열린 채 남는다.
+    """
+
+    return build_incident_key(
+        "site_build", "hospital", str(hospital_id), IncidentFingerprint.UNKNOWN
+    )
 
 
 def sanitize_operator_text(value: str | None, *, limit: int = 500) -> str | None:

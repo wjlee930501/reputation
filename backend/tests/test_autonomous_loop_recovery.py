@@ -5,8 +5,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import arrow
+from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentType
 from app.models.hospital import Hospital
 from app.models.operations import Incident, OperationRun, OperationRunState
@@ -258,12 +260,10 @@ def test_site_build_recovery_does_not_requeue_a_hospital_with_a_queued_run(
     assert queued.state == OperationRunState.QUEUED
 
 
-def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -> None:
-    """H-13: 24시간 안에 실패가 예산만큼 쌓이면 병원 하나당 사고 한 건으로 넘긴다."""
+def _rebuild_site_failures(hospital, now, count=3):
+    """24시간 창 안에서 예산을 다 쓴 사이트 준비 실행. 가장 최근 실패가 index 0이다."""
 
-    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
-    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
-    failures = [
+    return [
         SimpleNamespace(
             id=uuid.uuid4(),
             operation_type="REBUILD_SITE",
@@ -272,9 +272,60 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
             task_id=f"failed-{index}",
             requested_at=now - timedelta(hours=index + 1),
             queued_at=now - timedelta(hours=index + 1),
+            completed_at=now - timedelta(hours=index + 1, minutes=-5),
+            updated_at=now - timedelta(hours=index + 1, minutes=-5),
         )
-        for index in range(3)
+        for index in range(count)
     ]
+
+
+def _exhausted_incident(hospital, run, *, state, last_seen_at, **overrides):
+    """이미 남아 있는 사이트 준비 최종 차단 한 건."""
+
+    incident = Incident(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_run_id=run.id,
+        dedupe_key=autonomous_recovery.site_build_incident_key(hospital.id),
+        incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
+        state=state,
+        severity="HIGH",
+        customer_impact="병원 공개 페이지 준비가 끝나지 않아 공개가 미뤄지고 있습니다.",
+        source_type="SITE_BUILD",
+        source_id=str(hospital.id),
+        safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
+        safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
+        next_action="병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요.",
+        admin_path=f"/hospitals/{hospital.id}",
+        first_seen_at=last_seen_at,
+        last_seen_at=last_seen_at,
+        created_at=last_seen_at,
+        updated_at=last_seen_at,
+        occurrence_count=1,
+        episode_seq=1,
+        version=1,
+    )
+    for field, value in overrides.items():
+        setattr(incident, field, value)
+    return incident
+
+
+def _stop_site_builds(monkeypatch):
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a spent attempt budget must stop automatic retries")
+        ),
+    )
+
+
+def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -> None:
+    """H-13: 24시간 안에 실패가 예산만큼 쌓이면 병원 하나당 사고 한 건으로 넘긴다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
+    failures = _rebuild_site_failures(hospital, now)
     session = _RecoverySession(
         hospitals=(hospital,),
         rebuild_site_runs=failures,
@@ -285,13 +336,7 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
 
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
-    monkeypatch.setattr(
-        autonomous_recovery.celery_app,
-        "send_task",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("a spent attempt budget must stop automatic retries")
-        ),
-    )
+    _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
         autonomous_recovery,
         "enqueue_notification_sync",
@@ -301,9 +346,9 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     result = autonomous_recovery.reconcile.run()
 
     assert result["site_builds"] == 0
-    assert len(session.added) == 1
-    incident = session.added[0]
-    assert isinstance(incident, Incident)
+    incidents = [row for row in session.added if isinstance(row, Incident)]
+    assert len(incidents) == 1
+    incident = incidents[0]
     assert incident.incident_type == "SITE_BUILD_RETRIES_EXHAUSTED"
     assert incident.severity == "HIGH"
     assert incident.hospital_id == hospital.id
@@ -323,30 +368,23 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     assert intents[0].notification_type == "INCIDENT_OPEN"
     assert intents[0].channel == "SLACK"
     assert intents[0].incident_id == incident.id
+    assert [
+        row.action for row in session.added if isinstance(row, AdminAuditLog)
+    ] == ["incident_occurrence_recorded"]
 
 
-def test_site_build_recovery_does_not_duplicate_an_open_incident(monkeypatch) -> None:
-    """H-13: 예산이 다시 열려도 같은 병원의 사고가 두 건이 되지 않는다."""
+def test_site_build_incident_is_not_touched_without_a_new_failure(monkeypatch) -> None:
+    """H-13: 예산이 이미 닫힌 사고를 tick마다 다시 세지 않는다.
+
+    관측을 매분 갱신하면 occurrence_count는 하루 1,400이 되어 재발 횟수라는 뜻을 잃고,
+    사고 목록은 아무 일도 없었는데 계속 방금 일어난 일처럼 보인다.
+    """
 
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
-    failures = [
-        SimpleNamespace(
-            id=uuid.uuid4(),
-            operation_type="REBUILD_SITE",
-            state=OperationRunState.FAILED,
-            hospital_id=hospital.id,
-            task_id=f"failed-{index}",
-            requested_at=now - timedelta(hours=index + 1),
-            queued_at=now - timedelta(hours=index + 1),
-        )
-        for index in range(3)
-    ]
-    existing = SimpleNamespace(
-        id=uuid.uuid4(),
-        last_seen_at=now - timedelta(hours=5),
-        occurrence_count=1,
-        updated_at=now - timedelta(hours=5),
+    failures = _rebuild_site_failures(hospital, now)
+    existing = _exhausted_incident(
+        hospital, failures[0], state="OPEN", last_seen_at=now - timedelta(minutes=30)
     )
     session = _RecoverySession(
         hospitals=(hospital,),
@@ -356,11 +394,12 @@ def test_site_build_recovery_does_not_duplicate_an_open_incident(monkeypatch) ->
 
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
-        autonomous_recovery.celery_app,
-        "send_task",
+        autonomous_recovery,
+        "enqueue_notification_sync",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("a spent attempt budget must stop automatic retries")
+            AssertionError("an untouched incident must not alert again")
         ),
     )
 
@@ -368,8 +407,145 @@ def test_site_build_recovery_does_not_duplicate_an_open_incident(monkeypatch) ->
 
     assert result["site_builds"] == 0
     assert session.added == []
+    assert existing.last_seen_at == now - timedelta(minutes=30)
+    assert existing.occurrence_count == 1
+    assert existing.version == 1
+
+
+def test_site_build_incident_counts_a_new_failure_and_follows_it(monkeypatch) -> None:
+    """H-13: `last_seen_at` 이후의 새 실패 하나가 관측 한 번이고, 조치 대상도 그 실행이다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
+    failures = _rebuild_site_failures(hospital, now)
+    stale_run = uuid.uuid4()
+    existing = _exhausted_incident(
+        hospital, failures[-1], state="OPEN", last_seen_at=now - timedelta(hours=3)
+    )
+    existing.operation_run_id = stale_run
+    session = _RecoverySession(
+        hospitals=(hospital,),
+        rebuild_site_runs=failures,
+        rebuild_site_incidents=(existing,),
+    )
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    _stop_site_builds(monkeypatch)
+    monkeypatch.setattr(
+        autonomous_recovery,
+        "enqueue_notification_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a still-open episode must not alert again")
+        ),
+    )
+
+    autonomous_recovery.reconcile.run()
+
     assert existing.last_seen_at == now
     assert existing.occurrence_count == 2
+    assert existing.version == 2
+    # 조치 버튼이 가장 최근 실패를 가리켜야 운영자가 다시 시도할 실행을 찾는다.
+    assert existing.operation_run_id == failures[0].id
+    assert existing.operation_run_id != stale_run
+    assert [
+        row.action for row in session.added if isinstance(row, AdminAuditLog)
+    ] == ["incident_occurrence_recorded"]
+
+
+def test_site_build_incident_reopens_after_recovery(monkeypatch) -> None:
+    """H-13: 닫힌 사고가 같은 원인으로 다시 예산을 다 쓰면 새 에피소드로 다시 열린다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
+    failures = _rebuild_site_failures(hospital, now)
+    existing = _exhausted_incident(
+        hospital,
+        failures[-1],
+        state="RECOVERED",
+        last_seen_at=now - timedelta(days=2),
+        recovered_at=now - timedelta(days=2),
+    )
+    session = _RecoverySession(
+        hospitals=(hospital,),
+        rebuild_site_runs=failures,
+        rebuild_site_incidents=(existing,),
+    )
+    intents = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    _stop_site_builds(monkeypatch)
+    monkeypatch.setattr(
+        autonomous_recovery,
+        "enqueue_notification_sync",
+        lambda _db, intent, **_kwargs: intents.append(intent),
+    )
+
+    autonomous_recovery.reconcile.run()
+
+    assert [row for row in session.added if isinstance(row, Incident)] == []
+    assert existing.state == "OPEN"
+    assert existing.episode_seq == 2
+    assert existing.occurrence_count == 2
+    assert existing.first_seen_at == now
+    assert existing.recovered_at is None
+    assert existing.acknowledged_at is None
+    assert existing.operation_run_id == failures[0].id
+    # 새 에피소드는 새 OPEN 공지 하나를 만든다 — outbox dedupe 키가 에피소드를 포함한다.
+    assert len(intents) == 1
+    assert intents[0].notification_type == "INCIDENT_OPEN"
+    assert intents[0].dedupe_key.endswith(":e2")
+
+
+def test_site_build_incident_race_falls_back_to_the_committed_row(monkeypatch) -> None:
+    """H-13: 다른 replica가 먼저 만든 사고 때문에 tick 전체가 날아가지 않는다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
+    failures = _rebuild_site_failures(hospital, now)
+    winner = _exhausted_incident(hospital, failures[0], state="OPEN", last_seen_at=now)
+
+    class _RacingSession(_RecoverySession):
+        def begin_nested(self):
+            pending = len(self.added)
+
+            def _commit():
+                # 상대 sweep이 같은 dedupe 키로 먼저 커밋했다.
+                self.rebuild_site_incidents = [winner]
+                raise IntegrityError("insert", {}, Exception("duplicate key"))
+
+            def _rollback():
+                # savepoint rollback은 그 안에서 add한 행을 세션에서 걷어낸다.
+                del self.added[pending:]
+
+            return SimpleNamespace(commit=_commit, rollback=_rollback)
+
+    session = _RacingSession(hospitals=(hospital,), rebuild_site_runs=failures)
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    _stop_site_builds(monkeypatch)
+    monkeypatch.setattr(
+        autonomous_recovery,
+        "enqueue_notification_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("the losing sweep must not send a second OPEN notice")
+        ),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    # tick이 계속 돈다 — 뒤따르는 병원과 이미지 재인증이 통째로 밀리지 않는다.
+    assert result == {
+        "site_builds": 0,
+        "site_revalidations": 0,
+        "operation_runs": 0,
+        "image_recertifications": 0,
+    }
+    assert session.added == []
+    assert winner.occurrence_count == 1
+    assert session.commits >= 1
 
 
 def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None:

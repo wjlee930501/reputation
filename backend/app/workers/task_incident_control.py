@@ -24,7 +24,7 @@ from app.models.operations import (
 )
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
-from app.services.incident_safety import build_incident_key
+from app.services.incident_safety import build_incident_key, site_build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import (
     IncidentSlackProjection,
@@ -43,6 +43,10 @@ _CLASSIFIED_GENERATION_OPERATIONS = {
     "RUN_SOV",
 }
 _GENERIC_FAILURE_SLACK_SUPPRESSED_OPERATIONS = {"RUN_SOV"}
+# 자동 복구 sweep이 주인인 작업 (H-13). 최종 차단은 sweep이 병원 하나당
+# SITE_BUILD_RETRIES_EXHAUSTED 한 건으로 넘긴다
+# (`workers/autonomous_recovery._open_rebuild_site_incident`).
+_SWEEP_OWNED_OPERATIONS = {"REBUILD_SITE"}
 
 
 class SignalRequest(Protocol):
@@ -61,6 +65,12 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
     with SyncSessionLocal() as db:
         run = _tracked_run(db, run_id, worker_task_id)
         if run is None:
+            return False
+        if run.operation_type in _SWEEP_OWNED_OPERATIONS:
+            # 자동 재실행의 시도 하나하나를 사람의 할 일로 만들지 않는다. 예산을 다 쓰기
+            # 전의 실패마다 generic 사고와 Slack을 열면 하루 세 번 조치 요청이 생기고,
+            # 뒤이은 자동 성공은 그중 자기 run의 사고 한 건만 닫는다. run 자체는 이
+            # 반환값과 무관하게 `workers/operation_run_signals`가 FAILED로 종결한다.
             return False
         if (
             run.operation_type in _CLASSIFIED_GENERATION_OPERATIONS
@@ -119,13 +129,7 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
         run = _tracked_run(db, run_id, worker_task_id)
         if run is None:
             return False
-        incident = db.scalar(
-            select(Incident).where(
-                Incident.dedupe_key == _incident_key(run.id),
-                Incident.operation_run_id == run.id,
-                Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
-            )
-        )
+        incident = _recoverable_incident(db, run)
         if incident is None:
             return False
         if incident.state == IncidentState.OPEN.value:
@@ -206,6 +210,34 @@ def _tracked_run(db: Session, run_id: uuid.UUID, task_id: str) -> OperationRun |
 
 def _incident_key(run_id: uuid.UUID) -> str:
     return build_incident_key("worker_task", "operation_run", str(run_id), _FINGERPRINT)
+
+
+def _recoverable_incident(db: Session, run: OperationRun) -> Incident | None:
+    """이 실행의 성공이 닫아야 할 사고 한 건.
+
+    일반 경로는 자기 run이 연 BACKGROUND_TASK_FAILED다. sweep이 주인인 작업은 시도마다
+    사고를 열지 않으므로, 운영자가 실패한 실행을 운영센터에서 다시 시도해 자식 run이
+    성공하면 sweep이 남긴 병원 단위 최종 차단을 닫아야 한다 — 아무도 닫지 않으면 이미
+    해결된 일이 사람의 할 일 목록에 영원히 남는다.
+    """
+
+    live = (IncidentState.OPEN.value, IncidentState.RETRYING.value)
+    if run.operation_type in _SWEEP_OWNED_OPERATIONS:
+        if run.hospital_id is None:
+            return None
+        return db.scalar(
+            select(Incident).where(
+                Incident.dedupe_key == site_build_incident_key(run.hospital_id),
+                Incident.state.in_(live),
+            )
+        )
+    return db.scalar(
+        select(Incident).where(
+            Incident.dedupe_key == _incident_key(run.id),
+            Incident.operation_run_id == run.id,
+            Incident.state.in_(live),
+        )
+    )
 
 
 def _open_incident(db: Session, run: OperationRun) -> Incident:
