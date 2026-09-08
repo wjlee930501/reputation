@@ -12,6 +12,13 @@ import ast
 import re
 from pathlib import Path
 
+from scripts.check_user_facing_terms import (
+    NEW_SURFACE_BANNED_PATTERNS,
+    NEW_SURFACE_PATHS,
+    banned_labels_for_line,
+    iter_scannable_lines,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 _BACKEND_DIAGNOSIS = PROJECT_ROOT / "backend" / "app" / "api" / "public" / "diagnosis.py"
@@ -133,4 +140,33 @@ def test_blank_text_set_matches_across_backend_and_admin() -> None:
         f"admin에만 있음={sorted(hex(ord(c)) for c in admin_chars - backend_chars)}. "
         "backend/app/services/essence_sources.py의 _BLANK_CHARS와 "
         "admin/lib/essence-source-split.ts의 BLANK_TEXT_RE를 같은 집합으로 맞출 것."
+    )
+
+
+def test_new_admin_surfaces_use_the_unified_terms() -> None:
+    """새로 만든 admin 화면은 검토 §4에서 하나로 묶은 용어만 쓴다.
+
+    옛 페이지는 PR-1E에서 통째로 사라지므로 전역 스캔을 하지 않는다. 대신
+    `NEW_SURFACE_PATHS`가 다시 만든 화면을 하나씩 받아들이고, 그 경로 안에서만
+    금지 변형을 막는다. 목록이 비어 있는 동안에도 패턴 자체가 사라지지 않았는지는
+    확인한다 — 패턴이 비면 경로를 채운 다음 커밋에서 가드가 조용히 아무것도 안 지킨다.
+    """
+    assert NEW_SURFACE_BANNED_PATTERNS, (
+        "NEW_SURFACE_BANNED_PATTERNS가 비었다. 새 화면 용어 가드가 아무것도 검사하지 않는다."
+    )
+
+    violations: list[str] = []
+    for rel in NEW_SURFACE_PATHS:
+        path = PROJECT_ROOT / rel
+        assert path.exists(), (
+            f"NEW_SURFACE_PATHS의 {rel}이 없다. 화면을 옮겼거나 지웠으면 "
+            "scripts/check_user_facing_terms.py의 목록도 함께 고칠 것."
+        )
+        for lineno, line in iter_scannable_lines(path):
+            for label in banned_labels_for_line(line, NEW_SURFACE_BANNED_PATTERNS):
+                violations.append(f"{rel}:{lineno}: {label}: {line.strip()}")
+
+    assert not violations, (
+        "새 화면에 통일 전 용어가 남았다. admin/lib/admin-copy.ts의 키로 바꿀 것:\n"
+        + "\n".join(violations)
     )

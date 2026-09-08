@@ -76,6 +76,27 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("internal screening", re.compile(r"internal\s+screening", re.I)),
     ("raw essence_summary", re.compile(r"raw\s+essence_summary|essence_summary\s*JSON", re.I)),
 ]
+
+# 검토 §4의 통일안(admin/lib/admin-copy.ts)을 벗어난 옛 변형. 옛 화면은 PR-1E에서
+# 통째로 사라지므로 전역으로 막지 않고, 다시 만든 화면 경로에서만 막는다.
+NEW_SURFACE_BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    ("공개 표면 → 병원 공개 페이지", re.compile(r"공개\s*표면")),
+    ("정보/콘텐츠 허브 → 병원 공개 페이지", re.compile(r"(?:병원\s*)?(?:정보|콘텐츠)\s*허브")),
+    # "초기 진단 리포트"도 이 하나로 걸린다.
+    ("리포트 → 보고서", re.compile(r"리포트")),
+    ("스케줄 → 발행 일정", re.compile(r"스케줄")),
+    ("슬러그/slug → 공개 주소", re.compile(r"슬러그|['\"]slug['\"]")),
+    ("월간 운영량 → 월 발행 편수", re.compile(r"월간\s*운영량")),
+    ("월간 발행량 → 월 발행 편수", re.compile(r"월간\s*발행량")),
+    ("사후검수 → 공개 후 확인", re.compile(r"사후\s*검수")),
+    ("후행 확인 → 공개 후 확인", re.compile(r"후행\s*확인")),
+    ("AI 진단 분석 중 → 초기 진단 보고서", re.compile(r"AI\s*진단\s*분석\s*중")),
+    ("자료 모음 → 근거 자료", re.compile(r"자료\s*모음")),
+]
+
+# 위 가드를 적용할 화면 경로(repo 기준). PR-1B~1E가 화면을 다시 만들 때마다 추가한다.
+NEW_SURFACE_PATHS: list[str] = []
+
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
 
 # Internal docs/comments that are not shown to operators can be allowed by path.
@@ -111,38 +132,69 @@ def is_probably_non_user_line(line: str) -> bool:
     return False
 
 
-def banned_labels_for_line(line: str) -> list[str]:
+def banned_labels_for_line(
+    line: str, patterns: list[tuple[str, re.Pattern[str]]] | None = None
+) -> list[str]:
     """Return matched labels unless this exact source line declares an internal-only contract."""
     if INTERNAL_ONLY_MARKER in line:
         return []
-    return [label for label, pattern in BANNED_PATTERNS if pattern.search(line)]
+    return [label for label, pattern in (patterns or BANNED_PATTERNS) if pattern.search(line)]
+
+
+def iter_scannable_lines(path: Path) -> list[tuple[int, str]]:
+    """주석·docstring을 걷어낸, 실제로 화면에 나갈 수 있는 줄만 돌려준다."""
+    lines: list[tuple[int, str]] = []
+    in_triple_quoted_comment = False
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith(('"""', "'''")):
+            if stripped.count('"""') == 1 or stripped.count("'''") == 1:
+                in_triple_quoted_comment = not in_triple_quoted_comment
+            continue
+        if in_triple_quoted_comment:
+            if stripped.endswith(('"""', "'''")):
+                in_triple_quoted_comment = False
+            continue
+        if stripped.startswith("#"):
+            continue
+        if is_probably_non_user_line(line):
+            continue
+        lines.append((lineno, line))
+    return lines
+
+
+def scan_new_surfaces() -> list[str]:
+    """다시 만든 화면에서만 통일 전 용어 변형을 막는다."""
+    violations: list[str] = []
+    for rel in NEW_SURFACE_PATHS:
+        path = ROOT / rel
+        if not path.exists():
+            violations.append(f"{rel}: NEW_SURFACE_PATHS에 적힌 파일이 없다. 목록을 고칠 것.")
+            continue
+        for lineno, line in iter_scannable_lines(path):
+            for label in banned_labels_for_line(line, NEW_SURFACE_BANNED_PATTERNS):
+                violations.append(f"{rel}:{lineno}: {label}: {line.strip()}")
+    return violations
 
 
 def main() -> int:
     violations: list[str] = []
     for path in iter_files():
         rel = path.relative_to(ROOT).as_posix()
-        in_triple_quoted_comment = False
-        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            stripped = line.strip()
-            if stripped.startswith(('"""', "'''")):
-                if stripped.count('"""') == 1 or stripped.count("'''") == 1:
-                    in_triple_quoted_comment = not in_triple_quoted_comment
-                continue
-            if in_triple_quoted_comment:
-                if stripped.endswith(('"""', "'''")):
-                    in_triple_quoted_comment = False
-                continue
-            if stripped.startswith("#"):
-                continue
-            if is_probably_non_user_line(line):
-                continue
+        for lineno, line in iter_scannable_lines(path):
             for label in banned_labels_for_line(line):
                 violations.append(f"{rel}:{lineno}: {label}: {line.strip()}")
     if violations:
         print("User-facing hard terms found. Replace with marketer/operator language:\n")
         print("\n".join(violations))
         return 1
+
+    new_surface_violations = scan_new_surfaces()
+    if new_surface_violations:
+        print("새 화면에 통일 전 용어가 남았다. admin/lib/admin-copy.ts의 키로 바꿀 것:\n")
+        print("\n".join(new_surface_violations))
+        return 1
+
     print("OK: no banned user-facing Re:putation terms found.")
     return 0
 
