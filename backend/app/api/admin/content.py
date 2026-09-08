@@ -1569,6 +1569,16 @@ async def _blocked_links_for(
     사람의 할 일로 새어 나가게 하면 안 된다. run은 그 글의 **가장 최근** 실행만 본다.
     실패 뒤에 성공한 재시도가 있으면 지난 실패는 이미 지나간 일이다.
     사람이 볼 원인은 인시던트가 실패 run보다 앞선다 — 인시던트에는 조치 문장이 있다.
+
+    실패 run 링크는 **그 글에 열린(OPEN/RETRYING) 인시던트가 하나도 없을 때만** 만든다
+    (설계 판단, Astra B4). 실패했다고 곧바로 사람의 할 일이 되는 것이 아니다 — 첫
+    일시 실패는 쿨다운 뒤 스윕이 다시 집어 가고(`published_image_recertification.
+    sweep_may_dispatch`), 그동안 인시던트는 기한 안의 RETRYING이다. 재시도 예산이
+    실제로 남았는지는 그 글의 모든 run과 subject hash가 있어야 알 수 있어 이 두 문장
+    질의로는 못 구한다. 그래서 "기계가 아직 쥐고 있는가"의 대리 신호로 인시던트의
+    존재를 쓴다: 기한 안 RETRYING이면 자동 복구이므로 아무 링크도 만들지 않고, OPEN이나
+    기한 지난 RETRYING이면 아래 인시던트 링크가 조치 문장과 함께 그 자리를 채운다.
+    인시던트가 아예 없는 실패만 사람이 볼 수 있는 유일한 흔적이라 run으로 링크한다.
     """
     if not item_ids:
         return {}
@@ -1609,6 +1619,10 @@ async def _blocked_links_for(
         )
     ).all()
 
+    # 열린 인시던트가 있는 글은 그 인시던트가 결말을 말한다 — 자동 복구 중이면 조용히,
+    # 사람의 일이면 아래 인시던트 링크로. 실패 run 대체 링크는 여기에 없는 글만 만든다.
+    open_incident_items = {uuid.UUID(row[0]) for row in incident_rows}
+
     run_links: dict[uuid.UUID, dict[str, Any]] = {}
     newest_seen: set[uuid.UUID] = set()
     for source_id, message, run_state in run_rows:
@@ -1618,6 +1632,8 @@ async def _blocked_links_for(
         newest_seen.add(item_id)
         if run_state != OperationRunState.FAILED.value:
             # 최신 실행이 실패가 아니면 이 글은 이미 복구됐다.
+            continue
+        if item_id in open_incident_items:
             continue
         run_links[item_id] = {
             "kind": "run",

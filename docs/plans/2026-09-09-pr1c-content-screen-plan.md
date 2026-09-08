@@ -8,6 +8,8 @@
 
 **설계 판단(명시):** §4.3은 반려를 없애지만 CLAUDE.md STEP 7과 §2 "공개 후 확인"의 부정 결과를 위해 "문제 발견 · 비공개 후 재생성"(`POST .../reject`)을 남긴다. **결함이 확인된 공개 글은 표본 여부와 무관하게 사람이 내릴 수 있다(의료광고 안전 통제)** — 상세를 연 PUBLISHED 글에는 항상 이 버튼이 있고, 되돌릴 수 없으므로 `role="alertdialog"` 확인을 거친다. 반대로 "문제 없음 · 확인 완료"는 표본(`canConfirmSample`)에만 열어 월 12~20번의 헛클릭을 만들지 않는다. 미발행 글에는 반려 버튼이 없다.
 
+**설계 판단(명시, Astra B4):** 실패 run의 "운영 센터에서 조치" 대체 링크는 그 글에 열린(OPEN/RETRYING) 인시던트가 하나도 없을 때만 만든다 — 재시도 예산이 남았는지는 그 글의 모든 run과 subject hash가 있어야 알 수 있어 목록 질의로는 못 구하므로, 기한 안 RETRYING 인시던트를 "기계가 아직 쥔 복구"의 신호로 삼아 아무 링크도 만들지 않고(자동 복구를 사람의 할 일로 만들지 않는다), OPEN·기한 초과 RETRYING은 조치 문장이 있는 인시던트 링크가 대신한다.
+
 **Tech Stack:** FastAPI/SQLAlchemy async, Next.js 16 + node:test.
 
 **코드 사실:** 2026-09-09 탐색 기준(`content/page.tsx` 315-1963, `schedule/page.tsx` 65-490, `content.py` 203-1168·1391-1582, `operations.py` 838-910, `operations_center_today_queries.py` 296-333·418-422, `content_publication_block_control.py` 20-75).
