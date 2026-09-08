@@ -91,6 +91,16 @@ const FORBIDDEN_RULES: ForbiddenRule[] = [
   { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
 
+const PUBLISH_GATE_CODES = new Set(['HOSPITAL_NOT_PUBLIC', 'SCHEDULE_NOT_SET'])
+
+function readPublishGateMessage(error: unknown): string | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null
+  const detail = error.detail as { code?: unknown; message?: unknown } | null
+  if (!detail || typeof detail !== 'object') return null
+  if (typeof detail.code !== 'string' || !PUBLISH_GATE_CODES.has(detail.code)) return null
+  return typeof detail.message === 'string' ? detail.message : null
+}
+
 function readViolationsFromError(error: unknown): string[] {
   if (!(error instanceof ApiError)) return []
   const detail = error.detail
@@ -573,7 +583,11 @@ export default function ContentPage() {
       void refetchHeader()
       void refreshItem(itemId)
     } catch (e: unknown) {
-      const message = safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
+      // 병원 게이트(일시정지·일정 미설정)의 409는 서버가 할 일을 이미 문장으로 준다 — 의료광고
+      // 안내로 덮으면 운영자는 재개·일정 설정 대신 본문만 다시 본다 (H-09).
+      const gateMessage = readPublishGateMessage(e)
+      const message =
+        gateMessage ?? safeOperatorError('content', '의료광고 확인 결과를 검토한 뒤 ‘운영 복구 발행’을 다시 누르세요.')
       const violationList = readViolationsFromError(e)
       // 편집 모드 전환은 해당 콘텐츠가 모달에 열려 있을 때만 — 닫힌 모달의 상태를 건드리지 않는다.
       if (selected && selected.id === itemId) {
