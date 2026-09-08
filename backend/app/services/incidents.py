@@ -156,6 +156,9 @@ async def _auto_assign(
     없으면 활성 OWNER 한 명이 받는다. 이미 담당자가 있으면 절대 덮지 않는다 — 재발로
     다시 열린 건은 그 사람이 계속 본다. 후보가 없으면 그대로 비워 둔다(실패 아님).
 
+    인수 AE도 OWNER 후보와 같은 자격을 요구한다. 퇴사·정지된 계정이나 운영 점검 계정에
+    맡기면 담당자는 있는데 아무도 보지 않는 예외가 되므로, 그때는 OWNER 규칙으로 내려간다.
+
     `first_seen_at`은 새 행과 재open에서만 이번 관측 시각으로 맞춰지므로(위 upsert),
     같은 에피소드의 반복 관측에서는 이 조회가 아예 돌지 않는다.
     """
@@ -164,9 +167,14 @@ async def _auto_assign(
     owner_id: uuid.UUID | None = None
     if incident.hospital_id is not None:
         owner_id = await db.scalar(
-            select(HospitalHandoff.ae_owner_id).where(
-                HospitalHandoff.hospital_id == incident.hospital_id
+            select(AdminUser.id)
+            .join(HospitalHandoff, HospitalHandoff.ae_owner_id == AdminUser.id)
+            .where(
+                HospitalHandoff.hospital_id == incident.hospital_id,
+                AdminUser.is_active.is_(True),
+                AdminUser.is_operations_test.is_(False),
             )
+            .limit(1)
         )
     if owner_id is None:
         owner_id = await db.scalar(

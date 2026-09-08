@@ -739,6 +739,27 @@ def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     assert "첫 발행" in next_onboarding_step(hospital)
 
 
+def test_onboarding_steps_point_at_screens_that_still_exist() -> None:
+    """안내가 부르는 화면 이름은 현재 화면 구성과 같아야 한다 — 없는 화면을 찾게 두지 않는다."""
+    # Given
+    hospital = Hospital(id=uuid.uuid4(), name="테스트의원", slug="test-clinic")
+    steps = [next_onboarding_step(hospital)]
+    for flag in ("profile_complete", "site_built", "site_live", "schedule_set"):
+        setattr(hospital, flag, True)
+        steps.append(next_onboarding_step(hospital))
+
+    # Then
+    assert all(
+        gone not in step
+        for step in steps
+        for gone in ("허브", "스케줄", "리포트", "체크리스트")
+    )
+    assert "병원 공개 페이지" in steps[1]
+    assert "병원 정보 화면의 자기 도메인" in steps[2]
+    assert "병원 정보 화면의 남은 필수 항목" in steps[3]
+    assert "콘텐츠 화면의 발행 요일" in steps[3]
+
+
 def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -> None:
     # Given / When
     actions = readiness_next_actions()

@@ -797,6 +797,26 @@ async def test_first_open_without_handoff_falls_back_to_the_active_owner(
 
 
 @pytest.mark.asyncio
+async def test_first_open_skips_a_deactivated_handoff_ae(db: AsyncSession) -> None:
+    # Given: 인수 AE가 정지된 계정이고, 배정 가능한 사람은 활성 OWNER 한 명뿐이다
+    sales, ae, hospital = await _actors_and_hospital(db)
+    db.add(
+        HospitalHandoff.pending(hospital.id, sales_owner_id=sales.id, ae_owner_id=ae.id)
+    )
+    await db.flush()
+    owner = await _only_candidate_owner(db)  # 이전 계정을 모두 비활성으로 만든다 — ae 포함
+
+    # When: 그 병원의 예외가 처음 열린다
+    incident = await open_or_touch_incident(db, _request(hospital), actor="worker")
+
+    # Then: 아무도 보지 않는 계정에 맡기지 않고 OWNER 규칙으로 내려간다
+    assert incident.owner_id == owner.id
+    detail = await _assignment_detail(db, incident)
+    assert detail is not None
+    assert detail["auto_assigned_to"] == str(owner.id)
+
+
+@pytest.mark.asyncio
 async def test_reopen_keeps_the_person_already_holding_the_incident(
     db: AsyncSession,
 ) -> None:

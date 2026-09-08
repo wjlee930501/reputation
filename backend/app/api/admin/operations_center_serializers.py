@@ -418,16 +418,19 @@ def next_onboarding_step(hospital: Hospital) -> str:
 
     V0 is an independently recovering background diagnostic, so it never displaces
     a site, domain, or content-setup action that the operator can complete now.
+
+    안내가 가리키는 곳은 지금 화면 구성 그대로여야 한다 — 사라진 허브·스케줄 탭·체크리스트
+    이름을 남겨 두면 운영자가 없는 화면을 찾는다.
     """
     if not hospital.profile_complete:
         return "병원 기본 정보 탭에서 필수 병원 정보를 입력하고 저장하세요."
     if not hospital.site_built:
-        return "콘텐츠 허브에 노출할 병원 공개 정보를 확인하세요."
+        return "병원 공개 페이지에 노출할 병원 공개 정보를 확인하세요."
     if not hospital.site_live:
-        return "도메인 화면에서 공개 주소를 검증하고 운영 시작을 완료하세요."
+        return "병원 정보 화면의 자기 도메인에서 공개 주소를 검증하고 운영 시작을 완료하세요."
     if not hospital.schedule_set:
         return (
-            "온보딩 체크리스트에서 근거 자료 처리와 콘텐츠 운영 기준 자동 승인을 완료한 뒤 "
-            "스케줄 탭에서 월간 콘텐츠 일정과 발행 요일을 저장하세요."
+            "병원 정보 화면의 남은 필수 항목에서 근거 자료 처리와 콘텐츠 운영 기준 자동 "
+            "승인을 완료한 뒤 콘텐츠 화면의 발행 요일에서 월간 콘텐츠 일정을 저장하세요."
         )
     return "콘텐츠 운영 상태를 확인하고 첫 발행 준비를 진행하세요."
