@@ -15,5 +15,15 @@
 - 생성 재시도 fingerprint에서 날짜 제거 → 배포 후 stranded 글마다 1회 신규 시도.
 - 미해결로 등록된 항목: H-16(월간 원장 리포트가 보류 글을 발행 글로 나열, PR-0C-2/PR-0D), PR-0D 전체(SEC-01 BFF 서명 actor 포함).
 
-## 검증
-(체크포인트 검증 결과와 배포 증거를 아래에 기록)
+## 검증 (2026-09-09, 로컬 CI 동일 env, 깨끗한 5432 DB 재생성 후)
+- alembic `0069` → `0070` 적용 확인
+- backend **3,337 passed / 0 failed** (ruff clean)
+- admin **618/618**, site **310/310**
+- copy-guard OK, db-budget-guard 75/80
+- 총검토: GPT-6 Astra(medium) — 결과는 아래 "총검토"에 기록
+
+## 총검토
+(기록 예정)
+
+## 배포 증거
+(기록 예정)
