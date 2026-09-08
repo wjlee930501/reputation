@@ -120,7 +120,7 @@ export default function HospitalsPage() {
           className="mb-6 rounded-xl border border-slate-200 bg-white p-4"
         >
           {/* 확인 대기가 0이어도 원장 보고가 밀렸을 수 있다 — 그때는 이 묶음을 감춘다. */}
-          <div className={attention.unreviewed_total > 0 ? '' : 'hidden'}>
+          <div className={attention.unreviewed_total > 0 || attention.withheld_total > 0 ? '' : 'hidden'}>
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <h2 id="attention-heading" className="text-sm font-semibold text-slate-900">
               공개 후 확인 필요 {attention.unreviewed_total}건
@@ -128,6 +128,12 @@ export default function HospitalsPage() {
             {attention.overdue_total > 0 && (
               <span className="text-xs font-medium text-red-700">
                 그중 {attention.overdue_total}건은 {attention.overdue_hours}시간 넘음
+              </span>
+            )}
+            {/* 공개 보류는 확인이 아니라 사유 해소가 할 일이다 — 숫자를 섞지 않는다(H-01). */}
+            {attention.withheld_total > 0 && (
+              <span className="text-xs font-medium text-amber-800">
+                공개 보류 {attention.withheld_total}건
               </span>
             )}
           </div>
@@ -145,6 +151,11 @@ export default function HospitalsPage() {
                       {row.unreviewed_count}건
                       {row.overdue_count > 0 && (
                         <span className="ml-1.5 text-red-700">{row.overdue_count}건 초과</span>
+                      )}
+                      {row.withheld_count > 0 && (
+                        <span className="ml-1.5 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                          공개 보류 {row.withheld_count}건
+                        </span>
                       )}
                       {waiting && <span className="ml-2 text-slate-400">{waiting}</span>}
                     </span>

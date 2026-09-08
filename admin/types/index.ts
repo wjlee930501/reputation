@@ -161,8 +161,9 @@ export interface ContentItem {
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
     // 공개 사이트가 이 글을 실제로 내보내는지 — 공개 표면과 같은 판정 함수의 결과다.
-    // (backend/app/services/content_visibility.py)
-    public_visibility?: { visible: boolean; blockers: string[]; blocker_labels: string[] }
+    // 서버가 항상 내려주므로 선택 필드가 아니다. 값이 없다면 계약이 깨진 것이고,
+    // 화면은 "공개 중"이 아니라 보류로 취급해야 한다(H-01).
+    public_visibility: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
   body?: string | null
   image_prompt?: string | null

@@ -18,6 +18,7 @@ function queue(overrides: Partial<AttentionQueue> = {}): AttentionQueue {
     unreviewed_total: 0,
     overdue_total: 0,
     overdue_hours: 24,
+    withheld_total: 0,
     hospitals: [],
     ...overrides,
   }
@@ -44,6 +45,8 @@ test('the queue stays hidden when there is nothing to confirm', () => {
   assert.equal(hasAttentionWork(null), false)
   assert.equal(hasAttentionWork(queue()), false)
   assert.equal(hasAttentionWork(queue({ unreviewed_total: 1 })), true)
+  // 확인 대기가 0이어도 공개 보류가 남았으면 사람이 손대야 한다 — 큐를 감추지 않는다.
+  assert.equal(hasAttentionWork(queue({ withheld_total: 1 })), true)
 })
 
 test('hiddenHospitalCount only counts rows beyond the visible window', () => {
@@ -55,6 +58,7 @@ test('hiddenHospitalCount only counts rows beyond the visible window', () => {
         unreviewed_count: 1,
         overdue_count: 0,
         oldest_published_at: null,
+        withheld_count: 0,
       })),
     })
 

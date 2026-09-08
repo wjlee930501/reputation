@@ -164,9 +164,11 @@ function getReviewState(item: ContentItem): ReviewState {
   const displayReason = displayReview?.reason ?? undefined
   if (item.status === 'PUBLISHED') {
     // 공개 사이트가 실제로 숨기는 글에는 초록 배지를 달지 않는다 — 같은 판정을 그대로 쓴다.
+    // 판정 자체가 없으면 공개 중이라고 단정하지 않는다(fail-closed).
     const visibility = item.compliance?.public_visibility
-    if (visibility && !visibility.visible) {
-      return { key: 'withheld', label: '공개 보류', badge: 'bg-amber-100 text-amber-800', reason: visibility.blocker_labels.join(' · '), publishable: false }
+    if (visibility?.visible !== true) {
+      const labels = visibility?.blocker_labels ?? []
+      return { key: 'withheld', label: '공개 보류', badge: 'bg-amber-100 text-amber-800', reason: (labels.length > 0 ? labels : ['공개 가시성 정보 없음']).join(' · '), publishable: false }
     }
     if (item.post_publish_reviewed_at) {
       return { key: 'published', label: '공개 내용 확인 완료', badge: 'bg-green-100 text-green-700', publishable: false }
@@ -205,6 +207,13 @@ function getReviewState(item: ContentItem): ReviewState {
     return { key: 'needsReview', label: '자동 발행 차단', badge: 'bg-orange-100 text-orange-700', reason, publishable: false }
   }
   return { key: 'publishable', label: '자동 발행 대기', badge: 'bg-green-100 text-green-700', publishable: true }
+}
+
+/** 공개 시각 한 줄. 보류 중인 판을 "공개"라고만 쓰면 화면이 사실과 다른 말을 한다(H-01). */
+function publicationTimeLine(review: ReviewState, publishedAt: string): string {
+  return review.key === 'withheld'
+    ? `공개 보류 · ${formatDateTime(publishedAt)} 공개분`
+    : `공개 ${formatDateTime(publishedAt)}`
 }
 
 function getContentTypeLabel(item: ContentItem): string {
@@ -601,7 +610,12 @@ export default function ContentPage() {
       })
       setActionSuccess('공개 내용 확인을 완료로 기록했습니다.')
     } catch (e: unknown) {
-      setEditError(safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
+      // 서버는 보류 사유를 문자열 detail에 담아 409로 거절한다. 일반 안내로 덮으면 AE는
+      // 같은 버튼을 다시 누를 뿐이므로 사유를 그대로 보여 주고, 최신 상태를 다시 읽어
+      // 오래된 탭에서는 버튼 자체가 사라지게 한다.
+      const serverDetail = e instanceof ApiError && typeof e.detail === 'string' ? e.message : null
+      setEditError(serverDetail ?? safeOperatorError('content', '최신 공개 글을 확인한 뒤 ‘문제 없음’을 다시 누르세요.'))
+      void refreshItem(itemId)
       setActionLoading(false)
       return
     }
@@ -881,6 +895,9 @@ export default function ContentPage() {
       })
       clearDraftSnapshot(id, selected.id)
       setRecoverableDraft(null)
+      // 공개 필드를 고치면 서버가 이미지 인증을 무효화해 이 판이 공개에서 내려갈 수 있다.
+      // 직전 발행 성공 배너는 그 사실을 모른 채 "공개 사이트에 게시됨"이라고 계속 말한다.
+      setPublishSuccessId((prev) => (prev === updated.id ? null : prev))
       setSelected(updated)
       setEditMode(false)
       setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
@@ -982,7 +999,7 @@ export default function ContentPage() {
     hint: string
     filter: ContentOperationsFilter
   } = summary.needsReview > 0
-    ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '차단 사유를 확인하고 공개 전 조치', filter: 'needsReview' }
+    ? { label: '지금 확인: 자동 발행 차단', value: summary.needsReview, tone: 'orange', hint: '공개 전 차단·공개 보류 사유를 확인하고 조치', filter: 'needsReview' }
     : summary.notificationPending > 0
       ? { label: '지금 확인: Slack 알림 확인 필요', value: summary.notificationPending, tone: 'amber', hint: '눌러 아래 항목의 알림 상태와 처리 방법 확인', filter: 'notificationPending' }
       : summary.postReviewPending > 0
@@ -1019,7 +1036,7 @@ export default function ContentPage() {
           <summary>전체 처리 상태</summary>
           <div className="grid grid-cols-2 gap-3 p-3 md:grid-cols-3 xl:grid-cols-6">
             {carriedCount > 0 && <SummaryCard label="이월" value={carriedCount} tone="amber" hint="전월에서 이월됨" filter="carried" activeFilter={activeFilter} onFilter={applyOperationsFilter} />}
-            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 자동 차단" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
+            <SummaryCard label="자동 발행 차단" value={summary.needsReview} tone="orange" hint="공개 전 차단·공개 보류" filter="needsReview" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="생성 전" value={summary.notGenerated} tone="gray" hint="야간 자동 생성 대기" filter="notGenerated" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="Slack 알림 확인 필요" value={summary.notificationPending} tone="amber" hint="알림 상태와 처리 방법 확인" filter="notificationPending" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
             <SummaryCard label="정상 발행" value={summary.published} tone="green" hint="자동 검증 통과·공개 완료" filter="published" activeFilter={activeFilter} onFilter={applyOperationsFilter} />
@@ -1161,7 +1178,7 @@ export default function ContentPage() {
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 text-slate-600">
                       <div>{item.scheduled_date}</div>
-                      {item.published_at && <span className="mt-1 block text-[11px] text-slate-400">공개 {formatDateTime(item.published_at)}</span>}
+                      {item.published_at && <span className="mt-1 block text-[11px] text-slate-400">{publicationTimeLine(review, item.published_at)}</span>}
                       {item.carried_over_from && (
                         <span
                           title={`원래 예정일: ${formatDate(item.carried_over_from)}`}
@@ -1286,7 +1303,11 @@ export default function ContentPage() {
                 {editMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 편집</h3>}
                 {briefEditMode && <h3 id="content-dialog-title" className="text-lg font-bold text-slate-900 mt-0.5">콘텐츠 가이드 편집</h3>}
                 <p id="content-dialog-status" className="mt-1 text-xs text-slate-500">
-                  {selectedReview.label}{selected.published_at ? ` · ${formatDateTime(selected.published_at)} 공개` : ` · ${selected.scheduled_date} 예정`}
+                  {selected.published_at
+                    ? (selectedReview.key === 'withheld'
+                        ? publicationTimeLine(selectedReview, selected.published_at)
+                        : `${selectedReview.label} · ${formatDateTime(selected.published_at)} 공개`)
+                    : `${selectedReview.label} · ${selected.scheduled_date} 예정`}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -1318,7 +1339,9 @@ export default function ContentPage() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-            {publishSuccessId && selectedPublicUrl && (
+            {/* 발행 성공 배너는 "지금 공개 사이트에 있다"는 주장이다 — 이 판이 보류로
+                바뀌었거나 다른 항목을 열었다면 그 주장은 더 이상 사실이 아니다. */}
+            {publishSuccessId === selected.id && selectedPublicUrl && selectedReview.key !== 'withheld' && (
               <div className="mx-6 mt-4 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
                 <p className="text-sm font-medium text-green-800">발행 완료 — 콘텐츠가 공개 사이트에 게시되었습니다.</p>
                 <a

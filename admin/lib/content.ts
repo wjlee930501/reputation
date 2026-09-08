@@ -35,6 +35,8 @@ export interface ContentOperationsItem extends CarriedOverItem {
   compliance?: {
     publishable: boolean
     // 공개 사이트가 이 글을 실제로 내보내는지 (backend/app/services/content_visibility.py).
+    // 여기서는 선택 필드다 — 이 인터페이스는 부분 응답도 받는 구조적 계약이며,
+    // 판정이 없으면 보류로 닫는다.
     public_visibility?: { visible: boolean; blockers: string[]; blocker_labels: string[] }
   }
 }
@@ -72,7 +74,9 @@ export function getContentOperationsState(item: ContentOperationsItem): ContentO
   if (item.status === 'PUBLISHED') {
     // 공개 페이지가 숨기는 중인 글은 발행·알림·확인 어느 정상 묶음에도 들어가지 않는다.
     // 확인이 끝났거나 알림이 밀린 것과 무관하게 이 사실이 먼저다(H-01).
-    if (item.compliance?.public_visibility?.visible === false) return 'withheld'
+    // 판정이 아예 없으면(구버전 응답·필드 누락) 공개 중이라고 단정하지 않는다 —
+    // 모르는 상태를 초록으로 칠하면 admin만 공개라고 말하는 그 사고가 그대로 돌아온다.
+    if (item.compliance?.public_visibility?.visible !== true) return 'withheld'
     if (item.post_publish_reviewed_at) return 'published'
     if (item.display?.review?.notification_state === 'NOT_REQUIRED') return 'published'
     return item.display?.review?.notification_state === 'SENT'

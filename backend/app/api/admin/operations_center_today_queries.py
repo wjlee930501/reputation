@@ -28,6 +28,7 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
+from app.services.content_visibility import assess_sampled_visibility
 from app.services.post_publish_review_policy import (
     auto_publish_due_predicate,
     human_post_publish_review_predicate,
@@ -37,6 +38,7 @@ from app.services.post_publish_review_policy import (
 _OVERDUE_REVIEW_HOURS: Final = 24
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
 _TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
+_WITHHELD_ACTION_LABEL: Final = "보류 사유 확인"
 # The automatic publisher runs at 08:00 KST; before it does, a due slot is not work.
 _AUTO_PUBLISH_HOUR: Final = time(8, 0)
 
@@ -95,7 +97,11 @@ async def load_today_queue(
     overview: bool,
     now: datetime,
 ) -> tuple[int, list[OperationsQueueRow]]:
-    """Load due publishing and post-publication review work without row-level queries.
+    """Load due publishing and post-publication review work for one page.
+
+    Selection, counting and ordering stay set-based. Only the review sample on the
+    page is judged row by row, because "already public" is not a column — see the
+    visibility pass below.
 
     The explicit pagination and overview inputs mirror the operations-center HTTP
     contract; their independent meanings make a compact parameter object misleading.
@@ -225,10 +231,18 @@ async def load_today_queue(
         total = int((await db.scalar(count_stmt)) or 0)
         rows = list((await db.execute(page_stmt)).all())
 
+    # 공개 페이지가 숨기는 중인 글에는 "공개 내용 확인"이 성립하지 않는다 — 눌러도 409로
+    # 거절되고 행은 큐에 남아 기한만 넘긴다. 표본은 한 페이지 분량이라 각 행을 공개 표면과
+    # 같은 판정 함수로 다시 보고, 사람에게는 다른 일(보류 사유 해소)로 내보낸다(H-01).
+    visibility = await assess_sampled_visibility(
+        db, [row[0] for row in rows if row[-2] != "PUBLISH_DUE"]
+    )
+
     items: list[OperationsQueueRow] = []
     for content, hospital, handoff, actor, run, incident, state, _total in rows:
         overdue = state == "OVERDUE_REVIEW"
         review = state in {"OVERDUE_REVIEW", "REVIEW_PENDING"}
+        withheld = visibility[content.id] if review and not visibility[content.id].visible else None
         # 이 행의 기한은 콘텐츠 작업의 기한이다. 예전에는 계약 인수 기한을 보여 주면서
         # 상태는 발행 후 검수 초과 여부로 정해, 서로 다른 두 기한이 한 줄에 섞였다(G-2).
         # 발행 후 검수는 공개 시각 + 24시간, 발행 예정 글은 예정일이 끝나는 시각이 기한이다.
@@ -238,7 +252,14 @@ async def load_today_queue(
             due_at = content.published_at + timedelta(hours=_OVERDUE_REVIEW_HOURS)
         else:
             due_at = None
-        impact, next_action = _today_operator_copy(review=review)
+        if withheld is not None:
+            impact = "공개 보류 — " + " · ".join(withheld.blocker_labels)
+            next_action = (
+                f"운영 센터의 “{_WITHHELD_ACTION_LABEL}”에서 보류 사유를 해소하세요. "
+                "사유가 남아 있는 동안에는 공개 내용 확인을 기록할 수 없습니다."
+            )
+        else:
+            impact, next_action = _today_operator_copy(review=review)
         occurred_at = content.published_at or content.created_at
         history_at = content.published_at or datetime.combine(
             content.scheduled_date, datetime.min.time(), tzinfo=_SEOUL
@@ -252,7 +273,7 @@ async def load_today_queue(
                     name=hospital.name,
                     admin_path=f"/hospitals/{hospital.id}/content",
                 ),
-                status=state,
+                status="WITHHELD_PUBLIC" if withheld is not None else state,
                 severity="HIGH" if overdue else "MEDIUM",
                 impact=impact,
                 owner=owner_projection(actor),
@@ -271,8 +292,8 @@ async def load_today_queue(
                     )
                 ),
                 action=OperationsAction(
-                    kind="REVIEW_CONTENT",
-                    label=_TODAY_ACTION_LABEL,
+                    kind="REVIEW_CONTENT" if withheld is None else "OPEN_CONTENT",
+                    label=_TODAY_ACTION_LABEL if withheld is None else _WITHHELD_ACTION_LABEL,
                     method="GET",
                     path=f"/hospitals/{hospital.id}/content?content={content.id}",
                 ),

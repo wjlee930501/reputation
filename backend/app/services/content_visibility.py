@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.content import ContentStatus
 from app.services.content_publication import (
@@ -21,6 +24,7 @@ from app.services.content_publication import (
     publication_field_values,
 )
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
+from app.services.essence_readiness import get_public_approved_philosophy_id
 from app.utils.medical_filter import check_forbidden_content_fields
 
 UNSET_PHILOSOPHY = object()
@@ -83,3 +87,22 @@ def assess_public_visibility(
     if check_forbidden_content_fields(publication_field_values(item), PUBLICATION_CHECK_FIELDS):
         blockers.append("FORBIDDEN_EXPRESSION")
     return PublicVisibility(visible=not blockers, blockers=tuple(blockers))
+
+
+async def assess_sampled_visibility(
+    db: AsyncSession,
+    items: Iterable[Any],
+) -> dict[uuid.UUID, PublicVisibility]:
+    """표본 행별 공개 가시성 — 병원당 승인 기준은 한 번만 읽는다.
+
+    운영 큐가 각자 자기만의 SQL 조건으로 "공개 중"을 정의하면 화면마다 답이 갈라진다.
+    표본이 작을 때만 쓴다 — 전수 목록에 쓰면 병원 수만큼 기준 조회가 늘어난다.
+    """
+    philosophy_ids: dict[uuid.UUID, uuid.UUID | None] = {}
+    assessed: dict[uuid.UUID, PublicVisibility] = {}
+    for item in items:
+        hospital_id = item.hospital_id
+        if hospital_id not in philosophy_ids:
+            philosophy_ids[hospital_id] = await get_public_approved_philosophy_id(db, hospital_id)
+        assessed[item.id] = assess_public_visibility(item, philosophy_ids[hospital_id])
+    return assessed

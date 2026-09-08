@@ -219,6 +219,8 @@ export function operationStatusLabel(status: string): string {
     case 'PUBLISH_DUE': return '오늘 발행 예정'
     case 'REVIEW_PENDING': return '발행 후 확인 대기'
     case 'OVERDUE_REVIEW': return '발행 후 확인 기한 지남'
+    // 발행됐지만 공개 페이지가 숨기는 중 — 확인이 아니라 사유 해소가 할 일이다(H-01).
+    case 'WITHHELD_PUBLIC': return '공개 보류'
     case 'MISSING': return '지난달 보고서 미생성'
     case 'COVERAGE_INCOMPLETE': return '필수 측정 미완료'
     case 'MANIFEST_MISMATCH': return '측정 집계 연결 오류'

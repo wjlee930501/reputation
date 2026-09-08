@@ -105,7 +105,8 @@ def _admin_blank_chars() -> set[str]:
     while position < len(tokens):
         character, escaped = tokens[position]
         # 범위(`a-z`)는 **이스케이프되지 않은** `-`가 양쪽 토큰 사이에 있을 때만이다.
-        # `\-`는 리터럴 하이픈이며, 양끝의 `-`도 리터럴이다.
+        # 위 토큰화가 `\uXXXX` 외의 이스케이프를 전부 거부하므로 `\-`는 여기까지 오지
+        # 못한다(그 자리에서 ValueError). 양끝의 `-`는 리터럴이다.
         if character == "-" and not escaped and 0 < position < len(tokens) - 1:
             for code_point in range(ord(tokens[position - 1][0]), ord(tokens[position + 1][0]) + 1):
                 chars.add(chr(code_point))

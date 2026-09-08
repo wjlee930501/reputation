@@ -9,6 +9,11 @@ from pydantic import ValidationError
 from app.api.admin import content as content_api
 from app.schemas.content import ContentBriefUpdate
 from app.services.content_brief import build_content_brief
+from app.services.image_engine import (
+    IMAGE_POLICY_VERSION,
+    image_content_hash_from_url,
+    image_subject_hash,
+)
 
 
 def _hospital(hospital_id=None):
@@ -555,31 +560,49 @@ async def test_post_publish_review_records_authenticated_actor_and_is_idempotent
     assert audits[0]["detail"]["note"] == "공개 페이지 확인"
 
 
-async def test_post_publish_review_is_refused_while_the_public_page_withholds_the_item(
-    monkeypatch,
-):
-    """공개 보류 중인 글에 "공개 내용 확인"을 기록하면 admin만 확인 완료로 굳는다(H-01)."""
-    hospital_id = uuid.uuid4()
-    item_id = uuid.uuid4()
-    item = _content_item(
-        id=item_id,
-        hospital_id=hospital_id,
-        title="공개된 글",
+def _published_certified_item(**overrides):
+    """운영 기준 연결만 빼면 공개 가시성 검사를 전부 통과하는 발행 글.
+
+    사유가 여러 개 겹치면 어느 검사가 막았는지 단정할 수 없다 — 이 더블은 승인 기준
+    하나만 어긋나게 두어 차단 사유를 격리한다.
+    """
+    title = "치질 원인과 치료"
+    image_url = f"https://storage.googleapis.com/reputation-images/content/{'a' * 64}-ok.png"
+    base = dict(
+        content_type="DISEASE",
+        title=title,
         body="환자 상태에 따라 설명합니다.",
         status=content_api.ContentStatus.PUBLISHED,
         published_at=datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc),
         essence_status=content_api.ESSENCE_STATUS_ALIGNED,
+        essence_check_summary={},
+        content_philosophy_id=uuid.uuid4(),
+        references_list=[
+            {
+                "title": "질병관리청 국가건강정보포털",
+                "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo.do",
+            }
+        ],
+        image_url=image_url,
+        image_policy_verified_at=datetime(2026, 6, 1, 7, 0, tzinfo=timezone.utc),
+        image_content_hash=image_content_hash_from_url(image_url),
+        image_subject_hash=image_subject_hash("DISEASE", title),
+        image_policy_version=IMAGE_POLICY_VERSION,
         post_publish_reviewed_at=None,
         post_publish_reviewed_by=None,
     )
-    audits = []
+    base.update(overrides)
+    return _content_item(**base)
 
-    class FakeDB:
-        commits = 0
 
-        async def commit(self):
-            self.commits += 1
+class _ReviewFakeDB:
+    commits = 0
 
+    async def commit(self):
+        self.commits += 1
+
+
+def _stub_post_publish_review(monkeypatch, item, audits):
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
         return item
 
@@ -594,7 +617,18 @@ async def test_post_publish_review_is_refused_while_the_public_page_withholds_th
     monkeypatch.setattr(
         content_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
     )
-    db = FakeDB()
+
+
+async def test_post_publish_review_is_refused_while_the_public_page_withholds_the_item(
+    monkeypatch,
+):
+    """공개 보류 중인 글에 "공개 내용 확인"을 기록하면 admin만 확인 완료로 굳는다(H-01)."""
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    item = _published_certified_item(id=item_id, hospital_id=hospital_id)
+    audits = []
+    _stub_post_publish_review(monkeypatch, item, audits)
+    db = _ReviewFakeDB()
 
     with pytest.raises(HTTPException) as excinfo:
         await content_api.complete_post_publish_review(
@@ -606,9 +640,41 @@ async def test_post_publish_review_is_refused_while_the_public_page_withholds_th
 
     assert excinfo.value.status_code == 409
     assert "공개 페이지에서 보류 중인 글" in excinfo.value.detail
-    assert "현재 승인된 콘텐츠 운영 기준과 다른 기준으로 생성됨" in excinfo.value.detail
+    # 승인 기준 하나만 어긋난 더블이므로 사유도 그 하나뿐이다.
+    assert excinfo.value.detail.endswith("현재 승인된 콘텐츠 운영 기준과 다른 기준으로 생성됨")
     # 기록도 감사 로그도 남지 않는다.
     assert item.post_publish_reviewed_at is None
+    assert db.commits == 0
+    assert audits == []
+
+
+async def test_withheld_gate_runs_before_the_already_reviewed_shortcut(monkeypatch):
+    """이미 확인된 글이라도 공개 보류로 바뀌었으면 "확인 완료"를 돌려주지 않는다.
+
+    멱등 반환이 게이트보다 먼저 서면, 확인 후 제목이 바뀌어 인증이 무효가 된 글도
+    admin은 계속 "확인 완료"로 보여 준다 — 공개 페이지에는 없는 글인데.
+    """
+    hospital_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    item = _published_certified_item(
+        id=item_id,
+        hospital_id=hospital_id,
+        post_publish_reviewed_at=datetime(2026, 6, 1, 9, 0, tzinfo=timezone.utc),
+        post_publish_reviewed_by="operator@example.com",
+    )
+    audits = []
+    _stub_post_publish_review(monkeypatch, item, audits)
+    db = _ReviewFakeDB()
+
+    with pytest.raises(HTTPException) as excinfo:
+        await content_api.complete_post_publish_review(
+            hospital_id,
+            item_id,
+            content_api.PostPublishReviewBody(),
+            db=db,
+        )
+
+    assert excinfo.value.status_code == 409
     assert db.commits == 0
     assert audits == []
 

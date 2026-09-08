@@ -69,10 +69,17 @@ test('countUnpublishedCarriedOver excludes published carried items', () => {
   assert.equal(countUnpublishedCarriedOver(items), 2)
 })
 
+// 공개 사이트가 실제로 내보내는 중이라는 서버 판정. 발행 글의 판정은 이것이 먼저다.
+const VISIBLE = {
+  publishable: false,
+  public_visibility: { visible: true, blockers: [], blocker_labels: [] },
+}
+
 test('content operations state distinguishes Slack retry, post-review, and reviewed states', () => {
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       display: { review: { notification_state: 'NOT_REQUIRED' } },
     }),
     'published',
@@ -80,6 +87,7 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       display: { review: { notification_state: 'PENDING' } },
     }),
     'notificationPending',
@@ -87,6 +95,7 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       display: { review: { notification_state: 'SENT' } },
     }),
     'postReviewPending',
@@ -95,6 +104,7 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       post_publish_notified_at: '2026-07-16T08:00:00Z',
       display: { review: { notification_state: 'FAILED' } },
     }),
@@ -103,6 +113,7 @@ test('content operations state distinguishes Slack retry, post-review, and revie
   assert.equal(
     getContentOperationsState({
       status: 'PUBLISHED',
+      compliance: VISIBLE,
       post_publish_notified_at: '2026-07-16T08:00:00Z',
       post_publish_reviewed_at: '2026-07-16T09:00:00Z',
     }),
@@ -160,6 +171,24 @@ test('a withheld published item is never bucketed as published, post-review, or 
   )
 })
 
+test('a published item without a visibility judgment is withheld, never published', () => {
+  // 경계는 fail-closed다 — 판정이 없다는 건 "공개 중"이 아니라 "모른다"는 뜻이고,
+  // 모르는 상태를 초록으로 칠하면 admin만 공개라고 말하는 H-01이 그대로 돌아온다.
+  assert.equal(
+    getContentOperationsState({
+      status: 'PUBLISHED',
+      post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+      compliance: { publishable: false },
+    }),
+    'withheld',
+  )
+  assert.equal(getContentOperationsState({ status: 'PUBLISHED' }), 'withheld')
+  assert.equal(
+    getContentOperationsBucket({ status: 'PUBLISHED', compliance: { publishable: false } }),
+    'needsReview',
+  )
+})
+
 test('withheld items are counted and filtered with the blocked bucket, never with published', () => {
   const item = {
     status: 'PUBLISHED',
@@ -212,6 +241,7 @@ test('content operations filters support actionable summary-card filtering', () 
   const item = {
     status: 'PUBLISHED',
     carried_over_from: '2026-06-30',
+    compliance: VISIBLE,
     post_publish_notified_at: '2026-07-16T08:00:00Z',
     display: { review: { notification_state: 'SENT' as const } },
   }
