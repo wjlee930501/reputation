@@ -116,3 +116,101 @@ export function photoUploadFormData(draft: PhotoUploadDraft): FormData {
   body.append('photo_evidence_reference', draft.reference.trim())
   return body
 }
+
+/** 텍스트 자료 유형. 업로드 폼의 선택지이자 근거 자료 표의 기준이다. */
+export const TEXT_SOURCE_TYPE_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: 'HOMEPAGE', label: '병원 홈페이지' },
+  { value: 'NAVER_BLOG', label: '네이버 블로그' },
+  { value: 'YOUTUBE', label: '유튜브' },
+  { value: 'INTERVIEW', label: '원장 인터뷰지' },
+  { value: 'LANDING_PAGE', label: '랜딩 페이지' },
+  { value: 'BROCHURE', label: '브로슈어' },
+  { value: 'INTERNAL_NOTE', label: '내부 메모' },
+  { value: 'OTHER', label: '기타' },
+]
+
+/** 사진은 사진 섹션이 다룬다 — 근거 자료 표는 본문이 있는 자료만 센다. */
+export function isTextSource(source: { source_type: string }): boolean {
+  return !source.source_type.startsWith('PHOTO_')
+}
+
+export type SourceRowTone = 'neutral' | 'good' | 'paused' | 'warn'
+
+/*
+  처리는 자동이다. 오류도 자동 재시도 대상이므로 사람이 눌러야 할 버튼이 아니라
+  현재 상태로만 말한다. 실패 원인(process_error)은 여기 붙이지 않는다 — 사람이 손대야
+  하는 사건이라면 현황 화면의 인시던트가 따로 알린다.
+*/
+const SOURCE_ROW_STATUS: Record<string, { label: string; tone: SourceRowTone }> = {
+  PENDING: { label: '처리 대기 (자동)', tone: 'neutral' },
+  PROCESSED: { label: '처리 완료', tone: 'good' },
+  EXCLUDED: { label: '제외', tone: 'paused' },
+  ERROR: { label: '처리 실패 — 자동 재시도 중', tone: 'warn' },
+}
+
+export function sourceRowStatus(
+  source: { status: string },
+): { label: string; tone: SourceRowTone } {
+  return SOURCE_ROW_STATUS[source.status] ?? { label: '처리 상태 확인 필요', tone: 'neutral' }
+}
+
+/** 근거 노트 분류 라벨과 표시 순서. 자료 화면과 병원 자료 화면이 같은 값을 쓴다. */
+export const NOTE_TYPE_LABELS: Record<string, string> = {
+  KEY_MESSAGE: '핵심 메시지',
+  TONE_SIGNAL: '말투 기준',
+  TREATMENT_SIGNAL: '진료 설명 근거',
+  RISK_SIGNAL: '주의 표현',
+  PATIENT_PROMISE: '환자 약속',
+  DOCTOR_PHILOSOPHY: '의료진 철학',
+  LOCAL_CONTEXT: '지역 맥락',
+  PROOF_POINT: '근거 자료',
+  CONFLICT: '상충 메모',
+}
+
+export const NOTE_GROUP_ORDER: string[] = [
+  'DOCTOR_PHILOSOPHY',
+  'PATIENT_PROMISE',
+  'KEY_MESSAGE',
+  'TREATMENT_SIGNAL',
+  'TONE_SIGNAL',
+  'PROOF_POINT',
+  'LOCAL_CONTEXT',
+  'RISK_SIGNAL',
+  'CONFLICT',
+]
+
+/** 모르는 분류는 버리지 않고 알려진 순서 뒤에 붙인다. */
+export function groupNotesByType<T extends { note_type: string }>(
+  notes: T[],
+): Array<{ noteType: string; label: string; notes: T[] }> {
+  const grouped = new Map<string, T[]>()
+  for (const note of notes) {
+    const list = grouped.get(note.note_type) ?? []
+    list.push(note)
+    grouped.set(note.note_type, list)
+  }
+  const known = NOTE_GROUP_ORDER.filter((type) => grouped.has(type))
+  const extras = [...grouped.keys()].filter((type) => !NOTE_GROUP_ORDER.includes(type))
+  return [...known, ...extras].map((noteType) => ({
+    noteType,
+    label: NOTE_TYPE_LABELS[noteType] ?? noteType,
+    notes: grouped.get(noteType) ?? [],
+  }))
+}
+
+export interface SourceProcessingRunSummary {
+  state: string | null
+  total_count: number
+}
+
+const ACTIVE_RUN_STATES = new Set(['REQUESTED', 'QUEUED', 'RUNNING'])
+
+/**
+ * 진행 중인 처리만 한 줄로 알린다. 끝난 처리는 표의 상태가 이미 말하므로 다시 쓰지 않고,
+ * 사람이 시작하거나 멈출 것이 없으므로 버튼도 만들지 않는다.
+ */
+export function processingSummary(run: SourceProcessingRunSummary | null): string | null {
+  if (!run || !run.state || !ACTIVE_RUN_STATES.has(run.state)) return null
+  if (run.total_count <= 0) return null
+  return `자동 처리 중 ${run.total_count}건`
+}

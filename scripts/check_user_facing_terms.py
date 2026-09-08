@@ -106,6 +106,7 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/app/hospitals/[id]/info/AutofillModal.tsx",
     "admin/app/hospitals/[id]/info/BrandSection.tsx",
     "admin/app/hospitals/[id]/info/PhotosSection.tsx",
+    "admin/app/hospitals/[id]/info/SourcesSection.tsx",
     "admin/app/hospitals/[id]/info/ClinicVisualForm.tsx",
     "admin/app/hospitals/[id]/info/ClinicLogoField.tsx",
     "admin/app/hospitals/[id]/info/PhotoRightsFields.tsx",

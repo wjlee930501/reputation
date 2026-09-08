@@ -5,13 +5,18 @@ import {
   INFO_SECTION_ORDER,
   INFO_SECTION_TITLES,
   PHOTO_SOURCE_TYPE_OPTIONS,
+  TEXT_SOURCE_TYPE_OPTIONS,
   assetKindForPhotoType,
   brandDefaultsNotice,
+  groupNotesByType,
   infoSectionAnchorId,
   isPhotoSourceType,
+  isTextSource,
   photoUploadFormData,
+  processingSummary,
   remainingRequirementsSummary,
   sectionForRequirement,
+  sourceRowStatus,
 } from './info-sections.ts'
 
 test('빈 목록은 남은 항목이 아니라 완료로 말한다', () => {
@@ -128,4 +133,72 @@ test('공개하지 않기로 한 사진도 권리 정보를 그대로 보낸다'
 
   assert.equal(body.get('is_public'), 'false')
   assert.equal(body.get('photo_evidence_reference'), '동의서.pdf')
+})
+
+test('자료 상태는 사람이 누를 일이 아니라 지금 상태로만 말한다', () => {
+  assert.deepEqual(sourceRowStatus({ status: 'PENDING' }), {
+    label: '처리 대기 (자동)',
+    tone: 'neutral',
+  })
+  assert.deepEqual(sourceRowStatus({ status: 'PROCESSED' }), { label: '처리 완료', tone: 'good' })
+  assert.deepEqual(sourceRowStatus({ status: 'EXCLUDED' }), { label: '제외', tone: 'paused' })
+  assert.deepEqual(sourceRowStatus({ status: 'ERROR' }), {
+    label: '처리 실패 — 자동 재시도 중',
+    tone: 'warn',
+  })
+  // 모르는 상태도 화면이 비지 않는다.
+  assert.equal(sourceRowStatus({ status: 'WHATEVER' }).tone, 'neutral')
+})
+
+test('오류 상태에 실패 원문을 붙이지 않는다', () => {
+  assert.equal(
+    sourceRowStatus({ status: 'ERROR', process_error: 'TimeoutError' } as { status: string }).label,
+    '처리 실패 — 자동 재시도 중',
+  )
+})
+
+test('근거 자료 표는 사진을 세지 않는다', () => {
+  assert.ok(isTextSource({ source_type: 'HOMEPAGE' }))
+  assert.ok(isTextSource({ source_type: 'NAVER_BLOG' }))
+  assert.equal(isTextSource({ source_type: 'PHOTO_DOCTOR' }), false)
+  assert.equal(isTextSource({ source_type: 'PHOTO_BRAND' }), false)
+  for (const option of PHOTO_SOURCE_TYPE_OPTIONS) {
+    assert.equal(isTextSource({ source_type: option.value }), false)
+  }
+  for (const option of TEXT_SOURCE_TYPE_OPTIONS) {
+    assert.ok(isTextSource({ source_type: option.value }), `${option.value}가 빠졌다`)
+  }
+})
+
+test('근거 노트는 정해진 순서로 묶이고 모르는 분류는 뒤에 붙는다', () => {
+  const groups = groupNotesByType([
+    { id: '1', note_type: 'KEY_MESSAGE' },
+    { id: '2', note_type: 'NEW_KIND' },
+    { id: '3', note_type: 'DOCTOR_PHILOSOPHY' },
+    { id: '4', note_type: 'KEY_MESSAGE' },
+  ])
+  assert.deepEqual(
+    groups.map((group) => group.noteType),
+    ['DOCTOR_PHILOSOPHY', 'KEY_MESSAGE', 'NEW_KIND'],
+  )
+  assert.deepEqual(groups.map((group) => group.label), ['의료진 철학', '핵심 메시지', 'NEW_KIND'])
+  assert.deepEqual(groups[1].notes.map((note) => note.id), ['1', '4'])
+})
+
+test('노트가 없으면 그룹도 없다', () => {
+  assert.deepEqual(groupNotesByType([]), [])
+})
+
+test('진행 중인 처리만 한 줄로 알린다', () => {
+  assert.equal(processingSummary({ state: 'RUNNING', total_count: 3 }), '자동 처리 중 3건')
+  assert.equal(processingSummary({ state: 'QUEUED', total_count: 1 }), '자동 처리 중 1건')
+  assert.equal(processingSummary({ state: 'REQUESTED', total_count: 2 }), '자동 처리 중 2건')
+})
+
+test('끝났거나 없는 처리는 알릴 것이 없다', () => {
+  assert.equal(processingSummary(null), null)
+  assert.equal(processingSummary({ state: 'SUCCEEDED', total_count: 3 }), null)
+  assert.equal(processingSummary({ state: 'FAILED', total_count: 3 }), null)
+  assert.equal(processingSummary({ state: null, total_count: 3 }), null)
+  assert.equal(processingSummary({ state: 'RUNNING', total_count: 0 }), null)
 })

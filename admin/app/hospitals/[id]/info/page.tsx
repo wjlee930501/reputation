@@ -23,6 +23,7 @@ import { AutofillModal } from './AutofillModal'
 import { BrandSection } from './BrandSection'
 import { FactsSection, sourceLabel } from './FactsSection'
 import { PhotosSection } from './PhotosSection'
+import { SourcesSection } from './SourcesSection'
 import type { HospitalInfoProfile, Treatment } from './FactsSection'
 
 /** PATCH /profile 응답. 완료 여부·남은 항목은 서버가 판정해 함께 내려준다. */
@@ -438,6 +439,8 @@ export default function HospitalInfoPage() {
           />
         </div>
       )}
+
+      <SourcesSection hospitalId={hospitalId} />
       </div>
     </>
   )

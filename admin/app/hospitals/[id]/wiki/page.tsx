@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { fetchAPI } from '@/lib/api'
+import { NOTE_GROUP_ORDER, NOTE_TYPE_LABELS } from '@/lib/info-sections'
 import { formatActorLabel } from '@/lib/actor-display'
 import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from '@/lib/photo-public-gate'
 
@@ -45,29 +46,6 @@ interface SourceDetail extends Source {
   evidence_notes: EvidenceNote[] | null
 }
 
-const NOTE_TYPE_LABELS: Record<string, string> = {
-  KEY_MESSAGE: '핵심 메시지',
-  TONE_SIGNAL: '말투 기준',
-  TREATMENT_SIGNAL: '진료 설명 근거',
-  RISK_SIGNAL: '주의 표현',
-  PATIENT_PROMISE: '환자 약속',
-  DOCTOR_PHILOSOPHY: '의료진 철학',
-  LOCAL_CONTEXT: '지역 맥락',
-  PROOF_POINT: '근거 자료',
-  CONFLICT: '상충 메모',
-}
-
-const NOTE_GROUP_ORDER = [
-  'DOCTOR_PHILOSOPHY',
-  'PATIENT_PROMISE',
-  'KEY_MESSAGE',
-  'TREATMENT_SIGNAL',
-  'TONE_SIGNAL',
-  'PROOF_POINT',
-  'LOCAL_CONTEXT',
-  'RISK_SIGNAL',
-  'CONFLICT',
-]
 
 const PHOTO_TYPES = new Set([
   'PHOTO_DOCTOR',

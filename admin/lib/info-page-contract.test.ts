@@ -12,6 +12,7 @@ const infoPage = infoFile('page.tsx')
 const factsSection = infoFile('FactsSection.tsx')
 const brandSection = infoFile('BrandSection.tsx')
 const photosSection = infoFile('PhotosSection.tsx')
+const sourcesSection = infoFile('SourcesSection.tsx')
 // 브랜드 섹션이 실제로 그리는 것 전부 — 칸이 다른 파일로 빠졌다고 계약이 느슨해지면 안 된다.
 const brandSources = [
   brandSection,
@@ -130,4 +131,39 @@ test('세 섹션이 사실 섹션 뒤에 브랜드·사진·자기 도메인 순
   assert.ok(domain > photos, '자기 도메인이 사진 섹션 뒤에 없다')
   // 도메인 확인은 자동 폴링이다 — 사이트가 준비된 뒤에만 칸을 연다.
   assert.match(infoPage, /site_built && \(\s*<div id="domain-setup"/)
+})
+
+test('근거 자료 표는 읽고, 올리고, 제외하는 것만 한다', () => {
+  assert.match(sourcesSection, /essence\/sources/)
+  assert.match(sourcesSection, /sources\/upload/)
+  assert.match(sourcesSection, /\/exclude/)
+  assert.match(sourcesSection, /\/reinclude/)
+  assert.match(sourcesSection, /evidence-notes\/noise/)
+  assert.match(sourcesSection, /source-processing-runs\/latest/)
+  assert.match(sourcesSection, /NaverBlogBulkForm/)
+})
+
+test('처리·크롤·제목 수정·유형 변경 버튼은 없다', () => {
+  // 처리는 자동이다 — 사람이 시작하거나 다시 거는 경로를 만들지 않는다.
+  assert.doesNotMatch(sourcesSection, /sources\/\$\{[^}]+\}\/process/)
+  assert.doesNotMatch(sourcesSection, /process-pending/)
+  assert.doesNotMatch(sourcesSection, /sources\/crawl/)
+  assert.doesNotMatch(sourcesSection, /url-title/)
+  assert.doesNotMatch(sourcesSection, /AssetTitleEditor/)
+  assert.doesNotMatch(sourcesSection, /asset_kind/)
+  assert.doesNotMatch(sourcesSection, /자료로 추가/)
+  assert.doesNotMatch(sourcesSection, /CrawlForm/)
+  // 사진과 그 공개 여부는 사진 섹션의 일이다.
+  assert.doesNotMatch(sourcesSection, /PhotosSection/)
+})
+
+test('근거 노트 제외 표시는 켜고 끄는 양방향이다', () => {
+  assert.match(sourcesSection, /is_noise:\s*isNoise/)
+  assert.match(sourcesSection, /groupNotesByType/)
+})
+
+test('근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다', () => {
+  const domain = infoPage.indexOf('<DomainSetupPanel')
+  const sources = infoPage.indexOf('<SourcesSection')
+  assert.ok(domain >= 0 && sources > domain, '근거 자료 섹션이 마지막에 없다')
 })
