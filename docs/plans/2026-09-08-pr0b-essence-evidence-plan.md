@@ -945,6 +945,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 6: 원문 없는 URL 자료는 필수 자료가 아니다 (M-01)
 
+> **실행 기록 (2026-09-08):** predicate는 `essence_readiness.py`가 아니라 새 모듈 **`app/services/essence_sources.py`**(모델만 import)에 둔다 — `essence_readiness`가 `evidence_noise`를 import하므로 `evidence_noise`가 `essence_readiness`를 다시 import하면 순환이 된다. readiness 로더 4개·`_required_sources`·승인 쿼리·`_excluded_note_ids_stmt`가 모두 이 predicate를 쓴다. Step 0로 Task 5 검토의 잔여 문구 지적(재조정은 15분마다 200곳씩 순환하므로 "최대 15분" 보장 불가)을 정정.
+
 **Files:**
 - Modify: `backend/app/services/essence_readiness.py` — predicate 추가, 세 로더가 사용
 - Modify: `backend/app/services/essence_auto_review.py:248-261` (`_required_sources`)
