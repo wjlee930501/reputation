@@ -4277,12 +4277,22 @@ def recertify_published_content_image(self, content_id: str):
                 code=blocked,
             )
             return
+        observed_at = datetime.now(timezone.utc)
         if (
-            recertification.attempts_spent(
-                runs, expected_subject, now=datetime.now(timezone.utc)
-            )
+            recertification.attempts_spent(runs, expected_subject, now=observed_at)
             >= recertification.ATTEMPT_BUDGET
         ):
+            if recertification.other_run_in_flight(
+                runs,
+                expected_subject,
+                now=observed_at,
+                run_id=context.run_id if context is not None else None,
+            ):
+                # 같은 subject의 다른 실행이 아직 돈다. 그 실행이 성공할 수 있으므로
+                # '반복 실패'라고 닫지 않고, 돈도 쓰지 않고 물러난다. 그 실행이 끝난 뒤의
+                # sweep이 결말을 맡는다.
+                finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
+                return
             # 예산 소진. 태스크가 시작조차 못한 실패(TASK_FAILED·BROKER_UNAVAILABLE 등)도
             # 이 실행이 하나의 사고로 닫는다.
             _finish_recertify_block(
@@ -4296,6 +4306,11 @@ def recertify_published_content_image(self, content_id: str):
             )
             return
         try:
+            if context is not None:
+                # 유료 호출을 시작한다는 사실을 먼저 별도 세션으로 커밋한다. 여기서 죽어도
+                # 이 행은 다른 실행의 예산에 하나로 잡힌다. 표시 자체가 실패하면 공급자를
+                # 부르지 않고 아래 일시 오류 경로로 끝난다.
+                recertification.mark_provider_call_started(context.run_id)
             content_hash, certified_subject = _run_async(
                 certify_existing_image(
                     item.image_url,

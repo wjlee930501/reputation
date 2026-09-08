@@ -246,8 +246,8 @@ def _cleared_certificate_candidates(db) -> list[ContentItem]:
 
     정책 버전 교체는 manifest로 운전하는 별도 작업이므로 여기서 다루지 않는다 — 그 조건을
     넣으면 롤아웃 때 전체 공개 글이 한꺼번에 이 sweep으로 쏟아진다. hash 불일치도 저장된
-    바이트를 다시 읽어야 알 수 있어 대상이 아니다. 사람의 결정을 기다리는 판은 SQL에서
-    빼, 아직 자동으로 고칠 수 있는 글의 자리를 뺏지 않게 한다.
+    바이트를 다시 읽어야 알 수 있어 대상이 아니다. 사람의 결정을 기다리고 **그 사고가
+    아직 보이는** 판은 SQL에서 빼, 아직 자동으로 고칠 수 있는 글의 자리를 뺏지 않게 한다.
     """
     return list(
         db.execute(
@@ -313,13 +313,7 @@ def _visible_block_incidents(db, candidates: list[ContentItem]) -> set[str]:
         db.execute(
             select(Incident.dedupe_key).where(
                 Incident.dedupe_key.in_(keys),
-                Incident.state.in_(
-                    (
-                        IncidentState.OPEN.value,
-                        IncidentState.RETRYING.value,
-                        IncidentState.ACKNOWLEDGED.value,
-                    )
-                ),
+                Incident.state.in_(recertification.VISIBLE_INCIDENT_STATES),
             )
         )
         .scalars()

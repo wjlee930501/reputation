@@ -14,7 +14,10 @@ PATCH 디스패치(API)·재인증 태스크(worker)·복구 sweep·운영자 �
 broker가 같은 task를 재배달하고 prerun이 같은 행을 다시 claim하며 `attempt_count`를
 올린다. 행은 하나지만 돈은 두 번 나갈 수 있다. 종결된 실행은 물론, 좌초해(하드 제한 +
 여유를 넘도록 종결 기록이 없는) 결과를 남기지 못한 실행도 이미 돈을 썼을 수 있으므로
-그 `attempt_count`만큼(최소 하나) 센다.
+그 `attempt_count`만큼(최소 하나) 센다. 아직 종결도 좌초도 하지 않은 진행 중인 실행은
+`mark_provider_call_started`가 유료 호출 **직전에** 별도 세션으로 남긴 표시로 센다 —
+그 표시가 없으면 죽은 직후의 실행이 30분 동안 0으로 세어져 다음 실행이 네 번째 호출을
+살 수 있다.
 """
 
 from __future__ import annotations
@@ -24,11 +27,18 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
-from sqlalchemy import String, and_, cast, false, func, literal, update
+from sqlalchemy import String, and_, cast, false, func, literal, select, update
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentStatus
-from app.models.operations import JSONValue, OperationRun, OperationRunState
+from app.models.operations import (
+    Incident,
+    IncidentState,
+    JSONValue,
+    OperationRun,
+    OperationRunState,
+)
 from app.services.image_engine import image_subject_hash
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint
@@ -69,6 +79,16 @@ _NON_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
 # 사람의 결정을 기다리는 subject를 글 자체에 남기는 표시. sweep이 후보 SQL에서 이 행을
 # 제외해 다른 글의 자리를 뺏지 않게 한다.
 MARKER_FIELD: Final = "image_recertification"
+
+# 유료 호출을 시작한 실행이 스스로 남기는 payload 표시. 종결 전에도 예산에 잡힌다.
+PROVIDER_CALL_FIELD: Final = "provider_called"
+
+# 차단이 아직 사람에게 보이는 incident 상태.
+VISIBLE_INCIDENT_STATES: Final[tuple[str, ...]] = (
+    IncidentState.OPEN.value,
+    IncidentState.RETRYING.value,
+    IncidentState.ACKNOWLEDGED.value,
+)
 
 # 차단 incident의 신원. 차단 세 코드는 지문 하나를 공유해 (글, subject)당 한 건이 된다.
 INCIDENT_PIPELINE: Final = "content_generation"
@@ -161,6 +181,34 @@ def payload_subject_hash(run: OperationRun | None) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def provider_call_started(run: OperationRun) -> bool:
+    """이 실행 행이 유료 호출을 시작했다고 스스로 기록했는가."""
+
+    payload = getattr(run, "request_payload", None)
+    return bool(payload.get(PROVIDER_CALL_FIELD)) if isinstance(payload, Mapping) else False
+
+
+def mark_provider_call_started(run_id: uuid.UUID) -> None:
+    """유료 호출 **직전에** 그 사실을 별도 세션으로 커밋한다.
+
+    태스크의 본 세션은 글 행 잠금을 쥔 채 공급자를 부르므로 여기서 커밋할 수 없다. 이
+    표시가 없으면, 호출을 산 채로 죽어 종결도 좌초도 아닌 실행이 잠금을 이어받은 다른
+    실행의 예산 검사에서 0으로 세어진다. operation_runs 행만 건드리므로 본 세션이 쥔
+    잠금과 겹치지 않고, `version`도 올리지 않아 종결의 낙관적 검사를 깨지 않는다.
+    """
+
+    payload_type = OperationRun.__table__.c.request_payload.type
+    flag = cast(literal({PROVIDER_CALL_FIELD: True}, payload_type), payload_type)
+    with SyncSessionLocal() as db:
+        db.execute(
+            update(OperationRun)
+            .where(OperationRun.id == run_id)
+            .values(request_payload=OperationRun.request_payload.op("||")(flag))
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
+
+
 def payload_source_id(run: OperationRun) -> str | None:
     payload = getattr(run, "request_payload", None)
     source_id = payload.get("source_id") if isinstance(payload, Mapping) else None
@@ -205,15 +253,17 @@ def _executions_spent(run: OperationRun, *, now: datetime) -> int:
 
     `attempt_count`는 prerun의 claim이 올린다 — 재배달로 같은 행을 다시 claim하면 2가
     된다. 종결·좌초한 행은 그 execution이 모두 끝났으므로 기록된 수를 그대로 센다(claim
-    기록이 없는 행도 이미 샀을 수 있으므로 최소 하나로 본다). 진행 중인 행은 지금 이
-    execution이 아직 돈을 쓰기 전이라 직전 execution까지만 센다 — 첫 실행은 0, 재배달된
-    실행은 1이다.
+    기록이 없는 행도 이미 샀을 수 있으므로 최소 하나로 본다). 진행 중인 행은 직전
+    execution까지 세고(첫 실행은 0, 재배달된 실행은 1), 지금 execution이 유료 호출을
+    시작했다고 스스로 기록했으면 종결 전에도 하나로 센다. 이 규칙은 세는 쪽이 자기 행을
+    보든 남의 행을 보든 같다 — 호출을 산 채로 죽어 아직 좌초 판정 전인 행이 잠금을
+    이어받은 다른 실행의 검사에서 0이 되지 않게 한다.
     """
 
     attempts = int(getattr(run, "attempt_count", 0) or 0)
     if is_terminal(run) or _is_stranded(run, now=now):
         return max(attempts, 1)
-    return max(attempts - 1, 0)
+    return max(attempts - 1, int(provider_call_started(run)), 0)
 
 
 def attempts_spent(
@@ -226,7 +276,8 @@ def attempts_spent(
     인증이 살아 있는 SUCCEEDED는 호출자가 그 전에 이미 성공으로 끝내므로 이 셈에
     도달하지 않는다. 좌초한 실행은 결과를 남기지 못했을 뿐 이미 공급자를 불렀을 수 있어
     함께 센다. 진행 중인 자기 실행도 직전 execution만큼 포함되므로, 재배달된 실행은 자기
-    앞의 유료 호출을 스스로 센다.
+    앞의 유료 호출을 스스로 센다. 유료 호출을 시작했다고 기록한 진행 중 실행은 아직
+    종결하지 않았어도 하나로 센다.
     """
 
     return sum(
@@ -276,6 +327,25 @@ def in_flight(
     )
 
 
+def other_run_in_flight(
+    runs: Iterable[OperationRun],
+    subject_hash: str,
+    *,
+    now: datetime,
+    run_id: uuid.UUID | None,
+) -> bool:
+    """자기 실행을 뺀 이 subject의 진행 중 실행이 있는가.
+
+    예산이 끝난 것을 본 실행이 '반복 실패'로 닫아야 할지 판단할 때 쓴다. 아직 도는 다른
+    실행이 성공할 수 있으므로, 그 앞에서 결말을 선언하면 사실이 아니다.
+    """
+
+    return any(
+        run.id != run_id and not is_terminal(run) and not _is_stranded(run, now=now)
+        for run in _at_subject(runs, subject_hash)
+    )
+
+
 def sweep_may_dispatch(
     runs: Sequence[OperationRun],
     subject_hash: str,
@@ -321,11 +391,16 @@ def next_sweep_key(
 
 
 def blocked_row_predicate() -> ColumnElement[bool]:
-    """sweep 후보에서 제외할 행 — 현재 subject가 사람의 결정을 기다리는 글.
+    """sweep 후보에서 제외할 행 — 현재 subject의 차단을 사람이 실제로 보고 있는 글.
 
     콘텐츠 유형은 바뀌지 않으므로 제목만 비교하면 subject 비교와 같다. 제목을 고치면
     표시가 저절로 맞지 않게 된다. 표시가 없는 행에서는 비교가 NULL이 되므로 coalesce로
     거짓을 확정한다 — 부정(`~`)이 모든 행을 지우지 않게.
+
+    표시만 보고 빼면 안 된다. 표시는 남았는데 그 incident가 어떤 경로로든 닫히면(다른
+    subject의 성공, 사람의 정리) 자동 경로도 사람이 볼 사고도 없는 글이 된다. 표시가
+    가리키는 incident가 미해결일 때만 빼고, 그렇지 않으면 후보로 되돌려 무료 실행 하나가
+    사고와 표시를 다시 남기게 한다. incident 키가 없는 옛 표시도 같은 이유로 되돌아온다.
     """
 
     marker = ContentItem.essence_check_summary[MARKER_FIELD]
@@ -333,6 +408,12 @@ def blocked_row_predicate() -> ColumnElement[bool]:
         and_(
             marker["title"].as_string() == ContentItem.title,
             marker["blocked"].as_string() == "true",
+            select(Incident.id)
+            .where(
+                Incident.dedupe_key == marker["incident_key"].as_string(),
+                Incident.state.in_(VISIBLE_INCIDENT_STATES),
+            )
+            .exists(),
         ),
         false(),
     )
@@ -341,13 +422,18 @@ def blocked_row_predicate() -> ColumnElement[bool]:
 def mark_blocked(
     db, *, item_id: uuid.UUID, subject_hash: str, title: str | None, code: str
 ) -> int:
-    """사람의 결정을 기다리는 subject를 글에 남긴다 (status·제목 CAS)."""
+    """사람의 결정을 기다리는 subject를 글에 남긴다 (status·제목 CAS).
+
+    표시는 자기 incident의 키를 함께 들고 다닌다 — 후보 SQL이 그 사고가 아직 보이는지
+    확인해야 표시만 남은 무음 보류가 생기지 않는다.
+    """
 
     marker = {
         "subject_hash": subject_hash,
         "title": title,
         "blocked": True,
         "code": code,
+        "incident_key": incident_dedupe_key(item_id, subject_hash),
     }
     return _write_summary(
         db,
