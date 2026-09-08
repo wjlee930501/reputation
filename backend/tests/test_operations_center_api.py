@@ -447,3 +447,105 @@ def test_same_cause_incidents_collapse_with_distinct_hospital_count() -> None:
     assert grouped[0].id == "cause:COST_LIMIT_EXHAUSTED:sov"
     assert grouped[0].same_type_count == 3
     assert grouped[0].affected_hospital_count == 2
+
+
+def _operator(role: str, *, user_id: uuid.UUID | None = None):
+    from app.models.admin_user import AdminUser
+
+    return AdminUser(
+        id=user_id or uuid.uuid4(),
+        email=f"{uuid.uuid4().hex}@example.test",
+        name="운영자",
+        role=role,
+        password_hash="not-a-real-hash",
+        is_active=True,
+    )
+
+
+def _failed_run(hospital_id: uuid.UUID):
+    from app.models.operations import OperationRun
+
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="REGENERATE_CONTENT",
+        state="FAILED",
+        request_payload={},
+    )
+
+
+def test_incident_row_actions_follow_the_authorization_the_routes_enforce() -> None:
+    """행이 싣는 행동의 활성 여부 = `require_owner`·`authorize_run_retry`의 답."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+    from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER
+
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="지연")
+    run = _failed_run(incident.hospital_id)
+    assignee = _operator(ROLE_OPERATOR)
+    incident.owner_id = assignee.id
+
+    owner_row = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=_operator(ROLE_OWNER)
+    )
+    assignee_row = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=assignee
+    )
+    stranger_row = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=_operator(ROLE_OPERATOR)
+    )
+
+    assert owner_row.assign is not None
+    assert owner_row.assign.kind == "ASSIGN_INCIDENT"
+    assert owner_row.assign.requires_version is True
+    assert owner_row.assign.reason_required is True
+    assert owner_row.assign.enabled is True
+    # 담당 지정은 OWNER 전용이지만, 재시도는 담당자에게도 열려 있다.
+    assert assignee_row.assign is not None and assignee_row.assign.enabled is False
+    assert assignee_row.retry is not None and assignee_row.retry.enabled is True
+    assert stranger_row.retry is not None and stranger_row.retry.enabled is False
+
+
+def test_incident_row_without_a_known_actor_keeps_the_previous_contract() -> None:
+    """요청자를 모르는 호출(배치·기존 경로)은 인가에 달린 행동을 만들지 않는다."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="지연")
+    run = _failed_run(incident.hospital_id)
+
+    row = serialize_incident_row(incident, None, None, run, None, incident.last_seen_at)
+
+    assert row.assign is None
+    assert row.resolve is None
+    assert row.retry is not None and row.retry.enabled is True
+
+
+def test_recovery_confirmation_waits_for_the_linked_run_to_succeed() -> None:
+    """복구 확인은 연결 작업 성공이 관측돼야 서버가 받는다 — 버튼도 그때 켜진다."""
+    from app.api.admin.operations_center_serializers import serialize_incident_row
+    from app.models.admin_user import ROLE_OWNER
+
+    incident = _incident(safe_error_code="PROVIDER_TIMEOUT", safe_error_message="지연")
+    incident.state = "RETRYING"
+    run = _failed_run(incident.hospital_id)
+    owner = _operator(ROLE_OWNER)
+
+    while_failing = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=owner
+    )
+    run.state = "SUCCEEDED"
+    after_success = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=owner
+    )
+    incident.state = "RECOVERED"
+    recovered = serialize_incident_row(
+        incident, None, None, run, None, incident.last_seen_at, actor=owner
+    )
+
+    assert while_failing.resolve is not None
+    assert while_failing.resolve.kind == "RECOVER_INCIDENT"
+    assert while_failing.resolve.enabled is False
+    assert after_success.resolve is not None and after_success.resolve.enabled is True
+    assert after_success.resolve.path.endswith("/recover")
+    assert recovered.resolve is not None
+    assert recovered.resolve.kind == "ACK_INCIDENT"
+    assert recovered.resolve.enabled is True

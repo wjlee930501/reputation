@@ -181,6 +181,11 @@ class OperationsQueueRow(OperationsSchema):
     next_action: str
     action: OperationsAction
     retry: OperationsAction | None
+    # 이 행이 지금 받을 수 있는 상태 전이 하나(복구 확인 → 문제 확인)와 담당 지정.
+    # 요청 actor를 모르는 호출(기존 경로)에서는 둘 다 없다 — 인가를 모른 채 버튼을
+    # 내보내면 누르는 순간 403이 된다.
+    resolve: OperationsAction | None = None
+    assign: OperationsAction | None = None
     cause_code: str | None = None
     cause_message: str | None = None
     cause_group_key: str | None = None
@@ -224,6 +229,9 @@ class OperationsOverviewResponse(OperationsSchema):
 class IncidentDetailResponse(OperationsSchema):
     incident: OperationsQueueRow
     run: OperationsRunSummary | None
+    # 담당으로 고를 수 있는 계정. 운영 점검 계정과 정지된 계정은 빼고 준다 —
+    # 목록에 있는데 서버가 422로 거절하는 선택지를 만들지 않는다.
+    assignable_accounts: list[OperationsOwner] = []
 
 
 class VersionedReasonRequest(OperationsSchema):

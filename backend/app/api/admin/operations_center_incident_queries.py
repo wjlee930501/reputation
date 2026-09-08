@@ -26,7 +26,7 @@ from app.api.admin.operations_center_serializers import (
 from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
-from app.schemas.operations import OperationsQueueRow
+from app.schemas.operations import OperationsOwner, OperationsQueueRow
 
 HospitalScope = uuid.UUID | None | EllipsisType
 
@@ -50,11 +50,12 @@ _INCIDENT_ORDER_BY = (
 def _group_incident_rows(
     rows: list[tuple[Incident, Hospital | None, AdminUser | None, OperationRun | None, NotificationOutbox | None]],
     now: datetime,
+    actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """Collapse repeated symptoms into one stable root-cause projection."""
     grouped: dict[str, list[OperationsQueueRow]] = {}
-    for incident, hospital, actor, run, outbox in rows:
-        row = serialize_incident_row(incident, hospital, actor, run, outbox, now)
+    for incident, hospital, owner, run, outbox in rows:
+        row = serialize_incident_row(incident, hospital, owner, run, outbox, now, actor=actor)
         key = row.cause_group_key or row.cause_code or incident.incident_type
         grouped.setdefault(key, []).append(row)
 
@@ -129,6 +130,7 @@ async def load_incidents_queue(
     now: datetime,
     incident_id: uuid.UUID | None = None,
     hospital_scope: HospitalScope = ...,
+    actor: AdminUser | None = None,
 ) -> tuple[int, list[OperationsQueueRow]]:
     """Load one incident page using one page query plus an optional count query."""
     assignee = aliased(AdminUser)
@@ -216,7 +218,7 @@ async def load_incidents_queue(
     # Pass 2 — load the full projection (Hospital/AdminUser/OperationRun/
     # NotificationOutbox) only for the incidents whose groups landed on this page,
     # instead of for every incident that matched the filter.
-    return total, await _load_grouped_rows(db, page_incident_ids, now=now)
+    return total, await _load_grouped_rows(db, page_incident_ids, now=now, actor=actor)
 
 
 async def _load_grouped_rows(
@@ -224,6 +226,7 @@ async def _load_grouped_rows(
     incident_ids: list[uuid.UUID],
     *,
     now: datetime,
+    actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """Project the named incidents with their related records and collapse the groups."""
     owner = aliased(AdminUser)
@@ -251,7 +254,7 @@ async def _load_grouped_rows(
         .order_by(*_INCIDENT_ORDER_BY)
     )
     raw_rows = [tuple(row) for row in (await db.execute(statement)).all()]
-    return _group_incident_rows(raw_rows, now)
+    return _group_incident_rows(raw_rows, now, actor)
 
 
 async def _operator_incident_groups(
@@ -343,6 +346,7 @@ async def load_operator_incident_groups(
     hospital_id: uuid.UUID,
     *,
     now: datetime,
+    actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """한 병원의 사람 몫 예외 — 원인 묶음 하나가 행 하나다(현황 화면의 예외 카드).
 
@@ -357,13 +361,37 @@ async def load_operator_incident_groups(
     ]
     if not incident_ids:
         return []
-    return await _load_grouped_rows(db, incident_ids, now=now)
+    return await _load_grouped_rows(db, incident_ids, now=now, actor=actor)
+
+
+async def load_assignable_accounts(db: AsyncSession) -> list[OperationsOwner]:
+    """담당으로 고를 수 있는 계정 — 활성 운영자에서 운영 점검 계정을 뺀 목록.
+
+    배정 라우트가 활성 계정만 받으므로(`INVALID_OWNER`) 여기서 같은 조건을 쓴다.
+    운영 점검 계정 제외는 실운영 인원 지표(`utils/production_readiness.py`)와 같은 기준이다.
+    """
+    accounts = (
+        (
+            await db.execute(
+                select(AdminUser)
+                .where(
+                    AdminUser.is_active.is_(True),
+                    AdminUser.is_operations_test.is_(False),
+                )
+                .order_by(AdminUser.name.asc(), AdminUser.id.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [OperationsOwner(id=user.id, name=user.name, email=user.email) for user in accounts]
 
 
 __all__ = (
     "ACTIVE_INCIDENT_STATES",
     "HospitalScope",
     "count_operator_incidents",
+    "load_assignable_accounts",
     "load_incidents_queue",
     "load_operator_incident_groups",
 )

@@ -15,7 +15,7 @@ from sqlalchemy import event
 from app.api.admin.hospital_overview import get_hospital_overview
 from app.api.admin.operations_center_incident_queries import count_operator_incidents
 from app.api.admin.operations_center_read_routes import get_operations_queue
-from app.models.admin_user import ROLE_OWNER, AdminUser
+from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.essence import (
     AUTO_REVIEW_GAP_FIELD,
@@ -26,7 +26,7 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus, Plan
-from app.models.operations import Incident, IncidentSeverity
+from app.models.operations import Incident, IncidentSeverity, OperationRun
 from app.models.sov import QueryMatrix, SovRecord
 from app.schemas.operations import OperationsQueue
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
@@ -188,11 +188,11 @@ async def _content(db, hospital: Hospital, *, withheld: bool = False) -> Content
     return item
 
 
-async def _operations_actor(db) -> AdminUser:
+async def _operations_actor(db, *, role: str = ROLE_OWNER) -> AdminUser:
     actor = AdminUser(
         email=f"{uuid.uuid4().hex}@example.com",
         name="AE QA",
-        role=ROLE_OWNER,
+        role=role,
         password_hash="pbkdf2_sha256$1$c2FsdA$ZGlnZXN0",
         is_active=True,
     )
@@ -230,6 +230,11 @@ async def _incident(
     return incident
 
 
+async def _overview(db, hospital_id, actor: AdminUser | None = None):
+    """현황 호출. 예외 카드의 행동 가능 여부가 요청자 권한에 달려 actor가 필수다."""
+    return await get_hospital_overview(hospital_id, db, actor or await _operations_actor(db))
+
+
 def _next_month_first_day() -> date:
     next_month = arrow.now("Asia/Seoul").shift(months=1)
     return date(next_month.year, next_month.month, 1)
@@ -245,7 +250,7 @@ async def test_live_hospital_reports_states_exceptions_and_this_month(pg_async_s
     await _content(db, hospital, withheld=True)
     incident = await _incident(db, hospital)
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.public_service.kind == "live"
     assert overview.public_service.label == "공개 중"
@@ -255,7 +260,7 @@ async def test_live_hospital_reports_states_exceptions_and_this_month(pg_async_s
     assert overview.domain.kind == "unused"
 
     queue = await get_operations_queue(
-        OperationsQueue.INCIDENTS, hospital_id=hospital.id, db=db, _actor=actor,
+        OperationsQueue.INCIDENTS, hospital_id=hospital.id, db=db, actor=actor,
         owner=None, status=None, severity=None, sla=None, recovery=None,
         page=1, page_size=25,
     )
@@ -264,8 +269,14 @@ async def test_live_hospital_reports_states_exceptions_and_this_month(pg_async_s
     card = overview.exceptions[0]
     assert card.kind == "incident"
     assert card.id == str(incident.id)
-    assert card.allowed_actions == [row.action.kind]
-    assert card.href.startswith("/operations")
+    # 카드가 싣는 행동 코드는 운영 센터 행이 낸 것과 같은 집합이다.
+    assert card.allowed_actions == [
+        action.kind for action in (row.action, row.retry, row.resolve, row.assign)
+        if action is not None and action.enabled
+    ]
+    assert card.href == (
+        f"/operations?queue=incidents&hospital_id={hospital.id}&detail=incident:{incident.id}"
+    )
 
     assert overview.month.published_count == 3
     assert overview.month.public_count == 2
@@ -292,11 +303,11 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
         escalated_findings=("근거 없는 효과 표현", "출처가 확인되지 않은 수치"),
     )
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.public_service.kind == "not_live"
     assert [(c.key, c.actor, c.href) for c in overview.public_service.remaining] == [
-        ("profile_complete", "human", f"/hospitals/{hospital.id}/profile"),
+        ("profile_complete", "human", f"/hospitals/{hospital.id}/info#info-director"),
         ("site_built", "system", None),
     ]
     # 예외는 준비 중보다 앞선다 — 사람이 손대야 나머지가 풀린다.
@@ -307,6 +318,10 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
     assert "근거 없는 효과 표현" in card.evidence
     assert "출처가 확인되지 않은 수치" in card.evidence
     assert card.allowed_actions == ["re_review", "approve_with_override"]
+    # 재검수·예외 승인은 essence 라우트다 — 운영 센터 mutation 서술자로 만들지 않는다.
+    assert card.actions == []
+    assert card.hospital_id == hospital.id
+    assert card.incident_id is None
     assert card.href == f"/hospitals/{hospital.id}/essence"
 
     assert overview.month.published_count == 0
@@ -327,7 +342,7 @@ async def test_preparing_hospital_lists_schedule_and_source_conditions(pg_async_
         unprocessed_source=True,
     )
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.content.kind == "preparing"
     assert [(c.key, c.label, c.actor) for c in overview.content.remaining] == [
@@ -335,7 +350,9 @@ async def test_preparing_hospital_lists_schedule_and_source_conditions(pg_async_
         ("sources:1", "근거 자료 처리 1건", "system"),
         ("essence_review", "콘텐츠 운영 기준 자동 검수", "system"),
     ]
-    assert overview.content.remaining[0].href == f"/hospitals/{hospital.id}/schedule"
+    assert overview.content.remaining[0].href == (
+        f"/hospitals/{hospital.id}/content#content-schedule"
+    )
 
 
 async def test_overview_and_list_agree_on_what_needs_an_operator(pg_async_session):
@@ -353,7 +370,7 @@ async def test_overview_and_list_agree_on_what_needs_an_operator(pg_async_sessio
         sla_due_at=datetime.now(UTC) + timedelta(hours=2),
     )
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
     counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
 
     assert [card.kind for card in overview.exceptions] == ["incident"]
@@ -369,7 +386,7 @@ async def test_overview_and_list_agree_on_what_needs_an_operator(pg_async_sessio
         sla_due_at=datetime.now(UTC) - timedelta(hours=2),
     )
 
-    overdue_overview = await get_hospital_overview(overdue.id, db)
+    overdue_overview = await _overview(db, overdue.id)
     overdue_counts = await count_operator_incidents(db, [overdue.id], now=datetime.now(UTC))
 
     assert overdue_counts[overdue.id] == len(overdue_overview.exceptions) == 1
@@ -382,7 +399,7 @@ async def test_same_cause_incidents_are_one_exception_on_both_screens(pg_async_s
     await _incident(db, hospital)
     await _incident(db, hospital)
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
     counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
 
     assert [card.kind for card in overview.exceptions] == ["incident", "escalated_draft"]
@@ -397,7 +414,7 @@ async def test_paused_hospital_withholds_every_published_item(pg_async_session):
     for _ in range(3):
         await _content(db, hospital)
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.public_service.kind == "paused"
     # 일시정지 병원에는 야간 생성이 돌지 않는다 — "자동 발행 중"이라 말하면 화면이 거짓말을 한다.
@@ -415,7 +432,7 @@ async def test_a_hospital_without_sources_asks_a_person_not_the_system(pg_async_
     db = pg_async_session
     hospital = await _hospital(db, "자료 없는 의원", approved_essence=False, without_sources=True)
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.content.kind == "preparing"
     assert [(c.key, c.label, c.actor, c.href) for c in overview.content.remaining] == [
@@ -423,7 +440,7 @@ async def test_a_hospital_without_sources_asks_a_person_not_the_system(pg_async_
             "sources_required",
             "공식 채널·근거 자료 등록",
             "human",
-            f"/hospitals/{hospital.id}/profile",
+            f"/hospitals/{hospital.id}/info#info-channels",
         )
     ]
 
@@ -450,7 +467,7 @@ async def test_an_escalated_draft_from_an_older_snapshot_stops_being_an_exceptio
     )
     await db.flush()
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.content.kind != "exception"
     assert [card.kind for card in overview.exceptions] == []
@@ -461,7 +478,7 @@ async def test_a_gap_without_a_reason_is_not_an_exception_card(pg_async_session)
     db = pg_async_session
     hospital = await _hospital(db, "사유 없는 초안 의원", escalated_findings=("",))
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
     counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
 
     assert overview.content.kind == "auto"
@@ -483,7 +500,7 @@ async def test_an_open_incident_is_a_card_even_behind_an_in_sla_retry(pg_async_s
         sla_due_at=datetime.now(UTC) + timedelta(hours=2),
     )
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
     counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
 
     assert [card.kind for card in overview.exceptions] == ["incident"]
@@ -504,7 +521,7 @@ async def test_many_recovering_groups_do_not_push_the_operator_incident_off(pg_a
         )
     await _incident(db, hospital, incident_type="PROVIDER_TIMEOUT")
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
     counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
 
     assert [card.kind for card in overview.exceptions] == ["incident"]
@@ -526,7 +543,7 @@ async def test_planned_total_is_the_contracted_plan_not_next_month_replacement(p
     )
     await db.flush()
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.month.planned_total == 12
 
@@ -546,7 +563,7 @@ async def test_planned_total_falls_back_to_the_schedule_already_active(pg_async_
     )
     await db.flush()
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.month.planned_total == 16
 
@@ -574,7 +591,7 @@ async def test_mention_rate_says_which_week_it_was_measured(pg_async_session):
     )
     await db.flush()
 
-    overview = await get_hospital_overview(hospital.id, db)
+    overview = await _overview(db, hospital.id)
 
     assert overview.month.mention_rate == 100.0
     assert overview.month.mention_rate_measured_at == arrow.now("Asia/Seoul").shift(weeks=-2).date()
@@ -585,6 +602,8 @@ async def _overview_query_count(db, hospital_id) -> int:
 
     # 시드가 남긴 세션 캐시가 병원 행 조회를 가리면 예산이 실제 요청보다 작게 나온다.
     db.expire_all()
+    # 요청자는 라우터 의존성이 이미 읽어 둔 행이다(만료 상태가 아니다) — 측정 전에 만든다.
+    actor = await _operations_actor(db)
 
     def count_statement(_connection, _cursor, statement, _parameters, _context, _many):
         statements.append(statement)
@@ -592,7 +611,7 @@ async def _overview_query_count(db, hospital_id) -> int:
     engine = db.bind.engine
     event.listen(engine.sync_engine, "before_cursor_execute", count_statement)
     try:
-        await get_hospital_overview(hospital_id, db)
+        await get_hospital_overview(hospital_id, db, actor)
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
     return len(statements)
@@ -619,3 +638,56 @@ async def test_overview_query_count_is_constant_across_incidents_and_content(pg_
 
     assert small_count == _OVERVIEW_STATEMENT_BUDGET
     assert large_count == small_count
+
+
+async def test_exception_card_carries_the_actions_the_server_will_accept(pg_async_session):
+    """예외 카드는 운영 센터의 mutation 서술자를 그대로 싣는다 — 화면이 경로·권한을 새로 쓰지 않는다."""
+    db = pg_async_session
+    owner = await _operations_actor(db)
+    operator = await _operations_actor(db, role=ROLE_OPERATOR)
+    hospital = await _hospital(db, "행동 카드 의원")
+    run = OperationRun(
+        hospital_id=hospital.id,
+        operation_type="REGENERATE_CONTENT",
+        state="FAILED",
+        request_payload={},
+        completed_at=datetime.now(UTC),
+    )
+    db.add(run)
+    await db.flush()
+    incident = await _incident(db, hospital)
+    incident.operation_run_id = run.id
+    await db.flush()
+
+    owner_card = (await _overview(db, hospital.id, owner)).exceptions[0]
+    operator_card = (await _overview(db, hospital.id, operator)).exceptions[0]
+
+    actions = {action.kind: action for action in owner_card.actions}
+    assert {"OPEN_INCIDENT", "RETRY_RUN", "ASSIGN_INCIDENT"} <= set(actions)
+    assert (actions["OPEN_INCIDENT"].method, actions["OPEN_INCIDENT"].path) == (
+        "GET",
+        f"/operations?queue=incidents&hospital_id={hospital.id}&detail=incident:{incident.id}",
+    )
+    assert actions["RETRY_RUN"].method == "POST"
+    assert actions["RETRY_RUN"].requires_idempotency_key is True
+    assert actions["RETRY_RUN"].path == (
+        f"/api/admin/operations/hospitals/{hospital.id}/runs/{run.id}/retry"
+    )
+    assert actions["ASSIGN_INCIDENT"].method == "POST"
+    assert actions["ASSIGN_INCIDENT"].requires_version is True
+    assert actions["ASSIGN_INCIDENT"].path == (
+        f"/api/admin/operations/hospitals/{hospital.id}/incidents/{incident.id}/assign"
+    )
+
+    # 행동을 실행할 대상을 카드만 보고 알 수 있어야 한다.
+    assert owner_card.hospital_id == hospital.id
+    assert owner_card.incident_id == incident.id
+    assert owner_card.operation_run_id == run.id
+    assert owner_card.version == incident.version
+
+    # 담당도 아니고 OWNER도 아닌 운영자에게는 같은 행동이 비활성으로 온다.
+    operator_actions = {action.kind: action for action in operator_card.actions}
+    assert operator_actions["ASSIGN_INCIDENT"].enabled is False
+    assert operator_actions["RETRY_RUN"].enabled is False
+    assert operator_card.allowed_actions == ["OPEN_INCIDENT"]
+    assert owner_card.allowed_actions == ["OPEN_INCIDENT", "RETRY_RUN", "ASSIGN_INCIDENT"]

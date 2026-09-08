@@ -12,7 +12,10 @@ from app.api.admin.operations_center_actions import (
     require_owner,
     scoped_run,
 )
-from app.api.admin.operations_center_incident_queries import load_incidents_queue
+from app.api.admin.operations_center_incident_queries import (
+    load_assignable_accounts,
+    load_incidents_queue,
+)
 from app.api.admin.operations_center_queries import load_operations_queue
 from app.api.admin.operations_center_query_common import (
     IncidentRecoveryFilter,
@@ -46,7 +49,7 @@ async def get_operations_overview(
     sla: str | None = None,
     recovery: str | None = None,
     db: AsyncSession = Depends(get_db),
-    _actor: AdminUser = Depends(require_operations_account),
+    actor: AdminUser = Depends(require_operations_account),
 ) -> OperationsOverviewResponse:
     """Return all queue counts plus the first five tasks in a fixed number of queries."""
     filters = normalize_filters(
@@ -57,7 +60,7 @@ async def get_operations_overview(
     items = []
     for queue in OperationsQueue:
         total, rows = await load_operations_queue(
-            db, queue, filters, page=1, page_size=_OVERVIEW_SIZE, overview=True
+            db, queue, filters, page=1, page_size=_OVERVIEW_SIZE, overview=True, actor=actor
         )
         # 기한 초과 건수는 여기서 세지 않는다. overview는 큐마다 앞 5건만 읽으므로,
         # 그 5건에서 센 숫자는 실제 총계가 아니라 표본이다. 6번째 이후의 초과 건은
@@ -82,7 +85,7 @@ async def get_operations_queue(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=_PAGE_SIZE, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    _actor: AdminUser = Depends(require_operations_account),
+    actor: AdminUser = Depends(require_operations_account),
 ) -> OperationsQueueResponse:
     """Return one filtered queue using at most COUNT plus page SQL."""
     filters = normalize_filters(
@@ -90,7 +93,7 @@ async def get_operations_queue(
         owner=owner, status=status, severity=severity, sla=sla, recovery=recovery
     )
     total, items = await load_operations_queue(
-        db, queue, filters, page=page, page_size=page_size, overview=False
+        db, queue, filters, page=page, page_size=page_size, overview=False, actor=actor
     )
     return OperationsQueueResponse(
         queue=queue, total=total, page=page, page_size=page_size, items=items
@@ -101,6 +104,7 @@ async def _incident_detail(
     db: AsyncSession,
     incident_id: uuid.UUID,
     hospital_scope: uuid.UUID | None,
+    actor: AdminUser | None = None,
 ) -> IncidentDetailResponse:
     total, items = await load_incidents_queue(
         db,
@@ -111,6 +115,7 @@ async def _incident_detail(
         now=datetime.now(UTC),
         incident_id=incident_id,
         hospital_scope=hospital_scope,
+        actor=actor,
     )
     if total == 0:
         raise operations_error(
@@ -119,7 +124,11 @@ async def _incident_detail(
     item = items[0]
     run = await db.get(OperationRun, item.operation_run_id) if item.operation_run_id else None
     run_projection = run_summary(hospital_scope, run) if hospital_scope is not None else None
-    return IncidentDetailResponse(incident=item, run=run_projection)
+    return IncidentDetailResponse(
+        incident=item,
+        run=run_projection,
+        assignable_accounts=await load_assignable_accounts(db),
+    )
 
 
 @router.get(
@@ -130,10 +139,10 @@ async def get_incident_detail(
     hospital_id: uuid.UUID,
     incident_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _actor: AdminUser = Depends(require_operations_account),
+    actor: AdminUser = Depends(require_operations_account),
 ) -> IncidentDetailResponse:
     """Read one incident only through its owning hospital scope."""
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 @router.get("/incidents/{incident_id}", response_model=IncidentDetailResponse)
@@ -144,7 +153,7 @@ async def get_global_incident_detail(
 ) -> IncidentDetailResponse:
     """Read a hospital-less system incident; owners only."""
     require_owner(actor)
-    return await _incident_detail(db, incident_id, None)
+    return await _incident_detail(db, incident_id, None, actor)
 
 
 @router.get("/hospitals/{hospital_id}/runs/{run_id}", response_model=OperationsRunSummary)

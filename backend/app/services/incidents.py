@@ -9,6 +9,8 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.admin_user import ROLE_OWNER, AdminUser
+from app.models.handoff import HospitalHandoff
 from app.models.operations import Incident, IncidentState
 from app.services.audit_log import write_audit_log
 from app.services.incident_safety import (
@@ -142,7 +144,56 @@ async def open_or_touch_incident(
     ).returning(Incident).execution_options(populate_existing=True)
     incident = (await db.execute(statement)).scalar_one()
     await _audit(db, incident, actor, "incident_occurrence_recorded", reason)
-    return incident
+    return await _auto_assign(db, incident, observed_at, actor)
+
+
+async def _auto_assign(
+    db: AsyncSession, incident: Incident, observed_at: datetime, actor: str
+) -> Incident:
+    """새 에피소드가 열릴 때 담당자를 정해 둔다 (H-15).
+
+    주인 없는 예외는 아무도 자기 일로 보지 않는다. 병원의 계약 인수 AE가 1순위이고,
+    없으면 활성 OWNER 한 명이 받는다. 이미 담당자가 있으면 절대 덮지 않는다 — 재발로
+    다시 열린 건은 그 사람이 계속 본다. 후보가 없으면 그대로 비워 둔다(실패 아님).
+
+    `first_seen_at`은 새 행과 재open에서만 이번 관측 시각으로 맞춰지므로(위 upsert),
+    같은 에피소드의 반복 관측에서는 이 조회가 아예 돌지 않는다.
+    """
+    if incident.owner_id is not None or incident.first_seen_at != observed_at:
+        return incident
+    owner_id: uuid.UUID | None = None
+    if incident.hospital_id is not None:
+        owner_id = await db.scalar(
+            select(HospitalHandoff.ae_owner_id).where(
+                HospitalHandoff.hospital_id == incident.hospital_id
+            )
+        )
+    if owner_id is None:
+        owner_id = await db.scalar(
+            select(AdminUser.id)
+            .where(
+                AdminUser.role == ROLE_OWNER,
+                AdminUser.is_active.is_(True),
+                AdminUser.is_operations_test.is_(False),
+            )
+            .order_by(AdminUser.created_at.asc(), AdminUser.id.asc())
+            .limit(1)
+        )
+    if owner_id is None:
+        return incident
+    assigned = await _mutate(
+        db,
+        incident.id,
+        incident.version,
+        None,
+        {"owner_id": owner_id},
+        actor,
+        "incident_assigned",
+        "auto-assigned on first open",
+        observed_at,
+        detail_extra={"auto_assigned": True, "auto_assigned_to": str(owner_id)},
+    )
+    return assigned if isinstance(assigned, Incident) else incident
 
 
 async def assign_incident(
@@ -265,6 +316,7 @@ async def _mutate(
     db: AsyncSession, incident_id: uuid.UUID, expected_version: int,
     required_state: IncidentState | None, values: dict[str, str | uuid.UUID | datetime | None],
     actor: str, action: str, reason: str, now: datetime | None,
+    *, detail_extra: dict[str, str | bool] | None = None,
 ) -> IncidentMutationResult:
     changed_at = now or datetime.now(UTC)
     predicates = [Incident.id == incident_id, Incident.version == expected_version]
@@ -276,7 +328,7 @@ async def _mutate(
     incident = (await db.execute(statement)).scalar_one_or_none()
     if incident is None:
         return await _conflict(db, incident_id, expected_version, required_state)
-    await _audit(db, incident, actor, action, reason)
+    await _audit(db, incident, actor, action, reason, detail_extra)
     return incident
 
 
@@ -320,13 +372,15 @@ async def _transition_error(
 
 
 async def _audit(
-    db: AsyncSession, incident: Incident, actor: str, action: str, reason: str | None
+    db: AsyncSession, incident: Incident, actor: str, action: str, reason: str | None,
+    detail_extra: dict[str, str | bool] | None = None,
 ) -> None:
     await write_audit_log(
         db, action=action, hospital_id=incident.hospital_id, actor=actor,
         target_type="incident", target_id=incident.id,
         detail={"state": incident.state, "version": incident.version,
                 "occurrence_count": incident.occurrence_count,
-                "reason": sanitize_operator_text(reason, limit=200) if reason else None},
+                "reason": sanitize_operator_text(reason, limit=200) if reason else None,
+                **(detail_extra or {})},
     )
     await db.flush()

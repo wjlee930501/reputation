@@ -74,7 +74,7 @@ async def _assign(
     if not isinstance(result, Incident):
         raise_incident_conflict(result, hospital_id)
     await db.commit()
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 async def _acknowledge(
@@ -100,7 +100,7 @@ async def _acknowledge(
     if not isinstance(result, Incident):
         raise_incident_conflict(result, hospital_id)
     await db.commit()
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 async def _recover(
@@ -156,7 +156,7 @@ async def _recover(
     if not isinstance(result, Incident):
         raise_incident_conflict(result, hospital_id)
     await db.commit()
-    return await _incident_detail(db, incident_id, hospital_id)
+    return await _incident_detail(db, incident_id, hospital_id, actor)
 
 
 @router.post(

@@ -775,7 +775,7 @@ async def test_operations_overview_returns_all_four_operator_queues(pg_async_ses
     incident_hospital = await _active_hospital(db, "예외 의원")
     await _incident(db, incident_hospital, owner=actor)
 
-    result = await operations_center.get_operations_overview(db=db, _actor=actor)
+    result = await operations_center.get_operations_overview(db=db, actor=actor)
 
     counts = {summary.queue: summary.total for summary in result.queues}
     assert counts[operations_center.OperationsQueue.ONBOARDING] >= 1
@@ -812,7 +812,7 @@ async def test_live_hospital_stays_in_onboarding_until_content_schedule_is_ready
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     assert any(row.customer.hospital_id == hospital.id for row in pending.items)
 
@@ -823,7 +823,7 @@ async def test_live_hospital_stays_in_onboarding_until_content_schedule_is_ready
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     assert all(row.customer.hospital_id != hospital.id for row in completed.items)
 
@@ -848,7 +848,7 @@ async def test_operations_incident_filters_paginate_and_empty(pg_async_session):
         page=1,
         page_size=1,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     second = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.INCIDENTS,
@@ -859,7 +859,7 @@ async def test_operations_incident_filters_paginate_and_empty(pg_async_session):
         page=2,
         page_size=1,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     empty = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.INCIDENTS,
@@ -870,7 +870,7 @@ async def test_operations_incident_filters_paginate_and_empty(pg_async_session):
         page=1,
         page_size=25,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
 
     assert first.total >= 2
@@ -900,7 +900,7 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     onboarding_none = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.ONBOARDING,
@@ -908,7 +908,7 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     today_high = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.TODAY,
@@ -916,7 +916,7 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     today_overdue = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.TODAY,
@@ -924,7 +924,7 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     reports_medium = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.REPORTS,
@@ -932,7 +932,7 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
     reports_due = await operations_center.get_operations_queue(
         operations_center.OperationsQueue.REPORTS,
@@ -940,7 +940,7 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         page=1,
         page_size=100,
         db=db,
-        _actor=actor,
+        actor=actor,
     )
 
     assert all(row.customer.hospital_id != onboarding.id for row in onboarding_high.items)
@@ -1286,7 +1286,7 @@ async def _overview_query_count(db, actor: AdminUser) -> int:
     engine = db.bind.engine
     event.listen(engine.sync_engine, "before_cursor_execute", count_statement)
     try:
-        await operations_center.get_operations_overview(db=db, _actor=actor)
+        await operations_center.get_operations_overview(db=db, actor=actor)
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
     return len(statements)
@@ -1338,7 +1338,7 @@ async def test_incident_queue_groups_same_cause_in_a_constant_number_of_queries(
             page=1,
             page_size=10,
             db=db,
-            _actor=actor,
+            actor=actor,
         )
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", count_statement)
@@ -1794,7 +1794,51 @@ async def test_overview_summary_reports_no_sampled_overdue_count(pg_async_sessio
     hospital = await _active_hospital(db, "표본집계 의원")
     await _incident(db, hospital, owner=actor)
 
-    result = await operations_center.get_operations_overview(db=db, _actor=actor)
+    result = await operations_center.get_operations_overview(db=db, actor=actor)
 
     for summary in result.queues:
         assert "overdue" not in summary.model_dump()
+
+
+async def test_incident_detail_offers_only_accounts_the_assign_route_will_accept(
+    pg_async_session,
+):
+    """담당 select의 선택지 = 배정 라우트가 받아 주는 계정. 목록과 서버가 갈리면 422가 된다."""
+    db = pg_async_session
+    actor = await _operations_actor(db, "담당 OWNER")
+    teammate = await _operations_actor(db, "담당 후보", role=ROLE_OPERATOR)
+    retired = await _operations_actor(db, "퇴사 계정")
+    retired.is_active = False
+    qa_account = await _operations_actor(db, "운영 점검 계정")
+    qa_account.is_operations_test = True
+    await db.flush()
+    hospital = await _active_hospital(db, "담당 지정 의원")
+    incident = await _incident(db, hospital)
+
+    detail = await operations_center.get_incident_detail(hospital.id, incident.id, db, actor)
+
+    listed = {account.id for account in detail.assignable_accounts}
+    assert {actor.id, teammate.id} <= listed
+    assert retired.id not in listed
+    assert qa_account.id not in listed
+    # 행에도 같은 행동이 실린다 — 운영 센터가 담당 지정 버튼을 그릴 근거다.
+    assert detail.incident.assign is not None
+    assert detail.incident.assign.kind == "ASSIGN_INCIDENT"
+    assert detail.incident.assign.enabled is True
+    assert detail.incident.assign.requires_version is True
+    assert detail.incident.assign.path == (
+        f"/api/admin/operations/hospitals/{hospital.id}/incidents/{incident.id}/assign"
+    )
+
+
+async def test_non_owner_sees_the_assign_action_disabled(pg_async_session):
+    """담당 지정은 OWNER만 할 수 있다(`require_owner`) — 담당자여도 버튼은 비활성이다."""
+    db = pg_async_session
+    operator = await _operations_actor(db, "담당 운영자", role=ROLE_OPERATOR)
+    hospital = await _active_hospital(db, "권한 표시 의원")
+    incident = await _incident(db, hospital, owner=operator)
+
+    detail = await operations_center.get_incident_detail(hospital.id, incident.id, db, operator)
+
+    assert detail.incident.assign is not None
+    assert detail.incident.assign.enabled is False

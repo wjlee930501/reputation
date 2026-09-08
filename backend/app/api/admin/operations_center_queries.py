@@ -10,6 +10,7 @@ from app.api.admin.operations_center_onboarding_queries import load_onboarding_q
 from app.api.admin.operations_center_query_common import OperationsFilters
 from app.api.admin.operations_center_report_queries import load_reports_queue
 from app.api.admin.operations_center_today_queries import load_today_queue
+from app.models.admin_user import AdminUser
 from app.schemas.operations import OperationsQueue, OperationsQueueRow
 
 
@@ -21,6 +22,7 @@ async def load_operations_queue(
     page: int,
     page_size: int,
     overview: bool,
+    actor: AdminUser | None = None,
 ) -> tuple[int, list[OperationsQueueRow]]:
     """Load one queue while preserving its fixed query budget."""
     now = datetime.now(UTC)
@@ -39,7 +41,13 @@ async def load_operations_queue(
             )
         case OperationsQueue.INCIDENTS:
             return await load_incidents_queue(
-                db, filters, page=page, page_size=page_size, overview=overview, now=now
+                db,
+                filters,
+                page=page,
+                page_size=page_size,
+                overview=overview,
+                now=now,
+                actor=actor,
             )
         case unreachable:
             assert_never(unreachable)
