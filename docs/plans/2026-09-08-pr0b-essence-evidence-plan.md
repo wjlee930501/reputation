@@ -12,6 +12,21 @@
 
 ---
 
+## 실행 결과 (2026-09-08)
+
+| Task | 결함 | 커밋 | 검수 |
+|---|---|---|---|
+| 1 | H-02 기반 | `2d013a1` → `e9aabc3` | Codex: 노이즈 hash 범위를 필수 텍스트 자료로 축소 후 APPROVE |
+| 2 | H-02 readiness | `eb10224` → `4264e95` | Codex: 공개 전용 로더·backfill 체크포인트 hash 후 승인(잔여 TOCTOU는 Task 3 Step 0) |
+| 3 | H-02 자동 검수 | `1c79115`(잠금) `2461213` → `0487525` | Codex가 **실제 결함**(잔여 UP_TO_DATE → 15분 유료 반복) 발견 → 수정 후 APPROVE |
+| 4 | H-03 | `e2fbdd3` → `ead9d6b` | PATCH로 finding 삭제하는 우회 발견(Fable·Codex 동시) → 서버 소유 필드로 수정 |
+| 5 | H-04 | `8c6e1b1`(Task 4 잔여) `6270576` → `78b08a0` `9b07830` | Codex: best-effort dispatch·30분 쿨다운·문구 정렬·복구 창 문구 후 APPROVE |
+| 6 | M-01 | `5c65b8d` → `2482cf4` `ee6dee4` | Codex: 정의 공유 3곳 추가·공백 집합 parity·admin parity·ID 집합 일치 후 APPROVE |
+| 7 | M-03 + fake 대응 | `1a52744` | APPROVE |
+| 검증 | — | — | 깨끗한 5432 DB 재생성 후 backend **3,171 passed / 1 failed**(`test_provider_usage_postgres` 순서 의존 flake, 단독 통과, 등록부 LOW), ruff clean, admin **557/557**, site **310/310**, `philosophy/draft` 잔존 없음 |
+
+배포 주의: NULL `evidence_noise_hash` 승인은 다음 재조정에서 병원당 1회 유료 재검수가 발생한다(운영 7곳). 마이그레이션 head `0070_essence_evidence_noise_hash`.
+
 ## 환경 준비
 
 PR-0A 계획의 "환경 준비"와 동일하다. 백엔드 테스트 명령(`backend/`에서):
