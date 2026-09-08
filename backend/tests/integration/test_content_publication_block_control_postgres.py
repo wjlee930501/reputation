@@ -29,7 +29,7 @@ def test_publication_block_creates_one_retryable_run_per_content_revision(pg_con
         text(
             "INSERT INTO content_schedules "
             "(id, hospital_id, plan, publish_days, active_from) "
-            "VALUES (:id, :hospital_id, 'PLAN_8', '[1, 3]', :active_from)"
+            "VALUES (:id, :hospital_id, 'PLAN_12', '[1, 3]', :active_from)"
         ),
         {"id": schedule_id, "hospital_id": hospital_id, "active_from": date(2026, 8, 1)},
     )

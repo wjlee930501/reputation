@@ -56,6 +56,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
     engine = create_engine(parsed)
     hospital_id = uuid.UUID("a6500000-0000-0000-0000-000000000001")
     schedule_id = uuid.UUID("a6500000-0000-0000-0000-000000000002")
+    retired_plan_schedule_id = uuid.UUID("a6500000-0000-0000-0000-000000000013")
     content_id = uuid.UUID("a6500000-0000-0000-0000-000000000003")
     erased_content_id = uuid.UUID("a6500000-0000-0000-0000-000000000012")
     query_id = uuid.UUID("a6500000-0000-0000-0000-000000000004")
@@ -75,7 +76,11 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 
         with engine.begin() as connection:
             connection.execute(
-                text("INSERT INTO hospitals (id, name, slug) VALUES (:id, '기존 병원', 'existing')"),
+                # 폐기된 PLAN_8로 남아 있는 병원 — 0071이 PLAN_12로 옮기고 값을 없앤다.
+                text(
+                    "INSERT INTO hospitals (id, name, slug, plan) "
+                    "VALUES (:id, '기존 병원', 'existing', 'PLAN_8')"
+                ),
                 {"id": hospital_id},
             )
             connection.execute(
@@ -191,8 +196,27 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "0070_essence_evidence_noise_hash"
+                "0071_plan_enum_cleanup"
             )
+            # M-20: 폐기 요금제는 행에서도, enum 값에서도 사라진다.
+            assert connection.execute(
+                text("SELECT plan::text FROM hospitals WHERE id=:id"), {"id": hospital_id}
+            ).scalar_one() == "PLAN_12"
+            assert set(
+                connection.execute(
+                    text("SELECT enumlabel FROM pg_enum WHERE enumtypid='plan'::regtype")
+                ).scalars()
+            ) == {"PLAN_12", "PLAN_16", "PLAN_20"}
+            with pytest.raises(IntegrityError):
+                with engine.begin() as blocked:
+                    blocked.execute(
+                        text(
+                            "INSERT INTO content_schedules "
+                            "(id, hospital_id, plan, publish_days, active_from) VALUES "
+                            "(:id, :hospital_id, 'PLAN_8', '[1]'::json, DATE '2026-09-01')"
+                        ),
+                        {"id": retired_plan_schedule_id, "hospital_id": hospital_id},
+                    )
             content = connection.execute(
                 text(
                     "SELECT image_url, image_policy_verified_at, generation_philosophy_id, "
