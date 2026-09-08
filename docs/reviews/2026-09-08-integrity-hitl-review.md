@@ -68,7 +68,7 @@
 
 ### 2.3 LOW / 정리
 
-`tests/integration/test_attention_queue.py::test_incident_queue_groups_same_cause_in_a_constant_number_of_queries`는 5432 테스트 DB에 이전 실행이 남긴 인시던트 행이 있으면 `total 2 == 1`로 실패한다(깨끗한 DB에서 3/3 통과 확인). 테스트 격리 약점 — 병원 단위로 카운트하거나 setup에서 정리해야 한다; 부분 실행을 반복하는 로컬 개발에서 거짓 실패를 만든다. READY 상태 미사용; 23:00 task 안의 dead 07:45 호출; 07:45 "recovery" 이름의 페이징 전용 task; beat 안의 Nowon 일회성 잔존; `_report_delivery_blockers` 미사용(`reports.py:120-135`); `delivery_tracked` 하드코딩 True로 admin V0 분기 도달 불가; JSON-LD `alumniOf` 미렌더 필드; `/api/leads` 호출자 없음; slug/host 정규식 4곳 중복(패리티 테스트 없음); 주석 "25일 00:00" 드리프트; `connect_domain` check-then-write 500; pause/resume/set_schedule `FOR UPDATE` 없음.
+`lock_hospital_for_domain_certificate`(`domain_certificate_jobs.py`)는 PR-0A Task 2부터 재개 경로도 쓰는 "행 잠금 + 도메인·전략 비교" helper인데 이름이 인증서 전용처럼 읽힌다 — `lock_hospital_domain`으로 개명(호출자 3곳). `tests/integration/test_attention_queue.py::test_incident_queue_groups_same_cause_in_a_constant_number_of_queries`는 5432 테스트 DB에 이전 실행이 남긴 인시던트 행이 있으면 `total 2 == 1`로 실패한다(깨끗한 DB에서 3/3 통과 확인). 테스트 격리 약점 — 병원 단위로 카운트하거나 setup에서 정리해야 한다; 부분 실행을 반복하는 로컬 개발에서 거짓 실패를 만든다. READY 상태 미사용; 23:00 task 안의 dead 07:45 호출; 07:45 "recovery" 이름의 페이징 전용 task; beat 안의 Nowon 일회성 잔존; `_report_delivery_blockers` 미사용(`reports.py:120-135`); `delivery_tracked` 하드코딩 True로 admin V0 분기 도달 불가; JSON-LD `alumniOf` 미렌더 필드; `/api/leads` 호출자 없음; slug/host 정규식 4곳 중복(패리티 테스트 없음); 주석 "25일 00:00" 드리프트; `connect_domain` check-then-write 500; pause/resume/set_schedule `FOR UPDATE` 없음.
 
 ### 2.4 확인된 정상 (감사 문서 주장 중 코드로 재확인된 것)
 
