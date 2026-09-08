@@ -355,6 +355,7 @@ def _is_even_measurement_week(today: date) -> bool:
 logger = logging.getLogger(__name__)
 
 AUTO_PUBLISH_ACTOR = "SYSTEM_AUTO_PUBLISH"
+V0_QUERY_TARGET_SEED_ACTOR = "SYSTEM_V0_QUERY_SEED"
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 MORNING_CLOSE_START = time(7, 45)
 
@@ -3624,7 +3625,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             )
             db.commit()
 
-            # V0 QueryMatrix → AIQueryTarget 자동 시드 (노출 보완 탭 즉시 활성화)
+            # V0 QueryMatrix → AIQueryTarget 자동 시드 (질문이 비어 있을 때만).
             # V0 리포트·Slack outbox가 이미 함께 커밋된 뒤 실행하므로, 시드 실패는
             # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
             _seed_query_targets_from_matrix_sync(hospital.id)
@@ -7258,7 +7259,11 @@ def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant
 
 
 def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
-    """V0 완료 후 QueryMatrix → AIQueryTarget 시드 + 노출 보완 큐 생성.
+    """환자 질문이 하나도 없으면 QueryMatrix에서 시드하고 노출 보완 큐를 채운다.
+
+    환자 질문은 사람이 만들지 않는다 — V0가 끝나면 시스템이 채운다. 다만 이미 질문이
+    있으면(보관 제외) 다시 시드하지 않는다. 재실행·주기 복구가 AE가 정리한 질문 구성에
+    덮어써 들어가면 안 되기 때문이다.
 
     V0 리포트가 이미 커밋된 뒤에 실행되는 post-commit 사이드 이펙트다.
     실패해도 V0 결과를 건드리지 않고 로그만 남긴다.
@@ -7266,13 +7271,30 @@ def _seed_query_targets_from_matrix_sync(hospital_id: uuid.UUID) -> None:
     exposure_action_engine은 AsyncSession만 지원하므로 별도 async 루프로 실행한다.
     """
     try:
-        from app.api.admin.query_targets import seed_query_targets_from_matrix
         from app.core.database import get_async_sessionmaker
+        from app.services.audit_log import write_audit_log
         from app.services.exposure_action_engine import ensure_hospital_exposure_actions
+        from app.services.query_target_seed import (
+            count_live_query_targets,
+            seed_query_targets_from_matrix,
+        )
 
         async def _run(h_id: uuid.UUID) -> None:
             async with get_async_sessionmaker()() as async_db:
-                await seed_query_targets_from_matrix(async_db, h_id)
+                if await count_live_query_targets(async_db, h_id) == 0:
+                    result = await seed_query_targets_from_matrix(async_db, h_id)
+                    created = int(result.get("created") or 0)
+                    if created:
+                        # 사람이 만들지 않은 질문이 어디서 왔는지 화면에서 되짚을 수 있어야 한다.
+                        await write_audit_log(
+                            async_db,
+                            action="query_targets_seeded_from_matrix",
+                            hospital_id=h_id,
+                            actor=V0_QUERY_TARGET_SEED_ACTOR,
+                            target_type="ai_query_target",
+                            detail={"created": created, "trigger": "v0_report_done"},
+                        )
+                        await async_db.commit()
                 await ensure_hospital_exposure_actions(async_db, h_id)
 
         _run_async(_run(hospital_id))
