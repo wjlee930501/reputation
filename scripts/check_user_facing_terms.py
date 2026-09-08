@@ -101,6 +101,10 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/app/hospitals/page.tsx",
     "admin/lib/hospital-states.ts",
     "admin/lib/admin-copy.ts",
+    "admin/app/hospitals/[id]/info/page.tsx",
+    "admin/app/hospitals/[id]/info/FactsSection.tsx",
+    "admin/app/hospitals/[id]/info/AutofillModal.tsx",
+    "admin/lib/info-sections.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"

@@ -52,6 +52,19 @@ export type HospitalStatusValue =
   | 'ACTIVE'
   | 'PAUSED'
 
+/** 서버가 판정해 내려주는 남은 필수 항목 한 건(키 + 화면 라벨). */
+export interface MissingProfileRequirement {
+  key: string
+  label: string
+}
+
+/** 공식 채널 URL을 저장할 때 서버가 근거 자료로 자동 등록한 결과. */
+export interface ProfileSourceRegistration {
+  field: string
+  status: 'REGISTERED' | 'SKIPPED' | 'FAILED'
+  message?: string | null
+}
+
 export interface Hospital {
   id: string
   name: string
@@ -59,6 +72,13 @@ export interface Hospital {
   status: HospitalStatusValue
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12' | null
   profile_complete: boolean
+  /**
+   * 아직 비어 있는 필수 항목. 서버가 `profile_complete`를 파생하면서 함께 내려준다 —
+   * 화면은 이 목록만 세고, 완료 여부를 스스로 계산하지 않는다.
+   */
+  missing_profile_requirements?: MissingProfileRequirement[]
+  /** 프로필 저장 응답에만 실린다. */
+  source_registration?: ProfileSourceRegistration[]
   /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
   visual_approval_missing?: string[]
   v0_report_done: boolean
