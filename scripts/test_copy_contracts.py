@@ -8,6 +8,7 @@
 stdlib만 쓴다: `pytest scripts` 레인은 백엔드 의존성 설치 없이도 돌아야 한다.
 """
 
+import ast
 import re
 from pathlib import Path
 
@@ -15,6 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 _BACKEND_DIAGNOSIS = PROJECT_ROOT / "backend" / "app" / "api" / "public" / "diagnosis.py"
 _SITE_DIAGNOSIS_SLOTS = PROJECT_ROOT / "site" / "lib" / "diagnosis-slots.ts"
+_BACKEND_ESSENCE_SOURCES = PROJECT_ROOT / "backend" / "app" / "services" / "essence_sources.py"
+_ADMIN_ESSENCE_SOURCE_SPLIT = PROJECT_ROOT / "admin" / "lib" / "essence-source-split.ts"
 
 
 def _read_int_constant(path: Path, pattern: str) -> int:
@@ -46,4 +49,80 @@ def test_diagnosis_slot_reset_hour_matches_across_backend_and_site() -> None:
         f"자리 리셋 시각이 갈라졌다: backend/app/api/public/diagnosis.py="
         f"{backend_hour}, site/lib/diagnosis-slots.ts={site_hour}. "
         "둘 다 같은 값으로 맞출 것 — 화면 안내 문구와 실제 배정 경계가 어긋난다."
+    )
+
+
+def _single_match(path: Path, pattern: str, flags: int = re.MULTILINE) -> str:
+    text = path.read_text(encoding="utf-8")
+    matches = re.findall(pattern, text, flags)
+    assert len(matches) == 1, (
+        f"{path.relative_to(PROJECT_ROOT)}에서 {pattern!r}로 선언을 정확히 하나 찾지 못했다 "
+        f"(찾은 개수: {len(matches)}). 선언 형태가 바뀌었으면 이 파서를 함께 고쳐야 한다 — "
+        "파서가 조용히 0건을 반환하면 가드가 통과하면서 아무것도 지키지 않게 된다."
+    )
+    return matches[0]
+
+
+def _backend_blank_chars() -> set[str]:
+    """`_BLANK_CHARS = (...)` 우변을 그대로 평가한다 (암묵적 문자열 연결 포함)."""
+    literal = _single_match(
+        _BACKEND_ESSENCE_SOURCES,
+        r"^_BLANK_CHARS\s*=\s*(\(.*?\))\s*$",
+        re.MULTILINE | re.DOTALL,
+    )
+    return set(ast.literal_eval(literal))
+
+
+def _admin_blank_chars() -> set[str]:
+    """`BLANK_TEXT_RE = /^[...]*$/`의 문자 클래스를 코드포인트 집합으로 푼다."""
+    char_class = _single_match(
+        _ADMIN_ESSENCE_SOURCE_SPLIT,
+        r"^const BLANK_TEXT_RE\s*=\s*/\^\[(.*?)\]\*\$/\s*$",
+    )
+
+    tokens: list[str] = []
+    index = 0
+    while index < len(char_class):
+        if char_class.startswith("\\u", index):
+            tokens.append(chr(int(char_class[index + 2 : index + 6], 16)))
+            index += 6
+        elif char_class[index] == "\\":
+            tokens.append(char_class[index + 1])
+            index += 2
+        else:
+            tokens.append(char_class[index])
+            index += 1
+
+    chars: set[str] = set()
+    position = 0
+    while position < len(tokens):
+        is_range = (
+            tokens[position] == "-" and 0 < position < len(tokens) - 1 and bool(chars)
+        )
+        if is_range:
+            for code_point in range(ord(tokens[position - 1]), ord(tokens[position + 1]) + 1):
+                chars.add(chr(code_point))
+            position += 2
+        else:
+            chars.add(tokens[position])
+            position += 1
+    return chars
+
+
+def test_blank_text_set_matches_across_backend_and_admin() -> None:
+    """원문이 비어 있다는 판정의 공백 집합은 백엔드와 admin 화면이 같아야 한다.
+
+    어긋나면 NBSP·전각 공백만 든 자료를 두고 한쪽은 "원문 있음", 다른 쪽은 "없음"으로
+    세어 필수 자료 분모가 갈라진다. 화면은 "처리 완료 12/12"인데 서버는 승인 게이트를
+    열어 주지 않고, AE는 무엇이 남았는지 볼 방법이 없다.
+    """
+    backend_chars = _backend_blank_chars()
+    admin_chars = _admin_blank_chars()
+
+    assert backend_chars == admin_chars, (
+        "공백 집합이 갈라졌다: "
+        f"backend에만 있음={sorted(hex(ord(c)) for c in backend_chars - admin_chars)}, "
+        f"admin에만 있음={sorted(hex(ord(c)) for c in admin_chars - backend_chars)}. "
+        "backend/app/services/essence_sources.py의 _BLANK_CHARS와 "
+        "admin/lib/essence-source-split.ts의 BLANK_TEXT_RE를 같은 집합으로 맞출 것."
     )
