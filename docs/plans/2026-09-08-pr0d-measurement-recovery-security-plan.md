@@ -8,7 +8,7 @@
 
 **Tech Stack:** FastAPI, Celery, Alembic, pytest(SimpleNamespace + 실 PostgreSQL), Next.js 16 admin(`crypto.subtle`), `node:test`. 근거: [설계](2026-09-08-admin-hitl-simplification-design.md) §3 PR-0D, [검토](../reviews/2026-09-08-integrity-hitl-review.md) §2.
 
-**상세도 안내:** Task 1·2·4·6·7은 코드 단계까지 확정했다. Task 3(복구 예산)·Task 5(배정 UI)는 대상 helper·직렬화 파일을 아직 확정하지 못해 의도와 검증 조건까지만 적었다 — 실행 직전에 컨트롤러가 해당 파일을 읽고 같은 형식의 코드 단계로 확장한 뒤 구현자에게 넘긴다. 확장 없이 구현자에게 넘기지 않는다.
+**상세도 안내:** 모든 Task를 코드 단계까지 확정했다(Task 3·5는 `autonomous_recovery.py`의 `_redispatch_operation_run`/`_rebuild_dispatch`, `operations_center_serializers.py`의 `serialize_incident_row`, `HospitalHandoff.ae_owner_id`를 읽고 확장함). Task 3의 `build_aeo_site`가 REBUILD_SITE run을 닫는지는 구현자가 첫 단계에서 확인한다.
 
 **이 PR에서 다루지 않음(후속 PR-0D-2):** H-12의 "다시 실행이 150 슬롯 전량 재구매"(V0 lineage 재사용 설계 필요), M-09(언급률 집계 5개 통일), M-19(노출 보완 갱신/완료 제거 — Phase 1에서 화면 자체가 사라짐).
 
@@ -229,17 +229,74 @@ def test_site_build_recovery_creates_one_rebuild_run_per_hospital_and_does_not_r
 
 - [ ] **Step 2: 구현**
 
-병원 선택 쿼리는 유지하되, 각 병원에 대해 `celery_app.send_task(...)` 대신:
+`reconcile()`의 병원 루프에서 `celery_app.send_task("app.workers.tasks.build_aeo_site", ...)` 호출을 아래로 교체한다. 재발송 자체는 이미 있는 `_redispatch_operation_run(db, run, observed_at)`(같은 파일 ≈234행)이 담당한다 — `REBUILD_SITE` 정책은 `_OPERATION_REDISPATCH_POLICIES`에 이미 있고, `_rebuild_dispatch`는 `target_type == "hospital"`이면 저장 payload 없이도 `hospital_id`로 dispatch를 재구성한다.
 
 ```python
         for hospital in hospitals:
             run = _ensure_rebuild_site_run(db, hospital, observed_at)
-            if run is None:
-                continue  # 이미 QUEUED/RUNNING이거나 예산 소진
-            _dispatch_operation_run_sync(db, run, _OPERATION_REDISPATCH_POLICIES["REBUILD_SITE"])
+            if run is not None:
+                _redispatch_operation_run(db, run, observed_at)
+        db.commit()
 ```
 
-`_ensure_rebuild_site_run`: 병원의 최신 `OperationRun(operation_type="REBUILD_SITE", target_id=hospital.id)`를 조회. 없으면 `operation_run_payloads`/`OperationRun` 생성(REQUESTED, `attempt_count=0`). 있으면: QUEUED/RUNNING이고 grace 안 → None; FAILED이고 `attempt_count < 3` → 새 REQUESTED run(또는 attempt_count+1); FAILED이고 `attempt_count >= 3` → `open_or_touch_incident` 상당의 sync 경로(이 파일이 이미 인시던트를 여는 방식 — `build_open_incident_notification`/`enqueue_notification_sync` 조합 — 을 재사용)로 인시던트 1건(dedupe key = `build_incident_key("site_build", "hospital", hospital.id, fingerprint)`) 후 None. 이 파일에서 OperationRun을 어떻게 만들고 dispatch하는지(아래쪽 `operation_runs` 루프가 쓰는 helper)를 읽고 **같은 helper**를 쓴다. 새 helper를 만들기보다 기존 `_redispatch_operation_run`(이름은 파일에서 확인)을 REBUILD_SITE에 적용하는 것이 목표다.
+새 helper(같은 파일, `_redispatch_operation_run` 위):
+
+```python
+_REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
+_REBUILD_SITE_BUDGET_WINDOW: Final = timedelta(hours=24)
+
+
+def _ensure_rebuild_site_run(db, hospital: Hospital, observed_at: datetime) -> OperationRun | None:
+    """사이트 준비 재실행을 OperationRun 예산 아래 둔다 (H-13).
+
+    QUEUED/RUNNING이 grace 안이면 건너뛰고, 24시간 안에 FAILED가 예산만큼 쌓였으면 인시던트
+    하나(병원 단위 dedupe)로 사람에게 넘긴다. 그 밖에는 REQUESTED run을 만들어 dispatch한다.
+    """
+    recent = list(
+        db.execute(
+            select(OperationRun)
+            .where(
+                OperationRun.operation_type == "REBUILD_SITE",
+                OperationRun.hospital_id == hospital.id,
+                OperationRun.requested_at >= observed_at - _REBUILD_SITE_BUDGET_WINDOW,
+            )
+            .order_by(OperationRun.requested_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    for run in recent:
+        if run.state in (OperationRunState.REQUESTED, OperationRunState.QUEUED, OperationRunState.RUNNING):
+            return run if _operation_redispatch_is_due(run, observed_at) else None
+    failed = [run for run in recent if run.state == OperationRunState.FAILED]
+    if len(failed) >= _REBUILD_SITE_ATTEMPT_BUDGET:
+        _open_rebuild_site_incident(db, hospital, failed[0], observed_at)
+        return None
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="REBUILD_SITE",
+        state=OperationRunState.REQUESTED,
+        idempotency_key=f"rebuild-site:{hospital.id}:{observed_at.date().isoformat()}:{len(failed)}",
+        requested_by_id=None,
+        task_id=str(uuid.uuid4()),
+        attempt_count=len(failed),
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload={"source_type": "hospital", "source_id": str(hospital.id)},
+        result_summary={},
+        version=1,
+    )
+    db.add(run)
+    db.flush()
+    return run
+```
+
+`_open_rebuild_site_incident(db, hospital, last_failed_run, observed_at)`: 이 파일이 `_fail_unsafe_operation_run` 등에서 인시던트를 여는 방식(`build_incident_key` + `Incident(...)` insert 또는 `build_open_incident_notification` + `enqueue_notification_sync`)을 그대로 따라 `incident_type="SITE_BUILD_RETRIES_EXHAUSTED"`, `severity=IncidentSeverity.HIGH`, dedupe key `build_incident_key("site_build", "hospital", str(hospital.id), IncidentFingerprint(...))`, `next_action="병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."`, `admin_path=f"/hospitals/{hospital.id}"`로 연다. 같은 병원이 열려 있으면 `last_seen_at`만 갱신(기존 helper가 dedupe를 처리하면 그대로).
+
+`build_aeo_site` task가 REBUILD_SITE run의 상태를 SUCCEEDED/FAILED로 닫는지 확인한다(`grep -n "REBUILD_SITE" backend/app/workers/tasks.py`). 닫지 않으면, task 시작부에서 `headers["operation_run_id"]`로 run을 찾아 RUNNING → 끝에 SUCCEEDED/FAILED로 기록하는 기존 explicit-run 패턴(`explicit_run_context`/`finish_explicit_run`)을 붙인다 — 그래야 예산 카운트가 실제 실패를 센다.
 
 - [ ] **Step 3: 통과·커밋**
 
@@ -314,12 +371,96 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 ### Task 5: 인시던트 배정을 admin에서 할 수 있다 (H-15)
 
 **Files:**
-- Modify: 백엔드 큐/상세 직렬화에서 `row.action`을 만드는 파일(`grep -rn "ACK_INCIDENT\|kind=" backend/app/api/admin/operations_center*.py backend/app/services/operations_center*.py`로 찾는다): 무배정 인시던트에 `assign` 행동(`{"kind": "ASSIGN_INCIDENT", "method": "POST", "path": ".../assign", "enabled": true, "label": "담당자 지정"}`) 추가; 상세 응답에 `assignable_accounts: [{id, email, role}]`(활성 계정 목록) 추가
-- Modify: `admin/lib/operations-center.ts:42-44, 486-500` (`'ASSIGN_INCIDENT'` kind + 배정 mutation), `admin/app/operations/OperationDetail.tsx:57-62` (label) + 담당자 `<select>`, `admin/app/operations/useOperationsCenter.ts:≈210` (body에 `owner_id`, `sla_due_at: null`, `reason`, `expected_version`)
-- 자동 배정: `backend/app/services/incidents.py:open_or_touch_incident` 호출 직후 hospital의 담당 AE(`HospitalHandoff.ae_account_id` 또는 그에 해당하는 필드 — `grep -n "ae_" backend/app/models/handoff.py`)가 있으면 `owner_id`로 설정
-- Test: `backend/tests/test_admin_operations.py`(배정 행동 직렬화 + 자동 배정), `admin/lib/operations-center.test.ts`(ASSIGN mutation 생성)
+- Modify: `backend/app/schemas/operations.py:168-182` (`OperationsQueueRow`에 `assign: OperationsAction | None = None`), `:221-223` (`IncidentDetailResponse`에 `assignable_accounts: list[OperationsOwner] = []`)
+- Modify: `backend/app/api/admin/operations_center_serializers.py:196-275` (`serialize_incident_row`에 `assign=...`), 상세 라우트(`operations_center_incident_routes.py`의 `_incident_detail`)에서 활성 계정 목록 채우기
+- Modify: `backend/app/services/incidents.py:47` (`open_or_touch_incident` — 신규 인시던트에 병원 담당 AE 자동 배정)
+- Modify: `admin/lib/operations-center.ts:40-44` (kind 유니온에 `'ASSIGN_INCIDENT'`), `:486-500` (`primaryOperationsMutation`), `admin/app/operations/OperationDetail.tsx:57-62` (label) + 담당자 `<select>`, `admin/app/operations/useOperationsCenter.ts:≈210-225` (body)
+- Test: `backend/tests/test_admin_operations.py`, `backend/tests/test_admin_lead_attention.py`(자동 배정), `admin/lib/operations-center.test.ts`
 
-- [ ] 구현·테스트·커밋 (`fix: wire incident assignment and auto-assign to the hospital's AE (H-15)`).
+- [ ] **Step 1: 테스트**
+
+`backend/tests/test_admin_operations.py`(그 파일의 인시던트 직렬화 테스트 픽스처 사용):
+
+```python
+def test_unassigned_incident_row_offers_an_assign_action():
+    row = serialize_incident_row(_incident(owner_id=None), _hospital(), None, None, None, _now())
+    assert row.assign is not None
+    assert row.assign.kind == "ASSIGN_INCIDENT"
+    assert row.assign.method == "POST"
+    assert row.assign.path.endswith(f"/incidents/{row.incident_id}/assign")
+    assert row.assign.reason_required is True and row.assign.requires_version is True
+
+
+def test_assigned_incident_row_offers_reassign_only_as_a_labelled_action():
+    row = serialize_incident_row(_incident(owner_id=uuid.uuid4()), _hospital(), _owner(), None, None, _now())
+    assert row.assign is not None and row.assign.label == "담당자 변경"
+```
+
+자동 배정(실 PG 통합 테스트가 있는 파일 — `tests/integration/test_incident_*.py` 또는 `test_admin_lead_attention.py`의 방식):
+
+```python
+async def test_new_incident_is_auto_assigned_to_the_hospital_ae(pg_async_session):
+    hospital, handoff, ae = await _seed_hospital_with_ae(pg_async_session)  # handoff.ae_owner_id == ae.id
+    incident = await open_or_touch_incident(pg_async_session, _request(hospital_id=hospital.id))
+    assert incident.owner_id == ae.id
+
+
+async def test_existing_owner_is_not_overwritten_on_touch(pg_async_session):
+    hospital, handoff, ae = await _seed_hospital_with_ae(pg_async_session)
+    other = await _seed_account(pg_async_session, email="other@example.com")
+    first = await open_or_touch_incident(pg_async_session, _request(hospital_id=hospital.id))
+    first.owner_id = other.id
+    await pg_async_session.commit()
+    touched = await open_or_touch_incident(pg_async_session, _request(hospital_id=hospital.id))
+    assert touched.owner_id == other.id
+```
+
+`admin/lib/operations-center.test.ts`:
+
+```ts
+test('an unassigned incident resolves to an ASSIGN_INCIDENT mutation before recover/ack', () => {
+  const detail = makeDetail({ owner: null, assign: { kind: 'ASSIGN_INCIDENT', label: '담당자 지정', method: 'POST', path: '/api/admin/operations/hospitals/h/incidents/i/assign', enabled: true, reason_required: true, requires_version: true, requires_idempotency_key: false } })
+  const mutation = primaryOperationsMutation(detail, '담당 지정', { ownerId: 'acct-1' })
+  assert.equal(mutation?.kind, 'ASSIGN_INCIDENT')
+  assert.equal(mutation?.ownerId, 'acct-1')
+})
+```
+(`makeDetail`은 그 테스트 파일의 기존 detail 빌더 이름으로 맞춘다.)
+
+- [ ] **Step 2: 백엔드 구현**
+
+`serialize_incident_row`의 `OperationsQueueRow(...)`에:
+
+```python
+        assign=(
+            OperationsAction(
+                kind="ASSIGN_INCIDENT",
+                label="담당자 변경" if owner is not None else "담당자 지정",
+                method="POST",
+                path=f"/api/admin/operations/hospitals/{hospital_id}/incidents/{incident.id}/assign",
+                reason_required=True,
+                requires_version=True,
+            )
+            if hospital_id is not None
+            else None
+        ),
+```
+
+`_incident_detail`(상세 응답)에서 `assignable_accounts=[OperationsOwner(id=a.id, email=a.email, role=a.role) for a in 활성 AdminUser 목록]` — 활성 계정 조회는 `accounts.py`가 쓰는 쿼리(`AdminUser.is_active.is_(True)`)를 재사용. `OperationsOwner` 필드는 `owner_projection`이 만드는 것과 같게.
+
+`open_or_touch_incident`: `base = insert(Incident).values(...)`의 `owner_id`(현재 값이 없으면 추가)를 `request.hospital_id`가 있을 때 `HospitalHandoff.ae_owner_id`(해당 병원 handoff, 있으면)로 채운다 — insert 전에 `await db.scalar(select(HospitalHandoff.ae_owner_id).where(HospitalHandoff.hospital_id == request.hospital_id))`. upsert의 `on_conflict_do_update`에서는 `owner_id`를 **갱신하지 않는다**(기존 배정 보존). `IncidentOpenRequest`는 바꾸지 않는다.
+
+- [ ] **Step 3: admin 구현**
+
+`operations-center.ts`: kind 유니온에 `'ASSIGN_INCIDENT'`; `OperationsMutationDescriptor`에 `ownerId?: string`; `primaryOperationsMutation(detail, reason, options?: { ownerId?: string })`가 `row.owner == null && enabledPostAction(row.assign)`이면 ASSIGN mutation을 **먼저** 돌려준다(`targetId: row.incident_id`, `version: row.version`, `requiresIdempotencyKey: false`, `ownerId: options?.ownerId`). `useOperationsCenter.ts`의 mutate: `mutation.kind === 'ASSIGN_INCIDENT'`면 body `{ reason, expected_version: mutation.version, owner_id: mutation.ownerId, sla_due_at: null }`. `OperationDetail.tsx`: `mutationLabel`에 `case 'ASSIGN_INCIDENT': return '담당자 지정'`; 담당자가 없고 `detail.assignable_accounts.length > 0`이면 이유 입력 위에 `<select>`(계정 email 목록, 기본값 = 로그인 사용자)를 그리고 선택값을 `onMutate`에 `ownerId`로 넘긴다. 배정된 뒤에는 기존 복구/확인 행동이 그대로 나온다.
+
+- [ ] **Step 4: 통과·커밋** — backend 해당 테스트 + admin `npm test/lint/typecheck`.
+
+```bash
+git add backend/app/schemas/operations.py backend/app/api/admin/operations_center_serializers.py backend/app/api/admin/operations_center_incident_routes.py backend/app/services/incidents.py backend/tests admin/lib/operations-center.ts admin/lib/operations-center.test.ts admin/app/operations/OperationDetail.tsx admin/app/operations/useOperationsCenter.ts && git commit -m "fix: wire incident assignment and auto-assign new incidents to the hospital's AE (H-15)
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
+```
 
 ---
 
