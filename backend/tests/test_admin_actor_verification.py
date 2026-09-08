@@ -180,3 +180,165 @@ async def test_capture_admin_actor_sets_and_resets_context():
             await gen.__anext__()
     # 컨텍스트 원복 후에는 헤더 값이 남지 않는다.
     assert default_actor() != "owner@example.com"
+
+
+# ── H-10: 사람 변경은 BFF가 서명한 actor 단언을 요구한다 ────────────────────
+
+
+def _sign_assertion(secret: str, payload: dict, *, mangle: bool = False) -> str:
+    """admin/lib/actor-assertion.ts와 같은 규칙으로 단언을 만든다."""
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode().rstrip("=")
+    signature = hmac.new(
+        secret.encode("utf-8"), f"v1.{encoded}".encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    if mangle:
+        signature = ("0" if signature[0] != "0" else "1") + signature[1:]
+    return f"v1.{encoded}.{signature}"
+
+
+def _assertion_payload(*, email: str = "owner@example.com", ttl_ms: int = 120_000) -> dict:
+    import time as _time
+
+    issued_at = int(_time.time() * 1000)
+    return {
+        "email": email,
+        "role": "OWNER",
+        "iat": issued_at,
+        "exp": issued_at + ttl_ms,
+        "nonce": "0123456789abcdef0123456789abcdef",
+    }
+
+
+def _assertion_request(method: str, headers: dict[str, str], path: str = "/api/v1/admin/leads"):
+    return SimpleNamespace(
+        method=method,
+        url=SimpleNamespace(path=path),
+        headers=SimpleNamespace(get=lambda key, default=None: headers.get(key, default)),
+    )
+
+
+async def _actor_for(request, db) -> str:
+    from app.services.audit_log import default_actor
+
+    gen = security.capture_admin_actor(request, db=db)
+    await gen.__anext__()
+    try:
+        return default_actor()
+    finally:
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+
+
+@pytest.fixture
+def _actor_secret(monkeypatch):
+    monkeypatch.setattr(security.settings, "BFF_ACTOR_SECRET", "test-actor-secret")
+    return "test-actor-secret"
+
+
+async def test_write_without_assertion_is_rejected_with_operator_guidance(_actor_secret):
+    """(a) 배포 직후 옛 JS를 띄워둔 탭이 여기 걸린다 — 스스로 복구할 문구가 있어야 한다."""
+    db = _FakeDB(matched="owner@example.com")
+    gen = security.capture_admin_actor(_assertion_request("POST", {}), db=db)
+
+    with pytest.raises(security.HTTPException) as exc:
+        await gen.__anext__()
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "ACTOR_ASSERTION_REQUIRED"
+    assert exc.value.detail["message"] == (
+        "관리 화면을 새로고침한 뒤 다시 시도해 주세요(로그인 세션 갱신 필요)."
+    )
+    assert db.executed == 0  # 단언 없이는 DB를 건드리지 않는다
+
+
+async def test_valid_assertion_adopts_the_signed_email_as_actor(_actor_secret):
+    """(b) 서명된 이메일을 actor로 채택하되 활성 계정 매칭은 그대로 적용한다."""
+    db = _FakeDB(matched="owner@example.com")
+    token = _sign_assertion(_actor_secret, _assertion_payload())
+
+    actor = await _actor_for(
+        # X-Admin-Actor는 위조 가능하므로 단언이 이긴다.
+        _assertion_request(
+            "POST", {"X-Admin-Actor-Assertion": token, "X-Admin-Actor": "ghost@attacker.com"}
+        ),
+        db,
+    )
+
+    assert actor == "owner@example.com"
+    assert db.executed == 1
+
+
+async def test_expired_assertion_is_rejected(_actor_secret):
+    """(c) 120초 TTL이 재생 창을 제한한다 — 만료 뒤에는 같은 토큰이 통하지 않는다."""
+    db = _FakeDB(matched="owner@example.com")
+    token = _sign_assertion(_actor_secret, _assertion_payload(ttl_ms=-1))
+
+    gen = security.capture_admin_actor(
+        _assertion_request("POST", {"X-Admin-Actor-Assertion": token}), db=db
+    )
+    with pytest.raises(security.HTTPException) as exc:
+        await gen.__anext__()
+
+    assert exc.value.status_code == 403
+    assert exc.value.detail["code"] == "ACTOR_ASSERTION_INVALID"
+
+
+async def test_assertion_signed_with_another_secret_is_rejected(_actor_secret):
+    """(d) 다른 키로 서명했거나 서명을 손댄 단언은 통과하지 못한다."""
+    db = _FakeDB(matched="owner@example.com")
+    for token in (
+        _sign_assertion("other-secret", _assertion_payload()),
+        _sign_assertion(_actor_secret, _assertion_payload(), mangle=True),
+        "v1.not-base64.deadbeef",
+        "garbage",
+    ):
+        gen = security.capture_admin_actor(
+            _assertion_request("PATCH", {"X-Admin-Actor-Assertion": token}), db=db
+        )
+        with pytest.raises(security.HTTPException) as exc:
+            await gen.__anext__()
+        assert exc.value.status_code == 403
+        assert exc.value.detail["code"] == "ACTOR_ASSERTION_INVALID"
+
+
+async def test_read_without_assertion_is_allowed(_actor_secret):
+    """(e) 읽기는 단언 없이 통과한다."""
+    db = _FakeDB(matched="owner@example.com")
+
+    actor = await _actor_for(_assertion_request("GET", {"X-Admin-Actor": "owner@example.com"}), db)
+
+    assert actor == "owner@example.com"
+
+
+async def test_system_header_write_is_allowed_and_recorded_as_system_actor(_actor_secret):
+    """(f) 배치/CLI는 세션이 없다 — 시스템 헤더로 통과하되 actor에 job 이름을 남긴다."""
+    db = _FakeDB(matched=None)
+
+    actor = await _actor_for(_assertion_request("POST", {"X-Admin-Actor-System": "nightly"}), db)
+
+    assert actor == "system:nightly"
+    assert db.executed == 0  # 시스템 호출에는 매칭할 AdminUser가 없다
+
+
+async def test_malformed_system_job_name_is_rejected(_actor_secret):
+    db = _FakeDB(matched=None)
+    gen = security.capture_admin_actor(
+        _assertion_request("DELETE", {"X-Admin-Actor-System": "night ly\n"}), db=db
+    )
+    with pytest.raises(security.HTTPException) as exc:
+        await gen.__anext__()
+    assert exc.value.detail["code"] == "ACTOR_ASSERTION_INVALID"
+
+
+async def test_assertion_is_not_enforced_without_a_configured_secret():
+    """시크릿이 없으면 검증 자체가 불가능하다 — 프로덕션 부팅은 config가 막는다."""
+    db = _FakeDB(matched="owner@example.com")
+
+    actor = await _actor_for(_assertion_request("POST", {"X-Admin-Actor": "owner@example.com"}), db)
+
+    assert actor == "owner@example.com"

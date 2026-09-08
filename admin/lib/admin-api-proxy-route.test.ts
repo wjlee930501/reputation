@@ -3,12 +3,15 @@ import test from 'node:test'
 
 import { NextRequest } from 'next/server.js'
 
+import { parseActorAssertionForTest } from './actor-assertion.ts'
 import {
   handleAdminApiProxy,
   validateAdminIdempotencyKey,
 } from './admin-api-proxy-route.ts'
 import { clearAdminSessionRevocationCache } from './session-revocation.ts'
 import { generateSessionToken } from './session.ts'
+
+const ACTOR_SECRET = 'test-actor-secret'
 
 const sessionPayload = {
   accountId: '0f0a41a9-bf2c-4f7b-b182-b85dc729b6e4',
@@ -28,6 +31,7 @@ async function buildAuthorizedRequest(
   const token = tokenOverride ?? (await generateSessionToken(secret, 60, sessionPayload))
   process.env.ADMIN_SECRET_KEY = 'test-admin-key'
   process.env.ADMIN_SESSION_SECRET = secret
+  process.env.BFF_ACTOR_SECRET = ACTOR_SECRET
   process.env.BACKEND_URL = 'https://backend.example.test'
 
   return new NextRequest('https://admin.example.test/api/admin/hospitals?limit=1', {
@@ -470,6 +474,66 @@ test('admin API route asks the backend to judge the session account, not just th
     assert.ok(Number.isFinite(Date.parse(issuedAt)), 'issued_at must be an ISO timestamp')
   } finally {
     globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('the proxy signs every backend call with a BFF actor assertion', async () => {
+  // 백엔드는 사람 변경에 이 헤더를 요구한다(H-10). 프록시가 붙이지 않으면 admin 화면의
+  // 모든 쓰기가 403 ACTOR_ASSERTION_REQUIRED로 죽는다.
+  clearAdminSessionRevocationCache()
+  const originalFetch = globalThis.fetch
+  let backendHeaders = new Headers()
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes('/api/v1/admin/auth/sessions/') && url.includes('/revocation')) {
+      return new Response(JSON.stringify({ revoked: false }), { status: 200 })
+    }
+    backendHeaders = new Headers(init?.headers)
+    return new Response(JSON.stringify({ ok: true }), { status: 200 })
+  }
+
+  try {
+    const res = await handleAdminApiProxy(
+      await buildAuthorizedRequest('POST', sessionPayload.csrfToken),
+      { params: Promise.resolve({ path: ['hospitals'] }) },
+    )
+    assert.equal(res.status, 200)
+
+    const assertion = backendHeaders.get('x-admin-actor-assertion')
+    assert.ok(assertion, 'the backend call must carry a signed actor assertion')
+    const parsed = await parseActorAssertionForTest(ACTOR_SECRET, assertion)
+    assert.equal(parsed?.email, sessionPayload.email)
+    assert.equal(parsed?.role, sessionPayload.role)
+    assert.equal(await parseActorAssertionForTest('other-secret', assertion), null)
+  } finally {
+    globalThis.fetch = originalFetch
+    clearAdminSessionRevocationCache()
+  }
+})
+
+test('a deployment without BFF_ACTOR_SECRET refuses to proxy instead of sending an unsigned mutation', async () => {
+  const original = process.env.BFF_ACTOR_SECRET
+  const originalFetch = globalThis.fetch
+  let fetchCalled = false
+  globalThis.fetch = async () => {
+    fetchCalled = true
+    return new Response('{}', { status: 200 })
+  }
+
+  try {
+    const request = await buildAuthorizedRequest('POST', sessionPayload.csrfToken)
+    Reflect.deleteProperty(process.env, 'BFF_ACTOR_SECRET')
+    const res = await handleAdminApiProxy(request, {
+      params: Promise.resolve({ path: ['hospitals'] }),
+    })
+
+    assert.equal(res.status, 500)
+    assert.deepEqual(await res.json(), { error: 'Server misconfigured' })
+    assert.equal(fetchCalled, false)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (original !== undefined) process.env.BFF_ACTOR_SECRET = original
     clearAdminSessionRevocationCache()
   }
 })

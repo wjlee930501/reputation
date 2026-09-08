@@ -26,6 +26,9 @@ fail()   { echo -e "  ${RED}✗${RESET} $1"; FAIL=$((FAIL+1)); }
 skip()   { echo -e "  ${YELLOW}⊘${RESET} $1 (API 키 없음 — 스킵)"; SKIP=$((SKIP+1)); }
 info()   { echo -e "  ${YELLOW}ℹ${RESET} $1"; }
 
+# 백엔드는 사람 변경에 BFF 서명 단언을 요구한다 — 스크립트는 시스템 호출로 표시한다.
+ACTOR_SYSTEM_HEADER="X-Admin-Actor-System: full-test-script"
+
 check_api() {
   local desc="$1" url="$2" expected="$3"
   local res
@@ -40,7 +43,7 @@ check_api() {
 check_post() {
   local desc="$1" url="$2" body="$3" expected="$4"
   local res
-  res=$(curl -sf --max-time 5 -X POST "$url" -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" -d "$body" 2>/dev/null) || { fail "$desc — 응답 없음"; return; }
+  res=$(curl -sf --max-time 5 -X POST "$url" -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" -d "$body" 2>/dev/null) || { fail "$desc — 응답 없음"; return; }
   if echo "$res" | grep -q "$expected"; then
     ok "$desc"
   else
@@ -100,7 +103,7 @@ HOSPITAL_JSON='{
 }'
 
 CREATE_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals" \
-  -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
   -d "$HOSPITAL_JSON" 2>/dev/null) || { fail "병원 생성 실패"; CREATE_RES="{}"; }
 
 TEST_ID=$(echo "$CREATE_RES" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('id',''))" 2>/dev/null)
@@ -117,7 +120,7 @@ check_api "병원 상세 조회" "$BASE/api/v1/admin/hospitals/$TEST_ID" "통합
 
 # 프로파일 업데이트 (PATCH /profile)
 UPDATE_RES=$(curl -sf --max-time 5 -X PATCH "$BASE/api/v1/admin/hospitals/$TEST_ID/profile" \
-  -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
   -d '{"director_name": "김통합", "director_career": "서울대 의대 졸업\n정형외과 전문의 15년", "director_philosophy": "환자 중심 비수술 치료"}' 2>/dev/null) || UPDATE_RES="{}"
 
 if echo "$UPDATE_RES" | grep -q "김통합"; then
@@ -130,7 +133,7 @@ fi
 header "2. 콘텐츠 스케줄 설정"
 
 SCHED_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/schedule" \
-  -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
   -d '{"plan": "PLAN_16", "publish_days": [1, 4], "active_from": "2026-03-01"}' 2>/dev/null) || SCHED_RES="{}"
 
 if echo "$SCHED_RES" | grep -q -E "(schedule_id|id|PLAN_16)"; then
@@ -180,7 +183,7 @@ if [[ -n "$FIRST_CONTENT_ID" ]]; then
 
   # 발행
   PUB_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/content/$FIRST_CONTENT_ID/publish" \
-    -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+    -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
     -d '{"published_by": "테스트AE"}' 2>/dev/null) || PUB_RES="{}"
   if echo "$PUB_RES" | grep -q "Published"; then
     ok "콘텐츠 발행 (→ PUBLISHED)"
@@ -201,7 +204,7 @@ if [[ -n "$SECOND_CONTENT_ID" ]]; then
     "UPDATE content_items SET title='반려 테스트', body='본문', status='DRAFT' WHERE id='$SECOND_CONTENT_ID'" >/dev/null 2>&1 || true
 
   REJ_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/content/$SECOND_CONTENT_ID/reject" \
-    -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+    -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
     -d '{"reason": "내용 수정 필요"}' 2>/dev/null) || REJ_RES="{}"
 
   if echo "$REJ_RES" | grep -q "Rejected"; then
@@ -258,7 +261,7 @@ header "6. V0 리포트 생성 (OpenAI 필요)"
 if check_api_key "OPENAI_API_KEY"; then
   info "V0 리포트 태스크 트리거 중..."
   V0_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/reports/v0" \
-    -H "X-Admin-Key: $ADMIN_KEY" 2>/dev/null) || V0_RES="{}"
+    -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" 2>/dev/null) || V0_RES="{}"
   if echo "$V0_RES" | grep -q -E "(task_id|queued|started|report_id)"; then
     ok "V0 리포트 태스크 큐 등록"
     info "Flower에서 진행 확인: http://localhost:5555"
@@ -335,7 +338,7 @@ header "11. 테스트 데이터 정리"
 
 if [[ -n "$TEST_ID" ]]; then
   DEL_RES=$(curl -sf --max-time 5 -X DELETE "$BASE/api/v1/admin/hospitals/$TEST_ID" \
-    -H "X-Admin-Key: $ADMIN_KEY" 2>/dev/null) || DEL_RES="{}"
+    -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" 2>/dev/null) || DEL_RES="{}"
   if echo "$DEL_RES" | grep -q -E "(deleted|ok|success|\{\})"; then
     ok "테스트 병원 삭제"
   else

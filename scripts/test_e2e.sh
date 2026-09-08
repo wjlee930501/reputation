@@ -42,18 +42,21 @@ wait_msg() { echo -ne "  ${YELLOW}⏳${RESET} $1\r"; }
 api_get() {
   curl -sf --max-time 10 "$BASE$1" -H "X-Admin-Key: $ADMIN_KEY" 2>/dev/null
 }
+# 백엔드는 사람 변경에 BFF 서명 단언을 요구한다 — 스크립트는 시스템 호출로 표시한다.
+ACTOR_SYSTEM_HEADER="X-Admin-Actor-System: e2e-script"
 api_post() {
   curl -sf --max-time 10 -X POST "$BASE$1" \
-    -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+    -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
     -d "$2" 2>/dev/null
 }
 api_patch() {
   curl -sf --max-time 10 -X PATCH "$BASE$1" \
-    -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+    -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
     -d "$2" 2>/dev/null
 }
 api_delete() {
-  curl -sf --max-time 10 -X DELETE "$BASE$1" -H "X-Admin-Key: $ADMIN_KEY" 2>/dev/null
+  curl -sf --max-time 10 -X DELETE "$BASE$1" -H "X-Admin-Key: $ADMIN_KEY" \
+    -H "$ACTOR_SYSTEM_HEADER" 2>/dev/null
 }
 
 # PostgreSQL 쿼리 — \r\n 완전 제거
@@ -138,7 +141,7 @@ header "2" "병원 프로파일 입력 (장편한외과의원)"
 
 # CREATE: name + plan 만 (HospitalCreate 스키마)
 CREATE_RES=$(curl -sf --max-time 10 -X POST "$BASE/api/v1/admin/hospitals" \
-  -H "X-Admin-Key: $ADMIN_KEY" -H "Content-Type: application/json" \
+  -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" -H "Content-Type: application/json" \
   -d '{"name": "장편한외과의원", "plan": "PLAN_16"}' 2>/dev/null) || CREATE_RES="{}"
 
 HID=$(echo "$CREATE_RES" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")

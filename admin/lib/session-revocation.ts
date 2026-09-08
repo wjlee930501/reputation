@@ -161,6 +161,8 @@ export async function revokeAdminSession({
       headers: {
         'Content-Type': 'application/json',
         'X-Admin-Key': adminKey,
+        // 로그아웃 시 세션을 폐기하는 BFF 자체 호출 — 사람 단언을 붙일 대상이 아니다.
+        'X-Admin-Actor-System': 'admin-session-revoke',
       },
       body: JSON.stringify({
         token_hash: tokenHash,

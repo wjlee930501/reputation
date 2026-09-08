@@ -16,6 +16,9 @@ _CRITICAL_PRODUCTION_SECRETS = (
     "ADMIN_SECRET_KEY",
     "WORKER_DISPATCH_SECRET",
     "SLACK_WEBHOOK_URL",
+    # 비어 있으면 사람 변경에 대한 actor 단언 검증이 통째로 꺼진다(core/security.py) —
+    # 공유 키만 아는 쪽이 세션 없이 admin API를 조작할 수 있다(H-10).
+    "BFF_ACTOR_SECRET",
 )
 
 
@@ -53,6 +56,8 @@ class Settings(BaseSettings):
     REPUTATION_RELEASE_REVISION: str = ""
     ADMIN_SECRET_KEY: str = ""
     WORKER_DISPATCH_SECRET: str = ""
+    # Admin BFF가 세션 인증 뒤 서명하는 actor 단언의 HMAC 키(admin/lib/actor-assertion.ts와 공유).
+    BFF_ACTOR_SECRET: str = ""
     # NoDecode: pydantic-settings의 env-source 자동 JSON 디코드를 끄고 raw 문자열을 검증자에 전달.
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     TRUSTED_PROXY_IPS: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
@@ -64,6 +69,7 @@ class Settings(BaseSettings):
             self.WORKER_DISPATCH_SECRET = _resolve_secret(
                 "WORKER_DISPATCH_SECRET", self.WORKER_DISPATCH_SECRET
             )
+            self.BFF_ACTOR_SECRET = _resolve_secret("BFF_ACTOR_SECRET", self.BFF_ACTOR_SECRET)
             self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)

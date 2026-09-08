@@ -75,6 +75,8 @@ export async function handleAdminLogin(req: NextRequest) {
   const upstreamHeaders: Record<string, string> = {
     'content-type': 'application/json',
     'X-Admin-Key': adminKey,
+    // 로그인은 세션이 생기기 전이라 actor 단언을 만들 수 없다 — BFF 자체 호출로 표시한다.
+    'X-Admin-Actor-System': 'admin-login',
   }
   const bffSecret = (process.env.SITE_BFF_SECRET || '').trim()
   const visitorIp = clientIpFromForwardedHeaders(req.headers)

@@ -26,6 +26,19 @@
 
 저장소 루트의 `.env.production`과 접근 가능한 Secret Manager 설정을 준비한다. 비밀 값을 추적 파일에 넣지 않는다. `scripts/deploy.sh`는 Git 소스 버전을 고정하고 필수 환경·secret·DB 연결·공개 도메인 등을 검사한다.
 
+**다음 배포 전 1회 — `BFF_ACTOR_SECRET` 생성(H-10).** 백엔드는 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)에 Admin BFF가 서명한 actor 단언을 요구하고, 이 값이 비어 있으면 API가 프로덕션에서 부팅에 실패한다. API와 Admin이 **같은 값**을 읽어야 서명이 검증된다. Terraform이 secret 리소스와 두 서비스 주입·IAM을 선언하고(`terraform/secretmanager.tf`), `scripts/deploy.sh`도 API·Admin 필수 시크릿 목록에 넣어 값이 없으면 배포 전 검사에서 멈춘다. 배포 전에 값만 만들어 둔다.
+
+```bash
+gcloud secrets create BFF_ACTOR_SECRET --project mso-platform-481505 --replication-policy=automatic --data-file=<(openssl rand -hex 32)
+# 접근 권한은 ADMIN_SESSION_SECRET과 같은 두 서비스 계정에 준다(terraform apply가 동일하게 부여한다).
+gcloud secrets add-iam-policy-binding BFF_ACTOR_SECRET --project mso-platform-481505 \
+  --member="serviceAccount:$(terraform -chdir=terraform output -raw service_account_email)" --role=roles/secretmanager.secretAccessor
+gcloud secrets add-iam-policy-binding BFF_ACTOR_SECRET --project mso-platform-481505 \
+  --member="serviceAccount:$(terraform -chdir=terraform output -raw frontend_service_account_email)" --role=roles/secretmanager.secretAccessor
+```
+
+배포 순서상 API가 Admin보다 먼저 새 리비전을 받는다. **이미 열려 있던 admin 탭은 이전 JS라 단언을 보내지 않으므로 첫 저장에서 403 `ACTOR_ASSERTION_REQUIRED`("관리 화면을 새로고침한 뒤 다시 시도해 주세요")를 한 번 받는다.** 새로고침하면 복구된다 — 롤아웃 직후 운영자에게 이 사실을 알린다. 배치·CLI 호출은 `X-Admin-Actor-System: <job>` 헤더로 통과하며 감사 기록에는 `system:<job>`으로 남는다.
+
 ```bash
 make db-budget-guard
 make copy-guard

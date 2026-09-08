@@ -15,6 +15,7 @@
 - `PATCH /admin/hospitals/{id}/profile`은 전환 기간 동안 **모르는 필드를 버린다**(`extra="ignore"`). 배포 순서가 api → admin이라 이미 열려 있던 옛 탭이 병원 전체 스냅샷(완료 플래그·응답 전용 필드 포함)을 그대로 보내기 때문이다. body의 `profile_complete`는 무시하고 경고 로그만 남기며, 완료 여부는 서버가 필수 항목에서 파생한다. PR-1E에서 화면이 필요한 필드만 보내게 되면 `extra="forbid"`로 되돌린다.
 - 생성 재시도 fingerprint에서 날짜 제거 → 배포 후 stranded 글마다 1회 신규 시도.
 - 미해결로 등록된 항목: H-16(월간 원장 리포트가 보류 글을 발행 글로 나열, PR-0C-2/PR-0D), PR-0D 전체(SEC-01 BFF 서명 actor 포함).
+- (후속) PR-0D Task 4에서 SEC-01/H-10을 구현했다 — 다음 배포 전에 `BFF_ACTOR_SECRET`를 Secret Manager에 만들어야 API가 부팅한다(절차는 [배포 안내](../ops/deployment-runbook.md)). 롤아웃 직후 열려 있던 admin 탭은 새로고침 전 첫 저장에서 403을 한 번 받는다.
 
 ## 검증 (2026-09-09, 로컬 CI 동일 env, 깨끗한 5432 DB 재생성 후)
 - alembic `0069` → `0070` 적용 확인

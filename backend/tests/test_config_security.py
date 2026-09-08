@@ -25,6 +25,7 @@ def _valid_prod_kwargs(**overrides):
         ADMIN_SECRET_KEY="admin-secret",
         WORKER_DISPATCH_SECRET="worker-only-secret-32-bytes-minimum",
         SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
+        BFF_ACTOR_SECRET="bff-actor-secret",
         DATABASE_URL="postgresql+asyncpg://postgres:postgres@db/reputation",
         SYNC_DATABASE_URL="postgresql+psycopg2://postgres:postgres@db/reputation",
         REDIS_URL="redis://redis.internal:6379/0",
@@ -53,6 +54,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         ADMIN_SECRET_KEY="admin-secret",
         WORKER_DISPATCH_SECRET="worker-only-secret-32-bytes-minimum",
         SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
+        BFF_ACTOR_SECRET="bff-actor-secret",
         DB_USER="reputation",
         DB_PASSWORD="p@ss word",
         DB_NAME="reputation",
@@ -158,6 +160,14 @@ def test_production_rejects_missing_worker_dispatch_secret(monkeypatch):
     monkeypatch.delenv("WORKER_DISPATCH_SECRET", raising=False)
     with pytest.raises(ValueError, match="WORKER_DISPATCH_SECRET"):
         Settings(**_valid_prod_kwargs(WORKER_DISPATCH_SECRET=""))
+
+
+def test_production_fails_fast_when_bff_actor_secret_empty(monkeypatch):
+    # 비어 있으면 사람 변경의 actor 단언 검증이 통째로 꺼진다(H-10).
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("BFF_ACTOR_SECRET", raising=False)
+    with pytest.raises(ValueError, match="BFF_ACTOR_SECRET"):
+        Settings(**_valid_prod_kwargs(BFF_ACTOR_SECRET=""))
 
 
 def test_production_does_not_probe_optional_unmanaged_jina_secret(monkeypatch):
