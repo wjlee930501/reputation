@@ -284,10 +284,15 @@ async def test_resume_records_live_domain_evidence_for_custom_domain(monkeypatch
     await hospitals_api.resume_hospital(hospital.id, db=db)
 
     assert hospital.status == HospitalStatus.ACTIVE
-    assert hospital.domain_last_check_ok is True
+    # DNS-only 관측은 서빙을 증명하지 않으므로 ok는 None이다(domain_live_status.py:79).
+    # 배지를 '확인 대기'에서 'DNS 확인 완료'로 옮기는 값은 dns_verified_at이다.
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_cert_dns_verified_at is not None
     assert hospital.domain_last_check_reason == "dns_ok"
     assert hospital.domain_last_checked_at is not None
 ```
+
+> **실행 기록 (2026-09-08):** 구현 `444d1e5`. 원래 계획의 `domain_last_check_ok is True` assertion은 `apply_live_domain_check`의 계약(HTTPS 테넌트 마커 확인만 ok를 쓴다)과 맞지 않아 구현자가 위와 같이 정정했고 검수에서 수용했다.
 
 `_full_hospital`의 base dict에 `domain_last_checked_at=None, domain_last_check_ok=None, domain_last_check_reason=None`이 없으면 추가한다(`apply_live_domain_check`가 이 속성을 쓴다).
 
