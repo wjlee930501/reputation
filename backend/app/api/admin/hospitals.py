@@ -1148,7 +1148,8 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     # DM-F4: DNS 검증만 확인. 인증서는 후속 작업이므로 재개를 블록하지 않음.
     if h.aeo_domain:
         checked_domain = h.aeo_domain
-        dns_check = await check_domain_dns(checked_domain, domain_dns_strategy_for_hospital(h))
+        checked_strategy = domain_dns_strategy_for_hospital(h)
+        dns_check = await check_domain_dns(checked_domain, checked_strategy)
         if not dns_check.verified:
             raise HTTPException(
                 status_code=409,
@@ -1159,11 +1160,14 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
             )
         checked_at = datetime.now(UTC)
         # 조회는 잠금 밖에서(외부 조회를 잠금 안에서 하지 않는다), 기록만 잠금 아래서 한다.
-        # 그 사이 다른 요청이 도메인을 바꿨다면 옛 도메인의 성공 관측이 새 도메인 행에
-        # 붙어, 확인된 적 없는 주소가 '확인 완료'로 보인다.
+        # 그 사이 다른 요청이 도메인이나 연결 방식을 바꿨다면 옛 설정의 성공 관측이 새 행에
+        # 붙어, 확인된 적 없는 설정이 '확인 완료'로 보인다.
         try:
             h = await lock_hospital_for_domain_certificate(
-                db, DomainCertificateClaimRequest(hospital_id, checked_domain)
+                db,
+                DomainCertificateClaimRequest(
+                    hospital_id, checked_domain, dns_strategy=checked_strategy
+                ),
             )
         except DomainCertificateHospitalMissing as exc:
             raise HTTPException(status_code=404, detail="병원을 찾을 수 없습니다.") from exc
@@ -1173,7 +1177,7 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                 detail={
                     "code": "DOMAIN_CHANGED",
                     "message": (
-                        "확인 중 병원 도메인이 변경되었습니다. "
+                        "확인 중 도메인 또는 연결 방식이 변경되었습니다. "
                         "화면을 새로고침한 뒤 다시 재개해 주세요."
                     ),
                 },

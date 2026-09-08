@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
-from app.models.hospital import Hospital, HospitalStatus, Plan
+from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus, Plan
 from app.models.monthly_control import HospitalServiceInterval
 
 
@@ -288,6 +288,7 @@ class _LifecycleDB:
         interval=None,
         events=None,
         locked_domain=None,
+        locked_strategy=None,
     ):
         self.hospital = hospital
         self.handoff_state = handoff_state
@@ -297,8 +298,10 @@ class _LifecycleDB:
         #: 이 세션에서 실제로 일어난 순서(commit / revalidate). revalidate 스텁과 같은
         #: 리스트를 공유해야 커밋 이후 호출인지까지 확인할 수 있다.
         self.events = [] if events is None else events
-        #: 잠금 재조회가 돌려줄 도메인. None이면 병원 행 그대로 — 경합 없는 정상 경로다.
+        #: 잠금 재조회가 돌려줄 도메인·연결 방식. 둘 다 None이면 병원 행 그대로 —
+        #: 경합 없는 정상 경로다.
         self.locked_domain = locked_domain
+        self.locked_strategy = locked_strategy
         #: 잠금 아래서 실제로 읽어온 도메인들 — 재조회가 일어났는지 테스트가 확인한다.
         self.locked_reads = []
 
@@ -314,10 +317,15 @@ class _LifecycleDB:
         if entity is Hospital and stmt.column_descriptions[0].get("expr") is Hospital:
             # resume 의 도메인 재확인(SELECT ... FOR UPDATE). 잠금 시점의 행을 돌려준다.
             # 구간 잠금이 쓰는 select(Hospital.id) 와 달리 행 전체를 고르는 문장만 해당한다.
+            changed = {}
+            if self.locked_domain is not None:
+                changed["aeo_domain"] = self.locked_domain
+            if self.locked_strategy is not None:
+                changed["domain_dns_strategy"] = self.locked_strategy
             row = (
                 self.hospital
-                if self.locked_domain is None
-                else SimpleNamespace(**{**vars(self.hospital), "aeo_domain": self.locked_domain})
+                if not changed
+                else SimpleNamespace(**{**vars(self.hospital), **changed})
             )
             self.locked_reads.append(row.aeo_domain)
             return row
@@ -602,6 +610,47 @@ async def test_resume_refuses_when_domain_changed_during_dns_check(
     )
 
     async def _dns_ok(domain, strategy):
+        return SimpleNamespace(verified=True)
+
+    monkeypatch.setattr(hospitals_api, "check_domain_dns", _dns_ok)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.resume_hospital(hospital.id, db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "DOMAIN_CHANGED"
+    assert hospital.status == HospitalStatus.PAUSED
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_last_checked_at is None
+    assert hospital.domain_last_check_ok is None
+    assert hospital.domain_last_check_reason is None
+    assert db.committed is False
+    assert db.added == []
+    assert _record_site_revalidate.calls == []
+
+
+async def test_resume_refuses_when_dns_strategy_changed_during_check(
+    monkeypatch, _record_site_revalidate
+):
+    """도메인이 그대로여도 연결 방식이 바뀌었으면 관측을 남기지 않고 409로 막는다.
+
+    CNAME으로 확인한 성공을 APEX_ADDRESS 행에 붙이면, 실제로는 확인된 적 없는
+    레코드 설정이 '확인 완료'로 보인다 — 도메인 교체와 같은 종류의 거짓 근거다.
+    """
+    hospital = _full_hospital(
+        status=HospitalStatus.PAUSED,
+        site_live=True,
+        aeo_domain="clinic.example.com",
+        domain_dns_strategy=DomainDnsStrategy.CNAME,
+    )
+    db = _LifecycleDB(
+        hospital,
+        events=_record_site_revalidate.events,
+        locked_strategy=DomainDnsStrategy.APEX_ADDRESS,
+    )
+
+    async def _dns_ok(domain, strategy):
+        assert strategy is DomainDnsStrategy.CNAME
         return SimpleNamespace(verified=True)
 
     monkeypatch.setattr(hospitals_api, "check_domain_dns", _dns_ok)

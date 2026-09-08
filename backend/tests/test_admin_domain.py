@@ -21,13 +21,21 @@ _EVENTS: list[str] = []
 
 
 class FakeDB:
-    def __init__(self, hospital, *, handoff_state=HandoffState.HANDOFF_ACCEPTED):
+    def __init__(
+        self,
+        hospital,
+        *,
+        handoff_state=HandoffState.HANDOFF_ACCEPTED,
+        locked_strategy=None,
+    ):
         self.hospital = hospital
         self.handoff_state = handoff_state
         self.committed = False
         self.added = []
         _EVENTS.clear()
         self.events = _EVENTS
+        #: 잠금 재조회가 돌려줄 연결 방식. None이면 병원 행 그대로 — 경합 없는 정상 경로다.
+        self.locked_strategy = locked_strategy
 
     async def get(self, model, object_id):
         return self.hospital if self.hospital.id == object_id else None
@@ -39,6 +47,15 @@ class FakeDB:
         if entity is HospitalServiceInterval:
             return None
         if entity is Hospital:
+            if (
+                self.locked_strategy is not None
+                and stmt.column_descriptions[0].get("expr") is Hospital
+            ):
+                # 검증의 도메인 재확인(SELECT ... FOR UPDATE)만 해당한다. 행 전체를
+                # 고르는 문장에만 잠금 시점의 연결 방식을 돌려준다.
+                return SimpleNamespace(
+                    **{**vars(self.hospital), "domain_dns_strategy": self.locked_strategy}
+                )
             return self.hospital
         return None
 
@@ -441,6 +458,32 @@ async def test_verify_domain_does_not_reactivate_a_paused_hospital(monkeypatch, 
     assert hospital.status == HospitalStatus.PAUSED
     assert hospital.site_live is False
     assert db.committed is False
+    assert _record_site_revalidate == []
+
+
+async def test_verify_domain_refuses_when_dns_strategy_changed_during_check(
+    monkeypatch, _record_site_revalidate
+):
+    """도메인이 그대로여도 연결 방식이 바뀌었으면 아무것도 기록하지 않고 409로 막는다.
+
+    DNS 조회는 잠금 밖에서 일어난다. CNAME으로 확인한 성공을 APEX_ADDRESS로 바뀐 행에
+    기록하면, 확인된 적 없는 레코드 설정이 검증 완료로 남는다.
+    """
+    hospital = _hospital(domain_dns_strategy=DomainDnsStrategy.CNAME)
+    db = FakeDB(hospital, locked_strategy=DomainDnsStrategy.APEX_ADDRESS)
+    _patch_dns(monkeypatch)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await domain_api.verify_domain(hospital.id, db=db)
+
+    assert exc_info.value.status_code == 409
+    assert "연결 방식" in exc_info.value.detail
+    assert hospital.status == HospitalStatus.PENDING_DOMAIN
+    assert hospital.site_live is False
+    assert hospital.domain_cert_dns_verified_at is None
+    assert hospital.domain_cert_job_state is None
+    assert db.committed is False
+    assert db.added == []
     assert _record_site_revalidate == []
 
 

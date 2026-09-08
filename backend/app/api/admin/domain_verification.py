@@ -101,7 +101,9 @@ async def verify_domain_for_hospital(
         )
 
     now = datetime.now(UTC)
-    request = DomainCertificateClaimRequest(hospital_id, domain, now)
+    # DNS 조회는 잠금 밖에서 끝났다. 그 사이 도메인이나 연결 방식이 바뀌었다면 방금의
+    # 성공은 지금 행의 설정을 설명하지 못하므로, 잠금 재조회가 둘 다 대조하게 한다.
+    request = DomainCertificateClaimRequest(hospital_id, domain, now, dns_strategy=dns_strategy)
     try:
         hospital = await lock_hospital_for_domain_certificate(db, request)
     except DomainCertificateHospitalMissing as exc:
@@ -109,7 +111,10 @@ async def verify_domain_for_hospital(
     except DomainChangedDuringVerification as exc:
         raise HTTPException(
             status_code=409,
-            detail="검증 중 도메인이 변경되었습니다. 화면을 새로고침한 뒤 다시 확인해 주세요.",
+            detail=(
+                "검증 중 도메인 또는 연결 방식이 변경되었습니다. "
+                "화면을 새로고침한 뒤 다시 확인해 주세요."
+            ),
         ) from exc
 
     gate = await dependencies.evaluate_gate(db, hospital)
