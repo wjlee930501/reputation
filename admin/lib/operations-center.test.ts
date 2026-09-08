@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   SAFE_CAUSE_CODE_MESSAGES,
+  assignAction,
   buildDevelopmentSupportSummary,
   canonicalizeOperationsQuery,
   createUserActionKey,
@@ -17,6 +18,7 @@ import {
   getOrCreateOperationsMutationKey,
   reportOperationsHref,
   interpretOperationsConflict,
+  mutationRequestBody,
   operationStatusLabel,
   partitionOperationsRows,
   primaryOperationsMutation,
@@ -269,7 +271,7 @@ test('customer-facing operation labels never expose raw backend states', () => {
   const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'REVIEW_PENDING', 'OVERDUE_REVIEW', 'WITHHELD_PUBLIC', 'MISSING', 'COVERAGE_INCOMPLETE', 'MANIFEST_MISMATCH', 'MANIFEST_OPEN', 'DOCTOR_ARTIFACT_MISSING', 'DOCTOR_ARTIFACT_INVALID', 'REPORT_BLOCKED', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
 
   assert.deepEqual(states.map(operationStatusLabel), [
-    '온보딩 진행 중', 'AI 진단 분석 중', '콘텐츠 허브 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
+    '온보딩 진행 중', '초기 진단 보고서 준비 중', '병원 공개 페이지 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
     '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '공개 보류', '지난달 보고서 미생성',
     '필수 측정 미완료', '측정 집계 연결 오류', '측정 집계 마감 대기', '원장 전달용 PDF 없음',
     '원장 전달용 PDF 검증 실패', '보고서 전달 차단', '원장 전달 검수 대기',
@@ -557,4 +559,100 @@ test('the detail panel shows who owns the task and when it is due', () => {
   assert.match(detail, /담당자 · 처리 기한/)
   assert.match(detail, /row\.owner\?\.name \?\? '미지정'/)
   assert.match(detail, /describeOperationsDeadline/)
+})
+
+test('each request body carries exactly the fields its route accepts', () => {
+  const input = { reason: ' 담당을 옮깁니다 ', expectedVersion: 4, ownerId: 'account-9', slaDueAt: '2026-09-10T00:00:00Z' }
+
+  assert.deepEqual(mutationRequestBody('RETRY_RUN', input), { reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('POST_ACTION', input), { reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('RECOVER_INCIDENT', input), { expected_version: 4, reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('ACK_INCIDENT', input), { expected_version: 4, reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('RETRY_SLACK', input), { expected_version: 4, reason: '담당을 옮깁니다' })
+  assert.deepEqual(mutationRequestBody('ASSIGN_INCIDENT', input), {
+    expected_version: 4,
+    reason: '담당을 옮깁니다',
+    owner_id: 'account-9',
+    // 담당 지정 라우트는 처리 기한도 함께 받는다. 빼면 요청이 거절되고 null로 보내면
+    // 남아 있던 기한이 지워지므로, 지금 기한을 그대로 다시 실어 보낸다.
+    sla_due_at: '2026-09-10T00:00:00Z',
+  })
+})
+
+test('clearing the owner is an explicit choice, not a missing field', () => {
+  assert.deepEqual(
+    mutationRequestBody('ASSIGN_INCIDENT', { reason: '담당 해제', expectedVersion: 2, ownerId: null, slaDueAt: null }),
+    { expected_version: 2, reason: '담당 해제', owner_id: null, sla_due_at: null },
+  )
+})
+
+test('the server decides which transition an incident can take right now', () => {
+  const incident = row('incident:9', {
+    queue: 'INCIDENTS',
+    status: 'RETRYING',
+    incident_id: 'incident-9',
+    version: 3,
+    action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1', enabled: true },
+    resolve: {
+      kind: 'RECOVER_INCIDENT', label: '복구 확인 완료', method: 'POST',
+      path: '/admin/operations/hospitals/hospital-1/incidents/incident-9/recover',
+      enabled: true, reason_required: true, requires_version: true,
+    },
+  })
+
+  const mutation = primaryOperationsMutation({ incident, run: null }, '복구를 확인했습니다')
+
+  assert.equal(mutation?.kind, 'RECOVER_INCIDENT')
+  assert.equal(mutation?.path, '/admin/operations/hospitals/hospital-1/incidents/incident-9/recover')
+  assert.equal(mutation?.version, 3)
+  assert.equal(mutation?.targetId, 'incident-9')
+})
+
+test('a transition the server has closed is not offered by the old client derivation', () => {
+  const blocked = row('incident:10', {
+    queue: 'INCIDENTS', status: 'RECOVERED', incident_id: 'incident-10', version: 5,
+    action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1', enabled: true },
+    resolve: {
+      kind: 'ACK_INCIDENT', label: '문제 확인 완료', method: 'POST',
+      path: '/admin/operations/hospitals/hospital-1/incidents/incident-10/ack',
+      enabled: false, reason_required: true, requires_version: true,
+    },
+  })
+
+  assert.equal(primaryOperationsMutation({ incident: blocked, run: null }, '확인했습니다'), null)
+})
+
+test('a response without the server transition still derives the acknowledgement', () => {
+  const legacy = row('incident:11', {
+    queue: 'INCIDENTS', status: 'RECOVERED', incident_id: 'incident-11', version: 7,
+    action: { kind: 'REVIEW', label: '확인', method: 'GET', path: '/hospitals/1', enabled: true },
+  })
+
+  const mutation = primaryOperationsMutation({ incident: legacy, run: null }, '확인했습니다')
+
+  assert.equal(mutation?.kind, 'ACK_INCIDENT')
+  assert.equal(mutation?.path, '/admin/operations/hospitals/hospital-1/incidents/incident-11/ack')
+  assert.equal(mutation?.version, 7)
+})
+
+test('the assignment form appears only where the server allows the assignment', () => {
+  const assign = {
+    kind: 'ASSIGN_INCIDENT', label: '담당 지정', method: 'POST' as const,
+    path: '/admin/operations/hospitals/hospital-1/incidents/incident-9/assign',
+    enabled: true, reason_required: true, requires_version: true,
+  }
+
+  assert.equal(assignAction(row('a', { assign }))?.path, assign.path)
+  assert.equal(assignAction(row('b', { assign: { ...assign, enabled: false } })), null)
+  assert.equal(assignAction(row('c')), null)
+})
+
+test('the detail panel assigns the owner instead of sending the operator elsewhere', () => {
+  const detail = readFileSync(new URL('../app/operations/OperationDetail.tsx', import.meta.url), 'utf8')
+
+  assert.match(detail, /assignable_accounts/)
+  assert.match(detail, /ASSIGN_INCIDENT/)
+  assert.match(detail, /담당 지정/)
+  assert.match(detail, /담당 지정은 OWNER만 할 수 있습니다/)
+  assert.doesNotMatch(detail, /인수 대기열/)
 })

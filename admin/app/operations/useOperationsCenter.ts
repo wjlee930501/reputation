@@ -10,6 +10,7 @@ import {
   canonicalizeOperationsQuery,
   getOrCreateOperationsMutationKey,
   interpretOperationsConflict,
+  mutationRequestBody,
   readOperationsQuery,
   shouldPollRun,
   updateOperationsQuery,
@@ -211,9 +212,13 @@ export function useOperationsCenter() {
     setBusy(true)
     setActionError('')
     setPermissionDenied(false)
-    const body = mutation.kind === 'RETRY_RUN' || mutation.kind === 'POST_ACTION'
-      ? { reason: mutation.reason.trim() }
-      : { expected_version: mutation.version, reason: mutation.reason.trim() }
+    const assigning = mutation.kind === 'ASSIGN_INCIDENT'
+    const body = mutationRequestBody(mutation.kind, {
+      reason: mutation.reason,
+      expectedVersion: mutation.version,
+      ownerId: assigning ? mutation.ownerId ?? null : null,
+      slaDueAt: assigning ? mutation.slaDueAt ?? null : null,
+    })
     const attempt = mutation.requiresIdempotencyKey
       ? getOrCreateOperationsMutationKey(mutationKeys.current, mutation, crypto.randomUUID())
       : null

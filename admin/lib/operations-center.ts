@@ -41,6 +41,7 @@ export type OperationsMutationKind =
   | 'RETRY_RUN'
   | 'RECOVER_INCIDENT'
   | 'ACK_INCIDENT'
+  | 'ASSIGN_INCIDENT'
   | 'POST_ACTION'
 
 export interface OperationsMutationDescriptor {
@@ -51,6 +52,41 @@ export interface OperationsMutationDescriptor {
   readonly reason: string
   readonly label: string
   readonly requiresIdempotencyKey: boolean
+  /** 담당 지정에만 쓴다. null은 "담당 없음"이라는 선택이다. */
+  readonly ownerId?: string | null
+  readonly slaDueAt?: string | null
+}
+
+export interface OperationsMutationBody {
+  readonly reason: string
+  readonly expectedVersion?: number | null
+  readonly ownerId?: string | null
+  readonly slaDueAt?: string | null
+}
+
+/**
+ * 요청 본문은 종류마다 다르다. 재시도와 그 밖의 POST 행동은 사유만 보내고, 상태 전이는
+ * 낙관적 잠금 버전을 함께 보낸다.
+ *
+ * 담당 지정 라우트는 담당과 처리 기한을 한 번에 받는다(`IncidentAssignRequest`). 기한을
+ * 빼면 요청 자체가 거절되고, null로 보내면 남아 있던 기한이 지워진다 — 담당만 바꾸는
+ * 화면이므로 지금 기한을 그대로 다시 실어 보낸다.
+ */
+export function mutationRequestBody(
+  kind: OperationsMutationKind | 'RETRY_SLACK',
+  input: OperationsMutationBody,
+): Record<string, unknown> {
+  const reason = input.reason.trim()
+  if (kind === 'RETRY_RUN' || kind === 'POST_ACTION') return { reason }
+  if (kind === 'ASSIGN_INCIDENT') {
+    return {
+      expected_version: input.expectedVersion ?? null,
+      reason,
+      owner_id: input.ownerId ?? null,
+      sla_due_at: input.slaDueAt ?? null,
+    }
+  }
+  return { expected_version: input.expectedVersion ?? null, reason }
 }
 const QUEUES: readonly OperationsQueueParam[] = ['onboarding', 'today', 'reports', 'incidents']
 const FILTER_KEYS = ['queue', 'hospitalId', 'owner', 'status', 'severity', 'sla', 'recovery', 'q', 'detail', 'page'] as const
@@ -300,7 +336,7 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   // 비용 안전장치
   COST_BLOCKED: '비용 안전장치가 이 작업의 실행을 보류했습니다.',
   COST_GUARD_LIMIT_REACHED: '오늘 설정된 사용 한도에 도달해 자동 작업을 보류했습니다.',
-  // 보고서·공개 표면·도메인
+  // 보고서·병원 공개 페이지·도메인
   MONTHLY_MEASUREMENT_INCOMPLETE: '필수 측정이 완료되지 않아 실패한 항목만 복구해야 합니다.',
   MONTHLY_REPORT_FAILED: '월간 보고서를 만드는 중 작업이 완료되지 않았습니다.',
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
@@ -472,6 +508,16 @@ function mutationFromPostAction(
   }
 }
 
+/**
+ * 담당 지정/변경. 서버는 OWNER에게만 열어 주므로(`assign_action`) 버튼도 그 판단을
+ * 그대로 따른다 — 눌러야 알 수 있는 403을 만들지 않는다.
+ */
+export function assignAction(
+  row: Pick<OperationsQueueRow, 'assign'>,
+): OperationsAction | null {
+  return enabledPostAction(row.assign ?? null)
+}
+
 export function primaryOperationsMutation(
   detail: OperationsIncidentDetail,
   reason: string,
@@ -490,6 +536,20 @@ export function primaryOperationsMutation(
       requiresIdempotencyKey: true,
     }
   }
+  // 서버가 이 행이 지금 받을 수 있는 상태 전이를 직접 실어 보낸다(`resolve_action`).
+  // 그 판단이 화면의 상태 추론보다 정확하다 — 인가와 복구 관측까지 보고 정한 값이다.
+  const resolve = enabledPostAction(row.resolve ?? null)
+  if (resolve?.kind === 'RECOVER_INCIDENT' || resolve?.kind === 'ACK_INCIDENT') {
+    return {
+      kind: resolve.kind,
+      path: resolve.path,
+      targetId: row.incident_id ?? row.id,
+      version: row.version,
+      reason,
+      label: resolve.label,
+      requiresIdempotencyKey: false,
+    }
+  }
   const action = enabledPostAction(row.action)
   if (action?.kind === 'RECOVER_INCIDENT' || action?.kind === 'ACK_INCIDENT') {
     return {
@@ -503,6 +563,10 @@ export function primaryOperationsMutation(
     }
   }
   if (action) return mutationFromPostAction(action, row, reason)
+  // 전이 자리를 실어 보낸 응답이면 그것이 정답이다. 서버가 막아 둔 전이를 화면이 상태만
+  // 보고 되살리면 눌러야 알 수 있는 403·409가 된다. 아래 추론은 그 자리가 아예 없는
+  // 옛 응답에만 남긴다.
+  if (row.resolve !== undefined) return null
   if (run?.state === 'SUCCEEDED' && row.status === 'RETRYING') {
     return {
       kind: 'RECOVER_INCIDENT',

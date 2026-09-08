@@ -122,6 +122,13 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/lib/content-rows.ts",
     # 하단 읽기 전용 신호의 표시 문구가 사는 곳.
     "admin/lib/content-signals.ts",
+    "admin/app/operations/page.tsx",
+    "admin/app/operations/OperationDetail.tsx",
+    "admin/app/operations/OperationsFilters.tsx",
+    "admin/app/operations/OperationsQueue.tsx",
+    "admin/app/operations/CurrentActionStrip.tsx",
+    # 큐 행의 상태·원인 설명이 사는 곳. 화면이 이 값을 그대로 그린다.
+    "admin/lib/operations-center.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"

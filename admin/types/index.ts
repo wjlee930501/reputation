@@ -592,8 +592,8 @@ export interface ScheduleInfo {
 
 export const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   ONBOARDING: { label: '온보딩 진행 중', color: 'bg-gray-100 text-gray-700' },
-  ANALYZING: { label: 'AI 진단 분석 중', color: 'bg-blue-100 text-blue-700' },
-  BUILDING: { label: '콘텐츠 허브 준비 중', color: 'bg-orange-100 text-orange-700' },
+  ANALYZING: { label: '초기 진단 보고서 준비 중', color: 'bg-blue-100 text-blue-700' },
+  BUILDING: { label: '병원 공개 페이지 준비 중', color: 'bg-orange-100 text-orange-700' },
   PENDING_DOMAIN: { label: '공개 주소 확인 대기', color: 'bg-yellow-100 text-yellow-700' },
   ACTIVE: { label: '운영 중', color: 'bg-green-100 text-green-700' },
   PAUSED: { label: '운영 일시 정지', color: 'bg-red-100 text-red-700' },
@@ -723,6 +723,13 @@ export interface OperationsQueueRow {
   readonly next_action: string
   readonly action: OperationsAction
   readonly retry: OperationsAction | null
+  /**
+   * 이 행이 지금 받을 수 있는 상태 전이 하나(복구 확인 → 문제 확인)와 담당 지정.
+   * 요청한 계정의 권한을 모르는 옛 응답에는 둘 다 없다 — 없으면 화면이 예전처럼
+   * 상태에서 직접 유추한다.
+   */
+  readonly resolve?: OperationsAction | null
+  readonly assign?: OperationsAction | null
   readonly cause_code: string | null
   readonly cause_message: string | null
   readonly cause_group_key: string | null
@@ -786,4 +793,9 @@ export interface OperationsRunSummary {
 export interface OperationsIncidentDetail {
   readonly incident: OperationsQueueRow
   readonly run: OperationsRunSummary | null
+  /**
+   * 담당으로 고를 수 있는 계정. 사건 상세 응답에만 있다 — 목록 행만 가지고 화면이
+   * 임시로 만든 상세에는 없으므로, 없을 때는 담당 선택을 그리지 않는다.
+   */
+  readonly assignable_accounts?: readonly OperationsOwner[]
 }
