@@ -10,6 +10,20 @@
 
 ---
 
+## 실행 결과 (2026-09-08)
+
+| Task | 결함 | 커밋 | 검수 |
+|---|---|---|---|
+| 1 | H-05 | `db9875f` → `5606168` | Fable 스펙 ✅ · Codex 품질 REQUEST_CHANGES → 수정 → APPROVE |
+| 2 | H-06 후반·M-11 | `444d1e5` → `2a8c30b` → `cf4ee67` | Fable ✅ · Codex 경합 2건(도메인·연결 방식 변경) 수정 후 APPROVE |
+| 3 | M-13 | `389430b` → `85128d7` | Fable ✅ · Codex 경합(잠금 없는 해제 vs 재개) 수정 후 APPROVE |
+| 4 | M-10 | `9cc631f` → `c9076f4` | Fable ✅ · Codex(WAITING 상태 누락) 수정 후 APPROVE |
+| 5 | H-06 표시 | `a040b8f` → `5388ba9` | Fable ✅ · Codex(자기 도메인 PAUSED) 수정 후 APPROVE |
+| 6 | H-07 | `78fe8b6` | Fable ✅ (3줄 치환) |
+| 7 | 전체 검증 | — | 깨끗한 5432 DB 재생성 후 backend **3,131 passed / 0 failed**, ruff clean, admin **548/548**, site **310/310**, lint·typecheck 0. 직접 `status = ACTIVE` 기록자: `hospital_activation._apply_activation_transition`, `resume_hospital`(문서화된 예외), `content.py:311`(no-op 가드)뿐 |
+
+계획과 달랐던 점: Task 2 assertion(DNS-only 관측은 `ok=None`), Task 4 규칙("비어 있거나 DONE"), Task 3에 advisory lock 추가, Task 5에 자기 도메인 PAUSED 분기 추가. 모두 본문 각 Task의 실행 기록에 반영.
+
 ## 환경 준비 (모든 Task 공통)
 
 브랜치 `claude/integrity-hitl-simplification`에서 작업한다. 백엔드 테스트는 실 PostgreSQL 두 개(5432 `postgres:postgres`, 5434 `reputation:reputation`)와 Redis 6379가 필요하다. 이 세션에서 이미 띄워둔 컨테이너: `reputation-ci-pg5432`, `reputation-db-1`, `reputation-redis-1`. 죽어 있으면:
