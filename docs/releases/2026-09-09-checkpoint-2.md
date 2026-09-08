@@ -16,9 +16,10 @@
 - 옛 admin URL은 redirect로 동작(Slack 링크·북마크 보호). 백엔드가 만드는 옛 딥링크 약 11곳은 2026-10-09 전에 옮긴다(등록부 §2.3).
 - 미해결로 등록: H-16(월간 원장 보고서가 보류 글을 나열), PR-0D-2(V0 lineage 재사용, M-09, M-19), PR-0C-2(M-05/06/07).
 
-## 검증 (2026-09-09, 로컬 CI 동일 env, 깨끗한 5432 DB 재생성 후, `6bcc59c`)
-- alembic `0069` → `0070` → `0071` 적용 확인
-- backend **3,429 passed / 0 failed** (ruff clean)
+## 검증 (2026-09-09, 로컬 CI 동일 env, 깨끗한 5432 DB 재생성 후)
+- 범위: `4bd1e03` 이후 34 커밋 + 이 기록 커밋, 219 files changed, 11174 insertions(+), 15090 deletions(-)
+- 1차(`6bcc59c`): backend 3,429 / 0 · admin 588 · site 310 — Astra 1차 HOLD 뒤 수정
+- 2차(`7f83455`, 블로커 4건 수정 후): alembic `0069` → `0070` → `0071`(CHECK만) 적용 확인; backend **3,443 passed / 0 failed** (ruff clean)
 - admin **588/588**, site **310/310**
 - copy-guard OK(전역 가드), db-budget-guard 75/80
 - 검토: Task별 Fable·Codex(`gpt-5.6-sol` high) 교차 검수, 계약 위반만 수정(라운드 상한 2회) — 상세는 각 계획서 "실행 결과"
