@@ -319,3 +319,61 @@ def test_manual_approve_rejects_a_short_override_reason():
             confirm_evidence_reviewed=True,
             override_reason="짧음",
         )
+
+
+@pytest.mark.asyncio
+async def test_patch_cannot_erase_automatic_review_findings(pg_async_session):
+    """H-03: PATCH로 finding을 비우고 승인하는 우회를 막는다."""
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "근거 없는 효과 주장"}
+    ]
+    await pg_async_session.commit()
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        await essence_api.patch_philosophy(
+            hospital.id,
+            draft.id,
+            essence_api.PhilosophyPatch(unsupported_gaps=[]),
+            db=pg_async_session,
+        )
+        await pg_async_session.refresh(draft)
+        assert [gap["reason"] for gap in draft.unsupported_gaps] == ["근거 없는 효과 주장"]
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital.id, draft.id, _approve_body(), db=pg_async_session
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "AUTO_REVIEW_FINDINGS_UNRESOLVED"
+
+
+@pytest.mark.asyncio
+async def test_patch_keeps_operator_gaps_alongside_server_findings(pg_async_session):
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "근거 없는 효과 주장"}
+    ]
+    await pg_async_session.commit()
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        await essence_api.patch_philosophy(
+            hospital.id,
+            draft.id,
+            essence_api.PhilosophyPatch(
+                unsupported_gaps=[{"field": "positioning_statement", "reason": "근거 부족"}]
+            ),
+            db=pg_async_session,
+        )
+    finally:
+        reset_request_actor(token)
+
+    await pg_async_session.refresh(draft)
+    assert {(gap["field"], gap["reason"]) for gap in draft.unsupported_gaps} == {
+        ("positioning_statement", "근거 부족"),
+        ("automatic_ai_review", "근거 없는 효과 주장"),
+    }

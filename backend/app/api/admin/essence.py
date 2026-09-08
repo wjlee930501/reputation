@@ -114,6 +114,11 @@ from app.workers.dispatch_auth import build_dispatch_headers
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
+# unsupported_gaps 중 서버만 쓰는 field. 자동 검수(essence_auto_review)가 기록하며,
+# 클라이언트 PATCH로는 지울 수 없다. 지우는 유일한 경로는 재검수다(H-03).
+# 두 값 모두 essence_auto_review의 리터럴·_AUTO_RECOVERY_CYCLE_FIELD와 같아야 한다.
+AUTO_REVIEW_GAP_FIELD = "automatic_ai_review"
+SERVER_OWNED_GAP_FIELDS = (AUTO_REVIEW_GAP_FIELD, "automatic_recovery_cycle")
 logger = logging.getLogger(__name__)
 
 
@@ -1626,6 +1631,20 @@ async def patch_philosophy(
         )
 
     update = body.model_dump(exclude_unset=True)
+    if "unsupported_gaps" in update:
+        # 자동 검수 finding은 서버 소유다 — 클라이언트가 지워서 예외 승인 게이트를 우회하지
+        # 못하게 저장된 항목을 그대로 보존한다(H-03). 지우는 유일한 경로는 재검수다.
+        stored_server_owned = [
+            gap
+            for gap in (philosophy.unsupported_gaps or [])
+            if isinstance(gap, dict) and gap.get("field") in SERVER_OWNED_GAP_FIELDS
+        ]
+        incoming = [
+            gap
+            for gap in (update["unsupported_gaps"] or [])
+            if not (isinstance(gap, dict) and gap.get("field") in SERVER_OWNED_GAP_FIELDS)
+        ]
+        update["unsupported_gaps"] = incoming + stored_server_owned
     for field_name, value in update.items():
         setattr(philosophy, field_name, value)
 
@@ -1684,7 +1703,11 @@ async def approve_philosophy(
     auto_findings = [
         str(gap.get("reason"))
         for gap in (philosophy.unsupported_gaps or [])
-        if isinstance(gap, dict) and gap.get("field") == "automatic_ai_review" and gap.get("reason")
+        if (
+            isinstance(gap, dict)
+            and gap.get("field") == AUTO_REVIEW_GAP_FIELD
+            and gap.get("reason")
+        )
     ]
     if auto_findings and not body.override_reason:
         raise HTTPException(
