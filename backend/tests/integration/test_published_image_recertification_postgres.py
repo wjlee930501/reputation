@@ -690,6 +690,24 @@ def test_the_sweep_reads_the_cooldown_and_the_current_subject_from_real_runs(pg_
     )
 
 
+def test_an_overspent_budget_without_a_recorded_incident_still_gets_a_free_closer(pg_session):
+    """마감 실행에서 사고 생성이 실패하면 예산은 넘겼는데 사고가 없다 — 무음 보류가 되지
+    않도록 사고가 보일 때까지 쿨다운마다 무료 실행 하나를 더 만든다."""
+    hospital, item = _seed_published(pg_session, certified=False)
+    for minutes_ago in (240, 180, 120, 60):
+        _terminal_run(
+            pg_session, hospital, item, code="GENERATION_FAILED", finished_minutes_ago=minutes_ago
+        )
+    subject = _subject(item)
+    runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
+    now = datetime.now(timezone.utc)
+    assert recertification.attempts_spent(runs, subject, now=now) > recertification.ATTEMPT_BUDGET
+    assert recertification.pending_operator_code(runs, subject) is None
+
+    assert recertification.sweep_may_dispatch(runs, subject, now=now, block_visible=False)
+    assert not recertification.sweep_may_dispatch(runs, subject, now=now, block_visible=True)
+
+
 async def test_a_title_edit_on_a_paused_hospital_does_not_dispatch(
     pg_async_session, monkeypatch
 ):

@@ -305,8 +305,10 @@ def sweep_may_dispatch(
         # 부르지 않으므로 예산을 쓰지 않는다.
         return not block_visible
     if attempts_spent(runs, subject_hash, now=now) > ATTEMPT_BUDGET:
-        # 예산 소진을 기록한 마지막 실행까지 끝났다. 더 만들지 않는다.
-        return False
+        # 예산 소진을 기록해야 할 마지막 실행까지 끝났다. 그 실행이 사고를 남겼으면 더
+        # 만들지 않는다. 사고 생성 자체가 실패해(보류 코드도 표시도 없이) 끝났다면
+        # 아무도 보지 않는 보류이므로, 쿨다운마다 무료 실행 하나로 사고 생성을 다시 시도한다.
+        return not block_visible
     return True
 
 
