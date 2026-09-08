@@ -25,12 +25,11 @@ test('admin proxy fetch init uses no-store and an abort timeout signal', () => {
   assert.equal(ADMIN_PROXY_TIMEOUT_MS <= 15_000, true)
 })
 
-test('LLM-backed autofill, source processing, and philosophy drafting receive the slow timeout', () => {
+test('LLM-backed autofill and source processing receive the slow timeout', () => {
   assert.equal(ADMIN_PROXY_SLOW_TIMEOUT_MS >= 210_000, true)
   for (const path of [
     'hospitals/demo/profile/autofill',
     'hospitals/demo/essence/sources/source-id/process',
-    'hospitals/demo/essence/philosophy/draft',
   ]) {
     assert.equal(adminProxyTimeoutMsForPath(path), ADMIN_PROXY_SLOW_TIMEOUT_MS, path)
   }
@@ -41,7 +40,8 @@ test('nearby reads and ordinary writes keep the short timeout', () => {
     'hospitals/demo/profile',
     'hospitals/demo/essence/sources/source-id',
     'hospitals/demo/essence/philosophies',
-    'hospitals/demo/essence/philosophy/draft/extra',
+    'hospitals/demo/essence/philosophy/philosophy-id/re-review',
+    'hospitals/demo/essence/philosophy/philosophy-id/archive',
   ]) {
     assert.equal(adminProxyTimeoutMsForPath(path), ADMIN_PROXY_TIMEOUT_MS, path)
   }

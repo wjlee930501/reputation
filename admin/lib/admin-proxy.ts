@@ -6,8 +6,7 @@ export const ADMIN_PROXY_SLOW_TIMEOUT_MS = 210_000
 export function isSlowAdminProxyPath(path: string): boolean {
   return (
     path.endsWith('/profile/autofill') ||
-    /\/essence\/sources\/[^/]+\/process$/.test(path) ||
-    path.endsWith('/essence/philosophy/draft')
+    /\/essence\/sources\/[^/]+\/process$/.test(path)
   )
 }
 

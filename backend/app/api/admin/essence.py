@@ -34,7 +34,6 @@ from app.models.operations import OperationRun
 from app.schemas.essence import (
     ApprovedPhilosophyResponse,
     PhilosophyApprove,
-    PhilosophyDraftCreate,
     PhilosophyPatch,
     PhilosophyResponse,
     SourceAssetCreate,
@@ -42,7 +41,6 @@ from app.schemas.essence import (
     SourceAssetResponse,
     SourcePublicToggle,
 )
-from app.services import cost_guard
 from app.services.asset_extractor import (
     detect_extractor_for,
     extract_docx_text,
@@ -59,10 +57,7 @@ from app.services.essence_engine import (
     compute_source_content_hash,
     compute_sources_snapshot_hash,
     effective_safety_policy,
-    find_error_marker_fields,
     mandatory_safety_findings,
-    metered_llm_calls,
-    synthesize_philosophy,
     validate_philosophy_grounding,
 )
 from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
@@ -113,6 +108,7 @@ from app.services.source_processing_runs import (
 )
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.workers.dispatch_auth import build_dispatch_headers
+from app.workers.tasks import auto_review_essence_snapshot
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
@@ -1542,77 +1538,6 @@ async def get_approved_philosophy(hospital_id: uuid.UUID, db: AsyncSession = Dep
     return {"approved": _serialize_philosophy(approved) if approved else None}
 
 
-@router.post(
-    "/philosophy/draft", status_code=status.HTTP_201_CREATED, response_model=PhilosophyResponse
-)
-async def create_philosophy_draft(
-    hospital_id: uuid.UUID,
-    body: PhilosophyDraftCreate,
-    db: AsyncSession = Depends(get_db),
-):
-    await acquire_hospital_advisory_lock(db, hospital_id)
-    hospital = await _get_hospital_or_404(db, hospital_id)
-    sources = await _select_processed_sources(db, hospital_id, body.source_asset_ids)
-    if not sources:
-        raise HTTPException(status_code=400, detail="처리된 병원 자료가 1개 이상 필요합니다.")
-
-    notes = await _get_notes_for_sources(db, [source.id for source in sources])
-    if not notes:
-        raise HTTPException(
-            status_code=400, detail="운영 기준 초안 생성에 사용할 근거 노트가 없습니다."
-        )
-
-    # 워커의 essence 자동 검수 경로(_cost_guarded_essence_synthesis)와 같은 예산 예약을
-    # 거친다 — 예약 없이 metered_llm_calls만 쓰면 킬스위치/상한이 무시된 채 나간다.
-    decision = await cost_guard.check_and_increment("content")
-    if not decision.allowed:
-        raise HTTPException(
-            status_code=429,
-            detail=decision.reason or "비용 가드 상한으로 운영 기준 초안 생성이 차단되었습니다.",
-        )
-
-    # Claude synthesis is a synchronous SDK call and can take close to its 60s
-    # timeout. Running it on the event loop starves /health/live and Cloud Run
-    # kills the otherwise healthy API instance before the draft can commit.
-    async with metered_llm_calls(hospital_id):
-        payload = await asyncio.to_thread(
-            synthesize_philosophy,
-            hospital,
-            sources,
-            notes,
-            operator_note=body.operator_note,
-        )
-    # 차단·오류 페이지 잔재가 핵심 필드에 남았으면 초안을 만들지 않고 명확한 사유로 거부한다.
-    marker_fields = find_error_marker_fields(payload)
-    if marker_fields:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error_markers": marker_fields,
-                "reason": (
-                    "차단·오류 페이지 잔재가 포함되어 콘텐츠 운영 기준 초안을 생성하지 않았습니다. "
-                    "해당 자료를 제외하거나 본문을 다시 수집한 뒤 시도하세요."
-                ),
-            },
-        )
-    grounding_errors = validate_philosophy_grounding(payload, notes)
-    if grounding_errors:
-        raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
-
-    version = await _next_version(db, hospital_id)
-    philosophy = HospitalContentPhilosophy(
-        hospital_id=hospital_id,
-        version=version,
-        status=PhilosophyStatus.DRAFT,
-        created_by=body.created_by,
-        **payload,
-    )
-    db.add(philosophy)
-    await db.commit()
-    await db.refresh(philosophy)
-    return _serialize_philosophy(philosophy)
-
-
 @router.patch("/philosophy/{philosophy_id}", response_model=PhilosophyResponse)
 async def patch_philosophy(
     hospital_id: uuid.UUID,
@@ -1657,6 +1582,79 @@ async def patch_philosophy(
 
     await db.commit()
     await db.refresh(philosophy)
+    return _serialize_philosophy(philosophy)
+
+
+def _archive_draft_or_400(philosophy: HospitalContentPhilosophy) -> str:
+    if philosophy.status != PhilosophyStatus.DRAFT:
+        raise HTTPException(
+            status_code=400, detail="초안 상태의 콘텐츠 운영 기준만 보관할 수 있습니다."
+        )
+    previous_status = (
+        philosophy.status.value if hasattr(philosophy.status, "value") else str(philosophy.status)
+    )
+    philosophy.status = PhilosophyStatus.ARCHIVED
+    return previous_status
+
+
+@router.post("/philosophy/{philosophy_id}/archive", response_model=PhilosophyResponse)
+async def archive_philosophy(
+    hospital_id: uuid.UUID,
+    philosophy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """보류된 초안을 보관한다. 자동 검수는 같은 snapshot의 대기 초안이 없어야 다시 돈다."""
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
+    previous_status = _archive_draft_or_400(philosophy)
+    await write_audit_log(
+        db,
+        action="archive_philosophy",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="philosophy",
+        target_id=philosophy_id,
+        detail={"previous_status": previous_status},
+    )
+    await db.commit()
+    await db.refresh(philosophy)
+    return _serialize_philosophy(philosophy)
+
+
+@router.post("/philosophy/{philosophy_id}/re-review", response_model=PhilosophyResponse)
+async def request_philosophy_re_review(
+    hospital_id: uuid.UUID,
+    philosophy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """보류된 초안을 보관하고 자동 검수를 즉시 다시 요청한다.
+
+    사람이 초안을 고쳐 다시 검수받고 싶을 때의 유일한 경로다. 수동 합성은 없다 —
+    합성·검수·승인은 언제나 워커의 자동 경로가 수행한다(H-04).
+    초안 본문 수정은 재합성 입력이 아니다; 근거 노트·자료가 입력이다. 사람이 고친
+    문장을 그대로 채택하려면 예외 승인을 쓴다.
+    """
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    hospital = await _get_hospital_or_404(db, hospital_id)
+    philosophy = await _get_philosophy_or_404(db, hospital_id, philosophy_id)
+    previous_status = _archive_draft_or_400(philosophy)
+    await write_audit_log(
+        db,
+        action="request_philosophy_re_review",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="philosophy",
+        target_id=philosophy_id,
+        detail={"previous_status": previous_status},
+    )
+    await db.commit()
+    await db.refresh(philosophy)
+    # 커밋 이후의 외부 효과. 유실되면 15분 reconcile(reconcile_essence_snapshots)이 회수한다.
+    auto_review_essence_snapshot.apply_async(
+        args=[str(hospital.id)],
+        queue="content",
+        headers=build_dispatch_headers("auto-review-essence-snapshot", str(hospital.id)),
+    )
     return _serialize_philosophy(philosophy)
 
 
@@ -2018,37 +2016,6 @@ async def _get_notes_for_philosophy(
         )
         return result.scalars().all()
     return await _get_notes_for_sources(db, source_ids)
-
-
-async def _select_processed_sources(
-    db: AsyncSession,
-    hospital_id: uuid.UUID,
-    source_asset_ids: list[str] | None,
-) -> list[HospitalSourceAsset]:
-    stmt = select(HospitalSourceAsset).where(
-        HospitalSourceAsset.hospital_id == hospital_id,
-        HospitalSourceAsset.status == SourceStatus.PROCESSED,
-    )
-    if source_asset_ids:
-        try:
-            ids = [uuid.UUID(str(item)) for item in source_asset_ids]
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=400, detail="선택한 병원 자료 ID 형식이 올바르지 않습니다."
-            ) from exc
-        stmt = stmt.where(HospitalSourceAsset.id.in_(ids))
-    stmt = stmt.order_by(HospitalSourceAsset.processed_at.desc())
-    result = await db.execute(stmt)
-    return result.scalars().all()
-
-
-async def _next_version(db: AsyncSession, hospital_id: uuid.UUID) -> int:
-    result = await db.execute(
-        select(func.max(HospitalContentPhilosophy.version)).where(
-            HospitalContentPhilosophy.hospital_id == hospital_id
-        )
-    )
-    return int(result.scalar_one() or 0) + 1
 
 
 def _serialize_source(

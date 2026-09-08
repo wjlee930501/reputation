@@ -1,0 +1,19 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { test } from 'node:test'
+
+// H-04: 수동 초안 합성은 사라졌다. 운영자에게 남는 초안 조작은 재검수 요청과 보관뿐이다.
+const essencePageSource = readFileSync(
+  join(process.cwd(), 'app/hospitals/[id]/essence/page.tsx'),
+  'utf8',
+)
+
+test('the essence page no longer calls the manual draft synthesis endpoint', () => {
+  assert.equal(essencePageSource.includes('philosophy/draft'), false)
+})
+
+test('the essence page offers re-review and archive for a held draft', () => {
+  assert.ok(essencePageSource.includes('/re-review'))
+  assert.ok(essencePageSource.includes('/archive'))
+})

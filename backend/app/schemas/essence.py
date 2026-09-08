@@ -82,12 +82,6 @@ class SourcePublicToggle(BaseModel):
     photo_evidence_reference: str | None = Field(default=None, max_length=500)
 
 
-class PhilosophyDraftCreate(BaseModel):
-    source_asset_ids: list[str] | None = None
-    operator_note: str | None = None
-    created_by: str | None = Field(default=None, max_length=100)
-
-
 class PhilosophyPatch(BaseModel):
     positioning_statement: str | None = None
     doctor_voice: str | None = None

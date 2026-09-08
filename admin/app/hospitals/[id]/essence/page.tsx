@@ -126,7 +126,6 @@ export default function EssencePage() {
   const [selectedSource, setSelectedSource] = useState<SourceAsset | null>(null)
   const [philosophies, setPhilosophies] = useState<ContentPhilosophy[]>([])
   const [approved, setApproved] = useState<ContentPhilosophy | null>(null)
-  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set())
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
@@ -219,10 +218,6 @@ export default function EssencePage() {
       setSources(Array.isArray(sourceData) ? sourceData : [])
       setPhilosophies(Array.isArray(philosophyData) ? philosophyData : [])
       setApproved(approvedData?.approved ?? null)
-      const processedIds = (Array.isArray(sourceData) ? sourceData : [])
-        .filter((source: SourceAsset) => source.status === 'PROCESSED')
-        .map((source: SourceAsset) => source.id)
-      setSelectedSourceIds(new Set(processedIds))
       const philosophyList = Array.isArray(philosophyData) ? philosophyData : []
       const approvedPhilosophy = approvedData?.approved ?? null
       const reviewDraft = philosophyList.find(
@@ -434,26 +429,32 @@ export default function EssencePage() {
     }
   }
 
-  async function createDraft() {
-    const sourceIds = Array.from(selectedSourceIds)
-    if (sourceIds.length === 0) return
-    setActionLoading('create-draft')
+  async function reReviewDraft(draftId: string) {
+    setActionLoading(`re-review-${draftId}`)
     setError(null)
     setNotice(null)
     try {
-      const draft = await fetchAPI<ContentPhilosophy>(`/admin/hospitals/${id}/essence/philosophy/draft`, {
-        method: 'POST',
-        body: JSON.stringify({
-          source_asset_ids: sourceIds,
-          created_by: currentOperatorName,
-        }),
-      })
-      setSelectedDraftId(draft.id)
-      setDraftFields(draft)
-      setNotice('콘텐츠 운영 기준 초안이 생성되었습니다. 내용을 검토 후 승인하세요.')
+      await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${draftId}/re-review`, { method: 'POST' })
+      setNotice('초안을 보관하고 자동 검수를 다시 요청했습니다. 결과는 이 화면과 운영 센터에 표시됩니다.')
       await load()
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : '초안 생성에 실패했습니다.')
+      setError(e instanceof Error ? e.message : '재검수 요청에 실패했습니다.')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  async function archiveDraft(draftId: string) {
+    if (!confirm('이 초안을 보관하면 화면에서 사라지고 승인할 수 없습니다. 계속하시겠습니까?')) return
+    setActionLoading(`archive-${draftId}`)
+    setError(null)
+    setNotice(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${id}/essence/philosophy/${draftId}/archive`, { method: 'POST' })
+      setNotice('초안을 보관했습니다.')
+      await load()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : '보관에 실패했습니다.')
     } finally {
       setActionLoading(null)
     }
@@ -524,15 +525,6 @@ export default function EssencePage() {
     } finally {
       setActionLoading(null)
     }
-  }
-
-  function toggleSource(sourceId: string) {
-    setSelectedSourceIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(sourceId)) next.delete(sourceId)
-      else next.add(sourceId)
-      return next
-    })
   }
 
   if (loading) {
@@ -734,24 +726,13 @@ export default function EssencePage() {
             <div className="min-w-0">
               <StepLabel index={2} label="근거 추출 · 자동 준비" />
               <p className="text-xs text-slate-500 mt-1.5">
-                저장한 자료는 자동으로 처리됩니다. 오류가 난 자료를 다시 처리하거나, 자동 준비가 막힌 경우에만 수동 초안을 만드세요.
+                저장한 자료는 자동으로 처리됩니다. 오류가 난 자료만 다시 처리하세요. 운영 기준 초안은 자동 경로가 만듭니다.
               </p>
             </div>
-            <button
-              onClick={createDraft}
-              disabled={selectedSourceIds.size === 0 || actionLoading === 'create-draft'}
-              className="shrink-0 whitespace-nowrap px-4 py-2 bg-emerald-600 text-white text-sm font-semibold rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-              title={selectedSourceIds.size === 0 ? '먼저 처리완료된 자료를 선택하세요.' : ''}
-            >
-              {actionLoading === 'create-draft'
-                ? '생성 중...'
-                : `선택한 ${selectedSourceIds.size}개로 수동 초안 만들기`}
-            </button>
           </div>
           <table className="admin-responsive-table w-full text-sm">
             <thead className="bg-slate-50 border-b border-slate-200">
               <tr>
-                <th className="px-4 py-3 w-10"></th>
                 <th className="text-left px-4 py-3 text-slate-600 font-medium">자료</th>
                 <th className="text-center px-4 py-3 text-slate-600 font-medium whitespace-nowrap">상태</th>
                 <th className="text-center px-4 py-3 text-slate-600 font-medium whitespace-nowrap">근거</th>
@@ -761,7 +742,7 @@ export default function EssencePage() {
             <tbody className="divide-y divide-slate-100">
               {sourceSplit.textSources.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-16 text-center text-slate-400 text-sm">
+                  <td colSpan={4} className="py-16 text-center text-slate-400 text-sm">
                     아직 등록된 근거 자료가 없습니다. 좌측에서 자료를 입력하세요.
                   </td>
                 </tr>
@@ -770,16 +751,6 @@ export default function EssencePage() {
                 const statusStyle = getSourceStatusStyle(source)
                 return (
                   <tr key={source.id} className="hover:bg-slate-50/70">
-                    <td className="px-4 py-4 align-top" data-label="선택">
-                      <input
-                        type="checkbox"
-                        checked={selectedSourceIds.has(source.id)}
-                        onChange={() => toggleSource(source.id)}
-                        disabled={source.status !== 'PROCESSED'}
-                        title={source.status !== 'PROCESSED' ? '처리완료된 자료만 선택할 수 있습니다.' : ''}
-                        className="w-4 h-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 disabled:opacity-30"
-                      />
-                    </td>
                     <td className="px-4 py-4" data-primary="true">
                       <p className="font-medium text-slate-900">{source.title}</p>
                       <p className="text-xs text-slate-500 mt-0.5">
@@ -950,13 +921,28 @@ export default function EssencePage() {
               </div>
               <TextArea label="의료광고 리스크 규칙" value={draftRiskRules} onChange={setDraftRiskRules} disabled={selectedDraft.status !== 'DRAFT'} rows={4} hint="의료광고법 관련 추가 운영 규칙 (한 줄에 하나씩)" />
               {selectedDraft.status === 'DRAFT' && (
-                <div className="flex gap-3">
+                <div className="flex flex-wrap items-center gap-3">
                   <button
                     onClick={saveDraft}
                     disabled={actionLoading === 'save-draft'}
                     className="px-5 py-2.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 disabled:opacity-50"
                   >
                     {actionLoading === 'save-draft' ? '저장 중...' : '초안 저장'}
+                  </button>
+                  {/* 사람이 초안을 고쳐 다시 검수받는 유일한 경로. 수동 합성은 없다(H-04). */}
+                  <button
+                    onClick={() => reReviewDraft(selectedDraft.id)}
+                    disabled={actionLoading === `re-review-${selectedDraft.id}`}
+                    className="rounded-md border border-blue-200 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                  >
+                    자동 재검수 요청
+                  </button>
+                  <button
+                    onClick={() => archiveDraft(selectedDraft.id)}
+                    disabled={actionLoading === `archive-${selectedDraft.id}`}
+                    className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    보관
                   </button>
                 </div>
               )}

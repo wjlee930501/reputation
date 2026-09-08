@@ -321,6 +321,70 @@ def test_manual_approve_rejects_a_short_override_reason():
         )
 
 
+@pytest.mark.asyncio
+async def test_re_review_archives_the_draft_and_dispatches_auto_review(
+    pg_async_session, monkeypatch
+):
+    """H-04: 사람이 초안을 고쳐 다시 검수받는 유일한 경로."""
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        essence_api.auto_review_essence_snapshot,
+        "apply_async",
+        lambda **kwargs: dispatched.append(kwargs),
+    )
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        response = await essence_api.request_philosophy_re_review(
+            hospital.id, draft.id, db=pg_async_session
+        )
+    finally:
+        reset_request_actor(token)
+
+    assert response["status"] == PhilosophyStatus.ARCHIVED.value
+    assert dispatched
+    assert dispatched[0]["args"] == [str(hospital.id)]
+    assert dispatched[0]["queue"] == "content"
+    audit = (
+        await pg_async_session.execute(
+            select(AdminAuditLog)
+            .where(AdminAuditLog.action == "request_philosophy_re_review")
+            .order_by(AdminAuditLog.created_at.desc())
+        )
+    ).scalars().first()
+    assert audit.detail["previous_status"] == PhilosophyStatus.DRAFT.value
+
+
+@pytest.mark.asyncio
+async def test_archive_marks_the_draft_archived(pg_async_session):
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        response = await essence_api.archive_philosophy(
+            hospital.id, draft.id, db=pg_async_session
+        )
+    finally:
+        reset_request_actor(token)
+
+    assert response["status"] == PhilosophyStatus.ARCHIVED.value
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.ARCHIVED
+
+
+@pytest.mark.asyncio
+async def test_archive_only_accepts_drafts(pg_async_session):
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.status = PhilosophyStatus.APPROVED
+    await pg_async_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await essence_api.archive_philosophy(hospital.id, draft.id, db=pg_async_session)
+
+    assert exc.value.status_code == 400
+
+
 def test_whitespace_only_override_reason_is_no_reason():
     body = essence_api.PhilosophyApprove(
         reviewed_by="r",
