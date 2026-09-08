@@ -111,8 +111,8 @@ export default function HospitalLayout({
 
   const planLabel = hospital?.plan ? PLAN_CONTRACT_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
   const headerProgress = summarizeHeaderProgress(hospital)
+  // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 일정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
-  const visibleLifecycleAction = lifecycleAction === 'resume' && !hospital?.schedule_set ? null : lifecycleAction
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
   const activeMainTab = MAIN_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
   const activeTab = activeConfigTab ?? activeMainTab ?? MAIN_TABS[0]
@@ -224,18 +224,18 @@ export default function HospitalLayout({
                   {planLabel}
                 </span>
               )}
-              {visibleLifecycleAction && (
+              {lifecycleAction && (
                 <button
                   type="button"
                   onClick={() => void handleLifecycleAction()}
                   disabled={lifecycleLoading}
                   className={`inline-flex min-h-11 items-center rounded-lg border px-3 py-2 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
-                    visibleLifecycleAction === 'pause'
+                    lifecycleAction === 'pause'
                       ? 'border-red-200 text-red-700 hover:bg-red-50'
                       : 'border-green-200 text-green-700 hover:bg-green-50'
                   }`}
                 >
-                  {lifecycleLoading ? '처리 중...' : visibleLifecycleAction === 'pause' ? '일시정지' : '재개'}
+                  {lifecycleLoading ? '처리 중...' : lifecycleAction === 'pause' ? '일시정지' : '재개'}
                 </button>
               )}
             </div>

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
 import {
@@ -32,4 +33,14 @@ test('hospitalLifecycleConfirmMessage warns that automation stops before pausing
 test('hospitalLifecycleActionPath builds the admin proxy path for pause/resume', () => {
   assert.equal(hospitalLifecycleActionPath('h-1', 'pause'), '/admin/hospitals/h-1/pause')
   assert.equal(hospitalLifecycleActionPath('h-1', 'resume'), '/admin/hospitals/h-1/resume')
+})
+
+const layoutSource = readFileSync(
+  new URL('../app/hospitals/[id]/layout.tsx', import.meta.url),
+  'utf8',
+)
+
+test('the header never hides resume behind schedule_set — the backend resume gate does not require a schedule', () => {
+  assert.doesNotMatch(layoutSource, /resume'\s*&&\s*!hospital\?\.schedule_set/)
+  assert.doesNotMatch(layoutSource, /schedule_set\s*\?\s*null/)
 })
