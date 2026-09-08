@@ -8,6 +8,8 @@
 
 **Tech Stack:** FastAPI, Celery, Alembic, pytest(SimpleNamespace + 실 PostgreSQL), Next.js 16 admin(`crypto.subtle`), `node:test`. 근거: [설계](2026-09-08-admin-hitl-simplification-design.md) §3 PR-0D, [검토](../reviews/2026-09-08-integrity-hitl-review.md) §2.
 
+**상세도 안내:** Task 1·2·4·6·7은 코드 단계까지 확정했다. Task 3(복구 예산)·Task 5(배정 UI)는 대상 helper·직렬화 파일을 아직 확정하지 못해 의도와 검증 조건까지만 적었다 — 실행 직전에 컨트롤러가 해당 파일을 읽고 같은 형식의 코드 단계로 확장한 뒤 구현자에게 넘긴다. 확장 없이 구현자에게 넘기지 않는다.
+
 **이 PR에서 다루지 않음(후속 PR-0D-2):** H-12의 "다시 실행이 150 슬롯 전량 재구매"(V0 lineage 재사용 설계 필요), M-09(언급률 집계 5개 통일), M-19(노출 보완 갱신/완료 제거 — Phase 1에서 화면 자체가 사라짐).
 
 ---
