@@ -43,6 +43,7 @@ from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentStatus
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus, Plan
+from app.models.operations import Incident, IncidentState
 from app.models.report import V0_REPORT_TYPE, MonthlyReport
 from app.models.sov import SovRecord
 from app.schemas.hospital import HospitalDetail, HospitalListItem
@@ -63,7 +64,9 @@ from app.services.essence_engine import (
     ESSENCE_STATUS_NEEDS_REVIEW,
 )
 from app.services.essence_readiness import (
+    EssenceReadinessState,
     get_essence_readiness,
+    get_essence_readiness_states,
     get_public_approved_philosophy_id,
 )
 from app.services.hospital_activation import (
@@ -89,6 +92,14 @@ from app.services.hospital_logo import (
     public_logo_url,
 )
 from app.services.hospital_profile_autofill import autofill_profile
+from app.services.hospital_states import (
+    ContentState,
+    DomainState,
+    PublicServiceState,
+    content_state,
+    domain_state,
+    public_service_state,
+)
 from app.services.hospital_usage import LEDGER_KINDS, aggregate_usage
 from app.services.keyword_analysis import (
     analyze_keyword,
@@ -632,7 +643,71 @@ async def list_hospitals(
         select(Hospital).order_by(Hospital.created_at.desc()).offset(skip).limit(limit)
     )
     hospitals = result.scalars().all()
-    return [_serialize_list(h) for h in hospitals]
+    # 상태 근거는 페이지 전체를 묶어 읽는다 — 행마다 조회하면 목록 하나가 병원 수에 비례하는
+    # 쿼리를 낸다.
+    hospital_ids = [h.id for h in hospitals]
+    readiness_states = await get_essence_readiness_states(db, hospital_ids)
+    incident_counts = await _open_incident_counts(db, hospital_ids)
+    ae_owners = await _ae_owners(db, hospital_ids)
+    return [
+        _serialize_list(
+            h,
+            readiness_state=readiness_states[h.id],
+            # 자동 검수가 막힌 초안도 사람이 풀어야 하는 예외다 — 인시던트와 함께 센다.
+            open_exception_count=(
+                incident_counts.get(h.id, 0) + int(readiness_states[h.id].escalated_draft)
+            ),
+            ae_owner=ae_owners.get(h.id),
+        )
+        for h in hospitals
+    ]
+
+
+async def _open_incident_counts(
+    db: AsyncSession, hospital_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, int]:
+    """사람에게 아직 남은 인시던트만 — RECOVERED는 자동 복구가 끝난 기록이다."""
+    if not hospital_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(Incident.hospital_id, func.count())
+            .where(
+                Incident.hospital_id.in_(hospital_ids),
+                Incident.state.in_(
+                    (
+                        IncidentState.OPEN,
+                        IncidentState.RETRYING,
+                        IncidentState.ACKNOWLEDGED,
+                    )
+                ),
+            )
+            .group_by(Incident.hospital_id)
+        )
+    ).all()
+    return {hospital_id: count for hospital_id, count in rows}
+
+
+async def _ae_owners(
+    db: AsyncSession, hospital_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, dict[str, str]]:
+    """담당 AE — `hospital_handoffs.hospital_id`가 unique라 병원당 계약은 한 건뿐이다.
+
+    inner join이므로 담당이 비어 있는 레거시 인수(`LEGACY_BACKFILL`)는 자연히 빠진다.
+    """
+    if not hospital_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(HospitalHandoff.hospital_id, AdminUser.id, AdminUser.name)
+            .join(AdminUser, AdminUser.id == HospitalHandoff.ae_owner_id)
+            .where(HospitalHandoff.hospital_id.in_(hospital_ids))
+        )
+    ).all()
+    return {
+        hospital_id: {"id": str(owner_id), "name": name}
+        for hospital_id, owner_id, name in rows
+    }
 
 
 @router.get("/{hospital_id}", response_model=HospitalDetail)
@@ -1586,7 +1661,13 @@ def _enum_value(value: object, default: str) -> str:
     return str(value)
 
 
-def _serialize_list(h: Hospital) -> dict:
+def _serialize_list(
+    h: Hospital,
+    *,
+    readiness_state: EssenceReadinessState,
+    open_exception_count: int,
+    ae_owner: dict[str, str] | None,
+) -> dict:
     return {
         "id": str(h.id),
         "name": h.name,
@@ -1609,6 +1690,32 @@ def _serialize_list(h: Hospital) -> dict:
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         **_serialize_domain_live_check(h),
         "created_at": h.created_at.isoformat() if h.created_at else None,
+        # 3상태는 `hospital_states`가 유일한 판정이다 — admin은 라벨만 붙인다(설계 §4.2).
+        "public_service_state": _serialize_state(public_service_state(h)),
+        "content_state": _serialize_state(
+            content_state(
+                h,
+                essence_current=readiness_state.current,
+                unprocessed_sources=readiness_state.unprocessed_sources,
+                escalated_draft=readiness_state.escalated_draft,
+            )
+        ),
+        "domain_state": _serialize_domain_state(domain_state(h)),
+        "open_exception_count": open_exception_count,
+        "ae_owner": ae_owner,
+    }
+
+
+def _serialize_state(state: PublicServiceState | ContentState) -> dict:
+    return {"kind": state.kind, "remaining": list(state.remaining)}
+
+
+def _serialize_domain_state(state: DomainState) -> dict:
+    checked_at = state.last_checked_at
+    return {
+        "kind": state.kind,
+        "reason": state.reason,
+        "last_checked_at": checked_at.isoformat() if checked_at else None,
     }
 
 

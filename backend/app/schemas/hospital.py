@@ -3,7 +3,25 @@ from typing import Any, Optional
 from pydantic import BaseModel
 
 
-class HospitalListItem(BaseModel):
+class HospitalStateItem(BaseModel):
+    """공개 서비스·콘텐츠 준비 상태. `remaining`은 아직 채워지지 않은 조건 키다."""
+
+    kind: str
+    remaining: list[str]
+
+
+class HospitalDomainStateItem(BaseModel):
+    kind: str
+    reason: Optional[str] = None
+    last_checked_at: Optional[str] = None
+
+
+class HospitalAeOwner(BaseModel):
+    id: str
+    name: str
+
+
+class HospitalItemBase(BaseModel):
     id: str
     name: str
     slug: str
@@ -28,7 +46,19 @@ class HospitalListItem(BaseModel):
     created_at: Optional[str]
 
 
-class HospitalDetail(HospitalListItem):
+class HospitalListItem(HospitalItemBase):
+    # 3상태는 백엔드가 판정해 내려주고 admin은 라벨만 붙인다(설계 §4.2). 화면마다 판정하면
+    # 목록·헤더·현황이 다른 답을 한다(PR-0A H-06). 상세 화면은 `overview`가 따로 답한다.
+    public_service_state: HospitalStateItem
+    content_state: HospitalStateItem
+    domain_state: HospitalDomainStateItem
+    # 인시던트(OPEN·RETRYING·ACKNOWLEDGED) + 사람이 풀어야 하는 예외 초안.
+    open_exception_count: int
+    # 계약이 없거나 담당 AE가 비어 있으면 None이다.
+    ae_owner: Optional[HospitalAeOwner] = None
+
+
+class HospitalDetail(HospitalItemBase):
     onboarding_note: Optional[str] = None
     address: Optional[str]
     phone: Optional[str]

@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import hospitals as hospitals_api
 from app.models.hospital import HospitalStatus
+from app.services.essence_readiness import EssenceReadinessState
 from app.services.hospital_geocoding import GeocodeResult, GeocodingError
 
 
@@ -205,7 +206,14 @@ async def test_advanced_manual_coordinates_skip_address_geocode(monkeypatch):
 def test_list_serializer_includes_custom_domain_for_admin_search():
     hospital = _hospital(aeo_domain="jangclinic.kr", site_built=True, site_live=True)
 
-    payload = hospitals_api._serialize_list(hospital)
+    payload = hospitals_api._serialize_list(
+        hospital,
+        readiness_state=EssenceReadinessState(
+            current=True, unprocessed_sources=0, escalated_draft=False
+        ),
+        open_exception_count=0,
+        ae_owner=None,
+    )
 
     assert payload["aeo_domain"] == "jangclinic.kr"
 

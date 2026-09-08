@@ -38,6 +38,11 @@ def test_hospital_response_keeps_domain_live_check_as_nullable_display_data() ->
         domain_last_check_ok=False,
         domain_last_check_reason="TLS_PENDING",
         created_at=None,
+        public_service_state={"kind": "live", "remaining": []},
+        content_state={"kind": "preparing", "remaining": ["schedule"]},
+        domain_state={"kind": "problem", "reason": "TLS_PENDING", "last_checked_at": checked_at},
+        open_exception_count=0,
+        ae_owner=None,
     )
 
     serialized = HospitalListItem.model_validate(payload, from_attributes=True).model_dump()
