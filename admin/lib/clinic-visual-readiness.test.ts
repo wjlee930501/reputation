@@ -24,7 +24,7 @@ const approved = {
 test('a fully approved visual profile has nothing left to confirm', () => {
   assert.equal(isClinicVisualApproved(approved), true)
   assert.deepEqual(missingClinicVisualItems(approved), [])
-  assert.equal(clinicVisualSummary(approved), '공개 표면 시각 요소 승인 완료')
+  assert.equal(clinicVisualSummary(approved), '병원 공개 페이지 시각 요소 승인 완료')
 })
 
 test('an empty profile names every visual item the AE still has to approve', () => {
@@ -89,7 +89,7 @@ test('the summary lists the outstanding items so the AE knows what to fill', () 
 
 
 test('an external logo URL is stored but can never reach the screen, so it is not approved', () => {
-  // 공개 표면은 우리 저장소·오리진이 아닌 주소를 쓰지 않는다. 값이 있다는 이유로
+  // 병원 공개 페이지는 우리 저장소·오리진이 아닌 주소를 쓰지 않는다. 값이 있다는 이유로
   // `승인됨`을 주면 운영자는 로고가 빠진 사이트를 정상으로 알고 넘어간다(O-5).
   const external = { ...approved, logo_url: 'https://cdn.imweb.me/thumbnail/logo.png' }
 

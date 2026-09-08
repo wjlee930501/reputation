@@ -30,7 +30,9 @@ out/
 # Build artifacts
 /tmp/sites/
 /tmp/reports/
-reports/
+# repo 루트의 생성물 폴더만 무시한다 — admin/app/hospitals/[id]/reports/ 같은
+# 소스 디렉터리까지 걸려 화면 파일이 추적에서 빠졌다.
+/reports/
 *.tsbuildinfo
 celerybeat-schedule
 backend/celerybeat-schedule

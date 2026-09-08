@@ -1,4 +1,4 @@
-// 병원별 공개 표면 시각 요소가 실제로 승인됐는지 추적한다.
+// 병원 공개 페이지의 시각 요소가 실제로 승인됐는지 병원별로 추적한다.
 //
 // 감사에서 확인된 문제는 색·로고·카피가 코드에는 있는데 병원 데이터에는 없다는
 // 것이었다. 여기서 다루는 항목은 로고·대표색·첫 화면 카피·정보 우선순위 넷이며
@@ -43,7 +43,7 @@ export function isApprovedAccessMode(value: string | null | undefined): boolean 
 /**
  * 공개 화면이 실제로 그릴 수 있는 로고인지.
  *
- * 값이 있다는 것과 화면에 뜬다는 것은 다르다. 공개 표면은 우리 저장소·오리진이 아닌
+ * 값이 있다는 것과 화면에 뜬다는 것은 다르다. 병원 공개 페이지는 우리 저장소·오리진이 아닌
  * 주소를 쓰지 않으므로, 외부 CDN 주소는 저장돼 있어도 헤더에 아무것도 그리지 못한다.
  * 그런데 게이트가 "값이 있으면 승인됨"으로 판정해서, 운영자는 `승인됨` 배지만 보고
  * 로고가 빠진 사이트를 정상으로 알고 넘어갔다(O-5).
@@ -123,6 +123,6 @@ export function isClinicVisualApproved(profile: ClinicVisualInput): boolean {
 /** 사진 유무는 시각 승인 판단을 바꾸지 않는다. */
 export function clinicVisualSummary(profile: ClinicVisualInput): string {
   const missing = missingClinicVisualItems(profile)
-  if (missing.length === 0) return '공개 표면 시각 요소 승인 완료'
+  if (missing.length === 0) return '병원 공개 페이지 시각 요소 승인 완료'
   return `승인 필요: ${missing.map((item) => item.label).join(', ')}`
 }

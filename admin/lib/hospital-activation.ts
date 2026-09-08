@@ -10,7 +10,7 @@ export interface HospitalActivationInput {
 export interface ActivationPrerequisite {
   key: keyof HospitalActivationInput
   label: string
-  hrefSuffix: 'profile' | 'reports'
+  hrefSuffix: 'info' | 'reports'
 }
 
 export interface ServerActivationPrerequisite {
@@ -33,8 +33,8 @@ export interface ServerActivationBlocker {
 }
 
 const DISPLAY_PREREQUISITES: readonly ActivationPrerequisite[] = [
-  { key: 'profile_complete', label: '병원 기본 정보 완료', hrefSuffix: 'profile' },
-  { key: 'site_built', label: '콘텐츠 허브 준비', hrefSuffix: 'profile' },
+  { key: 'profile_complete', label: '병원 기본 정보 완료', hrefSuffix: 'info' },
+  { key: 'site_built', label: '병원 공개 페이지 준비', hrefSuffix: 'info' },
 ]
 
 const SERVER_GATE_ORDER = [

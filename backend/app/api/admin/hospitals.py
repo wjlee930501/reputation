@@ -1660,14 +1660,14 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         ),
         ReadinessCheck(
             "v0_report",
-            "초기 진단 리포트",
+            "초기 진단 보고서",
             v0_report_pdf_count > 0,
             12,
             readiness_actions["v0_report"],
         ),
         ReadinessCheck(
             "site_built",
-            "콘텐츠 허브 노출 준비",
+            "병원 공개 페이지 준비",
             bool(h.site_built),
             10,
             readiness_actions["site_built"],

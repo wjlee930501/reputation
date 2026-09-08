@@ -778,10 +778,10 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "백그라운드에서 자동으로" in actions["v0_report"]
     assert "설정을 계속 진행" in actions["v0_report"]
     assert "다시 만들기" not in actions["v0_report"]
-    assert "“스케줄 저장 및 슬롯 생성”" in actions["schedule"]
+    assert "“발행 일정 저장 및 항목 만들기”" in actions["schedule"]
     assert "“DNS 확인하고 운영 시작”" in actions["domain"]
     assert "지금 발행" not in actions["published_content"]
-    assert "스케줄 탭" in actions["published_content"]
+    assert "콘텐츠 탭의 발행 일정" in actions["published_content"]
     assert "예약 콘텐츠" in readiness_next_actions(has_content_slots=True)["published_content"]
 
 

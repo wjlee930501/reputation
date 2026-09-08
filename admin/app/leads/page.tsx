@@ -3,12 +3,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { formatDateTime } from '@/lib/format'
 import { SkeletonTable } from '@/app/components/Skeleton'
-import { PLAN_CONTRACT_LABELS, PLAN_LABELS, STATUS_LABELS, type SalesLead } from '@/types'
+import { type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
 import { describeLeadAging, sortLeadsByAttention } from '@/lib/lead-aging'
@@ -31,24 +30,6 @@ import {
 const PAGE_SIZE = 50
 // 파기 후 전체 재조회 시 백엔드 limit 상한.
 const RELOAD_MAX = 200
-
-interface HospitalCandidate {
-  id: string
-  name: string
-  slug: string
-  status: string | null
-  plan: string | null
-  source_lead_id: string | null
-  onboarding_url: string
-}
-
-interface ConvertResponse {
-  lead?: SalesLead
-  hospital?: { id: string } | null
-  onboarding_url?: string | null
-}
-
-type PlanOption = 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
 
 type DiagnosisAction = 'retry' | 'release' | 'remeasure' | 'rebuild'
 
@@ -114,7 +95,6 @@ function readRefusalReasons(error: unknown): string[] {
 }
 
 export default function LeadsPage() {
-  const router = useRouter()
   const [leads, setLeads] = useState<SalesLead[]>([])
   // 경과·기한은 지금 시각 기준이다. 렌더마다 Date.now()를 읽으면 같은 목록이 스크롤마다
   // 다른 숫자를 보여주므로, 목록을 불러온 시점을 고정해서 쓴다.
@@ -124,16 +104,6 @@ export default function LeadsPage() {
   const [error, setError] = useState<string | null>(null)
   const [hasMore, setHasMore] = useState(false)
   const [summary, setSummary] = useState<RealLeadSummary | null>(null)
-
-  // 전환 모달
-  const [convertLead, setConvertLead] = useState<SalesLead | null>(null)
-  const [candidates, setCandidates] = useState<HospitalCandidate[]>([])
-  const [candidatesLoading, setCandidatesLoading] = useState(false)
-  const [candidatesError, setCandidatesError] = useState<string | null>(null)
-  const [selectedPlan, setSelectedPlan] = useState<PlanOption>('PLAN_12')
-  const [linkHospitalId, setLinkHospitalId] = useState<string | null>(null)
-  const [converting, setConverting] = useState(false)
-  const [convertError, setConvertError] = useState<string | null>(null)
 
   // 개인정보 파기
   const [erasingLeadId, setErasingLeadId] = useState<string | null>(null)
@@ -148,15 +118,14 @@ export default function LeadsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const actionDialogRef = useRef<HTMLDivElement>(null)
-  const convertDialogRef = useRef<HTMLDivElement>(null)
   const modalBusyRef = useRef(false)
 
   useEffect(() => {
-    modalBusyRef.current = actionSubmitting || converting
-  }, [actionSubmitting, converting])
+    modalBusyRef.current = actionSubmitting
+  }, [actionSubmitting])
 
   useEffect(() => {
-    const dialog = actionTarget ? actionDialogRef.current : convertLead ? convertDialogRef.current : null
+    const dialog = actionTarget ? actionDialogRef.current : null
     if (!dialog) return
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const main = document.getElementById('main-content')
@@ -169,7 +138,6 @@ export default function LeadsPage() {
       if (event.key === 'Escape' && !modalBusyRef.current) {
         event.preventDefault()
         setActionTarget(null)
-        setConvertLead(null)
         return
       }
       if (event.key !== 'Tab') return
@@ -193,7 +161,7 @@ export default function LeadsPage() {
       document.body.style.overflow = ''
       previousFocus?.focus()
     }
-  }, [actionTarget, convertLead])
+  }, [actionTarget])
 
   const loadLeads = useCallback(
     async (offset: number, options?: { append?: boolean; limit?: number; attention?: boolean }) => {
@@ -247,58 +215,6 @@ export default function LeadsPage() {
     }, 5000)
     return () => window.clearInterval(timer)
   }, [leads, loadLeads])
-
-  async function openConvertModal(lead: SalesLead) {
-    if (lead.converted_hospital_id) {
-      router.push(`/hospitals/${lead.converted_hospital_id}/onboarding`)
-      return
-    }
-    setConvertLead(lead)
-    setSelectedPlan('PLAN_12')
-    setLinkHospitalId(null)
-    setConvertError(null)
-    setCandidates([])
-    setCandidatesError(null)
-    setCandidatesLoading(true)
-    try {
-      const result = await fetchAPI<{ lead_id: string; candidates: HospitalCandidate[] }>(
-        `/admin/leads/${lead.id}/hospital-candidates`,
-      )
-      setCandidates(Array.isArray(result?.candidates) ? result.candidates : [])
-    } catch (e: unknown) {
-      setCandidatesError(safeOperatorError('leads', '병원 목록에서 같은 이름을 확인한 뒤 다시 시도하세요.'))
-    } finally {
-      setCandidatesLoading(false)
-    }
-  }
-
-  async function handleConfirmConvert() {
-    if (!convertLead || converting || candidatesLoading || candidatesError) return
-    if (!linkHospitalId) {
-      router.push(getOnboardingHref(convertLead))
-      return
-    }
-    setConverting(true)
-    setConvertError(null)
-    try {
-      const result = await fetchAPI<ConvertResponse>(`/admin/leads/${convertLead.id}/convert`, {
-        method: 'POST',
-        body: JSON.stringify({
-          hospital_id: linkHospitalId,
-          plan: selectedPlan,
-          conversion_note: '상담 요청 목록에서 온보딩 시작',
-        }),
-      })
-      const hospitalId = result?.hospital?.id ?? result?.lead?.converted_hospital_id
-      if (!hospitalId) {
-        throw new Error('생성된 병원 정보를 확인할 수 없습니다.')
-      }
-      router.push(`/hospitals/${hospitalId}/onboarding`)
-    } catch (e: unknown) {
-      setConvertError(safeOperatorError('leads', '모달을 닫고 최신 상담 요청을 다시 불러온 뒤 온보딩 시작을 누르세요.'))
-      setConverting(false)
-    }
-  }
 
   async function handleErase(lead: SalesLead) {
     const confirmed = confirm(
@@ -690,10 +606,10 @@ export default function LeadsPage() {
                   <td className="px-6 py-4 text-right" data-label="다음 작업">
                     {lead.converted_hospital_id ? (
                       <Link
-                        href={`/hospitals/${lead.converted_hospital_id}/onboarding`}
+                        href={`/hospitals/${lead.converted_hospital_id}/info`}
                         className="inline-flex min-h-11 items-center justify-center whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-50"
                       >
-                        온보딩 허브
+                        병원 정보
                       </Link>
                     ) : (
                       <Link
@@ -821,171 +737,6 @@ export default function LeadsPage() {
                 onClick={() => setActionTarget(null)}
                 disabled={actionSubmitting}
                 className="min-h-11 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
-              >
-                취소
-              </button>
-            </div>
-          </div>
-        </div>
-      ), document.body)}
-
-      {/* 온보딩 전환 모달 */}
-      {convertLead && typeof document !== 'undefined' && createPortal((
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !converting) setConvertLead(null)
-          }}
-        >
-          <div
-            ref={convertDialogRef}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="convert-dialog-title"
-            className="w-full max-w-lg rounded-xl bg-white shadow-xl"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 p-5">
-              <div>
-                <h3 id="convert-dialog-title" className="text-lg font-bold text-slate-900">
-                  온보딩 전환 — {convertLead.clinic_name}
-                </h3>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  전환하면 병원 운영 화면이 만들어지고 온보딩 화면으로 이동합니다.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setConvertLead(null)}
-                disabled={converting}
-                aria-label="전환 모달 닫기"
-                className="rounded-md px-2 py-1 text-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50"
-              >
-                ✕
-              </button>
-            </div>
-
-            <div className="space-y-4 p-5">
-              {/* 중복 병원 확인 */}
-              {candidatesLoading && (
-                <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-500">
-                  같은 이름·연락처의 기존 병원이 있는지 확인하는 중...
-                </p>
-              )}
-              {candidatesError && (
-                <div className="space-y-2">
-                  <OperatorIssuePanel
-                    message={candidatesError}
-                    surface="leads"
-                    onRetry={() => void openConvertModal(convertLead)}
-                    retryLabel="중복 확인 다시 시도"
-                  />
-                  <Link href="/hospitals" className="inline-flex min-h-11 items-center rounded-lg border border-slate-300 px-4 text-sm font-semibold text-slate-700">
-                    병원 목록에서 확인
-                  </Link>
-                </div>
-              )}
-              {!candidatesLoading && candidates.length > 0 && (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
-                  <p className="text-sm font-semibold text-amber-900">
-                    이미 등록된 것으로 보이는 병원이 {candidates.length}곳 있습니다.
-                  </p>
-                  <p className="mt-1 text-xs text-amber-800">
-                    중복 등록을 막으려면 아래에서 기존 병원에 연결하거나, 다른 병원이 맞는지 확인 후 새로 생성하세요.
-                  </p>
-                  <div className="mt-2 space-y-1.5">
-                    <label className="flex items-center gap-2 rounded-md bg-white/70 px-3 py-2 text-sm text-slate-800">
-                      <input
-                        type="radio"
-                        name="convert-target"
-                        checked={linkHospitalId === null}
-                        onChange={() => setLinkHospitalId(null)}
-                      />
-                      <span>새 병원으로 생성</span>
-                    </label>
-                    {candidates.map((candidate) => (
-                      <label
-                        key={candidate.id}
-                        className="flex items-center gap-2 rounded-md bg-white/70 px-3 py-2 text-sm text-slate-800"
-                      >
-                        <input
-                          type="radio"
-                          name="convert-target"
-                          checked={linkHospitalId === candidate.id}
-                          onChange={() => setLinkHospitalId(candidate.id)}
-                        />
-                        <span className="min-w-0 flex-1">
-                          <span className="font-medium">{candidate.name}</span>
-                          <span className="ml-2 text-[11px] text-slate-500">
-                            {candidate.plan ? PLAN_LABELS[candidate.plan] ?? '요금제 확인 필요' : '요금제 확인 필요'}
-                          </span>
-                        </span>
-                        <span className="shrink-0 text-[11px] text-slate-500">
-                          {candidate.status ? STATUS_LABELS[candidate.status]?.label ?? '상태 확인 필요' : '-'}
-                        </span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {!candidatesLoading && !candidatesError && candidates.length === 0 && (
-                <p className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-800">
-                  같은 이름·연락처로 등록된 병원이 없습니다. 새 병원으로 전환합니다.
-                </p>
-              )}
-
-              {/* 요금제 선택 — 기존 병원 연결 시에는 기존 운영량 유지 */}
-              {linkHospitalId === null && (
-                <fieldset>
-                  <legend className="text-sm font-medium text-slate-700">월간 운영량</legend>
-                  <div className="mt-2 grid gap-2 sm:grid-cols-3">
-                    {(['PLAN_12', 'PLAN_16', 'PLAN_20'] as PlanOption[]).map((planOption) => (
-                      <label
-                        key={planOption}
-                        className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-colors ${
-                          selectedPlan === planOption
-                            ? 'border-blue-500 bg-blue-50 text-blue-900'
-                            : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="convert-plan"
-                          value={planOption}
-                          checked={selectedPlan === planOption}
-                          onChange={() => setSelectedPlan(planOption)}
-                        />
-                        <span className="text-xs font-medium">{PLAN_CONTRACT_LABELS[planOption]}</span>
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-              )}
-
-              {convertError && (
-                <OperatorIssuePanel message={convertError} surface="leads" />
-              )}
-            </div>
-
-            <div className="flex gap-3 border-t border-slate-200 p-5">
-              <button
-                type="button"
-                onClick={handleConfirmConvert}
-                disabled={converting || candidatesLoading || Boolean(candidatesError)}
-                className="min-h-11 flex-1 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
-              >
-                {converting
-                  ? '전환 중...'
-                  : linkHospitalId
-                    ? '기존 병원에 연결하고 온보딩 이동'
-                    : '병원 만들고 온보딩 이동'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setConvertLead(null)}
-                disabled={converting}
-                className="rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
               >
                 취소
               </button>

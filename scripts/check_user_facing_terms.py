@@ -17,6 +17,8 @@ SCAN_PATHS = [
     # 화면 문구가 lib의 순수 함수로 빠지는 일이 잦다(예: admin/lib/sov-trend.ts의
     # "아직 측정 전"). app만 스캔하면 리팩터 한 번으로 가드 사각지대가 생긴다.
     ROOT / "admin" / "lib",
+    # 상태·요금제 라벨(STATUS_LABELS·PLAN_LABELS)이 여기 산다. 화면은 이 값을 그대로 그린다.
+    ROOT / "admin" / "types",
     ROOT / "site" / "app",
     ROOT / "site" / "lib",
     ROOT / "backend" / "app" / "api",
@@ -77,8 +79,8 @@ BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("raw essence_summary", re.compile(r"raw\s+essence_summary|essence_summary\s*JSON", re.I)),
 ]
 
-# 검토 §4의 통일안(admin/lib/admin-copy.ts)을 벗어난 옛 변형. 옛 화면은 PR-1E에서
-# 통째로 사라지므로 전역으로 막지 않고, 다시 만든 화면 경로에서만 막는다.
+# 검토 §4의 통일안(admin/lib/admin-copy.ts)을 벗어난 옛 변형. 옛 8개 화면이 PR-1E에서
+# 사라졌으므로 더는 경로 허용 목록을 두지 않고 admin 전체에 적용한다.
 NEW_SURFACE_BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("공개 표면 → 병원 공개 페이지", re.compile(r"공개\s*표면")),
     ("정보/콘텐츠 허브 → 병원 공개 페이지", re.compile(r"(?:병원\s*)?(?:정보|콘텐츠)\s*허브")),
@@ -94,67 +96,11 @@ NEW_SURFACE_BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("자료 모음 → 근거 자료", re.compile(r"자료\s*모음")),
 ]
 
-# 위 가드를 적용할 화면 경로(repo 기준). PR-1B~1E가 화면을 다시 만들 때마다 추가한다.
-NEW_SURFACE_PATHS: list[str] = [
-    "admin/app/hospitals/page.tsx",
-    # 병원 탭 4개와 사이드바 이름. 옛 탭 라벨 때문에 빠져 있던 두 파일을 PR-1E가 넣었다.
-    "admin/app/hospitals/[id]/layout.tsx",
-    "admin/app/AdminShell.tsx",
-    "admin/lib/hospital-states.ts",
-    "admin/lib/admin-copy.ts",
-    "admin/app/hospitals/[id]/info/page.tsx",
-    "admin/app/hospitals/[id]/info/FactsSection.tsx",
-    "admin/app/hospitals/[id]/info/AutofillModal.tsx",
-    "admin/app/hospitals/[id]/info/BrandSection.tsx",
-    "admin/app/hospitals/[id]/info/PhotosSection.tsx",
-    "admin/app/hospitals/[id]/info/SourcesSection.tsx",
-    "admin/app/hospitals/[id]/info/ClinicVisualForm.tsx",
-    "admin/app/hospitals/[id]/info/ClinicLogoField.tsx",
-    "admin/app/hospitals/[id]/info/PhotoRightsFields.tsx",
-    "admin/app/hospitals/[id]/info/NaverBlogBulkForm.tsx",
-    "admin/app/hospitals/[id]/info/NaverHandoffResultItem.tsx",
-    "admin/lib/info-sections.ts",
-    # 공식 채널 칸의 안내 문구가 사는 곳. 화면(FactsSection)이 이 상수를 그대로 그린다.
-    "admin/lib/external-channel-urls.ts",
-    "admin/app/hospitals/[id]/content/page.tsx",
-    "admin/app/hospitals/[id]/content/ScheduleSection.tsx",
-    "admin/app/hospitals/[id]/content/ReadOnlySignals.tsx",
-    # 월 표의 행 상태 라벨이 사는 곳. 화면이 이 값을 그대로 그린다.
-    "admin/lib/content-rows.ts",
-    # 하단 읽기 전용 신호의 표시 문구가 사는 곳.
-    "admin/lib/content-signals.ts",
-    "admin/app/operations/page.tsx",
-    "admin/app/operations/OperationDetail.tsx",
-    "admin/app/operations/OperationsFilters.tsx",
-    "admin/app/operations/OperationsQueue.tsx",
-    "admin/app/operations/CurrentActionStrip.tsx",
-    # 큐 행의 상태·원인 설명이 사는 곳. 화면이 이 값을 그대로 그린다.
-    "admin/lib/operations-center.ts",
-    "admin/app/hospitals/[id]/page.tsx",
-    "admin/app/hospitals/[id]/status/StatusCards.tsx",
-    "admin/app/hospitals/[id]/status/ExceptionCards.tsx",
-    "admin/app/hospitals/[id]/status/EscalatedDraftCard.tsx",
-    "admin/app/hospitals/[id]/status/MonthSummary.tsx",
-    # 현황 화면의 요약 줄과 버튼 사유 문구가 사는 곳.
-    "admin/lib/status-screen.ts",
-    # 예외 초안의 확인 문구와 결과 안내가 사는 곳.
-    "admin/lib/essence-actions.ts",
-    # 보고서 탭 — 목록과 다이얼로그 하나(PR-1E Task 5).
-    "admin/app/hospitals/[id]/reports/page.tsx",
-    "admin/app/hospitals/[id]/reports/ReportList.tsx",
-    "admin/app/hospitals/[id]/reports/ReportDialog.tsx",
-    "admin/app/hospitals/[id]/reports/ReportEvidence.tsx",
-    "admin/app/hospitals/[id]/reports/ReportRunStatus.tsx",
-    "admin/app/hospitals/[id]/reports/ReportRunCard.tsx",
-    # 보고서 화면 문구가 사는 순수 모듈.
-    "admin/lib/report-delivery.ts",
-    "admin/lib/report-review.ts",
-    "admin/lib/report-run.ts",
-    "admin/lib/report-period.ts",
-    "admin/lib/report-component-behavior.ts",
-    # 한 화면 계약 등록(PR-1E Task 4)과 그 화면 문구가 사는 순수 모듈.
-    "admin/app/hospitals/new/page.tsx",
-    "admin/lib/contract-registration.ts",
+# 위 가드가 도는 범위. 화면 문구는 admin/app·admin/lib·admin/types 어디에나 산다.
+UNIFIED_TERM_PATHS = [
+    ROOT / "admin" / "app",
+    ROOT / "admin" / "lib",
+    ROOT / "admin" / "types",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
@@ -168,9 +114,9 @@ ALLOW_PATH_FRAGMENTS = {
 }
 
 
-def iter_files() -> list[Path]:
+def iter_files(bases: list[Path] | None = None) -> list[Path]:
     files: list[Path] = []
-    for base in SCAN_PATHS:
+    for base in bases if bases is not None else SCAN_PATHS:
         if not base.exists():
             continue
         for path in base.rglob("*"):
@@ -223,13 +169,16 @@ def iter_scannable_lines(path: Path) -> list[tuple[int, str]]:
     return lines
 
 
-def scan_new_surfaces() -> list[str]:
-    """다시 만든 화면에서만 통일 전 용어 변형을 막는다."""
+def unified_term_violations() -> list[str]:
+    """admin 화면 전체에서 통일 전 용어 변형을 막는다.
+
+    화면 문구를 그대로 인용해 고정하는 `*.test.ts(x)`는 제외한다 — "옛 문구가 남지
+    않았다"를 검사하려면 그 테스트가 옛 문구를 적어야 하기 때문이다.
+    """
     violations: list[str] = []
-    for rel in NEW_SURFACE_PATHS:
-        path = ROOT / rel
-        if not path.exists():
-            violations.append(f"{rel}: NEW_SURFACE_PATHS에 적힌 파일이 없다. 목록을 고칠 것.")
+    for path in iter_files(UNIFIED_TERM_PATHS):
+        rel = path.relative_to(ROOT).as_posix()
+        if rel.endswith((".test.ts", ".test.tsx")):
             continue
         for lineno, line in iter_scannable_lines(path):
             for label in banned_labels_for_line(line, NEW_SURFACE_BANNED_PATTERNS):
@@ -249,10 +198,10 @@ def main() -> int:
         print("\n".join(violations))
         return 1
 
-    new_surface_violations = scan_new_surfaces()
-    if new_surface_violations:
-        print("새 화면에 통일 전 용어가 남았다. admin/lib/admin-copy.ts의 키로 바꿀 것:\n")
-        print("\n".join(new_surface_violations))
+    unified_violations = unified_term_violations()
+    if unified_violations:
+        print("admin에 통일 전 용어가 남았다. admin/lib/admin-copy.ts의 키로 바꿀 것:\n")
+        print("\n".join(unified_violations))
         return 1
 
     print("OK: no banned user-facing Re:putation terms found.")

@@ -133,7 +133,7 @@ def activation_requirements(
             "profile_complete", "병원 기본 정보 완료", "병원 기본 정보의 필수 항목을 완료하세요.", hospital.profile_complete
         ),
         ActivationRequirement(
-            "site_built", "콘텐츠 허브 준비", "AI 노출 콘텐츠 허브 준비를 완료하세요.", hospital.site_built
+            "site_built", "병원 공개 페이지 준비", "병원 공개 페이지 준비가 끝나면 자동으로 진행됩니다.", hospital.site_built
         ),
     ]
 

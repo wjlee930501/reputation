@@ -284,13 +284,13 @@ export default function HospitalsPage() {
                   const contentReady = describeContentState(h.content_state)
                   const domain = describeDomainState(h.domain_state)
                   const domainHref = h.site_built
-                    ? `/hospitals/${h.id}/profile#domain-setup`
-                    : `/hospitals/${h.id}/profile`
+                    ? `/hospitals/${h.id}/info#domain-setup`
+                    : `/hospitals/${h.id}/info`
                   return (
                     <tr key={h.id} className="hover:bg-slate-50/80 transition-colors">
                       <td className="px-6 py-4" data-primary="true">
                         <Link
-                          href={`/hospitals/${h.id}/dashboard`}
+                          href={`/hospitals/${h.id}`}
                           className="block group"
                         >
                           <div className="font-medium text-slate-900 group-hover:text-blue-700">
@@ -316,7 +316,7 @@ export default function HospitalsPage() {
                             전에는 알 수 없다 — 승인 화면으로 바로 간다(O-2). */}
                         {(h.visual_approval_missing?.length ?? 0) > 0 && (
                           <Link
-                            href={`/hospitals/${h.id}/onboarding`}
+                            href={`/hospitals/${h.id}/info`}
                             className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
                           >
                             사진 승인 대기 {h.visual_approval_missing?.length}건
@@ -349,7 +349,7 @@ export default function HospitalsPage() {
                       </td>
                       <td className="px-4 py-4 text-right" data-label="">
                         <Link
-                          href={`/hospitals/${h.id}/dashboard`}
+                          href={`/hospitals/${h.id}`}
                           className="text-xs font-medium text-blue-600 hover:text-blue-800 hover:underline"
                         >
                           열기 →

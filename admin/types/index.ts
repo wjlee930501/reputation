@@ -86,7 +86,7 @@ export interface Hospital {
   missing_profile_requirements: MissingProfileRequirement[]
   /** 프로필 저장 응답에만 실린다. */
   source_registration?: ProfileSourceRegistration[]
-  /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
+  /** 승인이 남은 병원 공개 페이지 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */
   visual_approval_missing?: string[]
   v0_report_done: boolean
   site_built?: boolean
@@ -292,7 +292,7 @@ export interface ContentItem {
     references_count?: number
     essence_status?: string | null
     essence_check_summary?: Record<string, unknown> | null
-    // 공개 사이트가 이 글을 실제로 내보내는지 — 공개 표면과 같은 판정 함수의 결과다.
+    // 공개 사이트가 이 글을 실제로 내보내는지 — 병원 공개 페이지와 같은 판정 함수의 결과다.
     // 서버가 항상 내려주므로 선택 필드가 아니다. 값이 없다면 계약이 깨진 것이고,
     // 화면은 "공개 중"이 아니라 보류로 취급해야 한다(H-01).
     public_visibility: { visible: boolean; blockers: string[]; blocker_labels: string[] }
@@ -595,7 +595,7 @@ export interface ExposureActionCreateBriefResponse {
   }
 }
 
-// GET /admin/hospitals/{id}/schedule — 활성 스케줄 (없으면 404)
+// GET /admin/hospitals/{id}/schedule — 활성 발행 일정 (없으면 404)
 export interface ScheduleInfo {
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12'
   publish_days: number[]

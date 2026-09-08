@@ -514,7 +514,7 @@ def _open_rebuild_site_incident(
         incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
         state=IncidentState.OPEN.value,
         severity=IncidentSeverity.HIGH.value,
-        customer_impact="콘텐츠 허브 공개 준비가 끝나지 않아 공개가 미뤄지고 있습니다.",
+        customer_impact="병원 공개 페이지 준비가 끝나지 않아 공개가 미뤄지고 있습니다.",
         source_type="SITE_BUILD",
         source_id=str(hospital.id),
         safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",

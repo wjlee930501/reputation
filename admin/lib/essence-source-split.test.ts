@@ -117,5 +117,5 @@ test('the denominator drops the sources the server never requires', () => {
 
 test('the screen says where the photos went instead of silently dropping them', () => {
   assert.equal(describePhotoSourceExclusion(0), null)
-  assert.match(describePhotoSourceExclusion(6) ?? '', /사진 6장은 공개 표면용 자산/)
+  assert.match(describePhotoSourceExclusion(6) ?? '', /사진 6장은 병원 공개 페이지용 자산/)
 })

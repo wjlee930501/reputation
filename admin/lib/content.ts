@@ -146,7 +146,7 @@ export function countUnpublishedCarriedOver(items: CarriedOverItem[]): number {
   ).length
 }
 
-// 반려(reject_content)는 scheduled_date가 오늘 이하이면 내일로 재스케줄한다(backend
+// 반려(reject_content)는 scheduled_date가 오늘 이하이면 내일로 발행 일정을 옮긴다(backend
 // api/admin/content.py:reject_content). 월말에 반려하면 다음 달로 넘어가는데, 단건
 // 새로고침(refreshItem)이 그 결과를 그대로 병합하면 다음 달 슬롯이 이번 달 화면에
 // 유령처럼 남는다 — 병합 전 반드시 이 판정을 거쳐야 한다.
