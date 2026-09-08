@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.essence import (
+    AUTO_REVIEW_GAP_FIELD,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -15,6 +16,7 @@ from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.essence_readiness import (
     get_current_approved_philosophy_id,
     get_essence_readiness,
+    get_essence_readiness_states,
     get_public_approved_philosophy_id,
     get_public_approved_philosophy_ids,
     get_public_essence_readiness,
@@ -325,3 +327,138 @@ async def test_public_readiness_skips_the_noise_query_the_strict_one_pays():
     assert public_db.query_count == 2
     assert strict.current is approved
     assert strict_db.query_count == 3
+
+
+class _AsyncReadinessStatesDB:
+    """3상태 묶음 조회 더블 — 승인·자료·노이즈·초안 4문장을 statement가 무엇을 고르는지로 가른다."""
+
+    def __init__(self, approved_rows, source_rows, *, noise_rows=None, draft_rows=None):
+        self._approved_rows = approved_rows
+        self._source_rows = source_rows
+        self._noise_rows = noise_rows or []
+        self._draft_rows = draft_rows or []
+        self.query_count = 0
+
+    async def execute(self, statement):
+        self.query_count += 1
+        names = [description["name"] for description in statement.column_descriptions]
+        entity = statement.column_descriptions[0].get("entity")
+        if entity is HospitalContentPhilosophy:
+            # 승인 행과 예외 초안은 같은 엔티티라 고르는 컬럼으로 가른다.
+            return _AsyncResult(rows=self._draft_rows if "unsupported_gaps" in names else self._approved_rows)
+        if entity is HospitalSourceAsset:
+            return _AsyncResult(rows=self._source_rows)
+        if entity is HospitalSourceEvidenceNote:
+            return _AsyncResult(rows=self._noise_rows)
+        raise AssertionError(f"예상하지 못한 3상태 묶음 조회: {names}")
+
+
+def _states_case(*, sources, approved_sources, noise_hash=None):
+    """한 병원의 묶음 행과 단건 더블을 같은 사실로 만든다 — 두 경로가 같은 답을 내야 한다."""
+    hospital_id = uuid.uuid4()
+    approved_row = _approved_row(
+        uuid.uuid4(),
+        compute_sources_snapshot_hash(approved_sources),
+        [source.id for source in approved_sources],
+        evidence_noise_hash=noise_hash if noise_hash is not None else compute_evidence_noise_hash([]),
+        hospital_id=hospital_id,
+    )
+    single_db = _AsyncReadinessDB(
+        SimpleNamespace(
+            source_snapshot_hash=approved_row.source_snapshot_hash,
+            source_asset_ids=approved_row.source_asset_ids,
+            evidence_noise_hash=approved_row.evidence_noise_hash,
+        ),
+        sources,
+    )
+    return hospital_id, approved_row, single_db
+
+
+@pytest.mark.asyncio
+async def test_batched_states_judge_current_like_the_single_lookup():
+    """신선·stale·미처리 — 묶음 판정이 단건 `get_essence_readiness`와 갈라지면 화면이 거짓말을 한다."""
+    fresh_source = _source()
+    fresh, fresh_row, fresh_single = _states_case(
+        sources=[fresh_source], approved_sources=[fresh_source]
+    )
+    original = _source()
+    changed = SimpleNamespace(**vars(original))
+    changed.content_hash = "changed"
+    stale, stale_row, stale_single = _states_case(
+        sources=[changed], approved_sources=[original]
+    )
+    processed = _source()
+    pending = _source(status=SourceStatus.PENDING)
+    waiting, waiting_row, waiting_single = _states_case(
+        sources=[processed, pending], approved_sources=[processed]
+    )
+    for hospital_id, rows in ((fresh, [fresh_source]), (stale, [changed]), (waiting, [processed, pending])):
+        for row in rows:
+            row.hospital_id = hospital_id
+    db = _AsyncReadinessStatesDB(
+        [fresh_row, stale_row, waiting_row],
+        [fresh_source, changed, processed, pending],
+    )
+
+    states = await get_essence_readiness_states(db, [fresh, stale, waiting])
+
+    assert db.query_count == 4
+    assert states[fresh].current is True
+    assert states[stale].current is False
+    assert states[waiting].current is False
+    assert states[waiting].unprocessed_sources == 1
+    assert states[fresh].unprocessed_sources == 0
+    assert all(state.escalated_draft is False for state in states.values())
+    for hospital_id, single_db in ((fresh, fresh_single), (stale, stale_single), (waiting, waiting_single)):
+        single = await get_essence_readiness(single_db, hospital_id)
+        assert states[hospital_id].current is (single.current is not None)
+        assert states[hospital_id].unprocessed_sources == (
+            single.required_source_count - single.processed_source_count
+        )
+
+
+@pytest.mark.asyncio
+async def test_batched_states_flag_a_hospital_with_an_escalated_draft():
+    """자동 검수가 보류한 초안은 사람이 손대야 풀린다 — `current`가 살아 있어도 예외로 남는다."""
+    source = _source()
+    hospital_id, approved_row, single_db = _states_case(
+        sources=[source], approved_sources=[source]
+    )
+    source.hospital_id = hospital_id
+    db = _AsyncReadinessStatesDB(
+        [approved_row],
+        [source],
+        draft_rows=[
+            SimpleNamespace(
+                hospital_id=hospital_id,
+                unsupported_gaps=[{"field": AUTO_REVIEW_GAP_FIELD, "reason": "근거 없는 효과 표현"}],
+            )
+        ],
+    )
+
+    states = await get_essence_readiness_states(db, [hospital_id])
+
+    assert states[hospital_id].escalated_draft is True
+    assert states[hospital_id].current is True
+    assert (await get_essence_readiness(single_db, hospital_id)).current is not None
+
+
+@pytest.mark.asyncio
+async def test_batched_states_answer_for_a_hospital_without_an_approval():
+    """승인 기준이 없는 병원도 키를 받는다 — 화면에서 빠지면 준비 중인 병원이 사라진다."""
+    hospital_id = uuid.uuid4()
+    pending = _source(status=SourceStatus.PENDING, hospital_id=hospital_id)
+    db = _AsyncReadinessStatesDB([], [pending])
+
+    states = await get_essence_readiness_states(db, [hospital_id])
+
+    assert states[hospital_id].current is False
+    assert states[hospital_id].unprocessed_sources == 1
+
+
+@pytest.mark.asyncio
+async def test_batched_states_read_nothing_for_an_empty_hospital_set():
+    db = _AsyncReadinessStatesDB([], [])
+
+    assert await get_essence_readiness_states(db, []) == {}
+    assert db.query_count == 0

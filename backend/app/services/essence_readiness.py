@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.essence import (
+    AUTO_REVIEW_GAP_FIELD,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     PhilosophyStatus,
@@ -32,6 +33,7 @@ from app.services.essence_sources import required_text_source_predicate
 from app.services.evidence_noise import (
     load_evidence_noise_hash,
     load_evidence_noise_hash_sync,
+    load_evidence_noise_hashes,
 )
 
 
@@ -298,6 +300,113 @@ async def get_public_approved_philosophy_ids(
             )
         )
     return resolved
+
+
+@dataclass(frozen=True, slots=True)
+class EssenceReadinessState:
+    current: bool
+    unprocessed_sources: int
+    escalated_draft: bool
+
+
+async def get_essence_readiness_states(
+    db: AsyncSession,
+    hospital_ids: Iterable[uuid.UUID],
+) -> dict[uuid.UUID, EssenceReadinessState]:
+    """N개 병원의 콘텐츠 준비 상태를 상수 쿼리로 — 승인 행 · 필수 자료 · 노이즈 제외 집합 · 예외 초안.
+
+    `current`는 엄격한 판정이므로 노이즈 집합을 반드시 읽는다(단건 `get_essence_readiness`의
+    `include_noise=True` 규칙). 판정은 단건과 같은 `_resolve_lightweight_readiness`를 쓰고
+    조회 방식만 다르다 — 목록·헤더·현황이 갈라질 수 없다.
+    """
+    ids = list(dict.fromkeys(hospital_ids))
+    if not ids:
+        return {}
+    approved_rows = (
+        await db.execute(
+            select(
+                HospitalContentPhilosophy.hospital_id,
+                HospitalContentPhilosophy.id,
+                HospitalContentPhilosophy.source_snapshot_hash,
+                HospitalContentPhilosophy.source_asset_ids,
+                HospitalContentPhilosophy.evidence_noise_hash,
+            ).where(
+                HospitalContentPhilosophy.hospital_id.in_(ids),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            )
+        )
+    ).all()
+    source_rows = (
+        await db.execute(
+            select(
+                HospitalSourceAsset.hospital_id,
+                HospitalSourceAsset.id,
+                HospitalSourceAsset.content_hash,
+                HospitalSourceAsset.status,
+                HospitalSourceAsset.processed_at,
+            ).where(
+                HospitalSourceAsset.hospital_id.in_(ids),
+                required_text_source_predicate(),
+            )
+        )
+    ).all()
+    noise_hashes = await load_evidence_noise_hashes(db, ids)
+    escalated_hospital_ids = await _load_escalated_draft_hospital_ids(db, ids)
+
+    # 병원당 APPROVED는 부분 unique 인덱스로 최대 1건이다.
+    approved_by_hospital = {row.hospital_id: row for row in approved_rows}
+    sources_by_hospital: dict[uuid.UUID, list[Any]] = {}
+    for row in source_rows:
+        sources_by_hospital.setdefault(row.hospital_id, []).append(row)
+
+    resolved: dict[uuid.UUID, EssenceReadinessState] = {}
+    for hospital_id in ids:
+        sources = sources_by_hospital.get(hospital_id, [])
+        _, readiness = _resolve_lightweight_readiness(
+            approved_by_hospital.get(hospital_id),
+            sources,
+            excluded_note_hash=noise_hashes.get(hospital_id),
+        )
+        resolved[hospital_id] = EssenceReadinessState(
+            current=readiness is not None and readiness.current is not None,
+            # `resolve_essence_readiness`와 같은 정의(PROCESSED가 아닌 필수 자료). 승인 행이
+            # 없는 병원도 남은 자료 수는 말할 수 있어야 하므로 자료 행에서 직접 센다.
+            unprocessed_sources=sum(
+                1 for row in sources if row.status != SourceStatus.PROCESSED
+            ),
+            escalated_draft=hospital_id in escalated_hospital_ids,
+        )
+    return resolved
+
+
+async def _load_escalated_draft_hospital_ids(
+    db: AsyncSession,
+    hospital_ids: list[uuid.UUID],
+) -> set[uuid.UUID]:
+    """자동 검수가 보류 사유를 남긴 DRAFT가 있는 병원 — 사람이 손대야 풀리는 예외.
+
+    `unsupported_gaps`는 postgres에서만 JSONB인 variant라 컨테인먼트를 SQL로 강제하면 다른
+    dialect에서 깨진다. 병원당 초안은 소수이므로 gap 목록만 읽어 파이썬에서 거른다.
+    """
+    rows = (
+        await db.execute(
+            select(
+                HospitalContentPhilosophy.hospital_id,
+                HospitalContentPhilosophy.unsupported_gaps,
+            ).where(
+                HospitalContentPhilosophy.hospital_id.in_(hospital_ids),
+                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
+            )
+        )
+    ).all()
+    return {
+        row.hospital_id
+        for row in rows
+        if any(
+            isinstance(gap, dict) and gap.get("field") == AUTO_REVIEW_GAP_FIELD
+            for gap in (row.unsupported_gaps or [])
+        )
+    }
 
 
 def _public_philosophy_id(
