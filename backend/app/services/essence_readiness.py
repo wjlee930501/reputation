@@ -309,10 +309,14 @@ class EssenceReadinessState:
     `escalated_draft_findings`는 자동 검수가 남긴 보류 사유 전부다 — 현황 화면이 예외
     카드를 만들 때 초안을 다시 조회하지 않도록 여기서 함께 싣는다(같은 JSONB 필터가
     두 곳에 있으면 목록의 예외와 현황의 카드가 갈린다).
+
+    `required_sources`는 자동 검수가 볼 수 있는 필수 자료 수다. 0이면 자동 검수는 시작조차
+    하지 못하므로(WAITING_FOR_SOURCES) 남은 일은 시스템이 아니라 사람의 몫이다.
     """
 
     current: bool
     unprocessed_sources: int
+    required_sources: int
     escalated_draft: bool
     escalated_draft_id: uuid.UUID | None = None
     escalated_draft_findings: tuple[str, ...] = ()
@@ -360,13 +364,25 @@ async def get_essence_readiness_states(
         )
     ).all()
     noise_hashes = await load_evidence_noise_hashes(db, ids)
-    escalated_drafts = await _load_escalated_drafts(db, ids)
 
     # 병원당 APPROVED는 부분 unique 인덱스로 최대 1건이다.
     approved_by_hospital = {row.hospital_id: row for row in approved_rows}
     sources_by_hospital: dict[uuid.UUID, list[Any]] = {}
     for row in source_rows:
         sources_by_hospital.setdefault(row.hospital_id, []).append(row)
+    # 지금 자료 집합의 snapshot — 예외 초안을 이 판으로만 좁힌다. 승인 행이 없는 병원도
+    # 자기 snapshot은 있으므로 자료 행에서 직접 센다.
+    snapshot_hashes = {
+        hospital_id: compute_sources_snapshot_hash(
+            [
+                row
+                for row in sources_by_hospital.get(hospital_id, ())
+                if row.status == SourceStatus.PROCESSED
+            ]
+        )
+        for hospital_id in ids
+    }
+    escalated_drafts = await _load_escalated_drafts(db, ids, snapshot_hashes)
 
     resolved: dict[uuid.UUID, EssenceReadinessState] = {}
     for hospital_id in ids:
@@ -384,6 +400,7 @@ async def get_essence_readiness_states(
             unprocessed_sources=sum(
                 1 for row in sources if row.status != SourceStatus.PROCESSED
             ),
+            required_sources=len(sources),
             escalated_draft=hospital_id in escalated_drafts,
             escalated_draft_id=draft_id,
             escalated_draft_findings=findings,
@@ -394,8 +411,13 @@ async def get_essence_readiness_states(
 async def _load_escalated_drafts(
     db: AsyncSession,
     hospital_ids: list[uuid.UUID],
+    snapshot_hashes: dict[uuid.UUID, str],
 ) -> dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]]:
     """자동 검수가 보류한 DRAFT — 사람이 손대야 풀리는 예외와 그 보류 사유 전부.
+
+    지금 자료 집합의 snapshot으로 만든 초안만 예외로 센다(쓰기 경로의
+    `essence_auto_review._drafts_for_snapshot`와 같은 조건). 자료가 바뀌어 새 판이 자동
+    승인된 뒤에도 옛 초안은 DRAFT로 남으므로, 판을 보지 않으면 그 병원은 영영 "예외 있음"이다.
 
     `unsupported_gaps`는 postgres에서만 JSONB인 variant라 컨테인먼트를 SQL로 강제하면 다른
     dialect에서 깨진다. 병원당 초안은 소수이므로 gap 목록만 읽어 파이썬에서 거른다.
@@ -407,6 +429,7 @@ async def _load_escalated_drafts(
             select(
                 HospitalContentPhilosophy.hospital_id,
                 HospitalContentPhilosophy.id,
+                HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.unsupported_gaps,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(hospital_ids),
@@ -416,17 +439,19 @@ async def _load_escalated_drafts(
     ).all()
     escalated: dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]] = {}
     for row in rows:
+        if row.source_snapshot_hash != snapshot_hashes.get(row.hospital_id):
+            continue
         gaps = [
             gap
             for gap in (row.unsupported_gaps or [])
             if isinstance(gap, dict) and gap.get("field") == AUTO_REVIEW_GAP_FIELD
         ]
-        if not gaps:
-            continue
         findings = tuple(str(gap["reason"]) for gap in gaps if gap.get("reason"))
-        # 사유를 남긴 초안이 화면이 보여줄 초안이다 — 사유 없는 초안은 예외로만 센다.
-        if row.hospital_id not in escalated or (findings and not escalated[row.hospital_id][1]):
-            escalated[row.hospital_id] = (row.id, findings)
+        # 사유가 없으면 승인 게이트도 막지 않는다 — 목록의 예외 수와 현황의 카드가
+        # 갈리지 않도록 여기서도 세지 않는다.
+        if not findings:
+            continue
+        escalated.setdefault(row.hospital_id, (row.id, findings))
     return escalated
 
 

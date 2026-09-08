@@ -113,7 +113,9 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   assert.doesNotMatch(`${shell}\n${leads}\n${content}\n${operations}`, /상담 리드|운영 관제|후행 점검|전체 파이프라인 상태|Research Preview|내부 운영 콘솔/)
   assert.match(currentAction, /원인과 처리 방법 보기/)
   assert.doesNotMatch(hospitalLayout, /label: hospital\.status/)
-  assert.match(hospitalLayout, /상태 확인 필요/)
+  // 상태를 못 받아왔으면 못 받아왔다고 말한다 — 옛 status 배지로 지어내지 않는다.
+  assert.doesNotMatch(hospitalLayout, /STATUS_LABELS/)
+  assert.match(hospitalLayout, /상태 불러오기 실패/)
   assert.match(hospitalLayout, /label: '온보딩', path: 'onboarding', hint: '병원 자료를 입력하고 콘텐츠 운영 기준을 준비합니다\.'/)
   assert.match(shell, /break-keep text-pretty \[overflow-wrap:anywhere\]/)
   assert.match(leads, /font-semibold whitespace-nowrap text-slate-900/)
@@ -127,7 +129,7 @@ test('live marketer surfaces fail closed instead of rendering raw states or exce
   // 자기 도메인이 없으면 무조건 "준비 중"이라, 이미 서비스 중인 4곳이 미완성으로
   // 보였다(O-7). 원시 slug를 그대로 흘리지 않는다는 계약은 위 doesNotMatch가 지킨다.
   assert.doesNotMatch(hospitalLayout, /공개 주소 준비 중/)
-  assert.match(hospitalLayout, /readHospitalDomainStatus\(hospital\)\.detail/)
+  assert.match(hospitalLayout, /readHospitalDomainStatus\(hospital\)/)
   assert.doesNotMatch(leads, /\{candidate\.slug\}/)
   assert.match(leads, /불러온 상담 요청/)
   assert.doesNotMatch(leads, /\{lead\.source_path/)

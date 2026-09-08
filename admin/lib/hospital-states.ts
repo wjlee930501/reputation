@@ -40,6 +40,8 @@ export interface DomainStateValue {
   kind: DomainKind
   reason?: string | null
   last_checked_at?: string | null
+  /** 마지막 관측의 성패. 없으면 "마지막 확인 …"만 말하고 정상/실패를 붙이지 않는다. */
+  last_check_ok?: boolean | null
 }
 
 export interface StateDescription {
@@ -74,9 +76,19 @@ const CONDITION_LABELS: Record<string, string> = {
   schedule: '발행 요일 설정',
   sources: '근거 자료 처리 {count}건',
   essence_review: '콘텐츠 운영 기준 자동 검수',
+  // 자료가 하나도 없으면 자동 검수는 기다리기만 한다 — 사람이 채워야 다음이 있다.
+  sources_required: '공식 채널·근거 자료 등록',
+  // 공개 서비스 중이 아닌 병원은 자동 발행이 돌지 않는다.
+  service_paused: '서비스 재개',
+  public_service: '공개 서비스 시작 후 자동 발행',
 }
 
-const HUMAN_CONDITIONS = new Set(['profile_complete', 'schedule'])
+const HUMAN_CONDITIONS = new Set([
+  'profile_complete',
+  'schedule',
+  'sources_required',
+  'service_paused',
+])
 
 /** `sources:2` 같은 목록 조건 키를 사람이 읽는 문구로. */
 export function remainingConditionLabel(key: string): string {
@@ -138,7 +150,7 @@ export function describeDomainState(state: DomainStateValue): StateDescription |
     state.kind === 'problem'
       ? `${DOMAIN_LABELS.problem}: ${state.reason || '원인 확인 필요'}`
       : DOMAIN_LABELS[state.kind]
-  return { label, detail: domainLastCheckedLabel(state.last_checked_at) }
+  return { label, detail: domainLastCheckedLabel(state.last_checked_at, state.last_check_ok) }
 }
 
 export function stateTone(kind: StateKind): StateTone {

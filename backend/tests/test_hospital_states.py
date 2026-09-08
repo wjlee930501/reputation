@@ -48,23 +48,64 @@ def test_public_service_mirrors_the_serving_gate():
 
 def test_content_state_needs_schedule_and_a_current_essence():
     ready = content_state(
-        _hospital(), essence_current=True, unprocessed_sources=0, escalated_draft=False
+        _hospital(),
+        essence_current=True,
+        unprocessed_sources=0,
+        required_sources=1,
+        escalated_draft=False,
     )
     assert ready == ContentState(kind="auto", remaining=())
     waiting = content_state(
         _hospital(schedule_set=False),
         essence_current=False,
         unprocessed_sources=2,
+        required_sources=3,
         escalated_draft=False,
     )
     assert waiting.kind == "preparing"
     assert waiting.remaining == ("schedule", "sources:2", "essence_review")
     assert (
         content_state(
-            _hospital(), essence_current=False, unprocessed_sources=0, escalated_draft=True
+            _hospital(),
+            essence_current=False,
+            unprocessed_sources=0,
+            required_sources=1,
+            escalated_draft=True,
         ).kind
         == "exception"
     )
+
+
+def test_no_sources_is_human_work_not_an_automatic_review():
+    """자료가 없으면 자동 검수는 기다리기만 한다 — 사람이 채워야 할 일을 시스템 몫으로 적지 않는다."""
+    state = content_state(
+        _hospital(),
+        essence_current=False,
+        unprocessed_sources=0,
+        required_sources=0,
+        escalated_draft=False,
+    )
+    assert state == ContentState(kind="preparing", remaining=("sources_required",))
+
+
+def test_a_hospital_that_is_not_serving_is_never_auto_publishing():
+    """야간 생성은 공개 서비스 중인 병원에만 돈다 — 멈춘 병원을 '자동 발행 중'이라 하지 않는다."""
+    paused = content_state(
+        _hospital(status=HospitalStatus.PAUSED),
+        essence_current=True,
+        unprocessed_sources=0,
+        required_sources=1,
+        escalated_draft=False,
+    )
+    assert paused == ContentState(kind="preparing", remaining=("service_paused",))
+    not_live = content_state(
+        _hospital(status=HospitalStatus.BUILDING, site_live=False),
+        essence_current=True,
+        unprocessed_sources=0,
+        required_sources=1,
+        escalated_draft=False,
+    )
+    assert not_live == ContentState(kind="preparing", remaining=("public_service",))
 
 
 def test_domain_state_only_when_a_custom_domain_exists():
@@ -103,7 +144,12 @@ def test_failed_live_check_reports_the_stored_reason():
             domain_last_check_reason="A 레코드 불일치",
         )
     )
-    assert state == DomainState(kind="problem", reason="A 레코드 불일치", last_checked_at=None)
+    assert state == DomainState(
+        kind="problem",
+        reason="A 레코드 불일치",
+        last_checked_at=None,
+        last_check_ok=False,
+    )
 
 
 def test_paused_hospital_keeps_its_domain_fact():

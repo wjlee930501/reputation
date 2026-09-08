@@ -20,6 +20,11 @@ interface HospitalDomainInput {
 export interface HospitalDomainStatus {
   label: '운영 중' | '운영 일시 정지' | '공개 주소 확인 대기' | 'DNS 확인 완료' | '인증서 발급 중' | '인증서 실패' | '기본 주소' | '미설정'
   detail: string
+  /**
+   * 공개 주소 그 자체. `detail`은 마지막 확인 시각까지 붙인 문구이므로, 상태를 따로 말하는
+   * 화면이 `detail`을 쓰면 같은 사실을 두 번 말하게 된다.
+   */
+  url: string | null
   tone: DomainTone
 }
 
@@ -107,6 +112,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '운영 일시 정지',
         detail: withLastChecked(hospital, `${domain} · ${domainFactLabel(hospital)}`),
+        url: domain,
         tone: 'default',
       }
     }
@@ -117,6 +123,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '인증서 발급 중',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'issuing',
       }
     }
@@ -125,6 +132,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '인증서 실패',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'failed',
       }
     }
@@ -133,6 +141,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '운영 중',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'live',
       }
     }
@@ -143,6 +152,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: '운영 중',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'live',
       }
     }
@@ -151,6 +161,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
       return {
         label: 'DNS 확인 완료',
         detail: withLastChecked(hospital, domain),
+        url: domain,
         tone: 'dns_verified',
       }
     }
@@ -159,6 +170,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     return {
       label: '공개 주소 확인 대기',
       detail: withLastChecked(hospital, domain),
+      url: domain,
       tone: 'waiting',
     }
   }
@@ -169,6 +181,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
     return {
       label: '기본 주소',
       detail: `${slug}.${platformSiteHost()}`,
+      url: `${slug}.${platformSiteHost()}`,
       tone: 'default',
     }
   }
@@ -176,6 +189,7 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
   return {
     label: '미설정',
     detail: '병원 기본 정보에서 공개 주소 연결',
+    url: null,
     tone: 'empty',
   }
 }

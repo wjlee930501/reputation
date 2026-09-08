@@ -43,6 +43,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
     {
       label: '운영 중',
       detail: 'clinic-a.example.com',
+      url: 'clinic-a.example.com',
       tone: 'live',
     },
   )
@@ -52,6 +53,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
     {
       label: '공개 주소 확인 대기',
       detail: 'clinic-b.example.com',
+      url: 'clinic-b.example.com',
       tone: 'waiting',
     },
   )
@@ -62,6 +64,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
       {
         label: '기본 주소',
         detail: 'clinic-c.reputation.motionlabs.kr',
+        url: 'clinic-c.reputation.motionlabs.kr',
         tone: 'default',
       },
     ),
@@ -71,6 +74,7 @@ test('readHospitalDomainStatus separates live, DNS waiting, default, and unset s
     {
       label: '미설정',
       detail: '병원 기본 정보에서 공개 주소 연결',
+      url: null,
       tone: 'empty',
     },
   )
@@ -98,6 +102,7 @@ test('readHospitalDomainStatus derives the default host from NEXT_PUBLIC_SITE_UR
       {
         label: '기본 주소',
         detail: 'clinic-c.preview.reputation.example.test',
+        url: 'clinic-c.preview.reputation.example.test',
         tone: 'default',
       },
     ),
@@ -115,6 +120,7 @@ test('custom domain with DNS verified but cert not done shows dns_verified', () 
     {
       label: 'DNS 확인 완료',
       detail: 'clinic.example.com',
+      url: 'clinic.example.com',
       tone: 'dns_verified',
     },
   )
@@ -132,6 +138,7 @@ test('custom domain with cert ISSUING shows issuing', () => {
     {
       label: '인증서 발급 중',
       detail: 'clinic.example.com',
+      url: 'clinic.example.com',
       tone: 'issuing',
     },
   )
@@ -149,6 +156,7 @@ test('custom domain with cert FAILED shows failed', () => {
     {
       label: '인증서 실패',
       detail: 'clinic.example.com',
+      url: 'clinic.example.com',
       tone: 'failed',
     },
   )

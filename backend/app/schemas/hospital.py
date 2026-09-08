@@ -14,6 +14,7 @@ class HospitalDomainStateItem(BaseModel):
     kind: str
     reason: Optional[str] = None
     last_checked_at: Optional[str] = None
+    last_check_ok: Optional[bool] = None
 
 
 class HospitalAeOwner(BaseModel):

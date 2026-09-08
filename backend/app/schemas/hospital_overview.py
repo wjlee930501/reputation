@@ -29,6 +29,8 @@ class StateCard(BaseModel):
     remaining: list[RemainingCondition]
     reason: str | None = None
     last_checked_at: datetime | None = None
+    # 마지막 관측의 성패 — 화면이 "마지막 확인 …"에 응답 정상/실패를 붙이는 근거다.
+    last_check_ok: bool | None = None
 
 
 class ExceptionCard(BaseModel):

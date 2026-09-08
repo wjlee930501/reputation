@@ -209,7 +209,7 @@ def test_list_serializer_includes_custom_domain_for_admin_search():
     payload = hospitals_api._serialize_list(
         hospital,
         readiness_state=EssenceReadinessState(
-            current=True, unprocessed_sources=0, escalated_draft=False
+            current=True, unprocessed_sources=0, required_sources=1, escalated_draft=False
         ),
         open_exception_count=0,
         ae_owner=None,

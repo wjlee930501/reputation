@@ -149,6 +149,8 @@ export interface HospitalOverviewMonth {
   withheld_count: number
   planned_total: number
   mention_rate: number | null
+  /** `mention_rate`를 실제로 잰 주의 시작일. 값만 보이면 지난달 수치가 오늘 수치가 된다. */
+  mention_rate_measured_at: string | null
   next_report_date: string
 }
 
@@ -157,7 +159,14 @@ export interface HospitalOverview {
   hospital_id: string
   public_service: { kind: PublicServiceKind; label: string; remaining: RemainingCondition[] }
   content: { kind: ContentKind; label: string; remaining: RemainingCondition[] }
-  domain: { kind: DomainKind; label: string; reason: string | null; last_checked_at: string | null }
+  domain: {
+    kind: DomainKind
+    label: string
+    remaining: RemainingCondition[]
+    reason: string | null
+    last_checked_at: string | null
+    last_check_ok: boolean | null
+  }
   exceptions: HospitalOverviewException[]
   month: HospitalOverviewMonth
 }

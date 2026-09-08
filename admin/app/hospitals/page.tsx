@@ -312,6 +312,16 @@ export default function HospitalsPage() {
                             {ADMIN_COPY.aeOwner} {h.ae_owner?.name ?? '미지정'}
                           </div>
                         </Link>
+                        {/* 사진 승인은 사람만 풀 수 있고, 여기서 보이지 않으면 병원을 열기
+                            전에는 알 수 없다 — 승인 화면으로 바로 간다(O-2). */}
+                        {(h.visual_approval_missing?.length ?? 0) > 0 && (
+                          <Link
+                            href={`/hospitals/${h.id}/onboarding`}
+                            className="mt-1 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800 hover:bg-amber-100"
+                          >
+                            사진 승인 대기 {h.visual_approval_missing?.length}건
+                          </Link>
+                        )}
                       </td>
                       <td className="px-6 py-4" data-label="공개 서비스">
                         <StateCell kind={h.public_service_state.kind} description={publicService} />
@@ -321,13 +331,17 @@ export default function HospitalsPage() {
                       </td>
                       <td className="px-6 py-4" data-label="자기 도메인">
                         {/* 자기 도메인을 쓰지 않는 병원은 이 칸이 비어 있는 게 사실이다 —
-                            기본 주소로 공개 중인 병원을 '미설정'으로 부르지 않는다. */}
-                        {domain ? (
+                            기본 주소로 공개 중인 병원을 '미설정'으로 부르지 않는다.
+                            링크는 사람이 결정할 문제(`problem`)에만 붙인다 — 연결됨·확인
+                            중은 손댈 것이 없는데 눌러 보게 만든다. */}
+                        {!domain ? (
+                          <span className="text-xs text-slate-400">—</span>
+                        ) : h.domain_state.kind === 'problem' ? (
                           <Link href={domainHref} className="group inline-flex max-w-[240px]">
                             <StateCell kind={h.domain_state.kind} description={domain} />
                           </Link>
                         ) : (
-                          <span className="text-xs text-slate-400">—</span>
+                          <StateCell kind={h.domain_state.kind} description={domain} />
                         )}
                       </td>
                       <td className="px-6 py-4 text-slate-600" data-label={ADMIN_COPY.plan}>

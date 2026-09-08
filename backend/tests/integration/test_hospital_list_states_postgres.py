@@ -120,6 +120,8 @@ async def _hospital(
                 version=2,
                 status=PhilosophyStatus.DRAFT,
                 positioning_statement=f"{name} 초안",
+                # 예외는 지금 자료 판의 초안만이다.
+                source_snapshot_hash=compute_sources_snapshot_hash([source]),
                 unsupported_gaps=[
                     {"field": AUTO_REVIEW_GAP_FIELD, "reason": "근거 없는 효과 표현"}
                 ],
@@ -226,6 +228,11 @@ async def test_list_rows_carry_the_three_states(pg_async_session):
     assert rows[str(live.id)]["public_service_state"] == {"kind": "live", "remaining": []}
     assert rows[str(live.id)]["content_state"] == {"kind": "auto", "remaining": []}
     assert rows[str(paused.id)]["public_service_state"]["kind"] == "paused"
+    # 일시정지 병원은 야간 생성이 돌지 않는다 — "자동 발행 중"이라 하지 않는다.
+    assert rows[str(paused.id)]["content_state"] == {
+        "kind": "preparing",
+        "remaining": ["service_paused"],
+    }
     assert rows[str(preparing.id)]["public_service_state"] == {
         "kind": "not_live",
         "remaining": ["profile_complete", "site_built"],

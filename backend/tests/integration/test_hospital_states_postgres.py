@@ -101,6 +101,8 @@ async def _hospital(
                 version=2,
                 status=PhilosophyStatus.DRAFT,
                 positioning_statement=f"{name} 초안",
+                # 예외는 지금 자료 판의 초안만이다 — 옛 판의 초안은 세지 않는다.
+                source_snapshot_hash=compute_sources_snapshot_hash([source]),
                 unsupported_gaps=[
                     {"field": AUTO_REVIEW_GAP_FIELD, "reason": "근거 없는 효과 표현"}
                 ],
@@ -175,8 +177,22 @@ async def test_content_state_reads_the_batched_rows(pg_async_session):
             hospital,
             essence_current=state.current,
             unprocessed_sources=state.unprocessed_sources,
+            required_sources=state.required_sources,
             escalated_draft=state.escalated_draft,
         )
 
     assert _state(ready).kind == "auto"
     assert _state(escalated).kind == "exception"
+
+
+async def test_a_draft_from_an_older_source_snapshot_is_not_an_exception(pg_async_session):
+    """자료가 바뀌어 새 판이 승인되면 옛 초안은 예외로 남지 않는다 — 안 그러면 영영 "예외 있음"이다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "옛 초안 의원", escalated_draft=True)
+    # 새 자료가 처리되면 지금 자료 판의 snapshot이 바뀐다 — 초안이 선언한 판은 옛 판이다.
+    await _source(db, hospital)
+
+    states = await get_essence_readiness_states(db, [hospital.id])
+
+    assert states[hospital.id].escalated_draft is False
+    assert states[hospital.id].escalated_draft_id is None

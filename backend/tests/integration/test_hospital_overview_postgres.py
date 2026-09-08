@@ -59,6 +59,7 @@ async def _hospital(
     with_schedule: bool = True,
     approved_essence: bool = True,
     unprocessed_source: bool = False,
+    without_sources: bool = False,
     escalated_findings: tuple[str, ...] = (),
 ) -> Hospital:
     hospital = Hospital(
@@ -95,7 +96,9 @@ async def _hospital(
         status=SourceStatus.PROCESSED,
         processed_at=datetime.now(UTC),
     )
-    db.add(source)
+    # 자료가 한 건도 없는 병원 — 자동 검수가 기다리기만 하는 상태를 만든다.
+    if not without_sources:
+        db.add(source)
     await db.flush()
     if unprocessed_source:
         db.add(
@@ -109,6 +112,9 @@ async def _hospital(
             )
         )
 
+    hospital._test_snapshot_hash = compute_sources_snapshot_hash(
+        [] if without_sources else [source]
+    )
     hospital._test_philosophy_id = None
     if approved_essence:
         philosophy = HospitalContentPhilosophy(
@@ -132,6 +138,8 @@ async def _hospital(
                 version=2,
                 status=PhilosophyStatus.DRAFT,
                 positioning_statement=f"{name} 초안",
+                # 예외는 지금 자료 판의 초안만이다(쓰기 게이트의 `_drafts_for_snapshot`).
+                source_snapshot_hash=hospital._test_snapshot_hash,
                 unsupported_gaps=[
                     {"field": AUTO_REVIEW_GAP_FIELD, "reason": finding}
                     for finding in escalated_findings
@@ -392,9 +400,115 @@ async def test_paused_hospital_withholds_every_published_item(pg_async_session):
     overview = await get_hospital_overview(hospital.id, db)
 
     assert overview.public_service.kind == "paused"
+    # 일시정지 병원에는 야간 생성이 돌지 않는다 — "자동 발행 중"이라 말하면 화면이 거짓말을 한다.
+    assert overview.content.kind == "preparing"
+    assert [(c.key, c.label, c.actor, c.href) for c in overview.content.remaining] == [
+        ("service_paused", "서비스 재개", "human", None)
+    ]
     assert overview.month.published_count == 3
     assert overview.month.public_count == 0
     assert overview.month.withheld_count == 3
+
+
+async def test_a_hospital_without_sources_asks_a_person_not_the_system(pg_async_session):
+    """자료가 하나도 없으면 자동 검수는 시작조차 못 한다 — 남은 일은 사람이 자료를 등록하는 것이다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "자료 없는 의원", approved_essence=False, without_sources=True)
+
+    overview = await get_hospital_overview(hospital.id, db)
+
+    assert overview.content.kind == "preparing"
+    assert [(c.key, c.label, c.actor, c.href) for c in overview.content.remaining] == [
+        (
+            "sources_required",
+            "공식 채널·근거 자료 등록",
+            "human",
+            f"/hospitals/{hospital.id}/profile",
+        )
+    ]
+
+
+async def test_an_escalated_draft_from_an_older_snapshot_stops_being_an_exception(
+    pg_async_session,
+):
+    """자료가 바뀌어 새 판이 승인되면 옛 초안은 예외가 아니다 — 안 그러면 영영 "예외 있음"이다."""
+    db = pg_async_session
+    hospital = await _hospital(
+        db, "옛 초안 의원", escalated_findings=("근거 없는 효과 표현",)
+    )
+    # 새 자료가 처리되면 지금 자료 판이 바뀐다 — 초안이 선언한 판은 옛 판이 된다.
+    db.add(
+        HospitalSourceAsset(
+            hospital_id=hospital.id,
+            source_type=SourceType.INTERVIEW,
+            title=f"{hospital.name} 인터뷰",
+            raw_text="새로 처리된 근거 자료",
+            content_hash=f"hash-{uuid.uuid4().hex[:12]}",
+            status=SourceStatus.PROCESSED,
+            processed_at=datetime.now(UTC),
+        )
+    )
+    await db.flush()
+
+    overview = await get_hospital_overview(hospital.id, db)
+
+    assert overview.content.kind != "exception"
+    assert [card.kind for card in overview.exceptions] == []
+
+
+async def test_a_gap_without_a_reason_is_not_an_exception_card(pg_async_session):
+    """사유가 없으면 승인 게이트도 막지 않는다 — 목록의 예외 수와 카드 수가 갈리지 않게."""
+    db = pg_async_session
+    hospital = await _hospital(db, "사유 없는 초안 의원", escalated_findings=("",))
+
+    overview = await get_hospital_overview(hospital.id, db)
+    counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
+
+    assert overview.content.kind == "auto"
+    assert overview.exceptions == []
+    assert counts.get(hospital.id, 0) == 0
+
+
+async def test_an_open_incident_is_a_card_even_behind_an_in_sla_retry(pg_async_session):
+    """같은 원인 묶음의 대표가 자동 복구 중이라고 사람 몫 예외가 사라지면 안 된다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "대표 뒤집힘 의원")
+    await _incident(db, hospital, incident_type="PROVIDER_TIMEOUT")
+    # 같은 원인 · 기한이 남은 RETRYING — 정렬상 대표가 되기 쉬운 자리다.
+    await _incident(
+        db,
+        hospital,
+        incident_type="PROVIDER_TIMEOUT",
+        state="RETRYING",
+        sla_due_at=datetime.now(UTC) + timedelta(hours=2),
+    )
+
+    overview = await get_hospital_overview(hospital.id, db)
+    counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
+
+    assert [card.kind for card in overview.exceptions] == ["incident"]
+    assert counts[hospital.id] == len(overview.exceptions) == 1
+
+
+async def test_many_recovering_groups_do_not_push_the_operator_incident_off(pg_async_session):
+    """자동 복구 중인 묶음이 아무리 많아도 사람 몫 예외는 카드로 남는다(페이지 밀림 금지)."""
+    db = pg_async_session
+    hospital = await _hospital(db, "묶음 많은 의원")
+    for index in range(25):
+        await _incident(
+            db,
+            hospital,
+            incident_type=f"RECOVERING_{index}",
+            state="RETRYING",
+            sla_due_at=datetime.now(UTC) + timedelta(hours=2),
+        )
+    await _incident(db, hospital, incident_type="PROVIDER_TIMEOUT")
+
+    overview = await get_hospital_overview(hospital.id, db)
+    counts = await count_operator_incidents(db, [hospital.id], now=datetime.now(UTC))
+
+    assert [card.kind for card in overview.exceptions] == ["incident"]
+    assert counts[hospital.id] == len(overview.exceptions) == 1
 
 
 async def test_planned_total_is_the_contracted_plan_not_next_month_replacement(pg_async_session):

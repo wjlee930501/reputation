@@ -16,8 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.admin.operations_center_incident_queries import load_incidents_queue
-from app.api.admin.operations_center_query_common import OperationsFilters
+from app.api.admin.operations_center_incident_queries import load_operator_incident_groups
 from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, monthly_quota_for_plan
@@ -37,8 +36,6 @@ from app.services.sov_trend import latest_measured_week, weekly_mention_trend
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — 병원 현황"])
 
 KST = "Asia/Seoul"
-# 예외 카드는 "지금 사람이 손댈 일"이라 화면이 다 보여줄 수 있는 만큼만 싣는다.
-_EXCEPTION_PAGE_SIZE = 20
 
 _PUBLIC_SERVICE_LABELS = {"live": "공개 중", "paused": "일시 정지", "not_live": "준비 중"}
 _CONTENT_LABELS = {"auto": "자동 발행 중", "preparing": "준비 중", "exception": "예외 있음"}
@@ -58,6 +55,11 @@ _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
     "schedule": ("발행 요일 설정", "human", "/hospitals/{hospital_id}/schedule"),
     "sources": ("근거 자료 처리 {count}건", "system", None),
     "essence_review": ("콘텐츠 운영 기준 자동 검수", "system", None),
+    # 자료가 하나도 없으면 자동 검수가 기다리기만 한다 — 사람이 채워야 다음이 있다.
+    "sources_required": ("공식 채널·근거 자료 등록", "human", "/hospitals/{hospital_id}/profile"),
+    # 재개는 헤더의 버튼이 한다. 조건 줄에 링크를 붙이면 같은 일이 두 곳이 된다.
+    "service_paused": ("서비스 재개", "human", None),
+    "public_service": ("공개 서비스 시작 후 자동 발행", "system", None),
 }
 
 _ESCALATED_DRAFT_ACTIONS = ["re_review", "approve_with_override"]
@@ -96,16 +98,9 @@ async def _incident_cards(db: AsyncSession, hospital_id: uuid.UUID) -> list[Exce
 
     자동 복구 중인 건(`requires_operator_action=False`)은 카드로 만들지 않는다 —
     약속한 재시도 창이 남은 RETRYING은 AE의 할 일이 아니다. 병원 목록의 예외 수도
-    같은 규칙(`count_operator_incidents`)으로 세므로 두 화면의 숫자가 같다.
+    같은 파이프라인(`count_operator_incidents`)의 묶음 수이므로 두 화면의 숫자가 같다.
     """
-    _total, rows = await load_incidents_queue(
-        db,
-        OperationsFilters(hospital_id=hospital_id),
-        page=1,
-        page_size=_EXCEPTION_PAGE_SIZE,
-        overview=True,
-        now=datetime.now(UTC),
-    )
+    rows = await load_operator_incident_groups(db, hospital_id, now=datetime.now(UTC))
     return [
         ExceptionCard(
             kind="incident",
@@ -117,7 +112,6 @@ async def _incident_cards(db: AsyncSession, hospital_id: uuid.UUID) -> list[Exce
             href=row.action.path,
         )
         for row in rows
-        if row.requires_operator_action
     ]
 
 
@@ -222,6 +216,7 @@ async def get_hospital_overview(
         hospital,
         essence_current=readiness.current,
         unprocessed_sources=readiness.unprocessed_sources,
+        required_sources=readiness.required_sources,
         escalated_draft=readiness.escalated_draft,
     )
     domain = domain_state(hospital)
@@ -249,6 +244,7 @@ async def get_hospital_overview(
             remaining=[],
             reason=domain.reason,
             last_checked_at=domain.last_checked_at,
+            last_check_ok=domain.last_check_ok,
         ),
         exceptions=exceptions,
         month=await _month_summary(db, hospital),

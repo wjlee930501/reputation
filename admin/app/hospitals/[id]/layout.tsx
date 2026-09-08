@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { useParams, usePathname, useRouter } from 'next/navigation'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, fetchAPI } from '@/lib/api'
 import {
   getHospitalLifecycleAction,
@@ -21,7 +21,7 @@ import {
   type StateTone,
 } from '@/lib/hospital-states'
 import { ADMIN_COPY } from '@/lib/admin-copy'
-import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
+import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
@@ -51,6 +51,8 @@ export default function HospitalLayout({
   const hospitalId = params.id
   const [hospital, setHospital] = useState<Hospital | null>(null)
   const [overview, setOverview] = useState<HospitalOverview | null>(null)
+  // 상태를 못 받아온 것과 "상태가 없다"는 다르다 — 조용히 비우면 헤더가 아무 말도 하지 않는다.
+  const [overviewFailed, setOverviewFailed] = useState(false)
   // 컨텍스트를 초기 렌더에 쓰는 하위 페이지(profile/onboarding)가 "아직 못 받아옴"과
   // "받아왔는데 실패/없음"을 구분할 수 있게 — 첫 refetch가 끝나면 false로 고정된다.
   const [headerLoading, setHeaderLoading] = useState(true)
@@ -60,14 +62,21 @@ export default function HospitalLayout({
   const [lifecycleLoading, setLifecycleLoading] = useState(false)
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
 
+  const requestSeq = useRef(0)
+
   const refetch = useCallback(async () => {
-    // 3상태(overview)만 못 받아도 헤더는 이름·상태 배지로 계속 뜬다 — 한쪽 실패가
+    // 일시정지·재개 직후 다시 받는 중에 먼저 나간 요청이 늦게 도착하면 방금 바뀐 상태를
+    // 옛 응답으로 덮는다 — 가장 마지막 요청의 답만 화면에 쓴다.
+    const request = ++requestSeq.current
+    // 3상태(overview)만 못 받아도 헤더는 이름으로 계속 뜬다 — 한쪽 실패가
     // 다른 쪽을 지우지 않게 두 호출을 따로 받는다.
     const [detail, states] = await Promise.allSettled([
       fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}`),
       fetchAPI<HospitalOverview>(`/admin/hospitals/${hospitalId}/overview`),
     ])
+    if (request !== requestSeq.current) return
     setOverview(states.status === 'fulfilled' ? states.value : null)
+    setOverviewFailed(states.status === 'rejected')
     if (detail.status === 'fulfilled') {
       setHospital(detail.value)
       setNotFound(false)
@@ -116,15 +125,16 @@ export default function HospitalLayout({
     )
   }
 
-  const statusInfo = hospital
-    ? STATUS_LABELS[hospital.status] ?? { label: '상태 확인 필요', color: 'bg-slate-100 text-slate-700' }
-    : null
-
   const planLabel = hospital?.plan ? PLAN_CONTRACT_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
   // 3상태는 서버 판정(overview)만 읽는다 — 헤더가 따로 판정하면 목록·현황과 다른 답을 낸다.
+  // 공개 서비스 상태가 곧 이 병원의 상태다. 옛 status 배지를 함께 두면 ACTIVE인데 공개
+  // 페이지가 없는 병원이 '운영 중'으로 보인다.
   const publicCard = overview ? describePublicService(overview.public_service) : null
   const contentCard = overview ? describeContentState(overview.content) : null
   const domainCard = overview ? describeDomainState(overview.domain) : null
+  // 주소는 주소만 말한다 — 마지막 확인 시각은 자기 도메인 상태가 한 번만 말한다.
+  const domainStatus = hospital ? readHospitalDomainStatus(hospital) : null
+  const publicAddress = domainStatus ? domainStatus.url ?? domainStatus.detail : null
   // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 일정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
@@ -164,34 +174,33 @@ export default function HospitalLayout({
                 <h1 className="truncate text-base font-bold text-slate-900">
                   {hospital?.name ?? (loadError ? '병원 정보 확인 필요' : '병원 불러오는 중')}
                 </h1>
-                {statusInfo && (
-                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ${statusInfo.color}`}>
-                    {statusInfo.label}
-                  </span>
-                )}
               </div>
               {/* 자기 도메인이 없다고 "준비 중"은 아니다 — 기본 플랫폼 주소로 이미
                   서비스 중인 병원이 대부분이고, 그걸 준비 중이라 하면 운영자가 살아
                   있는 주소를 없는 것으로 안다(O-7). 목록·패널과 같은 판정을 쓴다. */}
               <p className="mt-0.5 truncate text-xs text-slate-500">
-                {hospital
-                  ? `공개 주소 ${readHospitalDomainStatus(hospital).detail}`
+                {publicAddress
+                  ? `공개 주소 ${publicAddress}`
                   : loadError
                     ? '병원 정보를 다시 불러와 주세요'
                     : '공개 주소 확인 중'}
               </p>
             </div>
-            {overview && (
+            {(overview || overviewFailed) && (
               <details className="group relative shrink-0">
                 <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 [&::-webkit-details-marker]:hidden">
                   상태 <span aria-hidden className="transition-transform group-open:rotate-180">⌄</span>
                 </summary>
                 <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-[min(21rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
-                  <div className="grid gap-3">
-                    <StateChip title="공개 서비스" kind={overview.public_service.kind} description={publicCard} actions={humanRemaining(overview.public_service.remaining)} />
-                    <StateChip title="콘텐츠 준비" kind={overview.content.kind} description={contentCard} actions={humanRemaining(overview.content.remaining)} />
-                    {domainCard && <StateChip title="자기 도메인" kind={overview.domain.kind} description={domainCard} />}
-                  </div>
+                  {overview ? (
+                    <div className="grid gap-3">
+                      <StateChip title="공개 서비스" kind={overview.public_service.kind} description={publicCard} actions={humanRemaining(overview.public_service.remaining)} />
+                      <StateChip title="콘텐츠 준비" kind={overview.content.kind} description={contentCard} actions={humanRemaining(overview.content.remaining)} />
+                      {domainCard && <StateChip title="자기 도메인" kind={overview.domain.kind} description={domainCard} />}
+                    </div>
+                  ) : (
+                    <OverviewFailureChip onRetry={() => void refetch()} />
+                  )}
                   {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">{ADMIN_COPY.plan} {planLabel}</p>}
                 </div>
               </details>
@@ -226,11 +235,6 @@ export default function HospitalLayout({
               <h1 className="heading3 truncate text-[var(--color-revisit-text-title)]">
                 {hospital?.name ?? (loadError ? '병원 정보 확인 필요' : '불러오는 중...')}
               </h1>
-              {statusInfo && (
-                <span className={`inline-flex px-2.5 py-0.5 rounded-full text-xs font-medium ${statusInfo.color}`}>
-                  {statusInfo.label}
-                </span>
-              )}
               {planLabel && (
                 <span className="details2 inline-flex rounded-full bg-[var(--color-revisit-coolgrey-90)] px-2.5 py-0.5 text-[var(--color-revisit-text-helper)]">
                   {planLabel}
@@ -251,15 +255,12 @@ export default function HospitalLayout({
                 </button>
               )}
             </div>
-            {hospital && (
+            {publicAddress && (
               <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-slate-500 sm:gap-3">
                 <span className="inline-flex min-w-0 max-w-[280px] items-baseline gap-1">
                   공개 주소{' '}
-                  <span
-                    className="truncate text-[var(--color-revisit-text-title)]"
-                    title={readHospitalDomainStatus(hospital).detail}
-                  >
-                    {readHospitalDomainStatus(hospital).detail}
+                  <span className="truncate text-[var(--color-revisit-text-title)]" title={publicAddress}>
+                    {publicAddress}
                   </span>
                 </span>
                 {/* 공개 중인지 아닌지는 공개 서비스 상태가 말한다 — 이 줄은 자기 도메인
@@ -282,6 +283,11 @@ export default function HospitalLayout({
               <StateChip title="공개 서비스" kind={overview.public_service.kind} description={publicCard} actions={humanRemaining(overview.public_service.remaining)} />
               <StateChip title="콘텐츠 준비" kind={overview.content.kind} description={contentCard} actions={humanRemaining(overview.content.remaining)} />
               {domainCard && <StateChip title="자기 도메인" kind={overview.domain.kind} description={domainCard} />}
+            </div>
+          )}
+          {overviewFailed && (
+            <div className="hidden lg:flex lg:shrink-0">
+              <OverviewFailureChip onRetry={() => void refetch()} />
             </div>
           )}
         </div>
@@ -401,6 +407,28 @@ function domainTextClass(tone: StateTone): string {
 
 function domainDotClass(tone: StateTone): string {
   return tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : 'bg-slate-400'
+}
+
+/**
+ * 상태를 못 받아왔을 때. 옛 status 배지로 "운영 중"을 지어내지 않고, 못 받아왔다는
+ * 사실과 다시 받는 버튼만 보인다 — 아무 말도 안 하면 화면이 비어 보인다.
+ */
+function OverviewFailureChip({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[11px] text-slate-400">공개 서비스</p>
+      <span className="mt-0.5 inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+        상태 불러오기 실패
+      </span>
+      <button
+        type="button"
+        onClick={onRetry}
+        className="mt-1 block text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
+      >
+        다시 시도
+      </button>
+    </div>
+  )
 }
 
 /**

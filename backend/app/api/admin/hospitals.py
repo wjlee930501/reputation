@@ -1673,6 +1673,7 @@ def _serialize_list(
                 h,
                 essence_current=readiness_state.current,
                 unprocessed_sources=readiness_state.unprocessed_sources,
+                required_sources=readiness_state.required_sources,
                 escalated_draft=readiness_state.escalated_draft,
             )
         ),
@@ -1692,6 +1693,7 @@ def _serialize_domain_state(state: DomainState) -> dict:
         "kind": state.kind,
         "reason": state.reason,
         "last_checked_at": checked_at.isoformat() if checked_at else None,
+        "last_check_ok": state.last_check_ok,
     }
 
 

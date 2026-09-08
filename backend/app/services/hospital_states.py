@@ -25,7 +25,8 @@ class PublicServiceState:
 @dataclass(frozen=True, slots=True)
 class ContentState:
     kind: Literal["auto", "preparing", "exception"]
-    remaining: tuple[str, ...]  # schedule · sources:N · essence_review
+    # schedule · sources:N · sources_required · essence_review · service_paused · public_service
+    remaining: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,8 @@ class DomainState:
     kind: Literal["connected", "checking", "problem", "unused"]
     reason: str | None = None
     last_checked_at: Any = None
+    # 마지막 관측의 성패. 화면이 "마지막 확인 …"에 응답 정상/실패를 붙이는 근거다.
+    last_check_ok: bool | None = None
 
 
 def public_service_state(hospital: Any) -> PublicServiceState:
@@ -54,6 +57,7 @@ def content_state(
     *,
     essence_current: bool,
     unprocessed_sources: int,
+    required_sources: int,
     escalated_draft: bool,
 ) -> ContentState:
     """`schedule_set && essence_readiness.current` (설계 §4.2). 예외는 준비 중보다 앞선다."""
@@ -65,8 +69,19 @@ def content_state(
     if unprocessed_sources > 0:
         remaining.append(f"sources:{unprocessed_sources}")
     if not essence_current:
-        remaining.append("essence_review")
-    return ContentState("auto" if not remaining else "preparing", tuple(remaining))
+        # 자료가 하나도 없으면 자동 검수는 시작조차 하지 않는다(WAITING_FOR_SOURCES).
+        # 그때 남은 일은 시스템 처리가 아니라 사람이 공식 채널·근거 자료를 등록하는 것이다.
+        remaining.append("essence_review" if required_sources > 0 else "sources_required")
+    if remaining:
+        return ContentState("preparing", tuple(remaining))
+    # 야간 생성은 공개 서비스 중인 병원에만 돈다(`nightly_generation_batch`). 멈춰 있는
+    # 병원을 "자동 발행 중"이라 부르면 화면이 하지 않는 일을 하고 있다고 말한다.
+    public = public_service_state(hospital)
+    if public.kind == "paused":
+        return ContentState("preparing", ("service_paused",))
+    if public.kind != "live":
+        return ContentState("preparing", ("public_service",))
+    return ContentState("auto", ())
 
 
 def domain_state(hospital: Any) -> DomainState:
@@ -81,19 +96,23 @@ def domain_state(hospital: Any) -> DomainState:
     job = getattr(hospital, "domain_cert_job_state", None)
     job = getattr(job, "value", job)
     checked_at = getattr(hospital, "domain_last_checked_at", None)
-    if job == "ISSUING":
-        return DomainState("checking", last_checked_at=checked_at)
-    if job == "FAILED":
-        return DomainState("problem", reason="인증서 발급 실패", last_checked_at=checked_at)
-    if job == "DONE":
-        return DomainState("connected", last_checked_at=checked_at)
     check_ok = getattr(hospital, "domain_last_check_ok", None)
-    if check_ok is True:
-        return DomainState("connected", last_checked_at=checked_at)
+    if job == "ISSUING":
+        return DomainState("checking", last_checked_at=checked_at, last_check_ok=check_ok)
+    if job == "FAILED":
+        return DomainState(
+            "problem",
+            reason="인증서 발급 실패",
+            last_checked_at=checked_at,
+            last_check_ok=check_ok,
+        )
+    if job == "DONE" or check_ok is True:
+        return DomainState("connected", last_checked_at=checked_at, last_check_ok=check_ok)
     if check_ok is False:
         return DomainState(
             "problem",
             reason=getattr(hospital, "domain_last_check_reason", None) or "DNS 확인 실패",
             last_checked_at=checked_at,
+            last_check_ok=check_ok,
         )
-    return DomainState("checking", last_checked_at=checked_at)
+    return DomainState("checking", last_checked_at=checked_at, last_check_ok=check_ok)

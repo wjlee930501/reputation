@@ -31,6 +31,38 @@ test('domain state is silent without a custom domain', () => {
   assert.equal(stateTone('exception'), 'warn')
 })
 
+// 마지막 확인만 말하고 응답이 정상이었는지 빼면, 실패한 관측과 성공한 관측이 같아 보인다.
+test('the last check says whether the address answered', () => {
+  const checked = '2026-09-08T01:23:00Z'
+  assert.match(
+    describeDomainState({ kind: 'connected', last_checked_at: checked, last_check_ok: true })?.detail ?? '',
+    /응답 정상$/,
+  )
+  assert.match(
+    describeDomainState({ kind: 'problem', reason: 'DNS 확인 실패', last_checked_at: checked, last_check_ok: false })?.detail ?? '',
+    /응답 실패$/,
+  )
+})
+
+// 자료가 없는 것과 자동 검수가 도는 것은 다른 일이고, 멈춘 병원은 자동 발행 중이 아니다.
+test('zero sources and a stopped service are human-readable conditions', () => {
+  assert.deepEqual(
+    describeContentState({ kind: 'preparing', remaining: ['sources_required'] }),
+    { label: '준비 중', detail: '할 일: 공식 채널·근거 자료 등록' },
+  )
+  assert.deepEqual(
+    describeContentState({ kind: 'preparing', remaining: ['service_paused'] }),
+    { label: '준비 중', detail: '할 일: 서비스 재개' },
+  )
+  assert.deepEqual(
+    describeContentState({ kind: 'preparing', remaining: ['public_service'] }),
+    { label: '준비 중', detail: '시스템 처리 중: 공개 서비스 시작 후 자동 발행' },
+  )
+  assert.deepEqual(humanRemaining(['sources_required', 'public_service']).map((c) => c.key), [
+    'sources_required',
+  ])
+})
+
 // 목록 행은 같은 조건을 키 문자열로만 받는다 — 헤더와 목록이 다른 문구를 쓰면
 // 같은 병원의 남은 일이 화면마다 달라 보인다.
 test('list rows carry the same conditions as bare keys', () => {
