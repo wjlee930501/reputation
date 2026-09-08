@@ -475,10 +475,27 @@ Expected: 첫 테스트 `essence_refresh_needed(...) is True` 실패(현재 Fals
 
 ```python
 def _noise_hash_matches(db: Session, hospital_id: uuid.UUID, previous: HospitalContentPhilosophy) -> bool:
+    """저장된 노이즈 집합 hash가 현재와 같은가.
+
+    NULL(컬럼 이전 승인)은 readiness에서는 관대하게(생성 차단 없음) 다루지만, 여기서는
+    **한 번 재검수해 실제 값을 쓰도록** False를 돌려준다 — 그러지 않으면 기존 병원은
+    자료가 바뀔 때까지 노이즈 제외가 승인에 반영되지 않는 H-02 구멍이 그대로 남는다.
+    운영 병원 수만큼 1회성 유료 재검수가 발생한다(현재 7곳).
+    """
     stored = getattr(previous, "evidence_noise_hash", None)
     if stored is None:
-        return True
+        return False
     return stored == load_evidence_noise_hash_sync(db, hospital_id)
+```
+
+주의: `refresh_essence_snapshot`의 UP_TO_DATE 조건에도 같은 helper를 쓰므로, NULL인 승인은 다음 실행에서 새 후보를 합성·검수하고 승인하며 그때 `evidence_noise_hash`가 채워진다. 같은 snapshot의 ESCALATED 초안이 이미 있으면 기존 규칙대로 사람 몫이다. 통합 테스트에 "NULL 승인은 `essence_refresh_needed`가 True"를 추가한다:
+
+```python
+def test_legacy_approval_without_noise_hash_is_refreshed_once(pg_session):
+    hospital, source, note, approved = _seed_baseline(pg_session, label="legacy-null")
+    approved.evidence_noise_hash = None
+    pg_session.commit()
+    assert essence_refresh_needed(pg_session, hospital.id) is True
 ```
 
 `refresh_essence_snapshot`:
