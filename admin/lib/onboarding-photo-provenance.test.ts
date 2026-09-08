@@ -12,6 +12,11 @@ const wikiPage = readFileSync(
   new URL('../app/hospitals/[id]/wiki/page.tsx', import.meta.url),
   'utf8',
 )
+// 권리 칸과 그 선택지는 병원 정보 화면과 공유한다 — 온보딩에 사본이 없어야 한다.
+const photoRightsFields = readFileSync(
+  new URL('../app/hospitals/[id]/info/PhotoRightsFields.tsx', import.meta.url),
+  'utf8',
+)
 
 test('photo uploads carry the rights evidence the public surface requires', () => {
   for (const field of [
@@ -22,9 +27,10 @@ test('photo uploads carry the rights evidence the public surface requires', () =
     assert.match(onboardingPage, new RegExp(`fd\\.append\\('${field}'`))
   }
   // 서버가 허용하는 두 값 외에는 고를 수 없어야 저장 단계에서 막히지 않는다.
-  const options = onboardingPage.match(
+  const options = photoRightsFields.match(
     /const PHOTO_RIGHTS_BASIS_OPTIONS = \[([\s\S]*?)\]/,
   )?.[1]
+  assert.doesNotMatch(onboardingPage, /const PHOTO_RIGHTS_BASIS_OPTIONS/)
   assert.ok(options)
   assert.match(options, /'LICENSE'/)
   assert.match(options, /'OWNER_CONSENT'/)

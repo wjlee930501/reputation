@@ -10,6 +10,11 @@ import test from 'node:test'
 const ONBOARDING_PAGE_URL = new URL('../app/hospitals/[id]/onboarding/page.tsx', import.meta.url)
 const onboardingPage = readFileSync(ONBOARDING_PAGE_URL, 'utf8')
 const lifecycle = readFileSync(new URL('./onboarding-lifecycle.ts', import.meta.url), 'utf8')
+// 폼 자체는 병원 정보 화면과 공유한다. 온보딩이 갖는 것은 승인 체크리스트뿐이다.
+const clinicVisualForm = readFileSync(
+  new URL('../app/hospitals/[id]/info/ClinicVisualForm.tsx', import.meta.url),
+  'utf8',
+)
 
 test('the visual form is rendered inside the existing profile step, not a new one', () => {
   const profileBody = onboardingPage.indexOf('function ProfileStepBody(')
@@ -44,35 +49,38 @@ test('no ninth onboarding step key was introduced', () => {
 
 test('the visual form saves through the existing profile PATCH', () => {
   assert.match(
-    onboardingPage,
+    clinicVisualForm,
     /`\/admin\/hospitals\/\$\{hospitalId\}\/profile`[\s\S]{0,120}method: 'PATCH'/,
   )
   for (const field of [
-    'logo_url',
     'brand_primary_color',
     'hero_headline',
     'hero_description',
     'site_access_mode',
   ]) {
-    assert.match(onboardingPage, new RegExp(`${field}:`), `${field}을 저장하지 않는다`)
+    assert.match(clinicVisualForm, new RegExp(`${field}:`), `${field}을 저장하지 않는다`)
   }
+  // logo_url은 업로드 엔드포인트가 소유한다 — 폼이 되돌려 보내면 자산 참조를 덮어쓴다.
+  assert.doesNotMatch(clinicVisualForm, /logo_url:/)
 })
 
 test('only one brand color is asked for in the onboarding step', () => {
-  const formStart = onboardingPage.indexOf('function ClinicVisualForm(')
-  const form = onboardingPage.slice(formStart)
+  const formStart = clinicVisualForm.indexOf('export function ClinicVisualForm(')
 
   assert.ok(formStart >= 0, 'ClinicVisualForm을 찾지 못했다')
-  assert.doesNotMatch(form, /brand_accent_color/)
-  assert.match(form, /brand_primary_color/)
+  assert.doesNotMatch(clinicVisualForm, /brand_accent_color/)
+  assert.match(clinicVisualForm, /brand_primary_color/)
+  // 온보딩 페이지에는 폼 사본이 남아 있지 않다.
+  assert.doesNotMatch(onboardingPage, /function ClinicVisualForm\(/)
 })
 
 test('photos are described as optional inside the visual step', () => {
-  const formStart = onboardingPage.indexOf('function ClinicVisualForm(')
-  const form = onboardingPage.slice(formStart)
+  const checklistStart = onboardingPage.indexOf('function ClinicVisualChecklist(')
+  const checklist = onboardingPage.slice(checklistStart)
 
-  assert.match(form, /실사진은 필수가 아니며/)
-  assert.doesNotMatch(form, /사진.{0,6}필수입니다/)
+  assert.ok(checklistStart >= 0, 'ClinicVisualChecklist를 찾지 못했다')
+  assert.match(checklist, /실사진은 필수가 아니며/)
+  assert.doesNotMatch(checklist, /사진.{0,6}필수입니다/)
 })
 
 test('no new admin surface was opened for visual configuration', () => {

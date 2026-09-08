@@ -104,7 +104,14 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/app/hospitals/[id]/info/page.tsx",
     "admin/app/hospitals/[id]/info/FactsSection.tsx",
     "admin/app/hospitals/[id]/info/AutofillModal.tsx",
+    "admin/app/hospitals/[id]/info/BrandSection.tsx",
+    "admin/app/hospitals/[id]/info/PhotosSection.tsx",
+    "admin/app/hospitals/[id]/info/ClinicVisualForm.tsx",
+    "admin/app/hospitals/[id]/info/ClinicLogoField.tsx",
+    "admin/app/hospitals/[id]/info/PhotoRightsFields.tsx",
     "admin/lib/info-sections.ts",
+    # 공식 채널 칸의 안내 문구가 사는 곳. 화면(FactsSection)이 이 상수를 그대로 그린다.
+    "admin/lib/external-channel-urls.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"

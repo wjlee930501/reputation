@@ -16,9 +16,13 @@ import {
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
 import type { MissingProfileRequirement } from '@/lib/info-sections'
 import type { ProfileSourceRegistration } from '@/types'
+import type { DomainProfile } from '../DomainSetupTypes'
 import { useHospitalHeader } from '../hospital-context'
+import { DomainSetupPanel } from '../DomainSetupPanel'
 import { AutofillModal } from './AutofillModal'
+import { BrandSection } from './BrandSection'
 import { FactsSection, sourceLabel } from './FactsSection'
+import { PhotosSection } from './PhotosSection'
 import type { HospitalInfoProfile, Treatment } from './FactsSection'
 
 /** PATCH /profile 응답. 완료 여부·남은 항목은 서버가 판정해 함께 내려준다. */
@@ -26,6 +30,12 @@ interface ProfileSaveResponse extends Partial<HospitalInfoProfile> {
   missing_profile_requirements?: MissingProfileRequirement[]
   source_registration?: ProfileSourceRegistration[]
 }
+
+/**
+ * 폼 상태. 사실 칸에 더해 자기 도메인 칸도 같은 상태에 들고 있어야
+ * `DomainSetupPanel`이 입력한 값을 화면이 그대로 다시 보여 줄 수 있다.
+ */
+type InfoFormProfile = Partial<HospitalInfoProfile> & DomainProfile
 
 // 자동 입력이 문자열 하나로 채울 수 있는 칸(빈 칸인지 판단하는 데 쓴다).
 const SCALAR_AUTOFILL_KEYS = [
@@ -62,7 +72,7 @@ export default function HospitalInfoPage() {
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
   const { hospital, loading: headerLoading, refetch: refetchHeader } = useHospitalHeader()
-  const [profile, setProfile] = useState<Partial<HospitalInfoProfile>>({})
+  const [profile, setProfile] = useState<InfoFormProfile>({})
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState(false)
@@ -286,7 +296,8 @@ export default function HospitalInfoPage() {
           onSubmit={handleAutofill}
         />
       )}
-      <form onSubmit={handleSave} className="space-y-6 p-4 sm:p-6 lg:p-8">
+      <div className="space-y-6 p-4 sm:p-6 lg:p-8">
+      <form onSubmit={handleSave} className="space-y-6">
         <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
           <div>
             <h2 className="text-xl font-bold text-slate-900">병원 정보</h2>
@@ -407,6 +418,27 @@ export default function HospitalInfoPage() {
           onCoordinateChange={handleCoordinateChange}
         />
       </form>
+
+      <BrandSection
+        hospital={hospital}
+        hospitalId={hospitalId}
+        onSaved={() => void refetchHeader()}
+      />
+
+      <PhotosSection hospitalId={hospitalId} hospitalName={profile.name ?? hospital.name} />
+
+      {hospital.site_built && (
+        <div id="domain-setup" className="scroll-mt-24">
+          <DomainSetupPanel
+            hospitalId={hospitalId}
+            profile={profile}
+            activationReadiness={hospital}
+            onProfileChange={(patch) => setProfile((prev) => ({ ...prev, ...patch }))}
+            onHeaderRefresh={() => void refetchHeader()}
+          />
+        </div>
+      )}
+      </div>
     </>
   )
 }

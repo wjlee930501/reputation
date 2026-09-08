@@ -3,11 +3,13 @@
  *
  * 구글 항목이 두 칸으로 나뉘어 있는데(관리용 병원 정보 URL, 환자가 보는 지도 URL)
  * 라벨만으로는 무엇이 무엇인지 알 수 없어서, 운영자가 같은 지도 링크를 두 칸에 그대로
- * 붙여 넣었다. 두 값은 공개 표면에서 각각 다른 링크로 나가므로, 같은 값이 들어가면
+ * 붙여 넣었다. 두 값은 병원 공개 페이지에서 각각 다른 링크로 나가므로, 같은 값이 들어가면
  * 환자에게 같은 링크가 두 번 보이고 AI가 참고하는 정보도 한쪽이 비어 있는 상태가 된다.
  *
  * 저장을 막지는 않는다 — 실제로 같은 URL을 쓰는 병원이 있을 수 있으므로, 사실만 알린다.
  */
+
+import { ADMIN_COPY } from './admin-copy.ts'
 
 export interface ExternalChannelUrls {
   google_business_profile_url?: string | null
@@ -59,5 +61,5 @@ export function findDuplicateChannelUrls(profile: ExternalChannelUrls): string[]
 export const GOOGLE_CHANNEL_FIELD_HINTS = {
   google_business_profile_url:
     '병원이 관리하는 구글 병원 정보 관리 화면 주소입니다. 환자에게 보여 주는 링크가 아닙니다.',
-  google_maps_url: '환자가 길찾기에 쓰는 공개 지도 주소입니다. 공개 표면의 지도 링크가 됩니다.',
+  google_maps_url: `환자가 길찾기에 쓰는 공개 지도 주소입니다. ${ADMIN_COPY.publicPage}의 지도 링크가 됩니다.`,
 } as const
