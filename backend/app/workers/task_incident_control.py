@@ -24,7 +24,11 @@ from app.models.operations import (
 )
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
-from app.services.incident_safety import build_incident_key, site_build_incident_key
+from app.services.incident_safety import (
+    REBUILD_SITE_SWEEP_KEY_PREFIX,
+    build_incident_key,
+    site_build_incident_key,
+)
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import (
     IncidentSlackProjection,
@@ -34,6 +38,11 @@ from app.services.notification_contracts import (
 from app.services.notification_messages import (
     build_open_incident_notification,
     build_recovered_incident_notification,
+)
+from app.services.site_build_incidents import (
+    load_site_build_incident,
+    reopen_site_build_incident,
+    touch_site_build_incident,
 )
 
 _FINGERPRINT = IncidentFingerprint.UNKNOWN
@@ -67,11 +76,19 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
         if run is None:
             return False
         if run.operation_type in _SWEEP_OWNED_OPERATIONS:
-            # 자동 재실행의 시도 하나하나를 사람의 할 일로 만들지 않는다. 예산을 다 쓰기
-            # 전의 실패마다 generic 사고와 Slack을 열면 하루 세 번 조치 요청이 생기고,
-            # 뒤이은 자동 성공은 그중 자기 run의 사고 한 건만 닫는다. run 자체는 이
-            # 반환값과 무관하게 `workers/operation_run_signals`가 FAILED로 종결한다.
-            return False
+            if str(run.idempotency_key or "").startswith(REBUILD_SITE_SWEEP_KEY_PREFIX):
+                # sweep이 만든 자동 시도다. 시도 하나하나를 사람의 할 일로 만들지 않는다.
+                # 예산을 다 쓰기 전의 실패마다 generic 사고와 Slack을 열면 하루 세 번
+                # 조치 요청이 생기고, 뒤이은 자동 성공은 그중 자기 run의 사고 한 건만
+                # 닫는다. 예산을 다 쓴 뒤의 최종 차단은 sweep이 병원 하나당 한 건으로
+                # 넘기고, run 자체는 이 반환값과 무관하게
+                # `workers/operation_run_signals`가 FAILED로 종결한다.
+                return False
+            if _record_site_build_operator_failure(db, run):
+                db.commit()
+                return True
+            # 아직 이 병원의 최종 차단이 없다. 사람이 시작한 시도 하나가 실패했다는
+            # 사실은 아래 generic 경로가 사고 한 건으로 보여준다.
         if (
             run.operation_type in _CLASSIFIED_GENERATION_OPERATIONS
             and run.safe_error_code
@@ -180,6 +197,41 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
             incident = acknowledged
             _audit(db, incident, "incident_auto_acknowledged")
         db.commit()
+    return True
+
+
+def _record_site_build_operator_failure(db: Session, run: OperationRun) -> bool:
+    """사람이 시작한 사이트 준비 재시도의 실패를 이미 있는 최종 차단에 싣는다 (H-13).
+
+    운영센터 재시도는 sweep이 더 이상 고르지 않는 병원(이미 ACTIVE·site_built 등)에서도
+    눌린다. 그 실패를 sweep에게 미루면 아무도 알리지 않아, 누른 사람은 실패한 줄 모른다.
+    그렇다고 병원 단위 최종 차단과 별개의 사고를 또 열면 같은 원인이 두 줄이 된다. 이미
+    있는 한 건에 실으면 원인 하나에 사고 하나가 지켜지고 실패도 보인다. 사고가 없으면
+    False를 돌려 호출한 쪽의 generic 경로가 이 시도 하나를 사람에게 보이게 한다.
+    """
+
+    if run.hospital_id is None:
+        return False
+    incident = load_site_build_incident(db, run.hospital_id)
+    if incident is None:
+        return False
+    observed_at = datetime.now(UTC)
+    if incident.state in (IncidentState.OPEN.value, IncidentState.RETRYING.value):
+        touch_site_build_incident(
+            db, incident, failed_run_id=run.id, observed_at=observed_at
+        )
+        return True
+    hospital_name = (
+        db.scalar(select(Hospital.name).where(Hospital.id == run.hospital_id))
+        or "병원 작업"
+    )
+    reopen_site_build_incident(
+        db,
+        incident,
+        hospital_name=hospital_name,
+        failed_run_id=run.id,
+        observed_at=observed_at,
+    )
     return True
 
 

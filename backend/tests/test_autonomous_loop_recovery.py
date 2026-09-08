@@ -13,6 +13,7 @@ from app.models.content import ContentItem, ContentType
 from app.models.hospital import Hospital
 from app.models.operations import Incident, OperationRun, OperationRunState
 from app.services import published_image_recertification as recertification
+from app.services import site_build_incidents
 from app.services.image_engine import image_subject_hash
 from app.workers import autonomous_recovery, tasks
 
@@ -338,7 +339,7 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
-        autonomous_recovery,
+        site_build_incidents,
         "enqueue_notification_sync",
         lambda _db, intent, **_kwargs: intents.append(intent),
     )
@@ -396,7 +397,7 @@ def test_site_build_incident_is_not_touched_without_a_new_failure(monkeypatch) -
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
-        autonomous_recovery,
+        site_build_incidents,
         "enqueue_notification_sync",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("an untouched incident must not alert again")
@@ -433,7 +434,7 @@ def test_site_build_incident_counts_a_new_failure_and_follows_it(monkeypatch) ->
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
-        autonomous_recovery,
+        site_build_incidents,
         "enqueue_notification_sync",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("a still-open episode must not alert again")
@@ -451,6 +452,14 @@ def test_site_build_incident_counts_a_new_failure_and_follows_it(monkeypatch) ->
     assert [
         row.action for row in session.added if isinstance(row, AdminAuditLog)
     ] == ["incident_occurrence_recorded"]
+    # 관리자의 배정·확인(Incident.version CAS)과 같은 행을 겨루므로 잠그고 읽는다.
+    incident_read = next(
+        statement
+        for statement in session.statements
+        if statement.column_descriptions[0].get("entity") is Incident
+        and statement.column_descriptions[0].get("name") != "dedupe_key"
+    )
+    assert incident_read._for_update_arg is not None
 
 
 def test_site_build_incident_reopens_after_recovery(monkeypatch) -> None:
@@ -477,7 +486,7 @@ def test_site_build_incident_reopens_after_recovery(monkeypatch) -> None:
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
-        autonomous_recovery,
+        site_build_incidents,
         "enqueue_notification_sync",
         lambda _db, intent, **_kwargs: intents.append(intent),
     )
@@ -527,7 +536,7 @@ def test_site_build_incident_race_falls_back_to_the_committed_row(monkeypatch) -
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     _stop_site_builds(monkeypatch)
     monkeypatch.setattr(
-        autonomous_recovery,
+        site_build_incidents,
         "enqueue_notification_sync",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("the losing sweep must not send a second OPEN notice")
@@ -570,6 +579,104 @@ def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None
         and "REBUILD_SITE" in statement.compile().params.values()
     )
     assert now - timedelta(hours=24) in budget_query.compile().params.values()
+
+
+def test_site_build_budget_ignores_failures_before_a_later_success(monkeypatch) -> None:
+    """H-13: 성공보다 앞선 실패는 예산을 쓰지 않는다.
+
+    운영자 재시도 한 번이 성공하면 그 전의 실패는 더 이상 막을 이유가 아니다. 그대로 세면
+    성공한 병원이 24시간 동안 자동 재실행을 못 받는다.
+    """
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="재시도 성공 의원")
+    failures = _rebuild_site_failures(hospital, now)
+    succeeded = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="REBUILD_SITE",
+        state=OperationRunState.SUCCEEDED,
+        hospital_id=hospital.id,
+        task_id="operator-retry",
+        requested_at=now - timedelta(minutes=40),
+        queued_at=now - timedelta(minutes=40),
+        completed_at=now - timedelta(minutes=30),
+        updated_at=now - timedelta(minutes=30),
+    )
+    session = _RecoverySession(
+        hospitals=(hospital,), rebuild_site_runs=(succeeded, *failures)
+    )
+    dispatched: list[str] = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda name, **_kwargs: dispatched.append(name),
+    )
+    monkeypatch.setattr(
+        site_build_incidents,
+        "enqueue_notification_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a hospital whose retry already succeeded must not be blocked")
+        ),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["site_builds"] == 1
+    assert [row for row in session.added if isinstance(row, Incident)] == []
+    rebuild = session.added[0]
+    assert rebuild.operation_type == "REBUILD_SITE"
+    # 예산이 처음부터 다시 열린다 — 앞선 실패는 이미 해결된 일이다.
+    assert rebuild.idempotency_key == f"rebuild-site:{hospital.id}:2026-08-10:0"
+    assert dispatched == ["app.workers.tasks.build_aeo_site"]
+
+
+def test_site_build_incident_does_not_reopen_for_a_failure_it_already_closed(
+    monkeypatch,
+) -> None:
+    """H-13: 닫히기 전의 실패로는 새 에피소드를 열지 않는다.
+
+    그 뒤로 새로 실패한 적이 없는데 다시 열면, 이미 확인된 일로 Slack이 나가고 자동
+    재실행까지 24시간 막힌다.
+    """
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="확인 완료 의원")
+    failures = _rebuild_site_failures(hospital, now)
+    existing = _exhausted_incident(
+        hospital,
+        failures[0],
+        state="RECOVERED",
+        last_seen_at=now - timedelta(hours=2),
+        recovered_at=now - timedelta(minutes=30),
+    )
+    session = _RecoverySession(
+        hospitals=(hospital,),
+        rebuild_site_runs=failures,
+        rebuild_site_incidents=(existing,),
+    )
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    _stop_site_builds(monkeypatch)
+    monkeypatch.setattr(
+        site_build_incidents,
+        "enqueue_notification_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a failure older than the recovery must not alert again")
+        ),
+    )
+
+    autonomous_recovery.reconcile.run()
+
+    assert existing.state == "RECOVERED"
+    assert existing.episode_seq == 1
+    assert existing.occurrence_count == 1
+    assert existing.version == 1
+    assert existing.recovered_at == now - timedelta(minutes=30)
+    assert session.added == []
 
 
 def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -> None:

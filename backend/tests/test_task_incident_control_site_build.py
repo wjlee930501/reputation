@@ -30,8 +30,12 @@ from app.models.operations import (
     OperationRun,
     OperationRunState,
 )
+from app.services import site_build_incidents
 from app.services.dependency_incident_helpers import incident_projection
-from app.services.incident_safety import site_build_incident_key
+from app.services.incident_safety import (
+    REBUILD_SITE_SWEEP_KEY_PREFIX,
+    site_build_incident_key,
+)
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification_sync
 from app.workers import operation_run_signals, task_incident_control
@@ -43,9 +47,11 @@ def _sync_factory() -> sessionmaker[Session]:
     )
 
 
-def _exhausted_incident(hospital_id: uuid.UUID, run_id: uuid.UUID) -> Incident:
+def _exhausted_incident(
+    hospital_id: uuid.UUID, run_id: uuid.UUID, **overrides: object
+) -> Incident:
     now = datetime.now(UTC)
-    return Incident(
+    incident = Incident(
         id=uuid.uuid4(),
         hospital_id=hospital_id,
         operation_run_id=run_id,
@@ -65,6 +71,9 @@ def _exhausted_incident(hospital_id: uuid.UUID, run_id: uuid.UUID) -> Incident:
         created_at=now,
         updated_at=now,
     )
+    for field, value in overrides.items():
+        setattr(incident, field, value)
+    return incident
 
 
 def _cleanup(factory: sessionmaker[Session], incident_id: uuid.UUID) -> None:
@@ -81,13 +90,18 @@ async def test_site_build_failure_stays_with_the_sweep_and_never_opens_a_generic
     signal_store,
     monkeypatch,
 ) -> None:
-    """F1: 자동 시도의 실패는 사람의 할 일이 아니다. run만 FAILED로 남는다.
+    """F1: sweep이 만든 자동 시도의 실패는 사람의 할 일이 아니다. run만 FAILED로 남는다.
 
     시도마다 generic 사고를 열면 예산(하루 3회)을 다 쓰기 전에 조치 요청이 세 번 생기고,
     뒤이은 자동 성공은 그중 자기 run의 사고 한 건만 닫는다.
     """
     factory, hospital_id = signal_store
-    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "site-build-fail")
+    run = await dispatch_test_run(
+        factory,
+        hospital_id,
+        RecordingTask(),
+        f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital_id}:2026-09-09:0",
+    )
     sync_factory = _sync_factory()
     monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
     celery_task = SimpleNamespace(
@@ -214,3 +228,185 @@ async def test_site_build_recovery_stays_silent_when_no_open_notice_reached_slac
             )
     finally:
         _cleanup(sync_factory, incident.id)
+
+
+def _dispatch_headers(run_id: uuid.UUID) -> SimpleNamespace:
+    return SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_failure_records_on_the_open_site_build_incident(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """R1: 운영자 재시도의 실패는 이미 열린 최종 차단 한 건에 실린다.
+
+    sweep이 더 이상 고르지 않는 병원에서도 운영센터 재시도는 눌린다. 그 실패가 조용하면
+    누른 사람은 실패한 줄 모른다. 그렇다고 사고를 또 열면 같은 원인이 두 줄이 된다.
+    """
+    factory, hospital_id = signal_store
+    swept = await dispatch_test_run(
+        factory,
+        hospital_id,
+        RecordingTask(),
+        f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital_id}:2026-09-09:2",
+    )
+    run = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "operator-retry-open"
+    )
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    audits: list[str] = []
+    monkeypatch.setattr(
+        site_build_incidents,
+        "audit_site_build_incident",
+        lambda _db, incident: audits.append(incident.state),
+    )
+    incident = _exhausted_incident(hospital_id, swept.id, state="OPEN")
+    with sync_factory() as db:
+        db.add(incident)
+        db.commit()
+
+    try:
+        assert task_incident_control.record_task_failure(
+            _dispatch_headers(run.id), run.task_id
+        ) is True
+
+        with sync_factory() as db:
+            stored = db.get(Incident, incident.id)
+            assert stored is not None
+            assert stored.state == "OPEN"
+            assert stored.occurrence_count == 2
+            # 관리자 화면의 낙관적 잠금이 이 변경을 알아채야 한다.
+            assert stored.version == 2
+            # 조치 버튼이 방금 실패한 실행을 가리킨다.
+            assert stored.operation_run_id == run.id
+            assert stored.operation_run_id != swept.id
+            # 원인 하나에 사고 하나 — generic 사고를 따로 열지 않는다.
+            assert (
+                db.scalar(
+                    select(Incident).where(
+                        Incident.dedupe_key == task_incident_control._incident_key(run.id)
+                    )
+                )
+                is None
+            )
+            # 이미 열린 에피소드는 다시 알리지 않는다.
+            assert (
+                db.scalar(
+                    select(NotificationOutbox).where(
+                        NotificationOutbox.incident_id == incident.id
+                    )
+                )
+                is None
+            )
+        assert audits == ["OPEN"]
+    finally:
+        _cleanup(sync_factory, incident.id)
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_failure_reopens_a_closed_site_build_incident(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """R1: 닫힌 최종 차단은 sweep과 같은 규칙으로 새 에피소드가 되어 다시 알린다."""
+    factory, hospital_id = signal_store
+    swept = await dispatch_test_run(
+        factory,
+        hospital_id,
+        RecordingTask(),
+        f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital_id}:2026-09-10:2",
+    )
+    run = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "operator-retry-closed"
+    )
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    audits: list[str] = []
+    monkeypatch.setattr(
+        site_build_incidents,
+        "audit_site_build_incident",
+        lambda _db, incident: audits.append(incident.state),
+    )
+    closed_at = datetime.now(UTC)
+    incident = _exhausted_incident(
+        hospital_id,
+        swept.id,
+        state="ACKNOWLEDGED",
+        recovered_at=closed_at,
+        acknowledged_at=closed_at,
+    )
+    with sync_factory() as db:
+        db.add(incident)
+        db.commit()
+
+    try:
+        assert task_incident_control.record_task_failure(
+            _dispatch_headers(run.id), run.task_id
+        ) is True
+
+        with sync_factory() as db:
+            stored = db.get(Incident, incident.id)
+            assert stored is not None
+            assert stored.state == "OPEN"
+            assert stored.episode_seq == 2
+            assert stored.occurrence_count == 2
+            assert stored.version == 2
+            assert stored.recovered_at is None
+            assert stored.acknowledged_at is None
+            assert stored.operation_run_id == run.id
+            notices = list(
+                db.scalars(
+                    select(NotificationOutbox).where(
+                        NotificationOutbox.incident_id == incident.id
+                    )
+                )
+            )
+            # 새 에피소드 하나에 OPEN 공지 하나 — dedupe 키가 에피소드를 포함한다.
+            assert [notice.notification_type for notice in notices] == ["INCIDENT_OPEN"]
+            assert notices[0].dedupe_key.endswith(":e2")
+        assert audits == ["OPEN"]
+    finally:
+        _cleanup(sync_factory, incident.id)
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_failure_without_a_site_build_incident_opens_a_generic_one(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """R1: 병원 단위 최종 차단이 없으면 이 시도 하나가 generic 사고로 보인다.
+
+    사람이 시작한 시도의 실패는 어떤 경우에도 조용히 사라지지 않는다.
+    """
+    factory, hospital_id = signal_store
+    run = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "operator-retry-orphan"
+    )
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    monkeypatch.setattr(task_incident_control, "_audit", lambda *_a, **_k: None)
+
+    assert task_incident_control.record_task_failure(
+        _dispatch_headers(run.id), run.task_id
+    ) is True
+
+    with sync_factory() as db:
+        generic = db.scalar(
+            select(Incident).where(
+                Incident.dedupe_key == task_incident_control._incident_key(run.id)
+            )
+        )
+        assert generic is not None
+        assert generic.incident_type == "BACKGROUND_TASK_FAILED"
+        assert generic.state == "OPEN"
+        assert (
+            db.scalar(
+                select(Incident).where(
+                    Incident.dedupe_key == site_build_incident_key(hospital_id)
+                )
+            )
+            is None
+        )
+    _cleanup(sync_factory, generic.id)

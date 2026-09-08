@@ -14,7 +14,6 @@ from sqlalchemy.exc import IntegrityError
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
-from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import (
@@ -27,12 +26,23 @@ from app.models.operations import (
 from app.services import operation_run_payloads
 from app.services import published_image_recertification as recertification
 from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
-from app.services.incident_safety import build_incident_key, site_build_incident_key
+from app.services.incident_safety import (
+    REBUILD_SITE_SWEEP_KEY_PREFIX,
+    build_incident_key,
+    site_build_incident_key,
+)
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification_sync
 from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
+from app.services.site_build_incidents import (
+    audit_site_build_incident,
+    load_site_build_incident,
+    notify_site_build_incident,
+    reopen_site_build_incident,
+    touch_site_build_incident,
+)
 from app.services.site_revalidation_control import retry_delay
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
@@ -443,10 +453,10 @@ def _ensure_rebuild_site_run(
             # 진행 중인 실행이 있으면 새 run을 만들지 않는다. 유실이 의심될 때만
             # 같은 run을 재배달한다 — 판단은 일반 재배달 규칙과 하나로 유지한다.
             return run if _operation_redispatch_is_due(run, observed_at) else None
-    failed = [run for run in recent if run.state == OperationRunState.FAILED]
+    failed = _failures_since_last_success(recent)
     if len(failed) >= _REBUILD_SITE_ATTEMPT_BUDGET:
         _open_rebuild_site_incident(
-            db, hospital, max(failed, key=_failure_observed_at), observed_at
+            db, hospital, max(failed, key=_run_observed_at), observed_at
         )
         return None
 
@@ -456,7 +466,8 @@ def _ensure_rebuild_site_run(
         operation_type="REBUILD_SITE",
         state=OperationRunState.REQUESTED,
         idempotency_key=(
-            f"rebuild-site:{hospital.id}:{observed_at.date().isoformat()}:{len(failed)}"
+            f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital.id}"
+            f":{observed_at.date().isoformat()}:{len(failed)}"
         ),
         requested_by_id=None,
         task_id=str(uuid.uuid4()),
@@ -486,10 +497,33 @@ def _ensure_rebuild_site_run(
     return run
 
 
-def _failure_observed_at(run: OperationRun) -> datetime:
-    """이 실패가 관측된 시각. 종료 기록이 없으면 마지막 상태 변경 시각을 쓴다."""
+def _run_observed_at(run: OperationRun) -> datetime:
+    """이 실행의 종료가 관측된 시각. 종료 기록이 없으면 마지막 상태 변경 시각을 쓴다."""
 
     return run.completed_at or run.updated_at or run.requested_at
+
+
+def _failures_since_last_success(recent: list[OperationRun]) -> list[OperationRun]:
+    """예산을 쓴 실패만 남긴다 — 성공보다 앞선 실패는 이미 해결된 일이다.
+
+    운영자 재시도 한 번이 성공하면 그 전의 실패는 더 이상 막을 이유가 아니다. 그대로 세면
+    성공한 병원이 24시간 동안 자동 재실행을 못 받고, 성공 전의 실패로 사고가 다시 열린다.
+    """
+
+    latest_success = max(
+        (
+            _run_observed_at(run)
+            for run in recent
+            if run.state == OperationRunState.SUCCEEDED
+        ),
+        default=None,
+    )
+    return [
+        run
+        for run in recent
+        if run.state == OperationRunState.FAILED
+        and (latest_success is None or _run_observed_at(run) > latest_success)
+    ]
 
 
 def _open_rebuild_site_incident(
@@ -504,67 +538,46 @@ def _open_rebuild_site_incident(
     조용하면 아무도 그 사실을 모른다.
     """
 
-    dedupe_key = site_build_incident_key(hospital.id)
-    incident = _rebuild_site_incident(db, dedupe_key)
+    incident = load_site_build_incident(db, hospital.id)
     if incident is None:
         created = _insert_rebuild_site_incident(
-            db, hospital, newest_failed_run, dedupe_key, observed_at
+            db, hospital, newest_failed_run, site_build_incident_key(hospital.id), observed_at
         )
         if created is not None:
-            _notify_rebuild_site_incident(db, hospital, created, observed_at)
-            _audit_rebuild_site_incident(db, created)
+            notify_site_build_incident(
+                db, created, hospital_name=hospital.name, observed_at=observed_at
+            )
+            audit_site_build_incident(db, created)
             return
         # 같은 tick의 다른 replica가 먼저 만들었다 — 병원 잠금은 앞선 commit에서 이미
         # 풀려 두 sweep이 여기까지 온다. IntegrityError를 그대로 올리면 뒤따르는 병원과
         # 재인증이 통째로 밀리므로, 상대가 만든 행을 다시 읽어 아래 규칙으로 이어간다.
-        incident = _rebuild_site_incident(db, dedupe_key)
+        incident = load_site_build_incident(db, hospital.id)
         if incident is None:
             return
     if incident.state in (
         IncidentState.RECOVERED.value,
         IncidentState.ACKNOWLEDGED.value,
     ):
-        _reopen_rebuild_site_incident(incident, newest_failed_run, observed_at)
-        auto_assign_owner_sync(db, incident, observed_at=observed_at)
-        _notify_rebuild_site_incident(db, hospital, incident, observed_at)
-        _audit_rebuild_site_incident(db, incident)
+        closed_at = incident.recovered_at or incident.acknowledged_at
+        if closed_at is not None and _run_observed_at(newest_failed_run) <= closed_at:
+            # 닫히기 전의 실패다. 그 뒤로 새로 실패한 적이 없는데 다시 열면, 이미 해결된
+            # 일로 새 에피소드와 Slack이 나가고 자동 재실행까지 24시간 막힌다.
+            return
+        reopen_site_build_incident(
+            db,
+            incident,
+            hospital_name=hospital.name,
+            failed_run_id=newest_failed_run.id,
+            observed_at=observed_at,
+        )
         return
-    if _failure_observed_at(newest_failed_run) <= incident.last_seen_at:
+    if _run_observed_at(newest_failed_run) <= incident.last_seen_at:
         # 이미 센 실패다. 예산이 다시 열릴 때까지 같은 사고를 다시 만지지 않는다.
         return
-    incident.last_seen_at = observed_at
-    incident.occurrence_count += 1
-    # 조치 버튼이 가장 최근 실패를 가리켜야 운영자가 다시 시도할 실행을 찾는다.
-    incident.operation_run_id = newest_failed_run.id
-    incident.version += 1
-    incident.updated_at = observed_at
-    _audit_rebuild_site_incident(db, incident)
-
-
-def _rebuild_site_incident(db, dedupe_key: str) -> Incident | None:
-    return (
-        db.execute(select(Incident).where(Incident.dedupe_key == dedupe_key))
-        .scalars()
-        .first()
+    touch_site_build_incident(
+        db, incident, failed_run_id=newest_failed_run.id, observed_at=observed_at
     )
-
-
-def _reopen_rebuild_site_incident(
-    incident: Incident, newest_failed_run: OperationRun, observed_at: datetime
-) -> None:
-    """닫힌 사고를 같은 원인의 새 에피소드로 되돌린다 (`open_or_touch_incident`와 같은 규칙)."""
-
-    incident.state = IncidentState.OPEN.value
-    incident.episode_seq += 1
-    incident.first_seen_at = observed_at
-    incident.last_seen_at = observed_at
-    incident.occurrence_count += 1
-    incident.operation_run_id = newest_failed_run.id
-    incident.recovered_at = None
-    incident.acknowledged_at = None
-    incident.acknowledged_by_id = None
-    incident.version += 1
-    incident.updated_at = observed_at
 
 
 def _insert_rebuild_site_incident(
@@ -609,52 +622,6 @@ def _insert_rebuild_site_incident(
         savepoint.rollback()
         return None
     return incident
-
-
-def _notify_rebuild_site_incident(
-    db, hospital: Hospital, incident: Incident, observed_at: datetime
-) -> None:
-    """새로 열린 에피소드 하나에 운영자 채널 알림 하나. dedupe 키가 에피소드를 포함한다."""
-
-    projection = IncidentSlackProjection(
-        incident_id=incident.id,
-        hospital_name=hospital.name,
-        severity=incident.severity,
-        customer_impact=incident.customer_impact,
-        next_action=incident.next_action,
-        admin_path=incident.admin_path,
-        owner_label=owner_label_sync(db, incident.owner_id),
-        sla_label="확인 필요",
-        hospital_id=incident.hospital_id,
-        operation_run_id=incident.operation_run_id,
-        version=incident.version,
-        problem=incident.safe_error_message,
-        episode_seq=incident.episode_seq,
-        incident_type=incident_type_of(incident),
-    )
-    enqueue_notification_sync(
-        db,
-        build_open_incident_notification(projection, settings.ADMIN_BASE_URL),
-        now=observed_at,
-    )
-
-
-def _audit_rebuild_site_incident(db, incident: Incident) -> None:
-    db.add(
-        AdminAuditLog(
-            hospital_id=incident.hospital_id,
-            actor="system",
-            action="incident_occurrence_recorded",
-            target_type="incident",
-            target_id=str(incident.id),
-            detail={
-                "state": incident.state,
-                "version": incident.version,
-                "occurrence_count": incident.occurrence_count,
-                "episode_seq": incident.episode_seq,
-            },
-        )
-    )
 
 
 def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> bool:

@@ -41,6 +41,16 @@ def build_incident_key(
     return f"incident:v1:{pipeline_key}:{object_key}:{digest}"
 
 
+REBUILD_SITE_SWEEP_KEY_PREFIX: Final = "rebuild-site:"
+"""자동 복구 sweep이 만든 REBUILD_SITE 실행의 idempotency key 접두사 (H-13).
+
+sweep이 만든 자동 시도와, 운영자가 운영센터에서 누른 재시도의 자식 실행을 가르는 표식이다.
+sweep은 예산을 다 쓴 뒤 병원 하나당 사고 한 건으로 넘기므로 시도마다 알리지 않고, 사람이
+시작한 시도는 실패하면 반드시 보여야 한다. 접두사를 두 곳에서 각자 적으면 한쪽만 바뀌는
+순간 자동 시도가 사람의 할 일이 되거나 사람의 실패가 조용해진다.
+"""
+
+
 def site_build_incident_key(hospital_id: uuid.UUID | str) -> str:
     """사이트 준비 최종 차단의 사고 키 (H-13).
 
