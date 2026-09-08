@@ -82,6 +82,8 @@ RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매
 
 2026-09-08 운영 전환 runtime `ede3d8f5a8adec849c987d21c1491afef03edbca`의 [PR #86 CI](https://github.com/wjlee930501/reputation/actions/runs/34142628859)는 9/9 통과했다. Backend는 3,095 passed, 0 failed, 0 skipped, 17 warnings, coverage 83.03%였고 Admin·Site 검사와 컨테이너 빌드도 통과했다. 운영에서는 5개 서비스·3개 영속 Job, DB head, 7개 큐 readiness, 공개 115건과 실제 이미지 바이트를 확인했다. 이 완료 범위와 남은 장기 WATCH는 [후속 구현 기록](../reviews/2026-09-07-purpose-autonomy-efficiency-implementation.md)에 분리한다.
 
+2026-09-09 체크포인트 1 runtime `4bd1e0312a9178ad53c2f1065ec42798d81d7c7c`(PR #91, CI 9/9)는 `scripts/deploy.sh all`로 마이그레이션(0070) → Worker → RedBeat 재조정 → Beat → readiness(7개 큐 canary, `recertify_candidate_count 0`, `null_noise_hash_approvals 8`) → API/Site/Admin 순으로 배포했고, 8개 병원 헬스·대표 글·이미지 200과 새 리비전 오류 0건을 확인했다. 상세는 [체크포인트 1 기록](../releases/2026-09-09-checkpoint-1.md).
+
 ## 롤백과 문서 변경
 
 ```bash

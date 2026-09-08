@@ -27,5 +27,11 @@
 - GPT-6 Astra(medium), 1차 — **HOLD**, 블로커 5: (1) 재인증 결제 회계가 실행 단위가 아니어서 재배달 반복 시 4번째 결제 가능; (2) 채널 자료 등록이 프로필 커밋과 비원자적; (3) fetch 스윕이 LIMIT 뒤에 상태를 걸러 레거시 행이 새 등록을 굶기고, ERROR 커밋 후 인시던트 실패 시 무음; (4) 일시정지 병원의 글이 admin 콘텐츠 행에서 "공개 중"; (5) `extra="forbid"`가 배포 순서상 열린 옛 탭의 저장을 422로 깨뜨림. 비차단 관찰 항목: 재인증 후보 재고 조사, NULL 노이즈 hash 재검수 비용, fetch 동시성, H-16 리포트, 계약 정정 다운그레이드. 다섯 블로커는 `e4c174d`에서 수정(실행별 결제 카운터, 프로필 트랜잭션 내 SAVEPOINT 등록, 스윕 SQL 자격 필터+인시던트 선행+CAS, 병원 서비스 게이트 `HOSPITAL_NOT_SERVING`, `extra="ignore"`+deprecation 경고) → 재검토 결과는 아래.
 - GPT-6 Astra(medium), 2차(`e4c174d`·`1944774` 이후) — **SHIP**. 결제 카운터가 공급자 호출 전 별도 세션으로 커밋되고 행 잠금이 예산 읽기에 선행함을 확인; SAVEPOINT 배치·스윕 자격 필터·CAS·서비스 게이트 함수 동일성·호환 validator 모두 확인. 비차단 관찰: fetch 실패 CAS가 PENDING만 검사해 늦은 실패가 성공을 덮을 수 있음, 재조정의 메타데이터 부착에 CAS 없음(등록부 LOW). 배포 후 증거 체크리스트 5단계(readiness JSON·큐 canary·operation_runs/fetch 상태 SQL·병원 헬스·공개 글 표본)를 아래 "배포 증거"에 그대로 수행한다.
 
-## 배포 증거
-(기록 예정)
+## 배포 증거 (2026-09-08 16:48Z 시작, `bash scripts/deploy.sh all`, release `4bd1e0312a9178ad53c2f1065ec42798d81d7c7c` = PR #91 merge)
+- 소스: PR [#91](https://github.com/wjlee930501/reputation/pull/91) CI 9/9 통과(backend lint/tests, admin·site tests/builds, copy·DB budget guards, security scans, terraform, 3개 이미지 빌드). 이미지 태그 `20260909-014749`.
+- 런타임: 5개 서비스 새 리비전에 트래픽 100% — api `00158-tng`, worker `00147-bj9`, beat `00143-9bf`, site `00112-jm4`, admin `00077-z6m`(롤백 좌표 `.deploy-rollback`: api 00157 / worker 00146 / beat 00142 / site 00111 / admin 00076). 배포 후 새 리비전 ERROR 로그 0건.
+- DB: readiness Job `reputation-production-readiness-rth7n` — `schema_revision = expected = 0070_essence_evidence_noise_hash`, 모든 check true, `hospital_count 8`, `live_site_count 8`, **`recertify_candidate_count 0`**(예상 밖 유료 재인증 없음), **`null_noise_hash_approvals 8`**(다음 재조정에서 병원당 1회 자동 재검수 — 예상된 비용).
+- 작업: 7개 큐 canary 모두 현재 release `4bd1e03`(control/default/content/sov/reports/leadgen/certificates); worker 로그에서 `autonomous_recovery.reconcile`이 매분 실행되며 `image_recertifications: 0`(sweep 가동, 후보 없음); queue wait lt_5s.
+- 병원 공개 표면: 8개 호스트(기본 주소 6 + 자기 도메인 `jangclinic.kr`·`smtopos.kr`·`ai.no1top365.co.kr` 포함) `/.well-known/reputation-health` 200, `hospital_id`·`slug`·`canonical_host` 일치, `release = reputation-site-00112-jm4`; 병원별 대표 글 200, 이미지 프록시 URL(`?v=<hash>`) 최종 200 `image/png`.
+- Admin: 로그인 표면 200. (API `/api/v1/health` 경로는 404 — 헬스는 readiness Job과 공개 API 이미지 응답으로 확인; 경로 확인 항목으로 등록.)
+- 미검증 범위: 실제 모델·Slack 호출은 이 체크포인트에서 별도 시험하지 않음(런북 원칙). 재인증·채널 fetch task는 후보 0으로 실행 이력 없음 — 첫 실제 실행 시 `operation_runs`(`RECERTIFY_PUBLISHED_IMAGE`)와 `hospital_source_assets.fetch_state`를 확인한다.
