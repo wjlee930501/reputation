@@ -48,7 +48,7 @@
 ### PR-0A 생애주기·활성화·도메인 (H-05, H-06, H-07, M-10, M-11, M-13)
 - ACTIVE 전환 **단일 진입점**: `hospital_activation.activate(...)`만 `status=ACTIVE`를 쓴다. `domain_verification.py:123-127`, `operations.py:801-808`의 직접 기록을 이 함수 호출로 교체. PAUSED면 `HospitalNotActivatable`. 활성화 후 `site_revalidate` 호출.
 - `pause`/`resume`가 `site_revalidate`를 호출. `resume`는 자기 도메인이면 DNS/live 증거를 갱신한 뒤 활성화.
-- admin lib에 **단일 판정** `publicServiceState(hospital)` 추가: `ACTIVE && site_live && profile_complete && site_built` → `LIVE`, `PAUSED` → `PAUSED`, 그 외 → `NOT_LIVE`. `site_live`를 직접 읽는 6곳을 이 함수로 교체.
+- admin lib에 **단일 판정** `publicServiceState(hospital)` 추가: 백엔드 `_has_public_site`와 동일하게 `status === ACTIVE && site_live` → `live`, `PAUSED` → `paused`, 그 외 → `not_live` (ACTIVE는 활성화 시점에 게이트를 통과했음을 뜻하고, 운영 중 `profile_complete` 해제는 같은 PR에서 409로 막는다). `site_live`를 직접 읽는 6곳을 이 함수로 교체.
 - `resume` 버튼 조건에서 `schedule_set` 제거.
 - 프로필 체크리스트의 도메인 상태를 배지와 같은 `liveCheckProvesServing`으로.
 - 운영 중 병원의 `profile_complete=false` PATCH는 409 + 사유 (공개 사이트가 404가 되므로).
