@@ -35,6 +35,10 @@ class ContentItemResponse(BaseModel):
     faq_question: Optional[str] = None
     faq_answer_summary: Optional[str] = None
     compliance: Optional[dict[str, Any]] = None
+    # 월 표의 행 상태 — kind/label/reason/link. 공개 사이트와 같은 판정 위에 차단 링크만
+    # 얹은 값이며, Admin은 라벨을 새로 만들지 않는다. 필수 — 빠진 응답이 있으면
+    # 그 화면만 상태를 자기 방식으로 다시 계산하게 된다.
+    row_state: dict[str, Any]
     content_philosophy_id: Optional[str] = None
     query_target_id: Optional[str] = None
     exposure_action_id: Optional[str] = None

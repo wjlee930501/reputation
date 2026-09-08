@@ -193,7 +193,8 @@ class _PatchDB:
         self.committed = False
 
     async def execute(self, statement):
-        return SimpleNamespace(scalar_one_or_none=lambda: self._item)
+        # `all`은 행 상태의 차단 링크 배치 조회용 — 이 더블에는 인시던트·실행이 없다.
+        return SimpleNamespace(scalar_one_or_none=lambda: self._item, all=list)
 
     async def commit(self):
         self.committed = True

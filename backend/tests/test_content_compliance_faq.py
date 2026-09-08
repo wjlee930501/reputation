@@ -101,6 +101,10 @@ class _AuditDB(_NoExecuteDB):
     def add(self, value):
         self.added.append(value)
 
+    async def execute(self, statement):
+        # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
+        return _ScalarNone()
+
 
 def _wire(monkeypatch, item, hospital):
     async def fake_get_content(db, content_id, hospital_id):

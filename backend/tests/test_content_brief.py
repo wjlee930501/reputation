@@ -830,6 +830,10 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
         async def refresh(self, refreshed_item):
             assert refreshed_item is item
 
+        async def execute(self, statement):
+            # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
+            return SimpleNamespace(all=list, scalar_one_or_none=lambda: None)
+
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
         assert requested_item_id == item_id
         assert requested_hospital_id == hospital_id
@@ -1098,6 +1102,10 @@ async def test_update_content_brief_reassigns_action_without_stale_links(monkeyp
         async def refresh(self, refreshed_item):
             assert refreshed_item is item
 
+        async def execute(self, statement):
+            # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
+            return SimpleNamespace(all=list, scalar_one_or_none=lambda: None)
+
         async def get(self, model, requested_id):
             if requested_id == replaced_item_id:
                 return replaced_item
@@ -1182,6 +1190,10 @@ async def test_update_content_brief_unlinks_action_clears_work_queue_link(monkey
 
         async def refresh(self, refreshed_item):
             assert refreshed_item is item
+
+        async def execute(self, statement):
+            # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
+            return SimpleNamespace(all=list, scalar_one_or_none=lambda: None)
 
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
         assert requested_item_id == item_id

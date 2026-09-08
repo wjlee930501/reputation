@@ -13,8 +13,9 @@ POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 
 import logging
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import Any, Final, Optional
 
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -26,6 +27,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import indexnow
@@ -57,6 +59,7 @@ from app.services.content_publication import (
 )
 from app.services.content_publish_notifications import project_publish_notification
 from app.services.content_publish_state import attach_publish_notification_state
+from app.services.content_row_state import ROW_STATE_LABELS, content_row_state
 from app.services.content_visibility import (
     PublicVisibility,
     assess_public_visibility,
@@ -86,6 +89,7 @@ from app.services.operation_runs import (
 )
 from app.services.ops_incident_alerts import open_ops_incident
 from app.services.post_publish_review_policy import is_human_post_publish_review_sample
+from app.services.published_image_recertification import RECERTIFY_OPERATION
 from app.services.published_image_recertification import (
     base_key as published_recertify_key,
 )
@@ -478,7 +482,13 @@ async def list_content(
     await attach_publish_notification_state(db, items)
 
     public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
-    return [_serialize_item(i, public_philosophy_id=public_philosophy_id) for i in items]
+    links = await _blocked_links_for(db, hospital_id, [i.id for i in items])
+    return [
+        _serialize_item(
+            i, public_philosophy_id=public_philosophy_id, blocked_link=links.get(i.id)
+        )
+        for i in items
+    ]
 
 
 @router.get("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
@@ -490,8 +500,7 @@ async def get_content(
     """콘텐츠 상세 (본문 포함)"""
     item = await _get_content(db, content_id, hospital_id)
     await attach_publish_notification_state(db, (item,))
-    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
-    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.patch("/{hospital_id}/content/{content_id}", response_model=ContentItemDetail)
@@ -697,8 +706,7 @@ async def update_content(
         await trigger_content_site_revalidate_safe(
             hospital.slug, item.id, hospital_name=hospital.name, treatments=hospital.treatments
         )
-    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
-    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.patch("/{hospital_id}/content/{content_id}/brief", response_model=ContentItemDetail)
@@ -716,8 +724,7 @@ async def update_content_brief(
 
     await db.commit()
     await db.refresh(item)
-    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
-    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.post(
@@ -778,8 +785,7 @@ async def reschedule_content(
     )
     await db.commit()
     await db.refresh(item)
-    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
-    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
+    return await _serialize_single(db, hospital_id, item)
 
 
 @router.post(
@@ -797,11 +803,7 @@ async def cancel_content(
     if item.status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Published content must be rejected instead")
     if item.status == ContentStatus.CANCELLED:
-        return _serialize_item(
-            item,
-            full=True,
-            public_philosophy_id=await get_public_approved_philosophy_id(db, hospital_id),
-        )
+        return await _serialize_single(db, hospital_id, item)
 
     previous_status = _enum_value(item.status)
     item.status = ContentStatus.CANCELLED
@@ -824,8 +826,7 @@ async def cancel_content(
     )
     await db.commit()
     await db.refresh(item)
-    public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
-    return _serialize_item(item, full=True, public_philosophy_id=public_philosophy_id)
+    return await _serialize_single(db, hospital_id, item)
 
 
 async def _lock_content_status(
@@ -1513,6 +1514,93 @@ def _build_compliance_summary(
     }
 
 
+# 발행이 막힌 글이 만드는 durable run의 종류 — `content_publication_block_control`이
+# 여는 재생성/이미지 재생성과 공개 이미지 재인증. 운영 센터의 콘텐츠 관련 run 집합
+# (`operations_center_today_queries` 289-300)과 같아야 같은 행을 가리킨다.
+_CONTENT_BLOCK_OPERATIONS: Final = (
+    "REGENERATE_CONTENT",
+    "REGENERATE_CONTENT_IMAGE",
+    RECERTIFY_OPERATION,
+)
+
+
+async def _blocked_links_for(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    item_ids: Sequence[uuid.UUID],
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """글별 "운영 센터에서 조치" 링크 — 항목 수와 무관하게 쿼리 2회.
+
+    경로는 운영 센터가 쓰는 상세 경로 규칙 그대로다
+    (`operations_center_serializers.serialize_incident_row`의 detail_path,
+    `retry_action`의 run 경로). 화면마다 주소를 새로 지으면 링크가 죽는다.
+    사람이 볼 원인은 인시던트가 실패 run보다 앞선다 — 인시던트에는 조치 문장이 있다.
+    """
+    if not item_ids:
+        return {}
+    keys = [str(item_id) for item_id in item_ids]
+    run_source = OperationRun.request_payload["source_id"].as_string()
+
+    incident_rows = (
+        await db.execute(
+            select(Incident.source_id, Incident.id, Incident.next_action)
+            .where(
+                Incident.hospital_id == hospital_id,
+                Incident.source_id.in_(keys),
+                Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
+            )
+            .order_by(Incident.last_seen_at.desc(), Incident.id.desc())
+        )
+    ).all()
+    run_rows = (
+        await db.execute(
+            select(run_source, OperationRun.id, OperationRun.safe_error_message)
+            .where(
+                OperationRun.hospital_id == hospital_id,
+                OperationRun.state == OperationRunState.FAILED.value,
+                OperationRun.operation_type.in_(_CONTENT_BLOCK_OPERATIONS),
+                run_source.in_(keys),
+            )
+            .order_by(OperationRun.requested_at.desc(), OperationRun.id.desc())
+        )
+    ).all()
+
+    run_links: dict[uuid.UUID, dict[str, Any]] = {}
+    for source_id, run_id, message in run_rows:
+        run_links.setdefault(
+            uuid.UUID(source_id),
+            {
+                "kind": "run",
+                "href": f"/operations/hospitals/{hospital_id}/runs/{run_id}",
+                "next_action": message,
+            },
+        )
+    incident_links: dict[uuid.UUID, dict[str, Any]] = {}
+    for source_id, incident_id, next_action in incident_rows:
+        incident_links.setdefault(
+            uuid.UUID(source_id),
+            {
+                "kind": "incident",
+                "href": f"/operations/hospitals/{hospital_id}/incidents/{incident_id}",
+                "next_action": next_action,
+            },
+        )
+    return {**run_links, **incident_links}
+
+
+async def _serialize_single(
+    db: AsyncSession, hospital_id: uuid.UUID, item: ContentItem
+) -> dict:
+    """단건 응답 — 목록과 같은 판정·같은 차단 링크를 쓴다."""
+    links = await _blocked_links_for(db, hospital_id, [item.id])
+    return _serialize_item(
+        item,
+        full=True,
+        public_philosophy_id=await get_public_approved_philosophy_id(db, hospital_id),
+        blocked_link=links.get(item.id),
+    )
+
+
 def _serialize_item(
     item: ContentItem,
     full: bool = False,
@@ -1520,10 +1608,19 @@ def _serialize_item(
     # 기본값을 두지 않는다 — 빠뜨린 호출자가 조용히 기준 대조를 건너뛰면
     # 그 화면만 "공개 중"으로 갈라진다(H-01).
     public_philosophy_id: uuid.UUID | None | object,
+    blocked_link: dict[str, Any] | None = None,
 ) -> dict:
     content_type = _enum_value(item.content_type)
     status_value = _enum_value(item.status)
     visibility = assess_public_visibility(item, public_philosophy_id)
+    compliance = _build_compliance_summary(item, status_value, visibility)
+    row_state = content_row_state(
+        item,
+        visibility,
+        compliance_blockers=tuple(compliance["blockers"]),
+        blocked_link=blocked_link,
+        today=arrow.now("Asia/Seoul").date(),
+    )
     d = {
         "id": str(item.id),
         "content_type": content_type,
@@ -1574,7 +1671,14 @@ def _serialize_item(
         "brief_approved_by": item.brief_approved_by,
         "essence_status": item.essence_status,
         "essence_check_summary": item.essence_check_summary,
-        "compliance": _build_compliance_summary(item, status_value, visibility),
+        "compliance": compliance,
+        # 월 표의 행 상태 — 라벨까지 여기서 정한다. admin은 붙이기만 한다(PR-1A 원칙).
+        "row_state": {
+            "kind": row_state.kind,
+            "label": ROW_STATE_LABELS[row_state.kind],
+            "reason": row_state.reason,
+            "link": row_state.link,
+        },
     }
     if full:
         d["body"] = item.body
