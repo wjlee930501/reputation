@@ -392,15 +392,18 @@ _AUTOMATIC_BODY_REPAIR_CODES = frozenset(
 def _generation_attempt_context(
     item: ContentItem, philosophy: HospitalContentPhilosophy | None
 ) -> str:
-    """Fingerprint inputs whose change can justify one more body attempt."""
+    """Fingerprint inputs whose change can justify one more body attempt.
+
+    scheduled_date는 넣지 않는다 — 22:30 복구가 미발행 슬롯의 날짜를 매일 다시 쓰므로
+    날짜를 넣으면 결정적으로 실패하는 글이 하루 4회씩 유료 호출을 영원히 반복한다(H-08).
+    """
 
     philosophy_id = str(getattr(philosophy, "id", "") or "MISSING")
     content_type = str(getattr(getattr(item, "content_type", None), "value", "") or "")
-    scheduled_date = str(getattr(item, "scheduled_date", "") or "")
     query_target_id = str(getattr(item, "query_target_id", "") or "")
     return (
         f"philosophy={philosophy_id};content_type={content_type};"
-        f"scheduled_date={scheduled_date};query_target={query_target_id}"
+        f"query_target={query_target_id}"
     )
 
 
