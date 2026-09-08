@@ -107,7 +107,7 @@ INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"
 
 # Internal docs/comments that are not shown to operators can be allowed by path.
 # 백엔드 내부 모듈만 제외한다. admin/site 아래에 같은 이름의 디렉터리를 만들어
-# 화면 문구를 숨기는 우회를 막기 위해 backend/ 경로에만 적용한다.
+# 화면 문구를 숨기는 우회를 막기 위해 repo 기준 접두사로만 비교한다.
 ALLOW_PATH_FRAGMENTS = {
     "backend/alembic/",
     "backend/app/models/",
@@ -124,7 +124,7 @@ def iter_files(bases: list[Path] | None = None) -> list[Path]:
         for path in base.rglob("*"):
             if path.is_file() and path.suffix in EXTENSIONS:
                 rel = path.relative_to(ROOT).as_posix()
-                if any(fragment in rel for fragment in ALLOW_PATH_FRAGMENTS):
+                if any(rel.startswith(fragment) for fragment in ALLOW_PATH_FRAGMENTS):
                     continue
                 files.append(path)
     return sorted(files)
