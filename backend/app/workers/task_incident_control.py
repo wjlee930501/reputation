@@ -41,6 +41,7 @@ from app.services.notification_messages import (
 )
 from app.services.site_build_incidents import (
     load_site_build_incident,
+    open_site_build_incident,
     reopen_site_build_incident,
     touch_site_build_incident,
 )
@@ -87,8 +88,8 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
             if _record_site_build_operator_failure(db, run):
                 db.commit()
                 return True
-            # 아직 이 병원의 최종 차단이 없다. 사람이 시작한 시도 하나가 실패했다는
-            # 사실은 아래 generic 경로가 사고 한 건으로 보여준다.
+            # 병원이 없는 REBUILD_SITE 실행에만 남는 길이다 — 병원 단위 사고 키가 없어
+            # 실을 곳이 없으므로, 이 시도 하나를 아래 generic 경로가 사람에게 보인다.
         if (
             run.operation_type in _CLASSIFIED_GENERATION_OPERATIONS
             and run.safe_error_code
@@ -201,38 +202,57 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
 
 
 def _record_site_build_operator_failure(db: Session, run: OperationRun) -> bool:
-    """사람이 시작한 사이트 준비 재시도의 실패를 이미 있는 최종 차단에 싣는다 (H-13).
+    """사람이 시작한 사이트 준비 재시도의 실패를 이 병원의 사고 한 건에 싣는다 (H-13).
 
     운영센터 재시도는 sweep이 더 이상 고르지 않는 병원(이미 ACTIVE·site_built 등)에서도
     눌린다. 그 실패를 sweep에게 미루면 아무도 알리지 않아, 누른 사람은 실패한 줄 모른다.
-    그렇다고 병원 단위 최종 차단과 별개의 사고를 또 열면 같은 원인이 두 줄이 된다. 이미
-    있는 한 건에 실으면 원인 하나에 사고 하나가 지켜지고 실패도 보인다. 사고가 없으면
-    False를 돌려 호출한 쪽의 generic 경로가 이 시도 하나를 사람에게 보이게 한다.
+    그렇다고 실행 단위 generic 사고를 열면 같은 원인이 두 줄이 된다 — 그 실행은 sweep의
+    예산에도 함께 세어져, 뒤이은 자동 실패 두 번이 병원 단위 최종 차단을 두 번째 OPEN과
+    두 번째 Slack으로 열고, 재시도의 성공은 그중 한 건만 닫는다. 그래서 열려 있으면 실어
+    주고, 닫혀 있으면 새 에피소드로 되돌리고, 아직 없으면 같은 dedupe 키로 이 병원의
+    사고를 여기서 연다. 그 뒤에 예산이 다 차도 sweep은 이미 있는 한 건을 만질 뿐이다.
     """
 
     if run.hospital_id is None:
         return False
+    observed_at = datetime.now(UTC)
     incident = load_site_build_incident(db, run.hospital_id)
     if incident is None:
-        return False
-    observed_at = datetime.now(UTC)
+        opened = open_site_build_incident(
+            db,
+            hospital_id=run.hospital_id,
+            hospital_name=_hospital_name(db, run.hospital_id),
+            failed_run_id=run.id,
+            safe_error_code="SITE_BUILD_FAILED",
+            safe_error_message="병원 공개 페이지 준비 작업이 실패했습니다.",
+            next_action=(
+                "운영 관제에서 실패한 작업의 원인을 확인해 해결한 뒤 다시 시도하세요."
+            ),
+            observed_at=observed_at,
+        )
+        if opened is not None:
+            return True
+        # 같은 순간의 sweep이 먼저 만들었다. 상대가 만든 한 건에 이 실패를 싣는다.
+        incident = load_site_build_incident(db, run.hospital_id)
+        if incident is None:
+            return False
     if incident.state in (IncidentState.OPEN.value, IncidentState.RETRYING.value):
         touch_site_build_incident(
             db, incident, failed_run_id=run.id, observed_at=observed_at
         )
         return True
-    hospital_name = (
-        db.scalar(select(Hospital.name).where(Hospital.id == run.hospital_id))
-        or "병원 작업"
-    )
     reopen_site_build_incident(
         db,
         incident,
-        hospital_name=hospital_name,
+        hospital_name=_hospital_name(db, run.hospital_id),
         failed_run_id=run.id,
         observed_at=observed_at,
     )
     return True
+
+
+def _hospital_name(db: Session, hospital_id: uuid.UUID) -> str:
+    return db.scalar(select(Hospital.name).where(Hospital.id == hospital_id)) or "병원 작업"
 
 
 def _run_identity(

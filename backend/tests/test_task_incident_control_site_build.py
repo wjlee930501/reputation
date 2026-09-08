@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -24,6 +24,7 @@ from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
+from app.models.hospital import Hospital
 from app.models.operations import (
     Incident,
     NotificationOutbox,
@@ -38,7 +39,7 @@ from app.services.incident_safety import (
 )
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification_sync
-from app.workers import operation_run_signals, task_incident_control
+from app.workers import autonomous_recovery, operation_run_signals, task_incident_control
 
 
 def _sync_factory() -> sessionmaker[Session]:
@@ -372,13 +373,16 @@ async def test_operator_retry_failure_reopens_a_closed_site_build_incident(
 
 
 @pytest.mark.asyncio
-async def test_operator_retry_failure_without_a_site_build_incident_opens_a_generic_one(
+async def test_operator_retry_failure_without_an_incident_opens_the_hospital_one(
     signal_store,
     monkeypatch,
 ) -> None:
-    """R1: 병원 단위 최종 차단이 없으면 이 시도 하나가 generic 사고로 보인다.
+    """D2: 병원 단위 사고가 아직 없어도 실패는 그 한 건으로 열린다.
 
-    사람이 시작한 시도의 실패는 어떤 경우에도 조용히 사라지지 않는다.
+    사람이 시작한 시도의 실패는 어떤 경우에도 조용히 사라지지 않는다. 그렇다고 실행 단위
+    generic 사고로 열면, 그 실행은 sweep의 예산에도 함께 세어져 뒤이은 자동 실패 두 번이
+    같은 원인의 두 번째 OPEN과 두 번째 Slack을 만든다. 재시도의 성공은 병원 단위 한 건만
+    닫으므로 generic 쪽은 남는다. 처음부터 같은 dedupe 키 한 건으로 연다.
     """
     factory, hospital_id = signal_store
     run = await dispatch_test_run(
@@ -386,27 +390,163 @@ async def test_operator_retry_failure_without_a_site_build_incident_opens_a_gene
     )
     sync_factory = _sync_factory()
     monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
-    monkeypatch.setattr(task_incident_control, "_audit", lambda *_a, **_k: None)
 
     assert task_incident_control.record_task_failure(
         _dispatch_headers(run.id), run.task_id
     ) is True
 
     with sync_factory() as db:
-        generic = db.scalar(
+        opened = db.scalar(
             select(Incident).where(
-                Incident.dedupe_key == task_incident_control._incident_key(run.id)
+                Incident.dedupe_key == site_build_incident_key(hospital_id)
             )
         )
-        assert generic is not None
-        assert generic.incident_type == "BACKGROUND_TASK_FAILED"
-        assert generic.state == "OPEN"
+        assert opened is not None
+        assert opened.incident_type == "SITE_BUILD_FAILED"
+        assert opened.safe_error_code == "SITE_BUILD_FAILED"
+        assert opened.state == "OPEN"
+        assert opened.severity == "HIGH"
+        assert opened.operation_run_id == run.id
+        assert opened.admin_path == f"/hospitals/{hospital_id}"
+        # 사람이 볼 사고 하나에 운영자 채널 알림 하나.
+        assert [
+            notice.notification_type
+            for notice in db.scalars(
+                select(NotificationOutbox).where(
+                    NotificationOutbox.incident_id == opened.id
+                )
+            )
+        ] == ["INCIDENT_OPEN"]
+        # 같은 원인이 두 줄이 되지 않는다 — 실행 단위 generic 사고는 열리지 않는다.
         assert (
             db.scalar(
                 select(Incident).where(
-                    Incident.dedupe_key == site_build_incident_key(hospital_id)
+                    Incident.dedupe_key == task_incident_control._incident_key(run.id)
                 )
             )
             is None
         )
-    _cleanup(sync_factory, generic.id)
+    # 다음 재시도의 성공이 그 한 건을 닫는다 — 사고 유형과 무관하게 dedupe 키로 찾는다.
+    retry = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "operator-retry-orphan-again"
+    )
+    try:
+        assert task_incident_control.record_task_success(
+            _dispatch_headers(retry.id), retry.task_id
+        ) is True
+        with sync_factory() as db:
+            closed = db.get(Incident, opened.id)
+            assert closed is not None and closed.state == "ACKNOWLEDGED"
+    finally:
+        _cleanup(sync_factory, opened.id)
+
+
+@pytest.mark.asyncio
+async def test_a_later_sweep_touches_the_incident_the_operator_failure_opened(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """D2: 그 뒤 예산을 다 쓴 sweep은 두 번째 사고가 아니라 같은 한 건을 만진다."""
+    factory, hospital_id = signal_store
+    run = await dispatch_test_run(
+        factory, hospital_id, RecordingTask(), "operator-retry-then-sweep"
+    )
+    sync_factory = _sync_factory()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    assert task_incident_control.record_task_failure(
+        _dispatch_headers(run.id), run.task_id
+    ) is True
+
+    observed_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    with sync_factory() as db:
+        newest = _sweep_run(
+            hospital_id,
+            f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital_id}:2026-08-10:0",
+            OperationRunState.FAILED,
+            observed_at - timedelta(hours=1),
+        )
+        db.add(newest)
+        db.commit()
+        autonomous_recovery._open_rebuild_site_incident(
+            db, SimpleNamespace(id=hospital_id, name="재시도 실패 의원"), newest, observed_at
+        )
+        db.commit()
+
+    with sync_factory() as db:
+        rows = list(
+            db.scalars(select(Incident).where(Incident.hospital_id == hospital_id))
+        )
+        assert len(rows) == 1
+        # 만든 유형 그대로, 두 번째 사고 없이 관측만 는다.
+        assert rows[0].incident_type == "SITE_BUILD_FAILED"
+        assert rows[0].occurrence_count == 2
+        assert rows[0].operation_run_id == newest.id
+    _cleanup(sync_factory, rows[0].id)
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_key_stays_unique_after_a_successful_run(signal_store) -> None:
+    """D1: 성공 뒤에도 sweep의 idempotency key는 그날 이미 쓴 값으로 되돌아가지 않는다.
+
+    꼬리표를 실패 수로 세면 성공 한 번이 계수를 0으로 되돌려 같은 날 이미 쓴 키가 다시
+    나온다. 유일 제약 위반은 savepoint가 삼키므로 아무 흔적도 없이, 그 병원은 자정까지
+    자동 재실행을 한 번도 받지 못한다. 실제 Postgres 제약 위에서 새 행을 확인한다.
+    """
+    _factory, hospital_id = signal_store
+    observed_at = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    prefix = f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital_id}:2026-08-10"
+    sync_factory = _sync_factory()
+    with sync_factory() as db:
+        db.add(
+            _sweep_run(
+                hospital_id,
+                f"{prefix}:0",
+                OperationRunState.FAILED,
+                observed_at - timedelta(hours=3),
+            )
+        )
+        db.add(
+            _sweep_run(
+                hospital_id,
+                f"{prefix}:1",
+                OperationRunState.SUCCEEDED,
+                observed_at - timedelta(hours=2),
+            )
+        )
+        db.commit()
+
+        created = autonomous_recovery._ensure_rebuild_site_run(
+            db, db.get(Hospital, hospital_id), observed_at
+        )
+
+        assert created is not None
+        assert sorted(
+            db.scalars(
+                select(OperationRun.idempotency_key).where(
+                    OperationRun.hospital_id == hospital_id
+                )
+            )
+        ) == [f"{prefix}:0", f"{prefix}:1", f"{prefix}:2"]
+
+
+def _sweep_run(
+    hospital_id: uuid.UUID,
+    idempotency_key: str,
+    state: OperationRunState,
+    requested_at: datetime,
+) -> OperationRun:
+    """sweep이 만들었을 모양 그대로의 REBUILD_SITE 실행 한 건."""
+
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="REBUILD_SITE",
+        state=state,
+        idempotency_key=idempotency_key,
+        requested_by_id=None,
+        task_id=str(uuid.uuid4()),
+        requested_at=requested_at,
+        completed_at=requested_at + timedelta(minutes=5),
+        request_payload={},
+        version=1,
+    )

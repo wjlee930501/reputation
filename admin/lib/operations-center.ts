@@ -375,6 +375,7 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   MONTHLY_MEASUREMENT_INCOMPLETE: '필수 측정이 완료되지 않아 실패한 항목만 복구해야 합니다.',
   MONTHLY_REPORT_FAILED: '월간 보고서를 만드는 중 작업이 완료되지 않았습니다.',
   SITE_BUILD_RETRIES_EXHAUSTED: '병원 공개 페이지 준비가 하루 안에 세 번 실패해 자동 재시도를 멈췄습니다. 실패한 작업의 원인을 해결한 뒤 운영 센터에서 다시 시도하세요.',
+  SITE_BUILD_FAILED: '병원 공개 페이지 준비 작업이 실패했습니다. 실패한 작업의 원인을 해결한 뒤 운영 센터에서 다시 시도하세요.',
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
   CACHE_REVALIDATION_FAILED: '공개 사이트의 내용 갱신을 확인하지 못했습니다.',
   DOMAIN_UNHEALTHY: '공개 주소가 정상으로 응답하지 않습니다.',

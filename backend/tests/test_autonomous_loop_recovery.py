@@ -15,6 +15,7 @@ from app.models.operations import Incident, OperationRun, OperationRunState
 from app.services import published_image_recertification as recertification
 from app.services import site_build_incidents
 from app.services.image_engine import image_subject_hash
+from app.services.incident_safety import site_build_incident_key
 from app.workers import autonomous_recovery, tasks
 
 
@@ -287,7 +288,7 @@ def _exhausted_incident(hospital, run, *, state, last_seen_at, **overrides):
         id=uuid.uuid4(),
         hospital_id=hospital.id,
         operation_run_id=run.id,
-        dedupe_key=autonomous_recovery.site_build_incident_key(hospital.id),
+        dedupe_key=site_build_incident_key(hospital.id),
         incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
         state=state,
         severity="HIGH",
@@ -375,17 +376,19 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
 
 
 def test_site_build_incident_is_not_touched_without_a_new_failure(monkeypatch) -> None:
-    """H-13: 예산이 이미 닫힌 사고를 tick마다 다시 세지 않는다.
+    """H-13: 사고가 이미 가리키는 실패를 tick마다 다시 세지 않는다.
 
     관측을 매분 갱신하면 occurrence_count는 하루 1,400이 되어 재발 횟수라는 뜻을 잃고,
-    사고 목록은 아무 일도 없었는데 계속 방금 일어난 일처럼 보인다.
+    사고 목록은 아무 일도 없었는데 계속 방금 일어난 일처럼 보인다. 관측 시각으로 가르면
+    부족하다 — 운영자 재시도의 실패는 `record_task_failure`가 사고에 먼저 싣고 그 뒤에
+    `completed_at`이 찍히므로, 시각만 보면 다음 tick이 같은 실패를 한 번 더 센다.
     """
 
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
     hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
     failures = _rebuild_site_failures(hospital, now)
     existing = _exhausted_incident(
-        hospital, failures[0], state="OPEN", last_seen_at=now - timedelta(minutes=30)
+        hospital, failures[0], state="OPEN", last_seen_at=now - timedelta(hours=2)
     )
     session = _RecoverySession(
         hospitals=(hospital,),
@@ -408,7 +411,7 @@ def test_site_build_incident_is_not_touched_without_a_new_failure(monkeypatch) -
 
     assert result["site_builds"] == 0
     assert session.added == []
-    assert existing.last_seen_at == now - timedelta(minutes=30)
+    assert existing.last_seen_at == now - timedelta(hours=2)
     assert existing.occurrence_count == 1
     assert existing.version == 1
 
@@ -628,8 +631,10 @@ def test_site_build_budget_ignores_failures_before_a_later_success(monkeypatch) 
     assert [row for row in session.added if isinstance(row, Incident)] == []
     rebuild = session.added[0]
     assert rebuild.operation_type == "REBUILD_SITE"
-    # 예산이 처음부터 다시 열린다 — 앞선 실패는 이미 해결된 일이다.
-    assert rebuild.idempotency_key == f"rebuild-site:{hospital.id}:2026-08-10:0"
+    # 예산은 처음부터 다시 열리지만(앞선 실패는 이미 해결된 일이다), 키 꼬리표는 실패 수가
+    # 아니라 오늘 만든 실행 수다. 실패 수로 세면 성공이 계수를 되돌려 같은 날 이미 쓴 키가
+    # 다시 나오고, 유일 제약 위반이 savepoint에서 조용히 삼켜져 자정까지 재실행이 멈춘다.
+    assert rebuild.idempotency_key == f"rebuild-site:{hospital.id}:2026-08-10:4"
     assert dispatched == ["app.workers.tasks.build_aeo_site"]
 
 

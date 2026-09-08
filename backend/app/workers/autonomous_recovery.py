@@ -29,7 +29,6 @@ from app.services.incident_assignment import auto_assign_owner_sync, owner_label
 from app.services.incident_safety import (
     REBUILD_SITE_SWEEP_KEY_PREFIX,
     build_incident_key,
-    site_build_incident_key,
 )
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
@@ -37,9 +36,8 @@ from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification_sync
 from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
 from app.services.site_build_incidents import (
-    audit_site_build_incident,
     load_site_build_incident,
-    notify_site_build_incident,
+    open_site_build_incident,
     reopen_site_build_incident,
     touch_site_build_incident,
 )
@@ -467,7 +465,7 @@ def _ensure_rebuild_site_run(
         state=OperationRunState.REQUESTED,
         idempotency_key=(
             f"{REBUILD_SITE_SWEEP_KEY_PREFIX}{hospital.id}"
-            f":{observed_at.date().isoformat()}:{len(failed)}"
+            f":{observed_at.date().isoformat()}:{_runs_started_today(recent, observed_at)}"
         ),
         requested_by_id=None,
         task_id=str(uuid.uuid4()),
@@ -495,6 +493,20 @@ def _ensure_rebuild_site_run(
         return None
     db.commit()
     return run
+
+
+def _runs_started_today(recent: list[OperationRun], observed_at: datetime) -> int:
+    """오늘 만들어진 사이트 준비 실행의 수 — 새 실행의 idempotency key 꼬리표다 (H-13).
+
+    꼬리표는 날짜 안에서 절대 되돌아가면 안 된다. 실패 수로 세면 성공 한 번이 계수를 0으로
+    되돌려 같은 날 이미 쓴 키가 다시 나오고, 유일 제약이 savepoint 안에서 조용히 삼켜져
+    그 병원은 자정까지 자동 재실행을 못 받는다. 24시간 창 전체를 세도 어제 같은 시각의
+    실행이 창 밖으로 빠지는 만큼 계수가 줄어 같은 충돌이 하루 뒤에 다시 온다. 오늘 만든
+    실행은 오늘 안에는 창에서 빠지지 않으므로, 이 수는 날짜 안에서 늘기만 한다.
+    """
+
+    today = observed_at.date()
+    return sum(1 for run in recent if run.requested_at.date() == today)
 
 
 def _run_observed_at(run: OperationRun) -> datetime:
@@ -532,7 +544,7 @@ def _open_rebuild_site_incident(
     """예산을 다 쓴 사이트 준비를 병원 하나당 사고 한 건으로 넘긴다 (H-13).
 
     최종 차단은 원인별로 한 건이지만, 그 한 건이 영원히 같은 값으로 굳어서도 안 된다.
-    이미 열려 있으면 `last_seen_at` 이후에 새로 실패한 실행이 있을 때만 관측을 갱신한다 —
+    이미 열려 있으면 사고가 가리키는 실행과 다른 실행이 새로 실패했을 때만 관측을 갱신한다 —
     tick마다 세면 occurrence_count는 하루 1,400이 되어 재발 횟수라는 뜻을 잃는다. 반대로
     복구·확인으로 닫힌 건은 새 에피소드로 다시 연다. 같은 문제가 다시 예산을 다 썼는데
     조용하면 아무도 그 사실을 모른다.
@@ -540,14 +552,19 @@ def _open_rebuild_site_incident(
 
     incident = load_site_build_incident(db, hospital.id)
     if incident is None:
-        created = _insert_rebuild_site_incident(
-            db, hospital, newest_failed_run, site_build_incident_key(hospital.id), observed_at
+        created = open_site_build_incident(
+            db,
+            hospital_id=hospital.id,
+            hospital_name=hospital.name,
+            failed_run_id=newest_failed_run.id,
+            safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
+            safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
+            next_action=(
+                "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
+            ),
+            observed_at=observed_at,
         )
         if created is not None:
-            notify_site_build_incident(
-                db, created, hospital_name=hospital.name, observed_at=observed_at
-            )
-            audit_site_build_incident(db, created)
             return
         # 같은 tick의 다른 replica가 먼저 만들었다 — 병원 잠금은 앞선 commit에서 이미
         # 풀려 두 sweep이 여기까지 온다. IntegrityError를 그대로 올리면 뒤따르는 병원과
@@ -572,56 +589,14 @@ def _open_rebuild_site_incident(
             observed_at=observed_at,
         )
         return
-    if _run_observed_at(newest_failed_run) <= incident.last_seen_at:
-        # 이미 센 실패다. 예산이 다시 열릴 때까지 같은 사고를 다시 만지지 않는다.
+    if newest_failed_run.id == incident.operation_run_id:
+        # 이미 센 실패다 — 사고가 그 실행을 가리키고 있다. 관측 시각으로 가르면, 운영자
+        # 재시도의 실패를 `record_task_failure`가 먼저 실은 뒤 `completed_at`이 찍히는
+        # 순서 때문에 다음 tick이 같은 실패를 한 번 더 세어 재발 횟수를 부풀린다.
         return
     touch_site_build_incident(
         db, incident, failed_run_id=newest_failed_run.id, observed_at=observed_at
     )
-
-
-def _insert_rebuild_site_incident(
-    db,
-    hospital: Hospital,
-    newest_failed_run: OperationRun,
-    dedupe_key: str,
-    observed_at: datetime,
-) -> Incident | None:
-    """새 사고 행 하나. 같은 키를 먼저 만든 tick이 있으면 None."""
-
-    incident = Incident(
-        id=uuid.uuid4(),
-        hospital_id=hospital.id,
-        operation_run_id=newest_failed_run.id,
-        dedupe_key=dedupe_key,
-        incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
-        state=IncidentState.OPEN.value,
-        severity=IncidentSeverity.HIGH.value,
-        customer_impact="병원 공개 페이지 준비가 끝나지 않아 공개가 미뤄지고 있습니다.",
-        source_type="SITE_BUILD",
-        source_id=str(hospital.id),
-        safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
-        safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
-        next_action=(
-            "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
-        ),
-        admin_path=f"/hospitals/{hospital.id}",
-        first_seen_at=observed_at,
-        last_seen_at=observed_at,
-        created_at=observed_at,
-        updated_at=observed_at,
-        version=1,
-        episode_seq=1,
-    )
-    auto_assign_owner_sync(db, incident, observed_at=observed_at)
-    savepoint = db.begin_nested()
-    try:
-        db.add(incident)
-        savepoint.commit()
-    except IntegrityError:
-        savepoint.rollback()
-        return None
-    return incident
 
 
 def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> bool:
