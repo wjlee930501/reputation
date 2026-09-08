@@ -30,5 +30,13 @@
 - GPT-6 Astra(medium), 2차(`4d7f419`) — **HOLD**, 블로커 1: 런북의 `openssl rand -hex 32` 출력 개행이 시크릿에 저장되면 BFF는 원본 바이트로, API는 `strip()` 값으로 서명해 영구 403 → `605490a`(BFF도 trim, 런북 `| tr -d '\n'`). 원 블로커 4건 CLOSED 확인. 비차단: CHECK 추가는 ACCESS EXCLUSIVE 스캔(8개 병원 규모라 무시 가능), 가드 substring 매칭 → 접두사 매칭(`605490a`). Fable 정적 확인의 UTC 명시는 `8010f0e`.
 - GPT-6 Astra(medium), 3차(`605490a`) — **SHIP**, 블로커 없음. 두 커밋의 diff가 알려진 정규화·UTC·개행 없는 시크릿·접두사 가드뿐임을 확인. Fable(이 세션)도 동의 — 아래 배포로 진행.
 
-## 배포 증거
-(기록 예정)
+## 배포 증거 (2026-09-08 21:03Z 시작 → 21:11Z 완료, `bash scripts/deploy.sh all`, release `a77485155dce67eb8309b74b42410e73a648797e` = PR #92 merge)
+- 소스: PR [#92](https://github.com/wjlee930501/reputation/pull/92) CI 9/9 통과(첫 실행은 배포 정책 테스트 1건 실패 — `setup-gcp.sh` SECRETS에 `BFF_ACTOR_SECRET` 누락 → `82d6ac2`로 수정 후 재실행 통과).
+- 사전 단계: `BFF_ACTOR_SECRET` 버전 1 생성(64자, 개행 없음), `reputation-sa`·`reputation-frontend-sa`에 secretAccessor 부여.
+- 런타임: 5개 서비스 새 리비전 트래픽 100% — worker `00148-rbl`, beat `00144-sv2`, api `00159-c57`, site `00113-cn8`, admin `00078-8d2`(롤백 좌표 `.deploy-rollback`: 이전 api 00158 / worker 00147 / beat 00143 / site 00112 / admin 00077).
+- DB: readiness Job `reputation-production-readiness-rztnz` — `schema_revision = expected = 0071_plan_enum_cleanup`, 모든 check true(`database_connected`·`redis_connected`·`operator_secrets_configured`·`queue_canaries_current`·`schema_current` 등 16개), `hospital_count 8`, `live_site_count 8`, `active_owner_count 1`, `recertify_candidate_count 0`, `null_noise_hash_approvals 7`(체크포인트 1과 동일 — 다음 재조정에서 병원당 1회 유료 재검수 예정), `ready=True`.
+- 작업: 7개 큐 canary(control/default/content/sov/reports/leadgen/certificates) 모두 `release_revision = a774851`; worker 새 리비전에서 `autonomous_recovery.reconcile`이 매분 실행되어 `site_builds 0 · site_revalidations 0 · operation_runs 0`(**`REBUILD_SITE` 신규 run 0** — 8곳 모두 `site_built`이므로 예상과 일치), ERROR/Traceback 0.
+- API 새 리비전: 배포 후 1시간 창에서 5xx 0, ERROR 0, `ACTOR_ASSERTION_*` 거부 0(관측 시점까지 admin 변경 트래픽 없음).
+- 병원 공개 표면: 8개 호스트(기본 주소 5 + 자기 도메인 `jangclinic.kr`·`smtopos.kr`·`ai.no1top365.co.kr`) `/.well-known/reputation-health` 200, `hospital_id`·`canonical_host` 일치, `release = reputation-site-00113-cn8`. `motionlabs-orthopedics-demo` 호스트는 404(라이브 8곳 밖, readiness와 일치). 샘플: `jangclinic.kr/contents/eef50190-…` 200 `text/html`, 이미지 프록시 `…/image?v=0c3f8…` 최종 200 `image/png`.
+- Admin 로그인 표면 200, Site 루트 200.
+- 미검증 범위: 실제 모델·Slack 호출과 admin 변경(계약 등록·예외 카드 행동·반려)의 운영 왕복은 이 체크포인트에서 별도 시험하지 않음(런북 원칙). 첫 운영자 변경 요청이 새 Admin 리비전을 통해 서명 단언을 붙여 200을 받는지, 그리고 옛 콘텐츠 탭 반려 422 안내가 운영자에게 전달됐는지는 후속 확인 항목.
