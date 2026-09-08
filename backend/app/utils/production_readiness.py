@@ -96,6 +96,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.process_source_asset_task",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.regenerate_content_item",
+    "app.workers.tasks.recertify_published_content_image",
     "app.workers.tasks.reconcile_essence_snapshots",
     "app.workers.tasks.retry_site_revalidation",
     "app.workers.tasks.run_monthly_reports",
