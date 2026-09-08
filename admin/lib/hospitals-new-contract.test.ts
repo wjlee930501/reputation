@@ -24,10 +24,20 @@ test('the screen asks for the six contract fields and nothing else', () => {
 })
 
 test('a duplicate hospital offers the existing hospital instead of a retry', () => {
-  assert.match(PAGE, /existingHospitalId\(cause\.detail\)/)
+  assert.match(PAGE, /registrationFailure\(cause instanceof ApiError \? cause\.detail : null\)/)
   assert.match(PAGE, /기존 병원 열기/)
-  assert.match(PAGE, /href=\{`\/hospitals\/\$\{existingHospital\}\/info`\}/)
+  assert.match(PAGE, /href=\{`\/hospitals\/\$\{failure\.hospitalId\}\/info`\}/)
   assert.doesNotMatch(PAGE, /다시 시도|다시 누르/)
+})
+
+test('the failure panel prints the mapped cause instead of one generic line', () => {
+  assert.match(PAGE, /\{failure\.message\}/)
+  assert.doesNotMatch(PAGE, /입력한 계약 정보를 확인해 주세요/)
+})
+
+test('an unreadable lead drops the link and says so without asking for a retry', () => {
+  assert.match(PAGE, /setLeadId\(null\)[\s\S]{0,200}상담 요청 연결 없이 병원을 등록합니다/)
+  assert.doesNotMatch(PAGE, /상담 요청 정보를 다시 확인/)
 })
 
 test('success lands on the hospital info screen', () => {

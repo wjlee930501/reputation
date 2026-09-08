@@ -8,11 +8,12 @@ import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { fetchCurrentAccount } from '@/lib/current-account'
 import { readClinicNameFromLeadContext } from '@/lib/lead-onboarding'
 import {
-  existingHospitalId,
   registrationBlockReason,
+  registrationFailure,
   registrationPayload,
   suggestContractReference,
   todayInKorea,
+  type ContractRegistrationFailure,
 } from '@/lib/contract-registration'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import { ADMIN_COPY } from '@/lib/admin-copy'
@@ -38,8 +39,11 @@ export default function RegisterContractPage() {
   const [leadLoading, setLeadLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [errorCanReload, setErrorCanReload] = useState(false)
-  // 같은 병원이 이미 있으면 다시 만드는 길은 없다. 남는 선택지는 그 병원을 여는 것뿐이다.
-  const [existingHospital, setExistingHospital] = useState<string | null>(null)
+  // 등록을 막은 원인을 그대로 그린다. 같은 병원이 이미 있으면 다시 만드는 길은 없고,
+  // 남는 선택지는 그 병원을 여는 것뿐이다.
+  const [failure, setFailure] = useState<ContractRegistrationFailure | null>(null)
+  // 상담 요청을 읽지 못하면 연결을 포기한다 — 그 사실을 등록 전에 알려 준다.
+  const [leadNotice, setLeadNotice] = useState<string | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -78,10 +82,11 @@ export default function RegisterContractPage() {
       })
       .catch((cause: unknown) => {
         if (!isExpectedOperatorRequestFailure(cause)) throw cause
-        if (!cancelled) {
-          setErrorCanReload(true)
-          setError(safeOperatorError('onboarding', '운영 화면 다시 불러오기를 눌러 상담 요청 정보를 다시 확인하세요.'))
-        }
+        if (cancelled) return
+        // 읽지 못한 상담 요청 id를 그대로 보내면 서버가 등록 자체를 막는다. 연결만
+        // 포기하고 병원 등록은 그대로 진행한다.
+        setLeadId(null)
+        setLeadNotice('상담 요청 정보를 불러오지 못했습니다. 상담 요청 연결 없이 병원을 등록합니다.')
       })
       .finally(() => {
         if (!cancelled) setLeadLoading(false)
@@ -100,7 +105,7 @@ export default function RegisterContractPage() {
     setLoading(true)
     setError(null)
     setErrorCanReload(false)
-    setExistingHospital(null)
+    setFailure(null)
     try {
       const created = await fetchAPI<{ id: string }>('/admin/hospitals/register-contract', {
         method: 'POST',
@@ -108,16 +113,8 @@ export default function RegisterContractPage() {
       })
       router.push(`/hospitals/${created.id}/info`)
     } catch (cause: unknown) {
-      const duplicate = cause instanceof ApiError && cause.status === 409
-        ? existingHospitalId(cause.detail)
-        : null
-      if (duplicate) {
-        setExistingHospital(duplicate)
-        setLoading(false)
-        return
-      }
       if (!isExpectedOperatorRequestFailure(cause)) throw cause
-      setError(safeOperatorError('onboarding', '입력한 계약 정보를 확인해 주세요.'))
+      setFailure(registrationFailure(cause instanceof ApiError ? cause.detail : null))
       setLoading(false)
     }
   }
@@ -147,15 +144,23 @@ export default function RegisterContractPage() {
           />
         </label>
 
-        {existingHospital && (
+        {leadNotice && (
+          <p className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+            {leadNotice}
+          </p>
+        )}
+
+        {failure && (
           <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-            <p className="font-semibold">이미 등록된 병원입니다.</p>
-            <Link
-              href={`/hospitals/${existingHospital}/info`}
-              className="mt-2 inline-flex min-h-11 items-center font-semibold underline"
-            >
-              기존 병원 열기
-            </Link>
+            <p className="font-semibold">{failure.message}</p>
+            {failure.hospitalId && (
+              <Link
+                href={`/hospitals/${failure.hospitalId}/info`}
+                className="mt-2 inline-flex min-h-11 items-center font-semibold underline"
+              >
+                기존 병원 열기
+              </Link>
+            )}
           </div>
         )}
 

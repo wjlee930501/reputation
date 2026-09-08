@@ -38,7 +38,7 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.handoff import HandoffState, HospitalHandoff
-from app.models.hospital import Hospital, HospitalStatus
+from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.monthly_control import (
     HospitalServiceInterval,
     MonthlyDeliveryEvent,
@@ -835,6 +835,76 @@ async def test_live_hospital_stays_in_onboarding_until_content_schedule_is_ready
         actor=actor,
     )
     assert all(row.customer.hospital_id != hospital.id for row in completed.items)
+
+
+async def test_accepted_handoff_is_not_overdue_but_a_waiting_one_still_is(pg_async_session):
+    """인수 처리 기한은 수락을 기다리는 동안에만 적용된다.
+
+    한 화면 계약 등록은 수락 시각을 그대로 `sla_due_at`에 남긴다(DB CHECK가 non-null을
+    요구한다). 상태를 보지 않고 기한만 비교하면 등록된 모든 병원이 즉시 기한 초과·HIGH로
+    떠서 온보딩 큐가 실제로 늦은 병원을 가린다.
+    """
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    accepted_at = datetime.now(UTC) - timedelta(days=3)
+    accepted = await _hospital(
+        db, "인수 완료 의원", status=HospitalStatus.ONBOARDING, site_live=False
+    )
+    waiting = await _hospital(
+        db, "인수 대기 의원", status=HospitalStatus.ONBOARDING, site_live=False
+    )
+    db.add(
+        HospitalHandoff(
+            hospital_id=accepted.id,
+            state=HandoffState.HANDOFF_ACCEPTED,
+            sales_owner_id=actor.id,
+            ae_owner_id=actor.id,
+            contract_reference=f"RP-ACCEPTED-{uuid.uuid4().hex[:8]}",
+            contract_effective_at=accepted_at,
+            plan=Plan.PLAN_12,
+            sla_due_at=accepted_at,
+            accepted_by_id=actor.id,
+            accepted_at=accepted_at,
+        )
+    )
+    db.add(
+        HospitalHandoff(
+            hospital_id=waiting.id,
+            state=HandoffState.CONTRACTED,
+            sales_owner_id=actor.id,
+            ae_owner_id=actor.id,
+            contract_reference=f"RP-WAITING-{uuid.uuid4().hex[:8]}",
+            contract_effective_at=accepted_at,
+            plan=Plan.PLAN_12,
+            sla_due_at=accepted_at,
+        )
+    )
+    await db.flush()
+
+    queue = await operations_center.get_operations_queue(
+        operations_center.OperationsQueue.ONBOARDING,
+        page=1,
+        page_size=100,
+        db=db,
+        actor=actor,
+    )
+    overdue_only = await operations_center.get_operations_queue(
+        operations_center.OperationsQueue.ONBOARDING,
+        sla="OVERDUE",
+        page=1,
+        page_size=100,
+        db=db,
+        actor=actor,
+    )
+
+    rows = {row.customer.hospital_id: row for row in queue.items}
+    assert rows[accepted.id].sla_state == "NONE"
+    assert rows[accepted.id].sla_due_at is None
+    assert rows[accepted.id].severity == "MEDIUM"
+    assert rows[waiting.id].sla_state == "OVERDUE"
+    assert rows[waiting.id].severity == "HIGH"
+    overdue_ids = {row.customer.hospital_id for row in overdue_only.items}
+    assert waiting.id in overdue_ids and accepted.id not in overdue_ids
 
 
 async def test_operations_incident_filters_paginate_and_empty(pg_async_session):

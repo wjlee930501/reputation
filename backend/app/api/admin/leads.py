@@ -292,7 +292,7 @@ async def convert_sales_lead(
             # 복사 시 보유기간 파기/정보주체 파기를 우회해 공개 /site에 잔존한다. 병원 공식
             # 전화번호는 AE가 프로파일 단계에서 검증해 직접 입력한다.
             source_lead_id=lead.id,
-            onboarding_note=_build_onboarding_note(lead, request_body.conversion_note),
+            onboarding_note=build_onboarding_note(lead, request_body.conversion_note),
             specialties=[lead.clinic_type] if lead.clinic_type else [],
         )
         db.add(hospital)
@@ -325,7 +325,7 @@ async def convert_sales_lead(
     lead.status = "CONVERTED"
     lead.converted_hospital_id = hospital.id
     lead.converted_at = datetime.now(timezone.utc)
-    lead.conversion_note = request_body.conversion_note or _build_onboarding_note(lead, None)
+    lead.conversion_note = request_body.conversion_note or build_onboarding_note(lead, None)
 
     # 전환은 리드 PII를 병원 레코드(=보유기간이 다른 라이프사이클)로 옮기는 지점이라
     # 파기 요청 추적의 시작점이 된다. 대상 id만 남기고 이름·연락처는 남기지 않는다.
@@ -621,7 +621,7 @@ async def _unique_hospital_slug(db: AsyncSession, name: str) -> str:
     return slug
 
 
-def _build_onboarding_note(lead: SalesLead, operator_note: str | None) -> str:
+def build_onboarding_note(lead: SalesLead, operator_note: str | None) -> str:
     # PII-3: 연락처/문의 원문은 onboarding_note(병원 레코드)나 conversion_note에 영구 저장하지
     # 않는다 — 보유기간 자동 파기를 우회하기 때문. 원문은 보유기간이 관리되는 lead row에서만 확인.
     lines = [
@@ -638,7 +638,7 @@ def _build_onboarding_note(lead: SalesLead, operator_note: str | None) -> str:
 
 
 def _merge_onboarding_note(hospital: Hospital, lead: SalesLead, operator_note: str | None) -> None:
-    lead_note = _build_onboarding_note(lead, operator_note)
+    lead_note = build_onboarding_note(lead, operator_note)
     if hospital.onboarding_note:
         hospital.onboarding_note = f"{hospital.onboarding_note}\n\n{lead_note}"
     else:

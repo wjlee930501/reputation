@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from uuid import UUID
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from app.models.handoff import HandoffSource, HandoffState
 from app.models.hospital import Plan
@@ -24,6 +24,16 @@ class ContractRegistration(BaseModel):
     plan: Plan
     ae_owner_id: UUID
     sales_owner_id: UUID | None = None
+
+    @field_validator("name", "contract_reference")
+    @classmethod
+    def normalize_text(cls, value: str) -> str:
+        # 공백만 넣은 값은 min_length를 통과한다 — 이름 없는 병원과 빈 계약 번호가
+        # 그대로 저장되면 화면에서 고칠 수 없으므로 여기서 막는다.
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("값을 입력해 주세요.")
+        return cleaned
 
 
 class HandoffContract(BaseModel):

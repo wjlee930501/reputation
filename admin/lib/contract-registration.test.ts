@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
-  existingHospitalId,
+  registrationFailure,
   registrationBlockReason,
   registrationPayload,
   suggestContractReference,
@@ -58,10 +58,48 @@ test('the block reason names the one field that is still missing', () => {
   assert.match(registrationBlockReason(form({ aeOwnerId: '' })) ?? '', /담당 AE/)
 })
 
-test('only a HOSPITAL_EXISTS body yields an existing hospital to open', () => {
-  assert.equal(existingHospitalId({ code: 'HOSPITAL_EXISTS', hospital_id: 'h-1' }), 'h-1')
-  assert.equal(existingHospitalId({ code: 'HOSPITAL_EXISTS' }), null)
-  assert.equal(existingHospitalId({ code: 'CONTRACT_REFERENCE_EXISTS', hospital_id: 'h-1' }), null)
-  assert.equal(existingHospitalId('nope'), null)
-  assert.equal(existingHospitalId(null), null)
+test('only the two "already exists" codes offer the existing hospital to open', () => {
+  assert.equal(registrationFailure({ code: 'HOSPITAL_EXISTS', hospital_id: 'h-1' }).hospitalId, 'h-1')
+  assert.equal(
+    registrationFailure({ code: 'LEAD_ALREADY_CONVERTED', hospital_id: 'h-2' }).hospitalId,
+    'h-2',
+  )
+  assert.equal(registrationFailure({ code: 'HOSPITAL_EXISTS' }).hospitalId, null)
+  // 계약 번호 중복은 그 병원을 여는 문제가 아니라 이 화면에서 번호를 고치는 문제다.
+  assert.equal(
+    registrationFailure({ code: 'CONTRACT_REFERENCE_EXISTS', hospital_id: 'h-1' }).hospitalId,
+    null,
+  )
+  assert.equal(registrationFailure('nope').hospitalId, null)
+  assert.equal(registrationFailure(null).hospitalId, null)
+})
+
+test('each failure code gets its own line naming what to fix', () => {
+  // 서버 문장이 있으면 그것이 정본이다.
+  assert.equal(
+    registrationFailure({ code: 'CONTRACT_REFERENCE_EXISTS', message: '이미 사용된 계약 번호입니다.' })
+      .message,
+    '이미 사용된 계약 번호입니다.',
+  )
+  assert.match(registrationFailure({ code: 'CONTRACT_REFERENCE_EXISTS' }).message, /계약 번호/)
+  assert.match(registrationFailure({ code: 'ACTIVE_OWNER_REQUIRED' }).message, /담당 AE/)
+  assert.match(registrationFailure({ code: 'HANDOFF_NOT_ASSIGNED' }).message, /담당 AE 본인/)
+  assert.match(registrationFailure({ code: 'LEAD_NOT_FOUND' }).message, /상담 요청/)
+  assert.match(registrationFailure({ code: 'LEAD_ALREADY_CONVERTED' }).message, /전환된 상담 요청/)
+  assert.match(registrationFailure({ code: 'VERIFIED_ACTOR_REQUIRED' }).message, /새로고침/)
+  assert.match(registrationFailure({ code: 'ACTOR_ASSERTION_REQUIRED' }).message, /새로고침/)
+  const codes = [
+    'HOSPITAL_EXISTS',
+    'LEAD_ALREADY_CONVERTED',
+    'CONTRACT_REFERENCE_EXISTS',
+    'ACTIVE_OWNER_REQUIRED',
+    'HANDOFF_NOT_ASSIGNED',
+    'LEAD_NOT_FOUND',
+    'VERIFIED_ACTOR_REQUIRED',
+  ]
+  const lines = codes.map((code) => registrationFailure({ code }).message)
+  assert.equal(new Set(lines).size, codes.length)
+  // 알 수 없는 실패만 예전의 뭉뚱그린 한 줄로 떨어진다.
+  assert.match(registrationFailure({ code: 'NOPE' }).message, /계약 정보를 확인/)
+  assert.match(registrationFailure(undefined).message, /계약 정보를 확인/)
 })

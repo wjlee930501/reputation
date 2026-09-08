@@ -16,11 +16,13 @@ from app.api.admin.hospitals import (
     serialize_handoff_summary,
     serialize_hospital_detail,
 )
+from app.api.admin.leads import build_onboarding_note
 from app.core.database import get_db
 from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER, AdminUser
 from app.models.content import ContentSchedule
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
+from app.models.lead import SalesLead
 from app.schemas.handoff import (
     ContractRegistration,
     HandoffAccept,
@@ -70,6 +72,38 @@ def _hospital_exists(hospital_id: uuid.UUID | None) -> dict[str, object]:
     if hospital_id is not None:
         detail["hospital_id"] = str(hospital_id)
     return detail
+
+
+async def _convertible_lead(db: AsyncSession, lead_id: uuid.UUID | None) -> SalesLead | None:
+    """계약 등록이 전환할 상담 요청. 없거나 이미 전환된 요청은 여기서 답한다.
+
+    없는 `lead_id`를 그냥 넘기면 INSERT의 외래키 위반이 아래 IntegrityError 처리에
+    걸려 "이미 등록된 병원"이라는 엉뚱한 답이 나간다. 리드 행을 잠가 두 번 눌린
+    계약 등록이 같은 상담 요청으로 병원을 둘 만들지 못하게 한다.
+    """
+    if lead_id is None:
+        return None
+    lead = (
+        await db.execute(select(SalesLead).where(SalesLead.id == lead_id).with_for_update())
+    ).scalar_one_or_none()
+    if lead is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "LEAD_NOT_FOUND",
+                "message": "상담 요청을 찾을 수 없습니다.",
+            },
+        )
+    if lead.converted_hospital_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "LEAD_ALREADY_CONVERTED",
+                "hospital_id": str(lead.converted_hospital_id),
+                "message": "이미 병원으로 전환된 상담 요청입니다.",
+            },
+        )
+    return lead
 
 
 async def _get_or_404(db: AsyncSession, handoff_id: uuid.UUID) -> HospitalHandoff:
@@ -428,12 +462,14 @@ async def register_contract(
     await _active_owner(db, body.ae_owner_id)
     await _active_owner(db, sales_owner_id)
 
-    name = body.name.strip()
+    lead = await _convertible_lead(db, body.lead_id)
+
+    name = body.name
     duplicates = await find_duplicate_hospitals(db, name=name)
     if duplicates:
         raise HTTPException(status_code=409, detail=_hospital_exists(duplicates[0].id))
 
-    contract_reference = body.contract_reference.strip()
+    contract_reference = body.contract_reference
     taken = (
         await db.execute(
             select(HospitalHandoff).where(
@@ -470,6 +506,9 @@ async def register_contract(
         contract_effective_at=datetime.combine(body.contract_effective_at, time.min, tzinfo=KST),
         plan=body.plan,
         # 기한과 승인 시각이 같다 — 이 요청에서 담당 AE가 바로 인수했다는 사실 그대로다.
+        # DB CHECK가 CONTRACTED 이후 상태에서 non-null을 요구해 비워 둘 수 없다. 읽는 쪽은
+        # 이 기한을 수락을 기다리는 handoff에만 적용한다(operations_center_onboarding_queries,
+        # milestone_onboarding_projection) — 그러지 않으면 등록 즉시 기한 초과로 보인다.
         sla_due_at=accepted_at,
         accepted_by_id=actor.id,
         accepted_at=accepted_at,
@@ -525,6 +564,28 @@ async def register_contract(
                 "reason": None,
             },
         )
+        if lead is not None:
+            # 리드 전환 사실은 `POST /admin/leads/{id}/convert`가 남기는 것과 같아야 한다.
+            # 병원만 만들고 리드를 NEW로 두면 상담 요청 목록이 이미 계약한 병원을 두고
+            # 계속 “계약 등록”을 권한다.
+            lead.status = "CONVERTED"
+            lead.converted_hospital_id = hospital.id
+            lead.converted_at = accepted_at
+            lead.conversion_note = build_onboarding_note(lead, None)
+            await write_audit_log(
+                db,
+                action="convert_sales_lead",
+                hospital_id=hospital.id,
+                actor=audit_actor,
+                target_type="sales_lead",
+                target_id=str(lead.id),
+                detail={
+                    "hospital_id": str(hospital.id),
+                    "linked_existing_hospital": False,
+                    "auto_linked_duplicate": False,
+                    "plan": body.plan.value,
+                },
+            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()

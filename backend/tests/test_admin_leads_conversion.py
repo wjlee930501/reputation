@@ -95,7 +95,7 @@ def test_build_onboarding_note_excludes_raw_pii():
     # PII-3: 연락처/문의 원문은 onboarding_note에 영구 저장하지 않는다(보유기간 우회 방지).
     lead = _lead()
 
-    note = leads_api._build_onboarding_note(lead, "call before noon")
+    note = leads_api.build_onboarding_note(lead, "call before noon")
 
     assert f"Source lead: {lead.id}" in note
     assert "Clinic type / region: 강남 치과" in note

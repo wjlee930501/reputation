@@ -10,6 +10,7 @@ from app.models.admin_user import AdminUser
 from app.models.content import ContentSchedule
 from app.models.handoff import HandoffSource, HandoffState, HospitalHandoff
 from app.models.hospital import Hospital, Plan
+from app.models.lead import SalesLead
 from app.schemas.handoff import HandoffAccept, HandoffContract
 from app.services.admin_passwords import hash_admin_password
 
@@ -623,10 +624,12 @@ class _RegisterDB:
         *,
         duplicates: list[Hospital] | None = None,
         reference_rows: list[HospitalHandoff] | None = None,
+        lead: SalesLead | None = None,
     ):
         self.accounts = {account.id: account for account in accounts}
         self.duplicates = duplicates or []
         self.reference_rows = reference_rows or []
+        self.lead = lead
         self.added: list = []
         self.committed = False
         self.rolled_back = False
@@ -638,6 +641,8 @@ class _RegisterDB:
 
     async def execute(self, stmt):
         entity = stmt.column_descriptions[0]["entity"]
+        if entity is SalesLead:
+            return _RegisterResult([], single=self.lead)
         if entity is HospitalHandoff:
             return _RegisterResult(self.reference_rows)
         # 같은 Hospital select라도 중복 검사는 scalars().all(), slug 검사는
@@ -723,23 +728,119 @@ async def test_register_contract_creates_hospital_and_accepts_in_one_commit(
     assert response["id"] == str(hospital.id)
 
 
+def _lead(**overrides) -> SalesLead:
+    values = {
+        "id": uuid.uuid4(),
+        "clinic_name": "장편한외과의원",
+        "clinic_type": "외과 / 서울",
+        "contact": "010-0000-0000",
+        "status": "NEW",
+    }
+    values.update(overrides)
+    return SalesLead(**values)
+
+
 async def test_register_contract_links_the_lead_and_records_the_conversion_source(
     _verified_actor,
 ) -> None:
     ae = _account("OPERATOR")
-    lead_id = uuid.uuid4()
-    db = _RegisterDB([ae])
+    lead = _lead()
+    db = _RegisterDB([ae], lead=lead)
 
     await handoffs_api.register_contract(
-        _registration(ae, lead_id=lead_id), db=db, actor=ae
+        _registration(ae, lead_id=lead.id), db=db, actor=ae
     )
 
     hospital = next(row for row in db.added if isinstance(row, Hospital))
     handoff = next(row for row in db.added if isinstance(row, HospitalHandoff))
-    assert hospital.source_lead_id == lead_id
+    assert hospital.source_lead_id == lead.id
     assert handoff.acceptance_source is HandoffSource.LEAD_CONVERSION
     # 영업 담당이 비어 있으면 등록한 운영자가 맡는다.
     assert handoff.sales_owner_id == ae.id
+
+
+async def test_register_contract_converts_the_lead_in_the_same_transaction(
+    _verified_actor,
+) -> None:
+    """리드가 NEW로 남으면 상담 요청 목록이 같은 계약을 다시 등록하라고 권한다."""
+    ae = _account("OPERATOR")
+    lead = _lead()
+    db = _RegisterDB([ae], lead=lead)
+
+    await handoffs_api.register_contract(
+        _registration(ae, lead_id=lead.id), db=db, actor=ae
+    )
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert lead.status == "CONVERTED"
+    assert lead.converted_hospital_id == hospital.id
+    assert lead.converted_at is not None
+    assert f"Source lead: {lead.id}" in (lead.conversion_note or "")
+    assert _audit_actions(db) == [
+        "create_hospital",
+        "handoff_contracted",
+        "handoff_accepted",
+        "convert_sales_lead",
+    ]
+    assert db.committed is True
+
+
+async def test_register_contract_refuses_a_lead_that_already_has_a_hospital(
+    _verified_actor,
+) -> None:
+    ae = _account("OPERATOR")
+    other_hospital_id = uuid.uuid4()
+    lead = _lead(status="CONVERTED", converted_hospital_id=other_hospital_id)
+    db = _RegisterDB([ae], lead=lead)
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(
+            _registration(ae, lead_id=lead.id), db=db, actor=ae
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "LEAD_ALREADY_CONVERTED"
+    assert exc.value.detail["hospital_id"] == str(other_hospital_id)
+    assert db.added == [] and db.committed is False
+
+
+async def test_register_contract_names_a_missing_lead_instead_of_a_duplicate_hospital(
+    _verified_actor,
+) -> None:
+    """지워진 상담 요청은 외래키 위반으로 흘러 "이미 등록된 병원"으로 답하곤 했다."""
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    with pytest.raises(HTTPException) as exc:
+        await handoffs_api.register_contract(
+            _registration(ae, lead_id=uuid.uuid4()), db=db, actor=ae
+        )
+
+    assert exc.value.status_code == 404
+    assert exc.value.detail["code"] == "LEAD_NOT_FOUND"
+    assert db.added == [] and db.committed is False
+
+
+async def test_register_contract_rolls_back_the_lead_conversion_with_the_hospital(
+    monkeypatch, _verified_actor
+) -> None:
+    ae = _account("OPERATOR")
+    lead = _lead()
+    db = _RegisterDB([ae], lead=lead)
+
+    async def _boom(*_args, **kwargs):
+        if kwargs.get("action") == "convert_sales_lead":
+            raise RuntimeError("리드 전환 기록 실패")
+        return None
+
+    monkeypatch.setattr(handoffs_api, "write_audit_log", _boom)
+
+    with pytest.raises(RuntimeError):
+        await handoffs_api.register_contract(
+            _registration(ae, lead_id=lead.id), db=db, actor=ae
+        )
+
+    assert db.committed is False and db.rolled_back is True
 
 
 async def test_register_contract_refuses_a_duplicate_hospital_without_creating_rows(
@@ -777,9 +878,31 @@ async def test_register_contract_rejects_an_invalid_plan_or_empty_reference() ->
     from pydantic import ValidationError
 
     ae = _account("OPERATOR")
-    for overrides in ({"plan": "PLAN_9"}, {"contract_reference": ""}):
+    # 공백만 넣은 값도 빈 값이다 — 이름 없는 병원과 빈 계약 번호를 만들지 않는다.
+    for overrides in (
+        {"plan": "PLAN_9"},
+        {"contract_reference": ""},
+        {"contract_reference": "   "},
+        {"name": " \t "},
+    ):
         with pytest.raises(ValidationError):
             _registration(ae, **overrides)
+
+
+async def test_register_contract_stores_trimmed_name_and_reference(_verified_actor) -> None:
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    await handoffs_api.register_contract(
+        _registration(ae, name="  장편한외과의원  ", contract_reference=" RP-202609-a1b2 "),
+        db=db,
+        actor=ae,
+    )
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    handoff = next(row for row in db.added if isinstance(row, HospitalHandoff))
+    assert hospital.name == "장편한외과의원"
+    assert handoff.contract_reference == "RP-202609-a1b2"
 
 
 async def test_register_contract_rolls_everything_back_when_the_contract_step_fails(
