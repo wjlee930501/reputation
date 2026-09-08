@@ -368,6 +368,9 @@ export default function EssencePage() {
     setActionLoading(`process-${sourceId}`)
     setError(null)
     setNotice(null)
+    // 내용이 그대로면 서버는 아무것도 다시 뽑지 않고 기존 처리 결과를 그대로 돌려준다.
+    // 처리 시각이 그대로인지로 그 no-op을 가려내야 "완료" 안내가 거짓말을 하지 않는다.
+    const processedAtBefore = sources.find((source) => source.id === sourceId)?.processed_at ?? null
     try {
       const detail = await fetchAPI<SourceAsset>(`/admin/hospitals/${id}/essence/sources/${sourceId}/process`, {
         method: 'POST',
@@ -376,7 +379,12 @@ export default function EssencePage() {
       // 재처리는 옛 노트를 지우고 새 id를 만든다. 보관함을 그 자리에서 교체해야
       // 사라진 노트가 근거 해석에 남지 않는다.
       rememberSourceDetail(detail)
-      setNotice('근거 추출이 완료되었습니다.')
+      const noop = detail.status === 'PROCESSED' && detail.processed_at === processedAtBefore
+      setNotice(
+        noop
+          ? '이미 최신 상태입니다. 자료 내용이 바뀌지 않아 다시 처리할 것이 없습니다.'
+          : '자료 처리를 시작했습니다. 완료되면 근거 노트가 갱신됩니다.',
+      )
       await load()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : '자료 처리에 실패했습니다.')

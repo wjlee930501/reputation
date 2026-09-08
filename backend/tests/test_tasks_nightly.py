@@ -16,6 +16,7 @@ from app.models.content import ContentItem
 from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
+    HospitalSourceEvidenceNote,
     PhilosophyStatus,
     SourceStatus,
     SourceType,
@@ -2243,6 +2244,9 @@ def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
                 return ScalarResult(self.philosophy)
             if entity is HospitalSourceAsset:
                 return SourcesResult(self.sources)
+            # readiness는 제외된 근거 노트의 noise hash도 확인한다 — 이 병원엔 없다.
+            if entity is HospitalSourceEvidenceNote:
+                return SourcesResult([])
             raise AssertionError(f"unexpected entity: {entity}")
 
         def commit(self):
