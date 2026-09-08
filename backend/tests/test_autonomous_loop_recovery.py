@@ -25,6 +25,9 @@ class _ScalarResult:
     def all(self):
         return list(self._values)
 
+    def first(self):
+        return self._values[0] if self._values else None
+
 
 class _RecoverySession:
     def __init__(
@@ -36,6 +39,8 @@ class _RecoverySession:
         content_items=(),
         recertify_candidates=(),
         recertify_runs=(),
+        rebuild_site_runs=(),
+        rebuild_site_incidents=(),
         visible_block_keys=(),
         auto_assign_owner_id=None,
         auto_assign_owner_name=None,
@@ -50,28 +55,40 @@ class _RecoverySession:
         self.content_items = {item.id: item for item in content_items}
         self.recertify_candidates = list(recertify_candidates)
         self.recertify_runs = list(recertify_runs)
+        # 병원 하나의 사이트 준비 실행 이력과 이미 열린 사고 (H-13 예산).
+        self.rebuild_site_runs = list(rebuild_site_runs)
+        self.rebuild_site_incidents = list(rebuild_site_incidents)
         # 차단이 아직 사람에게 보이는 (글, subject)의 사고 키.
         self.visible_block_keys = list(visible_block_keys)
         self.added = []
+        self.statements = []
         self.commits = 0
         self._operation_run_reads = 0
 
     def execute(self, statement):
-        entity = statement.column_descriptions[0].get("entity")
+        self.statements.append(statement)
+        description = statement.column_descriptions[0]
+        entity = description.get("entity")
         if entity is Hospital:
             return _ScalarResult(self.hospitals)
         if entity is ContentItem:
             return _ScalarResult(self.recertify_candidates)
         if entity is Incident:
-            return _ScalarResult(self.visible_block_keys)
+            # 사고 행 조회는 사이트 준비 예산, 키만 읽는 조회는 재인증 차단 확인이다.
+            if description.get("name") == "dedupe_key":
+                return _ScalarResult(self.visible_block_keys)
+            return _ScalarResult(self.rebuild_site_incidents)
         if entity is OperationRun:
             self._operation_run_reads += 1
-            # 1: SITE_REVALIDATION, 2: 재배달 후보, 3: 재인증 실행 이력.
-            return _ScalarResult(
-                (self.runs, self.operation_runs, self.recertify_runs)[
-                    min(self._operation_run_reads, 3) - 1
-                ]
-            )
+            # 1: SITE_REVALIDATION, 2: 재배달 후보, 그다음 병원별 사이트 준비 이력,
+            # 마지막이 재인증 실행 이력.
+            sequence = [
+                self.runs,
+                self.operation_runs,
+                *([self.rebuild_site_runs] * len(self.hospitals)),
+                self.recertify_runs,
+            ]
+            return _ScalarResult(sequence[min(self._operation_run_reads, len(sequence)) - 1])
         return _ScalarResult(())
 
     def get(self, entity, row_id):
@@ -144,7 +161,7 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
 
 def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -> None:
     now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
-    hospital = SimpleNamespace(id=uuid.uuid4())
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="스트랜디드 의원")
     run = SimpleNamespace(
         id=uuid.uuid4(),
         attempt_count=0,
@@ -163,6 +180,11 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
 
     result = autonomous_recovery.reconcile.run()
 
+    rebuild = session.added[0]
+    assert rebuild.operation_type == "REBUILD_SITE"
+    assert rebuild.hospital_id == hospital.id
+    assert rebuild.idempotency_key == f"rebuild-site:{hospital.id}:2026-08-10:0"
+    assert rebuild.state == OperationRunState.QUEUED
     assert result == {
         "site_builds": 1,
         "site_revalidations": 1,
@@ -170,16 +192,6 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
         "image_recertifications": 0,
     }
     assert dispatched == [
-        (
-            "app.workers.tasks.build_aeo_site",
-            [str(hospital.id)],
-            {
-                "queue": "default",
-                "headers": autonomous_recovery.build_dispatch_headers(
-                    "build-aeo-site", str(hospital.id)
-                ),
-            },
-        ),
         (
             "app.workers.tasks.retry_site_revalidation",
             [str(run.id), 0],
@@ -191,9 +203,197 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
                 ),
             },
         ),
+        (
+            "app.workers.tasks.build_aeo_site",
+            [str(hospital.id)],
+            {
+                "queue": "default",
+                "headers": {
+                    **autonomous_recovery.build_dispatch_headers(
+                        "build-aeo-site", str(hospital.id)
+                    ),
+                    "operation_run_id": str(rebuild.id),
+                },
+                "task_id": rebuild.task_id,
+            },
+        ),
     ]
     assert run.heartbeat_at == now
-    assert session.commits == 1
+    # 실행 기록을 먼저 커밋하고(1) 마지막에 sweep 전체를 커밋한다(2).
+    assert session.commits == 2
+
+
+def test_site_build_recovery_does_not_requeue_a_hospital_with_a_queued_run(
+    monkeypatch,
+) -> None:
+    """H-13: 같은 병원을 매분 다시 큐잉하지 않는다 — QUEUED run이 grace 안이면 건너뛴다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="준비 중 의원")
+    queued = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="REBUILD_SITE",
+        state=OperationRunState.QUEUED,
+        hospital_id=hospital.id,
+        task_id="already-queued",
+        requested_at=now - timedelta(minutes=1),
+        queued_at=now - timedelta(minutes=1),
+    )
+    session = _RecoverySession(hospitals=(hospital,), rebuild_site_runs=(queued,))
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a queued site build must not be requeued every minute")
+        ),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["site_builds"] == 0
+    assert session.added == []
+    assert queued.state == OperationRunState.QUEUED
+
+
+def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -> None:
+    """H-13: 24시간 안에 실패가 예산만큼 쌓이면 병원 하나당 사고 한 건으로 넘긴다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
+    failures = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            operation_type="REBUILD_SITE",
+            state=OperationRunState.FAILED,
+            hospital_id=hospital.id,
+            task_id=f"failed-{index}",
+            requested_at=now - timedelta(hours=index + 1),
+            queued_at=now - timedelta(hours=index + 1),
+        )
+        for index in range(3)
+    ]
+    session = _RecoverySession(
+        hospitals=(hospital,),
+        rebuild_site_runs=failures,
+        auto_assign_owner_id=uuid.uuid4(),
+        auto_assign_owner_name="이수진",
+    )
+    intents = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a spent attempt budget must stop automatic retries")
+        ),
+    )
+    monkeypatch.setattr(
+        autonomous_recovery,
+        "enqueue_notification_sync",
+        lambda _db, intent, **_kwargs: intents.append(intent),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["site_builds"] == 0
+    assert len(session.added) == 1
+    incident = session.added[0]
+    assert isinstance(incident, Incident)
+    assert incident.incident_type == "SITE_BUILD_RETRIES_EXHAUSTED"
+    assert incident.severity == "HIGH"
+    assert incident.hospital_id == hospital.id
+    assert incident.operation_run_id == failures[0].id
+    assert incident.admin_path == f"/hospitals/{hospital.id}"
+    assert incident.next_action == (
+        "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
+    )
+    assert incident.dedupe_key == autonomous_recovery.build_incident_key(
+        "site_build",
+        "hospital",
+        str(hospital.id),
+        autonomous_recovery.IncidentFingerprint.UNKNOWN,
+    )
+    # 사람이 볼 사고 하나에 운영자 채널 알림 하나.
+    assert len(intents) == 1
+    assert intents[0].notification_type == "INCIDENT_OPEN"
+    assert intents[0].channel == "SLACK"
+    assert intents[0].incident_id == incident.id
+
+
+def test_site_build_recovery_does_not_duplicate_an_open_incident(monkeypatch) -> None:
+    """H-13: 예산이 다시 열려도 같은 병원의 사고가 두 건이 되지 않는다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="실패 반복 의원")
+    failures = [
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            operation_type="REBUILD_SITE",
+            state=OperationRunState.FAILED,
+            hospital_id=hospital.id,
+            task_id=f"failed-{index}",
+            requested_at=now - timedelta(hours=index + 1),
+            queued_at=now - timedelta(hours=index + 1),
+        )
+        for index in range(3)
+    ]
+    existing = SimpleNamespace(
+        id=uuid.uuid4(),
+        last_seen_at=now - timedelta(hours=5),
+        occurrence_count=1,
+        updated_at=now - timedelta(hours=5),
+    )
+    session = _RecoverySession(
+        hospitals=(hospital,),
+        rebuild_site_runs=failures,
+        rebuild_site_incidents=(existing,),
+    )
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("a spent attempt budget must stop automatic retries")
+        ),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["site_builds"] == 0
+    assert session.added == []
+    assert existing.last_seen_at == now
+    assert existing.occurrence_count == 2
+
+
+def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None:
+    """H-13: 예산은 24시간 창의 실행만 센다 — 어제 실패는 오늘 복구를 막지 않는다."""
+
+    now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="어제 실패 의원")
+    session = _RecoverySession(hospitals=(hospital,))
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app, "send_task", lambda *_args, **_kwargs: None
+    )
+
+    autonomous_recovery.reconcile.run()
+
+    budget_query = next(
+        statement
+        for statement in session.statements
+        if statement.column_descriptions[0].get("entity") is OperationRun
+        and "REBUILD_SITE" in statement.compile().params.values()
+    )
+    assert now - timedelta(hours=24) in budget_query.compile().params.values()
 
 
 def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -> None:

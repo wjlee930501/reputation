@@ -40,6 +40,8 @@ _BATCH_SIZE: Final = 100
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
 _QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=1)
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
+_REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
+_REBUILD_SITE_BUDGET_WINDOW: Final = timedelta(hours=24)
 _INTEGER_ARG: Final = object()
 
 
@@ -210,14 +212,6 @@ def reconcile() -> RecoveryCounts:
             if _operation_redispatch_is_due(run, observed_at)
         ]
 
-        for hospital in hospitals:
-            hospital_id = str(hospital.id)
-            celery_app.send_task(
-                "app.workers.tasks.build_aeo_site",
-                args=[hospital_id],
-                queue="default",
-                headers=build_dispatch_headers("build-aeo-site", hospital_id),
-            )
         for run in runs:
             celery_app.send_task(
                 "app.workers.tasks.retry_site_revalidation",
@@ -232,10 +226,16 @@ def reconcile() -> RecoveryCounts:
             redispatched = _redispatch_operation_run(db, run, observed_at)
             if redispatched:
                 operation_redispatches += 1
+        # 실행 기록을 먼저 커밋하는 경로이므로 같은 tick의 상태 변경 뒤에 둔다.
+        site_builds = 0
+        for hospital in hospitals:
+            rebuild = _ensure_rebuild_site_run(db, hospital, observed_at)
+            if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
+                site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
         db.commit()
     return {
-        "site_builds": len(hospitals),
+        "site_builds": site_builds,
         "site_revalidations": len(runs),
         "operation_runs": operation_redispatches,
         "image_recertifications": recertifications,
@@ -407,6 +407,152 @@ def _start_recertify_run(
         task_id=task_id,
     )
     return True
+
+
+def _ensure_rebuild_site_run(
+    db, hospital: Hospital, observed_at: datetime
+) -> OperationRun | None:
+    """사이트 준비 재실행을 REBUILD_SITE OperationRun 예산 아래 둔다 (H-13).
+
+    예전에는 이 sweep이 같은 병원에 `build_aeo_site`를 매분 새로 큐잉했다. claim도 시도
+    기록도 없어 실패하는 병원 하나가 무한히 재실행됐다. 이제 진행 중인 run이 grace 안이면
+    건너뛰고, 24시간 안에 실패가 예산만큼 쌓이면 병원 하나당 사고 한 건으로 사람에게
+    넘긴다. 그 밖에는 REQUESTED run을 만들어 호출자가 서명된 재배달로 보낸다.
+    """
+
+    recent = list(
+        db.execute(
+            select(OperationRun)
+            .where(
+                OperationRun.operation_type == "REBUILD_SITE",
+                OperationRun.hospital_id == hospital.id,
+                OperationRun.requested_at >= observed_at - _REBUILD_SITE_BUDGET_WINDOW,
+            )
+            .order_by(OperationRun.requested_at.desc())
+        )
+        .scalars()
+        .all()
+    )
+    for run in recent:
+        if run.state in (
+            OperationRunState.REQUESTED,
+            OperationRunState.QUEUED,
+            OperationRunState.RUNNING,
+        ):
+            # 진행 중인 실행이 있으면 새 run을 만들지 않는다. 유실이 의심될 때만
+            # 같은 run을 재배달한다 — 판단은 일반 재배달 규칙과 하나로 유지한다.
+            return run if _operation_redispatch_is_due(run, observed_at) else None
+    failed = [run for run in recent if run.state == OperationRunState.FAILED]
+    if len(failed) >= _REBUILD_SITE_ATTEMPT_BUDGET:
+        _open_rebuild_site_incident(db, hospital, failed[0], observed_at)
+        return None
+
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_type="REBUILD_SITE",
+        state=OperationRunState.REQUESTED,
+        idempotency_key=(
+            f"rebuild-site:{hospital.id}:{observed_at.date().isoformat()}:{len(failed)}"
+        ),
+        requested_by_id=None,
+        task_id=str(uuid.uuid4()),
+        requested_at=observed_at,
+        attempt_count=len(failed),
+        total_count=0,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=operation_run_payloads.build_request_payload(
+            operation_run_payloads.DispatchPayload(
+                "hospital", str(hospital.id), "default", (str(hospital.id),)
+            )
+        ),
+        version=1,
+    )
+    # 실행 기록을 먼저 커밋한다. worker가 publish를 먼저 집어도 claim할 행이 있어야 하고,
+    # 같은 키를 동시에 만든 두 번째 sweep은 여기서 조용히 물러난다.
+    savepoint = db.begin_nested()
+    try:
+        db.add(run)
+        savepoint.commit()
+    except IntegrityError:
+        savepoint.rollback()
+        return None
+    db.commit()
+    return run
+
+
+def _open_rebuild_site_incident(
+    db, hospital: Hospital, last_failed_run: OperationRun, observed_at: datetime
+) -> None:
+    """예산을 다 쓴 사이트 준비를 병원 하나당 사고 한 건으로 넘긴다 (H-13).
+
+    같은 병원의 사고가 이미 있으면 관측 시각만 갱신한다 — 24시간마다 예산이 다시 열려도
+    같은 문제로 사고와 Slack이 늘지 않게 한다.
+    """
+
+    dedupe_key = build_incident_key(
+        "site_build", "hospital", str(hospital.id), IncidentFingerprint.UNKNOWN
+    )
+    existing = (
+        db.execute(select(Incident).where(Incident.dedupe_key == dedupe_key))
+        .scalars()
+        .first()
+    )
+    if existing is not None:
+        existing.last_seen_at = observed_at
+        existing.occurrence_count += 1
+        existing.updated_at = observed_at
+        return
+
+    incident = Incident(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        operation_run_id=last_failed_run.id,
+        dedupe_key=dedupe_key,
+        incident_type="SITE_BUILD_RETRIES_EXHAUSTED",
+        state=IncidentState.OPEN.value,
+        severity=IncidentSeverity.HIGH.value,
+        customer_impact="콘텐츠 허브 공개 준비가 끝나지 않아 공개가 미뤄지고 있습니다.",
+        source_type="SITE_BUILD",
+        source_id=str(hospital.id),
+        safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
+        safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
+        next_action=(
+            "병원 기본 정보와 공개 준비 오류를 확인하고 운영센터에서 다시 시도하세요."
+        ),
+        admin_path=f"/hospitals/{hospital.id}",
+        first_seen_at=observed_at,
+        last_seen_at=observed_at,
+        created_at=observed_at,
+        updated_at=observed_at,
+        version=1,
+        episode_seq=1,
+    )
+    auto_assign_owner_sync(db, incident, observed_at=observed_at)
+    db.add(incident)
+    projection = IncidentSlackProjection(
+        incident_id=incident.id,
+        hospital_name=hospital.name,
+        severity=incident.severity,
+        customer_impact=incident.customer_impact,
+        next_action=incident.next_action,
+        admin_path=incident.admin_path,
+        owner_label=owner_label_sync(db, incident.owner_id),
+        sla_label="확인 필요",
+        hospital_id=incident.hospital_id,
+        operation_run_id=incident.operation_run_id,
+        version=incident.version,
+        problem=incident.safe_error_message,
+        episode_seq=incident.episode_seq,
+        incident_type=incident_type_of(incident),
+    )
+    enqueue_notification_sync(
+        db,
+        build_open_incident_notification(projection, settings.ADMIN_BASE_URL),
+        now=observed_at,
+    )
 
 
 def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> bool:
