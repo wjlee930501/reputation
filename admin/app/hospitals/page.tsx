@@ -122,8 +122,12 @@ export default function HospitalsPage() {
           {/* 확인 대기가 0이어도 원장 보고가 밀렸을 수 있다 — 그때는 이 묶음을 감춘다. */}
           <div className={attention.unreviewed_total > 0 || attention.withheld_total > 0 ? '' : 'hidden'}>
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+            {/* 확인할 것이 없고 보류만 남았으면 "확인 필요 0건"이 제목일 이유가 없다 —
+                그때는 실제 할 일인 공개 보류가 제목이 된다(H-01). */}
             <h2 id="attention-heading" className="text-sm font-semibold text-slate-900">
-              공개 후 확인 필요 {attention.unreviewed_total}건
+              {attention.unreviewed_total > 0
+                ? `공개 후 확인 필요 ${attention.unreviewed_total}건`
+                : `공개 보류 ${attention.withheld_total}건`}
             </h2>
             {attention.overdue_total > 0 && (
               <span className="text-xs font-medium text-red-700">
@@ -131,7 +135,7 @@ export default function HospitalsPage() {
               </span>
             )}
             {/* 공개 보류는 확인이 아니라 사유 해소가 할 일이다 — 숫자를 섞지 않는다(H-01). */}
-            {attention.withheld_total > 0 && (
+            {attention.unreviewed_total > 0 && attention.withheld_total > 0 && (
               <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
                 공개 보류 {attention.withheld_total}건
               </span>

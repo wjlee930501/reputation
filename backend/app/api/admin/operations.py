@@ -42,7 +42,7 @@ from app.schemas.operations import (
 )
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
-from app.services.content_visibility import assess_sampled_visibility
+from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.incident_safety import sanitize_operator_text
 from app.services.monthly_delivery_projection import (
     latest_delivery_event_subquery,
@@ -233,13 +233,16 @@ async def get_attention_queue(db: AsyncSession = Depends(get_db)):
     SQL 술어(PUBLISHED · 미확인 · 공개시각 존재)만으로는 "공개 중"을 말할 수 없다. 공개
     페이지는 저장된 글을 다시 판정해 숨기므로, 그 글을 '공개 후 확인 필요'로 세면 AE는
     확인을 누를 때마다 409로 거절당하고 행은 큐에 남아 기한만 넘긴다(H-01). 표본은 위
-    조건으로 이미 병원당 소수라, 각 행을 공개 표면과 같은 판정 함수로 다시 본다.
+    조건으로 이미 병원당 소수라, 각 행을 공개 표면과 같은 판정 함수로 다시 본다. 표본
+    크기는 검수 표본 정책(월 시퀀스 1편 + 공개 후 수정, 미확인)이 묶고 AE가 확인할수록
+    줄어들며, 그 행에서도 판정에 쓰는 컬럼만 싣는다.
     """
     overdue_before = datetime.now(UTC) - timedelta(hours=POST_PUBLISH_REVIEW_OVERDUE_HOURS)
 
     rows = (
         await db.execute(
             select(ContentItem, Hospital.id, Hospital.name)
+            .options(visibility_load_only())
             .join(Hospital, ContentItem.hospital_id == Hospital.id)
             .where(
                 publicly_operational_hospital_predicate(),

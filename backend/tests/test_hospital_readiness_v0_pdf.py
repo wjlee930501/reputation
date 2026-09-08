@@ -12,10 +12,18 @@
 """
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.api.admin import hospitals as hospitals_api
+from app.models.content import ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
+from app.services.image_engine import (
+    IMAGE_POLICY_VERSION,
+    image_content_hash_from_url,
+    image_subject_hash,
+)
 
 
 class _ReadinessDB:
@@ -25,9 +33,16 @@ class _ReadinessDB:
     순서가 바뀌어도 테스트가 조용히 다른 값을 검증하지 않는다.
     """
 
-    def __init__(self, *, report_count: int, v0_report_pdf_count: int) -> None:
+    def __init__(
+        self,
+        *,
+        report_count: int,
+        v0_report_pdf_count: int,
+        published_items: list | None = None,
+    ) -> None:
         self.report_count = report_count
         self.v0_report_pdf_count = v0_report_pdf_count
+        self.published_items = published_items or []
         self.hospital: Hospital | None = None
         self.report_sql: list[str] = []
 
@@ -36,10 +51,12 @@ class _ReadinessDB:
 
     async def execute(self, stmt):
         sql = str(stmt)
-        # 발행 글 본문 조회는 공개 가시성 판정용이다. 이 파일은 카운트 배선만 고정하므로
-        # 빈 목록을 준다 — 실제 판정은 `tests/test_content_visibility.py`가 담당한다.
+        # 발행 글 본문 조회는 공개 가시성 판정용이다. 판정 자체는
+        # `tests/test_content_visibility.py`가 담당하고, 여기서는 그 결과가 카운트·검사로
+        # 이어지는 배선만 본다.
         if "content_items" in sql and "count(" not in sql:
-            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+            items = self.published_items
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: items))
         if "monthly_reports" in sql:
             literal = str(stmt.compile(compile_kwargs={"literal_binds": True}))
             self.report_sql.append(literal)
@@ -74,8 +91,18 @@ def _fake_essence():
     )
 
 
-async def _run(monkeypatch, *, report_count: int, v0_report_pdf_count: int) -> tuple[dict, _ReadinessDB]:
-    db = _ReadinessDB(report_count=report_count, v0_report_pdf_count=v0_report_pdf_count)
+async def _run(
+    monkeypatch,
+    *,
+    report_count: int,
+    v0_report_pdf_count: int,
+    published_items: list | None = None,
+) -> tuple[dict, _ReadinessDB]:
+    db = _ReadinessDB(
+        report_count=report_count,
+        v0_report_pdf_count=v0_report_pdf_count,
+        published_items=published_items,
+    )
     db.hospital = _hospital()
 
     async def fake_essence_readiness(_db, _hospital_id):
@@ -136,3 +163,79 @@ async def test_the_pdf_count_query_is_restricted_to_initial_diagnosis_reports(mo
     plain_queries = [sql for sql in db.report_sql if "pdf_path" not in sql]
     assert len(plain_queries) == 1
     assert "report_type" not in plain_queries[0]
+
+
+# H-01: 준비도의 "발행 콘텐츠"는 발행 행 수가 아니라 공개 페이지가 실제로 내보내는
+# 편수여야 한다. 전 글이 보류 중인 병원이 통과로 보이면 운영자는 알 방법이 없다.
+def _published_item(*, certified: bool, philosophy_id: uuid.UUID) -> SimpleNamespace:
+    """공개 판정을 통과하는 발행 글 — `certified=False`면 이미지 인증만 비운다."""
+    title = "치질 원인과 치료"
+    image_url = f"https://storage.googleapis.com/reputation-images/content/{'a' * 64}-ok.png"
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        status=ContentStatus.PUBLISHED,
+        content_type=ContentType.DISEASE,
+        title=title,
+        body="본문 " * 400,
+        meta_description=None,
+        published_at=datetime.now(timezone.utc),
+        essence_status=ESSENCE_STATUS_ALIGNED,
+        essence_check_summary={},
+        content_philosophy_id=philosophy_id,
+        faq_question=None,
+        faq_answer_summary=None,
+        references_list=[
+            {
+                "title": "질병관리청 국가건강정보포털",
+                "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo.do",
+            }
+        ],
+        image_url=image_url if certified else None,
+        image_policy_verified_at=datetime.now(timezone.utc) if certified else None,
+        image_content_hash=image_content_hash_from_url(image_url) if certified else None,
+        image_subject_hash=(
+            image_subject_hash(ContentType.DISEASE, title) if certified else None
+        ),
+        image_policy_version=IMAGE_POLICY_VERSION if certified else None,
+    )
+
+
+async def _public_readiness(monkeypatch, *, certified: list[bool]) -> dict:
+    philosophy_id = uuid.uuid4()
+
+    async def fake_public_philosophy_id(_db, _hospital_id):
+        return philosophy_id
+
+    monkeypatch.setattr(
+        hospitals_api, "get_public_approved_philosophy_id", fake_public_philosophy_id
+    )
+    payload, _ = await _run(
+        monkeypatch,
+        report_count=1,
+        v0_report_pdf_count=1,
+        published_items=[
+            _published_item(certified=value, philosophy_id=philosophy_id) for value in certified
+        ],
+    )
+    return payload
+
+
+async def test_readiness_counts_withheld_articles_apart_from_published_rows(monkeypatch):
+    payload = await _public_readiness(monkeypatch, certified=[True, False])
+
+    assert payload["published_content_count"] == 2
+    assert payload["public_content_count"] == 1
+    assert payload["withheld_content_count"] == 1
+    assert _check(payload, "published_content")["passed"] is True
+    assert "공개 보류 1편" in _check(payload, "published_content")["next_action"]
+
+
+async def test_readiness_fails_the_published_check_when_every_article_is_withheld(monkeypatch):
+    payload = await _public_readiness(monkeypatch, certified=[False, False])
+
+    assert payload["published_content_count"] == 2
+    assert payload["public_content_count"] == 0
+    assert payload["withheld_content_count"] == 2
+    assert _check(payload, "published_content")["passed"] is False
+    assert "공개 보류 2편" in _check(payload, "published_content")["next_action"]

@@ -16,15 +16,17 @@ from app.services.essence_readiness import (
     get_current_approved_philosophy_id,
     get_essence_readiness,
     get_public_approved_philosophy_id,
+    get_public_approved_philosophy_ids,
     get_public_essence_readiness,
     resolve_essence_readiness,
 )
 from app.services.evidence_noise import compute_evidence_noise_hash
 
 
-def _source(*, status=SourceStatus.PROCESSED, source_type=SourceType.HOMEPAGE):
+def _source(*, status=SourceStatus.PROCESSED, source_type=SourceType.HOMEPAGE, hospital_id=None):
     return SimpleNamespace(
         id=uuid.uuid4(),
+        hospital_id=hospital_id,
         content_hash="hash",
         status=status,
         source_type=source_type,
@@ -82,11 +84,17 @@ def test_absorbed_new_processed_source_keeps_public_on_intact_approved_baseline(
 
 
 def _approved_row(
-    approved_id, source_snapshot_hash, source_asset_ids, *, evidence_noise_hash=None
+    approved_id,
+    source_snapshot_hash,
+    source_asset_ids,
+    *,
+    evidence_noise_hash=None,
+    hospital_id=None,
 ):
     """SQLAlchemy Row처럼 이름으로 읽히는 승인 행 — 판정 함수가 컬럼 이름으로 읽는다."""
     return SimpleNamespace(
         id=approved_id,
+        hospital_id=hospital_id,
         source_snapshot_hash=source_snapshot_hash,
         source_asset_ids=source_asset_ids,
         evidence_noise_hash=evidence_noise_hash,
@@ -137,6 +145,75 @@ class _AsyncReadinessDB:
         ):
             return _AsyncResult(rows=self._noise_rows)
         raise AssertionError(f"예상하지 못한 readiness 조회: {description}")
+
+
+class _AsyncBatchReadinessDB:
+    """묶음 조회 더블 — 병원 IN 조회 2회에 모든 승인·자료 행을 한 번에 돌려준다."""
+
+    def __init__(self, approved_rows, source_rows):
+        self._approved_rows = approved_rows
+        self._source_rows = source_rows
+        self.query_count = 0
+
+    async def execute(self, statement):
+        self.query_count += 1
+        description = statement.column_descriptions[0]
+        entity = description.get("entity")
+        if entity is HospitalContentPhilosophy:
+            return _AsyncResult(rows=self._approved_rows)
+        if entity is HospitalSourceAsset:
+            return _AsyncResult(rows=self._source_rows)
+        raise AssertionError(f"예상하지 못한 묶음 readiness 조회: {description}")
+
+
+@pytest.mark.asyncio
+async def test_batched_public_ids_judge_each_hospital_like_the_single_lookup():
+    """한 번의 묶음 조회가 병원마다 단건 조회와 같은 답을 낸다 — 조회 방식만 다르다."""
+    fresh_hospital, stale_hospital = uuid.uuid4(), uuid.uuid4()
+    fresh_id, stale_id = uuid.uuid4(), uuid.uuid4()
+    fresh_source = _source(hospital_id=fresh_hospital)
+    # 승인 이후 자료 본문이 바뀐 병원 — 공개 baseline이 깨졌으므로 공개 판정도 막힌다.
+    original = _source(hospital_id=stale_hospital)
+    changed = SimpleNamespace(**vars(original))
+    changed.content_hash = "changed"
+    fresh_row = _approved_row(
+        fresh_id,
+        compute_sources_snapshot_hash([fresh_source]),
+        [fresh_source.id],
+        hospital_id=fresh_hospital,
+    )
+    stale_row = _approved_row(
+        stale_id,
+        compute_sources_snapshot_hash([original]),
+        [original.id],
+        hospital_id=stale_hospital,
+    )
+    db = _AsyncBatchReadinessDB([fresh_row, stale_row], [fresh_source, changed])
+
+    batched = await get_public_approved_philosophy_ids(db, [fresh_hospital, stale_hospital])
+
+    assert batched == {fresh_hospital: fresh_id, stale_hospital: None}
+    assert db.query_count == 2
+    assert (
+        await get_public_approved_philosophy_id(
+            _AsyncReadinessDB(fresh_row, [fresh_source]), fresh_hospital
+        )
+        == batched[fresh_hospital]
+    )
+    assert (
+        await get_public_approved_philosophy_id(
+            _AsyncReadinessDB(stale_row, [changed]), stale_hospital
+        )
+        == batched[stale_hospital]
+    )
+
+
+@pytest.mark.asyncio
+async def test_batched_public_ids_read_nothing_for_an_empty_hospital_set():
+    db = _AsyncBatchReadinessDB([], [])
+
+    assert await get_public_approved_philosophy_ids(db, []) == {}
+    assert db.query_count == 0
 
 
 @pytest.mark.asyncio

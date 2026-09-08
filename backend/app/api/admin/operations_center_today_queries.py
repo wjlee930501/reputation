@@ -7,7 +7,20 @@ from datetime import date, datetime, time, timedelta
 from typing import Final, assert_never
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import String, and_, case, false, func, or_, select, true
+from sqlalchemy import (
+    ARRAY,
+    String,
+    all_,
+    and_,
+    any_,
+    bindparam,
+    case,
+    false,
+    func,
+    or_,
+    select,
+    true,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -29,7 +42,11 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
-from app.services.content_visibility import PublicVisibility, assess_sampled_visibility
+from app.services.content_visibility import (
+    PublicVisibility,
+    assess_sampled_visibility,
+    visibility_load_only,
+)
 from app.services.post_publish_review_policy import (
     auto_publish_due_predicate,
     human_post_publish_review_predicate,
@@ -95,14 +112,17 @@ async def _withheld_review_samples(
 ) -> tuple[set[uuid.UUID], dict[uuid.UUID, PublicVisibility]]:
     """Judge the review candidates before the page query so SQL can label them.
 
-    후보는 공개 운영 중인 병원의 후행 검수 표본뿐이라 병원당 소수다. 승인 기준 조회는
-    묶여 있어 병원 수와 무관하게 2회다. owner 필터는 여기에 적용하지 않는다 — 판정은
-    담당자와 무관하고, 후보 집합만 넓어질 뿐 결과는 같기 때문이다.
+    후보는 공개 운영 중인 병원의 후행 검수 표본뿐이라 병원당 소수다. 표본 크기는 검수
+    표본 정책(월 시퀀스 1편 + 공개 후 수정, 미확인)이 묶고 AE가 확인할수록 줄어든다.
+    그 행에서도 판정에 쓰는 컬럼만 싣는다. 승인 기준 조회는 묶여 있어 병원 수와 무관하게
+    2회다. owner 필터는 여기에 적용하지 않는다 — 판정은 담당자와 무관하고, 후보 집합만
+    넓어질 뿐 결과는 같기 때문이다.
     """
     candidates = (
         (
             await db.execute(
                 select(ContentItem)
+                .options(visibility_load_only())
                 .join(Hospital, Hospital.id == ContentItem.hospital_id)
                 .where(
                     publicly_operational_hospital_predicate(),
@@ -154,9 +174,15 @@ async def load_today_queue(
     # 페이지를 만든 뒤에 Python에서 덧칠하면 status 필터·total·심각도가 모두 어긋난다 —
     # status=REVIEW_PENDING이 보류 행을 돌려주고, WITHHELD_PUBLIC은 아무것도 못 찾았다.
     # 그래서 검수 후보를 먼저 판정해 그 id를 CASE에 넣고, 선택·집계·정렬을 한 기준으로 둔다.
+    # 보류 id는 배열 파라미터 하나로 넘긴다 — 표본이 늘어도 SQL과 파라미터 개수가 같아
+    # 준비된 구문이 표본 크기마다 새로 만들어지지 않는다. 부정은 `!= ALL(...)`이어야 한다.
+    # `NOT (id = ANY(...))`를 SQLAlchemy가 뒤집으면 `id != ANY(...)`가 되어 뜻이 달라진다.
     withheld_ids, withheld_visibility = await _withheld_review_samples(db, filters)
-    is_withheld = ContentItem.id.in_(withheld_ids) if withheld_ids else false()
-    not_withheld = ContentItem.id.notin_(withheld_ids) if withheld_ids else true()
+    withheld_param = bindparam(
+        "withheld_ids", value=sorted(withheld_ids), type_=ARRAY(ContentItem.id.type)
+    )
+    is_withheld = ContentItem.id == any_(withheld_param) if withheld_ids else false()
+    not_withheld = ContentItem.id != all_(withheld_param) if withheld_ids else true()
     task_state = case(
         *([(is_withheld, "WITHHELD_PUBLIC")] if withheld_ids else []),
         (overdue_review, "OVERDUE_REVIEW"),

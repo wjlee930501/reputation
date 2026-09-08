@@ -50,7 +50,7 @@ from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
-from app.services.content_visibility import assess_public_visibility
+from app.services.content_visibility import assess_public_visibility, visibility_load_only
 from app.services.domain_certificate_jobs import (
     DomainCertificateClaimRequest,
     DomainCertificateHospitalMissing,
@@ -1253,11 +1253,15 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
 
     # PUBLISHED 행 수는 "발행했다"는 사실일 뿐 공개 페이지가 그 글을 내보낸다는 뜻이 아니다.
     # 준비도가 행 수만 세면 전 글이 보류 중인 병원도 "발행 콘텐츠" 통과로 보인다(H-01).
-    # 병원 단위 엔드포인트라 그 병원의 발행 글만 읽어 공개 표면과 같은 함수로 판정한다.
+    # 병원 단위 엔드포인트라 그 병원의 발행 글만 읽어 공개 표면과 같은 함수로 판정한다 —
+    # 이 병원의 공개 목록을 그리는 공개 사이트가 이미 치르는 비용과 같고, 판정에 쓰는
+    # 컬럼만 싣는다.
     published_items = (
         (
             await db.execute(
-                select(ContentItem).where(
+                select(ContentItem)
+                .options(visibility_load_only())
+                .where(
                     ContentItem.hospital_id == h.id,
                     ContentItem.status == ContentStatus.PUBLISHED,
                 )

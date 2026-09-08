@@ -393,9 +393,12 @@ export default function DashboardPage() {
     (run) => run.status === 'COMPLETED' || run.status === 'PARTIAL',
   )
   const hasExposureActions = exposureActions.length > 0
-  const hasBrief = (readiness?.published_content_count ?? 0) > 0
   const publicContentCount = readiness?.public_content_count ?? 0
   const withheldContentCount = readiness?.withheld_content_count ?? 0
+  // 콘텐츠 단계의 완료와 다음 작업은 발행 행 수가 아니라 공개 페이지가 실제로 내보내는
+  // 편수로 정한다. 전 글이 보류 중인데 단계가 완료로 바뀌고 다음 작업이 '월간 회고'가
+  // 되면, 운영자는 해야 할 일(보류 사유 해소)을 어디서도 볼 수 없다(H-01).
+  const hasBrief = publicContentCount > 0
 
   const queryTargetsHref = `/hospitals/${id}/query-targets`
   const exposureActionsHref = `/hospitals/${id}/exposure-actions`
@@ -895,7 +898,9 @@ export default function DashboardPage() {
               done={hasBrief}
               summary={
                 readiness
-                  ? `누적 발행 ${readiness.published_content_count}편`
+                  ? `누적 발행 ${readiness.published_content_count}편${
+                      withheldContentCount > 0 ? ` · 공개 보류 ${withheldContentCount}편` : ''
+                    }`
                   : '아직 발행된 콘텐츠가 없습니다.'
               }
               href={contentHref}

@@ -751,6 +751,19 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "예약 콘텐츠" in readiness_next_actions(has_content_slots=True)["published_content"]
 
 
+def test_withheld_articles_change_the_published_content_action_to_clearing_reasons() -> None:
+    """발행은 했는데 공개 페이지가 숨기고 있으면 할 일은 새 글이 아니라 사유 해소다(H-01)."""
+    # Given / When
+    action = readiness_next_actions(has_content_slots=True, withheld_content_count=3)[
+        "published_content"
+    ]
+
+    # Then
+    assert "공개 보류 3편" in action
+    assert "보류 사유" in action
+    assert "예약 콘텐츠" not in action
+
+
 def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> None:
     # Given
     incident = IncidentSlackProjection(

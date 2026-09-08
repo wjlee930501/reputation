@@ -10,11 +10,12 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Load, load_only
 
-from app.models.content import ContentStatus
+from app.models.content import ContentItem, ContentStatus
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     has_required_faq_fields,
@@ -42,6 +43,38 @@ VISIBILITY_BLOCKER_LABELS: dict[str, str] = {
     "AI_REVIEW_UNRESOLVED": "독립 검수 지적 미해결",
     "FORBIDDEN_EXPRESSION": "의료광고 금지 표현 포함",
 }
+
+
+# `assess_public_visibility`와 그 헬퍼가 실제로 읽는 컬럼. 판정 표본은 행 단위로 읽어야
+# 하므로, 판정에 쓰지 않는 대용량 컬럼(content_brief·image_prompt·검수 이력)까지 실어
+# 나르지 않는다. body는 공백·금지 표현 검사가 쓰므로 뺄 수 없다. 판정에 새 필드를 더하면
+# 이 목록에도 더해야 한다 — 빠뜨리면 지연 로딩이 async 세션에서 바로 드러난다.
+_VISIBILITY_COLUMNS: Final = (
+    ContentItem.id,
+    ContentItem.hospital_id,
+    ContentItem.status,
+    ContentItem.content_type,
+    ContentItem.title,
+    ContentItem.body,
+    ContentItem.meta_description,
+    ContentItem.published_at,
+    ContentItem.essence_status,
+    ContentItem.essence_check_summary,
+    ContentItem.content_philosophy_id,
+    ContentItem.faq_question,
+    ContentItem.faq_answer_summary,
+    ContentItem.references_list,
+    ContentItem.image_url,
+    ContentItem.image_policy_verified_at,
+    ContentItem.image_content_hash,
+    ContentItem.image_subject_hash,
+    ContentItem.image_policy_version,
+)
+
+
+def visibility_load_only() -> Load:
+    """공개 가시성 판정에 필요한 컬럼만 싣는 로더 옵션."""
+    return load_only(*_VISIBILITY_COLUMNS)
 
 
 @dataclass(frozen=True, slots=True)
