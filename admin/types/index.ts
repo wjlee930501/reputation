@@ -1,4 +1,13 @@
 import type { LeadDiagnosisSummary } from '@/lib/lead-diagnosis-status'
+import type {
+  ContentKind,
+  ContentStateValue,
+  DomainKind,
+  DomainStateValue,
+  PublicServiceKind,
+  PublicServiceStateValue,
+  RemainingCondition,
+} from '@/lib/hospital-states'
 
 export type { LeadDiagnosisSummary }
 
@@ -101,6 +110,56 @@ export interface Hospital {
   hero_description?: string | null
   image_style_direction?: string | null
   site_access_mode?: 'urgent' | 'appointment' | 'specialist' | '' | null
+}
+
+export interface HospitalAeOwner {
+  id: string
+  name: string
+}
+
+/**
+ * `GET /admin/hospitals` 행. 상세 응답(`Hospital`)에는 없는 3상태·예외 수·담당 AE를
+ * 목록만 함께 받는다 — 판정은 서버가 하고 목록은 라벨만 붙인다.
+ */
+export interface HospitalListRow extends Hospital {
+  public_service_state: PublicServiceStateValue
+  content_state: ContentStateValue
+  domain_state: DomainStateValue
+  open_exception_count: number
+  ae_owner: HospitalAeOwner | null
+}
+
+export interface HospitalOverviewException {
+  kind: 'incident' | 'escalated_draft'
+  id: string
+  title: string
+  evidence: string | null
+  next_action: string
+  /** 서버가 지금 허용한 행동만. 비어 있으면 버튼을 만들지 않는다. */
+  allowed_actions: string[]
+  href: string
+}
+
+export interface HospitalOverviewMonth {
+  year: number
+  month: number
+  published_count: number
+  /** 공개 사이트가 실제로 내보내는 수. `published_count`(DB PUBLISHED)와 같지 않다. */
+  public_count: number
+  withheld_count: number
+  planned_total: number
+  mention_rate: number | null
+  next_report_date: string
+}
+
+/** `GET /admin/hospitals/{id}/overview` — 현황 화면 한 장을 채우는 유일한 호출. */
+export interface HospitalOverview {
+  hospital_id: string
+  public_service: { kind: PublicServiceKind; label: string; remaining: RemainingCondition[] }
+  content: { kind: ContentKind; label: string; remaining: RemainingCondition[] }
+  domain: { kind: DomainKind; label: string; reason: string | null; last_checked_at: string | null }
+  exceptions: HospitalOverviewException[]
+  month: HospitalOverviewMonth
 }
 
 export interface ContentReference {

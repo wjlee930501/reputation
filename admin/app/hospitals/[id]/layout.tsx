@@ -9,15 +9,19 @@ import {
   hospitalLifecycleActionPath,
   hospitalLifecycleConfirmMessage,
 } from '@/lib/hospital-lifecycle'
+import { readHospitalDomainStatus } from '@/lib/hospital-domain-status'
 import {
-  domainHeaderIsLive,
-  domainHeaderStatus,
-  readHospitalDomainStatus,
-  domainLastCheckedLabel,
-} from '@/lib/hospital-domain-status'
-import { summarizeHeaderProgress } from '@/lib/hospital-header-progress'
-import { isPubliclyServing } from '@/lib/public-service-state'
-import { Hospital, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
+  describeContentState,
+  describeDomainState,
+  describePublicService,
+  humanRemaining,
+  stateTone,
+  type RemainingCondition,
+  type StateKind,
+  type StateTone,
+} from '@/lib/hospital-states'
+import { ADMIN_COPY } from '@/lib/admin-copy'
+import { Hospital, HospitalOverview, PLAN_CONTRACT_LABELS, STATUS_LABELS } from '@/types'
 import { HospitalHeaderContext } from './hospital-context'
 
 const MAIN_TABS: Array<{ label: string; path: string; hint: string }> = [
@@ -46,6 +50,7 @@ export default function HospitalLayout({
   const params = useParams<{ id: string }>()
   const hospitalId = params.id
   const [hospital, setHospital] = useState<Hospital | null>(null)
+  const [overview, setOverview] = useState<HospitalOverview | null>(null)
   // 컨텍스트를 초기 렌더에 쓰는 하위 페이지(profile/onboarding)가 "아직 못 받아옴"과
   // "받아왔는데 실패/없음"을 구분할 수 있게 — 첫 refetch가 끝나면 false로 고정된다.
   const [headerLoading, setHeaderLoading] = useState(true)
@@ -56,13 +61,20 @@ export default function HospitalLayout({
   const [lifecycleError, setLifecycleError] = useState<string | null>(null)
 
   const refetch = useCallback(async () => {
-    try {
-      const data = await fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}`)
-      setHospital(data)
+    // 3상태(overview)만 못 받아도 헤더는 이름·상태 배지로 계속 뜬다 — 한쪽 실패가
+    // 다른 쪽을 지우지 않게 두 호출을 따로 받는다.
+    const [detail, states] = await Promise.allSettled([
+      fetchAPI<Hospital>(`/admin/hospitals/${hospitalId}`),
+      fetchAPI<HospitalOverview>(`/admin/hospitals/${hospitalId}/overview`),
+    ])
+    setOverview(states.status === 'fulfilled' ? states.value : null)
+    if (detail.status === 'fulfilled') {
+      setHospital(detail.value)
       setNotFound(false)
       setLoadError(null)
       setLoadErrorStatus(null)
-    } catch (e: unknown) {
+    } else {
+      const e: unknown = detail.reason
       if (e instanceof ApiError && e.status === 404) {
         setNotFound(true)
         setLoadError(null)
@@ -77,9 +89,8 @@ export default function HospitalLayout({
               : '병원 정보를 불러오지 못했습니다.',
         )
       }
-    } finally {
-      setHeaderLoading(false)
     }
+    setHeaderLoading(false)
   }, [hospitalId])
 
   useEffect(() => {
@@ -110,7 +121,10 @@ export default function HospitalLayout({
     : null
 
   const planLabel = hospital?.plan ? PLAN_CONTRACT_LABELS[hospital.plan] ?? '요금제 확인 필요' : null
-  const headerProgress = summarizeHeaderProgress(hospital)
+  // 3상태는 서버 판정(overview)만 읽는다 — 헤더가 따로 판정하면 목록·현황과 다른 답을 낸다.
+  const publicCard = overview ? describePublicService(overview.public_service) : null
+  const contentCard = overview ? describeContentState(overview.content) : null
+  const domainCard = overview ? describeDomainState(overview.domain) : null
   // 재개 가능 여부는 서버 게이트(활성화 조건·자기 도메인 DNS)가 결정한다 — 발행 일정은 조건이 아니다(H-07).
   const lifecycleAction = getHospitalLifecycleAction(hospital?.status)
   const activeConfigTab = CONFIG_TABS.find((tab) => pathname.startsWith(`/hospitals/${hospitalId}/${tab.path}`))
@@ -123,10 +137,11 @@ export default function HospitalLayout({
     setLifecycleLoading(true)
     setLifecycleError(null)
     try {
-      const updated = await fetchAPI<Hospital>(hospitalLifecycleActionPath(hospitalId, lifecycleAction), {
+      await fetchAPI<Hospital>(hospitalLifecycleActionPath(hospitalId, lifecycleAction), {
         method: 'POST',
       })
-      setHospital(updated)
+      // 일시정지·재개는 공개 서비스 상태를 바꾼다 — 헤더의 3상태까지 같이 다시 받는다.
+      await refetch()
     } catch (e: unknown) {
       setLifecycleError(e instanceof Error ? e.message : '병원 상태 변경에 실패했습니다.')
     } finally {
@@ -135,7 +150,7 @@ export default function HospitalLayout({
   }
 
   return (
-    <HospitalHeaderContext.Provider value={{ hospital, loading: headerLoading, refetch }}>
+    <HospitalHeaderContext.Provider value={{ hospital, overview, loading: headerLoading, refetch }}>
     <div className="flex min-h-full flex-col">
       {/* Hospital header */}
       <header className="border-b border-slate-200 bg-white px-4 py-3 lg:px-8 lg:pb-0 lg:pt-5">
@@ -166,21 +181,18 @@ export default function HospitalLayout({
                     : '공개 주소 확인 중'}
               </p>
             </div>
-            {hospital && (
+            {overview && (
               <details className="group relative shrink-0">
                 <summary className="inline-flex min-h-11 cursor-pointer list-none items-center gap-1 rounded-lg border border-slate-200 px-3 text-xs font-semibold text-slate-700 [&::-webkit-details-marker]:hidden">
                   상태 <span aria-hidden className="transition-transform group-open:rotate-180">⌄</span>
                 </summary>
                 <div className="absolute right-0 top-[calc(100%+8px)] z-40 w-[min(21rem,calc(100vw-2rem))] rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
-                  <p className="text-xs font-semibold text-slate-900">운영 준비 상태</p>
-                  <div className="mt-3 grid gap-2 text-xs text-slate-600">
-                    <ProgressDot label="필수 병원 정보" done={hospital.profile_complete} />
-                    <ProgressDot label="초기 진단 리포트" done={hospital.v0_report_done} />
-                    <ProgressDot label="콘텐츠 허브 준비" done={hospital.site_built} />
-                    <ProgressDot label="발행 일정 설정" done={hospital.schedule_set} />
-                    <ProgressDot label="병원 정보 허브" done={isPubliclyServing(hospital)} />
+                  <div className="grid gap-3">
+                    <StateChip title="공개 서비스" kind={overview.public_service.kind} description={publicCard} actions={humanRemaining(overview.public_service.remaining)} />
+                    <StateChip title="콘텐츠 준비" kind={overview.content.kind} description={contentCard} actions={humanRemaining(overview.content.remaining)} />
+                    {domainCard && <StateChip title="자기 도메인" kind={overview.domain.kind} description={domainCard} />}
                   </div>
-                  {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">월간 발행량 {planLabel}</p>}
+                  {planLabel && <p className="mt-3 border-t border-slate-100 pt-3 text-xs text-slate-500">{ADMIN_COPY.plan} {planLabel}</p>}
                 </div>
               </details>
             )}
@@ -250,51 +262,27 @@ export default function HospitalLayout({
                     {readHospitalDomainStatus(hospital).detail}
                   </span>
                 </span>
-                {hospital.aeo_domain ? (
+                {/* 공개 중인지 아닌지는 공개 서비스 상태가 말한다 — 이 줄은 자기 도메인
+                    사실만 덧붙인다. 자기 도메인이 없으면 아무 말도 하지 않는다. */}
+                {domainCard && overview && (
                   <>
-                    <span className={`inline-flex items-center gap-1 font-medium ${domainHeaderIsLive(hospital) ? 'text-emerald-600' : 'text-amber-600'}`}>
-                      <span className={`w-1.5 h-1.5 rounded-full ${domainHeaderIsLive(hospital) ? 'bg-emerald-500' : 'bg-amber-500'}`} />
-                      {domainHeaderStatus(hospital)}
+                    <span className={`inline-flex items-center gap-1 font-medium ${domainTextClass(stateTone(overview.domain.kind))}`}>
+                      <span className={`w-1.5 h-1.5 rounded-full ${domainDotClass(stateTone(overview.domain.kind))}`} />
+                      {domainCard.label}
                     </span>
-                    {domainLastCheckedLabel(hospital.domain_last_checked_at, hospital.domain_last_check_ok) && (
-                      <span className="text-slate-400">
-                        {domainLastCheckedLabel(hospital.domain_last_checked_at, hospital.domain_last_check_ok)}
-                      </span>
-                    )}
+                    {domainCard.detail && <span className="text-slate-400">{domainCard.detail}</span>}
                   </>
-                ) : isPubliclyServing(hospital) ? (
-                  <span className="inline-flex items-center gap-1 text-emerald-600 font-medium">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    정보 허브 운영 중
-                  </span>
-                ) : hospital.status === 'PAUSED' ? (
-                  <span className="inline-flex items-center gap-1 text-slate-500">
-                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
-                    공개 페이지 일시정지 중
-                  </span>
-                ) : null}
+                )}
               </div>
             )}
           </div>
 
-          {hospital && (
-            <>
-              {/*
-                1024~1280px에서는 다섯 칩이 두세 줄로 접혀 헤더가 본문을 밀어낸다.
-                그 폭에서는 한 줄 요약으로 접고, 폭이 실제로 있는 xl부터 펼친다(I-1).
-              */}
-              <span
-                className="hidden shrink-0 rounded-full bg-[var(--color-revisit-coolgrey-90)] px-3 py-1 text-[11px] font-medium text-[var(--color-revisit-text-helper)] lg:inline-flex xl:hidden"
-                title={headerProgress.label}
-              >
-                {headerProgress.label}
-              </span>
-              <div className="hidden max-w-xl flex-wrap items-center gap-x-3 gap-y-2 text-[11px] text-slate-500 lg:shrink-0 xl:flex">
-                {headerProgress.items.map((item) => (
-                  <ProgressDot key={item.label} label={item.label} done={item.done} />
-                ))}
-              </div>
-            </>
+          {overview && (
+            <div className="hidden max-w-xl flex-wrap items-start gap-x-6 gap-y-3 lg:flex lg:shrink-0">
+              <StateChip title="공개 서비스" kind={overview.public_service.kind} description={publicCard} actions={humanRemaining(overview.public_service.remaining)} />
+              <StateChip title="콘텐츠 준비" kind={overview.content.kind} description={contentCard} actions={humanRemaining(overview.content.remaining)} />
+              {domainCard && <StateChip title="자기 도메인" kind={overview.domain.kind} description={domainCard} />}
+            </div>
           )}
         </div>
 
@@ -394,16 +382,63 @@ export default function HospitalLayout({
   )
 }
 
-function ProgressDot({ label, done }: { label: string; done: boolean | undefined }) {
+function stateChipClass(tone: StateTone): string {
+  switch (tone) {
+    case 'good':
+      return 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+    case 'warn':
+      return 'bg-amber-50 text-amber-800 border border-amber-200'
+    case 'paused':
+      return 'bg-slate-100 text-slate-600 border border-slate-200'
+    case 'neutral':
+      return 'bg-sky-50 text-sky-700 border border-sky-200'
+  }
+}
+
+function domainTextClass(tone: StateTone): string {
+  return tone === 'good' ? 'text-emerald-600' : tone === 'warn' ? 'text-amber-600' : 'text-slate-500'
+}
+
+function domainDotClass(tone: StateTone): string {
+  return tone === 'good' ? 'bg-emerald-500' : tone === 'warn' ? 'bg-amber-500' : 'bg-slate-400'
+}
+
+/**
+ * 상태 하나 — 라벨과 남은 조건. 링크는 사람이 손댈 조건에만 붙는다(`actions`).
+ * 시스템이 처리 중인 조건은 문구로만 말한다: 운영자가 누를 곳이 없기 때문이다.
+ */
+function StateChip({
+  title,
+  kind,
+  description,
+  actions,
+}: {
+  title: string
+  kind: StateKind
+  description: { label: string; detail: string | null } | null
+  actions?: RemainingCondition[]
+}) {
+  if (!description) return null
   return (
-    <span className="inline-flex items-center gap-1.5">
-      <span
-        className={`h-2 w-2 rounded-full ${done ? 'bg-[var(--color-revisit-green-50)]' : 'bg-[var(--color-revisit-coolgrey-70)]'}`}
-        aria-hidden
-      />
-      <span className={done ? 'text-[var(--color-revisit-text-title)]' : 'text-[var(--color-revisit-text-caption)]'}>
-        {label}: {done ? '완료' : '대기'}
+    <div className="min-w-0">
+      <p className="text-[11px] text-slate-400">{title}</p>
+      <span className={`mt-0.5 inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${stateChipClass(stateTone(kind))}`}>
+        {description.label}
       </span>
-    </span>
+      {description.detail && (
+        <p className="mt-1 max-w-[18rem] text-[11px] leading-relaxed text-slate-500">{description.detail}</p>
+      )}
+      {(actions ?? [])
+        .filter((condition) => condition.href)
+        .map((condition) => (
+          <Link
+            key={condition.key}
+            href={condition.href as string}
+            className="mt-1 block text-[11px] font-medium text-blue-600 hover:text-blue-800 hover:underline"
+          >
+            {condition.label} →
+          </Link>
+        ))}
+    </div>
   )
 }
