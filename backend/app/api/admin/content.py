@@ -85,13 +85,15 @@ from app.services.operation_runs import (
     dispatch_operation,
 )
 from app.services.ops_incident_alerts import open_ops_incident
+from app.services.published_image_recertification import (
+    base_key as published_recertify_key,
+)
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
 )
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
-from app.workers.generation_retry_policy import published_recertify_key
 from app.workers.tasks import recertify_published_content_image, regenerate_content_item
 
 logger = logging.getLogger(__name__)
@@ -641,9 +643,18 @@ async def update_content(
 
     await db.commit()
     await db.refresh(item)
-    if was_published and certificate_invalidated and isinstance(item, ContentItem):
+    if (
+        was_published
+        and certificate_invalidated
+        and isinstance(item, ContentItem)
+        # 지금 공개 표면이 있는 병원만 즉시 디스패치한다. PAUSED·미공개 병원은 재개 뒤
+        # 복구 sweep이 같은 예산 안에서 이어받는다.
+        and hospital.status == HospitalStatus.ACTIVE
+        and bool(hospital.site_live)
+    ):
         # 제목 편집이 지운 이미지 인증은 시스템이 저장된 바이트 재검수로 되살린다.
         # 운영자의 할 일로 넘기지 않는다 (H-01).
+        revision = int(item.content_revision or 1)
         try:
             await dispatch_operation(
                 db,
@@ -651,14 +662,13 @@ async def update_content(
                     operation_type="RECERTIFY_PUBLISHED_IMAGE",
                     hospital_id=hospital.id,
                     requested_by_id=None,
-                    idempotency_key=published_recertify_key(
-                        item.id, int(item.content_revision or 1)
-                    ),
+                    idempotency_key=published_recertify_key(item.id, revision),
                     audit_actor=default_actor(),
                     target_type="content_item",
                     target_id=str(item.id),
                     queue="content",
                     task_args=(str(item.id),),
+                    request_payload_extra={"revision": revision},
                 ),
                 recertify_published_content_image,
             )

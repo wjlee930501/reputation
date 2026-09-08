@@ -112,12 +112,19 @@ def write_back_published_image_certificate(
     0행을 돌려준다. 공개 글의 재인증은 상태·제목·판이 그대로일 때만 저장한다 — 그 사이
     편집이 있었다면 그 편집이 다시 재인증을 요청한다.
     """
+    # NULL 제목은 `= NULL`로 비교하면 항상 거짓이라, 바뀐 것이 없는데도 0행이 나와
+    # CANCELLED로 끝나고 sweep이 같은 글을 다시 사는 고리가 된다.
+    title_clause = (
+        ContentItem.title.is_(None)
+        if expected_title is None
+        else ContentItem.title == expected_title
+    )
     result = db.execute(
         update(ContentItem)
         .where(
             ContentItem.id == item_id,
             ContentItem.status == ContentStatus.PUBLISHED,
-            ContentItem.title == expected_title,
+            title_clause,
             ContentItem.content_revision == expected_revision,
         )
         .values(**values)

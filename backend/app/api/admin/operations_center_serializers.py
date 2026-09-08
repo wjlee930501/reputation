@@ -19,6 +19,7 @@ from app.schemas.operations import (
     OperationsRunSummary,
     OperationsSlackState,
 )
+from app.services import published_image_recertification as recertification
 
 __all__ = (
     "history",
@@ -156,6 +157,13 @@ def retry_action(hospital_id: uuid.UUID, run: OperationRun | None) -> Operations
         or run.state not in _RETRYABLE_RUN_STATES
         or run.operation_type not in _RETRYABLE_OPERATION_TYPES
     ):
+        return None
+    if (
+        run.operation_type == recertification.RECERTIFY_OPERATION
+        and run.safe_error_code in recertification.OPERATOR_REQUIRED_CODES
+    ):
+        # 사람의 결정을 기다리는 차단이다. 다시 눌러도 같은 답을 유료로 사기만 한다 —
+        # 남은 예산 검사는 재시도 라우트가 서버에서 한 번 더 한다.
         return None
     return OperationsAction(
         kind="RETRY_RUN",

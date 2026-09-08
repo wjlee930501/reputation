@@ -17,6 +17,7 @@ from app.models.operations import (
     IncidentState,
     NotificationOutbox,
 )
+from app.services import published_image_recertification as recertification
 from app.services.incident_types import (
     IncidentFingerprint,
     IncidentOpenRequest,
@@ -53,13 +54,7 @@ _MORNING_IMAGE_NOTIFICATION_CODES = {
 }
 # 이미 공개했던 글이 이미지 인증이 풀려 공개 페이지에서 내려간 상태다. 예정 슬롯의
 # 아침 마감 게이트와 달리 지금 사람이 결정해야 하므로 첫 open에 한 번 알린다.
-PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = frozenset(
-    {
-        "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
-        "PUBLISHED_IMAGE_MISSING",
-        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
-    }
-)
+PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = recertification.OPERATOR_REQUIRED_CODES
 # The cost guard owns its hard-stop incident/outbox projection.  Generation still
 # records COST_BLOCKED, but a second generation Slack would violate the one-message
 # hard-stop contract.
@@ -178,14 +173,12 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
         "IMAGE_GENERATION_FAILED": (
             "본문은 저장되어 있습니다. 운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 한 번 누르세요."
         ),
-        "PUBLISHED_IMAGE_RECERTIFY_REJECTED": (
-            "대표 이미지를 교체하거나 제목을 되돌리세요."
-        ),
-        "PUBLISHED_IMAGE_MISSING": (
-            "해당 항목에 대표 이미지를 등록하세요. 등록하면 시스템이 자동으로 다시 인증합니다."
-        ),
-        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED": (
-            "자동 재인증이 반복 실패했습니다. 대표 이미지를 교체하거나 제목을 되돌리세요."
+        # 공개 글에는 관리자 이미지 업로드 경로가 없고 "대표 이미지 다시 생성"은 PUBLISHED를
+        # 거절한다. 실제로 사람이 할 수 있는 조치만 적는다.
+        recertification.PUBLISHED_IMAGE_RECERTIFY_REJECTED: recertification.OPERATOR_ACTION,
+        recertification.PUBLISHED_IMAGE_MISSING: recertification.OPERATOR_ACTION,
+        recertification.PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED: (
+            f"자동 재인증이 반복 실패했습니다. {recertification.OPERATOR_ACTION}"
         ),
     }
     action = actions.get(
@@ -213,13 +206,7 @@ def _generation_safe_cause(code: str) -> str:
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
         "CONTENT_IMAGE_NOT_VERIFIED": "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다.",
-        "PUBLISHED_IMAGE_RECERTIFY_REJECTED": (
-            "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다."
-        ),
-        "PUBLISHED_IMAGE_MISSING": "공개 중인 글에 대표 이미지가 없어 재인증할 수 없습니다.",
-        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED": (
-            "대표 이미지 자동 재인증이 정해진 횟수만큼 반복 실패했습니다."
-        ),
+        **recertification.SAFE_MESSAGES,
     }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
 
 
@@ -254,9 +241,11 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "ESSENCE_NOT_ALIGNED": IncidentFingerprint.VALIDATION_FAILED,
         "CONTENT_IMAGE_NOT_READY": IncidentFingerprint.RENDER_FAILED,
         "CONTENT_IMAGE_NOT_VERIFIED": IncidentFingerprint.RENDER_FAILED,
-        "PUBLISHED_IMAGE_RECERTIFY_REJECTED": IncidentFingerprint.SAFETY_BLOCKED,
-        "PUBLISHED_IMAGE_MISSING": IncidentFingerprint.MISSING_PREREQUISITE,
-        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED": IncidentFingerprint.RENDER_FAILED,
+        # 재인증 차단 세 코드는 지문을 공유한다. 예산 소진으로 열린 건 위에 같은 판의
+        # 거절이 겹쳐도 새 incident·새 Slack이 아니라 그 한 건이 갱신된다.
+        **dict.fromkeys(
+            recertification.OPERATOR_REQUIRED_CODES, IncidentFingerprint.RENDER_FAILED
+        ),
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 

@@ -9,6 +9,7 @@ from typing import Final, TypedDict
 
 from celery import current_task
 from sqlalchemy import and_, func, or_, select
+from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -23,7 +24,7 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.services import operation_run_payloads
-from app.services.image_engine import IMAGE_POLICY_VERSION
+from app.services import published_image_recertification as recertification
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
@@ -33,25 +34,12 @@ from app.services.post_publish_review_policy import publicly_operational_hospita
 from app.services.site_revalidation_control import retry_delay
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
-from app.workers.generation_retry_policy import (
-    PUBLISHED_RECERTIFY_ATTEMPT_BUDGET,
-    GenerationRetryClass,
-    published_recertify_key,
-    published_recertify_sweep_key,
-    retry_class_for,
-)
 
 _BATCH_SIZE: Final = 100
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
 _QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=1)
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _INTEGER_ARG: Final = object()
-_RECERTIFY_OPERATION: Final = "RECERTIFY_PUBLISHED_IMAGE"
-_NON_TERMINAL_RUN_STATES: Final = (
-    OperationRunState.REQUESTED,
-    OperationRunState.QUEUED,
-    OperationRunState.RUNNING,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +79,7 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
     "REGENERATE_CONTENT_IMAGE": _RedispatchPolicy(
         "app.workers.tasks.generate_content_image", "content", "content_item"
     ),
-    "RECERTIFY_PUBLISHED_IMAGE": _RedispatchPolicy(
+    recertification.RECERTIFY_OPERATION: _RedispatchPolicy(
         "app.workers.tasks.recertify_published_content_image", "content", "content_item"
     ),
 }
@@ -256,7 +244,10 @@ def reconcile() -> RecoveryCounts:
 def _cleared_certificate_candidates(db) -> list[ContentItem]:
     """공개 중인데 이미지 인증이 지워진 글. 제목 편집이 남기는 상태만 SQL로 값싸게 고른다.
 
-    hash 불일치는 저장된 바이트를 다시 읽어야 알 수 있어 이 sweep의 대상이 아니다.
+    정책 버전 교체는 manifest로 운전하는 별도 작업이므로 여기서 다루지 않는다 — 그 조건을
+    넣으면 롤아웃 때 전체 공개 글이 한꺼번에 이 sweep으로 쏟아진다. hash 불일치도 저장된
+    바이트를 다시 읽어야 알 수 있어 대상이 아니다. 사람의 결정을 기다리는 판은 SQL에서
+    빼, 아직 자동으로 고칠 수 있는 글의 자리를 뺏지 않게 한다.
     """
     return list(
         db.execute(
@@ -267,10 +258,8 @@ def _cleared_certificate_candidates(db) -> list[ContentItem]:
                 ContentItem.status == ContentStatus.PUBLISHED,
                 ContentItem.image_url.isnot(None),
                 ContentItem.image_url != "",
-                or_(
-                    ContentItem.image_policy_verified_at.is_(None),
-                    ContentItem.image_policy_version.is_distinct_from(IMAGE_POLICY_VERSION),
-                ),
+                ContentItem.image_policy_verified_at.is_(None),
+                ~recertification.blocked_row_predicate(),
             )
             .order_by(ContentItem.published_at, ContentItem.id)
             .limit(_BATCH_SIZE)
@@ -280,111 +269,93 @@ def _cleared_certificate_candidates(db) -> list[ContentItem]:
     )
 
 
-def _recertify_runs_by_item(db, item_ids: list[str]) -> dict[str, list[OperationRun]]:
-    if not item_ids:
+def _recertify_runs_by_item(db, candidates: list[ContentItem]) -> dict[str, list[OperationRun]]:
+    """후보 글들의 재인증 실행 이력을 색인된 컬럼으로 한 번에 읽는다.
+
+    payload 안의 대상·판 비교는 Python에서 한다 — JSON 표현식으로 거르면 색인을 못 쓴다.
+    """
+    if not candidates:
         return {}
+    hospital_ids = {item.hospital_id for item in candidates}
+    wanted = {str(item.id) for item in candidates}
     grouped: dict[str, list[OperationRun]] = {}
     for run in (
         db.execute(
             select(OperationRun).where(
-                OperationRun.operation_type == _RECERTIFY_OPERATION,
-                OperationRun.request_payload["source_id"].as_string().in_(item_ids),
+                OperationRun.hospital_id.in_(hospital_ids),
+                OperationRun.operation_type == recertification.RECERTIFY_OPERATION,
             )
         )
         .scalars()
         .all()
     ):
-        payload = _mapping(getattr(run, "request_payload", None))
-        grouped.setdefault(str(payload.get("source_id")), []).append(run)
+        source_id = recertification.payload_source_id(run)
+        if source_id in wanted:
+            grouped.setdefault(source_id, []).append(run)
     return grouped
-
-
-def _numbered_recertify_attempts(
-    runs: list[OperationRun], base: str
-) -> list[tuple[int, OperationRun]]:
-    """이 (글, 판)의 시도를 실행 키에 박힌 번호로 정렬한다. 시각 없이도 순서가 정해진다."""
-    numbered: list[tuple[int, OperationRun]] = []
-    for run in runs:
-        key = str(getattr(run, "idempotency_key", "") or "")
-        suffix = key[len(base) :]
-        if key == base:
-            numbered.append((1, run))
-        elif key.startswith(base) and suffix.startswith(":s") and suffix[2:].isdigit():
-            numbered.append((int(suffix[2:]), run))
-    return sorted(numbered, key=lambda pair: pair[0])
-
-
-def _recertify_sweep_key(item: ContentItem, runs: list[OperationRun]) -> str | None:
-    """자동 재실행이 아직 이어져야 하는 글에만 새 실행 키를 준다."""
-    if any(run.state in _NON_TERMINAL_RUN_STATES for run in runs):
-        # PATCH 디스패치든 이전 sweep이든 진행 중인 실행이 있으면 겹쳐 사지 않는다.
-        return None
-    revision = int(getattr(item, "content_revision", 1) or 1)
-    base = published_recertify_key(item.id, revision)
-    numbered = _numbered_recertify_attempts(runs, base)
-    failed = [pair for pair in numbered if pair[1].state == OperationRunState.FAILED]
-    if failed and retry_class_for(str(failed[-1][1].safe_error_code or "")) is not (
-        GenerationRetryClass.ENVIRONMENT_RECOVERABLE
-    ):
-        # 거절·이미지 없음은 사람의 결정이다. 다시 사도 같은 답이 나온다.
-        return None
-    if len(failed) >= PUBLISHED_RECERTIFY_ATTEMPT_BUDGET:
-        # 예산 소진. 마지막 실행이 이미 incident를 열었다.
-        return None
-    attempt = numbered[-1][0] + 1 if numbered else 1
-    return published_recertify_sweep_key(item.id, revision, attempt)
 
 
 def _dispatch_published_image_recertifications(db, observed_at: datetime) -> int:
     """인증이 지워진 공개 글의 재인증을 예산 안에서 다시 실행한다 (H-01).
 
-    일시 오류로 끝난 재인증은 태스크의 자기 재시도만으로는 되살아나지 않는다. 이 sweep이
-    backstop이라 공개가 내려간 글이 사람을 기다리며 방치되지 않는다.
+    태스크는 실행 하나당 공급자를 많아야 한 번 부르므로 재실행은 이 sweep만 만든다.
+    쿨다운·진행 중 판정·예산은 모두 `published_image_recertification`의 한 규칙이라,
+    PATCH·sweep·운영자 재시도가 겹쳐도 (글, 판)당 유료 호출이 늘지 않는다.
     """
     candidates = _cleared_certificate_candidates(db)
-    runs_by_item = _recertify_runs_by_item(db, [str(item.id) for item in candidates])
+    runs_by_item = _recertify_runs_by_item(db, candidates)
     dispatched = 0
     for item in candidates:
         if dispatched >= _RECERTIFY_DISPATCH_LIMIT:
             break
-        key = _recertify_sweep_key(item, runs_by_item.get(str(item.id), []))
-        if key is None:
+        revision = int(getattr(item, "content_revision", 1) or 1)
+        runs = runs_by_item.get(str(item.id), [])
+        if not recertification.sweep_may_dispatch(runs, revision, now=observed_at):
             continue
-        _start_recertify_run(db, item, key, observed_at)
-        dispatched += 1
+        if _start_recertify_run(db, item, revision, runs, observed_at):
+            dispatched += 1
     return dispatched
 
 
-def _start_recertify_run(db, item: ContentItem, key: str, observed_at: datetime) -> None:
+def _start_recertify_run(
+    db,
+    item: ContentItem,
+    revision: int,
+    runs: list[OperationRun],
+    observed_at: datetime,
+) -> bool:
     """REQUESTED run을 먼저 커밋하고 publish한다.
 
     worker가 publish를 먼저 집어도 claim할 행이 있어야 한다. publish가 실패해도 남은
-    REQUESTED run을 이 파일의 재배달 sweep이 잇는다.
+    REQUESTED run을 이 파일의 재배달 sweep이 잇는다. 두 reconcile이 겹쳐 같은 키를
+    만들면 뒤에 온 쪽은 건너뛴다 — 같은 판을 두 번 사지 않기 위해서다.
     """
     target_id = str(item.id)
     task_id = str(uuid.uuid4())
     run = OperationRun(
         id=uuid.uuid4(),
         hospital_id=item.hospital_id,
-        operation_type=_RECERTIFY_OPERATION,
+        operation_type=recertification.RECERTIFY_OPERATION,
         state=OperationRunState.REQUESTED,
-        idempotency_key=key,
+        idempotency_key=recertification.next_sweep_key(item.id, revision, runs),
         requested_by_id=None,
         task_id=task_id,
         requested_at=observed_at,
         attempt_count=0,
-        total_count=1,
+        total_count=0,
         success_count=0,
         failure_count=0,
         skipped_count=0,
-        request_payload=operation_run_payloads.build_request_payload(
-            operation_run_payloads.DispatchPayload(
-                "content_item", target_id, "content", (target_id,)
-            )
-        ),
+        request_payload=recertification.request_payload(item.id, revision),
         version=1,
     )
-    db.add(run)
+    savepoint = db.begin_nested()
+    try:
+        db.add(run)
+        savepoint.commit()
+    except IntegrityError:
+        savepoint.rollback()
+        return False
     db.commit()
     celery_app.send_task(
         "app.workers.tasks.recertify_published_content_image",
@@ -396,6 +367,7 @@ def _start_recertify_run(db, item: ContentItem, key: str, observed_at: datetime)
         },
         task_id=task_id,
     )
+    return True
 
 
 def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> bool:

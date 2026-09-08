@@ -1631,6 +1631,23 @@ async def test_today_queue_shows_the_recertification_block_as_the_next_action(
             ),
             safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
             safe_error_message="제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다.",
+            requested_at=datetime.now(UTC) - timedelta(hours=1),
+            completed_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+    )
+    # 나중에 돈 다른 유형의 실행이 최신 실행이 되어도 거절 사유를 가리면 안 된다.
+    db.add(
+        OperationRun(
+            hospital_id=hospital.id,
+            operation_type="REGENERATE_CONTENT_IMAGE",
+            state="SUCCEEDED",
+            idempotency_key=f"regenerate-image:{withheld.id}",
+            request_payload=build_request_payload(
+                DispatchPayload(
+                    "content_item", str(withheld.id), "content", (str(withheld.id),)
+                )
+            ),
+            requested_at=datetime.now(UTC),
             completed_at=datetime.now(UTC),
         )
     )
@@ -1647,7 +1664,7 @@ async def test_today_queue_shows_the_recertification_block_as_the_next_action(
 
     row = next(item for item in rows if item.content_id == withheld.id)
     assert row.status == "WITHHELD_PUBLIC"
-    assert row.next_action == "대표 이미지를 교체하거나 제목을 되돌리세요."
+    assert row.next_action == "제목을 되돌리거나, 글을 반려(비공개)해 새 이미지로 재생성하세요."
     assert row.safe_cause == "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다."
 
 

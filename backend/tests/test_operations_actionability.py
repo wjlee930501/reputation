@@ -434,9 +434,19 @@ async def test_acknowledged_generation_cause_keeps_the_same_episode(monkeypatch)
 
 def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:
     # 아침 마감 게이트를 기다리지 않는 것은 이미 공개했다가 내려간 글의 재인증 차단뿐이다.
-    assert generation_incident_control._IMMEDIATE_GENERATION_NOTIFICATION_CODES == (
-        generation_incident_control.PUBLISHED_IMAGE_RECERTIFY_CODES
-    )
+    # 그 사실을 동작으로 확인한다 — 사람이 지금 결정해야 하므로 예정일 없이도 알린다.
+    for code in (
+        "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
+        "PUBLISHED_IMAGE_MISSING",
+        "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
+    ):
+        assert generation_incident_control.generation_notify_requested(code)
+        assert generation_incident_control._morning_notification_due(
+            code=code, item=None, observed_at=datetime(2026, 9, 8, 2, 0, tzinfo=UTC)
+        )
+        assert not generation_incident_control.generation_block_digest_due(
+            code, batch=generation_incident_control.PUBLISH_MORNING_BATCH
+        )
 
     morning_codes = (
         "PROVIDER_TIMEOUT",

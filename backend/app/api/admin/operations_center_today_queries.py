@@ -42,6 +42,7 @@ from app.schemas.operations import (
     OperationsQueue,
     OperationsQueueRow,
 )
+from app.services import published_image_recertification as recertification
 from app.services.content_visibility import (
     PublicVisibility,
     assess_sampled_visibility,
@@ -53,7 +54,6 @@ from app.services.post_publish_review_policy import (
     publicly_operational_hospital_predicate,
 )
 from app.workers.generation_incident_control import (
-    PUBLISHED_IMAGE_RECERTIFY_CODES,
     generation_operator_action,
     generation_safe_cause,
 )
@@ -82,7 +82,7 @@ def _today_operator_copy(*, review: bool) -> tuple[str, str]:
 def _blocking_recertify_code(run: OperationRun | None) -> str | None:
     """자동 재인증이 사람 결정으로 끝났을 때만 그 원인 코드를 돌려준다."""
     code = run.safe_error_code if run is not None else None
-    return code if code in PUBLISHED_IMAGE_RECERTIFY_CODES else None
+    return code if code in recertification.OPERATOR_REQUIRED_CODES else None
 
 
 def _withheld_next_action(run: OperationRun | None) -> str:
@@ -191,6 +191,9 @@ async def load_today_queue(
     """
     assignee = aliased(AdminUser)
     related_run = aliased(OperationRun)
+    # 보류 문구는 재인증 실행만 근거로 삼는다. 같은 글의 나중 재생성 실행이 최신 실행이
+    # 되면서 사람이 봐야 할 거절 사유를 가리면 안 된다.
+    recertify_run = aliased(OperationRun)
     related_incident = aliased(Incident)
     today = now.astimezone(_SEOUL).date()
     overdue_before = now - timedelta(hours=_OVERDUE_REVIEW_HOURS)
@@ -272,6 +275,7 @@ async def load_today_queue(
             HospitalHandoff,
             assignee,
             related_run,
+            recertify_run,
             related_incident,
             task_state.label("task_state"),
             func.count().over().label("_total"),
@@ -292,6 +296,21 @@ async def load_today_queue(
                         "RECERTIFY_PUBLISHED_IMAGE",
                     )
                 ),
+                OperationRun.request_payload["source_id"].as_string()
+                == ContentItem.id.cast(String),
+            )
+            .order_by(OperationRun.requested_at.desc(), OperationRun.id.desc())
+            .limit(1)
+            .correlate(ContentItem)
+            .scalar_subquery(),
+        )
+        .outerjoin(
+            recertify_run,
+            recertify_run.id
+            == select(OperationRun.id)
+            .where(
+                OperationRun.hospital_id == ContentItem.hospital_id,
+                OperationRun.operation_type == recertification.RECERTIFY_OPERATION,
                 OperationRun.request_payload["source_id"].as_string()
                 == ContentItem.id.cast(String),
             )
@@ -339,7 +358,7 @@ async def load_today_queue(
         rows = list((await db.execute(page_stmt)).all())
 
     items: list[OperationsQueueRow] = []
-    for content, hospital, handoff, actor, run, incident, state, _total in rows:
+    for content, hospital, handoff, actor, run, recertify, incident, state, _total in rows:
         # 공개 페이지가 숨기는 중인 글에는 "공개 내용 확인"이 성립하지 않는다 — 눌러도 409로
         # 거절되고 행은 큐에 남아 기한만 넘긴다. 사람에게는 다른 일(보류 사유 해소)로 내보낸다.
         withheld = withheld_visibility[content.id] if state == "WITHHELD_PUBLIC" else None
@@ -360,8 +379,8 @@ async def load_today_queue(
             due_at = None
         if withheld is not None:
             impact = "공개 보류 — " + " · ".join(withheld.blocker_labels)
-            next_action = _withheld_next_action(run)
-            safe_cause = _withheld_safe_cause(run)
+            next_action = _withheld_next_action(recertify)
+            safe_cause = _withheld_safe_cause(recertify)
         else:
             impact, next_action = _today_operator_copy(review=review)
             safe_cause = None

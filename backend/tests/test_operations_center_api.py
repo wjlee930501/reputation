@@ -249,6 +249,73 @@ async def test_retry_policy_allows_monthly_rebuild_true_payload_only() -> None:
         assert blocked.value.detail["code"] == "UNSAFE_STORED_DISPATCH"
 
 
+def _recertify_run(*, code: str | None, revision: int = 3, item_id=None, hospital_id=None):
+    from app.models.operations import OperationRun
+    from app.services import published_image_recertification as recertification
+
+    item_id = item_id or uuid.uuid4()
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id or uuid.uuid4(),
+        operation_type=recertification.RECERTIFY_OPERATION,
+        state="FAILED",
+        safe_error_code=code,
+        request_payload=recertification.request_payload(item_id, revision),
+    )
+
+
+class _RunLookup:
+    """재시도 예산 검사가 읽는 실행 이력만 돌려주는 최소 더블."""
+
+    def __init__(self, runs):
+        self._runs = runs
+
+    async def execute(self, _statement):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: self._runs))
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_is_refused_for_a_recertification_a_human_must_decide() -> None:
+    """거절로 끝난 재인증은 다시 눌러도 같은 답을 유료로 살 뿐이다 (H-01)."""
+    from app.api.admin.operations_center_actions import require_retry_within_budget
+    from app.api.admin.operations_center_serializers import retry_action
+    from app.services import published_image_recertification as recertification
+
+    run = _recertify_run(code=recertification.PUBLISHED_IMAGE_RECERTIFY_REJECTED)
+
+    assert retry_action(run.hospital_id, run) is None
+    with pytest.raises(HTTPException) as refused:
+        await require_retry_within_budget(_RunLookup([run]), run)
+    assert refused.value.status_code == 409
+    assert refused.value.detail["code"] == "OPERATION_NOT_RETRYABLE"
+
+
+@pytest.mark.asyncio
+async def test_operator_retry_follows_the_same_attempt_budget_as_the_sweep() -> None:
+    """운영자 재시도도 (글, 판) 예산 안에서만 허용된다."""
+    from app.api.admin.operations_center_actions import require_retry_within_budget
+    from app.api.admin.operations_center_serializers import retry_action
+    from app.services import published_image_recertification as recertification
+
+    item_id, hospital_id = uuid.uuid4(), uuid.uuid4()
+    failed = _recertify_run(
+        code="PROVIDER_UNAVAILABLE", item_id=item_id, hospital_id=hospital_id
+    )
+    assert retry_action(hospital_id, failed) is not None
+    await require_retry_within_budget(_RunLookup([failed]), failed)
+
+    spent = [
+        _recertify_run(
+            code="PROVIDER_UNAVAILABLE", item_id=item_id, hospital_id=hospital_id
+        )
+        for _ in range(recertification.ATTEMPT_BUDGET)
+    ]
+    with pytest.raises(HTTPException) as exhausted:
+        await require_retry_within_budget(_RunLookup(spent), spent[0])
+    assert exhausted.value.status_code == 409
+    assert recertification.OPERATOR_ACTION in exhausted.value.detail["message"]
+
+
 def test_invalid_sla_filter_returns_a_typed_422() -> None:
     from app.api.admin.operations_center_query_common import normalize_filters
 

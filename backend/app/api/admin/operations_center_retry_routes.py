@@ -12,6 +12,7 @@ from app.api.admin.operations_center_actions import (
     operations_error,
     require_operations_account,
     require_owner,
+    require_retry_within_budget,
     retry_policy,
     run_refetch_path,
     scoped_run,
@@ -58,6 +59,7 @@ async def retry_operations_run(
     """Retry one terminal allowlisted command using the durable server dispatch."""
     run = await scoped_run(db, hospital_id, run_id)
     await authorize_run_retry(db, actor, run)
+    await require_retry_within_budget(db, run)
     policy = await retry_policy(db, run)
     try:
         dispatch = await retry_operation_run(

@@ -211,18 +211,26 @@ def _published_orm(**overrides):
     return item, philosophy_id
 
 
-async def _patch_published(monkeypatch, item, philosophy_id, patch):
+async def _patch_published(
+    monkeypatch, item, philosophy_id, patch, *, status=HospitalStatus.ACTIVE
+):
     hospital = SimpleNamespace(
         id=item.hospital_id,
         name="재인증의원",
         slug="recert-clinic",
-        status=HospitalStatus.ACTIVE,
-        site_live=False,
+        status=status,
+        site_live=True,
         aeo_domain=None,
         treatments=[],
     )
     dispatched: list[str] = []
     submitted: list[uuid.UUID] = []
+
+    async def _revalidate(slug, content_id, **kwargs):
+        return True
+
+    monkeypatch.setattr(admin_content, "ensure_site_revalidate_configured", lambda: None)
+    monkeypatch.setattr(admin_content, "trigger_content_site_revalidate_safe", _revalidate)
 
     async def _get_content(db, content_id, hospital_id):
         return item

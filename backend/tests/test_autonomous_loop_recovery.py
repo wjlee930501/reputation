@@ -69,6 +69,9 @@ class _RecoverySession:
     def add(self, value):
         self.added.append(value)
 
+    def begin_nested(self):
+        return SimpleNamespace(commit=lambda: None, rollback=lambda: None)
+
     def commit(self):
         self.commits += 1
 
@@ -852,6 +855,8 @@ def test_failed_scheduled_monthly_run_is_reclaimed_automatically() -> None:
 
 # ── 공개 글 이미지 재인증 backstop (H-01) ─────────────────────────────────
 
+_RECERTIFY_NOW = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
+
 
 def _withheld_item(revision: int = 3):
     return SimpleNamespace(
@@ -859,27 +864,43 @@ def _withheld_item(revision: int = 3):
     )
 
 
-def _recertify_run(item, *, attempt, state, safe_error_code=None):
-    key = (
-        f"recertify:{item.id}:{item.content_revision}"
-        if attempt == 1
-        else f"recertify:{item.id}:{item.content_revision}:s{attempt}"
+def _recertify_run(
+    item,
+    *,
+    state,
+    safe_error_code=None,
+    revision=None,
+    finished_minutes_ago=60,
+    active_minutes_ago=1,
+):
+    terminal = state not in (
+        OperationRunState.REQUESTED,
+        OperationRunState.QUEUED,
+        OperationRunState.RUNNING,
     )
     return SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="RECERTIFY_PUBLISHED_IMAGE",
         state=state,
-        idempotency_key=key,
         safe_error_code=safe_error_code,
-        request_payload={"source_id": str(item.id)},
+        request_payload={
+            "source_id": str(item.id),
+            "revision": item.content_revision if revision is None else revision,
+        },
+        completed_at=(
+            _RECERTIFY_NOW - timedelta(minutes=finished_minutes_ago) if terminal else None
+        ),
+        heartbeat_at=None,
+        started_at=None,
+        queued_at=None,
+        requested_at=_RECERTIFY_NOW - timedelta(minutes=active_minutes_ago),
     )
 
 
 def _run_recertify_sweep(monkeypatch, session):
-    now = datetime(2026, 9, 8, 12, 0, tzinfo=UTC)
     dispatched: list[tuple[str, list[str], dict[str, object]]] = []
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
-    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: _RECERTIFY_NOW)
     monkeypatch.setattr(
         autonomous_recovery.celery_app,
         "send_task",
@@ -903,6 +924,8 @@ def test_recertify_sweep_redispatches_a_cleared_certificate(monkeypatch) -> None
     assert run.operation_type == "RECERTIFY_PUBLISHED_IMAGE"
     assert run.state == OperationRunState.REQUESTED
     assert run.idempotency_key == f"recertify:{item.id}:3:s1"
+    # 시도 수는 키가 아니라 payload에 적힌 판으로 센다.
+    assert run.request_payload["revision"] == 3
     assert kwargs["headers"]["operation_run_id"] == str(run.id)
     assert kwargs["task_id"] == run.task_id
 
@@ -911,15 +934,33 @@ def test_recertify_sweep_leaves_an_in_flight_run_alone(monkeypatch) -> None:
     item = _withheld_item()
     session = _RecoverySession(
         recertify_candidates=(item,),
-        recertify_runs=(
-            _recertify_run(item, attempt=1, state=OperationRunState.RUNNING),
-        ),
+        recertify_runs=(_recertify_run(item, state=OperationRunState.RUNNING),),
     )
 
     result, dispatched = _run_recertify_sweep(monkeypatch, session)
 
     assert result["image_recertifications"] == 0
     assert dispatched == [] and session.added == []
+
+
+def test_recertify_sweep_ignores_a_stranded_run_and_an_older_revision(monkeypatch) -> None:
+    """좌초한 실행과 지난 판의 실행은 지금 판의 자동 복구를 막지 않는다."""
+    item = _withheld_item()
+    session = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            # 하드 제한(900초)을 한참 넘긴 RUNNING — 유실된 실행이다.
+            _recertify_run(
+                item, state=OperationRunState.RUNNING, active_minutes_ago=120
+            ),
+            # 지난 판의 진행 중 실행 — 시작하자마자 현재 판을 보고 끝난다.
+            _recertify_run(item, state=OperationRunState.QUEUED, revision=2),
+        ),
+    )
+
+    result, _dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 1
 
 
 def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) -> None:
@@ -930,7 +971,6 @@ def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) ->
         recertify_runs=(
             _recertify_run(
                 item,
-                attempt=1,
                 state=OperationRunState.FAILED,
                 safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
             ),
@@ -943,40 +983,73 @@ def test_recertify_sweep_stops_at_an_operator_required_rejection(monkeypatch) ->
     assert dispatched == [] and session.added == []
 
 
-def test_recertify_sweep_retries_a_transient_failure_until_the_budget_is_spent(
-    monkeypatch,
-) -> None:
+def test_recertify_sweep_waits_out_the_cooldown(monkeypatch) -> None:
+    """방금 끝난 실패 위에 곧바로 다음 시도를 얹지 않는다 — 예산이 몇 분에 타버린다."""
     item = _withheld_item()
-    transient = [
-        _recertify_run(
-            item,
-            attempt=attempt,
-            state=OperationRunState.FAILED,
-            safe_error_code="PROVIDER_UNAVAILABLE",
-        )
-        for attempt in (1, 2)
-    ]
-    session = _RecoverySession(recertify_candidates=(item,), recertify_runs=transient)
-
-    result, dispatched = _run_recertify_sweep(monkeypatch, session)
-
-    assert result["image_recertifications"] == 1
-    assert session.added[0].idempotency_key == f"recertify:{item.id}:3:s3"
-
-    spent = _RecoverySession(
+    session = _RecoverySession(
         recertify_candidates=(item,),
         recertify_runs=(
-            *transient,
             _recertify_run(
                 item,
-                attempt=3,
                 state=OperationRunState.FAILED,
-                safe_error_code="PROVIDER_UNAVAILABLE",
+                safe_error_code="COST_BLOCKED",
+                finished_minutes_ago=5,
             ),
         ),
     )
 
-    exhausted, no_dispatch = _run_recertify_sweep(monkeypatch, spent)
+    result, dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 0
+    assert dispatched == []
+
+
+def test_recertify_sweep_redispatches_a_failure_the_task_never_reported(monkeypatch) -> None:
+    """태스크가 아예 시작하지 못한 실패도 예산 안에서 다시 이어간다."""
+    item = _withheld_item()
+    session = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            _recertify_run(
+                item, state=OperationRunState.FAILED, safe_error_code="BROKER_UNAVAILABLE"
+            ),
+        ),
+    )
+
+    result, _dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 1
+    assert session.added[0].idempotency_key == f"recertify:{item.id}:3:s2"
+
+
+def test_recertify_sweep_records_the_spent_budget_once_and_then_stops(monkeypatch) -> None:
+    """예산이 끝나면 유료 호출 없는 마지막 실행 하나만 더 만들고 멈춘다."""
+    item = _withheld_item()
+    spent = [
+        _recertify_run(
+            item, state=OperationRunState.FAILED, safe_error_code="PROVIDER_UNAVAILABLE"
+        )
+        for _ in range(3)
+    ]
+    session = _RecoverySession(recertify_candidates=(item,), recertify_runs=spent)
+
+    result, _dispatched = _run_recertify_sweep(monkeypatch, session)
+
+    assert result["image_recertifications"] == 1
+
+    closed = _RecoverySession(
+        recertify_candidates=(item,),
+        recertify_runs=(
+            *spent,
+            _recertify_run(
+                item,
+                state=OperationRunState.FAILED,
+                safe_error_code="PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
+            ),
+        ),
+    )
+
+    exhausted, no_dispatch = _run_recertify_sweep(monkeypatch, closed)
 
     assert exhausted["image_recertifications"] == 0
-    assert no_dispatch == [] and spent.added == []
+    assert no_dispatch == [] and closed.added == []
