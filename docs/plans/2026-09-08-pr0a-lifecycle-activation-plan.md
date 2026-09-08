@@ -515,14 +515,12 @@ Expected: 첫 테스트 FAIL (`'DONE' == 'WAITING'`), 둘째 PASS.
     dns_verified = bool(state.dns_verified_at) or live_ok
     # 배지(admin/lib/hospital-domain-status.ts)와 같은 규칙: 발급 중·실패는 관측이
     # 정상이어도 그대로 드러낸다. 관측은 인증서 상태가 비어 있거나 DONE일 때만 완료 근거다.
-    cert_in_progress = state.cert_job_state in (
-        DomainCertJobState.ISSUING.value,
-        DomainCertJobState.FAILED.value,
-    )
     cert_done = state.cert_job_state == DomainCertJobState.DONE.value or (
-        live_ok and not cert_in_progress
+        live_ok and not state.cert_job_state
     )
 ```
+
+> **실행 기록 (2026-09-08):** 처음 계획한 "ISSUING/FAILED가 아니면" 규칙은 선언된 상태 `WAITING`을 놓쳐 배지와 달랐다(Codex 지적). 배지의 `liveCheckProvesServing`과 **동일하게** "비어 있거나 DONE"으로 정정했고 WAITING/FAILED + live 테스트를 추가했다.
 
 - [ ] **Step 4: 통과 확인**
 
