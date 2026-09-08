@@ -24,6 +24,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.admin.operations_center_serializers import requires_operator_action
+from app.api.admin.operations_links import hospital_incidents_href, incident_href
 from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
@@ -1538,19 +1540,30 @@ async def _blocked_links_for(
 ) -> dict[uuid.UUID, dict[str, Any]]:
     """글별 "운영 센터에서 조치" 링크 — 항목 수와 무관하게 쿼리 2회.
 
-    경로는 운영 센터가 쓰는 상세 경로 규칙 그대로다
-    (`operations_center_serializers.serialize_incident_row`의 detail_path,
-    `retry_action`의 run 경로). 화면마다 주소를 새로 지으면 링크가 죽는다.
+    주소는 `operations_links`가 정한다 — 운영 센터 화면은 `/operations` 하나뿐이고
+    상세는 질의값으로 연다. 화면마다 주소를 새로 지으면 링크는 없는 경로로 간다.
+
+    인시던트는 `requires_operator_action`(운영 센터 큐·현황 카드와 같은 정의)이 참일
+    때만 링크한다 — 약속한 시간 안에서 재시도 중인 인시던트는 자동 복구이고, 그것을
+    사람의 할 일로 새어 나가게 하면 안 된다. run은 그 글의 **가장 최근** 실행만 본다.
+    실패 뒤에 성공한 재시도가 있으면 지난 실패는 이미 지나간 일이다.
     사람이 볼 원인은 인시던트가 실패 run보다 앞선다 — 인시던트에는 조치 문장이 있다.
     """
     if not item_ids:
         return {}
     keys = [str(item_id) for item_id in item_ids]
+    now = datetime.now(timezone.utc)
     run_source = OperationRun.request_payload["source_id"].as_string()
 
     incident_rows = (
         await db.execute(
-            select(Incident.source_id, Incident.id, Incident.next_action)
+            select(
+                Incident.source_id,
+                Incident.id,
+                Incident.next_action,
+                Incident.state,
+                Incident.sla_due_at,
+            )
             .where(
                 Incident.hospital_id == hospital_id,
                 Incident.source_id.in_(keys),
@@ -1561,10 +1574,13 @@ async def _blocked_links_for(
     ).all()
     run_rows = (
         await db.execute(
-            select(run_source, OperationRun.id, OperationRun.safe_error_message)
+            select(
+                run_source,
+                OperationRun.safe_error_message,
+                OperationRun.state,
+            )
             .where(
                 OperationRun.hospital_id == hospital_id,
-                OperationRun.state == OperationRunState.FAILED.value,
                 OperationRun.operation_type.in_(_CONTENT_BLOCK_OPERATIONS),
                 run_source.in_(keys),
             )
@@ -1573,22 +1589,29 @@ async def _blocked_links_for(
     ).all()
 
     run_links: dict[uuid.UUID, dict[str, Any]] = {}
-    for source_id, run_id, message in run_rows:
-        run_links.setdefault(
-            uuid.UUID(source_id),
-            {
-                "kind": "run",
-                "href": f"/operations/hospitals/{hospital_id}/runs/{run_id}",
-                "next_action": message,
-            },
-        )
+    newest_seen: set[uuid.UUID] = set()
+    for source_id, message, run_state in run_rows:
+        item_id = uuid.UUID(source_id)
+        if item_id in newest_seen:
+            continue
+        newest_seen.add(item_id)
+        if run_state != OperationRunState.FAILED.value:
+            # 최신 실행이 실패가 아니면 이 글은 이미 복구됐다.
+            continue
+        run_links[item_id] = {
+            "kind": "run",
+            "href": hospital_incidents_href(hospital_id),
+            "next_action": message,
+        }
     incident_links: dict[uuid.UUID, dict[str, Any]] = {}
-    for source_id, incident_id, next_action in incident_rows:
+    for source_id, incident_id, next_action, incident_state, sla_due_at in incident_rows:
+        if not requires_operator_action(incident_state, sla_due_at, now):
+            continue
         incident_links.setdefault(
             uuid.UUID(source_id),
             {
                 "kind": "incident",
-                "href": f"/operations/hospitals/{hospital_id}/incidents/{incident_id}",
+                "href": incident_href(hospital_id, incident_id),
                 "next_action": next_action,
             },
         )

@@ -2,7 +2,12 @@
 
 import { useEffect, useState } from 'react'
 import { fetchAPI } from '@/lib/api'
-import { describeTrackingSet, latestMentionLabel, thisMonthTargets } from '@/lib/content-signals'
+import {
+  describeTrackingSet,
+  isCurrentKoreanMonth,
+  latestMentionLabel,
+  thisMonthTargets,
+} from '@/lib/content-signals'
 import { EXPOSURE_ACTION_LIST_LIMIT } from '@/lib/exposure-action-counts'
 import type { AIQueryTarget, ExposureAction } from '@/types'
 
@@ -47,6 +52,8 @@ export function ReadOnlySignals({
   }, [hospitalId])
 
   const monthTargets = thisMonthTargets(targets, year, month)
+  // 지난달을 조회 중인데 "이번 달"이라고 쓰면 화면이 거짓말을 한다.
+  const monthLabel = isCurrentKoreanMonth(year, month) ? '이번 달' : `${month}월`
 
   return (
     <section className="mt-8 grid gap-4 lg:grid-cols-2">
@@ -57,14 +64,13 @@ export function ReadOnlySignals({
       )}
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
-        <h3 className="text-sm font-semibold text-slate-800">이번 달 환자 질문</h3>
+        <h3 className="text-sm font-semibold text-slate-800">{monthLabel} 환자 질문</h3>
         <p className="mt-1 text-xs text-slate-500">
-          {month}월에 확인하는 질문입니다. ‘측정 대상’으로 표시된 질문만 실제로 측정하며,
-          질문 추가·수정은 환자 질문 화면에서 합니다.
+          {monthLabel}에 확인하는 질문입니다. ‘측정 대상’으로 표시된 질문만 실제로 측정합니다.
         </p>
         <ul className="mt-3 divide-y divide-slate-100">
           {!loading && monthTargets.length === 0 && (
-            <li className="py-3 text-sm text-slate-400">이번 달 환자 질문이 없습니다.</li>
+            <li className="py-3 text-sm text-slate-400">{monthLabel} 환자 질문이 없습니다.</li>
           )}
           {monthTargets.map((target) => (
             <li key={target.id} className="py-3">

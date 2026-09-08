@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   ROW_FILTERS,
   ROW_FILTER_LABELS,
+  blockedHint,
   canConfirmSample,
   describeRowState,
   matchesRowFilter,
@@ -38,18 +39,33 @@ test('공개 보류는 사유를 그대로 보여 준다', () => {
   })
 })
 
-test('차단은 운영 센터 링크와 다음 조치를 함께 준다', () => {
+test('차단은 실제로 열리는 운영 센터 링크와 다음 조치를 함께 준다', () => {
+  const href = '/operations?queue=incidents&hospital_id=h1&detail=incident:i1'
   const described = describeRowState(
     rowState({
       kind: 'blocked',
       label: '차단',
       reason: null,
-      link: { kind: 'incident', href: '/operations/hospitals/h1/incidents/i1', next_action: '이미지 재생성' },
+      link: { kind: 'incident', href, next_action: '이미지 재생성' },
     }),
   )
   assert.equal(described.tone, 'warn')
   assert.equal(described.detail, '이미지 재생성')
-  assert.equal(described.href, '/operations/hospitals/h1/incidents/i1')
+  // 운영 센터 화면은 `/operations` 하나뿐이다 — 다른 경로는 존재하지 않는다.
+  assert.ok(described.href?.startsWith('/operations?queue=incidents&hospital_id='))
+  assert.equal(described.href, href)
+})
+
+test('차단 카드 문구는 갈 곳이 있을 때만 운영 센터를 가리킨다', () => {
+  const routable = item({ kind: 'blocked' })
+  routable.row_state.link = {
+    kind: 'incident',
+    href: '/operations?queue=incidents&hospital_id=h1&detail=incident:i1',
+    next_action: null,
+  }
+  assert.equal(blockedHint([routable, item({ kind: 'public' })]), '운영 센터에서 조치')
+  assert.equal(blockedHint([item({ kind: 'blocked' })]), '자동 복구 대기')
+  assert.equal(blockedHint([item({ kind: 'public' })]), '자동 복구 대기')
 })
 
 test('예정·초안 생성 중은 사람이 할 일이 아니다', () => {

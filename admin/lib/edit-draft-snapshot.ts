@@ -73,12 +73,20 @@ export function clearDraftSnapshot(hospitalId: string, contentId: string): void 
   window.sessionStorage.removeItem(buildDraftSnapshotKey(hospitalId, contentId))
 }
 
-/** 저장된 스냅샷이 현재 편집중인 값과 실질적으로 다를 때만 복구 배너를 띄우기 위한 비교. */
+/** 저장된 스냅샷이 현재 편집중인 값과 실질적으로 다를 때만 복구 배너를 띄우기 위한 비교.
+ *
+ * 참고 자료까지 본다 — 자동저장(`editFieldsDiffer`)은 참고 자료만 고친 초안도 남기므로,
+ * 여기서 빼면 그 초안은 "차이 없음"으로 판정돼 배너 없이 조용히 지워진다. */
 export function draftDiffersFromCurrent(
   draft: ContentDraftSnapshot,
-  current: { title: string; body: string; meta_description: string },
+  current: EditableDraftFields,
 ): boolean {
-  return draft.title !== current.title || draft.body !== current.body || draft.meta_description !== current.meta_description
+  return (
+    draft.title !== current.title ||
+    draft.body !== current.body ||
+    draft.meta_description !== current.meta_description ||
+    referencesDiffer(draft.references, current.references)
+  )
 }
 
 export interface EditableDraftFields {

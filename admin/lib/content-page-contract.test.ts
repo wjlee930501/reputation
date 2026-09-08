@@ -52,11 +52,34 @@ test('행 상태는 서버 판정을 그대로 쓰고, 표본만 사람이 확�
   assert.match(page, /문제 발견 · 비공개 후 재생성/)
 })
 
-test('반려는 표본 확인 흐름 안에서만 쓰인다', () => {
+test('공개 글의 비공개는 표본 여부와 무관하고, "문제 없음" 확인만 표본으로 제한한다', () => {
+  // 결함이 확인된 공개 글은 표본이 아니어도 사람이 내릴 수 있어야 한다(의료광고 안전
+  // 통제). 반대로 "문제 없음" 확인은 표본만 누른다 — 월 12~20번의 헛클릭을 만들지 않는다.
   assert.match(page, /confirmAction, setConfirmAction\] = useState<'reject' \| null>/)
-  const rejectCall = page.indexOf('handleReject(selected.id)')
-  const sampleBlock = page.indexOf('문제 발견 · 비공개 후 재생성')
-  assert.ok(rejectCall > 0 && sampleBlock > 0)
+  const start = page.indexOf(": selected.status === 'PUBLISHED' ? (")
+  const end = page.indexOf("selected.status === 'CANCELLED' ?", start)
+  assert.ok(start > 0 && end > start)
+  const published = page.slice(start, end)
+
+  const sampleGate = published.indexOf('selectedSample ? (')
+  const confirm = published.indexOf('문제 없음 · 확인 완료')
+  const notSample = published.indexOf('표본 확인 대상이 아닙니다')
+  const reject = published.indexOf('문제 발견 · 비공개 후 재생성')
+
+  // 확인 버튼은 표본 분기 안에 있고, 비공개 버튼은 그 분기가 모두 끝난 뒤에 온다.
+  assert.ok(sampleGate > 0 && confirm > sampleGate)
+  assert.ok(notSample > confirm)
+  assert.ok(reject > notSample)
+  assert.match(published, /setConfirmAction\('reject'\)/)
+  // 되돌릴 수 없는 조작이므로 확인 대화상자를 거친다.
+  assert.match(page, /role="alertdialog"/)
+  assert.match(page, /handleReject\(selected\.id\)/)
+})
+
+test('운영 센터로 가는 링크는 실제로 열리는 주소다', () => {
+  // `/operations` 한 화면 + 질의값이 전부다 — 병원별 하위 경로는 존재하지 않는다.
+  assert.match(page, /hospitalOperationsHref\(id, '\/operations\?queue=incidents'\)/)
+  assert.doesNotMatch(page, /href="\/operations\/hospitals\//)
 })
 
 test('운영 센터 딥링크와 단건 새로고침은 유지된다', () => {
@@ -76,6 +99,10 @@ test('하단 환자 질문·노출 보완 제안은 읽기만 한다', () => {
   // GET 외의 요청은 한 건도 없다 — 이 화면은 정보로만 보여 준다.
   assert.doesNotMatch(signals, /method:/)
   assert.doesNotMatch(signals, /'POST'|'PATCH'|'DELETE'/)
+  // 읽기 전용 섹션은 다른 화면에서 할 일을 지시하지 않는다.
+  assert.doesNotMatch(signals, /질문 추가·수정/)
+  // 지난달을 보고 있으면 "이번 달"이라고 쓰지 않는다.
+  assert.match(signals, /isCurrentKoreanMonth\(year, month\)/)
 })
 
 test('편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한다', () => {

@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { describeTrackingSet, latestMentionLabel, thisMonthTargets } from './content-signals.ts'
+import {
+  describeTrackingSet,
+  isCurrentKoreanMonth,
+  latestMentionLabel,
+  thisMonthTargets,
+} from './content-signals.ts'
 
 test('고정 관측 슬롯에 들어간 질문만 측정 대상으로 말한다', () => {
   assert.equal(describeTrackingSet({ in_tracking_set: true }), '측정 대상')
@@ -27,5 +32,18 @@ test('측정 결과가 없으면 0%로 지어내지 않는다', () => {
   assert.equal(
     latestMentionLabel({ latest_sov_pct: 12.34, last_measured_at: null }),
     '언급률 12.3%',
+  )
+})
+
+test('"이번 달"은 KST 기준 이번 달일 때만 쓴다', () => {
+  const now = new Date('2026-09-30T16:30:00Z') // KST 2026-10-01
+  assert.equal(isCurrentKoreanMonth(2026, 10, now), true)
+  assert.equal(isCurrentKoreanMonth(2026, 9, now), false)
+})
+
+test('측정 날짜는 KST로 읽는다 — UTC 저녁 측정은 다음 날이다', () => {
+  assert.equal(
+    latestMentionLabel({ latest_sov_pct: 12, last_measured_at: '2026-09-01T16:30:00Z' }),
+    '언급률 12% (9/2 측정)',
   )
 })
