@@ -107,6 +107,7 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
 from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import build_aeo_site, trigger_v0_report
@@ -668,6 +669,10 @@ async def update_profile(
     프로파일 수정.
     profile_complete=True 설정 시 V0 분석과 콘텐츠 허브 준비를 각각 트리거.
     """
+    # 프로필 완료 해제와 활성화/재개/일시정지가 같은 잠금 아래서 결정되게 한다 — 잠금 없이
+    # 읽으면 일시정지 병원에서 '완료 해제'와 '재개'가 교차해 ACTIVE + profile_complete=False
+    # (공개 404)가 될 수 있다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id)
 
     if body.keywords is not None:
@@ -1066,6 +1071,8 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
     판정과 전환은 같은 행 잠금 안에서 일어나야 한다 — 게이트를 읽은 뒤 전환하기까지
     사이에 들어온 `/pause` 커밋이 조용히 덮이면 일시 정지가 되살아난다.
     """
+    # 프로필 완료 해제(`PATCH /profile`)와 같은 잠금을 먼저 잡는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id, for_update=True)
     if h.status == HospitalStatus.ACTIVE:
         return {
@@ -1109,6 +1116,8 @@ async def activate_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(g
 @router.post("/{hospital_id}/pause", response_model=HospitalDetail)
 async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """병원 운영을 일시 정지 (ACTIVE 또는 PENDING_DOMAIN 상태에서만 허용)."""
+    # 프로필 완료 해제(`PATCH /profile`)와 같은 잠금을 먼저 잡는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id)
 
     if h.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
@@ -1147,6 +1156,9 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
     인증서 발급은 후속 배치의 몫이라 재개를 막지 않는다. DNS 확인 결과는
     Admin 배지가 읽는 관측 필드에 남긴다.
     """
+    # 게이트 판정 전에 잡는다 — 프로필 완료 해제와 재개가 교차하면 ACTIVE +
+    # profile_complete=False(공개 404)로 끝난다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     h = await _get_or_404(db, hospital_id)
 
     if h.status != HospitalStatus.PAUSED:

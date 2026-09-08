@@ -304,8 +304,23 @@ class _LifecycleDB:
         self.locked_strategy = locked_strategy
         #: 잠금 아래서 실제로 읽어온 도메인들 — 재조회가 일어났는지 테스트가 확인한다.
         self.locked_reads = []
+        #: 잡힌 병원 advisory lock. 첫 읽기보다 먼저 잡혔는지까지 확인한다.
+        self.locks = []
+        self.locked_before_first_read = None
 
-    async def get(self, model, object_id):
+    def get_bind(self):
+        # advisory lock 헬퍼는 Postgres 바인딩에서만 동작한다 — 잠금 호출을 관찰하려면 필요하다.
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    async def execute(self, stmt):
+        # 이 fake에 오는 execute는 병원 advisory lock 뿐이다 (나머지 조회는 get/scalar).
+        if "pg_advisory_xact_lock" in str(stmt):
+            self.locks.append(self.hospital.id)
+        return SimpleNamespace(scalar_one=lambda: None, scalar=lambda: None)
+
+    async def get(self, model, object_id, *, with_for_update=False):
+        if self.locked_before_first_read is None:
+            self.locked_before_first_read = bool(self.locks)
         return self.hospital if self.hospital.id == object_id else None
 
     async def scalar(self, stmt):
@@ -421,6 +436,9 @@ async def test_pause_from_active_or_pending(start_status):
     assert response["status"] == HospitalStatus.PAUSED
     assert db.committed is True
     assert [a.action for a in db.added] == ["pause_hospital"]
+    # 상태 전환은 프로필 완료 해제와 같은 잠금 아래서 결정돼야 한다.
+    assert db.locks == [hospital.id]
+    assert db.locked_before_first_read is True
 
 
 @pytest.mark.parametrize(
@@ -449,6 +467,9 @@ async def test_resume_to_active_when_gates_and_site_live_met():
     assert response["status"] == HospitalStatus.ACTIVE
     assert db.committed is True
     assert [a.action for a in db.added if hasattr(a, "action")] == ["resume_hospital"]
+    # 게이트 판정 자체가 잠금 아래에 있어야 '완료 해제'와 교차하지 않는다.
+    assert db.locks == [hospital.id]
+    assert db.locked_before_first_read is True
 
 
 async def test_resume_allows_missing_schedule():

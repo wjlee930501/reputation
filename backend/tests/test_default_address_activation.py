@@ -5,6 +5,7 @@ DM-F3: Default-address go-live and custom-domain connect are independent.
 """
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -21,9 +22,24 @@ class FakeDB:
         self.committed = False
         self.added = []
         self.locked_reads: list[bool] = []
+        #: 잡힌 병원 advisory lock. 첫 읽기보다 먼저 잡혔는지까지 확인한다.
+        self.locks: list[uuid.UUID] = []
+        self.locked_before_first_read = None
+
+    def get_bind(self):
+        # advisory lock 헬퍼는 Postgres 바인딩에서만 동작한다 — 잠금 호출을 관찰하려면 필요하다.
+        return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
+
+    async def execute(self, stmt):
+        # 이 fake에 오는 execute는 병원 advisory lock 뿐이다.
+        if "pg_advisory_xact_lock" in str(stmt):
+            self.locks.append(self.hospital.id)
+        return SimpleNamespace(scalar_one=lambda: None, scalar=lambda: None)
 
     async def get(self, model, object_id, *, with_for_update=False):
         # 상태 전환 엔드포인트는 판정과 쓰기를 한 잠금 안에 두려고 FOR UPDATE로 읽는다.
+        if self.locked_before_first_read is None:
+            self.locked_before_first_read = bool(self.locks)
         self.locked_reads.append(bool(with_for_update))
         return self.hospital if self.hospital.id == object_id else None
 
@@ -83,6 +99,9 @@ async def test_activate_without_custom_domain():
     assert db.committed is True
     # 게이트 판정과 전환은 잠긴 행 위에서 일어난다 (동시 /pause가 덮이지 않도록).
     assert db.locked_reads == [True]
+    # 프로필 완료 해제(`PATCH /profile`)와 같은 advisory lock을 첫 읽기 전에 잡는다.
+    assert db.locks == [hospital.id]
+    assert db.locked_before_first_read is True
 
 
 @pytest.mark.asyncio
