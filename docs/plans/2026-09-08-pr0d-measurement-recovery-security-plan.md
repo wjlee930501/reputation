@@ -14,6 +14,20 @@
 
 ---
 
+## 실행 결과 (2026-09-09)
+
+| Task | 커밋 | 검수 |
+|---|---|---|
+| 1 측정 최종성 한 함수·milestone 격리 (H-11) | `8de0590` | `coverage_is_final`로 전달 게이트·투영기·09:00 요약이 같은 판정; 리포트별 격리로 한 병원의 LIMITED가 전체 milestone을 멈추지 않음. 남은 것: `_monthly_report_measurement_is_final`과의 이중 술어(등록부 §2.3) |
+| 2 V0 게이트·보류 사유 (H-12 일부) | `55733be` | `profile_complete` 전 V0 시작 불가(API·worker·화면); 비용 보류 continuation에 `safe_error_message`; 이어가기 예산 소진이 인시던트로 표면화. lineage 재사용(재구매 방지)은 PR-0D-2 |
+| 3 사이트 준비 복구 예산 (H-13) | `b6440f7` → `9df28d9` | 병원별 `REBUILD_SITE` run 24h 창·FAILED 3회 → `SITE_BUILD_RETRIES_EXHAUSTED` 하나(원인별 dedupe, 자동 배정, outbox Slack); 스윕 소유 run은 시도마다 generic 인시던트를 열지 않음; 복구된 인시던트는 새 실패에만 touch/재오픈(episode+1); 운영자 재시도 성공 시 `record_task_success`가 회수; 두 replica 경합은 savepoint로 흡수. 기록만: `_redispatch_operation_run` stale-QUEUED 창, RETRY→QUEUED `queued_at` 보존, 성공 반복 병원의 UTC 하루 1회 상한 |
+| 4 서명된 actor 단언 (H-10, SEC-01) | `68cbe19` | BFF `X-Admin-Actor-Assertion`(HMAC, 120초) 필수, 배치 `X-Admin-Actor-System`; 운영 배포 전 `BFF_ACTOR_SECRET` 생성(런북). 재생 저장소 유예(§2.3) |
+| 5 인시던트 배정 (H-15) | PR-1D `3ca8d5a`/`dc537f3` | PR-1D로 이동 |
+| 6 전달 hash 결합 (M-08) | `d04f988` | 내려받은 바이트 hash로 결합, 대체된 판 전달 거부 |
+| 7 환자 질문 시드 (M-18) + enum 정리 (M-20) | `46ca2c0`, `d525b25` | 비면 시스템이 `/seed-from-matrix`와 같은 멱등 시드; 마이그레이션 `0071`이 `PLAN_8` 행을 `PLAN_12`로 옮긴 뒤 enum 교체·CHECK — 운영 사전 데이터 점검 불필요 |
+| 8 전체 검증 | 체크포인트 2 기록 참조 | 깨끗한 DB 전체 suite·admin·site·copy-guard·db-budget-guard |
+| 검토 | — | Task 3: Fable·Codex 1라운드(계약 위반 4건 수정 `9df28d9`) + 2라운드 확인. 나머지 Task는 각 커밋 시점 검수 |
+
 ## 환경 준비
 
 PR-0A와 동일한 환경 준비 명령(`docs/plans/2026-09-08-pr0a-lifecycle-activation-plan.md` 참조). 마이그레이션이 있는 Task 7 뒤에는 세 DB 모두 `alembic upgrade head`.

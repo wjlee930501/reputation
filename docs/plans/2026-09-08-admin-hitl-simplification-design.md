@@ -1,7 +1,7 @@
 # 무결성 수정 + Admin HITL 최소화 설계 — 2026-09-08
 
 문서 버전: **1.0** · 기준 커밋: `59acabe` · 근거: [무결성·HITL 검토](../reviews/2026-09-08-integrity-hitl-review.md)
-상태: **설계 승인됨 · Phase 0 진행 중 (PR-0A·PR-0B 완료 2026-09-08)** (접근 A "예외 인박스형 재구성" + SEC-01 "BFF 서명 actor")
+상태: **설계 승인됨 · Phase 0 완료(PR-0A~0C) · Phase 1 §4.1~4.5 구현됨(PR-1A~1E, 2026-09-09) · PR-0D 진행** (접근 A "예외 인박스형 재구성" + SEC-01 "BFF 서명 actor")
 
 ## 1. 목표와 비목표
 
@@ -104,6 +104,8 @@
 ```
 
 삭제: `/hospitals/{id}/{dashboard,onboarding,profile,schedule,wiki,essence,query-targets,exposure-actions}` (8개 라우트, 합계 ≈11,000줄). 옛 URL은 새 탭으로 redirect.
+
+**구현됨(2026-09-09, PR-1E `8be9fbd`)**: 8개 라우트는 `redirect()` 한 줄 + `admin/lib/route-redirects.ts` 매핑으로 대체(−12,357줄). redirect 제거 예정일 **2026-10-09**. 그 전에 백엔드가 만드는 옛 딥링크(등록부 §2.3)를 새 탭 경로로 옮긴다.
 
 ### 4.2 세 가지 명시 상태 (헤더·목록·현황이 같은 함수를 씀)
 

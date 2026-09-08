@@ -204,9 +204,9 @@ Site는 병원별 별도 코드 대신 공통 `/{slug}` 페이지·원장 소개
 
 ## 10. Admin 인증과 운영 화면
 
-Admin은 내부 전체 병원을 다루는 콘솔이다. 병원별 고객 로그인이나 AE별 병원 배정 ACL로 설계되어 있지 않다. 주요 화면은 병원·온보딩·프로파일·Wiki/Essence·질문/보완 행동·콘텐츠·일정·리포트, 전체 리드·운영센터·계정 관리다.
+Admin은 내부 전체 병원을 다루는 콘솔이다. 병원별 고객 로그인이나 AE별 병원 배정 ACL로 설계되어 있지 않다. 화면은 병원 목록, 병원별 탭 4개(`현황`/`병원 정보`/`콘텐츠`/`보고서`), 계약 등록(`/hospitals/new`), 리드, 운영센터, 계정 관리다. 옛 8개 병원 경로는 [redirect 매핑](../../admin/lib/route-redirects.ts)으로 새 탭에 연결되며 2026-10-09 제거 예정이다. `현황`은 [3상태](../../backend/app/services/hospital_states.py)와 [overview](../../backend/app/api/admin/hospital_overview.py)의 예외 카드(서버가 허용한 행동만 표시), `병원 정보`는 사실·브랜드·사진·근거 자료·공개 주소, `콘텐츠`는 월 표(행 상태 [content_row_state](../../backend/app/services/content_row_state.py))·발행 일정·읽기 전용 신호, `보고서`는 목록과 열기·전달·정정 다이얼로그 하나다.
 
-브라우저는 같은 출처 BFF를 호출한다. 로그인 후 HMAC 서명된 7일 세션 cookie와 CSRF 검증을 사용한다. BFF는 허용된 API 경로만 전달하고 서명 세션에서 actor를 구성하며 server-only `X-Admin-Key`를 붙인다. API 읽기의 짧은 활성 상태 캐시와 달리 변경 요청은 세션 해제를 다시 확인한다. OWNER/OPERATOR 역할과 일부 담당자 조건은 서버에서 현재 계정으로 검증한다.
+브라우저는 같은 출처 BFF를 호출한다. 로그인 후 HMAC 서명된 7일 세션 cookie와 CSRF 검증을 사용한다. BFF는 허용된 API 경로만 전달하고 서명 세션에서 actor를 구성하며 server-only `X-Admin-Key`를 붙인다. 사람이 일으키는 변경 요청에는 [actor 단언](../../admin/lib/actor-assertion.ts)(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET` HMAC, 120초)을 붙이고 Backend [security](../../backend/app/core/security.py)가 검증한다. 배치·CLI는 `X-Admin-Actor-System`으로 통과한다. API 읽기의 짧은 활성 상태 캐시와 달리 변경 요청은 세션 해제를 다시 확인한다. OWNER/OPERATOR 역할과 일부 담당자 조건은 서버에서 현재 계정으로 검증한다.
 
 Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으로 독립적인 병원 테넌트 인증이 완성되는 구조는 아니다. 키 보유자의 권한과 일반 브라우저 운영자의 역할 통제를 구분한다. Worker dispatch도 서명된 목적·대상을 검사하므로 예전 unsigned `celery call` 예제를 운영 복구 방법으로 쓰지 않는다.
 

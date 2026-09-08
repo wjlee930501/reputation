@@ -721,7 +721,7 @@ def test_report_queue_does_not_hide_stale_monthly_runs() -> None:
 def test_onboarding_steps_name_the_exact_saved_or_verified_outcome() -> None:
     hospital = Hospital(id=uuid.uuid4(), name="테스트의원", slug="test-clinic")
 
-    assert "병원 기본 정보 탭" in next_onboarding_step(hospital)
+    assert "병원 정보 탭" in next_onboarding_step(hospital)
     assert "저장" in next_onboarding_step(hospital)
     hospital.profile_complete = True
     assert "공개 정보" in next_onboarding_step(hospital)
@@ -769,7 +769,7 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert all("해당 버튼이 없으면" not in action for action in actions.values())
     assert all("개발팀에 병원명" not in action for action in actions.values())
     assert "“저장”" in actions["core_profile"]
-    assert "병원 기본 정보 탭" in actions["core_profile"]
+    assert "병원 정보 탭" in actions["core_profile"]
     assert all("프로파일" not in action for action in actions.values())
     assert "“근거 추출”" in actions["essence_sources"]
     assert "시스템 자동 검수" in actions["essence_philosophy"]

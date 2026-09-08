@@ -10,6 +10,17 @@
 
 ---
 
+## 실행 결과 (2026-09-09)
+
+| Task | 커밋 | 검수 |
+|---|---|---|
+| 1 redirect 8개·탭 4개·사이드바 / 2 옛 화면·전용 lib·테스트 정리 | `8be9fbd` | `route-redirects.ts` 순수 매핑(`?content=` 등 query 보존, hash는 고정 앵커); 탭 `현황·병원 정보·콘텐츠·보고서`; −12,357줄. redirect 제거 예정일 **2026-10-09** |
+| 3 용어 가드 전역화 | `74e2811` | `NEW_SURFACE_PATHS` 삭제, `admin/app`·`admin/lib`·`admin/types` 전체 스캔(`*.test.ts`는 옛 문구 부재 단언용이라 이 층만 제외); 24건 정정; `SITE_BUILD_RETRIES_EXHAUSTED` 운영자 설명; `.gitignore` `/reports/`; 옛 세그먼트 링크 재지정; 리드 전환 모달(죽은 코드) 삭제; 백엔드 `스케줄 탭`·`리포트` 라벨 정정 |
+| 4 한 화면 계약 등록 | `0c1c2c7` → `81ed1cf` | `POST /admin/hospitals/register-contract` 한 트랜잭션(병원·인수 기록 `HANDOFF_ACCEPTED`·감사 3건·리드 CONVERTED); 409 `HOSPITAL_EXISTS`/`LEAD_ALREADY_CONVERTED`/`CONTRACT_REFERENCE_EXISTS`, 404 `LEAD_NOT_FOUND`; 인수 기한(`sla_due_at`)은 CONTRACTED 동안만 큐·마일스톤에서 기한 초과로 읽음; 오류 코드별 문구. 기록만: OWNER 대리 사유 없음, 계약 번호 DB 유니크 없음, 배경 자동 입력 미디스패치(§2.3) |
+| 5 보고서 다이얼로그 1개 | `69590de` | 열기→전달 기록→이력 한 다이얼로그, V0 동일; 정정·철회는 서버 허용 시만 |
+| 6 검증·문서 | 체크포인트 2 기록 참조 | CLAUDE.md 2.6(Admin 화면과 사람의 일), system-map §10, 언어 안내 1.1, 설계 §4.1 구현됨 |
+| 검토 | — | Task 4: Fable·Codex 1라운드(계약 위반 2건 + 오류 구분 수정 `81ed1cf`) + 2라운드 확인 |
+
 ## 환경 준비
 PR-0C 계획의 env 명령(worktree). backend 전체 suite는 Task 6에서만.
 

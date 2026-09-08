@@ -433,7 +433,7 @@ def next_onboarding_step(hospital: Hospital) -> str:
     이름을 남겨 두면 운영자가 없는 화면을 찾는다.
     """
     if not hospital.profile_complete:
-        return "병원 기본 정보 탭에서 필수 병원 정보를 입력하고 저장하세요."
+        return "병원 정보 탭에서 필수 병원 정보를 입력하고 저장하세요."
     if not hospital.site_built:
         return "병원 공개 페이지에 노출할 병원 공개 정보를 확인하세요."
     if not hospital.site_live:
