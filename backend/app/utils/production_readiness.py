@@ -126,7 +126,29 @@ def _database_facts() -> dict[str, Any]:
         live_site_count = int(
             db.execute(text("SELECT count(*) FROM hospitals WHERE site_live IS TRUE")).scalar_one()
         )
+        # 배포 직후 재인증 sweep이 집을 공개 글 수 — 제목 편집이 아닌 레거시 인증 공백이면
+        # 예상 밖 유료 호출(글·주제당 최대 3회)이므로 배포 증거로 남긴다(2026-09-09 체크포인트).
+        recertify_candidate_count = int(
+            db.execute(
+                text(
+                    "SELECT count(*) FROM content_items c JOIN hospitals h ON h.id = c.hospital_id "
+                    "WHERE c.status = 'PUBLISHED' AND c.image_url IS NOT NULL AND c.image_url <> '' "
+                    "AND c.image_policy_verified_at IS NULL "
+                    "AND h.status = 'ACTIVE' AND h.site_live IS TRUE"
+                )
+            ).scalar_one()
+        )
+        null_noise_hash_approvals = int(
+            db.execute(
+                text(
+                    "SELECT count(*) FROM hospital_content_philosophies "
+                    "WHERE status = 'APPROVED' AND evidence_noise_hash IS NULL"
+                )
+            ).scalar_one()
+        )
     return {
+        "recertify_candidate_count": recertify_candidate_count,
+        "null_noise_hash_approvals": null_noise_hash_approvals,
         "schema_current": current_head == expected_head,
         "schema_revision": current_head,
         "expected_schema_revision": expected_head,
