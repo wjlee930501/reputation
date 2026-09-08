@@ -4,6 +4,7 @@ import test from 'node:test'
 
 import {
   describePhotoSourceExclusion,
+  isBlankText,
   isPhotoSource,
   isRequiredTextSource,
   splitEssenceSources,
@@ -23,6 +24,7 @@ test('every photo category is recognised as a photo, not as an evidence source',
     'PHOTO_CLINIC_EXTERIOR',
     'PHOTO_CLINIC_INTERIOR',
     'PHOTO_TREATMENT_ROOM',
+    'PHOTO_BRAND',
   ]) {
     assert.equal(isPhotoSource({ source_type: type }), true, type)
   }
@@ -66,6 +68,14 @@ test('a hospital with photos only has an empty evidence denominator, not a full 
 
   assert.equal(split.textSourceCount, 0)
   assert.equal(split.processedTextCount, 0)
+})
+
+test('the blank-text rule is the server\'s whitespace set, not JS trim()', () => {
+  assert.equal(isBlankText(''), true)
+  // U+FEFF는 trim()이 깎지만 Python str.strip()은 남긴다 — 서버 기준으로 "원문 있음"이다.
+  assert.equal(isBlankText('\ufeff'), false)
+  assert.equal(isBlankText('   \u3000'), true)
+  assert.equal(isBlankText('a'), false)
 })
 
 test('the required-source rule matches the server: excluded, photo and text-less rows are out', () => {

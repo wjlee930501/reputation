@@ -23,6 +23,18 @@ export function isPhotoSource(source: EssenceSourceLike): boolean {
 }
 
 /**
+ * 서버(`essence_sources._BLANK_CHARS`)가 쓰는 공백 집합을 그대로 옮긴 것이다.
+ * JS의 `trim()`을 쓰면 안 된다 — `trim()`은 U+FEFF를 깎지만 U+001C~U+001F·U+0085는
+ * 남기고, Python의 `str.strip()`은 정반대다. 화면과 서버가 같은 본문을 두고 "원문 있음"을
+ * 다르게 판정하면 분모가 갈라진다.
+ */
+const BLANK_TEXT_RE = /^[\u0009\u000a\u000b\u000c\u000d\u001c\u001d\u001e\u001f\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000]*$/
+
+export function isBlankText(value: string | null | undefined): boolean {
+  return BLANK_TEXT_RE.test(value ?? '')
+}
+
+/**
  * 백엔드의 `required_text_source_predicate()`와 같은 규칙 — 제외되지 않고, 사진이 아니고,
  * 원문이 있는 자료만 근거 추출·승인의 필수 자료다.
  *
@@ -39,7 +51,7 @@ export function isRequiredTextSource(source: {
 }): boolean {
   if (source.status === 'EXCLUDED') return false
   if (typeof source.source_type !== 'string' || source.source_type.startsWith('PHOTO_')) return false
-  return (source.raw_text?.trim() ?? '').length > 0
+  return !isBlankText(source.raw_text)
 }
 
 export interface EssenceSourceSplit<T extends EssenceSourceLike> {
