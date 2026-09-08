@@ -18,6 +18,11 @@
 |---|---|---|---|
 | 0 | 공백 문자 집합 parity 가드 | `41affe3` | Codex: 이스케이프 느슨 → `fd`-라운드에서 `\uXXXX`만 허용하는 엄격 토크나이저로 수정 |
 | 1 | H-01 표시 | `6e4d5b2` → `db71a26` → `a16a764` → `691f186` → `fd00a49` | Fable·Codex 5라운드. 남아 있던 "공개" 경로를 순차 발견: 운영 상태 버킷/필터/집계 → 병원 목록·오늘 큐 → 기준 조회 배치화(병원 수 무관 2쿼리)·오늘 큐 SQL CASE·readiness 공개/보류 분리 → 대시보드·온보딩·`load_only`·배열 파라미터. 최종 Fable APPROVE, Codex는 H-16(리포트) 신규 지적 → 등록부로 이관 |
+| 2 | H-01 복구 | `8f8d7a3` → `8921d13` → `dd14c73` → `0bbbdeb` → `259db40` `720c847` `20bbe45` | 재검수 task·CAS write-back·PATCH 디스패치. 검토에서 유료 루프·무음 정지 경로가 연쇄 발견되어 재설계: 예산·마커·인시던트 키를 `content_revision`이 아니라 **이미지 subject(유형+제목)**로, 시작 게이트(보류 코드·예산 소진이면 결제 없음), 행 잠금, 실행 단위 회계(`attempt_count`·`provider_called`), SQL 차단 마커(+가시 인시던트 EXISTS), 쿨다운·in-flight 30분, 운영자 재시도 동일 규칙. Fable 최종 APPROVE; Codex 잔여 2건 반영 후 **검토 종료**(사용자 지시: 라운드 상한) |
+| 3 | H-08 | `96bda45` | fingerprint에서 `scheduled_date` 제거(배포 후 stranded 글마다 1회 신규 시도 허용) |
+| 4 | H-09 | `907a33e` → `1e95338` | Codex: 우회 없음. admin이 409 게이트 문구를 의료광고 안내로 덮던 것 수정. Low 3건(테스트 보강) 등록부 |
+| 5 | H-14 | `4cba988` → `320ace8` | Codex High: 계약 정정이 활성 일정 plan을 동기화하지 않음 → `_sync_active_schedule_plan`(감사 기록). 다운그레이드 시 현재 월 slot 상한만 갱신되는 reconciler 동작은 기존 그대로(LOW 등록) |
+| 6 | M-15·M-21·M-22 | `3553105` → `320ace8` | 계획의 M-15 줄 참조 오류(콘텐츠 편집 게이트가 아니라 brief 편집)를 구현자가 잡아 정정. NOT_REQUIRED 알림·비본문 편집도 표본 규칙에 정렬 |
 | 테스트 위생 | LOW 2건 | `adff1e6` | `recover_ops_incident`가 만든 전역 async 엔진이 닫힌 루프에 남아 `provider_usage._persist`가 예외를 삼키던 문제(루트 conftest dispose fixture) + 두 모듈의 롤백 밖 커밋 행 정리 |
 
 ## 환경 준비
