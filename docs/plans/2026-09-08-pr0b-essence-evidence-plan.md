@@ -379,6 +379,8 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ### Task 3: 자동 검수가 노이즈를 제외하고, hash를 비교·저장한다 (H-02)
 
+> **실행 기록 (2026-09-08):** Task 2 재검토에서 남은 TOCTOU(노이즈 토글 엔드포인트가 병원 advisory lock 없이 커밋 → backfill 체크포인트의 hash 읽기와 커밋 사이 경합)를 이 Task의 **Step 0**(별도 커밋)으로 흡수: `mark_evidence_notes_as_noise`가 잠금을 잡고, 체크포인트가 같은 잠금 아래인지 확인. 또한 Task 2에서 만든 `get_public_essence_readiness`는 관대한 `current`를 노출하는 footgun이라 **`public_philosophy`만 반환**하도록 좁힌다(Step 3e).
+
 **Files:**
 - Modify: `backend/app/services/essence_auto_review.py` — `_notes_for_sources`(286-304), `essence_refresh_needed`(1179-1204), `refresh_essence_snapshot`(1207-, UP_TO_DATE·CAS·승인 기록)
 - Modify: `backend/app/api/admin/essence.py` — `approve_philosophy` 승인 기록
