@@ -303,8 +303,18 @@ def test_provider_transient_blockers_wait_for_the_seven_forty_five_recovery(code
 
 
 @pytest.mark.parametrize(
-    "code", ["FORBIDDEN_EXPRESSION", "ESSENCE_NOT_ALIGNED", "MISSING_REFERENCES"]
+    "code", ["FORBIDDEN_EXPRESSION", "MISSING_REFERENCES"]
 )
 def test_human_only_blockers_are_summarized_at_seven_forty_five(code: str) -> None:
     # A stored safety gate cannot heal itself, so waiting costs the publication slot.
     assert generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH) is True
+
+
+@pytest.mark.parametrize("batch", [PREPUBLISH_MORNING_BATCH, PUBLISH_MORNING_BATCH])
+@pytest.mark.parametrize("exhausted", [False, True])
+def test_essence_digest_requires_exhausted_remediation(batch, exhausted):
+    assert generation_block_digest_due(
+        "ESSENCE_NOT_ALIGNED", batch=batch, remediation_exhausted=exhausted
+    ) is exhausted
+    # Even escalation is owned by ESSENCE_AUTO_REVIEW_ESCALATED, not this digest.
+    assert not generation_block_digest_due("MISSING_APPROVED_ESSENCE", batch=batch)

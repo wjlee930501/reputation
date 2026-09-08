@@ -288,3 +288,16 @@ async def test_hospital_recovery_ignores_changed_snapshot_hash(monkeypatch) -> N
     assert transitions == [("retrying", 1), ("recovered", 2), ("acknowledged", 3)]
     assert incident.state == IncidentState.ACKNOWLEDGED.value
     assert db.committed is True
+
+
+@pytest.mark.parametrize("status", [
+    EssenceRefreshStatus.WAITING_FOR_SOURCES,
+    EssenceRefreshStatus.SNAPSHOT_CHANGED,
+    EssenceRefreshStatus.UP_TO_DATE,
+    EssenceRefreshStatus.AUTO_APPROVED,
+])
+def test_system_owned_essence_refresh_never_opens_human_incident(monkeypatch, status):
+    result = EssenceRefreshResult(status=status, hospital_id=uuid.uuid4())
+    response, opened, _ = _run_essence_task(monkeypatch, result)
+    assert response["status"] == status.value
+    assert opened == []

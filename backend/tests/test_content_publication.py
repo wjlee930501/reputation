@@ -392,3 +392,10 @@ def test_publication_identity_does_not_invent_missing_legacy_first_actor():
     assert item.first_published_at == known_at
     assert item.first_published_by is None
     assert item.published_by == "NEW_API"
+
+
+def test_body_without_approved_essence_uses_missing_code():
+    assessment = content_publication.assess_content_publication(_item(), None)
+    assert assessment.code == "MISSING_APPROVED_ESSENCE"
+    assert assessment.essence_status == content_publication.ESSENCE_STATUS_MISSING_APPROVED
+    assert not assessment.publishable

@@ -15,6 +15,7 @@ from app.services.content_engine import (
 )
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
+    ESSENCE_STATUS_MISSING_APPROVED,
     ESSENCE_STATUS_NEEDS_REVIEW,
     screen_content_against_philosophy,
 )
@@ -260,8 +261,16 @@ def assess_content_publication(
     if screening.status != ESSENCE_STATUS_ALIGNED:
         return PublicationAssessment(
             publishable=False,
-            code="ESSENCE_NOT_ALIGNED",
-            message="최신 승인 콘텐츠 운영 기준의 자동 검사를 통과하지 못했습니다.",
+            code=(
+                "MISSING_APPROVED_ESSENCE"
+                if screening.status == ESSENCE_STATUS_MISSING_APPROVED
+                else "ESSENCE_NOT_ALIGNED"
+            ),
+            message=(
+                "승인된 콘텐츠 운영 기준이 없습니다."
+                if screening.status == ESSENCE_STATUS_MISSING_APPROVED
+                else "최신 승인 콘텐츠 운영 기준의 자동 검사를 통과하지 못했습니다."
+            ),
             violations=(),
             essence_status=screening.status,
             essence_summary=screening.summary,

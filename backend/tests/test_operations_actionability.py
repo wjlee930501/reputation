@@ -198,8 +198,9 @@ async def test_generation_gate_inherits_open_legacy_episode_without_repaging(
 
     async def capture_request(_db, request, **_kwargs):
         captured["opened"] += 1
-        return SimpleNamespace(
+        return generation_incident_control.Incident(
             id=uuid.uuid4(),
+            state="OPEN",
             severity="MEDIUM",
             customer_impact=request.customer_impact,
             next_action=request.next_action,
@@ -221,6 +222,16 @@ async def test_generation_gate_inherits_open_legacy_episode_without_repaging(
     monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", capture_request)
     monkeypatch.setattr(generation_incident_control, "enqueue_notification", capture_notification)
 
+    retrying_incidents = []
+    async def capture_retrying(_db, incident_id, **kwargs):
+        incident = generation_incident_control.Incident(
+            id=incident_id, state="RETRYING", version=2,
+            sla_due_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        retrying_incidents.append(incident)
+        return incident
+    monkeypatch.setattr(generation_incident_control, "mark_retrying", capture_retrying)
+
     await generation_incident_control.open_generation_incident(
         item_id=uuid.uuid4(),
         hospital_id=hospital_id,
@@ -231,6 +242,11 @@ async def test_generation_gate_inherits_open_legacy_episode_without_repaging(
     )
 
     assert captured == {"opened": 1, "notified": 0}
+    assert len(retrying_incidents) == 1
+    from app.api.admin.operations_center_serializers import requires_operator_action
+    incident = retrying_incidents[0]
+    assert incident.severity == "MEDIUM"
+    assert not requires_operator_action(incident.state, incident.sla_due_at, datetime.now(UTC))
 
 
 def test_open_generation_episode_can_wake_at_morning_cutoff_once() -> None:
@@ -820,3 +836,15 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
     assert "담당: 미지정(담당자 지정 필요)" in payload
     assert "처리 기한: 운영 센터에서 확인" in payload
     assert "SLA" not in payload
+
+
+@pytest.mark.parametrize("attempts,expected", [(None, False), (1, False), (2, True)])
+def test_per_item_essence_page_also_requires_exhaustion(attempts, expected):
+    item = SimpleNamespace(
+        scheduled_date=date(2026, 8, 19), body="검토할 본문",
+        essence_check_summary={"automatic_remediation_attempts": attempts},
+    )
+    assert generation_incident_control._morning_notification_due(
+        code="ESSENCE_NOT_ALIGNED", item=item,
+        observed_at=datetime(2026, 8, 18, 23, 0, tzinfo=UTC),
+    ) is expected
