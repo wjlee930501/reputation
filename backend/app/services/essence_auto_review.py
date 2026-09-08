@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.content import ContentItem
 from app.models.essence import (
+    AUTO_RECOVERY_CYCLE_GAP_FIELD,
+    AUTO_REVIEW_GAP_FIELD,
     PHOTO_SOURCE_TYPES,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -53,7 +55,6 @@ AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_ADJUDICATION_CONFIDENCE = 0.95
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
 AUTO_ESSENCE_RECOVERY_REVISION = 8
-_AUTO_RECOVERY_CYCLE_FIELD = "automatic_recovery_cycle"
 _MAX_REVIEW_FINDINGS = 8
 _MAX_REVIEW_NOTES = 80
 # 2차 재정은 1차가 지목한 blocker만 다시 본다. 전체 근거를 재전송하면 같은 최대 96K자를
@@ -380,7 +381,7 @@ def _automatic_recovery_cycles(philosophy: HospitalContentPhilosophy) -> int:
 
     cycles = 0
     for item in philosophy.unsupported_gaps or []:
-        if not isinstance(item, dict) or item.get("field") != _AUTO_RECOVERY_CYCLE_FIELD:
+        if not isinstance(item, dict) or item.get("field") != AUTO_RECOVERY_CYCLE_GAP_FIELD:
             continue
         try:
             cycles = max(cycles, int(item.get("reason") or 0))
@@ -393,7 +394,7 @@ def _is_untouched_legacy_auto_draft(philosophy: HospitalContentPhilosophy) -> bo
     """Only recover a positively identified, never-operator-touched system draft."""
 
     has_auto_review_finding = any(
-        isinstance(item, dict) and item.get("field") == "automatic_ai_review"
+        isinstance(item, dict) and item.get("field") == AUTO_REVIEW_GAP_FIELD
         for item in philosophy.unsupported_gaps or []
     )
     return bool(
@@ -1549,10 +1550,10 @@ def refresh_essence_snapshot(
     if findings:
         candidate.unsupported_gaps = (
             list(candidate.unsupported_gaps or [])
-            + [{"field": "automatic_ai_review", "reason": finding} for finding in findings]
+            + [{"field": AUTO_REVIEW_GAP_FIELD, "reason": finding} for finding in findings]
             + [
                 {
-                    "field": _AUTO_RECOVERY_CYCLE_FIELD,
+                    "field": AUTO_RECOVERY_CYCLE_GAP_FIELD,
                     "reason": str(AUTO_ESSENCE_RECOVERY_REVISION),
                 }
             ]

@@ -19,7 +19,9 @@ from app.core.database import get_db
 from app.models.admin_user import ADMIN_ROLES, AdminUser
 from app.models.content import ContentItem
 from app.models.essence import (
+    AUTO_REVIEW_GAP_FIELD,
     PHOTO_SOURCE_TYPES,
+    SERVER_OWNED_GAP_FIELDS,
     HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
@@ -114,11 +116,6 @@ from app.workers.dispatch_auth import build_dispatch_headers
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024  # 12MB
 UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
-# unsupported_gaps 중 서버만 쓰는 field. 자동 검수(essence_auto_review)가 기록하며,
-# 클라이언트 PATCH로는 지울 수 없다. 지우는 유일한 경로는 재검수다(H-03).
-# 두 값 모두 essence_auto_review의 리터럴·_AUTO_RECOVERY_CYCLE_FIELD와 같아야 한다.
-AUTO_REVIEW_GAP_FIELD = "automatic_ai_review"
-SERVER_OWNED_GAP_FIELDS = (AUTO_REVIEW_GAP_FIELD, "automatic_recovery_cycle")
 logger = logging.getLogger(__name__)
 
 

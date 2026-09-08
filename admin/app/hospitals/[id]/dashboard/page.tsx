@@ -512,7 +512,15 @@ export default function DashboardPage() {
       return `반려: ${detail.previous_title}`
     }
     if (action === 'approve_philosophy' && typeof detail.version !== 'undefined') {
-      return `버전 ${detail.version} 승인 (근거 검토 확인)`
+      const base = `버전 ${detail.version} 승인 (근거 검토 확인)`
+      const overrideReason = typeof detail.override_reason === 'string' ? detail.override_reason : null
+      if (!overrideReason) return base
+      // 자동 검수 보류를 넘긴 승인은 그 근거와 넘긴 사유가 기록에 보여야 한다(H-03).
+      const findings = Array.isArray(detail.overridden_auto_review_findings)
+        ? detail.overridden_auto_review_findings.filter((item): item is string => typeof item === 'string')
+        : []
+      const held = findings.length > 0 ? ` (보류 사유: ${findings.join(', ')})` : ''
+      return `${base} · 예외 승인 사유: ${overrideReason}${held}`
     }
     if (action === 'upload_source_asset') {
       const sizeBytes = typeof detail.size_bytes === 'number' ? detail.size_bytes : null

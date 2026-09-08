@@ -86,6 +86,14 @@ class PhilosophyStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
+# unsupported_gaps 중 서버만 쓰는 field 이름. 자동 검수(essence_auto_review)가 기록하고
+# Admin API가 클라이언트 PATCH로부터 보호한다 — 두 쪽이 같은 문자열을 봐야 하므로
+# 모델 모듈 한 곳에만 둔다(H-03).
+AUTO_REVIEW_GAP_FIELD = "automatic_ai_review"
+AUTO_RECOVERY_CYCLE_GAP_FIELD = "automatic_recovery_cycle"
+SERVER_OWNED_GAP_FIELDS = (AUTO_REVIEW_GAP_FIELD, AUTO_RECOVERY_CYCLE_GAP_FIELD)
+
+
 class HospitalSourceAsset(Base):
     __tablename__ = "hospital_source_assets"
     __table_args__ = (

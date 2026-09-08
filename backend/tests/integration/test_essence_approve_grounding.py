@@ -321,6 +321,76 @@ def test_manual_approve_rejects_a_short_override_reason():
         )
 
 
+def test_whitespace_only_override_reason_is_no_reason():
+    body = essence_api.PhilosophyApprove(
+        reviewed_by="r",
+        approval_note=None,
+        confirm_evidence_reviewed=True,
+        override_reason="   ",
+    )
+
+    assert body.override_reason is None
+
+
+@pytest.mark.asyncio
+async def test_whitespace_override_reason_does_not_satisfy_the_gate(pg_async_session):
+    """공백 20자는 사유가 아니다 — min_length를 채워도 게이트는 그대로 걸린다."""
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "근거 없는 효과 주장"}
+    ]
+    await pg_async_session.commit()
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital.id,
+                draft.id,
+                _approve_body(override_reason=" " * 20),
+                db=pg_async_session,
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "AUTO_REVIEW_FINDINGS_UNRESOLVED"
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.DRAFT
+
+
+@pytest.mark.asyncio
+async def test_changed_snapshot_still_blocks_an_overridden_approval(pg_async_session):
+    """예외 승인 사유가 있어도 자료가 바뀐 초안은 승인되지 않는다."""
+    hospital, draft, _note = await _seed_draft_for_findings(pg_async_session)
+    draft.unsupported_gaps = [
+        {"field": "automatic_ai_review", "reason": "근거 없는 효과 주장"}
+    ]
+    draft.source_snapshot_hash = "stale"
+    await pg_async_session.commit()
+
+    token = set_request_actor("reviewer@example.com")
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital.id,
+                draft.id,
+                _approve_body(
+                    override_reason=(
+                        "원장 인터뷰 원문 2문단에 해당 효과의 근거가 직접 서술되어 있음을 확인함"
+                    )
+                ),
+                db=pg_async_session,
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 409
+    assert "처리된 병원 자료가 변경되었습니다" in exc.value.detail
+    await pg_async_session.refresh(draft)
+    assert draft.status == PhilosophyStatus.DRAFT
+
+
 @pytest.mark.asyncio
 async def test_patch_cannot_erase_automatic_review_findings(pg_async_session):
     """H-03: PATCH로 finding을 비우고 승인하는 우회를 막는다."""

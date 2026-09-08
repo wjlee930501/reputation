@@ -112,6 +112,15 @@ class PhilosophyApprove(BaseModel):
     # 자동 검수가 보류한 초안을 사람이 승인할 때의 근거. 20자 미만은 사유가 아니다.
     override_reason: str | None = Field(default=None, min_length=20, max_length=2000)
 
+    @field_validator("override_reason", mode="before")
+    @classmethod
+    def blank_override_reason_is_no_reason(cls, value: Any) -> Any:
+        # 공백 20자는 사유가 아니다. min_length 검사 전에 다듬어, 빈 값은 None이 되고
+        # 게이트가 그대로 걸리게 한다.
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
     @field_validator("confirm_evidence_reviewed")
     @classmethod
     def evidence_review_must_be_confirmed(cls, value: bool) -> bool:
