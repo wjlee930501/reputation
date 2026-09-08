@@ -18,7 +18,12 @@ from sqlalchemy import false, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.essence import HospitalSourceEvidenceNote
+from app.models.essence import (
+    PHOTO_SOURCE_TYPES,
+    HospitalSourceAsset,
+    HospitalSourceEvidenceNote,
+    SourceStatus,
+)
 
 
 def is_noise_note(note: Any) -> bool:
@@ -41,15 +46,31 @@ def not_noise_note_predicate():
 
 
 def compute_evidence_noise_hash(excluded_note_ids: Iterable[uuid.UUID | str]) -> str:
-    """제외된 노트 id 집합의 identity. 순서 무관, 빈 집합도 고정 hash."""
-    parts = sorted(str(note_id) for note_id in excluded_note_ids)
+    """제외된 노트 id 집합의 identity. 순서·중복·표기 무관, 빈 집합도 고정 hash."""
+    parts = sorted({str(uuid.UUID(str(value))) for value in excluded_note_ids})
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def _excluded_note_ids_stmt(hospital_id: uuid.UUID):
-    return select(HospitalSourceEvidenceNote.id).where(
-        HospitalSourceEvidenceNote.hospital_id == hospital_id,
-        noise_note_predicate(),
+    """필수 텍스트 자료(비제외·비사진)에 속한 노이즈 노트만 — readiness의 자료 집합과 같은 경계.
+
+    제외된 자료나 사진 자료의 노트를 세면, readiness가 보지 않는 자료의 노트 토글만으로
+    승인이 stale이 된다.
+    """
+    # PR-0B Task 6이 essence_readiness에 required_text_source_predicate()를 만들면 그것으로
+    # 교체한다. 지금 거기서 import하면 readiness가 이 모듈을 쓰는 순간 순환이 된다.
+    return (
+        select(HospitalSourceEvidenceNote.id)
+        .join(
+            HospitalSourceAsset,
+            HospitalSourceAsset.id == HospitalSourceEvidenceNote.source_asset_id,
+        )
+        .where(
+            HospitalSourceEvidenceNote.hospital_id == hospital_id,
+            HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+            HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
+            noise_note_predicate(),
+        )
     )
 
 
