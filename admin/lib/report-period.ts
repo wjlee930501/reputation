@@ -6,7 +6,7 @@ function seoulParts(now: Date): {
   hour: number
   minute: number
 } {
-  // 리포트 기간은 백엔드가 전부 Asia/Seoul로 계산한다. 브라우저·컨테이너의 로컬
+  // 보고서 기간은 백엔드가 전부 Asia/Seoul로 계산한다. 브라우저·컨테이너의 로컬
   // 시간대를 쓰면 UTC 환경(Cloud Run 기본)에서 8월 1일 00:30 KST가 아직 7월 31일이라
   // 기본값이 한 달 어긋난다.
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -36,7 +36,7 @@ function seoulYearMonth(now: Date): { year: number; month: number } {
 
 /** `<input type="month">`가 쓰는 YYYY-MM 형식으로 KST 기준 지난달을 돌려준다.
  *
- * 월간 리포트 수동 생성의 기본값 — 월말 배치 실패는 대개 달이 바뀐 뒤에 발견되므로
+ * 월간 보고서 수동 생성의 기본값 — 월말 배치 실패는 대개 달이 바뀐 뒤에 발견되므로
  * '이번 달'이 아니라 '지난달'이 맞다. 1월에는 전년 12월로 넘어가야 한다.
  */
 export function previousMonthValue(now: Date = new Date()): string {
@@ -107,8 +107,8 @@ export const REPORT_MONTH_BLOCK_MESSAGE: Record<ReportMonthBlockReason, string> 
 /**
  * 백엔드 `require_closed_period`와 같은 경계를 화면에서도 판정한다.
  *
- * 월간 리포트는 그 달이 마감된 뒤에만 만들 수 있다(다음 달 1일 00시 15분 KST).
- * 마감 전에 빈 리포트 행을 만들면 월말 배치가 dedupe로 영구 차단된다.
+ * 월간 보고서는 그 달이 마감된 뒤에만 만들 수 있다(다음 달 1일 00시 15분 KST).
+ * 마감 전에 빈 보고서 행을 만들면 월말 배치가 dedupe로 영구 차단된다.
  */
 export function reportMonthBlockReason(
   period: { year: number; month: number },

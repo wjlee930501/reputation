@@ -95,10 +95,11 @@ NEW_SURFACE_BANNED_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 # 위 가드를 적용할 화면 경로(repo 기준). PR-1B~1E가 화면을 다시 만들 때마다 추가한다.
-# 병원 상세 헤더(`layout.tsx`)는 아직 옛 탭 라벨('자료 모음')을 그대로 들고 있다. 탭 이름은
-# PR-1E가 라우트와 함께 바꾸므로 지금 우회 표시를 붙이지 않고, 그때 이 목록에 넣는다.
 NEW_SURFACE_PATHS: list[str] = [
     "admin/app/hospitals/page.tsx",
+    # 병원 탭 4개와 사이드바 이름. 옛 탭 라벨 때문에 빠져 있던 두 파일을 PR-1E가 넣었다.
+    "admin/app/hospitals/[id]/layout.tsx",
+    "admin/app/AdminShell.tsx",
     "admin/lib/hospital-states.ts",
     "admin/lib/admin-copy.ts",
     "admin/app/hospitals/[id]/info/page.tsx",
@@ -138,6 +139,19 @@ NEW_SURFACE_PATHS: list[str] = [
     "admin/lib/status-screen.ts",
     # 예외 초안의 확인 문구와 결과 안내가 사는 곳.
     "admin/lib/essence-actions.ts",
+    # 보고서 탭 — 목록과 다이얼로그 하나(PR-1E Task 5).
+    "admin/app/hospitals/[id]/reports/page.tsx",
+    "admin/app/hospitals/[id]/reports/ReportList.tsx",
+    "admin/app/hospitals/[id]/reports/ReportDialog.tsx",
+    "admin/app/hospitals/[id]/reports/ReportEvidence.tsx",
+    "admin/app/hospitals/[id]/reports/ReportRunStatus.tsx",
+    "admin/app/hospitals/[id]/reports/ReportRunCard.tsx",
+    # 보고서 화면 문구가 사는 순수 모듈.
+    "admin/lib/report-delivery.ts",
+    "admin/lib/report-review.ts",
+    "admin/lib/report-run.ts",
+    "admin/lib/report-period.ts",
+    "admin/lib/report-component-behavior.ts",
 ]
 
 INTERNAL_ONLY_MARKER = "# copy-guard: internal-only"

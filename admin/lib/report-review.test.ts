@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { parseReport, REPORT_REVIEW_SECTION_ORDER } from './report-review.ts'
+import { parseReport, REPORT_DIALOG_SECTION_ORDER } from './report-review.ts'
 
 const payload = {
   id: 'report-2', hospital_id: 'hospital-1', period_year: 2026, period_month: 7,
@@ -59,12 +59,16 @@ test('strict report boundary preserves frozen cells, version lineage, and honest
   assert.doesNotMatch(JSON.stringify(report), /SLA|CUSTOMER_READY|raw_response/)
 })
 
-test('evidence sections are rendered before every delivery control', () => {
-  const deliveryIndex = REPORT_REVIEW_SECTION_ORDER.indexOf('delivery')
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('measurement') < deliveryIndex)
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('operations') < deliveryIndex)
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('artifact') < deliveryIndex)
-  assert.ok(REPORT_REVIEW_SECTION_ORDER.indexOf('notification') < deliveryIndex)
+test('the one dialog runs open, then delivery, then history, with internal state last', () => {
+  assert.deepEqual([...REPORT_DIALOG_SECTION_ORDER], ['open', 'delivery', 'history', 'internal'])
+})
+
+test('the screen name of a report never keeps the pre-unification server label', () => {
+  assert.equal(parseReport(payload)?.typeLabel, '보고서')
+  assert.equal(
+    parseReport({ ...payload, report_type: 'V0', display: { report_type_label: '초기 진단 리포트' } })?.typeLabel,
+    '초기 진단 보고서',
+  )
 })
 
 test('malformed report payload fails closed', () => {
