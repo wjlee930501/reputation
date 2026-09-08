@@ -18,13 +18,13 @@
 
 ## 검증 (2026-09-09, 로컬 CI 동일 env, 깨끗한 5432 DB 재생성 후)
 - alembic `0069` → `0070` 적용 확인
-- backend **3,337 passed / 0 failed** (ruff clean)
+- backend **3,337 passed / 0 failed** (ruff clean) → 블로커 수정(`e4c174d`) 후 재검증 **3,350 passed / 0 failed**
 - admin **618/618**, site **310/310**
 - copy-guard OK, db-budget-guard 75/80
 - 총검토: GPT-6 Astra(medium) — 결과는 아래 "총검토"에 기록
 
 ## 총검토
-- GPT-6 Astra(medium), 1차 — **HOLD**, 블로커 5: (1) 재인증 결제 회계가 실행 단위가 아니어서 재배달 반복 시 4번째 결제 가능; (2) 채널 자료 등록이 프로필 커밋과 비원자적; (3) fetch 스윕이 LIMIT 뒤에 상태를 걸러 레거시 행이 새 등록을 굶기고, ERROR 커밋 후 인시던트 실패 시 무음; (4) 일시정지 병원의 글이 admin 콘텐츠 행에서 "공개 중"; (5) `extra="forbid"`가 배포 순서상 열린 옛 탭의 저장을 422로 깨뜨림. 비차단 관찰 항목: 재인증 후보 재고 조사, NULL 노이즈 hash 재검수 비용, fetch 동시성, H-16 리포트, 계약 정정 다운그레이드. 다섯 블로커는 수정 후 재검토.
+- GPT-6 Astra(medium), 1차 — **HOLD**, 블로커 5: (1) 재인증 결제 회계가 실행 단위가 아니어서 재배달 반복 시 4번째 결제 가능; (2) 채널 자료 등록이 프로필 커밋과 비원자적; (3) fetch 스윕이 LIMIT 뒤에 상태를 걸러 레거시 행이 새 등록을 굶기고, ERROR 커밋 후 인시던트 실패 시 무음; (4) 일시정지 병원의 글이 admin 콘텐츠 행에서 "공개 중"; (5) `extra="forbid"`가 배포 순서상 열린 옛 탭의 저장을 422로 깨뜨림. 비차단 관찰 항목: 재인증 후보 재고 조사, NULL 노이즈 hash 재검수 비용, fetch 동시성, H-16 리포트, 계약 정정 다운그레이드. 다섯 블로커는 `e4c174d`에서 수정(실행별 결제 카운터, 프로필 트랜잭션 내 SAVEPOINT 등록, 스윕 SQL 자격 필터+인시던트 선행+CAS, 병원 서비스 게이트 `HOSPITAL_NOT_SERVING`, `extra="ignore"`+deprecation 경고) → 재검토 결과는 아래.
 
 ## 배포 증거
 (기록 예정)
