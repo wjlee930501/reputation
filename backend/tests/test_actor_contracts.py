@@ -23,17 +23,7 @@ def test_philosophy_approval_actor_and_evidence_confirmation_are_required():
     assert "근거 검토 확인" in str(missing_evidence_confirmation.value)
 
 
-def test_publish_actor_cannot_be_blank():
-    with pytest.raises(ValidationError) as missing_actor:
-        PublishBody()
-    assert "published_by" in str(missing_actor.value)
-
-    with pytest.raises(ValidationError) as blank_actor:
-        PublishBody(published_by="")
-    assert "published_by" in str(blank_actor.value)
-
-    with pytest.raises(ValidationError) as whitespace_actor:
-        PublishBody(published_by="   ")
-    assert "published_by" in str(whitespace_actor.value)
-
-    assert PublishBody(published_by="  김민지 AE  ").published_by == "김민지 AE"
+def test_publish_body_cannot_claim_a_publisher():
+    """발행자는 요청 본문이 아니라 확인된 요청 actor로 기록한다 (H-09)."""
+    assert not hasattr(PublishBody(), "published_by")
+    assert not hasattr(PublishBody(published_by="김민지 AE"), "published_by")

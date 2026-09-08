@@ -29,7 +29,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import indexnow
-from app.services.audit_log import default_actor, write_audit_log
+from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -92,6 +92,7 @@ from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_content_site_revalidate_safe,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
 from app.workers.tasks import recertify_published_content_image, regenerate_content_item
@@ -187,17 +188,7 @@ class ContentPatch(BaseModel):
 
 
 class PublishBody(BaseModel):
-    published_by: str = Field(min_length=1, max_length=100)
-
-    @field_validator("published_by", mode="before")
-    @classmethod
-    def normalize_published_by(cls, value: object) -> object:
-        if not isinstance(value, str):
-            return value
-        cleaned = value.strip()
-        if not cleaned:
-            raise ValueError("published_by is required")
-        return cleaned
+    """발행자는 요청 본문이 아니라 확인된 요청 actor로 기록한다 (H-09)."""
 
 
 class PostPublishReviewBody(BaseModel):
@@ -852,8 +843,34 @@ async def publish_content(
     자동 발행 장애 시 사용하는 수동 복구 발행 경로.
     예약 자동 발행과 동일한 기계적 안전 정책을 적용한다.
     """
+    # 발행자는 "누가 공개했는가"의 근거이므로 요청 본문이 아니라 확인된 요청 actor를 쓴다 (H-09).
+    publisher = verified_request_actor()
+    if publisher is None:
+        raise HTTPException(
+            status_code=403,
+            detail="발행자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
+        )
+    # 자동 발행과 동일하게 병원 행을 잠근 뒤 공개 게이트를 재확인한다. 잠금이 없으면
+    # 공개 중지 요청과 경합해 PAUSED 직후 새 글이 튀어나오는 TOCTOU가 남는다.
+    await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
+    if not _has_public_site(hospital):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "HOSPITAL_NOT_PUBLIC",
+                "message": "공개 운영 중인 병원만 발행할 수 있습니다. 일시정지 상태면 먼저 재개해 주세요.",
+            },
+        )
+    if not hospital.schedule_set:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SCHEDULE_NOT_SET",
+                "message": "발행 일정이 설정된 병원만 발행할 수 있습니다.",
+            },
+        )
 
     # 동시 발행 경합 차단: 행 잠금 후 권위 있는 상태로 재확인.
     current_status = await _lock_content_status(db, hospital_id, content_id, item.status)
@@ -920,7 +937,7 @@ async def publish_content(
     record_publication_identity(
         item,
         published_at=datetime.now(timezone.utc),
-        published_by=body.published_by,
+        published_by=publisher,
     )
     item.post_publish_notified_at = None
     item.post_publish_reviewed_at = None
@@ -936,7 +953,7 @@ async def publish_content(
             "title": item.title,
             "content_type": _enum_value(item.content_type),
             "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
-            "claimed_by": body.published_by,
+            "claimed_by": publisher,
             "essence_status": assessment.essence_status,
             "mode": "manual_recovery",
         },

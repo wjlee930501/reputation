@@ -180,7 +180,8 @@ def assess_content_publication(
 ) -> PublicationAssessment:
     """Re-screen the exact stored content immediately before it becomes public."""
 
-    if not item.title or not item.body:
+    # 공백만 남은 제목·본문은 생성된 원고가 아니다 (H-09).
+    if not (item.title or "").strip() or not (item.body or "").strip():
         return _blocked(
             code="CONTENT_NOT_GENERATED",
             message="제목과 본문이 아직 생성되지 않았습니다.",

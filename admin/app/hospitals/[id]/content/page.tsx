@@ -31,7 +31,7 @@ import {
 import { formatDate, formatDateTime } from '@/lib/format'
 import { platformSubdomainHost } from '@/lib/platform-domain'
 import { fetchCurrentAccount } from '@/lib/current-account'
-import { buildManualPublishPayload, resolveAuditActorName } from '@/lib/publishing'
+import { resolveAuditActorName } from '@/lib/publishing'
 import { getOrCreatePendingActionKey } from '@/lib/pending-action-key'
 import {
   AIQueryTarget,
@@ -558,19 +558,13 @@ export default function ContentPage() {
   }, [id, refreshItem, regenerationRuns])
 
   async function handlePublish(itemId: string) {
-    const payload = buildManualPublishPayload(currentOperatorName ?? '')
-    if (!payload) {
-      const message = '로그인 운영자 정보를 확인할 수 없어 발행자를 기록하지 못합니다. 다시 로그인한 뒤 발행해 주세요.'
-      if (selected && selected.id === itemId) setEditError(message)
-      else setActionError(message)
-      return
-    }
+    // 발행자는 서버가 확인된 로그인 actor로 기록한다. 본문으로 이름을 보내지 않는다 (H-09).
     setActionLoading(true)
     clearActionFeedback()
     try {
       await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/publish`, {
         method: 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify({}),
       })
       setPublishSuccessId(itemId)
       setActionSuccess('운영 복구 발행을 완료했습니다.')

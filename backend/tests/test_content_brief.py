@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.api.admin import content as content_api
 from app.schemas.content import ContentBriefUpdate
+from app.services.audit_log import reset_request_actor, set_request_actor
 from app.services.content_brief import build_content_brief
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
@@ -16,13 +17,19 @@ from app.services.image_engine import (
 )
 
 
-def _hospital(hospital_id=None):
-    return SimpleNamespace(
+def _hospital(hospital_id=None, **overrides):
+    base = dict(
         id=hospital_id or uuid.uuid4(),
         name="테스트의원",
         slug="test-clinic",
+        # 수동 발행 게이트 기본값 — 공개 운영 중 + 일정 설정 완료 (H-09).
+        status="ACTIVE",
+        site_live=True,
+        schedule_set=True,
         treatments=[{"name": "치질 수술", "description": "상태에 따라 수술 여부와 회복 계획을 설명합니다."}],
     )
+    base.update(overrides)
+    return SimpleNamespace(**base)
 
 
 def _content_item(**overrides):
@@ -58,6 +65,15 @@ def _content_item(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+@pytest.fixture
+def verified_actor():
+    """수동 발행은 확인된 로그인 actor를 요구한다 (H-09)."""
+    actor = "ae@example.com"
+    token = set_request_actor(actor)
+    yield actor
+    reset_request_actor(token)
 
 
 def _query_target(target_id=None, hospital_id=None):
@@ -260,12 +276,10 @@ def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
     assert "권위 있는 참고 자료가 1개 이상 필요합니다." in serialized["compliance"]["blockers"]
 
 
-async def test_publish_content_rejects_generated_content_without_references(monkeypatch):
+async def test_publish_content_rejects_generated_content_without_references(monkeypatch, verified_actor):
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
     hospital = _hospital(hospital_id)
-    hospital.status = "ACTIVE"
-    hospital.site_live = False
     item = _content_item(
         id=item_id,
         hospital_id=hospital_id,
@@ -305,7 +319,7 @@ async def test_publish_content_rejects_generated_content_without_references(monk
         await content_api.publish_content(
             hospital_id,
             item_id,
-            content_api.PublishBody(published_by="AE"),
+            content_api.PublishBody(),
             db=FakeDB(),
         )
 
@@ -313,12 +327,10 @@ async def test_publish_content_rejects_generated_content_without_references(monk
     assert exc_info.value.detail["missing"] == "references"
 
 
-async def test_publish_content_rejects_non_whitelisted_references(monkeypatch):
+async def test_publish_content_rejects_non_whitelisted_references(monkeypatch, verified_actor):
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
     hospital = _hospital(hospital_id)
-    hospital.status = "ACTIVE"
-    hospital.site_live = False
     item = _content_item(
         id=item_id,
         hospital_id=hospital_id,
@@ -349,7 +361,7 @@ async def test_publish_content_rejects_non_whitelisted_references(monkeypatch):
         await content_api.publish_content(
             hospital_id,
             item_id,
-            content_api.PublishBody(published_by="AE"),
+            content_api.PublishBody(),
             db=SimpleNamespace(),
         )
 
@@ -357,15 +369,13 @@ async def test_publish_content_rejects_non_whitelisted_references(monkeypatch):
     assert exc_info.value.detail["missing"] == "references"
 
 
-async def test_publish_content_blocks_concurrent_publish_under_lock(monkeypatch):
+async def test_publish_content_blocks_concurrent_publish_under_lock(monkeypatch, verified_actor):
     # 동시 발행 경합: in-memory 읽기는 DRAFT지만 행 잠금 후 권위 상태가 PUBLISHED이면 차단 (API-1).
     from app.models.content import ContentStatus
 
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
     hospital = _hospital(hospital_id)
-    hospital.status = "ACTIVE"
-    hospital.site_live = False
     item = _content_item(
         id=item_id,
         hospital_id=hospital_id,
@@ -395,19 +405,17 @@ async def test_publish_content_blocks_concurrent_publish_under_lock(monkeypatch)
 
     with pytest.raises(HTTPException) as exc_info:
         await content_api.publish_content(
-            hospital_id, item_id, content_api.PublishBody(published_by="AE"), db=_LockingDB()
+            hospital_id, item_id, content_api.PublishBody(), db=_LockingDB()
         )
 
     assert exc_info.value.status_code == 400
     assert exc_info.value.detail == "Already published"
 
 
-async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
+async def test_publish_content_records_manual_screener_and_audit(monkeypatch, verified_actor):
     hospital_id = uuid.uuid4()
     item_id = uuid.uuid4()
     hospital = _hospital(hospital_id)
-    hospital.status = "ACTIVE"
-    hospital.site_live = False
     item = _content_item(
         id=item_id,
         hospital_id=hospital_id,
@@ -465,7 +473,7 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     result = await content_api.publish_content(
         hospital_id,
         item_id,
-        content_api.PublishBody(published_by="  김민지 AE  "),
+        content_api.PublishBody(),
         db=db,
     )
 
@@ -473,9 +481,9 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
     assert result["notification_state"] == "NOT_REQUIRED"
     assert item.status == content_api.ContentStatus.PUBLISHED
     assert item.published_at is not None
-    assert item.published_by == "김민지 AE"
+    assert item.published_by == verified_actor
     assert item.first_published_at == item.published_at
-    assert item.first_published_by == "김민지 AE"
+    assert item.first_published_by == verified_actor
     assert db.commit_calls == 1
     assert audit_calls == [
         {
@@ -488,12 +496,135 @@ async def test_publish_content_records_manual_screener_and_audit(monkeypatch):
                 "title": item.title,
                 "content_type": "FAQ",
                 "scheduled_date": str(item.scheduled_date),
-                "claimed_by": "김민지 AE",
+                "claimed_by": verified_actor,
                 "essence_status": content_api.ESSENCE_STATUS_ALIGNED,
                 "mode": "manual_recovery",
             },
         }
     ]
+
+
+def _publishable_item(hospital):
+    """수동 발행 게이트를 통과할 수 있는 최소 원고."""
+    return _content_item(
+        hospital_id=hospital.id,
+        title="치질 수술 전 확인할 점",
+        body="환자 상태에 따라 진료 방향을 설명합니다.",
+        meta_description="진료 전 확인할 점.",
+        essence_status="ALIGNED",
+        references_list=[{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}],
+        status="DRAFT",
+    )
+
+
+class _PublishDB:
+    """수동 발행 경로용 세션 더블 — 행 잠금 없이 조회와 commit만 제공한다."""
+
+    def __init__(self, hospital, item):
+        self._rows = {hospital.id: hospital, item.id: item}
+        self.added = []
+        self.commit_calls = 0
+
+    async def get(self, _model, pk):
+        return self._rows.get(pk)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def commit(self):
+        self.commit_calls += 1
+
+
+def _allow_assessment(monkeypatch):
+    monkeypatch.setattr(
+        content_api,
+        "assess_content_publication",
+        lambda _item, philosophy: SimpleNamespace(
+            publishable=True,
+            code=None,
+            message=None,
+            violations=(),
+            essence_status=content_api.ESSENCE_STATUS_ALIGNED,
+            essence_summary={"ok": True},
+            philosophy_id=getattr(philosophy, "id", None),
+        ),
+    )
+
+    async def fake_get_philosophy(db, requested_hospital_id):
+        return _philosophy()
+
+    monkeypatch.setattr(content_api, "_get_approved_philosophy", fake_get_philosophy)
+
+
+async def test_manual_publish_refuses_a_hospital_that_is_not_publicly_serving(verified_actor):
+    # 수동 복구 발행도 자동 발행과 같은 공개 게이트를 지나야 한다 (H-09).
+    hospital = _hospital(status="PAUSED")
+    item = _publishable_item(hospital)
+    db = _PublishDB(hospital, item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.publish_content(
+            hospital.id, item.id, content_api.PublishBody(), db=db
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "HOSPITAL_NOT_PUBLIC"
+    assert item.status != content_api.ContentStatus.PUBLISHED
+
+
+async def test_manual_publish_refuses_without_a_schedule(verified_actor):
+    hospital = _hospital(schedule_set=False)
+    item = _publishable_item(hospital)
+    db = _PublishDB(hospital, item)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await content_api.publish_content(
+            hospital.id, item.id, content_api.PublishBody(), db=db
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "SCHEDULE_NOT_SET"
+    assert item.status != content_api.ContentStatus.PUBLISHED
+
+
+async def test_manual_publish_records_the_verified_actor_not_the_request_body(
+    monkeypatch, verified_actor
+):
+    hospital = _hospital()
+    item = _publishable_item(hospital)
+    db = _PublishDB(hospital, item)
+    _allow_assessment(monkeypatch)
+
+    await content_api.publish_content(hospital.id, item.id, content_api.PublishBody(), db=db)
+
+    assert item.published_by == verified_actor
+    assert item.first_published_by == verified_actor
+
+
+async def test_manual_publish_requires_a_verified_actor():
+    hospital = _hospital()
+    item = _publishable_item(hospital)
+    db = _PublishDB(hospital, item)
+    token = set_request_actor(None)
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await content_api.publish_content(
+                hospital.id, item.id, content_api.PublishBody(), db=db
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc_info.value.status_code == 403
+    assert item.status != content_api.ContentStatus.PUBLISHED
+
+
+def test_whitespace_only_title_or_body_is_not_generated():
+    from app.services.content_publication import assess_content_publication
+
+    item = _publishable_item(_hospital())
+    item.title = "   "
+
+    assert assess_content_publication(item, None).code == "CONTENT_NOT_GENERATED"
 
 
 async def test_post_publish_review_records_authenticated_actor_and_is_idempotent(monkeypatch):

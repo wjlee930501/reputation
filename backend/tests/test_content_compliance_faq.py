@@ -7,6 +7,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import content as content_api
+from app.services.audit_log import reset_request_actor, set_request_actor
 
 
 def _hospital(hospital_id=None, **overrides):
@@ -14,8 +15,9 @@ def _hospital(hospital_id=None, **overrides):
         id=hospital_id or uuid.uuid4(),
         name="테스트의원",
         slug="test-clinic",
-        status="ONBOARDING",
-        site_live=False,
+        status="ACTIVE",
+        site_live=True,
+        schedule_set=True,
         treatments=[{"name": "어깨 통증 치료", "description": "상태에 따라 설명합니다."}],
     )
     base.update(overrides)
@@ -131,10 +133,14 @@ async def test_publish_content_blocks_forbidden_expression_in_faq_fields(monkeyp
     _wire(monkeypatch, item, hospital)
     db = _NoExecuteDB()
 
-    with pytest.raises(HTTPException) as exc_info:
-        await content_api.publish_content(
-            hospital.id, item.id, content_api.PublishBody(published_by="AE"), db=db
-        )
+    token = set_request_actor("ae@example.com")
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            await content_api.publish_content(
+                hospital.id, item.id, content_api.PublishBody(), db=db
+            )
+    finally:
+        reset_request_actor(token)
 
     assert exc_info.value.status_code == 400
     assert "완치" in exc_info.value.detail["violations"]
