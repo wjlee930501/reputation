@@ -27,6 +27,10 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.evidence_noise import (
+    load_evidence_noise_hash,
+    load_evidence_noise_hash_sync,
+)
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,8 @@ class EssenceReadiness:
 def resolve_essence_readiness(
     approved: HospitalContentPhilosophy | None,
     required_sources: list[HospitalSourceAsset],
+    *,
+    excluded_note_hash: str | None = None,
 ) -> EssenceReadiness:
     processed_sources = [
         source for source in required_sources if source.status == SourceStatus.PROCESSED
@@ -70,7 +76,20 @@ def resolve_essence_readiness(
         and approved.source_snapshot_hash
         and approved.source_snapshot_hash == snapshot
     )
-    fresh = processed_snapshot_matches and len(processed_sources) == len(required_sources)
+    # 노이즈 제외 집합은 엄격한 current에만 관여한다. 컬럼 이전 승인(NULL)이거나 호출자가
+    # 현재 집합을 계산하지 않았으면(None) 이 조건은 통과시킨다. public_philosophy는 자료
+    # snapshot만 보므로 노트 하나를 숨겨도 공개 글이 사라지지 않는다.
+    approved_noise_hash = getattr(approved, "evidence_noise_hash", None) if approved else None
+    noise_matches = (
+        approved_noise_hash is None
+        or excluded_note_hash is None
+        or approved_noise_hash == excluded_note_hash
+    )
+    fresh = (
+        processed_snapshot_matches
+        and len(processed_sources) == len(required_sources)
+        and noise_matches
+    )
     source_asset_ids = getattr(approved, "source_asset_ids", None) if approved else None
     if approved and source_asset_ids:
         baseline_ids = {str(source_id) for source_id in source_asset_ids}
@@ -113,7 +132,11 @@ async def get_essence_readiness(
             HospitalSourceAsset.source_type.notin_(list(PHOTO_SOURCE_TYPES)),
         )
     )
-    return resolve_essence_readiness(approved, list(sources_result.scalars().all()))
+    return resolve_essence_readiness(
+        approved,
+        list(sources_result.scalars().all()),
+        excluded_note_hash=await load_evidence_noise_hash(db, hospital_id),
+    )
 
 
 def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceReadiness:
@@ -134,7 +157,11 @@ def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceRe
         .scalars()
         .all()
     )
-    return resolve_essence_readiness(approved, required_sources)
+    return resolve_essence_readiness(
+        approved,
+        required_sources,
+        excluded_note_hash=load_evidence_noise_hash_sync(db, hospital_id),
+    )
 
 
 async def get_current_approved_philosophy(
@@ -192,6 +219,7 @@ async def _get_lightweight_essence_readiness(
                 HospitalContentPhilosophy.id,
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
+                HospitalContentPhilosophy.evidence_noise_hash,
             ).where(
                 HospitalContentPhilosophy.hospital_id == hospital_id,
                 HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
@@ -200,7 +228,7 @@ async def _get_lightweight_essence_readiness(
     ).one_or_none()
     if approved_row is None:
         return None, None
-    approved_id, source_snapshot_hash, source_asset_ids = approved_row
+    approved_id, source_snapshot_hash, source_asset_ids, evidence_noise_hash = approved_row
 
     sources_result = await db.execute(
         select(
@@ -226,6 +254,11 @@ async def _get_lightweight_essence_readiness(
     approved_stub = SimpleNamespace(
         source_snapshot_hash=source_snapshot_hash,
         source_asset_ids=source_asset_ids,
+        evidence_noise_hash=evidence_noise_hash,
     )
-    readiness = resolve_essence_readiness(approved_stub, required_sources)
+    readiness = resolve_essence_readiness(
+        approved_stub,
+        required_sources,
+        excluded_note_hash=await load_evidence_noise_hash(db, hospital_id),
+    )
     return approved_id, readiness

@@ -13,12 +13,20 @@ import pytest
 from app.models.essence import (
     PHOTO_SOURCE_TYPES,
     EvidenceNoteType,
+    HospitalContentPhilosophy,
     HospitalSourceAsset,
     HospitalSourceEvidenceNote,
+    PhilosophyStatus,
     SourceStatus,
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.essence_engine import (
+    MANDATORY_AVOID_MESSAGES,
+    MANDATORY_MEDICAL_AD_RISK_RULES,
+    compute_sources_snapshot_hash,
+)
+from app.services.essence_readiness import get_essence_readiness
 from app.services.evidence_noise import (
     compute_evidence_noise_hash,
     load_evidence_noise_hash,
@@ -111,12 +119,12 @@ async def _seed(db):
         ]
     )
     await db.commit()
-    return hospital, required_note, excluded_note
+    return hospital, required, required_note, excluded_note
 
 
 @pytest.mark.asyncio
 async def test_only_notes_of_required_text_sources_enter_the_hash(pg_async_session):
-    hospital, required_note, _excluded_note = await _seed(pg_async_session)
+    hospital, _required, required_note, _excluded_note = await _seed(pg_async_session)
 
     assert await load_evidence_noise_hash(
         pg_async_session, hospital.id
@@ -125,7 +133,7 @@ async def test_only_notes_of_required_text_sources_enter_the_hash(pg_async_sessi
 
 @pytest.mark.asyncio
 async def test_toggling_noise_outside_the_required_set_does_not_move_the_hash(pg_async_session):
-    hospital, required_note, excluded_note = await _seed(pg_async_session)
+    hospital, _required, required_note, excluded_note = await _seed(pg_async_session)
     before = await load_evidence_noise_hash(pg_async_session, hospital.id)
 
     excluded_note.note_metadata = {"is_noise": False}
@@ -142,3 +150,50 @@ async def test_toggling_noise_outside_the_required_set_does_not_move_the_hash(pg
     assert await load_evidence_noise_hash(
         pg_async_session, hospital.id
     ) == compute_evidence_noise_hash([])
+
+
+def _approved_philosophy(
+    source: HospitalSourceAsset, noise_note_ids: list[uuid.UUID]
+) -> HospitalContentPhilosophy:
+    return HospitalContentPhilosophy(
+        id=uuid.uuid4(),
+        hospital_id=source.hospital_id,
+        version=1,
+        status=PhilosophyStatus.APPROVED,
+        positioning_statement="충분한 설명과 개인별 선택지 안내",
+        content_principles=[],
+        tone_guidelines=[],
+        must_use_messages=[],
+        avoid_messages=list(MANDATORY_AVOID_MESSAGES),
+        treatment_narratives=[],
+        local_context={},
+        medical_ad_risk_rules=list(MANDATORY_MEDICAL_AD_RISK_RULES),
+        evidence_map={},
+        source_asset_ids=[str(source.id)],
+        unsupported_gaps=[],
+        conflict_notes=[],
+        source_snapshot_hash=compute_sources_snapshot_hash([source]),
+        evidence_noise_hash=compute_evidence_noise_hash(noise_note_ids),
+    )
+
+
+@pytest.mark.asyncio
+async def test_unmarking_noise_blocks_current_but_keeps_public_baseline(pg_async_session):
+    """H-02: 노트를 근거에서 빼거나 되돌리면 생성은 막히고, 이미 공개된 글의 근거는 남는다."""
+    hospital, required, required_note, _excluded_note = await _seed(pg_async_session)
+    approved = _approved_philosophy(required, [required_note.id])
+    pg_async_session.add(approved)
+    await pg_async_session.commit()
+
+    readiness = await get_essence_readiness(pg_async_session, hospital.id)
+    assert readiness.current is not None
+    assert readiness.current.id == approved.id
+
+    required_note.note_metadata = {**required_note.note_metadata, "is_noise": False}
+    await pg_async_session.commit()
+    await pg_async_session.refresh(required_note)
+
+    readiness = await get_essence_readiness(pg_async_session, hospital.id)
+    assert readiness.current is None
+    assert readiness.public_philosophy is not None
+    assert readiness.public_philosophy.id == approved.id
