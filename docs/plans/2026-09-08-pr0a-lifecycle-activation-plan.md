@@ -43,6 +43,8 @@ cd /Users/woojinlee/Documents/projects/reputation/backend && export APP_ENV=test
 
 ### Task 1: 도메인 검증이 PAUSED 병원을 되살리지 못하게 하고, 활성화 후 캐시를 갱신한다 (H-05)
 
+> **실행 기록 (2026-09-08):** 구현 `db9875f` → Codex 품질 검토 REQUEST_CHANGES → 후속 커밋에서 공개 API를 `ensure_activatable()` + **`transition_to_active()`**(가드+전환 단일 진입점)로 정리하고 원시 변경 `_apply_activation_transition`은 private으로 되돌렸다. revalidate는 인증서 작업 dispatch(및 그 커밋) **뒤**에 `finally`로 실행한다. 아래 Step 3~4의 `apply_activation_transition` 호출은 `transition_to_active`로 읽는다.
+
 **Files:**
 - Modify: `backend/app/services/hospital_activation.py:165-175` (`_apply_transition`)
 - Modify: `backend/app/api/admin/domain_verification.py:36-40` (imports), `:107-127` (가드·전환), `:157` (커밋 후)
