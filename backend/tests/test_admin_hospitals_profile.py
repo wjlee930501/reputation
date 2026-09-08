@@ -7,6 +7,7 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import hospitals as hospitals_api
+from app.models.hospital import HospitalStatus
 from app.services.hospital_geocoding import GeocodeResult, GeocodingError
 
 
@@ -192,3 +193,28 @@ def test_list_serializer_includes_custom_domain_for_admin_search():
     payload = hospitals_api._serialize_list(hospital)
 
     assert payload["aeo_domain"] == "jangclinic.kr"
+
+
+async def test_patch_cannot_unset_profile_complete_while_publicly_serving():
+    """M-13: 공개 게이트가 profile_complete를 요구하므로 해제하면 공개 페이지가 조용히 404가 된다."""
+    hospital = _hospital(status=HospitalStatus.ACTIVE, site_live=True, profile_complete=True)
+    db = FakeDB(hospital)
+    body = hospitals_api.HospitalProfileUpdate(profile_complete=False)
+
+    with pytest.raises(HTTPException) as exc:
+        await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE"
+    assert db.committed is False
+
+
+async def test_patch_can_unset_profile_complete_when_paused():
+    hospital = _hospital(status=HospitalStatus.PAUSED, site_live=True, profile_complete=True)
+    db = FakeDB(hospital)
+    body = hospitals_api.HospitalProfileUpdate(profile_complete=False)
+
+    await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+
+    assert hospital.profile_complete is False
+    assert db.committed is True

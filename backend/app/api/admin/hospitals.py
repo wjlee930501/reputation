@@ -823,6 +823,17 @@ async def update_profile(
             changed_fields.append(field)
         setattr(h, field, value)
 
+    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 해제하면
+    # 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다. 먼저 일시정지하게 한다.
+    if was_complete and not h.profile_complete and _has_public_site(h):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE",
+                "message": "공개 운영 중인 병원은 기본 정보 완료를 해제할 수 없습니다. 먼저 운영을 일시정지해 주세요.",
+            },
+        )
+
     # Admin UI와 동일한 authoritative checklist를 서버에서 강제한다. 직접 API 호출로
     # 불완전한 병원을 완료 처리해 V0/사이트 파이프라인에 흘려보낼 수 없어야 한다.
     if h.profile_complete:
