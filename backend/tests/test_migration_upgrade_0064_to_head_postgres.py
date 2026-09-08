@@ -57,6 +57,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
     hospital_id = uuid.UUID("a6500000-0000-0000-0000-000000000001")
     schedule_id = uuid.UUID("a6500000-0000-0000-0000-000000000002")
     retired_plan_schedule_id = uuid.UUID("a6500000-0000-0000-0000-000000000013")
+    retired_plan_hospital_id = uuid.UUID("a6500000-0000-0000-0000-000000000014")
     content_id = uuid.UUID("a6500000-0000-0000-0000-000000000003")
     erased_content_id = uuid.UUID("a6500000-0000-0000-0000-000000000012")
     query_id = uuid.UUID("a6500000-0000-0000-0000-000000000004")
@@ -198,7 +199,9 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
                 "0071_plan_enum_cleanup"
             )
-            # M-20: 폐기 요금제는 행에서도, enum 값에서도 사라진다.
+            # M-20: 폐기 요금제는 행에서 사라지고 CHECK가 다시 들어오는 것을 막는다.
+            # enum 타입 자체는 손대지 않는다 — 롤링 배포 중 옛 리비전의 연결 풀이 들고
+            # 있는 타입 OID·prepared statement 캐시가 깨지면 안 된다.
             assert connection.execute(
                 text("SELECT plan::text FROM hospitals WHERE id=:id"), {"id": hospital_id}
             ).scalar_one() == "PLAN_12"
@@ -206,7 +209,13 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                 connection.execute(
                     text("SELECT enumlabel FROM pg_enum WHERE enumtypid='plan'::regtype")
                 ).scalars()
-            ) == {"PLAN_12", "PLAN_16", "PLAN_20"}
+            ) == {"PLAN_8", "PLAN_12", "PLAN_16", "PLAN_20"}
+            assert connection.execute(
+                text(
+                    "SELECT count(*) FROM pg_constraint "
+                    "WHERE conname IN ('ck_hospitals_plan', 'ck_content_schedules_plan')"
+                )
+            ).scalar_one() == 2
             with pytest.raises(IntegrityError):
                 with engine.begin() as blocked:
                     blocked.execute(
@@ -216,6 +225,15 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                             "(:id, :hospital_id, 'PLAN_8', '[1]'::json, DATE '2026-09-01')"
                         ),
                         {"id": retired_plan_schedule_id, "hospital_id": hospital_id},
+                    )
+            with pytest.raises(IntegrityError):
+                with engine.begin() as blocked:
+                    blocked.execute(
+                        text(
+                            "INSERT INTO hospitals (id, name, slug, plan) VALUES "
+                            "(:id, '폐기 요금제 병원', 'retired-plan', 'PLAN_8')"
+                        ),
+                        {"id": retired_plan_hospital_id},
                     )
             content = connection.execute(
                 text(
