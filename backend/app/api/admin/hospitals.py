@@ -50,6 +50,12 @@ from app.services import cost_guard
 from app.services.asset_storage import store_asset_bytes
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.clinic_visual_readiness import evaluate_visual_readiness
+from app.services.domain_certificate_jobs import (
+    DomainCertificateClaimRequest,
+    DomainCertificateHospitalMissing,
+    DomainChangedDuringVerification,
+    lock_hospital_for_domain_certificate,
+)
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -1126,7 +1132,9 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
 async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     """일시 정지된 병원을 재개 (PAUSED 상태에서만 허용).
 
-    활성화 게이트와 사용자 도메인의 현재 DNS/인증서를 다시 확인한다.
+    활성화 게이트와, 자기 도메인을 쓰는 경우 그 도메인의 DNS만 다시 확인한다.
+    인증서 발급은 후속 배치의 몫이라 재개를 막지 않는다. DNS 확인 결과는
+    Admin 배지가 읽는 관측 필드에 남긴다.
     """
     h = await _get_or_404(db, hospital_id)
 
@@ -1139,7 +1147,8 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
 
     # DM-F4: DNS 검증만 확인. 인증서는 후속 작업이므로 재개를 블록하지 않음.
     if h.aeo_domain:
-        dns_check = await check_domain_dns(h.aeo_domain, domain_dns_strategy_for_hospital(h))
+        checked_domain = h.aeo_domain
+        dns_check = await check_domain_dns(checked_domain, domain_dns_strategy_for_hospital(h))
         if not dns_check.verified:
             raise HTTPException(
                 status_code=409,
@@ -1148,15 +1157,36 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                     "message": "재개 전 사용자 도메인의 DNS 설정을 확인해 주세요.",
                 },
             )
+        checked_at = datetime.now(UTC)
+        # 조회는 잠금 밖에서(외부 조회를 잠금 안에서 하지 않는다), 기록만 잠금 아래서 한다.
+        # 그 사이 다른 요청이 도메인을 바꿨다면 옛 도메인의 성공 관측이 새 도메인 행에
+        # 붙어, 확인된 적 없는 주소가 '확인 완료'로 보인다.
+        try:
+            h = await lock_hospital_for_domain_certificate(
+                db, DomainCertificateClaimRequest(hospital_id, checked_domain)
+            )
+        except DomainCertificateHospitalMissing as exc:
+            raise HTTPException(status_code=404, detail="병원을 찾을 수 없습니다.") from exc
+        except DomainChangedDuringVerification as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DOMAIN_CHANGED",
+                    "message": (
+                        "확인 중 병원 도메인이 변경되었습니다. "
+                        "화면을 새로고침한 뒤 다시 재개해 주세요."
+                    ),
+                },
+            ) from exc
         # 배지·목록이 읽는 관측 필드에 남긴다. 확인만 하고 기록하지 않으면
         # 살아 있는 주소가 '확인 대기'로 표시된다(A-1 재발 경로).
         apply_live_domain_check(
             h,
             LiveDomainCheck(
-                domain=h.aeo_domain,
+                domain=checked_domain,
                 healthy=True,
                 reason="dns_ok",
-                checked_at=datetime.now(UTC),
+                checked_at=checked_at,
             ),
         )
 
