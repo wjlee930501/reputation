@@ -1182,9 +1182,9 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
                 },
             )
         checked_at = datetime.now(UTC)
-        # 조회는 잠금 밖에서(외부 조회를 잠금 안에서 하지 않는다), 기록만 잠금 아래서 한다.
-        # 그 사이 다른 요청이 도메인이나 연결 방식을 바꿨다면 옛 설정의 성공 관측이 새 행에
-        # 붙어, 확인된 적 없는 설정이 '확인 완료'로 보인다.
+        # DNS 조회는 의도적으로 병원 advisory 잠금 안에서 한다 — 프로필 완료 해제와 재개가
+        # 조회 도중 끼어들어 옛 설정의 성공 관측이 새 행에 붙는 것을 막는다. 수동 경로라
+        # 조회 지연(상한 있음)만큼 잠금을 오래 쥐는 비용은 받아들인다.
         try:
             h = await lock_hospital_for_domain_certificate(
                 db,

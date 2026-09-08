@@ -118,6 +118,43 @@ def test_domain_setup_reads_certificate_state_without_provider_call(monkeypatch)
     assert certificate_step["status"] == "WAITING"
 
 
+def test_domain_setup_certificate_step_stays_waiting_while_issuing_even_if_live(monkeypatch):
+    """M-10: 배지는 '인증서 발급 중'인데 체크리스트만 DONE이면 운영자는 어느 쪽도 믿지 않는다."""
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at=datetime(2026, 8, 22, 2, 0, tzinfo=timezone.utc),
+        domain_cert_job_state="ISSUING",
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        domain_last_check_ok=True,
+        domain_last_check_reason="https_ok",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    statuses = {item["key"]: item["status"] for item in response.json()["checklist"]}
+    assert statuses["dns_verified"] == "DONE"
+    assert statuses["certificate_ready"] == "WAITING"
+
+
+def test_domain_setup_certificate_step_is_done_when_live_and_no_job_state(monkeypatch):
+    """A-1 유지: cert 컬럼이 초기화됐어도 주소가 실제로 응답하면 완료로 본다."""
+    monkeypatch.setattr(settings, "CNAME_TARGET", "target.motionlabs.example")
+    hospital = _hospital(
+        site_live=True,
+        domain_cert_dns_verified_at=None,
+        domain_cert_job_state=None,
+        domain_last_checked_at=datetime(2026, 8, 22, 3, 0, tzinfo=timezone.utc),
+        domain_last_check_ok=True,
+        domain_last_check_reason="https_ok",
+    )
+
+    response = _get_setup(hospital, monkeypatch)
+
+    statuses = {item["key"]: item["status"] for item in response.json()["checklist"]}
+    assert statuses["certificate_ready"] == "DONE"
+
+
 def test_domain_setup_returns_apex_address_plan(monkeypatch):
     monkeypatch.setattr(settings, "CUSTOM_DOMAIN_IP_TARGETS", "34.117.10.20,2600:1901::1")
     hospital = _hospital(

@@ -220,13 +220,22 @@ def _checklist(
         state.registrar
     )
     # DM-U5: 체크리스트는 각 단계의 실제 상태를 반영. site_live는 DNS 검증 완료 여부만 나타냄.
-    # A-1: 도메인이 지금 실제로 응답하고 있다면 그 관측이 저장된 인증서 작업 상태보다
+    # A-1: 도메인이 지금 실제로 응답하고 있다면 그 관측이 비어 있는 인증서 작업 상태보다
     # 강한 증거다. 도메인 재저장으로 cert 컬럼이 초기화된 병원이 살아 있는 주소를 두고
     # "DNS 검증 필요 / HTTPS 필요"로 남는 것을 막는다.
     live_ok = state.last_check_ok is True
     dns_verified = bool(state.dns_verified_at) or live_ok
-    cert_done = state.cert_job_state == DomainCertJobState.DONE.value or live_ok
-    
+    # M-10: 배지(admin/lib/hospital-domain-status.ts)와 같은 규칙 — 발급 중·실패는 관측이
+    # 정상이어도 그대로 드러낸다. 관측은 인증서 상태가 비어 있거나 DONE일 때만 완료 근거다.
+    cert_in_progress = state.cert_job_state in (
+        DomainCertJobState.ISSUING.value,
+        DomainCertJobState.FAILED.value,
+    )
+    cert_done = state.cert_job_state == DomainCertJobState.DONE.value or (
+        live_ok and not cert_in_progress
+    )
+
+
     return [
         DomainSetupChecklistItem(
             key="domain_saved",
