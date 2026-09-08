@@ -47,11 +47,15 @@ def _admin_item(carried_over_from=None):
 
 def test_admin_serializer_includes_carried_over_from():
     serialized = content_api._serialize_item(
-        _admin_item(carried_over_from=date(2026, 6, 30)), public_philosophy_id=None
+        _admin_item(carried_over_from=date(2026, 6, 30)),
+        public_philosophy_id=None,
+        hospital_serving=True,
     )
     assert serialized["carried_over_from"] == "2026-06-30"
 
-    serialized_none = content_api._serialize_item(_admin_item(), public_philosophy_id=None)
+    serialized_none = content_api._serialize_item(
+        _admin_item(), public_philosophy_id=None, hospital_serving=True
+    )
     assert serialized_none["carried_over_from"] is None
 
 

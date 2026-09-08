@@ -38,12 +38,20 @@ pytestmark = pytest.mark.asyncio
 _CONTENT_LIST_STATEMENT_BUDGET = 6
 
 
-async def _hospital(db, name: str) -> Hospital:
+async def _hospital(db, name: str, **overrides) -> Hospital:
+    # 공개 사이트의 병원 게이트를 실제로 통과하는 상태 — 이게 아니면 사이트는 이 병원의
+    # 어떤 글도 내보내지 않는다.
     hospital = Hospital(
-        name=name,
-        slug=f"clinic-{uuid.uuid4().hex[:12]}",
-        status=HospitalStatus.ACTIVE,
-        site_live=True,
+        **{
+            "name": name,
+            "slug": f"clinic-{uuid.uuid4().hex[:12]}",
+            "status": HospitalStatus.ACTIVE,
+            "site_live": True,
+            "profile_complete": True,
+            "site_built": True,
+            "schedule_set": True,
+            **overrides,
+        }
     )
     db.add(hospital)
     await db.flush()
@@ -269,6 +277,26 @@ async def test_every_row_carries_the_site_judgment_and_its_block_link(pg_async_s
         "reason": "종료됨",
         "link": None,
     }
+
+
+async def test_a_paused_hospitals_published_rows_are_withheld_with_the_hospital_reason(
+    pg_async_session,
+):
+    """일시정지 병원의 발행 글은 사이트에 없다 — admin 표가 "공개 중"이라고 말하면 안 된다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "일시정지 의원", status=HospitalStatus.PAUSED)
+    today, _, _ = _month_bounds()
+    item = await _content(db, hospital, scheduled_date=today)
+
+    row = (await _rows(db, hospital))[str(item.id)]
+
+    assert row["compliance"]["public_visibility"] == {
+        "visible": False,
+        "blockers": ["HOSPITAL_NOT_SERVING"],
+        "blocker_labels": ["병원 공개 서비스 중이 아님"],
+    }
+    assert row["row_state"]["kind"] == "withheld"
+    assert row["row_state"]["reason"] == "병원 공개 서비스 중이 아님"
 
 
 async def test_block_links_do_not_leak_to_other_rows_or_hospitals(pg_async_session):

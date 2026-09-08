@@ -54,7 +54,7 @@ class _SessionProxy:
 
 
 class _SideSessionProxy:
-    """`mark_provider_call_started`의 별도 세션. 같은 테스트 트랜잭션에 쓰되, 태스크
+    """`mark_paid_execution_started`의 별도 세션. 같은 테스트 트랜잭션에 쓰되, 태스크
     세션의 커밋 기록(= 행 잠금 해제)과 섞이지 않게 원래 commit을 부른다.
 
     운영에서는 정말 다른 세션이라 본 세션이 쥔 글 행 잠금을 놓지 않는다.
@@ -223,17 +223,29 @@ def _payload(item, title):
 
 
 def _claimed_run(
-    pg_session, hospital, item, *, title=None, key=None, age_minutes=0, attempts=1
+    pg_session,
+    hospital,
+    item,
+    *,
+    title=None,
+    key=None,
+    age_minutes=0,
+    attempts=1,
+    paid=0,
 ):
     """worker가 이미 claim한 실행. 실제 `finish_explicit_run` 경로를 타게 한다.
 
     `attempts`는 prerun의 claim이 올린 `attempt_count`다. 2면 worker 유실로 재배달돼
-    같은 행을 다시 claim한 실행이다.
+    같은 행을 다시 claim한 실행이다. `paid`는 그 행이 실제로 산 유료 호출 수다 — 재배달
+    자체는 결제가 아니므로 둘은 다를 수 있다.
     """
 
     worker_id = str(uuid.uuid4())
     title = item.title if title is None else title
     now = datetime.now(timezone.utc) - timedelta(minutes=age_minutes)
+    payload = _payload(item, title)
+    if paid:
+        payload |= {recertification.PAID_EXECUTIONS_FIELD: paid}
     run = OperationRun(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -247,7 +259,7 @@ def _claimed_run(
         requested_at=now,
         queued_at=now,
         started_at=now,
-        request_payload=_payload(item, title),
+        request_payload=payload,
         attempt_count=attempts,
         total_count=1,
         success_count=0,
@@ -1012,10 +1024,10 @@ def test_a_block_whose_incident_cannot_open_stays_recoverable(pg_session, monkey
     }
 
 
-def test_a_redelivered_execution_counts_its_earlier_attempt_against_the_budget(
+def test_a_redelivered_execution_counts_its_earlier_payment_against_the_budget(
     pg_session, monkeypatch
 ):
-    """worker가 유료 호출 도중 죽어 재배달된 실행은 자기 앞의 호출을 스스로 센다.
+    """worker가 유료 호출 도중 죽어 재배달된 실행은 자기 앞의 결제를 스스로 센다.
 
     `task_acks_late`·`task_reject_on_worker_lost`에서 broker는 같은 task를 다시 보내고
     prerun은 같은 행을 다시 claim한다. 행 수로 세면 그 행은 여전히 하나라, 예산 세 번을
@@ -1038,6 +1050,7 @@ def test_a_redelivered_execution_counts_its_earlier_attempt_against_the_budget(
         item,
         key=recertification.sweep_key(item.id, _subject(item), 3),
         attempts=2,
+        paid=1,
     )
 
     _run_task(item, redelivered, worker_id)
@@ -1066,7 +1079,9 @@ def test_a_redelivered_execution_still_pays_once_while_the_budget_holds(
 
     _wire_task(monkeypatch, pg_session, _certify)
     _wire_incidents(monkeypatch, pg_session)
-    redelivered, worker_id = _claimed_run(pg_session, hospital, item, attempts=2)
+    redelivered, worker_id = _claimed_run(
+        pg_session, hospital, item, attempts=2, paid=1
+    )
 
     _run_task(item, redelivered, worker_id)
 
@@ -1074,7 +1089,7 @@ def test_a_redelivered_execution_still_pays_once_while_the_budget_holds(
     assert calls == [item.title]
     assert redelivered.state == OperationRunState.SUCCEEDED
     assert image_certification_current(pg_session.get(ContentItem, item.id))
-    # 직전 execution 하나와 이번 하나 — 예산 세 번을 넘지 않는다.
+    # 직전 결제 하나와 이번 하나 — 예산 세 번을 넘지 않는다.
     runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
     assert (
         recertification.attempts_spent(
@@ -1242,7 +1257,7 @@ def test_an_in_flight_run_that_started_its_paid_call_counts_for_the_next_run(
     # 거절하게 만들지 않는다.
     assert recertification.attempts_spent(runs, subject, now=now) == 2
 
-    recertification.mark_provider_call_started(paying.id)
+    recertification.mark_paid_execution_started(paying.id)
     pg_session.expire_all()
     runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
     assert recertification.attempts_spent(runs, subject, now=now) == 3
@@ -1284,6 +1299,99 @@ def test_an_in_flight_run_that_started_its_paid_call_counts_for_the_next_run(
     )
     incidents = _open_incidents(pg_session, hospital)
     assert [incident.state for incident in incidents] == [IncidentState.OPEN.value]
+
+
+def test_a_run_that_paid_twice_is_counted_twice_and_closes_the_budget(
+    pg_session, monkeypatch
+):
+    """한 행이 재배달로 두 번 샀으면 두 번으로 센다 — boolean 표시로는 하나였다.
+
+    execution 1에서 사고 죽고, 재배달된 execution 2에서 또 사고 또 죽은 행이다. 앞선
+    종결 실행 하나까지 합쳐 예산 세 번이 이미 나갔으므로, 세 번째 execution은 네 번째를
+    사지 않고 '반복 실패'로 닫는다.
+    """
+    hospital, item = _seed_published(pg_session, certified=False)
+    calls: list[str] = []
+
+    async def _never(image_url, *, content_type, topic, hospital_id=None):
+        calls.append(topic)
+        raise AssertionError("예산이 끝난 뒤에 유료 재검수를 호출했다")
+
+    _terminal_run(pg_session, hospital, item, code="PROVIDER_UNAVAILABLE")
+    _wire_task(monkeypatch, pg_session, _never)
+    _wire_incidents(monkeypatch, pg_session)
+    subject = _subject(item)
+    twice_paid, worker_id = _claimed_run(
+        pg_session,
+        hospital,
+        item,
+        key=recertification.sweep_key(item.id, subject, 2),
+        attempts=3,
+        paid=2,
+    )
+
+    runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
+    assert (
+        recertification.attempts_spent(runs, subject, now=datetime.now(timezone.utc))
+        == recertification.ATTEMPT_BUDGET
+    )
+
+    _run_task(item, twice_paid, worker_id)
+
+    pg_session.expire_all()
+    assert calls == []
+    assert twice_paid.safe_error_code == (
+        recertification.PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED
+    )
+    incidents = _open_incidents(pg_session, hospital)
+    assert [incident.state for incident in incidents] == [IncidentState.OPEN.value]
+
+
+def test_a_legacy_provider_called_payload_still_counts_as_one(pg_session):
+    """계수기 이전 payload는 몇 번인지 알 수 없다 — 하나로 세되 0으로 세지 않는다."""
+    hospital, item = _seed_published(pg_session, certified=False)
+    subject = _subject(item)
+    legacy, _worker = _claimed_run(pg_session, hospital, item, attempts=2)
+    pg_session.execute(
+        update(OperationRun)
+        .where(OperationRun.id == legacy.id)
+        .values(request_payload=_payload(item, item.title) | {"provider_called": True})
+    )
+    pg_session.commit()
+    pg_session.expire_all()
+
+    runs = autonomous_recovery._recertify_runs_by_item(pg_session, [item])[str(item.id)]
+    assert recertification.attempts_spent(runs, subject, now=datetime.now(timezone.utc)) == 1
+
+
+def test_the_counter_is_committed_before_the_provider_is_called(pg_session, monkeypatch):
+    """공급자가 불릴 때 계수기는 이미 DB에 있다 — 그 사이에 죽어도 결제가 세어진다."""
+    hospital, item = _seed_published(pg_session, certified=False)
+    observed: list[int] = []
+
+    async def _certify_reading_the_db(image_url, *, content_type, topic, hospital_id=None):
+        # 공급자 호출 시점의 durable 상태를 그대로 읽는다.
+        payload = pg_session.execute(
+            select(OperationRun.request_payload).where(OperationRun.id == run.id)
+        ).scalar_one()
+        observed.append(int(payload.get(recertification.PAID_EXECUTIONS_FIELD) or 0))
+        return image_content_hash_from_url(image_url), image_subject_hash(content_type, topic)
+
+    _wire_task(monkeypatch, pg_session, _certify_reading_the_db)
+    _wire_incidents(monkeypatch, pg_session)
+    run, worker_id = _claimed_run(pg_session, hospital, item, paid=1)
+
+    _run_task(item, run, worker_id)
+
+    pg_session.expire_all()
+    # 이 행의 두 번째 결제 — 계수기는 호출 전에 이미 2다.
+    assert observed == [2]
+    assert (
+        pg_session.get(OperationRun, run.id).request_payload[
+            recertification.PAID_EXECUTIONS_FIELD
+        ]
+        == 2
+    )
 
 
 def test_a_block_whose_incident_is_not_visible_re_enters_the_sweep(pg_session, monkeypatch):

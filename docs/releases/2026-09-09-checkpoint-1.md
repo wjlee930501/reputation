@@ -12,6 +12,7 @@
 - 마이그레이션 head `0070_essence_evidence_noise_hash`(추가형). 기존 승인 행은 NULL → 다음 재조정에서 병원당 1회 유료 재검수(운영 7곳).
 - `content` 큐 신규 task 2개: `recertify_published_content_image`, `fetch_channel_source`(둘 다 readiness 등록, beat 변경 없음). 재인증 sweep은 인증 없는 PUBLISHED 글에 (글, 주제)당 최대 3회 유료 호출.
 - 옛 프로필 화면의 "병원 기본 정보 완료로 표시" 체크박스는 서버 파생으로 무동작.
+- `PATCH /admin/hospitals/{id}/profile`은 전환 기간 동안 **모르는 필드를 버린다**(`extra="ignore"`). 배포 순서가 api → admin이라 이미 열려 있던 옛 탭이 병원 전체 스냅샷(완료 플래그·응답 전용 필드 포함)을 그대로 보내기 때문이다. body의 `profile_complete`는 무시하고 경고 로그만 남기며, 완료 여부는 서버가 필수 항목에서 파생한다. PR-1E에서 화면이 필요한 필드만 보내게 되면 `extra="forbid"`로 되돌린다.
 - 생성 재시도 fingerprint에서 날짜 제거 → 배포 후 stranded 글마다 1회 신규 시도.
 - 미해결로 등록된 항목: H-16(월간 원장 리포트가 보류 글을 발행 글로 나열, PR-0C-2/PR-0D), PR-0D 전체(SEC-01 BFF 서명 actor 포함).
 

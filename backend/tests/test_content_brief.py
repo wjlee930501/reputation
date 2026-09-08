@@ -26,6 +26,9 @@ def _hospital(hospital_id=None, **overrides):
         status="ACTIVE",
         site_live=True,
         schedule_set=True,
+        # 공개 사이트가 실제로 이 병원의 글을 내보내는 상태.
+        profile_complete=True,
+        site_built=True,
         treatments=[{"name": "치질 수술", "description": "상태에 따라 수술 여부와 회복 계획을 설명합니다."}],
     )
     base.update(overrides)
@@ -200,7 +203,9 @@ def test_serialize_item_includes_brief_and_query_links():
         brief_approved_by="Ops",
     )
 
-    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
+    serialized = content_api._serialize_item(
+        item, full=True, public_philosophy_id=None, hospital_serving=True
+    )
 
     assert serialized["query_target_id"] == str(target_id)
     assert serialized["exposure_action_id"] == str(action_id)
@@ -229,7 +234,9 @@ def test_serialize_item_exposes_forbidden_expression_compliance_blocker():
         essence_status="ALIGNED",
     )
 
-    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
+    serialized = content_api._serialize_item(
+        item, full=True, public_philosophy_id=None, hospital_serving=True
+    )
 
     assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["forbidden_violations"] == ["최고"]
@@ -249,7 +256,9 @@ def test_serialize_item_blocks_publish_without_references():
         image_policy_verified_at=datetime.now(timezone.utc),
     )
 
-    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
+    serialized = content_api._serialize_item(
+        item, full=True, public_philosophy_id=None, hospital_serving=True
+    )
 
     assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["references_count"] == 0
@@ -269,7 +278,9 @@ def test_serialize_item_blocks_publish_with_only_non_whitelisted_references():
         image_policy_verified_at=datetime.now(timezone.utc),
     )
 
-    serialized = content_api._serialize_item(item, full=True, public_philosophy_id=None)
+    serialized = content_api._serialize_item(
+        item, full=True, public_philosophy_id=None, hospital_serving=True
+    )
 
     assert serialized["compliance"]["status"] == "BLOCKED"
     assert serialized["compliance"]["references_count"] == 0
@@ -834,6 +845,10 @@ async def test_update_content_brief_links_action_infers_target_and_approves(monk
             # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
             return SimpleNamespace(all=list, scalar_one_or_none=lambda: None)
 
+        async def get(self, _model, _pk):
+            # 직렬화가 병원 공개 게이트를 한 번 읽는다.
+            return hospital
+
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
         assert requested_item_id == item_id
         assert requested_hospital_id == hospital_id
@@ -1106,10 +1121,11 @@ async def test_update_content_brief_reassigns_action_without_stale_links(monkeyp
             # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
             return SimpleNamespace(all=list, scalar_one_or_none=lambda: None)
 
-        async def get(self, model, requested_id):
+        async def get(self, _model, requested_id):
             if requested_id == replaced_item_id:
                 return replaced_item
-            return None
+            # 직렬화가 병원 공개 게이트를 한 번 읽는다.
+            return hospital if requested_id == hospital.id else None
 
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
         assert requested_item_id == item_id
@@ -1194,6 +1210,10 @@ async def test_update_content_brief_unlinks_action_clears_work_queue_link(monkey
         async def execute(self, statement):
             # 직렬화가 행 상태의 차단 링크(인시던트·실패한 실행)를 배치 조회한다.
             return SimpleNamespace(all=list, scalar_one_or_none=lambda: None)
+
+        async def get(self, _model, _pk):
+            # 직렬화가 병원 공개 게이트를 한 번 읽는다.
+            return hospital
 
     async def fake_get_content(db, requested_item_id, requested_hospital_id):
         assert requested_item_id == item_id

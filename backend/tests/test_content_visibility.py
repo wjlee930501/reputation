@@ -8,7 +8,11 @@ import app.api.public.site as site
 from app.api.admin import content as admin_content
 from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.hospital import HospitalStatus
-from app.services.content_visibility import VISIBILITY_BLOCKER_LABELS, assess_public_visibility
+from app.services.content_visibility import (
+    HOSPITAL_NOT_SERVING,
+    VISIBILITY_BLOCKER_LABELS,
+    assess_public_visibility,
+)
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
@@ -108,7 +112,10 @@ def test_every_blocker_has_a_korean_label_and_a_stable_order():
     )
     result = assess_public_visibility(item, uuid.uuid4())
     assert result.visible is False
-    assert result.blockers == tuple(VISIBILITY_BLOCKER_LABELS)
+    # 병원 게이트 코드는 admin 직렬화만 붙인다 — 글 판정은 만들지 않는다.
+    assert result.blockers == tuple(
+        code for code in VISIBILITY_BLOCKER_LABELS if code != HOSPITAL_NOT_SERVING
+    )
     assert result.blocker_labels == [VISIBILITY_BLOCKER_LABELS[code] for code in result.blockers]
     assert result.blocker_labels[0] == "현재 승인된 콘텐츠 운영 기준과 다른 기준으로 생성됨"
 
@@ -148,8 +155,54 @@ def test_site_withholds_when_no_approved_philosophy_but_not_when_unasked():
     assert site._is_public_safe_content(item) is True
 
 
-def _serialize(item, philosophy_id):
-    return admin_content._serialize_item(item, full=True, public_philosophy_id=philosophy_id)
+def _serialize(item, philosophy_id, *, hospital_serving: bool = True):
+    return admin_content._serialize_item(
+        item,
+        full=True,
+        public_philosophy_id=philosophy_id,
+        hospital_serving=hospital_serving,
+    )
+
+
+def test_a_non_serving_hospital_withholds_every_published_row():
+    """글은 완벽해도 사이트가 그 병원의 어떤 글도 내보내지 않으면 '공개 중'이 아니다."""
+    item, philosophy_id = _published()
+
+    serialized = _serialize(item, philosophy_id, hospital_serving=False)
+
+    visibility = serialized["compliance"]["public_visibility"]
+    assert visibility["visible"] is False
+    assert visibility["blockers"] == ["HOSPITAL_NOT_SERVING"]
+    assert visibility["blocker_labels"] == ["병원 공개 서비스 중이 아님"]
+    assert serialized["row_state"]["kind"] == "withheld"
+    assert serialized["row_state"]["reason"] == "병원 공개 서비스 중이 아님"
+
+
+def test_a_non_serving_hospital_keeps_the_items_own_reasons_behind_its_own():
+    item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
+
+    visibility = _serialize(item, philosophy_id, hospital_serving=False)["compliance"][
+        "public_visibility"
+    ]
+
+    assert visibility["blockers"] == ["HOSPITAL_NOT_SERVING", "IMAGE_NOT_CERTIFIED"]
+    assert visibility["blocker_labels"] == [
+        "병원 공개 서비스 중이 아님",
+        "대표 이미지 재인증 대기",
+    ]
+
+
+def test_a_serving_hospital_is_unchanged():
+    item, philosophy_id = _published()
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["compliance"]["public_visibility"] == {
+        "visible": True,
+        "blockers": [],
+        "blocker_labels": [],
+    }
+    assert serialized["row_state"]["kind"] == "public"
 
 
 def test_admin_serializes_a_withheld_published_item_as_withheld():
@@ -188,13 +241,18 @@ def test_notification_label_never_overwrites_the_withheld_label():
 class _PatchDB:
     """update_content의 행 잠금 조회만 실제 아이템으로 돌려주는 최소 더블."""
 
-    def __init__(self, item):
+    def __init__(self, item, hospital=None):
         self._item = item
+        self._hospital = hospital
         self.committed = False
 
     async def execute(self, statement):
         # `all`은 행 상태의 차단 링크 배치 조회용 — 이 더블에는 인시던트·실행이 없다.
         return SimpleNamespace(scalar_one_or_none=lambda: self._item, all=list)
+
+    async def get(self, _model, _object_id):
+        # 직렬화의 병원 게이트 조회.
+        return self._hospital
 
     async def commit(self):
         self.committed = True
@@ -222,6 +280,9 @@ async def _patch_published(
         slug="recert-clinic",
         status=status,
         site_live=True,
+        profile_complete=True,
+        site_built=True,
+        schedule_set=True,
         aeo_domain=None,
         treatments=[],
     )
@@ -257,7 +318,10 @@ async def _patch_published(
     monkeypatch.setattr(admin_content.indexnow, "enqueue_content_published", _enqueue)
 
     await admin_content.update_content(
-        hospital.id, item.id, admin_content.ContentPatch(**patch), db=_PatchDB(item)
+        hospital.id,
+        item.id,
+        admin_content.ContentPatch(**patch),
+        db=_PatchDB(item, hospital),
     )
     return dispatched, submitted
 

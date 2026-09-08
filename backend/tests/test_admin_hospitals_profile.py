@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
-from pydantic import ValidationError
 
 from app.api.admin import hospitals as hospitals_api
 from app.models.handoff import HandoffState
@@ -155,20 +154,34 @@ async def test_missing_requirements_are_labelled():
     assert db.committed is True
 
 
-def test_body_cannot_set_profile_complete():
-    """완료 플래그는 조용히 무시되지 않고 요청 자체가 거부된다 — 보낸 쪽이 알아야 한다."""
+async def test_body_profile_complete_is_ignored_and_derivation_wins(caplog):
+    """body의 완료 플래그는 버리고 경고만 남긴다 — 저장 결과에서 파생한 값이 이긴다.
+
+    배포 순서가 api → admin이라, 이미 열려 있던 옛 탭은 병원 스냅샷째로 보낸다. 그 요청을
+    422로 되돌리면 운영자만 저장에 실패한다. 값 자체는 절대 반영하지 않는다.
+    """
     assert "profile_complete" not in hospitals_api.HospitalProfileUpdate.model_fields
 
-    with pytest.raises(ValidationError) as exc:
-        hospitals_api.HospitalProfileUpdate(profile_complete=True)
+    with caplog.at_level("WARNING"):
+        body = hospitals_api.HospitalProfileUpdate(profile_complete=True, treatments=[])
 
-    assert exc.value.errors()[0]["type"] == "extra_forbidden"
+    assert "profile_complete" not in body.model_fields_set
+    assert "profile_complete in request body is ignored" in caplog.text
+
+    hospital = _hospital(profile_complete=False, treatments=[])
+    result = await hospitals_api.update_profile(
+        hospital.id, body, BackgroundTasks(), db=FakeDB(hospital)
+    )
+
+    assert result["profile_complete"] is False
+    assert hospital.profile_complete is False
 
 
-def test_unknown_fields_are_rejected_instead_of_dropped():
-    """화면이 병원 전체 스냅샷을 그대로 보내면 다른 섹션의 값까지 실려 온다."""
-    with pytest.raises(ValidationError):
-        hospitals_api.HospitalProfileUpdate(name="테스트의원")
+def test_unknown_fields_are_dropped_during_the_admin_transition():
+    """옛 화면이 보내는 응답 전용 필드는 저장 대상이 아니지만 요청을 깨지도 않는다."""
+    body = hospitals_api.HospitalProfileUpdate(name="테스트의원", phone="02-111-2222")
+
+    assert body.model_fields_set == {"phone"}
 
 
 async def test_address_change_geocodes_once_and_persists_coordinates(monkeypatch):

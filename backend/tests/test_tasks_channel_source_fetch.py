@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.sql.dml import Update
 
 from app.models.essence import SourceStatus, SourceType
 from app.services.essence_sources import (
@@ -20,8 +22,19 @@ from app.services.essence_sources import (
 from app.workers import tasks
 
 
+def _rendered(clause) -> str:
+    """실제로 DB에 나갈 SQL. 조건을 파이썬이 아니라 SQL이 거는지 여기서 드러난다."""
+    return str(
+        clause.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+
+
 class _FakeSession:
-    """`SyncSessionLocal()` 대신 쓰는 최소 세션. 저장소는 테스트가 들고 있는 dict다."""
+    """`SyncSessionLocal()` 대신 쓰는 최소 세션. 저장소는 테스트가 들고 있는 dict다.
+
+    조회는 **렌더링된 SQL에 실제로 있는 조건만** 적용하고 LIMIT도 그대로 따른다.
+    파이썬에서 한 번 더 거르면 "LIMIT 앞에서 걸렀는가"를 테스트가 증명하지 못한다.
+    """
 
     def __init__(self, store):
         self.store = store
@@ -32,19 +45,59 @@ class _FakeSession:
     def __exit__(self, *_exc):
         return False
 
+    def _sources(self):
+        return [
+            row for row in self.store.values() if getattr(row, "source_type", None) is not None
+        ]
+
     def get(self, _model, object_id):
         return self.store.get(object_id)
 
-    def execute(self, _stmt):
+    def execute(self, stmt):
+        if isinstance(stmt, Update):
+            return self._apply_update(stmt)
+        sql = _rendered(stmt)
+        rows = [row for row in self._sources() if self._matches(row, sql)]
+        rows.sort(key=lambda row: row.created_at)
+        limit = getattr(getattr(stmt, "_limit_clause", None), "value", None)
+        if limit is not None:
+            rows = rows[:limit]
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+    @staticmethod
+    def _matches(row, sql: str) -> bool:
+        metadata = row.source_metadata or {}
+        checks = [
+            ("status = 'PENDING'", row.status == SourceStatus.PENDING),
+            ("status = 'ERROR'", row.status == SourceStatus.ERROR),
+            ("raw_text IS NULL", row.raw_text is None),
+            ("url IS NOT NULL", bool(row.url)),
+            (
+                "'fetch_state') AS VARCHAR) IN ('QUEUED', 'FAILED')",
+                metadata.get("fetch_state") in ("QUEUED", "FAILED"),
+            ),
+            (
+                "'fetch_state') AS VARCHAR) = 'FAILED'",
+                metadata.get("fetch_state") == "FAILED",
+            ),
+            ("'incident_id') AS VARCHAR) IS NULL", metadata.get("incident_id") is None),
+        ]
+        return all(passed for fragment, passed in checks if fragment in sql)
+
+    def _apply_update(self, stmt):
+        sql = _rendered(stmt.whereclause)
+        values = {
+            column.name: getattr(bind, "value", bind) for column, bind in stmt._values.items()
+        }
         rows = [
             row
-            for row in self.store.values()
-            if getattr(row, "source_type", None) is not None
-            and row.status == SourceStatus.PENDING
-            and row.raw_text is None
-            and row.url
+            for row in self._sources()
+            if f"'{row.id}'" in sql and self._matches(row, sql)
         ]
-        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+        for row in rows:
+            for name, value in values.items():
+                setattr(row, name, value)
+        return SimpleNamespace(rowcount=len(rows))
 
     def commit(self):
         pass
@@ -270,6 +323,92 @@ def test_the_sweep_ignores_rows_that_are_not_waiting_on_a_fetch(worker_env):
     assert tasks._redispatch_stalled_channel_source_fetches() == 0
     assert worker_env.calls["dispatched"] == []
     assert worker_env.calls["opened"] == []
+
+
+def test_legacy_url_rows_cannot_starve_a_freshly_queued_channel(worker_env):
+    """자동 처리 대상이 아닌 옛 URL 전용 행이 LIMIT 200칸을 채워도 새 등록은 발행된다.
+
+    자격 조건을 LIMIT 뒤 파이썬에서 걸면, 오래된 레거시 행 250개가 후보를 다 차지해
+    방금 프로파일 저장이 만든 QUEUED 행은 영원히 fetch되지 않는다.
+    """
+    old = datetime(2020, 1, 1, tzinfo=timezone.utc)
+    for index in range(250):
+        # `fetch_state`가 없는 행 — 계약상 자동 처리 대상이 아니다.
+        _add(
+            worker_env,
+            _source(
+                source_metadata={"registered_from": "legacy"},
+                created_at=old + timedelta(seconds=index),
+            ),
+        )
+    queued = _add(worker_env, _source(created_at=datetime(2026, 9, 9, tzinfo=timezone.utc)))
+
+    assert tasks._redispatch_stalled_channel_source_fetches() == 1
+    assert worker_env.calls["dispatched"] == [[str(queued.id)]]
+
+
+def test_a_terminal_failure_whose_incident_cannot_open_stays_retryable(worker_env, monkeypatch):
+    """사고를 열지 못하면 ERROR로 굳히지 않는다 — 굳히면 아무도 다시 보지 않는다."""
+    source = _add(worker_env, _source(source_type=SourceType.NAVER_BLOG))
+
+    async def shell_page(**_kwargs):
+        raise SourceRegistrationError("네이버 블로그 본문을 가져오지 못했습니다.")
+
+    async def incident_open_fails(**_kwargs):
+        raise RuntimeError("incident store unavailable")
+
+    monkeypatch.setattr(tasks, "fetch_source_content", shell_page)
+    monkeypatch.setattr(tasks, "open_ops_incident", incident_open_fails)
+
+    result = tasks.fetch_channel_source.apply(args=[str(source.id)]).get()
+
+    assert result["status"] == "FAILED"
+    assert source.status == SourceStatus.PENDING
+    assert source.source_metadata["fetch_state"] == "FAILED"
+    assert "incident_id" not in source.source_metadata
+    # 스윕의 후보 조건 그대로다 — 쿨다운이 지나면 같은 종결을 다시 시도한다.
+    source.source_metadata["last_fetch_attempt_at"] = (
+        datetime.now(timezone.utc) - timedelta(minutes=20)
+    ).isoformat()
+    assert tasks._redispatch_stalled_channel_source_fetches() == 1
+
+
+def test_the_sweep_reconciles_a_terminal_row_that_never_got_an_incident(worker_env):
+    """사고 없이 ERROR로 굳은 행은 사고만 열어 사람이 볼 수 있게 되돌린다."""
+    source = _add(
+        worker_env,
+        _source(
+            status=SourceStatus.ERROR,
+            process_error="URL 크롤링 실패: 연결할 수 없습니다",
+            source_metadata={"fetch_state": "FAILED", "fetch_attempts": 3},
+        ),
+    )
+
+    tasks._redispatch_stalled_channel_source_fetches()
+
+    assert len(worker_env.calls["opened"]) == 1
+    opened = worker_env.calls["opened"][0]
+    assert opened["object_id"] == str(source.id)
+    assert opened["problem"] == "URL 크롤링 실패: 연결할 수 없습니다"
+    assert source.source_metadata["incident_id"]
+
+    # 사고가 붙은 뒤에는 다시 열지 않는다.
+    tasks._redispatch_stalled_channel_source_fetches()
+    assert len(worker_env.calls["opened"]) == 1
+
+
+def test_an_operator_exclusion_wins_over_a_late_terminal_error(worker_env, monkeypatch):
+    """종결 쓰기는 status=PENDING을 다시 확인한다 — 제외 결정을 늦은 ERROR가 덮지 않는다."""
+    source = _add(worker_env, _source(status=SourceStatus.EXCLUDED))
+
+    tasks._fail_channel_source_fetch(
+        source.id, message="영구 실패", terminal=True, incident_id=uuid.uuid4()
+    )
+
+    assert source.status == SourceStatus.EXCLUDED
+    assert source.process_error is None
+    # CAS가 막았으므로 fetch 흔적도 남기지 않는다.
+    assert source.source_metadata["fetch_state"] == "QUEUED"
 
 
 def test_a_processing_error_opens_an_incident_the_person_can_act_on(worker_env):

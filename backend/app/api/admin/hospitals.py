@@ -27,7 +27,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from slugify import slugify
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -182,9 +182,11 @@ async def _exact_name_candidates(db: AsyncSession, name: str) -> list[Hospital]:
 
 
 class HospitalProfileUpdate(BaseModel):
-    # 모르는 필드는 조용히 버리지 않고 422로 되돌린다 — 화면이 병원 전체 스냅샷을 그대로
-    # 보내면 완료 플래그·다른 섹션의 값까지 함께 실려 오기 때문이다(설계 §4.5).
-    model_config = ConfigDict(extra="forbid")
+    # 배포 순서가 api → admin이라, 새 API가 뜬 뒤에도 이전 admin 탭은 병원 전체 스냅샷을
+    # 그대로 PATCH한다(완료 플래그·응답 전용 필드 포함). 그 요청을 422로 되돌리면 화면이
+    # 열려 있던 운영자만 저장에 실패한다 — 전환 기간에는 모르는 필드를 버리고 저장한다.
+    # PR-1E에서 화면이 필요한 필드만 보내게 되면 다시 `extra="forbid"`로 돌린다.
+    model_config = ConfigDict(extra="ignore")
 
     # 연락처
     address: str | None = Field(None, max_length=500)
@@ -245,6 +247,18 @@ class HospitalProfileUpdate(BaseModel):
     treatments: list[TreatmentItem] | None = None
 
     # 완료 플래그는 받지 않는다 — 저장할 때 서버가 필수 항목에서 파생한다(설계 §4.5).
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_deprecated_profile_complete(cls, data: object) -> object:
+        """이전 admin이 보내는 완료 플래그를 버린다 — 파생값만 저장을 결정한다."""
+        if isinstance(data, dict) and "profile_complete" in data:
+            logger.warning(
+                "profile_complete in request body is ignored "
+                "(deprecated since 2026-09-09; removed with PR-1E)"
+            )
+            data = {key: value for key, value in data.items() if key != "profile_complete"}
+        return data
 
     @field_validator("wikidata_qid")
     @classmethod
@@ -482,17 +496,51 @@ def _submitted_channel_urls(
 
 async def _register_channel_sources(
     db: AsyncSession, hospital: Hospital, submitted_channels: dict[str, tuple[str, bool]]
-) -> list[dict]:
-    """공식 채널 주소를 근거 자료로 등록하고 본문 수집은 워커에 넘긴다.
+) -> tuple[list[dict], list[uuid.UUID]]:
+    """공식 채널 주소를 근거 자료 행으로 만든다 — 프로파일 저장과 **같은 트랜잭션**에서.
 
-    저장은 이미 커밋됐다. 여기서 만드는 것은 본문 없는 PENDING 행뿐이라 요청은 즉시 끝나고,
-    fetch 실패는 워커의 재시도 예산과 운영 예외가 처리한다. 응답의 QUEUED는 커밋된 행이
-    실제로 있다는 뜻이고, FAILED는 그 행조차 만들지 못했다는 뜻이다.
+    커밋 뒤에 만들면 그 사이의 실패가 "저장은 됐는데 자료 행은 없는" 병원을 남기고,
+    운영자는 같은 값을 다시 저장하기 전까지 그 사실을 모른다. 채널 하나하나는 SAVEPOINT
+    안에서 만든다 — 한 채널의 실패가 다른 채널이나 프로파일 저장을 되돌리지 않는다.
+    본문 수집은 커밋 뒤 워커가 맡는다. 응답의 QUEUED는 이 트랜잭션이 커밋되면 행이
+    있다는 뜻이고, FAILED는 그 SAVEPOINT가 되돌아가 행이 없다는 뜻이다.
     """
     entries: list[dict] = []
     dispatch_ids: list[uuid.UUID] = []
     for field, (url, changed) in submitted_channels.items():
-        existing_id = await find_active_source_id_by_url(db, hospital_id=hospital.id, url=url)
+        try:
+            async with db.begin_nested():
+                existing_id = await find_active_source_id_by_url(
+                    db, hospital_id=hospital.id, url=url
+                )
+                created_id: uuid.UUID | None = None
+                if existing_id is None:
+                    source = await create_pending_channel_source(
+                        db,
+                        hospital_id=hospital.id,
+                        source_type=CHANNEL_SOURCE_TYPES[field],
+                        url=url,
+                        title=CHANNEL_SOURCE_PROVISIONAL_TITLES[field],
+                        channel_field=field,
+                        created_by=default_actor(),
+                    )
+                    created_id = source.id
+        except Exception:
+            logger.warning(
+                "Channel source registration failed for hospital %s (%s)",
+                hospital.id,
+                field,
+                exc_info=True,
+            )
+            entries.append(
+                {
+                    "field": field,
+                    "status": "FAILED",
+                    "source_id": None,
+                    "message": "자료 등록에 실패했습니다. 자료 화면에서 직접 등록해 주세요.",
+                }
+            )
+            continue
         if existing_id is not None:
             # 값이 그대로면 이번 저장이 한 일이 없다 — 화면에 알릴 것도 없다.
             if changed:
@@ -505,43 +553,10 @@ async def _register_channel_sources(
                     }
                 )
             continue
-        try:
-            source = await create_pending_channel_source(
-                db,
-                hospital_id=hospital.id,
-                source_type=CHANNEL_SOURCE_TYPES[field],
-                url=url,
-                title=CHANNEL_SOURCE_PROVISIONAL_TITLES[field],
-                channel_field=field,
-                created_by=default_actor(),
-            )
-        except Exception:
-            logger.warning(
-                "Channel source registration failed for hospital %s (%s)",
-                hospital.id,
-                field,
-                exc_info=True,
-            )
-            # 실패한 트랜잭션을 물고 다음 채널·감사 기록으로 넘어가지 않는다.
-            await db.rollback()
-            entries.append(
-                {
-                    "field": field,
-                    "status": "FAILED",
-                    "source_id": None,
-                    "message": "자료 등록에 실패했습니다. 자료 화면에서 직접 등록해 주세요.",
-                }
-            )
-        else:
-            dispatch_ids.append(source.id)
-            entries.append(
-                {
-                    "field": field,
-                    "status": "QUEUED",
-                    "source_id": source.id,
-                    "message": None,
-                }
-            )
+        dispatch_ids.append(created_id)
+        entries.append(
+            {"field": field, "status": "QUEUED", "source_id": created_id, "message": None}
+        )
 
     for entry in entries:
         await write_audit_log(
@@ -558,11 +573,16 @@ async def _register_channel_sources(
                 "message": entry["message"],
             },
         )
-    if entries:
-        await db.commit()
-    # 커밋 뒤에 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다. 발행 실패는 응답을
-    # 바꾸지 않는다: 행은 이미 durable하고, 정기 복구가 같은 fetch를 다시 건다.
-    for source_id in dispatch_ids:
+    return entries, dispatch_ids
+
+
+def _dispatch_channel_source_fetches(source_ids: list[uuid.UUID]) -> None:
+    """커밋된 자료 행의 본문 수집을 워커에 넘긴다 — 반드시 커밋 뒤에 부른다.
+
+    발행 실패는 응답을 바꾸지 않는다: 행은 이미 durable하고 `fetch_state`가 QUEUED이므로
+    정기 스윕이 같은 fetch를 다시 건다.
+    """
+    for source_id in source_ids:
         try:
             celery_app.send_task(
                 "app.workers.tasks.fetch_channel_source",
@@ -574,7 +594,6 @@ async def _register_channel_sources(
             logger.warning(
                 "Channel source fetch dispatch failed for source %s", source_id, exc_info=True
             )
-    return entries
 
 
 def _readiness_status_label(status_value: str) -> str:
@@ -1108,8 +1127,16 @@ async def update_profile(
     if needs_site_revalidate:
         ensure_site_revalidate_configured()
 
+    # 자료 행은 프로파일과 같은 커밋에 들어간다 — 저장은 됐는데 근거 자료만 없는 상태가
+    # 생기지 않게 한다.
+    source_registration, fetch_dispatch_ids = await _register_channel_sources(
+        db, h, submitted_channels
+    )
+
     await db.commit()
     await db.refresh(h)
+    # 커밋 뒤에 보낸다 — 워커가 아직 없는 행을 찾아 헛돌지 않게 한다.
+    _dispatch_channel_source_fetches(fetch_dispatch_ids)
 
     # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다. 초기 진단은
     # 장시간 걸릴 수 있는 백그라운드 산출물이므로 그 큐의 지연·실패가 공개 준비를
@@ -1144,8 +1171,8 @@ async def update_profile(
         await trigger_hospital_site_revalidate_safe(h.slug, h.treatments, hospital_name=h.name)
 
     payload = _serialize(h)
-    # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다.
-    payload["source_registration"] = await _register_channel_sources(db, h, submitted_channels)
+    # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다 — 커밋된 사실만 담는다.
+    payload["source_registration"] = source_registration
     return payload
 
 

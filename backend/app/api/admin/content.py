@@ -24,6 +24,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.api.public.site import is_public_serving_hospital
 from app.core.database import get_db
 from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import Hospital, HospitalStatus
@@ -63,6 +64,7 @@ from app.services.content_row_state import ROW_STATE_LABELS, content_row_state
 from app.services.content_visibility import (
     PublicVisibility,
     assess_public_visibility,
+    withheld_by_hospital_gate,
 )
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
@@ -482,10 +484,15 @@ async def list_content(
     await attach_publish_notification_state(db, items)
 
     public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
+    # 병원 게이트는 요청당 한 번만 본다 — 행마다 다시 읽을 값이 아니다.
+    hospital_serving = is_public_serving_hospital(await db.get(Hospital, hospital_id))
     links = await _blocked_links_for(db, hospital_id, [i.id for i in items])
     return [
         _serialize_item(
-            i, public_philosophy_id=public_philosophy_id, blocked_link=links.get(i.id)
+            i,
+            public_philosophy_id=public_philosophy_id,
+            hospital_serving=hospital_serving,
+            blocked_link=links.get(i.id),
         )
         for i in items
     ]
@@ -1597,6 +1604,7 @@ async def _serialize_single(
         item,
         full=True,
         public_philosophy_id=await get_public_approved_philosophy_id(db, hospital_id),
+        hospital_serving=is_public_serving_hospital(await db.get(Hospital, hospital_id)),
         blocked_link=links.get(item.id),
     )
 
@@ -1608,11 +1616,16 @@ def _serialize_item(
     # 기본값을 두지 않는다 — 빠뜨린 호출자가 조용히 기준 대조를 건너뛰면
     # 그 화면만 "공개 중"으로 갈라진다(H-01).
     public_philosophy_id: uuid.UUID | None | object,
+    hospital_serving: bool,
     blocked_link: dict[str, Any] | None = None,
 ) -> dict:
     content_type = _enum_value(item.content_type)
     status_value = _enum_value(item.status)
     visibility = assess_public_visibility(item, public_philosophy_id)
+    if not hospital_serving:
+        # 글 판정만으로는 "공개 중"이 된다 — 일시정지·미활성 병원에서는 사이트가 어떤
+        # 글도 내보내지 않으므로 병원 게이트를 사유로 앞세운다.
+        visibility = withheld_by_hospital_gate(visibility)
     compliance = _build_compliance_summary(item, status_value, visibility)
     row_state = content_row_state(
         item,

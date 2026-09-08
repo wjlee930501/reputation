@@ -535,6 +535,10 @@ def test_list_content_rejects_out_of_range_month():
         async def execute(self, _stmt):
             return _ExecuteResult([])
 
+        async def get(self, _model, _pk):
+            # 직렬화의 병원 공개 게이트 조회 — 이 검증에는 병원 행이 없다.
+            return None
+
     async def override_get_db():
         yield _EmptyDB()
 

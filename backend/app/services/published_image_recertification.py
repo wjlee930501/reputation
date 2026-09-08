@@ -9,15 +9,19 @@ PATCH 디스패치(API)·재인증 태스크(worker)·복구 sweep·운영자 �
 올라가 예산을 되살리고 표시를 지우고 같은 거절로 두 번째 incident를 열었다.
 
 불변식: **유료 호출을 한 태스크 실행(execution)은 어떤 경우에도 세지 않고 넘어갈 수
-없다.** 예산은 실행 행(run) 수가 아니라 그 행이 돈 execution 수로 센다 —
+없다.** 예산은 실행 행(run) 수가 아니라 그 행이 실제로 산 결제 수로 센다 —
 `task_acks_late`·`task_reject_on_worker_lost` 아래에서 worker가 유료 호출 도중 죽으면
 broker가 같은 task를 재배달하고 prerun이 같은 행을 다시 claim하며 `attempt_count`를
-올린다. 행은 하나지만 돈은 두 번 나갈 수 있다. 종결된 실행은 물론, 좌초해(하드 제한 +
-여유를 넘도록 종결 기록이 없는) 결과를 남기지 못한 실행도 이미 돈을 썼을 수 있으므로
-그 `attempt_count`만큼(최소 하나) 센다. 아직 종결도 좌초도 하지 않은 진행 중인 실행은
-`mark_provider_call_started`가 유료 호출 **직전에** 별도 세션으로 남긴 표시로 센다 —
-그 표시가 없으면 죽은 직후의 실행이 30분 동안 0으로 세어져 다음 실행이 네 번째 호출을
-살 수 있다.
+올린다. 행은 하나지만 돈은 여러 번 나갈 수 있다. 그래서 결제는 boolean이 아니라
+`mark_paid_execution_started`가 유료 호출 **직전에** 별도 세션으로 올리는 durable
+계수기(`paid_executions`)로 남는다 — boolean이면 execution 1에서 사고 재배달돼
+execution 2에서 또 산 행이 하나로 세어져 다음 실행이 네 번째 호출을 산다.
+
+세는 규칙은 둘뿐이다. 종결했거나 좌초한(하드 제한 + 여유를 넘도록 종결 기록이 없는)
+실행은 결과를 남기지 못했어도 이미 샀을 수 있으므로 `max(attempt_count,
+paid_executions, 1)`로 센다. 아직 도는 실행은 자기 것이든 남의 것이든 기록된
+`paid_executions`만큼 센다(계수기 이전의 `provider_called` payload는 몇 번인지 알 수
+없으므로 하나로 본다).
 """
 
 from __future__ import annotations
@@ -27,7 +31,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Final
 
-from sqlalchemy import String, and_, cast, false, func, literal, select, update
+from sqlalchemy import Integer, String, and_, case, cast, false, func, literal, select, update
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.database import SyncSessionLocal
@@ -80,8 +84,10 @@ _NON_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
 # 제외해 다른 글의 자리를 뺏지 않게 한다.
 MARKER_FIELD: Final = "image_recertification"
 
-# 유료 호출을 시작한 실행이 스스로 남기는 payload 표시. 종결 전에도 예산에 잡힌다.
-PROVIDER_CALL_FIELD: Final = "provider_called"
+# 유료 호출을 시작한 실행이 스스로 올리는 durable 계수기. 종결 전에도 예산에 잡힌다.
+PAID_EXECUTIONS_FIELD: Final = "paid_executions"
+# 계수기 이전의 boolean 표시. 몇 번 샀는지 알 수 없으므로 하나로 센다.
+LEGACY_PROVIDER_CALL_FIELD: Final = "provider_called"
 
 # 차단이 아직 사람에게 보이는 incident 상태.
 VISIBLE_INCIDENT_STATES: Final[tuple[str, ...]] = (
@@ -181,29 +187,46 @@ def payload_subject_hash(run: OperationRun | None) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def provider_call_started(run: OperationRun) -> bool:
-    """이 실행 행이 유료 호출을 시작했다고 스스로 기록했는가."""
+def paid_executions(run: OperationRun) -> int:
+    """이 실행 행이 유료 호출 직전에 스스로 기록한 결제 수."""
 
     payload = getattr(run, "request_payload", None)
-    return bool(payload.get(PROVIDER_CALL_FIELD)) if isinstance(payload, Mapping) else False
+    if not isinstance(payload, Mapping):
+        return 0
+    recorded = payload.get(PAID_EXECUTIONS_FIELD)
+    if isinstance(recorded, int) and not isinstance(recorded, bool):
+        return max(recorded, 0)
+    # 계수기 이전 payload — 샀다는 사실만 있고 횟수는 없다.
+    return 1 if payload.get(LEGACY_PROVIDER_CALL_FIELD) else 0
 
 
-def mark_provider_call_started(run_id: uuid.UUID) -> None:
-    """유료 호출 **직전에** 그 사실을 별도 세션으로 커밋한다.
+def mark_paid_execution_started(run_id: uuid.UUID) -> None:
+    """유료 호출 **직전에** 결제 계수기를 별도 세션으로 하나 올린다.
 
     태스크의 본 세션은 글 행 잠금을 쥔 채 공급자를 부르므로 여기서 커밋할 수 없다. 이
-    표시가 없으면, 호출을 산 채로 죽어 종결도 좌초도 아닌 실행이 잠금을 이어받은 다른
-    실행의 예산 검사에서 0으로 세어진다. operation_runs 행만 건드리므로 본 세션이 쥔
+    기록이 없으면, 호출을 산 채로 죽어 종결도 좌초도 아닌 실행이 잠금을 이어받은 다른
+    실행의 예산 검사에서 0으로 세어진다. 증가는 DB에서 읽고 더하므로 같은 행이 재배달로
+    여러 번 돌아도 결제마다 하나씩 는다. operation_runs 행만 건드리므로 본 세션이 쥔
     잠금과 겹치지 않고, `version`도 올리지 않아 종결의 낙관적 검사를 깨지 않는다.
     """
 
     payload_type = OperationRun.__table__.c.request_payload.type
-    flag = cast(literal({PROVIDER_CALL_FIELD: True}, payload_type), payload_type)
+    payload = OperationRun.request_payload
+    recorded = func.coalesce(
+        cast(payload.op("->>")(literal(PAID_EXECUTIONS_FIELD)), Integer),
+        case(
+            (payload.op("->>")(literal(LEGACY_PROVIDER_CALL_FIELD)) == literal("true"), 1),
+            else_=0,
+        ),
+    )
+    counter = cast(
+        func.jsonb_build_object(literal(PAID_EXECUTIONS_FIELD), recorded + 1), payload_type
+    )
     with SyncSessionLocal() as db:
         db.execute(
             update(OperationRun)
             .where(OperationRun.id == run_id)
-            .values(request_payload=OperationRun.request_payload.op("||")(flag))
+            .values(request_payload=payload.op("||")(counter))
             .execution_options(synchronize_session=False)
         )
         db.commit()
@@ -249,35 +272,33 @@ def _is_stranded(run: OperationRun, *, now: datetime) -> bool:
 
 
 def _executions_spent(run: OperationRun, *, now: datetime) -> int:
-    """이 실행 행이 이미 태운 태스크 실행 수.
+    """이 실행 행이 이미 산 유료 호출 수.
 
-    `attempt_count`는 prerun의 claim이 올린다 — 재배달로 같은 행을 다시 claim하면 2가
-    된다. 종결·좌초한 행은 그 execution이 모두 끝났으므로 기록된 수를 그대로 센다(claim
-    기록이 없는 행도 이미 샀을 수 있으므로 최소 하나로 본다). 진행 중인 행은 직전
-    execution까지 세고(첫 실행은 0, 재배달된 실행은 1), 지금 execution이 유료 호출을
-    시작했다고 스스로 기록했으면 종결 전에도 하나로 센다. 이 규칙은 세는 쪽이 자기 행을
-    보든 남의 행을 보든 같다 — 호출을 산 채로 죽어 아직 좌초 판정 전인 행이 잠금을
-    이어받은 다른 실행의 검사에서 0이 되지 않게 한다.
+    종결·좌초한 행은 결과를 남기지 못했어도 이미 샀을 수 있으므로 claim 수
+    (`attempt_count`)와 기록된 결제 수 중 큰 값을 센다(둘 다 없는 행도 최소 하나로 본다).
+    아직 도는 행은 자기 것이든 남의 것이든 기록된 결제 수만 센다 — 결제 직전에 커밋되므로
+    `attempt_count`를 대신 세면 아직 사지 않은 execution까지 예산에서 빼앗고, 재배달로
+    두 번 산 execution은 하나로 세어진다.
     """
 
     attempts = int(getattr(run, "attempt_count", 0) or 0)
+    paid = paid_executions(run)
     if is_terminal(run) or _is_stranded(run, now=now):
-        return max(attempts, 1)
-    return max(attempts - 1, int(provider_call_started(run)), 0)
+        return max(attempts, paid, 1)
+    return paid
 
 
 def attempts_spent(
     runs: Iterable[OperationRun], subject_hash: str, *, now: datetime
 ) -> int:
-    """이 (글, subject)에서 이미 소진한 태스크 실행 수 — 예산의 유일한 정의.
+    """이 (글, subject)에서 이미 산 유료 호출 수 — 예산의 유일한 정의.
 
     PATCH·sweep·운영자 재시도를 키 모양과 무관하게 함께 센다. 종결 상태(FAILED,
     CANCELLED, 인증을 남기지 못한 SUCCEEDED)면 그 행의 execution을 모두 쓴 것으로 본다.
     인증이 살아 있는 SUCCEEDED는 호출자가 그 전에 이미 성공으로 끝내므로 이 셈에
     도달하지 않는다. 좌초한 실행은 결과를 남기지 못했을 뿐 이미 공급자를 불렀을 수 있어
-    함께 센다. 진행 중인 자기 실행도 직전 execution만큼 포함되므로, 재배달된 실행은 자기
-    앞의 유료 호출을 스스로 센다. 유료 호출을 시작했다고 기록한 진행 중 실행은 아직
-    종결하지 않았어도 하나로 센다.
+    함께 센다. 진행 중인 실행은 자기 것을 포함해 기록된 결제 수만큼 세므로, 재배달된
+    실행은 자기 앞의 결제를 몇 번이든 스스로 센다.
     """
 
     return sum(

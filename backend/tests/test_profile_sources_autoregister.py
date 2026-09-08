@@ -18,6 +18,23 @@ from app.models.handoff import HandoffState
 from app.services import essence_sources as essence_sources_service
 
 
+class FakeSavepoint:
+    """SAVEPOINT 하나. 빠져나갈 때 예외면 그 안에서 add한 것만 되돌린다."""
+
+    def __init__(self, db):
+        self.db = db
+        self.mark = len(db.added)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, *_exc):
+        if exc_type is not None:
+            del self.db.added[self.mark :]
+            self.db.savepoint_rollbacks += 1
+        return False
+
+
 class FakeDB:
     """자료 중복 조회와 병원 advisory lock만 구분하면 되는 최소 세션."""
 
@@ -29,6 +46,10 @@ class FakeDB:
         self.added = []
         self.commits = 0
         self.rolled_back = False
+        self.savepoint_rollbacks = 0
+
+    def begin_nested(self):
+        return FakeSavepoint(self)
 
     def get_bind(self):
         return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
@@ -276,7 +297,10 @@ async def test_a_row_that_could_not_be_created_reports_failed(monkeypatch, worke
     result = await _patch(db, hospital, website_url="https://clinic.example.com")
 
     assert hospital.website_url == "https://clinic.example.com"
-    assert db.rolled_back is True
+    # 프로파일 저장은 살아남고, 되돌아간 것은 그 채널의 SAVEPOINT뿐이다.
+    assert db.savepoint_rollbacks == 1
+    assert db.rolled_back is False
+    assert db.commits == 1
     assert worker["dispatch"] == []
     entry = result["source_registration"][0]
     assert entry == {
@@ -288,6 +312,68 @@ async def test_a_row_that_could_not_be_created_reports_failed(monkeypatch, worke
     audits = db.audits("profile_channel_source_registered")
     assert len(audits) == 1
     assert audits[0].detail["status"] == "FAILED"
+
+
+async def test_one_failing_channel_does_not_undo_the_other_or_the_profile(monkeypatch, worker):
+    """채널 하나의 실패가 다른 채널의 행이나 프로파일 저장을 되돌리지 않는다."""
+    real_create = hospitals_api.create_pending_channel_source
+
+    async def fail_for_blog(db, *, channel_field, **kwargs):
+        if channel_field == "blog_url":
+            raise RuntimeError("insert failed")
+        return await real_create(db, channel_field=channel_field, **kwargs)
+
+    monkeypatch.setattr(hospitals_api, "create_pending_channel_source", fail_for_blog)
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    result = await _patch(
+        db,
+        hospital,
+        website_url="https://clinic.example.com",
+        blog_url="https://blog.naver.com/clinic",
+    )
+
+    # 프로파일은 한 번의 커밋으로 저장되고, 그 커밋에 성공한 채널의 행이 함께 들어간다.
+    assert db.commits == 1
+    assert db.savepoint_rollbacks == 1
+    assert hospital.website_url == "https://clinic.example.com"
+    assert hospital.blog_url == "https://blog.naver.com/clinic"
+    sources = db.sources()
+    assert [source.source_metadata["channel_field"] for source in sources] == ["website_url"]
+    assert [(entry["field"], entry["status"]) for entry in result["source_registration"]] == [
+        ("website_url", "QUEUED"),
+        ("blog_url", "FAILED"),
+    ]
+    assert worker["dispatch"] == [
+        ("app.workers.tasks.fetch_channel_source", [str(sources[0].id)]),
+    ]
+    assert [audit.detail["status"] for audit in db.audits("profile_channel_source_registered")] == [
+        "QUEUED",
+        "FAILED",
+    ]
+
+
+async def test_a_dispatch_failure_after_the_commit_leaves_the_row_for_the_sweep(
+    monkeypatch, worker
+):
+    """커밋 뒤 발행이 죽어도 행은 QUEUED로 남아 스윕이 같은 fetch를 다시 건다."""
+
+    def exploding_send_task(*_args, **_kwargs):
+        raise RuntimeError("broker unavailable")
+
+    monkeypatch.setattr(hospitals_api.celery_app, "send_task", exploding_send_task)
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    result = await _patch(db, hospital, website_url="https://clinic.example.com")
+
+    source = db.sources()[0]
+    assert db.commits == 1
+    assert source.status == SourceStatus.PENDING
+    # 스윕의 후보 조건 그대로 — 다음 tick이 이 행을 집는다.
+    assert source.source_metadata["fetch_state"] == "QUEUED"
+    assert result["source_registration"][0]["status"] == "QUEUED"
 
 
 @pytest.mark.parametrize(

@@ -30,7 +30,13 @@ from app.utils.medical_filter import check_forbidden_content_fields
 
 UNSET_PHILOSOPHY = object()
 
+# 글이 아니라 병원 게이트가 막는 경우. `assess_public_visibility`는 글 하나만 판정하므로
+# 이 코드는 admin 직렬화가 `is_public_serving_hospital`을 보고 앞에 붙인다. 공개 사이트는
+# 이 코드를 만들 일이 없다 — 병원 게이트가 글 판정보다 먼저 404를 내기 때문이다.
+HOSPITAL_NOT_SERVING: Final = "HOSPITAL_NOT_SERVING"
+
 VISIBILITY_BLOCKER_LABELS: dict[str, str] = {
+    HOSPITAL_NOT_SERVING: "병원 공개 서비스 중이 아님",
     "PHILOSOPHY_MISMATCH": "현재 승인된 콘텐츠 운영 기준과 다른 기준으로 생성됨",
     "STATUS_NOT_PUBLISHED": "발행 상태가 아님",
     "ESSENCE_NOT_ALIGNED": "콘텐츠 운영 기준 재검토 필요",
@@ -120,6 +126,18 @@ def assess_public_visibility(
     if check_forbidden_content_fields(publication_field_values(item), PUBLICATION_CHECK_FIELDS):
         blockers.append("FORBIDDEN_EXPRESSION")
     return PublicVisibility(visible=not blockers, blockers=tuple(blockers))
+
+
+def withheld_by_hospital_gate(visibility: PublicVisibility) -> PublicVisibility:
+    """병원이 공개 서비스 중이 아닐 때의 판정 — 글 자체의 사유는 그대로 뒤에 남긴다.
+
+    admin 전용이다. 글은 완벽해도 사이트가 그 병원의 어떤 글도 내보내지 않으므로,
+    "공개 중"이라고 말하면 AE는 없는 페이지를 고객에게 알린다(H-01과 같은 종류의 갈라짐).
+    """
+
+    return PublicVisibility(
+        visible=False, blockers=(HOSPITAL_NOT_SERVING, *visibility.blockers)
+    )
 
 
 async def assess_sampled_visibility(
