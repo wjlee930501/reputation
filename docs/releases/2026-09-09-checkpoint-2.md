@@ -27,7 +27,8 @@
 
 ## 총검토
 - GPT-6 Astra(medium), 1차(`806a1e4`) — **HOLD**, 블로커 4: (1) 0071의 enum 타입 교체가 롤링 배포 중 이전 리비전 연결 캐시를 깨뜨림 → `26d7765`(타입 유지, CHECK만); (2) `X-Admin-Actor-System` + 서명 없는 `X-Admin-Actor`로 OWNER 위장·감사 오기록 → `7f83455`(검증된 actor만 권한·감사 근거, 불일치 403, 시스템 actor는 사람 전용 라우트 403); (3) 운영자 재시도 실패의 generic 인시던트가 성공 뒤에도 남음 → `e14bea9`(REBUILD_SITE는 병원 단위 인시던트 하나, 성공 시 회수); (4) 콘텐츠 행이 자동 복구 중인 실패 run에도 "운영 센터에서 조치" 링크 → `f93a2cb`(창 안 RETRYING 인시던트가 있으면 링크 없음). 비차단 지적: 용어 가드 우회 경로 → `fc423ab`; 롤아웃 403 설명 정정 → 런북·이 문서.
-- GPT-6 Astra(medium), 2차 — (기록 예정)
+- GPT-6 Astra(medium), 2차(`4d7f419`) — **HOLD**, 블로커 1: 런북의 `openssl rand -hex 32` 출력 개행이 시크릿에 저장되면 BFF는 원본 바이트로, API는 `strip()` 값으로 서명해 영구 403 → `605490a`(BFF도 trim, 런북 `| tr -d '\n'`). 원 블로커 4건 CLOSED 확인. 비차단: CHECK 추가는 ACCESS EXCLUSIVE 스캔(8개 병원 규모라 무시 가능), 가드 substring 매칭 → 접두사 매칭(`605490a`). Fable 정적 확인의 UTC 명시는 `8010f0e`.
+- GPT-6 Astra(medium), 3차(`605490a`) — **SHIP**, 블로커 없음. 두 커밋의 diff가 알려진 정규화·UTC·개행 없는 시크릿·접두사 가드뿐임을 확인. Fable(이 세션)도 동의 — 아래 배포로 진행.
 
 ## 배포 증거
 (기록 예정)
