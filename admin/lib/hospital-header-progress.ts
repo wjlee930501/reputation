@@ -12,9 +12,10 @@
  */
 
 import { isPubliclyServing } from './public-service-state.ts'
+import type { HospitalStatusValue } from '../types/index.ts'
 
 export interface HeaderProgressHospital {
-  status?: string | null
+  status?: HospitalStatusValue | null
   profile_complete?: boolean | null
   v0_report_done?: boolean | null
   site_built?: boolean | null

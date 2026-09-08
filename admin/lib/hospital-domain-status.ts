@@ -1,4 +1,5 @@
 import { platformSiteHost } from './platform-domain.ts'
+import type { HospitalStatusValue } from '../types/index.ts'
 import { isPubliclyServing } from './public-service-state.ts'
 
 type DomainTone = 'live' | 'waiting' | 'dns_verified' | 'issuing' | 'failed' | 'default' | 'empty'
@@ -6,7 +7,7 @@ type DomainTone = 'live' | 'waiting' | 'dns_verified' | 'issuing' | 'failed' | '
 interface HospitalDomainInput {
   name?: string | null
   slug?: string | null
-  status?: string | null
+  status?: HospitalStatusValue | null
   aeo_domain?: string | null
   site_built?: boolean | null
   site_live?: boolean | null
@@ -74,6 +75,24 @@ function liveCheckProvesServing(input: {
   return !certState || certState === 'DONE'
 }
 
+/**
+ * 자기 도메인 자체의 사실 — 병원이 지금 공개 운영 중인지와는 다른 질문이다.
+ *
+ * 일시정지된 병원의 배지는 '운영 일시 정지'가 먼저여야 하지만, 인증서가 발급 중이거나
+ * 실패했다는 사실까지 지우면 재개 전에 무엇을 손봐야 하는지 화면에서 사라진다.
+ */
+function domainFactLabel(input: {
+  domain_cert_job_state?: string | null
+  domain_cert_dns_verified_at?: string | null
+  domain_last_check_ok?: boolean | null
+}): '도메인 연결됨' | '인증서 발급 중' | '인증서 실패' | 'DNS 확인 완료' | 'DNS 미확인' {
+  if (input.domain_cert_job_state === 'ISSUING') return '인증서 발급 중'
+  if (input.domain_cert_job_state === 'FAILED') return '인증서 실패'
+  if (input.domain_cert_job_state === 'DONE' || liveCheckProvesServing(input)) return '도메인 연결됨'
+  if (input.domain_cert_dns_verified_at) return 'DNS 확인 완료'
+  return 'DNS 미확인'
+}
+
 export function readHospitalDomainStatus(hospital: HospitalDomainInput): HospitalDomainStatus {
   const domain = normalizedDomain(hospital.aeo_domain)
   
@@ -81,6 +100,16 @@ export function readHospitalDomainStatus(hospital: HospitalDomainInput): Hospita
   if (domain) {
     const certState = hospital.domain_cert_job_state
     const dnsVerified = !!hospital.domain_cert_dns_verified_at
+
+    // 일시정지는 DNS도 인증서도 건드리지 않는다. 도메인 사실만 읽으면 공개가 끊긴 병원을
+    // '운영 중'이라 부르게 되므로, 정지 사실이 먼저고 도메인 사실은 그 뒤에 붙는다.
+    if (hospital.status === 'PAUSED') {
+      return {
+        label: '운영 일시 정지',
+        detail: withLastChecked(hospital, `${domain} · ${domainFactLabel(hospital)}`),
+        tone: 'default',
+      }
+    }
 
     // 진행 중이거나 실패한 인증서 작업이 먼저다. 마지막 관측이 정상이더라도 그 사실을
     // 가리면 운영자가 발급 지연·실패를 알아챌 화면이 사라진다.
@@ -229,7 +258,7 @@ export function certificateIssuingCanBeRetried(
 }
 
 interface DomainHeaderInput {
-  status?: string | null
+  status?: HospitalStatusValue | null
   site_live?: boolean | null
   aeo_domain?: string | null
   domain_cert_dns_verified_at?: string | null
@@ -250,6 +279,9 @@ export function domainHeaderStatus(profile: DomainHeaderInput) {
     if (profile.status === 'PAUSED') return '운영 일시 정지'
     return isPubliclyServing(profile) ? '운영 중' : '공개 주소 확인 대기'
   }
+
+  // 일시정지는 커스텀 도메인 행에서도 먼저다. 인증서가 DONE이어도 공개 페이지는 닫혀 있다.
+  if (profile.status === 'PAUSED') return `운영 일시 정지 · ${domainFactLabel(profile)}`
 
   // 커스텀 도메인이 있으면 DNS/cert 상태로 판단. 발급 중·실패는 마지막 관측이 정상이어도
   // 그대로 드러낸다 — 그 배지가 사라지면 운영자가 인증서 지연·실패를 알 방법이 없다.

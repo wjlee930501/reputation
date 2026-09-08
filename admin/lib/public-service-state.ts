@@ -6,10 +6,12 @@
  * status만 PAUSED로 바꾸고 site_live는 그대로 두므로, site_live만 읽는 화면은 정지된
  * 병원을 "공개 중"이라고 말한다.
  */
+import type { HospitalStatusValue } from '../types/index.ts'
+
 export type PublicServiceState = 'live' | 'paused' | 'not_live'
 
 export interface PublicServiceInput {
-  status?: string | null
+  status?: HospitalStatusValue | null
   site_live?: boolean | null
 }
 

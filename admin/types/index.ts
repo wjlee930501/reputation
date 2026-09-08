@@ -34,11 +34,20 @@ export interface AdminAccountSummary {
   is_operations_test?: boolean
 }
 
+/** 병원 운영 상태. 부분 프로파일만 받는 헬퍼도 이 값의 범위 안에서만 판단해야 한다. */
+export type HospitalStatusValue =
+  | 'ONBOARDING'
+  | 'ANALYZING'
+  | 'BUILDING'
+  | 'PENDING_DOMAIN'
+  | 'ACTIVE'
+  | 'PAUSED'
+
 export interface Hospital {
   id: string
   name: string
   slug: string
-  status: 'ONBOARDING' | 'ANALYZING' | 'BUILDING' | 'PENDING_DOMAIN' | 'ACTIVE' | 'PAUSED'
+  status: HospitalStatusValue
   plan: 'PLAN_20' | 'PLAN_16' | 'PLAN_12' | null
   profile_complete: boolean
   /** 승인이 남은 공개 표면 시각 항목 라벨. 비어 있으면 승인 완료(O-2). */

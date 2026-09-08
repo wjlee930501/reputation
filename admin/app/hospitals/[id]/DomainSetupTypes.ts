@@ -1,12 +1,12 @@
 import type { DomainDnsStrategy, DomainManagementMode } from '@/lib/domain'
-import type { Hospital } from '@/types'
+import type { Hospital, HospitalStatusValue } from '@/types'
 
 export interface DomainProfile {
   id?: string
   slug?: string
   aeo_domain?: string
   website_url?: string
-  status?: string
+  status?: HospitalStatusValue
   profile_complete?: boolean
   v0_report_done?: boolean
   site_built?: boolean

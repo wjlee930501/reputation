@@ -17,6 +17,7 @@ import {
 import { useHospitalHeader } from '../hospital-context'
 import { DomainSetupPanel } from '../DomainSetupPanel'
 import type { DomainProfile } from '../DomainSetupTypes'
+import type { HospitalStatusValue } from '@/types'
 import {
   buildProfileChecklist,
   type ProfileChecklistStatus,
@@ -36,7 +37,7 @@ interface HospitalProfile {
   name: string
   slug: string
   plan: string
-  status: string
+  status: HospitalStatusValue
   director_name: string
   director_career: string
   director_philosophy: string

@@ -453,5 +453,50 @@ test('an untracked certificate state is not upgraded to 운영 중 by a live che
 test('a paused hospital on the platform address is never labelled 운영 중', () => {
   assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }), '운영 일시 정지')
   assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'ACTIVE' }), '운영 중')
-  assert.notEqual(readHospitalDomainStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }).label, '운영 중')
+  // 자기 도메인이 없으면 이 배지는 '어느 주소를 쓰는가'만 말한다 — 운영 여부는 옆의 상태
+  // 배지가 말하므로 일시정지라고 주소 이름까지 바꾸지 않는다.
+  assert.equal(readHospitalDomainStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }).label, '기본 주소')
+})
+
+test('a paused hospital with a connected custom domain is paused first, domain fact second', () => {
+  const paused = {
+    status: 'PAUSED',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_job_state: 'DONE',
+    domain_cert_dns_verified_at: '2026-08-21T00:00:00Z',
+    domain_last_check_ok: true,
+  } as const
+
+  assert.equal(readHospitalDomainStatus(paused).label, '운영 일시 정지')
+  assert.match(readHospitalDomainStatus(paused).detail, /도메인 연결됨/)
+  assert.equal(domainHeaderStatus(paused), '운영 일시 정지 · 도메인 연결됨')
+  assert.equal(domainHeaderIsLive(paused), false)
+})
+
+test('a paused hospital whose certificate is still issuing keeps that fact visible', () => {
+  const paused = {
+    status: 'PAUSED',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_job_state: 'ISSUING',
+    domain_cert_dns_verified_at: '2026-08-21T00:00:00Z',
+  } as const
+
+  assert.equal(domainHeaderStatus(paused), '운영 일시 정지 · 인증서 발급 중')
+  assert.equal(readHospitalDomainStatus(paused).label, '운영 일시 정지')
+})
+
+test('an ACTIVE hospital with a DONE certificate is still 운영 중', () => {
+  const active = {
+    status: 'ACTIVE',
+    aeo_domain: 'clinic.example.com',
+    site_live: true,
+    domain_cert_job_state: 'DONE',
+    domain_cert_dns_verified_at: '2026-08-21T00:00:00Z',
+  } as const
+
+  assert.equal(domainHeaderStatus(active), '운영 중')
+  assert.equal(readHospitalDomainStatus(active).label, '운영 중')
+  assert.equal(domainHeaderIsLive(active), true)
 })
