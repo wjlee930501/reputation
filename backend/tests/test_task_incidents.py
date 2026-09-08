@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.core import celery_app as celery_module
 from app.models.admin_user import AdminUser
+from app.models.handoff import HospitalHandoff
 from app.models.operations import Incident, IncidentState, NotificationOutbox
 from app.workers import task_incident_control
 
@@ -83,7 +84,13 @@ def test_run_sov_task_failed_stays_durable_without_generic_slack(monkeypatch) ->
         operation_type="RUN_SOV",
         safe_error_code="TASK_FAILED",
     )
-    incident = SimpleNamespace(id=uuid.uuid4())
+    # 이미 담당자가 있는 재발 건 — 자동 배정은 새 에피소드의 첫 open에만 돈다.
+    incident = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=None,
+        owner_id=uuid.uuid4(),
+        first_seen_at=datetime(2026, 9, 1, tzinfo=UTC),
+    )
     committed = []
     audits = []
 
@@ -113,7 +120,7 @@ def test_run_sov_task_failed_stays_durable_without_generic_slack(monkeypatch) ->
     monkeypatch.setattr(
         task_incident_control,
         "_audit",
-        lambda _db, opened, action: audits.append((opened, action)),
+        lambda _db, opened, action, **_kwargs: audits.append((opened, action)),
     )
 
     assert task_incident_control.record_task_failure(task, "worker-task") is True
@@ -153,7 +160,7 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
     monkeypatch.setattr(
         task_incident_control,
         "_audit",
-        lambda _db, _incident, action: audit_actions.append(action),
+        lambda _db, _incident, action, **_kwargs: audit_actions.append(action),
     )
     incident_ids = []
     admin_ids = []
@@ -306,7 +313,7 @@ async def test_recovery_stays_silent_when_the_open_notice_never_reached_the_outb
     sync_engine = create_engine(SYNC_DATABASE_URL)
     sync_factory = sessionmaker(sync_engine, expire_on_commit=False, class_=Session)
     monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
-    monkeypatch.setattr(task_incident_control, "_audit", lambda *_args: None)
+    monkeypatch.setattr(task_incident_control, "_audit", lambda *_args, **_kwargs: None)
     incident_ids: list[uuid.UUID] = []
     try:
         assert task_incident_control.record_task_failure(celery_task, run.task_id) is True
@@ -346,4 +353,91 @@ async def test_recovery_stays_silent_when_the_open_notice_never_reached_the_outb
                 )
                 db.execute(delete(Incident).where(Incident.id.in_(incident_ids)))
                 db.commit()
+        sync_engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_generic_task_failure_assigns_the_handoff_ae_and_says_so_in_slack(
+    signal_store,
+    monkeypatch,
+) -> None:
+    """generic Celery 실패로 열린 예외도 담당자를 받는다 (H-15).
+
+    서비스 경로에서만 배정하면 이 경로로 열린 예외는 언제나 주인이 없고, Slack도
+    "미지정"으로 알린다 — 아무도 자기 일로 보지 않는다.
+    """
+    factory, hospital_id = signal_store
+    run = await dispatch_test_run(factory, hospital_id, RecordingTask(), "task20-assign")
+    celery_task = SimpleNamespace(
+        request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
+    )
+    sync_engine = create_engine(SYNC_DATABASE_URL)
+    sync_factory = sessionmaker(sync_engine, expire_on_commit=False, class_=Session)
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", sync_factory)
+    incident_ids: list[uuid.UUID] = []
+    admin_ids: list[uuid.UUID] = []
+    handoff_ids: list[uuid.UUID] = []
+    audits: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        task_incident_control,
+        "_audit",
+        lambda _db, _incident, action, **kwargs: audits.append(
+            (action, dict(kwargs.get("detail_extra") or {}))
+        ),
+    )
+    try:
+        with sync_factory() as db:
+            ae = AdminUser(
+                email=f"task20-ae-{run.id}@example.test",
+                name="배정 대상 AE",
+                password_hash="not-a-real-password-hash",
+            )
+            db.add(ae)
+            db.flush()
+            admin_ids.append(ae.id)
+            handoff = HospitalHandoff.pending(
+                hospital_id, sales_owner_id=ae.id, ae_owner_id=ae.id
+            )
+            db.add(handoff)
+            db.flush()
+            handoff_ids.append(handoff.id)
+            db.commit()
+            ae_id, ae_name = ae.id, ae.name
+
+        assert task_incident_control.record_task_failure(celery_task, run.task_id) is True
+
+        with sync_factory() as db:
+            incident = db.scalar(select(Incident).where(Incident.operation_run_id == run.id))
+            assert incident is not None
+            incident_ids.append(incident.id)
+            assert incident.owner_id == ae_id
+            notice = db.scalar(
+                select(NotificationOutbox).where(
+                    NotificationOutbox.incident_id == incident.id,
+                    NotificationOutbox.notification_type == "INCIDENT_OPEN",
+                )
+            )
+            assert notice is not None
+            rendered = json.dumps(notice.payload, ensure_ascii=False)
+            assert f"담당: {ae_name}" in rendered
+            assert "미지정" not in rendered
+        assert ("incident_assigned", {"auto_assigned": True, "auto_assigned_to": str(ae_id)}) in (
+            audits
+        )
+    finally:
+        with sync_factory() as db:
+            if incident_ids:
+                db.execute(
+                    delete(NotificationOutbox).where(
+                        NotificationOutbox.incident_id.in_(incident_ids)
+                    )
+                )
+                db.execute(delete(Incident).where(Incident.id.in_(incident_ids)))
+            if handoff_ids:
+                db.execute(
+                    delete(HospitalHandoff).where(HospitalHandoff.id.in_(handoff_ids))
+                )
+            if admin_ids:
+                db.execute(delete(AdminUser).where(AdminUser.id.in_(admin_ids)))
+            db.commit()
         sync_engine.dispose()

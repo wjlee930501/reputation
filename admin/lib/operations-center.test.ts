@@ -24,6 +24,7 @@ import {
   primaryOperationsMutation,
   readOperationsQuery,
   requiresOperatorAction,
+  resolveOperationsDetail,
   runStateLabel,
   safeCauseText,
   selectCurrentAction,
@@ -653,6 +654,76 @@ test('the detail panel assigns the owner instead of sending the operator elsewhe
   assert.match(detail, /assignable_accounts/)
   assert.match(detail, /ASSIGN_INCIDENT/)
   assert.match(detail, /담당 지정/)
-  assert.match(detail, /담당 지정은 OWNER만 할 수 있습니다/)
+  // 문구는 화면마다 다시 쓰지 않는다 — 현황 카드와 같은 한 곳에서 가져온다(A3).
+  assert.match(detail, /actionDisabledReason\('ASSIGN_INCIDENT'\)/)
+  // 상세를 아직 못 읽었을 때는 권한 문제로 읽히지 않게 불러오는 중임을 말한다(A1).
+  assert.match(detail, /담당자 정보를 불러오는 중/)
   assert.doesNotMatch(detail, /인수 대기열/)
+})
+
+test('깊은 링크는 접힌 묶음과 다음 쪽에서도 그 인시던트를 찾아간다', () => {
+  // 큐는 같은 원인을 대표 행 하나로 접고 쪽을 나눈다. 행 id가 그대로 맞기를 기대하면
+  // 다른 화면이 만든 `detail=incident:{id}` 링크는 조용히 아무것도 열지 못한다.
+  const single = row('incident:a-1', { incident_id: 'a-1' })
+  const grouped = row('cause:COST_LIMIT_EXHAUSTED', {
+    incident_id: 'b-1',
+    member_incident_ids: ['b-1', 'b-2'],
+  })
+  const rows = [single, grouped]
+
+  assert.deepEqual(resolveOperationsDetail('incident:a-1', rows, 'hospital-1'), {
+    kind: 'row',
+    row: single,
+  })
+  assert.deepEqual(resolveOperationsDetail('incident:b-2', rows, 'hospital-1'), {
+    kind: 'row',
+    row: grouped,
+  })
+  assert.deepEqual(resolveOperationsDetail('incident:c-9', rows, 'hospital-1'), {
+    kind: 'fetch',
+    hospitalId: 'hospital-1',
+    incidentId: 'c-9',
+  })
+  // 병원을 특정할 수 없으면 직접 읽을 주소를 만들 수 없다.
+  assert.deepEqual(resolveOperationsDetail('incident:c-9', rows, ''), { kind: 'none' })
+  // 인시던트가 아닌 행 id(리포트 등)는 예전처럼 정확히 맞을 때만 연다.
+  assert.deepEqual(resolveOperationsDetail('report:x:2026-09', rows, 'hospital-1'), {
+    kind: 'none',
+  })
+  assert.deepEqual(resolveOperationsDetail('', rows, 'hospital-1'), { kind: 'none' })
+})
+
+test('409는 경합·복구 미관측·예산 차단을 구분해 읽는다', () => {
+  // 전부 "다른 운영자가 먼저 변경했습니다"로 덮으면 운영자는 없는 경합을 찾다가
+  // 같은 버튼을 다시 누른다.
+  assert.match(
+    interpretOperationsConflict({ code: 'INCIDENT_RECOVERY_NOT_OBSERVED' }).message,
+    /연결된 작업이 아직 성공하지 않았습니다/,
+  )
+  assert.equal(
+    interpretOperationsConflict({
+      code: 'RETRY_BUDGET_EXHAUSTED',
+      message: '이 글의 재검수 예산을 이미 사용했습니다.',
+    }).message,
+    '이 글의 재검수 예산을 이미 사용했습니다.',
+  )
+  assert.match(
+    interpretOperationsConflict({
+      code: 'INCIDENT_VERSION_CONFLICT',
+      current_version: 4,
+      refetch_path: '/api/admin/operations/incidents/x',
+    }).message,
+    /다른 운영자가 먼저 변경했습니다/,
+  )
+  // 코드가 없는 옛 응답도 예전 문구 그대로다.
+  assert.match(interpretOperationsConflict({}).message, /다른 운영자가 먼저 변경했습니다/)
+})
+
+test('운영 센터 훅은 깊은 링크를 해석기 한 곳으로 처리한다', () => {
+  const hook = readFileSync(new URL('../app/operations/useOperationsCenter.ts', import.meta.url), 'utf8')
+
+  assert.match(hook, /resolveOperationsDetail\(/)
+  assert.match(hook, /loadIncidentById\(resolution\.hospitalId, resolution\.incidentId\)/)
+  // 작업 기록만 읽고 끝내면 상세가 담당 후보를 못 받아 담당 지정 폼을 그릴 수 없다.
+  assert.match(hook, /assignable_accounts: incident\?\.assignable_accounts \?\? \[\]/)
 })

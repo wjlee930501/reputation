@@ -549,3 +549,49 @@ def test_recovery_confirmation_waits_for_the_linked_run_to_succeed() -> None:
     assert recovered.resolve is not None
     assert recovered.resolve.kind == "ACK_INCIDENT"
     assert recovered.resolve.enabled is True
+
+
+def test_run_projection_retry_follows_the_same_authorization_as_the_route() -> None:
+    """화면은 행의 `retry`보다 작업 상세의 `retry`를 우선한다.
+
+    그 자리를 언제나 활성으로 내보내면 상세 화면만 서버보다 관대해지고, 담당이 아닌
+    운영자는 눌러야 403을 알게 된다.
+    """
+    from app.api.admin.operations_center_serializers import run_summary
+
+    run = _failed_run(uuid.uuid4())
+    run.attempt_count = run.total_count = run.success_count = 0
+    run.failure_count = run.skipped_count = 0
+    run.requested_at = datetime(2026, 9, 9, tzinfo=UTC)
+    run.version = 1
+
+    allowed = run_summary(run.hospital_id, run, retry_enabled=True)
+    blocked = run_summary(run.hospital_id, run, retry_enabled=False)
+
+    assert allowed is not None and allowed.retry is not None
+    assert allowed.retry.enabled is True
+    assert blocked is not None and blocked.retry is not None
+    assert blocked.retry.enabled is False
+
+
+async def test_run_retry_enabled_matches_owner_and_assignee_only() -> None:
+    """`authorize_run_retry`와 같은 판정 하나를 화면과 라우트가 나눠 쓴다."""
+    from app.api.admin.operations_center_actions import run_retry_enabled
+    from app.models.admin_user import ROLE_OPERATOR, ROLE_OWNER
+
+    run = _failed_run(uuid.uuid4())
+    assignee = _operator(ROLE_OPERATOR)
+    stranger = _operator(ROLE_OPERATOR)
+
+    class _AssignedOnlyDB:
+        async def scalar(self, statement):
+            bound = statement.compile().params.values()
+            return 1 if assignee.id in bound else 0
+
+    db = _AssignedOnlyDB()
+
+    assert await run_retry_enabled(db, _operator(ROLE_OWNER), run) is True
+    assert await run_retry_enabled(db, assignee, run) is True
+    assert await run_retry_enabled(db, stranger, run) is False
+    # 요청자를 모르는 호출(배치·기존 경로)은 예전 계약 그대로 열어 둔다.
+    assert await run_retry_enabled(db, None, run) is True

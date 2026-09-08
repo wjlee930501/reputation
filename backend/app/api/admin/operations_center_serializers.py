@@ -280,8 +280,18 @@ def incident_actions(row: OperationsQueueRow) -> list[OperationsAction]:
     ]
 
 
-def run_summary(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsRunSummary | None:
-    """Project a durable operation run and its eligible retry affordance."""
+def run_summary(
+    hospital_id: uuid.UUID,
+    run: OperationRun | None,
+    *,
+    retry_enabled: bool = True,
+) -> OperationsRunSummary | None:
+    """Project a durable operation run and its eligible retry affordance.
+
+    화면은 행의 `retry`보다 이 자리의 `retry`를 우선한다. 그래서 요청자를 아는 호출은
+    `authorize_run_retry`와 같은 판정(`run_retry_enabled`)을 넘겨야 한다 — 기본값을
+    그대로 내보내면 상세 화면만 서버보다 관대해지고, 버튼은 눌러야 403을 알려준다.
+    """
     if run is None:
         return None
     return OperationsRunSummary(
@@ -301,7 +311,7 @@ def run_summary(hospital_id: uuid.UUID, run: OperationRun | None) -> OperationsR
         started_at=run.started_at,
         completed_at=run.completed_at,
         version=run.version,
-        retry=retry_action(hospital_id, run),
+        retry=retry_action(hospital_id, run, enabled=retry_enabled),
     )
 
 

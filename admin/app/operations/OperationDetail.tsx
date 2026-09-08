@@ -17,6 +17,7 @@ import {
   slackStateLabel,
   type OperationsMutationDescriptor,
 } from '@/lib/operations-center'
+import { actionDisabledReason } from '@/lib/status-screen'
 import type { OperationsIncidentDetail, OperationsQueueRow } from '@/types'
 
 export type OperationMutation = OperationsMutationDescriptor | {
@@ -105,7 +106,10 @@ export function OperationDetail(props: Props) {
   const directLink = !mutation && isOperatorNavigation(row)
   // 담당 지정은 서버가 열어 준 행에서만, 고를 수 있는 계정을 함께 받은 상세에서만 그린다.
   const assign = assignAction(row)
-  const assignableAccounts = effectiveDetail.assignable_accounts ?? []
+  // undefined는 "아직 못 읽었다", 빈 배열은 "읽었고 고를 계정이 없다"이다. 둘을 섞으면
+  // 불러오는 중인 화면이 "OWNER만 할 수 있습니다"로 보여 권한 문제처럼 읽힌다.
+  const assignableAccounts = effectiveDetail.assignable_accounts
+  const accountsPending = assignableAccounts === undefined
   const assignLabel = row.owner ? '담당 변경' : '담당 지정'
   const deadline = describeOperationsDeadline(row, checkedAt, formatDate)
   const waitUntil = slack?.state === 'RETRYING' && slack.next_attempt_at
@@ -173,7 +177,7 @@ export function OperationDetail(props: Props) {
         >
           {deadline.text}
         </p>
-        {assign && assignableAccounts.length > 0 ? (
+        {assign && assignableAccounts !== undefined && assignableAccounts.length > 0 ? (
           <div className="mt-3">
             <label className="block text-xs font-semibold text-slate-600" htmlFor="ops-assign-owner">담당 계정</label>
             <select
@@ -183,7 +187,7 @@ export function OperationDetail(props: Props) {
               className="ops-control mt-1 w-full rounded-lg border border-slate-300 px-3 text-sm"
             >
               <option value="">담당 없음</option>
-              {assignableAccounts.map((account) => (
+              {(assignableAccounts ?? []).map((account) => (
                 <option key={account.id} value={account.id}>{account.name} · {account.email}</option>
               ))}
             </select>
@@ -209,8 +213,12 @@ export function OperationDetail(props: Props) {
               {busy ? '서버 확인 중…' : assignLabel}
             </button>
           </div>
+        ) : row.assign && accountsPending ? (
+          <p className="ops-readable mt-2 text-xs leading-5 text-slate-500">담당자 정보를 불러오는 중</p>
         ) : row.assign ? (
-          <p className="ops-readable mt-2 text-xs leading-5 text-slate-500">담당 지정은 OWNER만 할 수 있습니다.</p>
+          <p className="ops-readable mt-2 text-xs leading-5 text-slate-500">
+            {actionDisabledReason('ASSIGN_INCIDENT')}
+          </p>
         ) : null}
       </section>
 

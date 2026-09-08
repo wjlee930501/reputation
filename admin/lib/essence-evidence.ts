@@ -8,6 +8,8 @@
  * 계산해 승인 버튼과 화면 문구가 같은 사실을 쓰게 한다.
  */
 
+import { isRequiredTextSource } from './essence-source-split.ts'
+
 interface IdentifiedNote {
   id: string
 }
@@ -111,6 +113,61 @@ export function evidenceApprovalBlockers(state: EvidenceApprovalState): string[]
     blockers.push(
       `초안이 참조하는 근거 노트 ${missingCount}개가 현재 자료에 없습니다. ` +
         '자료를 다시 처리했다면 자료를 선택해 초안을 새로 만드세요.',
+    )
+  }
+  return blockers
+}
+
+export interface RequiredSourceEvidenceState {
+  /** 병원의 자료 목록. null이면 아직 읽지 못했다(로딩 중이거나 실패). */
+  sources:
+    | readonly {
+        status?: string | null
+        source_type?: string | null
+        raw_text?: string | null
+        evidence_note_count?: number | null
+      }[]
+    | null
+  loading: boolean
+}
+
+/**
+ * 현황 화면의 예외 승인이 봐야 하는 근거 게이트.
+ *
+ * 운영 기준 화면은 초안이 참조하는 근거 노트를 실제로 열어 확인할 수 있을 때만 승인을
+ * 연다(`evidenceApprovalBlockers`). 현황 카드에도 같은 승인 버튼이 있는데 그 확인 없이
+ * 눌리면, 확인할 수 없는 것을 확인했다고 체크하는 승인이 화면만 바꿔 통과한다.
+ *
+ * 카드는 노트 본문까지 열지 않으므로 승인 게이트의 선행 사실 — 필수 자료가 모두 처리됐고
+ * 근거 노트를 가졌는가 — 를 자료 목록에서 확인한다. 문구는 운영 기준 화면과 같은 방식으로
+ * 다음 행동까지 적는다.
+ */
+export function requiredSourceApprovalBlockers(state: RequiredSourceEvidenceState): string[] {
+  if (state.loading) return ['근거 노트를 불러오는 중입니다. 완료된 뒤 승인하세요.']
+  if (state.sources === null) {
+    return [
+      '근거 자료를 불러오지 못했습니다. [근거 자료 보기]에서 자료 상태를 확인한 뒤 승인하세요.',
+    ]
+  }
+  const required = state.sources.filter((source) => isRequiredTextSource(source))
+  if (required.length === 0) {
+    return [
+      '근거로 쓸 자료가 없습니다. [근거 자료 보기]에서 자료를 올리고 처리한 뒤 승인하세요.',
+    ]
+  }
+  const blockers: string[] = []
+  const unprocessed = required.filter((source) => source.status !== 'PROCESSED').length
+  if (unprocessed > 0) {
+    blockers.push(
+      `필수 자료 ${unprocessed}건이 아직 처리되지 않았습니다. ` +
+        '[근거 자료 보기]에서 처리 상태를 확인한 뒤 승인하세요.',
+    )
+  }
+  const withoutNotes = required.filter((source) => (source.evidence_note_count ?? 0) === 0).length
+  if (withoutNotes > 0) {
+    blockers.push(
+      `필수 자료 ${withoutNotes}건에 근거 노트가 없습니다. ` +
+        '[근거 자료 보기]에서 자료를 다시 처리한 뒤 승인하세요.',
     )
   }
   return blockers

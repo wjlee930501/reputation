@@ -1,5 +1,7 @@
 'use client'
 
+import { useState } from 'react'
+
 import { useHospitalHeader } from './hospital-context'
 import { ExceptionCards } from './status/ExceptionCards'
 import { MonthSummary } from './status/MonthSummary'
@@ -13,6 +15,9 @@ import { StatusCards } from './status/StatusCards'
  */
 export default function HospitalStatusPage() {
   const { overview, loading, refetch } = useHospitalHeader()
+  // 재검수·승인은 예외 카드 자체를 없앤다. 결과 문구를 카드 안에 두면 카드가 사라지는
+  // 순간 함께 사라져, 운영자는 방금 요청이 어떻게 됐는지 알 수 없다.
+  const [notice, setNotice] = useState<string | null>(null)
 
   if (!overview) {
     return (
@@ -38,7 +43,19 @@ export default function HospitalStatusPage() {
   return (
     <div className="mx-auto max-w-[1100px] space-y-5 p-4 sm:p-6 lg:p-8">
       <StatusCards overview={overview} />
-      <ExceptionCards exceptions={overview.exceptions} onDone={refetch} />
+      {notice && (
+        <p
+          role="status"
+          className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800"
+        >
+          {notice}
+        </p>
+      )}
+      <ExceptionCards
+        exceptions={overview.exceptions}
+        onDone={refetch}
+        onNotice={setNotice}
+      />
       <MonthSummary hospitalId={overview.hospital_id} month={overview.month} />
     </div>
   )

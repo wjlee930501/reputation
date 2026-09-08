@@ -175,6 +175,8 @@ export interface HospitalOverviewException {
   content_id: string | null
   /** 인시던트의 낙관적 잠금 값. 상태를 바꾸는 요청이 이 값을 함께 보낸다. */
   version: number | null
+  /** 이 카드에 접힌 같은 원인 인시던트 수. 행동은 대표 인시던트 하나에만 적용된다. */
+  same_type_count?: number
   /**
    * 서버가 이 카드에 등록한 mutation 서술자 그대로. 지금 못 하는 행동도
    * `enabled: false`로 함께 온다 — 화면이 경로·권한을 새로 쓰지 않는다.
@@ -745,6 +747,11 @@ export interface OperationsQueueRow {
   readonly cause_message: string | null
   readonly cause_group_key: string | null
   readonly same_type_count: number
+  /**
+   * 이 행에 접힌 인시던트 id 전부(묶음 상한까지). 깊은 링크(`detail=incident:{id}`)가
+   * 대표 행으로 접힌 건을 찾는 근거다. 옛 응답에는 없다.
+   */
+  readonly member_incident_ids?: readonly string[]
   readonly affected_hospital_count: number
   readonly cost_guard_category: string | null
   /**

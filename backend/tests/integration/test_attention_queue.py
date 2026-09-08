@@ -736,17 +736,26 @@ async def _operations_actor(db, name: str = "AE QA", *, role: str = ROLE_OWNER) 
     return actor
 
 
-async def _incident(db, hospital: Hospital, *, owner: AdminUser | None = None) -> Incident:
+async def _incident(
+    db,
+    hospital: Hospital,
+    *,
+    owner: AdminUser | None = None,
+    state: str = "OPEN",
+    sla_due_at: datetime | None = None,
+    safe_error_code: str = "PROVIDER_TIMEOUT",
+) -> Incident:
     incident = Incident(
         hospital_id=hospital.id,
         dedupe_key=f"qa:{uuid.uuid4()}",
         incident_type="PROVIDER_TIMEOUT",
-        state="OPEN",
+        state=state,
+        sla_due_at=sla_due_at,
         severity=IncidentSeverity.HIGH,
         customer_impact="오늘 콘텐츠 초안 생성이 멈췄습니다.",
         owner_id=owner.id if owner else None,
         source_type="content_generation",
-        safe_error_code="PROVIDER_TIMEOUT",
+        safe_error_code=safe_error_code,
         safe_error_message="AI 공급자 응답이 지연되고 있습니다.",
         next_action="작업을 다시 시도해 주세요.",
         admin_path=f"/hospitals/{hospital.id}/content",
@@ -1347,9 +1356,54 @@ async def test_incident_queue_groups_same_cause_in_a_constant_number_of_queries(
     assert len(result.items) == 1
     assert result.items[0].same_type_count == 25
     assert result.items[0].affected_hospital_count == 1
+    # 묶인 인시던트 id를 그대로 실어 보낸다 — 깊은 링크가 대표 행을 찾는 근거다(B4).
+    assert len(result.items[0].member_incident_ids) == 25
     # 인시던트 25건이 원인 1건으로 묶여도 쿼리는 2회 고정이다(그룹 판별 pass + 해당
     # 페이지 상세 pass). 건수에 비례해 늘어나면 N+1이므로 이 수치는 상한이자 하한이다.
+    # 자동 복구가 맡은 묶음이 함께 있을 때만 맥락 pass 하나가 더 붙는다(아래 테스트).
     assert len(statements) == 2
+
+
+async def test_automatic_retries_do_not_push_operator_work_off_the_first_page(
+    pg_async_session,
+):
+    """거르기가 묶기·쪽 나누기보다 먼저다.
+
+    약속한 재시도 창이 남은 RETRYING 스물다섯 건이 먼저 묶이면 1페이지를 그 원인들이
+    채우고, 사람이 손대야 하는 OPEN 한 건은 다음 페이지로 밀려 보이지 않는다. 총계도
+    기계가 맡은 일을 사람의 할 일처럼 센다.
+    """
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    hospital = await _active_hospital(db, "자동 재시도 의원")
+    within_window = datetime.now(UTC) + timedelta(hours=6)
+    for index in range(25):
+        await _incident(
+            db,
+            hospital,
+            owner=actor,
+            state="RETRYING",
+            sla_due_at=within_window,
+            # 원인이 서로 달라야 25개 묶음이 되어 실제로 페이지를 채운다.
+            safe_error_code=f"AUTOMATIC_RETRY_{index}",
+        )
+    operator_work = await _incident(
+        db, hospital, owner=actor, safe_error_code="OPERATOR_ONLY"
+    )
+
+    result = await operations_center.get_operations_queue(
+        operations_center.OperationsQueue.INCIDENTS,
+        page=1,
+        page_size=25,
+        db=db,
+        actor=actor,
+    )
+
+    actionable = [item for item in result.items if item.requires_operator_action]
+    assert result.total == 1
+    assert [item.incident_id for item in actionable] == [operator_work.id]
+    # 자동 복구 중인 건은 버려지지 않는다 — 맥락으로 함께 실려 화면이 접어서 보여준다.
+    assert len(result.items) - len(actionable) == 25
 
 
 async def test_operations_http_surface_returns_typed_scoping_and_conflict_errors(pg_async_session):
@@ -1398,6 +1452,55 @@ async def test_operations_http_surface_returns_typed_scoping_and_conflict_errors
     assert conflict.status_code == 409
     assert conflict.json()["detail"]["code"] == "INCIDENT_VERSION_CONFLICT"
     assert conflict.json()["detail"]["refetch_path"].startswith("/api/admin/operations/")
+
+
+async def test_assign_route_refuses_an_account_the_screen_never_offers(pg_async_session):
+    """배정 라우트는 고를 수 있는 목록과 같은 조건을 요구한다.
+
+    운영 점검 계정은 화면에 뜨지 않는데 요청 본문으로는 지정할 수 있었다. 그렇게 만든
+    예외는 담당자는 있는데 아무도 보지 않는 상태가 된다.
+    """
+    db = pg_async_session
+    actor = await _operations_actor(db)
+    hidden = await _operations_actor(db, "운영 점검 계정")
+    hidden.is_operations_test = True
+    hospital = await _active_hospital(db, "배정 검증 의원")
+    incident = await _incident(db, hospital)
+    await db.flush()
+
+    async def override_get_db():
+        yield db
+
+    previous_limiter = app.state.limiter
+    app.state.limiter = Limiter(key_func=get_request_ip, storage_uri="memory://")
+    app.dependency_overrides[get_db] = override_get_db
+    headers = {"X-Admin-Key": "test-admin-key", "X-Admin-Actor": actor.email}
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            hidden_owner = await client.post(
+                f"/api/v1/admin/operations/hospitals/{hospital.id}/incidents/{incident.id}/assign",
+                headers=headers,
+                json={
+                    "expected_version": incident.version,
+                    "reason": "운영 점검 계정으로 배정 시도",
+                    "owner_id": str(hidden.id),
+                    "sla_due_at": None,
+                },
+            )
+            offered = await client.get(
+                f"/api/v1/admin/operations/hospitals/{hospital.id}/incidents/{incident.id}",
+                headers=headers,
+            )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        app.state.limiter = previous_limiter
+
+    assert hidden_owner.status_code == 422
+    assert hidden_owner.json()["detail"]["code"] == "INVALID_OWNER"
+    assert offered.status_code == 200
+    assert str(hidden.id) not in [
+        account["id"] for account in offered.json()["assignable_accounts"]
+    ]
 
 
 async def _accepted_handoff(db, hospital: Hospital, *, sla_due_at: datetime) -> HospitalHandoff:

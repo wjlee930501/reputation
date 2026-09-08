@@ -35,13 +35,15 @@ def _incident(*, safe_error_code: str, hospital_id=None, last_seen_at=None):
 
 
 def _group_row(incident, run=None):
-    """Pass 1 selects only the cause-key columns, not whole ORM rows.
+    """Pass 1 selects the cause-key columns plus the "사람 몫인가" 판정 columns.
 
     Keeping the tuple shape here in one place makes the projection's column order a
     single fact the tests share with the query.
     """
     return (
         incident.id,
+        incident.state,
+        incident.sla_due_at,
         incident.safe_error_code,
         incident.incident_type,
         incident.source_type,

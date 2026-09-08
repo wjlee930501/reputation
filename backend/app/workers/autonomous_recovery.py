@@ -25,6 +25,7 @@ from app.models.operations import (
 )
 from app.services import operation_run_payloads
 from app.services import published_image_recertification as recertification
+from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection
@@ -681,6 +682,9 @@ def _fail_unsafe_operation_run(db, run: OperationRun, observed_at: datetime) -> 
         version=1,
         episode_seq=1,
     )
+    # 자동 복구가 멈춘 이 예외도 서비스·worker 경로와 같은 규칙으로 담당자를 정한다
+    # (H-15). 여기만 배정을 건너뛰면 안전하지 않은 재실행은 언제나 주인이 없다.
+    auto_assign_owner_sync(db, incident, observed_at=observed_at)
     db.add(incident)
     hospital = db.get(Hospital, run.hospital_id) if run.hospital_id is not None else None
     projection = IncidentSlackProjection(
@@ -690,7 +694,9 @@ def _fail_unsafe_operation_run(db, run: OperationRun, observed_at: datetime) -> 
         customer_impact=incident.customer_impact,
         next_action=incident.next_action,
         admin_path=incident.admin_path,
-        owner_label="미지정",
+        # 자동 배정된 담당자를 그대로 싣는다 — 주인이 정해진 예외를 Slack이 "미지정"으로
+        # 알리면 아무도 자기 일로 보지 않는다.
+        owner_label=owner_label_sync(db, incident.owner_id),
         sla_label="확인 필요",
         hospital_id=incident.hospital_id,
         operation_run_id=incident.operation_run_id,

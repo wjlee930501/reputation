@@ -57,6 +57,9 @@ class ExceptionCard(BaseModel):
     content_id: uuid.UUID | None = None
     # 인시던트의 낙관적 잠금 값. 상태를 바꾸는 행동은 이 값을 함께 보내야 한다.
     version: int | None = None
+    # 이 카드에 접힌 같은 원인 인시던트 수. 행동은 대표 인시던트 하나에만 적용되므로
+    # 2건 이상이면 화면이 그 사실을 말해야 한다.
+    same_type_count: int = 1
     actions: list[OperationsAction] = []
 
 

@@ -9,10 +9,12 @@ from sqlalchemy import case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.admin_user import ROLE_OWNER, AdminUser
-from app.models.handoff import HospitalHandoff
 from app.models.operations import Incident, IncidentState
 from app.services.audit_log import write_audit_log
+from app.services.incident_assignment import (
+    needs_auto_assign,
+    resolve_auto_assign_owner,
+)
 from app.services.incident_safety import (
     build_incident_key,
     incident_filter_expressions,
@@ -38,7 +40,7 @@ __all__ = (
     "IncidentNotFound",
     "IncidentOpenRequest", "IncidentTransitionConflict", "IncidentVersionConflict",
     "acknowledge_incident", "assign_incident",
-    "auto_acknowledge_incident",
+    "auto_acknowledge_incident", "auto_assign_owner",
     "build_incident_key",
     "incident_filter_expressions",
     "mark_recovered", "mark_retrying", "open_or_touch_incident",
@@ -144,49 +146,25 @@ async def open_or_touch_incident(
     ).returning(Incident).execution_options(populate_existing=True)
     incident = (await db.execute(statement)).scalar_one()
     await _audit(db, incident, actor, "incident_occurrence_recorded", reason)
-    return await _auto_assign(db, incident, observed_at, actor)
+    return await auto_assign_owner(db, incident, observed_at=observed_at, actor=actor)
 
 
-async def _auto_assign(
-    db: AsyncSession, incident: Incident, observed_at: datetime, actor: str
+async def auto_assign_owner(
+    db: AsyncSession,
+    incident: Incident,
+    *,
+    observed_at: datetime,
+    actor: str = "system",
 ) -> Incident:
     """새 에피소드가 열릴 때 담당자를 정해 둔다 (H-15).
 
-    주인 없는 예외는 아무도 자기 일로 보지 않는다. 병원의 계약 인수 AE가 1순위이고,
-    없으면 활성 OWNER 한 명이 받는다. 이미 담당자가 있으면 절대 덮지 않는다 — 재발로
-    다시 열린 건은 그 사람이 계속 본다. 후보가 없으면 그대로 비워 둔다(실패 아님).
-
-    인수 AE도 OWNER 후보와 같은 자격을 요구한다. 퇴사·정지된 계정이나 운영 점검 계정에
-    맡기면 담당자는 있는데 아무도 보지 않는 예외가 되므로, 그때는 OWNER 규칙으로 내려간다.
-
-    `first_seen_at`은 새 행과 재open에서만 이번 관측 시각으로 맞춰지므로(위 upsert),
-    같은 에피소드의 반복 관측에서는 이 조회가 아예 돌지 않는다.
+    후보 규칙과 "첫 open만" 조건은 worker 경로와 공유한다
+    (`services/incident_assignment`). 여기서만 다른 것은 배정을 낙관적 잠금으로
+    기록하고 감사 로그를 남긴다는 점뿐이다.
     """
-    if incident.owner_id is not None or incident.first_seen_at != observed_at:
+    if not needs_auto_assign(incident.owner_id, incident.first_seen_at, observed_at):
         return incident
-    owner_id: uuid.UUID | None = None
-    if incident.hospital_id is not None:
-        owner_id = await db.scalar(
-            select(AdminUser.id)
-            .join(HospitalHandoff, HospitalHandoff.ae_owner_id == AdminUser.id)
-            .where(
-                HospitalHandoff.hospital_id == incident.hospital_id,
-                AdminUser.is_active.is_(True),
-                AdminUser.is_operations_test.is_(False),
-            )
-            .limit(1)
-        )
-    if owner_id is None:
-        owner_id = await db.scalar(
-            select(AdminUser.id)
-            .where(
-                AdminUser.role == ROLE_OWNER,
-                AdminUser.is_active.is_(True),
-                AdminUser.is_operations_test.is_(False),
-            )
-            .order_by(AdminUser.created_at.asc(), AdminUser.id.asc())
-            .limit(1)
-        )
+    owner_id = await resolve_auto_assign_owner(db, incident.hospital_id)
     if owner_id is None:
         return incident
     assigned = await _mutate(

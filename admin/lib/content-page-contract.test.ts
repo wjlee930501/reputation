@@ -73,7 +73,11 @@ test('공개 글의 비공개는 표본 여부와 무관하고, "문제 없음" 
   assert.match(published, /setConfirmAction\('reject'\)/)
   // 되돌릴 수 없는 조작이므로 확인 대화상자를 거친다.
   assert.match(page, /role="alertdialog"/)
-  assert.match(page, /handleReject\(selected\.id\)/)
+  assert.match(page, /handleReject\(selected\.id, rejectReason\)/)
+  // 되돌릴 수 없는 조작의 감사 기록에는 사유가 남아야 한다(H-09) — 3자 미만이면 못 누른다.
+  assert.match(page, /비공개 사유 \(3자 이상, 필수\)/)
+  assert.match(page, /rejectReason\.trim\(\)\.length < 3/)
+  assert.match(page, /JSON\.stringify\(\{ reason: reason\.trim\(\) \}\)/)
 })
 
 test('운영 센터로 가는 링크는 실제로 열리는 주소다', () => {

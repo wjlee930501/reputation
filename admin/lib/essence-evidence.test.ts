@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   evidenceApprovalBlockers,
+  requiredSourceApprovalBlockers,
   evidenceResolutionSummary,
   indexNotesById,
   replaceSourceNotes,
@@ -190,4 +191,51 @@ test('a source dropped by a failed reload disappears from the index immediately'
   })
   assert.equal(blockers.length, 1)
   assert.match(blockers[0], /근거 노트 다시 불러오기/)
+})
+
+test('현황 카드의 예외 승인은 필수 자료 상태를 근거로 잠근다', () => {
+  const processed = {
+    status: 'PROCESSED',
+    source_type: 'INTERVIEW',
+    raw_text: '원문',
+    evidence_note_count: 3,
+  }
+
+  // 다 읽었고 필수 자료가 모두 처리·근거를 가졌으면 승인을 연다.
+  assert.deepEqual(
+    requiredSourceApprovalBlockers({ sources: [processed], loading: false }),
+    [],
+  )
+  // 읽는 중과 읽기 실패는 다르게 말한다 — 둘 다 승인은 막는다.
+  assert.match(
+    requiredSourceApprovalBlockers({ sources: null, loading: true })[0],
+    /불러오는 중입니다/,
+  )
+  assert.match(
+    requiredSourceApprovalBlockers({ sources: null, loading: false })[0],
+    /근거 자료 보기/,
+  )
+  // 처리되지 않은 자료와 근거 노트가 없는 자료는 각각 이유를 남긴다.
+  assert.match(
+    requiredSourceApprovalBlockers({
+      sources: [{ ...processed, status: 'PENDING' }],
+      loading: false,
+    })[0],
+    /아직 처리되지 않았습니다/,
+  )
+  assert.match(
+    requiredSourceApprovalBlockers({
+      sources: [{ ...processed, evidence_note_count: 0 }],
+      loading: false,
+    })[0],
+    /근거 노트가 없습니다/,
+  )
+  // 사진은 근거 추출 대상이 아니므로 분모에 넣지 않는다 — 그래도 근거 자료는 없다.
+  assert.match(
+    requiredSourceApprovalBlockers({
+      sources: [{ ...processed, source_type: 'PHOTO_EXTERIOR' }],
+      loading: false,
+    })[0],
+    /근거로 쓸 자료가 없습니다/,
+  )
 })

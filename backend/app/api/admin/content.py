@@ -204,6 +204,16 @@ class PostPublishReviewBody(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
 
 
+class RejectBody(BaseModel):
+    """비공개(반려)는 공개 글을 내리고 본문까지 지우는 되돌릴 수 없는 조작이다.
+
+    누가 왜 내렸는지가 남아야 나중에 판단을 되짚을 수 있다. 반려자는 요청 본문이 아니라
+    확인된 요청 actor로 기록한다 (H-09, 발행과 같은 규칙).
+    """
+
+    reason: str = Field(min_length=3, max_length=500)
+
+
 class ContentRescheduleBody(BaseModel):
     scheduled_date: date
 
@@ -1086,9 +1096,18 @@ async def complete_post_publish_review(
 async def reject_content(
     hospital_id: uuid.UUID,
     content_id: uuid.UUID,
+    body: RejectBody,
     db: AsyncSession = Depends(get_db),
 ):
     """반려 — 야간 재생성 큐에 다시 들어감"""
+    # 공개 글을 내리고 본문을 지우는 되돌릴 수 없는 조작이다. 발행과 같은 규칙으로
+    # 확인된 요청 actor만 허용한다 (H-09).
+    rejected_by = verified_request_actor()
+    if rejected_by is None:
+        raise HTTPException(
+            status_code=403,
+            detail="비공개 처리자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
+        )
     item = await _get_content(db, content_id, hospital_id)
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.CANCELLED:
@@ -1145,7 +1164,7 @@ async def reject_content(
         db,
         action="reject_content",
         hospital_id=hospital_id,
-        actor=default_actor(),
+        actor=rejected_by,
         target_type="content_item",
         target_id=content_id,
         detail={
@@ -1153,6 +1172,8 @@ async def reject_content(
             "previous_status": previous_status,
             "scheduled_date": str(item.scheduled_date) if item.scheduled_date else None,
             "carried_over_from": str(item.carried_over_from) if item.carried_over_from else None,
+            "reason": body.reason.strip(),
+            "rejected_by": rejected_by,
         },
     )
     if should_revalidate and isinstance(item, ContentItem):

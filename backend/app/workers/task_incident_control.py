@@ -23,6 +23,7 @@ from app.models.operations import (
     OperationRun,
 )
 from app.services.dependency_incident_helpers import open_notice_exists_sync
+from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import (
@@ -74,6 +75,21 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
             select(Incident.state).where(Incident.dedupe_key == _incident_key(run.id))
         )
         incident = _open_incident(db, run)
+        # 이 경로로 열린 예외도 서비스 경로와 같은 규칙으로 담당자를 정한다 (H-15).
+        # 여기만 배정을 건너뛰면 generic Celery 실패는 언제나 주인이 없다.
+        assigned_owner_id = auto_assign_owner_sync(
+            db, incident, observed_at=incident.first_seen_at
+        )
+        if assigned_owner_id is not None:
+            _audit(
+                db,
+                incident,
+                "incident_assigned",
+                detail_extra={
+                    "auto_assigned": True,
+                    "auto_assigned_to": str(assigned_owner_id),
+                },
+            )
         should_notify = run.operation_type not in _GENERIC_FAILURE_SLACK_SUPPRESSED_OPERATIONS
         if should_notify and (
             previous_state is None
@@ -326,7 +342,9 @@ def _projection(db: Session, incident: Incident) -> IncidentSlackProjection:
         customer_impact=incident.customer_impact,
         next_action=incident.next_action,
         admin_path=incident.admin_path,
-        owner_label="미지정",
+        # 자동 배정된 담당자를 그대로 싣는다 — 주인이 정해진 예외를 Slack이 "미지정"으로
+        # 알리면 아무도 자기 일로 보지 않는다.
+        owner_label=owner_label_sync(db, incident.owner_id),
         sla_label="확인 필요",
         problem=incident.safe_error_message,
         hospital_id=incident.hospital_id,
@@ -362,7 +380,13 @@ def _enqueue(db: Session, intent: NotificationIntent) -> None:
     )
 
 
-def _audit(db: Session, incident: Incident, action: str) -> None:
+def _audit(
+    db: Session,
+    incident: Incident,
+    action: str,
+    *,
+    detail_extra: dict[str, str | bool] | None = None,
+) -> None:
     db.add(
         AdminAuditLog(
             hospital_id=incident.hospital_id,
@@ -370,6 +394,10 @@ def _audit(db: Session, incident: Incident, action: str) -> None:
             action=action,
             target_type="incident",
             target_id=str(incident.id),
-            detail={"operation_run_id": str(incident.operation_run_id), "version": incident.version},
+            detail={
+                "operation_run_id": str(incident.operation_run_id),
+                "version": incident.version,
+                **(detail_extra or {}),
+            },
         )
     )

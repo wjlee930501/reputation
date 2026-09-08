@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.operations import Incident, IncidentSeverity, IncidentState
 from app.services.dependency_incident_helpers import open_notice_exists
+from app.services.incident_assignment import owner_label
 from app.services.incident_types import (
     IncidentFingerprint,
     IncidentOpenRequest,
@@ -99,7 +100,9 @@ async def open_ops_incident(
                         customer_impact=incident.customer_impact,
                         next_action=incident.next_action,
                         admin_path=incident.admin_path,
-                        owner_label="미지정",
+                        # 자동 배정된 담당자를 그대로 싣는다 — 주인이 정해진 예외를
+                        # Slack이 "미지정"으로 알리면 아무도 자기 일로 보지 않는다.
+                        owner_label=await owner_label(db, incident.owner_id),
                         sla_label=sla_label,
                         hospital_id=incident.hospital_id,
                         operation_run_id=incident.operation_run_id,

@@ -173,6 +173,8 @@ export default function ContentPage() {
   // 사람이 되돌릴 수 없게 만드는 유일한 조작 — 표본에서 문제를 찾았을 때의 비공개.
   const [confirmAction, setConfirmAction] = useState<'reject' | null>(null)
   const confirmActionRef = useRef<'reject' | null>(null)
+  // 비공개 사유. 서버가 3자 이상을 요구하고, 감사 기록의 근거가 된다.
+  const [rejectReason, setRejectReason] = useState('')
 
   // Inline edit
   const [editMode, setEditMode] = useState(false)
@@ -407,12 +409,17 @@ export default function ContentPage() {
     }
   }
 
-  async function handleReject(itemId: string) {
+  async function handleReject(itemId: string, reason: string) {
     setActionLoading(true)
     setConfirmAction(null)
     clearActionFeedback()
     try {
-      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reject`, { method: 'POST' })
+      // 되돌릴 수 없는 조작이다 — 왜 내렸는지가 감사 기록에 남아야 한다(H-09).
+      await fetchAPI(`/admin/hospitals/${id}/content/${itemId}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reason.trim() }),
+      })
+      setRejectReason('')
       setActionSuccess('콘텐츠를 비공개했습니다. 야간에 재생성됩니다.')
       void refetchHeader()
       // 닫기 전에 그 글을 다시 읽는다 — 반려로 다음 달로 밀린 글은 `refreshItem`이 이번
@@ -1218,13 +1225,32 @@ export default function ContentPage() {
                     <p className="mt-1 text-xs leading-relaxed text-red-700">
                       공개 사이트에서 바로 제거되고, 새 콘텐츠는 야간 재생성 주기에 만들어집니다.
                     </p>
+                    <label className="mt-3 block text-xs font-medium text-red-800">
+                      비공개 사유 (3자 이상, 필수)
+                      <textarea
+                        value={rejectReason}
+                        onChange={(e) => setRejectReason(e.target.value)}
+                        rows={2}
+                        maxLength={500}
+                        className="mt-1 block w-full resize-none rounded-lg border border-red-200 bg-white px-2 py-1.5 text-sm text-slate-800"
+                      />
+                    </label>
                     <div className="mt-3 flex justify-end gap-2">
-                      <button type="button" onClick={() => setConfirmAction(null)} className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">취소</button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConfirmAction(null)
+                          setRejectReason('')
+                        }}
+                        className="min-h-11 rounded-lg border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        취소
+                      </button>
                       <button
                         type="button"
                         ref={destructiveConfirmRef}
-                        onClick={() => handleReject(selected.id)}
-                        disabled={actionLoading}
+                        onClick={() => handleReject(selected.id, rejectReason)}
+                        disabled={actionLoading || rejectReason.trim().length < 3}
                         className="min-h-11 rounded-lg bg-red-700 px-4 text-sm font-semibold text-white hover:bg-red-800 disabled:opacity-50"
                       >
                         {actionLoading ? '처리 중...' : '비공개 후 재생성'}

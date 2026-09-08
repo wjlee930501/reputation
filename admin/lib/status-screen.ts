@@ -90,8 +90,27 @@ const ACTION_ORDER: readonly string[] = [
   'ASSIGN_INCIDENT',
 ]
 
-/** 서버가 `enabled: false`로 보낸 행동에 붙일 문구. */
-export const ACTION_DISABLED_REASON = '권한 있는 담당자만'
+/**
+ * 서버가 `enabled: false`로 보낸 행동에 붙일 문구.
+ *
+ * 이유가 행동마다 다른데 한 문장으로 뭉뚱그리면, 운영자는 자기 권한이 없어서인지 아직
+ * 때가 아닌지 구분하지 못한다. 복구 확인은 권한 문제가 아니라 연결된 작업의 성공이 아직
+ * 관측되지 않은 것이고(`_recover`의 `INCIDENT_RECOVERY_NOT_OBSERVED`), 담당 지정만
+ * OWNER 전용이며(`require_owner`), 나머지는 담당자에게도 열려 있다.
+ */
+export const ACTION_DISABLED_REASONS: Readonly<Record<string, string>> = {
+  RECOVER_INCIDENT: '연결된 작업이 아직 성공하지 않아 복구를 확인할 수 없습니다',
+  ASSIGN_INCIDENT: '담당 지정은 OWNER만 할 수 있습니다',
+  RETRY_RUN: '담당자 또는 OWNER만 처리할 수 있습니다',
+  ACK_INCIDENT: '담당자 또는 OWNER만 처리할 수 있습니다',
+}
+
+/** 서버가 새 종류를 늘렸을 때 쓰는 기본 문구. */
+export const ACTION_DISABLED_REASON = '담당자 또는 OWNER만 처리할 수 있습니다'
+
+export function actionDisabledReason(kind: string): string {
+  return ACTION_DISABLED_REASONS[kind] ?? ACTION_DISABLED_REASON
+}
 
 export interface CardButtons {
   enabled: OperationsAction[]
@@ -116,8 +135,38 @@ export function cardButtons(exception: Pick<HospitalOverviewException, 'actions'
     enabled: sorted.filter((action) => action.enabled),
     disabled: sorted
       .filter((action) => !action.enabled)
-      .map((action) => ({ action, reason: ACTION_DISABLED_REASON })),
+      .map((action) => ({ action, reason: actionDisabledReason(action.kind) })),
   }
+}
+
+/** 같은 원인이 여러 건이면 대표 인시던트 하나에만 적용된다는 사실을 화면이 말한다. */
+export function sameCauseNotice(sameTypeCount: number | undefined): string | null {
+  if (!sameTypeCount || sameTypeCount <= 1) return null
+  return `같은 원인 ${sameTypeCount}건 — 대표 인시던트에 적용됩니다`
+}
+
+/**
+ * 담당 지정 폼의 상태. 요청 본문이 지금 걸린 처리 기한을 그대로 다시 실어야 하므로
+ * (`mutationBodyFor`), 상세를 못 읽은 채로 보내면 기한이 지워진다.
+ */
+export interface AssignFormState {
+  /** 열려 있는 행동의 종류. 담당 지정이 아니면 상세를 기다릴 이유가 없다. */
+  kind: string
+  /** 인시던트 상세(담당 후보·현재 처리 기한)를 읽었는가. */
+  detailLoaded: boolean
+  /** 상세 조회가 실패했는가. 실패했으면 보내지 않는다. */
+  detailFailed: boolean
+  busy: boolean
+  reason: string
+}
+
+export const MIN_ACTION_REASON_LENGTH = 3
+
+export function canSubmitAssign(state: AssignFormState): boolean {
+  if (state.busy) return false
+  if (state.reason.trim().length < MIN_ACTION_REASON_LENGTH) return false
+  if (state.kind !== 'ASSIGN_INCIDENT') return true
+  return state.detailLoaded && !state.detailFailed
 }
 
 export interface MutationBodyInput {

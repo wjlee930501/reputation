@@ -14,8 +14,17 @@ import {
   reReviewNotice,
   type PhilosophyDraftText,
 } from '@/lib/essence-actions'
+import { requiredSourceApprovalBlockers } from '@/lib/essence-evidence'
 import { persistThenApprove } from '@/lib/operator-safety'
 import type { ContentPhilosophy, HospitalOverviewException } from '@/types'
+
+/** 근거 게이트가 읽는 자료의 최소 형태 — 운영 기준 화면과 같은 목록 응답이다. */
+interface EvidenceSourceRow {
+  status: string
+  source_type: string
+  raw_text?: string | null
+  evidence_note_count: number
+}
 
 const FIELDS: Array<{ key: keyof PhilosophyDraftText; label: string; rows: number; list: boolean }> = [
   { key: 'positioning', label: '병원이 알려져야 할 기준', rows: 3, list: false },
@@ -44,9 +53,15 @@ const MIN_OVERRIDE_LENGTH = 20
 export function EscalatedDraftCard({
   exception,
   onDone,
+  onNotice,
 }: {
   exception: HospitalOverviewException
   onDone: () => Promise<void>
+  /**
+   * 카드가 사라진 뒤에도 남아야 하는 안내. 재검수·승인은 예외 카드 자체를 없애므로,
+   * 카드 안에만 적은 결과 문구는 화면이 갱신되는 순간 함께 사라진다.
+   */
+  onNotice?: (text: string) => void
 }) {
   const [draft, setDraft] = useState<ContentPhilosophy | null>(null)
   const [fields, setFields] = useState<PhilosophyDraftText>(EMPTY_DRAFT)
@@ -57,6 +72,13 @@ export function EscalatedDraftCard({
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [sources, setSources] = useState<EvidenceSourceRow[] | null>(null)
+  const [sourcesLoading, setSourcesLoading] = useState(true)
+
+  function publishNotice(text: string) {
+    if (onNotice) onNotice(text)
+    else setNotice(text)
+  }
 
   const hospitalId = exception.hospital_id
   const draftId = exception.id
@@ -78,7 +100,22 @@ export function EscalatedDraftCard({
         if (alive) setError(e instanceof Error ? e.message : '초안을 불러오지 못했습니다.')
       }
     }
+    // 예외 승인은 근거를 확인했다는 선언이다. 자료 상태를 읽지 못한 채로 열어 두면
+    // 확인할 수 없는 것을 확인했다고 체크하는 승인이 된다(운영 기준 화면과 같은 게이트).
+    async function loadSources() {
+      try {
+        const rows = await fetchAPI<EvidenceSourceRow[]>(
+          `/admin/hospitals/${hospitalId}/essence/sources`,
+        )
+        if (alive) setSources(rows)
+      } catch {
+        if (alive) setSources(null)
+      } finally {
+        if (alive) setSourcesLoading(false)
+      }
+    }
     void load()
+    void loadSources()
     void fetchCurrentAccount().then((account) => {
       if (alive) setReviewedBy(account?.name ?? '')
     })
@@ -117,7 +154,7 @@ export function EscalatedDraftCard({
       const result = await fetchAPI<ContentPhilosophy>(`${draftPath}/re-review`, {
         method: 'POST',
       })
-      setNotice(reReviewNotice(result))
+      publishNotice(reReviewNotice(result))
       await onDone()
     } catch (e: unknown) {
       setError(reReviewErrorMessage(e))
@@ -140,7 +177,7 @@ export function EscalatedDraftCard({
           ),
         }),
       )
-      setNotice('콘텐츠 운영 기준이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')
+      publishNotice('콘텐츠 운영 기준이 승인되었습니다. 자동 콘텐츠 생성에 적용됩니다.')
       await onDone()
     } catch (e: unknown) {
       setError(approveErrorMessage(e))
@@ -149,9 +186,15 @@ export function EscalatedDraftCard({
     }
   }
 
+  // 운영 기준 화면(`essence/page.tsx`)의 승인 잠금과 같은 근거 게이트다.
+  const evidenceBlockers = requiredSourceApprovalBlockers({
+    sources,
+    loading: sourcesLoading,
+  })
   const approveBlocked =
     !draft ||
     draft.status !== 'DRAFT' ||
+    evidenceBlockers.length > 0 ||
     !confirmEvidence ||
     !reviewedBy.trim() ||
     (findings.length > 0 && overrideReason.trim().length < MIN_OVERRIDE_LENGTH)
@@ -251,10 +294,24 @@ export function EscalatedDraftCard({
                 type="checkbox"
                 checked={confirmEvidence}
                 onChange={(event) => setConfirmEvidence(event.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-slate-300"
+                disabled={evidenceBlockers.length > 0}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 disabled:opacity-50"
               />
               근거 노트와 원문 발췌를 검토했습니다.
             </label>
+            {evidenceBlockers.length > 0 && (
+              <ul className="space-y-1 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800">
+                {evidenceBlockers.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            )}
+            <Link
+              href={`/hospitals/${hospitalId}/info#info-sources`}
+              className="inline-flex min-h-11 items-center text-xs text-blue-700 underline underline-offset-2"
+            >
+              근거 자료 보기
+            </Link>
             <button
               type="button"
               onClick={() => void approve()}

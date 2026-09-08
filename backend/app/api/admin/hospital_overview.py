@@ -149,6 +149,7 @@ async def _incident_cards(
                 operation_run_id=row.operation_run_id,
                 content_id=row.content_id,
                 version=row.version,
+                same_type_count=row.same_type_count,
                 actions=actions,
             )
         )

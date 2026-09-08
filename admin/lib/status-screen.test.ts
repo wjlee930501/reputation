@@ -3,9 +3,12 @@ import test from 'node:test'
 
 import {
   ACTION_DISABLED_REASON,
+  actionDisabledReason,
+  canSubmitAssign,
   cardButtons,
   monthSummaryLines,
   mutationBodyFor,
+  sameCauseNotice,
   splitRemaining,
   stateCardCopy,
 } from './status-screen.ts'
@@ -197,5 +200,71 @@ test('담당 지정은 담당자와 지금 걸린 처리 기한을 함께 보낸
       owner_id: 'owner-1',
       sla_due_at: '2026-09-10T00:00:00Z',
     },
+  )
+})
+
+test('못 하는 이유는 행동마다 다르게 적는다', () => {
+  // 한 문장으로 뭉뚱그리면 운영자는 권한 문제인지 아직 때가 아닌지 구분하지 못한다.
+  assert.equal(
+    actionDisabledReason('RECOVER_INCIDENT'),
+    '연결된 작업이 아직 성공하지 않아 복구를 확인할 수 없습니다',
+  )
+  assert.equal(actionDisabledReason('ASSIGN_INCIDENT'), '담당 지정은 OWNER만 할 수 있습니다')
+  assert.equal(actionDisabledReason('RETRY_RUN'), '담당자 또는 OWNER만 처리할 수 있습니다')
+  assert.equal(actionDisabledReason('ACK_INCIDENT'), '담당자 또는 OWNER만 처리할 수 있습니다')
+  // 서버가 새 종류를 늘려도 문구가 비지 않는다.
+  assert.equal(actionDisabledReason('SOMETHING_NEW'), ACTION_DISABLED_REASON)
+})
+
+test('카드 버튼의 사유도 행동마다 다른 문구를 쓴다', () => {
+  const buttons = cardButtons({
+    actions: [
+      action('RECOVER_INCIDENT', { enabled: false }),
+      action('ASSIGN_INCIDENT', { enabled: false }),
+    ],
+  })
+
+  assert.deepEqual(
+    buttons.disabled.map((item) => item.reason),
+    [
+      '연결된 작업이 아직 성공하지 않아 복구를 확인할 수 없습니다',
+      '담당 지정은 OWNER만 할 수 있습니다',
+    ],
+  )
+})
+
+test('같은 원인이 여러 건이면 대표 인시던트에만 적용된다고 말한다', () => {
+  assert.equal(sameCauseNotice(undefined), null)
+  assert.equal(sameCauseNotice(1), null)
+  assert.equal(sameCauseNotice(4), '같은 원인 4건 — 대표 인시던트에 적용됩니다')
+})
+
+test('담당 지정은 상세를 읽기 전에는 보내지 않는다', () => {
+  // 요청 본문이 지금 걸린 처리 기한을 그대로 실어야 하므로(`mutationBodyFor`),
+  // 상세를 못 읽은 채 보내면 걸려 있던 기한이 지워진다.
+  const base = { kind: 'ASSIGN_INCIDENT', busy: false, reason: '담당 이관' }
+
+  assert.equal(canSubmitAssign({ ...base, detailLoaded: false, detailFailed: false }), false)
+  assert.equal(canSubmitAssign({ ...base, detailLoaded: false, detailFailed: true }), false)
+  assert.equal(canSubmitAssign({ ...base, detailLoaded: true, detailFailed: false }), true)
+  // 사유는 3자 이상, 처리 중에는 두 번 누르지 않는다.
+  assert.equal(
+    canSubmitAssign({ ...base, reason: '  가 ', detailLoaded: true, detailFailed: false }),
+    false,
+  )
+  assert.equal(
+    canSubmitAssign({ ...base, busy: true, detailLoaded: true, detailFailed: false }),
+    false,
+  )
+  // 다른 행동은 상세를 기다릴 이유가 없다.
+  assert.equal(
+    canSubmitAssign({
+      kind: 'RETRY_RUN',
+      busy: false,
+      reason: '공급자 오류',
+      detailLoaded: false,
+      detailFailed: false,
+    }),
+    true,
   )
 })

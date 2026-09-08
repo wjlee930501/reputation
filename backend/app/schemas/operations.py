@@ -190,6 +190,9 @@ class OperationsQueueRow(OperationsSchema):
     cause_message: str | None = None
     cause_group_key: str | None = None
     same_type_count: int = 1
+    # 이 행에 접힌 인시던트 id 전부(묶음 상한까지). 깊은 링크(`detail=incident:{id}`)가
+    # "그 인시던트를 담은 행"을 찾을 수 있어야 대표 행으로 접힌 뒤에도 상세가 열린다.
+    member_incident_ids: list[UUID] = []
     affected_hospital_count: int = 0
     cost_guard_category: str | None = None
     # False marks a row that is context, not work: automatic recovery owns it right

@@ -10,6 +10,7 @@ from app.api.admin.operations_center_actions import (
     operations_error,
     require_operations_account,
     require_owner,
+    run_retry_enabled,
     scoped_run,
 )
 from app.api.admin.operations_center_incident_queries import (
@@ -123,7 +124,13 @@ async def _incident_detail(
         )
     item = items[0]
     run = await db.get(OperationRun, item.operation_run_id) if item.operation_run_id else None
-    run_projection = run_summary(hospital_scope, run) if hospital_scope is not None else None
+    run_projection = (
+        run_summary(
+            hospital_scope, run, retry_enabled=await run_retry_enabled(db, actor, run)
+        )
+        if hospital_scope is not None and run is not None
+        else None
+    )
     return IncidentDetailResponse(
         incident=item,
         run=run_projection,
@@ -161,11 +168,13 @@ async def get_operation_run_detail(
     hospital_id: uuid.UUID,
     run_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _actor: AdminUser = Depends(require_operations_account),
+    actor: AdminUser = Depends(require_operations_account),
 ) -> OperationsRunSummary:
     """Read one safe run projection without stored payloads or task metadata."""
     run = await scoped_run(db, hospital_id, run_id)
-    projection = run_summary(hospital_id, run)
+    projection = run_summary(
+        hospital_id, run, retry_enabled=await run_retry_enabled(db, actor, run)
+    )
     if projection is None:
         raise operations_error(404, "OPERATION_RUN_NOT_FOUND", "작업 기록을 찾을 수 없습니다.")
     return projection

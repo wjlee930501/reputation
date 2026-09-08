@@ -95,3 +95,34 @@ test('이번 달 요약은 콘텐츠·보고서 화면으로만 이어진다', (
   assert.match(monthSummary, /\/hospitals\/\$\{hospitalId\}\/content/)
   assert.match(monthSummary, /\/hospitals\/\$\{hospitalId\}\/reports/)
 })
+
+test('예외 승인은 근거 자료 상태를 확인한 뒤에만 열린다', () => {
+  // 운영 기준 화면과 같은 게이트다. 근거를 확인할 수 없는 상태에서 "검토했습니다"를
+  // 체크할 수 있으면, 확인할 수 없는 것을 확인했다고 선언하는 승인이 통과한다.
+  assert.match(escalatedDraft, /\/essence\/sources/)
+  assert.match(escalatedDraft, /requiredSourceApprovalBlockers/)
+  assert.match(escalatedDraft, /disabled=\{evidenceBlockers\.length > 0\}/)
+  assert.match(escalatedDraft, /evidenceBlockers\.length > 0 \|\|/)
+  assert.match(escalatedDraft, /근거 자료 보기/)
+  assert.match(escalatedDraft, /info#info-sources/)
+})
+
+test('재검수·승인 결과 안내는 카드가 사라져도 화면에 남는다', () => {
+  // 두 요청은 예외 카드 자체를 없앤다. 카드 안에만 적은 문구는 갱신되는 순간 사라진다.
+  assert.match(escalatedDraft, /onNotice\?: \(text: string\) => void/)
+  assert.match(escalatedDraft, /publishNotice\(reReviewNotice\(result\)\)/)
+  assert.match(exceptionCards, /onNotice=\{onNotice\}/)
+  assert.match(page, /onNotice=\{setNotice\}/)
+  assert.match(page, /role="status"/)
+})
+
+test('담당 지정 폼은 상세를 읽은 뒤에만 열리고, 실패하면 다시 시도한다', () => {
+  assert.match(exceptionCards, /canSubmitAssign\(/)
+  assert.match(exceptionCards, /detailState === 'ready'/)
+  assert.match(exceptionCards, /detailState === 'loading'/)
+  assert.match(exceptionCards, /담당자 정보 다시 불러오기/)
+  // 같은 원인이 여러 건이면 대표 인시던트에만 적용된다는 사실을 말한다.
+  assert.match(exceptionCards, /sameCauseNotice\(exception\.same_type_count\)/)
+  // 403·409 뒤에는 최신 인가로 다시 그린다 — 서버가 거절한 버튼이 남아 있으면 안 된다.
+  assert.match(exceptionCards, /setError\(PERMISSION_DENIED\)\n\s*\/\/[^\n]*\n\s*await onDone\(\)/)
+})

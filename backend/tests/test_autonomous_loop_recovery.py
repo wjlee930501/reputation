@@ -37,7 +37,13 @@ class _RecoverySession:
         recertify_candidates=(),
         recertify_runs=(),
         visible_block_keys=(),
+        auto_assign_owner_id=None,
+        auto_assign_owner_name=None,
     ):
+        # 담당자 자동 배정 후보와 그 이름(Slack 투영). None이면 후보 없음이다.
+        self.auto_assign_owner_id = auto_assign_owner_id
+        self.auto_assign_owner_name = auto_assign_owner_name
+        self.scalars_called = 0
         self.hospitals = list(hospitals)
         self.runs = list(runs)
         self.operation_runs = list(operation_runs)
@@ -72,6 +78,20 @@ class _RecoverySession:
         if entity is ContentItem:
             return self.content_items.get(row_id)
         return None
+
+    def scalar(self, _statement):
+        """담당자 자동 배정 후보 조회와, 배정된 계정 이름 조회(Slack 투영).
+
+        후보 조회는 인수 AE → OWNER 순으로 두 번까지 오고, 이름 조회는 배정된 뒤에만 온다.
+        """
+        self.scalars_called += 1
+        if self.auto_assign_owner_id is None:
+            return None
+        return (
+            self.auto_assign_owner_name
+            if self.scalars_called > 1
+            else self.auto_assign_owner_id
+        )
 
     def add(self, value):
         self.added.append(value)
@@ -451,7 +471,12 @@ def test_reconciler_fails_unrebuildable_dispatch_with_incident_and_open_intent(
         safe_error_message=None,
         version=1,
     )
-    session = _RecoverySession(operation_runs=(run,))
+    owner_id = uuid.uuid4()
+    session = _RecoverySession(
+        operation_runs=(run,),
+        auto_assign_owner_id=owner_id,
+        auto_assign_owner_name="이수진",
+    )
     intents = []
 
     monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
@@ -486,11 +511,17 @@ def test_reconciler_fails_unrebuildable_dispatch_with_incident_and_open_intent(
     assert incident.operation_run_id == run.id
     assert incident.safe_error_code == "UNSAFE_STORED_DISPATCH"
     assert incident.hospital_id == hospital_id
+    # 이 경로로 열린 예외도 서비스 경로와 같은 규칙으로 담당자를 받는다 (H-15).
+    assert incident.owner_id == owner_id
     assert len(intents) == 1
     assert intents[0].notification_type == "INCIDENT_OPEN"
     assert intents[0].channel == "SLACK_DEV"
     assert intents[0].incident_id == incident.id
     assert intents[0].operation_run_id == run.id
+    # Slack도 배정된 담당자를 그대로 말한다 — "미지정"이면 아무도 자기 일로 보지 않는다.
+    projected = str(intents[0].message.payload())
+    assert "담당: 이수진" in projected
+    assert "미지정" not in projected
 
 
 def test_reconciler_allows_monthly_report_period_dispatch(monkeypatch) -> None:
