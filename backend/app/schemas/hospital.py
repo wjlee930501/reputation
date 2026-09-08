@@ -22,6 +22,13 @@ class HospitalAeOwner(BaseModel):
     name: str
 
 
+class ProfileRequirementItem(BaseModel):
+    """아직 채워지지 않은 필수 항목. 화면은 라벨만 그대로 보여 준다."""
+
+    key: str
+    label: str
+
+
 class HospitalItemBase(BaseModel):
     id: str
     name: str
@@ -60,6 +67,9 @@ class HospitalListItem(HospitalItemBase):
 
 
 class HospitalDetail(HospitalItemBase):
+    # `profile_complete`는 서버가 이 목록에서 파생한다 — 화면은 "남은 필수 항목 N개"만
+    # 보여 주고 완료를 직접 표시하지 않는다(설계 §4.5).
+    missing_profile_requirements: list[ProfileRequirementItem]
     onboarding_note: Optional[str] = None
     address: Optional[str]
     phone: Optional[str]

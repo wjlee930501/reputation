@@ -82,6 +82,7 @@ from app.services.hospital_lifecycle import (
     activation_gate_error,
     evaluate_activation_gate,
     missing_profile_requirement_keys,
+    profile_requirements,
 )
 from app.services.hospital_logo import (
     EXTERNAL_LOGO_URL_MESSAGE,
@@ -233,8 +234,7 @@ class HospitalProfileUpdate(BaseModel):
     # 진료 항목
     treatments: list[TreatmentItem] | None = None
 
-    # 완료 플래그 (프로파일 다 입력됐으면 True로)
-    profile_complete: bool | None = None
+    # 완료 플래그는 받지 않는다 — 저장할 때 서버가 필수 항목에서 파생한다(설계 §4.5).
 
     @field_validator("wikidata_qid")
     @classmethod
@@ -722,7 +722,8 @@ async def update_profile(
 ):
     """
     프로파일 수정.
-    profile_complete=True 설정 시 V0 분석과 콘텐츠 허브 준비를 각각 트리거.
+    저장 결과가 필수 항목을 모두 채우면 완료로 파생되고, 그때 V0 분석과 콘텐츠 허브
+    준비를 각각 트리거한다.
     """
     # 프로필 완료 해제와 활성화/재개/일시정지가 같은 잠금 아래서 결정되게 한다 — 잠금 없이
     # 읽으면 일시정지 병원에서 '완료 해제'와 '재개'가 교차해 ACTIVE + profile_complete=False
@@ -792,7 +793,6 @@ async def update_profile(
         "image_style_direction",
         "site_access_mode",
         "treatments",
-        "profile_complete",
     }
     # exclude_unset: 보내지 않은 필드는 유지하되, 명시적 null/빈 문자열은 '비우기'로
     # 처리한다. exclude_none이었을 때는 잘못 입력된 URL/식별자를 지울 API 경로가 없었다.
@@ -883,9 +883,14 @@ async def update_profile(
             changed_fields.append(field)
         setattr(h, field, value)
 
-    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 해제하면
-    # 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다. 먼저 일시정지하게 한다.
-    if was_complete and not h.profile_complete and _has_public_site(h):
+    # 완료 여부는 body가 아니라 저장 결과에서 파생한다 — 화면에 '완료로 표시'가 없으므로
+    # 손으로 만든 요청이 불완전한 병원을 완료 처리할 경로도 함께 사라진다(설계 §4.5).
+    missing_requirements = missing_profile_requirement_keys(h)
+    derived = not missing_requirements
+
+    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 필수 항목을
+    # 비우면 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다. 먼저 일시정지하게 한다.
+    if was_complete and not derived and _has_public_site(h):
         raise HTTPException(
             status_code=409,
             detail={
@@ -894,31 +899,18 @@ async def update_profile(
             },
         )
 
-    # Admin UI와 동일한 authoritative checklist를 서버에서 강제한다. 직접 API 호출로
-    # 불완전한 병원을 완료 처리해 V0/사이트 파이프라인에 흘려보낼 수 없어야 한다.
-    if h.profile_complete:
-        required_missing = missing_profile_requirement_keys(h)
-        if required_missing:
-            if was_complete:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"프로파일 완료 상태에서는 필수 항목을 비울 수 없습니다: "
-                        f"{', '.join(required_missing)}. 값을 입력하거나 profile_complete를 해제해 주세요."
-                    ),
-                )
-            raise HTTPException(
-                status_code=400,
-                detail=f"프로파일 완료에 필요한 필드 누락: {', '.join(required_missing)}",
-            )
-        if not was_complete:
-            handoff_result = await db.execute(
-                select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
-            )
-            handoff = handoff_result.scalar_one_or_none()
-            blocker = profile_completion_handoff_blocker(h, handoff)
-            if blocker is not None:
-                raise HTTPException(status_code=409, detail=blocker)
+    transitioned = derived and not was_complete
+    h.profile_complete = derived
+
+    # 완료 전환이 V0·사이트 파이프라인을 여는 지점이므로, 인수 승인은 여기서만 막는다.
+    if transitioned:
+        handoff_result = await db.execute(
+            select(HospitalHandoff).where(HospitalHandoff.hospital_id == hospital_id)
+        )
+        handoff = handoff_result.scalar_one_or_none()
+        blocker = profile_completion_handoff_blocker(h, handoff)
+        if blocker is not None:
+            raise HTTPException(status_code=409, detail=blocker)
 
     if changed_fields:
         await write_audit_log(
@@ -930,7 +922,9 @@ async def update_profile(
             target_id=hospital_id,
             detail={
                 "changed_fields": changed_fields,
-                "profile_complete_transition": (not was_complete) and bool(h.profile_complete),
+                "profile_complete_transition": transitioned,
+                "profile_complete_derived": derived,
+                "missing_requirements": missing_requirements,
             },
         )
 
@@ -946,7 +940,7 @@ async def update_profile(
     # 프로파일 완료로 변경되면 V0와 허브 준비를 독립적으로 시작한다. 초기 진단은
     # 장시간 걸릴 수 있는 백그라운드 산출물이므로 그 큐의 지연·실패가 공개 준비를
     # 막아서는 안 된다. 허브 태스크는 자율 복구에서도 멱등 재디스패치된다.
-    if not was_complete and h.profile_complete:
+    if transitioned:
         background_tasks.add_task(
             build_aeo_site.apply_async,
             args=[str(h.id)],
@@ -1609,6 +1603,14 @@ def _serialize(h: Hospital) -> dict:
         "site_access_mode": getattr(h, "site_access_mode", None),
         "treatments": h.treatments,
         "profile_complete": h.profile_complete,
+        # 화면은 "남은 필수 항목 N개"만 그린다 — 판정과 라벨을 서버가 한 곳에서 준다.
+        "missing_profile_requirements": [
+            {"key": requirement.key, "label": requirement.label}
+            for requirement in profile_requirements(h)
+            if not requirement.passed
+        ],
+        # 목록(_serialize_list)과 같은 값이어야 상세와 다른 말을 하지 않는다(O-2).
+        "visual_approval_missing": list(evaluate_visual_readiness(h).missing_labels),
         "domain_cert_job_state": getattr(h, "domain_cert_job_state", None),
         "domain_cert_job_started_at": (
             getattr(h, "domain_cert_job_started_at", None).isoformat()

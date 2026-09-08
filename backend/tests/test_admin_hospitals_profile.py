@@ -1,4 +1,4 @@
-"""P2-10 — profile_complete 병원의 필수 필드 비우기 차단."""
+"""프로파일 저장 — 완료 파생, 남은 필수 항목, 공개 운영 중 비우기 차단(P2-10)."""
 
 import uuid
 from types import SimpleNamespace
@@ -7,14 +7,16 @@ import pytest
 from fastapi import BackgroundTasks, HTTPException
 
 from app.api.admin import hospitals as hospitals_api
+from app.models.handoff import HandoffState
 from app.models.hospital import HospitalStatus
 from app.services.essence_readiness import EssenceReadinessState
 from app.services.hospital_geocoding import GeocodeResult, GeocodingError
 
 
 class FakeDB:
-    def __init__(self, hospital):
+    def __init__(self, hospital, handoff=None):
         self.hospital = hospital
+        self.handoff = handoff
         self.added = []
         self.committed = False
         #: 잡힌 병원 advisory lock. 첫 읽기보다 먼저 잡혔는지까지 확인한다.
@@ -26,10 +28,14 @@ class FakeDB:
         return SimpleNamespace(dialect=SimpleNamespace(name="postgresql"))
 
     async def execute(self, stmt):
-        # 이 fake에 오는 execute는 병원 advisory lock 뿐이다.
+        # 병원 advisory lock과, 완료 전환 시의 인수 조회만 이 fake에 온다.
         if "pg_advisory_xact_lock" in str(stmt):
             self.locks.append(self.hospital.id)
-        return SimpleNamespace(scalar_one=lambda: None, scalar=lambda: None)
+        return SimpleNamespace(
+            scalar_one=lambda: None,
+            scalar=lambda: None,
+            scalar_one_or_none=lambda: self.handoff,
+        )
 
     async def get(self, model, object_id):
         if self.locked_before_first_read is None:
@@ -92,43 +98,76 @@ def _hospital(**overrides):
     return SimpleNamespace(**base)
 
 
-@pytest.mark.parametrize(
-    "patch_body,requirement_key",
-    [
-        ({"keywords": []}, "targeting"),
-        ({"region": []}, "geo"),
-        ({"specialties": []}, "targeting"),
-        ({"address": ""}, "contact"),
-        ({"director_name": ""}, "director_basic"),
-    ],
-)
-async def test_patch_cannot_empty_required_field_on_complete_profile(patch_body, requirement_key):
-    """profile_complete=True가 유지되는 한 필수 필드를 빈 값으로 비울 수 없다 (422)."""
-    hospital = _hospital()
+async def test_profile_complete_is_derived_from_requirements(monkeypatch):
+    """완료는 body가 아니라 필수 8항목에서 파생되고, 그때만 파이프라인이 열린다."""
+    hospital = _hospital(
+        profile_complete=False,
+        director_philosophy=None,
+        treatments=[],
+    )
+    db = FakeDB(hospital, handoff=SimpleNamespace(state=HandoffState.HANDOFF_ACCEPTED))
+    background = BackgroundTasks()
+    dispatched = []
+
+    async def _dispatch(_db, command, _task):
+        dispatched.append(command.operation_type)
+        return None
+
+    monkeypatch.setattr(hospitals_api, "dispatch_operation", _dispatch)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            director_philosophy="충분히 설명합니다.",
+            treatments=[{"name": "치질 수술"}],
+        ),
+        background,
+        db=db,
+    )
+
+    assert result["profile_complete"] is True
+    assert result["missing_profile_requirements"] == []
+    assert hospital.profile_complete is True
+    assert dispatched == ["TRIGGER_V0_REPORT"]
+    assert len(background.tasks) == 1
+    site_task = background.tasks[0]
+    assert getattr(getattr(site_task.func, "__self__", None), "name", None) == (
+        hospitals_api.build_aeo_site.name
+    )
+    assert site_task.kwargs["args"] == [str(hospital.id)]
+
+
+async def test_missing_requirements_are_labelled():
+    """남은 항목은 화면이 그대로 쓸 수 있게 키와 라벨로 내려간다."""
+    hospital = _hospital(profile_complete=False, treatments=[])
     db = FakeDB(hospital)
-    body = hospitals_api.HospitalProfileUpdate(**patch_body)
 
-    with pytest.raises(HTTPException) as exc:
-        await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(phone="02-111-2222"),
+        BackgroundTasks(),
+        db=db,
+    )
 
-    assert exc.value.status_code == 422
-    assert requirement_key in exc.value.detail
-    assert "비울 수 없습니다" in exc.value.detail
-    assert db.committed is False
+    assert result["profile_complete"] is False
+    assert result["missing_profile_requirements"] == [{"key": "treatments", "label": "진료 항목"}]
+    assert db.committed is True
 
 
-async def test_completion_transition_with_missing_fields_keeps_400():
-    """미완료 → 완료 전환 시 누락 필드는 기존대로 400."""
-    hospital = _hospital(profile_complete=False, keywords=[])
+async def test_body_cannot_set_profile_complete():
+    """body의 완료 플래그는 필드가 없어 무시되고, 파생 판정이 이긴다."""
+    assert "profile_complete" not in hospitals_api.HospitalProfileUpdate.model_fields
+
+    hospital = _hospital(profile_complete=False, treatments=[])
     db = FakeDB(hospital)
     body = hospitals_api.HospitalProfileUpdate(profile_complete=True)
 
-    with pytest.raises(HTTPException) as exc:
-        await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+    assert "profile_complete" not in body.model_dump(exclude_unset=True)
 
-    assert exc.value.status_code == 400
-    assert "targeting" in exc.value.detail
-    assert db.committed is False
+    result = await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+
+    assert result["profile_complete"] is False
+    assert hospital.profile_complete is False
 
 
 async def test_address_change_geocodes_once_and_persists_coordinates(monkeypatch):
@@ -218,11 +257,39 @@ def test_list_serializer_includes_custom_domain_for_admin_search():
     assert payload["aeo_domain"] == "jangclinic.kr"
 
 
-async def test_patch_cannot_unset_profile_complete_while_publicly_serving():
-    """M-13: 공개 게이트가 profile_complete를 요구하므로 해제하면 공개 페이지가 조용히 404가 된다."""
+def test_detail_serializes_visual_approval_missing():
+    """상세와 목록이 같은 시각 승인 판정을 내려야 화면이 갈리지 않는다(O-2)."""
+    hospital = _hospital()
+
+    detail = hospitals_api._serialize(hospital)
+    listed = hospitals_api._serialize_list(
+        hospital,
+        readiness_state=EssenceReadinessState(
+            current=True, unprocessed_sources=0, required_sources=1, escalated_draft=False
+        ),
+        open_exception_count=0,
+        ae_owner=None,
+    )
+
+    assert detail["visual_approval_missing"] == listed["visual_approval_missing"]
+    assert "공식 로고" in detail["visual_approval_missing"]
+
+
+@pytest.mark.parametrize(
+    "patch_body",
+    [
+        {"keywords": []},
+        {"region": []},
+        {"specialties": []},
+        {"address": ""},
+        {"director_name": ""},
+    ],
+)
+async def test_patch_cannot_unset_profile_complete_while_publicly_serving(patch_body):
+    """M-13: 공개 게이트가 profile_complete를 요구하므로 필수 항목을 비우면 공개 페이지가 조용히 404가 된다."""
     hospital = _hospital(status=HospitalStatus.ACTIVE, site_live=True, profile_complete=True)
     db = FakeDB(hospital)
-    body = hospitals_api.HospitalProfileUpdate(profile_complete=False)
+    body = hospitals_api.HospitalProfileUpdate(**patch_body)
 
     with pytest.raises(HTTPException) as exc:
         await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
@@ -238,7 +305,7 @@ async def test_patch_cannot_unset_profile_complete_while_publicly_serving():
 async def test_patch_can_unset_profile_complete_when_paused():
     hospital = _hospital(status=HospitalStatus.PAUSED, site_live=True, profile_complete=True)
     db = FakeDB(hospital)
-    body = hospitals_api.HospitalProfileUpdate(profile_complete=False)
+    body = hospitals_api.HospitalProfileUpdate(keywords=[])
 
     await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
 

@@ -1,8 +1,9 @@
-"""M-13 후속 — 실제 세션에서 profile_complete 해제 가드를 확인한다.
+"""M-13 후속 — 실제 세션에서 완료 해제 가드를 확인한다.
 
 단위 테스트의 fake 세션은 409가 아무것도 남기지 않는다는 것을 증명하지 못한다.
 여기서는 진짜 Postgres 트랜잭션에서 거절된 PATCH가 행을 그대로 두는지,
-일시정지 병원에서는 해제가 실제로 저장되는지를 본다.
+일시정지 병원에서는 필수 항목을 비운 저장이 실제로 반영되는지를 본다.
+완료 여부는 서버가 파생하므로 해제는 필수 항목을 비우는 PATCH로 일어난다.
 """
 
 import uuid
@@ -60,7 +61,7 @@ async def test_uncomplete_on_live_hospital_persists_nothing(pg_async_session):
     with pytest.raises(HTTPException) as exc:
         await hospitals_api.update_profile(
             hospital_id,
-            hospitals_api.HospitalProfileUpdate(profile_complete=False),
+            hospitals_api.HospitalProfileUpdate(keywords=[]),
             BackgroundTasks(),
             db=pg_async_session,
         )
@@ -83,7 +84,7 @@ async def test_uncomplete_on_paused_hospital_is_saved(pg_async_session):
 
     await hospitals_api.update_profile(
         hospital_id,
-        hospitals_api.HospitalProfileUpdate(profile_complete=False),
+        hospitals_api.HospitalProfileUpdate(keywords=[]),
         BackgroundTasks(),
         db=pg_async_session,
     )
