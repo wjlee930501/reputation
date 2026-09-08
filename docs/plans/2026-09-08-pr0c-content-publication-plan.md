@@ -12,6 +12,14 @@
 
 ---
 
+## 실행 결과 (2026-09-08)
+
+| Task | 결함 | 커밋 | 검수 |
+|---|---|---|---|
+| 0 | 공백 문자 집합 parity 가드 | `41affe3` | Codex: 이스케이프 느슨 → `fd`-라운드에서 `\uXXXX`만 허용하는 엄격 토크나이저로 수정 |
+| 1 | H-01 표시 | `6e4d5b2` → `db71a26` → `a16a764` → `691f186` → `fd00a49` | Fable·Codex 5라운드. 남아 있던 "공개" 경로를 순차 발견: 운영 상태 버킷/필터/집계 → 병원 목록·오늘 큐 → 기준 조회 배치화(병원 수 무관 2쿼리)·오늘 큐 SQL CASE·readiness 공개/보류 분리 → 대시보드·온보딩·`load_only`·배열 파라미터. 최종 Fable APPROVE, Codex는 H-16(리포트) 신규 지적 → 등록부로 이관 |
+| 테스트 위생 | LOW 2건 | `adff1e6` | `recover_ops_incident`가 만든 전역 async 엔진이 닫힌 루프에 남아 `provider_usage._persist`가 예외를 삼키던 문제(루트 conftest dispose fixture) + 두 모듈의 롤백 밖 커밋 행 정리 |
+
 ## 환경 준비
 
 PR-0A/0B와 동일. 백엔드 테스트 명령(`backend/`에서, 단일 파일은 끝에 `tests/<file>.py -v`):

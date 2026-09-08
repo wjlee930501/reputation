@@ -17,7 +17,7 @@
 
 ## 2. 결함 등록부
 
-**처리 현황 (2026-09-08):** PR-0A 완료 — H-05(`5606168`), H-06(`cf4ee67`, `5388ba9`), H-07(`78fe8b6`), M-10(`c9076f4`), M-11(`cf4ee67`), M-13(`85128d7`) 수정·검수 완료. 상세는 [PR-0A 실행 결과](../plans/2026-09-08-pr0a-lifecycle-activation-plan.md#실행-결과-2026-09-08). PR-0B 완료 — H-02(`0487525`), H-03(`ead9d6b`, `8c6e1b1`), H-04(`78b08a0`), M-01(`2482cf4`), M-03(`1a52744`) 수정·검수 완료. 상세는 [PR-0B 실행 결과](../plans/2026-09-08-pr0b-essence-evidence-plan.md#실행-결과-2026-09-08). PR-0C 진행 중.
+**처리 현황 (2026-09-08):** PR-0A 완료 — H-05(`5606168`), H-06(`cf4ee67`, `5388ba9`), H-07(`78fe8b6`), M-10(`c9076f4`), M-11(`cf4ee67`), M-13(`85128d7`) 수정·검수 완료. 상세는 [PR-0A 실행 결과](../plans/2026-09-08-pr0a-lifecycle-activation-plan.md#실행-결과-2026-09-08). PR-0B 완료 — H-02(`0487525`), H-03(`ead9d6b`, `8c6e1b1`), H-04(`78b08a0`), M-01(`2482cf4`), M-03(`1a52744`) 수정·검수 완료. 상세는 [PR-0B 실행 결과](../plans/2026-09-08-pr0b-essence-evidence-plan.md#실행-결과-2026-09-08). PR-0C 진행 중 — Task 1(H-01 표시 부분) 완료: `41affe3`(복사 가드) `6e4d5b2` → `db71a26` `a16a764` `691f186` `fd00a49`(Fable·Codex 5라운드 교차 검수, 운영 큐·readiness·대시보드·온보딩까지 단일 판정으로 통일). 이 과정에서 H-16 신규 등록. 테스트 순서 의존 flake 2건은 `adff1e6`으로 근본 해결(전역 async 엔진 dispose·잔여 행 정리).
 
 심각도: **HIGH** = 데이터/비용/안전 무결성 또는 사람이 화면을 믿을 수 없게 만드는 것. **MED** = 기능은 돌지만 사람을 헛돌게 하거나 특정 조건에서 깨짐. **LOW** = 정리 대상.
 
@@ -40,6 +40,7 @@
 | H-13 | **사이트 준비 복구가 무한 재큐잉.** 매분 `profile_complete && !site_built` 가장 오래된 100곳을 claim/attempt 기록 없이 dispatch(`autonomous_recovery.py:128,204`), 자식 task 3회 재시도 후에도 반복 | 중복 큐 메시지, 뒤 병원 기아, 인시던트 없음 | Codex REC-01 |
 | H-14 | **일정 화면이 계약 요금제를 바꿈.** `schedule/page.tsx:290` 선택 → `content.py:300`이 `hospital.plan` 기록. 감사되는 계약 정정 엔드포인트(`handoffs.py:280`)는 admin 호출자 없음 | 인수 기록과 병원 가격/편수 불일치, 정정 경로 우회 | Codex W-03 |
 | H-15 | **인시던트 배정 UI 없음.** 복구/확인/Slack 재전송은 배정자 또는 OWNER만 허용(`operations_center_actions.py:90-96`), 배정 엔드포인트는 존재(`operations_center_incident_routes.py:162`)하나 클라이언트 미호출, 버튼은 역할 무관 표시 | OPERATOR가 403을 받고 갈 곳 없음 | Claude admin W-1 / Codex W-04 |
+| H-16 | **월간 원장 리포트가 공개 보류 글을 '발행 글'로 나열.** `tasks.py:7801` `visible_publications`가 status==PUBLISHED만 보고 공유 판정(`content_visibility.assess_public_visibility`)을 거치지 않음 → `report_engine.py:1164`·`doctor_report.html:103`에 보류 글 제목 노출 | Codex PR-0C Task 1 5차 검토 | 원장에게 공개되지 않은 글을 공개된 것으로 보고. 단, 재인증(PR-0C Task 2) 전에는 일시 보류가 대부분이라 리포트 시점 판정을 그대로 넣으면 계약 이행을 과소 보고할 수 있음 — 계약 월·`first_published_at` 규칙과 함께 PR-0C-2/PR-0D에서 결정 | 리포트 시점에 보류 글은 별도 항목("공개 보류 N편")으로 표기하거나 제외하되 계약 편수 집계는 `first_published_at` 기준 유지 |
 
 ### 2.2 MED
 
