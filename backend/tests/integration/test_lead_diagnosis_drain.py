@@ -22,6 +22,25 @@ from app.models.lead_diagnosis import (
 from app.workers import lead_diagnosis_tasks as leadgen_tasks
 from app.workers.lead_report_writeback import finalize_lead_report_artifact
 
+
+@pytest.fixture(autouse=True)
+def _remove_incidents_opened_outside_the_test_transaction(pg_engine):
+    """복구 드레인은 `open_ops_incident`로 인시던트·알림을 전역 세션에 **커밋**한다 —
+    pg_async_session의 롤백 밖이라 행이 남고, 운영 큐 집계 테스트가 순서에 따라 깨진다.
+    이 테스트가 새로 만든 행만 지운다."""
+    from sqlalchemy import text
+
+    def _ids(table: str) -> set:
+        with pg_engine.connect() as conn:
+            return {row[0] for row in conn.execute(text(f"SELECT id FROM {table}"))}
+
+    before = {table: _ids(table) for table in ("incidents", "notification_outbox")}
+    yield
+    with pg_engine.begin() as conn:
+        for table, seen in before.items():
+            for row_id in _ids(table) - seen:
+                conn.execute(text(f"DELETE FROM {table} WHERE id = :id"), {"id": row_id})
+
 _slot_sequence = itertools.count(100)
 
 

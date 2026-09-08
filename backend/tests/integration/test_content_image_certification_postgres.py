@@ -364,7 +364,15 @@ def test_editor_revision_change_blocks_provider_checkpoint_write(pg_engine, monk
         assert row.image_content_hash is None
         assert row.generation_claim_token is None
         assert "SAFE_REVIEWED" not in str(row.essence_check_summary)
-        verify_conn.execute(text("DELETE FROM content_items WHERE id = :id"), {"id": content_id})
+        # 이 두 테스트만 롤백되는 pg_conn 대신 실제 커밋(pg_engine.begin)으로 시드하므로,
+        # 글만 지우면 병원·스케줄 행이 남아 다른 테스트(운영 큐 집계 등)를 순서 의존으로 만든다.
+        verify_conn.execute(
+            text(
+                "DELETE FROM hospitals WHERE id = "
+                "(SELECT hospital_id FROM content_items WHERE id = :id)"
+            ),
+            {"id": content_id},
+        )
 
 
 def test_safe_finalization_merges_concurrent_hard_review_without_lost_update(
@@ -425,7 +433,15 @@ def test_safe_finalization_merges_concurrent_hard_review_without_lost_update(
             "blocking": True,
         }
         assert "legacy_image_certification" not in row.essence_check_summary
-        verify_conn.execute(text("DELETE FROM content_items WHERE id = :id"), {"id": content_id})
+        # 이 두 테스트만 롤백되는 pg_conn 대신 실제 커밋(pg_engine.begin)으로 시드하므로,
+        # 글만 지우면 병원·스케줄 행이 남아 다른 테스트(운영 큐 집계 등)를 순서 의존으로 만든다.
+        verify_conn.execute(
+            text(
+                "DELETE FROM hospitals WHERE id = "
+                "(SELECT hospital_id FROM content_items WHERE id = :id)"
+            ),
+            {"id": content_id},
+        )
 
 
 def test_unsafe_review_replaces_once_and_binds_generated_hash(
