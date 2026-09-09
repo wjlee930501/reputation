@@ -124,7 +124,7 @@ def test_escalated_snapshot_with_approved_essence_recovers_without_opening(monke
     assert recovered[0]["notify"] is False
 
 
-def test_escalated_snapshot_with_approved_essence_opens_incident_for_active_hospital(
+def test_escalated_snapshot_with_base_is_absorbed_without_slack_for_active_hospital(
     monkeypatch,
 ) -> None:
     """An unresolved active-hospital refresh opens one visible incident."""
@@ -143,18 +143,10 @@ def test_escalated_snapshot_with_approved_essence_opens_incident_for_active_hosp
     )
 
     assert response["status"] == "ESCALATED"
-    assert recovered == []
-    assert len(opened) == 1
-    incident = opened[0]
-    assert incident["incident_type"] == "ESSENCE_AUTO_REVIEW_ESCALATED"
-    assert incident["object_id"] == f"{hospital_id}:current-snapshot"
-    assert incident["object_type"] == "essence_snapshot"
-    assert incident["pipeline"] == "essence_auto_review"
-    assert incident["severity"] == tasks.IncidentSeverity.MEDIUM
-    assert incident["hospital_id"] == hospital_id
-    assert "일시 중지" in incident["customer_impact"]
-    assert "마지막으로 승인된" not in incident["customer_impact"]
-    assert "essence" in incident["admin_path"]
+    assert opened == []
+    assert len(recovered) == 1
+    assert recovered[0]["hospital_id"] == hospital_id
+    assert recovered[0]["notify"] is False
 
 
 def test_escalated_snapshot_without_approved_essence_opens_incident(monkeypatch) -> None:

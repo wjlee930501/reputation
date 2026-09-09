@@ -17,7 +17,7 @@ import logging
 import uuid
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import SyncSessionLocal
@@ -105,10 +105,20 @@ def backfill_essence(
 
     for hospital in hospitals:
         approved = db.execute(
-            select(HospitalContentPhilosophy).where(
+            select(HospitalContentPhilosophy)
+            .where(
                 HospitalContentPhilosophy.hospital_id == hospital.id,
-                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+                or_(
+                    HospitalContentPhilosophy.is_base.is_(True),
+                    HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+                ),
             )
+            .order_by(
+                HospitalContentPhilosophy.is_base.desc(),
+                HospitalContentPhilosophy.approved_at.desc().nullslast(),
+                HospitalContentPhilosophy.version.desc(),
+            )
+            .limit(1)
         ).scalar_one_or_none()
 
         item_stmt = select(ContentItem).where(ContentItem.hospital_id == hospital.id)

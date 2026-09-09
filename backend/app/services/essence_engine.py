@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Iterable
 
 import anthropic
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
@@ -1538,10 +1538,20 @@ def screen_content_against_philosophy(
 
 def get_approved_philosophy_sync(db, hospital_id: Any) -> HospitalContentPhilosophy | None:
     result = db.execute(
-        select(HospitalContentPhilosophy).where(
+        select(HospitalContentPhilosophy)
+        .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            or_(
+                HospitalContentPhilosophy.is_base.is_(True),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            ),
         )
+        .order_by(
+            HospitalContentPhilosophy.is_base.desc(),
+            HospitalContentPhilosophy.approved_at.desc().nullslast(),
+            HospitalContentPhilosophy.version.desc(),
+        )
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

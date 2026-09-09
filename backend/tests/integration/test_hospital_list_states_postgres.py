@@ -239,7 +239,7 @@ async def test_list_rows_carry_the_three_states(pg_async_session):
     }
     assert rows[str(preparing.id)]["content_state"] == {
         "kind": "preparing",
-        "remaining": ["schedule", "sources:1", "essence_review"],
+        "remaining": ["schedule"],
     }
 
 
@@ -270,7 +270,8 @@ async def test_list_rows_count_open_exceptions_and_name_the_ae_owner(pg_async_se
 
     rows = await _list_rows(db, actor)
 
-    assert rows[str(excepted.id)]["content_state"]["kind"] == "exception"
+    # 기존 보류 초안과 인시던트가 있어도 승인된 base의 자동 발행은 유지한다.
+    assert rows[str(excepted.id)]["content_state"] == {"kind": "auto", "remaining": []}
     # 원인 묶음 2 + 자동 검수 보류 초안 1 — 현황 화면이 보여줄 카드 수와 같다.
     assert rows[str(excepted.id)]["open_exception_count"] == 3
     assert rows[str(excepted.id)]["ae_owner"] is None

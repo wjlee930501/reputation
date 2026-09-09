@@ -158,6 +158,8 @@ async def test_approve_succeeds_when_every_reference_resolves(pg_async_session):
     result = await _approve_as_verified(pg_async_session, hospital.id, draft.id)
 
     assert result["status"] == PhilosophyStatus.APPROVED.value
+    await pg_async_session.refresh(draft)
+    assert draft.is_base is True
     # 수동 승인도 그 시점의 제외 집합(여기서는 비어 있음)을 함께 기록한다.
     assert draft.evidence_noise_hash == compute_evidence_noise_hash([])
 

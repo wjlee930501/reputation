@@ -75,6 +75,7 @@ def _seed_baseline(pg_session, *, label: str):
         hospital_id=hospital.id,
         version=1,
         status=PhilosophyStatus.APPROVED,
+        is_base=True,
         content_principles=[],
         tone_guidelines=[],
         must_use_messages=[],
@@ -158,6 +159,7 @@ def test_initial_snapshot_is_auto_approved_and_idempotent(pg_session) -> None:
     assert len(approved) == 1
     assert approved[0].version == 1
     assert approved[0].reviewed_by == AUTO_ESSENCE_ACTOR
+    assert approved[0].is_base is True
 
     second = refresh_essence_snapshot(
         pg_session,
@@ -171,7 +173,7 @@ def test_initial_snapshot_is_auto_approved_and_idempotent(pg_session) -> None:
     assert synthesis_calls == 1
 
 
-def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_session) -> None:
+def test_drifted_snapshot_preserves_base_without_synthesis(pg_session) -> None:
     hospital = Hospital(
         id=uuid.uuid4(),
         name="AI 운영 기준 통합테스트 병원",
@@ -204,6 +206,7 @@ def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_sessio
         hospital_id=hospital.id,
         version=1,
         status=PhilosophyStatus.APPROVED,
+        is_base=True,
         positioning_statement=None,
         doctor_voice=None,
         patient_promise=None,
@@ -223,47 +226,20 @@ def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_sessio
     pg_session.add_all([hospital, source, note, previous])
     pg_session.flush()
 
-    def synthesize(_hospital, sources, notes, operator_note=None):
-        assert operator_note is None
-        assert [item.id for item in sources] == [source.id]
-        assert [item.id for item in notes] == [note.id]
-        return {
-            "positioning_statement": "충분한 설명과 개인별 선택지 안내",
-            "doctor_voice": None,
-            "patient_promise": None,
-            "content_principles": [],
-            "tone_guidelines": [],
-            "must_use_messages": [],
-            "avoid_messages": [],
-            "treatment_narratives": [],
-            "local_context": {},
-            "medical_ad_risk_rules": [],
-            "evidence_map": {"positioning_statement": [str(note.id)]},
-            "source_asset_ids": [str(source.id)],
-            "unsupported_gaps": [],
-            "conflict_notes": [],
-            "synthesis_notes": "integration test",
-            "source_snapshot_hash": compute_sources_snapshot_hash(sources),
-        }
-
-    def approve(_hospital, _previous, _candidate, _notes):
-        return EssenceAiReview(
-            decision="APPROVE",
-            confidence=0.98,
-            findings=(),
-            reviewed_evidence_note_ids=(str(note.id),),
-            summary="전체 근거 확인",
-            model="reviewer-test",
-        )
-
+    original_hash = previous.source_snapshot_hash
     first = refresh_essence_snapshot(
         pg_session,
         hospital.id,
-        synthesizer=synthesize,
-        reviewer=approve,
+        synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("drift must not rewrite the base")
+        ),
+        reviewer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("drift must not review the base")
+        ),
     )
 
-    assert first.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert first.status == EssenceRefreshStatus.UP_TO_DATE
+    assert first.philosophy_id == previous.id
     versions = list(
         pg_session.scalars(
             select(HospitalContentPhilosophy)
@@ -271,10 +247,10 @@ def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_sessio
             .order_by(HospitalContentPhilosophy.version)
         )
     )
-    assert [(item.version, item.status) for item in versions] == [
-        (1, PhilosophyStatus.ARCHIVED),
-        (2, PhilosophyStatus.APPROVED),
+    assert [(item.version, item.status, item.is_base) for item in versions] == [
+        (1, PhilosophyStatus.APPROVED, True),
     ]
+    assert previous.source_snapshot_hash == original_hash
 
     second = refresh_essence_snapshot(
         pg_session,
@@ -282,7 +258,9 @@ def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_sessio
         synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("up-to-date replay must not synthesize")
         ),
-        reviewer=approve,
+        reviewer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("drift replay must not review")
+        ),
     )
 
     assert second.status == EssenceRefreshStatus.UP_TO_DATE
@@ -299,7 +277,7 @@ def test_clean_snapshot_atomically_archives_previous_and_is_idempotent(pg_sessio
     assert approved_count == 1
 
 
-def test_low_confidence_escalation_preserves_approval_and_reuses_one_draft(pg_session) -> None:
+def test_existing_base_skips_low_confidence_review_and_creates_no_draft(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="escalation")
     hospital_id = hospital.id
     synth_calls = 0
@@ -332,9 +310,9 @@ def test_low_confidence_escalation_preserves_approval_and_reuses_one_draft(pg_se
         reviewer=uncertain,
     )
 
-    assert first.status == EssenceRefreshStatus.ESCALATED
-    assert second.status == EssenceRefreshStatus.ESCALATED
-    assert synth_calls == 2
+    assert first.status == EssenceRefreshStatus.UP_TO_DATE
+    assert second.status == EssenceRefreshStatus.UP_TO_DATE
+    assert synth_calls == 0
     records = list(
         pg_session.scalars(
             select(HospitalContentPhilosophy).where(
@@ -343,7 +321,7 @@ def test_low_confidence_escalation_preserves_approval_and_reuses_one_draft(pg_se
         )
     )
     assert sum(item.status == PhilosophyStatus.APPROVED for item in records) == 1
-    assert sum(item.status == PhilosophyStatus.DRAFT for item in records) == 1
+    assert sum(item.status == PhilosophyStatus.DRAFT for item in records) == 0
     assert (
         pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
     )
@@ -351,6 +329,8 @@ def test_low_confidence_escalation_preserves_approval_and_reuses_one_draft(pg_se
 
 def test_forbidden_candidate_is_resynthesized_once_then_auto_approved(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="bounded-remediation")
+    pg_session.delete(previous)
+    pg_session.flush()
     operator_notes: list[str | None] = []
 
     def synthesize(*_args, operator_note=None, **_kwargs):
@@ -376,13 +356,13 @@ def test_forbidden_candidate_is_resynthesized_once_then_auto_approved(pg_session
     assert len(operator_notes) == 2
     assert operator_notes[0] is None
     assert "의료광고 금지 표현" in str(operator_notes[1])
-    assert (
-        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.ARCHIVED
-    )
+    assert pg_session.get(HospitalContentPhilosophy, result.philosophy_id).is_base is True
 
 
 def test_independent_review_finding_drives_one_fresh_synthesis(pg_session) -> None:
-    hospital, source, note, _previous = _seed_baseline(pg_session, label="review-remediation")
+    hospital, source, note, previous = _seed_baseline(pg_session, label="review-remediation")
+    pg_session.delete(previous)
+    pg_session.flush()
     operator_notes: list[str | None] = []
     review_calls = 0
 
@@ -418,7 +398,7 @@ def test_independent_review_finding_drives_one_fresh_synthesis(pg_session) -> No
     assert "환자 선택지 설명이 근거보다 넓습니다." in str(operator_notes[1])
 
 
-def test_refresh_carries_forward_current_grounded_approved_core(pg_session) -> None:
+def test_refresh_never_rewrites_current_grounded_approved_core(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="carry-forward")
     previous.positioning_statement = "충분한 설명과 환자별 선택지 안내"
     previous.must_use_messages = ["환자 상태에 맞춰 선택지를 안내합니다."]
@@ -433,27 +413,28 @@ def test_refresh_carries_forward_current_grounded_approved_core(pg_session) -> N
     }
     pg_session.flush()
 
-    candidate_seen: dict = {}
-
-    def review(_hospital, _previous, candidate, _notes):
-        candidate_seen.update(candidate)
-        return _approved_review(note)
-
     result = refresh_essence_snapshot(
         pg_session,
         hospital.id,
-        synthesizer=lambda *_args, **_kwargs: _candidate_payload(source, note),
-        reviewer=review,
+        synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("base drift must not synthesize")
+        ),
+        reviewer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("base drift must not review")
+        ),
     )
 
-    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
-    assert candidate_seen["positioning_statement"] == "충분한 설명과 환자별 선택지 안내"
-    assert candidate_seen["must_use_messages"] == ["환자 상태에 맞춰 선택지를 안내합니다."]
-    assert candidate_seen["content_principles"] == ["환자 상태에 따라 설명합니다."]
-    assert candidate_seen["evidence_map"]["positioning_statement"] == [str(note.id)]
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
+    stored = pg_session.get(HospitalContentPhilosophy, previous.id)
+    assert stored.positioning_statement == "충분한 설명과 환자별 선택지 안내"
+    assert stored.must_use_messages == ["환자 상태에 맞춰 선택지를 안내합니다."]
+    assert stored.content_principles == [
+        "완치와 성공률 표현을 사용하지 않습니다.",
+        "환자 상태에 따라 설명합니다.",
+    ]
 
 
-def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session) -> None:
+def test_existing_base_leaves_legacy_automatic_draft_unchanged(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="legacy-auto-draft")
     legacy_payload = _candidate_payload(source, note)
     legacy = HospitalContentPhilosophy(
@@ -475,7 +456,7 @@ def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session
     pg_session.flush()
 
     assert legacy.created_at == legacy.updated_at
-    assert essence_refresh_needed(pg_session, hospital.id) is True
+    assert essence_refresh_needed(pg_session, hospital.id) is False
     result = refresh_essence_snapshot(
         pg_session,
         hospital.id,
@@ -483,13 +464,13 @@ def test_legacy_automatic_draft_is_superseded_only_after_fresh_review(pg_session
         reviewer=lambda *_args, **_kwargs: _approved_review(note),
     )
 
-    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
-    assert result.synthesis_attempts == 1
-    assert pg_session.get(HospitalContentPhilosophy, legacy.id).status == PhilosophyStatus.ARCHIVED
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
+    assert result.synthesis_attempts == 0
+    assert pg_session.get(HospitalContentPhilosophy, legacy.id).status == PhilosophyStatus.DRAFT
     assert (
-        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.ARCHIVED
+        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
     )
-    assert pg_session.get(HospitalContentPhilosophy, result.philosophy_id).version == 3
+    assert result.philosophy_id == previous.id
 
 
 def test_operator_touched_automatic_draft_is_never_superseded(pg_session) -> None:
@@ -521,7 +502,7 @@ def test_operator_touched_automatic_draft_is_never_superseded(pg_session) -> Non
         reviewer=lambda *_args, **_kwargs: _approved_review(note),
     )
 
-    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
     assert pg_session.get(HospitalContentPhilosophy, draft.id).status == PhilosophyStatus.DRAFT
     assert (
         pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
@@ -530,6 +511,8 @@ def test_operator_touched_automatic_draft_is_never_superseded(pg_session) -> Non
 
 def test_persistent_candidate_failure_stops_periodic_retry_loop(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="persistent-failure")
+    pg_session.delete(previous)
+    pg_session.flush()
     synth_calls = 0
 
     def still_forbidden(*_args, **_kwargs):
@@ -568,9 +551,7 @@ def test_persistent_candidate_failure_stops_periodic_retry_loop(pg_session) -> N
     )
     assert second.status == EssenceRefreshStatus.ESCALATED
     assert synth_calls == 2
-    assert (
-        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
-    )
+    assert pg_session.get(HospitalContentPhilosophy, previous.id) is None
 
 
 def test_manual_same_snapshot_draft_is_never_superseded(pg_session) -> None:
@@ -595,27 +576,29 @@ def test_manual_same_snapshot_draft_is_never_superseded(pg_session) -> None:
         reviewer=lambda *_args, **_kwargs: _approved_review(note),
     )
 
-    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
     assert pg_session.get(HospitalContentPhilosophy, manual.id).status == PhilosophyStatus.DRAFT
     assert (
         pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
     )
 
 
-def test_reviewer_exception_creates_no_draft_and_preserves_previous_approval(pg_session) -> None:
+def test_existing_base_never_calls_reviewer_and_preserves_approval(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="provider-error")
 
     def unavailable(*_args, **_kwargs):
         raise RuntimeError("review provider unavailable")
 
-    with pytest.raises(RuntimeError, match="review provider unavailable"):
-        refresh_essence_snapshot(
-            pg_session,
-            hospital.id,
-            synthesizer=lambda *_args, **_kwargs: _candidate_payload(source, note),
-            reviewer=unavailable,
-        )
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("existing base must not synthesize")
+        ),
+        reviewer=unavailable,
+    )
 
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
     records = list(
         pg_session.scalars(
             select(HospitalContentPhilosophy).where(
@@ -630,6 +613,8 @@ def test_reviewer_exception_creates_no_draft_and_preserves_previous_approval(pg_
 
 def test_draft_created_during_review_is_never_approved_with_another_payload(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="draft-race")
+    pg_session.delete(previous)
+    pg_session.flush()
     external_draft_id = uuid.uuid4()
 
     def create_competing_draft(*_args, **_kwargs):
@@ -665,9 +650,7 @@ def test_draft_created_during_review_is_never_approved_with_another_payload(pg_s
     assert result.status == EssenceRefreshStatus.ESCALATED
     assert result.philosophy_id == external_draft_id
     assert "별도 초안" in result.findings[0]
-    assert (
-        pg_session.get(HospitalContentPhilosophy, previous.id).status == PhilosophyStatus.APPROVED
-    )
+    assert pg_session.get(HospitalContentPhilosophy, previous.id) is None
     assert (
         pg_session.get(HospitalContentPhilosophy, external_draft_id).status
         == PhilosophyStatus.DRAFT
@@ -678,6 +661,7 @@ def test_source_change_during_review_aborts_promotion(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="source-race")
     hospital_id = hospital.id
     previous_id = previous.id
+    pg_session.delete(previous)
     pg_session.commit()
 
     def mutate_source(*_args, **_kwargs):
@@ -707,13 +691,11 @@ def test_source_change_during_review_aborts_promotion(pg_session) -> None:
             )
         )
     )
-    assert [(item.id, item.status) for item in records] == [
-        (previous_id, PhilosophyStatus.APPROVED)
-    ]
+    assert records == []
+    assert pg_session.get(HospitalContentPhilosophy, previous_id) is None
 
 
-def test_marking_a_note_as_noise_requests_refresh_but_keeps_public_baseline(pg_session) -> None:
-    """H-02: 노이즈 제외 → 재검수 필요 + 엄격 current 없음, 공개 근거는 유지."""
+def test_marking_a_note_as_noise_keeps_base_without_refresh(pg_session) -> None:
     hospital, source, note, approved = _seed_baseline(pg_session, label="noise")
     # 제외 후에도 합성할 근거가 남아 있어야 재검수가 의미 있다.
     remaining = HospitalSourceEvidenceNote(
@@ -735,26 +717,21 @@ def test_marking_a_note_as_noise_requests_refresh_but_keeps_public_baseline(pg_s
     note.note_metadata = {**(note.note_metadata or {}), "is_noise": True}
     pg_session.commit()
 
-    assert essence_refresh_needed(pg_session, hospital.id) is True
+    assert essence_refresh_needed(pg_session, hospital.id) is False
     readiness = get_essence_readiness_sync(pg_session, hospital.id)
-    assert readiness.current is None
+    assert readiness.current is not None and readiness.current.id == approved.id
     assert readiness.public_philosophy is not None and readiness.public_philosophy.id == approved.id
 
 
-def test_legacy_approval_without_noise_hash_is_refreshed_once(pg_session) -> None:
+def test_legacy_approval_without_noise_hash_keeps_base(pg_session) -> None:
     hospital, source, note, approved = _seed_baseline(pg_session, label="legacy-null")
     approved.source_snapshot_hash = compute_sources_snapshot_hash([source])
     approved.evidence_noise_hash = None
     pg_session.commit()
-    assert essence_refresh_needed(pg_session, hospital.id) is True
+    assert essence_refresh_needed(pg_session, hospital.id) is False
 
 
-def test_noise_only_change_refreshes_and_stores_hash_then_settles(pg_session) -> None:
-    """노이즈-only 변경도 실제로 승인까지 가고, 두 번째 preflight에서 멈춘다.
-
-    자료 snapshot은 그대로이므로, 승인 블록이 자료 hash만 비교하면 UP_TO_DATE로 돌아가
-    `evidence_noise_hash`가 끝내 기록되지 않고 15분마다 유료 합성이 반복된다(H-02).
-    """
+def test_noise_only_change_does_not_churn_base(pg_session) -> None:
     hospital, source, noise_note, approved = _seed_baseline(pg_session, label="noise-only")
     # 제외 후에도 합성할 근거가 남아 있어야 재검수가 의미 있다.
     remaining = HospitalSourceEvidenceNote(
@@ -774,7 +751,7 @@ def test_noise_only_change_refreshes_and_stores_hash_then_settles(pg_session) ->
 
     noise_note.note_metadata = {**(noise_note.note_metadata or {}), "is_noise": True}
     pg_session.commit()
-    assert essence_refresh_needed(pg_session, hospital.id) is True
+    assert essence_refresh_needed(pg_session, hospital.id) is False
 
     synthesized_note_ids: list[str] = []
     reviewed_note_ids: list[str] = []
@@ -794,27 +771,23 @@ def test_noise_only_change_refreshes_and_stores_hash_then_settles(pg_session) ->
         reviewer=_review,
     )
 
-    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
     stored = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
-    assert stored.evidence_noise_hash == compute_evidence_noise_hash([noise_note.id])
+    assert stored.id == approved.id
+    assert stored.evidence_noise_hash == compute_evidence_noise_hash([])
     pg_session.refresh(approved)
-    assert approved.status == PhilosophyStatus.ARCHIVED
-    # 제외한 주장은 합성에도 검수에도 들어가지 않는다.
-    assert str(noise_note.id) not in synthesized_note_ids
-    assert str(noise_note.id) not in reviewed_note_ids
-    assert str(remaining.id) in synthesized_note_ids
-    assert str(remaining.id) in reviewed_note_ids
-    # 다음 preflight가 가라앉아야 15분 주기 재합성 루프가 아니다.
+    assert approved.status == PhilosophyStatus.APPROVED
+    assert synthesized_note_ids == []
+    assert reviewed_note_ids == []
     assert essence_refresh_needed(pg_session, hospital.id) is False
 
 
-def test_legacy_null_hash_refreshes_once_and_settles(pg_session) -> None:
-    """컬럼 이전 승인(NULL)은 한 번 재검수해 실제 값을 쓰고 그 다음엔 조용해진다."""
+def test_legacy_null_hash_stays_audit_metadata_without_refresh(pg_session) -> None:
     hospital, source, note, approved = _seed_baseline(pg_session, label="legacy-null-settle")
     approved.source_snapshot_hash = compute_sources_snapshot_hash([source])
     approved.evidence_noise_hash = None
     pg_session.commit()
-    assert essence_refresh_needed(pg_session, hospital.id) is True
+    assert essence_refresh_needed(pg_session, hospital.id) is False
 
     result = refresh_essence_snapshot(
         pg_session,
@@ -823,9 +796,9 @@ def test_legacy_null_hash_refreshes_once_and_settles(pg_session) -> None:
         reviewer=lambda *_args, **_kwargs: _approved_review(note),
     )
 
-    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    assert result.status == EssenceRefreshStatus.UP_TO_DATE
     stored = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
-    assert stored.evidence_noise_hash == compute_evidence_noise_hash([])
+    assert stored.evidence_noise_hash is None
     pg_session.refresh(approved)
-    assert approved.status == PhilosophyStatus.ARCHIVED
+    assert approved.status == PhilosophyStatus.APPROVED
     assert essence_refresh_needed(pg_session, hospital.id) is False

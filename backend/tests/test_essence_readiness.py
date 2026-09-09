@@ -36,7 +36,7 @@ def _source(*, status=SourceStatus.PROCESSED, source_type=SourceType.HOMEPAGE, h
     )
 
 
-def test_current_approved_requires_exact_complete_source_snapshot():
+def test_current_base_reports_matching_approval_snapshot_as_fresh():
     source = _source()
     philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([source]))
     readiness = resolve_essence_readiness(philosophy, [source])
@@ -45,31 +45,31 @@ def test_current_approved_requires_exact_complete_source_snapshot():
     assert readiness.is_fresh is True
 
 
-def test_new_pending_text_source_immediately_makes_approval_stale():
+def test_new_pending_text_source_keeps_base_current_while_freshness_is_stale():
     processed = _source()
     pending = _source(status=SourceStatus.PENDING)
     philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([processed]))
     readiness = resolve_essence_readiness(philosophy, [processed, pending])
-    assert readiness.current is None
+    assert readiness.current is philosophy
     assert readiness.public_philosophy is philosophy
     assert readiness.is_fresh is False
     assert readiness.is_stale is True
     assert readiness.has_unprocessed_sources is True
 
 
-def test_changed_processed_snapshot_blocks_writes_and_public_reads():
+def test_changed_processed_snapshot_keeps_base_for_writes_and_public_reads():
     original = _source()
     philosophy = SimpleNamespace(source_snapshot_hash=compute_sources_snapshot_hash([original]))
     changed = _source()
 
     readiness = resolve_essence_readiness(philosophy, [original, changed])
 
-    assert readiness.current is None
-    assert readiness.public_philosophy is None
+    assert readiness.current is philosophy
+    assert readiness.public_philosophy is philosophy
     assert readiness.is_stale is True
 
 
-def test_absorbed_new_processed_source_keeps_public_on_intact_approved_baseline():
+def test_absorbed_new_processed_source_keeps_base_current():
     original = _source()
     new = _source()
     philosophy = SimpleNamespace(
@@ -79,7 +79,7 @@ def test_absorbed_new_processed_source_keeps_public_on_intact_approved_baseline(
 
     readiness = resolve_essence_readiness(philosophy, [original, new])
 
-    assert readiness.current is None
+    assert readiness.current is philosophy
     assert readiness.public_philosophy is philosophy
     assert readiness.is_fresh is False
     assert readiness.is_stale is True
@@ -92,6 +92,8 @@ def _approved_row(
     *,
     evidence_noise_hash=None,
     hospital_id=None,
+    is_base=False,
+    version=1,
 ):
     """SQLAlchemy Row처럼 이름으로 읽히는 승인 행 — 판정 함수가 컬럼 이름으로 읽는다."""
     return SimpleNamespace(
@@ -100,6 +102,9 @@ def _approved_row(
         source_snapshot_hash=source_snapshot_hash,
         source_asset_ids=source_asset_ids,
         evidence_noise_hash=evidence_noise_hash,
+        is_base=is_base,
+        approved_at=None,
+        version=version,
     )
 
 
@@ -194,7 +199,7 @@ async def test_batched_public_ids_judge_each_hospital_like_the_single_lookup():
 
     batched = await get_public_approved_philosophy_ids(db, [fresh_hospital, stale_hospital])
 
-    assert batched == {fresh_hospital: fresh_id, stale_hospital: None}
+    assert batched == {fresh_hospital: fresh_id, stale_hospital: stale_id}
     assert db.query_count == 2
     assert (
         await get_public_approved_philosophy_id(
@@ -219,7 +224,32 @@ async def test_batched_public_ids_read_nothing_for_an_empty_hospital_set():
 
 
 @pytest.mark.asyncio
-async def test_lightweight_ids_split_strict_write_from_intact_public_baseline():
+async def test_batched_public_ids_prefer_flagged_base_over_rolling_approved_fallback():
+    hospital_id = uuid.uuid4()
+    base_id, rolling_id = uuid.uuid4(), uuid.uuid4()
+    source = _source(hospital_id=hospital_id)
+    snapshot = compute_sources_snapshot_hash([source])
+    rolling = _approved_row(
+        rolling_id, snapshot, [source.id], hospital_id=hospital_id, version=2
+    )
+    base = _approved_row(
+        base_id,
+        "approval-time-snapshot",
+        [source.id],
+        hospital_id=hospital_id,
+        is_base=True,
+        version=1,
+    )
+    # Deliberately reverse SQL ordering: Python selection must still protect the base.
+    db = _AsyncBatchReadinessDB([rolling, base], [source])
+
+    assert await get_public_approved_philosophy_ids(db, [hospital_id]) == {
+        hospital_id: base_id
+    }
+
+
+@pytest.mark.asyncio
+async def test_lightweight_ids_keep_base_during_pending_source_processing():
     approved_id = uuid.uuid4()
     original = _source()
     pending = _source(status=SourceStatus.PENDING)
@@ -227,12 +257,12 @@ async def test_lightweight_ids_split_strict_write_from_intact_public_baseline():
     source_rows = [original, pending]
     db = _AsyncReadinessDB(approved_row, source_rows)
 
-    assert await get_current_approved_philosophy_id(db, uuid.uuid4()) is None
+    assert await get_current_approved_philosophy_id(db, uuid.uuid4()) == approved_id
     assert await get_public_approved_philosophy_id(db, uuid.uuid4()) == approved_id
 
 
 @pytest.mark.asyncio
-async def test_lightweight_public_id_rejects_changed_approved_baseline():
+async def test_lightweight_public_id_keeps_drifted_base():
     approved_id = uuid.uuid4()
     original = _source()
     approved_row = _approved_row(approved_id, compute_sources_snapshot_hash([original]), [original.id])
@@ -240,11 +270,10 @@ async def test_lightweight_public_id_rejects_changed_approved_baseline():
     changed.content_hash = "changed"
     db = _AsyncReadinessDB(approved_row, [changed])
 
-    assert await get_public_approved_philosophy_id(db, uuid.uuid4()) is None
+    assert await get_public_approved_philosophy_id(db, uuid.uuid4()) == approved_id
 
 
-def test_excluding_a_note_makes_strict_current_stale_but_keeps_public_baseline():
-    """H-02: 운영자가 뺀 주장으로 새 글을 만들면 안 되지만, 기존 공개 글의 근거는 그대로다."""
+def test_excluding_a_note_keeps_base_current_and_records_stale_metadata():
     source = _source()
     approved = SimpleNamespace(
         source_snapshot_hash=compute_sources_snapshot_hash([source]),
@@ -256,7 +285,7 @@ def test_excluding_a_note_makes_strict_current_stale_but_keeps_public_baseline()
         approved, [source], excluded_note_hash=compute_evidence_noise_hash([uuid.uuid4()])
     )
 
-    assert readiness.current is None
+    assert readiness.current is approved
     assert readiness.public_philosophy is approved
     assert readiness.is_stale is True
 
@@ -292,8 +321,7 @@ def test_legacy_approval_without_noise_hash_is_not_stale_by_noise():
 
 
 @pytest.mark.asyncio
-async def test_lightweight_strict_id_rejects_a_changed_noise_set():
-    """근거에서 뺀 노트 집합이 승인 이후 달라지면 생성 게이트만 닫히고 공개 baseline은 남는다."""
+async def test_lightweight_id_keeps_base_after_changed_noise_set():
     approved_id = uuid.uuid4()
     original = _source()
     approved_row = _approved_row(
@@ -304,7 +332,7 @@ async def test_lightweight_strict_id_rejects_a_changed_noise_set():
     )
     db = _AsyncReadinessDB(approved_row, [original], noise_rows=[uuid.uuid4()])
 
-    assert await get_current_approved_philosophy_id(db, uuid.uuid4()) is None
+    assert await get_current_approved_philosophy_id(db, uuid.uuid4()) == approved_id
     assert await get_public_approved_philosophy_id(db, uuid.uuid4()) == approved_id
 
 
@@ -416,8 +444,8 @@ async def test_batched_states_judge_current_like_the_single_lookup():
 
     assert db.query_count == 4
     assert states[fresh].current is True
-    assert states[stale].current is False
-    assert states[waiting].current is False
+    assert states[stale].current is True
+    assert states[waiting].current is True
     assert states[waiting].unprocessed_sources == 1
     assert states[fresh].unprocessed_sources == 0
     assert all(state.escalated_draft is False for state in states.values())

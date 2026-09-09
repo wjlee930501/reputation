@@ -17,7 +17,15 @@ from app.services.essence_engine import (
     build_monthly_essence_summary,
     compute_sources_snapshot_hash,
 )
-from app.services.essence_readiness import get_essence_readiness
+from app.services.essence_readiness import (
+    get_current_approved_philosophy_id,
+    get_essence_readiness,
+    get_essence_readiness_states,
+    get_essence_readiness_sync,
+    get_public_approved_philosophy_id,
+    get_public_approved_philosophy_ids,
+    get_public_essence_readiness,
+)
 from app.services.evidence_noise import compute_evidence_noise_hash
 
 
@@ -90,7 +98,48 @@ async def test_url_only_source_becomes_required_once_it_has_text(pg_async_sessio
     await pg_async_session.commit()
     readiness = await get_essence_readiness(pg_async_session, hospital.id)
     assert readiness.required_source_count == 2
-    assert readiness.current is None
+    assert readiness.current is not None and readiness.current.id == approved.id
+    assert readiness.has_unprocessed_sources is True
+    assert readiness.is_stale is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_approved_fallback", [False, True])
+async def test_archived_base_is_never_current_even_with_legacy_flag(
+    pg_async_session, with_approved_fallback
+):
+    """An old worker may archive a base without clearing is_base during rollout."""
+    db = pg_async_session
+    hospital, archived, _url_only = await _seed(db)
+    archived.is_base = True
+    archived.status = PhilosophyStatus.ARCHIVED
+    fallback = None
+    if with_approved_fallback:
+        fallback = HospitalContentPhilosophy(
+            hospital_id=hospital.id,
+            version=2,
+            status=PhilosophyStatus.APPROVED,
+            is_base=False,
+            source_asset_ids=archived.source_asset_ids,
+            source_snapshot_hash=archived.source_snapshot_hash,
+            evidence_noise_hash=archived.evidence_noise_hash,
+        )
+        db.add(fallback)
+    await db.flush()
+    expected_id = fallback.id if fallback is not None else None
+
+    readiness = await get_essence_readiness(db, hospital.id)
+    assert readiness.current is fallback
+    assert readiness.public_philosophy is fallback
+    assert (await db.run_sync(get_essence_readiness_sync, hospital.id)).current is fallback
+    assert await get_public_essence_readiness(db, hospital.id) is fallback
+    assert await get_current_approved_philosophy_id(db, hospital.id) == expected_id
+    assert await get_public_approved_philosophy_id(db, hospital.id) == expected_id
+    assert await get_public_approved_philosophy_ids(db, [hospital.id]) == {
+        hospital.id: expected_id
+    }
+    states = await get_essence_readiness_states(db, [hospital.id])
+    assert states[hospital.id].current is with_approved_fallback
 
 
 @pytest.mark.asyncio

@@ -362,12 +362,7 @@ MORNING_CLOSE_START = time(7, 45)
 
 
 def _generation_philosophy_sync(db, hospital_id: uuid.UUID) -> HospitalContentPhilosophy | None:
-    """Use only an approval for the complete current processed-source snapshot.
-
-    Source ingestion automatically processes and reviews a new snapshot. During
-    that bounded refresh, generation pauses without a per-item notification and
-    resumes when the new snapshot is auto-approved.
-    """
+    """Use the stable BaseEssence; source/noise drift is not a write gate."""
 
     readiness = get_essence_readiness_sync(db, hospital_id)
     return readiness.current
@@ -2628,13 +2623,12 @@ def _cost_guarded_essence_review(
     time_limit=840,
 )
 def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
-    """Build and independently review an initial or changed Essence snapshot."""
+    """Build and independently review an initial BaseEssence."""
 
     require_dispatch(self, "auto-review-essence-snapshot", hospital_id)
     hospital_uuid = uuid.UUID(hospital_id)
     hospital_name = "병원"
     hospital_slug: str | None = None
-    hospital_status: HospitalStatus | None = None
     refresh_claim_token = (
         f"{str(self.request.id or uuid.uuid4())}:retry:{int(self.request.retries or 0)}"
     )
@@ -2644,7 +2638,6 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
             if hospital is not None:
                 hospital_name = hospital.name
                 hospital_slug = hospital.slug
-                hospital_status = getattr(hospital, "status", None)
             result = refresh_essence_snapshot(
                 db,
                 hospital_uuid,
@@ -2669,7 +2662,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 incident_type="ESSENCE_AUTO_REVIEW_COST_BLOCKED",
                 safe_error_code="COST_BLOCKED",
                 problem="AI 운영 기준 자동 검수가 비용 가드로 보류되었습니다.",
-                customer_impact="새 자료의 자동 검수가 끝날 때까지 콘텐츠 생성과 발행이 일시 중지됩니다.",
+                customer_impact="초기 운영 기준 검수가 끝날 때까지 콘텐츠 생성과 발행이 중지됩니다.",
                 next_action="비용 가드가 해제되면 정기 복구가 자동으로 다시 시도합니다.",
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
@@ -2699,7 +2692,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 incident_type="ESSENCE_AUTO_REVIEW_FAILED",
                 safe_error_code="ESSENCE_AUTO_REVIEW_FAILED",
                 problem="AI 운영 기준 자동 검수를 완료하지 못했습니다.",
-                customer_impact="새 자료의 자동 검수가 끝날 때까지 콘텐츠 생성과 발행이 일시 중지됩니다.",
+                customer_impact="초기 운영 기준 검수가 끝날 때까지 콘텐츠 생성과 발행이 중지됩니다.",
                 next_action="운영센터에서 자동 생성된 초안과 근거 자료를 확인해 주세요.",
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
@@ -2753,32 +2746,6 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 admin_path=f"/hospitals/{hospital_id}/essence",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
-            )
-        )
-    elif result.status == EssenceRefreshStatus.ESCALATED and hospital_status == HospitalStatus.ACTIVE:
-        # 자동 심사로 해결되지 않은 활성 병원의 예외만 스냅샷 해시 단위로 1건 연다.
-        snapshot = result.snapshot_hash or "unknown"
-        _run_async(
-            open_ops_incident(
-                pipeline="essence_auto_review",
-                object_type="essence_snapshot",
-                object_id=f"{hospital_id}:{snapshot}",
-                incident_type="ESSENCE_AUTO_REVIEW_ESCALATED",
-                safe_error_code="ESSENCE_AUTO_REVIEW_ESCALATED",
-                problem=(
-                    result.findings[0]
-                    if result.findings
-                    else "AI 근거 검수가 새 자료 반영을 보류했습니다."
-                ),
-                customer_impact="이 예외가 해결될 때까지 콘텐츠 생성과 발행이 일시 중지됩니다.",
-                next_action="운영센터 Essence 페이지에서 보류된 예외를 확인해 주세요.",
-                source_type="ESSENCE_AUTO_REVIEW",
-                hospital_name=hospital_name,
-                hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/essence",
-                fingerprint=IncidentFingerprint.VALIDATION_FAILED,
-                actor=AUTO_ESSENCE_ACTOR,
-                severity=IncidentSeverity.MEDIUM,
             )
         )
     elif result.status in {

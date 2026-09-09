@@ -1,4 +1,4 @@
-"""AI-assisted approval and refresh of a source-backed Essence snapshot."""
+"""AI-assisted initial BaseEssence approval with drift-safe source absorption."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from enum import StrEnum
 from typing import Any, Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -250,24 +250,6 @@ def _status_value(value: object) -> str:
     return str(enum_value(value) or "")
 
 
-def _noise_hash_matches(
-    db: Session,
-    hospital_id: uuid.UUID,
-    previous: HospitalContentPhilosophy,
-) -> bool:
-    """저장된 노이즈 집합 hash가 현재와 같은가.
-
-    NULL(컬럼 이전 승인)은 readiness에서는 관대하게(생성 차단 없음) 다루지만, 여기서는
-    **한 번 재검수해 실제 값을 쓰도록** False를 돌려준다 — 그러지 않으면 기존 병원은
-    자료가 바뀔 때까지 노이즈 제외가 승인에 반영되지 않는 H-02 구멍이 그대로 남는다.
-    운영 병원 수만큼 1회성 유료 재검수가 발생한다.
-    """
-    stored = getattr(previous, "evidence_noise_hash", None)
-    if stored is None:
-        return False
-    return stored == load_evidence_noise_hash_sync(db, hospital_id)
-
-
 def _required_sources(db: Session, hospital_id: uuid.UUID) -> list[HospitalSourceAsset]:
     return list(
         db.execute(
@@ -288,8 +270,17 @@ def _approved(db: Session, hospital_id: uuid.UUID) -> HospitalContentPhilosophy 
         select(HospitalContentPhilosophy)
         .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            or_(
+                HospitalContentPhilosophy.is_base.is_(True),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            ),
         )
+        .order_by(
+            HospitalContentPhilosophy.is_base.desc(),
+            HospitalContentPhilosophy.approved_at.desc().nullslast(),
+            HospitalContentPhilosophy.version.desc(),
+        )
+        .limit(1)
         .with_for_update()
     )
 
@@ -298,10 +289,20 @@ def _approved_unlocked(db: Session, hospital_id: uuid.UUID) -> HospitalContentPh
     """Read-only reconciliation lookup; correctness is rechecked under lock later."""
 
     return db.scalar(
-        select(HospitalContentPhilosophy).where(
+        select(HospitalContentPhilosophy)
+        .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            or_(
+                HospitalContentPhilosophy.is_base.is_(True),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            ),
         )
+        .order_by(
+            HospitalContentPhilosophy.is_base.desc(),
+            HospitalContentPhilosophy.approved_at.desc().nullslast(),
+            HospitalContentPhilosophy.version.desc(),
+        )
+        .limit(1)
     )
 
 
@@ -1201,21 +1202,19 @@ def _rescreen_content(
 
 
 def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
-    """Cheap lock-free preflight; the worker rechecks every fact under its lock."""
+    """Return whether a hospital with no BaseEssence can complete onboarding."""
 
     previous = _approved_unlocked(db, hospital_id)
+    # A stable base absorbs ordinary source/noise drift. Re-synthesis is reserved
+    # for an explicit re-onboarding workflow, never scheduled reconciliation.
+    if previous is not None:
+        return False
     sources = _required_sources(db, hospital_id)
     if not sources or any(
         _status_value(source.status) != SourceStatus.PROCESSED.value for source in sources
     ):
         return False
     snapshot_hash = compute_sources_snapshot_hash(sources)
-    if (
-        previous is not None
-        and previous.source_snapshot_hash == snapshot_hash
-        and _noise_hash_matches(db, hospital_id, previous)
-    ):
-        return False
     existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
     if existing_drafts:
         # A legacy automatic escalation gets exactly one recovery cycle after this
@@ -1238,7 +1237,7 @@ def refresh_essence_snapshot(
     reviewer: Callable[..., EssenceAiReview] = review_essence_candidate,
     claim_token: str | None = None,
 ) -> EssenceRefreshResult:
-    """Approve a snapshot with provider work outside the hospital transaction lock."""
+    """Create an initial BaseEssence; existing bases only absorb source drift."""
 
     acquire_hospital_advisory_lock_sync(db, hospital_id)
     hospital = db.get(Hospital, hospital_id)
@@ -1247,6 +1246,22 @@ def refresh_essence_snapshot(
     previous = _approved(db, hospital_id)
 
     sources = _required_sources(db, hospital_id)
+    if previous is not None:
+        processed_sources = [
+            source
+            for source in sources
+            if _status_value(source.status) == SourceStatus.PROCESSED.value
+        ]
+        # This is the observed source snapshot, not a mutation of the base's
+        # approval-time source_snapshot_hash metadata.
+        snapshot_hash = compute_sources_snapshot_hash(processed_sources)
+        return EssenceRefreshResult(
+            EssenceRefreshStatus.UP_TO_DATE,
+            hospital_id,
+            snapshot_hash=snapshot_hash,
+            philosophy_id=previous.id,
+            previous_philosophy_id=previous.id,
+        )
     if not sources or any(
         _status_value(source.status) != SourceStatus.PROCESSED.value for source in sources
     ):
@@ -1258,19 +1273,6 @@ def refresh_essence_snapshot(
     snapshot_hash = compute_sources_snapshot_hash(sources)
     # 자료 snapshot과 같은 잠금 안에서 읽어야 CAS가 성립한다.
     noise_hash = load_evidence_noise_hash_sync(db, hospital_id)
-    if (
-        previous is not None
-        and previous.source_snapshot_hash == snapshot_hash
-        and _noise_hash_matches(db, hospital_id, previous)
-    ):
-        return EssenceRefreshResult(
-            EssenceRefreshStatus.UP_TO_DATE,
-            hospital_id,
-            snapshot_hash=snapshot_hash,
-            philosophy_id=previous.id,
-            previous_philosophy_id=previous.id,
-        )
-
     existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
     retryable_auto_draft: HospitalContentPhilosophy | None = None
     if existing_drafts:
@@ -1454,13 +1456,9 @@ def refresh_essence_snapshot(
         # Archive first and flush before promotion to satisfy the one-APPROVED partial
         # unique index. The hospital lock + APPROVED row lock serialize competitors.
         current_previous = _approved(db, hospital_id)
-        # 자료 hash만 같다고 UP_TO_DATE로 돌아가면 노이즈-only 변경·NULL 승인은 영원히
-        # 승인되지 않고 15분마다 유료 합성이 반복된다.
-        if (
-            current_previous is not None
-            and current_previous.source_snapshot_hash == snapshot_hash
-            and _noise_hash_matches(db, hospital_id, current_previous)
-        ):
+        # Another onboarding approval won while provider work was in flight. Its
+        # stable base always wins; never replace it with this stale candidate.
+        if current_previous is not None:
             _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
             db.commit()
             return EssenceRefreshResult(
@@ -1494,6 +1492,7 @@ def refresh_essence_snapshot(
             current_previous.status = PhilosophyStatus.ARCHIVED
             db.flush()
         candidate.status = PhilosophyStatus.APPROVED
+        candidate.is_base = True
         candidate.evidence_noise_hash = noise_hash
         candidate.reviewed_by = AUTO_ESSENCE_ACTOR
         candidate.approved_at = datetime.now(timezone.utc)

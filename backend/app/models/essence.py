@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     DateTime,
     Enum,
@@ -204,6 +205,13 @@ class HospitalContentPhilosophy(Base):
             unique=True,
             postgresql_where=text("status = 'APPROVED'"),
         ),
+        Index(
+            "uq_hospital_content_philosophies_one_base",
+            "hospital_id",
+            unique=True,
+            postgresql_where=text("is_base"),
+            sqlite_where=text("is_base = 1"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -214,6 +222,12 @@ class HospitalContentPhilosophy(Base):
         Enum(PhilosophyStatus, name="hospital_philosophy_status"),
         default=PhilosophyStatus.DRAFT,
         nullable=False,
+    )
+    # Stable generation/publication anchor. Source snapshot hashes remain approval-time
+    # audit metadata and never clear or replace this flag; only onboarding/re-onboarding
+    # approval moves it to another philosophy.
+    is_base: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
     )
 
     positioning_statement: Mapped[str | None] = mapped_column(Text)

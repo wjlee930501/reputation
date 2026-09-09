@@ -38,9 +38,10 @@ LEAD_COST_DEFERRAL = "0068_lead_cost_deferral"
 CONTENT_FIRST_PUBLICATION = "0069_content_first_publication"
 EVIDENCE_NOISE_HASH = "0070_essence_evidence_noise_hash"
 PLAN_ENUM_CLEANUP = "0071_plan_enum_cleanup"
+BASE_ESSENCE_FLAG = "0072_add_base_essence_flag"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = PLAN_ENUM_CLEANUP
+HEAD = BASE_ESSENCE_FLAG
 
 
 def _script_directory() -> ScriptDirectory:
@@ -102,6 +103,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         CONTENT_FIRST_PUBLICATION,
         EVIDENCE_NOISE_HASH,
         PLAN_ENUM_CLEANUP,
+        BASE_ESSENCE_FLAG,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -127,6 +129,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         CONTENT_FIRST_PUBLICATION: LEAD_COST_DEFERRAL,
         EVIDENCE_NOISE_HASH: CONTENT_FIRST_PUBLICATION,
         PLAN_ENUM_CLEANUP: EVIDENCE_NOISE_HASH,
+        BASE_ESSENCE_FLAG: PLAN_ENUM_CLEANUP,
     }
 
 
@@ -138,6 +141,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        BASE_ESSENCE_FLAG,
         PLAN_ENUM_CLEANUP,
         EVIDENCE_NOISE_HASH,
         CONTENT_FIRST_PUBLICATION,
@@ -166,7 +170,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-20:] == [
+    assert applied[-21:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -187,4 +191,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         CONTENT_FIRST_PUBLICATION,
         EVIDENCE_NOISE_HASH,
         PLAN_ENUM_CLEANUP,
+        BASE_ESSENCE_FLAG,
     ]

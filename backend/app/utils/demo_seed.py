@@ -226,6 +226,7 @@ def _seed_essence_chain(db, hospital: Hospital) -> HospitalContentPhilosophy | N
         hospital_id=hospital.id,
         version=1,
         status=PhilosophyStatus.APPROVED,
+        is_base=True,
         created_by="Demo AE",
         reviewed_by="Demo AE",
         approval_note="Sales demo: source-backed orthopedic writing standard.",

@@ -1,12 +1,9 @@
-"""Resolve approved clinic writing standards for write and public-read gates.
+"""Resolve the stable BaseEssence used by write and public-read gates.
 
-``current`` is deliberately strict: every required text source must be processed
-and the approved snapshot must match the complete current source set. It is the
-only philosophy suitable for generation or publication.
-
-``public_philosophy`` preserves already-published historical content while a new
-source is being processed or approved, provided every source in the approved
-baseline is still processed and unchanged. It must never be used for a write.
+An approval's source and evidence-noise hashes are immutable audit metadata. They
+still describe whether today's evidence snapshot matches the approval-time input,
+but ordinary ingestion drift never removes the BaseEssence from ``current`` or
+``public_philosophy``. Only absence of an onboarded base closes those gates.
 """
 
 from __future__ import annotations
@@ -80,9 +77,8 @@ def resolve_essence_readiness(
         and approved.source_snapshot_hash
         and approved.source_snapshot_hash == snapshot
     )
-    # 노이즈 제외 집합은 엄격한 current에만 관여한다. 컬럼 이전 승인(NULL)이거나 호출자가
-    # 현재 집합을 계산하지 않았으면(None) 이 조건은 통과시킨다. public_philosophy는 자료
-    # snapshot만 보므로 노트 하나를 숨겨도 공개 글이 사라지지 않는다.
+    # Freshness remains diagnostic metadata only. It must not decide whether the
+    # stable BaseEssence exists for generation/publication.
     approved_noise_hash = getattr(approved, "evidence_noise_hash", None) if approved else None
     noise_matches = (
         approved_noise_hash is None
@@ -94,27 +90,29 @@ def resolve_essence_readiness(
         and len(processed_sources) == len(required_sources)
         and noise_matches
     )
-    source_asset_ids = getattr(approved, "source_asset_ids", None) if approved else None
-    if approved and source_asset_ids:
-        baseline_ids = {str(source_id) for source_id in source_asset_ids}
-        baseline_processed = [
-            source for source in processed_sources if str(source.id) in baseline_ids
-        ]
-        public_philosophy = (
-            approved
-            if compute_sources_snapshot_hash(baseline_processed) == approved.source_snapshot_hash
-            else None
-        )
-    else:
-        public_philosophy = approved if processed_snapshot_matches else None
     return EssenceReadiness(
         approved=approved,
-        current=approved if fresh else None,
-        public_philosophy=public_philosophy,
+        current=approved,
+        public_philosophy=approved,
         processed_source_count=len(processed_sources),
         required_source_count=len(required_sources),
         current_snapshot_hash=snapshot,
         complete_snapshot_is_fresh=fresh,
+    )
+
+
+def _base_candidate_predicate():
+    """Only APPROVED rows qualify; ordering prefers the base over legacy fallbacks."""
+
+    return HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED
+
+
+def _base_candidate_ordering() -> tuple[Any, ...]:
+    return (
+        HospitalContentPhilosophy.is_base.desc(),
+        HospitalContentPhilosophy.approved_at.desc().nullslast(),
+        HospitalContentPhilosophy.version.desc(),
+        HospitalContentPhilosophy.id.desc(),
     )
 
 
@@ -123,10 +121,13 @@ async def get_essence_readiness(
     hospital_id: uuid.UUID,
 ) -> EssenceReadiness:
     approved_result = await db.execute(
-        select(HospitalContentPhilosophy).where(
+        select(HospitalContentPhilosophy)
+        .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            _base_candidate_predicate(),
         )
+        .order_by(*_base_candidate_ordering())
+        .limit(1)
     )
     approved = approved_result.scalar_one_or_none()
     sources_result = await db.execute(
@@ -146,16 +147,15 @@ async def get_public_essence_readiness(
     db: AsyncSession,
     hospital_id: uuid.UUID,
 ) -> HospitalContentPhilosophy | None:
-    """공개 읽기는 `public_philosophy`만 받는다 — 관대하게 계산된 `current`를 실수로 읽을 수 없게 한다.
-
-    노이즈 집합을 조회하지 않으므로 이 호출의 `current`는 신뢰할 수 없다. 그래서 아예
-    돌려주지 않는다 — 생성/발행 게이트에 쓰이면 H-02가 다시 열린다.
-    """
+    """Return the stable base for public serving without loading noise rows."""
     approved_result = await db.execute(
-        select(HospitalContentPhilosophy).where(
+        select(HospitalContentPhilosophy)
+        .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            _base_candidate_predicate(),
         )
+        .order_by(*_base_candidate_ordering())
+        .limit(1)
     )
     approved = approved_result.scalar_one_or_none()
     sources_result = await db.execute(
@@ -171,10 +171,13 @@ async def get_public_essence_readiness(
 
 def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceReadiness:
     approved = db.execute(
-        select(HospitalContentPhilosophy).where(
+        select(HospitalContentPhilosophy)
+        .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            _base_candidate_predicate(),
         )
+        .order_by(*_base_candidate_ordering())
+        .limit(1)
     ).scalar_one_or_none()
     required_sources = list(
         db.execute(
@@ -211,9 +214,9 @@ async def get_current_approved_philosophy_id(
     db: AsyncSession,
     hospital_id: uuid.UUID,
 ) -> uuid.UUID | None:
-    """Return the strict current-snapshot approval id without source text.
+    """Return the stable BaseEssence id without source text.
 
-    `get_essence_readiness()`와 동일한 신선도 규칙(§resolve_essence_readiness)을 쓰지만,
+    `get_essence_readiness()`와 동일한 base 규칙을 쓰지만,
     소스 자산을 스냅샷 해시 계산에 필요한 4개 컬럼(id·content_hash·status·processed_at)만
     선택해 `raw_text`·`operator_note` 같은 대용량 컬럼을 읽지 않는다. 생성·수정·발행을
     허용하는 쓰기 게이트에서만 사용한다.
@@ -228,13 +231,7 @@ async def get_public_approved_philosophy_id(
     db: AsyncSession,
     hospital_id: uuid.UUID,
 ) -> uuid.UUID | None:
-    """Return an intact historical approval id for read-only public serving.
-
-    A new source may await automated processing and approval without hiding
-    already-published content. The helper returns ``None`` as soon as a source in
-    the approved baseline is excluded, unprocessed, or changed. It must never
-    authorize generation, editing, or publication.
-    """
+    """Return the stable BaseEssence id for read-only public serving."""
     approved_id, readiness = await _get_lightweight_essence_readiness(
         db, hospital_id, include_noise=False
     )
@@ -263,10 +260,14 @@ async def get_public_approved_philosophy_ids(
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
                 HospitalContentPhilosophy.evidence_noise_hash,
+                HospitalContentPhilosophy.is_base,
+                HospitalContentPhilosophy.approved_at,
+                HospitalContentPhilosophy.version,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(ids),
-                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+                _base_candidate_predicate(),
             )
+            .order_by(*_base_candidate_ordering())
         )
     ).all()
     source_rows = (
@@ -283,8 +284,8 @@ async def get_public_approved_philosophy_ids(
             )
         )
     ).all()
-    # 병원당 APPROVED는 부분 unique 인덱스로 최대 1건이다.
-    approved_by_hospital = {row.hospital_id: row for row in approved_rows}
+    # Flagged base rows sort ahead of rolling-deploy APPROVED fallbacks.
+    approved_by_hospital = _group_base_candidates(approved_rows)
     sources_by_hospital: dict[uuid.UUID, list[Any]] = {}
     for row in source_rows:
         sources_by_hospital.setdefault(row.hospital_id, []).append(row)
@@ -328,9 +329,9 @@ async def get_essence_readiness_states(
 ) -> dict[uuid.UUID, EssenceReadinessState]:
     """N개 병원의 콘텐츠 준비 상태를 상수 쿼리로 — 승인 행 · 필수 자료 · 노이즈 제외 집합 · 예외 초안.
 
-    `current`는 엄격한 판정이므로 노이즈 집합을 반드시 읽는다(단건 `get_essence_readiness`의
-    `include_noise=True` 규칙). 판정은 단건과 같은 `_resolve_lightweight_readiness`를 쓰고
-    조회 방식만 다르다 — 목록·헤더·현황이 갈라질 수 없다.
+    Snapshot/noise freshness remains diagnostic, so it is loaded here even though
+    it can no longer clear ``current``. Base selection is shared with the single-
+    hospital resolver.
     """
     ids = list(dict.fromkeys(hospital_ids))
     if not ids:
@@ -343,10 +344,14 @@ async def get_essence_readiness_states(
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
                 HospitalContentPhilosophy.evidence_noise_hash,
+                HospitalContentPhilosophy.is_base,
+                HospitalContentPhilosophy.approved_at,
+                HospitalContentPhilosophy.version,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(ids),
-                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+                _base_candidate_predicate(),
             )
+            .order_by(*_base_candidate_ordering())
         )
     ).all()
     source_rows = (
@@ -365,8 +370,7 @@ async def get_essence_readiness_states(
     ).all()
     noise_hashes = await load_evidence_noise_hashes(db, ids)
 
-    # 병원당 APPROVED는 부분 unique 인덱스로 최대 1건이다.
-    approved_by_hospital = {row.hospital_id: row for row in approved_rows}
+    approved_by_hospital = _group_base_candidates(approved_rows)
     sources_by_hospital: dict[uuid.UUID, list[Any]] = {}
     for row in source_rows:
         sources_by_hospital.setdefault(row.hospital_id, []).append(row)
@@ -406,6 +410,20 @@ async def get_essence_readiness_states(
             escalated_draft_findings=findings,
         )
     return resolved
+
+
+def _group_base_candidates(rows: Iterable[Any]) -> dict[uuid.UUID, Any]:
+    """Prefer a durable base flag over a rolling-deploy APPROVED fallback."""
+
+    selected: dict[uuid.UUID, Any] = {}
+    for row in rows:
+        existing = selected.get(row.hospital_id)
+        if existing is None or (
+            bool(getattr(row, "is_base", False))
+            and not bool(getattr(existing, "is_base", False))
+        ):
+            selected[row.hospital_id] = row
+    return selected
 
 
 async def _load_escalated_drafts(
@@ -459,7 +477,7 @@ def _public_philosophy_id(
     approved_id: uuid.UUID | None,
     readiness: EssenceReadiness | None,
 ) -> uuid.UUID | None:
-    """공개 읽기가 받아도 되는 승인 id — `current`가 아니라 `public_philosophy`만 본다."""
+    """공개 읽기가 받아도 되는 stable BaseEssence id."""
     return approved_id if readiness and readiness.public_philosophy is not None else None
 
 
@@ -469,7 +487,7 @@ def _resolve_lightweight_readiness(
     *,
     excluded_note_hash: str | None,
 ) -> tuple[uuid.UUID | None, EssenceReadiness | None]:
-    """Evaluate one hospital's lightweight rows with the shared freshness rule.
+    """Evaluate one hospital's lightweight rows with the shared base rule.
 
     단건 조회와 묶음 조회가 각자 stub을 만들면 신선도 규칙이 갈라진다 — 판정은 여기뿐이다.
     """
@@ -503,9 +521,8 @@ async def _get_lightweight_essence_readiness(
 ) -> tuple[uuid.UUID | None, EssenceReadiness | None]:
     """Load only columns needed to evaluate current and historical read gates.
 
-    `include_noise=False`는 노이즈 집합 조회를 건너뛴다 — 공개 읽기 경로는
-    `public_philosophy`만 보므로 그 쿼리가 결과를 바꾸지 않는다. 엄격한 `current`를
-    읽는 호출자는 반드시 `include_noise=True`로 불러야 한다.
+    `include_noise=False` skips the evidence-noise query for public serving. Write
+    callers include it so readiness can still report audit freshness accurately.
     """
     approved_row = (
         await db.execute(
@@ -514,10 +531,15 @@ async def _get_lightweight_essence_readiness(
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
                 HospitalContentPhilosophy.evidence_noise_hash,
+                HospitalContentPhilosophy.is_base,
+                HospitalContentPhilosophy.approved_at,
+                HospitalContentPhilosophy.version,
             ).where(
                 HospitalContentPhilosophy.hospital_id == hospital_id,
-                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+                _base_candidate_predicate(),
             )
+            .order_by(*_base_candidate_ordering())
+            .limit(1)
         )
     ).one_or_none()
     if approved_row is None:
