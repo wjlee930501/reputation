@@ -1,8 +1,8 @@
 """노이즈 hash의 자료 경계는 readiness의 자료 경계와 같아야 한다.
 
 readiness는 필수 텍스트 자료(제외되지 않은 비사진 자료)만 snapshot에 넣는다. 노이즈 hash가
-그보다 넓은 집합을 보면, readiness가 아예 보지 않는 자료의 노트를 토글하는 것만으로 승인이
-stale이 된다 — 운영자에게는 아무것도 바뀌지 않은 것처럼 보이는데 생성이 멈춘다.
+그보다 넓은 집합을 보면, readiness가 아예 보지 않는 자료의 노트를 토글하는 것만으로
+freshness 진단이 달라진다. 해시 변경과 관계없이 승인된 base는 current로 남는다.
 """
 
 import uuid
@@ -178,8 +178,8 @@ def _approved_philosophy(
 
 
 @pytest.mark.asyncio
-async def test_unmarking_noise_blocks_current_but_keeps_public_baseline(pg_async_session):
-    """H-02: 노트를 근거에서 빼거나 되돌리면 생성은 막히고, 이미 공개된 글의 근거는 남는다."""
+async def test_unmarking_noise_keeps_base_current_and_public_baseline(pg_async_session):
+    """PR-1: 노이즈 변경은 freshness 진단만 바꾸고 생성·공개의 base는 유지한다."""
     hospital, required, required_note, _excluded_note = await _seed(pg_async_session)
     approved = _approved_philosophy(required, [required_note.id])
     pg_async_session.add(approved)
@@ -194,6 +194,8 @@ async def test_unmarking_noise_blocks_current_but_keeps_public_baseline(pg_async
     await pg_async_session.refresh(required_note)
 
     readiness = await get_essence_readiness(pg_async_session, hospital.id)
-    assert readiness.current is None
+    assert readiness.current is not None
+    assert readiness.current.id == approved.id
+    assert readiness.is_stale is True
     assert readiness.public_philosophy is not None
     assert readiness.public_philosophy.id == approved.id

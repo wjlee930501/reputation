@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -102,12 +102,9 @@ def resolve_essence_readiness(
 
 
 def _base_candidate_predicate():
-    """Base flag first, with APPROVED fallback for rolling-deploy compatibility."""
+    """Only APPROVED rows qualify; ordering prefers the base over legacy fallbacks."""
 
-    return or_(
-        HospitalContentPhilosophy.is_base.is_(True),
-        HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
-    )
+    return HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED
 
 
 def _base_candidate_ordering() -> tuple[Any, ...]:

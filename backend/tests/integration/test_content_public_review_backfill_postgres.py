@@ -450,7 +450,7 @@ def test_typed_provider_unavailable_preserves_old_review_and_stops_at_three(
 
 
 @pytest.mark.parametrize("concurrent_change", ["content", "source", "essence"])
-def test_concurrent_candidate_or_context_change_is_stale_and_preserves_editor_state(
+def test_concurrent_changes_preserve_editor_state_and_only_hash_drift_clears_review(
     committed_db, pg_engine, concurrent_change
 ) -> None:
     db, tracked = committed_db
@@ -488,9 +488,13 @@ def test_concurrent_candidate_or_context_change_is_stale_and_preserves_editor_st
         reviewer=reviewer,
     )
 
-    assert result.stale == 1
+    assert result.stale == (0 if concurrent_change == "source" else 1)
+    assert result.cleared == (1 if concurrent_change == "source" else 0)
     item = _refresh(db, ContentItem, seed.item.id)
-    assert item.essence_check_summary["ai_review"] == old_review
+    if concurrent_change == "source":
+        assert item.essence_check_summary["ai_review"]["status"] == "PASS"
+    else:
+        assert item.essence_check_summary["ai_review"] == old_review
     if concurrent_change == "content":
         assert item.body == "운영자가 저장한 새 본문"
         assert item.content_revision == 11
@@ -498,21 +502,23 @@ def test_concurrent_candidate_or_context_change_is_stale_and_preserves_editor_st
         assert _refresh(db, HospitalSourceAsset, seed.source.id).content_hash == (
             "운영자가-바꾼-자료-hash"
         )
-        assert item.content_revision == 10
+        assert item.content_revision == 11  # Saved review advances the revision.
     else:
         assert _refresh(db, HospitalContentPhilosophy, seed.philosophy.id).positioning_statement == (
             "운영자가 승인한 새 운영 기준"
         )
         assert item.content_revision == 10
     run = _run(db, seed)
-    assert run.state == OperationRunState.CANCELLED
+    assert run.state == (
+        OperationRunState.SUCCEEDED if concurrent_change == "source" else OperationRunState.CANCELLED
+    )
     assert run.attempt_count == 1
 
 
-def test_noise_marked_during_review_is_stale_and_never_saves_the_result(
+def test_noise_marked_during_review_keeps_base_current_and_saves_the_result(
     committed_db, pg_engine
 ) -> None:
-    """H-02: 검수 중 근거 노트를 빼면 CAS 체크포인트가 승인을 stale로 보고 결과를 버린다."""
+    """PR-1: 검수 중 노이즈 해시가 바뀌어도 base는 current이고 검수 결과를 저장한다."""
     db, tracked = committed_db
     seed = _seed(db, tracked)
     note = HospitalSourceEvidenceNote(
@@ -528,7 +534,6 @@ def test_noise_marked_during_review_is_stale_and_never_saves_the_result(
     db.add(note)
     seed.philosophy.evidence_noise_hash = compute_evidence_noise_hash([])
     db.commit()
-    old_review = copy.deepcopy(seed.item.essence_check_summary["ai_review"])
 
     async def reviewer(**kwargs):
         with Session(pg_engine) as operator:
@@ -548,13 +553,16 @@ def test_noise_marked_during_review_is_stale_and_never_saves_the_result(
         reviewer=reviewer,
     )
 
-    assert result.stale == 1
+    assert result.stale == 0
+    assert result.cleared == 1
     item = _refresh(db, ContentItem, seed.item.id)
-    assert item.essence_check_summary["ai_review"] == old_review
-    assert item.content_revision == 10
+    assert item.essence_check_summary["ai_review"]["status"] == "PASS"
+    assert _refresh(db, HospitalSourceEvidenceNote, note.id).note_metadata["is_noise"] is True
+    assert item.content_revision == 11  # Saved review advances the revision.
     run = _run(db, seed)
-    assert run.state == OperationRunState.CANCELLED
-    assert run.safe_error_code == "SOURCE_CHANGED"
+    assert run.state == OperationRunState.SUCCEEDED
+    assert run.safe_error_code is None
+    assert run.attempt_count == 1
 
 
 

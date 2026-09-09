@@ -70,7 +70,7 @@ async def _hospital(
     if unprocessed_source:
         await _source(db, hospital, status=SourceStatus.PENDING)
     if excluded_note:
-        # 승인 이후 운영자가 근거에서 뺀 노트 — 승인이 기록한 빈 집합과 달라 current가 막힌다.
+        # 승인 이후 운영자가 근거에서 뺀 노트 — 해시는 달라도 base는 current로 남는다.
         db.add(
             HospitalSourceEvidenceNote(
                 hospital_id=hospital.id,
@@ -157,11 +157,12 @@ async def test_readiness_states_answer_each_hospital_from_its_own_rows(pg_async_
     assert states[ready.id].current is True
     assert states[ready.id].unprocessed_sources == 0
     assert states[ready.id].escalated_draft is False
-    assert states[waiting.id].current is False
+    assert states[waiting.id].current is True
     assert states[waiting.id].unprocessed_sources == 1
     assert states[escalated.id].escalated_draft is True
-    # 승인이 기록한 제외 집합과 지금 집합이 다르면 새 글의 근거가 될 수 없다(H-02).
-    assert states[noisy.id].current is False
+    # PR-1: 자료 처리·노이즈 변경·기존 보류 초안은 승인된 base를 무효화하지 않는다.
+    assert states[escalated.id].current is True
+    assert states[noisy.id].current is True
 
 
 async def test_content_state_reads_the_batched_rows(pg_async_session):
@@ -182,7 +183,9 @@ async def test_content_state_reads_the_batched_rows(pg_async_session):
         )
 
     assert _state(ready).kind == "auto"
-    assert _state(escalated).kind == "exception"
+    assert states[escalated.id].escalated_draft is True
+    assert _state(escalated).kind == "auto"
+    assert _state(escalated).remaining == ()
 
 
 async def test_a_draft_from_an_older_source_snapshot_is_not_an_exception(pg_async_session):

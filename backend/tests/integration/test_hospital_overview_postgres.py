@@ -331,8 +331,8 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
     assert overview.month.mention_rate_measured_at is None
 
 
-async def test_preparing_hospital_lists_schedule_and_source_conditions(pg_async_session):
-    """예외가 없으면 남은 조건이 그대로 보인다 — `sources:N`은 건수까지 문구에 들어간다."""
+async def test_preparing_hospital_with_base_only_lists_schedule_condition(pg_async_session):
+    """승인된 base가 있으면 자료 처리 중에도 사람의 발행 요일 설정만 남는다."""
     db = pg_async_session
     hospital = await _hospital(
         db,
@@ -347,8 +347,6 @@ async def test_preparing_hospital_lists_schedule_and_source_conditions(pg_async_
     assert overview.content.kind == "preparing"
     assert [(c.key, c.label, c.actor) for c in overview.content.remaining] == [
         ("schedule", "발행 요일 설정", "human"),
-        ("sources:1", "근거 자료 처리 1건", "system"),
-        ("essence_review", "콘텐츠 운영 기준 자동 검수", "system"),
     ]
     assert overview.content.remaining[0].href == (
         f"/hospitals/{hospital.id}/content#content-schedule"
