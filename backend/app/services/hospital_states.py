@@ -61,12 +61,12 @@ def content_state(
     escalated_draft: bool,
 ) -> ContentState:
     """`schedule_set && essence_readiness.current` (설계 §4.2). 예외는 준비 중보다 앞선다."""
-    if escalated_draft:
+    if escalated_draft and not essence_current:
         return ContentState("exception", ())
     remaining: list[str] = []
     if not bool(getattr(hospital, "schedule_set", False)):
         remaining.append("schedule")
-    if unprocessed_sources > 0:
+    if unprocessed_sources > 0 and not essence_current:
         remaining.append(f"sources:{unprocessed_sources}")
     if not essence_current:
         # 자료가 하나도 없으면 자동 검수는 시작조차 하지 않는다(WAITING_FOR_SOURCES).

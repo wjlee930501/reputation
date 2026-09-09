@@ -183,7 +183,18 @@ async def test_set_schedule_requires_processed_sources_and_fresh_approved_essenc
         ),
         (
             EssenceReadiness(SimpleNamespace(), None, 2, 2, "stale"),
-            ["콘텐츠 운영 기준이 현재 근거 자료 snapshot과 일치하지 않습니다."],
+            ["콘텐츠 운영 기준 재온보딩 승인을 기다리고 있습니다."],
+        ),
+        (
+            EssenceReadiness(
+                SimpleNamespace(),
+                SimpleNamespace(),
+                1,
+                2,
+                "drifted",
+                complete_snapshot_is_fresh=False,
+            ),
+            [],
         ),
         (
             EssenceReadiness(SimpleNamespace(), SimpleNamespace(), 2, 2, "fresh"),

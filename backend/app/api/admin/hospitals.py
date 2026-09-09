@@ -1572,7 +1572,10 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     )
     essence = await get_essence_readiness(db, h.id)
     approved_philosophy = essence.approved
-    essence_fresh = essence.is_fresh
+    # Operational readiness follows the stable base. Keep hash freshness below as
+    # source_stale audit metadata instead of letting it reduce readiness.
+    essence_fresh = essence.current is not None
+    source_snapshot_fresh = essence.is_fresh
     blocked_content_condition = ContentItem.essence_status.in_(
         [
             ESSENCE_STATUS_MISSING_APPROVED,
@@ -1728,7 +1731,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "required_source_count": essence.required_source_count,
             "approved_philosophy_exists": approved_philosophy is not None,
             "philosophy_version": approved_philosophy.version if approved_philosophy else None,
-            "source_stale": bool(approved_philosophy and not essence_fresh),
+            "source_stale": bool(approved_philosophy and not source_snapshot_fresh),
             "blocked_content_count": essence_blocked_content_count,
         },
         "checks": [_serialize_readiness_check(c) for c in checks],

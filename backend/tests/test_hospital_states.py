@@ -88,6 +88,18 @@ def test_no_sources_is_human_work_not_an_automatic_review():
     assert state == ContentState(kind="preparing", remaining=("sources_required",))
 
 
+def test_source_drift_and_legacy_review_draft_do_not_block_an_existing_base():
+    state = content_state(
+        _hospital(),
+        essence_current=True,
+        unprocessed_sources=2,
+        required_sources=3,
+        escalated_draft=True,
+    )
+
+    assert state == ContentState(kind="auto", remaining=())
+
+
 def test_a_hospital_that_is_not_serving_is_never_auto_publishing():
     """야간 생성은 공개 서비스 중인 병원에만 돈다 — 멈춘 병원을 '자동 발행 중'이라 하지 않는다."""
     paused = content_state(

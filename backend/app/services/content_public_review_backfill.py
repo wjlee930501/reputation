@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Final
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.database import SyncSessionLocal
@@ -502,8 +502,17 @@ def _checkpoint_review(
         select(HospitalContentPhilosophy)
         .where(
             HospitalContentPhilosophy.hospital_id == claim.expectation.hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            or_(
+                HospitalContentPhilosophy.is_base.is_(True),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            ),
         )
+        .order_by(
+            HospitalContentPhilosophy.is_base.desc(),
+            HospitalContentPhilosophy.approved_at.desc().nullslast(),
+            HospitalContentPhilosophy.version.desc(),
+        )
+        .limit(1)
         .with_for_update(of=HospitalContentPhilosophy)
         .execution_options(populate_existing=True)
     ).scalar_one_or_none()

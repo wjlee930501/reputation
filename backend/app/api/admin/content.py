@@ -158,6 +158,10 @@ class ScheduleCreate(BaseModel):
 
 
 def _content_readiness_blockers(readiness: EssenceReadiness) -> list[str]:
+    # Source processing and snapshot freshness are onboarding diagnostics once a
+    # stable base exists; they must not close scheduling/generation write gates.
+    if readiness.current is not None:
+        return []
     blockers: list[str] = []
     if readiness.required_source_count == 0:
         blockers.append("병원 근거 자료를 1개 이상 추가해 주세요.")
@@ -168,8 +172,8 @@ def _content_readiness_blockers(readiness: EssenceReadiness) -> list[str]:
         )
     if readiness.approved is None:
         blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
-    elif not readiness.is_fresh:
-        blockers.append("콘텐츠 운영 기준이 현재 근거 자료 snapshot과 일치하지 않습니다.")
+    else:
+        blockers.append("콘텐츠 운영 기준 재온보딩 승인을 기다리고 있습니다.")
     return blockers
 
 

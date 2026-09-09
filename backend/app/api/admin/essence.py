@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import FileResponse, RedirectResponse
 from kombu.exceptions import OperationalError as BrokerOperationalError
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1716,15 +1716,23 @@ async def approve_philosophy(
     previous_result = await db.execute(
         select(HospitalContentPhilosophy).where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            or_(
+                HospitalContentPhilosophy.is_base.is_(True),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            ),
         )
     )
     for previous in previous_result.scalars().all():
         if previous.id != philosophy.id:
-            previous.status = PhilosophyStatus.ARCHIVED
+            if previous.status == PhilosophyStatus.APPROVED:
+                previous.status = PhilosophyStatus.ARCHIVED
+            previous.is_base = False
     await db.flush()
 
     philosophy.status = PhilosophyStatus.APPROVED
+    # Human approval is the explicit onboarding/re-onboarding boundary that may
+    # replace the stable base. Ordinary source ingestion never reaches this path.
+    philosophy.is_base = True
     # 승인은 그 시점에 운영자가 근거에서 뺀 집합까지 확정한다(H-02).
     philosophy.evidence_noise_hash = await load_evidence_noise_hash(db, hospital_id)
     # 검토자는 확인된 로그인 계정만 기록한다. 요청 본문의 이름은 감사 비교용 주장일 뿐,
@@ -1888,10 +1896,20 @@ async def _get_approved(
     db: AsyncSession, hospital_id: uuid.UUID
 ) -> HospitalContentPhilosophy | None:
     result = await db.execute(
-        select(HospitalContentPhilosophy).where(
+        select(HospitalContentPhilosophy)
+        .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            or_(
+                HospitalContentPhilosophy.is_base.is_(True),
+                HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+            ),
         )
+        .order_by(
+            HospitalContentPhilosophy.is_base.desc(),
+            HospitalContentPhilosophy.approved_at.desc().nullslast(),
+            HospitalContentPhilosophy.version.desc(),
+        )
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

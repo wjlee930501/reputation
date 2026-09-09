@@ -2241,8 +2241,8 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
     assert item.essence_check_summary["blocking"] is True
 
 
-def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
-    """Automated snapshot refresh must finish before a new write can start."""
+def test_drifted_source_hash_still_allows_generation(monkeypatch):
+    """A stable base remains writable while newly processed sources are absorbed."""
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
     processed = SimpleNamespace(
         id=uuid.uuid4(),
@@ -2251,13 +2251,13 @@ def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
         status=SourceStatus.PROCESSED,
         processed_at=arrow.get(2026, 8, 18).datetime,
     )
-    pending = SimpleNamespace(
+    drifted = SimpleNamespace(
         id=uuid.uuid4(),
         source_type=SourceType.NAVER_BLOG,
         raw_text="새로 추가된 네이버 텍스트 자료",
         content_hash="pending-extra",
-        status=SourceStatus.PENDING,
-        processed_at=None,
+        status=SourceStatus.PROCESSED,
+        processed_at=arrow.get(2026, 8, 19).datetime,
     )
     approved = SimpleNamespace(
         id=uuid.uuid4(),
@@ -2375,6 +2375,24 @@ def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
             philosophy_id=philosophy.id,
         ),
     )
+    monkeypatch.setattr(
+        tasks,
+        "prepare_automatic_content_brief_sync",
+        lambda *_args, **_kwargs: None,
+    )
+
+    async def fake_generate_with_review(**_kwargs):
+        return await fake_generate_content(), SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        )
+
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", fake_generate_with_review)
+    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        tasks,
+        "_recover_missing_content_image",
+        lambda *_args, **_kwargs: tasks.GenerationItemState.SUCCEEDED,
+    )
 
     pending_item = SimpleNamespace(
         id=uuid.uuid4(),
@@ -2399,20 +2417,17 @@ def test_pending_source_pauses_generation_before_cost_or_provider(monkeypatch):
         faq_question=None,
         faq_answer_summary=None,
     )
-    approved_db = DB(approved, [processed, pending])
-    assert (
-        tasks.get_current_approved_philosophy_sync(approved_db, hospital.id) is None
-    )
+    approved_db = DB(approved, [processed, drifted])
+    assert tasks.get_current_approved_philosophy_sync(approved_db, hospital.id) is approved
     outcome, code, _message = tasks._generate_single_content_item(
         approved_db, pending_item, hospital
     )
-    assert outcome == tasks.GenerationItemState.SKIPPED
-    assert code == "MISSING_APPROVED_ESSENCE"
-    assert calls["cost"] == 0
-    assert calls["generate"] == 0
-    assert approved_db.written_values == []
-    assert pending_item.content_philosophy_id is None
-    assert pending_item.essence_status == tasks.ESSENCE_STATUS_MISSING_APPROVED
+    assert outcome == tasks.GenerationItemState.SUCCEEDED
+    assert code is None
+    assert calls == {"cost": 1, "generate": 1}
+    assert approved_db.written_values
+    assert pending_item.content_philosophy_id == approved.id
+    assert pending_item.essence_status == "ALIGNED"
 
     calls_before_onboarding = dict(calls)
     onboarding_item = SimpleNamespace(

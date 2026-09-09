@@ -68,6 +68,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
     other_lead_id = uuid.UUID("a6500000-0000-0000-0000-000000000009")
     exact_diagnosis_id = uuid.UUID("a6500000-0000-0000-0000-000000000010")
     other_diagnosis_id = uuid.UUID("a6500000-0000-0000-0000-000000000011")
+    philosophy_id = uuid.UUID("a6500000-0000-0000-0000-000000000015")
 
     try:
         with engine.begin() as connection:
@@ -91,6 +92,19 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                     "VALUES (:id, :hospital_id, 'PLAN_12', '[1]'::json, DATE '2026-08-01')"
                 ),
                 {"id": schedule_id, "hospital_id": hospital_id},
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO hospital_content_philosophies "
+                    "(id, hospital_id, version, status, source_snapshot_hash, approved_at) "
+                    "VALUES (:id, :hospital_id, 1, 'APPROVED', :snapshot, "
+                    "TIMESTAMPTZ '2026-08-01 00:00:00+00')"
+                ),
+                {
+                    "id": philosophy_id,
+                    "hospital_id": hospital_id,
+                    "snapshot": "approval-time-snapshot",
+                },
             )
             connection.execute(
                 text(
@@ -197,8 +211,17 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "0071_plan_enum_cleanup"
+                "0072_add_base_essence_flag"
             )
+            base = connection.execute(
+                text(
+                    "SELECT is_base, source_snapshot_hash "
+                    "FROM hospital_content_philosophies WHERE id=:id"
+                ),
+                {"id": philosophy_id},
+            ).one()
+            assert base.is_base is True
+            assert base.source_snapshot_hash == "approval-time-snapshot"
             # M-20: 폐기 요금제는 행에서 사라지고 CHECK가 다시 들어오는 것을 막는다.
             # enum 타입 자체는 손대지 않는다 — 롤링 배포 중 옛 리비전의 연결 풀이 들고
             # 있는 타입 OID·prepared statement 캐시가 깨지면 안 된다.
