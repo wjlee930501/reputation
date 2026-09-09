@@ -104,14 +104,10 @@ export default function Home() {
         </a>
 
         <nav className="header-nav" aria-label="랜딩 페이지 섹션">
-          <a href="#numbers">근거</a>
+          <a href="#numbers">측정 방식</a>
           <a href="#operation">운영 방식</a>
           <a href="#faq">자주 묻는 질문</a>
         </nav>
-
-        {/* 내비 밖에 둔다 — `.header-nav`는 600px 이하에서 통째로 숨는데, 좁은 화면에서
-            멈춤 수단이 사라지면 이 버튼의 존재 이유가 없어진다. */}
-        <MotionToggle />
 
         <Link className="header-cta" href={DIAGNOSIS_PATH}>
           무료 진단
@@ -314,7 +310,7 @@ export default function Home() {
         </ul>
       </section>
 
-      {/* ── ⑤-b 자주 받는 질문 ────────────────────────────────────
+      {/* ── ⑤-b 자주 묻는 질문 ────────────────────────────────────
           반론을 피하지 않는다. 여기서 답하지 않으면 상담에서 같은 질문을 다시 받는다. */}
       <section id="faq" className="faq-section" aria-labelledby="faq-heading">
         <div className="faq-inner">
@@ -377,12 +373,16 @@ export default function Home() {
               <p className="pricing-terms">
                 월 {plan.monthlyContents}편 발행 · {plan.vatExcluded ? "부가세 별도" : "부가세 포함"}
               </p>
-              <p className="pricing-management">{plan.management}</p>
               {/* 월 편수 외에도 운영 우선순위를 설명해 선택 기준을 보완한다. */}
               <p className="pricing-note">{plan.note}</p>
             </li>
           ))}
         </ul>
+
+        {/* 세 요금제가 공통으로 갖는 조건이므로 표 아래 한 줄로만 둔다. */}
+        <p className="pricing-management" data-reveal>
+          {pricingSection.management}
+        </p>
       </section>
 
       {/* ── ⑥ 무료 진단 ──────────────────────────────────────────── */}
@@ -453,6 +453,10 @@ export default function Home() {
           <Link href="/privacy">개인정보 처리방침</Link>
           <Link href="/terms">이용약관</Link>
           <Link href={DIAGNOSIS_PATH}>무료 진단</Link>
+          {/* 헤더 내비에서 내려온 자리다 — 내비에는 섹션 링크만 남기되, 페이지를 멈추는
+              수단 자체는 남긴다(WCAG 2.2.2). 자동으로 움직이는 것은 질문 띠와 로고뿐이고
+              둘 다 이 토글 하나로 멈춘다. */}
+          <MotionToggle />
         </div>
       </footer>
     </main>

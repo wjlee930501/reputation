@@ -57,7 +57,8 @@ const ALL_COPY = [
   pricingSection.label,
   pricingSection.heading,
   pricingSection.note,
-  ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.management, p.note]),
+  pricingSection.management,
+  ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.note]),
 
 
 
@@ -182,7 +183,7 @@ test('the page states explicitly what it does not do', () => {
   for (const item of limitItems) {
     assert.match(
       `${item.title} ${item.body}`,
-      /(않습니다|못|밖입니다|걸러냅니다|확인합니다)/,
+      /(않습니다|아닙니다|없습니다|못|밖입니다|걸러냅니다|확인합니다)/,
       `"${item.title}"이 무엇을 못 하는지 말하지 않습니다.`,
     )
   }
@@ -267,7 +268,7 @@ test('the page discloses how the number is produced', () => {
   // 병원명을 질의에 넣지 않는다는 사실은 측정이 성립하는 근거다.
   assert.match(faqText, /병원 이름을 (넣|물)/)
   // 측정 실패와 미언급을 구분한다는 약속.
-  assert.match(faqText, /측정이 안 된 경우|실패/)
+  assert.match(faqText, /측정이 안 된 경우|실패|답을 하지 않았|응답을 받지 못/)
 })
 
 // ── AI 답변 예시 (의료광고법) ────────────────────────────────────────
@@ -299,10 +300,16 @@ test('post-publication human review copy matches the sampling policy', () => {
     ...faqItems.map((f) => f.answer),
   ].join(' ')
 
-  assert.match(reviewCopy, /사후 점검 큐/)
+  // 공개 뒤에 사람이 보긴 본다는 사실은 밝혀야 한다 — 없으면 "올리고 끝"으로 읽힌다.
+  assert.match(reviewCopy, /공개(된)? 뒤|발행 (뒤|후)/)
+  // **다만 표본이다.** 운영 계약(CLAUDE.md「후행 검수는 조건부 표본 확인이다」)이
+  // 그렇게 돌아가므로, 전건을 사람이 본다고 적으면 카피가 제품보다 앞서 나간다.
+  // 내부 용어("사후 점검 큐")는 원장에게 설명 없는 말이라 화면에서 걷어냈고,
+  // 대신 표본이라는 사실 자체를 문구가 들고 있는지 본다.
+  assert.match(reviewCopy, /표본/)
   assert.doesNotMatch(
     reviewCopy,
-    /발행 뒤(?:에는)? 담당 매니저가 다시 봅니다|모든 글을.*사람|전건.*검수/,
+    /발행 뒤(?:에는)? 담당 (매니저|마케터)가 다시 봅니다|모든 글을.*사람|전건.*검수|모든 글은 담당 (매니저|마케터)가 확인/,
   )
 })
 
@@ -373,10 +380,17 @@ test('every pricing tier includes direct MotionLabs marketer management', () => 
       { name: 'Leader', price: '120만원', monthlyContents: 20, vatExcluded: true },
     ],
   )
+  // 전담 관리 문구는 표 아래 한 줄이다 — 세 카드가 같은 문장을 하나씩 들고 있으면
+  // 카드가 말해야 할 차이(편수·가격·추천 대상)가 반복 문구에 밀린다.
+  assert.match(pricingSection.management, /모션랩스.*전담 마케터.*직접.*관리.*소통/)
   for (const plan of pricingSection.plans) {
     assert.equal(plan.vatExcluded, true)
-    assert.match(plan.management, /모션랩스.*전담 마케터.*직접.*관리.*소통/)
-    assert.doesNotMatch(`${plan.management} ${plan.note}`, /월 \d+편|\d+편 발행/)
+    assert.equal(
+      'management' in plan,
+      false,
+      `${plan.name} 카드가 공통 문구를 따로 들고 있습니다 — pricingSection.management 한 줄로 모읍니다.`,
+    )
+    assert.doesNotMatch(plan.note, /월 \d+편|\d+편 발행/)
   }
 })
 
@@ -406,7 +420,7 @@ test('measurement scope explains the two-provider comparison without a market-sh
   const copy = `${marketSection.heading} ${platformShareSection.nudge}`
   assert.match(copy, /OpenAI API/)
   assert.match(copy, /Google Gemini API/)
-  assert.match(copy, /같은 환자 질문/)
+  assert.match(copy, /(같은|동일한) 환자 질문/)
   assert.doesNotMatch(copy, /83\.9|84%|점유율/)
 })
 
@@ -445,7 +459,7 @@ test('the hero instrument states the same measurement contract the backend runs'
 })
 
 test('the instrument headline explains the service without implementation identifiers', () => {
-  assert.match(measurementSpec.headline, /환자.*질문 방식/)
+  assert.match(measurementSpec.headline, /환자.*질문 (방식|패턴)/)
   assert.match(measurementSpec.headline, /측정.*노출 전략/)
   assert.doesNotMatch(measurementSpec.headline, /API|gpt-|gemini-\d|파라미터/)
 })
