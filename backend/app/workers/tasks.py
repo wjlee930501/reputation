@@ -365,7 +365,9 @@ def _generation_philosophy_sync(db, hospital_id: uuid.UUID) -> HospitalContentPh
     """Use the stable BaseEssence; source/noise drift is not a write gate."""
 
     readiness = get_essence_readiness_sync(db, hospital_id)
-    return readiness.current
+    from app.services.director_delta import effective_philosophy_sync
+
+    return effective_philosophy_sync(db, readiness.current)
 
 
 def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
@@ -408,9 +410,11 @@ def _generation_attempt_context(
     philosophy_id = str(getattr(philosophy, "id", "") or "MISSING")
     content_type = str(getattr(getattr(item, "content_type", None), "value", "") or "")
     query_target_id = str(getattr(item, "query_target_id", "") or "")
+    delta_ids = getattr(philosophy, "director_delta_ids", []) or []
+    delta_context = f";director_deltas={','.join(delta_ids)}" if delta_ids else ""
     return (
         f"philosophy={philosophy_id};content_type={content_type};"
-        f"query_target={query_target_id}"
+        f"query_target={query_target_id}{delta_context}"
     )
 
 

@@ -86,6 +86,8 @@ def build_content_brief(
         "target_revision": _target_revision(query_target),
         "treatment_narrative": treatment_narrative,
         "must_use_messages": _list(getattr(philosophy, "must_use_messages", None)),
+        "prefer_topics": _list(getattr(philosophy, "prefer_topics", None)),
+        "prefer_messages": _list(getattr(philosophy, "prefer_messages", None)),
         "avoid_messages": safety_policy["avoid_messages"],
         "medical_risk_rules": safety_policy["medical_ad_risk_rules"],
         # 이 함수는 현재 슬롯 외의 콘텐츠를 조회하지 않는다. 현재 글 자신을 링크
