@@ -13,6 +13,7 @@ from app.models.director_delta import DirectorDelta
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services.content_engine import _build_philosophy_context
+from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.director_delta import (
     ActiveDirectorDeltaLimit,
     DirectorDeltaInput,
@@ -178,6 +179,77 @@ def test_delta_activation_and_retirement_invalidate_failed_attempt_context(db):
     assert before != during
     retire_director_delta(db, hospital.id, delta.id)
     assert _generation_attempt_context(item, effective_philosophy_sync(db, base)) == before
+
+
+def _stub_content_item():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        content_type="FAQ",
+        title="Delta brief",
+        scheduled_date=None,
+        content_brief=None,
+        brief_status=None,
+    )
+
+
+def test_retired_delta_invalidates_approved_stub_brief(db):
+    hospital, base = seed(db)
+    delta = create_director_delta(
+        db,
+        hospital.id,
+        DirectorDeltaInput(source="DIRECTOR", avoid_messages=["retired avoidance"]),
+    )
+    item = _stub_content_item()
+    original = prepare_automatic_content_brief_sync(
+        db,
+        item=item,
+        hospital=hospital,
+        philosophy=effective_philosophy_sync(db, base),
+    )
+    assert "retired avoidance" in original["avoid_messages"]
+    assert original["philosophy_reference"]["director_delta_ids"] == [str(delta.id)]
+
+    retire_director_delta(db, hospital.id, delta.id)
+    rebuilt = prepare_automatic_content_brief_sync(
+        db,
+        item=item,
+        hospital=hospital,
+        philosophy=effective_philosophy_sync(db, base),
+    )
+
+    assert rebuilt is item.content_brief
+    assert rebuilt is not original
+    assert "retired avoidance" not in rebuilt["avoid_messages"]
+    assert rebuilt["philosophy_reference"]["director_delta_ids"] == []
+
+
+def test_new_active_delta_invalidates_approved_stub_brief(db):
+    hospital, base = seed(db)
+    item = _stub_content_item()
+    original = prepare_automatic_content_brief_sync(
+        db,
+        item=item,
+        hospital=hospital,
+        philosophy=effective_philosophy_sync(db, base),
+    )
+    assert original["philosophy_reference"]["director_delta_ids"] == []
+
+    delta = create_director_delta(
+        db,
+        hospital.id,
+        DirectorDeltaInput(source="ADMIN", avoid_messages=["new avoidance"]),
+    )
+    rebuilt = prepare_automatic_content_brief_sync(
+        db,
+        item=item,
+        hospital=hospital,
+        philosophy=effective_philosophy_sync(db, base),
+    )
+
+    assert rebuilt is item.content_brief
+    assert rebuilt is not original
+    assert "new avoidance" in rebuilt["avoid_messages"]
+    assert rebuilt["philosophy_reference"]["director_delta_ids"] == [str(delta.id)]
 
 
 def test_retired_and_unrecognized_delta_policy_fields_cannot_weaken_safety(db):
