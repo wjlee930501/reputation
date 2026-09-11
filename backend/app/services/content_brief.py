@@ -272,6 +272,7 @@ def content_brief_matches_inputs(
         isinstance(philosophy_reference, dict)
         and philosophy_reference.get("id") == str(philosophy.id)
         and philosophy_reference.get("version") == getattr(philosophy, "version", None)
+        and "director_delta_ids" in philosophy_reference
         and list(philosophy_reference.get("director_delta_ids") or [])
         == _director_delta_ids(philosophy)
         and source_snapshot == _source_snapshot_reference(philosophy)
