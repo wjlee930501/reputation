@@ -188,6 +188,28 @@ def test_content_brief_match_tracks_normalized_director_delta_ids():
     assert not content_brief_matches_inputs(brief, philosophy=philosophy, query_target=None)
 
 
+def test_legacy_brief_missing_director_delta_ids_does_not_match_empty_delta_set():
+    """Pre-#100 APPROVED briefs omit director_delta_ids; do not treat that as [].
+
+    Otherwise a brief that baked in a later-retired avoid would keep matching once
+    all deltas are retired (both sides look empty) and re-poison generation.
+    """
+    hospital = _hospital()
+    item = _content_item(hospital_id=hospital.id)
+    philosophy = _philosophy()
+    philosophy.director_delta_ids = []
+
+    brief = build_content_brief(
+        hospital=hospital,
+        content_item=item,
+        philosophy=philosophy,
+    )
+    brief["avoid_messages"] = list(brief.get("avoid_messages") or []) + ["retired avoidance"]
+    del brief["philosophy_reference"]["director_delta_ids"]
+
+    assert not content_brief_matches_inputs(brief, philosophy=philosophy, query_target=None)
+
+
 def test_build_content_brief_uses_target_query_instead_of_content_type_as_treatment():
     hospital = _hospital()
     item = _content_item(hospital_id=hospital.id, content_type="DISEASE")
