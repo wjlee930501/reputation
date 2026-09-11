@@ -211,7 +211,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "0072_add_base_essence_flag"
+                "0073_add_director_deltas"
             )
             base = connection.execute(
                 text(
