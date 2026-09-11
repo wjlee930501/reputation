@@ -1597,18 +1597,20 @@ def build_monthly_essence_summary(
     aligned_count = sum(
         1
         for item in generated_items
-        if not source_stale
-        and item.essence_status == ESSENCE_STATUS_ALIGNED
+        if item.essence_status == ESSENCE_STATUS_ALIGNED
         and approved is not None
         and item.content_philosophy_id == approved.id
     )
+    # source_stale is audit metadata only — do not demote ALIGNED into needs_review
+    # solely because sources drifted after approval. Still count real NEEDS_REVIEW,
+    # missing approved, and philosophy-id mismatch vs approved/base.
     needs_review_count = sum(
         1
         for item in generated_items
         if item.essence_status == ESSENCE_STATUS_NEEDS_REVIEW
         or (
             item.essence_status == ESSENCE_STATUS_ALIGNED
-            and (source_stale or approved is None or item.content_philosophy_id != approved.id)
+            and (approved is None or item.content_philosophy_id != approved.id)
         )
     )
     missing_count = sum(

@@ -75,8 +75,8 @@ def monthly_report_delivery_blockers(report: MonthlyReport) -> list[str]:
     essence = report.essence_summary if isinstance(report.essence_summary, dict) else {}
     if not essence.get("approved_philosophy_exists"):
         blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
-    if essence.get("source_stale"):
-        blockers.append("리포트의 콘텐츠 운영 기준이 현재 자료와 일치하지 않습니다.")
+    # source_stale stays in essence_summary as audit metadata only (#95 BaseEssence);
+    # hash drift must not block delivery by itself.
 
     source_count = essence.get("source_count")
     processed_count = essence.get("processed_source_count")

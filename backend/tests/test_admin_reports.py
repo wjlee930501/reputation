@@ -1013,10 +1013,6 @@ def test_report_detail_surfaces_delivery_warnings_without_blocking_readiness():
             "필수 사후검수 샘플",
         ),
         ({"essence_summary": {"approved_philosophy_exists": False}}, "승인된 콘텐츠 운영 기준"),
-        (
-            {"essence_summary": {"approved_philosophy_exists": True, "source_stale": True}},
-            "현재 자료와 일치하지 않습니다",
-        ),
     ],
 )
 async def test_mark_report_sent_blocks_incomplete_delivery(overrides, expected):
@@ -1039,6 +1035,54 @@ async def test_mark_report_sent_blocks_incomplete_delivery(overrides, expected):
     assert any(expected in blocker for blocker in exc.value.detail["blockers"])
     assert report.sent_at is None
     assert db.committed is False
+
+
+async def test_mark_report_sent_allows_source_stale_audit_only(monkeypatch):
+    """Hash drift (source_stale) is audit metadata; alone it must not block delivery."""
+    hospital, report, actor, db = _ready_db()
+    essence = dict(report.essence_summary)
+    essence["source_stale"] = True
+    essence["recommended_actions"] = [
+        "처리된 자료가 승인된 운영 기준과 달라졌습니다. 새 초안을 검토하세요."
+    ]
+    report.essence_summary = essence
+
+    async def _fresh_essence(db, hospital_id):
+        del db, hospital_id
+        philosophy = SimpleNamespace(version=3)
+        return EssenceReadiness(
+            approved=philosophy,
+            current=philosophy,
+            processed_source_count=4,
+            required_source_count=4,
+            current_snapshot_hash="snapshot",
+        )
+
+    monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh_essence)
+
+    from app.services.monthly_report_delivery import monthly_report_delivery_blockers
+
+    assert monthly_report_delivery_blockers(report) == []
+    assert not any(
+        "일치하지 않습니다" in blocker for blocker in monthly_report_delivery_blockers(report)
+    )
+
+    payload = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+        ),
+        db=db,
+        actor=actor,
+    )
+
+    assert report.sent_at is not None
+    assert db.committed is True
+    assert payload["display"]["screening_status"] == "DELIVERED"
+    assert not any(
+        "일치하지 않습니다" in blocker for blocker in (payload.get("delivery_blockers") or [])
+    )
 
 
 async def test_download_report_uses_one_hour_signed_url(monkeypatch):

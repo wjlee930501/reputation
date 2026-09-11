@@ -225,6 +225,46 @@ def test_monthly_summary_excludes_photos_but_blocks_on_pending_text_sources():
     assert "처리되지 않은 온보딩 자료를 처리하거나 제외하세요." in summary["recommended_actions"]
 
 
+def test_monthly_summary_source_stale_does_not_inflate_needs_review_for_aligned():
+    """Hash drift keeps source_stale for audit but ALIGNED+matching id stays aligned."""
+    db = FakeSeedDb()
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="모션랩스정형외과의원",
+        region=["성동구"],
+        treatments=[{"name": "무릎 통증 진료"}],
+    )
+    philosophy = _seed_essence_chain(db, hospital)
+    philosophy.source_snapshot_hash = "stale-hash-drift-for-audit-only"
+    db.add(
+        ContentItem(
+            id=uuid.uuid4(),
+            hospital_id=hospital.id,
+            content_type=ContentType.FAQ,
+            sequence_no=1,
+            total_count=8,
+            title="정렬된 콘텐츠",
+            body="승인된 운영 기준과 일치하는 본문입니다.",
+            scheduled_date=date(2026, 5, 5),
+            status=ContentStatus.PUBLISHED,
+            content_philosophy_id=philosophy.id,
+            essence_status=ESSENCE_STATUS_ALIGNED,
+        )
+    )
+
+    summary = build_monthly_essence_summary(
+        db,
+        hospital,
+        period_start=datetime(2026, 5, 1),
+        period_end=datetime(2026, 5, 31),
+    )
+
+    assert summary["source_stale"] is True
+    assert summary["aligned_content_count"] == 1
+    assert summary["needs_review_content_count"] == 0
+    assert any("달라졌습니다" in action for action in summary["recommended_actions"])
+
+
 def test_monthly_summary_treats_old_philosophy_content_as_needing_review():
     db = FakeSeedDb()
     hospital = SimpleNamespace(
