@@ -77,3 +77,30 @@ def test_delivery_gate_coverage_decision_is_unchanged_for_complete_limited_unava
     assert _gate_code("DEGRADED", {"status": "UNAVAILABLE", "confirmed_slots": 0}).code == (
         "coverage_incomplete"
     )
+
+
+def test_delivery_blockers_ignore_source_stale_audit_flag():
+    from app.services.monthly_report_delivery import monthly_report_delivery_blockers
+
+    report = SimpleNamespace(
+        pdf_path="gs://reputation-reports/demo.pdf",
+        doctor_pdf_path="gs://reputation-reports/demo_doctor.pdf",
+        sov_summary={"sov_pct": 42.0},
+        content_summary={
+            "published_count": 8,
+            "operations": {"delivery_blockers": []},
+        },
+        essence_summary={
+            "approved_philosophy_exists": True,
+            "source_count": 4,
+            "processed_source_count": 4,
+            "source_stale": True,
+            "needs_review_content_count": 0,
+            "missing_philosophy_content_count": 0,
+            "medical_risk_findings": [],
+        },
+    )
+    blockers = monthly_report_delivery_blockers(report)
+    assert blockers == []
+    assert not any("일치하지 않습니다" in b for b in blockers)
+
