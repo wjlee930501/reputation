@@ -86,6 +86,8 @@ def build_content_brief(
         "target_revision": _target_revision(query_target),
         "treatment_narrative": treatment_narrative,
         "must_use_messages": _list(getattr(philosophy, "must_use_messages", None)),
+        "prefer_topics": _list(getattr(philosophy, "prefer_topics", None)),
+        "prefer_messages": _list(getattr(philosophy, "prefer_messages", None)),
         "avoid_messages": safety_policy["avoid_messages"],
         "medical_risk_rules": safety_policy["medical_ad_risk_rules"],
         # 이 함수는 현재 슬롯 외의 콘텐츠를 조회하지 않는다. 현재 글 자신을 링크
@@ -208,6 +210,7 @@ def _philosophy_reference(philosophy: HospitalContentPhilosophy | None) -> dict[
     return {
         "id": str(philosophy.id),
         "version": getattr(philosophy, "version", None),
+        "director_delta_ids": _director_delta_ids(philosophy),
         "positioning_statement": getattr(philosophy, "positioning_statement", None),
         "doctor_voice": getattr(philosophy, "doctor_voice", None),
         "patient_promise": getattr(philosophy, "patient_promise", None),
@@ -227,6 +230,12 @@ def _source_snapshot_reference(
             str(value) for value in (getattr(philosophy, "source_asset_ids", None) or [])
         ),
     }
+
+
+def _director_delta_ids(philosophy: HospitalContentPhilosophy) -> list[str]:
+    return sorted(
+        {str(value) for value in (getattr(philosophy, "director_delta_ids", None) or [])}
+    )
 
 
 def _target_revision(query_target: AIQueryTarget | None) -> str | None:
@@ -263,6 +272,8 @@ def content_brief_matches_inputs(
         isinstance(philosophy_reference, dict)
         and philosophy_reference.get("id") == str(philosophy.id)
         and philosophy_reference.get("version") == getattr(philosophy, "version", None)
+        and list(philosophy_reference.get("director_delta_ids") or [])
+        == _director_delta_ids(philosophy)
         and source_snapshot == _source_snapshot_reference(philosophy)
         and brief.get("target_revision") == _target_revision(query_target)
     )

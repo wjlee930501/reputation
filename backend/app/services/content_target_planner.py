@@ -55,7 +55,15 @@ def prepare_automatic_content_brief_sync(
     # Lightweight stubs and imported legacy rows may not expose the linkage columns.
     # They still receive a philosophy-backed generic brief without attempting DB planning.
     if not hasattr(item, "query_target_id"):
-        if item.brief_status == BRIEF_STATUS_APPROVED and isinstance(item.content_brief, dict):
+        if (
+            item.brief_status == BRIEF_STATUS_APPROVED
+            and isinstance(item.content_brief, dict)
+            and content_brief_matches_inputs(
+                item.content_brief,
+                philosophy=philosophy,
+                query_target=None,
+            )
+        ):
             return {**item.content_brief, "planned_publish_date": planned_publish_date}
         brief = build_content_brief(
             hospital=hospital,

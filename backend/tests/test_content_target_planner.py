@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.content import ContentType
-from app.services.content_brief import BRIEF_STATUS_APPROVED
+from app.services.content_brief import BRIEF_STATUS_APPROVED, build_content_brief
 from app.services.content_target_planner import (
     AFFINITY_EXACT,
     AFFINITY_MISMATCH,
@@ -229,17 +229,27 @@ def test_legacy_targets_are_backfilled_before_ranking():
 
 
 def test_existing_approved_brief_receives_current_planned_publish_date() -> None:
+    hospital = SimpleNamespace(id=uuid.uuid4(), treatments=[])
+    philosophy = SimpleNamespace(id=uuid.uuid4(), version=1)
     item = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_type="FAQ",
+        title="수원 변비 검사",
         brief_status=BRIEF_STATUS_APPROVED,
-        content_brief={"target_query": "수원 변비 검사"},
+        content_brief=None,
         scheduled_date=date(2026, 7, 31),
+    )
+    item.content_brief = build_content_brief(
+        hospital=hospital,
+        content_item=item,
+        philosophy=philosophy,
     )
 
     result = prepare_automatic_content_brief_sync(
         None,
         item=item,
-        hospital=SimpleNamespace(),
-        philosophy=SimpleNamespace(),
+        hospital=hospital,
+        philosophy=philosophy,
     )
 
     assert result["planned_publish_date"] == "2026-07-31"

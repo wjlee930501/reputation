@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from app.api.admin import content as content_api
 from app.schemas.content import ContentBriefUpdate
 from app.services.audit_log import reset_request_actor, set_request_actor
-from app.services.content_brief import build_content_brief
+from app.services.content_brief import build_content_brief, content_brief_matches_inputs
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
@@ -163,6 +163,29 @@ def test_build_content_brief_uses_query_target_action_and_philosophy():
     assert brief["medical_risk_rules"][0] == "치료 효과를 보장하지 않습니다."
     assert any("완치·안전성을 단정" in item for item in brief["medical_risk_rules"])
     assert brief["internal_link_target"] is None
+
+
+def test_content_brief_match_tracks_normalized_director_delta_ids():
+    hospital = _hospital()
+    item = _content_item(hospital_id=hospital.id)
+    philosophy = _philosophy()
+    first_delta_id = uuid.uuid4()
+    second_delta_id = uuid.uuid4()
+    philosophy.director_delta_ids = [second_delta_id, first_delta_id, second_delta_id]
+
+    brief = build_content_brief(
+        hospital=hospital,
+        content_item=item,
+        philosophy=philosophy,
+    )
+
+    assert brief["philosophy_reference"]["director_delta_ids"] == sorted(
+        [str(first_delta_id), str(second_delta_id)]
+    )
+    assert content_brief_matches_inputs(brief, philosophy=philosophy, query_target=None)
+
+    philosophy.director_delta_ids = [first_delta_id]
+    assert not content_brief_matches_inputs(brief, philosophy=philosophy, query_target=None)
 
 
 def test_build_content_brief_uses_target_query_instead_of_content_type_as_treatment():

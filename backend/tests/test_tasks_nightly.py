@@ -2243,6 +2243,8 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
 
 def test_drifted_source_hash_still_allows_generation(monkeypatch):
     """A stable base remains writable while newly processed sources are absorbed."""
+    from app.models.director_delta import DirectorDelta
+
     hospital = SimpleNamespace(id=uuid.uuid4(), name="승인의원", slug="approved-clinic")
     processed = SimpleNamespace(
         id=uuid.uuid4(),
@@ -2260,6 +2262,7 @@ def test_drifted_source_hash_still_allows_generation(monkeypatch):
         processed_at=arrow.get(2026, 8, 19).datetime,
     )
     approved = SimpleNamespace(
+        hospital_id=hospital.id,
         id=uuid.uuid4(),
         status=PhilosophyStatus.APPROVED,
         source_snapshot_hash=compute_sources_snapshot_hash([processed]),
@@ -2313,7 +2316,7 @@ def test_drifted_source_hash_still_allows_generation(monkeypatch):
             if entity is HospitalSourceAsset:
                 return SourcesResult(self.sources)
             # readiness는 제외된 근거 노트의 noise hash도 확인한다 — 이 병원엔 없다.
-            if entity is HospitalSourceEvidenceNote:
+            if entity in (HospitalSourceEvidenceNote, DirectorDelta):
                 return SourcesResult([])
             raise AssertionError(f"unexpected entity: {entity}")
 

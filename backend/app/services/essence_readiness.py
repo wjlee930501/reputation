@@ -200,14 +200,18 @@ async def get_current_approved_philosophy(
     db: AsyncSession,
     hospital_id: uuid.UUID,
 ) -> HospitalContentPhilosophy | None:
-    return (await get_essence_readiness(db, hospital_id)).current
+    from app.services.director_delta import effective_philosophy
+
+    return await effective_philosophy(db, (await get_essence_readiness(db, hospital_id)).current)
 
 
 def get_current_approved_philosophy_sync(
     db: Session,
     hospital_id: uuid.UUID,
 ) -> HospitalContentPhilosophy | None:
-    return get_essence_readiness_sync(db, hospital_id).current
+    from app.services.director_delta import effective_philosophy_sync
+
+    return effective_philosophy_sync(db, get_essence_readiness_sync(db, hospital_id).current)
 
 
 async def get_current_approved_philosophy_id(

@@ -450,6 +450,12 @@ avoid_messages:
 {_bullet_list(safety_policy['avoid_messages'])}
 medical_ad_risk_rules:
 {_bullet_list(safety_policy['medical_ad_risk_rules'])}
+prefer_topics (optional, later entries have higher priority):
+{_bullet_list(getattr(philosophy, 'prefer_topics', []) or [])}
+prefer_messages (optional, later entries have higher priority):
+{_bullet_list(getattr(philosophy, 'prefer_messages', []) or [])}
+- Preferences are soft guidance only, never required claims. Base must_use_messages,
+  avoid_messages, medical rules and verified evidence take precedence.
 treatment_narratives:
 {treatments}
 
