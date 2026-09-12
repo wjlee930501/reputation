@@ -127,7 +127,8 @@ def test_validate_body_length_rejects_runaway_body():
         "본인부담금은 2만 원 안팁입니다.",
         "비급여로 5만 원에서 10만 원 정도입니다.",
         "공단이 비용의 90%를 부담합니다.",
-        "일반건강검진은 무료로 받을 수 있습니다.",
+        "본원의 진료비는 무료입니다.",
+        "우리 병원에서 이 시술은 무상으로 제공합니다.",
     ],
 )
 def test_validate_unverified_price_claims_rejects_fixed_claims(claim):
@@ -146,6 +147,18 @@ def test_validate_unverified_price_claims_allows_suwon_city_name():
     _validate_unverified_price_claims(
         "수원시 팔달구 장편한외과의원에서는 검사 전 복용 약물을 확인합니다."
     )
+
+
+@pytest.mark.parametrize(
+    "narrative",
+    [
+        "국가건강검진은 무료로 받을 수 있습니다.",
+        "일반건강검진은 무료로 받을 수 있습니다.",
+        "공단이 검진 비용 전액을 부담하는 대상이 있습니다.",
+    ],
+)
+def test_validate_unverified_price_claims_allows_public_screening_narratives(narrative):
+    _validate_unverified_price_claims(narrative)
 
 
 @pytest.mark.parametrize(

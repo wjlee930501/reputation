@@ -387,6 +387,61 @@ async def test_price_geo_seo_value_error_rewrites_in_the_same_tick(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_season_title_soft_finding_requests_only_one_rewrite(monkeypatch):
+    calls = []
+    finding = (
+        "제목 계절-발행월 불일치: title season '봄' does not match "
+        "planned_publish_date 2026-07-31"
+    )
+
+    async def keep_year_round_candidate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "봄철 건강 관리",
+            "body": "본문",
+            "seo_geo_findings": [finding],
+        }
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", keep_year_round_candidate)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="HEALTH", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"planned_publish_date": "2026-07-31"},
+    )
+
+    assert len(calls) == 2
+    assert calls == [[], [finding]]
+    assert content["title"] == "봄철 건강 관리"
+    assert screening.status == "ALIGNED"
+    assert screening.summary["season_title_findings"] == [finding]
+    assert screening.summary["automatic_remediation_attempts"] == 1
+
+
+@pytest.mark.asyncio
 async def test_independent_ai_review_requests_one_bounded_rewrite(monkeypatch):
     generation_findings = []
     reviews = 0

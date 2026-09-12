@@ -102,18 +102,20 @@ class TestValidateSeo:
         with pytest.raises(ValueError, match="must not contain an H1"):
             _validate_seo(result, h, None, ContentType.DISEASE)
 
-    def test_seasonal_title_must_match_planned_publish_date(self):
+    def test_mismatched_seasonal_title_is_a_soft_rewrite_finding(self):
         h = _hospital()
         result = _good_result(h)
         result["title"] = "봄철 어깨 통증 관리"
 
-        with pytest.raises(ValueError, match="title season '봄'.*2026-07-31"):
-            _validate_seo(
-                result,
-                h,
-                {"planned_publish_date": "2026-07-31"},
-                ContentType.HEALTH,
-            )
+        findings = _validate_seo(
+            result,
+            h,
+            {"planned_publish_date": "2026-07-31"},
+            ContentType.HEALTH,
+        )
+
+        assert any("계절-발행월 불일치" in finding for finding in findings)
+        assert any("title season '봄'" in finding for finding in findings)
 
     def test_matching_seasonal_title_is_allowed(self):
         h = _hospital()
@@ -331,6 +333,28 @@ class TestValidateGeo:
         result = _good_result()
         with pytest.raises(ValueError, match="지역 엔티티"):
             _validate_geo(result, h, ContentType.FAQ)
+
+    @pytest.mark.parametrize(
+        ("profile_region", "body_region"),
+        [
+            ("노원구", "노원"),
+            ("노원", "노원구"),
+            ("강남구", "강남"),
+            ("강남", "강남구"),
+            ("수원시", "수원"),
+            ("수원", "수원시"),
+        ],
+    )
+    def test_region_administrative_suffix_is_normalized(
+        self, profile_region, body_region
+    ):
+        h = _hospital(region=[profile_region])
+        result = _good_result(h)
+        result["body"] = result["body"].replace(profile_region, body_region)
+
+        findings = _validate_geo(result, h, ContentType.DISEASE)
+
+        assert isinstance(findings, list)
 
     def test_missing_stat_pattern_is_soft_finding(self):
         """숫자/통계 패턴이 없으면 soft finding"""

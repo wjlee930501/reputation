@@ -78,7 +78,11 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     review_generated_content,
 )
-from app.services.content_engine import EXISTING_TITLE_PROMPT_LIMIT, generate_content
+from app.services.content_engine import (
+    EXISTING_TITLE_PROMPT_LIMIT,
+    SEASON_MISMATCH_FINDING_PREFIX,
+    generate_content,
+)
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     apply_publication_assessment,
@@ -827,9 +831,9 @@ async def _generate_with_auto_review(
     findings = _review_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
-    # 측정 질의 키워드 미반영은 **한 번만** 보완 재작성을 부른다. 하드 게이트로 올리면
-    # 한국어 형태 변화 때문에 정상 글이 버려지고, 무제한 재시도로 두면 비용만 늘어난다.
-    alignment_remediation_used = False
+    # 측정 질의 키워드 미반영과 계절-발행월 불일치는 **합쳐서 한 번만** 보완 재작성을
+    # 부른다. 하드 게이트로 올리면 정상 글이 버려지고, 무제한 재시도는 비용만 늘어난다.
+    bounded_soft_remediation_used = False
     last_content: dict | None = None
     last_screening = None
     last_ai_review = None
@@ -870,13 +874,19 @@ async def _generate_with_auto_review(
         # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
         # (content_engine._validate_target_alignment가 채운다)
         alignment_findings = list(last_content.get("target_alignment_findings") or [])
+        season_findings = [
+            finding
+            for finding in (last_content.get("seo_geo_findings") or [])
+            if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
+        ]
+        bounded_soft_findings = alignment_findings + season_findings
         if (
-            alignment_findings
-            and not alignment_remediation_used
+            bounded_soft_findings
+            and not bounded_soft_remediation_used
             and generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS
         ):
-            alignment_remediation_used = True
-            findings = alignment_findings
+            bounded_soft_remediation_used = True
+            findings = bounded_soft_findings
             continue
 
         last_ai_review = None
@@ -951,6 +961,13 @@ async def _generate_with_auto_review(
     residual_alignment = list(last_content.get("target_alignment_findings") or [])
     if residual_alignment:
         summary["target_alignment_findings"] = residual_alignment
+    residual_season = [
+        finding
+        for finding in (last_content.get("seo_geo_findings") or [])
+        if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
+    ]
+    if residual_season:
+        summary["season_title_findings"] = residual_season
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:

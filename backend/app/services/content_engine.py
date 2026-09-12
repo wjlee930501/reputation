@@ -80,8 +80,9 @@ UNVERIFIED_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\d+(?:\.\d+)?\s*%.{0,40}"
         r"(?:본인\s*부담|건강보험|공단|보험\s*적용|비용)"
     ),
-    re.compile(r"(?:무료|무상|본인이\s*내는\s*금액이\s*없)"),
-    re.compile(r"(?:공단|건강보험).{0,30}전액\s*부담"),
+    # 공적 건강검진 제도 설명까지 "무료" 한 단어로 폐기하지 않는다. 병원 자체의
+    # 무상 제공 주장만 hard-fail하고 구체 금액·부담률 패턴은 위에서 계속 막는다.
+    re.compile(r"(?:본원|우리\s*병원|이\s*시술|진료비).{0,30}(?:무료|무상)"),
 )
 SEASON_MONTHS = {
     "봄": {3, 4, 5},
@@ -89,6 +90,7 @@ SEASON_MONTHS = {
     "가을": {9, 10, 11},
     "겨울": {12, 1, 2},
 }
+SEASON_MISMATCH_FINDING_PREFIX = "제목 계절-발행월 불일치"
 
 
 class MissingCitableReferencesError(ValueError):
@@ -1065,9 +1067,9 @@ def _validate_seo(
             planned_month = 0
         for season, months in SEASON_MONTHS.items():
             if season in title and planned_month and planned_month not in months:
-                raise ValueError(
-                    f"SEO hard-fail: title season '{season}' does not match "
-                    f"planned_publish_date {planned_date}"
+                findings.append(
+                    f"{SEASON_MISMATCH_FINDING_PREFIX}: title season '{season}' does not "
+                    f"match planned_publish_date {planned_date}"
                 )
 
     if re.search(r"^#\s+\S", body, flags=re.MULTILINE):
@@ -1213,8 +1215,19 @@ def _validate_geo(
         )
 
     # ── HARD: 지역명 공출현 (region 중 하나라도 있으면 통과) ──────────
+    # 행정구역 접미사만 다른 표기(노원구↔노원, 수원시↔수원)는 같은 엔티티다.
+    # 병원명과 원장명은 위에서 계속 exact match하며, 지역 자체가 없으면 hard-fail한다.
     regions = [r for r in (hospital.region or []) if r]
-    if regions and not any(r in body for r in regions):
+    region_variants = {
+        variant
+        for region in regions
+        for variant in {
+            str(region).strip(),
+            re.sub(r"(?<=[가-힣])(?:구|시)$", "", str(region).strip()),
+        }
+        if variant
+    }
+    if regions and not any(region in body for region in region_variants):
         raise ValueError(f"GEO hard-fail: 지역 엔티티 {regions} body 미포함")
 
     # ── SOFT: 통계/수치 proxy ────────────────────────────────────────
