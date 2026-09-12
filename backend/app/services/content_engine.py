@@ -82,13 +82,23 @@ UNVERIFIED_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 # 구체 금액·부담률은 위 패턴으로 문맥과 무관하게 계속 막는다. "무료/무상"은
-# 병원 자체 제공 주장만 hard-fail하되, 같은 claim window의 공적 건강검진
-# 설명은 예외로 둔다.
+# 병원 자체 제공 주장만 hard-fail하되, 무료/무상의 대상이 공적 건강검진인
+# 경우만 예외로 둔다.
 _HOSPITAL_SELF_FREE_PATTERN = re.compile(
     r"(?:본원|저희\s*병원|우리\s*병원|이\s*시술|진료비)[^.?!\n]{0,30}"
     r"(?:무료|무상)"
 )
-_PUBLIC_SCREENING_KEYWORD_PATTERN = re.compile(r"국가건강검진|일반건강검진|공단")
+_PUBLIC_SCREENING_FREE_CLAIM_PATTERN = re.compile(
+    r"(?:국가건강검진|일반건강검진|공단\s*(?:건강)?검진)"
+    r"(?:은|는|이|가|을|를|도)?\s*"
+    r"(?:(?:본원|저희\s*병원|우리\s*병원)에서\s*)?(?:무료|무상)"
+    r"|(?:무료|무상)(?:로)?\s*(?:받을\s*수\s*있는\s*)?"
+    r"(?:국가건강검진|일반건강검진|공단\s*(?:건강)?검진)"
+)
+_HOSPITAL_CARE_FREE_CLAIM_PATTERN = re.compile(
+    r"(?:진료비|진료|시술)(?:\s*비용)?(?:은|는|이|가|을|를)?\s*(?:무료|무상)"
+    r"|(?:무료|무상)(?:로)?\s*(?:진료비|진료|시술)"
+)
 _FREE_CLAIM_WINDOW_CHARS = 40
 SEASON_MONTHS = {
     "봄": {3, 4, 5},
@@ -1043,10 +1053,15 @@ def _validate_unverified_price_claims(value: object) -> None:
                 f"{match.group(0)[:80]}"
             )
 
-    for match in _HOSPITAL_SELF_FREE_PATTERN.finditer(compact):
+    sentence_bounded = re.sub(
+        r"[^\S\n]+", " ", value.replace("\r\n", "\n").replace("\r", "\n")
+    )
+    for match in _HOSPITAL_SELF_FREE_PATTERN.finditer(sentence_bounded):
         window_start = max(0, match.start() - _FREE_CLAIM_WINDOW_CHARS)
-        window_end = min(len(compact), match.end() + _FREE_CLAIM_WINDOW_CHARS)
-        claim_window = compact[window_start:window_end]
+        window_end = min(
+            len(sentence_bounded), match.end() + _FREE_CLAIM_WINDOW_CHARS
+        )
+        claim_window = sentence_bounded[window_start:window_end]
         match_start_in_window = match.start() - window_start
         match_end_in_window = match.end() - window_start
         left_boundary = max(
@@ -1059,7 +1074,10 @@ def _validate_unverified_price_claims(value: object) -> None:
         ]
         right_boundary = min(right_boundaries, default=len(claim_window))
         claim_window = claim_window[left_boundary + 1 : right_boundary]
-        if _PUBLIC_SCREENING_KEYWORD_PATTERN.search(claim_window):
+        if (
+            not _HOSPITAL_CARE_FREE_CLAIM_PATTERN.search(claim_window)
+            and _PUBLIC_SCREENING_FREE_CLAIM_PATTERN.search(claim_window)
+        ):
             continue
         raise ValueError(
             "Generated content contains an unverified fixed price or coverage claim: "

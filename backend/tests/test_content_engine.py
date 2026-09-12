@@ -166,11 +166,17 @@ def test_validate_unverified_price_claims_allows_public_screening_narratives(nar
     _validate_unverified_price_claims(narrative)
 
 
-def test_public_screening_in_an_adjacent_sentence_does_not_exempt_hospital_free_care():
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "국가건강검진 일정을 안내합니다. 저희 병원은 무료 진료를 제공합니다.",
+        "국가건강검진과 별도로 저희 병원은 무료 진료를 제공합니다",
+        "국가건강검진 안내\n저희 병원은 무료 진료를 제공합니다",
+    ],
+)
+def test_public_screening_context_does_not_exempt_hospital_free_care(claim):
     with pytest.raises(ValueError, match="unverified fixed price"):
-        _validate_unverified_price_claims(
-            "국가건강검진 일정을 안내합니다. 저희 병원은 무료 진료를 제공합니다."
-        )
+        _validate_unverified_price_claims(claim)
 
 
 @pytest.mark.parametrize(
