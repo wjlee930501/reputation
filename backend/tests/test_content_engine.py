@@ -132,6 +132,8 @@ def test_validate_body_length_rejects_runaway_body():
         "저희 병원은 무료 진료를 제공합니다.",
         "우리병원은 무료 진료를 제공합니다.",
         "우리 병원에서 이 시술은 무상으로 제공합니다.",
+        "진료를 전액 무료로 제공합니다.",
+        "시술 후 관리를 무료로 제공합니다.",
     ],
 )
 def test_validate_unverified_price_claims_rejects_fixed_claims(claim):
@@ -172,6 +174,7 @@ def test_validate_unverified_price_claims_allows_public_screening_narratives(nar
         "국가건강검진 일정을 안내합니다. 저희 병원은 무료 진료를 제공합니다.",
         "국가건강검진과 별도로 저희 병원은 무료 진료를 제공합니다",
         "국가건강검진 안내\n저희 병원은 무료 진료를 제공합니다",
+        "국가건강검진은 무료이며 저희 병원은 진료를 전액 무료로 제공합니다",
     ],
 )
 def test_public_screening_context_does_not_exempt_hospital_free_care(claim):

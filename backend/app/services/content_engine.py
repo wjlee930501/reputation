@@ -96,10 +96,12 @@ _PUBLIC_SCREENING_FREE_CLAIM_PATTERN = re.compile(
     r"(?:국가건강검진|일반건강검진|공단\s*(?:건강)?검진)"
 )
 _HOSPITAL_CARE_FREE_CLAIM_PATTERN = re.compile(
-    r"(?:진료비|진료|시술)(?:\s*비용)?(?:은|는|이|가|을|를)?\s*(?:무료|무상)"
-    r"|(?:무료|무상)(?:로)?\s*(?:진료비|진료|시술)"
+    r"(?:진료비|진료|시술)(?:\s*비용)?(?:은|는|이|가|을|를)?"
+    r"[^.?!\n]{0,20}?(?:전액\s*)?(?:무료|무상)(?:로)?(?:\s*제공)?"
+    r"|(?:전액\s*)?(?:무료|무상)(?:로)?(?:\s*제공(?:하는|되는)?)?"
+    r"\s*(?:진료비|진료|시술)"
 )
-_FREE_CLAIM_WINDOW_CHARS = 40
+_FREE_TERM_PATTERN = re.compile(r"무료|무상")
 SEASON_MONTHS = {
     "봄": {3, 4, 5},
     "여름": {6, 7, 8},
@@ -1056,33 +1058,24 @@ def _validate_unverified_price_claims(value: object) -> None:
     sentence_bounded = re.sub(
         r"[^\S\n]+", " ", value.replace("\r\n", "\n").replace("\r", "\n")
     )
-    for match in _HOSPITAL_SELF_FREE_PATTERN.finditer(sentence_bounded):
-        window_start = max(0, match.start() - _FREE_CLAIM_WINDOW_CHARS)
-        window_end = min(
-            len(sentence_bounded), match.end() + _FREE_CLAIM_WINDOW_CHARS
-        )
-        claim_window = sentence_bounded[window_start:window_end]
-        match_start_in_window = match.start() - window_start
-        match_end_in_window = match.end() - window_start
-        left_boundary = max(
-            claim_window.rfind(mark, 0, match_start_in_window) for mark in ".!?\n"
-        )
-        right_boundaries = [
-            position
-            for mark in ".!?\n"
-            if (position := claim_window.find(mark, match_end_in_window)) != -1
-        ]
-        right_boundary = min(right_boundaries, default=len(claim_window))
-        claim_window = claim_window[left_boundary + 1 : right_boundary]
-        if (
-            not _HOSPITAL_CARE_FREE_CLAIM_PATTERN.search(claim_window)
-            and _PUBLIC_SCREENING_FREE_CLAIM_PATTERN.search(claim_window)
-        ):
-            continue
-        raise ValueError(
-            "Generated content contains an unverified fixed price or coverage claim: "
-            f"{match.group(0)[:80]}"
-        )
+    # 공적 검진 예외는 같은 문장/창이 아니라 같은 무료·무상 토큰에만 붙는다.
+    public_screening_free_spans = {
+        (claim.start() + term.start(), claim.start() + term.end())
+        for claim in _PUBLIC_SCREENING_FREE_CLAIM_PATTERN.finditer(sentence_bounded)
+        for term in _FREE_TERM_PATTERN.finditer(claim.group(0))
+    }
+    for pattern in (_HOSPITAL_SELF_FREE_PATTERN, _HOSPITAL_CARE_FREE_CLAIM_PATTERN):
+        for match in pattern.finditer(sentence_bounded):
+            match_free_spans = {
+                (match.start() + term.start(), match.start() + term.end())
+                for term in _FREE_TERM_PATTERN.finditer(match.group(0))
+            }
+            if match_free_spans and match_free_spans <= public_screening_free_spans:
+                continue
+            raise ValueError(
+                "Generated content contains an unverified fixed price or coverage claim: "
+                f"{match.group(0)[:80]}"
+            )
 
 
 def _validate_seo(
