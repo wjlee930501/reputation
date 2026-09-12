@@ -346,6 +346,35 @@ def is_whitelisted_url(url: str) -> bool:
     return False
 
 
+_DOMAIN_TO_INSTITUTION_NAME: dict[str, str] = {
+    item["domain"]: item["name"]
+    for group in (KR_PUBLIC_SOURCES, KR_ACADEMIC_SOURCES, US_GLOBAL_SOURCES, ENCYCLOPEDIA_SOURCES)
+    for item in group
+}
+
+
+def institution_label_for_url(url: str) -> str | None:
+    """화이트리스트 URL을 기관 이름 기반의 중립 표기로 되돌린다.
+
+    참고자료 제목은 URL과 달리 모델의 자유 텍스트다. 공신력 도메인 문서에 광고 문구
+    제목("부작용 없는 치료 안내")이 붙어도 그대로 두면 공개 표면과 JSON-LD
+    citation.name 으로 나간다. 제목만 기관 표기로 바꾸면 근거(URL)는 지키면서 그
+    노출을 없앨 수 있다. 화이트리스트 밖 URL은 애초에 참고자료로 인정하지 않으므로
+    None 을 돌려준다.
+    """
+    hostname = _extract_hostname(url)
+    if not hostname:
+        return None
+    matched = [
+        domain for domain in _DOMAIN_TO_INSTITUTION_NAME if _matches_domain(hostname, domain)
+    ]
+    if not matched:
+        return None
+    # 가장 구체적인 도메인(health.kdca.go.kr > kdca.go.kr)의 이름을 쓴다.
+    name = _DOMAIN_TO_INSTITUTION_NAME[max(matched, key=len)]
+    return f"{name} 자료"
+
+
 def is_citable_reference_url(url: str) -> bool:
     """공신력 도메인의 특정 자료 URL인지 확인한다.
 

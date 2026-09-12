@@ -98,6 +98,42 @@ def write_back_generated_image(
     return result.rowcount
 
 
+def write_back_published_image(
+    db,
+    *,
+    item_id,
+    expected_title: str | None,
+    expected_revision: int,
+    values: dict[str, Any],
+) -> int:
+    """공개 중인 글의 대표 이미지 자체를 바꾼다. 판(content_revision)은 올리지 않는다.
+
+    빌려온 이미지를 그 글의 주제 이미지로 교체하는 사후 스윕이 쓴다. 본문 후보는 그대로이므로
+    판을 올리지 않고(올리면 후보 hash에 매인 검수·인증이 통째로 무효가 된다), 대신 제목과
+    판이 그대로일 때만 저장한다 — 그 사이 편집이 있었다면 그 편집이 자기 경로로 다시 요청한다.
+    새 인증 필드(내용 hash·주제 hash·정책 버전·검수 시각)와 재사용 marker 해제는 호출부가
+    한 `values`에 담아 **한 UPDATE로** 쓴다. 나눠 쓰면 그 사이에 marker만 풀린 미인증
+    이미지가 공개 판정에 노출된다.
+    """
+    title_clause = (
+        ContentItem.title.is_(None)
+        if expected_title is None
+        else ContentItem.title == expected_title
+    )
+    result = db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.id == item_id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+            title_clause,
+            ContentItem.content_revision == expected_revision,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount
+
+
 def write_back_published_image_certificate(
     db,
     *,

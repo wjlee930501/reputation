@@ -229,6 +229,12 @@ class ContentItem(Base):
     image_content_hash: Mapped[str | None] = mapped_column(String(64))
     image_subject_hash: Mapped[str | None] = mapped_column(String(64))
     image_policy_version: Mapped[str | None] = mapped_column(String(40))
+    # 이 글의 대표 이미지를 빌려온 원본 글. 값이 있으면 인증의 결합 대상은 이 글의
+    # 제목이 아니라 원본이며(`image_subject_hash`는 원본의 값 그대로다), 사후 교체
+    # 스윕이 자기 주제 이미지를 만들어 붙이면 NULL로 돌아간다. migration 0074.
+    image_reused_from_content_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("content_items.id", ondelete="SET NULL")
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

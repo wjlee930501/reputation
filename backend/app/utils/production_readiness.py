@@ -46,6 +46,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "nightly-content-generation",
     "overnight-content-generation-recovery",
     "prepublish-content-generation-recovery",
+    "refresh-reused-content-images",
     "morning-content-auto-publish",
     "project-milestone-events",
     "purge-expired-leads",
@@ -95,6 +96,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.nightly_content_generation",
     "app.workers.tasks.overnight_content_generation_recovery",
     "app.workers.tasks.prepublish_content_generation_recovery",
+    "app.workers.published_image_refresh.refresh_reused_content_images",
     "app.workers.tasks.process_source_asset_task",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.regenerate_content_item",
@@ -186,6 +188,7 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.naver_sync  # noqa: F401, PLC0415
     import app.workers.notification_tasks  # noqa: F401, PLC0415
     import app.workers.provider_usage_recovery  # noqa: F401, PLC0415
+    import app.workers.published_image_refresh  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415
 
     registered = set(celery_app.tasks)

@@ -19,7 +19,7 @@ from app.workers.runtime_queue_observability import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-09-12.1"
+REDBEAT_SCHEDULE_VERSION = "2026-09-12.2"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -108,6 +108,7 @@ celery_app = Celery(
         "app.workers.canary_tasks",
         "app.workers.indexnow_retry",
         "app.workers.provider_usage_recovery",
+        "app.workers.published_image_refresh",
     ],
 )
 
@@ -228,6 +229,9 @@ celery_app.conf.update(
             ],
         },
         "app.workers.content_backlog_recovery.reconcile": {"queue": "default"},
+        "app.workers.published_image_refresh.refresh_reused_content_images": {
+            "queue": "content"
+        },
         "app.workers.domain_certificate_tasks.provision_domain_certificate": {
             "queue": "certificates"
         },
@@ -259,6 +263,14 @@ celery_app.conf.update(
             "options": {
                 "headers": build_dispatch_headers("overnight-content-generation-recovery")
             },
+        },
+        # 01:20 · 04:20 · 07:20 — 발행 때 같은 병원의 인증된 이미지를 빌린 글에
+        # 그 글의 주제 이미지를 만들어 바꿔 단다. 실패해도 빌린 인증은 유효하므로
+        # 공개 글이 그림을 잃지 않는다. 이미지 재시도 예산은 야간 스윕과 공유한다.
+        "refresh-reused-content-images": {
+            "task": "app.workers.published_image_refresh.refresh_reused_content_images",
+            "schedule": crontab(hour="1,4,7", minute=20),
+            "options": {"headers": build_dispatch_headers("refresh-reused-content-images")},
         },
         "prepublish-content-generation-recovery": {
             "task": "app.workers.tasks.prepublish_content_generation_recovery",

@@ -60,6 +60,9 @@ TASK_PURPOSES = {
     "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": "drain-lead-diagnoses",
     "app.workers.autonomous_recovery.reconcile": "reconcile-autonomous-workflows",
     "app.workers.content_backlog_recovery.reconcile": "reconcile-stranded-content",
+    "app.workers.published_image_refresh.refresh_reused_content_images": (
+        "refresh-reused-content-images"
+    ),
     "app.workers.domain_certificate_tasks.provision_domain_certificate": (
         "provision-domain-certificate"
     ),

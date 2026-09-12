@@ -1089,25 +1089,43 @@ def _reference_title_result(references: list[dict]) -> dict:
     }
 
 
-def test_authority_document_titles_do_not_discard_a_whole_article():
-    """외부 기관의 공식 문서 제목은 우리가 지은 광고 문구가 아니다.
+def test_unsafe_title_on_an_authority_document_is_replaced_not_published():
+    """제목은 URL과 달리 모델 자유 텍스트다 — 공신력 문서에 붙어도 그대로 내보내지 않는다.
 
-    근거를 제대로 단 글일수록 폐기되던 원인 — 주입한 큐레이션 출처 제목이 같은
-    금지 표현 검사를 통과해야 했다.
+    제목만 기관 표기로 바꾸면 근거(URL)는 지키면서 공개 표면·JSON-LD citation.name
+    노출을 없앨 수 있고, 이 때문에 글 한 편을 다시 살 필요도 없다.
     """
     hospital = SimpleNamespace(
         name="테스트병원", director_name="김원장", region=["강남"], keywords=["대장용종"]
     )
     result = _reference_title_result(
-        [{"title": "국가건강정보포털 — 대장용종 완치율 통계", "url": _CURATED_DOCUMENT_URL}]
+        [{"title": "부작용 없는 치료 안내", "url": _CURATED_DOCUMENT_URL}]
     )
 
     saved = _validate_generated_result(result, hospital, ContentType.DISEASE, None)
 
     assert saved["references"][0]["url"] == _CURATED_DOCUMENT_URL
+    assert saved["references"][0]["title"] == "질병관리청 국가건강정보포털 자료"
+    assert check_forbidden_content_fields(
+        {"reference_titles": saved["references"][0]["title"]}, ("reference_titles",)
+    ) == []
 
 
-def test_model_invented_reference_titles_are_still_screened():
+def test_safe_reference_titles_are_left_exactly_as_written():
+    hospital = SimpleNamespace(
+        name="테스트병원", director_name="김원장", region=["강남"], keywords=["대장용종"]
+    )
+    result = _reference_title_result(
+        [{"title": "질병관리청 국가건강정보포털 — 대장용종", "url": _CURATED_DOCUMENT_URL}]
+    )
+
+    saved = _validate_generated_result(result, hospital, ContentType.DISEASE, None)
+
+    assert saved["references"][0]["title"] == "질병관리청 국가건강정보포털 — 대장용종"
+
+
+def test_unsafe_title_on_a_non_whitelisted_url_still_discards_the_article():
+    """화이트리스트 밖 URL은 기관 표기로 되돌릴 근거가 없다 — 고치지 않고 글을 버린다."""
     hospital = SimpleNamespace(
         name="테스트병원", director_name="김원장", region=["강남"], keywords=["대장용종"]
     )
@@ -1122,20 +1140,24 @@ def test_model_invented_reference_titles_are_still_screened():
         _validate_generated_result(result, hospital, ContentType.DISEASE, None)
 
 
-def test_reference_titles_for_forbidden_check_keeps_only_unverified_titles():
-    checked = content_engine.reference_titles_for_forbidden_check(
-        [
-            {"title": "검증된 기관 문서", "url": _CURATED_DOCUMENT_URL},
-            {"title": "기관 홈페이지", "url": "https://health.kdca.go.kr"},
-            {"title": "모델이 지은 제목", "url": "https://ad-blog.example.com/promo"},
-            "not a dict",
+async def test_generation_heals_an_unsafe_reference_title_without_buying_another_article(
+    monkeypatch,
+):
+    """정상 경로 확인: 화이트리스트 밖 참고자료는 정규화가 떨구고, 남은 제목은 정리된다."""
+    payload = _valid_payload(
+        references=[
+            {"title": "부작용 없는 치료 안내", "url": _CURATED_DOCUMENT_URL},
+            {"title": "완치율 100% 후기", "url": "https://ad-blog.example.com/promo"},
         ]
     )
+    recorder = _Recorder([payload])
+    _install_writer_doubles(monkeypatch, recorder)
 
-    assert "검증된 기관 문서" not in checked
-    # 기관 루트 URL은 문서가 아니다 — 거기 붙은 제목은 계속 검사한다.
-    assert "기관 홈페이지" in checked
-    assert "모델이 지은 제목" in checked
+    saved = await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    assert len(recorder.calls) == 1
+    assert [reference["url"] for reference in saved["references"]] == [_CURATED_DOCUMENT_URL]
+    assert saved["references"][0]["title"] == "질병관리청 국가건강정보포털 자료"
 
 
 # ── 프롬프트와 검증기의 단위·요구 일치 (WP-1) ────────────────────────────────

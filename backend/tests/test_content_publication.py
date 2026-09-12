@@ -92,6 +92,76 @@ def test_publication_policy_blocks_unverified_representative_image(monkeypatch):
     assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
 
 
+def _reused(**overrides):
+    """같은 병원의 다른 공개 글에서 빌려온 이미지를 단 글.
+
+    주제 hash는 **원본의 값 그대로**다. 이 글의 제목으로 다시 계산해 넣으면 아무도
+    검수하지 않은 합성 인증값이 되므로, 결합 대상은 marker 컬럼이 말한다.
+    """
+    base = {
+        "image_reused_from_content_id": uuid.uuid4(),
+        "image_subject_hash": content_publication.image_subject_hash(
+            ContentType.FAQ, "다른 글의 제목"
+        ),
+    }
+    base.update(overrides)
+    return _item(**base)
+
+
+def test_publication_policy_accepts_a_reused_certified_image(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(_reused(), _philosophy())
+
+    assert assessment.publishable is True
+    assert assessment.code is None
+    # 운영 화면·사후 교체 스윕이 "빌린 판"을 식별할 수 있어야 한다.
+    assert assessment.essence_summary["image_reused"] is True
+
+
+def test_publication_policy_does_not_mark_an_own_image_as_reused(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(_item(), _philosophy())
+
+    assert assessment.publishable is True
+    assert "image_reused" not in assessment.essence_summary
+
+
+def test_reused_image_still_requires_the_byte_binding(monkeypatch):
+    """marker가 있어도 바이트 결합이 없으면 인증이 아니다 — 합성 통과를 만들지 않는다."""
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _reused(image_content_hash=None), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+
+
+def test_reused_image_with_a_retired_policy_version_is_not_current(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _reused(image_policy_version="2000-01-01"), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+
+
+def test_reused_image_survives_a_title_edit_but_an_own_image_does_not():
+    """제목 편집의 의미가 두 모양에서 다르다 — 빌린 이미지는 원본에 묶여 있다."""
+    own = _item()
+    own.title = "제목이 바뀐 글"
+    reused = _reused()
+    reused.title = "제목이 바뀐 글"
+
+    assert content_publication.image_certification_current(own) is False
+    assert content_publication.image_certification_current(reused) is True
+
+
 @pytest.mark.parametrize(
     ("question", "answer"),
     [(None, "답변"), ("질문인가요?", None), ("물음표 없는 질문", "답변")],
@@ -244,6 +314,42 @@ def test_reference_titles_are_screened_before_publication(monkeypatch):
     assert assessment.publishable is False
     assert assessment.code == "FORBIDDEN_EXPRESSION"
     assert "완치" in assessment.violations
+
+
+def test_authority_domain_does_not_exempt_a_reference_title(monkeypatch):
+    """도메인이 공신력 있어도 제목은 모델이 지은 자유 텍스트다 — 예외를 두지 않는다.
+
+    생성 단계가 이런 제목을 기관 표기로 바꾸지만(content_engine._sanitize_reference_titles),
+    그 경로를 거치지 않은 기존 행·수동 편집이 있으므로 발행 게이트는 다시 검사한다.
+    """
+    _aligned(monkeypatch)
+    item = _item(
+        references_list=[
+            {
+                "title": "부작용 없는 치료 안내",
+                "url": "https://www.cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+            }
+        ]
+    )
+
+    assessment = content_publication.assess_content_publication(item, _philosophy())
+
+    assert assessment.publishable is False
+    assert assessment.code == "FORBIDDEN_EXPRESSION"
+    assert "부작용 없는" in assessment.violations
+    assert (
+        content_publication.publication_field_values(item)["reference_titles"]
+        == "부작용 없는 치료 안내"
+    )
+
+
+def test_generation_and_publication_share_the_reference_required_types():
+    """두 집합이 갈라지면 생성은 통과하고 발행만 막히는 유형이 생긴다(NOTICE가 그랬다)."""
+    from app.services.content_engine import REFERENCES_REQUIRED_TYPES
+
+    assert content_publication._REFERENCES_REQUIRED_VALUES == frozenset(
+        content_type.value for content_type in REFERENCES_REQUIRED_TYPES
+    )
 
 
 def test_notice_does_not_require_references_but_other_types_do(monkeypatch):

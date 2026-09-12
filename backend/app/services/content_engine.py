@@ -31,6 +31,7 @@ from app.services.essence_engine import (
 from app.utils.anthropic_retry import NON_RETRYABLE_ANTHROPIC_ERRORS
 from app.utils.authority_sources import (
     infer_source_type,
+    institution_label_for_url,
     is_citable_reference_url,
     is_whitelisted_url,
     render_source_hint_block,
@@ -871,27 +872,49 @@ async def _generate_content_attempt(
     return _validate_generated_result(result, hospital, content_type, content_brief)
 
 
-def reference_titles_for_forbidden_check(references: object) -> str:
-    """금지 표현 검사 대상이 되는 참고자료 제목만 이어 붙인다.
+def _reference_title_violations(title: str) -> list[str]:
+    """참고자료 제목 한 건을 공개 표면 기준(평문)으로 검사한다."""
+    if not title:
+        return []
+    return check_forbidden_content_fields(
+        {REFERENCE_TITLES_FIELD: title}, (REFERENCE_TITLES_FIELD,)
+    )
 
-    화이트리스트 기관의 실제 문서 제목("국가암정보센터 — 대장암 완치율 통계")은 우리가
-    지은 광고 문구가 아니라 외부 기관의 공식 표기다. 그 제목 때문에 근거를 제대로 단 글이
-    통째로 폐기되면 근거가 좋을수록 발행되지 않는다. 반대로 모델이 지어낸 제목(화이트리스트
-    밖 URL)은 공개 표면에 그대로 나가므로 계속 검사한다.
 
-    예외 판정은 생성·발행이 참고자료로 인정하는 조건과 같다 — 화이트리스트 도메인의
-    **실제 문서 URL**(is_citable_reference_url). 기관 루트 URL에 붙은 제목은 문서 제목이
-    아니므로 예외로 두지 않는다. 생성 엔진과 발행 게이트가 이 한 함수를 공유한다.
+def _sanitize_reference_titles(references: object) -> object:
+    """광고 문구 제목을 기관 표기로 바꾼다 — 근거는 지키고 노출만 없앤다.
+
+    참고자료의 URL만 화이트리스트 검증을 거치고 제목은 모델 자유 텍스트다. 공신력
+    문서에 "부작용 없는 치료 안내" 같은 제목이 붙으면 그 제목이 병원 페이지와
+    JSON-LD citation.name 으로 그대로 나간다. 제목을 기관 이름으로 바꾸면 공급자를
+    다시 부르지 않고 결정적으로 고칠 수 있다.
+
+    화이트리스트 밖 URL은 이 단계 이전에 _normalize_references 가 이미 떨궈낸다.
+    (여기서 고칠 수 없는 제목은 그대로 두고 아래 공통 금지 표현 게이트가 글 전체를
+    폐기한다 — 우회 경로를 만들지 않는다.)
     """
     if not isinstance(references, list):
-        return ""
-    return " ".join(
-        title
-        for reference in references
-        if isinstance(reference, dict)
-        for title in [str(reference.get("title") or "").strip()]
-        if title and not is_citable_reference_url(str(reference.get("url") or "").strip())
-    ).strip()
+        return references
+    sanitized: list = []
+    for reference in references:
+        if not isinstance(reference, dict):
+            sanitized.append(reference)
+            continue
+        title = str(reference.get("title") or "").strip()
+        url = str(reference.get("url") or "").strip()
+        if not _reference_title_violations(title):
+            sanitized.append(reference)
+            continue
+        label = institution_label_for_url(url)
+        if not label or _reference_title_violations(label):
+            sanitized.append(reference)
+            continue
+        logger.info(
+            "Replacing an unsafe reference title with the institution label: host=%s",
+            urlparse(url).hostname,
+        )
+        sanitized.append({**reference, "title": label})
+    return sanitized
 
 
 def _validate_generated_result(
@@ -938,7 +961,14 @@ def _validate_generated_result(
     # 완전한 새 응답인 결과만 반환하게 한다. 재시도 소진 시 호출자는 결과를 저장하지 않고
     # 기존 생성 실패 incident/outbox 경로를 연다.
     violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
-    reference_titles = reference_titles_for_forbidden_check(result.get("references"))
+    # 모델이 붙인 제목을 먼저 기관 표기로 고쳐 본 뒤, **모든** 제목을 예외 없이
+    # 검사한다. 발행·공개 게이트도 같은 기준으로 모든 제목을 다시 검사한다(방어 심층).
+    result["references"] = _sanitize_reference_titles(result.get("references"))
+    reference_titles = " ".join(
+        str(reference.get("title") or "").strip()
+        for reference in (result.get("references") or [])
+        if isinstance(reference, dict)
+    )
     violations.extend(
         check_forbidden_content_fields(
             {REFERENCE_TITLES_FIELD: reference_titles}, (REFERENCE_TITLES_FIELD,)

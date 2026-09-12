@@ -41,9 +41,10 @@ PLAN_ENUM_CLEANUP = "0071_plan_enum_cleanup"
 BASE_ESSENCE_FLAG = "0072_add_base_essence_flag"
 
 DIRECTOR_DELTAS = "0073_add_director_deltas"
+IMAGE_REUSE_MARKER = "0074_add_image_reuse_marker"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = DIRECTOR_DELTAS
+HEAD = IMAGE_REUSE_MARKER
 
 
 def _script_directory() -> ScriptDirectory:
@@ -107,6 +108,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         PLAN_ENUM_CLEANUP,
         BASE_ESSENCE_FLAG,
         DIRECTOR_DELTAS,
+        IMAGE_REUSE_MARKER,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -134,6 +136,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         PLAN_ENUM_CLEANUP: EVIDENCE_NOISE_HASH,
         BASE_ESSENCE_FLAG: PLAN_ENUM_CLEANUP,
         DIRECTOR_DELTAS: BASE_ESSENCE_FLAG,
+        IMAGE_REUSE_MARKER: DIRECTOR_DELTAS,
     }
 
 
@@ -145,6 +148,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        IMAGE_REUSE_MARKER,
         DIRECTOR_DELTAS,
         BASE_ESSENCE_FLAG,
         PLAN_ENUM_CLEANUP,
@@ -175,7 +179,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-22:] == [
+    assert applied[-23:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -198,4 +202,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         PLAN_ENUM_CLEANUP,
         BASE_ESSENCE_FLAG,
         DIRECTOR_DELTAS,
+        IMAGE_REUSE_MARKER,
     ]

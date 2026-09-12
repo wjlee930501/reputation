@@ -91,6 +91,50 @@ def test_title_edit_that_invalidates_the_image_certificate_withholds_with_a_reas
     assert VISIBILITY_BLOCKER_LABELS["IMAGE_NOT_CERTIFIED"] == "대표 이미지 재인증 대기"
 
 
+def test_reused_certified_image_is_visible_without_its_own_subject_binding():
+    """빌린 이미지는 원본에 묶여 있다 — 이 글의 제목으로 주제 hash를 요구하지 않는다.
+
+    요구하면 합성 주제 hash를 만들어 넣게 되고, 그것은 아무도 검수하지 않은 인증값이다.
+    """
+    item, philosophy_id = _published(
+        image_reused_from_content_id=uuid.uuid4(),
+        image_subject_hash=image_subject_hash(ContentType.FAQ, "빌려준 원본 글"),
+    )
+
+    result = assess_public_visibility(item, philosophy_id)
+
+    assert result.visible is True and result.blockers == ()
+
+
+def test_reused_image_without_byte_binding_is_still_withheld():
+    item, philosophy_id = _published(
+        image_reused_from_content_id=uuid.uuid4(),
+        image_content_hash=None,
+    )
+
+    result = assess_public_visibility(item, philosophy_id)
+
+    assert result.blockers == ("IMAGE_NOT_CERTIFIED",)
+
+
+def test_reused_image_on_a_retired_policy_version_is_withheld():
+    item, philosophy_id = _published(
+        image_reused_from_content_id=uuid.uuid4(),
+        image_policy_version="2000-01-01",
+    )
+
+    result = assess_public_visibility(item, philosophy_id)
+
+    assert result.blockers == ("IMAGE_NOT_CERTIFIED",)
+
+
+def test_visibility_loads_the_reuse_marker_column():
+    """판정이 읽는 컬럼은 load_only 목록에 있어야 한다 — 빠지면 async 세션에서 터진다."""
+    from app.services.content_visibility import _VISIBILITY_COLUMNS
+
+    assert "image_reused_from_content_id" in {column.key for column in _VISIBILITY_COLUMNS}
+
+
 def test_every_blocker_has_a_korean_label_and_a_stable_order():
     """모든 검사에 걸리는 글은 라벨 표의 키 순서 그대로 사유를 낸다.
 

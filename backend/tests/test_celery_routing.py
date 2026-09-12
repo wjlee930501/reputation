@@ -199,6 +199,33 @@ def test_generation_rejection_rollup_runs_once_each_monday() -> None:
     assert REDBEAT_SCHEDULE_VERSION >= "2026-09-12.1"
 
 
+def test_reused_image_refresh_runs_after_each_overnight_recovery_sweep() -> None:
+    """빌린 이미지 교체는 야간 복구 스윕 직후에 돈다 — 같은 이미지 예산을 나눠 쓴다."""
+    task_name = "app.workers.published_image_refresh.refresh_reused_content_images"
+    entry = celery_app.conf.beat_schedule["refresh-reused-content-images"]
+
+    assert entry["task"] == task_name
+    assert entry["schedule"].minute == {20}
+    assert entry["schedule"].hour == {1, 4, 7}
+    assert _resolved_queue(task_name) == "content"
+    assert "app.workers.published_image_refresh" in celery_app.conf.include
+    purpose = expected_purpose(task_name)
+    assert purpose == "refresh-reused-content-images"
+    assert entry["options"]["headers"][PURPOSE_HEADER] == purpose
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-09-12.2"
+
+
+def test_reused_image_refresh_declares_its_own_wall_clock_limits() -> None:
+    """이미지 공급자 호출 50건은 전역 기본 한계(600s/900s)보다 길 수 있다."""
+    importlib.import_module("app.workers.published_image_refresh")
+    task = celery_app.tasks[
+        "app.workers.published_image_refresh.refresh_reused_content_images"
+    ]
+
+    assert task.soft_time_limit == 1500
+    assert task.time_limit > task.soft_time_limit
+
+
 def test_redbeat_refreshes_lock_well_before_ttl_expires():
     """max loop와 lock TTL이 같아 LockNotOwnedError crash loop가 재발하지 않게 한다."""
     max_interval = celery_app.conf.beat_max_loop_interval

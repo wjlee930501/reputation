@@ -115,6 +115,9 @@ PUBLICATION_CHECK_FIELDS = (*FORBIDDEN_CHECK_FIELDS, REFERENCE_TITLES_FIELD)
 
 def publication_field_values(item: ContentItem) -> dict:
     values = {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    # 제목은 도메인과 무관하게 **전부** 검사한다. 생성 단계가 공신력 문서의 광고성
+    # 제목을 기관 표기로 바꾸지만(content_engine._sanitize_reference_titles), 그 경로를
+    # 거치지 않은 기존 행·수동 편집이 있으므로 발행·공개 게이트는 예외를 두지 않는다.
     values[REFERENCE_TITLES_FIELD] = " ".join(
         str(ref.get("title") or "").strip()
         for ref in (item.references_list or [])
@@ -162,24 +165,43 @@ def _unavailable_ai_review_code(review: dict[str, Any]) -> str:
     return "CONTENT_AI_REVIEW_UNAVAILABLE"
 
 
+def image_is_reused(item: ContentItem) -> bool:
+    """이 글의 대표 이미지가 같은 병원의 다른 공개 글에서 빌려온 것인가."""
+
+    return getattr(item, "image_reused_from_content_id", None) is not None
+
+
 def image_certification_current(item: ContentItem) -> bool:
-    """Require the stored URL, exact bytes, subject, and policy to remain bound."""
+    """저장된 URL·바이트·정책이 지금도 묶여 있는가. 인증은 언제나 byte-bound다.
+
+    두 가지 인증 모양을 받는다.
+
+    (a) 이 글을 위해 생성된 이미지: URL이 가리키는 내용 hash, **주제(유형+제목) hash**,
+        정책 버전이 모두 현재여야 한다. 제목이 바뀌면 주제 결합이 깨지고 재인증이 필요하다.
+    (b) 재사용 이미지(`image_reused_from_content_id`): 주제 hash는 검사하지 않는다.
+        이 이미지의 결합 대상은 이 글의 제목이 아니라 **원본 글**이며, 그 사실은 marker
+        컬럼이 명시한다. 새 제목으로 주제 hash를 다시 계산해 채워 넣으면 아무도 검수하지
+        않은 합성 인증값이 된다 — 그래서 원본의 주제 hash를 그대로 들고 다닌다.
+        바이트 결합(내용 hash = URL hash)과 정책 버전은 두 모양 모두에서 요구한다.
+    """
 
     if not getattr(item, "image_url", None) or not getattr(
         item, "image_policy_verified_at", None
     ):
         return False
     content_hash = getattr(item, "image_content_hash", None)
-    subject_hash = getattr(item, "image_subject_hash", None)
     policy_version = getattr(item, "image_policy_version", None)
     url_hash = image_content_hash_from_url(getattr(item, "image_url", None))
+    # 내용 hash 없는 이미지는 어떤 모양에서도 인증이 아니다.
+    if not (content_hash and url_hash and content_hash == url_hash):
+        return False
+    if policy_version != IMAGE_POLICY_VERSION:
+        return False
+    if image_is_reused(item):
+        return True
     return bool(
-        content_hash
-        and url_hash
-        and content_hash == url_hash
-        and subject_hash
+        getattr(item, "image_subject_hash", None)
         == image_subject_hash(getattr(item, "content_type", None), getattr(item, "title", None))
-        and policy_version == IMAGE_POLICY_VERSION
     )
 
 
@@ -298,6 +320,8 @@ def assess_content_publication(
             item=item,
             philosophy=philosophy,
         )
+    # 인증되지 않은 이미지는 어떤 경우에도 공개하지 않는다. 재사용 이미지도 같은
+    # 함수로 판정한다 — 통과 근거는 원본 글에 대한 명시적 marker이지 합성값이 아니다.
     if not image_certification_current(item):
         return _blocked(
             code="CONTENT_IMAGE_NOT_VERIFIED",
@@ -306,13 +330,18 @@ def assess_content_publication(
             philosophy=philosophy,
         )
 
+    summary = dict(screening.summary or {})
+    if image_is_reused(item):
+        # 이 판의 대표 이미지는 같은 병원의 다른 글에서 빌려왔다. 사후 교체 스윕과
+        # 운영 화면이 그 사실을 볼 수 있게 남긴다 — 교체되면 사라진다.
+        summary["image_reused"] = True
     return PublicationAssessment(
         publishable=True,
         code=None,
         message=None,
         violations=(),
         essence_status=screening.status,
-        essence_summary=screening.summary,
+        essence_summary=summary,
         philosophy_id=getattr(philosophy, "id", None),
     )
 
