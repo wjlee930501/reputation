@@ -154,6 +154,14 @@ def public_candidate_review_safe(item: ContentItem) -> bool:
     return _blocking_ai_review_state(item) is None
 
 
+def _unavailable_ai_review_code(review: dict[str, Any]) -> str:
+    if review.get("unavailable_reason") == "COST_BLOCKED":
+        return "COST_BLOCKED"
+    if review.get("unavailable_reason") == "PROVIDER_UNCONFIGURED":
+        return "CONTENT_AI_REVIEW_CONFIG_ERROR"
+    return "CONTENT_AI_REVIEW_UNAVAILABLE"
+
+
 def image_certification_current(item: ContentItem) -> bool:
     """Require the stored URL, exact bytes, subject, and policy to remain bound."""
 
@@ -236,7 +244,7 @@ def assess_content_publication(
         code = (
             "CONTENT_AI_REVIEW_STALE"
             if review_state == "STALE"
-            else "CONTENT_AI_REVIEW_UNAVAILABLE"
+            else _unavailable_ai_review_code(hard_review)
             if review_state == "UNAVAILABLE"
             else "CONTENT_AI_HARD_FINDING"
         )
@@ -245,10 +253,16 @@ def assess_content_publication(
             message=(
                 "이전의 미해결 사실·의료 안전 지적 이후 후보가 변경되어 독립 재검수가 필요합니다."
                 if review_state == "STALE"
-                else "독립 AI 검수를 완료하지 못해 공급자 복구 후 자동 재검수가 필요합니다."
+                else (
+                    "독립 AI 검수 공급자 설정이 없어 자동 재검수를 시작할 수 없습니다."
+                    if code == "CONTENT_AI_REVIEW_CONFIG_ERROR"
+                    else "비용 가드가 독립 AI 재검수를 다음 실행으로 보류했습니다."
+                    if code == "COST_BLOCKED"
+                    else "독립 AI 검수를 완료하지 못해 공급자 복구 후 자동 재검수가 필요합니다."
+                )
                 if review_state == "UNAVAILABLE"
                 else (
-                    findings[0]
+                    f"{findings[0]} 승인된 병원 자료 또는 의료 근거의 보완이 필요합니다."
                     if findings
                     else "독립 검수의 사실·의료 안전 지적이 해결되지 않았습니다."
                 )

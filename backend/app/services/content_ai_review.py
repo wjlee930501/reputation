@@ -175,6 +175,16 @@ class ContentAiReview:
     def remediation_messages(self) -> tuple[str, ...]:
         return tuple(finding.message for finding in self._typed_findings())
 
+    @property
+    def rewrite_is_safe(self) -> bool:
+        """Allow bounded rewrites only for style/soft feedback, never fact gaps."""
+        findings = self._typed_findings()
+        return bool(findings) and all(
+            finding.severity == ContentAiFindingSeverity.SOFT
+            or finding.kind == ContentAiFindingKind.STYLE
+            for finding in findings
+        )
+
     def payload(self) -> dict[str, Any]:
         return {
             "status": self.status.value,

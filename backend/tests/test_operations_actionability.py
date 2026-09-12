@@ -11,8 +11,9 @@ from sqlalchemy.dialects import postgresql
 
 from app.api.admin import operations_center_report_queries as report_queries
 from app.api.admin import operations_center_today_queries as today_queries
-from app.api.admin.operations_center_serializers import next_onboarding_step
+from app.api.admin.operations_center_serializers import next_onboarding_step, retry_action
 from app.models.hospital import Hospital
+from app.models.operations import OperationRunState
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.post_publish_review_policy import (
@@ -95,8 +96,8 @@ def test_publication_blockers_name_the_exact_operator_recovery() -> None:
         "MISSING_REFERENCES": "참고 자료",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현",
         "ESSENCE_NOT_ALIGNED": "운영 기준",
-        "CONTENT_IMAGE_NOT_READY": "대표 이미지 다시 생성",
-        "CONTENT_IMAGE_NOT_VERIFIED": "자동 정책 검사 완료",
+        "CONTENT_IMAGE_NOT_READY": "시스템 재시도 중",
+        "CONTENT_IMAGE_NOT_VERIFIED": "시스템 재시도 중",
     }
 
     for code, instruction in expected.items():
@@ -108,6 +109,29 @@ def test_publication_blockers_name_the_exact_operator_recovery() -> None:
         assert "개발팀 문의용 정보 복사" not in action
         assert cause.endswith("습니다.")
     assert "PROVIDER" not in generation_incident_control._generation_safe_cause("PROVIDER_TIMEOUT")
+
+
+def test_image_retry_cta_distinguishes_system_owned_and_terminal_states() -> None:
+    hospital_id = uuid.uuid4()
+    retrying = retry_action(
+        hospital_id,
+        SimpleNamespace(
+            id=uuid.uuid4(), state=OperationRunState.FAILED,
+            operation_type="REGENERATE_CONTENT_IMAGE", safe_error_code="IMAGE_GENERATION_FAILED"
+        ),
+    )
+    terminal = retry_action(
+        hospital_id,
+        SimpleNamespace(
+            id=uuid.uuid4(), state=OperationRunState.FAILED,
+            operation_type="REGENERATE_CONTENT_IMAGE",
+            safe_error_code="CONTENT_IMAGE_POLICY_REJECTED"
+        ),
+    )
+    assert retrying.label == "시스템 재시도 중"
+    assert retrying.enabled is False
+    assert terminal.label == "예산 소진·정책 거절"
+    assert terminal.enabled is True
 
 
 async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
@@ -542,6 +566,7 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
         "FAQ_FIELDS_MISSING",
         "CONTENT_AI_HARD_FINDING",
         "CONTENT_AI_REVIEW_STALE",
+        "CONTENT_IMAGE_POLICY_REJECTED",
     )
     for code in weekly_codes:
         assert not generation_incident_control.generation_notify_requested(code)
@@ -560,6 +585,7 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
         "CONTENT_IMAGE_NOT_READY",
         "CONTENT_IMAGE_NOT_VERIFIED",
         "IMAGE_GENERATION_FAILED",
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED",
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
     )

@@ -76,6 +76,7 @@ from app.services.asset_extractor import evidence_text_is_acceptable
 from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
+    ContentAiReviewUnavailableReason,
     review_generated_content,
 )
 from app.services.content_engine import (
@@ -300,10 +301,13 @@ from app.workers.generation_incident_control import (
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
+    ENVIRONMENT_ATTEMPT_BUDGET,
     GenerationRetryClass,
+    environment_attempt_period,
     next_recovery_sweep,
     retry_class_for,
     retry_is_due,
+    stored_attempt_period,
 )
 from app.workers.generation_run_control import (
     GenerationItemState,
@@ -410,10 +414,11 @@ _AUTOMATIC_BODY_REPAIR_CODES = frozenset(
         "MISSING_REFERENCES",
         "FORBIDDEN_EXPRESSION",
         "ESSENCE_NOT_ALIGNED",
-        "CONTENT_AI_HARD_FINDING",
         "CONTENT_AI_REVIEW_STALE",
     }
 )
+_IMAGE_POLICY_REJECTION_CODE = "CONTENT_IMAGE_POLICY_REJECTED"
+_IMAGE_RETRY_EXHAUSTED_CODE = "IMAGE_GENERATION_RETRIES_EXHAUSTED"
 
 
 def _generation_attempt_context(
@@ -464,6 +469,37 @@ def _stored_generation_attempt(item: ContentItem) -> dict[str, Any]:
     return dict(attempt)
 
 
+def _stored_ai_review_is_remediable(item: ContentItem) -> bool:
+    """Only rewrite stored style/soft findings, never factual or safety gaps."""
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    findings = review.get("findings") if isinstance(review, dict) else None
+    if not isinstance(findings, list) or not findings:
+        return False
+    remediable = all(
+        isinstance(finding, dict)
+        and (
+            str(finding.get("severity") or "").upper() == "SOFT"
+            or str(finding.get("kind") or "").upper() == "STYLE"
+        )
+        for finding in findings
+    )
+    attempts = summary.get("automatic_remediation_attempts", 0)
+    return (
+        remediable
+        and isinstance(attempts, int)
+        and attempts < AUTO_REMEDIATION_MAX_GENERATIONS
+    )
+
+
+def _content_ai_unavailable_code(review: Any) -> str:
+    if review.unavailable_reason == ContentAiReviewUnavailableReason.COST_BLOCKED:
+        return "COST_BLOCKED"
+    if review.unavailable_reason == ContentAiReviewUnavailableReason.PROVIDER_UNCONFIGURED:
+        return "CONTENT_AI_REVIEW_CONFIG_ERROR"
+    return "CONTENT_AI_REVIEW_UNAVAILABLE"
+
+
 def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str, str]:
     """Prefer a persisted generation cause over the empty-content symptom."""
 
@@ -503,7 +539,7 @@ def _remember_generation_attempt(
     reason: str,
     *,
     message: str | None = None,
-) -> None:
+) -> dict[str, Any]:
     """Persist one no-body outcome without adding a schema column."""
 
     summary = getattr(item, "essence_check_summary", None)
@@ -512,6 +548,15 @@ def _remember_generation_attempt(
     previous = _stored_generation_attempt(item)
     retry_class = retry_class_for(reason)
     same_context = previous.get("context") == context
+    observed_at = datetime.now(timezone.utc)
+    attempt_period = environment_attempt_period(observed_at)
+    if (
+        same_context
+        and reason == "CONTENT_AI_REVIEW_UNAVAILABLE"
+        and previous.get("reason") == reason
+        and stored_attempt_period(previous) != attempt_period
+    ):
+        same_context = False
     previous_provider_attempts = int(
         previous.get(
             "provider_attempt_count",
@@ -530,10 +575,17 @@ def _remember_generation_attempt(
         guard_deferral_count += 1
     elif retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
         provider_attempt_count += 1
+    if (
+        reason == "IMAGE_GENERATION_FAILED"
+        and provider_attempt_count >= ENVIRONMENT_ATTEMPT_BUDGET
+    ):
+        reason = _IMAGE_RETRY_EXHAUSTED_CODE
+        retry_class = retry_class_for(reason)
     attempt = {
         "context": context,
         "reason": reason,
-        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "observed_at": observed_at.isoformat(),
+        "attempt_period": attempt_period,
         "retry_class": retry_class.value,
         # ``attempt_count`` remains for rolling readers, but it now represents
         # paid/provider failures only. Cost-guard deferrals are separately visible
@@ -549,6 +601,7 @@ def _remember_generation_attempt(
     updated[_GENERATION_ATTEMPT_KEY] = attempt
     item.essence_check_summary = updated
     db.commit()
+    return attempt
 
 
 def _clear_generation_attempt(db, item: ContentItem) -> None:
@@ -559,6 +612,36 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
     updated.pop(_GENERATION_ATTEMPT_KEY, None)
     item.essence_check_summary = updated
     db.commit()
+
+
+def _image_failure_code(diagnostics: Mapping[str, object] | None = None) -> str:
+    reason = str((diagnostics or {}).get("reason") or "").upper()
+    if reason == "COST_BLOCKED":
+        return "COST_BLOCKED"
+    if reason in {"POLICY_REJECTED", "IMAGE_SAFETY"}:
+        return _IMAGE_POLICY_REJECTION_CODE
+    return "IMAGE_GENERATION_FAILED"
+
+
+def _remember_image_failure(db, item, philosophy, diagnostics=None) -> str:
+    attempt = _remember_generation_attempt(
+        db, item, philosophy, _image_failure_code(diagnostics)
+    )
+    return str(attempt["reason"])
+
+
+def _image_failure_details(item: ContentItem) -> tuple[str, str]:
+    code = str(_stored_generation_attempt(item).get("reason") or "IMAGE_GENERATION_FAILED")
+    messages = {
+        "COST_BLOCKED": "비용 가드가 대표 이미지 생성을 다음 실행으로 보류했습니다.",
+        _IMAGE_POLICY_REJECTION_CODE: (
+            "대표 이미지 후보가 정책 검사를 통과하지 못해 자동 재시도를 중단했습니다."
+        ),
+        _IMAGE_RETRY_EXHAUSTED_CODE: "대표 이미지 자동 재시도 예산을 모두 사용했습니다.",
+    }
+    return code, messages.get(
+        code, "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다."
+    )
 
 
 def _recover_missing_content_image(
@@ -620,6 +703,7 @@ def _recover_missing_content_image(
                 # The stored bytes no longer fit the changed subject. Generate one
                 # fresh candidate below; transient reviewer failures stay recoverable.
                 pass
+        diagnostics: dict[str, object] = {}
         image_url, image_prompt = _run_async(
             generate_image(
                 item.content_type,
@@ -627,11 +711,12 @@ def _recover_missing_content_image(
                 topic=image_source_title,
                 direction=hospital_image_direction(hospital),
                 hospital_id=hospital.id,
+                diagnostics=diagnostics,
             )
         )
         if not image_url:
             logger.warning("Image generation returned no URL for %s (text saved)", item.id)
-            _remember_generation_attempt(db, item, philosophy, "IMAGE_GENERATION_FAILED")
+            _remember_image_failure(db, item, philosophy, diagnostics)
             return GenerationItemState.PARTIAL
         image_values = {
             "image_url": image_url,
@@ -674,7 +759,7 @@ def _recover_missing_content_image(
         )
         db.rollback()
         db.refresh(item)
-        _remember_generation_attempt(db, item, philosophy, "IMAGE_GENERATION_FAILED")
+        _remember_image_failure(db, item, philosophy)
         return GenerationItemState.PARTIAL
 
 
@@ -918,10 +1003,9 @@ async def _generate_with_auto_review(
             # UNAVAILABLE never grants approval: it merely leaves the candidate to
             # the deterministic generation and publication gates below.
             break
-        # Style-only feedback is advisory and must not create a manual gate or spend
-        # another writer call. Fact/safety uncertainty remains blocking by content,
-        # independent of the reviewer's confidence number.
-        if not last_ai_review.blocking_findings:
+        # A factual/medical-safety gap needs approved evidence, not another model
+        # paraphrase. Only stylistic/soft feedback may spend the bounded rewrite.
+        if not last_ai_review.rewrite_is_safe:
             break
         findings = list(last_ai_review.remediation_messages)
         if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
@@ -4178,6 +4262,9 @@ def nightly_content_generation(self):
                         readiness_failure is not None
                         and item_state == GenerationItemState.SUCCEEDED
                     ):
+                        _remember_generation_attempt(
+                            db, item, philosophy, readiness_failure[0]
+                        )
                         item_state = GenerationItemState.FAILED
 
                 if item_state == GenerationItemState.FAILED:
@@ -4211,8 +4298,7 @@ def nightly_content_generation(self):
                         )
                     )
                 elif item_state == GenerationItemState.PARTIAL:
-                    code = "IMAGE_GENERATION_FAILED"
-                    message = "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다."
+                    code, message = _image_failure_details(item)
                     recorder.record(
                         item.id,
                         item_state,
@@ -4920,6 +5006,7 @@ def generate_content_image(self, content_id: str):
             item, claim_token = claimed
             image_source_title = item.title or "병원 의료 정보"
             expected_revision = int(getattr(item, "content_revision", 1) or 1)
+            diagnostics: dict[str, object] = {}
             image_url, image_prompt = _run_async(
                 generate_image(
                     item.content_type,
@@ -4927,13 +5014,14 @@ def generate_content_image(self, content_id: str):
                     topic=image_source_title,
                     direction=hospital_image_direction(hospital),
                     hospital_id=hospital.id,
+                    diagnostics=diagnostics,
                 )
             )
             if not image_url:
                 release_generation_claim(db, item_id, claim_token)
                 db.commit()
-                code = "IMAGE_GENERATION_FAILED"
-                message = "대표 이미지 생성이 완료되지 않았습니다."
+                _remember_image_failure(db, item, philosophy, diagnostics)
+                code, message = _image_failure_details(item)
                 run_id = finish_explicit_run(
                     db,
                     self,
@@ -4992,6 +5080,8 @@ def generate_content_image(self, content_id: str):
                         run_id,
                         safe_error_codes=(
                             "IMAGE_GENERATION_FAILED",
+                            _IMAGE_RETRY_EXHAUSTED_CODE,
+                            _IMAGE_POLICY_REJECTION_CODE,
                             "CONTENT_IMAGE_NOT_READY",
                             "CONTENT_IMAGE_NOT_VERIFIED",
                         ),
@@ -5002,7 +5092,11 @@ def generate_content_image(self, content_id: str):
             if "claim_token" in locals():
                 release_generation_claim(db, item_id, claim_token)
                 db.commit()
-            code, message = classify_generation_failure(exc)
+            if "philosophy" in locals() and philosophy is not None:
+                _remember_image_failure(db, item, philosophy)
+                code, message = _image_failure_details(item)
+            else:
+                code, message = classify_generation_failure(exc)
             run_id = finish_explicit_run(
                 db,
                 self,
@@ -5059,16 +5153,23 @@ def _generate_single_content_item(
         if stored_assessment.code in {
             "CONTENT_AI_REVIEW_STALE",
             "CONTENT_AI_REVIEW_UNAVAILABLE",
+            "CONTENT_AI_REVIEW_CONFIG_ERROR",
+            "COST_BLOCKED",
         }:
             previous_attempt = _stored_generation_attempt(item)
             if (
-                previous_attempt.get("reason") == "CONTENT_AI_REVIEW_UNAVAILABLE"
+                previous_attempt.get("reason")
+                in {
+                    "CONTENT_AI_REVIEW_UNAVAILABLE",
+                    "CONTENT_AI_REVIEW_CONFIG_ERROR",
+                    "COST_BLOCKED",
+                }
                 and _generation_attempt_is_unchanged(item, philosophy)
             ):
                 return (
                     GenerationItemState.SKIPPED,
-                    "CONTENT_AI_REVIEW_UNAVAILABLE",
-                    "독립 검수 공급자 복구 시각까지 자동 재검수를 보류합니다.",
+                    str(previous_attempt["reason"]),
+                    "독립 검수의 다음 자동 재검수 조건을 기다립니다.",
                 )
             candidate = {
                 field: getattr(item, field, None)
@@ -5090,13 +5191,16 @@ def _generate_single_content_item(
                 )
             )
             if refreshed_review.status == ContentAiReviewStatus.UNAVAILABLE:
-                _remember_generation_attempt(
-                    db, item, philosophy, "CONTENT_AI_REVIEW_UNAVAILABLE"
-                )
+                code = _content_ai_unavailable_code(refreshed_review)
+                _remember_generation_attempt(db, item, philosophy, code)
                 return (
-                    GenerationItemState.PARTIAL,
-                    "CONTENT_AI_REVIEW_UNAVAILABLE",
-                    "독립 검수 공급자 복구 후 자동 재검수를 다시 시도합니다.",
+                    GenerationItemState.FAILED,
+                    code,
+                    "독립 검수 공급자 설정을 확인해야 합니다."
+                    if code == "CONTENT_AI_REVIEW_CONFIG_ERROR"
+                    else "비용 가드가 독립 AI 재검수를 다음 실행으로 보류했습니다."
+                    if code == "COST_BLOCKED"
+                    else "독립 검수 공급자 복구 후 자동 재검수를 다시 시도합니다.",
                 )
             summary = (
                 dict(item.essence_check_summary)
@@ -5107,37 +5211,52 @@ def _generate_single_content_item(
             item.essence_check_summary = summary
             _clear_generation_attempt(db, item)
             stored_assessment = assess_content_publication(item, philosophy)
-            if stored_assessment.code not in _AUTOMATIC_BODY_REPAIR_CODES:
-                image_state = _recover_missing_content_image(db, item, hospital, philosophy)
-                if image_state != GenerationItemState.SUCCEEDED:
-                    return image_state, "IMAGE_GENERATION_FAILED", (
-                        "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다."
-                    )
-                readiness_failure = _persist_publication_readiness(db, item, philosophy)
-                return (
-                    (GenerationItemState.FAILED, *readiness_failure)
-                    if readiness_failure is not None
-                    else (GenerationItemState.SUCCEEDED, None, None)
-                )
-        if stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES:
+        repairable_body = stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES or (
+            stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            and _stored_ai_review_is_remediable(item)
+        )
+        if repairable_body:
             logger.info(
                 "Regenerating repairable stored content %s: %s",
                 item.id,
                 stored_assessment.code,
+            )
+        elif stored_assessment.code is not None and stored_assessment.code not in {
+            "CONTENT_IMAGE_NOT_READY",
+            "CONTENT_IMAGE_NOT_VERIFIED",
+        }:
+            # Fact/medical-safety findings remain fail-closed with their concrete
+            # finding and approved-data gap; no writer or image budget is spent.
+            return (
+                GenerationItemState.FAILED,
+                stored_assessment.code,
+                stored_assessment.message,
             )
         else:
             # Image candidates are individually bounded and semantic failures are
             # fail-closed before upload. Scheduled sweeps may therefore try a fresh
             # candidate again; the cost guard bounds provider spend and incidents
             # stay deduplicated by item/cause/attempt context.
+            previous_attempt = _stored_generation_attempt(item)
+            if (
+                previous_attempt.get("reason")
+                in {
+                    "IMAGE_GENERATION_FAILED",
+                    _IMAGE_RETRY_EXHAUSTED_CODE,
+                    _IMAGE_POLICY_REJECTION_CODE,
+                    "COST_BLOCKED",
+                }
+                and _generation_attempt_is_unchanged(item, philosophy)
+            ):
+                return (
+                    GenerationItemState.SKIPPED,
+                    str(previous_attempt["reason"]),
+                    "대표 이미지의 다음 자동 재시도 조건을 기다립니다.",
+                )
             image_state = _recover_missing_content_image(db, item, hospital, philosophy)
             if image_state == GenerationItemState.PARTIAL:
                 _persist_publication_readiness(db, item, philosophy)
-                return (
-                    image_state,
-                    "IMAGE_GENERATION_FAILED",
-                    "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
-                )
+                return image_state, *_image_failure_details(item)
             if image_state == GenerationItemState.DISCARDED:
                 return image_state, None, None
             readiness_failure = _persist_publication_readiness(db, item, philosophy)
@@ -5249,11 +5368,7 @@ def _generate_single_content_item(
     image_state = _recover_missing_content_image(db, item, hospital, philosophy)
     if image_state == GenerationItemState.PARTIAL:
         _persist_publication_readiness(db, item, philosophy)
-        return (
-            GenerationItemState.PARTIAL,
-            "IMAGE_GENERATION_FAILED",
-            "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다.",
-        )
+        return GenerationItemState.PARTIAL, *_image_failure_details(item)
     if image_state == GenerationItemState.DISCARDED:
         return image_state, None, None
     readiness_failure = _persist_publication_readiness(db, item, philosophy)
