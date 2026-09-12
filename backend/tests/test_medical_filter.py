@@ -3,9 +3,11 @@ import pytest
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.utils.authority_sources import infer_source_type, is_whitelisted_url
 from app.utils.medical_filter import (
+    FORBIDDEN_EXPRESSIONS,
     check_forbidden,
     check_forbidden_content_fields,
     check_forbidden_markdown,
+    forbidden_vocabulary_for_prompt,
     markdown_visible_text,
 )
 
@@ -223,3 +225,120 @@ def test_link_syntax_that_is_not_a_link_stays_visible_and_is_checked():
     # 반대로 진짜 링크의 목적지는 화면에 없으므로 검사하지 않는다.
     assert check_forbidden_markdown("[안내](https://example.test/최고-병원)") == []
     assert check_forbidden_markdown('[안내](https://example.test/a "최고 자료")') == []
+
+
+# ── 문맥 예외 (2026-09-12 수율 계획 WP-2) ────────────────────────────────────
+# 광고가 아닌 임상·통계·부정 문장까지 막으면 정상 글이 통째로 버려진다. 아래 예외는
+# **문장이 광고 주장을 부정하거나 수치 단위를 말하는** 좁은 문맥만 통과시킨다.
+# 각 항목은 음성(임상 문장 통과)과 양성(광고 문형 계속 차단)을 쌍으로 확인한다.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1등급 화상은 표피에만 손상이 있습니다.",
+        "대장암은 국내 암 사망원인 1위입니다.",
+        "국내 발병 원인 1위로 꼽히는 질환입니다.",
+        "발생률 1위 질환의 초기 증상을 정리했습니다.",
+        "이 질환은 완치가 어렵고 꾸준한 관리가 중요합니다.",
+        "약을 계속 먹어도 완치되지 않습니다.",
+        "검사가 완치를 보장할 수 없습니다.",
+        "음성 결과가 완치를 의미하지 않습니다.",
+        "내시경 정확도가 100%는 아닙니다.",
+        "백신으로 100%로 예방할 수 없습니다.",
+        "부작용 없는 약은 없습니다.",
+        "성공률은 개인차가 커 단정할 수 없습니다.",
+        "성공 확률은 환자 상태에 따라 다릅니다.",
+        "해열제를 먹어도 최고 39도까지 오를 수 있습니다.",
+        "하루 최고 40mg까지 처방합니다.",
+        "탁월한 효과를 기대하기 어렵습니다.",
+        "첨단 기술이 결과를 보장하지 않습니다.",
+        "시술이 아프지 않을까 걱정하는 분이 많습니다.",
+    ],
+)
+def test_clinical_negation_and_statistics_are_not_medical_ads(text):
+    assert check_forbidden(text) == [], text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("국내 1위 병원입니다.", "1등"),
+        ("지역 1등 의원으로 뽑혔습니다.", "1등"),
+        # 앞쪽의 역학 통계가 뒤쪽 광고 주장의 면죄부가 되면 안 된다.
+        ("발생률 1위 질환을 가장 많이 치료하는 국내 1위 병원입니다.", "1등"),
+        ("완치율이 높은 치료입니다.", "완치"),
+        ("꾸준히 받으면 완치 가능합니다.", "완치"),
+        ("이 시술로 완치됩니다.", "완치"),
+        ("100% 안전하게 끝납니다.", "100%"),
+        ("성공률 99%를 기록했습니다.", "성공률"),
+        ("부작용 없는 시술입니다.", "부작용 없는"),
+        ("최고의 진료를 약속합니다.", "최고"),
+        ("탁월한 효과가 있습니다.", "최우수"),
+        ("첨단 기술로 시술합니다.", "최첨단"),
+        ("이 시술은 아프지 않습니다.", "통증 없는"),
+    ],
+)
+def test_advertising_phrasings_stay_blocked_after_the_exemptions(text, expected):
+    assert expected in check_forbidden(text), text
+
+
+def test_exemptions_apply_to_markdown_body_and_plain_fields_alike():
+    """발행 게이트가 실제로 쓰는 진입점(check_forbidden_content_fields)으로 확인한다.
+
+    본문은 마크다운 렌더 기준, 제목·메타·FAQ는 평문 기준으로 검사되므로 두 경로가
+    같은 문맥 예외를 갖는지 직접 확인해야 한다.
+    """
+    clinical = {
+        "title": "완치가 어려운 질환을 관리하는 방법",
+        "body": (
+            "## 경과\n"
+            "이 질환은 **완치가 어렵**고 꾸준한 관리가 필요합니다.\n"
+            "검사 정확도가 100%는 아니며, 성공률은 개인차가 큽니다.\n"
+        ),
+        "meta_description": "국내 사망원인 1위 질환의 관리 기준을 정리했습니다.",
+        "faq_question": "시술이 아프지 않을까요?",
+        "faq_answer_summary": "부작용 없는 약은 없으므로 상태에 맞춰 조절합니다.",
+    }
+    assert check_forbidden_content_fields(clinical, FORBIDDEN_CHECK_FIELDS) == []
+
+    promotional = dict(clinical, body="## 안내\n저희는 완치율 100%를 달성했습니다.")
+    violations = check_forbidden_content_fields(promotional, FORBIDDEN_CHECK_FIELDS)
+    assert "완치" in violations and "100%" in violations
+
+
+def test_forbidden_vocabulary_for_prompt_covers_pattern_only_expressions():
+    """작가에게 보여 주는 목록이 실제로 글을 버리는 어휘를 포함해야 한다.
+
+    표시용 21개만 보여 주던 동안 "1위"·"탁월"·"완치율"·"비교 불가"는 작가가 모르는
+    금지어였고, 그 어휘 하나로 완성된 글이 폐기됐다.
+    """
+    vocabulary = forbidden_vocabulary_for_prompt()
+
+    assert set(FORBIDDEN_EXPRESSIONS).issubset(set(vocabulary))
+    for expression in (
+        "1위",
+        "일등",
+        "최상",
+        "으뜸",
+        "탁월",
+        "가장 우수",
+        "가장 잘",
+        "가장 뛰어",
+        "완치율",
+        "완전 치료",
+        "완전 회복",
+        "백 퍼센트",
+        "성공 확률",
+        "비교 불가",
+        "첨단 기술",
+        "첨단 장비",
+        "유일무이",
+        "확인된 효과",
+        "아프지 않은 시술",
+        "흉터 남지 않",
+    ):
+        assert expression in vocabulary, expression
+    # 정적 시스템 블록(프롬프트 캐시 접두어)에 들어가므로 호출마다 동일해야 한다.
+    assert forbidden_vocabulary_for_prompt() == vocabulary
+    assert len(set(vocabulary)) == len(vocabulary)

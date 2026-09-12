@@ -36,7 +36,10 @@ from app.utils.authority_sources import (
     render_source_hint_block,
     select_curated_authority_sources,
 )
-from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden_content_fields
+from app.utils.medical_filter import (
+    check_forbidden_content_fields,
+    forbidden_vocabulary_for_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,15 @@ REFERENCES_REQUIRED_TYPES: frozenset = frozenset(
         ContentType.LOCAL,
     }
 )
+
+# 결정적 검증(분량·가격·SEO·GEO·FAQ·금지 표현) 실패에 쓰는 공급자 호출 횟수.
+# 같은 프롬프트로 blind 재시도하지 않고 직전 실패 사유를 작가에게 넘겨 다시 쓰게 한다.
+# 총량은 종전 tenacity 3회와 같다.
+GENERATION_REMEDIATION_ROUNDS = 3
+# 전송 오류 재시도(tenacity)까지 같은 예산에서 센다. 이 수를 이미 쓴 뒤에는 새 재작성
+# 회차를 시작하지 않는다 — 결정적 재작성 3회와 전송 재시도 3회가 곱해져 한 아이템에
+# 9회를 결제하는 일을 막는다.
+GENERATION_PROVIDER_CALL_BUDGET = 5
 
 # SOFT-FINDING 기준 — 위반해도 생성 결과는 살리고 AE 화면에 점수로만 표시
 SEO_TITLE_MAX_CHARS = 60         # Google title truncation 기준 (권고)
@@ -119,6 +131,16 @@ class MissingCitableReferencesError(ValueError):
         self.result = result
 
 
+class TruncatedProviderOutputError(ValueError):
+    """The provider stopped before completing the JSON envelope (max_tokens/refusal).
+
+    This is not a JSON syntax problem and not a content gate: the same prompt will
+    truncate again.  The message stays distinctive ("truncated") so the run control
+    layer can classify it and the writer receives a "shorten the body" instruction
+    instead of a blind identical retry.
+    """
+
+
 class DirectorNameMissingError(ValueError):
     """Keep the last provider result available for one deterministic name heal."""
 
@@ -158,8 +180,10 @@ _SYSTEM_PROMPT_TEMPLATE = """\
    `## H2` 소제목부터 사용합니다. 단계·비교가 실제 이해에 도움이 될 때만 목록이나 표를 씁니다.
 6. **엔티티 정확성**: 프로파일의 지역명·병원명·원장명을 표기 그대로 본문에 각각 최소 1회 자연스럽게
    포함하세요. 누락은 허용되지 않으며 반복 삽입은 금지합니다.
-7. **분량**: 본문은 최소 기준보다 짧아지지 않도록 2200~4200자를 목표로 작성하고, H2 4~6개를 사용하세요.
-   1800자 미만은 저장되지 않으며 5200자는 넘기지 마세요.
+7. **분량**: 글자 수는 **공백과 마크다운 기호(#, *, -, |, 링크 괄호 등)를 모두 제거한 순수 글자 수**로 셉니다.
+   같은 글이라도 공백까지 센 길이보다 20~35% 짧게 계산되므로, 화면에 보이는 길이가 아니라 이 기준으로 맞추세요.
+   목표는 순수 글자 수 2,400~4,500자이고 H2는 4~6개입니다.
+   순수 글자 수 1,800자 미만이거나 5,200자를 넘으면 저장되지 않습니다.
    이미 다른 글에 있는 일반론을 반복하지 말고, 이 질문에 필요한 감별 포인트·진료 흐름·내원 기준을 충분히 풉니다.
 8. **비용 정보**: 승인된 병원 자료에 명시되지 않은 구체적 금액, '무료', 건강보험 본인부담률을 추정하지 마세요.
    비용 질문에는 진료 목적·검사 범위·보험 적용 여부에 따라 달라질 수 있으므로 의료기관에 현재 기준을 확인하라고 설명하세요.
@@ -170,6 +194,9 @@ _SYSTEM_PROMPT_TEMPLATE = """\
 __FORBIDDEN_EXPRESSIONS__
 
 위 표현은 변형(예: "통증 제로", "흉터 zero")도 모두 금지. 환자 후기/치료경험담 톤도 금지(2024 사전심의 강화).
+**부정문·인용문·통계 인용 문맥에서도 위 어휘 자체를 쓰지 말고 다른 표현으로 바꿔 쓰세요.**
+(예: "완치율이 높지는 않습니다" → "치료로 증상이 좋아지는 정도는 개인차가 큽니다",
+ "사망원인 1위" → "가장 흔한 사망 원인 가운데 하나", "성공률" → "치료 결과")
 
 [플랫폼 공통 의료광고 안전 규칙 — 모든 병원에 항상 적용]
 __MANDATORY_SAFETY_RULES__
@@ -225,8 +252,11 @@ _MANDATORY_SAFETY_ENTRIES: frozenset[str] = frozenset(
 # 형태다. 위 "[의료광고법 준수 — 절대 금지 표현]" 절이 곧 그 규칙의 렌더링이므로
 # 여기서 다시 찍으면 같은 목록이 한 프롬프트에 두 번 들어간다. 따라서 아래 절에는
 # 표현 목록이 없는 MANDATORY_MEDICAL_AD_RISK_RULES 만 넣는다.
+# 표시용 21개가 아니라 **실제 매칭 패턴이 잡는 어휘 전부**를 렌더한다. 작가가 못 보는
+# 어휘로 글이 폐기되던 원인(2026-09-12 수율 계획 §1.1)을 없앤다. 값은 상수 조합이라
+# 바이트 단위로 고정이므로 정적 시스템 블록(프롬프트 캐시 접두어)에 안전하다.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.replace(
-    "__FORBIDDEN_EXPRESSIONS__", " · ".join(FORBIDDEN_EXPRESSIONS)
+    "__FORBIDDEN_EXPRESSIONS__", " · ".join(forbidden_vocabulary_for_prompt())
 ).replace(
     "__MANDATORY_SAFETY_RULES__",
     "\n".join(f"- {rule}" for rule in MANDATORY_MEDICAL_AD_RISK_RULES),
@@ -284,6 +314,8 @@ TYPE_PROMPTS = {
 [콘텐츠 유형: 원장 칼럼]
 원장님의 시각에서 환자에게 전하는 의견형 글을 작성하세요.
 원장명이 자연스럽게 등장해야 합니다. 억지 반복 없이 전문성과 진료 철학이 연결되어야 합니다.
+의견형 글이어도 근거는 필요합니다 — 화이트리스트 도메인의 **실제 문서 URL을 references에 최소 1개** 넣으세요.
+확신이 없는 URL은 지어내지 말고, 대신 확신이 있는 문서를 인용하고 확인할 수 없는 수치·주장은 빼세요.
 원장명: {director_name}
 전문 분야: {specialties}
 진료 철학: {director_philosophy}
@@ -291,6 +323,8 @@ TYPE_PROMPTS = {
     ContentType.HEALTH: """\
 [콘텐츠 유형: 건강 정보]
 계절·생활습관 관련 예방 정보를 친근하게 작성하세요.
+예방·생활습관 권고의 근거로 화이트리스트 도메인의 **실제 문서 URL을 references에 최소 1개** 넣으세요
+(질병관리청 국가건강정보포털·국가암정보센터 등). 확신이 없는 URL은 지어내지 말고 그 항목을 빼세요.
 진료 키워드: {keywords}
 """,
     ContentType.LOCAL: """\
@@ -649,19 +683,17 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     stop=stop_after_attempt(3),
     wait=wait_exponential(min=2, max=10),
     before_sleep=before_sleep_log(logger, logging.WARNING),
-    # An empty normalized reference list is deterministic for this provider
-    # response.  Retrying the writer two more times only spends money before the
-    # same curated catalog recovery below.  Other hard gates still retain their
-    # bounded provider retries.
+    # tenacity 는 **전송·공급자 오류 전용**이다. 우리 검증기가 던지는 ValueError 는
+    # 같은 프롬프트로 다시 사면 같은 결과가 나오는 결정적 실패이므로 여기서 재시도하지
+    # 않고, generate_content 의 재작성 루프가 실패 사유를 작가에게 넘겨 다시 쓰게 한다
+    # (잘림·JSON 파싱·분량·가격·SEO·GEO·FAQ·금지 표현 전부 ValueError 계열).
     #
     # NON_RETRYABLE_ANTHROPIC_ERRORS: a malformed request, a bad key, a revoked
     # permission or a missing model does not become valid by waiting.  Retrying
     # them burned three request slots and up to 12s of backoff per item before
     # surfacing the same error.  Rate limits (429), 5xx and timeouts stay
-    # retryable, as do our own validation ValueErrors.
-    retry=retry_if_not_exception_type(
-        (MissingCitableReferencesError, *NON_RETRYABLE_ANTHROPIC_ERRORS)
-    ),
+    # retryable.
+    retry=retry_if_not_exception_type((ValueError, *NON_RETRYABLE_ANTHROPIC_ERRORS)),
     reraise=True,
 )
 async def _generate_content_attempt(
@@ -760,7 +792,7 @@ async def _generate_content_attempt(
             None,
             lambda: client.messages.create(
                 model=settings.CLAUDE_MODEL,
-                max_tokens=5500,
+                max_tokens=12000,
                 system=system_blocks,
                 messages=[{"role": "user", "content": user_message}],
             ),
@@ -810,6 +842,16 @@ async def _generate_content_attempt(
         usage=usage,
     )
 
+    # 잘린 응답은 JSON 파싱 실패로만 드러나 "가격·지역·검색 구조 게이트 실패"라는 틀린
+    # 원인으로 기록됐다. 사용량 기록(위)은 이미 끝났으므로 여기서 전용 오류로 끊는다.
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason in {"max_tokens", "refusal"}:
+        raise TruncatedProviderOutputError(
+            f"Provider output was truncated before completion (stop_reason={stop_reason}) "
+            "— 응답이 끝까지 완성되지 않았습니다. 본문 분량을 순수 글자 수 2,400~3,200자로 "
+            "줄이고 JSON 객체를 끝까지 닫아 다시 작성하세요."
+        )
+
     raw = response.content[0].text
 
     result = _parse_json_response(raw, json_module=json)
@@ -827,6 +869,29 @@ async def _generate_content_attempt(
         result["references"] = await _drop_definitively_broken_references(result["references"])
 
     return _validate_generated_result(result, hospital, content_type, content_brief)
+
+
+def reference_titles_for_forbidden_check(references: object) -> str:
+    """금지 표현 검사 대상이 되는 참고자료 제목만 이어 붙인다.
+
+    화이트리스트 기관의 실제 문서 제목("국가암정보센터 — 대장암 완치율 통계")은 우리가
+    지은 광고 문구가 아니라 외부 기관의 공식 표기다. 그 제목 때문에 근거를 제대로 단 글이
+    통째로 폐기되면 근거가 좋을수록 발행되지 않는다. 반대로 모델이 지어낸 제목(화이트리스트
+    밖 URL)은 공개 표면에 그대로 나가므로 계속 검사한다.
+
+    예외 판정은 생성·발행이 참고자료로 인정하는 조건과 같다 — 화이트리스트 도메인의
+    **실제 문서 URL**(is_citable_reference_url). 기관 루트 URL에 붙은 제목은 문서 제목이
+    아니므로 예외로 두지 않는다. 생성 엔진과 발행 게이트가 이 한 함수를 공유한다.
+    """
+    if not isinstance(references, list):
+        return ""
+    return " ".join(
+        title
+        for reference in references
+        if isinstance(reference, dict)
+        for title in [str(reference.get("title") or "").strip()]
+        if title and not is_citable_reference_url(str(reference.get("url") or "").strip())
+    ).strip()
 
 
 def _validate_generated_result(
@@ -854,7 +919,7 @@ def _validate_generated_result(
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
     geo_findings = _validate_geo(result, hospital, content_type)
     # 측정 질의 대응 검사. 워커가 이 목록을 보고 한 번만 보완 재작성을 돌린다.
-    target_findings = _validate_target_alignment(result, content_brief)
+    target_findings = _validate_target_alignment(result, content_brief, content_type)
     result["target_alignment_findings"] = target_findings
 
     # 세 검증에서 나온 SOFT 결과를 result에 첨부 — AE 화면이 참조할 수 있도록
@@ -873,14 +938,10 @@ def _validate_generated_result(
     # 완전한 새 응답인 결과만 반환하게 한다. 재시도 소진 시 호출자는 결과를 저장하지 않고
     # 기존 생성 실패 incident/outbox 경로를 연다.
     violations = check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS)
-    reference_titles = " ".join(
-        str(reference.get("title") or "").strip()
-        for reference in (result.get("references") or [])
-        if isinstance(reference, dict)
-    )
+    reference_titles = reference_titles_for_forbidden_check(result.get("references"))
     violations.extend(
         check_forbidden_content_fields(
-            {"reference_titles": reference_titles}, ("reference_titles",)
+            {REFERENCE_TITLES_FIELD: reference_titles}, (REFERENCE_TITLES_FIELD,)
         )
     )
     if violations:
@@ -908,10 +969,27 @@ async def generate_content(
     content_brief: dict | None = None,
     remediation_findings: list[str] | None = None,
 ) -> dict:
-    """Generate with hard retries and apply bounded deterministic heals."""
+    """Generate with bounded, *informed* rewrites and apply deterministic heals.
 
+    결정적 검증기(분량·가격·SEO·GEO·FAQ·금지 표현·잘림)의 실패는 같은 프롬프트로
+    다시 사도 같은 결과가 나온다. 그래서 tenacity 의 blind 재시도 대신 여기서
+    직전 실패 사유를 `remediation_findings` 로 작가에게 넘겨 다시 쓰게 한다.
+    총 공급자 호출 수는 종전(tenacity 3회)과 같고, 전송 오류 재시도까지 합쳐도
+    GENERATION_PROVIDER_CALL_BUDGET 을 넘지 않는다.
+    """
+
+    # 한 번의 generate_content = 하나의 논리 호출. 재작성 회차와 전송 재시도가 모두
+    # 이 lineage 아래 HTTP attempt 로 기록돼 '예약'과 '실제'가 벌어지지 않는다.
     attempt_context = {"logical_call_id": str(uuid.uuid4()), "http_attempt": 0}
-    try:
+    caller_findings = [
+        str(finding) for finding in (remediation_findings or []) if str(finding).strip()
+    ]
+    findings = list(caller_findings)
+    last_error: ValueError | None = None
+
+    for _round in range(GENERATION_REMEDIATION_ROUNDS):
+        if int(attempt_context.get("http_attempt") or 0) >= GENERATION_PROVIDER_CALL_BUDGET:
+            break
         try:
             return await _generate_content_attempt(
                 hospital,
@@ -919,36 +997,115 @@ async def generate_content(
                 existing_titles,
                 philosophy,
                 content_brief,
-                remediation_findings,
+                findings,
                 attempt_context,
             )
         except MissingCitableReferencesError as exc:
-            result = exc.result
-            # MissingCitableReferencesError is excluded from tenacity, so this runs
-            # after the first provider result in the same tick.  Preserve any citable
-            # provider references; only an actually empty list may be healed from the
-            # human-verified, topic-specific catalog.
-            if result.get("references"):
-                raise
-            curated_references = select_curated_authority_sources(
-                _curated_reference_focus(content_brief, result),
-            )
-            if not curated_references:
-                raise
-            result["references"] = curated_references
-            return _validate_generated_result(result, hospital, content_type, content_brief)
-    except DirectorNameMissingError as exc:
-        result = exc.result
-        director = (hospital.director_name or "").strip()
-        body = (result.get("body") or "").rstrip()
-        if not director or director in body:
-            raise
-        result["body"] = f"{body}\n\n{hospital.name}의 원장은 {director}입니다."
-        return _validate_generated_result(result, hospital, content_type, content_brief)
+            last_error = exc
+            try:
+                healed = _heal_from_curated_catalog(
+                    exc, hospital, content_type, content_brief
+                )
+            except ValueError as heal_error:
+                # 큐레이션 근거를 붙였더니 다른 게이트가 걸렸다. 그 사유를 그대로
+                # 다음 회차에 넘긴다 — 이미 결제한 응답을 여기서 버리지 않는다.
+                last_error = heal_error
+            else:
+                if healed is not None:
+                    return healed
+        except DirectorNameMissingError as exc:
+            # 승인된 원장명 한 줄은 결정적으로 붙일 수 있다. 본문이 그 한 가지만
+            # 빼고 완전한데도 재작성을 두 번 더 사면 정상 글 한 편에 세 번 결제한다.
+            last_error = exc
+            try:
+                healed = _heal_missing_director_name(
+                    exc, hospital, content_type, content_brief
+                )
+            except ValueError as heal_error:
+                # 이름을 붙였더니 다른 게이트가 걸렸다 — 그 사유로 다시 쓰게 한다.
+                last_error = heal_error
+            else:
+                if healed is not None:
+                    return healed
+        except ValueError as exc:
+            last_error = exc
+        logger.info(
+            "content generation rejected deterministically; feeding the finding back: "
+            "hospital=%s type=%s error=%s",
+            getattr(hospital, "id", None),
+            getattr(content_type, "value", content_type),
+            type(last_error).__name__,
+        )
+        findings = _validator_remediation_findings(last_error, caller_findings)
+
+    if last_error is None:  # pragma: no cover - 루프는 최소 1회 실행된다
+        raise RuntimeError("content generation ended without a result or an error")
+    raise last_error
 
 
-# Keep the retry controller observable/configurable at the public seam used by tests and
-# provider-call metering, while deterministic heals remain strictly outside tenacity.
+def _validator_remediation_findings(
+    error: ValueError, caller_findings: list[str]
+) -> list[str]:
+    """Turn one deterministic rejection into the next attempt's writer feedback.
+
+    호출자가 준 지적(독립 검수 등)은 그대로 남긴다 — 재작성을 요청한 원래 이유가
+    사라지면 같은 문제를 다시 쓴다. 검증기 사유를 맨 앞에 둬 길이 상한에서 잘리지 않게 한다.
+    """
+    message = " ".join(str(error).split())[:240]
+    finding = (
+        "직전 응답이 시스템 검증에서 거부되었습니다. 지적된 문제만 고쳐 전체를 다시 "
+        f"작성하세요: {message}"
+    )
+    return [finding, *caller_findings][:5]
+
+
+def _heal_from_curated_catalog(
+    error: MissingCitableReferencesError,
+    hospital: Hospital,
+    content_type: ContentType,
+    content_brief: dict | None,
+) -> dict | None:
+    """Recover an empty reference list from the human-verified catalog, or give up.
+
+    Preserve any citable provider reference; only an actually empty list may be
+    healed from the topic-specific curated documents.
+    """
+    result = error.result
+    if result.get("references"):
+        return None
+    curated_references = select_curated_authority_sources(
+        _curated_reference_focus(content_brief, result),
+    )
+    if not curated_references:
+        return None
+    result["references"] = curated_references
+    return _validate_generated_result(result, hospital, content_type, content_brief)
+
+
+def _heal_missing_director_name(
+    error: DirectorNameMissingError,
+    hospital: Hospital,
+    content_type: ContentType,
+    content_brief: dict | None,
+) -> dict | None:
+    """Append the approved director name once, in the same round, or give up.
+
+    이름 누락은 승인된 프로파일 값 한 줄로 결정적으로 고쳐진다. 다시 사도 결과가
+    나아진다는 보장이 없으므로 공급자를 한 번 더 부르지 않는다. 이름이 없거나 이미
+    본문에 있으면(=다른 이유로 실패한 것이면) None을 돌려 재작성 루프로 보낸다.
+    """
+    result = error.result
+    director = (hospital.director_name or "").strip()
+    body = (result.get("body") or "").rstrip()
+    if not director or director in body:
+        return None
+    result["body"] = f"{body}\n\n{hospital.name}의 원장은 {director}입니다."
+    return _validate_generated_result(result, hospital, content_type, content_brief)
+
+
+# Keep the transport retry controller observable/configurable at the public seam used by
+# tests and provider-call metering. It now governs **only** transport/provider errors —
+# 결정적 검증 실패의 재작성 예산은 GENERATION_REMEDIATION_ROUNDS 가 가진다.
 generate_content.retry = _generate_content_attempt.retry
 
 
@@ -976,6 +1133,9 @@ def _build_remediation_context(findings: list[str] | None) -> str:
         f"{bullets}"
     )
 
+
+# 참고자료 제목을 담아 검사하는 가상 필드 이름. 발행 게이트가 같은 이름을 쓴다.
+REFERENCE_TITLES_FIELD = "reference_titles"
 
 # 의료광고 금지 표현 검사 대상 필드 — 공개 표면(FAQPage rich result 포함)에 노출되는
 # 모든 텍스트 필드를 빠짐없이 포함해야 한다 (P1-2: FAQ 필드 누락 회귀 방지).
@@ -1184,7 +1344,9 @@ def _validate_seo(
 TARGET_KEYWORD_FINDING_PREFIX = "측정 질의 키워드 미반영"
 
 
-def _validate_target_alignment(result: dict, content_brief: dict | None) -> list[str]:
+def _validate_target_alignment(
+    result: dict, content_brief: dict | None, content_type: ContentType
+) -> list[str]:
     """측정 질의의 임상 키워드가 제목·첫 H2·FAQ 질문 중 한 곳에는 있어야 한다.
 
     본문 어딘가에 한 번 나오는 것으로는 부족하다 — AI가 이 글을 그 질문의 답으로
@@ -1192,6 +1354,11 @@ def _validate_target_alignment(result: dict, content_brief: dict | None) -> list
     올리면 한국어 형태 변화(‘허리디스크’ vs ‘허리 디스크’)로 정상 결과가 버려지므로,
     한 번의 보완 재작성까지만 요구하고 그 뒤에는 통과시킨다.
     """
+    # 조향 대상이 아닌 유형(COLUMN·HEALTH·NOTICE)은 프롬프트에 키워드를 보여 주지도
+    # 않는다. 보여 주지 않은 요구로 보완 재작성 예산을 태우지 않는다.
+    if content_type not in TARGET_STEERED_TYPES:
+        return []
+
     brief = content_brief or {}
     keyword = str(brief.get("target_keyword") or "").strip()
     if not keyword:

@@ -15,6 +15,7 @@ from app.utils.authority_sources import (  # noqa: E402
     infer_source_type,
     is_citable_reference_url,
     is_whitelisted_url,
+    render_source_hint_block,
     select_curated_authority_sources,
 )
 
@@ -243,3 +244,23 @@ def test_select_curated_authority_sources_does_not_misclassify_patient_status_as
     trauma_document_ids = {"5463", "5679", "5696"}
     selected_document_ids = {source["url"].rsplit("=", 1)[-1] for source in sources}
     assert selected_document_ids.isdisjoint(trauma_document_ids)
+
+
+def test_source_hint_block_requires_a_document_url_instead_of_an_empty_list():
+    """프롬프트가 "비워 두세요"라고 말하고 검증기가 빈 references를 버리던 모순을 없앤다.
+
+    작가는 지시를 그대로 따랐을 뿐인데 6개 유형에서 완성된 글이 hard-fail 됐다
+    (2026-09-12 수율 계획 §1.1).
+    """
+    block = render_source_hint_block()
+
+    assert "references를 비워 두세요" not in block
+    assert "시스템이 검증된 문서를 보완합니다" not in block
+    assert "최소 1개" in block
+    # 확신 없는 URL을 지어내라는 뜻이 아니다 — 그 항목만 빼라고 말해야 한다.
+    assert "지어내지 말고" in block
+
+
+def test_source_hint_block_is_byte_stable_for_the_prompt_cache():
+    """정적 시스템 블록의 접두어라 호출마다 같아야 한다(시각·UUID 금지)."""
+    assert render_source_hint_block() == render_source_hint_block()

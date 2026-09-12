@@ -5,6 +5,7 @@
 """
 import re
 import unicodedata
+from dataclasses import dataclass
 
 # Zero-width / 비표시 문자 — 금지 표현 사이에 끼워 넣어 정규식을 회피하는 우회를 차단.
 # U+200B ZERO WIDTH SPACE, U+200C ZWNJ, U+200D ZWJ, U+2060 WORD JOINER, U+FEFF BOM, U+00AD SOFT HYPHEN.
@@ -23,7 +24,9 @@ FORBIDDEN_EXPRESSIONS = [
 
 # 정규식 패턴 (변형 포착)
 FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
-    "1등": re.compile(r"1등|일등|1위|일위"),
+    # "1등급"은 질환 중증도·화상 분류 같은 임상 등급 표기다. 광고 최상급이 아니므로
+    # 매칭 자체에서 제외한다("1등급 화상"). 순위 주장("1등 병원")은 그대로 막는다.
+    "1등": re.compile(r"1등(?!급)|일등(?!급)|1위|일위"),
     # 최고혈압(수축기혈압)은 의학 용어다. 최상/으뜸 및 "최고의 진료" 같은
     # 광고 최상급은 그대로 막되 혈압 문맥만 제외한다.
     "최고": re.compile(
@@ -69,6 +72,173 @@ FORBIDDEN_PATTERNS: dict[str, re.Pattern] = {
 }
 
 
+# ── 프롬프트용 어휘 목록 ────────────────────────────────────────────────────
+# FORBIDDEN_EXPRESSIONS 는 **표시용 21개**이고 실제로 글을 버리는 것은
+# FORBIDDEN_PATTERNS 다. 작가에게 21개만 보여 주면 "1위", "탁월", "완치율",
+# "비교 불가"처럼 패턴만 잡는 어휘를 모른 채 쓰고, 완성된 글이 통째로 폐기된다.
+# 아래 목록은 패턴이 실제로 잡는 표현을 사람이 읽을 수 있게 풀어 둔 것이다.
+# (정본은 여전히 FORBIDDEN_PATTERNS 다. 이 목록은 검사에 쓰이지 않는다.)
+FORBIDDEN_PATTERN_VARIANTS: tuple[str, ...] = (
+    "1위", "일등", "일위",
+    "최상", "으뜸",
+    "탁월", "가장 우수", "제일 우수",
+    "가장 잘", "가장 뛰어", "제일 잘",
+    "유일무이", "오직 이곳",
+    "완치율", "완전 치료", "완전 회복",
+    "백 퍼센트", "성공 확률", "성공 보장",
+    "부작용 제로", "통증 제로",
+    "확인된 효과", "효과 약속", "효과 확실",
+    "비교 불가", "차별화된 노하우",
+    "첨단 기술", "첨단 장비", "첨단 시술",
+    "무통 시술", "아프지 않은 시술", "흉터 남지 않",
+    "국내 최초", "아시아 최초", "특허 보유",
+)
+
+
+def forbidden_vocabulary_for_prompt() -> tuple[str, ...]:
+    """작가 프롬프트에 그대로 렌더할 금지 어휘(표시용 + 패턴이 잡는 변형).
+
+    값은 상수 조합이라 호출 시점과 무관하게 바이트 단위로 동일하다 —
+    content_engine 의 정적 시스템 블록(프롬프트 캐시 접두어)에 들어가므로
+    시각·UUID 같은 변동 값을 절대 섞지 말 것.
+    """
+    return tuple(dict.fromkeys([*FORBIDDEN_EXPRESSIONS, *FORBIDDEN_PATTERN_VARIANTS]))
+
+
+# ── 문맥 예외 ───────────────────────────────────────────────────────────────
+# 필터는 정본이고 경로별 허용 목록(allowlist)은 만들지 않는다. 다만 광고가 아닌
+# 임상·통계·부정 문장까지 막으면 정상 글이 버려지므로, **문장 자체가 광고 주장을
+# 부정하거나 수치 단위를 말하는** 좁은 문맥만 예외로 둔다. 각 예외는 광고 문형이
+# 계속 막히는 양성 테스트와 임상 문형이 통과하는 음성 테스트를 함께 가진다.
+@dataclass(frozen=True)
+class _ContextExemption:
+    """한 매치를 '광고가 아님'으로 판정하는 좁은 문맥 규칙."""
+
+    reason: str
+    trigger: re.Pattern | None = None      # 매치된 표현 자체가 이것과 완전히 일치할 때만
+    preceded_by: re.Pattern | None = None  # 매치 앞 window 자 안에 이 표현이 있을 때
+    followed_by: re.Pattern | None = None  # 매치 뒤 window 자 안에 이 표현이 있을 때
+    window: int = 30
+
+    def applies(self, text: str, match: re.Match) -> bool:
+        if self.trigger is not None and not self.trigger.fullmatch(match.group(0)):
+            return False
+        if self.preceded_by is not None:
+            head = text[max(0, match.start() - self.window) : match.start()]
+            if not self.preceded_by.search(head):
+                return False
+        if self.followed_by is not None:
+            tail = text[match.end() : match.end() + self.window]
+            if not self.followed_by.search(tail):
+                return False
+        return True
+
+
+_ALLOWED_CONTEXTS: dict[str, tuple[_ContextExemption, ...]] = {
+    # "사망원인 1위", "발생률 1위" 같은 역학 통계. 역학 명사가 **바로 앞에 붙어 있을
+    # 때만** 예외다 — 창을 넓게 잡으면 "발생률 1위 질환을 치료하는 국내 1위 병원"의
+    # 뒤쪽 광고 주장까지 같은 문장 안에서 통과한다.
+    "1등": (
+        _ContextExemption(
+            reason="역학 통계 문맥의 순위 인용",
+            trigger=re.compile(r"1위|일위"),
+            preceded_by=re.compile(
+                r"(?:발생|사망|유병|발병)(?:률|율)?(?:\s*원인|\s*순위|\s*빈도)?"
+                r"\s*(?:[은는이가]\s*)?$"
+            ),
+            window=12,
+        ),
+    ),
+    # "최고 39도", "최고 40mg" 같은 수치 상한. 광고 최상급("최고의 진료")은 계속 차단.
+    "최고": (
+        _ContextExemption(
+            reason="수치 상한(체온·용량·연령·횟수)",
+            trigger=re.compile(r"최고"),
+            followed_by=re.compile(
+                r"^\s*\d+(?:\.\d+)?\s*(?:도|mg|ml|회|세|시간|일|주|개월|년|kg|cm|mm|%)"
+            ),
+            window=12,
+        ),
+    ),
+    # "탁월한 효과를 기대하기 어렵습니다"처럼 우월 주장을 바로 부정하는 문장.
+    "최우수": (
+        _ContextExemption(
+            reason="우월 주장을 부정하는 문장",
+            trigger=re.compile(r"탁월[한]?"),
+            followed_by=re.compile(r"기대하기\s*어(?:렵|려)|보장하지\s*않"),
+            window=20,
+        ),
+    ),
+    # "완치가 어렵고", "완치되지 않습니다"처럼 완치 주장을 바로 부정·한정하는 문장.
+    # "완치율", "완치 가능", "완치됩니다"는 계속 차단.
+    "완치": (
+        _ContextExemption(
+            reason="완치 주장을 바로 부정·한정",
+            trigger=re.compile(r"완치"),
+            followed_by=re.compile(
+                r"^(?:가\s*어(?:렵|려)|되지\s*않|[을를]\s*보장할\s*수\s*없|[을를]\s*의미하지\s*않)"
+            ),
+            window=16,
+        ),
+    ),
+    # "정확도가 100%는 아닙니다", "100%로 예방할 수 없습니다" 같은 한계 설명.
+    "100%": (
+        _ContextExemption(
+            reason="100% 주장을 바로 부정",
+            followed_by=re.compile(r"^(?:[는가]\s*아(?:니|닙|님)|로\s*예방할\s*수\s*없)"),
+            window=16,
+        ),
+    ),
+    # "성공률은 개인차가 커 단정할 수 없습니다"처럼 수치를 바로 한정하는 문장.
+    "성공률": (
+        _ContextExemption(
+            reason="성공률을 개인차·불확실성으로 한정",
+            trigger=re.compile(r"성공\s*(?:률|확률)"),
+            followed_by=re.compile(r"다릅니다|개인차|단정할\s*수\s*없|달라질\s*수"),
+            window=20,
+        ),
+    ),
+    # "부작용 없는 약은 없습니다" — 무부작용 주장을 존재 자체로 부정하는 문장.
+    "부작용 없는": (
+        _ContextExemption(
+            reason="무부작용 주장을 존재 부정으로 반박",
+            followed_by=re.compile(r"^는\s*(?:약|치료|시술|수술)(?:은|는|이|가)?\s*없"),
+            window=20,
+        ),
+    ),
+    # "첨단 기술이 효과를 보장하지 않습니다" 같은 부정. "최첨단"은 계속 차단.
+    "최첨단": (
+        _ContextExemption(
+            reason="첨단 기술 주장을 부정",
+            trigger=re.compile(r"첨단[의]?\s*(?:기술|장비|시술)"),
+            followed_by=re.compile(r"기대하기\s*어(?:렵|려)|보장하지\s*않"),
+            window=20,
+        ),
+    ),
+    # "시술이 아프지 않을까 걱정하는 분이 많습니다" — 환자의 의문·걱정 인용.
+    # "시술은 아프지 않습니다" 같은 단정은 계속 차단.
+    "통증 없는": (
+        _ContextExemption(
+            reason="환자의 의문·걱정 표현",
+            trigger=re.compile(r"(?:시술|수술|치료)[은는이가]?\s*아프지\s*않"),
+            followed_by=re.compile(r"^을(?:까|지)"),
+            window=8,
+        ),
+    ),
+}
+
+
+def _blocking_match_exists(label: str, pattern: re.Pattern, text: str) -> bool:
+    """이 라벨의 매치 중 문맥 예외가 아닌 것이 하나라도 있는가."""
+    exemptions = _ALLOWED_CONTEXTS.get(label, ())
+    for match in pattern.finditer(text):
+        if not exemptions:
+            return True
+        if not any(exemption.applies(text, match) for exemption in exemptions):
+            return True
+    return False
+
+
 def normalize_for_check(text: str) -> str:
     """금지 표현 매칭 전 정규화.
 
@@ -92,7 +262,7 @@ def check_forbidden(text: str) -> list[str]:
     normalized = normalize_for_check(text)
     found = []
     for label, pattern in FORBIDDEN_PATTERNS.items():
-        if pattern.search(normalized):
+        if _blocking_match_exists(label, pattern, normalized):
             found.append(label)
     return found
 

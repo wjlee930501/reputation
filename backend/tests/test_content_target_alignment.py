@@ -21,6 +21,7 @@ from app.models.content import ContentType
 from app.services.content_brief import build_content_brief
 from app.services.content_engine import (
     TARGET_KEYWORD_FINDING_PREFIX,
+    TARGET_STEERED_TYPES,
     _fill_type_prompt,
     _validate_seo,
     _validate_target_alignment,
@@ -147,12 +148,12 @@ def _result(title="허리디스크 초기 증상과 치료", body=None, faq_ques
 
 
 def test_keyword_in_title_passes():
-    assert _validate_target_alignment(_result(), _brief()) == []
+    assert _validate_target_alignment(_result(), _brief(), ContentType.DISEASE) == []
 
 
 def test_keyword_only_in_first_h2_passes():
     result = _result(title="허리 통증, 언제 병원에 가야 할까요?")
-    assert _validate_target_alignment(result, _brief()) == []
+    assert _validate_target_alignment(result, _brief(), ContentType.DISEASE) == []
 
 
 def test_keyword_only_in_faq_question_passes():
@@ -161,13 +162,13 @@ def test_keyword_only_in_faq_question_passes():
         body="## 증상\n\n본문\n\n## 치료\n\n본문",
         faq_question="허리디스크는 어떻게 치료하나요?",
     )
-    assert _validate_target_alignment(result, _brief()) == []
+    assert _validate_target_alignment(result, _brief(), ContentType.FAQ) == []
 
 
 def test_missing_keyword_is_reported_as_a_finding():
     result = _result(title="허리 통증 안내", body="## 증상\n\n본문\n\n## 치료\n\n본문")
 
-    findings = _validate_target_alignment(result, _brief())
+    findings = _validate_target_alignment(result, _brief(), ContentType.DISEASE)
 
     assert len(findings) == 1
     assert findings[0].startswith(TARGET_KEYWORD_FINDING_PREFIX)
@@ -175,8 +176,27 @@ def test_missing_keyword_is_reported_as_a_finding():
 
 
 def test_no_brief_means_no_alignment_check():
-    assert _validate_target_alignment(_result(), None) == []
-    assert _validate_target_alignment(_result(), {"target_query": ""}) == []
+    assert _validate_target_alignment(_result(), None, ContentType.DISEASE) == []
+    assert (
+        _validate_target_alignment(_result(), {"target_query": ""}, ContentType.DISEASE) == []
+    )
+
+
+@pytest.mark.parametrize(
+    "content_type", [ContentType.COLUMN, ContentType.HEALTH, ContentType.NOTICE]
+)
+def test_unsteered_types_are_never_asked_for_the_measured_keyword(content_type):
+    """조향 대상이 아닌 유형은 프롬프트에 키워드를 보여 주지도 않는다.
+
+    보여 주지 않은 요구로 지적을 만들면 보완 재작성 예산(2회)이 문체성 지적에
+    먼저 소모되고, 정작 고쳐야 할 사실·안전 지적을 고칠 기회가 사라진다.
+    """
+    result = _result(title="허리 통증 안내", body="## 증상\n\n본문\n\n## 치료\n\n본문")
+
+    assert content_type not in TARGET_STEERED_TYPES
+    assert _validate_target_alignment(result, _brief(), content_type) == []
+    # 조향 대상 유형에서는 같은 결과가 계속 지적된다.
+    assert _validate_target_alignment(result, _brief(), ContentType.DISEASE)
 
 
 def test_seo_primary_keyword_is_the_clinical_term_not_the_region():

@@ -10,6 +10,7 @@ os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
 
 from types import SimpleNamespace  # noqa: E402
 
+import anthropic  # noqa: E402
 import pytest  # noqa: E402
 from tenacity import stop_after_attempt  # noqa: E402
 
@@ -30,7 +31,10 @@ from app.services.content_engine import (  # noqa: E402
     _validate_geo,
     _validate_unverified_price_claims,
 )
-from app.utils.medical_filter import check_forbidden_content_fields  # noqa: E402
+from app.utils.medical_filter import (  # noqa: E402
+    check_forbidden_content_fields,
+    forbidden_vocabulary_for_prompt,
+)
 
 
 def test_parse_json_response_accepts_fenced_json():
@@ -299,10 +303,14 @@ def test_clean_faq_fields_pass_the_generation_layer_check():
 
     assert check_forbidden_content_fields(result, FORBIDDEN_CHECK_FIELDS) == []
 
-async def test_generate_content_heals_missing_approved_director_name_after_retries(
+async def test_generate_content_heals_missing_approved_director_name_in_the_same_round(
     monkeypatch,
 ):
-    """Admin regeneration can persist after all model rewrites omit the director name."""
+    """승인된 원장명 한 줄은 결정적으로 붙는다 — 그것 때문에 다시 사지 않는다.
+
+    본문이 원장명 하나만 빼고 완전한데 재작성을 두 번 더 사면 정상 글 한 편에 세 번
+    결제하게 된다. 보정은 같은 회차에서 끝나고 공급자 호출은 1회여야 한다.
+    """
 
     hospital = SimpleNamespace(
         name="강심장내과의원",
@@ -353,7 +361,7 @@ async def test_generate_content_heals_missing_approved_director_name_after_retri
 
     saved = await content_engine.generate_content(hospital, ContentType.NOTICE)
 
-    assert provider_calls == 3
+    assert provider_calls == 1
     assert "장현경" not in body_without_director
     assert saved["body"] == (
         f"{body_without_director.rstrip()}\n\n강심장내과의원의 원장은 장현경입니다."
@@ -419,6 +427,12 @@ def test_faq_generation_rejects_missing_json_ld_field(missing_field):
 
 
 def test_generation_rejects_forbidden_expression_in_reference_title():
+    """모델이 지어낸 제목(화이트리스트 밖 URL)은 계속 검사한다.
+
+    2026-09-12 수율 계획 WP-1로 **화이트리스트 문서 URL의 제목만** 검사에서 빠졌다
+    (외부 기관의 공식 표기라 우리가 지은 광고 문구가 아니다). 그 밖의 제목은 공개
+    표면과 JSON-LD에 그대로 나가므로 종전대로 글 전체를 폐기한다.
+    """
     hospital = SimpleNamespace(
         name="테스트병원",
         director_name="김원장",
@@ -429,7 +443,7 @@ def test_generation_rejects_forbidden_expression_in_reference_title():
         "title": "복통 안내",
         "body": "테스트병원 김원장은 강남에서 설명합니다.\n## 확인\n- 항목\n## 준비\n- 항목",
         "meta_description": "설명",
-        "references": [{"title": "복통 완치 안내", "url": "https://www.kdca.go.kr/x"}],
+        "references": [{"title": "복통 완치 안내", "url": "https://ad-blog.example.com/x"}],
         "faq_question": None,
         "faq_answer_summary": None,
     }
@@ -516,8 +530,10 @@ async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_r
         return None
 
     monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    # tenacity는 전송 오류 전용이 됐다. 결정적 GEO hard-fail의 예산은 재작성 루프가 가진다.
     monkeypatch.setattr(content_engine.generate_content.retry, "stop", stop_after_attempt(1))
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", _no_sleep)
+    monkeypatch.setattr(content_engine, "GENERATION_REMEDIATION_ROUNDS", 1)
 
     with pytest.raises(ValueError, match="GEO hard-fail"):
         await content_engine.generate_content(hospital, ContentType.DISEASE)
@@ -796,7 +812,7 @@ def test_legacy_empty_approved_philosophy_gets_runtime_safety_floor():
     ) == 1
     assert (
         content_engine.STATIC_SYSTEM_BLOCK.count(
-            " · ".join(content_engine.FORBIDDEN_EXPRESSIONS)
+            " · ".join(forbidden_vocabulary_for_prompt())
         )
         == 1
     )
@@ -867,3 +883,302 @@ async def test_generate_content_sends_cached_system_blocks(monkeypatch):
     assert "최근 발행 제목 일부" in user_message
     assert "제목 0" not in system[0]["text"]
     assert user_message.count("- 제목 ") == content_engine.EXISTING_TITLE_PROMPT_LIMIT
+
+
+# ── 잘림 감지·재작성 예산 (2026-09-12 수율 계획 WP-1) ─────────────────────────
+
+
+def _writer_hospital() -> SimpleNamespace:
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        name="테스트의원",
+        address="서울시 노원구",
+        phone="02-000-0000",
+        business_hours=None,
+        region=["노원"],
+        specialties=["내과"],
+        keywords=["대장내시경"],
+        director_name="김의사",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+
+
+def _valid_payload(**overrides) -> dict:
+    payload = {
+        "title": "대장내시경 검사 전 준비 안내",
+        "body": (
+            "## 준비\n테스트의원 김의사 원장이 노원에서 안내합니다. "
+            + ("검사 전 준비 사항을 단계별로 설명합니다. " * 90)
+            + "\n\n## 주의\n"
+            + ("검사 당일 주의할 점을 정리했습니다. " * 60)
+        ),
+        "meta_description": "대장내시경 검사 전 준비 과정과 주의사항을 단계별로 안내합니다. 식이 조절 방법을 확인하세요.",
+        "references": [],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    payload.update(overrides)
+    return payload
+
+
+class _Recorder:
+    """공급자 호출을 세고 system/user 블록을 회차별로 보관한다."""
+
+    def __init__(self, payloads, stop_reason=None):
+        self.payloads = list(payloads)
+        self.stop_reason = stop_reason
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        payload = self.payloads[min(len(self.calls) - 1, len(self.payloads) - 1)]
+        return SimpleNamespace(
+            content=[SimpleNamespace(text=json.dumps(payload))],
+            stop_reason=self.stop_reason,
+            usage=None,
+            id="msg_test",
+        )
+
+
+def _install_writer_doubles(monkeypatch, recorder) -> list[dict]:
+    usage_records: list[dict] = []
+
+    async def record_attempt(**kwargs):
+        usage_records.append(kwargs)
+
+    async def no_cost_record(*_args, **_kwargs):
+        return None
+
+    async def no_sleep(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(content_engine.client.messages, "create", recorder.create)
+    monkeypatch.setattr("app.services.provider_usage.record_attempt", record_attempt)
+    monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_record)
+    monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
+    return usage_records
+
+
+async def test_truncated_provider_output_is_reported_as_truncation_not_a_gate_failure(
+    monkeypatch,
+):
+    """잘린 응답은 JSON 파싱 실패가 아니라 전용 오류로 끊는다.
+
+    예전에는 `max_tokens`로 끊긴 응답이 JSON 파싱 실패가 되어 "가격·지역·검색 구조
+    게이트 실패"라는 **틀린 원인**으로 기록됐다. 사용량 기록은 오류보다 먼저 끝나야
+    비용 원장에서 이 호출이 사라지지 않는다.
+    """
+    recorder = _Recorder([_valid_payload()], stop_reason="max_tokens")
+    usage_records = _install_writer_doubles(monkeypatch, recorder)
+
+    with pytest.raises(content_engine.TruncatedProviderOutputError, match="truncated"):
+        await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    # 결정적 실패는 tenacity(전송 전용)가 아니라 재작성 루프만 재시도한다 —
+    # 두 재시도가 곱해지면 한 아이템에 9회를 결제하게 된다.
+    assert len(recorder.calls) == content_engine.GENERATION_REMEDIATION_ROUNDS == 3
+    assert len(usage_records) == 3
+    assert all(record["workflow"] == "content_generation" for record in usage_records)
+
+
+async def test_provider_call_asks_for_enough_tokens_to_finish_a_korean_article(
+    monkeypatch,
+):
+    """한국어 4,000자 본문 + JSON 봉투는 5,500 토큰을 쉽게 넘는다."""
+    recorder = _Recorder([_valid_payload()])
+    _install_writer_doubles(monkeypatch, recorder)
+
+    await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    assert recorder.calls[0]["max_tokens"] == 12000
+
+
+async def test_validator_rejection_is_fed_back_instead_of_a_blind_identical_retry(
+    monkeypatch,
+):
+    """결정적 검증 실패는 같은 프롬프트로 다시 사도 같은 결과다 — 지적을 넘겨 다시 쓰게 한다."""
+    short = _valid_payload(body="## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다.")
+    recorder = _Recorder([short, _valid_payload()])
+    _install_writer_doubles(monkeypatch, recorder)
+
+    saved = await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    assert saved["body"] == _valid_payload()["body"]
+    assert len(recorder.calls) == 2
+    first_user = recorder.calls[0]["messages"][0]["content"]
+    second_user = recorder.calls[1]["messages"][0]["content"]
+    assert "직전 응답이 시스템 검증에서 거부" not in first_user
+    assert "직전 응답이 시스템 검증에서 거부" in second_user
+    assert "too short" in second_user
+    # 프롬프트 캐시 접두어 순서는 회차와 무관하게 고정이어야 한다.
+    for call in recorder.calls:
+        assert call["system"][0]["text"] == content_engine.STATIC_SYSTEM_BLOCK
+        assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert "테스트의원" in call["system"][1]["text"]
+
+
+async def test_truncation_feedback_tells_the_writer_to_shorten_the_body(monkeypatch):
+    recorder = _Recorder([_valid_payload()], stop_reason="max_tokens")
+    _install_writer_doubles(monkeypatch, recorder)
+
+    with pytest.raises(content_engine.TruncatedProviderOutputError):
+        await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    second_user = recorder.calls[1]["messages"][0]["content"]
+    assert "분량을" in second_user and "줄이" in second_user
+
+
+async def test_caller_remediation_findings_survive_a_validator_rejection(monkeypatch):
+    """재작성을 요청한 원래 이유(독립 검수 지적)가 검증 실패로 사라지면 안 된다."""
+    short = _valid_payload(body="## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다.")
+    recorder = _Recorder([short, _valid_payload()])
+    _install_writer_doubles(monkeypatch, recorder)
+
+    await content_engine.generate_content(
+        _writer_hospital(),
+        ContentType.NOTICE,
+        remediation_findings=["근거 없는 효과 주장을 삭제하세요."],
+    )
+
+    second_user = recorder.calls[1]["messages"][0]["content"]
+    assert "근거 없는 효과 주장을 삭제하세요." in second_user
+    assert "직전 응답이 시스템 검증에서 거부" in second_user
+
+
+async def test_transport_errors_still_use_the_tenacity_retry_seam(monkeypatch):
+    """전송 오류는 기다리면 낫는다 — tenacity가 그대로 맡는다."""
+    import httpx
+
+    recorder = _Recorder([_valid_payload()])
+    _install_writer_doubles(monkeypatch, recorder)
+    failures = {"left": 2}
+    real_create = recorder.create
+
+    def flaky_create(**kwargs):
+        if failures["left"]:
+            failures["left"] -= 1
+            raise anthropic.APITimeoutError(request=httpx.Request("POST", "https://api.test"))
+        return real_create(**kwargs)
+
+    monkeypatch.setattr(content_engine.client.messages, "create", flaky_create)
+
+    saved = await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    assert saved["title"] == _valid_payload()["title"]
+    assert len(recorder.calls) == 1  # 성공한 호출만 payload를 소비한다
+
+
+# ── 화이트리스트 참고자료 제목 (WP-1) ────────────────────────────────────────
+
+_CURATED_DOCUMENT_URL = (
+    "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/"
+    "gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531"
+)
+
+
+def _reference_title_result(references: list[dict]) -> dict:
+    return {
+        "title": "대장용종 진료 전 확인할 점",
+        "body": "테스트병원 김원장은 강남에서 설명합니다.\n## 확인\n- 항목\n## 준비\n- 항목",
+        "meta_description": "대장용종 진료 전 확인할 내용을 정리합니다.",
+        "references": references,
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+
+
+def test_authority_document_titles_do_not_discard_a_whole_article():
+    """외부 기관의 공식 문서 제목은 우리가 지은 광고 문구가 아니다.
+
+    근거를 제대로 단 글일수록 폐기되던 원인 — 주입한 큐레이션 출처 제목이 같은
+    금지 표현 검사를 통과해야 했다.
+    """
+    hospital = SimpleNamespace(
+        name="테스트병원", director_name="김원장", region=["강남"], keywords=["대장용종"]
+    )
+    result = _reference_title_result(
+        [{"title": "국가건강정보포털 — 대장용종 완치율 통계", "url": _CURATED_DOCUMENT_URL}]
+    )
+
+    saved = _validate_generated_result(result, hospital, ContentType.DISEASE, None)
+
+    assert saved["references"][0]["url"] == _CURATED_DOCUMENT_URL
+
+
+def test_model_invented_reference_titles_are_still_screened():
+    hospital = SimpleNamespace(
+        name="테스트병원", director_name="김원장", region=["강남"], keywords=["대장용종"]
+    )
+    result = _reference_title_result(
+        [
+            {"title": "국가건강정보포털 — 대장용종", "url": _CURATED_DOCUMENT_URL},
+            {"title": "완치율 100% 병원 후기", "url": "https://ad-blog.example.com/promo"},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="Forbidden medical expressions"):
+        _validate_generated_result(result, hospital, ContentType.DISEASE, None)
+
+
+def test_reference_titles_for_forbidden_check_keeps_only_unverified_titles():
+    checked = content_engine.reference_titles_for_forbidden_check(
+        [
+            {"title": "검증된 기관 문서", "url": _CURATED_DOCUMENT_URL},
+            {"title": "기관 홈페이지", "url": "https://health.kdca.go.kr"},
+            {"title": "모델이 지은 제목", "url": "https://ad-blog.example.com/promo"},
+            "not a dict",
+        ]
+    )
+
+    assert "검증된 기관 문서" not in checked
+    # 기관 루트 URL은 문서가 아니다 — 거기 붙은 제목은 계속 검사한다.
+    assert "기관 홈페이지" in checked
+    assert "모델이 지은 제목" in checked
+
+
+# ── 프롬프트와 검증기의 단위·요구 일치 (WP-1) ────────────────────────────────
+
+
+def test_length_rule_states_the_unit_the_validator_actually_measures():
+    """프롬프트가 원문 글자 수를 말하고 검증기가 평문 글자 수를 재면 정상 글이 버려진다."""
+    prompt = content_engine.SYSTEM_PROMPT
+
+    assert "공백과 마크다운 기호" in prompt
+    assert "2,400~4,500자" in prompt
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만" in prompt
+    assert f"{content_engine.CONTENT_BODY_MAX_CHARS:,}자를 넘으면" in prompt
+    assert "2200~4200자" not in prompt
+
+
+def test_forbidden_vocabulary_shown_to_the_writer_matches_what_the_filter_blocks():
+    block = content_engine.STATIC_SYSTEM_BLOCK
+
+    for expression in ("1위", "탁월", "완치율", "비교 불가", "첨단 기술", "유일무이"):
+        assert expression in block, expression
+    assert "부정문·인용문·통계 인용 문맥에서도" in block
+
+
+@pytest.mark.parametrize("content_type", sorted(content_engine.REFERENCES_REQUIRED_TYPES, key=str))
+def test_every_reference_required_type_asks_for_evidence_in_its_prompt(content_type):
+    """검증기가 참고자료를 요구하는 유형은 프롬프트도 근거를 요구해야 한다."""
+    prompt = content_engine.TYPE_PROMPTS[content_type]
+
+    assert "references" in prompt or "출처" in prompt, content_type
+
+
+@pytest.mark.parametrize("content_type", [ContentType.COLUMN, ContentType.HEALTH])
+def test_column_and_health_prompts_now_require_a_whitelisted_document(content_type):
+    """두 유형은 참고자료를 **언급조차** 하지 않으면서 빈 references로 폐기됐다."""
+    prompt = content_engine.TYPE_PROMPTS[content_type]
+
+    assert "references에 최소 1개" in prompt
+    assert "지어내지" in prompt
+
+
+def test_static_system_block_requires_at_least_one_real_document_url():
+    block = content_engine.STATIC_SYSTEM_BLOCK
+
+    assert "references를 비워" not in block
+    assert "최소 1개" in block
