@@ -127,7 +127,10 @@ def test_validate_body_length_rejects_runaway_body():
         "본인부담금은 2만 원 안팁입니다.",
         "비급여로 5만 원에서 10만 원 정도입니다.",
         "공단이 비용의 90%를 부담합니다.",
+        "국가건강검진 본인부담률은 10%입니다.",
         "본원의 진료비는 무료입니다.",
+        "저희 병원은 무료 진료를 제공합니다.",
+        "우리병원은 무료 진료를 제공합니다.",
         "우리 병원에서 이 시술은 무상으로 제공합니다.",
     ],
 )
@@ -153,12 +156,21 @@ def test_validate_unverified_price_claims_allows_suwon_city_name():
     "narrative",
     [
         "국가건강검진은 무료로 받을 수 있습니다.",
+        "본원에서 국가건강검진은 무료로 받을 수 있습니다.",
+        "국가건강검진은 본원에서 무료로 받을 수 있습니다.",
         "일반건강검진은 무료로 받을 수 있습니다.",
         "공단이 검진 비용 전액을 부담하는 대상이 있습니다.",
     ],
 )
 def test_validate_unverified_price_claims_allows_public_screening_narratives(narrative):
     _validate_unverified_price_claims(narrative)
+
+
+def test_public_screening_in_an_adjacent_sentence_does_not_exempt_hospital_free_care():
+    with pytest.raises(ValueError, match="unverified fixed price"):
+        _validate_unverified_price_claims(
+            "국가건강검진 일정을 안내합니다. 저희 병원은 무료 진료를 제공합니다."
+        )
 
 
 @pytest.mark.parametrize(

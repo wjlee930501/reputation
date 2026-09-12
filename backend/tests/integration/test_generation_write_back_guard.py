@@ -531,7 +531,7 @@ def test_processed_and_live_lease_items_finish_partial(pg_conn, pg_session, monk
     assert set(run.result_summary["items"]) == {str(success_id), str(locked_id)}
 
 
-async def test_generation_failure_stays_silent_before_due_slot_and_retry_recovers_it(
+async def test_generation_fatal_failure_pages_immediately_and_retry_recovers_it(
     pg_async_session, monkeypatch
 ):
     hospital = Hospital(
@@ -594,8 +594,9 @@ async def test_generation_failure_stays_silent_before_due_slot_and_retry_recover
             NotificationOutbox.notification_type == "INCIDENT_OPEN",
         )
     )
-    # There is no proven due ContentItem/body hole, so provider failure cannot page.
-    assert open_outbox == 0
+    # Provider/system fatal failures page immediately; deterministic content-gate
+    # rejections are the class held for the weekly rollup.
+    assert open_outbox == 1
 
     succeeded_run = OperationRun(
         id=uuid.uuid4(),

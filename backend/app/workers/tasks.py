@@ -396,6 +396,11 @@ def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
 
 
 _GENERATION_ATTEMPT_KEY = "generation_attempt"
+# Bump whenever deterministic generation acceptance can change: medical-ad filters,
+# price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
+# token lets already rejected slots receive one bounded re-evaluation after a deploy;
+# the newly stored context then restores H-08's identical-input loop suppression.
+GENERATION_GATE_CATALOG_VERSION = "2026-09-12.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -426,6 +431,7 @@ def _generation_attempt_context(
     delta_ids = getattr(philosophy, "director_delta_ids", []) or []
     delta_context = f";director_deltas={','.join(delta_ids)}" if delta_ids else ""
     return (
+        f"gate_catalog={GENERATION_GATE_CATALOG_VERSION};"
         f"philosophy={philosophy_id};content_type={content_type};"
         f"query_target={query_target_id}{delta_context}"
     )

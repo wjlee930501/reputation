@@ -80,10 +80,16 @@ UNVERIFIED_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\d+(?:\.\d+)?\s*%.{0,40}"
         r"(?:본인\s*부담|건강보험|공단|보험\s*적용|비용)"
     ),
-    # 공적 건강검진 제도 설명까지 "무료" 한 단어로 폐기하지 않는다. 병원 자체의
-    # 무상 제공 주장만 hard-fail하고 구체 금액·부담률 패턴은 위에서 계속 막는다.
-    re.compile(r"(?:본원|우리\s*병원|이\s*시술|진료비).{0,30}(?:무료|무상)"),
 )
+# 구체 금액·부담률은 위 패턴으로 문맥과 무관하게 계속 막는다. "무료/무상"은
+# 병원 자체 제공 주장만 hard-fail하되, 같은 claim window의 공적 건강검진
+# 설명은 예외로 둔다.
+_HOSPITAL_SELF_FREE_PATTERN = re.compile(
+    r"(?:본원|저희\s*병원|우리\s*병원|이\s*시술|진료비)[^.?!\n]{0,30}"
+    r"(?:무료|무상)"
+)
+_PUBLIC_SCREENING_KEYWORD_PATTERN = re.compile(r"국가건강검진|일반건강검진|공단")
+_FREE_CLAIM_WINDOW_CHARS = 40
 SEASON_MONTHS = {
     "봄": {3, 4, 5},
     "여름": {6, 7, 8},
@@ -1036,6 +1042,29 @@ def _validate_unverified_price_claims(value: object) -> None:
                 "Generated content contains an unverified fixed price or coverage claim: "
                 f"{match.group(0)[:80]}"
             )
+
+    for match in _HOSPITAL_SELF_FREE_PATTERN.finditer(compact):
+        window_start = max(0, match.start() - _FREE_CLAIM_WINDOW_CHARS)
+        window_end = min(len(compact), match.end() + _FREE_CLAIM_WINDOW_CHARS)
+        claim_window = compact[window_start:window_end]
+        match_start_in_window = match.start() - window_start
+        match_end_in_window = match.end() - window_start
+        left_boundary = max(
+            claim_window.rfind(mark, 0, match_start_in_window) for mark in ".!?\n"
+        )
+        right_boundaries = [
+            position
+            for mark in ".!?\n"
+            if (position := claim_window.find(mark, match_end_in_window)) != -1
+        ]
+        right_boundary = min(right_boundaries, default=len(claim_window))
+        claim_window = claim_window[left_boundary + 1 : right_boundary]
+        if _PUBLIC_SCREENING_KEYWORD_PATTERN.search(claim_window):
+            continue
+        raise ValueError(
+            "Generated content contains an unverified fixed price or coverage claim: "
+            f"{match.group(0)[:80]}"
+        )
 
 
 def _validate_seo(

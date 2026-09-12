@@ -63,6 +63,7 @@ def test_check_forbidden_allows_neutral_medical_text():
         "검증 가능한 출처를 본문에 명시합니다.",
         "유일한 치료법은 아닙니다.",
         "유일무이한 치료법은 아닙니다.",
+        "유일한 방법은 아닙니다.",
         "오늘은 상처가 아프지 않은 날입니다.",
     ],
 )
@@ -82,6 +83,10 @@ def test_check_forbidden_allows_medical_terms_evidence_and_negative_hedges(text)
 )
 def test_check_forbidden_keeps_real_promotional_claims_blocked(text, expected):
     assert expected in check_forbidden(text)
+
+
+def test_unrelated_negative_language_does_not_hedge_a_unique_treatment_claim():
+    assert "유일" in check_forbidden("전국 유일한 치료법이며 예약이 필요 없습니다")
 
 
 # ── 마크다운 렌더 기준 검사 ────────────────────────────────────────────

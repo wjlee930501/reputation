@@ -1250,6 +1250,50 @@ def test_changed_essence_or_target_still_grants_a_fresh_attempt():
     ) != tasks._generation_attempt_context(other_target, SimpleNamespace(id="a"))
 
 
+def test_gate_catalog_version_bump_retries_existing_rejection_exactly_once(monkeypatch):
+    """Old rejected slots get one fresh attempt, then H-08 suppresses the same input."""
+
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("게이트갱신의원")
+    philosophy = SimpleNamespace(id="p1")
+    writer_calls = 0
+
+    monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", "old-rules")
+    tasks._remember_generation_attempt(db, item, philosophy, "GENERATION_REJECTED")
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+
+    monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", "new-rules")
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    def fail_writer(*_args, **_kwargs):
+        nonlocal writer_calls
+        writer_calls += 1
+        raise ValueError("same deterministic generation gate")
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", fail_writer)
+
+    async def ignore_incident(**_kwargs):
+        return None
+
+    monkeypatch.setattr(tasks, "open_generation_incident", ignore_incident)
+
+    tasks.nightly_content_generation.run()
+    tasks.nightly_content_generation.run()
+
+    assert writer_calls == 1
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+    assert "gate_catalog=new-rules" in item.essence_check_summary["generation_attempt"][
+        "context"
+    ]
+
+
 def test_changed_generation_context_allows_exactly_one_retry(monkeypatch):
     item = SimpleNamespace(
         id=uuid.uuid4(),
