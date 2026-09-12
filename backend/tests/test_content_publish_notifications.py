@@ -9,8 +9,10 @@ import pytest
 from app.models.operations import NotificationOutboxState
 from app.services.content_publish_notifications import (
     build_generation_blocked_digest_intent,
+    build_generation_rejection_weekly_rollup_intent,
     build_missing_approved_essence_digest_intent,
     build_publish_notification_intent,
+    enqueue_generation_rejection_weekly_rollup_sync,
     parse_publish_notification_identity,
     project_publish_notification,
 )
@@ -281,10 +283,27 @@ def test_blocked_digest_refuses_an_empty_batch() -> None:
 
 
 @pytest.mark.parametrize(
+    ("code", "prepublish_due", "publish_due"),
+    [
+        ("PROVIDER_TIMEOUT", False, True),
+        ("PROVIDER_UNAVAILABLE", False, True),
+        ("GENERATION_FAILED", True, True),
+        ("CONTENT_AI_REVIEW_UNAVAILABLE", False, False),
+    ],
+)
+def test_generation_blocker_digest_cadence(
+    code: str, prepublish_due: bool, publish_due: bool
+) -> None:
+    prepublish = generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH)
+    publish = generation_block_digest_due(code, batch=PUBLISH_MORNING_BATCH)
+
+    assert prepublish is prepublish_due
+    assert publish is publish_due
+
+
+@pytest.mark.parametrize(
     "code",
     [
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_UNAVAILABLE",
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
         "IMAGE_GENERATION_FAILED",
@@ -292,29 +311,99 @@ def test_blocked_digest_refuses_an_empty_batch() -> None:
         "CONTENT_IMAGE_NOT_VERIFIED",
     ],
 )
-def test_provider_transient_blockers_wait_for_the_seven_forty_five_recovery(code: str) -> None:
-    # Given / When: the same transient code at 07:45 and again at 08:00
-    prepublish = generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH)
-    publish = generation_block_digest_due(code, batch=PUBLISH_MORNING_BATCH)
-
-    # Then: only a blocker that survived the automatic recovery reaches Slack
-    assert prepublish is False
-    assert publish is True
+def test_recoverable_artifact_blockers_wait_for_eight_oclock(code: str) -> None:
+    assert not generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH)
+    assert generation_block_digest_due(code, batch=PUBLISH_MORNING_BATCH)
 
 
-@pytest.mark.parametrize(
-    "code", ["FORBIDDEN_EXPRESSION", "MISSING_REFERENCES"]
-)
-def test_human_only_blockers_are_summarized_at_seven_forty_five(code: str) -> None:
-    # A stored safety gate cannot heal itself, so waiting costs the publication slot.
-    assert generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH) is True
+@pytest.mark.parametrize("code", ["FORBIDDEN_EXPRESSION", "MISSING_REFERENCES"])
+def test_rejected_class_blockers_are_reserved_for_the_weekly_rollup(code: str) -> None:
+    assert generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH) is False
+    assert generation_block_digest_due(code, batch=PUBLISH_MORNING_BATCH) is False
 
 
 @pytest.mark.parametrize("batch", [PREPUBLISH_MORNING_BATCH, PUBLISH_MORNING_BATCH])
 @pytest.mark.parametrize("exhausted", [False, True])
 def test_essence_digest_requires_exhausted_remediation(batch, exhausted):
-    assert generation_block_digest_due(
+    # Exhausted deterministic gates are weekly; the morning digest cannot duplicate them.
+    assert not generation_block_digest_due(
         "ESSENCE_NOT_ALIGNED", batch=batch, remediation_exhausted=exhausted
-    ) is exhausted
+    )
     # Even escalation is owned by ESSENCE_AUTO_REVIEW_ESCALATED, not this digest.
     assert not generation_block_digest_due("MISSING_APPROVED_ESSENCE", batch=batch)
+
+
+def test_rejected_items_aggregate_by_hospital_and_reason_in_one_weekly_rollup() -> None:
+    hospital_id = uuid.uuid4()
+    outcomes = [
+        {
+            "hospital_id": hospital_id,
+            "hospital_name": "주간요약의원",
+            "reason": "검증되지 않은 가격 표현이 남았습니다.",
+        },
+        {
+            "hospital_id": hospital_id,
+            "hospital_name": "주간요약의원",
+            "reason": "검증되지 않은 가격 표현이 남았습니다.",
+        },
+        {
+            "hospital_id": uuid.uuid4(),
+            "hospital_name": "근거확인의원",
+            "reason": "공신력 있는 참고 자료를 확보하지 못했습니다.",
+        },
+    ]
+
+    intent = build_generation_rejection_weekly_rollup_intent(date(2026, 9, 7), outcomes)
+    repeated = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 9, 7), list(reversed(outcomes))
+    )
+
+    payload = intent.message.payload_json()
+    assert intent.notification_type == "GENERATION_REJECTION_WEEKLY_ROLLUP"
+    assert intent.dedupe_key == "GENERATION_REJECTION_WEEKLY_ROLLUP:2026-09-07"
+    assert repeated.dedupe_key == intent.dedupe_key
+    assert "병원 2곳 · 차단 3건" in payload
+    assert "주간요약의원" in payload
+    assert "검증되지 않은 가격 표현이 남았습니다. 2건" in payload
+    assert "근거확인의원" in payload
+    assert "다시 시도" not in payload
+    assert payload.count('"type": "button"') == 1
+
+
+def test_weekly_rejection_rollup_reuses_the_calendar_week_outbox_row() -> None:
+    class Result:
+        def __init__(self, value):
+            self.value = value
+
+        def scalar_one_or_none(self):
+            return self.value
+
+    class DB:
+        stored = None
+        additions = 0
+
+        def execute(self, _statement):
+            return Result(self.stored)
+
+        def add(self, row):
+            self.stored = row
+            self.additions += 1
+
+    db = DB()
+    outcomes = [
+        {
+            "hospital_id": uuid.uuid4(),
+            "hospital_name": "중복억제의원",
+            "reason": "검색 문서 구조 검수가 통과되지 않았습니다.",
+        }
+    ]
+
+    first = enqueue_generation_rejection_weekly_rollup_sync(
+        db, date(2026, 9, 7), outcomes
+    )
+    repeated = enqueue_generation_rejection_weekly_rollup_sync(
+        db, date(2026, 9, 7), outcomes
+    )
+
+    assert first is repeated
+    assert db.additions == 1

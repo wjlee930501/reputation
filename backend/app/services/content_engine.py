@@ -80,15 +80,35 @@ UNVERIFIED_PRICE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\d+(?:\.\d+)?\s*%.{0,40}"
         r"(?:본인\s*부담|건강보험|공단|보험\s*적용|비용)"
     ),
-    re.compile(r"(?:무료|무상|본인이\s*내는\s*금액이\s*없)"),
-    re.compile(r"(?:공단|건강보험).{0,30}전액\s*부담"),
 )
+# 구체 금액·부담률은 위 패턴으로 문맥과 무관하게 계속 막는다. "무료/무상"은
+# 병원 자체 제공 주장만 hard-fail하되, 무료/무상의 대상이 공적 건강검진인
+# 경우만 예외로 둔다.
+_HOSPITAL_SELF_FREE_PATTERN = re.compile(
+    r"(?:본원|저희\s*병원|우리\s*병원|이\s*시술|진료비)[^.?!\n]{0,30}"
+    r"(?:무료|무상)"
+)
+_PUBLIC_SCREENING_FREE_CLAIM_PATTERN = re.compile(
+    r"(?:국가건강검진|일반건강검진|공단\s*(?:건강)?검진)"
+    r"(?:은|는|이|가|을|를|도)?\s*"
+    r"(?:(?:본원|저희\s*병원|우리\s*병원)에서\s*)?(?:무료|무상)"
+    r"|(?:무료|무상)(?:로)?\s*(?:받을\s*수\s*있는\s*)?"
+    r"(?:국가건강검진|일반건강검진|공단\s*(?:건강)?검진)"
+)
+_HOSPITAL_CARE_FREE_CLAIM_PATTERN = re.compile(
+    r"(?:진료비|진료|시술)(?:\s*비용)?(?:은|는|이|가|을|를)?"
+    r"[^.?!\n]{0,20}?(?:전액\s*)?(?:무료|무상)(?:로)?(?:\s*제공)?"
+    r"|(?:전액\s*)?(?:무료|무상)(?:로)?(?:\s*제공(?:하는|되는)?)?"
+    r"\s*(?:진료비|진료|시술)"
+)
+_FREE_TERM_PATTERN = re.compile(r"무료|무상")
 SEASON_MONTHS = {
     "봄": {3, 4, 5},
     "여름": {6, 7, 8},
     "가을": {9, 10, 11},
     "겨울": {12, 1, 2},
 }
+SEASON_MISMATCH_FINDING_PREFIX = "제목 계절-발행월 불일치"
 
 
 class MissingCitableReferencesError(ValueError):
@@ -1035,6 +1055,28 @@ def _validate_unverified_price_claims(value: object) -> None:
                 f"{match.group(0)[:80]}"
             )
 
+    sentence_bounded = re.sub(
+        r"[^\S\n]+", " ", value.replace("\r\n", "\n").replace("\r", "\n")
+    )
+    # 공적 검진 예외는 같은 문장/창이 아니라 같은 무료·무상 토큰에만 붙는다.
+    public_screening_free_spans = {
+        (claim.start() + term.start(), claim.start() + term.end())
+        for claim in _PUBLIC_SCREENING_FREE_CLAIM_PATTERN.finditer(sentence_bounded)
+        for term in _FREE_TERM_PATTERN.finditer(claim.group(0))
+    }
+    for pattern in (_HOSPITAL_SELF_FREE_PATTERN, _HOSPITAL_CARE_FREE_CLAIM_PATTERN):
+        for match in pattern.finditer(sentence_bounded):
+            match_free_spans = {
+                (match.start() + term.start(), match.start() + term.end())
+                for term in _FREE_TERM_PATTERN.finditer(match.group(0))
+            }
+            if match_free_spans and match_free_spans <= public_screening_free_spans:
+                continue
+            raise ValueError(
+                "Generated content contains an unverified fixed price or coverage claim: "
+                f"{match.group(0)[:80]}"
+            )
+
 
 def _validate_seo(
     result: dict, hospital: Hospital, content_brief: dict | None, content_type: ContentType
@@ -1065,9 +1107,9 @@ def _validate_seo(
             planned_month = 0
         for season, months in SEASON_MONTHS.items():
             if season in title and planned_month and planned_month not in months:
-                raise ValueError(
-                    f"SEO hard-fail: title season '{season}' does not match "
-                    f"planned_publish_date {planned_date}"
+                findings.append(
+                    f"{SEASON_MISMATCH_FINDING_PREFIX}: title season '{season}' does not "
+                    f"match planned_publish_date {planned_date}"
                 )
 
     if re.search(r"^#\s+\S", body, flags=re.MULTILINE):
@@ -1213,8 +1255,19 @@ def _validate_geo(
         )
 
     # ── HARD: 지역명 공출현 (region 중 하나라도 있으면 통과) ──────────
+    # 행정구역 접미사만 다른 표기(노원구↔노원, 수원시↔수원)는 같은 엔티티다.
+    # 병원명과 원장명은 위에서 계속 exact match하며, 지역 자체가 없으면 hard-fail한다.
     regions = [r for r in (hospital.region or []) if r]
-    if regions and not any(r in body for r in regions):
+    region_variants = {
+        variant
+        for region in regions
+        for variant in {
+            str(region).strip(),
+            re.sub(r"(?<=[가-힣])(?:구|시)$", "", str(region).strip()),
+        }
+        if variant
+    }
+    if regions and not any(region in body for region in region_variants):
         raise ValueError(f"GEO hard-fail: 지역 엔티티 {regions} body 미포함")
 
     # ── SOFT: 통계/수치 proxy ────────────────────────────────────────

@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.utils.authority_sources import infer_source_type, is_whitelisted_url
 from app.utils.medical_filter import (
@@ -52,6 +54,39 @@ def test_check_forbidden_allows_neutral_medical_text():
     violations = check_forbidden(text)
 
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "최고혈압과 최저혈압을 함께 기록합니다.",
+        "검증 가능한 출처를 본문에 명시합니다.",
+        "유일한 치료법은 아닙니다.",
+        "유일무이한 치료법은 아닙니다.",
+        "유일한 방법은 아닙니다.",
+        "오늘은 상처가 아프지 않은 날입니다.",
+    ],
+)
+def test_check_forbidden_allows_medical_terms_evidence_and_negative_hedges(text):
+    assert check_forbidden(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("최고의 병원이라고 홍보합니다.", "최고"),
+        ("저희 병원에서 검증된 치료입니다.", "검증된"),
+        ("전국 유일한 치료법입니다.", "유일"),
+        ("아프지 않은 시술을 보장합니다.", "통증 없는"),
+        ("수술은 아프지 않습니다.", "통증 없는"),
+    ],
+)
+def test_check_forbidden_keeps_real_promotional_claims_blocked(text, expected):
+    assert expected in check_forbidden(text)
+
+
+def test_unrelated_negative_language_does_not_hedge_a_unique_treatment_claim():
+    assert "유일" in check_forbidden("전국 유일한 치료법이며 예약이 필요 없습니다")
 
 
 # ── 마크다운 렌더 기준 검사 ────────────────────────────────────────────

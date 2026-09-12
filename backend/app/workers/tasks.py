@@ -53,7 +53,13 @@ from app.models.monthly_control import (
     MonthlyMeasurementManifest,
     MonthlyReportArtifact,
 )
-from app.models.operations import IncidentSeverity, OperationRun, OperationRunState
+from app.models.operations import (
+    Incident,
+    IncidentSeverity,
+    IncidentState,
+    OperationRun,
+    OperationRunState,
+)
 from app.models.report import MonthlyReport
 from app.models.sov import (
     AIQueryTarget,
@@ -72,7 +78,11 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     review_generated_content,
 )
-from app.services.content_engine import EXISTING_TITLE_PROMPT_LIMIT, generate_content
+from app.services.content_engine import (
+    EXISTING_TITLE_PROMPT_LIMIT,
+    SEASON_MISMATCH_FINDING_PREFIX,
+    generate_content,
+)
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     apply_publication_assessment,
@@ -82,6 +92,7 @@ from app.services.content_publication import (
 )
 from app.services.content_publish_notifications import (
     enqueue_generation_blocked_digest_sync,
+    enqueue_generation_rejection_weekly_rollup_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
@@ -280,6 +291,7 @@ from app.workers.generation_incident_control import (
     AUTO_REMEDIATION_MAX_GENERATIONS,
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
+    WEEKLY_REJECTED_GENERATION_CODES,
     essence_remediation_exhausted,
     generation_block_digest_due,
     generation_notify_requested,
@@ -300,6 +312,7 @@ from app.workers.generation_run_control import (
     explicit_run_context,
     explicit_run_matches,
     finish_explicit_run,
+    safe_generation_rejection_message,
 )
 from app.workers.monthly_artifact_incident_control import (
     MonthlyArtifactIncidentContext,
@@ -383,6 +396,11 @@ def _morning_close_due(item: ContentItem, *, now_kst=None) -> bool:
 
 
 _GENERATION_ATTEMPT_KEY = "generation_attempt"
+# Bump whenever deterministic generation acceptance can change: medical-ad filters,
+# price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
+# token lets already rejected slots receive one bounded re-evaluation after a deploy;
+# the newly stored context then restores H-08's identical-input loop suppression.
+GENERATION_GATE_CATALOG_VERSION = "2026-09-12.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -413,6 +431,7 @@ def _generation_attempt_context(
     delta_ids = getattr(philosophy, "director_delta_ids", []) or []
     delta_context = f";director_deltas={','.join(delta_ids)}" if delta_ids else ""
     return (
+        f"gate_catalog={GENERATION_GATE_CATALOG_VERSION};"
         f"philosophy={philosophy_id};content_type={content_type};"
         f"query_target={query_target_id}{delta_context}"
     )
@@ -455,7 +474,12 @@ def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str,
 
     stored_code = _stored_generation_attempt(item).get("reason")
     if stored_code in _STORED_EMPTY_CONTENT_BLOCK_CODES:
-        return stored_code, generation_safe_cause(stored_code)
+        stored_message = _stored_generation_attempt(item).get("message")
+        return stored_code, (
+            safe_generation_rejection_message(stored_message)
+            if stored_code == "GENERATION_REJECTED"
+            else generation_safe_cause(stored_code)
+        )
     return code, message
 
 
@@ -477,6 +501,8 @@ def _remember_generation_attempt(
     item: ContentItem,
     philosophy: HospitalContentPhilosophy | None,
     reason: str,
+    *,
+    message: str | None = None,
 ) -> None:
     """Persist one no-body outcome without adding a schema column."""
 
@@ -516,6 +542,8 @@ def _remember_generation_attempt(
         "provider_attempt_count": provider_attempt_count,
         "guard_deferral_count": guard_deferral_count,
     }
+    if reason == "GENERATION_REJECTED":
+        attempt["message"] = safe_generation_rejection_message(message)
     if retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
         attempt["next_retry_at"] = next_recovery_sweep().isoformat()
     updated[_GENERATION_ATTEMPT_KEY] = attempt
@@ -809,9 +837,9 @@ async def _generate_with_auto_review(
     findings = _review_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
-    # 측정 질의 키워드 미반영은 **한 번만** 보완 재작성을 부른다. 하드 게이트로 올리면
-    # 한국어 형태 변화 때문에 정상 글이 버려지고, 무제한 재시도로 두면 비용만 늘어난다.
-    alignment_remediation_used = False
+    # 측정 질의 키워드 미반영과 계절-발행월 불일치는 **합쳐서 한 번만** 보완 재작성을
+    # 부른다. 하드 게이트로 올리면 정상 글이 버려지고, 무제한 재시도는 비용만 늘어난다.
+    bounded_soft_remediation_used = False
     last_content: dict | None = None
     last_screening = None
     last_ai_review = None
@@ -852,13 +880,19 @@ async def _generate_with_auto_review(
         # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
         # (content_engine._validate_target_alignment가 채운다)
         alignment_findings = list(last_content.get("target_alignment_findings") or [])
+        season_findings = [
+            finding
+            for finding in (last_content.get("seo_geo_findings") or [])
+            if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
+        ]
+        bounded_soft_findings = alignment_findings + season_findings
         if (
-            alignment_findings
-            and not alignment_remediation_used
+            bounded_soft_findings
+            and not bounded_soft_remediation_used
             and generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS
         ):
-            alignment_remediation_used = True
-            findings = alignment_findings
+            bounded_soft_remediation_used = True
+            findings = bounded_soft_findings
             continue
 
         last_ai_review = None
@@ -933,6 +967,13 @@ async def _generate_with_auto_review(
     residual_alignment = list(last_content.get("target_alignment_findings") or [])
     if residual_alignment:
         summary["target_alignment_findings"] = residual_alignment
+    residual_season = [
+        finding
+        for finding in (last_content.get("seo_geo_findings") or [])
+        if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
+    ]
+    if residual_season:
+        summary["season_title_findings"] = residual_season
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:
@@ -4010,7 +4051,7 @@ def nightly_content_generation(self):
                     )
                     code = "COST_BLOCKED"
                     message = "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요."
-                    _remember_generation_attempt(db, item, philosophy, code)
+                    _remember_generation_attempt(db, item, philosophy, code, message=message)
                     recorder.record(
                         item.id,
                         GenerationItemState.SKIPPED,
@@ -4244,7 +4285,7 @@ def nightly_content_generation(self):
                 db.rollback()
                 db.expire_all()
                 if not getattr(item, "body", None):
-                    _remember_generation_attempt(db, item, philosophy, code)
+                    _remember_generation_attempt(db, item, philosophy, code, message=message)
                 recorder.record(
                     item.id,
                     GenerationItemState.FAILED,
@@ -4342,7 +4383,7 @@ def overnight_content_generation_recovery(self):
                 db.rollback()
                 db.expire_all()
                 if not getattr(item, "body", None):
-                    _remember_generation_attempt(db, item, philosophy, code)
+                    _remember_generation_attempt(db, item, philosophy, code, message=message)
                 _record_generation_batch_outcome(
                     db,
                     recorder,
@@ -4429,6 +4470,7 @@ def regenerate_content_item(self, content_id: str):
                         run_id=run_id,
                         code=code,
                         message=message,
+                        notify=generation_notify_requested(code),
                     )
                 )
             logger.error(
@@ -4470,6 +4512,7 @@ def regenerate_content_item(self, content_id: str):
                         run_id=image_run.id,
                         code=code,
                         message=message,
+                        notify=generation_notify_requested(code),
                     )
                 )
             return
@@ -4491,6 +4534,7 @@ def regenerate_content_item(self, content_id: str):
                         run_id=run_id,
                         code=code,
                         message=message,
+                        notify=generation_notify_requested(code),
                     )
                 )
             return
@@ -5448,6 +5492,55 @@ def morning_content_auto_publish(self):
     except Exception as exc:
         logger.exception("morning_content_auto_publish failed")
         raise self.retry(exc=exc, countdown=300)
+
+
+def _weekly_generation_rejection_outcomes(db, *, week_start: date) -> list[dict[str, object]]:
+    """Load unresolved rejection episodes observed during one completed KST week."""
+
+    kst = ZoneInfo("Asia/Seoul")
+    period_start = datetime.combine(week_start, time.min, tzinfo=kst).astimezone(timezone.utc)
+    period_end = period_start + timedelta(days=7)
+    rows = db.execute(
+        select(Incident, Hospital.name)
+        .join(Hospital, Hospital.id == Incident.hospital_id)
+        .where(
+            Incident.incident_type == "CONTENT_GENERATION_FAILED",
+            Incident.safe_error_code.in_(WEEKLY_REJECTED_GENERATION_CODES),
+            Incident.state.in_((IncidentState.OPEN.value, IncidentState.RETRYING.value)),
+            Incident.first_seen_at < period_end,
+            Incident.last_seen_at >= period_start,
+        )
+        .order_by(Hospital.name, Incident.first_seen_at, Incident.id)
+    ).all()
+    return [
+        {
+            "hospital_id": incident.hospital_id,
+            "hospital_name": hospital_name,
+            "reason": incident.safe_error_message
+            or generation_safe_cause(incident.safe_error_code or ""),
+            "episode_fingerprint": f"{incident.dedupe_key}:{incident.episode_seq}",
+        }
+        for incident, hospital_name in rows
+    ]
+
+
+@celery_app.task(name="app.workers.tasks.weekly_generation_rejection_rollup", bind=True)
+def weekly_generation_rejection_rollup(self):
+    """Send one weekly Slack summary for unresolved deterministic generation gates."""
+
+    require_dispatch(self, "weekly-generation-rejection-rollup")
+    today = arrow.now("Asia/Seoul").date()
+    current_week_start = today - timedelta(days=today.weekday())
+    week_start = current_week_start - timedelta(days=7)
+    with SyncSessionLocal() as db:
+        outcomes = _weekly_generation_rejection_outcomes(db, week_start=week_start)
+        notification = enqueue_generation_rejection_weekly_rollup_sync(db, week_start, outcomes)
+        db.commit()
+    return {
+        "week_start": week_start.isoformat(),
+        "blocked_count": len(outcomes),
+        "notification_enqueued": notification is not None,
+    }
 
 
 def _auto_publish_due_stmt(today):

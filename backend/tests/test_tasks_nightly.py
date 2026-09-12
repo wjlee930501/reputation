@@ -387,6 +387,61 @@ async def test_price_geo_seo_value_error_rewrites_in_the_same_tick(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_season_title_soft_finding_requests_only_one_rewrite(monkeypatch):
+    calls = []
+    finding = (
+        "제목 계절-발행월 불일치: title season '봄' does not match "
+        "planned_publish_date 2026-07-31"
+    )
+
+    async def keep_year_round_candidate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "봄철 건강 관리",
+            "body": "본문",
+            "seo_geo_findings": [finding],
+        }
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", keep_year_round_candidate)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="HEALTH", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"planned_publish_date": "2026-07-31"},
+    )
+
+    assert len(calls) == 2
+    assert calls == [[], [finding]]
+    assert content["title"] == "봄철 건강 관리"
+    assert screening.status == "ALIGNED"
+    assert screening.summary["season_title_findings"] == [finding]
+    assert screening.summary["automatic_remediation_attempts"] == 1
+
+
+@pytest.mark.asyncio
 async def test_independent_ai_review_requests_one_bounded_rewrite(monkeypatch):
     generation_findings = []
     reviews = 0
@@ -882,17 +937,40 @@ def test_generation_failure_classification_never_persists_exception_text(error, 
     assert "운영 센터" in message
 
 
-def test_generation_failures_are_morning_candidates_but_cost_slack_has_one_owner():
+@pytest.mark.parametrize(
+    ("detail", "visible_reason"),
+    [
+        (
+            "Generated content contains an unverified fixed price or coverage claim: 수만 원",
+            "원화 가격",
+        ),
+        ("GEO hard-fail: citable reference required", "공신력 있는 참고 자료"),
+        ("SEO hard-fail: H1 is not allowed", "검색 문서 구조"),
+        ("Forbidden medical expressions require complete regeneration", "의료광고 금지 표현"),
+    ],
+)
+def test_rejected_gate_classification_preserves_only_the_safe_real_reason(detail, visible_reason):
+    code, message = tasks.classify_generation_failure(ValueError(detail))
+
+    assert code == "GENERATION_REJECTED"
+    assert visible_reason in message
+    assert detail not in message
+    assert "다시 시도" not in message
+
+
+def test_generation_failure_notification_cadences_are_disjoint():
     for code in (
         "PROVIDER_TIMEOUT",
         "PROVIDER_UNAVAILABLE",
-        "GENERATION_REJECTED",
         "GENERATION_FAILED",
-        "CONTENT_IMAGE_NOT_READY",
     ):
         assert tasks.generation_notify_requested(code)
+    for code in ("GENERATION_REJECTED", "FORBIDDEN_EXPRESSION", "MISSING_REFERENCES"):
+        assert not tasks.generation_notify_requested(code)
+    assert tasks.generation_notify_requested("CONTENT_IMAGE_NOT_READY")
     assert not tasks.generation_notify_requested("COST_BLOCKED")
     assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
+    assert not tasks.generation_notify_requested("CONTENT_AI_REVIEW_UNAVAILABLE")
 
 
 class _NightlyTaskDB:
@@ -1028,7 +1106,7 @@ def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatc
     assert incident_calls[0]["notify"] is False
 
 
-def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkeypatch):
+def test_nightly_classified_morning_failure_requests_due_checked_notification(monkeypatch):
     cycle_date = date(2026, 8, 19)
     db = _NightlyTaskDB()
     item = _nightly_item("공급자지연의원")
@@ -1096,6 +1174,7 @@ def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps
     db = _NightlyTaskDB()
     item = _nightly_item("중복차단의원")
     writer_calls = 0
+    incident_calls = 0
 
     async def allow_cost(*_args, **_kwargs):
         return SimpleNamespace(allowed=True)
@@ -1103,7 +1182,7 @@ def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps
     def fail_writer(*_args, **_kwargs):
         nonlocal writer_calls
         writer_calls += 1
-        raise TimeoutError("same provider gate")
+        raise ValueError("same deterministic generation gate")
 
     _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
     monkeypatch.setattr(
@@ -1111,16 +1190,24 @@ def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps
     )
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
     monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", fail_writer)
-    async def ignore_incident(**_kwargs):
+
+    incident_notifications = []
+
+    async def count_incident(**kwargs):
+        nonlocal incident_calls
+        incident_calls += 1
+        incident_notifications.append(kwargs["notify"])
         return None
 
-    monkeypatch.setattr(tasks, "open_generation_incident", ignore_incident)
+    monkeypatch.setattr(tasks, "open_generation_incident", count_incident)
 
     for _ in range(30):
         tasks.nightly_content_generation.run()
 
     assert writer_calls == 1
-    assert item.essence_check_summary["generation_attempt"]["reason"] == "PROVIDER_TIMEOUT"
+    assert incident_calls == 1
+    assert incident_notifications == [False]
+    assert item.essence_check_summary["generation_attempt"]["reason"] == "GENERATION_REJECTED"
 
 
 def test_rescheduling_a_stranded_slot_does_not_reset_the_attempt_budget():
@@ -1161,6 +1248,50 @@ def test_changed_essence_or_target_still_grants_a_fresh_attempt():
     assert tasks._generation_attempt_context(
         item, SimpleNamespace(id="a")
     ) != tasks._generation_attempt_context(other_target, SimpleNamespace(id="a"))
+
+
+def test_gate_catalog_version_bump_retries_existing_rejection_exactly_once(monkeypatch):
+    """Old rejected slots get one fresh attempt, then H-08 suppresses the same input."""
+
+    cycle_date = date(2026, 8, 19)
+    db = _NightlyTaskDB()
+    item = _nightly_item("게이트갱신의원")
+    philosophy = SimpleNamespace(id="p1")
+    writer_calls = 0
+
+    monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", "old-rules")
+    tasks._remember_generation_attempt(db, item, philosophy, "GENERATION_REJECTED")
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+
+    monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", "new-rules")
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    def fail_writer(*_args, **_kwargs):
+        nonlocal writer_calls
+        writer_calls += 1
+        raise ValueError("same deterministic generation gate")
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], cycle_date)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", fail_writer)
+
+    async def ignore_incident(**_kwargs):
+        return None
+
+    monkeypatch.setattr(tasks, "open_generation_incident", ignore_incident)
+
+    tasks.nightly_content_generation.run()
+    tasks.nightly_content_generation.run()
+
+    assert writer_calls == 1
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+    assert "gate_catalog=new-rules" in item.essence_check_summary["generation_attempt"][
+        "context"
+    ]
 
 
 def test_changed_generation_context_allows_exactly_one_retry(monkeypatch):
@@ -1504,7 +1635,7 @@ def test_forbidden_field_retry_exhaustion_opens_incident_without_content_writeba
     assert writeback_calls == []
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "GENERATION_REJECTED"
-    assert incident_calls[0]["notify"] is True
+    assert incident_calls[0]["notify"] is False
 
 
 def test_nightly_missing_essence_never_owns_the_morning_digest(monkeypatch):
@@ -1553,7 +1684,7 @@ def test_nightly_missing_essence_has_no_slack_before_seven_forty_five(monkeypatc
     ("CONTENT_NOT_GENERATED", 0, True),
     ("ESSENCE_NOT_ALIGNED", 0, False),
     ("ESSENCE_NOT_ALIGNED", 1, False),
-    ("ESSENCE_NOT_ALIGNED", 2, True),
+    ("ESSENCE_NOT_ALIGNED", 2, False),
     ("PROVIDER_UNAVAILABLE", 2, False),
 ])
 def test_seven_forty_five_pages_stored_empty_slot_without_publishing(
@@ -1736,11 +1867,8 @@ def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
         assert heals[1][1]["args"] == [str(hospital.id)]
         return
     assert heals == []
-    assert len(digests) == 1
-    assert visible_cause in str(digests[0].payload)
-    if stored_code == "GENERATION_REJECTED":
-        assert "생성 검수 게이트 거절" in str(digests[0].payload)
-        assert "제목 없는 콘텐츠" not in str(digests[0].payload)
+    assert digests == []
+    assert visible_cause in incident_calls[0]["message"]
 
 
 def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):
@@ -3539,7 +3667,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
     ("MISSING_APPROVED_ESSENCE", 0, False),
     ("ESSENCE_NOT_ALIGNED", 0, False),
     ("ESSENCE_NOT_ALIGNED", 1, False),
-    ("ESSENCE_NOT_ALIGNED", 2, True),
+    ("ESSENCE_NOT_ALIGNED", 2, False),
     ("PROVIDER_UNAVAILABLE", 0, True),
 ])
 def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
@@ -3582,3 +3710,84 @@ def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
         assert heals == []
     if expected and code == "ESSENCE_NOT_ALIGNED":
         assert "피해야 할 문구" in digests[0]["cause"]
+
+
+def test_weekly_rejection_rollup_uses_the_completed_kst_week_once(monkeypatch):
+    outcome = {
+        "hospital_id": uuid.uuid4(),
+        "hospital_name": "주간차단의원",
+        "reason": "검증되지 않은 원화 가격 표현이 남았습니다.",
+    }
+    captured = {}
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def commit(self):
+            captured["committed"] = True
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args: arrow.get(2026, 9, 14, 9, 15, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_weekly_generation_rejection_outcomes",
+        lambda _db, *, week_start: captured.update(week_start=week_start) or [outcome],
+    )
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_generation_rejection_weekly_rollup_sync",
+        lambda _db, week_start, outcomes: (
+            captured.update(enqueued_week=week_start, outcomes=outcomes) or object()
+        ),
+    )
+
+    result = tasks.weekly_generation_rejection_rollup.run()
+
+    assert captured["week_start"] == date(2026, 9, 7)
+    assert captured["enqueued_week"] == date(2026, 9, 7)
+    assert captured["outcomes"] == [outcome]
+    assert captured["committed"] is True
+    assert result == {
+        "week_start": "2026-09-07",
+        "blocked_count": 1,
+        "notification_enqueued": True,
+    }
+
+
+def test_weekly_rejection_rollup_query_includes_rejected_class_only() -> None:
+    captured = {}
+
+    class Result:
+        def all(self):
+            return []
+
+    class DB:
+        def execute(self, statement):
+            captured["statement"] = statement
+            return Result()
+
+    assert tasks._weekly_generation_rejection_outcomes(
+        DB(), week_start=date(2026, 9, 7)
+    ) == []
+
+    sql = str(
+        captured["statement"].compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "GENERATION_REJECTED" in sql
+    assert "FORBIDDEN_EXPRESSION" in sql
+    assert "MISSING_REFERENCES" in sql
+    assert "CONTENT_GENERATION_FAILED" in sql
+    assert "incidents.state IN ('OPEN', 'RETRYING')" in sql
+    assert "incidents.first_seen_at <" in sql
+    assert "incidents.last_seen_at >=" in sql

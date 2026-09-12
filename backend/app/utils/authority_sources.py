@@ -91,6 +91,44 @@ _ORTHOPEDIC_FAQ_KEYWORDS = (
 CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
     {
         "keywords": (
+            "고혈압",
+            "혈압관리",
+            "수축기혈압",
+            "이완기혈압",
+            "심장내과",
+            "순환기내과",
+        ),
+        "title": "질병관리청 국가건강정보포털 — 고혈압",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6765",
+    },
+    {
+        "keywords": (
+            "허혈성심장질환",
+            "허혈성심질환",
+            "협심증",
+            "관상동맥질환",
+            "심근경색",
+            "심장내과",
+            "순환기내과",
+        ),
+        "title": "질병관리청 국가건강정보포털 — 협심증",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6566",
+    },
+    {
+        "keywords": (
+            "뇌졸중",
+            "뇌경색",
+            "뇌출혈",
+            "뇌혈관질환",
+            "심뇌혈관질환",
+            "심장내과",
+            "순환기내과",
+        ),
+        "title": "질병관리청 국가건강정보포털 — 뇌졸중",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5495",
+    },
+    {
+        "keywords": (
             *_TRAUMA_EMERGENCY_KEYWORDS,
             "골절",
             "뼈가부러",

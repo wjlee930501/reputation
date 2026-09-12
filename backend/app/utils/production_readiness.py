@@ -54,6 +54,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "stranded-content-recovery",
     "reconcile-monthly-artifact-incidents",
     "weekly-naver-source-sync",
+    "weekly-generation-rejection-rollup",
     "weekly-sov-monitoring",
 }
 
@@ -104,6 +105,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.run_monthly_sov_measurement",
     "app.workers.tasks.run_sov_for_hospital",
     "app.workers.tasks.run_weekly_monitoring",
+    "app.workers.tasks.weekly_generation_rejection_rollup",
     "app.workers.tasks.summarize_monthly_report_gaps",
     "app.workers.tasks.trigger_v0_report",
 }

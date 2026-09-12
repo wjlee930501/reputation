@@ -32,23 +32,29 @@ from app.services.incidents import (
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
+from app.workers.generation_run_control import safe_generation_rejection_message
 
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 
 _MORNING_BODY_NOTIFICATION_CODES = {
     "PROVIDER_TIMEOUT",
     "PROVIDER_UNAVAILABLE",
-    "GENERATION_REJECTED",
     "GENERATION_FAILED",
     "CONTENT_NOT_GENERATED",
     "GENERATION_LEASE_ACTIVE",
     "STALE_GENERATION_CLAIM",
 }
-_MORNING_STORED_GATE_NOTIFICATION_CODES = {
-    "FORBIDDEN_EXPRESSION",
-    "ESSENCE_NOT_ALIGNED",
-    "MISSING_REFERENCES",
-}
+WEEKLY_REJECTED_GENERATION_CODES: frozenset[str] = frozenset(
+    {
+        "GENERATION_REJECTED",
+        "FAQ_FIELDS_MISSING",
+        "MISSING_REFERENCES",
+        "FORBIDDEN_EXPRESSION",
+        "ESSENCE_NOT_ALIGNED",
+        "CONTENT_AI_HARD_FINDING",
+        "CONTENT_AI_REVIEW_STALE",
+    }
+)
 _MORNING_IMAGE_NOTIFICATION_CODES = {
     "CONTENT_IMAGE_NOT_READY",
     "CONTENT_IMAGE_NOT_VERIFIED",
@@ -57,16 +63,23 @@ _MORNING_IMAGE_NOTIFICATION_CODES = {
 # 이미 공개했던 글이 이미지 인증이 풀려 공개 페이지에서 내려간 상태다. 예정 슬롯의
 # 아침 마감 게이트와 달리 지금 사람이 결정해야 하므로 첫 open에 한 번 알린다.
 PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = recertification.OPERATOR_REQUIRED_CODES
-# The cost guard owns its hard-stop incident/outbox projection.  Generation still
-# records COST_BLOCKED, but a second generation Slack would violate the one-message
-# hard-stop contract.
-_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = PUBLISHED_IMAGE_RECERTIFY_CODES
+# The cost guard owns COST_BLOCKED's single hard-stop notification, so generation
+# records the incident without opening another outbox row. Published-image
+# recertification remains generation-owned and immediate because a public page has
+# already regressed and automatic recovery is exhausted.
+_IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = (
+    frozenset({"COST_BLOCKED"}) | PUBLISHED_IMAGE_RECERTIFY_CODES
+)
+_EXTERNALLY_OWNED_IMMEDIATE_NOTIFICATION_CODES = frozenset({"COST_BLOCKED"})
+_GENERATION_OWNED_IMMEDIATE_NOTIFICATION_CODES = (
+    _IMMEDIATE_GENERATION_NOTIFICATION_CODES
+    - _EXTERNALLY_OWNED_IMMEDIATE_NOTIFICATION_CODES
+)
 _MORNING_GENERATION_NOTIFICATION_CODES = frozenset(
     _MORNING_BODY_NOTIFICATION_CODES
-    | _MORNING_STORED_GATE_NOTIFICATION_CODES
     | _MORNING_IMAGE_NOTIFICATION_CODES
 )
-_MORNING_DIGEST_ONLY_CODES = frozenset({"MISSING_APPROVED_ESSENCE", "COST_BLOCKED"})
+_MORNING_DIGEST_ONLY_CODES = frozenset({"MISSING_APPROVED_ESSENCE"})
 _KST = ZoneInfo("Asia/Seoul")
 _MORNING_NOTIFICATION_START = time(7, 45)
 
@@ -109,6 +122,10 @@ def generation_block_digest_due(
 ) -> bool:
     """Return whether one blocked slot belongs in this morning batch's digest."""
 
+    # Every generation code has one Slack owner. Published regressions page
+    # immediately; deterministic rejection/gate codes wait for the weekly rollup.
+    if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES | WEEKLY_REJECTED_GENERATION_CODES:
+        return False
     # The auto-review task owns snapshot-keyed ESCALATED notifications.
     if code == "MISSING_APPROVED_ESSENCE":
         return False
@@ -170,16 +187,18 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             "운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요. 자동 복구는 "
             "01시·04시·07시·07시 45분에도 다시 실행됩니다."
         ),
-        "MISSING_REFERENCES": (
-            "운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 참고 자료가 포함된 "
-            "본문을 다시 생성하세요."
-        ),
+        "MISSING_REFERENCES": ("운영 센터에서 콘텐츠 주제와 승인된 참고 자료를 확인하세요."),
         "FORBIDDEN_EXPRESSION": (
-            "운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 의료광고 금지 표현이 없는 "
-            "본문을 다시 생성하세요."
+            "운영 센터에서 의료광고 금지 표현이 차단된 공개 필드와 승인된 대체 문구를 확인하세요."
         ),
-        "ESSENCE_NOT_ALIGNED": (
-            "병원 온보딩에서 운영 기준을 확인한 뒤 운영 센터의 “작업 다시 시도”를 누르세요."
+        "ESSENCE_NOT_ALIGNED": ("병원 온보딩에서 승인된 운영 기준과 차단된 문구를 확인하세요."),
+        "FAQ_FIELDS_MISSING": ("운영 센터에서 FAQ 질문과 직접 답변 요약의 누락 원인을 확인하세요."),
+        "CONTENT_AI_HARD_FINDING": (
+            "운영 센터에서 미해결 사실·의료 안전 지적과 승인 자료를 확인하세요."
+        ),
+        "CONTENT_AI_REVIEW_STALE": ("운영 센터에서 변경된 원고와 재검수 대기 상태를 확인하세요."),
+        "CONTENT_AI_REVIEW_UNAVAILABLE": (
+            "운영 센터에서 독립 검수 공급자 상태와 차단된 원고를 확인하세요."
         ),
         "CONTENT_IMAGE_NOT_READY": (
             "운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 누르고 완료 결과를 확인하세요."
@@ -220,8 +239,12 @@ def _generation_safe_cause(code: str) -> str:
         "STALE_GENERATION_CLAIM": "완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.",
         "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
         "MISSING_REFERENCES": "의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.",
+        "FAQ_FIELDS_MISSING": "FAQ 질문과 직접 답변 요약이 준비되지 않았습니다.",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
+        "CONTENT_AI_HARD_FINDING": "독립 검수의 사실·의료 안전 지적이 해결되지 않았습니다.",
+        "CONTENT_AI_REVIEW_STALE": "원고 변경 뒤 독립 재검수가 아직 완료되지 않았습니다.",
+        "CONTENT_AI_REVIEW_UNAVAILABLE": "독립 AI 검수 공급자를 일시적으로 사용할 수 없습니다.",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
         "CONTENT_IMAGE_NOT_VERIFIED": "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다.",
         **recertification.SAFE_MESSAGES,
@@ -291,12 +314,24 @@ def _incident_identity(
 
 
 def generation_notify_requested(code: str) -> bool:
-    """Return whether this code may page during the final morning close window."""
+    """Return whether generation itself owns an immediate or morning notification."""
 
     return code in (
-        _IMMEDIATE_GENERATION_NOTIFICATION_CODES
+        _GENERATION_OWNED_IMMEDIATE_NOTIFICATION_CODES
         | _MORNING_GENERATION_NOTIFICATION_CODES
     )
+
+
+def generation_notification_cadence(code: str) -> str:
+    """Expose the mutually exclusive Slack owner used by workers and tests."""
+
+    if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES:
+        return "IMMEDIATE"
+    if code in WEEKLY_REJECTED_GENERATION_CODES:
+        return "WEEKLY"
+    if code in _MORNING_GENERATION_NOTIFICATION_CODES | _MORNING_DIGEST_ONLY_CODES:
+        return "MORNING"
+    return "NONE"
 
 
 def _morning_notification_due(
@@ -460,6 +495,11 @@ async def open_generation_incident(
             notification_code = incident.safe_error_code or code
         else:
             customer_impact, next_action = _generation_operator_copy(code)
+            safe_cause = (
+                safe_generation_rejection_message(message)
+                if code == "GENERATION_REJECTED"
+                else _generation_safe_cause(code)
+            )
             incident = await open_or_touch_incident(
                 db,
                 IncidentOpenRequest(
@@ -477,7 +517,7 @@ async def open_generation_incident(
                     operation_run_id=run_id,
                     source_id=source_id,
                     safe_error_code=code,
-                    safe_error_message=_generation_safe_cause(code),
+                    safe_error_message=safe_cause,
                 ),
                 actor="content-generation-worker",
                 reason="generation attempt failed",

@@ -87,6 +87,30 @@ def test_select_curated_authority_sources_does_not_guess_for_unknown_topic():
     assert select_curated_authority_sources("알 수 없는 새 진료 주제") == []
 
 
+def test_select_curated_authority_sources_supports_cardiovascular_topics():
+    sources = select_curated_authority_sources(
+        "고혈압과 허혈성 심장질환, 뇌졸중 위험 안내",
+        limit=3,
+    )
+
+    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
+        "6765",
+        "6566",
+        "5495",
+    ]
+    assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
+
+
+def test_select_curated_authority_sources_repairs_generic_cardiology_focus():
+    sources = select_curated_authority_sources("심장내과 순환기 질환 안내", limit=3)
+
+    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
+        "6765",
+        "6566",
+        "5495",
+    ]
+
+
 def test_select_curated_authority_sources_supports_dehydration_content():
     sources = select_curated_authority_sources(
         "소아 발열이 이어질 때 탈수 징후와 수분 보충 방법",

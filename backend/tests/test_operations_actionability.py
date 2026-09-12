@@ -22,6 +22,7 @@ from app.services.post_publish_review_policy import (
 )
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.workers import generation_incident_control
+from app.workers.generation_run_control import classify_generation_failure
 
 
 def test_today_queue_and_post_publish_sampling_share_automatic_operation_boundaries() -> None:
@@ -143,8 +144,8 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
             episode_seq=1,
         )
 
-    async def accept_notification(_db, _intent) -> None:
-        return None
+    async def accept_notification(_db, intent) -> None:
+        captured["notification"] = intent
 
     monkeypatch.setattr(
         generation_incident_control,
@@ -156,7 +157,7 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
     monkeypatch.setattr(
         generation_incident_control,
         "build_open_incident_notification",
-        lambda _projection, _base_url: SimpleNamespace(),
+        lambda _projection, _base_url: SimpleNamespace(dedupe_key="morning:once"),
     )
 
     # When
@@ -173,6 +174,78 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
     request = captured["request"]
     assert request.safe_error_message == "콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다."
     assert "provider" not in request.safe_error_message
+    assert "notification" not in captured
+
+
+async def test_generation_rejected_records_reason_without_immediate_slack(
+    monkeypatch,
+) -> None:
+    captured = {}
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def scalar(self, _statement):
+            return None
+
+        async def get(self, _model, _item_id):
+            return SimpleNamespace(
+                scheduled_date=date(2026, 9, 12), body=None, image_url=None
+            )
+
+        async def commit(self):
+            return None
+
+    async def capture_request(_db, request, **_kwargs):
+        captured["request"] = request
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            state="OPEN",
+            severity="HIGH",
+            customer_impact=request.customer_impact,
+            next_action=request.next_action,
+            admin_path=request.admin_path,
+            hospital_id=request.hospital_id,
+            version=1,
+            safe_error_code=request.safe_error_code,
+            safe_error_message=request.safe_error_message,
+            episode_seq=1,
+        )
+
+    async def reject_notification(*_args, **_kwargs):
+        raise AssertionError("GENERATION_REJECTED must wait for the weekly rollup")
+
+    monkeypatch.setattr(
+        generation_incident_control,
+        "get_async_sessionmaker",
+        lambda: lambda: FakeSession(),
+    )
+    monkeypatch.setattr(
+        generation_incident_control, "open_or_touch_incident", capture_request
+    )
+    monkeypatch.setattr(
+        generation_incident_control, "enqueue_notification", reject_notification
+    )
+
+    _, safe_message = classify_generation_failure(
+        ValueError("Generated content contains an unverified fixed price or coverage claim")
+    )
+    await generation_incident_control.open_generation_incident(
+        item_id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        hospital_name="가격검수의원",
+        run_id=uuid.uuid4(),
+        code="GENERATION_REJECTED",
+        message=safe_message,
+        notify=True,
+    )
+
+    assert "원화 가격" in captured["request"].safe_error_message
+    assert "다시 시도" not in captured["request"].next_action
 
 
 async def test_generation_gate_inherits_open_legacy_episode_without_repaging(
@@ -264,7 +337,7 @@ def test_open_generation_episode_can_wake_at_morning_cutoff_once() -> None:
     )
 
 
-async def test_open_cause_pages_its_korean_gate_instead_of_empty_slot_symptom(
+async def test_open_rejected_cause_stays_out_of_immediate_and_morning_slack(
     monkeypatch,
 ) -> None:
     class FrozenDatetime(datetime):
@@ -333,10 +406,7 @@ async def test_open_cause_pages_its_korean_gate_instead_of_empty_slot_symptom(
         notify=True,
     )
 
-    assert len(captured["notifications"]) == 1
-    payload = captured["notifications"][0].message.payload_json()
-    assert "가격·지역·검색 구조 자동 검수 게이트" in payload
-    assert "발행 시각까지 콘텐츠 제목과 본문" not in payload
+    assert captured["notifications"] == []
 
 
 def test_generation_projection_uses_the_specific_safe_cause() -> None:
@@ -449,14 +519,14 @@ async def test_acknowledged_generation_cause_keeps_the_same_episode(monkeypatch)
 
 
 def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:
-    # 아침 마감 게이트를 기다리지 않는 것은 이미 공개했다가 내려간 글의 재인증 차단뿐이다.
-    # 그 사실을 동작으로 확인한다 — 사람이 지금 결정해야 하므로 예정일 없이도 알린다.
-    for code in (
+    immediate_codes = (
         "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
         "PUBLISHED_IMAGE_MISSING",
         "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
-    ):
+    )
+    for code in immediate_codes:
         assert generation_incident_control.generation_notify_requested(code)
+        assert generation_incident_control.generation_notification_cadence(code) == "IMMEDIATE"
         assert generation_incident_control._morning_notification_due(
             code=code, item=None, observed_at=datetime(2026, 9, 8, 2, 0, tzinfo=UTC)
         )
@@ -464,15 +534,29 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
             code, batch=generation_incident_control.PUBLISH_MORNING_BATCH
         )
 
-    morning_codes = (
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_UNAVAILABLE",
+    weekly_codes = (
         "GENERATION_REJECTED",
-        "GENERATION_FAILED",
-        "CONTENT_NOT_GENERATED",
         "FORBIDDEN_EXPRESSION",
         "ESSENCE_NOT_ALIGNED",
         "MISSING_REFERENCES",
+        "FAQ_FIELDS_MISSING",
+        "CONTENT_AI_HARD_FINDING",
+        "CONTENT_AI_REVIEW_STALE",
+    )
+    for code in weekly_codes:
+        assert not generation_incident_control.generation_notify_requested(code)
+        assert generation_incident_control.generation_notification_cadence(code) == "WEEKLY"
+        assert not generation_incident_control.generation_block_digest_due(
+            code,
+            batch=generation_incident_control.PUBLISH_MORNING_BATCH,
+            remediation_exhausted=True,
+        )
+
+    morning_codes = (
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_FAILED",
+        "CONTENT_NOT_GENERATED",
         "CONTENT_IMAGE_NOT_READY",
         "CONTENT_IMAGE_NOT_VERIFIED",
         "IMAGE_GENERATION_FAILED",
@@ -481,13 +565,37 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
     )
     for code in morning_codes:
         assert generation_incident_control.generation_notify_requested(code)
+        assert generation_incident_control.generation_notification_cadence(code) == "MORNING"
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"):
+        assert not generation_incident_control.generation_block_digest_due(
+            code, batch=generation_incident_control.PREPUBLISH_MORNING_BATCH
+        )
+        assert generation_incident_control.generation_block_digest_due(
+            code, batch=generation_incident_control.PUBLISH_MORNING_BATCH
+        )
+    assert generation_incident_control.generation_block_digest_due(
+        "GENERATION_FAILED", batch=generation_incident_control.PREPUBLISH_MORNING_BATCH
+    )
+    assert generation_incident_control.generation_block_digest_due(
+        "GENERATION_FAILED", batch=generation_incident_control.PUBLISH_MORNING_BATCH
+    )
     assert not generation_incident_control.generation_notify_requested("COST_BLOCKED")
+    assert (
+        generation_incident_control.generation_notification_cadence("COST_BLOCKED") == "IMMEDIATE"
+    )
+    assert not generation_incident_control.generation_notify_requested("MISSING_APPROVED_ESSENCE")
     assert not generation_incident_control.generation_notify_requested(
-        "MISSING_APPROVED_ESSENCE"
+        "CONTENT_AI_REVIEW_UNAVAILABLE"
+    )
+    assert (
+        generation_incident_control.generation_notification_cadence(
+            "CONTENT_AI_REVIEW_UNAVAILABLE"
+        )
+        == "NONE"
     )
 
 
-def test_human_now_generation_pages_once_per_episode_then_again_after_recovery() -> None:
+def test_due_generation_notification_pages_once_per_episode_then_again_after_recovery() -> None:
     should_send = generation_incident_control._should_send_generation_notification
     code = "GENERATION_FAILED"
 
@@ -517,18 +625,25 @@ def test_morning_cutoff_requires_due_date_and_exact_missing_artifact() -> None:
     before = datetime(2026, 8, 18, 22, 44, tzinfo=UTC)  # 07:44 KST
     cutoff = datetime(2026, 8, 18, 22, 45, tzinfo=UTC)  # 07:45 KST
 
-    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "GENERATION_REJECTED"):
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "GENERATION_FAILED"):
         assert not generation_incident_control._morning_notification_due(
             code=code, item=due, observed_at=before
         )
         assert generation_incident_control._morning_notification_due(
             code=code, item=due, observed_at=cutoff
         )
+    assert not generation_incident_control._morning_notification_due(
+        code="GENERATION_REJECTED", item=due, observed_at=before
+    )
+    assert not generation_incident_control._morning_notification_due(
+        code="GENERATION_REJECTED", item=due, observed_at=cutoff
+    )
 
     due.body = "이미 저장된 본문"
-    assert not generation_incident_control._morning_notification_due(
-        code="PROVIDER_TIMEOUT", item=due, observed_at=cutoff
-    )
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "GENERATION_FAILED"):
+        assert not generation_incident_control._morning_notification_due(
+            code=code, item=due, observed_at=cutoff
+        )
     assert generation_incident_control._morning_notification_due(
         code="CONTENT_IMAGE_NOT_READY", item=due, observed_at=cutoff
     )
@@ -838,13 +953,14 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
     assert "SLA" not in payload
 
 
-@pytest.mark.parametrize("attempts,expected", [(None, False), (1, False), (2, True)])
-def test_per_item_essence_page_also_requires_exhaustion(attempts, expected):
+def test_per_item_essence_rejection_is_weekly_even_after_remediation_exhaustion():
     item = SimpleNamespace(
-        scheduled_date=date(2026, 8, 19), body="검토할 본문",
-        essence_check_summary={"automatic_remediation_attempts": attempts},
+        scheduled_date=date(2026, 8, 19),
+        body="검토할 본문",
+        essence_check_summary={"automatic_remediation_attempts": 2},
     )
-    assert generation_incident_control._morning_notification_due(
-        code="ESSENCE_NOT_ALIGNED", item=item,
+    assert not generation_incident_control._morning_notification_due(
+        code="ESSENCE_NOT_ALIGNED",
+        item=item,
         observed_at=datetime(2026, 8, 18, 23, 0, tzinfo=UTC),
-    ) is expected
+    )
