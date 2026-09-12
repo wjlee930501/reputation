@@ -1,6 +1,6 @@
 # Re:putation 현재 시스템 구조
 
-문서 버전: **2.4** · 조사·갱신일: **2026-09-08 (Asia/Seoul)**
+문서 버전: **2.5** · 조사·갱신일: **2026-09-12 (Asia/Seoul)**
 소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
 구현 상태: **기준선 위 V0 공개 게이트 분리·자동 이어가기 구현 및 검증 중. 운영 배포 전**
 
@@ -101,7 +101,7 @@ flowchart LR
 
 일반 텍스트 자료가 생성되거나 실질적으로 바뀌면 `SOURCE_EVIDENCE_PROCESSING` 실행이 전체 대상 ID와 입력 hash를 snapshot으로 저장하고 cursor를 전진시킨다. 한 병원에는 한 실행만 진행하며, 한 번에 일부만 처리해도 다음 dispatch가 남은 자료를 잇는다. 같은 정규화 값의 PATCH는 처리 상태와 근거를 바꾸지 않는다. claim한 입력은 짧게 commit한 뒤 외부 호출하고, 저장 시 claim·입력 hash·현재 자료 상태를 다시 확인한다. 긴 원문은 24,000자와 800자 중첩 범위로 나누고 coverage를 남긴다. 사진, EXCLUDED 자료, 추출 원문이 없는 URL은 필수 텍스트 처리 집합과 구분한다.
 
-자동 검토는 병원 범위를 잠그고 합성·안전 검사·독립 검토를 수행한다. APPROVE, 신뢰도 0.90 이상, 발견 사항 없음, 연결된 근거 전체의 검토 범위를 요구한다. 근거가 80개를 넘으면 모든 근거를 shard로 나눠 검토하고, 어느 shard라도 확인되지 않으면 전체 승인하지 않는다. 승인 직전 snapshot과 경쟁 초안을 다시 확인하고 이전 승인을 보관한 뒤 새 기준을 승격한다. 사람이 맡은 경쟁 초안이나 해결되지 않은 충돌은 자동으로 덮어쓰지 않는다. 재조정은 15분마다 orphan PENDING 자료와 유실된 처리·검토 실행을 회수하되 병원 200곳씩 순환한다. 450곳이면 전체를 한 번 보는 데 최대 세 번, 약 45분이 걸릴 수 있으므로 15분을 개별 작업 완료 기한으로 해석하지 않는다.
+자동 검토는 병원 범위를 잠그고 합성·안전 검사·독립 검토를 수행한다. APPROVE, 신뢰도 0.90 이상, 발견 사항 없음, 연결된 근거 전체의 검토 범위를 요구한다. 근거가 80개를 넘으면 모든 근거를 shard로 나눠 검토하고, 어느 shard라도 확인되지 않으면 전체 승인하지 않는다. 승인 직전 snapshot과 경쟁 초안을 다시 확인하고 이전 승인을 보관한 뒤 새 기준을 승격한다. 사람이 맡은 경쟁 초안이나 해결되지 않은 충돌은 자동으로 덮어쓰지 않는다. 자동 검수가 보류(ESCALATE)하면 초안에 복구 사이클과 시각을 남기고 24h × 2^(cycle-1) 백오프로 최대 4회 자동 재검수한다(v2.7). 옛 마커(사이클 8, 시각 없음)는 사이클 1로 읽어 한 번 더 예산을 준다. 사람이 손댄 초안은 자동 재시도하지 않으며, 예산 안의 보류는 RETRYING 인시던트 하나로만 남고 소진 뒤 OPEN이 된다. 72시간 넘게 ERROR인 필수 자료는 상태를 바꾸지 않고 이번 합성 입력·완전성 검사·snapshot에서 제외하며 `excluded_error_source` gap으로 기록한다. 샤드 검수 프롬프트는 부분 근거임을 알리고 다른 샤드의 근거 ID를 `evidence_elsewhere`로 넘긴다. 합성·검수는 `essence` 비용 카테고리(일 60·월 600 기본)를 쓰고, 반복 실패한 claim은 `min(15분 × 2^attempt, 24h)`로 지연한다. 재조정은 15분마다 orphan PENDING 자료와 유실된 처리·검토 실행을 회수하되 병원 200곳씩 순환한다. 450곳이면 전체를 한 번 보는 데 최대 세 번, 약 45분이 걸릴 수 있으므로 15분을 개별 작업 완료 기한으로 해석하지 않는다.
 
 근거: [readiness](../../backend/app/services/essence_readiness.py), [snapshot·근거 검사](../../backend/app/services/essence_engine.py), [자료 처리 실행](../../backend/app/services/source_processing_runs.py), [자동 검토](../../backend/app/services/essence_auto_review.py), [자료 API](../../backend/app/api/admin/essence.py), [네이버 동기화](../../backend/app/workers/naver_sync.py).
 
@@ -127,9 +127,9 @@ flowchart LR
 
 1. 대상 슬롯을 claim하고 lease·운영 실행 기록을 저장한다. 자동 생성은 ACTIVE/live 병원을 대상으로 하고 한 번에 최대 50개, 기본 2시간 lease를 사용한다.
 2. 질문 타깃·보완 행동·최근 제목을 바탕으로 brief를 만들고 현재 Essence·source snapshot과 치료별 환자 설명·주의·근거를 writer와 reviewer에 같은 입력으로 넣는다. 생성 당시와 최근 재검사 Essence ID는 따로 보존한다.
-3. Anthropic Claude로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다.
-4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 2026-09-07~08 전환에서는 고정 manifest의 FAQ 3건을 CAS 수정하고 본문 22건을 독립 재검수한 뒤, 공개 글 115건의 strict gate를 read-only로 확인했다. AI 검수 레거시 상태만을 이유로 나머지 글을 유료 재검수하지 않았다.
-5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 2026-09-07~08 일회성 전환은 당시 공개 이미지 115건의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장했으며, 79건은 바이트를 유지하고 36건은 교체했다. 공개 GCS 이미지 프록시 URL에는 인증된 내용 hash를 `?v=`로 붙인다. Site 이미지 최적화 캐시의 최소 TTL이 86,400초이므로 교체된 바이트의 hash가 URL cache key도 바꾼다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다.
+3. Anthropic Claude로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**이며 프롬프트도 같은 단위로 2,400~4,500자를 요구한다. `max_tokens`는 12,000이고 `stop_reason`이 `max_tokens`/`refusal`이면 잘림으로 거절한다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다(프롬프트도 화이트리스트 문서 URL 1개 이상을 요구한다). 결정적 검증기(분량·가격·SEO·GEO·FAQ·금지 표현·잘림)의 거절은 같은 프롬프트로 재시도하지 않고 지적 내용을 다음 회차의 보완 지시로 넘긴다(최대 3회 공급자 호출). tenacity는 전송·공급자 오류에만 남는다. 화이트리스트 도메인 참고자료의 제목이 금지 표현에 걸리면 기관명 라벨로 치환하고, 그 뒤 모든 제목을 다시 검사한다.
+4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 검수자는 Haiku(`CLAUDE_MODEL_FAST`)이며 확신도 0.70 미만이나 형식 문제로 붙은 합성 UNCERTAIN만 남았을 때는 같은 호출 안에서 `CLAUDE_MODEL`로 1회 재검수한다. SOFT·STYLE만 남으면 PASS다. HARD 사실·안전 지적은 "지적된 주장을 삭제·완화하고 새 사실을 넣지 말라"는 삭제형 재작성을 1회 허용한 뒤 다시 검수한다. 한 세션의 유료 생성은 최대 3회다. 저장된 UNCERTAIN 차단은 스윕이 `SAMPLE_RECOVERABLE` 예산 안에서 재검수한다. 2026-09-07~08 전환에서는 고정 manifest의 FAQ 3건을 CAS 수정하고 본문 22건을 독립 재검수한 뒤, 공개 글 115건의 strict gate를 read-only로 확인했다. AI 검수 레거시 상태만을 이유로 나머지 글을 유료 재검수하지 않았다.
+5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 2026-09-07~08 일회성 전환은 당시 공개 이미지 115건의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장했으며, 79건은 바이트를 유지하고 36건은 교체했다. 공개 GCS 이미지 프록시 URL에는 인증된 내용 hash를 `?v=`로 붙인다. Site 이미지 최적화 캐시의 최소 TTL이 86,400초이므로 교체된 바이트의 hash가 URL cache key도 바꾼다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다. 이미지 생성이 실패해 당일 예산(4회)이 소진되거나 정책 거절·예산 소진이 저장되면 같은 병원의 PUBLISHED 글 중 인증이 현재이고 자기도 빌린 것이 아닌 가장 오래된 이미지를 빌려 붙인다(`content_image_reuse.py`). 빌린 행은 원본의 내용 hash·주제 hash·정책 버전·검수 시각을 그대로 옮기고 `image_reused_from_content_id`(마이그레이션 0074)로 결합 대상을 명시한다. `image_certification_current`는 완전 인증 또는 재사용 인증(마커 + 내용 hash 일치 + 정책 버전 현재)을 통과로 본다. 교체 스윕 `published_image_refresh`가 01:20·04:20·07:20에 그 글의 주제 이미지를 만들어 인증하고 마커를 지운다. 정책 거절은 저장된 진단으로 `policy_repair` 프롬프트를 1회 더 시도한다. 이미지 실패는 `image_failure_class`(COST_GUARD / PROVIDER_QUOTA / POLICY_REJECTED / PROVIDER_ERROR)로 분류해 08:00 요약이 크레딧·할당량 확인을 안내한다.
 6. 결과 저장은 `generation_claim_token`과 `content_revision`을 조건부 UPDATE로 확인한다. 운영자 편집·취소·발행이나 새 claim 뒤에 도착한 늦은 응답은 현재 행을 덮어쓰지 않는다.
 
 근거: [계획](../../backend/app/services/content_target_planner.py), [본문 엔진](../../backend/app/services/content_engine.py), [이미지 엔진](../../backend/app/services/image_engine.py), [공개 이미지 URL](../../backend/app/api/public/site.py), [Site 이미지 캐시](../../site/next.config.mjs), [배치 claim·writeback](../../backend/app/workers/nightly_generation_batch.py), [의료 표현 검사](../../backend/app/utils/medical_filter.py).
@@ -139,6 +139,8 @@ flowchart LR
 정상 상태 흐름은 **DRAFT → PUBLISHED**다. READY는 레거시 호환이며 REJECTED는 재생성 대상, CANCELLED는 자동 생성·발행 대상에서 제외된다. 저장된 글을 공개 직전에 다시 검사한다. 제목·본문·FAQ 필드·참고자료와 그 제목·금지 표현·최신 운영 기준·이미지 검증이 공통 콘텐츠 정책에 포함된다.
 
 자동 발행은 예정일 범위로 대상을 선택한 뒤 병원·콘텐츠를 잠그고 현재 상태, ACTIVE/live와 예정일을 다시 확인한다. 발행 상태와 감사 기록을 commit한 뒤 Site 캐시 재검증과 IndexNow intent를 저장한다. 캐시 실패는 공개 성공을 되돌리지 않고 복구 작업으로 남긴다. IndexNow는 host·URL·revision별로 합쳐 1분 drain에서 최대 5회 재시도한다. 정상 발행과 재시도 중인 IndexNow는 Slack으로 알리지 않는다.
+
+재시도 클래스는 `generation_retry_policy.py`가 정한다. `ENVIRONMENT_RECOVERABLE`(공급자 일시 오류, 예산 4회), `SAMPLE_RECOVERABLE`(작가 거절·이미지 실패·UNCERTAIN만 남은 검수 차단, KST 하루 예산 본문 2세션·이미지 4회, 소진 3일 뒤 `OPERATOR_REQUIRED`), `INPUT_CHANGE_REQUIRED`(승인 기준 없음, 저장 본문의 금지 표현, 검수 stale, 모델이 HARD로 단정한 지적)다. 저장 본문 수리 코드(FAQ 필드·참고자료·금지 표현·Essence 불일치·검수 stale)도 하루 2세션·3일 예산 안에서만 작가를 부른다. 예산 안의 차단은 RETRYING(`sla_due_at`=다음 스윕)으로 열고 소진 시 OPEN으로 바꾸며, 같은 글의 다른 원인 인시던트는 새 원인이 기록될 때 회수한다. 07:45·08:00 투영은 `CONTENT_IMAGE_NOT_READY` 같은 증상 대신 저장된 종착 원인을 보고한다. 22:30 지연 복구는 7일 catch-up 창 밖의 슬롯만 옮긴다.
 
 후행 검수는 첫 순번 또는 공개 후 본문 수정 같은 조건의 표본 검수다. 매 글 승인이나 월간 보고 차단의 전제는 아니다. 지연 복구는 실제 예정일을 앞으로 옮기고 월을 넘으면 `carried_over_from`으로 원래 월을 보존한다. `published_at`을 과거로 조작하지 않는다. 최초 공개 사실은 `first_published_at`·`first_published_by`에 한 번만 기록하고, 반려 뒤 새 판의 `published_at`·`published_by`와 분리해 닫힌 월을 집계한다. 전환 시점에 남아 있던 `published_at`만 최초 사실로 백필하며, 그 전에 수동 반려가 이미 지운 과거 발행일은 추정하지 않으므로 복원할 수 없다. 생성 당시 `generation_philosophy_id`와 최근 `last_reviewed_philosophy_id`를 함께 보아야 한다.
 
@@ -214,14 +216,15 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 
 ## 11. 스케줄·재시도·비용·알림
 
-아래는 코드의 Beat 등록 시각이며 **Asia/Seoul** 기준이다. 실행 지연·재시도·코호트 선택은 각 Worker가 추가 판정한다. 정본은 [celery_app.py](../../backend/app/core/celery_app.py), 작업 구현의 RedBeat schedule version은 `2026-09-07.2`다.
+아래는 코드의 Beat 등록 시각이며 **Asia/Seoul** 기준이다. 실행 지연·재시도·코호트 선택은 각 Worker가 추가 판정한다. 정본은 [celery_app.py](../../backend/app/core/celery_app.py), 작업 구현의 RedBeat schedule version은 `2026-09-12.2`다.
 
 | 시각 / 주기 | 작업 |
 |---|---|
 | 매일 21:30 | 당월 계약 슬롯 생성·누락 보완 |
 | 매일 22:30 | 발행하지 못한 슬롯의 미래 일정 복구 |
 | 매일 23:00 | 내일 콘텐츠 생성 |
-| 매일 01:00 / 04:00 / 07:00 | 오늘 콘텐츠의 누락·복구 가능한 부분 생성 |
+| 매일 01:00 / 04:00 / 07:00 | 오늘 콘텐츠의 누락·복구 가능한 부분 생성. 이미지 예산 소진 슬롯은 같은 병원의 인증 이미지를 빌린다 |
+| 매일 01:20 / 04:20 / 07:20 | 빌린 이미지로 공개된 글에 그 글의 주제 이미지를 만들어 교체(`published_image_refresh`, content 큐) |
 | 매일 07:45 | 남은 발행 차단 투영·요약. 이 작업 자체는 생성하지 않음 |
 | 매일 08:00 | 자동 발행. 오늘 및 직전 7일 catch-up 대상 검사 |
 | 월요일 02:00 | 월간 코호트를 제외한 주간 SoV |
