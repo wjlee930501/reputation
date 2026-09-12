@@ -5221,6 +5221,10 @@ def _generate_single_content_item(
                 item.id,
                 stored_assessment.code,
             )
+            # A stored publication finding describes the current body, not an
+            # unchanged failed writer input.  Remove that suppression before
+            # falling through to the existing full-body regeneration path.
+            _clear_generation_attempt(db, item)
         elif stored_assessment.code is not None and stored_assessment.code not in {
             "CONTENT_IMAGE_NOT_READY",
             "CONTENT_IMAGE_NOT_VERIFIED",
