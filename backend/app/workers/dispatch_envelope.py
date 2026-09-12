@@ -43,6 +43,9 @@ TASK_PURPOSES = {
     "app.workers.tasks.generate_content_image": "generate-content-image",
     "app.workers.tasks.recertify_published_content_image": "recertify-published-image",
     "app.workers.tasks.morning_content_auto_publish": "morning-content-auto-publish",
+    "app.workers.tasks.weekly_generation_rejection_rollup": (
+        "weekly-generation-rejection-rollup"
+    ),
     "app.workers.tasks.run_sov_for_hospital": "run-sov",
     "app.workers.tasks.monthly_slot_generation": "monthly-slot-generation",
     "app.workers.tasks.run_weekly_monitoring": "weekly-sov-monitoring",

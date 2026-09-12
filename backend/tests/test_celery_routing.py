@@ -187,6 +187,18 @@ def test_monthly_artifact_incident_reconciliation_runs_each_minute_on_reports_qu
     assert REDBEAT_SCHEDULE_VERSION >= "2026-08-10.4"
 
 
+def test_generation_rejection_rollup_runs_once_each_monday() -> None:
+    task_name = "app.workers.tasks.weekly_generation_rejection_rollup"
+    entry = celery_app.conf.beat_schedule["weekly-generation-rejection-rollup"]
+
+    assert entry["task"] == task_name
+    assert entry["schedule"].minute == {15}
+    assert entry["schedule"].hour == {9}
+    assert entry["schedule"].day_of_week == {1}
+    assert _resolved_queue(task_name) == "default"
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-09-12.1"
+
+
 def test_redbeat_refreshes_lock_well_before_ttl_expires():
     """max loop와 lock TTL이 같아 LockNotOwnedError crash loop가 재발하지 않게 한다."""
     max_interval = celery_app.conf.beat_max_loop_interval

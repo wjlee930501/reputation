@@ -19,7 +19,7 @@ from app.workers.runtime_queue_observability import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-09-07.2"
+REDBEAT_SCHEDULE_VERSION = "2026-09-12.1"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -174,6 +174,7 @@ celery_app.conf.update(
                 "app.workers.tasks.morning_content_auto_publish"
             ],
         },
+        "app.workers.tasks.weekly_generation_rejection_rollup": {"queue": "default"},
         "app.workers.tasks.run_sov_for_hospital": {"queue": "sov"},
         "app.workers.tasks.run_weekly_monitoring": {"queue": "sov"},
         "app.workers.tasks.run_monthly_sov_measurement": {"queue": "sov"},
@@ -285,6 +286,13 @@ celery_app.conf.update(
             "task": "app.workers.tasks.morning_content_auto_publish",
             "schedule": crontab(hour=8, minute=0),
             "options": {"headers": build_dispatch_headers("morning-content-auto-publish")},
+        },
+        # 매주 월요일 09:15 — 직전 주에 남은 결정적 생성/발행 검수 차단을
+        # 병원·원인별 한 메시지로 보낸다. 같은 거절은 개별/아침 Slack에 섞지 않는다.
+        "weekly-generation-rejection-rollup": {
+            "task": "app.workers.tasks.weekly_generation_rejection_rollup",
+            "schedule": crontab(hour=9, minute=15, day_of_week=1),
+            "options": {"headers": build_dispatch_headers("weekly-generation-rejection-rollup")},
         },
         # 매주 월요일 02:00 — 전체 병원 AI 답변 언급률 측정
         "weekly-sov-monitoring": {

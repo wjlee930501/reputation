@@ -22,6 +22,7 @@ from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
     action_block,
     admin_url,
+    chunk_lines,
     header_block,
     safe_text,
     section_block,
@@ -33,12 +34,18 @@ MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE = (
     "MISSING_APPROVED_ESSENCE_DIGEST"
 )
 GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE = "GENERATION_BLOCKED_DIGEST"
+GENERATION_REJECTION_WEEKLY_ROLLUP_NOTIFICATION_TYPE = (
+    "GENERATION_REJECTION_WEEKLY_ROLLUP"
+)
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
 _MISSING_ESSENCE_DIGEST_DEDUPE_PREFIX = (
     f"{MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE}:"
 )
 _GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX = (
     f"{GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE}:"
+)
+_GENERATION_REJECTION_WEEKLY_ROLLUP_DEDUPE_PREFIX = (
+    f"{GENERATION_REJECTION_WEEKLY_ROLLUP_NOTIFICATION_TYPE}:"
 )
 # Slack Block Kit truncates long sections; keep the digest inside one readable block.
 _DIGEST_MAX_HOSPITALS = 12
@@ -269,6 +276,85 @@ def build_generation_blocked_digest_intent(
     )
 
 
+def build_generation_rejection_weekly_rollup_intent(
+    week_start: date,
+    rejected_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationIntent:
+    """Build one hospital-and-reason summary for unresolved rejection episodes."""
+
+    if not rejected_outcomes:
+        raise NotificationPayloadError("GENERATION_REJECTION_WEEKLY_ITEMS_REQUIRED")
+    hospitals: dict[tuple[str, str], dict[str, int]] = {}
+    item_count = 0
+    for outcome in rejected_outcomes:
+        hospital_id = str(outcome.get("hospital_id") or "")
+        hospital_name = str(outcome.get("hospital_name") or "이름 미확인 병원")
+        reason = str(outcome.get("reason") or "생성 검수 차단 원인을 확인해야 합니다.")
+        counts = hospitals.setdefault((hospital_id, hospital_name), {})
+        counts[reason] = counts.get(reason, 0) + 1
+        item_count += 1
+
+    shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
+    hidden = len(hospitals) - len(shown)
+    lines: list[str] = []
+    for (_hospital_id, hospital_name), reason_counts in shown:
+        details = " · ".join(
+            f"{_publish_safe_text(reason, 110)} {count}건"
+            for reason, count in sorted(reason_counts.items())[:_DIGEST_MAX_ITEMS_PER_HOSPITAL]
+        )
+        remaining_reasons = len(reason_counts) - min(
+            len(reason_counts), _DIGEST_MAX_ITEMS_PER_HOSPITAL
+        )
+        if remaining_reasons > 0:
+            details = f"{details} · 그 외 원인 {remaining_reasons}개"
+        lines.append(f"• *{_publish_safe_text(hospital_name, 100)}*\n  {details}")
+    if hidden > 0:
+        lines.append(f"• 그 외 {hidden}곳")
+
+    week_end = week_start + timedelta(days=6)
+    summary = f"병원 {len(hospitals)}곳 · 차단 {item_count}건"
+    action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
+    message = validated_message(
+        RenderedSlackMessage(
+            f"무슨 문제인지: 주간 콘텐츠 생성 검수 차단 {summary} · "
+            "고객 영향: 해당 원고가 자동 발행 준비를 마치지 못함 · "
+            "지금 할 일: 운영센터에서 원인과 승인 자료 확인 · 처리 기한: 이번 주",
+            (
+                header_block("generation_rejection_weekly_header", "주간 콘텐츠 생성 검수 요약"),
+                section_block(
+                    "generation_rejection_weekly_summary",
+                    f"*{week_start.isoformat()}–{week_end.isoformat()} · {summary}*",
+                ),
+                *(
+                    section_block(
+                        f"generation_rejection_weekly_items_{index}", chunk
+                    )
+                    for index, chunk in enumerate(chunk_lines(lines), start=1)
+                ),
+                action_block(
+                    "generation_rejection_weekly_action",
+                    action_url,
+                    "운영센터에서 원인 확인",
+                ),
+            ),
+            action_url,
+        ),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        # A calendar-week key guarantees at most one rollup even if RedBeat or an
+        # operator dispatches the task twice. Per-item incident fingerprints still
+        # suppress tick-level repeats before they reach this projection.
+        dedupe_key=(
+            f"{_GENERATION_REJECTION_WEEKLY_ROLLUP_DEDUPE_PREFIX}"
+            f"{week_start.isoformat()}"
+        ),
+        notification_type=GENERATION_REJECTION_WEEKLY_ROLLUP_NOTIFICATION_TYPE,
+        message=message,
+        max_attempts=3,
+    )
+
+
 def _generation_blocked_display_title(title: object, code: object) -> str:
     visible_title = str(title or "").strip()
     if visible_title:
@@ -314,6 +400,24 @@ def enqueue_generation_blocked_digest_sync(
     if not blocked_outcomes:
         return None
     intent = build_generation_blocked_digest_intent(cycle_date, batch, blocked_outcomes)
+    existing = db.execute(
+        select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
+    ).scalar_one_or_none()
+    if existing is not None:
+        return existing
+    return _enqueue_notification_sync(db, intent)
+
+
+def enqueue_generation_rejection_weekly_rollup_sync(
+    db: Session,
+    week_start: date,
+    rejected_outcomes: Sequence[Mapping[str, object]],
+) -> NotificationOutbox | None:
+    """Add at most one rejection rollup for a Seoul calendar week."""
+
+    if not rejected_outcomes:
+        return None
+    intent = build_generation_rejection_weekly_rollup_intent(week_start, rejected_outcomes)
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     ).scalar_one_or_none()

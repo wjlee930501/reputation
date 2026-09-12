@@ -31,6 +31,35 @@ from app.workers.generation_retry_policy import (
 )
 
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
+_DEFAULT_REJECTION_MESSAGE = (
+    "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다. "
+    "운영 센터에서 차단 원인과 승인된 입력 자료를 확인해 주세요."
+)
+_REJECTION_MESSAGES = {
+    "price": (
+        "검증되지 않은 원화 가격·보험 범위 표현이 재작성 후에도 남았습니다. "
+        "운영 센터에서 승인된 가격 근거와 차단 문구를 확인해 주세요."
+    ),
+    "geo": (
+        "지역·의료 근거 검수에 필요한 공신력 있는 참고 자료를 확보하지 못했습니다. "
+        "운영 센터에서 승인된 자료와 콘텐츠 주제를 확인해 주세요."
+    ),
+    "seo": (
+        "검색 문서 구조 검수가 재작성 후에도 통과되지 않았습니다. "
+        "운영 센터에서 제목과 문서 구조 차단 원인을 확인해 주세요."
+    ),
+    "forbidden": (
+        "의료광고 금지 표현이 재작성 후에도 남았습니다. "
+        "운영 센터에서 차단된 공개 필드를 확인해 주세요."
+    ),
+    "faq": (
+        "FAQ 공개 필수 항목이 재작성 후에도 완성되지 않았습니다. "
+        "운영 센터에서 질문과 답변 요약을 확인해 주세요."
+    ),
+}
+GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
+    {_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values()}
+)
 
 
 class GenerationItemState(StrEnum):
@@ -110,13 +139,42 @@ def classify_generation_failure(error: BaseException) -> tuple[str, str]:
     match error:
         case TimeoutError() | anthropic.APITimeoutError():
             code = "PROVIDER_TIMEOUT"
+            message = _SAFE_FAILURE_MESSAGE
         case ConnectionError():
             code = "PROVIDER_UNAVAILABLE"
+            message = _SAFE_FAILURE_MESSAGE
         case ValueError():
             code = "GENERATION_REJECTED"
+            message = _safe_rejection_message(error)
         case _:
             code = "GENERATION_FAILED"
-    return code, _SAFE_FAILURE_MESSAGE
+            message = _SAFE_FAILURE_MESSAGE
+    return code, message
+
+
+def safe_generation_rejection_message(message: str | None) -> str:
+    """Accept only classifier-owned rejection copy at persistence boundaries."""
+
+    if message in GENERATION_REJECTION_SAFE_MESSAGES:
+        return message
+    return _DEFAULT_REJECTION_MESSAGE
+
+
+def _safe_rejection_message(error: ValueError) -> str:
+    """Classify known hard gates without persisting provider or candidate text."""
+
+    detail = str(error).casefold()
+    if "unverified fixed price or coverage" in detail:
+        return _REJECTION_MESSAGES["price"]
+    if "geo hard-fail" in detail or "citable reference" in detail:
+        return _REJECTION_MESSAGES["geo"]
+    if "seo hard-fail" in detail:
+        return _REJECTION_MESSAGES["seo"]
+    if "forbidden medical expressions" in detail:
+        return _REJECTION_MESSAGES["forbidden"]
+    if "faq output requires" in detail or "faq question must" in detail:
+        return _REJECTION_MESSAGES["faq"]
+    return _DEFAULT_REJECTION_MESSAGE
 
 
 def explicit_run_context(task: GenerationTask) -> ExplicitRunContext | None:
