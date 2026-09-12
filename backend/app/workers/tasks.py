@@ -5369,6 +5369,25 @@ def _generate_single_content_item(
     db.commit()
     db.refresh(item)
 
+    post_write_assessment = assess_content_publication(item, philosophy)
+    if (
+        post_write_assessment.code == "CONTENT_AI_HARD_FINDING"
+        and not _stored_ai_review_is_remediable(item)
+    ):
+        # A rewrite can turn a repairable style finding into a factual or
+        # medical-safety blocker. Persist that verdict, but do not buy an image
+        # for content that cannot become publishable without new evidence.
+        apply_publication_assessment(item, post_write_assessment)
+        db.commit()
+        _remember_generation_attempt(
+            db, item, philosophy, "CONTENT_AI_HARD_FINDING"
+        )
+        return (
+            GenerationItemState.FAILED,
+            "CONTENT_AI_HARD_FINDING",
+            post_write_assessment.message,
+        )
+
     image_state = _recover_missing_content_image(db, item, hospital, philosophy)
     if image_state == GenerationItemState.PARTIAL:
         _persist_publication_readiness(db, item, philosophy)
