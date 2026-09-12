@@ -963,7 +963,6 @@ def test_generation_failure_notification_cadences_are_disjoint():
         "PROVIDER_TIMEOUT",
         "PROVIDER_UNAVAILABLE",
         "GENERATION_FAILED",
-        "CONTENT_AI_REVIEW_UNAVAILABLE",
     ):
         assert tasks.generation_notify_requested(code)
     for code in ("GENERATION_REJECTED", "FORBIDDEN_EXPRESSION", "MISSING_REFERENCES"):
@@ -971,6 +970,7 @@ def test_generation_failure_notification_cadences_are_disjoint():
     assert tasks.generation_notify_requested("CONTENT_IMAGE_NOT_READY")
     assert not tasks.generation_notify_requested("COST_BLOCKED")
     assert not tasks.generation_notify_requested("MISSING_APPROVED_ESSENCE")
+    assert not tasks.generation_notify_requested("CONTENT_AI_REVIEW_UNAVAILABLE")
 
 
 class _NightlyTaskDB:
@@ -1106,7 +1106,7 @@ def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatc
     assert incident_calls[0]["notify"] is False
 
 
-def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkeypatch):
+def test_nightly_classified_morning_failure_requests_due_checked_notification(monkeypatch):
     cycle_date = date(2026, 8, 19)
     db = _NightlyTaskDB()
     item = _nightly_item("공급자지연의원")
@@ -1136,7 +1136,7 @@ def test_nightly_classified_fatal_failure_opens_incident_with_notify_true(monkey
     assert incident_calls[0]["notify"] is True
 
 
-def test_overnight_recovery_keeps_fatal_failure_immediate(monkeypatch):
+def test_overnight_recovery_records_failure_without_individual_notification(monkeypatch):
     cycle_date = datetime(2026, 8, 19, 7, 0)
     db = _NightlyTaskDB()
     item = _nightly_item("야간복구의원")
@@ -1164,7 +1164,7 @@ def test_overnight_recovery_keeps_fatal_failure_immediate(monkeypatch):
 
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "GENERATION_FAILED"
-    assert incident_calls[0]["notify"] is True
+    assert incident_calls[0]["notify"] is False
 
 
 def test_same_slot_and_generation_reason_spends_writer_once_across_thirty_sweeps(
@@ -3668,7 +3668,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
     ("ESSENCE_NOT_ALIGNED", 0, False),
     ("ESSENCE_NOT_ALIGNED", 1, False),
     ("ESSENCE_NOT_ALIGNED", 2, False),
-    ("PROVIDER_UNAVAILABLE", 0, False),
+    ("PROVIDER_UNAVAILABLE", 0, True),
 ])
 def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
     content_ids = [uuid.uuid4(), uuid.uuid4()]

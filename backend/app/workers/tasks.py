@@ -4371,7 +4371,7 @@ def overnight_content_generation_recovery(self):
                     db, item, item.hospital
                 )
                 _record_generation_batch_outcome(
-                    db, recorder, item, item.hospital, state, code, message
+                    db, recorder, item, item.hospital, state, code, message, notify=False
                 )
             except Exception as error:
                 code, message = classify_generation_failure(error)
@@ -4392,6 +4392,7 @@ def overnight_content_generation_recovery(self):
                     GenerationItemState.FAILED,
                     code,
                     message,
+                    notify=False,
                 )
             finally:
                 released = release_unfinished_claims(

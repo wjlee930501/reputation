@@ -283,16 +283,22 @@ def test_blocked_digest_refuses_an_empty_batch() -> None:
 
 
 @pytest.mark.parametrize(
-    "code",
-    ["PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "CONTENT_AI_REVIEW_UNAVAILABLE"],
+    ("code", "prepublish_due", "publish_due"),
+    [
+        ("PROVIDER_TIMEOUT", False, True),
+        ("PROVIDER_UNAVAILABLE", False, True),
+        ("GENERATION_FAILED", True, True),
+        ("CONTENT_AI_REVIEW_UNAVAILABLE", False, False),
+    ],
 )
-def test_provider_fatal_blockers_never_duplicate_in_morning_digest(code: str) -> None:
-    # Provider-fatal codes own one immediate episode and never duplicate in a digest.
+def test_generation_blocker_digest_cadence(
+    code: str, prepublish_due: bool, publish_due: bool
+) -> None:
     prepublish = generation_block_digest_due(code, batch=PREPUBLISH_MORNING_BATCH)
     publish = generation_block_digest_due(code, batch=PUBLISH_MORNING_BATCH)
 
-    assert prepublish is False
-    assert publish is False
+    assert prepublish is prepublish_due
+    assert publish is publish_due
 
 
 @pytest.mark.parametrize(

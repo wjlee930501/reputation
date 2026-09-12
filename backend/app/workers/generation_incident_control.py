@@ -37,6 +37,9 @@ from app.workers.generation_run_control import safe_generation_rejection_message
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 
 _MORNING_BODY_NOTIFICATION_CODES = {
+    "PROVIDER_TIMEOUT",
+    "PROVIDER_UNAVAILABLE",
+    "GENERATION_FAILED",
     "CONTENT_NOT_GENERATED",
     "GENERATION_LEASE_ACTIVE",
     "STALE_GENERATION_CLAIM",
@@ -60,21 +63,12 @@ _MORNING_IMAGE_NOTIFICATION_CODES = {
 # 이미 공개했던 글이 이미지 인증이 풀려 공개 페이지에서 내려간 상태다. 예정 슬롯의
 # 아침 마감 게이트와 달리 지금 사람이 결정해야 하므로 첫 open에 한 번 알린다.
 PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = recertification.OPERATOR_REQUIRED_CODES
-# The cost guard owns COST_BLOCKED's single hard-stop notification. Generation owns
-# provider/system fatal pages and must never duplicate them in a morning or weekly
-# digest. Published-image recertification also remains immediate because the public
-# page has already regressed and automatic recovery is exhausted.
+# The cost guard owns COST_BLOCKED's single hard-stop notification, so generation
+# records the incident without opening another outbox row. Published-image
+# recertification remains generation-owned and immediate because a public page has
+# already regressed and automatic recovery is exhausted.
 _IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = (
-    frozenset(
-        {
-            "COST_BLOCKED",
-            "PROVIDER_TIMEOUT",
-            "PROVIDER_UNAVAILABLE",
-            "GENERATION_FAILED",
-            "CONTENT_AI_REVIEW_UNAVAILABLE",
-        }
-    )
-    | PUBLISHED_IMAGE_RECERTIFY_CODES
+    frozenset({"COST_BLOCKED"}) | PUBLISHED_IMAGE_RECERTIFY_CODES
 )
 _EXTERNALLY_OWNED_IMMEDIATE_NOTIFICATION_CODES = frozenset({"COST_BLOCKED"})
 _GENERATION_OWNED_IMMEDIATE_NOTIFICATION_CODES = (
@@ -94,6 +88,8 @@ _MORNING_NOTIFICATION_START = time(7, 45)
 # survived the 07:45 prepublish recovery and still block the 08:00 publication.
 _PROVIDER_TRANSIENT_NOTIFICATION_CODES = frozenset(
     {
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
         "IMAGE_GENERATION_FAILED",
@@ -126,8 +122,8 @@ def generation_block_digest_due(
 ) -> bool:
     """Return whether one blocked slot belongs in this morning batch's digest."""
 
-    # Every generation code has one Slack owner. Fatal codes page immediately;
-    # deterministic rejection/gate codes are held for the weekly rollup.
+    # Every generation code has one Slack owner. Published regressions page
+    # immediately; deterministic rejection/gate codes wait for the weekly rollup.
     if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES | WEEKLY_REJECTED_GENERATION_CODES:
         return False
     # The auto-review task owns snapshot-keyed ESCALATED notifications.

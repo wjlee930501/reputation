@@ -157,7 +157,7 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
     monkeypatch.setattr(
         generation_incident_control,
         "build_open_incident_notification",
-        lambda _projection, _base_url: SimpleNamespace(dedupe_key="fatal:once"),
+        lambda _projection, _base_url: SimpleNamespace(dedupe_key="morning:once"),
     )
 
     # When
@@ -174,7 +174,7 @@ async def test_generation_incident_persists_korean_cause_instead_of_raw_message(
     request = captured["request"]
     assert request.safe_error_message == "콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다."
     assert "provider" not in request.safe_error_message
-    assert captured["notification"] is not None
+    assert "notification" not in captured
 
 
 async def test_generation_rejected_records_reason_without_immediate_slack(
@@ -520,10 +520,6 @@ async def test_acknowledged_generation_cause_keeps_the_same_episode(monkeypatch)
 
 def test_generation_notification_candidates_wait_for_morning_readiness_proof() -> None:
     immediate_codes = (
-        "PROVIDER_TIMEOUT",
-        "PROVIDER_UNAVAILABLE",
-        "GENERATION_FAILED",
-        "CONTENT_AI_REVIEW_UNAVAILABLE",
         "PUBLISHED_IMAGE_RECERTIFY_REJECTED",
         "PUBLISHED_IMAGE_MISSING",
         "PUBLISHED_IMAGE_RECERTIFY_UNRECOVERED",
@@ -557,6 +553,9 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
         )
 
     morning_codes = (
+        "PROVIDER_TIMEOUT",
+        "PROVIDER_UNAVAILABLE",
+        "GENERATION_FAILED",
         "CONTENT_NOT_GENERATED",
         "CONTENT_IMAGE_NOT_READY",
         "CONTENT_IMAGE_NOT_VERIFIED",
@@ -567,14 +566,36 @@ def test_generation_notification_candidates_wait_for_morning_readiness_proof() -
     for code in morning_codes:
         assert generation_incident_control.generation_notify_requested(code)
         assert generation_incident_control.generation_notification_cadence(code) == "MORNING"
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"):
+        assert not generation_incident_control.generation_block_digest_due(
+            code, batch=generation_incident_control.PREPUBLISH_MORNING_BATCH
+        )
+        assert generation_incident_control.generation_block_digest_due(
+            code, batch=generation_incident_control.PUBLISH_MORNING_BATCH
+        )
+    assert generation_incident_control.generation_block_digest_due(
+        "GENERATION_FAILED", batch=generation_incident_control.PREPUBLISH_MORNING_BATCH
+    )
+    assert generation_incident_control.generation_block_digest_due(
+        "GENERATION_FAILED", batch=generation_incident_control.PUBLISH_MORNING_BATCH
+    )
     assert not generation_incident_control.generation_notify_requested("COST_BLOCKED")
     assert (
         generation_incident_control.generation_notification_cadence("COST_BLOCKED") == "IMMEDIATE"
     )
     assert not generation_incident_control.generation_notify_requested("MISSING_APPROVED_ESSENCE")
+    assert not generation_incident_control.generation_notify_requested(
+        "CONTENT_AI_REVIEW_UNAVAILABLE"
+    )
+    assert (
+        generation_incident_control.generation_notification_cadence(
+            "CONTENT_AI_REVIEW_UNAVAILABLE"
+        )
+        == "NONE"
+    )
 
 
-def test_human_now_generation_pages_once_per_episode_then_again_after_recovery() -> None:
+def test_due_generation_notification_pages_once_per_episode_then_again_after_recovery() -> None:
     should_send = generation_incident_control._should_send_generation_notification
     code = "GENERATION_FAILED"
 
@@ -604,8 +625,8 @@ def test_morning_cutoff_requires_due_date_and_exact_missing_artifact() -> None:
     before = datetime(2026, 8, 18, 22, 44, tzinfo=UTC)  # 07:44 KST
     cutoff = datetime(2026, 8, 18, 22, 45, tzinfo=UTC)  # 07:45 KST
 
-    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"):
-        assert generation_incident_control._morning_notification_due(
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "GENERATION_FAILED"):
+        assert not generation_incident_control._morning_notification_due(
             code=code, item=due, observed_at=before
         )
         assert generation_incident_control._morning_notification_due(
@@ -619,9 +640,10 @@ def test_morning_cutoff_requires_due_date_and_exact_missing_artifact() -> None:
     )
 
     due.body = "이미 저장된 본문"
-    assert generation_incident_control._morning_notification_due(
-        code="PROVIDER_TIMEOUT", item=due, observed_at=cutoff
-    )
+    for code in ("PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE", "GENERATION_FAILED"):
+        assert not generation_incident_control._morning_notification_due(
+            code=code, item=due, observed_at=cutoff
+        )
     assert generation_incident_control._morning_notification_due(
         code="CONTENT_IMAGE_NOT_READY", item=due, observed_at=cutoff
     )
