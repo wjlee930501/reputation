@@ -32,6 +32,7 @@ from app.services.incidents import (
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
+from app.workers.generation_retry_policy import next_recovery_sweep
 from app.workers.generation_run_control import safe_generation_rejection_message
 
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
@@ -53,12 +54,14 @@ WEEKLY_REJECTED_GENERATION_CODES: frozenset[str] = frozenset(
         "ESSENCE_NOT_ALIGNED",
         "CONTENT_AI_HARD_FINDING",
         "CONTENT_AI_REVIEW_STALE",
+        "CONTENT_IMAGE_POLICY_REJECTED",
     }
 )
 _MORNING_IMAGE_NOTIFICATION_CODES = {
     "CONTENT_IMAGE_NOT_READY",
     "CONTENT_IMAGE_NOT_VERIFIED",
     "IMAGE_GENERATION_FAILED",
+    "IMAGE_GENERATION_RETRIES_EXHAUSTED",
 }
 # 이미 공개했던 글이 이미지 인증이 풀려 공개 페이지에서 내려간 상태다. 예정 슬롯의
 # 아침 마감 게이트와 달리 지금 사람이 결정해야 하므로 첫 open에 한 번 알린다.
@@ -92,6 +95,14 @@ _PROVIDER_TRANSIENT_NOTIFICATION_CODES = frozenset(
         "PROVIDER_UNAVAILABLE",
         "GENERATION_LEASE_ACTIVE",
         "STALE_GENERATION_CLAIM",
+        "IMAGE_GENERATION_FAILED",
+        "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
+    }
+)
+_AUTOMATIC_RECOVERY_CODES = frozenset(
+    {
+        "CONTENT_AI_REVIEW_UNAVAILABLE",
         "IMAGE_GENERATION_FAILED",
         "CONTENT_IMAGE_NOT_READY",
         "CONTENT_IMAGE_NOT_VERIFIED",
@@ -198,17 +209,25 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
         ),
         "CONTENT_AI_REVIEW_STALE": ("운영 센터에서 변경된 원고와 재검수 대기 상태를 확인하세요."),
         "CONTENT_AI_REVIEW_UNAVAILABLE": (
-            "운영 센터에서 독립 검수 공급자 상태와 차단된 원고를 확인하세요."
+            "시스템 재시도 중입니다. 다음 예약 배치가 독립 검수를 다시 실행합니다."
+        ),
+        "CONTENT_AI_REVIEW_CONFIG_ERROR": (
+            "독립 검수 공급자 인증과 모델 설정을 확인하세요. 자동 재시도 대상이 아닙니다."
         ),
         "CONTENT_IMAGE_NOT_READY": (
-            "운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 누르고 완료 결과를 확인하세요."
+            "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지를 다시 생성합니다."
         ),
         "CONTENT_IMAGE_NOT_VERIFIED": (
-            "운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 누르고 자동 정책 검사 완료를 "
-            "확인하세요."
+            "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지 정책 검사를 다시 실행합니다."
         ),
         "IMAGE_GENERATION_FAILED": (
-            "본문은 저장되어 있습니다. 운영 센터에서 해당 항목의 “대표 이미지 다시 생성”을 한 번 누르세요."
+            "시스템 재시도 중입니다. 본문은 보존되며 다음 예약 배치가 대체 이미지 경로를 다시 실행합니다."
+        ),
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED": (
+            "대표 이미지 자동 재시도 예산을 모두 사용했습니다. 운영 센터에서 공급자 상태를 확인하세요."
+        ),
+        "CONTENT_IMAGE_POLICY_REJECTED": (
+            "대표 이미지 후보가 정책 검사에서 거절되었습니다. 주제 또는 승인된 이미지 방향을 확인하세요."
         ),
         # 공개 글에는 관리자 이미지 업로드 경로가 없고 "대표 이미지 다시 생성"은 PUBLISHED를
         # 거절한다. 실제로 사람이 할 수 있는 조치만 적는다.
@@ -245,8 +264,11 @@ def _generation_safe_cause(code: str) -> str:
         "CONTENT_AI_HARD_FINDING": "독립 검수의 사실·의료 안전 지적이 해결되지 않았습니다.",
         "CONTENT_AI_REVIEW_STALE": "원고 변경 뒤 독립 재검수가 아직 완료되지 않았습니다.",
         "CONTENT_AI_REVIEW_UNAVAILABLE": "독립 AI 검수 공급자를 일시적으로 사용할 수 없습니다.",
+        "CONTENT_AI_REVIEW_CONFIG_ERROR": "독립 AI 검수 공급자 설정이 완료되지 않았습니다.",
         "CONTENT_IMAGE_NOT_READY": "대표 이미지가 준비되지 않아 공개를 중단했습니다.",
         "CONTENT_IMAGE_NOT_VERIFIED": "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다.",
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED": "대표 이미지 자동 재시도 예산을 모두 사용했습니다.",
+        "CONTENT_IMAGE_POLICY_REJECTED": "대표 이미지 후보가 자동 정책 검사에서 거절되었습니다.",
         **recertification.SAFE_MESSAGES,
     }.get(code, "자동 콘텐츠 생성 작업이 완료되지 않았습니다.")
 
@@ -274,6 +296,7 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "MISSING_APPROVED_ESSENCE": IncidentFingerprint.MISSING_PREREQUISITE,
         "COST_BLOCKED": IncidentFingerprint.COST_BLOCKED,
         "IMAGE_GENERATION_FAILED": IncidentFingerprint.RENDER_FAILED,
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED": IncidentFingerprint.RENDER_FAILED,
         "GENERATION_LEASE_ACTIVE": IncidentFingerprint.VALIDATION_FAILED,
         "STALE_GENERATION_CLAIM": IncidentFingerprint.VALIDATION_FAILED,
         "CONTENT_NOT_GENERATED": IncidentFingerprint.MISSING_PREREQUISITE,
@@ -282,6 +305,7 @@ def _fingerprint(code: str) -> IncidentFingerprint:
         "ESSENCE_NOT_ALIGNED": IncidentFingerprint.VALIDATION_FAILED,
         "CONTENT_IMAGE_NOT_READY": IncidentFingerprint.RENDER_FAILED,
         "CONTENT_IMAGE_NOT_VERIFIED": IncidentFingerprint.RENDER_FAILED,
+        "CONTENT_IMAGE_POLICY_REJECTED": IncidentFingerprint.SAFETY_BLOCKED,
         # 재인증 차단 세 코드는 지문을 공유한다. 예산 소진으로 열린 건 위에 같은 판의
         # 거절이 겹쳐도 새 incident·새 Slack이 아니라 그 한 건이 갱신된다.
         **dict.fromkeys(
@@ -498,6 +522,8 @@ async def open_generation_incident(
             safe_cause = (
                 safe_generation_rejection_message(message)
                 if code == "GENERATION_REJECTED"
+                else message
+                if code == "CONTENT_AI_HARD_FINDING"
                 else _generation_safe_cause(code)
             )
             incident = await open_or_touch_incident(
@@ -527,7 +553,9 @@ async def open_generation_incident(
             # This incident records system work. Human action is represented by
             # the separate snapshot-keyed ESCALATED incident, including its SLA.
             retrying = await mark_retrying(
-                db, incident.id, expected_version=incident.version,
+                db,
+                incident.id,
+                expected_version=incident.version,
                 actor="content-generation-worker",
                 reason="source processing and essence auto-review own recovery",
             )
@@ -535,6 +563,16 @@ async def open_generation_incident(
                 incident = retrying
                 incident.sla_due_at = None
                 incident.severity = IncidentSeverity.MEDIUM
+        elif notification_code in _AUTOMATIC_RECOVERY_CODES:
+            retrying = await mark_retrying(
+                db, incident.id, expected_version=incident.version,
+                actor="content-generation-worker",
+                reason="scheduled generation recovery owns retry",
+            )
+            if isinstance(retrying, Incident):
+                incident = retrying
+            incident.sla_due_at = next_recovery_sweep()
+            incident.severity = IncidentSeverity.MEDIUM
         observed_at = datetime.now(UTC)
         get_item = getattr(db, "get", None)
         item = await get_item(ContentItem, item_id) if get_item is not None else None

@@ -56,6 +56,17 @@ _RETRYABLE_OPERATION_TYPES: Final = frozenset(
         "RECERTIFY_PUBLISHED_IMAGE",
     }
 )
+_SYSTEM_RETRY_CODES: Final = frozenset(
+    {
+        "CONTENT_AI_REVIEW_UNAVAILABLE",
+        "IMAGE_GENERATION_FAILED",
+        "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
+    }
+)
+_IMAGE_TERMINAL_CODES: Final = frozenset(
+    {"IMAGE_GENERATION_RETRIES_EXHAUSTED", "CONTENT_IMAGE_POLICY_REJECTED"}
+)
 
 _COST_LIMIT_CAUSE_CODES: Final = frozenset(
     {
@@ -181,9 +192,20 @@ def retry_action(
         # 사람의 결정을 기다리는 차단이다. 다시 눌러도 같은 답을 유료로 사기만 한다 —
         # 남은 예산 검사는 재시도 라우트가 서버에서 한 번 더 한다.
         return None
+    code = str(run.safe_error_code or "")
+    if code in _SYSTEM_RETRY_CODES:
+        return OperationsAction(
+            kind="RETRY_RUN",
+            label="시스템 재시도 중",
+            method="POST",
+            path=f"{_BFF_OPERATIONS_PREFIX}/hospitals/{hospital_id}/runs/{run.id}/retry",
+            enabled=False,
+            reason_required=False,
+            requires_idempotency_key=True,
+        )
     return OperationsAction(
         kind="RETRY_RUN",
-        label="작업 다시 시도",
+        label="예산 소진·정책 거절" if code in _IMAGE_TERMINAL_CODES else "작업 다시 시도",
         method="POST",
         path=f"{_BFF_OPERATIONS_PREFIX}/hospitals/{hospital_id}/runs/{run.id}/retry",
         enabled=enabled,

@@ -302,6 +302,24 @@ def test_current_hard_ai_finding_blocks_publication(monkeypatch):
 
     assert assessment.publishable is False
     assert assessment.code == "CONTENT_AI_HARD_FINDING"
+    assert "확인되지 않은 장비 주장" in assessment.message
+    assert "승인된 병원 자료 또는 의료 근거" in assessment.message
+
+
+def test_unconfigured_ai_review_has_permanent_cause_code(monkeypatch):
+    _aligned(monkeypatch)
+    item = _reviewed_item(
+        {
+            "status": "UNAVAILABLE",
+            "schema_version": "content-review-v2",
+            "blocking": True,
+            "findings": [],
+            "unavailable_reason": "PROVIDER_UNCONFIGURED",
+        }
+    )
+    assessment = content_publication.assess_content_publication(item, _philosophy())
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_AI_REVIEW_CONFIG_ERROR"
 
 
 def test_soft_ai_finding_allows_deterministically_safe_content(monkeypatch):

@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo("Asia/Seoul")
 RECOVERY_SWEEP_HOURS = (1, 4, 7, 23)
 ENVIRONMENT_ATTEMPT_BUDGET = 4
+DAILY_RESET_ENVIRONMENT_CODES = frozenset({"CONTENT_AI_REVIEW_UNAVAILABLE"})
 
 
 class GenerationRetryClass(StrEnum):
@@ -36,8 +37,30 @@ _INPUT_CODES = frozenset(
         "FORBIDDEN_EXPRESSION",
         "CONTENT_AI_HARD_FINDING",
         "CONTENT_AI_REVIEW_STALE",
+        "CONTENT_IMAGE_POLICY_REJECTED",
     }
 )
+
+
+def environment_attempt_period(observed: datetime | None = None) -> str:
+    """Return the KST day that owns a bounded environment retry budget."""
+    return (observed or datetime.now(UTC)).astimezone(KST).date().isoformat()
+
+
+def stored_attempt_period(attempt: dict) -> str | None:
+    raw_period = attempt.get("attempt_period")
+    if isinstance(raw_period, str) and raw_period:
+        return raw_period
+    raw_observed = attempt.get("observed_at")
+    if not isinstance(raw_observed, str):
+        return None
+    try:
+        observed = datetime.fromisoformat(raw_observed)
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return environment_attempt_period(observed)
 
 
 def retry_class_for(code: str) -> GenerationRetryClass:
@@ -69,9 +92,15 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
         count = int(attempt.get("provider_attempt_count", legacy_count) or 0)
     except (TypeError, ValueError):
         return False
-    # A guard deferral makes no provider call, so it must survive a day/month
-    # boundary without exhausting the paid-attempt budget.
-    if count >= ENVIRONMENT_ATTEMPT_BUDGET:
+    observed = now or datetime.now(UTC)
+    budget_reset_due = (
+        attempt.get("reason") in DAILY_RESET_ENVIRONMENT_CODES
+        and stored_attempt_period(attempt) != environment_attempt_period(observed)
+    )
+    # Review outages receive a fresh bounded allowance on the next KST day so an
+    # already-written due slot cannot remain empty forever. Other provider failures
+    # retain their finite H-08 budget.
+    if count >= ENVIRONMENT_ATTEMPT_BUDGET and not budget_reset_due:
         return False
     raw_due = attempt.get("next_retry_at")
     if not isinstance(raw_due, str):
@@ -82,4 +111,4 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
         return True
     if due.tzinfo is None:
         due = due.replace(tzinfo=UTC)
-    return (now or datetime.now(UTC)) >= due
+    return observed >= due

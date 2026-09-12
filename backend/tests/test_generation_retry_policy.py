@@ -44,3 +44,32 @@ def test_cost_deferral_does_not_exhaust_provider_attempt_budget() -> None:
         },
         now,
     )
+
+
+def test_content_review_budget_reopens_once_on_next_kst_day() -> None:
+    previous_day = datetime(2026, 9, 11, 14, 0, tzinfo=UTC)
+    next_sweep = datetime(2026, 9, 11, 16, 0, tzinfo=UTC)
+    attempt = {
+        "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
+        "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+        "provider_attempt_count": 4,
+        "attempt_period": "2026-09-11",
+        "observed_at": previous_day.isoformat(),
+        "next_retry_at": next_sweep.isoformat(),
+    }
+    assert retry_is_due(attempt, previous_day + timedelta(minutes=30)) is False
+    assert retry_is_due(attempt, next_sweep) is True
+
+
+def test_image_budget_does_not_reset_on_day_boundary() -> None:
+    next_sweep = datetime(2026, 9, 11, 16, 0, tzinfo=UTC)
+    assert retry_is_due(
+        {
+            "reason": "IMAGE_GENERATION_FAILED",
+            "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+            "provider_attempt_count": 4,
+            "attempt_period": "2026-09-11",
+            "next_retry_at": next_sweep.isoformat(),
+        },
+        next_sweep,
+    ) is False
