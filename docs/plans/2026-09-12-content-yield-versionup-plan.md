@@ -95,13 +95,17 @@
 - 같은 글의 다른 원인 인시던트는 새 원인이 기록될 때 recover한다. `CONTENT_AI_REVIEW_CONFIG_ERROR`는 즉시 알림에 넣는다.
 - 인시던트 딥링크 `/hospitals/{id}/essence`를 `/hospitals/{id}/info`(병원 정보 탭 실제 경로 확인 후)로 바꾼다.
 
-### WP-5 이미지와 본문의 분리 (`content_publication.py`, `content_visibility.py`, 새 워커 모듈, `celery_app.py`)
+### WP-5 이미지 실패 시 인증된 기존 이미지 재사용 (`content_publication.py`, `content_visibility.py`, 새 `content_image_reuse.py`, 새 워커 모듈, `celery_app.py`, 마이그레이션 0074)
 
-- 발행 게이트: 본문이 통과하고 이미지가 없을 때, 이미지 시도 기록의 첫 실패 시각이 `CONTENT_IMAGE_PUBLISH_GRACE_HOURS`(기본 20시간, 즉 하룻밤 4회 스윕을 다 쓴 뒤) 이상 지났고 당일 예산이 소진됐으면 이미지 없이 발행한다. 이미지가 있으면 종전과 같이 byte-bound 인증이 현재여야 한다. 인증되지 않은 이미지는 어떤 경우에도 공개하지 않는다.
-- 공개 가시성 `assess_public_visibility`: `image_url`이 없으면 이미지 검사를 통과, 있으면 인증 현재성을 요구한다. 공개 API·Site는 `image_url=None`을 이미 처리한다.
-- 사후 이미지 부착 스윕: PUBLISHED이고 `image_url IS NULL`인 글을 01·04·07 복구 스윕이 같은 이미지 경로로 생성·인증하고 `write_back_published_image`(상태 PUBLISHED, 제목·revision 일치 조건)로 저장한 뒤 Site 재검증을 건다. 이 부착은 `content_revision`을 올리지 않는다(본문 후보 불변). 예산은 WP-4의 이미지 예산을 그대로 쓴다.
-- 수동 발행 API도 같은 게이트 함수를 쓰므로 자동으로 정합된다.
-- 이 변경은 "새 발행은 이미지 인증을 요구한다"는 종전 계약을 "이미지를 붙여 발행할 때 인증을 요구한다"로 바꾼다. 대표 확인이 필요한 결정이며 설정 `CONTENT_IMAGE_REQUIRED_FOR_PUBLISH=true`로 종전 동작을 복원할 수 있게 한다. 기본값은 false(분리)다.
+대표 결정(2026-09-12): 이미지가 실패해도 글을 빈 이미지로 내보내지 않는다. 그 시점 기준 같은 병원에서 가장 예전에 인증된 이미지를 재사용해 발행하고, Slack으로 이미지 생성 크레딧·할당량 확인을 안내한다.
+
+- 재사용 선택: 같은 병원의 PUBLISHED 글 중 인증이 현재이고 자기 자신이 재사용 이미지가 아닌 것 가운데 `image_policy_verified_at`이 가장 오래된 이미지를 고른다. 없으면(신규 병원) 종전처럼 `CONTENT_IMAGE_NOT_READY`로 막고 다음 스윕이 다시 시도한다.
+- 재사용 기록: 대상 글에 원본의 `image_url`·`image_content_hash`·`image_subject_hash`·`image_policy_version`·`image_policy_verified_at`을 그대로 복사하고 새 컬럼 `image_reused_from_content_id`에 원본 글 ID를 남긴다. 새 제목에 맞춘 주제 hash를 만들어 넣지 않는다. 합성 인증값을 만들지 않기 위해 결합 대상은 원본 글이라고 명시적으로 기록한다.
+- 인증 판정 `image_certification_current`: (a) 기존 완전 인증 또는 (b) 재사용 인증(`image_reused_from_content_id`가 있고 내용 hash가 URL과 일치하며 정책 버전이 현재) 둘 중 하나를 통과로 본다. 내용 hash 없는 이미지는 어떤 경우에도 통과하지 않는다. 공개 가시성도 같은 함수를 쓴다.
+- 호출 지점: `_recover_missing_content_image`에서 이미지 생성이 실패하고 당일 이미지 예산이 소진됐거나 원인이 종착(예산 소진·정책 거절)일 때 재사용을 적용한다. 01·04·07 스윕의 저장 본문 분기에서도 같은 경로를 타서 예정일 07:45 전에 재사용이 끝난다.
+- 교체 스윕: `image_reused_from_content_id`가 있는 PUBLISHED 글을 01:20·04:20·07:20에 최대 50건씩 골라 주제에 맞는 새 이미지를 생성·인증하고, 상태 PUBLISHED·제목·revision 일치 조건으로 저장한 뒤 마커를 지우고 Site 재검증을 건다. `content_revision`은 올리지 않는다. 예산은 WP-4의 이미지 예산과 공유한다.
+- Slack: 08:00 발행 요약(배치당 1건) 안에 "대표 이미지 재사용 발행" 절을 추가한다. 병원명·건수·지배적 실패 분류(비용 가드 한도 / 공급자 한도·크레딧 오류 / 정책 검사 거절 / 공급자 오류)와 고정 안내 "이미지 생성 공급자 크레딧·할당량과 비용 가드 한도를 확인해 주세요. 새 이미지가 생성되면 재사용 이미지는 자동으로 교체됩니다."를 넣는다. 별도 메시지를 만들지 않는다. 재사용할 이미지가 없어 막힌 글의 요약 줄에도 같은 안내를 붙인다. 실패 분류는 시도 기록의 `image_failure_class`(COST_GUARD / PROVIDER_QUOTA / POLICY_REJECTED / PROVIDER_ERROR)로 저장한다.
+- 계약 영향: "새 발행은 이미지 내용 hash·주제 hash·정책 버전에 연결된 인증을 요구한다"에서 주제 hash 결합이 재사용 인증에서는 원본 글 결합으로 대체된다. 이 예외는 마커가 있는 행에만 적용되며 CLAUDE.md에 명시한다.
 
 ### WP-6 Essence 자율 복구 (`essence_auto_review.py`, `essence_readiness.py`, `cost_guard.py`, `tasks.py` Essence 구간)
 
