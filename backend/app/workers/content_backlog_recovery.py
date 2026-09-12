@@ -46,7 +46,14 @@ def _stranded_content_stmt(today: date):
             ContentItem.scheduled_date <= today,
             ContentItem.status.in_(RECOVERABLE_STATUSES),
             or_(
-                _needs_generation_recovery(),
+                # 7일 catch-up 창 안의 슬롯은 옮기지 않는다. 날짜는 시도 지문이 아니므로
+                # (H-08) 재시도가 풀리지도 않는데, 차단 run의 멱등 키와 Slack 요약
+                # 식별자에는 날짜가 들어가 같은 글이 매일 새 FAILED run과 새 요약 줄을
+                # 만든다. 야간 생성·07:45 복구가 아직 소유한 창을 건드리지 않는다.
+                and_(
+                    _needs_generation_recovery(),
+                    ContentItem.scheduled_date < auto_publish_catchup_start(today),
+                ),
                 and_(
                     ContentItem.status.in_(AUTO_PUBLISHABLE_STATUSES),
                     ContentItem.scheduled_date < auto_publish_catchup_start(today),

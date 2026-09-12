@@ -159,7 +159,10 @@ async def _incident_cards(
 def _escalated_draft_card(
     hospital_id: uuid.UUID, readiness: EssenceReadinessState
 ) -> ExceptionCard | None:
-    """자동 검수가 보류 사유를 남긴 초안. 사유 전부가 근거이며 하나라도 지우면 승인 게이트와
+    """자동 재검수 예산이 끝났거나 사람이 손댄, 보류 사유가 남은 초안.
+
+    예산이 남은 시스템 초안은 `get_essence_readiness_states`가 아예 싣지 않는다 —
+    자동 복구 중인 일은 운영자의 할 일이 아니다. 사유 전부가 근거이며 하나라도 지우면 승인 게이트와
     화면이 어긋난다(`api/admin/essence.py`의 예외 승인 조건과 같은 목록).
 
     초안과 사유는 상태 판정과 같은 묶음 조회(`get_essence_readiness_states`)가 이미 읽었다 —
@@ -177,7 +180,8 @@ def _escalated_draft_card(
         evidence="\n".join(readiness.escalated_draft_findings),
         next_action="초안을 고쳐 재검수를 받거나, 확인한 근거를 적어 예외 승인하세요.",
         allowed_actions=list(_ESCALATED_DRAFT_ACTIONS),
-        href=f"/hospitals/{hospital_id}/essence",
+        # 옛 `/essence` 경로는 현황 탭으로 redirect되고 2026-10-09에 사라진다.
+        href=f"/hospitals/{hospital_id}",
         hospital_id=hospital_id,
         actions=[],
     )

@@ -25,6 +25,7 @@ from app.schemas.operations import (
     OperationsRunSummary,
     OperationsSlackState,
 )
+from app.services import cost_guard
 from app.services import published_image_recertification as recertification
 
 __all__ = (
@@ -114,7 +115,7 @@ def cost_guard_category(
         return None
     if source_type == "COST_GUARD" and source_id:
         category = source_id.split(":", 1)[0].lower()
-        if category in {"content", "image", "sov", "leadgen"}:
+        if category in cost_guard.CATEGORIES:
             return category
     context = " ".join(
         filter(None, (incident_type, source_type, run_operation_type))
@@ -125,6 +126,8 @@ def cost_guard_category(
         return "sov"
     if "IMAGE" in context:
         return "image"
+    if "ESSENCE" in context:
+        return "essence"
     return "content"
 
 

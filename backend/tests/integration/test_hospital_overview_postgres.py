@@ -10,7 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import arrow
 import pytest
-from sqlalchemy import event
+from sqlalchemy import event, select
 
 from app.api.admin.hospital_overview import get_hospital_overview
 from app.api.admin.operations_center_incident_queries import count_operator_incidents
@@ -29,6 +29,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.operations import Incident, IncidentSeverity, OperationRun
 from app.models.sov import QueryMatrix, SovRecord
 from app.schemas.operations import OperationsQueue
+from app.services.essence_auto_review import AUTO_ESSENCE_ACTOR
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.evidence_noise import compute_evidence_noise_hash
 from app.services.image_engine import (
@@ -322,7 +323,8 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
     assert card.actions == []
     assert card.hospital_id == hospital.id
     assert card.incident_id is None
-    assert card.href == f"/hospitals/{hospital.id}/essence"
+    # 옛 `/essence` 경로는 현황 탭으로 redirect되고 2026-10-09에 사라진다.
+    assert card.href == f"/hospitals/{hospital.id}"
 
     assert overview.month.published_count == 0
     assert overview.month.planned_total == 0
@@ -441,6 +443,72 @@ async def test_a_hospital_without_sources_asks_a_person_not_the_system(pg_async_
             f"/hospitals/{hospital.id}/info#info-channels",
         )
     ]
+
+
+async def _make_draft_machine_owned(db, hospital, *, cycle: int) -> None:
+    """자동 검수가 만든 그대로의 보류 초안으로 되돌린다(사이클 표식 + 마지막 시도 시각).
+
+    같은 트랜잭션 안에서는 PostgreSQL now()가 고정이라 `updated_at`이 `created_at`과 같게
+    유지된다 — 사람이 손대지 않은 시스템 초안 그대로다.
+    """
+    draft = (
+        await db.execute(
+            select(HospitalContentPhilosophy).where(
+                HospitalContentPhilosophy.hospital_id == hospital.id,
+                HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
+            )
+        )
+    ).scalar_one()
+    draft.created_by = AUTO_ESSENCE_ACTOR
+    draft.unsupported_gaps = [
+        *(draft.unsupported_gaps or []),
+        {"field": "automatic_recovery_cycle", "reason": str(cycle)},
+        {"field": "automatic_recovery_last_at", "reason": datetime.now(UTC).isoformat()},
+    ]
+    await db.flush()
+
+
+async def test_a_draft_the_automatic_re_review_still_owns_is_not_an_exception_card(
+    pg_async_session,
+):
+    """자동 재검수 예산이 남은 보류는 운영자의 할 일이 아니다 — 예외 카드로 띄우지 않는다."""
+    db = pg_async_session
+    hospital = await _hospital(
+        db,
+        "자동 재검수 대기 의원",
+        approved_essence=False,
+        escalated_findings=("근거 없는 효과 표현",),
+    )
+    await _make_draft_machine_owned(db, hospital, cycle=1)
+
+    overview = await _overview(db, hospital.id)
+
+    assert [card.kind for card in overview.exceptions if card.kind == "escalated_draft"] == []
+    # 예외가 아니라 준비 중이고, 남은 일의 주인은 사람이 아니라 시스템이다.
+    assert overview.content.kind == "preparing"
+    assert [(c.key, c.actor) for c in overview.content.remaining if c.key == "essence_review"] == [
+        ("essence_review", "system")
+    ]
+
+
+async def test_a_draft_whose_automatic_budget_is_spent_becomes_an_exception_card(
+    pg_async_session,
+):
+    """예산을 다 쓴 뒤에는 같은 초안이 사람의 일이 된다."""
+    db = pg_async_session
+    hospital = await _hospital(
+        db,
+        "자동 재검수 소진 의원",
+        approved_essence=False,
+        escalated_findings=("근거 없는 효과 표현",),
+    )
+    await _make_draft_machine_owned(db, hospital, cycle=4)
+
+    overview = await _overview(db, hospital.id)
+
+    card = next(item for item in overview.exceptions if item.kind == "escalated_draft")
+    assert "근거 없는 효과 표현" in card.evidence
+    assert card.allowed_actions == ["re_review", "approve_with_override"]
 
 
 async def test_an_escalated_draft_from_an_older_snapshot_stops_being_an_exception(

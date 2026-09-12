@@ -34,6 +34,9 @@ from app.schemas.operations import (
     AttentionQueueResponse,
     AttentionReportHospital,
     AttentionReports,
+    ContentYieldHospital,
+    ContentYieldResponse,
+    ContentYieldWeek,
     CostGuardDailyLimitRequest,
     CostGuardDailyLimitResponse,
     CostGuardKillSwitchRequest,
@@ -43,6 +46,7 @@ from app.schemas.operations import (
 from app.services import cost_guard
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
+from app.services.content_yield import compute_content_yield_async, kst_week_start
 from app.services.hospital_lifecycle import missing_profile_requirement_keys
 from app.services.incident_safety import sanitize_operator_text
 from app.services.monthly_delivery_projection import (
@@ -379,6 +383,53 @@ async def _previous_month_report_gaps(db: AsyncSession) -> AttentionReports:
         missing=missing,
         undelivered=undelivered,
     )
+
+
+@cost_guard_router.get("/content-yield", response_model=ContentYieldResponse)
+async def get_content_yield(
+    weeks: int = Query(4, ge=1, le=12),
+    db: AsyncSession = Depends(get_db),
+):
+    """주별·병원별 계약 예정 대비 실제 발행. 읽기 전용 집계다.
+
+    월요일 주간 요약이 Slack에 한 줄로 보내는 것과 **같은 사실**을 같은 함수로
+    계산한다. 여기서는 여러 주를 나란히 두어 버전업 전후를 비교할 수 있게 한다.
+    가장 최근(진행 중)인 주가 맨 앞이며, 그 주는 아직 예정일이 남아 있어 수율이
+    낮게 보이는 것이 정상이다.
+    """
+
+    current_week_start = kst_week_start(datetime.now(ZoneInfo("Asia/Seoul")).date())
+    payload: list[ContentYieldWeek] = []
+    for index in range(weeks):
+        week_start = current_week_start - timedelta(days=7 * index)
+        week_end = week_start + timedelta(days=7)
+        facts = await compute_content_yield_async(
+            db, period_start=week_start, period_end=week_end
+        )
+        active = [fact for fact in facts if fact.due or fact.published]
+        payload.append(
+            ContentYieldWeek(
+                week_start=week_start,
+                week_end=week_end - timedelta(days=1),
+                due_total=sum(fact.due for fact in active),
+                published_total=sum(fact.published for fact in active),
+                hospitals=[
+                    ContentYieldHospital(
+                        hospital_id=fact.hospital_id,
+                        hospital_name=fact.hospital_name,
+                        due=fact.due,
+                        published=fact.published,
+                        published_with_reused_image=fact.published_with_reused_image,
+                        retrying=fact.retrying,
+                        operator_required=fact.operator_required,
+                        blocked=fact.blocked,
+                        blocked_by_cause=fact.blocked_by_cause,
+                    )
+                    for fact in sorted(active, key=lambda fact: fact.hospital_name)
+                ],
+            )
+        )
+    return ContentYieldResponse(weeks=payload)
 
 
 @cost_guard_router.get("/cost-guard", response_model=CostGuardStatusResponse)

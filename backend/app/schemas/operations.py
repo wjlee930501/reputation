@@ -1,6 +1,6 @@
 """Admin operations 제어 평면 스키마 — 비용 가드, 후행 확인 대기 큐."""
 
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import Literal
 from uuid import UUID
@@ -93,6 +93,38 @@ class AttentionQueueResponse(BaseModel):
     withheld_total: int = 0
     hospitals: list[AttentionHospital]
     reports: AttentionReports
+
+
+class ContentYieldHospital(BaseModel):
+    """한 주·한 병원의 계약 예정 대비 실제 발행."""
+
+    hospital_id: UUID
+    hospital_name: str
+    # 그 주에 예정된(취소되지 않은) 슬롯 수. 계약 이행의 분모.
+    due: int
+    # first_published_at 기준. 지연 발행은 예정 주가 아니라 실제 발행 주에 잡힌다.
+    published: int
+    published_with_reused_image: int
+    # 자동 복구가 아직 소유한 수. 사람의 할 일이 아니다.
+    retrying: int
+    operator_required: int
+    blocked: int
+    # 운영자 문구 → 건수. 내부 enum·오류 코드는 담지 않는다.
+    blocked_by_cause: dict[str, int]
+
+
+class ContentYieldWeek(BaseModel):
+    week_start: date
+    week_end: date
+    due_total: int
+    published_total: int
+    hospitals: list[ContentYieldHospital]
+
+
+class ContentYieldResponse(BaseModel):
+    """최근 주의 수율. 버전업 전후 비교는 주 단위 추이로 읽는다."""
+
+    weeks: list[ContentYieldWeek]
 
 
 class OperationsQueue(StrEnum):

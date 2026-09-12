@@ -5,8 +5,9 @@ client headers. Transaction order: OperationRun + audit → commit → apply_asy
 """
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi import HTTPException
@@ -19,7 +20,7 @@ from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import OperationRun
-from app.services import audit_log, operation_runs
+from app.services import audit_log, content_yield, operation_runs
 
 
 class FakeTask:
@@ -751,3 +752,70 @@ async def test_trigger_v0_rejects_active_hospital_in_progress(monkeypatch):
 
     assert exc.value.status_code == 409
     assert "백그라운드" in exc.value.detail["message"]
+
+
+class FakeYieldDB:
+    """수율 읽기 전용 집계가 쓰는 두 쿼리만 흉내낸다."""
+
+    def __init__(self, hospitals, rows):
+        self.hospitals = hospitals
+        self.rows = rows
+        self.statements = 0
+
+    async def execute(self, statement):
+        self.statements += 1
+        entity = statement.column_descriptions[0].get("entity")
+        payload = self.hospitals if entity is Hospital else self.rows
+        return SimpleNamespace(all=lambda: list(payload))
+
+
+async def test_content_yield_reports_due_published_and_operator_work_per_week():
+    hospital_id = uuid.uuid4()
+    week_start = content_yield.kst_week_start(
+        datetime.now(ZoneInfo("Asia/Seoul")).date()
+    )
+    published_at = datetime.combine(
+        week_start, time(12, 0), tzinfo=ZoneInfo("Asia/Seoul")
+    ).astimezone(timezone.utc)
+    rows = [
+        SimpleNamespace(
+            hospital_id=hospital_id,
+            scheduled_date=week_start,
+            status=ContentStatus.PUBLISHED,
+            first_published_at=published_at,
+            image_reused_from_content_id=uuid.uuid4(),
+            essence_check_summary=None,
+        ),
+        SimpleNamespace(
+            hospital_id=hospital_id,
+            scheduled_date=week_start + timedelta(days=1),
+            status=ContentStatus.DRAFT,
+            first_published_at=None,
+            image_reused_from_content_id=None,
+            essence_check_summary={
+                "generation_attempt": {
+                    "reason": "CONTENT_AI_HARD_FINDING",
+                    "retry_class": "OPERATOR_REQUIRED",
+                }
+            },
+        ),
+    ]
+    db = FakeYieldDB([(hospital_id, "수율조회의원")], rows)
+
+    response = await operations_api.get_content_yield(weeks=2, db=db)
+
+    assert [week.week_start for week in response.weeks] == [
+        week_start,
+        week_start - timedelta(days=7),
+    ]
+    assert response.weeks[0].week_end == week_start + timedelta(days=6)
+    current = response.weeks[0]
+    assert (current.due_total, current.published_total) == (2, 1)
+    hospital = current.hospitals[0]
+    assert hospital.hospital_name == "수율조회의원"
+    assert hospital.published_with_reused_image == 1
+    assert (hospital.retrying, hospital.operator_required, hospital.blocked) == (0, 1, 1)
+    # 내부 enum·오류 코드는 응답의 사유 키에 넣지 않는다.
+    assert all("_" not in cause for cause in hospital.blocked_by_cause)
+    # 주마다 병원 목록 1회 + 콘텐츠 행 1회. 병원 수에 비례해 늘지 않는다.
+    assert db.statements == 4

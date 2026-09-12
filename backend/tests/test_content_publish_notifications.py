@@ -8,6 +8,7 @@ import pytest
 
 from app.models.operations import NotificationOutboxState
 from app.services.content_publish_notifications import (
+    IMAGE_REUSE_NEXT_ACTION,
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
     build_missing_approved_essence_digest_intent,
@@ -21,6 +22,8 @@ from app.workers.generation_incident_control import (
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
     generation_block_digest_due,
+    generation_notification_cadence,
+    generation_notify_requested,
 )
 
 
@@ -407,3 +410,212 @@ def test_weekly_rejection_rollup_reuses_the_calendar_week_outbox_row() -> None:
 
     assert first is repeated
     assert db.additions == 1
+
+
+def _reused(hospital_name: str, failure_class: str, hospital_id=None) -> dict:
+    return {
+        "hospital_id": hospital_id or uuid.uuid4(),
+        "hospital_name": hospital_name,
+        "content_id": uuid.uuid4(),
+        "image_failure_reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+        "image_failure_class": failure_class,
+    }
+
+
+def test_reused_image_publications_ride_the_existing_eight_oclock_digest() -> None:
+    """새 Slack 메시지가 아니라 08:00 요약 안의 한 섹션이다."""
+
+    hospital_id = uuid.uuid4()
+    reused = [
+        _reused("가나의원", "PROVIDER_QUOTA", hospital_id=hospital_id),
+        _reused("가나의원", "PROVIDER_QUOTA", hospital_id=hospital_id),
+        _reused("가나의원", "PROVIDER_ERROR", hospital_id=hospital_id),
+    ]
+
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 9, 12),
+        PUBLISH_MORNING_BATCH,
+        [_blocked("다라의원", "MISSING_REFERENCES", "참고 자료")],
+        reused_outcomes=reused,
+    )
+    payload = intent.message.payload_json()
+
+    assert intent.notification_type == "GENERATION_BLOCKED_DIGEST"
+    assert "대표 이미지 재사용 발행" in payload
+    assert "가나의원" in payload
+    assert "재사용 발행 3건" in payload
+    assert "공급자 한도·크레딧 오류" in payload, "가장 많은 실패 분류를 평문으로 적는다"
+    assert IMAGE_REUSE_NEXT_ACTION.split(".")[0] in payload
+    # 운영센터 링크는 요약에 이미 한 번 있으므로 두 번 넣지 않는다.
+    assert payload.count("/operations?queue=incidents&status=OPEN") == 1
+
+
+def test_reuse_only_batch_still_produces_exactly_one_digest() -> None:
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 9, 12), PUBLISH_MORNING_BATCH, [], reused_outcomes=[
+            _reused("가나의원", "COST_GUARD"),
+        ]
+    )
+    payload = intent.message.payload_json()
+
+    assert "재사용 발행 1건" in payload
+    assert "비용 가드 한도" in payload
+    assert len(intent.message.blocks) <= 50
+
+
+def test_reuse_section_is_deduped_by_its_own_identity() -> None:
+    blocked = [_blocked("다라의원", "MISSING_REFERENCES", "참고 자료")]
+    reused = [_reused("가나의원", "POLICY_REJECTED")]
+    without = build_generation_blocked_digest_intent(
+        date(2026, 9, 12), PUBLISH_MORNING_BATCH, blocked
+    )
+    with_reuse = build_generation_blocked_digest_intent(
+        date(2026, 9, 12), PUBLISH_MORNING_BATCH, blocked, reused_outcomes=reused
+    )
+    repeated = build_generation_blocked_digest_intent(
+        date(2026, 9, 12), PUBLISH_MORNING_BATCH, blocked, reused_outcomes=reused
+    )
+
+    assert without.dedupe_key != with_reuse.dedupe_key, "재사용 사실은 새 요약을 만든다"
+    # 같은 배치가 다시 관측돼도 outbox 키가 같아 Slack은 한 번만 나간다.
+    assert repeated.dedupe_key == with_reuse.dedupe_key
+
+
+def test_review_configuration_error_is_an_immediate_owner_not_a_digest_line() -> None:
+    assert generation_notification_cadence("CONTENT_AI_REVIEW_CONFIG_ERROR") == "IMMEDIATE"
+    assert generation_notify_requested("CONTENT_AI_REVIEW_CONFIG_ERROR") is True
+    for batch in (PREPUBLISH_MORNING_BATCH, PUBLISH_MORNING_BATCH):
+        assert not generation_block_digest_due(
+            "CONTENT_AI_REVIEW_CONFIG_ERROR", batch=batch
+        )
+
+
+def test_generation_notification_cadences_stay_mutually_exclusive() -> None:
+    cadences = {}
+    for code in (
+        "COST_BLOCKED",
+        "CONTENT_AI_REVIEW_CONFIG_ERROR",
+        "GENERATION_REJECTED",
+        "CONTENT_IMAGE_POLICY_REJECTED",
+        "CONTENT_AI_HARD_FINDING",
+        "PROVIDER_TIMEOUT",
+        "CONTENT_IMAGE_NOT_READY",
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+        "MISSING_APPROVED_ESSENCE",
+    ):
+        cadences.setdefault(generation_notification_cadence(code), []).append(code)
+    assert set(cadences) == {"IMMEDIATE", "WEEKLY", "MORNING"}
+    assert sum(len(codes) for codes in cadences.values()) == 9
+
+
+def _yield_fact(
+    name: str,
+    *,
+    due: int = 0,
+    published: int = 0,
+    reused: int = 0,
+    retrying: int = 0,
+    operator_required: int = 0,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        hospital_name=name,
+        due=due,
+        published=published,
+        published_with_reused_image=reused,
+        retrying=retrying,
+        operator_required=operator_required,
+    )
+
+
+def test_weekly_rollup_leads_with_one_yield_line_per_hospital() -> None:
+    outcomes = [
+        {
+            "hospital_id": uuid.uuid4(),
+            "hospital_name": "주간요약의원",
+            "reason": "검증되지 않은 가격 표현이 남았습니다.",
+        }
+    ]
+    facts = [
+        _yield_fact("수율낮은의원", due=5, published=1, retrying=2, operator_required=1),
+        _yield_fact("수율높은의원", due=4, published=4, reused=1),
+        # 계약도 발행도 없는 병원은 줄을 만들지 않는다.
+        _yield_fact("계약없는의원"),
+    ]
+
+    intent = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 9, 7), outcomes, facts
+    )
+    payload = intent.message.payload_json()
+    blocks = intent.message.payload()["blocks"]
+    block_ids = [block["block_id"] for block in blocks]
+
+    assert "발행 1/5 (재사용 이미지 0, 재시도 중 2, 조치 필요 1)" in payload
+    assert "발행 4/4 (재사용 이미지 1, 재시도 중 0, 조치 필요 0)" in payload
+    assert "계약없는의원" not in payload
+    assert "발행 5/9" in payload
+    # 수율 줄이 차단 목록보다 위에 온다.
+    assert block_ids.index("generation_rejection_weekly_yield_1") < block_ids.index(
+        "generation_rejection_weekly_items_1"
+    )
+    # 부족분이 큰 병원이 먼저 보인다.
+    assert payload.index("수율낮은의원") < payload.index("수율높은의원")
+    # 새 메시지를 만들지 않는다 — 주 시작일 하나가 그대로 중복 키다.
+    assert intent.dedupe_key == "GENERATION_REJECTION_WEEKLY_ROLLUP:2026-09-07"
+    assert payload.count('"type": "button"') == 1
+
+
+def test_weekly_rollup_yield_lines_cap_at_fifteen_hospitals() -> None:
+    facts = [
+        _yield_fact(f"수율{index:02d}의원", due=10, published=index)
+        for index in range(20)
+    ]
+
+    payload = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 9, 7), [], facts
+    ).message.payload_json()
+
+    assert "그 외 5개" in payload
+    # 부족분이 가장 큰 15곳만 남는다.
+    assert "수율00의원" in payload
+    assert "수율15의원" not in payload
+
+
+def test_weekly_rollup_is_sent_with_zero_rejections_when_slots_were_due() -> None:
+    class Result:
+        def scalar_one_or_none(self):
+            return None
+
+    class DB:
+        def __init__(self):
+            self.rows = []
+
+        def execute(self, _statement):
+            return Result()
+
+        def add(self, row):
+            self.rows.append(row)
+
+    db = DB()
+    row = enqueue_generation_rejection_weekly_rollup_sync(
+        db, date(2026, 9, 7), [], yield_facts=[_yield_fact("무차단의원", due=3, published=3)]
+    )
+
+    assert row is not None
+    assert db.rows == [row]
+    assert "발행 3/3" in row.fallback_text
+    assert "차단 없음" in row.fallback_text
+
+
+def test_weekly_rollup_is_skipped_when_there_is_nothing_to_report() -> None:
+    class DB:
+        def execute(self, _statement):  # pragma: no cover - 호출되면 계약 위반이다
+            raise AssertionError("보낼 사실이 없으면 outbox를 조회하지 않는다")
+
+    assert (
+        enqueue_generation_rejection_weekly_rollup_sync(
+            DB(), date(2026, 9, 7), [], yield_facts=[_yield_fact("조용한의원")]
+        )
+        is None
+    )
+    with pytest.raises(NotificationPayloadError):
+        build_generation_rejection_weekly_rollup_intent(date(2026, 9, 7), [], [])

@@ -81,7 +81,10 @@ class GenerationBatchRecorder:
             payload["safe_error_message"] = safe_error_message
             retry_class = retry_class_for(safe_error_code)
             payload["retry_class"] = retry_class.value
-            if retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+            if retry_class in (
+                GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
+                GenerationRetryClass.SAMPLE_RECOVERABLE,
+            ):
                 payload["next_retry_at"] = next_recovery_sweep().isoformat()
         self.items[str(item_id)] = payload
         self._persist(terminal=False)

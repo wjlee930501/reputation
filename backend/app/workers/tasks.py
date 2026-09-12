@@ -96,6 +96,7 @@ from app.services.content_publish_notifications import (
     enqueue_generation_rejection_weekly_rollup_sync,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
+from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
@@ -301,12 +302,17 @@ from app.workers.generation_incident_control import (
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
-    ENVIRONMENT_ATTEMPT_BUDGET,
+    SAMPLE_EXHAUSTED_DAY_LIMIT,
+    SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
     environment_attempt_period,
+    has_model_declared_hard_finding,
     next_recovery_sweep,
+    repair_session_is_available,
     retry_class_for,
     retry_is_due,
+    sample_budget_spent,
+    spend_repair_session,
     stored_attempt_period,
 )
 from app.workers.generation_run_control import (
@@ -404,7 +410,7 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-09-12.1"
+GENERATION_GATE_CATALOG_VERSION = "2026-09-13.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -417,8 +423,27 @@ _AUTOMATIC_BODY_REPAIR_CODES = frozenset(
         "CONTENT_AI_REVIEW_STALE",
     }
 )
+# 저장된 본문 수리 세션의 예산은 시도 지문(generation_attempt)과 따로 센다. 수리가
+# 성공해 본문이 바뀌면 시도 기록은 사라지지만 이 계수는 남아야 같은 글이 매일
+# 유료 재생성을 반복하지 않는다.
+_BODY_REPAIR_KEY = "automatic_body_repair"
+# 이미지 정책 거절의 durable 진단. 다음 후보를 policy_repair 프롬프트로 한 번 더 만든다.
+_IMAGE_POLICY_DIAGNOSTIC_KEY = "image_policy_rejection"
 _IMAGE_POLICY_REJECTION_CODE = "CONTENT_IMAGE_POLICY_REJECTED"
 _IMAGE_RETRY_EXHAUSTED_CODE = "IMAGE_GENERATION_RETRIES_EXHAUSTED"
+_IMAGE_SYMPTOM_CODES = frozenset({"CONTENT_IMAGE_NOT_READY", "CONTENT_IMAGE_NOT_VERIFIED"})
+_IMAGE_REUSED_CODE = "IMAGE_REUSED"
+_IMAGE_REUSE_KEY = "image_reuse"
+_IMAGE_FAILURE_REASONS = frozenset(
+    {
+        "IMAGE_GENERATION_FAILED",
+        _IMAGE_RETRY_EXHAUSTED_CODE,
+        _IMAGE_POLICY_REJECTION_CODE,
+    }
+)
+_STORED_IMAGE_TERMINAL_CODES = frozenset(
+    {_IMAGE_RETRY_EXHAUSTED_CODE, _IMAGE_POLICY_REJECTION_CODE}
+)
 
 
 def _generation_attempt_context(
@@ -469,6 +494,63 @@ def _stored_generation_attempt(item: ContentItem) -> dict[str, Any]:
     return dict(attempt)
 
 
+def _stored_ai_review(item: ContentItem) -> dict[str, Any]:
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    return review if isinstance(review, dict) else {}
+
+
+def _stored_review_has_uncertain_finding(item: ContentItem) -> bool:
+    """Whether the stored block rests on a low-confidence UNCERTAIN judgement."""
+
+    findings = _stored_ai_review(item).get("findings")
+    if not isinstance(findings, list):
+        return False
+    return any(
+        isinstance(finding, dict)
+        and str(finding.get("severity") or "").upper() == "UNCERTAIN"
+        for finding in findings
+    )
+
+
+def _stored_model_declared_hard(item: ContentItem) -> bool:
+    """Whether the stored independent review itself declared a HARD finding."""
+
+    return has_model_declared_hard_finding(_stored_ai_review(item))
+
+
+def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
+    """Carry the repair budget across a rewrite that replaces the whole summary."""
+
+    if not state or not isinstance(summary, dict):
+        return summary
+    merged = dict(summary)
+    merged[_BODY_REPAIR_KEY] = state
+    return merged
+
+
+def _stored_body_repair_state(item: ContentItem) -> dict[str, Any] | None:
+    summary = getattr(item, "essence_check_summary", None)
+    state = summary.get(_BODY_REPAIR_KEY) if isinstance(summary, dict) else None
+    return dict(state) if isinstance(state, dict) else None
+
+
+def _body_repair_session_is_due(item: ContentItem) -> bool:
+    return repair_session_is_available(_stored_body_repair_state(item))
+
+
+def _spend_body_repair_session(db, item: ContentItem) -> dict[str, Any]:
+    """Count one automatic stored-body repair session before the writer is called."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    state = spend_repair_session(updated.get(_BODY_REPAIR_KEY))
+    updated[_BODY_REPAIR_KEY] = state
+    item.essence_check_summary = updated
+    db.commit()
+    return state
+
+
 def _stored_ai_review_is_remediable(item: ContentItem) -> bool:
     """Only rewrite stored style/soft findings, never factual or safety gaps."""
     summary = getattr(item, "essence_check_summary", None)
@@ -505,6 +587,13 @@ def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str,
 
     code = assessment.code or "GENERATION_FAILED"
     message = assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다."
+    if code in _IMAGE_SYMPTOM_CODES:
+        # 07:45·08:00이 증상(이미지 없음)이 아니라 저장된 종착 원인을 보고해야 운영자가
+        # "다음 배치가 다시 생성합니다"라는 틀린 안내를 받지 않는다.
+        stored_image_code = _stored_generation_attempt(item).get("reason")
+        if stored_image_code in _STORED_IMAGE_TERMINAL_CODES:
+            return stored_image_code, generation_safe_cause(stored_image_code)
+        return code, message
     if code != "CONTENT_NOT_GENERATED":
         return code, message
 
@@ -539,6 +628,8 @@ def _remember_generation_attempt(
     reason: str,
     *,
     message: str | None = None,
+    diagnostics: Mapping[str, object] | None = None,
+    extra: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """Persist one no-body outcome without adding a schema column."""
 
@@ -546,7 +637,9 @@ def _remember_generation_attempt(
     updated = dict(summary) if isinstance(summary, dict) else {}
     context = _generation_attempt_context(item, philosophy)
     previous = _stored_generation_attempt(item)
-    retry_class = retry_class_for(reason)
+    retry_class = retry_class_for(
+        reason, model_declared_hard=_stored_model_declared_hard(item)
+    )
     same_context = previous.get("context") == context
     observed_at = datetime.now(timezone.utc)
     attempt_period = environment_attempt_period(observed_at)
@@ -571,22 +664,41 @@ def _remember_generation_attempt(
     previous_guard_deferrals = int(previous.get("guard_deferral_count") or 0) if same_context else 0
     provider_attempt_count = previous_provider_attempts
     guard_deferral_count = previous_guard_deferrals
+    exhausted_days = int(previous.get("exhausted_days") or 0) if same_context else 0
     if reason == "COST_BLOCKED":
         guard_deferral_count += 1
+    elif retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE:
+        # 표본 실패는 KST 하루 예산 안에서 세고 날이 바뀌면 초기화된다. 소진된 날이
+        # SAMPLE_EXHAUSTED_DAY_LIMIT만큼 쌓여야 사람의 일(OPERATOR_REQUIRED)이 된다.
+        provider_attempt_count, exhausted_days = sample_budget_spent(
+            previous if same_context else None, reason, observed_at
+        )
     elif retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
         provider_attempt_count += 1
     if (
         reason == "IMAGE_GENERATION_FAILED"
-        and provider_attempt_count >= ENVIRONMENT_ATTEMPT_BUDGET
+        and provider_attempt_count >= SAMPLE_IMAGE_DAILY_BUDGET
     ):
         reason = _IMAGE_RETRY_EXHAUSTED_CODE
         retry_class = retry_class_for(reason)
+    if (
+        retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE
+        and exhausted_days >= SAMPLE_EXHAUSTED_DAY_LIMIT
+    ):
+        retry_class = GenerationRetryClass.OPERATOR_REQUIRED
+    first_observed_at = previous.get("first_observed_at") if same_context else None
     attempt = {
         "context": context,
         "reason": reason,
         "observed_at": observed_at.isoformat(),
+        "first_observed_at": (
+            first_observed_at
+            if isinstance(first_observed_at, str)
+            else observed_at.isoformat()
+        ),
         "attempt_period": attempt_period,
         "retry_class": retry_class.value,
+        "exhausted_days": exhausted_days,
         # ``attempt_count`` remains for rolling readers, but it now represents
         # paid/provider failures only. Cost-guard deferrals are separately visible
         # and never exhaust the provider recovery budget before a day/month reset.
@@ -596,8 +708,21 @@ def _remember_generation_attempt(
     }
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
-    if retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+    stored_diagnostic = (
+        previous.get(_IMAGE_POLICY_DIAGNOSTIC_KEY) if same_context else None
+    )
+    policy_rejection = (diagnostics or {}).get("policy_rejection")
+    if isinstance(policy_rejection, Mapping):
+        stored_diagnostic = dict(policy_rejection)
+    if reason == _IMAGE_POLICY_REJECTION_CODE and isinstance(stored_diagnostic, dict):
+        attempt[_IMAGE_POLICY_DIAGNOSTIC_KEY] = stored_diagnostic
+    if retry_class in (
+        GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
+        GenerationRetryClass.SAMPLE_RECOVERABLE,
+    ):
         attempt["next_retry_at"] = next_recovery_sweep().isoformat()
+    for key, value in (extra or {}).items():
+        attempt[key] = value
     updated[_GENERATION_ATTEMPT_KEY] = attempt
     item.essence_check_summary = updated
     db.commit()
@@ -623,11 +748,173 @@ def _image_failure_code(diagnostics: Mapping[str, object] | None = None) -> str:
     return "IMAGE_GENERATION_FAILED"
 
 
-def _remember_image_failure(db, item, philosophy, diagnostics=None) -> str:
+# 공급자 크레딧·할당량 고갈은 "일시적 오류"가 아니라 사람이 결제·한도를 확인해야
+# 풀린다. 08:00 요약이 그 조치를 정확히 지목할 수 있게 실패를 분류해 둔다.
+_IMAGE_QUOTA_SIGNALS = (
+    "429",
+    " 402",
+    "insufficient_quota",
+    "insufficient quota",
+    "exceeded your current quota",
+    "quota",
+    "billing",
+    "credit",
+    "resource_exhausted",
+    "resourceexhausted",
+    "rate limit",
+    "rate_limit",
+)
+IMAGE_FAILURE_CLASSES = ("COST_GUARD", "PROVIDER_QUOTA", "POLICY_REJECTED", "PROVIDER_ERROR")
+
+
+def _image_failure_class(
+    diagnostics: Mapping[str, object] | None = None,
+    error: BaseException | None = None,
+) -> str:
+    """Classify one image failure so the morning digest names the real next action."""
+
+    reason = str((diagnostics or {}).get("reason") or "").upper()
+    if reason == "COST_BLOCKED":
+        return "COST_GUARD"
+    if reason in {"POLICY_REJECTED", "IMAGE_SAFETY"}:
+        return "POLICY_REJECTED"
+    parts = [str(value) for value in (diagnostics or {}).values()]
+    if error is not None:
+        parts.extend([type(error).__name__, str(error), str(getattr(error, "status_code", ""))])
+    haystack = " ".join(parts).casefold()
+    if any(signal in haystack for signal in _IMAGE_QUOTA_SIGNALS):
+        return "PROVIDER_QUOTA"
+    return "PROVIDER_ERROR"
+
+
+def _remember_image_failure(db, item, philosophy, diagnostics=None, error=None) -> str:
     attempt = _remember_generation_attempt(
-        db, item, philosophy, _image_failure_code(diagnostics)
+        db,
+        item,
+        philosophy,
+        _image_failure_code(diagnostics),
+        diagnostics=diagnostics,
+        extra={"image_failure_class": _image_failure_class(diagnostics, error)},
     )
     return str(attempt["reason"])
+
+
+def _image_attempts_exhausted_today(item: ContentItem) -> bool:
+    """Whether today's bounded image budget for this slot is already spent."""
+
+    try:
+        from app.workers.generation_attempt_state import image_attempts_exhausted_today
+    except ImportError:  # pragma: no cover - 해석 모듈 배포 전
+        attempt = _stored_generation_attempt(item)
+        if stored_attempt_period(attempt) != environment_attempt_period():
+            return False
+        try:
+            spent = int(attempt.get("provider_attempt_count") or 0)
+        except (TypeError, ValueError):
+            return False
+        return spent >= SAMPLE_IMAGE_DAILY_BUDGET
+    return bool(image_attempts_exhausted_today(item))
+
+
+def _image_reuse_is_due(item: ContentItem) -> bool:
+    """Reuse only after this slot actually spent its own image budget."""
+
+    attempt = _stored_generation_attempt(item)
+    reason = str(attempt.get("reason") or "")
+    if reason == _IMAGE_REUSED_CODE:
+        return False
+    if reason not in _IMAGE_FAILURE_REASONS:
+        return False
+    if reason in _STORED_IMAGE_TERMINAL_CODES:
+        return True
+    return _image_attempts_exhausted_today(item)
+
+
+def _remember_image_reuse(db, item, philosophy, *, source_id) -> None:
+    """Record the reused image without pretending the provider succeeded."""
+
+    previous = _stored_generation_attempt(item)
+    summary = getattr(item, "essence_check_summary", None)
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    reuse_facts = {
+        "reused_from_content_id": str(source_id),
+        "image_failure_reason": str(previous.get("reason") or "IMAGE_GENERATION_FAILED"),
+        "image_failure_class": str(previous.get("image_failure_class") or "PROVIDER_ERROR"),
+    }
+    attempt = dict(previous)
+    attempt.update(
+        {
+            "context": _generation_attempt_context(item, philosophy),
+            "reason": _IMAGE_REUSED_CODE,
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            "observed_at": datetime.now(timezone.utc).isoformat(),
+            **reuse_facts,
+        }
+    )
+    updated[_GENERATION_ATTEMPT_KEY] = attempt
+    # 시도 기록은 새 이미지가 붙으면 지워진다. 08:00 요약이 읽을 사실은 따로 남긴다.
+    updated[_IMAGE_REUSE_KEY] = reuse_facts
+    item.essence_check_summary = updated
+    db.commit()
+
+
+def stored_image_reuse_facts(item: ContentItem) -> dict[str, Any]:
+    """Durable reuse facts for the 08:00 digest section."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    facts = summary.get(_IMAGE_REUSE_KEY) if isinstance(summary, dict) else None
+    if isinstance(facts, dict):
+        return dict(facts)
+    attempt = _stored_generation_attempt(item)
+    if attempt.get("reason") == _IMAGE_REUSED_CODE:
+        return {
+            "reused_from_content_id": attempt.get("reused_from_content_id"),
+            "image_failure_reason": attempt.get("image_failure_reason"),
+            "image_failure_class": attempt.get("image_failure_class"),
+        }
+    return {}
+
+
+def _reuse_hospital_image(
+    db, item: ContentItem, hospital: Hospital, philosophy, guard_kwargs: dict
+) -> GenerationItemState:
+    """Publish with another verified image of the same hospital instead of nothing.
+
+    이미지는 발행을 하루 넘게 막을 수 없다. 인증되지 않은 이미지는 여전히 공개하지
+    않으며, 재사용 원본은 이미 인증을 통과한 같은 병원의 이미지다.
+    """
+
+    try:
+        from app.services.content_image_reuse import (
+            apply_reused_image,
+            select_reusable_hospital_image,
+        )
+    except ImportError:  # pragma: no cover - 재사용 모듈 배포 전
+        logger.warning("content image reuse unavailable for %s", item.id)
+        return GenerationItemState.PARTIAL
+    source = select_reusable_hospital_image(db, hospital.id, item.id)
+    if source is None:
+        # 첫 글이라 재사용할 인증 이미지가 없는 병원이다. 기존 차단 동작을 유지한다.
+        return GenerationItemState.PARTIAL
+    applied = apply_reused_image(db, item=item, source=source, **guard_kwargs)
+    if applied == 0:
+        db.rollback()
+        return GenerationItemState.DISCARDED
+    db.commit()
+    db.refresh(item)
+    _remember_image_reuse(db, item, philosophy, source_id=getattr(source, "id", source))
+    logger.info("Reused verified hospital image for %s", item.id)
+    return GenerationItemState.SUCCEEDED
+
+
+def _stored_image_policy_repair(item: ContentItem) -> Mapping[str, object] | None:
+    """Return the durable policy diagnostic that earns one repair-prompt candidate."""
+
+    attempt = _stored_generation_attempt(item)
+    if attempt.get("reason") != _IMAGE_POLICY_REJECTION_CODE:
+        return None
+    diagnostic = attempt.get(_IMAGE_POLICY_DIAGNOSTIC_KEY)
+    return diagnostic if isinstance(diagnostic, Mapping) else None
 
 
 def _image_failure_details(item: ContentItem) -> tuple[str, str]:
@@ -642,6 +929,18 @@ def _image_failure_details(item: ContentItem) -> tuple[str, str]:
     return code, messages.get(
         code, "본문은 저장됐지만 대표 이미지 생성이 완료되지 않았습니다."
     )
+
+
+def _image_guard_kwargs(item: ContentItem) -> dict[str, Any]:
+    """Revision/claim guards that keep a late image off a changed or cancelled slot."""
+
+    guard_kwargs: dict[str, Any] = {}
+    if hasattr(item, "content_revision"):
+        guard_kwargs["expected_revision"] = int(getattr(item, "content_revision", 1) or 1)
+    expected_claim_token = getattr(item, "generation_claim_token", None)
+    if expected_claim_token is not None:
+        guard_kwargs["expected_claim_token"] = expected_claim_token
+    return guard_kwargs
 
 
 def _recover_missing_content_image(
@@ -659,17 +958,7 @@ def _recover_missing_content_image(
         return GenerationItemState.SUCCEEDED
     try:
         image_source_title = item.title
-        expected_revision = (
-            int(getattr(item, "content_revision", 1) or 1)
-            if hasattr(item, "content_revision")
-            else None
-        )
-        expected_claim_token = getattr(item, "generation_claim_token", None)
-        guard_kwargs = {}
-        if expected_revision is not None:
-            guard_kwargs["expected_revision"] = expected_revision
-        if expected_claim_token is not None:
-            guard_kwargs["expected_claim_token"] = expected_claim_token
+        guard_kwargs = _image_guard_kwargs(item)
         if getattr(item, "image_url", None):
             try:
                 content_hash, subject_hash = _run_async(
@@ -704,6 +993,10 @@ def _recover_missing_content_image(
                 # fresh candidate below; transient reviewer failures stay recoverable.
                 pass
         diagnostics: dict[str, object] = {}
+        # 정책 거절은 표본 실패다. 같은 프롬프트를 다시 쓰면 같은 거절이 나오므로
+        # 저장된 진단으로 만든 repair 프롬프트로 한 번 더 만들어 본다
+        # (content_image_certification._replace_unsafe와 같은 경로).
+        prior_policy_rejection = _stored_image_policy_repair(item)
         image_url, image_prompt = _run_async(
             generate_image(
                 item.content_type,
@@ -712,11 +1005,19 @@ def _recover_missing_content_image(
                 direction=hospital_image_direction(hospital),
                 hospital_id=hospital.id,
                 diagnostics=diagnostics,
+                policy_repair=prior_policy_rejection is not None,
+                prior_policy_rejection=(
+                    dict(prior_policy_rejection)
+                    if prior_policy_rejection is not None
+                    else None
+                ),
             )
         )
         if not image_url:
             logger.warning("Image generation returned no URL for %s (text saved)", item.id)
             _remember_image_failure(db, item, philosophy, diagnostics)
+            if _image_reuse_is_due(item):
+                return _reuse_hospital_image(db, item, hospital, philosophy, guard_kwargs)
             return GenerationItemState.PARTIAL
         image_values = {
             "image_url": image_url,
@@ -759,7 +1060,9 @@ def _recover_missing_content_image(
         )
         db.rollback()
         db.refresh(item)
-        _remember_image_failure(db, item, philosophy)
+        _remember_image_failure(db, item, philosophy, error=error)
+        if _image_reuse_is_due(item):
+            return _reuse_hospital_image(db, item, hospital, philosophy, _image_guard_kwargs(item))
         return GenerationItemState.PARTIAL
 
 
@@ -899,6 +1202,37 @@ def _review_findings(summary: object) -> list[str]:
     return [str(finding) for finding in findings if str(finding).strip()][:5]
 
 
+# 한 세션이 살 수 있는 유료 생성 총량. 보완(2) + 문체성 키워드·계절(1) + 삭제형(1)의
+# 합이 아니라 이 상한이 실제 지출을 묶는다.
+MAX_GENERATIONS_PER_SESSION = 3
+SOFT_REMEDIATION_MAX_GENERATIONS = 1
+HARD_REMOVAL_MAX_GENERATIONS = 1
+_HARD_REMOVAL_KINDS = frozenset({"HOSPITAL_FACT", "MEDICAL_SAFETY"})
+_HARD_REMOVAL_INSTRUCTION = (
+    "아래 지적된 주장을 본문에서 삭제하거나 '개인차가 있습니다'·'정확한 내용은 의료기관에서 "
+    "확인이 필요합니다'처럼 완화해 다시 쓰세요. 새로운 사실·수치·효과·장비·경력을 "
+    "추가하지 말고, 지적되지 않은 문단은 그대로 두세요."
+)
+
+
+def _hard_removal_findings(review: Any) -> list[str]:
+    """Turn model-declared fact/safety HARD findings into one removal instruction."""
+
+    def _label(value: object) -> str:
+        return str(getattr(value, "value", value) or "").upper()
+
+    messages = [
+        str(getattr(finding, "message", "")).strip()
+        for finding in getattr(review, "blocking_findings", ())
+        if _label(getattr(finding, "severity", None)) == "HARD"
+        and _label(getattr(finding, "kind", None)) in _HARD_REMOVAL_KINDS
+    ]
+    messages = [message for message in messages if message]
+    if not messages:
+        return []
+    return [_HARD_REMOVAL_INSTRUCTION, *messages]
+
+
 def _screening_probe(content_data: dict) -> ContentItem:
     return ContentItem(
         title=content_data["title"],
@@ -922,16 +1256,29 @@ async def _generate_with_auto_review(
     findings = _review_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
-    # 측정 질의 키워드 미반영과 계절-발행월 불일치는 **합쳐서 한 번만** 보완 재작성을
-    # 부른다. 하드 게이트로 올리면 정상 글이 버려지고, 무제한 재시도는 비용만 늘어난다.
-    bounded_soft_remediation_used = False
-    last_content: dict | None = None
-    last_screening = None
+    removal_rewrites = 0
+    # 하드 게이트(Essence 스크린)와 독립 검수를 **먼저** 통과시킨 뒤에야 문체성
+    # 키워드·계절 보완에 재작성을 쓴다. 반대 순서로 쓰면 보완 예산을 문체 지적이
+    # 먼저 소모해 정작 발행을 막는 지적은 한 번도 고치지 못한 채 글이 버려진다.
+    remediation_rewrites = 0
+    soft_rewrites = 0
+    generations = 0
+    accepted_content: dict | None = None
+    accepted_screening = None
     last_ai_review = None
     last_generation_error: Exception | None = None
 
-    for generation_index in range(AUTO_REMEDIATION_MAX_GENERATIONS):
-        if generation_index > 0:
+    def _generation_budget_left() -> bool:
+        return generations < MAX_GENERATIONS_PER_SESSION
+
+    def _remediation_budget_left() -> bool:
+        return (
+            remediation_rewrites < AUTO_REMEDIATION_MAX_GENERATIONS - 1
+            and _generation_budget_left()
+        )
+
+    while _generation_budget_left():
+        if generations > 0:
             decision = await cost_guard.check_and_increment("content")
             if not decision.allowed:
                 logger.info(
@@ -942,7 +1289,7 @@ async def _generate_with_auto_review(
             automatic_rewrites += 1
 
         try:
-            last_content = await generate_content(
+            candidate = await generate_content(
                 hospital,
                 item.content_type,
                 existing_titles,
@@ -951,74 +1298,87 @@ async def _generate_with_auto_review(
                 remediation_findings=findings,
             )
         except ValueError as exc:
+            generations += 1
             last_generation_error = exc
             findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
-            if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
-                continue
-            if last_content is not None and last_screening is None:
+            if accepted_content is not None:
                 # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
                 # 그 후보까지 버리면 정상 글 한 편을 돈만 쓰고 폐기하는 셈이다.
+                last_generation_error = None
                 break
+            if _remediation_budget_left():
+                remediation_rewrites += 1
+                continue
             raise
+        generations += 1
         last_generation_error = None
 
         # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
         # (content_engine._validate_target_alignment가 채운다)
-        alignment_findings = list(last_content.get("target_alignment_findings") or [])
-        season_findings = [
+        bounded_soft_findings = list(
+            candidate.get("target_alignment_findings") or []
+        ) + [
             finding
-            for finding in (last_content.get("seo_geo_findings") or [])
+            for finding in (candidate.get("seo_geo_findings") or [])
             if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
         ]
-        bounded_soft_findings = alignment_findings + season_findings
-        if (
-            bounded_soft_findings
-            and not bounded_soft_remediation_used
-            and generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS
-        ):
-            bounded_soft_remediation_used = True
-            findings = bounded_soft_findings
-            continue
 
-        last_ai_review = None
-        last_screening = screen_content_against_philosophy(
-            _screening_probe(last_content), philosophy
+        screening = screen_content_against_philosophy(
+            _screening_probe(candidate), philosophy
         )
-        if last_screening.status != ESSENCE_STATUS_ALIGNED:
-            findings = _review_findings(last_screening.summary)
-            if not findings:
-                break
-            continue
+        accepted_content, accepted_screening, last_ai_review = candidate, screening, None
+        if screening.status != ESSENCE_STATUS_ALIGNED:
+            screen_findings = _review_findings(screening.summary)
+            if screen_findings and _remediation_budget_left():
+                remediation_rewrites += 1
+                findings = screen_findings
+                continue
+            break
 
         last_ai_review = await review_generated_content(
             hospital=hospital,
             philosophy=philosophy,
-            content=last_content,
+            content=candidate,
             content_brief=approved_brief,
         )
-        if last_ai_review.status in {
-            ContentAiReviewStatus.PASS,
-            ContentAiReviewStatus.UNAVAILABLE,
-        }:
+        if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
             # UNAVAILABLE never grants approval: it merely leaves the candidate to
             # the deterministic generation and publication gates below.
             break
-        # A factual/medical-safety gap needs approved evidence, not another model
-        # paraphrase. Only stylistic/soft feedback may spend the bounded rewrite.
-        if not last_ai_review.rewrite_is_safe:
+        if last_ai_review.status == ContentAiReviewStatus.PASS:
+            if (
+                bounded_soft_findings
+                and soft_rewrites < SOFT_REMEDIATION_MAX_GENERATIONS
+                and _generation_budget_left()
+            ):
+                soft_rewrites += 1
+                findings = bounded_soft_findings
+                continue
             break
-        findings = list(last_ai_review.remediation_messages)
-        if generation_index + 1 < AUTO_REMEDIATION_MAX_GENERATIONS:
-            reviewer_driven_rewrites += 1
+        # Only stylistic/soft feedback may spend the shared remediation rewrite.
+        if last_ai_review.rewrite_is_safe:
+            if _remediation_budget_left():
+                remediation_rewrites += 1
+                reviewer_driven_rewrites += 1
+                findings = list(last_ai_review.remediation_messages)
+                continue
+            break
+        # 사실·의료 안전 HARD 지적은 새 근거 없이 "다시 써 봐"로 풀 수 없다. 대신
+        # 지적된 주장을 삭제·hedge하는 재작성을 **정확히 한 번** 허용하고 그 결과는
+        # 반드시 독립 검수를 다시 받는다(루프 다음 회차).
+        removal_findings = _hard_removal_findings(last_ai_review)
+        if (
+            removal_findings
+            and removal_rewrites < HARD_REMOVAL_MAX_GENERATIONS
+            and _generation_budget_left()
+        ):
+            removal_rewrites += 1
+            findings = removal_findings
+            continue
+        break
 
-    if last_content is not None and last_screening is None:
-        # 키워드 보완을 위해 재작성으로 넘어갔지만 그 재작성이 비용 가드·생성 실패로
-        # 끝난 경우다. 남은 후보는 심사만 받지 않았을 뿐 이미 결제된 정상 후보이므로
-        # 여기서 심사해 살린다(잔여 키워드 지적은 아래 summary에 그대로 기록된다).
-        last_screening = screen_content_against_philosophy(
-            _screening_probe(last_content), philosophy
-        )
-        last_generation_error = None
+    last_content = accepted_content
+    last_screening = accepted_screening
 
     if last_content is None or last_screening is None:
         if last_generation_error is not None:
@@ -1062,6 +1422,8 @@ async def _generate_with_auto_review(
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:
         summary["reviewer_driven_rewrites"] = reviewer_driven_rewrites
+    if removal_rewrites > 0:
+        summary["hard_removal_rewrites"] = removal_rewrites
     if last_ai_review is not None:
         summary["ai_review"] = last_ai_review.payload()
     reviewed_screening = type(last_screening)(
@@ -2701,7 +3063,10 @@ def _cost_guarded_essence_synthesis(
     notes: list[HospitalSourceEvidenceNote],
     operator_note: str | None = None,
 ) -> dict[str, Any]:
-    decision = _run_async(cost_guard.check_and_increment("content"))
+    # 운영 기준 합성은 야간 생성과 다른 예산을 쓴다 — 온보딩 폭주가 계약 병원의 글을
+    # 굶기지 않게 한다. 공급자 HTTP attempt 원장(`provider_usage`)은 아직 'content'로
+    # 남아 있다 — 원장의 카테고리 CHECK 제약을 바꾸는 마이그레이션이 따로 필요하다.
+    decision = _run_async(cost_guard.check_and_increment("essence"))
     if not decision.allowed:
         raise _EssenceReviewCostBlocked(decision.reason or "Essence synthesis cost blocked")
 
@@ -2724,7 +3089,7 @@ def _cost_guarded_essence_review(
     candidate: dict[str, Any],
     notes: list[HospitalSourceEvidenceNote],
 ) -> EssenceAiReview:
-    decision = _run_async(cost_guard.check_and_increment("content"))
+    decision = _run_async(cost_guard.check_and_increment("essence"))
     if not decision.allowed:
         raise _EssenceReviewCostBlocked(decision.reason or "Essence review cost blocked")
 
@@ -2739,6 +3104,55 @@ def _cost_guarded_essence_review(
             )
 
     return _run_async(_call())
+
+
+def _defer_essence_escalation_to_automatic_retry(
+    *,
+    object_id: str,
+    retry_due_at: datetime,
+) -> bool:
+    """자동 재검수 예산이 남은 보류는 아직 기계의 일이다 — RETRYING + 다음 시도 기한.
+
+    같은 병원·snapshot 인시던트 하나를 시도마다 새로 열지 않고 상태만 바꾼다. 기한이
+    지나면 `requires_operator_action`이 그때부터 사람의 일로 읽으므로, 자동 복구가 죽어도
+    운영자 큐에서 사라지지 않는다.
+    """
+
+    from app.core.database import get_async_sessionmaker
+    from app.services.incidents import build_incident_key, mark_retrying
+
+    key = build_incident_key(
+        "essence_auto_review",
+        "essence_snapshot",
+        object_id,
+        IncidentFingerprint.VALIDATION_FAILED,
+    )
+
+    async def _run() -> bool:
+        async with get_async_sessionmaker()() as async_db:
+            incident = await async_db.scalar(select(Incident).where(Incident.dedupe_key == key))
+            if incident is None or incident.state != IncidentState.OPEN.value:
+                return False
+            retrying = await mark_retrying(
+                async_db,
+                incident.id,
+                expected_version=incident.version,
+                actor=AUTO_ESSENCE_ACTOR,
+                reason="automatic essence re-review owns this escalation",
+            )
+            if not isinstance(retrying, Incident):
+                return False
+            retrying.sla_due_at = retry_due_at
+            retrying.severity = IncidentSeverity.MEDIUM
+            await async_db.commit()
+            return True
+
+    try:
+        return bool(_run_async(_run()))
+    except Exception:
+        # 인시던트 상태는 보조 표시다. 실패해도 보류 사실과 재시도 예산은 DB에 남아 있다.
+        logger.exception("Failed to defer Essence escalation incident for %s", object_id)
+        return False
 
 
 @celery_app.task(
@@ -2796,7 +3210,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
                 hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/essence",
+                admin_path=f"/hospitals/{hospital_id}",
                 fingerprint=IncidentFingerprint.COST_BLOCKED,
                 actor=AUTO_ESSENCE_ACTOR,
             )
@@ -2826,7 +3240,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
                 hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/essence",
+                admin_path=f"/hospitals/{hospital_id}",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
             )
@@ -2872,11 +3286,18 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 source_type="ESSENCE_AUTO_REVIEW",
                 hospital_name=hospital_name,
                 hospital_id=hospital_uuid,
-                admin_path=f"/hospitals/{hospital_id}/essence",
+                admin_path=f"/hospitals/{hospital_id}",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
             )
         )
+        if not result.automatic_recovery_exhausted:
+            # 예산이 남은 동안은 같은 인시던트를 RETRYING으로 둔다 — 시도마다 새로 열지
+            # 않고, 자동 재검수 기한이 지나야 운영자의 할 일이 된다.
+            _defer_essence_escalation_to_automatic_retry(
+                object_id=f"{hospital_id}:{snapshot}",
+                retry_due_at=result.next_automatic_attempt_at or datetime.now(timezone.utc),
+            )
     elif result.status in {
         EssenceRefreshStatus.ESCALATED,
         EssenceRefreshStatus.AUTO_APPROVED,
@@ -2908,6 +3329,12 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
         "philosophy_id": str(result.philosophy_id) if result.philosophy_id else None,
         "findings": list(result.findings),
         "synthesis_attempts": result.synthesis_attempts,
+        "automatic_recovery_cycle": result.automatic_recovery_cycle,
+        "next_automatic_attempt_at": (
+            result.next_automatic_attempt_at.isoformat()
+            if result.next_automatic_attempt_at
+            else None
+        ),
     }
 
 
@@ -5123,6 +5550,9 @@ def generate_content_image(self, content_id: str):
 def _generate_single_content_item(
     db, item: ContentItem, hospital: Hospital
 ) -> tuple[GenerationItemState, str | None, str | None]:
+    # 저장 본문 수리 세션 계수는 재작성이 essence_check_summary를 통째로 덮어써도
+    # 살아남아야 한다. 사라지면 예산이 매일 0에서 다시 시작한다.
+    carried_repair_state = _stored_body_repair_state(item)
     philosophy = _generation_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
@@ -5150,7 +5580,21 @@ def _generate_single_content_item(
     )
     if body_uses_current_philosophy:
         stored_assessment = assess_content_publication(item, philosophy)
-        if stored_assessment.code in {
+        # 모델이 HARD로 단정하지 않은(합성 UNCERTAIN만 남은) 차단은 표본 실패다. 같은
+        # 본문을 한 번 더 독립 검수에 태워 본다 — 재검수는 확신도 부족만으로 생긴
+        # UNCERTAIN을 상위 모델로 1회 승격해 스스로 푼다. 예산은 아래에서 계수한다.
+        uncertain_only_block = (
+            stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            and not _stored_model_declared_hard(item)
+            and _stored_review_has_uncertain_finding(item)
+            # 문체/SOFT만 남은 차단은 재작성이 고친다. 그 경로를 가로채지 않는다.
+            and not _stored_ai_review_is_remediable(item)
+        )
+        stored_attempt = _stored_generation_attempt(item)
+        sample_rereview_due = uncertain_only_block and (
+            not stored_attempt.get("reason") or retry_is_due(stored_attempt)
+        )
+        if sample_rereview_due or stored_assessment.code in {
             "CONTENT_AI_REVIEW_STALE",
             "CONTENT_AI_REVIEW_UNAVAILABLE",
             "CONTENT_AI_REVIEW_CONFIG_ERROR",
@@ -5209,13 +5653,21 @@ def _generate_single_content_item(
             )
             summary["ai_review"] = refreshed_review.payload()
             item.essence_check_summary = summary
-            _clear_generation_attempt(db, item)
+            db.commit()
             stored_assessment = assess_content_publication(item, philosophy)
+            if stored_assessment.code == "CONTENT_AI_HARD_FINDING":
+                # 재검수해도 막힌다. 표본 예산을 한 번 쓴 것으로 계수해 하루 한도와
+                # 3일 소진이 적용되게 한다(모델이 HARD로 단정했다면 곧바로 종착이다).
+                _remember_generation_attempt(
+                    db, item, philosophy, "CONTENT_AI_HARD_FINDING"
+                )
+            else:
+                _clear_generation_attempt(db, item)
         repairable_body = stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES or (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             and _stored_ai_review_is_remediable(item)
         )
-        if repairable_body:
+        if repairable_body and _body_repair_session_is_due(item):
             logger.info(
                 "Regenerating repairable stored content %s: %s",
                 item.id,
@@ -5223,7 +5675,10 @@ def _generate_single_content_item(
             )
             # A stored publication finding describes the current body, not an
             # unchanged failed writer input.  Remove that suppression before
-            # falling through to the existing full-body regeneration path.
+            # falling through to the existing full-body regeneration path — but
+            # count the session first so a body nobody can fix deterministically
+            # cannot buy four regenerations a day forever.
+            carried_repair_state = _spend_body_repair_session(db, item)
             _clear_generation_attempt(db, item)
         elif stored_assessment.code is not None and stored_assessment.code not in {
             "CONTENT_IMAGE_NOT_READY",
@@ -5242,6 +5697,19 @@ def _generate_single_content_item(
             # candidate again; the cost guard bounds provider spend and incidents
             # stay deduplicated by item/cause/attempt context.
             previous_attempt = _stored_generation_attempt(item)
+            if _image_reuse_is_due(item):
+                # 어젯밤 이미지 예산을 이미 쓴 슬롯이다. 07:45 마감 전에 같은 병원의
+                # 인증된 이미지를 붙여 본문이 이미지 때문에 비어 있지 않게 한다.
+                reuse_state = _reuse_hospital_image(
+                    db, item, hospital, philosophy, _image_guard_kwargs(item)
+                )
+                if reuse_state == GenerationItemState.SUCCEEDED:
+                    readiness_failure = _persist_publication_readiness(db, item, philosophy)
+                    if readiness_failure is not None:
+                        return GenerationItemState.FAILED, *readiness_failure
+                    return GenerationItemState.SUCCEEDED, None, None
+                if reuse_state == GenerationItemState.DISCARDED:
+                    return reuse_state, None, None
             if (
                 previous_attempt.get("reason")
                 in {
@@ -5355,8 +5823,11 @@ def _generate_single_content_item(
             "generation_philosophy_id": philosophy.id,
             "last_reviewed_philosophy_id": philosophy.id,
             "essence_status": screening.status,
-            "essence_check_summary": _generation_summary(
-                db, hospital.id, screening, philosophy, approved_brief
+            "essence_check_summary": _with_body_repair_state(
+                _generation_summary(
+                    db, hospital.id, screening, philosophy, approved_brief
+                ),
+                carried_repair_state,
             ),
         },
     )
@@ -5439,8 +5910,23 @@ def _heal_missing_essence_for_digest(hospital_id, healed_hospitals: set) -> None
     healed_hospitals.add(hospital_id)
 
 
+# 이미지가 없어 막힌 글의 요약 줄은 실제로 사람이 할 수 있는 조치를 말해야 한다.
+IMAGE_CREDIT_CHECK_ACTION = "이미지 생성 공급자 크레딧·할당량과 비용 가드 한도를 확인해 주세요."
+_IMAGE_BLOCK_CODES = frozenset(
+    {
+        "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
+        "IMAGE_GENERATION_FAILED",
+        _IMAGE_RETRY_EXHAUSTED_CODE,
+        _IMAGE_POLICY_REJECTION_CODE,
+    }
+)
+
+
 def _publication_digest_cause(code: str, summary) -> str:
     cause = generation_safe_cause(code)
+    if code in _IMAGE_BLOCK_CODES:
+        return f"{cause} {IMAGE_CREDIT_CHECK_ACTION}"
     findings = (summary or {}).get("findings") or []
     if code == "ESSENCE_NOT_ALIGNED" and findings and isinstance(findings[0], str):
         # The digest renderer escapes Slack markup and truncates the whole cause.
@@ -5556,11 +6042,22 @@ def morning_content_auto_publish(self):
             due_ids = list(db.execute(_auto_publish_due_stmt(today)).scalars().all())
 
         blocked_outcomes: list[dict[str, object]] = []
+        reused_image_outcomes: list[dict[str, object]] = []
         healed_hospitals: set = set()
         for content_id in due_ids:
             outcome = _auto_publish_one(content_id)
             if outcome is None:
                 continue
+            if outcome.get("image_reused"):
+                reused_image_outcomes.append(
+                    {
+                        "hospital_id": outcome["hospital_id"],
+                        "hospital_name": outcome["hospital_name"],
+                        "content_id": content_id,
+                        "image_failure_reason": outcome.get("image_failure_reason"),
+                        "image_failure_class": outcome.get("image_failure_class"),
+                    }
+                )
             if outcome["kind"] == "blocked":
                 # The incident stays per item (it drives the Admin retry control);
                 # Slack gets one digest for the whole batch below.
@@ -5616,10 +6113,14 @@ def morning_content_auto_publish(self):
             if not revalidated and settings.APP_ENV.lower() == "production":
                 logger.warning("Auto-published content revalidation failed: %s", content_id)
 
-        if blocked_outcomes:
+        if blocked_outcomes or reused_image_outcomes:
             with SyncSessionLocal() as digest_db:
                 enqueue_generation_blocked_digest_sync(
-                    digest_db, today, PUBLISH_MORNING_BATCH, blocked_outcomes
+                    digest_db,
+                    today,
+                    PUBLISH_MORNING_BATCH,
+                    blocked_outcomes,
+                    reused_outcomes=reused_image_outcomes,
                 )
                 digest_db.commit()
 
@@ -5672,11 +6173,20 @@ def weekly_generation_rejection_rollup(self):
     week_start = current_week_start - timedelta(days=7)
     with SyncSessionLocal() as db:
         outcomes = _weekly_generation_rejection_outcomes(db, week_start=week_start)
-        notification = enqueue_generation_rejection_weekly_rollup_sync(db, week_start, outcomes)
+        # 같은 메시지 한 건 안에서 수율을 맨 위에 보여 준다. 차단이 0건인 주에도
+        # 계약 예정 슬롯이 있으면 이 한 건은 나간다 — 새 메시지도, 새 주기도 아니다.
+        yield_facts = compute_content_yield(
+            db, period_start=week_start, period_end=week_start + timedelta(days=7)
+        )
+        notification = enqueue_generation_rejection_weekly_rollup_sync(
+            db, week_start, outcomes, yield_facts=yield_facts
+        )
         db.commit()
     return {
         "week_start": week_start.isoformat(),
         "blocked_count": len(outcomes),
+        "due_count": sum(fact.due for fact in yield_facts),
+        "published_count": sum(fact.published for fact in yield_facts),
         "notification_enqueued": notification is not None,
     }
 
@@ -5839,6 +6349,21 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
             else 0
         ),
         "content_revision": int(getattr(item, "content_revision", 1) or 1),
+        # 이미지를 만들지 못해 같은 병원의 인증 이미지를 빌려 발행한 사실. 정상 발행을
+        # 알리지 않는 계약은 그대로고, 08:00 차단 요약 안의 한 섹션으로만 보고한다.
+        "image_reused": bool(getattr(item, "image_reused_from_content_id", None)),
+        **_image_reuse_payload(item),
+    }
+
+
+def _image_reuse_payload(item: ContentItem) -> dict[str, object]:
+    if not getattr(item, "image_reused_from_content_id", None):
+        return {}
+    facts = stored_image_reuse_facts(item)
+    return {
+        "image_reused_from_content_id": str(item.image_reused_from_content_id),
+        "image_failure_reason": str(facts.get("image_failure_reason") or "IMAGE_GENERATION_FAILED"),
+        "image_failure_class": str(facts.get("image_failure_class") or "PROVIDER_ERROR"),
     }
 
 

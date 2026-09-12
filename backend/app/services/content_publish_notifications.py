@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -50,6 +51,8 @@ _GENERATION_REJECTION_WEEKLY_ROLLUP_DEDUPE_PREFIX = (
 # Slack Block Kit truncates long sections; keep the digest inside one readable block.
 _DIGEST_MAX_HOSPITALS = 12
 _DIGEST_MAX_ITEMS_PER_HOSPITAL = 5
+# 수율 줄은 병원당 한 줄이라 차단 요약보다 조금 더 보여 준다. 나머지는 "그 외 N개".
+_YIELD_MAX_HOSPITALS = 15
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
@@ -84,6 +87,48 @@ class PublishNotificationIdentity:
 PublishNotificationState = Literal[
     "PENDING", "SENDING", "RETRYING", "HOLD", "SENT", "FAILED"
 ]
+
+
+class HospitalYieldView(Protocol):
+    """주간 요약이 읽는 수율 사실의 모양(`services/content_yield.HospitalYieldFact`)."""
+
+    hospital_name: str
+    due: int
+    published: int
+    published_with_reused_image: int
+    retrying: int
+    operator_required: int
+
+
+def _yield_lines(yield_facts: Sequence[HospitalYieldView]) -> tuple[list[str], int, int]:
+    """병원별 '발행 n/예정 m' 한 줄. 부족분이 큰 병원이 위로 온다.
+
+    계약도 발행도 없는 병원은 줄을 만들지 않는다 — 대표가 보는 것은 계약이 있는
+    병원의 이행이지 빈 행의 목록이 아니다. `재시도 중`은 자동 복구가 소유한 수이고
+    `조치 필요`만 사람의 일이다(두 수를 한 줄에 같이 두는 이유).
+    """
+
+    active = [fact for fact in yield_facts if fact.due or fact.published]
+    ranked = sorted(
+        active,
+        key=lambda fact: (-(fact.due - fact.published), fact.hospital_name),
+    )
+    shown = ranked[:_YIELD_MAX_HOSPITALS]
+    lines = [
+        f"• *{_publish_safe_text(fact.hospital_name, 100)}* "
+        f"발행 {fact.published}/{fact.due} "
+        f"(재사용 이미지 {fact.published_with_reused_image}, "
+        f"재시도 중 {fact.retrying}, 조치 필요 {fact.operator_required})"
+        for fact in shown
+    ]
+    hidden = len(ranked) - len(shown)
+    if hidden > 0:
+        lines.append(f"• 그 외 {hidden}개")
+    return (
+        lines,
+        sum(fact.published for fact in active),
+        sum(fact.due for fact in active),
+    )
 
 
 def build_publish_notification_intent(
@@ -174,10 +219,52 @@ def build_missing_approved_essence_digest_intent(
     )
 
 
+IMAGE_REUSE_NEXT_ACTION = (
+    "이미지 생성 공급자 크레딧·할당량과 비용 가드 한도를 확인해 주세요. "
+    "새 이미지가 생성되면 재사용 이미지는 자동으로 교체됩니다."
+)
+_IMAGE_FAILURE_CLASS_LABELS = {
+    "COST_GUARD": "비용 가드 한도",
+    "PROVIDER_QUOTA": "공급자 한도·크레딧 오류",
+    "POLICY_REJECTED": "정책 검사 거절",
+    "PROVIDER_ERROR": "공급자 오류",
+}
+
+
+def _image_reuse_section(
+    reused_outcomes: Sequence[Mapping[str, object]],
+) -> tuple[str, list[str]]:
+    """Group reused-image publications by hospital with their dominant cause."""
+
+    hospitals: dict[tuple[str, str], list[str]] = {}
+    for outcome in reused_outcomes:
+        key = (
+            str(outcome.get("hospital_id") or ""),
+            str(outcome.get("hospital_name") or "이름 미확인 병원"),
+        )
+        failure_class = str(outcome.get("image_failure_class") or "PROVIDER_ERROR")
+        hospitals.setdefault(key, []).append(
+            _IMAGE_FAILURE_CLASS_LABELS.get(failure_class, _IMAGE_FAILURE_CLASS_LABELS["PROVIDER_ERROR"])
+        )
+    lines = []
+    for (_hospital_id, hospital_name), labels in sorted(hospitals.items()):
+        dominant = Counter(labels).most_common(1)[0][0]
+        lines.append(
+            f"• *{_publish_safe_text(hospital_name, 100)}* 재사용 발행 {len(labels)}건 · {dominant}"
+        )
+    identity = sorted(
+        f"{str(outcome.get('hospital_id') or '')}:{str(outcome.get('content_id') or '')}"
+        f":{str(outcome.get('image_failure_class') or '')}"
+        for outcome in reused_outcomes
+    )
+    return "\n".join(identity), lines
+
+
 def build_generation_blocked_digest_intent(
     cycle_date: date,
     batch: str,
     blocked_outcomes: Sequence[Mapping[str, object]],
+    reused_outcomes: Sequence[Mapping[str, object]] = (),
 ) -> NotificationIntent:
     """Build one blocked-publication summary for a Seoul morning batch.
 
@@ -187,7 +274,7 @@ def build_generation_blocked_digest_intent(
     deliberately share one durable notification key across observations.
     """
 
-    if not blocked_outcomes:
+    if not blocked_outcomes and not reused_outcomes:
         raise NotificationPayloadError("GENERATION_BLOCKED_DIGEST_ITEMS_REQUIRED")
     entries = [
         (
@@ -217,7 +304,10 @@ def build_generation_blocked_digest_intent(
             ) in entries
         }
     )
-    digest = hashlib.sha256("\n".join(identity).encode()).hexdigest()[:32]
+    reuse_identity, reuse_lines = _image_reuse_section(reused_outcomes)
+    digest = hashlib.sha256(
+        "\n".join([*identity, reuse_identity]).encode()
+    ).hexdigest()[:32]
     hospitals: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
     for (
         hospital_id,
@@ -248,19 +338,33 @@ def build_generation_blocked_digest_intent(
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}곳")
     summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
+    if not entries:
+        summary = f"재사용 발행 {len(reused_outcomes)}건"
+    blocks = [
+        header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
+        section_block("generation_blocked_digest_summary", f"*{summary}*"),
+    ]
+    if lines:
+        blocks.append(section_block("generation_blocked_digest_items", "\n".join(lines)))
+    if reuse_lines:
+        # 새 Slack 메시지를 만들지 않는다 — 같은 08:00 요약 안의 한 섹션이다.
+        blocks.append(
+            section_block(
+                "generation_blocked_digest_image_reuse",
+                "*대표 이미지 재사용 발행*\n"
+                + "\n".join(reuse_lines)
+                + f"\n{IMAGE_REUSE_NEXT_ACTION}",
+            )
+        )
+    blocks.append(
+        action_block("generation_blocked_digest_action", action_url, "운영센터에서 모아보기")
+    )
     message = validated_message(
         RenderedSlackMessage(
             f"무슨 문제인지: 자동 발행 차단 {summary} · "
             "고객 영향: 예정 글이 공개되지 않음 · "
             "지금 할 일: 운영센터에서 차단 항목 조치 · 처리 기한: 오늘 중",
-            (
-                header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
-                section_block("generation_blocked_digest_summary", f"*{summary}*"),
-                section_block("generation_blocked_digest_items", "\n".join(lines)),
-                action_block(
-                    "generation_blocked_digest_action", action_url, "운영센터에서 모아보기"
-                ),
-            ),
+            tuple(blocks),
             action_url,
         ),
         settings.ADMIN_BASE_URL,
@@ -279,10 +383,17 @@ def build_generation_blocked_digest_intent(
 def build_generation_rejection_weekly_rollup_intent(
     week_start: date,
     rejected_outcomes: Sequence[Mapping[str, object]],
+    yield_facts: Sequence[HospitalYieldView] = (),
 ) -> NotificationIntent:
-    """Build one hospital-and-reason summary for unresolved rejection episodes."""
+    """Build one hospital-and-reason summary for unresolved rejection episodes.
 
-    if not rejected_outcomes:
+    수율 줄은 **같은 메시지 맨 위**에 붙는다. 새 Slack 메시지·새 주기를 만들지
+    않는다(docs/ops/slack-notification-policy.md). 차단이 0건이어도 계약 예정 슬롯이
+    있으면 이 한 건은 나간다 — 대표가 "이번 주에 몇 편 나왔는가"를 볼 곳이 여기뿐이다.
+    """
+
+    yield_lines, published_total, due_total = _yield_lines(yield_facts)
+    if not rejected_outcomes and not yield_lines:
         raise NotificationPayloadError("GENERATION_REJECTION_WEEKLY_ITEMS_REQUIRED")
     hospitals: dict[tuple[str, str], dict[str, int]] = {}
     item_count = 0
@@ -312,25 +423,50 @@ def build_generation_rejection_weekly_rollup_intent(
         lines.append(f"• 그 외 {hidden}곳")
 
     week_end = week_start + timedelta(days=6)
-    summary = f"병원 {len(hospitals)}곳 · 차단 {item_count}건"
+    blocked_summary = (
+        f"병원 {len(hospitals)}곳 · 차단 {item_count}건" if item_count else "차단 없음"
+    )
+    yield_summary = f"발행 {published_total}/{due_total}" if yield_lines else ""
+    summary = " · ".join(part for part in (yield_summary, blocked_summary) if part)
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
+    yield_blocks = (
+        (
+            section_block(
+                "generation_rejection_weekly_yield_summary",
+                f"*계약 예정 대비 발행 · {yield_summary}*",
+            ),
+            *(
+                section_block(f"generation_rejection_weekly_yield_{index}", chunk)
+                for index, chunk in enumerate(chunk_lines(yield_lines), start=1)
+            ),
+        )
+        if yield_lines
+        else ()
+    )
+    blocked_blocks = (
+        *(
+            section_block(f"generation_rejection_weekly_items_{index}", chunk)
+            for index, chunk in enumerate(chunk_lines(lines), start=1)
+        ),
+    )
+    next_action = (
+        "운영센터에서 원인과 승인 자료 확인"
+        if item_count
+        else "운영센터에서 병원별 발행 수율 확인"
+    )
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: 주간 콘텐츠 생성 검수 차단 {summary} · "
-            "고객 영향: 해당 원고가 자동 발행 준비를 마치지 못함 · "
-            "지금 할 일: 운영센터에서 원인과 승인 자료 확인 · 처리 기한: 이번 주",
+            f"무슨 문제인지: 주간 콘텐츠 발행 현황 {summary} · "
+            "고객 영향: 차단된 원고가 자동 발행 준비를 마치지 못함 · "
+            f"지금 할 일: {next_action} · 처리 기한: 이번 주",
             (
-                header_block("generation_rejection_weekly_header", "주간 콘텐츠 생성 검수 요약"),
+                header_block("generation_rejection_weekly_header", "주간 콘텐츠 발행 요약"),
                 section_block(
                     "generation_rejection_weekly_summary",
                     f"*{week_start.isoformat()}–{week_end.isoformat()} · {summary}*",
                 ),
-                *(
-                    section_block(
-                        f"generation_rejection_weekly_items_{index}", chunk
-                    )
-                    for index, chunk in enumerate(chunk_lines(lines), start=1)
-                ),
+                *yield_blocks,
+                *blocked_blocks,
                 action_block(
                     "generation_rejection_weekly_action",
                     action_url,
@@ -394,12 +530,15 @@ def enqueue_generation_blocked_digest_sync(
     cycle_date: date,
     batch: str,
     blocked_outcomes: Sequence[Mapping[str, object]],
+    reused_outcomes: Sequence[Mapping[str, object]] = (),
 ) -> NotificationOutbox | None:
     """Add at most one digest for an unchanged blocked-publication set."""
 
-    if not blocked_outcomes:
+    if not blocked_outcomes and not reused_outcomes:
         return None
-    intent = build_generation_blocked_digest_intent(cycle_date, batch, blocked_outcomes)
+    intent = build_generation_blocked_digest_intent(
+        cycle_date, batch, blocked_outcomes, reused_outcomes=reused_outcomes
+    )
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     ).scalar_one_or_none()
@@ -412,12 +551,23 @@ def enqueue_generation_rejection_weekly_rollup_sync(
     db: Session,
     week_start: date,
     rejected_outcomes: Sequence[Mapping[str, object]],
+    *,
+    yield_facts: Sequence[HospitalYieldView] = (),
 ) -> NotificationOutbox | None:
-    """Add at most one rejection rollup for a Seoul calendar week."""
+    """Add at most one weekly rollup for a Seoul calendar week.
 
-    if not rejected_outcomes:
+    주 시작일 하나가 중복 키이므로 재디스패치해도 그 주의 outbox 행은 하나다.
+    차단이 없어도 계약 예정 슬롯이 있으면 수율 한 건으로 나간다. 둘 다 없으면
+    보낼 사실이 없으므로 아무 행도 만들지 않는다.
+    """
+
+    if not rejected_outcomes and not any(
+        fact.due or fact.published for fact in yield_facts
+    ):
         return None
-    intent = build_generation_rejection_weekly_rollup_intent(week_start, rejected_outcomes)
+    intent = build_generation_rejection_weekly_rollup_intent(
+        week_start, rejected_outcomes, yield_facts
+    )
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)
     ).scalar_one_or_none()

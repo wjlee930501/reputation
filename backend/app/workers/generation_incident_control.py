@@ -32,7 +32,11 @@ from app.services.incidents import (
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
-from app.workers.generation_retry_policy import next_recovery_sweep
+from app.workers.generation_retry_policy import (
+    GenerationRetryClass,
+    next_recovery_sweep,
+    repair_session_is_available,
+)
 from app.workers.generation_run_control import safe_generation_rejection_message
 
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
@@ -70,8 +74,11 @@ PUBLISHED_IMAGE_RECERTIFY_CODES: frozenset[str] = recertification.OPERATOR_REQUI
 # records the incident without opening another outbox row. Published-image
 # recertification remains generation-owned and immediate because a public page has
 # already regressed and automatic recovery is exhausted.
+# 독립 검수 공급자 설정 오류는 자동 재시도 대상이 아니다 — 매일 조용히 실패하는 대신
+# 즉시 한 번 알리고 사람이 설정을 고치게 한다.
 _IMMEDIATE_GENERATION_NOTIFICATION_CODES: frozenset[str] = (
-    frozenset({"COST_BLOCKED"}) | PUBLISHED_IMAGE_RECERTIFY_CODES
+    frozenset({"COST_BLOCKED", "CONTENT_AI_REVIEW_CONFIG_ERROR"})
+    | PUBLISHED_IMAGE_RECERTIFY_CODES
 )
 _EXTERNALLY_OWNED_IMMEDIATE_NOTIFICATION_CODES = frozenset({"COST_BLOCKED"})
 _GENERATION_OWNED_IMMEDIATE_NOTIFICATION_CODES = (
@@ -108,9 +115,53 @@ _AUTOMATIC_RECOVERY_CODES = frozenset(
         "CONTENT_IMAGE_NOT_VERIFIED",
     }
 )
+# 저장된 본문을 작가가 스스로 고치는 코드. 예산이 남아 있는 동안은 자동 복구가 소유한
+# 상태이므로 사람의 할 일(OPEN)이 아니라 RETRYING으로 연다.
+_AUTOMATIC_BODY_REPAIR_CODES = frozenset(
+    {
+        "FAQ_FIELDS_MISSING",
+        "MISSING_REFERENCES",
+        "FORBIDDEN_EXPRESSION",
+        "ESSENCE_NOT_ALIGNED",
+        "CONTENT_AI_REVIEW_STALE",
+    }
+)
+_BODY_REPAIR_STATE_KEY = "automatic_body_repair"
+_GENERATION_ATTEMPT_KEY = "generation_attempt"
 # One Slack digest per morning batch replaces the per-content-item pages.
 PREPUBLISH_MORNING_BATCH = "PREPUBLISH_0745"
 PUBLISH_MORNING_BATCH = "PUBLISH_0800"
+
+
+def _stored_generation_attempt(item) -> dict:
+    summary = getattr(item, "essence_check_summary", None)
+    attempt = summary.get(_GENERATION_ATTEMPT_KEY) if isinstance(summary, dict) else None
+    return dict(attempt) if isinstance(attempt, dict) else {}
+
+
+def scheduled_recovery_owns_blocker(code: str, item) -> bool:
+    """Return whether a sweep still owns this cause, so it is not operator work.
+
+    예산이 남아 있는 동안의 자동 복구는 RETRYING이다. 예산이 소진돼
+    OPERATOR_REQUIRED로 전이한 뒤에야 원인별 인시던트 1건이 OPEN으로 열린다.
+    """
+
+    attempt = _stored_generation_attempt(item)
+    if (
+        attempt.get("reason") == code
+        and attempt.get("retry_class") == GenerationRetryClass.OPERATOR_REQUIRED.value
+    ):
+        return False
+    if code in _AUTOMATIC_BODY_REPAIR_CODES:
+        summary = getattr(item, "essence_check_summary", None)
+        state = summary.get(_BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
+        return repair_session_is_available(state)
+    if code in _AUTOMATIC_RECOVERY_CODES:
+        return True
+    return (
+        attempt.get("reason") == code
+        and attempt.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    )
 
 
 def is_provider_transient_generation_code(code: str) -> bool:
@@ -324,7 +375,8 @@ def _incident_identity(
     """Use one durable incident per hospital for a hospital-level preparation gate."""
 
     if code == "MISSING_APPROVED_ESSENCE":
-        return "hospital", str(hospital_id), f"/hospitals/{hospital_id}/essence"
+        # 옛 `/essence` 경로는 현황 탭의 예외 카드로 합쳐졌다(route-redirects.ts).
+        return "hospital", str(hospital_id), f"/hospitals/{hospital_id}"
     if code in PUBLISHED_IMAGE_RECERTIFY_CODES and subject_hash is not None:
         # 사람이 내리는 결정은 이미지 subject(유형 + 제목)마다 다르다. 같은 subject의
         # 반복 디스패치는 한 건으로 묶고, 다음 제목 편집은 새 건으로 연다. 판으로 묶으면
@@ -549,6 +601,9 @@ async def open_generation_incident(
                 reason="generation attempt failed",
             )
             notification_code = code
+        observed_at = datetime.now(UTC)
+        get_item = getattr(db, "get", None)
+        item = await get_item(ContentItem, item_id) if get_item is not None else None
         if notification_code == "MISSING_APPROVED_ESSENCE":
             # This incident records system work. Human action is represented by
             # the separate snapshot-keyed ESCALATED incident, including its SLA.
@@ -563,7 +618,8 @@ async def open_generation_incident(
                 incident = retrying
                 incident.sla_due_at = None
                 incident.severity = IncidentSeverity.MEDIUM
-        elif notification_code in _AUTOMATIC_RECOVERY_CODES:
+        elif scheduled_recovery_owns_blocker(notification_code, item):
+            # 예산이 남아 있는 자동 복구는 사람의 할 일이 아니다. 소진 뒤에만 OPEN이 된다.
             retrying = await mark_retrying(
                 db, incident.id, expected_version=incident.version,
                 actor="content-generation-worker",
@@ -573,9 +629,14 @@ async def open_generation_incident(
                 incident = retrying
             incident.sla_due_at = next_recovery_sweep()
             incident.severity = IncidentSeverity.MEDIUM
-        observed_at = datetime.now(UTC)
-        get_item = getattr(db, "get", None)
-        item = await get_item(ContentItem, item_id) if get_item is not None else None
+        if blocking_cause is None:
+            await _recover_superseded_generation_incidents(
+                db,
+                incident=incident,
+                item_id=item_id,
+                hospital_id=hospital_id,
+                code=notification_code,
+            )
         notification_due = notify and _morning_notification_due(
             code=notification_code,
             item=item,
@@ -621,6 +682,59 @@ async def open_generation_incident(
             await enqueue_notification(db, notification)
         await db.commit()
         return incident.id
+
+
+async def _recover_superseded_generation_incidents(
+    db, *, incident: Incident, item_id: uuid.UUID, hospital_id: uuid.UUID, code: str
+) -> int:
+    """Close this item's other open causes once a new one is recorded.
+
+    한 글이 동시에 여러 원인으로 열려 있으면 운영센터가 같은 일을 여러 번 시킨다.
+    지금 관측된 원인만 남기고 나머지는 회수한다(원인별 1건 계약).
+    """
+
+    execute = getattr(db, "execute", None)
+    if execute is None:
+        return 0
+    superseded = list(
+        (
+            await execute(
+                select(Incident).where(
+                    Incident.hospital_id == hospital_id,
+                    Incident.source_type == "CONTENT_GENERATION",
+                    Incident.source_id == str(item_id),
+                    Incident.id != incident.id,
+                    Incident.safe_error_code != code,
+                    Incident.state.in_((IncidentState.OPEN, IncidentState.RETRYING)),
+                )
+            )
+        ).scalars()
+    )
+    recovered = 0
+    for stale in superseded:
+        current = stale
+        if current.state == IncidentState.OPEN:
+            retrying = await mark_retrying(
+                db,
+                current.id,
+                expected_version=current.version,
+                actor="content-generation-worker",
+                reason="another cause now blocks this slot",
+            )
+            if not isinstance(retrying, Incident):
+                continue
+            current = retrying
+        result = await mark_recovered(
+            db,
+            current.id,
+            expected_version=current.version,
+            observed_success=True,
+            actor="content-generation-worker",
+            reason="superseded by a newer generation cause",
+        )
+        if isinstance(result, Incident):
+            recovered += 1
+    return recovered
 
 
 async def recover_generation_incidents(

@@ -56,6 +56,10 @@ _REJECTION_MESSAGES = {
         "FAQ 공개 필수 항목이 재작성 후에도 완성되지 않았습니다. "
         "운영 센터에서 질문과 답변 요약을 확인해 주세요."
     ),
+    "truncated": (
+        "생성 출력이 잘려 완전한 원고를 받지 못했습니다. "
+        "다음 예약 배치가 분량을 줄여 다시 생성합니다."
+    ),
 }
 GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
     {_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values()}
@@ -164,6 +168,10 @@ def _safe_rejection_message(error: ValueError) -> str:
     """Classify known hard gates without persisting provider or candidate text."""
 
     detail = str(error).casefold()
+    if "truncated" in detail:
+        # 잘린 응답은 가격·지역·검색 구조 게이트 실패가 아니다. 운영자에게 틀린 원인을
+        # 보여주면 승인 자료를 고치라는 엉뚱한 조치로 이어진다.
+        return _REJECTION_MESSAGES["truncated"]
     if "unverified fixed price or coverage" in detail:
         return _REJECTION_MESSAGES["price"]
     if "geo hard-fail" in detail or "citable reference" in detail:
@@ -289,7 +297,10 @@ def finish_explicit_run(
                 "retry_class": retry_class.value,
             }
         )
-        if retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+        if retry_class in (
+            GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
+            GenerationRetryClass.SAMPLE_RECOVERABLE,
+        ):
             item_result["next_retry_at"] = next_recovery_sweep().isoformat()
     result = db.execute(
         update(OperationRun)

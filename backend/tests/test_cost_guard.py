@@ -193,6 +193,7 @@ def _set_limits(monkeypatch, *, category="content", daily, monthly):
         "image": ("COST_GUARD_DAILY_IMAGE_CALLS", "COST_GUARD_MONTHLY_IMAGE_CALLS"),
         "sov": ("COST_GUARD_DAILY_SOV_QUERIES", "COST_GUARD_MONTHLY_SOV_QUERIES"),
         "leadgen": ("COST_GUARD_DAILY_LEADGEN_CALLS", "COST_GUARD_MONTHLY_LEADGEN_CALLS"),
+        "essence": ("COST_GUARD_DAILY_ESSENCE_CALLS", "COST_GUARD_MONTHLY_ESSENCE_CALLS"),
     }[category]
     monkeypatch.setattr(cost_guard.settings, field[0], daily)
     monkeypatch.setattr(cost_guard.settings, field[1], monthly)
@@ -398,6 +399,43 @@ async def test_leadgen_budget_is_independent_of_the_operations_sov_budget(monkey
 
     # 리드젠이 막혀도 운영 측정은 그대로 열려 있어야 한다.
     assert (await cost_guard.check_and_increment("sov", redis_client=redis)).allowed is True
+
+
+async def test_essence_budget_is_independent_of_the_nightly_content_budget(monkeypatch, alerts):
+    """운영 기준 합성·검수가 야간 생성과 같은 예산을 쓰면 온보딩 폭주가 글을 굶긴다."""
+    _set_limits(monkeypatch, category="essence", daily=2, monthly=1000)
+    _set_limits(monkeypatch, category="content", daily=100, monthly=1000)
+    redis = FakeRedis()
+
+    assert (await cost_guard.check_and_increment("essence", count=2, redis_client=redis)).allowed
+    blocked = await cost_guard.check_and_increment("essence", redis_client=redis)
+    assert blocked.allowed is False
+    assert "운영 기준" in blocked.reason
+    # 예약 키가 카테고리별로 갈라져 있어야 콘텐츠 예산이 그대로 열려 있다.
+    assert any("cost_guard:essence:" in key for key in redis.store)
+    assert (await cost_guard.check_and_increment("content", redis_client=redis)).allowed is True
+
+
+async def test_essence_reservation_receipt_is_scoped_to_its_own_category(monkeypatch, alerts):
+    """영수증·킬스위치·80% 경고 배선이 새 카테고리에도 똑같이 걸린다."""
+    _set_limits(monkeypatch, category="essence", daily=1000, monthly=10)
+    redis = FakeRedis()
+
+    decision = await cost_guard.reserve(
+        "essence", count=1, reservation_id="essence-test-1", redis_client=redis
+    )
+    assert decision.allowed is True
+    assert decision.receipt is not None and decision.receipt.category == "essence"
+    # 같은 예약 ID 재진입은 카운터를 두 번 올리지 않는다(멱등 영수증).
+    duplicate = await cost_guard.reserve(
+        "essence", count=1, reservation_id="essence-test-1", redis_client=redis
+    )
+    assert duplicate.allowed is True
+    monthly_key = next(k for k in redis.store if "cost_guard:essence:monthly:" in k)
+    assert redis.store[monthly_key] == 1
+
+    await cost_guard.set_kill_switch(True, redis_client=redis)
+    assert (await cost_guard.check_and_increment("essence", redis_client=redis)).allowed is False
 
 
 async def test_leadgen_reservation_charges_the_call_count_not_the_diagnosis(monkeypatch, alerts):

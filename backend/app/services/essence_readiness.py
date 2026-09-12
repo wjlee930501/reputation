@@ -101,13 +101,19 @@ def resolve_essence_readiness(
     )
 
 
-def _base_candidate_predicate():
-    """Only APPROVED rows qualify; ordering prefers the base over legacy fallbacks."""
+def base_candidate_predicate():
+    """The one definition of "이 병원의 현재 승인본" — 읽기 게이트와 자동 검수 공용.
+
+    APPROVED 행만 후보이고 순서가 base flag를 앞세운다. 보관된 행에 옛 배포의 base flag가
+    남아 있어도 승인본이 되지 않는다. 판정이 두 곳에 각자 있으면 자동 검수는 "승인본 있음"
+    으로 보고 아무것도 만들지 않는데 읽기 게이트는 "없음"으로 보아 생성이 영원히 막힌다
+    (`essence_auto_review._approved`가 이 함수를 그대로 쓴다).
+    """
 
     return HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED
 
 
-def _base_candidate_ordering() -> tuple[Any, ...]:
+def base_candidate_ordering() -> tuple[Any, ...]:
     return (
         HospitalContentPhilosophy.is_base.desc(),
         HospitalContentPhilosophy.approved_at.desc().nullslast(),
@@ -124,9 +130,9 @@ async def get_essence_readiness(
         select(HospitalContentPhilosophy)
         .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            _base_candidate_predicate(),
+            base_candidate_predicate(),
         )
-        .order_by(*_base_candidate_ordering())
+        .order_by(*base_candidate_ordering())
         .limit(1)
     )
     approved = approved_result.scalar_one_or_none()
@@ -152,9 +158,9 @@ async def get_public_essence_readiness(
         select(HospitalContentPhilosophy)
         .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            _base_candidate_predicate(),
+            base_candidate_predicate(),
         )
-        .order_by(*_base_candidate_ordering())
+        .order_by(*base_candidate_ordering())
         .limit(1)
     )
     approved = approved_result.scalar_one_or_none()
@@ -174,9 +180,9 @@ def get_essence_readiness_sync(db: Session, hospital_id: uuid.UUID) -> EssenceRe
         select(HospitalContentPhilosophy)
         .where(
             HospitalContentPhilosophy.hospital_id == hospital_id,
-            _base_candidate_predicate(),
+            base_candidate_predicate(),
         )
-        .order_by(*_base_candidate_ordering())
+        .order_by(*base_candidate_ordering())
         .limit(1)
     ).scalar_one_or_none()
     required_sources = list(
@@ -269,9 +275,9 @@ async def get_public_approved_philosophy_ids(
                 HospitalContentPhilosophy.version,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(ids),
-                _base_candidate_predicate(),
+                base_candidate_predicate(),
             )
-            .order_by(*_base_candidate_ordering())
+            .order_by(*base_candidate_ordering())
         )
     ).all()
     source_rows = (
@@ -353,9 +359,9 @@ async def get_essence_readiness_states(
                 HospitalContentPhilosophy.version,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(ids),
-                _base_candidate_predicate(),
+                base_candidate_predicate(),
             )
-            .order_by(*_base_candidate_ordering())
+            .order_by(*base_candidate_ordering())
         )
     ).all()
     source_rows = (
@@ -441,11 +447,18 @@ async def _load_escalated_drafts(
     `essence_auto_review._drafts_for_snapshot`와 같은 조건). 자료가 바뀌어 새 판이 자동
     승인된 뒤에도 옛 초안은 DRAFT로 남으므로, 판을 보지 않으면 그 병원은 영영 "예외 있음"이다.
 
+    자동 재검수 예산이 남은 시스템 초안은 세지 않는다 — 그 병원의 콘텐츠 상태는 예외가
+    아니라 "준비 중(essence_review)"이고, 인시던트도 RETRYING으로 남는다.
+
     `unsupported_gaps`는 postgres에서만 JSONB인 variant라 컨테인먼트를 SQL로 강제하면 다른
     dialect에서 깨진다. 병원당 초안은 소수이므로 gap 목록만 읽어 파이썬에서 거른다.
     사유는 하나라도 빠지면 승인 게이트와 화면이 어긋나므로 전부 싣는다
     (`api/admin/essence.py`의 예외 승인 조건과 같은 목록).
     """
+    # 자동 재검수 예산이 남은 보류는 아직 기계의 일이다 — 판정은 자동 검수 쪽 한 곳에만
+    # 둔다(모듈 순환을 피하려고 여기서만 늦게 가져온다).
+    from app.services.essence_auto_review import automatic_recovery_owns_draft
+
     rows = (
         await db.execute(
             select(
@@ -453,6 +466,11 @@ async def _load_escalated_drafts(
                 HospitalContentPhilosophy.id,
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.unsupported_gaps,
+                HospitalContentPhilosophy.created_by,
+                HospitalContentPhilosophy.reviewed_by,
+                HospitalContentPhilosophy.approved_at,
+                HospitalContentPhilosophy.created_at,
+                HospitalContentPhilosophy.updated_at,
             ).where(
                 HospitalContentPhilosophy.hospital_id.in_(hospital_ids),
                 HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
@@ -462,6 +480,11 @@ async def _load_escalated_drafts(
     escalated: dict[uuid.UUID, tuple[uuid.UUID, tuple[str, ...]]] = {}
     for row in rows:
         if row.source_snapshot_hash != snapshot_hashes.get(row.hospital_id):
+            continue
+        # 사람이 손대지 않은 시스템 초안이고 자동 재검수가 한 번 더 남아 있으면 예외로
+        # 세지 않는다. 자동 복구 중인 일을 운영자의 할 일로 만들지 않는다(운영 철학).
+        # 예산이 끝나거나 사람이 손댄 초안은 그대로 예외다.
+        if automatic_recovery_owns_draft(row):
             continue
         gaps = [
             gap
@@ -540,9 +563,9 @@ async def _get_lightweight_essence_readiness(
                 HospitalContentPhilosophy.version,
             ).where(
                 HospitalContentPhilosophy.hospital_id == hospital_id,
-                _base_candidate_predicate(),
+                base_candidate_predicate(),
             )
-            .order_by(*_base_candidate_ordering())
+            .order_by(*base_candidate_ordering())
             .limit(1)
         )
     ).one_or_none()

@@ -5,7 +5,7 @@
 킬스위치로 지출 폭주를 막는다.
 
 설계 원칙:
-- Redis 카운터로 카테고리(content|image|sov|leadgen)별 일일/월간 호출 수를 집계한다.
+- Redis 카운터로 카테고리(content|image|essence|sov|leadgen)별 일일/월간 호출 수를 집계한다.
 - 하드 상한 도달 시 이후 호출을 차단(allowed=False)하고 운영자에게 1회 알린다.
 - 소프트 임계(하드 상한의 80%) 최초 도달 시 1회 조기 경고한다.
 - 킬스위치가 켜지면 카테고리 불문 전부 차단한다.
@@ -54,11 +54,14 @@ KILL_SWITCH_KEY = "cost_guard:kill_switch"
 # 상향분은 그날 키에만 저장되므로 다음 날 자동으로 원복된다.
 MAX_DAILY_LIMIT_MULTIPLIER = 2
 
-CATEGORIES: tuple[str, ...] = ("content", "image", "sov", "leadgen")
+CATEGORIES: tuple[str, ...] = ("content", "image", "essence", "sov", "leadgen")
 
 _CATEGORY_LABELS = {
     "content": "콘텐츠 제작·검수",
     "image": "이미지 생성",
+    # 운영 기준(Essence) 합성·검수는 병원 수에 비례하는 온보딩 비용이고 야간 생성과
+    # 성수기가 다르다. 같은 'content' 예산을 쓰면 한쪽의 재시도가 다른 쪽을 굶긴다.
+    "essence": "운영 기준 합성·검수",
     "sov": "AI 답변 언급률 측정",
     # 1단(리드마그넷)은 2단 운영 서비스와 예산을 공유하지 않는다(설계 §0). 같은 'sov'
     # 카테고리에 넣으면 무료 진단 폭주가 계약 병원의 월간 측정을 차단하게 된다.
@@ -227,6 +230,10 @@ def _limits(category: str) -> tuple[int, int]:
         "image": (
             settings.COST_GUARD_DAILY_IMAGE_CALLS,
             settings.COST_GUARD_MONTHLY_IMAGE_CALLS,
+        ),
+        "essence": (
+            settings.COST_GUARD_DAILY_ESSENCE_CALLS,
+            settings.COST_GUARD_MONTHLY_ESSENCE_CALLS,
         ),
         "sov": (
             settings.COST_GUARD_DAILY_SOV_QUERIES,

@@ -1,5 +1,6 @@
 """P1-3/R1 — 야간 생성 catch-up window, cap 절단 감지, 자동 발행 검증."""
 
+import sys
 import uuid
 from datetime import date, datetime
 from types import SimpleNamespace
@@ -34,6 +35,14 @@ from app.services.content_ai_review import (
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.workers import tasks
+from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
+from app.workers.generation_retry_policy import (
+    ENVIRONMENT_ATTEMPT_BUDGET,
+    SAMPLE_BODY_DAILY_BUDGET,
+    SAMPLE_EXHAUSTED_DAY_LIMIT,
+    SAMPLE_IMAGE_DAILY_BUDGET,
+    GenerationRetryClass,
+)
 
 
 def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_content():
@@ -269,8 +278,18 @@ async def test_alignment_rewrite_blocked_by_cost_guard_keeps_the_paid_candidate(
     async def block_second_generation(*_args, **_kwargs):
         return SimpleNamespace(allowed=False)
 
-    async def reviewer_must_not_run(**_kwargs):
-        raise AssertionError("심사를 통과하지 못한 후보에 리뷰어를 태우지 않는다")
+    reviews = 0
+
+    async def reviewer_pass(**_kwargs):
+        nonlocal reviews
+        reviews += 1
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
 
     monkeypatch.setattr(tasks, "generate_content", generate_once)
     monkeypatch.setattr(
@@ -280,7 +299,7 @@ async def test_alignment_rewrite_blocked_by_cost_guard_keeps_the_paid_candidate(
             status="ALIGNED", summary={"blocking": False, "findings": []}
         ),
     )
-    monkeypatch.setattr(tasks, "review_generated_content", reviewer_must_not_run)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_second_generation)
 
     content, screening = await tasks._generate_with_auto_review(
@@ -292,6 +311,7 @@ async def test_alignment_rewrite_blocked_by_cost_guard_keeps_the_paid_candidate(
     )
 
     assert len(generations) == 1, "유료 생성은 1회만 나갔다"
+    assert reviews == 1, "하드 게이트·독립 검수를 먼저 통과시킨 뒤에 키워드 보완을 시도한다"
     assert content["title"] == "허리 통증 안내"
     assert screening.status == "ALIGNED", "DRAFT로 저장돼 발행 게이트로 넘어간다"
     assert screening.summary["target_alignment_findings"] == [finding]
@@ -317,8 +337,14 @@ async def test_alignment_rewrite_failure_keeps_the_paid_candidate(monkeypatch):
     async def allow_cost(*_args, **_kwargs):
         return SimpleNamespace(allowed=True)
 
-    async def reviewer_must_not_run(**_kwargs):
-        raise AssertionError("심사를 통과하지 못한 후보에 리뷰어를 태우지 않는다")
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
 
     monkeypatch.setattr(tasks, "generate_content", miss_then_fail)
     monkeypatch.setattr(
@@ -328,7 +354,7 @@ async def test_alignment_rewrite_failure_keeps_the_paid_candidate(monkeypatch):
             status="ALIGNED", summary={"blocking": False, "findings": []}
         ),
     )
-    monkeypatch.setattr(tasks, "review_generated_content", reviewer_must_not_run)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
     content, screening = await tasks._generate_with_auto_review(
@@ -507,15 +533,19 @@ async def test_independent_ai_review_requests_one_bounded_rewrite(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_fact_hard_finding_is_not_rewritten_and_remains_blocking(monkeypatch):
-    generation_calls = 0
+async def test_fact_hard_finding_gets_one_removal_rewrite_then_stays_blocking(monkeypatch):
+    """사실·안전 HARD 지적은 삭제형 재작성을 **한 번만** 받고, 그래도 남으면 종착이다."""
 
-    async def generate_once(*_args, **_kwargs):
-        nonlocal generation_calls
-        generation_calls += 1
+    generation_findings = []
+    reviews = 0
+
+    async def generate_once(*_args, **kwargs):
+        generation_findings.append(kwargs.get("remediation_findings"))
         return {"title": "확인 전 장비 안내", "body": "본문"}
 
     async def reviewer_blocks(**_kwargs):
+        nonlocal reviews
+        reviews += 1
         return ContentAiReview(
             status=ContentAiReviewStatus.REVISE,
             confidence=0.99,
@@ -528,8 +558,12 @@ async def test_fact_hard_finding_is_not_rewritten_and_remains_blocking(monkeypat
             model="reviewer-test",
         )
 
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
     monkeypatch.setattr(tasks, "generate_content", generate_once)
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_blocks)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
     monkeypatch.setattr(
         tasks, "screen_content_against_philosophy",
         lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []}),
@@ -539,9 +573,114 @@ async def test_fact_hard_finding_is_not_rewritten_and_remains_blocking(monkeypat
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[], philosophy=SimpleNamespace(), approved_brief=None,
     )
-    assert generation_calls == 1
+    assert len(generation_findings) == 2, "삭제형 재작성은 정확히 1회"
+    assert reviews == 2, "재작성 결과는 반드시 독립 검수를 다시 받는다"
+    assert "삭제하거나" in generation_findings[1][0]
+    assert "새로운 사실" in generation_findings[1][0]
+    assert "장비 보유 사실" in generation_findings[1][1]
     assert screening.status == tasks.ESSENCE_STATUS_NEEDS_REVIEW
     assert screening.summary["ai_review"]["blocking"] is True
+    assert screening.summary["hard_removal_rewrites"] == 1
+
+
+@pytest.mark.asyncio
+async def test_removal_rewrite_that_clears_the_hard_finding_is_publishable(monkeypatch):
+    """삭제형 재작성이 지적을 없애면 그 글은 살린다(재검수 통과가 근거다)."""
+
+    reviews = 0
+
+    async def generate(*_args, **_kwargs):
+        return {"title": "장비 안내", "body": "본문"}
+
+    async def reviewer(**_kwargs):
+        nonlocal reviews
+        reviews += 1
+        if reviews == 1:
+            return ContentAiReview(
+                status=ContentAiReviewStatus.REVISE,
+                confidence=0.99,
+                findings=(ContentAiFinding(
+                    ContentAiFindingSeverity.HARD,
+                    ContentAiFindingKind.MEDICAL_SAFETY,
+                    "근거 없는 치료 효과 단정이 있습니다.",
+                ),),
+                summary="삭제 필요",
+                model="reviewer-test",
+            )
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.95,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(tasks, "generate_content", generate)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(
+        tasks, "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []}),
+    )
+    _content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
+        existing_titles=[], philosophy=SimpleNamespace(), approved_brief=None,
+    )
+    assert reviews == 2
+    assert screening.status == "ALIGNED"
+    assert screening.summary["ai_review"]["status"] == "PASS"
+
+
+@pytest.mark.asyncio
+async def test_one_session_never_buys_more_than_three_generations(monkeypatch):
+    """보완 + 키워드 + 삭제형이 겹쳐도 한 세션의 유료 생성은 3회를 넘지 않는다."""
+
+    generations = 0
+    finding = "측정 질의 키워드 미반영: '허리디스크'이(가) 제목에 없습니다."
+
+    async def generate(*_args, **_kwargs):
+        nonlocal generations
+        generations += 1
+        return {
+            "title": "허리 통증 안내",
+            "body": "본문",
+            "target_alignment_findings": [finding],
+        }
+
+    async def reviewer_blocks(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.REVISE,
+            confidence=0.99,
+            findings=(ContentAiFinding(
+                ContentAiFindingSeverity.HARD,
+                ContentAiFindingKind.HOSPITAL_FACT,
+                "승인 자료에 없는 사실입니다.",
+            ),),
+            summary="사실 근거 필요",
+            model="reviewer-test",
+        )
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(tasks, "generate_content", generate)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_blocks)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    monkeypatch.setattr(
+        tasks, "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []}),
+    )
+    await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[], philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+    assert generations <= tasks.MAX_GENERATIONS_PER_SESSION
 
 
 @pytest.mark.asyncio
@@ -1387,8 +1526,8 @@ def test_content_review_budget_resets_when_next_kst_day_retry_is_recorded():
     item.essence_check_summary = {"generation_attempt": {
         "context": context, "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
         "retry_class": tasks.GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
-        "provider_attempt_count": tasks.ENVIRONMENT_ATTEMPT_BUDGET,
-        "attempt_count": tasks.ENVIRONMENT_ATTEMPT_BUDGET,
+        "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+        "attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
         "attempt_period": "2000-01-01", "observed_at": "2000-01-01T00:00:00+00:00",
     }}
     attempt = tasks._remember_generation_attempt(
@@ -1829,7 +1968,9 @@ def test_due_image_attempt_is_retried_by_scheduled_recovery(monkeypatch):
     assert (state, code, calls) == (tasks.GenerationItemState.SUCCEEDED, None, ["image"])
 
 
-def test_image_retry_budget_exhaustion_stops_automatic_calls(monkeypatch):
+def test_image_budget_is_spent_daily_and_reopens_on_the_next_kst_day(monkeypatch):
+    """하루 4회를 다 쓰면 그날은 멈추고, 다음 KST 일에 예산이 다시 열린다."""
+
     philosophy = SimpleNamespace(id=uuid.uuid4())
     item = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="stored body", title="stored title",
@@ -1839,31 +1980,105 @@ def test_image_retry_budget_exhaustion_stops_automatic_calls(monkeypatch):
     )
     hospital = SimpleNamespace(id=item.hospital_id, name="이미지예산의원")
     db = _NightlyTaskDB()
-    for _ in range(tasks.ENVIRONMENT_ATTEMPT_BUDGET):
+    for _ in range(SAMPLE_IMAGE_DAILY_BUDGET):
         tasks._remember_image_failure(db, item, philosophy)
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["reason"] == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert attempt["exhausted_days"] == 1
+
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
         code="CONTENT_IMAGE_NOT_READY"))
+    monkeypatch.setattr(tasks, "_image_reuse_is_due", lambda _item: False)
     monkeypatch.setattr(tasks, "_recover_missing_content_image", lambda *_args: (_ for _ in ()).throw(
         AssertionError("exhausted image budget must not call providers")))
     state, code, _message = tasks._generate_single_content_item(db, item, hospital)
     assert state == tasks.GenerationItemState.SKIPPED
     assert code == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
 
+    # 다음 KST 일: 같은 지문이어도 표본을 한 번 더 뽑는다.
+    item.essence_check_summary["generation_attempt"]["attempt_period"] = "2000-01-01"
+    calls = []
+    monkeypatch.setattr(tasks, "_recover_missing_content_image", lambda *_args: (
+        calls.append("image") or tasks.GenerationItemState.SUCCEEDED))
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+    assert (state, code, calls) == (tasks.GenerationItemState.SUCCEEDED, None, ["image"])
 
-def test_image_policy_rejection_is_explicit_input_change():
+
+def test_image_budget_becomes_operator_work_after_three_exhausted_days():
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        essence_check_summary=None,
+    )
+    db = _NightlyTaskDB()
+    for day in range(SAMPLE_EXHAUSTED_DAY_LIMIT):
+        for _ in range(SAMPLE_IMAGE_DAILY_BUDGET):
+            tasks._remember_image_failure(db, item, philosophy)
+        attempt = item.essence_check_summary["generation_attempt"]
+        assert attempt["exhausted_days"] == day + 1
+        if day + 1 < SAMPLE_EXHAUSTED_DAY_LIMIT:
+            assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+            # 다음 KST 일로 넘어간다.
+            attempt["attempt_period"] = f"2000-01-0{day + 1}"
+    assert item.essence_check_summary["generation_attempt"]["retry_class"] == (
+        GenerationRetryClass.OPERATOR_REQUIRED.value
+    )
+    assert item.essence_check_summary["generation_attempt"]["first_observed_at"]
+
+
+def test_image_policy_rejection_keeps_a_bounded_sample_budget():
     item = SimpleNamespace(
         content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
         essence_check_summary=None,
     )
     code = tasks._remember_image_failure(
         _NightlyTaskDB(), item, SimpleNamespace(id=uuid.uuid4()),
-        {"reason": "POLICY_REJECTED"},
+        {"reason": "POLICY_REJECTED", "policy_rejection": {"reason": "POLICY_REJECTED",
+                                                           "has_text": True}},
     )
+    attempt = item.essence_check_summary["generation_attempt"]
     assert code == "CONTENT_IMAGE_POLICY_REJECTED"
-    assert item.essence_check_summary["generation_attempt"]["retry_class"] == (
-        tasks.GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert attempt["image_failure_class"] == "POLICY_REJECTED"
+    # durable 진단이 남아야 다음 후보를 policy_repair 프롬프트로 만들 수 있다.
+    assert attempt["image_policy_rejection"]["has_text"] is True
+
+
+def test_policy_rejected_image_retries_once_with_the_repair_prompt(monkeypatch):
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), title="주제", image_url=None,
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        content_revision=1, generation_claim_token=None, essence_check_summary=None,
     )
+    hospital = SimpleNamespace(id=item.hospital_id, name="정책거절의원", slug="policy-clinic")
+    db = _NightlyTaskDB()
+    tasks._remember_image_failure(
+        db, item, philosophy,
+        {"reason": "POLICY_REJECTED", "policy_rejection": {"reason": "POLICY_REJECTED"}},
+    )
+    calls = []
+
+    async def fake_generate_image(*_args, **kwargs):
+        calls.append(kwargs)
+        return ("gs://bucket/new.png", "prompt")
+
+    monkeypatch.setattr(tasks, "generate_image", fake_generate_image)
+    monkeypatch.setattr(tasks, "hospital_image_direction", lambda _hospital: None)
+    monkeypatch.setattr(tasks, "image_content_hash_from_url", lambda _url: "hash")
+    monkeypatch.setattr(tasks, "image_subject_hash", lambda *_args: "subject")
+    monkeypatch.setattr(tasks, "write_back_generated_image", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(db, "refresh", lambda _item: None, raising=False)
+
+    state = tasks._recover_missing_content_image(db, item, hospital, philosophy)
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    assert len(calls) == 1
+    assert calls[0]["policy_repair"] is True
+    assert calls[0]["prior_policy_rejection"] == {"reason": "POLICY_REJECTED"}
 
 
 def test_newly_approved_essence_regenerates_body_from_previous_snapshot(monkeypatch):
@@ -4121,7 +4336,7 @@ def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
     monkeypatch.setattr(tasks.auto_review_essence_snapshot, "apply_async",
                         lambda **kwargs: heals.append(kwargs["args"]))
     monkeypatch.setattr(tasks, "enqueue_generation_blocked_digest_sync",
-                        lambda db, day, batch, outcomes: digests.extend(outcomes))
+                        lambda db, day, batch, outcomes, reused_outcomes=(): digests.extend(outcomes))
     tasks.morning_content_auto_publish.run()
     assert all(not incident["notify"] for incident in incidents)
     assert len(digests) == (2 if expected else 0)
@@ -4166,8 +4381,23 @@ def test_weekly_rejection_rollup_uses_the_completed_kst_week_once(monkeypatch):
     monkeypatch.setattr(
         tasks,
         "enqueue_generation_rejection_weekly_rollup_sync",
-        lambda _db, week_start, outcomes: (
-            captured.update(enqueued_week=week_start, outcomes=outcomes) or object()
+        lambda _db, week_start, outcomes, *, yield_facts=(): (
+            captured.update(
+                enqueued_week=week_start, outcomes=outcomes, yield_facts=yield_facts
+            )
+            or object()
+        ),
+    )
+    facts = [
+        SimpleNamespace(
+            hospital_name="수율관측의원", due=4, published=3, retrying=1, operator_required=0
+        )
+    ]
+    monkeypatch.setattr(
+        tasks,
+        "compute_content_yield",
+        lambda _db, *, period_start, period_end: (
+            captured.update(yield_period=(period_start, period_end)) or facts
         ),
     )
 
@@ -4176,12 +4406,66 @@ def test_weekly_rejection_rollup_uses_the_completed_kst_week_once(monkeypatch):
     assert captured["week_start"] == date(2026, 9, 7)
     assert captured["enqueued_week"] == date(2026, 9, 7)
     assert captured["outcomes"] == [outcome]
+    # 수율은 같은 KST 주를 본다 — 새 메시지도, 새 주기도 아니다.
+    assert captured["yield_period"] == (date(2026, 9, 7), date(2026, 9, 14))
+    assert captured["yield_facts"] == facts
     assert captured["committed"] is True
     assert result == {
         "week_start": "2026-09-07",
         "blocked_count": 1,
+        "due_count": 4,
+        "published_count": 3,
         "notification_enqueued": True,
     }
+
+
+def test_weekly_rollup_still_reports_yield_when_no_rejection_is_open(monkeypatch):
+    """차단이 0건인 주에도 계약 예정이 있으면 그 한 건은 나간다."""
+
+    captured = {}
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def commit(self):
+            captured["committed"] = True
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args: arrow.get(2026, 9, 14, 9, 15, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks, "_weekly_generation_rejection_outcomes", lambda _db, *, week_start: []
+    )
+    facts = [
+        SimpleNamespace(
+            hospital_name="무차단의원", due=5, published=5, retrying=0, operator_required=0
+        )
+    ]
+    monkeypatch.setattr(
+        tasks, "compute_content_yield", lambda _db, **_kwargs: facts
+    )
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_generation_rejection_weekly_rollup_sync",
+        lambda _db, week_start, outcomes, *, yield_facts=(): (
+            captured.update(outcomes=outcomes, yield_facts=yield_facts) or object()
+        ),
+    )
+
+    result = tasks.weekly_generation_rejection_rollup.run()
+
+    assert captured["outcomes"] == []
+    assert captured["yield_facts"] == facts
+    assert result["notification_enqueued"] is True
+    assert (result["due_count"], result["published_count"]) == (5, 5)
 
 
 def test_weekly_rejection_rollup_query_includes_rejected_class_only() -> None:
@@ -4212,3 +4496,520 @@ def test_weekly_rejection_rollup_query_includes_rejected_class_only() -> None:
     assert "incidents.state IN ('OPEN', 'RETRYING')" in sql
     assert "incidents.first_seen_at <" in sql
     assert "incidents.last_seen_at >=" in sql
+
+
+def test_seven_forty_five_reports_the_stored_terminal_image_cause():
+    """증상(이미지 없음)이 아니라 저장된 종착 원인을 보고한다."""
+
+    item = SimpleNamespace(
+        content_type=SimpleNamespace(value="FAQ"),
+        query_target_id=None,
+        essence_check_summary={
+            "generation_attempt": {
+                "reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+                "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            }
+        },
+    )
+    assessment = SimpleNamespace(
+        code="CONTENT_IMAGE_NOT_READY", message="대표 이미지가 준비되지 않았습니다."
+    )
+
+    code, message = tasks._publication_block_details(item, assessment)
+
+    assert code == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
+    assert "예산" in message
+
+    item.essence_check_summary["generation_attempt"]["reason"] = "CONTENT_IMAGE_POLICY_REJECTED"
+    code, _message = tasks._publication_block_details(item, assessment)
+    assert code == "CONTENT_IMAGE_POLICY_REJECTED"
+
+    # 저장된 종착 원인이 없으면 평가 결과를 그대로 쓴다.
+    item.essence_check_summary = {}
+    code, _message = tasks._publication_block_details(item, assessment)
+    assert code == "CONTENT_IMAGE_NOT_READY"
+
+
+def test_blocked_image_digest_line_names_the_credit_and_quota_check():
+    cause = tasks._publication_digest_cause("CONTENT_IMAGE_NOT_READY", {})
+    assert tasks.IMAGE_CREDIT_CHECK_ACTION in cause
+    assert "크레딧" in cause
+
+
+@pytest.mark.parametrize(
+    "diagnostics,error,expected",
+    [
+        ({"reason": "COST_BLOCKED"}, None, "COST_GUARD"),
+        ({"reason": "POLICY_REJECTED"}, None, "POLICY_REJECTED"),
+        ({}, RuntimeError("429 insufficient_quota: billing hard limit"), "PROVIDER_QUOTA"),
+        ({"reason": "PROVIDER_EMPTY", "stage": "RESOURCE_EXHAUSTED"}, None, "PROVIDER_QUOTA"),
+        ({}, RuntimeError("connection reset"), "PROVIDER_ERROR"),
+    ],
+)
+def test_image_failure_classes_separate_quota_from_generic_errors(
+    diagnostics, error, expected
+):
+    assert tasks._image_failure_class(diagnostics, error) == expected
+
+
+def test_automatic_body_repair_stops_buying_regenerations_when_its_budget_is_spent(
+    monkeypatch,
+):
+    """수리 세션은 하루 예산 안에서만 작가를 부르고, 소진되면 fail-closed로 간다."""
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="stored body", title="stored title",
+        image_url=None, content_philosophy_id=philosophy.id,
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        essence_check_summary={},
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="본문수리의원")
+    db = _NightlyTaskDB()
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
+        code="FAQ_FIELDS_MISSING", message="FAQ 필드가 비었습니다."))
+    writer_calls = []
+    monkeypatch.setattr(
+        tasks, "_clear_generation_attempt", lambda *_args: writer_calls.append("cleared")
+    )
+    class _WriterReached(RuntimeError):
+        pass
+
+    monkeypatch.setattr(
+        tasks.cost_guard,
+        "check_and_increment",
+        lambda *_args: (_ for _ in ()).throw(_WriterReached("writer reached")),
+    )
+
+    for _ in range(SAMPLE_BODY_DAILY_BUDGET):
+        with pytest.raises(_WriterReached):
+            tasks._generate_single_content_item(db, item, hospital)
+    assert len(writer_calls) == SAMPLE_BODY_DAILY_BUDGET
+
+    state, code, message = tasks._generate_single_content_item(db, item, hospital)
+    assert state == tasks.GenerationItemState.FAILED
+    assert code == "FAQ_FIELDS_MISSING"
+    assert "FAQ" in message
+    assert len(writer_calls) == SAMPLE_BODY_DAILY_BUDGET, "예산 소진 뒤에는 작가를 부르지 않는다"
+
+
+def test_body_repair_budget_survives_the_rewrite_that_replaces_the_summary():
+    repair_state = {"period": "2026-09-12", "count": 1, "exhausted_days": 0}
+    merged = tasks._with_body_repair_state({"findings": []}, repair_state)
+    assert merged["automatic_body_repair"] == repair_state
+    assert tasks._with_body_repair_state({"findings": []}, None) == {"findings": []}
+
+
+def test_scheduled_recovery_owns_body_repair_until_its_budget_is_spent():
+    """예산 안의 자동 수리는 RETRYING이다 — 운영센터의 할 일로 쌓이지 않는다."""
+
+    item = SimpleNamespace(essence_check_summary={})
+    assert scheduled_recovery_owns_blocker("FAQ_FIELDS_MISSING", item) is True
+    item.essence_check_summary = {
+        "automatic_body_repair": {
+            "period": "2026-09-12",
+            "count": 2,
+            "exhausted_days": SAMPLE_EXHAUSTED_DAY_LIMIT,
+        }
+    }
+    assert scheduled_recovery_owns_blocker("FAQ_FIELDS_MISSING", item) is False
+
+
+def test_sample_blocker_becomes_operator_work_only_after_the_budget_ends():
+    item = SimpleNamespace(essence_check_summary={
+        "generation_attempt": {
+            "reason": "GENERATION_REJECTED",
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+        }
+    })
+    assert scheduled_recovery_owns_blocker("GENERATION_REJECTED", item) is True
+    item.essence_check_summary["generation_attempt"]["retry_class"] = (
+        GenerationRetryClass.OPERATOR_REQUIRED.value
+    )
+    assert scheduled_recovery_owns_blocker("GENERATION_REJECTED", item) is False
+    # 저장된 종착 이미지 원인도 같은 규칙을 쓴다.
+    exhausted = SimpleNamespace(essence_check_summary={
+        "generation_attempt": {
+            "reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+        }
+    })
+    assert scheduled_recovery_owns_blocker(
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED", exhausted
+    ) is False
+
+
+def test_exhausted_image_budget_publishes_with_a_reused_hospital_image(monkeypatch):
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), title="주제", image_url=None,
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        content_revision=1, generation_claim_token=None, essence_check_summary=None,
+        image_reused_from_content_id=None,
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="재사용의원", slug="reuse-clinic")
+    db = _NightlyTaskDB()
+    for _ in range(SAMPLE_IMAGE_DAILY_BUDGET):
+        tasks._remember_image_failure(db, item, philosophy, {"reason": "PROVIDER_EMPTY"})
+    source = SimpleNamespace(id=uuid.uuid4())
+    applied = {}
+
+    def fake_apply(_db, *, item, source, **guards):
+        applied["source"] = source.id
+        applied["guards"] = guards
+        item.image_reused_from_content_id = source.id
+        return 1
+
+    reuse_module = SimpleNamespace(
+        select_reusable_hospital_image=lambda _db, _hospital_id, _exclude: source,
+        apply_reused_image=fake_apply,
+    )
+    monkeypatch.setitem(sys.modules, "app.services.content_image_reuse", reuse_module)
+    monkeypatch.setattr(db, "refresh", lambda _item: None, raising=False)
+
+    state = tasks._reuse_hospital_image(
+        db, item, hospital, philosophy, tasks._image_guard_kwargs(item)
+    )
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    assert applied["source"] == source.id
+    assert applied["guards"]["expected_revision"] == 1
+    facts = tasks.stored_image_reuse_facts(item)
+    assert facts["reused_from_content_id"] == str(source.id)
+    assert facts["image_failure_reason"] == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
+    assert facts["image_failure_class"] == "PROVIDER_ERROR"
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["reason"] == "IMAGE_REUSED"
+    assert attempt["provider_attempt_count"] == SAMPLE_IMAGE_DAILY_BUDGET
+
+
+def test_new_hospital_without_any_verified_image_keeps_the_blocked_behaviour(monkeypatch):
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), title="주제", image_url=None,
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        content_revision=1, generation_claim_token=None, essence_check_summary=None,
+        image_reused_from_content_id=None,
+    )
+    hospital = SimpleNamespace(id=item.hospital_id, name="첫글의원", slug="first-clinic")
+    db = _NightlyTaskDB()
+    tasks._remember_image_failure(db, item, philosophy, {"reason": "POLICY_REJECTED"})
+    reuse_module = SimpleNamespace(
+        select_reusable_hospital_image=lambda _db, _hospital_id, _exclude: None,
+        apply_reused_image=lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setitem(sys.modules, "app.services.content_image_reuse", reuse_module)
+
+    state = tasks._reuse_hospital_image(db, item, hospital, philosophy, {})
+
+    assert state == tasks.GenerationItemState.PARTIAL
+    assert tasks._stored_generation_attempt(item)["reason"] == "CONTENT_IMAGE_POLICY_REJECTED"
+
+
+def test_reused_image_publication_reaches_the_eight_oclock_digest(monkeypatch):
+    content_id = uuid.uuid4()
+    hospital_id = uuid.uuid4()
+    digests = []
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def execute(self, _stmt):
+            return _Result(items=[content_id])
+
+        def commit(self):
+            pass
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+    monkeypatch.setattr(tasks, "recover_generation_incidents", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks, "trigger_content_site_revalidate_safe", lambda *_args, **_kwargs: True
+    )
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda _id: {
+        "kind": "published",
+        "hospital_id": hospital_id,
+        "hospital_name": "재사용의원",
+        "slug": "reuse-clinic",
+        "treatments": [],
+        "image_reused": True,
+        "image_failure_reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+        "image_failure_class": "PROVIDER_QUOTA",
+    })
+
+    def capture(_db, _day, batch, outcomes, reused_outcomes=()):
+        digests.append((batch, list(outcomes), list(reused_outcomes)))
+
+    monkeypatch.setattr(tasks, "enqueue_generation_blocked_digest_sync", capture)
+
+    tasks.morning_content_auto_publish.run()
+
+    assert len(digests) == 1, "정상 발행에 새 Slack 메시지를 만들지 않는다"
+    batch, blocked, reused = digests[0]
+    assert batch == tasks.PUBLISH_MORNING_BATCH
+    assert blocked == []
+    assert reused[0]["image_failure_class"] == "PROVIDER_QUOTA"
+    assert reused[0]["hospital_name"] == "재사용의원"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "retry_class,expects_retrying",
+    [
+        (GenerationRetryClass.SAMPLE_RECOVERABLE.value, True),
+        (GenerationRetryClass.OPERATOR_REQUIRED.value, False),
+    ],
+)
+async def test_sample_budget_exhaustion_opens_exactly_one_operator_incident(
+    monkeypatch, retry_class, expects_retrying
+):
+    """예산이 남아 있으면 RETRYING, 3일 소진 뒤에만 원인별 OPEN 1건."""
+
+    from app.workers import generation_incident_control
+
+    item_id = uuid.uuid4()
+    stored_item = SimpleNamespace(
+        id=item_id,
+        scheduled_date=date(2000, 1, 1),
+        body="",
+        image_url=None,
+        essence_check_summary={
+            "generation_attempt": {
+                "reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+                "retry_class": retry_class,
+            }
+        },
+    )
+    opened = []
+    retried = []
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def commit(self):
+            return None
+
+        async def scalar(self, _statement):
+            return None
+
+        async def get(self, _model, _identity):
+            return stored_item
+
+        async def execute(self, _statement):
+            return SimpleNamespace(scalars=lambda: iter(()))
+
+    async def capture_open(_db, request, **_kwargs):
+        opened.append(request)
+        return SimpleNamespace(
+            id=uuid.uuid4(), severity="HIGH", customer_impact=request.customer_impact,
+            next_action=request.next_action, admin_path=request.admin_path,
+            hospital_id=request.hospital_id, version=1,
+            safe_error_code=request.safe_error_code,
+            safe_error_message=request.safe_error_message,
+            episode_seq=1, state="OPEN", sla_due_at=None,
+        )
+
+    async def capture_retry(_db, incident_id, **kwargs):
+        retried.append(incident_id)
+        return SimpleNamespace(
+            id=incident_id, version=2, state="RETRYING", severity="MEDIUM",
+            sla_due_at=None, customer_impact="", next_action="", admin_path="/operations",
+            hospital_id=uuid.uuid4(), safe_error_code="IMAGE_GENERATION_RETRIES_EXHAUSTED",
+            safe_error_message="", episode_seq=1,
+        )
+
+    monkeypatch.setattr(
+        generation_incident_control, "get_async_sessionmaker", lambda: lambda: FakeSession()
+    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", capture_open)
+    monkeypatch.setattr(generation_incident_control, "mark_retrying", capture_retry)
+
+    for _ in range(3):
+        await generation_incident_control.open_generation_incident(
+            item_id=item_id,
+            hospital_id=uuid.uuid4(),
+            hospital_name="예산소진의원",
+            run_id=uuid.uuid4(),
+            code="IMAGE_GENERATION_RETRIES_EXHAUSTED",
+            message="대표 이미지 자동 재시도 예산을 모두 사용했습니다.",
+            notify=False,
+        )
+
+    # 같은 원인은 한 지문으로 묶이므로 sweep마다 새 인시던트를 열지 않는다.
+    assert {request.safe_error_code for request in opened} == {
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED"
+    }
+    assert bool(retried) is expects_retrying
+
+
+def _uncertain_only_item(philosophy, *, severity="UNCERTAIN"):
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        body="stored body",
+        title="stored title",
+        image_url=None,
+        content_philosophy_id=philosophy.id,
+        content_type=SimpleNamespace(value="FAQ"),
+        query_target_id=None,
+        content_brief=None,
+        meta_description="요약",
+        faq_question="질문인가요?",
+        faq_answer_summary="답변 요약",
+        references_list=[],
+        essence_check_summary={
+            "ai_review": {
+                "status": "REVISE",
+                "blocking": True,
+                "findings": [
+                    {
+                        "severity": severity,
+                        "kind": "MEDICAL_SAFETY",
+                        "message": "자동 재검수가 필요합니다.",
+                    }
+                ],
+            }
+        },
+    )
+
+
+def _stub_review(status, findings=()):
+    return ContentAiReview(
+        status=status,
+        confidence=0.9,
+        findings=findings,
+        summary="재검수",
+        model="reviewer-test",
+    )
+
+
+def test_uncertain_only_block_is_re_reviewed_by_the_sweep_and_can_pass(monkeypatch):
+    """확신도 부족으로 붙은 UNCERTAIN은 표본 실패다 — 스윕이 한 번 더 검수한다."""
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = _uncertain_only_item(philosophy)
+    hospital = SimpleNamespace(id=item.hospital_id, name="재검수의원", slug="recheck")
+    db = _NightlyTaskDB()
+    reviews = []
+    assessments = iter(["CONTENT_AI_HARD_FINDING", None, None])
+
+    async def reviewer(**kwargs):
+        reviews.append(kwargs["content"]["title"])
+        return _stub_review(ContentAiReviewStatus.PASS)
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
+        code=next(assessments), message="독립 검수 지적이 남아 있습니다."))
+    monkeypatch.setattr(tasks, "_recover_missing_content_image",
+                        lambda *_args: tasks.GenerationItemState.SUCCEEDED)
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "_generate_with_auto_review",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("re-review must not spend a writer session")
+        ),
+    )
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+
+    assert reviews == ["stored title"], "저장된 본문을 그대로 재검수한다"
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert item.essence_check_summary["ai_review"]["status"] == "PASS"
+    assert "generation_attempt" not in item.essence_check_summary
+
+
+def test_uncertain_only_block_spends_the_daily_sample_budget_and_ends_operator_required(
+    monkeypatch,
+):
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = _uncertain_only_item(philosophy)
+    hospital = SimpleNamespace(id=item.hospital_id, name="재검수의원", slug="recheck")
+    db = _NightlyTaskDB()
+    reviews = []
+
+    async def reviewer(**_kwargs):
+        reviews.append("review")
+        return _stub_review(
+            ContentAiReviewStatus.REVISE,
+            (ContentAiFinding(
+                ContentAiFindingSeverity.UNCERTAIN,
+                ContentAiFindingKind.MEDICAL_SAFETY,
+                "자동 재검수가 필요합니다.",
+            ),),
+        )
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
+        code="CONTENT_AI_HARD_FINDING", message="독립 검수 지적이 남아 있습니다."))
+    monkeypatch.setattr(
+        tasks,
+        "_generate_with_auto_review",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("re-review must not spend a writer session")
+        ),
+    )
+
+    for day in range(SAMPLE_EXHAUSTED_DAY_LIMIT):
+        for _ in range(SAMPLE_BODY_DAILY_BUDGET):
+            # 같은 스윕 구간의 두 번째 시도는 next_retry_at을 지나야 한다.
+            attempt = tasks._stored_generation_attempt(item)
+            if attempt:
+                item.essence_check_summary["generation_attempt"]["next_retry_at"] = (
+                    datetime(2000, 1, 1, tzinfo=tasks.timezone.utc).isoformat()
+                )
+            state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+            assert (state, code) == (
+                tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING"
+            )
+        attempt = item.essence_check_summary["generation_attempt"]
+        assert attempt["exhausted_days"] == day + 1
+        if day + 1 < SAMPLE_EXHAUSTED_DAY_LIMIT:
+            assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+            attempt["attempt_period"] = f"2000-01-0{day + 1}"
+
+    assert len(reviews) == SAMPLE_EXHAUSTED_DAY_LIMIT * SAMPLE_BODY_DAILY_BUDGET
+    assert item.essence_check_summary["generation_attempt"]["retry_class"] == (
+        GenerationRetryClass.OPERATOR_REQUIRED.value
+    )
+    # 소진 뒤에는 공급자를 다시 부르지 않고 곧바로 fail-closed다.
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert len(reviews) == SAMPLE_EXHAUSTED_DAY_LIMIT * SAMPLE_BODY_DAILY_BUDGET
+
+
+def test_model_declared_hard_finding_is_never_re_reviewed_by_the_sweep(monkeypatch):
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = _uncertain_only_item(philosophy, severity="HARD")
+    hospital = SimpleNamespace(id=item.hospital_id, name="사실차단의원", slug="fact")
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
+        code="CONTENT_AI_HARD_FINDING", message="승인 자료가 필요합니다."))
+    monkeypatch.setattr(
+        tasks,
+        "review_generated_content",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("model-declared HARD finding must not buy another review")
+        ),
+    )
+    monkeypatch.setattr(tasks, "_recover_missing_content_image", lambda *_args: (
+        _ for _ in ()).throw(AssertionError("must not spend image budget")))
+
+    state, code, message = tasks._generate_single_content_item(
+        _NightlyTaskDB(), item, hospital
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert "승인 자료" in message

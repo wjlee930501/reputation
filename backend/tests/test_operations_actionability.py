@@ -470,7 +470,8 @@ def test_generation_gate_is_hospital_scoped_and_paged_once_per_state_episode() -
     )
 
     assert first == second
-    assert first == ("hospital", str(hospital_id), f"/hospitals/{hospital_id}/essence")
+    # 옛 `/essence` 경로는 2026-10-09에 사라진다. 딥링크는 현황 탭(예외 카드)을 가리킨다.
+    assert first == ("hospital", str(hospital_id), f"/hospitals/{hospital_id}")
     assert (
         generation_incident_control._generation_severity("MISSING_APPROVED_ESSENCE").value
         == "MEDIUM"

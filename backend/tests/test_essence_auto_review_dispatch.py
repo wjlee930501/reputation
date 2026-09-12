@@ -36,6 +36,7 @@ def _run_essence_task(monkeypatch, result: EssenceRefreshResult, *, hospital_sta
     )
     opened: list[dict] = []
     recovered: list[dict] = []
+    deferred: list[dict] = []
 
     async def fake_open(**kwargs):
         opened.append(kwargs)
@@ -56,9 +57,14 @@ def _run_essence_task(monkeypatch, result: EssenceRefreshResult, *, hospital_sta
     monkeypatch.setattr(
         tasks, "recover_ops_incidents_for_hospital", fake_recover_hospital
     )
+    monkeypatch.setattr(
+        tasks,
+        "_defer_essence_escalation_to_automatic_retry",
+        lambda **kwargs: deferred.append(kwargs) or True,
+    )
 
     response = tasks.auto_review_essence_snapshot.run(str(result.hospital_id))
-    return response, opened, recovered
+    return response, opened, recovered, deferred
 
 
 def test_essence_review_dispatch_is_purpose_and_hospital_bound() -> None:
@@ -111,7 +117,7 @@ def test_escalated_snapshot_with_approved_essence_recovers_without_opening(monke
         findings=("new source conflicts with approved essence",),
     )
 
-    response, opened, recovered = _run_essence_task(
+    response, opened, recovered, _deferred = _run_essence_task(
         monkeypatch, result, hospital_status=tasks.HospitalStatus.PENDING_DOMAIN
     )
 
@@ -138,7 +144,7 @@ def test_escalated_snapshot_with_base_is_absorbed_without_slack_for_active_hospi
         findings=("new source conflicts with approved essence",),
     )
 
-    response, opened, recovered = _run_essence_task(
+    response, opened, recovered, _deferred = _run_essence_task(
         monkeypatch, result, hospital_status=tasks.HospitalStatus.ACTIVE
     )
 
@@ -159,7 +165,7 @@ def test_escalated_snapshot_without_approved_essence_opens_incident(monkeypatch)
         findings=("operator review required before generation",),
     )
 
-    _, opened, recovered = _run_essence_task(monkeypatch, result)
+    _, opened, recovered, _deferred = _run_essence_task(monkeypatch, result)
 
     assert len(opened) == 1
     assert opened[0]["incident_type"] == "ESSENCE_AUTO_REVIEW_ESCALATED"
@@ -180,7 +186,7 @@ def test_healthy_essence_status_recovers_hospital_escalations(monkeypatch, statu
         previous_philosophy_id=uuid.uuid4(),
     )
 
-    _, opened, recovered = _run_essence_task(monkeypatch, result)
+    _, opened, recovered, _deferred = _run_essence_task(monkeypatch, result)
 
     assert opened == []
     assert len(recovered) == 1
@@ -282,14 +288,94 @@ async def test_hospital_recovery_ignores_changed_snapshot_hash(monkeypatch) -> N
     assert db.committed is True
 
 
+def test_escalation_with_recovery_budget_left_is_not_operator_work(monkeypatch) -> None:
+    """자동 재검수가 아직 소유한 보류는 인시던트를 RETRYING으로 둔다(사람의 큐에 없다)."""
+
+    hospital_id = uuid.uuid4()
+    retry_at = datetime(2026, 9, 13, tzinfo=timezone.utc)
+    result = EssenceRefreshResult(
+        status=EssenceRefreshStatus.ESCALATED,
+        hospital_id=hospital_id,
+        snapshot_hash="current-snapshot",
+        previous_philosophy_id=None,
+        findings=("독립 검수가 자동 승인을 보류했습니다.",),
+        automatic_recovery_cycle=1,
+        next_automatic_attempt_at=retry_at,
+    )
+
+    _, opened, _recovered, deferred = _run_essence_task(monkeypatch, result)
+
+    # 시도마다 새 인시던트를 열지 않는다 — 같은 병원·snapshot 한 건을 만지기만 한다.
+    assert len(opened) == 1
+    assert opened[0]["object_id"] == f"{hospital_id}:current-snapshot"
+    assert deferred == [
+        {"object_id": f"{hospital_id}:current-snapshot", "retry_due_at": retry_at}
+    ]
+
+
+def test_exhausted_escalation_becomes_operator_work(monkeypatch) -> None:
+    hospital_id = uuid.uuid4()
+    result = EssenceRefreshResult(
+        status=EssenceRefreshStatus.ESCALATED,
+        hospital_id=hospital_id,
+        snapshot_hash="current-snapshot",
+        previous_philosophy_id=None,
+        findings=("독립 검수가 자동 승인을 보류했습니다.",),
+        automatic_recovery_cycle=4,
+        next_automatic_attempt_at=None,
+    )
+
+    _, opened, _recovered, deferred = _run_essence_task(monkeypatch, result)
+
+    assert len(opened) == 1
+    assert deferred == []
+
+
+def test_essence_incident_deep_links_point_at_an_existing_tab(monkeypatch) -> None:
+    """옛 `/essence` 경로는 2026-10-09에 사라진다 — 딥링크는 현황 탭을 가리킨다."""
+
+    hospital_id = uuid.uuid4()
+    result = EssenceRefreshResult(
+        status=EssenceRefreshStatus.ESCALATED,
+        hospital_id=hospital_id,
+        snapshot_hash="current-snapshot",
+        previous_philosophy_id=None,
+        findings=("보류",),
+    )
+
+    _, opened, _recovered, _deferred = _run_essence_task(monkeypatch, result)
+
+    assert opened[0]["admin_path"] == f"/hospitals/{hospital_id}"
+
+
+def test_essence_provider_calls_spend_the_essence_budget(monkeypatch) -> None:
+    """합성·검수가 야간 생성과 같은 `content` 예산을 쓰면 온보딩이 글을 굶긴다."""
+
+    categories: list[str] = []
+
+    async def record(category, *_args, **_kwargs):
+        categories.append(category)
+        return type("Decision", (), {"allowed": False, "reason": "limit"})()
+
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", record)
+
+    with pytest.raises(tasks._EssenceReviewCostBlocked):
+        tasks._cost_guarded_essence_synthesis(object(), [], [])
+    with pytest.raises(tasks._EssenceReviewCostBlocked):
+        tasks._cost_guarded_essence_review(object(), None, {}, [])
+
+    assert categories == ["essence", "essence"]
+
+
 @pytest.mark.parametrize("status", [
     EssenceRefreshStatus.WAITING_FOR_SOURCES,
     EssenceRefreshStatus.SNAPSHOT_CHANGED,
     EssenceRefreshStatus.UP_TO_DATE,
     EssenceRefreshStatus.AUTO_APPROVED,
+    EssenceRefreshStatus.DEFERRED,
 ])
 def test_system_owned_essence_refresh_never_opens_human_incident(monkeypatch, status):
     result = EssenceRefreshResult(status=status, hospital_id=uuid.uuid4())
-    response, opened, _ = _run_essence_task(monkeypatch, result)
+    response, opened, _recovered, _deferred = _run_essence_task(monkeypatch, result)
     assert response["status"] == status.value
     assert opened == []

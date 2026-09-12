@@ -3,6 +3,7 @@ from datetime import date
 from sqlalchemy.dialects import postgresql
 
 from app.core.celery_app import REDBEAT_SCHEDULE_VERSION, celery_app
+from app.services.post_publish_review_policy import auto_publish_catchup_start
 from app.workers.content_backlog_recovery import (
     _next_available_dates,
     _stranded_content_stmt,
@@ -42,6 +43,27 @@ def test_recovery_selector_is_bounded_to_due_unpublished_active_content():
     assert "content_schedules.is_active IS true" in compiled
     assert "content_items.carried_over_from IS NOT NULL" in compiled
     assert "LIMIT 100" in compiled
+
+
+def test_generation_recovery_leaves_the_seven_day_catchup_window_alone():
+    """7일 catch-up 안의 미완성 슬롯은 다시 날짜를 쓰지 않는다.
+
+    날짜는 시도 지문이 아니므로(H-08) 옮겨도 재시도가 풀리지 않는데, 차단 run의 멱등
+    키와 Slack 요약 식별자에는 날짜가 들어가 같은 글이 매일 새 FAILED run과 새 요약
+    줄을 만든다.
+    """
+
+    today = date(2026, 8, 18)
+    catchup_start = auto_publish_catchup_start(today)
+    compiled = str(
+        _stranded_content_stmt(today).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert compiled.count(f"content_items.scheduled_date < '{catchup_start}'") == 2, (
+        "생성 복구 분기와 발행 복구 분기 모두 catch-up 창 밖만 옮긴다"
+    )
 
 
 def test_recovery_task_is_registered_routed_and_scheduled_before_generation():

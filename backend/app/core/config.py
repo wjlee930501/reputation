@@ -394,6 +394,10 @@ class Settings(BaseSettings):
     COST_GUARD_DAILY_CONTENT_CALLS: int = 250
     COST_GUARD_DAILY_IMAGE_CALLS: int = 250
     COST_GUARD_DAILY_SOV_QUERIES: int = 1260
+    # 운영 기준(Essence) 합성·독립 검수 호출 상한. 야간 생성과 예산을 나눠 온보딩 폭주가
+    # 계약 병원의 콘텐츠 생성을 굶기지 않게 한다(병원 1곳 = 합성·1차·2차 ≈ 3~6회).
+    COST_GUARD_DAILY_ESSENCE_CALLS: int = 60
+    COST_GUARD_MONTHLY_ESSENCE_CALLS: int = 600
     # 무료 진단(1단) 답변 호출 상한. **선착순 자리 수는 호출 상한이 아니다** —
     # 자리 20개 × 질의3 × 플랫폼2 × 반복3 = 360건이 정상 상한이고, 측정 재시도(최대 3회)가
     # 겹치면 그 3배까지 늘어난다. 일일 500은 정상분 360 + 복구 여유이며, 이 선을 넘는
