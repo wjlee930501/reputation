@@ -277,3 +277,328 @@ def test_malformed_findings_cannot_be_treated_as_an_empty_pass(malformed: object
             ),
             reviewed_content={"title": "안내", "body": "본문"},
         )
+
+
+class _FakeResponse:
+    def __init__(self, text: str) -> None:
+        self.content = [SimpleNamespace(text=text)]
+        self.id = "msg_test"
+        self.usage = None
+
+
+_LOW_CONFIDENCE_VERDICT = json.dumps(
+    {
+        "decision": "PASS",
+        "confidence": 0.55,
+        "findings": [],
+        "summary": "확신이 부족합니다.",
+    }
+)
+
+
+def _install_reviewer(monkeypatch, handlers: list, *, reserve_results=None):
+    """검수 공급자·비용 가드·usage 원장을 호출 순서대로 흉내낸다."""
+
+    calls: list[dict] = []
+    reservations: list[str] = []
+    settled: list[int] = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            handler = handlers[len(calls) - 1]
+            if isinstance(handler, Exception):
+                raise handler
+            return _FakeResponse(handler)
+
+    client = SimpleNamespace(messages=_Messages())
+    monkeypatch.setattr(content_ai_review, "_anthropic_client", lambda: client)
+    monkeypatch.setattr(content_ai_review.settings, "ANTHROPIC_API_KEY", "test-key")
+
+    allowed_by_call = list(reserve_results or [True, True])
+
+    async def reserve(category, **_kwargs):
+        reservations.append(category)
+        index = len(reservations) - 1
+        allowed = allowed_by_call[index] if index < len(allowed_by_call) else True
+        return SimpleNamespace(
+            allowed=allowed, receipt=SimpleNamespace(category=category)
+        )
+
+    async def settle(_receipt, *, consumed_units, **_kwargs):
+        settled.append(consumed_units)
+
+    async def record_provider_call(_category, **_kwargs):
+        return None
+
+    monkeypatch.setattr(content_ai_review.cost_guard, "reserve", reserve)
+    monkeypatch.setattr(content_ai_review.cost_guard, "settle_reservation", settle)
+    monkeypatch.setattr(
+        content_ai_review.cost_guard, "record_provider_call", record_provider_call
+    )
+
+    from app.services import provider_usage
+
+    async def record_attempt(**_kwargs):
+        return True
+
+    monkeypatch.setattr(provider_usage, "record_attempt", record_attempt)
+    return SimpleNamespace(calls=calls, reservations=reservations, settled=settled)
+
+
+async def _review(**overrides):
+    payload = {
+        "hospital": SimpleNamespace(id=None, name="병원"),
+        "philosophy": SimpleNamespace(),
+        "content": {"title": "안내", "body": "환자마다 다릅니다."},
+        "content_brief": None,
+    }
+    payload.update(overrides)
+    return await content_ai_review.review_generated_content(**payload)
+
+
+async def test_low_confidence_only_block_escalates_once_and_can_pass(monkeypatch) -> None:
+    harness = _install_reviewer(
+        monkeypatch,
+        [
+            _LOW_CONFIDENCE_VERDICT,
+            json.dumps(
+                {
+                    "decision": "PASS",
+                    "confidence": 0.93,
+                    "findings": [],
+                    "summary": "승인된 사실과 안전 기준에 맞습니다.",
+                }
+            ),
+        ],
+    )
+
+    result = await _review()
+
+    assert [call["model"] for call in harness.calls] == [
+        content_ai_review.settings.CLAUDE_MODEL_FAST,
+        content_ai_review.settings.CLAUDE_MODEL,
+    ]
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.blocking_findings == ()
+    payload = result.payload()
+    assert payload["blocking"] is False
+    assert payload["escalated_model"] == content_ai_review.settings.CLAUDE_MODEL
+    assert payload["review_rounds"] == 2
+    assert payload["model"] == content_ai_review.settings.CLAUDE_MODEL
+    assert payload["schema_version"] == content_ai_review.REVIEW_SCHEMA_VERSION
+    # 승격 호출도 같은 예약 경로로 계량된다.
+    assert harness.reservations == ["content", "content"]
+    assert harness.settled == [1, 1]
+
+
+async def test_escalated_review_that_still_finds_a_problem_keeps_blocking(
+    monkeypatch,
+) -> None:
+    harness = _install_reviewer(
+        monkeypatch,
+        [
+            _LOW_CONFIDENCE_VERDICT,
+            json.dumps(
+                {
+                    "decision": "REVISE",
+                    "confidence": 0.95,
+                    "findings": [
+                        {
+                            "severity": "HARD",
+                            "kind": "HOSPITAL_FACT",
+                            "message": "승인된 프로파일에 없는 장비 주장",
+                        }
+                    ],
+                    "summary": "병원 사실 근거 부족",
+                }
+            ),
+        ],
+    )
+
+    result = await _review()
+
+    assert len(harness.calls) == 2
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.payload()["blocking"] is True
+    assert result.payload()["review_rounds"] == 2
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+async def test_escalation_blocked_by_cost_guard_keeps_the_first_verdict(
+    monkeypatch,
+) -> None:
+    harness = _install_reviewer(
+        monkeypatch, [_LOW_CONFIDENCE_VERDICT], reserve_results=[True, False]
+    )
+
+    result = await _review()
+
+    assert len(harness.calls) == 1
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.payload()["blocking"] is True
+    assert result.payload()["review_rounds"] == 1
+    assert result.payload()["escalated_model"] is None
+    assert result.confidence == 0.55
+
+
+async def test_escalation_provider_error_never_grants_pass(monkeypatch) -> None:
+    harness = _install_reviewer(
+        monkeypatch, [_LOW_CONFIDENCE_VERDICT, RuntimeError("provider down")]
+    )
+
+    result = await _review()
+
+    assert len(harness.calls) == 2
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.payload()["blocking"] is True
+    assert result.payload()["review_rounds"] == 1
+    assert result.payload()["escalated_model"] is None
+    assert result.unavailable_reason is None
+
+
+async def test_model_declared_hard_finding_is_never_escalated(monkeypatch) -> None:
+    harness = _install_reviewer(
+        monkeypatch,
+        [
+            json.dumps(
+                {
+                    "decision": "REVISE",
+                    "confidence": 0.42,
+                    "findings": [
+                        {
+                            "severity": "HARD",
+                            "kind": "MEDICAL_SAFETY",
+                            "message": "응급 상황을 자가 관리로 안내",
+                        }
+                    ],
+                    "summary": "의료 안전 위험",
+                }
+            )
+        ],
+    )
+
+    result = await _review()
+
+    assert len(harness.calls) == 1
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.payload()["blocking"] is True
+
+
+def test_model_hard_finding_blocks_at_any_confidence() -> None:
+    for confidence in (0.99, 0.71, 0.10):
+        result = content_ai_review._parse_response(
+            json.dumps(
+                {
+                    "decision": "PASS",
+                    "confidence": confidence,
+                    "findings": [
+                        {
+                            "severity": "HARD",
+                            "kind": "HOSPITAL_FACT",
+                            "message": "근거 없는 실적 주장",
+                        }
+                    ],
+                    "summary": "사실 근거 부족",
+                }
+            ),
+            reviewed_content={"title": "안내", "body": "본문"},
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE
+        assert result.payload()["blocking"] is True
+
+
+def test_non_blocking_findings_only_is_a_pass() -> None:
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "REVISE",
+                "confidence": 0.88,
+                "findings": [
+                    {"severity": "SOFT", "kind": "STYLE", "message": "문장을 다듬으세요."},
+                    {"severity": "SOFT", "kind": "STYLE", "message": "소제목을 추가하세요."},
+                ],
+                "summary": "문체 개선 제안",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.payload()["blocking"] is False
+    assert len(result.findings) == 2
+
+
+def test_confidence_threshold_is_lowered_to_zero_point_seven() -> None:
+    assert content_ai_review._PASS_CONFIDENCE == 0.70
+
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "PASS",
+                "confidence": 0.72,
+                "findings": [],
+                "summary": "기준을 만족합니다.",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.escalation_eligible is False
+
+
+def test_review_input_carries_writer_evidence_and_accepted_gates() -> None:
+    data = content_ai_review._review_data(
+        hospital=SimpleNamespace(
+            name="테스트 병원",
+            director_name="김원장",
+            director_career="내과 전문의",
+            specialties=["내과"],
+            treatments=["건강검진"],
+            director_credentials={"license": "의사면허 12345"},
+        ),
+        philosophy=SimpleNamespace(
+            positioning_statement="근거 중심",
+            doctor_voice="차분하고 설명이 긴 말투",
+            content_principles=["환자 언어로 설명한다"],
+            treatment_narratives=[
+                {"name": "위내시경", "cautions": ["금식이 필요합니다"]}
+            ],
+            prefer_messages=["정기 검진의 가치"],
+            must_use_messages=[],
+            avoid_messages=[],
+            medical_ad_risk_rules=[],
+        ),
+        content={
+            "title": "안내",
+            "body": "본문",
+            "references": [{"title": "질병관리청 자료", "url": "https://kdca.go.kr/a"}],
+        },
+        content_brief=None,
+    )
+
+    essence = data["approved_essence"]
+    assert essence["doctor_voice"] == "차분하고 설명이 긴 말투"
+    assert essence["content_principles"] == ["환자 언어로 설명한다"]
+    assert essence["treatment_narratives"][0]["cautions"] == ["금식이 필요합니다"]
+    assert essence["prefer_messages"] == ["정기 검진의 가치"]
+    assert "prefer_topics" not in essence
+    assert data["hospital_profile"]["treatments"] == ["건강검진"]
+    assert data["hospital_profile"]["specialties"] == ["내과"]
+    assert data["hospital_profile"]["director_credentials"]["license"] == "의사면허 12345"
+
+    gates = data["deterministic_gates_passed"]
+    assert any("금지 표현" in gate for gate in gates)
+    assert any("무료" in gate for gate in gates)
+    assert any("공출현" in gate for gate in gates)
+    assert any("화이트리스트" in gate for gate in gates)
+    assert "deterministic_gates_passed" in content_ai_review._SYSTEM_PROMPT
+
+
+def test_reference_gate_note_is_absent_without_references() -> None:
+    gates = content_ai_review.deterministic_gates_passed({"title": "공지", "body": "본문"})
+
+    assert gates
+    assert not any("화이트리스트" in gate for gate in gates)
