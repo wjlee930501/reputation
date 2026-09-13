@@ -85,12 +85,23 @@ class GenerationTask(Protocol):
     request: GenerationTaskRequest
 
 
+# 야간 배치가 슬롯 하나씩 팬아웃하는 작업의 실행 종류. 배치 실행(부모)과 구분되고,
+# 유실 시 자율 복구가 저장된 payload로 같은 인자·큐로만 다시 배포한다.
+GENERATE_CONTENT_ITEM_OPERATION = "GENERATE_CONTENT_ITEM"
+GENERATE_CONTENT_ITEM_TASK = "app.workers.tasks.generate_claimed_content_item"
+GENERATE_CONTENT_ITEM_PURPOSE = "generate-claimed-content-item"
+
 _OPERATION_TASK_POLICIES = {
     "app.workers.tasks.trigger_v0_report": ("TRIGGER_V0_REPORT", "hospital", "reports"),
     "app.workers.tasks.build_aeo_site": ("REBUILD_SITE", "hospital", "default"),
     "app.workers.tasks.run_sov_for_hospital": ("RUN_SOV", "hospital", "sov"),
     "app.workers.tasks.regenerate_content_item": (
         "REGENERATE_CONTENT",
+        "content_item",
+        "content",
+    ),
+    "app.workers.tasks.generate_claimed_content_item": (
+        GENERATE_CONTENT_ITEM_OPERATION,
         "content_item",
         "content",
     ),
@@ -122,6 +133,7 @@ _OPERATION_TASK_POLICIES = {
 }
 _OPERATION_RUN_REQUIRED_TASKS = frozenset(
     {
+        GENERATE_CONTENT_ITEM_TASK,
         "app.workers.tasks.generate_content_image",
         "app.workers.tasks.recertify_published_content_image",
         "app.workers.tasks.generate_monthly_report_for_hospital",
@@ -329,6 +341,93 @@ def finish_explicit_run(
     ).scalar_one_or_none()
     db.commit()
     return result
+
+
+def create_dispatched_item_run(
+    db: Session,
+    *,
+    parent_run_id: uuid.UUID | None,
+    item_id: uuid.UUID,
+    hospital_id: uuid.UUID,
+    task_id: str,
+    task_args: tuple[JSONValue, ...],
+    state: OperationRunState = OperationRunState.REQUESTED,
+    idempotency_key: str | None = None,
+) -> OperationRun:
+    """Commit the durable intent of one fanned-out generation before publishing it.
+
+    실행 기록을 먼저 커밋해야 worker가 메시지를 먼저 집어도 claim할 행이 있고, 배포가
+    유실돼도 자율 복구가 **저장된 허용 목록 payload**로 같은 인자·큐에 다시 배포할 수 있다.
+    """
+
+    now = datetime.now(UTC)
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type=GENERATE_CONTENT_ITEM_OPERATION,
+        state=state,
+        idempotency_key=idempotency_key or f"generation-item:{parent_run_id}:{item_id}",
+        parent_run_id=parent_run_id,
+        task_id=task_id,
+        request_payload=build_request_payload(
+            DispatchPayload("content_item", str(item_id), "content", task_args)
+        ),
+        requested_at=now,
+        started_at=now if state == OperationRunState.RUNNING else None,
+        attempt_count=1 if state == OperationRunState.RUNNING else 0,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        version=1,
+    )
+    db.add(run)
+    db.commit()
+    return run
+
+
+def finish_item_run(
+    db: Session,
+    run: OperationRun,
+    item_id: uuid.UUID,
+    state: OperationRunState,
+    *,
+    safe_error_code: str | None = None,
+    safe_error_message: str | None = None,
+) -> None:
+    """Terminalize a per-item run this worker created itself (no claimed lease)."""
+
+    db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run.id,
+            OperationRun.state.notin_(
+                (
+                    OperationRunState.SUCCEEDED,
+                    OperationRunState.FAILED,
+                    OperationRunState.PARTIAL,
+                    OperationRunState.CANCELLED,
+                )
+            ),
+        )
+        .values(
+            state=state,
+            completed_at=datetime.now(UTC),
+            heartbeat_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            total_count=1,
+            success_count=int(state == OperationRunState.SUCCEEDED),
+            failure_count=int(
+                state in (OperationRunState.FAILED, OperationRunState.PARTIAL)
+            ),
+            skipped_count=int(state == OperationRunState.CANCELLED),
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+            version=OperationRun.version + 1,
+        )
+    )
+    db.commit()
 
 
 def create_item_run(

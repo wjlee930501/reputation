@@ -235,6 +235,10 @@ class ContentItem(Base):
     image_reused_from_content_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("content_items.id", ondelete="SET NULL")
     )
+    # 이 판의 대표 이미지가 병원 히어로 이미지에서 온 대체본이라는 marker('HOSPITAL_HERO').
+    # 값이 있으면 주제 결합(`image_subject_hash`)이 없는 대신 바이트 결합과 정책 버전만으로
+    # 인증을 판정한다. 교체 스윕이 주제 이미지를 붙이면 NULL로 돌아간다. migration 0075.
+    image_fallback_source: Mapped[str | None] = mapped_column(String(32))
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

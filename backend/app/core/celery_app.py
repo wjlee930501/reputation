@@ -163,6 +163,9 @@ celery_app.conf.update(
         "app.workers.tasks.overnight_content_generation_recovery": {"queue": "content"},
         "app.workers.tasks.prepublish_content_generation_recovery": {"queue": "content"},
         "app.workers.tasks.regenerate_content_item": {"queue": "content"},
+        # 야간 배치가 슬롯 하나씩 팬아웃하는 실제 생성 작업. 배치 태스크는 claim과 배포만
+        # 하고 끝나므로 처리량은 이 큐를 소비하는 워커 동시성이 정한다.
+        "app.workers.tasks.generate_claimed_content_item": {"queue": "content"},
         "app.workers.tasks.generate_content_image": {"queue": "content"},
         "app.workers.tasks.recertify_published_content_image": {"queue": "content"},
         "app.workers.tasks.process_source_asset_task": {"queue": "default"},

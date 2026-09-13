@@ -17,6 +17,96 @@ from app.workers.generation_run_control import GenerationItemState, create_item_
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
 
 
+def item_result_payload(
+    run_id: uuid.UUID,
+    attempt_count: int,
+    item_id: uuid.UUID,
+    state: GenerationItemState,
+    *,
+    safe_error_code: str | None = None,
+    safe_error_message: str | None = None,
+) -> dict[str, JSONValue]:
+    """One item's durable outcome, identical for batch and per-item runs."""
+
+    payload: dict[str, JSONValue] = {
+        "state": state.value,
+        "attempt_id": f"{run_id}:{item_id}:{attempt_count}",
+    }
+    if safe_error_code is not None:
+        payload["safe_error_code"] = safe_error_code
+        payload["safe_error_message"] = safe_error_message
+        retry_class = retry_class_for(safe_error_code)
+        payload["retry_class"] = retry_class.value
+        if retry_class in (
+            GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
+            GenerationRetryClass.SAMPLE_RECOVERABLE,
+        ):
+            payload["next_retry_at"] = next_recovery_sweep().isoformat()
+    return payload
+
+
+class GenerationItemRecorder:
+    """Durable progress for one fanned-out item, written onto its own run.
+
+    배치 기록기와 같은 `record`/`item_run` 계약을 제공하므로 결과 기록·인시던트 경로를
+    그대로 공유한다. 다만 상태·lease·version은 절대 건드리지 않는다 — 그것들은
+    Celery 신호가 claim한 실행 소유권이고, 여기서 덮어쓰면 종료 기록이 자기 lease를
+    잃어 실행이 영원히 RUNNING으로 남는다.
+    """
+
+    def __init__(self, db: Session, run: OperationRun) -> None:
+        self.db = db
+        self.run = run
+        self.items: dict[str, JSONValue] = _stored_items(run.result_summary)
+
+    def record(
+        self,
+        item_id: uuid.UUID,
+        state: GenerationItemState,
+        *,
+        safe_error_code: str | None = None,
+        safe_error_message: str | None = None,
+    ) -> None:
+        self.items[str(item_id)] = item_result_payload(
+            self.run.id,
+            self.run.attempt_count,
+            item_id,
+            state,
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+        )
+        self.db.execute(
+            update(OperationRun)
+            .where(OperationRun.id == self.run.id)
+            .values(result_summary={"items": self.items})
+        )
+        self.db.commit()
+
+    def item_run(
+        self,
+        item_id: uuid.UUID,
+        hospital_id: uuid.UUID,
+        operation_type: str,
+        state: OperationRunState,
+        *,
+        safe_error_code: str | None = None,
+        safe_error_message: str | None = None,
+        attempt_kind: str = "final",
+    ) -> OperationRun:
+        return create_item_run(
+            self.db,
+            parent_run_id=self.run.id,
+            item_id=item_id,
+            hospital_id=hospital_id,
+            operation_type=operation_type,
+            state=state,
+            result=self.items[str(item_id)],
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+            attempt_kind=f"{attempt_kind}-{self.run.attempt_count}",
+        )
+
+
 class GenerationBatchRecorder:
     """Mutable per-item accumulator whose purpose is durable batch progress."""
 
@@ -72,21 +162,14 @@ class GenerationBatchRecorder:
         safe_error_code: str | None = None,
         safe_error_message: str | None = None,
     ) -> None:
-        payload: dict[str, JSONValue] = {
-            "state": state.value,
-            "attempt_id": f"{self.run.id}:{item_id}:{self.run.attempt_count}",
-        }
-        if safe_error_code is not None:
-            payload["safe_error_code"] = safe_error_code
-            payload["safe_error_message"] = safe_error_message
-            retry_class = retry_class_for(safe_error_code)
-            payload["retry_class"] = retry_class.value
-            if retry_class in (
-                GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
-                GenerationRetryClass.SAMPLE_RECOVERABLE,
-            ):
-                payload["next_retry_at"] = next_recovery_sweep().isoformat()
-        self.items[str(item_id)] = payload
+        self.items[str(item_id)] = item_result_payload(
+            self.run.id,
+            self.run.attempt_count,
+            item_id,
+            state,
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+        )
         self._persist(terminal=False)
 
     def item_run(

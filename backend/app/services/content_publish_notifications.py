@@ -221,7 +221,7 @@ def build_missing_approved_essence_digest_intent(
 
 IMAGE_REUSE_NEXT_ACTION = (
     "이미지 생성 공급자 크레딧·할당량과 비용 가드 한도를 확인해 주세요. "
-    "새 이미지가 생성되면 재사용 이미지는 자동으로 교체됩니다."
+    "새 이미지가 생성되면 대체 이미지는 자동으로 교체됩니다."
 )
 _IMAGE_FAILURE_CLASS_LABELS = {
     "COST_GUARD": "비용 가드 한도",
@@ -231,30 +231,49 @@ _IMAGE_FAILURE_CLASS_LABELS = {
 }
 
 
+# 대표 이미지를 만들지 못한 글이 무엇으로 나갔는지. 조치가 다르지 않으므로 메시지는
+# 하나지만, 첫 글이라 병원 대표 이미지를 쓴 경우는 빌릴 원본이 아예 없었다는 뜻이라
+# 운영자가 읽는 문구를 구분한다.
+HOSPITAL_FALLBACK_IMAGE_SOURCE = "HOSPITAL_HERO"
+_IMAGE_SOURCE_LABELS = {
+    HOSPITAL_FALLBACK_IMAGE_SOURCE: "병원 대표 이미지 사용",
+    "REUSED_ARTICLE": "재사용 발행",
+}
+
+
+def _image_source_kind(outcome: Mapping[str, object]) -> str:
+    reused_from = str(outcome.get("reused_from") or "")
+    if reused_from == HOSPITAL_FALLBACK_IMAGE_SOURCE:
+        return HOSPITAL_FALLBACK_IMAGE_SOURCE
+    return "REUSED_ARTICLE"
+
+
 def _image_reuse_section(
     reused_outcomes: Sequence[Mapping[str, object]],
 ) -> tuple[str, list[str]]:
-    """Group reused-image publications by hospital with their dominant cause."""
+    """Group image-substituted publications by hospital and source with their cause."""
 
-    hospitals: dict[tuple[str, str], list[str]] = {}
+    hospitals: dict[tuple[str, str, str], list[str]] = {}
     for outcome in reused_outcomes:
         key = (
             str(outcome.get("hospital_id") or ""),
             str(outcome.get("hospital_name") or "이름 미확인 병원"),
+            _image_source_kind(outcome),
         )
         failure_class = str(outcome.get("image_failure_class") or "PROVIDER_ERROR")
         hospitals.setdefault(key, []).append(
             _IMAGE_FAILURE_CLASS_LABELS.get(failure_class, _IMAGE_FAILURE_CLASS_LABELS["PROVIDER_ERROR"])
         )
     lines = []
-    for (_hospital_id, hospital_name), labels in sorted(hospitals.items()):
+    for (_hospital_id, hospital_name, source_kind), labels in sorted(hospitals.items()):
         dominant = Counter(labels).most_common(1)[0][0]
+        source_label = _IMAGE_SOURCE_LABELS[source_kind]
         lines.append(
-            f"• *{_publish_safe_text(hospital_name, 100)}* 재사용 발행 {len(labels)}건 · {dominant}"
+            f"• *{_publish_safe_text(hospital_name, 100)}* {source_label} {len(labels)}건 · {dominant}"
         )
     identity = sorted(
         f"{str(outcome.get('hospital_id') or '')}:{str(outcome.get('content_id') or '')}"
-        f":{str(outcome.get('image_failure_class') or '')}"
+        f":{str(outcome.get('image_failure_class') or '')}:{_image_source_kind(outcome)}"
         for outcome in reused_outcomes
     )
     return "\n".join(identity), lines
@@ -339,7 +358,9 @@ def build_generation_blocked_digest_intent(
         lines.append(f"• 그 외 {hidden}곳")
     summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
     if not entries:
-        summary = f"재사용 발행 {len(reused_outcomes)}건"
+        # 차단이 하나도 없는 배치다 — 요약 줄은 대체 발행 건수만 말한다. 빌린 것과 병원
+        # 대표 이미지를 쓴 것을 한 수로 세되, 어느 쪽인지는 아래 섹션 줄이 말한다.
+        summary = f"대표 이미지 대체 발행 {len(reused_outcomes)}건"
     blocks = [
         header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
         section_block("generation_blocked_digest_summary", f"*{summary}*"),
@@ -351,7 +372,7 @@ def build_generation_blocked_digest_intent(
         blocks.append(
             section_block(
                 "generation_blocked_digest_image_reuse",
-                "*대표 이미지 재사용 발행*\n"
+                "*대표 이미지 대체 발행*\n"
                 + "\n".join(reuse_lines)
                 + f"\n{IMAGE_REUSE_NEXT_ACTION}",
             )

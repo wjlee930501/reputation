@@ -78,6 +78,8 @@ _VISIBILITY_COLUMNS: Final = (
     # 재사용 이미지의 인증 모양은 이 컬럼으로만 구분된다 — 빼면 판정이 지연 로딩을
     # 시도하다 async 세션에서 터지거나, 인증된 이미지를 미인증으로 오판한다.
     ContentItem.image_reused_from_content_id,
+    # 병원 히어로 대체 이미지의 인증 모양도 같다(migration 0075).
+    ContentItem.image_fallback_source,
 )
 
 

@@ -1204,3 +1204,316 @@ def test_static_system_block_requires_at_least_one_real_document_url():
 
     assert "references를 비워" not in block
     assert "최소 1개" in block
+
+
+# ── 참고자료 주제 적합성: 거절이 아니라 제거 ──────────────────────────────
+
+_KNEE_BRIEF = {
+    "target_keyword": "무릎 통증",
+    "target_query": "노원 무릎 통증 병원",
+    "treatment_narrative": {"treatment": "무릎 관절 비수술 치료", "angle": "보존 치료 우선"},
+}
+_KNEE_RESULT = {
+    "title": "무릎 통증 원인과 치료 방법",
+    "body": "## 무릎이 아픈 이유\n무릎 통증은 여러 원인으로 생깁니다.\n## 치료\n안내",
+}
+
+
+def test_article_topic_terms_use_only_the_approved_topic_fields():
+    terms = content_engine._article_topic_terms(_KNEE_RESULT, _KNEE_BRIEF)
+
+    assert "무릎 통증 원인과 치료 방법" in terms
+    assert "무릎이 아픈 이유" in terms
+    assert "무릎 통증" in terms
+    assert "무릎 관절 비수술 치료" in terms
+    assert all("안내" != term for term in terms)
+
+
+def test_reference_unrelated_to_the_article_topic_is_dropped():
+    references = [
+        {"title": "질병관리청 국가건강정보포털 - 무릎 관절염", "url": "https://health.kdca.go.kr/a"},
+        {"title": "국가암정보센터 - 대장암 예방", "url": "https://cancer.go.kr/b"},
+    ]
+
+    kept = content_engine._drop_unrelated_references(
+        references, _KNEE_RESULT, _KNEE_BRIEF
+    )
+
+    assert [reference["url"] for reference in kept] == ["https://health.kdca.go.kr/a"]
+
+
+def test_related_kdca_reference_survives_a_differently_worded_article():
+    """요통 문서는 허리 디스크 글의 근거다 — 표기가 달라도 떨구지 않는다."""
+    result = {
+        "title": "허리디스크 초기 증상과 치료 방법",
+        "body": "## 허리디스크는 왜 생기나요\n설명입니다.",
+    }
+    references = [{"title": "질병관리청 국가건강정보포털 - 요통", "url": "https://health.kdca.go.kr/c"}]
+
+    kept = content_engine._drop_unrelated_references(
+        references, result, {"target_keyword": "허리디스크"}
+    )
+
+    assert kept == references
+
+
+def test_english_and_institution_only_titles_are_never_dropped():
+    references = [
+        {"title": "Mayo Clinic - Colorectal cancer", "url": "https://mayoclinic.org/x"},
+        {"title": "대한정형외과학회 진료 지침", "url": "https://koa.or.kr/y"},
+    ]
+
+    kept = content_engine._drop_unrelated_references(
+        references, _KNEE_RESULT, _KNEE_BRIEF
+    )
+
+    assert kept == references
+
+
+def test_curated_catalog_reference_is_trusted_without_scoring():
+    curated_url = next(iter(content_engine.CURATED_SOURCE_URLS))
+    references = [{"title": "대장암 예방 안내", "url": curated_url}]
+
+    kept = content_engine._drop_unrelated_references(
+        references, _KNEE_RESULT, _KNEE_BRIEF
+    )
+
+    assert kept == references
+
+
+def test_fetched_page_title_can_reveal_an_unrelated_reference():
+    references = [{"title": "권위 기관 자료", "url": "https://health.kdca.go.kr/d"}]
+
+    kept = content_engine._drop_unrelated_references(
+        references,
+        _KNEE_RESULT,
+        _KNEE_BRIEF,
+        {"https://health.kdca.go.kr/d": "대장암 | 국가건강정보포털"},
+    )
+
+    assert kept == []
+
+
+def test_html_page_title_is_extracted_from_an_already_fetched_response():
+    response = SimpleNamespace(
+        text="<html><head><title>  요통 |\n 국가건강정보포털 </title></head><body>x</body></html>"
+    )
+
+    assert content_engine._html_page_title(response) == "요통 | 국가건강정보포털"
+    assert content_engine._html_page_title(SimpleNamespace()) == ""
+
+
+async def test_unrelated_reference_is_dropped_without_rejecting_the_article(monkeypatch):
+    hospital = SimpleNamespace(
+        name="노원탑365의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["정형외과"],
+        keywords=["무릎 통증"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    body = (
+        "## 무릎이 아픈 이유\n노원탑365의원 김원장은 노원에서 무릎 통증을 확인합니다. "
+        + ("무릎 통증은 시작 시점과 움직임에 따른 변화를 기록하면 진료에 도움이 됩니다. " * 60)
+        + "\n\n## 치료 방향\n"
+        + ("증상에 따라 검사와 치료 방향이 달라질 수 있으며 회복 기간은 3주 이상 걸릴 수 있습니다. " * 40)
+    )
+    payload = {
+        "title": "무릎 통증 원인과 치료 방법",
+        "body": body,
+        "meta_description": "무릎 통증의 원인과 치료 방향, 병원에서 확인하는 항목을 안내합니다.",
+        "references": [
+            {"title": "질병관리청 국가건강정보포털 - 무릎 관절염", "url": "https://health.kdca.go.kr/knee"},
+            {"title": "국가암정보센터 - 대장암 예방", "url": "https://cancer.go.kr/colon"},
+        ],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    calls = 0
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+
+    result = await content_engine.generate_content(
+        hospital,
+        ContentType.DISEASE,
+        content_brief={
+            "target_keyword": "무릎 통증",
+            "target_query": "노원 무릎 통증 병원",
+        },
+    )
+
+    assert calls == 1, "주제 불일치 자료는 재생성을 사지 않는다"
+    assert [reference["url"] for reference in result["references"]] == [
+        "https://health.kdca.go.kr/knee"
+    ]
+
+
+async def _capture_user_message(monkeypatch, *, existing_titles, brief) -> str:
+    hospital = SimpleNamespace(
+        name="노원탑365의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["정형외과"],
+        keywords=["무릎 통증"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    captured: dict = {}
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text="{}")]
+
+    def fake_create(*_args, **kwargs):
+        captured["user"] = kwargs["messages"][0]["content"]
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine, "GENERATION_REMEDIATION_ROUNDS", 1)
+    with pytest.raises(ValueError):
+        await content_engine.generate_content(
+            hospital,
+            ContentType.DISEASE,
+            existing_titles,
+            content_brief=brief,
+        )
+    return captured["user"]
+
+
+async def test_prompt_asks_for_a_distinct_angle_when_the_keyword_repeats(monkeypatch):
+    message = await _capture_user_message(
+        monkeypatch,
+        existing_titles=["무릎 통증 원인과 치료 방법"],
+        brief={"target_keyword": "무릎 통증"},
+    )
+
+    assert "중복 금지" in message
+    assert "질문·관점·독자 상황을 다르게" in message
+
+
+async def test_prompt_keeps_the_plain_duplicate_list_for_other_keywords(monkeypatch):
+    message = await _capture_user_message(
+        monkeypatch,
+        existing_titles=["무릎 통증 원인과 치료 방법"],
+        brief={"target_keyword": "허리디스크"},
+    )
+
+    assert "중복 금지" in message
+    assert "질문·관점·독자 상황을 다르게" not in message
+
+
+async def test_broken_reference_check_returns_page_titles_without_extra_requests(
+    monkeypatch,
+):
+    import httpx
+
+    references = [
+        {"title": "권위 자료", "url": "https://health.kdca.go.kr/ok"},
+        {"title": "없는 자료", "url": "https://health.kdca.go.kr/missing"},
+    ]
+    requested: list[str] = []
+
+    class _Client:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def get(self, url, headers):
+            requested.append(url)
+            status = 404 if url.endswith("missing") else 200
+            return httpx.Response(
+                status,
+                request=httpx.Request("GET", url),
+                headers={"content-type": "text/html"},
+                text="<html><head><title>요통 | 국가건강정보포털</title></head></html>",
+            )
+
+    monkeypatch.setattr(content_engine.httpx, "AsyncClient", _Client)
+
+    kept, titles = await content_engine._drop_definitively_broken_references(
+        references, with_titles=True
+    )
+
+    assert kept == [references[0]]
+    assert titles == {"https://health.kdca.go.kr/ok": "요통 | 국가건강정보포털"}
+    assert requested == [reference["url"] for reference in references], (
+        "제목 수집이 추가 요청을 만들면 안 된다"
+    )
+
+
+async def test_dropping_every_reference_falls_back_to_the_curated_catalog(monkeypatch):
+    """주제 불일치로 근거가 비면 기존 큐레이션 치유 경로가 그대로 적용된다."""
+    hospital = SimpleNamespace(
+        name="노원탑365의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["내과"],
+        keywords=["고혈압"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    body = (
+        "## 고혈압은 왜 생기나요\n노원탑365의원 김원장은 노원에서 혈압을 확인합니다. "
+        + ("혈압은 측정 시점과 자세에 따라 달라질 수 있어 반복 측정이 필요합니다. " * 60)
+        + "\n\n## 생활 관리\n"
+        + ("가정에서 2주 이상 기록한 혈압은 진료에 도움이 됩니다. " * 40)
+    )
+    payload = {
+        "title": "고혈압 관리에서 먼저 확인할 것",
+        "body": body,
+        "meta_description": "고혈압의 원인과 가정 혈압 측정, 생활 관리 기준을 안내합니다.",
+        "references": [
+            {"title": "국가암정보센터 - 대장암 예방", "url": "https://cancer.go.kr/colon"}
+        ],
+        "faq_question": None,
+        "faq_answer_summary": None,
+    }
+    calls = 0
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+
+    result = await content_engine.generate_content(
+        hospital,
+        ContentType.DISEASE,
+        content_brief={"target_keyword": "고혈압", "target_query": "노원 고혈압 병원"},
+    )
+
+    assert calls == 1, "치유 경로는 공급자를 다시 부르지 않는다"
+    assert result["references"]
+    assert all(
+        reference["url"] in content_engine.CURATED_SOURCE_URLS
+        for reference in result["references"]
+    )

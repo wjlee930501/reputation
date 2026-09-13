@@ -2,7 +2,7 @@
 
 import sys
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import anthropic
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.dml import Update
 
-from app.models.content import ContentItem
+from app.models.content import ContentItem, ContentStatus
 from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -34,7 +34,8 @@ from app.services.content_ai_review import (
     ContentAiReviewUnavailableReason,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
-from app.workers import tasks
+from app.workers import nightly_generation_batch, tasks
+from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
 from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
 from app.workers.generation_retry_policy import (
     ENVIRONMENT_ATTEMPT_BUDGET,
@@ -65,8 +66,9 @@ def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_co
     assert "essence_check_summary" in sql.split("WHERE", 1)[1]
     assert "UNAVAILABLE" in sql
     assert "REVISE" in sql
-    # cap+1로 읽어 절단 발생을 감지한다
-    assert f"LIMIT {tasks.NIGHTLY_GENERATION_CAP + 1}" in sql
+    # 병원 간 라운드로빈을 할 수 있을 만큼 후보를 더 읽고, +1로 절단 발생을 감지한다
+    assert f"LIMIT {tasks.NIGHTLY_GENERATION_SELECT_LIMIT + 1}" in sql
+    assert tasks.NIGHTLY_GENERATION_SELECT_LIMIT > tasks.NIGHTLY_GENERATION_CAP
 
 
 def test_maintenance_window_empty_drafts_stay_on_general_nightly_path():
@@ -717,6 +719,263 @@ async def test_ai_reviewer_is_never_called_before_deterministic_gate_passes(monk
     assert screening.summary["blocking"] is True
 
 
+def _aligned(*_args, **_kwargs):
+    return SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []})
+
+
+async def _allow_cost(*_args, **_kwargs):
+    return SimpleNamespace(allowed=True)
+
+
+def _reviewer(findings=(), status=ContentAiReviewStatus.PASS):
+    async def _review(**_kwargs):
+        return ContentAiReview(
+            status=status,
+            confidence=0.95,
+            findings=tuple(findings),
+            summary="검수",
+            model="reviewer-test",
+        )
+
+    return _review
+
+
+@pytest.mark.asyncio
+async def test_duplicate_topic_spends_one_shared_rewrite_and_then_accepts(monkeypatch):
+    """중복 주제는 보완 1회만 시도하고, 그래도 비슷하면 글을 살리고 기록만 남긴다."""
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "허리디스크 초기 증상과 자가 진단법",
+            "body": "## 허리디스크 초기 증상\n본문",
+        }
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", _aligned)
+    monkeypatch.setattr(tasks, "review_generated_content", _reviewer())
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=["허리디스크 초기증상과 자가진단 방법"],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(calls) == 2, "생성은 최초 + 각도 변경 1회뿐이다"
+    assert "다른 " in calls[1][0]
+    assert "허리디스크 초기증상과 자가진단 방법" in calls[1][0]
+    assert content["title"] == "허리디스크 초기 증상과 자가 진단법"
+    assert screening.status == "ALIGNED"
+    assert screening.summary["blocking"] is False
+    finding = screening.summary["duplicate_topic_findings"][0]
+    assert finding["title"] == "허리디스크 초기증상과 자가진단 방법"
+    assert finding["score"] >= 0.6
+
+
+@pytest.mark.asyncio
+async def test_duplicate_topic_rewrite_that_changes_angle_leaves_no_finding(monkeypatch):
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        if len(calls) == 1:
+            return {
+                "title": "허리디스크 초기 증상과 자가 진단법",
+                "body": "## 허리디스크 초기 증상\n본문",
+            }
+        return {
+            "title": "허리디스크, 수술 없이 회복할 수 있을까요?",
+            "body": "## 비수술 치료를 고려하는 기준\n본문",
+        }
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", _aligned)
+    monkeypatch.setattr(tasks, "review_generated_content", _reviewer())
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=["허리디스크 초기증상과 자가진단 방법"],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(calls) == 2
+    assert content["title"] == "허리디스크, 수술 없이 회복할 수 있을까요?"
+    assert "duplicate_topic_findings" not in screening.summary
+
+
+@pytest.mark.asyncio
+async def test_duplicate_topic_shares_the_soft_budget_with_keyword_remediation(
+    monkeypatch,
+):
+    """키워드·계절 보완과 중복 가드는 같은 1회 예산을 나눠 쓴다 (총 생성 3회 상한 유지)."""
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "허리디스크 초기 증상과 자가 진단법",
+            "body": "## 허리디스크 초기 증상\n본문",
+            "target_alignment_findings": ["측정 질의 키워드 미반영: '허리디스크'"],
+        }
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", _aligned)
+    monkeypatch.setattr(tasks, "review_generated_content", _reviewer())
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+
+    _content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=["허리디스크 초기증상과 자가진단 방법"],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "허리디스크"},
+    )
+
+    assert len(calls) == 2, "두 가지 보완을 한 번의 재작성에 함께 넘긴다"
+    assert len(calls[1]) == 2
+    assert screening.summary["target_alignment_findings"]
+    assert screening.summary["duplicate_topic_findings"]
+
+
+@pytest.mark.asyncio
+async def test_soft_reference_finding_drops_the_named_reference_without_a_rewrite(
+    monkeypatch,
+):
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "무릎 통증 원인과 치료",
+            "body": "## 무릎이 아픈 이유\n본문",
+            "references": [
+                {"title": "질병관리청 무릎 관절염", "url": "https://health.kdca.go.kr/a"},
+                {"title": "국가암정보센터 대장암 예방", "url": "https://cancer.go.kr/b"},
+            ],
+        }
+
+    reviewer = _reviewer(
+        findings=[
+            ContentAiFinding(
+                ContentAiFindingSeverity.SOFT,
+                ContentAiFindingKind.REFERENCE,
+                "'국가암정보센터 대장암 예방'은 무릎 통증 주제와 어긋납니다.",
+            )
+        ],
+        status=ContentAiReviewStatus.REVISE,
+    )
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", _aligned)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief={"target_keyword": "무릎 통증"},
+    )
+
+    assert len(calls) == 1, "참고자료 지적은 재작성을 사지 않는다"
+    assert [reference["url"] for reference in content["references"]] == [
+        "https://health.kdca.go.kr/a"
+    ]
+    assert screening.status == "ALIGNED"
+    assert screening.summary["blocking"] is False
+    assert screening.summary["reference_findings"]
+
+
+@pytest.mark.asyncio
+async def test_unmatched_reference_finding_stays_advisory(monkeypatch):
+    """제목을 찾지 못하거나 마지막 근거면 자료를 지우지 않고 조언만 남긴다."""
+    calls = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return {
+            "title": "무릎 통증 원인과 치료",
+            "body": "## 무릎이 아픈 이유\n본문",
+            "references": [
+                {"title": "질병관리청 무릎 관절염", "url": "https://health.kdca.go.kr/a"}
+            ],
+        }
+
+    reviewer = _reviewer(
+        findings=[
+            ContentAiFinding(
+                ContentAiFindingSeverity.SOFT,
+                ContentAiFindingKind.REFERENCE,
+                "참고자료가 글 주제와 맞지 않아 보입니다.",
+            )
+        ],
+        status=ContentAiReviewStatus.REVISE,
+    )
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", _aligned)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief=None,
+    )
+
+    assert len(calls) == 1
+    assert len(content["references"]) == 1
+    assert screening.summary["reference_findings"] == [
+        "참고자료가 글 주제와 맞지 않아 보입니다."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reference_finding_never_removes_the_last_evidence(monkeypatch):
+    async def fake_generate(*_args, **_kwargs):
+        return {
+            "title": "무릎 통증 원인과 치료",
+            "body": "## 무릎이 아픈 이유\n본문",
+            "references": [
+                {"title": "국가암정보센터 대장암 예방", "url": "https://cancer.go.kr/b"}
+            ],
+        }
+
+    reviewer = _reviewer(
+        findings=[
+            ContentAiFinding(
+                ContentAiFindingSeverity.SOFT,
+                ContentAiFindingKind.REFERENCE,
+                "'국가암정보센터 대장암 예방'은 주제와 어긋납니다.",
+            )
+        ],
+        status=ContentAiReviewStatus.REVISE,
+    )
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(tasks, "screen_content_against_philosophy", _aligned)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+
+    content, screening = await tasks._generate_with_auto_review(
+        hospital=SimpleNamespace(id=uuid.uuid4()),
+        item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
+        existing_titles=[],
+        philosophy=SimpleNamespace(),
+        approved_brief=None,
+    )
+
+    assert len(content["references"]) == 1, "근거를 전부 떼면 발행이 막힌다"
+    assert screening.summary["reference_findings"]
+
+
 def test_query_priority_promotes_only_unmentioned_targets():
     successful_missing = SimpleNamespace(measurement_status="SUCCESS", is_mentioned=False)
     successful_mentioned = SimpleNamespace(measurement_status="SUCCESS", is_mentioned=True)
@@ -1201,7 +1460,7 @@ class _NightlyTaskDB:
 class _NightlyTaskRecorder:
     def __init__(self, db, *_args):
         self.db = db
-        self.run = SimpleNamespace(id=uuid.uuid4())
+        self.run = SimpleNamespace(id=uuid.uuid4(), attempt_count=1)
 
     def record(self, *_args, **_kwargs):
         return None
@@ -1227,7 +1486,18 @@ def _nightly_item(hospital_name: str):
     )
 
 
-def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
+def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date, *, dispatch_inline=True):
+    """배치 → per-item 팬아웃을 한 프로세스 안에서 이어 실행한다.
+
+    브로커 없이도 배치가 claim한 슬롯이 실제로 per-item 파이프라인을 지나야 기존
+    기록·인시던트 계약을 그대로 검사할 수 있다. 배포 자체(서명 봉투·실행 기록·claim
+    토큰)는 별도 테스트가 검사한다.
+    """
+
+    def _run_inline(db_, recorder, item, *, notify):
+        tasks._run_generation_item(db_, recorder, item, item.hospital, notify=notify)
+        return True
+
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "GenerationBatchRecorder", _NightlyTaskRecorder)
     monkeypatch.setattr(
@@ -1236,6 +1506,8 @@ def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
     monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
     monkeypatch.setattr(tasks, "release_unfinished_claims", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    if dispatch_inline:
+        monkeypatch.setattr(tasks, "_dispatch_generation_item", _run_inline)
     monkeypatch.setattr(
         tasks.arrow,
         "now",
@@ -1243,7 +1515,8 @@ def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date):
     )
 
 
-def test_twenty_three_batch_queries_tomorrow_only(monkeypatch):
+def test_twenty_three_batch_covers_tomorrow_and_the_day_after(monkeypatch):
+    """한 밤이 통째로 실패해도 같은 슬롯이 두 번째 밤의 기회를 갖는다."""
     db = _NightlyTaskDB()
     loaded_windows = []
     observed = datetime(2026, 8, 19, 23, 0)
@@ -1265,7 +1538,8 @@ def test_twenty_three_batch_queries_tomorrow_only(monkeypatch):
 
     tasks.nightly_content_generation.run()
 
-    assert loaded_windows == [(date(2026, 8, 20), date(2026, 8, 20))]
+    assert loaded_windows == [(date(2026, 8, 20), date(2026, 8, 21))]
+    assert tasks.settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS == 2
 
 
 def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatch):
@@ -3619,7 +3893,7 @@ class _FakeSyncDB:
 
 
 def _items(n):
-    return [SimpleNamespace(id=i) for i in range(n)]
+    return [SimpleNamespace(id=i, hospital_id=i) for i in range(n)]
 
 
 def test_load_nightly_generation_batch_without_truncation():
@@ -4661,9 +4935,16 @@ def test_exhausted_image_budget_publishes_with_a_reused_hospital_image(monkeypat
         item.image_reused_from_content_id = source.id
         return 1
 
+    async def _no_fallback(_db, _hospital):
+        return None
+
     reuse_module = SimpleNamespace(
-        select_reusable_hospital_image=lambda _db, _hospital_id, _exclude: source,
+        select_reusable_hospital_image=(
+            lambda _db, _hospital_id, _exclude, **_kwargs: source
+        ),
         apply_reused_image=fake_apply,
+        certify_hospital_fallback_image=_no_fallback,
+        apply_hospital_fallback_image=lambda *_args, **_kwargs: 0,
     )
     monkeypatch.setitem(sys.modules, "app.services.content_image_reuse", reuse_module)
     monkeypatch.setattr(db, "refresh", lambda _item: None, raising=False)
@@ -4677,6 +4958,8 @@ def test_exhausted_image_budget_publishes_with_a_reused_hospital_image(monkeypat
     assert applied["guards"]["expected_revision"] == 1
     facts = tasks.stored_image_reuse_facts(item)
     assert facts["reused_from_content_id"] == str(source.id)
+    # 08:00 요약이 출처를 한 줄로 읽는 자리 — 글에서 빌리면 그 글의 id가 들어간다.
+    assert facts["reused_from"] == str(source.id)
     assert facts["image_failure_reason"] == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
     assert facts["image_failure_class"] == "PROVIDER_ERROR"
     attempt = tasks._stored_generation_attempt(item)
@@ -4684,27 +4967,99 @@ def test_exhausted_image_budget_publishes_with_a_reused_hospital_image(monkeypat
     assert attempt["provider_attempt_count"] == SAMPLE_IMAGE_DAILY_BUDGET
 
 
-def test_new_hospital_without_any_verified_image_keeps_the_blocked_behaviour(monkeypatch):
+def _first_article_fixture(monkeypatch, *, fallback, applied_rows: int = 1):
+    """빌려올 인증 이미지가 하나도 없는 병원의 첫 글."""
+
     philosophy = SimpleNamespace(id=uuid.uuid4())
     item = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=uuid.uuid4(), title="주제", image_url=None,
         content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
         content_revision=1, generation_claim_token=None, essence_check_summary=None,
-        image_reused_from_content_id=None,
+        image_reused_from_content_id=None, image_fallback_source=None,
     )
     hospital = SimpleNamespace(id=item.hospital_id, name="첫글의원", slug="first-clinic")
     db = _NightlyTaskDB()
     tasks._remember_image_failure(db, item, philosophy, {"reason": "POLICY_REJECTED"})
+    calls: dict = {}
+
+    async def _certify(_db, _hospital):
+        calls["certified"] = True
+        return fallback
+
+    def _apply(_db, *, item, fallback, **guards):
+        calls["fallback"] = fallback
+        calls["guards"] = guards
+        item.image_fallback_source = "HOSPITAL_HERO"
+        return applied_rows
+
     reuse_module = SimpleNamespace(
-        select_reusable_hospital_image=lambda _db, _hospital_id, _exclude: None,
+        select_reusable_hospital_image=lambda _db, _hospital_id, _exclude, **_kwargs: None,
         apply_reused_image=lambda *_args, **_kwargs: 0,
+        certify_hospital_fallback_image=_certify,
+        apply_hospital_fallback_image=_apply,
     )
     monkeypatch.setitem(sys.modules, "app.services.content_image_reuse", reuse_module)
+    monkeypatch.setattr(db, "refresh", lambda _item: None, raising=False)
+    return philosophy, item, hospital, db, calls
+
+
+def test_new_hospital_without_any_verified_image_keeps_the_blocked_behaviour(monkeypatch):
+    """빌릴 이미지도 인증된 히어로도 없으면 종전대로 막힌다 — 합성 인증을 만들지 않는다."""
+    philosophy, item, hospital, db, calls = _first_article_fixture(monkeypatch, fallback=None)
 
     state = tasks._reuse_hospital_image(db, item, hospital, philosophy, {})
 
     assert state == tasks.GenerationItemState.PARTIAL
+    assert calls["certified"] is True
+    assert "fallback" not in calls
     assert tasks._stored_generation_attempt(item)["reason"] == "CONTENT_IMAGE_POLICY_REJECTED"
+
+
+def test_first_article_publishes_with_the_certified_hospital_hero_image(monkeypatch):
+    fallback = SimpleNamespace(
+        image_url="gs://bucket/content/hero/" + "c" * 64 + "-x.png",
+        content_hash="c" * 64,
+        policy_version=tasks.IMAGE_POLICY_VERSION,
+        verified_at=datetime.now(timezone.utc),
+        source_url="https://cdn.example.com/hero.jpg",
+    )
+    philosophy, item, hospital, db, calls = _first_article_fixture(
+        monkeypatch, fallback=fallback
+    )
+
+    state = tasks._reuse_hospital_image(
+        db, item, hospital, philosophy, tasks._image_guard_kwargs(item)
+    )
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    assert calls["fallback"] is fallback
+    # 늦은 결과가 바뀐 판이나 취소된 슬롯을 덮지 않게 가드를 그대로 들고 간다.
+    assert calls["guards"]["expected_revision"] == 1
+    facts = tasks.stored_image_reuse_facts(item)
+    # 08:00 요약이 "어디서 왔는지"를 읽는 자리. 글이 아니라 병원 자산에서 왔다.
+    assert facts["reused_from"] == "HOSPITAL_HERO"
+    assert facts["reused_from_content_id"] is None
+    assert facts["image_failure_reason"] == "CONTENT_IMAGE_POLICY_REJECTED"
+    assert facts["image_failure_class"] == "POLICY_REJECTED"
+    assert tasks._stored_generation_attempt(item)["reason"] == "IMAGE_REUSED"
+
+
+def test_a_discarded_fallback_write_does_not_claim_success(monkeypatch):
+    """대체 이미지 쓰기가 가드에 막히면 그 결과는 버린다."""
+    fallback = SimpleNamespace(
+        image_url="gs://bucket/content/hero/" + "d" * 64 + "-x.png",
+        content_hash="d" * 64,
+        policy_version=tasks.IMAGE_POLICY_VERSION,
+        verified_at=datetime.now(timezone.utc),
+        source_url="https://cdn.example.com/hero.jpg",
+    )
+    philosophy, item, hospital, db, _calls = _first_article_fixture(
+        monkeypatch, fallback=fallback, applied_rows=0
+    )
+
+    state = tasks._reuse_hospital_image(db, item, hospital, philosophy, {})
+
+    assert state == tasks.GenerationItemState.DISCARDED
 
 
 def test_reused_image_publication_reaches_the_eight_oclock_digest(monkeypatch):
@@ -5013,3 +5368,245 @@ def test_model_declared_hard_finding_is_never_re_reviewed_by_the_sweep(monkeypat
 
     assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
     assert "승인 자료" in message
+
+
+# ── 야간 생성 팬아웃: claim은 배치가, 생성은 슬롯별 태스크가 한다 ──
+
+
+def test_dispatcher_hands_each_claimed_item_to_one_per_item_task(monkeypatch):
+    """배치는 claim한 슬롯마다 정확히 하나의 태스크를 claim token과 함께 배포한다."""
+
+    db = _NightlyTaskDB()
+    items = [_nightly_item("팬아웃의원"), _nightly_item("팬아웃의원")]
+    for item in items:
+        item._generation_claim_token = uuid.uuid4()
+    sent = []
+
+    _patch_nightly_task_shell(
+        monkeypatch, db, items, date(2026, 8, 19), dispatch_inline=False
+    )
+    monkeypatch.setattr(
+        tasks.celery_app, "send_task", lambda name, **kwargs: sent.append((name, kwargs))
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_run_generation_item",
+        lambda *_args, **_kwargs: pytest.fail("배포 태스크는 공급자를 직접 호출하지 않는다"),
+    )
+
+    tasks.nightly_content_generation.run()
+
+    assert len(sent) == len(items)
+    runs = [row for row in db.added if isinstance(row, OperationRun)]
+    assert len(runs) == len(items)
+    for (name, kwargs), item, run in zip(sent, items, runs, strict=True):
+        assert name == "app.workers.tasks.generate_claimed_content_item"
+        assert kwargs["args"] == [
+            str(item.id),
+            str(item._generation_claim_token),
+            None,
+        ]
+        assert kwargs["queue"] == "content"
+        assert kwargs["task_id"] == run.task_id
+        assert kwargs["headers"][PURPOSE_HEADER] == "generate-claimed-content-item"
+        assert kwargs["headers"][TARGET_HEADER] == str(item.id)
+        assert kwargs["headers"]["operation_run_id"] == str(run.id)
+        # 유실된 배포를 자율 복구가 되살릴 수 있어야 한다 — 저장 payload가 허용 목록이다.
+        assert run.operation_type == "GENERATE_CONTENT_ITEM"
+        assert run.state == OperationRunState.REQUESTED
+        assert run.request_payload["_dispatch"]["task_args"] == [
+            str(item.id),
+            str(item._generation_claim_token),
+            None,
+        ]
+
+
+def test_overnight_sweep_dispatches_without_individual_slack(monkeypatch):
+    """01/04/07 스윕도 배포만 한다. 슬롯별 알림은 07:45 요약이 소유한다."""
+
+    db = _NightlyTaskDB()
+    item = _nightly_item("새벽복구의원")
+    item._generation_claim_token = uuid.uuid4()
+    sent = []
+
+    _patch_nightly_task_shell(
+        monkeypatch, db, [item], datetime(2026, 8, 19, 1, 0), dispatch_inline=False
+    )
+    monkeypatch.setattr(
+        tasks.celery_app, "send_task", lambda name, **kwargs: sent.append((name, kwargs))
+    )
+
+    tasks.overnight_content_generation_recovery.run()
+
+    assert [kwargs["args"][2] for _name, kwargs in sent] == [False]
+
+
+def test_per_item_task_refuses_a_stale_or_mismatched_claim(monkeypatch):
+    """lease가 바뀌었거나 만료된 뒤 도착한 실행은 공급자를 한 번도 부르지 않는다."""
+
+    db = _NightlyTaskDB()
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks, "load_claimed_generation_item", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tasks,
+        "_run_generation_item",
+        lambda *_args, **_kwargs: pytest.fail("만료된 lease로 생성이 실행됐다"),
+    )
+    finished = []
+    monkeypatch.setattr(
+        tasks,
+        "finish_explicit_run",
+        lambda _db, _task, item_id, state, **_kwargs: finished.append((item_id, state)),
+    )
+
+    tasks.generate_claimed_content_item.run(str(uuid.uuid4()), str(uuid.uuid4()))
+
+    assert [state for _item_id, state in finished] == [OperationRunState.CANCELLED]
+
+
+def test_claimed_item_load_requires_the_current_unexpired_lease():
+    token = uuid.uuid4()
+    now = datetime(2026, 8, 19, 23, 30, tzinfo=timezone.utc)
+
+    def _load(**overrides):
+        fields = {
+            "id": uuid.uuid4(),
+            "status": ContentStatus.DRAFT,
+            "generation_claim_token": token,
+            "generation_claimed_at": now - timedelta(minutes=5),
+            **overrides,
+        }
+        item = SimpleNamespace(**fields)
+        db = SimpleNamespace(
+            execute=lambda _stmt: SimpleNamespace(scalar_one_or_none=lambda: item)
+        )
+        return nightly_generation_batch.load_claimed_generation_item(
+            db, item.id, token, now=now
+        )
+
+    assert _load() is not None
+    assert _load(generation_claim_token=uuid.uuid4()) is None
+    assert _load(generation_claimed_at=None) is None
+    assert _load(generation_claimed_at=now - timedelta(hours=3)) is None
+    assert _load(status=ContentStatus.PUBLISHED) is None
+
+
+def test_claimed_batch_interleaves_hospitals_round_robin():
+    """이월 슬롯이 많은 병원 하나가 상한을 통째로 가져가지 못한다."""
+
+    busy, quiet = uuid.uuid4(), uuid.uuid4()
+    ordered = [SimpleNamespace(id=index, hospital_id=busy) for index in range(5)]
+    ordered += [SimpleNamespace(id=100 + index, hospital_id=quiet) for index in range(2)]
+
+    interleaved = nightly_generation_batch.interleave_by_hospital(ordered)
+
+    assert [item.hospital_id for item in interleaved] == [
+        busy,
+        quiet,
+        busy,
+        quiet,
+        busy,
+        busy,
+        busy,
+    ]
+    # 병원 안의 우선순위(이월 → 예정일 → 순번)는 그대로다.
+    assert [item.id for item in interleaved if item.hospital_id == busy] == [0, 1, 2, 3, 4]
+
+
+def test_dispatcher_warns_when_the_claim_cannot_finish_before_the_morning(monkeypatch, caplog):
+    """운영자의 손잡이는 동시성 하나다 — 그 손잡이를 올려야 할 때를 로그로 알린다."""
+
+    db = _NightlyTaskDB()
+    items = [_nightly_item(f"용량부족의원{index}") for index in range(40)]
+    for item in items:
+        item._generation_claim_token = uuid.uuid4()
+
+    _patch_nightly_task_shell(
+        monkeypatch, db, items, datetime(2026, 8, 20, 7, 0), dispatch_inline=False
+    )
+    monkeypatch.setattr(tasks.celery_app, "send_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks.settings, "CELERY_CONCURRENCY", 2)
+
+    with caplog.at_level("WARNING", logger="app.workers.tasks"):
+        tasks.overnight_content_generation_recovery.run()
+
+    assert any("capacity is short" in record.message for record in caplog.records)
+
+
+def _published_item(**overrides):
+    base = dict(
+        id=uuid.uuid4(),
+        title="발행된 글",
+        sequence_no=1,
+        total_count=12,
+        content_type=SimpleNamespace(value="FAQ"),
+        scheduled_date=date(2026, 9, 12),
+        carried_over_from=None,
+        content_revision=1,
+        essence_check_summary=None,
+        image_reused_from_content_id=None,
+        image_fallback_source=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _publish_hospital():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        name="대체이미지의원",
+        slug="fallback-clinic",
+        aeo_domain=None,
+        treatments=[],
+    )
+
+
+def test_hero_fallback_publication_reaches_the_digest_with_its_source(monkeypatch):
+    """08:00 요약이 "빌린 것"과 "병원 대표 이미지"를 구분할 수 있어야 한다."""
+    item = _published_item(
+        image_fallback_source="HOSPITAL_HERO",
+        essence_check_summary={
+            "image_reuse": {
+                "reused_from_content_id": None,
+                "reused_from": "HOSPITAL_HERO",
+                "image_failure_reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+                "image_failure_class": "PROVIDER_QUOTA",
+            }
+        },
+    )
+
+    payload = tasks._publication_notification_payload(item, _publish_hospital())
+
+    assert payload["image_reused"] is True
+    assert payload["reused_from"] == "HOSPITAL_HERO"
+    assert payload["image_reused_from_content_id"] is None
+    assert payload["image_failure_class"] == "PROVIDER_QUOTA"
+
+
+def test_borrowed_article_publication_still_names_the_source_article(monkeypatch):
+    source_id = uuid.uuid4()
+    item = _published_item(
+        image_reused_from_content_id=source_id,
+        essence_check_summary={
+            "image_reuse": {
+                "reused_from_content_id": str(source_id),
+                "reused_from": str(source_id),
+                "image_failure_reason": "IMAGE_GENERATION_FAILED",
+                "image_failure_class": "PROVIDER_ERROR",
+            }
+        },
+    )
+
+    payload = tasks._publication_notification_payload(item, _publish_hospital())
+
+    assert payload["image_reused"] is True
+    assert payload["reused_from"] == str(source_id)
+    assert payload["image_reused_from_content_id"] == str(source_id)
+
+
+def test_an_own_topic_image_is_not_reported_as_substituted():
+    payload = tasks._publication_notification_payload(_published_item(), _publish_hospital())
+
+    assert payload["image_reused"] is False
+    assert "reused_from" not in payload

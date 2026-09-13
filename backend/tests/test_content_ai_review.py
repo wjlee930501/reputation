@@ -602,3 +602,61 @@ def test_reference_gate_note_is_absent_without_references() -> None:
 
     assert gates
     assert not any("화이트리스트" in gate for gate in gates)
+
+
+def test_soft_reference_finding_stays_soft_and_never_blocks() -> None:
+    """참고자료 주제 불일치는 조언이다 — SOFT+FACT/SAFETY의 UNCERTAIN 승격 대상이 아니다."""
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "REVISE",
+                "confidence": 0.93,
+                "findings": [
+                    {
+                        "severity": "SOFT",
+                        "kind": "REFERENCE",
+                        "message": "'국가암정보센터 대장암 예방'은 무릎 통증 주제와 어긋납니다.",
+                    }
+                ],
+                "summary": "참고자료 한 건이 주제와 다름",
+            }
+        ),
+        reviewed_content={"title": "무릎 통증", "body": "본문"},
+    )
+
+    assert result.findings[0].kind == ContentAiFindingKind.REFERENCE
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+    assert result.blocking_findings == ()
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.payload()["blocking"] is False
+
+
+def test_hard_reference_finding_keeps_the_existing_blocking_contract() -> None:
+    result = content_ai_review._parse_response(
+        json.dumps(
+            {
+                "decision": "REVISE",
+                "confidence": 0.95,
+                "findings": [
+                    {
+                        "severity": "HARD",
+                        "kind": "REFERENCE",
+                        "message": "근거로 쓸 수 없는 자료입니다.",
+                    }
+                ],
+                "summary": "차단",
+            }
+        ),
+        reviewed_content={"title": "안내", "body": "본문"},
+    )
+
+    assert result.blocking_findings[0].kind == ContentAiFindingKind.REFERENCE
+    assert result.payload()["blocking"] is True
+
+
+def test_system_prompt_restores_the_reference_topic_criterion() -> None:
+    prompt = content_ai_review._SYSTEM_PROMPT
+
+    assert "references의 제목·기관이 글의 주제와 명백히 어긋나는 경우" in prompt
+    assert "kind REFERENCE, severity SOFT" in prompt
+    assert "REFERENCE" in prompt.split('"kind":', 1)[1].splitlines()[0]

@@ -353,6 +353,29 @@ _DOMAIN_TO_INSTITUTION_NAME: dict[str, str] = {
 }
 
 
+# 사람이 제목·URL을 직접 확인한 문서들. 주제 적합성 채점은 이 URL을 건너뛴다
+# (구성상 신뢰되며, 빈 references를 치유하는 경로도 여기서 값을 가져온다).
+CURATED_SOURCE_URLS: frozenset[str] = frozenset(
+    str(source["url"]) for source in CURATED_MEDICAL_SOURCE_PAGES
+)
+
+_INSTITUTION_TITLE_TOKENS: frozenset[str] = frozenset(
+    re.sub(r"[^0-9a-z가-힣]+", "", part.lower())
+    for name in _DOMAIN_TO_INSTITUTION_NAME.values()
+    for part in name.split()
+    if re.sub(r"[^0-9a-z가-힣]+", "", part.lower())
+)
+
+
+def institution_title_tokens() -> frozenset[str]:
+    """기관 이름을 이루는 토큰들(정규화) — 참고자료 주제 판정에서 제외할 단어.
+
+    '질병관리청 국가건강정보포털 - 대장암'에서 주제를 결정하는 토큰은 '대장암'뿐이다.
+    기관명은 어느 글에 붙어도 같으므로 적합성 점수의 분모에서 빼야 한다.
+    """
+    return _INSTITUTION_TITLE_TOKENS
+
+
 def institution_label_for_url(url: str) -> str | None:
     """화이트리스트 URL을 기관 이름 기반의 중립 표기로 되돌린다.
 

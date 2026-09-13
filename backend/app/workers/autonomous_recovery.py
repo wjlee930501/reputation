@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -42,6 +43,7 @@ from app.services.site_build_incidents import (
     touch_site_build_incident,
 )
 from app.services.site_revalidation_control import retry_delay
+from app.workers import generation_run_control
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
 
@@ -52,6 +54,10 @@ _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
 _REBUILD_SITE_BUDGET_WINDOW: Final = timedelta(hours=24)
 _INTEGER_ARG: Final = object()
+_UUID_ARG: Final = object()
+_UUID_PATTERN: Final = re.compile(
+    r"^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +96,15 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
     ),
     "REGENERATE_CONTENT_IMAGE": _RedispatchPolicy(
         "app.workers.tasks.generate_content_image", "content", "content_item"
+    ),
+    # 야간 배치가 팬아웃한 슬롯 하나의 생성. 유실된 배포만 되살린다 — claim token까지
+    # 저장된 그대로 다시 실어 주고, 그 사이 lease가 바뀌었으면 태스크 자신이 물러난다.
+    # 토큰 없이 되살아난 경우에는 태스크가 자기 lease를 새로 claim한다.
+    generation_run_control.GENERATE_CONTENT_ITEM_OPERATION: _RedispatchPolicy(
+        generation_run_control.GENERATE_CONTENT_ITEM_TASK,
+        "content",
+        "content_item",
+        ((), (_UUID_ARG,), (_UUID_ARG, None), (_UUID_ARG, False)),
     ),
     recertification.RECERTIFY_OPERATION: _RedispatchPolicy(
         "app.workers.tasks.recertify_published_content_image", "content", "content_item"
@@ -834,6 +849,10 @@ def _args_match_policy(
 def _arg_matches_shape(value: object, expected: object) -> bool:
     if expected is _INTEGER_ARG:
         return type(value) is int
+    if expected is _UUID_ARG:
+        return isinstance(value, str) and bool(_UUID_PATTERN.fullmatch(value))
+    if expected is None:
+        return value is None
     if expected is True:
         return value is True
     return value == expected

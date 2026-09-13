@@ -565,6 +565,7 @@ async def generate_image(
             if diagnostics is not None:
                 diagnostics["reason"] = "POLICY_UNAVAILABLE"
                 diagnostics["stage"] = openai_stage.value
+                diagnostics["policy_error"] = str(e)
             logger.error("Image policy review unavailable: %s", e)
             await _settle_image_reservations(
                 attempts,
@@ -597,6 +598,10 @@ async def generate_image(
 
     # ── Vertex AI Gemini image (기본 또는 폴백) ──
     if not settings.GCP_PROJECT_ID:
+        if diagnostics is not None:
+            # 종전에는 이 경로만 reason 없이 ("","")를 돌려줘, 설정 누락이 공급자 오류와
+            # 같은 모습으로 보고됐다. 원인을 구분할 수 있게 남긴다.
+            diagnostics["reason"] = "PROVIDER_NOT_CONFIGURED"
         logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
         await _settle_image_reservations(
             attempts,
@@ -636,6 +641,7 @@ async def generate_image(
         if diagnostics is not None:
             diagnostics["reason"] = "POLICY_UNAVAILABLE"
             diagnostics["stage"] = google_stage.value
+            diagnostics["policy_error"] = str(e)
         logger.error("Image policy review unavailable: %s", e)
         return ("", "")
     except ImagePolicyRejectedError as exc:
@@ -695,6 +701,7 @@ async def generate_image(
             if diagnostics is not None:
                 diagnostics["reason"] = "POLICY_UNAVAILABLE"
                 diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+                diagnostics["policy_error"] = str(fallback_exc)
             logger.error("Google image fallback policy review unavailable: %s", fallback_exc)
             return ("", "")
         except ImageSafetyBlockedError as fallback_exc:
@@ -829,6 +836,19 @@ def store_certified_image_bytes(image_bytes: bytes, hospital_name: str) -> str:
     return _upload_verified_png(image_bytes, hospital_name)
 
 
+# 검수 실패의 원인은 공급자가 준 raw 오류에만 들어 있다(모델 404, 지역 미제공, 권한 없음,
+# 429 할당량). 종전에는 그 문자열을 버려 운영 로그에 "image policy review failed"만 남았고,
+# 이미지가 왜 매번 실패하는지는 로그만으로 특정할 수 없었다. 분류기(`_image_failure_class`)도
+# 진단 값 전체를 문자열로 훑어 quota 신호를 찾으므로, 원문을 남기면 PROVIDER_QUOTA가
+# PROVIDER_ERROR로 뭉개지지 않는다.
+_POLICY_FAILURE_DETAIL_LIMIT = 400
+
+
+def _policy_failure_reason(summary: str, exc: BaseException) -> str:
+    detail = f"{type(exc).__name__}: {exc}".strip()
+    return f"{summary}: {detail[:_POLICY_FAILURE_DETAIL_LIMIT]}"
+
+
 def _validate_generated_image(
     image_bytes: bytes,
     *,
@@ -909,11 +929,11 @@ def _validate_generated_image(
             )
         assessment = ImagePolicyAssessment.model_validate_json(response_text)
     except (ImportError, ValidationError) as exc:
-        raise ImagePolicyUnavailableError("invalid image policy response") from exc
+        raise ImagePolicyUnavailableError(_policy_failure_reason("invalid image policy response", exc)) from exc
     except ImagePolicyUnavailableError:
         raise
     except Exception as exc:
-        raise ImagePolicyUnavailableError("image policy review failed") from exc
+        raise ImagePolicyUnavailableError(_policy_failure_reason("image policy review failed", exc)) from exc
     if not image_is_publishable(assessment):
         raise ImagePolicyRejectedError(assessment)
     return assessment

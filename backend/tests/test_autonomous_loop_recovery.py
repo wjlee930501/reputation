@@ -12,8 +12,8 @@ from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentType
 from app.models.hospital import Hospital
 from app.models.operations import Incident, OperationRun, OperationRunState
+from app.services import operation_run_payloads, site_build_incidents
 from app.services import published_image_recertification as recertification
-from app.services import site_build_incidents
 from app.services.image_engine import image_subject_hash
 from app.services.incident_safety import site_build_incident_key
 from app.workers import autonomous_recovery, tasks
@@ -1626,3 +1626,92 @@ def test_recertify_sweep_records_the_spent_budget_once_and_then_stops(monkeypatc
 
     assert exhausted["image_recertifications"] == 0
     assert no_dispatch == [] and closed.added == []
+
+
+def test_reconciler_redispatches_a_lost_fanned_out_generation_with_its_claim_token(
+    monkeypatch,
+) -> None:
+    """팬아웃된 슬롯 하나의 배포가 유실되면 저장된 인자 그대로 다시 배포한다."""
+
+    now = datetime(2026, 9, 13, 0, 30, tzinfo=UTC)
+    hospital_id = uuid.uuid4()
+    item = SimpleNamespace(id=uuid.uuid4(), hospital_id=hospital_id)
+    claim_token = str(uuid.uuid4())
+    run = SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="GENERATE_CONTENT_ITEM",
+        state=OperationRunState.REQUESTED,
+        hospital_id=hospital_id,
+        task_id="lost-generation-item",
+        request_payload=operation_run_payloads.build_request_payload(
+            operation_run_payloads.DispatchPayload(
+                "content_item",
+                str(item.id),
+                "content",
+                (str(item.id), claim_token, None),
+            )
+        ),
+        requested_at=now - timedelta(minutes=10),
+        queued_at=None,
+        safe_error_code=None,
+        safe_error_message=None,
+        version=1,
+    )
+    session = _RecoverySession(operation_runs=(run,), content_items=(item,))
+    dispatched: list[tuple[str, list[object], dict[str, object]]] = []
+
+    monkeypatch.setattr(autonomous_recovery, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
+    monkeypatch.setattr(
+        autonomous_recovery.celery_app,
+        "send_task",
+        lambda name, args, **kwargs: dispatched.append((name, args, kwargs)),
+    )
+
+    result = autonomous_recovery.reconcile.run()
+
+    assert result["operation_runs"] == 1
+    assert dispatched == [
+        (
+            "app.workers.tasks.generate_claimed_content_item",
+            [str(item.id), claim_token, None],
+            {
+                "queue": "content",
+                "headers": {
+                    **autonomous_recovery.build_dispatch_headers(
+                        "generate-claimed-content-item", str(item.id)
+                    ),
+                    "operation_run_id": str(run.id),
+                },
+                "task_id": "lost-generation-item",
+            },
+        )
+    ]
+    assert run.state == OperationRunState.QUEUED
+    assert run.safe_error_code is None
+
+
+def test_fanned_out_generation_payload_rejects_non_allowlisted_arguments() -> None:
+    """claim token 자리에 UUID가 아닌 값이 저장되면 다시 배포하지 않는다."""
+
+    policy = autonomous_recovery._OPERATION_REDISPATCH_POLICIES["GENERATE_CONTENT_ITEM"]
+    item_id = str(uuid.uuid4())
+
+    assert autonomous_recovery._args_match_policy(
+        operation_run_payloads.DispatchPayload(
+            "content_item", item_id, "content", (item_id, str(uuid.uuid4()), None)
+        ),
+        policy,
+    )
+    assert autonomous_recovery._args_match_policy(
+        operation_run_payloads.DispatchPayload(
+            "content_item", item_id, "content", (item_id,)
+        ),
+        policy,
+    )
+    assert not autonomous_recovery._args_match_policy(
+        operation_run_payloads.DispatchPayload(
+            "content_item", item_id, "content", (item_id, 7, None)
+        ),
+        policy,
+    )

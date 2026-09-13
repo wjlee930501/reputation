@@ -454,12 +454,13 @@ def test_mixed_generation_batch_finishes_partial_with_retryable_failed_item(pg_c
 
 
 def test_all_due_items_behind_live_leases_finish_failed(pg_conn, pg_session, monkeypatch):
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     item_id = _seed_item(pg_conn, status="DRAFT")
     pg_conn.execute(
         text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
-        {"t": datetime.now(timezone.utc), "id": item_id},
+        # 팬아웃 뒤 30분 유예 안의 claim은 진행 중인 일감이다 — 유예를 넘긴 lease만 stuck이다.
+        {"t": datetime.now(timezone.utc) - timedelta(minutes=45), "id": item_id},
     )
     recorder = GenerationBatchRecorder(
         pg_session,
@@ -491,7 +492,7 @@ def test_all_due_items_behind_live_leases_finish_failed(pg_conn, pg_session, mon
 
 
 def test_processed_and_live_lease_items_finish_partial(pg_conn, pg_session, monkeypatch):
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     success_id = _seed_item(pg_conn, status="DRAFT")
     locked_id = _seed_item(pg_conn, status="DRAFT")
@@ -501,7 +502,7 @@ def test_processed_and_live_lease_items_finish_partial(pg_conn, pg_session, monk
     )
     pg_conn.execute(
         text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
-        {"t": datetime.now(timezone.utc), "id": locked_id},
+        {"t": datetime.now(timezone.utc) - timedelta(minutes=45), "id": locked_id},
     )
     recorder = GenerationBatchRecorder(
         pg_session,

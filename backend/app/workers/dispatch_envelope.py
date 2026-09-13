@@ -37,6 +37,7 @@ TASK_PURPOSES = {
         "prepublish-content-generation-recovery"
     ),
     "app.workers.tasks.regenerate_content_item": "regenerate-content",
+    "app.workers.tasks.generate_claimed_content_item": "generate-claimed-content-item",
     "app.workers.tasks.auto_review_essence_snapshot": "auto-review-essence-snapshot",
     "app.workers.tasks.reconcile_essence_snapshots": "reconcile-essence-snapshots",
     "app.workers.tasks.fetch_channel_source": "fetch-channel-source",
@@ -84,6 +85,7 @@ FIRST_ARG_TARGET_TASKS = frozenset(
         "app.workers.tasks.trigger_v0_report",
         "app.workers.tasks.build_aeo_site",
         "app.workers.tasks.regenerate_content_item",
+        "app.workers.tasks.generate_claimed_content_item",
         "app.workers.tasks.auto_review_essence_snapshot",
         "app.workers.tasks.generate_content_image",
         "app.workers.tasks.recertify_published_content_image",

@@ -162,6 +162,92 @@ def test_reused_image_survives_a_title_edit_but_an_own_image_does_not():
     assert content_publication.image_certification_current(reused) is True
 
 
+def _hospital_fallback(**overrides):
+    """병원 히어로에서 온 대체 이미지를 단 글.
+
+    주제 hash는 **비어 있다**. 이 이미지는 이 글의 주제로 검수된 적이 없고, 새로 계산해
+    넣으면 아무도 검수하지 않은 합성 인증값이 된다. 결합 대상은 marker가 말한다.
+    """
+    base = {
+        "image_fallback_source": "HOSPITAL_HERO",
+        "image_subject_hash": None,
+        "image_reused_from_content_id": None,
+    }
+    base.update(overrides)
+    return _item(**base)
+
+
+def test_publication_policy_accepts_a_certified_hospital_fallback_image(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _hospital_fallback(), _philosophy()
+    )
+
+    assert assessment.publishable is True
+    assert assessment.code is None
+    # 사후 교체 스윕·운영 화면·08:00 요약은 "자기 주제 이미지가 아니다"를 한 열쇠로 읽는다.
+    assert assessment.essence_summary["image_reused"] is True
+    # 출처는 한 칸으로만 구분한다 — 읽는 쪽을 둘로 늘리지 않는다.
+    assert assessment.essence_summary["image_fallback"] == "HOSPITAL_HERO"
+
+
+def test_a_borrowed_article_image_is_not_marked_as_a_hospital_fallback(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(_reused(), _philosophy())
+
+    assert assessment.essence_summary["image_reused"] is True
+    assert "image_fallback" not in assessment.essence_summary
+
+
+def test_an_own_topic_image_carries_neither_substitution_key(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(_item(), _philosophy())
+
+    assert "image_reused" not in assessment.essence_summary
+    assert "image_fallback" not in assessment.essence_summary
+
+
+def test_hospital_fallback_image_still_requires_the_byte_binding(monkeypatch):
+    """marker가 있어도 내용 hash가 URL과 묶이지 않으면 인증이 아니다."""
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _hospital_fallback(image_content_hash=None), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+
+
+def test_hospital_fallback_image_with_a_retired_policy_version_is_not_current(monkeypatch):
+    _aligned(monkeypatch)
+
+    assessment = content_publication.assess_content_publication(
+        _hospital_fallback(image_policy_version="2000-01-01"), _philosophy()
+    )
+
+    assert assessment.publishable is False
+    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+
+
+def test_unknown_fallback_marker_does_not_grant_certification():
+    """marker 문자열이 다르면 (c) 모양이 아니다 — 아무 값이나 통과시키지 않는다."""
+    item = _hospital_fallback(image_fallback_source="SOMETHING_ELSE")
+
+    assert content_publication.image_certification_current(item) is False
+
+
+def test_hospital_fallback_image_survives_a_title_edit():
+    """결합 대상이 글의 제목이 아니라 병원이므로 제목 편집이 인증을 깨지 않는다."""
+    fallback = _hospital_fallback()
+    fallback.title = "제목이 바뀐 글"
+
+    assert content_publication.image_certification_current(fallback) is True
+
+
 @pytest.mark.parametrize(
     ("question", "answer"),
     [(None, "답변"), ("질문인가요?", None), ("물음표 없는 질문", "답변")],

@@ -23,6 +23,11 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
+from app.services.content_similarity import (
+    REFERENCE_TOKEN_MATCH_MIN,
+    normalize_topic_text,
+    reference_topic_match,
+)
 from app.services.essence_engine import (
     MANDATORY_AVOID_MESSAGES,
     MANDATORY_MEDICAL_AD_RISK_RULES,
@@ -30,8 +35,10 @@ from app.services.essence_engine import (
 )
 from app.utils.anthropic_retry import NON_RETRYABLE_ANTHROPIC_ERRORS
 from app.utils.authority_sources import (
+    CURATED_SOURCE_URLS,
     infer_source_type,
     institution_label_for_url,
+    institution_title_tokens,
     is_citable_reference_url,
     is_whitelisted_url,
     render_source_hint_block,
@@ -726,6 +733,16 @@ async def _generate_content_attempt(
         avoid_titles = "\n\n최근 발행 제목 일부 (중복 금지):\n" + "\n".join(
             f"- {t}" for t in recent_titles
         )
+        # 같은 키워드를 다시 다루는 회차는 사후 중복 가드에 걸리기 쉬우므로 미리 각도를
+        # 다르게 잡도록 요구한다. 키워드 자체는 그대로 유지해야 측정 질의에 답한다.
+        keyword = normalize_topic_text((content_brief or {}).get("target_keyword"))
+        if keyword and any(
+            keyword in normalize_topic_text(title) for title in recent_titles
+        ):
+            avoid_titles += (
+                "\n위 제목과 같은 핵심 키워드를 다루더라도 질문·관점·독자 상황을 다르게 "
+                "잡아 서로 다른 글이 되게 하세요(제목이 비슷해지면 안 됩니다)."
+            )
 
     brief_context = f"\n\n{brief_ctx}" if brief_ctx else ""
     curated_candidates = select_curated_authority_sources(
@@ -866,8 +883,17 @@ async def _generate_content_attempt(
     # 빈 배열로 저장돼 근거 없이 발행이 완료된다. 정규화된 리스트로 검사해야
     # tenacity 재시도가 "화이트리스트 통과 references 1개 이상"을 실제로 강제한다.
     result["references"] = _normalize_references(result.get("references"))
+    page_titles: dict[str, str] = {}
     if settings.APP_ENV == "production" and result["references"]:
-        result["references"] = await _drop_definitively_broken_references(result["references"])
+        result["references"], page_titles = await _drop_definitively_broken_references(
+            result["references"], with_titles=True
+        )
+    if result["references"]:
+        # 주제와 어긋나는 근거는 거절 사유가 아니라 제거 대상이다. 비면 아래 GEO 게이트가
+        # 기존대로 MissingCitableReferencesError → 큐레이션 치유 경로로 보낸다.
+        result["references"] = _drop_unrelated_references(
+            result["references"], result, content_brief, page_titles
+        )
 
     return _validate_generated_result(result, hospital, content_type, content_brief)
 
@@ -1499,13 +1525,111 @@ def _normalize_references(raw: object) -> list[dict]:
     return cleaned
 
 
-async def _drop_definitively_broken_references(references: list[dict]) -> list[dict]:
+def _article_topic_terms(result: dict, content_brief: dict | None) -> list[str]:
+    """참고자료 적합성 판정의 기준이 되는 '이 글의 주제어'.
+
+    본문 전체를 쓰지 않는다 — 스쳐 지나가는 문장 하나가 주제를 바꿔 엉뚱한 자료를
+    붙잡아 두는 일을 막기 위해, 승인된 측정 키워드·질의와 제목·첫 H2·진료 서사만 쓴다.
+    """
+    terms: list[str] = [str(result.get("title") or "")]
+    body = str(result.get("body") or "")
+    first_h2 = re.search(r"^##\s+(.+)$", body, flags=re.MULTILINE)
+    if first_h2:
+        terms.append(first_h2.group(1))
+    brief = content_brief or {}
+    terms.append(str(brief.get("target_keyword") or ""))
+    terms.append(str(brief.get("target_query") or ""))
+    query_target = brief.get("query_target")
+    if isinstance(query_target, dict):
+        terms.append(str(query_target.get("name") or ""))
+    narrative = brief.get("treatment_narrative")
+    if isinstance(narrative, dict):
+        terms.append(str(narrative.get("treatment") or ""))
+        terms.append(str(narrative.get("angle") or ""))
+    elif narrative:
+        terms.append(str(narrative))
+    return [term for term in terms if term.strip()]
+
+
+def _reference_is_unrelated(
+    reference: dict,
+    page_title: str,
+    article_terms: list[str],
+    keyword: str,
+) -> bool:
+    """이 참고자료가 글의 주제와 명백히 어긋나는가.
+
+    보수적으로만 참이 된다. 핵심 키워드를 제목에 담고 있거나, 주제를 판단할 한글
+    토큰이 없거나(영문 전용 국제 자료), 토큰 하나라도 주제 풀과 절반 이상 겹치면
+    무관이 아니다. 애매하면 남긴다 — 근거를 잘못 버리면 발행이 막힌다.
+    """
+    if reference.get("url") in CURATED_SOURCE_URLS:
+        return False
+    text = f"{reference.get('title') or ''} {page_title or ''}".strip()
+    if keyword and keyword in normalize_topic_text(text):
+        return False
+    score = reference_topic_match(
+        text, article_terms, ignored_tokens=institution_title_tokens()
+    )
+    return score is not None and score < REFERENCE_TOKEN_MATCH_MIN
+
+
+def _drop_unrelated_references(
+    references: list[dict],
+    result: dict,
+    content_brief: dict | None,
+    page_titles: dict[str, str] | None = None,
+) -> list[dict]:
+    """주제와 어긋나는 참고자료를 제거한다 — 거절이 아니라 제거다.
+
+    비게 되면 기존 큐레이션 치유(_heal_from_curated_catalog) 또는
+    MissingCitableReferencesError 경로가 그대로 적용된다.
+    """
+    article_terms = _article_topic_terms(result, content_brief)
+    if not article_terms:
+        return references
+    keyword = normalize_topic_text((content_brief or {}).get("target_keyword"))
+    kept: list[dict] = []
+    for reference in references:
+        page_title = (page_titles or {}).get(str(reference.get("url") or ""), "")
+        if _reference_is_unrelated(reference, page_title, article_terms, keyword):
+            logger.info(
+                "Dropping a reference unrelated to the article topic: host=%s",
+                urlparse(str(reference.get("url") or "")).hostname,
+            )
+            continue
+        kept.append(reference)
+    return kept
+
+
+_HTML_TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+
+
+def _html_page_title(response: object) -> str:
+    """이미 받아 둔 응답 본문에서 <title>만 뽑는다 — 추가 요청은 하지 않는다."""
+    text = getattr(response, "text", "") or ""
+    if not isinstance(text, str):
+        return ""
+    match = _HTML_TITLE_PATTERN.search(text[:20000])
+    if not match:
+        return ""
+    return " ".join(match.group(1).split())[:200]
+
+
+async def _drop_definitively_broken_references(
+    references: list[dict], *, with_titles: bool = False
+) -> list[dict] | tuple[list[dict], dict[str, str]]:
     """확정적으로 없는 URL과 화이트리스트 밖으로 이탈한 리다이렉트를 제거한다.
 
     권위 사이트가 봇 요청을 403/429로 막거나 일시 네트워크 오류가 난 경우에는 정상
     자료를 잘못 버리지 않기 위해 유지한다. 404/410과 최종 호스트 이탈만 실패로 본다.
+
+    `with_titles=True`면 이미 받은 응답에서 뽑은 <title>을 함께 돌려준다. 주제 적합성
+    판정이 모델이 지어낸 제목 대신 실제 문서 제목도 볼 수 있게 하기 위한 것이며,
+    요청을 추가로 보내지 않는다.
     """
     kept: list[dict] = []
+    page_titles: dict[str, str] = {}
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -1534,5 +1658,9 @@ async def _drop_definitively_broken_references(references: list[dict]) -> list[d
                     urlparse(final_url).hostname,
                 )
                 continue
+            if with_titles:
+                title = _html_page_title(response)
+                if title:
+                    page_titles[url] = title
             kept.append(reference)
-    return kept
+    return (kept, page_titles) if with_titles else kept

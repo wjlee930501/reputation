@@ -43,6 +43,16 @@
 - 옛 마커(사이클 8)로 보류된 Essence 초안은 첫 재조정에서 자동 재검수를 1회 받는다(병원당 합성·검수 각 1~2회 비용).
 - 첫 이미지 재사용 발행이 나오면 08:00 요약에 새 절이 나타난다. 이미지 공급자 크레딧·할당량과 비용 가드 한도를 확인하는 것이 그 절의 유일한 후속 행동이다.
 
+## v2.7.1 후속 (2026-09-13, 대표 지시 C1~C6)
+
+- C1 외부 감시: `services/pipeline_watchdog.py`, `GET/POST /admin/watchdog/pipeline[/alert]`, `terraform/watchdog.tf`(Cloud Scheduler 5분·08:30 KST), `PIPELINE_WATCHDOG_TOKEN`(Secret Manager, 비어 있으면 경고만). 인프라 조건은 개발 채널, 발행 누락은 운영 채널, 개발 웹훅 미설정 시 운영 채널 대체. 배포 전 시크릿 생성과 `terraform apply`가 필요하다.
+- C3 처리량: 23:00·01·04·07 배치를 디스패처로 바꾸고 글 단위 태스크 `generate_claimed_content_item`(claim token 재검증, 900/1000초, max_retries 0)으로 병렬 처리. 23:00 창 이틀, 병원 라운드로빈, 용량 경고, 자율 복구 allowlist 등록. 동시성은 바꾸지 않았다(`CELERY_CONCURRENCY=2`, DB 예산 75/80). 처리량은 동시성에 비례하므로 병원이 늘면 Worker 동시성·인스턴스를 올리고 `scripts/check_db_connection_budget.py`를 통과시킨다.
+- C4 참고자료 주제 일치: 결정적 겹침 점수로 명백히 무관한 출처만 제거(판단 불가는 유지), 검수자 REFERENCE 지적은 SOFT 비차단. 차단 코드 없음.
+- C6 중복 주제: 문자 bigram Jaccard 0.6 또는 동일 제목·같은 키워드의 첫 H2 일치를 유사로 보고 문체 보완 예산 1회로 다른 각도를 요구. 그래도 유사하면 발행하고 `duplicate_topic_findings` 기록. 차단 아님.
+- C2·C5 이미지: `app/utils/check_image_provider.py` 9단계 진단(`docs/ops/image-provider-runbook.md`), 정책 검수 실패의 원인 보존과 `PROVIDER_NOT_CONFIGURED` 진단, 같은 유형 우선 재사용, 병원 대표 이미지 fallback(마이그레이션 0075: hospitals에 fallback 인증 5컬럼, content_items에 `image_fallback_source`). 08:00 요약이 "병원 대표 이미지 사용"을 구분해 보여 준다.
+- 검증: backend 전체 3,841 passed / 9 skipped(아래 최종 실행 갱신), ruff·copy-guard·DB 예산 통과. 마이그레이션 head 0075.
+- 이미지 생성이 현재 실패하는 원인은 운영 자격 증명 없이 확정할 수 없다. 코드 기준 유력 순위는 (1) 정책 검수 모델(`GEMINI_MODEL`, Vertex `GOOGLE_IMAGE_LOCATION`) 도달 불가가 `POLICY_UNAVAILABLE`로 뭉개짐, (2) 클라이언트 `api_version="v1"` 고정과 `response_modalities`·`image_config`·`thinking_config` 필드의 v1beta1 의존, (3) 429/크레딧 고갈, (4) 버킷 이름 규칙 불일치, (5) 정책 거절 반복이다. 진단 스크립트의 첫 실패 단계가 원인을 가른다.
+
 ## 미결·후속
 
 - 제공자 사용량 원장(`provider_usage`)은 Essence 호출을 여전히 `content` 카테고리로 기록한다. CHECK 제약 마이그레이션이 필요하다.

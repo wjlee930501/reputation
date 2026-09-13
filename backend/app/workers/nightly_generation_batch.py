@@ -11,6 +11,14 @@ from app.models.hospital import Hospital, HospitalStatus
 
 NIGHTLY_GENERATION_CAP = 50
 NIGHTLY_GENERATION_CLAIM_TTL_HOURS = 2
+# 병원 간 라운드로빈을 할 수 있을 만큼만 후보를 더 읽는다. 상한만큼만 읽으면 정렬 순서상
+# 앞선 한 병원이 그 안을 다 채운 뒤라 섞을 것이 남지 않는다. 읽고도 claim하지 않은 행은
+# 커밋과 함께 잠금이 풀려 다음 스윕이 그대로 다시 본다.
+NIGHTLY_GENERATION_SELECT_LIMIT = NIGHTLY_GENERATION_CAP * 2
+# 지금 막 claim된 슬롯은 "잠긴 일감"이 아니라 진행 중인 일감이다. per-item 태스크의
+# 벽시계 한계(1,000초)에 큐 대기 여유를 더한 이 시간이 지나도 끝나지 않은 claim만
+# 이전 실행이 죽어 남긴 것으로 본다.
+NIGHTLY_GENERATION_IN_FLIGHT_GRACE = timedelta(minutes=30)
 
 # 생성 결과를 되쓸 수 있는 상태. 그 외(CANCELLED/PUBLISHED 등)는 운영자·발행 파이프라인이
 # 이미 확정한 상태이므로 야간 배치가 덮어쓰면 안 된다.
@@ -218,6 +226,42 @@ def claim_generation_lease(
     return item, claim_token
 
 
+def load_claimed_generation_item(
+    db,
+    item_id,
+    claim_token: uuid.UUID,
+    *,
+    now: datetime | None = None,
+) -> ContentItem | None:
+    """Return the row only while *this* lease is still the current, unexpired one.
+
+    배치가 claim한 뒤 per-item 태스크가 실행되기까지 큐 대기가 있고, 그 사이 운영자가
+    취소하거나 lease가 만료돼 다른 스윕이 같은 슬롯을 다시 인수할 수 있다. 토큰이
+    바뀌었거나 lease가 만료됐으면 공급자 호출을 한 번도 하지 않고 물러난다 — 늦게
+    도착한 실행이 새 소유자의 결과를 덮어쓰지 못하게 하는 것과 같은 계약이다.
+    """
+
+    observed_at = now or datetime.now(timezone.utc)
+    item = db.execute(
+        select(ContentItem)
+        .where(ContentItem.id == item_id)
+        .options(joinedload(ContentItem.hospital))
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if item is None or item.status not in GENERATION_WRITE_BACK_STATUSES:
+        return None
+    if item.generation_claim_token != claim_token:
+        return None
+    claimed_at = item.generation_claimed_at
+    if claimed_at is None:
+        return None
+    if claimed_at.tzinfo is None:
+        claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+    if claimed_at < observed_at - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS):
+        return None
+    return item
+
+
 def _needs_generation_recovery():
     """Select missing fragments and stored defects the writer can repair.
 
@@ -316,8 +360,28 @@ def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | 
         )
         .options(joinedload(ContentItem.hospital))
         .with_for_update(skip_locked=True, of=ContentItem)
-        .limit(NIGHTLY_GENERATION_CAP + 1)
+        .limit(NIGHTLY_GENERATION_SELECT_LIMIT + 1)
     )
+
+
+def interleave_by_hospital(items: list[ContentItem]) -> list[ContentItem]:
+    """Round-robin the ordered candidates by hospital before the cap is applied.
+
+    우선순위(이월 → 예정일 → 순번)는 병원 안에서 그대로 유지되고, 병원 간에는 한 편씩
+    번갈아 나간다. 섞지 않으면 이월 슬롯이 많은 병원 하나가 상한 50개를 통째로 가져가
+    나머지 병원은 아침까지 한 편도 받지 못한다.
+    """
+
+    groups: dict[Any, list[ContentItem]] = {}
+    for item in items:
+        groups.setdefault(item.hospital_id, []).append(item)
+    ordered: list[ContentItem] = []
+    queues = list(groups.values())
+    while queues:
+        queues = [queue for queue in queues if queue]
+        for queue in queues:
+            ordered.append(queue.pop(0))
+    return ordered
 
 
 def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, int]:
@@ -342,7 +406,7 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
             )
         ).scalar_one()
         truncated_count = max(int(overflow) - NIGHTLY_GENERATION_CAP, 1)
-    claimed_items = items[:NIGHTLY_GENERATION_CAP]
+    claimed_items = interleave_by_hospital(items)[:NIGHTLY_GENERATION_CAP]
     for item in claimed_items:
         # SQLAlchemy에 영속화되지 않는 시도 메타데이터. 새 배치가 만료 claim을
         # 인수했는지와 finally가 해제할 정확한 lease 시각을 호출부에 전달한다.
@@ -411,15 +475,23 @@ def load_stuck_claims(db, window_start, window_end) -> list[ContentItem]:
 
     배치가 빈손으로 끝났을 때 "정말 할 일이 없는 것"과 "직전 실행이 죽어 claim이
     잠긴 것"을 구분하기 위한 값이다. 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
+    팬아웃 뒤에는 방금 배포된 per-item 태스크가 정상적으로 claim을 들고 있으므로,
+    유예 시간 안의 claim은 진행 중인 일감으로 보고 제외한다.
     """
-    claim_cutoff = _nightly_generation_claim_cutoff()
     return list(
-        db.execute(_stuck_claims_stmt(window_start, window_end, claim_cutoff)).scalars().all()
+        db.execute(_stuck_claims_stmt(window_start, window_end)).scalars().all()
     )
 
 
-def _stuck_claims_stmt(window_start, window_end, claim_cutoff: datetime | None = None):
-    claim_cutoff = claim_cutoff or _nightly_generation_claim_cutoff()
+def _stuck_claims_stmt(
+    window_start,
+    window_end,
+    claim_cutoff: datetime | None = None,
+    in_flight_cutoff: datetime | None = None,
+):
+    now = datetime.now(timezone.utc)
+    claim_cutoff = claim_cutoff or now - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS)
+    in_flight_cutoff = in_flight_cutoff or now - NIGHTLY_GENERATION_IN_FLIGHT_GRACE
     return (
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
@@ -432,6 +504,7 @@ def _stuck_claims_stmt(window_start, window_end, claim_cutoff: datetime | None =
             Hospital.site_live.is_(True),
             ContentItem.generation_claimed_at.isnot(None),
             ContentItem.generation_claimed_at >= claim_cutoff,
+            ContentItem.generation_claimed_at <= in_flight_cutoff,
         )
         .options(joinedload(ContentItem.hospital))
     )

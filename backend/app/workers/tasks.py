@@ -86,9 +86,12 @@ from app.services.content_engine import (
 )
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
+    HOSPITAL_FALLBACK_IMAGE_SOURCE,
     apply_publication_assessment,
     assess_content_publication,
     image_certification_current,
+    image_is_hospital_fallback,
+    image_is_reused,
     record_publication_identity,
 )
 from app.services.content_publish_notifications import (
@@ -288,7 +291,10 @@ from app.workers.dispatch_auth import (
     build_dispatch_headers,
     require_dispatch,
 )
-from app.workers.generation_batch_run import GenerationBatchRecorder
+from app.workers.generation_batch_run import (
+    GenerationBatchRecorder,
+    GenerationItemRecorder,
+)
 from app.workers.generation_incident_control import (
     AUTO_REMEDIATION_MAX_GENERATIONS,
     PREPUBLISH_MORNING_BATCH,
@@ -316,12 +322,16 @@ from app.workers.generation_retry_policy import (
     stored_attempt_period,
 )
 from app.workers.generation_run_control import (
+    GENERATE_CONTENT_ITEM_PURPOSE,
+    GENERATE_CONTENT_ITEM_TASK,
     GenerationItemState,
     classify_generation_failure,
+    create_dispatched_item_run,
     create_item_run,
     explicit_run_context,
     explicit_run_matches,
     finish_explicit_run,
+    finish_item_run,
     safe_generation_rejection_message,
 )
 from app.workers.monthly_artifact_incident_control import (
@@ -336,10 +346,12 @@ from app.workers.monthly_slot_incident_control import (
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
     NIGHTLY_GENERATION_CAP,
+    NIGHTLY_GENERATION_SELECT_LIMIT,  # noqa: F401 — test가 tasks 경유로 참조하는 re-export
     _load_nightly_generation_batch,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     _stuck_claims_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     claim_generation_lease,
+    load_claimed_generation_item,
     load_stuck_claims,
     release_generation_claim,
     release_unfinished_claims,
@@ -830,14 +842,22 @@ def _image_reuse_is_due(item: ContentItem) -> bool:
     return _image_attempts_exhausted_today(item)
 
 
-def _remember_image_reuse(db, item, philosophy, *, source_id) -> None:
-    """Record the reused image without pretending the provider succeeded."""
+def _remember_image_reuse(
+    db, item, philosophy, *, source_id=None, fallback_source: str | None = None
+) -> None:
+    """Record the borrowed image without pretending the provider succeeded.
+
+    `source_id`는 같은 병원의 다른 글에서 빌려온 경우의 원본 글이고, `fallback_source`는
+    글이 아니라 병원 자산(히어로)에서 왔다는 표시다. 둘 중 하나만 있다. `reused_from`은
+    08:00 요약이 출처를 한 줄로 말할 수 있게 두 경우를 같은 자리에 적는다.
+    """
 
     previous = _stored_generation_attempt(item)
     summary = getattr(item, "essence_check_summary", None)
     updated = dict(summary) if isinstance(summary, dict) else {}
     reuse_facts = {
-        "reused_from_content_id": str(source_id),
+        "reused_from_content_id": str(source_id) if source_id is not None else None,
+        "reused_from": str(source_id) if source_id is not None else fallback_source,
         "image_failure_reason": str(previous.get("reason") or "IMAGE_GENERATION_FAILED"),
         "image_failure_class": str(previous.get("image_failure_class") or "PROVIDER_ERROR"),
     }
@@ -869,6 +889,8 @@ def stored_image_reuse_facts(item: ContentItem) -> dict[str, Any]:
     if attempt.get("reason") == _IMAGE_REUSED_CODE:
         return {
             "reused_from_content_id": attempt.get("reused_from_content_id"),
+            "reused_from": attempt.get("reused_from")
+            or attempt.get("reused_from_content_id"),
             "image_failure_reason": attempt.get("image_failure_reason"),
             "image_failure_class": attempt.get("image_failure_class"),
         }
@@ -886,24 +908,45 @@ def _reuse_hospital_image(
 
     try:
         from app.services.content_image_reuse import (
+            apply_hospital_fallback_image,
             apply_reused_image,
+            certify_hospital_fallback_image,
             select_reusable_hospital_image,
         )
     except ImportError:  # pragma: no cover - 재사용 모듈 배포 전
         logger.warning("content image reuse unavailable for %s", item.id)
         return GenerationItemState.PARTIAL
-    source = select_reusable_hospital_image(db, hospital.id, item.id)
-    if source is None:
-        # 첫 글이라 재사용할 인증 이미지가 없는 병원이다. 기존 차단 동작을 유지한다.
+    source = select_reusable_hospital_image(
+        db, hospital.id, item.id, content_type=item.content_type
+    )
+    if source is not None:
+        applied = apply_reused_image(db, item=item, source=source, **guard_kwargs)
+        if applied == 0:
+            db.rollback()
+            return GenerationItemState.DISCARDED
+        db.commit()
+        db.refresh(item)
+        _remember_image_reuse(db, item, philosophy, source_id=getattr(source, "id", source))
+        logger.info("Reused verified hospital image for %s", item.id)
+        return GenerationItemState.SUCCEEDED
+
+    # 첫 글이라 빌려올 인증 이미지가 없는 병원이다. 마지막 수단으로 그 병원의 히어로
+    # 이미지를 실제 바이트로 검수해 쓴다. 그것도 없으면 종전 차단 동작을 유지한다.
+    fallback = _run_async(certify_hospital_fallback_image(db, hospital))
+    if fallback is None:
         return GenerationItemState.PARTIAL
-    applied = apply_reused_image(db, item=item, source=source, **guard_kwargs)
+    applied = apply_hospital_fallback_image(
+        db, item=item, fallback=fallback, **guard_kwargs
+    )
     if applied == 0:
         db.rollback()
         return GenerationItemState.DISCARDED
     db.commit()
     db.refresh(item)
-    _remember_image_reuse(db, item, philosophy, source_id=getattr(source, "id", source))
-    logger.info("Reused verified hospital image for %s", item.id)
+    _remember_image_reuse(
+        db, item, philosophy, fallback_source=HOSPITAL_FALLBACK_IMAGE_SOURCE
+    )
+    logger.info("Applied certified hospital hero fallback image for %s", item.id)
     return GenerationItemState.SUCCEEDED
 
 
@@ -1233,6 +1276,118 @@ def _hard_removal_findings(review: Any) -> list[str]:
     return [_HARD_REMOVAL_INSTRUCTION, *messages]
 
 
+_REFERENCE_FINDING_KIND = "REFERENCE"
+
+
+def _finding_label(value: object) -> str:
+    return str(getattr(value, "value", value) or "").upper()
+
+
+def _review_finding_items(review: Any) -> list[Any]:
+    """Findings as objects. 문자열만 넘어오는 구형 shape은 여기서 제외한다."""
+    return [
+        finding
+        for finding in (getattr(review, "findings", ()) or ())
+        if getattr(finding, "message", None) is not None
+    ]
+
+
+def _apply_reference_review_findings(candidate: dict, review: Any) -> list[str]:
+    """SOFT+REFERENCE 지적을 '지목된 참고자료 제거'로 결정적으로 처리한다.
+
+    제목을 message에서 찾을 수 있으면 그 항목만 떼어 낸다(유료 재작성 없음).
+    못 찾거나 마지막 한 건이라 떼면 근거가 비는 경우에는 글은 그대로 두고 조언만
+    남긴다 — 이 지적은 어떤 경우에도 발행을 막지 않는다.
+    """
+    messages = [
+        str(getattr(finding, "message", "")).strip()
+        for finding in _review_finding_items(review)
+        if _finding_label(getattr(finding, "kind", None)) == _REFERENCE_FINDING_KIND
+        and _finding_label(getattr(finding, "severity", None)) == "SOFT"
+    ]
+    messages = [message for message in messages if message]
+    if not messages:
+        return []
+    references = candidate.get("references")
+    if not isinstance(references, list):
+        return messages
+    joined = " ".join(messages)
+    kept = [
+        reference
+        for reference in references
+        if not (
+            isinstance(reference, dict)
+            and len(str(reference.get("title") or "").strip()) >= 4
+            and str(reference.get("title")).strip() in joined
+        )
+    ]
+    # 근거를 전부 떼면 발행 게이트가 막힌다. 조언으로만 남기고 원본을 지킨다.
+    if kept and len(kept) != len(references):
+        logger.info(
+            "Dropping reviewer-flagged references: kept=%d of %d",
+            len(kept),
+            len(references),
+        )
+        candidate["references"] = kept
+    return messages
+
+
+def _non_reference_remediation_messages(review: Any) -> list[str]:
+    """재작성을 요구할 수 있는 지적만 남긴다 (REFERENCE는 결정적으로 처리됨)."""
+    if not _review_finding_items(review):
+        # 구형 문자열 shape: 종류를 알 수 없으므로 종전대로 전부 넘긴다.
+        return [
+            str(message).strip()
+            for message in (getattr(review, "remediation_messages", ()) or ())
+            if str(message).strip()
+        ]
+    return [
+        str(getattr(finding, "message", "")).strip()
+        for finding in _review_finding_items(review)
+        if _finding_label(getattr(finding, "kind", None)) != _REFERENCE_FINDING_KIND
+        and str(getattr(finding, "message", "")).strip()
+    ]
+
+
+_DUPLICATE_TOPIC_INSTRUCTION = (
+    "최근 발행한 글과 제목·주제가 거의 같습니다. 측정 키워드는 그대로 유지하되 다른 "
+    "질문·관점·독자 상황을 골라 제목과 구성을 바꿔 다시 쓰세요. 비슷한 기존 제목: "
+)
+
+
+def _first_h2_line(body: object) -> str:
+    for line in str(body or "").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            return stripped[3:].strip()
+    return ""
+
+
+def _duplicate_topic_matches(
+    content: dict,
+    existing_titles: list[str] | None,
+    approved_brief: dict | None,
+) -> list[tuple[str, float]]:
+    """최근 제목과 사실상 같은 주제인가. 결정적 계산이라 공급자를 부르지 않는다."""
+    if not existing_titles:
+        return []
+    from app.services.content_similarity import find_similar_titles
+
+    return find_similar_titles(
+        content.get("title") or "",
+        _first_h2_line(content.get("body")),
+        (approved_brief or {}).get("target_keyword") or "",
+        existing_titles,
+    )
+
+
+def _duplicate_topic_remediation(matches: list[tuple[str, float]]) -> list[str]:
+    if not matches:
+        return []
+    titles = ", ".join(title for title, _score in matches[:3])
+    return [f"{_DUPLICATE_TOPIC_INSTRUCTION}{titles}"]
+
+
 def _screening_probe(content_data: dict) -> ContentItem:
     return ContentItem(
         title=content_data["title"],
@@ -1265,6 +1420,7 @@ async def _generate_with_auto_review(
     generations = 0
     accepted_content: dict | None = None
     accepted_screening = None
+    accepted_reference_findings: list[str] = []
     last_ai_review = None
     last_generation_error: Exception | None = None
 
@@ -1327,6 +1483,7 @@ async def _generate_with_auto_review(
             _screening_probe(candidate), philosophy
         )
         accepted_content, accepted_screening, last_ai_review = candidate, screening, None
+        accepted_reference_findings = []
         if screening.status != ESSENCE_STATUS_ALIGNED:
             screen_findings = _review_findings(screening.summary)
             if screen_findings and _remediation_budget_left():
@@ -1345,22 +1502,37 @@ async def _generate_with_auto_review(
             # UNAVAILABLE never grants approval: it merely leaves the candidate to
             # the deterministic generation and publication gates below.
             break
+        # 참고자료 주제 불일치(SOFT+REFERENCE)는 유료 재작성이 아니라 결정적 제거로 푼다.
+        accepted_reference_findings = _apply_reference_review_findings(
+            candidate, last_ai_review
+        )
         if last_ai_review.status == ContentAiReviewStatus.PASS:
+            # 중복 주제도 문체성 지적과 같은 한 번의 보완 예산을 나눠 쓴다. 새 예산을
+            # 만들지 않으며, 고치지 못해도 글은 통과시키고 기록만 남긴다.
+            duplicate_remediation = (
+                _duplicate_topic_remediation(
+                    _duplicate_topic_matches(candidate, existing_titles, approved_brief)
+                )
+                if soft_rewrites < SOFT_REMEDIATION_MAX_GENERATIONS
+                else []
+            )
+            soft_findings = bounded_soft_findings + duplicate_remediation
             if (
-                bounded_soft_findings
+                soft_findings
                 and soft_rewrites < SOFT_REMEDIATION_MAX_GENERATIONS
                 and _generation_budget_left()
             ):
                 soft_rewrites += 1
-                findings = bounded_soft_findings
+                findings = soft_findings
                 continue
             break
         # Only stylistic/soft feedback may spend the shared remediation rewrite.
         if last_ai_review.rewrite_is_safe:
-            if _remediation_budget_left():
+            rewrite_messages = _non_reference_remediation_messages(last_ai_review)
+            if rewrite_messages and _remediation_budget_left():
                 remediation_rewrites += 1
                 reviewer_driven_rewrites += 1
-                findings = list(last_ai_review.remediation_messages)
+                findings = rewrite_messages
                 continue
             break
         # 사실·의료 안전 HARD 지적은 새 근거 없이 "다시 써 봐"로 풀 수 없다. 대신
@@ -1418,6 +1590,17 @@ async def _generate_with_auto_review(
     ]
     if residual_season:
         summary["season_title_findings"] = residual_season
+    # 중복 주제는 발행을 막지 않는다 — 재작성 뒤에도 남으면 글은 통과시키고 AE가 볼 수
+    # 있게 기록만 남긴다(거절 코드·인시던트·Slack 없음).
+    residual_duplicates = _duplicate_topic_matches(
+        last_content, existing_titles, approved_brief
+    )
+    if residual_duplicates:
+        summary["duplicate_topic_findings"] = [
+            {"title": title, "score": score} for title, score in residual_duplicates
+        ]
+    if accepted_reference_findings:
+        summary["reference_findings"] = accepted_reference_findings[:5]
     if automatic_rewrites > 0:
         summary["automatic_remediation_attempts"] = automatic_rewrites
     if reviewer_driven_rewrites > 0:
@@ -4372,550 +4555,768 @@ def build_aeo_site(self, hospital_id: str):
 
 # ══════════════════════════════════════════════════════════════════
 # 야간 콘텐츠 자동 생성 (매일 밤 23:00)
+#
+# 배치 태스크는 **claim과 배포만** 한다. 한 태스크가 50편을 순서대로 생성하면 한 편당
+# 4~6분이 직렬로 쌓여 워커 하나의 한 밤(23:00~07:45)은 40편 근처에서 끝난다. 병원이
+# 25~30곳이 되면 그 상한이 구조적으로 아침을 놓친다. 그래서 claim은 그대로 두고 실제
+# 생성만 슬롯 하나짜리 태스크로 팬아웃해, 처리량이 워커 동시성에 비례하게 만든다.
 # ══════════════════════════════════════════════════════════════════
+
+
+def _nightly_generation_window(now_kst) -> tuple[date, date]:
+    """23:00 배치가 생성할 예정일 구간. 기본은 [내일, 모레]다.
+
+    하루만 보면 한 밤의 공급자 장애가 그날 아침을 그대로 비운다. 이틀을 보면 같은 슬롯이
+    두 밤의 기회를 갖는다. 가까운 날짜가 먼저 나가는 순서는 조회 정렬(이월 → 예정일 →
+    순번)이 그대로 보장한다.
+    """
+
+    lookahead = max(int(settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS), 1)
+    return now_kst.shift(days=1).date(), now_kst.shift(days=lookahead).date()
+
+
+def _warn_if_generation_capacity_is_short(claimed_count: int, *, now_kst) -> None:
+    """아침 마감 전에 이 배치를 다 처리할 수 없어 보이면 한 줄로 남긴다.
+
+    items/night ≈ concurrency × (남은 시간 ÷ 한 편 소요). 운영자의 손잡이는
+    `CELERY_CONCURRENCY` 하나이고, 이 로그가 그 손잡이를 올려야 할 시점을 알려준다.
+    사람이 지금 할 일이 아니므로 인시던트나 Slack으로 만들지 않는다.
+    """
+
+    deadline = now_kst.replace(hour=7, minute=45, second=0, microsecond=0)
+    if deadline <= now_kst:
+        deadline = deadline.shift(days=1)
+    remaining_minutes = max((deadline - now_kst).total_seconds() / 60.0, 1.0)
+    concurrency = max(int(settings.CELERY_CONCURRENCY), 1)
+    item_minutes = max(int(settings.CONTENT_GENERATION_ITEM_MINUTES), 1)
+    capacity = int(concurrency * remaining_minutes / item_minutes)
+    if claimed_count > capacity:
+        logger.warning(
+            "nightly generation capacity is short: claimed=%d, estimated capacity=%d "
+            "(concurrency=%d × %.0f min ÷ %d min per item)",
+            claimed_count,
+            capacity,
+            concurrency,
+            remaining_minutes,
+            item_minutes,
+        )
+
+
+def _report_reclaimed_stale_item(recorder, item, hospital_id, hospital_name) -> None:
+    """만료된 lease를 이 배치가 인수했다는 사실을 그 슬롯의 기록으로 남긴다."""
+
+    stale_code = "STALE_GENERATION_CLAIM"
+    stale_message = "이전 생성 작업의 lease가 만료되어 안전하게 다시 인수했습니다."
+    recorder.record(
+        item.id,
+        GenerationItemState.FAILED,
+        safe_error_code=stale_code,
+        safe_error_message=stale_message,
+    )
+    stale_run = recorder.item_run(
+        item.id,
+        hospital_id,
+        "REGENERATE_CONTENT",
+        OperationRunState.FAILED,
+        safe_error_code=stale_code,
+        safe_error_message=stale_message,
+        attempt_kind="stale-claim",
+    )
+    _run_async(
+        open_generation_incident(
+            item_id=item.id,
+            hospital_id=hospital_id,
+            hospital_name=hospital_name,
+            run_id=stale_run.id,
+            code=stale_code,
+            message=stale_message,
+            notify=generation_notify_requested(stale_code),
+        )
+    )
+
+
+def _dispatch_generation_item(db, recorder, item, *, notify: bool | None) -> bool:
+    """Hand one claimed slot to the per-item worker with its lease token.
+
+    실행 기록을 먼저 커밋하고 서명된 봉투로 배포한다. 배포가 유실되면 자율 복구가 저장된
+    payload로 같은 인자·큐에 다시 배포하고, 그 사이 lease가 바뀌었으면 per-item 태스크가
+    공급자 호출 전에 스스로 물러난다. claim은 여기서 풀지 않는다 — 소유권은 실행 중인
+    per-item 태스크에 있고, 그 태스크의 finally가 되돌린다.
+    """
+
+    claim_token = getattr(item, "_generation_claim_token", None) or getattr(
+        item, "generation_claim_token", None
+    )
+    task_id = str(uuid.uuid4())
+    task_args: tuple[str | bool | None, ...] = (str(item.id), str(claim_token), notify)
+    try:
+        run = create_dispatched_item_run(
+            db,
+            parent_run_id=recorder.run.id,
+            item_id=item.id,
+            hospital_id=item.hospital_id,
+            task_id=task_id,
+            task_args=task_args,
+            idempotency_key=(
+                f"generation-item:{recorder.run.id}:{recorder.run.attempt_count}:{item.id}"
+            ),
+        )
+    except Exception as error:
+        # 실행 기록조차 남기지 못했다 — 이 슬롯의 복구를 소유할 주체가 없으므로 claim을
+        # 즉시 되돌려 다음 스윕이 TTL을 기다리지 않고 다시 가져가게 한다.
+        db.rollback()
+        logger.warning(
+            "content generation fan-out record failed for %s: %s",
+            item.id,
+            type(error).__name__,
+        )
+        if release_generation_claim(db, item.id, claim_token):
+            db.commit()
+        return False
+    try:
+        celery_app.send_task(
+            GENERATE_CONTENT_ITEM_TASK,
+            args=list(task_args),
+            queue="content",
+            task_id=task_id,
+            headers={
+                **build_dispatch_headers(GENERATE_CONTENT_ITEM_PURPOSE, str(item.id)),
+                "operation_run_id": str(run.id),
+            },
+        )
+    except Exception as error:  # 브로커 장애 — 저장된 REQUESTED 실행이 복구를 소유한다
+        logger.warning(
+            "content generation fan-out publish failed for %s: %s",
+            item.id,
+            type(error).__name__,
+        )
+        return False
+    recorder.record(item.id, GenerationItemState.RUNNING)
+    return True
+
+
+def _dispatch_generation_batch(
+    db,
+    recorder,
+    window_start: date,
+    window_end: date,
+    *,
+    now_kst,
+    notify: bool | None = None,
+) -> int:
+    """Claim the due slots and fan them out. 이 함수는 공급자를 호출하지 않는다."""
+
+    items, truncated_count = _load_nightly_generation_batch(db, window_start, window_end)
+
+    if truncated_count:
+        # 상한 밖 슬롯은 상태에 남아 다음 주기에 다시 회수된다.
+        # 발행 시각까지 해결되지 않을 때만 08시 예외 요약으로 올린다.
+        logger.warning(
+            "nightly_content_generation cap reached: %d items deferred beyond cap %d",
+            truncated_count,
+            NIGHTLY_GENERATION_CAP,
+        )
+
+    if not items:
+        # 빈손 종료가 "할 일이 없음"인지 "직전 실행이 죽어 claim이 잠김"인지 구분한다.
+        # 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
+        stuck_items = load_stuck_claims(db, window_start, window_end)
+        if stuck_items:
+            logger.warning(
+                "nightly_content_generation found nothing: %d slots are still locked by "
+                "a previous run's claim",
+                len(stuck_items),
+            )
+            _record_locked_generation_items(recorder, stuck_items)
+        else:
+            logger.info(f"No content to generate for {window_start}~{window_end}")
+        return 0
+
+    _warn_if_generation_capacity_is_short(len(items), now_kst=now_kst)
+
+    dispatched_ids: set[uuid.UUID] = set()
+    for item in items:
+        if getattr(item, "_generation_reclaimed_stale", False):
+            _report_reclaimed_stale_item(recorder, item, item.hospital_id, item.hospital.name)
+        if _dispatch_generation_item(db, recorder, item, notify=notify):
+            dispatched_ids.add(item.id)
+
+    # 방금 배포한 슬롯의 claim은 진행 중인 일감이다. 그 밖에 유예 시간을 넘겨 잠긴 채
+    # 남은 슬롯만 이 실행의 미처리 결과로 남긴다.
+    stuck_items = [
+        item
+        for item in load_stuck_claims(db, window_start, window_end)
+        if item.id not in dispatched_ids
+    ]
+    if stuck_items:
+        _record_locked_generation_items(recorder, stuck_items)
+    logger.info("Nightly generation dispatched %d item claims", len(dispatched_ids))
+    return len(dispatched_ids)
+
+
 @celery_app.task(
     name="app.workers.tasks.nightly_content_generation",
     bind=True,
-    # 50개 슬롯 × (Claude+Imagen) 배치는 전역 900s를 초과하므로 상향. 멱등(body-null 필터)
-    # 하므로 acks_late로 워커 크래시 시 안전하게 재배달.
-    soft_time_limit=3000,
-    time_limit=3300,
+    # claim과 배포만 하므로 긴 벽시계가 필요 없다. 멱등(claim 필터)하므로 acks_late로
+    # 워커 크래시 시 안전하게 재배달된다.
+    soft_time_limit=600,
+    time_limit=660,
     acks_late=True,
 )
 def nightly_content_generation(self):
-    """At 23:00, generate only tomorrow's missing content fragments."""
+    """At 23:00, claim the next two days' missing slots and fan them out."""
     require_dispatch(self, "nightly-content-generation")
     now_kst = arrow.now("Asia/Seoul")
-    tomorrow = now_kst.shift(days=1).date()
-    window_start = tomorrow
+    window_start, window_end = _nightly_generation_window(now_kst)
 
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
-        recorder = GenerationBatchRecorder(db, task_id, window_start, tomorrow)
-        items, truncated_count = _load_nightly_generation_batch(db, window_start, tomorrow)
-
-        if truncated_count:
-            # 상한 밖 슬롯은 상태에 남아 다음 주기에 다시 회수된다.
-            # 발행 시각까지 해결되지 않을 때만 08시 예외 요약으로 올린다.
-            logger.warning(
-                "nightly_content_generation cap reached: %d items deferred beyond cap %d",
-                truncated_count,
-                NIGHTLY_GENERATION_CAP,
-            )
-
-        if not items:
-            # 빈손 종료가 "할 일이 없음"인지 "직전 실행이 죽어 claim이 잠김"인지 구분한다.
-            # 구분하지 않으면 한 달치 유실도 조용히 성공으로 보고된다.
-            stuck_items = load_stuck_claims(db, window_start, tomorrow)
-            if stuck_items:
-                logger.warning(
-                    "nightly_content_generation found nothing: %d slots are still locked by "
-                    "a previous run's claim",
-                    len(stuck_items),
-                )
-                _record_locked_generation_items(recorder, stuck_items)
-            else:
-                logger.info(f"No content to generate for {window_start}~{tomorrow}")
-            recorder.finish()
-            _page_morning_stored_publication_gates(db, now_kst=now_kst)
-            return
-
-        claimed_item_ids = [item.id for item in items]
-        missing_essence_hospitals: set[uuid.UUID] = set()
-
-        for item in items:
-            item_id = item.id
-            hospital = item.hospital
-            hospital_id = hospital.id
-            hospital_name = hospital.name
-            claim_time = item.generation_claimed_at
-            claim_token = getattr(item, "generation_claim_token", None)
-            item_state = GenerationItemState.SUCCEEDED
-            philosophy = None
-
-            if getattr(item, "_generation_reclaimed_stale", False):
-                stale_code = "STALE_GENERATION_CLAIM"
-                stale_message = "이전 생성 작업의 lease가 만료되어 안전하게 다시 인수했습니다."
-                recorder.record(
-                    item.id,
-                    GenerationItemState.FAILED,
-                    safe_error_code=stale_code,
-                    safe_error_message=stale_message,
-                )
-                stale_run = recorder.item_run(
-                    item.id,
-                    hospital_id,
-                    "REGENERATE_CONTENT",
-                    OperationRunState.FAILED,
-                    safe_error_code=stale_code,
-                    safe_error_message=stale_message,
-                    attempt_kind="stale-claim",
-                )
-                _run_async(
-                    open_generation_incident(
-                        item_id=item.id,
-                        hospital_id=hospital_id,
-                        hospital_name=hospital_name,
-                        run_id=stale_run.id,
-                        code=stale_code,
-                        message=stale_message,
-                        notify=generation_notify_requested(stale_code),
-                    )
-                )
-
-            try:
-                if getattr(item, "body", None):
-                    state, code, message = _generate_single_content_item(db, item, hospital)
-                    _record_generation_batch_outcome(
-                        db, recorder, item, hospital, state, code, message
-                    )
-                    continue
-
-                # 기존 제목 목록 (중복 방지). 상한 없이 전부 실으면 1년 운영한
-                # 병원에서 수백 개 제목이 매 호출 프롬프트에 들어간다. 중복 회피에
-                # 필요한 것은 최근 무엇을 썼는지이므로 최신 N개만 가져온다.
-                existing = db.execute(
-                    select(ContentItem.title)
-                    .where(
-                        ContentItem.hospital_id == hospital.id,
-                        ContentItem.title.isnot(None),
-                    )
-                    .order_by(
-                        ContentItem.scheduled_date.desc().nullslast(),
-                        ContentItem.published_at.desc().nullslast(),
-                    )
-                    .limit(EXISTING_TITLE_PROMPT_LIMIT)
-                )
-                existing_titles = [r[0] for r in existing.all()]
-
-                philosophy = _generation_philosophy_sync(db, hospital.id)
-                if _generation_attempt_is_unchanged(item, philosophy):
-                    previous = _stored_generation_attempt(item)
-                    recorder.record(
-                        item.id,
-                        GenerationItemState.SKIPPED,
-                        safe_error_code=previous["reason"],
-                        safe_error_message=(
-                            "직전 생성 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다."
-                        ),
-                    )
-                    continue
-                if not philosophy:
-                    item.content_philosophy_id = None
-                    item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
-                    item.essence_check_summary = {
-                        "blocking": True,
-                        "findings": [
-                            "승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."
-                        ],
-                        "checked_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    _remember_generation_attempt(
-                        db, item, philosophy, "MISSING_APPROVED_ESSENCE"
-                    )
-                    first_gate_observation = hospital_id not in missing_essence_hospitals
-                    missing_essence_hospitals.add(hospital_id)
-                    if first_gate_observation:
-                        logger.warning(
-                            "Skipping content generation without approved clinic writing "
-                            "standard: %s",
-                            hospital.name,
-                        )
-                    code = "MISSING_APPROVED_ESSENCE"
-                    message = "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다."
-                    recorder.record(
-                        item.id,
-                        GenerationItemState.SKIPPED,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    failed_run = recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT",
-                        OperationRunState.FAILED,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    if first_gate_observation:
-                        _run_async(
-                            open_generation_incident(
-                                item_id=item.id,
-                                hospital_id=hospital_id,
-                                hospital_name=hospital_name,
-                                run_id=failed_run.id,
-                                code=code,
-                                message=message,
-                                notify=generation_notify_requested(code),
-                            )
-                        )
-                    continue
-
-                # 비용 가드: Claude 호출 예산 확인. 차단 시 예외로 배치를 죽이지 않고 이 아이템만
-                # 스킵한다(다음 야간 배치에서 body-null 필터로 재시도됨).
-                cost_decision = _run_async(cost_guard.check_and_increment("content"))
-                if not cost_decision.allowed:
-                    logger.warning(
-                        "콘텐츠 생성이 비용 가드로 차단됨: %s — %s",
-                        hospital.name,
-                        cost_decision.reason,
-                    )
-                    code = "COST_BLOCKED"
-                    message = "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요."
-                    _remember_generation_attempt(db, item, philosophy, code, message=message)
-                    recorder.record(
-                        item.id,
-                        GenerationItemState.SKIPPED,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    failed_run = recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT",
-                        OperationRunState.FAILED,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    _run_async(
-                        open_generation_incident(
-                            item_id=item.id,
-                            hospital_id=hospital_id,
-                            hospital_name=hospital_name,
-                            run_id=failed_run.id,
-                            code=code,
-                            message=message,
-                            notify=generation_notify_requested(code),
-                        )
-                    )
-                    continue
-
-                # Claude Sonnet 콘텐츠 생성
-                approved_brief = prepare_automatic_content_brief_sync(
-                    db,
-                    item=item,
-                    hospital=hospital,
-                    philosophy=philosophy,
-                )
-                # 플래너는 추적 객체(item.query_target_id / content_brief / brief_* 등)를
-                # 직접 변경한다. 그대로 두면 아래 조건부 UPDATE의 db.execute()가 autoflush를
-                # 먼저 돌려 **status 술어가 없는 UPDATE**를 emit하고, "추적 객체를 건드리지
-                # 않는다"는 가드의 전제가 깨진다. 여기서 확정해 item을 clean 상태로 만든다.
-                # (기획 메타데이터라 생성이 실패해도 남는 편이 맞고, claim 커밋과 같은 취급이다.)
-                db.commit()
-                expected_revision = int(getattr(item, "content_revision", 1) or 1)
-                content_data, screening = _run_async(
-                    _generate_with_auto_review(
-                        hospital=hospital,
-                        item=item,
-                        existing_titles=existing_titles,
-                        philosophy=philosophy,
-                        approved_brief=approved_brief,
-                    )
-                )
-                now = datetime.now(timezone.utc)
-
-                # 생성 결과는 **추적 객체를 건드리지 않고** 별도 payload에 담는다.
-                #
-                # claim 커밋 시점에 행 잠금이 풀리므로, 생성이 도는 동안(최대 soft_time_limit)
-                # AE가 Admin에서 이 항목을 취소(CANCELLED)할 수 있다. 여기서
-                # `item.status = DRAFT`처럼 추적 객체를 먼저 변경하면 SQLAlchemy가 다음
-                # execute/commit 앞에서 autoflush로 그 값을 먼저 써버려 취소가 되살아난다
-                # (세션은 expire_on_commit=False). 그래서 조건부 UPDATE 한 방으로만 쓰고,
-                # 0행이면 운영자의 취소가 이긴 것으로 보고 결과를 버린다.
-                written = write_back_generated_content(
-                    db,
-                    item_id=item.id,
-                    expected_revision=expected_revision,
-                    expected_claim_token=claim_token,
-                    values={
-                        "title": content_data["title"],
-                        "body": content_data["body"],
-                        "meta_description": content_data.get("meta_description"),
-                        "references_list": content_data.get("references") or [],
-                        "faq_question": content_data.get("faq_question"),
-                        "faq_answer_summary": content_data.get("faq_answer_summary"),
-                        "image_url": None,
-                        "image_prompt": None,
-                        "image_policy_verified_at": None,
-                        "image_content_hash": None,
-                        "image_subject_hash": None,
-                        "image_policy_version": None,
-                        "generated_at": now,
-                        "body_updated_at": now,
-                        "status": ContentStatus.DRAFT,
-                        "content_philosophy_id": philosophy.id,
-                        "generation_philosophy_id": philosophy.id,
-                        "last_reviewed_philosophy_id": philosophy.id,
-                        "essence_status": screening.status,
-                        "essence_check_summary": _generation_summary(
-                            db, hospital.id, screening, philosophy, approved_brief
-                        ),
-                    },
-                )
-                if written == 0:
-                    # 운영자가 생성 도중 상태를 바꿨다(취소/발행 등). 배치 결과보다
-                    # 운영자 의도가 우선이므로 생성물을 버리고 다음 항목으로 넘어간다.
-                    db.rollback()
-                    db.expire(item)
-                    logger.info(
-                        "Discarding generated content for %s — status changed during generation",
-                        item.id,
-                    )
-                    recorder.record(item.id, GenerationItemState.DISCARDED)
-                    recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT",
-                        OperationRunState.CANCELLED,
-                    )
-                    continue
-
-                # 텍스트 콘텐츠 먼저 커밋 (이미지 실패가 텍스트를 롤백하지 않도록)
-                db.commit()
-                db.refresh(item)  # expire_on_commit=False — 조건부 UPDATE 결과를 다시 읽어온다
-                logger.info(f"Content generated: {hospital.name} — {item.title}")
-
-                # 대표 이미지는 비어 있을 때만 채운다. 기존 이미지가 있으면 공급자 파이프를
-                # 절대 다시 호출하지 않는다.
-                image_state = _recover_missing_content_image(db, item, hospital, philosophy)
-                if image_state != GenerationItemState.SUCCEEDED:
-                    item_state = image_state
-
-                readiness_failure = None
-                if item_state != GenerationItemState.DISCARDED:
-                    readiness_failure = _persist_publication_readiness(db, item, philosophy)
-                    if (
-                        readiness_failure is not None
-                        and item_state == GenerationItemState.SUCCEEDED
-                    ):
-                        _remember_generation_attempt(
-                            db, item, philosophy, readiness_failure[0]
-                        )
-                        item_state = GenerationItemState.FAILED
-
-                if item_state == GenerationItemState.FAILED:
-                    code, message = readiness_failure or (
-                        "GENERATION_FAILED",
-                        "자동 발행 준비 검사를 통과하지 못했습니다.",
-                    )
-                    recorder.record(
-                        item.id,
-                        item_state,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    failed_run = recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT",
-                        OperationRunState.FAILED,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    _run_async(
-                        open_generation_incident(
-                            item_id=item.id,
-                            hospital_id=hospital_id,
-                            hospital_name=hospital_name,
-                            run_id=failed_run.id,
-                            code=code,
-                            message=message,
-                            notify=generation_notify_requested(code),
-                        )
-                    )
-                elif item_state == GenerationItemState.PARTIAL:
-                    code, message = _image_failure_details(item)
-                    recorder.record(
-                        item.id,
-                        item_state,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    text_run = create_item_run(
-                        db,
-                        parent_run_id=recorder.run.id,
-                        item_id=item.id,
-                        hospital_id=hospital_id,
-                        operation_type="REGENERATE_CONTENT",
-                        state=OperationRunState.SUCCEEDED,
-                        result={"state": "SUCCEEDED", "artifact": "text"},
-                        attempt_kind="text",
-                    )
-                    _run_async(
-                        recover_generation_incidents(
-                            item.id,
-                            hospital_id,
-                            hospital_name,
-                            text_run.id,
-                            include_image=False,
-                        )
-                    )
-                    image_run = recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT_IMAGE",
-                        OperationRunState.FAILED,
-                        safe_error_code=code,
-                        safe_error_message=message,
-                    )
-                    _run_async(
-                        open_generation_incident(
-                            item_id=item.id,
-                            hospital_id=hospital_id,
-                            hospital_name=hospital_name,
-                            run_id=image_run.id,
-                            code=code,
-                            message=message,
-                            notify=generation_notify_requested(code),
-                        )
-                    )
-                elif item_state == GenerationItemState.DISCARDED:
-                    recorder.record(item.id, item_state)
-                    recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT_IMAGE",
-                        OperationRunState.CANCELLED,
-                    )
-                else:
-                    recorder.record(item.id, GenerationItemState.SUCCEEDED)
-                    success_run = recorder.item_run(
-                        item.id,
-                        hospital_id,
-                        "REGENERATE_CONTENT",
-                        OperationRunState.SUCCEEDED,
-                    )
-                    _run_async(
-                        recover_generation_incidents(
-                            item.id, hospital_id, hospital_name, success_run.id
-                        )
-                    )
-
-            except Exception as e:
-                code, message = classify_generation_failure(e)
-                logger.error("Content generation failed for item %s: %s", item.id, type(e).__name__)
-                db.rollback()
-                db.expire_all()
-                if not getattr(item, "body", None):
-                    _remember_generation_attempt(db, item, philosophy, code, message=message)
-                recorder.record(
-                    item.id,
-                    GenerationItemState.FAILED,
-                    safe_error_code=code,
-                    safe_error_message=message,
-                )
-                failed_run = recorder.item_run(
-                    item.id,
-                    hospital_id,
-                    "REGENERATE_CONTENT",
-                    OperationRunState.FAILED,
-                    safe_error_code=code,
-                    safe_error_message=message,
-                )
-                _run_async(
-                    open_generation_incident(
-                        item_id=item.id,
-                        hospital_id=hospital_id,
-                        hospital_name=hospital_name,
-                        run_id=failed_run.id,
-                        code=code,
-                        message=message,
-                        notify=generation_notify_requested(code),
-                    )
-                )
-            finally:
-                released = release_unfinished_claims(
-                    db,
-                    [item_id],
-                    expected_claimed_at=claim_time,
-                    expected_claim_token=claim_token,
-                )
-                if released:
-                    db.commit()
-
-        # 다른 워커가 보유한 live lease도 이 실행의 미처리 결과다. 일부만 생성한 경우
-        # PARTIAL, 전부 잠긴 경우 FAILED로 남겨 빈 성공으로 오인되지 않게 한다.
-        stuck_items = load_stuck_claims(db, window_start, tomorrow)
-        if stuck_items:
-            _record_locked_generation_items(recorder, stuck_items)
+        recorder = GenerationBatchRecorder(db, task_id, window_start, window_end)
+        _dispatch_generation_batch(
+            db, recorder, window_start, window_end, now_kst=now_kst
+        )
         recorder.finish()
         _page_morning_stored_publication_gates(db, now_kst=now_kst)
 
         # 성공과 자동 복구 중간 상태는 Slack으로 보내지 않는다. 인시던트/실행 기록이 다음
         # 배치의 입력이 되고, 01·04·07·07:45 재시도가 스스로 복구한다. 사람만 해결할 수 있는
-        # 승인 기준 누락은 위에서 병원별 상태만 남기고 이 실행의 요약을 한 번 보낸다. 재시도
-        # 소진 후 남은 최종 발행 차단은 08시 배치에서 한 번의 요약으로만 알린다.
-        logger.info("Nightly generation finalized %d item claims", len(claimed_item_ids))
+        # 승인 기준 누락은 per-item 태스크가 병원별 상태로 남기며, 재시도 소진 후 남은 최종
+        # 발행 차단은 08시 배치에서 한 번의 요약으로만 알린다.
+
+
+@celery_app.task(
+    name="app.workers.tasks.generate_claimed_content_item",
+    bind=True,
+    # 한 편의 작가 3회 + 독립 검수 + 이미지가 최대치다. 전역 기본(600s)보다 길지만
+    # 배치 전체의 한계와는 무관하다.
+    soft_time_limit=900,
+    time_limit=1000,
+    acks_late=True,
+    max_retries=0,
+)
+def generate_claimed_content_item(
+    self,
+    content_id: str,
+    claim_token: str | None = None,
+    notify: bool | None = None,
+):
+    """Generate exactly one slot the nightly batch already claimed.
+
+    재시도는 이 태스크가 갖지 않는다(`max_retries=0`) — 실패의 재시도 여부와 예산은
+    23:00·01·04·07 스윕과 `generation_retry_policy`가 소유한다. 늦게 도착했거나 다시
+    배달된 실행은 lease 토큰이 바뀐 것을 보고 공급자 호출 없이 물러난다.
+    """
+
+    require_dispatch(self, GENERATE_CONTENT_ITEM_PURPOSE, content_id)
+    item_id = uuid.UUID(content_id)
+    token = uuid.UUID(claim_token) if claim_token else None
+
+    with SyncSessionLocal() as db:
+        if token is None:
+            # 토큰 없이 되살아난 배포(자율 복구)다. 지금 비어 있는 lease만 인수한다.
+            leased = claim_generation_lease(db, item_id)
+            if leased is None:
+                _finish_claimed_item_run(
+                    db, self, item_id, None, OperationRunState.CANCELLED
+                )
+                return
+            item, token = leased
+        else:
+            item = load_claimed_generation_item(db, item_id, token)
+            if item is None:
+                logger.info(
+                    "Skipping claimed generation for %s — the lease changed or expired",
+                    item_id,
+                )
+                _finish_claimed_item_run(
+                    db, self, item_id, None, OperationRunState.CANCELLED
+                )
+                return
+
+        hospital = item.hospital
+        claim_time = item.generation_claimed_at
+        run = _resolve_claimed_item_run(db, self, item)
+        recorder = GenerationItemRecorder(db, run)
+        try:
+            state, code, message = _run_generation_item(
+                db, recorder, item, hospital, notify=notify
+            )
+        finally:
+            released = release_unfinished_claims(
+                db,
+                [item_id],
+                expected_claimed_at=claim_time,
+                expected_claim_token=token,
+            )
+            if released:
+                db.commit()
+        _finish_claimed_item_run(
+            db,
+            self,
+            item_id,
+            run,
+            _ITEM_RUN_STATES[state],
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+
+
+_ITEM_RUN_STATES = {
+    GenerationItemState.SUCCEEDED: OperationRunState.SUCCEEDED,
+    GenerationItemState.PARTIAL: OperationRunState.PARTIAL,
+    GenerationItemState.FAILED: OperationRunState.FAILED,
+    GenerationItemState.SKIPPED: OperationRunState.CANCELLED,
+    GenerationItemState.DISCARDED: OperationRunState.CANCELLED,
+    GenerationItemState.RUNNING: OperationRunState.FAILED,
+}
+
+
+def _resolve_claimed_item_run(db, task, item) -> OperationRun:
+    """This dispatch's durable run — the batch's child, or a standalone stand-in."""
+
+    context = explicit_run_context(task)
+    if context is not None:
+        run = db.get(OperationRun, context.run_id)
+        payload = getattr(run, "request_payload", None)
+        if run is not None and isinstance(payload, dict) and payload.get("source_id") == str(item.id):
+            return run
+    return create_dispatched_item_run(
+        db,
+        parent_run_id=None,
+        item_id=item.id,
+        hospital_id=item.hospital_id,
+        task_id=str(getattr(task.request, "id", None) or uuid.uuid4()),
+        task_args=(str(item.id),),
+        state=OperationRunState.RUNNING,
+        idempotency_key=f"generation-item:standalone:{uuid.uuid4()}",
+    )
+
+
+def _finish_claimed_item_run(
+    db,
+    task,
+    item_id: uuid.UUID,
+    run: OperationRun | None,
+    state: OperationRunState,
+    *,
+    safe_error_code: str | None = None,
+    safe_error_message: str | None = None,
+) -> None:
+    """Terminalize the per-item run through whichever ownership proof it has."""
+
+    finished = finish_explicit_run(
+        db,
+        task,
+        item_id,
+        state,
+        safe_error_code=safe_error_code,
+        safe_error_message=safe_error_message,
+    )
+    if finished is None and run is not None:
+        finish_item_run(
+            db,
+            run,
+            item_id,
+            state,
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+        )
+
+
+def _run_generation_item(
+    db,
+    recorder,
+    item: ContentItem,
+    hospital: Hospital,
+    *,
+    notify: bool | None = None,
+) -> tuple[GenerationItemState, str | None, str | None]:
+    """The whole pipeline for one claimed slot. 배치와 복구 스윕이 같은 몸통을 쓴다."""
+
+    hospital_id = hospital.id
+    hospital_name = hospital.name
+    claim_token = getattr(item, "generation_claim_token", None)
+    item_state = GenerationItemState.SUCCEEDED
+    philosophy = None
+
+    try:
+        if getattr(item, "body", None):
+            state, code, message = _generate_single_content_item(db, item, hospital)
+            _record_generation_batch_outcome(
+                db, recorder, item, hospital, state, code, message, notify=notify
+            )
+            return state, code, message
+
+        # 기존 제목 목록 (중복 방지). 상한 없이 전부 실으면 1년 운영한
+        # 병원에서 수백 개 제목이 매 호출 프롬프트에 들어간다. 중복 회피에
+        # 필요한 것은 최근 무엇을 썼는지이므로 최신 N개만 가져온다.
+        existing = db.execute(
+            select(ContentItem.title)
+            .where(
+                ContentItem.hospital_id == hospital.id,
+                ContentItem.title.isnot(None),
+            )
+            .order_by(
+                ContentItem.scheduled_date.desc().nullslast(),
+                ContentItem.published_at.desc().nullslast(),
+            )
+            .limit(EXISTING_TITLE_PROMPT_LIMIT)
+        )
+        existing_titles = [r[0] for r in existing.all()]
+
+        philosophy = _generation_philosophy_sync(db, hospital.id)
+        if _generation_attempt_is_unchanged(item, philosophy):
+            previous = _stored_generation_attempt(item)
+            code = str(previous["reason"])
+            message = "직전 생성 차단 원인이 달라지지 않아 비용 재시도를 건너뛰었습니다."
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            return GenerationItemState.SKIPPED, code, message
+        if not philosophy:
+            item.content_philosophy_id = None
+            item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
+            item.essence_check_summary = {
+                "blocking": True,
+                "findings": [
+                    "승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."
+                ],
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _remember_generation_attempt(db, item, philosophy, "MISSING_APPROVED_ESSENCE")
+            logger.warning(
+                "Skipping content generation without approved clinic writing standard: %s",
+                hospital.name,
+            )
+            code = "MISSING_APPROVED_ESSENCE"
+            message = "콘텐츠 운영 기준의 시스템 자동 승인이 아직 완료되지 않았습니다."
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            failed_run = recorder.item_run(
+                item.id,
+                hospital_id,
+                "REGENERATE_CONTENT",
+                OperationRunState.FAILED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            # 이 코드의 인시던트는 병원 단위로 중복 제거된다 — 같은 병원의 슬롯 12개가
+            # 각자 이 경로를 지나도 열리는 사고는 하나다.
+            _run_async(
+                open_generation_incident(
+                    item_id=item.id,
+                    hospital_id=hospital_id,
+                    hospital_name=hospital_name,
+                    run_id=failed_run.id,
+                    code=code,
+                    message=message,
+                    notify=generation_notify_requested(code) if notify is None else notify,
+                )
+            )
+            return GenerationItemState.SKIPPED, code, message
+
+        # 비용 가드: Claude 호출 예산 확인. 차단 시 예외로 배치를 죽이지 않고 이 아이템만
+        # 스킵한다(다음 야간 배치에서 body-null 필터로 재시도됨).
+        cost_decision = _run_async(cost_guard.check_and_increment("content"))
+        if not cost_decision.allowed:
+            logger.warning(
+                "콘텐츠 생성이 비용 가드로 차단됨: %s — %s",
+                hospital.name,
+                cost_decision.reason,
+            )
+            code = "COST_BLOCKED"
+            message = "비용 가드가 생성을 보류했습니다. 운영 센터에서 한도를 확인해 주세요."
+            _remember_generation_attempt(db, item, philosophy, code, message=message)
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            failed_run = recorder.item_run(
+                item.id,
+                hospital_id,
+                "REGENERATE_CONTENT",
+                OperationRunState.FAILED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            _run_async(
+                open_generation_incident(
+                    item_id=item.id,
+                    hospital_id=hospital_id,
+                    hospital_name=hospital_name,
+                    run_id=failed_run.id,
+                    code=code,
+                    message=message,
+                    notify=generation_notify_requested(code) if notify is None else notify,
+                )
+            )
+            return GenerationItemState.SKIPPED, code, message
+
+        # Claude Sonnet 콘텐츠 생성
+        approved_brief = prepare_automatic_content_brief_sync(
+            db,
+            item=item,
+            hospital=hospital,
+            philosophy=philosophy,
+        )
+        # 플래너는 추적 객체(item.query_target_id / content_brief / brief_* 등)를
+        # 직접 변경한다. 그대로 두면 아래 조건부 UPDATE의 db.execute()가 autoflush를
+        # 먼저 돌려 **status 술어가 없는 UPDATE**를 emit하고, "추적 객체를 건드리지
+        # 않는다"는 가드의 전제가 깨진다. 여기서 확정해 item을 clean 상태로 만든다.
+        # (기획 메타데이터라 생성이 실패해도 남는 편이 맞고, claim 커밋과 같은 취급이다.)
+        db.commit()
+        expected_revision = int(getattr(item, "content_revision", 1) or 1)
+        content_data, screening = _run_async(
+            _generate_with_auto_review(
+                hospital=hospital,
+                item=item,
+                existing_titles=existing_titles,
+                philosophy=philosophy,
+                approved_brief=approved_brief,
+            )
+        )
+        now = datetime.now(timezone.utc)
+
+        # 생성 결과는 **추적 객체를 건드리지 않고** 별도 payload에 담는다.
+        #
+        # claim 커밋 시점에 행 잠금이 풀리므로, 생성이 도는 동안(최대 soft_time_limit)
+        # AE가 Admin에서 이 항목을 취소(CANCELLED)할 수 있다. 여기서
+        # `item.status = DRAFT`처럼 추적 객체를 먼저 변경하면 SQLAlchemy가 다음
+        # execute/commit 앞에서 autoflush로 그 값을 먼저 써버려 취소가 되살아난다
+        # (세션은 expire_on_commit=False). 그래서 조건부 UPDATE 한 방으로만 쓰고,
+        # 0행이면 운영자의 취소가 이긴 것으로 보고 결과를 버린다.
+        written = write_back_generated_content(
+            db,
+            item_id=item.id,
+            expected_revision=expected_revision,
+            expected_claim_token=claim_token,
+            values={
+                "title": content_data["title"],
+                "body": content_data["body"],
+                "meta_description": content_data.get("meta_description"),
+                "references_list": content_data.get("references") or [],
+                "faq_question": content_data.get("faq_question"),
+                "faq_answer_summary": content_data.get("faq_answer_summary"),
+                "image_url": None,
+                "image_prompt": None,
+                "image_policy_verified_at": None,
+                "image_content_hash": None,
+                "image_subject_hash": None,
+                "image_policy_version": None,
+                "generated_at": now,
+                "body_updated_at": now,
+                "status": ContentStatus.DRAFT,
+                "content_philosophy_id": philosophy.id,
+                "generation_philosophy_id": philosophy.id,
+                "last_reviewed_philosophy_id": philosophy.id,
+                "essence_status": screening.status,
+                "essence_check_summary": _generation_summary(
+                    db, hospital.id, screening, philosophy, approved_brief
+                ),
+            },
+        )
+        if written == 0:
+            # 운영자가 생성 도중 상태를 바꿨다(취소/발행 등). 배치 결과보다
+            # 운영자 의도가 우선이므로 생성물을 버린다.
+            db.rollback()
+            db.expire(item)
+            logger.info(
+                "Discarding generated content for %s — status changed during generation",
+                item.id,
+            )
+            recorder.record(item.id, GenerationItemState.DISCARDED)
+            recorder.item_run(
+                item.id,
+                hospital_id,
+                "REGENERATE_CONTENT",
+                OperationRunState.CANCELLED,
+            )
+            return GenerationItemState.DISCARDED, None, None
+
+        # 텍스트 콘텐츠 먼저 커밋 (이미지 실패가 텍스트를 롤백하지 않도록)
+        db.commit()
+        db.refresh(item)  # expire_on_commit=False — 조건부 UPDATE 결과를 다시 읽어온다
+        logger.info(f"Content generated: {hospital.name} — {item.title}")
+
+        # 대표 이미지는 비어 있을 때만 채운다. 기존 이미지가 있으면 공급자 파이프를
+        # 절대 다시 호출하지 않는다.
+        image_state = _recover_missing_content_image(db, item, hospital, philosophy)
+        if image_state != GenerationItemState.SUCCEEDED:
+            item_state = image_state
+
+        readiness_failure = None
+        if item_state != GenerationItemState.DISCARDED:
+            readiness_failure = _persist_publication_readiness(db, item, philosophy)
+            if readiness_failure is not None and item_state == GenerationItemState.SUCCEEDED:
+                _remember_generation_attempt(db, item, philosophy, readiness_failure[0])
+                item_state = GenerationItemState.FAILED
+
+        if item_state == GenerationItemState.FAILED:
+            code, message = readiness_failure or (
+                "GENERATION_FAILED",
+                "자동 발행 준비 검사를 통과하지 못했습니다.",
+            )
+            recorder.record(
+                item.id,
+                item_state,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            failed_run = recorder.item_run(
+                item.id,
+                hospital_id,
+                "REGENERATE_CONTENT",
+                OperationRunState.FAILED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            _run_async(
+                open_generation_incident(
+                    item_id=item.id,
+                    hospital_id=hospital_id,
+                    hospital_name=hospital_name,
+                    run_id=failed_run.id,
+                    code=code,
+                    message=message,
+                    notify=generation_notify_requested(code) if notify is None else notify,
+                )
+            )
+            return item_state, code, message
+        if item_state == GenerationItemState.PARTIAL:
+            code, message = _image_failure_details(item)
+            recorder.record(
+                item.id,
+                item_state,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            text_run = create_item_run(
+                db,
+                parent_run_id=recorder.run.id,
+                item_id=item.id,
+                hospital_id=hospital_id,
+                operation_type="REGENERATE_CONTENT",
+                state=OperationRunState.SUCCEEDED,
+                result={"state": "SUCCEEDED", "artifact": "text"},
+                attempt_kind="text",
+            )
+            _run_async(
+                recover_generation_incidents(
+                    item.id,
+                    hospital_id,
+                    hospital_name,
+                    text_run.id,
+                    include_image=False,
+                )
+            )
+            image_run = recorder.item_run(
+                item.id,
+                hospital_id,
+                "REGENERATE_CONTENT_IMAGE",
+                OperationRunState.FAILED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            _run_async(
+                open_generation_incident(
+                    item_id=item.id,
+                    hospital_id=hospital_id,
+                    hospital_name=hospital_name,
+                    run_id=image_run.id,
+                    code=code,
+                    message=message,
+                    notify=generation_notify_requested(code) if notify is None else notify,
+                )
+            )
+            return item_state, code, message
+        if item_state == GenerationItemState.DISCARDED:
+            recorder.record(item.id, item_state)
+            recorder.item_run(
+                item.id,
+                hospital_id,
+                "REGENERATE_CONTENT_IMAGE",
+                OperationRunState.CANCELLED,
+            )
+            return item_state, None, None
+
+        recorder.record(item.id, GenerationItemState.SUCCEEDED)
+        success_run = recorder.item_run(
+            item.id,
+            hospital_id,
+            "REGENERATE_CONTENT",
+            OperationRunState.SUCCEEDED,
+        )
+        _run_async(
+            recover_generation_incidents(
+                item.id, hospital_id, hospital_name, success_run.id
+            )
+        )
+        return GenerationItemState.SUCCEEDED, None, None
+
+    except Exception as e:
+        code, message = classify_generation_failure(e)
+        logger.error("Content generation failed for item %s: %s", item.id, type(e).__name__)
+        db.rollback()
+        db.expire_all()
+        if not getattr(item, "body", None):
+            _remember_generation_attempt(db, item, philosophy, code, message=message)
+        recorder.record(
+            item.id,
+            GenerationItemState.FAILED,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        failed_run = recorder.item_run(
+            item.id,
+            hospital_id,
+            "REGENERATE_CONTENT",
+            OperationRunState.FAILED,
+            safe_error_code=code,
+            safe_error_message=message,
+        )
+        _run_async(
+            open_generation_incident(
+                item_id=item.id,
+                hospital_id=hospital_id,
+                hospital_name=hospital_name,
+                run_id=failed_run.id,
+                code=code,
+                message=message,
+                notify=generation_notify_requested(code) if notify is None else notify,
+            )
+        )
+        return GenerationItemState.FAILED, code, message
 
 
 @celery_app.task(
     name="app.workers.tasks.overnight_content_generation_recovery",
     bind=True,
-    soft_time_limit=3000,
-    time_limit=3300,
+    soft_time_limit=600,
+    time_limit=660,
     acks_late=True,
 )
 def overnight_content_generation_recovery(self):
-    """At 01/04/07, fill missing fragments without rewriting a stored body."""
+    """At 01/04/07, claim today's unfinished slots and fan them out."""
 
     require_dispatch(self, "overnight-content-generation-recovery")
-    today = arrow.now("Asia/Seoul").date()
+    now_kst = arrow.now("Asia/Seoul")
+    today = now_kst.date()
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
         recorder = GenerationBatchRecorder(db, task_id, today, today)
-        items, truncated_count = _load_nightly_generation_batch(db, today, today)
-        if truncated_count:
-            logger.warning(
-                "overnight fragment recovery cap reached: %d items deferred beyond cap %d",
-                truncated_count,
-                NIGHTLY_GENERATION_CAP,
-            )
-        for item in items:
-            claim_time = item.generation_claimed_at
-            claim_token = getattr(item, "generation_claim_token", None)
-            philosophy = None
-            try:
-                philosophy = _generation_philosophy_sync(db, item.hospital.id)
-                # _generate_single_content_item repeats this lookup so all callers
-                # share one policy.  The inexpensive duplicate read is preferable
-                # to allowing an exception path to lose the context fingerprint.
-                state, code, message = _generate_single_content_item(
-                    db, item, item.hospital
-                )
-                _record_generation_batch_outcome(
-                    db, recorder, item, item.hospital, state, code, message, notify=False
-                )
-            except Exception as error:
-                code, message = classify_generation_failure(error)
-                logger.error(
-                    "Overnight fragment recovery failed for item %s: %s",
-                    item.id,
-                    type(error).__name__,
-                )
-                db.rollback()
-                db.expire_all()
-                if not getattr(item, "body", None):
-                    _remember_generation_attempt(db, item, philosophy, code, message=message)
-                _record_generation_batch_outcome(
-                    db,
-                    recorder,
-                    item,
-                    item.hospital,
-                    GenerationItemState.FAILED,
-                    code,
-                    message,
-                    notify=False,
-                )
-            finally:
-                released = release_unfinished_claims(
-                    db,
-                    [item.id],
-                    expected_claimed_at=claim_time,
-                    expected_claim_token=claim_token,
-                )
-                if released:
-                    db.commit()
+        # 07:45 요약이 이 시간대의 알림을 소유한다 — 슬롯별 Slack을 내지 않는다.
+        _dispatch_generation_batch(
+            db, recorder, today, today, now_kst=now_kst, notify=False
+        )
         recorder.finish()
 
 
@@ -6056,6 +6457,8 @@ def morning_content_auto_publish(self):
                         "content_id": content_id,
                         "image_failure_reason": outcome.get("image_failure_reason"),
                         "image_failure_class": outcome.get("image_failure_class"),
+                        # 빌린 글인지 병원 대표 이미지인지 — 요약 문구가 이걸로 갈린다.
+                        "reused_from": outcome.get("reused_from"),
                     }
                 )
             if outcome["kind"] == "blocked":
@@ -6349,19 +6752,33 @@ def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> 
             else 0
         ),
         "content_revision": int(getattr(item, "content_revision", 1) or 1),
-        # 이미지를 만들지 못해 같은 병원의 인증 이미지를 빌려 발행한 사실. 정상 발행을
+        # 이미지를 만들지 못해 **자기 주제 이미지가 아닌** 것으로 발행한 사실. 같은 병원의
+        # 다른 글에서 빌렸거나, 첫 글이라 병원 대표 이미지를 썼거나 둘 중 하나다. 정상 발행을
         # 알리지 않는 계약은 그대로고, 08:00 차단 요약 안의 한 섹션으로만 보고한다.
-        "image_reused": bool(getattr(item, "image_reused_from_content_id", None)),
+        "image_reused": image_is_reused(item) or image_is_hospital_fallback(item),
         **_image_reuse_payload(item),
     }
 
 
 def _image_reuse_payload(item: ContentItem) -> dict[str, object]:
-    if not getattr(item, "image_reused_from_content_id", None):
+    """08:00 요약이 읽을 출처와 원인. 두 대체 경로가 같은 자리를 쓴다.
+
+    `reused_from`은 글에서 빌렸으면 그 글의 id, 병원 대표 이미지를 썼으면
+    `HOSPITAL_HERO`다. 요약 문구는 이 값으로 갈린다.
+    """
+
+    source_id = getattr(item, "image_reused_from_content_id", None)
+    is_fallback = image_is_hospital_fallback(item)
+    if not source_id and not is_fallback:
         return {}
     facts = stored_image_reuse_facts(item)
+    reused_from = str(
+        facts.get("reused_from")
+        or (str(source_id) if source_id else HOSPITAL_FALLBACK_IMAGE_SOURCE)
+    )
     return {
-        "image_reused_from_content_id": str(item.image_reused_from_content_id),
+        "image_reused_from_content_id": str(source_id) if source_id else None,
+        "reused_from": reused_from,
         "image_failure_reason": str(facts.get("image_failure_reason") or "IMAGE_GENERATION_FAILED"),
         "image_failure_class": str(facts.get("image_failure_class") or "PROVIDER_ERROR"),
     }

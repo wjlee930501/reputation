@@ -4,8 +4,29 @@ import pytest
 import tenacity
 from google import genai
 
+from app.models.content import ContentType
 from app.services import image_engine
-from app.services.image_policy import ImagePolicyAssessment, ImagePolicyRejectedError
+from app.services.image_policy import (
+    ImagePolicyAssessment,
+    ImagePolicyRejectedError,
+    ImagePolicyUnavailableError,
+)
+
+
+def _allow_cost(monkeypatch):
+    """비용 가드를 통과시키되 정산 호출은 그대로 받아 준다 (Redis 없이 돈다)."""
+
+    from app.services import cost_guard
+
+    async def _reserve(_category):
+        return SimpleNamespace(allowed=True, receipt=None, reason=None)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(cost_guard, "reserve", _reserve)
+    monkeypatch.setattr(cost_guard, "settle_reservation", _noop)
+    monkeypatch.setattr(cost_guard, "record_provider_call", _noop)
 
 
 def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(monkeypatch):
@@ -308,3 +329,83 @@ def test_google_visual_scene_preserves_safe_topic_variety():
     assert "cool pack" in image_engine._safe_google_visual_scene("소아 발열 치료")
     assert "unpowered ultrasound probe" in image_engine._safe_google_visual_scene("유방초음파 비용")
     assert "plain wooden blocks" in image_engine._safe_google_visual_scene("건강검진 준비")
+
+
+def test_policy_review_failure_keeps_the_raw_provider_error(monkeypatch):
+    """검수 실패의 원인은 공급자 원문에만 있다 — 요약으로 덮어쓰면 운영에서 특정할 수 없다.
+
+    종전에는 어떤 원인이든 로그에 "image policy review failed"만 남아, 모델 404·지역
+    미제공·권한 없음·429를 구분할 방법이 없었다.
+    """
+
+    class _VertexError(Exception):
+        status_code = 404
+
+    class FakeModels:
+        def generate_content(self, **_kwargs):
+            raise _VertexError(
+                "Publisher Model `gemini-3.6-flash` was not found or your project "
+                "does not have access to it"
+            )
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.models = FakeModels()
+
+    monkeypatch.setattr(genai, "Client", FakeClient)
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    image_engine._reset_clients_for_tests()
+
+    with pytest.raises(ImagePolicyUnavailableError) as raised:
+        image_engine._validate_generated_image(
+            b"png-bytes", mime_type="image/png", prompt="p", expected_topic="t"
+        )
+
+    message = str(raised.value)
+    assert "image policy review failed" in message
+    assert "_VertexError" in message
+    assert "gemini-3.6-flash" in message
+    image_engine._reset_clients_for_tests()
+
+
+async def test_policy_unavailable_carries_the_raw_error_into_diagnostics(monkeypatch):
+    """`_image_failure_class`가 진단 값 전체를 훑어 quota를 찾는다 — 원문을 남겨야 분류된다."""
+
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    _allow_cost(monkeypatch)
+
+    def _unavailable(*_args, **_kwargs):
+        raise ImagePolicyUnavailableError(
+            "image policy review failed: ClientError: 429 RESOURCE_EXHAUSTED"
+        )
+
+    monkeypatch.setattr(image_engine, "_generate_and_upload", _unavailable)
+    diagnostics: dict[str, object] = {}
+
+    url, _prompt = await image_engine.generate_image(
+        ContentType.HEALTH, "테스트병원", topic="여름 탈수", diagnostics=diagnostics
+    )
+
+    assert url == ""
+    assert diagnostics["reason"] == "POLICY_UNAVAILABLE"
+    assert "429 RESOURCE_EXHAUSTED" in str(diagnostics["policy_error"])
+    from app.workers.tasks import _image_failure_class
+
+    assert _image_failure_class(diagnostics) == "PROVIDER_QUOTA"
+
+
+async def test_missing_provider_configuration_is_not_a_silent_empty_result(monkeypatch):
+    """공급자 설정 누락만 종전에 reason 없이 ("","")를 돌려줘 공급자 오류처럼 보고됐다."""
+
+    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
+    monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    _allow_cost(monkeypatch)
+    diagnostics: dict[str, object] = {}
+
+    url, prompt = await image_engine.generate_image(
+        ContentType.HEALTH, "테스트병원", topic="여름 탈수", diagnostics=diagnostics
+    )
+
+    assert (url, prompt) == ("", "")
+    assert diagnostics["reason"] == "PROVIDER_NOT_CONFIGURED"

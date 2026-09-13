@@ -24,7 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from celery import current_task
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
 from app.core.celery_app import celery_app
@@ -60,14 +60,22 @@ _IMAGE_FAILURE_CODE = "IMAGE_GENERATION_FAILED"
 
 
 def _reused_image_stmt():
-    """공개 중이고 이미지를 빌려온 글. 오래 빌린 것부터 돌려준다."""
+    """공개 중이고 자기 주제 이미지가 아직 없는 글. 오래 빌린 것부터 돌려준다.
+
+    두 가지를 같이 집는다 — 같은 병원의 다른 글에서 빌린 글
+    (`image_reused_from_content_id`)과 병원 히어로 대체본을 쓴 글
+    (`image_fallback_source`). 둘 다 유효한 인증이지만 최종 상태는 아니다.
+    """
 
     return (
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
         .where(
             ContentItem.status == ContentStatus.PUBLISHED,
-            ContentItem.image_reused_from_content_id.is_not(None),
+            or_(
+                ContentItem.image_reused_from_content_id.is_not(None),
+                ContentItem.image_fallback_source.is_not(None),
+            ),
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
         )
@@ -128,13 +136,21 @@ def remember_image_attempt(db, item: ContentItem, reason: str) -> dict[str, Any]
     return attempt
 
 
+# 교체가 끝나면 요약에서 지워야 하는 것들. 시도 기록이 이미 없어도 "대체 이미지" 표시는
+# 남아 있을 수 있다(발행 판정이 쓰고 시도 기록은 그 사이 지워진 경우) — 그걸 남겨 두면
+# 운영 화면이 자기 주제 이미지를 계속 대체본이라고 읽는다.
+_REPLACED_SUMMARY_KEYS = (GENERATION_ATTEMPT_KEY, "image_reused", "image_fallback")
+
+
 def _clear_image_attempt(db, item: ContentItem) -> None:
     summary = getattr(item, "essence_check_summary", None)
-    if not isinstance(summary, dict) or GENERATION_ATTEMPT_KEY not in summary:
+    if not isinstance(summary, dict) or not any(
+        key in summary for key in _REPLACED_SUMMARY_KEYS
+    ):
         return
     updated = dict(summary)
-    updated.pop(GENERATION_ATTEMPT_KEY, None)
-    updated.pop("image_reused", None)
+    for key in _REPLACED_SUMMARY_KEYS:
+        updated.pop(key, None)
     item.essence_check_summary = updated
     db.commit()
 
@@ -207,8 +223,10 @@ def refresh_reused_content_images() -> dict[str, int]:
                     "image_subject_hash": image_subject_hash(item.content_type, expected_title),
                     "image_policy_version": IMAGE_POLICY_VERSION,
                     "image_policy_verified_at": datetime.now(UTC),
-                    # 이제 이 글 자신의 주제로 인증된 이미지다.
+                    # 이제 이 글 자신의 주제로 인증된 이미지다 — 빌린 표시도, 병원
+                    # 히어로 대체본 표시도 함께 지운다.
                     "image_reused_from_content_id": None,
+                    "image_fallback_source": None,
                 },
             )
             if written == 0:

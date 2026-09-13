@@ -42,9 +42,10 @@ BASE_ESSENCE_FLAG = "0072_add_base_essence_flag"
 
 DIRECTOR_DELTAS = "0073_add_director_deltas"
 IMAGE_REUSE_MARKER = "0074_add_image_reuse_marker"
+HOSPITAL_FALLBACK_IMAGE = "0075_add_hospital_fallback_image"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = IMAGE_REUSE_MARKER
+HEAD = HOSPITAL_FALLBACK_IMAGE
 
 
 def _script_directory() -> ScriptDirectory:
@@ -148,6 +149,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        HOSPITAL_FALLBACK_IMAGE,
         IMAGE_REUSE_MARKER,
         DIRECTOR_DELTAS,
         BASE_ESSENCE_FLAG,
@@ -179,7 +181,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-23:] == [
+    assert applied[-24:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -203,4 +205,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         BASE_ESSENCE_FLAG,
         DIRECTOR_DELTAS,
         IMAGE_REUSE_MARKER,
+        HOSPITAL_FALLBACK_IMAGE,
     ]

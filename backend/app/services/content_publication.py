@@ -171,6 +171,15 @@ def image_is_reused(item: ContentItem) -> bool:
     return getattr(item, "image_reused_from_content_id", None) is not None
 
 
+HOSPITAL_FALLBACK_IMAGE_SOURCE = "HOSPITAL_HERO"
+
+
+def image_is_hospital_fallback(item: ContentItem) -> bool:
+    """이 글의 대표 이미지가 병원 히어로에서 온 대체본인가."""
+
+    return getattr(item, "image_fallback_source", None) == HOSPITAL_FALLBACK_IMAGE_SOURCE
+
+
 def image_certification_current(item: ContentItem) -> bool:
     """저장된 URL·바이트·정책이 지금도 묶여 있는가. 인증은 언제나 byte-bound다.
 
@@ -182,7 +191,12 @@ def image_certification_current(item: ContentItem) -> bool:
         이 이미지의 결합 대상은 이 글의 제목이 아니라 **원본 글**이며, 그 사실은 marker
         컬럼이 명시한다. 새 제목으로 주제 hash를 다시 계산해 채워 넣으면 아무도 검수하지
         않은 합성 인증값이 된다 — 그래서 원본의 주제 hash를 그대로 들고 다닌다.
-        바이트 결합(내용 hash = URL hash)과 정책 버전은 두 모양 모두에서 요구한다.
+    (c) 병원 히어로 대체 이미지(`image_fallback_source == 'HOSPITAL_HERO'`): 재사용과 같은
+        이유로 주제 hash를 검사하지 않는다. 이 이미지의 결합 대상은 글의 제목이 아니라
+        **병원 자체**이고, 그 사실은 marker 컬럼이 말한다. 인증 근거는 병원 행에 저장된
+        실제 바이트 검수이며 여기서도 바이트 결합과 정책 버전을 요구한다.
+
+        바이트 결합(내용 hash = URL hash)과 정책 버전은 세 모양 모두에서 요구한다.
     """
 
     if not getattr(item, "image_url", None) or not getattr(
@@ -197,7 +211,7 @@ def image_certification_current(item: ContentItem) -> bool:
         return False
     if policy_version != IMAGE_POLICY_VERSION:
         return False
-    if image_is_reused(item):
+    if image_is_reused(item) or image_is_hospital_fallback(item):
         return True
     return bool(
         getattr(item, "image_subject_hash", None)
@@ -331,10 +345,14 @@ def assess_content_publication(
         )
 
     summary = dict(screening.summary or {})
-    if image_is_reused(item):
-        # 이 판의 대표 이미지는 같은 병원의 다른 글에서 빌려왔다. 사후 교체 스윕과
-        # 운영 화면이 그 사실을 볼 수 있게 남긴다 — 교체되면 사라진다.
+    if image_is_reused(item) or image_is_hospital_fallback(item):
+        # 이 판의 대표 이미지는 이 글의 주제로 만든 것이 아니다 — 같은 병원의 다른 글에서
+        # 빌렸거나, 첫 글이라 병원 대표 이미지를 썼다. 사후 교체 스윕과 운영 화면이 그
+        # 사실을 볼 수 있게 남긴다 — 교체되면 사라진다. 읽는 쪽이 하나뿐이도록 두 경우가
+        # 같은 열쇠를 쓰고, 출처는 `image_fallback` 한 칸으로만 구분한다.
         summary["image_reused"] = True
+        if image_is_hospital_fallback(item):
+            summary["image_fallback"] = HOSPITAL_FALLBACK_IMAGE_SOURCE
     return PublicationAssessment(
         publishable=True,
         code=None,

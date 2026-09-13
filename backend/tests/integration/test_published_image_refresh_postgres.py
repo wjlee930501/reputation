@@ -258,3 +258,115 @@ def test_an_edit_during_replacement_discards_the_new_image(
     assert item.image_url == borrowed_url
     assert item.image_reused_from_content_id == lender_id
     assert revalidated == []
+
+
+def _hospital_fallback_item(pg_conn) -> uuid.UUID:
+    """빌릴 이미지가 없어 병원 히어로 대체본으로 발행된 글(첫 글)."""
+
+    hospital_id = uuid.uuid4()
+    schedule_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    hero_url = (
+        "https://storage.googleapis.com/reputation-images/content/" + "b" * 64 + "-hero.png"
+    )
+    pg_conn.execute(
+        text(
+            "INSERT INTO hospitals (id, name, slug, status, site_live) "
+            "VALUES (:id, '첫글병원', :slug, 'ACTIVE', true)"
+        ),
+        {"id": hospital_id, "slug": f"fallback-{uuid.uuid4().hex[:8]}"},
+    )
+    pg_conn.execute(
+        text(
+            "INSERT INTO content_schedules (id, hospital_id, plan, publish_days, active_from) "
+            "VALUES (:id, :hid, 'PLAN_12', '[1, 3]', :active_from)"
+        ),
+        {"id": schedule_id, "hid": hospital_id, "active_from": date(2026, 9, 1)},
+    )
+    pg_conn.execute(
+        text(
+            "INSERT INTO content_items "
+            "(id, hospital_id, schedule_id, content_type, sequence_no, total_count, "
+            " scheduled_date, status, title, body, content_revision, published_at, "
+            " image_url, image_content_hash, image_subject_hash, image_policy_version, "
+            " image_policy_verified_at, image_reused_from_content_id, image_fallback_source) "
+            "VALUES (:id, :hid, :sid, 'DISEASE', 1, 12, :d, 'PUBLISHED', '첫 글', '본문', 3, "
+            " :published_at, :image_url, :content_hash, NULL, :policy_version, "
+            " :verified_at, NULL, 'HOSPITAL_HERO')"
+        ),
+        {
+            "id": item_id,
+            "hid": hospital_id,
+            "sid": schedule_id,
+            "d": date(2026, 9, 10),
+            "published_at": datetime(2026, 9, 10, tzinfo=timezone.utc),
+            "image_url": hero_url,
+            "content_hash": image_content_hash_from_url(hero_url),
+            "policy_version": IMAGE_POLICY_VERSION,
+            "verified_at": datetime(2026, 9, 1, tzinfo=timezone.utc),
+        },
+    )
+    return item_id
+
+
+def test_the_sweep_also_replaces_a_hospital_hero_fallback_and_clears_its_marker(
+    pg_conn, pg_session, monkeypatch, revalidated
+):
+    """히어로 대체본도 최종 상태가 아니다 — 그 글의 주제 이미지로 바꿔 달고 marker를 푼다."""
+    item_id = _hospital_fallback_item(pg_conn)
+
+    async def generate(*_args, **_kwargs):
+        return (_FRESH_URL, "새 프롬프트")
+
+    result = _run(monkeypatch, pg_session, generate)
+
+    assert result["replaced"] == 1
+    pg_session.expire_all()
+    item = pg_session.get(ContentItem, item_id)
+    assert item.image_url == _FRESH_URL
+    assert item.image_fallback_source is None
+    assert item.image_subject_hash == image_subject_hash(ContentType.DISEASE, item.title)
+    assert image_certification_current(item) is True
+    assert item.content_revision == 3
+
+
+def test_a_failed_replacement_keeps_the_hospital_hero_fallback_certified(
+    pg_conn, pg_session, monkeypatch, revalidated
+):
+    item_id = _hospital_fallback_item(pg_conn)
+
+    async def generate(*_args, **_kwargs):
+        return ("", "")
+
+    result = _run(monkeypatch, pg_session, generate)
+
+    assert result["failed"] == 1
+    pg_session.expire_all()
+    item = pg_session.get(ContentItem, item_id)
+    # 공개 페이지는 계속 그림이 있는 글을 보여준다.
+    assert item.image_fallback_source == "HOSPITAL_HERO"
+    assert image_certification_current(item) is True
+
+
+def test_replacement_clears_the_summary_substitution_keys(
+    pg_conn, pg_session, monkeypatch, revalidated
+):
+    """교체되면 "대체 이미지" 표시는 요약에서도 사라진다 — 운영 화면이 계속 대체라 읽지 않게."""
+    item_id = _hospital_fallback_item(pg_conn)
+    pg_conn.execute(
+        text(
+            "UPDATE content_items SET essence_check_summary = "
+            "'{\"image_reused\": true, \"image_fallback\": \"HOSPITAL_HERO\"}'::jsonb "
+            "WHERE id = :id"
+        ),
+        {"id": item_id},
+    )
+
+    async def generate(*_args, **_kwargs):
+        return (_FRESH_URL, "새 프롬프트")
+
+    assert _run(monkeypatch, pg_session, generate)["replaced"] == 1
+    pg_session.expire_all()
+    summary = pg_session.get(ContentItem, item_id).essence_check_summary or {}
+    assert "image_reused" not in summary
+    assert "image_fallback" not in summary

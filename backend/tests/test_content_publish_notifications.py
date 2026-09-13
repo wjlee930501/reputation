@@ -412,13 +412,16 @@ def test_weekly_rejection_rollup_reuses_the_calendar_week_outbox_row() -> None:
     assert db.additions == 1
 
 
-def _reused(hospital_name: str, failure_class: str, hospital_id=None) -> dict:
+def _reused(
+    hospital_name: str, failure_class: str, hospital_id=None, reused_from=None
+) -> dict:
     return {
         "hospital_id": hospital_id or uuid.uuid4(),
         "hospital_name": hospital_name,
         "content_id": uuid.uuid4(),
         "image_failure_reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
         "image_failure_class": failure_class,
+        "reused_from": reused_from or str(uuid.uuid4()),
     }
 
 
@@ -441,7 +444,7 @@ def test_reused_image_publications_ride_the_existing_eight_oclock_digest() -> No
     payload = intent.message.payload_json()
 
     assert intent.notification_type == "GENERATION_BLOCKED_DIGEST"
-    assert "대표 이미지 재사용 발행" in payload
+    assert "대표 이미지 대체 발행" in payload
     assert "가나의원" in payload
     assert "재사용 발행 3건" in payload
     assert "공급자 한도·크레딧 오류" in payload, "가장 많은 실패 분류를 평문으로 적는다"
@@ -458,9 +461,80 @@ def test_reuse_only_batch_still_produces_exactly_one_digest() -> None:
     )
     payload = intent.message.payload_json()
 
+    assert "대표 이미지 대체 발행 1건" in payload
     assert "재사용 발행 1건" in payload
     assert "비용 가드 한도" in payload
     assert len(intent.message.blocks) <= 50
+
+
+def test_a_first_article_says_the_hospital_image_was_used_not_reuse() -> None:
+    """첫 글이라 빌릴 원본이 아예 없었던 경우다 — 운영자가 읽는 문구를 구분한다."""
+
+    hospital_id = uuid.uuid4()
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 9, 12),
+        PUBLISH_MORNING_BATCH,
+        [],
+        reused_outcomes=[
+            _reused(
+                "첫글의원", "PROVIDER_QUOTA", hospital_id=hospital_id, reused_from="HOSPITAL_HERO"
+            ),
+            _reused(
+                "첫글의원", "PROVIDER_QUOTA", hospital_id=hospital_id, reused_from="HOSPITAL_HERO"
+            ),
+        ],
+    )
+    payload = intent.message.payload_json()
+
+    assert "병원 대표 이미지 사용 2건" in payload
+    assert "재사용 발행" not in payload
+    # 조치는 같으므로 메시지는 여전히 하나다.
+    assert len([block for block in intent.message.blocks if "image_reuse" in str(block)]) == 1
+
+
+def test_two_image_sources_in_one_batch_are_reported_as_separate_lines() -> None:
+    hospital_id = uuid.uuid4()
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 9, 12),
+        PUBLISH_MORNING_BATCH,
+        [],
+        reused_outcomes=[
+            _reused("가나의원", "PROVIDER_QUOTA", hospital_id=hospital_id),
+            _reused(
+                "가나의원", "COST_GUARD", hospital_id=hospital_id, reused_from="HOSPITAL_HERO"
+            ),
+        ],
+    )
+    payload = intent.message.payload_json()
+
+    assert "재사용 발행 1건" in payload
+    assert "병원 대표 이미지 사용 1건" in payload
+
+
+def test_the_image_source_changes_the_digest_identity() -> None:
+    """출처가 다르면 다른 사실이다 — 같은 outbox 키로 묻히지 않는다."""
+
+    hospital_id = uuid.uuid4()
+    content_id = uuid.uuid4()
+
+    def _intent(reused_from: str):
+        return build_generation_blocked_digest_intent(
+            date(2026, 9, 12),
+            PUBLISH_MORNING_BATCH,
+            [],
+            reused_outcomes=[
+                {
+                    "hospital_id": hospital_id,
+                    "hospital_name": "가나의원",
+                    "content_id": content_id,
+                    "image_failure_reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+                    "image_failure_class": "PROVIDER_QUOTA",
+                    "reused_from": reused_from,
+                }
+            ],
+        )
+
+    assert _intent("HOSPITAL_HERO").dedupe_key != _intent(str(uuid.uuid4())).dedupe_key
 
 
 def test_reuse_section_is_deduped_by_its_own_identity() -> None:

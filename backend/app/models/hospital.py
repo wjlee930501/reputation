@@ -169,6 +169,14 @@ class Hospital(Base):
     brand_accent_color: Mapped[str | None] = mapped_column(String(7))
     logo_url: Mapped[str | None] = mapped_column(String(500))
     hero_image_url: Mapped[str | None] = mapped_column(String(500))
+    # 히어로 이미지를 대표 이미지 대체본으로 쓰기 위한 인증 캐시. 실제 저장 바이트에서
+    # 계산한 내용 hash와 정책 버전만 인증이며, 원본 URL(`fallback_image_source_url`)이
+    # `hero_image_url`과 달라지면 다시 검수한다. migration 0075.
+    fallback_image_url: Mapped[str | None] = mapped_column(String(500))
+    fallback_image_source_url: Mapped[str | None] = mapped_column(String(500))
+    fallback_image_content_hash: Mapped[str | None] = mapped_column(String(64))
+    fallback_image_policy_version: Mapped[str | None] = mapped_column(String(40))
+    fallback_image_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     hero_media_kind: Mapped[str | None] = mapped_column(String(32))
     hero_headline: Mapped[str | None] = mapped_column(String(160))
     hero_description: Mapped[str | None] = mapped_column(String(320))

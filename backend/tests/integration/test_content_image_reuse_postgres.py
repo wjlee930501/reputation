@@ -6,14 +6,18 @@
 절의 SQL 동작이므로 mock으로는 확인할 수 없다.
 """
 
+import hashlib
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.hospital import Hospital
+from app.services import content_image_reuse, cost_guard
 from app.services.content_image_reuse import (
     apply_reused_image,
     select_reusable_hospital_image,
@@ -23,6 +27,11 @@ from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
     image_subject_hash,
+)
+from app.services.image_policy import (
+    ImagePolicyAssessment,
+    ImagePolicyRejectedError,
+    image_is_publishable,
 )
 
 
@@ -73,6 +82,7 @@ def _seed_item(
     image_marker: str | None = None,
     reused_from: uuid.UUID | None = None,
     sequence_no: int = 1,
+    content_type: ContentType = ContentType.DISEASE,
 ) -> uuid.UUID:
     item_id = uuid.uuid4()
     image_url = _image_url(image_marker) if image_marker else None
@@ -83,7 +93,7 @@ def _seed_item(
             " scheduled_date, status, title, body, content_revision, generated_at, "
             " published_at, image_url, image_content_hash, image_subject_hash, "
             " image_policy_version, image_policy_verified_at, image_reused_from_content_id) "
-            "VALUES (:id, :hid, :sid, 'DISEASE', :seq, 12, :d, :status, :title, '본문', 1, "
+            "VALUES (:id, :hid, :sid, :content_type, :seq, 12, :d, :status, :title, '본문', 1, "
             " :generated_at, :published_at, :image_url, :content_hash, :subject_hash, "
             " :policy_version, :verified_at, :reused_from)"
         ),
@@ -91,6 +101,7 @@ def _seed_item(
             "id": item_id,
             "hid": hospital_id,
             "sid": schedule_id,
+            "content_type": content_type.value,
             "seq": sequence_no,
             "d": date(2026, 9, 10),
             "status": status,
@@ -99,7 +110,7 @@ def _seed_item(
             "published_at": datetime(2026, 9, 10, tzinfo=timezone.utc),
             "image_url": image_url,
             "content_hash": image_content_hash_from_url(image_url) if image_url else None,
-            "subject_hash": image_subject_hash(ContentType.DISEASE, title) if image_url else None,
+            "subject_hash": image_subject_hash(content_type, title) if image_url else None,
             "policy_version": IMAGE_POLICY_VERSION if image_url else None,
             "verified_at": certified_at,
             "reused_from": reused_from,
@@ -306,3 +317,382 @@ def test_applying_a_reused_image_respects_status_revision_and_claim_guards(
     pg_session.expire_all()
     assert pg_session.get(ContentItem, target_id).image_url is None
     assert pg_session.get(ContentItem, target_id).status == ContentStatus.CANCELLED
+
+
+# ── 유형 선호 ───────────────────────────────────────────────────────────
+
+
+def test_reuse_prefers_the_same_content_type_over_an_older_other_type(pg_conn, pg_session):
+    """같은 유형의 그림이 글과 덜 어긋난다 — 오래된 순서보다 유형이 먼저다."""
+    hospital_id, schedule_id = _seed_hospital(pg_conn)
+    base = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    older_other_type = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="가장 오래된 질환 글",
+        certified_at=base - timedelta(days=90),
+        image_marker="oldest-disease",
+        content_type=ContentType.DISEASE,
+        sequence_no=1,
+    )
+    same_type = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="같은 유형의 생활건강 글",
+        certified_at=base - timedelta(days=5),
+        image_marker="health",
+        content_type=ContentType.HEALTH,
+        sequence_no=2,
+    )
+    target = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="이미지 없는 생활건강 글",
+        status="DRAFT",
+        content_type=ContentType.HEALTH,
+        sequence_no=3,
+    )
+
+    source = select_reusable_hospital_image(
+        pg_session, hospital_id, target, content_type=ContentType.HEALTH
+    )
+
+    assert source is not None
+    assert source.id == same_type
+    assert source.id != older_other_type
+
+
+def test_reuse_prefers_the_oldest_within_the_same_content_type(pg_conn, pg_session):
+    hospital_id, schedule_id = _seed_hospital(pg_conn)
+    base = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    newest_same_type = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="최근 생활건강 글",
+        certified_at=base,
+        image_marker="health-new",
+        content_type=ContentType.HEALTH,
+        sequence_no=1,
+    )
+    oldest_same_type = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="오래된 생활건강 글",
+        certified_at=base - timedelta(days=20),
+        image_marker="health-old",
+        content_type=ContentType.HEALTH,
+        sequence_no=2,
+    )
+    target = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="이미지 없는 생활건강 글",
+        status="DRAFT",
+        content_type=ContentType.HEALTH,
+        sequence_no=3,
+    )
+
+    source = select_reusable_hospital_image(
+        pg_session, hospital_id, target, content_type=ContentType.HEALTH
+    )
+
+    assert source is not None
+    assert source.id == oldest_same_type
+    assert source.id != newest_same_type
+
+
+def test_reuse_falls_back_to_any_type_when_the_same_type_has_none(pg_conn, pg_session):
+    """선호는 자격을 좁히지 않는다 — 같은 유형이 없으면 종전처럼 아무 유형이나 빌린다."""
+    hospital_id, schedule_id = _seed_hospital(pg_conn)
+    other_type = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="질환 글",
+        certified_at=datetime(2026, 9, 8, tzinfo=timezone.utc),
+        image_marker="disease",
+        content_type=ContentType.DISEASE,
+        sequence_no=1,
+    )
+    target = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="이미지 없는 FAQ",
+        status="DRAFT",
+        content_type=ContentType.FAQ,
+        sequence_no=2,
+    )
+
+    source = select_reusable_hospital_image(
+        pg_session, hospital_id, target, content_type=ContentType.FAQ
+    )
+
+    assert source is not None and source.id == other_type
+
+
+def test_reuse_infers_the_preferred_type_from_the_target_item(pg_conn, pg_session):
+    """호출부가 유형을 따로 계산하지 않아도 선호가 적용된다."""
+    hospital_id, schedule_id = _seed_hospital(pg_conn)
+    base = datetime(2026, 9, 8, tzinfo=timezone.utc)
+    _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="가장 오래된 질환 글",
+        certified_at=base - timedelta(days=90),
+        image_marker="oldest-disease",
+        content_type=ContentType.DISEASE,
+        sequence_no=1,
+    )
+    same_type = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="칼럼",
+        certified_at=base,
+        image_marker="column",
+        content_type=ContentType.COLUMN,
+        sequence_no=2,
+    )
+    target = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="이미지 없는 칼럼",
+        status="DRAFT",
+        content_type=ContentType.COLUMN,
+        sequence_no=3,
+    )
+
+    source = select_reusable_hospital_image(pg_session, hospital_id, target)
+
+    assert source is not None and source.id == same_type
+
+
+# ── 병원 히어로 대체 이미지 ─────────────────────────────────────────────
+
+
+def _png_bytes(color: tuple[int, int, int] = (200, 200, 180)) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (8, 8), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _stored_url(payload: bytes) -> str:
+    """`_upload_png_to_gcs`와 같은 이름 규칙 — 내용 hash가 URL 안에 있어야 인증이 성립한다."""
+
+    digest = hashlib.sha256(payload).hexdigest()
+    return f"gs://reputation-images-test/content/hero/{digest}-{uuid.uuid4().hex}.png"
+
+
+def _set_hero(conn, hospital_id, url: str) -> None:
+    conn.execute(
+        text("UPDATE hospitals SET hero_image_url = :url WHERE id = :id"),
+        {"url": url, "id": hospital_id},
+    )
+
+
+def _patch_hero_pipeline(monkeypatch, payload: bytes, assessment):
+    calls: dict[str, int] = {"fetch": 0, "review": 0, "store": 0}
+
+    def _fetch(_url):
+        calls["fetch"] += 1
+        return payload
+
+    def _review(*_args, **_kwargs):
+        calls["review"] += 1
+        if not image_is_publishable(assessment):
+            raise ImagePolicyRejectedError(assessment)
+        return assessment
+
+    def _store(image_bytes, _hospital):
+        calls["store"] += 1
+        return _stored_url(image_bytes)
+
+    monkeypatch.setattr(content_image_reuse, "_fetch_hero_bytes", _fetch)
+    monkeypatch.setattr(content_image_reuse, "_validate_generated_image", _review)
+    monkeypatch.setattr(content_image_reuse, "store_certified_image_bytes", _store)
+
+    async def _reserve(_category):
+        return SimpleNamespace(allowed=True, receipt=None, reason=None)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(cost_guard, "reserve", _reserve)
+    monkeypatch.setattr(cost_guard, "settle_reservation", _noop)
+    monkeypatch.setattr(cost_guard, "record_provider_call", _noop)
+    return calls
+
+
+def _assessment(**overrides):
+    base = {
+        "has_text": False,
+        "has_logo": False,
+        "has_recognizable_people": False,
+        "impersonates_real_clinic": False,
+        "topic_relevant": True,
+    }
+    base.update(overrides)
+    return ImagePolicyAssessment(**base)
+
+
+async def test_hero_certification_allows_the_clinic_logo_but_not_text_or_people(
+    pg_conn, pg_session, monkeypatch
+):
+    """자기 병원 히어로에 자기 로고가 있는 것은 사칭이 아니다 — 글자와 인물만 막는다."""
+    hospital_id, _schedule_id = _seed_hospital(pg_conn)
+    _set_hero(pg_conn, hospital_id, "https://cdn.example.com/hero.jpg")
+    pg_session.expire_all()
+    hospital = pg_session.get(Hospital, hospital_id)
+    payload = _png_bytes()
+
+    _patch_hero_pipeline(
+        monkeypatch,
+        payload,
+        # 생성 이미지 기준으로는 거절(로고 있음·주제 무관)이지만 히어로에는 허용한다.
+        _assessment(has_logo=True, impersonates_real_clinic=True, topic_relevant=False),
+    )
+    certified = await content_image_reuse.certify_hospital_fallback_image(pg_session, hospital)
+
+    assert certified is not None
+    assert certified.policy_version == IMAGE_POLICY_VERSION
+    # 인증은 저장한 바이트에서 계산한다 — 합성값이 아니다.
+    assert certified.content_hash == image_content_hash_from_url(certified.image_url)
+
+
+@pytest.mark.parametrize(
+    "rejecting",
+    [{"has_text": True}, {"has_recognizable_people": True}],
+)
+async def test_hero_certification_refuses_text_and_recognizable_people(
+    pg_conn, pg_session, monkeypatch, rejecting
+):
+    hospital_id, _schedule_id = _seed_hospital(pg_conn)
+    _set_hero(pg_conn, hospital_id, "https://cdn.example.com/hero.jpg")
+    pg_session.expire_all()
+    hospital = pg_session.get(Hospital, hospital_id)
+    _patch_hero_pipeline(monkeypatch, _png_bytes(), _assessment(**rejecting))
+
+    assert await content_image_reuse.certify_hospital_fallback_image(pg_session, hospital) is None
+    pg_session.expire_all()
+    assert pg_session.get(Hospital, hospital_id).fallback_image_url is None
+
+
+async def test_hero_certification_is_cached_and_redone_when_the_hero_changes(
+    pg_conn, pg_session, monkeypatch
+):
+    hospital_id, _schedule_id = _seed_hospital(pg_conn)
+    _set_hero(pg_conn, hospital_id, "https://cdn.example.com/hero.jpg")
+    pg_session.expire_all()
+    hospital = pg_session.get(Hospital, hospital_id)
+    calls = _patch_hero_pipeline(monkeypatch, _png_bytes(), _assessment())
+
+    first = await content_image_reuse.certify_hospital_fallback_image(pg_session, hospital)
+    second = await content_image_reuse.certify_hospital_fallback_image(pg_session, hospital)
+
+    assert first is not None and second is not None
+    assert second.image_url == first.image_url
+    # 두 번째 호출은 공급자를 다시 부르지 않는다.
+    assert calls["review"] == 1
+
+    # 히어로가 바뀌면 옛 인증은 새 원본을 말해 주지 않는다 — 다시 검수한다.
+    _set_hero(pg_conn, hospital_id, "https://cdn.example.com/hero-v2.jpg")
+    pg_session.expire_all()
+    changed = pg_session.get(Hospital, hospital_id)
+    third = await content_image_reuse.certify_hospital_fallback_image(pg_session, changed)
+
+    assert third is not None
+    assert calls["review"] == 2
+    assert third.source_url == "https://cdn.example.com/hero-v2.jpg"
+
+
+async def test_hospital_fallback_is_applied_as_the_certification_shape_the_gate_accepts(
+    pg_conn, pg_session, monkeypatch
+):
+    hospital_id, schedule_id = _seed_hospital(pg_conn)
+    _set_hero(pg_conn, hospital_id, "https://cdn.example.com/hero.jpg")
+    target_id = _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        title="첫 글이라 빌릴 이미지가 없다",
+        status="DRAFT",
+        content_type=ContentType.FAQ,
+    )
+    pg_session.expire_all()
+    hospital = pg_session.get(Hospital, hospital_id)
+    _patch_hero_pipeline(monkeypatch, _png_bytes(), _assessment(has_logo=True))
+
+    fallback = await content_image_reuse.certify_hospital_fallback_image(pg_session, hospital)
+    target = pg_session.get(ContentItem, target_id)
+    written = content_image_reuse.apply_hospital_fallback_image(
+        pg_session, item=target, fallback=fallback, expected_revision=1
+    )
+
+    assert written == 1
+    pg_session.expire_all()
+    stored = pg_session.get(ContentItem, target_id)
+    assert stored.image_url == fallback.image_url
+    assert stored.image_content_hash == fallback.content_hash
+    # 이 글의 주제로 검수된 적이 없으므로 주제 hash를 만들어 넣지 않는다.
+    assert stored.image_subject_hash is None
+    assert stored.image_reused_from_content_id is None
+    assert stored.image_fallback_source == "HOSPITAL_HERO"
+    assert stored.image_prompt is None
+    assert stored.content_revision == 1
+    # 그리고 이 모양을 공개 게이트가 실제로 통과시킨다.
+    assert image_certification_current(stored) is True
+
+
+async def test_hospital_fallback_respects_the_status_and_revision_guards(
+    pg_conn, pg_session, monkeypatch
+):
+    hospital_id, schedule_id = _seed_hospital(pg_conn)
+    _set_hero(pg_conn, hospital_id, "https://cdn.example.com/hero.jpg")
+    target_id = _seed_item(
+        pg_conn, hospital_id, schedule_id, title="첫 글", status="DRAFT"
+    )
+    pg_session.expire_all()
+    hospital = pg_session.get(Hospital, hospital_id)
+    _patch_hero_pipeline(monkeypatch, _png_bytes(), _assessment())
+    fallback = await content_image_reuse.certify_hospital_fallback_image(pg_session, hospital)
+    target = pg_session.get(ContentItem, target_id)
+
+    assert (
+        content_image_reuse.apply_hospital_fallback_image(
+            pg_session, item=target, fallback=fallback, expected_revision=7
+        )
+        == 0
+    )
+    pg_conn.execute(
+        text("UPDATE content_items SET status = 'CANCELLED' WHERE id = :id"), {"id": target_id}
+    )
+    pg_session.expire_all()
+    cancelled = pg_session.get(ContentItem, target_id)
+    assert (
+        content_image_reuse.apply_hospital_fallback_image(
+            pg_session, item=cancelled, fallback=fallback
+        )
+        == 0
+    )
+    pg_session.expire_all()
+    assert pg_session.get(ContentItem, target_id).image_url is None
+
+
+def test_hospital_without_a_hero_has_no_fallback(pg_conn, pg_session):
+    hospital_id, _schedule_id = _seed_hospital(pg_conn)
+    hospital = pg_session.get(Hospital, hospital_id)
+
+    assert content_image_reuse.stored_hospital_fallback_image(hospital) is None

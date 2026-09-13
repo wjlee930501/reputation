@@ -125,7 +125,7 @@ flowchart LR
 
 ### 생성과 검증
 
-1. 대상 슬롯을 claim하고 lease·운영 실행 기록을 저장한다. 자동 생성은 ACTIVE/live 병원을 대상으로 하고 한 번에 최대 50개, 기본 2시간 lease를 사용한다.
+1. 대상 슬롯을 claim하고 lease·운영 실행 기록을 저장한다. 자동 생성은 ACTIVE/live 병원을 대상으로 하고 한 번에 최대 50개, 기본 2시간 lease를 사용한다. 23:00 배치의 예정일 창은 `NIGHTLY_GENERATION_LOOKAHEAD_DAYS`(기본 2)로 **[내일, 모레]**라 한 밤이 실패해도 같은 슬롯이 두 번째 밤의 기회를 갖는다. 후보는 상한의 2배까지 읽어 병원 간 라운드로빈으로 섞은 뒤 50개를 claim하므로 이월이 많은 병원 하나가 상한을 통째로 가져가지 못한다(병원 안의 이월 → 예정일 → 순번 순서는 그대로다). 배치 태스크는 **claim과 배포까지만** 한다. claim한 슬롯마다 `generate_claimed_content_item`(content 큐, claim token 동봉, soft 900s, `acks_late`, 자체 재시도 없음)을 하나씩 배포하고, 그 태스크가 lease 토큰이 현재 값이고 만료 전일 때만 공급자를 부른다. 유실된 배포는 슬롯별 `GENERATE_CONTENT_ITEM` 실행 기록으로 자율 복구가 같은 인자·큐에 다시 배포한다. 한 밤의 처리량은 대략 `동시성 × (8시간 ÷ 한 편 6분)`이고, claim 수가 07:45까지 남은 시간의 추정 처리량을 넘으면 배포 시점에 경고 한 줄을 남긴다 — 운영자의 손잡이는 `CELERY_CONCURRENCY` 하나다.
 2. 질문 타깃·보완 행동·최근 제목을 바탕으로 brief를 만들고 현재 Essence·source snapshot과 치료별 환자 설명·주의·근거를 writer와 reviewer에 같은 입력으로 넣는다. 생성 당시와 최근 재검사 Essence ID는 따로 보존한다.
 3. Anthropic Claude로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**이며 프롬프트도 같은 단위로 2,400~4,500자를 요구한다. `max_tokens`는 12,000이고 `stop_reason`이 `max_tokens`/`refusal`이면 잘림으로 거절한다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다(프롬프트도 화이트리스트 문서 URL 1개 이상을 요구한다). 결정적 검증기(분량·가격·SEO·GEO·FAQ·금지 표현·잘림)의 거절은 같은 프롬프트로 재시도하지 않고 지적 내용을 다음 회차의 보완 지시로 넘긴다(최대 3회 공급자 호출). tenacity는 전송·공급자 오류에만 남는다. 화이트리스트 도메인 참고자료의 제목이 금지 표현에 걸리면 기관명 라벨로 치환하고, 그 뒤 모든 제목을 다시 검사한다.
 4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 검수자는 Haiku(`CLAUDE_MODEL_FAST`)이며 확신도 0.70 미만이나 형식 문제로 붙은 합성 UNCERTAIN만 남았을 때는 같은 호출 안에서 `CLAUDE_MODEL`로 1회 재검수한다. SOFT·STYLE만 남으면 PASS다. HARD 사실·안전 지적은 "지적된 주장을 삭제·완화하고 새 사실을 넣지 말라"는 삭제형 재작성을 1회 허용한 뒤 다시 검수한다. 한 세션의 유료 생성은 최대 3회다. 저장된 UNCERTAIN 차단은 스윕이 `SAMPLE_RECOVERABLE` 예산 안에서 재검수한다. 2026-09-07~08 전환에서는 고정 manifest의 FAQ 3건을 CAS 수정하고 본문 22건을 독립 재검수한 뒤, 공개 글 115건의 strict gate를 read-only로 확인했다. AI 검수 레거시 상태만을 이유로 나머지 글을 유료 재검수하지 않았다.
@@ -222,8 +222,8 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 |---|---|
 | 매일 21:30 | 당월 계약 슬롯 생성·누락 보완 |
 | 매일 22:30 | 발행하지 못한 슬롯의 미래 일정 복구 |
-| 매일 23:00 | 내일 콘텐츠 생성 |
-| 매일 01:00 / 04:00 / 07:00 | 오늘 콘텐츠의 누락·복구 가능한 부분 생성. 이미지 예산 소진 슬롯은 같은 병원의 인증 이미지를 빌린다 |
+| 매일 23:00 | 내일·모레 콘텐츠 슬롯 claim과 슬롯별 생성 작업 배포 |
+| 매일 01:00 / 04:00 / 07:00 | 오늘 콘텐츠의 누락·복구 가능한 부분을 claim해 슬롯별로 배포. 이미지 예산 소진 슬롯은 같은 병원의 인증 이미지를 빌린다 |
 | 매일 01:20 / 04:20 / 07:20 | 빌린 이미지로 공개된 글에 그 글의 주제 이미지를 만들어 교체(`published_image_refresh`, content 큐) |
 | 매일 07:45 | 남은 발행 차단 투영·요약. 이 작업 자체는 생성하지 않음 |
 | 매일 08:00 | 자동 발행. 오늘 및 직전 7일 catch-up 대상 검사 |
@@ -238,7 +238,7 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 | 매 15분 | Essence 재조정, 온보딩·월간 milestone 투영, 도메인 상태 확인. Essence orphan 회수는 병원 200곳씩 순환 |
 | 매 5분 | 서명된 7개 큐 canary |
 
-큐는 control/default/content/sov/reports/leadgen/certificates다. 발행·공개 캐시 복구·자율 복구는 높은 우선순위의 control로, IndexNow와 공급자 usage 복구는 낮은 우선순위 배경 작업으로 라우팅한다. 현재 Worker 서비스 하나가 7개 큐를 모두 소비하며 prefork 기본 동시성은 2다. control은 다음 빈 슬롯을 먼저 받지만 이미 실행 중인 긴 작업을 선점하거나 전용 용량을 보장하지 않는다. 태스크 enqueue 시각을 header에 넣고 control 30초, 배경 5분을 기준으로 queue wait 로그를 남긴다. Beat는 Redis 기반 RedBeat 락과 영속 스케줄을 사용하므로 배포 시 저장 스케줄도 재조정해야 한다. [entrypoint](../../backend/docker-entrypoint.sh)
+큐는 control/default/content/sov/reports/leadgen/certificates다. 발행·공개 캐시 복구·자율 복구는 높은 우선순위의 control로, IndexNow와 공급자 usage 복구는 낮은 우선순위 배경 작업으로 라우팅한다. 현재 Worker 서비스 하나가 7개 큐를 모두 소비하며 prefork 기본 동시성은 2다. 야간 생성은 슬롯 하나짜리 태스크로 팬아웃하므로 하룻밤 처리 편수는 `동시성 × (8시간 ÷ 한 편 6분)`으로 늘어난다(동시성 2면 약 80편). control은 다음 빈 슬롯을 먼저 받지만 이미 실행 중인 긴 작업을 선점하거나 전용 용량을 보장하지 않는다. 태스크 enqueue 시각을 header에 넣고 control 30초, 배경 5분을 기준으로 queue wait 로그를 남긴다. Beat는 Redis 기반 RedBeat 락과 영속 스케줄을 사용하므로 배포 시 저장 스케줄도 재조정해야 한다. [entrypoint](../../backend/docker-entrypoint.sh)
 
 일반적인 제어 순서는 **DB 업무·작업 기록 commit → 외부 호출 → 결과 저장 → 실패 시 해당 단계 복구**다. 이것이 모든 업무에 범용 트랜잭션 outbox가 있다는 뜻은 아니다. 유실된 등록 작업은 OperationRun의 allowlist·저장 payload를 검증하여 다시 dispatch한다. REQUESTED는 2분, QUEUED는 1시간 유예 후 회수한다. 위험하거나 해석할 수 없는 저장 명령은 실행하지 않는다. [자율 복구](../../backend/app/workers/autonomous_recovery.py)
 

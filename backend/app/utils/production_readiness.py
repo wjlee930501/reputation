@@ -89,6 +89,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.build_aeo_site",
     "app.workers.tasks.fetch_channel_source",
     "app.workers.tasks.generate_content_image",
+    "app.workers.tasks.generate_claimed_content_item",
     "app.workers.tasks.generate_monthly_report_for_hospital",
     "app.workers.tasks.monitor_live_custom_domains",
     "app.workers.tasks.monthly_slot_generation",
