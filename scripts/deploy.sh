@@ -127,6 +127,9 @@ BACKEND_BASE_REQUIRED_SECRET_NAMES=(
   # Admin BFF가 서명한 actor 단언의 검증 키. 비어 있으면 사람 변경 검증이 꺼지므로
   # config.py가 프로덕션 부팅을 막는다(H-10). Admin과 반드시 같은 값이어야 한다.
   "BFF_ACTOR_SECRET"
+  # Beat/Worker가 죽으면 그 사실을 알릴 태스크도 같이 죽는다. Cloud Scheduler가 API를
+  # 직접 깨우는 외부 감시(/admin/watchdog)의 유일한 자격 증명이므로 필수로 둔다.
+  "PIPELINE_WATCHDOG_TOKEN"
   "SITE_BFF_SECRET"
   "REDIS_URL"
   # 아침 자동 발행은 캐시 무효화 경로가 없으면 프로덕션에서 배치 전체를 중단한다

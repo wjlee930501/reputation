@@ -162,6 +162,7 @@ locals {
     WORKER_DISPATCH_SECRET   = google_secret_manager_secret.worker_dispatch_secret.secret_id
     ADMIN_SESSION_SECRET     = google_secret_manager_secret.admin_session_secret.secret_id
     BFF_ACTOR_SECRET         = google_secret_manager_secret.bff_actor_secret.secret_id
+    PIPELINE_WATCHDOG_TOKEN  = google_secret_manager_secret.pipeline_watchdog_token.secret_id
     DB_PASSWORD              = google_secret_manager_secret.db_password.secret_id
     SITE_REVALIDATE_SECRET   = google_secret_manager_secret.site_revalidate_secret.secret_id
     SITE_BFF_SECRET          = google_secret_manager_secret.site_bff_secret.secret_id

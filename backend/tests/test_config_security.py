@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from app.core.config import Settings
@@ -26,6 +28,7 @@ def _valid_prod_kwargs(**overrides):
         WORKER_DISPATCH_SECRET="worker-only-secret-32-bytes-minimum",
         SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
         BFF_ACTOR_SECRET="bff-actor-secret",
+        PIPELINE_WATCHDOG_TOKEN="watchdog-token",
         DATABASE_URL="postgresql+asyncpg://postgres:postgres@db/reputation",
         SYNC_DATABASE_URL="postgresql+psycopg2://postgres:postgres@db/reputation",
         REDIS_URL="redis://redis.internal:6379/0",
@@ -55,6 +58,7 @@ def test_production_builds_database_urls_from_secret_parts(monkeypatch):
         WORKER_DISPATCH_SECRET="worker-only-secret-32-bytes-minimum",
         SLACK_WEBHOOK_URL="https://hooks.slack.com/services/T00/B00/xxxx",
         BFF_ACTOR_SECRET="bff-actor-secret",
+        PIPELINE_WATCHDOG_TOKEN="watchdog-token",
         DB_USER="reputation",
         DB_PASSWORD="p@ss word",
         DB_NAME="reputation",
@@ -168,6 +172,19 @@ def test_production_fails_fast_when_bff_actor_secret_empty(monkeypatch):
     monkeypatch.delenv("BFF_ACTOR_SECRET", raising=False)
     with pytest.raises(ValueError, match="BFF_ACTOR_SECRET"):
         Settings(**_valid_prod_kwargs(BFF_ACTOR_SECRET=""))
+
+
+def test_production_warns_but_boots_without_the_pipeline_watchdog_token(monkeypatch, caplog):
+    # 감시 토큰이 없다고 부팅을 막으면, 이 부품이 잡으려는 바로 그 정지를 배포가 만든다.
+    # 경고만 남기고 뜬다 — 실제로 꺼져 있다는 사실은 감시 보고서의 token_configured가 보여준다.
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PIPELINE_WATCHDOG_TOKEN", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="app.core.config"):
+        settings = Settings(**_valid_prod_kwargs(PIPELINE_WATCHDOG_TOKEN=""))
+
+    assert settings.PIPELINE_WATCHDOG_TOKEN == ""
+    assert any("PIPELINE_WATCHDOG_TOKEN" in record.getMessage() for record in caplog.records)
 
 
 def test_production_does_not_probe_optional_unmanaged_jina_secret(monkeypatch):

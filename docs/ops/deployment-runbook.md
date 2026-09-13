@@ -69,6 +69,26 @@ bash scripts/deploy.sh all
 
 2026-09-07~08 전환은 로컬 업로드 지연 때문에 Cloud Build와 digest 기반 rollout을 사용했고 기존 서비스 환경·secret 참조 hash 보존을 별도로 검증했다. 이 실행을 `scripts/deploy.sh`의 기본 Cloud Build 기능으로 오해하지 않는다. 반복 가능한 기본 진입점은 위 스크립트이며 대체 배포도 같은 마이그레이션·Worker/Beat·readiness 순서를 지켜야 한다.
 
+## 파이프라인 외부 감시 (Cloud Scheduler)
+
+Beat나 Worker가 죽으면 23:00 생성과 08:00 발행이 조용히 멈춘다. 그 사실을 알릴 작업도 같은 Beat 위에 있으므로 감시는 Celery 밖에 둔다. Cloud Scheduler 두 개가 API를 직접 호출한다 — `reputation-watchdog-heartbeat`(5분마다)와 `reputation-watchdog-publish-check`(매일 08:30 KST). 둘 다 공개 LB를 거쳐 `POST https://reputation.motionlabs.kr/api/v1/admin/watchdog/pipeline/alert`를 부르고 `X-Watchdog-Token` 헤더로 인증한다(선언: [terraform/watchdog.tf](../../terraform/watchdog.tf), 판정: [pipeline_watchdog.py](../../backend/app/services/pipeline_watchdog.py)). 새 Celery 태스크나 Beat 스케줄은 추가하지 않았다.
+
+**무엇을 보는가.** (1) 큐 canary 신선도 — Redis에 남은 큐별 canary가 현재 릴리스로 15분 안에 갱신됐는지. (2) 예약 실행기 생존 — RedBeat 분산 락이 잡혀 있고 5분 주기 canary 스케줄이 15분 안에 실제로 실행됐는지. 락만으로는 "누군가 dispatcher 자리를 잡았다"까지만 증명되므로 두 근거를 모두 요구한다. (3) 당일 발행 — KST 오늘 발행 예정으로 남은 슬롯 수와 08:00 이후 공개된 글 수. (4) 마지막 야간 생성 배치 `OperationRun`의 나이(26시간). 판정만 읽으려면 `GET /api/v1/admin/watchdog/pipeline`을 같은 토큰이나 admin 키로 호출한다.
+
+**알림 규칙과 채널.** `control`·`content` 큐 정지, 예약 실행기 정지, 08:30까지 당일 발행 0건 중 하나라도 성립할 때만 Slack을 보낸다. notification outbox를 쓰지 않고 webhook으로 직접 보낸다 — 그 outbox를 비우는 Worker가 죽었을 수 있다. 수신자는 사실별로 나뉜다: 실행기·대기열 정지는 개발 채널(`SLACK_WEBHOOK_URL_DEV`), 당일 발행 0건은 운영 채널(`SLACK_WEBHOOK_URL`)이다. **이 부품만의 예외로 개발 채널이 설정돼 있지 않으면 인프라 알림을 HOLD로 남기지 않고 운영 채널로 내려보낸다** — 침묵이 바로 이 부품이 막으려는 실패다([알림 정책](slack-notification-policy.md)). 같은 원인 집합은 수신자별로 KST 시간당 한 건이고, 조건이 사라지면 복구 한 건이 같은 채널로 간다. 정상 상태·보조 큐 지연·일부만 발행된 상태·예산 안의 자동 재시도는 알리지 않는다. 문구는 `무슨 문제인지 → 고객 영향 → 지금 할 일` 순서이며 개인정보와 내부 코드가 없다.
+
+**경보를 받으면 먼저 볼 세 가지.** (1) Cloud Run `reputation-beat`·`reputation-worker`가 Ready이고 최근 재시작·OOM이 없는지. (2) Memorystore Redis 연결과 `GET /api/v1/admin/watchdog/pipeline`의 `beat_lock_held`·`beat_last_schedule_run_at`·`stale_queues`. (3) 운영센터 `/operations`의 오늘 발행 큐 — 남은 슬롯이 자동 복구(재시도 중)인지 사람의 일인지. 복구 뒤 다음 하트비트(최대 5분)에서 복구 메시지가 오는지 확인한다.
+
+**토큰 교체.** `PIPELINE_WATCHDOG_TOKEN`은 API와 Cloud Scheduler가 같은 값을 읽는다. **비어 있어도 API는 정상 부팅한다** — 감시 토큰이 없다고 배포를 막으면 이 부품이 잡으려는 바로 그 정지를 배포가 스스로 만들기 때문이다. 대신 부팅 로그에 경고가 남고 `GET /api/v1/admin/watchdog/pipeline`의 `token_configured`가 `false`가 된다(그 상태에서 스케줄러 호출은 401이고 외부 감시는 실제로 꺼져 있다. admin 키 호출은 계속 된다). 교체할 때는 새 버전을 올린 뒤 API를 재배포해 새 값을 읽게 하고, 그 다음 `terraform apply`로 두 스케줄러 job의 헤더를 갱신한다(순서가 반대면 그 사이 호출이 401로 떨어진다).
+
+```bash
+gcloud secrets versions add PIPELINE_WATCHDOG_TOKEN --project mso-platform-481505 --data-file=<(openssl rand -hex 32 | tr -d '\n')
+bash scripts/deploy.sh api
+terraform -chdir=terraform apply -target=google_cloud_scheduler_job.watchdog_heartbeat -target=google_cloud_scheduler_job.watchdog_publish_check
+```
+
+첫 배포 전 준비: secret 컨테이너와 값을 먼저 만든다(`scripts/setup-gcp.sh`가 컨테이너를 생성한다). Cloud Run 주입은 두 경로 모두 준비돼 있다 — `scripts/deploy.sh`의 backend 필수 시크릿 목록과 `terraform/secretmanager.tf`의 `local.app_secret_env`.
+
 ## 검증할 증거
 
 | 층 | 완료 판단 |

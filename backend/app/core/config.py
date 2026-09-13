@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     WORKER_DISPATCH_SECRET: str = ""
     # Admin BFF가 세션 인증 뒤 서명하는 actor 단언의 HMAC 키(admin/lib/actor-assertion.ts와 공유).
     BFF_ACTOR_SECRET: str = ""
+    # Cloud Scheduler → /admin/watchdog/* 전용 토큰. admin 키를 스케줄러에 넣지 않기 위해
+    # 읽기 점검·알림 전송만 허용하는 별도 자격 증명을 쓴다.
+    PIPELINE_WATCHDOG_TOKEN: str = ""
     # NoDecode: pydantic-settings의 env-source 자동 JSON 디코드를 끄고 raw 문자열을 검증자에 전달.
     ALLOWED_ORIGINS: Annotated[list[str], NoDecode] = ["http://localhost:3000"]
     TRUSTED_PROXY_IPS: Annotated[list[str], NoDecode] = ["127.0.0.1", "::1"]
@@ -70,6 +73,9 @@ class Settings(BaseSettings):
                 "WORKER_DISPATCH_SECRET", self.WORKER_DISPATCH_SECRET
             )
             self.BFF_ACTOR_SECRET = _resolve_secret("BFF_ACTOR_SECRET", self.BFF_ACTOR_SECRET)
+            self.PIPELINE_WATCHDOG_TOKEN = _resolve_secret(
+                "PIPELINE_WATCHDOG_TOKEN", self.PIPELINE_WATCHDOG_TOKEN
+            )
             self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
             self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
             self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
@@ -105,6 +111,13 @@ class Settings(BaseSettings):
             "ANTHROPIC_API_KEY": "콘텐츠 자동 생성(Claude Sonnet) 중단",
             "OPENAI_API_KEY": "SoV 측정(ChatGPT) 중단",
             "GEMINI_API_KEY": "SoV 측정(Gemini) 중단",
+            # 부팅을 막지 않는다 — 감시 토큰이 없다고 API를 못 뜨게 하면, 이 부품이
+            # 막으려는 바로 그 정지를 배포가 스스로 만든다. 대신 경고로 남기고
+            # GET /admin/watchdog/pipeline의 token_configured가 사실을 보여준다.
+            "PIPELINE_WATCHDOG_TOKEN": (
+                "Cloud Scheduler의 파이프라인 외부 감시 호출 차단 "
+                "(Beat/Worker 정지가 조용히 지나감)"
+            ),
         }
         for name, impact in flow_impact.items():
             if not str(getattr(self, name, "")).strip():
@@ -376,6 +389,17 @@ class Settings(BaseSettings):
     # 부동 별칭이라 Google이 갱신하면 기준선이 조용히 이동한다(2026-07-29 확인 시
     # gemini-3.6-flash로 해석됨). 측정 기준선을 고정하는 것이 별칭의 최신성보다 중요하다.
     GEMINI_MODEL: str = "gemini-3.6-flash"
+
+    # 야간 콘텐츠 생성 창과 처리량
+    # 23:00 배치는 내일만이 아니라 그 다음 날까지 생성한다. 한 밤이 통째로 실패해도
+    # 두 번째 밤이 남아 같은 슬롯을 아침 전에 채울 수 있다. 1이면 종전과 같이 내일만.
+    NIGHTLY_GENERATION_LOOKAHEAD_DAYS: int = 2
+    # 한 편(작가 최대 3회 + 독립 검수 + 이미지)의 관측 소요 시간. 배치가 07:45까지
+    # 남은 시간 안에 처리될 수 있는지 경고할 때만 쓰는 용량 추정값이다.
+    CONTENT_GENERATION_ITEM_MINUTES: int = 6
+    # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
+    # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
+    CELERY_CONCURRENCY: int = 2
 
     # Cost Guard — 전역 비용 가드레일 + 킬스위치.
     # 콘텐츠/이미지/SoV 호출은 병원 수에 비례해 무제한 확장되므로 카테고리별 일/월 호출
