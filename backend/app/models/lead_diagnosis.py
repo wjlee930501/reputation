@@ -61,6 +61,7 @@ class DeliveryStatus(str, enum.Enum):
     SENDING = "SENDING"       # 의도를 부수효과보다 먼저 커밋한 상태 (설계 §5-4)
     SENT = "SENT"
     FAILED = "FAILED"
+    INTERNAL = "INTERNAL"     # 도입문의 영업용 리포트. 고객 채널 폴러가 건드리지 않는다.
 
 
 class AnswerSource(str, enum.Enum):
@@ -106,16 +107,19 @@ class LeadDiagnosis(Base):
 
     # ── 잠금 (설계 §2-3). 해시만 저장하며 PII 파기 대상이 아니다 —
     #    보관기간이 지났다고 두 번째 무료 진단을 주는 것이 아니기 때문.
-    applicant_email_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    subject_phone_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    # INQUIRY는 무료진단 신청자가 아니므로 잠금 키가 없다. NULL은 Postgres 부분 유니크
+    # 인덱스에서 서로 충돌하지 않아 AI_DIAGNOSIS의 이메일/전화 잠금을 소비하지 않는다.
+    applicant_email_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    subject_phone_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # ── 측정 대상 (판정에만 쓴다. 질의에는 절대 넣지 않는다 — PRD F1-1)
     subject_hospital_name: Mapped[str] = mapped_column(String(200), nullable=False)
     subject_region: Mapped[str] = mapped_column(String(100), nullable=False)
 
     # ── 선착순 자리 (설계 §2-1). DB가 진실의 원천이라 카운터와 행 수가 어긋날 수 없다.
-    slot_date: Mapped[date] = mapped_column(Date, nullable=False)
-    slot_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 내부 영업용 INQUIRY 진단은 선착순 무료진단 자리를 소비하지 않는다.
+    slot_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    slot_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     queries: Mapped[list] = mapped_column(_jsonb_type(), nullable=False, default=list)
     requested_models: Mapped[dict] = mapped_column(_jsonb_type(), nullable=False, default=dict)

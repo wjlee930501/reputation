@@ -10,7 +10,7 @@
 
 export type ExecutionStatus = 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL' | 'FAILED'
 export type ReportStatus = 'PENDING' | 'BUILDING' | 'READY' | 'BLOCKED' | 'PURGED'
-export type DeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED'
+export type DeliveryStatus = 'PENDING' | 'SENDING' | 'SENT' | 'FAILED' | 'INTERNAL'
 
 export interface LeadDiagnosisSummary {
   id: string
@@ -96,6 +96,7 @@ const DELIVERY: Record<string, { label: string; tone: Tone }> = {
   SENDING: { label: '발송 중', tone: 'progress' },
   SENT: { label: '발송 완료', tone: 'ok' },
   FAILED: { label: '발송 실패', tone: 'danger' },
+  INTERNAL: { label: '내부 보관', tone: 'muted' },
 }
 
 function badge(
@@ -144,7 +145,7 @@ export function diagnosisReportHref(
 
 /** 잠금 해제 버튼을 보여줄지. 이미 풀린 잠금을 다시 풀 수는 없다. */
 export function canReleaseLock(diagnosis: LeadDiagnosisSummary): boolean {
-  return !diagnosis.lock_released_at
+  return diagnosis.delivery_status !== 'INTERNAL' && !diagnosis.lock_released_at
 }
 
 const ACTIVE_RECOVERY_STATES = new Set(['REQUESTED', 'QUEUED', 'RUNNING'])
@@ -238,6 +239,11 @@ export function recoveryAction(
  */
 export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
   if (diagnosis.report_status === 'PURGED') return '개인정보가 파기된 진단입니다.'
+  if (diagnosis.delivery_status === 'INTERNAL') {
+    return diagnosis.report_status === 'READY'
+      ? '영업 검토용 보고서가 준비됐습니다. 고객에게는 발송되지 않습니다.'
+      : '영업 검토용으로 생성 중이며 고객에게는 발송되지 않습니다.'
+  }
   if (diagnosis.execution_status === 'FAILED') {
     return '측정이 다시 실패해 보고서를 만들지 못했습니다.'
   }

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.lead import SalesLead
+from app.models.lead import SalesLead, is_internal_inquiry
 from app.models.lead_diagnosis import (
     DeliveryStatus,
     LeadDelivery,
@@ -55,12 +55,23 @@ async def _existing_delivery(db: AsyncSession, diagnosis_id) -> LeadDelivery | N
 
 async def deliver_report(db: AsyncSession, diagnosis: LeadDiagnosis) -> dict:
     """리포트 링크를 메일로 보낸다. 진단당 1통이며 재시도해도 같은 행·같은 키를 쓴다."""
-    if diagnosis.report_status != ReportStatus.READY.value:
-        return {"skipped": "report_not_ready"}
-
     lead = (
         await db.execute(select(SalesLead).where(SalesLead.id == diagnosis.lead_id))
     ).scalar_one_or_none()
+    if is_internal_inquiry(lead):
+        # source와 clinic_type을 모두 보는 최종 발송 방어선. 잘못 PENDING/SENDING으로
+        # 남은 과거 행도 고객 채널로 나가지 않도록 영구 hold 상태로 정리한다.
+        delivery = await _existing_delivery(db, diagnosis.id)
+        if delivery is not None and delivery.status != DeliveryStatus.SENT.value:
+            delivery.status = DeliveryStatus.INTERNAL.value
+            delivery.error = None
+        diagnosis.delivery_status = DeliveryStatus.INTERNAL.value
+        await db.commit()
+        return {"skipped": "internal_only"}
+
+    if diagnosis.report_status != ReportStatus.READY.value:
+        return {"skipped": "report_not_ready"}
+
     recipient = (lead.email or "").strip() if lead else ""
     if lead_privacy.is_purged_value(recipient):
         # 파기 후 재발송 시도는 정상 경로다 — 실패로 기록하지 않는다.
@@ -183,6 +194,14 @@ async def rearm_report_delivery(
     lead = (
         await db.execute(select(SalesLead).where(SalesLead.id == diagnosis.lead_id))
     ).scalar_one_or_none()
+    if is_internal_inquiry(lead):
+        diagnosis.delivery_status = DeliveryStatus.INTERNAL.value
+        await db.flush()
+        return {
+            "ok": False,
+            "code": "internal_only",
+            "message": "도입문의 리포트는 Admin 내부 보관 전용이라 고객 재발송할 수 없습니다.",
+        }
     if lead is None or lead_privacy.is_purged_value(lead.email):
         return {
             "ok": False,
@@ -266,13 +285,28 @@ async def sweep_stuck_deliveries(db: AsyncSession, *, now: datetime | None = Non
     now = now or datetime.now(timezone.utc)
     rows = (
         await db.execute(
-            select(LeadDelivery).where(LeadDelivery.status == DeliveryStatus.SENDING.value)
+            select(LeadDelivery, SalesLead)
+            .join(SalesLead, SalesLead.id == LeadDelivery.lead_id)
+            .where(LeadDelivery.status == DeliveryStatus.SENDING.value)
         )
-    ).scalars().all()
+    ).all()
 
     retriable: list[str] = []
     abandoned: list[LeadDelivery] = []
-    for delivery in rows:
+    held: list[LeadDelivery] = []
+    for delivery, lead in rows:
+        if is_internal_inquiry(lead):
+            delivery.status = DeliveryStatus.INTERNAL.value
+            delivery.error = None
+            diagnosis = (
+                await db.execute(
+                    select(LeadDiagnosis).where(LeadDiagnosis.id == delivery.diagnosis_id)
+                )
+            ).scalar_one_or_none()
+            if diagnosis is not None:
+                diagnosis.delivery_status = DeliveryStatus.INTERNAL.value
+            held.append(delivery)
+            continue
         created = delivery.created_at
         if created is None:  # pragma: no cover - server_default가 채운다
             continue
@@ -299,6 +333,11 @@ async def sweep_stuck_deliveries(db: AsyncSession, *, now: datetime | None = Non
             ).scalar_one_or_none()
             if diagnosis is not None:
                 diagnosis.delivery_status = DeliveryStatus.FAILED.value
+    if abandoned or held:
         await db.commit()
 
-    return {"retriable": retriable, "abandoned": [str(d.id) for d in abandoned]}
+    return {
+        "retriable": retriable,
+        "abandoned": [str(d.id) for d in abandoned],
+        "internal": [str(d.id) for d in held],
+    }

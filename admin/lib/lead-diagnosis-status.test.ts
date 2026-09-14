@@ -113,11 +113,31 @@ test('a ready report opens through the authenticated Admin route', () => {
   )
   assert.equal(diagnosisReportHref('lead-1', make({ report_status: 'BLOCKED' })), null)
   assert.equal(diagnosisReportHref('lead-1', make({ report_status: 'PURGED' })), null)
+  assert.match(
+    diagnosisReportHref('lead-1', make({ delivery_status: 'INTERNAL' })) ?? '',
+    /\/api\/admin\/leads\/lead-1\/diagnoses\/d1\/report/,
+  )
 })
 
 test('an already released lock is not offered again', () => {
   assert.equal(canReleaseLock(make()), true)
   assert.equal(canReleaseLock(make({ lock_released_at: '2026-07-30T00:00:00Z' })), false)
+})
+
+test('an internal inquiry diagnosis has no customer retry or free-lock action', () => {
+  const diagnosis = make({ delivery_status: 'INTERNAL' })
+  assert.equal(canRetryDelivery(diagnosis), false)
+  assert.equal(canReleaseLock(diagnosis), false)
+  assert.match(diagnosisHint(diagnosis), /고객에게는 발송되지 않습니다/)
+})
+
+test('the inquiry row exposes internal generation and explicitly guards retry', () => {
+  assert.match(LEADS_PAGE, /진단 생성\(내부용\)/)
+  assert.match(LEADS_PAGE, /콜용 \/ 고객 미발송/)
+  assert.match(
+    LEADS_PAGE,
+    /!isIntroductionInquiry\(lead\) && canRetryDelivery\(diagnosis\)/,
+  )
 })
 
 // ── 한 줄 안내 ───────────────────────────────────────────────────────

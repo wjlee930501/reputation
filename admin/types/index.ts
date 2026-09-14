@@ -505,6 +505,11 @@ export interface SalesLead {
   clinic_name: string
   clinic_type: string
   contact: string
+  contact_name?: string | null
+  clinic_phone?: string | null
+  email?: string | null
+  region_keyword?: string | null
+  core_keywords?: string[] | null
   question: string | null
   privacy: boolean
   source_path: string | null
@@ -519,7 +524,7 @@ export interface SalesLead {
   notification_status?: 'SENT' | 'FAILED' | string | null
   notification_error?: string | null
   created_at: string | null
-  /** 무료 진단(1단) 요약 — 리드마그넷으로 들어온 리드에만 있다. */
+  /** 무료 진단 또는 Admin 내부용 도입문의 진단 요약. */
   diagnoses?: LeadDiagnosisSummary[]
 }
 
