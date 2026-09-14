@@ -595,7 +595,7 @@ export default function LeadsPage() {
                             일반 문의
                           </span>
                           <p className="mt-1 text-[11px] font-medium text-violet-700">
-                            내부 콜 프리텍스트 · 고객 미발송
+                            콜용 / 고객 미발송
                           </p>
                           <button
                             type="button"
@@ -633,7 +633,7 @@ export default function LeadsPage() {
                             </p>
                             {isIntroductionInquiry(lead) && (
                               <p className="mt-1 text-[11px] font-semibold text-violet-700">
-                                내부 콜 프리텍스트 · 고객 미발송
+                                콜용 / 고객 미발송
                               </p>
                             )}
                             {needsAttention(diagnosis) && !isIntroductionInquiry(lead) && (

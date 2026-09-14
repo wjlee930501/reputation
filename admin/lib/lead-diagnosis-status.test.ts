@@ -133,7 +133,7 @@ test('an internal inquiry diagnosis has no customer retry or free-lock action', 
 
 test('the inquiry row exposes internal generation and explicitly guards retry', () => {
   assert.match(LEADS_PAGE, /진단 생성\(내부용\)/)
-  assert.match(LEADS_PAGE, /내부 콜 프리텍스트 · 고객 미발송/)
+  assert.match(LEADS_PAGE, /콜용 \/ 고객 미발송/)
   assert.match(
     LEADS_PAGE,
     /!isIntroductionInquiry\(lead\) && canRetryDelivery\(diagnosis\)/,
