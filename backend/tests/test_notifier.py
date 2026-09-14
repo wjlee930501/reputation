@@ -131,7 +131,7 @@ async def test_introduction_inquiry_message_never_claims_free_diagnosis(monkeypa
     assert "https://admin.example.test/leads" in rendered
 
 
-async def test_legacy_non_inquiry_message_keeps_its_diagnosis_meaning(monkeypatch):
+async def test_inquiry_message_uses_introduction_copy_for_any_clinic_type(monkeypatch):
     captured = _capture_send(monkeypatch)
 
     await notifier.notify_lead_created(
@@ -141,8 +141,10 @@ async def test_legacy_non_inquiry_message_keeps_its_diagnosis_meaning(monkeypatc
     )
 
     rendered = f"{captured['text']} {captured['blocks'][0]['text']['text']}"
-    assert "무료 진단 요청" in rendered
-    assert "진료과/지역: 외과" in rendered
+    assert "[도입문의 접수]" in rendered
+    assert "문의 유형: 일반 문의" in rendered
+    assert "무료 진단" not in rendered
+    assert "진료과/지역" not in rendered
 
 
 async def test_lead_diagnosis_intake_message_is_actionable_and_omits_pii(monkeypatch):
