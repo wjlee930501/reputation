@@ -46,6 +46,15 @@ interface ActionTarget {
   idempotencyKey: string
 }
 
+interface InternalDiagnosisForm {
+  email: string
+  clinicType: string
+  regionKeyword: string
+  coreKeywords: string
+  clinicPhone: string
+  contactName: string
+}
+
 const ACTION_COPY: Record<
   DiagnosisAction,
   { title: string; description: string; placeholder: string; submit: string }
@@ -119,6 +128,19 @@ function IntroductionInquiryDetails({ lead }: { lead: SalesLead }) {
   )
 }
 
+function internalDiagnosisDefaults(lead: SalesLead): InternalDiagnosisForm {
+  const details = readInquiryDetails(lead)
+  const contact = lead.contact?.trim() ?? ''
+  return {
+    email: lead.email?.trim() || (contact.includes('@') ? contact : ''),
+    clinicType: lead.clinic_type?.trim() === '도입문의' ? '' : lead.clinic_type?.trim() || '',
+    regionKeyword: lead.region_keyword?.trim() || details.address || '',
+    coreKeywords: (lead.core_keywords ?? []).join(', '),
+    clinicPhone: lead.clinic_phone?.trim() || (!contact.includes('@') ? contact : ''),
+    contactName: lead.contact_name?.trim() || details.directorName || '',
+  }
+}
+
 /** Count structured 409 rows without reflecting backend text into the marketer screen. */
 function readRefusalReasons(error: unknown): string[] {
   if (!(error instanceof ApiError)) return []
@@ -155,14 +177,23 @@ export default function LeadsPage() {
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionNotice, setActionNotice] = useState<string | null>(null)
   const actionDialogRef = useRef<HTMLDivElement>(null)
+  const [internalDiagnosisTarget, setInternalDiagnosisTarget] = useState<SalesLead | null>(null)
+  const [internalDiagnosisForm, setInternalDiagnosisForm] = useState<InternalDiagnosisForm | null>(null)
+  const [internalDiagnosisSubmitting, setInternalDiagnosisSubmitting] = useState(false)
+  const [internalDiagnosisError, setInternalDiagnosisError] = useState<string | null>(null)
+  const internalDiagnosisDialogRef = useRef<HTMLDivElement>(null)
   const modalBusyRef = useRef(false)
 
   useEffect(() => {
-    modalBusyRef.current = actionSubmitting
-  }, [actionSubmitting])
+    modalBusyRef.current = actionSubmitting || internalDiagnosisSubmitting
+  }, [actionSubmitting, internalDiagnosisSubmitting])
 
   useEffect(() => {
-    const dialog = actionTarget ? actionDialogRef.current : null
+    const dialog = actionTarget
+      ? actionDialogRef.current
+      : internalDiagnosisTarget
+        ? internalDiagnosisDialogRef.current
+        : null
     if (!dialog) return
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null
     const main = document.getElementById('main-content')
@@ -175,6 +206,8 @@ export default function LeadsPage() {
       if (event.key === 'Escape' && !modalBusyRef.current) {
         event.preventDefault()
         setActionTarget(null)
+        setInternalDiagnosisTarget(null)
+        setInternalDiagnosisForm(null)
         return
       }
       if (event.key !== 'Tab') return
@@ -198,7 +231,7 @@ export default function LeadsPage() {
       document.body.style.overflow = ''
       previousFocus?.focus()
     }
-  }, [actionTarget])
+  }, [actionTarget, internalDiagnosisTarget])
 
   const loadLeads = useCallback(
     async (offset: number, options?: { append?: boolean; limit?: number; attention?: boolean }) => {
@@ -241,7 +274,14 @@ export default function LeadsPage() {
   useEffect(() => {
     const active = leads.some((lead) =>
       (lead.diagnoses ?? []).some((diagnosis) =>
-        Object.values(diagnosis.recovery_runs ?? {}).some((run) =>
+        (
+          diagnosis.delivery_status === 'INTERNAL'
+          && (
+            ['PENDING', 'RUNNING'].includes(diagnosis.execution_status)
+            || ['PENDING', 'BUILDING'].includes(diagnosis.report_status)
+          )
+        )
+        || Object.values(diagnosis.recovery_runs ?? {}).some((run) =>
           run ? ['REQUESTED', 'QUEUED', 'RUNNING'].includes(run.state) : false,
         ),
       ),
@@ -278,6 +318,58 @@ export default function LeadsPage() {
     setAckDuplicateRisk(false)
     setActionError(null)
     setActionNotice(null)
+  }
+
+  function openInternalDiagnosis(lead: SalesLead) {
+    setInternalDiagnosisTarget(lead)
+    setInternalDiagnosisForm(internalDiagnosisDefaults(lead))
+    setInternalDiagnosisError(null)
+    setActionNotice(null)
+  }
+
+  async function handleCreateInternalDiagnosis() {
+    if (!internalDiagnosisTarget || !internalDiagnosisForm || internalDiagnosisSubmitting) return
+    const keywords = internalDiagnosisForm.coreKeywords
+      .split(/[\n,]/)
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .filter((value, index, values) => values.indexOf(value) === index)
+      .slice(0, 4)
+    if (
+      !internalDiagnosisForm.email.trim()
+      || !internalDiagnosisForm.clinicType.trim()
+      || !internalDiagnosisForm.regionKeyword.trim()
+      || keywords.length === 0
+    ) {
+      setInternalDiagnosisError('이메일, 진료과, 지역 키워드, 핵심 키워드를 모두 입력해 주세요.')
+      return
+    }
+
+    setInternalDiagnosisSubmitting(true)
+    setInternalDiagnosisError(null)
+    try {
+      await fetchAPI(`/admin/leads/${internalDiagnosisTarget.id}/diagnoses/internal`, {
+        method: 'POST',
+        body: JSON.stringify({
+          email: internalDiagnosisForm.email.trim(),
+          clinic_type: internalDiagnosisForm.clinicType.trim(),
+          region_keyword: internalDiagnosisForm.regionKeyword.trim(),
+          core_keywords: keywords,
+          clinic_phone: internalDiagnosisForm.clinicPhone.trim() || null,
+          contact_name: internalDiagnosisForm.contactName.trim() || null,
+        }),
+      })
+      setInternalDiagnosisTarget(null)
+      setInternalDiagnosisForm(null)
+      setActionNotice('내부용 진단 생성을 접수했습니다. 완료되면 이 화면에서 보고서를 열 수 있습니다.')
+      await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
+    } catch {
+      setInternalDiagnosisError(
+        safeOperatorError('leads', '입력값을 확인하고 진단 생성(내부용)을 다시 눌러 주세요.'),
+      )
+    } finally {
+      setInternalDiagnosisSubmitting(false)
+    }
   }
 
   async function handleSubmitAction() {
@@ -410,7 +502,7 @@ export default function LeadsPage() {
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">연락처</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">문의</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">유입</th>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">접수 유형 · 무료 진단</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600">접수 유형 · 진단</th>
                 <th className="px-6 py-3 text-right font-medium text-slate-600">다음 작업</th>
               </tr>
             </thead>
@@ -495,14 +587,23 @@ export default function LeadsPage() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-xs text-slate-500 sm:hidden lg:table-cell" data-label="유입">{leadSourceLabel(lead.source_path)}</td>
-                  <td className="px-6 py-4" data-label="접수 유형 · 무료 진단">
+                  <td className="px-6 py-4" data-label="접수 유형 · 진단">
                     {(lead.diagnoses ?? []).length === 0 ? (
                       isIntroductionInquiry(lead) ? (
                         <div>
                           <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
                             일반 문의
                           </span>
-                          <p className="mt-1 text-[11px] text-slate-500">무료 진단 대상 아님</p>
+                          <p className="mt-1 text-[11px] font-medium text-violet-700">
+                            내부 콜 프리텍스트 · 고객 미발송
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => openInternalDiagnosis(lead)}
+                            className="mt-2 inline-flex min-h-11 items-center rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm hover:bg-violet-50"
+                          >
+                            진단 생성(내부용)
+                          </button>
                         </div>
                       ) : (
                         <span className="text-xs text-slate-400">해당 없음</span>
@@ -530,7 +631,12 @@ export default function LeadsPage() {
                             >
                               {diagnosisHint(diagnosis)}
                             </p>
-                            {needsAttention(diagnosis) && (
+                            {isIntroductionInquiry(lead) && (
+                              <p className="mt-1 text-[11px] font-semibold text-violet-700">
+                                내부 콜 프리텍스트 · 고객 미발송
+                              </p>
+                            )}
+                            {needsAttention(diagnosis) && !isIntroductionInquiry(lead) && (
                               <p className="mt-1 break-keep text-pretty text-[11px] leading-5 text-red-700">
                               고객 영향: 신청자가 정확한 진단 보고서를 받지 못합니다.
                               </p>
@@ -636,7 +742,7 @@ export default function LeadsPage() {
                               }
                               return (
                                 <div className="mt-1 flex flex-wrap items-center gap-2">
-                                  {canRetryDelivery(diagnosis) && (
+                                  {!isIntroductionInquiry(lead) && canRetryDelivery(diagnosis) && (
                                     <button
                                       type="button"
                                       onClick={() => openAction(lead, diagnosis, 'retry')}
@@ -715,6 +821,150 @@ export default function LeadsPage() {
           )}
         </div>
       )}
+
+      {internalDiagnosisTarget && internalDiagnosisForm && typeof document !== 'undefined' && createPortal((
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !internalDiagnosisSubmitting) {
+              setInternalDiagnosisTarget(null)
+              setInternalDiagnosisForm(null)
+            }
+          }}
+        >
+          <div
+            ref={internalDiagnosisDialogRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="internal-diagnosis-title"
+            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white shadow-xl"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="border-b border-slate-200 p-5">
+              <h3 id="internal-diagnosis-title" className="text-lg font-bold text-slate-900">
+                진단 생성(내부용) — {internalDiagnosisTarget.clinic_name}
+              </h3>
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                콜 준비용 진단과 PDF만 생성합니다. 무료진단 자리와 신청 제한을 쓰지 않으며,
+                고객 이메일·공개 링크는 발송하지 않습니다.
+              </p>
+            </div>
+
+            <div className="grid gap-4 p-5 sm:grid-cols-2">
+              <label className="block sm:col-span-2">
+                <span className="text-sm font-medium text-slate-700">이메일</span>
+                <input
+                  type="email"
+                  required
+                  value={internalDiagnosisForm.email}
+                  onChange={(event) => setInternalDiagnosisForm({
+                    ...internalDiagnosisForm,
+                    email: event.target.value,
+                  })}
+                  placeholder="director@example.com"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-violet-500 focus:outline-none"
+                />
+                <span className="mt-1 block text-[11px] text-slate-500">
+                  리드 정보 보완용이며 이 진단을 고객에게 보내는 데 사용하지 않습니다.
+                </span>
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">진료과</span>
+                <input
+                  required
+                  value={internalDiagnosisForm.clinicType}
+                  onChange={(event) => setInternalDiagnosisForm({
+                    ...internalDiagnosisForm,
+                    clinicType: event.target.value,
+                  })}
+                  placeholder="예) 정형외과"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-violet-500 focus:outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">지역 키워드</span>
+                <input
+                  required
+                  value={internalDiagnosisForm.regionKeyword}
+                  onChange={(event) => setInternalDiagnosisForm({
+                    ...internalDiagnosisForm,
+                    regionKeyword: event.target.value,
+                  })}
+                  placeholder="예) 강남역"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-violet-500 focus:outline-none"
+                />
+              </label>
+              <label className="block sm:col-span-2">
+                <span className="text-sm font-medium text-slate-700">핵심 키워드 (최대 4개)</span>
+                <input
+                  required
+                  value={internalDiagnosisForm.coreKeywords}
+                  onChange={(event) => setInternalDiagnosisForm({
+                    ...internalDiagnosisForm,
+                    coreKeywords: event.target.value,
+                  })}
+                  placeholder="예) 도수치료, 허리통증, 체외충격파"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-violet-500 focus:outline-none"
+                />
+                <span className="mt-1 block text-[11px] text-slate-500">쉼표로 구분해 입력합니다.</span>
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">병원 대표번호 (선택)</span>
+                <input
+                  value={internalDiagnosisForm.clinicPhone}
+                  onChange={(event) => setInternalDiagnosisForm({
+                    ...internalDiagnosisForm,
+                    clinicPhone: event.target.value,
+                  })}
+                  placeholder="02-123-4567"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-violet-500 focus:outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">담당자명 (선택)</span>
+                <input
+                  value={internalDiagnosisForm.contactName}
+                  onChange={(event) => setInternalDiagnosisForm({
+                    ...internalDiagnosisForm,
+                    contactName: event.target.value,
+                  })}
+                  placeholder="예) 김원장"
+                  className="mt-1 min-h-11 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-violet-500 focus:outline-none"
+                />
+              </label>
+
+              {internalDiagnosisError && (
+                <div className="sm:col-span-2">
+                  <OperatorIssuePanel message={internalDiagnosisError} surface="leads" />
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 border-t border-slate-200 p-5">
+              <button
+                type="button"
+                onClick={handleCreateInternalDiagnosis}
+                disabled={internalDiagnosisSubmitting}
+                className="flex-1 min-h-11 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+              >
+                {internalDiagnosisSubmitting ? '생성 접수 중...' : '진단 생성(내부용)'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setInternalDiagnosisTarget(null)
+                  setInternalDiagnosisForm(null)
+                }}
+                disabled={internalDiagnosisSubmitting}
+                className="min-h-11 rounded-lg bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-700 hover:bg-slate-200 disabled:opacity-50"
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body)}
 
       {/* 무료 진단 액션 모달 — 재발송 / 1회 제한 해제 */}
       {actionTarget && typeof document !== 'undefined' && createPortal((

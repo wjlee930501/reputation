@@ -27,7 +27,7 @@ from sqlalchemy import func, or_, select, update
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import get_async_sessionmaker
-from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, SalesLead
+from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, LEAD_SOURCE_INQUIRY, SalesLead
 from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
     DeliveryStatus,
@@ -621,9 +621,12 @@ async def _deliveries_to_send(session) -> list[str]:
     rows = (
         await session.execute(
             select(LeadDiagnosis.id)
+            .join(SalesLead, SalesLead.id == LeadDiagnosis.lead_id)
             .where(
                 LeadDiagnosis.report_status == ReportStatus.READY.value,
                 LeadDiagnosis.delivery_status == DeliveryStatus.PENDING.value,
+                func.upper(func.trim(SalesLead.source)) != LEAD_SOURCE_INQUIRY,
+                func.trim(SalesLead.clinic_type) != "도입문의",
             )
             .order_by(LeadDiagnosis.created_at.asc())
             .limit(DRAIN_BATCH_SIZE)

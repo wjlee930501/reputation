@@ -29,7 +29,7 @@ from app.api.public.leads import contains_patient_sensitive_text
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import get_request_ip, limiter
-from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, SalesLead
+from app.models.lead import LEAD_SOURCE_AI_DIAGNOSIS, SalesLead, is_internal_inquiry
 from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
     ExecutionStatus,
@@ -208,10 +208,19 @@ async def _resolve_token(
     if row is None or row.revoked_at is not None or row.expires_at <= now:
         raise HTTPException(status_code=404, detail="유효하지 않은 링크입니다.")
 
-    diagnosis = (
-        await db.execute(select(LeadDiagnosis).where(LeadDiagnosis.id == row.diagnosis_id))
-    ).scalar_one_or_none()
-    if diagnosis is None:  # pragma: no cover - FK CASCADE로 함께 지워진다
+    diagnosis_with_lead = (
+        await db.execute(
+            select(LeadDiagnosis, SalesLead)
+            .join(SalesLead, SalesLead.id == LeadDiagnosis.lead_id)
+            .where(LeadDiagnosis.id == row.diagnosis_id)
+        )
+    ).one_or_none()
+    if diagnosis_with_lead is None:  # pragma: no cover - FK CASCADE로 함께 지워진다
+        raise HTTPException(status_code=404, detail="유효하지 않은 링크입니다.")
+    diagnosis, lead = diagnosis_with_lead
+    # Old or manually-created token rows must not turn an INQUIRY artifact into a public link.
+    # Internal reports are available only through the authenticated Admin stream.
+    if is_internal_inquiry(lead):
         raise HTTPException(status_code=404, detail="유효하지 않은 링크입니다.")
 
     if record_access:

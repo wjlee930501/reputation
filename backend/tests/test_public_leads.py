@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.api.public import leads as leads_api
+from app.models.lead import SalesLead
+from app.models.lead_diagnosis import LeadDiagnosis
 from app.services import notifier
 
 # slowapi's @limiter.limit uses functools.wraps, so __wrapped__ is always
@@ -67,6 +69,9 @@ async def test_create_lead_persists_with_retention_and_consent(monkeypatch):
 
     assert response["ok"] is True
     lead = db.added[0]
+    assert len(db.added) == 1
+    assert isinstance(lead, SalesLead)
+    assert not any(isinstance(row, LeadDiagnosis) for row in db.added)
     assert lead.privacy is True
     assert lead.consent_version == "v1.test"
     assert lead.consent_ip == "203.0.113.7"

@@ -12,6 +12,16 @@ LEAD_SOURCE_INQUIRY = "INQUIRY"
 LEAD_SOURCE_AI_DIAGNOSIS = "AI_DIAGNOSIS"
 
 
+def is_internal_inquiry(lead: "SalesLead | None") -> bool:
+    """Whether a lead report is sales-only and must never enter customer delivery."""
+    if lead is None:
+        return False
+    return (
+        (lead.source or "").strip().upper() == LEAD_SOURCE_INQUIRY
+        or (lead.clinic_type or "").strip() == "도입문의"
+    )
+
+
 class SalesLead(Base):
     __tablename__ = "sales_leads"
 
