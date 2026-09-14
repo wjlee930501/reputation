@@ -11,7 +11,13 @@ import { type SalesLead } from '@/types'
 import { buildLeadOnboardingHref } from '@/lib/lead-onboarding'
 import { leadSourceLabel, safeOperatorError } from '@/lib/operations-journey'
 import { describeLeadAging, sortLeadsByAttention } from '@/lib/lead-aging'
-import { leadEmptyState, type RealLeadSummary } from '@/lib/lead-list'
+import {
+  hasStructuredInquiryDetails,
+  isIntroductionInquiry,
+  leadEmptyState,
+  readInquiryDetails,
+  type RealLeadSummary,
+} from '@/lib/lead-list'
 import { safeCauseText } from '@/lib/operations-center'
 import {
   type LeadDiagnosisSummary,
@@ -80,6 +86,37 @@ const TONE_CLASS: Record<Tone, string> = {
 
 function getOnboardingHref(lead: SalesLead) {
   return buildLeadOnboardingHref(lead.id)
+}
+
+function IntroductionInquiryDetails({ lead }: { lead: SalesLead }) {
+  const details = readInquiryDetails(lead)
+  const rows = [
+    ['주소', details.address],
+    ['원장명', details.directorName],
+    ['홈페이지', details.homepage],
+    ['연락처', details.contact],
+  ] as const
+
+  return (
+    <div className="min-w-[18rem] max-w-sm">
+      <dl className="space-y-1.5 rounded-lg border border-violet-100 bg-violet-50/60 p-3">
+        {rows.map(([label, value]) => (
+          <div key={label} className="grid grid-cols-[4rem_minmax(0,1fr)] gap-2 text-xs leading-5">
+            <dt className="font-semibold text-violet-700">{label}</dt>
+            <dd className="break-keep text-pretty text-slate-700 [overflow-wrap:anywhere]">
+              {value ?? '미입력'}
+            </dd>
+          </div>
+        ))}
+      </dl>
+      <details className="mt-2 text-[11px] text-slate-500">
+        <summary className="cursor-pointer font-medium text-violet-700">접수 원문 보기</summary>
+        <p className="mt-1 whitespace-pre-wrap break-keep text-pretty [overflow-wrap:anywhere]">
+          {lead.question || '문의 원문 없음'}
+        </p>
+      </details>
+    </div>
+  )
 }
 
 /** Count structured 409 rows without reflecting backend text into the marketer screen. */
@@ -373,7 +410,7 @@ export default function LeadsPage() {
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">연락처</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">문의</th>
                 <th className="px-6 py-3 text-left font-medium text-slate-600 sm:hidden lg:table-cell">유입</th>
-                <th className="px-6 py-3 text-left font-medium text-slate-600">무료 진단</th>
+                <th className="px-6 py-3 text-left font-medium text-slate-600">접수 유형 · 무료 진단</th>
                 <th className="px-6 py-3 text-right font-medium text-slate-600">다음 작업</th>
               </tr>
             </thead>
@@ -405,7 +442,13 @@ export default function LeadsPage() {
                   <td className="px-6 py-4" data-primary="true">
                     <p className="font-semibold whitespace-nowrap text-slate-900">{lead.clinic_name}</p>
                     <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <span className="text-xs text-slate-500">{lead.clinic_type}</span>
+                      {isIntroductionInquiry(lead) ? (
+                        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                          도입문의
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-500">{lead.clinic_type}</span>
+                      )}
                       {lead.is_operations_test && (
                         <span className="rounded-full bg-slate-800 px-2 py-0.5 text-[11px] font-semibold text-white">
                           운영 점검용
@@ -421,10 +464,19 @@ export default function LeadsPage() {
                         {lead.converted_hospital_id ? '온보딩 전환됨' : '온보딩 대기'}
                       </span>
                     </div>
+                    {hasStructuredInquiryDetails(lead) && (
+                      <div className="mt-3 hidden sm:block lg:hidden">
+                        <IntroductionInquiryDetails lead={lead} />
+                      </div>
+                    )}
                   </td>
                   <td className="px-6 py-4 font-medium text-slate-700 sm:hidden lg:table-cell" data-label="연락처">{lead.contact}</td>
                   <td className="px-6 py-4 text-slate-600 sm:hidden lg:table-cell" data-label="문의">
-                    <p className="line-clamp-2 max-w-sm break-keep text-pretty">{lead.question}</p>
+                    {hasStructuredInquiryDetails(lead) ? (
+                      <IntroductionInquiryDetails lead={lead} />
+                    ) : (
+                      <p className="line-clamp-2 max-w-sm break-keep text-pretty">{lead.question || '문의 내용 없음'}</p>
+                    )}
                     <p className="mt-1 whitespace-nowrap text-[11px] text-slate-400">
                       개인정보 동의 {lead.privacy ? '완료' : '미확인'}
                     </p>
@@ -443,9 +495,18 @@ export default function LeadsPage() {
                     )}
                   </td>
                   <td className="px-6 py-4 text-xs text-slate-500 sm:hidden lg:table-cell" data-label="유입">{leadSourceLabel(lead.source_path)}</td>
-                  <td className="px-6 py-4" data-label="무료 진단">
+                  <td className="px-6 py-4" data-label="접수 유형 · 무료 진단">
                     {(lead.diagnoses ?? []).length === 0 ? (
-                      <span className="text-xs text-slate-400">해당 없음</span>
+                      isIntroductionInquiry(lead) ? (
+                        <div>
+                          <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[11px] font-semibold text-violet-800">
+                            일반 문의
+                          </span>
+                          <p className="mt-1 text-[11px] text-slate-500">무료 진단 대상 아님</p>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-slate-400">해당 없음</span>
+                      )
                     ) : (
                       <div className="space-y-3">
                         {(lead.diagnoses ?? []).map((diagnosis) => (

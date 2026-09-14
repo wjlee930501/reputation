@@ -182,7 +182,7 @@ async def notify_lead_created(
     contact: str,
     admin_url: str | None = None,
 ) -> bool:
-    """무료 진단 요청 접수 → AE에게.
+    """공개 문의 접수 → AE에게.
 
     PII 보호: 연락처는 마스킹, 환자 질문 본문은 Slack 채널로 송출하지 않음.
     상세 확인은 Admin UI deep-link에서.
@@ -195,15 +195,27 @@ async def notify_lead_created(
     safe_clinic_name = _safe_label(clinic_name)
     safe_clinic_type = _safe_label(clinic_type)
     link_line = f"<{admin_url}|Admin에서 상세 확인>" if admin_url else "Admin에서 상세 확인"
+    is_introduction_inquiry = clinic_type.strip() == "도입문의"
+    title = "도입문의 접수" if is_introduction_inquiry else "무료 진단 요청"
+    kind_line = (
+        "문의 유형: 일반 문의"
+        if is_introduction_inquiry
+        else f"진료과/지역: {safe_clinic_type}"
+    )
+    next_action = (
+        "문의 내용을 확인하고 담당자를 지정해 주세요."
+        if is_introduction_inquiry
+        else "진단 범위를 확정해 주세요."
+    )
     return await _send(
-        text=f"📩 [무료 진단 요청] {safe_clinic_name}",
+        text=f"📩 [{title}] {safe_clinic_name}",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📩 *[무료 진단 요청]* *{safe_clinic_name}*\n"
-                f"진료과/지역: {safe_clinic_type}\n"
+                f"📩 *[{title}]* *{safe_clinic_name}*\n"
+                f"{kind_line}\n"
                 f"연락처: `{masked}`\n\n"
-                f"{link_line} 후 진단 범위를 확정해 주세요."
+                f"{link_line} 후 {next_action}"
             )},
         }],
     )

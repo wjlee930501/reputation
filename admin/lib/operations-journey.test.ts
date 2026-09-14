@@ -29,6 +29,8 @@ test('request failures distinguish expected transport responses from unknown fau
 test('lead intake paths use plain labels and fail closed for unknown values', () => {
   assert.equal(leadSourceLabel('/ops-qa'), '운영 점검')
   assert.equal(leadSourceLabel('/ai-diagnosis'), '무료 진단 신청')
+  assert.equal(leadSourceLabel('/#contact'), '도입문의(홈)')
+  assert.equal(leadSourceLabel('/contact'), '도입문의(홈)')
   assert.equal(leadSourceLabel('/unknown/internal/path'), '접수 경로 확인 필요')
 })
 
