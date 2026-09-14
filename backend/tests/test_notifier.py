@@ -113,6 +113,40 @@ def _capture_send(monkeypatch):
     return captured
 
 
+async def test_introduction_inquiry_message_never_claims_free_diagnosis(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    sent = await notifier.notify_lead_created(
+        clinic_name="도입문의의원",
+        clinic_type="도입문의",
+        contact="010-1234-5678",
+        admin_url="https://admin.example.test/leads",
+    )
+
+    assert sent is True
+    rendered = f"{captured['text']} {captured['blocks'][0]['text']['text']}"
+    assert "[도입문의 접수]" in rendered
+    assert "문의 유형: 일반 문의" in rendered
+    assert "무료 진단" not in rendered
+    assert "https://admin.example.test/leads" in rendered
+
+
+async def test_inquiry_message_uses_introduction_copy_for_any_clinic_type(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_lead_created(
+        clinic_name="기존진단의원",
+        clinic_type="외과",
+        contact="010-1234-5678",
+    )
+
+    rendered = f"{captured['text']} {captured['blocks'][0]['text']['text']}"
+    assert "[도입문의 접수]" in rendered
+    assert "문의 유형: 일반 문의" in rendered
+    assert "무료 진단" not in rendered
+    assert "진료과/지역" not in rendered
+
+
 async def test_lead_diagnosis_intake_message_is_actionable_and_omits_pii(monkeypatch):
     captured = _capture_send(monkeypatch)
 

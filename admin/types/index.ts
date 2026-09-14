@@ -505,7 +505,7 @@ export interface SalesLead {
   clinic_name: string
   clinic_type: string
   contact: string
-  question: string
+  question: string | null
   privacy: boolean
   source_path: string | null
   /** 유입 퍼널 — 문의 폼(INQUIRY) 또는 무료 진단(AI_DIAGNOSIS) */

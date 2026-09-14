@@ -78,6 +78,29 @@ def test_a_normal_lead_payload_reports_false_rather_than_omitting_the_field():
     assert payload["source"] == "INQUIRY"
 
 
+def test_inquiry_list_payload_keeps_every_operator_field():
+    question = (
+        "병원 주소: 서울시 강남구 테헤란로 1\n"
+        "원장님 성함: 홍길동\n"
+        "병원 홈페이지: https://clinic.example.com"
+    )
+    payload = _serialize_lead(
+        _lead(
+            clinic_type="도입문의",
+            contact="010-1234-5678",
+            question=question,
+            source_path="/#contact",
+            source="INQUIRY",
+        )
+    )
+
+    assert payload["clinic_type"] == "도입문의"
+    assert payload["source"] == "INQUIRY"
+    assert payload["source_path"] == "/#contact"
+    assert payload["contact"] == "010-1234-5678"
+    assert payload["question"] == question
+
+
 def test_operations_test_sql_clause_uses_the_same_three_markers():
     sql = str(operations_test_lead_clause().compile(compile_kwargs={"literal_binds": True}))
 

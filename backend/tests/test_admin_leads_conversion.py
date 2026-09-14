@@ -143,6 +143,16 @@ async def test_list_sales_leads_applies_offset_and_limit():
     assert "OFFSET 100" in compiled
 
 
+async def test_default_lead_list_does_not_filter_out_inquiries():
+    db = _CaptureDB()
+
+    await leads_api.list_sales_leads(db=db, limit=50, offset=0)
+
+    compiled = str(db.stmt.compile(compile_kwargs={"literal_binds": True}))
+    assert "FROM sales_leads" in compiled
+    assert "WHERE" not in compiled
+
+
 async def test_hospital_candidates_returns_lead_context_without_query_string_pii():
     lead = _lead()
     db = FakeDB(lead=lead)

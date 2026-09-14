@@ -270,7 +270,8 @@ async def test_notify_lead_created_masks_residual_identifiers_in_clinic_name(mon
     payload = sent["text"] + sent["blocks"][0]["text"]["text"]
     assert "900101-1234567" not in payload
     assert "wjlee@motionlabs.kr" not in payload
-    assert "[id]" in payload and "[email]" in payload
+    assert "[id]" in payload
+    assert "강남 대장항문외과" not in payload
     assert "장편한외과의원" in payload  # 식별에 필요한 병원명 자체는 유지
 
 

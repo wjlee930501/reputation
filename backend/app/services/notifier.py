@@ -182,28 +182,27 @@ async def notify_lead_created(
     contact: str,
     admin_url: str | None = None,
 ) -> bool:
-    """무료 진단 요청 접수 → AE에게.
+    """공개 문의 접수 → AE에게.
 
     PII 보호: 연락처는 마스킹, 환자 질문 본문은 Slack 채널로 송출하지 않음.
     상세 확인은 Admin UI deep-link에서.
 
-    clinic_name/clinic_type도 공개 폼의 자유 텍스트라 입력 검증(leads API)을 통과한 뒤에도
+    clinic_name도 공개 폼의 자유 텍스트라 입력 검증(leads API)을 통과한 뒤에도
     Slack(국외 이전)으로 그대로 나가면 안 된다 — 검증 패턴이 놓친 식별정보가 남을 수 있고,
     긴 본문을 병원명 칸에 밀어넣는 채널 스팸도 가능하다. 여기서 한 번 더 마스킹·절단한다.
     """
     masked = mask_contact(contact)
     safe_clinic_name = _safe_label(clinic_name)
-    safe_clinic_type = _safe_label(clinic_type)
     link_line = f"<{admin_url}|Admin에서 상세 확인>" if admin_url else "Admin에서 상세 확인"
     return await _send(
-        text=f"📩 [무료 진단 요청] {safe_clinic_name}",
+        text=f"📩 [도입문의 접수] {safe_clinic_name}",
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📩 *[무료 진단 요청]* *{safe_clinic_name}*\n"
-                f"진료과/지역: {safe_clinic_type}\n"
+                f"📩 *[도입문의 접수]* *{safe_clinic_name}*\n"
+                "문의 유형: 일반 문의\n"
                 f"연락처: `{masked}`\n\n"
-                f"{link_line} 후 진단 범위를 확정해 주세요."
+                f"{link_line} 후 문의 내용을 확인하고 담당자를 지정해 주세요."
             )},
         }],
     )

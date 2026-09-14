@@ -79,7 +79,7 @@ export function isExpectedOperatorRequestFailure(
 export function leadSourceLabel(sourcePath: string | null | undefined): string {
   if (sourcePath === '/ops-qa') return '운영 점검'
   if (sourcePath === '/ai-diagnosis') return '무료 진단 신청'
-  if (sourcePath === '/' || sourcePath === '/contact') return '홈페이지 문의'
+  if (sourcePath === '/' || sourcePath === '/contact' || sourcePath === '/#contact') return '도입문의(홈)'
   return '접수 경로 확인 필요'
 }
 
