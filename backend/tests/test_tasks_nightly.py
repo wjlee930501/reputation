@@ -1501,7 +1501,9 @@ def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date, *, dispatch_in
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "GenerationBatchRecorder", _NightlyTaskRecorder)
     monkeypatch.setattr(
-        tasks, "_load_nightly_generation_batch", lambda *_args: (items, 0)
+        tasks,
+        "_load_nightly_generation_batch",
+        lambda *_args, **_kwargs: (items, 0, True),
     )
     monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
     monkeypatch.setattr(tasks, "release_unfinished_claims", lambda *_args, **_kwargs: 0)
@@ -1526,7 +1528,11 @@ def test_twenty_three_batch_covers_tomorrow_and_the_day_after(monkeypatch):
     monkeypatch.setattr(
         tasks,
         "_load_nightly_generation_batch",
-        lambda _db, start, end: (loaded_windows.append((start, end)) or [], 0),
+        lambda _db, start, end, **_kwargs: (
+            loaded_windows.append((start, end)) or [],
+            0,
+            True,
+        ),
     )
     monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
@@ -1596,6 +1602,43 @@ def test_nightly_classified_morning_failure_requests_due_checked_notification(mo
     assert len(incident_calls) == 1
     assert incident_calls[0]["code"] == "PROVIDER_TIMEOUT"
     assert incident_calls[0]["notify"] is True
+
+
+def test_a_body_row_with_an_unchanged_attempt_still_reaches_the_repair_path(monkeypatch):
+    """본문이 있는 행은 시도 기록이 그대로여도 수리·이미지 재사용 경로로 간다.
+
+    로더가 본문 없는 행의 규칙을 본문 있는 행에 적용하면 이 경로가 영영 돌지 않는다.
+    """
+
+    db = _NightlyTaskDB()
+    philosophy = SimpleNamespace(id="p1")
+    item = _nightly_item("수리대상의원")
+    item.body = "저장된 본문"
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_IMAGE_NOT_READY")
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+    # 그래도 로더는 이 행을 거르지 않는다.
+    assert tasks._generation_retry_is_eligible(db)(item) is True
+
+    repaired = []
+
+    async def ignore_recovery(*_args, **_kwargs):
+        return None
+
+    _patch_nightly_task_shell(monkeypatch, db, [item], date(2026, 8, 19))
+    monkeypatch.setattr(tasks, "recover_generation_incidents", ignore_recovery)
+    monkeypatch.setattr(
+        tasks,
+        "_generate_single_content_item",
+        lambda *_args: (
+            repaired.append("repair")
+            or (tasks.GenerationItemState.SUCCEEDED, None, None)
+        ),
+    )
+
+    tasks.nightly_content_generation.run()
+
+    assert repaired == ["repair"]
 
 
 def test_overnight_recovery_records_failure_without_individual_notification(monkeypatch):
@@ -2271,8 +2314,13 @@ def test_image_budget_is_spent_daily_and_reopens_on_the_next_kst_day(monkeypatch
     assert state == tasks.GenerationItemState.SKIPPED
     assert code == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
 
-    # 다음 KST 일: 같은 지문이어도 표본을 한 번 더 뽑는다.
-    item.essence_check_summary["generation_attempt"]["attempt_period"] = "2000-01-01"
+    # 다음 KST 일: 같은 지문이어도 표본을 한 번 더 뽑는다. 예산이 초기화됐다는 사실만으로
+    # 앞당기지는 않는다 — 저장된 다음 시도 시각(그날의 첫 스윕)이 와야 한다.
+    stored = item.essence_check_summary["generation_attempt"]
+    stored["attempt_period"] = "2000-01-01"
+    stored["next_retry_at"] = (
+        datetime.now().astimezone() - tasks.timedelta(minutes=1)
+    ).isoformat()
     calls = []
     monkeypatch.setattr(tasks, "_recover_missing_content_image", lambda *_args: (
         calls.append("image") or tasks.GenerationItemState.SUCCEEDED))
@@ -3119,9 +3167,26 @@ def test_nightly_generation_orders_carried_over_items_first():
     sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
 
     order_clause = sql.split("ORDER BY", 1)[1]
-    assert "carried_over_from IS NOT NULL DESC" in order_clause
+    # `carried_over_from IS NULL` 오름차순은 이월 슬롯을 먼저 놓는다(false < true).
+    # keyset 페이징이 이어붙일 수 있게 단방향 표현을 쓴다.
+    assert "carried_over_from IS NULL" in order_clause
+    assert "content_items.id" in order_clause.split("LIMIT", 1)[0]
     # 이월 우선 정렬이 발행 예정일 정렬보다 앞선다.
     assert order_clause.index("carried_over_from") < order_clause.index("scheduled_date")
+
+
+def test_nightly_generation_keyset_page_continues_after_the_last_row():
+    """refill 페이지는 같은 정렬 키로 이어붙는다 — 타입이 붙은 바인드로 비교한다."""
+    after = (False, date(2026, 7, 1), 4, uuid.uuid4())
+    stmt = tasks._nightly_generation_stmt(
+        date(2026, 7, 1), date(2026, 7, 8), after=after
+    )
+
+    sql = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+    where_clause = sql.split("WHERE", 1)[1]
+    assert "carried_over_from IS NULL" in where_clause
+    assert f"'{after[3]}'" in where_clause  # id tiebreak가 바인드된다
+    assert "'2026-07-01'" in where_clause
 
 
 def test_nightly_generation_stmt_uses_row_level_claiming():
@@ -3876,53 +3941,147 @@ class _Result:
 
 
 class _FakeSyncDB:
-    """첫 execute는 batch 조회, 두 번째 execute는 overflow count 조회."""
+    """keyset 페이징을 모사한다. execute 한 번이 한 페이지다."""
 
-    def __init__(self, items, total_count):
-        self._results = [_Result(items=items), _Result(scalar=total_count)]
+    def __init__(self, *pages):
+        self._pages = [list(page) for page in pages]
         self.execute_calls = 0
         self.commit_calls = 0
 
     def execute(self, _stmt):
-        result = self._results[self.execute_calls]
+        page = self._pages[self.execute_calls] if self.execute_calls < len(self._pages) else []
         self.execute_calls += 1
-        return result
+        return _Result(items=page)
 
     def commit(self):
         self.commit_calls += 1
 
 
-def _items(n):
-    return [SimpleNamespace(id=i, hospital_id=i) for i in range(n)]
+def _items(n, *, start=0, eligible=True):
+    return [
+        SimpleNamespace(
+            id=index,
+            hospital_id=index,
+            carried_over_from=None,
+            scheduled_date=date(2026, 6, 10),
+            sequence_no=index,
+            generation_claim_token=None,
+            _eligible=eligible,
+        )
+        for index in range(start, start + n)
+    ]
+
+
+def _eligible_flag(item) -> bool:
+    return bool(getattr(item, "_eligible", True))
 
 
 def test_load_nightly_generation_batch_without_truncation():
-    db = _FakeSyncDB(_items(3), total_count=3)
+    db = _FakeSyncDB(_items(3))
 
-    items, truncated = tasks._load_nightly_generation_batch(
+    items, truncated, scan_complete = tasks._load_nightly_generation_batch(
         db, date(2026, 6, 10), date(2026, 6, 11)
     )
 
     assert len(items) == 3
     assert truncated == 0
-    assert db.execute_calls == 1  # overflow count 조회 불필요
+    assert scan_complete is True
+    assert db.execute_calls == 1  # 한 페이지로 창이 소진됐다
     assert db.commit_calls == 1
     assert all(item.generation_claimed_at is not None for item in items)
 
 
-def test_load_nightly_generation_batch_detects_cap_truncation():
+def test_load_nightly_generation_batch_counts_every_unclaimed_eligible_row():
     cap = tasks.NIGHTLY_GENERATION_CAP
-    db = _FakeSyncDB(_items(cap + 1), total_count=cap + 7)
+    db = _FakeSyncDB(_items(cap + 5))
 
-    items, truncated = tasks._load_nightly_generation_batch(
+    items, truncated, scan_complete = tasks._load_nightly_generation_batch(
         db, date(2026, 6, 10), date(2026, 6, 11)
     )
 
     assert len(items) == cap
-    assert truncated == 7  # 정확한 잔여 건수 보고
-    assert db.execute_calls == 2
+    assert truncated == 5  # 상한 밖에 남은 적격 행 수를 그대로 보고한다
+    assert scan_complete is True
     assert db.commit_calls == 1
-    assert all(item.generation_claimed_at is not None for item in items)
+
+
+def test_load_nightly_generation_batch_refills_past_ineligible_rows():
+    """종결·미도래 행 101개 뒤의 적격 행이 굶지 않는다."""
+    page_size = tasks.NIGHTLY_GENERATION_SELECT_LIMIT + 1
+    blocked = _items(page_size, eligible=False)
+    eligible_row = _items(1, start=page_size)[0]
+    db = _FakeSyncDB(blocked, [eligible_row])
+
+    items, truncated, scan_complete = tasks._load_nightly_generation_batch(
+        db, date(2026, 6, 10), date(2026, 6, 11), is_eligible=_eligible_flag
+    )
+
+    assert [item.id for item in items] == [eligible_row.id]
+    assert truncated == 0
+    assert scan_complete is True
+    assert db.execute_calls == 2  # 첫 페이지가 가득 차 다음 키셋 페이지를 읽는다
+    # 페이지마다 커밋해 잠금을 푼다 — 비적격 행을 배치가 끝날 때까지 잠그지 않는다.
+    assert db.commit_calls == 2
+    assert all(row.generation_claim_token is None for row in blocked)
+
+
+def test_load_nightly_generation_batch_reports_an_unscanned_window_separately():
+    page_size = tasks.NIGHTLY_GENERATION_SELECT_LIMIT + 1
+    pages = [_items(page_size, start=page_size * index, eligible=False)
+             for index in range(nightly_generation_batch.NIGHTLY_GENERATION_MAX_PAGES + 1)]
+    db = _FakeSyncDB(*pages)
+
+    items, truncated, scan_complete = tasks._load_nightly_generation_batch(
+        db, date(2026, 6, 10), date(2026, 6, 11), is_eligible=_eligible_flag
+    )
+
+    assert items == []
+    assert db.execute_calls == nightly_generation_batch.NIGHTLY_GENERATION_MAX_PAGES
+    assert db.commit_calls == db.execute_calls  # claim이 없어도 페이지마다 잠금을 푼다
+    # 확인한 적격 행이 없으므로 truncated는 0이고, 창을 다 훑지 못한 사실은 따로 알린다.
+    assert truncated == 0
+    assert scan_complete is False
+
+
+def test_generation_retry_is_eligible_matches_the_worker_skip_rule(monkeypatch):
+    philosophy_reads = []
+
+    def read_philosophy(_db, hospital_id):
+        philosophy_reads.append(hospital_id)
+        return SimpleNamespace(id="p1")
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", read_philosophy)
+    monkeypatch.setattr(
+        tasks, "_generation_attempt_context", lambda _item, _philosophy: "ctx"
+    )
+    is_eligible = tasks._generation_retry_is_eligible(object())
+
+    fresh = SimpleNamespace(hospital_id="h1", essence_check_summary=None)
+    terminal = SimpleNamespace(
+        hospital_id="h1",
+        essence_check_summary={
+            "generation_attempt": {
+                "context": "ctx",
+                "reason": "GENERATION_REJECTED",
+                "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+            }
+        },
+    )
+    changed_context = SimpleNamespace(
+        hospital_id="h1",
+        essence_check_summary={
+            "generation_attempt": {
+                "context": "other-philosophy",
+                "reason": "GENERATION_REJECTED",
+                "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+            }
+        },
+    )
+
+    assert is_eligible(fresh) is True  # 시도 기록 없는 행은 항상 통과
+    assert is_eligible(terminal) is False
+    assert is_eligible(changed_context) is True  # 입력이 바뀌면 다시 시도한다
+    assert philosophy_reads == ["h1"]  # 병원별로 한 번만 읽는다
 
 
 # ── 08:00 자동 발행: due/public 상태와 예외 필터 ──

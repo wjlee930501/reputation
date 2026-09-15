@@ -1,13 +1,18 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
+from app.services.post_publish_review_policy import AUTO_PUBLISH_CATCHUP_DAYS
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
+    ENVIRONMENT_ATTEMPT_BUDGET,
+    KST,
+    RECOVERY_SWEEP_CATCHUP_DAYS,
     SAMPLE_BODY_DAILY_BUDGET,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
     environment_attempt_period,
     has_model_declared_hard_finding,
+    next_recovery_deadline,
     next_recovery_sweep,
     repair_session_is_available,
     retry_class_for,
@@ -211,3 +216,256 @@ def test_body_repair_sessions_are_bounded_daily_and_over_three_days() -> None:
     assert state["exhausted_days"] == SAMPLE_EXHAUSTED_DAY_LIMIT
     assert repair_session_is_available(state, now + timedelta(days=3)) is False
     assert state["first_observed_at"] == now.isoformat()
+
+
+def _kst(year, month, day, hour=0, minute=0, second=0) -> datetime:
+    return datetime(year, month, day, hour, minute, second, tzinfo=KST)
+
+
+def _sample_attempt(reason: str, count: int, *, day: date, exhausted_days: int = 0) -> dict:
+    return {
+        "reason": reason,
+        "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+        "provider_attempt_count": count,
+        "exhausted_days": exhausted_days,
+        "attempt_period": day.isoformat(),
+    }
+
+
+def test_recovery_sweep_window_matches_the_publish_catchup_window() -> None:
+    """복구 스윕의 창은 발행 catch-up과 같은 7일이어야 한다."""
+
+    assert RECOVERY_SWEEP_CATCHUP_DAYS == AUTO_PUBLISH_CATCHUP_DAYS
+
+
+def test_deadline_for_a_slot_two_days_out_is_tonights_nightly_batch() -> None:
+    now = _kst(2026, 9, 14, 10, 0)
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+
+    due = next_recovery_deadline(attempt, scheduled_date=date(2026, 9, 16), now=now)
+
+    assert due == _kst(2026, 9, 14, 23, 0).astimezone(UTC)
+
+
+def test_tomorrows_slot_failing_after_the_nightly_batch_waits_for_01() -> None:
+    now = _kst(2026, 9, 14, 23, 30)
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+
+    due = next_recovery_deadline(attempt, scheduled_date=date(2026, 9, 15), now=now)
+
+    # 23:00 배치는 `[내일, 모레]`를 보지만 이미 지났다. 내일 01:00 스윕의 창이
+    # `[내일-7, 내일]`이라 이 슬롯을 집는 첫 시각이다.
+    assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_todays_slot_with_budget_left_retries_at_the_next_recovery_sweep() -> None:
+    now = _kst(2026, 9, 14, 7, 30)
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+
+    due = next_recovery_deadline(attempt, scheduled_date=date(2026, 9, 14), now=now)
+
+    # 예산이 남아 있어도 오늘 남은 스윕은 23:00뿐인데 그 창에는 오늘이 없다.
+    assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_spent_daily_sample_budget_moves_the_deadline_to_the_next_day() -> None:
+    now = _kst(2026, 9, 14, 4, 5)
+    spent = _sample_attempt("GENERATION_REJECTED", SAMPLE_BODY_DAILY_BUDGET, day=date(2026, 9, 14))
+
+    due = next_recovery_deadline(spent, scheduled_date=date(2026, 9, 14), now=now)
+
+    assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_image_budget_allows_four_attempts_before_the_day_moves() -> None:
+    now = _kst(2026, 9, 14, 1, 5)
+    slot = date(2026, 9, 14)
+    under = _sample_attempt("IMAGE_GENERATION_FAILED", SAMPLE_IMAGE_DAILY_BUDGET - 1, day=slot)
+    spent = _sample_attempt("IMAGE_GENERATION_FAILED", SAMPLE_IMAGE_DAILY_BUDGET, day=slot)
+
+    assert next_recovery_deadline(under, scheduled_date=slot, now=now) == _kst(
+        2026, 9, 14, 4, 0
+    ).astimezone(UTC)
+    assert next_recovery_deadline(spent, scheduled_date=slot, now=now) == _kst(
+        2026, 9, 15, 1, 0
+    ).astimezone(UTC)
+
+
+def test_yesterdays_spent_budget_resets_at_kst_midnight() -> None:
+    now = _kst(2026, 9, 15, 0, 30)
+    stale = _sample_attempt(
+        "IMAGE_GENERATION_FAILED", SAMPLE_IMAGE_DAILY_BUDGET, day=date(2026, 9, 14)
+    )
+
+    due = next_recovery_deadline(stale, scheduled_date=date(2026, 9, 15), now=now)
+
+    assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_three_exhausted_days_leave_no_automatic_deadline() -> None:
+    attempt = _sample_attempt(
+        "GENERATION_REJECTED",
+        SAMPLE_BODY_DAILY_BUDGET,
+        day=date(2026, 9, 14),
+        exhausted_days=SAMPLE_EXHAUSTED_DAY_LIMIT,
+    )
+
+    assert (
+        next_recovery_deadline(
+            attempt, scheduled_date=date(2026, 9, 14), now=_kst(2026, 9, 14, 4, 5)
+        )
+        is None
+    )
+
+
+def test_environment_budget_is_finite_unless_the_code_resets_daily() -> None:
+    now = _kst(2026, 9, 14, 2, 0)
+    slot = date(2026, 9, 14)
+
+    def attempt(reason: str) -> dict:
+        return {
+            "reason": reason,
+            "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+            "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+            "attempt_period": slot.isoformat(),
+        }
+
+    assert next_recovery_deadline(attempt("PROVIDER_TIMEOUT"), scheduled_date=slot, now=now) is None
+    assert next_recovery_deadline(
+        attempt("CONTENT_AI_REVIEW_UNAVAILABLE"), scheduled_date=slot, now=now
+    ) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_terminal_classes_and_unreachable_slots_have_no_deadline() -> None:
+    now = _kst(2026, 9, 14, 2, 0)
+
+    for retry_class in (
+        GenerationRetryClass.OPERATOR_REQUIRED,
+        GenerationRetryClass.INPUT_CHANGE_REQUIRED,
+    ):
+        assert (
+            next_recovery_deadline(
+                {"reason": "GENERATION_REJECTED", "retry_class": retry_class.value},
+                scheduled_date=date(2026, 9, 14),
+                now=now,
+            )
+            is None
+        )
+    # 지평(14일) 밖의 미래 슬롯은 어떤 스윕도 집지 않는다.
+    assert (
+        next_recovery_deadline(
+            _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14)),
+            scheduled_date=date(2026, 12, 25),
+            now=now,
+        )
+        is None
+    )
+
+
+def test_a_slot_older_than_catchup_waits_for_the_backlog_recovery() -> None:
+    """스윕 창 밖의 슬롯은 22:30 백로그 복구가 소유한다 — 기한 없는 RETRYING이 아니다."""
+
+    observed = _kst(2026, 9, 14, 2, 0)
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+
+    due = next_recovery_deadline(attempt, scheduled_date=date(2026, 8, 1), now=observed)
+
+    assert due == _kst(2026, 9, 14, 23, 30).astimezone(UTC)
+    # 22:30이 이미 지난 시각이면 다음 날 실행 뒤가 된다.
+    assert next_recovery_deadline(
+        attempt, scheduled_date=date(2026, 8, 1), now=_kst(2026, 9, 14, 23, 0)
+    ) == _kst(2026, 9, 15, 23, 30).astimezone(UTC)
+
+
+def test_a_stored_null_deadline_does_not_become_due_by_time_alone() -> None:
+    attempt = {
+        "reason": "GENERATION_REJECTED",
+        "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+        "provider_attempt_count": 1,
+        "attempt_period": "2026-09-14",
+        "next_retry_at": None,
+    }
+
+    assert retry_is_due(attempt, _kst(2026, 9, 14, 23, 0)) is False
+
+
+def test_a_new_kst_day_still_honours_the_persisted_deadline() -> None:
+    """예산이 초기화됐다는 이유로 약속한 시각보다 앞당기지 않는다."""
+
+    next_day = _kst(2026, 9, 15, 0, 30)
+    spent_yesterday = _sample_attempt(
+        "GENERATION_REJECTED", SAMPLE_BODY_DAILY_BUDGET, day=date(2026, 9, 14)
+    )
+
+    future = dict(spent_yesterday, next_retry_at=_kst(2026, 9, 15, 1, 0).astimezone(UTC).isoformat())
+    assert retry_is_due(future, next_day) is False
+    assert retry_is_due(future, _kst(2026, 9, 15, 1, 0)) is True
+
+    # 어떤 스윕도 집지 않는다고 저장된 결정은 날이 바뀌어도 되살아나지 않는다.
+    assert retry_is_due(dict(spent_yesterday, next_retry_at=None), next_day) is False
+
+
+def test_a_daily_reset_environment_budget_reopens_on_the_day_it_resets() -> None:
+    """어제 소진된 일일 초기화 코드는 오늘 이미 예산이 돌아왔다."""
+
+    attempt = {
+        "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
+        "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+        "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+        "attempt_period": "2026-09-14",
+    }
+
+    due = next_recovery_deadline(
+        attempt, scheduled_date=date(2026, 9, 15), now=_kst(2026, 9, 15, 0, 30)
+    )
+
+    assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_a_repair_codes_deadline_follows_its_session_budget() -> None:
+    """수리 코드의 기한은 재시도 클래스가 아니라 수리 세션 예산에서 나온다."""
+
+    slot = date(2026, 9, 16)
+    now = _kst(2026, 9, 16, 7, 45)
+    attempt = {
+        "reason": "MISSING_REFERENCES",
+        "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+    }
+
+    # 오늘 세션이 남아 있다 → 오늘 남은 첫 스윕이 아니라 이 슬롯을 집는 첫 시각.
+    assert next_recovery_deadline(
+        attempt, scheduled_date=slot, now=now, repair_state=None
+    ) == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
+
+    # 오늘 예산만 소진 → 내일.
+    spent_today = {"period": "2026-09-16", "count": BODY_REPAIR_DAILY_BUDGET, "exhausted_days": 1}
+    assert next_recovery_deadline(
+        attempt, scheduled_date=slot, now=now, repair_state=spent_today
+    ) == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
+
+    # 소진된 날이 상한만큼 쌓였다 → 자동 기한 없음.
+    exhausted = {"period": "2026-09-16", "count": BODY_REPAIR_DAILY_BUDGET,
+                 "exhausted_days": SAMPLE_EXHAUSTED_DAY_LIMIT}
+    assert (
+        next_recovery_deadline(
+            attempt, scheduled_date=slot, now=now, repair_state=exhausted
+        )
+        is None
+    )
+
+
+def test_an_input_change_repair_code_has_no_automatic_deadline() -> None:
+    """승인된 입력이 틀렸다는 판정은 작가 세션으로 고칠 수 없다."""
+
+    assert (
+        next_recovery_deadline(
+            {
+                "reason": "FORBIDDEN_EXPRESSION",
+                "retry_class": GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+            },
+            scheduled_date=date(2026, 9, 16),
+            now=_kst(2026, 9, 16, 7, 45),
+            repair_state=None,
+        )
+        is None
+    )

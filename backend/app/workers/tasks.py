@@ -308,12 +308,14 @@ from app.workers.generation_incident_control import (
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
+    BODY_REPAIR_CODES,
+    BODY_REPAIR_STATE_KEY,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
     environment_attempt_period,
     has_model_declared_hard_finding,
-    next_recovery_sweep,
+    next_recovery_deadline,
     repair_session_is_available,
     retry_class_for,
     retry_is_due,
@@ -346,6 +348,7 @@ from app.workers.monthly_slot_incident_control import (
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
     NIGHTLY_GENERATION_CAP,
+    NIGHTLY_GENERATION_MAX_PAGES,
     NIGHTLY_GENERATION_SELECT_LIMIT,  # noqa: F401 — test가 tasks 경유로 참조하는 re-export
     _load_nightly_generation_batch,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
@@ -426,19 +429,11 @@ GENERATION_GATE_CATALOG_VERSION = "2026-09-13.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
-_AUTOMATIC_BODY_REPAIR_CODES = frozenset(
-    {
-        "FAQ_FIELDS_MISSING",
-        "MISSING_REFERENCES",
-        "FORBIDDEN_EXPRESSION",
-        "ESSENCE_NOT_ALIGNED",
-        "CONTENT_AI_REVIEW_STALE",
-    }
-)
+_AUTOMATIC_BODY_REPAIR_CODES = BODY_REPAIR_CODES
 # 저장된 본문 수리 세션의 예산은 시도 지문(generation_attempt)과 따로 센다. 수리가
 # 성공해 본문이 바뀌면 시도 기록은 사라지지만 이 계수는 남아야 같은 글이 매일
 # 유료 재생성을 반복하지 않는다.
-_BODY_REPAIR_KEY = "automatic_body_repair"
+_BODY_REPAIR_KEY = BODY_REPAIR_STATE_KEY
 # 이미지 정책 거절의 durable 진단. 다음 후보를 policy_repair 프롬프트로 한 번 더 만든다.
 _IMAGE_POLICY_DIAGNOSTIC_KEY = "image_policy_rejection"
 _IMAGE_POLICY_REJECTION_CODE = "CONTENT_IMAGE_POLICY_REJECTED"
@@ -633,6 +628,30 @@ def _generation_attempt_is_unchanged(
     return not retry_is_due(previous)
 
 
+def _generation_retry_is_eligible(db):
+    """로더가 claim 전에 쓰는 술어. 워커의 SKIPPED 판정과 **같은 범위**로 적용한다.
+
+    워커(`_run_generation_item`)는 본문이 있는 행을 `_generate_single_content_item`으로
+    먼저 보낸다 — 본문 수리·이미지 재사용은 시도 기록이 그대로여도 진행되는 일이다.
+    시도 기록 비교는 본문이 없는 행에만 걸린다. 로더가 그보다 넓게 거르면 수리·재사용이
+    필요한 슬롯을 영영 집지 않는다.
+
+    philosophy는 병원별로 한 번만 읽어 이 배치 안에서 캐시한다.
+    """
+
+    philosophies: dict[uuid.UUID, HospitalContentPhilosophy | None] = {}
+
+    def is_eligible(item: ContentItem) -> bool:
+        if getattr(item, "body", None):
+            return True
+        hospital_id = item.hospital_id
+        if hospital_id not in philosophies:
+            philosophies[hospital_id] = _generation_philosophy_sync(db, hospital_id)
+        return not _generation_attempt_is_unchanged(item, philosophies[hospital_id])
+
+    return is_eligible
+
+
 def _remember_generation_attempt(
     db,
     item: ContentItem,
@@ -642,8 +661,13 @@ def _remember_generation_attempt(
     message: str | None = None,
     diagnostics: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
+    count_attempt: bool = True,
 ) -> dict[str, Any]:
-    """Persist one no-body outcome without adding a schema column."""
+    """Persist one no-body outcome without adding a schema column.
+
+    `count_attempt=False`는 예산을 쓰지 않은 결정만 남긴다(게이트가 시도 기록보다 먼저
+    차단을 관측한 경우). 시도 수·소진 일수·가드 보류 수를 올리지 않는다.
+    """
 
     summary = getattr(item, "essence_check_summary", None)
     updated = dict(summary) if isinstance(summary, dict) else {}
@@ -662,6 +686,10 @@ def _remember_generation_attempt(
         and stored_attempt_period(previous) != attempt_period
     ):
         same_context = False
+    if not count_attempt and previous.get("reason") != reason:
+        # 예산을 쓰지 않은 결정이 다른 원인의 계수를 물려받으면, 새 원인이 처음부터
+        # 소진된 것처럼 보인다. 원인이 바뀌면 계수는 0에서 시작한다.
+        same_context = False
     previous_provider_attempts = int(
         previous.get(
             "provider_attempt_count",
@@ -677,7 +705,10 @@ def _remember_generation_attempt(
     provider_attempt_count = previous_provider_attempts
     guard_deferral_count = previous_guard_deferrals
     exhausted_days = int(previous.get("exhausted_days") or 0) if same_context else 0
-    if reason == "COST_BLOCKED":
+    if not count_attempt:
+        # 예산을 쓰지 않은 결정만 남기는 기록이다. 어떤 계수도 올리지 않는다.
+        pass
+    elif reason == "COST_BLOCKED":
         guard_deferral_count += 1
     elif retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE:
         # 표본 실패는 KST 하루 예산 안에서 세고 날이 바뀌면 초기화된다. 소진된 날이
@@ -728,17 +759,40 @@ def _remember_generation_attempt(
         stored_diagnostic = dict(policy_rejection)
     if reason == _IMAGE_POLICY_REJECTION_CODE and isinstance(stored_diagnostic, dict):
         attempt[_IMAGE_POLICY_DIAGNOSTIC_KEY] = stored_diagnostic
-    if retry_class in (
+    deadline = next_recovery_deadline(
+        attempt,
+        scheduled_date=getattr(item, "scheduled_date", None),
+        now=observed_at,
+        repair_state=updated.get(_BODY_REPAIR_KEY),
+    )
+    if reason in _AUTOMATIC_BODY_REPAIR_CODES or retry_class in (
         GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
         GenerationRetryClass.SAMPLE_RECOVERABLE,
     ):
-        attempt["next_retry_at"] = next_recovery_sweep().isoformat()
+        # 스윕마다 창이 달라 "다음 스윕 시각"은 기한이 아니다. 이 슬롯을 실제로 다시 집는
+        # 첫 시각만 저장한다 — `retry_is_due`와 인시던트 기한이 같은 값을 읽게 된다.
+        # `None`은 "어떤 스윕도 집지 않는다"는 결정이며 그대로 저장한다.
+        attempt["next_retry_at"] = deadline.isoformat() if deadline else None
     for key, value in (extra or {}).items():
         attempt[key] = value
     updated[_GENERATION_ATTEMPT_KEY] = attempt
     item.essence_check_summary = updated
     db.commit()
     return attempt
+
+
+def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) -> None:
+    """게이트가 시도 기록보다 먼저 관측한 차단을 정본 시도 기록으로 남긴다.
+
+    07:45·08:00 게이트는 워커가 한 번도 기록하지 못한 원인(또는 다른 원인)을 볼 수 있다.
+    그때 인시던트가 빌릴 기한이 없으면 "재시도 중"이라는 말만 남고 실제 다음 시도 시각이
+    없다. 예산은 쓰지 않은 채(count_attempt=False) context·기간·계수·기한을 갖춘 한 건을
+    먼저 저장해, 워커의 `retry_is_due`와 인시던트 기한이 같은 값을 읽게 한다.
+    """
+
+    if _stored_generation_attempt(item).get("reason") == code:
+        return
+    _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
 
 def _clear_generation_attempt(db, item: ContentItem) -> None:
@@ -4706,7 +4760,19 @@ def _dispatch_generation_batch(
 ) -> int:
     """Claim the due slots and fan them out. 이 함수는 공급자를 호출하지 않는다."""
 
-    items, truncated_count = _load_nightly_generation_batch(db, window_start, window_end)
+    items, truncated_count, scan_complete = _load_nightly_generation_batch(
+        db, window_start, window_end, is_eligible=_generation_retry_is_eligible(db)
+    )
+
+    if not scan_complete:
+        # 페이지 상한에서 멈췄다 — truncated_count는 확인한 만큼만 센 하한이다.
+        logger.warning(
+            "nightly_content_generation stopped after %d pages: window %s~%s was not "
+            "fully scanned",
+            NIGHTLY_GENERATION_MAX_PAGES,
+            window_start,
+            window_end,
+        )
 
     if truncated_count:
         # 상한 밖 슬롯은 상태에 남아 다음 주기에 다시 회수된다.
@@ -4771,6 +4837,8 @@ def nightly_content_generation(self):
 
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
+        # 로더보다 앞선 별도 pass다. 로더는 고른 행에 claim을 찍고 커밋한 채 돌려주므로
+        # 그 뒤에서는 활성 claim이 없는 후보를 찾을 수 없다.
         recorder = GenerationBatchRecorder(db, task_id, window_start, window_end)
         _dispatch_generation_batch(
             db, recorder, window_start, window_end, now_kst=now_kst
@@ -5310,12 +5378,16 @@ def overnight_content_generation_recovery(self):
     require_dispatch(self, "overnight-content-generation-recovery")
     now_kst = arrow.now("Asia/Seoul")
     today = now_kst.date()
+    # 복구 스윕의 창은 발행 catch-up과 같은 7일이다. `[오늘, 오늘]`만 보면 어제까지
+    # 실패한 슬롯은 예산이 남아 있어도 다시 집히지 않아, 약속한 재시도가 실제로는
+    # 일어나지 않는다. OperationRun 요청 payload도 같은 창을 기록해야 한다.
+    window_start = auto_publish_catchup_start(today)
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
-        recorder = GenerationBatchRecorder(db, task_id, today, today)
+        recorder = GenerationBatchRecorder(db, task_id, window_start, today)
         # 07:45 요약이 이 시간대의 알림을 소유한다 — 슬롯별 Slack을 내지 않는다.
         _dispatch_generation_batch(
-            db, recorder, today, today, now_kst=now_kst, notify=False
+            db, recorder, window_start, today, now_kst=now_kst, notify=False
         )
         recorder.finish()
 
@@ -6382,6 +6454,8 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
             code=code,
             message=message,
         )
+        # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
+        _record_gate_blocker_decision(db, item, philosophy, code)
         # The async incident transaction must be able to reference this run.
         db.commit()
         _run_async(
@@ -6672,6 +6746,8 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 code=code,
                 message=message,
             )
+            # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
+            _record_gate_blocker_decision(db, item, philosophy, code)
             db.commit()
             return {
                 "kind": "blocked",
