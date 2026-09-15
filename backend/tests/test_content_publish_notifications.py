@@ -589,6 +589,7 @@ def _yield_fact(
     published: int = 0,
     reused: int = 0,
     retrying: int = 0,
+    topic_swapped: int = 0,
     operator_required: int = 0,
 ) -> SimpleNamespace:
     return SimpleNamespace(
@@ -597,6 +598,7 @@ def _yield_fact(
         published=published,
         published_with_reused_image=reused,
         retrying=retrying,
+        topic_swapped=topic_swapped,
         operator_required=operator_required,
     )
 
@@ -610,7 +612,9 @@ def test_weekly_rollup_leads_with_one_yield_line_per_hospital() -> None:
         }
     ]
     facts = [
-        _yield_fact("수율낮은의원", due=5, published=1, retrying=2, operator_required=1),
+        _yield_fact(
+            "수율낮은의원", due=5, published=1, retrying=2, topic_swapped=1, operator_required=1
+        ),
         _yield_fact("수율높은의원", due=4, published=4, reused=1),
         # 계약도 발행도 없는 병원은 줄을 만들지 않는다.
         _yield_fact("계약없는의원"),
@@ -623,8 +627,8 @@ def test_weekly_rollup_leads_with_one_yield_line_per_hospital() -> None:
     blocks = intent.message.payload()["blocks"]
     block_ids = [block["block_id"] for block in blocks]
 
-    assert "발행 1/5 (재사용 이미지 0, 재시도 중 2, 조치 필요 1)" in payload
-    assert "발행 4/4 (재사용 이미지 1, 재시도 중 0, 조치 필요 0)" in payload
+    assert "발행 1/5 (재사용 이미지 0, 재시도 중 2, 주제 교체 1, 조치 필요 1)" in payload
+    assert "발행 4/4 (재사용 이미지 1, 재시도 중 0, 주제 교체 0, 조치 필요 0)" in payload
     assert "계약없는의원" not in payload
     assert "발행 5/9" in payload
     # 수율 줄이 차단 목록보다 위에 온다.

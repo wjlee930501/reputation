@@ -169,9 +169,22 @@ const FETCH_ROW_STATUS: Record<string, { label: string; tone: SourceRowTone }> =
   FAILED: { label: '가져오기 재시도 대기', tone: 'warn' },
 }
 
+/*
+  주소에서 본문을 끝내 받지 못한 자료는 처리 실패가 아니고, 운영 센터에 예외도 열리지
+  않는다(B2). 사람이 갈 곳은 이 자료 표 자체이므로 여기서 할 일을 그대로 말한다.
+*/
+const FETCH_FAILED_ROW_STATUS: { label: string; tone: SourceRowTone } = {
+  label: '주소에서 본문을 가져오지 못함 — 주소를 고치거나 자료 파일을 올려 주세요',
+  tone: 'warn',
+}
+
 export interface SourceRowLike {
   status: string
-  source_metadata?: { fetch_state?: string; incident_id?: string } | null
+  source_metadata?: {
+    fetch_state?: string
+    incident_id?: string
+    incident_retired_at?: string
+  } | null
 }
 
 export function sourceRowStatus(source: SourceRowLike): { label: string; tone: SourceRowTone } {
@@ -179,6 +192,7 @@ export function sourceRowStatus(source: SourceRowLike): { label: string; tone: S
   if (source.status === 'PENDING' && fetchState && fetchState in FETCH_ROW_STATUS) {
     return FETCH_ROW_STATUS[fetchState]
   }
+  if (source.status === 'ERROR' && fetchState === 'FAILED') return FETCH_FAILED_ROW_STATUS
   return SOURCE_ROW_STATUS[source.status] ?? { label: '처리 상태 확인 필요', tone: 'neutral' }
 }
 

@@ -286,11 +286,8 @@ export function operationStatusLabel(status: string): string {
   const hospitalStatus = STATUS_LABELS[status]
   if (hospitalStatus) return hospitalStatus.label
   switch (status) {
+    // 오늘의 운영에 남는 유일한 상태 — 공개 후 확인 표본은 운영자 큐에 오르지 않는다(B1).
     case 'PUBLISH_DUE': return '오늘 발행 예정'
-    case 'REVIEW_PENDING': return '발행 후 확인 대기'
-    case 'OVERDUE_REVIEW': return '발행 후 확인 기한 지남'
-    // 발행됐지만 공개 페이지가 숨기는 중 — 확인이 아니라 사유 해소가 할 일이다(H-01).
-    case 'WITHHELD_PUBLIC': return '공개 보류'
     case 'MISSING': return '지난달 보고서 미생성'
     case 'COVERAGE_INCOMPLETE': return '필수 측정 미완료'
     case 'MANIFEST_MISMATCH': return '측정 집계 연결 오류'
@@ -347,6 +344,7 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   PROVIDER_TIMEOUT: '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',
   PROVIDER_UNAVAILABLE: '콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.',
   GENERATION_REJECTED: '콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.',
+  TOPIC_SWAPPED: '같은 주제로는 자동 생성이 소진되어 다른 주제로 다시 준비합니다. 다음 복구 배치가 새 주제로 생성합니다.',
   MISSING_APPROVED_ESSENCE: '승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.',
   IMAGE_GENERATION_FAILED: '본문은 준비됐지만 대표 이미지를 만들지 못했습니다.',
   IMAGE_GENERATION_RETRIES_EXHAUSTED: '대표 이미지 자동 재시도 예산을 모두 사용했습니다.',

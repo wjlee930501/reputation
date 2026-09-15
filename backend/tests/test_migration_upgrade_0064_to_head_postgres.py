@@ -124,10 +124,13 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                     "INSERT INTO content_items "
                     "(id, hospital_id, schedule_id, content_type, sequence_no, total_count, "
                     "title, image_url, image_policy_verified_at, scheduled_date, status, "
-                    "published_at, published_by) VALUES "
+                    "generated_at, body_updated_at, published_at, published_by) VALUES "
                     "(:id, :hospital_id, :schedule_id, 'FAQ', 1, 12, '기존 글', "
                     "'https://cdn.example/image.png', TIMESTAMPTZ '2026-08-31 14:59:00+00', "
                     "DATE '2026-08-31', 'PUBLISHED', "
+                    # 생성 뒤에 공개 텍스트가 바뀐 행 — 0079 backfill이 사람 편집으로 읽는다.
+                    "TIMESTAMPTZ '2026-08-30 00:00:00+00', "
+                    "TIMESTAMPTZ '2026-08-30 09:00:00+00', "
                     "TIMESTAMPTZ '2026-08-31 15:00:00+00', 'LEGACY_AE')"
                 ),
                 {"id": content_id, "hospital_id": hospital_id, "schedule_id": schedule_id},
@@ -136,9 +139,11 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                 text(
                     "INSERT INTO content_items "
                     "(id, hospital_id, schedule_id, content_type, sequence_no, total_count, "
-                    "title, scheduled_date, status, published_at, published_by) VALUES "
+                    "title, scheduled_date, status, brief_approved_by, "
+                    "published_at, published_by) VALUES "
                     "(:id, :hospital_id, :schedule_id, 'FAQ', 2, 12, NULL, "
-                    "DATE '2026-08-30', 'REJECTED', NULL, NULL)"
+                    # 시스템 actor가 승인한 brief는 사람 편집이 아니다 (0079 backfill).
+                    "DATE '2026-08-30', 'REJECTED', 'SYSTEM_EXPOSURE_PLANNER', NULL, NULL)"
                 ),
                 {
                     "id": erased_content_id,
@@ -277,7 +282,8 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                     "SELECT image_url, image_policy_verified_at, generation_philosophy_id, "
                     "last_reviewed_philosophy_id, content_revision, image_content_hash, "
                     "image_subject_hash, image_policy_version, first_published_at, "
-                    "first_published_by FROM content_items WHERE id=:id"
+                    "first_published_by, human_edited_at, topic_swap_history "
+                    "FROM content_items WHERE id=:id"
                 ),
                 {"id": content_id},
             ).one()
@@ -293,15 +299,22 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                 2026, 8, 31, 15, 0, tzinfo=timezone.utc
             )
             assert content.first_published_by == "LEGACY_AE"
+            # 생성 뒤 공개 텍스트가 바뀐 행은 사람 편집으로 backfill되고, 주제 교체
+            # 이력은 아무 행에도 만들어지지 않는다.
+            assert content.human_edited_at.astimezone(timezone.utc) == datetime(
+                2026, 8, 30, 9, 0, tzinfo=timezone.utc
+            )
+            assert content.topic_swap_history is None
             erased_content = connection.execute(
                 text(
-                    "SELECT first_published_at, first_published_by "
+                    "SELECT first_published_at, first_published_by, human_edited_at "
                     "FROM content_items WHERE id=:id"
                 ),
                 {"id": erased_content_id},
             ).one()
             assert erased_content.first_published_at is None
             assert erased_content.first_published_by is None
+            assert erased_content.human_edited_at is None
             assert connection.execute(
                 text("SELECT count(*) FROM measurement_observation_slots")
             ).scalar_one() == 0

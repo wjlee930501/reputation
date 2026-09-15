@@ -308,12 +308,14 @@ from app.workers.generation_incident_control import (
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
+    BODY_REPAIR_CODES,
+    BODY_REPAIR_STATE_KEY,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
     environment_attempt_period,
     has_model_declared_hard_finding,
-    next_recovery_sweep,
+    next_recovery_deadline,
     repair_session_is_available,
     retry_class_for,
     retry_is_due,
@@ -346,6 +348,7 @@ from app.workers.monthly_slot_incident_control import (
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
 from app.workers.nightly_generation_batch import (
     NIGHTLY_GENERATION_CAP,
+    NIGHTLY_GENERATION_MAX_PAGES,
     NIGHTLY_GENERATION_SELECT_LIMIT,  # noqa: F401 — test가 tasks 경유로 참조하는 re-export
     _load_nightly_generation_batch,
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
@@ -361,6 +364,7 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
+from app.workers.topic_swap_fallback import swap_exhausted_topics
 from app.workers.v0_checkpoint import (
     find_resumable_v0_measurement_run,
     find_reusable_v0_measurement_run,
@@ -426,19 +430,11 @@ GENERATION_GATE_CATALOG_VERSION = "2026-09-13.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
-_AUTOMATIC_BODY_REPAIR_CODES = frozenset(
-    {
-        "FAQ_FIELDS_MISSING",
-        "MISSING_REFERENCES",
-        "FORBIDDEN_EXPRESSION",
-        "ESSENCE_NOT_ALIGNED",
-        "CONTENT_AI_REVIEW_STALE",
-    }
-)
+_AUTOMATIC_BODY_REPAIR_CODES = BODY_REPAIR_CODES
 # 저장된 본문 수리 세션의 예산은 시도 지문(generation_attempt)과 따로 센다. 수리가
 # 성공해 본문이 바뀌면 시도 기록은 사라지지만 이 계수는 남아야 같은 글이 매일
 # 유료 재생성을 반복하지 않는다.
-_BODY_REPAIR_KEY = "automatic_body_repair"
+_BODY_REPAIR_KEY = BODY_REPAIR_STATE_KEY
 # 이미지 정책 거절의 durable 진단. 다음 후보를 policy_repair 프롬프트로 한 번 더 만든다.
 _IMAGE_POLICY_DIAGNOSTIC_KEY = "image_policy_rejection"
 _IMAGE_POLICY_REJECTION_CODE = "CONTENT_IMAGE_POLICY_REJECTED"
@@ -633,6 +629,30 @@ def _generation_attempt_is_unchanged(
     return not retry_is_due(previous)
 
 
+def _generation_retry_is_eligible(db):
+    """로더가 claim 전에 쓰는 술어. 워커의 SKIPPED 판정과 **같은 범위**로 적용한다.
+
+    워커(`_run_generation_item`)는 본문이 있는 행을 `_generate_single_content_item`으로
+    먼저 보낸다 — 본문 수리·이미지 재사용은 시도 기록이 그대로여도 진행되는 일이다.
+    시도 기록 비교는 본문이 없는 행에만 걸린다. 로더가 그보다 넓게 거르면 수리·재사용이
+    필요한 슬롯을 영영 집지 않는다.
+
+    philosophy는 병원별로 한 번만 읽어 이 배치 안에서 캐시한다.
+    """
+
+    philosophies: dict[uuid.UUID, HospitalContentPhilosophy | None] = {}
+
+    def is_eligible(item: ContentItem) -> bool:
+        if getattr(item, "body", None):
+            return True
+        hospital_id = item.hospital_id
+        if hospital_id not in philosophies:
+            philosophies[hospital_id] = _generation_philosophy_sync(db, hospital_id)
+        return not _generation_attempt_is_unchanged(item, philosophies[hospital_id])
+
+    return is_eligible
+
+
 def _remember_generation_attempt(
     db,
     item: ContentItem,
@@ -642,8 +662,13 @@ def _remember_generation_attempt(
     message: str | None = None,
     diagnostics: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
+    count_attempt: bool = True,
 ) -> dict[str, Any]:
-    """Persist one no-body outcome without adding a schema column."""
+    """Persist one no-body outcome without adding a schema column.
+
+    `count_attempt=False`는 예산을 쓰지 않은 결정만 남긴다(게이트가 시도 기록보다 먼저
+    차단을 관측한 경우). 시도 수·소진 일수·가드 보류 수를 올리지 않는다.
+    """
 
     summary = getattr(item, "essence_check_summary", None)
     updated = dict(summary) if isinstance(summary, dict) else {}
@@ -662,6 +687,10 @@ def _remember_generation_attempt(
         and stored_attempt_period(previous) != attempt_period
     ):
         same_context = False
+    if not count_attempt and previous.get("reason") != reason:
+        # 예산을 쓰지 않은 결정이 다른 원인의 계수를 물려받으면, 새 원인이 처음부터
+        # 소진된 것처럼 보인다. 원인이 바뀌면 계수는 0에서 시작한다.
+        same_context = False
     previous_provider_attempts = int(
         previous.get(
             "provider_attempt_count",
@@ -677,7 +706,10 @@ def _remember_generation_attempt(
     provider_attempt_count = previous_provider_attempts
     guard_deferral_count = previous_guard_deferrals
     exhausted_days = int(previous.get("exhausted_days") or 0) if same_context else 0
-    if reason == "COST_BLOCKED":
+    if not count_attempt:
+        # 예산을 쓰지 않은 결정만 남기는 기록이다. 어떤 계수도 올리지 않는다.
+        pass
+    elif reason == "COST_BLOCKED":
         guard_deferral_count += 1
     elif retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE:
         # 표본 실패는 KST 하루 예산 안에서 세고 날이 바뀌면 초기화된다. 소진된 날이
@@ -728,17 +760,40 @@ def _remember_generation_attempt(
         stored_diagnostic = dict(policy_rejection)
     if reason == _IMAGE_POLICY_REJECTION_CODE and isinstance(stored_diagnostic, dict):
         attempt[_IMAGE_POLICY_DIAGNOSTIC_KEY] = stored_diagnostic
-    if retry_class in (
+    deadline = next_recovery_deadline(
+        attempt,
+        scheduled_date=getattr(item, "scheduled_date", None),
+        now=observed_at,
+        repair_state=updated.get(_BODY_REPAIR_KEY),
+    )
+    if reason in _AUTOMATIC_BODY_REPAIR_CODES or retry_class in (
         GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
         GenerationRetryClass.SAMPLE_RECOVERABLE,
     ):
-        attempt["next_retry_at"] = next_recovery_sweep().isoformat()
+        # 스윕마다 창이 달라 "다음 스윕 시각"은 기한이 아니다. 이 슬롯을 실제로 다시 집는
+        # 첫 시각만 저장한다 — `retry_is_due`와 인시던트 기한이 같은 값을 읽게 된다.
+        # `None`은 "어떤 스윕도 집지 않는다"는 결정이며 그대로 저장한다.
+        attempt["next_retry_at"] = deadline.isoformat() if deadline else None
     for key, value in (extra or {}).items():
         attempt[key] = value
     updated[_GENERATION_ATTEMPT_KEY] = attempt
     item.essence_check_summary = updated
     db.commit()
     return attempt
+
+
+def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) -> None:
+    """게이트가 시도 기록보다 먼저 관측한 차단을 정본 시도 기록으로 남긴다.
+
+    07:45·08:00 게이트는 워커가 한 번도 기록하지 못한 원인(또는 다른 원인)을 볼 수 있다.
+    그때 인시던트가 빌릴 기한이 없으면 "재시도 중"이라는 말만 남고 실제 다음 시도 시각이
+    없다. 예산은 쓰지 않은 채(count_attempt=False) context·기간·계수·기한을 갖춘 한 건을
+    먼저 저장해, 워커의 `retry_is_due`와 인시던트 기한이 같은 값을 읽게 한다.
+    """
+
+    if _stored_generation_attempt(item).get("reason") == code:
+        return
+    _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
 
 def _clear_generation_attempt(db, item: ContentItem) -> None:
@@ -2739,7 +2794,6 @@ def _defer_source_processing_run_item(
 SOURCE_FETCH_PIPELINE = "source_fetch"
 SOURCE_PROCESSING_PIPELINE = "source_processing"
 CHANNEL_FETCH_COOLDOWN = timedelta(minutes=15)
-SOURCE_FETCH_NEXT_ACTION = "공식 채널 주소를 확인하거나 자료 파일을 직접 올려 주세요."
 SOURCE_PROCESSING_NEXT_ACTION = "자료 내용을 확인하고 다시 올리거나 제외해 주세요."
 
 
@@ -2832,8 +2886,8 @@ def fetch_channel_source(self, source_id: str) -> dict[str, object]:
     """프로파일 저장이 만든 채널 자료 행의 본문을 받아 온다.
 
     저장 요청은 행만 만들고 끝난다. 주소 하나에 12초까지 걸리는 fetch는 여기서 하고,
-    성공하면 곧바로 자료 처리로 이어 준다. 영구 실패와 예산을 다 쓴 실패만 사람에게
-    올리고, 그 사이의 실패는 스윕이 조용히 다시 건다.
+    성공하면 곧바로 자료 처리로 이어 준다. 영구 실패와 예산을 다 쓴 실패는 자료 행을
+    ERROR로 굳히고, 그 사이의 실패는 스윕이 조용히 다시 건다.
     """
     require_dispatch(self, "fetch-channel-source", source_id)
     source_uuid = uuid.UUID(source_id)
@@ -2870,27 +2924,14 @@ def fetch_channel_source(self, source_id: str) -> dict[str, object]:
     try:
         fetched = _run_async(fetch_source_content(source_type=source_type, url=url))
     except SourceRegistrationError as exc:
-        # 사고를 먼저 연다 — 열지 못하면 행을 PENDING/FAILED로 두어 스윕이 같은 종결을
-        # 다시 시도하게 한다. ERROR로 먼저 굳히면 자동 경로도 사람도 이 자료를 다시 보지
-        # 않는다.
-        incident_id = _open_source_incident(
-            pipeline=SOURCE_FETCH_PIPELINE,
-            source_id=source_uuid,
-            hospital_id=hospital_id,
-            hospital_name=hospital_name,
-            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
-            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
-            problem=exc.message,
-            next_action=SOURCE_FETCH_NEXT_ACTION,
-        )
-        _fail_channel_source_fetch(
-            source_uuid,
-            message=exc.message,
-            terminal=incident_id is not None,
-            incident_id=incident_id,
-        )
-        status = SourceStatus.ERROR.value if incident_id is not None else FETCH_STATE_FAILED
-        return {"source_id": source_id, "status": status, "error": exc.message}
+        # fetch 실패는 인시던트가 아니라 자료 행의 상태다. 영구 실패는 인시던트와 무관하게
+        # ERROR로 굳고, 사람 경로는 필수 자료가 비었다고 말하는 콘텐츠 상태 카드가 맡는다.
+        _fail_channel_source_fetch(source_uuid, message=exc.message, terminal=True)
+        return {
+            "source_id": source_id,
+            "status": SourceStatus.ERROR.value,
+            "error": exc.message,
+        }
     except Exception as exc:
         # TransientSourceFetchError(네트워크·타임아웃)와 예상 못 한 오류를 같게 다룬다:
         # 둘 다 다시 걸면 달라질 수 있다. 영구 실패만 위에서 이미 갈라졌다.
@@ -2936,10 +2977,10 @@ def _fail_channel_source_fetch(
     *,
     message: str,
     terminal: bool,
-    incident_id: uuid.UUID | None = None,
 ) -> None:
-    """fetch 실패를 자료 행에 남긴다. 사람이 볼 사고가 열린 영구 실패만 ERROR로 굳힌다.
+    """fetch 실패를 자료 행에 남긴다. 자동 재시도가 끝난 실패만 ERROR로 굳힌다.
 
+    종결 여부는 인시던트와 무관하다 — 영구 실패와 재시도 예산 소진이 곧 종결이다.
     ERROR 쓰기는 `status = PENDING`을 UPDATE의 조건으로 다시 확인한다(CAS) — 그 사이
     운영자가 자료를 제외(EXCLUDED)했다면 이 늦은 종결이 그 결정을 덮지 않는다.
     """
@@ -2950,8 +2991,6 @@ def _fail_channel_source_fetch(
         metadata = _merged_source_metadata(
             source, fetch_state=FETCH_STATE_FAILED, fetch_error=message
         )
-        if incident_id is not None:
-            metadata["incident_id"] = str(incident_id)
         values: dict[str, object] = {"source_metadata": metadata}
         where = [HospitalSourceAsset.id == source_uuid]
         if terminal:
@@ -2966,55 +3005,25 @@ def _fail_channel_source_fetch(
         db.commit()
 
 
-def _reconcile_terminal_source_fetch_incidents(*, limit: int = 50) -> None:
-    """사고 없이 ERROR로 굳은 자료를 사람이 볼 수 있게 되돌린다.
+def _retire_channel_source_fetch_incidents() -> None:
+    """옛 `CHANNEL_SOURCE_FETCH_FAILED`를 스윕마다 한도 안에서 걷어 낸다(B2).
 
-    사고를 먼저 여는 순서로 바꾸기 전에 굳었거나, 사고를 붙이는 커밋만 실패한 행이다.
-    자동 경로는 이미 끝났으므로 여기서 사고만 열어 붙인다.
+    정리 규칙과 수렴 근거는 `channel_source_fetch_cleanup`에 있다. 여기서는 한 번의
+    실패가 스윕의 나머지(재발행)를 막지 않게만 감싼다.
     """
-    with SyncSessionLocal() as db:
-        rows = list(
-            db.execute(
-                select(HospitalSourceAsset)
-                .where(
-                    HospitalSourceAsset.status == SourceStatus.ERROR,
-                    HospitalSourceAsset.source_metadata["fetch_state"].as_string()
-                    == FETCH_STATE_FAILED,
-                    HospitalSourceAsset.source_metadata["incident_id"].as_string().is_(None),
-                )
-                .order_by(HospitalSourceAsset.created_at.asc())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
-        )
-        pending = [
-            (
-                source.id,
-                source.hospital_id,
-                getattr(db.get(Hospital, source.hospital_id), "name", None)
-                or "이름 미확인 병원",
-                str(
-                    source.process_error
-                    or (source.source_metadata or {}).get("fetch_error")
-                    or "공식 채널 주소의 본문을 가져오지 못했습니다."
-                ),
-            )
-            for source in rows
-        ]
+    from app.core.database import get_async_sessionmaker
+    from app.workers.channel_source_fetch_cleanup import (
+        retire_channel_source_fetch_incidents,
+    )
 
-    for source_id, hospital_id, hospital_name, message in pending:
-        incident_id = _open_source_incident(
-            pipeline=SOURCE_FETCH_PIPELINE,
-            source_id=source_id,
-            hospital_id=hospital_id,
-            hospital_name=hospital_name,
-            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
-            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
-            problem=message,
-            next_action=SOURCE_FETCH_NEXT_ACTION,
-        )
-        _attach_source_incident(source_id, incident_id)
+    async def _run() -> None:
+        async with get_async_sessionmaker()() as async_db:
+            await retire_channel_source_fetch_incidents(async_db)
+
+    try:
+        _run_async(_run())
+    except Exception:
+        logger.exception("Failed to retire channel source fetch incidents")
 
 
 def _attach_source_incident(source_uuid: uuid.UUID, incident_id: uuid.UUID | None) -> None:
@@ -3598,7 +3607,7 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
 
     `_create_runs_for_orphan_pending_sources`는 본문이 있는 자료만 본다 — 본문이 없는 이
     행들은 처리할 것이 없으므로 그쪽이 아니라 여기가 맡는다. 예산을 다 쓰면 자동 복구를
-    끝내고 사람의 할 일로 넘긴다.
+    끝내고 자료 행을 ERROR로 굳힌다.
 
     자격 조건은 LIMIT **앞에서** SQL이 거른다. 파이썬에서 거르면 자동 처리 대상이 아닌
     옛 URL 전용 행(`fetch_state`가 없는 행)이 200칸을 채워, 방금 등록된 QUEUED 행이
@@ -3606,7 +3615,7 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
     """
     now = datetime.now(timezone.utc)
     to_dispatch: list[uuid.UUID] = []
-    exhausted: list[tuple[uuid.UUID, uuid.UUID, str, str]] = []
+    exhausted: list[tuple[uuid.UUID, str]] = []
     with SyncSessionLocal() as db:
         candidates = list(
             db.execute(
@@ -3632,15 +3641,7 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
                 message = str(
                     metadata.get("fetch_error") or "공식 채널 주소의 본문을 가져오지 못했습니다."
                 )
-                hospital = db.get(Hospital, source.hospital_id)
-                exhausted.append(
-                    (
-                        source.id,
-                        source.hospital_id,
-                        hospital.name if hospital is not None else "이름 미확인 병원",
-                        message,
-                    )
-                )
+                exhausted.append((source.id, message))
                 continue
             last_attempt = metadata.get("last_fetch_attempt_at")
             if last_attempt:
@@ -3656,26 +3657,12 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
             to_dispatch.append(source.id)
         db.commit()
 
-    # 사고를 **먼저** 연다. ERROR로 굳힌 뒤에 사고 생성이 실패하면 자동 경로도 사람이 볼
-    # 예외도 없는 자료가 남는다. 열지 못하면 행은 PENDING/FAILED로 두어 다음 스윕이
-    # (쿨다운 안에서) 같은 종결을 다시 시도한다.
-    for source_id, hospital_id, hospital_name, message in exhausted:
-        incident_id = _open_source_incident(
-            pipeline=SOURCE_FETCH_PIPELINE,
-            source_id=source_id,
-            hospital_id=hospital_id,
-            hospital_name=hospital_name,
-            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
-            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
-            problem=message,
-            next_action=SOURCE_FETCH_NEXT_ACTION,
-        )
-        if incident_id is not None:
-            _fail_channel_source_fetch(
-                source_id, message=message, terminal=True, incident_id=incident_id
-            )
+    # 예산을 다 쓴 자료는 인시던트 없이 그대로 ERROR로 굳는다 — fetch 실패는 자료 행의
+    # 상태이고, 필수 자료가 비었다는 사실은 콘텐츠 상태 카드가 사람에게 말한다.
+    for source_id, message in exhausted:
+        _fail_channel_source_fetch(source_id, message=message, terminal=True)
 
-    _reconcile_terminal_source_fetch_incidents()
+    _retire_channel_source_fetch_incidents()
 
     dispatched = 0
     for source_id in to_dispatch:
@@ -4706,7 +4693,19 @@ def _dispatch_generation_batch(
 ) -> int:
     """Claim the due slots and fan them out. 이 함수는 공급자를 호출하지 않는다."""
 
-    items, truncated_count = _load_nightly_generation_batch(db, window_start, window_end)
+    items, truncated_count, scan_complete = _load_nightly_generation_batch(
+        db, window_start, window_end, is_eligible=_generation_retry_is_eligible(db)
+    )
+
+    if not scan_complete:
+        # 페이지 상한에서 멈췄다 — truncated_count는 확인한 만큼만 센 하한이다.
+        logger.warning(
+            "nightly_content_generation stopped after %d pages: window %s~%s was not "
+            "fully scanned",
+            NIGHTLY_GENERATION_MAX_PAGES,
+            window_start,
+            window_end,
+        )
 
     if truncated_count:
         # 상한 밖 슬롯은 상태에 남아 다음 주기에 다시 회수된다.
@@ -4771,6 +4770,9 @@ def nightly_content_generation(self):
 
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
+        # 로더보다 앞선 별도 pass다. 로더는 고른 행에 claim을 찍고 커밋한 채 돌려주므로
+        # 그 뒤에서는 활성 claim이 없는 후보를 찾을 수 없다.
+        swap_exhausted_topics(db, window_start=window_start, window_end=window_end)
         recorder = GenerationBatchRecorder(db, task_id, window_start, window_end)
         _dispatch_generation_batch(
             db, recorder, window_start, window_end, now_kst=now_kst
@@ -5310,12 +5312,18 @@ def overnight_content_generation_recovery(self):
     require_dispatch(self, "overnight-content-generation-recovery")
     now_kst = arrow.now("Asia/Seoul")
     today = now_kst.date()
+    # 복구 스윕의 창은 발행 catch-up과 같은 7일이다. `[오늘, 오늘]`만 보면 어제까지
+    # 실패한 슬롯은 예산이 남아 있어도 다시 집히지 않아, 약속한 재시도가 실제로는
+    # 일어나지 않는다. OperationRun 요청 payload도 같은 창을 기록해야 한다.
+    window_start = auto_publish_catchup_start(today)
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
-        recorder = GenerationBatchRecorder(db, task_id, today, today)
+        # 마지막 폴백 계단은 로더 앞에서 돈다(위 야간 배치와 같은 이유).
+        swap_exhausted_topics(db, window_start=window_start, window_end=today)
+        recorder = GenerationBatchRecorder(db, task_id, window_start, today)
         # 07:45 요약이 이 시간대의 알림을 소유한다 — 슬롯별 Slack을 내지 않는다.
         _dispatch_generation_batch(
-            db, recorder, today, today, now_kst=now_kst, notify=False
+            db, recorder, window_start, today, now_kst=now_kst, notify=False
         )
         recorder.finish()
 
@@ -6382,6 +6390,8 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
             code=code,
             message=message,
         )
+        # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
+        _record_gate_blocker_decision(db, item, philosophy, code)
         # The async incident transaction must be able to reference this run.
         db.commit()
         _run_async(
@@ -6672,6 +6682,8 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 code=code,
                 message=message,
             )
+            # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
+            _record_gate_blocker_decision(db, item, philosophy, code)
             db.commit()
             return {
                 "kind": "blocked",

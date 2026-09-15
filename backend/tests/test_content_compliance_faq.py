@@ -53,6 +53,7 @@ def _content_item(**overrides):
         essence_status="ALIGNED",
         essence_check_summary=None,
         body_updated_at=None,
+        human_edited_at=None,
         references_list=[{"title": "질병관리청 자료", "url": "https://kdca.go.kr/guide"}],
         faq_question=None,
         faq_answer_summary=None,
@@ -300,3 +301,94 @@ async def test_cancel_content_is_terminal_and_audited(monkeypatch):
     assert response["compliance"]["publishable"] is False
     assert db.added[0].action == "cancel_content"
     assert db.committed is True
+
+
+async def test_update_content_stamps_human_edited_at_on_a_real_change(monkeypatch):
+    """C1 — 사람이 실제로 바꾼 판만 자동 주제 교체 대상에서 빠진다."""
+    hospital = _hospital()
+    item = _content_item(hospital_id=hospital.id, human_edited_at=None)
+    _wire(monkeypatch, item, hospital)
+
+    await content_api.update_content(
+        hospital.id,
+        item.id,
+        # 본문이 아니라 제목만 고쳐도 사람 편집이다.
+        content_api.ContentPatch(title="어깨 통증 진료 안내(개정)"),
+        db=_PatchDB(hospital),
+    )
+
+    assert item.human_edited_at is not None
+
+
+async def test_update_content_ignores_a_no_op_patch(monkeypatch):
+    """같은 정규화 값 PATCH는 근거·처리 상태를 바꾸지 않는다는 계약."""
+    hospital = _hospital()
+    item = _content_item(hospital_id=hospital.id, human_edited_at=None)
+    _wire(monkeypatch, item, hospital)
+
+    await content_api.update_content(
+        hospital.id,
+        item.id,
+        content_api.ContentPatch(
+            title=item.title,
+            body=item.body,
+            meta_description=item.meta_description,
+        ),
+        db=_PatchDB(hospital),
+    )
+
+    assert item.human_edited_at is None
+
+
+async def test_update_content_ignores_a_legacy_reference_resubmitted_unchanged(monkeypatch):
+    """파생 필드가 없는 레거시 참고자료를 같은 값으로 다시 제출해도 편집이 아니다."""
+    hospital = _hospital()
+    # 저장된 행에는 정규화가 붙이는 source_type이 없다.
+    item = _content_item(
+        hospital_id=hospital.id,
+        human_edited_at=None,
+        references_list=[{"title": "질병관리청 자료", "url": "https://kdca.go.kr/guide"}],
+    )
+    _wire(monkeypatch, item, hospital)
+
+    await content_api.update_content(
+        hospital.id,
+        item.id,
+        content_api.ContentPatch(
+            references=[
+                content_api.ReferencePatchItem(
+                    title="질병관리청 자료", url="https://kdca.go.kr/guide"
+                )
+            ]
+        ),
+        db=_PatchDB(hospital),
+    )
+
+    assert item.human_edited_at is None
+    # 저장은 정규화된 형태로 이뤄진다 — 비교만 정규화 기준일 뿐이다.
+    assert item.references_list[0]["title"] == "질병관리청 자료"
+
+
+async def test_update_content_stamps_when_a_reference_actually_changes(monkeypatch):
+    hospital = _hospital()
+    item = _content_item(
+        hospital_id=hospital.id,
+        human_edited_at=None,
+        references_list=[{"title": "질병관리청 자료", "url": "https://kdca.go.kr/guide"}],
+    )
+    _wire(monkeypatch, item, hospital)
+
+    await content_api.update_content(
+        hospital.id,
+        item.id,
+        content_api.ContentPatch(
+            references=[
+                content_api.ReferencePatchItem(
+                    title="질병관리청 다른 자료", url="https://kdca.go.kr/guide"
+                )
+            ]
+        ),
+        db=_PatchDB(hospital),
+    )
+
+    assert item.human_edited_at is not None

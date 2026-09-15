@@ -207,6 +207,25 @@ test('운영 센터 링크는 실제로 열린 예외가 있을 때만 만든다
   )
 })
 
+test('fetch 실패로 굳은 자료는 예외 링크 없이 할 일을 그대로 말한다', () => {
+  // 정리 pass가 링크를 걷어 낸 행 — 운영 센터에는 볼 것이 없다.
+  const retired = {
+    status: 'ERROR',
+    source_metadata: { fetch_state: 'FAILED', incident_retired_at: '2026-09-15T00:00:00+00:00' },
+  }
+
+  assert.equal(sourceIncidentHref('h-1', retired), null)
+  assert.deepEqual(sourceRowStatus(retired), {
+    label: '주소에서 본문을 가져오지 못함 — 주소를 고치거나 자료 파일을 올려 주세요',
+    tone: 'warn',
+  })
+  // 본문이 있는데 처리에서 실패한 자료(SOURCE_PROCESSING_FAILED)는 그대로다.
+  assert.equal(
+    sourceRowStatus({ status: 'ERROR', source_metadata: { incident_id: 'i-1' } }).label,
+    '처리 실패 — 운영 센터 확인',
+  )
+})
+
 test('근거 자료 표는 사진을 세지 않는다', () => {
   assert.ok(isTextSource({ source_type: 'HOMEPAGE' }))
   assert.ok(isTextSource({ source_type: 'NAVER_BLOG' }))

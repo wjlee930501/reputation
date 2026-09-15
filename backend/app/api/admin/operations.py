@@ -421,6 +421,7 @@ async def get_content_yield(
                         published=fact.published,
                         published_with_reused_image=fact.published_with_reused_image,
                         retrying=fact.retrying,
+                        topic_swapped=fact.topic_swapped,
                         operator_required=fact.operator_required,
                         blocked=fact.blocked,
                         blocked_by_cause=fact.blocked_by_cause,

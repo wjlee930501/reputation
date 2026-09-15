@@ -779,7 +779,8 @@ async def test_operations_overview_returns_all_four_operator_queues(pg_async_ses
     today.status = HospitalStatus.ACTIVE
     today.site_live = True
     await db.flush()
-    await _content(db, today, published_hours_ago=2)
+    # 오늘 큐에 남는 일은 발행 예정 슬롯이다 — 공개 후 확인 표본은 여기 오르지 않는다(B1).
+    await _content(db, today, status=ContentStatus.DRAFT, published_hours_ago=None)
     report = await _active_hospital(db, "월간 의원")
     incident_hospital = await _active_hospital(db, "예외 의원")
     await _incident(db, incident_hospital, owner=actor)
@@ -970,7 +971,9 @@ async def test_non_incident_queue_filters_apply_to_projected_severity_and_sla(
         site_live=False,
     )
     today = await _hospital(db, "필터 금일 의원")
-    content = await _content(db, today, published_hours_ago=1)
+    content = await _content(
+        db, today, status=ContentStatus.DRAFT, published_hours_ago=None
+    )
     report = await _active_hospital(db, "필터 월간 의원")
 
     onboarding_high = await operations_center.get_operations_queue(
@@ -1600,12 +1603,14 @@ async def _accepted_handoff(db, hospital: Hospital, *, sla_due_at: datetime) -> 
 # 붙이고, 인수 기한이 없는 병원에서는 날짜 없이 기한만 지났다고 말한다.
 
 
-async def test_today_queue_deadline_is_the_review_window_not_the_handoff_date(pg_async_session):
+async def test_today_queue_deadline_is_the_slot_date_not_the_handoff_date(pg_async_session):
     db = pg_async_session
-    hospital = await _hospital(db, "검수기한 의원")
+    hospital = await _hospital(db, "발행기한 의원")
     handoff_due = datetime.now(UTC) + timedelta(days=30)
     await _accepted_handoff(db, hospital, sla_due_at=handoff_due)
-    content = await _content(db, hospital, published_hours_ago=2, sequence_no=1)
+    content = await _content(
+        db, hospital, status=ContentStatus.DRAFT, published_hours_ago=None
+    )
     now = datetime.now(UTC)
 
     _total, rows = await today_queries.load_today_queue(
@@ -1615,9 +1620,8 @@ async def test_today_queue_deadline_is_the_review_window_not_the_handoff_date(pg
     row = next(item for item in rows if item.content_id == content.id)
     assert row.sla_due_at is not None
     assert row.sla_due_at != handoff_due
-    # 발행 후 검수 기한은 공개 시각 + 24시간이다.
-    assert abs((row.sla_due_at - (content.published_at + timedelta(hours=24))).total_seconds()) < 1
-    assert row.sla_state == "DUE"
+    # 발행 예정 글의 기한은 예정일이 끝나는 시각이다.
+    assert row.sla_due_at.astimezone(ZoneInfo("Asia/Seoul")).date() == content.scheduled_date
 
 
 async def test_today_queue_folds_the_pre_eight_am_slot_instead_of_dropping_it(pg_async_session):
@@ -1733,123 +1737,36 @@ async def test_today_queue_leaves_linked_incident_as_the_single_operator_task(
     assert row.requires_operator_action is False
 
 
-async def test_today_queue_marks_a_review_past_the_window_as_overdue(pg_async_session):
-    db = pg_async_session
-    hospital = await _hospital(db, "검수초과 의원")
-    content = await _content(db, hospital, published_hours_ago=30, sequence_no=1)
-    now = datetime.now(UTC)
-
-    _total, rows = await today_queries.load_today_queue(
-        db, OperationsFilters(), page=1, page_size=100, overview=False, now=now
-    )
-
-    row = next(item for item in rows if item.content_id == content.id)
-    assert row.status == "OVERDUE_REVIEW"
-    assert row.sla_state == "OVERDUE"
-    assert row.sla_due_at < now
-
-
-async def test_today_queue_sends_a_withheld_item_to_the_reason_not_the_confirmation(
+async def test_today_queue_never_raises_the_post_publish_sample_as_operator_work(
     pg_async_session,
 ):
-    """공개 보류 중인 글에 "콘텐츠 확인" 버튼을 주면 눌러도 409로 거절된다(H-01)."""
-    db = pg_async_session
-    hospital = await _hospital(db, "오늘의운영 보류 의원")
-    withheld = await _content(db, hospital, published_hours_ago=2, sequence_no=1, withheld=True)
-    visible = await _content(
-        db, hospital, published_hours_ago=3, sequence_no=1, scheduled_days_ago=1
-    )
-    now = datetime.now(UTC)
+    """공개 후 확인 표본은 발행을 막지 않는 관측용 표본이라 오늘 큐에 오르지 않는다(B1).
 
-    _total, rows = await today_queries.load_today_queue(
+    표본을 렌더에서만 감추면 상태 CASE·심각도·SLA 필터·합계·페이지네이션이 어긋난다 —
+    선택 자체에서 빠졌는지 섞인 fixture로 확인한다. 공개 이미지 재인증의 종결 코드는
+    사람의 일이므로 그 인시던트는 그대로 남아야 한다.
+    """
+    db = pg_async_session
+    hospital = await _hospital(db, "표본 제외 의원")
+    # 표본: 기한을 넘긴 미확인 글과, 공개 페이지가 숨기는 중인 글.
+    overdue_sample = await _content(db, hospital, published_hours_ago=30, sequence_no=1)
+    withheld_sample = await _content(
+        db, hospital, published_hours_ago=30, sequence_no=1, scheduled_days_ago=1, withheld=True
+    )
+    # 사람의 일: 예정일이 지난 발행 슬롯.
+    due = await _content(
         db,
-        OperationsFilters(hospital_id=hospital.id),
-        page=1,
-        page_size=100,
-        overview=False,
-        now=now,
+        hospital,
+        status=ContentStatus.DRAFT,
+        published_hours_ago=None,
+        scheduled_days_ago=2,
     )
-
-    blocked = next(item for item in rows if item.content_id == withheld.id)
-    assert blocked.status == "WITHHELD_PUBLIC"
-    assert blocked.action.kind == "OPEN_CONTENT"
-    assert blocked.impact.startswith("공개 보류 — ")
-    assert "대표 이미지 재인증 대기" in blocked.impact
-    assert blocked.action.path.endswith(f"?content={withheld.id}")
-    # 보류도 사람이 손대야 하는 일이다 — 행을 접지 않는다.
-    assert blocked.requires_operator_action is True
-
-    normal = next(item for item in rows if item.content_id == visible.id)
-    assert normal.status == "REVIEW_PENDING"
-    assert normal.action.kind == "REVIEW_CONTENT"
-
-
-async def test_today_queue_shows_the_recertification_block_as_the_next_action(
-    pg_async_session,
-):
-    """자동 재인증이 사람 결정으로 끝났으면 그 조치를 보류 행에 그대로 보여준다(H-01)."""
-    db = pg_async_session
-    hospital = await _hospital(db, "재인증 보류 의원")
-    withheld = await _content(db, hospital, published_hours_ago=2, sequence_no=1, withheld=True)
-    db.add(
-        OperationRun(
-            hospital_id=hospital.id,
-            operation_type="RECERTIFY_PUBLISHED_IMAGE",
-            state="FAILED",
-            idempotency_key=f"recertify:{withheld.id}:2",
-            request_payload=build_request_payload(
-                DispatchPayload(
-                    "content_item", str(withheld.id), "content", (str(withheld.id),)
-                )
-            ),
-            safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED",
-            safe_error_message="제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다.",
-            requested_at=datetime.now(UTC) - timedelta(hours=1),
-            completed_at=datetime.now(UTC) - timedelta(hours=1),
-        )
+    # 재인증이 사람 결정으로 끝난 글의 인시던트 — 이 변경이 건드리지 않는다.
+    blocked = await _incident(
+        db, hospital, safe_error_code="PUBLISHED_IMAGE_RECERTIFY_REJECTED"
     )
-    # 나중에 돈 다른 유형의 실행이 최신 실행이 되어도 거절 사유를 가리면 안 된다.
-    db.add(
-        OperationRun(
-            hospital_id=hospital.id,
-            operation_type="REGENERATE_CONTENT_IMAGE",
-            state="SUCCEEDED",
-            idempotency_key=f"regenerate-image:{withheld.id}",
-            request_payload=build_request_payload(
-                DispatchPayload(
-                    "content_item", str(withheld.id), "content", (str(withheld.id),)
-                )
-            ),
-            requested_at=datetime.now(UTC),
-            completed_at=datetime.now(UTC),
-        )
-    )
+    blocked.source_id = str(withheld_sample.id)
     await db.flush()
-
-    _total, rows = await today_queries.load_today_queue(
-        db,
-        OperationsFilters(hospital_id=hospital.id),
-        page=1,
-        page_size=100,
-        overview=False,
-        now=datetime.now(UTC),
-    )
-
-    row = next(item for item in rows if item.content_id == withheld.id)
-    assert row.status == "WITHHELD_PUBLIC"
-    assert row.next_action == "제목을 되돌리거나, 글을 반려(비공개)해 새 이미지로 재생성하세요."
-    assert row.safe_cause == "제목이 바뀌어 대표 이미지가 글 주제와 맞지 않습니다."
-
-
-async def test_today_queue_status_filter_and_total_agree_on_a_withheld_row(pg_async_session):
-    """보류 판정이 SQL 밖에 있으면 status 필터·total·심각도가 서로 다른 답을 낸다(H-01)."""
-    db = pg_async_session
-    hospital = await _hospital(db, "오늘의운영 필터 의원")
-    # 기한을 넘긴 보류 행 — 예전에는 HIGH + OVERDUE로 기록할 수 없는 검수를 재촉했다.
-    withheld = await _content(db, hospital, published_hours_ago=30, sequence_no=1, withheld=True)
-    visible = await _content(
-        db, hospital, published_hours_ago=3, sequence_no=1, scheduled_days_ago=1
-    )
     now = datetime.now(UTC)
 
     async def _load(**filter_kwargs):
@@ -1862,27 +1779,72 @@ async def test_today_queue_status_filter_and_total_agree_on_a_withheld_row(pg_as
             now=now,
         )
 
-    all_total, all_rows = await _load()
-    withheld_total, withheld_rows = await _load(status="WITHHELD_PUBLIC")
-    review_total, review_rows = await _load(status="REVIEW_PENDING")
-    high_total, _high_rows = await _load(severity="HIGH")
+    total, rows = await _load()
+
+    assert total == len(rows) == 1
+    assert rows[0].content_id == due.id
+    assert rows[0].status == "PUBLISH_DUE"
+    assert rows[0].severity == "MEDIUM"
+    assert rows[0].requires_operator_action is True
+    sample_ids = {overdue_sample.id, withheld_sample.id}
+    assert not sample_ids & {row.content_id for row in rows}
+
+    # 표본에서 오던 상태·심각도·기한 없음은 이제 어떤 합계도 만들지 않는다.
+    for status in ("REVIEW_PENDING", "OVERDUE_REVIEW", "WITHHELD_PUBLIC"):
+        status_total, status_rows = await _load(status=status)
+        assert status_total == len(status_rows) == 0
+    high_total, high_rows = await _load(severity="HIGH")
+    assert high_total == len(high_rows) == 0
     none_total, none_rows = await _load(sla=SlaFilter.NONE)
+    assert none_total == len(none_rows) == 0
+
+    # 공개 이미지 재인증의 종결 코드는 사람의 일 — 인시던트는 그대로 열려 있다.
+    await db.refresh(blocked)
+    assert blocked.state == "OPEN"
+    assert blocked.safe_error_code == "PUBLISHED_IMAGE_RECERTIFY_REJECTED"
+
+
+async def test_today_queue_filters_and_total_agree_on_publish_due_rows(pg_async_session):
+    """상태·심각도·기한 필터와 total이 한 기준을 쓴다."""
+    db = pg_async_session
+    hospital = await _hospital(db, "오늘의운영 필터 의원")
+    overdue = await _content(
+        db,
+        hospital,
+        status=ContentStatus.DRAFT,
+        published_hours_ago=None,
+        scheduled_days_ago=2,
+    )
+    today_slot = await _content(
+        db, hospital, status=ContentStatus.DRAFT, published_hours_ago=None
+    )
+    seoul = ZoneInfo("Asia/Seoul")
+    now = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+
+    async def _load(**filter_kwargs):
+        return await today_queries.load_today_queue(
+            db,
+            OperationsFilters(hospital_id=hospital.id, **filter_kwargs),
+            page=1,
+            page_size=100,
+            overview=False,
+            now=now,
+        )
+
+    all_total, all_rows = await _load()
+    due_total, due_rows = await _load(status="PUBLISH_DUE")
+    medium_total, medium_rows = await _load(severity="MEDIUM")
     overdue_total, overdue_rows = await _load(sla=SlaFilter.OVERDUE)
+    remaining_total, remaining_rows = await _load(sla=SlaFilter.DUE)
 
     assert all_total == len(all_rows) == 2
-    assert withheld_total == len(withheld_rows) == 1
-    assert withheld_rows[0].content_id == withheld.id
-    assert withheld_rows[0].severity == "MEDIUM"
-    assert withheld_rows[0].sla_due_at is None
-    assert withheld_rows[0].sla_state == "NONE"
-    assert review_total == len(review_rows) == 1
-    assert review_rows[0].content_id == visible.id
-    # 보류 행은 기록할 수 없는 검수라 HIGH·기한 초과 어느 쪽으로도 재촉하지 않는다.
-    assert high_total == 0
-    assert none_total == len(none_rows) == 1
-    assert none_rows[0].content_id == withheld.id
-    assert all(row.content_id != withheld.id for row in overdue_rows)
-    assert overdue_total == len(overdue_rows)
+    assert due_total == len(due_rows) == 2
+    assert medium_total == len(medium_rows) == 2
+    assert overdue_total == len(overdue_rows) == 1
+    assert overdue_rows[0].content_id == overdue.id
+    assert overdue_rows[0].sla_state == "OVERDUE"
+    assert remaining_total == len(remaining_rows) == 1
+    assert remaining_rows[0].content_id == today_slot.id
 
 
 async def test_reports_queue_has_no_staff_deadline(pg_async_session):

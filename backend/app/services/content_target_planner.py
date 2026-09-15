@@ -154,9 +154,22 @@ def _load_target(db: Any, target_id: Any, hospital_id: Any) -> AIQueryTarget | N
     ).scalar_one_or_none()
 
 
-def _choose_target(db: Any, *, item: ContentItem, hospital_id: Any) -> AIQueryTarget | None:
-    targets = list(
-        db.execute(
+def _choose_target(
+    db: Any,
+    *,
+    item: ContentItem,
+    hospital_id: Any,
+    exclude_target_ids: Any = None,
+) -> AIQueryTarget | None:
+    """이 슬롯이 답할 측정 질문을 고른다.
+
+    `exclude_target_ids`는 주제 교체 폴백이 "이미 실패한 주제"를 빼는 데 쓴다. 비어
+    있으면(기본) 종전과 같은 후보 집합이다.
+    """
+    excluded = {str(value) for value in (exclude_target_ids or ()) if value}
+    targets = [
+        target
+        for target in db.execute(
             select(AIQueryTarget)
             .options(selectinload(AIQueryTarget.variants))
             .where(
@@ -166,7 +179,8 @@ def _choose_target(db: Any, *, item: ContentItem, hospital_id: Any) -> AIQueryTa
         )
         .scalars()
         .all()
-    )
+        if str(target.id) not in excluded
+    ]
     if not targets:
         return None
 

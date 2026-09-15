@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, func, literal, or_, select, tuple_, update
 from sqlalchemy.orm import joinedload
 
 from app.models.content import ContentItem, ContentStatus, ContentType
@@ -15,6 +15,9 @@ NIGHTLY_GENERATION_CLAIM_TTL_HOURS = 2
 # 앞선 한 병원이 그 안을 다 채운 뒤라 섞을 것이 남지 않는다. 읽고도 claim하지 않은 행은
 # 커밋과 함께 잠금이 풀려 다음 스윕이 그대로 다시 본다.
 NIGHTLY_GENERATION_SELECT_LIMIT = NIGHTLY_GENERATION_CAP * 2
+# keyset refill의 안전 상한. 창을 끝까지 훑는 것이 기본이고, 이 값은 병리적으로 큰
+# 창에서 한 스윕이 무한히 읽지 않게 하는 마지막 방어선이다.
+NIGHTLY_GENERATION_MAX_PAGES = 20
 # 지금 막 claim된 슬롯은 "잠긴 일감"이 아니라 진행 중인 일감이다. per-item 태스크의
 # 벽시계 한계(1,000초)에 큐 대기 여유를 더한 이 시간이 지나도 끝나지 않은 claim만
 # 이전 실행이 죽어 남긴 것으로 본다.
@@ -339,25 +342,65 @@ def _needs_generation_recovery():
     )
 
 
-def _nightly_generation_stmt(window_start, window_end, claim_cutoff: datetime | None = None):
+def _generation_order_columns():
+    """정렬 키. `carried_over_from IS NULL`은 이월 슬롯을 먼저 놓는다(false < true).
+
+    keyset 페이징이 같은 키로 이어붙일 수 있게 단방향(오름차순) 표현만 쓴다. id는
+    같은 키를 가진 행 사이의 순서를 고정하는 tiebreak다.
+    """
+
+    return (
+        ContentItem.carried_over_from.is_(None),
+        ContentItem.scheduled_date,
+        ContentItem.sequence_no,
+        ContentItem.id,
+    )
+
+
+def _generation_order_key(item: ContentItem) -> tuple:
+    return (
+        item.carried_over_from is None,
+        item.scheduled_date,
+        item.sequence_no,
+        item.id,
+    )
+
+
+def _nightly_generation_stmt(
+    window_start,
+    window_end,
+    claim_cutoff: datetime | None = None,
+    *,
+    after: tuple | None = None,
+):
     claim_cutoff = claim_cutoff or _nightly_generation_claim_cutoff()
+    order_columns = _generation_order_columns()
+    predicates = [
+        ContentItem.scheduled_date >= window_start,
+        ContentItem.scheduled_date <= window_end,
+        ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
+        _needs_generation_recovery(),
+        Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
+        Hospital.site_live.is_(True),
+        _nightly_generation_claim_filter(claim_cutoff),
+    ]
+    if after is not None:
+        # 값의 타입을 정렬 컬럼에서 가져온다. UUID·Date 바인드가 타입 없이 나가면
+        # PostgreSQL이 row 비교의 매개변수 타입을 정하지 못한다.
+        predicates.append(
+            tuple_(*order_columns)
+            > tuple_(
+                *(
+                    literal(value, column.type)
+                    for column, value in zip(order_columns, after, strict=True)
+                )
+            )
+        )
     return (
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
-        .where(
-            ContentItem.scheduled_date >= window_start,
-            ContentItem.scheduled_date <= window_end,
-            ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
-            _needs_generation_recovery(),
-            Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
-            Hospital.site_live.is_(True),
-            _nightly_generation_claim_filter(claim_cutoff),
-        )
-        .order_by(
-            ContentItem.carried_over_from.is_not(None).desc(),
-            ContentItem.scheduled_date,
-            ContentItem.sequence_no,
-        )
+        .where(*predicates)
+        .order_by(*order_columns)
         .options(joinedload(ContentItem.hospital))
         .with_for_update(skip_locked=True, of=ContentItem)
         .limit(NIGHTLY_GENERATION_SELECT_LIMIT + 1)
@@ -384,30 +427,63 @@ def interleave_by_hospital(items: list[ContentItem]) -> list[ContentItem]:
     return ordered
 
 
-def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, int]:
+def _load_nightly_generation_batch(
+    db, window_start, window_end, *, is_eligible=None
+) -> tuple[list, int, bool]:
+    """창 안에서 **지금 다시 시도할 수 있는** 슬롯만 claim한다.
+
+    `is_eligible`은 워커가 SKIPPED 판정에 쓰는 규칙과 같은 술어다(claim 전에 적용).
+    SQL로 거를 수 없는 판정이라 Python에서 걸러야 하는데, 그러면 상한만큼만 읽는 것으로는
+    종결·미도래 행 뒤의 적격 행이 굶는다. 그래서 정렬 키로 keyset 페이징을 하며 창을
+    끝까지 훑는다.
+
+    **페이지마다 claim하고 커밋한다.** `FOR UPDATE SKIP LOCKED`가 잡은 잠금은 커밋까지
+    풀리지 않으므로, 창 전체를 한 트랜잭션에서 훑으면 claim하지도 않을 행까지 배치가
+    끝날 때까지 잠근다. 페이지 단위로 커밋하면 비적격 행은 그 페이지를 읽는 동안만
+    잠긴다. 상한(50)을 채운 뒤에도 남은 적격 행 수를 세기 위해 페이징은 계속한다.
+
+    반환값은 `(claim한 슬롯, 상한 밖 적격 행 수, 창을 끝까지 훑었는가)`다. 두 번째 값은
+    **확인한 적격 행**만 센다 — 페이지 상한에서 멈췄다는 사실은 세 번째 값이 말한다.
+    """
+
     now = datetime.now(timezone.utc)
     claim_cutoff = now - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS)
-    result = db.execute(_nightly_generation_stmt(window_start, window_end, claim_cutoff))
-    items = list(result.scalars().all())
-    truncated_count = 0
-    if len(items) > NIGHTLY_GENERATION_CAP:
-        overflow = db.execute(
-            select(func.count())
-            .select_from(ContentItem)
-            .join(Hospital, ContentItem.hospital_id == Hospital.id)
-            .where(
-                ContentItem.scheduled_date >= window_start,
-                ContentItem.scheduled_date <= window_end,
-                ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
-                _needs_generation_recovery(),
-                Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
-                Hospital.site_live.is_(True),
-                _nightly_generation_claim_filter(claim_cutoff),
+    claimed_items: list[ContentItem] = []
+    eligible_count = 0
+    after: tuple | None = None
+    window_exhausted = False
+    for _page in range(NIGHTLY_GENERATION_MAX_PAGES):
+        rows = list(
+            db.execute(
+                _nightly_generation_stmt(window_start, window_end, claim_cutoff, after=after)
             )
-        ).scalar_one()
-        truncated_count = max(int(overflow) - NIGHTLY_GENERATION_CAP, 1)
-    claimed_items = interleave_by_hospital(items)[:NIGHTLY_GENERATION_CAP]
-    for item in claimed_items:
+            .scalars()
+            .all()
+        )
+        if not rows:
+            window_exhausted = True
+            break
+        page_eligible = [item for item in rows if is_eligible is None or is_eligible(item)]
+        eligible_count += len(page_eligible)
+        remaining = NIGHTLY_GENERATION_CAP - len(claimed_items)
+        if remaining > 0:
+            claimed_items.extend(
+                _claim_generation_page(interleave_by_hospital(page_eligible)[:remaining], now)
+            )
+        after = _generation_order_key(rows[-1])
+        # claim 여부와 무관하게 커밋한다 — 이 페이지의 잠금을 여기서 푼다.
+        db.commit()
+        if len(rows) <= NIGHTLY_GENERATION_SELECT_LIMIT:
+            window_exhausted = True
+            break
+    truncated_count = max(eligible_count - len(claimed_items), 0)
+    return claimed_items, truncated_count, window_exhausted
+
+
+def _claim_generation_page(items: list[ContentItem], now: datetime) -> list[ContentItem]:
+    """Stamp this page's lease. 호출부가 곧바로 커밋해 잠금을 푼다."""
+
+    for item in items:
         # SQLAlchemy에 영속화되지 않는 시도 메타데이터. 새 배치가 만료 claim을
         # 인수했는지와 finally가 해제할 정확한 lease 시각을 호출부에 전달한다.
         item._generation_reclaimed_stale = getattr(item, "generation_claimed_at", None) is not None
@@ -415,9 +491,7 @@ def _load_nightly_generation_batch(db, window_start, window_end) -> tuple[list, 
         item.generation_claimed_at = now
         item.generation_claim_token = claim_token
         item._generation_claim_token = claim_token
-    if claimed_items:
-        db.commit()
-    return claimed_items, truncated_count
+    return items
 
 
 def release_unfinished_claims(

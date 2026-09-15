@@ -8,10 +8,8 @@ import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/opera
 import {
   ATTENTION_VISIBLE_ROWS,
   type AttentionQueue,
-  formatWaiting,
-  hasAttentionWork,
   hasReportGaps,
-  hiddenHospitalCount,
+  hiddenReportCount,
   reportGapSummary,
 } from '@/lib/attention-queue'
 import { domainSearchText } from '@/lib/hospital-domain-status'
@@ -67,7 +65,7 @@ export default function HospitalsPage() {
     void loadPage(0)
   }, [loadPage])
 
-  // 확인 대기 큐는 부가 정보다 — 실패해도 병원 목록을 막지 않는다.
+  // 원장 보고 누락 큐는 부가 정보다 — 실패해도 병원 목록을 막지 않는다.
   const [attention, setAttention] = useState<AttentionQueue | null>(null)
   useEffect(() => {
     fetchAPI<AttentionQueue>('/admin/operations/attention')
@@ -87,11 +85,6 @@ export default function HospitalsPage() {
   const stats = useMemo(() => {
     return hospitalStatusCounts(hospitals)
   }, [hospitals])
-
-  const reviewCounts = useMemo(
-    () => new Map((attention?.hospitals ?? []).map((row) => [row.hospital_id, row.unreviewed_count])),
-    [attention],
-  )
 
   return (
     <div className="p-4 sm:p-6 lg:p-8">
@@ -123,97 +116,43 @@ export default function HospitalsPage() {
         )}
       </div>
 
-      {hasAttentionWork(attention) && attention && (
+      {/* 목록 상단에 남는 일은 사람만 할 수 있는 원장 보고뿐이다. 공개 후 확인 표본은
+          발행을 막지 않는 관측용 표본이라 운영자 큐로 올리지 않는다(B1). */}
+      {hasReportGaps(attention) && attention?.reports && (
         <section
           aria-labelledby="attention-heading"
           className="mb-6 rounded-xl border border-slate-200 bg-white p-4"
         >
-          {/* 확인 대기가 0이어도 원장 보고가 밀렸을 수 있다 — 그때는 이 묶음을 감춘다. */}
-          <div className={attention.unreviewed_total > 0 || attention.withheld_total > 0 ? '' : 'hidden'}>
-          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            {/* 확인할 것이 없고 보류만 남았으면 "확인 필요 0건"이 제목일 이유가 없다 —
-                그때는 실제 할 일인 공개 보류가 제목이 된다(H-01). */}
+          <div className="flex flex-wrap items-baseline gap-x-2">
             <h2 id="attention-heading" className="text-sm font-semibold text-slate-900">
-              {attention.unreviewed_total > 0
-                ? `공개 후 확인 필요 ${attention.unreviewed_total}건`
-                : `공개 보류 ${attention.withheld_total}건`}
+              {attention.reports.period_month}월 원장 보고
             </h2>
-            {attention.overdue_total > 0 && (
-              <span className="text-xs font-medium text-red-700">
-                그중 {attention.overdue_total}건은 {attention.overdue_hours}시간 넘음
-              </span>
-            )}
-            {/* 공개 보류는 확인이 아니라 사유 해소가 할 일이다 — 숫자를 섞지 않는다(H-01). */}
-            {attention.unreviewed_total > 0 && attention.withheld_total > 0 && (
-              <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                공개 보류 {attention.withheld_total}건
-              </span>
-            )}
+            <span className="text-xs font-medium text-amber-700">
+              {reportGapSummary(attention.reports)}
+            </span>
           </div>
-          <ul className="mt-3 divide-y divide-slate-100">
-            {attention.hospitals.slice(0, ATTENTION_VISIBLE_ROWS).map((row) => {
-              const waiting = formatWaiting(row.oldest_published_at)
-              return (
-                <li key={row.hospital_id}>
+          <ul className="mt-2 divide-y divide-slate-100">
+            {[
+              ...attention.reports.missing.map((row) => ({ row, label: '보고서 없음' })),
+              ...attention.reports.undelivered.map((row) => ({ row, label: '원장에게 전달하지 않음' })),
+            ]
+              .slice(0, ATTENTION_VISIBLE_ROWS)
+              .map(({ row, label }) => (
+                <li key={`${row.hospital_id}-${label}`}>
                   <Link
-                    href={`/hospitals/${row.hospital_id}/content`}
+                    href={`/hospitals/${row.hospital_id}/reports`}
                     className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-2 text-sm hover:bg-slate-50"
                   >
                     <span className="font-medium text-slate-900">{row.hospital_name}</span>
-                    <span className="text-slate-600">
-                      {row.unreviewed_count}건
-                      {row.overdue_count > 0 && (
-                        <span className="ml-1.5 text-red-700">{row.overdue_count}건 초과</span>
-                      )}
-                      {row.withheld_count > 0 && (
-                        <span className="ml-1.5 inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                          공개 보류 {row.withheld_count}건
-                        </span>
-                      )}
-                      {waiting && <span className="ml-2 text-slate-400">{waiting}</span>}
-                    </span>
+                    <span className="text-slate-600">{label}</span>
                   </Link>
                 </li>
-              )
-            })}
+              ))}
           </ul>
-          {hiddenHospitalCount(attention) > 0 && (
+          {hiddenReportCount(attention.reports) > 0 && (
             <p className="mt-2 text-xs text-slate-500">
-              외 {hiddenHospitalCount(attention)}곳 — 아래 목록에서 확인해 주세요.
+              외 {hiddenReportCount(attention.reports)}곳 — 아래 목록에서 확인해 주세요.
             </p>
-          )}
-          </div>
-
-          {/* 원장 보고는 월 1회짜리 리듬이라 위 큐와 성격이 다르다 — 줄을 나눠 둔다. */}
-          {hasReportGaps(attention) && attention.reports && (
-            <div className="mt-4 border-t border-slate-100 pt-3">
-              <div className="flex flex-wrap items-baseline gap-x-2">
-                <h3 className="text-sm font-semibold text-slate-900">
-                  {attention.reports.period_month}월 원장 보고
-                </h3>
-                <span className="text-xs font-medium text-amber-700">
-                  {reportGapSummary(attention.reports)}
-                </span>
-              </div>
-              <ul className="mt-2 divide-y divide-slate-100">
-                {[
-                  ...attention.reports.missing.map((row) => ({ row, label: '보고서 없음' })),
-                  ...attention.reports.undelivered.map((row) => ({ row, label: '원장에게 전달하지 않음' })),
-                ]
-                  .slice(0, ATTENTION_VISIBLE_ROWS)
-                  .map(({ row, label }) => (
-                    <li key={`${row.hospital_id}-${label}`}>
-                      <Link
-                        href={`/hospitals/${row.hospital_id}/reports`}
-                        className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 py-2 text-sm hover:bg-slate-50"
-                      >
-                        <span className="font-medium text-slate-900">{row.hospital_name}</span>
-                        <span className="text-slate-600">{label}</span>
-                      </Link>
-                    </li>
-                  ))}
-              </ul>
-            </div>
           )}
         </section>
       )}
@@ -295,11 +234,6 @@ export default function HospitalsPage() {
                         >
                           <div className="font-medium text-slate-900 group-hover:text-blue-700">
                             {h.name}
-                            {(reviewCounts.get(h.id) ?? 0) > 0 && (
-                              <span className="ml-2 inline-flex rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-semibold text-red-700">
-                                {ADMIN_COPY.postPublishReview} 필요 {reviewCounts.get(h.id)}건
-                              </span>
-                            )}
                             {/* 예외는 사람이 손대야 풀린다 — 목록에서 바로 보이지 않으면
                                 병원을 열어 보기 전에는 알 수 없다. */}
                             {h.open_exception_count > 0 && (

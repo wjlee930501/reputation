@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
@@ -33,11 +34,18 @@ from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 from app.workers.generation_retry_policy import (
+    BODY_REPAIR_CODES,
     GenerationRetryClass,
-    next_recovery_sweep,
-    repair_session_is_available,
+    next_recovery_deadline,
+    repair_recovery_remains,
+    retry_class_for,
+)
+from app.workers.generation_retry_policy import (
+    BODY_REPAIR_STATE_KEY as BODY_REPAIR_STATE_KEY_POLICY,
 )
 from app.workers.generation_run_control import safe_generation_rejection_message
+
+logger = logging.getLogger(__name__)
 
 AUTO_REMEDIATION_MAX_GENERATIONS = 2
 
@@ -117,16 +125,8 @@ _AUTOMATIC_RECOVERY_CODES = frozenset(
 )
 # 저장된 본문을 작가가 스스로 고치는 코드. 예산이 남아 있는 동안은 자동 복구가 소유한
 # 상태이므로 사람의 할 일(OPEN)이 아니라 RETRYING으로 연다.
-_AUTOMATIC_BODY_REPAIR_CODES = frozenset(
-    {
-        "FAQ_FIELDS_MISSING",
-        "MISSING_REFERENCES",
-        "FORBIDDEN_EXPRESSION",
-        "ESSENCE_NOT_ALIGNED",
-        "CONTENT_AI_REVIEW_STALE",
-    }
-)
-_BODY_REPAIR_STATE_KEY = "automatic_body_repair"
+_AUTOMATIC_BODY_REPAIR_CODES = BODY_REPAIR_CODES
+_BODY_REPAIR_STATE_KEY = BODY_REPAIR_STATE_KEY_POLICY
 _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # One Slack digest per morning batch replaces the per-content-item pages.
 PREPUBLISH_MORNING_BATCH = "PREPUBLISH_0745"
@@ -139,6 +139,27 @@ def _stored_generation_attempt(item) -> dict:
     return dict(attempt) if isinstance(attempt, dict) else {}
 
 
+def _stored_input_change(attempt: dict, code: str) -> bool:
+    """승인된 입력 자체가 틀렸다는 판정인가. 작가 세션으로는 고칠 수 없는 종착이다."""
+
+    return (
+        attempt.get("reason") == code
+        and attempt.get("retry_class") == GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    )
+
+
+def _body_repair_budget_remains(item) -> bool:
+    """Whether automatic body repair still owns this blocker (today or on a later day).
+
+    수리 예산이 남아 있는 동안은 시스템의 일이다. 저장된 시도 기록의 기본 분류
+    (`OPERATOR_REQUIRED`)보다 이 예산이 앞선다 — 기한도 같은 예산에서 나온다.
+    """
+
+    summary = getattr(item, "essence_check_summary", None)
+    state = summary.get(_BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
+    return repair_recovery_remains(state)
+
+
 def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """Return whether a sweep still owns this cause, so it is not operator work.
 
@@ -147,21 +168,92 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """
 
     attempt = _stored_generation_attempt(item)
+    if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
+        # 수리 예산이 저장된 분류보다 앞선다. 예산이 남아 있으면 아직 시스템의 일이다.
+        return _body_repair_budget_remains(item)
     if (
         attempt.get("reason") == code
         and attempt.get("retry_class") == GenerationRetryClass.OPERATOR_REQUIRED.value
     ):
         return False
-    if code in _AUTOMATIC_BODY_REPAIR_CODES:
-        summary = getattr(item, "essence_check_summary", None)
-        state = summary.get(_BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
-        return repair_session_is_available(state)
     if code in _AUTOMATIC_RECOVERY_CODES:
         return True
     return (
         attempt.get("reason") == code
         and attempt.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
     )
+
+
+_TERMINAL_RETRY_CLASSES = frozenset(
+    {
+        GenerationRetryClass.OPERATOR_REQUIRED.value,
+        GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+    }
+)
+
+
+def _stored_retry_deadline(attempt: dict) -> datetime | None:
+    raw = attempt.get("next_retry_at")
+    if not isinstance(raw, str):
+        return None
+    try:
+        due = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return due if due.tzinfo is not None else due.replace(tzinfo=UTC)
+
+
+def scheduled_recovery_deadline(item, code: str) -> datetime | None:
+    """이 슬롯을 실제로 다시 집는 첫 스윕 시각. 다른 원인의 기한을 빌리지 않는다.
+
+    정본은 워커·게이트가 저장한 시도 기록이다(`_remember_generation_attempt`). 기록이
+    이 원인을 가리키지 않는 것은 게이트 호출부가 결정을 먼저 남기지 못했다는 뜻이라,
+    같은 규칙으로 한 번 계산해 주되 저장하지는 않는다 — 인시던트 제어는 시도 기록의
+    소유자가 아니다.
+    """
+
+    if item is None:
+        return None
+    attempt = _stored_generation_attempt(item)
+    if attempt.get("reason") == code:
+        return _stored_retry_deadline(attempt)
+    logger.warning(
+        "generation incident %s opened without a matching stored attempt; "
+        "deriving a non-persisted deadline",
+        code,
+    )
+    return next_recovery_deadline(
+        {"reason": code, "retry_class": retry_class_for(code).value},
+        scheduled_date=getattr(item, "scheduled_date", None),
+    )
+
+
+def generation_block_is_terminal(code: str, item) -> bool:
+    """자동 재시도가 끝난 차단인가. 끝났으면 기한 없는 OPEN(사람의 일)이다."""
+
+    attempt = _stored_generation_attempt(item) if item is not None else {}
+    if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
+        # 수리 예산이 남아 있으면 종착이 아니다 — `scheduled_recovery_owns_blocker`와
+        # 같은 술어를 쓴다. 두 판정이 갈리면 기한 없는 OPEN과 RETRYING이 동시에 참이 된다.
+        return not _body_repair_budget_remains(item)
+    if attempt.get("reason") == code:
+        return attempt.get("retry_class") in _TERMINAL_RETRY_CLASSES
+    # 모르는 코드의 기본값(OPERATOR_REQUIRED)까지 종착으로 읽으면 lease·stale claim 같은
+    # 보고 경로의 기한까지 지운다. 선언된 입력 변경 코드만 기록 없이 종착으로 본다.
+    return retry_class_for(code) == GenerationRetryClass.INPUT_CHANGE_REQUIRED
+
+
+def drop_stored_retry_deadline(item, code: str) -> None:
+    """종착으로 굳은 원인의 저장된 다음 시도 시각을 지운다."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    attempt = _stored_generation_attempt(item)
+    if attempt.get("reason") != code or "next_retry_at" not in attempt:
+        return
+    attempt.pop("next_retry_at", None)
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    updated[_GENERATION_ATTEMPT_KEY] = attempt
+    item.essence_check_summary = updated
 
 
 def is_provider_transient_generation_code(code: str) -> bool:
@@ -308,6 +400,8 @@ def _generation_safe_cause(code: str) -> str:
         "GENERATION_LEASE_ACTIVE": "같은 콘텐츠의 다른 생성 작업이 아직 진행 중입니다.",
         "STALE_GENERATION_CLAIM": "완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.",
         "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
+        # 실패가 아니라 자동 폴백의 중간 상태다 — 같은 슬롯을 다른 주제로 다시 쓴다.
+        "TOPIC_SWAPPED": "같은 주제로 자동 생성이 소진되어 다른 주제로 다시 준비합니다.",
         "MISSING_REFERENCES": "의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.",
         "FAQ_FIELDS_MISSING": "FAQ 질문과 직접 답변 요약이 준비되지 않았습니다.",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
@@ -366,11 +460,38 @@ def _fingerprint(code: str) -> IncidentFingerprint:
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 
+def content_generation_object_id(item_id: uuid.UUID, topic_swap_count: int = 0) -> str:
+    """주제 교체마다 새 epoch를 연다.
+
+    교체 뒤의 같은 코드 실패는 **새 인시던트**를 열어야 한다 — 옛 주제의 episode를
+    다시 열거나, 옛 주제에 붙은 ACK 단축 경로를 새 주제에 적용하면 안 된다.
+    `source_id`는 종전대로 글 id라 큐 조인·성공 시 자동 종료는 그대로다.
+    """
+
+    if topic_swap_count > 0:
+        return f"{item_id}#t{topic_swap_count}"
+    return str(item_id)
+
+
+def generation_incident_dedupe_key(
+    item_id: uuid.UUID, code: str, *, topic_swap_count: int = 0
+) -> str:
+    """한 글·한 원인·한 epoch의 생성 인시던트 중복 제거 키."""
+
+    return build_incident_key(
+        "content_generation",
+        "content_item",
+        content_generation_object_id(item_id, topic_swap_count),
+        _fingerprint(code),
+    )
+
+
 def _incident_identity(
     code: str,
     item_id: uuid.UUID,
     hospital_id: uuid.UUID,
     subject_hash: str | None = None,
+    topic_swap_count: int = 0,
 ) -> tuple[str, str, str]:
     """Use one durable incident per hospital for a hospital-level preparation gate."""
 
@@ -386,7 +507,11 @@ def _incident_identity(
             recertification.incident_object_id(item_id, subject_hash),
             "/operations",
         )
-    return "content_item", str(item_id), "/operations"
+    return (
+        "content_item",
+        content_generation_object_id(item_id, topic_swap_count),
+        "/operations",
+    )
 
 
 def generation_notify_requested(code: str) -> bool:
@@ -498,8 +623,12 @@ async def open_generation_incident(
 ) -> uuid.UUID:
     sessions = get_async_sessionmaker()
     async with sessions() as db:
+        # 주제 교체 뒤의 실패는 새 epoch로 열려야 하므로 신원을 정하기 전에 이력을 읽는다.
+        get_item = getattr(db, "get", None)
+        swapped_item = await get_item(ContentItem, item_id) if get_item is not None else None
+        topic_swap_count = len(getattr(swapped_item, "topic_swap_history", None) or [])
         object_type, object_id, admin_path = _incident_identity(
-            code, item_id, hospital_id, subject_hash
+            code, item_id, hospital_id, subject_hash, topic_swap_count
         )
         # 중복 제거 키만 subject를 포함한다. source_id는 글 자체로 남겨 운영 큐 조인과
         # 성공 시 자동 종료가 subject와 무관하게 같은 글을 찾게 한다.
@@ -602,8 +731,7 @@ async def open_generation_incident(
             )
             notification_code = code
         observed_at = datetime.now(UTC)
-        get_item = getattr(db, "get", None)
-        item = await get_item(ContentItem, item_id) if get_item is not None else None
+        item = swapped_item
         if notification_code == "MISSING_APPROVED_ESSENCE":
             # This incident records system work. Human action is represented by
             # the separate snapshot-keyed ESCALATED incident, including its SLA.
@@ -618,8 +746,16 @@ async def open_generation_incident(
                 incident = retrying
                 incident.sla_due_at = None
                 incident.severity = IncidentSeverity.MEDIUM
+        elif generation_block_is_terminal(notification_code, item):
+            # 종착 판정이 먼저다. 저장된 시도 기록이 이 원인을 종착으로 굳혔다면 어떤
+            # 스윕도 다시 사지 않으므로 RETRYING이 될 수 없다. 이전 episode의 기한을
+            # 물려받아 "아직 재시도 중"으로 보이지 않게 저장값까지 지운다.
+            if item is not None:
+                drop_stored_retry_deadline(item, notification_code)
+            incident.sla_due_at = None
         elif scheduled_recovery_owns_blocker(notification_code, item):
             # 예산이 남아 있는 자동 복구는 사람의 할 일이 아니다. 소진 뒤에만 OPEN이 된다.
+            deadline = scheduled_recovery_deadline(item, notification_code)
             retrying = await mark_retrying(
                 db, incident.id, expected_version=incident.version,
                 actor="content-generation-worker",
@@ -627,7 +763,7 @@ async def open_generation_incident(
             )
             if isinstance(retrying, Incident):
                 incident = retrying
-            incident.sla_due_at = next_recovery_sweep()
+            incident.sla_due_at = deadline
             incident.severity = IncidentSeverity.MEDIUM
         if blocking_cause is None:
             await _recover_superseded_generation_incidents(

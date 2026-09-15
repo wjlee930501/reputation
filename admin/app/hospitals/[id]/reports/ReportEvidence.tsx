@@ -135,7 +135,7 @@ export function ReportEvidence({ report, onCopyNotification }: { report: ReportV
               <div>
                 <p className="font-bold">필수 공개 후 확인 표본</p>
                 <p className="mt-1 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">
-                  대상 {report.contentOperations.requiredReviewCount}건 · 완료 {report.contentOperations.reviewedCount}건 · 대기 {report.contentOperations.pendingReviewCount}건 · 기한 지남 {report.contentOperations.overdueReviewCount}건
+                  대상 {report.contentOperations.requiredReviewCount}건 · 완료 {report.contentOperations.reviewedCount}건 · 대기 {report.contentOperations.pendingReviewCount}건
                 </p>
                 <p className="mt-1 text-xs text-[var(--color-revisit-text-caption)]">마감 기준 {dateTime(report.contentOperations.cutoffAt)}</p>
               </div>

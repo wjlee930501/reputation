@@ -32,6 +32,7 @@ def _row(
     reused_from: uuid.UUID | None = None,
     summary: dict | None = None,
     hospital_id: uuid.UUID = HOSPITAL_ID,
+    topic_swap_history: list | None = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         hospital_id=hospital_id,
@@ -40,6 +41,7 @@ def _row(
         first_published_at=first_published_at,
         image_reused_from_content_id=reused_from,
         essence_check_summary=summary,
+        topic_swap_history=topic_swap_history,
     )
 
 
@@ -188,3 +190,37 @@ def test_period_must_move_forward() -> None:
 def test_week_start_is_the_kst_monday() -> None:
     assert kst_week_start(date(2026, 9, 13)) == WEEK_START
     assert kst_week_start(WEEK_START) == WEEK_START
+
+
+def test_topic_swaps_are_counted_in_the_week_they_happened() -> None:
+    """마지막 폴백 계단은 자동 복구 수다 — 조치 필요로 세지 않는다."""
+
+    in_week = datetime(2026, 9, 9, 1, 0, tzinfo=KST)
+    before_week = datetime(2026, 9, 1, 1, 0, tzinfo=KST)
+    fact = _fold(
+        [
+            _row(topic_swap_history=[{"swapped_at": in_week.isoformat()}]),
+            _row(
+                scheduled_date=WEEK_START + timedelta(days=1),
+                topic_swap_history=[{"swapped_at": before_week.isoformat()}],
+            ),
+            _row(scheduled_date=WEEK_START + timedelta(days=2), topic_swap_history=None),
+        ]
+    )
+
+    assert fact.topic_swapped == 1
+    assert fact.operator_required == 0
+
+
+def test_malformed_topic_swap_history_is_ignored() -> None:
+    fact = _fold(
+        [
+            _row(topic_swap_history="not-a-list"),
+            _row(
+                scheduled_date=WEEK_START + timedelta(days=1),
+                topic_swap_history=[{"swapped_at": "not-a-timestamp"}, "junk"],
+            ),
+        ]
+    )
+
+    assert fact.topic_swapped == 0
