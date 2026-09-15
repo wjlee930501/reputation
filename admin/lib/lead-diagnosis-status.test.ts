@@ -165,6 +165,14 @@ test('도입문의 진단의 복구 진행 문구는 고객 전달을 말하지 
   )
 })
 
+test('고객 영향 문구는 리드 표식과 이 행의 발송 상태를 함께 보고 감춘다', () => {
+  // 표식만 보면 표식이 사라진 행에서 「신청자가 … 받지 못합니다」가 콜용 행에 다시 붙는다.
+  assert.match(
+    LEADS_PAGE,
+    /!isIntroductionInquiry\(lead\)\s*\n?\s*&& diagnosis\.delivery_status !== 'INTERNAL' && \(\s*\n\s*<p[^>]*>\s*\n\s*고객 영향: 신청자가 정확한 진단 보고서를 받지 못합니다\./,
+  )
+})
+
 test('the inquiry row exposes internal generation and explicitly guards retry', () => {
   assert.match(LEADS_PAGE, /진단 생성\(내부용\)/)
   assert.match(LEADS_PAGE, /콜용 \/ 고객 미발송/)
