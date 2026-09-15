@@ -2,7 +2,7 @@ import { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 
 import { fetchHospital, fetchContents, HospitalNotFoundError } from '@/lib/api'
-import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
+import { buildOpeningHoursSpec } from '@/lib/business-hours'
 import {
   clinicComposition,
   clinicContentDensity,
@@ -32,7 +32,6 @@ import { ClinicFooter } from './_components/ClinicFooter'
 import { ClinicGallery } from './_components/ClinicGallery'
 import { ClinicHeader } from './_components/ClinicHeader'
 import { ClinicHero } from './_components/ClinicHero'
-import { ContactCard } from './_components/ContactCard'
 import { DoctorIntro } from './_components/DoctorIntro'
 import { FeaturedContent } from './_components/FeaturedContent'
 import { HospitalFacts } from './_components/HospitalFacts'
@@ -222,16 +221,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   const clusterContents = contents.filter((content) => !faqEntryIds.has(content.id))
   const pageJsonLd = [clinicJsonLd, breadcrumbJsonLd, ...(faqJsonLd ? [faqJsonLd] : [])]
 
-  const externalChannels = [
-    { url: hospital.blog_url, label: '병원 블로그' },
-    { url: hospital.kakao_channel_url, label: '카카오톡 상담' },
-    { url: hospital.naver_place_url, label: '네이버 플레이스' },
-    { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
-  ]
-
-  // AI-readable Hospital Facts 패널용 공식 엔티티 채널 — schema/llms.txt와 동일한 값.
+  // 진료시간·오시는 길 섹션의 공식 채널 — schema sameAs/llms.txt와 같은 값이다.
   const factLinks = [
     { url: hospital.website_url, label: '공식 홈페이지' },
+    { url: hospital.blog_url, label: '병원 블로그' },
     { url: hospital.naver_place_url, label: '네이버 플레이스' },
     { url: hospital.google_business_profile_url, label: 'Google 비즈니스 프로필' },
     { url: hospital.kakao_channel_url, label: '카카오톡 채널' },
@@ -256,7 +249,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     <>
       <JsonLd data={pageJsonLd} />
       <div
-        className={`clinic-shell clinic-shell--editorial clinic-shell--density-${contentDensity}`}
+        className={`clinic-shell clinic-shell--density-${contentDensity}`}
         style={buildClinicThemeStyle(hospital)}
       >
         <ClinicHeader
@@ -270,11 +263,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           currentSection="home"
           googleMapsUrl={hospital.google_maps_url}
         />
-        <main id="main-content">
-          {/* PRD §7.2 Public Webblog IA 순서:
-              Hero → Hospital Facts → Answer Clusters → Featured →
-              Care Principles → Treatments → Care Flow → Doctor → Gallery → Contact.
-              병원 엔티티 사실과 대표 질문을 최신글 피드보다 먼저 노출한다. */}
+        <main id="main-content" className="hub-main">
+          {/* 순서: 첫 화면(사실 요약) → 진료 영역 → 의료진 → 진료 원칙 → 글 → 질문 →
+              FAQ → 진료 흐름 → 공간 → 진료시간·오시는 길. 섹션은 <main> 바로 아래
+              <section>이어야 한다 — 흰 면과 회색 면의 교차를 순서로 결정하기 때문이다. */}
           <ClinicHero
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
@@ -292,26 +284,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             heroDescription={hospital.hero_description}
           />
 
-          <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
-            <a href="#treatments">진료 영역</a>
-            <a href="#doctor">의료진</a>
-            <a href="#contents">건강 정보</a>
-            <a href="#facts">병원 정보</a>
-            <a href="#contact">오시는 길</a>
-          </nav>
+          <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
 
-          <div id="treatments" className="clinic-anchor-target">
-            <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
-          </div>
-
-          <div id="doctor" className="clinic-anchor-target">
-          <DoctorIntro
-            physicians={physicians}
-            specialties={hospital.specialties}
-            region={hospital.region}
-            contentCount={contents.length}
-          />
-          </div>
+          <DoctorIntro physicians={physicians} region={hospital.region} />
 
           <CarePrinciples
             hospitalRootUrl={hospitalRootUrl}
@@ -321,7 +296,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             publicAbout={publicAbout}
           />
 
-          <div id="contents" className="clinic-anchor-target">
           <FeaturedContent
             contents={contents}
             hospitalRootUrl={hospitalRootUrl}
@@ -329,7 +303,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             directorName={hospital.director_name}
             secondaryLimit={composition.featuredSecondaryLimit}
           />
-          </div>
 
           {composition.showAnswerClusters ? (
             <AnswerClusters
@@ -354,7 +327,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             allPhotosHref={`${hospitalRootUrl}/visit#gallery`}
           />
 
-          <div id="facts" className="clinic-anchor-target">
           <HospitalFacts
             hospitalName={hospital.name}
             address={hospital.address}
@@ -368,22 +340,6 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             links={factLinks}
             googleMapsUrl={hospital.google_maps_url}
           />
-          </div>
-
-          <div id="contact" className="clinic-anchor-target">
-          <ContactCard
-            address={hospital.address}
-            addressDetail={hospital.address_detail}
-            phone={hospital.phone}
-            googleMapsUrl={hospital.google_maps_url}
-            links={externalChannels}
-            hospitalName={hospital.name}
-            hospitalRootUrl={hospitalRootUrl}
-            region={hospital.region}
-            websiteUrl={hospital.website_url}
-            hoursHref={visitHoursHref(hospitalRootUrl, false)}
-          />
-          </div>
         </main>
         <ClinicFooter
           hospitalName={hospital.name}

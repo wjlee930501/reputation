@@ -37,31 +37,27 @@ const CARE_STEPS = [
 
 export function CareFlow({ hospitalRootUrl }: Props) {
   return (
-    <section className="clinic-section clinic-section--flow">
-      <div className="clinic-section-inner">
-        <header className="clinic-section-head clinic-section-head--center">
-          <h2 className="clinic-section-title">첫 방문부터 경과 관리까지, 진료 4단계</h2>
-          <p className="clinic-section-note">
-            상담과 진료 확인을 바탕으로 단계적으로 진행합니다.
-          </p>
+    <section id="care-flow" className="hub-section">
+      <div className="hub-container">
+        <header className="hub-section-head">
+          <h2 className="hub-section-title">첫 방문부터 경과 관리까지, 진료 4단계</h2>
+          <p className="hub-section-note">상담과 진료 확인을 바탕으로 단계적으로 진행합니다.</p>
         </header>
 
-        <ol className="clinic-flow-timeline" aria-label="진료 4단계 흐름">
+        <ol className="hub-flow" aria-label="진료 4단계 흐름">
           {CARE_STEPS.map((step) => (
-            <li key={step.label} className="clinic-flow-node">
-              <span className="clinic-flow-node-badge" aria-hidden="true">{step.label}</span>
-              <div className="clinic-flow-node-body">
-                <span className="clinic-flow-node-aux">{step.aux}</span>
-                <h3 className="clinic-flow-node-title">{step.title}</h3>
-                <p className="clinic-flow-node-desc">{step.body}</p>
-              </div>
+            <li key={step.label} className="hub-flow-step">
+              <span className="hub-flow-badge" aria-hidden="true">{step.label}</span>
+              <span className="hub-flow-aux">{step.aux}</span>
+              <h3 className="hub-flow-title">{step.title}</h3>
+              <p className="hub-flow-desc">{step.body}</p>
             </li>
           ))}
         </ol>
 
-        <div className="clinic-flow-footer">
-          <Link href={`${hospitalRootUrl}/visit`} className="clinic-flow-cta">
-            진료 시간·오시는 길 확인
+        <div className="hub-flow-footer">
+          <Link href={`${hospitalRootUrl}/visit`} className="hub-btn hub-btn--secondary">
+            진료시간·오시는 길 확인
           </Link>
         </div>
       </div>

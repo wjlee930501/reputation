@@ -1,0 +1,182 @@
+/* ─── 의료진 ──────────────────────────────────────────────────────────
+   사람마다 카드 하나. 위는 4:5 초상(없으면 모노그램), 아래는 이름·역할·진료영역·
+   자격. 배치는 인원수에서 온다 — 1명은 초상/본문 가로 분할, 2~3명 2열, 4명 이상 3열. */
+
+.hub-doctors {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--clinic-block-gap);
+}
+
+.hub-doctors--pair {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.hub-doctors--solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.hub-doctor {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.hub-doctors--solo .hub-doctor {
+  display: grid;
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+}
+
+.hub-doctor-portrait {
+  position: relative;
+  aspect-ratio: 4 / 5;
+  overflow: hidden;
+  background: var(--clinic-surface-alt);
+}
+
+.hub-doctor-portrait img {
+  object-fit: cover;
+  object-position: center top;
+}
+
+.hub-doctor-monogram {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 64px;
+  font-weight: 700;
+  color: var(--clinic-brand-edge);
+}
+
+.hub-doctor-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-4);
+  padding: var(--clinic-card-pad);
+}
+
+.hub-doctor-identity {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-1);
+}
+
+.hub-doctor-name {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: var(--clinic-lh-tight);
+}
+
+.hub-doctor-name small {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--clinic-muted);
+}
+
+.hub-doctor-role {
+  font-size: var(--clinic-type-small);
+  color: var(--clinic-muted);
+}
+
+.hub-doctor-career {
+  margin: 0;
+  font-size: var(--clinic-type-small);
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+  white-space: pre-line;
+}
+
+.hub-doctor-career-toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--clinic-type-small);
+  font-weight: var(--clinic-control-weight);
+  color: var(--clinic-brand-action);
+}
+
+.hub-doctor-career-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.hub-doctor-career-toggle::after {
+  content: '+';
+  margin-left: var(--clinic-space-2);
+}
+
+details[open] > .hub-doctor-career-toggle::after {
+  content: '−';
+}
+
+.hub-doctor-creds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-4);
+  padding-top: var(--clinic-space-4);
+  border-top: 1px solid var(--clinic-line-soft);
+}
+
+.hub-cred-label {
+  display: block;
+  margin-bottom: var(--clinic-space-2);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--clinic-muted);
+}
+
+.hub-cred-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--clinic-space-1) var(--clinic-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--clinic-type-small);
+  line-height: 1.6;
+  color: var(--clinic-ink);
+}
+
+.hub-cred-list li:not(:last-child)::after {
+  content: '·';
+  margin-left: var(--clinic-space-3);
+  color: var(--clinic-line-strong);
+}
+
+@media (max-width: 1023px) {
+  .hub-doctors {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hub-doctors--solo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hub-doctors--solo .hub-doctor {
+    grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-doctors,
+  .hub-doctors--pair {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hub-doctors--solo .hub-doctor {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hub-doctor-portrait {
+    aspect-ratio: 1 / 1;
+  }
+
+  .hub-doctor-name {
+    font-size: 20px;
+  }
+}

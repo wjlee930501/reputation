@@ -1,0 +1,77 @@
+/* ─── 진료 원칙 ───────────────────────────────────────────────────────
+   왼쪽에 한 문장, 오른쪽에 원칙 세 줄. 카드가 아니라 선으로 나눈 목록이다. */
+
+.hub-principles {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--clinic-space-16);
+  align-items: start;
+}
+
+.hub-principles-lead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-3);
+}
+
+.hub-principles-statement {
+  margin: 0;
+  font-size: var(--clinic-type-body);
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+}
+
+.hub-principles-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--clinic-space-2);
+  margin-top: var(--clinic-space-3);
+}
+
+.hub-principle-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--clinic-line-soft);
+}
+
+.hub-principle {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  gap: var(--clinic-space-4);
+  padding: var(--clinic-space-6) 0;
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-principle-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  color: var(--clinic-brand-action);
+}
+
+.hub-principle-icon svg {
+  width: 100%;
+  height: 100%;
+}
+
+.hub-principle-title {
+  margin: 0 0 var(--clinic-space-1);
+  font-size: var(--clinic-type-h3);
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-principle-body {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--clinic-muted);
+}
+
+@media (max-width: 1023px) {
+  .hub-principles {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--clinic-space-10);
+  }
+}

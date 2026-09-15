@@ -5,12 +5,10 @@
 // 정확히 이것이었고, 렌더 테스트로는 잡히지 않는다.
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import test from 'node:test'
 
 import { buildClinicThemeStyle } from './clinic-theme.ts'
-
-const GLOBALS = join(process.cwd(), 'app', 'globals.css')
+import { GLOBALS_CSS_PATH, readClinicStyles } from './clinic-stylesheet.ts'
 
 /** 주석 안의 색은 렌더되지 않는다. */
 function stripComments(source: string): string {
@@ -37,8 +35,9 @@ function isBrandBlue(hex: string): boolean {
 
 type Declaration = { line: number; selector: string; text: string }
 
-function clinicDeclarations(): Declaration[] {
-  const lines = stripComments(readFileSync(GLOBALS, 'utf8')).split('\n')
+/** `selectorFilter`가 참인 규칙 안의 선언 줄. */
+function declarations(source: string, selectorFilter: (selector: string) => boolean): Declaration[] {
+  const lines = stripComments(source).split('\n')
   const found: Declaration[] = []
   let selector = ''
   let depth = 0
@@ -53,7 +52,7 @@ function clinicDeclarations(): Declaration[] {
     const closed = (line.match(/\}/g) ?? []).length
     const inside = depth > 0 || opened > 0
     depth += opened - closed
-    if (inside && selector.includes('clinic')) {
+    if (inside && selectorFilter(selector)) {
       found.push({ line: index + 1, selector, text: line.trim() })
     }
   })
@@ -61,7 +60,15 @@ function clinicDeclarations(): Declaration[] {
   return found
 }
 
-const DECLARATIONS = clinicDeclarations()
+const GLOBALS = readFileSync(GLOBALS_CSS_PATH, 'utf8')
+const STYLES = readClinicStyles()
+
+// globals.css는 랜딩과 병원 하위 페이지를 함께 담으므로 clinic 셀렉터만 본다.
+// 병원 레이어(_styles)는 파일 전체가 병원 표면이다.
+const DECLARATIONS = [
+  ...declarations(GLOBALS, (selector) => selector.includes('clinic')),
+  ...declarations(STYLES, () => true),
+]
 
 test('the clinic CSS scan actually reaches the public surface rules', () => {
   // 스캔이 비면 아래 단언이 공허하게 통과한다.
@@ -79,8 +86,19 @@ test('clinic rules never hard-code a brand blue outside the derived ramp', () =>
   assert.deepEqual(offenders, [])
 })
 
+test('the hub layer paints neutrals from tokens, never from literal greys', () => {
+  // 회색을 숫자로 적기 시작하면 hairline이 파일마다 달라진다 — 옛 스타일시트가 그랬다.
+  const offenders = declarations(STYLES, () => true)
+    .filter((declaration) => !/^\s*--clinic-/.test(declaration.text))
+    .filter((declaration) => /#[0-9a-fA-F]{3,6}\b/.test(declaration.text))
+    // 사진 위 캡션 글자만 흰색 리터럴을 허용한다 — 막(scrim)이 검정이라 토큰과 무관하다.
+    .filter((declaration) => !/color:\s*#ffffff/.test(declaration.text))
+    .map((declaration) => `${declaration.selector} — ${declaration.text}`)
+  assert.deepEqual(offenders, [])
+})
+
 test('every legacy revisit primary slot on the clinic surface is fed by the derived ramp', () => {
-  const css = stripComments(readFileSync(GLOBALS, 'utf8'))
+  const css = stripComments(GLOBALS)
   const used = new Set(
     [...css.matchAll(/var\(--(color-revisit-primary-\d+)\)/g)].map((match) => match[1]),
   )
@@ -95,7 +113,7 @@ test('every legacy revisit primary slot on the clinic surface is fed by the deri
 })
 
 test('the derived ramp fills every clinic bridge slot the CSS reads', () => {
-  const css = stripComments(readFileSync(GLOBALS, 'utf8'))
+  const css = stripComments(GLOBALS)
   const bridged = new Set(
     [...css.matchAll(/var\((--clinic-revisit-primary-\d+)\)/g)].map(
       (match) => match[1] as `--clinic-${string}`,
@@ -110,4 +128,17 @@ test('the derived ramp fills every clinic bridge slot the CSS reads', () => {
   for (const token of bridged) {
     assert.ok(theme[token], `${token}을 buildClinicThemeStyle이 채우지 않는다`)
   }
+})
+
+test('every brand token the hub layer reads is produced by the theme builder', () => {
+  // 레이어가 새 토큰을 읽기 시작했는데 빌더가 채우지 않으면 병원마다 기본색으로 떨어진다.
+  const theme = buildClinicThemeStyle({ brand_primary_color: '#2A6F4E', brand_accent_color: '#B79045' })
+  const read = new Set(
+    [...stripComments(STYLES).matchAll(/var\((--clinic-(?:brand|accent|on-brand|focus)[a-z-]*)\)/g)].map(
+      (match) => match[1] as `--clinic-${string}`,
+    ),
+  )
+  assert.ok(read.size >= 5, `브랜드 토큰을 ${read.size}개만 읽는다`)
+  const unfilled = [...read].filter((token) => !theme[token])
+  assert.deepEqual(unfilled, [])
 })

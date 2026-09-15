@@ -53,19 +53,19 @@ export function FeaturedContent({
   const primaryDate = formatDate(primary.published_at, primary.scheduled_date)
 
   return (
-    <section className="clinic-featured" aria-label="대표 의료 정보">
-      <div className="clinic-featured-inner">
-        <header className="clinic-section-head">
-          <h2 className="clinic-section-title">먼저 정리한 글</h2>
-          <p className="clinic-section-note">
+    <section id="contents" className="hub-section" aria-label="대표 의료 정보">
+      <div className="hub-container">
+        <header className="hub-section-head">
+          <h2 className="hub-section-title">먼저 정리한 글</h2>
+          <p className="hub-section-note">
             환자 질문에 답하기 위해 {hospitalName}에서 먼저 정리한 의료 정보입니다.
           </p>
         </header>
 
-        <div className={`clinic-lead${rest.length === 0 ? ' clinic-lead--solo' : ''}`}>
+        <div className={`hub-featured${rest.length === 0 ? ' hub-featured--solo' : ''}`}>
           <Link
             href={`${hospitalRootUrl}/contents/${primary.id}`}
-            className="clinic-lead-primary"
+            className="hub-lead"
             aria-label={`대표 콘텐츠 — ${primary.title}`}
           >
             <ContentCover
@@ -73,23 +73,23 @@ export function FeaturedContent({
               src={resolveAssetUrl(primary.image_url)}
               variant="featured"
             />
-            <span className="clinic-lead-kicker">가장 먼저 읽어보면 좋은 글</span>
+            <span className="hub-lead-kicker">가장 먼저 읽어보면 좋은 글</span>
             <span className={`clinic-tag ${categoryTagClass(primary.content_type)}`}>{primaryTypeLabel}</span>
-            <h3 className="clinic-lead-title">{primary.title}</h3>
+            <h3 className="hub-lead-title">{primary.title}</h3>
             {primary.meta_description && (
-              <p className="clinic-lead-summary">{primary.meta_description}</p>
+              <p className="hub-lead-summary">{primary.meta_description}</p>
             )}
-            <span className="clinic-lead-meta">
+            <span className="hub-meta">
               <strong>{directorName} 원장</strong>
-              <span className="clinic-content-card-meta-dot" aria-hidden="true" />
+              <span className="hub-meta-dot" aria-hidden="true" />
               <span>{primaryDate}</span>
-              <span className="clinic-content-card-meta-dot" aria-hidden="true" />
+              <span className="hub-meta-dot" aria-hidden="true" />
               <span>{primary.reading_minutes ?? 1}분 분량</span>
             </span>
           </Link>
 
           {rest.length > 0 && (
-            <ol className="clinic-lead-list">
+            <ol className="hub-row-list">
               {rest.map((content) => {
                 const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
                 const date = formatDate(content.published_at, content.scheduled_date)
@@ -97,14 +97,14 @@ export function FeaturedContent({
                   <li key={content.id}>
                     <Link
                       href={`${hospitalRootUrl}/contents/${content.id}`}
-                      className="clinic-lead-row"
+                      className="hub-row"
                       aria-label={`${typeLabel} — ${content.title}`}
                     >
                       <span className={`clinic-tag clinic-tag--sm ${categoryTagClass(content.content_type)}`}>
                         {typeLabel}
                       </span>
-                      <span className="clinic-lead-row-title">{content.title}</span>
-                      <span className="clinic-lead-row-date">{date}</span>
+                      <span className="hub-row-title">{content.title}</span>
+                      <span className="hub-row-date">{date}</span>
                     </Link>
                   </li>
                 )
@@ -113,9 +113,9 @@ export function FeaturedContent({
           )}
         </div>
 
-        <Link href={`${hospitalRootUrl}/contents`} className="clinic-featured-more">
+        <Link href={`${hospitalRootUrl}/contents`} className="hub-more">
           의료 정보 전체 보기
-          <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+          <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
         </Link>
       </div>
     </section>

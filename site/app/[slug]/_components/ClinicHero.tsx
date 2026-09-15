@@ -94,109 +94,109 @@ export function ClinicHero({
 
   return (
     <section
-      className={`clinic-hero clinic-hero--editorial clinic-hero--access-${accessMode} clinic-hero--media-${mediaMode}`}
+      className={`hub-hero hub-hero--access-${accessMode} hub-hero--media-${mediaMode}`}
       id="top"
     >
-      <div className="clinic-hero-editorial-grid">
-        <div className="clinic-hero-editorial-copy">
-          <span className="clinic-hero-editorial-kicker">
-            {[locationLabel, specialtyLabel].filter(Boolean).join(' · ')}
-          </span>
-          {/* 조각 사이의 `{' '}`는 장식이 아니다 — 이게 없으면 제목 텍스트가
-              `대장항문외과,의료진과 진료 정보를방문 전에 확인하세요`로 읽힌다. */}
-          <h1
-            className={`clinic-hero-editorial-title${
-              headline.explicitLines ? ' clinic-hero-editorial-title--lines' : ''
-            }`}
-          >
-            {headline.lead.map((part, index) => (
-              <span key={`${part}-${index}`}>
-                {part}{' '}
-              </span>
-            ))}
-            <strong>{headline.emphasis}</strong>
-          </h1>
-          <p className="clinic-hero-editorial-lede">
-            {heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
-          </p>
-          <div className="clinic-hero-editorial-actions">
-            {accessMode === 'specialist' ? (
-              <>
-                <Link className="clinic-btn clinic-btn-cta" href={`${hospitalRootUrl}/doctor`}>
-                  의료진 보기
-                </Link>
-                <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/treatments`}>
-                  진료 영역
-                </Link>
-              </>
-            ) : (
-              <>
-                <a className="clinic-btn clinic-btn-cta" href={`tel:${phone}`}>
-                  <PhoneIcon className="clinic-icon clinic-icon--sm" />
-                  {/* 오늘 휴진인데 '전화 상담'만 있으면 환자는 받지 않는 번호로 건다.
-                      사실을 먼저 말하고, 전화는 그대로 걸 수 있게 둔다(S-8). */}
-                  {today?.closed ? '오늘 휴진 · 전화 문의' : '전화 상담'}
-                </a>
-                <Link className="clinic-btn clinic-btn-secondary" href={`${hospitalRootUrl}/visit`}>
-                  <MapPinIcon className="clinic-icon clinic-icon--sm" />
-                  오시는 길
-                </Link>
-              </>
-            )}
+      <div className="hub-container">
+        <div className="hub-hero-grid">
+          <div className="hub-hero-copy">
+            <p className="hub-hero-kicker">
+              {[locationLabel, specialtyLabel].filter(Boolean).join(' · ')}
+            </p>
+            {/* 조각 사이의 `{' '}`는 장식이 아니다 — 이게 없으면 제목 텍스트가
+                `대장항문외과,의료진과 진료 정보를방문 전에 확인하세요`로 읽힌다. */}
+            <h1
+              className={`hub-hero-title${headline.explicitLines ? ' hub-hero-title--lines' : ''}`}
+            >
+              {headline.lead.map((part, index) => (
+                <span key={`${part}-${index}`}>
+                  {part}{' '}
+                </span>
+              ))}
+              <strong>{headline.emphasis}</strong>
+            </h1>
+            <p className="hub-hero-lede">
+              {heroDescription?.trim() || `${hospitalName}의 진료 영역, 진료시간과 위치를 한곳에서 확인할 수 있습니다.`}
+            </p>
+            <div className="hub-hero-actions">
+              {accessMode === 'specialist' ? (
+                <>
+                  <Link className="hub-btn hub-btn--primary" href={`${hospitalRootUrl}/doctor`}>
+                    의료진 보기
+                  </Link>
+                  <Link className="hub-btn hub-btn--secondary" href={`${hospitalRootUrl}/treatments`}>
+                    진료 영역
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <a className="hub-btn hub-btn--primary" href={`tel:${phone}`}>
+                    <PhoneIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
+                    {/* 오늘 휴진인데 '전화 상담'만 있으면 환자는 받지 않는 번호로 건다.
+                        사실을 먼저 말하고, 전화는 그대로 걸 수 있게 둔다(S-8). */}
+                    {today?.closed ? '오늘 휴진 · 전화 문의' : '전화 상담'}
+                  </a>
+                  <Link className="hub-btn hub-btn--secondary" href={`${hospitalRootUrl}/visit`}>
+                    <MapPinIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
+                    오시는 길
+                  </Link>
+                </>
+              )}
+            </div>
           </div>
-        </div>
 
-        <div className={`clinic-hero-editorial-photo${heroPhotoUrl ? '' : ' is-empty'}`}>
           {heroPhotoUrl ? (
-            <Image
-              src={heroPhotoUrl}
-              alt={mediaMode === 'brand-graphic' ? `${hospitalName} 브랜드 그래픽` : `${hospitalName} 진료 공간`}
-              fill
-              priority
-              loading="eager"
-              quality={84}
-              sizes="(max-width: 920px) 100vw, 58vw"
-              className="clinic-hero-editorial-image"
-            />
+            <div className="hub-hero-media">
+              <Image
+                src={heroPhotoUrl}
+                alt={mediaMode === 'brand-graphic' ? `${hospitalName} 브랜드 그래픽` : `${hospitalName} 진료 공간`}
+                fill
+                priority
+                loading="eager"
+                quality={84}
+                sizes="(max-width: 1023px) 100vw, 58vw"
+              />
+            </div>
           ) : (
-            <div className="clinic-hero-editorial-fallback">
-              <span>진료 정보 허브</span>
-              <strong>{hospitalName}</strong>
-              <small>{directorName ? `${directorName} 원장` : specialtyLabel || '진료 안내'}</small>
+            <div className="hub-hero-media hub-hero-media--empty">
+              <div>
+                <span>진료 안내</span>
+                <strong>{hospitalName}</strong>
+                <span>{directorName ? `${directorName} 원장` : specialtyLabel || '진료 안내'}</span>
+              </div>
             </div>
           )}
         </div>
+
+        <dl className="hub-hero-facts" aria-label="병원 빠른 안내">
+          <div className="hub-fact">
+            <ClockIcon className="hub-icon" />
+            <dt>오늘 진료</dt>
+            <dd>{today ? (today.closed ? '오늘 휴진' : today.time) : '방문 전 전화 확인'}</dd>
+          </div>
+          <div className="hub-fact">
+            <PhoneIcon className="hub-icon" />
+            <dt>전화</dt>
+            <dd><a href={`tel:${phone}`}>{phone}</a></dd>
+          </div>
+          <div className="hub-fact">
+            <MapPinIcon className="hub-icon" />
+            <dt>위치</dt>
+            <dd>{compactAddress(fullClinicAddress(address, addressDetail))}</dd>
+          </div>
+          <div className="hub-fact">
+            <CalendarIcon className="hub-icon" />
+            <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : '토요일 진료'}</dt>
+            <dd>
+              {uniformHours
+                ? '연중무휴'
+                : upcoming
+                  ? `${upcoming.label} ${upcoming.time}`
+                  : saturday || '방문 전 전화 확인'}
+            </dd>
+          </div>
+        </dl>
       </div>
-
-      <dl className="clinic-hero-fact-rail" aria-label="병원 빠른 안내">
-        <div>
-          <ClockIcon className="clinic-icon" />
-          <dt>오늘 진료</dt>
-          <dd>{today ? (today.closed ? '오늘 휴진' : today.time) : '방문 전 전화 확인'}</dd>
-        </div>
-        <div>
-          <PhoneIcon className="clinic-icon" />
-          <dt>전화</dt>
-          <dd><a href={`tel:${phone}`}>{phone}</a></dd>
-        </div>
-        <div className="clinic-hero-fact-rail-address">
-          <MapPinIcon className="clinic-icon" />
-          <dt>위치</dt>
-          <dd>{compactAddress(fullClinicAddress(address, addressDetail))}</dd>
-        </div>
-        <div>
-          <CalendarIcon className="clinic-icon" />
-          <dt>{uniformHours ? '휴무일' : upcoming ? '다음 진료' : '토요일 진료'}</dt>
-          <dd>
-            {uniformHours
-              ? '연중무휴'
-              : upcoming
-                ? `${upcoming.label} ${upcoming.time}`
-                : saturday || '방문 전 전화 확인'}
-          </dd>
-        </div>
-      </dl>
-
     </section>
   )
 }

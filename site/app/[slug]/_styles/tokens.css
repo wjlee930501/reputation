@@ -1,0 +1,107 @@
+/* ─── 병원 공개 표면 토큰 ─────────────────────────────────────────────
+   폭·여백·글자 단계의 숫자는 이 파일에만 있다. 컴포넌트 CSS는 여기의 토큰만
+   읽고, 화면 폭별 단계도 여기서만 바뀐다. 개별 섹션이 자기 분기에서 숫자를 다시
+   쓰면 리듬이 또 갈라진다 — 그게 이전 스타일시트가 무너진 방식이다.
+
+   색은 두 갈래다. 병원 대표색에서 파생된 `--clinic-brand-*`는
+   `buildClinicThemeStyle`이 `.clinic-shell`에 inline으로 주입하고, 여기의 값은
+   토큰이 없는 표면(404 등)을 위한 기본값이다. 중립색(잉크·회색·선)은 병원과
+   무관하게 여기서 정한다. */
+
+:root {
+  /* 기준 폭과 여백 — 헤더·히어로·모든 섹션이 같은 컨테이너와 같은 좌우 여백을 쓴다.
+     `--clinic-rail`·`--clinic-section-x`는 옛 하위 페이지 규칙이 아직 읽는 별칭이다. */
+  --clinic-max: 1200px;
+  --clinic-gutter: 24px;
+  --clinic-rail: var(--clinic-gutter);
+  --clinic-section-x: var(--clinic-gutter);
+  --clinic-shell-max: calc(var(--clinic-max) + var(--clinic-rail) * 2);
+
+  /* 간격 단계 — 4px 배수. 컴포넌트는 이 단계 밖의 숫자를 쓰지 않는다. */
+  --clinic-space-1: 4px;
+  --clinic-space-2: 8px;
+  --clinic-space-3: 12px;
+  --clinic-space-4: 16px;
+  --clinic-space-5: 20px;
+  --clinic-space-6: 24px;
+  --clinic-space-8: 32px;
+  --clinic-space-10: 40px;
+  --clinic-space-12: 48px;
+  --clinic-space-16: 64px;
+
+  /* 세로 리듬 — 섹션 위아래, 섹션 제목과 본문 사이, 카드 사이, 카드 안쪽. */
+  --clinic-section-y: 96px;
+  --clinic-section-y-tight: 64px;
+  --clinic-section-head-gap: var(--clinic-space-10);
+  --clinic-block-gap: var(--clinic-space-6);
+  --clinic-card-pad: var(--clinic-space-6);
+  --clinic-row-pad: var(--clinic-space-5);
+
+  /* 모서리와 조작 요소. */
+  --clinic-radius-sm: 8px;
+  --clinic-radius-md: 12px;
+  --clinic-radius-lg: 16px;
+  --clinic-control-radius: 8px;
+  --clinic-control-radius-pill: 999px;
+  --clinic-control-height: 44px;
+  --clinic-control-weight: 600;
+  --clinic-control-weight-idle: 500;
+
+  /* 글자 단계 — Pretendard 400/500/600/700만 쓴다. */
+  --clinic-type-display: 44px;
+  --clinic-type-h2: 28px;
+  --clinic-type-h3: 18px;
+  --clinic-type-lede: 17px;
+  --clinic-type-body: 16px;
+  --clinic-type-small: 14px;
+  --clinic-type-caption: 13px;
+  --clinic-lh-tight: 1.25;
+  --clinic-lh-snug: 1.4;
+  --clinic-lh-body: 1.7;
+
+  /* 중립색. 브랜드색은 inline 토큰이 결정한다. */
+  --clinic-ink: #0a1b2f;
+  --clinic-paper: #ffffff;
+  --clinic-muted: #5f6670;
+  --clinic-surface-alt: #f7f8fa;
+  --clinic-line-soft: #e6e8ec;
+  --clinic-line-strong: #d3d7de;
+  --clinic-scrim: rgba(10, 27, 47, 0.72);
+
+  /* 기본 브랜드 램프 — 병원 토큰이 없을 때만 보인다. */
+  --clinic-brand: #17365d;
+  --clinic-brand-action: #17365d;
+  --clinic-brand-hover: #122b4b;
+  --clinic-brand-strong: #17365d;
+  --clinic-brand-edge: #98a9c0;
+  --clinic-brand-tint: #f1f4f8;
+  --clinic-brand-soft: #e3e9f0;
+  --clinic-on-brand: #ffffff;
+  --clinic-accent: #17365d;
+  --clinic-accent-strong: #17365d;
+  --clinic-focus: #17365d;
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --clinic-section-y: 72px;
+    --clinic-section-y-tight: 48px;
+    --clinic-section-head-gap: var(--clinic-space-8);
+    --clinic-type-display: 36px;
+  }
+}
+
+@media (max-width: 719px) {
+  :root {
+    --clinic-gutter: 20px;
+    --clinic-section-y: 56px;
+    --clinic-section-y-tight: 40px;
+    --clinic-section-head-gap: var(--clinic-space-6);
+    --clinic-block-gap: var(--clinic-space-4);
+    --clinic-card-pad: var(--clinic-space-5);
+    --clinic-row-pad: var(--clinic-space-4);
+    --clinic-type-display: 30px;
+    --clinic-type-h2: 22px;
+    --clinic-type-lede: 16px;
+  }
+}

@@ -34,13 +34,11 @@ export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
   }
 
   return (
-    <section id="treatments" className="clinic-section clinic-treatment-directory">
-      <div className="clinic-section-inner">
-        {/* P-A-3 — 이 제목은 sr-only였다. 다른 섹션은 모두 제목이 보이는데 첫
-            섹션만 보이지 않아, 화면에서는 카드 네 장이 맥락 없이 시작됐다. */}
-        <header className="clinic-section-head clinic-treatment-directory-head">
-          <h2 className="clinic-section-title">진료 영역</h2>
-          <p className="clinic-section-note">
+    <section id="treatments" className="hub-section">
+      <div className="hub-container">
+        <header className="hub-section-head">
+          <h2 className="hub-section-title">진료 영역</h2>
+          <p className="hub-section-note">
             병원에서 주로 진료하는 영역입니다. 증상과 치료 방법은 개인마다 다를 수 있으니
             자세한 내용은 진료 상담에서 확인해 주세요.
           </p>
@@ -49,7 +47,7 @@ export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
         {/* 열 수를 항목 수에 맞춘다 — 4열로 고정하면 진료 항목이 1~3개인 병원에서
             테두리만 남은 빈 칸이 그려진다(P-C-1). */}
         <div
-          className="clinic-tx-cards clinic-tx-directory"
+          className="hub-tx-grid"
           style={{
             '--clinic-tx-columns': Math.min(lead.length, LEAD_LIMIT),
             '--clinic-tx-columns-md': Math.min(lead.length, 2),
@@ -60,27 +58,27 @@ export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
             const href = hrefFor(treatment.name)
             const inner = (
               <>
-                <span className="clinic-tx-card-index" aria-hidden="true">
+                <span className="hub-tx-index" aria-hidden="true">
                   {String(idx + 1).padStart(2, '0')}
                 </span>
-                <span className="clinic-tx-card-name">{treatment.name}</span>
-                <span className="clinic-tx-card-desc clinic-tx-card-desc--supporting">
+                <span className="hub-tx-name">{treatment.name}</span>
+                <span className="hub-tx-desc">
                   {treatment.description || '진료 상담에서 자세한 내용을 확인해 주세요.'}
                 </span>
                 {href && (
-                  <span className="clinic-tx-card-more">
-                    <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+                  <>
+                    <ChevronRightIcon className="hub-tx-arrow" />
                     <span className="sr-only">안내 보기</span>
-                  </span>
+                  </>
                 )}
               </>
             )
             return href ? (
-              <Link key={treatment.name} href={href} className="clinic-tx-card">
+              <Link key={treatment.name} href={href} className="hub-card hub-tx-card">
                 {inner}
               </Link>
             ) : (
-              <div key={treatment.name} className="clinic-tx-card clinic-tx-card--static">
+              <div key={treatment.name} className="hub-card hub-tx-card">
                 {inner}
               </div>
             )
@@ -88,9 +86,9 @@ export function TreatmentGrid({ treatments, hospitalRootUrl }: Props) {
         </div>
 
         {treatments.length > lead.length ? (
-          <Link href={`${hospitalRootUrl}/treatments`} className="clinic-tx-directory-more">
+          <Link href={`${hospitalRootUrl}/treatments`} className="hub-more">
             진료 영역 전체 {countLabel(treatments.length, '개')} 보기
-            <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+            <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
           </Link>
         ) : null}
       </div>

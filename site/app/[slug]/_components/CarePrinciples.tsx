@@ -53,60 +53,51 @@ export function CarePrinciples({ hospitalRootUrl, hospitalName, specialties, reg
       .join(' ')
 
   return (
-    <section className="clinic-section clinic-section--principles">
-      <div className="clinic-section-inner">
-        <div className="clinic-principles-band">
-          <header className="clinic-principles-lead">
-            <span className="clinic-principles-eyebrow">진료 원칙</span>
-            <h2 className="clinic-section-title">설명과 상담을 우선합니다</h2>
-            <p className="clinic-principles-statement">{lede}</p>
+    <section id="principles" className="hub-section">
+      <div className="hub-container">
+        <div className="hub-principles">
+          <header className="hub-principles-lead">
+            <span className="hub-eyebrow">진료 원칙</span>
+            <h2 className="hub-section-title">설명과 상담을 우선합니다</h2>
+            <p className="hub-principles-statement">{lede}</p>
+            <div className="hub-principles-actions">
+              <Link className="hub-chip-link" href={`${hospitalRootUrl}/doctor`}>의료진 보기</Link>
+              <Link className="hub-chip-link" href={`${hospitalRootUrl}/contents`}>전체 글 보기</Link>
+              <Link className="hub-chip-link" href={`${hospitalRootUrl}/visit`}>오시는 길</Link>
+            </div>
           </header>
 
-          <div className="clinic-belief-grid">
-            <BeliefCard
+          <ol className="hub-principle-list">
+            <Principle
               icon={<IconExplain />}
               title="충분히 설명합니다"
               body="검사와 진료 과정을 환자가 이해할 수 있는 언어로 설명하고, 궁금한 점을 확인한 뒤 진행합니다."
             />
-            <BeliefCard
+            <Principle
               icon={<IconExam />}
               title="확인된 정보만 안내합니다"
               body="이 페이지의 진료 안내와 의료 정보는 출처와 업데이트 일자를 함께 표기하며, 과장된 표현을 사용하지 않습니다."
             />
-            <BeliefCard
+            <Principle
               icon={<IconAftercare />}
               title="상담으로 함께 결정합니다"
               body="치료 방향은 글이 아니라 진료실에서의 상담과 개인별 상태 확인을 거쳐 결정됩니다."
             />
-          </div>
-
-          <div className="clinic-principles-actions">
-            <Link href={`${hospitalRootUrl}/doctor`}>의료진 보기</Link>
-            <Link href={`${hospitalRootUrl}/contents`}>전체 글 보기</Link>
-            <Link href={`${hospitalRootUrl}#contact`}>공식 채널 보기</Link>
-          </div>
+          </ol>
         </div>
       </div>
     </section>
   )
 }
 
-function BeliefCard({
-  icon,
-  title,
-  body,
-}: {
-  icon: ReactNode
-  title: string
-  body: string
-}) {
+function Principle({ icon, title, body }: { icon: ReactNode; title: string; body: string }) {
   return (
-    <article className="clinic-belief-card">
-      <span className="clinic-belief-icon" aria-hidden="true">{icon}</span>
-      <div className="clinic-belief-copy">
-        <h3 className="clinic-belief-title">{title}</h3>
-        <p className="clinic-belief-body">{body}</p>
+    <li className="hub-principle">
+      <span className="hub-principle-icon" aria-hidden="true">{icon}</span>
+      <div>
+        <h3 className="hub-principle-title">{title}</h3>
+        <p className="hub-principle-body">{body}</p>
       </div>
-    </article>
+    </li>
   )
 }

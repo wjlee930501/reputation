@@ -1,0 +1,107 @@
+/* ─── 병원 공간 ───────────────────────────────────────────────────────
+   격자는 장수에서 온다. 어떤 장수에서도 마지막 줄에 타일 하나가 홀로 남지 않는다.
+     1~2장: 2열 같은 크기      3·6장: 3열, 첫 장 2×2
+     4장: 2열 같은 크기        5장: 4열, 첫 장 2×2
+     7장: 4열, 첫 장 2×2, 마지막 두 장은 2칸씩   8장: 4열 같은 크기
+   캡션은 그라데이션이 아니라 단색 막 위에 놓는다. */
+
+.hub-gallery {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: 220px;
+  grid-auto-flow: dense;
+  gap: var(--clinic-space-3);
+}
+
+.hub-gallery[data-count='1'],
+.hub-gallery[data-count='2'],
+.hub-gallery[data-count='4'] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: 300px;
+}
+
+.hub-gallery[data-count='5'],
+.hub-gallery[data-count='7'],
+.hub-gallery[data-count='8'] {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-auto-rows: 200px;
+}
+
+.hub-gallery[data-count='7'] .hub-gallery-item:nth-child(n + 6) {
+  grid-column: span 2;
+}
+
+.hub-gallery-item {
+  position: relative;
+  margin: 0;
+  overflow: hidden;
+  border-radius: var(--clinic-radius-md);
+  background: var(--clinic-surface-alt);
+}
+
+.hub-gallery[data-count='3'] .hub-gallery-item:first-child,
+.hub-gallery[data-count='5'] .hub-gallery-item:first-child,
+.hub-gallery[data-count='6'] .hub-gallery-item:first-child,
+.hub-gallery[data-count='7'] .hub-gallery-item:first-child {
+  grid-column: span 2;
+  grid-row: span 2;
+}
+
+.hub-gallery-item img {
+  object-fit: cover;
+}
+
+.hub-gallery-caption {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: flex;
+  align-items: baseline;
+  gap: var(--clinic-space-2);
+  padding: var(--clinic-space-3) var(--clinic-space-4);
+  background: var(--clinic-scrim);
+  color: #ffffff;
+  font-size: var(--clinic-type-caption);
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-gallery-caption-type {
+  flex: none;
+  opacity: 0.8;
+}
+
+.hub-gallery-caption-title {
+  font-weight: 600;
+}
+
+@media (max-width: 1023px) {
+  /* 좁은 화면은 장수와 무관하게 2열. 홀수 장일 때만 첫 장이 한 줄을 다 써서
+     마지막 줄에 타일 하나가 남지 않는다. */
+  .hub-gallery,
+  .hub-gallery[data-count] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-auto-rows: 200px;
+  }
+
+  .hub-gallery[data-count] .hub-gallery-item {
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .hub-gallery[data-count='3'] .hub-gallery-item:first-child,
+  .hub-gallery[data-count='5'] .hub-gallery-item:first-child,
+  .hub-gallery[data-count='7'] .hub-gallery-item:first-child {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-gallery,
+  .hub-gallery[data-count] {
+    grid-auto-rows: 150px;
+    gap: var(--clinic-space-2);
+  }
+
+  .hub-gallery-item {
+    border-radius: var(--clinic-radius-sm);
+  }
+}

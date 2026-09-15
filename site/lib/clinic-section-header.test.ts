@@ -24,7 +24,7 @@ test('the home treatment section title is visible, not screen-reader-only', () =
   )
   assert.ok(header.length > 0, '진료 영역 섹션 헤더를 찾지 못했습니다')
   assert.doesNotMatch(header, /sr-only/)
-  assert.match(header, /<h2 className="clinic-section-title">진료 영역<\/h2>/)
+  assert.match(header, /<h2 className="hub-section-title">진료 영역<\/h2>/)
 })
 
 test('the home treatment section says how many areas exist in total', () => {
@@ -39,4 +39,11 @@ test('the treatment grid tells CSS how many columns to draw', () => {
   // 4열 고정이면 진료 항목이 1~3개인 병원에서 테두리만 남은 빈 칸이 생긴다 (P-C-1).
   assert.match(TREATMENT_GRID, /'--clinic-tx-columns': Math\.min\(lead\.length, LEAD_LIMIT\)/)
   assert.match(TREATMENT_GRID, /'--clinic-tx-columns-md': Math\.min\(lead\.length, 2\)/)
+})
+
+test('the treatment card arrow has a fixed slot so it never collides with the name', () => {
+  // 옛 카드는 화살표가 제목 뒤에 흘러서 `종합건강검진>`처럼 글자에 붙었다.
+  const css = readFileSync(join(HERE, '..', 'app', '[slug]', '_styles', 'treatments.css'), 'utf8')
+  assert.match(css, /\.hub-tx-arrow \{[^}]*position:\s*absolute/)
+  assert.match(css, /\.hub-tx-name \{[^}]*padding-right:\s*var\(--clinic-space-8\)/)
 })

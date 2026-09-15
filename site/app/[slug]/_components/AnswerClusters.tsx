@@ -38,48 +38,50 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
   const compact = questions.slice(3)
 
   return (
-    <section id="answer-clusters" className="clinic-section clinic-section--answers">
-      <div className="clinic-section-inner">
-        <div className="clinic-answers-layout">
-          <aside className="clinic-answers-rail">
-            <span className="clinic-answers-eyebrow">진료 전 확인</span>
-            <h2 className="clinic-section-title">자주 확인하는 질문</h2>
-            <p className="clinic-section-note">
-              {regionText}에서 {specialtyText} 진료를 찾을 때 환자분들이 자주 묻는 질문을 모았습니다.
-            </p>
-            <div className="clinic-answers-hint">
-              <span className="clinic-answers-hint-icon" aria-hidden="true"><MessageIcon /></span>
+    <section id="answer-clusters" className="hub-section">
+      <div className="hub-container">
+        <div className="hub-answers">
+          <aside className="hub-answers-rail">
+            <header className="hub-section-head">
+              <span className="hub-eyebrow">진료 전 확인</span>
+              <h2 className="hub-section-title">자주 확인하는 질문</h2>
+              <p className="hub-section-note">
+                {regionText}에서 {specialtyText} 진료를 찾을 때 환자분들이 자주 묻는 질문을 모았습니다.
+              </p>
+            </header>
+            <div className="hub-card hub-answers-hint">
+              <MessageIcon className="hub-icon" />
               <div>
                 <strong>처음 오시나요?</strong>
                 <p>진료 전 확인하면 좋은 질문부터 살펴보세요. 개인별 판단은 진료 상담에서 확인합니다.</p>
               </div>
             </div>
-            <Link href={`${hospitalRootUrl}/contents`} className="clinic-answers-all">
+            <Link href={`${hospitalRootUrl}/contents`} className="hub-more">
               의료 정보 전체 보기
-              <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+              <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
             </Link>
           </aside>
 
-          <div className="clinic-answers-main">
-            <ol className="clinic-qa-list" aria-label="자주 묻는 질문">
+          <div>
+            <ol className="hub-row-list" aria-label="자주 묻는 질문">
               {primary.map((content) => {
                 const typeLabel = TYPE_LABELS[content.content_type] ?? content.content_type
                 const question = content.faq_question || content.title
                 return (
-                  <li key={content.id} className="clinic-qa-item">
-                    <Link href={`${hospitalRootUrl}/contents/${content.id}`} className="clinic-qa-link">
-                      <span className="clinic-qa-main">
+                  <li key={content.id}>
+                    <Link href={`${hospitalRootUrl}/contents/${content.id}`} className="hub-qa">
+                      <span className="hub-qa-main">
                         <span className={`clinic-tag clinic-tag--sm ${categoryTagClass(content.content_type)}`}>
                           {typeLabel}
                         </span>
-                        <span className="clinic-qa-q">{question}</span>
+                        <span className="hub-qa-q">{question}</span>
                         {content.faq_answer_summary || content.meta_description ? (
-                          <span className="clinic-qa-a">
+                          <span className="hub-qa-a">
                             {content.faq_answer_summary || content.meta_description}
                           </span>
                         ) : null}
                       </span>
-                      <ChevronRightIcon className="clinic-icon clinic-qa-arrow" aria-hidden="true" />
+                      <ChevronRightIcon className="hub-icon" />
                     </Link>
                   </li>
                 )
@@ -87,14 +89,14 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
             </ol>
 
             {compact.length > 0 && (
-              <ol className="clinic-qa-compact" aria-label="추가 질문">
+              <ol className="hub-row-list" aria-label="추가 질문" style={{ borderTop: 0 }}>
                 {compact.map((content) => {
                   const question = content.faq_question || content.title
                   return (
                     <li key={content.id}>
-                      <Link href={`${hospitalRootUrl}/contents/${content.id}`} className="clinic-qa-compact-row">
-                        <span className="clinic-qa-compact-q">{question}</span>
-                        <ChevronRightIcon className="clinic-icon clinic-icon--sm clinic-qa-compact-arrow" aria-hidden="true" />
+                      <Link href={`${hospitalRootUrl}/contents/${content.id}`} className="hub-qa-compact">
+                        <span>{question}</span>
+                        <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
                       </Link>
                     </li>
                   )
@@ -103,9 +105,9 @@ export function AnswerClusters({ contents, hospitalRootUrl, treatments, region, 
             )}
 
             {treatments.length > 0 && (
-              <div className="clinic-answer-treatment-strip" aria-label="주요 진료 영역">
+              <div className="hub-strip" aria-label="주요 진료 영역">
                 {treatments.slice(0, 6).map((treatment) => (
-                  <Link key={treatment.name} href={`${hospitalRootUrl}/treatments`}>
+                  <Link key={treatment.name} href={`${hospitalRootUrl}/treatments`} className="hub-chip-link">
                     {treatment.name}
                   </Link>
                 ))}

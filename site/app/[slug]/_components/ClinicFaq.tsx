@@ -21,34 +21,34 @@ export function ClinicFaq({ entries, hospitalRootUrl }: Props) {
   if (entries.length === 0) return null
 
   return (
-    <section id="faq" className="clinic-section">
-      <div className="clinic-section-inner">
-        <header className="clinic-section-head">
-          <h2 className="clinic-section-title">자주 묻는 질문과 답변 요약</h2>
-          <p className="clinic-section-note">
+    <section id="faq" className="hub-section">
+      <div className="hub-container">
+        <header className="hub-section-head">
+          <h2 className="hub-section-title">자주 묻는 질문과 답변 요약</h2>
+          <p className="hub-section-note">
             진료실에서 반복되는 질문에 대한 답변 요약입니다. 개인의 상태에 따라 판단이
             달라질 수 있으니 자세한 내용은 진료 상담에서 확인해 주세요.
           </p>
         </header>
 
-        <dl className="clinic-faq-list">
+        <dl className="hub-faq">
           {entries.map((entry) => (
-            <div key={entry.id} className="clinic-faq-item">
-              <dt className="clinic-faq-question">{entry.question}</dt>
-              <dd className="clinic-faq-answer">
+            <div key={entry.id} className="hub-faq-item">
+              <dt className="hub-faq-q">{entry.question}</dt>
+              <dd className="hub-faq-a">
                 <p>{entry.answer}</p>
-                <Link href={entry.url} className="clinic-faq-more">
+                <Link href={entry.url} className="hub-more">
                   자세히 보기
-                  <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+                  <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
                 </Link>
               </dd>
             </div>
           ))}
         </dl>
 
-        <Link href={`${hospitalRootUrl}/contents`} className="clinic-faq-all">
+        <Link href={`${hospitalRootUrl}/contents`} className="hub-more">
           의료 정보 전체 보기
-          <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+          <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
         </Link>
       </div>
     </section>

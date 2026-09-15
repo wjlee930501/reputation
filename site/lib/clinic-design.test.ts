@@ -189,7 +189,7 @@ test('the home gallery links to the full library instead of only naming a number
     'utf8',
   )
   assert.match(component, /공간 사진 전체 \{countLabel\(selection\.total, '장'\)\} 보기/)
-  assert.match(component, /className="clinic-tx-directory-more"/)
+  assert.match(component, /className="hub-more"/)
 
   const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
   assert.match(home, /allPhotosHref=\{`\$\{hospitalRootUrl\}\/visit#gallery`\}/)

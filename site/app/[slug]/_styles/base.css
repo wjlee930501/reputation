@@ -1,0 +1,214 @@
+/* ─── 병원 공개 표면 기본 레이아웃 ───────────────────────────────────
+   셸·컨테이너·섹션·섹션 제목·버튼·칩처럼 모든 섹션이 공유하는 뼈대.
+   섹션 컴포넌트는 이 위에 자기 내용만 얹는다. */
+
+.clinic-shell {
+  min-height: 100vh;
+  background: var(--clinic-paper);
+  color: var(--clinic-ink);
+  font-size: var(--clinic-type-body);
+  line-height: var(--clinic-lh-body);
+}
+
+/* 한 페이지의 정렬선은 하나다. 헤더·히어로·섹션·푸터 전부 이 컨테이너를 쓴다. */
+.hub-container {
+  width: 100%;
+  max-width: var(--clinic-shell-max);
+  margin: 0 auto;
+  padding-inline: var(--clinic-gutter);
+}
+
+.hub-section {
+  padding-block: var(--clinic-section-y);
+  scroll-margin-top: 72px;
+}
+
+.hub-section--tight {
+  padding-block: var(--clinic-section-y-tight);
+}
+
+/* 연속되는 섹션은 흰 면과 옅은 회색 면을 번갈아 쓴다. 어떤 섹션이 렌더되지 않아도
+   교차가 유지되도록 순서로 결정한다 — 컴포넌트가 자기 배경을 정하지 않는다. */
+.hub-main > .hub-section:nth-of-type(even) {
+  background: var(--clinic-surface-alt);
+}
+
+.hub-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-3);
+  max-width: 720px;
+  margin: 0 0 var(--clinic-section-head-gap);
+}
+
+.hub-section-head--row {
+  max-width: none;
+  flex-direction: row;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--clinic-space-6);
+}
+
+.hub-section-title {
+  margin: 0;
+  font-size: var(--clinic-type-h2);
+  font-weight: 700;
+  line-height: var(--clinic-lh-tight);
+  color: var(--clinic-ink);
+}
+
+.hub-section-note {
+  margin: 0;
+  font-size: var(--clinic-type-body);
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+}
+
+/* 승인된 보조색은 작은 라벨(eyebrow·카드 번호·단계 번호)에만 닿는다 — 지원 디테일
+   5% 규칙. 보조색이 없으면 대표색에서 파생된 값이라 대표색과 같아진다. */
+.hub-eyebrow {
+  display: block;
+  font-size: var(--clinic-type-small);
+  font-weight: 600;
+  color: var(--clinic-accent-strong);
+}
+
+/* ─── 조작 요소 ─── */
+
+.hub-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--clinic-space-2);
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  padding: 0 var(--clinic-space-5);
+  border: 1px solid transparent;
+  border-radius: var(--clinic-control-radius);
+  font-size: 15px;
+  font-weight: var(--clinic-control-weight);
+  line-height: 1;
+  color: var(--clinic-ink);
+  background: transparent;
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+}
+
+.hub-btn--primary {
+  background: var(--clinic-brand-action);
+  border-color: var(--clinic-brand-action);
+  color: var(--clinic-on-brand);
+}
+
+.hub-btn--primary:hover {
+  background: var(--clinic-brand-hover);
+  border-color: var(--clinic-brand-hover);
+}
+
+.hub-btn--secondary {
+  background: var(--clinic-paper);
+  border-color: var(--clinic-line-strong);
+}
+
+.hub-btn--secondary:hover {
+  background: var(--clinic-surface-alt);
+  border-color: var(--clinic-ink);
+}
+
+/* 섹션 끝의 "전체 N개 보기" 같은 이어가기 링크. */
+.hub-more {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--clinic-space-1);
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  margin-top: var(--clinic-space-6);
+  font-size: 15px;
+  font-weight: var(--clinic-control-weight);
+  color: var(--clinic-brand-action);
+}
+
+.hub-more:hover {
+  color: var(--clinic-brand-hover);
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* 링크 칩 — 진료영역 스트립·공식 채널처럼 눌러서 이동하는 짧은 라벨. */
+.hub-chip-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--clinic-space-2);
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  padding: 0 var(--clinic-space-4);
+  border: 1px solid var(--clinic-line-soft);
+  border-radius: var(--clinic-control-radius-pill);
+  background: var(--clinic-paper);
+  font-size: var(--clinic-type-small);
+  font-weight: var(--clinic-control-weight-idle);
+  color: var(--clinic-ink);
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.hub-chip-link:hover {
+  border-color: var(--clinic-brand-edge);
+  background: var(--clinic-brand-tint);
+}
+
+/* 정보 칩 — 눌리지 않는 라벨. */
+.hub-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0 var(--clinic-space-3);
+  border-radius: var(--clinic-control-radius-pill);
+  background: var(--clinic-surface-alt);
+  font-size: var(--clinic-type-caption);
+  font-weight: 500;
+  color: var(--clinic-ink);
+}
+
+.hub-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--clinic-space-2);
+}
+
+/* 회색 면 위의 흰 카드. 그림자 없이 선으로만 구분한다. */
+.hub-card {
+  background: var(--clinic-paper);
+  border: 1px solid var(--clinic-line-soft);
+  border-radius: var(--clinic-radius-md);
+}
+
+.hub-icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--clinic-brand-action);
+}
+
+.hub-icon--sm {
+  width: 16px;
+  height: 16px;
+}
+
+/* 회색 면 위에서는 칩의 회색이 사라진다 — 흰색으로 뒤집는다. */
+.hub-main > .hub-section:nth-of-type(even) .hub-chip {
+  background: var(--clinic-paper);
+  border: 1px solid var(--clinic-line-soft);
+}
+
+@media (max-width: 719px) {
+  .hub-section-head--row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--clinic-space-3);
+  }
+
+  /* 모바일 하단 행동 바가 마지막 내용을 가리지 않게 자리를 비워 둔다. */
+  .clinic-shell {
+    padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px));
+  }
+}

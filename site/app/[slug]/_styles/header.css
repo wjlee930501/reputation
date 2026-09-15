@@ -1,0 +1,205 @@
+/* ─── 헤더 · 모바일 행동 바 ───────────────────────────────────────────
+   한 줄이다: 병원명 | 섹션 이동 | 전화. 병원명은 어느 폭에서도 첫 화면에 보인다.
+   720px 아래에서는 섹션 이동이 가로 스크롤 한 줄로 내려가고, 화면 하단에
+   전화·진료시간·진료안내·길찾기 행동 바가 붙는다. */
+
+.hub-header {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--clinic-paper);
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-header-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--clinic-space-8);
+  min-height: 64px;
+}
+
+.hub-header-brand {
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: var(--clinic-lh-tight);
+  color: var(--clinic-ink);
+  white-space: nowrap;
+}
+
+.hub-header-brand-logo {
+  display: block;
+  width: auto;
+  height: 32px;
+  object-fit: contain;
+}
+
+.hub-header-nav {
+  display: flex;
+  justify-content: center;
+  gap: var(--clinic-space-1);
+  min-width: 0;
+}
+
+.hub-header-nav a,
+.hub-header-nav span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--clinic-space-1);
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  padding: 0 var(--clinic-space-3);
+  border-radius: var(--clinic-control-radius);
+  font-size: 15px;
+  font-weight: var(--clinic-control-weight-idle);
+  color: var(--clinic-ink);
+  white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.hub-header-nav a:hover {
+  background: var(--clinic-surface-alt);
+}
+
+.hub-header-nav [aria-current='page'] {
+  color: var(--clinic-brand-action);
+  font-weight: var(--clinic-control-weight);
+}
+
+.hub-header-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--clinic-space-2);
+  min-height: var(--clinic-control-height);
+  min-width: var(--clinic-control-height);
+  padding: 0 var(--clinic-space-4);
+  border: 1px solid var(--clinic-line-strong);
+  border-radius: var(--clinic-control-radius);
+  font-size: var(--clinic-type-small);
+  font-weight: var(--clinic-control-weight-idle);
+  color: var(--clinic-ink);
+  white-space: nowrap;
+  transition: border-color 150ms ease, background-color 150ms ease;
+}
+
+.hub-header-cta strong {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.hub-header-cta:hover {
+  border-color: var(--clinic-ink);
+  background: var(--clinic-surface-alt);
+}
+
+.hub-header-subnav {
+  display: none;
+}
+
+.hub-actionbar {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .hub-header-row {
+    gap: var(--clinic-space-4);
+  }
+
+  .hub-header-cta span {
+    display: none;
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-header-row {
+    grid-template-columns: 1fr auto;
+    min-height: 56px;
+  }
+
+  .hub-header-brand {
+    font-size: 18px;
+  }
+
+  .hub-header-brand-logo {
+    height: 28px;
+  }
+
+  .hub-header-nav {
+    display: none;
+  }
+
+  /* 섹션 이동은 브랜드 줄 아래 한 줄. 좌우 여백은 컨테이너와 같다. */
+  .hub-header-subnav {
+    display: flex;
+    gap: var(--clinic-space-1);
+    overflow-x: auto;
+    scrollbar-width: none;
+    margin-inline: calc(var(--clinic-gutter) * -1);
+    padding: 0 var(--clinic-gutter) var(--clinic-space-2);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hub-header-subnav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .hub-header-subnav a,
+  .hub-header-subnav span {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--clinic-space-1);
+    flex: none;
+    min-height: var(--clinic-control-height);
+    min-width: var(--clinic-control-height);
+    padding: 0 var(--clinic-space-3);
+    border-radius: var(--clinic-control-radius);
+    font-size: var(--clinic-type-small);
+    font-weight: var(--clinic-control-weight-idle);
+    color: var(--clinic-ink);
+    white-space: nowrap;
+  }
+
+  .hub-header-subnav [aria-current='page'] {
+    color: var(--clinic-brand-action);
+    font-weight: var(--clinic-control-weight);
+    background: var(--clinic-brand-tint);
+  }
+
+  .hub-actionbar {
+    position: fixed;
+    inset: auto 0 0 0;
+    z-index: 40;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    background: var(--clinic-paper);
+    border-top: 1px solid var(--clinic-line-soft);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .hub-actionbar a,
+  .hub-actionbar span {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--clinic-space-1);
+    min-height: 60px;
+    font-size: 12px;
+    font-weight: var(--clinic-control-weight-idle);
+    color: var(--clinic-ink);
+  }
+
+  .hub-actionbar [aria-current='page'] {
+    color: var(--clinic-brand-action);
+    font-weight: var(--clinic-control-weight);
+  }
+
+  .hub-actionbar .hub-icon {
+    width: 22px;
+    height: 22px;
+  }
+}

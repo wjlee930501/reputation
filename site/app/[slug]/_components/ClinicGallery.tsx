@@ -35,39 +35,36 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
   const hasMore = selection.total > visible.length
 
   return (
-    <section className="clinic-section">
-      <div className="clinic-section-inner">
-        <header className="clinic-section-head">
-          <h2 className="clinic-section-title">병원 공간</h2>
+    <section id="gallery" className="hub-section">
+      <div className="hub-container">
+        <header className="hub-section-head">
+          <h2 className="hub-section-title">병원 공간</h2>
         </header>
 
-        <div className={`clinic-gallery-grid${visible.length < 3 ? ' clinic-gallery-grid--sparse' : ''}`}>
+        {/* 격자 모양은 CSS가 장수(data-count)로 정한다 — 어떤 장수에서도 홀로 남는 타일이 없다. */}
+        <div className="hub-gallery" data-count={visible.length}>
           {visible.map((photo, index) => {
             const url = resolveAssetUrl(photo.url)
             if (!url) return null
-            // 첫 타일만 데스크톱에서 두 칸을 차지해 목록이 아니라 편집면으로 읽히게 한다.
+            // 첫 타일은 장수에 따라 두 칸을 차지한다 — 크기는 CSS가 정하므로 sizes만 맞춘다.
             const lead = index === 0 && visible.length >= 3
             return (
-              <figure
-                key={photo.id}
-                className={`clinic-gallery-item${lead ? ' clinic-gallery-item--lead' : ''}`}
-              >
+              <figure key={photo.id} className="hub-gallery-item">
                 <Image
                   src={url}
                   alt={photo.title}
                   fill
                   sizes={
                     lead
-                      ? '(max-width: 600px) 100vw, (max-width: 1024px) 100vw, 640px'
-                      : '(max-width: 600px) 100vw, (max-width: 1024px) 50vw, 320px'
+                      ? '(max-width: 719px) 100vw, (max-width: 1023px) 100vw, 800px'
+                      : '(max-width: 719px) 50vw, (max-width: 1023px) 50vw, 400px'
                   }
-                  style={{ objectFit: 'cover' }}
                 />
-                <figcaption className="clinic-gallery-caption">
-                  <span className="clinic-gallery-caption-type">
+                <figcaption className="hub-gallery-caption">
+                  <span className="hub-gallery-caption-type">
                     {GALLERY_TYPE_LABELS[photo.source_type]}
                   </span>
-                  <span className="clinic-gallery-caption-title">{photo.title}</span>
+                  <span className="hub-gallery-caption-title">{photo.title}</span>
                 </figcaption>
               </figure>
             )
@@ -76,12 +73,12 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
 
         {hasMore ? (
           allPhotosHref ? (
-            <Link href={allPhotosHref} className="clinic-tx-directory-more">
+            <Link href={allPhotosHref} className="hub-more">
               공간 사진 전체 {countLabel(selection.total, '장')} 보기
-              <ChevronRightIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />
+              <ChevronRightIcon className="hub-icon hub-icon--sm" style={{ color: 'currentColor' }} />
             </Link>
           ) : (
-            <p className="clinic-gallery-summary">
+            <p className="hub-section-note" style={{ marginTop: 'var(--clinic-space-6)' }}>
               등록된 공간 사진 {previewCountLabel(visible.length, selection.total, '장')}을
               보여드립니다.
             </p>

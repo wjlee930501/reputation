@@ -1,0 +1,115 @@
+/* ─── 푸터 ────────────────────────────────────────────────────────────
+   전화 한 번 더, 병원 명의, 고지. 선 두 개로 세 덩어리를 나눈다. */
+
+.hub-footer {
+  border-top: 1px solid var(--clinic-line-soft);
+  padding-block: var(--clinic-space-12) var(--clinic-space-8);
+}
+
+.hub-footer-cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--clinic-space-6);
+  padding-bottom: var(--clinic-space-8);
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-footer-cta strong {
+  display: block;
+  margin-bottom: var(--clinic-space-1);
+  font-size: var(--clinic-type-h3);
+  font-weight: 700;
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-footer-cta span {
+  font-size: var(--clinic-type-small);
+  color: var(--clinic-muted);
+}
+
+.hub-footer-cols {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--clinic-space-8);
+  padding: var(--clinic-space-8) 0;
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-footer-col {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-1);
+}
+
+.hub-footer-name {
+  margin: 0 0 var(--clinic-space-1);
+  font-size: var(--clinic-type-body);
+  font-weight: 700;
+}
+
+.hub-footer-label {
+  margin-bottom: var(--clinic-space-1);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--clinic-muted);
+}
+
+.hub-footer-meta {
+  margin: 0;
+  font-size: var(--clinic-type-small);
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+}
+
+.hub-footer-meta a {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--clinic-space-1);
+  min-height: 24px;
+  color: var(--clinic-ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--clinic-line-strong);
+}
+
+.hub-footer-meta a:hover {
+  color: var(--clinic-brand-action);
+  text-decoration-color: currentColor;
+}
+
+.hub-footer-fine {
+  margin: var(--clinic-space-6) 0 var(--clinic-space-2);
+  max-width: 720px;
+  font-size: var(--clinic-type-caption);
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+}
+
+.hub-footer-copy {
+  margin: 0;
+  font-size: var(--clinic-type-caption);
+  color: var(--clinic-muted);
+}
+
+@media (max-width: 719px) {
+  .hub-footer-cta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .hub-footer-cta .hub-btn {
+    width: 100%;
+  }
+
+  .hub-footer-cols {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--clinic-space-6);
+  }
+
+  /* 손가락으로 누르는 것은 44px다 — 본문 안의 짧은 링크도 두 방향 모두. */
+  .hub-footer-meta a {
+    min-height: var(--clinic-control-height);
+    min-width: var(--clinic-control-height);
+  }
+}

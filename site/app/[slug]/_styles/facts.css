@@ -1,0 +1,225 @@
+/* ─── 진료시간 · 오시는 길 ─────────────────────────────────────────────
+   주소·전화·진료시간은 페이지에서 여기 한 번만 자세히 나온다. 왼쪽이 요일별
+   진료시간, 오른쪽이 전화·주소·진료 영역이다. 아래에 공식 채널과 방문 전 확인. */
+
+.hub-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--clinic-block-gap);
+  align-items: start;
+}
+
+.hub-week {
+  overflow: hidden;
+}
+
+.hub-week-head {
+  display: flex;
+  align-items: center;
+  gap: var(--clinic-space-2);
+  min-height: 52px;
+  padding: 0 var(--clinic-space-5);
+  border-bottom: 1px solid var(--clinic-line-soft);
+  font-size: var(--clinic-type-small);
+  font-weight: 600;
+}
+
+.hub-week-today {
+  margin-left: auto;
+  font-weight: 500;
+  color: var(--clinic-muted);
+}
+
+.hub-week-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.hub-week-day {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--clinic-space-2);
+  padding: var(--clinic-space-4) var(--clinic-space-2);
+  text-align: center;
+}
+
+.hub-week-day + .hub-week-day {
+  border-left: 1px solid var(--clinic-line-soft);
+}
+
+.hub-week-day-label {
+  font-size: var(--clinic-type-caption);
+  font-weight: 600;
+  color: var(--clinic-muted);
+}
+
+.hub-week-day-time {
+  font-size: var(--clinic-type-caption);
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+  white-space: pre-line;
+}
+
+.hub-week-day.is-today {
+  background: var(--clinic-brand-tint);
+}
+
+.hub-week-day.is-today .hub-week-day-label {
+  color: var(--clinic-brand-action);
+}
+
+.hub-week-day.is-closed .hub-week-day-time {
+  font-weight: 500;
+  color: var(--clinic-muted);
+}
+
+.hub-week-notice {
+  margin: 0;
+  padding: var(--clinic-space-3) var(--clinic-space-5);
+  border-top: 1px solid var(--clinic-line-soft);
+  font-size: var(--clinic-type-caption);
+  line-height: var(--clinic-lh-snug);
+  color: var(--clinic-muted);
+}
+
+.hub-contact {
+  padding: 0 var(--clinic-space-5);
+}
+
+.hub-contact-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: var(--clinic-space-3);
+  row-gap: var(--clinic-space-1);
+  padding: var(--clinic-space-4) 0;
+}
+
+.hub-contact-row + .hub-contact-row {
+  border-top: 1px solid var(--clinic-line-soft);
+}
+
+.hub-contact-row .hub-icon {
+  grid-row: 1 / span 3;
+  margin-top: 1px;
+}
+
+.hub-contact-label {
+  font-size: var(--clinic-type-caption);
+  color: var(--clinic-muted);
+}
+
+.hub-contact-value {
+  font-size: var(--clinic-type-body);
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+  overflow-wrap: anywhere;
+}
+
+.hub-contact-value--phone {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.hub-contact-sub {
+  font-size: var(--clinic-type-small);
+  color: var(--clinic-muted);
+}
+
+.hub-contact-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--clinic-space-1);
+  justify-self: start;
+  min-height: 36px;
+  font-size: var(--clinic-type-small);
+  font-weight: var(--clinic-control-weight);
+  color: var(--clinic-brand-action);
+}
+
+.hub-contact-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+.hub-facts-foot {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-3);
+  margin-top: var(--clinic-space-8);
+}
+
+.hub-facts-foot-label {
+  font-size: var(--clinic-type-small);
+  font-weight: 600;
+  color: var(--clinic-muted);
+}
+
+.hub-hira {
+  font-size: var(--clinic-type-caption);
+  color: var(--clinic-muted);
+}
+
+.hub-checks {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--clinic-block-gap);
+  margin: var(--clinic-space-8) 0 0;
+  padding: var(--clinic-space-8) 0 0;
+  border-top: 1px solid var(--clinic-line-soft);
+  list-style: none;
+}
+
+.hub-check-title {
+  display: block;
+  margin-bottom: var(--clinic-space-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.hub-check-body {
+  font-size: var(--clinic-type-small);
+  line-height: 1.6;
+  color: var(--clinic-muted);
+}
+
+@media (max-width: 1023px) {
+  .hub-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-contact-link {
+    min-height: var(--clinic-control-height);
+    min-width: var(--clinic-control-height);
+  }
+
+  .hub-week-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .hub-week-day {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    padding: var(--clinic-space-3) var(--clinic-space-5);
+    text-align: left;
+  }
+
+  .hub-week-day + .hub-week-day {
+    border-left: 0;
+    border-top: 1px solid var(--clinic-line-soft);
+  }
+
+  .hub-week-day-time {
+    text-align: right;
+  }
+
+  .hub-checks {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

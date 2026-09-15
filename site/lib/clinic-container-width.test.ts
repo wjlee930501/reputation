@@ -1,113 +1,93 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
-const CSS = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'globals.css'),
-  'utf8',
-)
+import postcss from 'postcss'
 
-/** 셀렉터로 시작하는 규칙 본문(첫 `}`까지)을 모두 돌려준다. */
-function rules(selector: string): string[] {
-  const found: string[] = []
-  const needle = `\n${selector} {`
-  let index = CSS.indexOf(needle)
-  while (index !== -1) {
-    found.push(CSS.slice(index, CSS.indexOf('\n}', index)))
-    index = CSS.indexOf(needle, index + 1)
-  }
-  assert.notEqual(found.length, 0, `규칙을 찾지 못했습니다: ${selector}`)
-  return found
-}
+import { GLOBALS_CSS_PATH, readClinicCascade, readClinicStyles } from './clinic-stylesheet.ts'
+
+const HERE = dirname(fileURLToPath(import.meta.url))
+const CASCADE = readClinicCascade()
+const STYLES = readClinicStyles()
+const GLOBALS = readFileSync(GLOBALS_CSS_PATH, 'utf8')
 
 /**
  * P-B-1 — 공개 병원 홈의 콘텐츠 기준선은 하나다.
  *
- * 감사에서 홈은 세 폭을 섞어 쓰고 있었다: 진료 디렉터리 1344(1440 - 여백 96),
- * 대부분의 섹션 1200, 추천 콘텐츠·푸터 1080. 스크롤을 내리는 동안 좌측 정렬선이
- * 구간마다 옮겨 다녀서, 같은 페이지가 서로 다른 세 페이지처럼 보였다.
+ * 감사에서 홈은 세 폭을 섞어 쓰고 있었다: 진료 디렉터리 1344, 대부분의 섹션 1200,
+ * 추천 콘텐츠·푸터 1080. 스크롤을 내리는 동안 좌측 정렬선이 구간마다 옮겨 다녀서
+ * 같은 페이지가 서로 다른 세 페이지처럼 보였다.
  *
- * 폭이 숫자로 흩어져 있으면 다음 섹션을 추가할 때 또 갈라진다 — 모든 컨테이너가
- * 토큰에서 폭을 받는지 여기서 고정한다.
+ * 지금은 컨테이너가 `.hub-container` 하나다. 헤더·히어로·모든 섹션·푸터가 같은
+ * 폭 토큰과 같은 좌우 여백 토큰을 쓴다. 폭이 숫자로 흩어지면 다음 섹션을 추가할 때
+ * 또 갈라지므로 여기서 고정한다.
  */
 
-/** 자기 좌우 여백 없이 폭만 잡는 컨테이너. 콘텐츠 폭이 곧 기준선이다. */
-const PLAIN_CONTAINERS = [
-  '.clinic-section-inner',
-  '.clinic-featured-inner',
-  '.clinic-footer-inner',
-  '.clinic-hero-inner',
-  '.clinic-library-hero-inner',
-]
-
-/**
- * 자기 좌우 여백(--clinic-rail)을 갖는 컨테이너. 바깥 상자는 여백만큼 더 크다.
- *
- * 레일 가족은 페이지 최상단 띠(헤더·히어로·팩트 레일·섹션 인덱스)뿐이다. 본문 중간에
- * 오는 섹션이 레일을 쓰면 텍스트 정렬선은 같아도 DOM 박스가 1296 대 1200으로 갈리고,
- * 중간 폭(1248~1296)에서는 본문 폭까지 이웃 섹션과 달라진다 — `진료 영역`이 그래서
- * 여기서 빠졌다(아래 전용 테스트가 그 사실을 지킨다).
- */
-const RAILED_CONTAINERS = [
-  '.clinic-header-row',
-  '.clinic-hero-editorial-grid',
-  '.clinic-hero-fact-rail',
-  '.clinic-section-index',
-]
-
-test('the container token is declared once, at 1200px', () => {
-  assert.match(CSS, /--clinic-max:\s*1200px;/)
-  assert.equal(CSS.match(/--clinic-max:/g)?.length, 1)
-  assert.match(CSS, /--clinic-shell-max:\s*calc\(var\(--clinic-max\) \+ var\(--clinic-rail\) \* 2\);/)
+test('the container token is declared once, at 1200px, and the outer width derives from it', () => {
+  assert.match(STYLES, /--clinic-max:\s*1200px;/)
+  assert.equal(CASCADE.match(/--clinic-max:/g)?.length, 1, '--clinic-max가 두 곳 이상에서 선언됐다')
+  assert.match(STYLES, /--clinic-shell-max:\s*calc\(var\(--clinic-max\) \+ var\(--clinic-rail\) \* 2\);/)
+  assert.match(STYLES, /--clinic-rail:\s*var\(--clinic-gutter\);/)
 })
 
-test('plain containers take their width from the single token', () => {
-  for (const selector of PLAIN_CONTAINERS) {
-    for (const body of rules(selector)) {
-      assert.match(
-        body,
-        /max-width:\s*var\(--clinic-max\)/,
-        `${selector}가 기준선 토큰을 쓰지 않습니다 — 이 구간만 정렬선이 어긋납니다.`,
-      )
-    }
+test('.hub-container is the only container, and it owns width and gutter together', () => {
+  const rule = /\n\.hub-container \{([^}]*)\}/.exec(STYLES)
+  assert.ok(rule, '.hub-container 규칙을 찾지 못했습니다')
+  assert.match(rule[1], /max-width:\s*var\(--clinic-shell-max\)/)
+  assert.match(rule[1], /padding-inline:\s*var\(--clinic-gutter\)/)
+  assert.match(rule[1], /margin:\s*0 auto/)
+
+  // 다른 hub 규칙은 기준 폭 토큰을 다시 쓰지 않는다 — 두 번째 컨테이너가 생기는 순간
+  // 정렬선이 둘이 된다.
+  const root = postcss.parse(STYLES)
+  const offenders: string[] = []
+  root.walkDecls('max-width', (decl) => {
+    const selector = (decl.parent as postcss.Rule).selector
+    if (selector === '.hub-container') return
+    if (/var\(--clinic-(shell-)?max\)/.test(decl.value)) offenders.push(`${selector} — ${decl.value}`)
+  })
+  assert.deepEqual(offenders, [])
+})
+
+test('every hub section wraps its content in the shared container', () => {
+  // 컴포넌트가 컨테이너를 빼먹으면 그 섹션만 화면 가장자리에 붙는다.
+  const dir = join(HERE, '..', 'app', '[slug]', '_components')
+  const missing: string[] = []
+  let scanned = 0
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.tsx')) continue
+    const source = readFileSync(join(dir, file), 'utf8')
+    if (!/<(section|header|footer)[^>]*className="hub-(section|hero|header|footer)[^"]*"/.test(source)) continue
+    scanned += 1
+    if (!source.includes('className="hub-container"')) missing.push(file)
   }
+  assert.ok(scanned >= 10, `hub 섹션 컴포넌트를 ${scanned}개만 찾았습니다`)
+  assert.deepEqual(missing, [])
 })
 
-test('railed containers reserve room for their own gutter so content lands on the same line', () => {
-  for (const selector of RAILED_CONTAINERS) {
-    const body = rules(selector)[0]
-    assert.match(
-      body,
-      /max-width:\s*(var\(--clinic-shell-max\)|calc\(var\(--clinic-max\) \+ \d+px\))/,
-      `${selector}의 바깥 폭이 기준선에서 파생되지 않습니다.`,
-    )
-  }
-})
-
-test('the treatment directory takes the same width as the sections around it', () => {
-  // 본문 중간 섹션이 히어로의 레일 체계를 빌려 쓰면 그 구간만 상자가 다르다.
-  // 폭·여백을 스스로 정하지 않고 .clinic-section / .clinic-section-inner 기본값을 받는다.
-  const body = rules('.clinic-treatment-directory .clinic-section-inner')[0]
-  assert.doesNotMatch(body, /max-width:/)
-  assert.doesNotMatch(body, /padding:/)
-  assert.match(rules('.clinic-treatment-directory')[0], /padding:[^;]*var\(--clinic-section-x\)/)
-})
-
-test('the hero copy sits on the same gutter as the header and the fact rail', () => {
-  // 첫 화면 문장의 좌측선이 헤더·팩트 레일과 갈리면 페이지 맨 위에서 바로 어긋난다.
-  assert.match(rules('.clinic-hero-editorial-copy')[0], /padding:[^;]*var\(--clinic-rail\)/)
-  assert.match(rules('.clinic-hero-fact-rail')[0], /padding:\s*0 var\(--clinic-rail\)/)
-  assert.match(rules('.clinic-header-row')[1], /padding:\s*0 var\(--clinic-rail\)/)
-})
-
-test('no clinic container hardcodes one of the three widths the audit found', () => {
-  // 반응형 분기(@media (max-width: 1080px))는 컨테이너 폭이 아니라 화면 폭이다.
-  const declarations = [...CSS.matchAll(/^\s*max-width:\s*(1080px|1200px|1344px|1440px);/gm)]
+test('no clinic stylesheet hardcodes one of the container widths the audit found', () => {
+  // 반응형 분기(@media (max-width: 1023px))는 컨테이너 폭이 아니라 화면 폭이다.
+  const declarations = [...CASCADE.matchAll(/^\s*max-width:\s*(1080px|1200px|1344px|1440px);/gm)]
   assert.deepEqual(
     declarations.map((match) => match[1]),
     [],
     '컨테이너 폭이 다시 숫자로 흩어졌습니다 — --clinic-max에서 파생하세요.',
   )
+})
+
+test('legacy sub-page containers still take their width from the same token', () => {
+  // 아직 옛 스타일을 쓰는 하위 페이지(의료진·진료·글·오시는 길)도 같은 정렬선 위에 선다.
+  const root = postcss.parse(GLOBALS)
+  const offenders: string[] = []
+  let scanned = 0
+  root.walkRules(/\.clinic-[a-z-]*-inner$/, (rule) => {
+    rule.walkDecls('max-width', (decl) => {
+      scanned += 1
+      if (!/var\(--clinic-max\)/.test(decl.value)) offenders.push(`${rule.selector} — ${decl.value}`)
+    })
+  })
+  assert.ok(scanned > 0, '옛 컨테이너 규칙을 찾지 못했습니다')
+  assert.deepEqual(offenders, [])
 })

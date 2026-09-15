@@ -1,0 +1,292 @@
+/* ─── 글 · 질문 · FAQ ─────────────────────────────────────────────────
+   먼저 정리한 글(대표 1편 + 목록), 자주 확인하는 질문(안내 레일 + 질문 목록),
+   자주 묻는 질문과 답변 요약. 셋 다 카드가 아니라 선으로 나눈 행이다. */
+
+/* 먼저 정리한 글 */
+.hub-featured {
+  display: grid;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--clinic-space-12);
+  align-items: start;
+}
+
+.hub-featured--solo {
+  grid-template-columns: minmax(0, 760px);
+}
+
+.hub-lead {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-4);
+  color: var(--clinic-ink);
+}
+
+.hub-lead .clinic-cover {
+  border-radius: var(--clinic-radius-md);
+}
+
+.hub-lead-kicker {
+  font-size: var(--clinic-type-caption);
+  font-weight: 600;
+  color: var(--clinic-muted);
+}
+
+.hub-lead-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-lead:hover .hub-lead-title {
+  color: var(--clinic-brand-action);
+}
+
+.hub-lead-summary {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--clinic-muted);
+}
+
+.hub-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--clinic-space-2);
+  font-size: var(--clinic-type-caption);
+  color: var(--clinic-muted);
+}
+
+.hub-meta strong {
+  font-weight: 600;
+  color: var(--clinic-ink);
+}
+
+.hub-meta-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--clinic-line-strong);
+}
+
+.hub-row-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--clinic-line-soft);
+}
+
+.hub-row-list > li {
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--clinic-space-3);
+  min-height: 56px;
+  padding: var(--clinic-space-3) 0;
+  color: var(--clinic-ink);
+}
+
+.hub-row-title {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-row:hover .hub-row-title {
+  color: var(--clinic-brand-action);
+}
+
+.hub-row-date {
+  font-size: var(--clinic-type-caption);
+  color: var(--clinic-muted);
+  white-space: nowrap;
+}
+
+/* 자주 확인하는 질문 */
+.hub-answers {
+  display: grid;
+  grid-template-columns: minmax(0, 4fr) minmax(0, 8fr);
+  gap: var(--clinic-space-12);
+  align-items: start;
+}
+
+.hub-answers-rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-3);
+}
+
+.hub-answers-rail .hub-section-head {
+  margin-bottom: var(--clinic-space-3);
+}
+
+.hub-answers-hint {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  gap: var(--clinic-space-3);
+  padding: var(--clinic-space-5);
+  margin-top: var(--clinic-space-2);
+}
+
+.hub-answers-hint strong {
+  display: block;
+  margin-bottom: var(--clinic-space-1);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.hub-answers-hint p {
+  margin: 0;
+  font-size: var(--clinic-type-small);
+  line-height: 1.6;
+  color: var(--clinic-muted);
+}
+
+.hub-qa {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 20px;
+  gap: var(--clinic-space-4);
+  align-items: start;
+  min-height: var(--clinic-control-height);
+  padding: var(--clinic-space-5) 0;
+  color: var(--clinic-ink);
+}
+
+.hub-qa-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--clinic-space-2);
+}
+
+.hub-qa-q {
+  font-size: var(--clinic-type-h3);
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-qa:hover .hub-qa-q {
+  color: var(--clinic-brand-action);
+}
+
+.hub-qa-a {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--clinic-muted);
+}
+
+.hub-qa .hub-icon {
+  align-self: start;
+  color: var(--clinic-muted);
+}
+
+.hub-qa-compact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--clinic-space-3);
+  min-height: 52px;
+  min-width: var(--clinic-control-height);
+  padding: var(--clinic-space-3) 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--clinic-ink);
+}
+
+.hub-qa-compact:hover {
+  color: var(--clinic-brand-action);
+}
+
+.hub-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--clinic-space-2);
+  margin-top: var(--clinic-space-6);
+}
+
+/* 자주 묻는 질문과 답변 요약 */
+.hub-faq {
+  margin: 0;
+  border-top: 1px solid var(--clinic-line-soft);
+}
+
+.hub-faq-item {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  column-gap: var(--clinic-space-3);
+  padding: var(--clinic-space-6) 0;
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-faq-q {
+  grid-column: 1 / 3;
+  display: flex;
+  gap: var(--clinic-space-3);
+  font-size: var(--clinic-type-h3);
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+}
+
+.hub-faq-q::before {
+  content: 'Q';
+  flex: none;
+  width: 28px;
+  font-weight: 700;
+  color: var(--clinic-brand-action);
+}
+
+.hub-faq-a {
+  grid-column: 2;
+  margin: var(--clinic-space-2) 0 0;
+}
+
+.hub-faq-a p {
+  margin: 0;
+  font-size: 15px;
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+}
+
+.hub-faq-a .hub-more {
+  margin-top: var(--clinic-space-1);
+  font-size: var(--clinic-type-small);
+}
+
+@media (max-width: 1023px) {
+  .hub-featured,
+  .hub-answers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--clinic-space-8);
+  }
+
+  .hub-featured--solo {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .hub-row-date {
+    grid-column: 2;
+  }
+
+  .hub-lead-title {
+    font-size: 20px;
+  }
+}

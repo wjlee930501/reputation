@@ -1,0 +1,237 @@
+/* ─── 첫 화면 ─────────────────────────────────────────────────────────
+   왼쪽은 문장, 오른쪽은 검증된 병원 사진. 그 아래 한 줄이 오늘 진료·전화·위치·
+   토요일 진료다. 네 칸은 같은 선 위에 놓이고 칸 사이는 얇은 선 하나로 나눈다. */
+
+.hub-hero {
+  padding-block: var(--clinic-space-12) 0;
+}
+
+.hub-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+  gap: var(--clinic-space-12);
+  align-items: center;
+}
+
+.hub-hero-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.hub-hero-kicker {
+  margin: 0 0 var(--clinic-space-4);
+  font-size: var(--clinic-type-small);
+  font-weight: 600;
+  color: var(--clinic-brand-action);
+}
+
+.hub-hero-title {
+  margin: 0 0 var(--clinic-space-5);
+  font-size: var(--clinic-type-display);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--clinic-ink);
+  overflow-wrap: anywhere;
+  /* 조각(span)은 inline이다 — 줄바꿈은 브라우저가 고른다. 조각을 블록으로 쌓으면
+     조각 수가 그대로 줄 수가 된다. */
+  text-wrap: balance;
+}
+
+.hub-hero-title strong {
+  font-weight: 700;
+  color: var(--clinic-brand-action);
+}
+
+/* 운영자가 직접 줄을 나눈 제목은 그 줄을 지킨다. */
+.hub-hero-title--lines > span {
+  display: block;
+}
+
+.hub-hero-lede {
+  max-width: 44ch;
+  margin: 0 0 var(--clinic-space-8);
+  font-size: var(--clinic-type-lede);
+  line-height: var(--clinic-lh-body);
+  color: var(--clinic-muted);
+}
+
+.hub-hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--clinic-space-3);
+}
+
+.hub-hero-media {
+  position: relative;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  border-radius: var(--clinic-radius-lg);
+  background: var(--clinic-surface-alt);
+}
+
+.hub-hero-media img {
+  object-fit: cover;
+}
+
+/* 브랜드 그래픽은 사진처럼 자르지 않는다. */
+.hub-hero--media-brand-graphic .hub-hero-media img {
+  object-fit: contain;
+  padding: var(--clinic-space-8);
+}
+
+/* 사진이 없으면 회색 상자 대신 병원명을 적은 조용한 패널. */
+.hub-hero-media--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--clinic-space-8);
+  text-align: center;
+  background: var(--clinic-brand-tint);
+  border: 1px solid var(--clinic-line-soft);
+}
+
+.hub-hero-media--empty span {
+  display: block;
+  font-size: var(--clinic-type-small);
+  color: var(--clinic-muted);
+}
+
+.hub-hero-media--empty strong {
+  display: block;
+  margin: var(--clinic-space-2) 0;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: var(--clinic-lh-tight);
+}
+
+.hub-hero-facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.5fr) minmax(0, 1fr);
+  margin: var(--clinic-space-12) 0 0;
+  border-top: 1px solid var(--clinic-line-soft);
+  border-bottom: 1px solid var(--clinic-line-soft);
+}
+
+.hub-fact {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: var(--clinic-space-3);
+  row-gap: var(--clinic-space-1);
+  align-content: start;
+  padding: var(--clinic-row-pad) var(--clinic-space-6) var(--clinic-row-pad) 0;
+}
+
+.hub-fact + .hub-fact {
+  padding-left: var(--clinic-space-6);
+  border-left: 1px solid var(--clinic-line-soft);
+}
+
+.hub-fact .hub-icon {
+  grid-row: 1 / 3;
+  margin-top: 1px;
+}
+
+.hub-fact dt {
+  font-size: var(--clinic-type-caption);
+  line-height: var(--clinic-lh-snug);
+  color: var(--clinic-muted);
+}
+
+.hub-fact dd {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: var(--clinic-lh-snug);
+  color: var(--clinic-ink);
+  overflow-wrap: anywhere;
+}
+
+.hub-fact dd a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
+.hub-fact dd a:hover {
+  color: var(--clinic-brand-action);
+}
+
+@media (max-width: 1023px) {
+  .hub-hero {
+    padding-block: var(--clinic-space-10) 0;
+  }
+
+  .hub-hero-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--clinic-space-8);
+  }
+
+  .hub-hero-media {
+    aspect-ratio: 16 / 10;
+    order: 1;
+  }
+
+  .hub-hero-facts {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    margin-top: var(--clinic-space-10);
+  }
+
+  .hub-fact + .hub-fact {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .hub-fact:nth-child(even) {
+    padding-left: var(--clinic-space-6);
+    border-left: 1px solid var(--clinic-line-soft);
+  }
+
+  .hub-fact:nth-child(n + 3) {
+    border-top: 1px solid var(--clinic-line-soft);
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-hero {
+    padding-block: var(--clinic-space-8) 0;
+  }
+
+  /* 손가락으로 누르는 것은 44px다 — 전화번호 링크는 글자보다 큰 상자를 가진다. */
+  .hub-fact dd a {
+    min-height: var(--clinic-control-height);
+    min-width: var(--clinic-control-height);
+  }
+
+  .hub-hero-lede {
+    margin-bottom: var(--clinic-space-6);
+  }
+
+  .hub-hero-actions {
+    width: 100%;
+  }
+
+  .hub-hero-actions .hub-btn {
+    flex: 1 1 0;
+  }
+
+  .hub-hero-media {
+    border-radius: var(--clinic-radius-md);
+  }
+
+  .hub-hero-facts {
+    grid-template-columns: minmax(0, 1fr);
+    margin-top: var(--clinic-space-8);
+  }
+
+  .hub-fact,
+  .hub-fact:nth-child(even) {
+    padding: var(--clinic-row-pad) 0;
+    border-left: 0;
+  }
+
+  .hub-fact + .hub-fact,
+  .hub-fact:nth-child(n + 3) {
+    border-top: 1px solid var(--clinic-line-soft);
+  }
+}

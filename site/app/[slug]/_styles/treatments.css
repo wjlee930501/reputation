@@ -1,0 +1,73 @@
+/* ─── 진료 영역 ───────────────────────────────────────────────────────
+   대표 항목을 같은 높이의 카드로 놓는다. 열 수는 항목 수에서 온다(1~4).
+   화살표는 카드 오른쪽 위 고정 자리에 있어 제목 길이와 무관하게 겹치지 않는다. */
+
+.hub-tx-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--clinic-tx-columns, 4), minmax(0, 1fr));
+  gap: var(--clinic-block-gap);
+}
+
+.hub-tx-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--clinic-space-3);
+  padding: var(--clinic-card-pad);
+  color: var(--clinic-ink);
+  transition: border-color 150ms ease;
+}
+
+a.hub-tx-card:hover {
+  border-color: var(--clinic-brand-edge);
+}
+
+.hub-tx-index {
+  font-size: var(--clinic-type-caption);
+  font-weight: 600;
+  line-height: 1;
+  color: var(--clinic-accent-strong);
+}
+
+.hub-tx-name {
+  padding-right: var(--clinic-space-8);
+  font-size: var(--clinic-type-h3);
+  font-weight: 700;
+  line-height: var(--clinic-lh-snug);
+  overflow-wrap: anywhere;
+}
+
+.hub-tx-desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  font-size: var(--clinic-type-small);
+  line-height: 1.6;
+  color: var(--clinic-muted);
+}
+
+.hub-tx-arrow {
+  position: absolute;
+  top: var(--clinic-card-pad);
+  right: var(--clinic-card-pad);
+  width: 20px;
+  height: 20px;
+  color: var(--clinic-muted);
+}
+
+a.hub-tx-card:hover .hub-tx-arrow {
+  color: var(--clinic-brand-action);
+}
+
+@media (max-width: 1023px) {
+  .hub-tx-grid {
+    grid-template-columns: repeat(var(--clinic-tx-columns-md, 2), minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 719px) {
+  .hub-tx-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

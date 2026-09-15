@@ -150,9 +150,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
 
           <DoctorIntro
             physicians={physicians}
-            specialties={hospital.specialties}
             region={hospital.region}
-            contentCount={contents.length}
             priorityPhoto
           />
 
