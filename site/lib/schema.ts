@@ -1,16 +1,25 @@
 import type { ContentSummary, Hospital } from './api.ts'
+import type { ClinicPhysician } from './clinic-physicians.ts'
 
 const FAQ_MAX_ITEMS = 10
 
-// 원장 Physician 노드의 신뢰축(자격·학회·전문영역) 서브필드.
-// 랜딩(중첩 Physician)과 /doctor(독립 Physician)가 동일 값을 내보내도록 공유한다 —
+// 의료진 Physician 노드의 신뢰축(자격·학회·전문영역) 서브필드.
+// 랜딩(employee[])과 /doctor(독립 Physician)가 동일 값을 내보내도록 공유한다 —
 // 최우선순위 URL(랜딩 priority 0.8)에서도 약한 Physician이 되지 않게 한다.
-export function buildPhysicianCredentials(hospital: Hospital): Record<string, unknown> {
-  const credentials = hospital.director_credentials
+//
+// `physician`을 주면 그 사람의 자격·전문영역을 쓰고, 비어 있는 축만 병원 프로파일에서
+// 채운다. 주지 않으면 종전대로 병원 대표 원장 한 명으로 본다.
+export function buildPhysicianCredentials(
+  hospital: Hospital,
+  physician?: ClinicPhysician,
+): Record<string, unknown> {
+  const credentials = physician ? physician.credentials : hospital.director_credentials
   const boardCerts = credentials?.board_certifications ?? []
   const societies = credentials?.society_memberships ?? []
   const treatmentNames = (hospital.treatments || []).map((t) => t.name).filter(Boolean)
-  const knowsAbout = Array.from(new Set([...(hospital.specialties || []), ...treatmentNames]))
+  const specialties =
+    physician && physician.specialties.length > 0 ? physician.specialties : hospital.specialties || []
+  const knowsAbout = Array.from(new Set([...specialties, ...treatmentNames]))
 
   const hasCredential = boardCerts.map((name) => ({
     '@type': 'EducationalOccupationalCredential',
@@ -24,11 +33,43 @@ export function buildPhysicianCredentials(hospital: Hospital): Record<string, un
 
   // undefined 키는 JSON.stringify가 제거하므로 빈 배열만 걸러 키를 생략한다.
   return {
-    medicalSpecialty: hospital.specialties?.length ? hospital.specialties : undefined,
+    medicalSpecialty: specialties.length > 0 ? specialties : undefined,
     knowsAbout: knowsAbout.length > 0 ? knowsAbout : undefined,
     hasCredential: hasCredential.length > 0 ? hasCredential : undefined,
     memberOf: memberOf.length > 0 ? memberOf : undefined,
     alumniOf,
+  }
+}
+
+/**
+ * 의료진 한 명의 Physician 노드. 랜딩의 `employee[]`와 `/doctor`가 같은 `@id`로
+ * 같은 사람을 주장하도록 한 함수에서 만든다.
+ */
+export function buildPhysicianNode(input: {
+  hospital: Hospital
+  physician: ClinicPhysician
+  hospitalRootUrl: string
+  nodeId: string
+  /** 절대 URL로 정규화된 인물 사진. 검증된 자산이 없으면 null. */
+  imageUrl: string | null
+  /** 약력 외에 덧붙일 문장(승인된 공개 서사 등). */
+  extraDescription?: string | null
+  sameAs?: string[]
+}): Record<string, unknown> {
+  const { hospital, physician, hospitalRootUrl, nodeId, imageUrl } = input
+  const description =
+    [physician.career, input.extraDescription?.trim() || null].filter(Boolean).join(' ') || undefined
+
+  return {
+    '@type': 'Physician',
+    '@id': nodeId,
+    name: physician.name,
+    jobTitle: physician.title || '원장',
+    description,
+    image: imageUrl || undefined,
+    url: `${hospitalRootUrl}/doctor`,
+    ...buildPhysicianCredentials(hospital, physician),
+    sameAs: input.sameAs && input.sameAs.length > 0 ? input.sameAs : undefined,
   }
 }
 

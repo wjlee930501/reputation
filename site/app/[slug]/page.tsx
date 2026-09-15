@@ -10,16 +10,18 @@ import {
   resolveClinicAccessMode,
   resolveClinicMediaMode,
 } from '@/lib/clinic-design'
+import { physicianNodeId, resolveClinicPhysicians } from '@/lib/clinic-physicians'
 import { buildPostalAddress } from '@/lib/clinic-schema'
 import {
+  absoluteClinicImageUrl,
   buildClinicThemeStyle,
   selectClinicDirectorImage,
   selectClinicHeroImage,
 } from '@/lib/clinic-theme'
 import { getApiBase } from '@/lib/config'
 import { REVALIDATE_SECONDS } from '@/lib/fetch-policy'
-import { buildFaqPageJsonLd, buildPhysicianCredentials, selectFaqEntries } from '@/lib/schema'
-import { canonicalHospitalUrl } from '@/lib/site-url'
+import { buildFaqPageJsonLd, buildPhysicianNode, selectFaqEntries } from '@/lib/schema'
+import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
 import { AnswerClusters } from './_components/AnswerClusters'
 import { buildBreadcrumbJsonLd } from './_components/Breadcrumb'
@@ -153,6 +155,19 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
   // 승인된 운영 기준에서 의료광고 검수를 통과한 about 서사 (없으면 null) — description/slogan에 사용.
   const publicAbout = hospital.public_about?.trim() || null
 
+  // 화면(DoctorIntro)·구조화 데이터·llms.txt가 같은 목록을 본다.
+  const canonicalOrigin = canonicalBase(hospital, params.slug)
+  const physicians = resolveClinicPhysicians(hospital)
+  const employeeJsonLd = physicians.map((physician, index) =>
+    buildPhysicianNode({
+      hospital,
+      physician,
+      hospitalRootUrl,
+      nodeId: physicianNodeId(hospitalRootUrl, physician, index),
+      imageUrl: absoluteClinicImageUrl(physician.photoUrl, canonicalOrigin),
+    }),
+  )
+
   const clinicJsonLd = {
     '@context': 'https://schema.org',
     '@type': ['MedicalClinic', 'LocalBusiness'],
@@ -167,7 +182,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
     description: publicAbout ?? undefined,
     slogan: publicAbout ?? undefined,
     sameAs,
-    address: buildPostalAddress(hospital.address),
+    address: buildPostalAddress(hospital.address, hospital.address_detail),
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,
     openingHoursSpecification: buildOpeningHoursSpec(hospital.business_hours),
@@ -180,20 +195,9 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             longitude: hospital.longitude,
           }
         : undefined,
-    physician: hospital.director_name
-      ? {
-          '@type': 'Physician',
-          '@id': `${hospitalRootUrl}/doctor#physician`,
-          name: hospital.director_name,
-          jobTitle: '원장',
-          description: hospital.director_career || undefined,
-          image: selectClinicDirectorImage(hospital) ?? undefined,
-          url: `${hospitalRootUrl}/doctor`,
-          // 자격·학회·전문영역 신뢰축을 최우선순위 URL(랜딩)에도 실어 /doctor에만
-          // 의존하지 않게 한다.
-          ...buildPhysicianCredentials(hospital),
-        }
-      : undefined,
+    // 의료진은 한 명이 아닐 수 있다. 자격·학회·전문영역 신뢰축을 최우선순위
+    // URL(랜딩)에도 사람마다 실어 /doctor에만 의존하지 않게 한다.
+    employee: employeeJsonLd.length > 0 ? employeeJsonLd : undefined,
     availableService: (hospital.treatments || []).map((treatment) => ({
       '@type': 'MedicalProcedure',
       name: treatment.name,
@@ -280,6 +284,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
             directorName={hospital.director_name}
             heroPhotoUrl={heroPhotoUrl}
             address={hospital.address}
+            addressDetail={hospital.address_detail}
             businessHours={hospital.business_hours}
             accessMode={accessMode}
             mediaMode={mediaMode}
@@ -301,14 +306,10 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
 
           <div id="doctor" className="clinic-anchor-target">
           <DoctorIntro
-            directorName={hospital.director_name}
-            directorCareer={hospital.director_career}
+            physicians={physicians}
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
-            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
-            societyMemberships={hospital.director_credentials?.society_memberships ?? null}
-            photos={hospital.photos ?? []}
           />
           </div>
 
@@ -349,12 +350,15 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           <ClinicGallery
             photos={hospital.photos ?? []}
             policy={clinicGalleryPolicy('home', contentDensity)}
+            excludeUrl={heroPhotoUrl}
+            allPhotosHref={`${hospitalRootUrl}/visit#gallery`}
           />
 
           <div id="facts" className="clinic-anchor-target">
           <HospitalFacts
             hospitalName={hospital.name}
             address={hospital.address}
+            addressDetail={hospital.address_detail}
             phone={hospital.phone}
             businessHours={hospital.business_hours}
             region={hospital.region}
@@ -369,6 +373,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           <div id="contact" className="clinic-anchor-target">
           <ContactCard
             address={hospital.address}
+            addressDetail={hospital.address_detail}
             phone={hospital.phone}
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
@@ -384,6 +389,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           hospitalName={hospital.name}
           directorName={hospital.director_name}
           address={hospital.address}
+          addressDetail={hospital.address_detail}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />

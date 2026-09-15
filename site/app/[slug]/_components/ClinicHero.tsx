@@ -5,6 +5,7 @@ import { nextOpenDay, uniformWeeklyHours } from '@/lib/business-hours'
 import { displayClinicLabels } from '@/lib/clinic-design'
 import type { ClinicAccessMode, ClinicMediaMode } from '@/lib/clinic-design'
 import { buildClinicHeroHeadline } from '@/lib/clinic-hero-headline'
+import { fullClinicAddress } from '@/lib/clinic-schema'
 
 import { CalendarIcon, ClockIcon, MapPinIcon, PhoneIcon } from './icons'
 
@@ -17,6 +18,7 @@ interface Props {
   directorName: string
   heroPhotoUrl?: string | null
   address: string
+  addressDetail?: string | null
   businessHours: Record<string, string> | null | undefined
   accessMode: ClinicAccessMode
   mediaMode: ClinicMediaMode
@@ -66,6 +68,7 @@ export function ClinicHero({
   directorName,
   heroPhotoUrl = null,
   address,
+  addressDetail = null,
   businessHours,
   accessMode,
   mediaMode,
@@ -179,7 +182,7 @@ export function ClinicHero({
         <div className="clinic-hero-fact-rail-address">
           <MapPinIcon className="clinic-icon" />
           <dt>위치</dt>
-          <dd>{compactAddress(address)}</dd>
+          <dd>{compactAddress(fullClinicAddress(address, addressDetail))}</dd>
         </div>
         <div>
           <CalendarIcon className="clinic-icon" />

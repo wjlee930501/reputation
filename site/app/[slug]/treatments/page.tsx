@@ -249,6 +249,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
           hospitalName={hospital.name}
           directorName={hospital.director_name}
           address={hospital.address}
+          addressDetail={hospital.address_detail}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />

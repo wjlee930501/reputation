@@ -157,12 +157,36 @@ export function selectClinicHeroImage(
     : null
   if (hero) return hero
 
-  const clinicPhoto = hospital.photos.find((photo) =>
+  const candidates = hospital.photos.filter((photo) =>
     ['PHOTO_CLINIC_EXTERIOR', 'PHOTO_CLINIC_INTERIOR', 'PHOTO_TREATMENT_ROOM'].includes(photo.source_type) &&
     photo.asset_kind !== 'EDITORIAL_GRAPHIC' &&
     (!photo.approved_usage || photo.approved_usage.includes('HERO')),
   )
+  // 같은 선호 단계에서는 API가 준 순서를 지킨다 — 운영자가 정한 순서를 뒤집지 않는다.
+  const clinicPhoto = candidates.reduce<Hospital['photos'][number] | null>(
+    (best, photo) =>
+      best === null || heroCandidateRank(photo) < heroCandidateRank(best) ? photo : best,
+    null,
+  )
   return resolveAssetUrl(clinicPhoto?.url ?? null)
+}
+
+/** 대기실·접수·로비처럼 "도착해서 처음 보는 곳"을 가리키는 내부 사진 제목. */
+const ARRIVAL_INTERIOR_TITLE = /대기실|접수|로비|현관|입구|안내/
+
+/**
+ * 히어로로 쓸 사진의 선호 순서 (작을수록 먼저).
+ *
+ * 첫 화면은 "여기가 맞는 병원인가"를 확인하는 자리다. 간판이 보이는 외관이 가장 강한
+ * 근거이고, 없으면 도착 동선(대기실·접수)의 내부 사진, 그다음 다른 내부, 마지막이
+ * 진료·시술실이다. 시술실을 첫 화면에 크게 거는 것은 환자에게 가장 불안한 장면이다.
+ */
+function heroCandidateRank(photo: Hospital['photos'][number]): number {
+  if (photo.source_type === 'PHOTO_CLINIC_EXTERIOR') return 0
+  if (photo.source_type === 'PHOTO_CLINIC_INTERIOR') {
+    return ARRIVAL_INTERIOR_TITLE.test(photo.title || '') ? 1 : 2
+  }
+  return 3
 }
 
 function isVerifiedDoctorAsset(photo: Hospital['photos'][number]): boolean {

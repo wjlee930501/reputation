@@ -113,15 +113,44 @@ export function displayClinicLabels(values: string[], limit = 2): string[] {
   return [...new Set(normalized)].slice(0, Math.max(0, limit))
 }
 
+/**
+ * 갤러리 노출 순서. 환자가 "이 병원이 어디에 있고 안이 어떤가"를 읽는 순서다 —
+ * 외관 → 내부 → 진료·시술실. 같은 분류 안에서는 API가 준 순서를 그대로 지킨다
+ * (Array#sort는 안정 정렬).
+ */
+export const CLINIC_GALLERY_CATEGORY_ORDER: ReadonlyArray<HospitalPhoto['source_type']> = [
+  'PHOTO_CLINIC_EXTERIOR',
+  'PHOTO_CLINIC_INTERIOR',
+  'PHOTO_TREATMENT_ROOM',
+]
+
+function categoryRank(sourceType: HospitalPhoto['source_type']): number {
+  const index = CLINIC_GALLERY_CATEGORY_ORDER.indexOf(sourceType)
+  return index === -1 ? CLINIC_GALLERY_CATEGORY_ORDER.length : index
+}
+
+export interface ClinicGallerySelectionOptions {
+  /**
+   * 히어로가 이미 쓰고 있는 사진 주소. 같은 사진이 첫 화면과 갤러리에 연달아 나오면
+   * 승인된 사진이 실제보다 적어 보인다 — 갤러리에서 뺀다.
+   */
+  excludeUrl?: string | null
+}
+
 export function selectClinicGalleryPhotos(
   photos: HospitalPhoto[],
   requestedLimit = 6,
+  options: ClinicGallerySelectionOptions = {},
 ): { photos: HospitalPhoto[]; total: number; remaining: number } {
-  const facilityPhotos = photos.filter((photo) => (
-    FACILITY_PHOTO_TYPES.has(photo.source_type) &&
-    photo.asset_kind !== 'EDITORIAL_GRAPHIC' &&
-    (!photo.approved_usage || photo.approved_usage.includes('GALLERY'))
-  ))
+  const excluded = options.excludeUrl?.trim() || null
+  const facilityPhotos = photos
+    .filter((photo) => (
+      FACILITY_PHOTO_TYPES.has(photo.source_type) &&
+      photo.asset_kind !== 'EDITORIAL_GRAPHIC' &&
+      (!photo.approved_usage || photo.approved_usage.includes('GALLERY')) &&
+      (!excluded || photo.url !== excluded)
+    ))
+    .sort((a, b) => categoryRank(a.source_type) - categoryRank(b.source_type))
   const limit = Math.max(1, Math.min(CLINIC_GALLERY_MAX, requestedLimit))
   const selected = facilityPhotos.slice(0, limit)
   return {

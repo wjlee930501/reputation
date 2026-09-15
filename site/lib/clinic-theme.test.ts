@@ -234,3 +234,50 @@ test('editorial character art cannot enter a named doctor identity slot', () => 
     null,
   )
 })
+
+test('the hero prefers the exterior, then the arrival interior, then treatment rooms', () => {
+  // 첫 화면은 "여기가 맞는 병원인가"를 확인하는 자리다. 운영자가 hero를 고르지 않은
+  // 병원에서 API 순서만 따르면 시술실이 첫 화면에 걸리는 일이 실제로 일어난다.
+  const photo = (id: string, source_type: string, title: string) => ({
+    id,
+    source_type: source_type as 'PHOTO_CLINIC_EXTERIOR',
+    title,
+    url: `http://localhost:8000/${id}.jpg`,
+  })
+  const base = { hero_image_url: null, hero_media_kind: null, specialties: [] as string[] }
+
+  const pick = (photos: ReturnType<typeof photo>[]) =>
+    selectClinicHeroImage({ ...base, photos })
+
+  assert.match(
+    pick([
+      photo('room', 'PHOTO_TREATMENT_ROOM', '시술실'),
+      photo('inside', 'PHOTO_CLINIC_INTERIOR', '진료실'),
+      photo('outside', 'PHOTO_CLINIC_EXTERIOR', '건물 외관'),
+    ]) ?? '',
+    /outside\.jpg$/,
+  )
+
+  // 외관이 없으면 도착 동선(대기실·접수·로비·현관·입구·안내)의 내부 사진이 먼저다.
+  assert.match(
+    pick([
+      photo('room', 'PHOTO_TREATMENT_ROOM', '시술실'),
+      photo('corridor', 'PHOTO_CLINIC_INTERIOR', '진료실 복도'),
+      photo('lobby', 'PHOTO_CLINIC_INTERIOR', '1층 대기실'),
+    ]) ?? '',
+    /lobby\.jpg$/,
+  )
+
+  // 대기실도 없으면 다른 내부가 시술실보다 앞선다.
+  assert.match(
+    pick([
+      photo('room', 'PHOTO_TREATMENT_ROOM', '시술실'),
+      photo('corridor', 'PHOTO_CLINIC_INTERIOR', '진료실 복도'),
+    ]) ?? '',
+    /corridor\.jpg$/,
+  )
+
+  // 시술실만 있으면 그것이라도 쓴다 — 첫 화면을 비워 두지 않는다.
+  assert.match(pick([photo('room', 'PHOTO_TREATMENT_ROOM', '시술실')]) ?? '', /room\.jpg$/)
+  assert.equal(pick([]), null)
+})

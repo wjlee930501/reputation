@@ -147,8 +147,68 @@ test('both gallery surfaces pass an explicit policy so the component keeps no de
   assert.match(visit, /policy=\{clinicGalleryPolicy\('visit'\)\}/)
 })
 
+test('the gallery reads outside-in: exterior, then interior, then treatment rooms', () => {
+  // API 순서만 따르면 첫 타일이 시술실이 되는 병원이 생긴다 — 환자가 "여기가 맞나"를
+  // 확인하는 화면인데 가장 불안한 장면부터 보게 된다.
+  const photos: HospitalPhoto[] = [
+    { id: 'room-1', source_type: 'PHOTO_TREATMENT_ROOM', title: '시술실 A', url: '/room-1.jpg' },
+    { id: 'in-1', source_type: 'PHOTO_CLINIC_INTERIOR', title: '대기실', url: '/in-1.jpg' },
+    { id: 'ex-1', source_type: 'PHOTO_CLINIC_EXTERIOR', title: '건물 외관', url: '/ex-1.jpg' },
+    { id: 'in-2', source_type: 'PHOTO_CLINIC_INTERIOR', title: '진료실 복도', url: '/in-2.jpg' },
+    { id: 'ex-2', source_type: 'PHOTO_CLINIC_EXTERIOR', title: '간판', url: '/ex-2.jpg' },
+  ]
+
+  assert.deepEqual(
+    selectClinicGalleryPhotos(photos).photos.map((photo) => photo.id),
+    ['ex-1', 'ex-2', 'in-1', 'in-2', 'room-1'],
+  )
+})
+
+test('the photo already used as the hero is not repeated in the gallery', () => {
+  const photos: HospitalPhoto[] = [
+    { id: 'hero', source_type: 'PHOTO_CLINIC_EXTERIOR', title: '외관', url: '/hero.jpg' },
+    { id: 'other', source_type: 'PHOTO_CLINIC_INTERIOR', title: '대기실', url: '/other.jpg' },
+  ]
+  const selection = selectClinicGalleryPhotos(photos, 6, { excludeUrl: '/hero.jpg' })
+  assert.deepEqual(selection.photos.map((photo) => photo.id), ['other'])
+  // 전체 수도 함께 줄어야 "전체 N장 보기"가 실제로 더 보여줄 수 있는 수를 말한다.
+  assert.equal(selection.total, 1)
+  assert.equal(selection.remaining, 0)
+})
+
 test('doctor role does not repeat the representative-director label', () => {
   assert.equal(selectDoctorRole([]), null)
   assert.equal(selectDoctorRole(['대표원장', '내과 전문의']), '내과 전문의')
   assert.equal(selectDoctorRole(['피부과 전문의']), '피부과 전문의')
+})
+
+test('the home gallery links to the full library instead of only naming a number', () => {
+  // "전체 22장 중 6장" 문장만 두면 나머지 16장을 볼 방법이 화면에 없다.
+  const component = readFileSync(
+    join(HERE, '..', 'app', '[slug]', '_components', 'ClinicGallery.tsx'),
+    'utf8',
+  )
+  assert.match(component, /공간 사진 전체 \{countLabel\(selection\.total, '장'\)\} 보기/)
+  assert.match(component, /className="clinic-tx-directory-more"/)
+
+  const home = readFileSync(join(HERE, '..', 'app', '[slug]', 'page.tsx'), 'utf8')
+  assert.match(home, /allPhotosHref=\{`\$\{hospitalRootUrl\}\/visit#gallery`\}/)
+  // 히어로가 쓰는 사진은 갤러리에서 뺀다 — 첫 화면과 같은 사진이 바로 아래 또 나온다.
+  assert.match(home, /excludeUrl=\{heroPhotoUrl\}/)
+})
+
+test('the visit page owns the anchor the home gallery links to', () => {
+  const component = readFileSync(
+    join(HERE, '..', 'app', '[slug]', '_components', 'VisitGallery.tsx'),
+    'utf8',
+  )
+  assert.match(component, /id="gallery"/)
+  // 분류별 소제목이 있어야 "주차장에서 어디로 들어가는가"를 사진 순서로 읽을 수 있다.
+  assert.match(component, /CLINIC_GALLERY_CATEGORY_ORDER\.map/)
+  assert.match(component, /clinic-visit-gallery-heading/)
+  // /visit은 미리보기가 아니다 — 상한으로 잘라내지 않는다.
+  assert.doesNotMatch(component, /previewLimit/)
+
+  const visit = readFileSync(join(HERE, '..', 'app', '[slug]', 'visit', 'page.tsx'), 'utf8')
+  assert.match(visit, /<VisitGallery photos=\{facilityPhotos\} policy=\{clinicGalleryPolicy\('visit'\)\} \/>/)
 })

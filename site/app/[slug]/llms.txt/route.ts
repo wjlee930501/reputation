@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { fetchAllContents, fetchHospital, HospitalNotFoundError, TYPE_LABELS } from '@/lib/api'
+import { resolveClinicPhysicians } from '@/lib/clinic-physicians'
 import { llmsBusinessHoursLines, llmsTextValue, llmsUrlValue } from '@/lib/llms-text'
+import { fullClinicAddress } from '@/lib/clinic-schema'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { buildTreatmentSlug } from '@/lib/treatment-slug'
 
@@ -51,7 +53,7 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       '',
       `## 병원 정보`,
       lineValue('name', hospital.name),
-      lineValue('address', hospital.address),
+      lineValue('address', fullClinicAddress(hospital.address, hospital.address_detail)),
       lineValue('phone', hospital.phone),
       optionalUrlValue('official_homepage', hospital.website_url),
       optionalUrlValue('google_maps', hospital.google_maps_url),
@@ -90,6 +92,31 @@ export async function GET(_req: Request, { params: paramsPromise }: Props) {
       // 단, 승인·의료광고 검수를 통과한 public_about 서사는 아래 별도 블록으로 노출합니다.
       '',
     ]
+
+    // 의료진 — 화면(DoctorIntro)·JSON-LD employee[]와 같은 목록·같은 순서.
+    // 자유 입력 약력·철학은 싣지 않는다. 이름·직함·진료영역·승인된 자격만 내보낸다.
+    const physicians = resolveClinicPhysicians(hospital)
+    if (physicians.length > 0) {
+      lines.push('## 의료진')
+      for (const physician of physicians) {
+        const name = llmsTextValue(physician.name)
+        if (!name) continue
+        const title = llmsTextValue(physician.title || (physician.isRepresentative ? '대표원장' : '원장'))
+        const specialties = physician.specialties
+          .map((value) => llmsTextValue(value))
+          .filter(Boolean)
+          .join(', ')
+        const certifications = (physician.credentials?.board_certifications ?? [])
+          .map((value) => llmsTextValue(value))
+          .filter(Boolean)
+          .join(', ')
+        lines.push(`### ${name}`)
+        if (title) lines.push(`- title: ${title}`)
+        if (specialties) lines.push(`- specialties: ${specialties}`)
+        if (certifications) lines.push(`- board_certifications: ${certifications}`)
+      }
+      lines.push('')
+    }
 
     // 요일별 진료시간 — JSON-LD openingHoursSpecification과 같은 원본·같은 파서.
     lines.push(...llmsBusinessHoursLines(hospital.business_hours))

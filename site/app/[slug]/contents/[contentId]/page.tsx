@@ -557,6 +557,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
           hospitalName={hospital.name}
           directorName={hospital.director_name}
           address={hospital.address}
+          addressDetail={hospital.address_detail}
           phone={hospital.phone}
           websiteUrl={hospitalWebsiteUrl}
         />
