@@ -132,7 +132,6 @@ async def create_lead(
     admin_url = f"{settings.ADMIN_BASE_URL.rstrip('/')}/leads"
     notified = await notifier.notify_lead_created(
         clinic_name=body.clinic_name,
-        clinic_type=body.clinic_type,
         contact=body.contact,
         admin_url=admin_url,
     )
