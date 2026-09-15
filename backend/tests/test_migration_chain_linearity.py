@@ -45,9 +45,10 @@ IMAGE_REUSE_MARKER = "0074_add_image_reuse_marker"
 HOSPITAL_FALLBACK_IMAGE = "0075_add_hospital_fallback_image"
 INQUIRY_INTERNAL_DIAGNOSIS = "0076_inquiry_internal_diagnosis"
 INQUIRY_INTAKE_AUTOMATION = "0077_inquiry_intake_automation"
+HOSPITAL_PHYSICIANS = "0078_add_hospital_physicians"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = INQUIRY_INTAKE_AUTOMATION
+HEAD = HOSPITAL_PHYSICIANS
 
 
 def _script_directory() -> ScriptDirectory:
@@ -115,6 +116,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         HOSPITAL_FALLBACK_IMAGE,
         INQUIRY_INTERNAL_DIAGNOSIS,
         INQUIRY_INTAKE_AUTOMATION,
+        HOSPITAL_PHYSICIANS,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -146,6 +148,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         HOSPITAL_FALLBACK_IMAGE: IMAGE_REUSE_MARKER,
         INQUIRY_INTERNAL_DIAGNOSIS: HOSPITAL_FALLBACK_IMAGE,
         INQUIRY_INTAKE_AUTOMATION: INQUIRY_INTERNAL_DIAGNOSIS,
+        HOSPITAL_PHYSICIANS: INQUIRY_INTAKE_AUTOMATION,
     }
 
 
@@ -157,6 +160,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        HOSPITAL_PHYSICIANS,
         INQUIRY_INTAKE_AUTOMATION,
         INQUIRY_INTERNAL_DIAGNOSIS,
         HOSPITAL_FALLBACK_IMAGE,
@@ -191,7 +195,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-26:] == [
+    assert applied[-27:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -218,4 +222,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         HOSPITAL_FALLBACK_IMAGE,
         INQUIRY_INTERNAL_DIAGNOSIS,
         INQUIRY_INTAKE_AUTOMATION,
+        HOSPITAL_PHYSICIANS,
     ]

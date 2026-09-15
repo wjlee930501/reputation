@@ -8,8 +8,8 @@ import {
   buildClinicThemeStyle,
   selectClinicDirectorImage,
 } from '@/lib/clinic-theme'
-import { buildPostalAddress } from '@/lib/clinic-schema'
-import { buildPhysicianCredentials } from '@/lib/schema'
+import { physicianNodeId, resolveClinicPhysicians } from '@/lib/clinic-physicians'
+import { buildPhysicianNode } from '@/lib/schema'
 import { canonicalBase, canonicalHospitalUrl } from '@/lib/site-url'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
@@ -87,47 +87,40 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
 
   const curatedContents = [...contents].sort(sortByCuratorRelevance).slice(0, 6)
 
-  // 자격·학회·전문영역 신뢰축은 랜딩 중첩 Physician과 동일 빌더를 공유한다.
-  const physicianCredentials = buildPhysicianCredentials(hospital)
-
   const base = canonicalBase(hospital, params.slug)
-  const directorImageUrl = selectClinicDirectorImage(hospital)
-  const directorImageAbsoluteUrl = absoluteClinicImageUrl(directorImageUrl, base)
+  const physicians = resolveClinicPhysicians(hospital)
 
   const physicianSameAs = [
     hospital.wikidata_qid ? `https://www.wikidata.org/wiki/${hospital.wikidata_qid}` : null,
   ].filter((value): value is string => Boolean(value))
 
-  // 약력(director_career)에 승인·검수된 진료 철학 서사를 덧붙여 Physician description을 보강한다.
+  // 승인·검수된 진료 철학 서사를 약력 뒤에 덧붙여 Physician description을 보강한다.
   const publicAbout = hospital.public_about?.trim() || null
-  const physicianDescription =
-    [hospital.director_career?.trim() || null, publicAbout].filter(Boolean).join(' ') || undefined
 
-  const physicianJsonLd = {
+  // 의료진마다 독립 Physician 노드를 낸다. 병원은 인라인 복제가 아니라 허브가 소유한
+  // `#clinic` @id를 참조한다 — 같은 엔티티를 두 벌로 주장하면 병합이 깨진다.
+  const physicianJsonLd = physicians.map((physician, index) => ({
     '@context': 'https://schema.org',
-    '@type': 'Physician',
-    '@id': `${hospitalRootUrl}/doctor#physician`,
-    name: hospital.director_name,
-    jobTitle: '원장',
-    description: physicianDescription,
-    image: directorImageAbsoluteUrl || undefined,
-    ...physicianCredentials,
-    sameAs: physicianSameAs.length > 0 ? physicianSameAs : undefined,
-    worksFor: {
-      '@type': 'MedicalClinic',
-      '@id': `${hospitalRootUrl}#clinic`,
-      name: hospital.name,
-      url: hospitalRootUrl,
-      address: buildPostalAddress(hospital.address),
-      telephone: hospital.phone,
-    },
-    url: `${hospitalRootUrl}/doctor`,
+    ...buildPhysicianNode({
+      hospital,
+      physician,
+      hospitalRootUrl,
+      nodeId: physicianNodeId(hospitalRootUrl, physician, index),
+      imageUrl: absoluteClinicImageUrl(physician.photoUrl, base),
+      // 병원 단위 서사는 대표 의료진 한 명에게만 붙인다 — 모든 카드에 같은 문단을
+      // 복제하면 답변 엔진이 서로 다른 사람의 설명으로 인용한다.
+      extraDescription: index === 0 ? publicAbout : null,
+      sameAs: index === 0 ? physicianSameAs : [],
+    }),
+    worksFor: { '@id': `${hospitalRootUrl}#clinic` },
     mainEntityOfPage: `${hospitalRootUrl}/doctor`,
-  }
+  }))
+
+  const physicianNames = physicians.map((physician) => physician.name).join(' · ')
 
   return (
     <>
-      <JsonLd data={[physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
+      <JsonLd data={[...physicianJsonLd, buildBreadcrumbJsonLd(breadcrumbItems, hospitalRootUrl)]} />
       <div className="clinic-shell clinic-shell--editorial" style={buildClinicThemeStyle(hospital)}>
         <ClinicHeader
           hospitalName={hospital.name}
@@ -146,31 +139,21 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
               <Breadcrumb items={breadcrumbItems} />
               <h1 className="clinic-library-hero-title">{hospital.name} 의료진</h1>
               <p className="clinic-library-hero-meta">
-                <strong>{hospital.director_name} 원장</strong>
+                <strong>{physicianNames || hospital.director_name}</strong>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.specialties.join(' · ')}</span>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <span>{hospital.region.join(' ')}</span>
               </p>
-              <p
-                className="clinic-section-lede"
-                style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
-              >
-                {hospital.director_name} 원장의 약력과 진료 영역, 환자 안내 글을 모았습니다.
-              </p>
             </div>
           </section>
 
           <DoctorIntro
-            directorName={hospital.director_name}
-            directorCareer={hospital.director_career}
+            physicians={physicians}
             specialties={hospital.specialties}
             region={hospital.region}
             contentCount={contents.length}
-            boardCertifications={hospital.director_credentials?.board_certifications ?? null}
-            societyMemberships={hospital.director_credentials?.society_memberships ?? null}
             priorityPhoto
-            photos={hospital.photos ?? []}
           />
 
           {curatedContents.length > 0 && (
@@ -210,6 +193,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
           hospitalName={hospital.name}
           directorName={hospital.director_name}
           address={hospital.address}
+          addressDetail={hospital.address_detail}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />

@@ -22,7 +22,7 @@ import anthropic
 from app.core.config import settings
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.services import cost_guard
+from app.services import cost_guard, llm_structured_output
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.essence_engine import effective_safety_policy
 
@@ -112,6 +112,47 @@ UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구�
   "summary": "한 문장 검수 요약"
 }
 """
+
+# 검수 판정의 전송 수단. 위 [출력 형식] 절과 같은 필드 집합이며, 강제 도구 호출로
+# 받으면 message 안의 인용 부호가 파싱을 깨뜨려 판정 전체가 UNAVAILABLE로
+# 떨어지는 일이 없다.
+REVIEW_TOOL_NAME = "report_review"
+REVIEW_TOOL = {
+    "name": REVIEW_TOOL_NAME,
+    "description": "검수 판정을 구조화된 필드로 제출합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "decision": {"type": "string", "enum": ["PASS", "REVISE"]},
+            "confidence": {"type": "number"},
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "severity": {
+                            "type": "string",
+                            "enum": ["HARD", "SOFT", "UNCERTAIN"],
+                        },
+                        "kind": {
+                            "type": "string",
+                            "enum": [
+                                "HOSPITAL_FACT",
+                                "MEDICAL_SAFETY",
+                                "REFERENCE",
+                                "STYLE",
+                            ],
+                        },
+                        "message": {"type": "string"},
+                    },
+                    "required": ["severity", "kind", "message"],
+                },
+            },
+            "summary": {"type": "string"},
+        },
+        "required": ["decision", "confidence", "findings", "summary"],
+    },
+}
 
 
 class ContentAiReviewStatus(StrEnum):
@@ -483,6 +524,16 @@ def _parse_response(
     data = json.loads(clean)
     if not isinstance(data, dict):
         raise ValueError("content reviewer returned a non-object")
+    return _build_review(data, reviewed_content=reviewed_content, model=model)
+
+
+def _build_review(
+    data: dict[str, Any],
+    *,
+    reviewed_content: dict[str, Any] | object | None = None,
+    model: str | None = None,
+) -> ContentAiReview:
+    """판정 규칙. 전송 수단(도구 호출/텍스트)과 무관하게 같은 dict를 받는다."""
 
     raw_findings = data.get("findings")
     if not isinstance(raw_findings, list):
@@ -561,6 +612,24 @@ def _parse_response(
     )
 
 
+def _review_from_response(
+    response: object,
+    *,
+    reviewed_content: dict[str, Any] | object | None = None,
+    model: str | None = None,
+) -> ContentAiReview:
+    """강제 도구 호출이 정상 경로이고, 텍스트는 도구를 쓰지 않는 응답만의 보루다."""
+
+    tool_input = llm_structured_output.tool_use_input(response, tool_name=REVIEW_TOOL_NAME)
+    if tool_input is not None:
+        return _build_review(tool_input, reviewed_content=reviewed_content, model=model)
+    return _parse_response(
+        llm_structured_output.first_text(response),
+        reviewed_content=reviewed_content,
+        model=model,
+    )
+
+
 def _unavailable_review(
     *,
     content: dict[str, Any],
@@ -612,6 +681,8 @@ async def _provider_review(
                         "content": payload,
                     }
                 ],
+                tools=[REVIEW_TOOL],
+                tool_choice={"type": "tool", "name": REVIEW_TOOL_NAME},
             ),
         )
     except Exception as exc:
@@ -650,11 +721,22 @@ async def _provider_review(
         provider_request_id=str(getattr(response, "id", "") or "") or None,
         usage=usage,
     )
+    # 잘린 도구 입력은 findings 배열이 비어 있는 채로 파싱돼 PASS가 된다. 검수가 끝나지
+    # 않았는데 안전 게이트를 여는 셈이므로, 작가 경로(content_engine)와 같게 여기서 끊는다.
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason in {"max_tokens", "refusal"}:
+        logger.warning("Independent content AI review truncated: stop_reason=%s", stop_reason)
+        return _unavailable_review(
+            content=content,
+            model=model,
+            summary="독립 AI 검수 응답이 끝까지 완성되지 않아 결정론적 안전검사만 적용했습니다.",
+            reason=ContentAiReviewUnavailableReason.INVALID_RESPONSE,
+            provider_attempted=True,
+        )
+
     try:
         return replace(
-            _parse_response(
-                response.content[0].text, reviewed_content=content, model=model
-            ),
+            _review_from_response(response, reviewed_content=content, model=model),
             provider_attempted=True,
         )
     except Exception as exc:  # parser failure is advisory-unavailable; HTTP was recorded above

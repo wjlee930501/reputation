@@ -3,6 +3,7 @@
 
 import type { ContentRowState, ContentRowStateKind } from '../types/index.ts'
 import { isCarriedOver } from './content.ts'
+import { SAFE_CAUSE_CODE_MESSAGES } from './operations-center.ts'
 
 export type RowTone = 'good' | 'neutral' | 'warn' | 'paused'
 
@@ -31,12 +32,49 @@ const ROW_STATE_TONES: Record<ContentRowStateKind, RowTone> = {
   closed: 'paused',
 }
 
+const IMMEDIATE_GENERATION_DETAIL =
+  '저장 직후 생성을 요청했습니다 · 실패 시 새벽 스윕이 다시 시도합니다'
+const NIGHTLY_GENERATION_DETAIL =
+  '발행 전날 23:00 자동 생성 · 실패 시 새벽 스윕이 다시 시도합니다'
+
+function isoDay(offsetDays: number, today: string): string {
+  const base = new Date(`${today}T00:00:00Z`)
+  if (Number.isNaN(base.getTime())) return ''
+  base.setUTCDate(base.getUTCDate() + offsetDays)
+  return base.toISOString().slice(0, 10)
+}
+
+/**
+ * 생성 중인 슬롯이 실제로 언제 생성을 요청받았는지.
+ *
+ * 오늘·내일 슬롯은 발행 일정을 저장할 때 서버가 바로 대기열에 넣는다 — 그 슬롯에
+ * "발행 전날 23:00"이라고 쓰면 이미 돌고 있는 일을 아직 시작도 안 한 것처럼 말한다.
+ * 저장된 시도 실패 코드가 있으면 그 사유가 더 구체적이므로 먼저 보여 준다.
+ */
+export function generatingDetail(
+  reason: string | null | undefined,
+  scheduledDate: string | null | undefined,
+  today: string = new Date().toISOString().slice(0, 10),
+): string {
+  const cleaned = reason?.trim() ?? ''
+  if (cleaned) return SAFE_CAUSE_CODE_MESSAGES[cleaned] ?? cleaned
+  const date = scheduledDate?.slice(0, 10) ?? ''
+  const soon = date !== '' && (date <= today || date === isoDay(1, today))
+  return soon ? IMMEDIATE_GENERATION_DETAIL : NIGHTLY_GENERATION_DETAIL
+}
+
 /** 행 하나의 표시값. 라벨은 서버가 준 것을 그대로 쓰고, 없을 때만 같은 표를 읽는다. */
-export function describeRowState(rowState: ContentRowState): RowStateDescription {
+export function describeRowState(
+  rowState: ContentRowState,
+  scheduledDate?: string | null,
+): RowStateDescription {
   const label = rowState.label?.trim() || ROW_STATE_LABELS[rowState.kind]
+  const detail = rowState.kind === 'generating'
+    ? generatingDetail(rowState.reason, scheduledDate)
+    : rowState.reason ?? rowState.link?.next_action ?? null
   return {
     label,
-    detail: rowState.reason ?? rowState.link?.next_action ?? null,
+    detail,
     tone: ROW_STATE_TONES[rowState.kind],
     href: rowState.link?.href ?? null,
   }

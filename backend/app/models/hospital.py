@@ -28,6 +28,7 @@ if TYPE_CHECKING:
         HospitalSourceAsset,
         HospitalSourceEvidenceNote,
     )
+    from app.models.physician import HospitalPhysician
     from app.models.report import MonthlyReport
     from app.models.sov import (
         AIQueryTarget,
@@ -91,6 +92,9 @@ class Hospital(Base):
 
     # ── 연락처 ──────────────────────────────────────────────────────
     address: Mapped[str | None] = mapped_column(String(500))
+    # 층·호 등 상세 주소. 지오코딩은 도로명 주소(`address`)만 사용한다 — 상세 주소를
+    # 붙이면 좌표 조회가 실패한다.
+    address_detail: Mapped[str | None] = mapped_column(String(200))
     phone: Mapped[str | None] = mapped_column(String(50))
     business_hours: Mapped[dict | None] = mapped_column(JSON)
     # 예: {"mon": "09:00-18:00", "tue": "09:00-18:00", ..., "sat": "09:00-13:00", "sun": "휴진"}
@@ -158,6 +162,8 @@ class Hospital(Base):
     )
 
     # ── 원장 정보 ────────────────────────────────────────────────────
+    # 아래 director_* 는 의료진 행(`hospital_physicians`)의 대표 행에서 파생·동기화되는
+    # 병원 단위 표시값이다. 공개 표면·llms.txt·JSON-LD가 계속 읽으므로 유지한다.
     director_name: Mapped[str | None] = mapped_column(String(100))
     director_career: Mapped[str | None] = mapped_column(Text)       # 약력 (마크다운)
     director_philosophy: Mapped[str | None] = mapped_column(Text)   # 진료 철학
@@ -252,6 +258,9 @@ class Hospital(Base):
         back_populates="hospital", cascade="all, delete-orphan"
     )
     content_philosophies: Mapped[list["HospitalContentPhilosophy"]] = relationship(
+        back_populates="hospital", cascade="all, delete-orphan"
+    )
+    physicians: Mapped[list["HospitalPhysician"]] = relationship(
         back_populates="hospital", cascade="all, delete-orphan"
     )
 

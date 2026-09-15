@@ -9,11 +9,13 @@
 
 /** 사실 섹션이 편집하는 칸. backend HospitalProfileUpdate의 같은 이름 필드와 짝이다. */
 export const FACTS_PATCH_FIELDS = [
-  'director_name',
-  'director_career',
+  // 원장 표시값(director_name·director_career)은 서버가 대표 의료진에서 파생한다 —
+  // 폼이 들고 있는 헤더 스냅샷을 되돌려 보내면 방금 바꾼 의료진 목록과 어긋난다.
+  // `physicians`도 여기 없다 — 집합 전체 교체라 목록을 읽은 화면만(physiciansLoaded)
+  // 자기 payload에 실어 보낸다. 아직 못 읽은 화면이 빈 목록으로 지우지 않게 한다.
   'director_philosophy',
-  'director_credentials',
   'address',
+  'address_detail',
   'phone',
   'business_hours',
   'website_url',
@@ -36,11 +38,13 @@ export const FACTS_PATCH_FIELDS = [
   'treatments',
 ] as const
 
-/** 브랜드 섹션이 편집하는 칸. 로고는 업로드가 소유하므로 빠져 있다. */
+/**
+ * 브랜드 섹션이 편집하는 칸. 로고는 업로드가 소유하므로 빠져 있고,
+ * `hero_image_url`은 사진 목록의 '대표 이미지로 지정'이 소유한다.
+ */
 export const BRAND_PATCH_FIELDS = [
   'brand_primary_color',
   'brand_accent_color',
-  'hero_image_url',
   'hero_media_kind',
   'hero_headline',
   'hero_description',

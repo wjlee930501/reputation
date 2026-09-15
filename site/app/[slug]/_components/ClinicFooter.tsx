@@ -1,16 +1,27 @@
+import { fullClinicAddress } from '@/lib/clinic-schema'
+
 import { ExternalIcon, PhoneIcon } from './icons'
 
 interface Props {
   hospitalName: string
   directorName: string
   address: string
+  /** 도로명 주소 뒤 상세 주소(건물명·층·호). 없으면 null. */
+  addressDetail?: string | null
   phone: string
   websiteUrl: string | null
 }
 
 // 병원 허브의 푸터는 병원 명의로만 구성한다 — 플랫폼(MotionLabs) 약관/개인정보 링크는
 // B2B 랜딩 전용이므로 병원 페이지에 노출하지 않는다.
-export function ClinicFooter({ hospitalName, directorName, address, phone, websiteUrl }: Props) {
+export function ClinicFooter({
+  hospitalName,
+  directorName,
+  address,
+  addressDetail = null,
+  phone,
+  websiteUrl,
+}: Props) {
   const year = new Date().getFullYear()
   return (
     <footer className="clinic-footer">
@@ -48,7 +59,7 @@ export function ClinicFooter({ hospitalName, directorName, address, phone, websi
           </div>
           <div className="clinic-footer-col">
             <span className="clinic-footer-col-label">연락처</span>
-            <p className="clinic-footer-meta">{address}</p>
+            <p className="clinic-footer-meta">{fullClinicAddress(address, addressDetail)}</p>
             <p className="clinic-footer-meta">
               대표전화 <a href={`tel:${phone}`}>{phone}</a>
             </p>

@@ -59,6 +59,7 @@ from app.models.operations import (
     OperationRun,
     OperationRunState,
 )
+from app.models.physician import HospitalPhysician
 from app.models.report import MonthlyReport
 from app.models.sov import (
     AIQueryTarget,
@@ -80,6 +81,7 @@ __all__ = [
     "DirectorDelta", "DirectorDeltaSource", "DirectorDeltaStatus",
     "Hospital", "Plan", "HospitalStatus", "DomainManagementMode", "DomainDnsStrategy",
     "HospitalHandoff", "HandoffState", "HandoffSource",
+    "HospitalPhysician",
     "AdminAuditLog", "AdminUser",
     "ContentSchedule", "ContentItem", "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",
     "HospitalSourceAsset", "HospitalSourceEvidenceNote", "HospitalContentPhilosophy",

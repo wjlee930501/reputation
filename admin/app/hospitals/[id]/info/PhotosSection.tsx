@@ -6,12 +6,16 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import { defaultAssetTitles } from '@/lib/asset-title'
 import {
   PHOTO_SOURCE_TYPE_OPTIONS,
+  isFacilityPhotoType,
   isPhotoSourceType,
   photoUploadFormData,
+  publicPhotoAssetUrl,
 } from '@/lib/info-sections'
 import { safeOperatorError } from '@/lib/operations-journey'
 import { PHOTO_PUBLIC_GATE_COPY, describePhotoPublicGate } from '@/lib/photo-public-gate'
 import { formatActorLabel } from '@/lib/actor-display'
+import { physicianUsingPhoto } from '@/lib/physicians'
+import type { Physician } from '@/types'
 import {
   PhotoRightsFields,
   photoRightsReady,
@@ -55,13 +59,26 @@ function photoTypeLabel(source: PhotoSource): string {
 export function PhotosSection({
   hospitalId,
   hospitalName,
+  hospitalSlug,
+  heroImageUrl,
+  physicians,
+  onHeroChanged,
 }: {
   hospitalId: string
   hospitalName: string | null
+  /** 공개 주소의 병원 식별자. 대표 이미지 주소를 만드는 데 쓴다. */
+  hospitalSlug: string
+  heroImageUrl: string | null
+  physicians: Physician[]
+  onHeroChanged: () => void
 }) {
   const [photos, setPhotos] = useState<PhotoSource[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  // 제외한 사진은 목록에서 바로 빼되, 잠시 되돌릴 수 있게 둔다 — 다시 불러 정렬이
+  // 바뀌면 방금 무엇을 눌렀는지 사람이 잃어버린다.
+  const [undoTarget, setUndoTarget] = useState<{ photo: PhotoSource; index: number } | null>(null)
+  const [undoError, setUndoError] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -82,6 +99,38 @@ export function PhotosSection({
     void refresh()
   }, [refresh])
 
+  // 되돌릴 수 있는 시간은 8초. 지나면 안내만 사라지고 제외는 그대로 남는다.
+  useEffect(() => {
+    if (!undoTarget) return
+    const timer = window.setTimeout(() => setUndoTarget(null), 8000)
+    return () => window.clearTimeout(timer)
+  }, [undoTarget])
+
+  function handleExcluded(photo: PhotoSource) {
+    const index = photos.findIndex((row) => row.id === photo.id)
+    setPhotos((prev) => prev.filter((row) => row.id !== photo.id))
+    setUndoError(null)
+    setUndoTarget({ photo, index: index < 0 ? photos.length : index })
+  }
+
+  async function undoExclude() {
+    if (!undoTarget) return
+    const { photo, index } = undoTarget
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${photo.id}/reinclude`, {
+        method: 'POST',
+      })
+      setPhotos((prev) => {
+        const next = [...prev]
+        next.splice(Math.min(index, next.length), 0, photo)
+        return next
+      })
+      setUndoTarget(null)
+    } catch {
+      setUndoError(safeOperatorError('onboarding', '사진 목록을 다시 불러온 뒤 확인하세요.'))
+    }
+  }
+
   return (
     <section
       id="info-photos"
@@ -99,6 +148,19 @@ export function PhotosSection({
       />
 
       {loadError && <p className="text-sm font-semibold text-red-700">{loadError}</p>}
+      {undoTarget && (
+        <p className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+          <span className="truncate">‘{undoTarget.photo.title}’를 제외했습니다.</span>
+          <button
+            type="button"
+            onClick={() => void undoExclude()}
+            className="rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            실행 취소
+          </button>
+        </p>
+      )}
+      {undoError && <p className="text-xs font-semibold text-red-700">{undoError}</p>}
       {loading ? (
         <p className="text-sm text-slate-500">사진 목록을 불러오는 중…</p>
       ) : photos.length === 0 ? (
@@ -111,8 +173,16 @@ export function PhotosSection({
             <PhotoRow
               key={photo.id}
               hospitalId={hospitalId}
+              hospitalSlug={hospitalSlug}
               photo={photo}
+              isHero={
+                heroImageUrl !== null
+                && heroImageUrl === publicPhotoAssetUrl(hospitalSlug, photo.id)
+              }
+              usedBy={physicianUsingPhoto(physicians, photo.id)?.name ?? null}
               onChanged={() => void refresh()}
+              onExcluded={() => handleExcluded(photo)}
+              onHeroChanged={onHeroChanged}
             />
           ))}
         </ul>
@@ -123,12 +193,23 @@ export function PhotosSection({
 
 function PhotoRow({
   hospitalId,
+  hospitalSlug,
   photo,
+  isHero,
+  usedBy,
   onChanged,
+  onExcluded,
+  onHeroChanged,
 }: {
   hospitalId: string
+  hospitalSlug: string
   photo: PhotoSource
+  isHero: boolean
+  /** 이 사진을 쓰는 의료진 이름. 사진 자체가 대표를 정하지 않는다 — 의료진 칸이 정한다. */
+  usedBy: string | null
   onChanged: () => void
+  onExcluded: () => void
+  onHeroChanged: () => void
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -160,9 +241,29 @@ function PhotoRow({
       await fetchAPI(`/admin/hospitals/${hospitalId}/essence/sources/${photo.id}/exclude`, {
         method: 'POST',
       })
-      onChanged()
+      onExcluded()
     } catch {
       setError(safeOperatorError('onboarding', '사진 목록을 다시 불러온 뒤 제외를 다시 누르세요.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 공개 페이지의 대표 이미지를 이 사진으로. 실제 공간 사진만 이 버튼을 가진다. */
+  async function setAsHero() {
+    setBusy(true)
+    setError(null)
+    try {
+      await fetchAPI(`/admin/hospitals/${hospitalId}/profile`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          hero_image_url: publicPhotoAssetUrl(hospitalSlug, photo.id),
+          hero_media_kind: 'VERIFIED_FACILITY',
+        }),
+      })
+      onHeroChanged()
+    } catch {
+      setError(safeOperatorError('onboarding', '대표 이미지 지정을 다시 시도하세요.'))
     } finally {
       setBusy(false)
     }
@@ -175,6 +276,11 @@ function PhotoRow({
           <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-600">
             {photoTypeLabel(photo)}
           </span>
+          {isHero && (
+            <span className="ml-1 rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold text-blue-700">
+              현재 대표 이미지
+            </span>
+          )}
           <p className="mt-1 truncate font-medium text-slate-900" title={photo.title}>
             {fileHref ? (
               <a href={fileHref} target="_blank" rel="noopener" className="underline">
@@ -184,15 +290,32 @@ function PhotoRow({
               photo.title
             )}
           </p>
+          {photo.source_type === 'PHOTO_DOCTOR' && (
+            <p className="mt-0.5 text-xs text-slate-500">
+              {usedBy ? `의료진 ${usedBy} 사진으로 사용 중` : '아직 어느 의료진에도 연결되지 않았습니다'}
+            </p>
+          )}
         </div>
-        <button
-          type="button"
-          onClick={() => void exclude()}
-          disabled={busy}
-          className="min-h-11 shrink-0 rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-        >
-          제외
-        </button>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <button
+            type="button"
+            onClick={() => void exclude()}
+            disabled={busy}
+            className="min-h-11 rounded border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            제외
+          </button>
+          {isFacilityPhotoType(photo.source_type) && !isHero && (
+            <button
+              type="button"
+              onClick={() => void setAsHero()}
+              disabled={busy}
+              className="min-h-11 rounded border border-blue-300 bg-white px-3 text-xs font-semibold text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+            >
+              대표 이미지로 지정
+            </button>
+          )}
+        </div>
       </div>
 
       <label className="flex min-h-11 cursor-pointer items-center gap-2">

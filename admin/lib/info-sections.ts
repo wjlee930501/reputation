@@ -82,6 +82,19 @@ export function isPhotoSourceType(sourceType: string): boolean {
   return PHOTO_SOURCE_TYPE_OPTIONS.some((option) => option.value === sourceType)
 }
 
+/** 원장 사진이 아닌 공간 사진. 공개 페이지의 대표 이미지로 쓸 수 있는 것들이다. */
+export function isFacilityPhotoType(sourceType: string): boolean {
+  return isPhotoSourceType(sourceType) && sourceType !== 'PHOTO_DOCTOR'
+}
+
+/**
+ * 공개 페이지가 읽는 사진 주소. backend `app/api/public/assets.py`의 같은 경로다 —
+ * admin이 보는 `file_access_url`은 운영자 인증이 필요한 주소라 공개 값으로 쓸 수 없다.
+ */
+export function publicPhotoAssetUrl(hospitalSlug: string, sourceId: string): string {
+  return `/api/v1/public/hospitals/${hospitalSlug}/assets/${sourceId}`
+}
+
 /**
  * 허용 용도는 사진 유형에서 나온다 — 사람에게 다시 묻지 않는다.
  *

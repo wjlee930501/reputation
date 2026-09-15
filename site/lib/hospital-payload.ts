@@ -7,11 +7,32 @@ export interface DirectorCredentials {
   society_memberships?: string[] | null
 }
 
+/**
+ * 병원에 소속된 의료진 한 명. 백엔드가 `physicians[]`로 순서대로 내려준다.
+ *
+ * 구버전 ISR 캐시 응답에는 이 필드가 없다 — 그때는 `director_*`에서 한 명을 합성한다
+ * (lib/clinic-physicians.ts). 사진은 이 슬롯에 들어온 값만 쓰며, 생성 인물은 절대
+ * 의료진 신원 자리에 들어가지 않는다.
+ */
+export interface HospitalPhysician {
+  id: string
+  name: string
+  title: string | null
+  specialties: string[]
+  career: string | null
+  credentials: DirectorCredentials | null
+  photo_url: string | null
+  is_representative: boolean
+  display_order: number
+}
+
 export interface Hospital {
   id: string
   name: string
   slug: string
   address: string
+  /** 도로명 주소 뒤에 붙는 상세 주소(건물명·층·호). 없으면 null. */
+  address_detail: string | null
   phone: string
   business_hours: Record<string, string>
   website_url: string | null
@@ -50,6 +71,8 @@ export interface Hospital {
   treatments: Array<{ name: string; description: string }>
   aeo_domain: string | null
   photos: HospitalPhoto[]
+  /** display_order 오름차순. 구버전 응답에는 없으므로 빈 배열로 정규화한다. */
+  physicians: HospitalPhysician[]
 }
 
 export type HospitalPhotoType =
@@ -190,6 +213,21 @@ function isHospitalPhotoPayload(value: unknown): value is HospitalPhoto {
   )
 }
 
+function isHospitalPhysicianPayload(value: unknown): value is HospitalPhysician {
+  if (!isRecord(value)) return false
+  return (
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    isNullableString(value.title ?? null) &&
+    isStringArray(value.specialties ?? []) &&
+    isNullableString(value.career ?? null) &&
+    isDirectorCredentials(value.credentials ?? null) &&
+    isNullableString(value.photo_url ?? null) &&
+    (value.is_representative === undefined || typeof value.is_representative === 'boolean') &&
+    (value.display_order === undefined || typeof value.display_order === 'number')
+  )
+}
+
 function isHospitalPayload(value: unknown): value is HospitalPayload {
   if (!isRecord(value)) return false
   return (
@@ -197,6 +235,11 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     typeof value.name === 'string' &&
     typeof value.slug === 'string' &&
     isNullableString(value.address) &&
+    // address_detail·physicians는 신규 필드 — 구버전 ISR 캐시 응답에 없을 수 있다.
+    (value.address_detail === undefined || isNullableString(value.address_detail)) &&
+    (value.physicians === undefined ||
+      value.physicians === null ||
+      (Array.isArray(value.physicians) && value.physicians.every(isHospitalPhysicianPayload))) &&
     isNullableString(value.phone) &&
     isNullableStringRecord(value.business_hours) &&
     HOSPITAL_EXTERNAL_URL_FIELDS.every((field) => isNullableString(value[field])) &&
@@ -241,6 +284,7 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
   const normalized: Hospital = {
     ...hospital,
     address: hospital.address ?? '',
+    address_detail: normalizeAddressDetail(hospital.address_detail),
     phone: hospital.phone ?? '',
     business_hours: hospital.business_hours ?? {},
     director_name: hospital.director_name ?? '',
@@ -275,5 +319,33 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
   normalized.photos = hospital.photos
     .map((photo) => ({ ...photo, url: resolveAssetUrl(photo.url) }))
     .filter((photo): photo is HospitalPhoto => Boolean(photo.url))
+  normalized.physicians = normalizePhysicians(hospital.physicians)
   return normalized
+}
+
+function normalizeAddressDetail(value: string | null | undefined): string | null {
+  const trimmed = (value ?? '').trim()
+  return trimmed || null
+}
+
+/**
+ * 표시 순서를 백엔드가 준 `display_order`로 고정한다. Array#sort는 안정 정렬이므로
+ * 같은 순번끼리는 API가 준 순서를 그대로 유지한다.
+ */
+function normalizePhysicians(
+  physicians: HospitalPhysician[] | null | undefined,
+): HospitalPhysician[] {
+  return (physicians ?? [])
+    .map((physician, index) => ({
+      ...physician,
+      title: physician.title ?? null,
+      specialties: physician.specialties ?? [],
+      career: physician.career ?? null,
+      credentials: physician.credentials ?? null,
+      photo_url: resolveAssetUrl(physician.photo_url),
+      is_representative: physician.is_representative === true,
+      display_order:
+        typeof physician.display_order === 'number' ? physician.display_order : index,
+    }))
+    .sort((a, b) => a.display_order - b.display_order)
 }

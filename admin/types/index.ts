@@ -71,6 +71,33 @@ export interface ProfileSourceRegistration {
   message?: string | null
 }
 
+/** 의료진 한 명의 자격·경력. 없는 항목은 비워 둔다 — 추정해 채우지 않는다. */
+export interface PhysicianCredentials {
+  medical_school?: string | null
+  board_certifications?: string[]
+  society_memberships?: string[]
+  license_number?: string | null
+}
+
+/**
+ * 병원 공개 페이지에 나가는 의료진 한 명.
+ *
+ * 저장은 집합 전체 교체다 — 폼이 들고 있는 목록이 곧 서버의 목록이 된다.
+ * `director_name`·`director_career`는 서버가 대표 의료진에서 파생하므로 폼이 편집하지 않는다.
+ */
+export interface Physician {
+  id?: string
+  name: string
+  title?: string | null
+  specialties?: string[]
+  career?: string | null
+  credentials?: PhysicianCredentials | null
+  /** 이 병원의 PHOTO_DOCTOR 자료 id. 다른 병원·다른 유형의 사진은 서버가 거절한다. */
+  photo_source_id?: string | null
+  display_order: number
+  is_representative: boolean
+}
+
 export interface Hospital {
   id: string
   name: string
@@ -94,6 +121,8 @@ export interface Hospital {
   schedule_set: boolean
   created_at: string | null
   address?: string
+  /** 층·호 같은 상세 주소. 좌표 변환에는 쓰이지 않는다. */
+  address_detail?: string | null
   phone?: string
   business_hours?: Record<string, string>
   website_url?: string
@@ -124,6 +153,8 @@ export interface Hospital {
   director_name?: string
   director_career?: string
   director_philosophy?: string
+  /** 대표 의료진에서 파생되는 원장명·약력의 원본. 화면은 이 목록만 편집한다. */
+  physicians?: Physician[]
   treatments?: Array<{ name: string; description: string }>
   // 아래 9개는 병원 기본 정보(profile) 편집 폼 전용 필드 — GET /admin/hospitals/{id}는
   // 이미 이 값들을 함께 내려주므로, 헤더 컨텍스트가 같은 응답을 재사용할 수 있게

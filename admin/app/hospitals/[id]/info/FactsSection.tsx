@@ -7,8 +7,11 @@ import {
   findDuplicateChannelUrls,
 } from '@/lib/external-channel-urls'
 import { INFO_SECTION_TITLES } from '@/lib/info-sections'
+import { emptyPhysician } from '@/lib/physicians'
 import type { AutofillFieldMeta } from '@/lib/api'
-import type { ProfileSourceRegistration } from '@/types'
+import type { DoctorPhotoOption } from '@/lib/physicians'
+import type { Physician, ProfileSourceRegistration } from '@/types'
+import { PhysiciansSection } from './PhysiciansSection'
 
 export interface Treatment {
   name: string
@@ -25,10 +28,11 @@ export interface BusinessHours {
  */
 export interface HospitalInfoProfile {
   name: string
-  director_name: string
-  director_career: string
+  /** 대표 의료진에서 서버가 파생한다 — 이 화면은 읽지도 보내지도 않는다. */
   director_philosophy: string
+  physicians: Physician[]
   address: string
+  address_detail: string
   phone: string
   business_hours: BusinessHours
   website_url: string
@@ -204,7 +208,11 @@ export interface FactsSectionProps {
   aiFilled: Record<string, AutofillFieldMeta>
   fieldCls: (fieldKey: string, isAiFilled: boolean) => string
   coordinateNotice: string | null
+  /** 저장은 됐고 좌표만 변환하지 못한 경우. 오류가 아니므로 주소 칸 아래에만 남긴다. */
+  geocodeWarning: string | null
   sourceRegistration: ProfileSourceRegistration[]
+  doctorPhotoOptions: DoctorPhotoOption[]
+  doctorPhotoOptionsError: string | null
   onFieldChange: <K extends keyof HospitalInfoProfile>(key: K, value: HospitalInfoProfile[K]) => void
   onAddressChange: (value: string) => void
   onCoordinateChange: (key: 'latitude' | 'longitude', value: number | null) => void
@@ -215,13 +223,17 @@ export function FactsSection({
   aiFilled,
   fieldCls,
   coordinateNotice,
+  geocodeWarning,
   sourceRegistration,
+  doctorPhotoOptions,
+  doctorPhotoOptionsError,
   onFieldChange,
   onAddressChange,
   onCoordinateChange,
 }: FactsSectionProps) {
   const [weekdayCommonHours, setWeekdayCommonHours] = useState('')
   const treatments = profile.treatments ?? []
+  const physicians = profile.physicians ?? []
   const duplicateChannelUrlWarnings = findDuplicateChannelUrls(profile)
 
   function updateHours(dayKey: string, value: string) {
@@ -258,33 +270,26 @@ export function FactsSection({
       <SectionShell
         section="director"
         description="인터뷰·기고문·소개자료에서 확인한 내용을 근거로 입력합니다. 진료 철학은 출처가 분명한 문장으로 정리해 주세요."
+        action={
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                onFieldChange('physicians', [...physicians, emptyPhysician(physicians.length)])
+              }
+              className="px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-300 rounded-lg hover:bg-blue-50 transition-colors"
+            >
+              + 추가
+            </button>
+          </div>
+        }
       >
-        <div>
-          <label htmlFor="info-director-name" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
-            원장명
-            {aiFilled.director_name && <AiBadge meta={aiFilled.director_name} />}
-          </label>
-          <input
-            type="text"
-            id="info-director-name"
-            value={profile.director_name ?? ''}
-            onChange={(e) => onFieldChange('director_name', e.target.value)}
-            className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('director_name', !!aiFilled.director_name)}`}
-          />
-        </div>
-        <div>
-          <label htmlFor="info-director-career" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
-            약력
-            {aiFilled.director_career && <AiBadge meta={aiFilled.director_career} />}
-          </label>
-          <textarea
-            id="info-director-career"
-            value={profile.director_career ?? ''}
-            onChange={(e) => onFieldChange('director_career', e.target.value)}
-            rows={3}
-            className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none ${fieldCls('director_career', !!aiFilled.director_career)}`}
-          />
-        </div>
+        <PhysiciansSection
+          rows={physicians}
+          photoOptions={doctorPhotoOptions}
+          photoOptionsError={doctorPhotoOptionsError}
+          onChange={(rows) => onFieldChange('physicians', rows)}
+        />
         <div>
           <label htmlFor="info-director-philosophy" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
             진료 철학
@@ -370,6 +375,27 @@ export function FactsSection({
             className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent ${fieldCls('address', !!aiFilled.address)}`}
           />
           {coordinateNotice && <p className="mt-1.5 text-xs text-slate-500">{coordinateNotice}</p>}
+          {geocodeWarning && (
+            <p className="mt-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">
+              {geocodeWarning}
+            </p>
+          )}
+        </div>
+        <div>
+          <label htmlFor="info-address-detail" className="block text-sm font-medium text-slate-700 mb-1.5">
+            상세 주소 (층·호)
+          </label>
+          <input
+            type="text"
+            id="info-address-detail"
+            value={profile.address_detail ?? ''}
+            onChange={(e) => onFieldChange('address_detail', e.target.value)}
+            placeholder="3층 301호"
+            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+          />
+          <p className="mt-1 text-xs text-slate-500">
+            지도 좌표는 위의 도로명 주소만으로 찾습니다. 층·호는 공개 페이지 표시에만 쓰입니다.
+          </p>
         </div>
         <div>
           <label htmlFor="info-phone" className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5">
@@ -523,7 +549,7 @@ export function FactsSection({
         <details className="rounded-lg border border-slate-200 bg-slate-50 p-3">
           <summary className="cursor-pointer text-sm font-semibold text-slate-700">고급 · 위도/경도 직접 수정</summary>
           <p className="mt-2 text-xs leading-5 text-slate-500">
-            주소 저장 시 좌표가 자동 변환됩니다. 자동 변환이 실패했거나 지도에서 직접 확인한 경우에만 수정하세요.
+            위도·경도를 입력하면 주소 자동 변환 대신 이 값을 씁니다. 자동 변환이 실패했거나 지도에서 직접 확인한 경우에만 수정하세요.
           </p>
           <div className="mt-3 grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>

@@ -4,6 +4,7 @@
 - 유형별 프롬프트 분기
 - 의료광고 금지 표현 자동 필터 + 재생성
 """
+import json
 import logging
 import re
 import uuid
@@ -23,6 +24,7 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
+from app.services import llm_structured_output
 from app.services.content_similarity import (
     REFERENCE_TOKEN_MATCH_MIN,
     normalize_topic_text,
@@ -243,6 +245,38 @@ __MANDATORY_SAFETY_RULES__
   "faq_answer_summary": "FAQ 유형일 때만 채움 — 짧고 직접적인 답변 1~2문장(180자 이내). FAQPage rich result에 들어감. 다른 유형은 null."
 }
 """
+
+# 작가 응답의 전송 수단. 프롬프트가 요구하는 필드와 **정확히 같은 집합**이며,
+# 강제 도구 호출로 받으면 ```json fence·본문 안의 이스케이프되지 않은 큰따옴표가
+# 파싱을 깨뜨릴 수 없다. 프롬프트의 [출력 형식 — JSON] 절은 그대로 두어 모델이
+# 필드 의미를 같은 문장으로 읽게 한다.
+ARTICLE_TOOL_NAME = "emit_article"
+ARTICLE_TOOL = {
+    "name": ARTICLE_TOOL_NAME,
+    "description": "작성한 콘텐츠 한 편을 구조화된 필드로 제출합니다.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "body": {"type": "string"},
+            "meta_description": {"type": "string"},
+            "references": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                    },
+                    "required": ["title", "url"],
+                },
+            },
+            "faq_question": {"type": ["string", "null"]},
+            "faq_answer_summary": {"type": ["string", "null"]},
+        },
+        "required": ["title", "body", "meta_description", "references"],
+    },
+}
 
 # 금지 표현 목록과 플랫폼 공통 안전 규칙은 **여기 한 번만** 렌더링한다.
 # 이전에는 같은 목록이 (1) 시스템 프롬프트 하드코딩, (2) 철학 컨텍스트의
@@ -718,7 +752,6 @@ async def _generate_content_attempt(
     Returns: {"title": str, "body": str, "meta_description": str}
     """
     import asyncio
-    import json
 
     profile_ctx = _build_profile_context(hospital)
     philosophy_ctx = _build_philosophy_context(philosophy)
@@ -813,6 +846,8 @@ async def _generate_content_attempt(
                 max_tokens=12000,
                 system=system_blocks,
                 messages=[{"role": "user", "content": user_message}],
+                tools=[ARTICLE_TOOL],
+                tool_choice={"type": "tool", "name": ARTICLE_TOOL_NAME},
             ),
         )
     except Exception:
@@ -870,9 +905,7 @@ async def _generate_content_attempt(
             "줄이고 JSON 객체를 끝까지 닫아 다시 작성하세요."
         )
 
-    raw = response.content[0].text
-
-    result = _parse_json_response(raw, json_module=json)
+    result = _extract_generated_result(response)
 
     _validate_body_length(result.get("body"))
     _validate_unverified_price_claims(result.get("body"))
@@ -1225,6 +1258,21 @@ def _parse_json_response(raw: str, *, json_module) -> dict:
     if not isinstance(result, dict):
         raise ValueError("Claude returned JSON that is not an object")
     return result
+
+
+def _extract_generated_result(response: object) -> dict:
+    """Prefer the forced tool call; fall back to the legacy text transport.
+
+    강제 도구 호출이 정상 경로다. `tool_use.input`은 공급자가 이미 파싱해 보낸
+    dict이므로 fence나 본문 안의 큰따옴표가 파싱을 깨뜨릴 수 없다. 텍스트 경로는
+    도구를 쓰지 않는 예전 응답(과 기존 테스트)만을 위한 보루이며, 여기서도
+    fence 제거까지만 하고 따옴표를 추측해 고치지는 않는다.
+    """
+
+    tool_input = llm_structured_output.tool_use_input(response, tool_name=ARTICLE_TOOL_NAME)
+    if tool_input is not None:
+        return tool_input
+    return _parse_json_response(llm_structured_output.first_text(response), json_module=json)
 
 
 def _trim_or_none(value: object, max_length: int) -> str | None:

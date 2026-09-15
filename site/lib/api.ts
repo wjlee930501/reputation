@@ -2,7 +2,13 @@ import { getApiBase } from './config.ts'
 import { publicFetchInit } from './fetch-policy.ts'
 import { parseHospitalPayload, type Hospital } from './hospital-payload.ts'
 export { resolveAssetUrl } from './hospital-payload.ts'
-export type { DirectorCredentials, Hospital, HospitalPhoto, HospitalPhotoType } from './hospital-payload.ts'
+export type {
+  DirectorCredentials,
+  Hospital,
+  HospitalPhoto,
+  HospitalPhotoType,
+  HospitalPhysician,
+} from './hospital-payload.ts'
 
 // 백엔드 하드캡(le=500)과 동일. 콘텐츠 목록을 요청하는 페이지가 60/200/500 등 서로 다른
 // limit을 넘기면 Next data cache가 URL별로 독립된 키를 만들어(같은 병원인데 캐시가

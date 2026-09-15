@@ -1,5 +1,7 @@
 import Link from 'next/link'
 
+import { fullClinicAddress } from '@/lib/clinic-schema'
+
 import { CalendarIcon, ExternalIcon, GlobeIcon, MapPinIcon, MessageIcon, NavigationIcon, PhoneIcon } from './icons'
 
 interface ChannelLink {
@@ -9,6 +11,8 @@ interface ChannelLink {
 
 interface Props {
   address: string
+  /** 도로명 주소 뒤 상세 주소(건물명·층·호). 없으면 null. */
+  addressDetail?: string | null
   phone: string
   links: ChannelLink[]
   googleMapsUrl: string | null
@@ -43,6 +47,7 @@ const VISIT_CHECKS = [
 
 export function ContactCard({
   address,
+  addressDetail = null,
   phone,
   links,
   googleMapsUrl,
@@ -107,7 +112,9 @@ export function ContactCard({
             <span className="clinic-visit-location-pin" aria-hidden="true"><MapPinIcon /></span>
             <span className="clinic-visit-location-label">병원 위치</span>
             {regionText && <span className="clinic-visit-location-region">{regionText}</span>}
-            <span className="clinic-visit-location-address">{address || '주소 확인 중'}</span>
+            <span className="clinic-visit-location-address">
+              {fullClinicAddress(address, addressDetail) || '주소 확인 중'}
+            </span>
             {googleMapsUrl && (
               <a href={googleMapsUrl} target="_blank" rel="noopener noreferrer" className="clinic-visit-location-link">
                 지도에서 보기

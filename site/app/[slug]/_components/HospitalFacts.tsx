@@ -1,3 +1,5 @@
+import { fullClinicAddress } from '@/lib/clinic-schema'
+
 import { CalendarIcon, MapPinIcon, NavigationIcon, PhoneIcon, StethoscopeIcon } from './icons'
 
 const DAY_LABELS: Record<string, string> = {
@@ -20,6 +22,8 @@ interface OfficialLink {
 interface Props {
   hospitalName: string
   address: string
+  /** 도로명 주소 뒤 상세 주소(건물명·층·호). 없으면 null. */
+  addressDetail?: string | null
   phone: string
   businessHours: Record<string, string> | null | undefined
   region: string[]
@@ -44,6 +48,7 @@ function isClosed(time: string): boolean {
 export function HospitalFacts({
   hospitalName,
   address,
+  addressDetail = null,
   phone,
   businessHours,
   region,
@@ -118,7 +123,9 @@ export function HospitalFacts({
           <div className="clinic-keyfact">
             <span className="clinic-keyfact-icon"><MapPinIcon aria-hidden="true" /></span>
             <span className="clinic-keyfact-label">주소</span>
-            <span className="clinic-keyfact-value">{address || '주소 확인 중'}</span>
+            <span className="clinic-keyfact-value">
+              {fullClinicAddress(address, addressDetail) || '주소 확인 중'}
+            </span>
             {googleMapsUrl && (
               <a className="clinic-keyfact-link" href={googleMapsUrl} target="_blank" rel="noopener noreferrer">
                 <NavigationIcon className="clinic-icon clinic-icon--sm" style={{ color: 'currentColor' }} />

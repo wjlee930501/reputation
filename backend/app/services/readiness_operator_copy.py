@@ -6,9 +6,17 @@ from collections.abc import Mapping
 
 
 def readiness_next_actions(
-    *, has_content_slots: bool = False, withheld_content_count: int = 0
+    *,
+    has_content_slots: bool = False,
+    withheld_content_count: int = 0,
+    processing_source_count: int = 0,
 ) -> Mapping[str, str]:
     """Describe impact and controls that exist in the current Admin state."""
+    # 자료 처리는 저장과 함께 자동으로 시작된다 — 운영자가 누를 버튼이 없다(ADM-06).
+    # 남은 건수를 알면 "기다리면 되는 상태"인지 바로 알 수 있으므로 함께 말한다.
+    essence_sources_progress = (
+        f" 처리 중 {processing_source_count}건." if processing_source_count > 0 else ""
+    )
     return {
         "core_profile": (
             "필수 병원 정보가 비어 있으면 온보딩과 콘텐츠 준비가 멈춥니다. 병원 정보 탭에서 "
@@ -24,7 +32,8 @@ def readiness_next_actions(
         ),
         "essence_sources": (
             "근거 자료 처리가 끝나지 않으면 콘텐츠 운영 기준을 만들 수 없습니다. 병원 정보 탭의 "
-            "근거 자료에서 “자료 저장” 후 각 자료의 “근거 추출”을 누르세요."
+            "근거 자료를 저장하면 자동으로 처리됩니다. 처리가 끝나면 발행 일정을 저장할 수 "
+            f"있습니다.{essence_sources_progress}"
         ),
         "essence_philosophy": (
             "운영 기준 자동 승인이 완료되지 않으면 콘텐츠 발행이 차단됩니다. 현황 탭의 예외 카드에서 "

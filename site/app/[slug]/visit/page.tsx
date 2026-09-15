@@ -4,17 +4,17 @@ import { notFound } from 'next/navigation'
 import { fetchHospital, HospitalNotFoundError } from '@/lib/api'
 import { buildOpeningHoursSpec, visitHoursHref } from '@/lib/business-hours'
 import { clinicGalleryPolicy } from '@/lib/clinic-design'
-import { buildPostalAddress } from '@/lib/clinic-schema'
+import { buildPostalAddress, fullClinicAddress } from '@/lib/clinic-schema'
 import { buildClinicThemeStyle } from '@/lib/clinic-theme'
 import { canonicalHospitalUrl } from '@/lib/site-url'
 import { selectVisitFacilityPhotos } from '@/lib/visit-photos'
 
 import { Breadcrumb, buildBreadcrumbJsonLd } from '../_components/Breadcrumb'
 import { ClinicFooter } from '../_components/ClinicFooter'
-import { ClinicGallery } from '../_components/ClinicGallery'
 import { ClinicHeader } from '../_components/ClinicHeader'
 import { ContactCard } from '../_components/ContactCard'
 import { JsonLd } from '../_components/JsonLd'
+import { VisitGallery } from '../_components/VisitGallery'
 import { VisitHoursTable } from '../_components/VisitHoursTable'
 
 interface Props {
@@ -86,7 +86,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
     // 같은 @id로 병합되는 노드끼리 엔티티 필드가 어긋나지 않도록 허브 페이지와 같은 값.
     logo: hospital.logo_url ?? undefined,
     mainEntityOfPage: `${hospitalRootUrl}/visit`,
-    address: buildPostalAddress(hospital.address),
+    address: buildPostalAddress(hospital.address, hospital.address_detail),
     telephone: hospital.phone,
     medicalSpecialty: hospital.specialties,
     openingHoursSpecification: buildOpeningHoursSpec(hospital.business_hours),
@@ -128,7 +128,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
               <span className="clinic-section-label">진료 안내</span>
               <h1 className="clinic-library-hero-title">{hospital.name} 진료 안내</h1>
               <p className="clinic-library-hero-meta">
-                <strong>{hospital.address}</strong>
+                <strong>{fullClinicAddress(hospital.address, hospital.address_detail)}</strong>
                 <span className="clinic-library-divider-dot" aria-hidden="true" />
                 <a
                   href={`tel:${hospital.phone}`}
@@ -153,6 +153,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
           />
           <ContactCard
             address={hospital.address}
+            addressDetail={hospital.address_detail}
             phone={hospital.phone}
             googleMapsUrl={hospital.google_maps_url}
             links={externalChannels}
@@ -162,12 +163,13 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
             websiteUrl={hospital.website_url}
             hoursHref={visitHoursHref(hospitalRootUrl, true)}
           />
-          <ClinicGallery photos={facilityPhotos} policy={clinicGalleryPolicy('visit')} />
+          <VisitGallery photos={facilityPhotos} policy={clinicGalleryPolicy('visit')} />
         </main>
         <ClinicFooter
           hospitalName={hospital.name}
           directorName={hospital.director_name}
           address={hospital.address}
+          addressDetail={hospital.address_detail}
           phone={hospital.phone}
           websiteUrl={hospital.website_url}
         />

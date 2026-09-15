@@ -43,6 +43,13 @@ class SourceRegistrationItem(BaseModel):
     message: Optional[str] = None
 
 
+class GeocodeWarning(BaseModel):
+    """주소는 저장됐지만 좌표를 갱신하지 못했다는 사실. 좌표는 종전 값 그대로다."""
+
+    code: Literal["ADDRESS_GEOCODE_FAILED"]
+    message: str
+
+
 class HospitalItemBase(BaseModel):
     id: str
     name: str
@@ -86,6 +93,8 @@ class HospitalDetail(HospitalItemBase):
     missing_profile_requirements: list[ProfileRequirementItem]
     onboarding_note: Optional[str] = None
     address: Optional[str]
+    # 층·호 등 상세 주소. 좌표 조회에는 쓰지 않는다.
+    address_detail: Optional[str] = None
     phone: Optional[str]
     business_hours: Optional[Any]
     website_url: Optional[str]
@@ -127,3 +136,5 @@ class HospitalDetail(HospitalItemBase):
     treatments: list
     # 이번 저장이 등록·건너뜀·실패한 자료. 다른 조회 응답에는 없다.
     source_registration: Optional[list[SourceRegistrationItem]] = None
+    # 주소는 저장했지만 좌표를 찾지 못했을 때만 실린다. 저장 실패가 아니다(ADM-05).
+    geocode_warning: Optional[GeocodeWarning] = None

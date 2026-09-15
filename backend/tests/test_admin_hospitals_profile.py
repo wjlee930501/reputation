@@ -35,6 +35,9 @@ class FakeDB:
             scalar_one=lambda: None,
             scalar=lambda: None,
             scalar_one_or_none=lambda: self.handoff,
+            # 의료진 조회(기존 행 없음·사진 없음)도 이 fake로 온다.
+            all=lambda: [],
+            scalars=lambda: SimpleNamespace(all=lambda: []),
         )
 
     async def get(self, model, object_id):
@@ -208,7 +211,8 @@ async def test_address_change_geocodes_once_and_persists_coordinates(monkeypatch
     assert result["latitude"] == 37.566535
 
 
-async def test_address_geocode_failure_is_concrete_and_does_not_save(monkeypatch):
+async def test_address_geocode_failure_saves_and_warns_without_touching_coordinates(monkeypatch):
+    """좌표 조회 실패는 주소 저장을 되돌릴 이유가 아니다 — 저장하고 사실만 알린다(ADM-05)."""
     hospital = _hospital()
     db = FakeDB(hospital)
 
@@ -217,18 +221,71 @@ async def test_address_geocode_failure_is_concrete_and_does_not_save(monkeypatch
 
     monkeypatch.setattr(hospitals_api, "geocode_address", fail_geocode)
 
-    with pytest.raises(HTTPException) as exc:
-        await hospitals_api.update_profile(
-            hospital.id,
-            hospitals_api.HospitalProfileUpdate(address="잘못된 주소"),
-            BackgroundTasks(),
-            db=db,
-        )
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(address="잘못된 주소"),
+        BackgroundTasks(),
+        db=db,
+    )
 
-    assert exc.value.status_code == 422
-    assert exc.value.detail["code"] == "ADDRESS_GEOCODE_FAILED"
-    assert "좌표를 찾지 못했습니다" in exc.value.detail["message"]
-    assert db.committed is False
+    assert db.committed is True
+    assert hospital.address == "잘못된 주소"
+    # 좌표는 건드리지 않는다 — 실패한 조회가 기존 값을 지우지 않는다.
+    assert hospital.latitude == 37.5
+    assert hospital.longitude == 127.0
+    assert result["geocode_warning"]["code"] == "ADDRESS_GEOCODE_FAILED"
+    assert "좌표를 찾지 못했습니다" in result["geocode_warning"]["message"]
+
+
+async def test_manual_coordinates_with_address_change_skip_geocoding(monkeypatch):
+    """같은 요청의 직접 입력 좌표가 이긴다 — geocode_address 기본값이어도 덮어쓰지 않는다(ADM-04)."""
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    async def unexpected_geocode(_address):
+        raise AssertionError("manual coordinates must not call the provider")
+
+    monkeypatch.setattr(hospitals_api, "geocode_address", unexpected_geocode)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            address="서울 중구 세종대로 110",
+            latitude=37.2,
+            longitude=127.2,
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.latitude == 37.2
+    assert hospital.longitude == 127.2
+    assert "geocode_warning" not in result
+
+
+async def test_address_detail_is_saved_and_never_geocoded(monkeypatch):
+    hospital = _hospital()
+    db = FakeDB(hospital)
+    calls = []
+
+    async def fake_geocode(address):
+        calls.append(address)
+        return GeocodeResult(37.566535, 126.977969)
+
+    monkeypatch.setattr(hospitals_api, "geocode_address", fake_geocode)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            address="서울 중구 세종대로 110", address_detail="3층 302호"
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert calls == ["서울 중구 세종대로 110"]
+    assert hospital.address_detail == "3층 302호"
+    assert result["address_detail"] == "3층 302호"
 
 
 async def test_advanced_manual_coordinates_skip_address_geocode(monkeypatch):
@@ -254,6 +311,88 @@ async def test_advanced_manual_coordinates_skip_address_geocode(monkeypatch):
 
     assert hospital.latitude == 37.1
     assert hospital.longitude == 127.1
+
+
+async def test_physicians_replace_the_set_and_sync_the_hospital_director_columns():
+    """공동원장은 행으로 저장하고, 공개 표면이 읽는 director_* 는 대표 행에서 파생한다."""
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    result = await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(
+            physicians=[
+                {
+                    "name": "김성열",
+                    "title": "대표원장",
+                    "career": "외과 전문의",
+                    "is_representative": True,
+                    "credentials": {"medical_school": "서울대학교 의과대학"},
+                },
+                {
+                    "name": "전상훈",
+                    "title": "대표원장",
+                    "career": "흉부외과 전문의",
+                    "display_order": 1,
+                    "is_representative": True,
+                },
+            ]
+        ),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    physician_rows = [row for row in db.added if hasattr(row, "name")]
+    assert [row.name for row in physician_rows] == ["김성열", "전상훈"]
+    assert hospital.director_name == "김성열 · 전상훈"
+    assert hospital.director_career == (
+        "[대표원장 김성열] 외과 전문의\n[대표원장 전상훈] 흉부외과 전문의"
+    )
+    assert hospital.director_credentials["medical_school"] == "서울대학교 의과대학"
+    # 진료 철학은 의료진 행에 없는 값이라 건드리지 않는다.
+    assert hospital.director_philosophy == "충분히 설명합니다."
+    assert result["director_name"] == "김성열 · 전상훈"
+    assert db.committed is True
+
+
+HERO_ASSET_PATH = (
+    "/api/v1/public/hospitals/test-clinic/assets/6d613ede-1748-47cd-8ecb-7f8e5adbfb05"
+)
+
+
+async def test_hero_image_accepts_the_public_asset_path_the_admin_button_sends():
+    """'대표 이미지로 지정'은 절대 URL이 아니라 이 상대 경로를 보낸다 — 422가 되면 안 된다."""
+    hospital = _hospital()
+    db = FakeDB(hospital)
+
+    await hospitals_api.update_profile(
+        hospital.id,
+        hospitals_api.HospitalProfileUpdate(hero_image_url=HERO_ASSET_PATH),
+        BackgroundTasks(),
+        db=db,
+    )
+
+    assert hospital.hero_image_url == HERO_ASSET_PATH
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "/api/v1/public/hospitals/../../x/assets/6d613ede-1748-47cd-8ecb-7f8e5adbfb05",
+        "//evil.example.com/api/v1/public/hospitals/x/assets/y",
+        "/api/v1/public/hospitals/test-clinic/assets/not-a-uuid",
+        "/static/hero.png",
+    ],
+)
+def test_hero_image_rejects_paths_outside_the_public_asset_route(value):
+    with pytest.raises(ValueError):
+        hospitals_api.HospitalProfileUpdate(hero_image_url=value)
+
+
+def test_hero_image_still_accepts_absolute_http_urls():
+    body = hospitals_api.HospitalProfileUpdate(hero_image_url="https://cdn.example.com/hero.png")
+
+    assert body.hero_image_url == "https://cdn.example.com/hero.png"
 
 
 def test_list_serializer_includes_custom_domain_for_admin_search():

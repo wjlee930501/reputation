@@ -368,6 +368,92 @@ def test_serialize_hospital_rejects_editorial_character_as_doctor_identity():
     assert serialized["photos"][0]["asset_kind"] == "EDITORIAL_GRAPHIC"
 
 
+def _physician(**overrides):
+    base = {
+        "id": "physician-id",
+        "name": "김성열",
+        "title": "대표원장",
+        "specialties": ["대장항문외과"],
+        "career": "외과 전문의",
+        "credentials": {"medical_school": "서울대학교 의과대학", "license_number": "12345"},
+        "photo_source_id": None,
+        "display_order": 0,
+        "is_representative": True,
+        "created_at": datetime(2026, 1, 1),
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_serialize_hospital_exposes_physicians_in_display_order():
+    hospital = _hospital_with_photo(None)
+    hospital.physicians = [
+        _physician(id="second", name="전상훈", display_order=1, is_representative=False),
+        _physician(id="first", name="김성열", display_order=0),
+    ]
+
+    serialized = _serialize_hospital(hospital, [])
+
+    assert [item["name"] for item in serialized["physicians"]] == ["김성열", "전상훈"]
+    assert serialized["physicians"][0]["title"] == "대표원장"
+    assert serialized["physicians"][0]["specialties"] == ["대장항문외과"]
+    # 공개 표면은 면허번호를 내보내지 않는다 — director_credentials와 같은 필터를 쓴다.
+    assert "license_number" not in serialized["physicians"][0]["credentials"]
+    assert serialized["physicians"][0]["photo_url"] is None
+
+
+def test_representative_physician_photo_wins_over_the_latest_verified_asset():
+    hospital = _hospital_with_photo(None)
+    hospital.physicians = [_physician(photo_source_id="asset-id")]
+
+    serialized = _serialize_hospital(hospital, [_doctor_photo_asset()])
+
+    assert serialized["physicians"][0]["photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/asset-id"
+    )
+    assert serialized["director_photo_url"] == serialized["physicians"][0]["photo_url"]
+
+
+def test_physician_photo_without_doctor_identity_approval_is_dropped():
+    """연결만으로는 부족하다 — 원장 identity 승인이 없는 사진은 내보내지 않는다."""
+    editorial = SimpleNamespace(
+        id="character-id",
+        source_type=SourceType.PHOTO_DOCTOR,
+        title="원장 캐릭터 일러스트",
+        file_url="gs://bucket/character.png",
+        source_metadata={
+            "asset_kind": "EDITORIAL_GRAPHIC",
+            "approved_usage": ["CONTENT_EDITORIAL"],
+        },
+    )
+    hospital = _hospital_with_photo(None)
+    hospital.physicians = [_physician(photo_source_id="character-id")]
+
+    serialized = _serialize_hospital(hospital, [editorial])
+
+    assert serialized["physicians"][0]["photo_url"] is None
+    assert serialized["director_photo_url"] is None
+
+
+def test_director_photo_falls_back_to_legacy_selection_without_physician_link():
+    """백필된 병원은 사진 연결이 비어 있다 — 종전의 최신 인증 사진 선택을 유지한다."""
+    hospital = _hospital_with_photo(None)
+    hospital.physicians = [_physician(photo_source_id=None)]
+
+    serialized = _serialize_hospital(hospital, [_doctor_photo_asset()])
+
+    assert serialized["director_photo_url"] == (
+        "/api/v1/public/hospitals/test-hospital/assets/asset-id"
+    )
+
+
+def test_serialize_hospital_without_physicians_returns_an_empty_list():
+    serialized = _serialize_hospital(_hospital_with_photo(None), [])
+
+    assert serialized["physicians"] == []
+    assert serialized["address_detail"] is None
+
+
 def test_serialize_item_list_response_includes_reading_minutes_without_body():
     item = SimpleNamespace(
         id="content-id",
@@ -902,3 +988,26 @@ def test_serialize_hospital_summary_drops_treatments_with_forbidden_expressions(
     assert summary["treatments"] == [
         {"name": "치질 수술", "description": "회복 기간을 안내합니다."}
     ]
+
+
+def test_hero_url_accepts_the_relative_public_asset_path_the_admin_stores():
+    """관리자 '대표 이미지로 지정'은 공개 자산 상대 경로를 저장한다 — 외부 URL 검사에 걸려
+    지정한 대표 이미지가 사라지면 안 된다. 그 밖의 상대 경로·비HTTP 값은 종전처럼 버린다."""
+
+    from app.api.public.site import _safe_hero_url
+
+    relative = "/api/v1/public/hospitals/test-clinic/assets/6d613ede-1748-47cd-8ecb-7f8e5adbfb05"
+    assert _safe_hero_url(relative) == relative
+    assert _safe_hero_url("https://cdn.example.com/hero.png") == "https://cdn.example.com/hero.png"
+    assert _safe_hero_url("/static/hero.png") is None
+    assert _safe_hero_url("javascript:alert(1)") is None
+    assert _safe_hero_url("") is None
+    # 접두사·부분 문자열 검사였다면 통과했을 모양들.
+    assert (
+        _safe_hero_url(
+            "/api/v1/public/hospitals/../../x/assets/6d613ede-1748-47cd-8ecb-7f8e5adbfb05"
+        )
+        is None
+    )
+    assert _safe_hero_url("//evil.example.com/api/v1/public/hospitals/x/assets/y") is None
+    assert _safe_hero_url("/api/v1/public/hospitals/test-clinic/assets/not-a-uuid") is None
