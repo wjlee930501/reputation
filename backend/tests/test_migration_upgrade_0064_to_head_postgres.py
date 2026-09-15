@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
@@ -32,6 +34,17 @@ def _async_url(value: str) -> str:
         if value.startswith(prefix):
             return "postgresql+asyncpg://" + value[len(prefix) :]
     return value
+
+
+def _current_head() -> str:
+    """리비전 리터럴을 박아 두면 마이그레이션이 하나 늘 때마다 이 테스트가 깨진다 —
+    체인의 실제 head를 alembic에서 읽는다(선형성은 test_migration_chain_linearity가 검증)."""
+
+    config = Config()
+    config.set_main_option("script_location", str(_BACKEND_ROOT / "alembic"))
+    head = ScriptDirectory.from_config(config).get_current_head()
+    assert head is not None
+    return head
 
 
 def _upgrade(revision: str, database_url: str) -> None:
@@ -210,8 +223,9 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
         _upgrade("head", _URL)
 
         with engine.connect() as connection:
-            assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-                "0076_inquiry_internal_diagnosis"
+            assert (
+                connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+                == _current_head()
             )
             base = connection.execute(
                 text(
