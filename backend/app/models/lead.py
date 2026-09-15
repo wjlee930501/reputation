@@ -11,6 +11,10 @@ from app.core.database import Base
 LEAD_SOURCE_INQUIRY = "INQUIRY"
 LEAD_SOURCE_AI_DIAGNOSIS = "AI_DIAGNOSIS"
 
+# 도입문의 폼이 clinic_type에 심는 표식. `source`가 없던 시절의 리드를 가려내는 근거이자
+# Admin 목록이 도입문의 배지·상세 카드를 띄우는 판정값이라, 나중 단계가 덮어쓰면 안 된다.
+LEAD_CLINIC_TYPE_INQUIRY_MARKER = "도입문의"
+
 
 def is_internal_inquiry(lead: "SalesLead | None") -> bool:
     """Whether a lead report is sales-only and must never enter customer delivery."""
@@ -18,7 +22,7 @@ def is_internal_inquiry(lead: "SalesLead | None") -> bool:
         return False
     return (
         (lead.source or "").strip().upper() == LEAD_SOURCE_INQUIRY
-        or (lead.clinic_type or "").strip() == "도입문의"
+        or (lead.clinic_type or "").strip() == LEAD_CLINIC_TYPE_INQUIRY_MARKER
     )
 
 
