@@ -689,7 +689,9 @@ export default function LeadsPage() {
                                   <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
                                     <p className="text-xs font-semibold text-blue-800">복구 작업 진행 중</p>
                                     <p className="mt-1 text-xs leading-5 text-slate-600">
-                                      신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.
+                                      {isIntroductionInquiry(lead) && diagnosis.delivery_status === 'INTERNAL'
+                                        ? '콜용 보고서가 아직 없습니다. 완료 여부를 자동으로 확인하고 있습니다.'
+                                        : '신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.'}
                                     </p>
                                     <Link href="/operations" className="mt-2 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 hover:underline">
                                       운영 센터에서 상세 확인

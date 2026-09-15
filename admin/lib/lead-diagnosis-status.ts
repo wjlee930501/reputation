@@ -188,7 +188,10 @@ export function recoveryAction(
         kind: 'support',
         enabled: false,
         label: '개발팀 확인 필요',
-        description: '이미 준비되었거나 고객에게 발송된 보고서가 있어 자동 재측정으로 바꿀 수 없습니다.',
+        description:
+          diagnosis.delivery_status === 'INTERNAL'
+            ? '이미 만들어진 콜용 보고서가 있어 자동 재측정으로 바꿀 수 없습니다.'
+            : '이미 준비되었거나 고객에게 발송된 보고서가 있어 자동 재측정으로 바꿀 수 없습니다.',
         run: measurementRun,
       }
     }
@@ -239,10 +242,14 @@ export function recoveryAction(
  */
 export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
   if (diagnosis.report_status === 'PURGED') return '개인정보가 파기된 진단입니다.'
+  // 콜용(내부 보관) 진단에는 고객 발송 단계가 없다. 목록의 「콜용 / 고객 미발송」과 같은 말로,
+  // 신청자에게 무엇이 갔는지가 아니라 AE가 콜에 쓸 보고서가 있는지만 말한다.
   if (diagnosis.delivery_status === 'INTERNAL') {
-    return diagnosis.report_status === 'READY'
-      ? '영업 검토용 보고서가 준비됐습니다. 고객에게는 발송되지 않습니다.'
-      : '영업 검토용으로 생성 중이며 고객에게는 발송되지 않습니다.'
+    if (diagnosis.report_status === 'READY') return '콜용 보고서가 준비됐습니다.'
+    if (diagnosis.execution_status === 'FAILED' || diagnosis.report_status === 'BLOCKED') {
+      return '콜용 보고서를 만들지 못했습니다.'
+    }
+    return '콜용 보고서를 만들고 있습니다.'
   }
   if (diagnosis.execution_status === 'FAILED') {
     return '측정이 다시 실패해 보고서를 만들지 못했습니다.'

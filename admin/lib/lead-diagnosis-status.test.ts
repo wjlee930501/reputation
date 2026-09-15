@@ -128,7 +128,41 @@ test('an internal inquiry diagnosis has no customer retry or free-lock action', 
   const diagnosis = make({ delivery_status: 'INTERNAL' })
   assert.equal(canRetryDelivery(diagnosis), false)
   assert.equal(canReleaseLock(diagnosis), false)
-  assert.match(diagnosisHint(diagnosis), /고객에게는 발송되지 않습니다/)
+  assert.match(diagnosisHint(diagnosis), /콜용 보고서/)
+})
+
+test('콜용 진단의 한 줄은 상태만 말하고 고객 전달을 말하지 않는다', () => {
+  // 이 행은 처음부터 고객에게 나가지 않는다 — 신청자에게 무엇이 갔는지 말하면 AE가 잘못 읽는다.
+  const hints = [
+    diagnosisHint(make({ delivery_status: 'INTERNAL' })),
+    diagnosisHint(make({ delivery_status: 'INTERNAL', report_status: 'PENDING' })),
+    diagnosisHint(
+      make({ delivery_status: 'INTERNAL', execution_status: 'FAILED', report_status: 'PENDING' }),
+    ),
+    diagnosisHint(make({ delivery_status: 'INTERNAL', report_status: 'BLOCKED' })),
+  ]
+  for (const hint of hints) {
+    assert.match(hint, /콜용 보고서/)
+    assert.doesNotMatch(hint, /신청자|발송|전달/)
+  }
+  assert.match(hints[2], /만들지 못했습니다/)
+  assert.match(hints[3], /만들지 못했습니다/)
+})
+
+test('콜용 진단의 개발팀 안내는 고객 발송 이력을 이유로 들지 않는다', () => {
+  const action = recoveryAction(
+    make({ delivery_status: 'INTERNAL', execution_status: 'FAILED', report_status: 'READY' }),
+  )
+  assert.equal(action?.kind, 'support')
+  assert.match(action?.description ?? '', /콜용 보고서/)
+  assert.doesNotMatch(action?.description ?? '', /고객에게 발송|신청자/)
+})
+
+test('도입문의 진단의 복구 진행 문구는 고객 전달을 말하지 않는다', () => {
+  assert.match(
+    LEADS_PAGE,
+    /isIntroductionInquiry\(lead\) && diagnosis\.delivery_status === 'INTERNAL'\s*\n?\s*\? '콜용 보고서가 아직 없습니다/,
+  )
 })
 
 test('the inquiry row exposes internal generation and explicitly guards retry', () => {
