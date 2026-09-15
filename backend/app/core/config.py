@@ -97,6 +97,7 @@ class Settings(BaseSettings):
                 "LEAD_REPORT_TOKEN_SECRET", self.LEAD_REPORT_TOKEN_SECRET
             )
             self.RESEND_API_KEY = _resolve_secret("RESEND_API_KEY", self.RESEND_API_KEY)
+            self.NHN_SMS_SECRET_KEY = _resolve_secret("NHN_SMS_SECRET_KEY", self.NHN_SMS_SECRET_KEY)
             self._fail_if_critical_production_secrets_empty()
             self._validate_production_config()
             self._warn_if_production_flow_config_incomplete()
@@ -526,6 +527,18 @@ class Settings(BaseSettings):
     # 리포트 발송 (Resend). 비어 있으면 발송을 시도하지 않고 delivery 행에 사유를 남긴다 —
     # 조용히 성공 처리하면 "발송 완료"인데 아무도 못 받는 상태가 된다.
     RESEND_API_KEY: str = ""
+    # 도입문의 접수 직후 원장 휴대전화로 나가는 안내 문자(LMS). NHN Cloud Notification SMS.
+    # INQUIRY_SMS_PROVIDER가 비어 있으면 발송을 시도하지 않고 리드에 SKIPPED 사유를 남긴다 —
+    # 조용히 성공 처리하면 "문자 발송됨"인데 원장은 아무것도 못 받은 상태가 된다.
+    INQUIRY_SMS_PROVIDER: str = ""  # "" | "nhn"
+    NHN_SMS_APP_KEY: str = ""
+    NHN_SMS_SECRET_KEY: str = ""
+    NHN_SMS_API_BASE: str = "https://api-sms.cloud.toast.com"
+    # 발신번호 — 마케팅팀 김효진 팀장. NHN Cloud 콘솔에 사전 등록된 번호여야 한다.
+    INQUIRY_SMS_SENDER_NO: str = "010-2492-8543"
+    INQUIRY_SMS_TIMEOUT_SECONDS: float = 8.0
+    # 같은 번호로 이 시간 안에 다시 접수돼도 문자는 한 번만 보낸다(중복 제출·재시도 보호).
+    INQUIRY_SMS_DEDUP_HOURS: int = 6
     LEAD_MAIL_FROM: str = "Re:putation <noreply@reputation.motionlabs.kr>"
     LEAD_MAIL_REPLY_TO: str = ""
 

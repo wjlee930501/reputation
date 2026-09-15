@@ -7,6 +7,7 @@ the FastAPI request lifecycle.
 from types import SimpleNamespace
 
 import pytest
+from fastapi import BackgroundTasks
 
 from app.api.public import leads as leads_api
 from app.models.lead import SalesLead
@@ -65,7 +66,9 @@ async def test_create_lead_persists_with_retention_and_consent(monkeypatch):
         privacy=True,
         source_path="/",
     )
-    response = await _create_lead(request=FakeRequest(forwarded="203.0.113.7"), body=body, db=db)
+    response = await _create_lead(
+        request=FakeRequest(forwarded="203.0.113.7"), body=body, background_tasks=BackgroundTasks(), db=db
+    )
 
     assert response["ok"] is True
     lead = db.added[0]
@@ -97,7 +100,7 @@ async def test_create_lead_records_notification_failure(monkeypatch):
         question="치질 수술 회복 기간은?",
         privacy=True,
     )
-    await _create_lead(request=FakeRequest(), body=body, db=db)
+    await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
 
     assert db.added[0].notification_status == "FAILED"
     assert "Slack/webhook" in db.added[0].notification_error
@@ -120,6 +123,7 @@ async def test_create_lead_ignores_forwarded_ip_from_untrusted_remote(monkeypatc
     await _create_lead(
         request=FakeRequest(ip="198.51.100.4", forwarded="203.0.113.7"),
         body=body,
+        background_tasks=BackgroundTasks(),
         db=db,
     )
 
@@ -136,7 +140,7 @@ async def test_create_lead_rejects_missing_privacy_consent():
         privacy=False,
     )
     with pytest.raises(leads_api.HTTPException) as exc:
-        await _create_lead(request=FakeRequest(), body=body, db=db)
+        await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
     assert exc.value.status_code == 400
 
 
@@ -151,7 +155,7 @@ async def test_create_lead_silently_drops_honeypot_filled():
         privacy=True,
         website="http://attacker.example.com",
     )
-    response = await _create_lead(request=FakeRequest(), body=body, db=db)
+    response = await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
     assert response["ok"] is True
     assert response["lead_id"] is None
     assert db.added == []
@@ -168,7 +172,7 @@ async def test_create_lead_silently_drops_url_honeypot_filled():
         privacy=True,
         url="http://attacker.example.com",
     )
-    response = await _create_lead(request=FakeRequest(), body=body, db=db)
+    response = await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
     assert response["ok"] is True
     assert response["lead_id"] is None
     assert db.added == []
@@ -191,7 +195,7 @@ async def test_create_lead_ignores_blank_honeypot(monkeypatch):
         website="   ",
         url="",
     )
-    response = await _create_lead(request=FakeRequest(), body=body, db=db)
+    response = await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
     assert response["lead_id"] is not None
     assert db.added and db.added[0].clinic_name == "장편한외과의원"
 
@@ -329,3 +333,176 @@ def test_mask_contact_email():
     assert masked.startswith("wo")
     assert "@motionlabs.kr" in masked
     assert "woojin@" not in masked
+
+
+# ── 초도 노출 진단 자동 생성 + 접수 안내 문자 ─────────────────────────────────────
+
+from app.services import inquiry_diagnosis, inquiry_sms  # noqa: E402
+
+
+def _inquiry_body(**overrides):
+    fields = dict(
+        clinic_name="강심장내과의원",
+        clinic_type="도입문의",
+        contact="010-1234-5678",
+        question="병원 주소: 서울 강남구\n원장님 성함: 김원장\n병원 홈페이지: https://x.example",
+        privacy=True,
+        source_path="/contact",
+        specialty="내과",
+        region_keyword="강남역",
+        core_keywords=["고혈압", "심장초음파"],
+        contact_name="김원장",
+    )
+    fields.update(overrides)
+    return leads_api.LeadCreate(**fields)
+
+
+def _silence_notifier(monkeypatch):
+    captured = []
+
+    async def fake_notify(**payload):
+        captured.append(payload)
+        return True
+
+    monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+    return captured
+
+
+def _sms_result(monkeypatch, status="SENT"):
+    async def fake_ack(db, lead):
+        lead.ack_sms_status = status
+        return inquiry_sms.AckSmsOutcome(status, None if status == "SENT" else "stub")
+
+    monkeypatch.setattr(inquiry_sms, "acknowledge_inquiry", fake_ack)
+
+
+async def test_intake_with_diagnosis_fields_creates_the_internal_diagnosis(monkeypatch):
+    slack = _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "SENT")
+    created = []
+    queued = []
+
+    async def fake_create(db, lead, spec, *, actor):
+        created.append((lead, spec, actor))
+        return SimpleNamespace(id="diag-1")
+
+    monkeypatch.setattr(inquiry_diagnosis, "create_inquiry_diagnosis", fake_create)
+    monkeypatch.setattr(inquiry_diagnosis, "enqueue_inquiry_diagnosis", queued.append)
+
+    db = FakeDB()
+    background_tasks = BackgroundTasks()
+    response = await _create_lead(
+        request=FakeRequest(), body=_inquiry_body(), background_tasks=background_tasks, db=db
+    )
+    assert queued == []  # 큐잉은 응답 뒤 background task에서 — 요청 안에서 브로커를 기다리지 않는다
+    await background_tasks()
+
+    lead = db.added[0]
+    assert lead.specialty == "내과"
+    assert lead.region_keyword == "강남역"
+    assert lead.core_keywords == ["고혈압", "심장초음파"]
+    assert lead.contact_name == "김원장"
+    assert lead.clinic_type == "도입문의"
+    spec = created[0][1]
+    assert created[0][0] is lead
+    assert created[0][2] == "system:public-inquiry"
+    assert spec.specialty == "내과"
+    assert spec.core_keywords == ["고혈압", "심장초음파"]
+    assert queued == ["diag-1"]
+    assert response["diagnosis_id"] == "diag-1"
+    assert response["ack_sms"] == "sent"
+    assert slack[0]["diagnosis_note"] == leads_api.DIAGNOSIS_NOTE_QUEUED
+
+
+async def test_intake_without_diagnosis_fields_leaves_creation_to_admin(monkeypatch):
+    slack = _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "SKIPPED")
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("diagnosis must not be created without inputs")
+
+    monkeypatch.setattr(inquiry_diagnosis, "create_inquiry_diagnosis", forbidden)
+
+    db = FakeDB()
+    response = await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=db,
+    )
+
+    assert response["diagnosis_id"] is None
+    assert response["ack_sms"] == "skipped"
+    assert slack[0]["diagnosis_note"] == leads_api.DIAGNOSIS_NOTE_NO_INPUT
+
+
+async def test_intake_survives_a_refused_diagnosis_and_still_notifies_and_texts(monkeypatch):
+    slack = _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "SENT")
+
+    async def refuse(db, lead, spec, *, actor):
+        raise inquiry_diagnosis.InquiryDiagnosisError(400, "진료과·지역·키워드에는 병원명을 넣을 수 없습니다.")
+
+    monkeypatch.setattr(inquiry_diagnosis, "create_inquiry_diagnosis", refuse)
+
+    db = FakeDB()
+    response = await _create_lead(
+        request=FakeRequest(), body=_inquiry_body(), background_tasks=BackgroundTasks(), db=db
+    )
+
+    assert response["ok"] is True
+    assert response["diagnosis_id"] is None
+    assert response["ack_sms"] == "sent"
+    assert slack[0]["diagnosis_note"] == leads_api.DIAGNOSIS_NOTE_REFUSED
+    assert db.added[0].notification_status == "SENT"
+
+
+async def test_intake_records_sms_failure_without_failing_the_lead(monkeypatch):
+    _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "FAILED")
+
+    db = FakeDB()
+    response = await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=BackgroundTasks(),
+        db=db,
+    )
+
+    assert response["ok"] is True
+    assert response["ack_sms"] == "failed"
+    assert db.added[0].ack_sms_status == "FAILED"
+    assert db.committed is True
+
+
+async def test_honeypot_sends_neither_diagnosis_nor_sms(monkeypatch):
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("must not be called for a honeypot submission")
+
+    monkeypatch.setattr(inquiry_diagnosis, "create_inquiry_diagnosis", forbidden)
+    monkeypatch.setattr(inquiry_sms, "acknowledge_inquiry", forbidden)
+    monkeypatch.setattr(notifier, "notify_lead_created", forbidden)
+
+    db = FakeDB()
+    response = await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(website="http://bot.example"),
+        background_tasks=BackgroundTasks(),
+        db=db,
+    )
+    assert response["lead_id"] is None
+    assert db.added == []
+
+
+def test_diagnosis_fields_are_cleaned_and_screened():
+    body = _inquiry_body(core_keywords=[" 고혈압 ", "고혈압", "", "부정맥", "당뇨", "갑상선", "비만"])
+    assert body.core_keywords == ["고혈압", "부정맥", "당뇨", "갑상선"]
+    assert _inquiry_body(core_keywords=["", "  "]).core_keywords is None
+    assert _inquiry_body(core_keywords=["", "  "]).diagnosis_input() is None
+
+    with pytest.raises(ValueError, match="환자 개인정보"):
+        _inquiry_body(region_keyword="환자 900101-1234567 진료 기록")
+    with pytest.raises(ValueError, match="환자 개인정보"):
+        _inquiry_body(core_keywords=["환자 홍길동 수술 기록"])
+    with pytest.raises(ValueError, match="50자"):
+        _inquiry_body(core_keywords=["가" * 51])

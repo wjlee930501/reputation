@@ -13,15 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.admin.accounts import require_active_account
 from app.api.admin.lead_recovery_routes import router as recovery_router
 from app.api.admin.lead_report_view import router as report_view_router
-from app.api.public.diagnosis import keyword_contains_hospital_name
 from app.api.public.leads import contains_patient_sensitive_text
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.handoff import HandoffSource, HospitalHandoff
 from app.models.hospital import Hospital, Plan
 from app.models.lead import (
-    LEAD_CLINIC_TYPE_INQUIRY_MARKER,
     SalesLead,
     is_internal_inquiry,
 )
@@ -32,13 +29,12 @@ from app.models.lead_diagnosis import (
     ReportStatus,
 )
 from app.models.operations import OperationRun
-from app.services import lead_delivery, sov_engine
+from app.services import inquiry_diagnosis, lead_delivery
 from app.services.audit_log import default_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals, matches_hospital_name
 from app.services.lead_diagnosis_identity import InvalidEmail, normalize_email
 from app.services.lead_privacy import purge_lead_completely_async, scrub_onboarding_note
 from app.services.lead_triage import is_operations_test_lead, operations_test_lead_clause
-from app.services.query_mapper import QueryMappingError, build_lead_diagnosis_queries
 
 router = APIRouter(prefix="/admin/leads", tags=["Admin — Leads"])
 router.include_router(recovery_router)
@@ -610,6 +606,7 @@ def _serialize_lead(lead: SalesLead) -> dict:
         "email": getattr(lead, "email", None),
         "region_keyword": getattr(lead, "region_keyword", None),
         "core_keywords": getattr(lead, "core_keywords", None),
+        "specialty": getattr(lead, "specialty", None),
         "question": lead.question,
         "privacy": lead.privacy,
         "source_path": lead.source_path,
@@ -625,6 +622,9 @@ def _serialize_lead(lead: SalesLead) -> dict:
         "conversion_note": lead.conversion_note,
         "notification_status": getattr(lead, "notification_status", None),
         "notification_error": getattr(lead, "notification_error", None),
+        # 접수 안내 문자(SENT/FAILED/SKIPPED). 원장이 실제로 안내를 받았는지 AE가 봐야 한다.
+        "ack_sms_status": getattr(lead, "ack_sms_status", None),
+        "ack_sms_error": getattr(lead, "ack_sms_error", None),
         "created_at": lead.created_at.isoformat() if lead.created_at else None,
     }
 
@@ -719,12 +719,7 @@ def _merge_onboarding_note(hospital: Hospital, lead: SalesLead, operator_note: s
 
 def _enqueue_internal_diagnosis(diagnosis_id: str) -> None:
     """Best-effort fast path; the PENDING database drain remains the guarantee."""
-    try:
-        from app.workers.lead_diagnosis_tasks import run_lead_diagnosis
-
-        run_lead_diagnosis.delay(diagnosis_id)
-    except Exception:  # noqa: BLE001 — the committed PENDING row is drained every minute.
-        logger.warning("internal inquiry diagnosis enqueue failed for %s", diagnosis_id)
+    inquiry_diagnosis.enqueue_inquiry_diagnosis(diagnosis_id)
 
 
 @router.post(
@@ -738,7 +733,11 @@ async def create_internal_inquiry_diagnosis(
     db: AsyncSession = Depends(get_db),
     actor: AdminUser = Depends(require_active_account),
 ):
-    """Create an Admin-only INQUIRY diagnosis without customer quota, locks, or token."""
+    """Create an Admin-only INQUIRY diagnosis without customer quota, locks, or token.
+
+    공개 접수가 자동으로 만드는 진단과 같은 규칙(`services/inquiry_diagnosis`)을 쓴다 —
+    AE가 채우는 이 경로는 폼이 비어 있었거나 자동 생성이 거절된 리드를 위한 것이다.
+    """
     lead = (
         await db.execute(
             select(SalesLead).where(SalesLead.id == lead_id).with_for_update()
@@ -746,112 +745,25 @@ async def create_internal_inquiry_diagnosis(
     ).scalar_one_or_none()
     if lead is None:
         raise HTTPException(status_code=404, detail="Lead not found")
-    if not is_internal_inquiry(lead):
-        raise HTTPException(
-            status_code=400,
-            detail="도입문의 리드만 내부용 진단을 생성할 수 있습니다.",
-        )
-
-    existing = await db.scalar(
-        select(LeadDiagnosis)
-        .where(LeadDiagnosis.lead_id == lead.id)
-        .order_by(LeadDiagnosis.created_at.desc())
-        .limit(1)
-    )
-    if existing is not None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "이 도입문의에는 이미 내부 진단이 있습니다.",
-                "diagnosis_id": str(existing.id),
-            },
-        )
-
-    if keyword_contains_hospital_name(
-        lead.clinic_name,
-        [
-            request_body.clinic_type,
-            request_body.region_keyword,
-            *request_body.core_keywords,
-        ],
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "진료과·지역·키워드에는 병원명을 넣을 수 없습니다. "
-                "진료·증상 키워드를 입력해 주세요."
-            ),
-        )
-
-    try:
-        queries = build_lead_diagnosis_queries(
-            region=request_body.region_keyword,
-            specialty=request_body.clinic_type,
-            keywords=request_body.core_keywords,
-        )
-    except QueryMappingError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if keyword_contains_hospital_name(lead.clinic_name, [query["text"] for query in queries]):
-        logger.error("hospital name leaked into internal diagnosis queries: %s", lead.id)
-        raise HTTPException(
-            status_code=400,
-            detail="입력값에서 병원명을 제외해 주세요. 병원명이 포함되면 측정이 무의미합니다.",
-        )
 
     # The Admin form enriches the lead record, but none of these values are converted into the
     # free-diagnosis email/phone locks. INTERNAL is terminal for every customer delivery poller.
-    lead.email = request_body.email
-    # 도입문의 표식은 남겨둔다. clinic_type 하나만 보는 판정(Admin 목록 배지·도입문의 상세
-    # 카드, 고객 발송 폴러의 레거시 방어선)이 진료과로 덮이면 그 리드는 일반 진단 신청처럼
-    # 보인다. AE가 입력한 진료과는 슬롯 1 진료과 앵커로 `diagnosis.queries`에 그대로 남고
-    # 아래 감사 기록에도 남으므로 별도 컬럼이 필요하지 않다.
-    if (lead.clinic_type or "").strip() != LEAD_CLINIC_TYPE_INQUIRY_MARKER:
-        lead.clinic_type = request_body.clinic_type
-    lead.region_keyword = request_body.region_keyword
-    lead.core_keywords = request_body.core_keywords
-    if request_body.clinic_phone is not None:
-        lead.clinic_phone = request_body.clinic_phone
-    if request_body.contact_name is not None:
-        lead.contact_name = request_body.contact_name
-
-    diagnosis = LeadDiagnosis(
-        lead_id=lead.id,
-        applicant_email_hash=None,
-        subject_phone_hash=None,
-        subject_hospital_name=lead.clinic_name,
-        subject_region=request_body.region_keyword,
-        slot_date=None,
-        slot_no=None,
-        queries=queries,
-        requested_models={
-            "openai": settings.OPENAI_MODEL_QUERY,
-            "gemini": settings.GEMINI_MODEL,
-            "judge": settings.OPENAI_MODEL_PARSE,
-        },
-        measurement_config=sov_engine.measurement_protocol(),
-        repeat_count=settings.LEADGEN_REPEAT_COUNT,
-        delivery_status=DeliveryStatus.INTERNAL.value,
-    )
-    db.add(diagnosis)
-    await db.flush()
-    await write_audit_log(
-        db,
-        action="create_internal_inquiry_diagnosis",
-        hospital_id=lead.converted_hospital_id,
-        actor=actor.email,
-        target_type="lead_diagnosis",
-        target_id=diagnosis.id,
-        detail={
-            "lead_id": str(lead.id),
-            "specialty": request_body.clinic_type,
-            "query_count": len(queries),
-            "customer_delivery": False,
-            "report_token_minted": False,
-            "free_slot_claimed": False,
-            "applicant_locks_claimed": False,
-        },
-    )
+    try:
+        diagnosis = await inquiry_diagnosis.create_inquiry_diagnosis(
+            db,
+            lead,
+            inquiry_diagnosis.InquiryDiagnosisInput(
+                specialty=request_body.clinic_type,
+                region_keyword=request_body.region_keyword,
+                core_keywords=request_body.core_keywords,
+                email=request_body.email,
+                clinic_phone=request_body.clinic_phone,
+                contact_name=request_body.contact_name,
+            ),
+            actor=actor.email,
+        )
+    except inquiry_diagnosis.InquiryDiagnosisError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     await db.commit()
 
     background_tasks.add_task(_enqueue_internal_diagnosis, str(diagnosis.id))

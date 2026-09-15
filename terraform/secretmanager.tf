@@ -150,6 +150,16 @@ resource "google_secret_manager_secret" "resend_api_key" {
   }
 }
 
+# 도입문의 접수 안내 문자(NHN Cloud Notification SMS) 시크릿 키. App Key는 비밀이 아니라
+# 일반 env(cloudrun.tf)로 주입한다. 비어 있으면 문자만 건너뛰고 접수는 정상 동작한다.
+resource "google_secret_manager_secret" "nhn_sms_secret_key" {
+  secret_id = "NHN_SMS_SECRET_KEY"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 # Secret Manager IAM — service account access
 locals {
   app_secret_env = {
@@ -170,6 +180,7 @@ locals {
     LEAD_LOCK_HASH_PEPPER    = google_secret_manager_secret.lead_lock_hash_pepper.secret_id
     LEAD_REPORT_TOKEN_SECRET = google_secret_manager_secret.lead_report_token_secret.secret_id
     RESEND_API_KEY           = google_secret_manager_secret.resend_api_key.secret_id
+    NHN_SMS_SECRET_KEY       = google_secret_manager_secret.nhn_sms_secret_key.secret_id
   }
 
   # 프론트엔드(Next.js) 서비스가 마운트하는 secret — admin BFF 세션/키, site

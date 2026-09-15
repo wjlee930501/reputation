@@ -96,6 +96,19 @@ resource "google_cloud_run_v2_service" "api" {
         name  = "SITE_BASE_URL"
         value = "https://${var.domain}"
       }
+      # 도입문의 접수 안내 문자 — 공개 접수를 받는 API 서비스만 보낸다.
+      env {
+        name  = "INQUIRY_SMS_PROVIDER"
+        value = var.inquiry_sms_provider
+      }
+      env {
+        name  = "NHN_SMS_APP_KEY"
+        value = var.nhn_sms_app_key
+      }
+      env {
+        name  = "INQUIRY_SMS_SENDER_NO"
+        value = var.inquiry_sms_sender_no
+      }
       env {
         name  = "CNAME_TARGET"
         value = var.cname_target

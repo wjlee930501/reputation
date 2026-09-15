@@ -510,6 +510,8 @@ export interface SalesLead {
   email?: string | null
   region_keyword?: string | null
   core_keywords?: string[] | null
+  /** 도입문의 폼이 함께 보낸 진료과. clinic_type은 도입문의 표식이 차지한다. */
+  specialty?: string | null
   question: string | null
   privacy: boolean
   source_path: string | null
@@ -523,6 +525,9 @@ export interface SalesLead {
   conversion_note?: string | null
   notification_status?: 'SENT' | 'FAILED' | string | null
   notification_error?: string | null
+  /** 접수 직후 원장 휴대전화로 보낸 안내 문자 결과. */
+  ack_sms_status?: 'SENT' | 'FAILED' | 'SKIPPED' | string | null
+  ack_sms_error?: string | null
   created_at: string | null
   /** 무료 진단 또는 Admin 내부용 도입문의 진단 요약. */
   diagnoses?: LeadDiagnosisSummary[]
