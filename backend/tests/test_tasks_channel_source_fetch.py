@@ -1,8 +1,8 @@
-"""채널 자료 fetch 워커와 그 복구 스윕(B1) — 그리고 처리 실패의 운영 예외(B2).
+"""채널 자료 fetch 워커와 그 복구 스윕(B1) — 그리고 처리 실패의 운영 예외.
 
 프로파일 저장은 본문 없는 PENDING 행만 만든다. 이 파일은 그 뒤를 검사한다: 워커가 본문을
 받아 처리로 잇는지, 영구 실패를 굳히는지, 일시 실패를 예산 안에서만 다시 거는지, 예산을 다
-쓴 자료가 사람의 할 일이 되는지.
+쓴 자료가 인시던트 없이 ERROR로 굳는지(B2).
 """
 
 import uuid
@@ -188,7 +188,8 @@ def test_a_fetched_channel_source_gets_its_body_and_starts_processing(worker_env
     assert worker_env.calls["opened"] == []
 
 
-def test_a_permanent_failure_stops_retrying_and_becomes_a_persons_job(worker_env, monkeypatch):
+def test_a_permanent_failure_becomes_source_state_not_an_incident(worker_env, monkeypatch):
+    """영구 실패는 자료 행의 상태다 — 인시던트는 열리지 않고 종결도 그것에 묶이지 않는다."""
     source = _add(worker_env, _source(source_type=SourceType.NAVER_BLOG))
 
     async def shell_page(**_kwargs):
@@ -202,14 +203,9 @@ def test_a_permanent_failure_stops_retrying_and_becomes_a_persons_job(worker_env
     assert source.status == SourceStatus.ERROR
     assert source.process_error.startswith("네이버 블로그 본문")
     assert source.source_metadata["fetch_state"] == "FAILED"
-    assert len(worker_env.calls["opened"]) == 1
-    opened = worker_env.calls["opened"][0]
-    assert opened["pipeline"] == "source_fetch"
-    assert opened["object_id"] == str(source.id)
-    assert opened["next_action"] == tasks.SOURCE_FETCH_NEXT_ACTION
-    assert opened["admin_path"] == f"/hospitals/{source.hospital_id}/info"
-    # 화면이 '운영 센터 확인' 링크를 걸 수 있게, 실제로 열린 예외만 붙는다.
-    assert source.source_metadata["incident_id"]
+    assert source.source_metadata["fetch_error"].startswith("네이버 블로그 본문")
+    assert worker_env.calls["opened"] == []
+    assert "incident_id" not in source.source_metadata
     assert worker_env.calls["processing"] == []
 
 
@@ -228,6 +224,34 @@ def test_a_transient_failure_keeps_the_row_pending_for_the_next_attempt(worker_e
     assert source.status == SourceStatus.PENDING
     assert source.source_metadata["fetch_state"] == "FAILED"
     assert "연결 시간" in source.source_metadata["fetch_error"]
+    assert worker_env.calls["opened"] == []
+
+
+def test_a_transient_failure_still_retries_with_the_same_countdown(worker_env, monkeypatch):
+    """인시던트를 걷어 내도 일시 오류의 재시도 간격은 그대로다."""
+    source = _add(worker_env, _source())
+    retries: list[dict] = []
+
+    async def timeout(**_kwargs):
+        raise TransientSourceFetchError("URL 크롤링 실패: 연결 시간이 초과되었습니다")
+
+    class _Retried(Exception):
+        pass
+
+    def fake_retry(**kwargs):
+        retries.append(kwargs)
+        raise _Retried
+
+    monkeypatch.setattr(tasks, "fetch_source_content", timeout)
+    monkeypatch.setattr(tasks.fetch_channel_source, "retry", fake_retry)
+
+    with pytest.raises(_Retried):
+        tasks.fetch_channel_source.apply(args=[str(source.id)], throw=True).get()
+
+    assert len(retries) == 1
+    assert retries[0]["countdown"] == 30
+    assert source.status == SourceStatus.PENDING
+    assert source.source_metadata["fetch_state"] == "FAILED"
     assert worker_env.calls["opened"] == []
 
 
@@ -295,7 +319,7 @@ def test_the_sweep_waits_out_the_cooldown(worker_env):
     assert worker_env.calls["dispatched"] == []
 
 
-def test_the_sweep_stops_at_the_budget_and_opens_one_incident(worker_env):
+def test_the_sweep_stops_at_the_budget_without_opening_an_incident(worker_env):
     source = _add(
         worker_env,
         _source(
@@ -311,10 +335,8 @@ def test_the_sweep_stops_at_the_budget_and_opens_one_incident(worker_env):
     assert worker_env.calls["dispatched"] == []
     assert source.status == SourceStatus.ERROR
     assert source.process_error == "URL 크롤링 실패: 연결할 수 없습니다"
-    assert len(worker_env.calls["opened"]) == 1
-    assert worker_env.calls["opened"][0]["pipeline"] == "source_fetch"
-    assert worker_env.calls["opened"][0]["next_action"] == tasks.SOURCE_FETCH_NEXT_ACTION
-    assert source.source_metadata["incident_id"]
+    assert worker_env.calls["opened"] == []
+    assert "incident_id" not in source.source_metadata
 
 
 def test_the_sweep_ignores_rows_that_are_not_waiting_on_a_fetch(worker_env):
@@ -347,35 +369,30 @@ def test_legacy_url_rows_cannot_starve_a_freshly_queued_channel(worker_env):
     assert worker_env.calls["dispatched"] == [[str(queued.id)]]
 
 
-def test_a_terminal_failure_whose_incident_cannot_open_stays_retryable(worker_env, monkeypatch):
-    """사고를 열지 못하면 ERROR로 굳히지 않는다 — 굳히면 아무도 다시 보지 않는다."""
-    source = _add(worker_env, _source(source_type=SourceType.NAVER_BLOG))
+def test_a_terminal_failure_does_not_overwrite_a_later_success(worker_env, monkeypatch):
+    """종결 쓰기는 PENDING 조건부다 — 그 사이 본문을 받은(EXCLUDED/다른 상태) 행은 그대로다."""
+    source = _add(worker_env, _source(source_type=SourceType.NAVER_BLOG, status=SourceStatus.PROCESSED))
 
     async def shell_page(**_kwargs):
         raise SourceRegistrationError("네이버 블로그 본문을 가져오지 못했습니다.")
 
-    async def incident_open_fails(**_kwargs):
-        raise RuntimeError("incident store unavailable")
-
     monkeypatch.setattr(tasks, "fetch_source_content", shell_page)
-    monkeypatch.setattr(tasks, "open_ops_incident", incident_open_fails)
 
     result = tasks.fetch_channel_source.apply(args=[str(source.id)]).get()
 
-    assert result["status"] == "FAILED"
-    assert source.status == SourceStatus.PENDING
-    assert source.source_metadata["fetch_state"] == "FAILED"
-    assert "incident_id" not in source.source_metadata
-    # 스윕의 후보 조건 그대로다 — 쿨다운이 지나면 같은 종결을 다시 시도한다.
-    source.source_metadata["last_fetch_attempt_at"] = (
-        datetime.now(timezone.utc) - timedelta(minutes=20)
-    ).isoformat()
-    assert tasks._redispatch_stalled_channel_source_fetches() == 1
+    assert result["status"] == SourceStatus.ERROR.value
+    assert source.status == SourceStatus.PROCESSED
+    assert source.process_error is None
+    assert worker_env.calls["opened"] == []
 
 
-def test_the_sweep_reconciles_a_terminal_row_that_never_got_an_incident(worker_env):
-    """사고 없이 ERROR로 굳은 행은 사고만 열어 사람이 볼 수 있게 되돌린다."""
-    source = _add(
+def test_the_sweep_runs_the_incident_cleanup_pass_once(worker_env, monkeypatch):
+    """스윕은 옛 fetch 인시던트 정리 pass를 부르고, 그 실패가 재발행을 막지 않는다."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        tasks, "_retire_channel_source_fetch_incidents", lambda: calls.append(1)
+    )
+    _add(
         worker_env,
         _source(
             status=SourceStatus.ERROR,
@@ -386,24 +403,16 @@ def test_the_sweep_reconciles_a_terminal_row_that_never_got_an_incident(worker_e
 
     tasks._redispatch_stalled_channel_source_fetches()
 
-    assert len(worker_env.calls["opened"]) == 1
-    opened = worker_env.calls["opened"][0]
-    assert opened["object_id"] == str(source.id)
-    assert opened["problem"] == "URL 크롤링 실패: 연결할 수 없습니다"
-    assert source.source_metadata["incident_id"]
-
-    # 사고가 붙은 뒤에는 다시 열지 않는다.
-    tasks._redispatch_stalled_channel_source_fetches()
-    assert len(worker_env.calls["opened"]) == 1
+    assert calls == [1]
+    # ERROR로 굳은 행을 다시 사람의 할 일로 올리지 않는다.
+    assert worker_env.calls["opened"] == []
 
 
 def test_an_operator_exclusion_wins_over_a_late_terminal_error(worker_env, monkeypatch):
     """종결 쓰기는 status=PENDING을 다시 확인한다 — 제외 결정을 늦은 ERROR가 덮지 않는다."""
     source = _add(worker_env, _source(status=SourceStatus.EXCLUDED))
 
-    tasks._fail_channel_source_fetch(
-        source.id, message="영구 실패", terminal=True, incident_id=uuid.uuid4()
-    )
+    tasks._fail_channel_source_fetch(source.id, message="영구 실패", terminal=True)
 
     assert source.status == SourceStatus.EXCLUDED
     assert source.process_error is None

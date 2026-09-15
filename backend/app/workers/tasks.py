@@ -2793,7 +2793,6 @@ def _defer_source_processing_run_item(
 SOURCE_FETCH_PIPELINE = "source_fetch"
 SOURCE_PROCESSING_PIPELINE = "source_processing"
 CHANNEL_FETCH_COOLDOWN = timedelta(minutes=15)
-SOURCE_FETCH_NEXT_ACTION = "공식 채널 주소를 확인하거나 자료 파일을 직접 올려 주세요."
 SOURCE_PROCESSING_NEXT_ACTION = "자료 내용을 확인하고 다시 올리거나 제외해 주세요."
 
 
@@ -2886,8 +2885,8 @@ def fetch_channel_source(self, source_id: str) -> dict[str, object]:
     """프로파일 저장이 만든 채널 자료 행의 본문을 받아 온다.
 
     저장 요청은 행만 만들고 끝난다. 주소 하나에 12초까지 걸리는 fetch는 여기서 하고,
-    성공하면 곧바로 자료 처리로 이어 준다. 영구 실패와 예산을 다 쓴 실패만 사람에게
-    올리고, 그 사이의 실패는 스윕이 조용히 다시 건다.
+    성공하면 곧바로 자료 처리로 이어 준다. 영구 실패와 예산을 다 쓴 실패는 자료 행을
+    ERROR로 굳히고, 그 사이의 실패는 스윕이 조용히 다시 건다.
     """
     require_dispatch(self, "fetch-channel-source", source_id)
     source_uuid = uuid.UUID(source_id)
@@ -2924,27 +2923,14 @@ def fetch_channel_source(self, source_id: str) -> dict[str, object]:
     try:
         fetched = _run_async(fetch_source_content(source_type=source_type, url=url))
     except SourceRegistrationError as exc:
-        # 사고를 먼저 연다 — 열지 못하면 행을 PENDING/FAILED로 두어 스윕이 같은 종결을
-        # 다시 시도하게 한다. ERROR로 먼저 굳히면 자동 경로도 사람도 이 자료를 다시 보지
-        # 않는다.
-        incident_id = _open_source_incident(
-            pipeline=SOURCE_FETCH_PIPELINE,
-            source_id=source_uuid,
-            hospital_id=hospital_id,
-            hospital_name=hospital_name,
-            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
-            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
-            problem=exc.message,
-            next_action=SOURCE_FETCH_NEXT_ACTION,
-        )
-        _fail_channel_source_fetch(
-            source_uuid,
-            message=exc.message,
-            terminal=incident_id is not None,
-            incident_id=incident_id,
-        )
-        status = SourceStatus.ERROR.value if incident_id is not None else FETCH_STATE_FAILED
-        return {"source_id": source_id, "status": status, "error": exc.message}
+        # fetch 실패는 인시던트가 아니라 자료 행의 상태다. 영구 실패는 인시던트와 무관하게
+        # ERROR로 굳고, 사람 경로는 필수 자료가 비었다고 말하는 콘텐츠 상태 카드가 맡는다.
+        _fail_channel_source_fetch(source_uuid, message=exc.message, terminal=True)
+        return {
+            "source_id": source_id,
+            "status": SourceStatus.ERROR.value,
+            "error": exc.message,
+        }
     except Exception as exc:
         # TransientSourceFetchError(네트워크·타임아웃)와 예상 못 한 오류를 같게 다룬다:
         # 둘 다 다시 걸면 달라질 수 있다. 영구 실패만 위에서 이미 갈라졌다.
@@ -2990,10 +2976,10 @@ def _fail_channel_source_fetch(
     *,
     message: str,
     terminal: bool,
-    incident_id: uuid.UUID | None = None,
 ) -> None:
-    """fetch 실패를 자료 행에 남긴다. 사람이 볼 사고가 열린 영구 실패만 ERROR로 굳힌다.
+    """fetch 실패를 자료 행에 남긴다. 자동 재시도가 끝난 실패만 ERROR로 굳힌다.
 
+    종결 여부는 인시던트와 무관하다 — 영구 실패와 재시도 예산 소진이 곧 종결이다.
     ERROR 쓰기는 `status = PENDING`을 UPDATE의 조건으로 다시 확인한다(CAS) — 그 사이
     운영자가 자료를 제외(EXCLUDED)했다면 이 늦은 종결이 그 결정을 덮지 않는다.
     """
@@ -3004,8 +2990,6 @@ def _fail_channel_source_fetch(
         metadata = _merged_source_metadata(
             source, fetch_state=FETCH_STATE_FAILED, fetch_error=message
         )
-        if incident_id is not None:
-            metadata["incident_id"] = str(incident_id)
         values: dict[str, object] = {"source_metadata": metadata}
         where = [HospitalSourceAsset.id == source_uuid]
         if terminal:
@@ -3020,55 +3004,25 @@ def _fail_channel_source_fetch(
         db.commit()
 
 
-def _reconcile_terminal_source_fetch_incidents(*, limit: int = 50) -> None:
-    """사고 없이 ERROR로 굳은 자료를 사람이 볼 수 있게 되돌린다.
+def _retire_channel_source_fetch_incidents() -> None:
+    """옛 `CHANNEL_SOURCE_FETCH_FAILED`를 스윕마다 한도 안에서 걷어 낸다(B2).
 
-    사고를 먼저 여는 순서로 바꾸기 전에 굳었거나, 사고를 붙이는 커밋만 실패한 행이다.
-    자동 경로는 이미 끝났으므로 여기서 사고만 열어 붙인다.
+    정리 규칙과 수렴 근거는 `channel_source_fetch_cleanup`에 있다. 여기서는 한 번의
+    실패가 스윕의 나머지(재발행)를 막지 않게만 감싼다.
     """
-    with SyncSessionLocal() as db:
-        rows = list(
-            db.execute(
-                select(HospitalSourceAsset)
-                .where(
-                    HospitalSourceAsset.status == SourceStatus.ERROR,
-                    HospitalSourceAsset.source_metadata["fetch_state"].as_string()
-                    == FETCH_STATE_FAILED,
-                    HospitalSourceAsset.source_metadata["incident_id"].as_string().is_(None),
-                )
-                .order_by(HospitalSourceAsset.created_at.asc())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
-        )
-        pending = [
-            (
-                source.id,
-                source.hospital_id,
-                getattr(db.get(Hospital, source.hospital_id), "name", None)
-                or "이름 미확인 병원",
-                str(
-                    source.process_error
-                    or (source.source_metadata or {}).get("fetch_error")
-                    or "공식 채널 주소의 본문을 가져오지 못했습니다."
-                ),
-            )
-            for source in rows
-        ]
+    from app.core.database import get_async_sessionmaker
+    from app.workers.channel_source_fetch_cleanup import (
+        retire_channel_source_fetch_incidents,
+    )
 
-    for source_id, hospital_id, hospital_name, message in pending:
-        incident_id = _open_source_incident(
-            pipeline=SOURCE_FETCH_PIPELINE,
-            source_id=source_id,
-            hospital_id=hospital_id,
-            hospital_name=hospital_name,
-            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
-            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
-            problem=message,
-            next_action=SOURCE_FETCH_NEXT_ACTION,
-        )
-        _attach_source_incident(source_id, incident_id)
+    async def _run() -> None:
+        async with get_async_sessionmaker()() as async_db:
+            await retire_channel_source_fetch_incidents(async_db)
+
+    try:
+        _run_async(_run())
+    except Exception:
+        logger.exception("Failed to retire channel source fetch incidents")
 
 
 def _attach_source_incident(source_uuid: uuid.UUID, incident_id: uuid.UUID | None) -> None:
@@ -3652,7 +3606,7 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
 
     `_create_runs_for_orphan_pending_sources`는 본문이 있는 자료만 본다 — 본문이 없는 이
     행들은 처리할 것이 없으므로 그쪽이 아니라 여기가 맡는다. 예산을 다 쓰면 자동 복구를
-    끝내고 사람의 할 일로 넘긴다.
+    끝내고 자료 행을 ERROR로 굳힌다.
 
     자격 조건은 LIMIT **앞에서** SQL이 거른다. 파이썬에서 거르면 자동 처리 대상이 아닌
     옛 URL 전용 행(`fetch_state`가 없는 행)이 200칸을 채워, 방금 등록된 QUEUED 행이
@@ -3660,7 +3614,7 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
     """
     now = datetime.now(timezone.utc)
     to_dispatch: list[uuid.UUID] = []
-    exhausted: list[tuple[uuid.UUID, uuid.UUID, str, str]] = []
+    exhausted: list[tuple[uuid.UUID, str]] = []
     with SyncSessionLocal() as db:
         candidates = list(
             db.execute(
@@ -3686,15 +3640,7 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
                 message = str(
                     metadata.get("fetch_error") or "공식 채널 주소의 본문을 가져오지 못했습니다."
                 )
-                hospital = db.get(Hospital, source.hospital_id)
-                exhausted.append(
-                    (
-                        source.id,
-                        source.hospital_id,
-                        hospital.name if hospital is not None else "이름 미확인 병원",
-                        message,
-                    )
-                )
+                exhausted.append((source.id, message))
                 continue
             last_attempt = metadata.get("last_fetch_attempt_at")
             if last_attempt:
@@ -3710,26 +3656,12 @@ def _redispatch_stalled_channel_source_fetches(*, limit: int = 200) -> int:
             to_dispatch.append(source.id)
         db.commit()
 
-    # 사고를 **먼저** 연다. ERROR로 굳힌 뒤에 사고 생성이 실패하면 자동 경로도 사람이 볼
-    # 예외도 없는 자료가 남는다. 열지 못하면 행은 PENDING/FAILED로 두어 다음 스윕이
-    # (쿨다운 안에서) 같은 종결을 다시 시도한다.
-    for source_id, hospital_id, hospital_name, message in exhausted:
-        incident_id = _open_source_incident(
-            pipeline=SOURCE_FETCH_PIPELINE,
-            source_id=source_id,
-            hospital_id=hospital_id,
-            hospital_name=hospital_name,
-            incident_type="CHANNEL_SOURCE_FETCH_FAILED",
-            safe_error_code="CHANNEL_SOURCE_FETCH_FAILED",
-            problem=message,
-            next_action=SOURCE_FETCH_NEXT_ACTION,
-        )
-        if incident_id is not None:
-            _fail_channel_source_fetch(
-                source_id, message=message, terminal=True, incident_id=incident_id
-            )
+    # 예산을 다 쓴 자료는 인시던트 없이 그대로 ERROR로 굳는다 — fetch 실패는 자료 행의
+    # 상태이고, 필수 자료가 비었다는 사실은 콘텐츠 상태 카드가 사람에게 말한다.
+    for source_id, message in exhausted:
+        _fail_channel_source_fetch(source_id, message=message, terminal=True)
 
-    _reconcile_terminal_source_fetch_incidents()
+    _retire_channel_source_fetch_incidents()
 
     dispatched = 0
     for source_id in to_dispatch:
