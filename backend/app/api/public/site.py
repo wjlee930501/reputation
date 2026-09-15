@@ -11,6 +11,11 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.sql import Select
 
 from app.api.public.assets import public_asset_response, public_asset_url
+from app.api.public.physicians import (
+    doctor_identity_asset_ids,
+    representative_photo_url,
+    serialize_public_physicians,
+)
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import limiter
@@ -21,7 +26,6 @@ from app.models.essence import (
     HospitalSourceAsset,
     PhilosophyStatus,
     SourceStatus,
-    SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.content_publication import (
@@ -37,6 +41,7 @@ from app.services.essence_readiness import (
 from app.services.hospital_lifecycle import activation_gate_snapshot
 from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
+from app.services.public_asset_ref import is_public_asset_path
 from app.utils.domain import normalize_domain
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import check_forbidden, check_forbidden_content_fields
@@ -219,7 +224,10 @@ def _serialize_hospital_summary(h: Hospital) -> dict:
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def get_hospital_public(request: Request, slug: str, db: AsyncSession = Depends(get_db)):
     """병원 기본정보 (ACTIVE 상태 병원만 공개) + AE가 검수해 공개로 표시한 사진."""
-    result = await db.execute(select(Hospital).where(Hospital.slug == slug))
+    # 의료진은 같은 조회에 붙인다 — 왕복 한 번만 늘어난다.
+    result = await db.execute(
+        select(Hospital).options(selectinload(Hospital.physicians)).where(Hospital.slug == slug)
+    )
     h = result.scalar_one_or_none()
     if not _is_active_public_hospital(h):
         raise HTTPException(status_code=404, detail="Hospital not found")
@@ -454,18 +462,22 @@ def _serialize_hospital(
             getattr(asset, "source_metadata", None),
         )
 
+    approved_doctor_photo_ids = doctor_identity_asset_ids(photo_records)
     doctor_asset = next(
-        (
-            asset
-            for asset in photo_records
-            if asset.source_type == SourceType.PHOTO_DOCTOR
-            and photo_metadata(asset).get("asset_kind") == "VERIFIED_REAL_PERSON"
-            and isinstance(photo_metadata(asset).get("approved_usage"), list)
-            and "DOCTOR_IDENTITY" in photo_metadata(asset)["approved_usage"]
-        ),
+        (asset for asset in photo_records if asset.id in approved_doctor_photo_ids),
         None,
     )
-    director_photo = public_asset_url(h.slug, doctor_asset.id) if doctor_asset else None
+    legacy_director_photo = public_asset_url(h.slug, doctor_asset.id) if doctor_asset else None
+
+    serialized_physicians = serialize_public_physicians(
+        h.slug,
+        getattr(h, "physicians", None) or [],
+        approved_doctor_photo_ids,
+        safe_credentials=_safe_credentials,
+    )
+    # 대표 의료진이 사진을 직접 연결했으면 그 사진이 이긴다. 연결이 없으면 종전처럼
+    # 가장 최근에 갱신된 인증 원장 사진을 쓴다 — 백필된 병원은 연결이 비어 있다.
+    director_photo = representative_photo_url(serialized_physicians) or legacy_director_photo
 
     serialized_photos = [
         {
@@ -486,6 +498,7 @@ def _serialize_hospital(
         "name": h.name,
         "slug": h.slug,
         "address": h.address,
+        "address_detail": getattr(h, "address_detail", None),
         "phone": h.phone,
         "business_hours": h.business_hours,
         "website_url": _safe_external_url(h.website_url),
@@ -514,10 +527,12 @@ def _serialize_hospital(
         # 승인된 운영 기준에서 의료광고 검수를 통과한 공개 about 서사. 승인 기준이 없으면 None.
         "public_about": _vetted_public_about(philosophy),
         "director_photo_url": director_photo,
+        # 의료진 전체. 병원 단위 director_* 는 이 목록의 대표 행에서 파생된 표시값이다.
+        "physicians": serialized_physicians,
         "brand_primary_color": getattr(h, "brand_primary_color", None),
         "brand_accent_color": getattr(h, "brand_accent_color", None),
         "logo_url": _public_logo_url(h),
-        "hero_image_url": _safe_external_url(getattr(h, "hero_image_url", None)),
+        "hero_image_url": _safe_hero_url(getattr(h, "hero_image_url", None)),
         "hero_media_kind": getattr(h, "hero_media_kind", None),
         "hero_headline": _safe_public_text(getattr(h, "hero_headline", None)),
         "hero_description": _safe_public_text(getattr(h, "hero_description", None)),
@@ -691,6 +706,17 @@ def _safe_external_url(value: str | None) -> str | None:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return None
     return value.strip()
+
+
+# 관리자 "대표 이미지로 지정"은 이 서비스가 직접 서빙하는 공개 자산 경로를 상대 경로로
+# 저장한다(director_photo_url·photos[].url과 같은 형식, Site가 resolveAssetUrl로 절대화).
+# 외부 URL만 통과시키는 검사에 이 경로가 걸리면 지정한 대표 이미지가 조용히 사라진다.
+# 접두사·부분 문자열 검사는 `../`나 `//host/...`까지 통과시키므로 정본 모양만 받는다.
+def _safe_hero_url(value: str | None) -> str | None:
+    text = (value or "").strip()
+    if is_public_asset_path(text):
+        return text
+    return _safe_external_url(text)
 
 
 # 한국어 평균 읽기 속도 약 600자/분 — site 상세 페이지 calculateReadingMinutes와 동일 기준.

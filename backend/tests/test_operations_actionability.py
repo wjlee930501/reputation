@@ -929,7 +929,11 @@ def test_readiness_guidance_names_real_controls_without_dead_end_button_copy() -
     assert "“저장”" in actions["core_profile"]
     assert "병원 정보 탭" in actions["core_profile"]
     assert all("프로파일" not in action for action in actions.values())
-    assert "“근거 추출”" in actions["essence_sources"]
+    # 자료 처리는 저장과 함께 자동으로 시작된다 — 없는 버튼을 누르라고 하지 않는다(ADM-06).
+    assert "“근거 추출”" not in actions["essence_sources"]
+    assert "자동으로 처리됩니다" in actions["essence_sources"]
+    assert "처리 중" not in actions["essence_sources"]
+    assert "처리 중 2건" in readiness_next_actions(processing_source_count=2)["essence_sources"]
     assert "시스템 자동 검수" in actions["essence_philosophy"]
     assert "보류된 예외만" in actions["essence_philosophy"]
     assert "“승인”을 누르세요" not in actions["essence_philosophy"]

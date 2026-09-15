@@ -39,6 +39,12 @@ from app.api.admin.domain import (
     domain_dns_strategy_for_hospital,
 )
 from app.api.admin.operations_center_incident_queries import count_operator_incidents
+from app.api.admin.physicians import (
+    DirectorCredentials,
+    PhysicianInput,
+    list_physicians,
+    replace_physicians,
+)
 from app.core.celery_app import celery_app
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
@@ -98,6 +104,7 @@ from app.services.hospital_logo import (
     is_stored_logo_ref,
     public_logo_url,
 )
+from app.services.hospital_physicians import derive_director_fields
 from app.services.hospital_profile_autofill import autofill_profile
 from app.services.hospital_states import (
     ContentState,
@@ -119,6 +126,7 @@ from app.services.operation_runs import (
     OperationQueueUnavailable,
     dispatch_operation,
 )
+from app.services.public_asset_ref import is_public_asset_path
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
     ServiceIntervalProvenance,
@@ -155,15 +163,6 @@ class TreatmentItem(BaseModel):
     description: str | None = Field(None, max_length=500)
 
 
-class DirectorCredentials(BaseModel):
-    """Physician.hasCredential / alumniOf / memberOf 매핑용."""
-
-    medical_school: str | None = Field(None, max_length=200)
-    board_certifications: list[str] | None = None
-    society_memberships: list[str] | None = None
-    license_number: str | None = Field(None, max_length=50)  # 공개 노출 X, 내부 보관
-
-
 class HospitalCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     plan: Plan = Plan.PLAN_12
@@ -190,6 +189,8 @@ class HospitalProfileUpdate(BaseModel):
 
     # 연락처
     address: str | None = Field(None, max_length=500)
+    # 층·호 등 상세 주소. 좌표 조회에는 절대 쓰지 않는다.
+    address_detail: str | None = Field(None, max_length=200)
     phone: str | None = Field(None, max_length=50)
     business_hours: BusinessHours | None = None
 
@@ -226,11 +227,15 @@ class HospitalProfileUpdate(BaseModel):
     keywords: list[str] | None = None
     competitors: list[str] | None = None
 
-    # 원장
+    # 원장 — 의료진 행이 생기기 전부터 있던 병원 단위 값. 하위 호환으로 계속 받는다.
     director_name: str | None = Field(None, max_length=100)
     director_career: str | None = Field(None, max_length=2000)
     director_philosophy: str | None = Field(None, max_length=1000)
     director_credentials: DirectorCredentials | None = None
+
+    # 의료진 — 값이 있으면 이 병원의 의료진 집합을 통째로 치환한다(빠진 행은 삭제).
+    # 저장한 뒤 대표 의료진에서 director_name/career/credentials를 파생해 동기화한다.
+    physicians: list[PhysicianInput] | None = None
 
     # 공개 사이트 identity — 운영자가 근거를 확인하고 승인한 값만 저장한다.
     brand_primary_color: str | None = Field(None, max_length=7)
@@ -310,7 +315,6 @@ class HospitalProfileUpdate(BaseModel):
         "google_business_profile_url",
         "google_maps_url",
         "naver_place_url",
-        "hero_image_url",
     )
     @classmethod
     def validate_public_url(cls, value: str | None) -> str | None:
@@ -322,6 +326,26 @@ class HospitalProfileUpdate(BaseModel):
         parsed = urlparse(cleaned)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
             raise ValueError("URL must be absolute http(s)")
+        return cleaned
+
+    @field_validator("hero_image_url")
+    @classmethod
+    def validate_hero_image_url(cls, value: str | None) -> str | None:
+        """'대표 이미지로 지정'은 이 서비스가 직접 서빙하는 자료 경로를 상대 경로로 보낸다.
+
+        외부 URL만 통과시키면 그 버튼이 항상 422가 된다. 그렇다고 상대 경로 전부를 열면
+        `//host/...`나 `../` 조작이 함께 들어오므로, 정확히 그 한 가지 모양만 받는다.
+        """
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            return None
+        if is_public_asset_path(cleaned):
+            return cleaned
+        parsed = urlparse(cleaned)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("URL must be a public asset path or absolute http(s)")
         return cleaned
 
     @field_validator("logo_url")
@@ -420,6 +444,7 @@ def profile_completion_handoff_blocker(
 
 PUBLIC_PROFILE_FIELDS = {
     "address",
+    "address_detail",
     "phone",
     "business_hours",
     "website_url",
@@ -436,6 +461,7 @@ PUBLIC_PROFILE_FIELDS = {
     "director_name",
     "director_career",
     "director_philosophy",
+    "physicians",
     "brand_primary_color",
     "brand_accent_color",
     "logo_url",
@@ -937,6 +963,7 @@ async def update_profile(
 
     PROFILE_FIELDS = {
         "address",
+        "address_detail",
         "phone",
         "business_hours",
         "website_url",
@@ -975,6 +1002,7 @@ async def update_profile(
     # 처리한다. exclude_none이었을 때는 잘못 입력된 URL/식별자를 지울 API 경로가 없었다.
     # 비우기는 nullable 선택 필드에만 허용 — 필수·NOT NULL 필드의 null은 기존처럼 무시.
     CLEARABLE_FIELDS = {
+        "address_detail",
         "website_url",
         "blog_url",
         "kakao_channel_url",
@@ -1008,16 +1036,25 @@ async def update_profile(
         and bool(submitted_address.strip())
         and submitted_address.strip() != (h.address or "").strip()
     )
-    if address_changed and body.geocode_address:
+    # 운영자가 같은 요청에서 좌표를 직접 넣었으면 그 값이 이긴다 — 주소를 함께 고쳤다는
+    # 이유로 손으로 확인한 좌표를 공급자 응답으로 덮어쓰지 않는다(ADM-04).
+    manual_coordinates = (
+        update_data.get("latitude") is not None and update_data.get("longitude") is not None
+    )
+    geocode_warning: dict[str, str] | None = None
+    if address_changed and body.geocode_address and not manual_coordinates:
         try:
             coordinates = await geocode_address(submitted_address)
         except GeocodingError as exc:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "ADDRESS_GEOCODE_FAILED", "message": str(exc)},
-            ) from exc
-        update_data["latitude"] = coordinates.latitude
-        update_data["longitude"] = coordinates.longitude
+            # 좌표 조회 실패는 주소 저장을 되돌릴 이유가 아니다(ADM-05). 저장은 그대로
+            # 진행하고 좌표만 손대지 않은 채, 무엇이 안 됐는지 응답으로 알린다.
+            geocode_warning = {"code": "ADDRESS_GEOCODE_FAILED", "message": str(exc)}
+            update_data.pop("latitude", None)
+            update_data.pop("longitude", None)
+            logger.warning("Address geocoding failed for hospital %s: %s", hospital_id, exc)
+        else:
+            update_data["latitude"] = coordinates.latitude
+            update_data["longitude"] = coordinates.longitude
     # 공개 표면이 조용히 버릴 값을 저장해 두고 `승인됨`으로 보여 주지 않는다 — 로고는
     # 온보딩 필수 게이트라, 새 효과 없는 입력은 통과시키지 않는다(L-1). 다만 프로파일
     # 화면은 전체 객체를 PATCH하므로, 이미 저장된 레거시 외부 URL을 그대로 재전송한 것은
@@ -1063,6 +1100,18 @@ async def update_profile(
         if comparable_stored_value != value:
             changed_fields.append(field)
         setattr(h, field, value)
+
+    # 의료진 집합 치환은 프로파일과 같은 트랜잭션에 둔다. 병원 단위 director_* 는 대표
+    # 의료진에서 파생해 같은 저장에서 맞춘다 — 공개 표면·llms.txt가 계속 그 값을 읽는다.
+    if body.physicians is not None:
+        stored_physicians = await replace_physicians(db, h.id, body.physicians)
+        # 대표 이름이 그대로여도 다른 의료진이 바뀌면 공개 페이지가 달라진다 — 이 저장을
+        # 공개 표면 재검증 대상으로 남긴다.
+        changed_fields.append("physicians")
+        for field, value in derive_director_fields(stored_physicians).items():
+            if getattr(h, field, None) != value:
+                changed_fields.append(field)
+            setattr(h, field, value)
 
     # 완료 여부는 body가 아니라 저장 결과에서 파생한다 — 화면에 '완료로 표시'가 없으므로
     # 손으로 만든 요청이 불완전한 병원을 완료 처리할 경로도 함께 사라진다(설계 §4.5).
@@ -1179,7 +1228,20 @@ async def update_profile(
     payload = serialize_hospital_detail(h)
     # 이 저장이 무엇을 자료로 등록했는지는 이 응답에서만 말한다 — 커밋된 사실만 담는다.
     payload["source_registration"] = source_registration
+    # 좌표 조회 실패는 저장 실패가 아니다. 저장된 결과와 함께 사실만 덧붙인다(ADM-05).
+    if geocode_warning is not None:
+        payload["geocode_warning"] = geocode_warning
     return payload
+
+
+@router.get("/{hospital_id}/physicians")
+async def get_hospital_physicians(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """병원 의료진 목록. 화면은 이 응답만으로 현재 행을 그대로 그릴 수 있다."""
+    await _get_or_404(db, hospital_id)
+    return {
+        "hospital_id": str(hospital_id),
+        "physicians": await list_physicians(db, hospital_id),
+    }
 
 
 @router.post("/{hospital_id}/logo", status_code=status.HTTP_201_CREATED)
@@ -1606,9 +1668,15 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     has_external_profiles = bool(
         h.website_url or h.blog_url or h.kakao_channel_url or h.naver_place_url
     )
+    # 아직 처리되지 않은 필수 자료 = 시스템이 자동으로 처리 중인 건수. 운영자에게는
+    # "기다리면 되는 상태"인지 알려 주는 유일한 숫자다(ADM-06).
+    processing_source_count = max(
+        essence.required_source_count - essence.processed_source_count, 0
+    )
     readiness_actions = readiness_next_actions(
         has_content_slots=content_slot_count > 0,
         withheld_content_count=withheld_content_count,
+        processing_source_count=processing_source_count,
     )
 
     checks = [
@@ -1729,6 +1797,8 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
         "essence": {
             "processed_source_count": essence.processed_source_count,
             "required_source_count": essence.required_source_count,
+            # 화면이 "처리 중 N건"을 그릴 수 있게 같은 숫자를 payload에도 싣는다.
+            "processing_source_count": processing_source_count,
             "approved_philosophy_exists": approved_philosophy is not None,
             "philosophy_version": approved_philosophy.version if approved_philosophy else None,
             "source_stale": bool(approved_philosophy and not source_snapshot_fresh),
@@ -1774,6 +1844,7 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "source_lead_id": str(h.source_lead_id) if h.source_lead_id else None,
         "onboarding_note": h.onboarding_note,
         "address": h.address,
+        "address_detail": getattr(h, "address_detail", None),
         "phone": h.phone,
         "business_hours": h.business_hours,
         "website_url": h.website_url,
