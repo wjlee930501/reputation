@@ -118,7 +118,6 @@ async def test_introduction_inquiry_message_never_claims_free_diagnosis(monkeypa
 
     sent = await notifier.notify_lead_created(
         clinic_name="도입문의의원",
-        clinic_type="도입문의",
         contact="010-1234-5678",
         admin_url="https://admin.example.test/leads",
     )
@@ -131,12 +130,11 @@ async def test_introduction_inquiry_message_never_claims_free_diagnosis(monkeypa
     assert "https://admin.example.test/leads" in rendered
 
 
-async def test_inquiry_message_uses_introduction_copy_for_any_clinic_type(monkeypatch):
+async def test_inquiry_message_uses_introduction_copy_without_clinic_type(monkeypatch):
     captured = _capture_send(monkeypatch)
 
     await notifier.notify_lead_created(
         clinic_name="기존진단의원",
-        clinic_type="외과",
         contact="010-1234-5678",
     )
 

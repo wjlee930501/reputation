@@ -178,11 +178,13 @@ def _admin_action_block(*, path: str, label: str) -> _LegacyActionBlock:
 async def notify_lead_created(
     *,
     clinic_name: str,
-    clinic_type: str,
     contact: str,
     admin_url: str | None = None,
 ) -> bool:
     """공개 문의 접수 → AE에게.
+
+    공개 폼의 clinic_type은 받지 않는다 — 문의 유형은 언제나 "일반 문의"로 고정 안내하고,
+    자유 텍스트를 Slack(국외 이전)으로 더 내보낼 이유가 없다.
 
     PII 보호: 연락처는 마스킹, 환자 질문 본문은 Slack 채널로 송출하지 않음.
     상세 확인은 Admin UI deep-link에서.

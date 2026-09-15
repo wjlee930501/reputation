@@ -266,8 +266,7 @@ async def test_notify_lead_created_masks_residual_identifiers_in_clinic_name(mon
     monkeypatch.setattr(notifier, "_send", fake_send)
 
     await notifier.notify_lead_created(
-        clinic_name="장편한외과의원 900101-1234567",
-        clinic_type="강남 대장항문외과 wjlee@motionlabs.kr",
+        clinic_name="장편한외과의원 900101-1234567 wjlee@motionlabs.kr",
         contact="010-0000-0000",
         admin_url="https://admin.example.com/leads",
     )
@@ -276,7 +275,7 @@ async def test_notify_lead_created_masks_residual_identifiers_in_clinic_name(mon
     assert "900101-1234567" not in payload
     assert "wjlee@motionlabs.kr" not in payload
     assert "[id]" in payload
-    assert "강남 대장항문외과" not in payload
+    assert "[email]" in payload
     assert "장편한외과의원" in payload  # 식별에 필요한 병원명 자체는 유지
 
 
@@ -293,7 +292,6 @@ async def test_notify_lead_created_truncates_and_flattens_long_clinic_name(monke
 
     await notifier.notify_lead_created(
         clinic_name="가" * 200 + "\n연락처: 010-1111-2222",
-        clinic_type="강남",
         contact="010-0000-0000",
     )
 

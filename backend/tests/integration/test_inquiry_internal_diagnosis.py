@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from app.api.admin import leads as leads_api
 from app.api.public import diagnosis as diagnosis_api
 from app.models.admin_user import AdminUser
-from app.models.lead import SalesLead
+from app.models.lead import SalesLead, is_internal_inquiry
 from app.models.lead_diagnosis import (
     DeliveryStatus,
     ExecutionStatus,
@@ -117,9 +117,57 @@ class TestInternalDiagnosisCreation:
         await pg_async_session.refresh(lead)
         assert lead.source == "INQUIRY"
         assert lead.email == "director@example.com"
-        assert lead.clinic_type == "정형외과"
         assert lead.region_keyword == "강남역"
         assert lead.core_keywords == ["도수치료", "허리통증"]
+
+    async def test_creation_preserves_the_introduction_inquiry_marker(
+        self, pg_async_session, monkeypatch
+    ):
+        """진료과 입력이 도입문의 표식을 덮으면 그 리드는 일반 진단 신청처럼 보인다.
+
+        clinic_type 하나만 보는 판정(Admin 목록 배지·도입문의 상세 카드, 고객 발송
+        폴러의 레거시 방어선)이 전부 이 표식에 걸려 있다.
+        """
+        lead = await _inquiry(pg_async_session)
+        monkeypatch.setattr(leads_api, "_enqueue_internal_diagnosis", lambda diagnosis_id: None)
+
+        result = await leads_api.create_internal_inquiry_diagnosis(
+            lead.id,
+            _request(),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+
+        await pg_async_session.refresh(lead)
+        assert lead.clinic_type == "도입문의"
+        assert is_internal_inquiry(lead) is True
+        assert leads_api._serialize_lead(lead)["clinic_type"] == "도입문의"
+
+        # 진료과는 사라지지 않는다 — 슬롯 1 진료과 앵커가 그대로 들고 있다.
+        diagnosis = await pg_async_session.scalar(
+            select(LeadDiagnosis).where(LeadDiagnosis.id == uuid.UUID(result["diagnosis_id"]))
+        )
+        assert any("정형외과" in query["text"] for query in diagnosis.queries)
+
+    async def test_creation_still_enriches_a_lead_without_the_marker(
+        self, pg_async_session, monkeypatch
+    ):
+        """표식이 없는 INQUIRY 리드는 자유 텍스트 대신 AE가 고른 진료과를 받는다."""
+        lead = await _inquiry(pg_async_session, clinic_type="강남 대장항문외과")
+        monkeypatch.setattr(leads_api, "_enqueue_internal_diagnosis", lambda diagnosis_id: None)
+
+        await leads_api.create_internal_inquiry_diagnosis(
+            lead.id,
+            _request(),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+
+        await pg_async_session.refresh(lead)
+        assert lead.clinic_type == "정형외과"
+        assert is_internal_inquiry(lead) is True
 
     async def test_non_inquiry_lead_is_refused(self, pg_async_session):
         lead = await _inquiry(

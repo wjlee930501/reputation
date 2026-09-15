@@ -20,7 +20,11 @@ from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.handoff import HandoffSource, HospitalHandoff
 from app.models.hospital import Hospital, Plan
-from app.models.lead import SalesLead, is_internal_inquiry
+from app.models.lead import (
+    LEAD_CLINIC_TYPE_INQUIRY_MARKER,
+    SalesLead,
+    is_internal_inquiry,
+)
 from app.models.lead_diagnosis import (
     DeliveryStatus,
     ExecutionStatus,
@@ -798,7 +802,12 @@ async def create_internal_inquiry_diagnosis(
     # The Admin form enriches the lead record, but none of these values are converted into the
     # free-diagnosis email/phone locks. INTERNAL is terminal for every customer delivery poller.
     lead.email = request_body.email
-    lead.clinic_type = request_body.clinic_type
+    # 도입문의 표식은 남겨둔다. clinic_type 하나만 보는 판정(Admin 목록 배지·도입문의 상세
+    # 카드, 고객 발송 폴러의 레거시 방어선)이 진료과로 덮이면 그 리드는 일반 진단 신청처럼
+    # 보인다. AE가 입력한 진료과는 슬롯 1 진료과 앵커로 `diagnosis.queries`에 그대로 남고
+    # 아래 감사 기록에도 남으므로 별도 컬럼이 필요하지 않다.
+    if (lead.clinic_type or "").strip() != LEAD_CLINIC_TYPE_INQUIRY_MARKER:
+        lead.clinic_type = request_body.clinic_type
     lead.region_keyword = request_body.region_keyword
     lead.core_keywords = request_body.core_keywords
     if request_body.clinic_phone is not None:
@@ -835,6 +844,7 @@ async def create_internal_inquiry_diagnosis(
         target_id=diagnosis.id,
         detail={
             "lead_id": str(lead.id),
+            "specialty": request_body.clinic_type,
             "query_count": len(queries),
             "customer_delivery": False,
             "report_token_minted": False,
