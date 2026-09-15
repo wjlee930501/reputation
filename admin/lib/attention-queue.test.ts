@@ -4,14 +4,10 @@ import test from 'node:test'
 import {
   ATTENTION_VISIBLE_ROWS,
   type AttentionQueue,
-  formatWaiting,
-  hasAttentionWork,
   hasReportGaps,
-  hiddenHospitalCount,
+  hiddenReportCount,
   reportGapSummary,
 } from './attention-queue.ts'
-
-const NOW = new Date('2026-08-04T12:00:00Z')
 
 function queue(overrides: Partial<AttentionQueue> = {}): AttentionQueue {
   return {
@@ -24,49 +20,6 @@ function queue(overrides: Partial<AttentionQueue> = {}): AttentionQueue {
   }
 }
 
-test('formatWaiting reports hours within the first day and days after', () => {
-  assert.equal(formatWaiting('2026-08-04T09:00:00Z', NOW), '3시간째')
-  assert.equal(formatWaiting('2026-08-03T11:00:00Z', NOW), '1일째')
-  assert.equal(formatWaiting('2026-07-30T12:00:00Z', NOW), '5일째')
-})
-
-test('formatWaiting collapses anything under an hour to 방금', () => {
-  assert.equal(formatWaiting('2026-08-04T11:30:00Z', NOW), '방금')
-})
-
-test('formatWaiting yields nothing it cannot compute', () => {
-  // 값이 없거나 시계가 어긋나 음수가 나오면 "0시간째" 같은 거짓 정보를 만들지 않는다.
-  assert.equal(formatWaiting(null, NOW), '')
-  assert.equal(formatWaiting('not-a-date', NOW), '')
-  assert.equal(formatWaiting('2026-08-04T13:00:00Z', NOW), '')
-})
-
-test('the queue stays hidden when there is nothing to confirm', () => {
-  assert.equal(hasAttentionWork(null), false)
-  assert.equal(hasAttentionWork(queue()), false)
-  assert.equal(hasAttentionWork(queue({ unreviewed_total: 1 })), true)
-  // 확인 대기가 0이어도 공개 보류가 남았으면 사람이 손대야 한다 — 큐를 감추지 않는다.
-  assert.equal(hasAttentionWork(queue({ withheld_total: 1 })), true)
-})
-
-test('hiddenHospitalCount only counts rows beyond the visible window', () => {
-  const rows = (n: number) =>
-    queue({
-      hospitals: Array.from({ length: n }, (_, i) => ({
-        hospital_id: `h${i}`,
-        hospital_name: `병원 ${i}`,
-        unreviewed_count: 1,
-        overdue_count: 0,
-        oldest_published_at: null,
-        withheld_count: 0,
-      })),
-    })
-
-  assert.equal(hiddenHospitalCount(rows(2)), 0)
-  assert.equal(hiddenHospitalCount(rows(ATTENTION_VISIBLE_ROWS)), 0)
-  assert.equal(hiddenHospitalCount(rows(ATTENTION_VISIBLE_ROWS + 3)), 3)
-})
-
 const reports = (missing: number, undelivered: number) => ({
   period_year: 2026,
   period_month: 7,
@@ -78,18 +31,41 @@ const reports = (missing: number, undelivered: number) => ({
   })),
 })
 
-test('report gaps alone are enough to show the queue', () => {
-  // 확인 대기가 0이어도 지난달 리포트가 밀렸으면 할 일이 남은 것이다.
-  assert.equal(hasAttentionWork(queue({ reports: reports(1, 0) })), true)
-  assert.equal(hasAttentionWork(queue({ reports: reports(0, 1) })), true)
-  assert.equal(hasAttentionWork(queue({ reports: reports(0, 0) })), false)
-})
-
-test('hasReportGaps ignores a queue that has none', () => {
+test('the queue stays hidden when no report is missing', () => {
   assert.equal(hasReportGaps(null), false)
   assert.equal(hasReportGaps(queue()), false)
   assert.equal(hasReportGaps(queue({ reports: reports(0, 0) })), false)
-  assert.equal(hasReportGaps(queue({ reports: reports(2, 1) })), true)
+  assert.equal(hasReportGaps(queue({ reports: reports(1, 0) })), true)
+  assert.equal(hasReportGaps(queue({ reports: reports(0, 1) })), true)
+})
+
+test('the post-publish sample never opens the queue on its own', () => {
+  // 공개 후 확인 표본은 발행을 막지 않는 관측용 표본이라 운영자 큐가 아니다(B1).
+  // 응답에는 남아 있지만 목록 상단은 원장 보고만 보고 뜬다.
+  const samplesOnly = queue({
+    unreviewed_total: 7,
+    overdue_total: 3,
+    withheld_total: 2,
+    hospitals: [
+      {
+        hospital_id: 'h1',
+        hospital_name: '표본 의원',
+        unreviewed_count: 7,
+        overdue_count: 3,
+        oldest_published_at: '2026-08-01T00:00:00Z',
+        withheld_count: 2,
+      },
+    ],
+  })
+  assert.equal(hasReportGaps(samplesOnly), false)
+  assert.equal(hasReportGaps({ ...samplesOnly, reports: reports(1, 0) }), true)
+})
+
+test('hiddenReportCount only counts rows beyond the visible window', () => {
+  assert.equal(hiddenReportCount(reports(1, 1)), 0)
+  assert.equal(hiddenReportCount(reports(ATTENTION_VISIBLE_ROWS, 0)), 0)
+  assert.equal(hiddenReportCount(reports(ATTENTION_VISIBLE_ROWS, 3)), 3)
+  assert.equal(hiddenReportCount(reports(0, 0)), 0)
 })
 
 test('reportGapSummary keeps the two states apart', () => {

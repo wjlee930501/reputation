@@ -26,6 +26,10 @@ test('the hospital list reads the server states instead of judging its own', () 
   assert.match(hospitalsList, /hospitals\/\$\{h\.id\}\/info/)
   // 링크는 사람이 결정할 문제에만 붙는다 — 연결됨·확인 중은 누를 곳이 아니다.
   assert.match(hospitalsList, /h\.domain_state\.kind === 'problem'/)
+  // 공개 후 확인 표본은 발행을 막지 않는 관측용 표본이라 목록 라벨이 되지 않는다(B1).
+  assert.doesNotMatch(hospitalsList, /postPublishReview/)
+  assert.doesNotMatch(hospitalsList, /unreviewed/)
+  assert.doesNotMatch(hospitalsList, /withheld/)
 })
 
 test('the hospital header speaks the same three states from one overview call', () => {

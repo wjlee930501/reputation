@@ -269,11 +269,11 @@ test('run and Slack labels are exhaustive over every backend state', () => {
 })
 
 test('customer-facing operation labels never expose raw backend states', () => {
-  const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'REVIEW_PENDING', 'OVERDUE_REVIEW', 'WITHHELD_PUBLIC', 'MISSING', 'COVERAGE_INCOMPLETE', 'MANIFEST_MISMATCH', 'MANIFEST_OPEN', 'DOCTOR_ARTIFACT_MISSING', 'DOCTOR_ARTIFACT_INVALID', 'REPORT_BLOCKED', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
+  const states = ['ONBOARDING', 'ANALYZING', 'BUILDING', 'PENDING_DOMAIN', 'ACTIVE', 'PAUSED', 'PUBLISH_DUE', 'MISSING', 'COVERAGE_INCOMPLETE', 'MANIFEST_MISMATCH', 'MANIFEST_OPEN', 'DOCTOR_ARTIFACT_MISSING', 'DOCTOR_ARTIFACT_INVALID', 'REPORT_BLOCKED', 'DELIVERY_PENDING', 'OPEN', 'RETRYING', 'RECOVERED', 'ACKNOWLEDGED']
 
   assert.deepEqual(states.map(operationStatusLabel), [
     '온보딩 진행 중', '초기 진단 보고서 준비 중', '병원 공개 페이지 준비 중', '공개 주소 확인 대기', '운영 중', '운영 일시 정지',
-    '오늘 발행 예정', '발행 후 확인 대기', '발행 후 확인 기한 지남', '공개 보류', '지난달 보고서 미생성',
+    '오늘 발행 예정', '지난달 보고서 미생성',
     '필수 측정 미완료', '측정 집계 연결 오류', '측정 집계 마감 대기', '원장 전달용 PDF 없음',
     '원장 전달용 PDF 검증 실패', '보고서 전달 차단', '원장 전달 검수 대기',
     '처리 필요', '복구 재시도 중', '복구 확인됨', '확인 완료',
@@ -513,11 +513,11 @@ test('a row without a deadline says so instead of showing an imminent one', () =
 
 test('two rows for the same hospital have different titles', () => {
   const publishDue = operationsRowTitle(row('content:1', { queue: 'TODAY', status: 'PUBLISH_DUE' }))
-  const overdueReview = operationsRowTitle(row('content:2', { queue: 'TODAY', status: 'OVERDUE_REVIEW' }))
+  const missingReport = operationsRowTitle(row('report:2', { queue: 'REPORTS', status: 'MISSING' }))
 
-  assert.notEqual(publishDue, overdueReview)
+  assert.notEqual(publishDue, missingReport)
   assert.match(publishDue, /오늘 발행 예정/)
-  assert.match(overdueReview, /발행 후 확인 기한 지남/)
+  assert.match(missingReport, /지난달 보고서 미생성/)
 })
 
 test('an unknown status falls back to the queue name rather than a bare warning', () => {

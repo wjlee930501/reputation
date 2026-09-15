@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -26,7 +27,21 @@ from app.workers import generation_incident_control
 from app.workers.generation_run_control import classify_generation_failure
 
 
-def test_today_queue_and_post_publish_sampling_share_automatic_operation_boundaries() -> None:
+def test_today_queue_never_selects_the_post_publish_sample() -> None:
+    """표본은 관측용이라 운영자 큐의 선택·집계에 들어가지 않는다(B1).
+
+    렌더에서만 감추면 상태·심각도·기한 필터와 합계가 어긋나므로, 오늘 큐 모듈이 표본
+    술어를 아예 참조하지 않는다는 사실을 계약으로 고정한다.
+    """
+    source = inspect.getsource(today_queries)
+
+    assert "human_post_publish_review_predicate" not in source
+    assert "REVIEW_PENDING" not in source
+    assert "OVERDUE_REVIEW" not in source
+    assert "WITHHELD_PUBLIC" not in source
+
+
+def test_post_publish_sampling_keeps_its_automatic_operation_boundaries() -> None:
     operational_sql = str(
         publicly_operational_hospital_predicate().compile(
             dialect=postgresql.dialect(),
@@ -715,15 +730,12 @@ def test_generation_notification_has_one_developer_fallback() -> None:
     assert payload.count("개발팀 문의용 정보 복사") == 1
 
 
-def test_today_queue_guidance_uses_the_content_check_link_for_both_states() -> None:
+def test_today_queue_guidance_uses_the_content_check_link() -> None:
     # Given / When
-    review_impact, review_action = today_queries._today_operator_copy(review=True)
-    publish_impact, publish_action = today_queries._today_operator_copy(review=False)
+    publish_impact, publish_action = today_queries._today_operator_copy()
 
     # Then
-    assert "운영 검수" in review_impact
     assert "병원 채널" in publish_impact
-    assert "콘텐츠 확인" in review_action
     assert "콘텐츠 확인" in publish_action
 
 
