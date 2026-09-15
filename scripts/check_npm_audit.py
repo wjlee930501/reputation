@@ -41,19 +41,9 @@ class Exception_:
 
 
 # 고칠 수 없다고 판단해 통과시키는 권고. **여기 추가할 때는 근거와 기한을 함께 쓴다.**
-ALLOWED = [
-    Exception_(
-        "GHSA-f88m-g3jw-g9cj",
-        review_by="2026-10-31",
-        reason=(
-            "sharp → libvips CVE 4건. next가 sharp를 물고 있고 npm의 유일한 수정 제안은 "
-            "next@14 다운그레이드(= 더 오래된 Next의 자체 권고를 다시 들임)라 전진 경로가 "
-            "없다. Next 16을 쓰는 admin도 동일하게 남는다. 노출 경로는 next/image 최적화이며 "
-            "우리 site는 자체 GCS 버킷의 생성 이미지만 최적화하고 사용자 업로드를 받지 않는다. "
-            "upstream(sharp/libvips) 수정 대기."
-        ),
-    ),
-]
+# 2026-09-15: sharp/libvips 예외(GHSA-f88m-g3jw-g9cj)는 sharp 0.35.4·next 16.3.3 상향으로
+# 더 이상 관측되지 않아 제거했다. 새 예외는 근거와 기한을 함께 적는다.
+ALLOWED: list[Exception_] = []
 
 _ALLOWED_BY_ID = {item.advisory: item for item in ALLOWED}
 
