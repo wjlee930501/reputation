@@ -147,6 +147,7 @@ def stage_settings() -> StageResult:
 
     data = {
         "IMAGE_PROVIDER": settings.IMAGE_PROVIDER,
+        "IMAGE_FALLBACK_PROVIDER": settings.IMAGE_FALLBACK_PROVIDER or "(off)",
         "GCP_PROJECT_ID": settings.GCP_PROJECT_ID or "(unset)",
         "GOOGLE_IMAGE_LOCATION": settings.GOOGLE_IMAGE_LOCATION,
         "GOOGLE_IMAGE_MODEL": settings.GOOGLE_IMAGE_MODEL,

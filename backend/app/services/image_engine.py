@@ -1,7 +1,8 @@
 """
 이미지 생성 엔진
-- 기본: Vertex AI **Gemini 3.1 Flash Image**
-- 선택: OpenAI **gpt-image-2**, 실패 시 Google 경로로 폴백
+- 기본: Vertex AI **Gemini 3.1 Flash Image**. 안전 차단·정책 거절·공급자 오류로 끝나면
+  OpenAI **gpt-image-2.5** 로 한 번 더 만든다(IMAGE_FALLBACK_PROVIDER).
+- 선택: OpenAI 이미지 우선(IMAGE_PROVIDER=openai), 실패 시 Google 경로로 폴백
 - 생성물은 GCS에 저장 후 gs:// 경로 반환 (공개 표면은 안정 프록시로 서빙)
 
 설계 메모: 콘텐츠 카드 이미지가 유형별 고정 프롬프트라 "파란 빈 방"이 반복되던 슬롭 문제를
@@ -52,9 +53,28 @@ class ImagePolicyStage(StrEnum):
     EXISTING_IMAGE_REVIEW = "EXISTING_IMAGE_REVIEW"
     OPENAI_PRIMARY = "OPENAI_PRIMARY"
     OPENAI_REPAIR = "OPENAI_REPAIR"
+    OPENAI_FALLBACK = "OPENAI_FALLBACK"
     GOOGLE_PRIMARY = "GOOGLE_PRIMARY"
     GOOGLE_FALLBACK = "GOOGLE_FALLBACK"
     GOOGLE_REPAIR = "GOOGLE_REPAIR"
+
+
+# Google 경로가 이 이유로 끝났을 때만 OpenAI 폴백을 부른다. POLICY_UNAVAILABLE은 검수
+# 모델 자체가 죽은 것이라 OpenAI 후보도 같은 검수에서 버려지고, COST_BLOCKED는 예산이다.
+_OPENAI_FALLBACK_TRIGGERS = frozenset(
+    {"IMAGE_SAFETY", "POLICY_REJECTED", "PROVIDER_ERROR", "PROVIDER_EMPTY"}
+)
+_OPENAI_FALLBACK_ERROR_LIMIT = 200
+
+
+@dataclass(frozen=True, slots=True)
+class _StageOutcome:
+    """One provider stage's result. ``terminal`` means no other provider can help."""
+
+    url: str = ""
+    prompt: str = ""
+    reason: str | None = None
+    terminal: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,7 +238,7 @@ def image_content_hash_from_url(url: str | None) -> str | None:
     candidate = filename.split("-", 1)[0]
     return candidate if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate) else None
 
-# ── gpt-image-2 프롬프트 (유형별 개념 + 항목 주제 주입) ───────────────────
+# ── OpenAI 이미지 프롬프트 (유형별 개념 + 항목 주제 주입) ─────────────────
 _OPENAI_TYPE_SUBJECT = {
     ContentType.FAQ: (
         "Concept: a clear, reassuring visual metaphor that answers a common patient health question."
@@ -495,8 +515,9 @@ async def generate_image(
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
-    - 기본 Vertex AI Gemini 3.1 Flash Image (안전한 주제 장면으로 항목별 다양성 확보)
-    - IMAGE_PROVIDER=openai이면 gpt-image-2 우선, 실패 시 Google 폴백
+    - 기본 Vertex AI Gemini 3.1 Flash Image (안전한 주제 장면으로 항목별 다양성 확보).
+      안전 차단·정책 거절·공급자 오류로 끝나면 OpenAI 이미지(IMAGE_FALLBACK_PROVIDER)로 한 번 더.
+    - IMAGE_PROVIDER=openai이면 OpenAI 이미지 우선, 실패 시 Google 폴백
     - 둘 다 불가하면 ("", "") — 이미지 실패가 텍스트 콘텐츠를 막지 않게 한다.
     Returns: (gcs_path, prompt_used)  — gs://bucket/path 형태
     """
@@ -525,138 +546,227 @@ async def generate_image(
 
     loop = asyncio.get_running_loop()
     provider = (settings.IMAGE_PROVIDER or "").lower()
+    fallback_provider = (settings.IMAGE_FALLBACK_PROVIDER or "").lower()
 
-    # 이미지 1건은 공급자 호출 1회가 아니다 — OpenAI가 최대 3회 재시도되고, 그게 다
-    # 실패하면 Google이 다시 호출된다. 예약은 위에서 1건만 잡았으므로, 실제 호출을
-    # 세어 두지 않으면 상한이 실제 지출의 몇 분의 일만 보고 있게 된다.
-    attempts = _CallCounter()
-
-    if provider == "openai" and settings.OPENAI_API_KEY:
-        prompt = (
-            _build_google_policy_repair_prompt(
-                content_type, topic, direction, prior_policy_rejection
-            )
-            if policy_repair
-            else _build_openai_image_prompt(content_type, topic, direction)
-        )
-        openai_stage = (
-            ImagePolicyStage.OPENAI_REPAIR
-            if policy_repair
-            else ImagePolicyStage.OPENAI_PRIMARY
-        )
-        try:
-            url = await loop.run_in_executor(
-                None,
-                lambda: _openai_generate_and_upload(
-                    prompt,
-                    hospital_name,
-                    expected_topic=topic,
-                    counter=attempts,
-                ),
-            )
-            if url:
-                await _settle_image_reservations(
-                    attempts,
-                    image_receipt=decision.receipt,
-                    review_receipt=review_decision.receipt,
-                )
-                return url, prompt
-        except ImagePolicyUnavailableError as e:
-            if diagnostics is not None:
-                diagnostics["reason"] = "POLICY_UNAVAILABLE"
-                diagnostics["stage"] = openai_stage.value
-                diagnostics["policy_error"] = str(e)
-            logger.error("Image policy review unavailable: %s", e)
-            await _settle_image_reservations(
-                attempts,
-                image_receipt=decision.receipt,
-                review_receipt=review_decision.receipt,
-            )
-            return ("", "")
-        except ImagePolicyRejectedError as exc:
-            _record_policy_rejection(
-                diagnostics,
-                exc,
-                stage=openai_stage,
-                prompt_version=(
-                    IMAGE_POLICY_REPAIR_PROMPT_VERSION
+    # 이미지 1건은 공급자 호출 1회가 아니다 — 한 공급자가 최대 3회 재시도되고, 그게 다
+    # 실패하면 다른 공급자가 다시 호출된다. 예약은 위에서 1건만 잡았으므로, 단계마다
+    # 계수기를 따로 두고 끝에서 전부 기록해야 상한이 실제 지출을 본다.
+    counters: list[_CallCounter] = []
+    try:
+        if provider == "openai" and settings.OPENAI_API_KEY:
+            outcome = await _openai_stage(
+                loop,
+                content_type,
+                hospital_name,
+                topic=topic,
+                direction=direction,
+                diagnostics=diagnostics,
+                policy_repair=policy_repair,
+                prior_policy_rejection=prior_policy_rejection,
+                stage=(
+                    ImagePolicyStage.OPENAI_REPAIR
                     if policy_repair
-                    else "openai-primary-v1"
+                    else ImagePolicyStage.OPENAI_PRIMARY
                 ),
+                counters=counters,
             )
-            logger.warning("Generated OpenAI image failed semantic policy review")
-            await _settle_image_reservations(
-                attempts,
-                image_receipt=decision.receipt,
-                review_receipt=review_decision.receipt,
-            )
-            return ("", "")
-        except Exception as e:  # noqa: BLE001 — gpt-image-2 불가 시 Google 경로로 폴백
-            logger.error("gpt-image-2 path failed, falling back to Google image: %s", e)
-        finally:
-            await _record_image_calls(attempts, hospital_id)
+            if outcome.url or outcome.terminal:
+                return outcome.url, outcome.prompt
 
-    # ── Vertex AI Gemini image (기본 또는 폴백) ──
-    if not settings.GCP_PROJECT_ID:
-        if diagnostics is not None:
-            # 종전에는 이 경로만 reason 없이 ("","")를 돌려줘, 설정 누락이 공급자 오류와
-            # 같은 모습으로 보고됐다. 원인을 구분할 수 있게 남긴다.
-            diagnostics["reason"] = "PROVIDER_NOT_CONFIGURED"
-        logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
+        # ── Vertex AI Gemini image (기본 또는 폴백) ──
+        if not settings.GCP_PROJECT_ID:
+            if diagnostics is not None:
+                # 종전에는 이 경로만 reason 없이 ("","")를 돌려줘, 설정 누락이 공급자 오류와
+                # 같은 모습으로 보고됐다. 원인을 구분할 수 있게 남긴다.
+                diagnostics["reason"] = "PROVIDER_NOT_CONFIGURED"
+            logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
+            return ("", "")
+
+        outcome = await _google_stages(
+            loop,
+            content_type,
+            hospital_name,
+            topic=topic,
+            direction=direction,
+            diagnostics=diagnostics,
+            policy_repair=policy_repair,
+            prior_policy_rejection=prior_policy_rejection,
+            counters=counters,
+        )
+        if outcome.url or outcome.terminal:
+            return outcome.url, outcome.prompt
+
+        # ── OpenAI 폴백: Google이 안전 차단·정책 거절·공급자 오류로 끝났을 때 ──
+        if (
+            provider != "openai"
+            and fallback_provider == "openai"
+            and settings.OPENAI_API_KEY
+            and outcome.reason in _OPENAI_FALLBACK_TRIGGERS
+        ):
+            logger.warning(
+                "Google image path ended with %s; trying OpenAI fallback (%s)",
+                outcome.reason,
+                settings.OPENAI_IMAGE_MODEL,
+            )
+            fallback = await _openai_stage(
+                loop,
+                content_type,
+                hospital_name,
+                topic=topic,
+                direction=direction,
+                diagnostics=diagnostics,
+                policy_repair=policy_repair,
+                prior_policy_rejection=prior_policy_rejection,
+                stage=ImagePolicyStage.OPENAI_FALLBACK,
+                counters=counters,
+                prior_failure=outcome.reason,
+            )
+            if fallback.url:
+                if diagnostics is not None:
+                    diagnostics["fallback_provider"] = "openai"
+                return fallback.url, fallback.prompt
+        return ("", "")
+    finally:
+        for counter in counters:
+            await _record_image_calls(counter, hospital_id)
         await _settle_image_reservations(
-            attempts,
+            *counters,
             image_receipt=decision.receipt,
             review_receipt=review_decision.receipt,
         )
-        return ("", "")
+
+
+async def _openai_stage(
+    loop,
+    content_type: ContentType,
+    hospital_name: str,
+    *,
+    topic: str | None,
+    direction: HospitalImageDirection | None,
+    diagnostics: dict[str, object] | None,
+    policy_repair: bool,
+    prior_policy_rejection: dict[str, object] | None,
+    stage: ImagePolicyStage,
+    counters: list[_CallCounter],
+    prior_failure: str | None = None,
+) -> _StageOutcome:
+    """One OpenAI candidate. As primary, a policy rejection ends the attempt; as the
+    fallback after Google, the recorded diagnostic keeps Google's failure as ``prior_failure``."""
 
     prompt = (
-        _build_google_policy_repair_prompt(
-            content_type, topic, direction, prior_policy_rejection
+        _build_google_policy_repair_prompt(content_type, topic, direction, prior_policy_rejection)
+        if policy_repair
+        else _build_openai_image_prompt(content_type, topic, direction)
+    )
+    if policy_repair:
+        prompt_version = IMAGE_POLICY_REPAIR_PROMPT_VERSION
+    elif stage == ImagePolicyStage.OPENAI_FALLBACK:
+        prompt_version = "openai-fallback-v1"
+    else:
+        prompt_version = "openai-primary-v1"
+    attempts = _CallCounter()
+    counters.append(attempts)
+    try:
+        url = await loop.run_in_executor(
+            None,
+            lambda: _openai_generate_and_upload(
+                prompt, hospital_name, expected_topic=topic, counter=attempts
+            ),
         )
+        if url:
+            return _StageOutcome(url=url, prompt=prompt)
+        return _StageOutcome(reason="PROVIDER_EMPTY")
+    except ImagePolicyUnavailableError as e:
+        if diagnostics is not None:
+            diagnostics["reason"] = "POLICY_UNAVAILABLE"
+            diagnostics["stage"] = stage.value
+            diagnostics["policy_error"] = str(e)
+        logger.error("Image policy review unavailable: %s", e)
+        return _StageOutcome(reason="POLICY_UNAVAILABLE", terminal=True)
+    except ImagePolicyRejectedError as exc:
+        _record_policy_rejection(
+            diagnostics,
+            exc,
+            stage=stage,
+            prompt_version=prompt_version,
+            prior_failure=prior_failure,
+        )
+        logger.warning("Generated OpenAI image failed semantic policy review")
+        # 기본 경로에서는 여기서 끝난다(Google 폴백 없음). 폴백 경로에서도 더 갈 곳이 없다.
+        return _StageOutcome(reason="POLICY_REJECTED", terminal=True)
+    except Exception as e:  # noqa: BLE001 — 공급자 오류는 다음 경로가 있으면 넘긴다
+        if stage == ImagePolicyStage.OPENAI_FALLBACK:
+            # Google 진단(reason·policy_rejection)은 남겨 두고 폴백 실패 원문만 덧붙인다.
+            # `_image_failure_class`가 진단 값 전체에서 quota 신호를 찾으므로 원문이 필요하다.
+            if diagnostics is not None:
+                diagnostics["openai_fallback_error"] = (
+                    f"{type(e).__name__}: {e}"[:_OPENAI_FALLBACK_ERROR_LIMIT]
+                )
+            logger.error("OpenAI image fallback failed: %s", e)
+        else:
+            logger.error(
+                "%s path failed, falling back to Google image: %s",
+                settings.OPENAI_IMAGE_MODEL,
+                e,
+            )
+        return _StageOutcome(reason="PROVIDER_ERROR")
+
+
+async def _google_stages(
+    loop,
+    content_type: ContentType,
+    hospital_name: str,
+    *,
+    topic: str | None,
+    direction: HospitalImageDirection | None,
+    diagnostics: dict[str, object] | None,
+    policy_repair: bool,
+    prior_policy_rejection: dict[str, object] | None,
+    counters: list[_CallCounter],
+) -> _StageOutcome:
+    """Google primary (or repair) candidate, then the safety-neutral topical fallback."""
+
+    prompt = (
+        _build_google_policy_repair_prompt(content_type, topic, direction, prior_policy_rejection)
         if policy_repair
         else _build_google_image_prompt(content_type, topic, direction)
     )
     google_stage = (
-        ImagePolicyStage.GOOGLE_REPAIR
-        if policy_repair
-        else ImagePolicyStage.GOOGLE_PRIMARY
+        ImagePolicyStage.GOOGLE_REPAIR if policy_repair else ImagePolicyStage.GOOGLE_PRIMARY
     )
-    fallback_attempts = _CallCounter()
+    attempts = _CallCounter()
+    counters.append(attempts)
     try:
         url = await loop.run_in_executor(
             None,
             lambda: _generate_and_upload(
-                prompt,
-                hospital_name,
-                expected_topic=topic,
-                counter=fallback_attempts,
+                prompt, hospital_name, expected_topic=topic, counter=attempts
             ),
         )
-        if not url and diagnostics is not None:
+        if url:
+            return _StageOutcome(url=url, prompt=prompt)
+        if diagnostics is not None:
             diagnostics["reason"] = "PROVIDER_EMPTY"
             diagnostics["stage"] = google_stage.value
-        return url, prompt
+        return _StageOutcome(reason="PROVIDER_EMPTY")
     except ImagePolicyUnavailableError as e:
         if diagnostics is not None:
             diagnostics["reason"] = "POLICY_UNAVAILABLE"
             diagnostics["stage"] = google_stage.value
             diagnostics["policy_error"] = str(e)
         logger.error("Image policy review unavailable: %s", e)
-        return ("", "")
+        return _StageOutcome(reason="POLICY_UNAVAILABLE", terminal=True)
     except ImagePolicyRejectedError as exc:
         _record_policy_rejection(
             diagnostics,
             exc,
             stage=google_stage,
             prompt_version=(
-                IMAGE_POLICY_REPAIR_PROMPT_VERSION
-                if policy_repair
-                else "google-primary-v1"
+                IMAGE_POLICY_REPAIR_PROMPT_VERSION if policy_repair else "google-primary-v1"
             ),
         )
         logger.warning("Generated Google image failed semantic policy review")
-        return ("", "")
+        return _StageOutcome(reason="POLICY_REJECTED")
     except Exception as e:  # noqa: BLE001
         primary_failure = (
             "IMAGE_SAFETY"
@@ -668,63 +778,52 @@ async def generate_image(
             diagnostics["stage"] = google_stage.value
         if policy_repair:
             logger.warning("Google policy repair image failed: %s", type(e).__name__)
-            return ("", "")
+            return _StageOutcome(reason=primary_failure)
         logger.warning("Google topic image failed; trying safety-neutral fallback: %s", e)
-        fallback_prompt = _build_google_safety_fallback_prompt(
-            content_type, topic, direction
-        )
-        try:
-            url = await loop.run_in_executor(
-                None,
-                lambda: _generate_and_upload(
-                    fallback_prompt,
-                    hospital_name,
-                    expected_topic=topic,
-                    counter=fallback_attempts,
-                ),
-            )
-            if not url and diagnostics is not None:
-                diagnostics["reason"] = "PROVIDER_EMPTY"
-                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
-            return url, fallback_prompt
-        except ImagePolicyRejectedError as fallback_exc:
-            _record_policy_rejection(
-                diagnostics,
-                fallback_exc,
-                stage=ImagePolicyStage.GOOGLE_FALLBACK,
-                prompt_version=IMAGE_POLICY_FALLBACK_PROMPT_VERSION,
-                prior_failure=primary_failure,
-            )
-            logger.warning("Google topical fallback failed semantic policy review")
-            return ("", "")
-        except ImagePolicyUnavailableError as fallback_exc:
-            if diagnostics is not None:
-                diagnostics["reason"] = "POLICY_UNAVAILABLE"
-                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
-                diagnostics["policy_error"] = str(fallback_exc)
-            logger.error("Google image fallback policy review unavailable: %s", fallback_exc)
-            return ("", "")
-        except ImageSafetyBlockedError as fallback_exc:
-            if diagnostics is not None:
-                diagnostics["reason"] = "IMAGE_SAFETY"
-                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
-            logger.warning("Google topical fallback blocked by image safety: %s", fallback_exc)
-            return ("", "")
-        except Exception as fallback_exc:  # noqa: BLE001
-            if diagnostics is not None:
-                diagnostics["reason"] = "PROVIDER_ERROR"
-                diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
-            logger.error("Google image fallback failed: %s", fallback_exc)
-            return ("", "")
-    finally:
-        await _record_image_calls(fallback_attempts, hospital_id)
-        await _settle_image_reservations(
-            attempts,
-            fallback_attempts,
-            image_receipt=decision.receipt,
-            review_receipt=review_decision.receipt,
-        )
 
+    fallback_prompt = _build_google_safety_fallback_prompt(content_type, topic, direction)
+    try:
+        url = await loop.run_in_executor(
+            None,
+            lambda: _generate_and_upload(
+                fallback_prompt, hospital_name, expected_topic=topic, counter=attempts
+            ),
+        )
+        if url:
+            return _StageOutcome(url=url, prompt=fallback_prompt)
+        if diagnostics is not None:
+            diagnostics["reason"] = "PROVIDER_EMPTY"
+            diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+        return _StageOutcome(reason="PROVIDER_EMPTY")
+    except ImagePolicyRejectedError as fallback_exc:
+        _record_policy_rejection(
+            diagnostics,
+            fallback_exc,
+            stage=ImagePolicyStage.GOOGLE_FALLBACK,
+            prompt_version=IMAGE_POLICY_FALLBACK_PROMPT_VERSION,
+            prior_failure=primary_failure,
+        )
+        logger.warning("Google topical fallback failed semantic policy review")
+        return _StageOutcome(reason="POLICY_REJECTED")
+    except ImagePolicyUnavailableError as fallback_exc:
+        if diagnostics is not None:
+            diagnostics["reason"] = "POLICY_UNAVAILABLE"
+            diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+            diagnostics["policy_error"] = str(fallback_exc)
+        logger.error("Google image fallback policy review unavailable: %s", fallback_exc)
+        return _StageOutcome(reason="POLICY_UNAVAILABLE", terminal=True)
+    except ImageSafetyBlockedError as fallback_exc:
+        if diagnostics is not None:
+            diagnostics["reason"] = "IMAGE_SAFETY"
+            diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+        logger.warning("Google topical fallback blocked by image safety: %s", fallback_exc)
+        return _StageOutcome(reason="IMAGE_SAFETY")
+    except Exception as fallback_exc:  # noqa: BLE001
+        if diagnostics is not None:
+            diagnostics["reason"] = "PROVIDER_ERROR"
+            diagnostics["stage"] = ImagePolicyStage.GOOGLE_FALLBACK.value
+        logger.error("Google image fallback failed: %s", fallback_exc)
+        return _StageOutcome(reason="PROVIDER_ERROR")
 
 def _download_stored_image(image_url: str) -> bytes:
     if not image_url.startswith("gs://"):
@@ -1077,10 +1176,10 @@ def _openai_generate_verified_bytes(
             event["usage"] = getattr(result, "usage", None)
             event["provider_request_id"] = getattr(result, "id", None)
         if not result.data:
-            raise ValueError("gpt-image-2 returned no data")
+            raise ValueError(f"{settings.OPENAI_IMAGE_MODEL} returned no data")
         b64 = result.data[0].b64_json
         if not b64:
-            raise ValueError("gpt-image-2 returned no b64_json payload")
+            raise ValueError(f"{settings.OPENAI_IMAGE_MODEL} returned no b64_json payload")
         image_bytes = base64.b64decode(b64, validate=True)
         if event is not None:
             event["image_units"] = 1
@@ -1096,7 +1195,7 @@ def _openai_generate_verified_bytes(
         logger.error("openai SDK not installed")
         return b""
     except Exception as e:
-        logger.error("gpt-image-2 generation failed: %s", e)
+        logger.error("%s generation failed: %s", settings.OPENAI_IMAGE_MODEL, e)
         raise
 
 

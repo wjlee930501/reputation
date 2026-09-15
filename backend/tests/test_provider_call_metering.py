@@ -234,6 +234,7 @@ def test_second_policy_repair_uses_one_distinct_prompt_without_another_fallback(
     monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
     monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "IMAGE_FALLBACK_PROVIDER", "")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
     prompts = []
 
@@ -279,6 +280,7 @@ def test_fallback_policy_rejection_keeps_prior_safety_and_typed_assessment(
     monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
     monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "IMAGE_FALLBACK_PROVIDER", "")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
     assessment = ImagePolicyAssessment(
         has_text=False,

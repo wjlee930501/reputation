@@ -253,7 +253,8 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 | 본문 | `claude-sonnet-4-5` |
 | 빠른 Anthropic 작업 | `claude-haiku-4-5-20251001` |
 | 대표 이미지 | `IMAGE_PROVIDER=google`, `gemini-3.1-flash-image` |
-| 선택 OpenAI 이미지 | `gpt-image-2`, Google fallback 경로 |
+| 대표 이미지 폴백 | `IMAGE_FALLBACK_PROVIDER=openai`, `gpt-image-2.5-flare` — Google 경로가 안전 차단·정책 거절·공급자 오류로 끝날 때 |
+| 선택 OpenAI 이미지 우선 | `IMAGE_PROVIDER=openai`, Google fallback 경로 |
 | ChatGPT 측정 | `gpt-5.6-luna` |
 | 판정·파싱 | `gpt-4o-mini-2024-07-18` |
 | Gemini 측정 | `gemini-3.6-flash` |

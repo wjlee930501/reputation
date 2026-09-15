@@ -63,6 +63,20 @@ uv run python -m app.utils.check_image_provider
 | `POLICY_UNAVAILABLE` | 검수 모델 호출 실패. `policy_error`에 공급자 원문 | `PROVIDER_ERROR`(원문에 quota 신호가 있으면 `PROVIDER_QUOTA`) |
 | `PROVIDER_ERROR` | 그 밖의 공급자 오류 | `PROVIDER_ERROR`/`PROVIDER_QUOTA` |
 
+## Google 경로 뒤의 OpenAI 폴백
+
+`IMAGE_FALLBACK_PROVIDER=openai`(기본)이면 Google 경로(기본 프롬프트 → 안전 폴백 프롬프트,
+또는 repair 프롬프트)가 `IMAGE_SAFETY`·`POLICY_REJECTED`·`PROVIDER_ERROR`·`PROVIDER_EMPTY`로
+끝났을 때 `OPENAI_IMAGE_MODEL`(기본 `gpt-image-2.5-flare`)로 후보를 한 번 더 만들고 **같은
+정책 검수**를 통과시킨다. 검수 모델이 죽은 `POLICY_UNAVAILABLE`과 `COST_BLOCKED`는 폴백하지
+않는다. 이미지 1건의 유료 호출 상한은 Google 최대 2단계 × 3회 + OpenAI 3회이며 전부 image
+계수에 잡힌다. 폴백까지 실패하면 저장 분류는 Google 원인을 유지하고 `openai_fallback_error`에
+OpenAI 원문(quota 신호 포함)만 덧붙는다. 폴백이 성공한 글은 `image_prompt`가 OpenAI 프롬프트다.
+
+2026-09-12~14 운영에서 Gemini 후보가 3일 내내 전부 실패한 패턴(기본 프롬프트 `IMAGE_SAFETY`
+차단 → 안전 폴백 후보가 검수 거절)이 이 폴백을 넣은 이유다. 거절 사유의 불리언은 저장된
+`generation_attempt.image_policy_rejection`이나 이 진단기의 5단계 출력으로 본다.
+
 ## 이미지가 끝내 안 만들어질 때의 발행
 
 이미지 실패가 발행을 하루 넘게 막지 않도록 두 단계의 대체가 있다.
