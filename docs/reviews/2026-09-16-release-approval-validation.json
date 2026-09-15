@@ -1,0 +1,102 @@
+{
+  "verified_at": "2026-09-15T21:14:02.021588+00:00",
+  "decision": "HOLD",
+  "baseline": "cfc14d034452d60dce862fe6b661cc842b31740e",
+  "application_commit": "b02237f2643104992064d90caf4fc19b0645316b",
+  "branch": "codex/geo-autonomy-hardening-20260915",
+  "migration": {
+    "bootstrap": "ALEMBIC_FROM_EMPTY",
+    "head": "0079_topic_swap_fallback",
+    "fresh_databases": 4,
+    "populated_0064_upgrade_in_full_suite": true,
+    "audit_append_only_trigger_rechecked": true
+  },
+  "backend": {
+    "tests": 4099,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "coverage_percent": 84.68,
+  "frontend": {
+    "admin_unit_passed": 627,
+    "site_unit_passed": 332,
+    "admin_lint_typecheck_build": "PASS",
+    "site_lint_typecheck_build": "PASS",
+    "admin_browser_passed": 29,
+    "admin_actions_passed": 4,
+    "browser_exceptions": [],
+    "http_5xx": []
+  },
+  "broker": {
+    "queues": [
+      "control",
+      "default",
+      "content",
+      "sov",
+      "reports",
+      "leadgen",
+      "certificates"
+    ],
+    "current_release": "local-00a8cd47fb363fda9d547d09931671d543f0f2ff",
+    "all_queue_canaries_verified": true,
+    "duplicate_heartbeat_outbox_rows": 1,
+    "external_slack_deliveries": 0
+  },
+  "not_proven": [
+    "LINUX_AMD64_IMAGE_BUILD_AND_RUNTIME",
+    "REAL_BEAT_TO_GENERATION_PUBLICATION_MEASUREMENT_REPORT_END_TO_END",
+    "VALID_DOCTOR_PDF_DOWNLOAD_DELIVERY_REDELIVERY_IN_BROWSER",
+    "TARGET_ENVIRONMENT_MIGRATION_REVISION_IAM_SECRET_ALIGNMENT"
+  ],
+  "excluded_actions": {
+    "production_database_access": false,
+    "customer_data_access": false,
+    "real_slack_send": false,
+    "deployment": false,
+    "git_push": false
+  },
+  "tool_blocked_not_executed": [
+    "additional_report_happy_path_seed_write",
+    "current_linux_image_build_request"
+  ],
+  "preservation": {
+    "original_head": "d96bd2143ba509cd1fcae73f028286b6d938ae8e",
+    "initial_pending_files_changed": [],
+    "diff_unchanged": true,
+    "status_unchanged": true,
+    "inherited_helpers_archived_unchanged": {
+      "scripts/release_candidate_report_seed.py": "inherited-incomplete-report-seed.py",
+      "scripts/run_geo_offline_tests.py": "inherited-offline-helper.py"
+    }
+  },
+  "raw_evidence_root": "/tmp/reputation-approval-20260916-tqihijy1",
+  "versioned_evidence_sha256": {
+    "docs/reviews/evidence/2026-09-16-release-approval/backend-junit.xml": "eec7352267e7e9bac82348c4997b85821e3a9845fca50b0e32c874c5345e168f",
+    "docs/reviews/evidence/2026-09-16-release-approval/admin-browser.json": "43dc38e61f73a77ee306a18e28dcd37a2928f84317743232181ce9e7d297fa8d",
+    "docs/reviews/evidence/2026-09-16-release-approval/admin-actions.json": "f6db4ccd4d39609e786788e62ea955d2704ff2dbdfc6798263c6c969394d9ca9",
+    "docs/reviews/evidence/2026-09-16-release-approval/broker.json": "f38927c2f0bb1ed7979d51d33da3b78e2edd3123a66bddfd469c64c923916bd7",
+    "docs/reviews/evidence/2026-09-16-release-approval/mobile-reports.png": "80cfce38afd2c617cd0b43d63f709670712f6adb901164ac5aa6980eb0320f5c",
+    "docs/reviews/evidence/2026-09-16-release-approval/blocked-report-dialog.png": "274d71acaa3abcd09e4f32e66fd469cd57f88a88b69dfa25b13224eb2271b150"
+  },
+  "cleanup": {
+    "owned_api_admin_worker_sessions_terminated": true,
+    "owned_test_ports_have_no_listeners": true,
+    "owned_postgres_stopped": true,
+    "owned_redis_container_removed": true,
+    "database_and_raw_evidence_files_retained": true
+  },
+  "cached_redis_image": "redis:7-alpine",
+  "verification_harness_commit": "b2e000dd187264d3396371d65bfcd2becc346ac5",
+  "application_trees": {
+    "backend": "4d54f51b8478844ff483da6dbedc35172a66bcd2",
+    "admin": "d7e5a8211ab5d3eb656af3598c9e830df8dcac76",
+    "site": "e0f162051b21afff53e3fb14aed21860aaa9ca29"
+  },
+  "local_runtime": {
+    "python": "Python 3.11.13",
+    "node": "v22.17.0",
+    "postgres": "16.15",
+    "os": "macOS"
+  }
+}

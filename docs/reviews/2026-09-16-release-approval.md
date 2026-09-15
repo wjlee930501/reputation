@@ -1,6 +1,6 @@
 # GEO release-candidate verification — 2026-09-16
 
-Status: IN PROGRESS. This record does not authorize production deployment.
+Status: HOLD. Executed local gates passed; remaining release gates are listed below. This record does not authorize production deployment.
 Baseline: cfc14d034452d60dce862fe6b661cc842b31740e.
 Worktree: Reputation-geo-hardening; branch codex/geo-autonomy-hardening-20260915.
 The inherited uncommitted work was inspected and backed up before changes.
@@ -51,3 +51,55 @@ the daily fleet heartbeat left exactly one PENDING outbox record. No Slack was
 sent. This is a broker/enqueue rehearsal, not a full provider/Beat pipeline E2E.
 Evidence: admin-browser-final.log, ui/results.json, ui/actions-results.json,
 admin-production-build.log, site-production-build.log, approval-broker.json.
+
+## Final decision — HOLD, not unconditional deployment approval
+
+The prior migration/whole-backend/Admin-render blockers are resolved within the
+isolated verification scope. Exact backend line coverage is 84.68%.
+There is no failing test in the final executed backend/frontend/browser gates.
+This is NOT evidence that the entire autonomous service has completed E2E.
+
+Remaining release gates:
+1. Build and start the target Linux/amd64 Backend/Admin/Site images. The current
+   build request was blocked by the tool before execution. Historical build
+   timeouts are not re-labelled as current product failures. Local Node 22
+   standalone success does not prove the Dockerfiles' Node 24 runtime parity.
+2. A synthetic-provider operational rehearsal must connect real Beat scheduling,
+   generation, publication and cache invalidation, measurement checkpoints,
+   recovery, report creation and normal/exception notification delivery to a
+   local capture endpoint. Seven canaries and an outbox row do not prove this.
+3. Finish the browser happy path for downloading a genuinely validated director
+   PDF and recording delivery/rescission/re-delivery. Backend PDF and delivery
+   tests passed, but this browser path was not executed: the additional fixture
+   write was blocked by the tool. No fabricated validation metadata was inserted.
+4. Target-environment revision, migration head, IAM and secret alignment still
+   require the separate approved rollout/preflight procedure. Production access
+   and real provider/Slack calls were excluded, not silently treated as passed.
+
+Do not weaken publication, report, production-URL, auth or tenant gates to obtain
+approval. No deployment or push was performed. See the sibling validation JSON
+and versioned evidence directory for exact counts and hashes.
+
+## Preservation, cleanup and reproduction
+
+The original Reputation worktree remained at d96bd2143ba509cd1fcae73f028286b6d938ae8e.
+Its initial pending-file hashes, binary diff and Git status all matched at the end.
+The initial target changes were backed up before edits. Two unused inherited
+helpers were archived byte-for-byte under the evidence root rather than shipping
+an unfinished report seed or the older, weaker offline-only harness:
+`inherited-incomplete-report-seed.py` and `inherited-offline-helper.py`.
+
+Only this run's API/Admin/worker sessions were terminated. PostgreSQL was stopped,
+the owned Redis container was removed, and all five owned ports were confirmed
+closed. Existing local databases, old test containers and the original worktree
+were not stopped or changed. Database files, raw logs and fixture credentials
+remain local; fixture credentials are not committed. Six selected evidence files,
+including JUnit XML and UI screenshots, are versioned with SHA-256 in the JSON.
+
+The harness refuses to run without the live, owned disposable PostgreSQL identity
+in `/tmp/reputation-approval-current.json`. For this retained run, restart only
+its `pgdata` on port 55584 with `LC_ALL=C LANG=C` and loopback binding; recreate
+`reputation-approval-tqihijy1-redis` from cached `redis:7-alpine` on loopback port
+56584 with persistence disabled. Never substitute an existing project/production DB.
+A fresh run needs a new owned `/tmp/reputation-approval-*` directory, five distinct
+high ports, and the five dedicated DB names declared by the runner.

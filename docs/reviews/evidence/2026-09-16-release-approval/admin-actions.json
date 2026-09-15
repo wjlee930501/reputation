@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "name": "pause UI changes both Admin state and public API eligibility",
+      "status": "PASS"
+    },
+    {
+      "name": "resume UI restores the guarded public API state",
+      "status": "PASS"
+    },
+    {
+      "name": "blocked report cannot be recorded as delivered through its dialog",
+      "status": "PASS"
+    },
+    {
+      "name": "stateful workflows produce no browser exceptions",
+      "status": "PASS"
+    }
+  ],
+  "errors": []
+}
