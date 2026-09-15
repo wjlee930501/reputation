@@ -47,6 +47,14 @@ class SalesLead(Base):
     core_keywords: Mapped[list | None] = mapped_column(
         JSON().with_variant(JSONB, "postgresql"), nullable=True
     )
+    # 도입문의 폼이 함께 보낸 진료과. `clinic_type`은 도입문의 표식이 차지하므로 따로 둔다 —
+    # 초도 진단 질의의 슬롯 1 앵커이자 Admin 내부 진단 폼의 기본값이다.
+    specialty: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # 접수 직후 원장 휴대전화로 나가는 안내 문자 결과. SENT/FAILED/SKIPPED.
+    # 리드 저장과 분리된 부수효과라 실패해도 접수를 되돌리지 않는다.
+    ack_sms_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    ack_sms_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ack_sms_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str] = mapped_column(
         String(40), nullable=False, default=LEAD_SOURCE_INQUIRY, server_default=LEAD_SOURCE_INQUIRY
     )

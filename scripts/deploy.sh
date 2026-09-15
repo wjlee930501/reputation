@@ -155,6 +155,9 @@ BACKEND_OPTIONAL_SECRET_NAMES=(
   # 인프라 인시던트만 이쪽으로 나간다. 비어 있으면 개발팀 알림은 outbox HOLD로 남고
   # 운영 채널로 폴백하지 않는다. 배포 전 값을 확인하되 배포 자체는 막지 않는 optional이다.
   "SLACK_WEBHOOK_URL_DEV"
+  # 도입문의 접수 안내 문자(NHN Cloud SMS) 시크릿 키. INQUIRY_SMS_PROVIDER=nhn과 NHN_SMS_APP_KEY가
+  # 함께 있어야 발송된다. 비어 있으면 접수는 정상이고 리드에 SKIPPED 사유만 남는다.
+  "NHN_SMS_SECRET_KEY"
 )
 
 SITE_REQUIRED_SECRET_NAMES=(

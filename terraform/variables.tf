@@ -437,3 +437,24 @@ variable "certificate_manager_role" {
   type        = string
   default     = "roles/certificatemanager.editor"
 }
+
+# ── 도입문의 접수 안내 문자 (NHN Cloud Notification SMS). 시크릿 키는 secretmanager.tf의
+#    NHN_SMS_SECRET_KEY로 주입하고, 여기 셋은 비밀이 아니라 일반 env다. provider가 비어 있으면
+#    발송을 시도하지 않는다 — 접수·Slack·초도 진단은 그대로 동작한다.
+variable "inquiry_sms_provider" {
+  description = "도입문의 접수 안내 문자 사업자. 현재 \"nhn\" 또는 빈 값(발송 안 함)"
+  type        = string
+  default     = ""
+}
+
+variable "nhn_sms_app_key" {
+  description = "NHN Cloud Notification SMS App Key (비밀 아님)"
+  type        = string
+  default     = ""
+}
+
+variable "inquiry_sms_sender_no" {
+  description = "접수 안내 문자 발신번호 — NHN Cloud 콘솔에 사전 등록된 번호"
+  type        = string
+  default     = "010-2492-8543"
+}

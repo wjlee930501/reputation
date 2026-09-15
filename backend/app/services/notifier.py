@@ -180,6 +180,7 @@ async def notify_lead_created(
     clinic_name: str,
     contact: str,
     admin_url: str | None = None,
+    diagnosis_note: str | None = None,
 ) -> bool:
     """공개 문의 접수 → AE에게.
 
@@ -196,6 +197,9 @@ async def notify_lead_created(
     masked = mask_contact(contact)
     safe_clinic_name = _safe_label(clinic_name)
     link_line = f"<{admin_url}|Admin에서 상세 확인>" if admin_url else "Admin에서 상세 확인"
+    # 초도 진단·안내 문자의 자동 처리 결과 한 줄. 사용자 자유 텍스트가 아니라 코드가 고른
+    # 고정 문구만 들어오므로 마스킹 대상이 아니지만, 길이는 라벨 규칙으로 묶는다.
+    note_line = f"자동 처리: {_safe_label(diagnosis_note)}\n" if diagnosis_note else ""
     return await _send(
         text=f"📩 [도입문의 접수] {safe_clinic_name}",
         blocks=[{
@@ -203,7 +207,8 @@ async def notify_lead_created(
             "text": {"type": "mrkdwn", "text": (
                 f"📩 *[도입문의 접수]* *{safe_clinic_name}*\n"
                 "문의 유형: 일반 문의\n"
-                f"연락처: `{masked}`\n\n"
+                f"연락처: `{masked}`\n"
+                f"{note_line}\n"
                 f"{link_line} 후 문의 내용을 확인하고 담당자를 지정해 주세요."
             )},
         }],

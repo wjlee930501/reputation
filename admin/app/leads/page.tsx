@@ -133,7 +133,9 @@ function internalDiagnosisDefaults(lead: SalesLead): InternalDiagnosisForm {
   const contact = lead.contact?.trim() ?? ''
   return {
     email: lead.email?.trim() || (contact.includes('@') ? contact : ''),
-    clinicType: lead.clinic_type?.trim() === '도입문의' ? '' : lead.clinic_type?.trim() || '',
+    clinicType:
+      lead.specialty?.trim()
+      || (lead.clinic_type?.trim() === '도입문의' ? '' : lead.clinic_type?.trim() || ''),
     regionKeyword: lead.region_keyword?.trim() || details.address || '',
     coreKeywords: (lead.core_keywords ?? []).join(', '),
     clinicPhone: lead.clinic_phone?.trim() || (!contact.includes('@') ? contact : ''),
@@ -584,6 +586,14 @@ export default function LeadsPage() {
                     )}
                     {lead.notification_status === 'SENT' && (
                       <p className="mt-1 text-[11px] font-medium text-emerald-600">운영 알림 완료</p>
+                    )}
+                    {lead.ack_sms_status === 'SENT' && (
+                      <p className="mt-1 text-[11px] font-medium text-emerald-600">원장 안내 문자 발송 완료</p>
+                    )}
+                    {lead.ack_sms_status === 'FAILED' && (
+                      <p className="mt-1 text-[11px] font-semibold text-red-600">
+                        원장 안내 문자 미발송 — 직접 연락이 필요합니다.
+                      </p>
                     )}
                   </td>
                   <td className="px-6 py-4 text-xs text-slate-500 sm:hidden lg:table-cell" data-label="유입">{leadSourceLabel(lead.source_path)}</td>

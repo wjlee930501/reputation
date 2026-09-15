@@ -307,3 +307,151 @@ class TestCustomerDeliveryFences:
         with pytest.raises(HTTPException) as exc:
             await diagnosis_api._resolve_token(pg_async_session, raw_token)
         assert exc.value.status_code == 404
+
+
+# ── 공개 접수의 자동 생성은 Admin 경로와 같은 행을 만든다 ─────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+from app.api.public import leads as public_leads_api  # noqa: E402
+from app.models.audit import AdminAuditLog  # noqa: E402
+from app.services import inquiry_diagnosis, inquiry_sms, notifier  # noqa: E402
+
+
+class _FakeRequest:
+    def __init__(self):
+        self.headers = SimpleNamespace(get=lambda key, default=None: default)
+        self.client = SimpleNamespace(host="127.0.0.1")
+
+
+def _public_body(**overrides) -> public_leads_api.LeadCreate:
+    fields = dict(
+        clinic_name=f"자동진단{uuid.uuid4().hex[:6]}의원",
+        clinic_type="도입문의",
+        contact=f"010-{uuid.uuid4().int % 9000 + 1000}-{uuid.uuid4().int % 9000 + 1000}",
+        question="병원 주소: 서울 강남구\n원장님 성함: 김원장\n병원 홈페이지: https://x.example",
+        privacy=True,
+        source_path="/contact",
+        specialty="정형외과",
+        region_keyword="강남역",
+        core_keywords=["도수치료", "허리통증"],
+        contact_name="김원장",
+    )
+    fields.update(overrides)
+    return public_leads_api.LeadCreate(**fields)
+
+
+@pytest.mark.asyncio
+class TestPublicIntakeAutoDiagnosis:
+    async def test_intake_creates_a_queued_internal_diagnosis(self, pg_async_session, monkeypatch):
+        async def fake_notify(**payload):
+            return True
+
+        monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+        monkeypatch.setattr(inquiry_sms.settings, "INQUIRY_SMS_PROVIDER", "")
+        queued: list[str] = []
+        monkeypatch.setattr(inquiry_diagnosis, "enqueue_inquiry_diagnosis", queued.append)
+
+        background_tasks = BackgroundTasks()
+        response = await public_leads_api.create_lead.__wrapped__(
+            request=_FakeRequest(),
+            body=_public_body(),
+            background_tasks=background_tasks,
+            db=pg_async_session,
+        )
+        await background_tasks()
+
+        assert response["diagnosis_id"] is not None
+        assert queued == [response["diagnosis_id"]]
+        diagnosis = await pg_async_session.scalar(
+            select(LeadDiagnosis).where(LeadDiagnosis.id == uuid.UUID(response["diagnosis_id"]))
+        )
+        assert diagnosis.delivery_status == DeliveryStatus.INTERNAL.value
+        assert diagnosis.execution_status == ExecutionStatus.PENDING.value
+        assert diagnosis.slot_date is None and diagnosis.applicant_email_hash is None
+        assert any("정형외과" in query["text"] for query in diagnosis.queries)
+
+        lead = await pg_async_session.scalar(
+            select(SalesLead).where(SalesLead.id == uuid.UUID(response["lead_id"]))
+        )
+        assert lead.clinic_type == "도입문의"
+        assert lead.specialty == "정형외과"
+        assert lead.core_keywords == ["도수치료", "허리통증"]
+        assert lead.ack_sms_status == "SKIPPED"
+        assert is_internal_inquiry(lead) is True
+
+        audit = await pg_async_session.scalar(
+            select(AdminAuditLog).where(AdminAuditLog.target_id == str(diagnosis.id))
+        )
+        assert audit is not None
+        assert audit.actor == "system:public-inquiry"
+
+        # Admin은 같은 리드에 두 번째 진단을 만들 수 없다 — 규칙이 두 경로에서 같다.
+        with pytest.raises(HTTPException) as exc:
+            await leads_api.create_internal_inquiry_diagnosis(
+                lead.id, _request(), BackgroundTasks(), db=pg_async_session, actor=_actor()
+            )
+        assert exc.value.status_code == 409
+
+    async def test_refused_input_still_records_the_lead_and_leaves_no_diagnosis(
+        self, pg_async_session, monkeypatch
+    ):
+        async def fake_notify(**payload):
+            return True
+
+        monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+        monkeypatch.setattr(inquiry_sms.settings, "INQUIRY_SMS_PROVIDER", "")
+        body = _public_body(clinic_name="강남역정형외과의원", core_keywords=["강남역 정형외과 의원"])
+
+        response = await public_leads_api.create_lead.__wrapped__(
+            request=_FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=pg_async_session
+        )
+
+        assert response["ok"] is True
+        assert response["diagnosis_id"] is None
+        lead = await pg_async_session.scalar(
+            select(SalesLead).where(SalesLead.id == uuid.UUID(response["lead_id"]))
+        )
+        assert lead is not None
+        assert await pg_async_session.scalar(
+            select(func.count()).select_from(LeadDiagnosis).where(LeadDiagnosis.lead_id == lead.id)
+        ) == 0
+
+    async def test_same_contact_gets_one_acknowledgement_sms(self, pg_async_session, monkeypatch):
+        async def fake_notify(**payload):
+            return True
+
+        sent: list[str] = []
+
+        async def fake_deliver(to):
+            sent.append(to)
+            return inquiry_sms.AckSmsOutcome("SENT", None, "req")
+
+        monkeypatch.setattr(notifier, "notify_lead_created", fake_notify)
+        monkeypatch.setattr(inquiry_diagnosis, "enqueue_inquiry_diagnosis", lambda _id: None)
+        monkeypatch.setattr(inquiry_sms, "deliver", fake_deliver)
+        for name, value in {
+            "INQUIRY_SMS_PROVIDER": "nhn",
+            "NHN_SMS_APP_KEY": "k",
+            "NHN_SMS_SECRET_KEY": "s",
+            "INQUIRY_SMS_SENDER_NO": "010-2492-8543",
+        }.items():
+            monkeypatch.setattr(inquiry_sms.settings, name, value)
+
+        contact = "010-5555-1234"
+        first = await public_leads_api.create_lead.__wrapped__(
+            request=_FakeRequest(),
+            body=_public_body(contact=contact),
+            background_tasks=BackgroundTasks(),
+            db=pg_async_session,
+        )
+        second = await public_leads_api.create_lead.__wrapped__(
+            request=_FakeRequest(),
+            body=_public_body(contact=contact),
+            background_tasks=BackgroundTasks(),
+            db=pg_async_session,
+        )
+
+        assert first["ack_sms"] == "sent"
+        assert second["ack_sms"] == "skipped"
+        assert sent == ["01055551234"]
