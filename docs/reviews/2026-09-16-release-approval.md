@@ -26,3 +26,28 @@ fixtures that actually exercise the active-cap concurrency test after deduplicat
 Evidence root: /tmp/reputation-approval-20260916-tqihijy1.
 Raw evidence: migrations.log, backend-full.log, backend-full.xml, coverage.xml.
 No production DB, customer data, real Slack delivery, deployment or push was used.
+
+## Checkpoint 2 — real Admin browser integration
+
+Production standalone Admin -> real BFF -> isolated API -> migrated PostgreSQL:
+29 browser checks passed, zero failures, browser exceptions or HTTP 5xx.
+Nine routes were exercised at 1440px and 390px viewport widths.
+Login, signed/CSRF-protected mutations, director-feedback deduplication and tenant
+isolation, explicit retirement, preserved schedule/content identities and logout
+were verified. Four additional stateful checks passed: pause/public 404,
+resume/public 200, blocked-report delivery prevention, and no browser exception.
+The report-state wrapper preserves readable status/problem text on mobile.
+Mobile reports and the blocked-report dialog were also visually inspected.
+
+Admin: 627 unit tests, lint, typecheck and default production build passed.
+Site: 332 unit tests, lint, typecheck and default production build passed.
+Frontend builds used scrubbed fake configuration and a Node socket egress guard;
+running Admin and API also had fixed-loopback-port OS network restrictions.
+The test-only logical API host was mapped to loopback inside the harness; no
+production URL guard was weakened and no system hosts file was changed.
+
+Real isolated Redis/Celery: seven signed queue canaries passed; two requests for
+the daily fleet heartbeat left exactly one PENDING outbox record. No Slack was
+sent. This is a broker/enqueue rehearsal, not a full provider/Beat pipeline E2E.
+Evidence: admin-browser-final.log, ui/results.json, ui/actions-results.json,
+admin-production-build.log, site-production-build.log, approval-broker.json.
