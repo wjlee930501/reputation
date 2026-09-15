@@ -8,6 +8,9 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@lo
 os.environ.setdefault("SYNC_DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
+# Google 이미지 경로가 실패하는 테스트가 실제 OpenAI로 새지 않게 폴백은 기본 꺼 둔다.
+# 폴백을 검증하는 테스트만 settings.IMAGE_FALLBACK_PROVIDER="openai"로 켠다.
+os.environ.setdefault("IMAGE_FALLBACK_PROVIDER", "")
 
 import pytest  # noqa: E402 — 위 환경변수 설정이 app import보다 먼저여야 한다.
 

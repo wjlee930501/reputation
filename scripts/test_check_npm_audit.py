@@ -22,12 +22,20 @@ def _vuln(severity: str, *, advisories=(), via_packages=()):
     return {"severity": severity, "via": via}
 
 
-ALLOWED_ID = gate.ALLOWED[0].advisory
+# 판정 로직은 출하 목록(ALLOWED)이 비어 있어도 검증돼야 한다 — 합성 예외 하나를 꽂는다.
+ALLOWED_ID = "GHSA-test-allo-wed0"
 
 
 @pytest.fixture
 def audited(monkeypatch):
-    """_audit을 고정 보고서로 바꿔치기하고 판정만 검사한다."""
+    """_audit을 고정 보고서로 바꿔치기하고, 합성 예외 하나만 허용된 상태로 판정만 검사한다."""
+
+    synthetic = gate.Exception_(
+        ALLOWED_ID,
+        review_by=(date.today() + timedelta(days=30)).isoformat(),
+        reason="테스트 전용 합성 예외 — 판정 로직이 출하 예외 목록에 묶이지 않게 한다.",
+    )
+    monkeypatch.setattr(gate, "_ALLOWED_BY_ID", {ALLOWED_ID: synthetic})
 
     def _install(report):
         monkeypatch.setattr(gate, "_audit", lambda _dir: report)

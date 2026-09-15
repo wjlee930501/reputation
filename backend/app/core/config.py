@@ -354,14 +354,19 @@ class Settings(BaseSettings):
     CERTIFICATE_MAP_NAME: str = "reputation-certmap"
 
     # 콘텐츠 대표 이미지 생성기
-    #   "google" → Vertex AI Gemini 3.1 Flash Image (기본)
-    #   "openai" → gpt-image-2 우선, 실패 시 Google 경로로 폴백
+    #   "google" → Vertex AI Gemini 3.1 Flash Image (기본). 안전 차단·정책 거절·공급자
+    #              오류로 끝나면 IMAGE_FALLBACK_PROVIDER(OpenAI)로 한 번 더 만든다.
+    #   "openai" → OpenAI 이미지 우선, 실패 시 Google 경로로 폴백
     IMAGE_PROVIDER: str = "google"
+    # Google 기본 경로의 폴백 공급자. "openai"만 지원하며 ""로 끄면 종전처럼 Google에서 끝난다.
+    # 검수 모델 자체가 죽은 POLICY_UNAVAILABLE과 비용 가드 차단은 폴백 대상이 아니다.
+    IMAGE_FALLBACK_PROVIDER: str = "openai"
     GOOGLE_IMAGE_MODEL: str = "gemini-3.1-flash-image"
     GOOGLE_IMAGE_LOCATION: str = "global"
-    OPENAI_IMAGE_MODEL: str = "gpt-image-2"
+    # ChatGPT Images 2.5 API 모델. flare=속도·대량 생성용, sunburst=편집 정밀도용.
+    OPENAI_IMAGE_MODEL: str = "gpt-image-2.5-flare"
     OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치
-    OPENAI_IMAGE_QUALITY: str = "high"  # low|medium|high
+    OPENAI_IMAGE_QUALITY: str = "high"  # low|medium|high|xhigh|max|auto
 
     # OpenAI — SoV
     OPENAI_API_KEY: str = ""

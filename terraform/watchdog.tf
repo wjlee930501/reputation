@@ -38,7 +38,7 @@ data "google_secret_manager_secret_version" "pipeline_watchdog_token" {
 }
 
 locals {
-  watchdog_alert_url     = "https://${var.domain}/api/v1/admin/watchdog/pipeline/alert"
+  watchdog_alert_url = "https://${var.domain}/api/v1/admin/watchdog/pipeline/alert"
   watchdog_token_headers = {
     "X-Watchdog-Token" = data.google_secret_manager_secret_version.pipeline_watchdog_token.secret_data
     "Content-Type"     = "application/json"
