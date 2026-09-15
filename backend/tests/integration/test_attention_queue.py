@@ -62,6 +62,16 @@ from app.services.operation_run_payloads import DispatchPayload, build_request_p
 pytestmark = pytest.mark.asyncio
 
 
+def _seoul_today() -> date:
+    """콘텐츠 슬롯의 달력은 Asia/Seoul이다 — 실행 머신의 지역 날짜를 쓰면 안 된다.
+
+    오늘의 운영 큐는 `now.astimezone(Asia/Seoul).date()`를 오늘로 잡고 그보다 이른
+    예정일을 기한 초과로 본다. fixture가 UTC 날짜로 "오늘"을 만들면 00~09시 KST에는
+    서울 기준 어제가 되어 같은 코드가 실행 시각에 따라 다른 결과를 낸다.
+    """
+    return datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+
 async def _hospital(
     db,
     name: str,
@@ -82,7 +92,7 @@ async def _hospital(
         hospital_id=hospital.id,
         plan="PLAN_12",
         publish_days=[1, 4],
-        active_from=date.today(),
+        active_from=_seoul_today(),
     )
     db.add(schedule)
     await db.flush()
@@ -144,7 +154,7 @@ async def _content(
         content_type=ContentType.FAQ,
         sequence_no=sequence_no or hospital._test_seq,
         total_count=8,
-        scheduled_date=date.today() - timedelta(days=scheduled_days_ago),
+        scheduled_date=_seoul_today() - timedelta(days=scheduled_days_ago),
         status=status,
         published_at=published_at,
         post_publish_reviewed_at=datetime.now(UTC) if reviewed else None,
@@ -1644,7 +1654,7 @@ async def test_today_queue_folds_the_pre_eight_am_slot_instead_of_dropping_it(pg
         scheduled_days_ago=2,
     )
     seoul = ZoneInfo("Asia/Seoul")
-    before = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(
+    before = datetime.combine(_seoul_today(), datetime.min.time(), tzinfo=seoul) + timedelta(
         hours=7, minutes=30
     )
 
@@ -1661,7 +1671,7 @@ async def test_today_queue_folds_the_pre_eight_am_slot_instead_of_dropping_it(pg
     # 예정일이 이미 지난 슬롯은 시각과 무관하게 사람의 일이다.
     assert still_work.requires_operator_action is True
 
-    after = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+    after = datetime.combine(_seoul_today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
     _total, later_rows = await today_queries.load_today_queue(
         db, OperationsFilters(), page=1, page_size=100, overview=False, now=after
     )
@@ -1690,7 +1700,7 @@ async def test_today_queue_uses_the_active_content_run_after_eight_and_keeps_dea
     db.add(run)
     await db.flush()
     seoul = ZoneInfo("Asia/Seoul")
-    after = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+    after = datetime.combine(_seoul_today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
 
     total, rows = await today_queries.load_today_queue(
         db,
@@ -1721,7 +1731,7 @@ async def test_today_queue_leaves_linked_incident_as_the_single_operator_task(
     incident.source_id = str(content.id)
     await db.flush()
     seoul = ZoneInfo("Asia/Seoul")
-    after = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+    after = datetime.combine(_seoul_today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
 
     _total, rows = await today_queries.load_today_queue(
         db,
@@ -1819,7 +1829,7 @@ async def test_today_queue_filters_and_total_agree_on_publish_due_rows(pg_async_
         db, hospital, status=ContentStatus.DRAFT, published_hours_ago=None
     )
     seoul = ZoneInfo("Asia/Seoul")
-    now = datetime.combine(date.today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
+    now = datetime.combine(_seoul_today(), datetime.min.time(), tzinfo=seoul) + timedelta(hours=9)
 
     async def _load(**filter_kwargs):
         return await today_queries.load_today_queue(
