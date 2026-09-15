@@ -23,6 +23,7 @@ const hospitalLayout = readFileSync(
   new URL('../app/hospitals/[id]/layout.tsx', import.meta.url),
   'utf8',
 )
+const physiciansSection = infoFile('PhysiciansSection.tsx')
 const infoSources = `${infoPage}\n${factsSection}`
 
 test('남은 필수 항목은 서버 판정을 그대로 읽는다', () => {
@@ -45,7 +46,12 @@ test('다른 섹션이 저장한 뒤에는 사실 칸도 새 헤더로 다시 �
   assert.match(infoPage, /if \(!hospital \|\| factsDirty\) return/)
   assert.match(infoPage, /\}, \[hospital, factsDirty\]\)/)
   // 새 헤더가 도착한 뒤에 dirty를 푼다 — 실패한 refetch가 화면을 되돌리지 않게.
-  assert.match(infoPage, /await refetchHeader\(\)\s*\n\s*setFactsDirty\(false\)/)
+  const afterRefetch = infoPage.slice(infoPage.indexOf('await refetchHeader()'))
+  assert.match(afterRefetch, /^await refetchHeader\(\)[\s\S]*?setFactsDirty\(false\)/)
+  assert.ok(
+    afterRefetch.indexOf('setFactsDirty(false)') < afterRefetch.indexOf('setTimeout'),
+    'dirty를 푸는 자리가 저장 성공 처리 뒤로 밀렸다',
+  )
 })
 
 test('자료를 등록한 저장은 근거 자료 표를 다시 읽게 한다', () => {
@@ -72,6 +78,83 @@ test('자료 등록·처리 버튼은 이 화면에 없다', () => {
   assert.doesNotMatch(infoSources, /자료로 추가/)
   assert.doesNotMatch(infoSources, /CrawlForm/)
   assert.doesNotMatch(infoSources, /처리 시작/)
+})
+
+test('원장 한 쌍 대신 의료진 목록을 편집한다', () => {
+  // 원장 표시값은 서버가 대표 의료진에서 파생한다 — 폼이 그 칸을 다시 만들지 않는다.
+  assert.doesNotMatch(factsSection, /id="info-director-name"/)
+  assert.doesNotMatch(factsSection, /id="info-director-career"/)
+  assert.match(factsSection, /<PhysiciansSection/)
+  // 진료 철학은 그대로 병원 단위 값이다.
+  assert.match(factsSection, /id="info-director-philosophy"/)
+  // 진료 항목과 같은 "+ 추가" 패턴.
+  assert.match(factsSection, /emptyPhysician\(physicians\.length\)/)
+})
+
+test('의료진 줄은 이름·직함·전문과목·약력과 자격 상세, 사진, 대표를 가진다', () => {
+  for (const label of [
+    '이름',
+    '직함',
+    '전문과목',
+    '약력',
+    '의과대학',
+    '전문의 자격',
+    '학회',
+    '면허번호',
+    '사진',
+    '대표',
+  ]) {
+    assert.match(
+      physiciansSection,
+      new RegExp(`aria-label=\\{\`의료진 \\$\\{i \\+ 1\\} ${label}\`\\}`),
+      `의료진 줄에 ${label} 칸이 없다`,
+    )
+  }
+  assert.match(physiciansSection, /표시 순서 위로/)
+  assert.match(physiciansSection, /표시 순서 아래로/)
+  assert.match(physiciansSection, /제거/)
+  // 대표는 여러 명일 수 있다 — 라디오가 아니라 체크박스다.
+  assert.match(physiciansSection, /type="checkbox"[\s\S]{0,200}is_representative/)
+})
+
+test('의료진 목록과 사진 선택지는 lib 헬퍼 한 곳에서 읽는다', () => {
+  assert.match(infoPage, /fetchPhysicians\(hospitalId\)/)
+  assert.match(infoPage, /fetchDoctorPhotoOptions\(hospitalId\)/)
+  // 집합 전체 교체이므로 읽지 못한 상태에서는 목록을 보내지 않는다.
+  assert.match(infoPage, /physiciansLoaded \? \{ physicians: physiciansPayload/)
+})
+
+test('상세 주소는 따로 받고 좌표 변환에 쓰지 않는다고 말한다', () => {
+  assert.match(factsSection, /상세 주소 \(층·호\)/)
+  assert.match(factsSection, /address_detail/)
+  assert.match(factsSection, /도로명 주소만으로 찾습니다/)
+  assert.match(factsSection, /위도·경도를 입력하면 주소 자동 변환 대신 이 값을 씁니다/)
+})
+
+test('좌표 변환 실패는 저장 실패가 아니다 — 주소 칸 아래 안내로만 남는다', () => {
+  assert.match(infoPage, /geocode_warning/)
+  assert.match(infoPage, /setGeocodeWarning\(saved\.geocode_warning\?\.message \?\? null\)/)
+  assert.match(factsSection, /geocodeWarning &&/)
+  // 저장은 성공했으므로 오류 패널로 올리지 않는다.
+  assert.doesNotMatch(infoPage, /setError\([^)]*geocode/i)
+})
+
+test('사진 화면은 원장 사진을 쓰는 의료진을 말하고 공간 사진만 대표 이미지로 지정한다', () => {
+  assert.match(photosSection, /physicianUsingPhoto\(physicians, photo\.id\)/)
+  assert.match(photosSection, /사진으로 사용 중/)
+  assert.match(photosSection, /isFacilityPhotoType\(photo\.source_type\)/)
+  assert.match(photosSection, /대표 이미지로 지정/)
+  assert.match(photosSection, /현재 대표 이미지/)
+  assert.match(photosSection, /hero_media_kind: 'VERIFIED_FACILITY'/)
+  assert.match(photosSection, /publicPhotoAssetUrl\(hospitalSlug, photo\.id\)/)
+})
+
+test('제외한 사진은 제자리에서 빠지고 잠시 되돌릴 수 있다', () => {
+  assert.match(photosSection, /실행 취소/)
+  assert.match(photosSection, /\/reinclude`/)
+  assert.match(photosSection, /setTimeout\(\(\) => setUndoTarget\(null\), 8000\)/)
+  // 다시 불러 정렬이 바뀌면 방금 무엇을 눌렀는지 잃어버린다 — 제자리에서 뺀다.
+  assert.match(photosSection, /prev\.filter\(\(row\) => row\.id !== photo\.id\)/)
 })
 
 test('다섯 섹션이 각자의 앵커를 가진다', () => {
@@ -134,12 +217,22 @@ test('자주 쓰지 않는 브랜드 칸은 고급으로 접어 둔다', () => {
   assert.ok(advanced.length > 0, '<details>를 찾지 못했다')
   for (const field of [
     'brand_accent_color',
-    'hero_image_url',
     'hero_media_kind',
     'image_style_direction',
   ]) {
     assert.match(advanced, new RegExp(field), `${field}이 고급 안에 없다`)
   }
+})
+
+test('대표 이미지 주소는 사진 목록만 바꾼다 — 브랜드 폼은 현재 값을 보여 주기만 한다', () => {
+  // 브랜드 저장이 자기 폼 스냅샷의 hero_image_url을 되돌려 보내면 방금 지정한 사진을
+  // 옛 값으로 덮어쓴다. 입력 칸도 PATCH 본문도 없어야 한다.
+  assert.doesNotMatch(brandSection, /info-hero-image-url/)
+  assert.doesNotMatch(brandSection, /hero_image_url:/)
+  assert.doesNotMatch(brandSection, /update\('hero_image_url'/)
+  assert.match(brandSection, /현재 대표 이미지/)
+  assert.match(brandSection, /대표 이미지로 지정/)
+  assert.match(photosSection, /hero_image_url: publicPhotoAssetUrl\(hospitalSlug, photo\.id\)/)
 })
 
 test('사진 업로드는 공개 여부와 권리 3필드를 같은 요청에 보낸다', () => {

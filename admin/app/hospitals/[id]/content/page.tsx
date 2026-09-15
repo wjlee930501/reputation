@@ -579,7 +579,7 @@ export default function ContentPage() {
   const yearOptions = [currentYear - 1, currentYear, currentYear + 1]
   const monthOptions = Array.from({ length: 12 }, (_, i) => i + 1)
 
-  const selectedRow = selected ? describeRowState(selected.row_state) : null
+  const selectedRow = selected ? describeRowState(selected.row_state, selected.scheduled_date) : null
   const selectedNotification = selected ? getPublishNotificationPresentation(selected) : null
   const selectedPublicUrl = selected ? buildPublicContentUrl(publicHost, selected.id) : null
   const selectedVisible = selected?.compliance?.public_visibility?.visible === true
@@ -702,7 +702,7 @@ export default function ContentPage() {
               </div>
             )}
             {filteredItems.map((item) => {
-              const row = describeRowState(item.row_state)
+              const row = describeRowState(item.row_state, item.scheduled_date)
               return (
                 <article key={item.id} className="p-4 sm:p-5">
                   <div className="flex items-start justify-between gap-3">
@@ -769,7 +769,7 @@ export default function ContentPage() {
                 </tr>
               )}
               {filteredItems.map((item) => {
-                const row = describeRowState(item.row_state)
+                const row = describeRowState(item.row_state, item.scheduled_date)
                 return (
                   <tr key={item.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-6 py-4 text-slate-600">

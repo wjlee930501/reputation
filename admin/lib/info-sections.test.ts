@@ -10,10 +10,12 @@ import {
   brandDefaultsNotice,
   groupNotesByType,
   infoSectionAnchorId,
+  isFacilityPhotoType,
   isPhotoSourceType,
   isTextSource,
   photoUploadFormData,
   processingSummary,
+  publicPhotoAssetUrl,
   remainingRequirementsSummary,
   sectionForRequirement,
   sourceIncidentHref,
@@ -91,6 +93,21 @@ test('허용 용도는 사진 유형에서 나온다 — 업로드할 때 따로
 test('사진 유형 판정은 업로드 선택지와 같은 목록을 쓴다', () => {
   assert.ok(isPhotoSourceType('PHOTO_CLINIC_EXTERIOR'))
   assert.equal(isPhotoSourceType('HOMEPAGE'), false)
+})
+
+test('대표 이미지로 쓸 수 있는 것은 공간 사진뿐이다', () => {
+  assert.ok(isFacilityPhotoType('PHOTO_CLINIC_EXTERIOR'))
+  assert.ok(isFacilityPhotoType('PHOTO_TREATMENT_ROOM'))
+  // 원장 사진은 의료진 칸이 쓴다 — 첫 화면 이미지로 돌려쓰지 않는다.
+  assert.equal(isFacilityPhotoType('PHOTO_DOCTOR'), false)
+  assert.equal(isFacilityPhotoType('HOMEPAGE'), false)
+})
+
+test('공개 사진 주소는 운영자 인증이 필요한 주소와 다르다', () => {
+  assert.equal(
+    publicPhotoAssetUrl('test-clinic', 'source-1'),
+    '/api/v1/public/hospitals/test-clinic/assets/source-1',
+  )
 })
 
 test('사진 업로드 한 요청에 공개 여부와 권리 3필드가 함께 실린다', () => {

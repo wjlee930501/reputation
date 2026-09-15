@@ -10,7 +10,6 @@ import { ClinicVisualForm } from './ClinicVisualForm'
 
 interface AdvancedBrandValues {
   brand_accent_color: string
-  hero_image_url: string
   hero_media_kind: string
   image_style_direction: string
 }
@@ -18,7 +17,6 @@ interface AdvancedBrandValues {
 function advancedValuesOf(hospital: Hospital | null): AdvancedBrandValues {
   return {
     brand_accent_color: hospital?.brand_accent_color ?? '',
-    hero_image_url: hospital?.hero_image_url ?? '',
     hero_media_kind: hospital?.hero_media_kind ?? '',
     image_style_direction: hospital?.image_style_direction ?? '',
   }
@@ -110,7 +108,8 @@ function AdvancedBrandFields({
         method: 'PATCH',
         body: JSON.stringify({
           brand_accent_color: form.brand_accent_color.trim() || null,
-          hero_image_url: form.hero_image_url.trim() || null,
+          // 대표 이미지 주소는 사진 목록의 '대표 이미지로 지정'이 소유한다 — 여기서
+          // 폼 스냅샷을 되돌려 보내면 방금 지정한 사진을 옛 값으로 덮어쓴다.
           hero_media_kind: form.hero_media_kind || null,
           image_style_direction: form.image_style_direction.trim() || null,
         }),
@@ -169,17 +168,15 @@ function AdvancedBrandFields({
             </select>
           </label>
         </div>
-        <label htmlFor="info-hero-image-url" className="block text-sm font-medium text-slate-700">
-          대표 이미지 URL
-          <input
-            id="info-hero-image-url"
-            type="url"
-            value={form.hero_image_url}
-            onChange={(e) => update('hero_image_url', e.target.value)}
-            placeholder="https://.../hero.jpg"
-            className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
-          />
-        </label>
+        <div className="block text-sm font-medium text-slate-700">
+          현재 대표 이미지
+          <p className="mt-1.5 w-full break-all rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs text-slate-600">
+            {hospital?.hero_image_url || '아직 지정하지 않았습니다'}
+          </p>
+          <span className="mt-1 block text-xs font-normal text-slate-500">
+            아래 사진 목록에서 ‘대표 이미지로 지정’으로만 바꿉니다.
+          </span>
+        </div>
         <label htmlFor="info-image-style-direction" className="block text-sm font-medium text-slate-700">
           콘텐츠 이미지 아트 디렉션
           <textarea

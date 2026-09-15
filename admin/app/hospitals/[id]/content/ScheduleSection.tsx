@@ -13,44 +13,13 @@ import {
   validateScheduleCapacity,
 } from '@/lib/schedule'
 import { canSubmitSchedule } from '@/lib/operator-safety'
+import { contentReadinessBlockers, sourceProcessingProgress } from '@/lib/content-readiness'
+import type { ContentReadiness } from '@/lib/content-readiness'
 import { ADMIN_COPY } from '@/lib/admin-copy'
 import { PLAN_CONTRACT_LABELS, PLAN_LABELS, type ScheduleInfo } from '@/types'
 import { useHospitalHeader } from '../hospital-context'
 
-interface ReadinessCheck {
-  key: string
-  label: string
-  passed: boolean
-  next_action?: string | null
-}
-
-interface ScheduleReadiness {
-  essence?: {
-    processed_source_count?: number | null
-    required_source_count?: number | null
-    approved_philosophy_exists?: boolean | null
-    source_stale?: boolean | null
-  } | null
-  checks?: ReadinessCheck[]
-}
-
-function contentReadinessBlockers(readiness: ScheduleReadiness | null): string[] {
-  if (!readiness) return []
-  const checkByKey = new Map((readiness.checks ?? []).map((check) => [check.key, check]))
-  const essence = readiness.essence
-  const blockers: string[] = []
-
-  if ((essence?.required_source_count ?? 0) === 0) {
-    blockers.push('병원 근거 자료를 1개 이상 추가해 주세요.')
-  }
-  for (const key of ['essence_sources', 'essence_philosophy', 'essence_freshness']) {
-    const check = checkByKey.get(key)
-    if (check && !check.passed) {
-      blockers.push(check.next_action || `${check.label} 단계를 완료해 주세요.`)
-    }
-  }
-  return Array.from(new Set(blockers))
-}
+type ScheduleReadiness = ContentReadiness
 
 /** 콘텐츠 화면 상단의 발행 요일 설정. 요금제는 계약 기록이 정하고 여기서는 읽기만 한다(H-14). */
 export function ScheduleSection({
@@ -140,6 +109,7 @@ export function ScheduleSection({
   }, [plan, daysChosen, existingLoading, existing])
 
   const readinessBlockers = contentReadinessBlockers(readiness)
+  const processingProgress = sourceProcessingProgress(readiness)
   const canSaveSchedule = canSubmitSchedule(existingLoading, existingError)
     && !readinessLoading
     && !readinessError
@@ -164,7 +134,7 @@ export function ScheduleSection({
       return
     }
     if (readinessBlockers.length > 0) {
-      setError(`콘텐츠 발행 일정 설정 전 필요한 작업이 남아 있습니다.\n- ${readinessBlockers.join('\n- ')}`)
+      setError(`발행 일정을 저장하기 전 남은 준비가 있습니다.\n- ${readinessBlockers.join('\n- ')}`)
       return
     }
     if (!plan) {
@@ -255,12 +225,15 @@ export function ScheduleSection({
         )}
         {!readinessLoading && readinessBlockers.length > 0 && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
-            <p className="text-sm font-semibold text-amber-900">발행 일정 설정 전 완료할 작업</p>
+            <p className="text-sm font-semibold text-amber-900">발행 일정을 저장하기 전 남은 준비</p>
             <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-amber-900">
               {readinessBlockers.map((blocker) => (
                 <li key={blocker}>{blocker}</li>
               ))}
             </ul>
+            {processingProgress && (
+              <p className="mt-2 text-xs font-semibold text-amber-800">{processingProgress}</p>
+            )}
           </div>
         )}
         {!existingLoading && existing && (

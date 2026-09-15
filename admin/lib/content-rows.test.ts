@@ -7,6 +7,7 @@ import {
   blockedHint,
   canConfirmSample,
   describeRowState,
+  generatingDetail,
   matchesRowFilter,
   summarizeRows,
 } from './content-rows.ts'
@@ -71,10 +72,42 @@ test('차단 카드 문구는 갈 곳이 있을 때만 운영 센터를 가리�
 test('예정·초안 생성 중은 사람이 할 일이 아니다', () => {
   assert.equal(describeRowState(rowState({ kind: 'scheduled', label: '예정' })).tone, 'neutral')
   const generating = describeRowState(
-    rowState({ kind: 'generating', label: '초안 생성 중', reason: '발행 전날 23:00 자동 생성' }),
+    rowState({ kind: 'generating', label: '초안 생성 중' }),
+    '2026-12-24',
   )
   assert.equal(generating.tone, 'neutral')
-  assert.equal(generating.detail, '발행 전날 23:00 자동 생성')
+  assert.match(generating.detail ?? '', /새벽 스윕이 다시 시도합니다/)
+})
+
+test('오늘·내일 슬롯은 23:00을 기다리지 않는다 — 저장 직후 요청된 일이다', () => {
+  assert.equal(
+    generatingDetail(null, '2026-09-15', '2026-09-15'),
+    '저장 직후 생성을 요청했습니다 · 실패 시 새벽 스윕이 다시 시도합니다',
+  )
+  assert.equal(
+    generatingDetail(null, '2026-09-16', '2026-09-15'),
+    '저장 직후 생성을 요청했습니다 · 실패 시 새벽 스윕이 다시 시도합니다',
+  )
+  // 월말·월초 경계에서도 "내일"은 달력의 다음 날이다.
+  assert.equal(
+    generatingDetail(null, '2026-10-01', '2026-09-30'),
+    '저장 직후 생성을 요청했습니다 · 실패 시 새벽 스윕이 다시 시도합니다',
+  )
+  assert.equal(
+    generatingDetail(null, '2026-09-20', '2026-09-15'),
+    '발행 전날 23:00 자동 생성 · 실패 시 새벽 스윕이 다시 시도합니다',
+  )
+  // 예정일을 모르면 평소 일정대로 말한다.
+  assert.match(generatingDetail(null, null, '2026-09-15'), /발행 전날 23:00 자동 생성/)
+})
+
+test('저장된 시도 실패 사유가 있으면 그것을 알려진 문구로 보여 준다', () => {
+  assert.equal(
+    generatingDetail('CONTENT_AI_REVIEW_UNAVAILABLE', '2026-09-20', '2026-09-15'),
+    '독립 AI 검수 공급자를 일시적으로 사용할 수 없습니다.',
+  )
+  // 모르는 코드에 새 문구를 지어내지 않는다.
+  assert.equal(generatingDetail('SOMETHING_NEW', '2026-09-20', '2026-09-15'), 'SOMETHING_NEW')
 })
 
 test('종료된 항목은 회색 톤으로 남는다', () => {

@@ -13,7 +13,14 @@ import {
   remainingRequirementsSummary,
   sectionForRequirement,
 } from '@/lib/info-sections'
+import {
+  fetchDoctorPhotoOptions,
+  fetchPhysicians,
+  physiciansPayload,
+  seedPhysicians,
+} from '@/lib/physicians'
 import type { AutofillResponse, AutofillFieldMeta } from '@/lib/api'
+import type { DoctorPhotoOption } from '@/lib/physicians'
 import type { MissingProfileRequirement } from '@/lib/info-sections'
 import type { ProfileSourceRegistration } from '@/types'
 import type { DomainProfile } from '../DomainSetupTypes'
@@ -30,6 +37,8 @@ import type { HospitalInfoProfile, Treatment } from './FactsSection'
 interface ProfileSaveResponse extends Partial<HospitalInfoProfile> {
   missing_profile_requirements?: MissingProfileRequirement[]
   source_registration?: ProfileSourceRegistration[]
+  /** 저장은 성공했고 좌표만 못 만든 경우. 실패가 아니므로 오류 패널로 올리지 않는다. */
+  geocode_warning?: { code: string; message: string } | null
 }
 
 /**
@@ -40,8 +49,6 @@ type InfoFormProfile = Partial<HospitalInfoProfile> & DomainProfile
 
 // 자동 입력이 문자열 하나로 채울 수 있는 칸(빈 칸인지 판단하는 데 쓴다).
 const SCALAR_AUTOFILL_KEYS = [
-  'director_name',
-  'director_career',
   'director_philosophy',
   'address',
   'phone',
@@ -83,8 +90,14 @@ export default function HospitalInfoPage() {
   const [savedAddress, setSavedAddress] = useState('')
   const [coordinatesManuallyEdited, setCoordinatesManuallyEdited] = useState(false)
   const [coordinateNotice, setCoordinateNotice] = useState<string | null>(null)
+  const [geocodeWarning, setGeocodeWarning] = useState<string | null>(null)
   const [sourceRegistration, setSourceRegistration] = useState<ProfileSourceRegistration[]>([])
   const [sourcesRefreshKey, setSourcesRefreshKey] = useState(0)
+  // 의료진과 그들이 고를 수 있는 원장 사진은 병원 상세 응답에 없다 — 따로 읽는다.
+  const [physiciansLoaded, setPhysiciansLoaded] = useState(false)
+  const [doctorPhotos, setDoctorPhotos] = useState<DoctorPhotoOption[]>([])
+  const [doctorPhotosError, setDoctorPhotosError] = useState<string | null>(null)
+  const [physiciansError, setPhysiciansError] = useState<string | null>(null)
 
   const [autofillOpen, setAutofillOpen] = useState(false)
   const [autofillLoading, setAutofillLoading] = useState(false)
@@ -98,7 +111,7 @@ export default function HospitalInfoPage() {
   useEffect(() => {
     if (!hospital || factsDirty) return
     const data = hospital as unknown as HospitalInfoProfile
-    setProfile({
+    setProfile((prev) => ({
       ...data,
       business_hours: data.business_hours ?? {},
       region: data.region ?? [],
@@ -108,9 +121,46 @@ export default function HospitalInfoPage() {
       treatments: data.treatments ?? [],
       latitude: data.latitude ?? null,
       longitude: data.longitude ?? null,
-    })
+      // 의료진은 상세 응답에 없을 수 있다 — 없으면 따로 읽어 둔 목록을 유지한다.
+      // 아직 읽지 못했으면 값을 만들지 않는다(빈 목록을 저장이 전체 교체로 보내지 않게).
+      physicians: data.physicians ?? prev.physicians,
+    }))
     setSavedAddress(data.address ?? '')
   }, [hospital, factsDirty])
+
+  // 의료진과 고를 수 있는 원장 사진은 사람이 입력을 시작하기 전에 한 번만 채운다.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const rows = await fetchPhysicians(hospitalId)
+        if (cancelled) return
+        setProfile((prev) => (prev.physicians ? prev : { ...prev, physicians: seedPhysicians(rows) }))
+        setPhysiciansLoaded(true)
+      } catch {
+        // 읽지 못했으면 목록을 저장 본문에 싣지 않는다 — 빈 목록이 기존 의료진을 지운다.
+        // 다시 던지면 effect 밖에서 아무도 받지 않는 rejection이 되므로 화면에 남긴다.
+        if (cancelled) return
+        setPhysiciansError(
+          safeOperatorError('onboarding', '의료진 목록을 불러오지 못했습니다. 화면을 다시 불러온 뒤 저장하세요.'),
+        )
+      }
+    })()
+    return () => { cancelled = true }
+  }, [hospitalId])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const options = await fetchDoctorPhotoOptions(hospitalId)
+        if (!cancelled) setDoctorPhotos(options)
+      } catch {
+        if (!cancelled) setDoctorPhotosError('원장 사진 목록을 불러오지 못했습니다. 화면을 다시 불러오세요.')
+      }
+    })()
+    return () => { cancelled = true }
+  }, [hospitalId, sourcesRefreshKey])
 
   function updateField<K extends keyof HospitalInfoProfile>(key: K, value: HospitalInfoProfile[K]) {
     setFactsDirty(true)
@@ -134,6 +184,7 @@ export default function HospitalInfoPage() {
     setError(null)
     setSuccess(false)
     setCoordinateNotice(null)
+    setGeocodeWarning(null)
     setSourceRegistration([])
     try {
       const addressChanged = (profile.address ?? '').trim() !== savedAddress.trim()
@@ -143,6 +194,8 @@ export default function HospitalInfoPage() {
         // 그것까지 보내면 브랜드 섹션이 방금 저장한 값을 오래된 스냅샷으로 덮어쓴다.
         body: JSON.stringify({
           ...factsPatchPayload(profile),
+          // 의료진 저장은 집합 전체 교체다 — 아직 읽지 못했으면 아예 보내지 않는다.
+          ...(physiciansLoaded ? { physicians: physiciansPayload(profile.physicians ?? []) } : {}),
           geocode_address: !coordinatesManuallyEdited,
         }),
       })
@@ -150,14 +203,21 @@ export default function HospitalInfoPage() {
         ...current,
         latitude: saved.latitude ?? null,
         longitude: saved.longitude ?? null,
+        physicians: saved.physicians ?? current.physicians,
       }))
+      // 좌표만 못 만든 저장은 성공이다 — 입력은 그대로 두고 주소 칸 아래에만 알린다.
+      setGeocodeWarning(saved.geocode_warning?.message ?? null)
       setSavedAddress(saved.address ?? '')
       setSourceRegistration(saved.source_registration ?? [])
       if (addressChanged) {
+        const converted = saved.latitude !== null && saved.latitude !== undefined
+          && saved.longitude !== null && saved.longitude !== undefined
         setCoordinateNotice(
           coordinatesManuallyEdited
             ? '고급에서 입력한 좌표를 사용했습니다.'
-            : `주소에서 좌표를 한 번 변환했습니다: ${saved.latitude}, ${saved.longitude}`,
+            : converted
+              ? `주소에서 좌표를 한 번 변환했습니다: ${saved.latitude}, ${saved.longitude}`
+              : null,
         )
       }
       setCoordinatesManuallyEdited(false)
@@ -169,6 +229,15 @@ export default function HospitalInfoPage() {
       // 남은 필수 항목과 헤더 상태는 서버 판정이다 — 저장 후 다시 받는다. 새 헤더가
       // 도착한 뒤에 dirty를 풀어야, 실패한 refetch가 화면을 옛 값으로 되돌리지 않는다.
       await refetchHeader()
+      if (physiciansLoaded) {
+        // 저장된 행에는 서버 id가 붙는다 — 다시 읽어야 다음 저장이 같은 행을 가리킨다.
+        try {
+          const rows = await fetchPhysicians(hospitalId)
+          setProfile((current) => ({ ...current, physicians: seedPhysicians(rows) }))
+        } catch {
+          // 저장은 이미 끝났다. 다음 새로고침이 맞춘다.
+        }
+      }
       setFactsDirty(false)
       setTimeout(() => setSuccess(false), 3000)
     } catch (e: unknown) {
@@ -245,6 +314,19 @@ export default function HospitalInfoPage() {
               if (field_meta[key]) newAiFilled[key] = field_meta[key]
             }
           }
+        }
+
+        // 원장명·약력 제안은 의료진 첫 줄로 간다 — 그 칸이 이제 의료진 목록이기 때문이다.
+        // 이미 이름을 채운 줄이 있으면 손대지 않는다.
+        const rows = prev.physicians ?? []
+        const firstEmpty = rows.length === 1 && rows[0].name.trim() === ''
+        const suggestedName = typeof draft.director_name === 'string' ? draft.director_name.trim() : ''
+        if (firstEmpty && suggestedName !== '') {
+          const career = typeof draft.director_career === 'string' ? draft.director_career : ''
+          next.physicians = [
+            { ...rows[0], name: suggestedName, career, is_representative: true },
+          ]
+          if (field_meta.director_name) newAiFilled.director_name = field_meta.director_name
         }
 
         if ('treatments' in draft && isBlankArray(prev.treatments)) {
@@ -372,6 +454,10 @@ export default function HospitalInfoPage() {
           <OperatorIssuePanel message={error} surface="onboarding" />
         )}
 
+        {physiciansError && (
+          <OperatorIssuePanel message={physiciansError} surface="onboarding" />
+        )}
+
         {autofillResult && autofillResult.violations.length > 0 && (
           <div className="bg-red-50 border border-red-200 rounded-lg p-4 space-y-2">
             <p className="text-sm font-semibold text-red-800">의료광고 금지 표현이 감지되었습니다</p>
@@ -425,7 +511,10 @@ export default function HospitalInfoPage() {
           aiFilled={aiFilled}
           fieldCls={fieldCls}
           coordinateNotice={coordinateNotice}
+          geocodeWarning={geocodeWarning}
           sourceRegistration={sourceRegistration}
+          doctorPhotoOptions={doctorPhotos}
+          doctorPhotoOptionsError={doctorPhotosError}
           onFieldChange={updateField}
           onAddressChange={handleAddressChange}
           onCoordinateChange={handleCoordinateChange}
@@ -438,7 +527,14 @@ export default function HospitalInfoPage() {
         onSaved={() => void refetchHeader()}
       />
 
-      <PhotosSection hospitalId={hospitalId} hospitalName={profile.name ?? hospital.name} />
+      <PhotosSection
+        hospitalId={hospitalId}
+        hospitalName={profile.name ?? hospital.name}
+        hospitalSlug={hospital.slug}
+        heroImageUrl={hospital.hero_image_url ?? null}
+        physicians={profile.physicians ?? []}
+        onHeroChanged={() => void refetchHeader()}
+      />
 
       {hospital.site_built && (
         <div id="domain-setup" className="scroll-mt-24">
