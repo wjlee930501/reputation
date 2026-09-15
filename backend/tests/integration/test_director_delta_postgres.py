@@ -18,28 +18,31 @@ from app.services.director_delta import (
 
 def test_concurrent_writers_cannot_exceed_active_cap(pg_engine):
     hospital_id = uuid.uuid4()
-    payload = DirectorDeltaInput(source="DIRECTOR", avoid_messages=["feedback"])
     with Session(pg_engine) as db, db.begin():
         db.add(Hospital(id=hospital_id, name="Delta concurrency", slug=str(hospital_id)))
         db.flush()
-        for _ in range(49):
-            create_director_delta(db, hospital_id, payload)
+        for index in range(49):
+            create_director_delta(db, hospital_id, DirectorDeltaInput(
+                source="DIRECTOR", avoid_messages=[f"existing {index}"]
+            ))
 
     barrier = Barrier(2)
 
-    def write():
+    def write(index):
         with Session(pg_engine) as db:
             barrier.wait(timeout=10)
             try:
                 with db.begin():
-                    create_director_delta(db, hospital_id, payload)
+                    create_director_delta(db, hospital_id, DirectorDeltaInput(
+                        source="DIRECTOR", avoid_messages=[f"new {index}"]
+                    ))
                 return "created"
             except ActiveDirectorDeltaLimit:
                 return "capped"
 
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(write) for _ in range(2)]
+            futures = [pool.submit(write, index) for index in range(2)]
             assert sorted(f.result(timeout=15) for f in futures) == ["capped", "created"]
         with Session(pg_engine) as db:
             assert (

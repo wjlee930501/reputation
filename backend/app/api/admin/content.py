@@ -739,7 +739,8 @@ async def update_content(
             revision=int(getattr(item, "content_revision", 1) or 1),
         )
 
-    enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
+    if should_revalidate:
+        enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
     await db.commit()
     await db.refresh(item)
     if (

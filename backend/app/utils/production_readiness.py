@@ -26,6 +26,7 @@ from app.core.database import SyncSessionLocal
 from app.workers.canary_tasks import read_queue_canaries
 
 EXPECTED_BEAT_SCHEDULES = {
+    "daily-fleet-heartbeat",
     "canary-control",
     "canary-content",
     "canary-default",
@@ -60,6 +61,7 @@ EXPECTED_BEAT_SCHEDULES = {
 }
 
 EXPECTED_TASKS = {
+    "app.workers.notification_tasks.enqueue_fleet_heartbeat",
     "app.workers.indexnow_retry.drain",
     "app.workers.provider_usage_recovery.drain",
     "app.workers.autonomous_recovery.reconcile",
