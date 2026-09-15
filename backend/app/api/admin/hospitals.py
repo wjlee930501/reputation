@@ -127,6 +127,7 @@ from app.services.operation_runs import (
     dispatch_operation,
 )
 from app.services.public_asset_ref import is_public_asset_path
+from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.readiness_operator_copy import readiness_next_actions
 from app.services.service_intervals import (
     ServiceIntervalProvenance,
@@ -1462,6 +1463,7 @@ async def pause_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_
             "new_status": HospitalStatus.PAUSED.value,
         },
     )
+    enqueue_public_surface_intent(db, h)
     await db.commit()
     await db.refresh(h)
     # 커밋 이후이므로 실패해도 raise하지 않는다 — 일시정지는 이미 성공했다.
@@ -1556,6 +1558,7 @@ async def resume_hospital(hospital_id: uuid.UUID, db: AsyncSession = Depends(get
             "site_live": bool(h.site_live),
         },
     )
+    enqueue_public_surface_intent(db, h)
     await db.commit()
     await db.refresh(h)
     # 커밋 이후이므로 실패해도 raise하지 않는다 — 재개는 이미 성공했다.

@@ -72,6 +72,7 @@ from app.services.essence_sources import (
 from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
+from app.services.knowledge_changes import invalidate_source_authority
 from app.services.naver_handoff import (
     NaverCrawlOptions,
     NaverRetryRequest,
@@ -100,6 +101,7 @@ from app.services.photo_provenance import (
     normalize_provenance_input,
     serialize_photo_provenance,
 )
+from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
     trigger_hospital_site_revalidate_safe,
@@ -664,6 +666,11 @@ async def patch_source(
         raise HTTPException(status_code=400, detail="자료 URL 또는 자료 본문 중 하나는 필수입니다.")
 
     if material_changed and not classification_only:
+        if source.source_type not in PHOTO_SOURCE_TYPES:
+            changed_items = await invalidate_source_authority(
+                db, hospital_id, source.id, reason="SOURCE_CORRECTED"
+            )
+            enqueue_public_surface_intent(db, hospital, content_ids=changed_items)
         await db.execute(
             delete(HospitalSourceEvidenceNote).where(
                 HospitalSourceEvidenceNote.source_asset_id == source.id
@@ -866,6 +873,10 @@ async def exclude_source(
         ensure_site_revalidate_configured()
     source.status = SourceStatus.EXCLUDED
     source.is_public = False
+    changed_items = await invalidate_source_authority(
+        db, hospital_id, source.id, reason="SOURCE_EXCLUDED"
+    )
+    enqueue_public_surface_intent(db, hospital, content_ids=changed_items)
     await write_audit_log(
         db,
         action="exclude_source_asset",

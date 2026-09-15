@@ -53,6 +53,8 @@ from app.services.evidence_noise import (
     load_evidence_noise_hash_sync,
     not_noise_note_predicate,
 )
+from app.services.knowledge_changes import authority_refresh_required
+from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.utils.medical_filter import check_forbidden
 
@@ -1402,6 +1404,11 @@ def _rescreen_content(
     )
     counts = {"total": 0, "aligned": 0, "needs_review": 0}
     for item in items:
+        if (item.essence_check_summary or {}).get("authority_change"):
+            # Keep withdrawn text non-public until guarded generation replaces it.
+            counts["total"] += 1
+            counts["needs_review"] += 1
+            continue
         was_published = enum_value(getattr(item, "status", None)) == "PUBLISHED"
         if mark_removed_source_dependency(item, philosophy):
             if was_published and hospital is not None:
@@ -1430,7 +1437,7 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
     previous = _approved_unlocked(db, hospital_id)
     # A stable base absorbs ordinary source/noise drift. Re-synthesis is reserved
     # for an explicit re-onboarding workflow, never scheduled reconciliation.
-    if previous is not None:
+    if previous is not None and not authority_refresh_required(previous):
         return False
     now = datetime.now(timezone.utc)
     sources, _stale_error_sources = _split_stale_error_sources(
@@ -1455,7 +1462,7 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
         db,
         hospital_id=hospital_id,
         snapshot_hash=snapshot_hash,
-        previous_id=None,
+        previous_id=previous.id if previous else None,
         now=now,
     ):
         return False
@@ -1485,7 +1492,8 @@ def refresh_essence_snapshot(
     sources, excluded_error_sources = _split_stale_error_sources(
         _required_sources(db, hospital_id), now
     )
-    if previous is not None:
+    authority_change = authority_refresh_required(previous)
+    if previous is not None and not authority_change:
         processed_sources = [
             source
             for source in sources
@@ -1576,6 +1584,8 @@ def refresh_essence_snapshot(
             findings=("동일 자료 snapshot의 자동 검수가 이미 진행 중입니다.",),
         )
 
+    # Withdrawn facts must not be carried into a replacement as "critical losses".
+    review_baseline = None if authority_change else previous
     synthesis_attempts = 0
     operator_note: str | None = None
     payload: dict[str, Any] = {}
@@ -1584,7 +1594,7 @@ def refresh_essence_snapshot(
     ai_review: EssenceAiReview | None = None
     while synthesis_attempts < AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS:
         payload = synthesizer(hospital, sources, notes, operator_note=operator_note)
-        payload = _carry_forward_grounded_baseline(previous, payload, notes)
+        payload = _carry_forward_grounded_baseline(review_baseline, payload, notes)
         # Enforce the global medical-ad safety floor at the orchestration boundary,
         # including custom synthesizers and deterministic test/provider fallbacks.
         payload = apply_mandatory_safety_policy(payload)
@@ -1597,7 +1607,7 @@ def refresh_essence_snapshot(
             ]
         synthesis_attempts += 1
         deterministic_findings = deterministic_candidate_findings(
-            previous=previous,
+            previous=review_baseline,
             payload=payload,
             sources=sources,
             notes=notes,
@@ -1606,7 +1616,7 @@ def refresh_essence_snapshot(
         if not deterministic_findings:
             # Provider/parser failures are retryable task failures. Never turn a
             # transient reviewer outage into a permanent human-review DRAFT.
-            ai_review = reviewer(hospital, previous, payload, notes)
+            ai_review = reviewer(hospital, review_baseline, payload, notes)
             reviewed_ids = set(ai_review.reviewed_evidence_note_ids)
             required_evidence_ids = _candidate_evidence_ids(payload)
             if not required_evidence_ids.issubset(reviewed_ids):
@@ -1726,7 +1736,11 @@ def refresh_essence_snapshot(
         current_previous = _approved(db, hospital_id)
         # Another onboarding approval won while provider work was in flight. Its
         # stable base always wins; never replace it with this stale candidate.
-        if current_previous is not None:
+        if current_previous is not None and not (
+            authority_change and current_previous.id == previous_id
+            and authority_refresh_required(current_previous)
+        ):
+            candidate.status = PhilosophyStatus.ARCHIVED
             _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
             db.commit()
             return EssenceRefreshResult(
@@ -1756,6 +1770,10 @@ def refresh_essence_snapshot(
                 reviewer=ai_review,
                 synthesis_attempts=synthesis_attempts,
             )
+        if current_previous is not None:
+            current_previous.status = PhilosophyStatus.ARCHIVED
+            current_previous.is_base = False
+            db.flush()
         # 옛 배포가 base flag를 내리지 않고 보관한 행이 남아 있을 수 있다. 병원당 base는
         # 부분 유니크 인덱스로 한 행뿐이므로, 승격 전에 그 잔재를 내려야 한다(Admin 승인
         # 경로와 같은 처리). 보관 행의 상태는 그대로 두고 flag만 정리한다.
@@ -1818,6 +1836,7 @@ def refresh_essence_snapshot(
                 "content_rescreened": rescreened,
             },
         )
+        enqueue_public_surface_intent(db, hospital)
         _finish_essence_refresh_claim(claim_run, state=OperationRunState.SUCCEEDED)
         db.commit()
         return EssenceRefreshResult(

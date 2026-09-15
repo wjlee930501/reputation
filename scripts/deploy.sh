@@ -102,7 +102,8 @@ BEAT_MIN="${BEAT_MIN:-1}"     # beat는 항상 1개만
 BEAT_MAX="${BEAT_MAX:-1}"
 
 # Frontend (Next.js) — terraform/cloudrun_frontend.tf 기본값과 동일하게 유지
-FRONTEND_SERVICE_ACCOUNT="${FRONTEND_SERVICE_ACCOUNT:-reputation-frontend-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
+SITE_SERVICE_ACCOUNT="${SITE_SERVICE_ACCOUNT:-reputation-site-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
+ADMIN_SERVICE_ACCOUNT="${ADMIN_SERVICE_ACCOUNT:-reputation-admin-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
 PUBLIC_DOMAIN="${PUBLIC_DOMAIN:-}"   # 예: reputation.motionlabs.kr
 ADMIN_DOMAIN="${ADMIN_DOMAIN:-}"     # 예: admin.reputation.motionlabs.kr
 SITE_MEMORY="${SITE_MEMORY:-512Mi}"
@@ -755,7 +756,7 @@ deploy_site() {
     --image="$image_url" \
     --region="$REGION" \
     --platform=managed \
-    --service-account="$FRONTEND_SERVICE_ACCOUNT" \
+    --service-account="$SITE_SERVICE_ACCOUNT" \
     --memory="$SITE_MEMORY" \
     --min-instances="$SITE_MIN" \
     --max-instances="$SITE_MAX" \
@@ -779,7 +780,7 @@ deploy_admin() {
     --image="$image_url" \
     --region="$REGION" \
     --platform=managed \
-    --service-account="$FRONTEND_SERVICE_ACCOUNT" \
+    --service-account="$ADMIN_SERVICE_ACCOUNT" \
     --memory="$ADMIN_MEMORY" \
     --min-instances="$ADMIN_MIN" \
     --max-instances="$ADMIN_MAX" \

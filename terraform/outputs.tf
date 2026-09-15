@@ -93,3 +93,11 @@ output "frontend_service_account_email" {
   description = "Frontend (Next.js) service account email"
   value       = google_service_account.frontend.email
 }
+
+output "site_service_account_email" {
+  value = google_service_account.site.email
+}
+
+output "admin_service_account_email" {
+  value = google_service_account.admin.email
+}

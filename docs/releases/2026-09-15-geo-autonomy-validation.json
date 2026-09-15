@@ -1,0 +1,85 @@
+{
+  "baseline": "d96bd21",
+  "branch": "codex/geo-autonomy-hardening-20260915",
+  "backend_suites": [
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "539",
+      "time": "7.941",
+      "timestamp": "2026-09-15T22:52:54.053164+09:00",
+      "hostname": "MacBook-Air-6.local",
+      "artifact": "backend-final.xml"
+    },
+    {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "16",
+      "time": "0.570",
+      "timestamp": "2026-09-15T22:57:08.903623+09:00",
+      "hostname": "MacBook-Air-6.local",
+      "artifact": "secondary.xml"
+    }
+  ],
+  "frontend": [
+    {
+      "check": "admin-tests",
+      "exit_code": 0
+    },
+    {
+      "check": "site-tests",
+      "exit_code": 0
+    },
+    {
+      "check": "admin-typegen",
+      "exit_code": 0
+    },
+    {
+      "check": "admin-typecheck",
+      "exit_code": 0
+    },
+    {
+      "check": "site-typecheck",
+      "exit_code": 0
+    }
+  ],
+  "lint_and_guards": [
+    {
+      "check": "backend-imports",
+      "exit_code": 0
+    },
+    {
+      "check": "backend-lint",
+      "exit_code": 0
+    },
+    {
+      "check": "copy-guard",
+      "exit_code": 0
+    },
+    {
+      "check": "db-budget",
+      "exit_code": 0
+    },
+    {
+      "check": "admin-lint",
+      "exit_code": 0
+    },
+    {
+      "check": "site-lint",
+      "exit_code": 0
+    },
+    {
+      "check": "whitespace",
+      "exit_code": 0
+    }
+  ],
+  "production_deployed": false,
+  "github_pushed": false,
+  "postgres_outbox_integration": "NOT_VALIDATED_17_NETWORK_BLOCKED",
+  "external_provider_calls": 0,
+  "slack_messages_sent": 0
+}

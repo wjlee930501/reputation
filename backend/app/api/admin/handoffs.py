@@ -3,6 +3,7 @@
 import uuid
 from datetime import UTC, datetime, time, timedelta, timezone
 
+import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -31,6 +32,7 @@ from app.schemas.handoff import (
 )
 from app.services.audit_log import verified_request_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals
+from app.utils.db_locks import acquire_hospital_advisory_lock
 
 router = APIRouter(prefix="/admin/handoffs", tags=["Admin — Handoffs"])
 
@@ -139,13 +141,7 @@ def _assert_version(handoff: HospitalHandoff, version: int) -> None:
 async def _sync_active_schedule_plan(
     db: AsyncSession, hospital_id: uuid.UUID, plan: Plan
 ) -> list[dict[str, str]]:
-    """계약 요금제를 활성 발행 일정에 반영하고, 바뀐 일정 기록을 돌려준다.
-
-    월 약정 편수와 격차 배분은 `ContentSchedule.plan`을 읽는다(workers/monthly_slots.py).
-    일정 화면은 더 이상 요금제를 바꿀 수 없으므로(H-14), 계약 정정이 일정을 함께 고치지
-    않으면 정정된 병원은 옛 편수로 계속 다음 달 슬롯을 만든다. 이미 만들어진 이번 달
-    슬롯은 계약 월 보존을 위해 건드리지 않는다 — 재생성은 일정 재설정(교체) 경로가 한다.
-    """
+    """Append next-month terms; never rewrite the plan read by historical reports."""
     result = await db.execute(
         select(ContentSchedule).where(
             ContentSchedule.hospital_id == hospital_id,
@@ -159,7 +155,16 @@ async def _sync_active_schedule_plan(
         synced.append(
             {"schedule_id": str(schedule.id), "from": schedule.plan, "to": plan.value}
         )
-        schedule.plan = plan.value
+        schedule.is_active = False
+        effective_from = max(
+            schedule.active_from,
+            arrow.now("Asia/Seoul").shift(months=1).floor("month").date(),
+        )
+        db.add(ContentSchedule(
+            hospital_id=hospital_id, plan=plan.value,
+            publish_days=list(schedule.publish_days), active_from=effective_from,
+            is_active=True, created_at=datetime.now(UTC),
+        ))
     return synced
 
 
@@ -304,6 +309,7 @@ async def contract_handoff(
     handoff.plan = body.plan
     handoff.sla_due_at = body.sla_due_at
     handoff.state = HandoffState.CONTRACTED
+    await acquire_hospital_advisory_lock(db, handoff.hospital_id)
     hospital = await db.get(Hospital, handoff.hospital_id)
     schedule_plan_synced: list[dict[str, str]] = []
     if hospital is not None:
@@ -401,6 +407,7 @@ async def correct_contract(
     handoff.contract_effective_at = body.contract_effective_at
     handoff.plan = body.plan
     handoff.sla_due_at = body.sla_due_at
+    await acquire_hospital_advisory_lock(db, handoff.hospital_id)
     hospital = await db.get(Hospital, handoff.hospital_id)
     schedule_plan_synced: list[dict[str, str]] = []
     if hospital is not None:

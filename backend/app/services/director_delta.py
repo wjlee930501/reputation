@@ -17,7 +17,7 @@ from copy import deepcopy
 from types import SimpleNamespace
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -25,6 +25,8 @@ from app.models.director_delta import DirectorDelta, DirectorDeltaSource, Direct
 from app.models.hospital import Hospital
 
 MAX_ACTIVE_DELTAS = 50
+MAX_ACTIVE_FEEDBACK_CHARS = 6000
+_FEEDBACK_FIELDS = ("avoid_messages", "prefer_topics", "prefer_messages")
 Message = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
 
 
@@ -35,6 +37,11 @@ class DirectorDeltaInput(BaseModel):
     prefer_topics: list[Message] = Field(default_factory=list, max_length=50)
     prefer_messages: list[Message] = Field(default_factory=list, max_length=50)
     notes: str | None = Field(default=None, max_length=10000)
+
+    @field_validator("avoid_messages", "prefer_topics", "prefer_messages")
+    @classmethod
+    def unique_messages(cls, values):
+        return list(dict.fromkeys(values))
 
 
 class ActiveDirectorDeltaLimit(ValueError):
@@ -50,6 +57,17 @@ def create_director_delta(
     ).scalar_one_or_none()
     if hospital is None:
         raise ValueError("Hospital not found")
+    existing = db.execute(active_deltas_query(hospital_id)).scalars().all()
+    normalized = payload.model_dump()
+    for delta in existing:
+        if all(getattr(delta, key) == value for key, value in normalized.items()):
+            return delta
+    active_chars = sum(len(value) for row in [*existing, payload]
+                       for field in _FEEDBACK_FIELDS for value in getattr(row, field))
+    if active_chars > MAX_ACTIVE_FEEDBACK_CHARS:
+        raise ActiveDirectorDeltaLimit(
+            "활성 피드백은 합계 6,000자까지 반영합니다. 이전 선호를 종료한 뒤 다시 저장해 주세요."
+        )
     count = db.scalar(
         select(func.count())
         .select_from(DirectorDelta)

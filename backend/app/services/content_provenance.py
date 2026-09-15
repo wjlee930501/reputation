@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import uuid
 from datetime import datetime
 from typing import Any
@@ -64,6 +66,10 @@ def build_generation_provenance(
             ).scalars()
         }
     return {
+        "director_delta_ids": sorted(getattr(philosophy, "director_delta_ids", []) or []),
+        "director_delta_fingerprint": hashlib.sha256(json.dumps(
+            sorted(getattr(philosophy, "director_delta_ids", []) or []),
+        ).encode()).hexdigest(),
         "philosophy_id": str(philosophy.id),
         "source_snapshot_hash": getattr(philosophy, "source_snapshot_hash", None),
         "source_asset_ids": sorted(

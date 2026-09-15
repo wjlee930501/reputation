@@ -104,6 +104,8 @@ def assess_public_visibility(
 ) -> PublicVisibility:
     """저장된 그대로의 글이 지금 공개 페이지에 나가도 되는가. 모든 차단 사유를 모은다."""
     blockers: list[str] = []
+    if (getattr(item, "essence_check_summary", None) or {}).get("authority_change"):
+        blockers.append("CONTENT_AUTHORITY_CHANGED")
     if current_philosophy_id is not UNSET_PHILOSOPHY and not (
         current_philosophy_id is not None
         and getattr(item, "content_philosophy_id", None) == current_philosophy_id

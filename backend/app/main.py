@@ -15,6 +15,7 @@ from starlette.responses import Response
 from app.api.admin import accounts as admin_accounts
 from app.api.admin import auth as admin_auth
 from app.api.admin import content as admin_content
+from app.api.admin import director_feedback as admin_director_feedback
 from app.api.admin import domain as admin_domain
 from app.api.admin import domain_connect as admin_domain_connect
 from app.api.admin import domain_setup as admin_domain_setup
@@ -181,6 +182,7 @@ app.include_router(admin_auth.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_accounts.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_content.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_reports.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(admin_director_feedback.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_sov.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_query_targets.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_domain_connect.router, prefix="/api/v1", dependencies=admin_deps)

@@ -225,6 +225,12 @@ def assess_content_publication(
 ) -> PublicationAssessment:
     """Re-screen the exact stored content immediately before it becomes public."""
 
+    if (getattr(item, "essence_check_summary", None) or {}).get("authority_change"):
+        return _blocked(
+            code="CONTENT_AUTHORITY_CHANGED",
+            message="근거 자료가 변경된 원고입니다. 새 기준에 따른 재생성을 기다립니다.",
+            item=item, philosophy=philosophy,
+        )
     # 공백만 남은 제목·본문은 생성된 원고가 아니다 (H-09).
     if not (item.title or "").strip() or not (item.body or "").strip():
         return _blocked(
@@ -377,6 +383,8 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # Scheduled generation uses this durable JSON fragment to avoid
             # paying again for the same unchanged body/image failure.
             "generation_attempt",
+            "authority_change",
+            "generation_provenance",
             "legacy_image_certification",
             # 공개 이미지 재인증 차단 표시는 제목(subject)에 매인 사실이다. 제목을
             # 건드리지 않는 편집이 지우면 sweep이 같은 답을 다시 사러 간다 (H-01).
@@ -385,6 +393,13 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             value = previous_summary.get(key)
             if value is not None:
                 summary[key] = value
+    if isinstance(previous_summary, dict) and previous_summary.get("authority_change"):
+        # A failed publish/re-screen must never lend the new base ID to withdrawn
+        # text or erase its blocker. Only guarded writer writeback clears this.
+        summary["blocking"] = True
+        item.essence_status = ESSENCE_STATUS_NEEDS_REVIEW
+        item.essence_check_summary = summary
+        return
     item.content_philosophy_id = assessment.philosophy_id
     if hasattr(item, "last_reviewed_philosophy_id"):
         item.last_reviewed_philosophy_id = assessment.philosophy_id
@@ -398,6 +413,9 @@ def apply_essence_revalidation(
 ) -> str:
     """Re-screen Essence fields without erasing independent review provenance."""
 
+    if (getattr(item, "essence_check_summary", None) or {}).get("authority_change"):
+        item.essence_status = ESSENCE_STATUS_NEEDS_REVIEW
+        return item.essence_status
     screening = screen_content_against_philosophy(item, philosophy)
     item.content_philosophy_id = philosophy.id
     previous = getattr(item, "essence_check_summary", None)

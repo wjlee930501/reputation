@@ -19,7 +19,7 @@ from app.workers.runtime_queue_observability import (
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
 # reconcile-redbeat Job이 이 버전을 기록하고, --check 모드가 드리프트를 차단한다.
-REDBEAT_SCHEDULE_VERSION = "2026-09-12.2"
+REDBEAT_SCHEDULE_VERSION = "2026-09-15.2"
 
 # Worker logs share the API's structured format + request_id filter (OBS-1/OBS-2).
 configure_logging(level=settings.LOG_LEVEL, json_logs=settings.LOG_JSON)
@@ -212,6 +212,7 @@ celery_app.conf.update(
         "app.workers.lead_diagnosis_tasks.recover_lead_diagnosis_report": {"queue": "leadgen"},
         "app.workers.lead_diagnosis_tasks.notify_lead_intake": {"queue": "default"},
         "app.workers.lead_diagnosis_tasks.drain_lead_diagnoses": {"queue": "default"},
+        "app.workers.notification_tasks.enqueue_fleet_heartbeat": {"queue": "default"},
         "app.workers.notification_tasks.dispatch_notification_outbox": {"queue": "default"},
         "app.workers.milestone_event_tasks.project_milestone_events": {"queue": "default"},
         "app.workers.monthly_artifact_reconciliation.reconcile": {"queue": "reports"},
@@ -369,6 +370,11 @@ celery_app.conf.update(
             "options": {"headers": build_dispatch_headers("drain-lead-diagnoses")},
         },
         # 1분마다 — 커밋된 Slack 의도를 임대해 전송하고 재시도/HOLD 상태를 회수한다.
+        "daily-fleet-heartbeat": {
+            "task": "app.workers.notification_tasks.enqueue_fleet_heartbeat",
+            "schedule": crontab(minute=0),
+            "options": {"headers": build_dispatch_headers("fleet-heartbeat")},
+        },
         "dispatch-notification-outbox": {
             "task": "app.workers.notification_tasks.dispatch_notification_outbox",
             "schedule": crontab(minute="*"),

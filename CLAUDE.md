@@ -1,5 +1,18 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 2026-09-15 GEO 자율 운영 보강 — 로컬 구현 우선 계약
+
+상태: `codex/geo-autonomy-hardening-20260915`, d96bd21 기반 로컬 구현·선별 검증. 운영 배포 전.
+기존 문구와 충돌할 때 아래의 새 계약을 적용한다. 상세 구현·한계·검증은 [GEO 보강 기록](docs/releases/2026-09-15-geo-autonomy-hardening.md)을 본다.
+정상 생성마다 메시지를 보내지 않되, 하루 한 건의 GEO 운영 요약은 Slack outbox로 보고한다. 기본 18시 KST 이후이며 누락 tick은 당일 다음 hourly tick이 회수한다.
+원장 상담 피드백은 다음 신규 생성부터 반영하며 기존 글 일괄 재생성을 하지 않는다. 활성 피드백은 총 6,000자, 중복은 합치고 사람의 기록 종료만 허용한다.
+BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시적 근거 제외·수정은 새 생성만 보류하고 의존 원고를 선택적으로 철회·수리한다. 철회 표시를 단순 발행 판정으로 지우지 않는다.
+일정 재설정으로 원고/최초 발행 이력을 삭제하지 않는다. 병원·계약 월 단위로 남은 할당만 채우며 다음 달 plan 변경은 append-only다.
+주요 공개 변경과 SITE_REVALIDATION intent는 한 transaction이다. cache invalidation 수락을 실제 환자 페이지 공개 확인으로 표시하지 않는다.
+새 생성 task는 소유권이 검증된 OperationRun을 바탕으로 실행 시 reservation token을 execution token으로 바꾸며, 대기 시간을 실행 lease로 오인하지 않는다.
+Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
+
+
 문서 버전: **2.8** · 갱신일: **2026-09-15 (Asia/Seoul)**
 소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**

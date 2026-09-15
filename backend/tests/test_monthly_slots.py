@@ -144,7 +144,7 @@ def test_carried_over_item_does_not_block_the_whole_month(db):
     assert _planned_sequences(db, schedule) == set(range(1, 17))
 
 
-def test_unrelated_schedule_items_do_not_block_generation(db):
+def test_other_schedule_same_month_counts_toward_hospital_contract(db):
     """같은 병원의 다른 스케줄 행이 판정을 오염시키지 않는다 (결함 1)."""
     schedule = _make_schedule(db)
     other = ContentSchedule(
@@ -159,7 +159,8 @@ def test_unrelated_schedule_items_do_not_block_generation(db):
     _add_item(db, other, scheduled_date=date(2026, 8, 5), sequence_no=1)
 
     assert _run(db, schedule) is True
-    assert _planned_sequences(db, schedule) == set(range(1, 17))
+    assert _planned_sequences(db, schedule) == set(range(2, 17))
+    assert db.query(ContentItem).filter(ContentItem.hospital_id == schedule.hospital_id).count() == 16
 
 
 def test_partial_slots_are_completed_without_duplicates(db):
@@ -281,12 +282,12 @@ def test_carried_out_slot_is_not_recreated_in_its_original_month(db):
     assert sum(row.sequence_no == 1 for row in rows) == 1
 
 
-def test_reconciliation_corrects_truncated_total_on_existing_posts(db):
+def test_reconciliation_preserves_legacy_total_on_existing_posts(db):
     schedule = _make_schedule(db, plan="PLAN_12", publish_days=[1, 4])
     item = _add_item(db, schedule, scheduled_date=date(2026, 8, 4), sequence_no=1)
     item.total_count = 8
     db.flush()
     assert _run(db, schedule) is True
     db.refresh(item)
-    assert item.total_count == 12
+    assert item.total_count == 8  # Historical allocation metadata is not rewritten.
     assert item.scheduled_date == date(2026, 8, 4)

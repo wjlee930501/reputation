@@ -24,16 +24,31 @@ resource "google_service_account" "frontend" {
   project      = var.project_id
 }
 
-resource "google_project_iam_member" "frontend_roles" {
-  for_each = toset([
-    "roles/logging.logWriter",
-    "roles/monitoring.metricWriter",
-  ])
+resource "google_service_account" "site" {
+  account_id   = "${var.app_name}-site-sa"
+  display_name = "Re:putation Public Site"
+  project      = var.project_id
+}
 
-  project = var.project_id
-  role    = each.key
-  member  = "serviceAccount:${google_service_account.frontend.email}"
+resource "google_service_account" "admin" {
+  account_id   = "${var.app_name}-admin-sa"
+  display_name = "Re:putation Admin BFF"
+  project      = var.project_id
+}
 
+resource "google_project_iam_member" "site_roles" {
+  for_each = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter"])
+  project  = var.project_id
+  role     = each.key
+  member   = "serviceAccount:${google_service_account.site.email}"
+  depends_on = [google_project_service.services]
+}
+
+resource "google_project_iam_member" "admin_roles" {
+  for_each = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter"])
+  project  = var.project_id
+  role     = each.key
+  member   = "serviceAccount:${google_service_account.admin.email}"
   depends_on = [google_project_service.services]
 }
 
@@ -45,7 +60,7 @@ resource "google_cloud_run_v2_service" "site" {
   ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
   template {
-    service_account = google_service_account.frontend.email
+    service_account = google_service_account.site.email
 
     containers {
       image = local.site_image
@@ -125,7 +140,7 @@ resource "google_cloud_run_v2_service" "site" {
 
   depends_on = [
     google_project_service.services,
-    google_secret_manager_secret_iam_member.frontend_access,
+    google_secret_manager_secret_iam_member.site_access,
   ]
 }
 
@@ -137,7 +152,7 @@ resource "google_cloud_run_v2_service" "admin" {
   ingress  = "INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER"
 
   template {
-    service_account = google_service_account.frontend.email
+    service_account = google_service_account.admin.email
 
     containers {
       image = local.admin_image
@@ -206,7 +221,7 @@ resource "google_cloud_run_v2_service" "admin" {
 
   depends_on = [
     google_project_service.services,
-    google_secret_manager_secret_iam_member.frontend_access,
+    google_secret_manager_secret_iam_member.admin_access,
   ]
 }
 

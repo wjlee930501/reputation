@@ -211,12 +211,20 @@ resource "google_secret_manager_secret_iam_member" "app_access" {
   member    = "serviceAccount:${google_service_account.app.email}"
 }
 
-resource "google_secret_manager_secret_iam_member" "frontend_access" {
-  for_each  = merge(local.admin_secret_env, local.site_secret_env)
+resource "google_secret_manager_secret_iam_member" "admin_access" {
+  for_each  = local.admin_secret_env
   project   = var.project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.frontend.email}"
+  member    = "serviceAccount:${google_service_account.admin.email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "site_access" {
+  for_each  = local.site_secret_env
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.site.email}"
 }
 
 resource "google_secret_manager_secret_iam_member" "redis_url_app_access" {
@@ -224,4 +232,14 @@ resource "google_secret_manager_secret_iam_member" "redis_url_app_access" {
   secret_id = google_secret_manager_secret.redis_url.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.app.email}"
+}
+
+
+# Transitional grants only; disable after both old frontend revisions are retired.
+resource "google_secret_manager_secret_iam_member" "frontend_access" {
+  for_each  = var.legacy_frontend_access_enabled ? merge(local.admin_secret_env, local.site_secret_env) : {}
+  project   = var.project_id
+  secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.frontend.email}"
 }

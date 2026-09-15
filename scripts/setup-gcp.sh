@@ -24,8 +24,10 @@ REPO="${GCP_ARTIFACT_REPO:-reputation}"
 SA_NAME="${GCP_SERVICE_ACCOUNT_NAME:-reputation-sa}"
 SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 # 프론트엔드(Next.js site/admin) 전용 SA — deploy.sh가 참조한다 (terraform과 동일 명명).
-FRONTEND_SA_NAME="${GCP_FRONTEND_SERVICE_ACCOUNT_NAME:-reputation-frontend-sa}"
-FRONTEND_SA_EMAIL="${FRONTEND_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+SITE_SA_NAME="${GCP_SITE_SERVICE_ACCOUNT_NAME:-reputation-site-sa}"
+SITE_SA_EMAIL="${SITE_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+ADMIN_SA_NAME="${GCP_ADMIN_SERVICE_ACCOUNT_NAME:-reputation-admin-sa}"
+ADMIN_SA_EMAIL="${ADMIN_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 
 if [[ -z "$PROJECT_ID" ]]; then
   fail "GCP_PROJECT_ID 환경변수 또는 gcloud config set project를 설정해 주세요."
@@ -74,14 +76,11 @@ fi
 
 # 프론트엔드 SA — site/admin Cloud Run 서비스용 (deploy.sh FRONTEND_SERVICE_ACCOUNT,
 # terraform cloudrun_frontend.tf와 동일). 백엔드 secret(API 키·DB 비밀번호) 접근 없음.
-if gcloud iam service-accounts describe "$FRONTEND_SA_EMAIL" --project="$PROJECT_ID" &>/dev/null; then
-  ok "프론트엔드 서비스 계정 이미 존재: ${FRONTEND_SA_EMAIL}"
-else
-  gcloud iam service-accounts create "$FRONTEND_SA_NAME" \
-    --display-name="Re:putation Frontend (Next.js) Service Account" \
-    --project="$PROJECT_ID"
-  ok "프론트엔드 서비스 계정 생성 완료: ${FRONTEND_SA_EMAIL}"
-fi
+for frontend_sa_name in "$SITE_SA_NAME" "$ADMIN_SA_NAME"; do
+  if ! gcloud iam service-accounts describe "${frontend_sa_name}@${PROJECT_ID}.iam.gserviceaccount.com" --project="$PROJECT_ID" &>/dev/null; then
+    gcloud iam service-accounts create "$frontend_sa_name" --display-name="Re:putation ${frontend_sa_name}" --project="$PROJECT_ID"
+  fi
+done
 
 # ─── 4. IAM 권한 부여 ──────────────────────────────────────────────
 info "IAM 권한 부여 중..."
@@ -108,12 +107,14 @@ FRONTEND_ROLES=(
   "roles/logging.logWriter"
   "roles/monitoring.metricWriter"
 )
+for frontend_sa_email in "$SITE_SA_EMAIL" "$ADMIN_SA_EMAIL"; do
 for role in "${FRONTEND_ROLES[@]}"; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${FRONTEND_SA_EMAIL}" \
+    --member="serviceAccount:${frontend_sa_email}" \
     --role="$role" \
     --condition=None \
     --quiet
+done
 done
 ok "IAM 권한 부여 완료"
 
@@ -153,20 +154,12 @@ declare -A SECRETS=(
 )
 
 # 프론트엔드 SA가 접근해야 하는 secret (terraform secretmanager.tf frontend_access와 동일).
-FRONTEND_SECRET_NAMES=(
-  "ADMIN_SECRET_KEY"
-  "ADMIN_SESSION_SECRET"
-  "BFF_ACTOR_SECRET"
-  "SITE_REVALIDATE_SECRET"
-  "SITE_BFF_SECRET"
-)
-
-is_frontend_secret() {
-  local name
-  for name in "${FRONTEND_SECRET_NAMES[@]}"; do
-    [[ "$1" == "$name" ]] && return 0
-  done
-  return 1
+frontend_secret_members() {
+  case "$1" in
+    ADMIN_SECRET_KEY|ADMIN_SESSION_SECRET|BFF_ACTOR_SECRET) echo "$ADMIN_SA_EMAIL" ;;
+    SITE_REVALIDATE_SECRET|INDEXNOW_KEY) echo "$SITE_SA_EMAIL" ;;
+    SITE_BFF_SECRET) echo "$ADMIN_SA_EMAIL"; echo "$SITE_SA_EMAIL" ;;
+  esac
 }
 
 for secret_name in "${!SECRETS[@]}"; do
@@ -186,13 +179,12 @@ for secret_name in "${!SECRETS[@]}"; do
     --project="$PROJECT_ID" \
     --quiet 2>/dev/null || true
 
-  if is_frontend_secret "$secret_name"; then
+  while IFS= read -r frontend_sa_email; do
+    [[ -z "$frontend_sa_email" ]] && continue
     gcloud secrets add-iam-policy-binding "$secret_name" \
-      --member="serviceAccount:${FRONTEND_SA_EMAIL}" \
-      --role="roles/secretmanager.secretAccessor" \
-      --project="$PROJECT_ID" \
-      --quiet 2>/dev/null || true
-  fi
+      --member="serviceAccount:${frontend_sa_email}" \
+      --role="roles/secretmanager.secretAccessor" --project="$PROJECT_ID" --quiet
+  done < <(frontend_secret_members "$secret_name")
 done
 
 ok "Secret Manager 설정 완료"
