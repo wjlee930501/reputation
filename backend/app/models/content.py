@@ -222,6 +222,12 @@ class ContentItem(Base):
     # 본문이지만 의미는 "공개 표면 텍스트 편집"이다 — 공개 뒤 편집 표본과 Site 재검증
     # 키가 이 값을 쓰므로 본문 외 공개 필드 편집도 여기에 기록한다.
     body_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 사람이 편집 가능한 필드(제목·본문·meta·FAQ·참고자료)를 **실제로** 바꾼 마지막 시각.
+    # 같은 값 PATCH는 찍지 않는다. 값이 있으면 자동 주제 교체 대상에서 빠진다. migration 0079.
+    human_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 본문 표본 실패의 마지막 폴백 계단이 남기는 주제 교체 이력. 비어 있음(NULL 포함)이
+    # "아직 교체하지 않았다"이고, 길이가 생성 인시던트의 epoch다. migration 0079.
+    topic_swap_history: Mapped[list | None] = mapped_column(_jsonb_type())
     generation_claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     generation_claim_token: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     # 생성 이미지가 의미론적(semantic) 정책 검수를 통과한 시각. migration 0053.

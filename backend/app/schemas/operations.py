@@ -107,6 +107,8 @@ class ContentYieldHospital(BaseModel):
     published_with_reused_image: int
     # 자동 복구가 아직 소유한 수. 사람의 할 일이 아니다.
     retrying: int
+    # 마지막 폴백 계단이 그 주에 주제를 바꾼 슬롯 수. 역시 자동 복구가 소유한 수다.
+    topic_swapped: int
     operator_required: int
     blocked: int
     # 운영자 문구 → 건수. 내부 enum·오류 코드는 담지 않는다.

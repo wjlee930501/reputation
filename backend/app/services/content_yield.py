@@ -31,7 +31,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import Select, and_, or_, select
+from sqlalchemy import Select, and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -71,6 +71,8 @@ class HospitalYieldFact:
     published: int = 0
     published_with_reused_image: int = 0
     retrying: int = 0
+    # 그 기간에 마지막 폴백 계단이 주제를 바꾼 슬롯 수. 재시도 중과 같은 자동 복구 수다.
+    topic_swapped: int = 0
     operator_required: int = 0
     # 운영자 문구 → 건수. 예정됐지만 아직 발행되지 않은 슬롯만 센다.
     blocked_by_cause: dict[str, int] = field(default_factory=dict)
@@ -122,13 +124,30 @@ def eligible_hospitals_stmt(period_start: date, period_end: date) -> Select:
     )
 
 
+def _has_topic_swap_history():
+    """주제 교체 이력이 있는 행. JSONB `null`은 스칼라라 배열일 때만 길이를 센다."""
+
+    return (
+        case(
+            (
+                func.jsonb_typeof(ContentItem.topic_swap_history) == "array",
+                func.jsonb_array_length(ContentItem.topic_swap_history),
+            ),
+            else_=0,
+        )
+        > 0
+    )
+
+
 def yield_rows_stmt(
     hospital_ids: Sequence[uuid.UUID], period_start: date, period_end: date
 ) -> Select:
-    """예정 슬롯과 실제 발행을 한 번에 읽는다.
+    """예정 슬롯과 실제 발행, 그리고 그 기간의 주제 교체를 한 번에 읽는다.
 
     지연 발행은 예정일이 기간 밖이므로 `scheduled_date` 조건만으로는 보이지 않는다.
-    두 조건의 합집합을 한 쿼리로 읽고 파이썬에서 각각 센다.
+    주제 교체도 마찬가지다 — 지난주 슬롯을 이번 주에 바꿀 수 있다. 세 조건의 합집합을
+    한 쿼리로 읽고 파이썬에서 각각 센다. 교체는 슬롯당 한 번뿐인 드문 종착 사건이라
+    이력이 있는 행 전체를 읽어도 규모가 작다(기간 판정은 파이썬이 한다).
     """
 
     starts_at, ends_at = _period_bounds(period_start, period_end)
@@ -140,6 +159,7 @@ def yield_rows_stmt(
             ContentItem.first_published_at,
             ContentItem.image_reused_from_content_id,
             ContentItem.essence_check_summary,
+            ContentItem.topic_swap_history,
         )
         .where(
             ContentItem.hospital_id.in_(list(hospital_ids)),
@@ -154,6 +174,7 @@ def yield_rows_stmt(
                     ContentItem.first_published_at >= starts_at,
                     ContentItem.first_published_at < ends_at,
                 ),
+                _has_topic_swap_history(),
             ),
         )
         .order_by(ContentItem.hospital_id, ContentItem.scheduled_date)
@@ -181,6 +202,35 @@ def _reused_image(row: Any) -> bool:
     return isinstance(summary, Mapping) and bool(summary.get(_IMAGE_REUSE_SUMMARY_KEY))
 
 
+def _topic_swaps_in_period(row: Any, starts_at: datetime, ends_at: datetime) -> int:
+    """그 기간에 일어난 주제 교체 수.
+
+    예정일·발행일이 기간 밖이어도 **교체가 그 기간에 일어났으면** 그 기간의 수다 —
+    지난주 슬롯을 이번 주에 바꾸는 일이 정상이기 때문이다. 교체는 슬롯당 한 번뿐이므로
+    행마다 실질적으로 0 또는 1이다.
+    """
+
+    history = getattr(row, "topic_swap_history", None)
+    if not isinstance(history, list):
+        return 0
+    swaps = 0
+    for entry in history:
+        if not isinstance(entry, Mapping):
+            continue
+        raw = entry.get("swapped_at")
+        if not isinstance(raw, str):
+            continue
+        try:
+            swapped_at = datetime.fromisoformat(raw)
+        except ValueError:
+            continue
+        if swapped_at.tzinfo is None:
+            swapped_at = swapped_at.replace(tzinfo=UTC)
+        if starts_at <= swapped_at < ends_at:
+            swaps += 1
+    return swaps
+
+
 def _status_value(status: Any) -> str:
     return status.value if isinstance(status, ContentStatus) else str(status or "")
 
@@ -203,6 +253,7 @@ def fold_yield_rows(
             "published": 0,
             "reused": 0,
             "retrying": 0,
+            "topic_swapped": 0,
             "operator_required": 0,
             "causes": {},
         }
@@ -221,6 +272,7 @@ def fold_yield_rows(
             bucket["published"] += 1
             if _reused_image(row):
                 bucket["reused"] += 1
+        bucket["topic_swapped"] += _topic_swaps_in_period(row, starts_at, ends_at)
 
         due_in_period = (
             period_start <= row.scheduled_date < period_end
@@ -255,6 +307,7 @@ def fold_yield_rows(
             published=bucket["published"],
             published_with_reused_image=bucket["reused"],
             retrying=bucket["retrying"],
+            topic_swapped=bucket["topic_swapped"],
             operator_required=bucket["operator_required"],
             blocked_by_cause=dict(sorted(bucket["causes"].items())),
         )

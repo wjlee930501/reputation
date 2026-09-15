@@ -97,6 +97,7 @@ class HospitalYieldView(Protocol):
     published: int
     published_with_reused_image: int
     retrying: int
+    topic_swapped: int
     operator_required: int
 
 
@@ -104,8 +105,8 @@ def _yield_lines(yield_facts: Sequence[HospitalYieldView]) -> tuple[list[str], i
     """병원별 '발행 n/예정 m' 한 줄. 부족분이 큰 병원이 위로 온다.
 
     계약도 발행도 없는 병원은 줄을 만들지 않는다 — 대표가 보는 것은 계약이 있는
-    병원의 이행이지 빈 행의 목록이 아니다. `재시도 중`은 자동 복구가 소유한 수이고
-    `조치 필요`만 사람의 일이다(두 수를 한 줄에 같이 두는 이유).
+    병원의 이행이지 빈 행의 목록이 아니다. `재시도 중`과 `주제 교체`는 자동 복구가
+    소유한 수이고 `조치 필요`만 사람의 일이다(세 수를 한 줄에 같이 두는 이유).
     """
 
     active = [fact for fact in yield_facts if fact.due or fact.published]
@@ -118,7 +119,8 @@ def _yield_lines(yield_facts: Sequence[HospitalYieldView]) -> tuple[list[str], i
         f"• *{_publish_safe_text(fact.hospital_name, 100)}* "
         f"발행 {fact.published}/{fact.due} "
         f"(재사용 이미지 {fact.published_with_reused_image}, "
-        f"재시도 중 {fact.retrying}, 조치 필요 {fact.operator_required})"
+        f"재시도 중 {fact.retrying}, 주제 교체 {fact.topic_swapped}, "
+        f"조치 필요 {fact.operator_required})"
         for fact in shown
     ]
     hidden = len(ranked) - len(shown)

@@ -89,6 +89,7 @@ def _seed_item(
     first_published_at: datetime | None = None,
     reused_from: uuid.UUID | None = None,
     summary: dict | None = None,
+    topic_swap_history: list | None = None,
 ) -> uuid.UUID:
     item_id = uuid.uuid4()
     conn.execute(
@@ -97,10 +98,10 @@ def _seed_item(
             "(id, hospital_id, schedule_id, content_type, sequence_no, total_count, "
             " scheduled_date, status, title, body, content_revision, "
             " published_at, first_published_at, image_reused_from_content_id, "
-            " essence_check_summary) "
+            " essence_check_summary, topic_swap_history) "
             "VALUES (:id, :hid, :sid, 'DISEASE', :seq, 12, :d, :status, :title, '본문', 1, "
             " :published_at, :first_published_at, :reused_from, "
-            " CAST(:summary AS jsonb))"
+            " CAST(:summary AS jsonb), CAST(:topic_swap_history AS jsonb))"
         ),
         {
             "id": item_id,
@@ -114,6 +115,9 @@ def _seed_item(
             "first_published_at": first_published_at,
             "reused_from": reused_from,
             "summary": json.dumps(summary) if summary is not None else None,
+            "topic_swap_history": (
+                json.dumps(topic_swap_history) if topic_swap_history is not None else None
+            ),
         },
     )
     return item_id
@@ -322,3 +326,33 @@ def test_paused_hospital_with_an_overlapping_interval_stays_in_the_report(
     assert "이전종료의원" not in names
     served = _fact(facts, "중지된계약의원")
     assert (served.due, served.published, served.retrying) == (1, 0, 1)
+
+
+def test_a_previous_weeks_slot_swapped_this_week_is_counted_this_week(pg_conn, pg_session):
+    """교체는 예정 주가 아니라 실제로 바꾼 주의 수다.
+
+    예정일로만 행을 읽으면 지난주 슬롯을 이번 주에 바꾼 건이 어느 주에도 잡히지 않는다.
+    """
+
+    hospital_id, schedule_id = _seed_hospital(pg_conn, name="교체관측의원")
+    _seed_item(
+        pg_conn,
+        hospital_id,
+        schedule_id,
+        scheduled_date=WEEK_START - timedelta(days=3),  # 지난주 슬롯
+        topic_swap_history=[
+            {
+                "reason_code": "GENERATION_REJECTED",
+                "swapped_at": datetime(2026, 9, 9, 1, 0, tzinfo=KST).isoformat(),
+            }
+        ],
+    )
+
+    facts = compute_content_yield(
+        pg_session, period_start=WEEK_START, period_end=WEEK_END
+    )
+    fact = _fact(facts, "교체관측의원")
+
+    assert fact.topic_swapped == 1
+    # 예정도 발행도 이번 주가 아니다 — 기존 분모·분자는 그대로다.
+    assert (fact.due, fact.published) == (0, 0)

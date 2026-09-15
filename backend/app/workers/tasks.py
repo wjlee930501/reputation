@@ -364,6 +364,7 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
+from app.workers.topic_swap_fallback import swap_exhausted_topics
 from app.workers.v0_checkpoint import (
     find_resumable_v0_measurement_run,
     find_reusable_v0_measurement_run,
@@ -4771,6 +4772,7 @@ def nightly_content_generation(self):
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
         # 로더보다 앞선 별도 pass다. 로더는 고른 행에 claim을 찍고 커밋한 채 돌려주므로
         # 그 뒤에서는 활성 claim이 없는 후보를 찾을 수 없다.
+        swap_exhausted_topics(db, window_start=window_start, window_end=window_end)
         recorder = GenerationBatchRecorder(db, task_id, window_start, window_end)
         _dispatch_generation_batch(
             db, recorder, window_start, window_end, now_kst=now_kst
@@ -5316,6 +5318,8 @@ def overnight_content_generation_recovery(self):
     window_start = auto_publish_catchup_start(today)
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
+        # 마지막 폴백 계단은 로더 앞에서 돈다(위 야간 배치와 같은 이유).
+        swap_exhausted_topics(db, window_start=window_start, window_end=today)
         recorder = GenerationBatchRecorder(db, task_id, window_start, today)
         # 07:45 요약이 이 시간대의 알림을 소유한다 — 슬롯별 Slack을 내지 않는다.
         _dispatch_generation_batch(

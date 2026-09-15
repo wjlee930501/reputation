@@ -200,6 +200,24 @@ class ContentPatch(BaseModel):
     references: list[ReferencePatchItem] | None = None
 
 
+# 사람이 이 PATCH로 바꿀 수 있는 저장 필드. 공개 텍스트 필드 목록은 생성 엔진과 공유하고
+# 참고자료만 덧붙인다 — 새 공개 필드가 늘 때 두 경로가 어긋나지 않게 한다.
+HUMAN_EDITABLE_FIELDS: tuple[str, ...] = (*FORBIDDEN_CHECK_FIELDS, "references_list")
+
+
+def _human_editable_snapshot(item) -> dict[str, object]:
+    """편집 전후를 **정규화한 값**으로 비교하기 위한 사본.
+
+    저장된 참고자료에는 파생 필드(`source_type`)가 없는 레거시 행이 있다. 같은 제목·URL을
+    그대로 다시 제출한 PATCH는 정규화 뒤 형태만 달라질 뿐 사람이 바꾼 것이 없으므로,
+    양쪽 모두 같은 정규화를 거쳐 비교한다. (판 올림·확인 기록 무효화는 종전 규칙 그대로다.)
+    """
+
+    snapshot = {field: getattr(item, field, None) for field in FORBIDDEN_CHECK_FIELDS}
+    snapshot["references_list"] = _normalize_references(getattr(item, "references_list", None))
+    return snapshot
+
+
 class PublishBody(BaseModel):
     """발행자는 요청 본문이 아니라 확인된 요청 actor로 기록한다 (H-09)."""
 
@@ -581,6 +599,10 @@ async def update_content(
     if isinstance(item.essence_check_summary, dict):
         previous_ai_review = item.essence_check_summary.get("ai_review")
 
+    # 사람이 실제로 손댄 판만 `human_edited_at`으로 남긴다. 같은 정규화 값 PATCH는 근거와
+    # 처리 상태를 바꾸지 않는다는 계약이라, 필드 제시 여부가 아니라 값 비교로 판정한다.
+    editable_before = _human_editable_snapshot(item)
+
     if body.references is not None:
         raw_refs = [ref.model_dump() for ref in body.references]
         normalized_refs = _normalize_references(raw_refs)
@@ -633,6 +655,9 @@ async def update_content(
         item.faq_question = body.faq_question
     if body.faq_answer_summary is not None:
         item.faq_answer_summary = body.faq_answer_summary
+
+    if _human_editable_snapshot(item) != editable_before:
+        item.human_edited_at = datetime.now(timezone.utc)
 
     # 공개 후 확인 기록은 그 당시 본문에 대한 기록이다. 공개 필드가 바뀌면 이전 확인을
     # 무효화해 Admin 목록에서 다시 공개 내용 확인 대기로 보이게 한다.

@@ -401,6 +401,7 @@ def _generation_safe_cause(code: str) -> str:
         "STALE_GENERATION_CLAIM": "완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.",
         "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
         # 실패가 아니라 자동 폴백의 중간 상태다 — 같은 슬롯을 다른 주제로 다시 쓴다.
+        "TOPIC_SWAPPED": "같은 주제로 자동 생성이 소진되어 다른 주제로 다시 준비합니다.",
         "MISSING_REFERENCES": "의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.",
         "FAQ_FIELDS_MISSING": "FAQ 질문과 직접 답변 요약이 준비되지 않았습니다.",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
@@ -459,6 +460,7 @@ def _fingerprint(code: str) -> IncidentFingerprint:
     }.get(code, IncidentFingerprint.UNKNOWN)
 
 
+def content_generation_object_id(item_id: uuid.UUID, topic_swap_count: int = 0) -> str:
     """주제 교체마다 새 epoch를 연다.
 
     교체 뒤의 같은 코드 실패는 **새 인시던트**를 열어야 한다 — 옛 주제의 episode를
@@ -466,15 +468,20 @@ def _fingerprint(code: str) -> IncidentFingerprint:
     `source_id`는 종전대로 글 id라 큐 조인·성공 시 자동 종료는 그대로다.
     """
 
+    if topic_swap_count > 0:
+        return f"{item_id}#t{topic_swap_count}"
     return str(item_id)
 
 
+def generation_incident_dedupe_key(
+    item_id: uuid.UUID, code: str, *, topic_swap_count: int = 0
 ) -> str:
     """한 글·한 원인·한 epoch의 생성 인시던트 중복 제거 키."""
 
     return build_incident_key(
         "content_generation",
         "content_item",
+        content_generation_object_id(item_id, topic_swap_count),
         _fingerprint(code),
     )
 
@@ -484,6 +491,7 @@ def _incident_identity(
     item_id: uuid.UUID,
     hospital_id: uuid.UUID,
     subject_hash: str | None = None,
+    topic_swap_count: int = 0,
 ) -> tuple[str, str, str]:
     """Use one durable incident per hospital for a hospital-level preparation gate."""
 
@@ -501,6 +509,7 @@ def _incident_identity(
         )
     return (
         "content_item",
+        content_generation_object_id(item_id, topic_swap_count),
         "/operations",
     )
 
@@ -617,7 +626,9 @@ async def open_generation_incident(
         # 주제 교체 뒤의 실패는 새 epoch로 열려야 하므로 신원을 정하기 전에 이력을 읽는다.
         get_item = getattr(db, "get", None)
         swapped_item = await get_item(ContentItem, item_id) if get_item is not None else None
+        topic_swap_count = len(getattr(swapped_item, "topic_swap_history", None) or [])
         object_type, object_id, admin_path = _incident_identity(
+            code, item_id, hospital_id, subject_hash, topic_swap_count
         )
         # 중복 제거 키만 subject를 포함한다. source_id는 글 자체로 남겨 운영 큐 조인과
         # 성공 시 자동 종료가 subject와 무관하게 같은 글을 찾게 한다.
