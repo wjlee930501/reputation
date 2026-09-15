@@ -18,6 +18,15 @@ from app.models.operations import OperationRun, OperationRunState
 from app.workers.nightly_generation_batch import GENERATION_WRITE_BACK_STATUSES
 
 
+def _human_edit_stamp(item):
+    edited_at = item.human_edited_at
+    if edited_at is None:
+        return None
+    if edited_at.tzinfo is None:
+        edited_at = edited_at.replace(tzinfo=UTC)
+    return edited_at.astimezone(UTC).isoformat()
+
+
 def begin_generation_execution(db, item_id, queued_token, context, *, now=None):
     observed_at = now or datetime.now(UTC)
     run = db.execute(
@@ -61,14 +70,40 @@ def begin_generation_execution(db, item_id, queued_token, context, *, now=None):
     if not (
         item is not None
         and item.status in GENERATION_WRITE_BACK_STATUSES
-        and item.generation_claim_token == queued_token
         and item.hospital.status == HospitalStatus.ACTIVE
         and item.hospital.site_live
     ):
         db.rollback()
         return None
+    previous = payload.get("generation_execution")
+    previous = previous if isinstance(previous, dict) else {}
+    previous_version = previous.get("run_version")
+    valid_redelivery = (
+        isinstance(previous_version, int)
+        and not isinstance(previous_version, bool)
+        and previous_version < context.version
+        and previous.get("reservation_token") == str(queued_token)
+        and previous.get("execution_token") == str(item.generation_claim_token)
+        and previous.get("worker_id") == context.worker_id
+        and previous.get("human_edited_at") == _human_edit_stamp(item)
+    )
+    if item.generation_claim_token != queued_token and not valid_redelivery:
+        db.rollback()
+        return None
     execution_token = uuid.uuid4()
     item.generation_claim_token = execution_token
     item.generation_claimed_at = observed_at
+    # Broker arguments retain the reservation token. Persist its relationship
+    # to this execution atomically; only a newer validated run claim may resume.
+    run.request_payload = {
+        **payload,
+        "generation_execution": {
+            "reservation_token": str(queued_token),
+            "execution_token": str(execution_token),
+            "run_version": context.version,
+            "worker_id": context.worker_id,
+            "human_edited_at": _human_edit_stamp(item),
+        },
+    }
     db.commit()
     return item, execution_token

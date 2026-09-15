@@ -168,7 +168,7 @@ async def test_public_invalidation_acceptance_cannot_remain_pending(db, monkeypa
     assert run.result_summary["page_visibility_verified"] is False
 
 
-# Release-blocking regression: do not skip this until redelivery recovery is fixed.
+# Regression: a newer authenticated redelivery must recover its existing reservation.
 def test_redelivery_with_newer_run_claim_resumes_existing_reservation(db):
     from dataclasses import replace
 

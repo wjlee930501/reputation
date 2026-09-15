@@ -1,0 +1,27 @@
+{
+  "baseline": "3da76bd11509eaaa937a70f827156f2c79e48054",
+  "redelivery_defect": "FIXED",
+  "schema": "PostgreSQL 16 test schema created from ORM metadata, not Alembic",
+  "new_schema_migration_required": false,
+  "selected_unique_tests": 720,
+  "selected_failures": 0,
+  "selected_errors": 0,
+  "selected_skips": 0,
+  "real_postgres_cases": 38,
+  "real_postgres_breakdown": {"new_redelivery_and_integrity": 21, "existing_outbox": 17},
+  "suites": [
+    {"name": "expanded-postgres", "tests": 104, "failures": 0, "errors": 0, "skips": 0},
+    {"name": "regressions", "tests": 664, "failures": 0, "errors": 0, "skips": 0}
+  ],
+  "suite_overlap": 48,
+  "migration_validation": "BLOCKED_BY_TOOL_CHECK",
+  "exploratory_full_suite": {
+    "passed": 3609, "failed": 44, "errors": 18, "skipped": 406,
+    "status": "NOT_GREEN: fixture endpoints and ORM-only schema did not satisfy full-suite requirements; not fully triaged"
+  },
+  "logs": "/tmp/reputation-redelivery-qos2aoem",
+  "production_deployed": false,
+  "github_pushed": false,
+  "external_provider_calls_in_selected_tests": 0,
+  "real_slack_messages": 0
+}

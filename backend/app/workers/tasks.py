@@ -4816,7 +4816,8 @@ def generate_claimed_content_item(
 
     재시도는 이 태스크가 갖지 않는다(`max_retries=0`) — 실패의 재시도 여부와 예산은
     23:00·01·04·07 스윕과 `generation_retry_policy`가 소유한다. 늦게 도착했거나 다시
-    배달된 실행은 lease 토큰이 바뀐 것을 보고 공급자 호출 없이 물러난다.
+    배달된 실행은 durable run 소유권을 재확인한다. 더 높은 claim version의 정상
+    재전달만 저장된 예약·실행 token 관계로 인수하며 중복·재할당·사람 편집은 거절한다.
     """
 
     require_dispatch(self, GENERATE_CONTENT_ITEM_PURPOSE, content_id)
