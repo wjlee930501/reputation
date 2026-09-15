@@ -677,6 +677,7 @@ async def _openai_stage(
             return _StageOutcome(url=url, prompt=prompt)
         return _StageOutcome(reason="PROVIDER_EMPTY")
     except ImagePolicyUnavailableError as e:
+        # 검수 모델 장애는 폴백 여부와 무관하게 최종 원인이다 — Google 진단을 덮어쓴다.
         if diagnostics is not None:
             diagnostics["reason"] = "POLICY_UNAVAILABLE"
             diagnostics["stage"] = stage.value
