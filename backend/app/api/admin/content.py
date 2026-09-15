@@ -80,6 +80,7 @@ from app.services.exposure_content_linker import (
     unlink_content_from_exposure_action,
 )
 from app.services.gap_driven_slots import (
+    ExistingSlot,
     build_gap_targets,
     gap_target_rows_stmt,
     plan_gap_driven_slots,
@@ -350,7 +351,20 @@ async def set_schedule(
     gap_targets = build_gap_targets(
         (await db.execute(gap_target_rows_stmt(hospital_id))).all()
     )
-    planned = plan_gap_driven_slots(slots, plan=period_plan, gap_targets=gap_targets)
+    # The monthly planner must inherit already allocated targets and its spent
+    # redistribution budget on this path just as it does in monthly repair.
+    existing_slots = [
+        ExistingSlot(
+            sequence_no=row.sequence_no,
+            content_type=row.content_type,
+            gap_driven=row.query_target_id is not None,
+            query_target_id=row.query_target_id,
+        )
+        for row in existing_rows
+    ]
+    planned = plan_gap_driven_slots(
+        slots, plan=period_plan, gap_targets=gap_targets, existing=existing_slots
+    )
     rescheduled_count = await retime_open_allocations(db, existing_rows, planned, today=today_kst)
     planned = remaining_month_slots(planned, existing_rows)
 
@@ -398,6 +412,8 @@ async def set_schedule(
             "publish_days": body.publish_days,
             "active_from": str(body.active_from),
             "slots_created": len(created_items),
+            "slots_rescheduled": rescheduled_count,
+            "future_contract_preserved": bool(future_heads),
             "old_schedule_ids": [str(sid) for sid in old_schedule_ids],
             # 이 엔드포인트가 병원 상태를 바꿀 수 있으므로 변경 전후를 남긴다.
             # 남기지 않으면 재활성화가 감사 추적에 전혀 드러나지 않는다.

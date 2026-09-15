@@ -138,7 +138,7 @@ export default function ReportsPage() {
   return (
     <div className="p-4 sm:p-6 lg:p-8">
       <header data-current-task className="mb-5"><h2 className="text-xl font-bold text-[var(--color-revisit-text-title)]">보고서</h2><p className="mt-1 text-sm leading-6 text-[var(--color-revisit-text-helper)] [word-break:keep-all]">보고서를 열어 원장용 파일을 확인하고, 같은 화면에서 전달 기록과 이력을 남깁니다.</p></header>
-      <DirectorFeedback hospitalId={hospitalId} />
+      <DirectorFeedback key={hospitalId} hospitalId={hospitalId} />
       <ReportRunStatus
         hospitalId={hospitalId}
         reportPeriods={reports.map((report) => ({

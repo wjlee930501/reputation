@@ -1,6 +1,6 @@
 # Re:putation 현재 시스템 구조
 
-문서 버전: **2.5** · 조사·갱신일: **2026-09-12 (Asia/Seoul)**
+문서 버전: **2.6** · 조사·갱신일: **2026-09-12 (Asia/Seoul)**
 소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
 구현 상태: **기준선 위 V0 공개 게이트 분리·자동 이어가기 구현 및 검증 중. 운영 배포 전**
 
@@ -96,12 +96,12 @@ flowchart LR
 
 텍스트 자료 상태는 PENDING/PROCESSED/ERROR/EXCLUDED, 운영 기준은 DRAFT/APPROVED/ARCHIVED다. 사진 및 EXCLUDED 자료는 필수 텍스트 처리 집합에서 제외한다. snapshot은 자료 ID·내용 hash·처리 상태·처리 시각 등을 사용한다. 새 자료가 들어오면 DB의 APPROVED enum을 즉시 바꾸지 않아도 현재 readiness가 stale을 계산한다.
 
-- **`current`**: 모든 필수 자료가 처리됐고 승인 snapshot이 최신 전체 자료와 일치해야 한다. 신규 생성·발행에 쓰는 엄격한 게이트다.
-- **`public_philosophy`**: 기존 승인에 쓰인 자료가 온전하면 추가 자료 처리 중에도 기존 공개 기준을 유지할 수 있다. 기존 근거 자체가 수정·제외·미처리되면 허용하지 않는다. 신규 생성 권한으로 대체해서는 안 된다.
+- **`current`**: 승인된 BaseEssence를 사용한다. 일반 자료 추가·노이즈 변화는 freshness 진단값만 바꾸며 운영을 막지 않는다. 명시적 승인 근거 철회·수정 표시가 있으면 재승인 전 신규 생성만 보류한다.
+- **`public_philosophy`**: 기존 BaseEssence를 유지한다. 명시적으로 철회된 근거의 의존 원고는 별도 authority 표시에 의해 비공개이며, 무관한 원고는 계속 공개한다. 신규 생성 권한으로 대체해서는 안 된다.
 
 일반 텍스트 자료가 생성되거나 실질적으로 바뀌면 `SOURCE_EVIDENCE_PROCESSING` 실행이 전체 대상 ID와 입력 hash를 snapshot으로 저장하고 cursor를 전진시킨다. 한 병원에는 한 실행만 진행하며, 한 번에 일부만 처리해도 다음 dispatch가 남은 자료를 잇는다. 같은 정규화 값의 PATCH는 처리 상태와 근거를 바꾸지 않는다. claim한 입력은 짧게 commit한 뒤 외부 호출하고, 저장 시 claim·입력 hash·현재 자료 상태를 다시 확인한다. 긴 원문은 24,000자와 800자 중첩 범위로 나누고 coverage를 남긴다. 사진, EXCLUDED 자료, 추출 원문이 없는 URL은 필수 텍스트 처리 집합과 구분한다.
 
-자동 검토는 병원 범위를 잠그고 합성·안전 검사·독립 검토를 수행한다. APPROVE, 신뢰도 0.90 이상, 발견 사항 없음, 연결된 근거 전체의 검토 범위를 요구한다. 근거가 80개를 넘으면 모든 근거를 shard로 나눠 검토하고, 어느 shard라도 확인되지 않으면 전체 승인하지 않는다. 승인 직전 snapshot과 경쟁 초안을 다시 확인하고 이전 승인을 보관한 뒤 새 기준을 승격한다. 사람이 맡은 경쟁 초안이나 해결되지 않은 충돌은 자동으로 덮어쓰지 않는다. 자동 검수가 보류(ESCALATE)하면 초안에 복구 사이클과 시각을 남기고 24h × 2^(cycle-1) 백오프로 최대 4회 자동 재검수한다(v2.7). 옛 마커(사이클 8, 시각 없음)는 사이클 1로 읽어 한 번 더 예산을 준다. 사람이 손댄 초안은 자동 재시도하지 않으며, 예산 안의 보류는 RETRYING 인시던트 하나로만 남고 소진 뒤 OPEN이 된다. 72시간 넘게 ERROR인 필수 자료는 상태를 바꾸지 않고 이번 합성 입력·완전성 검사·snapshot에서 제외하며 `excluded_error_source` gap으로 기록한다. 샤드 검수 프롬프트는 부분 근거임을 알리고 다른 샤드의 근거 ID를 `evidence_elsewhere`로 넘긴다. 합성·검수는 `essence` 비용 카테고리(일 60·월 600 기본)를 쓰고, 반복 실패한 claim은 `min(15분 × 2^attempt, 24h)`로 지연한다. 재조정은 15분마다 orphan PENDING 자료와 유실된 처리·검토 실행을 회수하되 병원 200곳씩 순환한다. 450곳이면 전체를 한 번 보는 데 최대 세 번, 약 45분이 걸릴 수 있으므로 15분을 개별 작업 완료 기한으로 해석하지 않는다.
+자동 검토는 최초 승인 또는 명시적 근거 변경의 재승인에서만 합성·안전 검사·독립 검토를 수행한다. 일반 자료 추가만으로 기존 승인본을 다시 합성하지 않는다. APPROVE, 신뢰도 0.90 이상, 발견 사항 없음, 연결된 근거 전체의 검토 범위를 요구한다. 근거가 80개를 넘으면 모든 근거를 shard로 나눠 검토하고, 어느 shard라도 확인되지 않으면 전체 승인하지 않는다. 승인 직전 snapshot과 경쟁 초안을 다시 확인하고 이전 승인을 보관한 뒤 새 기준을 승격한다. 사람이 맡은 경쟁 초안이나 해결되지 않은 충돌은 자동으로 덮어쓰지 않는다. 자동 검수가 보류(ESCALATE)하면 초안에 복구 사이클과 시각을 남기고 24h × 2^(cycle-1) 백오프로 최대 4회 자동 재검수한다(v2.7). 옛 마커(사이클 8, 시각 없음)는 사이클 1로 읽어 한 번 더 예산을 준다. 사람이 손댄 초안은 자동 재시도하지 않으며, 예산 안의 보류는 RETRYING 인시던트 하나로만 남고 소진 뒤 OPEN이 된다. 72시간 넘게 ERROR인 필수 자료는 상태를 바꾸지 않고 이번 합성 입력·완전성 검사·snapshot에서 제외하며 `excluded_error_source` gap으로 기록한다. 샤드 검수 프롬프트는 부분 근거임을 알리고 다른 샤드의 근거 ID를 `evidence_elsewhere`로 넘긴다. 합성·검수는 `essence` 비용 카테고리(일 60·월 600 기본)를 쓰고, 반복 실패한 claim은 `min(15분 × 2^attempt, 24h)`로 지연한다. 재조정은 15분마다 orphan PENDING 자료와 유실된 처리·검토 실행을 회수하되 병원 200곳씩 순환한다. 450곳이면 전체를 한 번 보는 데 최대 세 번, 약 45분이 걸릴 수 있으므로 15분을 개별 작업 완료 기한으로 해석하지 않는다.
 
 근거: [readiness](../../backend/app/services/essence_readiness.py), [snapshot·근거 검사](../../backend/app/services/essence_engine.py), [자료 처리 실행](../../backend/app/services/source_processing_runs.py), [자동 검토](../../backend/app/services/essence_auto_review.py), [자료 API](../../backend/app/api/admin/essence.py), [네이버 동기화](../../backend/app/workers/naver_sync.py).
 
@@ -144,7 +144,7 @@ flowchart LR
 
 후행 검수는 첫 순번 또는 공개 후 본문 수정 같은 조건의 표본 검수다. 매 글 승인이나 월간 보고 차단의 전제는 아니다. 지연 복구는 실제 예정일을 앞으로 옮기고 월을 넘으면 `carried_over_from`으로 원래 월을 보존한다. `published_at`을 과거로 조작하지 않는다. 최초 공개 사실은 `first_published_at`·`first_published_by`에 한 번만 기록하고, 반려 뒤 새 판의 `published_at`·`published_by`와 분리해 닫힌 월을 집계한다. 전환 시점에 남아 있던 `published_at`만 최초 사실로 백필하며, 그 전에 수동 반려가 이미 지운 과거 발행일은 추정하지 않으므로 복원할 수 없다. 생성 당시 `generation_philosophy_id`와 최근 `last_reviewed_philosophy_id`를 함께 보아야 한다.
 
-**경로 차이:** 수동 발행은 공통 콘텐츠 정책을 쓰지만 자동 발행의 ACTIVE/live·예약일 선택 조건을 모두 강제하지 않는다. 공개 API는 다시 병원 활성화·일정·승인 근거·ALIGNED·본문·참고자료 등을 확인한다. 따라서 DB PUBLISHED와 환자에게 실제 공개된 상태는 같지 않다.
+**경로 차이:** 수동·자동 발행은 모두 ACTIVE/live와 일정 설정을 확인한다. 예약일 선택 방식은 다르며 공통 콘텐츠 안전 검사는 유지한다. 공개 API는 다시 병원 활성화·일정·승인 근거·ALIGNED·본문·참고자료 등을 확인한다. 따라서 DB PUBLISHED와 환자에게 실제 공개된 상태는 같지 않다.
 
 근거: [공통 발행 검사](../../backend/app/services/content_publication.py), [발행 API](../../backend/app/api/admin/content.py), [후행 검수](../../backend/app/services/post_publish_review_policy.py), [지연 복구](../../backend/app/workers/content_backlog_recovery.py), [공개 필터](../../backend/app/api/public/site.py).
 

@@ -7,11 +7,15 @@ const page = readFileSync(
   'utf8',
 )
 
-test('schedule UI has year-month navigation and a destructive replacement dialog', () => {
+test('schedule UI confirms date changes while preserving original content', () => {
   assert.match(page, /moveScheduleMonth\(current, -1\)/)
   assert.match(page, /moveScheduleMonth\(current, 1\)/)
   assert.match(page, /role="dialog"/)
-  assert.match(page, /아직 발행하지 않은 콘텐츠 항목이 다시 만들어집니다/)
+  assert.match(page, /기존 원고와 발행 이력은 유지/)
+  assert.doesNotMatch(page, /항목이 다시 만들어집니다|이 변경은 자동으로 되돌릴 수 없습니다/)
+  assert.match(page, /existing \? null : validateScheduleCapacity/)
+  assert.match(page, /setExisting\(await fetchAPI<ScheduleInfo>/)
+  assert.match(page, /저장은 완료됐지만 화면을 갱신하지 못했습니다/)
   assert.doesNotMatch(page, /\bconfirm\(/)
 })
 

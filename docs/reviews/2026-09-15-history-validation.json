@@ -1,0 +1,22 @@
+{
+  "reviewed_main": "d96bd21",
+  "reviewed_previous_patch": "4db1b69",
+  "main_commits": 949,
+  "reachable_commits": 954,
+  "backend_suites": [
+    {"name": "current-regressions", "tests": 135, "failures": 0, "errors": 0, "skipped": 0},
+    {"name": "new-tests", "tests": 15, "failures": 1, "errors": 0, "skipped": 0},
+    {"name": "recovery-contracts", "tests": 86, "failures": 0, "errors": 0, "skipped": 0},
+    {"name": "knowledge-contracts", "tests": 112, "failures": 0, "errors": 0, "skipped": 0}
+  ],
+  "admin_passed": 627,
+  "site_passed": 332,
+  "passed_total": 1306,
+  "failed_total": 1,
+  "release_verdict": "HOLD",
+  "known_unresolved": "Broker redelivery cannot resume a rotated execution reservation after a newer authenticated run claim",
+  "postgres_validation": "BLOCKED_BEFORE_MIGRATION",
+  "deployed": false,
+  "pushed": false,
+  "independent_agent_review": "NOT_COMPLETED"
+}

@@ -9,7 +9,7 @@ never fabricated as exact source attribution. Call inside the source transaction
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
@@ -134,10 +134,32 @@ async def invalidate_source_authority(db, hospital_id, source_id, *, reason):
         .scalars()
         .all()
     )
-    return [
+    changed = [
         item.id
         for item in rows
         if invalidate_article_authority(
             item, source_id=source_id, base=base, reason=reason, now=now
         )
     ]
+
+    # A newly claimed empty slot may not yet reference the base it read. Fence
+    # every in-flight generation in this hospital before committing the authority
+    # change, including those rows; otherwise its old result can arrive after the
+    # replacement-base rescreen and escape that rescreen entirely. No provider IO.
+    await db.execute(
+        update(ContentItem)
+        .where(
+            ContentItem.hospital_id == hospital_id,
+            ContentItem.status.in_(
+                (ContentStatus.DRAFT, ContentStatus.READY, ContentStatus.REJECTED)
+            ),
+            ContentItem.generation_claim_token.is_not(None),
+        )
+        .values(
+            generation_claim_token=None,
+            generation_claimed_at=None,
+            content_revision=ContentItem.content_revision + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return changed

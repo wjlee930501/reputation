@@ -15,7 +15,13 @@ export function DirectorFeedback({ hospitalId }: { hospitalId: string }) {
   const [status, setStatus] = useState('')
   const path = `/admin/hospitals/${hospitalId}/director-feedback`
   const load = useCallback(async () => setRows(await fetchAPI<Feedback[]>(`${path}?limit=100`)), [path])
-  useEffect(() => { void load().catch(() => setStatus('대화 반영 기록을 불러오지 못했습니다.')) }, [load])
+  useEffect(() => {
+    let cancelled = false
+    void fetchAPI<Feedback[]>(`${path}?limit=100`)
+      .then((items) => { if (!cancelled) setRows(items) })
+      .catch(() => { if (!cancelled) setStatus('대화 반영 기록을 불러오지 못했습니다.') })
+    return () => { cancelled = true }
+  }, [path])
   const lines = (value: string) => value.split('\n').map((line) => line.trim()).filter(Boolean)
   async function save() {
     setBusy(true)
