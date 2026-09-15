@@ -636,7 +636,11 @@ export default function LeadsPage() {
                                 콜용 / 고객 미발송
                               </p>
                             )}
-                            {needsAttention(diagnosis) && !isIntroductionInquiry(lead) && (
+                            {/* 고객 영향은 고객 발송이 있는 무료 진단에만 성립한다. 리드 표식과 함께
+                                이 행의 발송 상태도 본다 — 콜용 행은 실패해도 고객이 기다리지 않는다. */}
+                            {needsAttention(diagnosis)
+                              && !isIntroductionInquiry(lead)
+                              && diagnosis.delivery_status !== 'INTERNAL' && (
                               <p className="mt-1 break-keep text-pretty text-[11px] leading-5 text-red-700">
                               고객 영향: 신청자가 정확한 진단 보고서를 받지 못합니다.
                               </p>
@@ -689,7 +693,9 @@ export default function LeadsPage() {
                                   <div className="mt-2 rounded-lg border border-blue-200 bg-blue-50 p-3">
                                     <p className="text-xs font-semibold text-blue-800">복구 작업 진행 중</p>
                                     <p className="mt-1 text-xs leading-5 text-slate-600">
-                                      신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.
+                                      {isIntroductionInquiry(lead) && diagnosis.delivery_status === 'INTERNAL'
+                                        ? '콜용 보고서가 아직 없습니다. 완료 여부를 자동으로 확인하고 있습니다.'
+                                        : '신청자에게는 아직 보고서가 전달되지 않았습니다. 완료 여부를 자동으로 확인하고 있습니다.'}
                                     </p>
                                     <Link href="/operations" className="mt-2 inline-flex min-h-11 items-center text-xs font-semibold text-blue-700 hover:underline">
                                       운영 센터에서 상세 확인
