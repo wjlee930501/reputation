@@ -1,3 +1,4 @@
+import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import Image from 'next/image'
 
 import { resolveAssetUrl, type HospitalPhoto } from '@/lib/api'
@@ -61,7 +62,8 @@ export function VisitGallery({ photos, policy }: Props) {
                       src={url}
                       alt={photo.title}
                       fill
-                      sizes="(max-width: 600px) 100vw, (max-width: 1024px) 50vw, 320px"
+                      sizes={CLINIC_IMAGE_SIZES.gallery}
+                      loading="lazy"
                       style={{ objectFit: 'cover' }}
                     />
                     <figcaption className="clinic-gallery-caption">

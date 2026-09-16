@@ -1,3 +1,4 @@
+import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import Link from 'next/link'
 
 import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
@@ -72,6 +73,7 @@ export function FeaturedContent({
               type={primary.content_type}
               src={resolveAssetUrl(primary.image_url)}
               variant="featured"
+              sizes={rest.length ? CLINIC_IMAGE_SIZES.featured : CLINIC_IMAGE_SIZES.soloFeatured}
             />
             <span className="clinic-lead-kicker">가장 먼저 읽어보면 좋은 글</span>
             <span className={`clinic-tag ${categoryTagClass(primary.content_type)}`}>{primaryTypeLabel}</span>

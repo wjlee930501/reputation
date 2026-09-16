@@ -1,3 +1,4 @@
+import { CLINIC_IMAGE_SIZES, CLINIC_IMAGE_QUALITY } from '@/lib/clinic-image-delivery'
 import Image from 'next/image'
 import Link from 'next/link'
 
@@ -152,10 +153,9 @@ export function ClinicHero({
               src={heroPhotoUrl}
               alt={mediaMode === 'brand-graphic' ? `${hospitalName} 브랜드 그래픽` : `${hospitalName} 진료 공간`}
               fill
-              priority
-              loading="eager"
-              quality={84}
-              sizes="(max-width: 720px) calc(100vw - 40px), (max-width: 920px) calc(100vw - 64px), (max-width: 1296px) 48vw, 600px"
+              preload
+              quality={CLINIC_IMAGE_QUALITY}
+              sizes={CLINIC_IMAGE_SIZES.hero}
               className="clinic-hero-editorial-image"
             />
           ) : (

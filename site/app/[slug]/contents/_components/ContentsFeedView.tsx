@@ -1,6 +1,7 @@
 import Link from 'next/link'
 
 import { resolveAssetUrl, TYPE_LABELS, type ContentSummary } from '@/lib/api'
+import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { countLabel } from '@/lib/clinic-counters'
 import { categoryTagClass } from '@/lib/content-meta'
 
@@ -88,7 +89,7 @@ export function ContentsFeedView({ contents, hospitalRootUrl, directorName, acti
           className="clinic-feed-featured"
           aria-label={`대표 글 — ${featured.title}`}
         >
-          <ContentCover type={featured.content_type} src={resolveAssetUrl(featured.image_url)} variant="featured" />
+          <ContentCover type={featured.content_type} src={resolveAssetUrl(featured.image_url)} variant="featured" priority sizes={CLINIC_IMAGE_SIZES.feed} />
           <span className="clinic-feed-featured-kicker">
             {resolvedActiveType ? `${TYPE_LABELS[resolvedActiveType] ?? resolvedActiveType} · 최신 글` : '가장 최근 글'}
           </span>

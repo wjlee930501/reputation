@@ -83,6 +83,7 @@ export function ClinicHeader({
               height={48}
               className="clinic-header-brand-logo"
               unoptimized
+              loading="eager"
             />
           ) : (
             <span className="clinic-header-brand-name">{hospitalName}</span>

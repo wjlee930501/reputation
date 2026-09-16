@@ -1,3 +1,4 @@
+import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { Metadata } from 'next'
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
@@ -300,6 +301,8 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                     src={resolveAssetUrl(content.image_url)}
                     alt={imageAlt}
                     variant="featured"
+                    priority
+                    sizes={CLINIC_IMAGE_SIZES.article}
                   />
                 </div>
                 <span className="clinic-article-type">{typeLabel}</span>
