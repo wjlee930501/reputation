@@ -122,3 +122,8 @@
 - [x] Customer-specific approved primary colors seed a contrast-safe semantic ramp on all clinic routes. Raw customer colors never directly style text/buttons. Decision: 2026-08-21 multi-hospital audit.
 - [ ] Should mobile bottom actions include Kakao when present? Owner: product. Impact: conversion path.
 - [ ] After compacting query targets, should desktop use an inline accordion or persistent right detail pane? Owner: product/operations. Impact: bulk comparison versus editing speed. Current implementation defaults to accessible accordion.
+
+## Image delivery budget
+- `clinic-image-delivery.ts` owns slot sizes and quality 75; retain AVIF/WebP negotiation, old q=84 URLs, original uploads and the existing certification query. Do not globally force WebP without measuring mobile transfer.
+- Only the home hero is intentionally preloaded. Article/list lead images opt into eager/high priority; below-fold covers and galleries stay lazy. The small logo is eager. Portraits are present in SSR; pending/error fallbacks never hide successfully loaded no-JavaScript media.
+- After authenticated public cache invalidation, optionally prepare the current approved hero at 750/1200px: one clinic, two sizes, a shared 2.5-second deadline, process-local cooldown and bounded entries. Only the owned Cloud Run loopback listener is called; no caller credentials or Host headers are forwarded. Failure cannot undo invalidation. This is not a shared cache or a guarantee against all cold starts.
