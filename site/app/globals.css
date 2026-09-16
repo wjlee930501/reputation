@@ -4982,10 +4982,10 @@ summary:focus-visible {
 
 .clinic-tag--faq        { background: var(--color-revisit-primary-95);  color: var(--color-revisit-primary-30); }
 .clinic-tag--disease    { background: var(--color-revisit-primary-90);  color: var(--color-revisit-primary-10); }
-.clinic-tag--treatment  { background: var(--color-revisit-green-95);    color: var(--color-revisit-green-40); }
+.clinic-tag--treatment  { background: var(--color-revisit-green-95);    color: var(--color-revisit-text-title); }
 .clinic-tag--column     { background: var(--color-revisit-coolgrey-90); color: var(--color-revisit-coolgrey-20); }
 .clinic-tag--health     { background: var(--color-revisit-yellow-95);   color: #b65f00; }
-.clinic-tag--local      { background: var(--color-revisit-red-95);      color: var(--color-revisit-red-40); }
+.clinic-tag--local      { background: var(--color-revisit-red-95);      color: var(--color-revisit-text-title); }
 .clinic-tag--notice     { background: var(--color-revisit-greyscale-90); color: var(--color-revisit-coolgrey-30); }
 
 /* ── Section header — 큰 에디토리얼 위계 ─────────────────────────── */
@@ -6930,7 +6930,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--clinic-on-brand);
 }
 .clinic-visit-action--primary small {
-  color: rgba(255, 255, 255, 0.82);
+  /* Small text must retain the theme-computed contrast, not a translucent white. */
+  color: var(--clinic-on-brand);
 }
 .clinic-visit-action--primary:hover {
   background: var(--color-revisit-primary-30);
@@ -7095,7 +7096,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   margin-bottom: 8px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--color-revisit-coolgrey-50);
+  color: var(--color-revisit-coolgrey-60);
   letter-spacing: 0.03em;
 }
 .clinic-footer-site {
@@ -7116,7 +7117,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-footer-copy {
   margin: 0;
   font-size: 12px;
-  color: var(--color-revisit-coolgrey-50);
+  color: var(--color-revisit-coolgrey-60);
 }
 @media (max-width: 640px) {
   .clinic-footer-cols {

@@ -13,6 +13,7 @@ const { values } = parseArgs({ options: {
   'base-url': { type: 'string' }, 'fixtures-dir': { type: 'string' },
   'output-dir': { type: 'string' }, widths: { type: 'string', default: '320,390,768,1024,1280,1440,1920' },
   'home-only': { type: 'boolean', default: false },
+  a11y: { type: 'boolean', default: false },
 } })
 assert.ok(values['base-url'] && values['fixtures-dir'] && values['output-dir'], 'Provide base-url, fixtures-dir, output-dir')
 const base = new URL(values['base-url'])
@@ -38,11 +39,13 @@ if (!values['home-only']) {
     for (const route of ['doctor', 'visit', 'treatments', 'contents', ...(fixture.detail ? ['contents/' + fixture.detail.id] : [])]) cases.push({ fixture, width, route })
   }
 }
+const AxeBuilder = values.a11y ? (await import(process.env.AXE_MODULE || '@axe-core/playwright')).default : null
 const results = []
 try {
   for (const { fixture, width, route } of cases) {
     const slug = fixture.hospital.slug
-    const page = await browser.newPage({ viewport: { width, height: 1000 }, deviceScaleFactor: 1 })
+    const context = await browser.newContext({ viewport: { width, height: 1000 }, deviceScaleFactor: 1 })
+    const page = await context.newPage()
     const errors = [], failures = []
     page.on('pageerror', error => errors.push(error.message))
     const url = new URL('/' + slug + (route ? '/' + route : ''), base).href
@@ -81,6 +84,7 @@ try {
       })
       const check = (condition, message) => { if (!condition) failures.push(message) }
       check(metrics.scrollWidth <= metrics.viewport + 1, 'Horizontal document overflow')
+      check(metrics.overflowing.length === 0, 'Overflowing clinic descendants')
       check(metrics.h1.length === 1, 'Exactly one H1 is required')
       check(metrics.containers.length >= 1, 'Expected clinic containers missing')
       for (const item of metrics.containers) {
@@ -99,14 +103,20 @@ try {
       if (width <= 720) for (const item of metrics.touch) check(item.width >= 43 && item.height >= 43, 'Touch target below 44px: ' + item.selector)
       check(metrics.jsonld.length > 0, 'Public structured data disappeared')
       check(errors.length === 0, 'Browser runtime errors: ' + errors.join('; '))
-      const result = { slug, width, route: route || 'home', passed: failures.length === 0, failures, errors, ...metrics }
+      let accessibility = null
+      if (AxeBuilder && !route && [390, 1440].includes(width)) {
+        const scan = await new AxeBuilder({ page }).include('.clinic-shell').withTags(['wcag2a', 'wcag2aa', 'wcag21aa']).analyze()
+        accessibility = scan.violations.map(item => ({ id: item.id, impact: item.impact, nodes: item.nodes.map(node => ({ target: node.target, summary: node.failureSummary })) }))
+        check(accessibility.length === 0, 'Accessibility violations: ' + accessibility.map(item => item.id).join(', '))
+      }
+      const result = { slug, width, route: route || 'home', passed: failures.length === 0, failures, errors, accessibility, ...metrics }
       results.push(result)
       console.log(JSON.stringify({ slug, width, route: result.route, passed: result.passed, failures }))
       if (failures.length) await page.screenshot({ path: path.join(output, slug + '-' + width + '-' + (route || 'home').replaceAll('/', '-') + '-failure.png'), fullPage: true })
     } catch (error) {
       results.push({ slug, width, route: route || 'home', passed: false, failures: [String(error)], errors })
       console.log(JSON.stringify(results.at(-1)))
-    } finally { await page.close() }
+    } finally { await context.close() }
   }
 } finally {
   await browser.close()

@@ -137,10 +137,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
                   {hospital.phone}
                 </a>
               </p>
-              <p
-                className="clinic-section-lede"
-
-              >
+              <p className="clinic-section-lede">
                 진료 예약·상담은 아래 병원 공식 채널을 통해 직접 연결해 주세요.
               </p>
             </div>
