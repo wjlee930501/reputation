@@ -10,7 +10,8 @@ from enum import StrEnum
 from typing import Protocol
 
 import anthropic
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models.operations import (
@@ -467,6 +468,27 @@ def create_item_run(
         completed_at=datetime.now(UTC),
         version=1,
     )
-    db.add(child)
+    try:
+        # A later notification failure can revisit this already committed outcome.
+        # Preserve the first fact and keep the caller's transaction usable.
+        with db.begin_nested():
+            db.add(child)
+            db.flush()
+    except IntegrityError as exc:
+        if getattr(getattr(exc.orig, "diag", None), "constraint_name", None) != (
+            "uq_operation_runs_idempotency_scope"
+        ):
+            raise
+        existing = db.scalar(select(OperationRun).where(
+            OperationRun.requested_by_id.is_(None),
+            OperationRun.hospital_id == hospital_id,
+            OperationRun.parent_run_id == parent_run_id,
+            OperationRun.operation_type == operation_type,
+            OperationRun.idempotency_key == child.idempotency_key,
+        ))
+        if existing is None:
+            raise
+        db.commit()
+        return existing
     db.commit()
     return child
