@@ -225,16 +225,18 @@ def test_active_from_on_the_last_day_preserves_the_contract(db):
     assert all(row.total_count == 12 for row in rows)
 
 
-def test_zero_publishable_days_still_raise(db):
+def test_valid_schedule_repairs_quota_when_only_a_nonpreferred_day_remains(db):
     schedule = _make_schedule(
         db,
         plan="PLAN_12",
         publish_days=[1],
         active_from=MONTH_END,
     )
-
-    with pytest.raises(ValueError):
-        _run(db, schedule)
+    assert _run(db, schedule) is True
+    rows = list(db.scalars(select(ContentItem).where(ContentItem.schedule_id == schedule.id)))
+    assert len(rows) == 12
+    assert {row.scheduled_date for row in rows} == {MONTH_END}
+    assert _run(db, schedule) is False
 
 
 def test_short_month_preserves_contract_and_is_idempotent(db):

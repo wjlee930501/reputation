@@ -88,7 +88,17 @@ def generate_monthly_slots(
             dates.append(day_date)
         day = day.shift(days=1)
 
-    if not dates:
+    if not publish_days or any(type(day) is not int or not 0 <= day <= 6 for day in publish_days):
+        raise ValueError("발행 가능한 날짜가 없습니다. 발행 요일은 0~6 사이의 값으로 하나 이상 설정해야 합니다.")
+    remaining_dates = [
+        day.date()
+        for day in arrow.Arrow.range("day", target_month.floor("month"), end)
+        if start_date is None or day.date() >= start_date
+    ]
+    # A valid contract repair may have no preferred weekday left this month.
+    # The remaining calendar days still belong to the contract; a genuinely empty
+    # month/start-date window does not. Strict initial scheduling is unchanged.
+    if not dates and (not ensure_quota or not remaining_dates):
         raise ValueError(
             "발행 가능한 날짜가 없습니다. "
             f"발행 요일과 시작일을 확인해 주세요. ({target_month.format('YYYY-MM')})"
@@ -105,9 +115,7 @@ def generate_monthly_slots(
         # months. Fill off-weekday gaps first. A late start may require more than
         # one article per day, but must never silently reduce the purchased quota.
         other_dates = [
-            day.date()
-            for day in arrow.Arrow.range("day", target_month.floor("month"), end)
-            if (start_date is None or day.date() >= start_date) and day.date() not in dates
+            day for day in remaining_dates if day not in dates
         ]
         needed = total - len(dates)
         dates = sorted(dates + _spread_dates(other_dates, min(needed, len(other_dates))))

@@ -1,0 +1,73 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_DEPLOYED",
+  "baseline_commit": "5432c5e616fbfab476363f562d8b8517c5a8b059",
+  "branch": "audit/autonomous-contract-delivery-20260916",
+  "verified_at": "2026-09-17T04:21:55.935771+09:00",
+  "backend_tests": {
+    "total": 4245,
+    "failed": 0,
+    "skipped": 0
+  },
+  "baseline_backend_tests": 4197,
+  "new_regressions": 48,
+  "line_coverage_percent": 84.98830990836043,
+  "script_tests_passed": 94,
+  "sql_overview_roundtrip_budget": 11,
+  "lint": "PASS",
+  "copy_guard": "PASS",
+  "db_budget_guard": "PASS",
+  "new_schema_migrations": 0,
+  "redbeat_schedule_version": "2026-09-17.1",
+  "evidence_directory": "/private/tmp/reputation-contract-audit-20260916-s0w9ff9i",
+  "source_sha256": {
+    "backend/app/api/admin/hospital_overview.py": "569408b844f91dff13fef78ef3697c056c9e95853bf777dbcf50d603cbf0c13f",
+    "backend/app/core/celery_app.py": "9ea36f7915038d232e6d6525186c382594222e3e1671d3fc80b470df1bbabbdc",
+    "backend/app/services/content_calendar.py": "3edae187e62e106ab72e8ebb594fa976c8ecea46dedadd11f95534719f52c57b",
+    "backend/app/services/content_target_planner.py": "f8df3f2b3ba28a4486d21344aea012d954064d238fa201ab802eae527f4f6a06",
+    "backend/app/services/contract_delivery_coverage.py": "aadd181cef7d18b051b64f141e28b03b6bbbd83603dc87cd6bce1639029dfcd8",
+    "backend/app/services/fleet_heartbeat.py": "04434627b6ab5935e40bc8887b801294382a8f87ad73efde577d87bcc368fac5",
+    "backend/app/utils/db_locks.py": "4c397b682f701a0f3b57aa9b99b126dedcb5c999e6effee26f88d44e1efeeaae",
+    "backend/app/utils/production_readiness.py": "a260e08b4ae739ac5c358fcb3068a8582fffa3ec1645bb9702e5cffe9c50f7b4",
+    "backend/app/workers/content_backlog_recovery.py": "cdf4488932aff7ccff46b5085d5c5b4abbe6c4bcf778dd6905f29841cb726427",
+    "backend/app/workers/monthly_slots.py": "926fe461a08851fcfeffb34dce3bde05b88bfca3a1d498d84976c55fd3235031",
+    "backend/app/workers/tasks.py": "1891cc518d3a517efb1b7f91025efa052e3c327ab6fbc77a0d2a7116c0ffdc60",
+    "backend/tests/integration/test_hospital_overview_postgres.py": "23b69953d924f2a12bff4aff12cd492a5c9f47e88dbfd27cdfb4f178c5392c8d",
+    "backend/tests/test_autonomous_contract_delivery.py": "46600ecc4185fcaba3c0fd0a00cb08d774117ef266934e78568eb68bfaf8c1a5",
+    "backend/tests/test_content_planner_concurrency_postgres.py": "545f067c96b543902df4477f42b9aa79ee68348e4b8c1288e4d73464b308022f",
+    "backend/tests/test_content_planner_ownership.py": "281a9157f9bf91f10dd5ca8e0455b1ef8e8732bce150cf91475651b84ecd820b",
+    "backend/tests/test_contract_backlog_postgres.py": "b59aabe77dd99a60134ad755171a8e4c3e0e7e9d9429823fef1c03844c91acf7",
+    "backend/tests/test_contract_delivery_coverage.py": "467e10e385e86822a09aa49eba2ecc534a33e4d495ce360d9384158d8d4992ec",
+    "backend/tests/test_contract_overview_consistency.py": "2b5f22d5ee75b61ecf8fee11d3e9b0ab7cb70cd00a2771ae109eed0eb220dc30",
+    "backend/tests/test_fable5_contracts.py": "10abc76b5b2b7f536cc5b63c618433ca88c34d75e6f2ab950579e4fbdc7b1961",
+    "backend/tests/test_monthly_slots.py": "6f58c7e42d5e06f679289cf2c28069630895ee450ed06d5e5ba4dd9479132ad6"
+  },
+  "protected_untracked_sha256": "162a5c2c47c553bab3fe929e5b243db4b396fad5708519c6739f5ecdfeb826dc",
+  "production_inspection": {
+    "read_only": true,
+    "observed_at": "2026-09-17T04:09:01.312523+09:00",
+    "customer_details_committed": false,
+    "publication_or_provider_calls": false
+  },
+  "limits": [
+    "No production rollout or remote CI in this audit",
+    "No guarantee of publishing unsafe or unsupported content",
+    "Actual monthly fulfillment still depends on approved evidence, available time, provider budget and infrastructure",
+    "Current-month coverage is not a historical accounting ledger",
+    "No new database model or migration; RedBeat reconciliation is required before production activation"
+  ],
+  "evidence_sha256": {
+    "baseline.xml": "386d0233f44d9c53e970f588591b2a58c43e213f191017712de4169748c2de95",
+    "release-tests.xml": "040dec5f9d19e8d51fbfbec29e1bf9cbac8c53b420d887b15bab48f8ee47ad96",
+    "release-coverage.json": "34919dafa58d1d53a4a8d23f26146ad5064a76d4debdcae0db612981ea285ac7",
+    "release-script-tests.log": "1f6e15ae96993d8809384bba069dff78f101a3434ff93e3f6922c371ee56b0d5",
+    "lock-order-reproduced.log": "8938a818289f8e10eb9ca2d3e005f57b3ea2cc9a3eb950e1f649d4736d2283b0",
+    "lock-order-fixed.log": "2109a162fb55962cdb62398711b07d09eb89fe69c7697427a9bffc7d4126649a",
+    "overview-fixed.log": "1b4955e32559e297b0dcd20ba58b55178c5239c76fa6d0c794b532a40336cfed"
+  },
+  "test_services_cleanup": {
+    "5432": "stopped_owned_cluster",
+    "5434": "stopped_owned_cluster",
+    "55432": "stopped_owned_cluster",
+    "redis": "stopped_owned_instance"
+  }
+}

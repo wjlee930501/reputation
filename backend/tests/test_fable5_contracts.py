@@ -61,7 +61,8 @@ def test_automatic_essence_approval_and_0800_publish_are_the_normal_runtime() ->
     assert AUTO_ESSENCE_ACTOR == "SYSTEM_ESSENCE_AI_REVIEW"
     assert AUTO_PUBLISH_ACTOR == "SYSTEM_AUTO_PUBLISH"
     assert publish_entry["task"] == "app.workers.tasks.morning_content_auto_publish"
-    assert publish_entry["schedule"].hour == {8}
+    # The first publication remains 08:00; safe late-ready work gets same-day catch-up.
+    assert publish_entry["schedule"].hour == set(range(8, 24))
     assert publish_entry["schedule"].minute == {0}
 
 

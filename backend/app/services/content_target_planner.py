@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections import Counter
 from datetime import date, datetime, timezone
 from typing import Any
@@ -26,6 +27,7 @@ from app.services.query_target_structure import (
     apply_structure_to_target,
     target_is_question_form,
 )
+from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 
 ACTIVE_ACTION_STATUSES = {"OPEN", "IN_PROGRESS"}
 PRIORITY_RANK = {"HIGH": 0, "NORMAL": 1, "LOW": 2}
@@ -35,6 +37,16 @@ PRIORITY_RANK = {"HIGH": 0, "NORMAL": 1, "LOW": 2}
 MENTION_GAP_RANK = {"MISSING_MENTION": 0, "LOW_MENTION_SHARE": 1}
 NO_MENTION_GAP_RANK = 2
 OPEN_GAP_STATUSES = {"OPEN", "IN_PROGRESS"}
+
+
+def _lock_target_planning(db: Any, hospital_id: Any) -> None:
+    """Serialize choice until its caller commits, never across provider work.
+
+    Use a separate namespace from schedule/backlog hospital locks so a worker's
+    content row and a calendar reconciler cannot invert their lock ordering.
+    """
+    key = uuid.uuid5(uuid.NAMESPACE_URL, f"reputation:content-target-planning:{hospital_id}")
+    acquire_hospital_advisory_lock_sync(db, key)
 
 
 def prepare_automatic_content_brief_sync(
@@ -76,14 +88,23 @@ def prepare_automatic_content_brief_sync(
             item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
         return brief
 
+    _lock_target_planning(db, hospital.id)
     target = _load_target(db, getattr(item, "query_target_id", None), hospital.id)
     if target is None:
         target = _choose_target(db, item=item, hospital_id=hospital.id)
-        if target is not None:
-            item.query_target_id = target.id
+        item.query_target_id = target.id if target is not None else None
+
+    action = _load_or_choose_action(db, item=item, target=target, hospital_id=hospital.id)
+    if hasattr(item, "exposure_action_id"):
+        item.exposure_action_id = action.id if action is not None else None
+    if action is not None:
+        action.linked_content_id = item.id
+    previous_action = (item.content_brief or {}).get("exposure_action") if isinstance(item.content_brief, dict) else None
+    previous_action_id = previous_action.get("id") if isinstance(previous_action, dict) else None
 
     if (
-        item.brief_status == BRIEF_STATUS_APPROVED
+        previous_action_id == (str(action.id) if action is not None else None)
+        and item.brief_status == BRIEF_STATUS_APPROVED
         and isinstance(item.content_brief, dict)
         and content_brief_matches_inputs(
             item.content_brief,
@@ -95,11 +116,6 @@ def prepare_automatic_content_brief_sync(
             **item.content_brief,
             "planned_publish_date": planned_publish_date,
         }
-
-    action = _load_or_choose_action(db, item=item, target=target, hospital_id=hospital.id)
-    if action is not None:
-        item.exposure_action_id = action.id
-        action.linked_content_id = item.id
 
     brief = build_content_brief(
         hospital=hospital,
@@ -166,6 +182,7 @@ def _choose_target(
     `exclude_target_ids`는 주제 교체 폴백이 "이미 실패한 주제"를 빼는 데 쓴다. 비어
     있으면(기본) 종전과 같은 후보 집합이다.
     """
+    _lock_target_planning(db, hospital_id)
     excluded = {str(value) for value in (exclude_target_ids or ()) if value}
     targets = [
         target
@@ -274,7 +291,14 @@ def _load_or_choose_action(
     if exposure_action_id:
         existing = db.get(ExposureAction, exposure_action_id)
         if existing is not None:
-            return existing
+            owned = existing.hospital_id == hospital_id
+            same_target = target is not None and existing.query_target_id == target.id
+            same_item = existing.linked_content_id in (None, item.id)
+            if owned and same_target and same_item and existing.action_type in BRIEF_CAPABLE_ACTION_TYPES:
+                return existing
+            # Do not modify another hospital's or another article's link.
+            if owned and existing.linked_content_id == item.id:
+                existing.linked_content_id = None
     if target is None:
         return None
     actions = list(

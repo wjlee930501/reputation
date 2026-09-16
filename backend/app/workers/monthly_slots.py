@@ -26,6 +26,8 @@ def create_next_month_slots_for_schedule(
     next_month: arrow.Arrow,
     next_month_start: date,
     next_month_end: date,
+    *,
+    not_before: date | None = None,
 ) -> bool:
     hospital = schedule.hospital
     if hospital.status not in (HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN):
@@ -40,6 +42,8 @@ def create_next_month_slots_for_schedule(
         return False
     # 활성화일이 대상 월 중간에 걸리면 그 날짜 이후로만 발행해야 한다.
     start_date = active_from if active_from and active_from > next_month_start else None
+    if not_before is not None:
+        start_date = max(start_date or next_month_start, not_before)
 
     # "이 스케줄의 이번 달 계획 슬롯이 이미 만들어졌는가"로만 판정한다.
     # 월 전체에 아이템이 1건이라도 있으면 건너뛰던 과거 조건은, 지난달에서 이월된
@@ -106,6 +110,12 @@ def create_next_month_slots_for_schedule(
                 )
             db.flush()
     except IntegrityError:
+        # A uniqueness race is harmless only when the full month obligation now
+        # exists. FK/check/storage failures must reach the per-hospital incident
+        # handler instead of being misreported as an already completed calendar.
+        actual = db.execute(month_items_query(hospital.id, next_month)).all()
+        if len(actual) < planned_total:
+            raise
         logger.info(
             "Next month slots already claimed concurrently: %s %s",
             hospital.name,

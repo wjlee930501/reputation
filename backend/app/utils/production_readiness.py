@@ -46,6 +46,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "current-month-slot-reconciliation",
     "nightly-content-generation",
     "overnight-content-generation-recovery",
+    "daytime-content-generation-recovery",
     "prepublish-content-generation-recovery",
     "refresh-reused-content-images",
     "morning-content-auto-publish",

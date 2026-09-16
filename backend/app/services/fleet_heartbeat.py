@@ -10,6 +10,10 @@ from app.models.hospital import Hospital
 from app.models.operations import Incident, IncidentState, OperationRun
 from app.models.report import MonthlyReport
 from app.models.sov import SovRecord
+from app.services.contract_delivery_coverage import (
+    FleetContractCoverage,
+    collect_contract_delivery_coverage,
+)
 from app.services.notification_contracts import NotificationIntent, SlackMessage
 from app.services.operator_action import requires_operator_action
 from app.services.pipeline_watchdog import KST, WatchdogReport
@@ -25,6 +29,7 @@ class FleetFacts:
     measured_hospitals: int
     recent_reports: int
     unresolved_failed_runs: int | None = None
+    contract_coverage: FleetContractCoverage | None = None
 
 
 def collect_fleet_facts(db, *, now):
@@ -114,7 +119,7 @@ def collect_fleet_facts(db, *, now):
             ~later_success,
         )
     ) or 0)
-    return FleetFacts(hospitals, recovering, operator_work, failed, measured_count, reports, unresolved)
+    return FleetFacts(hospitals, recovering, operator_work, failed, measured_count, reports, unresolved, collect_contract_delivery_coverage(db, now=now))
 
 
 def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, admin_base_url):
@@ -127,6 +132,7 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
         or report.publish_due_remaining is None
         or report.publish_published_today is None
         or facts.measured_hospitals < facts.hospitals
+        or bool(facts.contract_coverage and facts.contract_coverage.unknown_schedule_hospitals)
     )
     degraded = (
         not report.queue_canaries_current
@@ -139,6 +145,7 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
             else facts.failed_runs
         ) > 0
         or facts.operator_work > 0
+        or bool(facts.contract_coverage and facts.contract_coverage.delivery_at_risk)
     )
     # A known outage/action must not disappear behind missing measurement data.
     state = "미완료 항목 있음" if degraded else "관측 부족" if unknown else "관측 지표 양호"
@@ -150,6 +157,14 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
     def number(value):
         return "미확인" if value is None else str(value)
 
+    contract_lines = []
+    coverage = facts.contract_coverage
+    if coverage is not None:
+        contract_lines = [
+            f"이번 달 원 계약 기준: 확인된 약정 {coverage.expected}건 / 배정 {coverage.allocated}건 / 최초 발행 {coverage.first_published}건",
+            f"미배정 {coverage.missing_allocations}건 · 취소에 따른 미충족 {coverage.cancelled_deficit}건 · 기한 지난 미발행 {coverage.overdue_unpublished}건 · 다음 달 이월 미발행 {coverage.carried_out_unpublished}건",
+            f"일정 미확인 병원 {coverage.unknown_schedule_hospitals}곳. 최초 발행은 현재 공개 건수와 다르며, 다른 달의 이월 물량은 이번 달 약정을 채우지 않습니다.",
+        ]
     local_day = now.astimezone(KST).date().isoformat()
     text = "\n".join(
         [
@@ -157,6 +172,7 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
             f"공개 운영 병원 {facts.hospitals}곳",
             f"발행: 남은 예정 {number(report.publish_due_remaining)}건 / 오늘 08시 이후 DB 발행 {number(report.publish_published_today)}건",
             "예정 잔여와 오늘 발행은 서로 다른 집계이며 합계가 당일 약정 수량은 아닙니다.",
+            *contract_lines,
             f"자동 복구 {facts.recovering}건 · 사람의 개입 {facts.operator_work}건 · 최근 24시간 실패/부분 완료 이력 {facts.failed_runs}건",
             f"최근 35일 양 플랫폼 성공 답변 기록: {facts.measured_hospitals}/{facts.hospitals}곳 · 생성 보고서 {facts.recent_reports}건",
             "측정 전체 완료와 보고서 전달 준비는 운영 화면에서 확인합니다. DB 발행은 실제 페이지 관측 증명이 아닙니다.",
