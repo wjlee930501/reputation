@@ -21,3 +21,16 @@ Distinct attempts remain distinct. Unrelated integrity errors still propagate.
 Final selected regression: 24 passed, including all 21 redelivery PG cases and
 three new child-outcome cases. Full E2E and release verdict are not complete yet.
 Raw logs: /private/tmp/reputation-approval-final-20260916-093831.
+
+## Checkpoint 2 — first-pass monthly completion
+
+Real broker/SDK rehearsal persisted 150 confirmed monthly observations, but the
+RUN_SOV outcome was PARTIAL. ensure_monthly_slots assigned only the FK, leaving
+the preloaded parent collection empty in the non-expiring worker Session.
+The persisted slot-set gate correctly rejected that stale in-memory snapshot.
+A migrated PostgreSQL regression reproduced false completion before the fix.
+New slots now attach through the mapped monthly_cell relationship, preserving
+the FK and keeping the already-loaded collection coherent. No readiness gate
+was bypassed. The regression and 78 adjacent tests pass (79 total).
+Raw before/after logs and JUnit: monthly-finalize-before.log,
+monthly-finalize-after.log, monthly-finalize-after.xml in the evidence root.
