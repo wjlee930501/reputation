@@ -37,18 +37,18 @@ resource "google_service_account" "admin" {
 }
 
 resource "google_project_iam_member" "site_roles" {
-  for_each = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter"])
-  project  = var.project_id
-  role     = each.key
-  member   = "serviceAccount:${google_service_account.site.email}"
+  for_each   = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter"])
+  project    = var.project_id
+  role       = each.key
+  member     = "serviceAccount:${google_service_account.site.email}"
   depends_on = [google_project_service.services]
 }
 
 resource "google_project_iam_member" "admin_roles" {
-  for_each = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter"])
-  project  = var.project_id
-  role     = each.key
-  member   = "serviceAccount:${google_service_account.admin.email}"
+  for_each   = toset(["roles/logging.logWriter", "roles/monitoring.metricWriter"])
+  project    = var.project_id
+  role       = each.key
+  member     = "serviceAccount:${google_service_account.admin.email}"
   depends_on = [google_project_service.services]
 }
 
