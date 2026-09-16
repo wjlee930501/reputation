@@ -135,7 +135,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
               </p>
               <p
                 className="clinic-section-lede"
-                style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
+
               >
                 각 진료 영역에서 다루는 항목과 환자가 자주 묻는 내용을 함께 정리했습니다.
                 정확한 진단과 치료 계획은 진료 상담을 통해 확인해 주세요.
@@ -204,7 +204,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                   </p>
                 </header>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 48 }}>
+                <div className="clinic-content-groups">
                   {treatmentsWithRelated
                     .filter((t) => t.related.length > 0)
                     .map(({ treatment, related }) => {
@@ -233,7 +233,7 @@ export default async function TreatmentsPage({ params: paramsPromise }: Props) {
                     })}
                 </div>
 
-                <div style={{ marginTop: 32, textAlign: 'right' }}>
+                <div className="clinic-section-actions">
                   <Link
                     href={`${hospitalRootUrl}/contents`}
                     className="clinic-btn clinic-btn-secondary"

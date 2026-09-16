@@ -139,7 +139,7 @@ export default async function VisitPage({ params: paramsPromise }: Props) {
               </p>
               <p
                 className="clinic-section-lede"
-                style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}
+
               >
                 진료 예약·상담은 아래 병원 공식 채널을 통해 직접 연결해 주세요.
               </p>

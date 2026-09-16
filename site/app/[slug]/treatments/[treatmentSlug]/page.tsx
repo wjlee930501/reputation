@@ -207,7 +207,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
                 <span>{hospital.region?.join(' ')}</span>
               </p>
               {treatment.description && (
-                <p className="clinic-section-lede" style={{ marginTop: 16, maxWidth: 720, fontSize: 14 }}>
+                <p className="clinic-section-lede">
                   {treatment.description}
                 </p>
               )}
@@ -300,7 +300,7 @@ export default async function TreatmentPillarPage({ params: paramsPromise }: Pro
                       />
                     ))}
                   </div>
-                  <div style={{ marginTop: 32, textAlign: 'right' }}>
+                  <div className="clinic-section-actions">
                     <Link
                       href={`${hospitalRootUrl}/contents`}
                       className="clinic-btn clinic-btn-secondary"

@@ -176,7 +176,7 @@ export default async function DoctorPage({ params: paramsPromise }: Props) {
                   ))}
                 </div>
                 {contents.length > curatedContents.length && (
-                  <div style={{ marginTop: 24, textAlign: 'right' }}>
+                  <div className="clinic-section-actions">
                     <Link
                       href={`${hospitalRootUrl}/contents`}
                       className="clinic-btn clinic-btn-secondary"

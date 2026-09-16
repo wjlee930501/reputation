@@ -239,13 +239,13 @@ test('the brand lockup keeps its column layout while gaining the hit area', () =
 
 test('raising the hit area does not raise the visible type size', () => {
   // 폰트를 키우면 정보 밀도가 무너진다. 이 블록은 상자만 다뤄야 한다.
-  const block = CSS.slice(CSS.indexOf('손가락으로 누르는 것은 44px다 — 공개 병원 화면'))
+  const block = CSS.slice(CSS.indexOf('손가락으로 누르는 것은 44px다 — 공개 병원 화면'), CSS.indexOf('/* End minimum touch-target policy. */'))
   assert.doesNotMatch(block, /font-size:/)
 })
 
 test('the mobile floors stay inside the mobile breakpoint so desktop keeps its look', () => {
   // 헤더 CTA만 전 구간이고, 나머지는 720px 이하에서만 상자를 키운다.
-  const block = CSS.slice(CSS.indexOf('손가락으로 누르는 것은 44px다 — 공개 병원 화면'))
+  const block = CSS.slice(CSS.indexOf('손가락으로 누르는 것은 44px다 — 공개 병원 화면'), CSS.indexOf('/* End minimum touch-target policy. */'))
   const media = block.slice(block.indexOf('@media (max-width: 720px)'))
   for (const control of MEASURED_CONTROLS) {
     if (control === '.clinic-header-cta') continue

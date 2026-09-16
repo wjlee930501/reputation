@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
+import postcss from 'postcss'
 import { fileURLToPath } from 'node:url'
 
 import { buildClinicHeroHeadline } from './clinic-hero-headline.ts'
@@ -100,17 +101,17 @@ test('the hero renders the separator and lets the browser choose the line breaks
   // 공백은 JSX에서 조각 사이에 명시적으로 넣어야 한다 — 줄바꿈만 두면 사라진다.
   assert.match(HERO, /\{part\}\{' '\}/)
 
-  const rule = CSS.slice(CSS.indexOf('.clinic-hero-editorial-title {'))
-  const body = rule.slice(0, rule.indexOf('\n}'))
-  assert.match(body, /text-wrap:\s*balance/)
-  // 조각을 블록으로 쌓으면 조각 수가 그대로 줄 수가 된다.
-  assert.doesNotMatch(
-    CSS.slice(
-      CSS.indexOf('.clinic-hero-editorial-title span,'),
-      CSS.indexOf('.clinic-hero-editorial-lede'),
-    ),
-    /display:\s*block/,
-  )
+  const titleRules: postcss.Rule[] = []
+  const fragments: postcss.Rule[] = []
+  postcss.parse(CSS).walkRules((rule) => {
+    if (rule.selectors.includes('.clinic-hero-editorial-title')) titleRules.push(rule)
+    if (rule.selectors.some((selector) => /^\.clinic-hero-editorial-title (span|strong)$/.test(selector))) fragments.push(rule)
+  })
+  assert.ok(titleRules.some((rule) => rule.nodes.some((node) => node.type === 'decl' && node.prop === 'text-wrap' && node.value === 'balance')))
+  assert.ok(fragments.length > 0)
+  for (const rule of fragments) {
+    assert.ok(!rule.nodes.some((node) => node.type === 'decl' && node.prop === 'display' && node.value === 'block'))
+  }
 })
 
 test('an operator-authored headline gets the block-line modifier, and only it', () => {
