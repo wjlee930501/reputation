@@ -32,12 +32,29 @@ class _Probe:
     retry_after: str | None = None
 
 
+def _log_transport_failure(exc: httpx.HTTPError, domain: str, hospital_id: uuid.UUID) -> None:
+    """Keep type-only cause chains: request headers and exception text may be private."""
+    causes: list[str] = []
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen and len(causes) < 8:
+        seen.add(id(current))
+        causes.append(type(current).__name__)
+        current = current.__cause__ or current.__context__
+    logger.info(
+        "domain health transport failure: hospital_id=%s host=%s causes=%s",
+        hospital_id, domain, ">".join(causes),
+    )
+
+
 def _check_once(client: httpx.Client, domain: str, hospital_id: uuid.UUID, slug: str) -> _Probe:
     try:
         response = client.get(f"https://{domain}/.well-known/reputation-health")
-    except httpx.TimeoutException:
+    except httpx.TimeoutException as exc:
+        _log_transport_failure(exc, domain, hospital_id)
         return _Probe(False, "timeout")
-    except httpx.HTTPError:
+    except httpx.HTTPError as exc:
+        _log_transport_failure(exc, domain, hospital_id)
         return _Probe(False, "tls_or_network_error")
     if 300 <= response.status_code < 400:
         return _Probe(False, "redirect_not_allowed")

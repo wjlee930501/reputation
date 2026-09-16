@@ -136,3 +136,18 @@ def test_notification_preserves_the_stored_failure_instead_of_generic_text(reaso
     assert safe_domain_cause(reason) in intent.message.fallback_text
     assert "자동 작업이 완료되지 않았습니다." not in intent.message.fallback_text
     assert "DNS 확인하고 운영 시작" not in projection.next_action
+
+
+def test_transport_diagnostics_identify_cause_types_without_secret_text(caplog):
+    import logging
+    import socket
+
+    from app.services.domain_health_probe import _log_transport_failure
+    error = httpx.ConnectError("Authorization=private-test-value")
+    error.__cause__ = socket.gaierror("private DNS diagnostic")
+    with caplog.at_level(logging.INFO):
+        _log_transport_failure(error, "clinic.example.test", uuid4())
+    assert "ConnectError>gaierror" in caplog.text
+    assert "clinic.example.test" in caplog.text
+    assert "private-test-value" not in caplog.text
+    assert "private DNS diagnostic" not in caplog.text
