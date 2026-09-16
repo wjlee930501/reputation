@@ -74,6 +74,21 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+      # Ownership/redelivery proofs reject shared or low-port databases. Keep a
+      # dedicated disposable instance so these tests cannot silently skip in CI.
+      postgres_redelivery:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: reputation_redelivery_test
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d reputation_redelivery_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       # Admin API 통합 테스트의 rate-limit/revocation 경로는 실제 Redis 연결을
       # 사용한다. 프로덕션과 같은 실패 경계를 검증하도록 서비스로 제공한다.
       redis:
@@ -99,6 +114,7 @@ jobs:
       INCIDENT_TEST_DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
       OPERATIONS_TEST_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test
       MIGRATION_UPGRADE_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_autonomy_migration
+      REDELIVERY_TEST_SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:55432/reputation_redelivery_test
       COST_GUARD_REDIS_URL: redis://localhost:6379/2
       INTEGRATION_REDIS_URL: redis://localhost:6379/3
       # 블러 리포트 검사(F5-3)는 실제 PDF에서 텍스트를 추출해 가림 대상이 0회 등장하는지
@@ -174,6 +190,12 @@ jobs:
         env:
           DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
           SYNC_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test
+        run: uv run --no-sync alembic upgrade head
+
+      - name: Migrate isolated redelivery database
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@127.0.0.1:55432/reputation_redelivery_test
+          SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:55432/reputation_redelivery_test
         run: uv run --no-sync alembic upgrade head
 
       - name: Pytest (unit + integration, coverage gate)
@@ -310,6 +332,20 @@ jobs:
       # 빌드만 검증 — 푸시 없음 (이미지 롤아웃은 scripts/deploy.sh 담당).
       - name: Build ${{ matrix.name }} image
         run: docker build ${{ matrix.build_args }} -f "${{ matrix.dockerfile }}" -t "ci-${{ matrix.name }}:${{ github.sha }}" "${{ matrix.context }}"
+
+      # The runtime image has no dev extra, no host venv and no network. Exercise
+      # production imports, task routing, bundled migrations and API liveness.
+      - name: Backend image runtime smoke
+        if: matrix.name == 'backend'
+        run: |
+          docker run --rm --network none \
+            -e APP_ENV=test -e REPUTATION_DISABLE_DOTENV=1 \
+            -e ADMIN_SECRET_KEY=test-admin-key \
+            -e ANTHROPIC_API_KEY=test-anthropic-key -e OPENAI_API_KEY=test-openai-key \
+            -e GEMINI_API_KEY= -e SENTRY_DSN= \
+            --entrypoint python \
+            -v "$GITHUB_WORKSPACE/scripts/verify_backend_image.py:/tmp/verify_backend_image.py:ro" \
+            "ci-backend:${{ github.sha }}" /tmp/verify_backend_image.py
 
   # INFRA-4: Security scanning gate.
   #   - Dependency and secret audits are blocking release gates. A known high
