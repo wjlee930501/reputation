@@ -1,0 +1,22 @@
+[
+  {
+    "service": "reputation-api",
+    "revision": "reputation-api-00175-x8k"
+  },
+  {
+    "service": "reputation-worker",
+    "revision": "reputation-worker-00163-njr"
+  },
+  {
+    "service": "reputation-beat",
+    "revision": "reputation-beat-00159-zrg"
+  },
+  {
+    "service": "reputation-site",
+    "revision": "reputation-site-00123-27t"
+  },
+  {
+    "service": "reputation-admin",
+    "revision": "reputation-admin-00084-xh9"
+  }
+]

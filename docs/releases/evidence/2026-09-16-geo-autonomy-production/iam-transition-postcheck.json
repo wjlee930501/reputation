@@ -1,0 +1,44 @@
+[
+  {
+    "service_role": "site",
+    "secret_name": "SITE_REVALIDATE_SECRET",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  },
+  {
+    "service_role": "site",
+    "secret_name": "SITE_BFF_SECRET",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  },
+  {
+    "service_role": "site",
+    "secret_name": "INDEXNOW_KEY",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  },
+  {
+    "service_role": "admin",
+    "secret_name": "ADMIN_SECRET_KEY",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  },
+  {
+    "service_role": "admin",
+    "secret_name": "ADMIN_SESSION_SECRET",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  },
+  {
+    "service_role": "admin",
+    "secret_name": "BFF_ACTOR_SECRET",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  },
+  {
+    "service_role": "admin",
+    "secret_name": "SITE_BFF_SECRET",
+    "declared_accessor_present": true,
+    "all_previous_grants_preserved": true
+  }
+]

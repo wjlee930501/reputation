@@ -1,0 +1,20 @@
+[
+  {
+    "job": "reputation-migrate",
+    "execution": "reputation-migrate-lbfff",
+    "succeeded_count": 1,
+    "completion_time": "2026-09-16T03:55:16.379636Z"
+  },
+  {
+    "job": "reputation-redbeat-reconcile",
+    "execution": "reputation-redbeat-reconcile-h74km",
+    "succeeded_count": 1,
+    "completion_time": "2026-09-16T03:55:56.171037Z"
+  },
+  {
+    "job": "reputation-production-readiness",
+    "execution": "reputation-production-readiness-z6p2t",
+    "succeeded_count": 1,
+    "completion_time": "2026-09-16T04:00:10.276340Z"
+  }
+]

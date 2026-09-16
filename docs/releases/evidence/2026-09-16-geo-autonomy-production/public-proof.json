@@ -1,0 +1,15 @@
+{
+  "expected_site_revision": "reputation-site-geo-125451-012aeeb",
+  "hospital_count": 9,
+  "article_count": 128,
+  "certified_images_checked": 9,
+  "admin_login_status": 200,
+  "anonymous_admin_api_status": 401,
+  "all_passed": true,
+  "before_inventory_sha256": "fdeab29f63bcbec3b317597a6ed7c5d0920706fb05b68b222fbd51f8187b01ea",
+  "after_inventory_sha256": "fdeab29f63bcbec3b317597a6ed7c5d0920706fb05b68b222fbd51f8187b01ea",
+  "all_article_canonicals_verified": true,
+  "all_tenant_health_ids_hosts_revisions_verified": true,
+  "all_tenant_crawler_routes_http200": true,
+  "detail_retained_in_private_local_evidence": true
+}

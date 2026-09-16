@@ -1,0 +1,7 @@
+{
+  "job": "reputation-production-readiness",
+  "execution": "reputation-production-readiness-mz7jk",
+  "succeeded_count": 1,
+  "completion_time": "2026-09-16T04:14:32.302833Z",
+  "scope": "post-rollout current-release readiness, no customer mutation"
+}

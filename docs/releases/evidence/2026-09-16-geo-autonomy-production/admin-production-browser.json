@@ -1,0 +1,13 @@
+{
+  "production_login": true,
+  "customer_mutations": 0,
+  "errors": [],
+  "serverErrors": [],
+  "status": 200,
+  "anonymous_api_status": 401,
+  "form_labels": [
+    "관리자 이메일",
+    "관리자 비밀번호"
+  ],
+  "mobile_overflow": false
+}

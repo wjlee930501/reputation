@@ -1,0 +1,53 @@
+{
+  "checks": {
+    "active_owner_available": true,
+    "asset_bucket_configured": true,
+    "certificate_auto_provisioning_enabled": true,
+    "database_connected": true,
+    "generation_keys_configured": true,
+    "lead_delivery_configured": true,
+    "operator_secrets_configured": true,
+    "queue_canaries_current": true,
+    "redis_connected": true,
+    "release_revision_configured": true,
+    "report_bucket_configured": true,
+    "required_schedules_declared": true,
+    "required_tasks_registered": true,
+    "required_tasks_routed": true,
+    "schema_current": true,
+    "web_search_enabled": true
+  },
+  "facts": {
+    "active_owner_count": 1,
+    "expected_schema_revision": "0079_topic_swap_fallback",
+    "hospital_count": 9,
+    "live_site_count": 9,
+    "null_noise_hash_approvals": 7,
+    "recertify_candidate_count": 0,
+    "schema_current": true,
+    "schema_revision": "0079_topic_swap_fallback",
+    "worker_canaries": {
+      "developer_contact_info_copy": {
+        "affected_queues": [],
+        "completed_task_ids": {
+          "certificates": "36163670-e615-4729-884c-d7698fd86161",
+          "content": "b7c9bb0f-b63f-4105-8c8d-429b16f746bd",
+          "control": "393f8b7f-4dcb-46b4-8159-1de52be836d7",
+          "default": "7103206d-aa4c-4d85-9ccc-16fb9951acf5",
+          "leadgen": "a386d1e2-0890-49fd-9ed9-36cc82b4a46f",
+          "reports": "752385b3-cd8c-4056-a1ee-91e583715c9e",
+          "sov": "b4834463-c59f-4836-89a1-563f4e5bf506"
+        },
+        "release_revision": "012aeeb68e1965ea2194300989140ab9b8c4f155"
+      },
+      "operator_guidance": {
+        "affected_work": [],
+        "customer_impact": "현재 고객 운영에 예상되는 영향이 없습니다.",
+        "next_action": "별도 조치가 필요하지 않습니다.",
+        "problem": "확인된 문제가 없습니다."
+      },
+      "queue_canaries_current": true
+    }
+  },
+  "ready": true
+}

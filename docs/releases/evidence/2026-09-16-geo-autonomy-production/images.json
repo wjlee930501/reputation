@@ -1,0 +1,17 @@
+{
+  "backend": {
+    "tag": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:geo-20260916-124907-012aeeb",
+    "digest": "sha256:4b708061ef23b47d81c1c7ae51944e5adfd93ab7f28342f6f7d5343914a636fa",
+    "uri": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:4b708061ef23b47d81c1c7ae51944e5adfd93ab7f28342f6f7d5343914a636fa"
+  },
+  "site": {
+    "tag": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site:geo-20260916-124907-012aeeb",
+    "digest": "sha256:06b82b7393a701dcfddfe947fe34a387f20820c90dadd3c7184295c1cbd07143",
+    "uri": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site@sha256:06b82b7393a701dcfddfe947fe34a387f20820c90dadd3c7184295c1cbd07143"
+  },
+  "admin": {
+    "tag": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin:geo-20260916-124907-012aeeb",
+    "digest": "sha256:78c73ac5138a1aa0433ea7ce9fdd36a9719f8af2c34ff83489aa27c27e6316bd",
+    "uri": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin@sha256:78c73ac5138a1aa0433ea7ce9fdd36a9719f8af2c34ff83489aa27c27e6316bd"
+  }
+}
