@@ -1,5 +1,14 @@
 # 현재 배포와 헬스체크
 
+## 최신 실행 기록 — 2026-09-16
+
+GEO 자율 운영 후보 `012aeeb68e1965ea2194300989140ab9b8c4f155`의 전체 운영 배포를 완료했다.
+현재 5개 서비스의 suffix는 `geo-125451-012aeeb`, schema head는 `0079_topic_swap_fallback`이다.
+환경·secret 참조 보존을 위해 digest-pinned incremental update를 사용했고, 단계 순서와
+readiness gate는 아래 절차를 따랐다. Site/Admin SA는 분리됐으며 legacy grants는 유지 중이다.
+검사 결과·이미지 index/child digest·롤백 좌표는 [2026-09-16 배포 기록](../releases/2026-09-16-geo-autonomy-production.md)에 있다.
+아래 9월 7~9일의 수치와 head는 역사적 실행 기록이며 최신 현재값으로 사용하지 않는다.
+
 문서 버전: **2.5** · 갱신일: **2026-09-08 (Asia/Seoul)**
 소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
 구현 상태: **기준선 위 V0 공개 게이트 분리·자동 이어가기 구현 및 검증 중. 운영 배포 전**

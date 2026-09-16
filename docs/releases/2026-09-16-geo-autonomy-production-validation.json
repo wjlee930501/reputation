@@ -1,0 +1,161 @@
+{
+  "status": "DEPLOYED_VERIFIED",
+  "project": "mso-platform-481505",
+  "region": "asia-northeast3",
+  "deployed_source_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+  "deployment_completed_at_utc": "2026-09-16T04:01:11.361652+00:00",
+  "merge_pr": 114,
+  "ci_run": 35053204403,
+  "production_db_head": "0079_topic_swap_fallback",
+  "database_migration_new_revisions_applied": 0,
+  "services": [
+    {
+      "service": "reputation-api",
+      "revision": "reputation-api-geo-125451-012aeeb",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:4b708061ef23b47d81c1c7ae51944e5adfd93ab7f28342f6f7d5343914a636fa",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:89a3d4ff4f8f3017b1f82916a47e7e30f7636e89979e8942198d4d68fc8236d8",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T03:54:51Z",
+      "checked_at_utc": "2026-09-16T04:08:12.356730+00:00"
+    },
+    {
+      "service": "reputation-worker",
+      "revision": "reputation-worker-geo-125451-012aeeb",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:4b708061ef23b47d81c1c7ae51944e5adfd93ab7f28342f6f7d5343914a636fa",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:89a3d4ff4f8f3017b1f82916a47e7e30f7636e89979e8942198d4d68fc8236d8",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T03:54:51Z",
+      "checked_at_utc": "2026-09-16T04:08:12.359185+00:00"
+    },
+    {
+      "service": "reputation-beat",
+      "revision": "reputation-beat-geo-125451-012aeeb",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:4b708061ef23b47d81c1c7ae51944e5adfd93ab7f28342f6f7d5343914a636fa",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:89a3d4ff4f8f3017b1f82916a47e7e30f7636e89979e8942198d4d68fc8236d8",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T03:54:51Z",
+      "checked_at_utc": "2026-09-16T04:08:12.371950+00:00"
+    },
+    {
+      "service": "reputation-site",
+      "revision": "reputation-site-geo-125451-012aeeb",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site@sha256:06b82b7393a701dcfddfe947fe34a387f20820c90dadd3c7184295c1cbd07143",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site@sha256:5600add8bb37f3a2a284b564dcd8eb9dd1eaf81eba8fe387e1448a8be917b773",
+      "service_account": "reputation-site-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T03:54:51Z",
+      "checked_at_utc": "2026-09-16T04:08:15.340016+00:00"
+    },
+    {
+      "service": "reputation-admin",
+      "revision": "reputation-admin-geo-125451-012aeeb",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin@sha256:78c73ac5138a1aa0433ea7ce9fdd36a9719f8af2c34ff83489aa27c27e6316bd",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin@sha256:8f13cfd7fc2471f19f8076b3b291edc6d70a6bf5b8e175542502454cff2a0a95",
+      "service_account": "reputation-admin-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T03:54:51Z",
+      "checked_at_utc": "2026-09-16T04:08:15.339959+00:00"
+    }
+  ],
+  "public": {
+    "expected_site_revision": "reputation-site-geo-125451-012aeeb",
+    "hospital_count": 9,
+    "article_count": 128,
+    "certified_images_checked": 9,
+    "admin_login_status": 200,
+    "anonymous_admin_api_status": 401,
+    "all_passed": true,
+    "before_inventory_sha256": "fdeab29f63bcbec3b317597a6ed7c5d0920706fb05b68b222fbd51f8187b01ea",
+    "after_inventory_sha256": "fdeab29f63bcbec3b317597a6ed7c5d0920706fb05b68b222fbd51f8187b01ea",
+    "all_article_canonicals_verified": true,
+    "all_tenant_health_ids_hosts_revisions_verified": true,
+    "all_tenant_crawler_routes_http200": true,
+    "detail_retained_in_private_local_evidence": true
+  },
+  "jobs": [
+    {
+      "job": "reputation-migrate",
+      "execution": "reputation-migrate-lbfff",
+      "succeeded_count": 1,
+      "completion_time": "2026-09-16T03:55:16.379636Z"
+    },
+    {
+      "job": "reputation-redbeat-reconcile",
+      "execution": "reputation-redbeat-reconcile-h74km",
+      "succeeded_count": 1,
+      "completion_time": "2026-09-16T03:55:56.171037Z"
+    },
+    {
+      "job": "reputation-production-readiness",
+      "execution": "reputation-production-readiness-z6p2t",
+      "succeeded_count": 1,
+      "completion_time": "2026-09-16T04:00:10.276340Z"
+    }
+  ],
+  "configuration_changes": [
+    "REPUTATION_RELEASE_REVISION pinned to merged source",
+    "FLEET_HEARTBEAT_HOUR_KST=18 in backend services/jobs",
+    "Site/Admin switched to their declared least-privilege service accounts"
+  ],
+  "legacy_frontend_grants_retained": true,
+  "secret_values_read": false,
+  "manual_live_slack_test_sent": false,
+  "manual_customer_generation_or_report_delivery": false,
+  "original_worktree_unchanged": true,
+  "raw_local_evidence": "/private/tmp/reputation-deploy-20260916-5pz78kls",
+  "evidence": {
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/rollback-revisions.json": "da992e26cf5ec3b9ff1eb91a0e09d595614abb8680d8f15b09150c518227c223",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/readiness-proof.json": "310bb5cbb0923c475793e56229ff81ed92399215a856cade6636e5c1475d7fe1",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/iam-transition-postcheck.json": "0d953f65c4bbd9f72aeb524299f636c8a3b068dfc415df69350f5ab15fab888d",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/site-registry-manifest.json": "06b82b7393a701dcfddfe947fe34a387f20820c90dadd3c7184295c1cbd07143",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/ci-proof.json": "923edf772ba6b9515d8fea787c1a6f8fd33fe4a6bf4da22c250e68724aff8547",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/admin-production-login.png": "da1d1643aa827e348984480a4b7eebe52dd860409c451c84593561e9b91e804f",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/admin-registry-manifest.json": "78c73ac5138a1aa0433ea7ce9fdd36a9719f8af2c34ff83489aa27c27e6316bd",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/original-preservation-proof.json": "2da0d01b83caaa985a85d227fc4bc43ac44ae311ce39b970e8a2302b28413964",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/job-executions-proof.json": "ef8b0ec1a1c5260968725526f82637ecdac591796343301dbfd6601d09b2e5e5",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/backend-registry-manifest.json": "4b708061ef23b47d81c1c7ae51944e5adfd93ab7f28342f6f7d5343914a636fa",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/steps.jsonl": "00efb6a6f457bd624530d9640333d90a0239e536782da7598a602d57594f7dbf",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/images.json": "774ae7105dbfddcaac44d29b548cc207f45e8ebd336e35c9abcfb042b785c3ab",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/rollout-completed.json": "6e110373f5deb9cc34293fcbdd3b2db615a9e46d7d12c3b637d93ce206e6c660",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/postrollout-readiness-execution.json": "80812da51869330d839931bcfed97685218e83196e1489e070e6dda4c5311ec3",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/admin-production-browser.json": "58bd9a435b464cf3d6f0aaf07390c954ac1a8c7327c19236b0872da962b52e43",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/admin-production-login-mobile.png": "b5cd6bbfe21c8749a14e29947401cf520fb79f52d3caeb48d9b305e9ece03bcd",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/services-production-proof.json": "998c4408d35158ab48c4eaf4c71c8e41236fc0bda4bc733a5ba22e5b7e0b0dec",
+    "docs/releases/evidence/2026-09-16-geo-autonomy-production/public-proof.json": "bb05ea8750870a7423176b496d2461ca533fa98964f5dec8935c3a44edfdb970"
+  },
+  "postrollout_readiness": {
+    "job": "reputation-production-readiness",
+    "execution": "reputation-production-readiness-mz7jk",
+    "succeeded_count": 1,
+    "completion_time": "2026-09-16T04:14:32.302833Z",
+    "scope": "post-rollout current-release readiness, no customer mutation"
+  }
+}

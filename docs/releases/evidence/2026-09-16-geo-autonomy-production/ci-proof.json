@@ -1,0 +1,58 @@
+{
+  "release_commit": "012aeeb68e1965ea2194300989140ab9b8c4f155",
+  "merge_pr": 114,
+  "ci_run": 35053204403,
+  "ci_url": "https://github.com/wjlee930501/reputation/actions/runs/35053204403",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "Security scans (deps + secrets)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Frontend tests and builds (site)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Terraform fmt and validate",
+      "conclusion": "success"
+    },
+    {
+      "name": "Backend lint and tests",
+      "conclusion": "success"
+    },
+    {
+      "name": "Copy and DB budget guards",
+      "conclusion": "success"
+    },
+    {
+      "name": "Docker image builds (admin, admin, admin/Dockerfile, --build-arg NEXT_PUBLIC_BACKEND_URL=https://...",
+      "conclusion": "success"
+    },
+    {
+      "name": "Frontend tests and builds (admin)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Docker image builds (backend, backend, backend/Dockerfile)",
+      "conclusion": "success"
+    },
+    {
+      "name": "Docker image builds (site, site, site/Dockerfile, --build-arg NEXT_PUBLIC_SITE_URL=https://reputa...",
+      "conclusion": "success"
+    }
+  ],
+  "backend_ci": {
+    "passed": 4082,
+    "skipped": 21,
+    "warnings": 2,
+    "skipped_scope": "tests/test_generation_redelivery_postgres.py: dedicated test DSN not set by CI"
+  },
+  "prior_isolated_candidate_backend": {
+    "passed": 4103,
+    "skipped": 0,
+    "failures": 0,
+    "errors": 0
+  },
+  "deployment_policy_tests": 85
+}
