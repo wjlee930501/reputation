@@ -1,6 +1,15 @@
 # 현재 배포와 헬스체크
 
-## 최신 실행 기록 — 2026-09-16
+## 최신 실행 기록 — 2026-09-16 리팩터링
+
+PR #116의 병합 소스 `18531d3452287afa012e28ec256d920708c90a57`를 운영에 배포했다.
+현재 서비스 5개의 suffix는 `ref-151613-18531d3`, DB head는 `0079_topic_swap_fallback`이다.
+main CI 9/9, 새 release 7개 큐 readiness, 병원 9곳·공개 글 128개·대표 이미지·Admin 로그인
+검사를 통과했다. 환경·secret·IAM·자원은 보존했으며 신규 migration/backfill은 없다.
+[리팩터링 배포 기록](../releases/2026-09-16-refactor-production.md)의 실제 digest와 롤백 좌표를 사용한다.
+아래 실행 기록의 ‘현재’는 각 배포 시점의 이력이다.
+
+## 이전 실행 기록 — 2026-09-16 GEO
 
 GEO 자율 운영 후보 `012aeeb68e1965ea2194300989140ab9b8c4f155`의 전체 운영 배포를 완료했다.
 현재 5개 서비스의 suffix는 `geo-125451-012aeeb`, schema head는 `0079_topic_swap_fallback`이다.
