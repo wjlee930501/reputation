@@ -1,0 +1,12 @@
+PASS production login and real session
+PASS worker-built monthly report is ready in the real dialog
+PASS forged PDF hash and missing CSRF cannot create delivery
+PASS downloaded PDF hash matches the actual validated artifact
+PASS record delivery through the dialog
+PASS correction appends without deleting the original
+PASS rescission preserves history and clears effective delivery
+PASS re-download and re-delivery retain the same byte identity
+PASS history survives reload and retains all four hash-bound events
+PASS another hospital cannot read the report
+PASS desktop and mobile dialog remain usable
+PASS no runtime exception or server 5xx

@@ -1,0 +1,3789 @@
+=== admin test ===
+
+> reputation-admin@0.1.0 test
+> node --no-warnings --experimental-strip-types --test lib/*.test.ts
+
+TAP version 13
+# Subtest: suspended account promotion is locked and test accounts are excluded from the real count
+ok 1 - suspended account promotion is locked and test accounts are excluded from the real count
+  ---
+  duration_ms: 0.966541
+  type: 'test'
+  ...
+# Subtest: accounts switch to card rows at tablet width and keep touch targets usable
+ok 2 - accounts switch to card rows at tablet width and keep touch targets usable
+  ---
+  duration_ms: 0.555458
+  type: 'test'
+  ...
+# Subtest: password reset is a labelled modal with focus entry, trap, escape, and restoration
+ok 3 - password reset is a labelled modal with focus entry, trap, escape, and restoration
+  ---
+  duration_ms: 0.16975
+  type: 'test'
+  ...
+# Subtest: assertion carries email/role and verifies with the same secret
+ok 4 - assertion carries email/role and verifies with the same secret
+  ---
+  duration_ms: 12.024292
+  type: 'test'
+  ...
+# Subtest: assertion fails with a different secret or after expiry
+ok 5 - assertion fails with a different secret or after expiry
+  ---
+  duration_ms: 9.715125
+  type: 'test'
+  ...
+# Subtest: assertion default lifetime is the 120s replay window the backend enforces
+ok 6 - assertion default lifetime is the 120s replay window the backend enforces
+  ---
+  duration_ms: 6.401125
+  type: 'test'
+  ...
+# Subtest: a batch job identifier never appears where an operator name belongs
+ok 7 - a batch job identifier never appears where an operator name belongs
+  ---
+  duration_ms: 0.573375
+  type: 'test'
+  ...
+# Subtest: the AI reviewer is labelled as the normal automatic approver
+ok 8 - the AI reviewer is labelled as the normal automatic approver
+  ---
+  duration_ms: 0.058875
+  type: 'test'
+  ...
+# Subtest: other system actors keep their own name so the operator knows what ran
+ok 9 - other system actors keep their own name so the operator knows what ran
+  ---
+  duration_ms: 0.083708
+  type: 'test'
+  ...
+# Subtest: an unknown ALL_CAPS constant is treated as internal, not as a name
+ok 10 - an unknown ALL_CAPS constant is treated as internal, not as a name
+  ---
+  duration_ms: 0.060833
+  type: 'test'
+  ...
+# Subtest: operator names pass through untouched, including Korean and English names
+ok 11 - operator names pass through untouched, including Korean and English names
+  ---
+  duration_ms: 0.688333
+  type: 'test'
+  ...
+# Subtest: a Korean name is never mistaken for a batch token
+ok 12 - a Korean name is never mistaken for a batch token
+  ---
+  duration_ms: 0.054875
+  type: 'test'
+  ...
+# Subtest: an empty value asks for confirmation instead of printing a dash as a name
+ok 13 - an empty value asks for confirmation instead of printing a dash as a name
+  ---
+  duration_ms: 0.051125
+  type: 'test'
+  ...
+# Subtest: every screen that shows a confirmer runs the value through the shared helper
+ok 14 - every screen that shows a confirmer runs the value through the shared helper
+  ---
+  duration_ms: 2.751375
+  type: 'test'
+  ...
+# Subtest: Task17 recovery forwards only a validated Idempotency-Key through the Admin BFF
+ok 15 - Task17 recovery forwards only a validated Idempotency-Key through the Admin BFF
+  ---
+  duration_ms: 16.643084
+  type: 'test'
+  ...
+# Subtest: Task17 recovery rejects missing or invalid Idempotency-Key before backend mutation
+ok 16 - Task17 recovery rejects missing or invalid Idempotency-Key before backend mutation
+  ---
+  duration_ms: 13.973834
+  type: 'test'
+  ...
+# Subtest: a valid operations retry key is forwarded without opening arbitrary headers
+ok 17 - a valid operations retry key is forwarded without opening arbitrary headers
+  ---
+  duration_ms: 30.092417
+  type: 'test'
+  ...
+# Subtest: admin API route returns no-store 504 when upstream fetch times out
+ok 18 - admin API route returns no-store 504 when upstream fetch times out
+  ---
+  duration_ms: 18.126417
+  type: 'test'
+  ...
+# Subtest: admin API route rejects a backend-revoked session before proxying
+ok 19 - admin API route rejects a backend-revoked session before proxying
+  ---
+  duration_ms: 4.16425
+  type: 'test'
+  ...
+# Subtest: admin API route rejects invalid proxy paths before revocation lookup
+ok 20 - admin API route rejects invalid proxy paths before revocation lookup
+  ---
+  duration_ms: 5.581708
+  type: 'test'
+  ...
+# Subtest: admin API route rejects state-changing requests without or with mismatched CSRF nonce
+ok 21 - admin API route rejects state-changing requests without or with mismatched CSRF nonce
+  ---
+  duration_ms: 7.0835
+  type: 'test'
+  ...
+# Subtest: admin API route returns no-store 502 when upstream fetch fails
+ok 22 - admin API route returns no-store 502 when upstream fetch fails
+  ---
+  duration_ms: 3.383917
+  type: 'test'
+  ...
+# Subtest: admin API route bypasses the revocation cache for state-changing requests
+ok 23 - admin API route bypasses the revocation cache for state-changing requests
+  ---
+  duration_ms: 10.501791
+  type: 'test'
+  ...
+# Subtest: admin API route reuses a cached "active" revocation check for repeated requests
+ok 24 - admin API route reuses a cached "active" revocation check for repeated requests
+  ---
+  duration_ms: 4.120917
+  type: 'test'
+  ...
+# Subtest: admin API route proxies the global control-plane prefixes
+ok 25 - admin API route proxies the global control-plane prefixes
+  ---
+  duration_ms: 4.152708
+  type: 'test'
+  ...
+# Subtest: admin API route proxies handoff list and transition routes
+ok 26 - admin API route proxies handoff list and transition routes
+  ---
+  duration_ms: 14.455292
+  type: 'test'
+  ...
+# Subtest: admin API route rejects a handoffs sibling prefix and traversal before backend fetch
+ok 27 - admin API route rejects a handoffs sibling prefix and traversal before backend fetch
+  ---
+  duration_ms: 2.652875
+  type: 'test'
+  ...
+# Subtest: admin API route asks the backend to judge the session account, not just the token hash
+ok 28 - admin API route asks the backend to judge the session account, not just the token hash
+  ---
+  duration_ms: 2.734584
+  type: 'test'
+  ...
+# Subtest: the proxy signs every backend call with a BFF actor assertion
+ok 29 - the proxy signs every backend call with a BFF actor assertion
+  ---
+  duration_ms: 12.625417
+  type: 'test'
+  ...
+# Subtest: a deployment without BFF_ACTOR_SECRET refuses to proxy instead of sending an unsigned mutation
+ok 30 - a deployment without BFF_ACTOR_SECRET refuses to proxy instead of sending an unsigned mutation
+  ---
+  duration_ms: 1.087
+  type: 'test'
+  ...
+# Subtest: admin copy uses operator terms instead of implementation labels
+ok 31 - admin copy uses operator terms instead of implementation labels
+  ---
+  duration_ms: 0.69275
+  type: 'test'
+  ...
+# Subtest: one term per concept: new screens read these keys instead of inventing variants
+ok 32 - one term per concept: new screens read these keys instead of inventing variants
+  ---
+  duration_ms: 0.132708
+  type: 'test'
+  ...
+# Subtest: hospital status labels say the same thing the rest of admin says
+ok 33 - hospital status labels say the same thing the rest of admin says
+  ---
+  duration_ms: 0.21825
+  type: 'test'
+  ...
+# Subtest: mention rate keeps unavailable results separate from zero
+ok 34 - mention rate keeps unavailable results separate from zero
+  ---
+  duration_ms: 0.099583
+  type: 'test'
+  ...
+# Subtest: unknown counts are not presented as zero
+ok 35 - unknown counts are not presented as zero
+  ---
+  duration_ms: 0.099209
+  type: 'test'
+  ...
+# Subtest: every admin API method Next can route is served by the behavior-tested proxy handler
+ok 36 - every admin API method Next can route is served by the behavior-tested proxy handler
+  ---
+  duration_ms: 30.445875
+  type: 'test'
+  ...
+# Subtest: the matcher Next reads equals the matcher the auth-proxy tests exercise
+ok 37 - the matcher Next reads equals the matcher the auth-proxy tests exercise
+  ---
+  duration_ms: 152.959959
+  type: 'test'
+  ...
+# Subtest: the auth proxy leaves login and auth API paths public while guarding the console
+ok 38 - the auth proxy leaves login and auth API paths public while guarding the console
+  ---
+  duration_ms: 2.168083
+  type: 'test'
+  ...
+# Subtest: the routed admin handler rejects cross-origin requests with a no-store 403
+ok 39 - the routed admin handler rejects cross-origin requests with a no-store 403
+  ---
+  duration_ms: 3.406042
+  type: 'test'
+  ...
+# Subtest: the admin proxy rejects unsupported methods with a no-store 405 before reading env or session
+ok 40 - the admin proxy rejects unsupported methods with a no-store 405 before reading env or session
+  ---
+  duration_ms: 0.797375
+  type: 'test'
+  ...
+# Subtest: a misconfigured admin deployment answers with a no-store 500 instead of proxying
+ok 41 - a misconfigured admin deployment answers with a no-store 500 instead of proxying
+  ---
+  duration_ms: 1.112042
+  type: 'test'
+  ...
+# Subtest: admin proxy fetch init uses no-store and an abort timeout signal
+ok 42 - admin proxy fetch init uses no-store and an abort timeout signal
+  ---
+  duration_ms: 0.816791
+  type: 'test'
+  ...
+# Subtest: LLM-backed autofill and source processing receive the slow timeout
+ok 43 - LLM-backed autofill and source processing receive the slow timeout
+  ---
+  duration_ms: 2.431375
+  type: 'test'
+  ...
+# Subtest: nearby reads and ordinary writes keep the short timeout
+ok 44 - nearby reads and ordinary writes keep the short timeout
+  ---
+  duration_ms: 0.108125
+  type: 'test'
+  ...
+# Subtest: admin proxy maps timeout and network errors to normalized statuses
+ok 45 - admin proxy maps timeout and network errors to normalized statuses
+  ---
+  duration_ms: 4.931541
+  type: 'test'
+  ...
+# Subtest: the suggested contract reference stays editable on the registration screen
+ok 46 - the suggested contract reference stays editable on the registration screen
+  ---
+  duration_ms: 0.343542
+  type: 'test'
+  ...
+# Subtest: photo guidance describes automatic publication and current state, not a required toggle
+ok 47 - photo guidance describes automatic publication and current state, not a required toggle
+  ---
+  duration_ms: 0.073167
+  type: 'test'
+  ...
+# Subtest: fetchAPI surfaces FastAPI detail messages instead of raw JSON
+ok 48 - fetchAPI surfaces FastAPI detail messages instead of raw JSON
+  ---
+  duration_ms: 16.115916
+  type: 'test'
+  ...
+# Subtest: fetchAPI converts FastAPI validation arrays into readable lines
+ok 49 - fetchAPI converts FastAPI validation arrays into readable lines
+  ---
+  duration_ms: 0.417833
+  type: 'test'
+  ...
+# Subtest: fetchAPI converts grounding_errors detail into readable Korean message
+ok 50 - fetchAPI converts grounding_errors detail into readable Korean message
+  ---
+  duration_ms: 0.272042
+  type: 'test'
+  ...
+# Subtest: fetchAPI keeps structured detail on ApiError for screens that need violations
+ok 51 - fetchAPI keeps structured detail on ApiError for screens that need violations
+  ---
+  duration_ms: 0.496042
+  type: 'test'
+  ...
+# Subtest: fetchAPI appends compact JSON for unknown structured detail (cause stays visible)
+ok 52 - fetchAPI appends compact JSON for unknown structured detail (cause stays visible)
+  ---
+  duration_ms: 0.272833
+  type: 'test'
+  ...
+# Subtest: fetchAPI truncates very long unknown detail JSON to ~200 chars
+ok 53 - fetchAPI truncates very long unknown detail JSON to ~200 chars
+  ---
+  duration_ms: 0.221292
+  type: 'test'
+  ...
+# Subtest: fetchAPI surfaces top-level error/message strings when detail is absent
+ok 54 - fetchAPI surfaces top-level error/message strings when detail is absent
+  ---
+  duration_ms: 0.282834
+  type: 'test'
+  ...
+# Subtest: fetchAPI sends FormData bodies without forcing a JSON content type
+ok 55 - fetchAPI sends FormData bodies without forcing a JSON content type
+  ---
+  duration_ms: 8.724875
+  type: 'test'
+  ...
+# Subtest: fetchAPI sends the admin CSRF cookie as a header on state-changing requests
+ok 56 - fetchAPI sends the admin CSRF cookie as a header on state-changing requests
+  ---
+  duration_ms: 0.666167
+  type: 'test'
+  ...
+# Subtest: defaultAssetTitle strips the path and the extension
+ok 57 - defaultAssetTitle strips the path and the extension
+  ---
+  duration_ms: 0.664333
+  type: 'test'
+  ...
+# Subtest: defaultAssetTitle truncates to the stored column length
+ok 58 - defaultAssetTitle truncates to the stored column length
+  ---
+  duration_ms: 0.064708
+  type: 'test'
+  ...
+# Subtest: defaultAssetTitle leaves a dot-leading name empty so the server names it
+ok 59 - defaultAssetTitle leaves a dot-leading name empty so the server names it
+  ---
+  duration_ms: 0.090083
+  type: 'test'
+  ...
+# Subtest: a batch of files gets one distinct default title per file
+ok 60 - a batch of files gets one distinct default title per file
+  ---
+  duration_ms: 0.325208
+  type: 'test'
+  ...
+# Subtest: duplicateAssetTitles names only the titles that actually collide
+ok 61 - duplicateAssetTitles names only the titles that actually collide
+  ---
+  duration_ms: 0.791459
+  type: 'test'
+  ...
+# Subtest: duplicateAssetTitles treats case and surrounding spaces as the same caption
+ok 62 - duplicateAssetTitles treats case and surrounding spaces as the same caption
+  ---
+  duration_ms: 0.473166
+  type: 'test'
+  ...
+# Subtest: duplicateAssetTitles ignores blank titles that the server will fill in
+ok 63 - duplicateAssetTitles ignores blank titles that the server will fill in
+  ---
+  duration_ms: 0.423083
+  type: 'test'
+  ...
+# Subtest: the upload form sends the per-file title rather than one shared title
+ok 64 - the upload form sends the per-file title rather than one shared title
+  ---
+  duration_ms: 0.39525
+  type: 'test'
+  ...
+# Subtest: the queue stays hidden when no report is missing
+ok 65 - the queue stays hidden when no report is missing
+  ---
+  duration_ms: 0.975833
+  type: 'test'
+  ...
+# Subtest: the post-publish sample never opens the queue on its own
+ok 66 - the post-publish sample never opens the queue on its own
+  ---
+  duration_ms: 0.160708
+  type: 'test'
+  ...
+# Subtest: hiddenReportCount only counts rows beyond the visible window
+ok 67 - hiddenReportCount only counts rows beyond the visible window
+  ---
+  duration_ms: 0.15075
+  type: 'test'
+  ...
+# Subtest: reportGapSummary keeps the two states apart
+ok 68 - reportGapSummary keeps the two states apart
+  ---
+  duration_ms: 0.248083
+  type: 'test'
+  ...
+# Subtest: admin auth proxy matcher excludes framework and metadata assets only
+ok 69 - admin auth proxy matcher excludes framework and metadata assets only
+  ---
+  duration_ms: 2.016417
+  type: 'test'
+  ...
+# Subtest: admin auth proxy allows login and auth API routes without a session secret
+ok 70 - admin auth proxy allows login and auth API routes without a session secret
+  ---
+  duration_ms: 0.167125
+  type: 'test'
+  ...
+# Subtest: admin auth proxy returns JSON 401 for unauthenticated API routes
+ok 71 - admin auth proxy returns JSON 401 for unauthenticated API routes
+  ---
+  duration_ms: 1.702291
+  type: 'test'
+  ...
+# Subtest: admin auth proxy marks misconfiguration API errors as no-store
+ok 72 - admin auth proxy marks misconfiguration API errors as no-store
+  ---
+  duration_ms: 0.265792
+  type: 'test'
+  ...
+# Subtest: admin auth proxy redirects pages to login with the original path and clears stale sessions
+ok 73 - admin auth proxy redirects pages to login with the original path and clears stale sessions
+  ---
+  duration_ms: 1.899541
+  type: 'test'
+  ...
+# Subtest: admin auth proxy allows requests with a valid session token
+ok 74 - admin auth proxy allows requests with a valid session token
+  ---
+  duration_ms: 7.651584
+  type: 'test'
+  ...
+# Subtest: admin auth proxy redirects legacy pre-CSRF sessions to login and clears cookies
+ok 75 - admin auth proxy redirects legacy pre-CSRF sessions to login and clears cookies
+  ---
+  duration_ms: 2.188375
+  type: 'test'
+  ...
+# Subtest: a refreshed hospital with the same values is not a reason to reset the form
+ok 76 - a refreshed hospital with the same values is not a reason to reset the form
+  ---
+  duration_ms: 0.456875
+  type: 'test'
+  ...
+# Subtest: typing survives a poll that carries genuinely new server values
+ok 77 - typing survives a poll that carries genuinely new server values
+  ---
+  duration_ms: 0.061042
+  type: 'test'
+  ...
+# Subtest: an untouched form still picks up server changes
+ok 78 - an untouched form still picks up server changes
+  ---
+  duration_ms: 0.052459
+  type: 'test'
+  ...
+# Subtest: after a successful save the form syncs to what the server normalized
+ok 79 - after a successful save the form syncs to what the server normalized
+  ---
+  duration_ms: 0.090917
+  type: 'test'
+  ...
+# Subtest: opening another hospital discards the previous draft even mid-edit
+ok 80 - opening another hospital discards the previous draft even mid-edit
+  ---
+  duration_ms: 0.05725
+  type: 'test'
+  ...
+# Subtest: switching to a hospital whose visuals happen to match still resyncs
+ok 81 - switching to a hospital whose visuals happen to match still resyncs
+  ---
+  duration_ms: 0.042166
+  type: 'test'
+  ...
+# Subtest: missing profile fields read as empty strings, not as unsaved edits
+ok 82 - missing profile fields read as empty strings, not as unsaved edits
+  ---
+  duration_ms: 3.153
+  type: 'test'
+  ...
+# Subtest: the shared visual form marks itself dirty on edit and clears it only after saving
+ok 83 - the shared visual form marks itself dirty on edit and clears it only after saving
+  ---
+  duration_ms: 0.420791
+  type: 'test'
+  ...
+# Subtest: a fully approved visual profile has nothing left to confirm
+ok 84 - a fully approved visual profile has nothing left to confirm
+  ---
+  duration_ms: 0.864541
+  type: 'test'
+  ...
+# Subtest: an empty profile names every visual item the AE still has to approve
+ok 85 - an empty profile names every visual item the AE still has to approve
+  ---
+  duration_ms: 0.096458
+  type: 'test'
+  ...
+# Subtest: photos never gate visual approval
+ok 86 - photos never gate visual approval
+  ---
+  duration_ms: 0.139666
+  type: 'test'
+  ...
+# Subtest: only one primary color is required — an accent is never asked for
+ok 87 - only one primary color is required — an accent is never asked for
+  ---
+  duration_ms: 0.074
+  type: 'test'
+  ...
+# Subtest: brand color approval only accepts a full hex the public surface can derive from
+ok 88 - brand color approval only accepts a full hex the public surface can derive from
+  ---
+  duration_ms: 0.094333
+  type: 'test'
+  ...
+# Subtest: access mode approval rejects anything the public surface cannot honour
+ok 89 - access mode approval rejects anything the public surface cannot honour
+  ---
+  duration_ms: 4.08275
+  type: 'test'
+  ...
+# Subtest: either hero line counts as approved copy
+ok 90 - either hero line counts as approved copy
+  ---
+  duration_ms: 0.220375
+  type: 'test'
+  ...
+# Subtest: the summary lists the outstanding items so the AE knows what to fill
+ok 91 - the summary lists the outstanding items so the AE knows what to fill
+  ---
+  duration_ms: 0.059916
+  type: 'test'
+  ...
+# Subtest: an external logo URL is stored but can never reach the screen, so it is not approved
+ok 92 - an external logo URL is stored but can never reach the screen, so it is not approved
+  ---
+  duration_ms: 0.767583
+  type: 'test'
+  ...
+# Subtest: uploaded asset refs in every supported form count as servable
+ok 93 - uploaded asset refs in every supported form count as servable
+  ---
+  duration_ms: 0.498958
+  type: 'test'
+  ...
+# Subtest: post-publish review never repeats a confirmed POST when its follow-up GET fails
+ok 94 - post-publish review never repeats a confirmed POST when its follow-up GET fails
+  ---
+  duration_ms: 0.402125
+  type: 'test'
+  ...
+# Subtest: a single-item refresh never replaces an open editor
+ok 95 - a single-item refresh never replaces an open editor
+  ---
+  duration_ms: 0.067125
+  type: 'test'
+  ...
+# Subtest: 운영 복구 버튼과 그 요청 경로는 콘텐츠 화면에 없다
+ok 96 - 운영 복구 버튼과 그 요청 경로는 콘텐츠 화면에 없다
+  ---
+  duration_ms: 1.845333
+  type: 'test'
+  ...
+# Subtest: 행 상태는 서버 판정을 그대로 쓰고, 표본만 사람이 확인한다
+ok 97 - 행 상태는 서버 판정을 그대로 쓰고, 표본만 사람이 확인한다
+  ---
+  duration_ms: 0.197333
+  type: 'test'
+  ...
+# Subtest: 공개 글의 비공개는 표본 여부와 무관하고, "문제 없음" 확인만 표본으로 제한한다
+ok 98 - 공개 글의 비공개는 표본 여부와 무관하고, "문제 없음" 확인만 표본으로 제한한다
+  ---
+  duration_ms: 0.298542
+  type: 'test'
+  ...
+# Subtest: 운영 센터로 가는 링크는 실제로 열리는 주소다
+ok 99 - 운영 센터로 가는 링크는 실제로 열리는 주소다
+  ---
+  duration_ms: 0.13325
+  type: 'test'
+  ...
+# Subtest: 운영 센터 딥링크와 단건 새로고침은 유지된다
+ok 100 - 운영 센터 딥링크와 단건 새로고침은 유지된다
+  ---
+  duration_ms: 0.833167
+  type: 'test'
+  ...
+# Subtest: 화면은 발행 요일 섹션과 하단 읽기 전용 신호를 함께 조립한다
+ok 101 - 화면은 발행 요일 섹션과 하단 읽기 전용 신호를 함께 조립한다
+  ---
+  duration_ms: 0.119
+  type: 'test'
+  ...
+# Subtest: 하단 환자 질문·노출 보완 제안은 읽기만 한다
+ok 102 - 하단 환자 질문·노출 보완 제안은 읽기만 한다
+  ---
+  duration_ms: 0.239625
+  type: 'test'
+  ...
+# Subtest: 편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한다
+ok 103 - 편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한다
+  ---
+  duration_ms: 0.085333
+  type: 'test'
+  ...
+# Subtest: 자료가 하나도 없으면 사람이 할 일은 올리는 것뿐이다
+ok 104 - 자료가 하나도 없으면 사람이 할 일은 올리는 것뿐이다
+  ---
+  duration_ms: 0.603292
+  type: 'test'
+  ...
+# Subtest: 남은 준비는 자동으로 진행 중이라고만 말한다 — 없는 버튼을 누르라고 하지 않는다
+ok 105 - 남은 준비는 자동으로 진행 중이라고만 말한다 — 없는 버튼을 누르라고 하지 않는다
+  ---
+  duration_ms: 0.180875
+  type: 'test'
+  ...
+# Subtest: 통과한 준비와 빈 응답은 아무것도 남기지 않는다
+ok 106 - 통과한 준비와 빈 응답은 아무것도 남기지 않는다
+  ---
+  duration_ms: 0.055083
+  type: 'test'
+  ...
+# Subtest: 발행 일정 화면은 이 문구만 쓰고 자기 문구를 새로 만들지 않는다
+ok 107 - 발행 일정 화면은 이 문구만 쓰고 자기 문구를 새로 만들지 않는다
+  ---
+  duration_ms: 0.066583
+  type: 'test'
+  ...
+# Subtest: 진행 건수는 서버가 세어 줄 때만 말한다
+ok 108 - 진행 건수는 서버가 세어 줄 때만 말한다
+  ---
+  duration_ms: 0.105875
+  type: 'test'
+  ...
+# Subtest: 공개 중인 글은 사유도 링크도 없이 정상으로 표시된다
+ok 109 - 공개 중인 글은 사유도 링크도 없이 정상으로 표시된다
+  ---
+  duration_ms: 2.398917
+  type: 'test'
+  ...
+# Subtest: 공개 보류는 사유를 그대로 보여 준다
+ok 110 - 공개 보류는 사유를 그대로 보여 준다
+  ---
+  duration_ms: 0.248666
+  type: 'test'
+  ...
+# Subtest: 차단은 실제로 열리는 운영 센터 링크와 다음 조치를 함께 준다
+ok 111 - 차단은 실제로 열리는 운영 센터 링크와 다음 조치를 함께 준다
+  ---
+  duration_ms: 0.219875
+  type: 'test'
+  ...
+# Subtest: 차단 카드 문구는 갈 곳이 있을 때만 운영 센터를 가리킨다
+ok 112 - 차단 카드 문구는 갈 곳이 있을 때만 운영 센터를 가리킨다
+  ---
+  duration_ms: 0.104291
+  type: 'test'
+  ...
+# Subtest: 예정·초안 생성 중은 사람이 할 일이 아니다
+ok 113 - 예정·초안 생성 중은 사람이 할 일이 아니다
+  ---
+  duration_ms: 0.798917
+  type: 'test'
+  ...
+# Subtest: 오늘·내일 슬롯은 23:00을 기다리지 않는다 — 저장 직후 요청된 일이다
+ok 114 - 오늘·내일 슬롯은 23:00을 기다리지 않는다 — 저장 직후 요청된 일이다
+  ---
+  duration_ms: 0.062917
+  type: 'test'
+  ...
+# Subtest: 저장된 시도 실패 사유가 있으면 그것을 알려진 문구로 보여 준다
+ok 115 - 저장된 시도 실패 사유가 있으면 그것을 알려진 문구로 보여 준다
+  ---
+  duration_ms: 0.040042
+  type: 'test'
+  ...
+# Subtest: 종료된 항목은 회색 톤으로 남는다
+ok 116 - 종료된 항목은 회색 톤으로 남는다
+  ---
+  duration_ms: 0.040666
+  type: 'test'
+  ...
+# Subtest: 표본 확인은 공개 페이지에 실제로 있는 미확인 표본에만 열린다
+ok 117 - 표본 확인은 공개 페이지에 실제로 있는 미확인 표본에만 열린다
+  ---
+  duration_ms: 0.25
+  type: 'test'
+  ...
+# Subtest: 판정이 없는 응답에는 확인 버튼을 열지 않는다
+ok 118 - 판정이 없는 응답에는 확인 버튼을 열지 않는다
+  ---
+  duration_ms: 0.296333
+  type: 'test'
+  ...
+# Subtest: 요약은 행 상태별 건수와 이월 건수를 함께 센다
+ok 119 - 요약은 행 상태별 건수와 이월 건수를 함께 센다
+  ---
+  duration_ms: 0.151875
+  type: 'test'
+  ...
+# Subtest: 필터는 전체·이월과 여섯 개 행 상태를 같은 이름으로 다룬다
+ok 120 - 필터는 전체·이월과 여섯 개 행 상태를 같은 이름으로 다룬다
+  ---
+  duration_ms: 0.092375
+  type: 'test'
+  ...
+# Subtest: 고정 관측 슬롯에 들어간 질문만 측정 대상으로 말한다
+ok 121 - 고정 관측 슬롯에 들어간 질문만 측정 대상으로 말한다
+  ---
+  duration_ms: 0.540791
+  type: 'test'
+  ...
+# Subtest: 이번 달 질문은 대상 월이 같거나 월이 정해지지 않은 질문이다
+ok 122 - 이번 달 질문은 대상 월이 같거나 월이 정해지지 않은 질문이다
+  ---
+  duration_ms: 0.510958
+  type: 'test'
+  ...
+# Subtest: 측정 결과가 없으면 0%로 지어내지 않는다
+ok 123 - 측정 결과가 없으면 0%로 지어내지 않는다
+  ---
+  duration_ms: 12.635875
+  type: 'test'
+  ...
+# Subtest: "이번 달"은 KST 기준 이번 달일 때만 쓴다
+ok 124 - "이번 달"은 KST 기준 이번 달일 때만 쓴다
+  ---
+  duration_ms: 0.598916
+  type: 'test'
+  ...
+# Subtest: 측정 날짜는 KST로 읽는다 — UTC 저녁 측정은 다음 날이다
+ok 125 - 측정 날짜는 KST로 읽는다 — UTC 저녁 측정은 다음 날이다
+  ---
+  duration_ms: 0.279667
+  type: 'test'
+  ...
+# Subtest: isCarriedOver only flags items with carried_over_from set
+ok 126 - isCarriedOver only flags items with carried_over_from set
+  ---
+  duration_ms: 0.667208
+  type: 'test'
+  ...
+# Subtest: sortCarriedOverFirst moves carried items to the top, preserving order in both groups
+ok 127 - sortCarriedOverFirst moves carried items to the top, preserving order in both groups
+  ---
+  duration_ms: 0.412084
+  type: 'test'
+  ...
+# Subtest: sortCarriedOverFirst keeps order untouched when nothing is carried over
+ok 128 - sortCarriedOverFirst keeps order untouched when nothing is carried over
+  ---
+  duration_ms: 0.121167
+  type: 'test'
+  ...
+# Subtest: countCarriedOver counts all carried items regardless of status
+ok 129 - countCarriedOver counts all carried items regardless of status
+  ---
+  duration_ms: 0.05625
+  type: 'test'
+  ...
+# Subtest: countUnpublishedCarriedOver excludes published carried items
+ok 130 - countUnpublishedCarriedOver excludes published carried items
+  ---
+  duration_ms: 0.062666
+  type: 'test'
+  ...
+# Subtest: content operations state distinguishes Slack retry, post-review, and reviewed states
+ok 131 - content operations state distinguishes Slack retry, post-review, and reviewed states
+  ---
+  duration_ms: 0.091334
+  type: 'test'
+  ...
+# Subtest: a withheld published item is never bucketed as published, post-review, or notification
+ok 132 - a withheld published item is never bucketed as published, post-review, or notification
+  ---
+  duration_ms: 0.117041
+  type: 'test'
+  ...
+# Subtest: a published item without a visibility judgment is withheld, never published
+ok 133 - a published item without a visibility judgment is withheld, never published
+  ---
+  duration_ms: 0.052417
+  type: 'test'
+  ...
+# Subtest: withheld items are counted and filtered with the blocked bucket, never with published
+ok 134 - withheld items are counted and filtered with the blocked bucket, never with published
+  ---
+  duration_ms: 0.251417
+  type: 'test'
+  ...
+# Subtest: publish notification presentation is server-authoritative and operator-readable
+ok 135 - publish notification presentation is server-authoritative and operator-readable
+  ---
+  duration_ms: 0.336375
+  type: 'test'
+  ...
+# Subtest: content operations filters support actionable summary-card filtering
+ok 136 - content operations filters support actionable summary-card filtering
+  ---
+  duration_ms: 0.09625
+  type: 'test'
+  ...
+# Subtest: buildPublicContentUrl normalizes schemes, slashes, and content ids
+ok 137 - buildPublicContentUrl normalizes schemes, slashes, and content ids
+  ---
+  duration_ms: 0.109958
+  type: 'test'
+  ...
+# Subtest: belongsToMonthView keeps items whose scheduled_date matches the viewed year/month
+ok 138 - belongsToMonthView keeps items whose scheduled_date matches the viewed year/month
+  ---
+  duration_ms: 0.07275
+  type: 'test'
+  ...
+# Subtest: belongsToMonthView drops items rejected past the last day of the month (rescheduled to next month)
+ok 139 - belongsToMonthView drops items rejected past the last day of the month (rescheduled to next month)
+  ---
+  duration_ms: 0.026667
+  type: 'test'
+  ...
+# Subtest: belongsToMonthView is conservative about missing/unparseable dates (keeps existing merge behavior)
+ok 140 - belongsToMonthView is conservative about missing/unparseable dates (keeps existing merge behavior)
+  ---
+  duration_ms: 0.027708
+  type: 'test'
+  ...
+# Subtest: the suggested contract reference carries the Korean year-month and a hex suffix
+ok 141 - the suggested contract reference carries the Korean year-month and a hex suffix
+  ---
+  duration_ms: 26.024542
+  type: 'test'
+  ...
+# Subtest: the default effective date is today in Korea
+ok 142 - the default effective date is today in Korea
+  ---
+  duration_ms: 0.439333
+  type: 'test'
+  ...
+# Subtest: the payload trims operator input and sends empty owners as null
+ok 143 - the payload trims operator input and sends empty owners as null
+  ---
+  duration_ms: 0.361583
+  type: 'test'
+  ...
+# Subtest: the block reason names the one field that is still missing
+ok 144 - the block reason names the one field that is still missing
+  ---
+  duration_ms: 0.077417
+  type: 'test'
+  ...
+# Subtest: only the two "already exists" codes offer the existing hospital to open
+ok 145 - only the two "already exists" codes offer the existing hospital to open
+  ---
+  duration_ms: 0.127166
+  type: 'test'
+  ...
+# Subtest: each failure code gets its own line naming what to fix
+ok 146 - each failure code gets its own line naming what to fix
+  ---
+  duration_ms: 0.14075
+  type: 'test'
+  ...
+# Subtest: doctor conversation lives inside reports and sends hospital-scoped preferences
+ok 147 - doctor conversation lives inside reports and sends hospital-scoped preferences
+  ---
+  duration_ms: 0.487166
+  type: 'test'
+  ...
+# Subtest: feedback form labels bounded inputs and prevents duplicate clicks while saving
+ok 148 - feedback form labels bounded inputs and prevents duplicate clicks while saving
+  ---
+  duration_ms: 0.0655
+  type: 'test'
+  ...
+# Subtest: feedback is scoped by a remounted hospital form and ignores abandoned reads
+ok 149 - feedback is scoped by a remounted hospital form and ignores abandoned reads
+  ---
+  duration_ms: 0.545584
+  type: 'test'
+  ...
+# Subtest: the panel keeps a ticking clock while a certificate is issuing
+ok 150 - the panel keeps a ticking clock while a certificate is issuing
+  ---
+  duration_ms: 0.363
+  type: 'test'
+  ...
+# Subtest: the lock and the elapsed label both read that clock, not a fixed render time
+ok 151 - the lock and the elapsed label both read that clock, not a fixed render time
+  ---
+  duration_ms: 2.4725
+  type: 'test'
+  ...
+# Subtest: the clock crossing the server lease is what unlocks the button
+ok 152 - the clock crossing the server lease is what unlocks the button
+  ---
+  duration_ms: 0.241125
+  type: 'test'
+  ...
+# Subtest: custom domain live URL requires a saved non-empty custom domain
+ok 153 - custom domain live URL requires a saved non-empty custom domain
+  ---
+  duration_ms: 0.807375
+  type: 'test'
+  ...
+# Subtest: a paused hospital has no live custom-domain link even though site_live stays true
+ok 154 - a paused hospital has no live custom-domain link even though site_live stays true
+  ---
+  duration_ms: 0.148208
+  type: 'test'
+  ...
+# Subtest: profile reset initializes defaults for a newly loaded hospital profile
+ok 155 - profile reset initializes defaults for a newly loaded hospital profile
+  ---
+  duration_ms: 0.613042
+  type: 'test'
+  ...
+# Subtest: profile reset skips same profile key so unsaved metadata edits survive prop refreshes
+ok 156 - profile reset skips same profile key so unsaved metadata edits survive prop refreshes
+  ---
+  duration_ms: 7.148667
+  type: 'test'
+  ...
+# Subtest: profile reset falls back to hospital id before the backend profile id exists
+ok 157 - profile reset falls back to hospital id before the backend profile id exists
+  ---
+  duration_ms: 0.124375
+  type: 'test'
+  ...
+# Subtest: 422 is read as an invalid-format error with the backend Korean message
+ok 158 - 422 is read as an invalid-format error with the backend Korean message
+  ---
+  duration_ms: 0.71225
+  type: 'test'
+  ...
+# Subtest: 409 without a step list is read as an already-in-use conflict
+ok 159 - 409 without a step list is read as an already-in-use conflict
+  ---
+  duration_ms: 0.091167
+  type: 'test'
+  ...
+# Subtest: verify 409 with a prerequisite list is read as missing launch steps
+ok 160 - verify 409 with a prerequisite list is read as missing launch steps
+  ---
+  duration_ms: 0.097208
+  type: 'test'
+  ...
+# Subtest: extractMissingSteps reads known list keys and object entries with labels
+ok 161 - extractMissingSteps reads known list keys and object entries with labels
+  ---
+  duration_ms: 0.061791
+  type: 'test'
+  ...
+# Subtest: parseStepsFromMessage splits a colon-suffixed Korean step list
+ok 162 - parseStepsFromMessage splits a colon-suffixed Korean step list
+  ---
+  duration_ms: 0.22675
+  type: 'test'
+  ...
+# Subtest: non-API errors fall back to a generic message
+ok 163 - non-API errors fall back to a generic message
+  ---
+  duration_ms: 0.046834
+  type: 'test'
+  ...
+# Subtest: domain setup labels distinguish hospital-owned and MotionLabs-managed flows
+ok 164 - domain setup labels distinguish hospital-owned and MotionLabs-managed flows
+  ---
+  duration_ms: 0.0965
+  type: 'test'
+  ...
+# Subtest: fallback setup plan gives operators a usable CNAME record before backend setup API responds
+ok 165 - fallback setup plan gives operators a usable CNAME record before backend setup API responds
+  ---
+  duration_ms: 0.141917
+  type: 'test'
+  ...
+# Subtest: no checklist label carries its own number — the screen numbers by position
+ok 166 - no checklist label carries its own number — the screen numbers by position
+  ---
+  duration_ms: 0.797292
+  type: 'test'
+  ...
+# Subtest: buildDraftSnapshotKey scopes the storage key by hospital and content id
+ok 167 - buildDraftSnapshotKey scopes the storage key by hospital and content id
+  ---
+  duration_ms: 0.389625
+  type: 'test'
+  ...
+# Subtest: serializeDraftSnapshot round-trips through parseDraftSnapshot
+ok 168 - serializeDraftSnapshot round-trips through parseDraftSnapshot
+  ---
+  duration_ms: 0.36175
+  type: 'test'
+  ...
+# Subtest: parseDraftSnapshot rejects null, malformed JSON, and missing/invalid fields
+ok 169 - parseDraftSnapshot rejects null, malformed JSON, and missing/invalid fields
+  ---
+  duration_ms: 0.2125
+  type: 'test'
+  ...
+# Subtest: draftDiffersFromCurrent flags a change when title/body/meta or references differ
+ok 170 - draftDiffersFromCurrent flags a change when title/body/meta or references differ
+  ---
+  duration_ms: 0.331292
+  type: 'test'
+  ...
+# Subtest: editFieldsDiffer is false when the edit matches the original (title/body/meta/references)
+ok 171 - editFieldsDiffer is false when the edit matches the original (title/body/meta/references)
+  ---
+  duration_ms: 0.274875
+  type: 'test'
+  ...
+# Subtest: editFieldsDiffer flags title/body/meta and any reference change
+ok 172 - editFieldsDiffer flags title/body/meta and any reference change
+  ---
+  duration_ms: 0.135208
+  type: 'test'
+  ...
+# Subtest: cancelling an edit clears the stored snapshot so no false recovery banner appears next time
+ok 173 - cancelling an edit clears the stored snapshot so no false recovery banner appears next time
+  ---
+  duration_ms: 3.8315
+  type: 'test'
+  ...
+# Subtest: resolveEvidenceMap counts every reference the panel renders
+ok 174 - resolveEvidenceMap counts every reference the panel renders
+  ---
+  duration_ms: 4.528083
+  type: 'test'
+  ...
+# Subtest: resolveEvidenceMap reports unresolved note ids once each
+ok 175 - resolveEvidenceMap reports unresolved note ids once each
+  ---
+  duration_ms: 0.131625
+  type: 'test'
+  ...
+# Subtest: resolveEvidenceMap treats a missing or empty map as nothing to check
+ok 176 - resolveEvidenceMap treats a missing or empty map as nothing to check
+  ---
+  duration_ms: 0.062291
+  type: 'test'
+  ...
+# Subtest: approval is blocked while the supporting claims are still loading
+ok 177 - approval is blocked while the supporting claims are still loading
+  ---
+  duration_ms: 0.108375
+  type: 'test'
+  ...
+# Subtest: a failed load blocks approval and points at the retry control
+ok 178 - a failed load blocks approval and points at the retry control
+  ---
+  duration_ms: 0.052208
+  type: 'test'
+  ...
+# Subtest: notes that loaded but no longer exist block approval with a different action
+ok 179 - notes that loaded but no longer exist block approval with a different action
+  ---
+  duration_ms: 0.04525
+  type: 'test'
+  ...
+# Subtest: approval is open once every reference resolves
+ok 180 - approval is open once every reference resolves
+  ---
+  duration_ms: 0.135542
+  type: 'test'
+  ...
+# Subtest: a draft with no evidence references does not block approval
+ok 181 - a draft with no evidence references does not block approval
+  ---
+  duration_ms: 0.042875
+  type: 'test'
+  ...
+# Subtest: evidenceResolutionSummary states what the panel is actually showing
+ok 182 - evidenceResolutionSummary states what the panel is actually showing
+  ---
+  duration_ms: 0.2355
+  type: 'test'
+  ...
+# Subtest: reloading a source replaces its notes instead of keeping the old ones
+ok 183 - reloading a source replaces its notes instead of keeping the old ones
+  ---
+  duration_ms: 0.409583
+  type: 'test'
+  ...
+# Subtest: a source that failed to reload is dropped rather than left with stale notes
+ok 184 - a source that failed to reload is dropped rather than left with stale notes
+  ---
+  duration_ms: 0.095208
+  type: 'test'
+  ...
+# Subtest: reloading one source leaves the other sources untouched
+ok 185 - reloading one source leaves the other sources untouched
+  ---
+  duration_ms: 0.049083
+  type: 'test'
+  ...
+# Subtest: indexNotesById reflects only the per-source store, with no side entrance
+ok 186 - indexNotesById reflects only the per-source store, with no side entrance
+  ---
+  duration_ms: 0.083292
+  type: 'test'
+  ...
+# Subtest: a source dropped by a failed reload disappears from the index immediately
+ok 187 - a source dropped by a failed reload disappears from the index immediately
+  ---
+  duration_ms: 0.045292
+  type: 'test'
+  ...
+# Subtest: 현황 카드의 예외 승인은 필수 자료 상태를 근거로 잠근다
+ok 188 - 현황 카드의 예외 승인은 필수 자료 상태를 근거로 잠근다
+  ---
+  duration_ms: 0.1535
+  type: 'test'
+  ...
+# Subtest: every photo category is recognised as a photo, not as an evidence source
+ok 189 - every photo category is recognised as a photo, not as an evidence source
+  ---
+  duration_ms: 0.449
+  type: 'test'
+  ...
+# Subtest: the evidence table and the processed ratio both leave photos out
+ok 190 - the evidence table and the processed ratio both leave photos out
+  ---
+  duration_ms: 0.447417
+  type: 'test'
+  ...
+# Subtest: a processed photo never inflates the processed evidence count
+ok 191 - a processed photo never inflates the processed evidence count
+  ---
+  duration_ms: 0.06
+  type: 'test'
+  ...
+# Subtest: the total of extracted evidence counts only text sources
+ok 192 - the total of extracted evidence counts only text sources
+  ---
+  duration_ms: 0.049042
+  type: 'test'
+  ...
+# Subtest: a hospital with photos only has an empty evidence denominator, not a full one
+ok 193 - a hospital with photos only has an empty evidence denominator, not a full one
+  ---
+  duration_ms: 0.105458
+  type: 'test'
+  ...
+# Subtest: the blank-text rule is the server's whitespace set, not JS trim()
+ok 194 - the blank-text rule is the server's whitespace set, not JS trim()
+  ---
+  duration_ms: 0.057
+  type: 'test'
+  ...
+# Subtest: the required-source rule matches the server: excluded, photo and text-less rows are out
+ok 195 - the required-source rule matches the server: excluded, photo and text-less rows are out
+  ---
+  duration_ms: 3.693208
+  type: 'test'
+  ...
+# Subtest: the denominator drops the sources the server never requires
+ok 196 - the denominator drops the sources the server never requires
+  ---
+  duration_ms: 0.067042
+  type: 'test'
+  ...
+# Subtest: the screen says where the photos went instead of silently dropping them
+ok 197 - the screen says where the photos went instead of silently dropping them
+  ---
+  duration_ms: 0.288416
+  type: 'test'
+  ...
+# Subtest: waiting counts only OPEN, so the two screens can no longer disagree
+ok 198 - waiting counts only OPEN, so the two screens can no longer disagree
+  ---
+  duration_ms: 0.416
+  type: 'test'
+  ...
+# Subtest: a list filled to the limit admits the number is a floor
+ok 199 - a list filled to the limit admits the number is a floor
+  ---
+  duration_ms: 0.124125
+  type: 'test'
+  ...
+# Subtest: a short list never claims to be truncated
+ok 200 - a short list never claims to be truncated
+  ---
+  duration_ms: 0.050209
+  type: 'test'
+  ...
+# Subtest: the summary hides the blocked clause when nothing is blocked
+ok 201 - the summary hides the blocked clause when nothing is blocked
+  ---
+  duration_ms: 0.04575
+  type: 'test'
+  ...
+# Subtest: an empty queue says so rather than reporting zeroes
+ok 202 - an empty queue says so rather than reporting zeroes
+  ---
+  duration_ms: 0.101833
+  type: 'test'
+  ...
+# Subtest: the read-only signals block reads the shared limit instead of its own
+ok 203 - the read-only signals block reads the shared limit instead of its own
+  ---
+  duration_ms: 0.8315
+  type: 'test'
+  ...
+# Subtest: the completed status is never counted from a list that cannot contain it
+ok 204 - the completed status is never counted from a list that cannot contain it
+  ---
+  duration_ms: 0.08525
+  type: 'test'
+  ...
+# Subtest: the same map link pasted into both Google fields is reported by name
+ok 205 - the same map link pasted into both Google fields is reported by name
+  ---
+  duration_ms: 1.086875
+  type: 'test'
+  ...
+# Subtest: scheme, www and a trailing slash do not hide a duplicate
+ok 206 - scheme, www and a trailing slash do not hide a duplicate
+  ---
+  duration_ms: 0.06925
+  type: 'test'
+  ...
+# Subtest: different addresses produce no warning
+ok 207 - different addresses produce no warning
+  ---
+  duration_ms: 0.329167
+  type: 'test'
+  ...
+# Subtest: empty fields are never counted as sharing an address
+ok 208 - empty fields are never counted as sharing an address
+  ---
+  duration_ms: 0.05275
+  type: 'test'
+  ...
+# Subtest: three fields sharing one address are reported once, not three times
+ok 209 - three fields sharing one address are reported once, not three times
+  ---
+  duration_ms: 0.112542
+  type: 'test'
+  ...
+# Subtest: normalizeChannelUrl keeps the path, which is what distinguishes two places
+ok 210 - normalizeChannelUrl keeps the path, which is what distinguishes two places
+  ---
+  duration_ms: 1.255958
+  type: 'test'
+  ...
+# Subtest: the facts section explains what each Google field holds and warns on duplicates
+ok 211 - the facts section explains what each Google field holds and warns on duplicates
+  ---
+  duration_ms: 1.639042
+  type: 'test'
+  ...
+# Subtest: hospital list becomes key-value cards at 768px
+ok 212 - hospital list becomes key-value cards at 768px
+  ---
+  duration_ms: 1.10225
+  type: 'test'
+  ...
+# Subtest: rate limiting is an error state with Korean scope and a retry action
+ok 213 - rate limiting is an error state with Korean scope and a retry action
+  ---
+  duration_ms: 0.556542
+  type: 'test'
+  ...
+# Subtest: contract payload carries CAS version and never acceptance facts
+ok 214 - contract payload carries CAS version and never acceptance facts
+  ---
+  duration_ms: 0.833167
+  type: 'test'
+  ...
+# Subtest: accepted handoff exposes exactly the profile next action
+ok 215 - accepted handoff exposes exactly the profile next action
+  ---
+  duration_ms: 0.079041
+  type: 'test'
+  ...
+# Subtest: assigned operator can self-accept without an override reason
+ok 216 - assigned operator can self-accept without an override reason
+  ---
+  duration_ms: 0.063042
+  type: 'test'
+  ...
+# Subtest: owner cross-AE acceptance requires a visible audited reason
+ok 217 - owner cross-AE acceptance requires a visible audited reason
+  ---
+  duration_ms: 0.100792
+  type: 'test'
+  ...
+# Subtest: contract defaults follow the Korean business date and roll over the month
+ok 218 - contract defaults follow the Korean business date and roll over the month
+  ---
+  duration_ms: 14.403375
+  type: 'test'
+  ...
+# Subtest: empty onboarding contracts get a stable editable house-style reference
+ok 219 - empty onboarding contracts get a stable editable house-style reference
+  ---
+  duration_ms: 0.958458
+  type: 'test'
+  ...
+# Subtest: saved contract instants restore into Korean date controls
+ok 220 - saved contract instants restore into Korean date controls
+  ---
+  duration_ms: 0.358625
+  type: 'test'
+  ...
+# Subtest: workflow checkpoint persists opaque ids only and rejects corrupt values
+ok 221 - workflow checkpoint persists opaque ids only and rejects corrupt values
+  ---
+  duration_ms: 0.170292
+  type: 'test'
+  ...
+# Subtest: client preview follows the STEP 5 activation gate
+ok 222 - client preview follows the STEP 5 activation gate
+  ---
+  duration_ms: 0.594083
+  type: 'test'
+  ...
+# Subtest: the platform address is browsable only while ACTIVE and live — pause hides it
+ok 223 - the platform address is browsable only while ACTIVE and live — pause hides it
+  ---
+  duration_ms: 0.075417
+  type: 'test'
+  ...
+# Subtest: platform activation preview does not require content scheduling
+ok 224 - platform activation preview does not require content scheduling
+  ---
+  duration_ms: 0.046375
+  type: 'test'
+  ...
+# Subtest: server-provided activation blockers remain authoritative and canonically ordered
+ok 225 - server-provided activation blockers remain authoritative and canonically ordered
+  ---
+  duration_ms: 0.123167
+  type: 'test'
+  ...
+# Subtest: platform address activates automatically once the public gates pass
+ok 226 - platform address activates automatically once the public gates pass
+  ---
+  duration_ms: 0.618584
+  type: 'test'
+  ...
+# Subtest: custom-domain and paused hospitals keep the manual activation path
+ok 227 - custom-domain and paused hospitals keep the manual activation path
+  ---
+  duration_ms: 0.262041
+  type: 'test'
+  ...
+# Subtest: background V0 does not block automatic activation
+ok 228 - background V0 does not block automatic activation
+  ---
+  duration_ms: 0.102625
+  type: 'test'
+  ...
+# Subtest: platformActivationMode matches backend evaluate_auto_activation ordering (custom domain / PAUSED before gate check)
+ok 229 - platformActivationMode matches backend evaluate_auto_activation ordering (custom domain / PAUSED before gate check)
+  ---
+  duration_ms: 0.097375
+  type: 'test'
+  ...
+# Subtest: readHospitalDomainStatus separates live, DNS waiting, default, and unset states
+ok 230 - readHospitalDomainStatus separates live, DNS waiting, default, and unset states
+  ---
+  duration_ms: 6.894542
+  type: 'test'
+  ...
+# Subtest: domainSearchText includes custom domain and derived status label
+ok 231 - domainSearchText includes custom domain and derived status label
+  ---
+  duration_ms: 0.144083
+  type: 'test'
+  ...
+# Subtest: readHospitalDomainStatus derives the default host from NEXT_PUBLIC_SITE_URL
+ok 232 - readHospitalDomainStatus derives the default host from NEXT_PUBLIC_SITE_URL
+  ---
+  duration_ms: 0.160667
+  type: 'test'
+  ...
+# Subtest: custom domain with DNS verified but cert not done shows dns_verified
+ok 233 - custom domain with DNS verified but cert not done shows dns_verified
+  ---
+  duration_ms: 0.051417
+  type: 'test'
+  ...
+# Subtest: custom domain with cert ISSUING shows issuing
+ok 234 - custom domain with cert ISSUING shows issuing
+  ---
+  duration_ms: 0.049791
+  type: 'test'
+  ...
+# Subtest: custom domain with cert FAILED shows failed
+ok 235 - custom domain with cert FAILED shows failed
+  ---
+  duration_ms: 0.042875
+  type: 'test'
+  ...
+# Subtest: site_live true + custom domain + DNS not verified must NOT be 운영 중
+ok 236 - site_live true + custom domain + DNS not verified must NOT be 운영 중
+  ---
+  duration_ms: 0.053917
+  type: 'test'
+  ...
+# Subtest: domain with uppercase is normalized to lowercase
+ok 237 - domain with uppercase is normalized to lowercase
+  ---
+  duration_ms: 0.035791
+  type: 'test'
+  ...
+# Subtest: a certificate job that just started still blocks a duplicate verify
+ok 238 - a certificate job that just started still blocks a duplicate verify
+  ---
+  duration_ms: 0.235792
+  type: 'test'
+  ...
+# Subtest: a certificate job past the server lease can be verified again
+ok 239 - a certificate job past the server lease can be verified again
+  ---
+  duration_ms: 0.295166
+  type: 'test'
+  ...
+# Subtest: a certificate job with no start time never locks the button
+ok 240 - a certificate job with no start time never locks the button
+  ---
+  duration_ms: 0.089958
+  type: 'test'
+  ...
+# Subtest: a domain whose last live check answered is 운영 중 on the list, header and panel
+ok 241 - a domain whose last live check answered is 운영 중 on the list, header and panel
+  ---
+  duration_ms: 18.231583
+  type: 'test'
+  ...
+# Subtest: a failed live check does not turn a waiting domain into 운영 중
+ok 242 - a failed live check does not turn a waiting domain into 운영 중
+  ---
+  duration_ms: 0.184666
+  type: 'test'
+  ...
+# Subtest: a domain that was never checked reads exactly as before
+ok 243 - a domain that was never checked reads exactly as before
+  ---
+  duration_ms: 0.042833
+  type: 'test'
+  ...
+# Subtest: domainLastCheckedLabel reports the outcome and ignores unusable timestamps
+ok 244 - domainLastCheckedLabel reports the outcome and ignores unusable timestamps
+  ---
+  duration_ms: 0.233625
+  type: 'test'
+  ...
+# Subtest: customDomainPanelStatus keeps the unsaved and empty branches ahead of live checks
+ok 245 - customDomainPanelStatus keeps the unsaved and empty branches ahead of live checks
+  ---
+  duration_ms: 0.0405
+  type: 'test'
+  ...
+# Subtest: a DNS-only observation never outranks an issuing or failed certificate
+ok 246 - a DNS-only observation never outranks an issuing or failed certificate
+  ---
+  duration_ms: 1.081167
+  type: 'test'
+  ...
+# Subtest: a DNS-only observation on a domain with no certificate state stays 확인 대기
+ok 247 - a DNS-only observation on a domain with no certificate state stays 확인 대기
+  ---
+  duration_ms: 0.178916
+  type: 'test'
+  ...
+# Subtest: a healthy live check does not hide a certificate that is still issuing
+ok 248 - a healthy live check does not hide a certificate that is still issuing
+  ---
+  duration_ms: 0.178292
+  type: 'test'
+  ...
+# Subtest: a healthy live check does not hide a failed certificate
+ok 249 - a healthy live check does not hide a failed certificate
+  ---
+  duration_ms: 0.144916
+  type: 'test'
+  ...
+# Subtest: a healthy live check reads 운영 중 when the certificate is done or not tracked
+ok 250 - a healthy live check reads 운영 중 when the certificate is done or not tracked
+  ---
+  duration_ms: 0.338458
+  type: 'test'
+  ...
+# Subtest: an untracked certificate state is not upgraded to 운영 중 by a live check alone
+ok 251 - an untracked certificate state is not upgraded to 운영 중 by a live check alone
+  ---
+  duration_ms: 0.148209
+  type: 'test'
+  ...
+# Subtest: a paused hospital on the platform address is never labelled 운영 중
+ok 252 - a paused hospital on the platform address is never labelled 운영 중
+  ---
+  duration_ms: 0.118625
+  type: 'test'
+  ...
+# Subtest: a paused hospital with a connected custom domain is paused first, domain fact second
+ok 253 - a paused hospital with a connected custom domain is paused first, domain fact second
+  ---
+  duration_ms: 0.104208
+  type: 'test'
+  ...
+# Subtest: a paused hospital whose certificate is still issuing keeps that fact visible
+ok 254 - a paused hospital whose certificate is still issuing keeps that fact visible
+  ---
+  duration_ms: 0.065709
+  type: 'test'
+  ...
+# Subtest: an ACTIVE hospital with a DONE certificate is still 운영 중
+ok 255 - an ACTIVE hospital with a DONE certificate is still 운영 중
+  ---
+  duration_ms: 0.062041
+  type: 'test'
+  ...
+# Subtest: getHospitalLifecycleAction offers pause for ACTIVE and PENDING_DOMAIN
+ok 256 - getHospitalLifecycleAction offers pause for ACTIVE and PENDING_DOMAIN
+  ---
+  duration_ms: 1.276792
+  type: 'test'
+  ...
+# Subtest: getHospitalLifecycleAction offers resume only for PAUSED
+ok 257 - getHospitalLifecycleAction offers resume only for PAUSED
+  ---
+  duration_ms: 0.084042
+  type: 'test'
+  ...
+# Subtest: getHospitalLifecycleAction has no action for onboarding/build states or missing status
+ok 258 - getHospitalLifecycleAction has no action for onboarding/build states or missing status
+  ---
+  duration_ms: 0.053292
+  type: 'test'
+  ...
+# Subtest: hospitalLifecycleConfirmMessage warns that automation stops before pausing
+ok 259 - hospitalLifecycleConfirmMessage warns that automation stops before pausing
+  ---
+  duration_ms: 0.093542
+  type: 'test'
+  ...
+# Subtest: hospitalLifecycleActionPath builds the admin proxy path for pause/resume
+ok 260 - hospitalLifecycleActionPath builds the admin proxy path for pause/resume
+  ---
+  duration_ms: 0.109083
+  type: 'test'
+  ...
+# Subtest: the header never hides resume behind schedule_set — the backend resume gate does not require a schedule
+ok 261 - the header never hides resume behind schedule_set — the backend resume gate does not require a schedule
+  ---
+  duration_ms: 0.116958
+  type: 'test'
+  ...
+# Subtest: hospital status chips count and filter the exact same row sets
+ok 262 - hospital status chips count and filter the exact same row sets
+  ---
+  duration_ms: 0.692209
+  type: 'test'
+  ...
+# Subtest: the hospital list reads the server states instead of judging its own
+ok 263 - the hospital list reads the server states instead of judging its own
+  ---
+  duration_ms: 0.940917
+  type: 'test'
+  ...
+# Subtest: the hospital header speaks the same three states from one overview call
+ok 264 - the hospital header speaks the same three states from one overview call
+  ---
+  duration_ms: 0.181208
+  type: 'test'
+  ...
+# Subtest: public service labels follow the server kind and list only human work
+ok 265 - public service labels follow the server kind and list only human work
+  ---
+  duration_ms: 1.641542
+  type: 'test'
+  ...
+# Subtest: content state
+ok 266 - content state
+  ---
+  duration_ms: 0.19025
+  type: 'test'
+  ...
+# Subtest: domain state is silent without a custom domain
+ok 267 - domain state is silent without a custom domain
+  ---
+  duration_ms: 0.314292
+  type: 'test'
+  ...
+# Subtest: the last check says whether the address answered
+ok 268 - the last check says whether the address answered
+  ---
+  duration_ms: 15.992
+  type: 'test'
+  ...
+# Subtest: zero sources and a stopped service are human-readable conditions
+ok 269 - zero sources and a stopped service are human-readable conditions
+  ---
+  duration_ms: 0.43225
+  type: 'test'
+  ...
+# Subtest: list rows carry the same conditions as bare keys
+ok 270 - list rows carry the same conditions as bare keys
+  ---
+  duration_ms: 0.17425
+  type: 'test'
+  ...
+# Subtest: only human conditions become links
+ok 271 - only human conditions become links
+  ---
+  duration_ms: 0.116958
+  type: 'test'
+  ...
+# Subtest: tones separate paused from not-live and problems from waiting
+ok 272 - tones separate paused from not-live and problems from waiting
+  ---
+  duration_ms: 0.04675
+  type: 'test'
+  ...
+# Subtest: contract registration submits once to the single-transaction endpoint
+ok 273 - contract registration submits once to the single-transaction endpoint
+  ---
+  duration_ms: 0.493583
+  type: 'test'
+  ...
+# Subtest: the screen asks for the six contract fields and nothing else
+ok 274 - the screen asks for the six contract fields and nothing else
+  ---
+  duration_ms: 0.162792
+  type: 'test'
+  ...
+# Subtest: a duplicate hospital offers the existing hospital instead of a retry
+ok 275 - a duplicate hospital offers the existing hospital instead of a retry
+  ---
+  duration_ms: 0.083458
+  type: 'test'
+  ...
+# Subtest: the failure panel prints the mapped cause instead of one generic line
+ok 276 - the failure panel prints the mapped cause instead of one generic line
+  ---
+  duration_ms: 0.048917
+  type: 'test'
+  ...
+# Subtest: an unreadable lead drops the link and says so without asking for a retry
+ok 277 - an unreadable lead drops the link and says so without asking for a retry
+  ---
+  duration_ms: 0.068375
+  type: 'test'
+  ...
+# Subtest: success lands on the hospital info screen
+ok 278 - success lands on the hospital info screen
+  ---
+  duration_ms: 0.045208
+  type: 'test'
+  ...
+# Subtest: the lead list starts contract registration on the one-screen route
+ok 279 - the lead list starts contract registration on the one-screen route
+  ---
+  duration_ms: 0.158792
+  type: 'test'
+  ...
+# Subtest: 남은 필수 항목은 서버 판정을 그대로 읽는다
+ok 280 - 남은 필수 항목은 서버 판정을 그대로 읽는다
+  ---
+  duration_ms: 0.614
+  type: 'test'
+  ...
+# Subtest: 사실 저장은 사실 칸만 보내고, 다른 섹션의 값은 건드리지 않는다
+ok 281 - 사실 저장은 사실 칸만 보내고, 다른 섹션의 값은 건드리지 않는다
+  ---
+  duration_ms: 0.0825
+  type: 'test'
+  ...
+# Subtest: 다른 섹션이 저장한 뒤에는 사실 칸도 새 헤더로 다시 채운다
+ok 282 - 다른 섹션이 저장한 뒤에는 사실 칸도 새 헤더로 다시 채운다
+  ---
+  duration_ms: 0.197334
+  type: 'test'
+  ...
+# Subtest: 자료를 등록한 저장은 근거 자료 표를 다시 읽게 한다
+ok 283 - 자료를 등록한 저장은 근거 자료 표를 다시 읽게 한다
+  ---
+  duration_ms: 0.060625
+  type: 'test'
+  ...
+# Subtest: 저장이 등록한 자료는 그 칸 옆에서 등록됐다고 말한다
+ok 284 - 저장이 등록한 자료는 그 칸 옆에서 등록됐다고 말한다
+  ---
+  duration_ms: 0.763875
+  type: 'test'
+  ...
+# Subtest: 완료 여부는 사람이 표시하지 않는다 — 체크박스도 클라이언트 체크리스트도 없다
+ok 285 - 완료 여부는 사람이 표시하지 않는다 — 체크박스도 클라이언트 체크리스트도 없다
+  ---
+  duration_ms: 0.213334
+  type: 'test'
+  ...
+# Subtest: 자료 등록·처리 버튼은 이 화면에 없다
+ok 286 - 자료 등록·처리 버튼은 이 화면에 없다
+  ---
+  duration_ms: 0.119916
+  type: 'test'
+  ...
+# Subtest: 원장 한 쌍 대신 의료진 목록을 편집한다
+ok 287 - 원장 한 쌍 대신 의료진 목록을 편집한다
+  ---
+  duration_ms: 0.109042
+  type: 'test'
+  ...
+# Subtest: 의료진 줄은 이름·직함·전문과목·약력과 자격 상세, 사진, 대표를 가진다
+ok 288 - 의료진 줄은 이름·직함·전문과목·약력과 자격 상세, 사진, 대표를 가진다
+  ---
+  duration_ms: 0.548
+  type: 'test'
+  ...
+# Subtest: 의료진 목록과 사진 선택지는 lib 헬퍼 한 곳에서 읽는다
+ok 289 - 의료진 목록과 사진 선택지는 lib 헬퍼 한 곳에서 읽는다
+  ---
+  duration_ms: 0.565167
+  type: 'test'
+  ...
+# Subtest: 상세 주소는 따로 받고 좌표 변환에 쓰지 않는다고 말한다
+ok 290 - 상세 주소는 따로 받고 좌표 변환에 쓰지 않는다고 말한다
+  ---
+  duration_ms: 0.179875
+  type: 'test'
+  ...
+# Subtest: 좌표 변환 실패는 저장 실패가 아니다 — 주소 칸 아래 안내로만 남는다
+ok 291 - 좌표 변환 실패는 저장 실패가 아니다 — 주소 칸 아래 안내로만 남는다
+  ---
+  duration_ms: 0.1565
+  type: 'test'
+  ...
+# Subtest: 사진 화면은 원장 사진을 쓰는 의료진을 말하고 공간 사진만 대표 이미지로 지정한다
+ok 292 - 사진 화면은 원장 사진을 쓰는 의료진을 말하고 공간 사진만 대표 이미지로 지정한다
+  ---
+  duration_ms: 0.090083
+  type: 'test'
+  ...
+# Subtest: 제외한 사진은 제자리에서 빠지고 잠시 되돌릴 수 있다
+ok 293 - 제외한 사진은 제자리에서 빠지고 잠시 되돌릴 수 있다
+  ---
+  duration_ms: 0.066833
+  type: 'test'
+  ...
+# Subtest: 다섯 섹션이 각자의 앵커를 가진다
+ok 294 - 다섯 섹션이 각자의 앵커를 가진다
+  ---
+  duration_ms: 0.1075
+  type: 'test'
+  ...
+# Subtest: 병원 상세 탭에 병원 정보가 있다
+ok 295 - 병원 상세 탭에 병원 정보가 있다
+  ---
+  duration_ms: 0.052625
+  type: 'test'
+  ...
+# Subtest: 브랜드 섹션은 온보딩과 같은 칸을 쓰고 로고는 업로드로 받는다
+ok 296 - 브랜드 섹션은 온보딩과 같은 칸을 쓰고 로고는 업로드로 받는다
+  ---
+  duration_ms: 0.125458
+  type: 'test'
+  ...
+# Subtest: 시각 요소 폼은 프로파일 PATCH로 저장하고 로고는 되돌려 보내지 않는다
+ok 297 - 시각 요소 폼은 프로파일 PATCH로 저장하고 로고는 되돌려 보내지 않는다
+  ---
+  duration_ms: 0.254917
+  type: 'test'
+  ...
+# Subtest: 시각 설정을 위한 새 병원 화면은 열지 않는다
+ok 298 - 시각 설정을 위한 새 병원 화면은 열지 않는다
+  ---
+  duration_ms: 0.788041
+  type: 'test'
+  ...
+# Subtest: 비어 있는 브랜드 값은 승인 대기가 아니라 기본값 사용 중으로 말한다
+ok 299 - 비어 있는 브랜드 값은 승인 대기가 아니라 기본값 사용 중으로 말한다
+  ---
+  duration_ms: 0.137625
+  type: 'test'
+  ...
+# Subtest: 자주 쓰지 않는 브랜드 칸은 고급으로 접어 둔다
+ok 300 - 자주 쓰지 않는 브랜드 칸은 고급으로 접어 둔다
+  ---
+  duration_ms: 0.081209
+  type: 'test'
+  ...
+# Subtest: 대표 이미지 주소는 사진 목록만 바꾼다 — 브랜드 폼은 현재 값을 보여 주기만 한다
+ok 301 - 대표 이미지 주소는 사진 목록만 바꾼다 — 브랜드 폼은 현재 값을 보여 주기만 한다
+  ---
+  duration_ms: 0.080541
+  type: 'test'
+  ...
+# Subtest: 사진 업로드는 공개 여부와 권리 3필드를 같은 요청에 보낸다
+ok 302 - 사진 업로드는 공개 여부와 권리 3필드를 같은 요청에 보낸다
+  ---
+  duration_ms: 0.252375
+  type: 'test'
+  ...
+# Subtest: 사진 행은 공유 게이트가 판정하고 허용 용도 select를 다시 묻지 않는다
+ok 303 - 사진 행은 공유 게이트가 판정하고 허용 용도 select를 다시 묻지 않는다
+  ---
+  duration_ms: 0.079792
+  type: 'test'
+  ...
+# Subtest: 세 섹션이 사실 섹션 뒤에 브랜드·사진·자기 도메인 순서로 붙는다
+ok 304 - 세 섹션이 사실 섹션 뒤에 브랜드·사진·자기 도메인 순서로 붙는다
+  ---
+  duration_ms: 0.152292
+  type: 'test'
+  ...
+# Subtest: 근거 자료 표는 읽고, 올리고, 제외하는 것만 한다
+ok 305 - 근거 자료 표는 읽고, 올리고, 제외하는 것만 한다
+  ---
+  duration_ms: 0.5555
+  type: 'test'
+  ...
+# Subtest: 권리 근거는 서버가 받는 두 값만 고를 수 있다
+ok 306 - 권리 근거는 서버가 받는 두 값만 고를 수 있다
+  ---
+  duration_ms: 0.217917
+  type: 'test'
+  ...
+# Subtest: 사진 권리 칸은 한 구현을 업로드와 개별 사진이 함께 쓴다
+ok 307 - 사진 권리 칸은 한 구현을 업로드와 개별 사진이 함께 쓴다
+  ---
+  duration_ms: 0.0565
+  type: 'test'
+  ...
+# Subtest: 처리·크롤·제목 수정·유형 변경 버튼은 없다
+ok 308 - 처리·크롤·제목 수정·유형 변경 버튼은 없다
+  ---
+  duration_ms: 0.096416
+  type: 'test'
+  ...
+# Subtest: 근거 노트 제외 표시는 켜고 끄는 양방향이다
+ok 309 - 근거 노트 제외 표시는 켜고 끄는 양방향이다
+  ---
+  duration_ms: 0.115917
+  type: 'test'
+  ...
+# Subtest: 저장 중인 근거 노트는 그 체크박스만 잠근다
+ok 310 - 저장 중인 근거 노트는 그 체크박스만 잠근다
+  ---
+  duration_ms: 0.039333
+  type: 'test'
+  ...
+# Subtest: 여러 장 저장 뒤 갱신 요청이 실패하면 사실대로 알리고 다음 저장이 다시 보낸다
+ok 311 - 여러 장 저장 뒤 갱신 요청이 실패하면 사실대로 알리고 다음 저장이 다시 보낸다
+  ---
+  duration_ms: 0.0415
+  type: 'test'
+  ...
+# Subtest: 병원 정보 화면에는 실패한 글을 사람이 다시 수집하는 버튼이 없다
+ok 312 - 병원 정보 화면에는 실패한 글을 사람이 다시 수집하는 버튼이 없다
+  ---
+  duration_ms: 0.079334
+  type: 'test'
+  ...
+# Subtest: 자동 입력 창은 대화상자로 열리고 키보드로 빠져나올 수 있다
+ok 313 - 자동 입력 창은 대화상자로 열리고 키보드로 빠져나올 수 있다
+  ---
+  duration_ms: 0.203417
+  type: 'test'
+  ...
+# Subtest: 파일 고르는 칸은 이름이 있다
+ok 314 - 파일 고르는 칸은 이름이 있다
+  ---
+  duration_ms: 0.067291
+  type: 'test'
+  ...
+# Subtest: 근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다
+ok 315 - 근거 자료는 사람이 입력하는 섹션 뒤 마지막에 붙는다
+  ---
+  duration_ms: 0.035833
+  type: 'test'
+  ...
+# Subtest: 빈 목록은 남은 항목이 아니라 완료로 말한다
+ok 316 - 빈 목록은 남은 항목이 아니라 완료로 말한다
+  ---
+  duration_ms: 1.090041
+  type: 'test'
+  ...
+# Subtest: 남은 항목은 개수를 먼저 말하고 라벨을 잇는다
+ok 317 - 남은 항목은 개수를 먼저 말하고 라벨을 잇는다
+  ---
+  duration_ms: 0.14075
+  type: 'test'
+  ...
+# Subtest: 서버 필수 항목 키 8개가 모두 섹션을 가진다
+ok 318 - 서버 필수 항목 키 8개가 모두 섹션을 가진다
+  ---
+  duration_ms: 0.20225
+  type: 'test'
+  ...
+# Subtest: 모르는 키도 갈 곳이 있다
+ok 319 - 모르는 키도 갈 곳이 있다
+  ---
+  duration_ms: 0.0865
+  type: 'test'
+  ...
+# Subtest: 섹션 순서와 제목
+ok 320 - 섹션 순서와 제목
+  ---
+  duration_ms: 0.59675
+  type: 'test'
+  ...
+# Subtest: 앵커 id는 섹션 이름을 그대로 쓴다
+ok 321 - 앵커 id는 섹션 이름을 그대로 쓴다
+  ---
+  duration_ms: 0.091792
+  type: 'test'
+  ...
+# Subtest: 브랜드 값이 다 차 있으면 알릴 것이 없다
+ok 322 - 브랜드 값이 다 차 있으면 알릴 것이 없다
+  ---
+  duration_ms: 0.079458
+  type: 'test'
+  ...
+# Subtest: 비어 있는 브랜드 값은 승인 대기가 아니라 기본값 사용 중이다
+ok 323 - 비어 있는 브랜드 값은 승인 대기가 아니라 기본값 사용 중이다
+  ---
+  duration_ms: 0.173667
+  type: 'test'
+  ...
+# Subtest: 허용 용도는 사진 유형에서 나온다 — 업로드할 때 따로 묻지 않는다
+ok 324 - 허용 용도는 사진 유형에서 나온다 — 업로드할 때 따로 묻지 않는다
+  ---
+  duration_ms: 0.446667
+  type: 'test'
+  ...
+# Subtest: 사진 유형 판정은 업로드 선택지와 같은 목록을 쓴다
+ok 325 - 사진 유형 판정은 업로드 선택지와 같은 목록을 쓴다
+  ---
+  duration_ms: 0.661541
+  type: 'test'
+  ...
+# Subtest: 대표 이미지로 쓸 수 있는 것은 공간 사진뿐이다
+ok 326 - 대표 이미지로 쓸 수 있는 것은 공간 사진뿐이다
+  ---
+  duration_ms: 0.216709
+  type: 'test'
+  ...
+# Subtest: 공개 사진 주소는 운영자 인증이 필요한 주소와 다르다
+ok 327 - 공개 사진 주소는 운영자 인증이 필요한 주소와 다르다
+  ---
+  duration_ms: 0.080125
+  type: 'test'
+  ...
+# Subtest: 사진 업로드 한 요청에 공개 여부와 권리 3필드가 함께 실린다
+ok 328 - 사진 업로드 한 요청에 공개 여부와 권리 3필드가 함께 실린다
+  ---
+  duration_ms: 63.746959
+  type: 'test'
+  ...
+# Subtest: 공개하지 않기로 한 사진도 권리 정보를 그대로 보낸다
+ok 329 - 공개하지 않기로 한 사진도 권리 정보를 그대로 보낸다
+  ---
+  duration_ms: 0.151875
+  type: 'test'
+  ...
+# Subtest: 자료 상태는 사람이 누를 일이 아니라 지금 상태로만 말한다
+ok 330 - 자료 상태는 사람이 누를 일이 아니라 지금 상태로만 말한다
+  ---
+  duration_ms: 0.071
+  type: 'test'
+  ...
+# Subtest: 본문을 아직 못 받은 채널 자료는 처리 대기와 다른 단계로 말한다
+ok 331 - 본문을 아직 못 받은 채널 자료는 처리 대기와 다른 단계로 말한다
+  ---
+  duration_ms: 0.084458
+  type: 'test'
+  ...
+# Subtest: 오류 상태에 실패 원문을 붙이지 않는다
+ok 332 - 오류 상태에 실패 원문을 붙이지 않는다
+  ---
+  duration_ms: 0.027416
+  type: 'test'
+  ...
+# Subtest: 운영 센터 링크는 실제로 열린 예외가 있을 때만 만든다
+ok 333 - 운영 센터 링크는 실제로 열린 예외가 있을 때만 만든다
+  ---
+  duration_ms: 0.040125
+  type: 'test'
+  ...
+# Subtest: fetch 실패로 굳은 자료는 예외 링크 없이 할 일을 그대로 말한다
+ok 334 - fetch 실패로 굳은 자료는 예외 링크 없이 할 일을 그대로 말한다
+  ---
+  duration_ms: 0.039
+  type: 'test'
+  ...
+# Subtest: 근거 자료 표는 사진을 세지 않는다
+ok 335 - 근거 자료 표는 사진을 세지 않는다
+  ---
+  duration_ms: 0.054834
+  type: 'test'
+  ...
+# Subtest: 근거 노트는 정해진 순서로 묶이고 모르는 분류는 뒤에 붙는다
+ok 336 - 근거 노트는 정해진 순서로 묶이고 모르는 분류는 뒤에 붙는다
+  ---
+  duration_ms: 0.092667
+  type: 'test'
+  ...
+# Subtest: 노트가 없으면 그룹도 없다
+ok 337 - 노트가 없으면 그룹도 없다
+  ---
+  duration_ms: 0.028583
+  type: 'test'
+  ...
+# Subtest: 진행 중인 처리만 한 줄로 알린다
+ok 338 - 진행 중인 처리만 한 줄로 알린다
+  ---
+  duration_ms: 0.041208
+  type: 'test'
+  ...
+# Subtest: 끝났거나 없는 처리는 알릴 것이 없다
+ok 339 - 끝났거나 없는 처리는 알릴 것이 없다
+  ---
+  duration_ms: 0.028959
+  type: 'test'
+  ...
+# Subtest: elapsed time is shown in minutes, hours or days as it grows
+ok 340 - elapsed time is shown in minutes, hours or days as it grows
+  ---
+  duration_ms: 11.218459
+  type: 'test'
+  ...
+# Subtest: a fresh lead is inside the first-contact target
+ok 341 - a fresh lead is inside the first-contact target
+  ---
+  duration_ms: 0.212084
+  type: 'test'
+  ...
+# Subtest: a lead within six hours of the target is called out as due soon
+ok 342 - a lead within six hours of the target is called out as due soon
+  ---
+  duration_ms: 0.179666
+  type: 'test'
+  ...
+# Subtest: a lead past the target reports how far past, in hours then days
+ok 343 - a lead past the target reports how far past, in hours then days
+  ---
+  duration_ms: 0.228833
+  type: 'test'
+  ...
+# Subtest: a converted or dismissed lead carries no deadline — the work is done
+ok 344 - a converted or dismissed lead carries no deadline — the work is done
+  ---
+  duration_ms: 0.178292
+  type: 'test'
+  ...
+# Subtest: an unreadable timestamp says so instead of reporting zero hours waiting
+ok 345 - an unreadable timestamp says so instead of reporting zero hours waiting
+  ---
+  duration_ms: 0.116417
+  type: 'test'
+  ...
+# Subtest: overdue leads come first, and equal ranks keep the order the server gave
+ok 346 - overdue leads come first, and equal ranks keep the order the server gave
+  ---
+  duration_ms: 0.852
+  type: 'test'
+  ...
+# Subtest: the leads list shows the elapsed time, the deadline and the test-lead badge
+ok 347 - the leads list shows the elapsed time, the deadline and the test-lead badge
+  ---
+  duration_ms: 3.916625
+  type: 'test'
+  ...
+# Subtest: all three axes are always shown
+ok 348 - all three axes are always shown
+  ---
+  duration_ms: 0.758833
+  type: 'test'
+  ...
+# Subtest: PARTIAL measurement is not painted as success
+ok 349 - PARTIAL measurement is not painted as success
+  ---
+  duration_ms: 0.069666
+  type: 'test'
+  ...
+# Subtest: 알 수 없는 상태는 영문 원문 대신 확인 필요로 표시한다
+ok 350 - 알 수 없는 상태는 영문 원문 대신 확인 필요로 표시한다
+  ---
+  duration_ms: 0.120167
+  type: 'test'
+  ...
+# Subtest: 리드 운영 화면은 SLA 대신 우리말 기한 표현을 쓴다
+ok 351 - 리드 운영 화면은 SLA 대신 우리말 기한 표현을 쓴다
+  ---
+  duration_ms: 0.075625
+  type: 'test'
+  ...
+# Subtest: 복구 사유 최소 길이는 API 계약과 같은 3자다
+ok 352 - 복구 사유 최소 길이는 API 계약과 같은 3자다
+  ---
+  duration_ms: 0.056
+  type: 'test'
+  ...
+# Subtest: 복구 모달은 개발 용어 없이 운영자가 확인한 사실을 적게 한다
+ok 353 - 복구 모달은 개발 용어 없이 운영자가 확인한 사실을 적게 한다
+  ---
+  duration_ms: 0.076917
+  type: 'test'
+  ...
+# Subtest: 복구 모달 실행과 취소 버튼은 44px 조작 영역을 가진다
+ok 354 - 복구 모달 실행과 취소 버튼은 44px 조작 영역을 가진다
+  ---
+  duration_ms: 0.095875
+  type: 'test'
+  ...
+# Subtest: backend needs_attention wins when present
+ok 355 - backend needs_attention wins when present
+  ---
+  duration_ms: 0.049292
+  type: 'test'
+  ...
+# Subtest: without the backend flag each terminal failure counts
+ok 356 - without the backend flag each terminal failure counts
+  ---
+  duration_ms: 0.238083
+  type: 'test'
+  ...
+# Subtest: a lead is flagged when any of its diagnoses needs attention
+ok 357 - a lead is flagged when any of its diagnoses needs attention
+  ---
+  duration_ms: 0.276916
+  type: 'test'
+  ...
+# Subtest: retry is offered only when a report exists to send
+ok 358 - retry is offered only when a report exists to send
+  ---
+  duration_ms: 0.113083
+  type: 'test'
+  ...
+# Subtest: a ready report opens through the authenticated Admin route
+ok 359 - a ready report opens through the authenticated Admin route
+  ---
+  duration_ms: 0.059791
+  type: 'test'
+  ...
+# Subtest: an already released lock is not offered again
+ok 360 - an already released lock is not offered again
+  ---
+  duration_ms: 0.03325
+  type: 'test'
+  ...
+# Subtest: an internal inquiry diagnosis has no customer retry or free-lock action
+ok 361 - an internal inquiry diagnosis has no customer retry or free-lock action
+  ---
+  duration_ms: 0.046209
+  type: 'test'
+  ...
+# Subtest: 콜용 진단의 한 줄은 상태만 말하고 고객 전달을 말하지 않는다
+ok 362 - 콜용 진단의 한 줄은 상태만 말하고 고객 전달을 말하지 않는다
+  ---
+  duration_ms: 0.08075
+  type: 'test'
+  ...
+# Subtest: 콜용 진단의 개발팀 안내는 고객 발송 이력을 이유로 들지 않는다
+ok 363 - 콜용 진단의 개발팀 안내는 고객 발송 이력을 이유로 들지 않는다
+  ---
+  duration_ms: 0.07925
+  type: 'test'
+  ...
+# Subtest: 도입문의 진단의 복구 진행 문구는 고객 전달을 말하지 않는다
+ok 364 - 도입문의 진단의 복구 진행 문구는 고객 전달을 말하지 않는다
+  ---
+  duration_ms: 0.062667
+  type: 'test'
+  ...
+# Subtest: 고객 영향 문구는 리드 표식과 이 행의 발송 상태를 함께 보고 감춘다
+ok 365 - 고객 영향 문구는 리드 표식과 이 행의 발송 상태를 함께 보고 감춘다
+  ---
+  duration_ms: 0.076792
+  type: 'test'
+  ...
+# Subtest: the inquiry row exposes internal generation and explicitly guards retry
+ok 366 - the inquiry row exposes internal generation and explicitly guards retry
+  ---
+  duration_ms: 0.032
+  type: 'test'
+  ...
+# Subtest: the hint names the action for each terminal failure
+ok 367 - the hint names the action for each terminal failure
+  ---
+  duration_ms: 0.027792
+  type: 'test'
+  ...
+# Subtest: a sent report with partial measurement says so
+ok 368 - a sent report with partial measurement says so
+  ---
+  duration_ms: 0.024041
+  type: 'test'
+  ...
+# Subtest: purged diagnoses are described as purged, not as failures
+ok 369 - purged diagnoses are described as purged, not as failures
+  ---
+  duration_ms: 0.85725
+  type: 'test'
+  ...
+# Subtest: in-progress states are not described as problems
+ok 370 - in-progress states are not described as problems
+  ---
+  duration_ms: 0.05675
+  type: 'test'
+  ...
+# Subtest: a failed measurement exposes one measurement recovery action first
+ok 371 - a failed measurement exposes one measurement recovery action first
+  ---
+  duration_ms: 0.039833
+  type: 'test'
+  ...
+# Subtest: a blocked report exposes rebuild only after usable measurement
+ok 372 - a blocked report exposes rebuild only after usable measurement
+  ---
+  duration_ms: 0.030791
+  type: 'test'
+  ...
+# Subtest: an active recovery replaces the button with an authoritative progress outcome
+ok 373 - an active recovery replaces the button with an authoritative progress outcome
+  ---
+  duration_ms: 0.03775
+  type: 'test'
+  ...
+# Subtest: an unsafe sent report rebuild is disabled with an operations-center handoff
+ok 374 - an unsafe sent report rebuild is disabled with an operations-center handoff
+  ---
+  duration_ms: 0.029708
+  type: 'test'
+  ...
+# Subtest: filtered-empty copy states the real total and differs from data-empty copy
+ok 375 - filtered-empty copy states the real total and differs from data-empty copy
+  ---
+  duration_ms: 0.631209
+  type: 'test'
+  ...
+# Subtest: introduction inquiries are identified by funnel source or explicit clinic type
+ok 376 - introduction inquiries are identified by funnel source or explicit clinic type
+  ---
+  duration_ms: 0.066416
+  type: 'test'
+  ...
+# Subtest: five-field inquiry question is parsed into labelled admin details
+ok 377 - five-field inquiry question is parsed into labelled admin details
+  ---
+  duration_ms: 0.197459
+  type: 'test'
+  ...
+# Subtest: inquiry parser accepts short labels and leaves missing values explicit
+ok 378 - inquiry parser accepts short labels and leaves missing values explicit
+  ---
+  duration_ms: 0.052416
+  type: 'test'
+  ...
+# Subtest: only the five-field shape replaces legacy free-form inquiry copy
+ok 379 - only the five-field shape replaces legacy free-form inquiry copy
+  ---
+  duration_ms: 0.113084
+  type: 'test'
+  ...
+# Subtest: manual onboarding URL contains only the opaque lead id
+ok 380 - manual onboarding URL contains only the opaque lead id
+  ---
+  duration_ms: 1.504833
+  type: 'test'
+  ...
+# Subtest: clinic name is read from the authenticated lead context response, not the URL
+ok 381 - clinic name is read from the authenticated lead context response, not the URL
+  ---
+  duration_ms: 0.167667
+  type: 'test'
+  ...
+# Subtest: 옛 라우트 8개는 redirect 한 줄짜리 서버 화면이다
+ok 382 - 옛 라우트 8개는 redirect 한 줄짜리 서버 화면이다
+  ---
+  duration_ms: 1.72775
+  type: 'test'
+  ...
+# Subtest: 병원 탭은 현황·병원 정보·콘텐츠·보고서 넷뿐이다
+ok 383 - 병원 탭은 현황·병원 정보·콘텐츠·보고서 넷뿐이다
+  ---
+  duration_ms: 0.425916
+  type: 'test'
+  ...
+# Subtest: 운영 설정 드롭다운과 옛 탭 이름은 남지 않는다
+ok 384 - 운영 설정 드롭다운과 옛 탭 이름은 남지 않는다
+  ---
+  duration_ms: 0.086375
+  type: 'test'
+  ...
+# Subtest: 사이드바는 계약 등록이라고 부르고 주소는 그대로다
+ok 385 - 사이드바는 계약 등록이라고 부르고 주소는 그대로다
+  ---
+  duration_ms: 0.102
+  type: 'test'
+  ...
+# Subtest: login proxy fetch init uses no-store and an abort timeout signal
+ok 386 - login proxy fetch init uses no-store and an abort timeout signal
+  ---
+  duration_ms: 0.396291
+  type: 'test'
+  ...
+# Subtest: login proxy maps timeout and network errors to normalized statuses
+ok 387 - login proxy maps timeout and network errors to normalized statuses
+  ---
+  duration_ms: 0.31225
+  type: 'test'
+  ...
+# Subtest: login route forwards upstream 429 without minting cookies
+ok 388 - login route forwards upstream 429 without minting cookies
+  ---
+  duration_ms: 3.572958
+  type: 'test'
+  ...
+# Subtest: login route rejects malformed backend success bodies before setting cookies
+ok 389 - login route rejects malformed backend success bodies before setting cookies
+  ---
+  duration_ms: 1.905625
+  type: 'test'
+  ...
+# Subtest: login route rejects state-changing requests from the wrong origin
+ok 390 - login route rejects state-changing requests from the wrong origin
+  ---
+  duration_ms: 0.60325
+  type: 'test'
+  ...
+# Subtest: login route mints bounded session and CSRF cookies for valid backend accounts
+ok 391 - login route mints bounded session and CSRF cookies for valid backend accounts
+  ---
+  duration_ms: 15.775083
+  type: 'test'
+  ...
+# Subtest: login route never leaks which of email or password was wrong
+ok 392 - login route never leaks which of email or password was wrong
+  ---
+  duration_ms: 2.002416
+  type: 'test'
+  ...
+# Subtest: login route does not mint cookies when the backend is unreachable
+ok 393 - login route does not mint cookies when the backend is unreachable
+  ---
+  duration_ms: 10.860709
+  type: 'test'
+  ...
+# Subtest: logout revokes the session hash before clearing admin cookies
+ok 394 - logout revokes the session hash before clearing admin cookies
+  ---
+  duration_ms: 13.625916
+  type: 'test'
+  ...
+# Subtest: logout rejects a valid session without the CSRF header and does not revoke it
+ok 395 - logout rejects a valid session without the CSRF header and does not revoke it
+  ---
+  duration_ms: 1.453583
+  type: 'test'
+  ...
+# Subtest: logout allows a legacy pre-CSRF session to clear cookies
+ok 396 - logout allows a legacy pre-CSRF session to clear cookies
+  ---
+  duration_ms: 2.494791
+  type: 'test'
+  ...
+# Subtest: logout fails closed when the backend does not confirm revocation
+ok 397 - logout fails closed when the backend does not confirm revocation
+  ---
+  duration_ms: 2.174625
+  type: 'test'
+  ...
+# Subtest: 네이버 수집 결과를 한글 운영 상태로 해석한다
+ok 398 - 네이버 수집 결과를 한글 운영 상태로 해석한다
+  ---
+  duration_ms: 1.493375
+  type: 'test'
+  ...
+# Subtest: 개발팀 문의 정보에는 원문이나 오류 원문이 포함되지 않는다
+ok 399 - 개발팀 문의 정보에는 원문이나 오류 원문이 포함되지 않는다
+  ---
+  duration_ms: 0.228042
+  type: 'test'
+  ...
+# Subtest: 알 수 없는 상태를 성공처럼 표시하지 않는다
+ok 400 - 알 수 없는 상태를 성공처럼 표시하지 않는다
+  ---
+  duration_ms: 0.339
+  type: 'test'
+  ...
+# Subtest: 새로고침 뒤에도 조치가 필요한 실패 글을 복구 목록으로 읽는다
+ok 401 - 새로고침 뒤에도 조치가 필요한 실패 글을 복구 목록으로 읽는다
+  ---
+  duration_ms: 0.150125
+  type: 'test'
+  ...
+# Subtest: 본문이 없는 재시도는 복구 성공으로 취급하지 않는다
+ok 402 - 본문이 없는 재시도는 복구 성공으로 취급하지 않는다
+  ---
+  duration_ms: 0.127416
+  type: 'test'
+  ...
+# Subtest: 계약 등록 화면은 운영자가 모르는 약어나 지킬 수 없는 기한을 말하지 않는다
+ok 403 - 계약 등록 화면은 운영자가 모르는 약어나 지킬 수 없는 기한을 말하지 않는다
+  ---
+  duration_ms: 0.730292
+  type: 'test'
+  ...
+# Subtest: 계약 등록 화면은 사이드바 이름과 하는 일을 함께 설명한다
+ok 404 - 계약 등록 화면은 사이드바 이름과 하는 일을 함께 설명한다
+  ---
+  duration_ms: 0.14625
+  type: 'test'
+  ...
+# Subtest: canonical query parses supported values and drops unsafe noise
+ok 405 - canonical query parses supported values and drops unsafe noise
+  ---
+  duration_ms: 0.774084
+  type: 'test'
+  ...
+# Subtest: report deep links preserve the hospital scope through canonicalization
+ok 406 - report deep links preserve the hospital scope through canonicalization
+  ---
+  duration_ms: 0.074167
+  type: 'test'
+  ...
+# Subtest: hospital report links preserve an exact incident while adding tenant context
+ok 407 - hospital report links preserve an exact incident while adding tenant context
+  ---
+  duration_ms: 0.072708
+  type: 'test'
+  ...
+# Subtest: report links address the exact monthly report row
+ok 408 - report links address the exact monthly report row
+  ---
+  duration_ms: 0.066583
+  type: 'test'
+  ...
+# Subtest: the operations screen makes hospital-scoped deep links visible and clearable
+ok 409 - the operations screen makes hospital-scoped deep links visible and clearable
+  ---
+  duration_ms: 0.461208
+  type: 'test'
+  ...
+# Subtest: recovered incidents use a separate canonical view and reset paging
+ok 410 - recovered incidents use a separate canonical view and reset paging
+  ---
+  duration_ms: 0.227083
+  type: 'test'
+  ...
+# Subtest: code-like causes and contact details never render as marketer explanations
+ok 411 - code-like causes and contact details never render as marketer explanations
+  ---
+  duration_ms: 0.687209
+  type: 'test'
+  ...
+# Subtest: generic incident cause falls through to a classified run cause
+ok 412 - generic incident cause falls through to a classified run cause
+  ---
+  duration_ms: 0.130292
+  type: 'test'
+  ...
+# Subtest: changing a quick filter resets page while preserving detail
+ok 413 - changing a quick filter resets page while preserving detail
+  ---
+  duration_ms: 0.27325
+  type: 'test'
+  ...
+# Subtest: changing queue resets page and closes unrelated detail
+ok 414 - changing queue resets page and closes unrelated detail
+  ---
+  duration_ms: 0.334917
+  type: 'test'
+  ...
+# Subtest: selecting a task in another queue keeps its explicitly supplied detail
+ok 415 - selecting a task in another queue keeps its explicitly supplied detail
+  ---
+  duration_ms: 0.107209
+  type: 'test'
+  ...
+# Subtest: a due-publish row before 08:00 KST is not actionable, and older responses default to actionable
+ok 416 - a due-publish row before 08:00 KST is not actionable, and older responses default to actionable
+  ---
+  duration_ms: 0.057542
+  type: 'test'
+  ...
+# Subtest: partitioning splits actionable rows from rows folded until 08:00 auto-publish
+ok 417 - partitioning splits actionable rows from rows folded until 08:00 auto-publish
+  ---
+  duration_ms: 0.377
+  type: 'test'
+  ...
+# Subtest: actionable count excludes folded rows so "N건 처리 필요" never inflates with scheduled work
+ok 418 - actionable count excludes folded rows so "N건 처리 필요" never inflates with scheduled work
+  ---
+  duration_ms: 0.049417
+  type: 'test'
+  ...
+# Subtest: current action prioritizes overdue before critical and Slack failures
+ok 419 - current action prioritizes overdue before critical and Slack failures
+  ---
+  duration_ms: 0.062375
+  type: 'test'
+  ...
+# Subtest: run and Slack labels are exhaustive over every backend state
+ok 420 - run and Slack labels are exhaustive over every backend state
+  ---
+  duration_ms: 0.089375
+  type: 'test'
+  ...
+# Subtest: customer-facing operation labels never expose raw backend states
+ok 421 - customer-facing operation labels never expose raw backend states
+  ---
+  duration_ms: 0.052417
+  type: 'test'
+  ...
+# Subtest: developer support copy includes safe facts and excludes task payloads
+ok 422 - developer support copy includes safe facts and excludes task payloads
+  ---
+  duration_ms: 0.135291
+  type: 'test'
+  ...
+# Subtest: conflict guidance refetches and restores focus to the remaining safe target
+ok 423 - conflict guidance refetches and restores focus to the remaining safe target
+  ---
+  duration_ms: 0.058792
+  type: 'test'
+  ...
+# Subtest: one user action gets one stable idempotency key
+ok 424 - one user action gets one stable idempotency key
+  ---
+  duration_ms: 0.042875
+  type: 'test'
+  ...
+# Subtest: an uncertain operations response reuses its request key until the payload changes
+ok 425 - an uncertain operations response reuses its request key until the payload changes
+  ---
+  duration_ms: 0.076166
+  type: 'test'
+  ...
+# Subtest: server action descriptor controls permission and exact mutation path
+ok 426 - server action descriptor controls permission and exact mutation path
+  ---
+  duration_ms: 0.039
+  type: 'test'
+  ...
+# Subtest: non-incident POST actions become reasoned idempotent mutations
+ok 427 - non-incident POST actions become reasoned idempotent mutations
+  ---
+  duration_ms: 0.086208
+  type: 'test'
+  ...
+# Subtest: Slack HOLD never auto retries and active runs alone poll
+ok 428 - Slack HOLD never auto retries and active runs alone poll
+  ---
+  duration_ms: 0.035458
+  type: 'test'
+  ...
+# Subtest: operation detail exposes manual Slack retry for HOLD and FAILED only
+ok 429 - operation detail exposes manual Slack retry for HOLD and FAILED only
+  ---
+  duration_ms: 0.321084
+  type: 'test'
+  ...
+# Subtest: queue view distinguishes loading, empty, error and ready
+ok 430 - queue view distinguishes loading, empty, error and ready
+  ---
+  duration_ms: 0.042875
+  type: 'test'
+  ...
+# Subtest: every error identifier the backend can store has an operator explanation
+ok 431 - every error identifier the backend can store has an operator explanation
+  ---
+  duration_ms: 7.243791
+  type: 'test'
+  ...
+# Subtest: a known code becomes an explanation, and every explanation reads as Korean prose
+ok 432 - a known code becomes an explanation, and every explanation reads as Korean prose
+  ---
+  duration_ms: 0.120833
+  type: 'test'
+  ...
+# Subtest: recoverable content blockers explain automatic recovery before human action
+ok 433 - recoverable content blockers explain automatic recovery before human action
+  ---
+  duration_ms: 0.034625
+  type: 'test'
+  ...
+# Subtest: terminal V0 policy drift does not promise automatic recovery
+ok 434 - terminal V0 policy drift does not promise automatic recovery
+  ---
+  duration_ms: 0.078875
+  type: 'test'
+  ...
+# Subtest: a future deadline is not called imminent, and a passed one says how far past
+ok 435 - a future deadline is not called imminent, and a passed one says how far past
+  ---
+  duration_ms: 0.115416
+  type: 'test'
+  ...
+# Subtest: a row without a deadline says so instead of showing an imminent one
+ok 436 - a row without a deadline says so instead of showing an imminent one
+  ---
+  duration_ms: 0.036417
+  type: 'test'
+  ...
+# Subtest: two rows for the same hospital have different titles
+ok 437 - two rows for the same hospital have different titles
+  ---
+  duration_ms: 0.048875
+  type: 'test'
+  ...
+# Subtest: an unknown status falls back to the queue name rather than a bare warning
+ok 438 - an unknown status falls back to the queue name rather than a bare warning
+  ---
+  duration_ms: 0.028791
+  type: 'test'
+  ...
+# Subtest: the queue list explains a search-emptied page instead of contradicting the tab count
+ok 439 - the queue list explains a search-emptied page instead of contradicting the tab count
+  ---
+  duration_ms: 0.240792
+  type: 'test'
+  ...
+# Subtest: the current action is chosen from the actionable rows of the queue on screen, not from every queue
+ok 440 - the current action is chosen from the actionable rows of the queue on screen, not from every queue
+  ---
+  duration_ms: 0.065542
+  type: 'test'
+  ...
+# Subtest: the queue list folds automatic work while keeping its deadline visible
+ok 441 - the queue list folds automatic work while keeping its deadline visible
+  ---
+  duration_ms: 0.079625
+  type: 'test'
+  ...
+# Subtest: the detail panel shows who owns the task and when it is due
+ok 442 - the detail panel shows who owns the task and when it is due
+  ---
+  duration_ms: 0.076167
+  type: 'test'
+  ...
+# Subtest: each request body carries exactly the fields its route accepts
+ok 443 - each request body carries exactly the fields its route accepts
+  ---
+  duration_ms: 0.110959
+  type: 'test'
+  ...
+# Subtest: clearing the owner is an explicit choice, not a missing field
+ok 444 - clearing the owner is an explicit choice, not a missing field
+  ---
+  duration_ms: 0.029541
+  type: 'test'
+  ...
+# Subtest: the server decides which transition an incident can take right now
+ok 445 - the server decides which transition an incident can take right now
+  ---
+  duration_ms: 0.048875
+  type: 'test'
+  ...
+# Subtest: a transition the server has closed is not offered by the old client derivation
+ok 446 - a transition the server has closed is not offered by the old client derivation
+  ---
+  duration_ms: 0.03375
+  type: 'test'
+  ...
+# Subtest: a response without the server transition still derives the acknowledgement
+ok 447 - a response without the server transition still derives the acknowledgement
+  ---
+  duration_ms: 0.042625
+  type: 'test'
+  ...
+# Subtest: the assignment form appears only where the server allows the assignment
+ok 448 - the assignment form appears only where the server allows the assignment
+  ---
+  duration_ms: 0.056083
+  type: 'test'
+  ...
+# Subtest: the detail panel assigns the owner instead of sending the operator elsewhere
+ok 449 - the detail panel assigns the owner instead of sending the operator elsewhere
+  ---
+  duration_ms: 0.082416
+  type: 'test'
+  ...
+# Subtest: 깊은 링크는 접힌 묶음과 다음 쪽에서도 그 인시던트를 찾아간다
+ok 450 - 깊은 링크는 접힌 묶음과 다음 쪽에서도 그 인시던트를 찾아간다
+  ---
+  duration_ms: 0.087958
+  type: 'test'
+  ...
+# Subtest: 409는 경합·복구 미관측·예산 차단을 구분해 읽는다
+ok 451 - 409는 경합·복구 미관측·예산 차단을 구분해 읽는다
+  ---
+  duration_ms: 0.042875
+  type: 'test'
+  ...
+# Subtest: 운영 센터 훅은 깊은 링크를 해석기 한 곳으로 처리한다
+ok 452 - 운영 센터 훅은 깊은 링크를 해석기 한 곳으로 처리한다
+  ---
+  duration_ms: 0.275625
+  type: 'test'
+  ...
+# Subtest: clipboard failures distinguish expected browser denial from unknown faults
+ok 453 - clipboard failures distinguish expected browser denial from unknown faults
+  ---
+  duration_ms: 0.796583
+  type: 'test'
+  ...
+# Subtest: request failures distinguish expected transport responses from unknown faults
+ok 454 - request failures distinguish expected transport responses from unknown faults
+  ---
+  duration_ms: 0.144584
+  type: 'test'
+  ...
+# Subtest: lead intake paths use plain labels and fail closed for unknown values
+ok 455 - lead intake paths use plain labels and fail closed for unknown values
+  ---
+  duration_ms: 0.1785
+  type: 'test'
+  ...
+# Subtest: every surface error explains the problem, customer impact, and exact action
+ok 456 - every surface error explains the problem, customer impact, and exact action
+  ---
+  duration_ms: 0.271625
+  type: 'test'
+  ...
+# Subtest: generic exceptions are never reflected into marketer copy
+ok 457 - generic exceptions are never reflected into marketer copy
+  ---
+  duration_ms: 0.131083
+  type: 'test'
+  ...
+# Subtest: developer fallback contains safe screen context without a raw exception
+ok 458 - developer fallback contains safe screen context without a raw exception
+  ---
+  duration_ms: 0.154
+  type: 'test'
+  ...
+# Subtest: the runbook adapter matrix has one real Admin route and action per supported recovery
+ok 459 - the runbook adapter matrix has one real Admin route and action per supported recovery
+  ---
+  duration_ms: 0.298959
+  type: 'test'
+  ...
+# Subtest: live marketer surfaces fail closed instead of rendering raw states or exceptions
+ok 460 - live marketer surfaces fail closed instead of rendering raw states or exceptions
+  ---
+  duration_ms: 5.828
+  type: 'test'
+  ...
+# Subtest: persistThenApprove saves visible fields before approval
+ok 461 - persistThenApprove saves visible fields before approval
+  ---
+  duration_ms: 1.563166
+  type: 'test'
+  ...
+# Subtest: persistThenApprove does not approve when saving fails
+ok 462 - persistThenApprove does not approve when saving fails
+  ---
+  duration_ms: 0.471041
+  type: 'test'
+  ...
+# Subtest: buildPlatformVariants creates every question for every selected platform
+ok 463 - buildPlatformVariants creates every question for every selected platform
+  ---
+  duration_ms: 0.36525
+  type: 'test'
+  ...
+# Subtest: buildPlatformVariants rejects unsupported platforms instead of silently scheduling them
+ok 464 - buildPlatformVariants rejects unsupported platforms instead of silently scheduling them
+  ---
+  duration_ms: 0.156334
+  type: 'test'
+  ...
+# Subtest: canRunMeasurement requires an active variant on an active target
+ok 465 - canRunMeasurement requires an active variant on an active target
+  ---
+  duration_ms: 0.291916
+  type: 'test'
+  ...
+# Subtest: canSubmitSchedule remains blocked after the existing-schedule request fails
+ok 466 - canSubmitSchedule remains blocked after the existing-schedule request fails
+  ---
+  duration_ms: 0.099708
+  type: 'test'
+  ...
+# Subtest: reportDeliveryBlockers includes missing PDF, review gaps, and medical risks
+ok 467 - reportDeliveryBlockers includes missing PDF, review gaps, and medical risks
+  ---
+  duration_ms: 0.359042
+  type: 'test'
+  ...
+# Subtest: reportDeliveryBlockers lets a PDF-ready V0 diagnosis be delivered without monthly summaries
+ok 468 - reportDeliveryBlockers lets a PDF-ready V0 diagnosis be delivered without monthly summaries
+  ---
+  duration_ms: 2.159292
+  type: 'test'
+  ...
+# Subtest: activationBlockers allows default platform domain only after all prerequisites
+ok 469 - activationBlockers allows default platform domain only after all prerequisites
+  ---
+  duration_ms: 0.691959
+  type: 'test'
+  ...
+# Subtest: an uncertain POST reuses its key and a confirmed POST can start a new attempt
+ok 470 - an uncertain POST reuses its key and a confirmed POST can start a new attempt
+  ---
+  duration_ms: 0.342208
+  type: 'test'
+  ...
+# Subtest: operations and report generation share the pending action key contract
+ok 471 - operations and report generation share the pending action key contract
+  ---
+  duration_ms: 0.331459
+  type: 'test'
+  ...
+# Subtest: acknowledged mutations release their key before any follow-up read
+ok 472 - acknowledged mutations release their key before any follow-up read
+  ---
+  duration_ms: 0.152583
+  type: 'test'
+  ...
+# Subtest: a complete private photo is one the operator deliberately unpublished later
+ok 473 - a complete private photo is one the operator deliberately unpublished later
+  ---
+  duration_ms: 0.380708
+  type: 'test'
+  ...
+# Subtest: a processed photo without rights records cannot be published
+ok 474 - a processed photo without rights records cannot be published
+  ---
+  duration_ms: 0.086
+  type: 'test'
+  ...
+# Subtest: a photo already public can be turned back off
+ok 475 - a photo already public can be turned back off
+  ---
+  duration_ms: 0.04575
+  type: 'test'
+  ...
+# Subtest: an excluded photo says so and locks the toggle
+ok 476 - an excluded photo says so and locks the toggle
+  ---
+  duration_ms: 0.045833
+  type: 'test'
+  ...
+# Subtest: a missing provenance payload is treated as missing rights, not as permitted
+ok 477 - a missing provenance payload is treated as missing rights, not as permitted
+  ---
+  duration_ms: 0.095125
+  type: 'test'
+  ...
+# Subtest: the gate copy names the real condition and denies the review-status one
+ok 478 - the gate copy names the real condition and denies the review-status one
+  ---
+  duration_ms: 0.06525
+  type: 'test'
+  ...
+# Subtest: the photo section states the real gate and never claims review status decides it
+ok 479 - the photo section states the real gate and never claims review status decides it
+  ---
+  duration_ms: 0.343458
+  type: 'test'
+  ...
+# Subtest: 새 줄은 비어 있고 대표도 아니다
+ok 480 - 새 줄은 비어 있고 대표도 아니다
+  ---
+  duration_ms: 3.0755
+  type: 'test'
+  ...
+# Subtest: 표시 순서는 화면의 줄 순서와 같다
+ok 481 - 표시 순서는 화면의 줄 순서와 같다
+  ---
+  duration_ms: 0.09725
+  type: 'test'
+  ...
+# Subtest: 줄을 옮기면 순서 번호도 함께 다시 매긴다
+ok 482 - 줄을 옮기면 순서 번호도 함께 다시 매긴다
+  ---
+  duration_ms: 0.135834
+  type: 'test'
+  ...
+# Subtest: 줄을 지워도 남은 줄의 순서가 이어진다
+ok 483 - 줄을 지워도 남은 줄의 순서가 이어진다
+  ---
+  duration_ms: 0.11375
+  type: 'test'
+  ...
+# Subtest: 줄 단위·쉼표 입력은 빈 값을 버린다
+ok 484 - 줄 단위·쉼표 입력은 빈 값을 버린다
+  ---
+  duration_ms: 0.084167
+  type: 'test'
+  ...
+# Subtest: 이름이 빈 줄은 저장하지 않는다 — 전체 교체가 이름 없는 의료진을 만들지 않게
+ok 485 - 이름이 빈 줄은 저장하지 않는다 — 전체 교체가 이름 없는 의료진을 만들지 않게
+  ---
+  duration_ms: 0.062292
+  type: 'test'
+  ...
+# Subtest: 한 명도 없는 병원은 빈 줄 하나로 시작한다
+ok 486 - 한 명도 없는 병원은 빈 줄 하나로 시작한다
+  ---
+  duration_ms: 0.119917
+  type: 'test'
+  ...
+# Subtest: 사진 선택지는 이 병원의 제외되지 않은 원장 사진뿐이다
+ok 487 - 사진 선택지는 이 병원의 제외되지 않은 원장 사진뿐이다
+  ---
+  duration_ms: 0.065042
+  type: 'test'
+  ...
+# Subtest: 사진을 쓰는 의료진을 사진 화면이 찾아 쓴다
+ok 488 - 사진을 쓰는 의료진을 사진 화면이 찾아 쓴다
+  ---
+  duration_ms: 0.216167
+  type: 'test'
+  ...
+# Subtest: plan catalog matches the current monthly volume and VAT-exclusive pricing
+ok 489 - plan catalog matches the current monthly volume and VAT-exclusive pricing
+  ---
+  duration_ms: 1.200375
+  type: 'test'
+  ...
+# Subtest: the post-publish confirm button is gated on the server sample flag
+ok 490 - the post-publish confirm button is gated on the server sample flag
+  ---
+  duration_ms: 0.701542
+  type: 'test'
+  ...
+# Subtest: brief editing is never offered for published items
+ok 491 - brief editing is never offered for published items
+  ---
+  duration_ms: 0.146917
+  type: 'test'
+  ...
+# Subtest: 사실 저장은 사실 칸만 보낸다 — 브랜드 값은 실리지 않는다
+ok 492 - 사실 저장은 사실 칸만 보낸다 — 브랜드 값은 실리지 않는다
+  ---
+  duration_ms: 0.7225
+  type: 'test'
+  ...
+# Subtest: 의료진 목록은 허용 목록이 아니라 목록을 읽은 화면이 싣는다
+ok 493 - 의료진 목록은 허용 목록이 아니라 목록을 읽은 화면이 싣는다
+  ---
+  duration_ms: 0.076458
+  type: 'test'
+  ...
+# Subtest: 대표 이미지 주소는 브랜드 저장이 소유하지 않는다
+ok 494 - 대표 이미지 주소는 브랜드 저장이 소유하지 않는다
+  ---
+  duration_ms: 0.095583
+  type: 'test'
+  ...
+# Subtest: 파생되는 원장 표시값과 사라진 자격 칸은 저장 본문에 없다
+ok 495 - 파생되는 원장 표시값과 사라진 자격 칸은 저장 본문에 없다
+  ---
+  duration_ms: 0.049291
+  type: 'test'
+  ...
+# Subtest: 브랜드 저장은 브랜드 칸만 보낸다 — 사실 값은 실리지 않는다
+ok 496 - 브랜드 저장은 브랜드 칸만 보낸다 — 사실 값은 실리지 않는다
+  ---
+  duration_ms: 0.105875
+  type: 'test'
+  ...
+# Subtest: 어느 목록에도 완료 플래그·로고·병원 식별자는 없다
+ok 497 - 어느 목록에도 완료 플래그·로고·병원 식별자는 없다
+  ---
+  duration_ms: 0.056125
+  type: 'test'
+  ...
+# Subtest: 한 폼이 둘 다 편집하는 예전 화면은 두 목록의 합집합을 보낸다
+ok 498 - 한 폼이 둘 다 편집하는 예전 화면은 두 목록의 합집합을 보낸다
+  ---
+  duration_ms: 0.098917
+  type: 'test'
+  ...
+# Subtest: 두 목록은 겹치지 않는다 — 겹치면 한쪽 저장이 다른 쪽을 덮는다
+ok 499 - 두 목록은 겹치지 않는다 — 겹치면 한쪽 저장이 다른 쪽을 덮는다
+  ---
+  duration_ms: 0.09325
+  type: 'test'
+  ...
+# Subtest: profile save shows the backend message and code for a rejected new external logo
+ok 500 - profile save shows the backend message and code for a rejected new external logo
+  ---
+  duration_ms: 0.493167
+  type: 'test'
+  ...
+# Subtest: profile save names structured missing fields instead of masking the mismatch
+ok 501 - profile save names structured missing fields instead of masking the mismatch
+  ---
+  duration_ms: 0.244375
+  type: 'test'
+  ...
+# Subtest: profile save preserves a string backend detail
+ok 502 - profile save preserves a string backend detail
+  ---
+  duration_ms: 0.145417
+  type: 'test'
+  ...
+# Subtest: buildProxyResponse preserves binary upstream bodies
+ok 503 - buildProxyResponse preserves binary upstream bodies
+  ---
+  duration_ms: 19.980042
+  type: 'test'
+  ...
+# Subtest: buildProxyResponse forces private no-store for admin responses
+ok 504 - buildProxyResponse forces private no-store for admin responses
+  ---
+  duration_ms: 0.9335
+  type: 'test'
+  ...
+# Subtest: buildProxyResponse forwards list truncation headers
+ok 505 - buildProxyResponse forwards list truncation headers
+  ---
+  duration_ms: 0.54775
+  type: 'test'
+  ...
+# Subtest: ACTIVE with site_live is the only live state
+ok 506 - ACTIVE with site_live is the only live state
+  ---
+  duration_ms: 0.610542
+  type: 'test'
+  ...
+# Subtest: a paused hospital is paused even though pause leaves site_live true
+ok 507 - a paused hospital is paused even though pause leaves site_live true
+  ---
+  duration_ms: 0.065167
+  type: 'test'
+  ...
+# Subtest: every other combination is not live
+ok 508 - every other combination is not live
+  ---
+  duration_ms: 0.0585
+  type: 'test'
+  ...
+# Subtest: resolveDefaultPublisherName prefers the logged-in account name when no override exists
+ok 509 - resolveDefaultPublisherName prefers the logged-in account name when no override exists
+  ---
+  duration_ms: 1.518459
+  type: 'test'
+  ...
+# Subtest: resolveDefaultPublisherName falls back to empty string when nothing is known
+ok 510 - resolveDefaultPublisherName falls back to empty string when nothing is known
+  ---
+  duration_ms: 0.095125
+  type: 'test'
+  ...
+# Subtest: resolveDefaultPublisherName honors an explicit override, even an empty one the AE cleared
+ok 511 - resolveDefaultPublisherName honors an explicit override, even an empty one the AE cleared
+  ---
+  duration_ms: 0.057416
+  type: 'test'
+  ...
+# Subtest: normalizePublisherName rejects empty or whitespace-only screener names
+ok 512 - normalizePublisherName rejects empty or whitespace-only screener names
+  ---
+  duration_ms: 0.382334
+  type: 'test'
+  ...
+# Subtest: manual publish sends no publisher name — the server records the verified actor
+ok 513 - manual publish sends no publisher name — the server records the verified actor
+  ---
+  duration_ms: 0.407292
+  type: 'test'
+  ...
+# Subtest: audit actor normalization fails closed when the authenticated name is unavailable
+ok 514 - audit actor normalization fails closed when the authenticated name is unavailable
+  ---
+  duration_ms: 0.051708
+  type: 'test'
+  ...
+# Subtest: content operations use authenticated identity instead of generic audit actors
+ok 515 - content operations use authenticated identity instead of generic audit actors
+  ---
+  duration_ms: 11.336792
+  type: 'test'
+  ...
+# Subtest: dialog keyboard decisions close, wrap forward, and wrap backward
+ok 516 - dialog keyboard decisions close, wrap forward, and wrap backward
+  ---
+  duration_ms: 0.343916
+  type: 'test'
+  ...
+# Subtest: fresh server state blocks stale delivery before mutation and stays actionable
+ok 517 - fresh server state blocks stale delivery before mutation and stays actionable
+  ---
+  duration_ms: 0.149167
+  type: 'test'
+  ...
+# Subtest: fresh server state prevents a duplicate delivery but allows valid correction and rescind
+ok 518 - fresh server state prevents a duplicate delivery but allows valid correction and rescind
+  ---
+  duration_ms: 0.059541
+  type: 'test'
+  ...
+# Subtest: page and dialog components wire the tested preflight and focus behavior
+ok 519 - page and dialog components wire the tested preflight and focus behavior
+  ---
+  duration_ms: 0.105084
+  type: 'test'
+  ...
+# Subtest: the reports tab opens exactly one dialog, ordered 열기 → 전달 기록 → 이력
+ok 520 - the reports tab opens exactly one dialog, ordered 열기 → 전달 기록 → 이력
+  ---
+  duration_ms: 1.346583
+  type: 'test'
+  ...
+# Subtest: the delivery record binds to the downloaded bytes, never to the server hash echo
+ok 521 - the delivery record binds to the downloaded bytes, never to the server hash echo
+  ---
+  duration_ms: 0.094875
+  type: 'test'
+  ...
+# Subtest: server delivery readiness is the only positive authority
+ok 522 - server delivery readiness is the only positive authority
+  ---
+  duration_ms: 0.778041
+  type: 'test'
+  ...
+# Subtest: only the validated doctor artifact becomes the primary download
+ok 523 - only the validated doctor artifact becomes the primary download
+  ---
+  duration_ms: 0.08225
+  type: 'test'
+  ...
+# Subtest: rescission overrides compatibility sent time until re-delivery
+ok 524 - rescission overrides compatibility sent time until re-delivery
+  ---
+  duration_ms: 0.086375
+  type: 'test'
+  ...
+# Subtest: stale readiness conflicts become problem, impact, and exact action without raw jargon
+ok 525 - stale readiness conflicts become problem, impact, and exact action without raw jargon
+  ---
+  duration_ms: 0.174
+  type: 'test'
+  ...
+# Subtest: delivery history never renders raw event enums
+ok 526 - delivery history never renders raw event enums
+  ---
+  duration_ms: 0.053417
+  type: 'test'
+  ...
+# Subtest: the last item in the ascending API delivery history is the current receipt
+ok 527 - the last item in the ascending API delivery history is the current receipt
+  ---
+  duration_ms: 0.0555
+  type: 'test'
+  ...
+# Subtest: list summary partitions delivered, ready, and blocked reports exactly once
+ok 528 - list summary partitions delivered, ready, and blocked reports exactly once
+  ---
+  duration_ms: 0.064708
+  type: 'test'
+  ...
+# Subtest: the initial diagnosis report is never described with the monthly delivery story
+ok 529 - the initial diagnosis report is never described with the monthly delivery story
+  ---
+  duration_ms: 0.059208
+  type: 'test'
+  ...
+# Subtest: a V0 report never counts as a delivery receipt even if a legacy sent_at exists
+ok 530 - a V0 report never counts as a delivery receipt even if a legacy sent_at exists
+  ---
+  duration_ms: 0.218458
+  type: 'test'
+  ...
+# Subtest: page-level developer copy works without a selected report and contains no raw failure
+ok 531 - page-level developer copy works without a selected report and contains no raw failure
+  ---
+  duration_ms: 1.051916
+  type: 'test'
+  ...
+# Subtest: the delivery hash comes from the bytes this screen downloaded, not from the server echo
+ok 532 - the delivery hash comes from the bytes this screen downloaded, not from the server echo
+  ---
+  duration_ms: 9.753458
+  type: 'test'
+  ...
+# Subtest: a failed download never yields a hash to record
+ok 533 - a failed download never yields a hash to record
+  ---
+  duration_ms: 0.476625
+  type: 'test'
+  ...
+# Subtest: the server hash rejection is recognized so the screen can drop the stale download
+ok 534 - the server hash rejection is recognized so the screen can drop the stale download
+  ---
+  duration_ms: 0.09325
+  type: 'test'
+  ...
+# Subtest: previousMonthValue returns the month before, in KST
+ok 535 - previousMonthValue returns the month before, in KST
+  ---
+  duration_ms: 33.802125
+  type: 'test'
+  ...
+# Subtest: previousMonthValue rolls back across the year boundary
+ok 536 - previousMonthValue rolls back across the year boundary
+  ---
+  duration_ms: 0.117166
+  type: 'test'
+  ...
+# Subtest: previousMonthValue follows KST even when UTC is still the previous day
+ok 537 - previousMonthValue follows KST even when UTC is still the previous day
+  ---
+  duration_ms: 0.124708
+  type: 'test'
+  ...
+# Subtest: previousMonthValue zero-pads single-digit months
+ok 538 - previousMonthValue zero-pads single-digit months
+  ---
+  duration_ms: 0.115916
+  type: 'test'
+  ...
+# Subtest: parseMonthValue accepts the input element format
+ok 539 - parseMonthValue accepts the input element format
+  ---
+  duration_ms: 1.230084
+  type: 'test'
+  ...
+# Subtest: parseMonthValue rejects malformed or impossible months
+ok 540 - parseMonthValue rejects malformed or impossible months
+  ---
+  duration_ms: 0.08075
+  type: 'test'
+  ...
+# Subtest: currentMonthValue follows KST across the day and year boundary
+ok 541 - currentMonthValue follows KST across the day and year boundary
+  ---
+  duration_ms: 0.275875
+  type: 'test'
+  ...
+# Subtest: report picker follows the latest real report instead of a stale calendar default
+ok 542 - report picker follows the latest real report instead of a stale calendar default
+  ---
+  duration_ms: 0.99275
+  type: 'test'
+  ...
+# Subtest: the current month stays in the picker, locked with its reason
+ok 543 - the current month stays in the picker, locked with its reason
+  ---
+  duration_ms: 1.920667
+  type: 'test'
+  ...
+# Subtest: closed months are selectable and future months are locked apart from the current one
+ok 544 - closed months are selectable and future months are locked apart from the current one
+  ---
+  duration_ms: 0.865292
+  type: 'test'
+  ...
+# Subtest: a month unlocks exactly at its 00:15 KST close boundary
+ok 545 - a month unlocks exactly at its 00:15 KST close boundary
+  ---
+  duration_ms: 0.195417
+  type: 'test'
+  ...
+# Subtest: December closes into the next year rather than month 13
+ok 546 - December closes into the next year rather than month 13
+  ---
+  duration_ms: 0.112625
+  type: 'test'
+  ...
+# Subtest: every past year offers all twelve months
+ok 547 - every past year offers all twelve months
+  ---
+  duration_ms: 0.453292
+  type: 'test'
+  ...
+# Subtest: the year list reaches the current KST year even in January
+ok 548 - the year list reaches the current KST year even in January
+  ---
+  duration_ms: 0.153334
+  type: 'test'
+  ...
+# Subtest: strict report boundary preserves frozen cells, version lineage, and honest Slack evidence
+ok 549 - strict report boundary preserves frozen cells, version lineage, and honest Slack evidence
+  ---
+  duration_ms: 3.845333
+  type: 'test'
+  ...
+# Subtest: the one dialog runs open, then delivery, then history, with internal state last
+ok 550 - the one dialog runs open, then delivery, then history, with internal state last
+  ---
+  duration_ms: 0.070417
+  type: 'test'
+  ...
+# Subtest: the screen name of a report never keeps the pre-unification server label
+ok 551 - the screen name of a report never keeps the pre-unification server label
+  ---
+  duration_ms: 0.178625
+  type: 'test'
+  ...
+# Subtest: malformed report payload fails closed
+ok 552 - malformed report payload fails closed
+  ---
+  duration_ms: 0.070625
+  type: 'test'
+  ...
+# Subtest: report runs translate internal states into a three-part Korean action card
+ok 553 - report runs translate internal states into a three-part Korean action card
+  ---
+  duration_ms: 0.560458
+  type: 'test'
+  ...
+# Subtest: versioned rebuild names the prior report without exposing raw state
+ok 554 - versioned rebuild names the prior report without exposing raw state
+  ---
+  duration_ms: 0.070792
+  type: 'test'
+  ...
+# Subtest: validated PDF stage stays distinct from final delivery readiness
+ok 555 - validated PDF stage stays distinct from final delivery readiness
+  ---
+  duration_ms: 0.073542
+  type: 'test'
+  ...
+# Subtest: blocked reports lead with the operations center before a rebuild
+ok 556 - blocked reports lead with the operations center before a rebuild
+  ---
+  duration_ms: 3.01225
+  type: 'test'
+  ...
+# Subtest: unknown payload is rejected and developer note contains only safe identifiers
+ok 557 - unknown payload is rejected and developer note contains only safe identifiers
+  ---
+  duration_ms: 1.20425
+  type: 'test'
+  ...
+# Subtest: rebuild reason and request key prevent opaque duplicate rebuilds
+ok 558 - rebuild reason and request key prevent opaque duplicate rebuilds
+  ---
+  duration_ms: 0.128083
+  type: 'test'
+  ...
+# Subtest: the token scan actually covers the console surfaces
+ok 559 - the token scan actually covers the console surfaces
+  ---
+  duration_ms: 1.007042
+  type: 'test'
+  ...
+# Subtest: every referenced console color token resolves to a global definition
+ok 560 - every referenced console color token resolves to a global definition
+  ---
+  duration_ms: 0.675833
+  type: 'test'
+  ...
+# Subtest: every declared console color token is actually referenced
+ok 561 - every declared console color token is actually referenced
+  ---
+  duration_ms: 0.122041
+  type: 'test'
+  ...
+# Subtest: console color tokens are declared with concrete values, not empty aliases
+ok 562 - console color tokens are declared with concrete values, not empty aliases
+  ---
+  duration_ms: 3.138916
+  type: 'test'
+  ...
+# Subtest: 운영 요약과 운영 기준은 현황으로 돌아온다
+ok 563 - 운영 요약과 운영 기준은 현황으로 돌아온다
+  ---
+  duration_ms: 0.496667
+  type: 'test'
+  ...
+# Subtest: 온보딩·병원 기본 정보·자료는 병원 정보 한 화면으로 모인다
+ok 564 - 온보딩·병원 기본 정보·자료는 병원 정보 한 화면으로 모인다
+  ---
+  duration_ms: 0.11275
+  type: 'test'
+  ...
+# Subtest: 자기 도메인 링크만 병원 정보의 도메인 위치로 보낸다
+ok 565 - 자기 도메인 링크만 병원 정보의 도메인 위치로 보낸다
+  ---
+  duration_ms: 0.057583
+  type: 'test'
+  ...
+# Subtest: 발행 일정은 콘텐츠 화면의 발행 요일 자리로 간다
+ok 566 - 발행 일정은 콘텐츠 화면의 발행 요일 자리로 간다
+  ---
+  duration_ms: 0.112958
+  type: 'test'
+  ...
+# Subtest: 환자 질문과 노출 보완은 콘텐츠 화면의 읽기 전용 신호로 간다
+ok 567 - 환자 질문과 노출 보완은 콘텐츠 화면의 읽기 전용 신호로 간다
+  ---
+  duration_ms: 0.050583
+  type: 'test'
+  ...
+# Subtest: 모르는 조각은 목적지가 없다 — 조용히 현황으로 보내지 않는다
+ok 568 - 모르는 조각은 목적지가 없다 — 조용히 현황으로 보내지 않는다
+  ---
+  duration_ms: 0.038125
+  type: 'test'
+  ...
+# Subtest: 콘텐츠 딥링크의 content 파라미터는 앵커와 함께 살아남는다
+ok 569 - 콘텐츠 딥링크의 content 파라미터는 앵커와 함께 살아남는다
+  ---
+  duration_ms: 0.119458
+  type: 'test'
+  ...
+# Subtest: 다른 목적지에서도 알려진 파라미터만 남고 나머지는 버린다
+ok 570 - 다른 목적지에서도 알려진 파라미터만 남고 나머지는 버린다
+  ---
+  duration_ms: 0.048292
+  type: 'test'
+  ...
+# Subtest: 같은 이름이 여러 번 온 파라미터는 첫 값만 쓴다
+ok 571 - 같은 이름이 여러 번 온 파라미터는 첫 값만 쓴다
+  ---
+  duration_ms: 2.04
+  type: 'test'
+  ...
+# Subtest: schedule UI confirms date changes while preserving original content
+ok 572 - schedule UI confirms date changes while preserving original content
+  ---
+  duration_ms: 1.232875
+  type: 'test'
+  ...
+# Subtest: the schedule section never offers a plan selector — the contract owns the plan
+ok 573 - the schedule section never offers a plan selector — the contract owns the plan
+  ---
+  duration_ms: 0.222958
+  type: 'test'
+  ...
+# Subtest: the section keeps the plan defaults, the next-month start date and the contract mismatch notice
+ok 574 - the section keeps the plan defaults, the next-month start date and the contract mismatch notice
+  ---
+  duration_ms: 0.115
+  type: 'test'
+  ...
+# Subtest: every current tier has enough default days for its monthly volume
+ok 575 - every current tier has enough default days for its monthly volume
+  ---
+  duration_ms: 0.495542
+  type: 'test'
+  ...
+# Subtest: schedule validation catches too few publish days before the API call
+ok 576 - schedule validation catches too few publish days before the API call
+  ---
+  duration_ms: 0.096083
+  type: 'test'
+  ...
+# Subtest: localDateInputValue does not shift the selected day through UTC conversion
+ok 577 - localDateInputValue does not shift the selected day through UTC conversion
+  ---
+  duration_ms: 2.023875
+  type: 'test'
+  ...
+# Subtest: firstDayOfNextMonthInputValue starts new schedules without past slots
+ok 578 - firstDayOfNextMonthInputValue starts new schedules without past slots
+  ---
+  duration_ms: 0.069125
+  type: 'test'
+  ...
+# Subtest: schedule month navigation crosses year boundaries and uses a readable label
+ok 579 - schedule month navigation crosses year boundaries and uses a readable label
+  ---
+  duration_ms: 0.087083
+  type: 'test'
+  ...
+# Subtest: login rate-limit key ignores forged x-real-ip headers when XFF is present
+ok 580 - login rate-limit key ignores forged x-real-ip headers when XFF is present
+  ---
+  duration_ms: 17.713375
+  type: 'test'
+  ...
+# Subtest: login rate-limit key uses the GCP LB client entry (second-from-right XFF)
+ok 581 - login rate-limit key uses the GCP LB client entry (second-from-right XFF)
+  ---
+  duration_ms: 0.115666
+  type: 'test'
+  ...
+# Subtest: client IP helper handles minimal LB chain and dev single entry
+ok 582 - client IP helper handles minimal LB chain and dev single entry
+  ---
+  duration_ms: 0.220833
+  type: 'test'
+  ...
+# Subtest: login rate-limit key fails open (null) when no valid IP header is present
+ok 583 - login rate-limit key fails open (null) when no valid IP header is present
+  ---
+  duration_ms: 0.105833
+  type: 'test'
+  ...
+# Subtest: admin proxy path builder rejects dot segments and path separators
+ok 584 - admin proxy path builder rejects dot segments and path separators
+  ---
+  duration_ms: 0.116583
+  type: 'test'
+  ...
+# Subtest: admin proxy path builder allows only configured prefixes and encodes segments
+ok 585 - admin proxy path builder allows only configured prefixes and encodes segments
+  ---
+  duration_ms: 0.048541
+  type: 'test'
+  ...
+# Subtest: same-origin protection applies to state-changing requests
+ok 586 - same-origin protection applies to state-changing requests
+  ---
+  duration_ms: 0.215208
+  type: 'test'
+  ...
+# Subtest: admin CSRF protection requires the session nonce on state-changing requests
+ok 587 - admin CSRF protection requires the session nonce on state-changing requests
+  ---
+  duration_ms: 0.1065
+  type: 'test'
+  ...
+# Subtest: admin revocation checks use no-store fetches with a bounded timeout
+ok 588 - admin revocation checks use no-store fetches with a bounded timeout
+  ---
+  duration_ms: 12.857333
+  type: 'test'
+  ...
+# Subtest: admin session revocation writes also use a bounded timeout
+ok 589 - admin session revocation writes also use a bounded timeout
+  ---
+  duration_ms: 4.727833
+  type: 'test'
+  ...
+# Subtest: admin revocation checks fail closed when the bounded request is aborted
+ok 590 - admin revocation checks fail closed when the bounded request is aborted
+  ---
+  duration_ms: 0.457917
+  type: 'test'
+  ...
+# Subtest: cached revocation checks reuse an "active" result within the TTL
+ok 591 - cached revocation checks reuse an "active" result within the TTL
+  ---
+  duration_ms: 2.152625
+  type: 'test'
+  ...
+# Subtest: cached revocation checks never cache a "revoked" result
+ok 592 - cached revocation checks never cache a "revoked" result
+  ---
+  duration_ms: 2.484167
+  type: 'test'
+  ...
+# Subtest: revoking a session drops its cached "active" entry so the next check re-hits the backend
+ok 593 - revoking a session drops its cached "active" entry so the next check re-hits the backend
+  ---
+  duration_ms: 7.56425
+  type: 'test'
+  ...
+# Subtest: the active-revocation cache is bounded and evicts the oldest entries past the cap
+ok 594 - the active-revocation cache is bounded and evicts the oldest entries past the cap
+  ---
+  duration_ms: 93.469375
+  type: 'test'
+  ...
+# Subtest: cached revocation checks never cache an "unavailable" result
+ok 595 - cached revocation checks never cache an "unavailable" result
+  ---
+  duration_ms: 0.38775
+  type: 'test'
+  ...
+# Subtest: session tokens expire server-side
+ok 596 - session tokens expire server-side
+  ---
+  duration_ms: 7.796834
+  type: 'test'
+  ...
+# Subtest: session tokens verify before expiry
+ok 597 - session tokens verify before expiry
+  ---
+  duration_ms: 2.7305
+  type: 'test'
+  ...
+# Subtest: session tokens carry a signed issue time so accounts can revoke past sessions
+ok 598 - session tokens carry a signed issue time so accounts can revoke past sessions
+  ---
+  duration_ms: 4.564166
+  type: 'test'
+  ...
+# Subtest: generated CSRF tokens are opaque hex nonces for admin write requests
+ok 599 - generated CSRF tokens are opaque hex nonces for admin write requests
+  ---
+  duration_ms: 0.347583
+  type: 'test'
+  ...
+# Subtest: session token hashes are deterministic non-secret revocation keys
+ok 600 - session token hashes are deterministic non-secret revocation keys
+  ---
+  duration_ms: 2.338333
+  type: 'test'
+  ...
+# Subtest: 현황은 헤더가 받아 둔 overview만 읽는다
+ok 601 - 현황은 헤더가 받아 둔 overview만 읽는다
+  ---
+  duration_ms: 0.536
+  type: 'test'
+  ...
+# Subtest: 옛 운영 화면의 실행 도구와 분석 표는 현황에 없다
+ok 602 - 옛 운영 화면의 실행 도구와 분석 표는 현황에 없다
+  ---
+  duration_ms: 0.070625
+  type: 'test'
+  ...
+# Subtest: 현황은 판정·버튼·요약을 공용 함수에서 받는다
+ok 603 - 현황은 판정·버튼·요약을 공용 함수에서 받는다
+  ---
+  duration_ms: 0.056125
+  type: 'test'
+  ...
+# Subtest: 인시던트 행동은 운영 센터와 같은 배관을 쓴다
+ok 604 - 인시던트 행동은 운영 센터와 같은 배관을 쓴다
+  ---
+  duration_ms: 0.596083
+  type: 'test'
+  ...
+# Subtest: 예외 초안 카드는 편집·재검수·예외 승인 세 경로를 모두 가진다
+ok 605 - 예외 초안 카드는 편집·재검수·예외 승인 세 경로를 모두 가진다
+  ---
+  duration_ms: 0.205541
+  type: 'test'
+  ...
+# Subtest: 예외가 없을 때와 현황을 못 받았을 때 할 말이 있다
+ok 606 - 예외가 없을 때와 현황을 못 받았을 때 할 말이 있다
+  ---
+  duration_ms: 0.094958
+  type: 'test'
+  ...
+# Subtest: 이번 달 요약은 콘텐츠·보고서 화면으로만 이어진다
+ok 607 - 이번 달 요약은 콘텐츠·보고서 화면으로만 이어진다
+  ---
+  duration_ms: 0.357917
+  type: 'test'
+  ...
+# Subtest: 예외 승인은 근거 자료 상태를 확인한 뒤에만 열린다
+ok 608 - 예외 승인은 근거 자료 상태를 확인한 뒤에만 열린다
+  ---
+  duration_ms: 0.11175
+  type: 'test'
+  ...
+# Subtest: 재검수·승인 결과 안내는 카드가 사라져도 화면에 남는다
+ok 609 - 재검수·승인 결과 안내는 카드가 사라져도 화면에 남는다
+  ---
+  duration_ms: 0.264541
+  type: 'test'
+  ...
+# Subtest: 담당 지정 폼은 상세를 읽은 뒤에만 열리고, 실패하면 다시 시도한다
+ok 610 - 담당 지정 폼은 상세를 읽은 뒤에만 열리고, 실패하면 다시 시도한다
+  ---
+  duration_ms: 0.328208
+  type: 'test'
+  ...
+# Subtest: 남은 조건은 사람 몫과 시스템 몫으로 나뉜다
+ok 611 - 남은 조건은 사람 몫과 시스템 몫으로 나뉜다
+  ---
+  duration_ms: 1.726958
+  type: 'test'
+  ...
+# Subtest: 사람 몫이 아닌 조건은 화면에서 사라지지 않는다
+ok 612 - 사람 몫이 아닌 조건은 화면에서 사라지지 않는다
+  ---
+  duration_ms: 0.1915
+  type: 'test'
+  ...
+# Subtest: 카드 머리는 서버 라벨과 남은 조건 수를 말한다
+ok 613 - 카드 머리는 서버 라벨과 남은 조건 수를 말한다
+  ---
+  duration_ms: 0.10475
+  type: 'test'
+  ...
+# Subtest: 남은 조건이 한쪽뿐이거나 없을 때도 한 줄로 말한다
+ok 614 - 남은 조건이 한쪽뿐이거나 없을 때도 한 줄로 말한다
+  ---
+  duration_ms: 0.062791
+  type: 'test'
+  ...
+# Subtest: 이번 달 요약은 공개·발행·계획과 다음 보고서 날짜를 말한다
+ok 615 - 이번 달 요약은 공개·발행·계획과 다음 보고서 날짜를 말한다
+  ---
+  duration_ms: 0.149125
+  type: 'test'
+  ...
+# Subtest: 공개 보류는 있을 때만 한 줄을 차지하고, 언급률은 잰 날짜를 함께 말한다
+ok 616 - 공개 보류는 있을 때만 한 줄을 차지하고, 언급률은 잰 날짜를 함께 말한다
+  ---
+  duration_ms: 0.084083
+  type: 'test'
+  ...
+# Subtest: 언급률을 잰 날짜가 없으면 날짜를 지어내지 않는다
+ok 617 - 언급률을 잰 날짜가 없으면 날짜를 지어내지 않는다
+  ---
+  duration_ms: 0.0875
+  type: 'test'
+  ...
+# Subtest: 버튼은 서버가 허용한 행동만, 정해진 순서로 만든다
+ok 618 - 버튼은 서버가 허용한 행동만, 정해진 순서로 만든다
+  ---
+  duration_ms: 0.18975
+  type: 'test'
+  ...
+# Subtest: 지금 못 하는 행동은 버튼이 아니라 사유 문구로 남는다
+ok 619 - 지금 못 하는 행동은 버튼이 아니라 사유 문구로 남는다
+  ---
+  duration_ms: 0.261084
+  type: 'test'
+  ...
+# Subtest: 요청 본문은 행동 종류가 정한다
+ok 620 - 요청 본문은 행동 종류가 정한다
+  ---
+  duration_ms: 0.370167
+  type: 'test'
+  ...
+# Subtest: 담당 지정은 담당자와 지금 걸린 처리 기한을 함께 보낸다
+ok 621 - 담당 지정은 담당자와 지금 걸린 처리 기한을 함께 보낸다
+  ---
+  duration_ms: 0.096084
+  type: 'test'
+  ...
+# Subtest: 못 하는 이유는 행동마다 다르게 적는다
+ok 622 - 못 하는 이유는 행동마다 다르게 적는다
+  ---
+  duration_ms: 0.03925
+  type: 'test'
+  ...
+# Subtest: 카드 버튼의 사유도 행동마다 다른 문구를 쓴다
+ok 623 - 카드 버튼의 사유도 행동마다 다른 문구를 쓴다
+  ---
+  duration_ms: 0.043625
+  type: 'test'
+  ...
+# Subtest: 같은 원인이 여러 건이면 대표 인시던트에만 적용된다고 말한다
+ok 624 - 같은 원인이 여러 건이면 대표 인시던트에만 적용된다고 말한다
+  ---
+  duration_ms: 0.0345
+  type: 'test'
+  ...
+# Subtest: 담당 지정은 상세를 읽기 전에는 보내지 않는다
+ok 625 - 담당 지정은 상세를 읽기 전에는 보내지 않는다
+  ---
+  duration_ms: 0.055042
+  type: 'test'
+  ...
+# Subtest: isRecord accepts plain and class-backed objects
+ok 626 - isRecord accepts plain and class-backed objects
+  ---
+  duration_ms: 0.314084
+  type: 'test'
+  ...
+# Subtest: isRecord rejects null, arrays, and scalar values
+ok 627 - isRecord rejects null, arrays, and scalar values
+  ---
+  duration_ms: 0.055125
+  type: 'test'
+  ...
+1..627
+# tests 627
+# suites 0
+# pass 627
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2149.275917
+=== admin lint ===
+
+> reputation-admin@0.1.0 lint
+> eslint . --max-warnings=0
+
+=== admin typecheck ===
+
+> reputation-admin@0.1.0 typecheck
+> next typegen && tsc --noEmit -p tsconfig.json
+
+Generating route types...
+✓ Types generated successfully

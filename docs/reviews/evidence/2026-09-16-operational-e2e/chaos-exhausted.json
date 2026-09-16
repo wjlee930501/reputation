@@ -1,0 +1,154 @@
+{
+  "content": [
+    {
+      "slug": "e2e-clinic-1",
+      "status": "DRAFT",
+      "count": 1,
+      "bodies": 0,
+      "images": 0
+    },
+    {
+      "slug": "e2e-clinic-0",
+      "status": "PUBLISHED",
+      "count": 12,
+      "bodies": 12,
+      "images": 12
+    }
+  ],
+  "runs": [
+    {
+      "operation_type": "SITE_REVALIDATION",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 12
+    },
+    {
+      "operation_type": "RUN_SOV",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 3
+    },
+    {
+      "operation_type": "NIGHTLY_CONTENT_GENERATION",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 7
+    },
+    {
+      "operation_type": "SCHEDULED_MONTHLY_REPORT",
+      "state": "PARTIAL",
+      "safe_error_code": "MONTHLY_REPORT_BLOCKED",
+      "count": 1
+    },
+    {
+      "operation_type": "REGENERATE_CONTENT",
+      "state": "FAILED",
+      "safe_error_code": "MISSING_APPROVED_ESSENCE",
+      "count": 2
+    },
+    {
+      "operation_type": "GENERATE_CONTENT_ITEM",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 12
+    },
+    {
+      "operation_type": "SCHEDULED_MONTHLY_REPORT",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 1
+    },
+    {
+      "operation_type": "MONTHLY_REPORT_BATCH",
+      "state": "PARTIAL",
+      "safe_error_code": null,
+      "count": 21
+    },
+    {
+      "operation_type": "INDEXNOW_SUBMISSION",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 12
+    },
+    {
+      "operation_type": "REGENERATE_CONTENT",
+      "state": "SUCCEEDED",
+      "safe_error_code": null,
+      "count": 12
+    },
+    {
+      "operation_type": "GENERATE_CONTENT_ITEM",
+      "state": "CANCELLED",
+      "safe_error_code": "MISSING_APPROVED_ESSENCE",
+      "count": 1
+    },
+    {
+      "operation_type": "SITE_REVALIDATION",
+      "state": "FAILED",
+      "safe_error_code": null,
+      "count": 1
+    },
+    {
+      "operation_type": "SITE_REVALIDATION",
+      "state": "RUNNING",
+      "safe_error_code": null,
+      "count": 1
+    }
+  ],
+  "reports": [
+    {
+      "hospital_id": "133450fe-247b-4e5e-9786-7ccf83c84b40",
+      "report_type": "MONTHLY",
+      "quality": "BLOCKED",
+      "planned_count": 0,
+      "success_count": 0,
+      "failed_count": 0,
+      "customer_ready": false,
+      "delivery_blockers": [
+        "MANIFEST_MISSING"
+      ]
+    },
+    {
+      "hospital_id": "d081f17d-5dc0-4333-a8ab-ff814f416d4f",
+      "report_type": "MONTHLY",
+      "quality": "COMPLETE",
+      "planned_count": 30,
+      "success_count": 30,
+      "failed_count": 0,
+      "customer_ready": false,
+      "delivery_blockers": []
+    }
+  ],
+  "notifications": [
+    {
+      "notification_type": "FLEET_HEARTBEAT",
+      "state": "SENT",
+      "attempt_count": 2,
+      "dedupe_key": "FLEET_HEARTBEAT:2026-09-16"
+    },
+    {
+      "notification_type": "INCIDENT_OPEN",
+      "state": "RETRYING",
+      "attempt_count": 1,
+      "dedupe_key": "INCIDENT_OPEN:bbb60865-be29-4737-857d-24bdc73ada9a:e1"
+    }
+  ],
+  "measurements": [
+    {
+      "ai_platform": "gemini",
+      "count": 150
+    },
+    {
+      "ai_platform": "chatgpt",
+      "count": 150
+    }
+  ],
+  "slots": [
+    {
+      "scope": "MONTHLY",
+      "answer_status": "RECEIVED",
+      "judgment_status": "CONFIRMED",
+      "count": 150
+    }
+  ]
+}

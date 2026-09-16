@@ -1,0 +1,110 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 3.01kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14
+#2 DONE 1.3s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 130B done
+#3 DONE 0.0s
+
+#4 [builder 1/6] FROM docker.io/library/node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14
+#4 resolve docker.io/library/node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 17.69kB 0.0s done
+#5 DONE 0.0s
+
+#6 [builder 2/6] WORKDIR /app
+#6 CACHED
+
+#7 [builder 3/6] COPY package.json package-lock.json ./
+#7 CACHED
+
+#8 [builder 4/6] RUN npm ci
+#8 CACHED
+
+#9 [builder 5/6] COPY . .
+#9 CACHED
+
+#10 [builder 6/6] RUN npm run build
+#10 0.695
+#10 0.695 > site@0.1.0 build
+#10 0.695 > next build
+#10 0.695
+#10 1.476 ▲ Next.js 16.3.3 (Turbopack)
+#10 1.504 ✓ Running next.config.mjs took 27ms
+#10 1.625
+#10 1.674   Creating an optimized production build ...
+#10 9.649 ✓ Compiled successfully in 7.7s
+#10 9.659   Running TypeScript ...
+#10 15.34   Finished TypeScript in 5.7s ...
+#10 15.34   Collecting page data using 7 workers ...
+#10 17.00   Generating static pages using 7 workers (0/13) ...
+#10 17.07   Generating static pages using 7 workers (3/13)
+#10 17.21   Generating static pages using 7 workers (6/13)
+#10 17.27   Generating static pages using 7 workers (9/13)
+#10 17.38 ✓ Generating static pages using 7 workers (13/13) in 375ms
+#10 17.38   Finalizing page optimization ...
+#10 17.60
+#10 17.61 Route (app)
+#10 17.61 ┌ ○ /
+#10 17.61 ├ ○ /_not-found
+#10 17.61 ├ ƒ /.well-known/reputation-health
+#10 17.61 ├ ● /[slug]
+#10 17.61 ├ ƒ /[slug]/contents
+#10 17.61 ├ ƒ /[slug]/contents/[contentId]
+#10 17.61 ├ ƒ /[slug]/doctor
+#10 17.61 ├ ƒ /[slug]/llms.txt
+#10 17.61 ├ ƒ /[slug]/treatments
+#10 17.61 ├ ● /[slug]/treatments/[treatmentSlug]
+#10 17.61 ├ ƒ /[slug]/visit
+#10 17.61 ├ ƒ /ai-diagnosis
+#10 17.61 ├ ƒ /ai-diagnosis/status/[token]
+#10 17.61 ├ ƒ /api/diagnosis
+#10 17.61 ├ ƒ /api/diagnosis/[token]/report
+#10 17.61 ├ ƒ /api/diagnosis/[token]/status
+#10 17.61 ├ ƒ /api/diagnosis/slots
+#10 17.61 ├ ƒ /api/leads
+#10 17.61 ├ ƒ /api/revalidate
+#10 17.61 ├ ƒ /indexnow-key.txt
+#10 17.61 ├ ƒ /llms.txt
+#10 17.61 ├ ○ /privacy
+#10 17.61 ├ ƒ /robots.txt
+#10 17.61 ├ ƒ /sitemap.xml
+#10 17.61 └ ○ /terms
+#10 17.61
+#10 17.61
+#10 17.61 ƒ Proxy (Middleware)
+#10 17.61
+#10 17.61 ○  (Static)   prerendered as static content
+#10 17.61 ●  (SSG)      prerendered as static HTML (uses generateStaticParams)
+#10 17.61 ƒ  (Dynamic)  server-rendered on demand
+#10 17.61
+#10 DONE 17.8s
+
+#6 [builder 2/6] WORKDIR /app
+#6 CACHED
+
+#11 [runtime 3/5] COPY --from=builder --chown=node:node /app/.next/standalone ./
+#11 DONE 0.3s
+
+#12 [runtime 4/5] COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+#12 DONE 0.0s
+
+#13 [runtime 5/5] COPY --from=builder --chown=node:node /app/public ./public
+#13 DONE 0.0s
+
+#14 exporting to image
+#14 exporting layers
+#14 exporting layers 1.2s done
+#14 exporting manifest sha256:3ecdc61845967b7c7ae3481d29731cae0b0867592cae9877177ded3950907706 done
+#14 exporting config sha256:e40dc1af137e97e6a83b14545d7134650cb2a99815f96e8e51f7418d8704ea5f done
+#14 exporting attestation manifest sha256:97f87f01c2d96c84971d0553366ea87c979bcc3d069a7e12ab877d146623235d done
+#14 exporting manifest list sha256:b78bc045d0b1e76c513e1e0a33cca2751a28a61703615b1d234d80b84e4823c5 done
+#14 naming to docker.io/library/reputation-verify-site:isolated-6b0c86f done
+#14 DONE 1.2s

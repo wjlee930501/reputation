@@ -1,0 +1,624 @@
+{
+  "checked_at": "2026-09-16T02:57:51.504476+00:00",
+  "read_only": true,
+  "services": [
+    {
+      "name": "reputation-api",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:20260916-001447",
+      "ready_revision": "reputation-api-00175-x8k",
+      "traffic": [
+        {
+          "latestRevision": true,
+          "percent": 100,
+          "revisionName": "reputation-api-00175-x8k"
+        }
+      ],
+      "conditions": [
+        {
+          "lastTransitionTime": "2026-09-16T00:25:37.651444Z",
+          "status": "True",
+          "type": "Ready"
+        }
+      ],
+      "secret_references": {
+        "ANTHROPIC_API_KEY": {
+          "key": "latest",
+          "name": "ANTHROPIC_API_KEY"
+        },
+        "OPENAI_API_KEY": {
+          "key": "latest",
+          "name": "OPENAI_API_KEY"
+        },
+        "GEMINI_API_KEY": {
+          "key": "latest",
+          "name": "GEMINI_API_KEY"
+        },
+        "SLACK_WEBHOOK_URL": {
+          "key": "latest",
+          "name": "SLACK_WEBHOOK_URL"
+        },
+        "ADMIN_SECRET_KEY": {
+          "key": "latest",
+          "name": "ADMIN_SECRET_KEY"
+        },
+        "WORKER_DISPATCH_SECRET": {
+          "key": "latest",
+          "name": "WORKER_DISPATCH_SECRET"
+        },
+        "ADMIN_SESSION_SECRET": {
+          "key": "latest",
+          "name": "ADMIN_SESSION_SECRET"
+        },
+        "BFF_ACTOR_SECRET": {
+          "key": "latest",
+          "name": "BFF_ACTOR_SECRET"
+        },
+        "PIPELINE_WATCHDOG_TOKEN": {
+          "key": "latest",
+          "name": "PIPELINE_WATCHDOG_TOKEN"
+        },
+        "SITE_BFF_SECRET": {
+          "key": "latest",
+          "name": "SITE_BFF_SECRET"
+        },
+        "REDIS_URL": {
+          "key": "latest",
+          "name": "REDIS_URL"
+        },
+        "SITE_REVALIDATE_SECRET": {
+          "key": "latest",
+          "name": "SITE_REVALIDATE_SECRET"
+        },
+        "LEAD_LOCK_HASH_PEPPER": {
+          "key": "latest",
+          "name": "LEAD_LOCK_HASH_PEPPER"
+        },
+        "LEAD_REPORT_TOKEN_SECRET": {
+          "key": "latest",
+          "name": "LEAD_REPORT_TOKEN_SECRET"
+        },
+        "RESEND_API_KEY": {
+          "key": "latest",
+          "name": "RESEND_API_KEY"
+        },
+        "DB_PASSWORD": {
+          "key": "latest",
+          "name": "DB_PASSWORD"
+        },
+        "INDEXNOW_KEY": {
+          "key": "latest",
+          "name": "INDEXNOW_KEY"
+        }
+      },
+      "environment_names": [
+        "DB_CONNECTION_MODE",
+        "GCP_PROJECT_ID",
+        "GCP_LOCATION",
+        "DB_USER",
+        "DB_NAME",
+        "CLOUD_SQL_CONNECTION_NAME",
+        "GCP_STORAGE_BUCKET",
+        "CERTIFICATE_MANAGER_LOCATION",
+        "CERTIFICATE_MAP_NAME",
+        "GCS_REPORTS_BUCKET",
+        "PUBLIC_DOMAIN",
+        "ADMIN_DOMAIN",
+        "ADMIN_BASE_URL",
+        "SITE_BASE_URL",
+        "ADMIN_ACTOR_NAME",
+        "CNAME_TARGET",
+        "CUSTOM_DOMAIN_IP_TARGETS",
+        "ALLOWED_ORIGINS",
+        "TRUSTED_PROXY_IPS",
+        "SITE_REVALIDATE_URL",
+        "CLAUDE_MODEL",
+        "CLAUDE_MODEL_FAST",
+        "CELERY_CONCURRENCY",
+        "CELERY_MAX_TASKS_PER_CHILD",
+        "OPENAI_MODEL_QUERY",
+        "OPENAI_MODEL_PARSE",
+        "GEMINI_MODEL",
+        "SOV_REPEAT_COUNT",
+        "SOV_REPEAT_COUNT_WEEKLY",
+        "LEAD_RETENTION_DAYS",
+        "LEAD_CONSENT_VERSION",
+        "PUBLIC_LEAD_RATE_LIMIT",
+        "PUBLIC_SITE_RATE_LIMIT",
+        "LOG_LEVEL",
+        "LOG_JSON",
+        "SLACK_WEBHOOK_ALLOWED_HOSTS",
+        "SOV_MONTHLY_COHORT_LIMIT",
+        "COST_GUARD_DAILY_SOV_QUERIES",
+        "COST_GUARD_MONTHLY_SOV_QUERIES",
+        "SOV_TRACKING_SET_N_DEFAULT",
+        "SOV_MONTHLY_WINDOW_START_DAY",
+        "SERVICE",
+        "APP_ENV",
+        "OPENAI_CHATGPT_USE_WEB_SEARCH",
+        "CERTIFICATE_MANAGER_AUTO_PROVISION",
+        "REPUTATION_RELEASE_REVISION",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "SLACK_WEBHOOK_URL",
+        "ADMIN_SECRET_KEY",
+        "WORKER_DISPATCH_SECRET",
+        "ADMIN_SESSION_SECRET",
+        "BFF_ACTOR_SECRET",
+        "PIPELINE_WATCHDOG_TOKEN",
+        "SITE_BFF_SECRET",
+        "REDIS_URL",
+        "SITE_REVALIDATE_SECRET",
+        "LEAD_LOCK_HASH_PEPPER",
+        "LEAD_REPORT_TOKEN_SECRET",
+        "RESEND_API_KEY",
+        "DB_PASSWORD",
+        "INDEXNOW_KEY"
+      ]
+    },
+    {
+      "name": "reputation-worker",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:20260916-001447",
+      "ready_revision": "reputation-worker-00163-njr",
+      "traffic": [
+        {
+          "latestRevision": true,
+          "percent": 100,
+          "revisionName": "reputation-worker-00163-njr"
+        }
+      ],
+      "conditions": [
+        {
+          "lastTransitionTime": "2026-09-16T00:23:41.225979Z",
+          "status": "True",
+          "type": "Ready"
+        }
+      ],
+      "secret_references": {
+        "ANTHROPIC_API_KEY": {
+          "key": "latest",
+          "name": "ANTHROPIC_API_KEY"
+        },
+        "OPENAI_API_KEY": {
+          "key": "latest",
+          "name": "OPENAI_API_KEY"
+        },
+        "GEMINI_API_KEY": {
+          "key": "latest",
+          "name": "GEMINI_API_KEY"
+        },
+        "SLACK_WEBHOOK_URL": {
+          "key": "latest",
+          "name": "SLACK_WEBHOOK_URL"
+        },
+        "ADMIN_SECRET_KEY": {
+          "key": "latest",
+          "name": "ADMIN_SECRET_KEY"
+        },
+        "WORKER_DISPATCH_SECRET": {
+          "key": "latest",
+          "name": "WORKER_DISPATCH_SECRET"
+        },
+        "ADMIN_SESSION_SECRET": {
+          "key": "latest",
+          "name": "ADMIN_SESSION_SECRET"
+        },
+        "BFF_ACTOR_SECRET": {
+          "key": "latest",
+          "name": "BFF_ACTOR_SECRET"
+        },
+        "PIPELINE_WATCHDOG_TOKEN": {
+          "key": "latest",
+          "name": "PIPELINE_WATCHDOG_TOKEN"
+        },
+        "SITE_BFF_SECRET": {
+          "key": "latest",
+          "name": "SITE_BFF_SECRET"
+        },
+        "REDIS_URL": {
+          "key": "latest",
+          "name": "REDIS_URL"
+        },
+        "SITE_REVALIDATE_SECRET": {
+          "key": "latest",
+          "name": "SITE_REVALIDATE_SECRET"
+        },
+        "LEAD_LOCK_HASH_PEPPER": {
+          "key": "latest",
+          "name": "LEAD_LOCK_HASH_PEPPER"
+        },
+        "LEAD_REPORT_TOKEN_SECRET": {
+          "key": "latest",
+          "name": "LEAD_REPORT_TOKEN_SECRET"
+        },
+        "RESEND_API_KEY": {
+          "key": "latest",
+          "name": "RESEND_API_KEY"
+        },
+        "DB_PASSWORD": {
+          "key": "latest",
+          "name": "DB_PASSWORD"
+        },
+        "INDEXNOW_KEY": {
+          "key": "latest",
+          "name": "INDEXNOW_KEY"
+        }
+      },
+      "environment_names": [
+        "DB_CONNECTION_MODE",
+        "GCP_PROJECT_ID",
+        "GCP_LOCATION",
+        "DB_USER",
+        "DB_NAME",
+        "CLOUD_SQL_CONNECTION_NAME",
+        "GCP_STORAGE_BUCKET",
+        "CERTIFICATE_MANAGER_LOCATION",
+        "CERTIFICATE_MAP_NAME",
+        "GCS_REPORTS_BUCKET",
+        "PUBLIC_DOMAIN",
+        "ADMIN_DOMAIN",
+        "ADMIN_BASE_URL",
+        "SITE_BASE_URL",
+        "ADMIN_ACTOR_NAME",
+        "CNAME_TARGET",
+        "CUSTOM_DOMAIN_IP_TARGETS",
+        "ALLOWED_ORIGINS",
+        "TRUSTED_PROXY_IPS",
+        "SITE_REVALIDATE_URL",
+        "CLAUDE_MODEL",
+        "CLAUDE_MODEL_FAST",
+        "CELERY_CONCURRENCY",
+        "CELERY_MAX_TASKS_PER_CHILD",
+        "OPENAI_MODEL_QUERY",
+        "OPENAI_MODEL_PARSE",
+        "GEMINI_MODEL",
+        "SOV_REPEAT_COUNT",
+        "SOV_REPEAT_COUNT_WEEKLY",
+        "LEAD_RETENTION_DAYS",
+        "LEAD_CONSENT_VERSION",
+        "PUBLIC_LEAD_RATE_LIMIT",
+        "PUBLIC_SITE_RATE_LIMIT",
+        "LOG_LEVEL",
+        "LOG_JSON",
+        "SLACK_WEBHOOK_ALLOWED_HOSTS",
+        "SOV_MONTHLY_COHORT_LIMIT",
+        "COST_GUARD_DAILY_SOV_QUERIES",
+        "COST_GUARD_MONTHLY_SOV_QUERIES",
+        "SOV_TRACKING_SET_N_DEFAULT",
+        "SOV_MONTHLY_WINDOW_START_DAY",
+        "SERVICE",
+        "APP_ENV",
+        "OPENAI_CHATGPT_USE_WEB_SEARCH",
+        "CERTIFICATE_MANAGER_AUTO_PROVISION",
+        "REPUTATION_RELEASE_REVISION",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "SLACK_WEBHOOK_URL",
+        "ADMIN_SECRET_KEY",
+        "WORKER_DISPATCH_SECRET",
+        "ADMIN_SESSION_SECRET",
+        "BFF_ACTOR_SECRET",
+        "PIPELINE_WATCHDOG_TOKEN",
+        "SITE_BFF_SECRET",
+        "REDIS_URL",
+        "SITE_REVALIDATE_SECRET",
+        "LEAD_LOCK_HASH_PEPPER",
+        "LEAD_REPORT_TOKEN_SECRET",
+        "RESEND_API_KEY",
+        "DB_PASSWORD",
+        "INDEXNOW_KEY"
+      ]
+    },
+    {
+      "name": "reputation-beat",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:20260916-001447",
+      "ready_revision": "reputation-beat-00159-zrg",
+      "traffic": [
+        {
+          "latestRevision": true,
+          "percent": 100,
+          "revisionName": "reputation-beat-00159-zrg"
+        }
+      ],
+      "conditions": [
+        {
+          "lastTransitionTime": "2026-09-16T00:24:29.064600Z",
+          "status": "True",
+          "type": "Ready"
+        }
+      ],
+      "secret_references": {
+        "ANTHROPIC_API_KEY": {
+          "key": "latest",
+          "name": "ANTHROPIC_API_KEY"
+        },
+        "OPENAI_API_KEY": {
+          "key": "latest",
+          "name": "OPENAI_API_KEY"
+        },
+        "GEMINI_API_KEY": {
+          "key": "latest",
+          "name": "GEMINI_API_KEY"
+        },
+        "SLACK_WEBHOOK_URL": {
+          "key": "latest",
+          "name": "SLACK_WEBHOOK_URL"
+        },
+        "ADMIN_SECRET_KEY": {
+          "key": "latest",
+          "name": "ADMIN_SECRET_KEY"
+        },
+        "WORKER_DISPATCH_SECRET": {
+          "key": "latest",
+          "name": "WORKER_DISPATCH_SECRET"
+        },
+        "ADMIN_SESSION_SECRET": {
+          "key": "latest",
+          "name": "ADMIN_SESSION_SECRET"
+        },
+        "BFF_ACTOR_SECRET": {
+          "key": "latest",
+          "name": "BFF_ACTOR_SECRET"
+        },
+        "PIPELINE_WATCHDOG_TOKEN": {
+          "key": "latest",
+          "name": "PIPELINE_WATCHDOG_TOKEN"
+        },
+        "SITE_BFF_SECRET": {
+          "key": "latest",
+          "name": "SITE_BFF_SECRET"
+        },
+        "REDIS_URL": {
+          "key": "latest",
+          "name": "REDIS_URL"
+        },
+        "SITE_REVALIDATE_SECRET": {
+          "key": "latest",
+          "name": "SITE_REVALIDATE_SECRET"
+        },
+        "LEAD_LOCK_HASH_PEPPER": {
+          "key": "latest",
+          "name": "LEAD_LOCK_HASH_PEPPER"
+        },
+        "LEAD_REPORT_TOKEN_SECRET": {
+          "key": "latest",
+          "name": "LEAD_REPORT_TOKEN_SECRET"
+        },
+        "RESEND_API_KEY": {
+          "key": "latest",
+          "name": "RESEND_API_KEY"
+        },
+        "DB_PASSWORD": {
+          "key": "latest",
+          "name": "DB_PASSWORD"
+        },
+        "INDEXNOW_KEY": {
+          "key": "latest",
+          "name": "INDEXNOW_KEY"
+        }
+      },
+      "environment_names": [
+        "DB_CONNECTION_MODE",
+        "GCP_PROJECT_ID",
+        "GCP_LOCATION",
+        "DB_USER",
+        "DB_NAME",
+        "CLOUD_SQL_CONNECTION_NAME",
+        "GCP_STORAGE_BUCKET",
+        "CERTIFICATE_MANAGER_LOCATION",
+        "CERTIFICATE_MAP_NAME",
+        "GCS_REPORTS_BUCKET",
+        "PUBLIC_DOMAIN",
+        "ADMIN_DOMAIN",
+        "ADMIN_BASE_URL",
+        "SITE_BASE_URL",
+        "ADMIN_ACTOR_NAME",
+        "CNAME_TARGET",
+        "CUSTOM_DOMAIN_IP_TARGETS",
+        "ALLOWED_ORIGINS",
+        "TRUSTED_PROXY_IPS",
+        "SITE_REVALIDATE_URL",
+        "CLAUDE_MODEL",
+        "CLAUDE_MODEL_FAST",
+        "CELERY_CONCURRENCY",
+        "CELERY_MAX_TASKS_PER_CHILD",
+        "OPENAI_MODEL_QUERY",
+        "OPENAI_MODEL_PARSE",
+        "GEMINI_MODEL",
+        "SOV_REPEAT_COUNT",
+        "SOV_REPEAT_COUNT_WEEKLY",
+        "LEAD_RETENTION_DAYS",
+        "LEAD_CONSENT_VERSION",
+        "PUBLIC_LEAD_RATE_LIMIT",
+        "PUBLIC_SITE_RATE_LIMIT",
+        "LOG_LEVEL",
+        "LOG_JSON",
+        "SLACK_WEBHOOK_ALLOWED_HOSTS",
+        "SOV_MONTHLY_COHORT_LIMIT",
+        "COST_GUARD_DAILY_SOV_QUERIES",
+        "COST_GUARD_MONTHLY_SOV_QUERIES",
+        "SOV_TRACKING_SET_N_DEFAULT",
+        "SOV_MONTHLY_WINDOW_START_DAY",
+        "SERVICE",
+        "APP_ENV",
+        "OPENAI_CHATGPT_USE_WEB_SEARCH",
+        "CERTIFICATE_MANAGER_AUTO_PROVISION",
+        "REPUTATION_RELEASE_REVISION",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "SLACK_WEBHOOK_URL",
+        "ADMIN_SECRET_KEY",
+        "WORKER_DISPATCH_SECRET",
+        "ADMIN_SESSION_SECRET",
+        "BFF_ACTOR_SECRET",
+        "PIPELINE_WATCHDOG_TOKEN",
+        "SITE_BFF_SECRET",
+        "REDIS_URL",
+        "SITE_REVALIDATE_SECRET",
+        "LEAD_LOCK_HASH_PEPPER",
+        "LEAD_REPORT_TOKEN_SECRET",
+        "RESEND_API_KEY",
+        "DB_PASSWORD",
+        "INDEXNOW_KEY"
+      ]
+    },
+    {
+      "name": "reputation-admin",
+      "service_account": "reputation-frontend-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin:20260916-001447",
+      "ready_revision": "reputation-admin-00084-xh9",
+      "traffic": [
+        {
+          "latestRevision": true,
+          "percent": 100,
+          "revisionName": "reputation-admin-00084-xh9"
+        }
+      ],
+      "conditions": [
+        {
+          "lastTransitionTime": "2026-09-16T00:26:22.984777Z",
+          "status": "True",
+          "type": "Ready"
+        }
+      ],
+      "secret_references": {
+        "ADMIN_SESSION_SECRET": {
+          "key": "latest",
+          "name": "ADMIN_SESSION_SECRET"
+        },
+        "ADMIN_SECRET_KEY": {
+          "key": "latest",
+          "name": "ADMIN_SECRET_KEY"
+        },
+        "BFF_ACTOR_SECRET": {
+          "key": "latest",
+          "name": "BFF_ACTOR_SECRET"
+        },
+        "SITE_BFF_SECRET": {
+          "key": "latest",
+          "name": "SITE_BFF_SECRET"
+        }
+      },
+      "environment_names": [
+        "BACKEND_URL",
+        "NEXT_PUBLIC_BACKEND_URL",
+        "ADMIN_SESSION_SECRET",
+        "ADMIN_SECRET_KEY",
+        "BFF_ACTOR_SECRET",
+        "SITE_BFF_SECRET"
+      ]
+    },
+    {
+      "name": "reputation-site",
+      "service_account": "reputation-frontend-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site:20260916-001447",
+      "ready_revision": "reputation-site-00123-27t",
+      "traffic": [
+        {
+          "latestRevision": true,
+          "percent": 100,
+          "revisionName": "reputation-site-00123-27t"
+        }
+      ],
+      "conditions": [
+        {
+          "lastTransitionTime": "2026-09-16T00:26:02.774669Z",
+          "status": "True",
+          "type": "Ready"
+        }
+      ],
+      "secret_references": {
+        "SITE_REVALIDATE_SECRET": {
+          "key": "latest",
+          "name": "SITE_REVALIDATE_SECRET"
+        },
+        "SITE_BFF_SECRET": {
+          "key": "latest",
+          "name": "SITE_BFF_SECRET"
+        },
+        "INDEXNOW_KEY": {
+          "key": "latest",
+          "name": "INDEXNOW_KEY"
+        }
+      },
+      "environment_names": [
+        "NEXT_PUBLIC_API_URL",
+        "NEXT_PUBLIC_SITE_URL",
+        "NEXT_PUBLIC_BACKEND_URL",
+        "NEXT_PUBLIC_GCP_STORAGE_BUCKET",
+        "BACKEND_URL",
+        "SITE_REVALIDATE_SECRET",
+        "SITE_BFF_SECRET",
+        "INDEXNOW_KEY"
+      ]
+    }
+  ],
+  "jobs": [
+    {
+      "name": "reputation-migrate",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:20260916-001447"
+    },
+    {
+      "name": "reputation-production-readiness",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:20260916-001447"
+    },
+    {
+      "name": "reputation-redbeat-reconcile",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:20260916-001447"
+    }
+  ],
+  "secret_values_read": false,
+  "production_database_accessed": false,
+  "api_iam_bindings": [
+    {
+      "members": [
+        "allUsers"
+      ],
+      "role": "roles/run.invoker"
+    }
+  ],
+  "secret_reference_alignment": {
+    "BFF_ACTOR_SECRET": {
+      "roles": [
+        "api",
+        "admin"
+      ],
+      "all_present": true,
+      "same_reference": true
+    },
+    "WORKER_DISPATCH_SECRET": {
+      "roles": [
+        "api",
+        "worker",
+        "beat"
+      ],
+      "all_present": true,
+      "same_reference": true
+    },
+    "SITE_BFF_SECRET": {
+      "roles": [
+        "api",
+        "admin",
+        "site"
+      ],
+      "all_present": true,
+      "same_reference": true
+    },
+    "SITE_REVALIDATE_SECRET": {
+      "roles": [
+        "worker",
+        "site"
+      ],
+      "all_present": true,
+      "same_reference": true
+    }
+  }
+}

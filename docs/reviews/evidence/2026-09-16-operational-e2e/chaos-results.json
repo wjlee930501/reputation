@@ -1,0 +1,8 @@
+{
+  "site_outage_retried_without_early_operator_alert": true,
+  "terminal_negative_incident_outbox_rows": 1,
+  "positive_revalidation_recovered": true,
+  "published_content_id_body_image_first_publication_unchanged": true,
+  "repeated_heartbeat_rows": 1,
+  "live_slack_deliveries": 0
+}

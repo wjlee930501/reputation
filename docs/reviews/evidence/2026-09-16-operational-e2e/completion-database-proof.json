@@ -1,0 +1,145 @@
+{
+  "migration": "0079_topic_swap_fallback",
+  "audit_trigger": true,
+  "content": [
+    {
+      "slug": "e2e-clinic-1",
+      "status": "DRAFT",
+      "count": 1
+    },
+    {
+      "slug": "e2e-clinic-0",
+      "status": "PUBLISHED",
+      "count": 12
+    }
+  ],
+  "measurement_counts": [
+    {
+      "ai_platform": "gemini",
+      "measurement_status": "SUCCESS",
+      "count": 150
+    },
+    {
+      "ai_platform": "chatgpt",
+      "measurement_status": "SUCCESS",
+      "count": 150
+    }
+  ],
+  "monthly_slots": [
+    {
+      "answer_status": "RECEIVED",
+      "judgment_status": "CONFIRMED",
+      "count": 150
+    }
+  ],
+  "notifications": [
+    {
+      "notification_type": "INCIDENT_OPEN",
+      "state": "SENT",
+      "attempt_count": 2,
+      "count": 1
+    },
+    {
+      "notification_type": "FLEET_HEARTBEAT",
+      "state": "SENT",
+      "attempt_count": 2,
+      "count": 1
+    }
+  ],
+  "delivery_events": [
+    {
+      "event_type": "RESCINDED",
+      "count": 1
+    },
+    {
+      "event_type": "REDELIVERED",
+      "count": 1
+    },
+    {
+      "event_type": "DELIVERED",
+      "count": 1
+    },
+    {
+      "event_type": "CORRECTED",
+      "count": 1
+    }
+  ],
+  "positive_failed_runs": 0,
+  "report": {
+    "id": "c5e1f86a-0d38-4b2e-a82c-ec33a930c413",
+    "quality": "COMPLETE",
+    "planned_cells": 30,
+    "successful_cells": 30,
+    "doctor_sha256": "9ad10097addcdba6b19da5a8bb9cac1044d9e79544cc430fc08001b1954651a8",
+    "bytes": 36956,
+    "delivery_gate_ready": true,
+    "separate_internal_doctor_artifacts": true,
+    "validation": {
+      "sha256": "9ad10097addcdba6b19da5a8bb9cac1044d9e79544cc430fc08001b1954651a8",
+      "byte_size": 36956,
+      "page_size": "A4",
+      "link_count": 1,
+      "page_count": 2,
+      "font_family": "Pretendard",
+      "glyph_count": 558,
+      "font_embedded": true,
+      "korean_to_unicode": true,
+      "validation_source": "SYSTEM",
+      "validation_version": "doctor-pdf-v1",
+      "expected_link_present": true,
+      "required_text_present": true
+    }
+  },
+  "wire_counts": [
+    {
+      "path": "/v1/messages",
+      "status": 200,
+      "attempts": 46
+    },
+    {
+      "path": "/v1/images/generations",
+      "status": 200,
+      "attempts": 12
+    },
+    {
+      "path": "/v1beta/models/gemini-3.6-flash:generateContent",
+      "status": 200,
+      "attempts": 162
+    },
+    {
+      "path": "/indexnow",
+      "status": 202,
+      "attempts": 3
+    },
+    {
+      "path": "/v1/responses",
+      "status": 200,
+      "attempts": 150
+    },
+    {
+      "path": "/v1/chat/completions",
+      "status": 200,
+      "attempts": 300
+    },
+    {
+      "path": "/slack/ops",
+      "status": 503,
+      "attempts": 1
+    },
+    {
+      "path": "/slack/ops",
+      "status": 200,
+      "attempts": 1
+    },
+    {
+      "path": "/slack/dev",
+      "status": 503,
+      "attempts": 1
+    },
+    {
+      "path": "/slack/dev",
+      "status": 200,
+      "attempts": 1
+    }
+  ]
+}

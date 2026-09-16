@@ -1,5 +1,7 @@
 # GEO release-candidate verification — 2026-09-16
 
+> Superseded local-gate verdict: see [completed operational E2E](2026-09-16-operational-e2e.md) and its validation JSON. The historical HOLD below is retained as the earlier checkpoint, not the current local release-candidate status.
+
 Status: HOLD. Executed local gates passed; remaining release gates are listed below. This record does not authorize production deployment.
 Baseline: cfc14d034452d60dce862fe6b661cc842b31740e.
 Worktree: Reputation-geo-hardening; branch codex/geo-autonomy-hardening-20260915.

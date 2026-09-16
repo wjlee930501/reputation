@@ -1,0 +1,41 @@
+{
+  "backend_source_files_matched": 394,
+  "backend_source_differences": [],
+  "backend_merkle_sha256": "163b8b1b8786aeb645e4ff5b72b9e593f250f6f8fe199196f453ca3e0cced605",
+  "source_commit": "62b58bd50e6defbcb73558e8488c72f84229a9dd",
+  "frontend_changes_since_build_baseline": [],
+  "images": [
+    {
+      "role": "api",
+      "tag": "reputation-verify-backend:62b58bd",
+      "id": "sha256:aaa5679ee88955a3e8df34683b91dda2472e2df86f67e078b4866ab101b0d6e3",
+      "os": "linux",
+      "architecture": "amd64",
+      "user": "appuser"
+    },
+    {
+      "role": "worker",
+      "tag": "reputation-verify-backend:62b58bd",
+      "id": "sha256:aaa5679ee88955a3e8df34683b91dda2472e2df86f67e078b4866ab101b0d6e3",
+      "os": "linux",
+      "architecture": "amd64",
+      "user": "appuser"
+    },
+    {
+      "role": "admin",
+      "tag": "reputation-verify-admin:6b0c86f",
+      "id": "sha256:6e7f685204693913ea1198b6eb17671445b34166ec110cd4e538c65179bfe53c",
+      "os": "linux",
+      "architecture": "amd64",
+      "user": "node"
+    },
+    {
+      "role": "site",
+      "tag": "reputation-verify-site:isolated-6b0c86f",
+      "id": "sha256:b78bc045d0b1e76c513e1e0a33cca2751a28a61703615b1d234d80b84e4823c5",
+      "os": "linux",
+      "architecture": "amd64",
+      "user": "node"
+    }
+  ]
+}

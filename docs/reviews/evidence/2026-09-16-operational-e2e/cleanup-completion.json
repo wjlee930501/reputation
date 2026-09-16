@@ -1,0 +1,30 @@
+{
+  "owned_containers_stopped": [
+    "reputation-final-e2e-worker",
+    "reputation-final-e2e-api",
+    "reputation-final-e2e-capture",
+    "reputation-final-e2e-ingress",
+    "reputation-final-e2e-site",
+    "reputation-final-e2e-admin",
+    "reputation-final-e2e-queue",
+    "reputation-final-e2e-db"
+  ],
+  "owned_host_pids_terminated": [
+    69889,
+    69913,
+    69910,
+    69890
+  ],
+  "closed_ports": [
+    53186,
+    53187,
+    58186,
+    53086,
+    58086,
+    55585,
+    55586,
+    56586
+  ],
+  "original_containers_untouched": true,
+  "evidence_and_database_files_retained": true
+}
