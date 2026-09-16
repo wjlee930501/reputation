@@ -1,0 +1,48 @@
+{
+  "image": "reputation-verify-backend:62b58bd",
+  "production_entrypoint_unmodified": true,
+  "APP_ENV": "test",
+  "no_runtime_adapter_or_source_mount": true,
+  "roles": {
+    "api": {
+      "status": 200,
+      "path": "/health/live",
+      "user": "appuser",
+      "entrypoint": [
+        "./docker-entrypoint.sh"
+      ],
+      "command": null
+    },
+    "worker": {
+      "status": 200,
+      "path": "/ready",
+      "user": "appuser",
+      "entrypoint": [
+        "./docker-entrypoint.sh"
+      ],
+      "command": null
+    },
+    "beat": {
+      "status": 200,
+      "path": "/ready",
+      "user": "appuser",
+      "entrypoint": [
+        "./docker-entrypoint.sh"
+      ],
+      "command": null
+    }
+  },
+  "prefork_worker_canaries": {
+    "queues": [
+      "control",
+      "default",
+      "content",
+      "sov",
+      "reports",
+      "leadgen",
+      "certificates"
+    ],
+    "release": "stock-62b58bd",
+    "verified": true
+  }
+}

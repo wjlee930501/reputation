@@ -373,7 +373,7 @@ class _AsyncReadinessStatesDB:
         entity = statement.column_descriptions[0].get("entity")
         if entity is HospitalContentPhilosophy:
             # 승인 행과 예외 초안은 같은 엔티티라 고르는 컬럼으로 가른다.
-            return _AsyncResult(rows=self._draft_rows if "unsupported_gaps" in names else self._approved_rows)
+            return _AsyncResult(rows=self._draft_rows if "source_asset_ids" not in names else self._approved_rows)
         if entity is HospitalSourceAsset:
             return _AsyncResult(rows=self._source_rows)
         if entity is HospitalSourceEvidenceNote:

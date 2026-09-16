@@ -143,7 +143,9 @@ def ensure_monthly_slots(
         slot = MeasurementObservationSlot(
             scope="MONTHLY",
             hospital_id=hospital_id,
-            monthly_cell_id=cell.id,
+            # Maintain the already-loaded parent collection. expire_on_commit=False
+            # otherwise leaves first-pass finalization seeing an empty slot set.
+            monthly_cell=cell,
             measurement_run_id=measurement_run_id,
             query_id=cell.query_matrix_id,
             platform=cell.platform,

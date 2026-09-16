@@ -57,6 +57,8 @@ class _FakeDB:
         return self.hospital if object_id == self.hospital.id else None
 
     async def execute(self, statement):
+        if str(statement).startswith("SELECT content_schedules.plan"):
+            return _ExecuteResult(hospital=None)
         return _ExecuteResult(self.schedules, self.hospital)
 
     def add(self, item):
@@ -400,7 +402,7 @@ async def test_set_schedule_enqueue_failure_does_not_fail_request(monkeypatch):
     assert alerts[0].get("notify") is False
 
 
-async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
+async def test_set_schedule_preserves_old_unpublished_future_slots(monkeypatch):
     """재설정 시 구 스케줄의 미발행 미래 슬롯(body 유무 무관)을 정리하고 PUBLISHED는 보존한다.
 
     회귀: 과거엔 title/body/generated_at/published_at가 모두 NULL인 빈 슬롯만 삭제해,
@@ -408,7 +410,6 @@ async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
     """
     from sqlalchemy import Delete
 
-    from app.models.content import ContentItem, ContentStatus
 
     old_schedule = SimpleNamespace(id=uuid.uuid4(), is_active=True)
 
@@ -420,7 +421,7 @@ async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
         async def execute(self, statement):
             if isinstance(statement, Delete):
                 self.deletes.append(statement)
-            return _ExecuteResult(self.schedules, self.hospital)
+            return await super().execute(statement)
 
     hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
     db = _RecordingDB(hospital, [old_schedule])
@@ -439,18 +440,7 @@ async def test_set_schedule_purges_old_unpublished_future_slots(monkeypatch):
     await content_api.set_schedule(hospital.id, body, db=db)
 
     assert old_schedule.is_active is False
-    assert len(db.deletes) == 1
-    compiled = str(db.deletes[0])
-    # 미발행 + 미래 슬롯을 body 조건 없이 삭제한다.
-    assert "status !=" in compiled
-    assert "scheduled_date >=" in compiled
-    assert "body IS NULL" not in compiled
-    # 이월(carried_over_from) 미발행 슬롯은 삭제 대상에서 제외한다.
-    assert "carried_over_from IS NULL" in compiled
-    # 삭제 대상은 ContentItem 테이블.
-    assert ContentItem.__tablename__ in compiled
-    # PUBLISHED가 보존 대상임을 참조 무결성 차원에서 확인(상수 사용).
-    assert ContentStatus.PUBLISHED.value == "PUBLISHED"
+    assert db.deletes == []
 
 
 async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch):
@@ -472,7 +462,7 @@ async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch
         async def execute(self, statement):
             if isinstance(statement, Delete):
                 self.deletes.append(statement)
-            return _ExecuteResult(self.schedules, self.hospital)
+            return await super().execute(statement)
 
     hospital = SimpleNamespace(id=uuid.uuid4(), site_live=False, schedule_set=False, plan=None)
     db = _RecordingDB(hospital, [old_schedule])
@@ -490,10 +480,7 @@ async def test_set_schedule_preserves_carried_over_unpublished_slots(monkeypatch
     )
     await content_api.set_schedule(hospital.id, body, db=db)
 
-    assert len(db.deletes) == 1
-    compiled = str(db.deletes[0])
-    # 이월 슬롯 보존 조건이 정리 delete에 반드시 포함된다.
-    assert "carried_over_from IS NULL" in compiled
+    assert db.deletes == []
 
 
 async def test_get_schedule_returns_active_schedule():

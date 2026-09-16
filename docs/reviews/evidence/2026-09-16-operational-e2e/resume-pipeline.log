@@ -1,0 +1,8 @@
+PASS stage generate
+PASS stage publish
+PASS stage recover
+PASS stage index
+PASS stage baseline
+PASS stage measure
+PASS stage report
+PASS stage heartbeat

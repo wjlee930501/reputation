@@ -1,7 +1,20 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-문서 버전: **2.8** · 갱신일: **2026-09-15 (Asia/Seoul)**
-소스 기준선: **`31129d9911910b82c1161829d922a9760fac13a1`**
+## 2026-09-15 GEO 자율 운영 보강 — 로컬 구현 우선 계약
+
+상태: `codex/geo-autonomy-hardening-20260915`, d96bd21 기반 로컬 구현·선별 검증. 운영 배포 전.
+기존 문구와 충돌할 때 아래의 새 계약을 적용한다. 상세 구현·한계·검증은 [GEO 보강 기록](docs/releases/2026-09-15-geo-autonomy-hardening.md)을 본다.
+정상 생성마다 메시지를 보내지 않되, 하루 한 건의 GEO 운영 요약은 Slack outbox로 보고한다. 기본 18시 KST 이후이며 누락 tick은 당일 다음 hourly tick이 회수한다.
+원장 상담 피드백은 다음 신규 생성부터 반영하며 기존 글 일괄 재생성을 하지 않는다. 활성 피드백은 총 6,000자, 중복은 합치고 사람의 기록 종료만 허용한다.
+BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시적 근거 제외·수정은 새 생성만 보류하고 의존 원고를 선택적으로 철회·수리한다. 철회 표시를 단순 발행 판정으로 지우지 않는다.
+일정 재설정으로 원고/최초 발행 이력을 삭제하지 않는다. 병원·계약 월 단위로 남은 할당만 채우며 다음 달 plan 변경은 append-only다.
+주요 공개 변경과 SITE_REVALIDATION intent는 한 transaction이다. cache invalidation 수락을 실제 환자 페이지 공개 확인으로 표시하지 않는다.
+새 생성 task는 소유권이 검증된 OperationRun을 바탕으로 실행 시 reservation token을 execution token으로 바꾸며, 대기 시간을 실행 lease로 오인하지 않는다.
+Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
+
+
+문서 버전: **2.9** · 갱신일: **2026-09-15 (Asia/Seoul)**
+소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
 이 파일은 과거 제품 브리프를 현재 코드 기준의 개발 안내로 교체한 것이다. 전체 흐름과 근거 파일은 [현재 시스템 구조](docs/architecture/system-map.md), 문서의 지위는 [문서 인덱스](docs/README.md)에서 확인한다. 코드 기본값과 운영 환경, 목표 정책과 현재 구현 차이를 구분한다.
@@ -16,7 +29,7 @@
 ## 현재 기술·책임 경계
 
 - Backend: Python 3.11/FastAPI, PostgreSQL/SQLAlchemy/Alembic, Celery/Redis/RedBeat, Jinja2/WeasyPrint. API async와 Worker sync 세션이 공존한다.
-- Admin/Site: Next App Router, 조사 기준 Next 16.3.1, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다. 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)은 BFF가 서명한 actor 단언(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET`, 120초)을 요구하며, 배치·CLI는 `X-Admin-Actor-System`으로 감사에 `system:<job>`으로 남는다. 공유 `X-Admin-Key`만으로 actor를 고르는 경로는 없다.
+- Admin/Site: Next App Router, 저장소 선언 기준 Next 16.3.3, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다. 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)은 BFF가 서명한 actor 단언(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET`, 120초)을 요구하며, 배치·CLI는 `X-Admin-Actor-System`으로 감사에 `system:<job>`으로 남는다. 공유 `X-Admin-Key`만으로 actor를 고르는 경로는 없다.
 - 운영 배포: API, Worker, Beat, Admin, Site 모두 GCP Cloud Run. Cloud SQL, Memorystore, GCS, HTTPS Load Balancer와 인증서 구성을 사용한다.
 - 콘텐츠는 Anthropic Claude, 기본 이미지 경로는 Vertex Gemini, 측정은 OpenAI/Gemini API다. 개발 에이전트 모델과 서비스의 모델을 혼동하지 않는다. 실제 모델은 `backend/app/core/config.py`와 배포 설정으로 확인한다.
 - `build_aeo_site`는 상태 준비·자동 활성화 작업이다. 별도의 `site_builder.py`나 병원별 HTML/CSS 생성기를 전제로 개발하지 않는다.
@@ -27,7 +40,7 @@
 
 공개 활성화의 공통 선행조건은 `profile_complete && site_built`다. V0 초기 진단은 독립 백그라운드 작업이며 공개 시작을 막지 않는다. 일정·Essence를 활성화 선행조건에 추가하지 않는다. 기본 주소는 조건 충족 시 자동 활성화하고, 자기 도메인은 기존 도메인·TLS 확인 경로를 따르며, PAUSED는 배경 작업으로 재개하지 않는다. 상태 변경은 서비스 구간·도메인 확인·감사 기록까지 검수한다.
 
-콘텐츠의 신규 생성·발행은 일정과 현재 전체 자료에 유효한 Essence를 기준으로 한다. `EssenceReadiness.current`와 기존 승인 근거를 유지하는 `public_philosophy`의 목적을 섞지 않는다. 일반 텍스트 자료 생성·실질 변경은 durable 처리 run에 연결하고, 동일 정규화 값 PATCH는 근거와 처리 상태를 바꾸지 않는다. 사진과 원문 없는 URL 자료는 이 자동 처리 대상과 구분한다.
+콘텐츠 신규 생성·발행은 일정과 승인된 BaseEssence를 사용한다. 일반 자료 추가·노이즈 hash 변화는 진단 정보이며 자동 운영을 막지 않는다. 명시적 승인 근거 철회·수정만 재승인 전 신규 생성을 보류한다. `EssenceReadiness.current`와 기존 승인 근거를 유지하는 `public_philosophy`의 목적을 섞지 않는다. 일반 텍스트 자료 생성·실질 변경은 durable 처리 run에 연결하고, 동일 정규화 값 PATCH는 근거와 처리 상태를 바꾸지 않는다. 사진과 원문 없는 URL 자료는 이 자동 처리 대상과 구분한다.
 
 수동·자동 발행은 공통 콘텐츠 안전 검사를 사용하지만 현재 생애주기·예정일 조건은 완전히 같지 않다. Public API의 활성화·자료·본문·참고자료 검사를 제거하지 않는다. DB PUBLISHED만으로 공개 성공을 선언하지 않는다.
 

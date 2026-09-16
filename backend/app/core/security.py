@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 api_key_header = APIKeyHeader(name="X-Admin-Key", auto_error=False)
 _ADMIN_RATE_LIMIT = parse("100/minute")
+_ADMIN_REVOCATION_RATE_LIMIT = parse("30/minute")
 
 # 인가는 공유 X-Admin-Key로 이뤄지므로 계정 비활성화만으로는 백엔드 권한이 끊기지 않는다.
 # 최소한 "검증되지 않은 actor가 상태를 바꾸는" 순간은 반드시 드러나야 하므로, 쓰기 메서드는
@@ -200,8 +201,15 @@ async def verify_admin_rate_limit(request: Request) -> None:
     if limiter is None or not getattr(limiter, "enabled", True):
         return
     strategy = limiter.limiter
-    limit_key = f"admin:{get_request_ip(request) or 'unknown'}"
-    if not strategy.hit(_ADMIN_RATE_LIMIT, limit_key):
+    # Logging out must remain possible after read traffic exhausts its budget.
+    # This endpoint still requires the admin key and BFF CSRF/session checks;
+    # use a separate bounded lane, not an unlimited authentication exemption.
+    revoking = (request.method == "POST"
+                and request.url.path == "/api/v1/admin/auth/sessions/revoke")
+    lane = "admin-session-revoke" if revoking else "admin"
+    limit_key = f"{lane}:{get_request_ip(request) or 'unknown'}"
+    rate = _ADMIN_REVOCATION_RATE_LIMIT if revoking else _ADMIN_RATE_LIMIT
+    if not strategy.hit(rate, limit_key):
         raise HTTPException(status_code=429, detail="Too many requests")
 
 

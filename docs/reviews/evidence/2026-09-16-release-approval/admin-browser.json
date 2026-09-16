@@ -1,0 +1,122 @@
+{
+  "results": [
+    {
+      "name": "anonymous admin request is rejected",
+      "status": "PASS"
+    },
+    {
+      "name": "real login creates a server session",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop hospitals: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop operations: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop leads: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop accounts: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop new-contract: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop overview: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop info: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop content: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop reports: render without overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "feedback save, duplicate suppression and reload persistence",
+      "status": "PASS"
+    },
+    {
+      "name": "feedback remains hospital-scoped on navigation",
+      "status": "PASS"
+    },
+    {
+      "name": "authenticated mutation without CSRF is refused",
+      "status": "PASS"
+    },
+    {
+      "name": "explicit feedback retirement persists without generation",
+      "status": "PASS"
+    },
+    {
+      "name": "schedule adjustment preserves all hospital-month identities",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile hospitals: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile operations: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile leads: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile accounts: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile new-contract: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile overview: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile info: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile content: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "mobile reports: render without page overflow",
+      "status": "PASS"
+    },
+    {
+      "name": "no browser runtime exceptions",
+      "status": "PASS"
+    },
+    {
+      "name": "no same-origin HTTP 5xx during UI workflows",
+      "status": "PASS"
+    },
+    {
+      "name": "logout revokes browser access",
+      "status": "PASS"
+    },
+    {
+      "name": "all workflows including logout have no HTTP 5xx",
+      "status": "PASS"
+    }
+  ],
+  "errors": [],
+  "serverErrors": []
+}

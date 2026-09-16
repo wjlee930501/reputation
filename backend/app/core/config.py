@@ -50,8 +50,12 @@ def _resolve_secret(name: str, default: str = "") -> str:
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=None if os.getenv("REPUTATION_DISABLE_DOTENV") == "1" else ".env",
+        extra="ignore",
+    )
 
+    FLEET_HEARTBEAT_HOUR_KST: int = 18
     APP_ENV: str = "production"
     REPUTATION_RELEASE_REVISION: str = ""
     ADMIN_SECRET_KEY: str = ""

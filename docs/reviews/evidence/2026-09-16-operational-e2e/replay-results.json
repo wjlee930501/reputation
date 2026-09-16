@@ -1,0 +1,12 @@
+{
+  "repeated_stages": [
+    "generate",
+    "publish",
+    "measure",
+    "report",
+    "heartbeat"
+  ],
+  "additional_provider_attempts": 0,
+  "content_measurement_and_artifact_identities_preserved": true,
+  "heartbeat_rows": 1
+}

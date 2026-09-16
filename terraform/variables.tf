@@ -458,3 +458,10 @@ variable "inquiry_sms_sender_no" {
   type        = string
   default     = "010-2492-8543"
 }
+
+
+variable "legacy_frontend_access_enabled" {
+  description = "Transition only: retain old frontend grants until new Site/Admin identities are deployed and old revisions retired. Then set false."
+  type        = bool
+  default     = true
+}

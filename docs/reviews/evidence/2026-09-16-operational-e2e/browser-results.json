@@ -1,0 +1,54 @@
+{
+  "results": [
+    {
+      "name": "production login and real session",
+      "status": "PASS"
+    },
+    {
+      "name": "worker-built monthly report is ready in the real dialog",
+      "status": "PASS"
+    },
+    {
+      "name": "forged PDF hash and missing CSRF cannot create delivery",
+      "status": "PASS"
+    },
+    {
+      "name": "downloaded PDF hash matches the actual validated artifact",
+      "status": "PASS"
+    },
+    {
+      "name": "record delivery through the dialog",
+      "status": "PASS"
+    },
+    {
+      "name": "correction appends without deleting the original",
+      "status": "PASS"
+    },
+    {
+      "name": "rescission preserves history and clears effective delivery",
+      "status": "PASS"
+    },
+    {
+      "name": "re-download and re-delivery retain the same byte identity",
+      "status": "PASS"
+    },
+    {
+      "name": "history survives reload and retains all four hash-bound events",
+      "status": "PASS"
+    },
+    {
+      "name": "another hospital cannot read the report",
+      "status": "PASS"
+    },
+    {
+      "name": "desktop and mobile dialog remain usable",
+      "status": "PASS"
+    },
+    {
+      "name": "no runtime exception or server 5xx",
+      "status": "PASS"
+    }
+  ],
+  "errors": [],
+  "serverErrors": []
+}

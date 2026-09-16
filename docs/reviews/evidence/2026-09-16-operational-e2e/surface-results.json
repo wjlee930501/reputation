@@ -1,0 +1,38 @@
+{
+  "results": [
+    {
+      "name": "exact tenant health identity",
+      "status": "PASS"
+    },
+    {
+      "name": "12 public articles and certified image bytes",
+      "status": "PASS",
+      "count": 12
+    },
+    {
+      "name": "/",
+      "status": "PASS"
+    },
+    {
+      "name": "/contents",
+      "status": "PASS"
+    },
+    {
+      "name": "/sitemap.xml",
+      "status": "PASS"
+    },
+    {
+      "name": "/robots.txt",
+      "status": "PASS"
+    },
+    {
+      "name": "/llms.txt",
+      "status": "PASS"
+    },
+    {
+      "name": "negative and cross-tenant public isolation",
+      "status": "PASS"
+    }
+  ],
+  "actual_image_hashes_verified": 12
+}

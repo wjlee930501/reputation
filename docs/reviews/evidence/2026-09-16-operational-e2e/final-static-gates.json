@@ -1,0 +1,72 @@
+{
+  "results": [
+    {
+      "command": [
+        "backend/.venv/bin/python",
+        "-m",
+        "ruff",
+        "check",
+        "backend"
+      ],
+      "exit_code": 0,
+      "stdout": "All checks passed!\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "backend/.venv/bin/python",
+        "-m",
+        "ruff",
+        "check",
+        "scripts/release_e2e",
+        "--config",
+        "backend/pyproject.toml"
+      ],
+      "exit_code": 0,
+      "stdout": "All checks passed!\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "scripts/release_e2e/browser.mjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "node",
+        "--check",
+        "scripts/release_e2e/ingress.cjs"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check_user_facing_terms.py"
+      ],
+      "exit_code": 0,
+      "stdout": "OK: no banned user-facing Re:putation terms found.\n",
+      "stderr": ""
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/check_db_connection_budget.py"
+      ],
+      "exit_code": 0,
+      "stdout": "\u2713 DB \uc5f0\uacb0 \uc608\uc0b0 \ud1b5\uacfc\nAPI    : 7 inst \u00d7 (3+2) = 35\nWorker : 5 inst \u00d7 2 conc \u00d7 (2+2) = 40\n\ud569\uacc4    : 75 / \ud55c\ub3c4 80 (max_connections 100 \u00d7 0.8)\n",
+      "stderr": ""
+    }
+  ],
+  "lint_invocation_diagnostic": {
+    "noncanonical_combined_explicit_config_import_sort_findings": 305,
+    "reason_verified_with_show_settings": "Explicit --config from repository root changes linter.src/project_root from backend to repository root; canonical backend discovery passes without changing source or lint rules."
+  }
+}

@@ -1,5 +1,6 @@
 import { getApiBase } from './config.ts'
 import { publicFetchInit } from './fetch-policy.ts'
+import { withHospitalCache } from './hospital-cache.ts'
 import { parseHospitalPayload, type Hospital } from './hospital-payload.ts'
 export { resolveAssetUrl } from './hospital-payload.ts'
 export type {
@@ -83,7 +84,7 @@ export async function fetchHospital(
 ): Promise<Hospital> {
   // 경로 세그먼트는 항상 인코딩 — 라우트 파라미터는 URL 디코드된 값이라 ?/#/%2F 류가
   // 백엔드 요청의 쿼리·경로로 주입될 수 있다 (admin BFF buildSafeAdminProxyPath와 동일 정책).
-  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, init)
+  const res = await fetch(`${getApiBase()}/hospitals/${encodeURIComponent(slug)}`, withHospitalCache(slug, init))
   if (res.status === 404) throw new HospitalNotFoundError(slug)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching hospital`)
   const hospital = parseHospitalPayload(await res.json())
@@ -142,7 +143,7 @@ async function fetchContentsPage(
 ): Promise<ContentSummary[]> {
   const offsetQuery = offset > 0 ? `&offset=${offset}` : ''
   const url = `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents?limit=${CONTENTS_FETCH_LIMIT}${offsetQuery}`
-  const res = await fetch(url, init)
+  const res = await fetch(url, withHospitalCache(slug, init))
   // 404는 "콘텐츠 0건"이 아니라 병원 자체가 없거나 비활성 상태라는 뜻이다(콘텐츠가 0건이면
   // 백엔드가 200 []를 내려준다) — fetchHospital과 동일한 타입으로 던져 페이지의 notFound()
   // 분기와 맞물리게 한다. 그 외 !res.ok(5xx/429 등)를 조용히 []로 삼키면 ISR 캐시가
@@ -180,7 +181,7 @@ export async function fetchAllContents(
 export async function fetchContent(slug: string, contentId: string): Promise<ContentDetail> {
   const res = await fetch(
     `${getApiBase()}/hospitals/${encodeURIComponent(slug)}/contents/${encodeURIComponent(contentId)}`,
-    publicFetchInit(),
+    withHospitalCache(slug, publicFetchInit()),
   )
   if (res.status === 404) throw new ContentNotFoundError(contentId)
   if (!res.ok) throw new Error(`Server error (${res.status}) when fetching content`)

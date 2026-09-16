@@ -1,0 +1,88 @@
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001, initial
+INFO  [alembic.runtime.migration] Running upgrade 0001 -> 0002, add query_matrix priority column
+INFO  [alembic.runtime.migration] Running upgrade 0002 -> 0003, add performance indexes and unique constraints
+INFO  [alembic.runtime.migration] Running upgrade 0003 -> 0004, add competitor_mentions to sov_records
+INFO  [alembic.runtime.migration] Running upgrade 0004 -> 0005, add local entity fields to hospitals
+INFO  [alembic.runtime.migration] Running upgrade 0005 -> 0006, add content essence models
+INFO  [alembic.runtime.migration] Running upgrade 0006 -> 0007, add ai query target strategy models
+INFO  [alembic.runtime.migration] Running upgrade 0007 -> 0008_dedupe_ai_query_variants, dedupe ai query variants and enforce uniqueness
+INFO  [alembic.runtime.migration] Running upgrade 0008_dedupe_ai_query_variants -> 0009_add_measurement_runs, add measurement run foundation
+INFO  [alembic.runtime.migration] Running upgrade 0009_add_measurement_runs -> 0010_add_exposure_actions, add exposure gap and action foundation
+INFO  [alembic.runtime.migration] Running upgrade 0010_add_exposure_actions -> 0011_add_content_brief_links, add content brief query links
+INFO  [alembic.runtime.migration] Running upgrade 0011_add_content_brief_links -> 0012_add_exposure_content_link_uniqueness, add exposure content link uniqueness
+INFO  [alembic.runtime.migration] Running upgrade 0012_add_exposure_content_link_uniqueness -> 0013_add_sales_leads, add sales leads
+INFO  [alembic.runtime.migration] Running upgrade 0013_add_sales_leads -> 0014_add_admin_audit_logs, add admin audit logs
+INFO  [alembic.runtime.migration] Running upgrade 0014_add_admin_audit_logs -> 0015_add_lead_retention_columns, add lead retention + consent trail columns
+INFO  [alembic.runtime.migration] Running upgrade 0015_add_lead_retention_columns -> 0016_add_content_references_and_body_updated_at, add content references list + body_updated_at
+INFO  [alembic.runtime.migration] Running upgrade 0016_add_content_references_and_body_updated_at -> 0017_add_faq_split_fields, add FAQ split fields (faq_question, faq_answer_summary)
+INFO  [alembic.runtime.migration] Running upgrade 0017_add_faq_split_fields -> 0018_add_asset_storage_and_photo_types, add file storage columns + photo SourceType enum values + is_public
+INFO  [alembic.runtime.migration] Running upgrade 0018_add_asset_storage_and_photo_types -> 0019_add_hospital_entity_identifiers, add hospital entity identifiers + director credentials JSON
+INFO  [alembic.runtime.migration] Running upgrade 0019_add_hospital_entity_identifiers -> 0020_add_sales_lead_conversion, add sales lead conversion tracking
+INFO  [alembic.runtime.migration] Running upgrade 0020_add_sales_lead_conversion -> 0021_add_hospital_onboarding_source, add hospital onboarding source fields
+INFO  [alembic.runtime.migration] Running upgrade 0021_add_hospital_onboarding_source -> 0022_add_admin_users, add admin users
+INFO  [alembic.runtime.migration] Running upgrade 0022_add_admin_users -> 0023_harden_hospital_json_and_fk_indexes, harden hospital JSON list columns (NOT NULL) and add covering FK indexes
+INFO  [alembic.runtime.migration] Running upgrade 0023_harden_hospital_json_and_fk_indexes -> 0024_audit_log_append_only, make admin_audit_logs append-only (tamper-evident)
+INFO  [alembic.runtime.migration] Running upgrade 0024_audit_log_append_only -> 0025_add_aeo_domain_index, add index on hospitals.aeo_domain + normalize stored values
+INFO  [alembic.runtime.migration] Running upgrade 0025_add_aeo_domain_index -> 0026_add_content_carried_over_from, add content_items.carried_over_from (월말 반려 이월 추적)
+INFO  [alembic.runtime.migration] Running upgrade 0026_add_content_carried_over_from -> 0027_add_domain_management_metadata
+INFO  [alembic.runtime.migration] Running upgrade 0027_add_domain_management_metadata -> 0028_release_blocker_integrity_constraints, release blocker integrity constraints
+INFO  [alembic.runtime.migration] Running upgrade 0028_release_blocker_integrity_constraints -> 0029_add_content_generation_claims, add content generation claims
+INFO  [alembic.runtime.migration] Running upgrade 0029_add_content_generation_claims -> 0030_unique_ai_query_target_hospital_name, unique ai_query_target per hospital + name
+INFO  [alembic.runtime.migration] Running upgrade 0030_unique_ai_query_target_hospital_name -> 0031_add_hospital_visual_theme, add hospital visual theme fields
+INFO  [alembic.runtime.migration] Running upgrade 0031_add_hospital_visual_theme -> 0032_add_post_publish_review, add post-publish notification and review tracking
+INFO  [alembic.runtime.migration] Running upgrade 0032_add_post_publish_review -> 0033_add_cancelled_content_status, add terminal cancelled content status
+INFO  [alembic.runtime.migration] Running upgrade 0033_add_cancelled_content_status -> 0034_add_query_intent, add query_intent to query_matrix
+INFO  [alembic.runtime.migration] Running upgrade 0034_add_query_intent -> 0035_add_lead_diagnosis, 리드마그넷 무료 진단 (1단) 스키마
+INFO  [alembic.runtime.migration] Running upgrade 0035_add_lead_diagnosis -> 0036_lead_diagnosis_hardening, 리드 진단 스키마 보강 — 적대적 검토(2026-07-30) 반영
+INFO  [alembic.runtime.migration] Running upgrade 0036_lead_diagnosis_hardening -> 0037_add_admin_session_invalidation, add admin_users.sessions_invalid_before
+INFO  [alembic.runtime.migration] Running upgrade 0037_add_admin_session_invalidation -> 0038_add_doctor_report_path, add monthly_reports.doctor_pdf_path
+INFO  [alembic.runtime.migration] Running upgrade 0038_add_doctor_report_path -> 0039_update_content_plan_tiers, replace the legacy eight-post plan with the 12/16/20 tier contract
+INFO  [alembic.runtime.migration] Running upgrade 0039_update_content_plan_tiers -> 0040_add_hospital_handoffs, add legacy-safe hospital handoffs
+INFO  [alembic.runtime.migration] Running upgrade 0040_add_hospital_handoffs -> 0041_add_monthly_delivery_control, add immutable monthly delivery control
+INFO  [alembic.runtime.migration] Running upgrade 0041_add_monthly_delivery_control -> 0042_add_operations_control_plane, add durable operations control plane
+INFO  [alembic.runtime.migration] Running upgrade 0042_add_operations_control_plane -> 0043_allow_system_report_artifact_validation, Allow system-owned validation of monthly report artifacts.
+INFO  [alembic.runtime.migration] Running upgrade 0043_allow_system_report_artifact_validation -> 0044_add_sov_mention_verdict, 3값 언급 판정을 유료 측정에도 도입한다 (PRD F3-7).
+INFO  [alembic.runtime.migration] Running upgrade 0044_add_sov_mention_verdict -> 0045_add_lead_measurement_config, 무료 진단 접수 시점의 측정 정책 스냅샷 (측정 정책 v2).
+INFO  [alembic.runtime.migration] Running upgrade 0045_add_lead_measurement_config -> 0046_add_sov_measurement_telemetry, 유료 측정에도 검색·모델·토큰 계측을 저장한다.
+INFO  [alembic.runtime.migration] Running upgrade 0046_add_sov_measurement_telemetry -> 0047_add_incident_episode_seq, Add stable incident episode identity.
+INFO  [alembic.runtime.migration] Running upgrade 0047_add_incident_episode_seq -> 0048_normalize_partial_v0_summaries, Normalize operator guidance for successful partial V0 runs.
+INFO  [alembic.runtime.migration] Running upgrade 0048_normalize_partial_v0_summaries -> 0049_add_domain_cert_job_tracking, Add domain certificate job tracking fields to Hospital.
+INFO  [alembic.runtime.migration] Running upgrade 0049_add_domain_cert_job_tracking -> 0050_add_domain_cert_job_identity, Add token-bound identity to custom-domain certificate jobs.
+INFO  [alembic.runtime.migration] Running upgrade 0050_add_domain_cert_job_identity -> 0051_add_hospital_visual_identity, Add operator-approved visual identity fields for public clinic surfaces.
+INFO  [alembic.runtime.migration] Running upgrade 0051_add_hospital_visual_identity -> 0052_add_photo_asset_provenance, Add durable provenance verification for hospital photo assets.
+INFO  [alembic.runtime.migration] Running upgrade 0052_add_photo_asset_provenance -> 0053_add_content_image_policy_verification, Track semantic policy approval for generated content images.
+INFO  [alembic.runtime.migration] Running upgrade 0053_add_content_image_policy_verification -> 0054_add_hospital_content_customization, Add hospital-specific hero and editorial scope controls.
+INFO  [alembic.runtime.migration] Running upgrade 0054_add_hospital_content_customization -> 0055_backfill_photo_asset_kind, Backfill asset_kind/approved_usage for photos stored before classification existed.
+INFO  [alembic.runtime.migration] Running upgrade 0055_backfill_photo_asset_kind -> 0056_add_domain_live_check, Record the last live HTTPS/CNAME observation for a hospital custom domain.
+INFO  [alembic.runtime.migration] Running upgrade 0056_add_domain_live_check -> 0057_mark_operations_test_accounts, Keep QA admin accounts out of real-operation metrics.
+INFO  [alembic.runtime.migration] Running upgrade 0057_mark_operations_test_accounts -> 0058_repair_monthly_delivery_drift, Repair monthly delivery schema drift left by an already-applied 0041.
+INFO  [alembic.runtime.migration] Running upgrade 0058_repair_monthly_delivery_drift -> 0059_add_hospital_usage_events, Add an observational hospital usage ledger for provider call counts and tokens.
+INFO  [alembic.runtime.migration] Running upgrade 0059_add_hospital_usage_events -> 0060_add_ai_query_target_tracking_set, Mark fixed monthly SoV tracking-set members on existing query targets.
+INFO  [alembic.runtime.migration] Running upgrade 0060_add_ai_query_target_tracking_set -> 0061_allow_system_incident_acknowledgement, Allow the system to acknowledge an automatically recovered incident.
+INFO  [alembic.runtime.migration] Running upgrade 0061_allow_system_incident_acknowledgement -> 0062_allow_monthly_manifest_protocol_supersede, Allow an authoritative month-end protocol to supersede a monthly manifest.
+INFO  [alembic.runtime.migration] Running upgrade 0062_allow_monthly_manifest_protocol_supersede -> 0063_add_monthly_sov_cohort, Add stable hospital membership for monthly visibility measurement.
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='강심장내과' matches=0
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='행복드림' matches=0
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='장편한외과' matches=0
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='마포성모탑' matches=0
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='노원탑365' matches=0
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='서울W내과의원 위례점' matches=0
+ERROR [0063_add_monthly_sov_cohort_py] monthly cohort token migration requires exactly one ACTIVE hospital: token='연세속시원' matches=0
+INFO  [alembic.runtime.migration] Running upgrade 0063_add_monthly_sov_cohort -> 0064_manifest_recovery_guard, Separate monthly manifest recovery from protocol supersede.
+INFO  [alembic.runtime.migration] Running upgrade 0064_manifest_recovery_guard -> 0065_provider_usage, Add normalized per-provider HTTP-attempt usage events.
+INFO  [alembic.runtime.migration] Running upgrade 0065_provider_usage -> 0066_content_contracts, add content generation, review, and image certification contracts
+INFO  [alembic.runtime.migration] Running upgrade 0066_content_contracts -> 0067_measurement_slots, Add durable paid measurement observation slots.
+INFO  [alembic.runtime.migration] Running upgrade 0067_measurement_slots -> 0068_lead_cost_deferral, Add durable automatic cost deferral for free lead diagnosis.
+INFO  [alembic.runtime.migration] Running upgrade 0068_lead_cost_deferral -> 0069_content_first_publication, Preserve immutable first-publication facts for monthly history.
+INFO  [alembic.runtime.migration] Running upgrade 0069_content_first_publication -> 0070_essence_evidence_noise_hash, Record which evidence notes were excluded as noise when an Essence was approved.
+INFO  [alembic.runtime.migration] Running upgrade 0070_essence_evidence_noise_hash -> 0071_plan_enum_cleanup, Constrain hospitals.plan and content_schedules.plan to the 12/16/20 contract
+INFO  [alembic.runtime.migration] Running upgrade 0071_plan_enum_cleanup -> 0072_add_base_essence_flag, Promote each hospital's latest approved philosophy to stable BaseEssence.
+INFO  [alembic.runtime.migration] Running upgrade 0072_add_base_essence_flag -> 0073_add_director_deltas, Add director deltas independently of the stable base.
+INFO  [alembic.runtime.migration] Running upgrade 0073_add_director_deltas -> 0074_add_image_reuse_marker, Mark a cover image that was reused from another published article.
+INFO  [alembic.runtime.migration] Running upgrade 0074_add_image_reuse_marker -> 0075_add_hospital_fallback_image, Certify the hospital hero image as a cover-image fallback of last resort.
+INFO  [alembic.runtime.migration] Running upgrade 0075_add_hospital_fallback_image -> 0076_inquiry_internal_diagnosis, Allow Admin-only inquiry diagnoses without free-diagnosis quota or locks.
+INFO  [alembic.runtime.migration] Running upgrade 0076_inquiry_internal_diagnosis -> 0077_inquiry_intake_automation, Public inquiry intake: specialty for auto diagnosis and acknowledgement SMS outcome.
+INFO  [alembic.runtime.migration] Running upgrade 0077_inquiry_intake_automation -> 0078_add_hospital_physicians, Add hospital_physicians rows and hospitals.address_detail.
+INFO  [alembic.runtime.migration] Running upgrade 0078_add_hospital_physicians -> 0079_topic_swap_fallback, Add content_items.topic_swap_history and content_items.human_edited_at.

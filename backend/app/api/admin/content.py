@@ -20,7 +20,7 @@ from typing import Any, Final, Optional
 import arrow
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -80,6 +80,7 @@ from app.services.exposure_content_linker import (
     unlink_content_from_exposure_action,
 )
 from app.services.gap_driven_slots import (
+    ExistingSlot,
     build_gap_targets,
     gap_target_rows_stmt,
     plan_gap_driven_slots,
@@ -93,9 +94,15 @@ from app.services.operation_runs import (
 )
 from app.services.ops_incident_alerts import open_ops_incident
 from app.services.post_publish_review_policy import is_human_post_publish_review_sample
+from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.published_image_recertification import RECERTIFY_OPERATION
 from app.services.published_image_recertification import (
     base_key as published_recertify_key,
+)
+from app.services.schedule_reconciliation import (
+    month_items_query,
+    remaining_month_slots,
+    retime_open_allocations,
 )
 from app.services.site_revalidate import (
     ensure_site_revalidate_configured,
@@ -250,6 +257,7 @@ async def set_schedule(
     콘텐츠 스케줄 설정.
     저장 즉시 해당 월의 ContentItem 슬롯을 자동 생성.
     """
+    await acquire_hospital_advisory_lock(db, hospital_id)
     hospital = await _get_hospital_for_schedule_update(db, hospital_id)
 
     # 요금제는 계약 사실이다 — 월 편수와 가격이 여기에 걸려 있으므로 인수 정정 경로
@@ -298,29 +306,29 @@ async def set_schedule(
     old_result = await db.execute(old_stmt)
     old_schedules = old_result.scalars().all()
     old_schedule_ids = [old.id for old in old_schedules]
+    future_heads = [old for old in old_schedules
+                    if getattr(old, "active_from", body.active_from) > body.active_from]
     for old in old_schedules:
-        old.is_active = False
-    if old_schedule_ids:
-        # 재설정 시 구 스케줄의 미발행 미래 슬롯을 body 유무와 무관하게 정리한다.
-        # 이미 본문이 생성된(body 있음) 구 슬롯이 남으면 새 스케줄 슬롯과 같은 날짜에
-        # 중복 발행/중복 Slack/중복 생성 비용이 발생한다. PUBLISHED 슬롯은 발행 이력이므로
-        # 절대 삭제하지 않고, 과거 슬롯도 이력 보존을 위해 남긴다 (오늘 이후만 정리).
-        # 이월(carried_over_from IS NOT NULL) 미발행 슬롯도 보존한다: 월말 반려로 이월된
-        # 슬롯을 스케줄 재설정만으로 지우면 아직 발행 못 한 이월 콘텐츠가 유실된다.
-        await db.execute(
-            delete(ContentItem).where(
-                ContentItem.schedule_id.in_(old_schedule_ids),
-                ContentItem.status != ContentStatus.PUBLISHED,
-                ContentItem.scheduled_date >= today_kst,
-                ContentItem.carried_over_from.is_(None),
-            )
-        )
+        if old not in future_heads:
+            old.is_active = False
+    # Preserve all identities, publications, claims and generated/human work.
+    # A replacement only fills the unallocated hospital/month obligation.
+    target_month = arrow.get(body.active_from).floor("month")
+    existing_rows = (await db.execute(month_items_query(hospital_id, target_month))).all()
+    period_plan = (await db.execute(
+        select(ContentSchedule.plan).where(
+            ContentSchedule.hospital_id == hospital_id,
+            ContentSchedule.active_from <= target_month.ceil("month").date(),
+        ).order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc()).limit(1)
+    )).scalar_one_or_none() or body.plan
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
-        plan=body.plan,
+        plan=period_plan,
         publish_days=body.publish_days,
         active_from=body.active_from,
+        is_active=not future_heads,
+        created_at=datetime.now(timezone.utc),
     )
     db.add(schedule)
     await db.flush()
@@ -329,10 +337,11 @@ async def set_schedule(
     target_month = arrow.get(body.active_from).floor("month")
     try:
         slots = generate_monthly_slots(
-            body.plan,
+            period_plan,
             body.publish_days,
             target_month,
             start_date=body.active_from,
+            ensure_quota=bool(existing_rows),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -342,7 +351,22 @@ async def set_schedule(
     gap_targets = build_gap_targets(
         (await db.execute(gap_target_rows_stmt(hospital_id))).all()
     )
-    planned = plan_gap_driven_slots(slots, plan=body.plan, gap_targets=gap_targets)
+    # The monthly planner must inherit already allocated targets and its spent
+    # redistribution budget on this path just as it does in monthly repair.
+    existing_slots = [
+        ExistingSlot(
+            sequence_no=row.sequence_no,
+            content_type=row.content_type,
+            gap_driven=row.query_target_id is not None,
+            query_target_id=row.query_target_id,
+        )
+        for row in existing_rows
+    ]
+    planned = plan_gap_driven_slots(
+        slots, plan=period_plan, gap_targets=gap_targets, existing=existing_slots
+    )
+    rescheduled_count = await retime_open_allocations(db, existing_rows, planned, today=today_kst)
+    planned = remaining_month_slots(planned, existing_rows)
 
     created_items: list[ContentItem] = []
     for slot in planned:
@@ -384,10 +408,12 @@ async def set_schedule(
         target_type="content_schedule",
         target_id=schedule.id,
         detail={
-            "plan": body.plan,
+            "plan": period_plan,
             "publish_days": body.publish_days,
             "active_from": str(body.active_from),
-            "slots_created": len(slots),
+            "slots_created": len(created_items),
+            "slots_rescheduled": rescheduled_count,
+            "future_contract_preserved": bool(future_heads),
             "old_schedule_ids": [str(sid) for sid in old_schedule_ids],
             # 이 엔드포인트가 병원 상태를 바꿀 수 있으므로 변경 전후를 남긴다.
             # 남기지 않으면 재활성화가 감사 추적에 전혀 드러나지 않는다.
@@ -444,10 +470,12 @@ async def set_schedule(
 
     return {
         "schedule_id": str(schedule.id),
-        "plan": body.plan,
+        "plan": period_plan,
         "publish_days": body.publish_days,
-        "slots_created": len(slots),
-        "first_publish_date": str(slots[0][0]) if slots else None,
+        "slots_created": len(created_items),
+        "slots_rescheduled": rescheduled_count,
+        "future_contract_preserved": bool(future_heads),
+        "first_publish_date": str(created_items[0].scheduled_date) if created_items else None,
     }
 
 
@@ -555,6 +583,7 @@ async def update_content(
     제목/본문/meta/FAQ/참고자료 수정.
     저장 시 의료광고 금지표현 검사 → 위반 시 400 + 위반 목록 반환.
     """
+    await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
     if isinstance(item, ContentItem):
         locked_result = await db.execute(
@@ -710,6 +739,8 @@ async def update_content(
             revision=int(getattr(item, "content_revision", 1) or 1),
         )
 
+    if should_revalidate:
+        enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
     await db.commit()
     await db.refresh(item)
     if (
@@ -1037,6 +1068,7 @@ async def publish_content(
             treatments=hospital.treatments,
             revision=int(getattr(item, "content_revision", 1) or 1),
         )
+    enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
     await db.commit()
 
     # 사이트 캐시 무효화 — 새 콘텐츠가 sitemap/hub/library/관련 풀페이지에 즉시 반영되도록.
@@ -1137,7 +1169,11 @@ async def reject_content(
             status_code=403,
             detail="비공개 처리자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
         )
+    await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
+    await _lock_content_status(db, hospital_id, content_id, item.status)
+    if hasattr(db, "refresh"):
+        await db.refresh(item)
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.CANCELLED:
         raise HTTPException(status_code=409, detail="Cancelled content cannot be regenerated")
@@ -1214,6 +1250,7 @@ async def reject_content(
             treatments=hospital.treatments,
             revision=int(getattr(item, "content_revision", 1) or 1),
         )
+    enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
     await db.commit()
     if should_revalidate:
         # 내림(unpublish)도 올림과 동일한 경로 집합을 무효화한다. 실패 시 previous_published_at이

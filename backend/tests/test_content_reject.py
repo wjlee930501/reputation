@@ -21,6 +21,13 @@ def _reason() -> content_api.RejectBody:
     return content_api.RejectBody(reason=_REASON)
 
 
+@pytest.fixture(autouse=True)
+def isolated_rate_limit(monkeypatch):
+    from limits.storage import MemoryStorage
+    from limits.strategies import FixedWindowRateLimiter
+    monkeypatch.setattr(app.state.limiter, "_limiter", FixedWindowRateLimiter(MemoryStorage()))
+
+
 @pytest.fixture
 def verified_actor():
     """확인된 요청 actor. 비공개는 되돌릴 수 없으므로 이 값 없이는 거절된다 (H-09)."""
@@ -183,6 +190,11 @@ async def _reject_over_http(item, hospital, payload, actor: str | None):
     headers = {"X-Admin-Key": "test-admin-key"}
     if actor is not None:
         headers["X-Admin-Actor"] = actor
+        from app.core.config import settings
+        from tests.test_admin_actor_verification import _assertion_payload, _sign_assertion
+        headers["X-Admin-Actor-Assertion"] = _sign_assertion(
+            settings.BFF_ACTOR_SECRET, _assertion_payload(email=actor)
+        )
     try:
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"

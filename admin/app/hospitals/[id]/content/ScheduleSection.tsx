@@ -27,7 +27,7 @@ export function ScheduleSection({
   onSaved,
 }: {
   hospitalId: string
-  onSaved: () => void
+  onSaved: () => void | Promise<void>
 }) {
   const { hospital } = useHospitalHeader()
   const plan = hospital?.plan ?? ''
@@ -37,6 +37,7 @@ export function ScheduleSection({
   const [activeFrom, setActiveFrom] = useState(firstDayOfNextMonthInputValue())
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [refreshWarning, setRefreshWarning] = useState<string | null>(null)
   // 슬롯이 하나도 만들어지지 않으면 backend가 first_publish_date를 null로 내려준다
   // (api/admin/content.py). 타입이 string이면 화면은 없는 날짜를 있다고 말한다(M-22).
   const [result, setResult] = useState<{ slots_created: number; first_publish_date: string | null } | null>(null)
@@ -145,7 +146,7 @@ export function ScheduleSection({
       setError('발행 요일을 하나 이상 선택해 주세요.')
       return
     }
-    const capacityError = validateScheduleCapacity(plan, selectedDays, activeFrom)
+    const capacityError = existing ? null : validateScheduleCapacity(plan, selectedDays, activeFrom)
     if (capacityError) {
       setError(capacityError)
       return
@@ -158,11 +159,12 @@ export function ScheduleSection({
   }
 
   async function saveSchedule() {
+    setRefreshWarning(null)
     setConfirmingReplacement(false)
     setLoading(true)
     setError(null)
     try {
-      const data = await fetchAPI<{ slots_created: number; first_publish_date: string | null; publish_days: number[] }>(
+      const data = await fetchAPI<{ plan: ScheduleInfo['plan']; slots_created: number; first_publish_date: string | null; publish_days: number[] }>(
         `/admin/hospitals/${hospitalId}/schedule`,
         {
           method: 'POST',
@@ -170,14 +172,14 @@ export function ScheduleSection({
         },
       )
       setResult(data)
-      setExisting({
-        plan: plan as ScheduleInfo['plan'],
-        publish_days: selectedDays,
-        active_from: activeFrom,
-        is_active: true,
-      })
-      // 같은 화면의 월 표와 헤더 상태를 새 기준으로 다시 읽는다.
-      onSaved()
+      // Keep the last verified head until the server read-back succeeds.
+      // Saving succeeded. An unavailable read-back is a separate failure.
+      try {
+        setExisting(await fetchAPI<ScheduleInfo>(`/admin/hospitals/${hospitalId}/schedule`))
+        await onSaved()
+      } catch {
+        setRefreshWarning('저장은 완료됐지만 화면을 갱신하지 못했습니다. 새로고침해 주세요.')
+      }
     } catch (e: unknown) {
       if (!isExpectedOperatorRequestFailure(e)) throw e
       // 계약 요금제와 어긋난 저장은 서버가 막는다 — 운영자가 다음 행동을 알 수 있게 그대로 보여준다.
@@ -256,7 +258,7 @@ export function ScheduleSection({
               </div>
             </dl>
             <p className="mt-2 text-xs text-blue-700">
-              새로 저장하면 기존 발행 일정이 교체되고, 아직 발행하지 않은 콘텐츠 항목이 새 기준으로 만들어집니다.
+              기존 원고와 발행 이력은 유지합니다. 변경 가능한 미래 항목의 예정일을 조정하고 남은 약정만 추가합니다.
             </p>
           </div>
         )}
@@ -270,11 +272,12 @@ export function ScheduleSection({
           <div className="rounded-xl border border-green-200 bg-green-50 p-4 sm:p-6">
             <p className="text-base font-medium text-green-800">발행 일정 설정 완료</p>
             <p className="mt-2 text-sm text-green-700">
-              {result.slots_created}개의 콘텐츠 항목이 만들어졌습니다.
+              {result.slots_created}개의 콘텐츠 항목을 추가했습니다. 기존 원고는 유지합니다.
             </p>
             <p className="mt-1 text-sm text-green-700">
-              첫 발행 예정일: <strong>{result.first_publish_date ?? '첫 발행일 미정'}</strong>
+              추가 항목 첫 예정일: <strong>{result.first_publish_date ?? '추가 항목 없음'}</strong>
             </p>
+            {refreshWarning && <p role="status">{refreshWarning}</p>}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -355,7 +358,7 @@ export function ScheduleSection({
               disabled={loading || !canSaveSchedule}
               className="w-full rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
             >
-              {loading ? '저장 중...' : existing ? '발행 일정 교체 및 항목 다시 만들기' : '발행 일정 저장 및 항목 만들기'}
+              {loading ? '저장 중...' : existing ? '발행 일정 변경 확인' : '발행 일정 저장 및 항목 만들기'}
             </button>
           </form>
         )}
@@ -370,11 +373,11 @@ export function ScheduleSection({
             className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
           >
             <h3 id="schedule-replacement-title" className="text-lg font-bold text-slate-900">
-              기존 발행 일정을 교체할까요?
+              발행 요일과 예정일을 변경할까요?
             </h3>
             <p className="mt-2 text-sm leading-6 text-slate-600">
-              저장하면 기존 설정이 아래 새 기준으로 바뀌고 아직 발행하지 않은 콘텐츠 항목이 다시 만들어집니다.
-              이 변경은 자동으로 되돌릴 수 없습니다.
+              원고와 발행 이력을 보존하고, 변경 가능한 미래 항목의 날짜만 조정합니다.
+              공개 이력이나 사람 편집, 이월 또는 진행 중인 작업이 있는 항목은 유지합니다.
             </p>
             <dl className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 px-4 text-sm">
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
@@ -383,9 +386,7 @@ export function ScheduleSection({
                   {/* 계약 정정 뒤 일정이 아직 옛 요금제면, 되돌릴 수 없는 교체가 편수까지
                       바꾼다는 사실을 확인 문구가 감추면 안 된다. */}
                   {PLAN_LABELS[existing.plan] ?? existing.plan}
-                  {plan && plan !== existing.plan
-                    ? ` → ${PLAN_LABELS[plan] ?? plan}`
-                    : ''}
+                  <span className="block text-xs">대상 월의 계약 기록을 적용합니다.</span>
                 </dd>
               </div>
               <div className="grid grid-cols-[100px_1fr] gap-3 py-3">
@@ -414,7 +415,7 @@ export function ScheduleSection({
                 disabled={loading}
                 className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {loading ? '교체 중...' : '교체하고 항목 다시 만들기'}
+                {loading ? '교체 중...' : '원고를 보존하고 일정 저장'}
               </button>
             </div>
           </div>

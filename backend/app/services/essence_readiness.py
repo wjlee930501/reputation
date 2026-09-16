@@ -32,6 +32,7 @@ from app.services.evidence_noise import (
     load_evidence_noise_hash_sync,
     load_evidence_noise_hashes,
 )
+from app.services.knowledge_changes import authority_refresh_required
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ def resolve_essence_readiness(
     )
     return EssenceReadiness(
         approved=approved,
-        current=approved,
+        current=None if authority_refresh_required(approved) else approved,
         public_philosophy=approved,
         processed_source_count=len(processed_sources),
         required_source_count=len(required_sources),
@@ -270,6 +271,7 @@ async def get_public_approved_philosophy_ids(
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
                 HospitalContentPhilosophy.evidence_noise_hash,
+                HospitalContentPhilosophy.unsupported_gaps,
                 HospitalContentPhilosophy.is_base,
                 HospitalContentPhilosophy.approved_at,
                 HospitalContentPhilosophy.version,
@@ -354,6 +356,7 @@ async def get_essence_readiness_states(
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
                 HospitalContentPhilosophy.evidence_noise_hash,
+                HospitalContentPhilosophy.unsupported_gaps,
                 HospitalContentPhilosophy.is_base,
                 HospitalContentPhilosophy.approved_at,
                 HospitalContentPhilosophy.version,
@@ -533,6 +536,7 @@ def _resolve_lightweight_readiness(
         source_snapshot_hash=approved_row.source_snapshot_hash,
         source_asset_ids=approved_row.source_asset_ids,
         evidence_noise_hash=approved_row.evidence_noise_hash,
+        unsupported_gaps=getattr(approved_row, "unsupported_gaps", None),
     )
     readiness = resolve_essence_readiness(
         approved_stub, required_sources, excluded_note_hash=excluded_note_hash
@@ -558,6 +562,7 @@ async def _get_lightweight_essence_readiness(
                 HospitalContentPhilosophy.source_snapshot_hash,
                 HospitalContentPhilosophy.source_asset_ids,
                 HospitalContentPhilosophy.evidence_noise_hash,
+                HospitalContentPhilosophy.unsupported_gaps,
                 HospitalContentPhilosophy.is_base,
                 HospitalContentPhilosophy.approved_at,
                 HospitalContentPhilosophy.version,

@@ -57,7 +57,8 @@ export function ReportList({
                     <span className="mt-1 block text-xs font-normal text-[var(--color-revisit-text-caption)]">{report.typeLabel}</span>
                   </td>
                   <td className="px-5 py-4" data-label="현재 상태">
-                    <span className="font-semibold text-[var(--color-revisit-text-title)]">
+                    <div data-report-state-copy className="min-w-0 flex-1 text-left">
+                    <span className="block font-semibold text-[var(--color-revisit-text-title)]">
                       {reportStatusLabel(report)}
                     </span>
                     {shouldShowDeliveryProblem(report) && (
@@ -79,6 +80,7 @@ export function ReportList({
                         주의: {report.deliveryWarnings[0]}
                       </p>
                     )}
+                    </div>
                   </td>
                   <td className="px-5 py-4 text-[var(--color-revisit-text-helper)]" data-label="생성일">
                     {formatDate(report.createdAt)}

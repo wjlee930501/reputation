@@ -2,7 +2,6 @@ import logging
 from datetime import date
 
 import arrow
-from sqlalchemy import and_, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.models.content import PLAN_DISTRIBUTION, ContentItem, ContentSchedule, ContentStatus
@@ -15,6 +14,7 @@ from app.services.gap_driven_slots import (
     gap_target_rows_stmt,
     plan_gap_driven_slots,
 )
+from app.services.schedule_reconciliation import month_items_query, remaining_month_slots
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 
 logger = logging.getLogger(__name__)
@@ -45,27 +45,7 @@ def create_next_month_slots_for_schedule(
     # 월 전체에 아이템이 1건이라도 있으면 건너뛰던 과거 조건은, 지난달에서 이월된
     # (carried_over_from) 1건이나 다른 스케줄의 행 하나가 다음 달 약정 편수 전체 생성을
     # 통째로 막았다. 다른 달의 이월 슬롯은 제외하고, 이 달에서 넘어간 슬롯은 원래 계약에 포함한다.
-    existing_stmt = (
-        select(
-            ContentItem.sequence_no,
-            ContentItem.content_type,
-            ContentItem.query_target_id,
-            ContentItem.total_count,
-        ).where(
-            ContentItem.schedule_id == schedule.id,
-            or_(
-                and_(
-                    ContentItem.carried_over_from.is_(None),
-                    ContentItem.scheduled_date >= next_month_start,
-                    ContentItem.scheduled_date <= next_month_end,
-                ),
-                and_(
-                    ContentItem.carried_over_from >= next_month_start,
-                    ContentItem.carried_over_from <= next_month_end,
-                ),
-            ),
-        )
-    )
+    existing_stmt = month_items_query(hospital.id, next_month)
     existing_rows = db.execute(existing_stmt).all()
     existing_slots = [
         ExistingSlot(
@@ -76,13 +56,8 @@ def create_next_month_slots_for_schedule(
         )
         for row in existing_rows
     ]
-    existing_sequences = {slot.sequence_no for slot in existing_slots}
     planned_total = sum(PLAN_DISTRIBUTION.get(schedule.plan, {}).values())
-    if planned_total and any(row.total_count != planned_total for row in existing_rows):
-        db.execute(
-            update(ContentItem).where(existing_stmt.whereclause).values(total_count=planned_total)
-        )
-    if planned_total and len(existing_sequences) >= planned_total:
+    if planned_total and len(existing_rows) >= planned_total:
         return False
 
     slots = generate_monthly_slots(
@@ -103,7 +78,7 @@ def create_next_month_slots_for_schedule(
     )
 
     # 부분 생성(중단된 이전 배치 등) 뒤에는 비어 있는 순번만 채운다.
-    planned = [slot for slot in planned if slot.sequence_no not in existing_sequences]
+    planned = remaining_month_slots(planned, existing_rows)
     if not planned:
         return False
 

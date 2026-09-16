@@ -1,0 +1,112 @@
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.57kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14
+#2 DONE 1.5s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 130B done
+#3 DONE 0.0s
+
+#4 [builder 1/6] FROM docker.io/library/node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14
+#4 resolve docker.io/library/node:24-alpine@sha256:2bdb65ed1dab192432bc31c95f94155ca5ad7fc1392fb7eb7526ab682fa5bf14 done
+#4 DONE 0.0s
+
+#5 [internal] load build context
+#5 transferring context: 1.81MB 0.2s done
+#5 DONE 0.2s
+
+#6 [builder 3/6] COPY package.json package-lock.json ./
+#6 CACHED
+
+#7 [builder 2/6] WORKDIR /app
+#7 CACHED
+
+#8 [builder 4/6] RUN npm ci
+#8 CACHED
+
+#9 [builder 5/6] COPY . .
+#9 DONE 0.2s
+
+#10 [builder 6/6] RUN npm run build
+#10 1.519
+#10 1.519 > reputation-admin@0.1.0 build
+#10 1.519 > next build
+#10 1.519
+#10 3.148 ▲ Next.js 16.3.3 (Turbopack)
+#10 3.185 ✓ Running next.config.js took 36ms
+#10 3.457
+#10 3.524   Creating an optimized production build ...
+#10 13.29 Browserslist: browsers data (caniuse-lite) is 7 months old. Please run:
+#10 13.29   npx update-browserslist-db@latest
+#10 13.29   Why you should do it regularly: https://github.com/browserslist/update-db#readme
+#10 25.72 ✓ Compiled successfully in 21.7s
+#10 25.76   Running TypeScript ...
+#10 40.78   Finished TypeScript in 15.0s ...
+#10 40.80   Collecting page data using 7 workers ...
+#10 ...
+
+#7 [builder 2/6] WORKDIR /app
+#7 CACHED
+
+#10 [builder 6/6] RUN npm run build
+#10 43.27   Generating static pages using 7 workers (0/12) ...
+#10 43.33   Generating static pages using 7 workers (3/12)
+#10 43.68   Generating static pages using 7 workers (6/12)
+#10 43.95   Generating static pages using 7 workers (9/12)
+#10 43.95 ✓ Generating static pages using 7 workers (12/12) in 679ms
+#10 44.01   Finalizing page optimization ...
+#10 44.32
+#10 44.32 Route (app)
+#10 44.32 ┌ ○ /
+#10 44.32 ├ ○ /_not-found
+#10 44.32 ├ ○ /accounts
+#10 44.32 ├ ƒ /api/admin/[...path]
+#10 44.32 ├ ƒ /api/auth/login
+#10 44.32 ├ ƒ /api/auth/logout
+#10 44.32 ├ ƒ /api/auth/session
+#10 44.32 ├ ○ /hospitals
+#10 44.32 ├ ƒ /hospitals/[id]
+#10 44.32 ├ ƒ /hospitals/[id]/content
+#10 44.32 ├ ƒ /hospitals/[id]/dashboard
+#10 44.32 ├ ƒ /hospitals/[id]/essence
+#10 44.32 ├ ƒ /hospitals/[id]/exposure-actions
+#10 44.32 ├ ƒ /hospitals/[id]/info
+#10 44.32 ├ ƒ /hospitals/[id]/onboarding
+#10 44.32 ├ ƒ /hospitals/[id]/profile
+#10 44.32 ├ ƒ /hospitals/[id]/query-targets
+#10 44.32 ├ ƒ /hospitals/[id]/reports
+#10 44.32 ├ ƒ /hospitals/[id]/schedule
+#10 44.32 ├ ƒ /hospitals/[id]/wiki
+#10 44.32 ├ ○ /hospitals/new
+#10 44.32 ├ ○ /leads
+#10 44.32 ├ ○ /login
+#10 44.32 └ ○ /operations
+#10 44.32
+#10 44.32
+#10 44.32 ƒ Proxy (Middleware)
+#10 44.32
+#10 44.33 ○  (Static)   prerendered as static content
+#10 44.33 ƒ  (Dynamic)  server-rendered on demand
+#10 44.33
+#10 DONE 44.5s
+
+#11 [runtime 3/4] COPY --from=builder --chown=node:node /app/.next/standalone ./
+#11 DONE 0.3s
+
+#12 [runtime 4/4] COPY --from=builder --chown=node:node /app/.next/static ./.next/static
+#12 DONE 0.0s
+
+#13 exporting to image
+#13 exporting layers
+#13 exporting layers 1.4s done
+#13 exporting manifest sha256:8fd987634227f081d14176a3fed43ad9e5d1367f846b742608029b344d93ba8a
+#13 exporting manifest sha256:8fd987634227f081d14176a3fed43ad9e5d1367f846b742608029b344d93ba8a done
+#13 exporting config sha256:1e15cce322d3f95e1a36f3f776c35e1e41a9b00ee2723f513ee905be542d0952 done
+#13 exporting attestation manifest sha256:e4523ae0e36f521a0850253fd827dadd167e9f331f359dc960f7401182cf655b 0.0s done
+#13 exporting manifest list sha256:6e7f685204693913ea1198b6eb17671445b34166ec110cd4e538c65179bfe53c done
+#13 naming to docker.io/library/reputation-verify-admin:6b0c86f done
+#13 DONE 1.4s

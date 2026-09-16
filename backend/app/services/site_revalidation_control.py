@@ -257,6 +257,12 @@ async def record_revalidation_success(run_id: uuid.UUID, expected_attempt_count:
         run.attempt_count += 1
         run.state = OperationRunState.SUCCEEDED.value
         run.success_count = 1
+        if isinstance(run.result_summary, dict) and "invalidation_state" in run.result_summary:
+            run.result_summary = {
+                **run.result_summary,
+                "invalidation_state": "ACCEPTED",
+                "page_visibility_verified": False,
+            }
         run.safe_error_code = None
         run.safe_error_message = None
         run.completed_at = datetime.now(UTC)

@@ -64,3 +64,43 @@ def dispatch_notification_outbox(task: Task) -> dict[str, int]:
         "publish_reconciled": publish_reconciled,
         "incidents_recovered": incidents_recovered,
     }
+
+
+@celery_app.task(
+    name="app.workers.notification_tasks.enqueue_fleet_heartbeat",
+    soft_time_limit=90, time_limit=120,
+)
+def enqueue_fleet_heartbeat():
+    """One durable daily intent; delivery remains owned by the existing outbox."""
+    from datetime import UTC, datetime
+
+    from celery import current_task
+    from sqlalchemy import select
+
+    from app.core.database import SyncSessionLocal
+    from app.models.operations import NotificationOutbox
+    from app.services.fleet_heartbeat import build_fleet_heartbeat, collect_fleet_facts
+    from app.services.notification_outbox import enqueue_notification_sync
+    from app.services.pipeline_watchdog import KST, evaluate
+    from app.workers.dispatch_auth import require_dispatch
+
+    require_dispatch(current_task, "fleet-heartbeat")
+    now = datetime.now(UTC)
+    local_now = now.astimezone(KST)
+    if local_now.hour < settings.FLEET_HEARTBEAT_HOUR_KST:
+        return {"status": "before_summary_window"}
+    key = f"FLEET_HEARTBEAT:{local_now.date().isoformat()}"
+    with SyncSessionLocal() as db:
+        if db.scalar(select(NotificationOutbox.id).where(NotificationOutbox.dedupe_key == key)):
+            return {"status": "already_recorded", "dedupe_key": key}
+        report = evaluate(db, now=now)
+        if not report.database_available:
+            # A failed SQL transaction cannot safely persist a summary. External
+            # watchdog remains the independent signal for this failure mode.
+            db.rollback()
+            raise RuntimeError("fleet heartbeat database observations unavailable")
+        facts = collect_fleet_facts(db, now=now)
+        intent = build_fleet_heartbeat(report, facts, now=now, admin_base_url=settings.ADMIN_BASE_URL)
+        enqueue_notification_sync(db, intent, now=now)
+        db.commit()
+    return {"dedupe_key": intent.dedupe_key}

@@ -1,4 +1,5 @@
-import { revalidatePath } from 'next/cache'
+import { revalidatePath, revalidateTag } from 'next/cache'
+import { hospitalTagsForPaths } from '@/lib/hospital-cache'
 import { NextResponse } from 'next/server'
 
 import { constantTimeEqual } from '@/lib/constant-time'
@@ -33,9 +34,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'no valid paths' }, { status: 400 })
   }
 
+  const tags = hospitalTagsForPaths(paths)
+  // Withdrawal/pause must expire old data, not serve it while refreshing.
+  for (const tag of tags) revalidateTag(tag, { expire: 0 })
   for (const path of paths) {
     revalidatePath(path)
   }
 
-  return NextResponse.json({ ok: true, revalidated: paths })
+  return NextResponse.json({ ok: true, revalidated: paths, tags })
 }

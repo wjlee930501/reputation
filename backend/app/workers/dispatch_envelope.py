@@ -27,6 +27,7 @@ SIGNATURE_HEADER = f"{PREFIX}signature"
 GLOBAL_TARGET = "*"
 
 TASK_PURPOSES = {
+    "app.workers.notification_tasks.enqueue_fleet_heartbeat": "fleet-heartbeat",
     "app.workers.tasks.trigger_v0_report": "trigger-v0-report",
     "app.workers.tasks.build_aeo_site": "build-aeo-site",
     "app.workers.tasks.nightly_content_generation": "nightly-content-generation",

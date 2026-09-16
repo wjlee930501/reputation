@@ -224,6 +224,7 @@ from app.services.post_publish_review_policy import (
     auto_publish_due_predicate,
     publicly_operational_hospital_predicate,
 )
+from app.services.public_surface_intents import enqueue_public_surface_intent
 from app.services.report_artifact_validation import DoctorPdfValidationError
 from app.services.report_attribution import (
     CitationAttributionInput,
@@ -236,6 +237,7 @@ from app.services.report_engine import (
     build_strategy_summary,
     generate_pdf_report,
 )
+from app.services.schedule_reconciliation import effective_schedules_query
 from app.services.site_revalidate import (
     content_site_paths,
     ensure_site_revalidate_configured,
@@ -295,6 +297,7 @@ from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
     GenerationItemRecorder,
 )
+from app.workers.generation_execution_claim import begin_generation_execution
 from app.workers.generation_incident_control import (
     AUTO_REMEDIATION_MAX_GENERATIONS,
     PREPUBLISH_MORNING_BATCH,
@@ -643,6 +646,13 @@ def _generation_retry_is_eligible(db):
     philosophies: dict[uuid.UUID, HospitalContentPhilosophy | None] = {}
 
     def is_eligible(item: ContentItem) -> bool:
+        if (getattr(item, "essence_check_summary", None) or {}).get("authority_change"):
+            if item.hospital_id not in philosophies:
+                philosophies[item.hospital_id] = _generation_philosophy_sync(db, item.hospital_id)
+            # The evidence reapproval owns recovery, not per-content generation.
+            # No claims, model calls or one-alert-per-slot while it is pending.
+            if philosophies[item.hospital_id] is None:
+                return False
         if getattr(item, "body", None):
             return True
         hospital_id = item.hospital_id
@@ -4806,7 +4816,8 @@ def generate_claimed_content_item(
 
     재시도는 이 태스크가 갖지 않는다(`max_retries=0`) — 실패의 재시도 여부와 예산은
     23:00·01·04·07 스윕과 `generation_retry_policy`가 소유한다. 늦게 도착했거나 다시
-    배달된 실행은 lease 토큰이 바뀐 것을 보고 공급자 호출 없이 물러난다.
+    배달된 실행은 durable run 소유권을 재확인한다. 더 높은 claim version의 정상
+    재전달만 저장된 예약·실행 token 관계로 인수하며 중복·재할당·사람 편집은 거절한다.
     """
 
     require_dispatch(self, GENERATE_CONTENT_ITEM_PURPOSE, content_id)
@@ -4824,7 +4835,16 @@ def generate_claimed_content_item(
                 return
             item, token = leased
         else:
-            item = load_claimed_generation_item(db, item_id, token)
+            context = explicit_run_context(self)
+            if context is not None:
+                leased = begin_generation_execution(db, item_id, token, context)
+                if leased is None:
+                    item = None
+                else:
+                    item, token = leased
+            else:
+                # Legacy/test dispatch has no durable execution ownership proof.
+                item = load_claimed_generation_item(db, item_id, token)
             if item is None:
                 logger.info(
                     "Skipping claimed generation for %s — the lease changed or expired",
@@ -5967,6 +5987,7 @@ def _generate_single_content_item(
         item.content_philosophy_id = None
         item.essence_status = ESSENCE_STATUS_MISSING_APPROVED
         item.essence_check_summary = {
+            **(item.essence_check_summary or {}),
             "blocking": True,
             "findings": [
                 "승인된 콘텐츠 운영 기준이 없어 자동 생성/발행 품질을 통과할 수 없습니다."
@@ -6737,6 +6758,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 revision=int(getattr(item, "content_revision", 1) or 1),
             )
         payload = _publication_notification_payload(item, hospital)
+        enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
         db.commit()
         return payload
 
@@ -8560,8 +8582,7 @@ def monthly_slot_generation(current_month: bool = False):
 
     with SyncSessionLocal() as db:
         stmt = (
-            select(ContentSchedule)
-            .where(ContentSchedule.is_active)
+            effective_schedules_query(next_month_end)
             .options(joinedload(ContentSchedule.hospital))
         )
         result = db.execute(stmt)
@@ -10613,7 +10634,14 @@ def _site_revalidation_context(
             return None
         treatments = hospital.treatments if isinstance(hospital.treatments, list) else []
         if run.request_payload.get("scope") == "HOSPITAL":
-            return hospital_site_paths(hospital.slug, treatments)
+            paths = hospital_site_paths(hospital.slug, treatments)
+            for raw in run.request_payload.get("content_ids", []):
+                try:
+                    content_id = uuid.UUID(str(raw))
+                except (TypeError, ValueError):
+                    return None
+                paths.append(f"/{hospital.slug}/contents/{content_id}")
+            return paths
         raw_content_id = run.request_payload.get("content_id")
         try:
             content_id = uuid.UUID(str(raw_content_id))

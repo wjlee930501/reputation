@@ -1,0 +1,15 @@
+{
+  "queues": [
+    "control",
+    "default",
+    "content",
+    "sov",
+    "reports",
+    "leadgen",
+    "certificates"
+  ],
+  "current_release": "local-00a8cd47fb363fda9d547d09931671d543f0f2ff",
+  "all_queue_canaries_verified": true,
+  "duplicate_heartbeat_outbox_rows": 1,
+  "external_slack_deliveries": 0
+}

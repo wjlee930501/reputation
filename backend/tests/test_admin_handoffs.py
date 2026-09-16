@@ -226,7 +226,7 @@ async def test_owner_correction_updates_handoff_and_hospital_plan_with_audit_rea
 
     assert corrected["plan"] is Plan.PLAN_20
     assert db.hospital.plan is Plan.PLAN_20
-    audit = next(item for item in db.added if item.action == "handoff_contract_corrected")
+    audit = next(item for item in db.added if getattr(item, "action", None) == "handoff_contract_corrected")
     assert audit.detail["reason"] == "계약서 요금제 오기 정정"
     # 일정이 없으면 동기화 기록도 남기지 않는다.
     assert "schedule_plan_synced" not in audit.detail
@@ -271,9 +271,10 @@ async def test_owner_correction_syncs_the_active_schedule_plan_with_audit() -> N
 
     # 월 약정 편수는 ContentSchedule.plan을 읽는다 — 정정이 여기까지 오지 않으면
     # 다음 달도 옛 편수로 슬롯이 생긴다.
-    assert schedule.plan == "PLAN_20"
+    assert schedule.plan == "PLAN_12"
+    assert next(row for row in db.added if isinstance(row, ContentSchedule)).plan == "PLAN_20"
     assert retired.plan == "PLAN_12"
-    audit = next(item for item in db.added if item.action == "handoff_contract_corrected")
+    audit = next(item for item in db.added if getattr(item, "action", None) == "handoff_contract_corrected")
     assert audit.detail["schedule_plan_synced"] == [
         {"schedule_id": str(schedule.id), "from": "PLAN_12", "to": "PLAN_20"}
     ]
@@ -305,8 +306,9 @@ async def test_contract_record_syncs_an_existing_active_schedule_plan() -> None:
         actor=actor,
     )
 
-    assert schedule.plan == "PLAN_16"
-    audit = next(item for item in db.added if item.action == "handoff_contracted")
+    assert schedule.plan == "PLAN_12"
+    assert next(row for row in db.added if isinstance(row, ContentSchedule)).plan == "PLAN_16"
+    audit = next(item for item in db.added if getattr(item, "action", None) == "handoff_contracted")
     assert audit.detail["schedule_plan_synced"][0]["to"] == "PLAN_16"
 
 

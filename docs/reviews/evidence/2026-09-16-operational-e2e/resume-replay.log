@@ -1,0 +1,6 @@
+PASS stage generate
+PASS stage publish
+PASS stage measure
+PASS stage report
+PASS stage heartbeat
+PASS completed-stage replay: zero AI repurchases; all persisted identities unchanged

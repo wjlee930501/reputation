@@ -1,0 +1,2016 @@
+=== site test ===
+
+> site@0.1.0 test
+> node --no-warnings --experimental-strip-types --test lib/*.test.ts
+
+TAP version 13
+# Subtest: robots allowlist explicitly includes answer-time AI search crawlers
+ok 1 - robots allowlist explicitly includes answer-time AI search crawlers
+  ---
+  duration_ms: 0.328958
+  type: 'test'
+  ...
+# Subtest: robots allowlist distinguishes explicit AI search agents from generic wildcard only
+ok 2 - robots allowlist distinguishes explicit AI search agents from generic wildcard only
+  ---
+  duration_ms: 0.088459
+  type: 'test'
+  ...
+# Subtest: resolveAssetUrl returns absolute http URLs unchanged
+ok 3 - resolveAssetUrl returns absolute http URLs unchanged
+  ---
+  duration_ms: 0.501
+  type: 'test'
+  ...
+# Subtest: resolveAssetUrl rejects localhost absolute asset URLs in production
+ok 4 - resolveAssetUrl rejects localhost absolute asset URLs in production
+  ---
+  duration_ms: 0.102959
+  type: 'test'
+  ...
+# Subtest: resolveAssetUrl allows only the configured GCS asset bucket
+ok 5 - resolveAssetUrl allows only the configured GCS asset bucket
+  ---
+  duration_ms: 0.119083
+  type: 'test'
+  ...
+# Subtest: resolveAssetUrl resolves public API paths against the backend base
+ok 6 - resolveAssetUrl resolves public API paths against the backend base
+  ---
+  duration_ms: 0.068
+  type: 'test'
+  ...
+# Subtest: resolveAssetUrl rejects internal storage paths and unsupported relative keys
+ok 7 - resolveAssetUrl rejects internal storage paths and unsupported relative keys
+  ---
+  duration_ms: 0.103834
+  type: 'test'
+  ...
+# Subtest: fetchHospital rejects malformed backend payloads at runtime
+ok 8 - fetchHospital rejects malformed backend payloads at runtime
+  ---
+  duration_ms: 10.548333
+  type: 'test'
+  ...
+# Subtest: fetchHospital normalizes unsafe hospital URL fields before rendering
+ok 9 - fetchHospital normalizes unsafe hospital URL fields before rendering
+  ---
+  duration_ms: 0.424417
+  type: 'test'
+  ...
+# Subtest: fetchHospital accepts backend-nullable hospital fields and normalizes UI defaults
+ok 10 - fetchHospital accepts backend-nullable hospital fields and normalizes UI defaults
+  ---
+  duration_ms: 0.486167
+  type: 'test'
+  ...
+# Subtest: fetchContent throws ContentNotFoundError on a 404 (so the page can call notFound())
+ok 11 - fetchContent throws ContentNotFoundError on a 404 (so the page can call notFound())
+  ---
+  duration_ms: 0.37025
+  type: 'test'
+  ...
+# Subtest: fetchContent throws a generic error on other non-ok statuses (surfaces as 500)
+ok 12 - fetchContent throws a generic error on other non-ok statuses (surfaces as 500)
+  ---
+  duration_ms: 0.347541
+  type: 'test'
+  ...
+# Subtest: fetchContent returns parsed JSON on a 200
+ok 13 - fetchContent returns parsed JSON on a 200
+  ---
+  duration_ms: 0.244916
+  type: 'test'
+  ...
+# Subtest: fetchContents rejects malformed backend payloads at runtime
+ok 14 - fetchContents rejects malformed backend payloads at runtime
+  ---
+  duration_ms: 0.184583
+  type: 'test'
+  ...
+# Subtest: fetchAllContents follows offsets until the final short page
+ok 15 - fetchAllContents follows offsets until the final short page
+  ---
+  duration_ms: 4.509667
+  type: 'test'
+  ...
+# Subtest: fetchContents throws HospitalNotFoundError on a 404 (hospital missing/inactive, not "no content")
+ok 16 - fetchContents throws HospitalNotFoundError on a 404 (hospital missing/inactive, not "no content")
+  ---
+  duration_ms: 0.146041
+  type: 'test'
+  ...
+# Subtest: fetchContents throws on 5xx/429 instead of silently returning [] (so ISR keeps the prior cache)
+ok 17 - fetchContents throws on 5xx/429 instead of silently returning [] (so ISR keeps the prior cache)
+  ---
+  duration_ms: 7.935166
+  type: 'test'
+  ...
+# Subtest: fetchContent rejects malformed backend payloads at runtime
+ok 18 - fetchContent rejects malformed backend payloads at runtime
+  ---
+  duration_ms: 3.09525
+  type: 'test'
+  ...
+# Subtest: LLM-generated body links go through the same href validation as curated references
+ok 19 - LLM-generated body links go through the same href validation as curated references
+  ---
+  duration_ms: 0.440583
+  type: 'test'
+  ...
+# Subtest: LLM-generated body links are nofollow and cannot reach window.opener
+ok 20 - LLM-generated body links are nofollow and cannot reach window.opener
+  ---
+  duration_ms: 0.074416
+  type: 'test'
+  ...
+# Subtest: an unsafe href renders as plain text instead of a link
+ok 21 - an unsafe href renders as plain text instead of a link
+  ---
+  duration_ms: 0.06425
+  type: 'test'
+  ...
+# Subtest: removes only the generated leading H1
+ok 22 - removes only the generated leading H1
+  ---
+  duration_ms: 0.36025
+  type: 'test'
+  ...
+# Subtest: keeps ordinary body content and extracts navigable H2 headings
+ok 23 - keeps ordinary body content and extracts navigable H2 headings
+  ---
+  duration_ms: 1.08575
+  type: 'test'
+  ...
+# Subtest: every non-final ListItem carries an item URL
+ok 24 - every non-final ListItem carries an item URL
+  ---
+  duration_ms: 0.79725
+  type: 'test'
+  ...
+# Subtest: positions stay contiguous from 1 after dropping unlinked crumbs
+ok 25 - positions stay contiguous from 1 after dropping unlinked crumbs
+  ---
+  duration_ms: 0.076833
+  type: 'test'
+  ...
+# Subtest: the final crumb is kept even without an href
+ok 26 - the final crumb is kept even without an href
+  ---
+  duration_ms: 0.0665
+  type: 'test'
+  ...
+# Subtest: relative hrefs resolve against the hospital root
+ok 27 - relative hrefs resolve against the hospital root
+  ---
+  duration_ms: 0.103958
+  type: 'test'
+  ...
+# Subtest: lunch break note does not replace the actual clinic closing time
+ok 28 - lunch break note does not replace the actual clinic closing time
+  ---
+  duration_ms: 0.78025
+  type: 'test'
+  ...
+# Subtest: split morning and afternoon clinic ranges remain separate
+ok 29 - split morning and afternoon clinic ranges remain separate
+  ---
+  duration_ms: 0.140625
+  type: 'test'
+  ...
+# Subtest: GCP LB 체인에서 second-from-right 항목(실제 방문자)을 선택한다
+ok 30 - GCP LB 체인에서 second-from-right 항목(실제 방문자)을 선택한다
+  ---
+  duration_ms: 14.117709
+  type: 'test'
+  ...
+# Subtest: XFF가 있으면 위조된 x-real-ip / x-vercel-forwarded-for를 무시한다 (스푸핑 방어)
+ok 31 - XFF가 있으면 위조된 x-real-ip / x-vercel-forwarded-for를 무시한다 (스푸핑 방어)
+  ---
+  duration_ms: 0.148708
+  type: 'test'
+  ...
+# Subtest: x-real-ip / x-vercel-forwarded-for는 XFF가 아예 없을 때만 fallback으로 쓴다
+ok 32 - x-real-ip / x-vercel-forwarded-for는 XFF가 아예 없을 때만 fallback으로 쓴다
+  ---
+  duration_ms: 0.158167
+  type: 'test'
+  ...
+# Subtest: dev 단일 항목은 그대로, 유효하지 않은 값은 null
+ok 33 - dev 단일 항목은 그대로, 유효하지 않은 값은 null
+  ---
+  duration_ms: 0.113541
+  type: 'test'
+  ...
+# Subtest: the container token is declared once, at 1200px
+ok 34 - the container token is declared once, at 1200px
+  ---
+  duration_ms: 0.500917
+  type: 'test'
+  ...
+# Subtest: plain containers take their width from the single token
+ok 35 - plain containers take their width from the single token
+  ---
+  duration_ms: 0.413833
+  type: 'test'
+  ...
+# Subtest: railed containers reserve room for their own gutter so content lands on the same line
+ok 36 - railed containers reserve room for their own gutter so content lands on the same line
+  ---
+  duration_ms: 0.379208
+  type: 'test'
+  ...
+# Subtest: the treatment directory takes the same width as the sections around it
+ok 37 - the treatment directory takes the same width as the sections around it
+  ---
+  duration_ms: 0.189917
+  type: 'test'
+  ...
+# Subtest: the hero copy sits on the same gutter as the header and the fact rail
+ok 38 - the hero copy sits on the same gutter as the header and the fact rail
+  ---
+  duration_ms: 0.250417
+  type: 'test'
+  ...
+# Subtest: no clinic container hardcodes one of the three widths the audit found
+ok 39 - no clinic container hardcodes one of the three widths the audit found
+  ---
+  duration_ms: 0.57875
+  type: 'test'
+  ...
+# Subtest: counts carry their unit and never go negative
+ok 40 - counts carry their unit and never go negative
+  ---
+  duration_ms: 0.366958
+  type: 'test'
+  ...
+# Subtest: a preview label appears only when something is actually hidden
+ok 41 - a preview label appears only when something is actually hidden
+  ---
+  duration_ms: 0.063833
+  type: 'test'
+  ...
+# Subtest: the public surfaces that show a count go through this helper
+ok 42 - the public surfaces that show a count go through this helper
+  ---
+  duration_ms: 1.749125
+  type: 'test'
+  ...
+# Subtest: content density follows the shared sparse, standard, and rich composition thresholds
+ok 43 - content density follows the shared sparse, standard, and rich composition thresholds
+  ---
+  duration_ms: 5.840625
+  type: 'test'
+  ...
+# Subtest: each content density receives a materially different page composition
+ok 44 - each content density receives a materially different page composition
+  ---
+  duration_ms: 0.413291
+  type: 'test'
+  ...
+# Subtest: access and media modes are derived from approved profile facts without slug exceptions
+ok 45 - access and media modes are derived from approved profile facts without slug exceptions
+  ---
+  duration_ms: 0.173458
+  type: 'test'
+  ...
+# Subtest: hero and header labels stay concise even when onboarding contains many specialties
+ok 46 - hero and header labels stay concise even when onboarding contains many specialties
+  ---
+  duration_ms: 0.073292
+  type: 'test'
+  ...
+# Subtest: gallery selection exposes a representative set instead of an unbounded photo wall
+ok 47 - gallery selection exposes a representative set instead of an unbounded photo wall
+  ---
+  duration_ms: 0.207625
+  type: 'test'
+  ...
+# Subtest: editorial graphics never masquerade as verified clinic gallery photographs
+ok 48 - editorial graphics never masquerade as verified clinic gallery photographs
+  ---
+  duration_ms: 0.096375
+  type: 'test'
+  ...
+# Subtest: the home and visit gallery counts come from one policy, not component defaults
+ok 49 - the home and visit gallery counts come from one policy, not component defaults
+  ---
+  duration_ms: 0.127334
+  type: 'test'
+  ...
+# Subtest: both gallery surfaces pass an explicit policy so the component keeps no default
+ok 50 - both gallery surfaces pass an explicit policy so the component keeps no default
+  ---
+  duration_ms: 0.327125
+  type: 'test'
+  ...
+# Subtest: the gallery reads outside-in: exterior, then interior, then treatment rooms
+ok 51 - the gallery reads outside-in: exterior, then interior, then treatment rooms
+  ---
+  duration_ms: 0.255333
+  type: 'test'
+  ...
+# Subtest: the photo already used as the hero is not repeated in the gallery
+ok 52 - the photo already used as the hero is not repeated in the gallery
+  ---
+  duration_ms: 0.318958
+  type: 'test'
+  ...
+# Subtest: doctor role does not repeat the representative-director label
+ok 53 - doctor role does not repeat the representative-director label
+  ---
+  duration_ms: 0.10075
+  type: 'test'
+  ...
+# Subtest: the home gallery links to the full library instead of only naming a number
+ok 54 - the home gallery links to the full library instead of only naming a number
+  ---
+  duration_ms: 0.139292
+  type: 'test'
+  ...
+# Subtest: the visit page owns the anchor the home gallery links to
+ok 55 - the visit page owns the anchor the home gallery links to
+  ---
+  duration_ms: 0.24825
+  type: 'test'
+  ...
+# Subtest: the hub and visit MedicalClinic nodes share one @id
+ok 56 - the hub and visit MedicalClinic nodes share one @id
+  ---
+  duration_ms: 0.381292
+  type: 'test'
+  ...
+# Subtest: the visit node does not claim /visit as the clinic url
+ok 57 - the visit node does not claim /visit as the clinic url
+  ---
+  duration_ms: 0.123125
+  type: 'test'
+  ...
+# Subtest: both nodes build the same PostalAddress shape
+ok 58 - both nodes build the same PostalAddress shape
+  ---
+  duration_ms: 0.091458
+  type: 'test'
+  ...
+# Subtest: the headline text keeps a space between every part
+ok 59 - the headline text keeps a space between every part
+  ---
+  duration_ms: 0.533459
+  type: 'test'
+  ...
+# Subtest: the default copy is two parts, not a forced three-line split
+ok 60 - the default copy is two parts, not a forced three-line split
+  ---
+  duration_ms: 0.093916
+  type: 'test'
+  ...
+# Subtest: a clinic without an approved specialty label falls back to its own name
+ok 61 - a clinic without an approved specialty label falls back to its own name
+  ---
+  duration_ms: 0.092208
+  type: 'test'
+  ...
+# Subtest: an approved headline keeps its own line breaks as parts
+ok 62 - an approved headline keeps its own line breaks as parts
+  ---
+  duration_ms: 0.295625
+  type: 'test'
+  ...
+# Subtest: only an operator-authored multi-line headline claims explicit lines
+ok 63 - only an operator-authored multi-line headline claims explicit lines
+  ---
+  duration_ms: 1.489375
+  type: 'test'
+  ...
+# Subtest: a single-line approved headline needs no lead part
+ok 64 - a single-line approved headline needs no lead part
+  ---
+  duration_ms: 0.131959
+  type: 'test'
+  ...
+# Subtest: the hero renders the separator and lets the browser choose the line breaks
+ok 65 - the hero renders the separator and lets the browser choose the line breaks
+  ---
+  duration_ms: 0.879167
+  type: 'test'
+  ...
+# Subtest: an operator-authored headline gets the block-line modifier, and only it
+ok 66 - an operator-authored headline gets the block-line modifier, and only it
+  ---
+  duration_ms: 0.1875
+  type: 'test'
+  ...
+# Subtest: an approved headline never renders more than three parts
+ok 67 - an approved headline never renders more than three parts
+  ---
+  duration_ms: 7.518
+  type: 'test'
+  ...
+# Subtest: the listed physicians win over the legacy director fields
+ok 68 - the listed physicians win over the legacy director fields
+  ---
+  duration_ms: 1.894459
+  type: 'test'
+  ...
+# Subtest: a sole representative without a linked photo keeps the verified portrait
+ok 69 - a sole representative without a linked photo keeps the verified portrait
+  ---
+  duration_ms: 0.268416
+  type: 'test'
+  ...
+# Subtest: several representatives without linked photos get no portrait — never a guess
+ok 70 - several representatives without linked photos get no portrait — never a guess
+  ---
+  duration_ms: 0.291209
+  type: 'test'
+  ...
+# Subtest: a payload without physicians still renders the director, one card per name
+ok 71 - a payload without physicians still renders the director, one card per name
+  ---
+  duration_ms: 0.292875
+  type: 'test'
+  ...
+# Subtest: a hospital with no physician at all renders no card
+ok 72 - a hospital with no physician at all renders no card
+  ---
+  duration_ms: 0.148208
+  type: 'test'
+  ...
+# Subtest: the card count picks the layout: solo, two-column, three-column
+ok 73 - the card count picks the layout: solo, two-column, three-column
+  ---
+  duration_ms: 0.118875
+  type: 'test'
+  ...
+# Subtest: a title equal to the eyebrow is printed once, not twice
+ok 74 - a title equal to the eyebrow is printed once, not twice
+  ---
+  duration_ms: 0.177792
+  type: 'test'
+  ...
+# Subtest: the honorific carries its own space so the name never runs into it
+ok 75 - the honorific carries its own space so the name never runs into it
+  ---
+  duration_ms: 1.014458
+  type: 'test'
+  ...
+# Subtest: chips stay bounded and never repeat a value
+ok 76 - chips stay bounded and never repeat a value
+  ---
+  duration_ms: 0.314375
+  type: 'test'
+  ...
+# Subtest: a long career is folded behind a disclosure instead of flooding the card
+ok 77 - a long career is folded behind a disclosure instead of flooding the card
+  ---
+  duration_ms: 0.267625
+  type: 'test'
+  ...
+# Subtest: each physician gets a stable node id, so the two pages describe the same person
+ok 78 - each physician gets a stable node id, so the two pages describe the same person
+  ---
+  duration_ms: 0.107292
+  type: 'test'
+  ...
+# Subtest: the home and the doctor page emit one Physician node per physician
+ok 79 - the home and the doctor page emit one Physician node per physician
+  ---
+  duration_ms: 24.467791
+  type: 'test'
+  ...
+# Subtest: buildPostalAddress preserves the verified physical address without target regions
+ok 80 - buildPostalAddress preserves the verified physical address without target regions
+  ---
+  duration_ms: 0.659334
+  type: 'test'
+  ...
+# Subtest: buildPostalAddress omits an unknown physical address
+ok 81 - buildPostalAddress omits an unknown physical address
+  ---
+  duration_ms: 0.0605
+  type: 'test'
+  ...
+# Subtest: the building detail rides inside streetAddress, not a new invented field
+ok 82 - the building detail rides inside streetAddress, not a new invented field
+  ---
+  duration_ms: 0.050875
+  type: 'test'
+  ...
+# Subtest: the screen and the structured data print the same full address
+ok 83 - the screen and the structured data print the same full address
+  ---
+  duration_ms: 0.058292
+  type: 'test'
+  ...
+# Subtest: the home treatment section title is visible, not screen-reader-only
+ok 84 - the home treatment section title is visible, not screen-reader-only
+  ---
+  duration_ms: 0.756209
+  type: 'test'
+  ...
+# Subtest: the home treatment section says how many areas exist in total
+ok 85 - the home treatment section says how many areas exist in total
+  ---
+  duration_ms: 0.125917
+  type: 'test'
+  ...
+# Subtest: the treatment grid tells CSS how many columns to draw
+ok 86 - the treatment grid tells CSS how many columns to draw
+  ---
+  duration_ms: 0.139792
+  type: 'test'
+  ...
+# Subtest: the clinic CSS scan actually reaches the public surface rules
+ok 87 - the clinic CSS scan actually reaches the public surface rules
+  ---
+  duration_ms: 0.349917
+  type: 'test'
+  ...
+# Subtest: clinic rules never hard-code a brand blue outside the derived ramp
+ok 88 - clinic rules never hard-code a brand blue outside the derived ramp
+  ---
+  duration_ms: 3.541708
+  type: 'test'
+  ...
+# Subtest: every legacy revisit primary slot on the clinic surface is fed by the derived ramp
+ok 89 - every legacy revisit primary slot on the clinic surface is fed by the derived ramp
+  ---
+  duration_ms: 3.039833
+  type: 'test'
+  ...
+# Subtest: the derived ramp fills every clinic bridge slot the CSS reads
+ok 90 - the derived ramp fills every clinic bridge slot the CSS reads
+  ---
+  duration_ms: 3.68775
+  type: 'test'
+  ...
+# Subtest: the specificity model matches how browsers rank these selectors
+ok 91 - the specificity model matches how browsers rank these selectors
+  ---
+  duration_ms: 0.990584
+  type: 'test'
+  ...
+# Subtest: every measured control actually resolves to a 44x44 hit box on mobile
+ok 92 - every measured control actually resolves to a 44x44 hit box on mobile
+  ---
+  duration_ms: 0.667584
+  type: 'test'
+  ...
+# Subtest: no weaker 44px rule is left sitting behind a stronger smaller one
+ok 93 - no weaker 44px rule is left sitting behind a stronger smaller one
+  ---
+  duration_ms: 0.742417
+  type: 'test'
+  ...
+# Subtest: the header phone CTA keeps its hit box at desktop widths too
+ok 94 - the header phone CTA keeps its hit box at desktop widths too
+  ---
+  duration_ms: 0.12875
+  type: 'test'
+  ...
+# Subtest: inline text links become inline-flex so both floors actually apply
+ok 95 - inline text links become inline-flex so both floors actually apply
+  ---
+  duration_ms: 0.1435
+  type: 'test'
+  ...
+# Subtest: the brand lockup keeps its column layout while gaining the hit area
+ok 96 - the brand lockup keeps its column layout while gaining the hit area
+  ---
+  duration_ms: 0.120875
+  type: 'test'
+  ...
+# Subtest: raising the hit area does not raise the visible type size
+ok 97 - raising the hit area does not raise the visible type size
+  ---
+  duration_ms: 0.103083
+  type: 'test'
+  ...
+# Subtest: the mobile floors stay inside the mobile breakpoint so desktop keeps its look
+ok 98 - the mobile floors stay inside the mobile breakpoint so desktop keeps its look
+  ---
+  duration_ms: 0.074958
+  type: 'test'
+  ...
+# Subtest: clinic theme accepts valid hospital colors and rejects malformed values
+ok 99 - clinic theme accepts valid hospital colors and rejects malformed values
+  ---
+  duration_ms: 0.85525
+  type: 'test'
+  ...
+# Subtest: the approved accent has a text-safe step so it can actually be used on screen
+ok 100 - the approved accent has a text-safe step so it can actually be used on screen
+  ---
+  duration_ms: 0.398583
+  type: 'test'
+  ...
+# Subtest: one approved primary is enough — the whole ramp derives from it
+ok 101 - one approved primary is enough — the whole ramp derives from it
+  ---
+  duration_ms: 1.1595
+  type: 'test'
+  ...
+# Subtest: the derived ramp keeps every text pairing above its contrast floor
+ok 102 - the derived ramp keeps every text pairing above its contrast floor
+  ---
+  duration_ms: 1.680417
+  type: 'test'
+  ...
+# Subtest: light clinic colors receive a readable action foreground without erasing the brand
+ok 103 - light clinic colors receive a readable action foreground without erasing the brand
+  ---
+  duration_ms: 0.833792
+  type: 'test'
+  ...
+# Subtest: two hospitals with different approved primaries do not render the same ramp
+ok 104 - two hospitals with different approved primaries do not render the same ramp
+  ---
+  duration_ms: 0.357
+  type: 'test'
+  ...
+# Subtest: hero imagery never invents a clinic photograph when no verified facility asset exists
+ok 105 - hero imagery never invents a clinic photograph when no verified facility asset exists
+  ---
+  duration_ms: 0.532459
+  type: 'test'
+  ...
+# Subtest: approved profile hero and clinic photos take precedence over generic imagery
+ok 106 - approved profile hero and clinic photos take precedence over generic imagery
+  ---
+  duration_ms: 0.10175
+  type: 'test'
+  ...
+# Subtest: approved brand graphic can lead the hero without being represented as a clinic photo
+ok 107 - approved brand graphic can lead the hero without being represented as a clinic photo
+  ---
+  duration_ms: 0.243709
+  type: 'test'
+  ...
+# Subtest: director identity never falls back to slug-specific artwork
+ok 108 - director identity never falls back to slug-specific artwork
+  ---
+  duration_ms: 0.354
+  type: 'test'
+  ...
+# Subtest: approved real doctor photo takes precedence over clinic fallback artwork
+ok 109 - approved real doctor photo takes precedence over clinic fallback artwork
+  ---
+  duration_ms: 0.135542
+  type: 'test'
+  ...
+# Subtest: editorial character art cannot enter a named doctor identity slot
+ok 110 - editorial character art cannot enter a named doctor identity slot
+  ---
+  duration_ms: 0.039334
+  type: 'test'
+  ...
+# Subtest: the hero prefers the exterior, then the arrival interior, then treatment rooms
+ok 111 - the hero prefers the exterior, then the arrival interior, then treatment rooms
+  ---
+  duration_ms: 0.194167
+  type: 'test'
+  ...
+# Subtest: every section takes its vertical rhythm from the shared tokens
+ok 112 - every section takes its vertical rhythm from the shared tokens
+  ---
+  duration_ms: 11.615583
+  type: 'test'
+  ...
+# Subtest: no section rule keeps a dead vertical padding behind the tokens
+ok 113 - no section rule keeps a dead vertical padding behind the tokens
+  ---
+  duration_ms: 8.752791
+  type: 'test'
+  ...
+# Subtest: button radii converge on the two control tokens
+ok 114 - button radii converge on the two control tokens
+  ---
+  duration_ms: 3.452292
+  type: 'test'
+  ...
+# Subtest: button label weights converge on the two control tokens
+ok 115 - button label weights converge on the two control tokens
+  ---
+  duration_ms: 1.487042
+  type: 'test'
+  ...
+# Subtest: the heading scan reaches the clinic pages
+ok 116 - the heading scan reaches the clinic pages
+  ---
+  duration_ms: 3.557458
+  type: 'test'
+  ...
+# Subtest: h1 stays larger than h2, and h2 larger than h3, at both widths
+ok 117 - h1 stays larger than h2, and h2 larger than h3, at both widths
+  ---
+  duration_ms: 24.6055
+  type: 'test'
+  ...
+# Subtest: font weights snap to the declared steps
+ok 118 - font weights snap to the declared steps
+  ---
+  duration_ms: 1.523
+  type: 'test'
+  ...
+# Subtest: the declared shadow tokens are actually used, and never on the clinic surface
+ok 119 - the declared shadow tokens are actually used, and never on the clinic surface
+  ---
+  duration_ms: 1.621334
+  type: 'test'
+  ...
+# Subtest: the approved accent colour reaches the screen
+ok 120 - the approved accent colour reaches the screen
+  ---
+  duration_ms: 0.81325
+  type: 'test'
+  ...
+# Subtest: the treatment directory column count follows the item count
+ok 121 - the treatment directory column count follows the item count
+  ---
+  duration_ms: 1.34975
+  type: 'test'
+  ...
+# Subtest: the filter chip selected state is expressed once, by aria-current
+ok 122 - the filter chip selected state is expressed once, by aria-current
+  ---
+  duration_ms: 0.180166
+  type: 'test'
+  ...
+# Subtest: the gallery caption scrim is one token, not a gradient fought over by three rules
+ok 123 - the gallery caption scrim is one token, not a gradient fought over by three rules
+  ---
+  duration_ms: 1.287875
+  type: 'test'
+  ...
+# Subtest: constantTimeEqual returns true for identical secrets
+ok 124 - constantTimeEqual returns true for identical secrets
+  ---
+  duration_ms: 0.531541
+  type: 'test'
+  ...
+# Subtest: constantTimeEqual returns false for a wrong secret of equal length
+ok 125 - constantTimeEqual returns false for a wrong secret of equal length
+  ---
+  duration_ms: 0.057791
+  type: 'test'
+  ...
+# Subtest: constantTimeEqual returns false for a wrong secret of different length
+ok 126 - constantTimeEqual returns false for a wrong secret of different length
+  ---
+  duration_ms: 0.056625
+  type: 'test'
+  ...
+# Subtest: representative content images are present in server-rendered HTML
+ok 127 - representative content images are present in server-rendered HTML
+  ---
+  duration_ms: 206.734208
+  type: 'test'
+  ...
+# Subtest: parseKeywords trims blanks and keeps order
+ok 128 - parseKeywords trims blanks and keeps order
+  ---
+  duration_ms: 0.738125
+  type: 'test'
+  ...
+# Subtest: parseKeywords removes duplicates
+ok 129 - parseKeywords removes duplicates
+  ---
+  duration_ms: 0.057917
+  type: 'test'
+  ...
+# Subtest: parseKeywords caps at the maximum the backend accepts
+ok 130 - parseKeywords caps at the maximum the backend accepts
+  ---
+  duration_ms: 0.304375
+  type: 'test'
+  ...
+# Subtest: keyword carrying the hospital name is detected
+ok 131 - keyword carrying the hospital name is detected
+  ---
+  duration_ms: 0.28925
+  type: 'test'
+  ...
+# Subtest: spacing and hyphen variants of the hospital name are also detected
+ok 132 - spacing and hyphen variants of the hospital name are also detected
+  ---
+  duration_ms: 0.11225
+  type: 'test'
+  ...
+# Subtest: ordinary treatment keywords pass
+ok 133 - ordinary treatment keywords pass
+  ---
+  duration_ms: 0.098
+  type: 'test'
+  ...
+# Subtest: usable phone shapes are accepted
+ok 134 - usable phone shapes are accepted
+  ---
+  duration_ms: 0.165417
+  type: 'test'
+  ...
+# Subtest: unusable phone shapes are rejected
+ok 135 - unusable phone shapes are rejected
+  ---
+  duration_ms: 0.111333
+  type: 'test'
+  ...
+# Subtest: email shape check accepts and rejects the obvious cases
+ok 136 - email shape check accepts and rejects the obvious cases
+  ---
+  duration_ms: 0.596291
+  type: 'test'
+  ...
+# Subtest: common domain typos get a correction suggestion
+ok 137 - common domain typos get a correction suggestion
+  ---
+  duration_ms: 0.671083
+  type: 'test'
+  ...
+# Subtest: correct or unknown domains get no suggestion
+ok 138 - correct or unknown domains get no suggestion
+  ---
+  duration_ms: 0.214333
+  type: 'test'
+  ...
+# Subtest: a complete form has no errors
+ok 139 - a complete form has no errors
+  ---
+  duration_ms: 0.174083
+  type: 'test'
+  ...
+# Subtest: every missing required field is reported at once
+ok 140 - every missing required field is reported at once
+  ---
+  duration_ms: 0.124792
+  type: 'test'
+  ...
+# Subtest: a keyword carrying the hospital name is rejected by validation
+ok 141 - a keyword carrying the hospital name is rejected by validation
+  ---
+  duration_ms: 0.163875
+  type: 'test'
+  ...
+# Subtest: privacy consent is required
+ok 142 - privacy consent is required
+  ---
+  duration_ms: 0.125959
+  type: 'test'
+  ...
+# Subtest: an unusable clinic phone is rejected
+ok 143 - an unusable clinic phone is rejected
+  ---
+  duration_ms: 0.158542
+  type: 'test'
+  ...
+# Subtest: confirmation rows show every value the applicant typed
+ok 144 - confirmation rows show every value the applicant typed
+  ---
+  duration_ms: 0.195084
+  type: 'test'
+  ...
+# Subtest: payload maps to the backend field names
+ok 145 - payload maps to the backend field names
+  ---
+  duration_ms: 0.068583
+  type: 'test'
+  ...
+# Subtest: the hospital name never leaves as a measurement keyword
+ok 146 - the hospital name never leaves as a measurement keyword
+  ---
+  duration_ms: 0.036375
+  type: 'test'
+  ...
+# Subtest: every diagnosis proxy calls at least one backend path
+ok 147 - every diagnosis proxy calls at least one backend path
+  ---
+  duration_ms: 2.621166
+  type: 'test'
+  ...
+# Subtest: no diagnosis proxy re-adds the /public prefix that getApiBase already carries
+ok 148 - no diagnosis proxy re-adds the /public prefix that getApiBase already carries
+  ---
+  duration_ms: 0.195791
+  type: 'test'
+  ...
+# Subtest: diagnosis proxies target the diagnosis namespace
+ok 149 - diagnosis proxies target the diagnosis namespace
+  ---
+  duration_ms: 0.272375
+  type: 'test'
+  ...
+# Subtest: the existing leads proxy shows the same convention
+ok 150 - the existing leads proxy shows the same convention
+  ---
+  duration_ms: 0.229917
+  type: 'test'
+  ...
+# Subtest: slot counter keeps the server counts used by the numeric quota
+ok 151 - slot counter keeps the server counts used by the numeric quota
+  ---
+  duration_ms: 0.657792
+  type: 'test'
+  ...
+# Subtest: slot counter rejects malformed or internally inconsistent availability
+ok 152 - slot counter rejects malformed or internally inconsistent availability
+  ---
+  duration_ms: 0.065833
+  type: 'test'
+  ...
+# Subtest: slot counter reports a sold-out day
+ok 153 - slot counter reports a sold-out day
+  ---
+  duration_ms: 0.050667
+  type: 'test'
+  ...
+# Subtest: slot reset copy renders the configured hour, never a hardcoded one
+ok 154 - slot reset copy renders the configured hour, never a hardcoded one
+  ---
+  duration_ms: 0.054792
+  type: 'test'
+  ...
+# Subtest: clinic-local 404 offers known clinic contact routes and preserves the global fallback
+ok 155 - clinic-local 404 offers known clinic contact routes and preserves the global fallback
+  ---
+  duration_ms: 0.579875
+  type: 'test'
+  ...
+# Subtest: skip-link destinations exist on diagnosis, status, error, and not-found pages
+ok 156 - skip-link destinations exist on diagnosis, status, error, and not-found pages
+  ---
+  duration_ms: 0.730209
+  type: 'test'
+  ...
+# Subtest: one tenant invalidates all its data without touching platform or other clinics
+ok 157 - one tenant invalidates all its data without touching platform or other clinics
+  ---
+  duration_ms: 1.113083
+  type: 'test'
+  ...
+# Subtest: fetch and invalidation tags match, including unicode slugs
+ok 158 - fetch and invalidation tags match, including unicode slugs
+  ---
+  duration_ms: 0.145375
+  type: 'test'
+  ...
+# Subtest: no-store requests stay no-store and unsafe input cannot create shared tags
+ok 159 - no-store requests stay no-store and unsafe input cannot create shared tags
+  ---
+  duration_ms: 0.068625
+  type: 'test'
+  ...
+# Subtest: normalizeHostname strips port, lowercases, and handles IPv6
+ok 160 - normalizeHostname strips port, lowercases, and handles IPv6
+  ---
+  duration_ms: 0.507875
+  type: 'test'
+  ...
+# Subtest: getPrimaryHostnames includes site host and local hosts, tolerates bad URL
+ok 161 - getPrimaryHostnames includes site host and local hosts, tolerates bad URL
+  ---
+  duration_ms: 1.1985
+  type: 'test'
+  ...
+# Subtest: isPrimaryHost: platform, localhost with port, 127.0.0.1, run.app, vercel.app pass through
+ok 162 - isPrimaryHost: platform, localhost with port, 127.0.0.1, run.app, vercel.app pass through
+  ---
+  duration_ms: 0.196958
+  type: 'test'
+  ...
+# Subtest: isReservedPath: platform-owned paths and static files are reserved
+ok 163 - isReservedPath: platform-owned paths and static files are reserved
+  ---
+  duration_ms: 0.154292
+  type: 'test'
+  ...
+# Subtest: isReservedPath: hub paths and /llms.txt are rewritable
+ok 164 - isReservedPath: hub paths and /llms.txt are rewritable
+  ---
+  duration_ms: 0.056333
+  type: 'test'
+  ...
+# Subtest: decideRewrite: primary host never rewrites
+ok 165 - decideRewrite: primary host never rewrites
+  ---
+  duration_ms: 0.057333
+  type: 'test'
+  ...
+# Subtest: resolveRequestHost trusts x-forwarded-host only behind the proxy that overwrites it
+ok 166 - resolveRequestHost trusts x-forwarded-host only behind the proxy that overwrites it
+  ---
+  duration_ms: 0.12525
+  type: 'test'
+  ...
+# Subtest: resolveRequestHost keeps the port so callers can rebuild the request origin
+ok 167 - resolveRequestHost keeps the port so callers can rebuild the request origin
+  ---
+  duration_ms: 0.039333
+  type: 'test'
+  ...
+# Subtest: custom hosts fail closed when domain resolution is unavailable
+ok 168 - custom hosts fail closed when domain resolution is unavailable
+  ---
+  duration_ms: 0.2585
+  type: 'test'
+  ...
+# Subtest: decideRewrite: custom domain root rewrites to /{slug}
+ok 169 - decideRewrite: custom domain root rewrites to /{slug}
+  ---
+  duration_ms: 0.313208
+  type: 'test'
+  ...
+# Subtest: decideRewrite: paths already under /{slug} pass through
+ok 170 - decideRewrite: paths already under /{slug} pass through
+  ---
+  duration_ms: 0.116875
+  type: 'test'
+  ...
+# Subtest: custom domain redirects exposed internal slug paths to clean public paths
+ok 171 - custom domain redirects exposed internal slug paths to clean public paths
+  ---
+  duration_ms: 0.049458
+  type: 'test'
+  ...
+# Subtest: decideRewrite: non-reserved root paths get slug prefix
+ok 172 - decideRewrite: non-reserved root paths get slug prefix
+  ---
+  duration_ms: 0.0365
+  type: 'test'
+  ...
+# Subtest: decideRewrite: reserved paths pass through on custom domain
+ok 173 - decideRewrite: reserved paths pass through on custom domain
+  ---
+  duration_ms: 0.034375
+  type: 'test'
+  ...
+# Subtest: decideRewrite: malformed slug from backend is rejected defensively
+ok 174 - decideRewrite: malformed slug from backend is rejected defensively
+  ---
+  duration_ms: 0.026375
+  type: 'test'
+  ...
+# Subtest: onboarding portraits use responsive Next image delivery instead of the original upload
+ok 175 - onboarding portraits use responsive Next image delivery instead of the original upload
+  ---
+  duration_ms: 0.536625
+  type: 'test'
+  ...
+# Subtest: content covers use responsive Next image delivery instead of the original image
+ok 176 - content covers use responsive Next image delivery instead of the original image
+  ---
+  duration_ms: 0.148042
+  type: 'test'
+  ...
+# Subtest: public API assets stay on the responsive image optimizer path
+ok 177 - public API assets stay on the responsive image optimizer path
+  ---
+  duration_ms: 0.384917
+  type: 'test'
+  ...
+# Subtest: isOffAllowlistExternalUrl keeps normal optimized image hosts untouched
+ok 178 - isOffAllowlistExternalUrl keeps normal optimized image hosts untouched
+  ---
+  duration_ms: 0.056709
+  type: 'test'
+  ...
+# Subtest: isOffAllowlistExternalUrl bypasses off-allowlist external hosts (e.g. AE-pasted director photo)
+ok 179 - isOffAllowlistExternalUrl bypasses off-allowlist external hosts (e.g. AE-pasted director photo)
+  ---
+  duration_ms: 0.055166
+  type: 'test'
+  ...
+# Subtest: landing copy contains no forbidden medical-ad expression
+ok 180 - landing copy contains no forbidden medical-ad expression
+  ---
+  duration_ms: 0.594458
+  type: 'test'
+  ...
+# Subtest: the growth guard catches the phrasing that already slipped through
+ok 181 - the growth guard catches the phrasing that already slipped through
+  ---
+  duration_ms: 0.145375
+  type: 'test'
+  ...
+# Subtest: landing copy never promises rank or patient volume
+ok 182 - landing copy never promises rank or patient volume
+  ---
+  duration_ms: 0.165958
+  type: 'test'
+  ...
+# Subtest: the page states explicitly what it does not do
+ok 183 - the page states explicitly what it does not do
+  ---
+  duration_ms: 0.100333
+  type: 'test'
+  ...
+# Subtest: every figure in the evidence band declares whose number it is
+ok 184 - every figure in the evidence band declares whose number it is
+  ---
+  duration_ms: 0.084834
+  type: 'test'
+  ...
+# Subtest: the evidence band still carries at least one thing we can point at
+ok 185 - the evidence band still carries at least one thing we can point at
+  ---
+  duration_ms: 0.036916
+  type: 'test'
+  ...
+# Subtest: measured figures quote only the models we actually run
+ok 186 - measured figures quote only the models we actually run
+  ---
+  duration_ms: 0.101208
+  type: 'test'
+  ...
+# Subtest: the page discloses how the number is produced
+ok 187 - the page discloses how the number is produced
+  ---
+  duration_ms: 0.078625
+  type: 'test'
+  ...
+# Subtest: answer demo is framed as an example without guaranteeing results
+ok 188 - answer demo is framed as an example without guaranteeing results
+  ---
+  duration_ms: 0.239875
+  type: 'test'
+  ...
+# Subtest: every specialty answer example stays a safe placeholder example
+ok 189 - every specialty answer example stays a safe placeholder example
+  ---
+  duration_ms: 0.338083
+  type: 'test'
+  ...
+# Subtest: post-publication human review copy matches the sampling policy
+ok 190 - post-publication human review copy matches the sampling policy
+  ---
+  duration_ms: 0.15325
+  type: 'test'
+  ...
+# Subtest: hero preview counts stay inside the real denominator
+ok 191 - hero preview counts stay inside the real denominator
+  ---
+  duration_ms: 0.044958
+  type: 'test'
+  ...
+# Subtest: hero preview counts do not read as a promised outcome
+ok 192 - hero preview counts do not read as a promised outcome
+  ---
+  duration_ms: 0.043541
+  type: 'test'
+  ...
+# Subtest: the hero addresses the reader directly
+ok 193 - the hero addresses the reader directly
+  ---
+  duration_ms: 0.036875
+  type: 'test'
+  ...
+# Subtest: the hero leaves a slot for the rolling AI logo
+ok 194 - the hero leaves a slot for the rolling AI logo
+  ---
+  duration_ms: 0.028
+  type: 'test'
+  ...
+# Subtest: the hero claim stays inside what we measured
+ok 195 - the hero claim stays inside what we measured
+  ---
+  duration_ms: 0.034875
+  type: 'test'
+  ...
+# Subtest: every pricing tier includes direct MotionLabs marketer management
+ok 196 - every pricing tier includes direct MotionLabs marketer management
+  ---
+  duration_ms: 0.366792
+  type: 'test'
+  ...
+# Subtest: pain points are quoted in the director voice, not our slogans
+ok 197 - pain points are quoted in the director voice, not our slogans
+  ---
+  duration_ms: 0.086291
+  type: 'test'
+  ...
+# Subtest: pain point answers do not promise an outcome
+ok 198 - pain point answers do not promise an outcome
+  ---
+  duration_ms: 0.041709
+  type: 'test'
+  ...
+# Subtest: measurement scope explains the two-provider comparison without a market-share claim
+ok 199 - measurement scope explains the two-provider comparison without a market-share claim
+  ---
+  duration_ms: 0.049042
+  type: 'test'
+  ...
+# Subtest: measurement scope states what the synthetic panel does not represent
+ok 200 - measurement scope states what the synthetic panel does not represent
+  ---
+  duration_ms: 0.026916
+  type: 'test'
+  ...
+# Subtest: the FAQ answers the objections we would otherwise get on a call
+ok 201 - the FAQ answers the objections we would otherwise get on a call
+  ---
+  duration_ms: 0.05375
+  type: 'test'
+  ...
+# Subtest: the hero instrument states the same measurement contract the backend runs
+ok 202 - the hero instrument states the same measurement contract the backend runs
+  ---
+  duration_ms: 0.035167
+  type: 'test'
+  ...
+# Subtest: the instrument headline explains the service without implementation identifiers
+ok 203 - the instrument headline explains the service without implementation identifiers
+  ---
+  duration_ms: 0.055333
+  type: 'test'
+  ...
+# Subtest: the instrument states the premise before the number
+ok 204 - the instrument states the premise before the number
+  ---
+  duration_ms: 0.030625
+  type: 'test'
+  ...
+# Subtest: the instrument names the platforms we actually measure
+ok 205 - the instrument names the platforms we actually measure
+  ---
+  duration_ms: 0.035166
+  type: 'test'
+  ...
+# Subtest: every measured figure carries a plain-language meaning
+ok 206 - every measured figure carries a plain-language meaning
+  ---
+  duration_ms: 0.0415
+  type: 'test'
+  ...
+# Subtest: the fold label counts the hidden questions instead of hardcoding a number
+ok 207 - the fold label counts the hidden questions instead of hardcoding a number
+  ---
+  duration_ms: 0.035792
+  type: 'test'
+  ...
+# Subtest: every FAQ answer is substantive
+ok 208 - every FAQ answer is substantive
+  ---
+  duration_ms: 0.029667
+  type: 'test'
+  ...
+# Subtest: operation steps describe operation, not tooling
+ok 209 - operation steps describe operation, not tooling
+  ---
+  duration_ms: 0.042042
+  type: 'test'
+  ...
+# Subtest: headings do not all share one ending
+ok 210 - headings do not all share one ending
+  ---
+  duration_ms: 0.060417
+  type: 'test'
+  ...
+# Subtest: at least one heading is a question
+ok 211 - at least one heading is a question
+  ---
+  duration_ms: 0.03
+  type: 'test'
+  ...
+# Subtest: the "A가 아니라 B" construction is not a habit
+ok 212 - the "A가 아니라 B" construction is not a habit
+  ---
+  duration_ms: 0.035208
+  type: 'test'
+  ...
+# Subtest: negation is not the default sentence shape
+ok 213 - negation is not the default sentence shape
+  ---
+  duration_ms: 0.133
+  type: 'test'
+  ...
+# Subtest: full-bleed sections share the boxed sections content width
+ok 214 - full-bleed sections share the boxed sections content width
+  ---
+  duration_ms: 0.500209
+  type: 'test'
+  ...
+# Subtest: centered section children never reset margin with the shorthand
+ok 215 - centered section children never reset margin with the shorthand
+  ---
+  duration_ms: 0.217166
+  type: 'test'
+  ...
+# Subtest: 조직 노드는 검증 가능한 사업자 정보를 담는다
+ok 216 - 조직 노드는 검증 가능한 사업자 정보를 담는다
+  ---
+  duration_ms: 0.452416
+  type: 'test'
+  ...
+# Subtest: 노드들이 같은 @id로 서로를 참조한다
+ok 217 - 노드들이 같은 @id로 서로를 참조한다
+  ---
+  duration_ms: 0.109875
+  type: 'test'
+  ...
+# Subtest: 끝 슬래시가 있어도 @id가 갈라지지 않는다
+ok 218 - 끝 슬래시가 있어도 @id가 갈라지지 않는다
+  ---
+  duration_ms: 0.054166
+  type: 'test'
+  ...
+# Subtest: FAQ 구조화 데이터는 화면의 질문을 전부 담는다
+ok 219 - FAQ 구조화 데이터는 화면의 질문을 전부 담는다
+  ---
+  duration_ms: 0.079208
+  type: 'test'
+  ...
+# Subtest: FAQ 각 항목이 질문과 답을 모두 갖는다
+ok 220 - FAQ 각 항목이 질문과 답을 모두 갖는다
+  ---
+  duration_ms: 0.080209
+  type: 'test'
+  ...
+# Subtest: 빈 질문·답은 걸러지고, 전부 비면 노드를 만들지 않는다
+ok 221 - 빈 질문·답은 걸러지고, 전부 비면 노드를 만들지 않는다
+  ---
+  duration_ms: 0.046792
+  type: 'test'
+  ...
+# Subtest: 가격을 구조화 데이터에만 몰래 넣지 않는다
+ok 222 - 가격을 구조화 데이터에만 몰래 넣지 않는다
+  ---
+  duration_ms: 0.07525
+  type: 'test'
+  ...
+# Subtest: lead safety rejects patient-sensitive free text before upstream submission
+ok 223 - lead safety rejects patient-sensitive free text before upstream submission
+  ---
+  duration_ms: 0.738542
+  type: 'test'
+  ...
+# Subtest: lead proxy sends BFF auth even when visitor IP cannot be parsed
+ok 224 - lead proxy sends BFF auth even when visitor IP cannot be parsed
+  ---
+  duration_ms: 23.467416
+  type: 'test'
+  ...
+# Subtest: lead proxy forwards visitor IP when trusted proxy headers are available
+ok 225 - lead proxy forwards visitor IP when trusted proxy headers are available
+  ---
+  duration_ms: 0.406083
+  type: 'test'
+  ...
+# Subtest: lead proxy treats upstream auth failures as service errors, not input validation
+ok 226 - lead proxy treats upstream auth failures as service errors, not input validation
+  ---
+  duration_ms: 0.089875
+  type: 'test'
+  ...
+# Subtest: llms text values remove control characters and markdown line injection
+ok 227 - llms text values remove control characters and markdown line injection
+  ---
+  duration_ms: 0.43025
+  type: 'test'
+  ...
+# Subtest: llms URL values allow only absolute http URLs on one line
+ok 228 - llms URL values allow only absolute http URLs on one line
+  ---
+  duration_ms: 0.098667
+  type: 'test'
+  ...
+# Subtest: llms.txt lists weekday hours in the fixed weekday order
+ok 229 - llms.txt lists weekday hours in the fixed weekday order
+  ---
+  duration_ms: 0.359291
+  type: 'test'
+  ...
+# Subtest: llms.txt invents no hours for days the clinic left blank
+ok 230 - llms.txt invents no hours for days the clinic left blank
+  ---
+  duration_ms: 0.661167
+  type: 'test'
+  ...
+# Subtest: llms.txt hours are sanitized like every other llms value
+ok 231 - llms.txt hours are sanitized like every other llms value
+  ---
+  duration_ms: 0.207541
+  type: 'test'
+  ...
+# Subtest: llms.txt and the JSON-LD opening hours read the same days from one source
+ok 232 - llms.txt and the JSON-LD opening hours read the same days from one source
+  ---
+  duration_ms: 0.718458
+  type: 'test'
+  ...
+# Subtest: custom domain lookup true 404 stays a 404
+ok 233 - custom domain lookup true 404 stays a 404
+  ---
+  duration_ms: 2.846916
+  type: 'test'
+  ...
+# Subtest: custom domain lookup outage without cache returns no-store 503
+ok 234 - custom domain lookup outage without cache returns no-store 503
+  ---
+  duration_ms: 0.440458
+  type: 'test'
+  ...
+# Subtest: custom domain lookup outage uses fresh cached slug for the same hostname only
+ok 235 - custom domain lookup outage uses fresh cached slug for the same hostname only
+  ---
+  duration_ms: 0.617083
+  type: 'test'
+  ...
+# Subtest: custom domain lookup outage uses expired-fresh slug inside the 24h stale window
+ok 236 - custom domain lookup outage uses expired-fresh slug inside the 24h stale window
+  ---
+  duration_ms: 0.491291
+  type: 'test'
+  ...
+# Subtest: a spoofed x-forwarded-host on the Cloud Run host never impersonates a tenant
+ok 237 - a spoofed x-forwarded-host on the Cloud Run host never impersonates a tenant
+  ---
+  duration_ms: 0.225875
+  type: 'test'
+  ...
+# Subtest: custom domain lookup outage rejects positive slug beyond stale window
+ok 238 - custom domain lookup outage rejects positive slug beyond stale window
+  ---
+  duration_ms: 0.4125
+  type: 'test'
+  ...
+# Subtest: motion runs by default and pauses only when asked
+ok 239 - motion runs by default and pauses only when asked
+  ---
+  duration_ms: 0.565708
+  type: 'test'
+  ...
+# Subtest: the OS setting outranks the page toggle
+ok 240 - the OS setting outranks the page toggle
+  ---
+  duration_ms: 0.090583
+  type: 'test'
+  ...
+# Subtest: the paused state is written where CSS can see it
+ok 241 - the paused state is written where CSS can see it
+  ---
+  duration_ms: 0.081125
+  type: 'test'
+  ...
+# Subtest: subscribers are notified and can unsubscribe
+ok 242 - subscribers are notified and can unsubscribe
+  ---
+  duration_ms: 0.114917
+  type: 'test'
+  ...
+# Subtest: server-side rendering never claims motion is allowed
+ok 243 - server-side rendering never claims motion is allowed
+  ---
+  duration_ms: 0.310666
+  type: 'test'
+  ...
+# Subtest: privacy disclosure names the Korean service runtime region
+ok 244 - privacy disclosure names the Korean service runtime region
+  ---
+  duration_ms: 167.970084
+  type: 'test'
+  ...
+# Subtest: privacy disclosure no longer claims the retired us-central1 runtime
+ok 245 - privacy disclosure no longer claims the retired us-central1 runtime
+  ---
+  duration_ms: 4.386667
+  type: 'test'
+  ...
+# Subtest: privacy disclosure describes object storage as a configurable region
+ok 246 - privacy disclosure describes object storage as a configurable region
+  ---
+  duration_ms: 6.077208
+  type: 'test'
+  ...
+# Subtest: privacy disclosure names the destination country in the same paragraph as Slack
+ok 247 - privacy disclosure names the destination country in the same paragraph as Slack
+  ---
+  duration_ms: 3.911833
+  type: 'test'
+  ...
+# Subtest: privacy disclosure states the cross-border transfer country explicitly
+ok 248 - privacy disclosure states the cross-border transfer country explicitly
+  ---
+  duration_ms: 2.6995
+  type: 'test'
+  ...
+# Subtest: privacy disclosure renders every numbered section to the reader
+ok 249 - privacy disclosure renders every numbered section to the reader
+  ---
+  duration_ms: 2.589542
+  type: 'test'
+  ...
+# Subtest: privacy disclosure states the retention period and the withdrawal channel
+ok 250 - privacy disclosure states the retention period and the withdrawal channel
+  ---
+  duration_ms: 1.8885
+  type: 'test'
+  ...
+# Subtest: custom tenant health returns the exact no-store identity marker
+ok 251 - custom tenant health returns the exact no-store identity marker
+  ---
+  duration_ms: 12.166083
+  type: 'test'
+  ...
+# Subtest: unmapped and wrong-host tenant markers never report healthy
+ok 252 - unmapped and wrong-host tenant markers never report healthy
+  ---
+  duration_ms: 1.300667
+  type: 'test'
+  ...
+# Subtest: malformed tenant lookup never reports healthy or becomes cacheable
+ok 253 - malformed tenant lookup never reports healthy or becomes cacheable
+  ---
+  duration_ms: 0.359375
+  type: 'test'
+  ...
+# Subtest: platform host does not expose a tenant marker or call the backend
+ok 254 - platform host does not expose a tenant marker or call the backend
+  ---
+  duration_ms: 0.391417
+  type: 'test'
+  ...
+# Subtest: JSON body cap rejects oversized requests without Content-Length
+ok 255 - JSON body cap rejects oversized requests without Content-Length
+  ---
+  duration_ms: 27.835042
+  type: 'test'
+  ...
+# Subtest: JSON body cap counts bytes even when Content-Length is falsely small
+ok 256 - JSON body cap counts bytes even when Content-Length is falsely small
+  ---
+  duration_ms: 0.246042
+  type: 'test'
+  ...
+# Subtest: JSON body cap allows normal JSON requests
+ok 257 - JSON body cap allows normal JSON requests
+  ---
+  duration_ms: 0.500833
+  type: 'test'
+  ...
+# Subtest: multipart form cap rejects oversized requests without Content-Length
+ok 258 - multipart form cap rejects oversized requests without Content-Length
+  ---
+  duration_ms: 0.241375
+  type: 'test'
+  ...
+# Subtest: multipart form cap preserves the Content-Type boundary
+ok 259 - multipart form cap preserves the Content-Type boundary
+  ---
+  duration_ms: 1.703542
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl keeps platform host pointing at platform sitemap
+ok 260 - resolveSitemapUrl keeps platform host pointing at platform sitemap
+  ---
+  duration_ms: 3.038166
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl falls back to platform sitemap when host is missing
+ok 261 - resolveSitemapUrl falls back to platform sitemap when host is missing
+  ---
+  duration_ms: 0.100291
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl keeps run.app/vercel.app preview hosts on platform sitemap
+ok 262 - resolveSitemapUrl keeps run.app/vercel.app preview hosts on platform sitemap
+  ---
+  duration_ms: 0.078542
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl points custom domain at its own origin
+ok 263 - resolveSitemapUrl points custom domain at its own origin
+  ---
+  duration_ms: 0.079917
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl honours forwarded proto and trims comma-list
+ok 264 - resolveSitemapUrl honours forwarded proto and trims comma-list
+  ---
+  duration_ms: 0.074542
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl follows the same forwarded-host policy as middleware
+ok 265 - resolveSitemapUrl follows the same forwarded-host policy as middleware
+  ---
+  duration_ms: 0.114916
+  type: 'test'
+  ...
+# Subtest: resolveSitemapUrl preserves a port in the custom host origin
+ok 266 - resolveSitemapUrl preserves a port in the custom host origin
+  ---
+  duration_ms: 0.124209
+  type: 'test'
+  ...
+# Subtest: robots leaves Next render assets crawlable while private API paths stay blocked
+ok 267 - robots leaves Next render assets crawlable while private API paths stay blocked
+  ---
+  duration_ms: 0.530167
+  type: 'test'
+  ...
+# Subtest: robots explicitly allows public image proxy paths
+ok 268 - robots explicitly allows public image proxy paths
+  ---
+  duration_ms: 0.582416
+  type: 'test'
+  ...
+# Subtest: safeExternalHref allows http and https URLs only
+ok 269 - safeExternalHref allows http and https URLs only
+  ---
+  duration_ms: 0.321125
+  type: 'test'
+  ...
+# Subtest: safeExternalHref rejects script and malformed URLs
+ok 270 - safeExternalHref rejects script and malformed URLs
+  ---
+  duration_ms: 0.069375
+  type: 'test'
+  ...
+# Subtest: production FAQPage JSON-LD caps mainEntity at 10 entries
+ok 271 - production FAQPage JSON-LD caps mainEntity at 10 entries
+  ---
+  duration_ms: 0.626917
+  type: 'test'
+  ...
+# Subtest: only FAQ-type content with an approved question and answer becomes a Question
+ok 272 - only FAQ-type content with an approved question and answer becomes a Question
+  ---
+  duration_ms: 1.513375
+  type: 'test'
+  ...
+# Subtest: a list title never stands in for an approved question
+ok 273 - a list title never stands in for an approved question
+  ---
+  duration_ms: 0.396917
+  type: 'test'
+  ...
+# Subtest: a meta description never stands in for a reviewed answer
+ok 274 - a meta description never stands in for a reviewed answer
+  ---
+  duration_ms: 0.066209
+  type: 'test'
+  ...
+# Subtest: the selector reads only the two approved fields
+ok 275 - the selector reads only the two approved fields
+  ---
+  duration_ms: 0.290083
+  type: 'test'
+  ...
+# Subtest: the FAQPage node carries exactly what the visible section renders
+ok 276 - the FAQPage node carries exactly what the visible section renders
+  ---
+  duration_ms: 0.080917
+  type: 'test'
+  ...
+# Subtest: no FAQ at all means no FAQPage node
+ok 277 - no FAQ at all means no FAQPage node
+  ---
+  duration_ms: 0.087834
+  type: 'test'
+  ...
+# Subtest: each FAQ detail page gets its own node identity
+ok 278 - each FAQ detail page gets its own node identity
+  ---
+  duration_ms: 0.045083
+  type: 'test'
+  ...
+# Subtest: content detail uses approved FAQ fields for both visible FAQ and JSON-LD
+ok 279 - content detail uses approved FAQ fields for both visible FAQ and JSON-LD
+  ---
+  duration_ms: 0.517958
+  type: 'test'
+  ...
+# Subtest: the contents listing does not declare answers it does not visibly render
+ok 280 - the contents listing does not declare answers it does not visibly render
+  ---
+  duration_ms: 0.405375
+  type: 'test'
+  ...
+# Subtest: article schema uses supported, attributable publication fields
+ok 281 - article schema uses supported, attributable publication fields
+  ---
+  duration_ms: 0.2725
+  type: 'test'
+  ...
+# Subtest: the hospital home renders the same FAQ entries it declares in JSON-LD
+ok 282 - the hospital home renders the same FAQ entries it declares in JSON-LD
+  ---
+  duration_ms: 0.143333
+  type: 'test'
+  ...
+# Subtest: the approved Q&A has one owner on the home, so no item renders twice
+ok 283 - the approved Q&A has one owner on the home, so no item renders twice
+  ---
+  duration_ms: 0.121958
+  type: 'test'
+  ...
+# Subtest: the two home question surfaces never select the same content
+ok 284 - the two home question surfaces never select the same content
+  ---
+  duration_ms: 0.134667
+  type: 'test'
+  ...
+# Subtest: platformSiteUrl falls back to default and strips trailing slash
+ok 285 - platformSiteUrl falls back to default and strips trailing slash
+  ---
+  duration_ms: 0.575833
+  type: 'test'
+  ...
+# Subtest: platformSiteUrl fails closed when production env is missing
+ok 286 - platformSiteUrl fails closed when production env is missing
+  ---
+  duration_ms: 0.186166
+  type: 'test'
+  ...
+# Subtest: platformSiteUrl rejects unsafe production origins
+ok 287 - platformSiteUrl rejects unsafe production origins
+  ---
+  duration_ms: 0.2245
+  type: 'test'
+  ...
+# Subtest: normalizeCustomDomain accepts hostnames and normalizes loose input
+ok 288 - normalizeCustomDomain accepts hostnames and normalizes loose input
+  ---
+  duration_ms: 0.173959
+  type: 'test'
+  ...
+# Subtest: normalizeCustomDomain rejects invalid values
+ok 289 - normalizeCustomDomain rejects invalid values
+  ---
+  duration_ms: 0.108292
+  type: 'test'
+  ...
+# Subtest: canonicalBase uses https custom domain when aeo_domain is set
+ok 290 - canonicalBase uses https custom domain when aeo_domain is set
+  ---
+  duration_ms: 0.054709
+  type: 'test'
+  ...
+# Subtest: canonicalBase falls back to platform URL when aeo_domain missing or invalid
+ok 291 - canonicalBase falls back to platform URL when aeo_domain missing or invalid
+  ---
+  duration_ms: 0.641333
+  type: 'test'
+  ...
+# Subtest: canonicalHospitalUrl hides the internal slug on a custom domain
+ok 292 - canonicalHospitalUrl hides the internal slug on a custom domain
+  ---
+  duration_ms: 0.244334
+  type: 'test'
+  ...
+# Subtest: canonicalHospitalUrl uses the managed tenant subdomain
+ok 293 - canonicalHospitalUrl uses the managed tenant subdomain
+  ---
+  duration_ms: 0.673333
+  type: 'test'
+  ...
+# Subtest: platformHospitalUrl keeps local and unsupported labels on a path route
+ok 294 - platformHospitalUrl keeps local and unsupported labels on a path route
+  ---
+  duration_ms: 0.856125
+  type: 'test'
+  ...
+# Subtest: host-scope sitemap excludes platform entries and lists only that hospital
+ok 295 - host-scope sitemap excludes platform entries and lists only that hospital
+  ---
+  duration_ms: 24.0535
+  type: 'test'
+  ...
+# Subtest: hybrid subdomain sitemap emits only URLs on the hybrid request host
+ok 296 - hybrid subdomain sitemap emits only URLs on the hybrid request host
+  ---
+  duration_ms: 0.524125
+  type: 'test'
+  ...
+# Subtest: host-scope sitemap returns an empty list when the domain is unregistered (no platform leak)
+ok 297 - host-scope sitemap returns an empty list when the domain is unregistered (no platform leak)
+  ---
+  duration_ms: 0.332375
+  type: 'test'
+  ...
+# Subtest: host-scope sitemap treats a missing apiBase as transient configuration failure
+ok 298 - host-scope sitemap treats a missing apiBase as transient configuration failure
+  ---
+  duration_ms: 0.214416
+  type: 'test'
+  ...
+# Subtest: all-scope sitemap contains only URLs owned by the platform root
+ok 299 - all-scope sitemap contains only URLs owned by the platform root
+  ---
+  duration_ms: 0.563833
+  type: 'test'
+  ...
+# Subtest: all-scope sitemap never cross-lists tenant origins
+ok 300 - all-scope sitemap never cross-lists tenant origins
+  ---
+  duration_ms: 0.159458
+  type: 'test'
+  ...
+# Subtest: all-scope sitemap falls back to platform base entries when apiBase is missing
+ok 301 - all-scope sitemap falls back to platform base entries when apiBase is missing
+  ---
+  duration_ms: 0.071042
+  type: 'test'
+  ...
+# Subtest: host lookup 500 is transient instead of an empty successful sitemap
+ok 302 - host lookup 500 is transient instead of an empty successful sitemap
+  ---
+  duration_ms: 0.087708
+  type: 'test'
+  ...
+# Subtest: second contents page failure never returns a successful sitemap prefix
+ok 303 - second contents page failure never returns a successful sitemap prefix
+  ---
+  duration_ms: 0.9365
+  type: 'test'
+  ...
+# Subtest: tenant that becomes private during pagination returns a complete empty sitemap
+ok 304 - tenant that becomes private during pagination returns a complete empty sitemap
+  ---
+  duration_ms: 3.216916
+  type: 'test'
+  ...
+# Subtest: transient sitemap response is 503 and never cacheable
+ok 305 - transient sitemap response is 503 and never cacheable
+  ---
+  duration_ms: 0.521792
+  type: 'test'
+  ...
+# Subtest: sitemap XML escapes canonical URLs and serializes timestamps
+ok 306 - sitemap XML escapes canonical URLs and serializes timestamps
+  ---
+  duration_ms: 2.21725
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope returns "all" for the platform host
+ok 307 - resolveSitemapScope returns "all" for the platform host
+  ---
+  duration_ms: 11.148958
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope returns "all" when host is missing
+ok 308 - resolveSitemapScope returns "all" when host is missing
+  ---
+  duration_ms: 0.353875
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope returns "all" for local dev and run.app/vercel.app preview hosts
+ok 309 - resolveSitemapScope returns "all" for local dev and run.app/vercel.app preview hosts
+  ---
+  duration_ms: 0.22275
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope scopes a custom domain to just that host
+ok 310 - resolveSitemapScope scopes a custom domain to just that host
+  ---
+  duration_ms: 0.283167
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope scopes a hybrid {slug}.{platform host} subdomain to that host
+ok 311 - resolveSitemapScope scopes a hybrid {slug}.{platform host} subdomain to that host
+  ---
+  duration_ms: 0.135583
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope follows the same forwarded-host policy as middleware
+ok 312 - resolveSitemapScope follows the same forwarded-host policy as middleware
+  ---
+  duration_ms: 0.249042
+  type: 'test'
+  ...
+# Subtest: resolveSitemapScope normalizes case and strips the port from a custom host
+ok 313 - resolveSitemapScope normalizes case and strips the port from a custom host
+  ---
+  duration_ms: 0.405625
+  type: 'test'
+  ...
+# Subtest: the empty state points at the clinic other treatment areas
+ok 314 - the empty state points at the clinic other treatment areas
+  ---
+  duration_ms: 1.415584
+  type: 'test'
+  ...
+# Subtest: treatments with no usable slug are not offered as links
+ok 315 - treatments with no usable slug are not offered as links
+  ---
+  duration_ms: 0.115542
+  type: 'test'
+  ...
+# Subtest: the recent content list is newest first and capped at three
+ok 316 - the recent content list is newest first and capped at three
+  ---
+  duration_ms: 0.150542
+  type: 'test'
+  ...
+# Subtest: at most six sibling areas are offered
+ok 317 - at most six sibling areas are offered
+  ---
+  duration_ms: 0.087542
+  type: 'test'
+  ...
+# Subtest: the page no longer ends at a single "준비 중" line
+ok 318 - the page no longer ends at a single "준비 중" line
+  ---
+  duration_ms: 0.215541
+  type: 'test'
+  ...
+# Subtest: authoritative query-target treatment wins before text heuristics
+ok 319 - authoritative query-target treatment wins before text heuristics
+  ---
+  duration_ms: 0.787792
+  type: 'test'
+  ...
+# Subtest: an authoritative but unavailable treatment never falls back to an unrelated title match
+ok 320 - an authoritative but unavailable treatment never falls back to an unrelated title match
+  ---
+  duration_ms: 0.140542
+  type: 'test'
+  ...
+# Subtest: buildWeeklyHoursRows always returns Monday through Sunday in order
+ok 321 - buildWeeklyHoursRows always returns Monday through Sunday in order
+  ---
+  duration_ms: 0.734875
+  type: 'test'
+  ...
+# Subtest: a day the hospital did not provide stays empty instead of inventing hours
+ok 322 - a day the hospital did not provide stays empty instead of inventing hours
+  ---
+  duration_ms: 0.080167
+  type: 'test'
+  ...
+# Subtest: no hours at all is reported as such, for null, undefined and empty maps
+ok 323 - no hours at all is reported as such, for null, undefined and empty maps
+  ---
+  duration_ms: 0.103958
+  type: 'test'
+  ...
+# Subtest: the visible table and the structured data read the same source
+ok 324 - the visible table and the structured data read the same source
+  ---
+  duration_ms: 0.943
+  type: 'test'
+  ...
+# Subtest: the hours button points at the table, never back at the same page
+ok 325 - the hours button points at the table, never back at the same page
+  ---
+  duration_ms: 0.149125
+  type: 'test'
+  ...
+# Subtest: the visit page renders the hours table at the anchor the button targets
+ok 326 - the visit page renders the hours table at the anchor the button targets
+  ---
+  duration_ms: 0.086417
+  type: 'test'
+  ...
+# Subtest: the hours section is a real table with weekday row headers
+ok 327 - the hours section is a real table with weekday row headers
+  ---
+  duration_ms: 0.102
+  type: 'test'
+  ...
+# Subtest: the button becomes an in-page anchor rather than a link to the current URL
+ok 328 - the button becomes an in-page anchor rather than a link to the current URL
+  ---
+  duration_ms: 0.084541
+  type: 'test'
+  ...
+# Subtest: visit facility photos are empty when the hospital has no photos
+ok 329 - visit facility photos are empty when the hospital has no photos
+  ---
+  duration_ms: 0.637
+  type: 'test'
+  ...
+# Subtest: visit facility photos exclude a doctor-only collection
+ok 330 - visit facility photos exclude a doctor-only collection
+  ---
+  duration_ms: 0.072
+  type: 'test'
+  ...
+# Subtest: visit facility photos keep all three supported facility types
+ok 331 - visit facility photos keep all three supported facility types
+  ---
+  duration_ms: 0.084541
+  type: 'test'
+  ...
+# Subtest: visit facility photos drop doctor photos from a mixed collection
+ok 332 - visit facility photos drop doctor photos from a mixed collection
+  ---
+  duration_ms: 0.053458
+  type: 'test'
+  ...
+1..332
+# tests 332
+# suites 0
+# pass 332
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1296.432208
+=== site lint ===
+
+> site@0.1.0 lint
+> eslint --ext .js,.jsx,.ts,.tsx app lib proxy.ts --ignore-pattern next-env.d.ts
+
+=== site typecheck ===
+
+> site@0.1.0 typecheck
+> tsc --noEmit -p tsconfig.json
