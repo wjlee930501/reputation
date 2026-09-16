@@ -1,0 +1,147 @@
+{
+  "status": "LOCAL_REFACTOR_VERIFIED_NOT_DEPLOYED",
+  "verified_at": "2026-09-16T14:23:44.109277+09:00",
+  "baseline_commit": "2be1d6b60af90c91ae3bde0a866e189ce2441f17",
+  "branch": "refactor/behavior-preserving-20260916",
+  "backend_baseline": {
+    "total": 4103,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "backend_final": {
+    "total": 4197,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "new_regression_tests": 94,
+  "backend_line_coverage_percent": 84.84930177387179,
+  "frontend": {
+    "site": {
+      "tests": 332,
+      "pass": 332,
+      "fail": 0,
+      "skipped": 0
+    },
+    "admin": {
+      "tests": 627,
+      "pass": 627,
+      "fail": 0,
+      "skipped": 0
+    }
+  },
+  "frontend_lint_and_typecheck": "PASS",
+  "frontend_production_builds": {
+    "site": "PASS",
+    "admin": "PASS"
+  },
+  "deployment_policy_tests": {
+    "passed": 85,
+    "failed": 0,
+    "skipped": 0
+  },
+  "guards": {
+    "backend_ruff": "PASS",
+    "copy_guard": "PASS",
+    "db_budget_guard": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "worker_task_registration_contracts_unchanged": 27,
+  "structural_audit": {
+    "retained_worker_functions_ast_identical": 185,
+    "explicit_adapters": [
+      "_generate_with_auto_review",
+      "_build_measurement_specs"
+    ],
+    "moved_helper_bodies_equivalent_under_rename": [
+      "review_findings",
+      "hard_removal_findings",
+      "finding_label",
+      "review_finding_items",
+      "apply_reference_review_findings",
+      "non_reference_remediation_messages",
+      "first_h2_line",
+      "duplicate_topic_matches",
+      "duplicate_topic_remediation",
+      "screening_probe",
+      "v0_query_snapshot",
+      "v0_judgment_context",
+      "parse_v0_judgment_context",
+      "v0_platforms_from_run",
+      "v0_resume_judgment_context",
+      "is_even_measurement_week",
+      "priority_included",
+      "apply_high_priority_cap",
+      "apply_total_spec_cap",
+      "normalize_platform",
+      "sov_spec_identity",
+      "sov_spec_identities_match",
+      "manifest_slot_repeat_count",
+      "manifest_cell_slots_resolved",
+      "manifest_observation_adequacy",
+      "pending_weekly_manifest_specs",
+      "selected_weekly_manifest_is_resolved",
+      "weekly_manifest_is_resolved",
+      "manifest_execution_policy_matches",
+      "first_publication_at",
+      "observed_contract_publications",
+      "contract_publication_timing_counts",
+      "load_monthly_publication_facts"
+    ],
+    "intentionally_consolidated_snapshot_consumers": [
+      "local_v0_query_texts",
+      "v0_queries_from_snapshot"
+    ]
+  },
+  "worker_lines": {
+    "before": 10966,
+    "after": 10197
+  },
+  "source_sha256": {
+    "backend/app/services/content_generation_review.py": "791a10fca272cd6d9afd21a58ed6a3c19ee22459abf86476d04119c64bda494c",
+    "backend/app/services/content_review_feedback.py": "74da9aeb21c2e2d4f8a120d9198df4daac709a71d3476bdd622e9d28d2d0821d",
+    "backend/app/services/measurement_manifest_policy.py": "eacfc34656831793ceffcd578e2ec9eba88e831ee52a5ff429265d21ff85bb2b",
+    "backend/app/services/measurement_selection.py": "0a25a13cae33925ded243a8253e75d9a196abe431d27f58775bfdf9b070eb9ca",
+    "backend/app/services/monthly_publication_facts.py": "adfbaab150ec333fc1cccfb9db1fa6a541896eb54c985fbfb1221e848b365c1f",
+    "backend/app/services/v0_measurement_snapshot.py": "b050b51764838a70b194ebf4b6e319b806858ea2a9958da7f00b64ce7900155e",
+    "backend/app/workers/tasks.py": "5395b6be28c4b96e04600cbafe820b6b6a608c14e4efe4d683d69b475a29ab15",
+    "backend/tests/test_content_generation_review_service.py": "dab0571c6e4d8221b1ba8c6441c309a685fb7b5d26b83bceef097912a845b3bc",
+    "backend/tests/test_measurement_selection_service.py": "aadcbcf4009cc6d3e7b2ebda8eaaf93f004b2540d388300f097a38256b8607b2",
+    "backend/tests/test_refactored_service_contracts.py": "14700414ab9bdd6a2ea3c94efbedeae732082dea2154b23a496c5da6f91e9ea2",
+    "backend/tests/test_v0_measurement_snapshot_service.py": "97499f75ccee76a8d20429a5235b361da64b9270e9165b2f94044ed40f30596c"
+  },
+  "preserved_untracked_file": {
+    "path": "aside-test.js",
+    "sha256": "162a5c2c47c553bab3fe929e5b243db4b396fad5708519c6739f5ecdfeb826dc"
+  },
+  "evidence_archive": "/private/tmp/reputation-refactor-20260916-2oz6gi9v/verification",
+  "evidence_sha256": {
+    "admin-production-build.log": "b07382804af4123acca398729fb6976ab5780b7be30ac3c00a8a27df774c2cd9",
+    "baseline-verified.log": "a393d491425b7915f7816c0a92504b019dcab0d6adbdac323fecf585c4b761a4",
+    "baseline-verified.xml": "fab024180e788a60871ba528d6e115bc6e73b8c1bf6cd802cb4c86ef3576abb8",
+    "coverage.json": "9948a8135059121a2874d3ffa337ade70752b98730ffc7b1960914144121965a",
+    "final-backend.log": "4de266bee576ab66f5ba68d25a8ffcf24bb3a876c714ae15386681da1870e5a4",
+    "final-backend.xml": "2b538ae4d1dd2f3f4f0155d21d847e1d059a03336b517b86c2cf31fb5e268240",
+    "final-frontend-tests.log": "838aacbe80c9be61348c430e649ed0f51395cb86a4d31dda955f8e53b653eb2d",
+    "final-guards.log": "c345a441022204cee8870684ba1040ca39d481e2912f6932b81794e894d83508",
+    "final-script-tests.log": "c873aeebec3d7dcf6b55172dc09f1c40b3e6b0277cf715911f4414e9c6e81573",
+    "site-production-build.log": "79839f5b6b7daea97c36a969dd0702827f3f6c21448907b33c81fbbabb1ab096",
+    "structural-audit.json": "39d57471cc35bd19bb523e7ae719192dd9c5e6326ef51088d4177f20f599518c"
+  },
+  "limits": [
+    "No production rollout or remote CI run",
+    "No live paid AI, customer content changes, or Slack delivery",
+    "No authenticated browser E2E or Docker image rebuild in this refactor",
+    "Native local environment: Python 3.11.14, PostgreSQL 16, Redis 8.10.1, Node 26.3.0; Redis/Node differ from CI Redis 7/Node 24",
+    "Remaining large Worker/API/report/frontend files are not comprehensively refactored"
+  ],
+  "cleanup": {
+    "postgres_5432": "stopped_owned_cluster",
+    "postgres_5434": "stopped_owned_cluster",
+    "postgres_62831": "stopped_owned_cluster",
+    "redis": "stopped_owned_instance",
+    "disposable_frontend_and_staging_copies": "removed",
+    "verification_logs": "retained"
+  }
+}

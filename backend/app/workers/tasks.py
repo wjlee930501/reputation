@@ -81,8 +81,15 @@ from app.services.content_ai_review import (
 )
 from app.services.content_engine import (
     EXISTING_TITLE_PROMPT_LIMIT,
-    SEASON_MISMATCH_FINDING_PREFIX,
     generate_content,
+)
+from app.services.content_engine import (
+    SEASON_MISMATCH_FINDING_PREFIX as SEASON_MISMATCH_FINDING_PREFIX,
+)
+from app.services.content_generation_review import (
+    ContentReviewDependencies,
+    GenerationReviewLimits,
+    generate_reviewed_content,
 )
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
@@ -97,6 +104,36 @@ from app.services.content_publication import (
 from app.services.content_publish_notifications import (
     enqueue_generation_blocked_digest_sync,
     enqueue_generation_rejection_weekly_rollup_sync,
+)
+from app.services.content_review_feedback import (
+    apply_reference_review_findings as _apply_reference_review_findings,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    duplicate_topic_matches as _duplicate_topic_matches,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    duplicate_topic_remediation as _duplicate_topic_remediation,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    finding_label as _finding_label,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    first_h2_line as _first_h2_line,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    hard_removal_findings as _hard_removal_findings,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    non_reference_remediation_messages as _non_reference_remediation_messages,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    review_finding_items as _review_finding_items,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    review_findings as _review_findings,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    screening_probe as _screening_probe,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
@@ -114,9 +151,11 @@ from app.services.essence_auto_review import (
     review_essence_candidate,
 )
 from app.services.essence_engine import (
-    ESSENCE_STATUS_ALIGNED,
+    ESSENCE_STATUS_ALIGNED as ESSENCE_STATUS_ALIGNED,
+)
+from app.services.essence_engine import (
     ESSENCE_STATUS_MISSING_APPROVED,
-    ESSENCE_STATUS_NEEDS_REVIEW,
+    EssenceScreeningResult,
     build_monthly_essence_summary,
     compute_source_content_hash,
     llm_enabled,
@@ -127,6 +166,9 @@ from app.services.essence_engine import (
     source_processing_ranges,
     synthesize_philosophy,
     validate_source_excerpt,
+)
+from app.services.essence_engine import (
+    ESSENCE_STATUS_NEEDS_REVIEW as ESSENCE_STATUS_NEEDS_REVIEW,
 )
 from app.services.essence_readiness import (
     get_current_approved_philosophy_sync,
@@ -159,6 +201,51 @@ from app.services.image_engine import (
 )
 from app.services.image_policy import ImagePolicyRejectedError
 from app.services.incident_types import IncidentFingerprint
+from app.services.measurement_manifest_policy import (
+    manifest_cell_slots_resolved as _manifest_cell_slots_resolved,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    manifest_execution_policy_matches as _manifest_execution_policy_matches,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    manifest_observation_adequacy as _manifest_observation_adequacy,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    manifest_slot_repeat_count as _manifest_slot_repeat_count,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    pending_weekly_manifest_specs as _pending_weekly_manifest_specs,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    selected_weekly_manifest_is_resolved as _selected_weekly_manifest_is_resolved,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    sov_spec_identities_match as _sov_spec_identities_match,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    sov_spec_identity as _sov_spec_identity,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    weekly_manifest_is_resolved as _weekly_manifest_is_resolved,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_selection import (
+    apply_high_priority_cap as _apply_high_priority_cap,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_selection import (
+    apply_total_spec_cap as _apply_total_spec_cap,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_selection import (
+    build_measurement_specs,
+)
+from app.services.measurement_selection import (
+    is_even_measurement_week as _is_even_measurement_week,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_selection import (
+    normalize_platform as _normalize_platform,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_selection import (
+    priority_included as _priority_included,  # noqa: F401 -- stable legacy worker import
+)
 from app.services.measurement_slots import (
     answer_artifact,
     checkpoint_answer,
@@ -195,6 +282,18 @@ from app.services.monthly_period import (
     reporting_period,
     require_closed_period,
     scheduled_report_period,
+)
+from app.services.monthly_publication_facts import (
+    contract_publication_timing_counts as _contract_publication_timing_counts,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.monthly_publication_facts import (
+    first_publication_at as _first_publication_at,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.monthly_publication_facts import (
+    load_monthly_publication_facts as _load_monthly_publication_facts,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.monthly_publication_facts import (
+    observed_contract_publications as _observed_contract_publications,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.monthly_report_delivery import (
     coverage_is_final,
@@ -282,6 +381,27 @@ from app.services.sov_tracking_set import (
     tracking_set_members,
 )
 from app.services.v0_claim import v0_claim_is_alive_sync
+from app.services.v0_measurement_snapshot import (
+    local_v0_query_texts as _local_v0_query_texts,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.v0_measurement_snapshot import (
+    parse_v0_judgment_context as _parse_v0_judgment_context,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.v0_measurement_snapshot import (
+    v0_judgment_context as _v0_judgment_context,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.v0_measurement_snapshot import (
+    v0_platforms_from_run as _v0_platforms_from_run,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.v0_measurement_snapshot import (
+    v0_queries_from_snapshot as _v0_queries_from_snapshot,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.v0_measurement_snapshot import (
+    v0_query_snapshot as _v0_query_snapshot,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.v0_measurement_snapshot import (
+    v0_resume_judgment_context as _v0_resume_judgment_context,  # noqa: F401 -- stable legacy worker import
+)
 from app.utils.db_locks import (
     acquire_hospital_advisory_lock_sync,
     acquire_hospital_advisory_session_lock_sync,
@@ -381,20 +501,6 @@ from app.workers.weekly_sov_incident_control import (
     recover_monthly_sov_failure,
     recover_weekly_sov_failure,
 )
-
-# 격주 측정 주차 판정 — **절대 기준 경과 주 수**로 계산한다.
-#
-# `isocalendar()[1] % 2`를 쓰면 ISO 53주 연도 경계에서 패리티 연속성이 깨진다.
-# 2026년이 53주 연도라 52주(짝=측정) → 53주(홀=스킵) → 1주(홀=스킵)로 이어져
-# NORMAL 우선순위 쿼리가 3주 공백을 갖고, 12월/1월 표본이 절반이 되어 전월 대비
-# 변화가 "표본 수 변화"로 오염된다.
-_MEASUREMENT_WEEK_EPOCH = date(2026, 1, 5)  # 2026-W02 월요일 (임의의 고정 기준점)
-
-
-def _is_even_measurement_week(today: date) -> bool:
-    """격주 측정에서 이번 주가 '측정하는 주'인가."""
-    return ((today - _MEASUREMENT_WEEK_EPOCH).days // 7) % 2 == 0
-
 
 logger = logging.getLogger(__name__)
 
@@ -1301,166 +1407,11 @@ def _record_generation_batch_outcome(
     )
 
 
-def _review_findings(summary: object) -> list[str]:
-    if not isinstance(summary, dict):
-        return []
-    findings = summary.get("findings")
-    if not isinstance(findings, list):
-        return []
-    return [str(finding) for finding in findings if str(finding).strip()][:5]
-
-
 # 한 세션이 살 수 있는 유료 생성 총량. 보완(2) + 문체성 키워드·계절(1) + 삭제형(1)의
 # 합이 아니라 이 상한이 실제 지출을 묶는다.
 MAX_GENERATIONS_PER_SESSION = 3
 SOFT_REMEDIATION_MAX_GENERATIONS = 1
 HARD_REMOVAL_MAX_GENERATIONS = 1
-_HARD_REMOVAL_KINDS = frozenset({"HOSPITAL_FACT", "MEDICAL_SAFETY"})
-_HARD_REMOVAL_INSTRUCTION = (
-    "아래 지적된 주장을 본문에서 삭제하거나 '개인차가 있습니다'·'정확한 내용은 의료기관에서 "
-    "확인이 필요합니다'처럼 완화해 다시 쓰세요. 새로운 사실·수치·효과·장비·경력을 "
-    "추가하지 말고, 지적되지 않은 문단은 그대로 두세요."
-)
-
-
-def _hard_removal_findings(review: Any) -> list[str]:
-    """Turn model-declared fact/safety HARD findings into one removal instruction."""
-
-    def _label(value: object) -> str:
-        return str(getattr(value, "value", value) or "").upper()
-
-    messages = [
-        str(getattr(finding, "message", "")).strip()
-        for finding in getattr(review, "blocking_findings", ())
-        if _label(getattr(finding, "severity", None)) == "HARD"
-        and _label(getattr(finding, "kind", None)) in _HARD_REMOVAL_KINDS
-    ]
-    messages = [message for message in messages if message]
-    if not messages:
-        return []
-    return [_HARD_REMOVAL_INSTRUCTION, *messages]
-
-
-_REFERENCE_FINDING_KIND = "REFERENCE"
-
-
-def _finding_label(value: object) -> str:
-    return str(getattr(value, "value", value) or "").upper()
-
-
-def _review_finding_items(review: Any) -> list[Any]:
-    """Findings as objects. 문자열만 넘어오는 구형 shape은 여기서 제외한다."""
-    return [
-        finding
-        for finding in (getattr(review, "findings", ()) or ())
-        if getattr(finding, "message", None) is not None
-    ]
-
-
-def _apply_reference_review_findings(candidate: dict, review: Any) -> list[str]:
-    """SOFT+REFERENCE 지적을 '지목된 참고자료 제거'로 결정적으로 처리한다.
-
-    제목을 message에서 찾을 수 있으면 그 항목만 떼어 낸다(유료 재작성 없음).
-    못 찾거나 마지막 한 건이라 떼면 근거가 비는 경우에는 글은 그대로 두고 조언만
-    남긴다 — 이 지적은 어떤 경우에도 발행을 막지 않는다.
-    """
-    messages = [
-        str(getattr(finding, "message", "")).strip()
-        for finding in _review_finding_items(review)
-        if _finding_label(getattr(finding, "kind", None)) == _REFERENCE_FINDING_KIND
-        and _finding_label(getattr(finding, "severity", None)) == "SOFT"
-    ]
-    messages = [message for message in messages if message]
-    if not messages:
-        return []
-    references = candidate.get("references")
-    if not isinstance(references, list):
-        return messages
-    joined = " ".join(messages)
-    kept = [
-        reference
-        for reference in references
-        if not (
-            isinstance(reference, dict)
-            and len(str(reference.get("title") or "").strip()) >= 4
-            and str(reference.get("title")).strip() in joined
-        )
-    ]
-    # 근거를 전부 떼면 발행 게이트가 막힌다. 조언으로만 남기고 원본을 지킨다.
-    if kept and len(kept) != len(references):
-        logger.info(
-            "Dropping reviewer-flagged references: kept=%d of %d",
-            len(kept),
-            len(references),
-        )
-        candidate["references"] = kept
-    return messages
-
-
-def _non_reference_remediation_messages(review: Any) -> list[str]:
-    """재작성을 요구할 수 있는 지적만 남긴다 (REFERENCE는 결정적으로 처리됨)."""
-    if not _review_finding_items(review):
-        # 구형 문자열 shape: 종류를 알 수 없으므로 종전대로 전부 넘긴다.
-        return [
-            str(message).strip()
-            for message in (getattr(review, "remediation_messages", ()) or ())
-            if str(message).strip()
-        ]
-    return [
-        str(getattr(finding, "message", "")).strip()
-        for finding in _review_finding_items(review)
-        if _finding_label(getattr(finding, "kind", None)) != _REFERENCE_FINDING_KIND
-        and str(getattr(finding, "message", "")).strip()
-    ]
-
-
-_DUPLICATE_TOPIC_INSTRUCTION = (
-    "최근 발행한 글과 제목·주제가 거의 같습니다. 측정 키워드는 그대로 유지하되 다른 "
-    "질문·관점·독자 상황을 골라 제목과 구성을 바꿔 다시 쓰세요. 비슷한 기존 제목: "
-)
-
-
-def _first_h2_line(body: object) -> str:
-    for line in str(body or "").splitlines():
-        stripped = line.strip()
-        if stripped.startswith("## "):
-            return stripped[3:].strip()
-    return ""
-
-
-def _duplicate_topic_matches(
-    content: dict,
-    existing_titles: list[str] | None,
-    approved_brief: dict | None,
-) -> list[tuple[str, float]]:
-    """최근 제목과 사실상 같은 주제인가. 결정적 계산이라 공급자를 부르지 않는다."""
-    if not existing_titles:
-        return []
-    from app.services.content_similarity import find_similar_titles
-
-    return find_similar_titles(
-        content.get("title") or "",
-        _first_h2_line(content.get("body")),
-        (approved_brief or {}).get("target_keyword") or "",
-        existing_titles,
-    )
-
-
-def _duplicate_topic_remediation(matches: list[tuple[str, float]]) -> list[str]:
-    if not matches:
-        return []
-    titles = ", ".join(title for title, _score in matches[:3])
-    return [f"{_DUPLICATE_TOPIC_INSTRUCTION}{titles}"]
-
-
-def _screening_probe(content_data: dict) -> ContentItem:
-    return ContentItem(
-        title=content_data["title"],
-        body=content_data["body"],
-        meta_description=content_data.get("meta_description"),
-        faq_question=content_data.get("faq_question"),
-        faq_answer_summary=content_data.get("faq_answer_summary"),
-    )
 
 
 async def _generate_with_auto_review(
@@ -1470,215 +1421,27 @@ async def _generate_with_auto_review(
     existing_titles: list[str],
     philosophy: HospitalContentPhilosophy,
     approved_brief: dict | None,
-):
-    """Generate, independently review, and rewrite without bypassing hard gates."""
-
-    findings = _review_findings(getattr(item, "essence_check_summary", None))
-    automatic_rewrites = int(bool(findings))
-    reviewer_driven_rewrites = 0
-    removal_rewrites = 0
-    # 하드 게이트(Essence 스크린)와 독립 검수를 **먼저** 통과시킨 뒤에야 문체성
-    # 키워드·계절 보완에 재작성을 쓴다. 반대 순서로 쓰면 보완 예산을 문체 지적이
-    # 먼저 소모해 정작 발행을 막는 지적은 한 번도 고치지 못한 채 글이 버려진다.
-    remediation_rewrites = 0
-    soft_rewrites = 0
-    generations = 0
-    accepted_content: dict | None = None
-    accepted_screening = None
-    accepted_reference_findings: list[str] = []
-    last_ai_review = None
-    last_generation_error: Exception | None = None
-
-    def _generation_budget_left() -> bool:
-        return generations < MAX_GENERATIONS_PER_SESSION
-
-    def _remediation_budget_left() -> bool:
-        return (
-            remediation_rewrites < AUTO_REMEDIATION_MAX_GENERATIONS - 1
-            and _generation_budget_left()
-        )
-
-    while _generation_budget_left():
-        if generations > 0:
-            decision = await cost_guard.check_and_increment("content")
-            if not decision.allowed:
-                logger.info(
-                    "Automatic content remediation stopped by cost guard: hospital=%s",
-                    hospital.id,
-                )
-                break
-            automatic_rewrites += 1
-
-        try:
-            candidate = await generate_content(
-                hospital,
-                item.content_type,
-                existing_titles,
-                philosophy,
-                approved_brief,
-                remediation_findings=findings,
-            )
-        except ValueError as exc:
-            generations += 1
-            last_generation_error = exc
-            findings = [f"생성 안전검사 실패: {' '.join(str(exc).split())[:300]}"]
-            if accepted_content is not None:
-                # 앞선 회차가 만들어 둔(이미 결제된) 후보가 있다. 보완 재작성이 실패했다고
-                # 그 후보까지 버리면 정상 글 한 편을 돈만 쓰고 폐기하는 셈이다.
-                last_generation_error = None
-                break
-            if _remediation_budget_left():
-                remediation_rewrites += 1
-                continue
-            raise
-        generations += 1
-        last_generation_error = None
-
-        # 이 글이 원래 답하기로 한 측정 질문을 실제로 다뤘는가.
-        # (content_engine._validate_target_alignment가 채운다)
-        bounded_soft_findings = list(
-            candidate.get("target_alignment_findings") or []
-        ) + [
-            finding
-            for finding in (candidate.get("seo_geo_findings") or [])
-            if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
-        ]
-
-        screening = screen_content_against_philosophy(
-            _screening_probe(candidate), philosophy
-        )
-        accepted_content, accepted_screening, last_ai_review = candidate, screening, None
-        accepted_reference_findings = []
-        if screening.status != ESSENCE_STATUS_ALIGNED:
-            screen_findings = _review_findings(screening.summary)
-            if screen_findings and _remediation_budget_left():
-                remediation_rewrites += 1
-                findings = screen_findings
-                continue
-            break
-
-        last_ai_review = await review_generated_content(
-            hospital=hospital,
-            philosophy=philosophy,
-            content=candidate,
-            content_brief=approved_brief,
-        )
-        if last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE:
-            # UNAVAILABLE never grants approval: it merely leaves the candidate to
-            # the deterministic generation and publication gates below.
-            break
-        # 참고자료 주제 불일치(SOFT+REFERENCE)는 유료 재작성이 아니라 결정적 제거로 푼다.
-        accepted_reference_findings = _apply_reference_review_findings(
-            candidate, last_ai_review
-        )
-        if last_ai_review.status == ContentAiReviewStatus.PASS:
-            # 중복 주제도 문체성 지적과 같은 한 번의 보완 예산을 나눠 쓴다. 새 예산을
-            # 만들지 않으며, 고치지 못해도 글은 통과시키고 기록만 남긴다.
-            duplicate_remediation = (
-                _duplicate_topic_remediation(
-                    _duplicate_topic_matches(candidate, existing_titles, approved_brief)
-                )
-                if soft_rewrites < SOFT_REMEDIATION_MAX_GENERATIONS
-                else []
-            )
-            soft_findings = bounded_soft_findings + duplicate_remediation
-            if (
-                soft_findings
-                and soft_rewrites < SOFT_REMEDIATION_MAX_GENERATIONS
-                and _generation_budget_left()
-            ):
-                soft_rewrites += 1
-                findings = soft_findings
-                continue
-            break
-        # Only stylistic/soft feedback may spend the shared remediation rewrite.
-        if last_ai_review.rewrite_is_safe:
-            rewrite_messages = _non_reference_remediation_messages(last_ai_review)
-            if rewrite_messages and _remediation_budget_left():
-                remediation_rewrites += 1
-                reviewer_driven_rewrites += 1
-                findings = rewrite_messages
-                continue
-            break
-        # 사실·의료 안전 HARD 지적은 새 근거 없이 "다시 써 봐"로 풀 수 없다. 대신
-        # 지적된 주장을 삭제·hedge하는 재작성을 **정확히 한 번** 허용하고 그 결과는
-        # 반드시 독립 검수를 다시 받는다(루프 다음 회차).
-        removal_findings = _hard_removal_findings(last_ai_review)
-        if (
-            removal_findings
-            and removal_rewrites < HARD_REMOVAL_MAX_GENERATIONS
-            and _generation_budget_left()
-        ):
-            removal_rewrites += 1
-            findings = removal_findings
-            continue
-        break
-
-    last_content = accepted_content
-    last_screening = accepted_screening
-
-    if last_content is None or last_screening is None:
-        if last_generation_error is not None:
-            raise last_generation_error
-        raise RuntimeError("automatic content review produced no candidate")
-
-    if last_ai_review and (
-        last_ai_review.blocking_findings
-        or last_ai_review.status == ContentAiReviewStatus.UNAVAILABLE
-    ):
-        summary = dict(last_screening.summary or {})
-        summary.update(
-            {
-                "blocking": True,
-                "findings": (
-                    list(last_ai_review.remediation_messages)
-                    if last_ai_review.blocking_findings
-                    else ["독립 AI 검수를 완료하지 못해 자동 재검수가 필요합니다."]
-                ),
-            }
-        )
-        last_screening = type(last_screening)(
-            status=ESSENCE_STATUS_NEEDS_REVIEW,
-            summary=summary,
-        )
-
-    summary = dict(last_screening.summary or {})
-    # 보완 재작성 후에도 키워드가 주제 위치에 없으면 글은 살리고 기록만 남긴다.
-    # Admin의 콘텐츠 상세가 essence_check_summary를 그대로 보여주므로 AE가 확인할 수 있다.
-    residual_alignment = list(last_content.get("target_alignment_findings") or [])
-    if residual_alignment:
-        summary["target_alignment_findings"] = residual_alignment
-    residual_season = [
-        finding
-        for finding in (last_content.get("seo_geo_findings") or [])
-        if str(finding).startswith(SEASON_MISMATCH_FINDING_PREFIX)
-    ]
-    if residual_season:
-        summary["season_title_findings"] = residual_season
-    # 중복 주제는 발행을 막지 않는다 — 재작성 뒤에도 남으면 글은 통과시키고 AE가 볼 수
-    # 있게 기록만 남긴다(거절 코드·인시던트·Slack 없음).
-    residual_duplicates = _duplicate_topic_matches(
-        last_content, existing_titles, approved_brief
+) -> tuple[dict[str, Any], EssenceScreeningResult]:
+    """Adapt the stable worker entry point to the bounded review service."""
+    return await generate_reviewed_content(
+        hospital=hospital,
+        item=item,
+        existing_titles=existing_titles,
+        philosophy=philosophy,
+        approved_brief=approved_brief,
+        dependencies=ContentReviewDependencies(
+            generate=generate_content,
+            review=review_generated_content,
+            screen=screen_content_against_philosophy,
+            check_cost=cost_guard.check_and_increment,
+        ),
+        limits=GenerationReviewLimits(
+            max_generations=MAX_GENERATIONS_PER_SESSION,
+            remediation_generations=AUTO_REMEDIATION_MAX_GENERATIONS,
+            soft_rewrites=SOFT_REMEDIATION_MAX_GENERATIONS,
+            hard_removals=HARD_REMOVAL_MAX_GENERATIONS,
+        ),
     )
-    if residual_duplicates:
-        summary["duplicate_topic_findings"] = [
-            {"title": title, "score": score} for title, score in residual_duplicates
-        ]
-    if accepted_reference_findings:
-        summary["reference_findings"] = accepted_reference_findings[:5]
-    if automatic_rewrites > 0:
-        summary["automatic_remediation_attempts"] = automatic_rewrites
-    if reviewer_driven_rewrites > 0:
-        summary["reviewer_driven_rewrites"] = reviewer_driven_rewrites
-    if removal_rewrites > 0:
-        summary["hard_removal_rewrites"] = removal_rewrites
-    if last_ai_review is not None:
-        summary["ai_review"] = last_ai_review.payload()
-    reviewed_screening = type(last_screening)(
-        status=last_screening.status,
-        summary=summary,
-    )
-    return last_content, reviewed_screening
 
 
 class MonthlyBatchIncompleteError(RuntimeError):
@@ -1753,176 +1516,6 @@ def build_v0_baseline(
         "current_of_hundred": current,
         "sentence": f"서비스 시작 시점(V0) 대비: {started}번 → {current}번",
     }
-
-
-def _v0_query_snapshot(queries: Iterable[QueryMatrix]) -> list[dict[str, str]]:
-    """Freeze the exact questions a V0 run will send before provider calls start."""
-    return [
-        {
-            "query_id": str(query.id),
-            "query_text": query.query_text,
-            "query_intent": query.query_intent,
-        }
-        for query in queries
-    ]
-
-
-def _v0_judgment_context(hospital: Hospital) -> dict[str, Any]:
-    """Freeze every hospital field that can change a saved answer's verdict."""
-    return {
-        "hospital_identity": str(hospital.id),
-        "hospital_name": hospital.name,
-        "region": str((hospital.region or [""])[0]),
-        "competitors": [str(name) for name in (hospital.competitors or [])],
-    }
-
-
-def _parse_v0_judgment_context(
-    value: object, *, hospital_id: uuid.UUID
-) -> dict[str, Any] | None:
-    if not isinstance(value, dict):
-        return None
-    identity = value.get("hospital_identity")
-    hospital_name = value.get("hospital_name")
-    region = value.get("region")
-    competitors = value.get("competitors")
-    if (
-        identity != str(hospital_id)
-        or not isinstance(hospital_name, str)
-        or not hospital_name.strip()
-        or not isinstance(region, str)
-        or not isinstance(competitors, list)
-        or any(not isinstance(name, str) for name in competitors)
-    ):
-        return None
-    return {
-        "hospital_identity": identity,
-        "hospital_name": hospital_name,
-        "region": region,
-        "competitors": list(competitors),
-    }
-
-
-def _v0_platforms_from_run(run: MeasurementRun) -> list[str] | None:
-    """Read the provider set frozen by `_start_measurement_run`."""
-    config = run.config if isinstance(run.config, dict) else {}
-    model_names = config.get("model_names")
-    if not isinstance(model_names, dict):
-        return None
-    platforms = [name for name in ("chatgpt", "gemini") if name in model_names]
-    if not platforms or set(model_names) != set(platforms):
-        return None
-    return platforms
-
-
-def _v0_resume_judgment_context(
-    run: MeasurementRun,
-    hospital: Hospital,
-    slots: Sequence[MeasurementObservationSlot],
-    protocol: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Load the frozen context, safely upgrading pre-snapshot in-flight runs."""
-    config = run.config if isinstance(run.config, dict) else {}
-    frozen = _parse_v0_judgment_context(
-        config.get("judgment_context"), hospital_id=hospital.id
-    )
-    if frozen is not None:
-        return frozen
-
-    # Rows created before judgment_context was introduced can be upgraded only
-    # when every already-attempted judgment proves the current profile produces
-    # its exact saved fingerprint. Otherwise mixing identities would corrupt one
-    # MeasurementRun, so fail before another provider call.
-    candidate = _v0_judgment_context(hospital)
-    for slot in slots:
-        if slot.judgment_input_fingerprint is None:
-            continue
-        expected = sov_engine.judgment_input_fingerprint(
-            hospital_identity=candidate["hospital_identity"],
-            hospital_name=candidate["hospital_name"],
-            response_text=slot.raw_response or "",
-            region=candidate["region"],
-            competitors=candidate["competitors"],
-            policy=dict(protocol),
-        )
-        if slot.judgment_input_fingerprint != expected:
-            raise RuntimeError("resumable V0 judgment context changed")
-    run.config = {**config, "judgment_context": candidate}
-    return candidate
-
-
-def _local_v0_query_texts(snapshot: object) -> dict[uuid.UUID, str] | None:
-    """Parse an immutable V0 query snapshot; malformed lineage is unusable."""
-    if not isinstance(snapshot, list) or not snapshot:
-        return None
-    local_queries: dict[uuid.UUID, str] = {}
-    seen_ids: set[uuid.UUID] = set()
-    for raw in snapshot:
-        if not isinstance(raw, dict):
-            return None
-        try:
-            query_id = uuid.UUID(str(raw.get("query_id")))
-        except (TypeError, ValueError):
-            return None
-        query_text = raw.get("query_text")
-        query_intent = raw.get("query_intent")
-        if query_id in seen_ids or not isinstance(query_text, str) or not query_text.strip():
-            return None
-        if not isinstance(query_intent, str):
-            return None
-        seen_ids.add(query_id)
-        if query_intent == sov_engine.QUERY_INTENT_LOCAL:
-            local_queries[query_id] = query_text
-    return local_queries or None
-
-
-def _v0_queries_from_snapshot(
-    db, snapshot: object, *, hospital_id: uuid.UUID
-) -> list[QueryMatrix] | None:
-    """Reload frozen provider inputs while verifying their live FK ownership."""
-    if not isinstance(snapshot, list) or not snapshot:
-        return None
-    ordered_ids: list[uuid.UUID] = []
-    expected: dict[uuid.UUID, tuple[str, str]] = {}
-    for raw in snapshot:
-        if not isinstance(raw, dict):
-            return None
-        try:
-            query_id = uuid.UUID(str(raw.get("query_id")))
-        except (TypeError, ValueError):
-            return None
-        query_text = raw.get("query_text")
-        query_intent = raw.get("query_intent")
-        if (
-            query_id in expected
-            or not isinstance(query_text, str)
-            or not query_text.strip()
-            or not isinstance(query_intent, str)
-        ):
-            return None
-        ordered_ids.append(query_id)
-        expected[query_id] = (query_text, query_intent)
-    live_rows = {
-        row.id: row
-        for row in db.execute(
-            select(QueryMatrix).where(QueryMatrix.id.in_(ordered_ids))
-        ).scalars()
-    }
-    if set(live_rows) != set(ordered_ids) or any(
-        row.hospital_id != hospital_id for row in live_rows.values()
-    ):
-        return None
-    # Query text/intent may be edited after the first chunk. The immutable snapshot,
-    # not the mutable tracking row, remains the provider input for this lineage.
-    return [
-        QueryMatrix(
-            id=query_id,
-            hospital_id=hospital_id,
-            query_text=expected[query_id][0],
-            query_intent=expected[query_id][1],
-        )
-        for query_id in ordered_ids
-    ]
 
 
 def _load_v0_baseline(
@@ -7805,161 +7398,6 @@ def _recover_sov_failure(
     return recover_weekly_sov_failure(hospital_id=hospital_id, week_key=period_key)
 
 
-def _sov_spec_identity(spec: Mapping[str, object]) -> tuple[str, str, str]:
-    return (
-        str(spec.get("query_id") or ""),
-        _normalize_platform(str(spec.get("platform") or "")),
-        str(spec.get("target_id") or ""),
-    )
-
-
-def _sov_spec_identities_match(
-    left: tuple[str, str, str], right: tuple[str, str, str]
-) -> bool:
-    left_query, left_platform, left_target = left
-    right_query, right_platform, right_target = right
-    return (
-        bool(left_query)
-        and left_query == right_query
-        and left_platform == right_platform
-        and (not left_target or not right_target or left_target == right_target)
-    )
-
-
-def _manifest_slot_repeat_count(manifest) -> int | None:
-    provenance = getattr(manifest, "platform_provenance", None)
-    contract = provenance.get("observation_slots") if isinstance(provenance, dict) else None
-    repeat_count = contract.get("repeat_count") if isinstance(contract, dict) else None
-    if (
-        isinstance(repeat_count, int)
-        and not isinstance(repeat_count, bool)
-        and repeat_count > 0
-    ):
-        return repeat_count
-    return None
-
-
-def _manifest_cell_slots_resolved(cell, repeat_count: int) -> bool:
-    slots = list(getattr(cell, "observation_slots", ()) or ())
-    return (
-        len(slots) == repeat_count
-        and {slot.repeat_no for slot in slots} == set(range(1, repeat_count + 1))
-        and all(slot_is_terminal(slot) for slot in slots)
-    )
-
-
-def _manifest_observation_adequacy(manifest, *, deadline_reached: bool):
-    repeat_count = _manifest_slot_repeat_count(manifest)
-    if repeat_count is None:
-        return None
-    planned_cells = [
-        cell
-        for cell in (getattr(manifest, "cells", ()) or ())
-        if cell.state != "EXCLUDED"
-    ]
-    if not planned_cells or any(
-        len(list(getattr(cell, "observation_slots", ()) or ())) != repeat_count
-        for cell in planned_cells
-    ):
-        return None
-    return summarize_observation_slots(
-        (
-            slot
-            for cell in planned_cells
-            for slot in (getattr(cell, "observation_slots", ()) or ())
-        ),
-        deadline_reached=deadline_reached,
-    )
-
-
-def _pending_weekly_manifest_specs(manifest, selected_specs: list[dict]) -> list[dict]:
-    """Reconnect selected specs to unresolved frozen cells without widening the cap."""
-
-    selected = [_sov_spec_identity(spec) for spec in selected_specs]
-    repeat_count = _manifest_slot_repeat_count(manifest)
-    pending: list[dict] = []
-    for cell in getattr(manifest, "cells", ()) or ():
-        spec = {
-            "query_id": cell.query_matrix_id,
-            "query_text": cell.query_text,
-            "platform": cell.platform,
-            "target_id": cell.query_target_id,
-            "variant_id": cell.query_variant_id,
-            "manifest_cell": cell,
-        }
-        identity = _sov_spec_identity(spec)
-        needs_work = (
-            cell.state == "FAILED"
-            if repeat_count is None
-            else cell.state != "EXCLUDED"
-            and not _manifest_cell_slots_resolved(cell, repeat_count)
-        )
-        if needs_work and any(
-            _sov_spec_identities_match(identity, chosen) for chosen in selected
-        ):
-            pending.append(spec)
-    return pending
-
-
-def _selected_weekly_manifest_is_resolved(manifest, selected_specs: list[dict]) -> bool:
-    cells = list(getattr(manifest, "cells", ()) or ())
-    selected = [_sov_spec_identity(spec) for spec in selected_specs]
-    repeat_count = _manifest_slot_repeat_count(manifest)
-    if not selected:
-        return False
-    for chosen in selected:
-        matching = [
-            cell
-            for cell in cells
-            if _sov_spec_identities_match(
-                _sov_spec_identity(
-                    {
-                        "query_id": cell.query_matrix_id,
-                        "platform": cell.platform,
-                        "target_id": cell.query_target_id,
-                    }
-                ),
-                chosen,
-            )
-        ]
-        if not matching:
-            return False
-        if repeat_count is None:
-            if any(cell.state not in {"SUCCESS", "EXCLUDED"} for cell in matching):
-                return False
-        elif any(
-            cell.state != "EXCLUDED"
-            and not _manifest_cell_slots_resolved(cell, repeat_count)
-            for cell in matching
-        ):
-            return False
-    return True
-
-
-def _weekly_manifest_is_resolved(manifest) -> bool:
-    cells = list(getattr(manifest, "cells", ()) or ())
-    if not cells:
-        return False
-    repeat_count = _manifest_slot_repeat_count(manifest)
-    if repeat_count is None:
-        return all(getattr(cell, "state", None) in {"SUCCESS", "EXCLUDED"} for cell in cells)
-    return all(
-        cell.state == "EXCLUDED" or _manifest_cell_slots_resolved(cell, repeat_count)
-        for cell in cells
-    )
-
-
-def _manifest_execution_policy_matches(manifest) -> bool:
-    provenance = getattr(manifest, "platform_provenance", None)
-    snapshot = provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
-    platforms = tuple(getattr(manifest, "configured_platforms", ()) or ())
-    return bool(platforms) and sov_engine.same_execution_policy(
-        snapshot,
-        sov_engine.measurement_protocol(),
-        platforms=platforms,
-    )
-
-
 def _start_measurement_run(
     db,
     hospital: Hospital,
@@ -8312,48 +7750,6 @@ def _execute_paid_observation_slot(
     return result
 
 
-def _priority_included(priority: str | None, is_even_week: bool, is_month_start: bool) -> bool:
-    """priority 기반 주간 측정 게이팅 규칙.
-
-    HIGH: 매주 포함 / LOW: 월초(첫째 주)만 / 그 외(NORMAL 등): 짝수 주차만.
-    QueryMatrix.priority와 AIQueryTarget.priority에 동일 규칙을 적용해 스로틀링을 단일화한다.
-    """
-    normalized = str(priority or "NORMAL").upper()
-    if normalized == "HIGH":
-        return True
-    if normalized == "LOW":
-        return is_month_start
-    return is_even_week
-
-
-def _apply_high_priority_cap(specs: list[dict], cap: int) -> tuple[list[dict], int]:
-    """HIGH 우선순위 spec을 상한까지만 유지하고 초과분은 잘라낸다 (결정론적: 앞에서부터 유지).
-
-    Returns: (유지된 specs, 잘린 HIGH spec 개수).
-    """
-    if cap < 0:
-        return specs, 0
-    kept: list[dict] = []
-    high_seen = 0
-    dropped = 0
-    for spec in specs:
-        if str(spec.get("priority") or "NORMAL").upper() == "HIGH":
-            if high_seen >= cap:
-                dropped += 1
-                continue
-            high_seen += 1
-        kept.append(spec)
-    return kept, dropped
-
-
-def _apply_total_spec_cap(specs: list[dict], cap: int) -> list[dict]:
-    """Bound HIGH/NORMAL/LOW combined while preserving deterministic priority order."""
-
-    if cap < 0:
-        return specs
-    return specs[:cap]
-
-
 def _build_measurement_specs(
     *,
     db,
@@ -8366,100 +7762,18 @@ def _build_measurement_specs(
     total_spec_cap: int = SOV_TOTAL_SPEC_CAP,
     measurement_mode: str = "weekly",
 ) -> tuple[list[dict], int]:
-    """주간 측정 spec 목록을 만든다.
-
-    target/variant 유래 spec도 fallback 쿼리와 동일하게 target.priority 기준으로 게이팅한다
-    (V0 후 target 자동 시드로 인해 스로틀링이 죽는 문제 방지). 마지막에 HIGH 상한과
-    전체 상한을 적용해 NORMAL/LOW도 무제한 확장되지 않게 한다.
-    Returns: (specs, 잘린 HIGH spec 개수).
-    """
-    specs: list[dict] = []
-    seen: set[tuple[uuid.UUID, str]] = set()
-    priority_rank = {"HIGH": 0, "NORMAL": 1, "LOW": 2}
-    sorted_targets = sorted(
-        query_targets,
-        key=lambda target: (
-            priority_rank.get(str(getattr(target, "priority", "NORMAL")).upper(), 9),
-            str(getattr(target, "target_month", "") or ""),
-            str(getattr(target, "name", "") or ""),
-            str(getattr(target, "id", "")),
-        ),
+    """Keep query persistence at the worker boundary, separate from selection."""
+    return build_measurement_specs(
+        resolve_variant_query=lambda variant: _ensure_variant_query_matrix(db, hospital, variant),
+        gemini_enabled=bool(settings.GEMINI_API_KEY),
+        query_targets=query_targets,
+        fallback_queries=fallback_queries,
+        is_even_week=is_even_week,
+        is_month_start=is_month_start,
+        high_priority_cap=high_priority_cap,
+        total_spec_cap=total_spec_cap,
+        measurement_mode=measurement_mode,
     )
-    for target in sorted_targets:
-        target_priority = str(getattr(target, "priority", "NORMAL") or "NORMAL").upper()
-        if measurement_mode != "monthly" and not _priority_included(
-            target_priority, is_even_week, is_month_start
-        ):
-            continue
-        active_variants = sorted(
-            [variant for variant in target.variants if variant.is_active],
-            key=lambda variant: (
-                _normalize_platform(variant.platform),
-                str(variant.query_text),
-                str(variant.id),
-            ),
-        )
-        for variant in active_variants:
-            platform = _normalize_platform(variant.platform)
-            if platform == "gemini" and not settings.GEMINI_API_KEY:
-                continue
-            query = _ensure_variant_query_matrix(db, hospital, variant)
-            query_intent = str(getattr(query, "query_intent", "LOCAL") or "LOCAL").upper()
-            if query_intent == sov_engine.QUERY_INTENT_INFO:
-                continue
-            key = (query.id, platform)
-            if key in seen:
-                continue
-            seen.add(key)
-            specs.append(
-                {
-                    "query_id": query.id,
-                    "query_text": variant.query_text,
-                    "platform": platform,
-                    "target_id": target.id,
-                    "variant_id": variant.id,
-                    "priority": target_priority,
-                    "query_intent": query_intent,
-                }
-            )
-
-    if specs:
-        if measurement_mode == "monthly":
-            return specs, 0
-        capped, trimmed_high = _apply_high_priority_cap(specs, high_priority_cap)
-        return _apply_total_spec_cap(capped, total_spec_cap), trimmed_high
-
-    platforms = ["chatgpt"]
-    if settings.GEMINI_API_KEY:
-        platforms.append("gemini")
-    sorted_fallback_queries = sorted(
-        fallback_queries,
-        key=lambda query: (
-            priority_rank.get(
-                str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(), 9
-            ),
-            str(getattr(query, "query_text", "") or ""),
-            str(getattr(query, "id", "") or ""),
-        ),
-    )
-    for query in sorted_fallback_queries:
-        query_intent = str(getattr(query, "query_intent", "LOCAL") or "LOCAL").upper()
-        if query_intent == sov_engine.QUERY_INTENT_INFO:
-            continue
-        for platform in platforms:
-            specs.append(
-                {
-                    "query_id": query.id,
-                    "query_text": query.query_text,
-                    "platform": platform,
-                    "target_id": None,
-                    "variant_id": None,
-                    "priority": str(getattr(query, "priority", "NORMAL") or "NORMAL").upper(),
-                    "query_intent": query_intent,
-                }
-            )
-    capped, trimmed_high = _apply_high_priority_cap(specs, high_priority_cap)
-    return _apply_total_spec_cap(capped, total_spec_cap), trimmed_high
 
 
 def _ensure_variant_query_matrix(db, hospital: Hospital, variant: AIQueryVariant) -> QueryMatrix:
@@ -8551,13 +7865,6 @@ def _refresh_exposure_actions_sync(hospital_id: uuid.UUID) -> None:
             "exposure_actions refresh failed after measurement: hospital=%s",
             hospital_id,
         )
-
-
-def _normalize_platform(platform: str) -> str:
-    value = (platform or "CHATGPT").strip().lower()
-    if value in {"gemini", "google"}:
-        return "gemini"
-    return "chatgpt"
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -9790,82 +9097,6 @@ def _fail_monthly_operation_run(
     month: int,
 ) -> None:
     _finish_monthly_operation_run(db, run_id, hospital_id, year, month, "failed")
-
-
-def _first_publication_at(item: ContentItem) -> datetime | None:
-    return getattr(item, "first_published_at", None) or item.published_at
-
-
-def _observed_contract_publications(items: Iterable[ContentItem], observed_at: datetime) -> list:
-    """Only publications that had actually happened at report-build time fulfill a contract."""
-    return [
-        item
-        for item in items
-        if _first_publication_at(item) is not None
-        and _first_publication_at(item) <= observed_at
-    ]
-
-
-def _contract_publication_timing_counts(
-    items: Iterable[ContentItem],
-    period_start: datetime,
-    period_end: datetime,
-) -> tuple[int, int]:
-    """Return contract publications before the period and at/after its exclusive end."""
-    early = 0
-    late = 0
-    for item in items:
-        first_published_at = _first_publication_at(item)
-        if first_published_at is None:
-            continue
-        if first_published_at < period_start:
-            early += 1
-        elif first_published_at >= period_end:
-            late += 1
-    return early, late
-
-
-def _load_monthly_publication_facts(
-    db,
-    hospital_id: uuid.UUID,
-    period_start: datetime,
-    period_end: datetime,
-    observed_at: datetime,
-) -> tuple[list[ContentItem], list[ContentItem], list[ContentItem]]:
-    """Load immutable publication facts separately from currently visible rows."""
-    first_publication_at = func.coalesce(
-        ContentItem.first_published_at,
-        ContentItem.published_at,
-    )
-    actual_publications = list(
-        db.execute(
-            select(ContentItem).where(
-                ContentItem.hospital_id == hospital_id,
-                first_publication_at.is_not(None),
-                first_publication_at >= period_start,
-                first_publication_at < period_end,
-                first_publication_at <= observed_at,
-            )
-        ).scalars()
-    )
-    visible_publications = [
-        item for item in actual_publications if item.status == ContentStatus.PUBLISHED
-    ]
-    contract_publications = _observed_contract_publications(
-        db.execute(
-            select(ContentItem).where(
-                ContentItem.hospital_id == hospital_id,
-                first_publication_at.is_not(None),
-                first_publication_at <= observed_at,
-                func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
-                >= period_start.date(),
-                func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
-                < period_end.date(),
-            )
-        ).scalars(),
-        observed_at,
-    )
-    return actual_publications, visible_publications, contract_publications
 
 
 def _headline_uses_full_current_cohort(

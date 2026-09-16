@@ -1,0 +1,38 @@
+{
+  "status": "PRE_PUSH_VERIFIED_REMOTE_CI_TO_FOLLOW",
+  "reviewed_at": "2026-09-16T14:49:43.644041+09:00",
+  "runtime_source_commit": "bb87d921fe83b186e2fc0744451461be90d59d5a",
+  "base_commit": "2be1d6b60af90c91ae3bde0a866e189ce2441f17",
+  "branch": "refactor/behavior-preserving-20260916",
+  "backend_tests": {
+    "passed": 4197,
+    "failed": 0,
+    "skipped": 0,
+    "warnings": 2
+  },
+  "backend_line_coverage": 84.84660592009489,
+  "script_tests": {
+    "passed": 94,
+    "failed": 0,
+    "skipped": 0
+  },
+  "review_findings_closed": [
+    "CI did not provide the dedicated high-loopback-port PostgreSQL required by 21 redelivery tests; service and migration added",
+    "Docker CI built but never exercised the final runtime image; isolated non-root smoke added"
+  ],
+  "runtime_configuration_changed": false,
+  "schema_migrations_added": 0,
+  "celery_task_contracts_unchanged": 27,
+  "frontend_and_locks_unchanged": true,
+  "production_modified": false,
+  "production_inventory_rechecked": false,
+  "production_inventory_note": "Read-only Cloud Run inventory command was blocked by the tool and did not execute.",
+  "local_docker_note": "Docker Desktop daemon did not respond; final image build/runtime verification is assigned to the PR CI.",
+  "evidence_root": "/private/tmp/reputation-deploy-review-20260916-2e1xajht",
+  "evidence_sha256": {
+    "backend-full.log": "93f3ff74ad472f2bebd83f5135ce900e1ed1a095522472fd2e30159b83ba6111",
+    "backend-full.xml": "1aa49afc19ad0b7af215c481cc4329df23070d3c078a05f5ee902cd053a5aa65",
+    "coverage.json": "4ae50abaaa1b886011dac20c3320594361b9de502c0762bc6e61b3f7ad76ddf1",
+    "scripts-tests.log": "2c078afc75f24fd45489454db418093fc4cefee98d3c359abeaaa2f86954677f"
+  }
+}
