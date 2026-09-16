@@ -7,81 +7,91 @@
    구조는 3막이다: ① 이번 달 저희가 한 일 ② 무엇이 달라졌나 ③ 다음 달 계획.
    1페이지가 넘칠 때 무엇을 뺄지도 뷰가 정한다(view.trimmed) — CSS overflow에
    맡기면 무엇이 잘렸는지 아무도 모르는 채로 원장에게 나간다.
-   2쪽 부록(추적 질문 전체표)은 view.appendix_rows가 있을 때만 붙는다. #}
+   전체 질문표는 2쪽부터 필요한 만큼 이어지며, 결과나 행을 줄이지 않는다. #}
 <!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
+<title>{{ view.hospital_name }} · {{ period_label }} 월간 운영 리포트</title>
+<meta name="author" content="MotionLabs">
 <style>
-  @font-face {
-    font-family: 'Pretendard';
-    src: url('../assets/fonts/PretendardVariable.woff2') format('woff2');
-    font-weight: 400;
-  }
-  @page { size: A4; margin: 11mm 12mm 10mm; }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: 'Pretendard', sans-serif;
-         font-size: 9.2pt; color: #233044; line-height: 1.38; }
-  .tiles { table-layout: fixed; }
-  .head, .headline, .tiles, .case, tr { break-inside: avoid; }
-  h2 { break-after: avoid; }
-  th, td, .q, .a { overflow-wrap: anywhere; }
+@font-face { font-family: Pretendard; src: url('../assets/fonts/PretendardVariable.woff2') format('woff2'); font-weight: 400; }
+@font-face { font-family: Pretendard; src: url('../assets/fonts/PretendardVariable.woff2') format('woff2'); font-weight: 600; }
+@font-face { font-family: Pretendard; src: url('../assets/fonts/PretendardVariable.woff2') format('woff2'); font-weight: 700; }
+@page {
+  size: A4; margin: 13mm 14mm 15mm;
+  @bottom-left { content: 'MotionLabs · Re:putation'; font-family: Pretendard; font-size: 8pt; color: #58677a; }
+  @bottom-right { content: counter(page) ' / ' counter(pages); font-family: Pretendard; font-size: 8pt; color: #58677a; }
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: Pretendard, sans-serif; font-size: 10pt; color: #25354b; line-height: 1.45; }
+.head { border-bottom: 2px solid #17365d; padding-bottom: 10px; margin-bottom: 12px; }
+.head .who { font-size: 18pt; font-weight: 700; color: #17365d; line-height: 1.3; }
+.head .when { font-size: 9pt; color: #58677a; margin-top: 5px; }
+h2 { font-size: 11pt; color: #17365d; margin: 13px 0 6px; break-after: avoid; font-weight: 700; }
+.head, .headline, .tiles, .case, tr { break-inside: avoid; }
+th, td, .q, .a { overflow-wrap: anywhere; word-break: normal; }
+.summary { font-size: 11pt; background: #f1f5fa; border-left: 3px solid #17365d; padding: 10px 12px; }
+.coverage { font-size: 8.3pt; color: #536378; margin-top: 7px; line-height: 1.45; }
+.headline { padding: 12px; margin: 6px 0 10px; border: 1px solid #b9c8d9; border-radius: 4px; }
+.headline .num { font-size: 16pt; font-weight: 700; color: #17365d; line-height: 1.3; }
+.headline .delta, .headline .base { font-size: 8.5pt; color: #536378; margin-top: 5px; }
+.headline .none { font-size: 11pt; color: #536378; }
+.tiles { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 4px 0; margin: 5px -4px 0; }
+.tiles td { background: #f5f7fa; border-top: 2px solid #c5d0df; padding: 9px; vertical-align: top; }
+.tiles .lbl { font-size: 8.5pt; color: #536378; }
+.tiles .val { font-size: 13pt; font-weight: 700; color: #17365d; margin: 5px 0; line-height: 1.3; }
+.tiles .hint { font-size: 8.2pt; color: #536378; line-height: 1.4; }
+.panel { padding: 8px 10px; background: #f5f7fa; border-radius: 3px; }
+.panel li { font-size: 9pt; margin-bottom: 4px; }
+.panel .platform, .panel .tag { font-size: 8.2pt; color: #536378; }
+.panel .tag { color: #17365d; font-weight: 600; }
+.panel .cite { font-size: 8.8pt; margin-top: 5px; }
+.panel .sub { font-size: 9pt; font-weight: 600; margin-bottom: 3px; }
+.panel.miss { background: #faf4ee; }
+.case { border-left: 3px solid #365e89; background: #f5f7fa; padding: 8px 11px; margin: 6px 0; }
+.case.miss { border-left-color: #93622e; background: #faf4ee; }
+.case .q { font-size: 9pt; font-weight: 600; }
+.case .a { font-size: 8.8pt; margin-top: 5px; }
+.case .src { font-size: 8.2pt; color: #536378; margin-top: 5px; }
+ul { margin: 3px 0 0 14px; }
+li { margin-bottom: 3px; }
+.foot { margin-top: 10px; border-top: 1px solid #c5d0df; padding-top: 7px; font-size: 8.2pt; color: #536378; line-height: 1.45; }
+.foot li { margin-bottom: 3px; overflow-wrap: anywhere; }
+.public-link { margin-top: 6px; }
+.public-link a { color: #17365d; font-weight: 600; text-decoration: underline; }
+.appendix { page-break-before: always; }
+.appendix .scope { font-size: 9pt; color: #536378; margin-bottom: 10px; }
+table.rows { width: 100%; table-layout: fixed; border-collapse: collapse; margin-top: 8px; font-size: 8.5pt; line-height: 1.5; }
+table.rows thead { display: table-header-group; }
+table.rows th { background: #edf2f8; color: #17365d; text-align: left; padding: 8px 7px; border-bottom: 1px solid #b9c8d9; font-weight: 600; }
+table.rows td { padding: 8px 7px; border-bottom: 1px solid #dde4ec; vertical-align: top; }
+table.rows .table-context th { background: white; font-size: 8pt; color: #536378; padding: 5px 0; font-weight: 400; }
+table.rows tbody tr:nth-child(even) { background: #f8fafc; }
+table.rows .count { font-variant-numeric: tabular-nums; }
+.compact { font-size: 9.2pt; line-height: 1.38; }
+.compact .head { padding-bottom: 7px; margin-bottom: 9px; }
+.compact .head .who { font-size: 16pt; }
+.compact h2 { font-size: 10pt; margin: 9px 0 4px; }
+.compact .summary { font-size: 10pt; padding: 8px 10px; }
+.compact .headline { padding: 8px 10px; margin: 6px 0; }
+.compact .headline .num { font-size: 15pt; }
+.compact .tiles td { padding: 7px; }
 
-  .head { border-bottom: 2px solid #1A4B8C; padding-bottom: 7px; margin-bottom: 9px; }
-  .head .who { font-size: 15pt; font-weight: 700; color: #1A4B8C; }
-  .head .when { font-size: 8pt; color: #667085; margin-top: 2px; }
-
-  h2 { font-size: 10pt; color: #1A4B8C; margin: 9px 0 4px; }
-  h2 .act { font-size: 8pt; color: #667085; font-weight: 600; }
-
-  .summary { font-size: 9.5pt; background: #F2F6FC; border-radius: 5px; padding: 8px 10px; }
-  .coverage { font-size: 7.8pt; color: #516070; margin-top: 4px; }
-
-  .headline { text-align: center; padding: 8px 12px; margin: 6px 0; border: 1.5px solid #1A4B8C; border-radius: 6px; }
-  .headline .num { font-size: 17pt; font-weight: 800; color: #1A4B8C; line-height: 1.2; }
-  .headline .delta { font-size: 8pt; color: #475467; margin-top: 4px; }
-  .headline .base { font-size: 8pt; color: #667085; margin-top: 3px; }
-  .headline .none { font-size: 10pt; color: #667085; }
-
-  .tiles { width: 100%; border-collapse: separate; border-spacing: 5px 0; margin-top: 4px; }
-  .tiles td { background: #F7F8FA; border-radius: 5px; padding: 7px; vertical-align: top; }
-  .tiles .lbl { font-size: 7.5pt; color: #667085; }
-  .tiles .val { font-size: 11pt; font-weight: 700; color: #1A4B8C; margin: 2px 0; }
-  .tiles .hint { font-size: 7.8pt; color: #667085; line-height: 1.3; }
-
-  .panel { background: #F2F6FC; border-radius: 5px; padding: 7px 10px; }
-  .panel li { font-size: 8.2pt; margin-bottom: 3px; }
-  .panel .platform { color: #667085; font-size: 7.5pt; }
-  .panel .tag { color: #1A4B8C; font-size: 7.5pt; font-weight: 600; }
-  .panel .cite { font-size: 8.2pt; color: #344054; margin-top: 4px; }
-  .panel.miss { background: #FDF7F2; }
-  .panel .sub { font-size: 8pt; font-weight: 700; color: #344054; margin-bottom: 2px; }
-
-  .case { border-left: 3px solid #1A4B8C; background: #F7F9FC; padding: 6px 9px; margin: 5px 0; border-radius: 0 5px 5px 0; }
-  .case.miss { border-left-color: #C0641E; background: #FDF7F2; }
-  .case .q { font-weight: 700; font-size: 8.2pt; }
-  .case .a { font-size: 7.8pt; color: #344054; margin-top: 3px; }
-  .case .src { font-size: 8pt; color: #667085; margin-top: 3px; }
-
-  ul { margin: 3px 0 0 14px; }
-  li { margin-bottom: 2px; }
-
-  .foot { margin-top: 8px; border-top: 1px solid #D0D5DD; padding-top: 5px; font-size: 8pt; color: #667085; }
-  .foot li { margin-bottom: 1px; }
-  .public-link { margin-top: 4px; }
-  .public-link a { color: #1A4B8C; font-weight: 600; text-decoration: underline; }
-
-  .appendix { page-break-before: always; }
-  table.rows { width: 100%; border-collapse: collapse; margin-top: 5px; font-size: 7.6pt; }
-  table.rows th { background: #F2F6FC; color: #1A4B8C; text-align: left; padding: 4px 5px; border-bottom: 1px solid #D0D5DD; }
-  table.rows td { padding: 4px 5px; border-bottom: 1px solid #EAECF0; vertical-align: top; }
+.compact .case { padding: 6px 9px; margin: 4px 0; }
+.compact .case .a { font-size: 8pt; line-height: 1.34; }
+.compact .case .q { font-size: 8.5pt; }
+.compact .panel { padding: 6px 9px; }
+.compact .panel li { font-size: 8.5pt; margin-bottom: 2px; }
+.compact .tiles .hint { font-size: 8pt; }
+.compact .foot { margin-top: 7px; padding-top: 5px; }
 </style>
 </head>
-<body>
+<body class="{{ density|default('comfortable') }}">
 
 <div class="head">
   <div class="who">{{ view.hospital_name }}</div>
-  <div class="when">{{ period_label }} 리포트 · MotionLabs Re:putation</div>
+  <div class="when">{{ period_label }} 월간 운영 리포트 · MotionLabs Re:putation</div>
 </div>
 
 <div class="summary">{{ view.summary }}</div>
@@ -118,7 +128,7 @@
 <div class="headline">
   {% if view.measured %}
     <div class="num">{{ view.headline.delta_sentence }}</div>
-    <div class="delta">이번 달 현재: 환자 질문 100번 중 {{ view.headline.of_hundred }}번</div>
+    <div class="delta">확정 답변 100번 환산: {{ view.headline.of_hundred }}번</div>
     {% if view.v0_baseline %}
     <div class="base">{{ view.v0_baseline.sentence }}</div>
     {% endif %}
@@ -136,7 +146,7 @@
     {% endfor %}
   </ul>
   {% else %}
-    {{ view.new_mention_empty_text }}
+    {{ view.new_mention_empty_text|default("같은 조건의 비교 결과가 없어 새 언급을 표시하지 않습니다.") }}
   {% endif %}
 </div>
 
@@ -156,7 +166,7 @@
 
 {% if view.evidence.found %}
 <div class="case">
-  <div class="q">나온 사례 — “{{ view.evidence.found.question }}”</div>
+  <div class="q">언급된 답변 발췌 — “{{ view.evidence.found.question }}”</div>
   <div class="a">{{ view.evidence.found.excerpt }}</div>
   <div class="src">
     {{ view.evidence.found.platform }}
@@ -167,7 +177,7 @@
 
 {% if view.evidence.missing %}
 <div class="case miss">
-  <div class="q">아직 안 나오는 사례 — “{{ view.evidence.missing.question }}”</div>
+  <div class="q">미언급 답변 발췌 — “{{ view.evidence.missing.question }}”</div>
   <div class="a">{{ view.evidence.missing.excerpt }}</div>
   <div class="src">
     {{ view.evidence.missing.platform }}
@@ -192,32 +202,41 @@
   <div class="public-link"><a href="{{ public_url }}">병원 공개 정보 페이지 보기</a></div>
 </div>
 
+<div id="overview-end"></div>
 {% if view.appendix_rows %}
-<div class="appendix">
+<div class="appendix" id="appendix-start">
   <div class="head">
     <div class="who">{{ view.hospital_name }}</div>
     <div class="when">{{ period_label }} 리포트 · 부록 — 확인한 질문 전체</div>
   </div>
+  <p class="scope">전체 {{ view.appendix_rows|length }}개 질문 · 확정 답변만 집계합니다. 미측정과 미언급은 다르며, 비교 조건이 다른 달은 비교 불가로 표시합니다.</p>
   <table class="rows">
+    <colgroup>
+      <col style="width:38%"><col style="width:12%"><col style="width:12%">
+      <col style="width:16%"><col style="width:22%">
+    </colgroup>
+    <thead>
+    <tr class="table-context"><th colspan="5">{{ view.hospital_name }} · {{ period_label }} · 전체 질문표</th></tr>
     <tr>
-      <th style="width:34%">질문</th>
-      <th style="width:13%">지난달</th>
-      <th style="width:13%">이번달</th>
-      <th style="width:18%">가장 많이 나온 다른 병원</th>
+      <th style="width:38%">질문</th>
+      <th style="width:12%">지난달</th>
+      <th style="width:12%">이번달</th>
+      <th style="width:16%">반복 관측 병원</th>
       <th style="width:22%">AI가 인용한 우리 글</th>
-    </tr>
+    </tr></thead><tbody>
     {% for row in view.appendix_rows %}
-    <tr>
-      <td>{{ row.query_text }}</td>
-      <td>{{ row.prev_label }}</td>
-      <td>{{ row.current_label }}</td>
-      <td>{{ row.competitor }}</td>
-      <td>{{ row.cited_title }}</td>
+    <tr id="appendix-row-{{ loop.index0 }}">
+      <td>{{ row.query_text }}<span id="appendix-row-{{ loop.index0 }}-q-end"></span></td>
+      <td class="count">{{ row.prev_label }}</td>
+      <td class="count">{{ row.current_label }}</td>
+      <td>{{ row.competitor }}<span id="appendix-row-{{ loop.index0 }}-competitor-end"></span></td>
+      <td>{{ row.cited_title }}<span id="appendix-row-{{ loop.index0 }}-end"></span></td>
     </tr>
     {% endfor %}
+    </tbody>
   </table>
   <div class="foot">
-    같은 질문에 대한 챗GPT·제미나이 답변을 합산한 횟수입니다. 비어 있는 칸은 확인된 결과가 없다는 뜻입니다.
+    같은 질문에 대한 챗GPT·제미나이 답변을 합산한 횟수입니다. 측정 없음은 미언급 0회와 다릅니다. “—”는 해당 항목의 확인된 근거가 없다는 뜻입니다.
   </div>
 </div>
 {% endif %}

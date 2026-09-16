@@ -15,7 +15,8 @@ from typing import Final
 
 import arrow
 from celery import current_task
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
+from sqlalchemy.orm import aliased
 
 from app.core.celery_app import celery_app
 from app.core.database import SyncSessionLocal
@@ -26,11 +27,13 @@ from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_catchup_start,
 )
-from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+from app.utils.db_locks import try_acquire_hospital_advisory_lock_sync
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
     _needs_generation_recovery,
+    _nightly_generation_claim_cutoff,
+    _nightly_generation_claim_filter,
 )
 
 BACKLOG_RECOVERY_CAP: Final = 100
@@ -38,6 +41,12 @@ RECOVERABLE_STATUSES: Final = GENERATION_WRITE_BACK_STATUSES
 
 
 def _stranded_content_stmt(today: date):
+    # Replacing a schedule retires its head, not its unfulfilled allocations.
+    enabled = aliased(ContentSchedule)
+    hospital_has_enabled_schedule = exists(select(enabled.id).where(
+        enabled.hospital_id == ContentItem.hospital_id,
+        enabled.is_active.is_(True),
+    ))
     return (
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
@@ -45,6 +54,10 @@ def _stranded_content_stmt(today: date):
         .where(
             ContentItem.scheduled_date <= today,
             ContentItem.status.in_(RECOVERABLE_STATUSES),
+            ContentItem.first_published_at.is_(None),
+            ContentItem.published_at.is_(None),
+            ContentItem.human_edited_at.is_(None),
+            _nightly_generation_claim_filter(_nightly_generation_claim_cutoff()),
             or_(
                 # 7일 catch-up 창 안의 슬롯은 옮기지 않는다. 날짜는 시도 지문이 아니므로
                 # (H-08) 재시도가 풀리지도 않는데, 차단 run의 멱등 키와 Slack 요약
@@ -61,7 +74,11 @@ def _stranded_content_stmt(today: date):
             ),
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
-            or_(ContentSchedule.is_active.is_(True), ContentItem.carried_over_from.is_not(None)),
+            or_(
+                ContentSchedule.is_active.is_(True),
+                hospital_has_enabled_schedule,
+                ContentItem.carried_over_from.is_not(None),
+            ),
         )
         .order_by(ContentItem.hospital_id, ContentItem.scheduled_date, ContentItem.sequence_no)
         .with_for_update(skip_locked=True, of=ContentItem)
@@ -102,11 +119,16 @@ def reconcile() -> dict[str, int]:
             grouped[item.hospital_id].append(item)
 
         moved = 0
+        deferred_hospitals = 0
         for hospital_id, items in grouped.items():
             # Two redelivered/split batches for the same hospital must not choose the
             # same future gaps.  The transaction-scoped lock serializes the occupancy
             # read and all date writes while still allowing different hospitals to run.
-            acquire_hospital_advisory_lock_sync(db, hospital_id)
+            # The scan already owns content rows; calendar writes lock hospital
+            # first and may need those rows. A busy owner defers this group.
+            if not try_acquire_hospital_advisory_lock_sync(db, hospital_id):
+                deferred_hospitals += 1
+                continue
             occupied_dates = set(
                 db.execute(
                     select(ContentItem.scheduled_date).where(
@@ -122,6 +144,10 @@ def reconcile() -> dict[str, int]:
             )
             for item, recovery_date in zip(items, recovery_dates, strict=True):
                 previous_date = item.scheduled_date
+                # Only absent/expired leases passed the locked selector. Fence the
+                # former writer before moving the same contractual identity.
+                item.generation_claim_token = None
+                item.generation_claimed_at = None
                 item.scheduled_date = recovery_date
                 if (
                     previous_date
@@ -147,4 +173,8 @@ def reconcile() -> dict[str, int]:
                 moved += 1
         db.commit()
 
-    return {"rescheduled": moved, "hospitals": len(grouped)}
+    return {
+        "rescheduled": moved,
+        "hospitals": len(grouped) - deferred_hospitals,
+        "deferred_hospitals": deferred_hospitals,
+    }

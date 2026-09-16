@@ -325,9 +325,10 @@ def _question_rows(
     comparable_cell_keys: frozenset[tuple[str, str]] | None,
 ) -> list[QuestionRowPayload]:
     """질문 단위(플랫폼 합산) 지난달·이번달 표. 원장 리포트 2쪽 부록이 읽는다."""
-    rows: dict[str, QuestionRowPayload] = {}
+    rows: dict[tuple[str, str], QuestionRowPayload] = {}
     for cell in sorted(current_cells, key=lambda row: (row.query_key, row.platform)):
-        row = rows.get(cell.query_key)
+        display_key = (cell.query_key, cell.query_text.strip())
+        row = rows.get(display_key)
         if row is None:
             row = {
                 "query_key": cell.query_key,
@@ -339,7 +340,7 @@ def _question_rows(
                 "prior_measured": False,
                 "prior_comparable": True,
             }
-            rows[cell.query_key] = row
+            rows[display_key] = row
         row["current_attempts_used"] += cell.attempts_used
         row["current_mentioned_attempts"] += cell.mentioned_attempts
         prior = prior_by_key.get((cell.query_key, cell.platform))

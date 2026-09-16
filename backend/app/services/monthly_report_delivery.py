@@ -44,8 +44,7 @@ def safe_local_report_path(pdf_path: str) -> Path | None:
 def report_pdf_is_ready(report: MonthlyReport) -> bool:
     path = report.pdf_path
     return bool(
-        path
-        and (str(path).startswith("gs://") or safe_local_report_path(str(path)) is not None)
+        path and (str(path).startswith("gs://") or safe_local_report_path(str(path)) is not None)
     )
 
 
@@ -59,9 +58,7 @@ def monthly_report_delivery_blockers(report: MonthlyReport) -> list[str]:
     if sov_summary.get("sov_pct") is None:
         blockers.append("AI 언급률 요약이 없습니다.")
 
-    content_summary = (
-        report.content_summary if isinstance(report.content_summary, dict) else {}
-    )
+    content_summary = report.content_summary if isinstance(report.content_summary, dict) else {}
     if "published_count" not in content_summary:
         blockers.append("월간 콘텐츠 발행 요약이 없습니다.")
     operations_summary = content_summary.get("operations")
@@ -124,19 +121,60 @@ def coverage_is_final(report: MonthlyReport) -> bool:
     '더 기다릴 필요가 있는가'만 판정한다. LIMITED를 COMPLETE와 같은 품질로 표시하는 근거가
     아니며 품질 구분은 `report.quality`와 관측 적정성이 그대로 유지한다.
     """
-    counts_complete = (
-        report.planned_count > 0
-        and report.success_count == report.planned_count
-        and report.failed_count == 0
-    )
+    summary = report.sov_summary or {}
+    if not isinstance(summary, dict):
+        return False
+    counts = (report.planned_count, report.success_count, report.failed_count)
+    if not all(type(value) is int and value >= 0 for value in counts):
+        return False
+    counts_complete = counts[0] > 0 and counts[1] == counts[0] and counts[2] == 0
+    adequacy = summary.get("observation_adequacy")
+    if adequacy is not None and not isinstance(adequacy, dict):
+        return False
+    if isinstance(adequacy, dict):
+        counter_keys = (
+            "planned_slots",
+            "confirmed_slots",
+            "pending_slots",
+            "ambiguous_slots",
+            "answer_failed_slots",
+            "judgment_failed_slots",
+            "received_answers",
+        )
+        if any(
+            key in adequacy and (type(adequacy[key]) is not int or adequacy[key] < 0)
+            for key in counter_keys
+        ):
+            return False
+        if "planned_slots" in adequacy:
+            planned = adequacy["planned_slots"]
+            if planned <= 0 or any(adequacy.get(key, 0) > planned for key in counter_keys[1:]):
+                return False
     if report.quality == "COMPLETE":
+        if isinstance(adequacy, dict) and adequacy.get("status") not in (None, "LEGACY_UNKNOWN"):
+            planned, confirmed = adequacy.get("planned_slots"), adequacy.get("confirmed_slots")
+            return bool(
+                counts_complete
+                and adequacy.get("status") == "COMPLETE"
+                and type(planned) is int
+                and planned > 0
+                and confirmed == planned
+                and not any(
+                    adequacy.get(key)
+                    for key in (
+                        "pending_slots",
+                        "ambiguous_slots",
+                        "answer_failed_slots",
+                        "judgment_failed_slots",
+                    )
+                )
+            )
         return counts_complete
-    adequacy = (report.sov_summary or {}).get("observation_adequacy")
-    return (
+    return bool(
         report.quality == "DEGRADED"
         and isinstance(adequacy, dict)
         and adequacy.get("status") == "LIMITED"
-        and int(adequacy.get("confirmed_slots") or 0) > 0
+        and adequacy.get("confirmed_slots", 0) > 0
     )
 
 

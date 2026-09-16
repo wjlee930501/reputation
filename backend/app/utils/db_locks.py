@@ -34,6 +34,19 @@ def acquire_hospital_advisory_lock_sync(db, hospital_id: uuid.UUID) -> None:
     db.execute(select(func.pg_advisory_xact_lock(hospital_lock_key(hospital_id))))
 
 
+def try_acquire_hospital_advisory_lock_sync(db, hospital_id: uuid.UUID) -> bool:
+    """Defer rather than wait when a caller already owns content row locks.
+
+    Calendar writes take the hospital lock first. A recovery scan holding rows
+    must not block in the opposite order; the next sweep can retry the same work.
+    """
+    if not _is_postgres_bind(db):
+        return True
+    return bool(db.execute(
+        select(func.pg_try_advisory_xact_lock(hospital_lock_key(hospital_id)))
+    ).scalar())
+
+
 async def acquire_hospital_advisory_lock(db, hospital_id: uuid.UUID) -> None:
     """pg_advisory_xact_lock — 트랜잭션 종료(commit/rollback) 시 자동 해제 (async 세션용)."""
     if not _is_postgres_bind(db):

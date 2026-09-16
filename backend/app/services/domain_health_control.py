@@ -24,6 +24,7 @@ from app.services.dependency_incident_helpers import (
     domain_key,
     incident_projection,
     safe_domain_cause,
+    safe_domain_next_action,
 )
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
@@ -177,7 +178,7 @@ async def _open_domain_incident(
             severity=IncidentSeverity.HIGH,
             customer_impact="환자와 AI가 병원 연결 주소에서 공개 콘텐츠를 열지 못할 수 있습니다.",
             source_type=_SOURCE_TYPE,
-            next_action="병원 온보딩의 ‘자기 도메인 연결’에서 ‘DNS 확인하고 운영 시작’을 누르세요. 해결되지 않으면 개발팀 문의용 정보를 전달하세요.",
+            next_action=safe_domain_next_action(safe_reason),
             admin_path=f"/hospitals/{hospital.id}/onboarding",
             hospital_id=hospital.id,
             operation_run_id=run.id,

@@ -1,0 +1,19 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_DEPLOYED",
+  "reported_reference": "OPS-AADC44B537D0",
+  "public_endpoint_status": "HTTP_200_CORRECT_TENANT_TLS_VALID",
+  "production_log_access": "GCLOUD_REAUTH_REQUIRED",
+  "baseline": "5432c5e",
+  "tests": {
+    "passed": 220,
+    "failed": 0,
+    "skipped": 0
+  },
+  "source_sha256": {
+    "backend/app/services/domain_health_probe.py": "10a2c21dd300fdd59b668ec2ee4170d67427680007bcc4fb85b1711458359f36",
+    "backend/app/services/dependency_incident_helpers.py": "d902cc235a6f7d4136c9e4de6410b729874bbffa9d1767440968499ecb49199d",
+    "backend/app/services/domain_health_control.py": "e80db9cceb682198b71361f5d0180c627d9e436f392f8c667057073211f7f4b0",
+    "backend/app/workers/tasks.py": "777dbdffacacc37c154a6c2b2821cee8ba7050dba7f6acaf626804f847dc8bab",
+    "backend/tests/test_domain_health_probe.py": "1a1e7ec71c5e1a971fdc5dcb06ed6099ba11cc2f690e038e0798a41eca67c7b2"
+  }
+}

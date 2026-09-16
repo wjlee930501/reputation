@@ -13,7 +13,7 @@ from datetime import UTC, date, datetime
 
 import arrow
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.operations_center_actions import require_operations_account
@@ -34,6 +34,7 @@ from app.schemas.hospital_overview import (
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.essence_readiness import EssenceReadinessState, get_essence_readiness_states
 from app.services.hospital_states import content_state, domain_state, public_service_state
+from app.services.schedule_reconciliation import effective_schedules_query
 from app.services.sov_trend import latest_measured_week, weekly_mention_trend
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — 병원 현황"])
@@ -188,27 +189,41 @@ def _escalated_draft_card(
 
 
 async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
-    """이번 달(KST 계약 월) 발행 실적. 기간 경계는 `api/admin/content.py`의 월별 목록과 같다."""
+    """이번 달(KST 계약 월) 발행 실적. 이월된 글도 최초 약정 월에 귀속한다."""
     now = arrow.now(KST)
     period_start = arrow.Arrow(now.year, now.month, 1).date()
     period_end = arrow.Arrow(now.year, now.month, 1).ceil("month").date()
 
-    items = list(
-        (
-            await db.execute(
-                select(ContentItem)
-                .options(visibility_load_only())
-                .where(
-                    ContentItem.hospital_id == hospital.id,
-                    ContentItem.scheduled_date >= period_start,
-                    ContentItem.scheduled_date <= period_end,
-                    ContentItem.status == ContentStatus.PUBLISHED,
-                )
-            )
-        )
-        .scalars()
-        .all()
+    # Project effective terms with the existing content read: one database trip,
+    # even when no article has been published. The outer join preserves that row.
+    contract_plan = (
+        effective_schedules_query(period_end)
+        .with_only_columns(ContentSchedule.plan)
+        .where(ContentSchedule.hospital_id == hospital.id)
+        .limit(1)
+        .scalar_subquery()
     )
+    contract_date = func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
+    rows = (
+        await db.execute(
+            select(ContentItem, contract_plan.label("contract_plan"))
+            .select_from(Hospital)
+            .outerjoin(
+                ContentItem,
+                and_(
+                    ContentItem.hospital_id == Hospital.id,
+                    contract_date >= period_start,
+                    contract_date <= period_end,
+                    ContentItem.status == ContentStatus.PUBLISHED,
+                ),
+            )
+            .where(Hospital.id == hospital.id)
+            .options(visibility_load_only())
+        )
+    ).all()
+    items = [item for item, _plan in rows if item is not None]
+    effective_plan = rows[0][1] if rows else None
+    plan = effective_plan if effective_plan is not None else hospital.plan
     # DB PUBLISHED만으로 공개 성공을 선언하지 않는다 — 공개 API는 병원 게이트를 먼저 보고
     # 통과한 병원의 글만 내보낸다. 일시정지·준비 중 병원은 발행 글이 몇 편이든 공개 페이지가
     # 아무것도 내보내지 않으므로 전부 보류다.
@@ -217,25 +232,6 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
         public_count = sum(1 for item in items if visibility[item.id].visible)
     else:
         public_count = 0
-
-    # 이번 달 약정 편수의 정본은 계약 요금제다(PR-0C H-14: 일정의 plan은 계약에서 동기화된다).
-    # 활성 일정만 보면 다음 달부터 적용될 교체 일정의 편수가 이번 달로 새어 든다.
-    plan = hospital.plan
-    if plan is None:
-        # 요금제가 기록되기 전의 레거시 병원만 일정으로 되돌아간다 — 이번 달에 이미 시작한
-        # 일정만 본다.
-        plan = (
-            await db.execute(
-                select(ContentSchedule.plan)
-                .where(
-                    ContentSchedule.hospital_id == hospital.id,
-                    ContentSchedule.is_active,
-                    ContentSchedule.active_from <= period_end,
-                )
-                .order_by(ContentSchedule.active_from.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
 
     measured = latest_measured_week(await weekly_mention_trend(db, hospital.id))
     next_month = now.shift(months=1)

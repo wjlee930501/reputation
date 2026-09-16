@@ -31,8 +31,9 @@ _POSTGRES_URL = os.getenv(
 )
 
 
+@pytest.mark.parametrize("quality", ["COMPLETE", "DEGRADED"])
 def test_committed_blocked_report_repairs_missing_incident_once(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, quality: str,
 ) -> None:
     engine = create_engine(_POSTGRES_URL, future=True)
     try:
@@ -76,7 +77,8 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             period_month=7,
             report_type="MONTHLY",
             version=1,
-            quality="COMPLETE",
+            quality=quality,
+            sov_summary={"observation_adequacy": {"status": "LIMITED", "planned_slots": 10, "confirmed_slots": 3}} if quality == "DEGRADED" else {},
             planned_count=20,
             success_count=20,
             failed_count=0,
@@ -123,7 +125,8 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             period_month=7,
             report_type="MONTHLY",
             version=1,
-            quality="COMPLETE",
+            quality=quality,
+            sov_summary={"observation_adequacy": {"status": "LIMITED", "planned_slots": 10, "confirmed_slots": 3}} if quality == "DEGRADED" else {},
             planned_count=20,
             success_count=20,
             failed_count=0,
@@ -245,8 +248,10 @@ def test_committed_blocked_report_repairs_missing_incident_once(
         engine.dispose()
 
 
-def test_valid_two_page_artifact_recovers_false_invalid_incident(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("quality", ["COMPLETE", "DEGRADED"])
+@pytest.mark.parametrize("pdf_version,pages", [("doctor-pdf-v1", 2), ("doctor-pdf-v2", 3)])
+def test_valid_paginated_artifact_recovers_false_invalid_incident(
+    monkeypatch: pytest.MonkeyPatch, quality: str, pdf_version: str, pages: int,
 ) -> None:
     engine = create_engine(_POSTGRES_URL, future=True)
     try:
@@ -290,7 +295,8 @@ def test_valid_two_page_artifact_recovers_false_invalid_incident(
             period_month=8,
             report_type="MONTHLY",
             version=1,
-            quality="COMPLETE",
+            quality=quality,
+            sov_summary={"observation_adequacy": {"status": "LIMITED", "planned_slots": 10, "confirmed_slots": 3}} if quality == "DEGRADED" else {},
             planned_count=20,
             success_count=20,
             failed_count=0,
@@ -306,7 +312,7 @@ def test_valid_two_page_artifact_recovers_false_invalid_incident(
             byte_size=artifact_value.byte_size,
             validated=True,
             validated_at=datetime.now(timezone.utc),
-            validation_metadata=artifact_value.metadata.model_dump(mode="json"),
+            validation_metadata={**artifact_value.metadata.model_dump(mode="json"), "validation_version": pdf_version, "page_count": pages},
         )
         session.add_all((hospital, report))
         session.flush()

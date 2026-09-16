@@ -592,24 +592,15 @@ def test_the_densest_view_still_trims_to_one_page_before_the_appendix() -> None:
     assert "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다." in view["footnotes"]
 
 
-def test_the_densest_appendix_rows_are_bounded_by_characters_not_only_rows() -> None:
-    from app.services.report_engine import (
-        DOCTOR_APPENDIX_CITED_TITLE_CHARS,
-        DOCTOR_APPENDIX_COMPETITOR_CHARS,
-        DOCTOR_APPENDIX_QUERY_CHARS,
-        DOCTOR_APPENDIX_ROW_LIMIT,
-    )
-
+def test_dense_appendix_preserves_every_question_and_full_cell_text() -> None:
     rows = _dense_view(with_appendix=True)["appendix_rows"]
-
-    assert len(rows) == DOCTOR_APPENDIX_ROW_LIMIT
-    for row in rows:
-        assert len(row["query_text"]) <= DOCTOR_APPENDIX_QUERY_CHARS
-        assert len(row["competitor"]) <= DOCTOR_APPENDIX_COMPETITOR_CHARS
-        assert len(row["cited_title"]) <= DOCTOR_APPENDIX_CITED_TITLE_CHARS
-    # 잘렸다는 사실이 보여야 한다 — 조용히 사라지면 원장이 다른 질문으로 읽는다.
-    assert rows[0]["query_text"].endswith("…")
-    assert rows[0]["cited_title"].endswith("…")
+    assert len(rows) == 15
+    assert all(row["query_text"].endswith(f"{index:02d}") for index, row in enumerate(rows))
+    assert all("주차도 되는 곳이면 좋겠습니다" in row["query_text"] for row in rows)
+    assert all(len(row["query_text"]) > 44 for row in rows)
+    assert all(not row["query_text"].endswith("…") for row in rows)
+    assert rows[0]["cited_title"].endswith("모아 정리한 안내문")
+    assert rows[0]["competitor"].endswith("강남역 본원 및 분원")
 
 
 @pytest.mark.skipif(
@@ -617,12 +608,8 @@ def test_the_densest_appendix_rows_are_bounded_by_characters_not_only_rows() -> 
     reason="WeasyPrint 네이티브 의존성이 필요하다. CI에서 REQUIRE_PDF_RENDER=1로 강제한다.",
 )
 @pytest.mark.parametrize("with_appendix", [False, True])
-def test_the_densest_possible_report_renders_to_one_or_two_pages(with_appendix: bool) -> None:
-    """최대 밀도 + 최장 부록도 1쪽(부록 포함 2쪽)을 넘지 않는다.
-
-    넘치면 `DOCTOR_PDF_PAGE_COUNT_INVALID`로 아티팩트가 만들어지지 않고, Admin이
-    그 달을 `doctor_artifact_missing`으로 잠가 원장 리포트가 전달되지 않는다.
-    """
+def test_dense_summary_is_one_page_and_complete_appendix_paginates(with_appendix: bool) -> None:
+    """Keep the summary on page one and retain every long appendix row across pages."""
     view = _dense_view(with_appendix=with_appendix)
     expectation = DoctorPdfExpectation(
         hospital_name=view["hospital_name"],
@@ -639,4 +626,16 @@ def test_the_densest_possible_report_renders_to_one_or_two_pages(with_appendix: 
         expectation=expectation,
     )
 
-    assert rendered.metadata.page_count == (2 if with_appendix else 1)
+    # v2 preserves full questions/titles and repeats the clinic identity/header.
+    # This bounded long-text fixture needs at most three appendix pages.
+    assert 2 <= rendered.metadata.page_count <= 4 if with_appendix else rendered.metadata.page_count == 1
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(rendered.pdf_bytes))
+    first = "".join(reader.pages[0].extract_text().split())
+    assert "".join(view["coverage_text"].split()) in first
+    if with_appendix:
+        appendix = "".join("".join(page.extract_text().split()) for page in reader.pages[1:])
+        for row in view["appendix_rows"]:
+            assert "".join(row["query_text"].split()) in appendix
+            assert "".join(row["cited_title"].split()) in appendix
+        assert all("이번달" in "".join(page.extract_text().split()) for page in reader.pages[1:])

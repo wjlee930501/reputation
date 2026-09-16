@@ -1,0 +1,140 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_DEPLOYED",
+  "verified_at_kst": "2026-09-17T08:14:01.976497+09:00",
+  "branch": "audit/monthly-report-integrity-20260917",
+  "baseline_commit": "694b978981ce819b124b25731a7711e96e011ac7",
+  "backend_baseline": {
+    "total": 4245,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "backend_final": {
+    "total": 4300,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "test_count_increase": 55,
+  "backend_line_coverage_percent": 85.00066889632107,
+  "coverage_run": "verified.xml: same runtime Python; final-only follow-up was print column geometry and its test",
+  "script_tests": {
+    "passed": 94,
+    "failed": 0,
+    "skipped": 0
+  },
+  "static_checks": {
+    "ruff": "PASS",
+    "copy_guard": "PASS",
+    "db_connection_budget": "PASS",
+    "diff_check": "PASS"
+  },
+  "pdf_samples": {
+    "pdfs": [
+      {
+        "file": "checked-monthly-example.pdf",
+        "pages": 2,
+        "bytes": 45131
+      },
+      {
+        "file": "complete-questions-0.pdf",
+        "pages": 1,
+        "bytes": 31038
+      },
+      {
+        "file": "complete-questions-31.pdf",
+        "pages": 3,
+        "bytes": 41077
+      },
+      {
+        "file": "complete-questions-70.pdf",
+        "pages": 5,
+        "bytes": 47043
+      },
+      {
+        "file": "doctor-appendix.pdf",
+        "pages": 2,
+        "bytes": 43936
+      },
+      {
+        "file": "doctor-contract-timing-noncomparable.pdf",
+        "pages": 2,
+        "bytes": 36744
+      },
+      {
+        "file": "doctor-maximum.pdf",
+        "pages": 1,
+        "bytes": 38100
+      },
+      {
+        "file": "doctor-minimum.pdf",
+        "pages": 1,
+        "bytes": 32398
+      },
+      {
+        "file": "doctor-typical.pdf",
+        "pages": 1,
+        "bytes": 35509
+      }
+    ],
+    "total_pages": 18
+  },
+  "visual_review": {
+    "all_reviewed": true,
+    "renderer": "Poppler pdftoppm, 110 dpi contact sheets; primary example also reviewed at 144 dpi",
+    "sheets": [
+      "review-1.png",
+      "review-2.png",
+      "review-3.png"
+    ],
+    "pages_reviewed": 18,
+    "result": "No clipped table rows, missing glyphs, overlaps or unintended blank pages seen. Table headers and hospital/period identity continue on appendix pages."
+  },
+  "source_sha256": {
+    "backend/app/schemas/report.py": "f1598dadfbc81ee94e2a3e8ffd9b7919c5e6fe63e0146f493c07c317f63bd76d",
+    "backend/app/services/doctor_pdf_contracts.py": "a5facf1716713b7a104fc34756ad5c52575653c8f6039ba0118836d4b14deea9",
+    "backend/app/services/doctor_pdf_rendering.py": "48b52356d178cf44d56f2da2f906b413dcc4c2d88f17ffa6ba90e9993ac2d928",
+    "backend/app/services/monthly_report_delivery.py": "2ca3be8250508a62863da630b8762988f240fb6dcbe1867e8802d5837642c705",
+    "backend/app/services/monthly_sov.py": "4ef7fc7011beb60bb9e2a9fc745802b1e6a31cb0b65a6a2f9aabfeea183101f6",
+    "backend/app/services/monthly_sov_repository.py": "8deb2cbc026df172463539da93dcef629cc882d16422f034505223715dfed78e",
+    "backend/app/services/report_artifact_validation.py": "52b138321b53c21a64adb5377e01b878b9524fbe615b09e6cae15310f52f8814",
+    "backend/app/services/report_attribution.py": "b04ff71afad23eb0691cea957b428f72631b285033bc96c686c097f58b7791be",
+    "backend/app/services/report_engine.py": "0309e4c8f3afaaf328e5e420ff98e68923023da49e1590b0f7a0d47ab8af6ac5",
+    "backend/app/templates/doctor_report.html": "279766e0723e20af2ae1ef415f29a375dc8bd20955f9dca026403619dfd53ce1",
+    "backend/app/workers/monthly_artifact_reconciliation.py": "dcbcc027be335ed3d42742aba95547b429296e055bade32550fb806aef328274",
+    "backend/app/workers/tasks.py": "6fa2e6b748cf0fb6e43583b8d351142266cf8efba5f6956026fc49dc3c5eb2c5",
+    "backend/tests/integration/test_monthly_report_snapshot_postgres.py": "a6188069d55bd178ee4ecfc8adc2a3b2fa4904a34f676eb4968aac12d23e265e",
+    "backend/tests/test_doctor_pdf_pagination_v2.py": "86793cc39d9d4cfa78e7f149101045fa13a071e5616d5728e01d6dc10840cd2c",
+    "backend/tests/test_doctor_report_view.py": "f463bdf55fec20b7f07d2c3b97c6b5af9cc9d6a95ba8fbc9f8eeaa5bfad3f514",
+    "backend/tests/test_monthly_artifact_reconciliation_postgres.py": "9cae8f8637525887daf8ee7c6ee6f3a97cb01477bbe28f45750f24630fe5d9a2",
+    "backend/tests/test_monthly_report_integrity_audit.py": "b9012a987961528e9105fe6feb2c6ecea3d376f71d9e1219707e40d30e6ef859",
+    "backend/tests/test_monthly_report_sample_integrity.py": "608aebfe53f92705607283dffa606d1183e1d52ceb37b0a93b8076382fd28ac9",
+    "backend/tests/test_report_artifact_validation.py": "e91afa8e7111ae34542c22725146a4a70931372308b2c03b212dcdeabb263469"
+  },
+  "evidence_directory": "/private/tmp/reputation-monthly-report-audit-20260917-v_h6ufs6",
+  "local_sample": "/Users/woojinlee/Documents/projects/reputation/artifacts/qa/monthly-report-20260917/checked-monthly-example.pdf",
+  "local_sample_sha256": "2bf1142a977385935e19a7be15685cb2ce6a5d6a8c9ca703c17fa82cb5bcc85e",
+  "preserved_aside_sha256": "162a5c2c47c553bab3fe929e5b243db4b396fad5708519c6739f5ecdfeb826dc",
+  "evidence_sha256": {
+    "baseline.xml": "968965315846d762b461fdbde773ef29b80e6a7400a6b6da108b74031cf9cc59",
+    "final-candidate.xml": "02c2570b727cb2f92133d76a5cd43bd08d61c33cfda36aa4e217640871414313",
+    "verified-coverage.json": "641151e7a87eba752b45b1053565e86f1c00906c3ea73558d625f77e6ed63b40",
+    "final-candidate.log": "045e4cb65a92ef1258224b82a4d078a41833dede0dcf0cdae37d73a476bb588e",
+    "final-scripts.log": "6f883608074da5dd4f2d0168dce4db4d9298737c8da765630761d7ccef35f238",
+    "visual-review.json": "e802eb99c6fb09e998136076b6e80d25770e290850650fc2090f105235a080ab"
+  },
+  "limits": [
+    "No production rollout, remote CI, provider calls or customer delivery",
+    "Prior local contract-delivery commit is an undeployed prerequisite",
+    "No retroactive claims about previously delivered PDFs",
+    "Synthetic PDF samples are not customer performance data",
+    "Legacy missing measurement lineage remains labelled rather than reconstructed",
+    "PDF generation permits 512 rows, 2000 characters per table field and 32 pages; overflow fails closed"
+  ],
+  "cleanup": {
+    "5432": "stopped_owned_postgres",
+    "5434": "stopped_owned_postgres",
+    "55432": "stopped_owned_postgres",
+    "redis": "stopped_owned_redis"
+  }
+}

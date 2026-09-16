@@ -14,6 +14,7 @@ from app.models.hospital import Hospital
 from app.models.monthly_control import MonthlyReportArtifact
 from app.models.operations import Incident, IncidentState, OperationRun, OperationRunState
 from app.models.report import MonthlyReport
+from app.services.monthly_report_delivery import coverage_is_final
 from app.services.report_artifact_validation import (
     DoctorArtifactMetadata,
     DoctorPdfValidationError,
@@ -103,9 +104,13 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
             func.jsonb_typeof(metadata.op("->")("korean_to_unicode")) == "boolean",
             func.jsonb_typeof(metadata.op("->")("expected_link_present")) == "boolean",
             func.jsonb_typeof(metadata.op("->")("required_text_present")) == "boolean",
-            metadata.op("->>")("validation_version") == "doctor-pdf-v1",
+            or_(
+                and_(metadata.op("->>")("validation_version") == "doctor-pdf-v1",
+                     metadata.op("->>")("page_count").in_(("1", "2"))),
+                and_(metadata.op("->>")("validation_version") == "doctor-pdf-v2",
+                     metadata.op("->>")("page_count").in_(tuple(str(n) for n in range(1, 33)))),
+            ),
             metadata.op("->>")("validation_source") == "SYSTEM",
-            metadata.op("->>")("page_count").in_(("1", "2")),
             metadata.op("->>")("page_size") == "A4",
             glyph_text.op("~")(r"^[1-9][0-9]*$"),
             metadata.op("->>")("font_family") == "Pretendard",
@@ -122,6 +127,7 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
             ),
             and_(MonthlyReport.doctor_pdf_path.is_not(None), ~sql_artifact_valid),
         )
+        adequacy = cast(MonthlyReport.sov_summary, JSONB).op("->")("observation_adequacy")
         rows = db.execute(
             select(MonthlyReport, Hospital, MonthlyReportArtifact, Incident)
             .join(Hospital, Hospital.id == MonthlyReport.hospital_id)
@@ -142,7 +148,15 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
                 ),
             )
             .where(
-                MonthlyReport.quality == "COMPLETE",
+                or_(
+                    MonthlyReport.quality == "COMPLETE",
+                    and_(
+                        MonthlyReport.quality == "DEGRADED",
+                        adequacy.op("->>")("status") == "LIMITED",
+                        func.jsonb_typeof(adequacy.op("->")("confirmed_slots")) == "number",
+                        adequacy.op("->>")("confirmed_slots").op("~")(r"^[1-9][0-9]*$"),
+                    ),
+                ),
                 is_latest,
                 or_(
                     and_(invalid_truth, Incident.id.is_(None)),
@@ -181,6 +195,8 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
         ] = []
         recovery_contexts: list[MonthlyArtifactIncidentContext] = []
         for report, hospital, artifact, incident in rows:
+            if not coverage_is_final(report):
+                continue
             run = next(
                 (
                     candidate

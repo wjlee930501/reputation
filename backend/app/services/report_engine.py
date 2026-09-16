@@ -70,7 +70,10 @@ GAP_TYPE_LABELS = {
 
 
 def _query_text_of(record: Any) -> str | None:
-    """SoV 레코드의 표시용 쿼리 텍스트 — QueryMatrix.query_text 우선, 없으면 타깃명."""
+    """월간 보고서는 동결 질문 우선; legacy만 현재 query/target으로 되돌아간다."""
+    snapshot = getattr(record, "report_query_text", None)
+    if isinstance(snapshot, str):
+        return snapshot
     query = getattr(record, "query", None)
     if query is not None and getattr(query, "query_text", None):
         return query.query_text
@@ -600,7 +603,11 @@ def _excerpt_around(text: str, needle: str, *, width: int = DOCTOR_EXCERPT_CHARS
     # Raw link destinations and heading markers made the customer PDF unreadable.
     body = re.sub(r"!?\[([^\]]+)\]\(https?://[^\s)]+\)", r"\1", text or "")
     body = re.sub(r"(?m)^\s{0,3}(?:#{1,6}\s+|>\s*|[-*+]\s+)", "", body)
-    body = re.sub(r"(\*\*|__|~~|`)", "", body)
+    # Strike-throughs and warning/cross marks can change the meaning of evidence.
+    body = re.sub(r"~~(.+?)~~", r"[취소선 표시: \1]", body, flags=re.S)
+    for symbol, label in (("⚠", "[주의 표시]"), ("❌", "[X 표시]"), ("✅", "[체크 표시]")):
+        body = body.replace(symbol, label)
+    body = re.sub(r"(\*\*|__|`)", "", body)
     body = re.sub(r"(?m)^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", "", body)
     body = re.sub(r"\s*\|\s*", " · ", body)
     body = re.sub(r"(?m)^\s*[-*_]{3,}\s*$", "", body)
@@ -650,7 +657,8 @@ def _pick_evidence(records: list, hospital_name: str) -> DoctorEvidence:
                 hospital_name if found else "",
             ),
             "platform": _platform_label(getattr(record, "ai_platform", None)),
-            "measured_at": getattr(record, "measured_at", None),
+            "measured_at": (arrow.get(record.measured_at).to("Asia/Seoul").datetime
+                            if getattr(record, "measured_at", None) is not None else None),
             "competitors": [] if found else _competitors_named_in(record)[:3],
         }
 
@@ -658,34 +666,21 @@ def _pick_evidence(records: list, hospital_name: str) -> DoctorEvidence:
 
 
 def _error_margin_footnote(
-    margin_of_hundred: int | None, basis: dict[str, Any]
+    margin_of_hundred: int | None, basis: dict[str, Any],
+    *, ci_low: float | None = None, ci_high: float | None = None,
 ) -> str:
-    """오차 범위 각주 — 고정 상수가 아니라 이번 달 표본에서 계산한 값으로 쓴다.
+    """Show actual asymmetric bounds; legacy half-width cannot recover endpoints.
 
-    표본 정보가 없는 구버전 payload에서는 숫자를 지어내지 않고, AI 답변이
-    매번 달라진다는 사실만 남긴다.
+    Repeated selected questions do not justify a population or causal claim.
     """
-    questions = int(basis.get("question_count") or 0)
-    repeats = int(basis.get("repeat_count") or 0)
-    platform_count = int(basis.get("platform_count") or 0)
-    if margin_of_hundred is None or not questions or not repeats:
+    if ci_low is None or ci_high is None:
         return "AI 답변은 같은 질문에도 매번 달라져 횟수가 다소 오르내립니다."
-    # `repeat_count`는 셀당 평균이다. 부분 측정된 달(어떤 질문은 5회, 어떤 질문은
-    # 1회)에서 평균만 쓰면 실제로 존재하지 않은 표본("반복 3회 기준")을 원장에게
-    # 말하게 된다. 최소·최대가 다르면 범위로 적는다. 구버전 payload에는 두 값이
-    # 없어(0) 예전처럼 평균 하나로 적는다.
-    repeat_min = int(basis.get("repeat_min") or 0)
-    repeat_max = int(basis.get("repeat_max") or 0)
-    repeat_scope = (
-        f"반복 {repeat_min}~{repeat_max}회"
-        if repeat_min and repeat_max and repeat_min != repeat_max
-        else f"반복 {repeats}회"
+    count = int(basis.get("attempts_used") or 0)
+    sample = f" · 확정 답변 {count}회" if count else ""
+    return (
+        f"독립 표본 가정의 95% 참고구간: 100번 환산 {ci_low:.1f}~{ci_high:.1f}번{sample}. "
+        "같은 질문의 반복은 독립이 아닐 수 있어 이 구간만으로 성과를 단정하지 않습니다."
     )
-    if platform_count > 1:
-        scope = f"질문 {questions}개 × AI 서비스 {platform_count}곳 × {repeat_scope} 기준"
-    else:
-        scope = f"질문 {questions}개 × {repeat_scope} 기준"
-    return f"이번 달 수치의 오차 범위는 ±{margin_of_hundred}번입니다 ({scope})."
 
 
 # ── 원장 1페이지의 3막 ─────────────────────────────────────────────────
@@ -696,15 +691,7 @@ def _error_margin_footnote(
 DOCTOR_ACT1_TITLE_LIMIT = 3
 DOCTOR_MENTION_LIST_LIMIT = 3
 DOCTOR_TRIMMED_LIST_LIMIT = 2
-DOCTOR_APPENDIX_ROW_LIMIT = 15
-# 부록 칸의 글자 수 상한. 행 수만 15로 묶고 글자 수를 풀어 두면, 긴 질문이나 긴 글
-# 제목이 좁은 열(질문 34%, 다른 병원 18%, 인용 글 22%)에서 3~4줄로 접혀 15행이
-# 3쪽으로 넘친다. 그 PDF는 `report_artifact_validation`이 통째로 버리므로(2쪽만 허용)
-# 원장에게 나갈 파일이 아예 만들어지지 않는다. 값은 각 열에서 **2줄**을 넘지 않도록
-# 폭에서 역산했다(7.6pt 한글 기준: 질문 ~22자/줄, 인용 글 ~14자/줄, 다른 병원 ~11자/줄).
-DOCTOR_APPENDIX_QUERY_CHARS = 44
-DOCTOR_APPENDIX_COMPETITOR_CHARS = 22
-DOCTOR_APPENDIX_CITED_TITLE_CHARS = 28
+# Full questions are paginated by the PDF renderer; no 15-row or text truncation.
 # 경쟁 병원 이름은 같은 질문에서 2회 이상 관측될 때만 적는다. 1회 관측은 그날
 # 답변 하나일 수 있어 원장 앞에서 방어되지 않는다.
 DOCTOR_COMPETITOR_MIN_OBSERVATIONS = 2
@@ -777,7 +764,7 @@ def _published_items(
 def _citation_line(citations: CitationSummaryPayload | None) -> str | None:
     """"AI가 우리 글을 읽었는가"를 한 줄로. 구버전 리포트에는 없어 생략한다.
 
-    분모는 이번 달 **성공 측정한 답변 수**다. "질문 N개"라고 쓰면 질문×AI 서비스
+    분모는 이번 달 **확정 답변이 있는 질문·서비스 조합 수**다. "질문 N개"라고 쓰면 질문×AI 서비스
     조합을 질문 수로 부풀리는 셈이라 쓰지 않는다 — coverage_text와 같은 단위다.
     """
     if not citations:
@@ -841,17 +828,7 @@ def _cited_title_by_question(citations: CitationSummaryPayload | None) -> dict[s
 def _appendix_count_label(attempts_used: int, mentioned_attempts: int) -> str:
     if attempts_used <= 0:
         return "측정 없음"
-    if mentioned_attempts <= 0:
-        return "안 나옴"
     return f"{attempts_used}번 중 {mentioned_attempts}번"
-
-
-def _clip(text: str, limit: int) -> str:
-    """부록 칸이 정해진 줄 수를 넘지 않도록 자른다. 자른 사실은 말줄임표로 보인다."""
-    value = text.strip()
-    if len(value) <= limit:
-        return value
-    return f"{value[: limit - 1].rstrip()}…"
 
 
 def _appendix_rows(
@@ -861,13 +838,8 @@ def _appendix_rows(
     competitors: dict[str, str],
     cited_titles: dict[str, str],
 ) -> list[DoctorAppendixRow]:
-    """2쪽 부록 — 추적 질문 전체를 한 표로. 1페이지가 못 담는 '전부'가 여기 있다.
-
-    행 수(15)와 **칸당 글자 수**를 함께 묶는다. 행 수만 묶으면 긴 질문·긴 글 제목이
-    좁은 열에서 3~4줄로 접혀 부록이 3쪽으로 넘치고, 그 PDF는 검증에서 버려진다.
-    """
-    # Collapse platform-specific variants before the page limit: otherwise the
-    # first 15 of 30 cells silently omit half the questions and mix AI platforms.
+    """Full tracking table; preserve question identity and paginate without losing rows."""
+    # Merge only identical question text across platforms. All rows remain in the PDF.
     grouped: dict[str, dict[str, Any]] = {}
     for row in question_rows:
         text = str(row.get("query_text") or "").strip()
@@ -887,12 +859,12 @@ def _appendix_rows(
             combined.get("prior_comparable", True)
         ) and row_comparable
     rows: list[DoctorAppendixRow] = []
-    for row in list(grouped.values())[:DOCTOR_APPENDIX_ROW_LIMIT]:
+    for row in grouped.values():
         text = str(row.get("query_text") or "").strip()
         if not text:
             continue
         rows.append({
-            "query_text": _clip(text, DOCTOR_APPENDIX_QUERY_CHARS),
+            "query_text": text,
             "prev_label": (
                 _appendix_count_label(
                     int(row.get("prior_attempts_used") or 0),
@@ -909,12 +881,8 @@ def _appendix_rows(
                 int(row.get("current_attempts_used") or 0),
                 int(row.get("current_mentioned_attempts") or 0),
             ),
-            "competitor": _clip(
-                competitors.get(text, "—"), DOCTOR_APPENDIX_COMPETITOR_CHARS
-            ),
-            "cited_title": _clip(
-                cited_titles.get(text, "—"), DOCTOR_APPENDIX_CITED_TITLE_CHARS
-            ),
+            "competitor": competitors.get(text, "—"),
+            "cited_title": cited_titles.get(text, "—"),
         })
     return rows
 
@@ -1042,7 +1010,7 @@ def build_doctor_report_view(
     late_recovery_count: int = 0,
     contract_published_count: int | None = None,
 ) -> DoctorReportView:
-    """원장에게 보낼 1페이지(+선택적 2쪽 부록)의 모든 문구와 숫자를 만든다.
+    """원장에게 보낼 1페이지 요약(+필요한 만큼 이어지는 질문표)의 모든 문구와 숫자를 만든다.
 
     숫자는 전부 코드 바인딩이다 — 시장 1위 리포팅 툴의 현재 1순위 불만이 AI 요약의
     숫자 환각이라, 이 함수는 LLM을 쓰지 않는다.
@@ -1090,11 +1058,11 @@ def build_doctor_report_view(
         # 않을 때만 "의미 있는" 변화라고 말한다.
         movement = f"지난달 {prev_count}번 → 이번 달 {this_count}번"
         if verdict == "SIGNIFICANT_UP":
-            delta_sentence = f"{movement} (의미 있는 상승입니다)"
+            delta_sentence = f"{movement} (관측값 증가)"
         elif verdict == "SIGNIFICANT_DOWN":
-            delta_sentence = f"{movement} (의미 있는 하락입니다)"
+            delta_sentence = f"{movement} (관측값 감소)"
         elif verdict == "WITHIN_NOISE":
-            delta_sentence = f"{movement} (정상 변동 범위 안입니다)"
+            delta_sentence = f"{movement} (변동 해석에 주의가 필요합니다)"
         elif delta > 0:
             delta_sentence = f"{movement} ({delta}개 늘었습니다)"
         elif delta < 0:
@@ -1168,7 +1136,7 @@ def build_doctor_report_view(
 
     if measured:
         summary = (
-            f"이번 달 환자 질문 100번 중 AI가 {hospital.name}을(를) 답변에 넣은 횟수는 "
+            "이번 달 확인한 답변을 100번으로 환산하면 AI 답변에 병원이 언급된 횟수는 "
             f"{this_count}번입니다."
         )
     else:
@@ -1177,9 +1145,11 @@ def build_doctor_report_view(
         "이번 달이 기준선입니다",
         "측정 기준이 바뀌어 다음 달부터 비교합니다",
     }:
-        summary = f"{delta_sentence}. 이번 달 현재는 환자 질문 100번 중 {this_count}번입니다."
+        summary = f"{delta_sentence}. 이번 달 확인한 답변을 환산하면 100번 중 {this_count}번입니다."
 
-    ours = ["다음 달에도 계획한 글을 예정대로 발행합니다."]
+    shortfall = max(0, plan_quota - fulfilled_count) if plan_quota is not None else 0
+    ours = ([f"대상 월 미이행 {shortfall}편의 차단 원인을 확인하고, 안전 기준을 통과한 글부터 보충합니다."]
+            if shortfall else ["다음 달에도 승인된 근거와 안전 기준에 따라 계획한 글을 발행합니다."])
     if lost_mention_sentences:
         ours.append("이번 달 빠진 질문을 먼저 확인해 다음 글의 주제를 정합니다.")
     elif attribution and attribution.get("new_mention_queries"):
@@ -1200,9 +1170,21 @@ def build_doctor_report_view(
             f"{sov_coverage['success_count']}개를 확인했습니다."
         )
 
+    adequacy = coverage.get("observation_adequacy")
+    if isinstance(adequacy, dict) and adequacy.get("lineage", "SLOTTED") == "SLOTTED":
+        planned = int(adequacy.get("planned_slots") or 0)
+        confirmed = int(adequacy.get("confirmed_slots") or 0)
+        partial = "부분 측정 · " if adequacy.get("status") != "COMPLETE" else ""
+        coverage_text += f" {partial}계획 답변 {planned}회 중 {confirmed}회 판정 확정. 미확정은 미언급으로 세지 않습니다."
+    comparison = coverage.get("comparison") or {}
+    if comparison.get("status") == "COMPARABLE":
+        coverage_text += f" 상단 비교 수치는 두 달의 같은 질문·서비스 {comparison.get('matched_cell_count', 0)}개 조합 기준입니다."
+        if coverage.get("sov_pct_all_cells") is not None:
+            coverage_text += f" 이번 달 전체 확정 답변 기준은 100번 환산 {coverage['sov_pct_all_cells']:.1f}번입니다."
+
     footnotes = [
-        f"{platform_names}에 환자들이 실제로 쓰는 표현으로 질문해 답변을 모았습니다.",
-        _error_margin_footnote(margin_of_hundred, basis),
+        f"{platform_names} 자동 측정(API) 결과이며 실제 이용자 화면이나 검색 순위와 다릅니다.",
+        _error_margin_footnote(margin_of_hundred, basis, ci_low=coverage.get("ci95_low") if measured else None, ci_high=coverage.get("ci95_high") if measured else None),
         "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
     ]
     measured_dates = sorted({
@@ -1404,7 +1386,9 @@ def build_doctor_report_view(
         "citation_line": citation_line,
         "new_mention_sentences": new_mention_sentences,
         "new_mention_empty_text": (
-            "이번 달에는 지난달과 같은 조건에서 새로 확인된 병원 언급이 없습니다."
+            f"같은 조건의 새 언급 {(attribution or {}).get('new_mention_count', 0)}개 조합은 상세 질문표를 확인해 주세요."
+            if (attribution or {}).get("new_mention_count") and not new_mention_sentences
+            else "이번 달에는 지난달과 같은 조건에서 새로 확인된 병원 언급이 없습니다."
             if comparison_reason in (None, "MATCHED_COHORT")
             else "이번 달은 지난달과 같은 조건의 새 언급을 계산하지 않았습니다."
         ),

@@ -396,14 +396,15 @@ def build_monthly_sov(
     mentioned_attempts, attempts_used = _attempt_counts(headline_cells, "LOCAL")
     interval = wilson_interval(mentioned_attempts, attempts_used)
     scored = _scored_cells(headline_cells, "LOCAL")
-    slotted = tuple(cell for cell in cells if cell.slot_lineage == "SLOTTED")
+    required_cells = tuple(cell for cell in cells if cell.state != "EXCLUDED")
+    slotted = tuple(cell for cell in required_cells if cell.slot_lineage == "SLOTTED")
     planned_slots = sum(cell.planned_repeat_count for cell in slotted)
     confirmed_slots = sum(cell.confirmed_slot_count for cell in slotted)
     ambiguous_slots = sum(cell.ambiguous_slot_count for cell in slotted)
     pending_slots = sum(cell.pending_slot_count for cell in slotted)
     answer_failed_slots = sum(cell.answer_failed_slot_count for cell in slotted)
     judgment_failed_slots = sum(cell.judgment_failed_slot_count for cell in slotted)
-    if len(slotted) != len(cells):
+    if len(slotted) != len(required_cells):
         adequacy_status = "LEGACY_UNKNOWN"
         adequacy_lineage = "MIXED" if slotted else "LEGACY_UNKNOWN"
     elif planned_slots and confirmed_slots == planned_slots:

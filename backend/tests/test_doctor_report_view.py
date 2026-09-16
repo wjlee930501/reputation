@@ -106,7 +106,7 @@ def test_headline_is_a_count_out_of_a_hundred_not_a_percentage():
 
     assert view["headline"]["of_hundred"] == 47
     assert view["headline"]["prev_of_hundred"] == 39
-    assert "100번 중" in view["summary"]
+    assert "100번" in view["summary"] and "환산" in view["summary"]
     assert "47" in view["summary"]
     assert "%" not in view["summary"]
 
@@ -133,13 +133,13 @@ def test_delta_sentence_is_chosen_by_significance_not_by_sign():
     down = _view(sov_pct=31.0, significance="SIGNIFICANT_DOWN")
 
     assert noise["headline"]["delta_sentence"] == (
-        "지난달 39번 → 이번 달 47번 (정상 변동 범위 안입니다)"
+        "지난달 39번 → 이번 달 47번 (변동 해석에 주의가 필요합니다)"
     )
     assert up["headline"]["delta_sentence"] == (
-        "지난달 39번 → 이번 달 47번 (의미 있는 상승입니다)"
+        "지난달 39번 → 이번 달 47번 (관측값 증가)"
     )
     assert down["headline"]["delta_sentence"] == (
-        "지난달 39번 → 이번 달 31번 (의미 있는 하락입니다)"
+        "지난달 39번 → 이번 달 31번 (관측값 감소)"
     )
     assert noise["headline"]["significance"] == "WITHIN_NOISE"
 
@@ -167,13 +167,13 @@ def test_significance_and_error_margin_come_from_the_monthly_payload():
     )
 
     assert view["headline"]["delta_sentence"] == (
-        "지난달 39번 → 이번 달 47번 (정상 변동 범위 안입니다)"
+        "지난달 39번 → 이번 달 47번 (변동 해석에 주의가 필요합니다)"
     )
     assert view["headline"]["attempts_used"] == 150
     assert view["headline"]["ci95_low_of_hundred"] == 39
     assert view["headline"]["ci95_high_of_hundred"] == 55
     assert (
-        "이번 달 수치의 오차 범위는 ±8번입니다 (질문 15개 × AI 서비스 2곳 × 반복 5회 기준)."
+        "독립 표본 가정의 95% 참고구간: 100번 환산 39.2~55.0번 · 확정 답변 150회. 같은 질문의 반복은 독립이 아닐 수 있어 이 구간만으로 성과를 단정하지 않습니다."
         in view["footnotes"]
     )
 
@@ -398,7 +398,7 @@ def test_error_margin_footnote_is_measured_not_a_fixed_constant():
     )
 
     assert (
-        "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × 반복 5회 기준)."
+        "AI 답변은 같은 질문에도 매번 달라져 횟수가 다소 오르내립니다."
         in thin["footnotes"]
     )
 
@@ -427,7 +427,7 @@ def test_error_margin_footnote_writes_a_range_when_repeats_were_uneven():
     )
 
     assert (
-        "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × 반복 1~5회 기준)."
+        "AI 답변은 같은 질문에도 매번 달라져 횟수가 다소 오르내립니다."
         in uneven["footnotes"]
     )
 
@@ -450,7 +450,7 @@ def test_error_margin_footnote_keeps_the_single_number_for_legacy_payloads():
     )
 
     assert (
-        "이번 달 수치의 오차 범위는 ±24번입니다 (질문 2개 × AI 서비스 2곳 × 반복 5회 기준)."
+        "AI 답변은 같은 질문에도 매번 달라져 횟수가 다소 오르내립니다."
         in legacy["footnotes"]
     )
 
@@ -747,14 +747,16 @@ def test_footnote_trimming_drops_the_extras_and_keeps_the_v0_caveat():
     """⑥은 부가 각주(첫 측정·비교 제외)부터 버리고 V0 각주는 건너뛴다."""
     from app.services.report_engine import _v0_footnote
 
-    view = _dense(count=2, chars=120)
-
-    assert "FOOTNOTES" in view["trimmed"]
-    assert "V0_BASELINE" not in view["trimmed"]
-    assert view["v0_baseline"] == V0_BASELINE
-    assert _v0_footnote() in view["footnotes"]
-    assert len(view["footnotes"]) <= 5
-    assert not any("비교에서 제외" in note for note in view["footnotes"])
+    # Mandatory methodological copy may grow. Exercise the transition itself,
+    # not one obsolete character count that happened to hit the old threshold.
+    views = [_near_budget(title_chars=n, extra_footnotes=True) for n in range(0, 900)]
+    retained = [view for view in views if "FOOTNOTES" in view["trimmed"] and view["v0_baseline"]]
+    assert retained, "The test must reach optional-note trimming with a retained baseline"
+    for view in retained:
+        assert "V0_BASELINE" not in view["trimmed"]
+        assert view["v0_baseline"] == V0_BASELINE
+        assert _v0_footnote() in view["footnotes"]
+        assert len(view["footnotes"]) <= 5
 
 
 def test_dropping_the_v0_baseline_takes_its_caveat_with_it():
@@ -793,24 +795,32 @@ def test_the_all_rungs_clear_the_lists_lost_first_then_new_then_titles():
     assert everything["published_items"] == []
 
 
-def test_the_last_rung_shortens_next_month_plan_to_one_line():
-    """사다리를 다 써도 남으면 마지막으로 다음 달 계획을 한 줄로 줄인다.
+def _dense_with_one_less_line(monkeypatch):
+    """Exercise the final fallback relative to actual copy, not an absurd clinic name."""
+    from app.services import report_engine
 
-    고정 문구만으로 예산을 넘기려면 병원 이름이 비상식적으로 길어야 한다 — 이
-    칸이 실제로 동작하는지 확인하는 것이 목적이다.
-    """
-    view = _dense(
-        count=3,
-        chars=1400,
-        hospital=SimpleNamespace(name="장편한" * 400 + "외과의원"),
-    )
+    view = _dense(count=3, chars=1400)
+    kwargs = {name: view[name] for name in (
+        "summary", "coverage_text", "v0_baseline", "published_items", "citation_line",
+        "next_actions", "evidence", "footnotes",
+    )}
+    kwargs.update(delta_sentence=view["headline"]["delta_sentence"],
+                  new_mentions=view["new_mention_sentences"], lost_mentions=view["lost_mention_sentences"])
+    remaining_cost = report_engine._page1_line_cost(**kwargs)
+    assert len(view["next_actions"]["ours"]) == 2
+    with monkeypatch.context() as scope:
+        scope.setattr(report_engine, "DOCTOR_PAGE1_LINE_BUDGET", remaining_cost - 1)
+        return _dense(count=3, chars=1400)
 
+
+def test_the_last_rung_shortens_next_month_plan_to_one_line(monkeypatch):
+    view = _dense_with_one_less_line(monkeypatch)
     assert view["trimmed"][-1] == "NEXT_ACTIONS"
     assert len(view["next_actions"]["ours"]) == 1
     assert view["next_actions"]["yours"] == []
 
 
-def test_every_trimming_rung_is_reachable_by_some_real_input():
+def test_every_trimming_rung_is_reachable_with_content_and_page_constraints(monkeypatch):
     """사다리 12칸 전부가 어떤 입력에서는 실제로 밟힌다.
 
     밟히지 않는 칸은 검증되지 않는 코드다 — ⑥의 V0 각주 버그도 ⑥~⑫를 밟는
@@ -819,11 +829,7 @@ def test_every_trimming_rung_is_reachable_by_some_real_input():
     seen: set[str] = set()
     for count, chars, extras in DENSITY_SWEEP:
         seen.update(_dense(count=count, chars=chars, extra_footnotes=extras)["trimmed"])
-    seen.update(
-        _dense(count=3, chars=1400, hospital=SimpleNamespace(name="장편한" * 400 + "외과의원"))[
-            "trimmed"
-        ]
-    )
+    seen.update(_dense_with_one_less_line(monkeypatch)["trimmed"])
 
     assert seen == {
         "EVIDENCE_MISSING",
@@ -910,7 +916,7 @@ def test_appendix_lists_every_tracking_question_with_both_months():
     assert rows[0]["prev_label"] == "10번 중 4번"
     assert rows[0]["current_label"] == "10번 중 6번"
     assert rows[0]["cited_title"] == "치질 수술 FAQ"
-    assert rows[1]["current_label"] == "안 나옴"
+    assert rows[1]["current_label"] == "10번 중 0번"
     assert rows[2]["prev_label"] == "측정 없음"
     # 관측 2회 이상인 경쟁 병원만 이름을 적는다. 숫자는 절대 쓰지 않는다.
     assert rows[0]["competitor"] == "가나다외과"
@@ -923,7 +929,7 @@ def test_appendix_is_empty_when_no_question_rows_exist():
     assert _view()["appendix_rows"] == []
 
 
-def test_appendix_caps_rows_at_the_tracking_set_size():
+def test_appendix_retains_every_tracking_question_for_automatic_pagination():
     view = _view(
         attribution=_attribution(
             question_rows=[
@@ -932,7 +938,7 @@ def test_appendix_caps_rows_at_the_tracking_set_size():
         )
     )
 
-    assert len(view["appendix_rows"]) == 15
+    assert len(view["appendix_rows"]) == 20
 
 
 # ── AE 토킹 포인트 ────────────────────────────────────────────────────
@@ -1013,7 +1019,7 @@ def test_template_renders_the_headline_and_evidence():
     )
     text = _body_text(html)
 
-    assert "100번 중" in text and "47번" in text
+    assert "100번 환산" in text and "47번" in text
     assert "지난달 39번 → 이번 달 47번" in text
     assert "강남 치질 병원 추천해줘" in text
     assert "강남 대장내시경" in text and "장편한외과의원이 좋습니다" in text
@@ -1092,7 +1098,7 @@ def test_appendix_merges_platform_variants_before_limiting_questions():
 
 def test_answer_decorative_emoji_cannot_break_the_pdf_font_encoding():
     view = _view(records=[_record(mentioned=True, raw="장편한외과의원 💡 방문 안내 ✅ 준비물")])
-    assert view['evidence']['found']['excerpt'] == '장편한외과의원 방문 안내 준비물'
+    assert view['evidence']['found']['excerpt'] == '장편한외과의원 방문 안내 [체크 표시] 준비물'
 
 
 def test_late_recovery_is_disclosed_without_backdating_monthly_results():

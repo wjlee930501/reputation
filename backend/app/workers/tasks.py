@@ -140,6 +140,7 @@ from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
+from app.services.domain_health_probe import check_custom_domain_https as _check_custom_domain_https
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_auto_review import (
     AUTO_ESSENCE_ACTOR,
@@ -4920,7 +4921,7 @@ def _run_generation_item(
     acks_late=True,
 )
 def overnight_content_generation_recovery(self):
-    """At 01/04/07, claim today's unfinished slots and fan them out."""
+    """Recover unfinished due slots on bounded overnight and daytime ticks."""
 
     require_dispatch(self, "overnight-content-generation-recovery")
     now_kst = arrow.now("Asia/Seoul")
@@ -6069,76 +6070,87 @@ def morning_content_auto_publish(self):
         blocked_outcomes: list[dict[str, object]] = []
         reused_image_outcomes: list[dict[str, object]] = []
         healed_hospitals: set = set()
+        failed_ids: list[uuid.UUID] = []
         for content_id in due_ids:
-            outcome = _auto_publish_one(content_id)
-            if outcome is None:
-                continue
-            if outcome.get("image_reused"):
-                reused_image_outcomes.append(
-                    {
-                        "hospital_id": outcome["hospital_id"],
-                        "hospital_name": outcome["hospital_name"],
-                        "content_id": content_id,
-                        "image_failure_reason": outcome.get("image_failure_reason"),
-                        "image_failure_class": outcome.get("image_failure_class"),
-                        # 빌린 글인지 병원 대표 이미지인지 — 요약 문구가 이걸로 갈린다.
-                        "reused_from": outcome.get("reused_from"),
-                    }
-                )
-            if outcome["kind"] == "blocked":
-                # The incident stays per item (it drives the Admin retry control);
-                # Slack gets one digest for the whole batch below.
-                _run_async(
-                    open_generation_incident(
-                        item_id=content_id,
-                        hospital_id=outcome["hospital_id"],
-                        hospital_name=outcome["hospital_name"],
-                        run_id=outcome["run_id"],
-                        code=outcome["code"],
-                        message=outcome["message"],
-                        notify=False,
-                    )
-                )
-                if outcome["code"] == "MISSING_APPROVED_ESSENCE":
-                    _heal_missing_essence_for_digest(outcome["hospital_id"], healed_hospitals)
-                summary = outcome.get("essence_check_summary") or {}
-                if generation_block_digest_due(
-                    outcome["code"], batch=PUBLISH_MORNING_BATCH,
-                    remediation_exhausted=essence_remediation_exhausted(summary),
-                ):
-                    blocked_outcomes.append(
+            try:
+                outcome = _auto_publish_one(content_id)
+                if outcome is None:
+                    continue
+                if outcome.get("image_reused"):
+                    reused_image_outcomes.append(
                         {
                             "hospital_id": outcome["hospital_id"],
                             "hospital_name": outcome["hospital_name"],
                             "content_id": content_id,
-                            "scheduled_date": outcome.get("scheduled_date"),
-                            "title": outcome.get("title"),
-                            "code": outcome["code"],
-                            "cause": _publication_digest_cause(outcome["code"], summary),
-                            "attempt_fingerprint": outcome.get("attempt_fingerprint"),
+                            "image_failure_reason": outcome.get("image_failure_reason"),
+                            "image_failure_class": outcome.get("image_failure_class"),
+                            # 빌린 글인지 병원 대표 이미지인지 — 요약 문구가 이걸로 갈린다.
+                            "reused_from": outcome.get("reused_from"),
                         }
                     )
-                continue
+                if outcome["kind"] == "blocked":
+                    # The incident stays per item (it drives the Admin retry control);
+                    # Slack gets one digest for the whole batch below.
+                    _run_async(
+                        open_generation_incident(
+                            item_id=content_id,
+                            hospital_id=outcome["hospital_id"],
+                            hospital_name=outcome["hospital_name"],
+                            run_id=outcome["run_id"],
+                            code=outcome["code"],
+                            message=outcome["message"],
+                            notify=False,
+                        )
+                    )
+                    if outcome["code"] == "MISSING_APPROVED_ESSENCE":
+                        _heal_missing_essence_for_digest(outcome["hospital_id"], healed_hospitals)
+                    summary = outcome.get("essence_check_summary") or {}
+                    if generation_block_digest_due(
+                        outcome["code"], batch=PUBLISH_MORNING_BATCH,
+                        remediation_exhausted=essence_remediation_exhausted(summary),
+                    ):
+                        blocked_outcomes.append(
+                            {
+                                "hospital_id": outcome["hospital_id"],
+                                "hospital_name": outcome["hospital_name"],
+                                "content_id": content_id,
+                                "scheduled_date": outcome.get("scheduled_date"),
+                                "title": outcome.get("title"),
+                                "code": outcome["code"],
+                                "cause": _publication_digest_cause(outcome["code"], summary),
+                                "attempt_fingerprint": outcome.get("attempt_fingerprint"),
+                            }
+                        )
+                    continue
 
-            _run_async(
-                recover_generation_incidents(
-                    content_id,
-                    outcome["hospital_id"],
-                    outcome["hospital_name"],
-                    None,
+                _run_async(
+                    recover_generation_incidents(
+                        content_id,
+                        outcome["hospital_id"],
+                        outcome["hospital_name"],
+                        None,
+                    )
                 )
-            )
 
-            revalidated = _run_async(
-                trigger_content_site_revalidate_safe(
-                    outcome["slug"],
-                    content_id,
-                    hospital_name=outcome["hospital_name"],
-                    treatments=outcome["treatments"],
+                revalidated = _run_async(
+                    trigger_content_site_revalidate_safe(
+                        outcome["slug"],
+                        content_id,
+                        hospital_name=outcome["hospital_name"],
+                        treatments=outcome["treatments"],
+                    )
                 )
-            )
-            if not revalidated and settings.APP_ENV.lower() == "production":
-                logger.warning("Auto-published content revalidation failed: %s", content_id)
+                if not revalidated and settings.APP_ENV.lower() == "production":
+                    logger.warning("Auto-published content revalidation failed: %s", content_id)
+
+            except (SoftTimeLimitExceeded, WorkerLostError):
+                raise
+            except Exception:
+                # A poison row or its post-commit follow-up must not starve all
+                # subsequent hospitals. Each row owns its transaction; durable
+                # publication/revalidation intents survive a later follow-up error.
+                logger.exception("auto publication item failed: %s", content_id)
+                failed_ids.append(content_id)
 
         if blocked_outcomes or reused_image_outcomes:
             with SyncSessionLocal() as digest_db:
@@ -6150,6 +6162,11 @@ def morning_content_auto_publish(self):
                     reused_outcomes=reused_image_outcomes,
                 )
                 digest_db.commit()
+
+        if failed_ids:
+            # Retain the existing bounded retry and global failure signal after
+            # every healthy row has had a chance. Published rows are not republished.
+            raise RuntimeError(f"AUTO_PUBLICATION_PARTIAL_FAILURE: {len(failed_ids)} item(s)")
 
         # 정상 발행은 Slack을 아예 보내지 않는다 — DB 상태·감사 로그·공개 표면
         # 재검증이 기록이다. Slack에 나가는 것은 바로 위의 차단 요약 한 건뿐이며,
@@ -7913,6 +7930,7 @@ def monthly_slot_generation(current_month: bool = False):
                     next_month,
                     next_month_start,
                     next_month_end,
+                    not_before=today.date() if current_month else None,
                 ):
                     created_count += 1
                 if schedule_hospital_id is not None:
@@ -9204,9 +9222,9 @@ def _build_monthly_report_for_hospital(
     # 타깃별 언급 빈도는 성공 측정 **전부**로 센다. 대표 1건(evidence용)은 언급된
     # 시도를 먼저 고르므로 비율 계산에 쓰면 위로 편향된다.
     sov_records = list(current_loaded.scored_records) if current_loaded is not None else []
-    evidence_records = (
-        list(current_loaded.selected_records) if current_loaded is not None else []
-    )
+    # Evidence and repeated competitor observations use the same canonical sample.
+    # Choosing a positive representative per cell hides mixed negative answers.
+    evidence_records = list(sov_records)
     # 헤드라인·전월·증감은 모두 같은 분모 위에 있다 — 비교가 성립하면 셋 다 매칭
     # 코호트 기준이고, 아니면 셋 다 이번 달 전 셀 기준(전월·증감은 None)이다.
     sov_pct = monthly_sov.sov_pct
@@ -9815,37 +9833,6 @@ def generate_monthly_report_for_hospital(
     return {"status": outcome, "year": anchor.year, "month": anchor.month}
 
 
-def _check_custom_domain_https(
-    client: httpx.Client,
-    domain: str,
-    *,
-    expected_hospital_id: uuid.UUID,
-    expected_slug: str,
-) -> tuple[bool, str]:
-    try:
-        response = client.get(f"https://{domain}/.well-known/reputation-health")
-    except httpx.TimeoutException:
-        return False, "timeout"
-    except httpx.HTTPError:
-        return False, "tls_or_network_error"
-    if 300 <= response.status_code < 400:
-        return False, "redirect_not_allowed"
-    if response.status_code == 200:
-        try:
-            marker = response.json()
-        except ValueError:
-            return False, "invalid_tenant_marker"
-        if not isinstance(marker, dict):
-            return False, "invalid_tenant_marker"
-        matches = (
-            marker.get("hospital_id") == str(expected_hospital_id)
-            and marker.get("slug") == expected_slug
-            and marker.get("canonical_host") == domain
-            and isinstance(marker.get("release"), str)
-            and bool(marker["release"].strip())
-        )
-        return (True, "tenant_marker_ok") if matches else (False, "tenant_marker_mismatch")
-    return False, f"http_{response.status_code}"
 
 
 def _site_revalidation_context(
