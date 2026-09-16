@@ -3,3 +3,7 @@ c5bb1279e76d922592dc4d1601d4bf9738334a6a:backend/tests/test_notification_outbox.
 
 # False positive: arithmetic expression for a Redis TTL in seconds.
 0d86462b4a21669d2bf424562302e5b0eb5ce1ab:backend/app/workers/tasks.py:generic-api-key:815
+
+# False positive: the verified Cloud Run rollback revision name is public metadata, not an API key.
+# This exception covers only the exact documentation commit/path/line reported by the scanner.
+2dff0873fc3c9e66a79d3ce63efddf1b4b6eda93:docs/releases/2026-09-16-refactor-production-validation.json:generic-api-key:171

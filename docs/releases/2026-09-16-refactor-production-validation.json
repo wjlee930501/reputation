@@ -1,0 +1,195 @@
+{
+  "status": "DEPLOYED_VERIFIED",
+  "source_commit": "18531d3452287afa012e28ec256d920708c90a57",
+  "merged_pr": 116,
+  "merge_commit_ci": {
+    "url": "https://github.com/wjlee930501/reputation/actions/runs/35062402033",
+    "head_sha": "18531d3452287afa012e28ec256d920708c90a57",
+    "jobs_passed": 9,
+    "jobs_total": 9
+  },
+  "deployment_completed_at_utc": "2026-09-16T06:21:22.456100+00:00",
+  "revision_suffix": "ref-151613-18531d3",
+  "services": [
+    {
+      "service": "reputation-api",
+      "revision": "reputation-api-ref-151613-18531d3",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "18531d3452287afa012e28ec256d920708c90a57",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:36c61841b2ab58b5fdb6c3501f12b033871dd28ead8207ef8c92822f4159b038",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:2b48ccc4f7cc5280a4e66fd02462390de3aab299d5691274fba59d5ef972d47e",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T06:16:04.060677+00:00",
+      "checked_at_utc": "2026-09-16T06:21:46.327641+00:00"
+    },
+    {
+      "service": "reputation-worker",
+      "revision": "reputation-worker-ref-151613-18531d3",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "18531d3452287afa012e28ec256d920708c90a57",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:36c61841b2ab58b5fdb6c3501f12b033871dd28ead8207ef8c92822f4159b038",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:2b48ccc4f7cc5280a4e66fd02462390de3aab299d5691274fba59d5ef972d47e",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T06:16:04.060677+00:00",
+      "checked_at_utc": "2026-09-16T06:21:46.330028+00:00"
+    },
+    {
+      "service": "reputation-beat",
+      "revision": "reputation-beat-ref-151613-18531d3",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "18531d3452287afa012e28ec256d920708c90a57",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:36c61841b2ab58b5fdb6c3501f12b033871dd28ead8207ef8c92822f4159b038",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:2b48ccc4f7cc5280a4e66fd02462390de3aab299d5691274fba59d5ef972d47e",
+      "service_account": "reputation-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T06:16:04.060677+00:00",
+      "checked_at_utc": "2026-09-16T06:21:46.330088+00:00"
+    },
+    {
+      "service": "reputation-site",
+      "revision": "reputation-site-ref-151613-18531d3",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "18531d3452287afa012e28ec256d920708c90a57",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site@sha256:95f2b399c4f4d2fe8993ee0ba07387cf0dd9d1c44606452f6c93504d5d682a61",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site@sha256:0ec3bb59a337385ee2477d88d844310bc126be7566e5a14f7400f40380b46d3d",
+      "service_account": "reputation-site-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T06:16:04.060677+00:00",
+      "checked_at_utc": "2026-09-16T06:21:49.968766+00:00"
+    },
+    {
+      "service": "reputation-admin",
+      "revision": "reputation-admin-ref-151613-18531d3",
+      "ready": true,
+      "traffic_percent": 100,
+      "source_commit": "18531d3452287afa012e28ec256d920708c90a57",
+      "submitted_index": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin@sha256:8590b79f9f03cfd6ac5dfc9f6ff3722d243ff6760e43fa7059255d48d0bcf2c1",
+      "resolved_linux_amd64_manifest": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin@sha256:24127c5402ae8794bbb9d8e0053f46e975f2c1a9bfc020f0873c02c94d7b12d4",
+      "service_account": "reputation-admin-sa@mso-platform-481505.iam.gserviceaccount.com",
+      "environment_and_secret_references_preserved": true,
+      "runtime_resources_probes_scaling_preserved": true,
+      "error_log_count": 0,
+      "error_log_since_utc": "2026-09-16T06:16:04.060677+00:00",
+      "checked_at_utc": "2026-09-16T06:21:49.936747+00:00"
+    }
+  ],
+  "images": {
+    "backend": {
+      "tag": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation:refactor-20260916-151310-18531d3",
+      "digest": "sha256:36c61841b2ab58b5fdb6c3501f12b033871dd28ead8207ef8c92822f4159b038",
+      "uri": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:36c61841b2ab58b5fdb6c3501f12b033871dd28ead8207ef8c92822f4159b038"
+    },
+    "site": {
+      "tag": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site:refactor-20260916-151310-18531d3",
+      "digest": "sha256:95f2b399c4f4d2fe8993ee0ba07387cf0dd9d1c44606452f6c93504d5d682a61",
+      "uri": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/site@sha256:95f2b399c4f4d2fe8993ee0ba07387cf0dd9d1c44606452f6c93504d5d682a61"
+    },
+    "admin": {
+      "tag": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin:refactor-20260916-151310-18531d3",
+      "digest": "sha256:8590b79f9f03cfd6ac5dfc9f6ff3722d243ff6760e43fa7059255d48d0bcf2c1",
+      "uri": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/admin@sha256:8590b79f9f03cfd6ac5dfc9f6ff3722d243ff6760e43fa7059255d48d0bcf2c1"
+    }
+  },
+  "readiness": {
+    "checks": {
+      "active_owner_available": true,
+      "asset_bucket_configured": true,
+      "certificate_auto_provisioning_enabled": true,
+      "database_connected": true,
+      "generation_keys_configured": true,
+      "lead_delivery_configured": true,
+      "operator_secrets_configured": true,
+      "queue_canaries_current": true,
+      "redis_connected": true,
+      "release_revision_configured": true,
+      "report_bucket_configured": true,
+      "required_schedules_declared": true,
+      "required_tasks_registered": true,
+      "required_tasks_routed": true,
+      "schema_current": true,
+      "web_search_enabled": true
+    },
+    "schema_revision": "0079_topic_swap_fallback",
+    "release_revision": "18531d3452287afa012e28ec256d920708c90a57",
+    "canary_queue_count": 7
+  },
+  "jobs": {
+    "migrate": {
+      "execution": "reputation-migrate-wmt9g",
+      "succeeded_tasks": 1
+    },
+    "redbeat-reconcile": {
+      "execution": "reputation-redbeat-reconcile-vwtjr",
+      "succeeded_tasks": 1
+    },
+    "production-readiness": {
+      "execution": "reputation-production-readiness-7gsv9",
+      "succeeded_tasks": 1
+    }
+  },
+  "post_deployment_readiness": {
+    "metadata": {
+      "name": "reputation-production-readiness-q28vb"
+    },
+    "status": {
+      "completionTime": "2026-09-16T06:23:20.388958Z",
+      "startTime": "2026-09-16T06:23:00.186136Z",
+      "succeededCount": 1
+    }
+  },
+  "public_validation": {
+    "expected_site_revision": "reputation-site-ref-151613-18531d3",
+    "hospital_count": 9,
+    "article_count": 128,
+    "certified_images_checked": 9,
+    "admin_login_status": 200,
+    "anonymous_admin_api_status": 401,
+    "all_passed": true
+  },
+  "original_worktree": {
+    "head_unchanged": true,
+    "git_status_unchanged": true,
+    "diff_unchanged": true,
+    "modified_and_untracked_file_count": 110,
+    "all_file_hashes_unchanged": true
+  },
+  "rollback_revisions": {
+    "reputation-api": "reputation-api-geo-125451-012aeeb",
+    "reputation-worker": "reputation-worker-geo-125451-012aeeb",
+    "reputation-beat": "reputation-beat-geo-125451-012aeeb",
+    "reputation-site": "reputation-site-geo-125451-012aeeb",
+    "reputation-admin": "reputation-admin-geo-125451-012aeeb"
+  },
+  "rollback_state_file": "/private/tmp/reputation-refactor-deploy-20260916-yv7a6u2l/.deploy-rollback",
+  "limits": [
+    "Authenticated customer-data-changing browser flows and paid AI/Slack calls were not manually exercised",
+    "Error log count is a point-in-time observation from rollout start to the recorded checks, not a future guarantee",
+    "Documentation commits following the source release do not identify a new runtime image"
+  ],
+  "evidence_sha256": {
+    "main-ci-approved.json": "5846d7cbe77ee6afe69ddad847a205332d42a97dcdbc13c37e3d938c965d05b1",
+    "images.json": "e149208dbdae205fe16d1b7d15ee57072acb0b205820e44102952f6fa61cc532",
+    "services-production-proof.json": "c3d6e38d3635e407e49c93fc1ef093e90d13efd2975040963653574835e6070d",
+    "post-readiness-proof.json": "9bfdde8f79cec2416d36ac5101d5bd9f4b6f9e45be3776ef877741b6f1a30877",
+    "post-readiness-execution.json": "3180053fec6a998c090903f8aacd6951eba003f576989903fe7d288cea65baa6",
+    "public-postcheck.json": "03cdfce17e2cbb3c6ea634d58572e0cef5cdfb5de5b71be23345a2a45d354031",
+    "admin-production-browser.json": "58bd9a435b464cf3d6f0aaf07390c954ac1a8c7327c19236b0872da962b52e43",
+    "migration-reconcile-proof.json": "d53fc012c093094e6d5825dd95bee76d1385595a8e3ab608a4191effdf4b71b0",
+    "rollout-completed.json": "13dcee24aacaa04de9c1cb1d1c1b07db5f5157cd506520a54d384d8bf4836a5b",
+    "original-preserved.json": "6cd80a2f165a7c11429b7db3400fdbc490b47e21fa7bb00f8133f70b01e035d7"
+  }
+}

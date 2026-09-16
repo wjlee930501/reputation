@@ -1,13 +1,22 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 현재 운영 배포 — 2026-09-16
+## 현재 운영 배포 — 2026-09-16 리팩터링
+
+`18531d3452287afa012e28ec256d920708c90a57`(PR #116)이 실제 운영에 배포됐다.
+5개 서비스는 `ref-151613-18531d3` 리비전, DB head는 `0079_topic_swap_fallback`이다.
+main CI 9/9, 새 release 7개 큐 readiness, 병원 9곳·공개 글 128개·이미지·Admin 로그인
+사후 검증을 통과했다. 환경·secret·IAM·자원은 보존했다.
+[리팩터링 운영 배포 기록](docs/releases/2026-09-16-refactor-production.md)이 최신 실행 정본이며,
+아래 날짜별 상태는 당시 이력이다. 문서 후속 커밋은 런타임 이미지의 소스 SHA가 아니다.
+
+## 이전 운영 배포 — 2026-09-16 GEO
 
 `012aeeb68e1965ea2194300989140ab9b8c4f155`가 실제 운영에 배포됐다(PR #114).
 API/Worker/Beat/Site/Admin은 `geo-125451-012aeeb` 리비전, DB head는 `0079_topic_swap_fallback`이다.
 9개 병원·128개 공개 글, 현재 릴리스 7개 큐, production Admin 로그인 화면을 사후 확인했다.
 Site/Admin 전용 SA로 전환했고 기존 frontend grants는 롤백을 위해 유지했다.
 증거·범위·롤백 좌표는 [운영 배포 기록](docs/releases/2026-09-16-geo-autonomy-production.md)을 본다.
-아래 날짜별 절의 ‘운영 배포 전’은 해당 시점의 이력이며 현재 배포 상태는 이 절이 우선한다.
+아래 날짜별 절의 ‘운영 배포 전’은 해당 시점의 이력이며 최신 배포 상태는 위 리팩터링 절이 우선한다.
 
 ## 2026-09-15 GEO 자율 운영 보강 — 로컬 구현 우선 계약
 
