@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class DoctorHeadline(TypedDict):
@@ -130,6 +130,11 @@ class DoctorPdfExpectation:
     # 부록이 렌더되는 리포트만 2쪽이다. 렌더 여부를 기대값으로 못 박아야
     # "왜인지 모르게 2쪽"인 PDF가 원장에게 나가지 않는다.
     appendix_expected: bool = False
+    period_label: str | None = None
+    expected_page_count: int | None = None
+    required_overview_texts: tuple[str, ...] = ()
+    required_appendix_texts: tuple[str, ...] = ()
+    required_appendix_rows: tuple[tuple[str, ...], ...] = ()
 
 
 class DoctorArtifactMetadata(BaseModel):
@@ -137,9 +142,9 @@ class DoctorArtifactMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    validation_version: Literal["doctor-pdf-v1"]
+    validation_version: Literal["doctor-pdf-v1", "doctor-pdf-v2"]
     validation_source: Literal["SYSTEM"]
-    page_count: Literal[1, 2]
+    page_count: int = Field(ge=1, le=32, strict=True)
     page_size: Literal["A4"]
     glyph_count: int = Field(gt=0)
     font_family: Literal["Pretendard"]
@@ -150,6 +155,12 @@ class DoctorArtifactMetadata(BaseModel):
     required_text_present: Literal[True]
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     byte_size: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def preserve_legacy_page_contract(self):
+        if self.validation_version == "doctor-pdf-v1" and self.page_count > 2:
+            raise ValueError("Legacy doctor PDFs allow only one or two pages")
+        return self
 
 
 @dataclass(frozen=True, slots=True)

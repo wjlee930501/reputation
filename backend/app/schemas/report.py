@@ -17,10 +17,10 @@ class DoctorArtifactProjection(BaseModel):
     ]
     sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     byte_size: int | None = Field(default=None, gt=0)
-    # 본문 1쪽 + (부록이 있으면) 2쪽. 그 외 쪽수는 검증을 통과하지 못한다.
-    page_count: Literal[1, 2] | None = None
+    # 검증된 요약 1쪽 + 누락 없이 분할된 부록. v1은 기존 1~2쪽 계약 유지.
+    page_count: int | None = Field(default=None, ge=1, le=32)
     validated_at: datetime | None = None
-    validation_version: Literal["doctor-pdf-v1", "v0-pdf-v1"] | None = None
+    validation_version: Literal["doctor-pdf-v1", "doctor-pdf-v2", "v0-pdf-v1"] | None = None
 
 
 class ReportMeasurementProjection(BaseModel):

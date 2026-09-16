@@ -21,7 +21,7 @@ PublishedDoctorPdf = _contracts.PublishedDoctorPdf
 ValidatedDoctorPdf = _contracts.ValidatedDoctorPdf
 render_validated_doctor_pdf = _render_validated_doctor_pdf
 
-DOCTOR_ARTIFACT_VALIDATION_VERSION = "doctor-pdf-v1"
+DOCTOR_ARTIFACT_VALIDATION_VERSION = "doctor-pdf-v2"
 _A4_WIDTH_PT = 595.28
 _A4_HEIGHT_PT = 841.89
 _PAGE_TOLERANCE_PT = 2.0
@@ -49,7 +49,11 @@ def validate_doctor_pdf(
     # 본문은 언제나 1쪽이다. 부록(추적 질문 전체표)이 렌더될 때만 2쪽이 되고,
     # 그 사실은 호출부가 기대값으로 못 박는다 — "왜인지 모르게 2쪽"인 PDF는
     # 원장에게 나가면 안 된다.
-    expected_pages = 2 if expectation.appendix_expected else 1
+    expected_pages = expectation.expected_page_count if expectation.expected_page_count is not None else (2 if expectation.appendix_expected else 1)
+    if (type(expected_pages) is not int or not 1 <= expected_pages <= 32
+            or (not expectation.appendix_expected and expected_pages != 1)
+            or (expectation.appendix_expected and expected_pages < 2)):
+        raise DoctorPdfValidationError("DOCTOR_PDF_PAGE_COUNT_INVALID", "리포트의 페이지 구성 기준이 올바르지 않습니다.")
     page_count = len(reader.pages)
     if page_count != expected_pages:
         raise DoctorPdfValidationError(
@@ -77,6 +81,9 @@ def validate_doctor_pdf(
         ("coverage_text", expectation.coverage_text),
         ("caveat_text", expectation.caveat_text),
     )
+    required = (*required, *(("overview", text) for text in expectation.required_overview_texts))
+    if expectation.period_label is not None:
+        required = (*required, ("period", expectation.period_label))
     missing_fields = [
         field_name
         for field_name, text in required
@@ -88,6 +95,26 @@ def validate_doctor_pdf(
             "원장 전달용 PDF에서 필수 문구를 확인하지 못했습니다: "
             f"{', '.join(missing_fields)}.",
         )
+
+    appendix_text = _normalize_text("\n".join(sheet.extract_text() or "" for sheet in reader.pages[1:]))
+    if any(_normalize_text(text) not in appendix_text for text in expectation.required_appendix_texts):
+        raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "전체 질문표에 포함되어야 하는 결과가 PDF에서 누락됐습니다.")
+    # Searching each word globally lets an earlier row hide a missing later row.
+    # Bind table text to order and occurrence, including repeated labels.
+    cursor = 0
+    for row in expectation.required_appendix_rows:
+        for value in row:
+            text = _normalize_text(value)
+            position = appendix_text.find(text, cursor)
+            if position < 0:
+                raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "질문표의 행별 결과나 순서가 생성 입력과 일치하지 않습니다.")
+            cursor = position + len(text)
+    for sheet in reader.pages[1:]:
+        embedded, mapped = _pretendard_font_facts(sheet)
+        if not embedded or not mapped:
+            raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_FONT_INVALID", "부록의 한글 글꼴 또는 문자 연결 정보가 올바르지 않습니다.")
+        if not any("가" <= char <= "힣" for char in sheet.extract_text() or ""):
+            raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "부록 페이지의 한글을 확인할 수 없습니다.")
 
     glyph_count = sum("가" <= character <= "힣" for character in extracted_text)
     if glyph_count < 1:
