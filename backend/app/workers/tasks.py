@@ -140,6 +140,7 @@ from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
+from app.services.domain_health_probe import check_custom_domain_https as _check_custom_domain_https
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_auto_review import (
     AUTO_ESSENCE_ACTOR,
@@ -9832,37 +9833,6 @@ def generate_monthly_report_for_hospital(
     return {"status": outcome, "year": anchor.year, "month": anchor.month}
 
 
-def _check_custom_domain_https(
-    client: httpx.Client,
-    domain: str,
-    *,
-    expected_hospital_id: uuid.UUID,
-    expected_slug: str,
-) -> tuple[bool, str]:
-    try:
-        response = client.get(f"https://{domain}/.well-known/reputation-health")
-    except httpx.TimeoutException:
-        return False, "timeout"
-    except httpx.HTTPError:
-        return False, "tls_or_network_error"
-    if 300 <= response.status_code < 400:
-        return False, "redirect_not_allowed"
-    if response.status_code == 200:
-        try:
-            marker = response.json()
-        except ValueError:
-            return False, "invalid_tenant_marker"
-        if not isinstance(marker, dict):
-            return False, "invalid_tenant_marker"
-        matches = (
-            marker.get("hospital_id") == str(expected_hospital_id)
-            and marker.get("slug") == expected_slug
-            and marker.get("canonical_host") == domain
-            and isinstance(marker.get("release"), str)
-            and bool(marker["release"].strip())
-        )
-        return (True, "tenant_marker_ok") if matches else (False, "tenant_marker_mismatch")
-    return False, f"http_{response.status_code}"
 
 
 def _site_revalidation_context(
