@@ -63,3 +63,7 @@ HTTP 200·canonical, 홈/콘텐츠/sitemap/robots/llms 및 sitemap의 모든 글
 선택 증거·각 SHA-256·실제 이미지 index/child digest와 조회 시각은
 [검증 JSON](2026-09-16-refactor-production-validation.json)에 있다. 원본 private 스냅샷·로그는
 배포 작업 폴더에 남기고 비밀값·고객 비공개 payload는 저장소에 커밋하지 않았다.
+
+문서 후속 CI의 generic-api-key 탐지는 `rollback_revisions.reputation-api`의 기존 Cloud Run
+리비전 이름에 대한 오탐이었다. 배포 전 실제 서비스 리비전과 동일함을 확인하고 해당
+문서 커밋·파일·행 fingerprint만 `.gitleaksignore`에 등록했다. 실제 secret 값은 포함되지 않았다.
