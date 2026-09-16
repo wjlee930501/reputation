@@ -5,6 +5,7 @@ import test from 'node:test'
 const read = (file: string) => readFileSync(new URL(file, import.meta.url), 'utf8')
 const home = read('../app/[slug]/page.tsx')
 const hero = read('../app/[slug]/_components/ClinicHero.tsx')
+const imageDelivery = read('./clinic-image-delivery.ts')
 
 test('home jump links only advertise sections backed by available data', () => {
   assert.match(home, /hospital\.treatments\.length > 0 && <a href="#treatments"/)
@@ -25,9 +26,10 @@ test('subpage descriptions use the body role instead of inline 14px exceptions',
 })
 
 test('responsive hero media sizes include the shared mobile gutter', () => {
-  assert.match(hero, /calc\(100vw - 40px\)/)
-  assert.match(hero, /calc\(100vw - 64px\)/)
-  assert.match(hero, /600px"/)
+  assert.match(imageDelivery, /calc\(100vw - 40px\)/)
+  assert.match(imageDelivery, /calc\(100vw - 64px\)/)
+  assert.match(imageDelivery, /600px/ )
+  assert.match(hero, /sizes=\{CLINIC_IMAGE_SIZES\.hero\}/)
 })
 
 test('rendered layout gate rejects empty fixtures and non-loopback targets', () => {

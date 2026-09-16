@@ -1,3 +1,4 @@
+import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import { countLabel } from '@/lib/clinic-counters'
 import {
   clinicPhysicianLayout,
@@ -103,7 +104,7 @@ function PhysicianCard({
           alt={`${physician.name}${suffix ? ` ${suffix}` : ''}`}
           wrapperClassName="clinic-curator-portrait"
           fallbackClassName="clinic-curator-portrait--monogram"
-          sizes={layout === 'solo' ? '(max-width: 720px) 160px, 320px' : '(max-width: 720px) 140px, 260px'}
+          sizes={layout === 'solo' ? CLINIC_IMAGE_SIZES.portraitSolo : CLINIC_IMAGE_SIZES.portraitMultiple}
           priority={priorityPhoto}
           fallback={<span className="clinic-curator-monogram-glyph" aria-hidden="true">{initial}</span>}
         />

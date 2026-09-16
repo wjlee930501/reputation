@@ -5,6 +5,8 @@ import * as jsxRuntime from 'react/jsx-runtime'
 import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import ts from 'typescript'
+import * as delivery from './clinic-image-delivery.ts'
+import * as imageHook from './use-clinic-image.ts'
 
 const source = readFileSync(
   new URL('../app/[slug]/_components/ContentCover.tsx', import.meta.url),
@@ -28,6 +30,8 @@ test('representative content images are present in server-rendered HTML', () => 
     if (id === 'react/jsx-runtime') return jsxRuntime
     if (id === 'next/image') return { __esModule: true, default: image }
     if (id === '@/components/brand') return { ContentMotif: () => React.createElement('span') }
+    if (id === '@/lib/clinic-image-delivery') return delivery
+    if (id === '@/lib/use-clinic-image') return imageHook
     if (id === '@/lib/image-policy') return { isOffAllowlistExternalUrl: () => false }
     throw new Error(`Unexpected module: ${id}`)
   }

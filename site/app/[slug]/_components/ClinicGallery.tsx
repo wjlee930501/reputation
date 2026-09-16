@@ -1,3 +1,4 @@
+import { CLINIC_IMAGE_SIZES } from '@/lib/clinic-image-delivery'
 import Image from 'next/image'
 import Link from 'next/link'
 
@@ -56,11 +57,8 @@ export function ClinicGallery({ photos, policy, excludeUrl = null, allPhotosHref
                   src={url}
                   alt={photo.title}
                   fill
-                  sizes={
-                    lead
-                      ? '(max-width: 600px) 100vw, (max-width: 1024px) 100vw, 640px'
-                      : '(max-width: 600px) 100vw, (max-width: 1024px) 50vw, 320px'
-                  }
+                  sizes={lead ? CLINIC_IMAGE_SIZES.galleryLead : CLINIC_IMAGE_SIZES.gallery}
+                  loading="lazy"
                   style={{ objectFit: 'cover' }}
                 />
                 <figcaption className="clinic-gallery-caption">

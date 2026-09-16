@@ -1,3 +1,4 @@
+import { warmClinicHeroImages } from '@/lib/clinic-image-warmup'
 import { revalidatePath, revalidateTag } from 'next/cache'
 import { hospitalTagsForPaths } from '@/lib/hospital-cache'
 import { NextResponse } from 'next/server'
@@ -40,6 +41,10 @@ export async function POST(request: Request) {
   for (const path of paths) {
     revalidatePath(path)
   }
+
+  // Prepare the newly approved hero before the next patient pays the cold-cache cost.
+  // This is best-effort and bounded; invalidation above remains authoritative.
+  await warmClinicHeroImages(paths)
 
   return NextResponse.json({ ok: true, revalidated: paths, tags })
 }

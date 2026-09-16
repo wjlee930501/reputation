@@ -63,6 +63,18 @@ try {
             size: parseFloat(style.fontSize), paddingTop: parseFloat(style.paddingTop),
             paddingBottom: parseFloat(style.paddingBottom), text: element.textContent.trim().slice(0, 80) }
         }
+        // Decorative SVG underlays intentionally extend inside clipped image slots.
+        // Compare painted horizontal bounds, not an invisible child's unclipped box.
+        const overflowsViewport = element => {
+          let { left, right } = element.getBoundingClientRect()
+          for (let parent = element.parentElement; parent && parent !== document.documentElement; parent = parent.parentElement) {
+            if (!['hidden', 'clip', 'auto', 'scroll'].includes(getComputedStyle(parent).overflowX)) continue
+            const box = parent.getBoundingClientRect()
+            left = Math.max(left, box.left + parent.clientLeft)
+            right = Math.min(right, box.left + parent.clientLeft + parent.clientWidth)
+          }
+          return right > left && (left < -1 || right > innerWidth + 1)
+        }
         const all = selector => [...document.querySelectorAll(selector)].filter(visible).map(rect)
         const ids = [...document.querySelectorAll('[id]')].map(element => element.id)
         return {
@@ -77,7 +89,7 @@ try {
           brokenAnchors: [...document.querySelectorAll('.clinic-section-index a[href^="#"]')]
             .filter(link => !document.getElementById(link.hash.slice(1))).map(link => link.hash),
           overflowing: [...document.querySelectorAll('.clinic-shell *')].filter(visible)
-            .filter(element => { const r = element.getBoundingClientRect(); return r.left < -1 || r.right > innerWidth + 1 })
+            .filter(overflowsViewport)
             .filter(element => !element.closest('.clinic-markdown-table, .clinic-header-nav-mobile')).slice(0, 12).map(rect),
           jsonld: [...document.querySelectorAll('script[type="application/ld+json"]')].map(element => JSON.parse(element.textContent)),
         }
