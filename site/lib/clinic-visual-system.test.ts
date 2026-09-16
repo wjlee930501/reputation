@@ -102,10 +102,10 @@ function minimumPx(value: string): number | null {
 
 function resolveToken(name: string, width: number): string | null {
   const declarations = declarationsAt(width, new RegExp(`^${name}$`))
-  const rootDeclarations = declarations.filter((declaration) => declaration.selector === ':root')
+  const rootDeclarations = declarations.filter((declaration) => [':root', '.clinic-shell'].includes(declaration.selector))
   if (rootDeclarations.length === 0) return null
-  return rootDeclarations.reduce((best, candidate) => (winsOver(candidate, best) ? candidate : best))
-    .value
+  const scoped = rootDeclarations.filter((declaration) => declaration.selector === '.clinic-shell')
+  return (scoped.length ? scoped : rootDeclarations).reduce((best, candidate) => (winsOver(candidate, best) ? candidate : best)).value
 }
 
 /** 토큰 참조를 :root 값으로 한 단계 펼친다. 이 스타일시트에는 그 이상 필요 없다. */

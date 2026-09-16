@@ -103,8 +103,8 @@
      따로 갖고 있었다. 스크롤을 내리면 섹션 사이 간격이 구간마다 달라 보인다.
      모든 섹션은 이 토큰에서 세로 여백을 받는다. */
   --clinic-section-y: 80px;
-  --clinic-section-y-tight: 56px;
-  --clinic-section-x: 24px;
+  --clinic-section-y-tight: 48px;
+  --clinic-section-x: var(--clinic-rail);
   /* ─── 조작 요소 모양 (P-B-3) ─────────────────────────────────────
      버튼 반경이 9·5·8·12·14px로 다섯 갈래였고 굵기는 600·700·750·800이 섞여
      있었다. 같은 화면의 버튼이 서로 다른 부품처럼 보인다. 사각 버튼 하나와
@@ -117,7 +117,7 @@
      홈의 h3 두 개(원장 이름 38px, 대표 글 제목 32px)가 자기 섹션의 h2(30px)보다
      컸다. 진료 영역 h2만 34px로 다른 h2보다 커서 h1과도 가까웠다. h2·h3는 이
      토큰에서 크기를 받아 h1 > h2 > h3가 유지된다. */
-  --clinic-type-h2: 30px;
+  --clinic-type-h2: 32px;
   /* h2와의 낙차가 4px뿐이라 두 단계가 같은 크기로 보였다. h1(≈48) → h2(30) → h3(22)로
      낙차를 벌려 스케일이 단조롭게 줄어드는 것이 눈에 읽히게 한다. */
   --clinic-type-h3: 22px;
@@ -141,27 +141,6 @@
 
 /* 섹션 리듬과 제목 위계의 화면 폭별 단계. 값은 이 세 블록에만 있다 — 개별 섹션
    규칙이 자기 분기에서 숫자를 다시 쓰면 리듬이 또 갈라진다. */
-@media (min-width: 721px) {
-  :root {
-    --clinic-section-y: 96px;
-  }
-}
-
-@media (max-width: 720px) {
-  :root {
-    --clinic-section-y: 56px;
-    --clinic-section-y-tight: 40px;
-    --clinic-section-x: 20px;
-    --clinic-type-h2: 24px;
-    --clinic-type-h3: 20px;
-  }
-}
-
-@media (max-width: 480px) {
-  :root {
-    --clinic-section-y: 44px;
-  }
-}
 
 /* ─── MotionLabs typography classes (motionz-ui parity) ─── */
 .heading1 { font-size: 28px; font-weight: 700; line-height: 36px; }
@@ -554,8 +533,6 @@ summary:focus-visible {
 /* 좁은 화면에서는 걷어낸다. 390px에서 카피가 히어로 폭을 거의 다 쓰므로 마스크로
    비울 여백이 남지 않고, 남는 것은 글자 뒤 잡선뿐이다.
    영상은 컴포넌트가 아예 렌더하지 않으므로 160KB를 받지도 않는다. */
-@media (max-width: 720px) {
-}
 
 /* ─── Hero ─── */
 .hero-section {
@@ -2408,13 +2385,8 @@ summary:focus-visible {
 }
 
 .clinic-section {
-  padding: var(--clinic-section-y) var(--clinic-section-x);
   /* 섹션 간 명확한 위계 — 그림자 대신 hairline 구분선(PRD §11.5). */
   border-top: 1px solid var(--color-revisit-line-container);
-}
-
-.clinic-section--tight {
-  padding: var(--clinic-section-y-tight) var(--clinic-section-x);
 }
 
 .clinic-section--alt {
@@ -2425,17 +2397,8 @@ summary:focus-visible {
   background: var(--color-revisit-coolgrey-90);
 }
 
-.clinic-section-inner {
-  max-width: var(--clinic-max);
-  margin: 0 auto;
-}
-
 .clinic-section-inner--narrow {
   max-width: 880px;
-}
-
-.clinic-section-header {
-  margin-bottom: 48px;
 }
 
 /* 차분한 에디토리얼 라벨 — 대문자 태그 대신 얇은 액센트 룰 + 문장형 라벨.
@@ -2466,18 +2429,10 @@ summary:focus-visible {
 .clinic-section-heading {
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: var(--clinic-type-h2);
-  font-weight: 800;
-  line-height: 1.22;
-  letter-spacing: -0.035em;
 }
 
 .clinic-section-lede {
-  margin: 16px 0 0;
-  max-width: 60ch;
   color: var(--color-revisit-text-helper);
-  font-size: 17px;
-  line-height: 1.75;
 }
 
 /* ── Header ────────────────────────────────────────────────────── */
@@ -2498,14 +2453,9 @@ summary:focus-visible {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  width: 100%;
   /* border-box에서 max-width는 padding을 포함하므로, 기준선 폭에 좌우 패딩(24*2)을
      더해 둬야 패딩 안쪽 콘텐츠 엣지가 .clinic-section-inner와 정확히 일치한다.
      기준선을 옮길 때 이 값을 같이 옮기지 않으면 헤더만 어긋난다. */
-  max-width: calc(var(--clinic-max) + 48px);
-  margin: 0 auto;
-  padding: 14px 24px;
 }
 
 .clinic-header-brand {
@@ -2523,8 +2473,6 @@ summary:focus-visible {
 
 .clinic-header-brand-name {
   color: var(--color-revisit-text-title);
-  font-size: 18px;
-  font-weight: 700;
   letter-spacing: -0.01em;
 }
 
@@ -2537,8 +2485,6 @@ summary:focus-visible {
 .clinic-header-nav {
   display: flex;
   align-items: center;
-  gap: 22px;
-  font-size: 14px;
   font-weight: 500;
 }
 
@@ -2554,12 +2500,9 @@ summary:focus-visible {
 .clinic-header-cta {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 14px;
   border-radius: 8px;
   background: var(--color-revisit-primary-40);
   color: var(--clinic-on-brand, #ffffff);
-  font-size: 13px;
   font-weight: 600;
   transition: background 150ms ease;
 }
@@ -2577,27 +2520,13 @@ summary:focus-visible {
   .clinic-header-nav {
     display: none;
   }
-  .clinic-header-row {
-    padding: 12px 16px;
-    gap: 12px;
-  }
-  .clinic-header-brand-name {
-    font-size: 16px;
-  }
   .clinic-header-brand-meta {
     font-size: 12px;
-  }
-  .clinic-header-cta {
-    padding: 8px 12px;
-    font-size: 13px;
-    flex-shrink: 0;
   }
 
   .clinic-header-nav-mobile {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 12px 10px;
     overflow-x: auto;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
@@ -2612,7 +2541,11 @@ summary:focus-visible {
 
   /* 현재 페이지 항목 — 링크가 아니라 위치 표시다. 눌러도 아무 일이 없는 링크를
    없애면서(S-1) 어디에 있는지는 계속 보이게 한다. */
-.clinic-header-nav-current,
+.clinic-header-nav-current {
+  color: var(--clinic-brand-action);
+  font-weight: var(--weight-bold);
+  cursor: default;
+}
 .clinic-mobile-actionbar-current {
   color: var(--clinic-brand-action);
   font-weight: var(--weight-bold);
@@ -2621,12 +2554,10 @@ summary:focus-visible {
 
 .clinic-header-nav-mobile a {
     flex-shrink: 0;
-    padding: 8px 14px;
     border: 1px solid var(--color-revisit-line-container);
     border-radius: 999px;
     background: var(--color-revisit-greyscale-100);
     color: var(--color-revisit-text-subbody);
-    font-size: 13px;
     font-weight: 600;
     line-height: 1;
     transition: border-color 120ms ease, color 120ms ease;
@@ -2643,11 +2574,6 @@ summary:focus-visible {
 .clinic-hero {
   padding: 96px 24px 64px;
   background: var(--color-revisit-greyscale-100);
-}
-
-.clinic-hero-inner {
-  max-width: var(--clinic-max);
-  margin: 0 auto;
 }
 
 .clinic-hero-eyebrow {
@@ -2774,10 +2700,8 @@ summary:focus-visible {
   justify-content: center;
   gap: 6px;
   height: 46px;
-  padding: 0 20px;
   border: 1px solid transparent;
   border-radius: var(--clinic-control-radius);
-  font-size: 14px;
   font-weight: var(--clinic-control-weight);
   line-height: 1;
   cursor: pointer;
@@ -2946,8 +2870,6 @@ summary:focus-visible {
 .clinic-content-card {
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--color-revisit-line-container);
-  border-radius: 12px;
   overflow: hidden;
   background: var(--color-revisit-greyscale-100);
   transition: border-color 160ms ease;
@@ -2978,9 +2900,6 @@ summary:focus-visible {
 .clinic-content-card-title {
   margin: 0 0 8px;
   color: var(--color-revisit-text-title);
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.45;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -2990,8 +2909,6 @@ summary:focus-visible {
 .clinic-content-card-summary {
   margin: 0 0 14px;
   color: var(--color-revisit-text-helper);
-  font-size: 13px;
-  line-height: 1.6;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -3104,28 +3021,13 @@ summary:focus-visible {
 
 /* 2026-07 visual audit: long hub pages need a compact, visible jump index. */
 .clinic-section-index {
-  display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  max-width: var(--clinic-shell-max);
-  margin: 0 auto;
-  padding: 0 var(--clinic-rail);
-  border-bottom: 1px solid #e5e5e1;
-  background: #ffffff;
 }
 
 .clinic-section-index a {
   display: flex;
-  min-height: 54px;
   align-items: center;
-  justify-content: center;
-  border-right: 1px solid #ececea;
   color: #4f5662;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.clinic-section-index a:first-child {
-  border-left: 1px solid #ececea;
 }
 
 .clinic-section-index a:hover,
@@ -3139,9 +3041,6 @@ summary:focus-visible {
 }
 
 .clinic-article-toc {
-  margin: 24px 48px 0;
-  border: 1px solid var(--color-revisit-line-container);
-  border-radius: 8px;
   background: var(--color-revisit-coolgrey-95);
 }
 
@@ -3177,25 +3076,7 @@ summary:focus-visible {
 /* ── Article (detail page) ────────────────────────────────────── */
 .clinic-article-shell {
   display: grid;
-  grid-template-columns: minmax(0, 780px) 300px;
-  gap: 32px;
-  max-width: 1160px;
-  margin: 0 auto;
-  padding: 42px 24px 96px;
   align-items: start;
-}
-
-@media (max-width: 960px) {
-  .clinic-article-shell {
-    grid-template-columns: 1fr;
-  }
-}
-
-.clinic-article {
-  background: var(--color-revisit-greyscale-100);
-  border: 1px solid var(--color-revisit-line-container);
-  border-radius: 12px;
-  overflow: hidden;
 }
 
 .clinic-article-cover-figure {
@@ -3216,10 +3097,6 @@ summary:focus-visible {
   border-bottom: 1px solid var(--color-revisit-line-container);
   font-size: 12px;
   line-height: 1.55;
-}
-
-.clinic-article-header {
-  padding: 40px 44px 0;
 }
 
 .clinic-article-type {
@@ -3267,10 +3144,6 @@ summary:focus-visible {
 .clinic-article-title {
   margin: 0 0 20px;
   color: var(--color-revisit-text-title);
-  font-size: 38px;
-  font-weight: 800;
-  line-height: 1.2;
-  letter-spacing: 0;
   max-width: 28ch;
 }
 
@@ -3337,21 +3210,12 @@ summary:focus-visible {
 }
 
 .clinic-article-body {
-  padding: 36px 44px 56px;
-  max-width: 70ch;
   color: var(--color-revisit-text-body);
-  font-size: 18px;
   /* 1.88은 헐렁한 데다 첫 문단(1.75)과 달라 줄 간격이 들쭉날쭉 보였다 → 본문 전체 1.75로 통일. */
-  line-height: 1.75;
   letter-spacing: 0;
 }
 
 /* FAQ 질문/답변 블록 — 헤더·본문과 같은 좌우 패딩(44px)으로 정렬해야 줄이 안 틀어진다. */
-.clinic-article-faq {
-  margin: 4px 0 0;
-  padding: 0 44px;
-  max-width: 70ch;
-}
 
 .clinic-article-faq dt {
   font-weight: 700;
@@ -3368,13 +3232,18 @@ summary:focus-visible {
 }
 
 .clinic-article-body > p:first-of-type {
-  font-size: 19px;
-  line-height: 1.75;
   color: var(--color-revisit-text-title);
   font-weight: 500;
 }
 
-.clinic-article-body h1,
+.clinic-article-body h1 {
+  color: var(--color-revisit-text-title);
+  margin-top: 40px;
+  margin-bottom: 14px;
+  letter-spacing: -0.02em;
+  scroll-margin-top: 88px;
+}
+
 .clinic-article-body h2,
 .clinic-article-body h3 {
   color: var(--color-revisit-text-title);
@@ -3385,14 +3254,7 @@ summary:focus-visible {
 }
 
 .clinic-article-body h2 {
-  font-size: 24px;
-  font-weight: 700;
   padding-top: 4px;
-}
-
-.clinic-article-body h3 {
-  font-size: 19px;
-  font-weight: 700;
 }
 
 .clinic-article-body p {
@@ -3420,36 +3282,13 @@ summary:focus-visible {
   text-underline-offset: 3px;
 }
 
-@media (max-width: 720px) {
-  .clinic-article-header,
-  .clinic-article-body,
-  .clinic-article-faq {
-    padding-left: 22px;
-    padding-right: 22px;
-  }
-
-  .clinic-article-body > p:first-of-type {
-    /* 본문(17.5px)보다 작으면 리드 문단 줄 박스가 더 좁아 줄 간격이 들쭉날쭉 보인다 →
-       본문과 동일 크기로 맞춰 행간 리듬을 통일(강조는 weight 500·title 색으로 유지). */
-    font-size: 18px;
-  }
-
-  .clinic-article-title {
-    font-size: 26px;
-  }
-}
-
 /* ── Sidebar (article aside) ──────────────────────────────────── */
 .clinic-aside {
   display: flex;
   flex-direction: column;
-  gap: 16px;
 }
 
 .clinic-aside-card {
-  padding: 24px;
-  border: 1px solid var(--color-revisit-line-container);
-  border-radius: 10px;
   background: var(--color-revisit-greyscale-100);
 }
 
@@ -3648,9 +3487,7 @@ summary:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-bottom: 24px;
   color: var(--color-revisit-text-caption);
-  font-size: 13px;
 }
 
 .clinic-breadcrumb a {
@@ -3674,17 +3511,13 @@ summary:focus-visible {
 
 /* ── Footer ───────────────────────────────────────────────────── */
 .clinic-footer {
-  padding: 56px 24px 40px;
   background: var(--color-revisit-coolgrey-20);
   color: var(--color-revisit-coolgrey-70);
 }
 
 .clinic-footer-inner {
-  max-width: var(--clinic-max);
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 18px;
 }
 
 .clinic-footer-name {
@@ -3942,13 +3775,7 @@ summary:focus-visible {
 
 /* ── Featured content (hero 다음 큰 카드) ─────────────────────── */
 .clinic-featured {
-  padding: var(--clinic-section-y) var(--clinic-section-x);
   border-top: 1px solid var(--color-revisit-line-container);
-}
-
-.clinic-featured-inner {
-  max-width: var(--clinic-max);
-  margin: 0 auto;
 }
 
 /* solo(희소) 레이아웃의 인라인 더보기 링크 */
@@ -3956,9 +3783,7 @@ summary:focus-visible {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 20px;
   color: var(--color-revisit-primary-40);
-  font-size: 14px;
   font-weight: 600;
   transition: gap 150ms ease;
 }
@@ -3977,21 +3802,11 @@ summary:focus-visible {
    구성한다. 여기서 장식 요소를 다시 추가하지 말 것. */
 
 /* ── Curator (DoctorIntro 후속) ───────────────────────────────── */
-.clinic-curator {
-  display: grid;
-  grid-template-columns: 240px 1fr;
-  gap: 48px;
-  align-items: start;
-}
 
 .clinic-curator-portrait {
   position: relative;
-  width: 240px;
-  aspect-ratio: 4 / 5;
-  border-radius: 14px;
   overflow: hidden;
   background: var(--color-revisit-coolgrey-90);
-  border: 1px solid var(--color-revisit-line-container);
 }
 
 .clinic-curator-portrait::after {
@@ -4034,7 +3849,6 @@ summary:focus-visible {
   display: inline-block;
   margin-bottom: 10px;
   color: var(--color-revisit-primary-40);
-  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
@@ -4043,23 +3857,16 @@ summary:focus-visible {
 .clinic-curator-name {
   margin: 0 0 6px;
   color: var(--color-revisit-text-title);
-  font-size: 24px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
 }
 
 .clinic-curator-name small {
   margin-left: 8px;
   color: var(--color-revisit-text-helper);
-  font-size: 14px;
-  font-weight: 500;
 }
 
 .clinic-curator-tag-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 18px;
 }
 
 .clinic-curator-tag {
@@ -4068,23 +3875,18 @@ summary:focus-visible {
   background: transparent;
   border: 1px solid var(--color-revisit-coolgrey-70);
   color: var(--color-revisit-coolgrey-40);
-  font-size: 12px;
   font-weight: 500;
 }
 
 .clinic-curator-career {
   white-space: pre-line;
   color: var(--color-revisit-text-body);
-  font-size: 15px;
-  line-height: 1.8;
 }
 
 /* 원장 자격·학회 — 신뢰를 주는 사실 정보. 칩/리스트로 절제되게 노출(슬롭 금지). */
 .clinic-curator-credentials {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  margin-top: 20px;
 }
 
 .clinic-curator-cred-group {
@@ -4094,7 +3896,6 @@ summary:focus-visible {
 }
 
 .clinic-curator-cred-label {
-  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.16em;
   color: var(--color-revisit-text-caption);
@@ -4112,7 +3913,6 @@ summary:focus-visible {
   border-radius: 6px;
   background: var(--color-revisit-coolgrey-95);
   color: var(--color-revisit-text-subbody);
-  font-size: 13px;
   font-weight: 600;
   letter-spacing: -0.01em;
 }
@@ -4147,9 +3947,6 @@ summary:focus-visible {
 
 .clinic-curator-meta {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 20px;
-  margin-top: 24px;
 }
 
 .clinic-curator-meta-cell {
@@ -4159,7 +3956,6 @@ summary:focus-visible {
 }
 
 .clinic-curator-meta-label {
-  font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.16em;
   color: var(--color-revisit-text-caption);
@@ -4167,25 +3963,9 @@ summary:focus-visible {
 }
 
 .clinic-curator-meta-value {
-  font-size: 15px;
   font-weight: 700;
   color: var(--color-revisit-text-title);
   letter-spacing: -0.01em;
-}
-
-@media (max-width: 720px) {
-  .clinic-curator {
-    grid-template-columns: 1fr;
-    gap: 28px;
-  }
-
-  .clinic-curator-portrait {
-    width: 180px;
-  }
-
-  .clinic-curator-meta {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
 /* ── Channel grid (clinic 외부 링크 강조) ─────────────────────── */
@@ -4233,13 +4013,11 @@ summary:focus-visible {
 }
 
 .clinic-channel-card-label {
-  font-size: 13px;
   font-weight: 700;
   color: var(--color-revisit-text-title);
 }
 
 .clinic-channel-card-host {
-  font-size: 12px;
   color: var(--color-revisit-text-helper);
   white-space: nowrap;
   overflow: hidden;
@@ -4252,7 +4030,6 @@ summary:focus-visible {
    (감사에서 반복 지적되던 S-7 — 규칙이 다른 게 아니라 역할이 다르다.) */
 .clinic-library-hero {
   position: relative;
-  padding: var(--clinic-section-y) var(--clinic-section-x) var(--clinic-section-y-tight);
   background: var(--color-revisit-greyscale-100);
   border-bottom: 1px solid var(--color-revisit-line-container);
 }
@@ -4261,27 +4038,15 @@ summary:focus-visible {
   content: none;
 }
 
-.clinic-library-hero-inner {
-  max-width: var(--clinic-max);
-  margin: 0 auto;
-}
-
 .clinic-library-hero-title {
-  margin: 6px 0 16px;
   color: var(--color-revisit-text-title);
-  font-size: 36px;
-  font-weight: 800;
-  line-height: 1.16;
-  letter-spacing: -0.03em;
 }
 
 .clinic-library-hero-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 14px;
   align-items: center;
   color: var(--color-revisit-text-helper);
-  font-size: 13px;
 }
 
 .clinic-library-hero-meta strong {
@@ -4327,11 +4092,6 @@ summary:focus-visible {
 
 /* TL;DR 박스 — 본문 위 핵심 답변 */
 .clinic-article-tldr {
-  margin: 0 44px 8px;
-  padding: 22px 24px;
-  border: 1px solid var(--color-revisit-line-container);
-  border-left: 3px solid var(--color-revisit-primary-40);
-  border-radius: 4px;
   background: var(--color-revisit-coolgrey-95);
 }
 
@@ -4353,12 +4113,6 @@ summary:focus-visible {
   font-size: 16px;
   line-height: 1.75;
   font-weight: 500;
-}
-
-@media (max-width: 720px) {
-  .clinic-article-tldr {
-    margin: 0 24px 8px;
-  }
 }
 
 /* 본문 타이포그래피 강화 */
@@ -4480,8 +4234,6 @@ summary:focus-visible {
 
 /* 참고 자료 섹션 */
 .clinic-article-references {
-  margin: 0 36px;
-  padding: 28px 0 8px;
   border-top: 1px solid var(--color-revisit-line-container);
 }
 
@@ -4525,12 +4277,6 @@ summary:focus-visible {
   color: var(--color-revisit-text-caption);
   font-size: 12px;
   line-height: 1.6;
-}
-
-@media (max-width: 720px) {
-  .clinic-article-references {
-    margin: 0 24px;
-  }
 }
 
 /* PAA — 환자가 함께 묻는 질문 */
@@ -4581,12 +4327,6 @@ summary:focus-visible {
 
 @media (max-width: 720px) {
   /* 섹션 패딩은 :root의 리듬 토큰이 화면 폭에 따라 바꾼다. */
-  .clinic-section-heading {
-    font-size: var(--clinic-type-h2);
-  }
-  .clinic-section-lede {
-    font-size: 14px;
-  }
 
   /* 콘텐츠 그리드 — 1열로 떨어지는 시점 명시 */
   .clinic-content-grid,
@@ -4597,13 +4337,6 @@ summary:focus-visible {
   }
 
   /* 라이브러리 hero (목록·doctor·treatments·visit 페이지 공통) */
-  .clinic-library-hero-title {
-    font-size: 28px;
-  }
-  .clinic-library-hero-meta {
-    font-size: 13px;
-    gap: 10px;
-  }
 
   /* article cover (히어로 이미지)는 2:1로 압축 */
   .clinic-article-cover {
@@ -4611,24 +4344,11 @@ summary:focus-visible {
   }
 
   /* TL;DR 박스 */
-  .clinic-article-tldr {
-    margin: 0 16px 8px;
-    padding: 16px 18px;
-  }
   .clinic-article-tldr p {
     font-size: 14px;
   }
 
   /* 본문 좌우 여백 */
-  .clinic-article-header,
-  .clinic-article-body,
-  .clinic-article-faq {
-    padding-left: 20px;
-    padding-right: 20px;
-  }
-  .clinic-article-references {
-    margin: 0 20px;
-  }
 
   /* byline 줄바꿈 */
   .clinic-article-byline {
@@ -4649,20 +4369,11 @@ summary:focus-visible {
   }
 
   /* footer 컬럼 stack */
-  .clinic-footer {
-    padding: 40px 20px 32px;
-  }
 
   /* featured */
   /* breadcrumb 줄바꿈 친화 */
-  .clinic-breadcrumb {
-    font-size: 12px;
-  }
 
   /* curator meta 칸 — 2열 → 1열 */
-  .clinic-curator-meta {
-    grid-template-columns: 1fr 1fr;
-  }
 }
 
 @media (max-width: 480px) {
@@ -4687,8 +4398,6 @@ summary:focus-visible {
   /* 버튼 — 터치 타겟 최소 44px 보장 */
   .clinic-btn {
     height: 44px;
-    padding: 0 16px;
-    font-size: 14px;
     width: 100%;
   }
   .clinic-hero-actions {
@@ -4728,12 +4437,6 @@ summary:focus-visible {
   }
 
   /* article 더 좁게 */
-  .clinic-article {
-    border-radius: 16px;
-  }
-  .clinic-article-title {
-    font-size: 22px;
-  }
   .clinic-article-trustbar {
     grid-template-columns: 1fr 1fr;
   }
@@ -4746,17 +4449,8 @@ summary:focus-visible {
   .clinic-article-media-note {
     font-size: 12px;
   }
-  .clinic-article-shell {
-    padding: 24px 16px 64px;
-    gap: 24px;
-  }
 
   /* TL;DR 더 압축 */
-  .clinic-article-tldr {
-    margin: 0 12px 8px;
-    padding: 14px 16px;
-    border-radius: 12px;
-  }
 
   /* footer disclaimer 줄바꿈 친화 */
   .clinic-footer-disclaimer {
@@ -4766,10 +4460,6 @@ summary:focus-visible {
   }
 
   /* curator portrait 더 작게 */
-  .clinic-curator-portrait {
-    width: 140px;
-    aspect-ratio: 4 / 5;
-  }
 
   /* doctor photo (홈) */
   .clinic-doctor-photo {
@@ -4813,9 +4503,6 @@ summary:focus-visible {
   }
 
   /* article aside cards 패딩 압축 */
-  .clinic-aside-card {
-    padding: 20px;
-  }
 
   /* breadcrumb 터치 타겟 — 링크 padding */
   .clinic-breadcrumb a {
@@ -4831,7 +4518,9 @@ summary:focus-visible {
    바를 피하려고 둔 하단 여백이 한 번도 적용된 적이 없다 — 390×844 최대 스크롤에서
    푸터 마지막 링크가 바에 8px 덮이는 것이 실측됐다.
    랜딩의 safe-area는 이제 `.landing-shell` 자기 선언이 직접 포함한다. */
-.clinic-shell,
+.clinic-shell {
+  padding-bottom: env(safe-area-inset-bottom);
+}
 .legal-shell {
   padding-bottom: env(safe-area-inset-bottom);
 }
@@ -5293,18 +4982,15 @@ summary:focus-visible {
 
 .clinic-tag--faq        { background: var(--color-revisit-primary-95);  color: var(--color-revisit-primary-30); }
 .clinic-tag--disease    { background: var(--color-revisit-primary-90);  color: var(--color-revisit-primary-10); }
-.clinic-tag--treatment  { background: var(--color-revisit-green-95);    color: var(--color-revisit-green-40); }
+.clinic-tag--treatment  { background: var(--color-revisit-green-95);    color: var(--color-revisit-text-title); }
 .clinic-tag--column     { background: var(--color-revisit-coolgrey-90); color: var(--color-revisit-coolgrey-20); }
 .clinic-tag--health     { background: var(--color-revisit-yellow-95);   color: #b65f00; }
-.clinic-tag--local      { background: var(--color-revisit-red-95);      color: var(--color-revisit-red-40); }
+.clinic-tag--local      { background: var(--color-revisit-red-95);      color: var(--color-revisit-text-title); }
 .clinic-tag--notice     { background: var(--color-revisit-greyscale-90); color: var(--color-revisit-coolgrey-30); }
 
 /* ── Section header — 큰 에디토리얼 위계 ─────────────────────────── */
 
 /* ── 매거진형 콘텐츠 카드 ────────────────────────────────────────── */
-.clinic-content-card {
-  border-radius: 16px;
-}
 
 .clinic-content-card-body {
   display: flex;
@@ -5316,9 +5002,6 @@ summary:focus-visible {
 .clinic-content-card-title {
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: 19px;
-  font-weight: 700;
-  line-height: 1.4;
   letter-spacing: -0.02em;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -5329,8 +5012,6 @@ summary:focus-visible {
 .clinic-content-card-summary {
   margin: 0;
   color: var(--color-revisit-text-helper);
-  font-size: 15px;
-  line-height: 1.6;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -5419,10 +5100,6 @@ summary:focus-visible {
 /* section-header 중앙 정렬 variant (철학/흐름 섹션용) */
 .clinic-section-header--center {
   text-align: center;
-}
-.clinic-section-header--center .clinic-section-lede {
-  margin-left: auto;
-  margin-right: auto;
 }
 .clinic-section-header--center .clinic-section-label {
   justify-content: center;
@@ -5537,8 +5214,6 @@ summary:focus-visible {
 .clinic-flow-node-desc {
   margin: 0;
   color: var(--color-revisit-text-helper);
-  font-size: 14px;
-  line-height: 1.65;
   word-break: keep-all;
 }
 
@@ -5590,7 +5265,9 @@ summary:focus-visible {
    ────────────────────────────────────────────────────────────── */
 .clinic-fact-card,
 .clinic-answer-card,
-.clinic-treatment-card,
+.clinic-treatment-card {
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
 .clinic-content-card {
   transition: border-color 160ms ease, background-color 160ms ease;
 }
@@ -5675,43 +5352,17 @@ summary:focus-visible {
 
 /* ── 섹션 헤더 — 라이트 에디토리얼 패턴 ────────────────────────────
    eyebrow 3종 세트 대신 제목이 메시지를 전달. 필요할 때만 note. */
-.clinic-shell .clinic-section-head {
-  max-width: 720px;
-  margin-bottom: 40px;
-}
-.clinic-shell .clinic-section-head--center {
-  max-width: 640px;
-  margin-left: auto;
-  margin-right: auto;
-  text-align: center;
-}
 .clinic-shell .clinic-section-title {
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: var(--clinic-type-h2);
-  font-weight: 800;
-  line-height: 1.24;
-  letter-spacing: -0.032em;
   word-break: keep-all;
 }
 .clinic-shell .clinic-section-note {
-  margin: 14px 0 0;
   color: var(--color-revisit-text-helper);
-  font-size: 16px;
-  line-height: 1.72;
-  word-break: keep-all;
 }
 
 /* 레거시 섹션 헤더도 같은 위계로 정제(미마이그레이션 섹션 일관성). */
-.clinic-shell .clinic-section-heading {
-  font-size: var(--clinic-type-h2);
-  font-weight: 800;
-  letter-spacing: -0.032em;
-  line-height: 1.24;
-}
 .clinic-shell .clinic-section-lede {
-  font-size: 16px;
-  line-height: 1.72;
   color: var(--color-revisit-text-helper);
 }
 .clinic-shell .clinic-section-label {
@@ -5977,9 +5628,6 @@ summary:focus-visible {
 }
 .clinic-qa-q {
   color: var(--color-revisit-text-title);
-  font-size: 22px;
-  font-weight: 700;
-  line-height: 1.42;
   letter-spacing: -0.022em;
   word-break: keep-all;
   transition: color 150ms ease;
@@ -6040,8 +5688,6 @@ summary:focus-visible {
 }
 .clinic-tx-desc {
   color: var(--color-revisit-text-helper);
-  font-size: 15px;
-  line-height: 1.66;
   word-break: keep-all;
 }
 .clinic-tx-arrow {
@@ -6064,27 +5710,16 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   font-size: 24px;
   letter-spacing: -0.025em;
 }
-.clinic-tx-row--lead .clinic-tx-desc {
-  font-size: 16px;
-  line-height: 1.72;
-}
 
 /* ══ 대표 글(홈) — 타이포 리드 + 컴팩트 행 ════════════════════════ */
 .clinic-lead {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
-  gap: 56px;
   align-items: start;
-}
-.clinic-lead--solo {
-  grid-template-columns: minmax(0, 760px);
 }
 .clinic-lead-primary {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 14px;
-  padding-right: 20px;
 }
 .clinic-lead-kicker {
   color: var(--color-revisit-primary-30);
@@ -6095,10 +5730,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 .clinic-lead-title {
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: var(--clinic-type-h3);
-  font-weight: 800;
-  line-height: 1.24;
-  letter-spacing: -0.032em;
   word-break: keep-all;
   transition: color 150ms ease;
 }
@@ -6108,17 +5739,13 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 .clinic-lead-summary {
   margin: 0;
   color: var(--color-revisit-text-helper);
-  font-size: 16px;
-  line-height: 1.72;
   word-break: keep-all;
 }
 .clinic-lead-meta {
   display: flex;
   align-items: center;
-  gap: 8px;
   margin-top: 4px;
   color: var(--color-revisit-text-caption);
-  font-size: 13px;
 }
 .clinic-lead-meta strong {
   color: var(--color-revisit-text-subbody);
@@ -6133,9 +5760,7 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 .clinic-lead-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px 16px;
   align-items: baseline;
-  padding: 16px 0;
   border-bottom: 1px solid var(--clinic-hair);
   color: inherit;
 }
@@ -6145,9 +5770,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 .clinic-lead-row-title {
   grid-column: 1 / -1;
   color: var(--color-revisit-text-title);
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1.5;
   letter-spacing: -0.01em;
   word-break: keep-all;
   transition: color 150ms ease;
@@ -6157,7 +5779,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 }
 .clinic-lead-row-date {
   color: var(--color-revisit-text-caption);
-  font-size: 13px;
   white-space: nowrap;
 }
 
@@ -6166,24 +5787,15 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 12px;
-  padding: 24px 22px 22px;
-  border: 1px solid var(--clinic-hair);
-  border-radius: 14px;
   background: #ffffff;
   overflow: visible;
 }
 .clinic-shell .clinic-content-card-title {
   margin: 0;
-  font-size: 18px;
-  font-weight: 700;
-  line-height: 1.44;
   letter-spacing: -0.02em;
 }
 .clinic-shell .clinic-content-card-summary {
   margin: 0;
-  font-size: 15px;
-  line-height: 1.62;
 }
 .clinic-shell .clinic-content-card-meta {
   margin-top: 2px;
@@ -6197,12 +5809,7 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 
 /* ══ 콘텐츠 목록 — 에디토리얼 피드 ════════════════════════════════ */
 .clinic-library-hero-note {
-  margin: 16px 0 0;
-  max-width: 640px;
   color: var(--color-revisit-text-helper);
-  font-size: 15px;
-  line-height: 1.72;
-  word-break: keep-all;
 }
 .clinic-shell .clinic-filter-chip {
   display: inline-flex;
@@ -6370,37 +5977,16 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 }
 
 /* ══ DoctorIntro — 에디토리얼 프로필 정제 ═════════════════════════ */
-.clinic-shell .clinic-curator-portrait {
-  border-radius: 16px;
-}
-.clinic-shell .clinic-curator-name {
-  font-size: var(--clinic-type-h3);
-  font-weight: 800;
-  letter-spacing: -0.025em;
-}
 .clinic-shell .clinic-curator-meta {
   border-top: 1px solid var(--clinic-hair);
-  padding-top: 22px;
 }
 
 /* ══ Article — 독서 경험 ══════════════════════════════════════════ */
-.clinic-shell .clinic-article {
-  border: 1px solid var(--clinic-hair);
-  border-radius: 16px;
-  background: #ffffff;
-}
-.clinic-shell .clinic-article-header {
-  padding: 44px 48px 0;
-}
 .clinic-shell .clinic-article-type {
   color: var(--color-revisit-primary-30);
   font-weight: 700;
 }
 .clinic-shell .clinic-article-title {
-  font-size: 40px;
-  font-weight: 800;
-  line-height: 1.2;
-  letter-spacing: -0.035em;
   max-width: 22ch;
 }
 /* 메타 표 → 컴팩트 인라인 행 (테두리 박스 그리드 제거) */
@@ -6438,11 +6024,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 }
 /* 핵심 답변 콜아웃 — 절제된 카드 */
 .clinic-shell .clinic-article-tldr {
-  margin: 24px 48px 4px;
-  padding: 22px 26px;
-  border: 1px solid var(--clinic-hair);
-  border-left: 3px solid var(--color-revisit-primary-40);
-  border-radius: 8px;
   background: var(--color-revisit-primary-95);
 }
 .clinic-shell .clinic-article-tldr-eyebrow {
@@ -6455,18 +6036,7 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   line-height: 1.75;
 }
 /* 본문 — 측정폭 ~680px, 17px, 1.8 리딩 */
-.clinic-shell .clinic-article-body {
-  padding: 34px 48px 52px;
-  max-width: none;
-  font-size: 17px;
-  line-height: 1.8;
-}
-.clinic-shell .clinic-article-body > * {
-  max-width: 680px;
-}
 .clinic-shell .clinic-article-body > p:first-of-type {
-  font-size: 18px;
-  line-height: 1.78;
   color: var(--color-revisit-text-title);
   font-weight: 500;
 }
@@ -6476,8 +6046,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   margin-top: 48px;
   margin-bottom: 16px;
   padding-top: 20px;
-  font-size: 23px;
-  font-weight: 800;
   letter-spacing: -0.025em;
   border-top: 1px solid var(--clinic-hair);
 }
@@ -6491,14 +6059,10 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   background: var(--color-revisit-primary-40);
 }
 .clinic-shell .clinic-article-body h3 {
-  font-size: 18px;
   margin-top: 32px;
 }
 .clinic-shell .clinic-article-body p {
   margin: 0 0 18px;
-}
-.clinic-shell .clinic-article-faq {
-  padding: 0 48px;
 }
 .clinic-shell .clinic-article-faq dt,
 .clinic-shell .clinic-article-faq dd {
@@ -6506,10 +6070,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   line-height: 1.8;
 }
 /* 참고 자료 — 각주형 카드 */
-.clinic-shell .clinic-article-references {
-  margin: 8px 48px 0;
-  padding: 26px 0 8px;
-}
 .clinic-shell .clinic-article-references ol {
   padding-left: 0;
   list-style: none;
@@ -6578,29 +6138,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   color: var(--color-revisit-primary-30);
 }
 
-@media (max-width: 720px) {
-  .clinic-shell .clinic-article-header,
-  .clinic-shell .clinic-article-body,
-  .clinic-shell .clinic-article-faq {
-    padding-left: 22px;
-    padding-right: 22px;
-  }
-  .clinic-shell .clinic-article-tldr {
-    margin-left: 22px;
-    margin-right: 22px;
-  }
-  .clinic-shell .clinic-article-references {
-    margin-left: 22px;
-    margin-right: 22px;
-  }
-  .clinic-shell .clinic-article-title {
-    font-size: 27px;
-  }
-  .clinic-shell .clinic-article-body {
-    font-size: 17px;
-  }
-}
-
 /* ══ 반응형 — 신규 에디토리얼 컴포넌트 ════════════════════════════ */
 @media (max-width: 920px) {
   .clinic-shell .clinic-hero--hub .clinic-hero-inner {
@@ -6609,13 +6146,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   }
   .clinic-shell .clinic-hero-card {
     position: static;
-  }
-  .clinic-lead {
-    grid-template-columns: 1fr;
-    gap: 36px;
-  }
-  .clinic-lead-primary {
-    padding-right: 0;
   }
 }
 
@@ -6633,10 +6163,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
     font-size: 18px;
   }
   /* h2·h3 크기는 :root의 위계 토큰이 화면 폭에 따라 바꾼다. */
-  .clinic-shell .clinic-section-note,
-  .clinic-shell .clinic-section-lede {
-    font-size: 16px;
-  }
   .clinic-qa-link {
     grid-template-columns: minmax(0, 1fr) 20px;
     gap: 14px;
@@ -6644,9 +6170,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   }
   .clinic-qa-index {
     display: none;
-  }
-  .clinic-qa-q {
-    font-size: 19px;
   }
   .clinic-tx-row,
   .clinic-tx-row--lead {
@@ -6744,11 +6267,8 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 
 /* ── 기본 정보 — 주간 진료시간 캘린더(오늘 강조) + 핵심 팩트 ───────── */
 .clinic-week {
-  border: 1px solid var(--clinic-hair-strong);
-  border-radius: 16px;
   background: #ffffff;
   overflow: hidden;
-  margin-bottom: 16px;
 }
 .clinic-week-head {
   display: flex;
@@ -6765,7 +6285,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 }
 .clinic-week-today-hint {
   margin-left: auto;
-  font-size: 12px;
   font-weight: 700;
   color: var(--color-revisit-primary-30);
 }
@@ -6783,23 +6302,18 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   align-items: center;
   gap: 8px;
   padding: 15px 6px;
-  border: 1px solid var(--clinic-hair);
-  border-radius: 12px;
   background: var(--clinic-paper);
   min-width: 0;
 }
 .clinic-week-day-label {
-  font-size: 13px;
   font-weight: 700;
   color: var(--color-revisit-text-helper);
 }
 .clinic-week-day-time {
-  font-size: 13px;
   font-weight: 700;
   color: var(--color-revisit-text-title);
   font-variant-numeric: tabular-nums;
   text-align: center;
-  line-height: 1.4;
   word-break: keep-all;
 }
 .clinic-week-day.is-today {
@@ -6823,8 +6337,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   padding: 14px 20px;
   border-top: 1px solid var(--clinic-hair);
   background: var(--color-revisit-coolgrey-95);
-  font-size: 13px;
-  line-height: 1.6;
   color: var(--color-revisit-text-helper);
   word-break: keep-all;
 }
@@ -6843,7 +6355,6 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   border: 1px solid var(--clinic-hair);
   border-radius: 12px;
   overflow: hidden;
-  font-size: 15px;
   line-height: 1.6;
 }
 .clinic-hours-caption {
@@ -6858,13 +6369,11 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
 }
 .clinic-hours-table th,
 .clinic-hours-table td {
-  padding: 13px 20px;
   text-align: left;
   border-bottom: 1px solid var(--clinic-hair);
 }
 .clinic-hours-table thead th {
   background: var(--color-revisit-coolgrey-95);
-  font-size: 13px;
   font-weight: 700;
   color: var(--color-revisit-text-helper);
   letter-spacing: 0.02em;
@@ -6895,25 +6404,13 @@ a.clinic-tx-row:hover .clinic-tx-arrow {
   color: var(--color-revisit-primary-40);
   font-weight: 700;
 }
-@media (max-width: 640px) {
-  .clinic-hours-table th,
-  .clinic-hours-table td {
-    padding: 11px 14px;
-    font-size: 14px;
-  }
-}
 .clinic-keyfacts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
 }
 .clinic-keyfact {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 22px;
-  border: 1px solid var(--clinic-hair);
-  border-radius: 14px;
   background: #ffffff;
   transition: border-color 150ms ease;
 }
@@ -6936,7 +6433,6 @@ a.clinic-keyfact:hover {
   height: 18px;
 }
 .clinic-keyfact-label {
-  font-size: 12px;
   font-weight: 700;
   color: var(--color-revisit-text-caption);
 }
@@ -6951,7 +6447,6 @@ a.clinic-keyfact:hover {
   color: var(--color-revisit-primary-40);
 }
 .clinic-keyfact-sub {
-  font-size: 13px;
   color: var(--color-revisit-text-helper);
 }
 .clinic-keyfact-link {
@@ -7014,8 +6509,6 @@ a.clinic-keyfact:hover {
 .clinic-principles-statement {
   margin: 14px 0 0;
   color: var(--color-revisit-text-subbody);
-  font-size: 16px;
-  line-height: 1.72;
   word-break: keep-all;
 }
 .clinic-shell .clinic-belief-grid {
@@ -7204,14 +6697,7 @@ a.clinic-keyfact:hover {
   gap: 14px;
 }
 .clinic-tx-card {
-  display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 26px 24px;
-  border: 1px solid var(--clinic-hair);
-  border-radius: 16px;
-  background: #ffffff;
   transition: border-color 150ms ease;
 }
 a.clinic-tx-card:hover {
@@ -7219,17 +6705,11 @@ a.clinic-tx-card:hover {
 }
 .clinic-tx-card-index {
   color: var(--color-revisit-primary-40);
-  font-size: 13px;
-  font-weight: 800;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.04em;
 }
 .clinic-tx-card-name {
   color: var(--color-revisit-text-title);
-  font-size: 19px;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-  line-height: 1.35;
   word-break: keep-all;
 }
 .clinic-tx-card-desc {
@@ -7246,7 +6726,6 @@ a.clinic-tx-card:hover {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 4px;
   color: var(--color-revisit-primary-30);
   font-size: 13px;
   font-weight: 700;
@@ -7311,18 +6790,9 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 /* ── 의료진 — 대형 프로필(실제 일러스트/모노그램) ─────────────────── */
-.clinic-shell .clinic-curator {
-  grid-template-columns: 260px minmax(0, 1fr);
-  gap: 48px;
-  align-items: start;
-}
 .clinic-curator-figure {
-  display: flex;
   flex-direction: column;
   gap: 18px;
-}
-.clinic-shell .clinic-curator-figure .clinic-curator-portrait {
-  width: 100%;
 }
 .clinic-curator-identity {
   display: flex;
@@ -7331,20 +6801,11 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 .clinic-curator-role {
   color: var(--color-revisit-primary-30);
-  font-size: 14px;
   font-weight: 700;
 }
-.clinic-curator-body {
-  min-width: 0;
-}
 @media (max-width: 720px) {
-  .clinic-shell .clinic-curator {
-    grid-template-columns: 1fr;
-    gap: 24px;
-  }
   /* figure에는 사진만 남았다 — 나란히 놓을 형제가 없으므로 행 배치가 필요 없다. */
   .clinic-shell .clinic-curator-figure .clinic-curator-portrait {
-    width: 116px;
     flex-shrink: 0;
   }
 }
@@ -7354,8 +6815,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   position: relative;
   width: 100%;
   overflow: hidden;
-  border-radius: 14px;
-  border: 1px solid var(--clinic-line);
   background: var(--color-revisit-primary-95);
   color: var(--color-revisit-primary-40);
   --brand-ink-2: var(--clinic-brand-veil);
@@ -7432,8 +6891,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-visit-actions {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
 }
 .clinic-visit-action {
   display: flex;
@@ -7473,7 +6930,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--clinic-on-brand);
 }
 .clinic-visit-action--primary small {
-  color: rgba(255, 255, 255, 0.82);
+  /* Small text must retain the theme-computed contrast, not a translucent white. */
+  color: var(--clinic-on-brand);
 }
 .clinic-visit-action--primary:hover {
   background: var(--color-revisit-primary-30);
@@ -7482,7 +6940,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-visit-body {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr);
-  gap: 14px;
   margin-bottom: 28px;
 }
 .clinic-visit-location {
@@ -7490,9 +6947,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   flex-direction: column;
   align-items: flex-start;
   gap: 7px;
-  padding: 26px 24px;
-  border: 1px solid var(--clinic-hair);
-  border-radius: 16px;
   background: #ffffff;
 }
 .clinic-visit-location-pin {
@@ -7569,8 +7023,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--color-revisit-text-title);
 }
 .clinic-visit-check-body {
-  font-size: 14px;
-  line-height: 1.6;
   color: var(--color-revisit-text-helper);
   word-break: keep-all;
 }
@@ -7644,7 +7096,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   margin-bottom: 8px;
   font-size: 12px;
   font-weight: 700;
-  color: var(--color-revisit-coolgrey-50);
+  color: var(--color-revisit-coolgrey-60);
   letter-spacing: 0.03em;
 }
 .clinic-footer-site {
@@ -7665,7 +7117,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-footer-copy {
   margin: 0;
   font-size: 12px;
-  color: var(--color-revisit-coolgrey-50);
+  color: var(--color-revisit-coolgrey-60);
 }
 @media (max-width: 640px) {
   .clinic-footer-cols {
@@ -7680,9 +7132,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   margin: 0 0 4px;
   border-bottom: 0;
   background: transparent;
-}
-.clinic-article-cover .clinic-cover {
-  border-radius: 14px;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -7747,24 +7196,14 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-bottom-color: var(--clinic-line);
 }
 
-.clinic-header-row {
-  max-width: var(--clinic-shell-max);
-  min-height: 72px;
-  padding: 0 var(--clinic-rail);
-}
-
 .clinic-header-brand-name {
   color: var(--clinic-ink);
-  font-size: 21px;
-  font-weight: 800;
   letter-spacing: -0.03em;
 }
 
 .clinic-header-brand-logo {
   display: block;
   width: auto;
-  max-width: 160px;
-  height: 40px;
   object-fit: contain;
   object-position: left center;
 }
@@ -7774,10 +7213,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-header-nav {
-  gap: 34px;
-  margin-left: auto;
-  margin-right: 34px;
-  font-size: 14px;
   font-weight: var(--weight-bold);
 }
 
@@ -7786,17 +7221,12 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-header-cta {
-  gap: 8px;
-  padding: 0;
   border-radius: 0;
   background: transparent;
   color: var(--clinic-brand-action);
-  font-size: 13px;
 }
 
 .clinic-header-cta strong {
-  font-size: 16px;
-  font-weight: 800;
   font-variant-numeric: tabular-nums;
 }
 
@@ -7812,11 +7242,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-hero-editorial-grid {
-  display: grid;
-  grid-template-columns: minmax(420px, 46%) minmax(0, 54%);
-  max-width: var(--clinic-shell-max);
-  min-height: 580px;
-  margin: 0 auto;
   background: var(--clinic-paper);
 }
 
@@ -7826,62 +7251,16 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
    **폭은 100vw가 아니라 컨테이너 100%에서 나눠 갖는다**: 첫 컬럼만 화면 기준으로
    계산하고 남은 자리를 1fr이 받으므로, 스크롤바 폭만큼 어긋나도 가로 스크롤이
    생기지 않는다. 카피의 좌측 정렬선과 글줄 폭은 아래 위 섹션과 그대로 같다. */
-@media (min-width: 1297px) {
-  .clinic-hero-editorial-grid {
-    max-width: none;
-    grid-template-columns:
-      minmax(0, calc((100vw - var(--clinic-max)) / 2 + var(--clinic-max) * 0.46))
-      minmax(0, 1fr);
-  }
-
-  .clinic-hero-editorial-copy {
-    padding-left: calc((100vw - var(--clinic-max)) / 2);
-  }
-
-  /* 사진이 없어 1컬럼으로 떨어질 때는 다시 기준선 컨테이너로 돌아온다. */
-  .clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) {
-    max-width: var(--clinic-shell-max);
-  }
-
-  .clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty)
-    .clinic-hero-editorial-copy {
-    padding-left: var(--clinic-rail);
-  }
-}
-
-.clinic-hero-editorial-copy {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  /* 좌측 여백은 **상수**여야 한다. 그리드가 이미 `max-width`로 가운데 정렬돼 있어서,
-     여기에 `(100vw - 콘텐츠폭) / 2`를 더하면 센터링 오프셋을 두 번 센다. 컬럼 폭은
-     고정인데 여백만 화면을 따라 자라서 그리드 폭을 넘는 순간부터 본문이 깎이고
-     2400px에서 50px(한 글자), 2500px에서 0이 됐다.
-     .clinic-hero-fact-rail·헤더 행과 같은 레일을 쓰므로 첫 화면 문장의 좌측 정렬선이
-     아래 섹션들과 정확히 맞는다. */
-  padding: 68px 56px 72px var(--clinic-rail);
-}
 
 .clinic-hero-editorial-kicker {
-  margin-bottom: 26px;
   color: var(--clinic-brand-action);
-  font-size: 13px;
-  font-weight: var(--weight-bold);
-  letter-spacing: 0.02em;
 }
 
 /* 조각을 블록으로 쌓으면 조각 수가 곧 줄 수가 된다 — 병원명·진료과 길이와 무관하게
    항상 세 줄이 나오고, 마지막 줄이 한 단어만 남는 조합도 생겼다. 조각은 문장 안에
    흐르게 두고 줄바꿈은 `text-wrap: balance`가 폭에 맞춰 정한다 (P-A-4). */
 .clinic-hero-editorial-title {
-  margin: 0;
   color: var(--clinic-ink);
-  font-size: clamp(39px, 3.25vw, 54px);
-  font-weight: 800;
-  line-height: 1.12;
-  letter-spacing: -0.052em;
-  word-break: keep-all;
-  text-wrap: balance;
 }
 
 .clinic-hero-editorial-title span,
@@ -7894,11 +7273,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-hero-editorial-lede {
-  max-width: 34ch;
-  margin: 30px 0 0;
   color: var(--color-revisit-text-helper);
-  font-size: 17px;
-  line-height: 1.75;
   letter-spacing: -0.015em;
   word-break: keep-all;
 }
@@ -7913,15 +7288,10 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-hero-editorial-actions {
   display: flex;
-  gap: 12px;
-  margin-top: 34px;
 }
 
 .clinic-hero-editorial-actions .clinic-btn {
-  min-width: 154px;
-  min-height: 54px;
   justify-content: center;
-  font-size: 15px;
 }
 
 .clinic-hero-editorial-actions .clinic-btn-cta {
@@ -7944,13 +7314,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
    당겨 잘리는 양을 줄인다. 높이는 좌측 카피 높이에 맞춰 늘어난다. */
 .clinic-hero-editorial-photo {
   position: relative;
-  min-width: 0;
   /* 높이는 컬럼 폭에서 파생시킨다. min-height와 aspect-ratio를 같이 주면 높이가 폭을
      역산해 그리드 트랙보다 넓어지고, 그대로 가로 스크롤이 생긴다. */
-  width: 100%;
-  min-height: 0;
-  aspect-ratio: 16 / 10;
-  align-self: center;
   overflow: hidden;
   background: var(--color-revisit-coolgrey-90);
 }
@@ -7958,20 +7323,10 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 /* 사진이 없으면 오른쪽 절반을 회색 상자로 채우지 않는다 — 환자에게는 준비가 덜 된
    화면으로 읽히고, 실제로 그 자리에 담을 사실이 없다(S-8). 카피가 폭을 다 쓰는
    1컬럼으로 떨어뜨리는 편이 정보 밀도도 높고 의도적으로 보인다. */
-.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) {
-  grid-template-columns: minmax(0, 1fr);
-  min-height: 0;
-}
 
 .clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty)
   .clinic-hero-editorial-photo {
   display: none;
-}
-
-.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty)
-  .clinic-hero-editorial-copy {
-  max-width: 46rem;
-  padding-block: 76px;
 }
 
 .clinic-hero-editorial-photo.is-empty {
@@ -7979,7 +7334,13 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   background: var(--clinic-brand-soft);
 }
 
-.clinic-hero-editorial-image,
+.clinic-hero-editorial-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 48%;
+}
+
 .clinic-hero-editorial-avatar,
 .clinic-hero-editorial-avatar img {
   width: 100%;
@@ -7991,16 +7352,12 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 /* Provenance-aware media treatment: graphics are presented as graphics, never cropped to
    impersonate documentary clinic photography. */
 .clinic-hero--media-brand-graphic .clinic-hero-editorial-photo {
-  margin: clamp(28px, 4vw, 64px);
-  min-height: 0;
-  border: 1px solid var(--clinic-line);
   background: var(--clinic-brand-soft);
 }
 
 .clinic-hero--media-brand-graphic .clinic-hero-editorial-image {
   object-fit: contain;
   object-position: center;
-  padding: clamp(24px, 5vw, 72px);
 }
 
 .clinic-hero--media-verified-real .clinic-hero-editorial-image {
@@ -8025,7 +7382,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-hero--access-urgent .clinic-hero-fact-rail > div:first-child dd {
   color: var(--clinic-brand-action);
-  font-size: 15px;
 }
 
 .clinic-hero-editorial-avatar {
@@ -8071,32 +7427,10 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-hero-fact-rail {
   display: grid;
-  grid-template-columns: 1fr 1fr 1.65fr 1fr;
-  max-width: var(--clinic-shell-max);
-  margin: 0 auto;
-  padding: 0 var(--clinic-rail);
-  border-top: 1px solid var(--clinic-line);
-  border-bottom: 1px solid var(--clinic-line);
-  background: var(--clinic-paper);
 }
 
 .clinic-hero-fact-rail > div {
   display: grid;
-  grid-template-columns: 28px auto minmax(0, 1fr);
-  gap: 8px;
-  align-items: center;
-  min-height: 92px;
-  padding: 18px 24px;
-  border-right: 1px solid var(--clinic-line);
-}
-
-.clinic-hero-fact-rail > div:first-child {
-  padding-left: 0;
-}
-
-.clinic-hero-fact-rail > div:last-child {
-  padding-right: 0;
-  border-right: 0;
 }
 
 .clinic-hero-fact-rail .clinic-icon {
@@ -8107,19 +7441,12 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-hero-fact-rail dt {
-  grid-column: 2 / -1;
   color: var(--color-revisit-text-caption);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .clinic-hero-fact-rail dd {
-  grid-column: 2 / -1;
   margin: 0;
   color: var(--color-revisit-text-title);
-  font-size: 14px;
-  font-weight: var(--weight-bold);
-  line-height: 1.45;
   word-break: keep-all;
 }
 
@@ -8138,12 +7465,7 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
    전에는 이 섹션만 히어로의 레일 체계(1296 + 48 rail)를 빌려 써서, 텍스트 정렬선은
    같아도 DOM 박스가 1296 vs 1200으로 어긋났고 중간 폭에서는 본문 폭까지 달라졌다. */
 .clinic-treatment-directory {
-  padding: var(--clinic-section-y) var(--clinic-section-x);
   background: var(--clinic-paper);
-}
-
-.clinic-treatment-directory .clinic-section-inner {
-  display: block;
 }
 
 .clinic-treatment-directory-head {
@@ -8152,25 +7474,18 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-treatment-directory .clinic-section-title {
   color: var(--clinic-ink);
-  font-size: var(--clinic-type-h2);
 }
 
 .clinic-tx-directory-more {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  margin-top: 20px;
   color: var(--clinic-brand-action);
-  font-size: 14px;
   font-weight: var(--clinic-control-weight);
 }
 
 .clinic-tx-directory-more:hover {
   color: var(--clinic-brand-hover);
-}
-
-.clinic-treatment-directory .clinic-section-note {
-  font-size: 15px;
 }
 
 .clinic-treatment-directory .clinic-tx-cards,
@@ -8180,54 +7495,22 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 /* 열 수는 항목 수에서 온다(P-C-1). 4열로 고정하면 진료 항목이 1~3개인 병원에서
    테두리만 있는 빈 칸이 남아, 아직 채우지 못한 자리처럼 보였다. */
-.clinic-tx-directory {
-  grid-template-columns: repeat(var(--clinic-tx-columns, 4), minmax(0, 1fr));
-  gap: 0;
-  border-top: 0;
-}
 
 .clinic-tx-directory .clinic-tx-card {
   position: relative;
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 24px;
-  gap: 16px;
-  align-items: center;
-  min-height: 94px;
-  padding: 24px 28px;
-  border: 0;
-  border-bottom: 1px solid var(--clinic-line);
-  border-radius: 0;
-  background: transparent;
-}
-
-.clinic-tx-directory .clinic-tx-card + .clinic-tx-card {
-  border-left: 1px solid var(--clinic-line);
 }
 
 /* 카드 번호는 대표색을 한 번 더 쓰기보다 승인된 보조색을 쓴다(P-B-7). 글자이므로
    종이 대비를 통과한 단계(--clinic-accent-strong)를 쓴다. */
 .clinic-tx-directory .clinic-tx-card-index {
   color: var(--clinic-accent-strong, var(--clinic-brand-action));
-  font-size: 15px;
 }
 
 .clinic-tx-directory .clinic-tx-card-name {
   color: var(--color-revisit-text-title);
-  font-size: 21px;
-  font-weight: 800;
-}
-
-.clinic-tx-directory .clinic-tx-card-desc--supporting {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
 }
 
 .clinic-tx-directory .clinic-tx-card-more {
-  grid-column: 3;
-  margin: 0;
   color: var(--color-revisit-text-title);
 }
 
@@ -8241,16 +7524,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 /* 이름 블록이 우측 컬럼 맨 위로 올라왔으므로(DoctorIntro), 두 컬럼은 위에서 맞춰야
    한다. `center`로 두면 짧은 쪽이 아래로 밀려 사진 상단이 텍스트 없이 비었다. */
-.clinic-shell .clinic-curator {
-  grid-template-columns: minmax(300px, 0.72fr) minmax(0, 1.28fr);
-  gap: 76px;
-  align-items: start;
-}
 
 .clinic-shell .clinic-curator-figure .clinic-curator-portrait {
-  aspect-ratio: 4 / 4.85;
-  border: 0;
-  border-radius: 4px;
   background: var(--color-revisit-coolgrey-90);
 }
 
@@ -8260,10 +7535,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 /* 우측 컬럼 첫 블록 — 아래 태그행과 붙지 않게 간격을 준다. */
-.clinic-curator-identity {
-  padding-top: 2px;
-  margin-bottom: 20px;
-}
 
 .clinic-curator-eyebrow {
   color: var(--clinic-brand-action);
@@ -8272,21 +7543,14 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-shell .clinic-curator-name {
   color: var(--clinic-ink);
-  font-size: var(--clinic-type-h3);
-  letter-spacing: -0.045em;
 }
 
 .clinic-shell .clinic-curator-name small {
-  font-size: 20px;
   color: var(--color-revisit-text-subbody);
 }
 
 .clinic-curator-role {
   color: var(--clinic-brand-action);
-}
-
-.clinic-curator-tag-row {
-  margin-bottom: 24px;
 }
 
 .clinic-curator-tag {
@@ -8298,18 +7562,11 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-curator-career {
-  max-width: 62ch;
   color: var(--color-revisit-text-subbody);
-  font-size: 16px;
-  line-height: 1.82;
 }
 
 .clinic-curator-credentials {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 32px;
-  margin-top: 30px;
-  padding-top: 24px;
   border-top: 1px solid var(--clinic-line);
 }
 
@@ -8317,28 +7574,12 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   padding: 0;
   background: transparent;
   color: var(--color-revisit-text-subbody);
-  line-height: 1.65;
-}
-
-.clinic-curator-meta {
-  gap: 0;
-  margin-top: 28px;
-}
-
-.clinic-curator-meta-cell {
-  padding-right: 18px;
-  border-right: 1px solid var(--clinic-line);
-}
-
-.clinic-curator-meta-cell:last-child {
-  border-right: 0;
 }
 
 .clinic-gallery-summary {
   max-width: 52ch;
   margin: 18px 0 0;
   color: var(--color-revisit-text-helper);
-  font-size: 13px;
   line-height: 1.6;
 }
 
@@ -8351,48 +7592,39 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-faq-item {
-  padding: 24px 0;
   border-bottom: 1px solid var(--clinic-line);
 }
 
 .clinic-faq-question {
   color: var(--color-revisit-text-title);
-  font-size: 18px;
-  font-weight: var(--weight-bold);
-  line-height: 1.5;
   word-break: keep-all;
-}
-
-.clinic-faq-answer {
-  margin: 10px 0 0;
 }
 
 .clinic-faq-answer p {
   max-width: 68ch;
   margin: 0;
   color: var(--color-revisit-text-subbody);
-  font-size: 15px;
-  line-height: 1.78;
   word-break: keep-all;
 }
 
-.clinic-faq-more,
+.clinic-faq-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--clinic-brand-action);
+  font-weight: var(--clinic-control-weight);
+}
+
 .clinic-faq-all {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   color: var(--clinic-brand-action);
-  font-size: 14px;
   font-weight: var(--clinic-control-weight);
 }
 
 .clinic-faq-more {
   margin-top: 10px;
-  font-size: 13px;
-}
-
-.clinic-faq-all {
-  margin-top: 24px;
 }
 
 .clinic-faq-more:hover,
@@ -8448,125 +7680,32 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   margin-top: 32px;
 }
 
-@media (max-width: 720px) {
-  .clinic-treatment-empty-actions .clinic-btn {
-    flex: 1 1 100%;
-  }
-}
-
-@media (max-width: 1080px) {
-  .clinic-header-row {
-    padding-inline: 28px;
-  }
-  .clinic-header-nav {
-    gap: 20px;
-    margin-right: 20px;
-  }
-  .clinic-hero-editorial-copy {
-    padding-left: 36px;
-    padding-right: 36px;
-  }
-  /* 첫 화면 문장과 팩트 레일은 같은 정렬선에 서야 한다 — 여기서 36 대 28로 갈려
-     레일만 8px 왼쪽으로 튀어나왔다(S-4). */
-  .clinic-hero-fact-rail {
-    padding-inline: 36px;
-  }
-}
-
 /* 전화번호는 병원 사이트의 전환 요소다. 1080px에서 숨기면 노트북 대부분에서
    번호가 사라진다 — 그 폭에는 아직 여백이 있다. 정말 좁아지는 구간까지 남긴다(S-5). */
-@media (max-width: 900px) {
-  .clinic-header-cta strong {
-    display: none;
-  }
-}
 
 @media (max-width: 920px) {
-  .clinic-hero-editorial-grid,
-  .clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) {
-    grid-template-columns: 1fr;
-    min-height: 0;
-  }
-  .clinic-hero-editorial-copy {
-    min-height: 500px;
-    padding: 68px 40px;
-  }
-  .clinic-hero-editorial-photo {
-    min-height: 480px;
-  }
   .clinic-hero-editorial-photo.is-empty {
     min-height: 260px;
   }
-  .clinic-hero-fact-rail {
-    grid-template-columns: 1fr 1fr;
-  }
-  .clinic-hero-fact-rail > div {
-    border-bottom: 1px solid var(--clinic-line);
-  }
-  .clinic-tx-directory {
-    grid-template-columns: repeat(var(--clinic-tx-columns-md, 2), minmax(0, 1fr));
-  }
-  .clinic-tx-directory .clinic-tx-card:nth-child(3) {
-    border-left: 0;
-  }
 }
 
 @media (max-width: 720px) {
-  .clinic-header-row {
-    min-height: 60px;
-    padding: 0 16px;
-  }
-  .clinic-header-brand-name {
-    font-size: 17px;
-  }
   .clinic-header-cta span {
     font-size: 13px;
   }
   .clinic-header-nav-mobile {
-    gap: 20px;
-    padding: 0 16px;
     border-top: 0;
     border-bottom: 1px solid var(--clinic-line);
     -webkit-mask-image: none;
     mask-image: none;
   }
   .clinic-header-nav-mobile a {
-    padding: 12px 0;
     border: 0;
     border-radius: 0;
     background: transparent;
-    font-size: 13px;
   }
   .clinic-header-nav-mobile .clinic-header-external-link {
     display: none !important;
-  }
-  .clinic-hero-editorial-copy {
-    min-height: 390px;
-    padding: 44px 22px 40px;
-  }
-  .clinic-hero-editorial-kicker {
-    margin-bottom: 18px;
-    font-size: 12px;
-  }
-  .clinic-hero-editorial-title {
-    font-size: clamp(31px, 8.8vw, 36px);
-    line-height: 1.14;
-  }
-  .clinic-hero-editorial-lede {
-    margin-top: 22px;
-    font-size: 16px;
-    line-height: 1.68;
-  }
-  .clinic-hero-editorial-actions {
-    margin-top: 28px;
-  }
-  .clinic-hero-editorial-actions .clinic-btn {
-    min-width: 0;
-    flex: 1;
-    min-height: 50px;
-  }
-  .clinic-hero-editorial-photo {
-    min-height: 300px;
   }
   .clinic-hero-editorial-photo.is-empty {
     min-height: 220px;
@@ -8582,84 +7721,18 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   .clinic-hero-editorial-image {
     object-position: 54% center;
   }
-  .clinic-hero-fact-rail {
-    padding: 0 16px;
-  }
-  .clinic-hero-fact-rail > div,
-  .clinic-hero-fact-rail > div:first-child,
-  .clinic-hero-fact-rail > div:last-child {
-    min-height: 84px;
-    padding: 14px 12px;
-  }
-  .clinic-hero-fact-rail > div:nth-child(even) {
-    border-right: 0;
-  }
   .clinic-hero-fact-rail-address dd {
-    display: -webkit-box;
     -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow: hidden;
-  }
-  .clinic-treatment-directory .clinic-section-inner {
-    padding: 0 16px;
-  }
-  .clinic-tx-directory {
-    grid-template-columns: 1fr;
-  }
-  .clinic-tx-directory .clinic-tx-card,
-  .clinic-tx-directory .clinic-tx-card:nth-child(odd),
-  .clinic-tx-directory .clinic-tx-card:nth-child(even) {
-    grid-template-columns: 38px minmax(0, 1fr) 22px;
-    min-height: 92px;
-    padding: 20px 4px;
-    border-left: 0;
-  }
-  .clinic-tx-directory .clinic-tx-card-name {
-    font-size: 19px;
-  }
-  .clinic-shell .clinic-curator {
-    grid-template-columns: 1fr;
-    gap: 28px;
   }
   /* 이름 블록이 우측(본문) 컬럼으로 옮겨간 뒤로 figure 안에는 사진만 남는다 —
      2열 그리드로 두면 두 번째 칸이 빈 채로 폭을 먹는다. */
-  .clinic-curator-figure {
-    display: block;
-  }
-  .clinic-shell .clinic-curator-figure .clinic-curator-portrait {
-    width: 132px;
-    aspect-ratio: 4 / 5;
-  }
-  .clinic-curator-credentials {
-    grid-template-columns: 1fr;
-    gap: 22px;
-  }
-  .clinic-curator-meta {
-    grid-template-columns: 1fr 1fr;
-    gap: 18px;
-  }
-  .clinic-curator-meta-cell {
-    border-right: 0;
-  }
 
   .clinic-section-index {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    padding: 0 16px;
-  }
-
-  .clinic-section-index a {
-    min-height: 46px;
-    border-bottom: 1px solid #ececea;
-    font-size: 13px;
   }
 
   .clinic-section-index a:nth-child(4) {
     grid-column: 1 / 2;
-  }
-
-  .clinic-article-toc {
-    margin-left: 22px;
-    margin-right: 22px;
   }
 
   .clinic-article-toc ol {
@@ -9611,10 +8684,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 /* 칸 사이 진행 방향. 첫 칸 앞에는 붙지 않는다. */
 
-@media (max-width: 760px) {
-  /* 다섯 칸을 가로로 두면 글자가 부서진다. 세로로 세우고 화살표를 아래로 돌린다. */
-}
-
 /* ── 요금제 ──────────────────────────────────────────────────────────
    같은 카테고리 국내 16곳 중 가격을 공개하는 곳은 둘뿐이다. 표로 적어 두는 것
    자체가 차별화이므로 장식 없이 값이 바로 읽히게 둔다. */
@@ -9752,19 +8821,13 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 .clinic-shell .clinic-curator-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 40px;
 }
 
 /* 한 명 — 기존 인물 중심 분할(초상 좌 · 약력 우)을 그대로 쓴다. */
-.clinic-shell .clinic-curator-grid--solo .clinic-curator {
-  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
-  gap: 72px;
-}
 
 /* 두세 명은 2열, 네 명 이상은 3열. 좁아진 칸에서 좌우 분할을 유지하면 사진도 글도
    둘 다 읽히지 않으므로, 카드 안은 초상 위 · 이름 아래로 쌓는다. */
 .clinic-shell .clinic-curator-grid--pair {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 32px;
   /* 카드를 늘려 높이를 맞추면 약력이 짧은 사람의 카드 아래쪽이 빈 면으로 남는다 —
      테두리만 있는 그 면은 아직 채우지 못한 자리처럼 읽힌다. */
@@ -9772,7 +8835,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 .clinic-shell .clinic-curator-grid--grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 28px;
   align-items: start;
 }
@@ -9783,41 +8845,11 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   border-right: 0;
 }
 
-.clinic-shell .clinic-curator-grid--pair .clinic-curator,
-.clinic-shell .clinic-curator-grid--grid .clinic-curator {
-  grid-template-columns: minmax(0, 1fr);
-  gap: 18px;
-  padding: 18px;
-  border: 1px solid var(--clinic-line);
-  border-radius: 4px;
-  background: var(--clinic-paper);
-}
-
 /* 초상은 4:5 고정 — 카드마다 높이가 달라지면 이름 줄이 어긋나 목록으로 읽히지 않는다. */
-.clinic-shell .clinic-curator-grid--pair .clinic-curator-portrait,
-.clinic-shell .clinic-curator-grid--grid .clinic-curator-portrait {
-  width: 100%;
-  aspect-ratio: 4 / 5;
-}
 
 /* 두세 명일 때는 칸이 넓다 — 초상을 카드 폭만큼 키우면 4:5가 690px까지 자라서 사진
    한 장이 카드 전체를 차지하고 이름·자격은 접힌 아래로 밀린다. 카드 안을 다시
    좌우로 나눠 사진과 사실이 같은 높이에서 시작하게 한다. */
-@media (min-width: 900px) {
-  .clinic-shell .clinic-curator-grid--pair .clinic-curator {
-    grid-template-columns: 200px minmax(0, 1fr);
-    gap: 24px;
-    padding: 22px;
-  }
-
-  .clinic-shell .clinic-curator-grid--pair .clinic-curator-portrait {
-    width: 200px;
-  }
-}
-
-.clinic-shell .clinic-curator-name {
-  font-weight: 600;
-}
 
 /* 존칭 앞 공백은 이미 텍스트가 갖고 있다 — 마진까지 더하면 이름과 존칭이 두 낱말처럼
    벌어진다. */
@@ -9827,15 +8859,11 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 
 .clinic-shell .clinic-curator-role {
   color: var(--clinic-brand-action);
-  font-size: 14px;
   font-weight: 600;
 }
 
 /* 긴 약력은 접는다. 카드 넉 장 중 하나만 문단이 길면 그 카드만 세로로 늘어나
    그리드가 무너지고, 환자가 찾는 이름·직함이 화면 밖으로 밀린다. */
-.clinic-curator-career-disclosure {
-  margin-top: 4px;
-}
 
 .clinic-curator-career-summary {
   display: inline-flex;
@@ -9866,16 +8894,8 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   color: var(--clinic-brand-hover);
 }
 
-.clinic-shell .clinic-curator-grid--pair .clinic-curator-career,
-.clinic-shell .clinic-curator-grid--grid .clinic-curator-career {
-  font-size: 15px;
-  line-height: 1.75;
-}
-
 /* 메타 스트립은 병원 단위 사실이므로 카드마다 반복하지 않고 그리드 아래 한 번만 둔다. */
 .clinic-shell .clinic-curator-grid + .clinic-curator-meta {
-  margin-top: 36px;
-  padding-top: 24px;
   border-top: 1px solid var(--clinic-line);
 }
 
@@ -9993,51 +9013,26 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 /* ── 활자 마무리 — 30px 이상 제목의 자간 ───────────────────────────── */
-.clinic-shell .clinic-section-title,
-.clinic-shell .clinic-library-hero-title {
-  letter-spacing: -0.01em;
-}
 
 /* 본문 측정폭 상한. 한 줄이 68자를 넘으면 눈이 다음 줄 첫 글자를 잃는다. */
-.clinic-shell .clinic-section-note,
 .clinic-shell .clinic-principles-statement {
   max-width: 68ch;
 }
 
-@media (max-width: 1024px) {
-  .clinic-shell .clinic-curator-grid--grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 720px) {
-  .clinic-shell .clinic-curator-grid,
-  .clinic-shell .clinic-curator-grid--pair,
-  .clinic-shell .clinic-curator-grid--grid {
+  .clinic-shell .clinic-curator-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .clinic-shell .clinic-curator-grid--pair,
+.clinic-shell .clinic-curator-grid--grid {
     gap: 20px;
   }
 
   /* solo 규칙의 최소 280px 컬럼은 특정도가 높아 기존 모바일 1열 규칙을 이긴다 —
      같은 범위에서 명시적으로 되돌리지 않으면 390px에서 가로 스크롤이 생긴다. */
-  .clinic-shell .clinic-curator-grid--solo .clinic-curator {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 24px;
-  }
 
   /* 모바일에서는 초상이 카드 폭을 다 먹지 않도록 좌측에 세워 둔다 — 한 화면에
      한 사람만 보이면 여러 명 중에서 고르는 일이 불가능해진다. */
-  .clinic-shell .clinic-curator-grid--pair .clinic-curator,
-  .clinic-shell .clinic-curator-grid--grid .clinic-curator {
-    grid-template-columns: 116px minmax(0, 1fr);
-    gap: 16px;
-    padding: 16px;
-  }
-
-  .clinic-shell .clinic-curator-grid--pair .clinic-curator-portrait,
-  .clinic-shell .clinic-curator-grid--grid .clinic-curator-portrait {
-    width: 116px;
-  }
 
   .clinic-shell .clinic-principles-band {
     padding: 0;
@@ -10081,18 +9076,36 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   /* 글자 흐름 안에 있는 링크들 — inline 요소에는 min-height/min-width가 적용되지
      않으므로 inline-flex로 바꿔야 상자가 실제로 커진다. 상자가 글자보다 넓어질 때
      라벨이 한쪽에 붙지 않도록 가로도 가운데로 맞춘다. */
-  .clinic-shell .clinic-header-nav-mobile a,
+  .clinic-shell .clinic-header-nav-mobile a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
   .clinic-shell .clinic-hero-fact-rail dd a,
+.clinic-shell .clinic-answers-all,
+.clinic-shell .clinic-keyfact-link,
+.clinic-shell .clinic-visit-location-link,
+.clinic-shell .clinic-footer-site,
+.clinic-shell .clinic-footer-meta a,
+.clinic-shell .clinic-breadcrumb a {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
   .clinic-shell .clinic-featured-more,
-  .clinic-shell .clinic-answers-all,
-  .clinic-shell .clinic-tx-directory-more,
-  .clinic-shell .clinic-faq-more,
-  .clinic-shell .clinic-faq-all,
-  .clinic-shell .clinic-keyfact-link,
-  .clinic-shell .clinic-visit-location-link,
-  .clinic-shell .clinic-footer-site,
-  .clinic-shell .clinic-footer-meta a,
-  .clinic-shell .clinic-breadcrumb a {
+.clinic-shell .clinic-tx-directory-more,
+.clinic-shell .clinic-faq-all {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .clinic-shell .clinic-faq-more {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -10123,4 +9136,589 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
     min-height: 44px;
     min-width: 44px;
   }
+}
+
+/* End minimum touch-target policy. */
+
+@media (max-width: 1024px) {
+  :root { --clinic-rail: 32px; --clinic-section-y: 64px; --clinic-section-y-tight: 40px; }
+}
+
+@media (max-width: 720px) {
+  :root { --clinic-rail: 20px; --clinic-section-y: 48px; --clinic-section-y-tight: 32px; --clinic-type-h2: 26px; --clinic-type-h3: 22px; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+ * Clinic layout system — one owner for geometry and typography.
+ * The legacy declarations for these properties have been removed, not layered.
+ * Rails own page gutters; inner containers never add a second horizontal inset.
+ * No hospital-specific selectors, new imagery, or changes to public data gates.
+ * ══════════════════════════════════════════════════════════════════ */
+
+.clinic-shell {
+  --clinic-gap: 32px;
+  --clinic-card-pad: 24px;
+  --clinic-heading-gap: 32px;
+  --clinic-reading-max: 760px;
+  --clinic-type-display: clamp(36px, 3.4vw, 48px);
+  --clinic-type-page: 40px;
+  --clinic-type-body: 16px;
+  --clinic-type-lead: 18px;
+  --clinic-type-meta: 14px;
+  --clinic-leading-body: 1.75;
+  --clinic-leading-heading: 1.3;
+  --clinic-radius: 12px;
+  --clinic-sticky-clearance: 104px;
+  --color-revisit-text-caption: var(--color-revisit-coolgrey-40);
+  --color-revisit-text-helper: var(--color-revisit-coolgrey-40);
+  font-size: var(--clinic-type-body);
+  line-height: var(--clinic-leading-body);
+  overflow-wrap: anywhere;
+}
+
+.clinic-shell :is(section[id], .clinic-anchor-target, .clinic-article-body [id]) {
+  scroll-margin-top: var(--clinic-sticky-clearance);
+}
+
+.clinic-section, .clinic-treatment-directory, .clinic-featured {
+  padding: var(--clinic-section-y) var(--clinic-section-x);
+}
+
+.clinic-section--tight {
+  padding: var(--clinic-section-y-tight) var(--clinic-section-x);
+}
+
+.clinic-library-hero {
+  padding: var(--clinic-section-y-tight) var(--clinic-section-x);
+}
+
+.clinic-section-inner, .clinic-featured-inner, .clinic-footer-inner,
+.clinic-hero-inner, .clinic-library-hero-inner {
+  width: 100%;
+  max-width: var(--clinic-max);
+  margin: 0 auto;
+  padding: 0;
+  min-width: 0;
+}
+
+.clinic-treatment-directory .clinic-section-inner { display: block; }
+
+.clinic-header-row {
+  width: 100%;
+  max-width: var(--clinic-shell-max);
+  min-height: 80px;
+  margin: 0 auto;
+  padding: 0 var(--clinic-rail);
+  gap: 24px;
+}
+
+.clinic-header-brand { flex: 0 1 auto; max-width: 280px; }
+
+.clinic-header-brand-name { font-size: 22px; font-weight: 700; line-height: 1.3; }
+
+.clinic-header-brand-logo { max-width: 176px; height: 40px; }
+
+.clinic-header-nav { gap: 24px; margin: 0 0 0 auto; font-size: var(--clinic-type-meta); }
+
+.clinic-header-cta { flex-shrink: 0; gap: 8px; padding: 0; font-size: var(--clinic-type-meta); }
+
+.clinic-header-cta strong { font-size: var(--clinic-type-body); font-weight: 700; }
+
+.clinic-header-nav-mobile { padding: 0 var(--clinic-rail); gap: 24px; }
+
+.clinic-header-nav-mobile a, .clinic-header-nav-mobile .clinic-header-nav-current {
+  padding: 12px 0;
+  font-size: var(--clinic-type-meta);
+}
+
+.clinic-hero-editorial-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.08fr);
+  gap: 48px;
+  align-items: center;
+  width: 100%;
+  max-width: var(--clinic-shell-max);
+  min-height: 0;
+  margin: 0 auto;
+  padding: 56px var(--clinic-rail);
+}
+
+.clinic-hero-editorial-copy {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  padding: 0;
+}
+
+.clinic-hero-editorial-kicker {
+  margin: 0 0 20px;
+  font-size: var(--clinic-type-meta);
+  line-height: 1.6;
+  letter-spacing: 0;
+  font-weight: 600;
+}
+
+.clinic-hero-editorial-title {
+  margin: 0;
+  font-size: var(--clinic-type-display);
+  line-height: 1.25;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+.clinic-hero-editorial-lede {
+  max-width: 40ch;
+  margin: 24px 0 0;
+  font-size: var(--clinic-type-lead);
+  line-height: var(--clinic-leading-body);
+}
+
+.clinic-hero-editorial-actions { gap: 12px; margin-top: 32px; flex-wrap: wrap; }
+
+.clinic-hero-editorial-actions .clinic-btn {
+  flex: 0 1 auto;
+  min-width: 148px;
+  min-height: 48px;
+  font-size: var(--clinic-type-body);
+}
+
+.clinic-hero-editorial-photo {
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+  aspect-ratio: 4 / 3;
+  align-self: center;
+  border-radius: var(--clinic-radius);
+}
+
+.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) .clinic-hero-editorial-copy {
+  max-width: 800px;
+}
+
+.clinic-hero-editorial-grid:has(.clinic-hero-editorial-photo.is-empty) .clinic-hero-editorial-lede {
+  max-width: 60ch;
+}
+
+.clinic-hero--media-brand-graphic .clinic-hero-editorial-image { padding: 24px; }
+
+.clinic-hero-fact-rail {
+  width: 100%;
+  max-width: var(--clinic-shell-max);
+  margin: 0 auto;
+  padding: 0 var(--clinic-rail);
+  grid-template-columns: 1.2fr 1fr 1.55fr 1.1fr;
+  border-top: 0;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.clinic-hero-fact-rail > div {
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 6px 12px;
+  align-content: start;
+  align-items: start;
+  min-width: 0;
+  min-height: 112px;
+  padding: 24px;
+  border: 0;
+  border-top: 1px solid var(--clinic-line);
+  border-bottom: 1px solid var(--clinic-line);
+}
+
+.clinic-hero-fact-rail > div:first-child { padding-left: 0; }
+
+.clinic-hero-fact-rail > div:last-child { padding-right: 0; }
+
+.clinic-hero-fact-rail > div + div { border-left: 1px solid var(--clinic-line); }
+
+.clinic-hero-fact-rail dt {
+  font-size: var(--clinic-type-meta);
+  line-height: 1.5;
+  font-weight: 500;
+}
+
+.clinic-hero-fact-rail dd {
+  font-size: var(--clinic-type-body);
+  line-height: 1.6;
+  font-weight: 600;
+}
+
+.clinic-hero-fact-rail-address dd { display: block; overflow: visible; -webkit-line-clamp: unset; }
+
+.clinic-section-index {
+  display: flex;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: var(--clinic-shell-max);
+  margin: 0 auto;
+  padding: 16px var(--clinic-rail);
+  gap: 8px 32px;
+  border: 0;
+  background: transparent;
+}
+
+.clinic-section-index a {
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  justify-content: flex-start;
+  font-size: var(--clinic-type-meta);
+  font-weight: 600;
+}
+
+.clinic-shell .clinic-section-head, .clinic-section-header {
+  max-width: var(--clinic-reading-max);
+  margin: 0 0 var(--clinic-heading-gap);
+  padding: 0;
+  text-align: left;
+}
+
+.clinic-shell .clinic-section-head--center { max-width: var(--clinic-reading-max); margin-left: 0; margin-right: 0; text-align: left; }
+
+.clinic-shell .clinic-section-title, .clinic-shell .clinic-section-heading {
+  font-size: var(--clinic-type-h2);
+  font-weight: 700;
+  line-height: var(--clinic-leading-heading);
+  letter-spacing: -0.025em;
+}
+
+.clinic-shell .clinic-section-note, .clinic-shell .clinic-section-lede,
+.clinic-library-hero-note {
+  max-width: 68ch;
+  margin: 12px 0 0;
+  font-size: var(--clinic-type-body);
+  line-height: var(--clinic-leading-body);
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+
+.clinic-library-hero-title {
+  margin: 0 0 20px;
+  font-size: var(--clinic-type-page);
+  line-height: var(--clinic-leading-heading);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  word-break: keep-all;
+}
+
+.clinic-library-hero-meta { gap: 8px 16px; font-size: var(--clinic-type-meta); }
+
+.clinic-breadcrumb { margin: 0 0 24px; font-size: var(--clinic-type-meta); }
+
+.clinic-section-actions { margin-top: 32px; text-align: right; }
+
+.clinic-content-groups { display: flex; flex-direction: column; gap: 48px; }
+
+/* An ordered directory: two readable columns instead of four squeezed labels. */
+
+.clinic-tx-directory {
+  grid-template-columns: repeat(var(--clinic-tx-columns-md, 2), minmax(0, 1fr));
+  gap: 0 40px;
+  border-top: 1px solid var(--clinic-line);
+}
+
+.clinic-tx-directory .clinic-tx-card {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 20px;
+  align-items: start;
+  min-width: 0;
+  min-height: 0;
+  gap: 12px 16px;
+  padding: 28px 0;
+  border: 0;
+  border-bottom: 1px solid var(--clinic-line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.clinic-tx-directory .clinic-tx-card-index { grid-column: 1; grid-row: 1; font-size: var(--clinic-type-meta); line-height: 1.9; font-weight: 600; }
+
+.clinic-tx-directory .clinic-tx-card-name {
+  grid-column: 2; grid-row: 1;
+  font-size: var(--clinic-type-h3);
+  line-height: 1.4;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.clinic-tx-directory .clinic-tx-card-desc--supporting {
+  position: static;
+  width: auto;
+  height: auto;
+  grid-column: 2;
+  grid-row: 2;
+  clip: auto;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  margin: 0;
+  font-size: var(--clinic-type-body);
+  line-height: 1.65;
+  font-weight: 400;
+}
+
+.clinic-tx-directory .clinic-tx-card-more { grid-column: 3; grid-row: 1; margin: 4px 0 0; }
+
+.clinic-tx-directory-more { margin-top: 24px; font-size: var(--clinic-type-body); }
+
+/* The portrait is one piece of evidence, not a full-height empty column. */
+
+.clinic-shell .clinic-curator-grid { gap: var(--clinic-gap); }
+
+.clinic-shell .clinic-curator-grid--pair, .clinic-shell .clinic-curator-grid--grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.clinic-shell .clinic-curator {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  align-items: start;
+}
+
+.clinic-shell .clinic-curator-grid--solo .clinic-curator {
+  grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
+  gap: 64px;
+}
+
+.clinic-shell .clinic-curator-figure { min-width: 0; display: block; }
+
+.clinic-shell .clinic-curator-figure .clinic-curator-portrait {
+  width: 100%;
+  max-width: 320px;
+  aspect-ratio: 4 / 5;
+  border-radius: var(--clinic-radius);
+}
+
+.clinic-curator-body { min-width: 0; }
+
+.clinic-curator-identity { padding: 0; margin: 0 0 24px; }
+
+.clinic-shell .clinic-curator-name { font-size: var(--clinic-type-h3); font-weight: 700; line-height: 1.4; letter-spacing: -0.025em; }
+
+.clinic-shell .clinic-curator-name small { font-size: var(--clinic-type-body); font-weight: 400; }
+
+.clinic-curator-eyebrow, .clinic-curator-role { font-size: var(--clinic-type-meta); line-height: 1.6; }
+
+.clinic-curator-tag-row { gap: 8px 12px; margin-bottom: 24px; }
+
+.clinic-curator-tag { font-size: var(--clinic-type-meta); line-height: 1.6; }
+
+.clinic-curator-career { margin: 0; max-width: 68ch; font-size: var(--clinic-type-body); line-height: 1.8; }
+
+.clinic-curator-credentials { gap: 24px; margin-top: 24px; padding-top: 24px; }
+
+.clinic-shell .clinic-curator-meta { gap: 24px; margin-top: 32px; padding-top: 24px; }
+
+.clinic-curator-meta-cell { padding-right: 24px; }
+
+.clinic-curator-meta-label, .clinic-curator-cred-label { font-size: var(--clinic-type-meta); }
+
+.clinic-curator-meta-value, .clinic-curator-cred-list, .clinic-curator-cred-chip { font-size: var(--clinic-type-body); line-height: 1.7; }
+
+.clinic-lead { grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 40px; }
+
+.clinic-lead--solo { grid-template-columns: minmax(0, var(--clinic-reading-max)); }
+
+.clinic-lead-primary { padding: 0; gap: 16px; min-width: 0; }
+
+.clinic-lead-title { font-size: var(--clinic-type-h3); font-weight: 700; line-height: 1.4; letter-spacing: -0.02em; }
+
+.clinic-lead-meta { flex-wrap: wrap; gap: 8px; font-size: var(--clinic-type-meta); }
+
+.clinic-lead-row { padding: 24px 0; gap: 12px; }
+
+.clinic-lead-row-title { font-size: 18px; line-height: 1.55; font-weight: 600; }
+
+.clinic-lead-row-date { font-size: var(--clinic-type-meta); }
+
+.clinic-featured-more { margin-top: 32px; font-size: var(--clinic-type-body); }
+
+.clinic-shell .clinic-cover { border-radius: var(--clinic-radius); }
+
+.clinic-shell .clinic-content-card { padding: var(--clinic-card-pad); gap: 16px; border-radius: var(--clinic-radius); }
+
+.clinic-content-card-title { font-size: 20px; line-height: 1.5; font-weight: 600; }
+
+.clinic-content-card-summary, .clinic-lead-summary, .clinic-faq-answer p,
+.clinic-visit-check-body, .clinic-belief-text, .clinic-flow-node-desc,
+.clinic-tx-desc, .clinic-principles-statement {
+  font-size: var(--clinic-type-body);
+  line-height: var(--clinic-leading-body);
+}
+
+.clinic-faq-question, .clinic-qa-q { font-size: 20px; line-height: 1.5; font-weight: 600; }
+
+.clinic-faq-item { padding: 24px 0; }
+
+.clinic-faq-answer { margin: 12px 0 0; }
+
+.clinic-faq-more, .clinic-faq-all, .clinic-gallery-summary { font-size: var(--clinic-type-meta); }
+
+.clinic-faq-all { margin-top: 24px; }
+
+.clinic-week { border-radius: var(--clinic-radius); margin-bottom: 24px; }
+
+.clinic-week-day { border-radius: 8px; }
+
+.clinic-week-day-time, .clinic-week-day-label, .clinic-week-notice,
+.clinic-week-today-hint, .clinic-keyfact-label, .clinic-keyfact-sub,
+.clinic-channel-card-label, .clinic-channel-card-host { font-size: var(--clinic-type-meta); line-height: 1.6; }
+
+.clinic-keyfact { padding: var(--clinic-card-pad); gap: 8px; border-radius: var(--clinic-radius); }
+
+.clinic-keyfacts, .clinic-visit-actions { gap: 16px; }
+
+.clinic-visit-actions { margin-bottom: 24px; }
+
+.clinic-visit-body { gap: 32px; }
+
+.clinic-visit-location { padding: var(--clinic-card-pad); border-radius: var(--clinic-radius); }
+
+.clinic-hours-table { font-size: var(--clinic-type-body); }
+
+.clinic-hours-table th, .clinic-hours-table td { font-size: var(--clinic-type-body); padding: 16px 20px; }
+
+.clinic-footer { padding: 56px var(--clinic-section-x) 40px; }
+
+.clinic-footer-inner { gap: 24px; }
+
+/* Reading surfaces share the rail; the article owns measure, not a second gutter. */
+
+.clinic-article-shell {
+  width: 100%;
+  max-width: var(--clinic-shell-max);
+  margin: 0 auto;
+  padding: 48px var(--clinic-rail) 80px;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 64px;
+}
+
+.clinic-article { min-width: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+
+.clinic-article-header { padding: 0; }
+
+.clinic-article-title { font-size: var(--clinic-type-page); line-height: 1.35; font-weight: 700; letter-spacing: -0.025em; }
+
+.clinic-article-body { max-width: var(--clinic-reading-max); padding: 32px 0; font-size: 18px; line-height: 1.85; }
+
+.clinic-article-body > * { max-width: 100%; }
+
+.clinic-article-body > p:first-of-type { font-size: 18px; line-height: 1.85; }
+
+.clinic-article-body h2 { font-size: 26px; line-height: 1.5; font-weight: 700; }
+
+.clinic-article-body h3 { font-size: 22px; line-height: 1.5; font-weight: 600; }
+
+.clinic-article-faq { max-width: var(--clinic-reading-max); padding: 0; margin: 24px 0 0; }
+
+.clinic-article-toc { margin: 24px 0; border-radius: var(--clinic-radius); }
+
+.clinic-article-tldr { margin: 24px 0; padding: 24px; border-radius: var(--clinic-radius); }
+
+.clinic-article-references { margin: 0; padding: 24px 0 0; }
+
+.clinic-aside { gap: 24px; }
+
+.clinic-aside-card { padding: var(--clinic-card-pad); border-radius: var(--clinic-radius); }
+
+.clinic-aside-action { width: 100%; justify-content: center; min-height: 48px; font-size: var(--clinic-type-meta); margin-top: 12px; }
+
+@media (max-width: 1100px) {
+  .clinic-header-nav { gap: 16px; }
+  .clinic-header-cta strong { display: none; }
+  .clinic-hero-editorial-grid { gap: 32px; }
+  .clinic-shell .clinic-curator-grid--pair .clinic-curator,
+  .clinic-shell .clinic-curator-grid--grid .clinic-curator { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (min-width: 1101px) {
+  .clinic-shell .clinic-curator-grid--pair .clinic-curator,
+  .clinic-shell .clinic-curator-grid--grid .clinic-curator { grid-template-columns: 144px minmax(0, 1fr); gap: 24px; }
+  .clinic-shell .clinic-curator-grid--pair .clinic-curator-credentials,
+  .clinic-shell .clinic-curator-grid--grid .clinic-curator-credentials { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 920px) {
+  .clinic-hero-editorial-grid { grid-template-columns: minmax(0, 1fr); gap: 32px; padding-block: 40px; }
+  .clinic-hero-editorial-copy { max-width: 680px; }
+  .clinic-hero-editorial-photo { aspect-ratio: 16 / 9; }
+  .clinic-hero-fact-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .clinic-hero-fact-rail > div { padding: 20px; min-height: 0; }
+  .clinic-hero-fact-rail > div:nth-child(odd) { padding-left: 0; border-left: 0; }
+  .clinic-hero-fact-rail > div:nth-child(even) { padding-right: 0; }
+  .clinic-hero-fact-rail > div:nth-child(n+3) { border-top: 0; }
+  .clinic-shell .clinic-curator-grid--solo .clinic-curator { grid-template-columns: 240px minmax(0, 1fr); gap: 32px; }
+  .clinic-curator-credentials { grid-template-columns: 1fr; }
+  .clinic-article-shell { grid-template-columns: minmax(0, 1fr); gap: 40px; }
+  .clinic-article { max-width: var(--clinic-reading-max); }
+}
+
+@media (max-width: 720px) {
+  .clinic-shell {
+    --clinic-type-display: 34px;
+    --clinic-type-page: 30px;
+    --clinic-type-lead: 16px;
+    --clinic-gap: 24px;
+    --clinic-card-pad: 20px;
+    --clinic-heading-gap: 24px;
+    --clinic-sticky-clearance: 120px;
+  }
+  .clinic-header-row { min-height: 64px; gap: 16px; }
+  .clinic-header-brand { max-width: min(65%, 260px); }
+  .clinic-header-brand-name { font-size: 18px; }
+  .clinic-header-brand-logo { height: 36px; max-width: 160px; }
+  .clinic-hero-editorial-grid { padding-block: 32px; gap: 24px; }
+  .clinic-hero-editorial-kicker { margin-bottom: 16px; }
+  .clinic-hero-editorial-lede { margin-top: 20px; }
+  .clinic-hero-editorial-actions { margin-top: 24px; gap: 12px; }
+  .clinic-hero-editorial-actions .clinic-btn { flex: 1 1 0; min-width: 0; padding-inline: 12px; }
+  .clinic-hero-fact-rail > div { grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 16px; }
+  .clinic-hero-fact-rail .clinic-icon { display: none; }
+  .clinic-hero-fact-rail dt, .clinic-hero-fact-rail dd { grid-column: 1; }
+  .clinic-section-index { gap: 0 20px; padding-block: 12px; }
+  .clinic-tx-directory { grid-template-columns: minmax(0, 1fr); }
+  .clinic-tx-directory .clinic-tx-card { padding: 24px 0; gap: 8px 12px; grid-template-columns: 24px minmax(0, 1fr) 20px; }
+  .clinic-shell .clinic-curator-grid--pair, .clinic-shell .clinic-curator-grid--grid { grid-template-columns: minmax(0, 1fr); }
+  .clinic-shell .clinic-curator, .clinic-shell .clinic-curator-grid--solo .clinic-curator,
+  .clinic-shell .clinic-curator-grid--pair .clinic-curator, .clinic-shell .clinic-curator-grid--grid .clinic-curator {
+    grid-template-columns: 104px minmax(0, 1fr);
+    gap: 24px 20px;
+    padding: 0;
+  }
+  .clinic-shell .clinic-curator-body { display: contents; }
+  .clinic-curator-figure { grid-column: 1; grid-row: 1; }
+  .clinic-curator-identity { grid-column: 2; grid-row: 1; align-self: center; margin: 0; }
+  .clinic-curator-tag-row, .clinic-curator-career, .clinic-curator-career-disclosure,
+  .clinic-curator-credentials { grid-column: 1 / -1; margin: 0; }
+  .clinic-curator-credentials { padding-top: 24px; }
+  .clinic-shell .clinic-curator-grid--pair .clinic-curator + .clinic-curator,
+  .clinic-shell .clinic-curator-grid--grid .clinic-curator + .clinic-curator { padding-top: 24px; border-top: 1px solid var(--clinic-line); }
+  .clinic-shell .clinic-curator-meta { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+  .clinic-curator-meta-cell { border-right: 0; padding: 0; }
+  .clinic-lead { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+  .clinic-lead-row { padding: 20px 0; }
+  .clinic-footer { padding: 40px var(--clinic-section-x) 32px; }
+  .clinic-article-shell { padding-block: 32px 48px; }
+  .clinic-article-body, .clinic-article-body > p:first-of-type { font-size: 17px; line-height: 1.85; }
+  .clinic-article-body h2 { font-size: 24px; }
+  .clinic-article-body h3 { font-size: 20px; }
+  .clinic-article-tldr { padding: 20px; }
+  .clinic-content-groups { gap: 32px; }
 }

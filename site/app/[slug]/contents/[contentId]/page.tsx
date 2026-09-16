@@ -492,8 +492,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                 </address>
                 <Link
                   href={hospitalRootUrl}
-                  className="clinic-btn clinic-btn-secondary"
-                  style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14, marginBottom: 8 }}
+                  className="clinic-btn clinic-btn-secondary clinic-aside-action"
                 >
                   병원 의료 정보 홈으로
                 </Link>
@@ -502,8 +501,7 @@ export default async function ContentDetailPage({ params: paramsPromise }: Props
                     href={hospitalWebsiteUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="clinic-btn clinic-btn-primary"
-                    style={{ width: '100%', justifyContent: 'center', height: 40, fontSize: 14 }}
+                    className="clinic-btn clinic-btn-primary clinic-aside-action"
                   >
                     공식 홈페이지로 이동
                   </a>

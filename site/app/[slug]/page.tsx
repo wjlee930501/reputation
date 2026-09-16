@@ -271,10 +271,8 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           googleMapsUrl={hospital.google_maps_url}
         />
         <main id="main-content">
-          {/* PRD §7.2 Public Webblog IA 순서:
-              Hero → Hospital Facts → Answer Clusters → Featured →
-              Care Principles → Treatments → Care Flow → Doctor → Gallery → Contact.
-              병원 엔티티 사실과 대표 질문을 최신글 피드보다 먼저 노출한다. */}
+          {/* One shared hospital composition. Optional sections and their index links
+              follow available approved data; no placeholder content is fabricated. */}
           <ClinicHero
             hospitalName={hospital.name}
             hospitalRootUrl={hospitalRootUrl}
@@ -293,14 +291,14 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           />
 
           <nav className="clinic-section-index" aria-label="이 페이지의 주요 정보">
-            <a href="#treatments">진료 영역</a>
-            <a href="#doctor">의료진</a>
-            <a href="#contents">건강 정보</a>
+            {hospital.treatments.length > 0 && <a href="#treatments">진료 영역</a>}
+            {physicians.length > 0 && <a href="#doctor">의료진</a>}
+            {contents.length > 0 && <a href="#contents">건강 정보</a>}
             <a href="#facts">병원 정보</a>
             <a href="#contact">오시는 길</a>
           </nav>
 
-          <div id="treatments" className="clinic-anchor-target">
+          <div className="clinic-anchor-target">
             <TreatmentGrid treatments={hospital.treatments} hospitalRootUrl={hospitalRootUrl} />
           </div>
 
@@ -370,7 +368,7 @@ export default async function HospitalHubPage({ params: paramsPromise }: Props) 
           />
           </div>
 
-          <div id="contact" className="clinic-anchor-target">
+          <div className="clinic-anchor-target">
           <ContactCard
             address={hospital.address}
             addressDetail={hospital.address_detail}

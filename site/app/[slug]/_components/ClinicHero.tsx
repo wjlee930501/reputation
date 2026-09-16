@@ -155,7 +155,7 @@ export function ClinicHero({
               priority
               loading="eager"
               quality={84}
-              sizes="(max-width: 920px) 100vw, 58vw"
+              sizes="(max-width: 720px) calc(100vw - 40px), (max-width: 920px) calc(100vw - 64px), (max-width: 1296px) 48vw, 600px"
               className="clinic-hero-editorial-image"
             />
           ) : (

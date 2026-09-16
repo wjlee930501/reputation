@@ -1,0 +1,139 @@
+{
+  "status": "LOCAL_DESIGN_IMPLEMENTED_PRODUCTION_BUILD_VERIFIED_NOT_DEPLOYED",
+  "verified_at_kst": "2026-09-16T20:05:11.289150+09:00",
+  "baseline_commit": "c20d26b1a6666c1aa3826b7dc832ceac96a11d29",
+  "branch": "design/clinic-layout-system-20260916",
+  "scope": "Shared clinic public presentation only; no customer data, backend, API contracts, schema, admin, dependencies or infrastructure changes",
+  "removed_competing_css_declarations": 630,
+  "geometry_and_type_subjects": 144,
+  "unit_tests": {
+    "passed": 338,
+    "failed": 0,
+    "skipped": 0
+  },
+  "lint": "PASS",
+  "typecheck": "PASS",
+  "production_build": "PASS",
+  "production_browser_matrix": {
+    "total": 108,
+    "passed": 108,
+    "failed": 0
+  },
+  "local_synthetic_data_stress": {
+    "total": 42,
+    "passed": 42,
+    "failed": 0
+  },
+  "total_final_render_cases": 150,
+  "viewports": [
+    320,
+    390,
+    768,
+    1024,
+    1280,
+    1440,
+    1920
+  ],
+  "public_snapshot_hospitals": 9,
+  "representative_subroutes": [
+    "doctor",
+    "visit",
+    "treatments",
+    "contents",
+    "contents/{id}"
+  ],
+  "alignment_comparison": [
+    {
+      "viewport_css_px": 390,
+      "before_distinct_left_edges_px": [
+        16,
+        20,
+        22,
+        36
+      ],
+      "after_distinct_left_edges_px": [
+        20
+      ]
+    },
+    {
+      "viewport_css_px": 768,
+      "before_distinct_left_edges_px": [
+        24,
+        28,
+        36,
+        40
+      ],
+      "after_distinct_left_edges_px": [
+        32
+      ]
+    },
+    {
+      "viewport_css_px": 1280,
+      "before_distinct_left_edges_px": [
+        40,
+        48
+      ],
+      "after_distinct_left_edges_px": [
+        48
+      ]
+    },
+    {
+      "viewport_css_px": 1440,
+      "before_distinct_left_edges_px": [
+        48,
+        120
+      ],
+      "after_distinct_left_edges_px": [
+        120
+      ]
+    }
+  ],
+  "synthetic_fixture_note": "Six explicitly labelled local-only variants: 0/1/3/6/19 posts, 0/1/4/8/22/33 photos, empty treatment/physician data and an unusually long clinic name; never uploaded to production",
+  "preserved_untracked_file": {
+    "path": "aside-test.js",
+    "sha256": "162a5c2c47c553bab3fe929e5b243db4b396fad5708519c6739f5ecdfeb826dc"
+  },
+  "preview": {
+    "machine": "Mac mini",
+    "origin": "http://127.0.0.1:59681",
+    "fixture_api": "loopback-only, rejects non-GET writes",
+    "public_media": "Original approved public HTTPS assets; no private API credentials",
+    "interactive_origin": "http://127.0.0.1:57573",
+    "note": "Separate local snapshot copy. Production validation origin uses example.test canonical URLs; use interactive_origin for local navigation."
+  },
+  "source_sha256": {
+    "DESIGN.md": "ffa5ff5273893aceca8df57db76714729a63955f4f7a87694d505f91e51f10cb",
+    "scripts/verify_clinic_layout.mjs": "4afd9cb64e1988fe1af65f24c1e597e21b01ac0df5cbe9b1899545b2fd5a5844",
+    "site/app/[slug]/_components/ClinicHero.tsx": "68ae8ccfc8fa3100ee3c30227be5f639e248039ff29f24dc335cc3afc6acbcd2",
+    "site/app/[slug]/contents/[contentId]/page.tsx": "e9b7a5d599436f379234c4f87eed2fb0c3aba8d1081f1b9aa3a268ec11071c30",
+    "site/app/[slug]/doctor/page.tsx": "3f34035979a2557620fad453b8f493b3cbdd9a567b5ecc2668118c39f04057ff",
+    "site/app/[slug]/page.tsx": "61dc13afb337dae1be84d0dc28b9cc33e714cede9a3e87b629088bb9423ac371",
+    "site/app/[slug]/treatments/[treatmentSlug]/page.tsx": "90d86df2c5b9f8cb574581d01dc0f70c11c7d4642abc279a69a0cf66e9f553f7",
+    "site/app/[slug]/treatments/page.tsx": "79af806effee692331da1750a286c8d480633abc7a55402654d9eb2f2b5ff89d",
+    "site/app/[slug]/visit/page.tsx": "1700f9ccd513a3ed6272283c57e18846fea61b1ccd8f6c1404ab40759c957cda",
+    "site/app/globals.css": "612d74608357d9d0a3711074c05985113a0b9d6554d770ba495b9bec5a942473",
+    "site/lib/clinic-container-width.test.ts": "111a756093855f9e010fb28ab002529ff95a9904d5416fa47f1379f3bf3349e4",
+    "site/lib/clinic-hero-headline.test.ts": "9c308948d99f6043644309219c33568d396feb61edcae9384d1de72728303605",
+    "site/lib/clinic-layout-contract.test.ts": "3afa7295cad12fc995e29804d6a43133af1a8fb52505daa7a1f4b62fbc04202f",
+    "site/lib/clinic-tap-target.test.ts": "db8304fb866e439a1e881a7787b013b18abe88e26b999263ba5c9409bc0805ec",
+    "site/lib/clinic-visual-system.test.ts": "5aa8555401118ea3c9f254ad2ac7501bb6ff8376e2ee0b0b436e74952892bca0"
+  },
+  "evidence_directory": "/private/tmp/reputation-clinic-design-20260916-kkxgact4",
+  "evidence_sha256": {
+    "baseline-layout.json": "dab5c66961415a95ac97229419d81665d2d623b09478db163c284c6819c17898",
+    "final-matrix/layout-results.json": "4864f8b1c6adf6263ca17c78371ffc949cf3df7f73a2e7e13db6f23c3e69a028",
+    "stress-matrix/layout-results.json": "14b4544783429a2f9b112062a15f719d88ab7fd1d47bd63f85fa2db14b840661",
+    "production-build.log": "f6cef01d644df24f84696cd4baee7c4425f46e02824574e88bffad2e429374eb",
+    "final-test.log": "e401a77ae6bc7a41c77c52383c2b84ce44379440b58e00056e920c26e9c58452",
+    "final-lint.log": "75867d548e3e0e8246800a57afc14220188215d2e7e6f3e53e8f88ff716dc89c",
+    "final-typecheck.log": "3a37a844562227919e11c2ab6e851c79d95c9e54a37da9fd706645dea9cf8676"
+  },
+  "limits": [
+    "No production rollout or remote push/CI in this change",
+    "No authenticated or customer-mutating workflow tested",
+    "Viewport reflow and selected touch/heading checks are not a full WCAG conformance audit or an actual browser-zoom test",
+    "Canonical custom domains are normalized to local path routing in fixture responses; production host routing code is unchanged",
+    "Two JSX lines received trailing-whitespace cleanup after the final production build; no JSX tokens or rendered styles changed"
+  ],
+  "non_clinic_style_contracts_preserved": 1719
+}
