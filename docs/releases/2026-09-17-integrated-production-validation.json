@@ -1,0 +1,160 @@
+{
+  "status": "DEPLOYED_VERIFIED_WITH_CONFIGURATION_FOLLOWUPS",
+  "verified_at": "2026-09-17T00:05:33.486069+00:00",
+  "deployment": {
+    "source": "2381566883cfcfcf87d317a2c9671b96817499a8",
+    "image": "asia-northeast3-docker.pkg.dev/mso-platform-481505/reputation/reputation@sha256:265a059843007f77d5ed509f9f99b9e3018bd6927d21fcf04a60929cbdc176cb",
+    "suffix": "ops-235758-2381566",
+    "started_at": "2026-09-16T23:57:58.257663+00:00",
+    "main_ci": 35164057607,
+    "scope": "backend-only",
+    "services": {
+      "reputation-worker": {
+        "revision": "reputation-worker-ops-235758-2381566",
+        "traffic": 100,
+        "configuration_preserved": true
+      },
+      "reputation-beat": {
+        "revision": "reputation-beat-ops-235758-2381566",
+        "traffic": 100,
+        "configuration_preserved": true
+      },
+      "reputation-api": {
+        "revision": "reputation-api-ops-235758-2381566",
+        "traffic": 100,
+        "configuration_preserved": true
+      }
+    },
+    "reputation-migrate": "reputation-migrate-7mh8t",
+    "reputation-redbeat-reconcile": "reputation-redbeat-reconcile-rndbt",
+    "reputation-production-readiness": "reputation-production-readiness-jb2qm",
+    "completed_at": "2026-09-17T00:00:54.677489+00:00",
+    "frontend_preserved": true,
+    "status": "ROLLED_OUT_POSTCHECK_REQUIRED"
+  },
+  "public": {
+    "checked_at": "2026-09-17T00:02:26.658859+00:00",
+    "hospital_count": 9,
+    "content_count": 151,
+    "public_surface": "PASS"
+  },
+  "backend_tests": 4326,
+  "ci_jobs_passed": 9,
+  "coverage_percent": 85.05,
+  "schema_head": "0079_topic_swap_fallback",
+  "redbeat_version": "2026-09-17.1",
+  "image_verification": {
+    "changed_app_files": 25,
+    "pdf_questions": 31,
+    "pdf_pages": 3
+  },
+  "domain_recovery_kst": [
+    "2026-09-17 04:30",
+    "2026-09-17 06:30"
+  ],
+  "current_domain": {
+    "name": "행복드림의원",
+    "status": "ACTIVE",
+    "site_live": true,
+    "aeo_domain": "ai.happydreamclinic.co.kr",
+    "domain_last_check_ok": true,
+    "domain_last_checked_at": "2026-09-17T00:00:02.029641+00:00",
+    "domain_last_check_reason": "tenant_marker_ok",
+    "domain_cert_job_state": "DONE"
+  },
+  "error_window": {
+    "from": "2026-09-16T23:57:58.257663+00:00",
+    "to": "2026-09-17T00:04:13.710949+00:00",
+    "error_count": 1
+  },
+  "followups": [
+    "Development Slack webhook is unconfigured; one notification held.",
+    "NHN SMS secret startup warning also existed on the previous API revision; SMS delivery not tested."
+  ],
+  "cleanup": {
+    "5432": "stopped_owned_postgres",
+    "5434": "stopped_owned_postgres",
+    "55432": "stopped_owned_postgres",
+    "redis": "stopped_owned_redis"
+  },
+  "final_verification": {
+    "verified_at": "2026-09-17T00:09:46.600535+00:00",
+    "source": "2381566883cfcfcf87d317a2c9671b96817499a8",
+    "services": {
+      "reputation-api": {
+        "revision": "reputation-api-ops-235758-2381566",
+        "ready": true,
+        "traffic_percent": 100,
+        "settings_preserved": true
+      },
+      "reputation-worker": {
+        "revision": "reputation-worker-ops-235758-2381566",
+        "ready": true,
+        "traffic_percent": 100,
+        "settings_preserved": true
+      },
+      "reputation-beat": {
+        "revision": "reputation-beat-ops-235758-2381566",
+        "ready": true,
+        "traffic_percent": 100,
+        "settings_preserved": true
+      },
+      "reputation-site": {
+        "revision": "reputation-site-img-142435-5432c5e",
+        "ready": true,
+        "traffic_percent": 100,
+        "settings_preserved": true
+      },
+      "reputation-admin": {
+        "revision": "reputation-admin-ref-151613-18531d3",
+        "ready": true,
+        "traffic_percent": 100,
+        "settings_preserved": true
+      }
+    },
+    "ci": {
+      "passed": 9,
+      "source": "2381566883cfcfcf87d317a2c9671b96817499a8",
+      "url": "https://github.com/wjlee930501/reputation/actions/runs/35164057607"
+    },
+    "error_window": {
+      "from": "2026-09-16T23:57:58.257663+00:00",
+      "to": "2026-09-17T00:09:46.600535+00:00",
+      "total": 1,
+      "unconfigured_developer_slack": 1,
+      "other_errors": 0
+    }
+  },
+  "watchdog": {
+    "observed_at": "2026-09-17T00:08:14.628457+00:00",
+    "kst_date": "2026-09-17",
+    "redis_available": true,
+    "database_available": true,
+    "queue_canaries_current": true,
+    "stale_queues": [],
+    "stale_critical_queues": [],
+    "beat_alive": true,
+    "beat_lock_held": true,
+    "beat_last_schedule_run_at": "2026-09-17T00:05:00.067344+00:00",
+    "beat_evidence": "예약 실행기가 분산 락을 잡고 있고 5분 주기 점검 작업이 15분 안에 실제로 실행됐다. 이 두 가지가 증명하는 것은 dispatcher가 살아서 스케줄을 내보내고 있다는 사실이며, 개별 작업의 성공 여부는 각 작업 기록으로 따로 확인한다.",
+    "publish_checked": true,
+    "publish_due_remaining": 5,
+    "publish_published_today": 5,
+    "publish_missing": false,
+    "publish_partial": true,
+    "last_generation_batch_at": "2026-09-16T22:00:00.141013+00:00",
+    "generation_batch_stale": false,
+    "critical_conditions": [],
+    "healthy": true,
+    "token_configured": true
+  },
+  "evidence_sha256": {
+    "deployment-plan.json": "72186c43228461d8c31f123543eb6e3ccec19c105a2610771cd20916334dc000",
+    "domain_failures.json": "1453f53cc742c559934ce56da589feb77bbfd6b167a18eb90fe02e33c74bf0b1",
+    "domain-transition-proof.json": "6d0ec589c5d0a19e129a439228b31611bef4c35337f8621ad9877d154b711967",
+    "main-ci.json": "ab116762656c059b6ee1a3b7740ddc99befb109a31ab6de41dc7f014e4b0d675",
+    "cloudbuild-result.json": "b28368bd3a5dc625392f7175f9c2a71f8d65123a818aa8e117150bbc004f41b0",
+    "public-after.json": "e4e8919c3541f7aca02a5c9cfcfb2711257948ff1fbb080d0747b763e2d6b1f1",
+    "completion-check.json": "6bc86bd1e6150b9746a39a3c93d2c87b651a49ccb7a86130f62592441b8305ec"
+  }
+}
