@@ -1,5 +1,14 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 최신 운영 배포 — 2026-09-17 통합 보완
+
+PR #120의 main 소스 `2381566883cfcfcf87d317a2c9671b96817499a8`를 API·Worker·Beat에 배포했다.
+Backend suffix는 `ops-235758-2381566`, DB head는 `0079_topic_swap_fallback`, RedBeat는 `2026-09-17.1`이다.
+계약 이행·월간 PDF·도메인 감시 보완이 포함됐다. Site 이미지 최적화와 기존 Admin 리비전은 유지했다.
+main CI 9/9, 4,326개 Backend 테스트, 운영 readiness와 공개 9개 병원·151개 글 검증을 통과했다.
+개발 Slack 미설정과 기존 NHN SMS 설정 경고는 별도 후속 사항으로 남았다.
+아래 날짜별 상태는 당시 이력이며 현재 실행 정본은 [통합 운영 배포 기록](docs/releases/2026-09-17-integrated-production.md)이다.
+
 ## 현재 운영 배포 — 2026-09-16 리팩터링
 
 `18531d3452287afa012e28ec256d920708c90a57`(PR #116)이 실제 운영에 배포됐다.
