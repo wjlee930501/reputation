@@ -106,8 +106,8 @@ def test_heartbeat_counts_only_confirmed_platform_answers(db, verdict, mentioned
 def test_known_intervention_is_not_hidden_by_missing_measurement():
     from app.services.fleet_heartbeat import FleetFacts
     text = heartbeat(facts=FleetFacts(2, 0, 1, 0, 0, 0)).message.fallback_text
-    assert "개입 필요" in text.splitlines()[0]
-    assert "미완료 항목 있음" in text.splitlines()[0]
+    assert "담당자 확인 필요" in text.splitlines()[0]
+    assert "미완료 작업 있음" in text.splitlines()[0]
 
 
 @pytest.mark.parametrize("related,after,expected", [
@@ -135,8 +135,9 @@ def test_recovered_history_requires_actual_retry_lineage(db, related, after, exp
 def test_recovered_failure_remains_history_not_current_alarm():
     from app.services.fleet_heartbeat import FleetFacts
     text = heartbeat(facts=FleetFacts(2, 0, 0, 1, 2, 0, 0)).message.fallback_text
-    assert "관측 지표 양호" in text.splitlines()[0]
-    assert "실패/부분 완료 이력 1건" in text
+    assert "점검 이상 없음" in text.splitlines()[0]
+    assert "확인 필요 이슈 0건" in text
+    assert "실패/부분 완료 이력" not in text
 
 
 async def test_public_invalidation_acceptance_cannot_remain_pending(db, monkeypatch):

@@ -163,9 +163,9 @@ def test_heartbeat_no_longer_calls_a_missing_calendar_healthy(db):
     coverage = collect_contract_delivery_coverage(db, now=NOW)
     facts = FleetFacts(1, 0, 0, 0, 1, 1, 0, coverage)
     text = heartbeat(facts=facts).message.fallback_text
-    assert "미완료 항목 있음" in text.splitlines()[0]
-    assert "확인된 약정 12건" in text and "미배정 7건" in text
-    assert "최초 발행은 현재 공개 건수와 다르며" in text
+    assert "미완료 작업 있음" in text.splitlines()[0]
+    assert "약정 12편" in text and "미배정 7편" in text
+    assert "최초 발행은 현재 공개 건수와 다릅니다" in text
 
 
 def test_explicit_future_first_start_is_not_a_missing_current_schedule(db):

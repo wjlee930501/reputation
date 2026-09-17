@@ -104,16 +104,10 @@ async def test_purge_success_explains_outcome_and_links_one_incident_action(monk
     # When
     sent = await notifier.notify_lead_purge_result(purged=3, skipped=1)
 
-    # Then
-    assert sent is True
-    body = _section_text(payload)
-    assert all(label in body for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:"))
-    assert "3건" in body
-    assert "개발팀 전달용 참조:" in body
-    assert _button_url(payload) == "https://admin.example.test/operations?queue=INCIDENTS"
-    rendered = f"{payload['text']} {body}"
-    for forbidden in ("PII", "cron", "lead"):
-        assert forbidden.lower() not in rendered.lower()
+    # Successful housekeeping is logged, never sent as human work.
+    assert sent is False
+    assert not payload["text"] and payload["blocks"] == []
+
 
 
 async def test_lead_diagnosis_received_omits_contact_and_uses_one_lead_action(monkeypatch):
@@ -135,7 +129,7 @@ async def test_lead_diagnosis_received_omits_contact_and_uses_one_lead_action(mo
     body = _section_text(payload)
     assert all(
         label in body
-        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+        for label in ("[새 신청]", "담당자를 정한 뒤", "상담 일정")
     )
     assert _button_url(payload) == "https://admin.example.test/leads"
     assert "010-1234-5678" not in f"{payload['text']} {body}"

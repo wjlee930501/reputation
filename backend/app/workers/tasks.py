@@ -313,6 +313,7 @@ from app.services.onboarding_notifications import (
     build_v0_ready_notification,
     enqueue_onboarding_notification_sync,
 )
+from app.services.operator_action import requires_operator_action
 from app.services.ops_incident_alerts import (
     open_ops_incident,
     recover_ops_incident,
@@ -6202,6 +6203,8 @@ def _weekly_generation_rejection_outcomes(db, *, week_start: date) -> list[dict[
             "reason": incident.safe_error_message
             or generation_safe_cause(incident.safe_error_code or ""),
             "episode_fingerprint": f"{incident.dedupe_key}:{incident.episode_seq}",
+            "code": incident.safe_error_code,
+            "requires_action": requires_operator_action(incident.state, incident.sla_due_at, datetime.now(timezone.utc)),
         }
         for incident, hospital_name in rows
     ]

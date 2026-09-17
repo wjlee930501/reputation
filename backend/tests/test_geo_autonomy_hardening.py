@@ -242,9 +242,9 @@ def heartbeat(watchdog=None, facts=None, now=NOW):
 
 def test_heartbeat_healthy_no_due_and_retrying_not_human():
     text = heartbeat().message.fallback_text
-    assert "관측 지표 양호" in text and "자동 복구 1건 · 사람의 개입 0건" in text
+    assert "점검 이상 없음" in text and "자동 복구 중 1건" in text and "확인 필요 이슈 0건" in text
     assert (
-        "관측 지표 양호"
+        "점검 이상 없음"
         in heartbeat(replace(report(), publish_published_today=0)).message.fallback_text
     )
     assert not requires_operator_action("RETRYING", NOW + timedelta(hours=1), NOW)
@@ -262,7 +262,7 @@ def test_heartbeat_healthy_no_due_and_retrying_not_human():
     ],
 )
 def test_heartbeat_degraded(change):
-    assert "미완료 항목 있음" in heartbeat(replace(report(), **change)).message.fallback_text
+    assert "미완료 작업 있음" in heartbeat(replace(report(), **change)).message.fallback_text
 
 
 @pytest.mark.parametrize(
@@ -275,12 +275,12 @@ def test_heartbeat_degraded(change):
     ],
 )
 def test_heartbeat_unknown(change):
-    assert "관측 부족" in heartbeat(replace(report(), **change)).message.fallback_text
+    assert "일부 상태 미확인" in heartbeat(replace(report(), **change)).message.fallback_text
 
 
 def test_missing_measurements_and_failed_run_are_not_normal():
-    assert "관측 부족" in heartbeat(facts=FleetFacts(2, 0, 0, 0, 1, 0)).message.fallback_text
-    assert "미완료 항목 있음" in heartbeat(facts=FleetFacts(2, 0, 0, 1, 2, 0)).message.fallback_text
+    assert "일부 상태 미확인" in heartbeat(facts=FleetFacts(2, 0, 0, 0, 1, 0)).message.fallback_text
+    assert "미완료 작업 있음" in heartbeat(facts=FleetFacts(2, 0, 0, 1, 2, 0)).message.fallback_text
 
 
 def test_daily_outbox_real_dedupe_and_kst_boundary(db):

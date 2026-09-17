@@ -300,8 +300,8 @@ async def test_notify_lead_created_truncates_and_flattens_long_clinic_name(monke
     )
 
     assert "\n" not in sent["text"]
-    assert sent["text"].endswith("…")
-    assert len(sent["text"].split("] ", 1)[1]) == notifier._SAFE_LABEL_MAX_CHARS + 1
+    assert sent["text"].split(" | ", 1)[0].endswith("…")
+    assert len(sent["text"].split("] ", 1)[1].split(" | ", 1)[0]) == notifier._SAFE_LABEL_MAX_CHARS + 1
 
 
 def test_mask_contact_free_masks_resident_registration_number():

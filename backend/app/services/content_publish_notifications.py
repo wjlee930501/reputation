@@ -19,6 +19,7 @@ from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
 )
+from app.services.notification_copy import blocker_copy
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
     action_block,
@@ -115,14 +116,16 @@ def _yield_lines(yield_facts: Sequence[HospitalYieldView]) -> tuple[list[str], i
         key=lambda fact: (-(fact.due - fact.published), fact.hospital_name),
     )
     shown = ranked[:_YIELD_MAX_HOSPITALS]
-    lines = [
-        f"• *{_publish_safe_text(fact.hospital_name, 100)}* "
-        f"발행 {fact.published}/{fact.due} "
-        f"(재사용 이미지 {fact.published_with_reused_image}, "
-        f"재시도 중 {fact.retrying}, 주제 교체 {fact.topic_swapped}, "
-        f"조치 필요 {fact.operator_required})"
-        for fact in shown
-    ]
+    lines = []
+    for fact in shown:
+        details = [f"발행 {fact.published}/{fact.due}편"]
+        if fact.retrying:
+            details.append(f"자동 재시도 {fact.retrying}편")
+        if fact.operator_required:
+            details.append(f"확인 필요 {fact.operator_required}편")
+        if fact.published_with_reused_image:
+            details.append(f"대체 이미지 사용 {fact.published_with_reused_image}편")
+        lines.append(f"• *{_publish_safe_text(fact.hospital_name, 80)}* — " + " · ".join(details))
     hidden = len(ranked) - len(shown)
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}개")
@@ -222,7 +225,7 @@ def build_missing_approved_essence_digest_intent(
 
 
 IMAGE_REUSE_NEXT_ACTION = (
-    "이미지 생성 공급자 크레딧·할당량과 비용 가드 한도를 확인해 주세요. "
+    "승인된 대체 이미지로 발행했습니다. 추가 조치는 필요하지 않습니다. "
     "새 이미지가 생성되면 대체 이미지는 자동으로 교체됩니다."
 )
 _IMAGE_FAILURE_CLASS_LABELS = {
@@ -325,9 +328,9 @@ def build_generation_blocked_digest_intent(
             ) in entries
         }
     )
-    reuse_identity, reuse_lines = _image_reuse_section(reused_outcomes)
+    _reuse_identity, reuse_lines = _image_reuse_section(reused_outcomes)
     digest = hashlib.sha256(
-        "\n".join([*identity, reuse_identity]).encode()
+        "\n".join([*identity, ""]).encode()
     ).hexdigest()[:32]
     hospitals: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
     for (
@@ -346,16 +349,10 @@ def build_generation_blocked_digest_intent(
     hidden = len(hospitals) - len(shown)
     lines = []
     for (_hospital_id, hospital_name), items in shown:
-        detail = " · ".join(
-            f"{_publish_safe_text(title, 60)}({_publish_safe_text(cause, 80)})"
-            for title, _code, cause in items[:_DIGEST_MAX_ITEMS_PER_HOSPITAL]
-        )
-        remainder = len(items) - min(len(items), _DIGEST_MAX_ITEMS_PER_HOSPITAL)
-        if remainder > 0:
-            detail = f"{detail} · 그 외 {remainder}건"
-        lines.append(
-            f"• *{_publish_safe_text(hospital_name, 100)}* 차단 {len(items)}건\n  {detail}"
-        )
+        counts = Counter(blocker_copy(code).title for _title, code, _cause in items)
+        detail = " · ".join(f"{label} {count}편" for label, count in sorted(counts.items()))
+        actions = list(dict.fromkeys(blocker_copy(code).action for _title, code, _cause in items))
+        lines.append(f"• *{_publish_safe_text(hospital_name, 80)}* — 발행 보류 {len(items)}편\n  {detail}\n  {' '.join(actions[:2])}")
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}곳")
     summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
@@ -364,12 +361,12 @@ def build_generation_blocked_digest_intent(
         # 대표 이미지를 쓴 것을 한 수로 세되, 어느 쪽인지는 아래 섹션 줄이 말한다.
         summary = f"대표 이미지 대체 발행 {len(reused_outcomes)}건"
     blocks = [
-        header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
+        header_block("generation_blocked_digest_header", "[조치 필요] 발행을 마치지 못한 글" if entries else "[자동 처리] 대체 이미지 발행"),
         section_block("generation_blocked_digest_summary", f"*{summary}*"),
     ]
-    if lines:
-        blocks.append(section_block("generation_blocked_digest_items", "\n".join(lines)))
-    if reuse_lines:
+    for index, chunk in enumerate(chunk_lines(lines)):
+        blocks.append(section_block(f"generation_blocked_digest_items_{index}", chunk))
+    if reuse_lines and not entries:
         # 새 Slack 메시지를 만들지 않는다 — 같은 08:00 요약 안의 한 섹션이다.
         blocks.append(
             section_block(
@@ -384,9 +381,9 @@ def build_generation_blocked_digest_intent(
     )
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: 자동 발행 차단 {summary} · "
-            "고객 영향: 예정 글이 공개되지 않음 · "
-            "지금 할 일: 운영센터에서 차단 항목 조치 · 처리 기한: 오늘 중",
+            (f"[조치 필요] {summary} | " + " / ".join(_publish_safe_text(name, 60) for (_id, name), _items in shown)
+             + " | 콘텐츠에서 해당 글의 사유를 확인해 주세요.") if entries else
+            f"[자동 처리] {summary} | 추가 조치가 필요하지 않습니다.",
             tuple(blocks),
             action_url,
         ),
@@ -421,9 +418,11 @@ def build_generation_rejection_weekly_rollup_intent(
     hospitals: dict[tuple[str, str], dict[str, int]] = {}
     item_count = 0
     for outcome in rejected_outcomes:
+        if outcome.get("requires_action") is False:
+            continue
         hospital_id = str(outcome.get("hospital_id") or "")
         hospital_name = str(outcome.get("hospital_name") or "이름 미확인 병원")
-        reason = str(outcome.get("reason") or "생성 검수 차단 원인을 확인해야 합니다.")
+        reason = blocker_copy(outcome.get("code")).title
         counts = hospitals.setdefault((hospital_id, hospital_name), {})
         counts[reason] = counts.get(reason, 0) + 1
         item_count += 1
@@ -441,7 +440,7 @@ def build_generation_rejection_weekly_rollup_intent(
         )
         if remaining_reasons > 0:
             details = f"{details} · 그 외 원인 {remaining_reasons}개"
-        lines.append(f"• *{_publish_safe_text(hospital_name, 100)}*\n  {details}")
+        lines.append(f"• *{_publish_safe_text(hospital_name, 100)}*\n  {details}\n  콘텐츠에서 차단 사유와 병원 근거 자료를 확인해 주세요.")
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}곳")
 
@@ -456,7 +455,7 @@ def build_generation_rejection_weekly_rollup_intent(
         (
             section_block(
                 "generation_rejection_weekly_yield_summary",
-                f"*계약 예정 대비 발행 · {yield_summary}*",
+                f"*지난주 예정 글의 발행 실적 · {yield_summary}*",
             ),
             *(
                 section_block(f"generation_rejection_weekly_yield_{index}", chunk)
@@ -475,13 +474,11 @@ def build_generation_rejection_weekly_rollup_intent(
     next_action = (
         "운영센터에서 원인과 승인 자료 확인"
         if item_count
-        else "운영센터에서 병원별 발행 수율 확인"
+        else "추가 조치 없음"
     )
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: 주간 콘텐츠 발행 현황 {summary} · "
-            "고객 영향: 차단된 원고가 자동 발행 준비를 마치지 못함 · "
-            f"지금 할 일: {next_action} · 처리 기한: 이번 주",
+            f"[주간 요약] {week_start.isoformat()}~{week_end.isoformat()} · {summary} | {next_action}",
             (
                 header_block("generation_rejection_weekly_header", "주간 콘텐츠 발행 요약"),
                 section_block(
@@ -489,6 +486,8 @@ def build_generation_rejection_weekly_rollup_intent(
                     f"*{week_start.isoformat()}–{week_end.isoformat()} · {summary}*",
                 ),
                 *yield_blocks,
+                section_block("generation_rejection_weekly_scope", "현재 확인할 일입니다. 아래 미해결 항목은 지난주 발행 대상과 기간이 다를 수 있습니다."
+                    if item_count else "현재 확인이 필요한 생성 차단 항목은 없습니다."),
                 *blocked_blocks,
                 action_block(
                     "generation_rejection_weekly_action",
@@ -557,7 +556,7 @@ def enqueue_generation_blocked_digest_sync(
 ) -> NotificationOutbox | None:
     """Add at most one digest for an unchanged blocked-publication set."""
 
-    if not blocked_outcomes and not reused_outcomes:
+    if not blocked_outcomes:
         return None
     intent = build_generation_blocked_digest_intent(
         cycle_date, batch, blocked_outcomes, reused_outcomes=reused_outcomes

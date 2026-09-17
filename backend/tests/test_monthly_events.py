@@ -104,9 +104,9 @@ def test_complete_coverage_without_artifact_is_internal_pending_not_customer_rea
     # When: it is projected for internal operations
     projection = project_monthly_event(event)
 
-    # Then: it requires an internal action and never claims CUSTOMER_READY
+    # Then: it remains visible as progress but creates no manual PDF-validation task
     assert projection.kind.value == "MONTHLY_ARTIFACT_PENDING"
-    assert projection.requires_action is True
+    assert projection.requires_action is False
     assert "CUSTOMER_READY" not in projection.stable_id
 
 
@@ -121,7 +121,7 @@ def test_complete_coverage_without_artifact_is_internal_pending_not_customer_rea
         ),
         (
             MonthlyRunStage.ARTIFACT_VALIDATION_PENDING,
-            "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
+            "자동 검증이 끝나면 전달 준비 알림을 보냅니다. 지금은 다시 만들기를 누르지 마세요.",
         ),
         (
             MonthlyRunStage.ARTIFACT_VALIDATED,
@@ -255,8 +255,8 @@ def test_blocked_monthly_action_and_link_point_to_the_same_report_work() -> None
     assert projection.admin_path == (
         f"/hospitals/{event.hospital_id}/reports?report={event.report_id}"
     )
-    assert "리포트 화면에서 차단 사유" in projection.next_action
-    assert "개발팀 문의용 정보 복사" in projection.next_action
+    assert "보고서 화면에서 누락된 측정과 최종 오류" in projection.next_action
+    assert "준비되지 않은 레포트는 전달하지 마세요" in projection.next_action
     assert "차단 사유 확인" in payload_json
     assert f"{_ADMIN}{projection.admin_path}" in payload_json
 
@@ -301,10 +301,10 @@ def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -
     # Then: one deterministic summary hides internal IDs and has exactly one deep link
     payload_json = first.message.payload_json()
     assert first.dedupe_key == second.dedupe_key
-    assert first.message.fallback_text.startswith("무슨 문제인지: 운영 마일스톤 2건")
+    assert first.message.fallback_text.startswith("[업무 알림] 2건")
     assert all(
         label in first.message.fallback_text
-        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+        for label in ("한결의원", "장편한외과의원", "2026년 7월")
     )
     assert overdue.stable_id not in payload_json
     assert blocked.stable_id not in payload_json
@@ -313,9 +313,9 @@ def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -
     assert json.loads(payload_json)["text"] == first.message.fallback_text
     assert all(
         label in payload_json
-        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:")
+        for label in ("고객 인계", "보고서 화면에서", "관련 작업")
     )
-    assert "처리 기한:" in payload_json
+    assert "기한 없음" not in payload_json
     assert "SLA:" not in payload_json
     assert "T08:00:00" not in payload_json
     assert "관련 작업 모아보기" in payload_json
@@ -333,7 +333,7 @@ def _sov_summary(**overrides):
     payload = {
         "sov_pct": 47.0,
         "prev_sov_pct": 39.0,
-        "comparison": {"significance": "WITHIN_NOISE"},
+        "comparison": {"status": "COMPARABLE", "significance": "WITHIN_NOISE"},
     }
     payload.update(overrides)
     return payload
@@ -342,13 +342,13 @@ def _sov_summary(**overrides):
 def test_monthly_headline_label_reads_count_delta_and_significance() -> None:
     from app.services.monthly_events import monthly_headline_label
 
-    assert monthly_headline_label(_sov_summary()) == "언급 47번(전월 대비 +8번, 정상 변동 범위)"
+    assert monthly_headline_label(_sov_summary()) == "확정 답변 100번 기준 47번 언급 · 전월 대비 +8번"
     assert monthly_headline_label(
-        _sov_summary(comparison={"significance": "SIGNIFICANT_UP"})
-    ) == "언급 47번(전월 대비 +8번, 의미 있는 상승)"
+        _sov_summary(comparison={"status": "COMPARABLE", "significance": "SIGNIFICANT_UP"})
+    ) == "확정 답변 100번 기준 47번 언급 · 전월 대비 +8번"
     assert monthly_headline_label(
-        _sov_summary(sov_pct=31.0, comparison={"significance": "SIGNIFICANT_DOWN"})
-    ) == "언급 31번(전월 대비 -8번, 의미 있는 하락)"
+        _sov_summary(sov_pct=31.0, comparison={"status": "COMPARABLE", "significance": "SIGNIFICANT_DOWN"})
+    ) == "확정 답변 100번 기준 31번 언급 · 전월 대비 -8번"
 
 
 def test_monthly_headline_label_never_invents_a_missing_number() -> None:
@@ -357,19 +357,19 @@ def test_monthly_headline_label_never_invents_a_missing_number() -> None:
     assert monthly_headline_label(_sov_summary(sov_pct=None)) is None
     assert monthly_headline_label(None) is None
     # 전월이 없으면 델타를 만들지 않고 이번 달만 말한다.
-    assert monthly_headline_label(_sov_summary(prev_sov_pct=None)) == "언급 47번"
+    assert monthly_headline_label(_sov_summary(prev_sov_pct=None)) == "확정 답변 100번 기준 47번 언급"
     # 유의성 판정이 없으면 괄호에 판정을 넣지 않는다.
-    assert monthly_headline_label(_sov_summary(comparison={})) == "언급 47번(전월 대비 +8번)"
+    assert monthly_headline_label(_sov_summary(comparison={})) == "확정 답변 100번 기준 47번 언급"
     # 비교가 성립하지 않은 달에는 델타를 쓰지 않는다 — 원장 리포트도 쓰지 않는다.
     assert monthly_headline_label(
         _sov_summary(comparison={"status": "NON_COMPARABLE", "reason": "MEASUREMENT_POLICY_CHANGED"})
-    ) == "언급 47번"
+    ) == "확정 답변 100번 기준 47번 언급"
 
 
 def test_monthly_slack_summary_line_carries_the_headline_numbers() -> None:
     event = _monthly(
         MonthlyEventType.CUSTOMER_READY,
-        headline_label="언급 47번(전월 대비 +8번, 정상 변동 범위)",
+        headline_label="확정 답변 100번 기준 47번 언급 · 전월 대비 +8번",
     )
     projection = project_monthly_event(event)
     batch = MilestoneBatch((projection,), _NOW - timedelta(hours=1), _NOW)
@@ -377,22 +377,18 @@ def test_monthly_slack_summary_line_carries_the_headline_numbers() -> None:
     intent = build_milestone_summary_notification(batch, _ADMIN)
     body = intent.message.payload_json()
 
-    assert "언급 47번(전월 대비 +8번, 정상 변동 범위)" in body
-    assert body.count("언급 47번") == 1
+    assert "확정 답변 100번 기준 47번 언급 · 전월 대비 +8번" in body
+    assert body.count("47번 언급") == 1
 
 
 def test_monthly_action_notification_carries_the_headline_numbers() -> None:
-    event = _monthly(
-        MonthlyEventType.ARTIFACT_VALIDATION_PENDING,
-        artifact_state=ReportArtifactState.MISSING,
-        doctor_artifact_id=None,
-        delivery_ready=False,
-        headline_label="언급 47번(전월 대비 +8번, 정상 변동 범위)",
-    )
-
-    intent = build_milestone_action_notification(project_monthly_event(event), _ADMIN)
-
-    assert "언급 47번" in intent.message.payload_json()
+    event = _monthly(MonthlyEventType.CUSTOMER_READY,
+        headline_label="확정 답변 100번 기준 47번 언급 · 전월 대비 +8번")
+    projection = project_monthly_event(event)
+    assert projection.requires_action
+    intent = build_milestone_action_notification(projection, _ADMIN)
+    assert "47번 언급" in intent.message.payload_json()
+    assert "전달 기록" in intent.message.payload_json()
 
 
 def test_a_milestone_without_a_headline_adds_no_extra_line() -> None:

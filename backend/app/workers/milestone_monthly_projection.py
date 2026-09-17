@@ -24,7 +24,7 @@ from app.services.monthly_events import (
 from app.services.monthly_report_delivery import coverage_is_final
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import MilestoneKind, MilestoneProjection
-from app.workers.milestone_monthly_facts import ReportFacts, load_report_facts
+from app.workers.milestone_monthly_facts import ReportFacts, latest_report_facts, load_report_facts
 from app.workers.milestone_projection_support import (
     MilestoneStateScan,
     ProjectionWindow,
@@ -52,7 +52,7 @@ async def scan_monthly_milestones(
     facts_by_report = await load_report_facts(db)
     projections = [
         current
-        for facts in facts_by_report.values()
+        for facts in latest_report_facts(facts_by_report)
         if (current := _project_current(facts, window)) is not None
     ]
     projections.extend(
@@ -71,7 +71,7 @@ async def observe_monthly_milestones(
 
     facts_by_report = await load_report_facts(db)
     observed: list[tuple[ReportFacts, tuple[str, MilestoneProjection]]] = []
-    for facts in facts_by_report.values():
+    for facts in latest_report_facts(facts_by_report):
         try:
             observed.append((facts, _project_observed_current(facts, observed_at)))
         except NotificationPayloadError as exc:
@@ -164,6 +164,8 @@ def _project_observed_current(
 
 def _current_state(facts: ReportFacts) -> MonthlyEventType:
     report = facts.report
+    if "CURRENT_READINESS_BLOCKED" in facts.blockers:
+        return MonthlyEventType.BLOCKED
     if facts.ready and facts.artifact is not None:
         return MonthlyEventType.CUSTOMER_READY
     coverage_complete = (

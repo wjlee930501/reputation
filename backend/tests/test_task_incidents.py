@@ -190,10 +190,10 @@ async def test_exact_run_failure_opens_then_same_run_success_recovers(
             rendered = json.dumps(open_notice.payload, ensure_ascii=False)
             assert all(
                 label in rendered
-                for label in ("무슨 문제인지", "고객 영향", "지금 할 일")
+                for label in ("백그라운드 작업 중단", "개발 담당자", "지금 할 일")
             )
-            assert "운영센터에서 조치하기" in rendered
-            assert "개발팀에 전달할 정보" in rendered
+            assert "작업 오류 보기" in rendered
+            assert "참조 OPS-" in rendered
             assert "private@example.com" not in rendered
 
         assert task_incident_control.record_task_success(celery_task, "unrelated-task") is False
