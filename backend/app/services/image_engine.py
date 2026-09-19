@@ -1143,7 +1143,7 @@ def _openai_generate_verified_bytes(
         images, body = openrouter.generate_image(
             model=settings.OPENAI_IMAGE_MODEL,
             prompt=prompt,
-            aspect_ratio=settings.IMAGE_ASPECT_RATIO,
+            aspect_ratio=settings.OPENAI_IMAGE_ASPECT_RATIO,
             quality=settings.OPENAI_IMAGE_QUALITY,
         )
         if event is not None:
