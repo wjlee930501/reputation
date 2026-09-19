@@ -409,6 +409,110 @@ def test_independent_backend_deploys_keep_one_source_revision(tmp_path: Path) ->
     assert set(release_lines) == {'env REPUTATION_RELEASE_REVISION: "same-source-sha"'}
 
 
+def _api_deploy_line(command_log: Path) -> str:
+    return next(
+        line
+        for line in command_log.read_text().splitlines()
+        if line.startswith("gcloud run deploy reputation-api")
+    )
+
+
+def test_short_vpc_connector_name_is_normalized_to_the_full_resource_path(
+    tmp_path: Path,
+) -> None:
+    """Cloud Run v2는 bare connector 이름을 update 요청에서 거부한다.
+
+    짧은 이름으로 배포하면 어노테이션에 짧은 값이 기록되고, 이후 terraform apply가
+    그 값을 그대로 실어 보내 400으로 실패한다 — deploy.sh가 항상 풀 경로로 정규화한다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            VPC_CONNECTOR="reputation-vpc-connector",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    deploy = _api_deploy_line(command_log)
+    assert (
+        "--vpc-connector=projects/test-project/locations/asia-northeast3"
+        "/connectors/reputation-vpc-connector" in deploy
+    )
+    assert "--vpc-connector=reputation-vpc-connector" not in deploy
+    assert "--vpc-egress=private-ranges-only" in deploy
+
+
+def test_full_vpc_connector_path_is_passed_through_unchanged(tmp_path: Path) -> None:
+    """Shared VPC의 host project connector는 명시된 풀 경로 그대로 나가야 한다.
+
+    짧은 이름은 서비스 프로젝트·리전으로 해석되므로, 정규화가 이미 풀 경로인 값을
+    다시 감싸면 다른 프로젝트의 connector를 가리키게 된다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    host_connector = (
+        "projects/shared-host/locations/asia-northeast3/connectors/reputation-vpc-connector"
+    )
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            VPC_CONNECTOR=host_connector,
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    deploy = _api_deploy_line(command_log)
+    assert f"--vpc-connector={host_connector}" in deploy
+    assert "connectors/projects" not in deploy
+
+
+def test_disabled_vpc_attachment_passes_no_connector_flag(tmp_path: Path) -> None:
+    """GCP_ATTACH_VPC_CONNECTOR=0이면 정규화 결과와 무관하게 플래그 자체가 빠진다."""
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            GCP_ATTACH_VPC_CONNECTOR="0",
+            VPC_CONNECTOR="reputation-vpc-connector",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text()
+    assert "--vpc-connector" not in commands
+    assert "--vpc-egress" not in commands
+
+
 def test_backend_deploy_rejects_unknown_release_revision_before_mutation(tmp_path: Path) -> None:
     project, fake_bin, command_log = _make_project(tmp_path)
     shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
@@ -811,7 +915,10 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "--set-cloudsql-instances=test-project:asia-northeast3:reputation-db"
             in deploy
         )
-        assert "--vpc-connector=reputation-vpc-connector" in deploy
+        assert (
+            "--vpc-connector=projects/test-project/locations/asia-northeast3"
+            "/connectors/reputation-vpc-connector" in deploy
+        )
         assert "--vpc-egress=private-ranges-only" in deploy
 
     assert "--build-arg NEXT_PUBLIC_GCP_STORAGE_BUCKET=reputation-assets" in commands
