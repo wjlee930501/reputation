@@ -416,20 +416,6 @@ variable "redis_auth_enabled" {
 }
 
 # ── IAM (least privilege) ─────────────────────────────────────────
-variable "aiplatform_role" {
-  description = <<-EOT
-    Vertex AI role retained for the OpenRouter transition (INFRA-7). New code
-    paths call Vertex only through OpenRouter, but the currently deployed
-    revisions still call it directly, so revoking the role would break a traffic
-    rollback. Defaults to the broad predefined roles/aiplatform.user; override
-    with a custom role (e.g. "projects/<project>/roles/vertexImagePredictor"
-    carrying only aiplatform.endpoints.predict) to follow least-privilege, and
-    drop the variable entirely in the separate post-transition cleanup change.
-  EOT
-  type        = string
-  default     = "roles/aiplatform.user"
-}
-
 variable "certificate_manager_role" {
   description = <<-EOT
     Role used by the backend/worker for idempotent customer certificate and

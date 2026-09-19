@@ -19,51 +19,6 @@ import {
   id = "projects/${var.project_id}/secrets/OPENROUTER_API_KEY"
 }
 
-# ── 공급자 직결 시크릿 — 롤백 가능성을 위해 보존한다 ────────────────────
-#
-# OpenRouter 전환은 **추가**이지 교체가 아니다. 지금 운영에 떠 있는 리비전은
-# 자기 리비전 spec에 ANTHROPIC/OPENAI/GEMINI secret mount를 그대로 들고 있고,
-# Cloud Run은 인스턴스를 새로 띄울 때마다(재기동·확장·트래픽 롤백) 그 mount를
-# 다시 해석한다. 시크릿 컨테이너나 접근 권한을 먼저 지우면 "구 리비전으로
-# 트래픽을 되돌린다"는 롤백 수단 자체가 같이 사라진다.
-#
-# 그래서 이 세 리소스는 새 경로가 쓰지 않더라도 state에 남긴다. 아래
-# prevent_destroy는 실수로 지우는 apply를 계획 단계에서 멈춘다. 실제 정리는
-# 새 스택의 기능 검증과 롤백 불필요 판단이 끝난 뒤 **별도 변경**에서 이
-# lifecycle 블록까지 함께 지우며 수행한다.
-resource "google_secret_manager_secret" "anthropic_api_key" {
-  secret_id = "ANTHROPIC_API_KEY"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "google_secret_manager_secret" "openai_api_key" {
-  secret_id = "OPENAI_API_KEY"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
-resource "google_secret_manager_secret" "gemini_api_key" {
-  secret_id = "GEMINI_API_KEY"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-  lifecycle {
-    prevent_destroy = true
-  }
-}
-
 resource "google_secret_manager_secret" "slack_webhook_url" {
   secret_id = "SLACK_WEBHOOK_URL"
   project   = var.project_id
@@ -219,16 +174,6 @@ locals {
     NHN_SMS_SECRET_KEY       = google_secret_manager_secret.nhn_sms_secret_key.secret_id
   }
 
-  # 구 리비전이 자기 spec의 mount를 해석할 때만 필요한 시크릿. app_secret_env와
-  # 분리해 두는 이유는 두 가지다 — 새 리비전의 env/mount 모양을 되돌리지 않고,
-  # deploy.sh의 필수 시크릿 preflight에 죽은 키를 다시 끌어들이지 않는다.
-  # 접근 권한은 유지한다: 권한이 없으면 구 리비전은 시크릿이 남아 있어도 뜨지 않는다.
-  legacy_provider_secret_env = {
-    ANTHROPIC_API_KEY = google_secret_manager_secret.anthropic_api_key.secret_id
-    OPENAI_API_KEY    = google_secret_manager_secret.openai_api_key.secret_id
-    GEMINI_API_KEY    = google_secret_manager_secret.gemini_api_key.secret_id
-  }
-
   # 프론트엔드(Next.js) 서비스가 마운트하는 secret — admin BFF 세션/키, site
   # revalidate/BFF 인증. 백엔드 전용 secret(API 키·DB 비밀번호)에는 접근 불가.
   admin_secret_env = {
@@ -251,17 +196,6 @@ locals {
 # (iam_binding은 role 단위 authoritative라 두 SA를 한 리소스에서 관리해야 해서 부적합.)
 resource "google_secret_manager_secret_iam_member" "app_access" {
   for_each  = local.app_secret_env
-  project   = var.project_id
-  secret_id = each.value
-  role      = "roles/secretmanager.secretAccessor"
-  member    = "serviceAccount:${google_service_account.app.email}"
-}
-
-# 구 리비전 롤백용 접근 권한. 새 코드 경로는 이 키들을 읽지 않지만, 권한을 먼저
-# 회수하면 구 리비전이 기동 중 secret mount 해석에서 실패한다. 시크릿 컨테이너와
-# 같은 정리 변경에서 함께 제거한다.
-resource "google_secret_manager_secret_iam_member" "app_access_legacy_providers" {
-  for_each  = local.legacy_provider_secret_env
   project   = var.project_id
   secret_id = each.value
   role      = "roles/secretmanager.secretAccessor"
