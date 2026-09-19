@@ -259,3 +259,71 @@ def test_production_warns_on_empty_flow_secrets_and_placeholder_buckets(monkeypa
     # 전역 유일 제약상 placeholder 기본 버킷명 감지 경고.
     assert "GCP_STORAGE_BUCKET" in text
     assert "GCS_REPORTS_BUCKET" in text
+
+
+# ── OpenRouter 모델 슬러그 ──────────────────────────────────────────
+#
+# 모든 모델 호출이 게이트웨이 하나로 나가므로 모델 식별자도 전부 `vendor/model`이다.
+# 전환 전 `.env.production`·Cloud Run에 남은 공급자 직결 이름은 config.py의 새 기본값을
+# 덮어쓰고, 게이트웨이는 그 이름을 찾지 못한다 — 키만 바꿔 배포하면 콘텐츠 생성·SoV
+# 측정·이미지가 함께 멈춘다.
+
+
+def test_provider_direct_model_names_are_converted_to_openrouter_slugs(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="app.core.config"):
+        settings = Settings(
+            _env_file=None,
+            CLAUDE_MODEL="claude-sonnet-4-5-20250929",
+            OPENAI_MODEL_PARSE="gpt-4o-mini-2024-07-18",
+            GEMINI_MODEL="gemini-3.6-flash",
+            OPENAI_IMAGE_MODEL="gpt-5-image-mini",
+        )
+
+    assert settings.CLAUDE_MODEL == "anthropic/claude-sonnet-4-5-20250929"
+    assert settings.OPENAI_MODEL_PARSE == "openai/gpt-4o-mini-2024-07-18"
+    assert settings.GEMINI_MODEL == "google/gemini-3.6-flash"
+    assert settings.OPENAI_IMAGE_MODEL == "openai/gpt-5-image-mini"
+    # 조용히 고치면 다음 배포에서 같은 값이 또 들어온다 — 로그로 남긴다.
+    assert "CLAUDE_MODEL" in caplog.text
+
+
+def test_model_names_without_an_inferable_vendor_are_rejected(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+
+    with pytest.raises(ValueError, match="CLAUDE_MODEL"):
+        Settings(_env_file=None, CLAUDE_MODEL="our-internal-writer-v3")
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "models/gemini-3.6-flash",
+        "projects/p/locations/asia-northeast3/publishers/google/models/gemini-3.6-flash",
+        "/gemini-3.6-flash",
+        "google/",
+    ],
+)
+def test_provider_resource_paths_are_not_mistaken_for_slugs(monkeypatch, value):
+    """슬래시가 있다고 슬러그인 것은 아니다 — 마지막 `/` 뒤만 보는 검사의 구멍."""
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+
+    with pytest.raises(ValueError, match="GEMINI_MODEL"):
+        Settings(_env_file=None, GEMINI_MODEL=value)
+
+
+def test_vendor_prefixed_slugs_and_empty_overrides_pass_through(monkeypatch):
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+
+    settings = Settings(
+        _env_file=None,
+        CLAUDE_MODEL="anthropic/claude-sonnet-5",
+        # 빈 값은 "기본값(CLAUDE_MODEL_FAST)을 쓴다"는 뜻이라 통과해야 한다.
+        AUTOFILL_MODEL="",
+    )
+
+    assert settings.CLAUDE_MODEL == "anthropic/claude-sonnet-5"
+    assert settings.AUTOFILL_MODEL == ""

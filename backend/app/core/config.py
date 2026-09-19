@@ -4,7 +4,7 @@ import os
 from typing import Annotated
 from urllib.parse import quote, urlparse
 
-from pydantic import field_validator
+from pydantic import ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -20,6 +20,85 @@ _CRITICAL_PRODUCTION_SECRETS = (
     # 공유 키만 아는 쪽이 세션 없이 admin API를 조작할 수 있다(H-10).
     "BFF_ACTOR_SECRET",
 )
+
+
+# OpenRouter는 모델을 `vendor/model` 슬러그로만 받는다. 전환 전 `.env.production`과
+# Cloud Run에는 공급자 직결 이름(`claude-sonnet-4-5-20250929`, `gpt-4o-mini`,
+# `gemini-2.5-flash`)이 그대로 남아 있고, 기존 값은 새 기본값을 덮어쓴다. 키만 바꾸고
+# 그 값을 그대로 들고 뜨면 게이트웨이가 404를 돌려주어 콘텐츠·SoV·이미지가 함께 멈춘다.
+# 접두사로 공급자를 특정할 수 있으면 슬러그로 바꾸고, 특정할 수 없으면 부팅을 막는다.
+_BARE_MODEL_VENDORS: tuple[tuple[str, str], ...] = (
+    ("claude-", "anthropic"),
+    ("chatgpt-", "openai"),
+    ("gpt-", "openai"),
+    ("dall-e-", "openai"),
+    ("o1-", "openai"),
+    ("o3-", "openai"),
+    ("o4-", "openai"),
+    ("gemini-", "google"),
+    ("gemma-", "google"),
+    ("imagen-", "google"),
+    ("grok-", "x-ai"),
+    ("llama-", "meta-llama"),
+    ("mistral-", "mistralai"),
+    ("mixtral-", "mistralai"),
+    ("deepseek-", "deepseek"),
+    ("qwen", "qwen"),
+)
+
+# 슬래시가 있다고 슬러그인 것은 아니다. 공급자 직결 SDK와 Vertex는 자원 경로를 쓰는데
+# (`models/gemini-2.5-flash`, `projects/p/locations/l/publishers/google/models/...`),
+# 마지막 `/` 뒤만 보는 검사는 그 형태를 전부 통과시킨다.
+_NON_VENDOR_PATH_SEGMENTS = frozenset(
+    {"models", "model", "projects", "publishers", "locations", "v1", "v1beta", "v1beta1"}
+)
+
+# 이 설정들의 값은 전부 OpenRouter 슬러그다. 빈 값은 "기본값을 쓴다"는 뜻이라 통과시킨다.
+_OPENROUTER_MODEL_FIELDS = (
+    "CLAUDE_MODEL",
+    "CLAUDE_MODEL_FAST",
+    "AUTOFILL_MODEL",
+    "GOOGLE_IMAGE_MODEL",
+    "OPENAI_IMAGE_MODEL",
+    "OPENAI_MODEL_QUERY",
+    "OPENAI_MODEL_PARSE",
+    "GEMINI_MODEL",
+)
+
+
+def normalize_openrouter_model(field_name: str, value: str) -> str:
+    """`vendor/model` 슬러그로 정규화한다. 공급자를 특정할 수 없으면 ValueError."""
+
+    slug = value.strip()
+    if not slug:
+        return ""
+
+    if "/" in slug:
+        vendor, _, model = slug.partition("/")
+        if not vendor or not model or "/" in model or vendor in _NON_VENDOR_PATH_SEGMENTS:
+            raise ValueError(
+                f"{field_name}={value!r} is not an OpenRouter model slug. Every model call goes "
+                "through the OpenRouter gateway, which expects exactly one 'vendor/model' pair "
+                "(e.g. anthropic/claude-sonnet-5) — not a provider resource path."
+            )
+        return slug
+
+    for prefix, vendor in _BARE_MODEL_VENDORS:
+        if slug.startswith(prefix):
+            converted = f"{vendor}/{slug}"
+            logger.warning(
+                "%s=%s 는 공급자 직결 모델명이다 — OpenRouter 슬러그 %s로 해석한다. "
+                "환경변수를 슬러그로 고쳐 두어야 공급자를 바꿀 때 값이 따라간다.",
+                field_name,
+                slug,
+                converted,
+            )
+            return converted
+
+    raise ValueError(
+        f"{field_name}={value!r} has no vendor prefix and no known vendor could be inferred. "
+        "Set it to an OpenRouter 'vendor/model' slug (see https://openrouter.ai/models)."
+    )
 
 
 def _resolve_secret(name: str, default: str = "") -> str:
@@ -294,6 +373,25 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in stripped.split(",") if origin.strip()]
         return value
 
+    @field_validator(*_OPENROUTER_MODEL_FIELDS)
+    @classmethod
+    def _normalize_model_slug(cls, value: str, info: ValidationInfo) -> str:
+        return normalize_openrouter_model(info.field_name or "model", value)
+
+    @field_validator("OPENAI_IMAGE_ASPECT_RATIO")
+    @classmethod
+    def _validate_openai_image_aspect_ratio(cls, value: str) -> str:
+        # OpenRouter의 gpt-5-image 계열이 받는 값 전부. 여기서 막지 않으면 잘못된 비율이
+        # 폴백 호출에서만, 그것도 기본 경로가 이미 실패한 뒤에야 400으로 드러난다.
+        allowed = {"1:1", "3:2", "2:3", "auto"}
+        ratio = value.strip()
+        if ratio not in allowed:
+            raise ValueError(
+                f"OPENAI_IMAGE_ASPECT_RATIO={value!r} is not supported by the OpenAI image "
+                f"models on OpenRouter. Use one of {', '.join(sorted(allowed))}."
+            )
+        return ratio
+
     @field_validator("SOV_TRACKING_SET_N_DEFAULT")
     @classmethod
     def _validate_tracking_set_size(cls, value: int) -> int:
@@ -368,10 +466,17 @@ class Settings(BaseSettings):
     IMAGE_FALLBACK_PROVIDER: str = "openai"
     GOOGLE_IMAGE_MODEL: str = "google/gemini-3.1-flash-image"
     GOOGLE_IMAGE_RESOLUTION: str = "1K"  # OpenRouter images 엔드포인트의 resolution 값
-    IMAGE_ASPECT_RATIO: str = "16:9"  # 카드 레이아웃 일치
+    # 기본 Google 경로의 비율. gemini-3.1-flash-image의 aspect_ratio enum에 16:9가 있어
+    # 카드 레이아웃과 그대로 맞는다.
+    IMAGE_ASPECT_RATIO: str = "16:9"
     # OpenAI 계열 이미지 모델(OpenRouter 슬러그). 폴백 경로라 속도·단가가 낮은
     # mini 티어를 쓴다 — 정밀 편집이 필요하면 gpt-5-image로 되돌릴 수 있다.
     OPENAI_IMAGE_MODEL: str = "openai/gpt-5-image-mini"
+    # 폴백 경로는 비율을 따로 갖는다. **gpt-5-image 계열은 16:9를 지원하지 않는다** —
+    # aspect_ratio enum이 1:1 / 3:2 / 2:3 / auto뿐이라(mini·비-mini 동일), 공통 16:9를
+    # 그대로 보내면 폴백이 400으로 죽는다. 즉 기본 경로가 실패했을 때만 도는 경로가
+    # 항상 실패하는 상태가 된다. 지원 목록 중 카드에 가장 가까운 가로 비율이 3:2다.
+    OPENAI_IMAGE_ASPECT_RATIO: str = "3:2"
     OPENAI_IMAGE_QUALITY: str = "high"  # auto|low|medium|high (OpenRouter /images)
 
     # OpenAI 계열 — SoV (OpenRouter 경유)

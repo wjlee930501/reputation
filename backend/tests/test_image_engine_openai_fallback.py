@@ -9,6 +9,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from app.models.content import ContentType
 from app.services import image_engine
@@ -266,7 +267,12 @@ def test_openai_fallback_also_runs_for_the_policy_repair_candidate(
 
 
 def test_openai_image_request_uses_the_configured_openrouter_model(monkeypatch):
-    """생성은 OpenRouter /images 엔드포인트 하나로 나간다 — 모델 슬러그·비율·품질을 확인."""
+    """생성은 OpenRouter /images 엔드포인트 하나로 나간다 — 모델 슬러그·비율·품질을 확인.
+
+    비율은 공통 IMAGE_ASPECT_RATIO가 아니라 OPENAI_IMAGE_ASPECT_RATIO를 쓴다.
+    gpt-5-image 계열이 받는 값은 1:1 / 3:2 / 2:3 / auto뿐이라, 기본 경로의 16:9를
+    그대로 보내면 폴백이 400으로 죽는다.
+    """
 
     captured = {}
 
@@ -278,6 +284,7 @@ def test_openai_image_request_uses_the_configured_openrouter_model(monkeypatch):
     monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_MODEL", "openai/gpt-5-image-mini")
     monkeypatch.setattr(image_engine.settings, "IMAGE_ASPECT_RATIO", "16:9")
+    monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_ASPECT_RATIO", "3:2")
     monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_QUALITY", "high")
     monkeypatch.setattr(
         image_engine,
@@ -295,5 +302,17 @@ def test_openai_image_request_uses_the_configured_openrouter_model(monkeypatch):
 
     assert image_bytes == b"png"
     assert captured["model"] == "openai/gpt-5-image-mini"
-    assert captured["aspect_ratio"] == "16:9"
+    assert captured["aspect_ratio"] == "3:2"
     assert captured["quality"] == "high"
+
+
+def test_openai_image_aspect_ratio_default_is_one_the_model_supports():
+    """기본값이 지원 목록 밖이면 폴백은 "기본 경로가 실패했을 때만 항상 실패"가 된다."""
+
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None)
+    assert settings.OPENAI_IMAGE_ASPECT_RATIO in {"1:1", "3:2", "2:3", "auto"}
+
+    with pytest.raises(ValidationError, match="OPENAI_IMAGE_ASPECT_RATIO"):
+        Settings(_env_file=None, OPENAI_IMAGE_ASPECT_RATIO="16:9")
