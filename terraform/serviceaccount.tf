@@ -15,12 +15,17 @@ resource "google_service_account" "app" {
 #   - roles/logging.logWriter    — required: structured logs to Cloud Logging.
 #   - roles/monitoring.metricWriter, roles/cloudtrace.agent,
 #     roles/errorreporting.writer — required: observability signals.
-# 모든 LLM·이미지 생성 호출은 OpenRouter API로 나가므로 Vertex AI 권한은 두지 않는다.
+#   - var.aiplatform_role        — 새 코드 경로는 쓰지 않는다. 모든 LLM·이미지 호출은
+#       OpenRouter로 나간다. 그래도 전환 기간에는 남긴다: 지금 떠 있는 구 리비전의
+#       이미지 생성은 여전히 Vertex를 직접 부르므로, 권한을 먼저 회수하면 트래픽
+#       롤백이 "떠 있지만 이미지를 못 만드는" 상태로 돌아간다. 새 스택 검증과
+#       롤백 불필요 판단이 끝난 뒤 별도 정리 변경에서 이 항목과 변수를 함께 지운다.
 # Storage (per-bucket) and Secret Manager (per-secret) bindings are already
 # scoped narrowly below / in secretmanager.tf.
 resource "google_project_iam_member" "roles" {
   for_each = toset([
     "roles/cloudsql.client",
+    var.aiplatform_role,
     var.certificate_manager_role,
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",

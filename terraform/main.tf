@@ -42,6 +42,9 @@ resource "google_project_service" "services" {
     "iamcredentials.googleapis.com",
     "monitoring.googleapis.com",
     "dns.googleapis.com",
+    # 새 경로는 Vertex를 직접 부르지 않지만, 구 리비전의 이미지 생성이 아직 부른다.
+    # 롤백 경로가 살아 있어야 하므로 전환이 끝날 때까지 목록에 남긴다.
+    "aiplatform.googleapis.com",
   ])
   project            = var.project_id
   service            = each.key
