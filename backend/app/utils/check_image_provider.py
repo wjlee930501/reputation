@@ -165,7 +165,6 @@ def stage_settings() -> StageResult:
 
 
 def stage_openrouter_client() -> StageResult:
-    from app.core.config import settings
     from app.services import openrouter
 
     if not openrouter.configured():

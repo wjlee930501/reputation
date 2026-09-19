@@ -5,9 +5,9 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import openai
 import arrow
 import httpx
+import openai
 import pytest
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
