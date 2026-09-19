@@ -81,6 +81,12 @@ esac
 SERVICE_ACCOUNT="${GCP_SERVICE_ACCOUNT:-reputation-sa@${PROJECT_ID}.iam.gserviceaccount.com}"
 ALLOW_PLAINTEXT_ENV_SECRETS="${ALLOW_PLAINTEXT_ENV_SECRETS:-0}"
 VPC_CONNECTOR="${VPC_CONNECTOR:-${SERVERLESS_VPC_CONNECTOR:-reputation-vpc-connector}}"
+# Cloud Run v2 API는 connector를 projects/.../connectors/... 풀 경로로만 받는다.
+# 짧은 이름을 쓰면 어노테이션에 그대로 기록돼 이후 terraform apply가 state의 짧은
+# 값을 update 요청에 실어 보내 400으로 실패한다 — 항상 풀 경로로 정규화한다.
+if [[ -n "$VPC_CONNECTOR" && "$VPC_CONNECTOR" != */* ]]; then
+  VPC_CONNECTOR="projects/${PROJECT_ID}/locations/${REGION}/connectors/${VPC_CONNECTOR}"
+fi
 VPC_EGRESS="${VPC_EGRESS:-private-ranges-only}"
 
 # Cloud Run 서비스 설정
