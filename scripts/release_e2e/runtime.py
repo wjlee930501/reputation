@@ -54,24 +54,51 @@ class Blob:
         return f"http://qa-capture:8080/assets/{self.path.name}.png"
 
 
+CAPTURE_BASE_URL = "http://qa-capture:8080"
+
+
+def _redirect_openrouter_gateway():
+    """공급자별 클라이언트 주입 대신 게이트웨이 하나를 합성 서버로 돌린다.
+
+    콘텐츠 생성·독립 검수·Essence·양쪽 SoV·이미지 생성/검수가 전부
+    `app.services.openrouter`를 통해 나간다. 따라서 가로챌 지점도 하나다 — base URL을
+    qa-capture로 바꾸고 이미 만들어진 클라이언트 캐시를 비운다.
+
+    서비스 모듈보다 **먼저** 불러야 한다. sov_engine은 import 시점에 모듈 수준
+    클라이언트를 만들기 때문에, 순서가 뒤집히면 그 두 개만 진짜 openrouter.ai를
+    가리킨 채로 남는다.
+    """
+    from app.core.config import settings
+    from app.services import openrouter
+
+    settings.OPENROUTER_API_KEY = "synthetic-openrouter"
+    openrouter.OPENROUTER_BASE_URL = CAPTURE_BASE_URL
+    openrouter.reset_clients_for_tests()
+    return openrouter
+
+
 def install_boundaries():
+    openrouter = _redirect_openrouter_gateway()
+
     from app.services import (
         gcs_utils,
-        image_engine,
         indexnow,
         report_engine,
         sov_engine,
     )
-    from google import genai
 
     gcs_utils._gcs_client = SimpleNamespace(
         bucket=lambda name: SimpleNamespace(blob=lambda key: Blob(name, key))
     )
-    client = genai.Client(
-        api_key="synthetic-google", http_options={"base_url": "http://qa-capture:8080"}
+    # sov_engine의 두 클라이언트는 import 시점에 만들어져 모듈 전역에 묶인다. 위 reset은
+    # openrouter의 캐시만 비우므로, 다른 경로가 sov_engine을 먼저 불러 왔다면 그 두 개만
+    # 진짜 openrouter.ai를 가리킨 채 남는다 — 여기서 새 base URL로 다시 만든다.
+    sov_engine.openai_client = openrouter.async_client(
+        timeout=sov_engine.OPENAI_TIMEOUT_SECONDS
     )
-    image_engine._google_client_instance = client
-    sov_engine._gemini_client = client
+    sov_engine.openai_query_client = openrouter.async_client(
+        timeout=sov_engine.OPENAI_TIMEOUT_SECONDS
+    )
     report_engine._upload_to_gcs = lambda path, slug, filename: str(path)
     from app.services import doctor_report_artifact
 

@@ -14,10 +14,14 @@ leases; actual PDF rendering/validation; outbox HTTP transport and delivery hist
 
 ## Deliberate test boundaries
 
-`capture.py` returns synthetic Anthropic/OpenAI/Gemini wire responses and hosts a
-TLS Slack capture endpoint (first call 503, subsequent calls 200). GCS bytes are
-stored on the disposable evidence volume. Test TLS forwards the ownership key
-request to the REAL Site; it does not fabricate an ownership proof.
+`capture.py` returns synthetic OpenRouter wire responses — chat completions
+(forced tool calls, JSON-mode judges, free-text answers), Responses API and the
+`/images` endpoint — and hosts a TLS Slack capture endpoint (first call 503,
+subsequent calls 200). `runtime.py` points `app.services.openrouter` at it, so
+every model call is intercepted at the one gateway the production code uses
+rather than through per-provider SDK clients. GCS bytes are stored on the
+disposable evidence volume. Test TLS forwards the ownership key request to the
+REAL Site; it does not fabricate an ownership proof.
 `runtime.py` advances the task business calendar through September/October 2026.
 OS time, signature timestamps and monotonic/lease timers are not globally changed.
 Beat uses registered production task/options, accelerated to two-second ticks.

@@ -121,55 +121,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/indexnow":
             record(self.path, body, 202)
             return self.respond(202, {})
-        if self.path.endswith("/messages"):
-            tool = body.get("tool_choice", {}).get("name")
-            payload = (
-                article(n)
-                if tool == "emit_article"
-                else dict(
-                    decision="PASS",
-                    confidence=0.99,
-                    findings=[],
-                    summary="합성 검수 응답",
-                )
-            )
-            result = dict(
-                id=f"msg_qa_{n}",
-                type="message",
-                role="assistant",
-                model=body["model"],
-                stop_reason="tool_use",
-                usage=dict(input_tokens=100, output_tokens=100),
-                content=[
-                    dict(type="tool_use", id=f"tool_{n}", name=tool, input=payload)
-                ],
-            )
-        elif self.path.endswith("/images/generations"):
+        if self.path.endswith("/images"):
+            # OpenRouter의 이미지 API는 OpenAI SDK의 /images/generations가 아니라
+            # `/images`이고, 바이트는 data[].b64_json으로 온다.
             result = dict(
                 created=int(time.time()),
-                data=[dict(b64_json=base64.b64encode(PNG).decode())],
-            )
-        elif ":generateContent" in self.path:
-            config = body.get("generationConfig", {})
-            image_requested = "IMAGE" in config.get("responseModalities", [])
-            policy_requested = config.get("responseMimeType") == "application/json"
-            part = (
-                dict(
-                    inlineData=dict(
-                        mimeType="image/png", data=base64.b64encode(PNG).decode()
+                model=body.get("model"),
+                data=[
+                    dict(
+                        b64_json=base64.b64encode(PNG).decode(),
+                        media_type="image/png",
                     )
-                )
-                if image_requested
-                else dict(text=json.dumps(POLICY) if policy_requested else ANSWER)
-            )
-            result = dict(
-                candidates=[
-                    dict(content=dict(role="model", parts=[part]), finishReason="STOP")
                 ],
-                modelVersion=self.path.split("/models/")[-1].split(":")[0],
-                usageMetadata=dict(
-                    promptTokenCount=100, candidatesTokenCount=100, totalTokenCount=200
-                ),
+                usage=dict(prompt_tokens=0, completion_tokens=0, total_tokens=0),
             )
         elif self.path.endswith("/responses"):
             result = dict(
@@ -189,32 +153,62 @@ class Handler(BaseHTTPRequestHandler):
                 usage=dict(input_tokens=100, output_tokens=100, total_tokens=200),
             )
         elif self.path.endswith("/chat/completions"):
-            is_image = isinstance(body.get("messages", [{}])[0].get("content"), list)
-            payload = (
-                POLICY
-                if is_image
-                else dict(
-                    verdict="MATCHED",
-                    matched_text=NAME,
-                    mention_context=ANSWER,
-                    mention_rank=1,
-                    sentiment="neutral",
-                )
+            # 작가와 독립 검수자는 강제 도구 호출로 객체를 받는다(tool_calls). 나머지
+            # 경로는 텍스트 content로 JSON을 받는다 — 두 모양을 요청에서 구분한다.
+            tool = (
+                (body.get("tool_choice") or {}).get("function", {}).get("name")
+                if isinstance(body.get("tool_choice"), dict)
+                else None
             )
+            message = dict(role="assistant", content=None)
+            finish_reason = "stop"
+            if tool:
+                payload = (
+                    article(n)
+                    if tool == "emit_article"
+                    else dict(
+                        decision="PASS",
+                        confidence=0.99,
+                        findings=[],
+                        summary="합성 검수 응답",
+                    )
+                )
+                finish_reason = "tool_calls"
+                message["tool_calls"] = [
+                    dict(
+                        id=f"call_{n}",
+                        type="function",
+                        function=dict(
+                            name=tool,
+                            arguments=json.dumps(payload, ensure_ascii=False),
+                        ),
+                    )
+                ]
+            elif body.get("response_format"):
+                # 이미지 정책 검수는 이미지+텍스트 블록 목록을, 판정기는 문자열을 보낸다.
+                is_image = isinstance(body.get("messages", [{}])[0].get("content"), list)
+                payload = (
+                    POLICY
+                    if is_image
+                    else dict(
+                        verdict="MATCHED",
+                        matched_text=NAME,
+                        mention_context=ANSWER,
+                        mention_rank=1,
+                        sentiment="neutral",
+                    )
+                )
+                message["content"] = json.dumps(payload, ensure_ascii=False)
+            else:
+                # response_format도 강제 도구도 없는 호출은 답변 모델(SoV 측정 대상)이다.
+                message["content"] = ANSWER
             result = dict(
                 id=f"chat_{n}",
                 object="chat.completion",
                 model=body["model"],
                 created=int(time.time()),
                 choices=[
-                    dict(
-                        index=0,
-                        finish_reason="stop",
-                        message=dict(
-                            role="assistant",
-                            content=json.dumps(payload, ensure_ascii=False),
-                        ),
-                    )
+                    dict(index=0, finish_reason=finish_reason, message=message)
                 ],
                 usage=dict(prompt_tokens=100, completion_tokens=100, total_tokens=200),
             )
