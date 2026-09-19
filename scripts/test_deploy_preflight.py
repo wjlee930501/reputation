@@ -424,6 +424,70 @@ def test_model_gate_still_blocks_provider_reinterpreted_names() -> None:
         assert _model_gate(value, "GEMINI_MODEL") == 1, f"{value} 가 통과했다"
 
 
+def _slug_gate(key: str, value: str) -> int:
+    """require_openrouter_model_slugs만 떼어내 실행. 0=통과, 1=차단.
+
+    .env 파일은 없는 것으로 두고 값을 환경에서만 준다 — 게이트가 검사하는 것은
+    "어디서 왔는가"가 아니라 "최종 값이 슬러그인가"다.
+    """
+    text = DEPLOY_SCRIPT.read_text()
+    start = text.index("NON_VENDOR_PATH_SEGMENTS=")
+    end = text.index("\n}\n", text.index("require_openrouter_model_slugs() {")) + 3
+    harness = (
+        "set -euo pipefail\n"
+        'fail() { echo "$1" >&2; exit 1; }\n'
+        "read_env_file_value() { return 1; }\n"
+        f"OPENROUTER_MODEL_ENV_NAMES=({key!r})\n"
+        f"export {key}={value!r}\n"
+        + text[start:end]
+        + "\nrequire_openrouter_model_slugs\n"
+    )
+    return subprocess.run(
+        ["bash", "-c", harness], capture_output=True, text=True, timeout=30
+    ).returncode
+
+
+def test_slug_gate_accepts_vendor_prefixed_models_and_unset_values() -> None:
+    for key, value in (
+        ("CLAUDE_MODEL", "anthropic/claude-sonnet-5"),
+        ("OPENAI_MODEL_PARSE", "openai/gpt-4o-mini-2024-07-18"),
+        ("GEMINI_MODEL", "google/gemini-3.6-flash"),
+        ("GOOGLE_IMAGE_MODEL", "google/gemini-3.1-flash-image"),
+        # 미설정이면 config.py의 슬러그 기본값이 쓰인다.
+        ("AUTOFILL_MODEL", ""),
+    ):
+        assert _slug_gate(key, value) == 0, f"{key}={value} 가 차단됐다"
+
+
+def test_slug_gate_blocks_provider_direct_model_names() -> None:
+    """전환 전 환경에 남아 있는 공급자 직결 이름은 배포 전에 막는다.
+
+    이 값들은 config.py의 새 기본값을 덮어쓰고, OpenRouter는 찾지 못한다 —
+    키만 바꾸고 배포하면 콘텐츠·SoV·이미지가 함께 멈춘다.
+    """
+    for key, value in (
+        ("CLAUDE_MODEL", "claude-sonnet-4-5-20250929"),
+        ("OPENAI_MODEL_QUERY", "gpt-5.6-luna"),
+        ("OPENAI_MODEL_PARSE", "gpt-4o-mini-2024-07-18"),
+        ("GEMINI_MODEL", "gemini-3.6-flash"),
+        ("OPENAI_IMAGE_MODEL", "gpt-5-image-mini"),
+    ):
+        assert _slug_gate(key, value) == 1, f"{key}={value} 가 통과했다 (접두사가 없는데)"
+
+
+def test_slug_gate_blocks_provider_resource_paths() -> None:
+    """슬래시가 있다고 슬러그인 것은 아니다 — 마지막 `/` 뒤만 보는 검사의 구멍."""
+    for key, value in (
+        ("GEMINI_MODEL", "models/gemini-3.6-flash"),
+        (
+            "GOOGLE_IMAGE_MODEL",
+            "projects/p/locations/asia-northeast3/publishers/google/models/gemini-3.1-flash-image",
+        ),
+        ("CLAUDE_MODEL", "/claude-sonnet-5"),
+    ):
+        assert _slug_gate(key, value) == 1, f"{key}={value} 가 통과했다 (자원 경로인데)"
+
+
 def test_site_revalidate_secret_is_required_for_backend_not_optional() -> None:
     """런타임이 필수로 요구하는 시크릿을 배포가 선택으로 두면 안 된다.
 

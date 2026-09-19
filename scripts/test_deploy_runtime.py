@@ -409,6 +409,38 @@ def test_independent_backend_deploys_keep_one_source_revision(tmp_path: Path) ->
     assert set(release_lines) == {'env REPUTATION_RELEASE_REVISION: "same-source-sha"'}
 
 
+def test_backend_deploy_rejects_a_provider_direct_model_name_before_mutation(
+    tmp_path: Path,
+) -> None:
+    """전환 전 환경의 공급자 직결 모델명이 새 기본값을 덮어쓰는 경로를 닫는다.
+
+    모든 모델 호출은 OpenRouter 게이트웨이로 나간다. 키만 바꾸고 `claude-sonnet-...`
+    같은 접두사 없는 값을 그대로 들고 배포하면 게이트웨이가 모델을 못 찾아 콘텐츠
+    생성·SoV 측정·이미지가 함께 멈춘다 — 런타임이 아니라 배포 전에 멈춰야 한다.
+    """
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            CLAUDE_MODEL="claude-sonnet-4-5-20250929",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "CLAUDE_MODEL" in result.stderr
+    assert not command_log.exists() or "run deploy" not in command_log.read_text()
+
+
 def _api_deploy_line(command_log: Path) -> str:
     return next(
         line

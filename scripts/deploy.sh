@@ -259,6 +259,19 @@ OPENAI_CHATGPT_USE_WEB_SEARCH_VALUE="${OPENAI_CHATGPT_USE_WEB_SEARCH:-$(read_env
 OPENAI_MODEL_QUERY_VALUE="${OPENAI_MODEL_QUERY:-$(read_env_file_value OPENAI_MODEL_QUERY || true)}"
 OPENAI_MODEL_PARSE_VALUE="${OPENAI_MODEL_PARSE:-$(read_env_file_value OPENAI_MODEL_PARSE || true)}"
 GEMINI_MODEL_VALUE="${GEMINI_MODEL:-$(read_env_file_value GEMINI_MODEL || true)}"
+
+# 모든 모델 호출이 OpenRouter 게이트웨이 하나로 나가므로, 모델 식별자도 전부
+# `vendor/model` 슬러그여야 한다(require_openrouter_model_slugs).
+OPENROUTER_MODEL_ENV_NAMES=(
+  "CLAUDE_MODEL"
+  "CLAUDE_MODEL_FAST"
+  "AUTOFILL_MODEL"
+  "GOOGLE_IMAGE_MODEL"
+  "OPENAI_IMAGE_MODEL"
+  "OPENAI_MODEL_QUERY"
+  "OPENAI_MODEL_PARSE"
+  "GEMINI_MODEL"
+)
 CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE="${CERTIFICATE_MANAGER_AUTO_PROVISION:-$(read_env_file_value CERTIFICATE_MANAGER_AUTO_PROVISION || true)}"
 WILDCARD_PUBLIC_DOMAIN_CHECK="${WILDCARD_PUBLIC_DOMAIN_CHECK:-}"
 if [[ -z "$DB_CONNECTION_MODE" ]]; then
@@ -862,7 +875,44 @@ require_production_feature_flags() {
     || fail "OPENAI_CHATGPT_USE_WEB_SEARCH=true가 필요합니다. 프로덕션 SoV는 실제 web_search만 허용합니다."
   [[ "$CERTIFICATE_MANAGER_AUTO_PROVISION_VALUE" == "true" ]] \
     || fail "CERTIFICATE_MANAGER_AUTO_PROVISION=true가 필요합니다. 신규 커스텀 도메인 자동 온보딩을 비활성화한 배포는 허용하지 않습니다."
+  require_openrouter_model_slugs
   require_pinned_measurement_models
+}
+
+# 모델 환경변수는 OpenRouter `vendor/model` 슬러그여야 한다.
+#
+# 전환 전 .env.production과 Cloud Run에는 공급자 직결 이름(claude-sonnet-4-5-20250929,
+# gpt-4o-mini, gemini-2.5-flash)이 남아 있고, 그 값이 config.py의 새 기본값을 덮어쓴다.
+# 키만 OpenRouter로 바꾸고 그대로 배포하면 게이트웨이가 모델을 못 찾아 콘텐츠 생성·SoV
+# 측정·이미지 생성이 함께 멈춘다 — 런타임이 아니라 여기서 막는다.
+#
+# 마지막 `/` 뒤만 보는 검사로는 부족하다. 접두사가 없는 값은 `${value##*/}`가 값 전체를
+# 그대로 돌려주므로 아래 고정 모델 검사만 통과하면 살아서 배포된다. 공급자 자원 경로
+# (`models/gemini-2.5-flash`, `projects/p/locations/l/publishers/google/models/...`)도
+# 슬래시가 있다는 이유만으로 통과한다. 그래서 `vendor/model` 한 쌍인지를 직접 본다.
+NON_VENDOR_PATH_SEGMENTS=" models model projects publishers locations v1 v1beta v1beta1 "
+
+require_openrouter_model_slugs() {
+  local name value vendor model
+  for name in "${OPENROUTER_MODEL_ENV_NAMES[@]}"; do
+    value="${!name:-}"
+    [[ -z "$value" ]] && value="$(read_env_file_value "$name" || true)"
+    # 미설정이면 config.py의 슬러그 기본값이 쓰인다 — 통과.
+    [[ -z "$value" ]] && continue
+
+    [[ "$value" == */* ]] \
+      || fail "${name}=${value} 에 공급자 접두사가 없습니다. 모든 모델 호출은 OpenRouter 게이트웨이로 나가므로 'vendor/model' 슬러그를 쓰세요 (예: anthropic/claude-sonnet-5, openai/gpt-4o-mini-2024-07-18, google/gemini-3.6-flash)."
+
+    vendor="${value%%/*}"
+    model="${value#*/}"
+    [[ -n "$vendor" && -n "$model" && "$model" != */* ]] \
+      || fail "${name}=${value} 는 OpenRouter 슬러그가 아닙니다. 공급자 자원 경로가 아니라 'vendor/model' 한 쌍이어야 합니다."
+    [[ "$NON_VENDOR_PATH_SEGMENTS" == *" $vendor "* ]] \
+      && fail "${name}=${value} 의 '${vendor}'는 공급자 이름이 아니라 공급자 SDK의 경로 조각입니다. OpenRouter 슬러그(예: google/gemini-3.6-flash)를 쓰세요."
+  done
+  # 마지막 검사가 통과(=조건 거짓)하면 루프의 종료 상태가 1이다. errexit 아래에서
+  # 그대로 반환하면 호출부가 조용히 죽으므로 성공을 명시한다.
+  return 0
 }
 
 # AI 언급률 측정 모델은 날짜/버전으로 고정되어야 한다.
