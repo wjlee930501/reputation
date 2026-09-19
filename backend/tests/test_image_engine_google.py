@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 
+import httpx
 import pytest
 import tenacity
-from google import genai
 
 from app.models.content import ContentType
 from app.services import image_engine
@@ -29,39 +29,38 @@ def _allow_cost(monkeypatch):
     monkeypatch.setattr(cost_guard, "record_provider_call", _noop)
 
 
-def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(monkeypatch):
+def _ok_assessment():
+    return ImagePolicyAssessment(
+        has_text=False,
+        has_logo=False,
+        has_recognizable_people=False,
+        impersonates_real_clinic=False,
+        topic_relevant=True,
+    )
+
+
+def test_google_image_generation_uses_openrouter_images_endpoint_and_uploads_payload(
+    monkeypatch,
+):
+    """생성은 OpenRouter /images로 나간다 — 설정된 슬러그·비율·해상도가 요청에 실린다."""
     captured = {}
 
-    class FakeModels:
-        def generate_content(self, **kwargs):
-            captured["request"] = kwargs
-            return SimpleNamespace(
-                candidates=[
-                    SimpleNamespace(
-                        content=SimpleNamespace(
-                            parts=[
-                                SimpleNamespace(
-                                    inline_data=SimpleNamespace(data=b"png-bytes")
-                                )
-                            ]
-                        )
-                    )
-                ]
-            )
+    def fake_generate_image(**kwargs):
+        captured.update(kwargs)
+        return [b"png-bytes"], {
+            "data": [{"media_type": "image/png"}],
+            "usage": None,
+            "id": "gen_1",
+        }
 
-    class FakeClient:
-        def __init__(self, **kwargs):
-            captured["client"] = kwargs
-            self.models = FakeModels()
-
-    monkeypatch.setattr(genai, "Client", FakeClient)
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
-    monkeypatch.setattr(image_engine.settings, "GOOGLE_IMAGE_LOCATION", "global")
+    monkeypatch.setattr(image_engine.openrouter, "generate_image", fake_generate_image)
     monkeypatch.setattr(
         image_engine.settings,
         "GOOGLE_IMAGE_MODEL",
-        "gemini-3.1-flash-image",
+        "google/gemini-3.1-flash-image",
     )
+    monkeypatch.setattr(image_engine.settings, "IMAGE_ASPECT_RATIO", "16:9")
+    monkeypatch.setattr(image_engine.settings, "GOOGLE_IMAGE_RESOLUTION", "1K")
     monkeypatch.setattr(
         image_engine,
         "_upload_png_to_gcs",
@@ -70,38 +69,21 @@ def test_google_image_generation_uses_current_vertex_model_and_uploads_payload(m
     monkeypatch.setattr(
         image_engine,
         "_validate_generated_image",
-        lambda *_args, **_kwargs: ImagePolicyAssessment(
-            has_text=False,
-            has_logo=False,
-            has_recognizable_people=False,
-            impersonates_real_clinic=False,
-            topic_relevant=True,
-        ),
+        lambda *_args, **_kwargs: _ok_assessment(),
     )
 
     result = image_engine._generate_and_upload("medical prompt", "hospital-slug")
 
     assert result == "gs://bucket/hospital-slug/png-bytes.png"
-    assert captured["client"]["vertexai"] is True
-    assert captured["client"]["location"] == "global"
-    assert captured["request"]["model"] == "gemini-3.1-flash-image"
-    config = captured["request"]["config"]
-    assert config.image_config.aspect_ratio == "16:9"
-    assert config.image_config.person_generation == "ALLOW_NONE"
+    assert captured["model"] == "google/gemini-3.1-flash-image"
+    assert captured["aspect_ratio"] == "16:9"
+    assert captured["resolution"] == "1K"
+    assert captured["prompt"] == "medical prompt"
 
 
-def _patch_google_client(monkeypatch, generate_content):
-    class FakeModels:
-        def generate_content(self, **kwargs):
-            return generate_content(**kwargs)
-
-    class FakeClient:
-        def __init__(self, **_kwargs):
-            self.models = FakeModels()
-
-    monkeypatch.setattr(genai, "Client", FakeClient)
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
-    monkeypatch.setattr(image_engine.settings, "GOOGLE_IMAGE_LOCATION", "global")
+def _patch_generate_image(monkeypatch, generate):
+    monkeypatch.setattr(image_engine.openrouter, "generate_image", generate)
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(image_engine._generate_and_upload.retry, "sleep", lambda _s: None)
 
 
@@ -111,15 +93,18 @@ def test_google_safety_block_is_not_retried_on_the_same_prompt(monkeypatch):
 
     def blocked(**_kwargs):
         calls["n"] += 1
-        return SimpleNamespace(
-            candidates=[
-                SimpleNamespace(content=None, finish_reason="FinishReason.IMAGE_SAFETY")
-            ]
+        raise httpx.HTTPStatusError(
+            "openrouter images 400: IMAGE_SAFETY",
+            request=httpx.Request("POST", "https://openrouter.ai/api/v1/images"),
+            response=httpx.Response(
+                400,
+                request=httpx.Request("POST", "https://openrouter.ai/api/v1/images"),
+            ),
         )
 
-    _patch_google_client(monkeypatch, blocked)
+    _patch_generate_image(monkeypatch, blocked)
 
-    with pytest.raises(image_engine.ImageSafetyBlockedError):
+    with pytest.raises(httpx.HTTPStatusError):
         image_engine._generate_and_upload("blocked prompt", "hospital-slug")
 
     assert calls["n"] == 1
@@ -130,9 +115,9 @@ def test_google_transient_empty_payload_still_retries(monkeypatch):
 
     def empty(**_kwargs):
         calls["n"] += 1
-        return SimpleNamespace(candidates=[SimpleNamespace(content=None, finish_reason="STOP")])
+        return [], {"data": []}
 
-    _patch_google_client(monkeypatch, empty)
+    _patch_generate_image(monkeypatch, empty)
 
     with pytest.raises(tenacity.RetryError):
         image_engine._generate_and_upload("prompt", "hospital-slug")
@@ -140,19 +125,24 @@ def test_google_transient_empty_payload_still_retries(monkeypatch):
     assert calls["n"] == 3
 
 
-def test_google_client_is_created_once_and_reused(monkeypatch):
+def test_openrouter_client_is_created_once_and_reused(monkeypatch):
+    """검수·생성이 공유하는 게이트웨이 클라이언트는 timeout별로 한 번만 만든다."""
     created = []
 
     class FakeClient:
         def __init__(self, **kwargs):
             created.append(kwargs)
-            self.models = None
 
-    monkeypatch.setattr(genai, "Client", FakeClient)
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
+    monkeypatch.setattr(image_engine.openrouter, "OpenAI", FakeClient)
+    image_engine._reset_clients_for_tests()
 
-    assert image_engine._get_google_client() is image_engine._get_google_client()
+    first = image_engine.openrouter.sync_client(timeout=60.0)
+    second = image_engine.openrouter.sync_client(timeout=60.0)
+
+    assert first is second
     assert len(created) == 1
+    assert created[0]["max_retries"] == 0
+    image_engine._reset_clients_for_tests()
 
 
 def test_semantic_policy_rejection_prevents_upload_and_same_prompt_retry(monkeypatch):
@@ -160,17 +150,9 @@ def test_semantic_policy_rejection_prevents_upload_and_same_prompt_retry(monkeyp
 
     def generated(**_kwargs):
         calls["generation"] += 1
-        return SimpleNamespace(
-            candidates=[
-                SimpleNamespace(
-                    content=SimpleNamespace(
-                        parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"unsafe"))]
-                    )
-                )
-            ]
-        )
+        return [b"unsafe"], {"data": [{"media_type": "image/png"}]}
 
-    _patch_google_client(monkeypatch, generated)
+    _patch_generate_image(monkeypatch, generated)
     rejected = ImagePolicyAssessment(
         has_text=True,
         has_logo=False,
@@ -234,17 +216,9 @@ def test_transient_upload_retry_reuses_the_verified_candidate(monkeypatch):
 
     def generated(**_kwargs):
         calls["generation"] += 1
-        return SimpleNamespace(
-            candidates=[
-                SimpleNamespace(
-                    content=SimpleNamespace(
-                        parts=[SimpleNamespace(inline_data=SimpleNamespace(data=b"one-candidate"))]
-                    )
-                )
-            ]
-        )
+        return [b"one-candidate"], {"data": [{"media_type": "image/png"}]}
 
-    _patch_google_client(monkeypatch, generated)
+    _patch_generate_image(monkeypatch, generated)
 
     def review(*_args, **_kwargs):
         calls["review"] += 1
@@ -263,7 +237,7 @@ def test_transient_upload_retry_reuses_the_verified_candidate(monkeypatch):
     assert calls == {"generation": 1, "review": 1, "upload": 3}
 
 
-def test_openai_only_policy_review_sends_strict_typed_schema(monkeypatch):
+def test_policy_review_sends_strict_typed_schema_via_openrouter(monkeypatch):
     captured = {}
 
     class FakeCompletions:
@@ -287,13 +261,10 @@ def test_openai_only_policy_review_sends_strict_typed_schema(monkeypatch):
         def __init__(self):
             self.chat = SimpleNamespace(completions=FakeCompletions())
 
-        def with_options(self, **kwargs):
-            captured["client_options"] = kwargs
-            return self
-
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
-    monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(image_engine, "_get_openai_client", lambda: FakeClient())
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        image_engine.openrouter, "sync_client", lambda **_kwargs: FakeClient()
+    )
 
     assessment = image_engine._validate_generated_image(
         b"png",
@@ -312,7 +283,6 @@ def test_openai_only_policy_review_sends_strict_typed_schema(monkeypatch):
         "impersonates_real_clinic",
         "topic_relevant",
     }
-    assert captured["client_options"] == {"timeout": 60.0, "max_retries": 0}
 
 
 def test_google_visual_scene_does_not_echo_sensitive_medical_title():
@@ -334,27 +304,27 @@ def test_google_visual_scene_preserves_safe_topic_variety():
 def test_policy_review_failure_keeps_the_raw_provider_error(monkeypatch):
     """검수 실패의 원인은 공급자 원문에만 있다 — 요약으로 덮어쓰면 운영에서 특정할 수 없다.
 
-    종전에는 어떤 원인이든 로그에 "image policy review failed"만 남아, 모델 404·지역
-    미제공·권한 없음·429를 구분할 방법이 없었다.
+    종전에는 어떤 원인이든 로그에 "image policy review failed"만 남아, 모델 404·권한
+    없음·429를 구분할 방법이 없었다.
     """
 
-    class _VertexError(Exception):
+    class _ProviderError(Exception):
         status_code = 404
 
-    class FakeModels:
-        def generate_content(self, **_kwargs):
-            raise _VertexError(
-                "Publisher Model `gemini-3.6-flash` was not found or your project "
-                "does not have access to it"
+    class FakeCompletions:
+        def create(self, **_kwargs):
+            raise _ProviderError(
+                "No endpoints found for `google/gemini-3.6-flash`"
             )
 
     class FakeClient:
-        def __init__(self, **_kwargs):
-            self.models = FakeModels()
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
 
-    monkeypatch.setattr(genai, "Client", FakeClient)
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
-    image_engine._reset_clients_for_tests()
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        image_engine.openrouter, "sync_client", lambda **_kwargs: FakeClient()
+    )
 
     with pytest.raises(ImagePolicyUnavailableError) as raised:
         image_engine._validate_generated_image(
@@ -363,16 +333,15 @@ def test_policy_review_failure_keeps_the_raw_provider_error(monkeypatch):
 
     message = str(raised.value)
     assert "image policy review failed" in message
-    assert "_VertexError" in message
+    assert "_ProviderError" in message
     assert "gemini-3.6-flash" in message
-    image_engine._reset_clients_for_tests()
 
 
 async def test_policy_unavailable_carries_the_raw_error_into_diagnostics(monkeypatch):
     """`_image_failure_class`가 진단 값 전체를 훑어 quota를 찾는다 — 원문을 남겨야 분류된다."""
 
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
     _allow_cost(monkeypatch)
 
     def _unavailable(*_args, **_kwargs):
@@ -398,8 +367,8 @@ async def test_policy_unavailable_carries_the_raw_error_into_diagnostics(monkeyp
 async def test_missing_provider_configuration_is_not_a_silent_empty_result(monkeypatch):
     """공급자 설정 누락만 종전에 reason 없이 ("","")를 돌려줘 공급자 오류처럼 보고됐다."""
 
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "")
     _allow_cost(monkeypatch)
     diagnostics: dict[str, object] = {}
 

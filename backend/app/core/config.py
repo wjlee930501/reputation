@@ -80,9 +80,7 @@ class Settings(BaseSettings):
             self.PIPELINE_WATCHDOG_TOKEN = _resolve_secret(
                 "PIPELINE_WATCHDOG_TOKEN", self.PIPELINE_WATCHDOG_TOKEN
             )
-            self.ANTHROPIC_API_KEY = _resolve_secret("ANTHROPIC_API_KEY", self.ANTHROPIC_API_KEY)
-            self.OPENAI_API_KEY = _resolve_secret("OPENAI_API_KEY", self.OPENAI_API_KEY)
-            self.GEMINI_API_KEY = _resolve_secret("GEMINI_API_KEY", self.GEMINI_API_KEY)
+            self.OPENROUTER_API_KEY = _resolve_secret("OPENROUTER_API_KEY", self.OPENROUTER_API_KEY)
             # Jina는 무인증 free tier가 지원되는 선택 기능이고 Terraform도 이
             # secret을 소유하지 않는다. 존재하지 않는 secret을 런타임 SA로 매번
             # 조회하면 정상 부팅마다 IAM 403 경고가 남으므로, 키가 필요할 때만
@@ -113,9 +111,9 @@ class Settings(BaseSettings):
         실패하므로 부팅 로그에 영향 범위를 남긴다.
         """
         flow_impact = {
-            "ANTHROPIC_API_KEY": "콘텐츠 자동 생성(Claude Sonnet) 중단",
-            "OPENAI_API_KEY": "SoV 측정(ChatGPT) 중단",
-            "GEMINI_API_KEY": "SoV 측정(Gemini) 중단",
+            "OPENROUTER_API_KEY": (
+                "LLM·이미지 전체 중단(콘텐츠 생성, SoV 측정 ChatGPT/Gemini, 이미지 생성·검수)"
+            ),
             # 부팅을 막지 않는다 — 감시 토큰이 없다고 API를 못 뜨게 하면, 이 부품이
             # 막으려는 바로 그 정지를 배포가 스스로 만든다. 대신 경고로 남기고
             # GET /admin/watchdog/pipeline의 token_configured가 사실을 보여준다.
@@ -336,10 +334,12 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
 
-    # Anthropic — 콘텐츠 생성
-    ANTHROPIC_API_KEY: str = ""
-    CLAUDE_MODEL: str = "claude-sonnet-4-5"
-    CLAUDE_MODEL_FAST: str = "claude-haiku-4-5-20251001"
+    # OpenRouter — 콘텐츠 생성·SoV 측정·이미지 생성/검수의 유일한 LLM 게이트웨이.
+    # 모든 모델 식별자는 `vendor/model` 슬러그다.
+    OPENROUTER_API_KEY: str = ""
+    # Anthropic 계열 — 콘텐츠 생성
+    CLAUDE_MODEL: str = "anthropic/claude-sonnet-5"
+    CLAUDE_MODEL_FAST: str = "anthropic/claude-haiku-4.5"
     # 프로파일 자동 채우기는 결정론적 grounding 검증이 뒤따르는 구조화 추출 작업이라
     # 빠른 모델로 충분하다. 비우면 CLAUDE_MODEL_FAST를 쓰고, 값을 넣으면 되돌릴 수 있다.
     AUTOFILL_MODEL: str = ""
@@ -358,23 +358,24 @@ class Settings(BaseSettings):
     CERTIFICATE_MANAGER_LOCATION: str = "global"
     CERTIFICATE_MAP_NAME: str = "reputation-certmap"
 
-    # 콘텐츠 대표 이미지 생성기
-    #   "google" → Vertex AI Gemini 3.1 Flash Image (기본). 안전 차단·정책 거절·공급자
-    #              오류로 끝나면 IMAGE_FALLBACK_PROVIDER(OpenAI)로 한 번 더 만든다.
-    #   "openai" → OpenAI 이미지 우선, 실패 시 Google 경로로 폴백
+    # 콘텐츠 대표 이미지 생성기 — 두 계열 모두 OpenRouter /images 엔드포인트로 나간다.
+    #   "google" → Gemini 이미지 모델(기본). 안전 차단·정책 거절·공급자 오류로 끝나면
+    #              IMAGE_FALLBACK_PROVIDER(OpenAI 계열)로 한 번 더 만든다.
+    #   "openai" → OpenAI 계열 이미지 우선, 실패 시 Google 계열 경로로 폴백
     IMAGE_PROVIDER: str = "google"
-    # Google 기본 경로의 폴백 공급자. "openai"만 지원하며 ""로 끄면 종전처럼 Google에서 끝난다.
+    # Google 계열 기본 경로의 폴백. "openai"만 지원하며 ""로 끄면 종전처럼 Google에서 끝난다.
     # 검수 모델 자체가 죽은 POLICY_UNAVAILABLE과 비용 가드 차단은 폴백 대상이 아니다.
     IMAGE_FALLBACK_PROVIDER: str = "openai"
-    GOOGLE_IMAGE_MODEL: str = "gemini-3.1-flash-image"
-    GOOGLE_IMAGE_LOCATION: str = "global"
-    # ChatGPT Images 2.5 API 모델. flare=속도·대량 생성용, sunburst=편집 정밀도용.
-    OPENAI_IMAGE_MODEL: str = "gpt-image-2.5-flare"
-    OPENAI_IMAGE_SIZE: str = "1536x864"  # 16:9 (16의 배수, 비율≤3:1) — 카드 레이아웃 일치
-    OPENAI_IMAGE_QUALITY: str = "high"  # low|medium|high|xhigh|max|auto
+    GOOGLE_IMAGE_MODEL: str = "google/gemini-3.1-flash-image"
+    GOOGLE_IMAGE_RESOLUTION: str = "1K"  # OpenRouter images 엔드포인트의 resolution 값
+    IMAGE_ASPECT_RATIO: str = "16:9"  # 카드 레이아웃 일치
+    # OpenAI 계열 이미지 모델(OpenRouter 슬러그). 폴백 경로라 속도·단가가 낮은
+    # mini 티어를 쓴다 — 정밀 편집이 필요하면 gpt-5-image로 되돌릴 수 있다.
+    OPENAI_IMAGE_MODEL: str = "openai/gpt-5-image-mini"
+    OPENAI_IMAGE_QUALITY: str = "high"  # auto|low|medium|high (OpenRouter /images)
 
-    # OpenAI — SoV
-    OPENAI_API_KEY: str = ""
+    # OpenAI 계열 — SoV (OpenRouter 경유)
+    #
     # 두 모델 모두 **날짜 스냅샷으로 고정**한다. 부동 별칭(gpt-5-mini, gpt-4o-mini)은
     # OpenAI가 갱신하면 측정 기준선이 조용히 이동해, 언급률 변화가 플랫폼 탓인지
     # 우리 측정 도구 탓인지 구분할 수 없게 된다.
@@ -387,18 +388,17 @@ class Settings(BaseSettings):
     #   비용은 병원당 월 약 $9 증가(측정 호출 기준). 요금제 대비 1% 미만.
     # OPENAI_MODEL_PARSE  = 판정 모델(측정 도구=자). 답변 모델과 의도적으로 분리하며,
     #      기준선 유지를 위해 바꾸지 않는다. 폐기 예정 없음.
-    OPENAI_MODEL_QUERY: str = "gpt-5.6-luna"
-    OPENAI_MODEL_PARSE: str = "gpt-4o-mini-2024-07-18"
+    OPENAI_MODEL_QUERY: str = "openai/gpt-5.6-luna"
+    OPENAI_MODEL_PARSE: str = "openai/gpt-4o-mini-2024-07-18"
     # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
     # _validate_production_config에서 부팅을 차단한다.
     OPENAI_CHATGPT_USE_WEB_SEARCH: bool = True
 
-    # Gemini — SoV
-    GEMINI_API_KEY: str = ""
+    # Gemini — SoV (OpenRouter 경유, google/ 슬러그)
     # 답변 모델이므로 OpenAI와 동일하게 **버전 고정**한다. `gemini-flash-latest`는
     # 부동 별칭이라 Google이 갱신하면 기준선이 조용히 이동한다(2026-07-29 확인 시
     # gemini-3.6-flash로 해석됨). 측정 기준선을 고정하는 것이 별칭의 최신성보다 중요하다.
-    GEMINI_MODEL: str = "gemini-3.6-flash"
+    GEMINI_MODEL: str = "google/gemini-3.6-flash"
 
     # 야간 콘텐츠 생성 창과 처리량
     # 23:00 배치는 내일만이 아니라 그 다음 날까지 생성한다. 한 밤이 통째로 실패해도

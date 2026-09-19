@@ -443,7 +443,7 @@ async def test_chatgpt_web_search_is_offered_but_not_forced(monkeypatch):
     result = await sov_engine._query_chatgpt_with_search("수원 외과 추천")
 
     assert result == "검색 기반 답변"
-    assert responses.kwargs["tools"] == [{"type": "web_search"}]
+    assert responses.kwargs["tools"] == [sov_engine.openrouter.WEB_SEARCH_TOOL]
     assert responses.kwargs["tool_choice"] == "auto"
 
 
@@ -838,13 +838,14 @@ async def test_competitor_prefilter_skip_is_a_verdict_not_a_failure(monkeypatch)
 
 
 def test_measurement_models_are_pinned_to_dated_snapshots():
-    # 부동 별칭은 OpenAI가 갱신하면 측정 기준선을 조용히 이동시킨다(PRD F3-1).
+    # 부동 별칭은 공급자가 갱신하면 측정 기준선을 조용히 이동시킨다(PRD F3-1).
+    # OpenRouter 슬러그(`vendor/model`)로 고정한다.
     from app.core.config import Settings
 
     defaults = Settings.model_fields
-    assert defaults["OPENAI_MODEL_QUERY"].default == "gpt-5.6-luna"
-    assert defaults["OPENAI_MODEL_PARSE"].default == "gpt-4o-mini-2024-07-18"
+    assert defaults["OPENAI_MODEL_QUERY"].default == "openai/gpt-5.6-luna"
+    assert defaults["OPENAI_MODEL_PARSE"].default == "openai/gpt-4o-mini-2024-07-18"
     # Gemini도 답변 모델이므로 동일하게 고정한다. `-latest` 별칭은 기준선을 이동시킨다.
-    assert defaults["GEMINI_MODEL"].default == "gemini-3.6-flash"
+    assert defaults["GEMINI_MODEL"].default == "google/gemini-3.6-flash"
     for field in ("OPENAI_MODEL_QUERY", "OPENAI_MODEL_PARSE", "GEMINI_MODEL"):
         assert not defaults[field].default.endswith("-latest"), field

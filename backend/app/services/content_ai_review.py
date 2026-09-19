@@ -17,12 +17,12 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
-import anthropic
+from openai import OpenAI
 
 from app.core.config import settings
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.services import cost_guard, llm_structured_output
+from app.services import cost_guard, llm_structured_output, openrouter
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.essence_engine import effective_safety_policy
 
@@ -51,30 +51,17 @@ REVIEWED_CANDIDATE_FIELDS = (
 )
 
 # 검수 1건마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 핸드셰이크를 매번 버린다.
-# essence_engine._anthropic_client와 같은 lazy 싱글턴.
-_client_instance: anthropic.Anthropic | None = None
-_client_lock = threading.Lock()
+# openrouter.sync_client가 timeout별로 캐시하므로 그 싱글턴을 그대로 쓴다.
 
 
-def _anthropic_client() -> anthropic.Anthropic:
-    global _client_instance
-    if _client_instance is None:
-        with _client_lock:
-            if _client_instance is None:
-                _client_instance = anthropic.Anthropic(
-                    api_key=settings.ANTHROPIC_API_KEY,
-                    timeout=60.0,
-                    max_retries=0,
-                )
-    return _client_instance
+def _llm_client() -> OpenAI:
+    return openrouter.sync_client(timeout=60.0)
 
 
 def _reset_clients_for_tests() -> None:
-    """테스트가 ANTHROPIC_API_KEY/생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
+    """테스트가 OPENROUTER_API_KEY/생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
 
-    global _client_instance
-    with _client_lock:
-        _client_instance = None
+    openrouter.reset_clients_for_tests()
 
 _SYSTEM_PROMPT = """\
 당신은 병원 의료 콘텐츠의 독립 안전 검수자입니다.
@@ -653,7 +640,7 @@ def _unavailable_review(
 
 async def _provider_review(
     *,
-    client: anthropic.Anthropic,
+    client: OpenAI,
     payload: str,
     model: str,
     hospital: Hospital,
@@ -671,23 +658,29 @@ async def _provider_review(
     try:
         response = await asyncio.get_running_loop().run_in_executor(
             None,
-            lambda: client.messages.create(
+            lambda: client.chat.completions.create(
                 model=model,
                 max_tokens=1200,
-                system=_SYSTEM_PROMPT,
                 messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
                     {
                         "role": "user",
                         "content": payload,
-                    }
+                    },
                 ],
-                tools=[REVIEW_TOOL],
-                tool_choice={"type": "tool", "name": REVIEW_TOOL_NAME},
+                tools=[
+                    openrouter.function_tool(
+                        name=REVIEW_TOOL_NAME,
+                        description=REVIEW_TOOL["description"],
+                        input_schema=REVIEW_TOOL["input_schema"],
+                    )
+                ],
+                tool_choice=openrouter.forced_tool_choice(REVIEW_TOOL_NAME),
             ),
         )
     except Exception as exc:
         await provider_usage.record_attempt(
-            provider="anthropic",
+            provider="openrouter",
             model=model,
             workflow="content_independent_review",
             cost_category="content",
@@ -710,7 +703,7 @@ async def _provider_review(
 
     usage = getattr(response, "usage", None)
     await provider_usage.record_attempt(
-        provider="anthropic",
+        provider="openrouter",
         model=model,
         workflow="content_independent_review",
         cost_category="content",
@@ -723,8 +716,8 @@ async def _provider_review(
     )
     # 잘린 도구 입력은 findings 배열이 비어 있는 채로 파싱돼 PASS가 된다. 검수가 끝나지
     # 않았는데 안전 게이트를 여는 셈이므로, 작가 경로(content_engine)와 같게 여기서 끊는다.
-    stop_reason = getattr(response, "stop_reason", None)
-    if stop_reason in {"max_tokens", "refusal"}:
+    stop_reason = llm_structured_output.incomplete_reason(response)
+    if stop_reason is not None:
         logger.warning("Independent content AI review truncated: stop_reason=%s", stop_reason)
         return _unavailable_review(
             content=content,
@@ -772,7 +765,7 @@ async def review_generated_content(
             reason=ContentAiReviewUnavailableReason.COST_BLOCKED,
             provider_attempted=False,
         )
-    if not settings.ANTHROPIC_API_KEY:
+    if not settings.OPENROUTER_API_KEY:
         await cost_guard.settle_reservation(decision.receipt, consumed_units=0)
         return _unavailable_review(
             content=content,
@@ -791,7 +784,7 @@ async def review_generated_content(
         )
     )
     try:
-        client = _anthropic_client()
+        client = _llm_client()
     except Exception as exc:
         await cost_guard.settle_reservation(decision.receipt, consumed_units=0)
         logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)

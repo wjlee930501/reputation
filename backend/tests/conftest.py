@@ -6,8 +6,8 @@ os.environ["ADMIN_SECRET_KEY"] = "test-admin-key"
 os.environ.setdefault("APP_ENV", "test")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test")
 os.environ.setdefault("SYNC_DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test")
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
-os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
+# 모든 LLM·이미지 호출은 OpenRouter 키 하나로 나간다 — 테스트에서도 동일한 계약.
+os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 # Google 이미지 경로가 실패하는 테스트가 실제 OpenAI로 새지 않게 폴백은 기본 꺼 둔다.
 # 폴백을 검증하는 테스트만 settings.IMAGE_FALLBACK_PROVIDER="openai"로 켠다.
 os.environ.setdefault("IMAGE_FALLBACK_PROVIDER", "")

@@ -21,16 +21,12 @@ dependencies = [
     "redis>=5.2.0",
     "flower>=2.0.0",
 
-    # AI — 콘텐츠 생성
-    "anthropic>=0.40.0",
-
-    # AI — SoV 측정 + gpt-image-2 이미지 생성
+    # AI — 모든 LLM·이미지 호출은 OpenRouter 게이트웨이 하나로 나간다
+    # (OpenAI 호환 chat completions / responses / images). 공급자 SDK는 두지 않는다.
     "openai>=1.66.0",
     "httpx>=0.28.0",
-    "google-genai>=1.0.0",
 
-    # AI — 이미지 생성
-    "google-cloud-aiplatform>=1.70.0",
+    # GCS — 이미지·리포트 저장
     "google-cloud-storage>=2.18.0",
     "google-cloud-secret-manager>=2.20.0",
     "google-cloud-certificate-manager>=1.7.0",

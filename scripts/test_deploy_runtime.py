@@ -285,7 +285,7 @@ _TEMPLATE_ONLY_KEYS: dict[str, str] = {
     # docker-compose.yml의 flower 서비스 basic-auth.
     "FLOWER_USER": "docker-compose flower basic-auth",
     "FLOWER_PASSWORD": "docker-compose flower basic-auth",
-    # google-genai/GCS SDK가 직접 읽는 표준 환경변수. compose가 키 파일을 마운트한다.
+    # GCS SDK가 직접 읽는 표준 환경변수. compose가 키 파일을 마운트한다.
     "GOOGLE_APPLICATION_CREDENTIALS": "GCP SDK 표준 변수 (docker-compose 볼륨 마운트)",
     # app/utils/admin_user.py의 create-owner CLI가 os.getenv로 한 번 읽는 부트스트랩 입력.
     "ADMIN_EMAIL": "admin_user.py create-owner CLI",
@@ -1035,7 +1035,7 @@ def test_site_only_deploy_does_not_require_backend_only_secrets(tmp_path: Path) 
     commands = command_log.read_text()
     assert "secrets describe SITE_REVALIDATE_SECRET" in commands
     assert "secrets describe SITE_BFF_SECRET" in commands
-    assert "secrets describe ANTHROPIC_API_KEY" not in commands
+    assert "secrets describe OPENROUTER_API_KEY" not in commands
     assert "secrets describe REDIS_URL" not in commands
     assert "gsutil ls -b gs://reputation-assets" in commands
     assert commands.index("gsutil ls -b gs://reputation-assets") < commands.index("docker build")

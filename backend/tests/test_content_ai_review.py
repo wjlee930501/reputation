@@ -47,14 +47,14 @@ async def test_review_client_is_created_once_and_reused(monkeypatch) -> None:
     """검수 1건마다 클라이언트를 새로 만들면 커넥션 풀을 매번 버린다."""
     created: list[dict] = []
 
-    class FakeAnthropicClient:
+    class FakeOpenAIClient:
         def __init__(self, **kwargs):
             created.append(kwargs)
 
-    monkeypatch.setattr(content_ai_review.anthropic, "Anthropic", FakeAnthropicClient)
+    monkeypatch.setattr(content_ai_review.openrouter, "OpenAI", FakeOpenAIClient)
     content_ai_review._reset_clients_for_tests()
 
-    assert content_ai_review._anthropic_client() is content_ai_review._anthropic_client()
+    assert content_ai_review._llm_client() is content_ai_review._llm_client()
     assert len(created) == 1
     assert created[0]["max_retries"] == 0
 
@@ -92,7 +92,7 @@ async def test_unconfigured_reviewer_settles_unused_reservation(monkeypatch) -> 
 
     monkeypatch.setattr(content_ai_review.cost_guard, "reserve", allowed)
     monkeypatch.setattr(content_ai_review.cost_guard, "settle_reservation", settle)
-    monkeypatch.setattr(content_ai_review.settings, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(content_ai_review.settings, "OPENROUTER_API_KEY", "")
 
     result = await content_ai_review.review_generated_content(
         hospital=SimpleNamespace(),
@@ -303,7 +303,7 @@ def _install_reviewer(monkeypatch, handlers: list, *, reserve_results=None):
     reservations: list[str] = []
     settled: list[int] = []
 
-    class _Messages:
+    class _Completions:
         def create(self, **kwargs):
             calls.append(kwargs)
             handler = handlers[len(calls) - 1]
@@ -311,9 +311,9 @@ def _install_reviewer(monkeypatch, handlers: list, *, reserve_results=None):
                 raise handler
             return _FakeResponse(handler)
 
-    client = SimpleNamespace(messages=_Messages())
-    monkeypatch.setattr(content_ai_review, "_anthropic_client", lambda: client)
-    monkeypatch.setattr(content_ai_review.settings, "ANTHROPIC_API_KEY", "test-key")
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    monkeypatch.setattr(content_ai_review, "_llm_client", lambda: client)
+    monkeypatch.setattr(content_ai_review.settings, "OPENROUTER_API_KEY", "test-key")
 
     allowed_by_call = list(reserve_results or [True, True])
 

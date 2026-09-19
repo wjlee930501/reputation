@@ -58,7 +58,7 @@ Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 l
 - Backend: Python 3.11/FastAPI, PostgreSQL/SQLAlchemy/Alembic, Celery/Redis/RedBeat, Jinja2/WeasyPrint. API async와 Worker sync 세션이 공존한다.
 - Admin/Site: Next App Router, 저장소 선언 기준 Next 16.3.3, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다. 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)은 BFF가 서명한 actor 단언(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET`, 120초)을 요구하며, 배치·CLI는 `X-Admin-Actor-System`으로 감사에 `system:<job>`으로 남는다. 공유 `X-Admin-Key`만으로 actor를 고르는 경로는 없다.
 - 운영 배포: API, Worker, Beat, Admin, Site 모두 GCP Cloud Run. Cloud SQL, Memorystore, GCS, HTTPS Load Balancer와 인증서 구성을 사용한다.
-- 콘텐츠는 Anthropic Claude, 기본 이미지 경로는 Vertex Gemini, 측정은 OpenAI/Gemini API다. 개발 에이전트 모델과 서비스의 모델을 혼동하지 않는다. 실제 모델은 `backend/app/core/config.py`와 배포 설정으로 확인한다.
+- 모든 LLM·이미지 호출은 `OPENROUTER_API_KEY` 하나로 OpenRouter 게이트웨이를 거친다 — 콘텐츠는 Claude 계열, 이미지는 Gemini/OpenAI 계열, 측정은 OpenAI/Gemini 계열 모델을 `vendor/model` 슬러그로 호출한다. 공급자 직결 SDK(Anthropic·OpenAI·google-genai·Vertex)는 쓰지 않는다. 개발 에이전트 모델과 서비스의 모델을 혼동하지 않는다. 실제 모델은 `backend/app/core/config.py`와 배포 설정으로 확인한다.
 - `build_aeo_site`는 상태 준비·자동 활성화 작업이다. 별도의 `site_builder.py`나 병원별 HTML/CSS 생성기를 전제로 개발하지 않는다.
 
 ## 변경 시 보존할 계약

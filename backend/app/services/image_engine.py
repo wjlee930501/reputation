@@ -1,9 +1,10 @@
 """
 이미지 생성 엔진
-- 기본: Vertex AI **Gemini 3.1 Flash Image**. 안전 차단·정책 거절·공급자 오류로 끝나면
-  OpenAI **gpt-image-2.5** 로 한 번 더 만든다(IMAGE_FALLBACK_PROVIDER).
-- 선택: OpenAI 이미지 우선(IMAGE_PROVIDER=openai), 실패 시 Google 경로로 폴백
+- 기본: OpenRouter **google/gemini-3.1-flash-image**. 안전 차단·정책 거절·공급자 오류로
+  끝나면 OpenRouter **openai/gpt-5-image-mini** 로 한 번 더 만든다(IMAGE_FALLBACK_PROVIDER).
+- 선택: OpenAI 계열 우선(IMAGE_PROVIDER=openai), 실패 시 Google 계열 경로로 폴백
 - 생성물은 GCS에 저장 후 gs:// 경로 반환 (공개 표면은 안정 프록시로 서빙)
+- 모든 모델 호출(생성·검수)은 OPENROUTER_API_KEY 하나로 나간다. GCS는 저장소로 남는다.
 
 설계 메모: 콘텐츠 카드 이미지가 유형별 고정 프롬프트라 "파란 빈 방"이 반복되던 슬롭 문제를
 없애기 위해, 각 항목의 제목(topic)을 프롬프트에 주입해 항목마다 다른 그림이 나오게 한다.
@@ -13,7 +14,6 @@
 import base64
 import hashlib
 import logging
-import threading
 import uuid
 from dataclasses import dataclass
 from enum import StrEnum
@@ -24,6 +24,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from app.core.config import settings
 from app.models.content import ContentType
+from app.services import openrouter
 from app.services.image_direction import (
     HospitalImageDirection,
     image_direction_prompt,
@@ -116,51 +117,15 @@ def _record_policy_rejection(
         prior_failure=prior_failure,
     ).to_state()
 
-# ── 공급자 클라이언트 lazy 싱글턴 ────────────────────────────────────────
-# 시도마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 세션을 매번 버린다.
-# 초기화만 잠그고(Celery prefork 자식 안 스레드 동시 진입) 이후에는 그대로 재사용한다.
-_openai_client_instance = None
-_google_client_instance = None
-_client_lock = threading.Lock()
-
-
-def _get_openai_client():
-    global _openai_client_instance
-    if _openai_client_instance is None:
-        from openai import OpenAI
-
-        with _client_lock:
-            if _openai_client_instance is None:
-                _openai_client_instance = OpenAI(
-                    api_key=settings.OPENAI_API_KEY, timeout=180.0, max_retries=0
-                )
-    return _openai_client_instance
-
-
-def _get_google_client():
-    global _google_client_instance
-    if _google_client_instance is None:
-        from google import genai
-        from google.genai import types
-
-        with _client_lock:
-            if _google_client_instance is None:
-                _google_client_instance = genai.Client(
-                    vertexai=True,
-                    project=settings.GCP_PROJECT_ID,
-                    location=settings.GOOGLE_IMAGE_LOCATION,
-                    http_options=types.HttpOptions(api_version="v1", timeout=60_000),
-                )
-    return _google_client_instance
+# ── 공급자 클라이언트 ────────────────────────────────────────────────────
+# 생성은 openrouter.generate_image(전용 /images 엔드포인트), 검수는 OpenRouter
+# chat completions다. 둘 다 openrouter의 timeout별 싱글턴/재시도 계약을 공유한다.
 
 
 def _reset_clients_for_tests() -> None:
     """테스트가 settings/SDK 생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
 
-    global _openai_client_instance, _google_client_instance
-    with _client_lock:
-        _openai_client_instance = None
-        _google_client_instance = None
+    openrouter.reset_clients_for_tests()
 
 
 class ImageSafetyBlockedError(ValueError):
@@ -183,6 +148,16 @@ def _looks_like_policy_block(value: object) -> bool:
     return any(marker in text for marker in _GOOGLE_BLOCK_MARKERS)
 
 
+def _http_status_code(exc: BaseException) -> int | None:
+    """SDK/httpx/공급자 예외의 HTTP 상태를 한 곳에서 읽는다."""
+    for value in (getattr(exc, "status_code", None), getattr(exc, "code", None)):
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    status = getattr(response, "status_code", None)
+    return status if isinstance(status, int) else None
+
+
 def _is_transient_google_image_error(exc: BaseException) -> bool:
     """안전 차단과 결정적 4xx는 재시도 금지 — 바로 안전 폴백 프롬프트로 넘긴다.
 
@@ -194,9 +169,7 @@ def _is_transient_google_image_error(exc: BaseException) -> bool:
         (ImageSafetyBlockedError, ImagePolicyRejectedError, ImagePolicyUnavailableError),
     ) or _looks_like_policy_block(exc):
         return False
-    status = getattr(exc, "status_code", None)
-    if not isinstance(status, int):
-        status = getattr(exc, "code", None)
+    status = _http_status_code(exc)
     if isinstance(status, int) and 400 <= status < 500 and status != 429:
         return False
     return True
@@ -207,14 +180,9 @@ def _is_transient_openai_error(exc: BaseException) -> bool:
     바로 Google 경로로 넘겨 시간/비용 낭비와 Job 타임아웃을 막는다. 5xx/네트워크만 재시도."""
     if isinstance(exc, (ImagePolicyRejectedError, ImagePolicyUnavailableError)):
         return False
-    try:
-        from openai import APIStatusError
-
-        if isinstance(exc, APIStatusError):
-            status = getattr(exc, "status_code", 500) or 500
-            return status >= 500
-    except Exception:  # noqa: BLE001 — openai 미설치 등은 재시도 대상으로 둔다
-        pass
+    status = _http_status_code(exc)
+    if isinstance(status, int):
+        return status == 429 or status >= 500
     return True
 
 
@@ -553,7 +521,7 @@ async def generate_image(
     # 계수기를 따로 두고 끝에서 전부 기록해야 상한이 실제 지출을 본다.
     counters: list[_CallCounter] = []
     try:
-        if provider == "openai" and settings.OPENAI_API_KEY:
+        if provider == "openai" and settings.OPENROUTER_API_KEY:
             outcome = await _openai_stage(
                 loop,
                 content_type,
@@ -573,13 +541,13 @@ async def generate_image(
             if outcome.url or outcome.terminal:
                 return outcome.url, outcome.prompt
 
-        # ── Vertex AI Gemini image (기본 또는 폴백) ──
-        if not settings.GCP_PROJECT_ID:
+        # ── Google 계열 이미지 (기본 또는 폴백) — OpenRouter 경유 ──
+        if not settings.OPENROUTER_API_KEY:
             if diagnostics is not None:
                 # 종전에는 이 경로만 reason 없이 ("","")를 돌려줘, 설정 누락이 공급자 오류와
                 # 같은 모습으로 보고됐다. 원인을 구분할 수 있게 남긴다.
                 diagnostics["reason"] = "PROVIDER_NOT_CONFIGURED"
-            logger.warning("No usable image provider (OPENAI_API_KEY/GCP_PROJECT_ID) — skipping")
+            logger.warning("No usable image provider (OPENROUTER_API_KEY) — skipping")
             return ("", "")
 
         outcome = await _google_stages(
@@ -600,7 +568,7 @@ async def generate_image(
         if (
             provider != "openai"
             and fallback_provider == "openai"
-            and settings.OPENAI_API_KEY
+            and settings.OPENROUTER_API_KEY
             and outcome.reason in _OPENAI_FALLBACK_TRIGGERS
         ):
             logger.warning(
@@ -949,6 +917,41 @@ def _policy_failure_reason(summary: str, exc: BaseException) -> str:
     return f"{summary}: {detail[:_POLICY_FAILURE_DETAIL_LIMIT]}"
 
 
+def _review_image_once(
+    image_bytes: bytes,
+    *,
+    mime_type: str,
+    rubric: str,
+    model: str,
+    counter: _CallCounter | None,
+) -> str:
+    """Run one OpenRouter vision review call and return the raw JSON text."""
+
+    event = counter.tick_review("openrouter", model) if counter is not None else None
+    data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    response = openrouter.sync_client(timeout=60.0).chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": rubric},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+        response_format=openrouter.json_schema_format(
+            ImagePolicyAssessment.model_json_schema(), name="image_policy_assessment"
+        ),
+        temperature=0,
+        max_tokens=512,
+    )
+    if event is not None:
+        event["usage"] = getattr(response, "usage", None)
+        event["provider_request_id"] = getattr(response, "id", None)
+    return openrouter.first_text(response)
+
+
 def _validate_generated_image(
     image_bytes: bytes,
     *,
@@ -958,12 +961,10 @@ def _validate_generated_image(
     counter: _CallCounter | None = None,
 ) -> ImagePolicyAssessment:
     """Run one bounded multimodal review before any generated bytes are uploaded."""
-    event: dict[str, object] | None = None
-    if counter is not None:
-        if settings.GCP_PROJECT_ID:
-            event = counter.tick_review("google", settings.GEMINI_MODEL)
-        else:
-            event = counter.tick_review("openai", settings.OPENAI_MODEL_PARSE)
+    if not settings.OPENROUTER_API_KEY:
+        raise ImagePolicyUnavailableError(
+            "OPENROUTER_API_KEY is required for image policy review"
+        )
     rubric = (
         "Inspect this generated editorial image and return only the requested JSON policy "
         "assessment. A safe editorial metaphor counts as topic relevant when its objects clearly "
@@ -975,57 +976,29 @@ def _validate_generated_image(
         "anonymous illustrative treatment room is allowed."
     )
     try:
-        if settings.GCP_PROJECT_ID:
-            from google.genai import types
-
-            response = _get_google_client().models.generate_content(
+        try:
+            response_text = _review_image_once(
+                image_bytes,
+                mime_type=mime_type,
+                rubric=rubric,
                 model=settings.GEMINI_MODEL,
-                contents=[rubric, types.Part.from_bytes(data=image_bytes, mime_type=mime_type)],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=ImagePolicyAssessment,
-                    temperature=0,
-                    max_output_tokens=512,
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                ),
+                counter=counter,
             )
-            if event is not None:
-                event["usage"] = getattr(response, "usage_metadata", None)
-                event["provider_request_id"] = getattr(response, "response_id", None)
-            response_text = response.text or ""
-        elif settings.OPENAI_API_KEY:
-            data_url = f"data:{mime_type};base64,{base64.b64encode(image_bytes).decode('ascii')}"
-            response = _get_openai_client().with_options(
-                timeout=60.0, max_retries=0
-            ).chat.completions.create(
+        except Exception as primary_exc:  # noqa: BLE001 — 검수 모델 장애 시 다른 비전 모델로 한 번 더
+            if settings.OPENAI_MODEL_PARSE == settings.GEMINI_MODEL:
+                raise
+            logger.warning(
+                "image policy review failed on %s; retrying with %s: %s",
+                settings.GEMINI_MODEL,
+                settings.OPENAI_MODEL_PARSE,
+                type(primary_exc).__name__,
+            )
+            response_text = _review_image_once(
+                image_bytes,
+                mime_type=mime_type,
+                rubric=rubric,
                 model=settings.OPENAI_MODEL_PARSE,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": rubric},
-                            {"type": "image_url", "image_url": {"url": data_url}},
-                        ],
-                    }
-                ],
-                response_format={
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "image_policy_assessment",
-                        "strict": True,
-                        "schema": ImagePolicyAssessment.model_json_schema(),
-                    },
-                },
-                temperature=0,
-                max_tokens=512,
-            )
-            if event is not None:
-                event["usage"] = getattr(response, "usage", None)
-                event["provider_request_id"] = getattr(response, "id", None)
-            response_text = response.choices[0].message.content or ""
-        else:
-            raise ImagePolicyUnavailableError(
-                "Google or OpenAI credentials are required for image policy review"
+                counter=counter,
             )
         assessment = ImagePolicyAssessment.model_validate_json(response_text)
     except (ImportError, ValidationError) as exc:
@@ -1159,42 +1132,37 @@ def _openai_generate_verified_bytes(
     expected_topic: str | None = None,
     counter: _CallCounter | None = None,
 ) -> bytes:
-    """Generate and verify one OpenAI candidate, retrying provider work only."""
+    """Generate and verify one OpenAI-family candidate via OpenRouter /images."""
     # tenacity 재시도마다 본문이 다시 실행된다 — 시도 1회 = 유료 호출 1회.
-    event = counter.tick("openai", settings.OPENAI_IMAGE_MODEL) if counter is not None else None
+    event = (
+        counter.tick("openrouter", settings.OPENAI_IMAGE_MODEL)
+        if counter is not None
+        else None
+    )
     try:
-        client = _get_openai_client()
-        # response_format은 gpt-image 계열에서 기본 b64_json이며 일부 버전이 명시 전달을
-        # 거부하므로 전달하지 않는다(기본값 사용).
-        result = client.images.generate(
+        images, body = openrouter.generate_image(
             model=settings.OPENAI_IMAGE_MODEL,
             prompt=prompt,
-            size=settings.OPENAI_IMAGE_SIZE,
+            aspect_ratio=settings.IMAGE_ASPECT_RATIO,
             quality=settings.OPENAI_IMAGE_QUALITY,
-            n=1,
         )
         if event is not None:
-            event["usage"] = getattr(result, "usage", None)
-            event["provider_request_id"] = getattr(result, "id", None)
-        if not result.data:
-            raise ValueError(f"{settings.OPENAI_IMAGE_MODEL} returned no data")
-        b64 = result.data[0].b64_json
-        if not b64:
-            raise ValueError(f"{settings.OPENAI_IMAGE_MODEL} returned no b64_json payload")
-        image_bytes = base64.b64decode(b64, validate=True)
+            event["usage"] = body.get("usage")
+            event["provider_request_id"] = body.get("id")
+        if not images:
+            raise ValueError(f"{settings.OPENAI_IMAGE_MODEL} returned no image payload")
+        image_bytes = images[0]
         if event is not None:
             event["image_units"] = 1
+        media_type = str((body.get("data") or [{}])[0].get("media_type") or "image/png")
         _validate_generated_image(
             image_bytes,
-            mime_type="image/png",
+            mime_type=media_type,
             prompt=prompt,
             expected_topic=expected_topic,
             counter=counter,
         )
         return image_bytes
-    except ImportError:
-        logger.error("openai SDK not installed")
-        return b""
     except Exception as e:
         logger.error("%s generation failed: %s", settings.OPENAI_IMAGE_MODEL, e)
         raise
@@ -1227,74 +1195,41 @@ def _google_generate_verified_bytes(
     expected_topic: str | None = None,
     counter: _CallCounter | None = None,
 ) -> bytes:
-    """Generate and verify one Google candidate, retrying provider work only.
+    """Generate and verify one Google-family candidate via OpenRouter /images.
 
     안전/정책 차단은 재시도하지 않고 즉시 raise → 호출부가 안전 폴백 프롬프트로 넘어간다.
+    OpenRouter는 공급자 거절을 4xx 오류(본문에 IMAGE_SAFETY/PROHIBITED_CONTENT 등)로
+    돌려주므로 _looks_like_policy_block이 그대로 분류한다.
     """
-    event = counter.tick("google", settings.GOOGLE_IMAGE_MODEL) if counter is not None else None
+    event = (
+        counter.tick("openrouter", settings.GOOGLE_IMAGE_MODEL)
+        if counter is not None
+        else None
+    )
     try:
-        from google.genai import types
-
-        client = _get_google_client()
-        response = client.models.generate_content(
+        images, body = openrouter.generate_image(
             model=settings.GOOGLE_IMAGE_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
-                candidate_count=1,
-                image_config=types.ImageConfig(
-                    aspect_ratio="16:9",
-                    image_size="1K",
-                    person_generation="ALLOW_NONE",
-                ),
-            ),
+            prompt=prompt,
+            aspect_ratio=settings.IMAGE_ASPECT_RATIO,
+            resolution=settings.GOOGLE_IMAGE_RESOLUTION,
         )
         if event is not None:
-            event["usage"] = getattr(response, "usage_metadata", None)
-            event["provider_request_id"] = getattr(response, "response_id", None)
-        parts = (
-            response.candidates[0].content.parts
-            if response.candidates and response.candidates[0].content
-            else []
-        ) or []
-        image_part = next(
-            (
-                part.inline_data
-                for part in parts
-                if part.inline_data and part.inline_data.data
-            ),
-            None,
-        )
-        if not image_part:
-            finish_reasons = [
-                str(getattr(candidate, "finish_reason", None))
-                for candidate in (response.candidates or [])
-            ]
-            message = (
-                "Google image model returned no image payload "
-                f"(finish_reasons={finish_reasons})"
-            )
-            prompt_feedback = getattr(response, "prompt_feedback", None)
-            if _looks_like_policy_block(finish_reasons) or _looks_like_policy_block(
-                getattr(prompt_feedback, "block_reason", "")
-            ):
-                raise ImageSafetyBlockedError(message)
-            raise ValueError(message)
-        image_bytes = image_part.data
+            event["usage"] = body.get("usage")
+            event["provider_request_id"] = body.get("id")
+        if not images:
+            raise ValueError(f"{settings.GOOGLE_IMAGE_MODEL} returned no image payload")
+        image_bytes = images[0]
         if event is not None:
             event["image_units"] = 1
+        media_type = str((body.get("data") or [{}])[0].get("media_type") or "image/png")
         _validate_generated_image(
             image_bytes,
-            mime_type=getattr(image_part, "mime_type", None) or "image/png",
+            mime_type=media_type,
             prompt=prompt,
             expected_topic=expected_topic,
             counter=counter,
         )
         return image_bytes
-
-    except ImportError:
-        logger.error("Google Gen AI or GCS SDK not installed")
-        return b""
     except Exception as e:
         logger.error("Image generation failed: %s", e)
         raise

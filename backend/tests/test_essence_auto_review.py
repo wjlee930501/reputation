@@ -111,7 +111,7 @@ def test_independent_reviewer_requires_high_confidence_and_exact_decision(monkey
             )
         )
 
-    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_auto_review, "_call_llm_json", fake_call)
     candidate = _empty_candidate(uuid.uuid4())
     candidate["positioning_statement"] = "근거 기반 설명"
     candidate["evidence_map"] = {"positioning_statement": [str(note_id)]}
@@ -164,7 +164,7 @@ def test_independent_review_shards_more_than_eighty_notes_without_escalating_on_
             "summary": "이 범위 확인",
         }
 
-    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_auto_review, "_call_llm_json", fake_call)
 
     review = essence_auto_review.review_essence_candidate(
         _hospital(), _previous(), candidate, notes
@@ -232,7 +232,7 @@ def test_second_ai_adjudicator_can_clear_primary_false_positive(monkeypatch) -> 
         calls.append({"system": system_prompt, **kwargs})
         return next(responses)
 
-    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_auto_review, "_call_llm_json", fake_call)
     candidate = _empty_candidate(uuid.uuid4())
     candidate["positioning_statement"] = "근거 기반 지역 진료 설명"
     candidate["evidence_map"] = {"positioning_statement": [str(note_id)]}
@@ -293,7 +293,7 @@ def test_second_ai_adjudicator_fails_closed_below_confidence(monkeypatch) -> Non
         calls.append(_kwargs)
         return next(responses)
 
-    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_auto_review, "_call_llm_json", fake_call)
 
     candidate = _empty_candidate(uuid.uuid4())
     candidate["positioning_statement"] = "근거 기반 설명"
@@ -386,7 +386,7 @@ def _run_escalated_review(monkeypatch, primary: dict, candidate: dict, notes: li
         prompts.append(data)
         return next(responses)
 
-    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_auto_review, "_call_llm_json", fake_call)
     essence_auto_review.review_essence_candidate(
         _hospital(), _previous(), candidate, notes
     )
@@ -468,7 +468,7 @@ def test_adjudication_is_skipped_when_no_evidence_maps_to_the_blocker(monkeypatc
         calls.append(data)
         return _escalating_primary(blocking_findings=["필드를 특정하지 않은 일반 지적"])
 
-    monkeypatch.setattr(essence_auto_review, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_auto_review, "_call_llm_json", fake_call)
     review = essence_auto_review.review_essence_candidate(
         _hospital(), _previous(), candidate, notes
     )

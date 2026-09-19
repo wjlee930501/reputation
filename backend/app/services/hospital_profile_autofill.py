@@ -17,14 +17,13 @@ import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
-import anthropic
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
-from app.services import naver_place
+from app.services import llm_structured_output, naver_place, openrouter
 from app.services.asset_extractor import fetch_url_text
 from app.services.content_engine import _parse_json_response
-from app.utils.anthropic_retry import is_retryable_anthropic_error
+from app.services.openrouter import is_retryable_llm_error
 from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
@@ -39,11 +38,7 @@ def _autofill_model() -> str:
     return settings.AUTOFILL_MODEL or settings.CLAUDE_MODEL_FAST
 
 
-_client = anthropic.Anthropic(
-    api_key=settings.ANTHROPIC_API_KEY,
-    timeout=90.0,
-    max_retries=0,  # tenacity가 백오프로 재시도
-)
+_client = openrouter.sync_client(timeout=90.0)  # max_retries=0 — tenacity가 재시도
 
 # 소스별 입력 텍스트 상한 — 토큰/비용 통제.
 # 홈페이지·블로그·네이버 플레이스 3개 소스 × 18K자 = 입력 최대 ~54K자(≈20K 토큰).
@@ -202,7 +197,7 @@ async def _gather_sources(
     wait=wait_exponential(min=2, max=10),
     # 결정적 4xx(잘못된 요청·인증·권한·모델 오타)는 재시도해도 같은 실패다.
     # 재시도 1회 = 유료 호출 1회이므로 즉시 중단하고 호출부의 best-effort 폴백으로 넘긴다.
-    retry=retry_if_exception(is_retryable_anthropic_error),
+    retry=retry_if_exception(is_retryable_llm_error),
 )
 async def _extract_with_claude(
     name: str, aggregated_text: str, *, hospital_id: uuid.UUID | str | None = None
@@ -212,7 +207,7 @@ async def _extract_with_claude(
         f"[출처 텍스트]\n{aggregated_text}\n\n"
         "위 출처에서만 근거를 찾아 스키마대로 JSON을 출력하세요."
     )
-    # tenacity로 최대 3회 재시도되고 Anthropic 클라이언트는 재시도를 하지 않으므로
+    # tenacity로 최대 3회 재시도되고 OpenRouter 클라이언트는 재시도를 하지 않으므로
     # 본문 1회 실행 = 유료 호출 1회다. 자동 채우기는 AE가 버튼으로 돌리는 유료 호출인데
     # 종전에는 비용 화면에 전혀 잡히지 않았다.
     from app.services import cost_guard
@@ -230,16 +225,18 @@ async def _extract_with_claude(
     try:
         response = await loop.run_in_executor(
             None,
-            lambda: _client.messages.create(
+            lambda: _client.chat.completions.create(
                 model=model,
                 max_tokens=3000,
-                system=EXTRACTION_SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_message}],
+                messages=[
+                    {"role": "system", "content": EXTRACTION_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
             ),
         )
     except Exception:
         await provider_usage.record_attempt(
-            provider="anthropic",
+            provider="openrouter",
             model=model,
             workflow="PROFILE_AUTOFILL",
             cost_category="content",
@@ -255,7 +252,7 @@ async def _extract_with_claude(
 
     usage = getattr(response, "usage", None)
     await provider_usage.record_attempt(
-        provider="anthropic",
+        provider="openrouter",
         model=model,
         workflow="PROFILE_AUTOFILL",
         cost_category="content",
@@ -266,7 +263,7 @@ async def _extract_with_claude(
         usage=usage,
         idempotency_key=f"{attempt_context.logical_call_id}:http-attempt:{http_attempt}",
     )
-    raw = response.content[0].text
+    raw = llm_structured_output.first_text(response)
     parsed = _parse_json_response(raw, json_module=json)
     fields = parsed.get("fields")
     return fields if isinstance(fields, dict) else {}

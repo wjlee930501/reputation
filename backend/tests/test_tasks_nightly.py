@@ -5,7 +5,7 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import anthropic
+import openai
 import arrow
 import httpx
 import pytest
@@ -1368,7 +1368,7 @@ def test_weekly_manifest_without_a_platform_fails_closed():
     [
         (TimeoutError("secret-token"), "PROVIDER_TIMEOUT"),
         (
-            anthropic.APITimeoutError(request=httpx.Request("POST", "https://api.test")),
+            openai.APITimeoutError(request=httpx.Request("POST", "https://api.test")),
             "PROVIDER_TIMEOUT",
         ),
         (ConnectionError("secret-token"), "PROVIDER_UNAVAILABLE"),
@@ -3060,7 +3060,7 @@ def test_build_measurement_specs_gates_target_priority(monkeypatch):
         id="t-normal", priority="NORMAL", variants=[_variant("v-normal", "qm-normal")]
     )
     db = _SpecDB([qm_high, qm_normal])
-    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tasks.settings, "OPENROUTER_API_KEY", "")
 
     # 홀수 주차(is_even_week=False), 월초 아님 → NORMAL target 제외, HIGH만 포함
     specs, trimmed = tasks._build_measurement_specs(
@@ -3086,7 +3086,7 @@ def test_build_measurement_specs_applies_high_cap(monkeypatch):
         for i in range(5)
     ]
     db = _SpecDB(qms)
-    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tasks.settings, "OPENROUTER_API_KEY", "")
 
     specs, trimmed = tasks._build_measurement_specs(
         db=db,
@@ -3114,7 +3114,7 @@ def test_build_measurement_specs_caps_normal_and_low_combined(monkeypatch, prior
         )
         for index in range(12)
     ]
-    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tasks.settings, "OPENROUTER_API_KEY", "")
 
     specs, trimmed_high = tasks._build_measurement_specs(
         db=_SpecDB([]),

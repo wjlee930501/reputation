@@ -53,13 +53,13 @@ def test_gemini_timeout_exceeds_measured_p90_latency() -> None:
 
 
 def test_gemini_client_and_wait_for_share_one_timeout_constant() -> None:
-    """Gemini 경로에는 타임아웃이 두 군데 있다 — 한쪽만 고치면 짧은 쪽이 이긴다."""
+    """Gemini 경로의 타임아웃은 클라이언트 생성 시 한 군데서만 정해진다 — 상수와 분리 금지."""
     source = (sov_engine.__file__ or "").replace(".pyc", ".py")
     text = open(source, encoding="utf-8").read()
     assert "timeout=30.0" not in text, "하드코딩된 30초 타임아웃이 남아 있다"
     assert '"timeout": 30000' not in text, "Gemini 클라이언트에 하드코딩된 30초가 남아 있다"
-    assert text.count("GEMINI_TIMEOUT_SECONDS") >= 3, (
-        "Gemini 타임아웃 상수가 클라이언트와 wait_for 양쪽에 쓰이지 않는다"
+    assert "timeout=GEMINI_TIMEOUT_SECONDS" in text, (
+        "Gemini 클라이언트가 GEMINI_TIMEOUT_SECONDS와 다른 타임아웃을 쓴다"
     )
 
 
@@ -177,8 +177,12 @@ def test_both_platforms_receive_the_identical_prompt() -> None:
 
     # 양쪽 모두 **같은 상수를 같은 역할(지시문 파라미터)로** 보내야 한다.
     # 문자열만 같고 역할이 다르면(한쪽은 지시문, 한쪽은 질문에 이어붙임) 그것도 비대칭이다.
+    # OpenAI 계열은 Responses API의 instructions, Gemini 계열은 chat.completions의
+    # system 메시지 — OpenRouter 게이트웨이 안에서 지시문 자리가 이 둘이다.
     assert "instructions=SYSTEM_PROMPT_SOV" in text, "OpenAI 경로가 지시문을 지시문 자리로 안 보낸다"
-    assert "system_instruction=SYSTEM_PROMPT_SOV" in text, "Gemini 경로가 지시문을 지시문 자리로 안 보낸다"
+    assert '"role": "system", "content": SYSTEM_PROMPT_SOV' in text, (
+        "Gemini 경로가 지시문을 system 메시지 자리로 안 보낸다"
+    )
     # 한쪽에만 프롬프트를 직접 끼워 넣는 옛 형태가 남아 있으면 안 된다.
     assert "SYSTEM_PROMPT_CHATGPT" not in text, "플랫폼 전용 프롬프트 상수가 남아 있다"
     # 지시문을 질문 문자열에 이어붙이던 옛 전달 방식이 남아 있으면 안 된다 —

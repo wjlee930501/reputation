@@ -42,7 +42,7 @@ def google_primary_with_openai_fallback(monkeypatch):
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
     monkeypatch.setattr(image_engine.settings, "IMAGE_FALLBACK_PROVIDER", "openai")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
-    monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
     return recorded
 
 
@@ -265,24 +265,19 @@ def test_openai_fallback_also_runs_for_the_policy_repair_candidate(
     assert google_primary_with_openai_fallback["image"] == 2
 
 
-def test_openai_image_request_uses_the_configured_images_2_5_model(monkeypatch):
-    import openai
+def test_openai_image_request_uses_the_configured_openrouter_model(monkeypatch):
+    """생성은 OpenRouter /images 엔드포인트 하나로 나간다 — 모델 슬러그·비율·품질을 확인."""
 
     captured = {}
 
-    class FakeImages:
-        def generate(self, **kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(data=[SimpleNamespace(b64_json="cG5n")], usage=None, id="r1")
+    def fake_generate_image(**kwargs):
+        captured.update(kwargs)
+        return [b"png"], {"data": [{"media_type": "image/png"}], "usage": None, "id": "r1"}
 
-    class FakeOpenAI:
-        def __init__(self, **_kwargs):
-            self.images = FakeImages()
-
-    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_MODEL", "gpt-image-2.5-flare")
-    monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_SIZE", "1536x864")
+    monkeypatch.setattr(image_engine.openrouter, "generate_image", fake_generate_image)
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_MODEL", "openai/gpt-5-image-mini")
+    monkeypatch.setattr(image_engine.settings, "IMAGE_ASPECT_RATIO", "16:9")
     monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_QUALITY", "high")
     monkeypatch.setattr(
         image_engine,
@@ -295,13 +290,10 @@ def test_openai_image_request_uses_the_configured_images_2_5_model(monkeypatch):
             topic_relevant=True,
         ),
     )
-    image_engine._reset_clients_for_tests()
 
     image_bytes = image_engine._openai_generate_verified_bytes("prompt", expected_topic="t")
 
     assert image_bytes == b"png"
-    assert captured["model"] == "gpt-image-2.5-flare"
-    assert captured["size"] == "1536x864"
+    assert captured["model"] == "openai/gpt-5-image-mini"
+    assert captured["aspect_ratio"] == "16:9"
     assert captured["quality"] == "high"
-    assert "response_format" not in captured
-    image_engine._reset_clients_for_tests()

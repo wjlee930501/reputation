@@ -1,10 +1,10 @@
 """LLM 기반 essence 추출/합성 검증.
 
-실제 Anthropic API를 호출하지 않고 client.messages.create를 가짜 응답으로 대체한다.
+실제 OpenRouter API를 호출하지 않고 client.chat.completions.create를 가짜 응답으로 대체한다.
 검증 포인트:
 - source-processing: source_excerpt가 원문 verbatim일 때만 노트로 저장된다.
 - synthesis: 진짜 doctor_voice descriptor + treatment_narrative가 근거 노트에 묶여 나온다.
-- ANTHROPIC_API_KEY가 없으면 deterministic 폴백이 그대로 동작한다.
+- OPENROUTER_API_KEY가 없으면 deterministic 폴백이 그대로 동작한다.
 """
 import json
 import uuid
@@ -37,19 +37,19 @@ class _FakeMessages:
         return _FakeMessage(self._text)
 
 
-class _FakeAnthropic:
+class _FakeOpenRouter:
     def __init__(self, text: str):
-        self.messages = _FakeMessages(text)
+        self.chat = SimpleNamespace(completions=_FakeMessages(text))
 
 
 @pytest.fixture
 def llm_key(monkeypatch):
-    monkeypatch.setattr(essence_engine.settings, "ANTHROPIC_API_KEY", "sk-test")
+    monkeypatch.setattr(essence_engine.settings, "OPENROUTER_API_KEY", "sk-test")
 
 
-def _patch_client(monkeypatch, text: str) -> _FakeAnthropic:
-    fake = _FakeAnthropic(text)
-    monkeypatch.setattr(essence_engine, "_anthropic_client", lambda: fake)
+def _patch_client(monkeypatch, text: str) -> _FakeOpenRouter:
+    fake = _FakeOpenRouter(text)
+    monkeypatch.setattr(essence_engine, "_llm_client", lambda: fake)
     return fake
 
 
@@ -101,7 +101,7 @@ def test_llm_source_processing_keeps_only_verbatim_excerpts(monkeypatch, llm_key
     assert any(n.note_type == EvidenceNoteType.DOCTOR_PHILOSOPHY for n in notes)
     treatment = next(n for n in notes if n.note_type == EvidenceNoteType.TREATMENT_SIGNAL)
     assert treatment.note_metadata.get("treatment") == "치질 수술"
-    assert fake.messages.calls[0]["output_config"]["format"]["type"] == "json_schema"
+    assert fake.chat.completions.calls[0]["response_format"]["type"] == "json_schema"
 
 
 def test_llm_synthesis_produces_grounded_voice_and_narrative(monkeypatch, llm_key):
@@ -161,9 +161,9 @@ def test_llm_synthesis_produces_grounded_voice_and_narrative(monkeypatch, llm_ke
     assert "must_use_messages" not in payload["evidence_map"]
     # 합성 결과가 grounding 검증을 통과한다.
     assert validate_philosophy_grounding(payload, notes) == []
-    output_format = fake.messages.calls[0]["output_config"]["format"]
+    output_format = fake.chat.completions.calls[0]["response_format"]
     assert output_format["type"] == "json_schema"
-    assert output_format["schema"]["additionalProperties"] is False
+    assert output_format["json_schema"]["schema"]["additionalProperties"] is False
 
 
 def test_json_provider_call_retries_empty_response(monkeypatch, llm_key):
@@ -182,11 +182,11 @@ def test_json_provider_call_retries_empty_response(monkeypatch, llm_key):
     messages = SequenceMessages()
     monkeypatch.setattr(
         essence_engine,
-        "_anthropic_client",
-        lambda: SimpleNamespace(messages=messages),
+        "_llm_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=messages)),
     )
 
-    result = essence_engine._call_anthropic_json("system", "data", max_tokens=100)
+    result = essence_engine._call_llm_json("system", "data", max_tokens=100)
 
     assert result == {"ok": True}
     assert messages.calls == 2
@@ -204,12 +204,12 @@ def test_json_provider_call_honors_single_attempt_budget(monkeypatch, llm_key):
     messages = EmptyMessages()
     monkeypatch.setattr(
         essence_engine,
-        "_anthropic_client",
-        lambda: SimpleNamespace(messages=messages),
+        "_llm_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=messages)),
     )
 
     with pytest.raises(ValueError, match="no text JSON block"):
-        essence_engine._call_anthropic_json(
+        essence_engine._call_llm_json(
             "system",
             "data",
             max_tokens=100,
@@ -231,8 +231,8 @@ def test_synthesis_path_falls_back_after_one_provider_attempt(monkeypatch, llm_k
     messages = EmptyMessages()
     monkeypatch.setattr(
         essence_engine,
-        "_anthropic_client",
-        lambda: SimpleNamespace(messages=messages),
+        "_llm_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=messages)),
     )
     note = SimpleNamespace(
         id=uuid.uuid4(),
@@ -294,12 +294,14 @@ def test_compact_structured_entries_expand_to_grounded_payload(monkeypatch, llm_
     assert payload["positioning_statement"].startswith("충분한 상담")
     assert payload["treatment_narratives"][0]["treatment"] == "치질 수술"
     assert payload["evidence_map"]["positioning_statement"] == [str(note.id)]
-    schema = fake.messages.calls[0]["output_config"]["format"]["schema"]
+    schema = fake.chat.completions.calls[0]["response_format"]["json_schema"]["schema"]
     assert list(schema["properties"]) == ["entries"]
     assert "maxItems" not in schema["properties"]["entries"]
-    assert fake.messages.calls[0]["max_tokens"] == 5000
-    assert fake.messages.calls[0]["timeout"] == 90.0
-    assert "최대 14개 entry" in fake.messages.calls[0]["system"]
+    assert fake.chat.completions.calls[0]["max_tokens"] == 5000
+    assert fake.chat.completions.calls[0]["timeout"] == 90.0
+    messages = fake.chat.completions.calls[0]["messages"]
+    assert messages[0]["role"] == "system"
+    assert "최대 14개 entry" in messages[0]["content"]
 
 
 def test_llm_synthesis_missing_cautions_uses_safe_default(monkeypatch, llm_key):
@@ -359,13 +361,13 @@ def test_llm_synthesis_falls_back_when_response_ungrounded(monkeypatch, llm_key)
 
 
 def test_deterministic_fallback_runs_without_api_key(monkeypatch):
-    """ANTHROPIC_API_KEY가 없으면 LLM 클라이언트를 만들지 않고 규칙 기반으로 동작한다."""
-    monkeypatch.setattr(essence_engine.settings, "ANTHROPIC_API_KEY", "")
+    """OPENROUTER_API_KEY가 없으면 LLM 클라이언트를 만들지 않고 규칙 기반으로 동작한다."""
+    monkeypatch.setattr(essence_engine.settings, "OPENROUTER_API_KEY", "")
 
     def _boom():  # LLM 경로로 새면 즉시 실패하도록
-        raise AssertionError("키가 없는데 Anthropic 클라이언트를 만들면 안 됩니다.")
+        raise AssertionError("키가 없는데 OpenRouter 클라이언트를 만들면 안 됩니다.")
 
-    monkeypatch.setattr(essence_engine, "_anthropic_client", _boom)
+    monkeypatch.setattr(essence_engine, "_llm_client", _boom)
 
     asset = SimpleNamespace(
         raw_text="원장님은 충분히 설명하는 진료 원칙을 중요하게 생각합니다.",
@@ -380,11 +382,11 @@ def test_deterministic_fallback_runs_without_api_key(monkeypatch):
 
 def test_json_provider_call_does_not_retry_deterministic_client_error(monkeypatch, llm_key):
     """결정적 4xx는 재시도해도 같은 실패다 — 유료 호출이 3배로 늘면 안 된다."""
-    import anthropic
     import httpx
+    import openai
 
     http_response = httpx.Response(
-        400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     )
 
     class BadRequestMessages:
@@ -393,19 +395,19 @@ def test_json_provider_call_does_not_retry_deterministic_client_error(monkeypatc
 
         def create(self, **_kwargs):
             self.calls += 1
-            raise anthropic.BadRequestError(
+            raise openai.BadRequestError(
                 "invalid request", response=http_response, body=None
             )
 
     messages = BadRequestMessages()
     monkeypatch.setattr(
         essence_engine,
-        "_anthropic_client",
-        lambda: SimpleNamespace(messages=messages),
+        "_llm_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=messages)),
     )
 
-    with pytest.raises(anthropic.BadRequestError):
-        essence_engine._call_anthropic_json("system", "data", max_tokens=100)
+    with pytest.raises(openai.BadRequestError):
+        essence_engine._call_llm_json("system", "data", max_tokens=100)
 
     assert messages.calls == 1
 
@@ -426,27 +428,27 @@ def test_json_provider_call_still_retries_transient_provider_error(monkeypatch, 
     messages = FlakyMessages()
     monkeypatch.setattr(
         essence_engine,
-        "_anthropic_client",
-        lambda: SimpleNamespace(messages=messages),
+        "_llm_client",
+        lambda: SimpleNamespace(chat=SimpleNamespace(completions=messages)),
     )
 
-    assert essence_engine._call_anthropic_json("system", "data", max_tokens=100) == {"ok": True}
+    assert essence_engine._call_llm_json("system", "data", max_tokens=100) == {"ok": True}
     assert messages.calls == 2
 
 
-def test_anthropic_client_is_reused_across_calls(monkeypatch, llm_key):
+def test_openrouter_client_is_reused_across_calls(monkeypatch, llm_key):
     """호출마다 클라이언트를 새로 만들면 커넥션 풀과 TLS 세션을 매번 버린다."""
     created: list[dict] = []
 
-    class FakeAnthropicClient:
+    class FakeOpenAIClient:
         def __init__(self, **kwargs):
             created.append(kwargs)
 
-    monkeypatch.setattr(essence_engine.anthropic, "Anthropic", FakeAnthropicClient)
+    monkeypatch.setattr(essence_engine.openrouter, "OpenAI", FakeOpenAIClient)
     essence_engine._reset_clients_for_tests()
 
-    first = essence_engine._anthropic_client()
-    second = essence_engine._anthropic_client()
+    first = essence_engine._llm_client()
+    second = essence_engine._llm_client()
 
     assert first is second
     assert len(created) == 1

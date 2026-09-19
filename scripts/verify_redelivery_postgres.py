@@ -22,8 +22,8 @@ sync_url = base.replace("postgresql://", "postgresql+psycopg2://")
 os.environ.clear()
 os.environ.update(PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin", APP_ENV="test",
     REPUTATION_DISABLE_DOTENV="1", ADMIN_SECRET_KEY="test-admin-key",
-    ANTHROPIC_API_KEY="test-anthropic-key", OPENAI_API_KEY="test-openai-key",
-    GEMINI_API_KEY="", BFF_ACTOR_SECRET="test-actor-key",
+    OPENROUTER_API_KEY="test-openrouter-key",
+    BFF_ACTOR_SECRET="test-actor-key",
     WORKER_DISPATCH_SECRET="test-dispatch-key", DATABASE_URL=async_url,
     SYNC_DATABASE_URL=sync_url, REDIS_URL="redis://127.0.0.1:1/15")
 for key in ("NOTIFICATION_OUTBOX_DATABASE_URL", "OPERATION_RUN_TRANSITIONS_DATABASE_URL",

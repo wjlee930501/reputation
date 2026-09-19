@@ -341,8 +341,8 @@ jobs:
           docker run --rm --network none \
             -e APP_ENV=test -e REPUTATION_DISABLE_DOTENV=1 \
             -e ADMIN_SECRET_KEY=test-admin-key \
-            -e ANTHROPIC_API_KEY=test-anthropic-key -e OPENAI_API_KEY=test-openai-key \
-            -e GEMINI_API_KEY= -e SENTRY_DSN= \
+            -e OPENROUTER_API_KEY=test-openrouter-key \
+            -e SENTRY_DSN= \
             --entrypoint python \
             -v "$GITHUB_WORKSPACE/scripts/verify_backend_image.py:/tmp/verify_backend_image.py:ro" \
             "ci-backend:${{ github.sha }}" /tmp/verify_backend_image.py

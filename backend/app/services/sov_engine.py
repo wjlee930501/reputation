@@ -14,13 +14,10 @@ from typing import Any
 from urllib.parse import urlparse
 
 from billiard.exceptions import SoftTimeLimitExceeded
-from google import genai as google_genai
-from google.genai import types as genai_types
-from openai import AsyncOpenAI
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
-from app.services import query_mapper
+from app.services import openrouter, query_mapper
 from app.services.keyword_analysis import KeywordClass, analyze_keyword, clinic_phrase
 
 logger = logging.getLogger(__name__)
@@ -107,6 +104,7 @@ async def _record_provider_attempt(
     input_tokens: int | None = None,
     output_tokens: int | None = None,
     search_units: int | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Append one normalized HTTP-attempt event; ledger failure never fails the work."""
     try:
@@ -127,6 +125,7 @@ async def _record_provider_attempt(
             http_attempt=_next_http_attempt(logical_call_id),
             provider_request_id=str(request_id) if request_id else None,
             usage=usage,
+            metadata=metadata,
             # Let provider_usage infer this from normalized non-null fields. SDKs sometimes
             # attach an empty usage object to an error/partial response; object presence alone
             # is not evidence that usage is known.
@@ -219,22 +218,16 @@ SOV_PROVIDER_CONCURRENCY = 10
 #
 # 값 근거: 관측 최대 86.8초(mini) 대비 여유. 재시도 3회와 곱해지므로 무한정 늘리지 않는다.
 OPENAI_TIMEOUT_SECONDS = 120.0
-# Gemini는 실측 p50 7.9s / 최대 10.4s로 훨씬 빠르다. 여유만 두고 과하게 늘리지 않는다.
+# Gemini는 실측 p50 7.9s / 최대 10.4s로 훨씬 빠르다. OpenRouter 경유로도 같은
+# 모델 계열이라 여유만 두고 과하게 늘리지 않는다.
 GEMINI_TIMEOUT_SECONDS = 60.0
 
-openai_client = AsyncOpenAI(
-    api_key=settings.OPENAI_API_KEY,
-    timeout=OPENAI_TIMEOUT_SECONDS,
-    max_retries=0,
-)
-# SDK 내부 재시도는 HTTP 시도를 숨기므로 답변·판정 모두 끈다. 일시 오류 복원력은 아래의
-# 명시적 bounded retry가 맡고, 각 실제 HTTP 시도를 비용/usage 원장에 따로 기록한다.
-openai_query_client = AsyncOpenAI(
-    api_key=settings.OPENAI_API_KEY,
-    timeout=OPENAI_TIMEOUT_SECONDS,
-    max_retries=0,
-)
-_gemini_client: google_genai.Client | None = None
+# 모든 측정 호출은 OpenRouter 단일 키로 나간다. SDK 내부 재시도는 HTTP 시도를 숨기므로
+# 답변·판정 모두 끈다(max_retries=0은 openrouter.async_client가 고정). 일시 오류
+# 복원력은 아래의 명시적 bounded retry가 맡고, 각 실제 HTTP 시도를 비용/usage 원장에
+# 따로 기록한다.
+openai_client = openrouter.async_client(timeout=OPENAI_TIMEOUT_SECONDS)
+openai_query_client = openrouter.async_client(timeout=OPENAI_TIMEOUT_SECONDS)
 
 
 def _root_provider_exception(exc: BaseException) -> BaseException:
@@ -324,14 +317,9 @@ def _should_retry_provider_exception(exc: BaseException) -> bool:
     return any(token in class_name for token in ("timeout", "connection", "ratelimit"))
 
 
-def _get_gemini_client() -> google_genai.Client | None:
-    global _gemini_client
-    if settings.GEMINI_API_KEY and _gemini_client is None:
-        _gemini_client = google_genai.Client(
-            api_key=settings.GEMINI_API_KEY,
-            http_options={"timeout": int(GEMINI_TIMEOUT_SECONDS * 1000)},  # ms
-        )
-    return _gemini_client
+def _gemini_client():
+    """OpenRouter chat client를 돌려준다 — 키가 없으면 None(측정은 UNAVAILABLE로 남는다)."""
+    return openrouter.async_client(timeout=GEMINI_TIMEOUT_SECONDS) if openrouter.configured() else None
 
 
 # 질문 유형 — 언급률 분모를 가르는 기준.
@@ -592,7 +580,13 @@ def generate_query_matrix_specs(
 # v2.1: 지시문을 질문에 이어붙이던 것을 전용 지시문 파라미터로 옮겼다. 같은 문자열도
 # 역할이 다르면 모델 동작이 달라지므로 **기준선이 바뀐다** — 버전을 올려 v2와 비교되지
 # 않게 한다. 편향 제거가 아니라 재현성 계약(공개 조건 = 실제 조건) 수정이다.
-MEASUREMENT_POLICY_VERSION = "v2.1-neutral-auto-systemrole"
+# v3.0: 모든 측정 호출이 공급자 직결에서 OpenRouter 게이트웨이로 바뀌었다.
+# 모델·지시문·검색 의미는 같아도 전송 경로(게이트웨이·검색 도구 실행 주체)가 달라졌으므로
+# v2.x와 같은 기준선으로 취급하지 않는다.
+MEASUREMENT_POLICY_VERSION = "v3.0-openrouter-gateway"
+# 답변·판정이 실제로 나간 게이트웨이. 정책 버전을 사람이 올리는 것을 잊어도 이 필드가
+# fingerprint를 바꿔 다른 전송 경로의 측정이 같은 조건으로 섞이지 않게 한다.
+PROVIDER_GATEWAY = "openrouter"
 
 # ── 정책 동일성은 두 층으로 나뉜다.
 #
@@ -606,6 +600,7 @@ MEASUREMENT_POLICY_VERSION = "v2.1-neutral-auto-systemrole"
 # 둘을 한 덩어리로 두면 생성기 배포가 대기 중인 진단을 전부 죽인다.
 _EXECUTION_POLICY_KEYS = (
     "policy_version",
+    "provider_gateway",
     "prompt_fingerprint",
     "prompt_delivery",
     "openai_tool_choice",
@@ -654,6 +649,7 @@ def measurement_protocol(
     """
     protocol = {
         "policy_version": MEASUREMENT_POLICY_VERSION,
+        "provider_gateway": PROVIDER_GATEWAY,
         "system_prompt": SYSTEM_PROMPT_SOV,
         "openai_tool_choice": OPENAI_SEARCH_TOOL_CHOICE,
         # 요청 모델과 검색 경로도 답변 분포를 바꾸는 실행 조건이다. 실제 응답 모델은
@@ -689,6 +685,7 @@ def _fingerprint(text: str) -> str:
 def _execution_policy_keys_for_platform(platform: str | None) -> tuple[str, ...]:
     common = (
         "policy_version",
+        "provider_gateway",
         "prompt_fingerprint",
         "prompt_delivery",
         "judge_prompt_fingerprint",
@@ -838,7 +835,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
         )
     except Exception:
         await _record_provider_attempt(
-            provider="openai",
+            provider="openrouter",
             model=settings.OPENAI_MODEL_QUERY,
             logical_call_id="answer",
         )
@@ -847,7 +844,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
     input_tokens = _field(usage, "prompt_tokens")
     output_tokens = _field(usage, "completion_tokens")
     await _record_provider_attempt(
-        provider="openai",
+        provider="openrouter",
         model=_field(response, "model") or settings.OPENAI_MODEL_QUERY,
         logical_call_id="answer",
         response=response,
@@ -864,7 +861,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
         "search_calls": 0,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "measurement_method": "OPENAI_CHAT_COMPLETIONS",
+        "measurement_method": "OPENROUTER_CHAT_COMPLETIONS",
     }
 
 
@@ -883,13 +880,14 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
         return {
             "text": "",
             "source_urls": [],
-            "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
+            "measurement_method": "OPENROUTER_RESPONSES_WEB_SEARCH",
         }
     await _record_sov_provider_call()
     try:
         response = await create_response(
             model=settings.OPENAI_MODEL_QUERY,
-            tools=[{"type": "web_search"}],
+            # OpenRouter 서버 검색 도구 — openai/ 모델은 OpenAI 네이티브 검색으로 실행된다.
+            tools=[openrouter.WEB_SEARCH_TOOL],
             # 도구는 제공하되 강제하지 않는다 (측정 정책 v2). 매 요청 검색을 강제하면
             # 지역 병원 디렉터리를 긁어와 나열하게 되어, 환자가 실제로 받는 답변보다
             # 구조적으로 병원명이 많이 등장한다. 모델이 검색을 쓸지 고르는 것까지가
@@ -900,10 +898,12 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             # 문자열이라도 모델 동작이 달라지므로, 공개한 조건으로 재현이 안 됐다.
             instructions=SYSTEM_PROMPT_SOV,
             input=query,
+            # usage.server_tool_use.web_search_requests를 받기 위한 usage 포함 요청.
+            extra_body={"usage": {"include": True}},
         )
     except Exception:
         await _record_provider_attempt(
-            provider="openai",
+            provider="openrouter",
             model=settings.OPENAI_MODEL_QUERY,
             logical_call_id="answer",
         )
@@ -919,17 +919,24 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
                     break
             if text:
                 break
+    usage = _field(response, "usage")
     input_tokens, output_tokens = _extract_openai_usage(response)
     search_calls = _extract_openai_search_calls(response)
+    if search_calls == 0:
+        # 서버 도구 경로에서는 output 항목 대신 usage.server_tool_use에 계수가 남는다.
+        server_search_calls = openrouter.web_search_requests(usage)
+        if server_search_calls is not None:
+            search_calls = server_search_calls
     await _record_provider_attempt(
-        provider="openai",
+        provider="openrouter",
         model=_field(response, "model") or settings.OPENAI_MODEL_QUERY,
         logical_call_id="answer",
         response=response,
-        usage=_field(response, "usage"),
+        usage=usage,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         search_units=search_calls,
+        metadata={"openrouter_cost_usd": openrouter.usage_cost_usd(usage)},
     )
     return {
         "text": text,
@@ -938,7 +945,7 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
         "search_calls": search_calls,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "measurement_method": "OPENAI_RESPONSES_WEB_SEARCH",
+        "measurement_method": "OPENROUTER_RESPONSES_WEB_SEARCH",
     }
 
 
@@ -949,59 +956,67 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
     reraise=True,
 )
 async def _query_gemini_result(query: str) -> dict[str, Any]:
-    client = _get_gemini_client()
+    client = _gemini_client()
     if not client:
         return {
             "text": "",
             "source_urls": [],
-            "measurement_method": "GEMINI_GOOGLE_SEARCH",
+            "measurement_method": "OPENROUTER_GEMINI_WEB_SEARCH",
         }
     await _record_sov_provider_call()
     try:
-        response = await asyncio.wait_for(
-            asyncio.to_thread(
-                client.models.generate_content,
-                model=settings.GEMINI_MODEL,
-                contents=query,
-                config=genai_types.GenerateContentConfig(
-                    temperature=1.0,
-                    max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-                    tools=[genai_types.Tool(google_search=genai_types.GoogleSearch())],
-                    # OpenAI 경로와 **같은 문자열을 같은 역할로** 보낸다. 한쪽만 지시문을
-                    # 질문에 이어붙이면 "ChatGPT n% vs Gemini m%"가 플랫폼 차이가 아니라
-                    # 우리 호출 방식의 차이가 된다 (2026-07-29 비대칭 회귀와 같은 종류).
-                    system_instruction=SYSTEM_PROMPT_SOV,
-                ),
-            ),
-            timeout=GEMINI_TIMEOUT_SECONDS,
+        response = await client.chat.completions.create(
+            model=settings.GEMINI_MODEL,
+            messages=[
+                # OpenAI 경로와 **같은 문자열을 같은 역할로** 보낸다. 한쪽만 지시문을
+                # 질문에 이어붙이면 "ChatGPT n% vs Gemini m%"가 플랫폼 차이가 아니라
+                # 우리 호출 방식의 차이가 된다 (2026-07-29 비대칭 회귀와 같은 종류).
+                {"role": "system", "content": SYSTEM_PROMPT_SOV},
+                {"role": "user", "content": query},
+            ],
+            temperature=1.0,
+            max_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+            # 서버 검색 도구는 모델이 호출 여부를 고른다 — 도구 제공·강제하지 않는
+            # v2 정책과 같은 의미다. google/ 모델은 OpenRouter가 Google 네이티브
+            # 검색(grounding)으로 실행한다.
+            tools=[openrouter.WEB_SEARCH_TOOL],
+            # usage.server_tool_use.web_search_requests를 받기 위해 usage 포함을 요청한다.
+            extra_body={"usage": {"include": True}},
         )
     except Exception:
         await _record_provider_attempt(
-            provider="google",
+            provider="openrouter",
             model=settings.GEMINI_MODEL,
             logical_call_id="answer",
         )
         raise
-    input_tokens, output_tokens = _extract_gemini_usage(response)
-    search_calls = _extract_gemini_search_calls(response)
+    usage = _field(response, "usage")
+    input_tokens = _field(usage, "prompt_tokens")
+    output_tokens = _field(usage, "completion_tokens")
+    source_urls = _normalize_source_urls(openrouter.extract_annotations_urls(response))
+    search_calls = openrouter.web_search_requests(usage)
+    if search_calls is None:
+        # usage에 서버 도구 계수가 없을 때의 하한 — 인용 주석이 있으면 최소 1회는 검색됐다.
+        search_calls = 1 if source_urls else 0
     await _record_provider_attempt(
-        provider="google",
-        model=_field(response, "model_version") or settings.GEMINI_MODEL,
+        provider="openrouter",
+        model=openrouter.response_model(response) or settings.GEMINI_MODEL,
         logical_call_id="answer",
         response=response,
-        usage=_field(response, "usage_metadata"),
+        usage=usage,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         search_units=search_calls,
+        metadata={"openrouter_cost_usd": openrouter.usage_cost_usd(usage)},
     )
     return {
-        "text": response.text or "",
-        "source_urls": _extract_gemini_source_urls(response),
-        "answer_model": _field(response, "model_version"),
+        "text": openrouter.first_text(response),
+        "source_urls": source_urls,
+        "answer_model": openrouter.response_model(response),
         "search_calls": search_calls,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "measurement_method": "GEMINI_GOOGLE_SEARCH",
+        "measurement_method": "OPENROUTER_GEMINI_WEB_SEARCH",
     }
 
 
@@ -1041,15 +1056,6 @@ def _extract_openai_source_urls(response: Any) -> list[str]:
     return _normalize_source_urls(urls)
 
 
-def _extract_gemini_source_urls(response: Any) -> list[str]:
-    urls: list[Any] = []
-    for candidate in _field(response, "candidates", []) or []:
-        metadata = _field(candidate, "grounding_metadata")
-        for chunk in _field(metadata, "grounding_chunks", []) or []:
-            urls.append(_field(_field(chunk, "web"), "uri"))
-    return _normalize_source_urls(urls)
-
-
 # ── 측정 메타데이터 추출.
 #
 # 검색이 실제로 돌았는지는 **측정 결과를 해석하는 데 필수**다. `tool_choice=auto`로
@@ -1072,20 +1078,6 @@ def _extract_openai_search_calls(response: Any) -> int:
 def _extract_openai_usage(response: Any) -> tuple[int | None, int | None]:
     usage = _field(response, "usage")
     return _field(usage, "input_tokens"), _field(usage, "output_tokens")
-
-
-def _extract_gemini_search_calls(response: Any) -> int:
-    """Gemini가 실제로 발행한 검색 질의 수. grounding이 안 걸리면 0이다."""
-    calls = 0
-    for candidate in _field(response, "candidates", []) or []:
-        metadata = _field(candidate, "grounding_metadata")
-        calls += len(_field(metadata, "web_search_queries", []) or [])
-    return calls
-
-
-def _extract_gemini_usage(response: Any) -> tuple[int | None, int | None]:
-    usage = _field(response, "usage_metadata")
-    return _field(usage, "prompt_token_count"), _field(usage, "candidates_token_count")
 
 
 def _normalize_for_prefilter(text: str) -> str:
@@ -1178,7 +1170,7 @@ async def _request_judge_completion(
         )
     except Exception:
         await _record_provider_attempt(
-            provider="openai",
+            provider="openrouter",
             model=settings.OPENAI_MODEL_PARSE,
             logical_call_id=logical_call_id,
         )
@@ -1187,7 +1179,7 @@ async def _request_judge_completion(
     input_tokens = _field(usage, "prompt_tokens")
     output_tokens = _field(usage, "completion_tokens")
     await _record_provider_attempt(
-        provider="openai",
+        provider="openrouter",
         model=_field(result, "model") or settings.OPENAI_MODEL_PARSE,
         logical_call_id=logical_call_id,
         response=result,
@@ -1480,9 +1472,9 @@ async def fetch_answer(
     측정 1건의 실패와 진단 전체의 실패를 구분해야 한다.
     """
     measurement_method = (
-        "OPENAI_RESPONSES_WEB_SEARCH"
+        "OPENROUTER_RESPONSES_WEB_SEARCH"
         if platform == "chatgpt" and settings.OPENAI_CHATGPT_USE_WEB_SEARCH
-        else ("OPENAI_CHAT_COMPLETIONS" if platform == "chatgpt" else "GEMINI_GOOGLE_SEARCH")
+        else ("OPENROUTER_CHAT_COMPLETIONS" if platform == "chatgpt" else "OPENROUTER_GEMINI_WEB_SEARCH")
     )
 
     def failed(reason: str, *, provider_calls: int, source_urls: list[str] | None = None) -> dict:

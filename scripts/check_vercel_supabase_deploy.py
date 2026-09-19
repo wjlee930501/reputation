@@ -55,9 +55,7 @@ REQUIRED_ENV = {
         "TRUSTED_PROXY_IPS",
         "ADMIN_BASE_URL",
         "SITE_BASE_URL",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
         "SLACK_WEBHOOK_URL",
         "GCP_STORAGE_BUCKET",
         "GCS_REPORTS_BUCKET",
@@ -187,7 +185,7 @@ def _runtime_warnings() -> list[dict[str, str]]:
         _finding(
             "runtime.gcs_storage_required",
             "warn",
-            "GCS/Vertex asset and report flows remain in use for same-day onboarding.",
+            "GCS asset and report flows remain in use for same-day onboarding.",
         ),
         _finding(
             "runtime.live_deployment_not_verified",

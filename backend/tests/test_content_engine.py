@@ -5,12 +5,11 @@ import uuid
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///tmp/reputation-test.db")
 os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///tmp/reputation-test.db")
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
-os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
+os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 
 from types import SimpleNamespace  # noqa: E402
 
-import anthropic  # noqa: E402
+import openai  # noqa: E402
 import pytest  # noqa: E402
 from tenacity import stop_after_attempt  # noqa: E402
 
@@ -252,7 +251,7 @@ async def test_forbidden_response_is_discarded_and_second_complete_content_is_re
     async def no_sleep(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
     monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_record)
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
 
@@ -355,7 +354,7 @@ async def test_generate_content_heals_missing_approved_director_name_in_the_same
     async def no_sleep(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
     monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_record)
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
 
@@ -529,7 +528,7 @@ async def test_generate_content_hard_fails_end_to_end_for_non_whitelisted_only_r
     async def _no_sleep(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
     # tenacity는 전송 오류 전용이 됐다. 결정적 GEO hard-fail의 예산은 재작성 루프가 가진다.
     monkeypatch.setattr(content_engine.generate_content.retry, "stop", stop_after_attempt(1))
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", _no_sleep)
@@ -598,7 +597,7 @@ async def test_generate_content_injects_curated_trauma_documents_on_first_empty_
         return None
 
     monkeypatch.setattr(
-        content_engine.client.messages,
+        content_engine.client.chat.completions,
         "create",
         create_response,
     )
@@ -665,7 +664,7 @@ async def test_generate_content_keeps_valid_model_reference_when_catalog_also_ma
         calls += 1
         return _FakeResponse()
 
-    monkeypatch.setattr(content_engine.client.messages, "create", create_response)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", create_response)
 
     result = await content_engine.generate_content(
         hospital,
@@ -718,7 +717,7 @@ async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkey
         content = [SimpleNamespace(text=json.dumps(payload))]
 
     monkeypatch.setattr(
-        content_engine.client.messages,
+        content_engine.client.chat.completions,
         "create",
         lambda *_args, **_kwargs: _FakeResponse(),
     )
@@ -863,7 +862,7 @@ async def test_generate_content_sends_cached_system_blocks(monkeypatch):
         captured.update(kwargs)
         return _FakeResponse()
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
 
     await content_engine.generate_content(
         hospital,
@@ -871,7 +870,9 @@ async def test_generate_content_sends_cached_system_blocks(monkeypatch):
         existing_titles=[f"제목 {n}" for n in range(200)],
     )
 
-    system = captured["system"]
+    system_message = captured["messages"][0]
+    assert system_message["role"] == "system"
+    system = system_message["content"]
     assert isinstance(system, list) and len(system) == 2
     assert system[0]["text"] == content_engine.STATIC_SYSTEM_BLOCK
     assert system[0]["cache_control"] == {"type": "ephemeral"}
@@ -879,7 +880,7 @@ async def test_generate_content_sends_cached_system_blocks(monkeypatch):
     assert "테스트의원" in system[1]["text"]
 
     # 변동분은 정적 블록 밖에 있어야 캐시가 산다.
-    user_message = captured["messages"][0]["content"]
+    user_message = captured["messages"][1]["content"]
     assert "최근 발행 제목 일부" in user_message
     assert "제목 0" not in system[0]["text"]
     assert user_message.count("- 제목 ") == content_engine.EXISTING_TITLE_PROMPT_LIMIT
@@ -954,7 +955,7 @@ def _install_writer_doubles(monkeypatch, recorder) -> list[dict]:
     async def no_sleep(*_args, **_kwargs):
         return None
 
-    monkeypatch.setattr(content_engine.client.messages, "create", recorder.create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", recorder.create)
     monkeypatch.setattr("app.services.provider_usage.record_attempt", record_attempt)
     monkeypatch.setattr("app.services.cost_guard.record_provider_call", no_cost_record)
     monkeypatch.setattr(content_engine.generate_content.retry, "sleep", no_sleep)
@@ -1007,16 +1008,17 @@ async def test_validator_rejection_is_fed_back_instead_of_a_blind_identical_retr
 
     assert saved["body"] == _valid_payload()["body"]
     assert len(recorder.calls) == 2
-    first_user = recorder.calls[0]["messages"][0]["content"]
-    second_user = recorder.calls[1]["messages"][0]["content"]
+    first_user = recorder.calls[0]["messages"][1]["content"]
+    second_user = recorder.calls[1]["messages"][1]["content"]
     assert "직전 응답이 시스템 검증에서 거부" not in first_user
     assert "직전 응답이 시스템 검증에서 거부" in second_user
     assert "too short" in second_user
     # 프롬프트 캐시 접두어 순서는 회차와 무관하게 고정이어야 한다.
     for call in recorder.calls:
-        assert call["system"][0]["text"] == content_engine.STATIC_SYSTEM_BLOCK
-        assert call["system"][0]["cache_control"] == {"type": "ephemeral"}
-        assert "테스트의원" in call["system"][1]["text"]
+        system = call["messages"][0]["content"]
+        assert system[0]["text"] == content_engine.STATIC_SYSTEM_BLOCK
+        assert system[0]["cache_control"] == {"type": "ephemeral"}
+        assert "테스트의원" in system[1]["text"]
 
 
 async def test_truncation_feedback_tells_the_writer_to_shorten_the_body(monkeypatch):
@@ -1026,7 +1028,7 @@ async def test_truncation_feedback_tells_the_writer_to_shorten_the_body(monkeypa
     with pytest.raises(content_engine.TruncatedProviderOutputError):
         await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
 
-    second_user = recorder.calls[1]["messages"][0]["content"]
+    second_user = recorder.calls[1]["messages"][1]["content"]
     assert "분량을" in second_user and "줄이" in second_user
 
 
@@ -1042,7 +1044,7 @@ async def test_caller_remediation_findings_survive_a_validator_rejection(monkeyp
         remediation_findings=["근거 없는 효과 주장을 삭제하세요."],
     )
 
-    second_user = recorder.calls[1]["messages"][0]["content"]
+    second_user = recorder.calls[1]["messages"][1]["content"]
     assert "근거 없는 효과 주장을 삭제하세요." in second_user
     assert "직전 응답이 시스템 검증에서 거부" in second_user
 
@@ -1059,10 +1061,10 @@ async def test_transport_errors_still_use_the_tenacity_retry_seam(monkeypatch):
     def flaky_create(**kwargs):
         if failures["left"]:
             failures["left"] -= 1
-            raise anthropic.APITimeoutError(request=httpx.Request("POST", "https://api.test"))
+            raise openai.APITimeoutError(request=httpx.Request("POST", "https://api.test"))
         return real_create(**kwargs)
 
-    monkeypatch.setattr(content_engine.client.messages, "create", flaky_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", flaky_create)
 
     saved = await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
 
@@ -1344,7 +1346,7 @@ async def test_unrelated_reference_is_dropped_without_rejecting_the_article(monk
         calls += 1
         return _FakeResponse()
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
 
     result = await content_engine.generate_content(
         hospital,
@@ -1381,10 +1383,10 @@ async def _capture_user_message(monkeypatch, *, existing_titles, brief) -> str:
         content = [SimpleNamespace(text="{}")]
 
     def fake_create(*_args, **kwargs):
-        captured["user"] = kwargs["messages"][0]["content"]
+        captured["user"] = kwargs["messages"][1]["content"]
         return _FakeResponse()
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
     monkeypatch.setattr(content_engine, "GENERATION_REMEDIATION_ROUNDS", 1)
     with pytest.raises(ValueError):
         await content_engine.generate_content(
@@ -1503,7 +1505,7 @@ async def test_dropping_every_reference_falls_back_to_the_curated_catalog(monkey
         calls += 1
         return _FakeResponse()
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
 
     result = await content_engine.generate_content(
         hospital,

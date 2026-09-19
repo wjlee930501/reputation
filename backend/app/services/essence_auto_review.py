@@ -36,7 +36,7 @@ from app.services.content_publication import (
 )
 from app.services.enum_values import enum_value
 from app.services.essence_engine import (
-    _call_anthropic_json,
+    _call_llm_json,
     apply_mandatory_safety_policy,
     compute_sources_snapshot_hash,
     find_error_marker_fields,
@@ -1013,7 +1013,7 @@ def _review_essence_candidate_shard(
         },
     )
     data = untrusted_json_block(review_payload)
-    response = _call_anthropic_json(
+    response = _call_llm_json(
         _REVIEW_SYSTEM_PROMPT,
         data,
         max_tokens=1600,
@@ -1075,7 +1075,7 @@ def _review_essence_candidate_shard(
             },
         }
     )
-    adjudication = _call_anthropic_json(
+    adjudication = _call_llm_json(
         _ADJUDICATION_SYSTEM_PROMPT,
         adjudication_data,
         max_tokens=1600,

@@ -2,28 +2,21 @@
 # Re:putation — Secret Manager
 # ═══════════════════════════════════════════════════════════════════
 
-resource "google_secret_manager_secret" "anthropic_api_key" {
-  secret_id = "ANTHROPIC_API_KEY"
+# 모든 LLM·이미지 호출(콘텐츠 생성, SoV 측정, 이미지 생성·검수)은 OpenRouter 게이트웨이
+# 하나로 나간다 — 모델별 provider 키를 더 이상 관리하지 않는다.
+resource "google_secret_manager_secret" "openrouter_api_key" {
+  secret_id = "OPENROUTER_API_KEY"
   project   = var.project_id
   replication {
     auto {}
   }
 }
 
-resource "google_secret_manager_secret" "openai_api_key" {
-  secret_id = "OPENAI_API_KEY"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
-}
-
-resource "google_secret_manager_secret" "gemini_api_key" {
-  secret_id = "GEMINI_API_KEY"
-  project   = var.project_id
-  replication {
-    auto {}
-  }
+# 이 시크릿은 apply 전에 gcloud로 미리 만들어 둔다(값 버전은 수동 추가). 이미
+# 존재하는 컨테이너를 apply가 실패 없이 입양하도록 한다.
+import {
+  to = google_secret_manager_secret.openrouter_api_key
+  id = "projects/${var.project_id}/secrets/OPENROUTER_API_KEY"
 }
 
 resource "google_secret_manager_secret" "slack_webhook_url" {
@@ -163,9 +156,7 @@ resource "google_secret_manager_secret" "nhn_sms_secret_key" {
 # Secret Manager IAM — service account access
 locals {
   app_secret_env = {
-    ANTHROPIC_API_KEY        = google_secret_manager_secret.anthropic_api_key.secret_id
-    OPENAI_API_KEY           = google_secret_manager_secret.openai_api_key.secret_id
-    GEMINI_API_KEY           = google_secret_manager_secret.gemini_api_key.secret_id
+    OPENROUTER_API_KEY       = google_secret_manager_secret.openrouter_api_key.secret_id
     SLACK_WEBHOOK_URL        = google_secret_manager_secret.slack_webhook_url.secret_id
     SLACK_WEBHOOK_URL_DEV    = google_secret_manager_secret.slack_webhook_url_dev.secret_id
     ADMIN_SECRET_KEY         = google_secret_manager_secret.admin_secret_key.secret_id

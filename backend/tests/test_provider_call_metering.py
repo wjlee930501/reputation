@@ -45,24 +45,19 @@ def recorded(monkeypatch):
 
 def test_openai_image_retries_each_count_as_a_paid_call(monkeypatch):
     """tenacity 재시도 3회 = 유료 호출 3회. 시도가 조용히 사라지면 안 된다."""
-    import openai
-
     counter = image_engine._CallCounter()
     requests = {"n": 0}
 
-    class FakeImages:
-        def generate(self, **_kwargs):
-            requests["n"] += 1
-            # APIStatusError가 아닌 예외 → _is_transient_openai_error가 재시도 대상으로 본다.
-            raise RuntimeError("upstream 503")
+    def failing_generate_image(**_kwargs):
+        requests["n"] += 1
+        # 상태 코드가 없는 예외 → _is_transient_openai_error가 재시도 대상으로 본다.
+        raise RuntimeError("upstream 503")
 
-    class FakeOpenAI:
-        def __init__(self, **_kwargs):
-            self.images = FakeImages()
-
-    monkeypatch.setattr(openai, "OpenAI", FakeOpenAI)
-    monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_MODEL", "gpt-image-2")
+    monkeypatch.setattr(
+        image_engine.openrouter, "generate_image", failing_generate_image
+    )
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(image_engine.settings, "OPENAI_IMAGE_MODEL", "openai/gpt-5-image-mini")
     # 백오프 대기는 이 테스트의 관심사가 아니다.
     monkeypatch.setattr(image_engine._openai_generate_and_upload.retry, "sleep", lambda _s: None)
 
@@ -87,7 +82,7 @@ def test_image_generation_records_every_attempt_including_the_fallback(monkeypat
     monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
     monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "openai")
-    monkeypatch.setattr(image_engine.settings, "OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "test-project")
 
     def failing_openai(_prompt, _hospital, *, expected_topic=None, counter=None):
@@ -378,18 +373,18 @@ def test_no_usable_image_provider_refunds_both_reservations(monkeypatch, recorde
     monkeypatch.setattr("app.services.cost_guard.reserve", allowed)
     monkeypatch.setattr("app.services.cost_guard.settle_reservation", settle)
     monkeypatch.setattr(image_engine.settings, "IMAGE_PROVIDER", "google")
-    monkeypatch.setattr(image_engine.settings, "GCP_PROJECT_ID", "")
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "")
 
     assert asyncio.run(image_engine.generate_image(ContentType.FAQ, "병원")) == ("", "")
     assert settled == [("image", 0), ("content", 0)]
     assert recorded.total == 0
 
 
-# ── 콘텐츠: 재시도마다 Anthropic 호출 1회 ────────────────────────────────
+# ── 콘텐츠: 재시도마다 공급자 호출 1회 ────────────────────────────────
 
 
-def test_content_generation_records_a_call_before_each_anthropic_request(monkeypatch, recorded):
-    """Anthropic 클라이언트는 max_retries=0이라 본문 1회 실행 = HTTP 요청 1회다."""
+def test_content_generation_records_a_call_before_each_provider_request(monkeypatch, recorded):
+    """OpenRouter 클라이언트는 max_retries=0이라 본문 1회 실행 = HTTP 요청 1회다."""
     attempts = {"n": 0}
 
     class FakeResponse:
@@ -397,9 +392,9 @@ def test_content_generation_records_a_call_before_each_anthropic_request(monkeyp
 
     def fake_create(**_kwargs):
         attempts["n"] += 1
-        raise RuntimeError("anthropic 5xx")
+        raise RuntimeError("openrouter 5xx")
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
     # 프롬프트 조립은 이 테스트의 관심사가 아니다 — 계수 지점만 본다.
     monkeypatch.setattr(content_engine, "_build_profile_context", lambda _h: "프로파일")
     monkeypatch.setattr(content_engine, "_build_philosophy_context", lambda _p: "")
@@ -412,7 +407,7 @@ def test_content_generation_records_a_call_before_each_anthropic_request(monkeyp
         asyncio.run(content_engine.generate_content(object(), ContentType.FAQ))
 
     assert attempts["n"] == recorded.by_category.get("content"), (
-        "실제 Anthropic 요청 수와 기록된 호출 수가 같아야 한다"
+        "실제 OpenRouter 요청 수와 기록된 호출 수가 같아야 한다"
     )
     assert recorded.by_category.get("content", 0) >= 1
 
@@ -453,21 +448,21 @@ def test_essence_llm_calls_are_counted_across_the_thread_boundary(monkeypatch, r
     """
     from app.services import essence_engine
 
-    class FakeMessages:
+    class FakeCompletions:
         def create(self, **_kwargs):
             block = type("Block", (), {"text": '{"ok": true}'})()
             return type("Resp", (), {"content": [block]})()
 
     class FakeClient:
-        messages = FakeMessages()
+        chat = SimpleNamespace(completions=FakeCompletions())
 
-    monkeypatch.setattr(essence_engine, "_anthropic_client", lambda: FakeClient())
+    monkeypatch.setattr(essence_engine, "_llm_client", lambda: FakeClient())
 
     async def scenario():
         async with essence_engine.metered_llm_calls() as counter:
             for _ in range(2):
                 await asyncio.to_thread(
-                    essence_engine._call_anthropic_json, "sys", "msg", max_tokens=100
+                    essence_engine._call_llm_json, "sys", "msg", max_tokens=100
                 )
             return counter.count
 

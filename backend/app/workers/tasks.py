@@ -6615,7 +6615,7 @@ def run_sov_for_hospital(
                     period_year,
                     period_month,
                     frozen_specs,
-                    gemini_configured=bool(settings.GEMINI_API_KEY),
+                    gemini_configured=bool(settings.OPENROUTER_API_KEY),
                     measurement_protocol_kwargs=protocol_kwargs,
                 )
             except ManifestPolicyDrift as exc:
@@ -7427,9 +7427,9 @@ def _start_measurement_run(
     # 실제 호출 모드를 라벨에 정확히 반영. UI/리포트가 "ChatGPT 답변 노출률"이라고 잘못
     # 표기하던 컴플라이언스 이슈를 코드 수준에서 차단.
     chatgpt_method = (
-        "OPENAI_RESPONSES_WEB_SEARCH"
+        "OPENROUTER_RESPONSES_WEB_SEARCH"
         if settings.OPENAI_CHATGPT_USE_WEB_SEARCH
-        else "OPENAI_CHAT_COMPLETIONS"
+        else "OPENROUTER_CHAT_COMPLETIONS"
     )
     chatgpt_search_mode = "web" if settings.OPENAI_CHATGPT_USE_WEB_SEARCH else "model"
     run = MeasurementRun(
@@ -7448,10 +7448,10 @@ def _start_measurement_run(
         config={
             **config,
             "openai_use_web_search": settings.OPENAI_CHATGPT_USE_WEB_SEARCH,
-            "gemini_grounded": bool(settings.GEMINI_API_KEY),
+            "gemini_grounded": bool(settings.OPENROUTER_API_KEY),
             "model_names": {
                 "chatgpt": settings.OPENAI_MODEL_QUERY,
-                **({"gemini": settings.GEMINI_MODEL} if settings.GEMINI_API_KEY else {}),
+                **({"gemini": settings.GEMINI_MODEL} if settings.OPENROUTER_API_KEY else {}),
             },
             # 실행 시점 측정 정책 — 이 run의 숫자가 어떤 조건에서 나왔는지 남긴다.
             "measurement_protocol": sov_engine.measurement_protocol(
@@ -7782,7 +7782,7 @@ def _build_measurement_specs(
     """Keep query persistence at the worker boundary, separate from selection."""
     return build_measurement_specs(
         resolve_variant_query=lambda variant: _ensure_variant_query_matrix(db, hospital, variant),
-        gemini_enabled=bool(settings.GEMINI_API_KEY),
+        gemini_enabled=bool(settings.OPENROUTER_API_KEY),
         query_targets=query_targets,
         fallback_queries=fallback_queries,
         is_even_week=is_even_week,

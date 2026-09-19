@@ -416,17 +416,6 @@ variable "redis_auth_enabled" {
 }
 
 # ── IAM (least privilege) ─────────────────────────────────────────
-variable "aiplatform_role" {
-  description = <<-EOT
-    Vertex AI role granted to the app service account (INFRA-7). The app only
-    needs Vertex AI Gemini image generation. Defaults to the broad predefined roles/aiplatform.user;
-    override with a custom role (e.g. "projects/<project>/roles/vertexImagePredictor"
-    carrying only aiplatform.endpoints.predict) to follow least-privilege.
-  EOT
-  type        = string
-  default     = "roles/aiplatform.user"
-}
-
 variable "certificate_manager_role" {
   description = <<-EOT
     Role used by the backend/worker for idempotent customer certificate and

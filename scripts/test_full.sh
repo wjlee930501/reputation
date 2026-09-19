@@ -256,9 +256,9 @@ docker exec reputation-db-1 psql -U reputation -d reputation -c \
   "UPDATE hospitals SET status='ACTIVE' WHERE id='$TEST_ID'" >/dev/null 2>&1
 
 # ─── 6. V0 리포트 (API 키 필요) ───────────────────────────────────
-header "6. V0 리포트 생성 (OpenAI 필요)"
+header "6. V0 리포트 생성 (OpenRouter 필요)"
 
-if check_api_key "OPENAI_API_KEY"; then
+if check_api_key "OPENROUTER_API_KEY"; then
   info "V0 리포트 태스크 트리거 중..."
   V0_RES=$(curl -sf --max-time 5 -X POST "$BASE/api/v1/admin/hospitals/$TEST_ID/reports/v0" \
     -H "X-Admin-Key: $ADMIN_KEY" -H "$ACTOR_SYSTEM_HEADER" 2>/dev/null) || V0_RES="{}"
@@ -269,13 +269,13 @@ if check_api_key "OPENAI_API_KEY"; then
     fail "V0 리포트 트리거 실패: $(echo $V0_RES | head -c 200)"
   fi
 else
-  skip "V0 리포트 — OPENAI_API_KEY 미설정"
+  skip "V0 리포트 — OPENROUTER_API_KEY 미설정"
 fi
 
 # ─── 7. 콘텐츠 생성 태스크 (API 키 필요) ──────────────────────────
-header "7. 콘텐츠 자동 생성 (Anthropic + Imagen 필요)"
+header "7. 콘텐츠 자동 생성 (OpenRouter 필요)"
 
-if check_api_key "ANTHROPIC_API_KEY"; then
+if check_api_key "OPENROUTER_API_KEY"; then
   info "콘텐츠 생성 태스크 수동 트리거..."
   # Celery로 직접 태스크 발행
   TASK_RES=$(docker exec reputation-api-1 python3 -c "
@@ -290,7 +290,7 @@ print('task_id:', result.id)
     fail "콘텐츠 생성 태스크 트리거 실패"
   fi
 else
-  skip "콘텐츠 자동 생성 — ANTHROPIC_API_KEY 미설정"
+  skip "콘텐츠 자동 생성 — OPENROUTER_API_KEY 미설정"
 fi
 
 # ─── 8. Slack 알림 (API 키 필요) ──────────────────────────────────

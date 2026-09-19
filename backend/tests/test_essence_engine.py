@@ -26,7 +26,7 @@ from app.utils.medical_filter import check_forbidden
 @pytest.fixture(autouse=True)
 def _force_deterministic(monkeypatch):
     """이 파일의 테스트는 deterministic 폴백 경로를 검증한다 — LLM 키를 비워 네트워크 호출을 막는다."""
-    monkeypatch.setattr(essence_engine.settings, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(essence_engine.settings, "OPENROUTER_API_KEY", "")
 
 
 def test_process_source_asset_extracts_only_source_backed_notes():
@@ -476,7 +476,7 @@ def test_llm_source_processing_visits_tail_and_deduplicates_overlap(monkeypatch)
             ]
         }
 
-    monkeypatch.setattr(essence_engine, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_engine, "_call_llm_json", fake_call)
 
     notes = essence_engine._process_source_asset_llm(asset)
 
@@ -505,7 +505,7 @@ def test_llm_source_processing_keeps_every_valid_note_returned_for_a_chunk(
             ]
         }
 
-    monkeypatch.setattr(essence_engine, "_call_anthropic_json", fake_call)
+    monkeypatch.setattr(essence_engine, "_call_llm_json", fake_call)
 
     notes = essence_engine._process_source_asset_llm(asset)
 

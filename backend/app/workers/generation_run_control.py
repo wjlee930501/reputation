@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
-import anthropic
+import openai
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -154,7 +154,7 @@ class ExplicitRunContext:
 def classify_generation_failure(error: BaseException) -> tuple[str, str]:
     """Map runtime failures to allowlisted operator-safe facts."""
     match error:
-        case TimeoutError() | anthropic.APITimeoutError():
+        case TimeoutError() | openai.APITimeoutError():
             code = "PROVIDER_TIMEOUT"
             message = _SAFE_FAILURE_MESSAGE
         case ConnectionError():

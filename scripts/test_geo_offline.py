@@ -8,8 +8,8 @@ from pathlib import Path
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     os.environ.update({"REPUTATION_DISABLE_DOTENV": "1", "APP_ENV": "test",
-                       "ADMIN_SECRET_KEY": "test-admin-key", "ANTHROPIC_API_KEY": "test-anthropic-key",
-                       "OPENAI_API_KEY": "test-openai-key", "GEMINI_API_KEY": ""})
+                       "ADMIN_SECRET_KEY": "test-admin-key",
+                       "OPENROUTER_API_KEY": "test-openrouter-key"})
     os.chdir(root / "backend")
     sys.path.insert(0, str(root / "backend"))
 

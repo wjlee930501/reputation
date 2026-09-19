@@ -2,7 +2,7 @@
 
 원장의 톤/문체·핵심 의료 지식·가치(essence)를 자료에서 추출한다.
 
-- ANTHROPIC_API_KEY가 있으면 Claude로 근거 노트 추출 + 철학 합성 (heart path).
+- OPENROUTER_API_KEY가 있으면 LLM으로 근거 노트 추출 + 철학 합성 (heart path).
 - 키가 없으면(오프라인/CI) deterministic regex 폴백으로 동작해 테스트가 항상 통과한다.
 
 어느 경로든 모든 evidence note의 source_excerpt는 raw_text/operator_note의 verbatim
@@ -15,7 +15,6 @@ import hashlib
 import json
 import logging
 import re
-import threading
 import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -23,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Iterable
 
-import anthropic
+from openai import OpenAI
 from sqlalchemy import or_, select
 from tenacity import Retrying, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -38,8 +37,9 @@ from app.models.essence import (
     SourceStatus,
 )
 from app.models.hospital import Hospital
+from app.services import llm_structured_output, openrouter
 from app.services.essence_sources import required_text_source_predicate
-from app.utils.anthropic_retry import is_retryable_anthropic_error
+from app.services.openrouter import is_retryable_llm_error
 from app.utils.error_page import looks_like_error_page_text
 from app.utils.medical_filter import FORBIDDEN_EXPRESSIONS, check_forbidden
 
@@ -119,38 +119,25 @@ _LOCAL_CONTEXT_PATTERN = re.compile(
 
 
 # 클라이언트 1개 = HTTP 커넥션 풀 1개다. 호출마다 새로 만들면 재시도마다 TLS 핸드셰이크를
-# 다시 하고 풀을 버린다. Celery prefork 자식 프로세스 안에서 스레드가 동시에 들어올 수 있으므로
-# 초기화만 잠근다(sov_engine._get_gemini_client와 같은 lazy 싱글턴 패턴).
-_anthropic_client_instance: anthropic.Anthropic | None = None
-_anthropic_client_lock = threading.Lock()
+# 다시 하고 풀을 버린다. openrouter.sync_client가 timeout별로 같은 싱글턴을 돌려준다
+# (SDK 내부 재시도는 꺼져 있고 tenacity가 재시도를 소유한다).
 
 
-def _anthropic_client() -> anthropic.Anthropic | None:
-    global _anthropic_client_instance
-    if not settings.ANTHROPIC_API_KEY:
+def _llm_client() -> OpenAI | None:
+    if not openrouter.configured():
         return None
-    if _anthropic_client_instance is None:
-        with _anthropic_client_lock:
-            if _anthropic_client_instance is None:
-                _anthropic_client_instance = anthropic.Anthropic(
-                    api_key=settings.ANTHROPIC_API_KEY,
-                    timeout=60.0,
-                    max_retries=0,
-                )
-    return _anthropic_client_instance
+    return openrouter.sync_client(timeout=60.0)
 
 
 def _reset_clients_for_tests() -> None:
-    """테스트가 ANTHROPIC_API_KEY/생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
+    """테스트가 OPENROUTER_API_KEY/생성자를 바꿔치기한 뒤 캐시를 비우기 위한 훅."""
 
-    global _anthropic_client_instance
-    with _anthropic_client_lock:
-        _anthropic_client_instance = None
+    openrouter.reset_clients_for_tests()
 
 
 def llm_enabled() -> bool:
     """LLM 경로 사용 가능 여부 — 키가 있으면 True, 없으면 deterministic 폴백."""
-    return bool(settings.ANTHROPIC_API_KEY)
+    return openrouter.configured()
 
 
 @dataclass(frozen=True)
@@ -237,7 +224,7 @@ def process_source_asset(
 ) -> list[EvidenceNotePayload]:
     """자료 원문에서 근거 노트를 추출한다.
 
-    ANTHROPIC_API_KEY가 있으면 Claude로 추출하고, 없으면 deterministic 폴백을 쓴다.
+    OPENROUTER_API_KEY가 있으면 LLM으로 추출하고, 없으면 deterministic 폴백을 쓴다.
     LLM 호출이 실패하면 deterministic 폴백으로 안전하게 떨어진다.
     어느 경로든 source_excerpt는 원문 verbatim이어야 한다.
     """
@@ -375,7 +362,7 @@ class _LlmCallCounter:
         event["provider_request_id"] = str(getattr(response, "id", "") or "") or None
 
 
-# 이 모듈의 Anthropic 호출은 전부 _call_anthropic_json 하나를 지난다. 동기 코드라
+# 이 모듈의 LLM 호출은 전부 _call_llm_json 하나를 지난다. 동기 코드라
 # 그 자리에서 await할 수 없으므로, 호출자가 심어 둔 카운터를 올려두고 async 경계에서
 # 기록한다. asyncio.to_thread는 컨텍스트를 복사하므로 스레드 안에서도 같은 객체를 본다.
 _llm_call_counter: ContextVar[_LlmCallCounter | None] = ContextVar(
@@ -399,7 +386,7 @@ async def metered_llm_calls(
     item_id: uuid.UUID | str | None = None,
     attempt_id: str | None = None,
 ) -> AsyncIterator[_LlmCallCounter]:
-    """블록 안에서 나간 Anthropic 호출을 content 예산의 '실제 호출'로 기록한다.
+    """블록 안에서 나간 OpenRouter 호출을 content 예산의 '실제 호출'로 기록한다.
 
     운영 기준 처리(근거 추출·철학 합성)는 AE가 버튼으로 돌리는 유료 호출인데 종전에는
     예약도 계수도 없어 비용 화면에 전혀 잡히지 않았다.
@@ -426,7 +413,7 @@ async def metered_llm_calls(
                     else None
                 )
                 await provider_usage.record_attempt(
-                    provider="anthropic",
+                    provider="openrouter",
                     model=settings.CLAUDE_MODEL_FAST,
                     workflow=workflow,
                     cost_category="content",
@@ -443,7 +430,7 @@ async def metered_llm_calls(
                 )
 
 
-def _call_anthropic_json(
+def _call_llm_json(
     system: str,
     user_message: str,
     *,
@@ -462,13 +449,13 @@ def _call_anthropic_json(
         wait=wait_exponential(min=1, max=4),
         # 결정적 4xx(잘못된 요청·인증·권한·모델 오타)는 재시도해도 같은 실패라
         # 유료 호출만 3배로 늘린다. 타임아웃·5xx·429·파서 실패만 재시도한다.
-        retry=retry_if_exception(is_retryable_anthropic_error),
+        retry=retry_if_exception(is_retryable_llm_error),
         reraise=True,
     ):
         with attempt:
-            client = _anthropic_client()
+            client = _llm_client()
             if client is None:  # pragma: no cover — llm_enabled() 가드 후에만 호출됨
-                raise RuntimeError("ANTHROPIC_API_KEY가 설정되어 있지 않습니다.")
+                raise RuntimeError("OPENROUTER_API_KEY가 설정되어 있지 않습니다.")
             event = (
                 counter.tick(
                     logical_call=logical_call,
@@ -480,32 +467,29 @@ def _call_anthropic_json(
             request: dict[str, Any] = {
                 "model": settings.CLAUDE_MODEL_FAST,
                 "max_tokens": max_tokens,
-                "system": system,
-                "messages": [{"role": "user", "content": user_message}],
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_message},
+                ],
             }
             if output_schema is not None:
-                request["output_config"] = {
-                    "format": {"type": "json_schema", "schema": output_schema}
-                }
+                request["response_format"] = openrouter.json_schema_format(
+                    output_schema, name="structured_output"
+                )
             try:
-                response = client.messages.create(**request, timeout=timeout_seconds)
+                response = client.chat.completions.create(
+                    **request, timeout=timeout_seconds
+                )
             except Exception:
                 # The event was appended before the HTTP call, so failed provider
                 # attempts remain visible with usage_known=False.
                 raise
             if counter is not None and event is not None:
                 counter.record_response(event, response)
-            stop_reason = getattr(response, "stop_reason", None)
-            if stop_reason in {"max_tokens", "refusal"}:
+            stop_reason = llm_structured_output.incomplete_reason(response)
+            if stop_reason is not None:
                 raise ValueError(f"essence LLM incomplete structured output: {stop_reason}")
-            raw = next(
-                (
-                    str(block.text)
-                    for block in response.content
-                    if getattr(block, "text", None) and str(block.text).strip()
-                ),
-                "",
-            )
+            raw = llm_structured_output.first_text(response)
             if not raw:
                 raise ValueError("essence LLM returned no text JSON block")
             return _parse_json_object(raw)
@@ -624,7 +608,7 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
             )
             + "위 범위의 원문에서만 근거 노트를 추출해 JSON으로 출력하세요."
         )
-        data = _call_anthropic_json(
+        data = _call_llm_json(
             _SOURCE_PROCESSING_SYSTEM,
             user_message,
             max_tokens=3000,
@@ -710,7 +694,7 @@ def synthesize_philosophy(
 ) -> dict[str, Any]:
     """저장된 근거 노트만으로 콘텐츠 철학 초안을 만든다.
 
-    ANTHROPIC_API_KEY가 있으면 Claude로 합성하고, 없으면 deterministic 폴백을 쓴다.
+    OPENROUTER_API_KEY가 있으면 LLM으로 합성하고, 없으면 deterministic 폴백을 쓴다.
     LLM 합성이 실패하거나 grounding 검증을 통과하지 못하면 deterministic 폴백으로 떨어진다.
     """
     # 차단·오류 페이지 잔재("Title: 403 Forbidden" 등)가 든 근거 노트는 철학 조립에서 제외한다.
@@ -933,7 +917,7 @@ def _synthesize_philosophy_llm(
         "위 근거 노트만 사용해 콘텐츠 운영 기준을 JSON으로 합성하세요. "
         "각 필드의 evidence_note_ids는 위 id 목록 안에서만 고릅니다."
     )
-    data = _call_anthropic_json(
+    data = _call_llm_json(
         _SYNTHESIS_SYSTEM,
         user_message,
         max_tokens=5000,

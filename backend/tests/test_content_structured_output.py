@@ -10,8 +10,7 @@ import os
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///tmp/reputation-test.db")
 os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///tmp/reputation-test.db")
-os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
-os.environ.setdefault("OPENAI_API_KEY", "test-openai-key")
+os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 
 from types import SimpleNamespace  # noqa: E402
 
@@ -81,18 +80,23 @@ async def test_writer_tool_use_input_survives_unescaped_quotes(monkeypatch, _no_
             content=[_tool_use_block(content_engine.ARTICLE_TOOL_NAME, payload)],
         )
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
 
     saved = await content_engine.generate_content(_hospital(), ContentType.NOTICE)
 
     assert saved["body"] == BODY_WITH_RAW_QUOTES
     assert saved["title"] == payload["title"]
     # 도구 호출이 강제됐는지(= 모델이 텍스트로 답할 여지가 없는지) 확인한다.
-    assert captured["tool_choice"] == {
-        "type": "tool",
-        "name": content_engine.ARTICLE_TOOL_NAME,
-    }
-    assert captured["tools"] == [content_engine.ARTICLE_TOOL]
+    assert captured["tool_choice"] == content_engine.openrouter.forced_tool_choice(
+        content_engine.ARTICLE_TOOL_NAME
+    )
+    assert captured["tools"] == [
+        content_engine.openrouter.function_tool(
+            name=content_engine.ARTICLE_TOOL_NAME,
+            description=content_engine.ARTICLE_TOOL["description"],
+            input_schema=content_engine.ARTICLE_TOOL["input_schema"],
+        )
+    ]
 
 
 def test_article_tool_schema_matches_parser_fields():
@@ -117,7 +121,7 @@ async def test_writer_truncation_is_reported_before_extraction(
             content=[_tool_use_block(content_engine.ARTICLE_TOOL_NAME, {"title": "잘림"})],
         )
 
-    monkeypatch.setattr(content_engine.client.messages, "create", fake_create)
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
 
     with pytest.raises(content_engine.TruncatedProviderOutputError):
         await content_engine._generate_content_attempt(_hospital(), ContentType.NOTICE)
@@ -210,7 +214,9 @@ async def test_review_truncation_is_unavailable_instead_of_pass(monkeypatch, sto
         ],
     )
     client = SimpleNamespace(
-        messages=SimpleNamespace(create=lambda **_kwargs: truncated)
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=lambda **_kwargs: truncated)
+        )
     )
 
     review = await content_ai_review._provider_review(

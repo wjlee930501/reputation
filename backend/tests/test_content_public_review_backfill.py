@@ -236,7 +236,7 @@ async def test_supplied_allowed_decision_refunds_when_provider_is_unconfigured(
 
     monkeypatch.setattr(content_ai_review.cost_guard, "reserve", unexpected)
     monkeypatch.setattr(content_ai_review.cost_guard, "settle_reservation", settle)
-    monkeypatch.setattr(content_ai_review.settings, "ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr(content_ai_review.settings, "OPENROUTER_API_KEY", "")
 
     review = await content_ai_review.review_generated_content(
         hospital=SimpleNamespace(),

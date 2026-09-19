@@ -208,13 +208,7 @@ def _workflow_facts() -> dict[str, bool]:
 def _configuration_facts() -> dict[str, bool]:
     project_suffix = f"-{settings.GCP_PROJECT_ID}" if settings.GCP_PROJECT_ID else ""
     return {
-        "generation_keys_configured": all(
-            (
-                settings.ANTHROPIC_API_KEY.strip(),
-                settings.OPENAI_API_KEY.strip(),
-                settings.GEMINI_API_KEY.strip(),
-            )
-        ),
+        "generation_keys_configured": bool(settings.OPENROUTER_API_KEY.strip()),
         "operator_secrets_configured": all(
             (
                 settings.ADMIN_SECRET_KEY.strip(),

@@ -239,7 +239,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> Harness:
     pdf_calls: list[int] = []
     pdf_failures: list[bool] = [False]
 
-    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tasks.settings, "OPENROUTER_API_KEY", "")
     monkeypatch.setattr(tasks, "SyncSessionPinnedConnection", lambda: session)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: session)
     monkeypatch.setattr(

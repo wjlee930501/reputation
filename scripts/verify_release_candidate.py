@@ -34,8 +34,8 @@ def configure(database=BASE):
     os.environ.update(PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
         APP_ENV="test", REPUTATION_DISABLE_DOTENV="1", ADMIN_SECRET_KEY="test-admin-key",
         DATABASE_URL=async_url(database), SYNC_DATABASE_URL=sync_url(database))
-    os.environ.update(ANTHROPIC_API_KEY="test-anthropic-key", OPENAI_API_KEY="test-openai-key",
-        GEMINI_API_KEY="", GOOGLE_API_KEY="", IMAGE_FALLBACK_PROVIDER="",
+    os.environ.update(OPENROUTER_API_KEY="test-openrouter-key",
+        IMAGE_FALLBACK_PROVIDER="",
         GOOGLE_APPLICATION_CREDENTIALS="/tmp/reputation-release-no-credentials.json",
         GCP_PROJECT_ID="", GOOGLE_CLOUD_PROJECT="", SLACK_WEBHOOK_URL="", SLACK_WEBHOOK_URL_DEV="",
         BFF_ACTOR_SECRET="test-actor-key", WORKER_DISPATCH_SECRET="test-dispatch-key",

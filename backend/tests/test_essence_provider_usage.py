@@ -6,12 +6,14 @@ from app.services import cost_guard, essence_engine, provider_usage
 
 
 def test_failed_essence_http_attempt_is_observed_with_source_context(monkeypatch) -> None:
-    class FailingMessages:
+    class FailingCompletions:
         def create(self, **_kwargs):
             raise RuntimeError("provider unavailable")
 
     class FailingClient:
-        messages = FailingMessages()
+        from types import SimpleNamespace
+
+        chat = SimpleNamespace(completions=FailingCompletions())
 
     observed: list[dict] = []
 
@@ -22,7 +24,7 @@ def test_failed_essence_http_attempt_is_observed_with_source_context(monkeypatch
     async def capture_provider_count(_category, *, count=1):
         assert count == 1
 
-    monkeypatch.setattr(essence_engine, "_anthropic_client", lambda: FailingClient())
+    monkeypatch.setattr(essence_engine, "_llm_client", lambda: FailingClient())
     monkeypatch.setattr(provider_usage, "record_attempt", capture_provider_attempt)
     monkeypatch.setattr(cost_guard, "record_provider_call", capture_provider_count)
 
@@ -35,7 +37,7 @@ def test_failed_essence_http_attempt_is_observed_with_source_context(monkeypatch
             attempt_id="durable-attempt",
         ):
             await asyncio.to_thread(
-                essence_engine._call_anthropic_json,
+                essence_engine._call_llm_json,
                 "system",
                 "input",
                 max_tokens=100,

@@ -440,7 +440,7 @@ def test_remasure_does_not_match_different_non_null_tracking_targets():
 def test_monthly_specs_ignore_priority_and_caps_but_keep_legacy_helpers(monkeypatch):
     targets = [_target(f"지역 병원 질문 {index}") for index in range(15)]
     hospital = SimpleNamespace(id=uuid.uuid4())
-    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tasks.settings, "OPENROUTER_API_KEY", "")
 
     specs, trimmed = tasks._build_measurement_specs(
         db=_SpecDB(targets, hospital.id),
@@ -465,7 +465,7 @@ def test_monthly_specs_ignore_priority_and_caps_but_keep_legacy_helpers(monkeypa
 def test_measurement_specs_exclude_info_for_both_modes(monkeypatch):
     info = _target("치질 초기 증상이 뭔지 알려줘", intent="INFO")
     hospital = SimpleNamespace(id=uuid.uuid4())
-    monkeypatch.setattr(tasks.settings, "GEMINI_API_KEY", "")
+    monkeypatch.setattr(tasks.settings, "OPENROUTER_API_KEY", "")
 
     for mode in ("weekly", "monthly"):
         specs, _ = tasks._build_measurement_specs(

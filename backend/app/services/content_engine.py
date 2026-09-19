@@ -10,7 +10,6 @@ import re
 import uuid
 from urllib.parse import urlparse
 
-import anthropic
 import httpx
 from tenacity import (
     before_sleep_log,
@@ -24,7 +23,7 @@ from app.core.config import settings
 from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
-from app.services import llm_structured_output
+from app.services import llm_structured_output, openrouter
 from app.services.content_similarity import (
     REFERENCE_TOKEN_MATCH_MIN,
     normalize_topic_text,
@@ -35,7 +34,7 @@ from app.services.essence_engine import (
     MANDATORY_MEDICAL_AD_RISK_RULES,
     effective_safety_policy,
 )
-from app.utils.anthropic_retry import NON_RETRYABLE_ANTHROPIC_ERRORS
+from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
 from app.utils.authority_sources import (
     CURATED_SOURCE_URLS,
     infer_source_type,
@@ -159,11 +158,7 @@ class DirectorNameMissingError(ValueError):
         self.result = result
 
 
-client = anthropic.Anthropic(
-    api_key=settings.ANTHROPIC_API_KEY,
-    timeout=90.0,
-    max_retries=0,  # tenacity handles retries with backoff
-)
+client = openrouter.sync_client(timeout=90.0)  # max_retries=0 — tenacity가 재시도를 소유
 
 # ── 시스템 프롬프트 ───────────────────────────────────────────────
 # 검색·AI용 별도 문법을 가장하지 않고, 환자에게 유용한 고유 정보·정확한 출처·명확한
@@ -730,12 +725,12 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     # 않고, generate_content 의 재작성 루프가 실패 사유를 작가에게 넘겨 다시 쓰게 한다
     # (잘림·JSON 파싱·분량·가격·SEO·GEO·FAQ·금지 표현 전부 ValueError 계열).
     #
-    # NON_RETRYABLE_ANTHROPIC_ERRORS: a malformed request, a bad key, a revoked
+    # NON_RETRYABLE_LLM_ERRORS: a malformed request, a bad key, a revoked
     # permission or a missing model does not become valid by waiting.  Retrying
     # them burned three request slots and up to 12s of backoff per item before
     # surfacing the same error.  Rate limits (429), 5xx and timeouts stay
     # retryable.
-    retry=retry_if_not_exception_type((ValueError, *NON_RETRYABLE_ANTHROPIC_ERRORS)),
+    retry=retry_if_not_exception_type((ValueError, *NON_RETRYABLE_LLM_ERRORS)),
     reraise=True,
 )
 async def _generate_content_attempt(
@@ -821,14 +816,14 @@ async def _generate_content_attempt(
         f"{type_prompt}{avoid_titles}{curated_candidate_hint}{remediation_context}"
     ).strip()
 
-    # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 Anthropic 클라이언트는
+    # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 OpenRouter 클라이언트는
     # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다. 여기서 세지 않으면 비용 화면의
     # '예약'과 '실제'가 최대 3배까지 벌어져도 드러나지 않는다.
     from app.services import cost_guard
 
     await cost_guard.record_provider_call("content")
 
-    # asyncio에서 sync anthropic 클라이언트 호출
+    # asyncio에서 sync OpenAI-호환(OpenRouter) 클라이언트 호출
     loop = asyncio.get_running_loop()
     from app.services import provider_usage
 
@@ -841,18 +836,26 @@ async def _generate_content_attempt(
     try:
         response = await loop.run_in_executor(
             None,
-            lambda: client.messages.create(
+            lambda: client.chat.completions.create(
                 model=settings.CLAUDE_MODEL,
                 max_tokens=12000,
-                system=system_blocks,
-                messages=[{"role": "user", "content": user_message}],
-                tools=[ARTICLE_TOOL],
-                tool_choice={"type": "tool", "name": ARTICLE_TOOL_NAME},
+                messages=[
+                    openrouter.system_message(system_blocks),
+                    {"role": "user", "content": user_message},
+                ],
+                tools=[
+                    openrouter.function_tool(
+                        name=ARTICLE_TOOL_NAME,
+                        description=ARTICLE_TOOL["description"],
+                        input_schema=ARTICLE_TOOL["input_schema"],
+                    )
+                ],
+                tool_choice=openrouter.forced_tool_choice(ARTICLE_TOOL_NAME),
             ),
         )
     except Exception:
         await provider_usage.record_attempt(
-            provider="anthropic",
+            provider="openrouter",
             model=settings.CLAUDE_MODEL,
             workflow="content_generation",
             cost_category="content",
@@ -865,13 +868,12 @@ async def _generate_content_attempt(
         raise
 
     usage = getattr(response, "usage", None)
-    # 캐시된 입력은 usage.input_tokens에 포함되지 않는다. 두 필드를 더하지 않으면
-    # 캐시가 붙는 순간 원장(ledger)의 입력 토큰이 급감해 "비용이 줄었다"가 아니라
-    # "계측이 깨졌다"로 보인다. 과금되는 입력 총량을 그대로 유지하고, 캐시 적중은
-    # 별도 로그로 관찰한다(스키마 변경 없음).
-    cache_creation_tokens = _usage_token(usage, "cache_creation_input_tokens")
-    cache_read_tokens = _usage_token(usage, "cache_read_input_tokens")
-    uncached_input_tokens = _usage_token(usage, "input_tokens")
+    # OpenRouter(OpenAI 형태)는 캐시 적중을 prompt_tokens 안에 포함하고 세부는
+    # prompt_tokens_details.cached_tokens에 둔다. 적중량만 별도 로그로 관찰한다.
+    prompt_details = getattr(usage, "prompt_tokens_details", None)
+    cache_creation_tokens = 0
+    cache_read_tokens = _usage_token(prompt_details, "cached_tokens")
+    uncached_input_tokens = _usage_token(usage, "prompt_tokens")
     logger.info(
         "content generation usage: hospital=%s type=%s input=%d "
         "cache_creation=%d cache_read=%d output=%d",
@@ -880,10 +882,10 @@ async def _generate_content_attempt(
         uncached_input_tokens,
         cache_creation_tokens,
         cache_read_tokens,
-        _usage_token(usage, "output_tokens"),
+        _usage_token(usage, "completion_tokens"),
     )
     await provider_usage.record_attempt(
-        provider="anthropic",
+        provider="openrouter",
         model=settings.CLAUDE_MODEL,
         workflow="content_generation",
         cost_category="content",
@@ -897,8 +899,8 @@ async def _generate_content_attempt(
 
     # 잘린 응답은 JSON 파싱 실패로만 드러나 "가격·지역·검색 구조 게이트 실패"라는 틀린
     # 원인으로 기록됐다. 사용량 기록(위)은 이미 끝났으므로 여기서 전용 오류로 끊는다.
-    stop_reason = getattr(response, "stop_reason", None)
-    if stop_reason in {"max_tokens", "refusal"}:
+    stop_reason = llm_structured_output.incomplete_reason(response)
+    if stop_reason is not None:
         raise TruncatedProviderOutputError(
             f"Provider output was truncated before completion (stop_reason={stop_reason}) "
             "— 응답이 끝까지 완성되지 않았습니다. 본문 분량을 순수 글자 수 2,400~3,200자로 "

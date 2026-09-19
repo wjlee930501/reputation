@@ -46,7 +46,6 @@ gcloud services enable \
   secretmanager.googleapis.com \
   cloudresourcemanager.googleapis.com \
   iamcredentials.googleapis.com \
-  aiplatform.googleapis.com \
   --project="$PROJECT_ID"
 ok "API 활성화 완료"
 
@@ -85,9 +84,9 @@ done
 # ─── 4. IAM 권한 부여 ──────────────────────────────────────────────
 info "IAM 권한 부여 중..."
 
+# Vertex AI(aiplatform)는 더 이상 쓰지 않는다 — 모든 LLM·이미지 호출은 OpenRouter로 나간다.
 ROLES=(
   "roles/cloudsql.client"
-  "roles/aiplatform.user"
   "roles/logging.logWriter"
   "roles/monitoring.metricWriter"
   "roles/cloudtrace.agent"
@@ -122,9 +121,8 @@ ok "IAM 권한 부여 완료"
 info "Secret Manager 설정 중..."
 
 declare -A SECRETS=(
-  ["ANTHROPIC_API_KEY"]="Anthropic API 키"
-  ["OPENAI_API_KEY"]="OpenAI API 키"
-  ["GEMINI_API_KEY"]="Gemini API 키"
+  # 단일 게이트웨이 키 — 콘텐츠 생성·SoV 측정·이미지 생성/검수가 전부 여기로 나간다.
+  ["OPENROUTER_API_KEY"]="OpenRouter API 키 (모든 LLM·이미지 호출의 단일 게이트웨이)"
   ["ADMIN_SECRET_KEY"]="Admin API 인증 키"
   ["WORKER_DISPATCH_SECRET"]="Celery 작업 메시지 전용 서명 키 (32자 이상)"
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"

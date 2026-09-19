@@ -129,7 +129,7 @@ curl -sf --max-time 3 "http://localhost:5555" >/dev/null 2>&1 \
 
 echo ""
 info "API 키 상태:"
-for key in ANTHROPIC_API_KEY OPENAI_API_KEY GEMINI_API_KEY SLACK_WEBHOOK_URL; do
+for key in OPENROUTER_API_KEY SLACK_WEBHOOK_URL; do
   has_key "$key" \
     && echo -e "    ${GREEN}✓${RESET} $key" \
     || echo -e "    ${YELLOW}⊘${RESET} $key (미설정)"
@@ -209,7 +209,7 @@ print('ok' if kw and sp else 'fail')
 header "3" "V0 리포트 자동 생성 (profile_complete → SoV → PDF → Slack)"
 # ══════════════════════════════════════════════════════════════════
 
-if has_key "OPENAI_API_KEY"; then
+if has_key "OPENROUTER_API_KEY"; then
   info "남은 필수 항목(공식 채널) 입력 → 완료 파생 → V0 태스크 자동 트리거..."
 
   # 완료 플래그는 서버가 파생한다. 마지막 필수 항목(네이버 플레이스·Google 병원 정보)을
@@ -267,7 +267,7 @@ print('done')
       || fail "V0 동기 실행 실패: $V0_SYNC"
   fi
 else
-  skip "V0 리포트 — OPENAI_API_KEY 미설정 (SoV 기록 수동 주입)"
+  skip "V0 리포트 — OPENROUTER_API_KEY 미설정 (SoV 기록 수동 주입)"
   # 쿼리 매트릭스 + SoV 기록 수동 주입
   docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c "
     INSERT INTO query_matrix (id, hospital_id, query_text) VALUES
@@ -392,10 +392,10 @@ SCHED_FLAG=$(psql_q "SELECT schedule_set FROM hospitals WHERE id='$HID'")
   || info "schedule_set 상태: $SCHED_FLAG"
 
 # ══════════════════════════════════════════════════════════════════
-header "7" "콘텐츠 자동 생성 (Claude Sonnet)"
+header "7" "콘텐츠 자동 생성 (Claude Sonnet via OpenRouter)"
 # ══════════════════════════════════════════════════════════════════
 
-if has_key "ANTHROPIC_API_KEY"; then
+if has_key "OPENROUTER_API_KEY"; then
   # 슬롯 하나를 내일 날짜 + body=NULL + DRAFT 으로 세팅
   TOMORROW=$(python3 -c "from datetime import date, timedelta; print(date.today() + timedelta(days=1))")
   TARGET_ITEM=$(psql_q "SELECT id FROM content_items WHERE hospital_id='$HID' AND body IS NULL LIMIT 1") || TARGET_ITEM=""
@@ -448,7 +448,7 @@ print('done')
     fail "body=NULL 슬롯 없음"
   fi
 else
-  skip "콘텐츠 자동 생성 — ANTHROPIC_API_KEY 미설정 (수동 시딩)"
+  skip "콘텐츠 자동 생성 — OPENROUTER_API_KEY 미설정 (수동 시딩)"
   SEED_ID=$(psql_q "SELECT id FROM content_items WHERE hospital_id='$HID' AND content_type='FAQ' LIMIT 1") || SEED_ID=""
   if [[ -n "$SEED_ID" ]]; then
     docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c "
@@ -566,7 +566,7 @@ docker exec "$DB_CONTAINER" psql -U reputation -d reputation -c \
 header "10" "SoV 측정 태스크 (ChatGPT + Gemini)"
 # ══════════════════════════════════════════════════════════════════
 
-if has_key "OPENAI_API_KEY"; then
+if has_key "OPENROUTER_API_KEY"; then
   SOV_REPEAT=$(grep SOV_REPEAT_COUNT_WEEKLY .env | cut -d= -f2 | tr -d '\r\n')
   info "SOV_REPEAT_COUNT_WEEKLY=$SOV_REPEAT — run_sov_for_hospital 실행 중..."
 
@@ -582,12 +582,9 @@ print('done')
     SOV_CHATGPT=$(psql_q "SELECT COUNT(*) FROM sov_records WHERE hospital_id='$HID' AND ai_platform='chatgpt'") || SOV_CHATGPT=0
     ok "ChatGPT SoV 기록: ${SOV_CHATGPT}건"
 
-    if has_key "GEMINI_API_KEY"; then
-      SOV_GEMINI=$(psql_q "SELECT COUNT(*) FROM sov_records WHERE hospital_id='$HID' AND ai_platform='gemini'") || SOV_GEMINI=0
-      ok "Gemini SoV 기록: ${SOV_GEMINI}건"
-    else
-      skip "Gemini SoV — GEMINI_API_KEY 미설정"
-    fi
+    # Gemini 경로도 같은 OPENROUTER_API_KEY로 나간다 — 키가 있으면 둘 다 측정된다.
+    SOV_GEMINI=$(psql_q "SELECT COUNT(*) FROM sov_records WHERE hospital_id='$HID' AND ai_platform='gemini'") || SOV_GEMINI=0
+    ok "Gemini SoV 기록: ${SOV_GEMINI}건"
 
     # 종합 SoV 수치 (DB 직접 계산)
     TOTAL_MENTIONED=$(psql_q "SELECT COUNT(*) FROM sov_records WHERE hospital_id='$HID' AND is_mentioned=true") || TOTAL_MENTIONED=0
@@ -602,7 +599,7 @@ print('done')
     fail "SoV 태스크 실패: $SOV_OUT"
   fi
 else
-  skip "SoV 측정 — OPENAI_API_KEY 미설정"
+  skip "SoV 측정 — OPENROUTER_API_KEY 미설정"
   info "기존 주입된 SoV 기록 사용"
 fi
 

@@ -32,25 +32,24 @@ WARN = "WARN"
 # 단계가 실패했을 때 사람이 할 일. 마지막 "most likely cause" 줄이 이걸 그대로 읽는다.
 STAGE_REMEDIES: dict[str, str] = {
     "settings": (
-        "GCP_PROJECT_ID·GCP_STORAGE_BUCKET·IMAGE_PROVIDER를 Cloud Run 환경변수에서 확인한다. "
-        "버킷 이름 규칙은 'reputation-images-<GCP_PROJECT_ID>'다."
+        "OPENROUTER_API_KEY·GCP_STORAGE_BUCKET·IMAGE_PROVIDER를 Cloud Run 환경변수/Secret "
+        "Manager에서 확인한다. 버킷 이름 규칙은 'reputation-images-<GCP_PROJECT_ID>'다."
     ),
-    "vertex_client": (
-        "워커 서비스 계정에 ADC가 붙어 있는지, google-genai가 설치돼 있는지 확인한다."
+    "openrouter_client": (
+        "OPENROUTER_API_KEY가 유효한지, 워커 egress가 openrouter.ai에 닿는지 확인한다."
     ),
     "model_access": (
-        "모델이 그 지역에 서빙되지 않거나(GOOGLE_IMAGE_LOCATION), 프로젝트에 Vertex AI API가 "
-        "꺼져 있거나, 서비스 계정에 roles/aiplatform.user가 없다. 404/403/PERMISSION_DENIED의 "
-        "원문을 그대로 보고 고른다."
+        "설정된 모델 슬러그가 OpenRouter 카탈로그에 없다 — GOOGLE_IMAGE_MODEL·"
+        "OPENAI_IMAGE_MODEL·GEMINI_MODEL 값을 카탈로그의 실제 slug로 맞춘다."
     ),
     "image_generation": (
-        "결제·할당량(429 RESOURCE_EXHAUSTED), 지역 미제공(404), 요청 필드 거부(400 "
-        "INVALID_ARGUMENT: imageConfig/responseModalities)를 원문에서 구분한다. 400이면 "
-        "GOOGLE_IMAGE_MODEL과 클라이언트 api_version 조합을 의심한다."
+        "크레딧 부족·할당량(429), 모델 미제공(404), 요청 필드 거부(400)를 원문에서 구분한다. "
+        "400이면 모델이 지원하는 파라미터(aspect_ratio/resolution/quality)를 의심한다."
     ),
     "policy_review": (
-        "검수 모델(GEMINI_MODEL)이 그 지역에 없거나 권한이 없으면 모든 이미지가 "
-        "POLICY_UNAVAILABLE로 버려진다. 판정이 '거절'이면 정책 거절 루프이므로 프롬프트/주제를 본다."
+        "검수 모델(GEMINI_MODEL, 폴백 OPENAI_MODEL_PARSE)이 OpenRouter에 없거나 권한이 "
+        "없으면 모든 이미지가 POLICY_UNAVAILABLE로 버려진다. 판정이 '거절'이면 정책 거절 "
+        "루프이므로 프롬프트/주제를 본다."
     ),
     "gcs_upload": (
         "버킷이 없거나(이름 규칙), 서비스 계정에 storage.objects.create/delete 권한이 없다."
@@ -148,78 +147,79 @@ def stage_settings() -> StageResult:
     data = {
         "IMAGE_PROVIDER": settings.IMAGE_PROVIDER,
         "IMAGE_FALLBACK_PROVIDER": settings.IMAGE_FALLBACK_PROVIDER or "(off)",
-        "GCP_PROJECT_ID": settings.GCP_PROJECT_ID or "(unset)",
-        "GOOGLE_IMAGE_LOCATION": settings.GOOGLE_IMAGE_LOCATION,
         "GOOGLE_IMAGE_MODEL": settings.GOOGLE_IMAGE_MODEL,
         "GEMINI_MODEL (policy reviewer)": settings.GEMINI_MODEL,
         "OPENAI_IMAGE_MODEL": settings.OPENAI_IMAGE_MODEL,
         "GCP_STORAGE_BUCKET": settings.GCP_STORAGE_BUCKET,
-        "OPENAI_API_KEY": mask_secret(settings.OPENAI_API_KEY),
+        "OPENROUTER_API_KEY": mask_secret(settings.OPENROUTER_API_KEY),
         "REDIS_URL": mask_secret(settings.REDIS_URL, keep=12),
     }
     expected_bucket = f"reputation-images-{settings.GCP_PROJECT_ID}"
     problems = []
-    if not settings.GCP_PROJECT_ID and not settings.OPENAI_API_KEY:
-        problems.append("GCP_PROJECT_ID와 OPENAI_API_KEY가 모두 비어 있다 — 공급자가 없다")
+    if not settings.OPENROUTER_API_KEY.strip():
+        problems.append("OPENROUTER_API_KEY가 비어 있다 — 생성·검수 공급자가 없다")
     if settings.GCP_PROJECT_ID and settings.GCP_STORAGE_BUCKET != expected_bucket:
         problems.append(f"버킷 이름이 규칙과 다르다 (기대: {expected_bucket})")
     status = FAIL if problems else PASS
     return StageResult("settings", "settings/secrets resolved", status, "; ".join(problems), data)
 
 
-def stage_vertex_client() -> StageResult:
+def stage_openrouter_client() -> StageResult:
     from app.core.config import settings
-    from app.services import image_engine
+    from app.services import openrouter
 
-    if not settings.GCP_PROJECT_ID:
+    if not openrouter.configured():
         return StageResult(
-            "vertex_client", "Vertex client init", SKIP, "GCP_PROJECT_ID가 비어 있다"
+            "openrouter_client", "OpenRouter client init", SKIP, "OPENROUTER_API_KEY가 비어 있다"
         )
-    client = image_engine._get_google_client()
-    options = getattr(client, "_api_client", None)
-    http_options = getattr(options, "_http_options", None)
+    client = openrouter.sync_client(timeout=30.0)
     return StageResult(
-        "vertex_client",
-        "Vertex client init",
+        "openrouter_client",
+        "OpenRouter client init",
         PASS,
         "",
-        {
-            "base_url": getattr(http_options, "base_url", "?"),
-            "api_version": getattr(http_options, "api_version", "?"),
-            "location": settings.GOOGLE_IMAGE_LOCATION,
-        },
+        {"base_url": str(client.base_url)},
     )
 
 
 def stage_model_access() -> StageResult:
-    from app.core.config import settings
-    from app.services import image_engine
+    """설정된 슬러그가 OpenRouter 카탈로그에 실제로 있는지 확인한다(무과금 GET /models)."""
 
-    if not settings.GCP_PROJECT_ID:
-        return StageResult("model_access", "image model reachable", SKIP, "no Vertex project")
-    client = image_engine._get_google_client()
-    describe_error = ""
-    try:
-        described = client.models.get(model=settings.GOOGLE_IMAGE_MODEL)
+    import httpx
+
+    from app.core.config import settings
+    from app.services import openrouter
+
+    if not openrouter.configured():
+        return StageResult("model_access", "image model reachable", SKIP, "no OpenRouter key")
+    response = httpx.get(
+        f"{openrouter.OPENROUTER_BASE_URL}/models",
+        headers={"Authorization": f"Bearer {settings.OPENROUTER_API_KEY}"},
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    catalog = {m.get("id") for m in response.json().get("data") or []}
+    configured = {
+        "GOOGLE_IMAGE_MODEL": settings.GOOGLE_IMAGE_MODEL,
+        "OPENAI_IMAGE_MODEL": settings.OPENAI_IMAGE_MODEL,
+        "GEMINI_MODEL": settings.GEMINI_MODEL,
+        "OPENAI_MODEL_PARSE": settings.OPENAI_MODEL_PARSE,
+    }
+    missing = {name: slug for name, slug in configured.items() if slug not in catalog}
+    if missing:
         return StageResult(
             "model_access",
             "image model reachable",
-            PASS,
-            "",
-            {"described": getattr(described, "name", str(described))},
+            FAIL,
+            "카탈로그에 없는 모델 슬러그가 설정돼 있다",
+            missing,
         )
-    except Exception as error:  # noqa: BLE001 — describe 미지원일 수 있으니 probe로 넘어간다.
-        describe_error = format_error(error)
-    # describe가 막히는 배포도 있다. 최소 generateContent probe로 인증·지역·권한을 가른다.
-    response = client.models.generate_content(
-        model=settings.GEMINI_MODEL, contents="ping"
-    )
     return StageResult(
         "model_access",
         "image model reachable",
-        WARN,
-        f"models.get 실패, 텍스트 probe는 성공 — describe 오류: {describe_error}",
-        {"probe_model": settings.GEMINI_MODEL, "probe_text": (response.text or "")[:60]},
+        PASS,
+        "",
+        {name: slug for name, slug in configured.items()},
     )
 
 
@@ -237,8 +237,8 @@ def stage_generate_and_review() -> tuple[StageResult, StageResult, bytes | None]
 
     generation = StageResult("image_generation", "one image generation", SKIP)
     review = StageResult("policy_review", "policy review of that image", SKIP)
-    if not settings.GCP_PROJECT_ID:
-        generation.detail = review.detail = "no Vertex project"
+    if not settings.OPENROUTER_API_KEY.strip():
+        generation.detail = review.detail = "no OpenRouter key"
         return generation, review, None
 
     topic = "여름철 탈수 예방 생활 수칙"
@@ -392,7 +392,7 @@ def stage_stored_failures() -> StageResult:
 def run_all(*, skip_paid: bool = False, skip_db: bool = False) -> list[StageResult]:
     results = [
         _run("settings", "settings/secrets resolved", stage_settings),
-        _run("vertex_client", "Vertex client init", stage_vertex_client),
+        _run("openrouter_client", "OpenRouter client init", stage_openrouter_client),
         _run("model_access", "image model reachable", stage_model_access),
     ]
     image_bytes: bytes | None = None

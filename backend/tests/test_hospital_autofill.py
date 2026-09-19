@@ -125,7 +125,7 @@ async def test_autofill_profile_happy_path(monkeypatch):
         "director_career": {"value": "완치율 최고 보장", "source": "homepage", "confidence": 0.6, "evidence": "완치율 최고 보장"},
     }
     monkeypatch.setattr(
-        af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
+        af._client.chat.completions, "create", lambda **kwargs: _fake_claude_response(fields)
     )
 
     res = await af.autofill_profile("장편한외과의원", "http://hp", "http://blog")
@@ -164,7 +164,7 @@ async def test_autofill_profile_all_sources_fail_returns_empty(monkeypatch):
         called["n"] += 1
         return _fake_claude_response({})
 
-    monkeypatch.setattr(af._client.messages, "create", _should_not_call)
+    monkeypatch.setattr(af._client.chat.completions, "create", _should_not_call)
 
     res = await af.autofill_profile("없는병원", "http://hp", None)
     assert res.draft == {}
@@ -213,7 +213,7 @@ async def test_autofill_profile_direct_fetch_unpacks_three_tuple(monkeypatch):
 
     fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9, "evidence": "김원장"}}
     monkeypatch.setattr(
-        af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
+        af._client.chat.completions, "create", lambda **kwargs: _fake_claude_response(fields)
     )
 
     res = await af.autofill_profile("장편한외과의원", "http://hp", "http://blog")
@@ -236,7 +236,7 @@ async def test_autofill_rejects_ungrounded_specialty_and_hours(monkeypatch):
         "specialties": {"value": ["소아청소년과"], "source": "homepage", "confidence": 0.9, "evidence": "내과 진료"},
         "business_hours": {"value": {"mon": "09:00-20:00"}, "source": "homepage", "confidence": 0.9, "evidence": "월요일 09:00-18:00"},
     }
-    monkeypatch.setattr(af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields))
+    monkeypatch.setattr(af._client.chat.completions, "create", lambda **kwargs: _fake_claude_response(fields))
 
     res = await af.autofill_profile("병원", "http://hp", None)
 
@@ -293,7 +293,7 @@ async def test_autofill_endpoint_end_to_end_with_real_signature(monkeypatch):
     monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
     fields = {"director_name": {"value": "김원장", "source": "homepage", "confidence": 0.9, "evidence": "김원장"}}
     monkeypatch.setattr(
-        af._client.messages, "create", lambda **kwargs: _fake_claude_response(fields)
+        af._client.chat.completions, "create", lambda **kwargs: _fake_claude_response(fields)
     )
 
     import uuid as _uuid
@@ -356,7 +356,7 @@ async def test_autofill_request_sends_the_configured_model(monkeypatch):
         }
         return _fake_claude_response(fields)
 
-    monkeypatch.setattr(af._client.messages, "create", create)
+    monkeypatch.setattr(af._client.chat.completions, "create", create)
 
     await af.autofill_profile("장편한외과의원", "http://hp", None)
 
@@ -365,8 +365,8 @@ async def test_autofill_request_sends_the_configured_model(monkeypatch):
 
 async def test_autofill_does_not_retry_deterministic_client_error(monkeypatch):
     """결정적 4xx를 3회 재시도하면 유료 호출만 3배가 된다."""
-    import anthropic
     import httpx
+    import openai
 
     async def ok_fetch(url: str):
         return "김원장", None, None
@@ -378,15 +378,15 @@ async def test_autofill_does_not_retry_deterministic_client_error(monkeypatch):
     monkeypatch.setattr(af.naver_place, "scrape_naver_place", fake_naver)
 
     http_response = httpx.Response(
-        400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        400, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     )
     calls = {"n": 0}
 
     def create(**_kwargs):
         calls["n"] += 1
-        raise anthropic.BadRequestError("bad request", response=http_response, body=None)
+        raise openai.BadRequestError("bad request", response=http_response, body=None)
 
-    monkeypatch.setattr(af._client.messages, "create", create)
+    monkeypatch.setattr(af._client.chat.completions, "create", create)
 
     result = await af.autofill_profile("장편한외과의원", "http://hp", None)
 
@@ -397,8 +397,8 @@ async def test_autofill_does_not_retry_deterministic_client_error(monkeypatch):
 async def test_autofill_records_each_http_retry_with_one_logical_identity(
     monkeypatch, _capture_provider_attempts
 ):
-    import anthropic
     import httpx
+    import openai
     from tenacity import wait_none
 
     async def ok_fetch(_url: str):
@@ -416,7 +416,7 @@ async def test_autofill_records_each_http_retry_with_one_logical_identity(
     monkeypatch.setattr(af._extract_with_claude.retry, "wait", wait_none())
 
     http_response = httpx.Response(
-        429, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        429, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     )
     calls = 0
 
@@ -424,7 +424,7 @@ async def test_autofill_records_each_http_retry_with_one_logical_identity(
         nonlocal calls
         calls += 1
         if calls == 1:
-            raise anthropic.RateLimitError(
+            raise openai.RateLimitError(
                 "retry", response=http_response, body=None
             )
         return _fake_claude_response(
@@ -438,7 +438,7 @@ async def test_autofill_records_each_http_retry_with_one_logical_identity(
             }
         )
 
-    monkeypatch.setattr(af._client.messages, "create", create)
+    monkeypatch.setattr(af._client.chat.completions, "create", create)
     hospital_id = "00000000-0000-0000-0000-000000000123"
 
     result = await af.autofill_profile(

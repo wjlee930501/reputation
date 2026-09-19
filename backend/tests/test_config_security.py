@@ -238,9 +238,7 @@ def test_production_warns_on_empty_flow_secrets_and_placeholder_buckets(monkeypa
 
     for var in (
         "GCP_PROJECT_ID",
-        "ANTHROPIC_API_KEY",
-        "OPENAI_API_KEY",
-        "GEMINI_API_KEY",
+        "OPENROUTER_API_KEY",
         "GCP_STORAGE_BUCKET",
         "GCS_REPORTS_BUCKET",
     ):
@@ -249,9 +247,7 @@ def test_production_warns_on_empty_flow_secrets_and_placeholder_buckets(monkeypa
     with caplog.at_level(logging.WARNING, logger="app.core.config"):
         Settings(
             **_valid_prod_kwargs(
-                ANTHROPIC_API_KEY="",
-                OPENAI_API_KEY="",
-                GEMINI_API_KEY="",
+                OPENROUTER_API_KEY="",
                 GCP_STORAGE_BUCKET="reputation-images",
                 GCS_REPORTS_BUCKET="reputation-reports",
             )
@@ -259,9 +255,7 @@ def test_production_warns_on_empty_flow_secrets_and_placeholder_buckets(monkeypa
 
     text = caplog.text
     # 핵심 플로우 키 미설정 경고 (부팅은 계속되지만 로그에 영향 범위를 남긴다).
-    assert "ANTHROPIC_API_KEY" in text
-    assert "OPENAI_API_KEY" in text
-    assert "GEMINI_API_KEY" in text
+    assert "OPENROUTER_API_KEY" in text
     # 전역 유일 제약상 placeholder 기본 버킷명 감지 경고.
     assert "GCP_STORAGE_BUCKET" in text
     assert "GCS_REPORTS_BUCKET" in text
