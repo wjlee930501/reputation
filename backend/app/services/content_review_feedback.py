@@ -49,10 +49,47 @@ def hard_removal_findings(review: Any) -> list[str]:
 
 
 _REFERENCE_FINDING_KIND = "REFERENCE"
+_BLOCKING_SEVERITIES = frozenset({"HARD", "UNCERTAIN"})
+# 지시문 1줄 + 지적 5건. `review_findings`의 상한과 같은 크기로 묶어 둔다.
+_MAX_STORED_CONSTRAINTS = 6
 
 
 def finding_label(value: object) -> str:
     return str(getattr(value, "value", value) or "").upper()
+
+
+def stored_blocking_review_constraints(summary: object) -> list[str]:
+    """Rewrite constraints derived from an **already persisted** independent review.
+
+    같은 세션 안에서 받은 판정에는 `hard_removal_findings`를 쓴다. 이 함수는 며칠 전
+    저장된 차단 판정(`essence_check_summary["ai_review"]`)만 남은 슬롯을 사람이
+    강제로 다시 쓰게 할 때 쓴다 — 모델이 HARD로 단정한 사실·의료 안전 지적에는 같은
+    삭제·완화 지시문을 붙이고, 나머지 차단 지적은 그대로 제약으로 넘긴다.
+
+    제약일 뿐이며 발행 허가가 아니다. 재작성 결과는 독립 검수를 다시 받고, 그 뒤에도
+    같은 지적이 남으면 발행 게이트가 그대로 막는다.
+    """
+
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    findings = review.get("findings") if isinstance(review, dict) else None
+    if not isinstance(findings, list):
+        return []
+    removal: list[str] = []
+    remaining: list[str] = []
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        message = str(finding.get("message") or "").strip()
+        severity = finding_label(finding.get("severity"))
+        if not message or severity not in _BLOCKING_SEVERITIES:
+            continue
+        if severity == "HARD" and finding_label(finding.get("kind")) in _HARD_REMOVAL_KINDS:
+            removal.append(message)
+        else:
+            remaining.append(message)
+    if removal:
+        return [_HARD_REMOVAL_INSTRUCTION, *removal, *remaining][:_MAX_STORED_CONSTRAINTS]
+    return remaining[: _MAX_STORED_CONSTRAINTS - 1]
 
 
 def review_finding_items(review: Any) -> list[Any]:

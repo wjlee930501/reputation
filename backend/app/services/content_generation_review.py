@@ -64,10 +64,18 @@ async def generate_reviewed_content(
     approved_brief: dict | None,
     dependencies: ContentReviewDependencies,
     limits: GenerationReviewLimits,
+    rewrite_constraints: list[str] | None = None,
 ) -> tuple[dict[str, Any], EssenceScreeningResult]:
-    """Generate, independently review, and rewrite without bypassing hard gates."""
+    """Generate, independently review, and rewrite without bypassing hard gates.
 
-    findings = review_findings(getattr(item, "essence_check_summary", None))
+    `rewrite_constraints`는 호출부가 저장된 차단 판정에서 만든 첫 회차 제약이다. 저장된
+    `findings` 목록을 그대로 쓰는 기본 경로보다 구체적일 때만 쓰며(예: HARD 지적의
+    삭제·완화 지시문), 어느 경로든 결과는 아래 독립 검수를 다시 받는다.
+    """
+
+    findings = list(rewrite_constraints or []) or review_findings(
+        getattr(item, "essence_check_summary", None)
+    )
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
     removal_rewrites = 0
