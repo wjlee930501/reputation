@@ -135,6 +135,9 @@ from app.services.content_review_feedback import (
 from app.services.content_review_feedback import (
     screening_probe as _screening_probe,  # noqa: F401 -- stable legacy worker import
 )
+from app.services.content_review_feedback import (
+    stored_hard_removal_rewrite_is_owed as _stored_hard_removal_rewrite_is_owed,
+)
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
@@ -638,6 +641,20 @@ def _stored_model_declared_hard(item: ContentItem) -> bool:
     return has_model_declared_hard_finding(_stored_ai_review(item))
 
 
+def _hard_removal_rewrite_is_owed(item: ContentItem) -> bool:
+    """이 본문이 아직 쓰지 않은 삭제형 재작성을 갖고 있는가.
+
+    검수 장애 복구·재검수처럼 **생성 세션 밖에서** 사실·의료 안전 HARD가 붙은 본문은 그
+    한 번의 재작성을 산 적이 없다. 본문이 이미 있다는 이유로 이 상태를 종착으로 읽으면
+    스윕이 행을 claim만 하고 아무 일도 하지 않는 상태가 영원히 반복된다.
+    """
+
+    return _stored_hard_removal_rewrite_is_owed(
+        getattr(item, "essence_check_summary", None),
+        limit=HARD_REMOVAL_MAX_GENERATIONS,
+    )
+
+
 def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
     """Carry the repair budget across a rewrite that replaces the whole summary."""
 
@@ -792,9 +809,13 @@ def _remember_generation_attempt(
     updated = dict(summary) if isinstance(summary, dict) else {}
     context = _generation_attempt_context(item, philosophy)
     previous = _stored_generation_attempt(item)
-    retry_class = retry_class_for(
-        reason, model_declared_hard=_stored_model_declared_hard(item)
-    )
+    # `retry_class_for`의 INPUT_CHANGE_REQUIRED는 "삭제형 재작성까지 마친 뒤의 종착"이다.
+    # 그 한 번을 아직 쓰지 않은 본문을 그 판정으로 굳히면 기한도 재시도도 없는 상태가 되어,
+    # 스윕이 계속 claim하면서도 아무것도 고치지 못한다.
+    hard_is_terminal = _stored_model_declared_hard(
+        item
+    ) and not _hard_removal_rewrite_is_owed(item)
+    retry_class = retry_class_for(reason, model_declared_hard=hard_is_terminal)
     same_context = previous.get("context") == context
     observed_at = datetime.now(timezone.utc)
     attempt_period = environment_attempt_period(observed_at)
@@ -5690,7 +5711,14 @@ def _generate_single_content_item(
                 _clear_generation_attempt(db, item)
         repairable_body = stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES or (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
-            and _stored_ai_review_is_remediable(item)
+            and (
+                _stored_ai_review_is_remediable(item)
+                # 사실·의료 안전 HARD의 복구는 삭제형 재작성 → 재검수다. 그 한 번을 아직
+                # 쓰지 않았다면 본문이 있다는 사실이 "할 일이 없다"를 뜻하지 않는다.
+                # 작가 세션이 그 재작성과 재검수를 소유하고, 통과하면 아래 발행 게이트로
+                # 그대로 이어진다. 게이트를 건너뛰지 않는다.
+                or _hard_removal_rewrite_is_owed(item)
+            )
         )
         if repairable_body and _body_repair_session_is_due(item):
             logger.info(

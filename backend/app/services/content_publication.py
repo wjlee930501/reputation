@@ -13,6 +13,7 @@ from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     REFERENCES_REQUIRED_TYPES,
 )
+from app.services.content_review_feedback import HARD_REMOVAL_REWRITES_KEY
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -379,6 +380,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
         for key in (
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
+            # 이 본문이 한 번뿐인 삭제형 재작성을 이미 썼다는 사실. 지우면 예약 스윕이
+            # 같은 본문에 그 재작성을 매번 다시 사도 된다고 읽는다.
+            HARD_REMOVAL_REWRITES_KEY,
             "ai_review",
             # Scheduled generation uses this durable JSON fragment to avoid
             # paying again for the same unchanged body/image failure.
@@ -424,6 +428,7 @@ def apply_essence_revalidation(
         for key in (
             "automatic_remediation_attempts",
             "reviewer_driven_rewrites",
+            HARD_REMOVAL_REWRITES_KEY,
             "ai_review",
             "generation_attempt",
             "generation_provenance",

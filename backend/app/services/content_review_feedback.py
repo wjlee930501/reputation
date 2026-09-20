@@ -21,7 +21,10 @@ def review_findings(summary: object) -> list[str]:
     return [str(finding) for finding in findings if str(finding).strip()][:5]
 
 
-_HARD_REMOVAL_KINDS = frozenset({"HOSPITAL_FACT", "MEDICAL_SAFETY"})
+HARD_REMOVAL_KINDS = frozenset({"HOSPITAL_FACT", "MEDICAL_SAFETY"})
+# 한 본문이 쓴 삭제형 재작성 횟수. 생성 세션이 남기고, 예약 스윕이 "이 본문은 그 한 번을
+# 아직 쓰지 않았다"를 읽는 자리다.
+HARD_REMOVAL_REWRITES_KEY = "hard_removal_rewrites"
 
 _HARD_REMOVAL_INSTRUCTION = (
     "아래 지적된 주장을 본문에서 삭제하거나 '개인차가 있습니다'·'정확한 내용은 의료기관에서 "
@@ -40,12 +43,41 @@ def hard_removal_findings(review: Any) -> list[str]:
         str(getattr(finding, "message", "")).strip()
         for finding in getattr(review, "blocking_findings", ())
         if _label(getattr(finding, "severity", None)) == "HARD"
-        and _label(getattr(finding, "kind", None)) in _HARD_REMOVAL_KINDS
+        and _label(getattr(finding, "kind", None)) in HARD_REMOVAL_KINDS
     ]
     messages = [message for message in messages if message]
     if not messages:
         return []
     return [_HARD_REMOVAL_INSTRUCTION, *messages]
+
+
+def stored_hard_removal_rewrite_is_owed(summary: Any, *, limit: int) -> bool:
+    """저장된 본문이 아직 쓰지 않은 삭제형 재작성을 갖고 있는가.
+
+    `hard_removal_findings`와 같은 지적(사실·의료 안전 HARD)을 저장된 검수 payload에서
+    읽는다. 생성 세션 **밖에서** 검수가 붙은 본문(검수 장애 복구·재검수)은 그 한 번의
+    재작성을 한 번도 쓴 적이 없다 — 본문이 이미 있다는 이유로 종착으로 굳히면 그 한 번은
+    영영 오지 않는다. 계수가 상한에 닿은 뒤에야 종착이다.
+    """
+
+    if not isinstance(summary, dict):
+        return False
+    review = summary.get("ai_review")
+    findings = review.get("findings") if isinstance(review, dict) else None
+    if not isinstance(findings, list):
+        return False
+    removable = any(
+        isinstance(finding, dict)
+        and finding_label(finding.get("severity")) == "HARD"
+        and finding_label(finding.get("kind")) in HARD_REMOVAL_KINDS
+        for finding in findings
+    )
+    if not removable:
+        return False
+    spent = summary.get(HARD_REMOVAL_REWRITES_KEY, 0)
+    if isinstance(spent, bool) or not isinstance(spent, int):
+        return False
+    return spent < limit
 
 
 _REFERENCE_FINDING_KIND = "REFERENCE"
