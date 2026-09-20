@@ -827,6 +827,9 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     colorectal-cancer reference.  The approved target query, treatment narrative,
     and generated heading define the topic; incidental body phrases must not change
     its evidence set.
+
+    병원 단위로 승인된 `must_use_messages`도 같은 이유로 여기 들어오지 않는다
+    (`_hospital_wide_reference_focus` 참고).
     """
     values: list[object] = []
     if content_brief:
@@ -835,6 +838,7 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
         values.extend(
             [
                 content_brief.get("target_query"),
+                content_brief.get("target_keyword"),
                 query_target.get("name") if isinstance(query_target, dict) else None,
                 treatment_narrative.get("treatment")
                 if isinstance(treatment_narrative, dict)
@@ -842,12 +846,53 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
                 treatment_narrative.get("angle")
                 if isinstance(treatment_narrative, dict)
                 else None,
-                *(content_brief.get("must_use_messages") or []),
             ]
         )
     if result:
         values.extend([result.get("title"), result.get("faq_question")])
     return " ".join(str(value) for value in values if value)
+
+
+def _hospital_wide_reference_focus(content_brief: dict | None) -> str:
+    """Approved hospital-wide messaging, usable only when the slot names no topic.
+
+    `must_use_messages`는 병원마다 한 벌이고 그 병원의 모든 글에 같이 실린다. 그 문장이
+    이 글과 다른 질환·시술을 말하면(간 질환 글을 쓰는 병원의 승인 문구에 "대장내시경·
+    용종절제"가 있는 식) 카탈로그는 그 질환의 검증된 문서를 고르고, 작가는 그것을
+    "현재 주제와 일치하는 검증된 문서 — 이 URL만 인용"으로 받는다. 큐레이션 URL은 주제
+    불일치 제거를 면제받으므로 그 근거는 끝까지 남아 독립 검수의 REFERENCE 지적
+    (CONTENT_AI_HARD_FINDING)이 된다. 주제 불일치 제거(`_article_topic_terms`)가 병원
+    단위 문구를 글의 주제로 보지 않는 것과 같은 이유로, 선택에서도 이 문구는 글 자신의
+    주제가 없을 때의 마지막 단서일 뿐이다.
+    """
+
+    if not content_brief:
+        return ""
+    return " ".join(
+        str(message)
+        for message in (content_brief.get("must_use_messages") or [])
+        if message
+    )
+
+
+def _topic_aligned_curated_sources(
+    content_brief: dict | None, result: dict | None = None
+) -> list[dict[str, str]]:
+    """Curated documents for *this article's* topic, not for the hospital at large."""
+
+    sources = select_curated_authority_sources(
+        _curated_reference_focus(content_brief, result)
+    )
+    if sources:
+        return sources
+    if normalize_topic_text((content_brief or {}).get("target_keyword")):
+        # 이 슬롯은 다룰 임상 키워드를 스스로 갖고 있다. 카탈로그에 그 주제의 문서가
+        # 없다는 뜻이므로, 병원의 다른 진료 문구로 근거를 대신 채우지 않는다. 빈 결과는
+        # 기존 GEO 하드 거절 → 재작성 경로로 가서 작가가 주제에 맞는 출처를 찾는다.
+        return []
+    return select_curated_authority_sources(
+        _hospital_wide_reference_focus(content_brief)
+    )
 
 
 @retry(
@@ -907,9 +952,7 @@ async def _generate_content_attempt(
             )
 
     brief_context = f"\n\n{brief_ctx}" if brief_ctx else ""
-    curated_candidates = select_curated_authority_sources(
-        _curated_reference_focus(content_brief),
-    )
+    curated_candidates = _topic_aligned_curated_sources(content_brief)
     curated_candidate_hint = ""
     if curated_candidates:
         rendered_candidates = "\n".join(
@@ -1319,9 +1362,7 @@ def _heal_from_curated_catalog(
     result = error.result
     if result.get("references"):
         return None
-    curated_references = select_curated_authority_sources(
-        _curated_reference_focus(content_brief, result),
-    )
+    curated_references = _topic_aligned_curated_sources(content_brief, result)
     if not curated_references:
         return None
     result["references"] = curated_references

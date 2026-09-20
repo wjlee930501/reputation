@@ -148,16 +148,48 @@ def test_curated_reference_focus_excludes_incidental_body_topics():
     assert "대장내시경" not in focus
 
 
-def test_curated_reference_focus_includes_approved_must_use_medical_topic():
+def test_approved_must_use_messages_supply_a_topic_only_for_an_unnamed_slot():
+    """질의가 임상 주제를 말하지 않는 슬롯은 승인된 병원 문구가 유일한 단서다."""
     brief = {
         "target_query": "경산 일반의원 전문의 추천",
-        "must_use_messages": ["발열과 탈수 관리를 내과 관점에서 살폍니다."],
+        "must_use_messages": ["발열과 탈수 관리를 내과 관점에서 살핍니다."],
     }
 
-    focus = _curated_reference_focus(brief)
+    assert "발열" not in _curated_reference_focus(brief)
+    assert "발열" in content_engine._hospital_wide_reference_focus(brief)
 
-    assert "발열" in focus
-    assert "탈수" in focus
+    titles = [
+        source["title"]
+        for source in content_engine._topic_aligned_curated_sources(brief)
+    ]
+
+    assert titles == ["질병관리청 국가건강정보포털 — 탈수"]
+
+
+def test_hospital_wide_messaging_cannot_pick_evidence_for_another_disease():
+    """간 질환 슬롯이 병원의 대장 진료 문구 때문에 대장 문서를 근거로 받지 않는다.
+
+    서울W DISEASE 슬롯이 그렇게 대장 폴립 문서를 인용해 독립 검수의 REFERENCE 지적
+    (CONTENT_AI_HARD_FINDING)으로 막혔다.
+    """
+    brief = {
+        "target_query": "간 질환 초기 증상이 뭔가요",
+        "target_keyword": "간 질환",
+        "must_use_messages": ["대장내시경과 용종절제를 한 번에 진행합니다."],
+    }
+
+    assert content_engine._topic_aligned_curated_sources(brief) == []
+
+    # 이 글의 주제를 카탈로그가 알고 있으면 종전처럼 그 문서를 그대로 고른다.
+    colon_slot = {
+        "target_query": "대장용종 제거 후 관리",
+        "target_keyword": "대장용종",
+    }
+
+    assert [
+        source["title"]
+        for source in content_engine._topic_aligned_curated_sources(colon_slot)
+    ] == ["질병관리청 국가건강정보포털 — 대장용종"]
 
 
 def test_curated_reference_focus_includes_treatment_narrative_topic():
