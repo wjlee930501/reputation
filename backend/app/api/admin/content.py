@@ -111,6 +111,7 @@ from app.services.site_revalidate import (
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
+from app.workers.generation_attempt_state import released_generation_attempt
 from app.workers.tasks import recertify_published_content_image, regenerate_content_item
 
 logger = logging.getLogger(__name__)
@@ -1186,6 +1187,12 @@ async def reject_content(
         ensure_site_revalidate_configured()
     item.status = ContentStatus.REJECTED
     item.body = None  # 초기화 → 야간 생성 태스크가 다시 처리
+    # 본문이 사라졌으므로 그 본문을 설명하던 시도 기록의 억제도 함께 푼다. 풀지 않으면
+    # 야간 로더(`_generation_retry_is_eligible`)가 "본문 없음 + 직전 차단 그대로"로 읽어
+    # claim 전에 걸러낸다 — 시도 지문에는 예정일이 들어가지 않으므로(H-08) 아래 재스케줄도
+    # 억제를 풀지 못하고, 반려한 글이 영영 다시 쓰이지 않는다. 예산 계수는 그대로 남겨
+    # 반려 한 번에 재시도 한 번만 열리게 한다.
+    item.essence_check_summary = released_generation_attempt(item.essence_check_summary)
     item.title = None
     item.image_url = None
     item.image_policy_verified_at = None

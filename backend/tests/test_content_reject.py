@@ -59,7 +59,12 @@ class _FakeDB:
         self.committed = True
 
 
-def _item(scheduled_date, status=ContentStatus.PUBLISHED, carried_over_from=None):
+def _item(
+    scheduled_date,
+    status=ContentStatus.PUBLISHED,
+    carried_over_from=None,
+    essence_check_summary=None,
+):
     hospital_id = uuid.uuid4()
     return SimpleNamespace(
         id=uuid.uuid4(),
@@ -75,6 +80,7 @@ def _item(scheduled_date, status=ContentStatus.PUBLISHED, carried_over_from=None
         generated_at=datetime.now(timezone.utc),
         scheduled_date=scheduled_date,
         carried_over_from=carried_over_from,
+        essence_check_summary=essence_check_summary,
     )
 
 
@@ -118,6 +124,66 @@ async def test_reject_future_item_keeps_schedule(verified_actor):
     assert item.status == ContentStatus.REJECTED
     assert item.scheduled_date == future  # 발행 전날 밤 야간 배치가 그대로 집는다
     assert item.carried_over_from is None
+
+
+# ── 반려가 지운 본문이 실제로 다시 쓰이는가 (2026-09-20 due5 서울W) ──────────────
+
+
+async def test_reject_releases_the_suppression_that_described_the_deleted_body(
+    monkeypatch, verified_actor
+):
+    """반려는 "오늘 밤 다시 씁니다"라고 약속한다 — 로더가 걸러 버리면 거짓말이다.
+
+    본문이 없는 행의 claim 자격은 `_generation_retry_is_eligible`이 정한다. 그 술어는
+    저장된 차단 사유·맥락이 그대로이고 재시도 기한이 오지 않았으면 claim 전에 행을
+    걸러 낸다. 시도 지문에는 예정일이 들어가지 않으므로(H-08) 반려의 재스케줄도 그
+    억제를 풀지 못한다. 종착으로 굳은 사유를 그대로 두면 반려로 비워진 본문이 영영
+    다시 쓰이지 않는다 — 운영에서 본 "본문만 사라지고 재생성은 오지 않는" 상태다.
+    """
+    from app.workers import tasks
+
+    philosophy = SimpleNamespace(id="p1", director_delta_ids=[])
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_a: philosophy)
+    unchanged_context = tasks._generation_attempt_context(
+        SimpleNamespace(content_type=SimpleNamespace(value="FAQ"), query_target_id=None),
+        philosophy,
+    )
+    terminal_attempt = {
+        "context": unchanged_context,
+        "reason": "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+        "retry_class": "OPERATOR_REQUIRED",
+        "next_retry_at": None,
+        "attempt_period": "2026-09-18",
+        "attempt_count": 4,
+        "provider_attempt_count": 4,
+        "exhausted_days": 3,
+        "first_observed_at": "2026-09-18T00:00:00+00:00",
+    }
+    item = _item(
+        scheduled_date=arrow.now("Asia/Seoul").shift(days=3).date(),
+        status=ContentStatus.READY,
+        essence_check_summary={"generation_attempt": dict(terminal_attempt)},
+    )
+    item.content_type = SimpleNamespace(value="FAQ")
+    item.query_target_id = None
+    db = _FakeDB(item, _hospital(item.hospital_id))
+    # 종전 반려가 남기던 모양: 본문만 비고 시도 기록은 그대로. 로더가 claim 전에 거른다.
+    stale = SimpleNamespace(
+        **{**vars(item), "body": None, "title": None, "image_url": None}
+    )
+    assert tasks._generation_retry_is_eligible(db)(stale) is False
+
+    await content_api.reject_content(item.hospital_id, item.id, _reason(), db=db)
+
+    assert item.body is None
+    assert tasks._generation_retry_is_eligible(db)(item) is True
+    # 억제만 풀고 예산 사다리는 남긴다 — 반려 한 번이 하루 예산과 소진 일수를 0에서
+    # 다시 시작하게 하면 3일 소진도, 그 소진이 여는 주제 교체도 영영 오지 않는다.
+    carried = item.essence_check_summary["generation_attempt"]
+    assert carried["exhausted_days"] == 3
+    assert carried["provider_attempt_count"] == 4
+    assert carried["first_observed_at"] == "2026-09-18T00:00:00+00:00"
+    assert "reason" not in carried and "next_retry_at" not in carried
 
 
 # ── 월말 반려 carry-over (전월 이월) ─────────────────────────────────

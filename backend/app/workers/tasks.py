@@ -417,6 +417,7 @@ from app.workers.dispatch_auth import (
     build_dispatch_headers,
     require_dispatch,
 )
+from app.workers.generation_attempt_state import released_generation_attempt
 from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
     GenerationItemRecorder,
@@ -986,19 +987,6 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
     db.commit()
 
 
-# 억제를 만드는 것은 원인과 저장된 다음 시도 시각이다. 예산 사다리는 그 둘이 아니다.
-_GENERATION_LADDER_KEYS = (
-    "context",
-    "attempt_period",
-    "exhausted_days",
-    "attempt_count",
-    "provider_attempt_count",
-    "guard_deferral_count",
-    "first_observed_at",
-    "approved_facts",
-)
-
-
 def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
     """수리 세션은 시도 기록의 억제만 푼다. 예산 계수는 그대로 남긴다.
 
@@ -1007,17 +995,11 @@ def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
     교체도 열리지 않는다 — 표본 복구가 끝나지 않는 재작성 루프가 된다.
     """
 
-    previous = _stored_generation_attempt(item)
-    if not previous:
+    if not _stored_generation_attempt(item):
         return
-    carried = {key: previous[key] for key in _GENERATION_LADDER_KEYS if key in previous}
-    summary = getattr(item, "essence_check_summary", None)
-    updated = dict(summary) if isinstance(summary, dict) else {}
-    if carried:
-        updated[_GENERATION_ATTEMPT_KEY] = carried
-    else:
-        updated.pop(_GENERATION_ATTEMPT_KEY, None)
-    item.essence_check_summary = updated
+    item.essence_check_summary = released_generation_attempt(
+        getattr(item, "essence_check_summary", None)
+    )
     db.commit()
 
 

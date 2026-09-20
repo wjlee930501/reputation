@@ -15,6 +15,9 @@
   자동 시도가 더 남아 있지 않은가. 야간 생성이 "이미지를 포기하고 같은 병원의 인증된
   이미지를 빌릴 시점인가"를 이 값으로 판정한다.
 - ``IMAGE_ATTEMPT_REASONS`` / ``IMAGE_ATTEMPT_TERMINAL_REASONS`` — 위 판정이 쓰는 원인 집합.
+- ``GENERATION_LADDER_KEYS`` / ``released_generation_attempt(summary)`` — 저장된 본문이
+  사라졌을 때 억제만 풀고 예산 사다리는 남기는 변환. 순수 함수라 워커와 Admin API가
+  같은 규칙을 쓴다.
 """
 
 from __future__ import annotations
@@ -53,6 +56,40 @@ IMAGE_ATTEMPT_TERMINAL_REASONS = frozenset(
 # 비용 가드 보류는 공급자에게 한 번도 묻지 못한 상태다. 예산을 쓴 적이 없으므로
 # 소진으로 읽으면 "가드가 잠깐 막았다"가 "이미지 없이 발행"으로 굳는다.
 _NEVER_EXHAUSTED_REASONS = frozenset({"COST_BLOCKED"})
+
+# 억제를 만드는 것은 `reason`·`retry_class`·`next_retry_at`이다. 예산 사다리는 그 셋이
+# 아니라 아래 계수들이 가진다. 둘을 갈라 두면 "다시 한 번 시도할 자격"만 돌려주면서
+# 하루 예산·소진 일수·최초 관측 시각은 그대로 이어갈 수 있다.
+GENERATION_LADDER_KEYS = (
+    "context",
+    "attempt_period",
+    "exhausted_days",
+    "attempt_count",
+    "provider_attempt_count",
+    "guard_deferral_count",
+    "first_observed_at",
+    "approved_facts",
+)
+
+
+def released_generation_attempt(summary: Any) -> dict:
+    """억제만 푼 `essence_check_summary`. 예산 계수는 그대로 남긴다.
+
+    기록을 통째로 지우면 하루 예산과 소진 일수가 0에서 다시 시작해 3일 소진도,
+    그 소진이 여는 주제 교체도 영영 오지 않는다. 반대로 그대로 두면 저장된 사유가
+    이미 사라진 본문을 계속 설명하며 다음 시도를 막는다.
+    """
+
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    previous = updated.get(GENERATION_ATTEMPT_KEY)
+    if not isinstance(previous, dict):
+        return updated
+    carried = {key: previous[key] for key in GENERATION_LADDER_KEYS if key in previous}
+    if carried:
+        updated[GENERATION_ATTEMPT_KEY] = carried
+    else:
+        updated.pop(GENERATION_ATTEMPT_KEY, None)
+    return updated
 
 
 def read_generation_attempt(item: Any) -> dict:
