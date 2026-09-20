@@ -21,6 +21,10 @@ def review_findings(summary: object) -> list[str]:
     return [str(finding) for finding in findings if str(finding).strip()][:5]
 
 
+def finding_label(value: object) -> str:
+    return str(getattr(value, "value", value) or "").upper()
+
+
 _HARD_REMOVAL_KINDS = frozenset({"HOSPITAL_FACT", "MEDICAL_SAFETY"})
 
 _HARD_REMOVAL_INSTRUCTION = (
@@ -104,10 +108,6 @@ def writer_remediation_findings(summary: object) -> list[str]:
 
 
 _REFERENCE_FINDING_KIND = "REFERENCE"
-
-
-def finding_label(value: object) -> str:
-    return str(getattr(value, "value", value) or "").upper()
 
 
 def review_finding_items(review: Any) -> list[Any]:
