@@ -26,6 +26,7 @@ from app.services.image_engine import (
 )
 from app.utils.authority_sources import is_citable_reference_url
 from app.utils.medical_filter import check_forbidden_content_fields
+from app.workers.generation_retry_policy import BODY_REPAIR_STATE_KEY
 
 
 @dataclass(frozen=True)
@@ -383,6 +384,10 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # Scheduled generation uses this durable JSON fragment to avoid
             # paying again for the same unchanged body/image failure.
             "generation_attempt",
+            # 저장 본문 수리 세션의 하루 예산·소진 일수. 게이트 기록이 이것을 지우면
+            # 결정적으로 고칠 수 없는 글이 매일 새 예산으로 작가를 다시 부르고,
+            # 3일 소진도 주제 교체 승격도 영영 오지 않는다.
+            BODY_REPAIR_STATE_KEY,
             "authority_change",
             "generation_provenance",
             "legacy_image_certification",
@@ -426,6 +431,7 @@ def apply_essence_revalidation(
             "reviewer_driven_rewrites",
             "ai_review",
             "generation_attempt",
+            BODY_REPAIR_STATE_KEY,
             "generation_provenance",
             "legacy_image_certification",
             # 재승인은 제목을 바꾸지 않는다. 재인증 차단 표시를 지우면 안 된다 (H-01).

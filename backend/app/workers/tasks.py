@@ -77,6 +77,7 @@ from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
+    hospital_review_facts_fingerprint,
     review_generated_content,
 )
 from app.services.content_engine import (
@@ -638,6 +639,43 @@ def _stored_model_declared_hard(item: ContentItem) -> bool:
     return has_model_declared_hard_finding(_stored_ai_review(item))
 
 
+def _stored_block_is_sample_remediable(item: ContentItem, code: str | None) -> bool:
+    """이 차단이 표본(확률적) 실패인가.
+
+    판정은 재시도 정책 한 곳에서 가져온다. 스윕이 정책과 다른 답을 쓰면, 정책이 재시도
+    예산을 주는 슬롯을 스윕이 손대지 않거나 그 반대가 된다.
+    """
+
+    if not code:
+        return False
+    return (
+        retry_class_for(code, model_declared_hard=_stored_model_declared_hard(item))
+        == GenerationRetryClass.SAMPLE_RECOVERABLE
+    )
+
+
+def _hospital_review_facts(item: ContentItem, hospital: Hospital | None = None) -> str | None:
+    target = hospital if hospital is not None else getattr(item, "hospital", None)
+    return hospital_review_facts_fingerprint(target)
+
+
+def _approved_facts_changed_since_block(
+    item: ContentItem, hospital: Hospital | None = None
+) -> bool:
+    """차단을 남긴 뒤 승인된 병원 사실이 실제로 바뀌었는가.
+
+    사실·의료 안전 HARD는 "승인 자료에 없다"는 판정이라 본문을 다시 쓴다고 풀리지 않는다.
+    그 자료를 사람이 채운 것만이 다음 단계다. 지문을 남긴 적이 없는 기록은 비교할 대상이
+    없으므로 바뀌었다고 단정하지 않는다 — 배포만으로 재생성이 몰리지 않게 한다.
+    """
+
+    stored = _stored_generation_attempt(item).get("approved_facts")
+    if not isinstance(stored, str) or not stored:
+        return False
+    current = _hospital_review_facts(item, hospital)
+    return bool(current) and current != stored
+
+
 def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
     """Carry the repair budget across a rewrite that replaces the whole summary."""
 
@@ -870,6 +908,11 @@ def _remember_generation_attempt(
     }
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
+    # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
+    # 그 사실을 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
+    approved_facts = _hospital_review_facts(item) or previous.get("approved_facts")
+    if isinstance(approved_facts, str) and approved_facts:
+        attempt["approved_facts"] = approved_facts
     stored_diagnostic = (
         previous.get(_IMAGE_POLICY_DIAGNOSTIC_KEY) if same_context else None
     )
@@ -920,6 +963,41 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
         return
     updated = dict(summary)
     updated.pop(_GENERATION_ATTEMPT_KEY, None)
+    item.essence_check_summary = updated
+    db.commit()
+
+
+# 억제를 만드는 것은 원인과 저장된 다음 시도 시각이다. 예산 사다리는 그 둘이 아니다.
+_GENERATION_LADDER_KEYS = (
+    "context",
+    "attempt_period",
+    "exhausted_days",
+    "attempt_count",
+    "provider_attempt_count",
+    "guard_deferral_count",
+    "first_observed_at",
+    "approved_facts",
+)
+
+
+def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
+    """수리 세션은 시도 기록의 억제만 푼다. 예산 계수는 그대로 남긴다.
+
+    기록을 통째로 지우면 하루 예산과 소진 일수가 수리를 돌 때마다 0에서 다시 시작한다.
+    그러면 3일 소진이 영영 오지 않아 `OPERATOR_REQUIRED` 승격도, 그 승격이 여는 주제
+    교체도 열리지 않는다 — 표본 복구가 끝나지 않는 재작성 루프가 된다.
+    """
+
+    previous = _stored_generation_attempt(item)
+    if not previous:
+        return
+    carried = {key: previous[key] for key in _GENERATION_LADDER_KEYS if key in previous}
+    summary = getattr(item, "essence_check_summary", None)
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    if carried:
+        updated[_GENERATION_ATTEMPT_KEY] = carried
+    else:
+        updated.pop(_GENERATION_ATTEMPT_KEY, None)
     item.essence_check_summary = updated
     db.commit()
 
@@ -5690,7 +5768,16 @@ def _generate_single_content_item(
                 _clear_generation_attempt(db, item)
         repairable_body = stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES or (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
-            and _stored_ai_review_is_remediable(item)
+            and (
+                _stored_ai_review_is_remediable(item)
+                # 표본 실패로 분류된 차단(모델이 HARD로 단정하지 않은 합성 UNCERTAIN)은
+                # 재검수만으로는 풀리지 않는다. 같은 예산 안에서 본문을 실제로 다시 쓴다 —
+                # claim만 하고 물러나는 패스가 이 분류의 복구를 대신할 수 없다.
+                or _stored_block_is_sample_remediable(item, stored_assessment.code)
+                # 모델이 HARD로 단정한 사실·안전 지적은 재작성이 아니라 승인 자료가 푼다.
+                # 그 자료가 실제로 바뀐 뒤에만 한 번의 재생성을 준다.
+                or _approved_facts_changed_since_block(item, hospital)
+            )
         )
         if repairable_body and _body_repair_session_is_due(item):
             logger.info(
@@ -5704,7 +5791,7 @@ def _generate_single_content_item(
             # count the session first so a body nobody can fix deterministically
             # cannot buy four regenerations a day forever.
             carried_repair_state = _spend_body_repair_session(db, item)
-            _clear_generation_attempt(db, item)
+            _release_generation_attempt_for_repair(db, item)
         elif stored_assessment.code is not None and stored_assessment.code not in {
             "CONTENT_IMAGE_NOT_READY",
             "CONTENT_IMAGE_NOT_VERIFIED",

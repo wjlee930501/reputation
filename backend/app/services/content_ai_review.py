@@ -415,15 +415,9 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
     return ContentAiFinding(severity, kind, message)
 
 
-def content_review_input_payload(
-    *,
-    hospital: Hospital,
-    philosophy: HospitalContentPhilosophy,
-    content: dict[str, Any],
-    content_brief: dict[str, Any] | None,
-) -> dict[str, Any]:
-    safety_policy = effective_safety_policy(philosophy)
-    candidate = candidate_review_payload(content)
+def hospital_review_profile(hospital: Hospital) -> dict[str, Any]:
+    """검수자가 사실 판정의 근거로 삼는 승인된 병원 사실."""
+
     hospital_profile: dict[str, Any] = {
         "name": _bounded_text(getattr(hospital, "name", None), 150),
         "director_name": _bounded_text(getattr(hospital, "director_name", None), 150),
@@ -442,6 +436,35 @@ def content_review_input_payload(
     )
     if director_credentials:
         hospital_profile["director_credentials"] = director_credentials
+    return hospital_profile
+
+
+def hospital_review_facts_fingerprint(hospital: Hospital | None) -> str | None:
+    """사실 HARD 판정이 근거로 삼은 승인 사실의 지문.
+
+    이 값이 달라졌다는 것은 검수자가 "승인 자료에서 확인할 수 없다"고 말한 그 자료가
+    실제로 바뀌었다는 뜻이다. 저장된 차단은 옛 사실에 대한 판정이므로 그때 한 번의
+    재생성을 받을 자격이 생긴다. 판정 자체를 무르는 값이 아니다.
+    """
+
+    if hospital is None:
+        return None
+    payload = json.dumps(
+        hospital_review_profile(hospital), ensure_ascii=False, sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def content_review_input_payload(
+    *,
+    hospital: Hospital,
+    philosophy: HospitalContentPhilosophy,
+    content: dict[str, Any],
+    content_brief: dict[str, Any] | None,
+) -> dict[str, Any]:
+    safety_policy = effective_safety_policy(philosophy)
+    candidate = candidate_review_payload(content)
+    hospital_profile = hospital_review_profile(hospital)
 
     approved_essence: dict[str, Any] = {
         "positioning_statement": _bounded_text(
@@ -854,5 +877,7 @@ __all__ = (
     "candidate_sha256",
     "content_review_input_payload",
     "deterministic_gates_passed",
+    "hospital_review_facts_fingerprint",
+    "hospital_review_profile",
     "review_generated_content",
 )
