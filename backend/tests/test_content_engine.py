@@ -1475,6 +1475,84 @@ def test_remediation_context_keeps_deletions_from_shrinking_the_body():
     assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다" in context
 
 
+# ── 분량이 하한 바로 아래(평문 1,567~1,680자)에서 멈추던 FAQ (2026-09-20 due5) ──
+
+
+def test_the_length_target_is_also_stated_in_the_unit_the_writer_counts():
+    """작가는 화면에 보이는 길이로 센다 — 평문 숫자만 주면 그 값을 공백 포함으로 쓴다.
+
+    목표 하한 2,400을 공백 포함 길이로 받아 적으면 평문으로는 1,560~1,680자가 남는다.
+    운영에서 관측된 FAQ 미달(1,567~1,680)이 정확히 그 구간이다. 같은 목표를 작가가
+    실제로 세는 단위로도 말해 그 환산을 작가에게 맡기지 않는다.
+    """
+    visible_min = content_engine._visible_chars(content_engine.CONTENT_BODY_TARGET_MIN_CHARS)
+    visible_max = content_engine._visible_chars(content_engine.CONTENT_BODY_TARGET_MAX_CHARS)
+    band = f"공백까지 세면 대략 {visible_min:,}~{visible_max:,}자"
+
+    assert band in content_engine.SYSTEM_PROMPT
+    assert band in content_engine.TYPE_PROMPTS[ContentType.FAQ]
+    assert band in content_engine.ARTICLE_TOOL["input_schema"]["properties"]["body"]["description"]
+
+    # 그 환산 구간은 프롬프트가 말하는 20~35% 어느 쪽으로 빗나가도 저장 게이트 안이다.
+    for deflation in (0.20, 0.35):
+        assert visible_min * (1 - deflation) >= content_engine.CONTENT_BODY_MIN_CHARS
+        assert visible_max * (1 - deflation) <= content_engine.CONTENT_BODY_MAX_CHARS
+
+
+def test_faq_asks_for_a_per_section_floor_like_disease_does():
+    """FAQ는 H2 4~6개를 요구하면서 절당 하한이 없어 얇은 절 넷으로 하한을 못 넘었다."""
+    section_floor = f"{content_engine.CONTENT_BODY_SECTION_MIN_CHARS:,}자 이상"
+
+    assert content_engine.CONTENT_BODY_SECTION_MIN_CHARS * 4 == (
+        content_engine.CONTENT_BODY_TARGET_MIN_CHARS
+    )
+    for content_type in (ContentType.FAQ, ContentType.DISEASE):
+        assert section_floor in content_engine.TYPE_PROMPTS[content_type]
+
+
+def test_the_too_short_rejection_names_the_shortfall_and_the_per_section_floor():
+    """목표 구간만 되풀이하면 작가는 몇 문장을 덧붙이고 같은 구간에서 또 멈춘다."""
+    body = "## 안내\n" + "짧은 본문입니다. " * 20
+    measured = len(content_engine._plain_content_text(body))
+
+    with pytest.raises(ValueError) as excinfo:
+        _validate_body_length(body)
+
+    message = str(excinfo.value)
+    shortfall = content_engine.CONTENT_BODY_TARGET_MIN_CHARS - measured
+    assert f"{shortfall:,}자가 더 필요합니다" in message
+    assert f"{content_engine.CONTENT_BODY_SECTION_MIN_CHARS:,}자" in message
+    # 재작성 지적은 240자로 잘린다 — 잘려서 절당 하한이나 목표가 사라지면 안 된다.
+    finding = content_engine._validator_remediation_findings(excinfo.value, [])[0]
+    assert f"{shortfall:,}자가 더 필요합니다" in finding
+    assert f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자" in finding
+
+
+def test_every_rewrite_round_carries_the_length_requirement_not_just_deletions():
+    """분량은 어떤 지적을 받았든 모든 회차가 지켜야 하는 저장 조건이다.
+
+    삭제 지적이 있을 때만 분량을 말하면, 다른 지적으로 도는 회차는 분량 요구를 듣지
+    못한 채 재작성한다 — 하한 바로 아래에서 맴도는 슬롯이 그렇게 만들어진다.
+    """
+    context = _build_remediation_context(["참고자료 URL이 주제와 맞지 않습니다."])
+
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다" in context
+    # 목표 구간이 "삭제했다면"이라는 조건 **뒤에** 붙어 있으면, 삭제를 요구하지 않은
+    # 회차는 그 문장을 자기 것으로 읽지 않는다. 조건 앞에서 무조건 요구해야 한다.
+    assert context.index(f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자") < context.index(
+        "삭제하거나 완화했다면"
+    )
+
+
+def test_hard_removal_rewrite_does_not_forbid_refilling_the_removed_length():
+    """삭제형 재작성이 '나머지는 그대로 두라'고 하면 그 회차는 분량으로 다시 거절된다."""
+    from app.services.content_review_feedback import _HARD_REMOVAL_INSTRUCTION
+
+    assert "지적되지 않은 문단은 그대로 두세요" not in _HARD_REMOVAL_INSTRUCTION
+    assert "사실관계도 바꾸지 마세요" in _HARD_REMOVAL_INSTRUCTION  # 날조 금지는 그대로
+    assert "삭제로 줄어든 분량은" in _HARD_REMOVAL_INSTRUCTION
+
+
 # ── 참고자료 주제 적합성: 거절이 아니라 제거 ──────────────────────────────
 
 _KNEE_BRIEF = {
