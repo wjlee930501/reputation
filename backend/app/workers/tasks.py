@@ -319,6 +319,7 @@ from app.services.ops_incident_alerts import (
     recover_ops_incidents_for_hospital,
 )
 from app.services.post_publish_review_policy import (
+    AUTO_PUBLISH_BLOCKED_ACTION,
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_catchup_start,
     auto_publish_due_predicate,
@@ -6071,10 +6072,14 @@ def morning_content_auto_publish(self):
         reused_image_outcomes: list[dict[str, object]] = []
         healed_hospitals: set = set()
         failed_ids: list[uuid.UUID] = []
+        published_count = 0
+        blocked_codes: Counter[str] = Counter()
+        skipped_count = 0
         for content_id in due_ids:
             try:
                 outcome = _auto_publish_one(content_id)
                 if outcome is None:
+                    skipped_count += 1
                     continue
                 if outcome.get("image_reused"):
                     reused_image_outcomes.append(
@@ -6089,6 +6094,7 @@ def morning_content_auto_publish(self):
                         }
                     )
                 if outcome["kind"] == "blocked":
+                    blocked_codes[str(outcome["code"])] += 1
                     # The incident stays per item (it drives the Admin retry control);
                     # Slack gets one digest for the whole batch below.
                     _run_async(
@@ -6123,6 +6129,7 @@ def morning_content_auto_publish(self):
                         )
                     continue
 
+                published_count += 1
                 _run_async(
                     recover_generation_incidents(
                         content_id,
@@ -6151,6 +6158,20 @@ def morning_content_auto_publish(self):
                 # publication/revalidation intents survive a later follow-up error.
                 logger.exception("auto publication item failed: %s", content_id)
                 failed_ids.append(content_id)
+
+        # 이 한 줄이 "태스크는 성공했는데 due가 그대로"라는 관측을 설명한다. 반환값이
+        # 없는 태스크라 성공/None만으로는 발행 0건과 후보 0건을 구분할 수 없었다.
+        logger.info(
+            "morning auto publish pass finished: date=%s due=%d published=%d blocked=%d "
+            "skipped=%d failed=%d blocked_codes=%s",
+            today,
+            len(due_ids),
+            published_count,
+            sum(blocked_codes.values()),
+            skipped_count,
+            len(failed_ids),
+            dict(sorted(blocked_codes.items())),
+        )
 
         if blocked_outcomes or reused_image_outcomes:
             with SyncSessionLocal() as digest_db:
@@ -6254,6 +6275,27 @@ def _admin_content_url(hospital_id: object, content_id: object) -> str:
     )
 
 
+def _log_auto_publish_skip(reason: str, content_id, *, item=None, hospital=None) -> None:
+    """건너뛴 행의 신원과 이유를 남긴다.
+
+    발행기는 성공해도 반환값이 없고 건너뛴 행은 조용히 사라졌다. 남은 due만 보고는
+    "발행기가 안 돌았다"와 "돌았지만 이 행을 집지 않았다"가 구분되지 않아, 운영이
+    DB를 직접 열어야만 원인을 알 수 있었다. 한 줄이 그 질문에 답한다.
+    """
+
+    status = getattr(item, "status", None)
+    logger.info(
+        "auto publish skipped: reason=%s content_id=%s hospital_id=%s hospital=%s "
+        "status=%s scheduled_date=%s",
+        reason,
+        content_id,
+        getattr(hospital, "id", None) or getattr(item, "hospital_id", None),
+        getattr(hospital, "name", None),
+        getattr(status, "value", status),
+        getattr(item, "scheduled_date", None),
+    )
+
+
 def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
     with SyncSessionLocal() as db:
         item = db.execute(
@@ -6261,7 +6303,13 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             .where(ContentItem.id == content_id)
             .with_for_update(skip_locked=True)
         ).scalar_one_or_none()
-        if not item or item.status not in AUTO_PUBLISHABLE_STATUSES:
+        if not item:
+            # skip_locked이라 다른 트랜잭션이 잡고 있는 행도 여기로 온다 — 사라진 행과
+            # 구분되지 않으므로 둘을 한 이유로 적고 다음 시간대가 다시 집게 둔다.
+            _log_auto_publish_skip("row_locked_or_missing", content_id)
+            return None
+        if item.status not in AUTO_PUBLISHABLE_STATUSES:
+            _log_auto_publish_skip("not_publishable_status", content_id, item=item)
             return None
         today_kst = arrow.now("Asia/Seoul").date()
         if hasattr(item, "content_revision") and not (
@@ -6269,6 +6317,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
         ):
             # The candidate list is only a hint. A concurrent reschedule wins once
             # this row lock is held and the authoritative date is re-read.
+            _log_auto_publish_skip("outside_catchup_window", content_id, item=item)
             return None
         # 콘텐츠 검사와 동시에 병원이 PAUSED/비공개로 전환되는 경합을 막는다. 병원 행을
         # 같은 트랜잭션에서 잠근 뒤 ACTIVE/LIVE를 재확인해야 공개 중지 요청 이후 새 글이
@@ -6277,8 +6326,12 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             select(Hospital).where(Hospital.id == item.hospital_id).with_for_update()
         ).scalar_one_or_none()
         if not hospital:
+            _log_auto_publish_skip("hospital_missing", content_id, item=item)
             return None
         if hospital.status != HospitalStatus.ACTIVE or not hospital.site_live:
+            _log_auto_publish_skip(
+                "hospital_not_publicly_operational", content_id, item=item, hospital=hospital
+            )
             return None
 
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
@@ -6293,9 +6346,22 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 if findings
                 else message
             )
+            # 차단은 감사 기록·인시던트에 남지만 Slack 요약은 코드별로 소유자가 달라
+            # (주간 롤업 등) 당일 운영 로그에는 아무것도 보이지 않을 수 있다. 어느 병원의
+            # 어느 글이 어떤 코드로 막혔는지는 배포 로그에서 바로 읽혀야 한다.
+            logger.warning(
+                "auto publish blocked: hospital=%s hospital_id=%s content_id=%s "
+                "scheduled_date=%s code=%s reason=%s",
+                hospital.name,
+                hospital.id,
+                item.id,
+                item.scheduled_date,
+                code,
+                operator_reason,
+            )
             write_audit_log_sync(
                 db,
-                action="auto_publish_blocked",
+                action=AUTO_PUBLISH_BLOCKED_ACTION,
                 hospital_id=hospital.id,
                 actor=AUTO_PUBLISH_ACTOR,
                 target_type="content_item",
