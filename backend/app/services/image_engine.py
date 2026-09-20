@@ -164,6 +164,10 @@ def _is_transient_google_image_error(exc: BaseException) -> bool:
     종전에는 IMAGE_SAFETY 차단도 3회 재시도한 뒤 폴백 프롬프트를 다시 3회 재시도해
     이미지 1장에 최대 6회 유료 호출이 나갔다. 차단은 같은 입력에 항상 같은 결과다.
     """
+    if isinstance(exc, openrouter.ImageResponseError):
+        # 해석할 수 없는 게이트웨이 본문은 공급자의 정책 판정이 아니다. 진단용으로 실은
+        # 본문 조각에 우연히 섞인 단어(SAFETY 등)를 차단 신호로 읽지 않는다.
+        return True
     if isinstance(
         exc,
         (ImageSafetyBlockedError, ImagePolicyRejectedError, ImagePolicyUnavailableError),
@@ -949,7 +953,19 @@ def _review_image_once(
     if event is not None:
         event["usage"] = getattr(response, "usage", None)
         event["provider_request_id"] = getattr(response, "id", None)
-    return openrouter.first_text(response)
+    # 빈 답·잘린 답은 "검수 결과"가 아니라 이 호출의 실패다. 종전에는 first_text가
+    # 조용히 ""를 돌려줘 아래 model_validate_json("")이 pydantic의 "Invalid JSON: EOF
+    # while parsing a value at line 1 column 0"으로 터졌고, 예외를 조건으로 삼는
+    # 다른 비전 모델 재검수는 한 번도 실행되지 못한 채 이미지 1건이 그대로 끝났다.
+    # 여기서 올려야 이미 마련돼 있는 폴백이 제 예산(검수 1회) 안에서 돈다.
+    stop_reason = openrouter.finish_is_incomplete(response)
+    text = openrouter.first_text(response)
+    if stop_reason is not None or not text.strip():
+        raise ImagePolicyUnavailableError(
+            f"image policy review returned no assessment (model={model}, "
+            f"finish_reason={stop_reason or 'stop'}, chars={len(text.strip())})"
+        )
+    return text
 
 
 def _validate_generated_image(

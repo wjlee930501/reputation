@@ -239,6 +239,45 @@ def is_retryable_llm_error(exc: BaseException) -> bool:
 # 다르므로 호출부가 허용 파라미터만 넘긴다.
 
 
+class ImageResponseError(RuntimeError):
+    """2xx로 왔지만 이미지 응답으로 읽을 수 없는 본문.
+
+    종전에는 `response.json()`을 그대로 불러 빈 200·잘린 본문·HTML 오류 페이지가
+    `json.JSONDecodeError`로 터졌다. 운영에 남는 문자열은 "Expecting value: line 1
+    column 1 (char 0)"뿐이라 게이트웨이가 무엇을 돌려줬는지 사후에 좁힐 수 없고,
+    호출부의 실패 분류기(`_image_failure_class`)가 훑을 quota 신호도 사라진다.
+    상태·content-type·본문 조각을 메시지에 실어 그 구분을 복원한다.
+
+    HTTP 상태를 속성으로 붙이지 않는다 — 붙이면 이미지 호출부의 transient 분류가
+    2xx를 "재시도 불가 4xx가 아닌 것"이 아니라 결정적 응답으로 읽어 버린다.
+    """
+
+
+# 게이트웨이 본문 조각의 상한. 4xx 경로(400자)보다 짧게 잡는다 — 여기 실리는 것은
+# 구조화된 공급자 오류가 아니라 정체를 알 수 없는 바이트라 더 실어도 얻는 게 없다.
+_IMAGE_BODY_SNIPPET_LIMIT = 200
+
+
+def _decode_image_response(response: httpx.Response) -> dict[str, Any]:
+    """2xx 이미지 응답을 dict로 읽거나, 무엇이 왔는지 말하는 오류로 바꾼다."""
+    try:
+        body = response.json()
+    except ValueError as exc:
+        snippet = " ".join(response.text[:_IMAGE_BODY_SNIPPET_LIMIT].split())
+        raise ImageResponseError(
+            f"openrouter images {response.status_code} returned an unparsable body "
+            f"(content-type={response.headers.get('content-type') or 'unknown'}, "
+            f"bytes={len(response.content)}): {exc}"
+            + (f" :: {snippet}" if snippet else " :: (empty body)")
+        ) from exc
+    if not isinstance(body, dict):
+        raise ImageResponseError(
+            f"openrouter images {response.status_code} returned a "
+            f"{type(body).__name__} body where a JSON object was expected"
+        )
+    return body
+
+
 def generate_image(
     *,
     model: str,
@@ -281,9 +320,11 @@ def generate_image(
             response=response,
         )
         raise error
-    body = response.json()
+    body = _decode_image_response(response)
     images: list[bytes] = []
     for item in body.get("data") or []:
+        if not isinstance(item, dict):
+            continue
         b64 = item.get("b64_json")
         if b64:
             images.append(base64.b64decode(b64, validate=True))
@@ -310,5 +351,6 @@ __all__ = (
     "usage_cost_usd",
     "NON_RETRYABLE_LLM_ERRORS",
     "is_retryable_llm_error",
+    "ImageResponseError",
     "generate_image",
 )

@@ -5,7 +5,7 @@ import pytest
 import tenacity
 
 from app.models.content import ContentType
-from app.services import image_engine
+from app.services import image_engine, openrouter
 from app.services.image_policy import (
     ImagePolicyAssessment,
     ImagePolicyRejectedError,
@@ -378,3 +378,170 @@ async def test_missing_provider_configuration_is_not_a_silent_empty_result(monke
 
     assert (url, prompt) == ("", "")
     assert diagnostics["reason"] == "PROVIDER_NOT_CONFIGURED"
+
+
+# ── 게이트웨이가 이미지 응답으로 읽을 수 없는 본문을 줬을 때 ────────────────────
+
+
+def _unparsable_images_response(body: bytes, content_type: str) -> httpx.Response:
+    request = httpx.Request("POST", "https://openrouter.ai/api/v1/images")
+    return httpx.Response(
+        200, request=request, content=body, headers={"content-type": content_type}
+    )
+
+
+def test_unparsable_image_body_says_what_the_gateway_returned(monkeypatch):
+    """빈 200을 `json.JSONDecodeError`로 올리면 운영에 남는 것은 "Expecting value"뿐이다.
+
+    상태·content-type·본문 크기를 실어야 게이트웨이가 빈 응답을 줬는지 HTML 오류
+    페이지를 줬는지 사후에 좁힐 수 있다.
+    """
+    monkeypatch.setattr(openrouter.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        openrouter.httpx,
+        "post",
+        lambda *_args, **_kwargs: _unparsable_images_response(b"", "text/html"),
+    )
+
+    with pytest.raises(openrouter.ImageResponseError) as raised:
+        openrouter.generate_image(model="google/gemini-3.1-flash-image", prompt="p")
+
+    message = str(raised.value)
+    assert "openrouter images 200" in message
+    assert "text/html" in message
+    assert "bytes=0" in message
+    assert "(empty body)" in message
+
+
+def test_unparsable_image_body_keeps_a_bounded_snippet(monkeypatch):
+    monkeypatch.setattr(openrouter.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(
+        openrouter.httpx,
+        "post",
+        lambda *_args, **_kwargs: _unparsable_images_response(
+            b"<html><body>upstream connect error</body></html>" + b"x" * 500,
+            "text/html",
+        ),
+    )
+
+    with pytest.raises(openrouter.ImageResponseError) as raised:
+        openrouter.generate_image(model="google/gemini-3.1-flash-image", prompt="p")
+
+    message = str(raised.value)
+    assert "upstream connect error" in message
+    assert len(message) < 500
+
+
+def test_unparsable_image_body_is_retried_and_is_not_a_policy_block(monkeypatch):
+    """해석할 수 없는 본문은 공급자의 정책 판정이 아니다.
+
+    진단용 본문 조각에 우연히 섞인 단어(SAFETY 등)를 차단 신호로 읽으면 재시도 없이
+    안전 폴백 프롬프트로 넘어가 버린다.
+    """
+    calls = {"n": 0}
+    error = openrouter.ImageResponseError(
+        "openrouter images 200 returned an unparsable body "
+        "(content-type=text/html, bytes=64): Expecting value: line 1 column 1 "
+        ":: <html>gateway error: safety check service unavailable</html>"
+    )
+    assert image_engine._looks_like_policy_block(error), (
+        "본문 조각에 차단 표지가 섞인 경우를 골라야 이 테스트가 무언가를 지킨다"
+    )
+    assert image_engine._is_transient_google_image_error(error)
+
+    def unparsable(**_kwargs):
+        calls["n"] += 1
+        raise error
+
+    _patch_generate_image(monkeypatch, unparsable)
+
+    with pytest.raises(tenacity.RetryError):
+        image_engine._generate_and_upload("prompt", "hospital-slug")
+
+    assert calls["n"] == 3
+
+
+# ── 검수 모델이 빈 답을 줬을 때 ────────────────────────────────────────────────
+
+
+_OK_REVIEW_JSON = (
+    '{"has_text":false,"has_logo":false,"has_recognizable_people":false,'
+    '"impersonates_real_clinic":false,"topic_relevant":true}'
+)
+
+
+def _review_client(monkeypatch, answers: list[tuple[str, str | None]]) -> list[str]:
+    """호출 순서대로 (content, finish_reason)을 돌려주는 가짜 검수 클라이언트."""
+    models: list[str] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            content, finish_reason = answers[len(models)]
+            models.append(str(kwargs["model"]))
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content=content),
+                        finish_reason=finish_reason,
+                    )
+                ]
+            )
+
+    class FakeClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr(image_engine.settings, "OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(image_engine.settings, "GEMINI_MODEL", "google/review-vision")
+    monkeypatch.setattr(image_engine.settings, "OPENAI_MODEL_PARSE", "openai/review-vision")
+    monkeypatch.setattr(
+        image_engine.openrouter, "sync_client", lambda **_kwargs: FakeClient()
+    )
+    return models
+
+
+def test_empty_review_answer_lets_the_other_vision_model_run(monkeypatch):
+    """빈 답은 검수 결과가 아니라 그 호출의 실패다.
+
+    종전에는 `first_text`가 조용히 ""를 돌려줘 `model_validate_json("")`이 pydantic의
+    "EOF while parsing"으로 터졌고, 예외를 조건으로 삼는 다른 비전 모델 재검수는 한 번도
+    실행되지 못한 채 이미지 1건이 그대로 끝났다.
+    """
+    models = _review_client(
+        monkeypatch, [("", "length"), (_OK_REVIEW_JSON, "stop")]
+    )
+
+    assessment = image_engine._validate_generated_image(
+        b"png", mime_type="image/png", prompt="editorial prompt", expected_topic="복통 진료"
+    )
+
+    assert assessment.topic_relevant is True
+    assert models == ["google/review-vision", "openai/review-vision"]
+
+
+def test_blank_review_answer_is_treated_as_a_failed_call(monkeypatch):
+    models = _review_client(
+        monkeypatch, [("   \n", None), (_OK_REVIEW_JSON, "stop")]
+    )
+
+    image_engine._validate_generated_image(
+        b"png", mime_type="image/png", prompt="p", expected_topic="t"
+    )
+
+    assert models == ["google/review-vision", "openai/review-vision"]
+
+
+def test_two_empty_review_answers_name_the_empty_answer_not_a_json_eof(monkeypatch):
+    models = _review_client(monkeypatch, [("", "length"), ("", "refusal")])
+
+    with pytest.raises(ImagePolicyUnavailableError) as raised:
+        image_engine._validate_generated_image(
+            b"png", mime_type="image/png", prompt="p", expected_topic="t"
+        )
+
+    message = str(raised.value)
+    assert "returned no assessment" in message
+    assert "openai/review-vision" in message
+    assert "finish_reason=refusal" in message
+    assert "EOF while parsing" not in message
+    assert models == ["google/review-vision", "openai/review-vision"]
