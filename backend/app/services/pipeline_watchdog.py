@@ -44,6 +44,7 @@ from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
 from app.models.operations import OperationRun
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISH_BLOCKED_ACTION,
     auto_publish_due_predicate,
@@ -667,12 +668,19 @@ def _operator_alert_text(report: WatchdogReport) -> str:
 
 def build_alert_text(report: WatchdogReport, audience: str) -> str:
     """무슨 문제인지 → 고객 영향 → 지금 할 일 순서의 수신자별 문구."""
+    label = label_for_event("PIPELINE_WATCHDOG_ALERT")
     if audience == AUDIENCE_OPERATOR:
-        return _operator_alert_text(report)
-    return _developer_alert_text(report)
+        return prefixed(label, _operator_alert_text(report))
+    return prefixed(label, _developer_alert_text(report))
 
 
 def build_recovery_text(report: WatchdogReport, audience: str) -> str:
+    return prefixed(
+        label_for_event("PIPELINE_WATCHDOG_RECOVERY"), _recovery_text(report, audience)
+    )
+
+
+def _recovery_text(report: WatchdogReport, audience: str) -> str:
     if audience == AUDIENCE_OPERATOR:
         published = (
             f"오늘 공개된 글은 {report.publish_published_today}건이고 "

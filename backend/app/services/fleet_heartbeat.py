@@ -15,6 +15,7 @@ from app.services.contract_delivery_coverage import (
     collect_contract_delivery_coverage,
 )
 from app.services.notification_contracts import NotificationIntent, SlackMessage
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.operator_action import requires_operator_action
 from app.services.pipeline_watchdog import KST, WatchdogReport
 from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
@@ -166,9 +167,10 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
             f"일정 미확인 병원 {coverage.unknown_schedule_hospitals}곳. 최초 발행은 현재 공개 건수와 다르며, 다른 달의 이월 물량은 이번 달 약정을 채우지 않습니다.",
         ]
     local_day = now.astimezone(KST).date().isoformat()
+    label = label_for_event("FLEET_HEARTBEAT")
     text = "\n".join(
         [
-            f"{local_day} GEO 운영 요약 · {state}",
+            prefixed(label, f"{local_day} GEO 운영 요약 · {state}"),
             f"공개 운영 병원 {facts.hospitals}곳",
             f"발행: 남은 예정 {number(report.publish_due_remaining)}건 / 오늘 08시 이후 DB 발행 {number(report.publish_published_today)}건",
             "예정 잔여와 오늘 발행은 서로 다른 집계이며 합계가 당일 약정 수량은 아닙니다.",
