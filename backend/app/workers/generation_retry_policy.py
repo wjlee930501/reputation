@@ -10,8 +10,9 @@ from zoneinfo import ZoneInfo
 KST = ZoneInfo("Asia/Seoul")
 RECOVERY_SWEEP_HOURS = (1, 4, 7, 23)
 # 23:00 야간 배치가 보는 창은 `[내일, 모레]`, 01·04·07 복구 스윕이 보는 창은
-# `[오늘-7일, 오늘]`(발행 catch-up과 같은 7일)이다. 두 창을 모르면 기한이 "다음 스윕
-# 시각"이 되어 그 스윕이 실제로는 집지 않는 슬롯까지 재시도 중이라고 말하게 된다.
+# `[오늘-7일, 모레]`(뒤로는 발행 catch-up과 같은 7일, 앞으로는 야간 배치와 같은
+# lookahead)다. 두 창을 모르면 기한이 "다음 스윕 시각"이 되어 그 스윕이 실제로는 집지
+# 않는 슬롯까지 재시도 중이라고 말하게 된다.
 NIGHTLY_SWEEP_HOUR = 23
 NIGHTLY_SWEEP_LOOKAHEAD_DAYS = 2
 # `post_publish_review_policy.AUTO_PUBLISH_CATCHUP_DAYS`와 같은 값이어야 한다.
@@ -184,7 +185,13 @@ def _sweep_window(candidate: datetime) -> tuple[date, date]:
     day = candidate.date()
     if candidate.hour == NIGHTLY_SWEEP_HOUR:
         return day + timedelta(days=1), day + timedelta(days=NIGHTLY_SWEEP_LOOKAHEAD_DAYS)
-    return day - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS), day
+    # 복구 스윕의 앞쪽 끝은 야간 배치와 같다. 22:30 백로그 복구가 오래된 슬롯을 **미래**
+    # 날짜로 옮기므로, 앞쪽을 `오늘`에서 끊으면 방금 구조한 바로 그 슬롯을 복구 스윕이
+    # 다시 집지 못한다.
+    return (
+        day - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS),
+        day + timedelta(days=NIGHTLY_SWEEP_LOOKAHEAD_DAYS),
+    )
 
 
 def _candidate_sweeps(observed: datetime):

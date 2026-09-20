@@ -36,7 +36,9 @@ from app.services.content_ai_review import (
     ContentAiReviewUnavailableReason,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
+from app.services.post_publish_review_policy import auto_publish_catchup_start
 from app.workers import generation_incident_control, nightly_generation_batch, tasks
+from app.workers.content_backlog_recovery import _next_available_dates
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
 from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
 from app.workers.generation_retry_policy import (
@@ -46,6 +48,8 @@ from app.workers.generation_retry_policy import (
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
+    environment_attempt_period,
+    next_recovery_deadline,
 )
 from app.workers.topic_swap_fallback import exhausted_body_sample_reason
 
@@ -1593,6 +1597,71 @@ def test_twenty_three_batch_covers_tomorrow_and_the_day_after(monkeypatch):
 
     assert loaded_windows == [(date(2026, 8, 20), date(2026, 8, 21))]
     assert tasks.settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS == 2
+
+
+def test_recovery_sweep_reaches_the_future_dates_backlog_recovery_parks_slots_on(
+    monkeypatch,
+):
+    """22:30 백로그 복구가 구조한 슬롯을 복구 스윕·운영자 재트리거가 다시 집는다.
+
+    `content_backlog_recovery`는 catch-up 창(오늘-7)보다 오래된 슬롯을 **미래**의 빈
+    날짜(내일부터)로 옮긴다. 복구 스윕의 창을 `[오늘-7, 오늘]`로 끊으면 방금 구조한 그
+    슬롯은 하루에 한 번 23:00 배치만 볼 수 있고, 운영자가 복구 스윕을 다시 돌려도 창
+    밖이라 한 번도 claim되지 않는다 — due5의 서울W·행복드림이 "강심장만 claim됐다"로
+    보인 자리다. 앞쪽 끝을 야간 배치와 같은 lookahead에 맞춘다(새 지평이 아니다).
+    """
+    db = _NightlyTaskDB()
+    loaded_windows = []
+    today = date(2026, 8, 19)
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "GenerationBatchRecorder", _NightlyTaskRecorder)
+    monkeypatch.setattr(
+        tasks,
+        "_load_nightly_generation_batch",
+        lambda _db, start, end, **_kwargs: (
+            loaded_windows.append((start, end)) or [],
+            0,
+            True,
+        ),
+    )
+    monkeypatch.setattr(tasks, "load_stuck_claims", lambda *_args: [])
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks, "swap_exhausted_topics", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_a, **_kw: arrow.get(datetime(2026, 8, 19, 1, 0), tzinfo="Asia/Seoul"),
+    )
+
+    tasks.overnight_content_generation_recovery.run()
+
+    (window_start, window_end) = loaded_windows[0]
+    assert window_start == auto_publish_catchup_start(today)
+    assert window_end == tasks._nightly_generation_window(
+        arrow.get(datetime(2026, 8, 19, 23, 0), tzinfo="Asia/Seoul")
+    )[1]
+
+    # 백로그 복구가 실제로 고르는 첫 날짜들이 그 창 안에 있어야 한다.
+    parked = _next_available_dates(today=today, occupied_dates=set(), count=2)
+    assert parked == [date(2026, 8, 20), date(2026, 8, 21)]
+    for recovered in parked:
+        assert window_start <= recovered <= window_end
+        # 기한 계산이 쓰는 창도 같은 말을 해야 인시던트가 없는 시각을 약속하지 않는다.
+        assert (
+            next_recovery_deadline(
+                {
+                    "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+                    "reason": "IMAGE_GENERATION_FAILED",
+                    "attempt_period": today.isoformat(),
+                    "provider_attempt_count": 1,
+                    "exhausted_days": 0,
+                },
+                scheduled_date=recovered,
+                now=arrow.get(datetime(2026, 8, 19, 1, 0), tzinfo="Asia/Seoul").datetime,
+            )
+            == arrow.get(datetime(2026, 8, 19, 4, 0), tzinfo="Asia/Seoul").datetime
+        )
 
 
 def test_nightly_cost_blocked_records_without_second_generation_slack(monkeypatch):
