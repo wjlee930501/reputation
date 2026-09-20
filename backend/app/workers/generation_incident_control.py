@@ -37,6 +37,7 @@ from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
     GenerationRetryClass,
     next_recovery_deadline,
+    recovery_is_abandoned,
     repair_recovery_remains,
     retry_class_for,
 )
@@ -175,6 +176,10 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
         attempt.get("reason") == code
         and attempt.get("retry_class") == GenerationRetryClass.OPERATOR_REQUIRED.value
     ):
+        return False
+    if attempt.get("reason") == code and recovery_is_abandoned(attempt):
+        # 재시도 정책이 이 기록에 "집을 스윕이 없다"고 이미 적었다. 그 상태를 RETRYING
+        # 으로 부르면 아무도 소유하지 않은 차단이 기한 없는 "재시도 중"으로 숨는다.
         return False
     if code in _AUTOMATIC_RECOVERY_CODES:
         return True

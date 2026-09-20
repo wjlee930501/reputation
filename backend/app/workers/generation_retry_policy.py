@@ -446,6 +446,16 @@ def _due_time_reached(attempt: dict, observed: datetime) -> bool:
     return observed >= due
 
 
+def _sweep_window_was_abandoned(attempt: Mapping) -> bool:
+    """저장된 기록이 "어떤 스윕도 이 슬롯을 다시 집지 않는다"로 굳었는가.
+
+    `next_retry_at`을 명시적으로 `None`으로 저장한 것이 그 결정이다. 키가 아예 없는
+    레거시 기록은 결정을 내린 적이 없으므로 여기 해당하지 않는다.
+    """
+
+    return "next_retry_at" in attempt and attempt.get("next_retry_at") is None
+
+
 def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
     observed = now or datetime.now(UTC)
     retry_class = attempt.get("retry_class")
@@ -469,4 +479,18 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
     # retain their finite H-08 budget.
     if count >= ENVIRONMENT_ATTEMPT_BUDGET and not budget_reset_due:
         return False
+    if budget_reset_due and _sweep_window_was_abandoned(attempt):
+        # 어제 저장한 "집을 스윕이 없다"는 예측보다, 오늘의 새 예산이 나중에 내려진
+        # 결정이다. 게다가 이 판정을 묻는 것은 이미 이 행을 claim한 스윕이므로 창
+        # 밖이라는 전제 자체가 틀렸다. 그 예측을 그대로 지키면 하루짜리 검수 장애가
+        # 영구 차단으로 굳는다 — 검수를 다시 사지 않으니 저장된 판정도 영원히 그대로다.
+        return True
     return _due_time_reached(attempt, observed)
+
+
+def recovery_is_abandoned(attempt: Mapping | None, now: datetime | None = None) -> bool:
+    """예약 복구가 이 기록을 더 집지 않는가. 인시던트가 RETRYING을 말할 자격의 기준."""
+
+    if not isinstance(attempt, Mapping) or not _sweep_window_was_abandoned(attempt):
+        return False
+    return not retry_is_due(dict(attempt), now)
