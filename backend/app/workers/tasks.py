@@ -417,6 +417,7 @@ from app.workers.dispatch_auth import (
     build_dispatch_headers,
     require_dispatch,
 )
+from app.workers.generation_attempt_state import released_generation_attempt
 from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
     GenerationItemRecorder,
@@ -986,19 +987,6 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
     db.commit()
 
 
-# 억제를 만드는 것은 원인과 저장된 다음 시도 시각이다. 예산 사다리는 그 둘이 아니다.
-_GENERATION_LADDER_KEYS = (
-    "context",
-    "attempt_period",
-    "exhausted_days",
-    "attempt_count",
-    "provider_attempt_count",
-    "guard_deferral_count",
-    "first_observed_at",
-    "approved_facts",
-)
-
-
 def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
     """수리 세션은 시도 기록의 억제만 푼다. 예산 계수는 그대로 남긴다.
 
@@ -1007,17 +995,11 @@ def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
     교체도 열리지 않는다 — 표본 복구가 끝나지 않는 재작성 루프가 된다.
     """
 
-    previous = _stored_generation_attempt(item)
-    if not previous:
+    if not _stored_generation_attempt(item):
         return
-    carried = {key: previous[key] for key in _GENERATION_LADDER_KEYS if key in previous}
-    summary = getattr(item, "essence_check_summary", None)
-    updated = dict(summary) if isinstance(summary, dict) else {}
-    if carried:
-        updated[_GENERATION_ATTEMPT_KEY] = carried
-    else:
-        updated.pop(_GENERATION_ATTEMPT_KEY, None)
-    item.essence_check_summary = updated
+    item.essence_check_summary = released_generation_attempt(
+        getattr(item, "essence_check_summary", None)
+    )
     db.commit()
 
 
@@ -4260,8 +4242,18 @@ def _nightly_generation_window(now_kst) -> tuple[date, date]:
     순번)이 그대로 보장한다.
     """
 
+    return now_kst.shift(days=1).date(), _generation_lookahead_end(now_kst)
+
+
+def _generation_lookahead_end(now_kst) -> date:
+    """앞을 내다보는 모든 생성 스윕이 공유하는 마지막 예정일.
+
+    야간 배치와 복구 스윕이 같은 값을 쓰게 묶는다. 둘이 갈라지면 22:30 백로그 복구가
+    미래로 옮긴 슬롯을 한쪽만 볼 수 있게 된다.
+    """
+
     lookahead = max(int(settings.NIGHTLY_GENERATION_LOOKAHEAD_DAYS), 1)
-    return now_kst.shift(days=1).date(), now_kst.shift(days=lookahead).date()
+    return now_kst.shift(days=lookahead).date()
 
 
 def _warn_if_generation_capacity_is_short(claimed_count: int, *, now_kst) -> None:
@@ -5032,18 +5024,24 @@ def overnight_content_generation_recovery(self):
     require_dispatch(self, "overnight-content-generation-recovery")
     now_kst = arrow.now("Asia/Seoul")
     today = now_kst.date()
-    # 복구 스윕의 창은 발행 catch-up과 같은 7일이다. `[오늘, 오늘]`만 보면 어제까지
+    # 복구 스윕의 창은 뒤로 발행 catch-up과 같은 7일이다. `[오늘, 오늘]`만 보면 어제까지
     # 실패한 슬롯은 예산이 남아 있어도 다시 집히지 않아, 약속한 재시도가 실제로는
     # 일어나지 않는다. OperationRun 요청 payload도 같은 창을 기록해야 한다.
     window_start = auto_publish_catchup_start(today)
+    # 앞쪽 끝은 23:00 야간 배치와 같은 lookahead다. 22:30 백로그 복구는 창을 벗어난
+    # 슬롯을 **미래**의 빈 날짜(내일·모레·그 다음…)로 옮기는데, 앞쪽을 `오늘`에서 끊으면
+    # 방금 구조한 그 슬롯을 복구 스윕도 운영자의 재트리거도 영영 집지 못한다 — 하루에
+    # 한 번 23:00만 그 슬롯을 볼 수 있게 된다. 새 지평을 만드는 것이 아니라 이미 야간
+    # 배치가 쓰는 지평을 같은 로더에 맞추는 것이다.
+    window_end = _generation_lookahead_end(now_kst)
     with SyncSessionLocal() as db:
         task_id = str(getattr(self.request, "id", None) or uuid.uuid4())
         # 마지막 폴백 계단은 로더 앞에서 돈다(위 야간 배치와 같은 이유).
-        swap_exhausted_topics(db, window_start=window_start, window_end=today)
-        recorder = GenerationBatchRecorder(db, task_id, window_start, today)
+        swap_exhausted_topics(db, window_start=window_start, window_end=window_end)
+        recorder = GenerationBatchRecorder(db, task_id, window_start, window_end)
         # 07:45 요약이 이 시간대의 알림을 소유한다 — 슬롯별 Slack을 내지 않는다.
         _dispatch_generation_batch(
-            db, recorder, window_start, today, now_kst=now_kst, notify=False
+            db, recorder, window_start, window_end, now_kst=now_kst, notify=False
         )
         recorder.finish()
 

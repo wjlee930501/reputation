@@ -101,7 +101,9 @@ def test_a_body_sample_failure_stays_automatic_until_the_third_exhausted_day(mon
     item = _slot_item()
 
     first = _remember(monkeypatch, db, item, _kst(2026, 9, 14, 23, 0))
-    assert _stored_deadline(first) == _kst(2026, 9, 15, 23, 0).astimezone(UTC)
+    # 복구 스윕의 창은 앞으로도 야간 배치와 같은 lookahead를 가진다. D-1 01:00 스윕이
+    # 이미 D 예정 슬롯을 집으므로 기한은 그 다음 23:00이 아니라 그 시각이다.
+    assert _stored_deadline(first) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
 
     second = _remember(monkeypatch, db, item, _kst(2026, 9, 15, 23, 0))
     assert second["exhausted_days"] == 0  # 밤마다 하루 예산의 한 번씩만 쓴다

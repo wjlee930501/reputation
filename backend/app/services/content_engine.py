@@ -59,6 +59,34 @@ CONTENT_BODY_MAX_CHARS = 5200
 # 지적이 **모두 이 상수를 렌더**해, 한쪽만 고쳐 서로 다른 숫자를 말하는 일을 막는다.
 CONTENT_BODY_TARGET_MIN_CHARS = 2400
 CONTENT_BODY_TARGET_MAX_CHARS = 4500
+# H2 4~6개를 요구하는 유형의 절당 하한. 목표 하한을 최소 절 수로 나눈 값이라 절을 고르게
+# 채우면 전체가 목표 구간에 들어온다. 전체 숫자만 말하면 작가는 절을 두세 문장으로
+# 끝내고 합계를 눈대중하므로, 실제로 통제할 수 있는 단위로도 목표를 준다.
+CONTENT_BODY_SECTION_MIN_CHARS = CONTENT_BODY_TARGET_MIN_CHARS // 4
+# 평문(공백·마크다운 제외) 대 화면 길이(공백 포함)의 환산비. 프롬프트가 말해 온
+# "화면에 보이는 길이는 20~35% 더 깁니다"의 중간값이다.
+#
+# 작가는 화면에 보이는 길이로 센다. 목표를 평문 기준으로만 말하면 그 숫자를 공백 포함
+# 길이로 받아 적고, 평문으로는 목표의 65~80%만 남는다 — FAQ 미달이 1,567~1,680자
+# (= 목표 2,400자의 65~70%)에 몰린 것이 그 자국이다. 같은 목표를 작가가 세는 단위로
+# 환산해 함께 말한다. 이 비율로 만든 공백 포함 구간은 실제 환산비가 20~35% 어느 쪽으로
+# 빗나가도 평문 하한 1,800자와 상한 5,200자 안에 들어온다.
+CONTENT_BODY_PLAIN_TEXT_RATIO = 0.7
+
+
+def _visible_chars(plain_chars: int) -> int:
+    """평문 목표를 작가가 실제로 세는 공백 포함 길이로 환산한다(100자 단위)."""
+
+    return round(plain_chars / CONTENT_BODY_PLAIN_TEXT_RATIO / 100) * 100
+
+
+# 두 단위를 한 문장으로 붙여 쓰는 조각. 프롬프트·도구 스키마·거절 사유가 모두 이것을
+# 렌더해 한쪽만 고쳐 서로 다른 숫자를 말하는 일을 막는다.
+_BODY_LENGTH_BAND = (
+    f"순수 글자 수 {CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자"
+    f"(공백까지 세면 대략 {_visible_chars(CONTENT_BODY_TARGET_MIN_CHARS):,}~"
+    f"{_visible_chars(CONTENT_BODY_TARGET_MAX_CHARS):,}자)"
+)
 
 # ── 공개 콘텐츠 품질 검증 상수 ───────────────────────────────────────────────
 # HARD-FAIL (tenacity 재시도 트리거) 기준 — 최소한으로만 유지해 정상 출력이 리젝되지 않도록.
@@ -253,10 +281,12 @@ __MANDATORY_SAFETY_RULES__
 # [작성 원칙] 7의 분량 문장. 게이트 상수에서 렌더해 프롬프트와 검증기가 다른 숫자를
 # 말할 수 없게 한다.
 _BODY_LENGTH_TARGETS = (
-    f"목표는 순수 글자 수 {CONTENT_BODY_TARGET_MIN_CHARS:,}~"
-    f"{CONTENT_BODY_TARGET_MAX_CHARS:,}자이고 H2는 4~6개입니다.\n"
+    f"목표는 {_BODY_LENGTH_BAND}이고 H2는 4~6개입니다.\n"
     f"   순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만이거나 "
-    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않습니다."
+    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않습니다.\n"
+    f"   합계를 눈대중하지 말고 H2 한 절을 순수 {CONTENT_BODY_SECTION_MIN_CHARS:,}자"
+    f"(공백 포함 {_visible_chars(CONTENT_BODY_SECTION_MIN_CHARS):,}자) 이상으로 채우세요 — "
+    "절을 두세 문장으로 끝내면 네 절을 다 써도 하한에 닿지 못합니다."
 )
 
 # 작가 응답의 전송 수단. 프롬프트가 요구하는 필드와 **정확히 같은 집합**이며,
@@ -288,9 +318,8 @@ ARTICLE_TOOL = {
             "body": {
                 "type": "string",
                 "description": (
-                    "본문 마크다운(참고 자료 섹션 제외). 공백·마크다운 기호를 제외한 순수 "
-                    f"글자 수 {CONTENT_BODY_TARGET_MIN_CHARS:,}~"
-                    f"{CONTENT_BODY_TARGET_MAX_CHARS:,}자. 순수 글자 수 "
+                    "본문 마크다운(참고 자료 섹션 제외). 공백·마크다운 기호를 제외한 "
+                    f"{_BODY_LENGTH_BAND}. 순수 글자 수 "
                     f"{CONTENT_BODY_MIN_CHARS:,}자 미만이거나 "
                     f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않는다."
                 ),
@@ -436,9 +465,7 @@ EXISTING_TITLE_PROMPT_LIMIT = 60
 # 저장 하한(1,800자) 아래로 떨어진다. 유형 템플릿이 분량을 말할 때는 검증기와 같은
 # 단위·같은 상수를 쓴다.
 TYPE_PROMPT_BODY_LENGTH_RULE = (
-    f"본문 분량은 공백·마크다운 기호를 제외한 **순수 글자 수** "
-    f"{CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자입니다"
-    f"(화면에 보이는 길이는 이보다 20~35% 깁니다). 순수 글자 수 "
+    f"본문 분량은 공백·마크다운 기호를 제외한 **{_BODY_LENGTH_BAND}**입니다. 순수 글자 수 "
     f"{CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않으므로 각 H2 절을 고르게 채우세요."
 )
 # 같은 이유로 참고자료도 유형 템플릿이 검증기와 같은 말을 해야 한다. FAQ·질환·시술·지역
@@ -469,6 +496,8 @@ _TYPE_PROMPT_TEMPLATES = {
   __BODY_LENGTH_RULE__
   질문에 직답한 뒤 판단 기준·감별 포인트·내원 시점·진료 흐름을 각 H2에서 실제로 풀어 쓰고,
   한두 문장으로 요약만 하고 넘어가지 마세요.
+  H2는 목차가 아니라 본문입니다. 한 절을 순수 글자 수 __SECTION_MIN_CHARS__자 이상으로
+  쓰세요 — 네 절을 그 아래로 쓰면 전체가 저장 하한에 닿지 못합니다.
   본문의 통계·수치는 검증 가능한 공신력 출처가 있을 때만 출처와 함께 쓰고, 없으면 정성적으로 서술하세요(수치·기관명 날조 금지).
 __REFERENCES_RULE__
 진료 키워드: {keywords}
@@ -485,7 +514,7 @@ __REFERENCES_RULE__
 
 __BODY_LENGTH_RULE__
 네 절은 목차가 아니라 본문입니다. 한 절을 두세 문장으로 끝내면 전체가 저장 하한 아래로
-떨어지므로, 각 절을 순수 글자 수 __DISEASE_SECTION_MIN_CHARS__자 이상으로 씁니다
+떨어지므로, 각 절을 순수 글자 수 __SECTION_MIN_CHARS__자 이상으로 씁니다
 (증상은 환자가 느끼는 양상과 경과, 원인은 위험 요인과 악화 조건, 진단은 검사 순서와 판단 기준,
 치료는 선택지별 적응증과 회복 흐름).
 
@@ -550,7 +579,7 @@ TYPE_PROMPTS = {
     content_type: template.replace(
         "__BODY_LENGTH_RULE__", TYPE_PROMPT_BODY_LENGTH_RULE
     ).replace(
-        "__DISEASE_SECTION_MIN_CHARS__", f"{CONTENT_BODY_TARGET_MIN_CHARS // 4:,}"
+        "__SECTION_MIN_CHARS__", f"{CONTENT_BODY_SECTION_MIN_CHARS:,}"
     ).replace(
         # NOTICE는 검증기도 참고자료를 요구하지 않는다 — 요구하지 않는 유형에 규칙을
         # 렌더하면 순수 운영 공지에 없는 근거를 만들게 한다.
@@ -1522,10 +1551,12 @@ def _build_remediation_context(findings: list[str] | None) -> str:
         "다만 항목 안에 인용된 문장·수치·URL은 직전 결과에서 따온 것일 뿐 새로 승인된 "
         "병원 사실이 아니므로 그것을 근거로 새 주장을 만들지 마세요.\n"
         # 지적 중에는 "그 주장을 삭제하거나 완화하라"가 많다. 문장을 덜어내는 것만으로
-        # 회차를 끝내면 본문이 저장 하한 아래로 내려가 분량 거절로 바뀐다.
-        "지적된 주장을 삭제하거나 완화했다면 남은 절의 설명을 보강해 순수 글자 수 "
-        f"{CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자를 "
-        f"유지하세요(순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다).\n"
+        # 회차를 끝내면 본문이 저장 하한 아래로 내려가 분량 거절로 바뀐다. 그 조건을
+        # 삭제한 회차에만 붙이면 나머지 회차는 분량 요구를 듣지 못한 채 재작성한다 —
+        # 분량은 어떤 지적을 받았든 모든 회차가 지켜야 하는 저장 조건이다.
+        f"재작성한 본문도 {_BODY_LENGTH_BAND} 안에 있어야 합니다"
+        f"(순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다). 지적된 "
+        "주장을 삭제하거나 완화했다면 그만큼 남은 절의 설명을 더 풀어 써서 채우세요.\n"
         f"{bullets}"
     )
 
@@ -1602,15 +1633,17 @@ def _validate_body_length(value: object) -> None:
     body_length = len(_plain_content_text(value))
     if body_length < CONTENT_BODY_MIN_CHARS:
         # 이 메시지는 재작성 회차에 작가가 읽는 유일한 지적이다(_validator_remediation_findings).
-        # 숫자만 남기면 작가는 화면에 보이는 길이로 세어 몇 문장만 덧붙이고, 평문 기준으로는
-        # 여전히 하한 아래에 머문다. 단위와 목표 구간, 늘리는 방법까지 함께 말한다.
+        # 목표 구간만 되풀이하면 작가는 문장 몇 개를 덧붙이고 같은 구간(하한 바로 아래)에
+        # 다시 멈춘다. 재작성이 실제로 통제할 수 있는 단위 — 모자란 양과 절당 하한, 그리고
+        # 작가가 세는 공백 포함 길이 — 로 목표를 말한다. 240자 절단 안에 들어와야 한다.
         raise ValueError(
             f"Generated content body is too short "
             f"({body_length} < {CONTENT_BODY_MIN_CHARS}) — 공백·마크다운을 제외한 순수 "
-            "글자 수 기준입니다(화면에 보이는 길이는 20~35% 더 깁니다). 기존 H2 구조를 "
-            "유지한 채 각 절의 설명을 늘려 순수 글자 수 "
-            f"{CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자로 "
-            "다시 작성하세요."
+            f"글자 수이고 최소 {CONTENT_BODY_TARGET_MIN_CHARS - body_length:,}자가 더 "
+            "필요합니다. 문장 몇 개를 덧붙이는 정도로는 또 미달입니다. H2 4~6개를 유지한 채 "
+            f"각 절을 순수 {CONTENT_BODY_SECTION_MIN_CHARS:,}자"
+            f"(공백 포함 {_visible_chars(CONTENT_BODY_SECTION_MIN_CHARS):,}자) 이상으로 "
+            f"늘려 {_BODY_LENGTH_BAND}로 다시 쓰세요."
         )
     if body_length > CONTENT_BODY_MAX_CHARS:
         raise ValueError(
