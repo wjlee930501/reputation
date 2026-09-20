@@ -353,7 +353,9 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
         "ESSENCE_NOT_ALIGNED": ("병원 온보딩에서 승인된 운영 기준과 차단된 문구를 확인하세요."),
         "FAQ_FIELDS_MISSING": ("운영 센터에서 FAQ 질문과 직접 답변 요약의 누락 원인을 확인하세요."),
         "CONTENT_AI_HARD_FINDING": (
-            "운영 센터에서 미해결 사실·의료 안전 지적과 승인 자료를 확인하세요."
+            "지적된 사실을 병원 정보 탭의 승인 자료에 채우세요. 승인 자료가 바뀌면 다음 "
+            "자동 복구가 그 자료로 본문을 다시 씁니다. 사실이 아니라면 운영 센터에서 "
+            "해당 항목을 종료하세요."
         ),
         "CONTENT_AI_REVIEW_STALE": ("운영 센터에서 변경된 원고와 재검수 대기 상태를 확인하세요."),
         "CONTENT_AI_REVIEW_UNAVAILABLE": (

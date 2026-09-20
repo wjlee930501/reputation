@@ -77,6 +77,7 @@ from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
+    hospital_review_facts_fingerprint,
     review_generated_content,
 )
 from app.services.content_engine import (
@@ -134,9 +135,6 @@ from app.services.content_review_feedback import (
 )
 from app.services.content_review_feedback import (
     screening_probe as _screening_probe,  # noqa: F401 -- stable legacy worker import
-)
-from app.services.content_review_feedback import (
-    stored_hard_removal_rewrite_is_owed as _stored_hard_removal_rewrite_is_owed,
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
@@ -641,18 +639,41 @@ def _stored_model_declared_hard(item: ContentItem) -> bool:
     return has_model_declared_hard_finding(_stored_ai_review(item))
 
 
-def _hard_removal_rewrite_is_owed(item: ContentItem) -> bool:
-    """이 본문이 아직 쓰지 않은 삭제형 재작성을 갖고 있는가.
+def _stored_block_is_sample_remediable(item: ContentItem, code: str | None) -> bool:
+    """이 차단이 표본(확률적) 실패인가.
 
-    검수 장애 복구·재검수처럼 **생성 세션 밖에서** 사실·의료 안전 HARD가 붙은 본문은 그
-    한 번의 재작성을 산 적이 없다. 본문이 이미 있다는 이유로 이 상태를 종착으로 읽으면
-    스윕이 행을 claim만 하고 아무 일도 하지 않는 상태가 영원히 반복된다.
+    판정은 재시도 정책 한 곳에서 가져온다. 스윕이 정책과 다른 답을 쓰면, 정책이 재시도
+    예산을 주는 슬롯을 스윕이 손대지 않거나 그 반대가 된다.
     """
 
-    return _stored_hard_removal_rewrite_is_owed(
-        getattr(item, "essence_check_summary", None),
-        limit=HARD_REMOVAL_MAX_GENERATIONS,
+    if not code:
+        return False
+    return (
+        retry_class_for(code, model_declared_hard=_stored_model_declared_hard(item))
+        == GenerationRetryClass.SAMPLE_RECOVERABLE
     )
+
+
+def _hospital_review_facts(item: ContentItem, hospital: Hospital | None = None) -> str | None:
+    target = hospital if hospital is not None else getattr(item, "hospital", None)
+    return hospital_review_facts_fingerprint(target)
+
+
+def _approved_facts_changed_since_block(
+    item: ContentItem, hospital: Hospital | None = None
+) -> bool:
+    """차단을 남긴 뒤 승인된 병원 사실이 실제로 바뀌었는가.
+
+    사실·의료 안전 HARD는 "승인 자료에 없다"는 판정이라 본문을 다시 쓴다고 풀리지 않는다.
+    그 자료를 사람이 채운 것만이 다음 단계다. 지문을 남긴 적이 없는 기록은 비교할 대상이
+    없으므로 바뀌었다고 단정하지 않는다 — 배포만으로 재생성이 몰리지 않게 한다.
+    """
+
+    stored = _stored_generation_attempt(item).get("approved_facts")
+    if not isinstance(stored, str) or not stored:
+        return False
+    current = _hospital_review_facts(item, hospital)
+    return bool(current) and current != stored
 
 
 def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
@@ -809,13 +830,9 @@ def _remember_generation_attempt(
     updated = dict(summary) if isinstance(summary, dict) else {}
     context = _generation_attempt_context(item, philosophy)
     previous = _stored_generation_attempt(item)
-    # `retry_class_for`의 INPUT_CHANGE_REQUIRED는 "삭제형 재작성까지 마친 뒤의 종착"이다.
-    # 그 한 번을 아직 쓰지 않은 본문을 그 판정으로 굳히면 기한도 재시도도 없는 상태가 되어,
-    # 스윕이 계속 claim하면서도 아무것도 고치지 못한다.
-    hard_is_terminal = _stored_model_declared_hard(
-        item
-    ) and not _hard_removal_rewrite_is_owed(item)
-    retry_class = retry_class_for(reason, model_declared_hard=hard_is_terminal)
+    retry_class = retry_class_for(
+        reason, model_declared_hard=_stored_model_declared_hard(item)
+    )
     same_context = previous.get("context") == context
     observed_at = datetime.now(timezone.utc)
     attempt_period = environment_attempt_period(observed_at)
@@ -891,6 +908,11 @@ def _remember_generation_attempt(
     }
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
+    # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
+    # 그 사실을 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
+    approved_facts = _hospital_review_facts(item) or previous.get("approved_facts")
+    if isinstance(approved_facts, str) and approved_facts:
+        attempt["approved_facts"] = approved_facts
     stored_diagnostic = (
         previous.get(_IMAGE_POLICY_DIAGNOSTIC_KEY) if same_context else None
     )
@@ -5713,11 +5735,13 @@ def _generate_single_content_item(
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             and (
                 _stored_ai_review_is_remediable(item)
-                # 사실·의료 안전 HARD의 복구는 삭제형 재작성 → 재검수다. 그 한 번을 아직
-                # 쓰지 않았다면 본문이 있다는 사실이 "할 일이 없다"를 뜻하지 않는다.
-                # 작가 세션이 그 재작성과 재검수를 소유하고, 통과하면 아래 발행 게이트로
-                # 그대로 이어진다. 게이트를 건너뛰지 않는다.
-                or _hard_removal_rewrite_is_owed(item)
+                # 표본 실패로 분류된 차단(모델이 HARD로 단정하지 않은 합성 UNCERTAIN)은
+                # 재검수만으로는 풀리지 않는다. 같은 예산 안에서 본문을 실제로 다시 쓴다 —
+                # claim만 하고 물러나는 패스가 이 분류의 복구를 대신할 수 없다.
+                or _stored_block_is_sample_remediable(item, stored_assessment.code)
+                # 모델이 HARD로 단정한 사실·안전 지적은 재작성이 아니라 승인 자료가 푼다.
+                # 그 자료가 실제로 바뀐 뒤에만 한 번의 재생성을 준다.
+                or _approved_facts_changed_since_block(item, hospital)
             )
         )
         if repairable_body and _body_repair_session_is_due(item):

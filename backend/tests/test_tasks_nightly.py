@@ -35,13 +35,11 @@ from app.services.content_ai_review import (
     ContentAiReviewUnavailableReason,
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
-from app.workers import nightly_generation_batch, tasks
+from app.workers import generation_incident_control, nightly_generation_batch, tasks
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
-from app.workers.generation_incident_control import (
-    generation_block_is_terminal,
-    scheduled_recovery_owns_blocker,
-)
+from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
 from app.workers.generation_retry_policy import (
+    BODY_REPAIR_DAILY_BUDGET,
     ENVIRONMENT_ATTEMPT_BUDGET,
     SAMPLE_BODY_DAILY_BUDGET,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
@@ -1882,19 +1880,65 @@ def test_stored_style_finding_remains_sweep_repairable_within_budget():
     assert tasks._stored_ai_review_is_remediable(item) is False
 
 
+def test_only_a_sample_block_is_forced_into_a_body_repair():
+    """모델이 HARD로 단정한 차단은 표본 실패가 아니다 — 본문 재작성이 그것을 대신하지 못한다."""
+
+    model_hard = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
+        "severity": "HARD", "kind": "HOSPITAL_FACT", "message": "승인 자료가 없습니다.",
+    }]}})
+    assert tasks._stored_block_is_sample_remediable(
+        model_hard, "CONTENT_AI_HARD_FINDING"
+    ) is False
+
+    synthetic = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [{
+        "severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확신이 부족합니다.",
+    }]}})
+    assert tasks._stored_block_is_sample_remediable(
+        synthetic, "CONTENT_AI_HARD_FINDING"
+    ) is True
+    assert tasks._stored_block_is_sample_remediable(synthetic, None) is False
+    assert tasks._stored_block_is_sample_remediable(
+        synthetic, "MISSING_APPROVED_ESSENCE"
+    ) is False
+
+
+def test_fact_hard_next_action_names_the_edit_that_actually_unblocks_it():
+    """운영자에게 "확인하세요"가 아니라 실제로 복구를 여는 행동을 말한다."""
+
+    _impact, action = generation_incident_control._generation_operator_copy(
+        "CONTENT_AI_HARD_FINDING"
+    )
+    assert "병원 정보" in action, "존재하는 탭 이름만 쓴다"
+    assert "승인 자료" in action
+
+
+def test_approved_fact_change_is_the_only_thing_that_reopens_a_model_hard_block():
+    hospital = SimpleNamespace(name="강심장", treatments=["내과 진료"])
+    item = SimpleNamespace(essence_check_summary={"generation_attempt": {
+        "reason": "CONTENT_AI_HARD_FINDING",
+        "approved_facts": tasks.hospital_review_facts_fingerprint(hospital),
+    }})
+
+    assert tasks._approved_facts_changed_since_block(item, hospital) is False
+
+    # 실장이 승인 진료 항목을 채운다.
+    hospital.treatments = ["내과 진료", "심장 초음파"]
+    assert tasks._approved_facts_changed_since_block(item, hospital) is True
+
+    # 지문을 남긴 적이 없는 기록은 비교 대상이 없다 — 배포만으로 재생성이 몰리지 않는다.
+    item.essence_check_summary["generation_attempt"].pop("approved_facts")
+    assert tasks._approved_facts_changed_since_block(item, hospital) is False
+
+
 def test_hard_fact_finding_sweep_skips_writer_and_image(monkeypatch):
     philosophy = SimpleNamespace(id=uuid.uuid4())
     item = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="stored body", title="stored title",
         image_url=None, content_philosophy_id=philosophy.id,
         content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
-        essence_check_summary={
-            # 이 본문은 한 번뿐인 삭제형 재작성을 이미 썼다 — 그 뒤의 사실 HARD가 종착이다.
-            "hard_removal_rewrites": tasks.HARD_REMOVAL_MAX_GENERATIONS,
-            "ai_review": {"status": "REVISE", "blocking": True,
-                "findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT",
-                    "message": "승인 자료에서 장비 보유 사실을 확인할 수 없습니다."}]},
-        },
+        essence_check_summary={"ai_review": {"status": "REVISE", "blocking": True,
+            "findings": [{"severity": "HARD", "kind": "HOSPITAL_FACT",
+                "message": "승인 자료에서 장비 보유 사실을 확인할 수 없습니다."}]}},
     )
     hospital = SimpleNamespace(id=item.hospital_id, name="사실차단의원")
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
@@ -2038,189 +2082,6 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
     assert code == "CONTENT_AI_HARD_FINDING"
     assert "근거" in message
     assert tasks._stored_generation_attempt(item)["reason"] == code
-
-
-def test_stored_fact_hard_owes_its_removal_rewrite_until_one_is_spent():
-    """본문이 있다고 사실 HARD가 종착이 되지 않는다 — 삭제형 재작성 한 번이 남아 있다."""
-
-    item = SimpleNamespace(essence_check_summary={
-        "ai_review": {"status": "REVISE", "blocking": True, "findings": [{
-            "severity": "HARD", "kind": "HOSPITAL_FACT",
-            "message": "승인 자료에서 장비 보유 사실을 확인할 수 없습니다.",
-        }]},
-    })
-    assert tasks._hard_removal_rewrite_is_owed(item) is True
-
-    item.essence_check_summary["hard_removal_rewrites"] = (
-        tasks.HARD_REMOVAL_MAX_GENERATIONS
-    )
-    assert tasks._hard_removal_rewrite_is_owed(item) is False
-
-    # 삭제형 재작성이 다룰 수 없는 지적(합성 UNCERTAIN·문체)은 이 경로가 아니다.
-    item.essence_check_summary = {"ai_review": {"findings": [{
-        "severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확신이 부족합니다.",
-    }]}}
-    assert tasks._hard_removal_rewrite_is_owed(item) is False
-    item.essence_check_summary = {"ai_review": {"findings": [{
-        "severity": "HARD", "kind": "STYLE", "message": "문장을 다듬으세요.",
-    }]}}
-    assert tasks._hard_removal_rewrite_is_owed(item) is False
-
-
-def test_stored_fact_hard_with_a_body_is_remediated_not_skipped(monkeypatch):
-    """스윕이 claim만 하고 물러나지 않는다 — 재작성·재검수를 실제로 돌리고 게이트로 잇는다.
-
-    검수 장애가 풀린 뒤 재검수가 저장 본문에 사실 HARD를 붙이면, 그 본문은 한 번뿐인
-    삭제형 재작성을 아직 쓴 적이 없다. 그 한 번은 작가 세션이 소유한다(재작성 → 재검수).
-    """
-
-    philosophy = SimpleNamespace(id=uuid.uuid4())
-    item = SimpleNamespace(
-        id=uuid.uuid4(),
-        hospital_id=uuid.uuid4(),
-        body="stored body",
-        title="stored title",
-        image_url=None,
-        content_philosophy_id=philosophy.id,
-        content_type=SimpleNamespace(value="FAQ"),
-        query_target_id=None,
-        scheduled_date=date(2026, 9, 13),
-        published_at=None,
-        generation_claim_token=None,
-        content_revision=1,
-        essence_check_summary={
-            "findings": ["승인 자료에서 장비 보유 사실을 확인할 수 없습니다."],
-            "ai_review": {"status": "REVISE", "blocking": True, "findings": [{
-                "severity": "HARD", "kind": "HOSPITAL_FACT",
-                "message": "승인 자료에서 장비 보유 사실을 확인할 수 없습니다.",
-            }]},
-        },
-    )
-    hospital = SimpleNamespace(id=item.hospital_id, name="복구대상의원", slug="remediate")
-
-    class DB(_NightlyTaskDB):
-        def refresh(self, _item):
-            return None
-
-    db = DB()
-    # 어젯밤 스윕이 남긴 종착 판정. 이것이 있어도 재작성은 막히지 않아야 한다.
-    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_AI_HARD_FINDING")
-    stored_attempt = tasks._stored_generation_attempt(item)
-    assert stored_attempt["retry_class"] != (
-        GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
-    ), "삭제형 재작성이 남은 차단을 기한 없는 종착으로 굳히지 않는다"
-
-    writer_findings: list[list[str]] = []
-    gate_calls: list[str] = []
-
-    async def allowed(*_args, **_kwargs):
-        return SimpleNamespace(allowed=True)
-
-    async def regenerated(**kwargs):
-        writer_findings.append(
-            list((kwargs["item"].essence_check_summary or {}).get("findings") or [])
-        )
-        return (
-            {
-                "title": "장비 안내",
-                "body": "삭제형 재작성을 거친 본문",
-                "meta_description": "요약",
-                "references": [],
-                "faq_question": "무엇을 확인해야 하나요?",
-                "faq_answer_summary": "의료기관에서 확인이 필요합니다.",
-            },
-            SimpleNamespace(
-                status="ALIGNED",
-                summary={"blocking": False, "hard_removal_rewrites": 1},
-            ),
-        )
-
-    def write_content(_db, **kwargs):
-        for field, value in kwargs["values"].items():
-            setattr(item, field, value)
-        return 1
-
-    def assess(_item, _philosophy):
-        if _item.body == "stored body":
-            return SimpleNamespace(
-                code="CONTENT_AI_HARD_FINDING", message="승인 자료의 보완이 필요합니다."
-            )
-        return SimpleNamespace(code=None, message=None)
-
-    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
-    monkeypatch.setattr(tasks, "assess_content_publication", assess)
-    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
-    monkeypatch.setattr(
-        tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {}
-    )
-    monkeypatch.setattr(tasks, "_generate_with_auto_review", regenerated)
-    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: _args[2].summary)
-    monkeypatch.setattr(tasks, "write_back_generated_content", write_content)
-    monkeypatch.setattr(
-        tasks,
-        "review_generated_content",
-        lambda **_kwargs: (_ for _ in ()).throw(
-            AssertionError("작가 세션이 재검수를 소유한다 — 스윕이 따로 사지 않는다")
-        ),
-    )
-    monkeypatch.setattr(
-        tasks, "_recover_missing_content_image", lambda *_args: tasks.GenerationItemState.SUCCEEDED
-    )
-
-    def readiness(_db, _item, _philosophy):
-        gate_calls.append(_item.body)
-        return None
-
-    monkeypatch.setattr(tasks, "_persist_publication_readiness", readiness)
-
-    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
-
-    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
-    assert writer_findings == [
-        ["승인 자료에서 장비 보유 사실을 확인할 수 없습니다."]
-    ], "작가 세션이 저장된 HARD 지적을 재작성 지시로 받는다"
-    assert gate_calls == ["삭제형 재작성을 거친 본문"], "발행 게이트로 그대로 이어진다"
-    assert item.essence_check_summary["hard_removal_rewrites"] == 1
-    assert item.status == ContentStatus.DRAFT, "게이트를 건너뛴 강제 발행이 아니다"
-
-
-def test_spent_removal_rewrite_stops_the_sweep_from_buying_another_session(monkeypatch):
-    """삭제형 재작성을 한 번 쓴 뒤에는 같은 본문에 작가 세션을 또 사지 않는다."""
-
-    philosophy = SimpleNamespace(id=uuid.uuid4())
-    item = SimpleNamespace(
-        id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="rewritten body",
-        title="stored title", image_url=None, content_philosophy_id=philosophy.id,
-        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
-        scheduled_date=date(2026, 9, 13),
-        essence_check_summary={
-            "hard_removal_rewrites": tasks.HARD_REMOVAL_MAX_GENERATIONS,
-            "ai_review": {"status": "REVISE", "blocking": True, "findings": [{
-                "severity": "HARD", "kind": "MEDICAL_SAFETY",
-                "message": "의료 안전 근거가 부족합니다.",
-            }]},
-        },
-    )
-    hospital = SimpleNamespace(id=item.hospital_id, name="종착의원", slug="terminal")
-    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
-    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
-        code="CONTENT_AI_HARD_FINDING", message="승인 자료의 보완이 필요합니다."))
-    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", lambda *_a: (
-        _ for _ in ()).throw(AssertionError("재작성을 이미 쓴 본문은 작가 예산을 쓰지 않는다")))
-    monkeypatch.setattr(tasks, "_generate_with_auto_review", lambda **_kwargs: (
-        _ for _ in ()).throw(AssertionError("must not call the writer")))
-    monkeypatch.setattr(tasks, "_recover_missing_content_image", lambda *_args: (
-        _ for _ in ()).throw(AssertionError("must not spend image budget")))
-
-    db = _NightlyTaskDB()
-    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
-
-    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
-    attempt = tasks._remember_generation_attempt(db, item, philosophy, code)
-    assert attempt["retry_class"] == GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
-    assert (
-        tasks.retry_is_due(attempt) is False
-    ), "그 뒤에는 승인 자료 변경만이 이 차단을 푼다"
 
 
 def test_same_context_style_soft_finding_regenerates_body(monkeypatch):
@@ -5354,34 +5215,6 @@ def test_scheduled_recovery_owns_body_repair_until_its_budget_is_spent():
     assert scheduled_recovery_owns_blocker("FAQ_FIELDS_MISSING", item) is False
 
 
-def test_owed_removal_rewrite_keeps_a_fact_hard_off_the_operator_queue():
-    """삭제형 재작성이 남은 사실 HARD는 아직 자동 복구의 일이다 — 사람의 할 일이 아니다."""
-
-    philosophy = SimpleNamespace(id=uuid.uuid4())
-    item = SimpleNamespace(
-        id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="stored body",
-        title="stored title", content_philosophy_id=philosophy.id,
-        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
-        scheduled_date=date.today(),
-        essence_check_summary={"ai_review": {"status": "REVISE", "blocking": True, "findings": [{
-            "severity": "HARD", "kind": "HOSPITAL_FACT", "message": "승인 자료가 필요합니다.",
-        }]}},
-    )
-    db = _NightlyTaskDB()
-    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_AI_HARD_FINDING")
-
-    assert scheduled_recovery_owns_blocker("CONTENT_AI_HARD_FINDING", item) is True
-    assert generation_block_is_terminal("CONTENT_AI_HARD_FINDING", item) is False
-
-    item.essence_check_summary["hard_removal_rewrites"] = (
-        tasks.HARD_REMOVAL_MAX_GENERATIONS
-    )
-    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_AI_HARD_FINDING")
-
-    assert scheduled_recovery_owns_blocker("CONTENT_AI_HARD_FINDING", item) is False
-    assert generation_block_is_terminal("CONTENT_AI_HARD_FINDING", item) is True
-
-
 def test_sample_blocker_becomes_operator_work_only_after_the_budget_ends():
     item = SimpleNamespace(essence_check_summary={
         "generation_attempt": {
@@ -5762,8 +5595,8 @@ async def test_sample_budget_exhaustion_opens_exactly_one_operator_incident(
     assert bool(retried) is expects_retrying
 
 
-def _uncertain_only_item(philosophy, *, severity="UNCERTAIN", hard_removal_rewrites=None):
-    item = SimpleNamespace(
+def _uncertain_only_item(philosophy, *, severity="UNCERTAIN"):
+    return SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=uuid.uuid4(),
         body="stored body",
@@ -5791,9 +5624,6 @@ def _uncertain_only_item(philosophy, *, severity="UNCERTAIN", hard_removal_rewri
             }
         },
     )
-    if hard_removal_rewrites is not None:
-        item.essence_check_summary["hard_removal_rewrites"] = hard_removal_rewrites
-    return item
 
 
 def _stub_review(status, findings=()):
@@ -5846,8 +5676,15 @@ def test_uncertain_only_block_is_re_reviewed_by_the_sweep_and_can_pass(monkeypat
 def test_uncertain_only_block_spends_the_daily_sample_budget_and_ends_operator_required(
     monkeypatch,
 ):
+    """재작성 예산이 끝난 뒤에는 재검수만 하고 표본 사다리를 올라 주제 교체로 넘긴다."""
+
     philosophy = SimpleNamespace(id=uuid.uuid4())
     item = _uncertain_only_item(philosophy)
+    item.essence_check_summary[tasks._BODY_REPAIR_KEY] = {
+        "period": "2000-01-01",
+        "count": BODY_REPAIR_DAILY_BUDGET,
+        "exhausted_days": SAMPLE_EXHAUSTED_DAY_LIMIT,
+    }
     hospital = SimpleNamespace(id=item.hospital_id, name="재검수의원", slug="recheck")
     db = _NightlyTaskDB()
     reviews = []
@@ -5905,10 +5742,7 @@ def test_uncertain_only_block_spends_the_daily_sample_budget_and_ends_operator_r
 
 def test_model_declared_hard_finding_is_never_re_reviewed_by_the_sweep(monkeypatch):
     philosophy = SimpleNamespace(id=uuid.uuid4())
-    # 삭제형 재작성을 이미 쓴 본문이다. 그 뒤의 HARD는 검수를 다시 사지 않는 종착이다.
-    item = _uncertain_only_item(
-        philosophy, severity="HARD", hard_removal_rewrites=tasks.HARD_REMOVAL_MAX_GENERATIONS
-    )
+    item = _uncertain_only_item(philosophy, severity="HARD")
     hospital = SimpleNamespace(id=item.hospital_id, name="사실차단의원", slug="fact")
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
@@ -5929,6 +5763,146 @@ def test_model_declared_hard_finding_is_never_re_reviewed_by_the_sweep(monkeypat
 
     assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
     assert "승인 자료" in message
+
+
+def _sweep_regeneration_harness(monkeypatch, philosophy, item, *, body="다시 쓴 본문"):
+    """저장 본문 수리가 실제 작가 세션까지 가는지 관측하는 공통 장치."""
+
+    writer_calls: list[str] = []
+    gate_calls: list[str] = []
+
+    class DB(_NightlyTaskDB):
+        def refresh(self, _item):
+            return None
+
+    async def allowed(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def regenerated(**kwargs):
+        writer_calls.append(str(kwargs["item"].id))
+        return (
+            {
+                "title": "다시 쓴 제목",
+                "body": body,
+                "meta_description": "요약",
+                "references": [],
+                "faq_question": "무엇을 확인해야 하나요?",
+                "faq_answer_summary": "의료기관에서 확인이 필요합니다.",
+            },
+            SimpleNamespace(status="ALIGNED", summary={"blocking": False}),
+        )
+
+    def write_content(_db, **kwargs):
+        for field, value in kwargs["values"].items():
+            setattr(item, field, value)
+        return 1
+
+    def readiness(_db, _item, _philosophy):
+        gate_calls.append(_item.body)
+        return None
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+    monkeypatch.setattr(
+        tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", regenerated)
+    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: _args[2].summary)
+    monkeypatch.setattr(tasks, "write_back_generated_content", write_content)
+    monkeypatch.setattr(
+        tasks, "_recover_missing_content_image", lambda *_args: tasks.GenerationItemState.SUCCEEDED
+    )
+    monkeypatch.setattr(tasks, "_persist_publication_readiness", readiness)
+    return DB(), writer_calls, gate_calls
+
+
+def test_sample_block_that_survives_re_review_is_rewritten_not_skipped(monkeypatch):
+    """표본 실패로 분류된 차단은 재검수에서 끝나지 않고 실제 본문 재작성까지 간다."""
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = _uncertain_only_item(philosophy)
+    item.scheduled_date = date(2026, 9, 13)
+    item.generation_claim_token = None
+    item.content_revision = 1
+    hospital = SimpleNamespace(id=item.hospital_id, name="표본의원", slug="sample")
+    db, writer_calls, gate_calls = _sweep_regeneration_harness(monkeypatch, philosophy, item)
+
+    async def reviewer(**_kwargs):
+        return _stub_review(
+            ContentAiReviewStatus.REVISE,
+            (ContentAiFinding(
+                ContentAiFindingSeverity.UNCERTAIN,
+                ContentAiFindingKind.MEDICAL_SAFETY,
+                "자동 재검수가 필요합니다.",
+            ),),
+        )
+
+    assessments = iter(["CONTENT_AI_HARD_FINDING", "CONTENT_AI_HARD_FINDING", None, None])
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
+        code=next(assessments), message="독립 검수 지적이 남아 있습니다."))
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [str(item.id)], "재검수로 끝내지 않고 본문을 다시 쓴다"
+    assert gate_calls == ["다시 쓴 본문"], "재작성 결과는 그대로 발행 게이트로 간다"
+
+
+def test_model_hard_block_waits_for_an_approved_fact_change_then_regenerates(monkeypatch):
+    """사실 HARD는 승인 자료가 바뀐 뒤에만 재생성된다 — 그 전에는 claim 후 물러난다."""
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="강심장", slug="brave-heart", treatments=["내과 진료"]
+    )
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=hospital.id, hospital=hospital,
+        body="stored body", title="stored title", image_url=None,
+        content_philosophy_id=philosophy.id, content_revision=1,
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        scheduled_date=date(2026, 9, 15), published_at=None, generation_claim_token=None,
+        essence_check_summary={"findings": ["승인 자료에서 심장 초음파를 확인할 수 없습니다."],
+            "ai_review": {"status": "REVISE", "blocking": True, "findings": [{
+                "severity": "HARD", "kind": "HOSPITAL_FACT",
+                "message": "승인 자료에서 심장 초음파를 확인할 수 없습니다.",
+            }]}},
+    )
+    db, writer_calls, gate_calls = _sweep_regeneration_harness(monkeypatch, philosophy, item)
+    blocked = SimpleNamespace(
+        code="CONTENT_AI_HARD_FINDING", message="승인 자료의 보완이 필요합니다."
+    )
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: blocked)
+    monkeypatch.setattr(
+        tasks,
+        "review_generated_content",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            AssertionError("사실 HARD는 재검수를 다시 사지 않는다")
+        ),
+    )
+
+    # 승인 사실이 그대로인 동안은 claim 뒤 물러난다. 작가·이미지 예산을 쓰지 않는다.
+    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_AI_HARD_FINDING")
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["retry_class"] == GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    assert attempt["approved_facts"], "차단이 어떤 승인 사실 위에서 내려졌는지 남긴다"
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert writer_calls == [], "본문 claim만으로 사실 HARD를 고친 척하지 않는다"
+
+    # 실장이 승인 진료 항목을 채운다 → 다음 스윕이 한 번의 재생성을 준다.
+    hospital.treatments = ["내과 진료", "심장 초음파"]
+    assessments = iter([blocked, SimpleNamespace(code=None, message=None)])
+    monkeypatch.setattr(
+        tasks, "assess_content_publication", lambda *_args: next(assessments)
+    )
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [str(item.id)]
+    assert gate_calls == ["다시 쓴 본문"], "승인 자료가 바뀌어도 발행 게이트는 그대로 거친다"
 
 
 # ── 야간 생성 팬아웃: claim은 배치가, 생성은 슬롯별 태스크가 한다 ──

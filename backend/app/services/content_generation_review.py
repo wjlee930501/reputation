@@ -17,7 +17,6 @@ from app.models.hospital import Hospital
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
 from app.services.content_engine import SEASON_MISMATCH_FINDING_PREFIX
 from app.services.content_review_feedback import (
-    HARD_REMOVAL_REWRITES_KEY,
     apply_reference_review_findings,
     duplicate_topic_matches,
     duplicate_topic_remediation,
@@ -253,7 +252,7 @@ async def generate_reviewed_content(
     if reviewer_driven_rewrites > 0:
         summary["reviewer_driven_rewrites"] = reviewer_driven_rewrites
     if removal_rewrites > 0:
-        summary[HARD_REMOVAL_REWRITES_KEY] = removal_rewrites
+        summary["hard_removal_rewrites"] = removal_rewrites
     if last_ai_review is not None:
         summary["ai_review"] = last_ai_review.payload()
     reviewed_screening = type(last_screening)(

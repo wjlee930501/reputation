@@ -314,24 +314,6 @@ def test_publication_assessment_preserves_ai_review_provenance_but_not_old_block
     }
 
 
-def test_essence_writers_keep_the_spent_hard_removal_rewrite_count(monkeypatch):
-    """삭제형 재작성을 이미 썼다는 사실이 게이트를 지나며 사라지면 안 된다.
-
-    지워지면 예약 스윕이 그 본문에 한 번뿐인 재작성이 아직 남았다고 읽고, 고칠 수 없는
-    사실 HARD에 작가 세션을 매번 다시 산다.
-    """
-    _aligned(monkeypatch)
-    item = _item(content_revision=4, essence_check_summary={"hard_removal_rewrites": 1})
-    philosophy = _philosophy()
-
-    assessment = content_publication.assess_content_publication(item, philosophy)
-    content_publication.apply_publication_assessment(item, assessment)
-    assert item.essence_check_summary["hard_removal_rewrites"] == 1
-
-    content_publication.apply_essence_revalidation(item, philosophy)
-    assert item.essence_check_summary["hard_removal_rewrites"] == 1
-
-
 def test_essence_writers_preserve_durable_image_certification_attempt(monkeypatch):
     _aligned(monkeypatch)
     state = {
