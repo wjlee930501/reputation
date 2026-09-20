@@ -5,6 +5,7 @@ from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
     ENVIRONMENT_ATTEMPT_BUDGET,
     KST,
+    NIGHTLY_SWEEP_LOOKAHEAD_DAYS,
     RECOVERY_SWEEP_CATCHUP_DAYS,
     SAMPLE_BODY_DAILY_BUDGET,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
@@ -376,6 +377,55 @@ def test_a_slot_older_than_catchup_waits_for_the_backlog_recovery() -> None:
     assert next_recovery_deadline(
         attempt, scheduled_date=date(2026, 8, 1), now=_kst(2026, 9, 14, 23, 0)
     ) == _kst(2026, 9, 15, 23, 30).astimezone(UTC)
+
+
+def test_the_oldest_catchup_day_is_handed_to_the_backlog_recovery() -> None:
+    """오늘 스윕이 집은 창의 첫날은 내일 창에서 빠진다 — 기한을 잃으면 안 된다.
+
+    01·04·07 스윕의 창은 `[오늘-7, 오늘]`이라 오늘-7에 예정된 슬롯을 실제로 claim한다.
+    그 실행이 07:00 뒤에 실패를 기록하면 남은 후보 스윕의 창은 모두 `[내일-7, …]`
+    이상이라 이 슬롯을 다시 담지 못한다. 기준을 오늘 창으로 두면 그 하루가 스윕에도
+    백로그 복구에도 속하지 않아 `next_retry_at`이 `None`으로 굳고, 표본 실패는 소진
+    일수가 더 쌓이지 않아 주제 교체 계단조차 열리지 않는다.
+    """
+
+    observed = _kst(2026, 9, 14, 8, 0)
+    slot = observed.date() - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS)
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+
+    due = next_recovery_deadline(attempt, scheduled_date=slot, now=observed)
+
+    assert due == _kst(2026, 9, 14, 23, 30).astimezone(UTC)
+    attempt["next_retry_at"] = due.isoformat()
+    assert recovery_is_abandoned(attempt, due) is False
+
+
+def test_a_sample_slot_inside_the_sweep_windows_is_never_abandoned() -> None:
+    """예산이 남은 표본 실패는 어느 시각·어느 예정일에서도 다음 단계를 가져야 한다.
+
+    `next_retry_at`을 명시적 `None`으로 저장하면 `retry_is_due`가 영구히 거짓이 되고
+    (SAMPLE 분류에는 환경 오류 같은 하루 단위 예외 경로가 없다) 로더도 워커도 그 행을
+    다시 집지 않는다. 그러면 소진 일수가 3일에 닿지 못해 `OPERATOR_REQUIRED` 승격과
+    주제 교체가 함께 막힌다 — 정의된 다음 단계 없는 종착이다. 본문과 이미지 표본은
+    같은 기한 계산을 공유하므로 두 코드를 함께 묶는다.
+    """
+
+    today = date(2026, 9, 14)
+    for reason, budget in (
+        ("GENERATION_REJECTED", SAMPLE_BODY_DAILY_BUDGET),
+        ("IMAGE_GENERATION_FAILED", SAMPLE_IMAGE_DAILY_BUDGET),
+    ):
+        for hour in range(24):
+            observed = _kst(2026, 9, 14, hour, 10)
+            for offset in range(-RECOVERY_SWEEP_CATCHUP_DAYS, NIGHTLY_SWEEP_LOOKAHEAD_DAYS + 1):
+                slot = today + timedelta(days=offset)
+                for spent in range(1, budget + 1):
+                    case = (reason, hour, offset, spent)
+                    attempt = _sample_attempt(reason, spent, day=today)
+                    due = next_recovery_deadline(attempt, scheduled_date=slot, now=observed)
+                    assert due is not None, case
+                    attempt["next_retry_at"] = due.isoformat()
+                    assert recovery_is_abandoned(attempt, due) is False, case
 
 
 def test_a_stored_null_deadline_does_not_become_due_by_time_alone() -> None:

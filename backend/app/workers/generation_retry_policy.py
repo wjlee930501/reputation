@@ -198,6 +198,16 @@ def _candidate_sweeps(observed: datetime):
                 yield candidate
 
 
+def _next_sweep_catchup_start(observed: datetime) -> date:
+    """The oldest scheduled date any *future* catch-up sweep can still claim."""
+
+    return (
+        observed.astimezone(KST).date()
+        + timedelta(days=1)
+        - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS)
+    )
+
+
 def _next_backlog_recovery_deadline(observed: datetime) -> datetime:
     """Return when the 22:30 backlog recovery will have had its turn."""
 
@@ -322,7 +332,12 @@ def next_recovery_deadline(
         window_start, window_end = _sweep_window(candidate)
         if window_start <= scheduled_date <= window_end:
             return candidate.astimezone(UTC)
-    if scheduled_date < observed.date() - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS):
+    # 기준은 오늘의 catch-up 창이 아니라 **다음 스윕이 쓸 창**이다. 오늘 01·04·07이
+    # 집었던 창의 첫날(오늘-7)은 내일 창에서 빠지므로, 그날 예정된 슬롯이 마지막 스윕
+    # 뒤에 실패하면 어떤 후보 스윕도 다시 담지 못한다. 기준을 오늘 창으로 두면 그 하루가
+    # 스윕에도 백로그 복구에도 속하지 않아 `next_retry_at`이 `None`으로 굳고, 표본 실패는
+    # 소진 일수가 더 쌓이지 않아 주제 교체로 넘어갈 계단조차 열리지 않는다.
+    if scheduled_date < _next_sweep_catchup_start(observed):
         return _next_backlog_recovery_deadline(observed)
     return None
 
