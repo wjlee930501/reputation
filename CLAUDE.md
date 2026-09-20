@@ -117,6 +117,7 @@ Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 l
 - 무료 진단 single-flight는 동일 cache key의 중복 구매만 프로세스 간 합친다. provider semaphore는 프로세스 내부 한도이며 같은 API key의 전역 동시 호출 상한이 아니다.
 - 공개 commit 뒤 IndexNow 제출은 durable intent와 제한된 재시도로 처리한다. 정상 제출·재시도 성공·usage spool 복구를 Slack 알림으로 만들지 않는다.
 - Slack은 [알림 정책](docs/ops/slack-notification-policy.md)을 따른다. 정상 발행 알림을 다시 추가하지 않는다. outbox 실패가 도메인 트랜잭션을 되돌리지 않게 한다.
+- `#mkt-reputation`의 모든 메시지는 fallback text와 Block Kit header의 첫 토큰으로 `[Lead : 도입 문의]`·`[Error : 오류 발생]`·`[Report : 운영 현황 보고]` 중 하나를 쓴다. 문구와 종류→라벨 대응은 `services/notification_labels.py` 한 곳에 두고 라벨 문자열을 다른 파일에 복사하지 않는다. 라벨은 기존 문장 앞에만 붙고 버튼·`OPS-` 참조·개발팀 안내를 지우지 않으며, 자동 복구 사실(`INCIDENT_RECOVERED`)은 Error가 아니라 Report다. 라벨을 중복 억제·채널 라우팅·발행 게이트 판정에 쓰지 않는다.
 
 ## 검증과 배포
 
