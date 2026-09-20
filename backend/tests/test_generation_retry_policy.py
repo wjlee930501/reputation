@@ -14,6 +14,7 @@ from app.workers.generation_retry_policy import (
     has_model_declared_hard_finding,
     next_recovery_deadline,
     next_recovery_sweep,
+    recovery_is_abandoned,
     repair_session_is_available,
     retry_class_for,
     retry_is_due,
@@ -420,6 +421,51 @@ def test_a_daily_reset_environment_budget_reopens_on_the_day_it_resets() -> None
     )
 
     assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
+def test_a_review_outage_survives_a_stored_no_sweep_decision_on_the_next_day() -> None:
+    """검수 장애가 영구 차단으로 굳지 않게 한다.
+
+    catch-up 창 가장자리(예정일 == 오늘-7)에서 예산이 소진되면, 다음 날 어떤 스윕의
+    창에도 이 슬롯이 들지 않아 `next_retry_at`이 null로 굳는다. 그 상태로 두면 검수를
+    다시 사지 않으니 저장된 판정도 영원히 그대로다 — 2026-09-20 운영 사고의 형태다.
+    """
+
+    exhausted = {
+        "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
+        "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+        "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+        "attempt_period": "2026-09-19",
+        "next_retry_at": None,
+    }
+
+    # 같은 날에는 저장된 결정 그대로 — 예산이 아직 초기화되지 않았다.
+    assert retry_is_due(exhausted, _kst(2026, 9, 19, 23, 0)) is False
+    assert recovery_is_abandoned(exhausted, _kst(2026, 9, 19, 23, 0)) is True
+    # 다음 KST 일의 새 예산이 어제의 예측보다 나중에 내려진 결정이다.
+    assert retry_is_due(exhausted, _kst(2026, 9, 20, 1, 0)) is True
+    assert recovery_is_abandoned(exhausted, _kst(2026, 9, 20, 1, 0)) is False
+
+
+def test_a_non_resetting_environment_budget_stays_abandoned() -> None:
+    """일일 초기화가 없는 코드(비용 가드 등)의 종착은 그대로 종착이다."""
+
+    exhausted = {
+        "reason": "COST_BLOCKED",
+        "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+        "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+        "attempt_period": "2026-09-19",
+        "next_retry_at": None,
+    }
+
+    assert retry_is_due(exhausted, _kst(2026, 9, 20, 1, 0)) is False
+    assert recovery_is_abandoned(exhausted, _kst(2026, 9, 20, 1, 0)) is True
+
+
+def test_a_record_without_a_stored_decision_is_never_called_abandoned() -> None:
+    # 키가 아예 없는 레거시 기록은 "집지 않는다"고 판정한 적이 없다.
+    assert recovery_is_abandoned({"reason": "CONTENT_AI_REVIEW_UNAVAILABLE"}) is False
+    assert recovery_is_abandoned(None) is False
 
 
 def test_a_repair_codes_deadline_follows_its_session_budget() -> None:

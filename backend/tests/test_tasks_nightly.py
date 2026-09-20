@@ -1,5 +1,6 @@
 """P1-3/R1 — 야간 생성 catch-up window, cap 절단 감지, 자동 발행 검증."""
 
+import logging
 import sys
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -4499,6 +4500,60 @@ def test_auto_publish_blocks_content_with_forbidden_expression(monkeypatch):
     assert effects == {"revalidate": [], "indexnow": []}
 
 
+def test_auto_publish_names_the_hospital_and_reason_of_every_block(monkeypatch, caplog):
+    """차단은 감사 기록에도, 배포 로그에도 병원·글·코드·사유로 남아야 한다.
+
+    2026-09-20 운영 사고에서는 게이트가 매시간 같은 글을 되돌렸는데 Slack에도 로그에도
+    아무것도 없었다 — 코드별 Slack 소유자가 주간 롤업이거나 아예 없기 때문이다.
+    """
+
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="이 수술은 완치를 약속드립니다.")
+    db = _AutoPublishDB(item, hospital)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: _approved_philosophy()
+    )
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        payload = tasks._auto_publish_one(item.id)
+
+    audit = next(log for log in db.added if hasattr(log, "action"))
+    assert audit.action == tasks.AUTO_PUBLISH_BLOCKED_ACTION
+    assert audit.target_id == str(item.id)
+    assert audit.hospital_id == hospital.id
+    assert audit.detail["code"] == payload["code"] == "FORBIDDEN_EXPRESSION"
+    assert audit.detail["reason"] and audit.detail["scheduled_date"] == "2026-06-10"
+
+    blocked_lines = [
+        record.getMessage() for record in caplog.records if "auto publish blocked" in record.message
+    ]
+    assert len(blocked_lines) == 1
+    assert hospital.name in blocked_lines[0]
+    assert str(item.id) in blocked_lines[0]
+    assert "FORBIDDEN_EXPRESSION" in blocked_lines[0]
+
+
+def test_auto_publish_names_the_reason_it_walked_away_from_a_row(monkeypatch, caplog):
+    """게이트에 닿지도 못한 행도 이유를 남긴다 — 남은 due만으로는 구분되지 않는다."""
+
+    hospital = _publication_hospital()
+    hospital.site_live = False
+    item = _publication_item(hospital, body="증상 단계에 따라 진료 방향을 설명드립니다.")
+    db = _AutoPublishDB(item, hospital)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+
+    with caplog.at_level(logging.INFO, logger=tasks.logger.name):
+        assert tasks._auto_publish_one(item.id) is None
+
+    skipped = [
+        record.getMessage() for record in caplog.records if "auto publish skipped" in record.message
+    ]
+    assert len(skipped) == 1
+    assert "hospital_not_publicly_operational" in skipped[0]
+    assert str(item.id) in skipped[0]
+
+
 def test_auto_publish_blocks_markdown_hidden_forbidden_expression(monkeypatch):
     """마크다운 강조로 쪼갠 금지 표현(`최**고**의`)도 차단돼야 한다 — 회귀 방지선.
 
@@ -4779,6 +4834,66 @@ def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
         assert heals == []
     if expected and code == "ESSENCE_NOT_ALIGNED":
         assert "피해야 할 문구" in digests[0]["cause"]
+
+
+def test_a_morning_pass_records_what_it_did_even_when_nothing_was_published(
+    monkeypatch, caplog
+):
+    """08:00~23:00 사이 매시간 성공한 실행이 무엇을 했는지 한 줄로 남는다.
+
+    이 태스크는 반환값이 없어 Celery 결과만으로는 "발행 0건"과 "후보 0건"이 구분되지
+    않는다. 2026-09-20 사고에서 "성공했는데 due가 그대로"라는 관측이 실행기 정지로
+    오진된 이유다.
+    """
+
+    content_ids = [uuid.uuid4(), uuid.uuid4()]
+    hospital_id = uuid.uuid4()
+
+    class DB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def execute(self, _stmt):
+            return _Result(items=content_ids)
+
+        def commit(self):
+            return None
+
+    outcomes = {
+        content_ids[0]: {
+            "kind": "blocked",
+            "code": "CONTENT_AI_REVIEW_UNAVAILABLE",
+            "message": "blocked",
+            "hospital_id": hospital_id,
+            "hospital_name": "검수대기의원",
+            "run_id": uuid.uuid4(),
+            "title": "진료 안내",
+            "essence_check_summary": {},
+        },
+        content_ids[1]: None,
+    }
+    monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+    monkeypatch.setattr(tasks, "open_generation_incident", lambda **kwargs: None)
+
+    with caplog.at_level(logging.INFO, logger=tasks.logger.name):
+        tasks.morning_content_auto_publish.run()
+
+    summary = next(
+        record.getMessage()
+        for record in caplog.records
+        if "morning auto publish pass finished" in record.message
+    )
+    assert "due=2" in summary
+    assert "published=0" in summary
+    assert "blocked=1" in summary
+    assert "skipped=1" in summary
+    assert "CONTENT_AI_REVIEW_UNAVAILABLE" in summary
 
 
 def test_weekly_rejection_rollup_uses_the_completed_kst_week_once(monkeypatch):
@@ -5071,6 +5186,69 @@ def test_sample_blocker_becomes_operator_work_only_after_the_budget_ends():
     assert scheduled_recovery_owns_blocker(
         "IMAGE_GENERATION_RETRIES_EXHAUSTED", exhausted
     ) is False
+
+
+def test_a_review_outage_slot_is_re_reviewed_once_the_next_kst_day_starts():
+    """검수 장애로 멈춘 슬롯이 스스로 풀린다.
+
+    `_generate_single_content_item`은 저장된 시도 기록이 그대로이면 공급자를 부르지 않고
+    SKIPPED로 물러난다. 그 판정이 `retry_is_due`이므로, 여기서 다음 날이 열리지 않으면
+    재검수를 영원히 사지 않고 due 슬롯은 매시간 같은 자리에 남는다.
+    """
+
+    philosophy = SimpleNamespace(id=uuid.uuid4(), director_delta_ids=[])
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        content_type=SimpleNamespace(value="FAQ"),
+        query_target_id=None,
+        essence_check_summary={
+            "generation_attempt": {
+                "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
+                "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+                "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+                "attempt_period": "2026-09-19",
+                "next_retry_at": None,
+                "context": None,
+            }
+        },
+    )
+    attempt = item.essence_check_summary["generation_attempt"]
+    attempt["context"] = tasks._generation_attempt_context(item, philosophy)
+
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False, (
+        "오늘(2026-09-19 이후)의 새 예산이 어제의 '집을 스윕이 없다'를 대체한다"
+    )
+
+
+def test_a_blocker_no_sweep_will_pick_up_is_not_called_retrying():
+    """복구가 소유하지 않는 차단을 기한 없는 "재시도 중"으로 숨기지 않는다.
+
+    재시도 정책이 `next_retry_at: null`을 적었다는 것은 어떤 스윕도 이 슬롯을 다시
+    집지 않는다는 뜻이다. 그런데 이 코드는 자동 복구 목록에 있어 인시던트가 RETRYING
+    으로 열렸고, 그래서 운영센터에도 Slack에도 아무도 나타나지 않았다.
+    """
+
+    abandoned = SimpleNamespace(essence_check_summary={
+        "generation_attempt": {
+            "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
+            "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+            "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+            "attempt_period": arrow.now("Asia/Seoul").date().isoformat(),
+            "next_retry_at": None,
+        }
+    })
+    assert scheduled_recovery_owns_blocker("CONTENT_AI_REVIEW_UNAVAILABLE", abandoned) is False
+
+    # 예산이 남아 있는 같은 코드는 종전대로 시스템의 일이다.
+    retrying = SimpleNamespace(essence_check_summary={
+        "generation_attempt": {
+            "reason": "CONTENT_AI_REVIEW_UNAVAILABLE",
+            "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+            "provider_attempt_count": 1,
+            "attempt_period": arrow.now("Asia/Seoul").date().isoformat(),
+        }
+    })
+    assert scheduled_recovery_owns_blocker("CONTENT_AI_REVIEW_UNAVAILABLE", retrying) is True
 
 
 def test_exhausted_image_budget_publishes_with_a_reused_hospital_image(monkeypatch):

@@ -209,25 +209,28 @@ async def test_next_month_contract_is_append_only(db, monkeypatch):
 
 
 def report():
+    # 위치 인자로 만들면 감시 보고서에 사실이 하나 추가될 때마다 조용히 밀린다.
     return WatchdogReport(
-        NOW,
-        "2026-09-15",
-        True,
-        True,
-        True,
-        (),
-        (),
-        True,
-        True,
-        NOW,
-        "fresh",
-        True,
-        0,
-        5,
-        False,
-        False,
-        NOW,
-        False,
+        observed_at=NOW,
+        kst_date="2026-09-15",
+        redis_available=True,
+        database_available=True,
+        queue_canaries_current=True,
+        stale_queues=(),
+        stale_critical_queues=(),
+        beat_alive=True,
+        beat_lock_held=True,
+        beat_last_schedule_run_at=NOW,
+        beat_evidence="fresh",
+        publish_checked=True,
+        publish_due_remaining=0,
+        publish_published_today=5,
+        publish_missing=False,
+        publish_gate_residual=False,
+        publish_blocked_today=(),
+        publish_partial=False,
+        last_generation_batch_at=NOW,
+        generation_batch_stale=False,
     )
 
 

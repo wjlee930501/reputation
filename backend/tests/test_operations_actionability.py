@@ -789,6 +789,27 @@ def test_running_publication_and_linked_incident_stay_observable_without_duplica
     )
 
 
+def test_a_due_slot_with_an_open_incident_says_what_blocked_it() -> None:
+    """운영센터가 "오늘 발행 예정"만 반복하고 원인을 비워 두지 않는다.
+
+    2026-09-20 사고에서 이 자리가 늘 비어 있어, 매시간 같은 게이트에 막힌 5건의 원인을
+    DB를 직접 열지 않고는 알 수 없었다.
+    """
+
+    stored = SimpleNamespace(
+        safe_error_code="CONTENT_AI_REVIEW_UNAVAILABLE",
+        safe_error_message="독립 AI 검수 공급자를 일시적으로 사용할 수 없습니다.",
+    )
+    code_only = SimpleNamespace(safe_error_code="CONTENT_IMAGE_NOT_VERIFIED", safe_error_message="")
+
+    assert today_queries.publish_due_safe_cause(stored) == stored.safe_error_message
+    assert today_queries.publish_due_safe_cause(code_only) == (
+        "대표 이미지의 자동 정책 검사가 완료되지 않아 공개를 중단했습니다."
+    )
+    # 사건이 없는 정상 예정 슬롯은 종전대로 원인이 없다 — 모든 줄이 장애처럼 읽히면 안 된다.
+    assert today_queries.publish_due_safe_cause(None) is None
+
+
 def test_running_publication_becomes_operator_work_after_its_deadline() -> None:
     after_publisher = datetime(2026, 8, 19, 0, 0, tzinfo=UTC)
 

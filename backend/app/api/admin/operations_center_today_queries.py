@@ -32,6 +32,7 @@ from app.services.post_publish_review_policy import (
     auto_publish_due_predicate,
     publicly_operational_hospital_predicate,
 )
+from app.workers.generation_incident_control import generation_safe_cause
 
 _SEOUL: Final = ZoneInfo("Asia/Seoul")
 _TODAY_ACTION_LABEL: Final = "콘텐츠 확인"
@@ -41,6 +42,21 @@ _AUTO_PUBLISH_HOUR: Final = time(8, 0)
 # 승인 큐가 아니므로(`post_publish_review_policy`) 선택·집계·정렬 어디에도 넣지 않는다.
 _PUBLISH_DUE: Final = "PUBLISH_DUE"
 _MEDIUM: Final = "MEDIUM"
+
+
+def publish_due_safe_cause(incident: Incident | None) -> str | None:
+    """이 슬롯이 왜 아직 공개되지 않았는지 — 사건이 열려 있을 때만 있다.
+
+    예정된 일감에는 원인이라는 개념이 없어 이 자리는 비어 있는 것이 정상이다. 다만
+    08:00~23:00 발행기가 게이트에서 되돌린 슬롯은 예정 상태가 아니라 이미 관측된
+    사건이고, 그 사실은 행에 붙은 인시던트가 증명한다. 원인을 비워 두면 운영센터가
+    "오늘 발행 예정"만 반복해 보여 주고 무엇이 막혔는지는 DB를 열어야만 알 수 있다.
+    """
+
+    if incident is None:
+        return None
+    code = incident.safe_error_code or ""
+    return incident.safe_error_message or (generation_safe_cause(code) if code else None)
 
 
 def _today_operator_copy() -> tuple[str, str]:
@@ -248,7 +264,7 @@ async def load_today_queue(
                     path=f"/hospitals/{hospital.id}/content?content={content.id}",
                 ),
                 retry=None,
-                safe_cause=None,
+                safe_cause=publish_due_safe_cause(incident),
                 history=[OperationsHistoryEntry(event="SCHEDULED", at=history_at)],
                 slack=None,
                 incident_id=incident.id if incident is not None else None,
@@ -260,4 +276,8 @@ async def load_today_queue(
     return total, items
 
 
-__all__ = ("load_today_queue", "publish_due_requires_operator_action")
+__all__ = (
+    "load_today_queue",
+    "publish_due_requires_operator_action",
+    "publish_due_safe_cause",
+)

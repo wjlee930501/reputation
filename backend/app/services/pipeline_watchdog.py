@@ -40,14 +40,17 @@ from sqlalchemy.pool import NullPool
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import _sync_connect_args
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
 from app.models.operations import OperationRun
 from app.services.post_publish_review_policy import (
+    AUTO_PUBLISH_BLOCKED_ACTION,
     auto_publish_due_predicate,
     publicly_operational_hospital_predicate,
 )
 from app.workers.canary_tasks import CANARY_MAX_AGE, EXPECTED_QUEUES, read_queue_canaries
+from app.workers.generation_incident_control import generation_safe_cause
 
 logger = logging.getLogger(__name__)
 
@@ -71,18 +74,61 @@ GENERATION_BATCH_MAX_AGE: Final = timedelta(hours=26)
 
 CONDITION_QUEUE_STALE: Final = "queue_stale"
 CONDITION_BEAT_DOWN: Final = "beat_down"
+# 오늘 공개가 0건인 같은 사실을 두 원인으로 나눈다. 발행기가 한 건도 열어 보지 못한
+# 것(`publish_missing`)과, 열어 보고 공개 직전 안전검사에서 되돌린 것
+# (`publish_gate_residual`)은 사람이 할 일이 완전히 다르다.
 CONDITION_PUBLISH_MISSING: Final = "publish_missing"
+CONDITION_PUBLISH_GATE_RESIDUAL: Final = "publish_gate_residual"
 
 # 알림 정책의 수신자 구분. 순수 인프라 정지는 AE가 고칠 수 없으므로 개발 채널이 받고,
 # "오늘 글이 한 건도 안 나갔다"는 고객이 보는 사실이라 운영 채널이 받는다.
 AUDIENCE_DEVELOPER: Final = "developer"
 AUDIENCE_OPERATOR: Final = "operator"
+# 두 발행 조건 모두 "오늘 공개가 0건"이라는 고객이 보는 사실이라 운영 채널이 소유한다.
+_OPERATOR_CONDITIONS: Final = frozenset(
+    {CONDITION_PUBLISH_MISSING, CONDITION_PUBLISH_GATE_RESIDUAL}
+)
+
+# 발행기가 오늘 실제로 게이트를 돌렸다는 증거를 읽는 폭. 5개 병원 × 시간당 한 번이라
+# 하루치가 이 안에 들어오고, 손상된 하루에도 쿼리가 폭주하지 않는다.
+_BLOCK_AUDIT_SCAN_LIMIT: Final = 500
+# Slack·API 한 건에 담는 차단 표본. 나머지는 개수로만 말한다.
+PUBLISH_BLOCK_SAMPLE_LIMIT: Final = 20
 
 _KEY_NAMESPACE: Final = "reputation:pipeline-watchdog:v1"
 _DEDUPE_TTL_SECONDS: Final = 3600
 # 알린 상태를 기억해 두고, 조건이 사라지면 복구 한 건을 보낸다. 하루가 지나도
 # 복구 알림이 오지 않았다면 그 인시던트는 이미 사람이 다른 경로로 확인한 것이다.
 _STATE_TTL_SECONDS: Final = 24 * 3600
+
+
+@dataclass(frozen=True, slots=True)
+class PublishBlockFact:
+    """오늘 자동 발행이 한 글을 게이트에서 되돌린 사실 한 건."""
+
+    hospital_id: str | None
+    hospital_name: str
+    content_id: str
+    code: str
+    reason: str
+    scheduled_date: str | None
+    observed_at: datetime
+
+    @property
+    def safe_cause(self) -> str:
+        """운영자 문구용 한국어 원인. 내부 코드는 Slack에 넣지 않는다."""
+        return generation_safe_cause(self.code)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "hospital_id": self.hospital_id,
+            "hospital_name": self.hospital_name,
+            "content_id": self.content_id,
+            "code": self.code,
+            "reason": self.reason,
+            "scheduled_date": self.scheduled_date,
+            "observed_at": self.observed_at.isoformat(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,9 +150,19 @@ class WatchdogReport:
     publish_due_remaining: int | None
     publish_published_today: int | None
     publish_missing: bool
+    publish_gate_residual: bool
+    publish_blocked_today: tuple[PublishBlockFact, ...]
     publish_partial: bool
     last_generation_batch_at: datetime | None
     generation_batch_stale: bool
+
+    @property
+    def publish_block_reasons(self) -> tuple[tuple[str, int], ...]:
+        """오늘 관측된 차단 코드와 글 수 — 많은 순, 같으면 코드 순."""
+        counts: dict[str, int] = {}
+        for fact in self.publish_blocked_today:
+            counts[fact.code] = counts.get(fact.code, 0) + 1
+        return tuple(sorted(counts.items(), key=lambda pair: (-pair[1], pair[0])))
 
     @property
     def critical_conditions(self) -> tuple[str, ...]:
@@ -120,6 +176,8 @@ class WatchdogReport:
             conditions.append(CONDITION_BEAT_DOWN)
         if self.publish_missing:
             conditions.append(CONDITION_PUBLISH_MISSING)
+        if self.publish_gate_residual:
+            conditions.append(CONDITION_PUBLISH_GATE_RESIDUAL)
         return tuple(sorted(conditions))
 
     @property
@@ -147,6 +205,11 @@ class WatchdogReport:
             "publish_due_remaining": self.publish_due_remaining,
             "publish_published_today": self.publish_published_today,
             "publish_missing": self.publish_missing,
+            "publish_gate_residual": self.publish_gate_residual,
+            "publish_blocked_today": [fact.as_dict() for fact in self.publish_blocked_today],
+            "publish_block_reasons": [
+                {"code": code, "count": count} for code, count in self.publish_block_reasons
+            ],
             "publish_partial": self.publish_partial,
             "last_generation_batch_at": (
                 self.last_generation_batch_at.isoformat()
@@ -336,6 +399,57 @@ def _publish_facts(db: Session, *, now: datetime) -> tuple[int, int]:
     return int(due or 0), int(published or 0)
 
 
+def _publish_block_facts(db: Session, *, now: datetime) -> tuple[PublishBlockFact, ...]:
+    """오늘 자동 발행이 게이트에서 되돌린 글을 글 단위로 최신 1건씩 읽는다.
+
+    이 감사 기록은 발행기만 쓴다. 그러므로 08:00 이후에 한 건이라도 있으면 "발행기가
+    실행되지 않았다"는 판정은 거짓이다 — 실행됐고, 공개 직전 검사가 막은 것이다.
+    발행기는 정상 차단에 Slack을 보내지 않으므로(코드별 소유자가 주간 롤업이거나
+    아예 없다) 이 조회가 운영자가 원인을 볼 수 있는 유일한 외부 경로다.
+    """
+
+    today = now.astimezone(KST).date()
+    window_start = datetime.combine(today, PUBLISH_WINDOW_START, tzinfo=KST)
+    rows = db.execute(
+        select(
+            AdminAuditLog.hospital_id,
+            AdminAuditLog.target_id,
+            AdminAuditLog.detail,
+            AdminAuditLog.created_at,
+            Hospital.name,
+        )
+        .join(Hospital, Hospital.id == AdminAuditLog.hospital_id, isouter=True)
+        .where(
+            AdminAuditLog.action == AUTO_PUBLISH_BLOCKED_ACTION,
+            AdminAuditLog.created_at >= window_start,
+            AdminAuditLog.created_at <= now,
+        )
+        .order_by(AdminAuditLog.created_at.desc())
+        .limit(_BLOCK_AUDIT_SCAN_LIMIT)
+    ).all()
+
+    latest: dict[str, PublishBlockFact] = {}
+    for hospital_id, target_id, detail, created_at, hospital_name in rows:
+        content_id = str(target_id or "")
+        # 같은 글은 시간마다 다시 막힌다. 가장 최근 판정 하나만 사실로 삼는다.
+        if not content_id or content_id in latest:
+            continue
+        facts = detail if isinstance(detail, dict) else {}
+        observed = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+        latest[content_id] = PublishBlockFact(
+            hospital_id=str(hospital_id) if hospital_id else None,
+            hospital_name=str(hospital_name or "이름 미상 병원"),
+            content_id=content_id,
+            code=str(facts.get("code") or "UNKNOWN"),
+            reason=str(facts.get("reason") or ""),
+            scheduled_date=(
+                str(facts["scheduled_date"]) if facts.get("scheduled_date") else None
+            ),
+            observed_at=observed.astimezone(UTC),
+        )
+    return tuple(list(latest.values())[:PUBLISH_BLOCK_SAMPLE_LIMIT])
+
+
 def _last_generation_batch_at(db: Session) -> datetime | None:
     started = db.scalar(
         select(func.max(OperationRun.started_at)).where(
@@ -386,9 +500,11 @@ def evaluate(db: Session, *, now: datetime) -> WatchdogReport:
     database_available = True
     due: int | None = None
     published: int | None = None
+    blocked: tuple[PublishBlockFact, ...] = ()
     last_batch: datetime | None = None
     try:
         due, published = _publish_facts(db, now=observed_at)
+        blocked = _publish_block_facts(db, now=observed_at)
         last_batch = _last_generation_batch_at(db)
     except SQLAlchemyError:
         database_available = False
@@ -396,7 +512,11 @@ def evaluate(db: Session, *, now: datetime) -> WatchdogReport:
 
     after_check_time = local_now.time() >= PUBLISH_CHECK_AFTER
     publish_checked = bool(database_available and after_check_time)
-    publish_missing = bool(publish_checked and (due or 0) > 0 and published == 0)
+    # 오늘 아무것도 공개되지 않은 같은 사실을, 발행기가 이 글들을 열어 봤다는 증거가
+    # 있는지로 나눈다. 증거가 있으면 "실행되지 않음"은 거짓 진단이다.
+    publish_none_today = bool(publish_checked and (due or 0) > 0 and published == 0)
+    publish_gate_residual = bool(publish_none_today and blocked)
+    publish_missing = bool(publish_none_today and not blocked)
     # 일부만 나간 상태는 정보다. 남은 슬롯은 예산 안의 자동 복구가 소유하므로
     # 그 자체로는 사람의 일이 아니다.
     publish_partial = bool(publish_checked and (due or 0) > 0 and (published or 0) > 0)
@@ -421,6 +541,8 @@ def evaluate(db: Session, *, now: datetime) -> WatchdogReport:
         publish_due_remaining=due,
         publish_published_today=published,
         publish_missing=publish_missing,
+        publish_gate_residual=publish_gate_residual,
+        publish_blocked_today=blocked,
         publish_partial=publish_partial,
         last_generation_batch_at=last_batch,
         generation_batch_stale=generation_batch_stale,
@@ -484,13 +606,51 @@ def _developer_alert_text(report: WatchdogReport) -> str:
     return "\n".join(body)
 
 
+_BLOCK_REASON_LINES: Final = 3
+
+
+def _gate_residual_problem_lines(report: WatchdogReport) -> list[str]:
+    """막힌 글의 병원·원인을 평문으로 적는다 — 내부 코드는 넣지 않는다."""
+
+    blocked = report.publish_blocked_today
+    hospitals = {fact.hospital_name for fact in blocked}
+    lines = [
+        f"• 오늘 발행 예정 {report.publish_due_remaining}건 가운데 08:30까지 공개된 글이 "
+        "한 건도 없습니다.",
+        f"• 아침 자동 발행은 실행됐습니다. 병원 {len(hospitals)}곳의 글 {len(blocked)}건이 "
+        "공개 직전 자동 안전검사에서 되돌아왔습니다.",
+    ]
+    for code, count in report.publish_block_reasons[:_BLOCK_REASON_LINES]:
+        lines.append(f"• {generation_safe_cause(code)} ({count}건)")
+    return lines
+
+
 def _operator_alert_text(report: WatchdogReport) -> str:
+    if report.publish_gate_residual:
+        body = [
+            "오늘 예정된 글이 아직 한 건도 공개되지 않았습니다.",
+            "",
+            "무슨 문제인지",
+            *_gate_residual_problem_lines(report),
+            *_context_lines(report),
+            "",
+            "고객 영향",
+            "오늘 병원 공개 화면에 새 글이 올라가지 않습니다. 이 상태로 하루가 지나면 그날의 "
+            "계약 분량이 밀립니다.",
+            "",
+            "지금 할 일",
+            "운영센터에서 오늘 발행 큐의 각 항목을 열어 되돌아온 이유를 확인해 주세요. "
+            "자동 복구가 진행 중인 항목은 그대로 두고, 조치가 필요한 항목만 처리하면 됩니다. "
+            "예약 실행기와 대기열 자체는 정상이므로 재시작은 필요하지 않습니다.",
+            _operations_link(),
+        ]
+        return "\n".join(body)
     body = [
         "오늘 예정된 글이 아직 한 건도 공개되지 않았습니다.",
         "",
         "무슨 문제인지",
         f"• 오늘 발행 예정 {report.publish_due_remaining}건 가운데 08:30까지 공개된 글이 "
-        "한 건도 없습니다. 아침 자동 발행이 실행되지 않은 상태입니다.",
+        "한 건도 없습니다. 아침 자동 발행이 이 글들을 한 건도 열어 보지 못한 상태입니다.",
         *_context_lines(report),
         "",
         "고객 영향",
@@ -558,9 +718,11 @@ def conditions_for(report: WatchdogReport, audience: str) -> tuple[str, ...]:
     """수신자별로 소유하는 조건만 남긴다 — 같은 사실을 두 채널이 중복 소유하지 않는다."""
     if audience == AUDIENCE_OPERATOR:
         return tuple(
-            item for item in report.critical_conditions if item == CONDITION_PUBLISH_MISSING
+            item for item in report.critical_conditions if item in _OPERATOR_CONDITIONS
         )
-    return tuple(item for item in report.critical_conditions if item != CONDITION_PUBLISH_MISSING)
+    return tuple(
+        item for item in report.critical_conditions if item not in _OPERATOR_CONDITIONS
+    )
 
 
 def webhook_for(audience: str) -> str:
