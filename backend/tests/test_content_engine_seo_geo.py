@@ -23,8 +23,12 @@ import pytest
 
 from app.models.content import ContentType
 from app.services.content_engine import (
+    _REFERENCE_DROP_BROKEN,
+    _REFERENCE_DROP_NOT_CITABLE,
+    _REFERENCE_DROP_UNRELATED,
     _drop_definitively_broken_references,
     _normalize_references,
+    _reference_drop_notes,
     _validate_geo,
     _validate_seo,
 )
@@ -435,3 +439,88 @@ async def test_reference_verification_drops_404_and_external_redirect(monkeypatc
     kept = await _drop_definitively_broken_references(refs)
 
     assert kept == [refs[0]]
+
+
+# ── 빈 references 거절이 재작성 회차에 넘기는 사유 ─────────────────────────────
+
+
+class TestEmptyReferenceCause:
+    """참고자료가 왜 하나도 남지 않았는지 작가가 알 수 있어야 회차가 달라진다."""
+
+    def test_writer_that_sent_nothing_is_told_that_omitting_is_not_an_option(self):
+        h = _hospital()
+        result = _good_result(h)
+        result["references"] = []
+
+        with pytest.raises(ValueError) as raised:
+            _validate_geo(result, h, ContentType.FAQ)
+
+        message = str(raised.value)
+        assert "references를 비워 보냈습니다" in message
+        assert "비우는 선택지는 없으니" in message
+
+    def test_dropped_urls_are_named_with_the_reason_they_were_dropped(self):
+        """종전에는 URL을 냈는데도 "references is empty"만 돌아가 같은 URL을 다시 냈다."""
+        h = _hospital()
+        result = _good_result(h)
+        result["references"] = []
+        notes = _reference_drop_notes(
+            [
+                {"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"},
+                {"title": "기관 홈", "url": "https://kdca.go.kr/"},
+            ],
+            [],
+            _REFERENCE_DROP_NOT_CITABLE,
+        )
+
+        with pytest.raises(ValueError) as raised:
+            _validate_geo(result, h, ContentType.FAQ, reference_drop_notes=notes)
+
+        message = str(raised.value)
+        assert "모두 제외됐습니다" in message
+        assert "ad-blog.example.com" in message
+        assert _REFERENCE_DROP_NOT_CITABLE in message
+        assert "같은 사유를 피해" in message
+
+    def test_the_cause_survives_the_rewrite_finding_truncation(self):
+        """지적 한 줄은 240자에서 잘린다 — 사유가 그 안에 들어와야 작가에게 닿는다."""
+        h = _hospital()
+        result = _good_result(h)
+        result["references"] = []
+        notes = _reference_drop_notes(
+            [
+                {"title": "a", "url": "https://very-long-subdomain.ad-blog.example.com/p"},
+                {"title": "b", "url": "https://another-long-host.example.org/doc"},
+                {"title": "c", "url": "https://third-host.example.net/doc"},
+            ],
+            [],
+            _REFERENCE_DROP_UNRELATED,
+        )
+
+        with pytest.raises(ValueError) as raised:
+            _validate_geo(result, h, ContentType.FAQ, reference_drop_notes=notes)
+
+        message = " ".join(str(raised.value).split())
+        assert len(message) <= 240
+        assert "같은 사유를 피해" in message
+
+
+class TestReferenceDropNotes:
+    def test_only_the_dropped_entries_are_reported(self):
+        kept = [{"title": "KDCA", "url": "https://health.kdca.go.kr/doc?cntnts_sn=1"}]
+        notes = _reference_drop_notes(
+            [*kept, {"title": "블로그", "url": "https://ad-blog.example.com/promo"}],
+            kept,
+            _REFERENCE_DROP_NOT_CITABLE,
+        )
+
+        assert notes == [f"ad-blog.example.com({_REFERENCE_DROP_NOT_CITABLE})"]
+
+    def test_nothing_is_reported_when_every_entry_survived(self):
+        kept = [{"title": "KDCA", "url": "https://health.kdca.go.kr/doc?cntnts_sn=1"}]
+
+        assert _reference_drop_notes(kept, kept, _REFERENCE_DROP_UNRELATED) == []
+
+    def test_a_missing_or_malformed_list_is_not_a_crash(self):
+        assert _reference_drop_notes(None, [], _REFERENCE_DROP_BROKEN) == []
+        assert _reference_drop_notes(["not-a-dict"], [], _REFERENCE_DROP_BROKEN) == []

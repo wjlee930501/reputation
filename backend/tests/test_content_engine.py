@@ -1765,6 +1765,23 @@ def test_reference_required_type_prompts_do_not_license_an_empty_list(content_ty
     assert "없으면 생략" not in prompt
 
 
+def test_the_static_block_never_resolves_uncertainty_into_an_empty_reference_list():
+    """유형 템플릿만 고치면 부족하다 — 정적 블록이 여전히 '빼라'고 말하면 그쪽이 이긴다.
+
+    작성 원칙 3과 출처 화이트리스트는 항상 실리는 블록이고 날조 금지와 함께 읽히므로
+    "확신이 없으면 인용하지 않습니다"·"그 항목만 빼세요"는 작가가 references를 통째로
+    비우는 정당한 근거가 된다. 확신이 없을 때의 해결은 생략이 아니라 교체여야 한다.
+    """
+    block = content_engine.STATIC_SYSTEM_BLOCK
+
+    assert "확신이 없으면 인용하지 않습니다" not in block
+    assert "차라리 인용을 생략하세요" not in block
+    assert "**그 항목만 빼세요**" not in block
+    assert "확신이 있는 다른 공신력 문서" in block
+    assert "확신이 있는 다른 문서로 바꿔 넣으세요" in block
+    assert "빈 references는 저장되지 않습니다" in block
+
+
 async def test_prompt_keeps_the_plain_duplicate_list_for_other_keywords(monkeypatch):
     message = await _capture_user_message(
         monkeypatch,
@@ -1874,4 +1891,67 @@ async def test_dropping_every_reference_falls_back_to_the_curated_catalog(monkey
     assert all(
         reference["url"] in content_engine.CURATED_SOURCE_URLS
         for reference in result["references"]
+    )
+
+
+async def test_a_dropped_reference_reaches_the_next_round_as_a_named_cause(monkeypatch):
+    """제거는 조용하다 — 그 사실이 작가에게 닿지 않으면 같은 URL이 계속 돌아온다.
+
+    화이트리스트 밖 URL 하나만 낸 회차는 정규화 단계에서 근거가 통째로 사라져
+    "references is empty" 거절이 된다. 작가 입장에서는 출처를 냈으므로, 무엇이 왜
+    빠졌는지 말해 주지 않으면 다음 회차도 같은 선택을 한다.
+    """
+    hospital = SimpleNamespace(
+        name="잠원수면의원",
+        address="서울 서초구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["서초"],
+        specialties=["내과"],
+        keywords=["수면장애"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    body = (
+        "## 밤에 잠들기 어려울 때 먼저 볼 것\n"
+        "잠원수면의원 김원장은 서초에서 수면 문제를 상담합니다. "
+        + ("잠드는 데 걸리는 시간과 깨는 횟수를 2주 정도 기록하면 진료에 도움이 됩니다. " * 45)
+        + "\n\n## 진료가 필요한 기준\n"
+        + ("낮 졸림이 3주 이상 이어지면 의료기관에서 원인을 확인하는 것이 좋습니다. " * 30)
+    )
+    payload = {
+        "title": "잠이 잘 오지 않을 때 확인할 것",
+        "body": body,
+        "meta_description": "잠들기 어려울 때 기록할 것과 진료가 필요한 기준을 안내합니다.",
+        "references": [
+            {"title": "수면 블로그", "url": "https://sleep-blog.example.com/tips"}
+        ],
+        "faq_question": "밤에 잠이 잘 오지 않는데 어느 과에 가야 하나요?",
+        "faq_answer_summary": "2주 이상 이어지면 수면 문제를 다루는 의료기관에서 원인을 확인해 보세요.",
+    }
+    messages: list[str] = []
+
+    class _FakeResponse:
+        content = [SimpleNamespace(text=json.dumps(payload))]
+
+    def fake_create(*_args, **kwargs):
+        messages.append(str(kwargs["messages"][-1]["content"]))
+        return _FakeResponse()
+
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
+
+    with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
+        await content_engine.generate_content(
+            hospital,
+            ContentType.FAQ,
+            content_brief={"target_keyword": "수면장애", "target_query": "서초 수면장애 병원"},
+        )
+
+    assert "sleep-blog.example.com" in str(raised.value)
+    assert content_engine._REFERENCE_DROP_NOT_CITABLE in str(raised.value)
+    assert len(messages) > 1, "빈 references 거절은 재작성 회차를 산다"
+    assert "sleep-blog.example.com" in messages[1], (
+        "다음 회차 프롬프트가 어떤 출처가 왜 빠졌는지 말해야 같은 URL이 반복되지 않는다"
     )

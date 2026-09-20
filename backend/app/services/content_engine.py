@@ -186,8 +186,10 @@ _SYSTEM_PROMPT_TEMPLATE = """\
      특정 퍼센트("재발률 40%", "환자 70%")를 **특정 기관에 귀속시키지 마세요.** 확실한 출처가 없으면
      수치를 빼고 정성적으로 적습니다("상당수", "대부분", "드뭅니다").
    - 인용: 실재하고 그 내용을 실제로 담은 공신력 기관(국가암정보센터·질병관리청·대한대장항문학회 진료지침 등)만,
-     references에 실제 URL과 함께. 확신이 없으면 인용하지 않습니다.
-   - **"Mayo Clinic은 40% 낮춘다" 같은 [기관명+미검증 수치] 조합은 절대 금지.** 차라리 인용을 생략하세요.
+     references에 실제 URL과 함께. 어떤 URL에 확신이 없으면 **그 URL 대신 확신이 있는 다른 공신력 문서**를 넣으세요.
+     '확신이 없다'는 references를 비우라는 뜻이 아닙니다 — 참고자료가 필수인 유형에서 빈 references는 저장되지 않습니다.
+   - **"Mayo Clinic은 40% 낮춘다" 같은 [기관명+미검증 수치] 조합은 절대 금지.** 그 수치를 본문에서 빼고,
+     references에는 이 글의 주제를 다루는 확실한 문서를 넣으세요.
 4. **명확한 문장**: 모호한 홍보 문구를 피하고, 의학적 불확실성·개인차는 정확히 표시합니다.
 5. **읽기 쉬운 구조**: 페이지 제목은 시스템이 별도 H1으로 표시하므로 본문에는 `# H1`을 절대 넣지 말고,
    `## H2` 소제목부터 사용합니다. 단계·비교가 실제 이해에 도움이 될 때만 목록이나 표를 씁니다.
@@ -1154,20 +1156,40 @@ async def _generate_content_attempt(
     # 화이트리스트 밖 URL만 인용된 경우 hard-fail은 통과하고 최종 references는
     # 빈 배열로 저장돼 근거 없이 발행이 완료된다. 정규화된 리스트로 검사해야
     # tenacity 재시도가 "화이트리스트 통과 references 1개 이상"을 실제로 강제한다.
-    result["references"] = _normalize_references(result.get("references"))
+    raw_references = result.get("references")
+    result["references"] = _normalize_references(raw_references)
+    # 제거는 단계마다 조용히 일어난다(logger.info). 그 사실이 작가에게 닿지 않으면
+    # 재작성 회차는 "references is empty"만 보고 같은 URL을 다시 낸다.
+    reference_drops = _reference_drop_notes(
+        raw_references, result["references"], _REFERENCE_DROP_NOT_CITABLE
+    )
     page_titles: dict[str, str] = {}
     if settings.APP_ENV == "production" and result["references"]:
+        fetched_from = result["references"]
         result["references"], page_titles = await _drop_definitively_broken_references(
-            result["references"], with_titles=True
+            fetched_from, with_titles=True
+        )
+        reference_drops += _reference_drop_notes(
+            fetched_from, result["references"], _REFERENCE_DROP_BROKEN
         )
     if result["references"]:
         # 주제와 어긋나는 근거는 거절 사유가 아니라 제거 대상이다. 비면 아래 GEO 게이트가
         # 기존대로 MissingCitableReferencesError → 큐레이션 치유 경로로 보낸다.
+        scored_from = result["references"]
         result["references"] = _drop_unrelated_references(
-            result["references"], result, content_brief, page_titles
+            scored_from, result, content_brief, page_titles
+        )
+        reference_drops += _reference_drop_notes(
+            scored_from, result["references"], _REFERENCE_DROP_UNRELATED
         )
 
-    return _validate_generated_result(result, hospital, content_type, content_brief)
+    return _validate_generated_result(
+        result,
+        hospital,
+        content_type,
+        content_brief,
+        reference_drop_notes=reference_drops,
+    )
 
 
 def _reference_title_violations(title: str) -> list[str]:
@@ -1220,6 +1242,8 @@ def _validate_generated_result(
     hospital: Hospital,
     content_type: ContentType,
     content_brief: dict | None,
+    *,
+    reference_drop_notes: list[str] | None = None,
 ) -> dict:
     """Apply every stored-content hard gate to one normalized provider result."""
 
@@ -1238,7 +1262,9 @@ def _validate_generated_result(
 
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
-    geo_findings = _validate_geo(result, hospital, content_type)
+    geo_findings = _validate_geo(
+        result, hospital, content_type, reference_drop_notes=reference_drop_notes
+    )
     # 측정 질의 대응 검사. 워커가 이 목록을 보고 한 번만 보완 재작성을 돌린다.
     target_findings = _validate_target_alignment(result, content_brief, content_type)
     result["target_alignment_findings"] = target_findings
@@ -1776,6 +1802,8 @@ def _validate_geo(
     result: dict,
     hospital: Hospital,
     content_type: ContentType,
+    *,
+    reference_drop_notes: list[str] | None = None,
 ) -> list[str]:
     """GEO 엔티티 공출현 + 증거 신호 검증.
 
@@ -1795,7 +1823,8 @@ def _validate_geo(
         raise MissingCitableReferencesError(
             (
                 f"GEO hard-fail: references is empty for {content_type.value} "
-                "— 학회/KDCA 출처 1개 이상 필수"
+                f"— 학회/KDCA 출처 1개 이상 필수. "
+                f"{_empty_reference_cause(reference_drop_notes)}"
             ),
             result,
         )
@@ -1834,6 +1863,61 @@ def _validate_geo(
         findings.append("숫자/통계 패턴 없음 — claim-evidence 부족 (프롬프트 규칙 3 위반)")
 
     return findings
+
+
+# 참고자료가 단계별로 제거되는 사유. 재작성 지적에 그대로 실린다.
+_REFERENCE_DROP_NOT_CITABLE = "화이트리스트 밖이거나 문서 URL이 아님"
+_REFERENCE_DROP_BROKEN = "접속했더니 문서가 없음"
+_REFERENCE_DROP_UNRELATED = "이 글의 주제와 다른 문서"
+
+# 지적 한 줄은 `_validator_remediation_findings`에서 240자로 잘린다. 핵심 문장이
+# 잘려 나가지 않도록 제외 목록의 개수와 호스트 길이를 여기서 묶는다.
+_REFERENCE_DROP_NOTE_LIMIT = 2
+_REFERENCE_DROP_HOST_CHARS = 32
+
+
+def _reference_drop_notes(before: object, after: list[dict], reason: str) -> list[str]:
+    """이번 단계에서 떨어진 참고자료를 '호스트(사유)'로 적어 둔다.
+
+    제거는 거절이 아니라 조용한 정리라서 로그에만 남는다. 그런데 전부 떨어지면 작가가
+    받는 것은 "references is empty" 한 줄뿐이고, 정작 작가는 URL을 냈으므로 다음 회차에
+    같은 선택을 반복한다. 어떤 항목이 왜 빠졌는지 말해야 그 왕복이 끝난다.
+    """
+    if not isinstance(before, list):
+        return []
+    kept = {
+        str(item.get("url") or "").strip() for item in after if isinstance(item, dict)
+    }
+    notes: list[str] = []
+    for item in before:
+        if not isinstance(item, dict):
+            continue
+        url = str(item.get("url") or "").strip()
+        if not url or url in kept:
+            continue
+        try:
+            host = urlparse(url).hostname or url
+        except ValueError:
+            host = url
+        note = f"{host[:_REFERENCE_DROP_HOST_CHARS]}({reason})"
+        if note not in notes:
+            notes.append(note)
+    return notes
+
+
+def _empty_reference_cause(notes: list[str] | None) -> str:
+    """빈 references의 원인을 작가가 다음 회차에 고칠 수 있는 문장으로 바꾼다."""
+    dropped = [note for note in (notes or []) if note][:_REFERENCE_DROP_NOTE_LIMIT]
+    if not dropped:
+        return (
+            "직전 응답은 references를 비워 보냈습니다 — 비우는 선택지는 없으니 이 글의 "
+            "주제를 다루는 화이트리스트 문서 URL을 1개 이상 넣으세요."
+        )
+    return (
+        "직전 응답의 출처는 모두 제외됐습니다("
+        + ", ".join(dropped)
+        + "). 같은 사유를 피해 다른 문서를 쓰세요."
+    )
 
 
 def _normalize_references(raw: object) -> list[dict]:
