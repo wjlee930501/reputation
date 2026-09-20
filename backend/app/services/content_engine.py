@@ -488,7 +488,9 @@ def _fill_type_prompt(
     # 지역과 프로파일 지역이 다른 슬롯에서 프롬프트가 프로파일 지역을 보여 주지 않으면
     # 작가가 만족시킬 수 없는 요구가 된다. 그러면 지적을 되먹여도 같은 ValueError가
     # 재작성마다 되풀이돼 슬롯이 GENERATION_REJECTED에서 벗어나지 못한다.
-    profile_regions = [str(region).strip() for region in (hospital.region or []) if str(region).strip()]
+    profile_regions = [
+        str(region).strip() for region in (hospital.region or []) if str(region).strip()
+    ]
     region_text = " ".join(profile_regions)
     if content_type is ContentType.LOCAL and target["regions"]:
         region_text = " ".join(
