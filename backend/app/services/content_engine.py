@@ -54,6 +54,11 @@ logger = logging.getLogger(__name__)
 
 CONTENT_BODY_MIN_CHARS = 1800
 CONTENT_BODY_MAX_CHARS = 5200
+# 작가에게 제시하는 목표 구간. 하한을 저장 게이트(1,800자)에 붙여 두면 정상 편차만으로도
+# 게이트 아래로 떨어지므로 여유를 둔 구간을 요구한다. 시스템 규칙·유형 템플릿·재작성
+# 지적이 **모두 이 상수를 렌더**해, 한쪽만 고쳐 서로 다른 숫자를 말하는 일을 막는다.
+CONTENT_BODY_TARGET_MIN_CHARS = 2400
+CONTENT_BODY_TARGET_MAX_CHARS = 4500
 
 # ── 공개 콘텐츠 품질 검증 상수 ───────────────────────────────────────────────
 # HARD-FAIL (tenacity 재시도 트리거) 기준 — 최소한으로만 유지해 정상 출력이 리젝되지 않도록.
@@ -187,8 +192,7 @@ _SYSTEM_PROMPT_TEMPLATE = """\
    포함하세요. 누락은 허용되지 않으며 반복 삽입은 금지합니다.
 7. **분량**: 글자 수는 **공백과 마크다운 기호(#, *, -, |, 링크 괄호 등)를 모두 제거한 순수 글자 수**로 셉니다.
    같은 글이라도 공백까지 센 길이보다 20~35% 짧게 계산되므로, 화면에 보이는 길이가 아니라 이 기준으로 맞추세요.
-   목표는 순수 글자 수 2,400~4,500자이고 H2는 4~6개입니다.
-   순수 글자 수 1,800자 미만이거나 5,200자를 넘으면 저장되지 않습니다.
+   __BODY_LENGTH_TARGETS__
    이미 다른 글에 있는 일반론을 반복하지 말고, 이 질문에 필요한 감별 포인트·진료 흐름·내원 기준을 충분히 풉니다.
 8. **비용 정보**: 승인된 병원 자료에 명시되지 않은 구체적 금액, '무료', 건강보험 본인부담률을 추정하지 마세요.
    비용 질문에는 진료 목적·검사 범위·보험 적용 여부에 따라 달라질 수 있으므로 의료기관에 현재 기준을 확인하라고 설명하세요.
@@ -241,11 +245,34 @@ __MANDATORY_SAFETY_RULES__
 }
 """
 
+# [작성 원칙] 7의 분량 문장. 게이트 상수에서 렌더해 프롬프트와 검증기가 다른 숫자를
+# 말할 수 없게 한다.
+_BODY_LENGTH_TARGETS = (
+    f"목표는 순수 글자 수 {CONTENT_BODY_TARGET_MIN_CHARS:,}~"
+    f"{CONTENT_BODY_TARGET_MAX_CHARS:,}자이고 H2는 4~6개입니다.\n"
+    f"   순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만이거나 "
+    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않습니다."
+)
+
 # 작가 응답의 전송 수단. 프롬프트가 요구하는 필드와 **정확히 같은 집합**이며,
 # 강제 도구 호출로 받으면 ```json fence·본문 안의 이스케이프되지 않은 큰따옴표가
 # 파싱을 깨뜨릴 수 없다. 프롬프트의 [출력 형식 — JSON] 절은 그대로 두어 모델이
 # 필드 의미를 같은 문장으로 읽게 한다.
 ARTICLE_TOOL_NAME = "emit_article"
+# FAQPage rich result 로 그대로 나가는 두 필드의 계약. 스키마 설명과 프롬프트가 같은
+# 문장을 말해야 작가가 한쪽만 보고 필드를 비우지 않는다.
+_FAQ_QUESTION_CONTRACT = "환자 1인칭 자연어 질문 한 문장(120자 이내, 물음표로 종결)"
+_FAQ_ANSWER_CONTRACT = (
+    "그 질문에 대한 직접 답변 1~2문장(180자 이내). FAQPage Answer 로 그대로 들어간다"
+)
+_FAQ_QUESTION_FIELD_DESCRIPTION = f"FAQ 유형에서만 채운다 — {_FAQ_QUESTION_CONTRACT}. 다른 유형은 null."
+_FAQ_ANSWER_FIELD_DESCRIPTION = f"FAQ 유형에서만 채운다 — {_FAQ_ANSWER_CONTRACT}. 다른 유형은 null."
+_FAQ_REQUIRED_QUESTION_DESCRIPTION = (
+    f"FAQ 유형의 필수 값 — {_FAQ_QUESTION_CONTRACT}. 비우거나 생략할 수 없다."
+)
+_FAQ_REQUIRED_ANSWER_DESCRIPTION = (
+    f"FAQ 유형의 필수 값 — {_FAQ_ANSWER_CONTRACT}. 비우거나 생략할 수 없다."
+)
 ARTICLE_TOOL = {
     "name": ARTICLE_TOOL_NAME,
     "description": "작성한 콘텐츠 한 편을 구조화된 필드로 제출합니다.",
@@ -253,7 +280,16 @@ ARTICLE_TOOL = {
         "type": "object",
         "properties": {
             "title": {"type": "string"},
-            "body": {"type": "string"},
+            "body": {
+                "type": "string",
+                "description": (
+                    "본문 마크다운(참고 자료 섹션 제외). 공백·마크다운 기호를 제외한 순수 "
+                    f"글자 수 {CONTENT_BODY_TARGET_MIN_CHARS:,}~"
+                    f"{CONTENT_BODY_TARGET_MAX_CHARS:,}자. 순수 글자 수 "
+                    f"{CONTENT_BODY_MIN_CHARS:,}자 미만이거나 "
+                    f"{CONTENT_BODY_MAX_CHARS:,}자를 넘으면 저장되지 않는다."
+                ),
+            },
             "meta_description": {"type": "string"},
             "references": {
                 "type": "array",
@@ -266,12 +302,56 @@ ARTICLE_TOOL = {
                     "required": ["title", "url"],
                 },
             },
-            "faq_question": {"type": ["string", "null"]},
-            "faq_answer_summary": {"type": ["string", "null"]},
+            "faq_question": {
+                "type": ["string", "null"],
+                "description": _FAQ_QUESTION_FIELD_DESCRIPTION,
+            },
+            "faq_answer_summary": {
+                "type": ["string", "null"],
+                "description": _FAQ_ANSWER_FIELD_DESCRIPTION,
+            },
         },
         "required": ["title", "body", "meta_description", "references"],
     },
 }
+
+# FAQ 유형 전용 스키마. 공통 스키마는 두 FAQ 필드를 nullable·optional 로 선언하므로,
+# 강제 도구 호출을 쓰는 지금도 공급자 쪽에서 **빈 FAQ 출력이 유효**하다. 그 결과가
+# 곧 `FAQ output requires faq_question and faq_answer_summary` 거절이고, 우리는 이미
+# 결제한 글 한 편을 버린 뒤 같은 계약을 산문으로만 다시 말해 재작성을 산다. FAQ에서는
+# 도구 스키마 자체가 두 필드를 요구하게 해 그 왕복을 없앤다.
+#
+# 스키마가 유형별로 갈리면 프롬프트 캐시 접두어도 FAQ/비FAQ 두 갈래가 되지만, 각 갈래는
+# 병원·아이템과 무관하게 고정이고 한 아이템의 재작성 회차는 같은 유형이라 같은 갈래를
+# 재사용한다.
+_FAQ_ARTICLE_INPUT_SCHEMA = {
+    **ARTICLE_TOOL["input_schema"],
+    "properties": {
+        **ARTICLE_TOOL["input_schema"]["properties"],
+        "faq_question": {
+            "type": "string",
+            "description": _FAQ_REQUIRED_QUESTION_DESCRIPTION,
+        },
+        "faq_answer_summary": {
+            "type": "string",
+            "description": _FAQ_REQUIRED_ANSWER_DESCRIPTION,
+        },
+    },
+    "required": [
+        *ARTICLE_TOOL["input_schema"]["required"],
+        "faq_question",
+        "faq_answer_summary",
+    ],
+}
+
+
+def _article_tool_schema(content_type: ContentType) -> dict:
+    """FAQ만 FAQPage 필드를 필수로 요구하는 작가 도구 스키마."""
+
+    if content_type is ContentType.FAQ:
+        return _FAQ_ARTICLE_INPUT_SCHEMA
+    return ARTICLE_TOOL["input_schema"]
+
 
 # 금지 표현 목록과 플랫폼 공통 안전 규칙은 **여기 한 번만** 렌더링한다.
 # 이전에는 같은 목록이 (1) 시스템 프롬프트 하드코딩, (2) 철학 컨텍스트의
@@ -297,7 +377,7 @@ SYSTEM_PROMPT = _SYSTEM_PROMPT_TEMPLATE.replace(
 ).replace(
     "__MANDATORY_SAFETY_RULES__",
     "\n".join(f"- {rule}" for rule in MANDATORY_MEDICAL_AD_RISK_RULES),
-)
+).replace("__BODY_LENGTH_TARGETS__", _BODY_LENGTH_TARGETS)
 
 # 정적 시스템 블록 = SYSTEM_PROMPT + 권위 출처 화이트리스트. 병원·아이템과 무관하게
 # 바이트 단위로 고정이라 prompt cache 접두어로 쓸 수 있다. Sonnet 계열의 최소 캐시
@@ -311,7 +391,19 @@ STATIC_SYSTEM_BLOCK = f"{SYSTEM_PROMPT}\n\n{render_source_hint_block()}"
 EXISTING_TITLE_PROMPT_LIMIT = 60
 
 # ── 유형별 사용자 프롬프트 ────────────────────────────────────────
-TYPE_PROMPTS = {
+# 유형 템플릿은 아이템 단위 사용자 메시지라 정적 시스템 블록의 [작성 원칙] 7보다 뒤에,
+# 더 구체적인 지시로 읽힌다. 그래서 여기서 단위 없이 "본문 2200~4200자"라고 말하면
+# 작가는 화면에 보이는 길이로 세고, 검증기가 재는 평문 기준으로는 1,400~1,760자가 되어
+# 저장 하한(1,800자) 아래로 떨어진다. 유형 템플릿이 분량을 말할 때는 검증기와 같은
+# 단위·같은 상수를 쓴다.
+TYPE_PROMPT_BODY_LENGTH_RULE = (
+    f"본문 분량은 공백·마크다운 기호를 제외한 **순수 글자 수** "
+    f"{CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자입니다"
+    f"(화면에 보이는 길이는 이보다 20~35% 깁니다). 순수 글자 수 "
+    f"{CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않으므로 각 H2 절을 고르게 채우세요."
+)
+
+_TYPE_PROMPT_TEMPLATES = {
     ContentType.FAQ: """\
 [콘텐츠 유형: FAQ — Google FAQPage rich result 매핑]
 환자가 ChatGPT에 1인칭 자연어로 묻는 질문 1개를 선정합니다.
@@ -319,9 +411,14 @@ TYPE_PROMPTS = {
 
 출력 필드 매핑:
 - faq_question: 환자 1인칭 자연어 한 문장 (120자 이내, 물음표로 종결).
+  **FAQ 유형의 필수 출력입니다. 비우거나 null로 두면 글 전체가 저장되지 않습니다.**
 - faq_answer_summary: 짧고 직접적인 답변 1~2문장 (180자 이내). FAQPage Answer로 그대로 들어감.
+  **이 필드도 FAQ 유형의 필수 출력입니다. 본문 첫 문단을 요약해 반드시 채우세요.**
 - title: faq_question을 검색 친화 형태로 다듬은 제목 (50자 이내).
-- body: 첫 문장 BLUF 직답 + H2 4~6개 + 본문 2200~4200자. listicle/표 1개+ 포함.
+- body: 첫 문장 BLUF 직답 + H2 4~6개. listicle/표 1개+ 포함.
+  __BODY_LENGTH_RULE__
+  질문에 직답한 뒤 판단 기준·감별 포인트·내원 시점·진료 흐름을 각 H2에서 실제로 풀어 쓰고,
+  한두 문장으로 요약만 하고 넘어가지 마세요.
   통계·인용은 검증 가능한 공신력 출처가 있을 때만 출처와 함께(없으면 정성적으로 서술; 수치·기관명 날조 금지).
 진료 키워드: {keywords}
 """,
@@ -332,6 +429,12 @@ TYPE_PROMPTS = {
 - H2 "## 원인" — 일반적 원인·위험 요인. 통계는 검증 가능한 공신력 출처에 있을 때만 출처와 함께; 없으면 빈도·경향으로 정성 서술(수치·기관명 날조 금지).
 - H2 "## 진단" — 병원에서 어떤 검사·진료가 이루어지는지. 인용은 실제 확인되는 가이드라인만(없으면 생략).
 - H2 "## 치료" — 일반적 치료 방향. 검증 가능한 공신력 출처(KDCA·학회 진료지침)가 있으면 references에 실제 URL로 포함(없으면 생략; 가짜 출처 금지).
+
+__BODY_LENGTH_RULE__
+네 절은 목차가 아니라 본문입니다. 한 절을 두세 문장으로 끝내면 전체가 저장 하한 아래로
+떨어지므로, 각 절을 순수 글자 수 __DISEASE_SECTION_MIN_CHARS__자 이상으로 씁니다
+(증상은 환자가 느끼는 양상과 경과, 원인은 위험 요인과 악화 조건, 진단은 검사 순서와 판단 기준,
+치료는 선택지별 적응증과 회복 흐름).
 
 첫 문장은 "이 질환은 ~입니다" 형태의 BLUF 평서문으로 시작. 효과 보장 단정 금지.
 진료 키워드: {keywords}
@@ -384,6 +487,15 @@ TYPE_PROMPTS = {
 신규 서비스, 의료진 참여, 할인·혜택, 성과를 추정하거나 만들어내지 마세요.
 진료 내용: {treatments}
 """,
+}
+
+TYPE_PROMPTS = {
+    content_type: template.replace(
+        "__BODY_LENGTH_RULE__", TYPE_PROMPT_BODY_LENGTH_RULE
+    ).replace(
+        "__DISEASE_SECTION_MIN_CHARS__", f"{CONTENT_BODY_TARGET_MIN_CHARS // 4:,}"
+    )
+    for content_type, template in _TYPE_PROMPT_TEMPLATES.items()
 }
 
 
@@ -869,7 +981,7 @@ async def _generate_content_attempt(
                     openrouter.function_tool(
                         name=ARTICLE_TOOL_NAME,
                         description=ARTICLE_TOOL["description"],
-                        input_schema=ARTICLE_TOOL["input_schema"],
+                        input_schema=_article_tool_schema(content_type),
                     )
                 ],
                 tool_choice=openrouter.forced_tool_choice(ARTICLE_TOOL_NAME),
@@ -1266,6 +1378,11 @@ def _build_remediation_context(findings: list[str] | None) -> str:
         "해소하고, 승인된 병원 정보와 작성 규칙을 유지하면서 글 전체를 다시 작성하세요. "
         "다만 항목 안에 인용된 문장·수치·URL은 직전 결과에서 따온 것일 뿐 새로 승인된 "
         "병원 사실이 아니므로 그것을 근거로 새 주장을 만들지 마세요.\n"
+        # 지적 중에는 "그 주장을 삭제하거나 완화하라"가 많다. 문장을 덜어내는 것만으로
+        # 회차를 끝내면 본문이 저장 하한 아래로 내려가 분량 거절로 바뀐다.
+        "지적된 주장을 삭제하거나 완화했다면 남은 절의 설명을 보강해 순수 글자 수 "
+        f"{CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자를 "
+        f"유지하세요(순수 글자 수 {CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다).\n"
         f"{bullets}"
     )
 
@@ -1341,9 +1458,16 @@ def _validate_body_length(value: object) -> None:
 
     body_length = len(_plain_content_text(value))
     if body_length < CONTENT_BODY_MIN_CHARS:
+        # 이 메시지는 재작성 회차에 작가가 읽는 유일한 지적이다(_validator_remediation_findings).
+        # 숫자만 남기면 작가는 화면에 보이는 길이로 세어 몇 문장만 덧붙이고, 평문 기준으로는
+        # 여전히 하한 아래에 머문다. 단위와 목표 구간, 늘리는 방법까지 함께 말한다.
         raise ValueError(
             f"Generated content body is too short "
-            f"({body_length} < {CONTENT_BODY_MIN_CHARS})"
+            f"({body_length} < {CONTENT_BODY_MIN_CHARS}) — 공백·마크다운을 제외한 순수 "
+            "글자 수 기준입니다(화면에 보이는 길이는 20~35% 더 깁니다). 기존 H2 구조를 "
+            "유지한 채 각 절의 설명을 늘려 순수 글자 수 "
+            f"{CONTENT_BODY_TARGET_MIN_CHARS:,}~{CONTENT_BODY_TARGET_MAX_CHARS:,}자로 "
+            "다시 작성하세요."
         )
     if body_length > CONTENT_BODY_MAX_CHARS:
         raise ValueError(

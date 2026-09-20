@@ -1281,6 +1281,149 @@ def test_static_system_block_requires_at_least_one_real_document_url():
     assert "최소 1개" in block
 
 
+# ── 유형 템플릿의 분량 단위·FAQ 필드 계약 (2026-09-20 생성 실패) ────────────────
+
+
+@pytest.mark.parametrize("content_type", [ContentType.FAQ, ContentType.DISEASE])
+def test_type_prompt_states_length_in_the_unit_the_validator_measures(content_type):
+    """유형 템플릿은 시스템 규칙보다 뒤에, 더 구체적으로 읽힌다.
+
+    FAQ 템플릿이 단위 없이 "본문 2200~4200자"라고 말하는 동안 작가는 화면에 보이는
+    길이로 세어 평문 1,400~1,760자를 썼고, 그 글은 1,800자 게이트에서 버려졌다.
+    DISEASE 템플릿은 분량을 **아예 말하지 않아** 4절 골격만 채운 짧은 글이 나왔다.
+    """
+    prompt = content_engine.TYPE_PROMPTS[content_type]
+
+    assert "2200~4200자" not in prompt
+    assert "공백·마크다운" in prompt
+    assert (
+        f"{content_engine.CONTENT_BODY_TARGET_MIN_CHARS:,}~"
+        f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자"
+    ) in prompt
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만" in prompt
+
+
+def test_prompt_length_targets_come_from_the_gate_constants():
+    """시스템 규칙·유형 템플릿·재작성 지적이 서로 다른 숫자를 말하면 다시 벌어진다."""
+    targets = (
+        f"{content_engine.CONTENT_BODY_TARGET_MIN_CHARS:,}~"
+        f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자"
+    )
+
+    assert content_engine.CONTENT_BODY_TARGET_MIN_CHARS > content_engine.CONTENT_BODY_MIN_CHARS
+    assert content_engine.CONTENT_BODY_TARGET_MAX_CHARS < content_engine.CONTENT_BODY_MAX_CHARS
+    assert targets in content_engine.SYSTEM_PROMPT
+    assert targets in content_engine.TYPE_PROMPT_BODY_LENGTH_RULE
+
+
+def test_disease_prompt_requires_each_standard_section_to_carry_body_text():
+    """네 절 골격만 채우면 절당 두세 문장으로도 '완성'처럼 보인다 — 절 단위 하한을 준다."""
+    prompt = content_engine.TYPE_PROMPTS[ContentType.DISEASE]
+    section_min = content_engine.CONTENT_BODY_TARGET_MIN_CHARS // 4
+
+    assert f"{section_min:,}자 이상" in prompt
+    assert section_min * 4 >= content_engine.CONTENT_BODY_MIN_CHARS
+
+
+def test_faq_prompt_marks_the_json_ld_fields_as_required_output():
+    prompt = content_engine.TYPE_PROMPTS[ContentType.FAQ]
+
+    assert prompt.count("필수 출력") == 2
+    assert "저장되지 않습니다" in prompt
+
+
+def test_faq_tool_schema_requires_the_fields_the_validator_demands():
+    """공통 스키마는 두 필드를 nullable·optional 로 선언한다 — FAQ에서는 그것이 곧 거절이다."""
+    schema = content_engine._article_tool_schema(ContentType.FAQ)
+
+    assert "faq_question" in schema["required"]
+    assert "faq_answer_summary" in schema["required"]
+    assert schema["properties"]["faq_question"]["type"] == "string"
+    assert schema["properties"]["faq_answer_summary"]["type"] == "string"
+    # 도구 스키마가 요구하는 필드 집합은 파서·검증기가 쓰는 집합과 같아야 한다.
+    assert set(schema["properties"]) == set(
+        content_engine.ARTICLE_TOOL["input_schema"]["properties"]
+    )
+
+
+@pytest.mark.parametrize(
+    "content_type", [ct for ct in ContentType if ct is not ContentType.FAQ]
+)
+def test_non_faq_types_keep_the_shared_nullable_schema(content_type):
+    """FAQ가 아닌 유형에 FAQ 필드를 요구하면 쓰지도 않을 값을 매번 결제한다."""
+    schema = content_engine._article_tool_schema(content_type)
+
+    assert schema is content_engine.ARTICLE_TOOL["input_schema"]
+    assert "faq_question" not in schema["required"]
+    assert schema["properties"]["faq_question"]["type"] == ["string", "null"]
+
+
+def test_article_tool_body_field_carries_the_length_contract():
+    """강제 도구 호출이 실제 출력 계약이다 — 분량은 스키마에도 있어야 한다."""
+    body_schema = content_engine.ARTICLE_TOOL["input_schema"]["properties"]["body"]
+
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만" in body_schema["description"]
+
+
+async def test_faq_generation_asks_the_provider_for_the_required_fields(monkeypatch):
+    hospital = _writer_hospital()
+    payload = _valid_payload(
+        references=[{"title": "질병관리청 국가건강정보포털", "url": _CURATED_DOCUMENT_URL}],
+        faq_question="대장내시경은 몇 년마다 받아야 하나요?",
+        faq_answer_summary="검사 결과와 위험 요인에 따라 간격이 달라지므로 진료로 확인합니다.",
+    )
+    recorder = _Recorder([payload])
+    _install_writer_doubles(monkeypatch, recorder)
+
+    saved = await content_engine.generate_content(hospital, ContentType.FAQ)
+
+    assert saved["faq_question"].endswith("?")
+    tool = recorder.calls[0]["tools"][0]
+    assert tool["function"]["parameters"] is content_engine._article_tool_schema(
+        ContentType.FAQ
+    )
+
+
+def test_too_short_rejection_tells_the_writer_the_unit_and_the_target():
+    """숫자만 돌려주면 작가는 화면 길이로 세어 몇 문장만 덧붙이고 또 미달한다."""
+    with pytest.raises(ValueError) as excinfo:
+        _validate_body_length("## 안내\n" + "짧은 본문입니다. " * 20)
+
+    message = str(excinfo.value)
+    assert "too short" in message
+    assert "공백·마크다운을 제외한 순수" in message
+    assert (
+        f"{content_engine.CONTENT_BODY_TARGET_MIN_CHARS:,}~"
+        f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자"
+    ) in message
+    # 지적은 재작성 프롬프트에 240자 상한으로 실린다 — 잘려서 목표가 사라지면 안 된다.
+    finding = content_engine._validator_remediation_findings(excinfo.value, [])[0]
+    assert f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자" in finding
+
+
+async def test_short_body_feedback_reaches_the_writer_with_the_target_range(monkeypatch):
+    short = _valid_payload(body="## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다.")
+    recorder = _Recorder([short, _valid_payload()])
+    _install_writer_doubles(monkeypatch, recorder)
+
+    await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+
+    second_user = recorder.calls[1]["messages"][1]["content"]
+    assert "too short" in second_user
+    assert (
+        f"{content_engine.CONTENT_BODY_TARGET_MIN_CHARS:,}~"
+        f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자"
+    ) in second_user
+
+
+def test_remediation_context_keeps_deletions_from_shrinking_the_body():
+    """지적 대부분은 '삭제하거나 완화하라'다 — 덜어내기만 하면 분량 거절로 바뀐다."""
+    context = _build_remediation_context(["지적된 주장을 삭제하세요."])
+
+    assert "삭제하거나 완화했다면" in context
+    assert f"{content_engine.CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않습니다" in context
+
+
 # ── 참고자료 주제 적합성: 거절이 아니라 제거 ──────────────────────────────
 
 _KNEE_BRIEF = {
