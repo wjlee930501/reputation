@@ -5903,15 +5903,34 @@ def _generate_single_content_item(
     # 야간 배치와 동일한 이유로, 긴 생성 호출 전에 플래너 변경을 확정해 item을 clean으로 만든다.
     db.commit()
     expected_revision = int(getattr(item, "content_revision", 1) or 1)
-    content_data, screening = _run_async(
-        _generate_with_auto_review(
-            hospital=hospital,
-            item=item,
-            existing_titles=existing_titles,
-            philosophy=philosophy,
-            approved_brief=approved_brief,
+    stored_body = getattr(item, "body", None)
+    try:
+        content_data, screening = _run_async(
+            _generate_with_auto_review(
+                hospital=hospital,
+                item=item,
+                existing_titles=existing_titles,
+                philosophy=philosophy,
+                approved_brief=approved_brief,
+            )
         )
-    )
+    except Exception as exc:
+        if not stored_body:
+            raise
+        # 저장 본문을 고치러 들어온 세션이 본문을 만들지 못했다. 기존 본문은 그대로 두고
+        # (발행 게이트는 여전히 막혀 있다) 원인과 다음 시도 시각만 남긴다. 예외를 그대로
+        # 올리면 호출자가 본문 있는 행에는 시도 기록을 쓰지 않아 원인·재시도 클래스·
+        # 다음 시도 시각이 모두 비고, 수리 세션이 지운 억제도 복구되지 않는다 — 표본
+        # 사다리가 오르지 않으니 3일 소진도, 그 소진이 여는 주제 교체도 오지 않는다.
+        db.rollback()
+        code, message = classify_generation_failure(exc)
+        logger.warning(
+            "Stored-body repair session failed for %s (%s); keeping the stored body",
+            item.id,
+            code,
+        )
+        _remember_generation_attempt(db, item, philosophy, code, message=message)
+        return GenerationItemState.FAILED, code, message
     now = datetime.now(timezone.utc)
 
     # 배치 경로와 같은 상태 가드를 쓴다. 재생성이 도는 동안 AE가 이 슬롯을 종료(CANCELLED)할

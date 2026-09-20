@@ -5197,6 +5197,94 @@ def test_automatic_body_repair_stops_buying_regenerations_when_its_budget_is_spe
     assert len(writer_calls) == SAMPLE_BODY_DAILY_BUDGET, "예산 소진 뒤에는 작가를 부르지 않는다"
 
 
+def test_a_failed_repair_session_keeps_the_body_and_leaves_a_real_next_deadline(
+    monkeypatch,
+):
+    """수리 세션이 작가에게 거절당해도 저장 본문은 남고, 사다리는 이어서 오른다.
+
+    거절을 그대로 올리면 본문 있는 행에는 시도 기록이 쓰이지 않아 원인·재시도 클래스·
+    다음 시도 시각이 모두 비고, 수리가 지운 억제도 돌아오지 않는다 — 스윕이 매번 같은
+    행을 집어 작가만 사고 3일 소진도, 그 소진이 여는 주제 교체도 오지 않는다.
+    """
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    hospital_id = uuid.uuid4()
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        body="검수가 막은 저장 본문",
+        title="저장 제목",
+        image_url=None,
+        content_philosophy_id=philosophy.id,
+        content_type=SimpleNamespace(value="HEALTH"),
+        query_target_id=None,
+        scheduled_date=date.today(),
+        content_revision=1,
+        essence_check_summary={
+            "ai_review": {
+                "findings": [
+                    {
+                        "severity": "UNCERTAIN",
+                        "kind": "MEDICAL_SAFETY",
+                        "message": "확신이 부족합니다.",
+                    }
+                ]
+            }
+        },
+    )
+    hospital = SimpleNamespace(id=hospital_id, name="수리실패의원")
+    db = _NightlyTaskDB()
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(
+        tasks,
+        "assess_content_publication",
+        lambda *_args: SimpleNamespace(
+            code="CONTENT_AI_HARD_FINDING", message="사실·의료 안전 지적이 남아 있습니다."
+        ),
+    )
+    monkeypatch.setattr(tasks, "_stored_review_has_uncertain_finding", lambda _item: False)
+    async def _allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
+    monkeypatch.setattr(
+        tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        tasks,
+        "_generate_with_auto_review",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ValueError("SEO hard-fail: body must not contain an H1 heading")
+        ),
+    )
+
+    state, code, message = tasks._generate_single_content_item(db, item, hospital)
+
+    assert state == tasks.GenerationItemState.FAILED
+    assert code == "GENERATION_REJECTED"
+    assert message
+    assert item.body == "검수가 막은 저장 본문", "실패한 재작성이 정상 본문을 지우지 않는다"
+
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["reason"] == "GENERATION_REJECTED"
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert attempt["next_retry_at"], "다음 시도 시각 없이 자동 복구를 떠나지 않는다"
+    assert generation_incident_control.scheduled_recovery_owns_blocker(code, item) is True
+    assert generation_incident_control.generation_block_is_terminal(code, item) is False
+
+    # 사다리는 이어서 올라 3일 소진에 닿고, 거기서 주제 교체가 슬롯을 넘겨받는다.
+    for day in range(SAMPLE_EXHAUSTED_DAY_LIMIT):
+        item.essence_check_summary["generation_attempt"]["attempt_period"] = (
+            f"2000-01-0{day + 1}"
+        )
+        for _ in range(SAMPLE_BODY_DAILY_BUDGET):
+            attempt = tasks._remember_generation_attempt(
+                db, item, philosophy, "GENERATION_REJECTED"
+            )
+    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert exhausted_body_sample_reason(item) == "GENERATION_REJECTED"
+
+
 def _publication_gate_item(philosophy, **overrides):
     """게이트가 실제 판정을 쓸 수 있는 최소한의 저장 원고. FAQ 필드가 비어 막힌다."""
 
