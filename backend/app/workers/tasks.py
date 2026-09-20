@@ -967,6 +967,41 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
     db.commit()
 
 
+# 억제를 만드는 것은 원인과 저장된 다음 시도 시각이다. 예산 사다리는 그 둘이 아니다.
+_GENERATION_LADDER_KEYS = (
+    "context",
+    "attempt_period",
+    "exhausted_days",
+    "attempt_count",
+    "provider_attempt_count",
+    "guard_deferral_count",
+    "first_observed_at",
+    "approved_facts",
+)
+
+
+def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
+    """수리 세션은 시도 기록의 억제만 푼다. 예산 계수는 그대로 남긴다.
+
+    기록을 통째로 지우면 하루 예산과 소진 일수가 수리를 돌 때마다 0에서 다시 시작한다.
+    그러면 3일 소진이 영영 오지 않아 `OPERATOR_REQUIRED` 승격도, 그 승격이 여는 주제
+    교체도 열리지 않는다 — 표본 복구가 끝나지 않는 재작성 루프가 된다.
+    """
+
+    previous = _stored_generation_attempt(item)
+    if not previous:
+        return
+    carried = {key: previous[key] for key in _GENERATION_LADDER_KEYS if key in previous}
+    summary = getattr(item, "essence_check_summary", None)
+    updated = dict(summary) if isinstance(summary, dict) else {}
+    if carried:
+        updated[_GENERATION_ATTEMPT_KEY] = carried
+    else:
+        updated.pop(_GENERATION_ATTEMPT_KEY, None)
+    item.essence_check_summary = updated
+    db.commit()
+
+
 def _image_failure_code(diagnostics: Mapping[str, object] | None = None) -> str:
     reason = str((diagnostics or {}).get("reason") or "").upper()
     if reason == "COST_BLOCKED":
@@ -5756,7 +5791,7 @@ def _generate_single_content_item(
             # count the session first so a body nobody can fix deterministically
             # cannot buy four regenerations a day forever.
             carried_repair_state = _spend_body_repair_session(db, item)
-            _clear_generation_attempt(db, item)
+            _release_generation_attempt_for_repair(db, item)
         elif stored_assessment.code is not None and stored_assessment.code not in {
             "CONTENT_IMAGE_NOT_READY",
             "CONTENT_IMAGE_NOT_VERIFIED",

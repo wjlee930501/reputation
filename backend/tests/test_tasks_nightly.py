@@ -14,7 +14,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.sql.dml import Update
 
-from app.models.content import ContentItem, ContentStatus
+from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.essence import (
     HospitalContentPhilosophy,
     HospitalSourceAsset,
@@ -26,6 +26,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.models.sov import SovRecord
+from app.services import content_publication
 from app.services.content_ai_review import (
     ContentAiFinding,
     ContentAiFindingKind,
@@ -46,6 +47,7 @@ from app.workers.generation_retry_policy import (
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
 )
+from app.workers.topic_swap_fallback import exhausted_body_sample_reason
 
 
 def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_content():
@@ -5170,7 +5172,9 @@ def test_automatic_body_repair_stops_buying_regenerations_when_its_budget_is_spe
         code="FAQ_FIELDS_MISSING", message="FAQ 필드가 비었습니다."))
     writer_calls = []
     monkeypatch.setattr(
-        tasks, "_clear_generation_attempt", lambda *_args: writer_calls.append("cleared")
+        tasks,
+        "_release_generation_attempt_for_repair",
+        lambda *_args: writer_calls.append("released"),
     )
     class _WriterReached(RuntimeError):
         pass
@@ -5191,6 +5195,105 @@ def test_automatic_body_repair_stops_buying_regenerations_when_its_budget_is_spe
     assert code == "FAQ_FIELDS_MISSING"
     assert "FAQ" in message
     assert len(writer_calls) == SAMPLE_BODY_DAILY_BUDGET, "예산 소진 뒤에는 작가를 부르지 않는다"
+
+
+def _publication_gate_item(philosophy, **overrides):
+    """게이트가 실제 판정을 쓸 수 있는 최소한의 저장 원고. FAQ 필드가 비어 막힌다."""
+
+    base = {
+        "content_type": ContentType.FAQ,
+        "title": "치질 진료 전 확인할 점",
+        "body": "증상과 생활 불편을 확인한 뒤 진료 방향을 설명합니다.",
+        "meta_description": "진료 전 확인할 내용을 정리합니다.",
+        "faq_question": None,
+        "faq_answer_summary": None,
+        "references_list": [],
+        "image_url": None,
+        "content_philosophy_id": philosophy.id,
+        "last_reviewed_philosophy_id": philosophy.id,
+        "essence_status": None,
+        "essence_check_summary": None,
+        "content_revision": 1,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_body_repair_budget_survives_the_publication_readiness_write(monkeypatch):
+    """게이트 기록이 수리 예산을 지우면 안 된다 — 지우면 소진이 영영 오지 않는다."""
+
+    monkeypatch.setattr(
+        content_publication,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False}),
+    )
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    repair_state = {
+        "period": "2026-09-20",
+        "count": BODY_REPAIR_DAILY_BUDGET,
+        "exhausted_days": SAMPLE_EXHAUSTED_DAY_LIMIT - 1,
+        "first_observed_at": "2026-09-18T00:00:00+00:00",
+    }
+    item = _publication_gate_item(
+        philosophy, essence_check_summary={tasks._BODY_REPAIR_KEY: dict(repair_state)}
+    )
+    db = _NightlyTaskDB()
+
+    failure = tasks._persist_publication_readiness(db, item, philosophy)
+
+    assert failure is not None, "FAQ 필드가 비어 게이트가 막는 상태를 쓴다"
+    assert item.essence_check_summary[tasks._BODY_REPAIR_KEY] == repair_state
+    assert tasks._body_repair_session_is_due(item) is False, (
+        "소진된 예산이 게이트 기록 뒤에도 소진으로 남는다"
+    )
+
+    content_publication.apply_essence_revalidation(item, philosophy)
+    assert item.essence_check_summary[tasks._BODY_REPAIR_KEY] == repair_state
+
+
+def test_repair_session_releases_the_attempt_without_resetting_the_sample_ladder():
+    """수리는 억제만 푼다 — 소진 일수가 살아남아야 3일 뒤 주제 교체가 열린다."""
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=uuid.uuid4(), body="stored body",
+        content_philosophy_id=philosophy.id, scheduled_date=date.today(),
+        content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
+        essence_check_summary={"ai_review": {"findings": [{
+            "severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확신이 부족합니다.",
+        }]}},
+    )
+    db = _NightlyTaskDB()
+    for _ in range(SAMPLE_BODY_DAILY_BUDGET):
+        tasks._remember_generation_attempt(
+            db, item, philosophy, "CONTENT_AI_HARD_FINDING"
+        )
+    spent = tasks._stored_generation_attempt(item)
+    assert spent["exhausted_days"] == 1
+    assert spent["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+
+    tasks._release_generation_attempt_for_repair(db, item)
+
+    released = tasks._stored_generation_attempt(item)
+    assert "reason" not in released, "억제를 푼다"
+    assert "next_retry_at" not in released
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+    assert released["exhausted_days"] == 1, "소진 일수는 수리가 지우지 않는다"
+    assert released["provider_attempt_count"] == SAMPLE_BODY_DAILY_BUDGET
+    assert released["attempt_period"] == spent["attempt_period"]
+
+    # 이어지는 실패는 사다리를 이어서 올라 주제 교체가 보는 종착에 닿는다.
+    for day in range(SAMPLE_EXHAUSTED_DAY_LIMIT - 1):
+        item.essence_check_summary["generation_attempt"]["attempt_period"] = (
+            f"2000-01-0{day + 1}"
+        )
+        for _ in range(SAMPLE_BODY_DAILY_BUDGET):
+            attempt = tasks._remember_generation_attempt(
+                db, item, philosophy, "CONTENT_AI_HARD_FINDING"
+            )
+    assert attempt["exhausted_days"] == SAMPLE_EXHAUSTED_DAY_LIMIT
+    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert exhausted_body_sample_reason(item) == "CONTENT_AI_HARD_FINDING"
 
 
 def test_body_repair_budget_survives_the_rewrite_that_replaces_the_summary():
