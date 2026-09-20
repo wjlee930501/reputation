@@ -48,6 +48,61 @@ def hard_removal_findings(review: Any) -> list[str]:
     return [_HARD_REMOVAL_INSTRUCTION, *messages]
 
 
+# 저장된 검수 payload에서 작가가 삭제·완화로만 다룰 수 있는 지적의 심각도.
+# UNCERTAIN도 포함한다 — 모델이 확신하지 못한 사실·안전 지적도 승인 자료에 없는 주장이라
+# 작가가 할 수 있는 일은 그 주장을 빼거나 완화하는 것뿐이다.
+_STORED_REMOVAL_SEVERITIES = frozenset({"HARD", "UNCERTAIN"})
+
+
+def stored_fact_safety_messages(summary: object) -> list[str]:
+    """저장된 독립 검수에서 삭제·완화로만 풀리는 사실·의료 안전 지적의 원문."""
+
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    findings = review.get("findings") if isinstance(review, dict) else None
+    if not isinstance(findings, list):
+        return []
+    return [
+        message
+        for finding in findings
+        if isinstance(finding, dict)
+        and finding_label(finding.get("severity")) in _STORED_REMOVAL_SEVERITIES
+        and finding_label(finding.get("kind")) in _HARD_REMOVAL_KINDS
+        and (message := str(finding.get("message") or "").strip())
+    ]
+
+
+def writer_remediation_findings(summary: object) -> list[str]:
+    """저장된 차단을 작가가 실제로 할 수 있는 지시로 옮긴다.
+
+    `summary["findings"]`는 발행 게이트가 **운영자에게** 쓴 문장이다. 사실·의료 안전
+    지적일 때 그 문장은 검수 원문 뒤에 "승인된 병원 자료 또는 의료 근거의 보완이
+    필요합니다"를 붙여 끝난다 — 사람이 승인 자료를 채우라는 뜻이다. 그대로 작가에게
+    넘기면 작가는 승인 자료에 없는 사실·수치를 지어내 그 요구를 채우려 하고, 결정적
+    검증기가 그 결과를 거절한다. 거절 사유는 다음 회차에 얹히지만 원래의 "보완하라"는
+    지시도 그대로 남으므로 세션은 수렴하지 못하고 `GENERATION_REJECTED`로 끝난다.
+
+    그래서 그런 줄은 검수 원문으로 되돌리고, 세션 안의 재작성이 쓰는 것과 **같은**
+    삭제·완화 지시를 맨 앞에 둔다. 재작성 예산은 건드리지 않는다 — 바뀌는 것은 작가가
+    읽는 문장뿐이다. 검수 기록이 없는 결정적 차단(FAQ 필드·참고자료 누락 등)의 문장은
+    작가가 그대로 고칠 수 있으므로 손대지 않는다.
+    """
+
+    findings = review_findings(summary)
+    if not findings:
+        return []
+    removal_messages = stored_fact_safety_messages(summary)
+    if not removal_messages:
+        return findings
+    rewritten = [
+        next(
+            (message for message in removal_messages if finding.startswith(message)),
+            finding,
+        )
+        for finding in findings
+    ]
+    return [_HARD_REMOVAL_INSTRUCTION, *rewritten][:5]
+
+
 _REFERENCE_FINDING_KIND = "REFERENCE"
 
 

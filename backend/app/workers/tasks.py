@@ -136,6 +136,12 @@ from app.services.content_review_feedback import (
 from app.services.content_review_feedback import (
     screening_probe as _screening_probe,  # noqa: F401 -- stable legacy worker import
 )
+from app.services.content_review_feedback import (
+    stored_fact_safety_messages as _stored_fact_safety_messages,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.content_review_feedback import (
+    writer_remediation_findings as _writer_remediation_findings,  # noqa: F401 -- stable legacy worker import
+)
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorV0Baseline

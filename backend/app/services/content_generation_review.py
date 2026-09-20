@@ -24,6 +24,7 @@ from app.services.content_review_feedback import (
     non_reference_remediation_messages,
     review_findings,
     screening_probe,
+    writer_remediation_findings,
 )
 from app.services.cost_guard import CostGuardDecision
 from app.services.essence_engine import (
@@ -67,7 +68,9 @@ async def generate_reviewed_content(
 ) -> tuple[dict[str, Any], EssenceScreeningResult]:
     """Generate, independently review, and rewrite without bypassing hard gates."""
 
-    findings = review_findings(getattr(item, "essence_check_summary", None))
+    # 저장된 차단을 작가가 할 수 있는 일로 옮겨 넘긴다. 게이트의 운영자 문장을 그대로
+    # 주면 작가가 승인 자료에 없는 사실을 지어내 검증기에 걸린다.
+    findings = writer_remediation_findings(getattr(item, "essence_check_summary", None))
     automatic_rewrites = int(bool(findings))
     reviewer_driven_rewrites = 0
     removal_rewrites = 0

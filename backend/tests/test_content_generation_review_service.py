@@ -210,6 +210,59 @@ async def test_last_reference_is_not_removed_by_nonblocking_advice(context: dict
     effects.generate.assert_awaited_once()
 
 
+async def test_a_stored_fact_block_asks_the_writer_to_delete_not_to_supply_evidence(
+    context: dict[str, Any],
+) -> None:
+    """저장된 사실·안전 차단의 작가용 지시는 삭제·완화 한 가지뿐이다.
+
+    게이트가 운영자에게 쓴 "승인된 병원 자료 또는 의료 근거의 보완이 필요합니다"를
+    그대로 넘기면 작가가 승인 자료에 없는 수치를 지어내 채우고, 결정적 검증기가 그
+    결과를 거절해 세션이 `GENERATION_REJECTED`로 끝난다.
+    """
+
+    reviewer_message = "본문의 '재발률 5% 미만' 수치를 승인 자료에서 확인할 수 없습니다."
+    context["item"].essence_check_summary = {
+        "blocking": True,
+        "findings": [f"{reviewer_message} 승인된 병원 자료 또는 의료 근거의 보완이 필요합니다."],
+        "ai_review": {
+            "findings": [
+                {
+                    "severity": ContentAiFindingSeverity.UNCERTAIN.value,
+                    "kind": ContentAiFindingKind.HOSPITAL_FACT.value,
+                    "message": reviewer_message,
+                }
+            ]
+        },
+    }
+    effects = dependencies()
+
+    await generate_reviewed_content(**context, dependencies=effects, limits=LIMITS)
+
+    seeded = effects.generate.await_args.kwargs["remediation_findings"]
+    assert any("삭제하거나" in finding for finding in seeded)
+    assert any("추가하지 말고" in finding for finding in seeded)
+    assert reviewer_message in seeded
+    assert not any("보완이 필요합니다" in finding for finding in seeded)
+
+
+async def test_a_deterministic_gate_finding_still_reaches_the_writer_unchanged(
+    context: dict[str, Any],
+) -> None:
+    """검수 기록이 없는 차단 문장은 작가가 그대로 고칠 수 있다 — 바꾸지 않는다."""
+
+    context["item"].essence_check_summary = {
+        "blocking": True,
+        "findings": ["FAQ 질문과 답변 요약이 비어 있어 발행할 수 없습니다."],
+    }
+    effects = dependencies()
+
+    await generate_reviewed_content(**context, dependencies=effects, limits=LIMITS)
+
+    assert effects.generate.await_args.kwargs["remediation_findings"] == [
+        "FAQ 질문과 답변 요약이 비어 있어 발행할 수 없습니다."
+    ]
+
+
 async def test_generation_errors_without_a_candidate_still_propagate(
     context: dict[str, Any],
 ) -> None:
