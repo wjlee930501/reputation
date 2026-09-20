@@ -1490,6 +1490,49 @@ def _nightly_item(hospital_name: str):
     )
 
 
+def test_a_rejected_item_logs_the_reason_its_stored_copy_is_not_allowed_to_carry(
+    monkeypatch, caplog
+):
+    """운영자 문구가 감출 수밖에 없는 사유도 개발자 로그에는 남아야 한다.
+
+    `test_rejected_gate_classification_preserves_only_the_safe_real_reason`이 고정하듯
+    저장·알림 문구는 허용 목록이라 어느 게이트가 걸렸는지 말하지 않는다. 로그까지 예외
+    이름만 남기면 되풀이되는 `GENERATION_REJECTED`의 원인을 어디에서도 읽을 수 없다.
+    """
+    db = _NightlyTaskDB()
+    item = _nightly_item("서울W위례정형외과의원")
+    item.body = "이미 저장된 본문"
+    detail = "GEO hard-fail: 지역 엔티티 ['송파구'] body 미포함"
+
+    def _reject(*_args, **_kwargs):
+        raise ValueError(detail)
+
+    def _skip_incident(coroutine, *_args, **_kwargs):
+        coroutine.close()
+
+    monkeypatch.setattr(tasks, "_generate_single_content_item", _reject)
+    monkeypatch.setattr(tasks, "_run_async", _skip_incident)
+
+    with caplog.at_level(logging.ERROR, logger="app.workers.tasks"):
+        state, code, message = tasks._run_generation_item(
+            db, _NightlyTaskRecorder(db), item, item.hospital
+        )
+
+    assert state == tasks.GenerationItemState.FAILED
+    assert code == "GENERATION_REJECTED"
+    # 저장·알림 경로는 종전 그대로 허용 목록 문구만 나른다.
+    assert detail not in message
+
+    failures = [
+        record
+        for record in caplog.records
+        if "Content generation failed" in record.getMessage()
+    ]
+    assert failures, "실패는 한 줄 이상 남아야 한다"
+    assert detail in failures[0].getMessage()
+    assert failures[0].exc_info is not None, "스택 없이는 어느 검증기가 던졌는지 못 좁힌다"
+
+
 def _patch_nightly_task_shell(monkeypatch, db, items, cycle_date, *, dispatch_inline=True):
     """배치 → per-item 팬아웃을 한 프로세스 안에서 이어 실행한다.
 
