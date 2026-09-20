@@ -126,6 +126,32 @@ def test_local_prompt_keeps_the_profile_region_the_geo_gate_requires():
     assert "지역: 잠실 송파구" in prompt
 
 
+@pytest.mark.parametrize("content_type", sorted(TARGET_STEERED_TYPES, key=str))
+def test_the_measured_question_block_never_hides_the_region_the_geo_gate_requires(
+    content_type,
+):
+    """조향 대상 유형 전부가 읽는 지역 문장이 프로파일 region을 빼면 안 된다.
+
+    `[측정된 환자 질문]` 블록은 FAQ·DISEASE·TREATMENT·LOCAL이 공유하는 유일한 아이템
+    단위 지역 문장이다. 그런데 `_validate_geo`는 프로파일 region의 변형이 본문에 있어야
+    통과시키는 하드 게이트다. 이 줄이 측정 지역만 말하면 작가가 만족시킬 방법이 없어
+    재작성마다 같은 `GEO hard-fail`이 반복되고 슬롯이 GENERATION_REJECTED에 갇힌다.
+    LOCAL 유형 템플릿에서만 고쳐 두면 DISEASE 같은 나머지 유형에 같은 충돌이 남는다.
+    """
+    hospital = _hospital(region=["송파구"])
+    brief = _brief(_query_target(region_terms=["잠실"]))
+
+    prompt = _fill_type_prompt(content_type, hospital, brief)
+
+    measured_block = prompt.split("[측정된 환자 질문 — 이 글이 답해야 하는 대상]")[1]
+    region_line = next(
+        line for line in measured_block.splitlines() if line.startswith("- 지역:")
+    )
+
+    # 조향은 측정 지역이 앞서되 게이트가 요구하는 프로파일 region도 함께 보여 준다.
+    assert region_line == "- 지역: 잠실, 송파구"
+
+
 def test_disease_prompt_states_the_question_the_first_paragraph_must_answer():
     prompt = _fill_type_prompt(ContentType.DISEASE, _hospital(), _brief())
 

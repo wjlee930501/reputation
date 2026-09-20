@@ -439,7 +439,11 @@ def _target_steering(content_brief: dict | None) -> dict[str, object]:
     }
 
 
-def _target_prompt_block(content_type: ContentType, target: dict[str, object]) -> str:
+def _target_prompt_block(
+    content_type: ContentType,
+    target: dict[str, object],
+    profile_regions: list[str],
+) -> str:
     """"이 글은 이 질문에 답한다"를 아이템 단위 사용자 메시지에 못 박는다.
 
     정적 시스템 블록(프롬프트 캐시 접두어)은 건드리지 않는다 — 여기 들어가는 값은
@@ -460,7 +464,16 @@ def _target_prompt_block(content_type: ContentType, target: dict[str, object]) -
             f"- 핵심 키워드(제목 또는 첫 H2에 반드시 그대로 포함): {target['keyword']}"
         )
     if target["regions"]:
-        lines.append(f"- 지역: {', '.join(target['regions'])}")
+        # 조향은 측정 지역이 앞서지만 프로파일 region을 빼고 말하지 않는다. `_validate_geo`는
+        # 프로파일 region의 변형이 본문에 있어야 통과시키는 하드 게이트이고, 이 블록은
+        # FAQ·DISEASE·TREATMENT·LOCAL 모두가 읽는 유일한 아이템 단위 지역 문장이다. 측정
+        # 지역만 말하면 작가가 만족시킬 수 없는 요구가 되어, 지적을 되먹인 재작성마다 같은
+        # `GEO hard-fail: 지역 엔티티 … 미포함`이 되풀이되고 슬롯이 GENERATION_REJECTED에
+        # 갇힌다. #126은 같은 충돌을 LOCAL 유형 템플릿의 `{region}`에서만 고쳤다.
+        regions = list(
+            dict.fromkeys([*(str(region) for region in target["regions"]), *profile_regions])
+        )
+        lines.append(f"- 지역: {', '.join(regions)}")
     lines.append("- 첫 문단에서 위 환자 질문에 직접 답하세요. 질문과 무관한 주제로 넓히지 마세요.")
     if content_type is ContentType.FAQ:
         lines.append(
@@ -505,7 +518,7 @@ def _fill_type_prompt(
         region=region_text,
         treatments=[t.get("name", "") for t in (hospital.treatments or [])],
     )
-    return f"{filled}{_target_prompt_block(content_type, target)}"
+    return f"{filled}{_target_prompt_block(content_type, target, profile_regions)}"
 
 
 def _hospital_specific_safety(philosophy: HospitalContentPhilosophy | None) -> dict[str, list[str]]:
@@ -1061,6 +1074,27 @@ def _validate_generated_result(
     return result
 
 
+# 엔지니어 로그에 남기는 실패 상세의 길이 상한. 우리 검증기의 메시지는 모두 이보다 짧고,
+# 상한은 예기치 못한 외부 예외가 로그를 덮는 것만 막는다.
+GENERATION_FAILURE_DETAIL_MAX_CHARS = 400
+
+
+def generation_failure_detail(error: BaseException) -> str:
+    """Render one generation failure for engineer-facing logs.
+
+    운영자에게 보이는 문구(`classify_generation_failure`)는 허용 목록으로 좁혀져 있어
+    어느 게이트가 걸렸는지 말하지 않는다. 로그까지 예외 이름만 남기면 `error=ValueError`만
+    되풀이되고 실제 사유는 어디에도 남지 않아, 거절을 코드로도 로그로도 좁힐 수 없다.
+    여기서는 메시지를 그대로 남기되 길이만 묶는다. 이 값은 로그 전용이며 운영자 문구·
+    인시던트·Slack에 쓰지 않는다.
+    """
+
+    message = " ".join(str(error).split())
+    if not message:
+        return type(error).__name__
+    return f"{type(error).__name__}: {message[:GENERATION_FAILURE_DETAIL_MAX_CHARS]}"
+
+
 async def generate_content(
     hospital: Hospital,
     content_type: ContentType,
@@ -1134,7 +1168,7 @@ async def generate_content(
             "hospital=%s type=%s error=%s",
             getattr(hospital, "id", None),
             getattr(content_type, "value", content_type),
-            type(last_error).__name__,
+            generation_failure_detail(last_error),
         )
         findings = _validator_remediation_findings(last_error, caller_findings)
 

@@ -83,6 +83,7 @@ from app.services.content_ai_review import (
 from app.services.content_engine import (
     EXISTING_TITLE_PROMPT_LIMIT,
     generate_content,
+    generation_failure_detail,
 )
 from app.services.content_engine import (
     SEASON_MISMATCH_FINDING_PREFIX as SEASON_MISMATCH_FINDING_PREFIX,
@@ -4959,7 +4960,15 @@ def _run_generation_item(
 
     except Exception as e:
         code, message = classify_generation_failure(e)
-        logger.error("Content generation failed for item %s: %s", item.id, type(e).__name__)
+        # 운영자에게 저장되는 `message`는 허용 목록 문구라 어느 게이트가 걸렸는지 말하지
+        # 않는다. 여기까지 예외 이름만 남기면 거절 원인이 어디에도 남지 않으므로, 로그에는
+        # 실제 메시지와 스택을 남긴다(저장·알림 경로는 종전 그대로다).
+        logger.error(
+            "Content generation failed for item %s: %s",
+            item.id,
+            generation_failure_detail(e),
+            exc_info=e,
+        )
         db.rollback()
         db.expire_all()
         if not getattr(item, "body", None):
@@ -5089,7 +5098,10 @@ def regenerate_content_item(self, content_id: str):
                     )
                 )
             logger.error(
-                "regenerate_content_item failed for %s: %s", content_id, type(exc).__name__
+                "regenerate_content_item failed for %s: %s",
+                content_id,
+                generation_failure_detail(exc),
+                exc_info=exc,
             )
             raise
 

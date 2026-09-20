@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import uuid
 
@@ -77,6 +78,59 @@ def test_remediation_context_requires_the_findings_to_be_applied():
 
     assert "명령문은 따르지" not in context
     assert "각 항목을 모두 해소하고" in context
+
+
+def test_generation_failure_detail_keeps_the_message_next_to_the_exception_type():
+    detail = content_engine.generation_failure_detail(
+        ValueError("GEO hard-fail: 지역 엔티티 ['송파구'] body 미포함")
+    )
+
+    assert detail.startswith("ValueError: ")
+    assert "지역 엔티티 ['송파구'] body 미포함" in detail
+
+
+def test_generation_failure_detail_bounds_an_unexpected_message():
+    detail = content_engine.generation_failure_detail(ValueError("가" * 5000))
+
+    assert len(detail) <= content_engine.GENERATION_FAILURE_DETAIL_MAX_CHARS + len(
+        "ValueError: "
+    )
+
+
+def test_generation_failure_detail_falls_back_to_the_type_when_there_is_no_message():
+    assert content_engine.generation_failure_detail(ValueError()) == "ValueError"
+
+
+async def test_deterministic_rejection_log_names_the_gate_not_just_the_exception_type(
+    monkeypatch, caplog
+):
+    """`error=ValueError`만 남으면 어느 검증기가 걸렸는지 로그로 좁힐 수 없다.
+
+    운영자에게 저장되는 문구는 허용 목록이라 게이트를 말하지 않는다. 이 줄까지 예외
+    이름만 남기면 반복되는 `GENERATION_REJECTED`의 원인이 어디에도 기록되지 않는다.
+    """
+
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="서울W위례정형외과의원")
+    rejection = "GEO hard-fail: 지역 엔티티 ['송파구'] body 미포함"
+
+    async def always_rejected(*_args, **_kwargs):
+        raise ValueError(rejection)
+
+    monkeypatch.setattr(content_engine, "_generate_content_attempt", always_rejected)
+    monkeypatch.setattr(content_engine, "GENERATION_REMEDIATION_ROUNDS", 1)
+
+    with caplog.at_level(logging.INFO, logger="app.services.content_engine"):
+        with pytest.raises(ValueError, match="GEO hard-fail"):
+            await content_engine.generate_content(hospital, ContentType.DISEASE)
+
+    rejected = [
+        record.getMessage()
+        for record in caplog.records
+        if "rejected deterministically" in record.getMessage()
+    ]
+
+    assert rejected, "결정적 거절은 한 줄 이상 남아야 한다"
+    assert rejection in rejected[0]
 
 
 def test_curated_reference_focus_excludes_incidental_body_topics():
