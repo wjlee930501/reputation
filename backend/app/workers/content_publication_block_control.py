@@ -14,7 +14,17 @@ from app.models.hospital import Hospital
 from app.models.operations import JSONValue, OperationRun, OperationRunState
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
 
-_IMAGE_REGENERATION_CODES = frozenset({"CONTENT_IMAGE_NOT_READY", "CONTENT_IMAGE_NOT_VERIFIED"})
+# 이미지만 다시 만들면 되는 차단. 게이트는 증상(`CONTENT_IMAGE_*`)을 볼 때도 있고 워커가
+# 저장한 원인(`IMAGE_*`)을 볼 때도 있다 — 어느 쪽이든 재시도 대상은 본문이 아니라 이미지다.
+_IMAGE_REGENERATION_CODES = frozenset(
+    {
+        "CONTENT_IMAGE_NOT_READY",
+        "CONTENT_IMAGE_NOT_VERIFIED",
+        "IMAGE_GENERATION_FAILED",
+        "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+        "CONTENT_IMAGE_POLICY_REJECTED",
+    }
+)
 
 
 def ensure_publication_block_run(

@@ -565,6 +565,9 @@ _IMAGE_FAILURE_REASONS = frozenset(
 _STORED_IMAGE_TERMINAL_CODES = frozenset(
     {_IMAGE_RETRY_EXHAUSTED_CODE, _IMAGE_POLICY_REJECTION_CODE}
 )
+# 워커가 실제로 결제해 남긴 이미지 원인. 게이트가 관측하는 증상(`_IMAGE_SYMPTOM_CODES`)이
+# 이 기록을 대신 쓰면 예산 사다리와 재사용 자격이 함께 사라진다.
+_STORED_IMAGE_CAUSE_CODES = _IMAGE_FAILURE_REASONS | {"COST_BLOCKED", _IMAGE_REUSED_CODE}
 
 
 def _generation_attempt_context(
@@ -746,10 +749,13 @@ def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str,
     code = assessment.code or "GENERATION_FAILED"
     message = assessment.message or "자동 발행 준비 검사를 통과하지 못했습니다."
     if code in _IMAGE_SYMPTOM_CODES:
-        # 07:45·08:00이 증상(이미지 없음)이 아니라 저장된 종착 원인을 보고해야 운영자가
-        # "다음 배치가 다시 생성합니다"라는 틀린 안내를 받지 않는다.
+        # 07:45·08:00이 증상(이미지 없음)이 아니라 저장된 원인을 보고해야 운영자가
+        # "다음 배치가 다시 생성합니다"라는 틀린 안내를 받지 않는다. 종착뿐 아니라 아직
+        # 예산이 남은 실패(`IMAGE_GENERATION_FAILED`)도 같다 — 그래야 뒤따르는
+        # `_record_gate_blocker_decision`이 같은 원인을 보고 기록을 덮어쓰지 않고,
+        # 인시던트가 워커가 저장한 실제 다음 시도 시각을 그대로 빌린다.
         stored_image_code = _stored_generation_attempt(item).get("reason")
-        if stored_image_code in _STORED_IMAGE_TERMINAL_CODES:
+        if stored_image_code in _IMAGE_FAILURE_REASONS:
             return stored_image_code, generation_safe_cause(stored_image_code)
         return code, message
     if code != "CONTENT_NOT_GENERATED":
@@ -951,9 +957,21 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     그때 인시던트가 빌릴 기한이 없으면 "재시도 중"이라는 말만 남고 실제 다음 시도 시각이
     없다. 예산은 쓰지 않은 채(count_attempt=False) context·기간·계수·기한을 갖춘 한 건을
     먼저 저장해, 워커의 `retry_is_due`와 인시던트 기한이 같은 값을 읽게 한다.
+
+    다만 게이트가 보는 것은 **증상**이다. 이미지가 없다는 관측이 워커가 실제로 결제해
+    남긴 원인 기록을 대신 쓰면 두 가지가 무너진다. 원인이 바뀌면 계수를 0에서 다시
+    시작하므로(`_remember_generation_attempt`) 하루 4회 예산과 소진 일수가 매일 아침
+    초기화돼 `IMAGE_GENERATION_RETRIES_EXHAUSTED`에도, 3일 소진 뒤의
+    `OPERATOR_REQUIRED`에도 영영 닿지 못한다. 그리고 저장된 원인이
+    `_IMAGE_FAILURE_REASONS` 밖으로 나가 `_image_reuse_is_due`가 거짓이 되므로, 예산
+    소진 뒤 같은 병원의 인증 이미지를 빌리는 계약 자체가 실행되지 않는다. 본문이 멀쩡한
+    슬롯이 매일 이미지를 다시 사고 매일 아침 기록을 잃는 조용한 루프가 그것이다.
     """
 
-    if _stored_generation_attempt(item).get("reason") == code:
+    stored_reason = _stored_generation_attempt(item).get("reason")
+    if stored_reason == code:
+        return
+    if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
