@@ -26,6 +26,8 @@ def _report(**overrides) -> WatchdogReport:
         publish_due_remaining=9,
         publish_published_today=0,
         publish_missing=True,
+        publish_gate_residual=False,
+        publish_blocked_today=(),
         publish_partial=False,
         last_generation_batch_at=None,
         generation_batch_stale=True,

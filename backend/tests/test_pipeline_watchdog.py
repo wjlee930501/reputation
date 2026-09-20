@@ -58,16 +58,50 @@ class FakeRedis:
         return 1
 
 
-class FakeSession:
-    """`scalar` 호출 순서대로 값을 돌려주는 최소 세션(발행 예정 → 공개 → 배치 시각)."""
+class FakeResult:
+    def __init__(self, rows):
+        self.rows = list(rows)
 
-    def __init__(self, results):
+    def all(self):
+        return list(self.rows)
+
+
+class FakeSession:
+    """`scalar` 호출 순서대로 값을 돌려주는 최소 세션(발행 예정 → 공개 → 배치 시각).
+
+    `execute`는 차단 감사 기록 조회 하나뿐이라 행 목록을 그대로 돌려준다.
+    """
+
+    def __init__(self, results, block_rows=()):
         self.results = list(results)
+        self.block_rows = list(block_rows)
         self.calls = 0
 
     def scalar(self, _stmt):
         self.calls += 1
         return self.results.pop(0)
+
+    def execute(self, _stmt):
+        return FakeResult(self.block_rows)
+
+
+def _block_row(
+    code: str,
+    *,
+    hospital_name: str = "테스트의원",
+    content_id: str | None = None,
+    observed: datetime | None = None,
+    scheduled_date: str = "2026-09-13",
+):
+    """`_publish_block_facts`가 읽는 (hospital_id, target_id, detail, created_at, name) 행."""
+
+    return (
+        "11111111-1111-1111-1111-111111111111",
+        content_id or f"content-{code}",
+        {"code": code, "reason": "차단 사유", "scheduled_date": scheduled_date},
+        observed or datetime(2026, 9, 12, 23, 5, tzinfo=UTC),
+        hospital_name,
+    )
 
 
 def _beat_meta(last_run: datetime) -> dict[str, dict[str, bytes]]:
@@ -99,6 +133,7 @@ def _install(
     lock_held=True,
     beat_last_run: datetime | None = None,
     session_results=(0, 0, None),
+    block_rows=(),
     redis_broken=False,
 ):
     hashes = _beat_meta(beat_last_run) if beat_last_run is not None else {}
@@ -110,7 +145,9 @@ def _install(
         "read_queue_canaries",
         lambda **_kwargs: QueueCanaryFacts(not stale_queues, tuple(stale_queues), "rev", {}),
     )
-    report = pipeline_watchdog.evaluate(FakeSession(list(session_results)), now=now)
+    report = pipeline_watchdog.evaluate(
+        FakeSession(list(session_results), block_rows), now=now
+    )
     return report, client
 
 
@@ -258,6 +295,151 @@ def test_redis_failure_reports_unknown_beat_and_keeps_evaluating(monkeypatch):
 def test_naive_now_is_rejected():
     with pytest.raises(ValueError):
         pipeline_watchdog.evaluate(FakeSession([0, 0, None]), now=datetime(2026, 9, 13, 0, 0))
+
+
+# ── 08:00~23:00 발행기가 성공했는데 due가 그대로인 하루를 어떻게 부르는가 ──
+#
+# 2026-09-20 운영 사고: 5건이 매시간 공개 직전 안전검사에서 되돌아왔는데 감시 문구는
+# "아침 자동 발행이 실행되지 않은 상태"라고 말했다. 실행기 재시작은 아무것도 고치지
+# 못한다. 발행기가 남긴 차단 감사 기록이 있으면 그 진단은 거짓이다.
+
+
+def test_hourly_success_with_residual_due_is_gate_residual_not_a_missing_task(monkeypatch):
+    now = datetime(2026, 9, 12, 23, 40, tzinfo=UTC)  # KST 08:40
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(5, 0, now - timedelta(hours=9)),
+        block_rows=(
+            _block_row("CONTENT_AI_REVIEW_UNAVAILABLE", content_id="a"),
+            _block_row("CONTENT_AI_REVIEW_UNAVAILABLE", content_id="b"),
+            _block_row("CONTENT_IMAGE_NOT_VERIFIED", content_id="c"),
+        ),
+    )
+
+    assert report.publish_gate_residual is True
+    assert report.publish_missing is False
+    assert report.critical_conditions == (pipeline_watchdog.CONDITION_PUBLISH_GATE_RESIDUAL,)
+    assert report.publish_block_reasons == (
+        ("CONTENT_AI_REVIEW_UNAVAILABLE", 2),
+        ("CONTENT_IMAGE_NOT_VERIFIED", 1),
+    )
+
+
+def test_no_block_evidence_keeps_the_task_did_not_run_diagnosis(monkeypatch):
+    now = datetime(2026, 9, 12, 23, 40, tzinfo=UTC)
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(5, 0, now - timedelta(hours=9)),
+    )
+
+    assert report.publish_missing is True
+    assert report.publish_gate_residual is False
+    assert report.critical_conditions == (pipeline_watchdog.CONDITION_PUBLISH_MISSING,)
+
+
+def test_the_same_item_blocked_every_hour_counts_once(monkeypatch):
+    now = datetime(2026, 9, 12, 23, 40, tzinfo=UTC)
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(1, 0, now - timedelta(hours=9)),
+        block_rows=(
+            _block_row(
+                "CONTENT_AI_REVIEW_UNAVAILABLE",
+                content_id="same",
+                observed=datetime(2026, 9, 12, 23, 5, tzinfo=UTC),
+            ),
+            _block_row(
+                "CONTENT_AI_HARD_FINDING",
+                content_id="same",
+                observed=datetime(2026, 9, 12, 22, 5, tzinfo=UTC),
+            ),
+        ),
+    )
+
+    assert len(report.publish_blocked_today) == 1
+    assert report.publish_block_reasons == (("CONTENT_AI_REVIEW_UNAVAILABLE", 1),)
+
+
+def test_gate_residual_copy_names_the_cause_and_does_not_ask_for_a_restart(monkeypatch):
+    monkeypatch.setattr(
+        pipeline_watchdog.settings, "ADMIN_BASE_URL", "https://admin.example.com", raising=False
+    )
+    now = datetime(2026, 9, 12, 23, 40, tzinfo=UTC)
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(5, 0, now - timedelta(hours=9)),
+        block_rows=(
+            _block_row("CONTENT_AI_REVIEW_UNAVAILABLE", hospital_name="가나의원", content_id="a"),
+            _block_row("CONTENT_AI_REVIEW_UNAVAILABLE", hospital_name="다라의원", content_id="b"),
+        ),
+    )
+
+    text = pipeline_watchdog.build_alert_text(report, pipeline_watchdog.AUDIENCE_OPERATOR)
+
+    assert "아침 자동 발행은 실행됐습니다" in text
+    assert "실행되지 않은 상태입니다" not in text
+    assert "병원 2곳의 글 2건" in text
+    assert "독립 AI 검수 공급자를 일시적으로 사용할 수 없습니다" in text
+    assert "재시작은 필요하지 않습니다" in text
+    assert text.index("무슨 문제인지") < text.index("고객 영향") < text.index("지금 할 일")
+    for code in ("CONTENT_", "AI_REVIEW", "RETRYING"):
+        assert code not in text
+
+
+def test_gate_residual_is_owned_by_the_operations_channel_only(monkeypatch):
+    now = datetime(2026, 9, 12, 23, 40, tzinfo=UTC)
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(5, 0, now - timedelta(hours=9)),
+        block_rows=(_block_row("CONTENT_AI_REVIEW_UNAVAILABLE"),),
+    )
+
+    developer = pipeline_watchdog.conditions_for(report, pipeline_watchdog.AUDIENCE_DEVELOPER)
+    operator = pipeline_watchdog.conditions_for(report, pipeline_watchdog.AUDIENCE_OPERATOR)
+
+    assert developer == ()
+    assert operator == (pipeline_watchdog.CONDITION_PUBLISH_GATE_RESIDUAL,)
+
+
+def test_the_report_payload_names_hospital_and_code_for_each_blocked_item(monkeypatch):
+    now = datetime(2026, 9, 12, 23, 40, tzinfo=UTC)
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(1, 0, now - timedelta(hours=9)),
+        block_rows=(
+            _block_row("CONTENT_AI_HARD_FINDING", hospital_name="행복드림의원", content_id="x"),
+        ),
+    )
+
+    payload = report.as_dict()
+
+    assert payload["publish_gate_residual"] is True
+    assert payload["publish_blocked_today"] == [
+        {
+            "hospital_id": "11111111-1111-1111-1111-111111111111",
+            "hospital_name": "행복드림의원",
+            "content_id": "x",
+            "code": "CONTENT_AI_HARD_FINDING",
+            "reason": "차단 사유",
+            "scheduled_date": "2026-09-13",
+            "observed_at": "2026-09-12T23:05:00+00:00",
+        }
+    ]
+    assert payload["publish_block_reasons"] == [
+        {"code": "CONTENT_AI_HARD_FINDING", "count": 1}
+    ]
 
 
 def test_redbeat_datetime_parsing_handles_offset_zone_and_iso():
