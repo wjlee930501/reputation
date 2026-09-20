@@ -17,6 +17,7 @@ from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
 )
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_milestone_rendering import (
     MAX_BLOCKS,
     MAX_SUMMARY_ITEMS,
@@ -115,8 +116,9 @@ def build_milestone_summary_notification(
     chunks = chunk_lines(lines)
     if len(chunks) > MAX_BLOCKS - 3:
         raise NotificationPayloadError("MILESTONE_SUMMARY_EXCEEDS_SLACK_LIMIT")
+    label = label_for_event("MILESTONE_SUMMARY")
     blocks = (
-        header_block("milestone_summary_header", "운영 마일스톤 요약"),
+        header_block("milestone_summary_header", prefixed(label, "운영 마일스톤 요약")),
         section_block(
             "milestone_summary_window",
             f"{window_start} ~ {window_end} · 총 {len(ordered)}건",
@@ -126,10 +128,13 @@ def build_milestone_summary_notification(
     )
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: 운영 마일스톤 {len(ordered)}건 · "
-            "고객 영향: 항목별 확인 필요 · "
-            "지금 할 일: Admin에서 관련 작업 확인 · "
-            "처리 기한: 각 항목 확인",
+            prefixed(
+                label,
+                f"무슨 문제인지: 운영 마일스톤 {len(ordered)}건 · "
+                "고객 영향: 항목별 확인 필요 · "
+                "지금 할 일: Admin에서 관련 작업 확인 · "
+                "처리 기한: 각 항목 확인",
+            ),
             blocks,
             url,
         ),
@@ -160,6 +165,8 @@ def _single_notification(
     milestone: MilestoneProjection, admin_base_url: str, *, recovery: bool
 ) -> NotificationIntent:
     validate_stable_id(milestone.stable_id)
+    event = "MILESTONE_RECOVERED" if recovery else "MILESTONE_ACTION"
+    label = label_for_event(event)
     url = admin_url(admin_base_url, milestone.admin_path)
     status = safe_text(milestone.status_label, 100)
     deadline_label = _deadline_label(milestone)
@@ -177,7 +184,7 @@ def _single_notification(
         f"{deadline_label}: {safe_text(milestone.sla_label, 100)}"
     )
     blocks = (
-        header_block("milestone_header", status),
+        header_block("milestone_header", prefixed(label, status)),
         section_block(
             "milestone_identity",
             f"*{safe_text(milestone.hospital_name, 100)}*",
@@ -185,13 +192,15 @@ def _single_notification(
         section_block("milestone_context", details),
         action_block("milestone_action", url, _action_label(milestone.kind)),
     )
-    event = "MILESTONE_RECOVERED" if recovery else "MILESTONE_ACTION"
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: {status} · 고객 영향: "
-            f"{safe_text(milestone.customer_impact, 240)} · 지금 할 일: "
-            f"{safe_text(milestone.next_action, 240)} · "
-            f"{deadline_label}: {safe_text(milestone.sla_label, 100)}",
+            prefixed(
+                label,
+                f"무슨 문제인지: {status} · 고객 영향: "
+                f"{safe_text(milestone.customer_impact, 240)} · 지금 할 일: "
+                f"{safe_text(milestone.next_action, 240)} · "
+                f"{deadline_label}: {safe_text(milestone.sla_label, 100)}",
+            ),
             blocks,
             url,
         ),
