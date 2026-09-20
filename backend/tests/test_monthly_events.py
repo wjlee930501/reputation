@@ -15,6 +15,7 @@ from app.services.monthly_events import (
     project_monthly_event,
 )
 from app.services.notification_contracts import NotificationPayloadError
+from app.services.notification_labels import ERROR_LABEL
 from app.services.notification_milestone_messages import (
     MilestoneBatch,
     build_milestone_action_notification,
@@ -301,7 +302,9 @@ def test_mixed_daily_summary_has_stable_constituents_and_one_operations_link() -
     # Then: one deterministic summary hides internal IDs and has exactly one deep link
     payload_json = first.message.payload_json()
     assert first.dedupe_key == second.dedupe_key
-    assert first.message.fallback_text.startswith("무슨 문제인지: 운영 마일스톤 2건")
+    assert first.message.fallback_text.startswith(
+        f"{ERROR_LABEL} 무슨 문제인지: 운영 마일스톤 2건"
+    )
     assert all(
         label in first.message.fallback_text
         for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
