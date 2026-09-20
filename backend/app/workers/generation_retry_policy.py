@@ -322,7 +322,10 @@ def next_recovery_deadline(
         window_start, window_end = _sweep_window(candidate)
         if window_start <= scheduled_date <= window_end:
             return candidate.astimezone(UTC)
-    if scheduled_date < observed.date() - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS):
+    # 경계선(`오늘 - catch-up`)의 슬롯은 오늘 스윕만 집는다. 내일부터는 어떤 창에도 들지
+    # 않으므로 위 후보 열거가 비고, 여기서 `None`을 주면 "아무도 집지 않는다"가 저장돼
+    # 재시도가 영구히 얼어붙는다 — 실제로는 22:30 백로그 복구가 내일 이 슬롯을 옮긴다.
+    if scheduled_date <= observed.date() - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS):
         return _next_backlog_recovery_deadline(observed)
     return None
 

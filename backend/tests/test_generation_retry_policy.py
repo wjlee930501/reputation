@@ -378,6 +378,29 @@ def test_a_slot_older_than_catchup_waits_for_the_backlog_recovery() -> None:
     ) == _kst(2026, 9, 15, 23, 30).astimezone(UTC)
 
 
+def test_a_slot_on_the_catchup_edge_is_handed_over_instead_of_frozen() -> None:
+    """경계선의 슬롯도 소유자가 있다 — `None`을 저장하면 재시도가 영구히 얼어붙는다.
+
+    오늘 스윕은 `[오늘-7, 오늘]`을 보므로 이 슬롯을 집지만, 내일부터는 어떤 창에도
+    들지 않는다. 그 사이를 `None`으로 두면 저장된 "집을 스윕이 없다"가 로더 필터와
+    `retry_is_due`를 동시에 막아, 내일 22:30 백로그 복구가 날짜를 옮겨도 슬롯이 다시
+    살아나지 못한다.
+    """
+
+    # 오늘의 마지막 복구 스윕(07:00)이 이 슬롯을 집고 실패한 직후다.
+    observed = _kst(2026, 9, 14, 7, 30)
+    slot = observed.date() - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS)
+    attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
+
+    assert next_recovery_deadline(attempt, scheduled_date=slot, now=observed) == _kst(
+        2026, 9, 14, 23, 30
+    ).astimezone(UTC)
+    # 창 안쪽(경계선 바로 다음 날)은 종전대로 스윕이 계속 집는다.
+    assert next_recovery_deadline(
+        attempt, scheduled_date=slot + timedelta(days=1), now=observed
+    ) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+
+
 def test_a_stored_null_deadline_does_not_become_due_by_time_alone() -> None:
     attempt = {
         "reason": "GENERATION_REJECTED",
