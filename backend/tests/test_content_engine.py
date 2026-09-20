@@ -1381,13 +1381,32 @@ def test_faq_tool_schema_requires_the_fields_the_validator_demands():
 @pytest.mark.parametrize(
     "content_type", [ct for ct in ContentType if ct is not ContentType.FAQ]
 )
-def test_non_faq_types_keep_the_shared_nullable_schema(content_type):
+def test_non_faq_types_keep_the_nullable_faq_fields(content_type):
     """FAQ가 아닌 유형에 FAQ 필드를 요구하면 쓰지도 않을 값을 매번 결제한다."""
     schema = content_engine._article_tool_schema(content_type)
 
-    assert schema is content_engine.ARTICLE_TOOL["input_schema"]
     assert "faq_question" not in schema["required"]
     assert schema["properties"]["faq_question"]["type"] == ["string", "null"]
+
+
+@pytest.mark.parametrize(
+    "content_type", sorted(content_engine.REFERENCES_REQUIRED_TYPES, key=str)
+)
+def test_reference_required_types_reject_an_empty_references_array(content_type):
+    """빈 references는 GEO 하드 거절이다 — 스키마도 그것을 유효한 출력으로 두지 않는다."""
+    schema = content_engine._article_tool_schema(content_type)
+
+    assert "references" in schema["required"]
+    assert schema["properties"]["references"]["minItems"] == 1
+
+
+def test_notice_is_not_asked_for_evidence_it_does_not_need():
+    schema = content_engine._article_tool_schema(ContentType.NOTICE)
+
+    assert schema is content_engine.ARTICLE_TOOL["input_schema"]
+    assert "minItems" not in schema["properties"]["references"]
+    assert "__REFERENCES_RULE__" not in content_engine.TYPE_PROMPTS[ContentType.NOTICE]
+    assert "references에 최소 1개" not in content_engine.TYPE_PROMPTS[ContentType.NOTICE]
 
 
 def test_article_tool_body_field_carries_the_length_contract():
@@ -1655,6 +1674,95 @@ async def test_prompt_asks_for_a_distinct_angle_when_the_keyword_repeats(monkeyp
 
     assert "중복 금지" in message
     assert "질문·관점·독자 상황을 다르게" in message
+
+
+async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monkeypatch):
+    """빈 references를 채우는 회차가 분량을 하한 아래로 떨어뜨리지 않게 한다.
+
+    강심장 FAQ 슬롯이 그 왕복에 갇혔다 — GEO 하드 거절(빈 references)을 고친 회차가
+    순수 글자 수를 1,779자에서 1,633자로 줄여 분량 거절로 바뀌었다. 지적을 마지막
+    사유로 덮어쓰면 작가는 직전 회차에 통과했던 조건을 볼 수 없다.
+    """
+    hospital = SimpleNamespace(
+        name="노원이비인후과의원",
+        address="서울 노원구",
+        phone="02-000-0000",
+        business_hours="",
+        region=["노원"],
+        specialties=["이비인후과"],
+        keywords=["이명"],
+        director_name="김원장",
+        director_career="",
+        director_philosophy="",
+        treatments=[],
+    )
+    long_body = (
+        "## 이명이 들릴 때 확인할 점\n"
+        "노원이비인후과의원 김원장은 노원 지역의 이명을 진료합니다. "
+        + ("이명은 원인에 따라 검사와 처치가 달라질 수 있습니다. " * 90)
+        + "\n\n## 언제 내원해야 하나요\n"
+        + ("어지럼이나 청력 저하가 함께 오면 의료진의 평가를 받아야 합니다. " * 40)
+    )
+    reference = {
+        "title": "질병관리청 국가건강정보포털 — 이명",
+        "url": "https://health.kdca.go.kr/tinnitus",
+    }
+    rounds: list[dict] = [
+        # 1회차: 분량은 충분하지만 references가 비어 GEO 하드 거절.
+        {"body": long_body, "references": []},
+        # 2회차: references를 채우는 대신 본문을 줄여 분량 거절.
+        {"body": "## 이명\n" + ("짧게 요약합니다. " * 20), "references": [reference]},
+        {"body": long_body, "references": [reference]},
+    ]
+    user_messages: list[str] = []
+
+    def fake_create(*_args, **kwargs):
+        user_messages.append(kwargs["messages"][1]["content"])
+        payload = rounds[len(user_messages) - 1]
+        return SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    text=json.dumps(
+                        {
+                            "title": "노원 이명 진료 안내",
+                            "meta_description": "이명의 확인 기준과 내원 시점을 안내합니다.",
+                            "faq_question": None,
+                            "faq_answer_summary": None,
+                            **payload,
+                        }
+                    )
+                )
+            ]
+        )
+
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
+
+    # 재작성 루프는 유형과 무관하게 같다. FAQ 필수 필드가 거절 순서를 가리지 않도록
+    # 여기서는 DISEASE로 같은 왕복을 재현한다.
+    await content_engine.generate_content(
+        hospital,
+        ContentType.DISEASE,
+        content_brief={"target_keyword": "이명", "target_query": "노원 이명 병원"},
+    )
+
+    assert len(user_messages) == 3
+    # 2회차는 빈 references 지적만 봤다.
+    assert "references is empty" in user_messages[1]
+    # 3회차는 분량 지적과 함께 **앞선 회차의 references 지적도** 본다.
+    assert "too short" in user_messages[2]
+    assert "references is empty" in user_messages[2]
+
+
+@pytest.mark.parametrize(
+    "content_type", sorted(content_engine.REFERENCES_REQUIRED_TYPES, key=str)
+)
+def test_reference_required_type_prompts_do_not_license_an_empty_list(content_type):
+    """유형 템플릿은 시스템 규칙보다 뒤에 읽힌다 — 여기서 "없으면 생략"이라 하면 그쪽을 따른다."""
+    prompt = content_engine.TYPE_PROMPTS[content_type]
+
+    assert "references에 최소 1개" in prompt
+    assert "지어내지" in prompt
+    assert "없으면 생략" not in prompt
 
 
 async def test_prompt_keeps_the_plain_duplicate_list_for_other_keywords(monkeypatch):

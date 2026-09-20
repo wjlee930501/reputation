@@ -86,6 +86,9 @@ GENERATION_REMEDIATION_ROUNDS = 3
 # 회차를 시작하지 않는다 — 결정적 재작성 3회와 전송 재시도 3회가 곱해져 한 아이템에
 # 9회를 결제하는 일을 막는다.
 GENERATION_PROVIDER_CALL_BUDGET = 5
+# 한 재작성 회차에 작가에게 닿는 지적 수. 결정적 거절은 회차마다 누적되므로(최대
+# GENERATION_REMEDIATION_ROUNDS개) 나머지 자리를 호출자 지적(독립 검수)이 쓴다.
+GENERATION_REMEDIATION_FINDING_LIMIT = 5
 
 # SOFT-FINDING 기준 — 위반해도 생성 결과는 살리고 AE 화면에 점수로만 표시
 SEO_TITLE_MAX_CHARS = 60         # Google title truncation 기준 (권고)
@@ -345,11 +348,45 @@ _FAQ_ARTICLE_INPUT_SCHEMA = {
 }
 
 
+def _with_non_empty_references(schema: dict) -> dict:
+    """빈 references 가 공급자 쪽에서 유효하지 않게 한다.
+
+    `references`는 이미 required 지만 JSON Schema 에서 빈 배열은 유효하다. 그래서
+    참고자료가 필수인 유형에서도 `references: []` 가 정상 도구 호출로 돌아오고, 우리는
+    이미 결제한 글 한 편을 GEO 하드 거절로 버린 뒤 같은 계약을 산문으로만 다시 말해
+    재작성을 산다. 검증기가 요구하는 것을 스키마도 요구하게 해 그 왕복을 없앤다.
+    """
+
+    references = schema["properties"]["references"]
+    return {
+        **schema,
+        "properties": {
+            **schema["properties"],
+            "references": {
+                **references,
+                "minItems": 1,
+                "description": (
+                    "이 글의 주제를 다루는 화이트리스트 도메인의 실제 문서. 최소 1개가 "
+                    "필요하며 빈 배열은 저장되지 않는다."
+                ),
+            },
+        },
+    }
+
+
+_REFERENCE_REQUIRED_ARTICLE_INPUT_SCHEMA = _with_non_empty_references(
+    ARTICLE_TOOL["input_schema"]
+)
+_FAQ_ARTICLE_INPUT_SCHEMA = _with_non_empty_references(_FAQ_ARTICLE_INPUT_SCHEMA)
+
+
 def _article_tool_schema(content_type: ContentType) -> dict:
-    """FAQ만 FAQPage 필드를 필수로 요구하는 작가 도구 스키마."""
+    """유형이 실제로 요구하는 것만 요구하는 작가 도구 스키마."""
 
     if content_type is ContentType.FAQ:
         return _FAQ_ARTICLE_INPUT_SCHEMA
+    if content_type in REFERENCES_REQUIRED_TYPES:
+        return _REFERENCE_REQUIRED_ARTICLE_INPUT_SCHEMA
     return ARTICLE_TOOL["input_schema"]
 
 
@@ -402,6 +439,17 @@ TYPE_PROMPT_BODY_LENGTH_RULE = (
     f"(화면에 보이는 길이는 이보다 20~35% 깁니다). 순수 글자 수 "
     f"{CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않으므로 각 H2 절을 고르게 채우세요."
 )
+# 같은 이유로 참고자료도 유형 템플릿이 검증기와 같은 말을 해야 한다. FAQ·질환·시술·지역
+# 템플릿은 인용을 "공신력 출처가 있을 때만 … 없으면 생략"이라고 말해 왔다. 그 문장은
+# 시스템 규칙("최소 1개 반드시")보다 뒤에, 더 구체적인 지시로 읽혀 빈 references를
+# 허락했고, 그것이 곧 GEO 게이트의 하드 거절이었다.
+TYPE_PROMPT_REFERENCE_RULE = (
+    "화이트리스트 도메인에서 확인할 수 있는 **실제 문서 URL을 references에 최소 1개** "
+    "넣으세요 — 빈 references는 저장되지 않습니다. 본문에 인용할 수치가 없어도 이 글의 "
+    "주제를 다루는 공신력 문서(질병관리청 국가건강정보포털·학회 진료지침·국가암정보센터 "
+    "등)를 근거로 답니다. URL을 지어내지 말고, 확신이 없으면 확신이 있는 다른 문서를 "
+    "쓰세요. 이 글의 주제와 다른 질환·시술을 다루는 문서는 넣지 마세요."
+)
 
 _TYPE_PROMPT_TEMPLATES = {
     ContentType.FAQ: """\
@@ -419,7 +467,8 @@ _TYPE_PROMPT_TEMPLATES = {
   __BODY_LENGTH_RULE__
   질문에 직답한 뒤 판단 기준·감별 포인트·내원 시점·진료 흐름을 각 H2에서 실제로 풀어 쓰고,
   한두 문장으로 요약만 하고 넘어가지 마세요.
-  통계·인용은 검증 가능한 공신력 출처가 있을 때만 출처와 함께(없으면 정성적으로 서술; 수치·기관명 날조 금지).
+  본문의 통계·수치는 검증 가능한 공신력 출처가 있을 때만 출처와 함께 쓰고, 없으면 정성적으로 서술하세요(수치·기관명 날조 금지).
+__REFERENCES_RULE__
 진료 키워드: {keywords}
 """,
     ContentType.DISEASE: """\
@@ -427,8 +476,10 @@ _TYPE_PROMPT_TEMPLATES = {
 서울아산병원 질환백과(amc.seoul.kr) 표준 H2 순서를 그대로 따라 작성하세요:
 - H2 "## 증상" — 환자가 인지할 수 있는 주요 증상 3~5개를 **번호 목록 또는 표**로 정리.
 - H2 "## 원인" — 일반적 원인·위험 요인. 통계는 검증 가능한 공신력 출처에 있을 때만 출처와 함께; 없으면 빈도·경향으로 정성 서술(수치·기관명 날조 금지).
-- H2 "## 진단" — 병원에서 어떤 검사·진료가 이루어지는지. 인용은 실제 확인되는 가이드라인만(없으면 생략).
-- H2 "## 치료" — 일반적 치료 방향. 검증 가능한 공신력 출처(KDCA·학회 진료지침)가 있으면 references에 실제 URL로 포함(없으면 생략; 가짜 출처 금지).
+- H2 "## 진단" — 병원에서 어떤 검사·진료가 이루어지는지. 본문 인용은 실제 확인되는 가이드라인만 씁니다.
+- H2 "## 치료" — 일반적 치료 방향. 근거로 삼은 공신력 출처(KDCA·학회 진료지침)는 references에 실제 URL로 포함(가짜 출처 금지).
+
+__REFERENCES_RULE__
 
 __BODY_LENGTH_RULE__
 네 절은 목차가 아니라 본문입니다. 한 절을 두세 문장으로 끝내면 전체가 저장 하한 아래로
@@ -446,7 +497,9 @@ __BODY_LENGTH_RULE__
 - H2 "## 진행 단계" 아래 "### 1단계 ...", "### 2단계 ...", "### 3단계 ..." 형식으로
   3~4단계를 명확히 구분 (HowTo schema 자동 추출용). 소요 시간 등은 일반적 범위로 적되 개인차가 있음을 명시(확정 수치 단정 금지).
 - H2 "## 회복과 주의사항" — 회복 흐름과 일반적 주의사항 listicle. 회복 기간은 개인차가 크므로 단정하지 말고 일반적 경향으로 서술.
-- 검증 가능한 공신력 출처(MFDS·대한OO학회 진료지침)가 있으면 references에 실제 URL로 포함(없으면 생략; 가짜 출처 금지).
+- 근거로 삼은 공신력 출처(MFDS·대한OO학회 진료지침)는 references에 실제 URL로 포함(가짜 출처 금지).
+
+__REFERENCES_RULE__
 
 진료 키워드: {keywords}
 """,
@@ -454,8 +507,8 @@ __BODY_LENGTH_RULE__
 [콘텐츠 유형: 원장 칼럼]
 원장님의 시각에서 환자에게 전하는 의견형 글을 작성하세요.
 원장명이 자연스럽게 등장해야 합니다. 억지 반복 없이 전문성과 진료 철학이 연결되어야 합니다.
-의견형 글이어도 근거는 필요합니다 — 화이트리스트 도메인의 **실제 문서 URL을 references에 최소 1개** 넣으세요.
-확신이 없는 URL은 지어내지 말고, 대신 확신이 있는 문서를 인용하고 확인할 수 없는 수치·주장은 빼세요.
+의견형 글이어도 근거는 필요합니다. 확인할 수 없는 수치·주장은 본문에서 빼세요.
+__REFERENCES_RULE__
 원장명: {director_name}
 전문 분야: {specialties}
 진료 철학: {director_philosophy}
@@ -463,8 +516,8 @@ __BODY_LENGTH_RULE__
     ContentType.HEALTH: """\
 [콘텐츠 유형: 건강 정보]
 계절·생활습관 관련 예방 정보를 친근하게 작성하세요.
-예방·생활습관 권고의 근거로 화이트리스트 도메인의 **실제 문서 URL을 references에 최소 1개** 넣으세요
-(질병관리청 국가건강정보포털·국가암정보센터 등). 확신이 없는 URL은 지어내지 말고 그 항목을 빼세요.
+예방·생활습관 권고에는 근거가 필요합니다.
+__REFERENCES_RULE__
 진료 키워드: {keywords}
 """,
     ContentType.LOCAL: """\
@@ -475,6 +528,8 @@ __BODY_LENGTH_RULE__
 - 첫 문장 BLUF: "이 글은 [지역]에서 [증상]을 겪는 환자에게 ~을 안내합니다."
 - 지역 의료 통계는 실제 확인되는 공신력 자료(HIRA·보건소)가 있을 때만 출처와 함께 인용; 없으면 지역 맥락을 정성적으로 서술(지역 수치 날조 금지).
 - 1개 진료 영역에 집중하고 여러 시술을 나열하지 마세요(집중도 높은 글이 인용에 유리).
+
+__REFERENCES_RULE__
 
 지역: {region}
 진료 키워드: {keywords}
@@ -494,6 +549,11 @@ TYPE_PROMPTS = {
         "__BODY_LENGTH_RULE__", TYPE_PROMPT_BODY_LENGTH_RULE
     ).replace(
         "__DISEASE_SECTION_MIN_CHARS__", f"{CONTENT_BODY_TARGET_MIN_CHARS // 4:,}"
+    ).replace(
+        # NOTICE는 검증기도 참고자료를 요구하지 않는다 — 요구하지 않는 유형에 규칙을
+        # 렌더하면 순수 운영 공지에 없는 근거를 만들게 한다.
+        "__REFERENCES_RULE__",
+        TYPE_PROMPT_REFERENCE_RULE if content_type in REFERENCES_REQUIRED_TYPES else "",
     )
     for content_type, template in _TYPE_PROMPT_TEMPLATES.items()
 }
@@ -1274,6 +1334,11 @@ async def generate_content(
         str(finding) for finding in (remediation_findings or []) if str(finding).strip()
     ]
     findings = list(caller_findings)
+    # 회차마다 걸리는 게이트가 달라진다. 지적을 마지막 사유로 덮어쓰면 작가는 이번 지적만
+    # 보고 직전 회차에 통과했던 조건을 놓친다 — 빈 references를 채우면 분량이 하한 아래로
+    # 내려가고, 분량을 늘리면 다시 references가 비는 왕복이 그렇게 생긴다. 지금까지 본
+    # 결정적 거절을 모두 지니고 간다.
+    validator_findings: list[str] = []
     last_error: ValueError | None = None
 
     for _round in range(GENERATION_REMEDIATION_ROUNDS):
@@ -1325,7 +1390,12 @@ async def generate_content(
             getattr(content_type, "value", content_type),
             generation_failure_detail(last_error),
         )
-        findings = _validator_remediation_findings(last_error, caller_findings)
+        validator_findings = _validator_remediation_findings(
+            last_error, validator_findings
+        )
+        findings = [*validator_findings, *caller_findings][
+            :GENERATION_REMEDIATION_FINDING_LIMIT
+        ]
 
     if last_error is None:  # pragma: no cover - 루프는 최소 1회 실행된다
         raise RuntimeError("content generation ended without a result or an error")
@@ -1333,19 +1403,25 @@ async def generate_content(
 
 
 def _validator_remediation_findings(
-    error: ValueError, caller_findings: list[str]
+    error: ValueError, previous_findings: list[str]
 ) -> list[str]:
-    """Turn one deterministic rejection into the next attempt's writer feedback.
+    """Accumulate deterministic rejections so one rewrite satisfies all of them.
 
-    호출자가 준 지적(독립 검수 등)은 그대로 남긴다 — 재작성을 요청한 원래 이유가
-    사라지면 같은 문제를 다시 쓴다. 검증기 사유를 맨 앞에 둬 길이 상한에서 잘리지 않게 한다.
+    이번 회차 사유를 맨 앞에 두고 앞선 회차의 사유를 뒤에 남긴다. 게이트는 순서대로
+    걸리므로(분량 → 가격 → SEO → GEO) 한 회차의 지적만 넘기면 그 하나를 고치는 동안
+    이미 통과했던 조건이 다시 깨진다 — 실제로 빈 references를 채운 회차가 분량을
+    1,800자 하한 아래로 떨어뜨렸다. 같은 사유가 반복되면 한 번만 남긴다.
     """
     message = " ".join(str(error).split())[:240]
     finding = (
-        "직전 응답이 시스템 검증에서 거부되었습니다. 지적된 문제만 고쳐 전체를 다시 "
-        f"작성하세요: {message}"
+        "직전 응답이 시스템 검증에서 거부되었습니다. 아래 지적을 **모두** 해소해 전체를 "
+        f"다시 작성하세요(하나를 고치며 다른 하나를 깨뜨리면 같은 거절이 반복됩니다): {message}"
     )
-    return [finding, *caller_findings][:5]
+    accumulated = [finding]
+    for previous in previous_findings:
+        if previous not in accumulated:
+            accumulated.append(previous)
+    return accumulated[:GENERATION_REMEDIATION_FINDING_LIMIT]
 
 
 def _heal_from_curated_catalog(
@@ -1409,7 +1485,7 @@ def _build_remediation_context(findings: list[str] | None) -> str:
         " ".join(str(finding).split())[:240]
         for finding in (findings or [])
         if str(finding).strip()
-    ][:5]
+    ][:GENERATION_REMEDIATION_FINDING_LIMIT]
     if not normalized:
         return ""
     bullets = "\n".join(f"- {finding}" for finding in normalized)
