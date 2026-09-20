@@ -5340,8 +5340,10 @@ def test_body_repair_budget_survives_the_publication_readiness_write(monkeypatch
         lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False}),
     )
     philosophy = SimpleNamespace(id=uuid.uuid4())
+    # "오늘 예산을 다 썼다"가 이 상태의 뜻이다. 날짜를 리터럴로 굳히면 그 하루가 지난
+    # 순간부터 예산이 초기화돼 테스트가 벽시계로 깨진다.
     repair_state = {
-        "period": "2026-09-20",
+        "period": environment_attempt_period(),
         "count": BODY_REPAIR_DAILY_BUDGET,
         "exhausted_days": SAMPLE_EXHAUSTED_DAY_LIMIT - 1,
         "first_observed_at": "2026-09-18T00:00:00+00:00",
