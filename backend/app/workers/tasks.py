@@ -135,6 +135,9 @@ from app.services.content_review_feedback import (
 from app.services.content_review_feedback import (
     screening_probe as _screening_probe,  # noqa: F401 -- stable legacy worker import
 )
+from app.services.content_review_feedback import (
+    stored_blocking_review_constraints as _stored_blocking_review_constraints,
+)
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorV0Baseline
@@ -1423,6 +1426,7 @@ async def _generate_with_auto_review(
     existing_titles: list[str],
     philosophy: HospitalContentPhilosophy,
     approved_brief: dict | None,
+    rewrite_constraints: list[str] | None = None,
 ) -> tuple[dict[str, Any], EssenceScreeningResult]:
     """Adapt the stable worker entry point to the bounded review service."""
     return await generate_reviewed_content(
@@ -1431,6 +1435,7 @@ async def _generate_with_auto_review(
         existing_titles=existing_titles,
         philosophy=philosophy,
         approved_brief=approved_brief,
+        rewrite_constraints=rewrite_constraints,
         dependencies=ContentReviewDependencies(
             generate=generate_content,
             review=review_generated_content,
@@ -4957,8 +4962,15 @@ def prepublish_content_generation_recovery(self):
 
 
 @celery_app.task(name="app.workers.tasks.regenerate_content_item", bind=True, max_retries=1)
-def regenerate_content_item(self, content_id: str):
-    """Generate a single unpublished content item on operator request."""
+def regenerate_content_item(self, content_id: str, force_hard_rewrite: bool = False):
+    """Generate a single unpublished content item on operator request.
+
+    `force_hard_rewrite`는 운영 센터의 "작업 다시 시도"가 절대 켜지 않는 두 번째 인자다
+    (그 경로는 저장된 dispatch payload의 인자 1개만 허용한다). 저장된 본문이 독립 검수의
+    사실·의료 안전 지적으로 막혀 있을 때, 그 지적을 재작성 제약으로 삼는 작가 세션을 한 번
+    사고 결과를 다시 독립 검수에 태운다. 발행은 종전 게이트가 그대로 판정한다 — 지적이
+    남으면 그대로 차단된다.
+    """
     item_id = uuid.UUID(content_id)
     if explicit_run_context(self) is None:
         require_dispatch(self, "regenerate-content", str(item_id))
@@ -4985,8 +4997,26 @@ def regenerate_content_item(self, content_id: str):
                 safe_error_message="병원 정보를 찾을 수 없어 생성 작업을 중단했습니다.",
             )
             return
+        if force_hard_rewrite:
+            # 유료 작가 세션을 자동 예산 밖에서 사는 결정이다. 어느 글이 어떤 차단
+            # 상태에서 강제 재작성됐는지 감사 기록으로 남긴다.
+            write_audit_log_sync(
+                db,
+                action="force_content_hard_finding_rewrite",
+                hospital_id=hospital.id,
+                actor="system:content-hard-finding-force",
+                target_type="content_item",
+                target_id=item_id,
+                detail={
+                    "scheduled_date": str(getattr(item, "scheduled_date", None)),
+                    "blocked_code": _stored_generation_attempt(item).get("reason"),
+                },
+            )
+            db.commit()
         try:
-            outcome, code, message = _generate_single_content_item(db, item, hospital)
+            outcome, code, message = _generate_single_content_item(
+                db, item, hospital, force_hard_rewrite=bool(force_hard_rewrite)
+            )
         except Exception as exc:
             db.rollback()
             code, message = classify_generation_failure(exc)
@@ -5572,11 +5602,25 @@ def generate_content_image(self, content_id: str):
 
 
 def _generate_single_content_item(
-    db, item: ContentItem, hospital: Hospital
+    db, item: ContentItem, hospital: Hospital, *, force_hard_rewrite: bool = False
 ) -> tuple[GenerationItemState, str | None, str | None]:
+    """Run one slot's generation. `force_hard_rewrite`는 사람이 승인한 강제 경로다.
+
+    예약 스윕은 이 인자를 절대 켜지 않는다(기본값). 켜지면 두 가지가 달라진다.
+
+    1. 저장된 `CONTENT_AI_HARD_FINDING` 차단이 fail-closed 반환이 아니라, 그 지적을
+       재작성 제약으로 삼는 작가 세션 1회로 이어진다. 결과는 독립 검수를 다시 받는다.
+    2. "직전 차단 원인이 그대로다"라는 비용 억제(claim 후 SKIP)를 걷어낸다 — 강제
+       실행이 아무 일도 하지 않고 끝나는 것이 이 경로의 실패 모드였다.
+
+    발행 권한은 조금도 달라지지 않는다. 재작성 뒤에도 사실·의료 안전 지적이 남으면
+    아래 `post_write_assessment`와 08:00 발행 게이트가 그대로 막는다.
+    """
+
     # 저장 본문 수리 세션 계수는 재작성이 essence_check_summary를 통째로 덮어써도
     # 살아남아야 한다. 사라지면 예산이 매일 0에서 다시 시작한다.
     carried_repair_state = _stored_body_repair_state(item)
+    rewrite_constraints: list[str] = []
     philosophy = _generation_philosophy_sync(db, hospital.id)
     if not philosophy:
         item.content_philosophy_id = None
@@ -5605,6 +5649,11 @@ def _generate_single_content_item(
     )
     if body_uses_current_philosophy:
         stored_assessment = assess_content_publication(item, philosophy)
+        # 사람이 승인한 강제 재작성. 본문이 이미 있다는 사실은 이 경로에서 SKIP 사유가
+        # 아니다 — 그 본문이 바로 고쳐야 할 대상이다. 저장된 지적을 제약으로 넘긴다.
+        forced_hard_rewrite_due = (
+            force_hard_rewrite and stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+        )
         # 모델이 HARD로 단정하지 않은(합성 UNCERTAIN만 남은) 차단은 표본 실패다. 같은
         # 본문을 한 번 더 독립 검수에 태워 본다 — 재검수는 확신도 부족만으로 생긴
         # UNCERTAIN을 상위 모델로 1회 승격해 스스로 푼다. 예산은 아래에서 계수한다.
@@ -5619,15 +5668,20 @@ def _generate_single_content_item(
         sample_rereview_due = uncertain_only_block and (
             not stored_attempt.get("reason") or retry_is_due(stored_attempt)
         )
-        if sample_rereview_due or stored_assessment.code in {
-            "CONTENT_AI_REVIEW_STALE",
-            "CONTENT_AI_REVIEW_UNAVAILABLE",
-            "CONTENT_AI_REVIEW_CONFIG_ERROR",
-            "COST_BLOCKED",
-        }:
+        if not forced_hard_rewrite_due and (
+            sample_rereview_due
+            or stored_assessment.code
+            in {
+                "CONTENT_AI_REVIEW_STALE",
+                "CONTENT_AI_REVIEW_UNAVAILABLE",
+                "CONTENT_AI_REVIEW_CONFIG_ERROR",
+                "COST_BLOCKED",
+            }
+        ):
             previous_attempt = _stored_generation_attempt(item)
             if (
-                previous_attempt.get("reason")
+                not force_hard_rewrite
+                and previous_attempt.get("reason")
                 in {
                     "CONTENT_AI_REVIEW_UNAVAILABLE",
                     "CONTENT_AI_REVIEW_CONFIG_ERROR",
@@ -5692,7 +5746,22 @@ def _generate_single_content_item(
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             and _stored_ai_review_is_remediable(item)
         )
-        if repairable_body and _body_repair_session_is_due(item):
+        if forced_hard_rewrite_due:
+            # 운영자가 승인한 강제 재작성. 저장된 사실·의료 안전 지적을 삭제·완화
+            # 지시문으로 바꿔 작가에게 제약으로 넘기고, 아래 전체 재생성 경로로
+            # 내려간다. 자동 스윕과 달리 하루 수리 예산이 남아 있지 않아도 진행하되,
+            # 계수는 똑같이 올려 이 슬롯의 자동 복구 상태가 정확하게 남게 한다.
+            rewrite_constraints = _stored_blocking_review_constraints(
+                getattr(item, "essence_check_summary", None)
+            )
+            logger.info(
+                "Forcing a hard-finding rewrite for stored content %s: constraints=%d",
+                item.id,
+                len(rewrite_constraints),
+            )
+            carried_repair_state = _spend_body_repair_session(db, item)
+            _clear_generation_attempt(db, item)
+        elif repairable_body and _body_repair_session_is_due(item):
             logger.info(
                 "Regenerating repairable stored content %s: %s",
                 item.id,
@@ -5736,7 +5805,8 @@ def _generate_single_content_item(
                 if reuse_state == GenerationItemState.DISCARDED:
                     return reuse_state, None, None
             if (
-                previous_attempt.get("reason")
+                not force_hard_rewrite
+                and previous_attempt.get("reason")
                 in {
                     "IMAGE_GENERATION_FAILED",
                     _IMAGE_RETRY_EXHAUSTED_CODE,
@@ -5763,7 +5833,8 @@ def _generate_single_content_item(
 
     # The same empty slot and unchanged generation context gets no second writer
     # call.  A philosophy/context change removes this suppression exactly once.
-    if _generation_attempt_is_unchanged(item, philosophy):
+    # 강제 경로는 이 억제를 걷어낸다 — 그것이 이 경로의 존재 이유다.
+    if not force_hard_rewrite and _generation_attempt_is_unchanged(item, philosophy):
         previous = _stored_generation_attempt(item)
         return (
             GenerationItemState.SKIPPED,
@@ -5817,6 +5888,7 @@ def _generate_single_content_item(
             existing_titles=existing_titles,
             philosophy=philosophy,
             approved_brief=approved_brief,
+            rewrite_constraints=rewrite_constraints or None,
         )
     )
     now = datetime.now(timezone.utc)
