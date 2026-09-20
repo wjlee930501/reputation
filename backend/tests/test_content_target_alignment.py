@@ -111,6 +111,21 @@ def test_local_prompt_uses_the_measured_region_not_the_whole_profile():
     assert "지역: 강남 역삼동" not in prompt
 
 
+def test_local_prompt_keeps_the_profile_region_the_geo_gate_requires():
+    """측정 지역이 프로파일 지역과 다르면 프로파일 지역도 함께 보여 줘야 한다.
+
+    `_validate_geo`는 프로파일 region이 본문에 없으면 ValueError로 하드 거절한다.
+    프롬프트가 측정 지역만 보여 주면 작가는 그 게이트를 만족시킬 방법이 없어, 지적을
+    되먹인 재작성마다 같은 거절이 반복되고 슬롯이 GENERATION_REJECTED에 갇힌다.
+    """
+    hospital = _hospital(region=["송파구"])
+    brief = _brief(_query_target(region_terms=["잠실"]))
+
+    prompt = _fill_type_prompt(ContentType.LOCAL, hospital, brief)
+
+    assert "지역: 잠실 송파구" in prompt
+
+
 def test_disease_prompt_states_the_question_the_first_paragraph_must_answer():
     prompt = _fill_type_prompt(ContentType.DISEASE, _hospital(), _brief())
 
