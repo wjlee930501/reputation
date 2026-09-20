@@ -354,6 +354,76 @@ async def test_the_gate_records_a_canonical_attempt_before_opening(monkeypatch):
     assert tasks._generation_retry_is_eligible(db)(item) is True
 
 
+def test_the_morning_gate_does_not_reset_the_image_budget_it_only_observed(monkeypatch):
+    """게이트가 본 "이미지 없음"이 워커가 결제한 원인 기록을 대신 쓰지 않는다.
+
+    행복드림 슬롯이 그렇게 갇혔다. 밤에 이미지 생성이 실패해 예산을 한 번 쓰면, 07:45
+    게이트가 증상(`CONTENT_IMAGE_NOT_READY`)으로 기록을 덮어써 계수를 0으로 돌렸다.
+    그러면 하루 4회 예산이 매일 아침 초기화돼 `IMAGE_GENERATION_RETRIES_EXHAUSTED`에
+    닿지 못하고, 저장된 원인이 `_IMAGE_FAILURE_REASONS` 밖으로 나가 예산 소진 뒤 같은
+    병원의 인증 이미지를 빌리는 계약도 실행되지 않는다. 본문이 멀쩡한 슬롯이 매일 이미지를
+    다시 사고 매일 아침 기록을 잃는다.
+    """
+
+    db = _CommitOnlyDB()
+    item = _slot_item(scheduled_date=_SLOT)
+    philosophy = SimpleNamespace(id="p1")
+
+    # 밤 스윕이 이미지 생성 실패를 기록한다 — 하루 4회 예산 중 두 번.
+    for moment in (_kst(2026, 9, 16, 1, 0), _kst(2026, 9, 16, 4, 0)):
+        _remember(monkeypatch, db, item, moment, reason="IMAGE_GENERATION_FAILED")
+    spent = tasks._stored_generation_attempt(item)
+    assert spent["provider_attempt_count"] == 2
+
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    assessment = SimpleNamespace(
+        code="CONTENT_IMAGE_NOT_READY", message="대표 이미지가 아직 준비되지 않았습니다."
+    )
+    # 게이트는 증상이 아니라 저장된 원인을 보고한다.
+    code, _message = tasks._publication_block_details(item, assessment)
+    assert code == "IMAGE_GENERATION_FAILED"
+
+    tasks._record_gate_blocker_decision(db, item, philosophy, code)
+    after = tasks._stored_generation_attempt(item)
+
+    assert after["reason"] == "IMAGE_GENERATION_FAILED"
+    assert after["provider_attempt_count"] == 2  # 아침 관측이 예산을 되돌리지 않는다
+    assert after["next_retry_at"] == spent["next_retry_at"]
+
+    # 남은 두 번을 더 쓰면 종착으로 올라가고, 그때 재사용 자격이 열린다.
+    for moment in (_kst(2026, 9, 16, 7, 0), _kst(2026, 9, 16, 12, 0)):
+        _remember(monkeypatch, db, item, moment, reason="IMAGE_GENERATION_FAILED")
+    exhausted = tasks._stored_generation_attempt(item)
+
+    assert exhausted["reason"] == "IMAGE_GENERATION_RETRIES_EXHAUSTED"
+    assert exhausted["exhausted_days"] == 1
+    assert tasks._image_reuse_is_due(item) is True
+
+    # 그 뒤의 아침 관측도 종착 기록을 지우지 않는다.
+    _freeze(monkeypatch, _kst(2026, 9, 17, 7, 45))
+    tasks._record_gate_blocker_decision(db, item, philosophy, "CONTENT_IMAGE_NOT_READY")
+
+    assert tasks._stored_generation_attempt(item) == exhausted
+    assert tasks._image_reuse_is_due(item) is True
+
+
+def test_a_cost_guard_deferral_survives_the_morning_image_observation(monkeypatch):
+    """비용 가드 보류도 게이트의 증상 기록에 덮이지 않는다 — 가드가 알림을 소유한다."""
+
+    db = _CommitOnlyDB()
+    item = _slot_item(scheduled_date=_SLOT)
+    blocked = _remember(monkeypatch, db, item, _kst(2026, 9, 16, 1, 0), reason="COST_BLOCKED")
+
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    tasks._record_gate_blocker_decision(
+        db, item, SimpleNamespace(id="p1"), "CONTENT_IMAGE_NOT_READY"
+    )
+
+    stored = tasks._stored_generation_attempt(item)
+    assert stored["reason"] == "COST_BLOCKED"
+    assert stored["guard_deferral_count"] == blocked["guard_deferral_count"]
+
+
 @pytest.mark.asyncio
 async def test_repeated_gate_observations_keep_the_same_decision(monkeypatch):
     """07:45과 08:00이 같은 원인을 다시 봐도 기록과 기한은 그대로다."""
