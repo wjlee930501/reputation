@@ -13,18 +13,18 @@
 - 실패는 시도 기록에만 남긴다. Slack도, 시도마다 인시던트를 여는 일도 없다 — 자동 복구가
   소유한 상태를 사람의 할 일로 만들지 않기 위해서다.
 - `content_revision`은 올리지 않는다. 본문 후보가 바뀌지 않았기 때문이다.
-- 공개 캐시 무효화는 커밋 뒤 best-effort다. 실패해도 저장을 되돌리지 않는다.
+- 공개 캐시 무효화 intent는 이미지와 같은 트랜잭션에 저장한다.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from celery import current_task
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.orm import joinedload
 
 from app.core.celery_app import celery_app
@@ -36,19 +36,28 @@ from app.services.image_engine import (
     image_content_hash_from_url,
     image_subject_hash,
 )
+from app.services.public_surface_intents import enqueue_public_surface_intent
+from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 from app.workers.dispatch_auth import require_dispatch
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     read_generation_attempt,
 )
 from app.workers.generation_retry_policy import (
+    SAMPLE_EXHAUSTED_DAY_LIMIT,
+    GenerationRetryClass,
     environment_attempt_period,
     next_recovery_sweep,
     retry_class_for,
     retry_is_due,
+    sample_budget_spent,
     stored_attempt_period,
 )
-from app.workers.nightly_generation_batch import write_back_published_image
+from app.workers.nightly_generation_batch import (
+    NIGHTLY_GENERATION_CLAIM_TTL_HOURS,
+    release_generation_claim,
+    write_back_published_image,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +68,7 @@ _IMAGE_POLICY_REJECTION_CODE = "CONTENT_IMAGE_POLICY_REJECTED"
 _IMAGE_FAILURE_CODE = "IMAGE_GENERATION_FAILED"
 
 
-def _reused_image_stmt():
+def _reused_image_stmt(after=None):
     """공개 중이고 자기 주제 이미지가 아직 없는 글. 오래 빌린 것부터 돌려준다.
 
     두 가지를 같이 집는다 — 같은 병원의 다른 글에서 빌린 글
@@ -67,7 +76,12 @@ def _reused_image_stmt():
     (`image_fallback_source`). 둘 다 유효한 인증이지만 최종 상태는 아니다.
     """
 
-    return (
+    order = (
+        func.coalesce(ContentItem.published_at, datetime.min.replace(tzinfo=UTC)),
+        ContentItem.sequence_no,
+        ContentItem.id,
+    )
+    stmt = (
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
         .where(
@@ -79,10 +93,86 @@ def _reused_image_stmt():
             Hospital.status == HospitalStatus.ACTIVE,
             Hospital.site_live.is_(True),
         )
-        .order_by(ContentItem.published_at.asc(), ContentItem.sequence_no.asc())
+        .order_by(*order)
         .options(joinedload(ContentItem.hospital))
         .limit(PUBLISHED_IMAGE_REFRESH_CAP)
     )
+
+    if after is not None:
+        stmt = stmt.where(tuple_(*order) > tuple_(*after))
+    return stmt
+
+
+def _image_candidates(db):
+    """Refill past ineligible rows; cap provider work, not the first SQL page."""
+    after = None
+    while True:
+        page = list(db.execute(_reused_image_stmt(after)).unique().scalars().all())
+        if not page:
+            return
+        last = page[-1]
+        after = (last.published_at or datetime.min.replace(tzinfo=UTC), last.sequence_no, last.id)
+        for item in page:
+            yield item
+        if len(page) < PUBLISHED_IMAGE_REFRESH_CAP:
+            return
+
+
+def _claim_image_refresh(db, item_id):
+    """Serialize eligibility and reserve the existing fenced generation lease."""
+    now = datetime.now(UTC)
+    stmt = (
+        _reused_image_stmt()
+        .where(
+            ContentItem.id == item_id,
+            or_(
+                ContentItem.generation_claimed_at.is_(None),
+                ContentItem.generation_claimed_at
+                <= now - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
+            ),
+        )
+        .with_for_update(of=ContentItem, skip_locked=True)
+        .execution_options(populate_existing=True)
+    )
+    item = db.execute(stmt).unique().scalar_one_or_none()
+    if item is None:
+        db.rollback()
+        return None
+    attempt = read_generation_attempt(item)
+    if attempt and not retry_is_due(attempt, now):
+        db.rollback()
+        return None
+    token = uuid.uuid4()
+    item.generation_claim_token = token
+    item.generation_claimed_at = now
+    db.commit()
+    return token
+
+
+def _remember_claimed_failure(db, item, token, title, revision, reason):
+    """Fence failure metadata as carefully as successful image writeback."""
+    owned = db.execute(
+        select(ContentItem)
+        .where(
+            ContentItem.id == item.id,
+            ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.title == title,
+            ContentItem.content_revision == revision,
+            ContentItem.generation_claim_token == token,
+            ContentItem.generation_claimed_at
+            > datetime.now(UTC) - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    ).scalar_one_or_none()
+    if owned is None:
+        db.rollback()
+        release_generation_claim(db, item.id, token)
+        db.commit()
+        return
+    owned.generation_claimed_at = None
+    owned.generation_claim_token = None
+    remember_image_attempt(db, owned, reason)
 
 
 def _failure_code(diagnostics: dict[str, Any] | None) -> str:
@@ -115,14 +205,21 @@ def remember_image_attempt(db, item: ContentItem, reason: str) -> dict[str, Any]
         )
     except (TypeError, ValueError):
         provider_attempt_count = 0
+    try:
+        exhausted_days = int(previous.get("exhausted_days") or 0)
+    except (TypeError, ValueError):
+        exhausted_days = SAMPLE_EXHAUSTED_DAY_LIMIT
+    retry_class = retry_class_for(reason)
     if reason != "COST_BLOCKED":
-        # 비용 가드 보류는 공급자를 부른 적이 없다. 예산을 소모한 것으로 세지 않는다.
-        provider_attempt_count += 1
+        provider_attempt_count, exhausted_days = sample_budget_spent(previous, reason, observed_at)
+    if exhausted_days >= SAMPLE_EXHAUSTED_DAY_LIMIT:
+        retry_class = GenerationRetryClass.OPERATOR_REQUIRED
     attempt = {
         "reason": reason,
         "observed_at": observed_at.isoformat(),
         "attempt_period": attempt_period,
-        "retry_class": retry_class_for(reason).value,
+        "retry_class": retry_class.value,
+        "exhausted_days": exhausted_days,
         "attempt_count": provider_attempt_count,
         "provider_attempt_count": provider_attempt_count,
         "next_retry_at": next_recovery_sweep(observed_at).isoformat(),
@@ -144,15 +241,12 @@ _REPLACED_SUMMARY_KEYS = (GENERATION_ATTEMPT_KEY, "image_reused", "image_fallbac
 
 def _clear_image_attempt(db, item: ContentItem) -> None:
     summary = getattr(item, "essence_check_summary", None)
-    if not isinstance(summary, dict) or not any(
-        key in summary for key in _REPLACED_SUMMARY_KEYS
-    ):
+    if not isinstance(summary, dict) or not any(key in summary for key in _REPLACED_SUMMARY_KEYS):
         return
     updated = dict(summary)
     for key in _REPLACED_SUMMARY_KEYS:
         updated.pop(key, None)
     item.essence_check_summary = updated
-    db.commit()
 
 
 @celery_app.task(
@@ -170,18 +264,33 @@ def refresh_reused_content_images() -> dict[str, int]:
     from app.services.site_revalidate import trigger_content_site_revalidate_safe
     from app.workers.tasks import _run_async
 
-    replaced = skipped = failed = 0
+    replaced = skipped = failed = claimed = 0
     revalidations: list[tuple[str, uuid.UUID, str | None, Any]] = []
     with SyncSessionLocal() as db:
-        items = list(db.execute(_reused_image_stmt()).unique().scalars().all())
-        for item in items:
+        for item in _image_candidates(db):
+            if claimed >= PUBLISHED_IMAGE_REFRESH_CAP:
+                break
+            attempt = read_generation_attempt(item)
+            if attempt and not retry_is_due(attempt):
+                skipped += 1
+                continue
+            token = _claim_image_refresh(db, item.id)
+            if token is None:
+                skipped += 1
+                continue
+            claimed += 1
+            db.refresh(item)
             attempt = read_generation_attempt(item)
             if attempt and not retry_is_due(attempt):
                 # 같은 글의 이미지 예산은 야간 스윕과 하나다. 아직 due가 아니면 사지 않는다.
+                release_generation_claim(db, item.id, token)
+                db.commit()
                 skipped += 1
                 continue
             hospital = item.hospital
             if hospital is None:
+                release_generation_claim(db, item.id, token)
+                db.commit()
                 skipped += 1
                 continue
             expected_title = item.title
@@ -203,19 +312,25 @@ def refresh_reused_content_images() -> dict[str, int]:
                     "reused image refresh failed for %s: %s", item.id, type(error).__name__
                 )
                 db.rollback()
-                remember_image_attempt(db, item, _IMAGE_FAILURE_CODE)
+                _remember_claimed_failure(
+                    db, item, token, expected_title, expected_revision, _IMAGE_FAILURE_CODE
+                )
                 failed += 1
                 continue
             if not image_url:
                 # 비용 가드 보류·정책 거절·공급자 무응답. 빌린 이미지는 그대로 둔다.
-                remember_image_attempt(db, item, _failure_code(diagnostics))
+                _remember_claimed_failure(
+                    db, item, token, expected_title, expected_revision, _failure_code(diagnostics)
+                )
                 failed += 1
                 continue
+            acquire_hospital_advisory_lock_sync(db, hospital.id)
             written = write_back_published_image(
                 db,
                 item_id=item.id,
                 expected_title=expected_title,
                 expected_revision=expected_revision,
+                expected_claim_token=token,
                 values={
                     "image_url": image_url,
                     "image_prompt": image_prompt,
@@ -232,15 +347,16 @@ def refresh_reused_content_images() -> dict[str, int]:
             if written == 0:
                 # 교체 중 제목·판이 바뀌었다. 그 편집이 자기 경로로 다시 요청한다.
                 db.rollback()
+                release_generation_claim(db, item.id, token)
+                db.commit()
                 skipped += 1
                 continue
-            db.commit()
             db.refresh(item)
             _clear_image_attempt(db, item)
+            enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
+            db.commit()
             replaced += 1
-            revalidations.append(
-                (hospital.slug, item.id, hospital.name, hospital.treatments)
-            )
+            revalidations.append((hospital.slug, item.id, hospital.name, hospital.treatments))
     for slug, item_id, hospital_name, treatments in revalidations:
         # 공개 이미지 URL은 인증된 내용 hash를 담으므로 교체와 함께 캐시 키가 바뀐다.
         # 재검증 실패는 이미 커밋된 교체를 되돌리지 않는다.

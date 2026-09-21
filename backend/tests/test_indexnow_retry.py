@@ -43,7 +43,7 @@ async def test_enqueue_is_idempotent_upsert_inside_async_caller_transaction() ->
     assert first == second
     assert len(db.statements) == 2
     sql = str(db.statements[0].compile(dialect=postgresql.dialect()))
-    assert "ON CONFLICT (id) DO NOTHING" in sql
+    assert "ON CONFLICT DO NOTHING" in sql
 
 
 def test_enqueue_sync_uses_revision_and_url_set_for_identity() -> None:

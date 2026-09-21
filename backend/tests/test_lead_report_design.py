@@ -20,14 +20,14 @@ def design_payload() -> lead_report.LeadReportPayload:
             failed=0,
         )
         for slot, text in (
-            (1, "수서역 근처 외과 병원 추천해줘"),
-            (2, "수서역 근처 대장내시경 병원 추천해줘"),
-            (3, "치질이 있는데 수서역 근처 병원 어디로 가야해?"),
+            (1, "가상역 근처 외과 병원 추천해줘"),
+            (2, "가상역 근처 대장내시경 병원 추천해줘"),
+            (3, "치질이 있는데 가상역 근처 병원 어디로 가야해?"),
         )
     )
     return lead_report.LeadReportPayload(
-        hospital_name="장편한외과의원",
-        region="수서역",
+        hospital_name="검증용 가상 외과의원",
+        region="가상역",
         generated_at=datetime(2026, 7, 30, 10, 0, tzinfo=timezone.utc),
         repeat_count=3,
         system_prompt="지역 병원 정보를 잘 아는 의료 정보 도우미입니다.",
@@ -57,10 +57,10 @@ def design_payload() -> lead_report.LeadReportPayload:
         ),
         queries=queries,
         contact=lead_report.LeadReportContact(
-            name="김효진",
+            name="가상 담당자",
             role="Re:putation 마케팅 팀장",
-            email="hjkim@motionlabs.kr",
-            phone="070-8671-0100",
+            email="fictional@example.invalid",
+            phone="000-0000-0000",
         ),
     )
 
@@ -95,7 +95,7 @@ def test_report_packages_and_uses_only_pretendard(design_payload):
 def test_one_configured_contact_is_the_dominant_cta(design_payload):
     html = lead_report.render_lead_report_html(design_payload)
     assert html.count('class="cta"') == 1
-    assert 'href="tel:070-8671-0100"' in html
+    assert 'href="tel:000-0000-0000"' in html
 
 
 def test_result_headline_reports_each_platform_separately(design_payload):
@@ -114,14 +114,15 @@ def test_operating_page_keeps_prices_and_volumes_separate_from_recommendations(d
         assert f"월 {price}만 원" in third_page
         assert f"월 {volume}편 발행" in third_page
     assert third_page.count("부가세 별도") == 3
-    assert "특정 AI 순위 보장" in third_page
-    assert "고정 노출 보장" in third_page
-    assert "환자 수·매출 절대 증가" in third_page
+    assert "특정 AI 순위 보장" in html
+    assert "고정 노출 보장" in html
+    assert "환자 수·매출 절대 증가" in html
 
 
 def test_report_uses_editorial_rules_instead_of_saas_card_effects(design_payload):
     html = lead_report.render_lead_report_html(design_payload)
-    assert "#99522e" in html
+    assert "#0672ed" in html
+    assert "#99522e" not in html
     assert "border-radius" not in html
     assert "box-shadow" not in html
     assert "linear-gradient" not in html

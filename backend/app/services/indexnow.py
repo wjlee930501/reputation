@@ -409,7 +409,7 @@ def _intent_insert(
         )
         # A repeated or concurrent publication of the same durable revision is a no-op.
         # It must never turn a successful content transaction into an IntegrityError.
-        .on_conflict_do_nothing(index_elements=[OperationRun.id])
+        .on_conflict_do_nothing()
     )
     return statement, run_id
 

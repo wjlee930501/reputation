@@ -5,6 +5,7 @@
 import itertools
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -99,7 +100,7 @@ async def _seed(
                 diagnosis_id=diagnosis.id,
                 version=1,
                 storage_uri=str(pdf_path),
-                content_hash="deadbeef",
+                content_hash=sha256(pdf_path.read_bytes()).hexdigest(),
                 byte_size=pdf_path.stat().st_size,
                 template_version="lead-v1",
             )
@@ -218,6 +219,9 @@ class TestTokenGate:
                 )
             ).scalar_one()
             (tmp_path / f"{diagnosis.id}.pdf").write_bytes(b"%PDF-1.7 " + marker)
+            artifact.content_hash = sha256(b"%PDF-1.7 " + marker).hexdigest()
+            artifact.byte_size = len(b"%PDF-1.7 " + marker)
+            await pg_async_session.flush()
             assert artifact.storage_uri.endswith(f"{diagnosis.id}.pdf")
 
         assert b"FIRST-REPORT" in (await get_report(first_raw, pg_async_session)).body
@@ -273,7 +277,7 @@ class TestReportDelivery:
                 diagnosis_id=diagnosis.id,
                 version=2,
                 storage_uri=str(newer),
-                content_hash="cafe",
+                content_hash=sha256(newer.read_bytes()).hexdigest(),
                 byte_size=newer.stat().st_size,
                 template_version="lead-v1",
             )
@@ -292,7 +296,7 @@ class TestReportDelivery:
                 diagnosis_id=diagnosis.id,
                 version=2,
                 storage_uri=str(purged),
-                content_hash="cafe",
+                content_hash=sha256(purged.read_bytes()).hexdigest(),
                 byte_size=purged.stat().st_size,
                 template_version="lead-v1",
                 purged_at=datetime.now(timezone.utc),
@@ -468,3 +472,45 @@ class TestAdminTerminalRecovery:
                 actor,
             )
         assert unsafe.value.status_code == 409
+
+
+@pytest.fixture(autouse=True)
+def report_storage_root(tmp_path, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "REPORT_OUTPUT_DIR", str(tmp_path))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["missing", "same_size", "truncated"])
+async def test_report_download_checks_actual_artifact_bytes(pg_async_session, tmp_path, state):
+    diagnosis, token = await _seed(pg_async_session, tmp_path=tmp_path)
+    path = tmp_path / f"{diagnosis.id}.pdf"
+    original = path.read_bytes()
+    if state == "missing":
+        path.unlink()
+    elif state == "same_size":
+        path.write_bytes(b"x" * len(original))
+    else:
+        path.write_bytes(original[:-1])
+    with pytest.raises(HTTPException) as exc:
+        await get_report(token, pg_async_session)
+    assert exc.value.status_code == 409
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("corrupt", [False, True])
+async def test_admin_lead_download_verifies_bytes_too(pg_async_session, tmp_path, corrupt):
+    from app.api.admin.lead_report_view import view_lead_diagnosis_report
+    diagnosis, _ = await _seed(pg_async_session, tmp_path=tmp_path)
+    path = tmp_path / f"{diagnosis.id}.pdf"
+    original = path.read_bytes()
+    if corrupt:
+        path.write_bytes(b"x" * len(original))
+        with pytest.raises(HTTPException) as exc:
+            await view_lead_diagnosis_report(diagnosis.lead_id, diagnosis.id,
+                db=pg_async_session, actor=SimpleNamespace(email="review@example.invalid"))
+        assert exc.value.status_code == 409
+    else:
+        response = await view_lead_diagnosis_report(diagnosis.lead_id, diagnosis.id,
+            db=pg_async_session, actor=SimpleNamespace(email="review@example.invalid"))
+        assert response.body == original

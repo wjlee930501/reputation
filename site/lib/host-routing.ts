@@ -93,6 +93,8 @@ const RESERVED_EXACT = new Set(['/robots.txt', '/sitemap.xml'])
 const REWRITABLE_FILE_PATHS = new Set(['/llms.txt'])
 
 export function isReservedPath(pathname: string): boolean {
+  // Clinic metadata is dynamic even though its last segment has an extension.
+  if (/^\/[^/]+\/llms\.txt\/?$/.test(pathname)) return false
   if (RESERVED_EXACT.has(pathname)) return true
   if (pathname === '/favicon' || pathname.startsWith('/favicon')) return true
   for (const prefix of RESERVED_PREFIXES) {
@@ -160,5 +162,7 @@ export function shouldFailClosedCustomHost(
 ): boolean {
   if (isPrimaryHost(host, primaryHostnames)) return false
   if (isReservedPath(pathname)) return false
-  return !slugOrNull || !SLUG_PATTERN.test(slugOrNull)
+  if (!slugOrNull || !SLUG_PATTERN.test(slugOrNull)) return true
+  const clinicLlms = /^\/([^/]+)\/llms\.txt\/?$/.exec(pathname)
+  return clinicLlms !== null && clinicLlms[1] !== slugOrNull
 }

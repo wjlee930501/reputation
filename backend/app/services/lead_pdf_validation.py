@@ -44,7 +44,10 @@ def validate_lead_document(document: Document, payload: LeadReportPayload) -> by
     pages = PdfReader(BytesIO(data), strict=True).pages
     texts = [_normalize_text(page.extract_text() or "") for page in pages]
     proposal = build_lead_proposal(payload)
-    summary = [payload.hospital_name, payload.region, proposal.headline, "진단에 사용한 질문"]
+    summary = [
+        payload.hospital_name, payload.region, proposal.headline, "진단에 사용한 질문",
+        "우리 병원의 강점이,", "AI가 답할 근거가 되도록.",
+    ]
     for segment in payload.segments:
         summary.extend(
             (
@@ -55,11 +58,7 @@ def validate_lead_document(document: Document, payload: LeadReportPayload) -> by
     summary.extend(query.text for query in payload.queries[:3])
     required = (
         tuple(summary),
-        tuple(
-            value
-            for item in proposal.proposals
-            for value in (item.question, item.known, item.check, item.action)
-        ),
+        ("왜 지금 시작해야 하나요?", "기다린 시간은 발행 이력이 되지 않습니다.", *(value for item in proposal.proposals for value in (item.question, item.known, item.check, item.action))),
         (
             "첫 달에는 이렇게 시작합니다",
             "정보 정리 · 콘텐츠 운영 · 반복 측정",
@@ -68,6 +67,14 @@ def validate_lead_document(document: Document, payload: LeadReportPayload) -> by
             "03 / 검수와 발행",
             "04 / 재측정과 보고",
             "계약 범위",
+            "공개 정보 허브",
+            "질문별 콘텐츠",
+            "월간 해석과 조정",
+            "전담 마케터가 설명합니다",
+            "동일 지역·유사 진료 분야는 기존 운영 병원과의 중복을 확인한 뒤 안내합니다.",
+            *(("우리 지역 운영 가능 여부 확인",)
+              if not payload.internal and (payload.contact.phone or payload.contact.email)
+              else ()),
             "STARTER",
             "GROWER",
             "LEADER",
@@ -122,7 +129,7 @@ def validate_lead_document(document: Document, payload: LeadReportPayload) -> by
             raise ValueError("LEAD_REPORT_FONT_INVALID")
     links = tuple(link for page in pages for link in _uri_links(page))
     if payload.internal:
-        if links or "AE전용" not in "".join(texts):
+        if links or any("AE전용" not in text for text in texts):
             raise ValueError("LEAD_REPORT_INTERNAL_CONTACT")
     else:
         expected = (

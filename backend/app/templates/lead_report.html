@@ -1,84 +1,48 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{{ payload.hospital_name }} · 우리 병원 AI 노출 진단·개선 제안서</title>
 <style>{% include 'report_editorial.css' %}
-{% if payload.sample_label or payload.internal %}@page { @top-right { content:'{{ '검증용 가상 사례' if payload.sample_label else '' }}{{ ' · ' if payload.sample_label and payload.internal else '' }}{{ 'AE 전용 · INTERNAL' if payload.internal else '' }}'; font-family:Pretendard; font-size:9pt; color:#99522e; } }{% endif %}
+{% if payload.sample_label or payload.internal %}@page { @top-right { content:'{{ '검증용 가상 사례' if payload.sample_label else '' }}{{ ' · ' if payload.sample_label and payload.internal else '' }}{{ 'AE 전용 · INTERNAL' if payload.internal else '' }}'; font-family:Pretendard; font-size:9pt; color:#525b69; } }{% endif %}
 </style></head><body class="diagnosis">
-<section class="page page-summary" id="main-1-start"><div class="masthead">RE:PUTATION / 01 현재의 기회{% if payload.internal %} / AE 전용 · INTERNAL · 고객 전달용 아님{% endif %}</div>
-
+<section class="page page-summary" id="main-1-start">
+<div class="masthead"><b>Re:putation</b> by MotionLabs <span class="section-label">01 / DISCOVERY</span></div>
 <p class="descriptor">우리 병원 AI 노출 진단·개선 제안서 · {{ payload.region }}</p>
-<p class="identity hero-identity">{{ payload.hospital_name }}</p>
-<h1 class="editorial-result">{{ proposal.headline }}</h1>
+<h1 class="brand-promise">우리 병원의 강점이,<br>AI가 답할 근거가 되도록.</h1>
+<div class="identity-rail"><p class="hero-identity">{{ payload.hospital_name }}</p><p>우리 지역의 진료 질문에서, 병원이 이해되고 발견될 수 있도록 준비합니다.</p></div>
+<div class="metrics" id="result">{% for segment in payload.segments %}<div class="metric"><span class="metric-label">{{ segment.vendor_label }} · 병원명 언급 / 확인한 답변</span><strong class="{{ 'unknown' if not segment.measured else '' }}">{{ segment.mentioned ~ ' / ' ~ segment.measured if segment.measured else '확인 불가' }}</strong><p class="caption">계획 {{ segment.planned }}회 · 실패 {{ segment.failed }}회 · 보류 {{ segment.ambiguous }}회 · 미실행 {{ segment.pending }}회</p></div>{% endfor %}</div>
+<p class="caption">질문 {{ payload.queries|length }}개 · 환자 수가 아닌 확정 반복 중 언급 횟수입니다. API 관찰은 앱 화면·개인화 노출과 다르며, 미확정은 미언급 0이 아닙니다.</p>
+<p class="result-reading">{{ proposal.headline }}</p>
+<h2>진단에 사용한 질문 <span class="section-aside">지역·진료 맥락에 맞춘 질문</span></h2>
+{% for query in payload.queries[:3] %}<div class="opportunity-row"><span class="number">0{{ loop.index }}</span><div><p>{{ query.text }}</p><p class="caption">{% if query.measured %}확정 {{ query.measured }}회 중 언급 {{ query.mentioned }}회{% else %}확정 관측 없음{% endif %} · 실패 {{ query.failed }} / 보류 {{ query.ambiguous }} · {{ query.measured_at.strftime('%Y-%m-%d') if query.measured_at else '측정일 없음' }}</p></div></div>
+{% else %}<p>확인된 질문 목록이 없습니다. 공식 진료 범위와 환자 질문을 먼저 정합니다.</p>{% endfor %}
+<div id="main-1-end"></div></section>
 
-<div class="metrics" id="result">{% for segment in payload.segments %}<div class="metric"><span class="metric-label">{{ segment.vendor_label }} · 확정 반복 중 언급</span><strong>{{ segment.mentioned ~ ' / ' ~ segment.measured if segment.measured else '확인 불가' }}</strong><p class="caption">계획 {{ segment.planned }}회 · 실패 {{ segment.failed }}회 · 판정 보류 {{ segment.ambiguous }}회 · 미실행 {{ segment.pending }}회</p>
-</div>
-{% endfor %}</div>
+<section class="page page-proposals" id="main-2-start">
+<div class="masthead"><b>Re:putation</b> by MotionLabs <span class="section-label">02 / WHY NOW</span></div>
+<p class="kicker">왜 지금 시작해야 하나요?</p>
+<div class="statement-band"><h1>기다린 시간은<br>발행 이력이 되지 않습니다.</h1><p>유용한 병원 정보, 공개된 발행 기록, 비교할 측정 기준선은<br>운영을 시작한 뒤에 쌓입니다.</p></div>
+<p class="caption">먼저 시작하면 순위가 오른다는 뜻이 아닙니다. 지금 준비할 수 있는 정보와 기록부터 만듭니다.</p>
+<h2>이 질문부터, 답할 근거를 만듭니다</h2>
+{% for item in proposal.proposals %}<article class="proposal"><div class="proposal-heading"><span class="number">0{{ loop.index }}</span><h3>{{ item.question }}</h3></div>
+<dl><dt>현재 관측</dt><dd>{{ item.known }}</dd><dt>만들 정보</dt><dd>{{ item.check }}</dd><dt>운영과 확인</dt><dd>{{ item.action }}</dd></dl></article>
+{% else %}<p class="rule-row">질문별 관측이 없어 맞춤 개선안을 확정하지 않습니다. 공식 진료 범위와 실제 환자 질문을 먼저 정리합니다.</p>{% endfor %}
+{% if proposal.proposals|length == 1 %}<p class="caption">두 번째 질문은 기록에 없어 제안하지 않았습니다. 실제 질문을 확정한 뒤 추가합니다.</p>{% endif %}
+<p class="caption">공식 병원 자료와 관련 공신력 있는 참고자료로 뒷받침합니다. 확인되지 않은 진료 강점을 만들지 않습니다.</p>
+<div id="main-2-end"></div></section>
 
-<p class="caption">진단 질문 {{ payload.queries|length }}개 · 플랫폼별 확정 반복 중 언급 횟수입니다. API 관찰은 소비자용 앱 화면·개인화 노출과 다르며, 일부만 확정된 결과는 달라질 수 있습니다.</p>
-
-{% if payload.total_measured and not payload.total_mentioned %}<div class="caveat">0번은 이 질문의 확정 관측에서 언급이 없었다는 뜻이며, 진료의 질에 대한 평가가 아닙니다. 원인은 이 측정만으로 알 수 없습니다.</div>
-{% endif %}
-<h2>진단에 사용한 질문</h2>
-{% for query in payload.queries[:3] %}<div class="rule-row"><p>{{ query.text }}</p>
-<p class="caption">{% if query.measured %}확정 {{ query.measured }}회 중 언급 {{ query.mentioned }}회{% else %}확정 관측 없음{% endif %} · 실패 {{ query.failed }} / 보류 {{ query.ambiguous }} · {{ query.measured_at.strftime('%Y-%m-%d') if query.measured_at else '측정일 없음' }}</p>
-</div>
-{% else %}<p>확인된 질문 목록이 없습니다. 첫 단계는 질문과 측정 조건을 정하는 일입니다.</p>
-{% endfor %}
-<p class="caveat">이 질문에 답할 병원 정보를 먼저 정리한다면, 어떤 자료부터 공개할 수 있을까요?</p>
-<div id="main-1-end"></div>
-</section>
-
-<section class="page page-proposals" id="main-2-start"><div class="masthead">RE:PUTATION / 02 질문별 개선 제안</div>
-<h1>병원별 우선 운영 제안</h1>
-<p>확인한 질문을 병원이 설명할 정보와 연결합니다.</p>
-
-{% for item in proposal.proposals %}<article class="rule-row"><p class="kicker">제안 0{{ loop.index }}</p>
-<h2>{{ item.question }}</h2>
-<p><b>확인한 점</b> · {{ item.known }}</p>
-<p><b>먼저 정리할 정보</b> · {{ item.check }}</p>
-<div class="case"><h3>Re:putation 운영안</h3><p>{{ item.action }}</p>
-</div>
-</article>
-{% else %}<p>질문별 관측이 없어 맞춤 개선안을 확정하지 않습니다. 공식 진료 범위와 실제 환자 질문을 먼저 정리합니다.</p>
-{% endfor %}
-{% if proposal.proposals|length == 1 %}<p class="caveat">두 번째 질문은 기록에 없어 제안하지 않았습니다. 실제 질문을 확정한 뒤 추가합니다.</p>
-{% endif %}
-<p class="caveat">공식 자료를 확인하고 승인받은 뒤 실행할 운영 제안입니다.</p>
-<div id="main-2-end"></div>
-</section>
-
-<section class="page page-plan" id="main-3-start"><div class="masthead">RE:PUTATION / 03 첫 운영과 도입 범위</div>
-<h1>첫 달에는 이렇게 시작합니다</h1>
-<p class="plan-promise">정보 정리 · 콘텐츠 운영 · 반복 측정</p>
-
-<div class="rule-row"><p><span class="number">01 / 자료 정리</span> 공식 진료 자료와 공개 주소를 모아 우선 질문을 정합니다.</p>
-</div>
-
-<div class="rule-row"><p><span class="number">02 / 정보 설계</span> 질문에 답할 진료 범위·절차·유의사항을 원고로 정리합니다.</p>
-</div>
-
-<div class="rule-row"><p><span class="number">03 / 검수와 발행</span> 승인된 병원 자료와 자동 안전 검사를 바탕으로 공개 콘텐츠 허브에 발행합니다.</p>
-</div>
-<div class="rule-row"><p><span class="number">04 / 재측정과 보고</span> 같은 질문을 다시 확인하고, 결과에 따라 다음 운영을 조정합니다.</p></div>
-<p class="caption">공식 근거와 콘텐츠 운영 기준의 승인이 먼저입니다. 자료·승인 준비에 따라 첫 달 일정은 조정됩니다.</p>
-
+<section class="page page-plan" id="main-3-start">
+<div class="masthead"><b>Re:putation</b> by MotionLabs <span class="section-label">03 / YOUR NEXT STEP</span></div>
+<h1>환자가 병원을 이해할 근거,<br>원장님이 변화를 확인할 기록.</h1>
+<div class="asset-grid"><div><span class="kicker">01 / PUBLIC HUB</span><h3>공개 정보 허브</h3><p>병원 공식 정보를 모은<br>별도의 공개 공간</p></div><div><span class="kicker">02 / CONTENT</span><h3>질문별 콘텐츠</h3><p>환자 질문에 답하는<br>근거 있는 진료 안내</p></div><div><span class="kicker">03 / MONTHLY REVIEW</span><h3>월간 해석과 조정</h3><p>반복 관측 결과와<br>다음 운영할 질문</p></div></div>
+<p class="caption">기존 홈페이지와 블로그는 그대로 유지합니다. 병원 소유 도메인 사용은 온보딩에서 협의합니다.</p>
+<h2>첫 달에는 이렇게 시작합니다</h2>
+<p class="caption">정보 정리 · 콘텐츠 운영 · 반복 측정</p>
+<div class="process"><p><b>01 / 자료 정리</b> 공식 진료 사실과 공개 주소·운영 기준을 확인합니다.</p><p><b>02 / 정보 설계</b> 환자 질문에 맞춰 설명과 참고 근거를 구성합니다.</p><p><b>03 / 검수와 발행</b> 승인된 근거와 자동 안전 검사를 거쳐 공개합니다.</p><p><b>04 / 재측정과 보고</b> 같은 질문의 언급·인용을 확인해 운영을 조정합니다.</p></div>
+<div class="marketer-followthrough"><h3>WHY MOTIONLABS · 전담 마케터가 설명합니다</h3><p>병원의 사실을 답변 가능한 정보로 바꾸고, 공개 운영과 반복 관측까지 연결합니다. 전담 마케터가 월간 결과의 의미와 다음 실행을 설명합니다.</p></div>
 <h2>계약 범위</h2>
-<table><thead><tr><th>운영 규모</th><th>월 발행 약정</th><th>월 비용</th></tr>
-</thead>
-<tbody><tr><td>STARTER</td><td>월 12편 발행</td><td>월 60만 원 · 부가세 별도</td></tr>
-<tr><td>GROWER</td><td>월 16편 발행</td><td>월 90만 원 · 부가세 별도</td></tr>
-<tr><td>LEADER</td><td>월 20편 발행</td><td>월 120만 원 · 부가세 별도</td></tr>
-</tbody>
-</table>
-
-<p class="caption">요금제는 점수가 아니라 진료 범위·공식 자료·운영할 질문 수를 함께 확인해 결정합니다. 기존 홈페이지와 함께 운영할 공개 콘텐츠 허브, 정기 측정과 월간 보고가 운영 범위입니다.</p>
-
-{% if payload.internal %}<div class="case"><h3>AE 전용 · INTERNAL</h3><p>내부 도입 검토 자료입니다. 고객 전달·공개 링크 발급을 승인하는 문서가 아닙니다.</p>
-</div>
-{% else %}{% if payload.contact.phone %}<a class="cta" href="tel:{{ payload.contact.phone }}">첫 운영 범위 상담 · {{ payload.contact.phone }}</a>{% elif payload.contact.email %}<a class="cta" href="mailto:{{ payload.contact.email }}">첫 운영 범위 상담 · {{ payload.contact.email }}</a>{% else %}<p class="case">상담 연락처가 아직 설정되지 않았습니다.</p>
-{% endif %}<p class="caption">{{ payload.contact.name }} {{ payload.contact.role }}</p>
-{% endif %}
-<p class="caveat">특정 AI 순위 보장·고정 노출 보장·환자 수·매출 절대 증가는 계약 범위가 아닙니다.</p>
-<div id="main-3-end"></div>
-</section>
+<table class="pricing"><thead><tr><th>운영 규모</th><th>월 발행 약정</th><th>월 비용</th></tr></thead><tbody><tr><td>STARTER</td><td>월 12편 발행</td><td>월 60만 원 · 부가세 별도</td></tr><tr><td>GROWER</td><td>월 16편 발행</td><td>월 90만 원 · 부가세 별도</td></tr><tr><td>LEADER</td><td>월 20편 발행</td><td>월 120만 원 · 부가세 별도</td></tr></tbody></table>
+<p class="caption regional-policy">동일 지역·유사 진료 분야는 기존 운영 병원과의 중복을 확인한 뒤 안내합니다. 진료 포지셔닝의 차별화 가능성도 함께 검토합니다.</p>
+{% if payload.internal %}<div class="internal-note"><h3>AE 전용 · INTERNAL</h3><p>내부 도입 검토 자료입니다. 고객 전달·공개 링크 발급을 승인하는 문서가 아닙니다.</p></div>
+{% else %}{% if payload.contact.phone %}<a class="cta" href="tel:{{ payload.contact.phone }}">우리 지역 운영 가능 여부 확인 · {{ payload.contact.phone }}</a>{% elif payload.contact.email %}<a class="cta" href="mailto:{{ payload.contact.email }}">우리 지역 운영 가능 여부 확인 · {{ payload.contact.email }}</a>{% else %}<p class="internal-note">상담 연락처가 아직 설정되지 않았습니다.</p>{% endif %}<p class="caption">{{ payload.contact.name }} {{ payload.contact.role }}</p>{% endif %}
+<div id="main-3-end"></div></section>
 
 <section class="appendix" id="lead-details"><div class="masthead">RE:PUTATION / 측정 기록</div>
 <h1>질문과 측정 조건</h1>
@@ -94,7 +58,7 @@
 {% endfor %}</tbody>
 </table>
 
-<h2>재현 조건</h2>
+<h2>해석과 운영 범위</h2>{% if payload.total_measured and not payload.total_mentioned %}<div class="caveat">0번은 이 질문의 확정 관측에서 언급이 없었다는 뜻이며, 진료의 질에 대한 평가가 아닙니다. 원인은 이 측정만으로 알 수 없습니다.</div>{% endif %}<p class="caption">특정 AI 순위 보장·고정 노출 보장·환자 수·매출 절대 증가는 계약 범위가 아닙니다. 언급과 인용은 관측 결과이며 보장된 산출물이 아닙니다.</p><p class="caption">공식 근거와 콘텐츠 운영 기준은 온보딩에서 확인합니다. 모든 글에 수동 승인을 요구하지 않습니다. 자료 준비와 공개 조건에 따라 첫 달 일정은 조정됩니다. 요금제는 진료 범위·공식 자료·운영 질문 수를 함께 확인해 결정합니다.</p><h2>재현 조건</h2>
 <p class="caption">질문별·플랫폼별 계획 반복 {{ payload.repeat_count }}회 · 판정 모델 {{ payload.judge_model }}</p>
 <p class="caption">{{ payload.system_prompt }}</p>
 <p class="caption">{{ sample_caveat }}</p>

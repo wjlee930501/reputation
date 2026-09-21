@@ -115,6 +115,7 @@ def write_back_published_image(
     item_id,
     expected_title: str | None,
     expected_revision: int,
+    expected_claim_token: uuid.UUID,
     values: dict[str, Any],
 ) -> int:
     """공개 중인 글의 대표 이미지 자체를 바꾼다. 판(content_revision)은 올리지 않는다.
@@ -138,8 +139,11 @@ def write_back_published_image(
             ContentItem.status == ContentStatus.PUBLISHED,
             title_clause,
             ContentItem.content_revision == expected_revision,
+            ContentItem.generation_claim_token == expected_claim_token,
+            ContentItem.generation_claimed_at > datetime.now(timezone.utc)
+            - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
         )
-        .values(**values)
+        .values(**values, generation_claimed_at=None, generation_claim_token=None)
         .execution_options(synchronize_session=False)
     )
     return result.rowcount

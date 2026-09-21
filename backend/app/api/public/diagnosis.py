@@ -1,3 +1,4 @@
+
 """공개 API — 무료 AI 노출 진단 접수 (1단 리드마그넷).
 
 기존 `/public/leads`(자유 문의)와 **별도 엔드포인트**다. 받는 필드도, 방어 장치도,
@@ -14,7 +15,6 @@
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -24,6 +24,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.public.leads import contains_patient_sensitive_text
 from app.core.config import settings
@@ -51,6 +52,7 @@ from app.services.query_mapper import (
     QueryMappingError,
     build_lead_diagnosis_queries,
 )
+from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 
 logger = logging.getLogger(__name__)
 
@@ -317,10 +319,12 @@ async def get_diagnosis_report(request: Request, token: str, db: AsyncSession = 
         logger.error("lead report READY but no artifact: diagnosis=%s", diagnosis.id)
         raise HTTPException(status_code=409, detail="리포트가 아직 준비되지 않았습니다.")
 
-    data = _read_artifact(artifact.storage_uri)
-    if data is None:
-        logger.error("lead report artifact unreadable: %s", artifact.storage_uri)
-        raise HTTPException(status_code=409, detail="리포트를 불러오지 못했습니다.")
+    try:
+        data = await run_in_threadpool(
+            read_verified_report, artifact.storage_uri, artifact.content_hash, artifact.byte_size
+        )
+    except ReportFileUnavailable as exc:
+        raise HTTPException(status_code=409, detail="저장된 리포트 파일이 검증본과 다릅니다. 다시 생성한 뒤 확인해 주세요.") from exc
 
     filename = f"{diagnosis.subject_hospital_name}_AI노출진단.pdf"
     return Response(
@@ -334,29 +338,6 @@ async def get_diagnosis_report(request: Request, token: str, db: AsyncSession = 
             "Referrer-Policy": "no-referrer",
         },
     )
-
-
-def _read_artifact(storage_uri: str) -> bytes | None:
-    """산출물을 우리 서버가 읽어 스트리밍한다.
-
-    GCS 서명 URL로 리다이렉트하지 않는 이유: 그 URL은 우리 헤더(no-store·noindex)를
-    벗어나고, 만료 전까지 토큰 폐기와 무관하게 살아 있다.
-    """
-    if not storage_uri:
-        return None
-    if not storage_uri.startswith("gs://"):
-        path = Path(storage_uri)
-        return path.read_bytes() if path.exists() else None
-    try:
-        from google.cloud import storage
-
-        _, _, rest = storage_uri.partition("gs://")
-        bucket_name, _, blob_name = rest.partition("/")
-        client = storage.Client()
-        return client.bucket(bucket_name).blob(blob_name).download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
-        logger.error("lead report artifact download failed: %s", exc)
-        return None
 
 
 def _violated(exc: IntegrityError, *index_names: str) -> bool:

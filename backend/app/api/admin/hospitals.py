@@ -101,8 +101,8 @@ from app.services.hospital_logo import (
     LOGO_ALLOWED_MIME_TYPES,
     LOGO_MAX_BYTES,
     is_external_logo_url,
-    is_stored_logo_ref,
     public_logo_url,
+    validated_logo_filename,
 )
 from app.services.hospital_physicians import derive_director_fields
 from app.services.hospital_profile_autofill import autofill_profile
@@ -357,11 +357,7 @@ class HospitalProfileUpdate(BaseModel):
         cleaned = value.strip()
         if not cleaned:
             return None
-        if is_stored_logo_ref(cleaned):
-            return cleaned
-        parsed = urlparse(cleaned)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            raise ValueError("URL must be an uploaded logo reference or absolute http(s)")
+        # The row-aware update guard allows only unchanged values or removal.
         return cleaned
 
 
@@ -1070,12 +1066,12 @@ async def update_profile(
         if isinstance(raw_stored_logo_url, str)
         else raw_stored_logo_url
     )
-    if is_external_logo_url(submitted_logo_url) and submitted_logo_url != stored_logo_url:
+    if submitted_logo_url is not None and submitted_logo_url != stored_logo_url:
         raise HTTPException(
             status_code=400,
             detail={
-                "code": "EXTERNAL_LOGO_URL",
-                "message": EXTERNAL_LOGO_URL_MESSAGE,
+                "code": "EXTERNAL_LOGO_URL" if is_external_logo_url(submitted_logo_url) else "LOGO_UPLOAD_REQUIRED",
+                "message": EXTERNAL_LOGO_URL_MESSAGE if is_external_logo_url(submitted_logo_url) else "로고 파일을 직접 업로드해 주세요.",
             },
         )
     submitted_channels = _submitted_channel_urls(h, body, update_data)
@@ -1268,11 +1264,12 @@ async def upload_hospital_logo(
             detail="로고는 PNG·JPG·WEBP 파일만 올릴 수 있습니다.",
         )
 
+    filename = validated_logo_filename(data, mime_type)
     # 동기 GCS 업로드는 이벤트 루프를 블로킹할 수 있다 — 워커 스레드에서 실행한다.
     stored_ref = await asyncio.to_thread(
         store_asset_bytes,
         hospital_id=hospital_id,
-        filename=file.filename or "logo",
+        filename=filename,
         data=data,
         mime_type=mime_type,
     )

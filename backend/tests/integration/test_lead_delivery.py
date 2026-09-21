@@ -565,3 +565,31 @@ class TestRetryLadderInvariants:
         """
         assert max(lead_delivery.RETRY_DELAYS) < lead_delivery.IDEMPOTENCY_WINDOW
         assert sum(lead_delivery.RETRY_DELAYS, timedelta()) < lead_delivery.IDEMPOTENCY_WINDOW
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("acknowledge", [False, True])
+async def test_manual_rearm_does_not_extend_live_idempotency_window(
+    pg_async_session, mail, monkeypatch, acknowledge,
+):
+    start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    diagnosis, delivery = await TestManualRearm()._failed(
+        pg_async_session, age=timedelta(hours=23),
+    )
+    delivery.created_at = start
+    await pg_async_session.flush()
+    result = await lead_delivery.rearm_report_delivery(
+        pg_async_session, diagnosis, actor="review-fixture", reason="재시도 검증",
+        acknowledge_duplicate_risk=acknowledge, now=start + timedelta(hours=23),
+    )
+    assert result["ok"] is True
+    assert result["duplicate_risk_acknowledged"] is False
+    class DelayedClock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return start + timedelta(hours=25)
+    monkeypatch.setattr(lead_delivery, "datetime", DelayedClock)
+    sent = await lead_delivery.deliver_report(pg_async_session, diagnosis)
+    assert sent == {"skipped": "idempotency_window_expired"}
+    assert mail.sent == []
+    assert delivery.created_at == start

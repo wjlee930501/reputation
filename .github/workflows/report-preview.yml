@@ -1,0 +1,65 @@
+name: Report preview
+
+on:
+  push:
+    branches:
+      - 'feat/report-*'
+    paths:
+      - 'backend/app/templates/**'
+      - 'backend/app/services/**report**'
+      - 'backend/app/services/doctor_pdf*'
+      - 'backend/app/services/lead_*'
+      - 'scripts/report_design*'
+      - '.github/workflows/report-preview.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: report-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Verify fictional report PDFs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      REPUTATION_DISABLE_DOTENV: '1'
+      APP_ENV: test
+      ADMIN_SECRET_KEY: test-admin-key
+      OPENROUTER_API_KEY: test-openrouter-key
+      REQUIRE_PDF_RENDER: '1'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+      - name: Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: '0.8.13'
+      - name: PDF renderer dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b poppler-utils
+      - name: Frozen Python dependencies
+        run: uv sync --frozen --extra dev
+      - name: Render and validate fictional samples
+        run: uv run --no-sync python ../scripts/report_design_samples.py --output "${RUNNER_TEMP}/reputation-report-samples" --png
+      - name: Preserve PDF and image previews
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: reputation-report-brand-previews
+          path: |
+            ${{ runner.temp }}/reputation-report-samples/*.pdf
+            ${{ runner.temp }}/reputation-report-samples/*.png
+            ${{ runner.temp }}/reputation-report-samples/manifest.json
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false

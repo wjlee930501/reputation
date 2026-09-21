@@ -5,7 +5,9 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from threading import Barrier
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -14,10 +16,12 @@ from app.services import indexnow
 from app.workers import indexnow_retry
 
 
-def test_concurrent_duplicate_enqueue_is_a_noop_instead_of_integrity_failure(pg_engine) -> None:
-    base = "https://concurrent-indexnow.example.com"
+@pytest.mark.parametrize("round_number", range(10))
+def test_concurrent_duplicate_enqueue_is_a_noop_instead_of_integrity_failure(pg_engine, round_number) -> None:
+    base = f"https://concurrent-{round_number}-{uuid4().hex}.example.invalid"
     urls = [f"{base}/contents/same"]
     barrier = Barrier(2)
+    _, expected_id = indexnow._intent_insert(base_url=base, urls=urls, revision="content-same:17")
 
     def enqueue() -> object:
         with Session(pg_engine) as db:
@@ -40,7 +44,7 @@ def test_concurrent_duplicate_enqueue_is_a_noop_instead_of_integrity_failure(pg_
             first = first_future.result(timeout=10)
             second = second_future.result(timeout=10)
 
-        assert first == second
+        assert first == second == expected_id
         with Session(pg_engine) as db:
             count = db.scalar(
                 select(func.count(OperationRun.id)).where(OperationRun.id == first)
@@ -48,9 +52,8 @@ def test_concurrent_duplicate_enqueue_is_a_noop_instead_of_integrity_failure(pg_
             assert count == 1
     finally:
         with Session(pg_engine) as db:
-            if "first" in locals():
-                db.execute(delete(OperationRun).where(OperationRun.id == first))
-                db.commit()
+            db.execute(delete(OperationRun).where(OperationRun.id == expected_id))
+            db.commit()
 
 
 def test_enqueue_rollback_does_not_leave_an_external_delivery_intent(pg_engine) -> None:

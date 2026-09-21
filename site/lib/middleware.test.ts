@@ -132,3 +132,24 @@ test('custom domain lookup outage rejects positive slug beyond stale window', as
   assert.equal(res.headers.get('cache-control'), 'no-store')
   assert.equal(res.headers.get('retry-after'), '30')
 })
+
+test('clinic-qualified llms routes enforce custom-host ownership', async () => {
+  resetEnvAndCache()
+  globalThis.fetch = async () => Response.json({ slug: 'clinic-a' })
+  const foreign = await middleware(requestFor('a.example.com', '/clinic-b/llms.txt'))
+  assert.equal(foreign.status, 404)
+  const own = await middleware(requestFor('a.example.com', '/llms.txt'))
+  assert.equal(new URL(own.headers.get('x-middleware-rewrite') ?? '').pathname, '/clinic-a/llms.txt')
+  const qualified = await middleware(requestFor('a.example.com', '/clinic-a/llms.txt'))
+  assert.equal(qualified.status, 308)
+  assert.equal(new URL(qualified.headers.get('location') ?? '').pathname, '/llms.txt')
+  const platform = await middleware(requestFor('reputation.motionlabs.kr', '/clinic-b/llms.txt'))
+  assert.equal(platform.headers.get('x-middleware-next'), '1')
+})
+
+test('unknown custom hosts cannot serve clinic-qualified llms routes', async () => {
+  resetEnvAndCache()
+  globalThis.fetch = async () => new Response('Not found', { status: 404 })
+  const response = await middleware(requestFor('unknown.example.com', '/clinic-b/llms.txt'))
+  assert.equal(response.status, 404)
+})

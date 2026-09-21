@@ -257,9 +257,11 @@ async def rearm_report_delivery(
         # 발송 행이 아예 없다 — 나간 메일도 없으므로 폴러가 새로 만들게 두면 된다.
         diagnosis.delivery_status = DeliveryStatus.PENDING.value
     else:
-        # id는 유지한다(= 멱등성 키 유지). created_at을 되돌려 재시도 사다리와 24시간
-        # 창을 함께 리셋한다 — 그러지 않으면 deliver_report가 즉시 창 밖으로 판정한다.
-        delivery.created_at = now
+        # 같은 키가 아직 유효하면 최초 시각을 보존한다. 수동 재시도로 시각을
+        # 연장하면 큐 지연 후 공급자가 잊은 키를 동의 없이 다시 사용할 수 있다.
+        # 창 밖 재발송은 위에서 중복 위험 동의를 확인한 경우에만 새 창을 연다.
+        if key_forgotten and acknowledge_duplicate_risk:
+            delivery.created_at = now
         delivery.attempt = 0          # deliver_report가 +1 해서 1회차로 만든다
         delivery.status = DeliveryStatus.PENDING.value
         delivery.error = f"{delivery.error or ''}\n{note}".strip()[:2000]

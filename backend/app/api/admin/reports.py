@@ -2,7 +2,7 @@
 Admin API — 리포트 조회
 GET  /admin/hospitals/{hospital_id}/reports              — 리포트 목록 (최신순)
 GET  /admin/hospitals/{hospital_id}/reports/{report_id}  — 리포트 상세
-GET  /admin/hospitals/{hospital_id}/reports/{report_id}/download — PDF signed URL
+GET  /admin/hospitals/{hospital_id}/reports/{report_id}/download — 원장용 검증 PDF 또는 내부용 signed URL
 POST /admin/hospitals/{hospital_id}/reports/{report_id}/mark-sent — 원장 전달 완료 기록
 """
 
@@ -15,9 +15,10 @@ from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from app.api.admin.accounts import require_active_account, require_owner_account
 from app.core.database import get_db
@@ -54,6 +55,7 @@ from app.services.monthly_report_delivery import (
     safe_local_report_path,
 )
 from app.services.report_artifact_validation import parse_doctor_artifact_metadata
+from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 from app.services.report_review_evidence import build_report_review_evidence
 
 router = APIRouter(prefix="/admin/hospitals", tags=["Admin — Reports"])
@@ -364,7 +366,7 @@ async def download_report(
     db: AsyncSession = Depends(get_db),
     actor: AdminUser = Depends(require_active_account),
 ):
-    """PDF 다운로드 — GCS signed URL로 리다이렉트 (1시간 만료).
+    """원장용은 검증한 바이트를 제공하며, 내부용은 1시간 signed URL을 사용한다.
 
     `audience=doctor`는 원장에게 전달하는 본문·근거 부록 판본이다. 같은 데이터를
     다른 편집으로 렌더한 별도 파일이라 AE용과 경로가 다르다.
@@ -377,8 +379,10 @@ async def download_report(
 
     # Unqualified monthly links must never hand an internal checklist to a doctor.
     # V0 still uses its single diagnostic artifact.
-    is_doctor = audience == "doctor" or (audience is None and r.report_type == "MONTHLY")
+    is_doctor = audience == "doctor" or (audience is None and r.report_type in {"MONTHLY", "V0"})
     pdf_path = r.doctor_pdf_path if is_doctor else r.pdf_path
+    if r.report_type == "V0" and is_doctor:
+        pdf_path = r.pdf_path
     if is_doctor:
         await _assert_delivery_actor(db, r.hospital_id, actor)
         artifact = await _get_doctor_artifact(db, r.id)
@@ -412,6 +416,13 @@ async def download_report(
     stem = f"report-{r.period_year}-{r.period_month:02d}"
     download_name = f"{stem}{suffix}.pdf"
     disposition = _content_disposition(download_name, f"{stem}{display_suffix}.pdf")
+
+    if is_doctor:
+        data = await _verified_doctor_bytes(r, artifact, pdf_path)
+        return Response(content=data, media_type="application/pdf", headers={
+            "Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer",
+            "Content-Disposition": disposition, "X-Content-Type-Options": "nosniff",
+        })
 
     if pdf_path.startswith("gs://"):
         signed_url = get_signed_url(
@@ -468,6 +479,8 @@ async def mark_report_sent(
         raise _delivery_conflict(
             "artifact_mismatch", "다운로드한 원장 보고용 PDF와 현재 검증본이 일치하지 않습니다."
         )
+
+    await _verified_doctor_bytes(report, artifact, artifact.path)
 
     events = await _get_delivery_events(db, report.id)
     effective = _effective_delivery_event(events)
@@ -942,3 +955,22 @@ async def _serialize_report(
         current_warnings=current_warnings,
         review_evidence=review_evidence,
     )
+
+
+async def _verified_doctor_bytes(report, artifact, path: str) -> bytes:
+    """Validate physical bytes only at explicit download/delivery boundaries."""
+    if (
+        artifact is None or artifact.report_id != report.id
+        or artifact.path != path or artifact.audience != "DOCTOR"
+        or artifact.validated is not True
+    ):
+        raise _delivery_conflict("artifact_storage_mismatch", "검증된 보고서 파일과 연결 정보가 일치하지 않습니다.")
+    try:
+        return await run_in_threadpool(
+            read_verified_report, path, artifact.sha256, artifact.byte_size
+        )
+    except ReportFileUnavailable as exc:
+        raise _delivery_conflict(
+            "artifact_storage_mismatch",
+            "저장된 보고서 파일을 확인하지 못했습니다. 보고서를 다시 생성한 뒤 확인해 주세요.",
+        ) from exc

@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-from pathlib import Path
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -15,30 +14,11 @@ from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.lead_diagnosis import LeadDiagnosis, LeadReportArtifact, ReportStatus
 from app.services.audit_log import write_audit_log
+from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _read_artifact(storage_uri: str) -> bytes | None:
-    if not storage_uri:
-        return None
-    if not storage_uri.startswith("gs://"):
-        path = Path(storage_uri)
-        return path.read_bytes() if path.is_file() else None
-
-    try:
-        from google.cloud import storage
-
-        bucket_name, separator, blob_name = storage_uri.removeprefix("gs://").partition("/")
-        if not separator or not bucket_name or not blob_name:
-            return None
-        client = storage.Client()
-        return client.bucket(bucket_name).blob(blob_name).download_as_bytes()
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Admin lead report download failed: %s", exc.__class__.__name__)
-        return None
 
 
 @router.get("/{lead_id}/diagnoses/{diagnosis_id}/report")
@@ -83,12 +63,12 @@ async def view_lead_diagnosis_report(
             detail="리포트 파일 연결이 아직 끝나지 않았습니다. 잠시 후 다시 확인해 주세요.",
         )
 
-    data = await run_in_threadpool(_read_artifact, artifact.storage_uri)
-    if data is None:
-        raise HTTPException(
-            status_code=503,
-            detail="리포트를 불러오지 못했습니다. 다시 시도해도 열리지 않으면 개발팀에 문의해 주세요.",
+    try:
+        data = await run_in_threadpool(
+            read_verified_report, artifact.storage_uri, artifact.content_hash, artifact.byte_size
         )
+    except ReportFileUnavailable as exc:
+        raise HTTPException(status_code=409, detail="저장된 리포트 파일이 검증본과 다릅니다. 다시 생성한 뒤 확인해 주세요.") from exc
 
     await write_audit_log(
         db,

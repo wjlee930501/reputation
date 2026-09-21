@@ -240,13 +240,13 @@ def test_recovery_sweep_window_matches_the_publish_catchup_window() -> None:
     assert RECOVERY_SWEEP_CATCHUP_DAYS == AUTO_PUBLISH_CATCHUP_DAYS
 
 
-def test_deadline_for_a_slot_two_days_out_is_tonights_nightly_batch() -> None:
+def test_deadline_for_a_slot_two_days_out_is_the_daytime_recovery() -> None:
     now = _kst(2026, 9, 14, 10, 0)
     attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
 
     due = next_recovery_deadline(attempt, scheduled_date=date(2026, 9, 16), now=now)
 
-    assert due == _kst(2026, 9, 14, 23, 0).astimezone(UTC)
+    assert due == _kst(2026, 9, 14, 12, 0).astimezone(UTC)
 
 
 def test_tomorrows_slot_failing_after_the_nightly_batch_waits_for_01() -> None:
@@ -266,8 +266,8 @@ def test_todays_slot_with_budget_left_retries_at_the_next_recovery_sweep() -> No
 
     due = next_recovery_deadline(attempt, scheduled_date=date(2026, 9, 14), now=now)
 
-    # 예산이 남아 있어도 오늘 남은 스윕은 23:00뿐인데 그 창에는 오늘이 없다.
-    assert due == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+    # The noon recovery includes today and still honors the remaining daily budget.
+    assert due == _kst(2026, 9, 14, 12, 0).astimezone(UTC)
 
 
 def test_spent_daily_sample_budget_moves_the_deadline_to_the_next_day() -> None:
@@ -383,13 +383,13 @@ def test_the_oldest_catchup_day_is_handed_to_the_backlog_recovery() -> None:
     """오늘 스윕이 집은 창의 첫날은 내일 창에서 빠진다 — 기한을 잃으면 안 된다.
 
     01·04·07 스윕의 창은 `[오늘-7, 오늘]`이라 오늘-7에 예정된 슬롯을 실제로 claim한다.
-    그 실행이 07:00 뒤에 실패를 기록하면 남은 후보 스윕의 창은 모두 `[내일-7, …]`
+    마지막 주간 실행이 22:00 뒤에 실패를 기록하면 남은 후보 스윕의 창은 모두 `[내일-7, …]`
     이상이라 이 슬롯을 다시 담지 못한다. 기준을 오늘 창으로 두면 그 하루가 스윕에도
     백로그 복구에도 속하지 않아 `next_retry_at`이 `None`으로 굳고, 표본 실패는 소진
     일수가 더 쌓이지 않아 주제 교체 계단조차 열리지 않는다.
     """
 
-    observed = _kst(2026, 9, 14, 8, 0)
+    observed = _kst(2026, 9, 14, 22, 5)
     slot = observed.date() - timedelta(days=RECOVERY_SWEEP_CATCHUP_DAYS)
     attempt = _sample_attempt("GENERATION_REJECTED", 1, day=date(2026, 9, 14))
 
@@ -531,7 +531,7 @@ def test_a_repair_codes_deadline_follows_its_session_budget() -> None:
     # 오늘 세션이 남아 있다 → 오늘 남은 첫 스윕이 아니라 이 슬롯을 집는 첫 시각.
     assert next_recovery_deadline(
         attempt, scheduled_date=slot, now=now, repair_state=None
-    ) == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
+    ) == _kst(2026, 9, 16, 12, 0).astimezone(UTC)
 
     # 오늘 예산만 소진 → 내일.
     spent_today = {"period": "2026-09-16", "count": BODY_REPAIR_DAILY_BUDGET, "exhausted_days": 1}
