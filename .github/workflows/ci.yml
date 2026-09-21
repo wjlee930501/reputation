@@ -296,7 +296,7 @@ jobs:
         run: |
           uv export --project backend --no-dev --no-hashes --no-emit-project \
             -o /tmp/backend-requirements.txt
-          grep -E '^(pydantic|pydantic-settings)==' /tmp/backend-requirements.txt \
+          grep -Ei '^(pydantic|pydantic-settings|pyyaml)==' /tmp/backend-requirements.txt \
             > /tmp/config-requirements.txt
           test -s /tmp/config-requirements.txt
           cat /tmp/config-requirements.txt
