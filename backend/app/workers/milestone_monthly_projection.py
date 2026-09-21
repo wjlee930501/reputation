@@ -21,6 +21,7 @@ from app.services.monthly_events import (
     monthly_headline_label,
     project_monthly_event,
 )
+from app.services.monthly_period import KST
 from app.services.monthly_report_delivery import coverage_is_final
 from app.services.notification_contracts import NotificationPayloadError
 from app.services.notification_milestone_messages import MilestoneKind, MilestoneProjection
@@ -72,6 +73,8 @@ async def observe_monthly_milestones(
     facts_by_report = await load_report_facts(db)
     observed: list[tuple[ReportFacts, tuple[str, MilestoneProjection]]] = []
     for facts in latest_report_facts(facts_by_report):
+        if not _in_observation_scope(facts, observed_at):
+            continue
         try:
             observed.append((facts, _project_observed_current(facts, observed_at)))
         except NotificationPayloadError as exc:
@@ -157,9 +160,25 @@ def _project_observed_current(
         facts,
         event_type,
         observed_at,
-        state_uuid(event_type.value, facts.report.id, _state_fingerprint(facts)),
+        state_uuid(event_type.value, facts.report.id, _state_fingerprint(facts, event_type)),
     )
     return f"monthly:{facts.report.id}", project_monthly_event(_monthly_event(request))
+
+
+def _in_observation_scope(facts: ReportFacts, observed_at: datetime) -> bool:
+    """Keep the current-state scan on months operators can still act on.
+
+    이미 전달한 지난 계약 월의 리포트는 병원 공통 차단(예: 근거 자료 철회)이 켜지는
+    순간 한 병원에서 여러 달치 차단이 한꺼번에 투영된다. 사람이 할 일은 그 병원의
+    자료 하나이지 닫힌 달의 리포트가 아니다. 전달되지 않은 달은 지연 전달을 위해
+    기간과 무관하게 남긴다 — 늦게 준비된 리포트의 전달 알림을 잃지 않는다.
+    """
+
+    if not facts.delivered:
+        return True
+    local = observed_at.astimezone(KST)
+    report = facts.report
+    return report.period_year * 12 + report.period_month >= local.year * 12 + local.month - 1
 
 
 def _current_state(facts: ReportFacts) -> MonthlyEventType:
@@ -184,7 +203,23 @@ def _legacy_transition_time(facts: ReportFacts, event_type: MonthlyEventType) ->
     return facts.report.created_at
 
 
-def _state_fingerprint(facts: ReportFacts) -> str:
+def _state_fingerprint(facts: ReportFacts, event_type: MonthlyEventType) -> str:
+    """Fingerprint the notification a state would produce, not every underlying fact.
+
+    차단이 이어지는 동안에도 표본 수·PDF 행·게이트 코드는 계속 움직인다. 그 움직임을
+    상태 지문에 담으면 같은 차단이 관측 창마다 새 상태로 보여 Slack Error가 15분마다
+    다시 나간다. BLOCKED는 운영자 문구와 조치 필요 여부를 가르는 값만 담아 차단이
+    유지되는 동안 지문을 고정한다. 종류 자체는 `state_uuid`가 이미 묶으므로 다른
+    상태로 넘어가는 전이는 그대로 새 알림이 된다. 차단 판정과 게이트는 건드리지 않는다.
+    """
+
+    if event_type is MonthlyEventType.BLOCKED:
+        return ":".join(
+            (
+                str(facts.manifest is not None and facts.manifest.closed_at is not None),
+                str("CURRENT_READINESS_BLOCKED" in facts.blockers),
+            )
+        )
     report = facts.report
     artifact_state = facts.artifact_state.value
     artifact_id = (

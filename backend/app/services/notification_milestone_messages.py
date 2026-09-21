@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +36,8 @@ from app.services.notification_milestone_rendering import (
     validated_message,
 )
 from app.services.notification_outbox import enqueue_notification
+
+_PERIOD_LABEL: Final = re.compile(r"(\d{4})년 (\d{1,2})월")
 
 
 class MilestoneKind(StrEnum):
@@ -110,9 +114,9 @@ def build_milestone_summary_notification(
         json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
     url = admin_url(admin_base_url, _summary_path(ordered))
-    displayed = ordered[:MAX_SUMMARY_ITEMS]
-    lines = tuple(_summary_line(item) for item in displayed)
-    remaining = len(ordered) - len(displayed)
+    displayed = _collapsed_groups(ordered)[:MAX_SUMMARY_ITEMS]
+    lines = tuple(_summary_line(group) for group in displayed)
+    remaining = len(ordered) - sum(len(group) for group in displayed)
     if remaining:
         lines = (*lines, f"• 그 외 {remaining}건 · 전체 내역은 관련 작업에서 확인")
     chunks = chunk_lines(lines)
@@ -130,8 +134,9 @@ def build_milestone_summary_notification(
     message = validated_message(
         RenderedSlackMessage(
             prefixed_for_event("MILESTONE_SUMMARY", f"[업무 알림] {len(ordered)}건 | " + " / ".join(
-                f"{safe_text(item.hospital_name, 50)} {item.period_label or ''}: {safe_text(item.status_label, 70)}"
-                for item in displayed[:5]
+                f"{safe_text(group[0].hospital_name, 50)} {_period_text(group)}: "
+                f"{safe_text(group[0].status_label, 70)}"
+                for group in displayed[:5]
             ) + " | 아래 관련 작업에서 처리해 주세요."),
             blocks,
             url,
@@ -220,11 +225,58 @@ def _summary_path(milestones: Sequence[MilestoneProjection]) -> str:
     return next(iter(paths)) if len(paths) == 1 else "/operations"
 
 
-def _summary_line(milestone: MilestoneProjection) -> str:
-    period = (safe_text(milestone.period_label, 30) + " · ") if milestone.period_label else ""
+def _collapsed_groups(
+    milestones: Sequence[MilestoneProjection],
+) -> tuple[tuple[MilestoneProjection, ...], ...]:
+    """Fold one hospital's repeated same-state months into a single summary line.
+
+    병원 공통 자료 하나가 막히면 지난 계약 월 수만큼 같은 문장이 쌓인다. 사람이 할 일은
+    하나이므로 병원·종류·상태 문구·지금 할 일이 모두 같은 항목만 한 줄로 접는다. 접기는
+    표시에만 적용한다 — dedupe 키와 건수는 접기 전 항목 전부를 그대로 센다.
+    """
+
+    grouped: dict[tuple[uuid.UUID, MilestoneKind, str, str], list[MilestoneProjection]] = {}
+    for milestone in milestones:
+        key = (
+            milestone.hospital_id,
+            milestone.kind,
+            milestone.status_label,
+            milestone.next_action,
+        )
+        grouped.setdefault(key, []).append(milestone)
+    return tuple(
+        tuple(sorted(items, key=lambda item: _period_sort_key(item.period_label)))
+        for items in grouped.values()
+    )
+
+
+def _period_sort_key(label: str | None) -> tuple[int, int, str]:
+    match = _PERIOD_LABEL.fullmatch(label or "")
+    if match is None:
+        return (0, 0, label or "")
+    return (int(match.group(1)), int(match.group(2)), "")
+
+
+def _period_text(group: Sequence[MilestoneProjection]) -> str:
+    lead = group[0].period_label
+    if len(group) == 1:
+        return safe_text(lead, 30) if lead else ""
+    if lead is None:
+        return f"{len(group)}건"
+    return f"{safe_text(lead, 30)} 외 {len(group) - 1}개월"
+
+
+def _summary_line(group: Sequence[MilestoneProjection]) -> str:
+    milestone = group[0]
+    period_text = _period_text(group)
+    period = (period_text + " · ") if period_text else ""
     text = f"• *{safe_text(milestone.hospital_name, 80)}* · {period}{safe_text(milestone.status_label, 90)}\n"
     text += "  " + safe_text(milestone.next_action, 230)
-    if milestone.headline_label and milestone.kind is MilestoneKind.MONTHLY_CUSTOMER_READY:
+    if (
+        len(group) == 1
+        and milestone.headline_label
+        and milestone.kind is MilestoneKind.MONTHLY_CUSTOMER_READY
+    ):
         text += "\n  " + safe_text(milestone.headline_label, 140)
     return text
 
