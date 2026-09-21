@@ -1,0 +1,112 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_MERGED_NOT_DEPLOYED",
+  "base_main": "4fe1e4cc5898c88249e0ef7f2773b981d8597eaf",
+  "backend_full_before_final_copy_polish": {
+    "tests": 4567,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "final_report_and_script_regression": {
+    "tests": 205,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "landing_copy_tests": {
+    "passed": 35,
+    "failed": 0,
+    "skipped": 0
+  },
+  "test_totals_overlap": true,
+  "sample_documents": 9,
+  "sample_pages": 44,
+  "outside_page_text": 0,
+  "source_sha256": {
+    ".github/workflows/report-preview.yml": "73f0ed7328f7328224aa3d39147627bad75f9acaec249c652e6c5968221be022",
+    ".gitignore": "78d7ff811b6119591f03008b5848b25654d8f639dee2936b4b433684c6fcc9e7",
+    "backend/app/services/doctor_pdf_v3.py": "31527820be3a152431c10881cdfab9b32c91691d7b27f9c93b39c61151c4af3e",
+    "backend/app/services/lead_pdf_validation.py": "5dbf7809589cdba47eed0467534ca7c699a3c418e7028aecc470dbcab4b6c29b",
+    "backend/app/services/lead_proposal.py": "234a42172e0a171787ead5b5881655af836c38e35c6a20cf9a82623b4afd4b47",
+    "backend/app/services/lead_report.py": "2a6c1189c349cac3242b31a83b826cf3cb9a57af0c95f7ecbc0c321ba031b2d7",
+    "backend/app/services/report_narrative.py": "cdbc846e7f1fa25602d5d70e7e5bbeee6c211935411e6e418b888e474faf5d2b",
+    "backend/app/templates/DESIGN.md": "d9decf003fd4d248a564cb7f75131929d316edc230812c32516d4d50fb9943a5",
+    "backend/app/templates/doctor_report_v3.html": "17d03ac53e0f62991e23470fb095e56e461bb7559bfc07fee2436c501a03c7f1",
+    "backend/app/templates/lead_report.html": "d365ffd7535052212c4b90afd9795c00e271d872ca7b9f6764e62f56a0a813e3",
+    "backend/app/templates/report_editorial.css": "b97e675b7267fafcfa2f7a4d94a9d56e607c8474177cd76ffa3103b3c434721d",
+    "backend/tests/test_lead_report_design.py": "62f09db96d65df9617e517b1f106747a178d09c35af8283569e973e91e776c8c",
+    "backend/tests/test_report_brand_conversion.py": "a31a060f5d35eccb9a92a05452aeb800f68d5f8e52bc70f60998cc9ec54503a0",
+    "docs/reviews/2026-09-21-report-brand-conversion.md": "3432c30160be491af2e42e44475518144c03f5737377f33739ac02168d54ba1e",
+    "scripts/report_design_samples.py": "22945f9a56a799f53577f872f9a508573d475a049f5a20adca827c02914c1df5",
+    "scripts/test_report_preview_workflow.py": "1aae4a177345acba8092082de92fc760aea5360a8e0e18e687dc8133b46559eb",
+    "site/lib/landing-copy.test.ts": "06da7da6cbb416a4ef272c440d3fb6dfc2bf2818172521a7572cc770c8e65404",
+    "site/lib/landing-copy.ts": "8bfecc7b9b4dcefcc1c83a309c4130d67d0265f34229d89f9c2aa7ea2e4adc11"
+  },
+  "sample_manifest": [
+    {
+      "name": "monthly-growth",
+      "pages": 5,
+      "sha256": "137c4d19e93657a097927ba6c8d26ed097d16ae394ccbe2afcab0f30aa2c9d5c",
+      "bytes": 67293
+    },
+    {
+      "name": "monthly-decline",
+      "pages": 5,
+      "sha256": "24d81501357db2a4c52ed336302c20be607321ef86588da99359482e45741a37",
+      "bytes": 66693
+    },
+    {
+      "name": "monthly-flat",
+      "pages": 5,
+      "sha256": "a284e50ac940d995befd75977587a2fe3eaf444191971061f8fcb9f3e75a77f8",
+      "bytes": 66548
+    },
+    {
+      "name": "monthly-unavailable",
+      "pages": 5,
+      "sha256": "0973cdfb608f0b161f8e464f60110a346c5a3524ebe666ada7825292213674a9",
+      "bytes": 62591
+    },
+    {
+      "name": "monthly-dense",
+      "pages": 8,
+      "sha256": "1882bd5e93f379830054b3f21517cd42301b9c6ef3faac196106fadb9a5873dc",
+      "bytes": 77746
+    },
+    {
+      "name": "diagnosis-low",
+      "pages": 4,
+      "sha256": "951dba3376e691cf46444194c010a9fa853d6790c7aa72076448e55519888b73",
+      "bytes": 68662
+    },
+    {
+      "name": "diagnosis-strong",
+      "pages": 4,
+      "sha256": "be1178b097d413be0b418c92fdffc512b95ab12e236fe905e0169b2c068050d8",
+      "bytes": 68980
+    },
+    {
+      "name": "diagnosis-unavailable",
+      "pages": 4,
+      "sha256": "9cf97e4b5fede8295d1ca5fb22247596447bfa6cc9525800b9e7b693c56eaae5",
+      "bytes": 63433
+    },
+    {
+      "name": "diagnosis-internal",
+      "pages": 4,
+      "sha256": "af2adb0edcb8c1e6f0618a5bdc2fb2541d7ac83e4b61da072dd53bb9d64663ce",
+      "bytes": 64117
+    }
+  ],
+  "checks": {
+    "ruff": "PASS",
+    "copy_guard": "PASS",
+    "db_budget": "PASS",
+    "diff_check": "PASS"
+  },
+  "customer_messages_sent": 0,
+  "python_validation_external_connections_blocked": true,
+  "font_files_shared": false,
+  "production_database_reads_or_writes": false,
+  "public_landing_read_for_reference": true
+}

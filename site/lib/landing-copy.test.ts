@@ -575,3 +575,14 @@ test('negation is not the default sentence shape', () => {
     `문장의 ${Math.round(ratio * 100)}%가 부정형입니다(${negative.length}/${sentences.length}).`,
   )
 })
+
+test('report expectations describe contents without a brittle page count', () => {
+  // Given the public report preview and final invitation.
+  const descriptions = [previewSection.heading, previewSection.note, ctaSection.body]
+  // When a visitor reads what the report contains.
+  const text = descriptions.join(' ')
+  // Then the copy promises the diagnosis and proposal, without a fixed length.
+  assert.match(text, /질문별 개선안/)
+  assert.match(text, /검증 기록/)
+  assert.doesNotMatch(text, /두 장|2장|두 페이지|2페이지/)
+})

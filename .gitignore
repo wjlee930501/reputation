@@ -87,3 +87,6 @@ terraform/terraform.tfvars
 
 # Generated fictional report renderings; CI retains PDF previews.
 /artifacts/report-redesign-fictional/
+
+# Report brand/conversion previews are generated locally and retained by preview CI.
+/artifacts/report-brand-refresh-fictional/

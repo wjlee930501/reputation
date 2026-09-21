@@ -1,23 +1,24 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{{ view.hospital_name }} · {{ view.narrative.title }}</title>
 <style>{% include 'report_editorial.css' %}
-{% if view.sample_label %}@page { @top-right { content:'검증용 가상 사례'; font-family:Pretendard; font-size:9pt; color:#99522e; } }{% endif %}
-</style></head><body class="{{ density|default('comfortable') }}">
+{% if view.sample_label %}@page { @top-right { content:'검증용 가상 사례'; font-family:Pretendard; font-size:9pt; color:#525b69; } }{% endif %}
+</style></head><body class="monthly {{ density|default('comfortable') }}">
 {% set n = view.narrative %}
 <section class="page" id="main-1-start">
-<div class="masthead">RE:PUTATION / {{ period_label }} / 01 관측과 결론</div>
+<div class="masthead"><b>Re:putation</b> / {{ period_label }} <span class="section-label">01 관측과 결론</span></div>
 
 <p class="descriptor">{{ n.title }}</p>
 <p class="identity hero-identity">{{ view.hospital_name }}</p>
 <h1 class="editorial-result">{{ n.conclusion }}</h1>
 
-<div class="metrics"><div class="metric"><span class="metric-label">지난달</span><strong>{{ '%.1f%%'|format(n.previous) if n.previous is not none else '비교 보류' }}</strong>{% if n.previous is not none %}<div class="scale"><div class="bar prior" style="width:{{ n.previous }}%"></div></div>{% endif %}</div>
-<div class="metric"><span class="metric-label">이번 달</span><strong>{{ '%.1f%%'|format(n.current) if n.current is not none else '확인 불가' }}</strong>{% if n.current is not none %}<div class="scale"><div class="bar" style="width:{{ n.current }}%"></div></div>{% endif %}</div>
+<div class="metrics"><div class="metric"><span class="metric-label">지난달</span><strong class="{{ 'unknown' if n.previous is none else '' }}">{{ '%.1f%%'|format(n.previous) if n.previous is not none else '비교 보류' }}</strong>{% if n.previous is not none %}<div class="scale"><div class="bar prior" style="width:{{ n.previous }}%"></div></div>{% endif %}</div>
+<div class="metric"><span class="metric-label">이번 달</span><strong class="{{ 'unknown' if n.current is none else '' }}">{{ '%.1f%%'|format(n.current) if n.current is not none else '확인 불가' }}</strong>{% if n.current is not none %}<div class="scale"><div class="bar" style="width:{{ n.current }}%"></div></div>{% endif %}</div>
 </div>
 <p class="caption">공통 눈금 0–100%{% if n.current is not none and n.previous is not none %} · 지난달 대비 <b>{{ '%+.1f'|format(n.current - n.previous) }}%p</b>{% endif %}</p>
 <p class="caption">{{ n.denominator }}</p>
 {% if n.previous is none %}<p class="caption">{{ n.comparison_note }}</p>{% endif %}
 <p class="caption">자동 측정(API)은 소비자용 앱 화면·개인화 노출과 다릅니다. 미확정은 미언급 0으로 세지 않으며, 일부 측정만 확정된 결과는 달라질 수 있습니다.</p>
-<div class="case next-reading"><p class="kicker">이번 결과로 정할 일</p><p>{{ n.priorities[0] }}</p><p class="caption">다음 장에서 발행한 정보와 답변 근거를 확인하고, 다음 달 집중 질문을 정합니다.</p></div>
+<div class="readout"><div><p class="kicker">DELIVERED / 수행 기록</p><h3>{{ '초기 관측 기준선' if view.report_kind == 'INITIAL' else '공개한 정보와 약정 이행' }}</h3><p>{{ '첫 관측의 질문과 조건을 보존합니다.' if view.report_kind == 'INITIAL' else view.tiles[0].label ~ ' · ' ~ view.tiles[0].value }}</p><p class="caption">{{ '월간 수행 실적과 구분합니다.' if view.report_kind == 'INITIAL' else view.tiles[0].hint }}</p></div><div><p class="kicker">OBSERVED / 관측 결과</p><h3>언급과 출처 연결</h3><p>발행한 정보가 실제 답변에 어떻게 연결됐는지 다음 장에서 확인합니다.</p></div></div>
+<div class="marketer-followthrough"><p class="kicker">이번 결과로 정할 일</p><p>{{ n.priorities[0] }}</p></div>
 
 {% if view.v0_baseline %}<div class="rule-row"><h3>초기 측정 기준선 · 참고</h3><p>최초 측정 {{ view.v0_baseline.of_hundred }}% / 이번 관측 {{ view.v0_baseline.current_of_hundred }}%</p>
 <p class="caption">서비스 전 측정으로 확인된 값이 아닙니다. 전월 비교와 별도의 참고입니다.</p>
@@ -29,47 +30,45 @@
 </section>
 
 <section class="page" id="main-2-start">
-<div class="masthead">RE:PUTATION / {{ period_label }} / 02 수행과 증거</div>
+<div class="masthead"><b>Re:putation</b> / {{ period_label }} <span class="section-label">02 수행과 증거</span></div>
 
 <h1>{% if view.report_kind == 'INITIAL' %}최초 관측과<br>확인한 근거{% else %}이번 달 만든 정보와<br>활용 결과{% endif %}</h1>
 
 {% if n.works|selectattr('cited_cells')|list %}<p>병원이 운영한 글이 AI 답변의 출처로 확인됐습니다.</p>{% else %}<p>발행 기록을 정리하고, 답변의 출처로 연결됐는지 확인합니다.</p>{% endif %}
 
-{% for item in n.works[:2] %}<div class="case work-proof"><p class="kicker">발행 기록 / 0{{ loop.index }}</p><h3>{{ item.title }}</h3><p class="caption">{% if item.cited_cells %}출처로 확인 · {{ item.cited_cells }}개 질문×플랫폼 조합{% else %}출처 연결은 아직 확인되지 않았습니다{% endif %}</p>
-{% if item.queries %}<p class="caption">출처로 확인한 질문: {{ item.queries[0] }}</p>
-{% endif %}{% if item.url %}<a class="caption" href="{{ item.url }}">실제 공개 글 확인</a>{% endif %}</div>
-{% else %}<p class="rule-row">연결할 실제 공개 글 목록이 없습니다. 완료한 작업으로 대체해 설명하지 않습니다.</p>
-{% endfor %}
+{% for item in n.works[:2] %}<div class="work-proof"><div class="work-title"><p class="kicker">발행 기록 / 0{{ loop.index }}</p><h3>{{ item.title }}</h3>{% if item.url %}<a class="caption" href="{{ item.url }}">실제 공개 글 확인</a>{% endif %}</div><div class="work-observation"><p class="caption">{{ item.citation_label }}</p>{% if item.queries %}<p class="caption">출처로 확인한 질문: {{ item.queries[0] }}</p>{% endif %}</div></div>
+{% else %}<p class="rule-row">연결할 실제 공개 글 목록이 없습니다. 완료한 작업으로 대체해 설명하지 않습니다.</p>{% endfor %}
+<div class="evidence-pair">
 {% for key,label in [('found','언급 관측'),('missing','미언급 관측')] %}{% set case=view.evidence[key] %}{% if case %}<div class="case {{ 'negative' if key == 'missing' else '' }}"><h3>{{ label }} — {{ case.question }}</h3><p class="quote">{{ case.excerpt[:130] ~ "…" if case.excerpt|length > 130 else case.excerpt }}</p>
 <p class="caption">{{ case.platform }}{% if case.measured_at %} · {{ case.measured_at.strftime('%Y-%m-%d') }} 실제 확인{% endif %} · 요약 발췌, 전체 보존 발췌는 부록</p>
 </div>
 {% endif %}{% endfor %}
-{% if not view.evidence.found and not view.evidence.missing %}<div class="case">인용 가능한 확정 답변 사례가 없습니다. 관측 복구가 우선입니다.</div>
+{% if not view.evidence.found and not view.evidence.missing %}<div class="statement-band"><h2>{% if n.works %}공개 기록은 있습니다.<br>답변 연결은 아직 모릅니다.{% else %}확인할 근거부터<br>다시 확보합니다.{% endif %}</h2><p>인용 가능한 확정 답변 사례가 없습니다.<br>관측 복구가 우선입니다.</p></div><div class="process"><p><b>01 / 관측 복구</b> 같은 질문·플랫폼의 답변과 판정을 다시 확보합니다.</p><p><b>02 / 연결 확인</b> 공개 글의 소유 URL이 출처로 쓰였는지 확인합니다.</p><p><b>마케터 설명</b> 확정된 결과와 남은 미확인을 구분해 안내합니다.</p></div>
 {% endif %}
-<p class="caveat">발행·인용·언급만으로 운영의 인과 효과를 단정할 수 없습니다. 전체 작업과 근거는 부록에 담았습니다.</p>
+</div><p class="caption">전체 발행 기록과 보존한 답변 발췌는 부록에서 확인할 수 있습니다.</p>
 <div id="main-2-end"></div>
 
 </section>
 
 <section class="page monthly-plan" id="main-3-start">
-<div class="masthead">RE:PUTATION / {{ period_label }} / 03 다음 결정</div>
+<div class="masthead"><b>Re:putation</b> / {{ period_label }} <span class="section-label">03 다음 결정</span></div>
 
 <h1>{{ '다음 관측을 준비합니다' if view.report_kind == 'INITIAL' else '다음 달 집중할 진료 질문' }}</h1>
-<p>확인된 빈틈부터 자료를 정리하고, 같은 질문으로 다시 확인합니다.</p>
+<p>전담 마케터가 아래 우선순위를 운영에 반영하고, 다음 보고에서 확인 결과를 설명합니다.</p>
 
-{% for line in n.priorities[:3] %}<div class="rule-row"><p><span class="number">0{{ loop.index }} / </span>{{ line }}</p>
+{% for line in n.priorities[:3] %}<div class="rule-row"><span class="number">0{{ loop.index }}</span><p>{{ line }}</p>
 </div>
 {% endfor %}
-{% if view.report_kind == 'INITIAL' %}<h2>최초 관측 기록</h2>
+<div class="delivery-ledger">{% if view.report_kind == 'INITIAL' %}<h2>최초 관측 기록</h2>
 <p>이 문서는 초기 기준선을 정리한 자료입니다. 한 달간의 수행 실적이나 약정 이행을 보고하는 문서가 아닙니다.</p>
 {% else %}<h2>이번 달 약정 이행</h2>
 <p>{{ view.tiles[0].label }} <strong>{{ view.tiles[0].value }}</strong></p>
 <p class="caption">{{ view.tiles[0].hint }}</p>
 <p>{{ n.fulfillment_note }}</p>
 {% endif %}
-<p class="caption">제안은 완료된 작업이 아닙니다. 승인된 근거와 공개 준비 상태를 확인한 뒤 실행하며, 측정 성과나 순위를 보장하지 않습니다.</p>
+</div>
 
-<div class="case"><h3>다음 운영을 위한 확인</h3><p>우선 질문에 사용할 공식 자료와 공개 가능한 표현을 확인합니다. 승인 후 발행하고, 다음 보고서에서 같은 질문의 언급과 출처 연결을 다시 확인합니다.</p></div>
+<div class="marketer-followthrough"><h3>전담 마케터의 다음 실행</h3><p>우선 질문별 공식 근거와 공개 안내를 대조해 보완할 내용을 정합니다. 운영 기준에 따라 콘텐츠에 반영하고, 다음 관측의 언급·인용과 함께 변경 내용을 설명합니다.</p></div><div class="process"><p><b>운영 반영</b> 질문별 보완 내용과 발행 기록을 남깁니다.</p><p><b>다음 보고</b> 유지·변화·미확인을 구분해 다음 실행을 제안합니다.</p></div>
 <p class="caveat">질문별 전체 기록과 비교 조건은 이어지는 부록에서 확인할 수 있습니다.</p>
 <div id="main-3-end"></div>
 
@@ -111,7 +110,7 @@
 {% if n.priorities[3:] %}<h2>추가 우선순위</h2>
 {% for line in n.priorities[3:] %}<p>{{ line }}</p>
 {% endfor %}{% endif %}
-<h2>해석 범위와 측정 기록</h2>
+<h2>해석 범위와 측정 기록</h2><p class="caption">발행·인용·언급만으로 운영의 인과 효과를 단정할 수 없습니다. 제안은 완료된 작업이 아닙니다. 승인된 근거와 공개 준비 상태를 확인한 뒤 실행하며, 측정 성과나 순위를 보장하지 않습니다.</p>
 <p class="caption">{{ view.coverage_text }}</p>
 <p class="caption">{{ n.comparison_note }}</p>
 <p class="caption">{{ n.citation_scope }}</p>

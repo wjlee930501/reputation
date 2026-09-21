@@ -104,11 +104,7 @@ def v3_expectation(
     )
     for work in n.works[:2]:
         page2.append(work.title)
-        page2.append(
-            f"출처로 확인 · {work.cited_cells}개 질문×플랫폼 조합"
-            if work.cited_cells
-            else "출처 연결은 아직 확인되지 않았습니다"
-        )
+        page2.append(work.citation_label)
         if work.queries:
             page2.append(work.queries[0])
     for case in view["evidence"].values():
@@ -123,6 +119,7 @@ def v3_expectation(
         view["tiles"][0]["value"],
         view["tiles"][0]["hint"],
         n.fulfillment_note,
+        "전담 마케터의 다음 실행",
         *n.priorities[:3],
     ]
     if view.get("report_kind") == "INITIAL":
