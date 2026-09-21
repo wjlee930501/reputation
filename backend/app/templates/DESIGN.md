@@ -1,26 +1,25 @@
-# Report editorial system
+# Re:putation report brand and conversion system
 
 ## 1. Atmosphere & Identity
-Existing Jinja/WeasyPrint reports become an editorial sequence: conclusion, evidence, decision. Monthly uses navy/teal measurement rules; diagnosis uses ink/copper and query-led proposals. The brief is the approved visual contract.
+Premium clinic partner proposal and operating review, built as Jinja/WeasyPrint documents. Reference: supplied public landing screenshot inspected locally on 2026-09-21. White, near-black Korean typography, vivid blue and clear rails are the source; this is a new A4 composition, not a website clone. Diagnosis answers why now, why MotionLabs, what changes. Monthly answers what was delivered, observed, and comes next. Readers: time-constrained clinic owner and evidence-seeking AE.
 
 ## 2. Color
-Canvas white; warm surface #f7f5f0; ink #202b32; monthly navy #233b52; teal #176c68; diagnosis copper #99522e; muted #56616a; rules #d6d9d8. Status is always written, never color alone.
+White #ffffff, ink #181a1e, accent/signal #0672ed, muted #525b69, rule #dce3ed, pale-blue #eef5ff. Dark statement surface uses ink; result surface uses blue. Status always has text. No copper, warm cards, gradients or shadows.
 
 ## 3. Typography
-Existing bundled Pretendard only. Document descriptor 12pt, hospital identity 22pt, editorial outcome and page title 28pt, section/proof title 15pt, body 11pt, caption/table 9pt. Tabular numbers. Korean keep-all with emergency wrapping for long fields. The hospital and measured outcome lead page one; document type is subordinate.
+Bundled embedded Pretendard with Unicode mapping. Lead 30pt, monthly conclusion 28pt, identity 20pt, section/proof 15pt, body 11pt, captions/tables 9pt, metrics 44pt (unavailable 25pt), sequence 22pt. Tabular numbers, Korean word preservation, emergency wrapping for long fields. No text below 9pt. Large figures denote observations or labeled assets, never patients.
 
 ## 4. Spacing & Layout
-A4, 17mm horizontal and vertical rails. 4/8/12/16/24pt spacing. Three explicitly validated main pages; dense evidence and complete questions flow through appendices. No clipping or fixed-height text regions. Screen preview max 210mm with responsive rails.
-Appendices use a 22pt title, 12pt section spacing, and 4pt paragraph/table padding to keep methods together without reducing the 9pt evidence text.
+A4, 17mm rails, 4/8/12/16/24pt rhythm. Three validated main pages plus complete flowing appendix. No hidden overflow, fixed-height text boxes or omitted records. Diagnosis: promise and identity, blue metric pair, three ruled questions; dark why-now statement and two numbered query proposals; operating assets, first-month process, marketer ownership, prices and contact. Monthly: factual conclusion, same-scale comparison, delivered/observed distinction; portfolio ledger with contrasting positive/negative evidence; next priorities and fulfillment ledger. Appendices: 4pt padding, 9pt evidence. HTML preview reflows below 600px; PDF is delivery surface.
 
-## 5. Components
-Shared report_editorial.css: masthead, descriptor, hospital identity, editorial outcome, ruled metric pair with identical 0–100% tracks (6pt high), warm proof cards, numbered priorities (22pt number, 12pt vertical padding), agreement fulfillment, appendix table, caveat and single CTA. Bars exist only for valid values; percentage-point change requires a comparable pair. Cited published work leads the proof page. Methods and all work remain in the appendix; page three connects ranked questions to operation. Empty/unavailable/comparison-blocked states carry their own copy. Main-page end anchors and appendix row anchors are validation contracts, not decoration.
+## 5. Components & Contracts
+Shared masthead, statement-band, metrics, opportunity-row, proposal, asset-grid, process, work-proof ledger, evidence pair, priorities, delivery-ledger, marketer-followthrough, CTA and appendix tables. Shared tokens, different page rhythms. Monthly bars use 0–100%; prior/delta require valid matched cohorts. Headline remains pooled LOCAL confirmed repeats; platform averages stay labeled. Content identity/ownership stays upstream; None and zero have distinct labels. Lead payload gains no private fields. Full questions, works, excerpts and methods remain in appendix. Page/row anchors, required text, links, font and hashes remain mandatory. Lead becomes lead-v11; doctor-pdf-v3 and legacy routes remain.
 
 ## 6. Motion & Interaction
-Static document. Underlined links, visible keyboard focus. No motion. Diagnosis customer CTA uses configured contact; INTERNAL has no customer CTA.
+Static document; semantic headings/tables, underlined links and focus outlines. One configured regional-fit CTA. INTERNAL: AE-only every page, no links. Fictional labels every sample page. No contact/token changes.
 
-## 7. Depth & Surface
-Crisp rules and warm evidence bands. No gradients, shadows, emoji or repeated rounded cards.
+## 7. Narrative & Surface
+Useful information, publication history and baseline accumulate after work starts; no first-mover ranking promise. Existing homepage/blog remain; additional public hub, grounded query content and marketer-explained monthly findings are deliverables. Official facts and authoritative references ground content; no invented strengths. Onboarding sets operating criteria and discusses hospital-owned domains; no per-article manual approval. Regional overlap checked, differentiated positioning may be discussed; no exclusivity/scarcity. Prices remain 60/90/120만원 + VAT, 12/16/20 articles. AI mentions/citations observed, patient growth aspirational. One concise KPI caveat; full limitations in appendix.
 
 ## 8. Accessibility Constraints & Accepted Debt
-Readable 11pt body and 9pt captions, Korean embedded fonts and Unicode mapping, semantic headings/tables, link checks. PDF export is paginated; HTML preview reflows. No accepted clipping or omitted evidence. Visual QA must inspect generated production-renderer samples.
+Body 11pt, notes 9pt, clear contrast/status and same-scale bars. Production PDF/PNG, anchor/text/link/font checks and long-name/unavailable/high/internal tests are acceptance evidence. No accepted clipping or omitted evidence. Browser performance/tooling changes do not apply to static PDFs and two landing-copy corrections; use existing local dependencies. No production reads/deployment.

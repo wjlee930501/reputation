@@ -20,6 +20,14 @@ class PublishedWork:
     cited_cells: int | None
     queries: tuple[str, ...]
 
+    @property
+    def citation_label(self) -> str:
+        if self.cited_cells is None:
+            return "인용 집계 미확인"
+        if self.cited_cells == 0:
+            return "관측한 인용 0개 조합"
+        return f"출처로 확인 · {self.cited_cells}개 질문×플랫폼 조합"
+
 
 @dataclass(frozen=True, slots=True)
 class MonthlyNarrative:
@@ -123,7 +131,7 @@ def build_monthly_narrative(
         )
     for row in (attribution or {}).get("lost_mention_cells", []) if comparable else []:
         priorities.append(
-            f"‘{row['query_text']}’ · {row['platform_label']}에서 빠진 언급을 재확인하고 공식 진료 자료를 보완합니다."
+            f"‘{row['query_text']}’ · {row['platform_label']}에서 언급이 빠졌습니다. 공식 진료 안내를 대조·보완하고 같은 질문으로 회복 여부를 다시 확인합니다."
         )
     lost_questions = (
         {row["query_text"] for row in (attribution or {}).get("lost_mention_cells", [])}
@@ -135,7 +143,7 @@ def build_monthly_narrative(
             continue
         if row.get("current_attempts_used", 0) and not row.get("current_mentioned_attempts", 0):
             priorities.append(
-                f"‘{row['query_text']}’ · 확정 관측에서 미언급. 이 질문에 답할 공식 자료를 먼저 정리합니다."
+                f"‘{row['query_text']}’ · 확정 관측에서 미언급. 공식 자료에서 답할 수 있는 범위를 안내에 반영하고, 공개 후 언급·인용을 다시 확인합니다."
             )
     if not priorities and comparable:
         for row in (attribution or {}).get("new_mention_cells", [])[:2]:

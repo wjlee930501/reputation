@@ -49,6 +49,7 @@ def main() -> None:
     for name, state, dense in (
         ("monthly-growth", "growth", False),
         ("monthly-decline", "decline", False),
+        ("monthly-flat", "flat", False),
         ("monthly-unavailable", "unavailable", False),
         ("monthly-dense", "growth", True),
     ):

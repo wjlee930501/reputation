@@ -34,7 +34,7 @@ def _proposal(query: QueryDisclosure) -> QueryProposal:
     elif query.mentioned == 0:
         state = "ZERO"
         known = f"이 질문의 확정 반복 {query.measured}회 중 병원 언급 0회입니다."
-        action = "승인된 진료 자료를 바탕으로 이 질문에 답하는 콘텐츠를 제안하고, 공개 후 같은 질문을 재측정합니다."
+        action = "공식 근거를 확인해 이 질문의 안내를 공개 허브에 발행하고, 같은 질문의 언급·출처 연결을 재측정합니다."
     elif (
         query.mentioned < query.measured
         or query.failed
@@ -43,11 +43,11 @@ def _proposal(query: QueryDisclosure) -> QueryProposal:
     ):
         state = "PARTIAL"
         known = f"이 질문의 확정 반복 {query.measured}회 중 언급 {query.mentioned}회입니다. 누락 관측은 별도입니다."
-        action = "언급이 유지되는 조건을 재확인하고, 이 질문에 답할 공식 자료의 범위와 표현을 점검합니다."
+        action = "공식 자료의 범위와 표현을 점검해 안내를 보완하고, 같은 질문의 언급·출처 연결을 다시 확인합니다."
     else:
         state = "HIGH"
         known = f"이 질문의 확정 반복 {query.measured}회 모두에서 언급됐습니다. 다른 질문의 성과를 뜻하지 않습니다."
-        action = "현재 관측을 보존하고 같은 질문의 유지 여부를 추적합니다. 관련 질문 확장은 별도로 합의합니다."
+        action = "현재 답할 수 있는 정보를 최신 상태로 운영하고, 같은 질문의 언급 유지와 출처 연결을 추적합니다."
     focus = "진료 범위·절차·유의사항"
     if "검진" in query.text or "내시경" in query.text:
         focus = "검사 대상·예약 전 준비·결과 상담 절차"
@@ -55,7 +55,7 @@ def _proposal(query: QueryDisclosure) -> QueryProposal:
         focus = "정기 상담·추적 관리 범위·내원 전 확인 사항"
     elif "접종" in query.text:
         focus = "제공하는 예방접종·대상 확인·사전 상담 절차"
-    check = f"{focus}의 공식 자료와 공개 가능 여부"
+    check = f"{focus}를 설명하는 질문별 안내. 병원 공식 자료에서 확인한 범위만 담습니다."
     return QueryProposal(query.text, state, known, check, action)
 
 
