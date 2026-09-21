@@ -104,8 +104,9 @@
     "db_budget": "PASS",
     "diff_check": "PASS"
   },
-  "production_reads_or_writes": false,
   "customer_messages_sent": 0,
   "python_validation_external_connections_blocked": true,
-  "font_files_shared": false
+  "font_files_shared": false,
+  "production_database_reads_or_writes": false,
+  "public_landing_read_for_reference": true
 }
