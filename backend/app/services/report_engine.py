@@ -38,6 +38,8 @@ from app.services.report_attribution import (
     ContentAttributionPayload,
     QuestionRowPayload,
 )
+from app.services.report_narrative import ReportKind, build_monthly_narrative
+from app.services.report_work_evidence import published_work_evidence
 from app.services.sov_statistics import DeltaSignificance
 from app.utils.medical_filter import check_forbidden
 
@@ -1009,8 +1011,10 @@ def build_doctor_report_view(
     early_publication_count: int = 0,
     late_recovery_count: int = 0,
     contract_published_count: int | None = None,
+    report_kind: ReportKind = "LEGACY",
+    protocol_label: str | None = None,
 ) -> DoctorReportView:
-    """원장에게 보낼 1페이지 요약(+필요한 만큼 이어지는 질문표)의 모든 문구와 숫자를 만든다.
+    """Build legacy summary or an explicit MONTHLY/BASELINE value narrative.
 
     숫자는 전부 코드 바인딩이다 — 시장 1위 리포팅 툴의 현재 1순위 불만이 AI 요약의
     숫자 환각이라, 이 함수는 LLM을 쓰지 않는다.
@@ -1079,13 +1083,13 @@ def build_doctor_report_view(
         or (attribution or {}).get("new_mention_queries")
         or []
     )
-    new_mention_sentences = _mention_sentences(mention_rows, DOCTOR_MENTION_LIST_LIMIT)
+    new_mention_sentences = _mention_sentences(mention_rows, DOCTOR_MENTION_LIST_LIMIT if report_kind == "LEGACY" else len(mention_rows))
     # 지난달 manifest가 없으면 "빠진 질문"이라는 말 자체가 성립하지 않는다.
     has_prior_month = bool((attribution or {}).get("has_prior_month"))
     lost_mention_sentences = (
         _mention_sentences(
             (attribution or {}).get("lost_mention_cells") or [],
-            DOCTOR_MENTION_LIST_LIMIT,
+            DOCTOR_MENTION_LIST_LIMIT if report_kind == "LEGACY" else len((attribution or {}).get("lost_mention_cells") or []),
         )
         if has_prior_month
         else []
@@ -1339,13 +1343,13 @@ def build_doctor_report_view(
     ):
         # 각 칸은 예산을 다시 확인하며 **더 뺄 것이 없을 때까지** 반복한다.
         # (각주처럼 한 번에 한 줄씩 빠지는 칸이 있다.)
-        while _cost() > DOCTOR_PAGE1_LINE_BUDGET and step():
+        while report_kind == "LEGACY" and _cost() > DOCTOR_PAGE1_LINE_BUDGET and step():
             if label not in trimmed:
                 trimmed.append(label)
         if _cost() <= DOCTOR_PAGE1_LINE_BUDGET:
             break
 
-    if _cost() > DOCTOR_PAGE1_LINE_BUDGET:
+    if report_kind == "LEGACY" and _cost() > DOCTOR_PAGE1_LINE_BUDGET:
         # 사다리를 전부 써도 남는 경우는 남은 고정 문구(요약·측정 범위·필수 각주)만으로
         # 예산을 넘었다는 뜻이다. 조용히 넘기지 않고 남긴다 — 이 로그가 뜨면 예산이나
         # 고정 문구 길이를 다시 잡아야 한다.
@@ -1362,7 +1366,7 @@ def build_doctor_report_view(
         cited_titles=cited_titles_by_question,
     )
 
-    return {
+    view: DoctorReportView = {
         "measured": measured,
         "hospital_name": hospital.name,
         "headline": {
@@ -1424,3 +1428,29 @@ def build_doctor_report_view(
             ours=next_actions["ours"],
         ),
     }
+
+    if report_kind != "LEGACY":
+        view["footnotes"] = [
+            f"{platform_names} 자동 측정(API)이며 이용자 화면·검색 순위와 다릅니다.",
+            "같은 질문에서도 답변은 달라질 수 있습니다. 관측 변화는 인과 효과가 아닙니다.",
+            "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
+            *[note for note in footnotes[3:] if note != _v0_footnote()],
+        ]
+        if coverage.get("ci95_low") is not None and coverage.get("ci95_high") is not None:
+            view["footnotes"].append(f"확정 반복 합산 언급 비율의 95% 구간: {coverage['ci95_low']:.1f}% ~ {coverage['ci95_high']:.1f}%. 관측 표본의 불확실성을 함께 해석합니다.")
+        if v0_baseline:
+            view["footnotes"].append("초기 기준선은 최초 측정의 참고값이며, 서비스 전 측정으로 확인된 값이 아닙니다.")
+        if coverage.get("sov_pct_all_cells") is not None:
+            view["coverage_text"] = coverage_text.replace(f"이번 달 전체 확정 답변 기준은 100번 환산 {coverage['sov_pct_all_cells']:.1f}번입니다.", f"이번 달 전체 확정 반복 합산 언급 비율은 {coverage['sov_pct_all_cells']:.1f}%입니다.")
+        view["report_kind"] = report_kind
+        view["narrative"] = build_monthly_narrative(
+            kind=report_kind, coverage=sov_coverage, attribution=attribution, citations=citations,
+            works=published_work_evidence(hospital, published_contents, citations),
+            current=sov_pct, previous=prev_sov_pct, comparison_reason=comparison_reason,
+            shortfall=shortfall if report_kind == "MONTHLY" else 0, protocol_label=protocol_label,
+        )
+        if view["narrative"].previous is None:
+            view["new_mention_sentences"] = []
+            view["lost_mention_sentences"] = []
+            view["new_mention_empty_text"] = "같은 조건의 이전 관측이 없어 새 언급·빠진 언급을 계산하지 않았습니다."
+    return view

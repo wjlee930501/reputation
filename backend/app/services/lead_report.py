@@ -46,7 +46,7 @@ PRETENDARD_FONT_PATH = (
 
 # 템플릿이 바뀌면 같은 데이터라도 다른 리포트가 나온다. artifact에 기록해
 # "같은 병원인데 숫자가 왜 다르냐"에 답할 수 있게 한다.
-TEMPLATE_VERSION = "lead-v9"
+TEMPLATE_VERSION = "lead-v10"
 
 # 공급자 표기 — 사람이 읽는 이름이지 "ChatGPT 화면"이 아니다.
 _VENDOR_LABELS = {"chatgpt": "OpenAI API", "gemini": "Google Gemini API"}
@@ -70,8 +70,12 @@ class PlatformSegment:
     searched: int | None = None
 
     @property
+    def pending(self) -> int:
+        return max(0, self.planned - self.measured - self.failed - self.ambiguous)
+
+    @property
     def label(self) -> str:
-        return f"{self.vendor_label} · {self.model}"
+        return f"{self.vendor_label} · {self.model or '모델 기록 없음'}"
 
     @property
     def mention_rate(self) -> float | None:
@@ -137,6 +141,9 @@ class LeadReportPayload:
     notices: tuple[str, ...] = ()
     contact: LeadReportContact = LeadReportContact(name="", role="", email="", phone="")
 
+    internal: bool = False
+    sample_label: str = ""
+
     # 합산값은 **헤드라인이 아니라 존재 여부 판정에만** 쓴다("확정 0건인가?").
     # 경로별 결측률이 다르면 합산 비율은 결측이 적은 경로에 가중치를 주는데,
     # 그 가중치는 문서 어디에도 표기되지 않는다.
@@ -192,8 +199,6 @@ def build_lead_report_payload(
 
     for platform in _PLATFORMS:
         rows = [r for r in results if r.platform == platform]
-        if not rows:
-            continue
         succeeded = [r for r in rows if r.measurement_status == "SUCCESS"]
         confirmed = [r for r in succeeded if sov_engine.record_is_confirmed(r)]
         # 한 건이라도 계측된 진단만 검색 사용을 표기한다. 전부 NULL(계측 이전)이면
@@ -253,6 +258,7 @@ def build_lead_report_payload(
     snapshot = diagnosis.measurement_config or {}
 
     return LeadReportPayload(
+        internal=diagnosis.delivery_status == "INTERNAL",
         hospital_name=diagnosis.subject_hospital_name,
         region=diagnosis.subject_region,
         generated_at=generated_at,
@@ -280,18 +286,22 @@ def _environment() -> Environment:
 
 def render_lead_report_html(payload: LeadReportPayload) -> str:
     """**payload 외의 인자를 받지 않는다.** 렌더러는 원자료에 접근할 수 없다."""
+    from app.services.lead_proposal import build_lead_proposal, validate_proposal_input
+
+    validate_proposal_input(payload)
     template = _environment().get_template(TEMPLATE_NAME)
-    return template.render(payload=payload, sample_caveat=_SAMPLE_CAVEAT)
+    return template.render(payload=payload, proposal=build_lead_proposal(payload), sample_caveat=_SAMPLE_CAVEAT)
 
 
 def render_lead_report_pdf(payload: LeadReportPayload) -> bytes:
     """HTML을 그대로 PDF로. 가림 대상은 HTML에 없으므로 텍스트 레이어에도 없다."""
     from weasyprint import HTML  # 네이티브 의존성 — 임포트를 지연시킨다.
 
-    return HTML(
-        string=render_lead_report_html(payload),
-        base_url=str(TEMPLATE_DIR),
-    ).write_pdf()
+    from app.services.lead_pdf_validation import validate_lead_document
+    from app.services.report_typography import keep_korean_words
+
+    document = HTML(string=keep_korean_words(render_lead_report_html(payload)), base_url=str(TEMPLATE_DIR)).render()
+    return validate_lead_document(document, payload)
 
 
 def artifact_storage_uri(diagnosis_id, version: int) -> str:

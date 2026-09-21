@@ -84,3 +84,6 @@ terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.*
 terraform/terraform.tfvars
+
+# Generated fictional report renderings; CI retains PDF previews.
+/artifacts/report-redesign-fictional/

@@ -78,7 +78,15 @@ def render_validated_doctor_pdf(
     # Summary quotes are excerpts, never a full-answer transcript. Bound both
     # polarities identically; the complete question table is never shortened.
     view = deepcopy(view)
-    for case in (view.get("evidence") or {}).values():
+    v3 = view.get("report_kind", "LEGACY") != "LEGACY"
+    if v3 and "narrative" not in view:
+        raise DoctorPdfValidationError("DOCTOR_PDF_NARRATIVE_MISSING", "보고서 서술 계약이 없습니다.")
+    if v3:
+        from app.services.doctor_pdf_v3 import validate_v3_fields
+        validate_v3_fields(view)
+    if len(view["hospital_name"]) > 200:
+        raise DoctorPdfValidationError("DOCTOR_PDF_LAYOUT_LIMIT", "병원명이 지원 길이를 넘었습니다.")
+    for case in (() if v3 else (view.get("evidence") or {}).values()):
         if isinstance(case, dict):
             for field, limit in (("question", 100), ("excerpt", 190)):
                 value = str(case.get(field) or "")
@@ -101,14 +109,19 @@ def render_validated_doctor_pdf(
             loader=FileSystemLoader(str(_TEMPLATE_DIR)),
             autoescape=select_autoescape(enabled_extensions=("html",)),
         )
-        template = environment.get_template("doctor_report.html")
+        template = environment.get_template("doctor_report_v3.html" if v3 else "doctor_report.html")
+        from app.services.doctor_pdf_v3 import v3_layout_valid
         document = None
         for density in ("comfortable", "compact"):
             html = template.render(
                 view=view, period_label=period_label, public_url=public_url, density=density
             )
+            if v3:
+                from app.services.report_typography import keep_korean_words
+                html = keep_korean_words(html)
             candidate = HTML(string=html, base_url=str(_TEMPLATE_DIR)).render()
-            if _layout_is_valid(candidate, appendix=bool(rows), row_count=len(rows)):
+            valid = v3_layout_valid(candidate, len(rows)) if v3 else _layout_is_valid(candidate, appendix=bool(rows), row_count=len(rows))
+            if valid:
                 document = candidate
                 break
         if document is None:
@@ -163,6 +176,9 @@ def render_validated_doctor_pdf(
             if row.get(field)
         ),
     )
+    if v3:
+        from app.services.doctor_pdf_v3 import v3_expectation
+        bound = v3_expectation(view, bound, len(document.pages))
     metadata = validate_doctor_pdf(pdf_bytes, bound)
     return ValidatedDoctorPdf(
         pdf_bytes=pdf_bytes, sha256=metadata.sha256, byte_size=metadata.byte_size, metadata=metadata

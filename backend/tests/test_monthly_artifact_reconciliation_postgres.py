@@ -249,7 +249,7 @@ def test_committed_blocked_report_repairs_missing_incident_once(
 
 
 @pytest.mark.parametrize("quality", ["COMPLETE", "DEGRADED"])
-@pytest.mark.parametrize("pdf_version,pages", [("doctor-pdf-v1", 2), ("doctor-pdf-v2", 3)])
+@pytest.mark.parametrize("pdf_version,pages", [("doctor-pdf-v1", 2), ("doctor-pdf-v2", 3), ("doctor-pdf-v3", 4), ("doctor-pdf-v3", 7)])
 def test_valid_paginated_artifact_recovers_false_invalid_incident(
     monkeypatch: pytest.MonkeyPatch, quality: str, pdf_version: str, pages: int,
 ) -> None:
