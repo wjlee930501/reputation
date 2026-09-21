@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.services.report_narrative import MonthlyNarrative, ReportKind
 
 
 class DoctorHeadline(TypedDict):
@@ -86,11 +88,11 @@ class DoctorV0Baseline(TypedDict):
 
 
 class DoctorReportView(TypedDict):
-    """원장 1페이지의 3막 + 선택적 2쪽 부록.
+    """Legacy fields plus an optional typed three-page MONTHLY/BASELINE narrative."""
 
-    막 1 "이번 달 저희가 한 일" → 막 2 "무엇이 달라졌나" → 막 3 "다음 달 계획".
-    """
-
+    report_kind: NotRequired[ReportKind]
+    narrative: NotRequired[MonthlyNarrative]
+    sample_label: NotRequired[str]
     measured: bool
     hospital_name: str
     headline: DoctorHeadline
@@ -132,6 +134,8 @@ class DoctorPdfExpectation:
     appendix_expected: bool = False
     period_label: str | None = None
     expected_page_count: int | None = None
+    main_page_texts: tuple[tuple[str, ...], ...] = ()
+    required_links: tuple[str, ...] = ()
     required_overview_texts: tuple[str, ...] = ()
     required_appendix_texts: tuple[str, ...] = ()
     required_appendix_rows: tuple[tuple[str, ...], ...] = ()
@@ -142,7 +146,7 @@ class DoctorArtifactMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    validation_version: Literal["doctor-pdf-v1", "doctor-pdf-v2"]
+    validation_version: Literal["doctor-pdf-v1", "doctor-pdf-v2", "doctor-pdf-v3"]
     validation_source: Literal["SYSTEM"]
     page_count: int = Field(ge=1, le=32, strict=True)
     page_size: Literal["A4"]
@@ -160,6 +164,8 @@ class DoctorArtifactMetadata(BaseModel):
     def preserve_legacy_page_contract(self):
         if self.validation_version == "doctor-pdf-v1" and self.page_count > 2:
             raise ValueError("Legacy doctor PDFs allow only one or two pages")
+        if self.validation_version == "doctor-pdf-v3" and self.page_count < 4:
+            raise ValueError("V3 requires three main pages and an evidence appendix")
         return self
 
 

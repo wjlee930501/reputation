@@ -366,7 +366,7 @@ async def download_report(
 ):
     """PDF 다운로드 — GCS signed URL로 리다이렉트 (1시간 만료).
 
-    `audience=doctor`는 원장에게 그대로 전달하는 1페이지 판본이다. 같은 데이터를
+    `audience=doctor`는 원장에게 전달하는 본문·근거 부록 판본이다. 같은 데이터를
     다른 편집으로 렌더한 별도 파일이라 AE용과 경로가 다르다.
     """
     await _get_hospital_or_404(db, hospital_id)

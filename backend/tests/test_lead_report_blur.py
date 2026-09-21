@@ -349,14 +349,16 @@ class TestReadableDocument:
         os.getenv("REQUIRE_PDF_RENDER") is None,
         reason="weasyprint 네이티브 의존성이 필요하다. CI에서 REQUIRE_PDF_RENDER=1로 강제한다.",
     )
-    def test_pdf_has_two_intentional_pages(self, payload):
+    def test_pdf_has_three_intentional_pages_and_complete_method_appendix(self, payload):
         from io import BytesIO
 
         from pypdf import PdfReader
 
         reader = PdfReader(BytesIO(lead_report.render_lead_report_pdf(payload)))
 
-        assert len(reader.pages) == 2
+        assert len(reader.pages) == 4
+        assert "계약범위" in "".join(reader.pages[2].extract_text().split())
+        assert "재현조건" in "".join(reader.pages[3].extract_text().split())
 
     def test_zero_mentions_are_explained_not_left_bare(self):
         """0회는 가장 흔한 결과이고 가장 오해받기 쉽다.

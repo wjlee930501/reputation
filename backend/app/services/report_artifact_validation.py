@@ -49,10 +49,12 @@ def validate_doctor_pdf(
     # 본문은 언제나 1쪽이다. 부록(추적 질문 전체표)이 렌더될 때만 2쪽이 되고,
     # 그 사실은 호출부가 기대값으로 못 박는다 — "왜인지 모르게 2쪽"인 PDF는
     # 원장에게 나가면 안 된다.
+    v3 = bool(expectation.main_page_texts)
     expected_pages = expectation.expected_page_count if expectation.expected_page_count is not None else (2 if expectation.appendix_expected else 1)
     if (type(expected_pages) is not int or not 1 <= expected_pages <= 32
-            or (not expectation.appendix_expected and expected_pages != 1)
-            or (expectation.appendix_expected and expected_pages < 2)):
+            or (not v3 and not expectation.appendix_expected and expected_pages != 1)
+            or (not v3 and expectation.appendix_expected and expected_pages < 2)
+            or (v3 and (len(expectation.main_page_texts) != 3 or expected_pages < 4))):
         raise DoctorPdfValidationError("DOCTOR_PDF_PAGE_COUNT_INVALID", "리포트의 페이지 구성 기준이 올바르지 않습니다.")
     page_count = len(reader.pages)
     if page_count != expected_pages:
@@ -78,9 +80,9 @@ def validate_doctor_pdf(
     normalized_text = _normalize_text(extracted_text)
     required = (
         ("hospital_name", expectation.hospital_name),
-        ("coverage_text", expectation.coverage_text),
-        ("caveat_text", expectation.caveat_text),
     )
+    if not v3:
+        required = (*required, ("coverage_text", expectation.coverage_text), ("caveat_text", expectation.caveat_text))
     required = (*required, *(("overview", text) for text in expectation.required_overview_texts))
     if expectation.period_label is not None:
         required = (*required, ("period", expectation.period_label))
@@ -96,7 +98,16 @@ def validate_doctor_pdf(
             f"{', '.join(missing_fields)}.",
         )
 
-    appendix_text = _normalize_text("\n".join(sheet.extract_text() or "" for sheet in reader.pages[1:]))
+    if v3:
+        markers = ("01 관측과 결론", "02 수행과 증거", "03 다음 결정")
+        for index, required_texts in enumerate(expectation.main_page_texts):
+            page_text = _normalize_text(reader.pages[index].extract_text() or "")
+            if not required_texts or _normalize_text(markers[index]) not in page_text or any(_normalize_text(text) not in page_text for text in required_texts):
+                raise DoctorPdfValidationError("DOCTOR_PDF_MAIN_TEXT_MISSING", f"본문 {index + 1}쪽의 필수 근거가 누락됐습니다.")
+    appendix_start = 3 if v3 else 1
+    appendix_text = _normalize_text("\n".join(sheet.extract_text() or "" for sheet in reader.pages[appendix_start:]))
+    if v3 and any(_normalize_text(text) not in appendix_text for text in (expectation.coverage_text, expectation.caveat_text)):
+        raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "부록의 측정 범위 또는 해석 제한 문구가 누락됐습니다.")
     if any(_normalize_text(text) not in appendix_text for text in expectation.required_appendix_texts):
         raise DoctorPdfValidationError("DOCTOR_PDF_APPENDIX_TEXT_MISSING", "전체 질문표에 포함되어야 하는 결과가 PDF에서 누락됐습니다.")
     # Searching each word globally lets an earlier row hide a missing later row.
@@ -135,7 +146,9 @@ def validate_doctor_pdf(
             "원장 전달용 PDF의 한글 문자 연결 정보를 확인하지 못했습니다.",
         )
 
-    links = _uri_links(page)
+    links = tuple(link for sheet in reader.pages for link in _uri_links(sheet)) if v3 else _uri_links(page)
+    if any(url not in links for url in expectation.required_links):
+        raise DoctorPdfValidationError("DOCTOR_PDF_LINK_MISSING", "공개 글 근거 링크가 누락됐습니다.")
     if expectation.public_url not in links:
         raise DoctorPdfValidationError(
             "DOCTOR_PDF_LINK_MISSING",
@@ -144,7 +157,7 @@ def validate_doctor_pdf(
 
     digest = sha256(pdf_bytes).hexdigest()
     return DoctorArtifactMetadata(
-        validation_version=DOCTOR_ARTIFACT_VALIDATION_VERSION,
+        validation_version="doctor-pdf-v3" if v3 else DOCTOR_ARTIFACT_VALIDATION_VERSION,
         validation_source="SYSTEM",
         page_count=page_count,
         page_size="A4",

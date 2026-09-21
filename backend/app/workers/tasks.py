@@ -9494,6 +9494,7 @@ def _build_monthly_report_for_hospital(
             change_pct=change_pct,
             comparison_reason=monthly_sov.comparison.reason,
             comparable_cell_keys=monthly_sov.comparison_cell_keys,
+            max_visible_cells=len(current_loaded.cells) if current_loaded is not None else 0,
         )
     )
 
@@ -9518,6 +9519,7 @@ def _build_monthly_report_for_hospital(
             cells=current_loaded.cells if current_loaded is not None else (),
             records_by_id=citation_records_by_id,
             content_items=citation_content_rows,
+            max_visible_items=max(len(citation_content_rows), 512),
         )
     )
 
@@ -9606,6 +9608,8 @@ def _build_monthly_report_for_hospital(
     # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
     # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
     doctor_view = build_doctor_report_view(
+        report_kind="MONTHLY",
+        protocol_label=str(((manifest.platform_provenance or {}).get("measurement_protocol") or {}).get("policy_version") or "기록 없음") if manifest is not None else None,
         hospital=h,
         sov_pct=sov_pct,
         prev_sov_pct=prev_sov,

@@ -201,6 +201,23 @@ jobs:
       - name: Pytest (unit + integration, coverage gate)
         run: uv run --no-sync pytest --cov=app --cov-report=term --cov-fail-under=60
 
+      - name: Render fictional report design samples
+        env:
+          REPUTATION_DISABLE_DOTENV: "1"
+          OPENROUTER_API_KEY: test-openrouter-key
+        run: uv run --no-sync python ../scripts/report_design_samples.py --output "${RUNNER_TEMP}/reputation-report-samples"
+
+      - name: Preserve verified report previews
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: reputation-report-design-samples
+          path: |
+            ${{ runner.temp }}/reputation-report-samples/*.pdf
+            ${{ runner.temp }}/reputation-report-samples/*.json
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: false
+
   frontend:
     name: Frontend tests and builds
     runs-on: ubuntu-latest

@@ -109,6 +109,8 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
                      metadata.op("->>")("page_count").in_(("1", "2"))),
                 and_(metadata.op("->>")("validation_version") == "doctor-pdf-v2",
                      metadata.op("->>")("page_count").in_(tuple(str(n) for n in range(1, 33)))),
+                and_(metadata.op("->>")("validation_version") == "doctor-pdf-v3",
+                     metadata.op("->>")("page_count").in_(tuple(str(n) for n in range(4, 33)))),
             ),
             metadata.op("->>")("validation_source") == "SYSTEM",
             metadata.op("->>")("page_size") == "A4",

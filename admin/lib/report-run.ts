@@ -95,7 +95,7 @@ function copyForStage(stage: string): RunCopy {
     case 'ARTIFACT_VALIDATED':
       return {
         statusLabel: '원장 전달용 PDF 검증 완료',
-        whatHappened: '원장 전달용 PDF의 한 페이지 구성, 한글, 필수 안내와 링크를 확인했습니다.',
+        whatHappened: '원장 전달용 PDF의 본문·근거 부록, 한글, 필수 안내와 링크를 확인했습니다.',
         customerImpact: '최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.',
         nextAction: '보고서 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.',
         canRebuild: false,

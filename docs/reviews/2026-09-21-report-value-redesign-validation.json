@@ -1,0 +1,124 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_DEPLOYED",
+  "verified_at_kst": "2026-09-21T18:16:20.855354+09:00",
+  "base_commit": "9b2dac3910413cf0c29e7ceb6828dfdc83a7417b",
+  "backend": {
+    "tests": 4560,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "focused_including_script_tests": {
+    "tests": 195,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "line_coverage_pct": 85.2824888148996,
+  "checks": {
+    "ruff": "PASS",
+    "copy_guard": "PASS",
+    "db_budget": "PASS",
+    "diff_check": "PASS"
+  },
+  "fictional_samples": [
+    {
+      "name": "monthly-growth",
+      "pages": 5,
+      "sha256": "ad32702b5a0b8b20f5f710f909086574455286991ca32fc319996768a82791c3",
+      "bytes": 63999
+    },
+    {
+      "name": "monthly-decline",
+      "pages": 5,
+      "sha256": "695d6098d7468318cee3af78fd2daddf0e5c905469b9d5d5fa72f5488f285bc7",
+      "bytes": 63645
+    },
+    {
+      "name": "monthly-unavailable",
+      "pages": 5,
+      "sha256": "c8b6dd8373907710ca7de1ef9aac4259e6b1c708f42f9c842bfe35f72f7cfb03",
+      "bytes": 57275
+    },
+    {
+      "name": "monthly-dense",
+      "pages": 8,
+      "sha256": "71a1839e07dadff7459873b22a8f05d8ba3dea386d98ae22f63a1ed0e6b649a5",
+      "bytes": 74115
+    },
+    {
+      "name": "diagnosis-low",
+      "pages": 4,
+      "sha256": "63c0430a833b069a3e6e523ff87848261cbebf499cd3cbc17d16231bd05ce2ec",
+      "bytes": 60000
+    },
+    {
+      "name": "diagnosis-strong",
+      "pages": 4,
+      "sha256": "3408a72fc90e1f14bb7c4d52392e7a38cf28e6c1d5aead9387fd5c09bfc50b73",
+      "bytes": 60037
+    },
+    {
+      "name": "diagnosis-unavailable",
+      "pages": 4,
+      "sha256": "52852475b208c6c5eed4082480eb4fe0d5cb58df2a8f63bdc0ae4c6a2ea1516a",
+      "bytes": 58237
+    },
+    {
+      "name": "diagnosis-internal",
+      "pages": 4,
+      "sha256": "48230cb49279ef4936782f5fdbd4a9cfd1421a8f354bbb4b90e43fdd95d10643",
+      "bytes": 58189
+    }
+  ],
+  "rendered_page_count": 39,
+  "pdf_page_bounds_issues": 0,
+  "live_customer_data_read": false,
+  "production_deployed": false,
+  "actual_customer_messages_sent": 0,
+  "source_sha256": {
+    ".github/workflows/ci.yml": "768d3e49eec8dbe4396c6d278cb6c1430d3e3b2605808a4efe71c6f28b625ea1",
+    ".gitignore": "31be6146ac2ad1d16a3c520aebce5b06ae4427479bb41ef3e6098e79b77c44d6",
+    "admin/lib/report-run.ts": "9dc0874632b08d0640de2aff7f4fbb30fcc8ea2401443e8223d6cf4e7b0b84c1",
+    "backend/app/api/admin/reports.py": "55b9cda9168b409371e57a8c71e5bd4af89ec25ce7260a2493c2dfb536d01995",
+    "backend/app/schemas/report.py": "b55511c098f7248ec6ea37856b0d281d12e31fdc237f348b0ac62ca48d5adac9",
+    "backend/app/services/doctor_pdf_contracts.py": "2d88380a7c586bfd4271b604f92449fe80b40ec937be0313ca0ef1bf8ffcf4d3",
+    "backend/app/services/doctor_pdf_rendering.py": "8a8a1aecebecfce7d61fec32b7379aa10ce4a62ae80f26086eed688065254c65",
+    "backend/app/services/doctor_pdf_v3.py": "474087dec404b87aa0c60c795fa852a131c95d047414cd5ab7f68b01353a7137",
+    "backend/app/services/lead_pdf_validation.py": "cbdc15427e29a64cd8c90398461b007a7f7009d15e172b4e7a066496af003f95",
+    "backend/app/services/lead_proposal.py": "a697d0bbb06e6bfa33c6510968a660ebcb8c661b771753a2f4052af2c179d3bf",
+    "backend/app/services/lead_report.py": "635a3bbd9be59e447f60ac5fd7983c4f12dd2d4de1d5022763ddcc9c14cf9777",
+    "backend/app/services/report_artifact_validation.py": "81a69f37be010b3aa461033aa797eda4021d28663d85111f58a530cac12b18c6",
+    "backend/app/services/report_engine.py": "abd6a8c99f043138f755678356430b23143844c31f10f8a73fe0f380ae20af78",
+    "backend/app/services/report_narrative.py": "a5c1f98e52ae12ae7dac3290999c27a3cb27327a2cbfeae7ee38eaf7d3e52bab",
+    "backend/app/services/report_typography.py": "a9464e664334881bdabc692922667adb8db405257541e36f06a045505548a224",
+    "backend/app/services/report_work_evidence.py": "80b2a5d42863bb9ed045fe788e2ec47fd9cc15f466f0361152e8ccdde30548fa",
+    "backend/app/templates/DESIGN.md": "5cf01f3e20102e44c54a6dde3ff01e5f9aaa01e3a8ef8ea2b8cb906f27370577",
+    "backend/app/templates/doctor_report_v3.html": "dc7ba574c2eec413cf08529c56577164c4a4cbe5a5e60b93d62ce72dbf052387",
+    "backend/app/templates/lead_report.html": "a545dc8b5333b529b72ef5d24bd2e492b5c69e1a0975e2b9fcf36cd96d685504",
+    "backend/app/templates/report_editorial.css": "e23ffc71861f6931b71b9754126cc9a66452904091747ef01f742e4ae48aeea9",
+    "backend/app/workers/monthly_artifact_reconciliation.py": "4d312dbdb5e7093c5b0f730dce641bf19c545542dc3133ea5d53559d5d89dc17",
+    "backend/app/workers/tasks.py": "dd85cf84711ce20ada6e5ae3e405a599ff99608dd12cec3fbcd9e1016d9a20b3",
+    "backend/tests/test_lead_proposal.py": "9821fe2fe236ffe1a77f1af54e4f7e56cd0e78ca76c4326cef6cffc072b415e5",
+    "backend/tests/test_lead_report_blur.py": "74e00ff0c235e27949c295b474e31eb8f41d1ae35696a9934c4fe47a8ec7e644",
+    "backend/tests/test_lead_report_design.py": "a4f4ecc52b58760efd590560260f7fdc244b5c6e4dfc9a23be8d2d54c0142a66",
+    "backend/tests/test_monthly_artifact_reconciliation_postgres.py": "f667bccce224640028b2bac6dc38b203bd22f647cfcfac5ddcdccd71d65fce9e",
+    "backend/tests/test_report_citation_unknown.py": "63de0ef12109780a26c0b054435bef4c2997519c4b28c093db6b69ceda53ff26",
+    "backend/tests/test_report_dense_evidence.py": "c33cd245b759545a53a06af614528aacc96a1c6d9cce57b125387a839c165133",
+    "backend/tests/test_report_editorial_polish.py": "fea9ab903d453a919f75b33c9e922cb7a56626aaf4d75ac77db381863557f21c",
+    "backend/tests/test_report_metric_integrity.py": "322bc1ace92c4d614454e6817775dcb3b98513316ee50194e728e94067291217",
+    "backend/tests/test_report_redesign.py": "8f857e3e5ca06d0ed8d58ee8bd315ff7d30a59fbc32eac8db017ba4e3158e46c",
+    "backend/tests/test_report_version_compatibility.py": "aeaf6f01c82d94adae619439c2b2b89010b4da74f23c3d10275b674217c618ae",
+    "docs/reviews/2026-09-21-report-value-redesign.md": "6992d4b9011ebb6265ee1acbf8fe151e5b415fecaed48ca18f877e75d3e0113c",
+    "scripts/report_design_fixtures.py": "3f9f71227aa95374cc688ccd6613e59b1ff9f816d39a43eb59f5f9952286dac8",
+    "scripts/report_design_samples.py": "5cbdf314792b6ad63eeada74b304644e51749f5b9f7c9f49e823f78a7ca62ff8"
+  },
+  "evidence_sha256": {
+    "backend-final.xml": "29be995d9f50091f40055a4046f7c5845eba35dac5c1b179c920bfcef3d29ac3",
+    "backend-final.log": "02cbde122c87c7cc134df5e3d25894c0f4284d801da3f57bef0a91ae1c4f2ec0",
+    "coverage-final.json": "e28d23b60fe94c461f883e1a8e93d1b45673e209f2a2ce85d182a6a36da37d3b",
+    "focused.xml": "0f10aee60610f2bcf67ffce45e87167c65f108cdf3f7645d5f951b9db056fc16",
+    "focused.log": "01b9e7b3223d98fe409ad43fc6c560bf23acfefd4af515c7a93465e522fda482",
+    "geometry.log": "a076286e931d6d54d68edff8d033ae6add6da97ec2522135ca357250fbe428e0"
+  }
+}
