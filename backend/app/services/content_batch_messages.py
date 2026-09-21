@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 
 from app.services.notification_contracts import SlackMessage
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
     action_block,
@@ -95,16 +96,23 @@ def build_content_batch_message(
             *result_lines,
         )
     )
-    fallback = (
+    # 같은 야간 결과라도 사람이 열어야 하는 항목이 남았는지에 따라 채널 라벨이 갈린다.
+    label = label_for_event(
+        "CONTENT_BATCH_BLOCKED" if summary.needs_action else "CONTENT_BATCH_PREPARED"
+    )
+    fallback = prefixed(
+        label,
         f"야간 콘텐츠 준비 결과 · {hospital_name} · "
         f"무슨 문제인지: {problem} · 고객 영향: {impact} · "
-        f"지금 할 일: 콘텐츠 상태 확인 · 처리 기한: {scheduled_date} 공개 전"
+        f"지금 할 일: 콘텐츠 상태 확인 · 처리 기한: {scheduled_date} 공개 전",
     )
     return validated_message(
         RenderedSlackMessage(
             fallback_text=fallback,
             blocks=(
-                header_block("content-batch-header", "야간 콘텐츠 준비 결과"),
+                header_block(
+                    "content-batch-header", prefixed(label, "야간 콘텐츠 준비 결과")
+                ),
                 section_block("content-batch-summary", body),
                 action_block("content-batch-action", destination, "콘텐츠 상태 확인"),
             ),

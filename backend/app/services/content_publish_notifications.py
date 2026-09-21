@@ -19,6 +19,7 @@ from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
 )
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
     action_block,
@@ -152,12 +153,16 @@ def build_publish_notification_intent(
         "지금 할 일: Admin에서 공개된 글의 내용과 이미지를 확인해 주세요.\n"
         "처리 기한: 오늘 중"
     )
+    label = label_for_event(PUBLISH_NOTIFICATION_TYPE)
     message = validated_message(
         RenderedSlackMessage(
-            "무슨 문제인지: 콘텐츠 공개 확인 필요 · "
-            "고객 영향: 공개 정보 확인 전 · 지금 할 일: Admin 검토 · 처리 기한: 오늘 중",
+            prefixed(
+                label,
+                "무슨 문제인지: 콘텐츠 공개 확인 필요 · "
+                "고객 영향: 공개 정보 확인 전 · 지금 할 일: Admin 검토 · 처리 기한: 오늘 중",
+            ),
             (
-                header_block("publish_header", "콘텐츠 공개 확인"),
+                header_block("publish_header", prefixed(label, "콘텐츠 공개 확인")),
                 section_block("publish_identity", f"*{hospital_name}*\n{title}"),
                 section_block("publish_context", details),
                 action_block("publish_action", action_url, "Admin에서 공개 내용 확인"),
@@ -194,11 +199,14 @@ def build_missing_approved_essence_digest_intent(
     item_count = len(skipped_outcomes)
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=onboarding")
     summary = f"온보딩 병원 {hospital_count}곳 · 글 {item_count}건"
+    label = label_for_event(MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE)
     message = validated_message(
         RenderedSlackMessage(
-            f"온보딩 생성 요약 · {summary} · 승인 기준이 없어 생성을 건너뜀",
+            prefixed(label, f"온보딩 생성 요약 · {summary} · 승인 기준이 없어 생성을 건너뜀"),
             (
-                header_block("missing_essence_digest_header", "온보딩 생성 요약"),
+                header_block(
+                    "missing_essence_digest_header", prefixed(label, "온보딩 생성 요약")
+                ),
                 section_block(
                     "missing_essence_digest_summary",
                     f"*{summary}*\n승인 기준이 없어 생성을 건너뜀.",
@@ -363,8 +371,11 @@ def build_generation_blocked_digest_intent(
         # 차단이 하나도 없는 배치다 — 요약 줄은 대체 발행 건수만 말한다. 빌린 것과 병원
         # 대표 이미지를 쓴 것을 한 수로 세되, 어느 쪽인지는 아래 섹션 줄이 말한다.
         summary = f"대표 이미지 대체 발행 {len(reused_outcomes)}건"
+    label = label_for_event(GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE)
     blocks = [
-        header_block("generation_blocked_digest_header", "자동 발행 차단 요약"),
+        header_block(
+            "generation_blocked_digest_header", prefixed(label, "자동 발행 차단 요약")
+        ),
         section_block("generation_blocked_digest_summary", f"*{summary}*"),
     ]
     if lines:
@@ -384,9 +395,12 @@ def build_generation_blocked_digest_intent(
     )
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: 자동 발행 차단 {summary} · "
-            "고객 영향: 예정 글이 공개되지 않음 · "
-            "지금 할 일: 운영센터에서 차단 항목 조치 · 처리 기한: 오늘 중",
+            prefixed(
+                label,
+                f"무슨 문제인지: 자동 발행 차단 {summary} · "
+                "고객 영향: 예정 글이 공개되지 않음 · "
+                "지금 할 일: 운영센터에서 차단 항목 조치 · 처리 기한: 오늘 중",
+            ),
             tuple(blocks),
             action_url,
         ),
@@ -477,13 +491,20 @@ def build_generation_rejection_weekly_rollup_intent(
         if item_count
         else "운영센터에서 병원별 발행 수율 확인"
     )
+    label = label_for_event(GENERATION_REJECTION_WEEKLY_ROLLUP_NOTIFICATION_TYPE)
     message = validated_message(
         RenderedSlackMessage(
-            f"무슨 문제인지: 주간 콘텐츠 발행 현황 {summary} · "
-            "고객 영향: 차단된 원고가 자동 발행 준비를 마치지 못함 · "
-            f"지금 할 일: {next_action} · 처리 기한: 이번 주",
+            prefixed(
+                label,
+                f"무슨 문제인지: 주간 콘텐츠 발행 현황 {summary} · "
+                "고객 영향: 차단된 원고가 자동 발행 준비를 마치지 못함 · "
+                f"지금 할 일: {next_action} · 처리 기한: 이번 주",
+            ),
             (
-                header_block("generation_rejection_weekly_header", "주간 콘텐츠 발행 요약"),
+                header_block(
+                    "generation_rejection_weekly_header",
+                    prefixed(label, "주간 콘텐츠 발행 요약"),
+                ),
                 section_block(
                     "generation_rejection_weekly_summary",
                     f"*{week_start.isoformat()}–{week_end.isoformat()} · {summary}*",

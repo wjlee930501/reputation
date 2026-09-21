@@ -15,6 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import settings
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_milestone_rendering import safe_text as _slack_safe_text
 
 logger = logging.getLogger(__name__)
@@ -200,12 +201,13 @@ async def notify_lead_created(
     # 초도 진단·안내 문자의 자동 처리 결과 한 줄. 사용자 자유 텍스트가 아니라 코드가 고른
     # 고정 문구만 들어오므로 마스킹 대상이 아니지만, 길이는 라벨 규칙으로 묶는다.
     note_line = f"자동 처리: {_safe_label(diagnosis_note)}\n" if diagnosis_note else ""
+    label = label_for_event("LEAD_CREATED")
     return await _send(
-        text=f"📩 [도입문의 접수] {safe_clinic_name}",
+        text=prefixed(label, f"📩 [도입문의 접수] {safe_clinic_name}"),
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"📩 *[도입문의 접수]* *{safe_clinic_name}*\n"
+                f"{label.value} 📩 *[도입문의 접수]* *{safe_clinic_name}*\n"
                 "문의 유형: 일반 문의\n"
                 f"연락처: `{masked}`\n"
                 f"{note_line}\n"
@@ -229,18 +231,21 @@ async def notify_lead_diagnosis_received(
     """무료 AI 노출 진단 접수를 한 건만 즉시 알린다."""
     del clinic_type, region, keywords, contact, email
     safe_clinic_name = _safe_operator_label(clinic_name)
+    label = label_for_event("LEAD_DIAGNOSIS_RECEIVED")
     body = (
-        f"📩 *[무료 AI 노출 진단 접수]* *{safe_clinic_name}* · 오늘 {slot_no}번째 접수\n"
+        f"{label.value} 📩 *[무료 AI 노출 진단 접수]* *{safe_clinic_name}* · "
+        f"오늘 {slot_no}번째 접수\n"
         "무슨 문제인지: 새로운 무료 진단 신청이 접수됐습니다.\n"
         "고객 영향: 접수 확인이 늦어지면 상담 연락과 진단 일정이 지연될 수 있습니다.\n"
         "지금 할 일: Admin에서 신청 정보를 확인하고 담당자를 지정해 주세요.\n"
         "처리 기한: 접수 당일"
     )
     return await _send(
-        text=(
+        text=prefixed(
+            label,
             f"무슨 문제인지: {safe_clinic_name} 진단 신청 접수 · "
             "고객 영향: 상담 연락 대기 · 지금 할 일: Admin 확인 · "
-            "처리 기한: 접수 당일"
+            "처리 기한: 접수 당일",
         ),
         blocks=[
             {"type": "section", "text": {"type": "mrkdwn", "text": body}},
@@ -259,13 +264,14 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
     "purge cron이 살아 있음"을 운영자가 매일 확인할 수 있게 한다.
     """
     if error:
+        failure_label = label_for_event("PRIVACY_RETENTION_FAILED")
         return await _send(
-            text="🟥 [개인정보 자동 파기] 운영 확인 필요",
+            text=prefixed(failure_label, "🟥 [개인정보 자동 파기] 운영 확인 필요"),
             blocks=[
                 {
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": (
-                        "🟥 *[개인정보 자동 파기]* 운영 확인 필요\n"
+                        f"{failure_label.value} 🟥 *[개인정보 자동 파기]* 운영 확인 필요\n"
                         "무슨 문제인지: 보관기간이 지난 신청 정보의 파기 결과를 확정하지 못했습니다.\n"
                         "고객 영향: 일부 개인정보가 예정된 시간에 정리되지 않았을 수 있습니다.\n"
                         "지금 할 일: 운영센터에서 개인정보 보관 항목의 안전 정보를 복사한 뒤 "
@@ -279,14 +285,18 @@ async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str 
     if purged == 0 and skipped == 0:
         logger.info("PII retention sweep completed with no expired leads")
         return False
+    completion_label = label_for_event("PRIVACY_RETENTION_COMPLETED")
     return await _send(
-        text=f"🧹 [개인정보 자동 파기] 만료 신청 정보 {purged}건 정리 완료"
-        + (f" (재처리 제외 {skipped}건)" if skipped else ""),
+        text=prefixed(
+            completion_label,
+            f"🧹 [개인정보 자동 파기] 만료 신청 정보 {purged}건 정리 완료"
+            + (f" (재처리 제외 {skipped}건)" if skipped else ""),
+        ),
         blocks=[
             {
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": (
-                    "🧹 *[개인정보 자동 파기]* 처리 완료\n"
+                    f"{completion_label.value} 🧹 *[개인정보 자동 파기]* 처리 완료\n"
                     f"무슨 문제인지: 보관기간이 지난 신청 정보 {purged}건을 안전하게 정리했습니다."
                     + (f" 이미 처리된 {skipped}건은 다시 변경하지 않았습니다." if skipped else "")
                     + "\n고객 영향: 보관기간이 지난 개인정보가 운영 화면에 남지 않도록 정리되었습니다.\n"

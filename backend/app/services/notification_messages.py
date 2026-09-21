@@ -20,6 +20,7 @@ from app.services.notification_contracts import (
     validate_admin_url,
     validate_message,
 )
+from app.services.notification_labels import label_for_event, prefixed
 
 _MAX_BLOCKS = 50
 _MAX_SECTION_CHARS = 2900
@@ -41,6 +42,7 @@ def _incident_notification(
     incident: IncidentSlackProjection, admin_base_url: str, *, recovered: bool
 ) -> NotificationIntent:
     event = "INCIDENT_RECOVERED" if recovered else "INCIDENT_OPEN"
+    label = label_for_event(event)
     status = "자동 복구 완료" if recovered else "운영 확인 필요"
     hospital_name = _safe_text(incident.hospital_name, 100)
     owner_label = _operator_owner_label(incident.owner_label)
@@ -67,14 +69,19 @@ def _incident_notification(
     )
     developer_reference = _developer_reference(incident)
     message = _message(
-        (
-            f"무슨 문제인지: {_safe_text(problem, 180)} · "
-            f"고객 영향: {_safe_text(incident.customer_impact, 180)} · "
-            f"지금 할 일: {_safe_text(next_action, 180)} · "
-            f"처리 기한: {deadline_label}"
+        prefixed(
+            label,
+            (
+                f"무슨 문제인지: {_safe_text(problem, 180)} · "
+                f"고객 영향: {_safe_text(incident.customer_impact, 180)} · "
+                f"지금 할 일: {_safe_text(next_action, 180)} · "
+                f"처리 기한: {deadline_label}"
+            ),
         ),
         (
-            _block("header", "header", {"type": "plain_text", "text": status}),
+            _block(
+                "header", "header", {"type": "plain_text", "text": prefixed(label, status)}
+            ),
             _block(
                 "section",
                 "incident_identity",
@@ -162,8 +169,13 @@ def build_summary_notification(
     chunks = _chunk_lines(lines)
     if len(chunks) > _MAX_BLOCKS - 3:
         raise NotificationPayloadError("SUMMARY_EXCEEDS_SLACK_LIMIT")
+    label = label_for_event("INCIDENT_SUMMARY")
     blocks = (
-        _block("header", "summary_header", {"type": "plain_text", "text": "운영 알림 요약"}),
+        _block(
+            "header",
+            "summary_header",
+            {"type": "plain_text", "text": prefixed(label, "운영 알림 요약")},
+        ),
         _block(
             "section",
             "summary_window",
@@ -184,10 +196,13 @@ def build_summary_notification(
         dedupe_key=f"INCIDENT_SUMMARY:{digest}",
         notification_type="INCIDENT_SUMMARY",
         message=_message(
-            f"무슨 문제인지: 운영 알림 {len(ordered)}건 · "
-            "고객 영향: 항목별 확인 필요 · "
-            "지금 할 일: Admin에서 모아보기 · "
-            "처리 기한: 각 항목 확인",
+            prefixed(
+                label,
+                f"무슨 문제인지: 운영 알림 {len(ordered)}건 · "
+                "고객 영향: 항목별 확인 필요 · "
+                "지금 할 일: Admin에서 모아보기 · "
+                "처리 기한: 각 항목 확인",
+            ),
             blocks,
             url,
         ),

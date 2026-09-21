@@ -7,6 +7,7 @@ from datetime import date
 
 from app.core.config import settings
 from app.models.operations import JSONValue
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_outbox import NotificationIntent, SlackMessage
 
 
@@ -33,11 +34,15 @@ def build_naver_weekly_digest(
         if failed
         else "새로 추가된 근거 자료의 내용을 병원 자료 화면에서 검토해 주세요."
     )
+    label = label_for_event("NAVER_WEEKLY_HANDOFF")
     blocks: tuple[dict[str, JSONValue], ...] = (
         {
             "type": "header",
             "block_id": "naver_weekly_header",
-            "text": {"type": "plain_text", "text": f"네이버 자료 수집 · {status}"},
+            "text": {
+                "type": "plain_text",
+                "text": prefixed(label, f"네이버 자료 수집 · {status}"),
+            },
         },
         {
             "type": "section",
@@ -68,7 +73,9 @@ def build_naver_weekly_digest(
         },
     )
     message = SlackMessage(
-        fallback_text=f"[네이버 자료 수집] 새 자료 {created}개 · 실패 {failed}개",
+        fallback_text=prefixed(
+            label, f"[네이버 자료 수집] 새 자료 {created}개 · 실패 {failed}개"
+        ),
         blocks=blocks,
         admin_url=admin_url,
     )

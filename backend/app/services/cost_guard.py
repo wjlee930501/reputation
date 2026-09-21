@@ -33,6 +33,7 @@ from app.models.operations import Incident, IncidentSeverity
 from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_contracts import NotificationIntent, SlackMessage
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_outbox import enqueue_notification
 
 logger = logging.getLogger(__name__)
@@ -953,10 +954,14 @@ def _build_cost_alert_intent(
     kind = "hard" if hard else "soft"
     scope_label = "일일" if scope == "daily" else "월간"
     label = _CATEGORY_LABELS[category]
-    title = (
-        f"비용 가드 {scope_label} 상한 도달 - {label}"
-        if hard
-        else f"비용 가드 {scope_label} 소프트 경고(80%) - {label}"
+    event = "COST_GUARD_LIMIT_REACHED" if hard else "COST_GUARD_SOFT_WARNING"
+    title = prefixed(
+        label_for_event(event),
+        (
+            f"비용 가드 {scope_label} 상한 도달 - {label}"
+            if hard
+            else f"비용 가드 {scope_label} 소프트 경고(80%) - {label}"
+        ),
     )
     context = (
         f"{scope_label} 사용량이 상한에 도달했습니다: {value}/{limit}건"
@@ -1007,7 +1012,7 @@ def _build_cost_alert_intent(
     )
     return NotificationIntent(
         dedupe_key=f"COST_GUARD_ALERT:{category}:{scope}:{period}:{kind}",
-        notification_type="COST_GUARD_LIMIT_REACHED" if hard else "COST_GUARD_SOFT_WARNING",
+        notification_type=event,
         message=message,
         incident_id=incident.id if incident is not None else None,
         max_attempts=3,

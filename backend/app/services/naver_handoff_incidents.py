@@ -23,6 +23,7 @@ from app.services.incidents import (
     open_or_touch_incident,
 )
 from app.services.naver_handoff_contracts import NaverHandoffItem
+from app.services.notification_labels import label_for_event, prefixed
 from app.services.notification_outbox import (
     NotificationIntent,
     SlackMessage,
@@ -147,13 +148,17 @@ def _recovery_intent(context: NaverIncidentContext, incident: Incident) -> Notif
     admin_url = (
         f"{settings.ADMIN_BASE_URL.rstrip('/')}/hospitals/{context.hospital_id}/onboarding"
     )
+    label = label_for_event("NAVER_SOURCE_RECOVERED")
     message = SlackMessage(
-        fallback_text=f"[자료 수집 복구] {context.hospital_name}",
+        fallback_text=prefixed(label, f"[자료 수집 복구] {context.hospital_name}"),
         blocks=(
             {
                 "type": "header",
                 "block_id": "naver_recovered_header",
-                "text": {"type": "plain_text", "text": "네이버 자료 수집 복구 완료"},
+                "text": {
+                    "type": "plain_text",
+                    "text": prefixed(label, "네이버 자료 수집 복구 완료"),
+                },
             },
             {
                 "type": "section",
