@@ -8,7 +8,6 @@ import pytest
 
 from app.models.operations import NotificationOutboxState
 from app.services.content_publish_notifications import (
-    IMAGE_REUSE_NEXT_ACTION,
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
     build_missing_approved_essence_digest_intent,
@@ -275,8 +274,9 @@ def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
     payload = first.message.payload_json()
     assert first.dedupe_key == second.dedupe_key
     assert changed.dedupe_key != first.dedupe_key
-    assert "생성 검수 게이트 거절" in payload
-    assert "가격·지역·검색 구조 자동 검수 게이트가" in payload
+    assert "본문·근거 확인 필요" in payload
+    assert "가격·지역·검색 구조 자동 검수 게이트가" not in payload
+    assert "콘텐츠에서 해당 글의 차단 사유" in payload
     assert "제목 없는 콘텐츠" not in payload
 
 
@@ -367,7 +367,8 @@ def test_rejected_items_aggregate_by_hospital_and_reason_in_one_weekly_rollup() 
     assert repeated.dedupe_key == intent.dedupe_key
     assert "병원 2곳 · 차단 3건" in payload
     assert "주간요약의원" in payload
-    assert "검증되지 않은 가격 표현이 남았습니다. 2건" in payload
+    assert "본문·근거 확인 필요 2건" in payload
+    assert "검증되지 않은 가격 표현이 남았습니다." not in payload
     assert "근거확인의원" in payload
     assert "다시 시도" not in payload
     assert payload.count('"type": "button"') == 1
@@ -425,8 +426,8 @@ def _reused(
     }
 
 
-def test_reused_image_publications_ride_the_existing_eight_oclock_digest() -> None:
-    """새 Slack 메시지가 아니라 08:00 요약 안의 한 섹션이다."""
+def test_automatically_reused_images_do_not_pollute_the_action_digest() -> None:
+    """성공한 대체 발행은 조치 목록이 아니다. 주간 실적에만 집계한다."""
 
     hospital_id = uuid.uuid4()
     reused = [
@@ -444,11 +445,10 @@ def test_reused_image_publications_ride_the_existing_eight_oclock_digest() -> No
     payload = intent.message.payload_json()
 
     assert intent.notification_type == "GENERATION_BLOCKED_DIGEST"
-    assert "대표 이미지 대체 발행" in payload
-    assert "가나의원" in payload
-    assert "재사용 발행 3건" in payload
-    assert "공급자 한도·크레딧 오류" in payload, "가장 많은 실패 분류를 평문으로 적는다"
-    assert IMAGE_REUSE_NEXT_ACTION.split(".")[0] in payload
+    assert "대표 이미지 대체 발행" not in payload
+    assert "가나의원" not in payload
+    assert "다라의원" in payload and "발행 보류 1편" in payload
+    assert "크레딧" not in payload
     # 운영센터 링크는 요약에 이미 한 번 있으므로 두 번 넣지 않는다.
     assert payload.count("/operations?queue=incidents&status=OPEN") == 1
 
@@ -511,8 +511,8 @@ def test_two_image_sources_in_one_batch_are_reported_as_separate_lines() -> None
     assert "병원 대표 이미지 사용 1건" in payload
 
 
-def test_the_image_source_changes_the_digest_identity() -> None:
-    """출처가 다르면 다른 사실이다 — 같은 outbox 키로 묻히지 않는다."""
+def test_image_source_does_not_change_the_action_digest_identity() -> None:
+    """출처 차이는 발행 기록이며 사람이 처리할 새 오류가 아니다."""
 
     hospital_id = uuid.uuid4()
     content_id = uuid.uuid4()
@@ -534,7 +534,7 @@ def test_the_image_source_changes_the_digest_identity() -> None:
             ],
         )
 
-    assert _intent("HOSPITAL_HERO").dedupe_key != _intent(str(uuid.uuid4())).dedupe_key
+    assert _intent("HOSPITAL_HERO").dedupe_key == _intent(str(uuid.uuid4())).dedupe_key
 
 
 def test_reuse_section_is_deduped_by_its_own_identity() -> None:
@@ -550,7 +550,7 @@ def test_reuse_section_is_deduped_by_its_own_identity() -> None:
         date(2026, 9, 12), PUBLISH_MORNING_BATCH, blocked, reused_outcomes=reused
     )
 
-    assert without.dedupe_key != with_reuse.dedupe_key, "재사용 사실은 새 요약을 만든다"
+    assert without.dedupe_key == with_reuse.dedupe_key, "자동 처리 사실은 같은 차단을 다시 알리지 않는다"
     # 같은 배치가 다시 관측돼도 outbox 키가 같아 Slack은 한 번만 나간다.
     assert repeated.dedupe_key == with_reuse.dedupe_key
 
@@ -627,8 +627,8 @@ def test_weekly_rollup_leads_with_one_yield_line_per_hospital() -> None:
     blocks = intent.message.payload()["blocks"]
     block_ids = [block["block_id"] for block in blocks]
 
-    assert "발행 1/5 (재사용 이미지 0, 재시도 중 2, 주제 교체 1, 조치 필요 1)" in payload
-    assert "발행 4/4 (재사용 이미지 1, 재시도 중 0, 주제 교체 0, 조치 필요 0)" in payload
+    assert "발행 1/5편 · 자동 재시도 2편 · 확인 필요 1편" in payload
+    assert "발행 4/4편 · 대체 이미지 사용 1편" in payload
     assert "계약없는의원" not in payload
     assert "발행 5/9" in payload
     # 수율 줄이 차단 목록보다 위에 온다.

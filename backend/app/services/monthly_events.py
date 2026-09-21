@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -81,12 +82,12 @@ def monthly_run_operator_copy(stage: MonthlyRunStage) -> MonthlyRunOperatorCopy:
                 "원장 전달용 PDF 확인이 필요합니다",
                 "측정 집계와 리포트 생성은 끝났지만 원장 전달용 PDF 확인이 남았습니다.",
                 "확인 전 파일은 원장님께 전달할 수 없습니다.",
-                "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
+                "자동 검증이 끝나면 전달 준비 알림을 보냅니다. 지금은 다시 만들기를 누르지 마세요.",
             )
         case MonthlyRunStage.ARTIFACT_VALIDATED:
             return MonthlyRunOperatorCopy(
                 "원장 전달용 PDF 검증 완료",
-                "원장 전달용 PDF의 한 페이지 구성, 한글, 필수 안내와 링크를 확인했습니다.",
+                "원장 전달용 PDF의 요약·질문표, 한글, 필수 안내와 링크를 확인했습니다.",
                 "최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.",
                 "리포트 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.",
             )
@@ -108,42 +109,23 @@ def monthly_run_operator_copy(stage: MonthlyRunStage) -> MonthlyRunOperatorCopy:
             assert_never(unreachable)
 
 
-_SIGNIFICANCE_LABELS = {
-    "SIGNIFICANT_UP": "의미 있는 상승",
-    "SIGNIFICANT_DOWN": "의미 있는 하락",
-    "WITHIN_NOISE": "정상 변동 범위",
-}
-
-
 def monthly_headline_label(sov_summary: object) -> str | None:
-    """Slack 한 줄에 넣을 "언급 N번(전월 대비 ±Δ, 유의성)".
-
-    AE가 알림만 보고 원장에게 무슨 말을 할지 알 수 있어야 한다 — 지금까지 마일스톤
-    메시지에는 숫자가 하나도 없었다. 숫자가 없으면 Admin을 열기 전까지 아무것도
-    모르고, 그 클릭이 리포트 전달을 하루 늦춘다.
-
-    측정이 없거나 비교가 성립하지 않으면 **없는 숫자를 지어내지 않고** 있는 만큼만
-    쓴다. 유의성 판정이 없으면 괄호도 붙이지 않는다.
-    """
+    """Describe observations, not statistical or causal success."""
     if not isinstance(sov_summary, dict):
         return None
-    sov_pct = sov_summary.get("sov_pct")
-    if not isinstance(sov_pct, (int, float)):
+    def valid(value):
+        return type(value) in (int, float) and 0 <= value <= 100 and math.isfinite(value)
+    current = sov_summary.get("sov_pct")
+    if not valid(current):
         return None
-    current = round(sov_pct)
+    label = f"확정 답변 100번 기준 {round(current)}번 언급"
     comparison = sov_summary.get("comparison")
-    comparison = comparison if isinstance(comparison, dict) else {}
-    # 비교가 성립하지 않은 달에 델타를 쓰면 Slack과 원장 리포트가 서로 다른 말을 한다
-    # (리포트는 "측정 기준이 바뀌어 다음 달부터 비교합니다"라고 쓴다).
-    comparable = comparison.get("status", "COMPARABLE") == "COMPARABLE"
-    prev_pct = sov_summary.get("prev_sov_pct")
-    significance = comparison.get("significance") or sov_summary.get("significance")
-    if not comparable or not isinstance(prev_pct, (int, float)):
-        return f"언급 {current}번"
-    delta = current - round(prev_pct)
-    verdict = _SIGNIFICANCE_LABELS.get(str(significance or ""))
-    detail = f"전월 대비 {delta:+d}번" + (f", {verdict}" if verdict else "")
-    return f"언급 {current}번({detail})"
+    if not isinstance(comparison, dict) or comparison.get("status") != "COMPARABLE":
+        return label
+    previous = comparison.get("prior_sov_pct", sov_summary.get("prev_sov_pct"))
+    if valid(previous):
+        label += f" · 전월 대비 {round(current) - round(previous):+d}번"
+    return label
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,7 +151,7 @@ class MonthlyEvent:
     owner_label: str
     sla_due_at: datetime | None
     occurred_at: datetime
-    # "언급 47번(전월 대비 +8번, 정상 변동 범위)". 없으면 줄을 붙이지 않는다.
+    # 확정 답변의 관측 요약. 없으면 숫자를 지어내지 않는다.
     headline_label: str | None = None
 
 
@@ -186,6 +168,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
     stable_id = f"milestone:v1:{event.event_id}"
     admin_path = f"/hospitals/{event.hospital_id}/reports?report={event.report_id}"
     sla_label = operator_deadline(event.sla_due_at)
+    period_label = f"{event.period_year}년 {event.period_month}월"
     match event.event_type:
         case MonthlyEventType.CUSTOMER_READY:
             if not customer_ready:
@@ -195,15 +178,16 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.MONTHLY_CUSTOMER_READY,
                 event.hospital_id,
                 event.hospital_name,
-                "원장 전달본 검증 완료",
+                "월간 레포트 전달 준비 완료",
                 "월간 리포트를 원장에게 전달할 수 있습니다.",
-                "검증된 원장용 PDF를 확인하고 전달 기록을 남겨 주세요.",
+                "고객용 PDF를 확인해 원장님께 전달한 뒤, 보고서 화면에 전달 기록을 남겨 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,
-                False,
+                True,
                 False,
                 headline_label=event.headline_label,
+                period_label=period_label,
             )
         case MonthlyEventType.ARTIFACT_VALIDATION_PENDING:
             if not coverage_complete or artifact_valid or event.delivery_ready:
@@ -213,15 +197,16 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.MONTHLY_ARTIFACT_PENDING,
                 event.hospital_id,
                 event.hospital_name,
-                "측정 집계 완료 · 원장 전달용 PDF 확인 대기",
+                "고객용 PDF 준비 미완료",
                 "측정은 완료됐지만 아직 고객 전달 가능 상태가 아닙니다.",
-                "원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.",
+                "자동 검증이 끝나면 전달 준비 알림을 보냅니다. 지금은 다시 만들기를 누르지 마세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,
-                True,
+                False,
                 False,
                 headline_label=event.headline_label,
+                period_label=period_label,
             )
         case MonthlyEventType.BLOCKED:
             if customer_ready:
@@ -233,14 +218,18 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 event.hospital_name,
                 "월간 리포트 차단",
                 "월간 리포트를 아직 고객에게 전달할 수 없습니다.",
-                "리포트 화면에서 차단 사유를 확인해 해결한 뒤 ‘리포트 다시 만들기’를 눌러 "
-                "주세요. 다시 실패하면 ‘개발팀 문의용 정보 복사’를 눌러 개발팀에 전달해 주세요.",
+                ("병원 정보에서 변경·철회된 근거 자료를 확인해 주세요. 준비되지 않은 레포트는 전달하지 마세요."
+                 if "CURRENT_READINESS_BLOCKED" in event.blocker_codes else
+                 "보고서 화면에서 누락된 측정과 최종 오류를 확인해 주세요. 준비되지 않은 레포트는 전달하지 마세요."
+                 if event.manifest_closed else
+                 "시스템이 측정·파일 준비 상태를 추적합니다. 최종 실패는 별도 오류 알림으로 안내합니다."),
                 event.owner_label,
                 sla_label,
                 admin_path,
-                True,
+                event.manifest_closed or "CURRENT_READINESS_BLOCKED" in event.blocker_codes,
                 False,
                 headline_label=event.headline_label,
+                period_label=period_label,
             )
         case MonthlyEventType.DELIVERY_CORRECTED:
             return MilestoneProjection(
@@ -258,6 +247,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 True,
                 f"report:{event.report_id}:delivery",
                 headline_label=event.headline_label,
+                period_label=period_label,
             )
         case MonthlyEventType.DELIVERY_RESCINDED:
             return MilestoneProjection(
@@ -274,6 +264,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 True,
                 False,
                 headline_label=event.headline_label,
+                period_label=period_label,
             )
         case MonthlyEventType.DELIVERY_REDELIVERED:
             return MilestoneProjection(
@@ -291,6 +282,7 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 True,
                 f"report:{event.report_id}:delivery",
                 headline_label=event.headline_label,
+                period_label=period_label,
             )
         case unreachable:
             assert_never(unreachable)

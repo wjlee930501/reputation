@@ -14,6 +14,8 @@ from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.services.notification_milestone_messages import (
     MilestoneBatch,
+    MilestoneKind,
+    MilestoneProjection,
     enqueue_milestone_summary,
 )
 from app.workers.milestone_monthly_projection import (
@@ -76,7 +78,7 @@ async def project_milestone_window(
         cursor.previous_states,
         cursor.delivery_since,
     )
-    milestones = (*onboarding.milestones, *monthly.milestones)
+    milestones = tuple(item for item in (*onboarding.milestones, *monthly.milestones) if should_notify_milestone(item))
     if milestones:
         await enqueue_milestone_summary(
             db,
@@ -102,3 +104,15 @@ def project_milestone_events(_task: Task) -> dict[str, int | bool]:
         "monthly_count": result.monthly_count,
         "enqueued": result.enqueued,
     }
+
+
+def should_notify_milestone(item: MilestoneProjection) -> bool:
+    """Progress stays in the cursor. Human handoffs and delivery corrections may notify.
+
+    Final failures still use their existing incident/gap producers. The standalone
+    activation producer owns its one notice; this projector must not duplicate it.
+    """
+    return item.requires_action or item.kind in {
+        MilestoneKind.DELIVERY_CORRECTED, MilestoneKind.DELIVERY_RESCINDED,
+        MilestoneKind.DELIVERY_REDELIVERED,
+    } or (item.kind is MilestoneKind.HANDOFF_ACCEPTED and item.is_recovery)

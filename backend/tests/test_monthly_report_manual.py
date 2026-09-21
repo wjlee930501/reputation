@@ -824,8 +824,8 @@ def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery
         assert incident.safe_error_code == "DOCTOR_PDF_STORAGE_FAILED"
         assert outbox.operation_run_id == run_id
         assert outbox.state == "PENDING"
-        assert "무슨 문제인지" in str(outbox.payload)
-        assert "고객 영향" in str(outbox.payload)
+        assert "고객용 레포트 파일 생성 실패" in str(outbox.payload)
+        assert "개발 담당자" in str(outbox.payload)
         assert "지금 할 일" in str(outbox.payload)
     finally:
         session.rollback()

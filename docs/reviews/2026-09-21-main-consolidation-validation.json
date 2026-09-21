@@ -1,0 +1,78 @@
+{
+  "status": "LOCAL_VERIFIED_NOT_DEPLOYED",
+  "verified_at_kst": "2026-09-21T14:34:55.691141+09:00",
+  "base_main": "9495837319c1640ac8840bcb817e58f380aa8a93",
+  "integrated_slack_commit": "5e3cf2871470ca50549a52ec424c738be5f0f4d8",
+  "backend": {
+    "tests": 4497,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "scripts": {
+    "tests": 101,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "line_coverage_pct": 85.20761473445852,
+  "checks": {
+    "ruff": "PASS",
+    "copy_guard": "PASS",
+    "db_connection_budget": "PASS",
+    "diff_check": "PASS"
+  },
+  "external_network_blocked_for_python_tests": true,
+  "actual_slack_posts": 0,
+  "production_mutations": false,
+  "test_infrastructure": "owned loopback PostgreSQL x3 and Redis x1",
+  "warnings": [
+    "existing Alembic path_separator deprecation",
+    "existing SQLAlchemy cyclic foreign-key metadata warning"
+  ],
+  "source_sha256": {
+    "backend/app/services/content_publish_notifications.py": "60ef414876e6647f369d94850988d4fa9eed666e483b10a2d24125302e1313ab",
+    "backend/app/services/fleet_heartbeat.py": "1fe054916e418f894fe3ff92d427bffbb606de93b3399a421291779dda5493cc",
+    "backend/app/services/monthly_events.py": "e1909583d3585940148ead29a55f470f5ba7ecc821220231e08d5267e426b8b7",
+    "backend/app/services/monthly_report_gap_notifications.py": "a9084c88aa3e0c2eea23227d7255806228221ad84d2e0547becb24bff556b78f",
+    "backend/app/services/notification_contracts.py": "368599f949ba67adae92cec2778066ed26865fafbfca97bd3b13bbf624f400eb",
+    "backend/app/services/notification_copy.py": "1a08b93357aac8abae99658a0f31a1ca835397d51b83280447dab7bc1ba59325",
+    "backend/app/services/notification_messages.py": "250654f5b8773bedf219c4d2f67213ebdd10d8b7f9055fd1efc1f849ff0f1614",
+    "backend/app/services/notification_milestone_messages.py": "ab32a6fd4221bde74865284614fa7779dfc17cbf2084bd4c55c22a19da336112",
+    "backend/app/services/notification_milestone_rendering.py": "6d684809116413c45006b6c6cfcfe90db2f7c2568454293655b95b0c27b10b70",
+    "backend/app/services/notifier.py": "fcabc8604f550ffd2eb00b7b90fe38e3eb621675b1e886f64b5d14a77c1af0b0",
+    "backend/app/services/onboarding_events.py": "3ddb09f71c3831e613e1b1912e931d0158cdcdbcd1d305915379b9d3920a1970",
+    "backend/app/services/onboarding_notifications.py": "ddafe825c263b976ed42bbfe9ce59ed842aeb5e346ca0c567ebccd9e82d78ed5",
+    "backend/app/workers/milestone_event_tasks.py": "2cdee7c8871a2ff09c0361e4ae41139fc9d170dedad7e25f9c819888abdc58cc",
+    "backend/app/workers/milestone_monthly_facts.py": "4cea082a4a28e942f187be653d32986dfa1406e451c0a47b2a6a341a7f311e6f",
+    "backend/app/workers/milestone_monthly_projection.py": "07ed58d7563db71deb97fde211214fe7d8ae6c480d40afbb5937a39e0dc16cdc",
+    "backend/app/workers/tasks.py": "79c3adbee35f4dc70f43d54dab43250fde5986f0b0e27957fe057332e1f6c5c1",
+    "backend/tests/test_content_publish_notifications.py": "9e8773c7fd06b6b24e836ee55aaa7142ceea3c3035a36763abe35f1a2587fa83",
+    "backend/tests/test_contract_delivery_coverage.py": "c8239c531d6704bf40d69d869bc08839a74391da59b08bdacfe1212d3a0d588c",
+    "backend/tests/test_geo_autonomy_hardening.py": "c0c8011d851eddb215f676421a3fb47ff8af71ef8d3864b844c2e112b71cd91f",
+    "backend/tests/test_history_consistency.py": "3f43fafdf141ef32cc8d6eb789ccf7f40fd7d9394d7c6cac665780fb10b8b687",
+    "backend/tests/test_milestone_projector_postgres.py": "8fd795f16e5150d880948ce7a45d5217eca387caad1bf54dc9bb31e399f5fe2b",
+    "backend/tests/test_monthly_artifact_reconciliation_postgres.py": "91845d074f413ab2ad4611c07ba2711516c241561a6d16229d3e9e6cb798ae75",
+    "backend/tests/test_monthly_events.py": "a2cab0663a61de774b04d50facfa044d37b60b948135069a7a04db5f5c4d89b5",
+    "backend/tests/test_monthly_report_manual.py": "df0fef8d06a834c37c76baad9cc6acc8b7b5031429e0cdc52ccd28f7ff9090ec",
+    "backend/tests/test_notification_labels.py": "3ecd308c5fb3a4c1149c7a90390990ca0e16479845e26523581aa6251f2396a6",
+    "backend/tests/test_notification_outbox.py": "ff4f4dae7cfbbbccb88539681aad0c3cfd44df675674284b34ca7443cfc3f2fc",
+    "backend/tests/test_notifier.py": "85b13efeb3ce86df44f913540ac462001287441708db3e19e86b63532eabd9a2",
+    "backend/tests/test_notifier_ops_contract.py": "670904b14db563c88aa471ecd8f1bce09aefee87f44aacf4dfe17d256f4a3b18",
+    "backend/tests/test_onboarding_events.py": "bff44edd57badebafaa7d728680c90527c3767912c0a808765b47296dde2736d",
+    "backend/tests/test_onboarding_notifications.py": "a91d5cbe88ff4fe3dbfd1e75b7f63c9bff029f73181a136465409c748f2215da",
+    "backend/tests/test_operations_actionability.py": "bd11a184ef43fc21d16ff10bcd6fff52a83e49ac6d96919b9e967fc70af2c177",
+    "backend/tests/test_public_leads.py": "2270456f0e64e98101b9e3eea93b09195a8bc27bc6a70772af4342b74cfc0e93",
+    "backend/tests/test_site_build_auto_activation.py": "c804348ccaebe798c6f6db31bd7bbff1066fe7c12a99d5deb6e716fd71974347",
+    "backend/tests/test_slack_actionable_policy.py": "6b021d9991ff115a1f9ce69ed484f5d24fb34d055a08e4215fce6881f149b00e",
+    "backend/tests/test_task_incidents.py": "94201752c031c3af14e0e2a52963fd515514bb3bee63af868ebeaeb088eecbf3",
+    "backend/tests/test_tasks_nightly.py": "0777ccde4f34837349d47bd04e0df098bebe313da56ad7ba4c1dc8e3a3a74cf2"
+  },
+  "evidence_sha256": {
+    "backend-final.xml": "39fa515d158447d18a4fb0226d2e678ac083845d11f70faf26ab9dc8809c5f25",
+    "backend-final.log": "b2383faee989d7e64990a505b1283d12a647a3a7dbb5f2d854822aaf40aff5eb",
+    "coverage-final.json": "a3c5d8a05ab27b7339ee940eeafa1b03b3e258cf9d096c0bf6396fa4bf8028f8",
+    "scripts-final.xml": "9a429d68dce5d95b1880df40683735fd9d7c9113fc454f14345e2ac4c99f9f40",
+    "scripts-final.log": "3ac003f6b1eb2ab19bf289d088e16315dd96443c805daed8fff8d2aebcf1bcb5"
+  }
+}

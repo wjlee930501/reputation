@@ -65,7 +65,7 @@ def test_v0_ready_intent_is_report_identified_safe_and_has_one_action() -> None:
     assert "12.3%" in encoded
     assert "ChatGPT · Gemini" in encoded
     assert all(
-        label in encoded for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+        label in encoded for label in ("[전달 준비]", "원장님께 전달", "자동 발송한 것은 아닙니다")
     )
 
 
@@ -84,7 +84,7 @@ def test_site_built_intent_is_hospital_milestone_identified_and_has_one_action()
     assert first.dedupe_key == second.dedupe_key == f"ONBOARDING_SITE_BUILT:{_HOSPITAL_ID}:v1"
     assert first.notification_type == SITE_BUILT_NOTIFICATION_TYPE
     assert _urls(first.message.payload()) == [
-        f"{_ADMIN}/hospitals/{_HOSPITAL_ID}/profile#domain-setup"
+        f"{_ADMIN}/hospitals/{_HOSPITAL_ID}/info#domain-setup"
     ]
 
 
@@ -167,8 +167,8 @@ def test_activated_intent_names_the_platform_address_and_has_one_admin_action() 
     assert first.dedupe_key == second.dedupe_key == f"ONBOARDING_HOSPITAL_ACTIVATED:{_HOSPITAL_ID}:v1"
     assert first.notification_type == ACTIVATED_NOTIFICATION_TYPE
     # 공개 주소는 본문 텍스트로만 들어간다 — Slack 액션 URL은 Admin 하나뿐이어야 한다.
-    assert _urls(first.message.payload()) == [f"{_ADMIN}/hospitals/{_HOSPITAL_ID}/dashboard"]
-    assert "운영 시작됨 — 기본 주소 https://jangpyeonhan.reputation.example/" in encoded
+    assert _urls(first.message.payload()) == [f"{_ADMIN}/hospitals/{_HOSPITAL_ID}"]
+    assert "공개 주소: https://jangpyeonhan.reputation.example/" in encoded
 
 
 def test_site_built_nag_states_why_auto_activation_was_impossible() -> None:
@@ -180,6 +180,6 @@ def test_site_built_nag_states_why_auto_activation_was_impossible() -> None:
     )
 
     encoded = json.dumps(intent.message.payload(), ensure_ascii=False)
-    assert "자동 시작 불가 사유" in encoded
+    assert "아직 공개 운영을 시작하지 못했습니다" in encoded
     assert "자기 도메인" in encoded
     assert intent.notification_type == SITE_BUILT_NOTIFICATION_TYPE

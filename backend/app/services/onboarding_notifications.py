@@ -16,7 +16,7 @@ from app.services.notification_contracts import (
     NotificationPayloadError,
     validate_message,
 )
-from app.services.notification_labels import label_for_event, prefixed
+from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
     action_block,
@@ -44,38 +44,11 @@ def build_v0_ready_notification(
     """Build one safe V0-review action, identified by the persisted report."""
 
     url = admin_url(admin_base_url, f"/hospitals/{hospital_id}/reports")
-    name = safe_text(hospital_name, 100)
+    name = safe_text(hospital_name, 90)
     measurement = _measurement_label(sov_pct, platforms)
-    label = label_for_event(V0_READY_NOTIFICATION_TYPE)
-    message = validated_message(
-        RenderedSlackMessage(
-            fallback_text=prefixed(
-                label,
-                f"무슨 문제인지: {name} 초기 진단 리포트 준비 완료 · "
-                "고객 영향: 원장 전달 전 검수 필요 · "
-                "지금 할 일: Admin에서 V0 리포트 검토 · 처리 기한: 원장 보고 전",
-            ),
-            blocks=(
-                header_block(
-                    "onboarding_v0_header", prefixed(label, "V0 초기 진단 준비 완료")
-                ),
-                section_block("onboarding_v0_identity", f"*{name}*"),
-                section_block(
-                    "onboarding_v0_context",
-                    (
-                        "무슨 문제인지: 초기 AI 노출 진단 리포트가 준비되었습니다.\n"
-                        "고객 영향: 원장에게 전달하기 전에 측정 결과와 설명 근거를 검수해야 합니다.\n"
-                        f"현재 확인: {measurement}\n"
-                        "지금 할 일: Admin에서 V0 리포트를 검토한 뒤 원장에게 전달해 주세요.\n"
-                        "처리 기한: 원장 보고 전"
-                    ),
-                ),
-                action_block("onboarding_v0_action", url, "V0 리포트 검토"),
-            ),
-            admin_url=url,
-        ),
-        admin_base_url,
-    )
+    message = _onboarding_message(prefixed_for_event(V0_READY_NOTIFICATION_TYPE, "[전달 준비] 초기 진단 레포트"), name,
+        f"{measurement}\n고객용 파일과 설명을 확인해 원장님께 전달해 주세요. 아직 고객에게 자동 발송한 것은 아닙니다.",
+        url, "초기 진단 레포트 열기", admin_base_url)
     return NotificationIntent(
         dedupe_key=f"ONBOARDING_V0_READY:{report_id}",
         notification_type=V0_READY_NOTIFICATION_TYPE,
@@ -98,40 +71,12 @@ def build_site_built_notification(
     (자기 도메인 대기·선행 조건 미충족 등)를 그 자리에서 말한다.
     """
 
-    url = admin_url(admin_base_url, f"/hospitals/{hospital_id}/profile#domain-setup")
-    name = safe_text(hospital_name, 100)
-    reason = safe_text(blocked_reason, 200) if blocked_reason else "공개 주소 확인이 필요합니다."
-    label = label_for_event(SITE_BUILT_NOTIFICATION_TYPE)
-    message = validated_message(
-        RenderedSlackMessage(
-            fallback_text=prefixed(
-                label,
-                f"무슨 문제인지: {name} 콘텐츠 허브 준비 완료 · 자동 운영 시작 불가 ({reason}) · "
-                "고객 영향: 공개 주소 확인 전에는 운영 미활성 · "
-                "지금 할 일: Admin에서 공개 주소 상태 확인 · 처리 기한: 오늘 중",
-            ),
-            blocks=(
-                header_block(
-                    "onboarding_site_header", prefixed(label, "콘텐츠 허브 준비 완료")
-                ),
-                section_block("onboarding_site_identity", f"*{name}*"),
-                section_block(
-                    "onboarding_site_context",
-                    (
-                        "무슨 문제인지: 병원 정보와 콘텐츠 허브의 공개 준비가 완료되었지만 "
-                        "기본 주소 자동 운영 시작이 불가능했습니다.\n"
-                        f"자동 시작 불가 사유: {reason}\n"
-                        "고객 영향: 공개 주소를 확인하기 전에는 환자 대상 운영이 활성화되지 않습니다.\n"
-                        "지금 할 일: Admin에서 기본 주소 또는 연결 도메인의 상태를 확인해 주세요.\n"
-                        "처리 기한: 오늘 중"
-                    ),
-                ),
-                action_block("onboarding_site_action", url, "공개 주소 상태 확인"),
-            ),
-            admin_url=url,
-        ),
-        admin_base_url,
-    )
+    url = admin_url(admin_base_url, f"/hospitals/{hospital_id}/info#domain-setup")
+    name = safe_text(hospital_name, 90)
+    reason = safe_text(blocked_reason, 180) if blocked_reason else "공개 주소를 확인해야 합니다."
+    message = _onboarding_message(prefixed_for_event(SITE_BUILT_NOTIFICATION_TYPE, "[조치 필요] 병원 공개 주소 확인"), name,
+        f"{reason}\n병원 정보의 공개 주소 상태를 확인해 주세요. 아직 공개 운영을 시작하지 못했습니다.",
+        url, "공개 주소 설정 열기", admin_base_url)
     return NotificationIntent(
         dedupe_key=f"ONBOARDING_SITE_BUILT:{hospital_id}:v1",
         notification_type=SITE_BUILT_NOTIFICATION_TYPE,
@@ -152,40 +97,12 @@ def build_hospital_activated_notification(
     dedupe_key가 병원 단위이므로 허브 준비 태스크가 다시 돌아도 두 번 나가지 않는다.
     """
 
-    url = admin_url(admin_base_url, f"/hospitals/{hospital_id}/dashboard")
-    name = safe_text(hospital_name, 100)
+    url = admin_url(admin_base_url, f"/hospitals/{hospital_id}")
+    name = safe_text(hospital_name, 90)
     address = safe_text(public_url, 200)
-    label = label_for_event(ACTIVATED_NOTIFICATION_TYPE)
-    message = validated_message(
-        RenderedSlackMessage(
-            fallback_text=prefixed(
-                label,
-                f"무슨 문제인지: {name} 운영 시작됨 — 기본 주소 {address} · "
-                "고객 영향: 공개 표면이 환자에게 노출됩니다 · "
-                "지금 할 일: 공개 화면 후행 확인 · 처리 기한: 오늘 중",
-            ),
-            blocks=(
-                header_block(
-                    "onboarding_activated_header", prefixed(label, "공개 운영 자동 시작")
-                ),
-                section_block("onboarding_activated_identity", f"*{name}*"),
-                section_block(
-                    "onboarding_activated_context",
-                    (
-                        f"무슨 문제인지: 운영 시작됨 — 기본 주소 {address}\n"
-                        "고객 영향: 선행 조건 세 가지가 모두 통과되어 공개 표면이 "
-                        "환자와 AI 크롤러에 노출됩니다.\n"
-                        "지금 할 일: 공개 화면을 한 번 확인하고, 자기 도메인을 쓸 예정이면 "
-                        "Admin에서 도메인을 입력해 주세요.\n"
-                        "처리 기한: 오늘 중"
-                    ),
-                ),
-                action_block("onboarding_activated_action", url, "병원 운영 현황 확인"),
-            ),
-            admin_url=url,
-        ),
-        admin_base_url,
-    )
+    message = _onboarding_message(prefixed_for_event(ACTIVATED_NOTIFICATION_TYPE, "[운영 시작] 병원 공개 설정 완료"), name,
+        f"공개 주소: {address}\n추가 조치가 필요하지 않습니다. 정기 작업과 장애 감시는 시스템이 진행합니다.",
+        url, "병원 운영 현황 보기", admin_base_url)
     return NotificationIntent(
         dedupe_key=f"ONBOARDING_HOSPITAL_ACTIVATED:{hospital_id}:v1",
         notification_type=ACTIVATED_NOTIFICATION_TYPE,
@@ -246,3 +163,11 @@ def _measurement_label(sov_pct: float | None, platforms: list[str]) -> str:
     platform_text = " · ".join(measured) or "측정 서비스 확인 필요"
     sov_text = "확인 필요" if sov_pct is None else f"{sov_pct:.1f}%"
     return f"AI 답변 내 병원 언급률 {sov_text} · 측정 대상 {platform_text}"
+
+
+def _onboarding_message(title, name, body, url, button, base):
+    return validated_message(RenderedSlackMessage(
+        f"{title} · {name} | {body}",
+        (header_block("onboarding_header", title),
+         section_block("onboarding_body", f"*{name}*\n{body}"),
+         action_block("onboarding_action", url, button)), url), base)

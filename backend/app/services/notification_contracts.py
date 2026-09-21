@@ -77,6 +77,17 @@ def validate_message(message: SlackMessage, *, allowed_admin_base_url: str) -> N
         raise NotificationPayloadError("SLACK_BLOCK_ID_REQUIRED")
     if len(block_ids) != len(set(block_ids)):
         raise NotificationPayloadError("SLACK_BLOCK_IDS_NOT_UNIQUE")
+    for block in message.blocks:
+        text = block.get("text")
+        limit = 150 if block.get("type") == "header" else 3000
+        if isinstance(text, dict) and isinstance(text.get("text"), str):
+            if not 1 <= len(text["text"]) <= limit:
+                raise NotificationPayloadError("SLACK_TEXT_LIMIT_EXCEEDED")
+        fields = block.get("fields", [])
+        if isinstance(fields, list) and (len(fields) > 10 or any(
+            isinstance(field, dict) and len(str(field.get("text", ""))) > 2000 for field in fields
+        )):
+            raise NotificationPayloadError("SLACK_FIELD_LIMIT_EXCEEDED")
     urls = _collect_urls(list(message.blocks))
     if urls != [message.admin_url] or _origin(message.admin_url) != _origin(allowed_admin_base_url):
         raise NotificationPayloadError("SLACK_ADMIN_LINK_INVALID")

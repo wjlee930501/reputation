@@ -322,9 +322,9 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert str(second.incident_id) not in summary_a.message.payload_json()
     assert all(
         label in summary_a.message.payload_json()
-        for label in ("무슨 문제인지", "고객 영향", "지금 할 일")
+        for label in ("조치 필요", "장편한외과의원", "콘텐츠에서")
     )
-    assert "개발팀에 전달할 정보" in summary_a.message.payload_json()
+    assert "참조 OPS-" in summary_a.message.payload_json()
     assert open_intent.notification_type == "INCIDENT_OPEN"
     assert recovered.notification_type == "INCIDENT_RECOVERED"
     assert open_intent.dedupe_key.endswith(":e1")
@@ -335,16 +335,16 @@ def test_payload_builders_have_one_safe_admin_link_and_deterministic_summary() -
     assert build_open_incident_notification(
         replace(first, episode_seq=2), "https://admin.example.test"
     ).dedupe_key.endswith(":e2")
-    assert "처리 기한: 오늘 18:00" in open_intent.message.payload_json()
+    assert "처리 기한 오늘 18:00" in open_intent.message.payload_json()
     assert "SLA:" not in open_intent.message.payload_json()
-    assert "운영센터에서 조치하기" in open_intent.message.payload_json()
+    assert "멈춘 글 확인" in open_intent.message.payload_json()
     recovered_payload = recovered.message.payload_json()
-    assert "자동 복구가 확인되었습니다" in recovered_payload
+    assert "정상 복구가 확인됐습니다" in recovered_payload
     # Recovery is informational: it must never ask a person to confirm machine work.
     assert "추가 조치가 필요하지 않습니다" in recovered_payload
     assert "확인 완료’ 처리하세요" not in recovered_payload
     assert "복구 기록 보기" in recovered_payload
-    assert "처리 기한: 조치 불필요" in recovered_payload
+    assert "처리 기한" not in recovered_payload
     assert "재시도를 확인해 주세요" not in recovered_payload
 
 
@@ -367,7 +367,7 @@ def test_summary_identity_uses_sorted_unique_incidents_and_rejects_conflicts() -
     assert deduped.dedupe_key == canonical.dedupe_key
     assert all(
         label in deduped.message.fallback_text
-        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+        for label in ("조치 필요", "장편한외과의원", "운영센터에서 담당 항목")
     )
     assert str(first.incident_id) not in deduped.message.payload_json()
     with pytest.raises(NotificationPayloadError, match="SUMMARY_INCIDENT_CONFLICT"):

@@ -72,18 +72,18 @@ def test_handoff_overdue_action_is_stable_safe_and_admin_linked() -> None:
     assert "doctor@example.com" not in encoded
     assert "010-1234-5678" not in encoded
     assert "gs://private/report.pdf" not in encoded
-    assert "무슨 문제인지:" in encoded
-    assert "고객 영향:" in encoded
+    assert "고객 인계 기한 초과" in encoded
+    assert "온보딩 시작이 지연" in encoded
     assert "지금 할 일:" in encoded
     assert "처리 기한:" in encoded
     assert "SLA:" not in encoded
     assert "2026-08-10T" not in encoded
-    assert "2026년 8월 10일 01:00 (UTC)" in encoded
+    assert "08/10 10:00 KST" in encoded
     assert first.stable_id not in encoded
     assert "고객 인계 승인하기" in encoded
     assert all(
         label in intent.message.fallback_text
-        for label in ("무슨 문제인지:", "고객 영향:", "지금 할 일:", "처리 기한:")
+        for label in ("[업무 알림]", "고객 인계", "승인해 주세요")
     )
 
 
@@ -109,9 +109,9 @@ def test_accepted_handoff_can_close_an_overdue_action_without_success_spam() -> 
     assert str(overdue_id) not in payload_json
     assert accepted.stable_id not in payload_json
     assert "복구 대상" not in payload_json
-    assert "온보딩 체크리스트 열기" in payload_json
+    assert "병원 준비 현황 보기" in payload_json
     assert _urls(intent.message.payload()) == [
-        f"{_ADMIN}/hospitals/{accepted.hospital_id}/onboarding"
+        f"{_ADMIN}/hospitals/{accepted.hospital_id}/info"
     ]
 
 
@@ -120,11 +120,11 @@ def test_accepted_handoff_can_close_an_overdue_action_without_success_spam() -> 
     [
         (
             OnboardingEventType.ACTIVATION_READY,
-            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/profile#domain-setup",
+            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/info#domain-setup",
         ),
         (
             OnboardingEventType.HOSPITAL_ACTIVE,
-            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}/dashboard",
+            f"/hospitals/{uuid.UUID('b1300000-0000-0000-0000-000000000001')}",
         ),
     ],
 )
