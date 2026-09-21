@@ -13,8 +13,9 @@ from app.core.config import settings
 from app.models.hospital import Hospital
 from app.models.report import MonthlyReport
 from app.services.monthly_period import eligible_hospital_ids, prior_month_to_close
+from app.services.monthly_report_delivery import coverage_is_final
 from app.services.notification_contracts import NotificationIntent
-from app.services.notification_labels import label_for_event, prefixed
+from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
     action_block,
@@ -66,7 +67,7 @@ def load_monthly_report_gaps(db: Session, now: datetime) -> tuple[str, list[Mont
         ).first()
         if report is None:
             gaps.append(MonthlyReportGap(hospital.name, "MISSING"))
-        elif report.quality != "COMPLETE":
+        elif not coverage_is_final(report):
             gaps.append(MonthlyReportGap(hospital.name, "COVERAGE_INCOMPLETE"))
     return period_key, gaps
 
@@ -80,19 +81,15 @@ def build_monthly_report_gap_summary(
     names = " · ".join(safe_text(gap.hospital_name, 60) for gap in gaps[:15])
     if len(gaps) > 15:
         names = f"{names} · 외 {len(gaps) - 15}곳"
-    label = label_for_event(MONTHLY_REPORT_GAP_SUMMARY_TYPE)
     message = validated_message(
         RenderedSlackMessage(
-            fallback_text=prefixed(
-                label,
-                f"무슨 문제인지: {period_key} 월간 리포트 미해결 {len(gaps)}곳 · "
-                f"고객 영향: 미생성 {len(missing)}곳, 측정 미완료 {len(incomplete)}곳 · "
-                "지금 할 일: 운영 센터에서 자동 복구 상태 확인 · 처리 기한: 오늘 중",
+            fallback_text=(
+                prefixed_for_event(MONTHLY_REPORT_GAP_SUMMARY_TYPE, f"[진행 요약] {period_key} 레포트 준비 중 {len(gaps)}곳 | "
+                f"미생성 {len(missing)}곳 · 측정 미완료 {len(incomplete)}곳 | "
+                "시스템이 자동 재측정·마감을 진행합니다. 수동으로 반복 실행하지 마세요.")
             ),
             blocks=(
-                header_block(
-                    "monthly_report_gap_header", prefixed(label, "월간 리포트 미해결 요약")
-                ),
+                header_block("monthly_report_gap_header", prefixed_for_event(MONTHLY_REPORT_GAP_SUMMARY_TYPE, "[진행 요약] 월간 레포트 준비 중")),
                 section_block(
                     "monthly_report_gap_counts",
                     (
@@ -105,7 +102,7 @@ def build_monthly_report_gap_summary(
                     (
                         f"대상: {names}\n"
                         "시스템이 매월 1~7일 자동 재측정·마감을 계속합니다. "
-                        "오늘 자동 복구 뒤에도 남은 상태를 운영 센터에서 확인해 주세요."
+                        "수동으로 반복 실행하지 마세요. 사람이 해결할 최종 차단은 별도 조치 알림으로 안내합니다."
                     ),
                 ),
                 action_block("monthly_report_gap_action", url, "운영 센터에서 확인"),

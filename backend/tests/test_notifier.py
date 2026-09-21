@@ -114,6 +114,7 @@ def _capture_send(monkeypatch):
 
 
 async def test_introduction_inquiry_message_never_claims_free_diagnosis(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "ADMIN_BASE_URL", "https://admin.example.test")
     captured = _capture_send(monkeypatch)
 
     sent = await notifier.notify_lead_created(
@@ -124,10 +125,10 @@ async def test_introduction_inquiry_message_never_claims_free_diagnosis(monkeypa
 
     assert sent is True
     rendered = f"{captured['text']} {captured['blocks'][0]['text']['text']}"
-    assert "[도입문의 접수]" in rendered
+    assert "[새 문의]" in rendered
     assert "문의 유형: 일반 문의" in rendered
     assert "무료 진단" not in rendered
-    assert "https://admin.example.test/leads" in rendered
+    assert captured["blocks"][1]["elements"][0]["url"] == "https://admin.example.test/leads"
 
 
 async def test_inquiry_message_uses_introduction_copy_without_clinic_type(monkeypatch):
@@ -139,7 +140,7 @@ async def test_inquiry_message_uses_introduction_copy_without_clinic_type(monkey
     )
 
     rendered = f"{captured['text']} {captured['blocks'][0]['text']['text']}"
-    assert "[도입문의 접수]" in rendered
+    assert "[새 문의]" in rendered
     assert "문의 유형: 일반 문의" in rendered
     assert "무료 진단" not in rendered
     assert "진료과/지역" not in rendered
@@ -161,17 +162,17 @@ async def test_lead_diagnosis_intake_message_is_actionable_and_omits_pii(monkeyp
 
     assert sent is True
     body = captured["blocks"][0]["text"]["text"]
-    assert "무료 AI 노출 진단 접수" in body
+    assert "무료 AI 노출 진단" in body
     assert "장편한외과의원" in body
-    assert "무슨 문제인지:" in body
-    assert "고객 영향:" in body
-    assert "지금 할 일:" in body
-    assert "처리 기한:" in body
+    assert "[새 신청]" in body
+    assert "상담 일정" in body
+    assert "담당자를 정한 뒤" in body
+    assert "오늘 4번째 신청" in body
     assert "외과 · 수서역" not in body
     assert "대장내시경" not in body
     assert "010-1234-5678" not in body
     assert "doctor@example.com" not in body
-    assert "오늘 4번째 접수" in body
+    assert "오늘 4번째 신청" in body
     assert captured["blocks"][1]["type"] == "actions"
 
 

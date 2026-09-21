@@ -13,7 +13,6 @@ from app.api.public import leads as leads_api
 from app.models.lead import SalesLead
 from app.models.lead_diagnosis import LeadDiagnosis
 from app.services import notifier
-from app.services.notification_labels import LEAD_LABEL
 
 # slowapi's @limiter.limit uses functools.wraps, so __wrapped__ is always
 # present. Calling __wrapped__ bypasses the per-request rate-limit check that
@@ -301,10 +300,8 @@ async def test_notify_lead_created_truncates_and_flattens_long_clinic_name(monke
     )
 
     assert "\n" not in sent["text"]
-    assert sent["text"].startswith(LEAD_LABEL)
-    assert sent["text"].endswith("…")
-    # 채널 라벨 다음에 기존 접수 표시가 그대로 오고, 병원명만 절단된다.
-    assert len(sent["text"].rsplit("] ", 1)[1]) == notifier._SAFE_LABEL_MAX_CHARS + 1
+    assert sent["text"].split(" | ", 1)[0].endswith("…")
+    assert len(sent["text"].split("[새 문의] ", 1)[1].split(" | ", 1)[0]) == notifier._SAFE_LABEL_MAX_CHARS + 1
 
 
 def test_mask_contact_free_masks_resident_registration_number():

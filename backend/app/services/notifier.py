@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.core.config import settings
-from app.services.notification_labels import label_for_event, prefixed
+from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import safe_text as _slack_safe_text
 
 logger = logging.getLogger(__name__)
@@ -196,24 +196,21 @@ async def notify_lead_created(
     긴 본문을 병원명 칸에 밀어넣는 채널 스팸도 가능하다. 여기서 한 번 더 마스킹·절단한다.
     """
     masked = mask_contact(contact)
-    safe_clinic_name = _safe_label(clinic_name)
-    link_line = f"<{admin_url}|Admin에서 상세 확인>" if admin_url else "Admin에서 상세 확인"
-    # 초도 진단·안내 문자의 자동 처리 결과 한 줄. 사용자 자유 텍스트가 아니라 코드가 고른
-    # 고정 문구만 들어오므로 마스킹 대상이 아니지만, 길이는 라벨 규칙으로 묶는다.
-    note_line = f"자동 처리: {_safe_label(diagnosis_note)}\n" if diagnosis_note else ""
-    label = label_for_event("LEAD_CREATED")
+    safe_clinic_name = _safe_operator_label(_safe_label(clinic_name), limit=100)
+    action_path = _validated_admin_path(admin_url or settings.ADMIN_BASE_URL.rstrip("/") + "/leads")
+    note_line = f"자동 처리: {_safe_operator_label(diagnosis_note, limit=100)}\n" if diagnosis_note else ""
     return await _send(
-        text=prefixed(label, f"📩 [도입문의 접수] {safe_clinic_name}"),
+        text=prefixed_for_event("LEAD_CREATED", f"[새 문의] {safe_clinic_name} | 담당자를 정해 신청자에게 연락해 주세요."),
         blocks=[{
             "type": "section",
             "text": {"type": "mrkdwn", "text": (
-                f"{label.value} 📩 *[도입문의 접수]* *{safe_clinic_name}*\n"
+                prefixed_for_event("LEAD_CREATED", f"*[새 문의] {safe_clinic_name}*\n"
                 "문의 유형: 일반 문의\n"
                 f"연락처: `{masked}`\n"
-                f"{note_line}\n"
-                f"{link_line} 후 문의 내용을 확인하고 담당자를 지정해 주세요."
+                f"{note_line}"
+                "신청 내역에서 담당자를 지정하고 상담 연락을 진행해 주세요.")
             )},
-        }],
+        }, _admin_action_block(path=action_path, label="도입 문의 확인")],
     )
 
 
@@ -231,24 +228,15 @@ async def notify_lead_diagnosis_received(
     """무료 AI 노출 진단 접수를 한 건만 즉시 알린다."""
     del clinic_type, region, keywords, contact, email
     safe_clinic_name = _safe_operator_label(clinic_name)
-    label = label_for_event("LEAD_DIAGNOSIS_RECEIVED")
     body = (
-        f"{label.value} 📩 *[무료 AI 노출 진단 접수]* *{safe_clinic_name}* · "
-        f"오늘 {slot_no}번째 접수\n"
-        "무슨 문제인지: 새로운 무료 진단 신청이 접수됐습니다.\n"
-        "고객 영향: 접수 확인이 늦어지면 상담 연락과 진단 일정이 지연될 수 있습니다.\n"
-        "지금 할 일: Admin에서 신청 정보를 확인하고 담당자를 지정해 주세요.\n"
-        "처리 기한: 접수 당일"
+        f"*[새 신청] 무료 AI 노출 진단 · {safe_clinic_name}*\n"
+        f"오늘 {slot_no}번째 신청입니다.\n"
+        "담당자를 정한 뒤 신청 내역의 연락처로 상담 일정을 안내해 주세요."
     )
     return await _send(
-        text=prefixed(
-            label,
-            f"무슨 문제인지: {safe_clinic_name} 진단 신청 접수 · "
-            "고객 영향: 상담 연락 대기 · 지금 할 일: Admin 확인 · "
-            "처리 기한: 접수 당일",
-        ),
+        text=prefixed_for_event("LEAD_DIAGNOSIS_RECEIVED", f"[새 신청] {safe_clinic_name} · 무료 진단 | 담당자를 정해 신청자에게 연락해 주세요."),
         blocks=[
-            {"type": "section", "text": {"type": "mrkdwn", "text": body}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": prefixed_for_event("LEAD_DIAGNOSIS_RECEIVED", body)}},
             _admin_action_block(
                 path=_validated_admin_path(admin_url),
                 label="무료 진단 신청 확인",
@@ -260,53 +248,28 @@ async def notify_lead_diagnosis_received(
 async def notify_lead_purge_result(*, purged: int, skipped: int = 0, error: str | None = None) -> bool:
     """매일 04:00 KST 보관기간 만료 lead 자동 파기 결과.
 
-    개인정보보호법 제21조 자동 파기 의무 이행 trail. 0건이라도 매일 송출하여
-    "purge cron이 살아 있음"을 운영자가 매일 확인할 수 있게 한다.
+    정상 파기 기록은 로그에 남기고 실패만 알린다. 실행 여부는 정기 감시로 확인한다.
     """
     if error:
-        failure_label = label_for_event("PRIVACY_RETENTION_FAILED")
         return await _send(
-            text=prefixed(failure_label, "🟥 [개인정보 자동 파기] 운영 확인 필요"),
+            text=prefixed_for_event("PRIVACY_RETENTION_FAILED", "🟥 [개인정보 자동 파기] 운영 확인 필요"),
             blocks=[
                 {
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": (
-                        f"{failure_label.value} 🟥 *[개인정보 자동 파기]* 운영 확인 필요\n"
+                        prefixed_for_event("PRIVACY_RETENTION_FAILED", "🟥 *[개인정보 자동 파기]* 운영 확인 필요\n"
                         "무슨 문제인지: 보관기간이 지난 신청 정보의 파기 결과를 확정하지 못했습니다.\n"
                         "고객 영향: 일부 개인정보가 예정된 시간에 정리되지 않았을 수 있습니다.\n"
                         "지금 할 일: 운영센터에서 개인정보 보관 항목의 안전 정보를 복사한 뒤 "
                         "개발팀에 문의해 주세요.\n"
-                        "개발팀 전달용 참조: `PRIVACY-RETENTION`"
+                        "개발팀 전달용 참조: `PRIVACY-RETENTION`")
                     )},
                 },
                 _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
             ],
         )
-    if purged == 0 and skipped == 0:
-        logger.info("PII retention sweep completed with no expired leads")
-        return False
-    completion_label = label_for_event("PRIVACY_RETENTION_COMPLETED")
-    return await _send(
-        text=prefixed(
-            completion_label,
-            f"🧹 [개인정보 자동 파기] 만료 신청 정보 {purged}건 정리 완료"
-            + (f" (재처리 제외 {skipped}건)" if skipped else ""),
-        ),
-        blocks=[
-            {
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": (
-                    f"{completion_label.value} 🧹 *[개인정보 자동 파기]* 처리 완료\n"
-                    f"무슨 문제인지: 보관기간이 지난 신청 정보 {purged}건을 안전하게 정리했습니다."
-                    + (f" 이미 처리된 {skipped}건은 다시 변경하지 않았습니다." if skipped else "")
-                    + "\n고객 영향: 보관기간이 지난 개인정보가 운영 화면에 남지 않도록 정리되었습니다.\n"
-                    "지금 할 일: 추가 조치는 없습니다. 필요하면 운영센터에서 처리 상태를 확인해 주세요.\n"
-                    "개발팀 전달용 참조: `PRIVACY-RETENTION`"
-                )},
-            },
-            _admin_action_block(path="/operations?queue=INCIDENTS", label="운영센터에서 확인"),
-        ],
-    )
+    logger.info("PII retention sweep completed: purged=%s skipped=%s", purged, skipped)
+    return False  # Successful housekeeping is not an operator task.
 
 
 def mask_contact_free(text: str) -> str:

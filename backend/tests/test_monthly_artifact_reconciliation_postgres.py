@@ -197,8 +197,8 @@ def test_committed_blocked_report_repairs_missing_incident_once(
         assert incidents[invalid_hospital_id].safe_error_code == "DOCTOR_PDF_ARTIFACT_INVALID"
         assert len(notices) == 2
         assert all(notice.notification_type == "INCIDENT_OPEN" for notice in notices)
-        assert all("무슨 문제인지" in str(notice.payload) for notice in notices)
-        assert all("고객 영향" in str(notice.payload) for notice in notices)
+        assert all("고객용 레포트 파일 생성 실패" in str(notice.payload) for notice in notices)
+        assert all("고객에게 보내지 마세요" in str(notice.payload) for notice in notices)
         assert all("지금 할 일" in str(notice.payload) for notice in notices)
 
         second = monthly_artifact_reconciliation.reconcile_monthly_artifact_incidents.run()

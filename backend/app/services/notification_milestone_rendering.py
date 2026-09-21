@@ -17,6 +17,7 @@ from app.services.notification_contracts import (
     validate_admin_url,
     validate_message,
 )
+from app.services.notification_copy import display_time
 
 MAX_BLOCKS: Final = 50
 MAX_SECTION_CHARS: Final = 2900
@@ -116,9 +117,7 @@ def canonical_time(value: datetime) -> str:
 def operator_deadline(value: datetime | None) -> str:
     if value is None:
         return "기한 없음"
-    zone = value.tzname()
-    suffix = f" ({zone})" if zone else ""
-    return f"{value.year}년 {value.month}월 {value.day}일 {value.hour:02d}:{value.minute:02d}{suffix}"
+    return display_time(value)
 
 
 def validate_stable_id(value: str) -> None:

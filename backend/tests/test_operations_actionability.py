@@ -727,7 +727,9 @@ def test_generation_notification_has_one_developer_fallback() -> None:
         incident, "https://admin.example.test"
     ).message.payload_json()
 
-    assert payload.count("개발팀 문의용 정보 복사") == 1
+    assert payload.count("개발팀 문의용 정보 복사") == 0
+    assert payload.count('"type": "button"') == 1
+    assert "근거 자료를 확인" in payload and "OPS-" in payload
 
 
 def test_today_queue_guidance_uses_the_content_check_link() -> None:
@@ -1012,8 +1014,8 @@ def test_incident_payload_expands_unassigned_owner_and_missing_deadline() -> Non
 
     # Then
     payload = intent.message.payload_json()
-    assert "담당: 미지정(담당자 지정 필요)" in payload
-    assert "처리 기한: 운영 센터에서 확인" in payload
+    assert "담당: 병원 운영 담당자" in payload
+    assert "처리 기한: 운영 센터에서 확인" not in payload
     assert "SLA" not in payload
 
 

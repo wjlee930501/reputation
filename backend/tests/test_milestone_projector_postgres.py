@@ -260,25 +260,10 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
                 NotificationOutbox.state == NotificationOutboxState.PENDING.value,
             )
         )
-        assert first_outbox is not None
-        # The production dispatcher intentionally claims every due row. Put this
-        # test's rows in a private historical window so a hospital-less outbox row
-        # left by another integration fixture cannot be sent through this mock.
-        first_outbox.next_attempt_at = first_delivery_at
+        # PDF validation is automatic. Persist the cursor without paging an AE.
+        assert first_outbox is None
+        assert (first.monthly_count, first.enqueued) == (1, False)
         await db.commit()
-        assert (first.monthly_count, first.enqueued) == (1, True)
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda _request: httpx.Response(200, text="ok"))
-    ) as client:
-        sent = await dispatch_notification_batch(
-            monthly_sessions,
-            client,
-            webhook_url="https://hooks.slack.com/services/T/B/X",
-            worker_id="task13-first",
-            now=first_delivery_at,
-            throttle=lambda: _no_pause(),
-        )
-    assert sent.sent == 1
 
     # When: validation occurs in a missed interval and a later window runs
     async with monthly_sessions() as db:

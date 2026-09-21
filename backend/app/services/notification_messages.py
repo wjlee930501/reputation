@@ -7,6 +7,7 @@ import json
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from html import unescape
 from urllib.parse import urljoin, urlsplit
 
 from app.models.operations import JSONValue
@@ -20,7 +21,8 @@ from app.services.notification_contracts import (
     validate_admin_url,
     validate_message,
 )
-from app.services.notification_labels import label_for_event, prefixed
+from app.services.notification_copy import display_time, incident_copy, readable_detail
+from app.services.notification_labels import prefixed_for_event
 
 _MAX_BLOCKS = 50
 _MAX_SECTION_CHARS = 2900
@@ -42,78 +44,44 @@ def _incident_notification(
     incident: IncidentSlackProjection, admin_base_url: str, *, recovered: bool
 ) -> NotificationIntent:
     event = "INCIDENT_RECOVERED" if recovered else "INCIDENT_OPEN"
-    label = label_for_event(event)
-    status = "자동 복구 완료" if recovered else "운영 확인 필요"
-    hospital_name = _safe_text(incident.hospital_name, 100)
-    owner_label = _operator_owner_label(incident.owner_label)
-    # A recovered incident is closed by the system, so it carries no deadline.
-    deadline_label = "조치 불필요" if recovered else _operator_deadline_label(incident.sla_label)
-    severity_label = _operator_severity_label(incident.severity)
+    copy = incident_copy(incident.incident_type)
+    hospital_name = _safe_text(incident.hospital_name, 90)
+    prefix = "복구" if recovered else "긴급" if incident.severity.upper() == "CRITICAL" else "조치 필요"
+    subject = "이전 알림 해결" if recovered else copy.title
+    title = f"[{prefix}] {hospital_name} · {subject}"
     url = _admin_url(admin_base_url, incident.admin_path)
-    problem = "자동 복구가 확인되었습니다." if recovered else incident.problem
-    # Recovery is informational: the system already closed the incident, so the
-    # message must not create a "확인 완료" click for a person.
-    next_action = (
-        "추가 조치가 필요하지 않습니다. 시스템이 이 건을 확인 완료로 종료했습니다."
-        if recovered
-        else incident.next_action
-    )
-    action_label = "복구 기록 보기" if recovered else "운영센터에서 조치하기"
-    support_fallback = (
-        "같은 문제가 다시 열리면 그때 다시 알립니다."
-        if recovered
-        else (
-            "운영센터의 조치 버튼을 사용할 수 없거나 같은 문제가 반복되면 "
-            "‘개발팀 문의용 정보 복사’를 개발팀에 전달하세요."
-        )
-    )
-    developer_reference = _developer_reference(incident)
+    if recovered:
+        problem = f"앞서 알린 ‘{copy.title}’ 문제의 정상 복구가 확인됐습니다."
+        action = "추가 조치가 필요하지 않습니다. 같은 문제가 다시 발생하면 새로 알립니다."
+        details = f"{problem}\n{action}"
+        context = f"참조 {_developer_reference(incident)}"
+    else:
+        impact = readable_detail(incident.customer_impact, fallback="영향 범위는 연결된 화면에서 확인해 주세요.")
+        problem = readable_detail(incident.problem, fallback=copy.title + " 상태입니다.")
+        if incident.incident_type in {"CONTENT_GENERATION_FAILED", "ESSENCE_AUTO_REVIEW_ESCALATED"}:
+            problem = copy.title + " 상태입니다. 상세 지적은 연결된 화면에 있습니다."
+        action = copy.action
+        if incident.incident_type == "DOMAIN_UNHEALTHY":
+            action = readable_detail(incident.next_action, fallback=action, limit=240)
+        details = f"{_safe_text(problem, 240)}\n{_safe_text(impact, 200)}\n\n*지금 할 일*\n{_safe_text(action, 300)}"
+        labels = []
+        owner = incident.owner_label.strip()
+        if owner not in {"", "미지정", "확인 필요", "담당자 미배정", "담당 AE"}:
+            labels.append("담당: " + _safe_text(owner, 60))
+        else:
+            role = "개발 담당자" if notification_channel_for_incident_type(incident.incident_type) == "SLACK_DEV" else "병원 운영 담당자"
+            labels.append("담당: " + role)
+        if incident.sla_label.strip() not in {"", "확인 필요", "기한 미설정", "기한 없음"}:
+            labels.append("처리 기한 " + _safe_text(incident.sla_label, 80))
+        labels.append("참조 " + _developer_reference(incident))
+        context = " · ".join(labels)
     message = _message(
-        prefixed(
-            label,
-            (
-                f"무슨 문제인지: {_safe_text(problem, 180)} · "
-                f"고객 영향: {_safe_text(incident.customer_impact, 180)} · "
-                f"지금 할 일: {_safe_text(next_action, 180)} · "
-                f"처리 기한: {deadline_label}"
-            ),
-        ),
+        prefixed_for_event(event, f"{title} | {problem} | {action}"),
         (
-            _block(
-                "header", "header", {"type": "plain_text", "text": prefixed(label, status)}
-            ),
-            _block(
-                "section",
-                "incident_identity",
-                {
-                    "type": "mrkdwn",
-                    "text": f"*{hospital_name}* · {severity_label}",
-                },
-            ),
-            _block(
-                "section",
-                "incident_context",
-                {
-                    "type": "mrkdwn",
-                    "text": (
-                        f"*무슨 문제인지*\n{_safe_text(problem, 500)}\n"
-                        f"*고객 영향*\n{_safe_text(incident.customer_impact, 500)}\n"
-                        f"*지금 할 일*\n{_safe_text(next_action, 500)} "
-                        f"{support_fallback}\n"
-                        f"담당: {owner_label} · "
-                        f"처리 기한: {deadline_label}"
-                    ),
-                },
-            ),
-            _block(
-                "section",
-                "developer_reference",
-                {
-                    "type": "mrkdwn",
-                    "text": f"*개발팀에 전달할 정보*\n`{developer_reference}`",
-                },
-            ),
-            _action_block("incident_action", url, action_label),
+            _block("header", "header", {"type": "plain_text", "text": prefixed_for_event(event, title)}),
+            _block("section", "incident_context", {"type": "mrkdwn", "text": details}),
+            {"type": "context", "block_id": "incident_reference", "elements": [{"type": "plain_text", "text": context}]},
+            _action_block("incident_action", url, "복구 기록 보기" if recovered else copy.button),
         ),
         url,
     )
@@ -155,34 +123,26 @@ def build_summary_notification(
         json.dumps(identity, separators=(",", ":"), sort_keys=True).encode()
     ).hexdigest()
     url = _admin_url(admin_base_url, "/operations?queue=incidents&status=OPEN")
+    channels = {notification_channel_for_incident_type(item.incident_type) for item in ordered}
+    if len(channels) != 1:
+        raise NotificationPayloadError("SUMMARY_AUDIENCE_CONFLICT")
     lines = tuple(
-        (
-            f"• *{_safe_text(item.hospital_name, 100)}*\n"
-            f"  무슨 문제인지: {_safe_text(item.problem, 300)}\n"
-            f"  고객 영향: {_safe_text(item.customer_impact, 300)}\n"
-            f"  지금 할 일: {_safe_text(item.next_action, 300)}\n"
-            f"  처리 기한: {_operator_deadline_label(item.sla_label)}\n"
-            f"  개발팀에 전달할 정보: `{_developer_reference(item)}`"
-        )
+        f"• *{_safe_text(item.hospital_name, 90)}* — {incident_copy(item.incident_type).title}\n"
+        f"  {_safe_text(incident_copy(item.incident_type).action, 240)} · 참조 {_developer_reference(item)}"
         for item in ordered
     )
     chunks = _chunk_lines(lines)
     if len(chunks) > _MAX_BLOCKS - 3:
         raise NotificationPayloadError("SUMMARY_EXCEEDS_SLACK_LIMIT")
-    label = label_for_event("INCIDENT_SUMMARY")
     blocks = (
-        _block(
-            "header",
-            "summary_header",
-            {"type": "plain_text", "text": prefixed(label, "운영 알림 요약")},
-        ),
+        _block("header", "summary_header", {"type": "plain_text", "text": prefixed_for_event("INCIDENT_SUMMARY", f"[조치 필요] 운영 이슈 {len(ordered)}건")}),
         _block(
             "section",
             "summary_window",
             {
                 "type": "mrkdwn",
                 "text": (
-                    f"집계 기간: {_canonical_time(window_start)} ~ {_canonical_time(window_end)}"
+                    f"{display_time(window_start)} ~ {display_time(window_end)}"
                 ),
             },
         ),
@@ -195,14 +155,11 @@ def build_summary_notification(
     return NotificationIntent(
         dedupe_key=f"INCIDENT_SUMMARY:{digest}",
         notification_type="INCIDENT_SUMMARY",
+        channel=next(iter(channels)),
         message=_message(
-            prefixed(
-                label,
-                f"무슨 문제인지: 운영 알림 {len(ordered)}건 · "
-                "고객 영향: 항목별 확인 필요 · "
-                "지금 할 일: Admin에서 모아보기 · "
-                "처리 기한: 각 항목 확인",
-            ),
+            prefixed_for_event("INCIDENT_SUMMARY", f"[조치 필요] 운영 이슈 {len(ordered)}건 | " + " / ".join(
+                f"{_safe_text(item.hospital_name, 50)}: {incident_copy(item.incident_type).title}" for item in ordered[:5]
+            ) + " | 운영센터에서 담당 항목을 확인해 주세요."),
             blocks,
             url,
         ),
@@ -233,6 +190,8 @@ def _chunk_lines(lines: Sequence[str]) -> tuple[str, ...]:
 
 
 def _block(kind: str, block_id: str, text: dict[str, JSONValue]) -> dict[str, JSONValue]:
+    if kind == "header" and isinstance(text.get("text"), str):
+        text = {**text, "text": unescape(text["text"])}
     return {"type": kind, "block_id": block_id, "text": text}
 
 
@@ -277,29 +236,6 @@ def _canonical_time(value: datetime) -> str:
 def _safe_text(value: str, limit: int) -> str:
     cleaned = sanitize_operator_text(value, limit=limit) or "확인 필요"
     return cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _operator_owner_label(value: str) -> str:
-    cleaned = _safe_text(value, 100)
-    if cleaned in {"미지정", "확인 필요", "담당자 미배정"}:
-        return "미지정(담당자 지정 필요)"
-    return cleaned
-
-
-def _operator_deadline_label(value: str) -> str:
-    cleaned = _safe_text(value, 100)
-    if cleaned in {"확인 필요", "기한 미설정"}:
-        return "운영 센터에서 확인"
-    return cleaned
-
-
-def _operator_severity_label(value: str) -> str:
-    return {
-        "LOW": "낮음",
-        "MEDIUM": "보통",
-        "HIGH": "높음",
-        "CRITICAL": "긴급",
-    }.get(value.upper(), "상세 확인 필요")
 
 
 def _developer_reference(incident: IncidentSlackProjection) -> str:

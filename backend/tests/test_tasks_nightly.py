@@ -2893,7 +2893,7 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(
     assert len(digests) == 1
     assert digests[0].notification_type == "GENERATION_BLOCKED_DIGEST"
     assert "게이트확인의원" in str(digests[0].payload)
-    assert "제목 없는 콘텐츠" in str(digests[0].payload)
+    assert "본문·근거 확인 필요" in str(digests[0].payload)
     if code == "ESSENCE_NOT_ALIGNED":
         assert "피해야 할 문구" in str(digests[0].payload)
         assert "<!channel>" not in str(digests[0].payload)

@@ -2,7 +2,7 @@
 
 여기서 확인하는 것은 세 가지다. 라벨 문구가 한 글자도 바뀌지 않는다. 종류마다 표본
 메시지의 fallback text와 Block Kit header가 **같은** 라벨로 시작한다. 라벨을 붙이면서
-기존 문장·버튼·`OPS-` 참조·개발팀 문의 문구를 지우지 않는다.
+행동 안내·버튼·`OPS-` 참조를 유지하고 정상 자동 처리 알림은 억제한다.
 """
 
 from __future__ import annotations
@@ -486,10 +486,11 @@ def test_incident_open_keeps_its_copy_buttons_and_developer_reference() -> None:
     intent = build_open_incident_notification(_incident(), _ADMIN)
     payload = intent.message.payload_json()
 
-    assert f"{ERROR_LABEL} 운영 확인 필요" in payload
-    assert "무슨 문제인지" in payload and "고객 영향" in payload and "지금 할 일" in payload
-    assert "운영센터에서 조치하기" in payload
-    assert "개발팀 문의용 정보 복사" in payload
+    assert f"{ERROR_LABEL} [조치 필요]" in payload
+    assert "지금 할 일" in payload and "예정 글 발행 보류" in payload
+    assert "무슨 문제인지" not in payload
+    assert "멈춘 글 확인" in payload
+    assert "콘텐츠에서 해당 글의 차단 사유" in payload
     assert "OPS-" in payload
     assert payload.count(f"{_ADMIN}/operations") == 1
 
@@ -499,7 +500,8 @@ def test_recovered_incident_is_a_report_not_an_error() -> None:
 
     assert recovered.notification_type == "INCIDENT_RECOVERED"
     assert recovered.message.fallback_text.startswith(REPORT_LABEL)
-    assert f"{REPORT_LABEL} 자동 복구 완료" in recovered.message.payload_json()
+    assert f"{REPORT_LABEL} [복구]" in recovered.message.payload_json()
+    assert "추가 조치가 필요하지 않습니다" in recovered.message.payload_json()
     assert ERROR_LABEL not in recovered.message.payload_json()
 
 
@@ -531,7 +533,7 @@ async def test_lead_intake_messages_carry_the_lead_label(monkeypatch) -> None:
     await notifier.notify_lead_created(clinic_name="장편한외과의원", contact="010-0000-0000")
     assert str(sent["text"]).startswith(LEAD_LABEL)
     assert sent["blocks"][0]["text"]["text"].startswith(LEAD_LABEL)
-    assert "[도입문의 접수]" in sent["blocks"][0]["text"]["text"]
+    assert "[새 문의]" in sent["blocks"][0]["text"]["text"]
 
     await notifier.notify_lead_diagnosis_received(
         clinic_name="장편한외과의원",
@@ -545,10 +547,10 @@ async def test_lead_intake_messages_carry_the_lead_label(monkeypatch) -> None:
     )
     assert str(sent["text"]).startswith(LEAD_LABEL)
     assert sent["blocks"][0]["text"]["text"].startswith(LEAD_LABEL)
-    assert "[무료 AI 노출 진단 접수]" in sent["blocks"][0]["text"]["text"]
+    assert "무료 AI 노출 진단" in sent["blocks"][0]["text"]["text"]
 
 
-async def test_privacy_purge_failure_is_an_error_and_success_is_a_report(monkeypatch) -> None:
+async def test_privacy_purge_failure_is_an_error_and_success_is_silent(monkeypatch) -> None:
     sent: dict[str, object] = {}
 
     async def fake_send(text, blocks=None):
@@ -563,9 +565,9 @@ async def test_privacy_purge_failure_is_an_error_and_success_is_a_report(monkeyp
     assert sent["blocks"][0]["text"]["text"].startswith(ERROR_LABEL)
     assert "PRIVACY-RETENTION" in sent["blocks"][0]["text"]["text"]
 
-    await notifier.notify_lead_purge_result(purged=3)
-    assert str(sent["text"]).startswith(REPORT_LABEL)
-    assert sent["blocks"][0]["text"]["text"].startswith(REPORT_LABEL)
+    sent.clear()
+    assert await notifier.notify_lead_purge_result(purged=3) is False
+    assert sent == {}
 
 
 def test_heartbeat_label_sits_in_front_of_the_geo_summary_line() -> None:
@@ -577,13 +579,13 @@ def test_heartbeat_label_sits_in_front_of_the_geo_summary_line() -> None:
     ).message
     first_line = message.fallback_text.splitlines()[0]
 
-    assert first_line.startswith(f"{REPORT_LABEL} 2026-09-20 GEO 운영 요약")
-    assert "관측 지표 양호" in first_line
+    assert first_line.startswith(f"{REPORT_LABEL} [일일 요약] 2026-09-20")
+    assert "점검 이상 없음" in first_line
     # 본문 섹션과 fallback이 같은 문구를 쓴다 — 목록과 펼친 메시지가 같은 분류를 말한다.
-    assert message.blocks[0]["text"]["text"] == message.fallback_text
+    assert message.blocks[0]["text"]["text"] == first_line
 
 
-def test_blocked_digest_keeps_its_image_reuse_guidance() -> None:
+def test_blocked_digest_separates_successful_image_reuse_from_errors() -> None:
     intent = build_generation_blocked_digest_intent(
         date(2026, 9, 20),
         "0800",
@@ -600,19 +602,19 @@ def test_blocked_digest_keeps_its_image_reuse_guidance() -> None:
     )
     payload = intent.message.payload_json()
 
-    assert f"{ERROR_LABEL} 자동 발행 차단 요약" in payload
-    assert "병원 대표 이미지 사용" in payload
-    assert "이미지 생성 공급자 크레딧" in payload
+    assert f"{ERROR_LABEL} [조치 필요]" in payload
+    assert "병원 대표 이미지 사용" not in payload
+    assert "이미지 생성 공급자 크레딧" not in payload
 
 
 def test_weekly_rollup_stays_a_report_when_blocks_exist() -> None:
     intent = build_generation_rejection_weekly_rollup_intent(
         date(2026, 9, 14),
-        ({"hospital_id": str(_HOSPITAL), "hospital_name": "장편한외과의원", "reason": "금지 표현 검사 차단"},),
+        ({"hospital_id": str(_HOSPITAL), "hospital_name": "장편한외과의원", "code": "CONTENT_AI_HARD_FINDING", "reason": "금지 표현 검사 차단"},),
         (_YieldFact("장편한외과의원", 5, 3, 0, 1, 0, 1),),
     )
     payload = intent.message.payload_json()
 
     assert intent.message.fallback_text.startswith(REPORT_LABEL)
     assert f"{REPORT_LABEL} 주간 콘텐츠 발행 요약" in payload
-    assert "발행 3/5" in payload and "금지 표현 검사 차단 1건" in payload
+    assert "발행 3/5" in payload and "본문·근거 확인 필요 1건" in payload

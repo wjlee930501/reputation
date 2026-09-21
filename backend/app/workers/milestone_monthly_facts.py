@@ -71,9 +71,12 @@ async def load_report_facts(db: AsyncSession) -> dict[uuid.UUID, ReportFacts]:
         )
     ).all()
     facts_by_report: dict[uuid.UUID, ReportFacts] = {}
+    readiness_by_hospital = {}
     for report, hospital, manifest, artifact, latest_delivery_type in rows:
         gate = _delivery_gate(report, manifest, artifact)
-        readiness = await get_essence_readiness(db, report.hospital_id)
+        if report.hospital_id not in readiness_by_hospital:
+            readiness_by_hospital[report.hospital_id] = await get_essence_readiness(db, report.hospital_id)
+        readiness = readiness_by_hospital[report.hospital_id]
         current_blockers = _current_essence_delivery_blockers(report, readiness)
         facts_by_report[report.id] = ReportFacts(
             report,
@@ -96,3 +99,16 @@ async def load_report_facts(db: AsyncSession) -> dict[uuid.UUID, ReportFacts]:
             ),
         )
     return facts_by_report
+
+
+def latest_report_facts(facts_by_report: dict[uuid.UUID, ReportFacts]) -> tuple[ReportFacts, ...]:
+    """One current report per hospital AND contract month; keep old delivery lookup intact."""
+    latest = {}
+    for facts in facts_by_report.values():
+        report = facts.report
+        key = (facts.hospital.id, report.period_year, report.period_month)
+        rank = (getattr(report, "version", 0) or 0, report.created_at, str(report.id))
+        previous = latest.get(key)
+        if previous is None or rank > previous[0]:
+            latest[key] = (rank, facts)
+    return tuple(value[1] for key, value in sorted(latest.items(), key=lambda item: str(item[0])))

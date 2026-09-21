@@ -175,7 +175,7 @@ def test_site_build_auto_activates_platform_address(monkeypatch) -> None:
     assert audit.detail["activation_method"] == "platform_subdomain"
     assert audit.detail["reason"] == "SITE_BUILD_AUTO_ACTIVATION"
     assert [intent.notification_type for intent in intents] == [ACTIVATED_NOTIFICATION_TYPE]
-    assert "운영 시작됨" in intents[0].message.fallback_text
+    assert "[운영 시작]" in intents[0].message.fallback_text
     assert public_site_url(None, hospital.slug) in intents[0].message.fallback_text
     assert revalidated == [(hospital.slug, hospital.name)]
     assert db.commits == 1
