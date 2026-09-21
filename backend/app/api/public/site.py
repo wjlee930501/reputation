@@ -39,7 +39,7 @@ from app.services.essence_readiness import (
     get_public_essence_readiness,
 )
 from app.services.hospital_lifecycle import activation_gate_snapshot
-from app.services.hospital_logo import is_stored_logo_ref, public_logo_url
+from app.services.hospital_logo import is_public_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.services.public_asset_ref import is_public_asset_path
 from app.utils.domain import normalize_domain
@@ -295,7 +295,7 @@ async def get_public_hospital_logo(
     """
     h = await _get_active_hospital(db, slug)
     stored = getattr(h, "logo_url", None)
-    if not is_stored_logo_ref(stored):
+    if not is_public_logo_ref(stored, h.id):
         raise HTTPException(status_code=404, detail="Logo not found")
     return public_asset_response(stored, hospital_id=h.id, media_type=None)
 
@@ -693,7 +693,7 @@ def _public_logo_url(h: Hospital) -> str | None:
     여기서도 같은 기준으로 거른다.
     """
     stored = getattr(h, "logo_url", None)
-    if not is_stored_logo_ref(stored):
+    if not is_public_logo_ref(stored, h.id):
         return None
     slug = getattr(h, "slug", None)
     return public_logo_url(slug) if slug else None

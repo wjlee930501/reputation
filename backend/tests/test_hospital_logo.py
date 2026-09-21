@@ -57,7 +57,8 @@ def test_empty_values_are_neither_stored_nor_external(value):
 
 def test_public_payload_serves_uploaded_logos_from_our_own_origin():
     # 백엔드 오리진 경로여야 공개 표면(resolveAssetUrl)이 통과시킨다.
-    hospital = _hospital("gs://reputation-images/assets/abc/logo.png")
+    hospital = _hospital(None)
+    hospital.logo_url = f"local://{hospital.id}/logo.png"
 
     assert public_site._public_logo_url(hospital) == public_logo_url(hospital.slug)
 

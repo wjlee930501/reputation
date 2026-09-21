@@ -11,6 +11,10 @@ from app.workers.dispatch_auth import (
     build_dispatch_headers,
     stamp_published_message,
 )
+from app.workers.generation_retry_policy import (
+    DAYTIME_RECOVERY_HOURS,
+    OVERNIGHT_RECOVERY_HOURS,
+)
 from app.workers.runtime_queue_observability import (
     record_task_queue_wait,
     stamp_task_enqueue_time,
@@ -263,7 +267,7 @@ celery_app.conf.update(
         # 아침 발행 전에 다시 회수한다. 횟수를 네 번으로 제한해 무한 비용 재시도를 막는다.
         "overnight-content-generation-recovery": {
             "task": "app.workers.tasks.overnight_content_generation_recovery",
-            "schedule": crontab(hour="1,4,7", minute=0),
+            "schedule": crontab(hour=",".join(map(str, OVERNIGHT_RECOVERY_HOURS)), minute=0),
             "options": {
                 "headers": build_dispatch_headers("overnight-content-generation-recovery")
             },
@@ -273,7 +277,7 @@ celery_app.conf.update(
         # current-month allocations repaired at 21:30, before the last publisher.
         "daytime-content-generation-recovery": {
             "task": "app.workers.tasks.overnight_content_generation_recovery",
-            "schedule": crontab(hour="12,18,22", minute=0),
+            "schedule": crontab(hour=",".join(map(str, DAYTIME_RECOVERY_HOURS)), minute=0),
             "options": {
                 "headers": build_dispatch_headers("overnight-content-generation-recovery")
             },

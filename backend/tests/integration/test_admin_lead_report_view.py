@@ -1,5 +1,6 @@
 import uuid
 from datetime import date
+from hashlib import sha256
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -53,8 +54,8 @@ async def _seed_ready_report(session, pdf_path: str):
             diagnosis_id=diagnosis.id,
             version=1,
             storage_uri=pdf_path,
-            content_hash="a" * 64,
-            byte_size=16,
+            content_hash=sha256(b"%PDF-1.7\nreport").hexdigest(),
+            byte_size=len(b"%PDF-1.7\nreport"),
             template_version="test-v1",
         )
     )
@@ -181,3 +182,9 @@ async def test_report_view_fails_closed_when_report_is_not_ready(
         app.dependency_overrides.pop(get_db, None)
 
     assert response.status_code == expected_status
+
+
+@pytest.fixture(autouse=True)
+def local_report_fixture_root(tmp_path, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "REPORT_OUTPUT_DIR", str(tmp_path))

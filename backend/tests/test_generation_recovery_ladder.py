@@ -338,7 +338,7 @@ async def test_the_gate_records_a_canonical_attempt_before_opening(monkeypatch):
     assert stored["exhausted_days"] == 0
     assert stored["guard_deferral_count"] == 0
     deadline = datetime.fromisoformat(stored["next_retry_at"])
-    assert deadline == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
+    assert deadline == _kst(2026, 9, 16, 12, 0).astimezone(UTC)
 
     incident = await _open_incident(monkeypatch, item, "CONTENT_IMAGE_NOT_READY")
 
@@ -350,7 +350,7 @@ async def test_the_gate_records_a_canonical_attempt_before_opening(monkeypatch):
     monkeypatch.setattr(
         tasks, "_generation_philosophy_sync", lambda *_args: SimpleNamespace(id="p1")
     )
-    _freeze(monkeypatch, _kst(2026, 9, 16, 23, 30))
+    _freeze(monkeypatch, _kst(2026, 9, 16, 11, 59))
     assert tasks._generation_retry_is_eligible(db)(item) is False
     _freeze(monkeypatch, deadline.astimezone(KST))
     assert tasks._generation_retry_is_eligible(db)(item) is True
@@ -522,7 +522,7 @@ async def test_a_repair_blocker_is_system_work_while_a_session_remains(monkeypat
     stored = item.essence_check_summary["generation_attempt"]
     assert stored["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
     deadline = datetime.fromisoformat(stored["next_retry_at"])
-    assert deadline == _kst(2026, 9, 17, 1, 0).astimezone(UTC)
+    assert deadline == _kst(2026, 9, 16, 12, 0).astimezone(UTC)
 
     incident = await _open_incident(monkeypatch, item, "MISSING_REFERENCES")
 

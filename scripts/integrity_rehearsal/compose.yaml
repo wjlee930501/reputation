@@ -1,0 +1,53 @@
+x-runtime: &runtime
+  platform: linux/amd64
+  image: integrity-rehearsal:${REHEARSAL_ID:?}
+  build: {context: ./context, dockerfile: Dockerfile}
+  env_file: ./runtime.env
+  networks: [isolated]
+  volumes: ['./:/rehearsal:ro']
+  security_opt: ['no-new-privileges:true']
+  cap_drop: [ALL]
+services:
+  postgres:
+    image: postgres:16.4-bookworm
+    environment:
+      POSTGRES_USER: rehearsal
+      POSTGRES_PASSWORD: rehearsal-disposable-only
+      POSTGRES_DB: rehearsal
+    networks: [isolated]
+    tmpfs: ['/var/lib/postgresql/data']
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U rehearsal -d rehearsal']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: redis:7.4.0-bookworm
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    networks: [isolated]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  fixture:
+    <<: *runtime
+    command: ['python', '/rehearsal/fixture.py']
+  migrate:
+    <<: *runtime
+    environment: {SERVICE: migrate}
+  api:
+    <<: *runtime
+    environment: {SERVICE: api}
+  worker:
+    <<: *runtime
+    environment: {SERVICE: worker, CELERY_CONCURRENCY: '2'}
+  beat:
+    <<: *runtime
+    environment: {SERVICE: beat}
+  probe:
+    <<: *runtime
+    command: ['python', '/rehearsal/check.py', 'initial']
+networks:
+  isolated:
+    internal: true

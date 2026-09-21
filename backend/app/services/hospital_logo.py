@@ -14,7 +14,15 @@ L-1 배경. 온보딩 2단계는 공식 로고를 필수로 요구하는데, 어
     표시하지 않기 위해서다.
 """
 
+import re
+import uuid
+from io import BytesIO
 from urllib.parse import urlparse
+
+from fastapi import HTTPException
+from PIL import Image, UnidentifiedImageError
+
+from app.core.config import settings
 
 # store_asset_bytes가 만드는 참조 + 과거 업로드가 남긴 경로.
 _STORED_ASSET_PREFIXES = ("gs://", "local://", "/assets/")
@@ -25,8 +33,7 @@ LOGO_MAX_BYTES = 1 * 1024 * 1024
 LOGO_ALLOWED_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 
 EXTERNAL_LOGO_URL_MESSAGE = (
-    "외부 사이트의 로고 주소는 공개 화면에 쓸 수 없습니다. "
-    "로고 파일을 직접 업로드해 주세요."
+    "외부 사이트의 로고 주소는 공개 화면에 쓸 수 없습니다. 로고 파일을 직접 업로드해 주세요."
 )
 
 
@@ -48,3 +55,43 @@ def is_external_logo_url(value: str | None) -> bool:
 def public_logo_url(slug: str) -> str:
     """공개 표면이 읽는 로고 주소. 백엔드 오리진 경로라 자산 허용 목록을 통과한다."""
     return f"/api/v1/public/hospitals/{slug}/logo"
+
+
+def is_public_logo_ref(value: str | None, hospital_id: uuid.UUID) -> bool:
+    """Only image assets in this hospital's configured storage namespace are public."""
+    if not value:
+        return False
+    prefixes = [f"local://{hospital_id}/", f"/assets/{hospital_id}/"]
+    if settings.GCP_STORAGE_BUCKET:
+        prefixes.append(f"gs://{settings.GCP_STORAGE_BUCKET}/assets/{hospital_id}/")
+    for prefix in prefixes:
+        if value.startswith(prefix):
+            filename = value[len(prefix) :]
+            return bool(re.fullmatch(r"[\w.-]+\.(?:png|jpe?g|webp)", filename, re.IGNORECASE))
+    return False
+
+
+def validated_logo_filename(data: bytes, mime_type: str) -> str:
+    """Verify image bytes and derive the stored extension independently of client filenames."""
+    formats = {
+        "PNG": ("image/png", "png"),
+        "JPEG": ("image/jpeg", "jpg"),
+        "WEBP": ("image/webp", "webp"),
+    }
+    try:
+        with Image.open(BytesIO(data)) as image:
+            detected = formats.get(image.format or "")
+            if detected is None or detected[0] != mime_type:
+                raise HTTPException(
+                    status_code=400, detail="로고 파일 형식이 업로드 정보와 다릅니다."
+                )
+            image.verify()
+    except (
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+        Image.DecompressionBombError,
+    ) as exc:
+        raise HTTPException(status_code=400, detail="유효한 PNG·JPG·WEBP 이미지를 올려 주세요.") from exc
+    return f"logo.{detected[1]}"

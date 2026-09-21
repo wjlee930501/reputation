@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime, timezone
+from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +91,7 @@ def _doctor_artifact(**overrides):
         "report_id": uuid.uuid4(),
         "audience": "DOCTOR",
         "path": "gs://reputation-reports/demo_doctor.pdf",
-        "sha256": "a" * 64,
+        "sha256": sha256(b"a" * 4096).hexdigest(),
         "byte_size": 4096,
         "validated": True,
         "validated_at": datetime(2026, 5, 5, 12, 35, tzinfo=timezone.utc),
@@ -106,7 +107,7 @@ def _doctor_artifact(**overrides):
             "link_count": 1,
             "expected_link_present": True,
             "required_text_present": True,
-            "sha256": "a" * 64,
+            "sha256": sha256(b"a" * 4096).hexdigest(),
             "byte_size": 4096,
         },
     }
@@ -120,14 +121,14 @@ def _v0_artifact(report, **overrides):
         "report_id": report.id,
         "audience": "DOCTOR",
         "path": report.pdf_path,
-        "sha256": "b" * 64,
+        "sha256": sha256(b"b" * 2048).hexdigest(),
         "byte_size": 2048,
         "validated": True,
         "validated_at": datetime(2026, 5, 5, 12, 35, tzinfo=timezone.utc),
         "validation_metadata": {
             "validation_version": "v0-pdf-v1",
             "validation_source": "SYSTEM",
-            "sha256": "b" * 64,
+            "sha256": sha256(b"b" * 2048).hexdigest(),
             "byte_size": 2048,
         },
     }
@@ -315,7 +316,7 @@ async def test_mark_sent_returns_distinct_readiness_conflicts(mutation, expected
             hospital.id,
             report.id,
             ReportDeliveryRequest(
-                artifact_sha256="a" * 64, recipient_label="김원장", channel="대면"
+                artifact_sha256=sha256(b"a" * 4096).hexdigest(), recipient_label="김원장", channel="대면"
             ),
             db=db,
             actor=actor,
@@ -370,7 +371,7 @@ def test_report_detail_exposes_only_safe_authoritative_artifact_evidence():
     assert payload["doctor_artifact"] == {
         "state": "VALID",
         "state_label": "원장 전달용 PDF 검증 완료",
-        "sha256": "a" * 64,
+        "sha256": sha256(b"a" * 4096).hexdigest(),
         "byte_size": 4096,
         "page_count": 1,
         "validated_at": "2026-05-05T12:35:00+00:00",
@@ -380,7 +381,7 @@ def test_report_detail_exposes_only_safe_authoritative_artifact_evidence():
     assert "validation_metadata" not in payload["doctor_artifact"]
     serialized = ReportResponse.model_validate(payload).model_dump(mode="json")
     assert serialized["doctor_artifact"]["validated_at"] == "2026-05-05T12:35:00Z"
-    assert serialized["doctor_artifact"]["sha256"] == "a" * 64
+    assert serialized["doctor_artifact"]["sha256"] == sha256(b"a" * 4096).hexdigest()
     assert "gs://" not in str(serialized["doctor_artifact"])
 
 
@@ -604,11 +605,10 @@ async def test_v0_generation_artifact_is_the_doctor_download(monkeypatch):
         actor=actor,
     )
 
-    assert response.status_code == 302
-    assert response.headers["location"] == "https://storage.example/v0.pdf"
-    assert calls[0][0] == report.pdf_path == db.artifact.path
-    assert calls[0][1] == 1
-    assert 'filename="report-2026-05-doctor.pdf"' in calls[0][2]
+    assert response.status_code == 200
+    assert response.body == b"b" * 2048
+    assert calls == []
+    assert 'filename="report-2026-05-doctor.pdf"' in response.headers["content-disposition"]
 
 
 async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(monkeypatch):
@@ -690,7 +690,7 @@ async def test_mark_report_sent_rejects_artifact_hash_mismatch(monkeypatch):
             hospital.id,
             report.id,
             ReportDeliveryRequest(
-                artifact_sha256="b" * 64, recipient_label="김원장", channel="대면"
+                artifact_sha256=sha256(b"b" * 2048).hexdigest(), recipient_label="김원장", channel="대면"
             ),
             db=db,
             actor=actor,
@@ -826,7 +826,7 @@ async def test_mark_report_sent_404_for_foreign_report():
             hospital.id,
             report.id,
             ReportDeliveryRequest(
-                artifact_sha256="a" * 64, recipient_label="김원장", channel="대면"
+                artifact_sha256=sha256(b"a" * 4096).hexdigest(), recipient_label="김원장", channel="대면"
             ),
             db=db,
             actor=_actor(),
@@ -945,7 +945,7 @@ def test_report_detail_keeps_delivered_reports_downloadable_even_if_current_read
                 recipient="김원장",
                 metadata_json={
                     "artifact_sha256": artifact.sha256,
-                    "artifact_path_hash": "b" * 64,
+                    "artifact_path_hash": sha256(b"b" * 2048).hexdigest(),
                     "channel": "대면",
                     "operator": "owner@example.com",
                     "note": None,
@@ -1146,8 +1146,9 @@ async def test_download_report_serves_the_doctor_edition_when_asked(monkeypatch,
     )
 
     # 헤더는 latin-1만 담을 수 있다 — 한글 이름은 RFC 5987 filename*으로만 나간다.
-    disposition = calls[0][2]
-    assert calls == [(report.doctor_pdf_path, 1, disposition)]
+    disposition = response.headers["content-disposition"]
+    assert calls == []
+    assert response.body == b"a" * 4096
     assert 'filename="report-2026-05-doctor.pdf"' in disposition
     assert "filename*=UTF-8''" in disposition
     assert "원장보고" not in disposition, "한글이 latin-1 헤더에 그대로 들어가면 500이 난다"
@@ -1179,10 +1180,10 @@ async def test_legacy_delivered_doctor_artifact_remains_downloadable(monkeypatch
         actor=_actor(),
     )
 
-    assert response.status_code == 302
+    assert response.status_code == 200
 
 
-@pytest.mark.parametrize(("assigned", "expected_status"), [(True, 302), (False, 403)])
+@pytest.mark.parametrize(("assigned", "expected_status"), [(True, 200), (False, 403)])
 async def test_doctor_download_requires_owner_or_assigned_operator(
     monkeypatch, assigned, expected_status
 ):
@@ -1198,11 +1199,11 @@ async def test_doctor_download_requires_owner_or_assigned_operator(
     monkeypatch.setattr(reports_api, "get_essence_readiness", _fresh)
     monkeypatch.setattr(reports_api, "get_signed_url", lambda *args, **kwargs: "https://x.test")
 
-    if expected_status == 302:
+    if expected_status == 200:
         response = await reports_api.download_report(
             hospital.id, report.id, audience="doctor", db=db, actor=operator
         )
-        assert response.status_code == 302
+        assert response.status_code == 200
     else:
         with pytest.raises(HTTPException) as exc:
             await reports_api.download_report(
@@ -1274,7 +1275,7 @@ def test_v0_report_requires_its_hash_bound_generated_artifact():
         validation_metadata={
             "validation_version": "v0-pdf-v1",
             "validation_source": "SYSTEM",
-            "sha256": "b" * 64,
+            "sha256": sha256(b"b" * 2048).hexdigest(),
             "byte_size": 2048,
         },
     )
@@ -1586,3 +1587,16 @@ async def _async_none(*_args, **_kwargs):
 
 async def _async_empty_list(*_args, **_kwargs):
     return []
+
+
+@pytest.fixture(autouse=True)
+def stored_report_fixture_bytes(monkeypatch):
+    """Unit routes use fake storage; real checksum verification remains enabled."""
+    from app.services import report_file_integrity
+    def read_cloud(path, expected_size):
+        if path == "gs://reputation-reports/demo_doctor.pdf":
+            return b"a" * 4096
+        if path == "gs://reputation-reports/demo.pdf":
+            return b"b" * 2048
+        raise report_file_integrity.ReportFileUnavailable("Unknown fixture object")
+    monkeypatch.setattr(report_file_integrity, "_read_cloud_report", read_cloud)

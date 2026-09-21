@@ -8,7 +8,9 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 KST = ZoneInfo("Asia/Seoul")
-RECOVERY_SWEEP_HOURS = (1, 4, 7, 23)
+OVERNIGHT_RECOVERY_HOURS = (1, 4, 7)
+DAYTIME_RECOVERY_HOURS = (12, 18, 22)
+RECOVERY_SWEEP_HOURS = (*OVERNIGHT_RECOVERY_HOURS, *DAYTIME_RECOVERY_HOURS, 23)
 # 23:00 야간 배치가 보는 창은 `[내일, 모레]`, 01·04·07 복구 스윕이 보는 창은
 # `[오늘-7일, 모레]`(뒤로는 발행 catch-up과 같은 7일, 앞으로는 야간 배치와 같은
 # lookahead)다. 두 창을 모르면 기한이 "다음 스윕 시각"이 되어 그 스윕이 실제로는 집지
