@@ -4611,7 +4611,7 @@ def _finish_claimed_item_run(
 ) -> None:
     """Terminalize the per-item run through whichever ownership proof it has."""
 
-    has_explicit_run = explicit_run_context(task) is not None
+    context = explicit_run_context(task)
     finished = finish_explicit_run(
         db,
         task,
@@ -4620,7 +4620,11 @@ def _finish_claimed_item_run(
         safe_error_code=safe_error_code,
         safe_error_message=safe_error_message,
     )
-    if finished is None and run is not None and not has_explicit_run:
+    if (
+        finished is None
+        and run is not None
+        and (context is None or run.id != context.run_id)
+    ):
         finish_item_run(
             db,
             run,
