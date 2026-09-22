@@ -15,6 +15,7 @@
 import logging
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,6 +60,19 @@ async def latest_diagnosis_for(db: AsyncSession, lead_id: uuid.UUID) -> LeadDiag
     )
 
 
+async def active_diagnosis_for(db: AsyncSession, lead_id: uuid.UUID) -> LeadDiagnosis | None:
+    """갈음되지 않은 진단. 리드당 하나뿐이며 이것이 '이 리드의 현재 진단'이다."""
+    return await db.scalar(
+        select(LeadDiagnosis)
+        .where(
+            LeadDiagnosis.lead_id == lead_id,
+            LeadDiagnosis.superseded_at.is_(None),
+        )
+        .order_by(LeadDiagnosis.created_at.desc())
+        .limit(1)
+    )
+
+
 def build_inquiry_queries(clinic_name: str, spec: InquiryDiagnosisInput) -> list[dict]:
     """질의를 만들되 병원명이 섞이면 거절한다. 세션을 건드리지 않는 순수 검증 단계."""
     # 지연 import — public.diagnosis가 public.leads를 import하므로 모듈 순환을 피한다.
@@ -92,17 +106,35 @@ async def create_inquiry_diagnosis(
     spec: InquiryDiagnosisInput,
     *,
     actor: str,
+    supersede_reason: str | None = None,
 ) -> LeadDiagnosis:
-    """INTERNAL 진단 1건을 세션에 추가하고 flush한다. commit과 큐잉은 호출자 몫이다."""
+    """INTERNAL 진단 1건을 세션에 추가하고 flush한다. commit과 큐잉은 호출자 몫이다.
+
+    `supersede_reason`이 있으면 기존 활성 진단을 갈음하고 새로 만든다. 도입문의 폼에
+    진료과·지역·키워드를 틀리게 적은 리드를 고치는 경로다 — 값이 비어 있으면 자동
+    생성이 거절돼 이 함수가 처음 만들지만, 틀린 값은 자동 생성을 통과해 잘못된 질의로
+    측정까지 끝난다. 옛 진단은 지우지 않는다. 실제로 지출한 공급자 호출과 그때 무엇을
+    쟀는지가 기록으로 남아야 한다.
+    """
     if not is_internal_inquiry(lead):
         raise InquiryDiagnosisError(400, "도입문의 리드만 내부용 진단을 생성할 수 있습니다.")
 
-    existing = await latest_diagnosis_for(db, lead.id)
-    if existing is not None:
+    existing = await active_diagnosis_for(db, lead.id)
+    if existing is not None and supersede_reason is None:
         raise InquiryDiagnosisError(
             409,
             {
                 "message": "이 도입문의에는 이미 내부 진단이 있습니다.",
+                "diagnosis_id": str(existing.id),
+            },
+        )
+    if existing is not None and existing.delivery_status != DeliveryStatus.INTERNAL.value:
+        # 고객에게 나갔거나 나가는 중인 진단은 갈음 대상이 아니다. 콜용이 아니라는 뜻이고,
+        # 공개 토큰이 걸린 판을 조용히 비활성으로 만들면 링크의 의미가 바뀐다.
+        raise InquiryDiagnosisError(
+            409,
+            {
+                "message": "고객 발송 이력이 있는 진단은 갈음할 수 없습니다. 개발팀에 진단 ID를 알려 주세요.",
                 "diagnosis_id": str(existing.id),
             },
         )
@@ -145,6 +177,11 @@ async def create_inquiry_diagnosis(
     )
     db.add(diagnosis)
     await db.flush()
+    if existing is not None:
+        # 갈음은 새 진단이 생긴 뒤에 표시한다 — 그 사이에 "활성 진단이 없는" 리드가
+        # 만들어지면 폴러와 Admin 목록이 서로 다른 것을 본다.
+        existing.superseded_at = datetime.now(timezone.utc)
+        existing.superseded_by_id = diagnosis.id
     await write_audit_log(
         db,
         action="create_internal_inquiry_diagnosis",
@@ -160,6 +197,8 @@ async def create_inquiry_diagnosis(
             "report_token_minted": False,
             "free_slot_claimed": False,
             "applicant_locks_claimed": False,
+            "superseded_diagnosis_id": str(existing.id) if existing is not None else None,
+            "supersede_reason": supersede_reason,
         },
     )
     return diagnosis

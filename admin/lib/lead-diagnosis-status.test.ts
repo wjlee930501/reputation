@@ -12,6 +12,7 @@ import {
   recoveryAction,
   leadNeedsAttention,
   needsAttention,
+  isSuperseded,
 } from './lead-diagnosis-status.ts'
 
 const LEADS_PAGE = readFileSync(new URL('../app/leads/page.tsx', import.meta.url), 'utf8')
@@ -287,5 +288,39 @@ test('a ready report still being delivered is left alone', () => {
       make({ execution_status: 'SUCCEEDED', report_status: 'READY', delivery_status: 'SENDING' }),
     ),
     null,
+  )
+})
+
+test('a superseded diagnosis is a record, not a task', () => {
+  // Given: 값이 틀려 갈음된 옛 진단 — 측정도 실패해 있다
+  const superseded = make({
+    execution_status: 'FAILED',
+    report_status: 'BLOCKED',
+    delivery_status: 'INTERNAL',
+    superseded_at: '2026-09-22T09:00:00Z',
+    superseded_by_id: 'diagnosis-2',
+  })
+
+  // Then: 운영자 큐에 올리지도, 복구 버튼을 내주지도 않는다
+  assert.equal(isSuperseded(superseded), true)
+  assert.equal(needsAttention(superseded), false)
+  assert.equal(recoveryAction(superseded), null)
+  assert.match(diagnosisHint(superseded), /갈음/)
+})
+
+test('the superseded report can still be opened to see what went wrong', () => {
+  const superseded = make({
+    report_status: 'READY',
+    delivery_status: 'INTERNAL',
+    superseded_at: '2026-09-22T09:00:00Z',
+  })
+  assert.ok(diagnosisReportHref('lead-1', superseded))
+})
+
+test('backend needs_attention does not override a supersede', () => {
+  // 백엔드 판정을 신뢰하되, 갈음은 그보다 앞선다 — 이미 대체본이 있다.
+  assert.equal(
+    needsAttention(make({ needs_attention: true, superseded_at: '2026-09-22T09:00:00Z' })),
+    false,
   )
 })

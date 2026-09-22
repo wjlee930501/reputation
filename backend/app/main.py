@@ -24,6 +24,7 @@ from app.api.admin import exposure_actions as admin_exposure_actions
 from app.api.admin import handoffs as admin_handoffs
 from app.api.admin import hospital_overview as admin_hospital_overview
 from app.api.admin import hospitals as admin_hospitals
+from app.api.admin import lead_diagnosis_creation as admin_lead_diagnosis_creation
 from app.api.admin import leads as admin_leads
 from app.api.admin import operations as admin_operations
 from app.api.admin import operations_center as admin_operations_center
@@ -194,6 +195,9 @@ app.include_router(admin_operations.router, prefix="/api/v1", dependencies=admin
 app.include_router(admin_operations.cost_guard_router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_operations_center.router, prefix="/api/v1", dependencies=admin_deps)
 app.include_router(admin_leads.router, prefix="/api/v1", dependencies=admin_deps)
+app.include_router(
+    admin_lead_diagnosis_creation.router, prefix="/api/v1", dependencies=admin_deps
+)
 # 감시 라우터만 admin_deps 밖에 둔다 — Cloud Scheduler가 admin 키 대신 전용 토큰으로
 # 호출해야 하고, 인증은 라우터 자체 의존성(verify_watchdog_access)이 판정한다.
 app.include_router(admin_watchdog.router, prefix="/api/v1")

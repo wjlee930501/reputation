@@ -169,7 +169,9 @@ async def _claim_for_execution(
     """
     recovery = recovery_expected_attempts is not None
     now = datetime.now(timezone.utc)
-    predicates = [LeadDiagnosis.id == diagnosis_id]
+    # 갈음된 진단은 어느 경로로도 공급자를 부르지 않는다. AE가 잘못된 입력을 고쳐
+    # 새 진단을 만든 뒤에도 옛 행이 PENDING이면 폴러가 그대로 돈을 쓴다.
+    predicates = [LeadDiagnosis.id == diagnosis_id, LeadDiagnosis.superseded_at.is_(None)]
     if recovery:
         predicates.extend(
             (
@@ -368,6 +370,8 @@ async def _claim_for_report(
     recovery = recovery_expected_attempts is not None
     predicates = [
         LeadDiagnosis.id == diagnosis_id,
+        # 갈음된 진단의 보고서는 더 만들지 않는다 (claim_for_execution과 같은 이유).
+        LeadDiagnosis.superseded_at.is_(None),
         LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
     ]
     if recovery:
@@ -587,6 +591,7 @@ async def _reports_to_build(session) -> list[str]:
         await session.execute(
             select(LeadDiagnosis.id)
             .where(
+                LeadDiagnosis.superseded_at.is_(None),
                 LeadDiagnosis.report_status == ReportStatus.PENDING.value,
                 LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
                 LeadDiagnosis.report_attempts < MAX_REPORT_ATTEMPTS,
@@ -644,6 +649,7 @@ async def _deliveries_to_send(session) -> list[str]:
             select(LeadDiagnosis.id)
             .join(SalesLead, SalesLead.id == LeadDiagnosis.lead_id)
             .where(
+                LeadDiagnosis.superseded_at.is_(None),
                 LeadDiagnosis.report_status == ReportStatus.READY.value,
                 LeadDiagnosis.delivery_status == DeliveryStatus.PENDING.value,
                 func.upper(func.trim(SalesLead.source)) != LEAD_SOURCE_INQUIRY,
@@ -700,6 +706,9 @@ async def _exhausted_to_failed(session) -> list[LeadDiagnosis]:
     rows = (
         await session.execute(
             select(LeadDiagnosis).where(
+                # 갈음된 행은 FAILED로 종결하지 않는다 — 사람이 이미 대체본을 만들었는데
+                # DLQ와 인시던트가 열리면 없는 일을 운영자 큐에 올리는 셈이다.
+                LeadDiagnosis.superseded_at.is_(None),
                 LeadDiagnosis.execution_status == ExecutionStatus.PENDING.value,
                 LeadDiagnosis.execution_attempts >= MAX_EXECUTION_ATTEMPTS,
             )
@@ -724,6 +733,7 @@ async def _pending_to_dispatch(session) -> list[str]:
         await session.execute(
             select(LeadDiagnosis.id)
             .where(
+                LeadDiagnosis.superseded_at.is_(None),
                 LeadDiagnosis.execution_status == ExecutionStatus.PENDING.value,
                 LeadDiagnosis.execution_attempts < MAX_EXECUTION_ATTEMPTS,
                 or_(
