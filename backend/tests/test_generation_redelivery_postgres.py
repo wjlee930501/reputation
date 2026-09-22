@@ -230,6 +230,36 @@ def test_stale_run_completion_cannot_close_new_execution(live):
         assert db.get(OperationRun, run_id).version == newer.version
 
 
+def test_claimed_item_finish_does_not_bypass_stale_run_fence(live):
+    from types import SimpleNamespace
+
+    from app.workers.tasks import _finish_claimed_item_run
+
+    sessions, item_id, reservation, context, run_id = live
+    with sessions() as db:
+        assert begin_generation_execution(db, item_id, reservation, context, now=NOW)
+    newer = next_claim(context)
+    stale_task = SimpleNamespace(
+        request=SimpleNamespace(
+            id=context.worker_id,
+            headers={"operation_run_id": str(run_id)},
+            operation_run_claim_version=context.version,
+        )
+    )
+    with sessions() as db:
+        run = db.get(OperationRun, run_id)
+        _finish_claimed_item_run(
+            db,
+            stale_task,
+            item_id,
+            run,
+            OperationRunState.CANCELLED,
+        )
+        db.refresh(run)
+        assert run.state == OperationRunState.RUNNING
+        assert run.version == newer.version
+
+
 async def test_authority_change_and_public_intent_commit_or_rollback_together(live):
     from test_geo_autonomy_hardening import AsyncDB
 
