@@ -209,3 +209,15 @@ def test_v0_report_never_shows_meeting_talking_points():
     html = _render(None, report_type="V0", talking_points=_POINTS)
 
     assert "원장 미팅 토킹 포인트" not in html
+
+
+def test_ae_report_shares_the_editorial_rules_without_saas_card_effects():
+    """내부 리포트도 원장용·진단서와 같은 헤어라인 편집 체계를 쓴다."""
+    html = _render(_sample_attribution(), talking_points=_POINTS)
+
+    assert 'class="masthead"' in html and "#0672ed" in html
+    assert "border-radius" not in html
+    assert "box-shadow" not in html
+    assert "linear-gradient" not in html
+    assert "#1A4B8C" not in html and "#fff8e1" not in html
+    assert "nth-child(even)" not in html

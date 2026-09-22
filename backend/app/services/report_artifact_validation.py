@@ -99,7 +99,7 @@ def validate_doctor_pdf(
         )
 
     if v3:
-        markers = ("01 관측과 결론", "02 수행과 증거", "03 다음 결정")
+        markers = ("01 / 관측과 결론", "02 / 수행과 증거", "03 / 다음 결정")
         for index, required_texts in enumerate(expectation.main_page_texts):
             page_text = _normalize_text(reader.pages[index].extract_text() or "")
             if not required_texts or _normalize_text(markers[index]) not in page_text or any(_normalize_text(text) not in page_text for text in required_texts):
