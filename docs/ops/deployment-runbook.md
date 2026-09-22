@@ -1,5 +1,15 @@
 # 현재 배포와 헬스체크
 
+## 최신 운영 배포 — 2026-09-22 노출 진단 수동 생성
+
+PR #143 기능 코드를 담은 main tip `300a6636aee6d5fb73141848f34189194a86c9e5`를 5개 서비스에 배포했다.
+현재 리비전은 api `00198-r2k`, worker `00187-wsn`, beat `00183-ks8`, site `00134-x65`, admin `00092-zln`이다.
+**DB head가 `0079_topic_swap_fallback`에서 `0080_lead_diagnosis_supersede`로 올라갔다**(additive only).
+PR CI 10/10과 readiness 7개 큐를 통과했고, 공개 9개 병원 헬스 200·새 리비전 오류 0건·
+새 admin API 401 라우팅·랜딩 회귀 없음을 사후 확인했다. 새 화면을 로그인 상태로 눌러본
+검증과 교정 후 새 질의로 측정이 도는지는 남아 있다. 실제 digest·롤백 좌표는
+[노출 진단 수동 생성 배포 기록](../releases/2026-09-22-manual-diagnosis-production.md)을 따른다.
+
 ## 최신 운영 배포 — 2026-09-22 도입문의 CTA 전환
 
 PR #141의 main 소스 `8f40f49590345ccd333ff85d786d9fcfe41848f2`를 5개 서비스에 배포했다.
