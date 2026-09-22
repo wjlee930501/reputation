@@ -1,4 +1,5 @@
 """Conversion and safe state contracts using fictional records only."""
+import re
 from dataclasses import replace
 from pathlib import Path
 
@@ -20,13 +21,14 @@ def test_diagnosis_connects_why_now_assets_and_regional_fit(measured, mentioned,
     # Then the approved decision narrative exists independently of results.
     assert TEMPLATE_VERSION == "lead-v12"
     assert "우리 병원의 강점이," in html and "AI가 답할 근거가 되도록." in html
-    assert "기다린 시간은 발행 이력이 되지 않습니다." in html.replace("<br>", " ")
+    plain = re.sub(r"</?em>", "", html.replace("<br>", " "))
+    assert "기다린 시간은 발행 이력이 되지 않습니다." in plain
     assert "공개 정보 허브" in html and "전담 마케터" in html
     assert "동일 지역·유사 진료 분야는 기존 운영 병원과의 중복을 확인한 뒤 안내합니다." in html
     assert "우리 지역 운영 가능 여부 확인" in html
     assert "기존 홈페이지와 블로그는 그대로" in html
     assert 'class="statement-band"' in html and 'class="proposal"' in html
-    assert "#0672ed" in html and "#99522e" not in html
+    assert "#ff3d00" in html and "#99522e" not in html
 
 
 @pytest.mark.parametrize("cited_cells,label", [(None, "인용 집계 미확인"), (0, "관측한 인용 0개 조합"), (2, "출처로 확인 · 2개 질문×플랫폼 조합")])
