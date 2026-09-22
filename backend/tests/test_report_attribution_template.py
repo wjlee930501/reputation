@@ -215,9 +215,41 @@ def test_ae_report_shares_the_editorial_rules_without_saas_card_effects():
     """내부 리포트도 원장용·진단서와 같은 헤어라인 편집 체계를 쓴다."""
     html = _render(_sample_attribution(), talking_points=_POINTS)
 
-    assert 'class="masthead"' in html and "#0672ed" in html
+    assert 'class="masthead"' in html and "#ff3d00" in html
     assert "border-radius" not in html
     assert "box-shadow" not in html
     assert "linear-gradient" not in html
     assert "#1A4B8C" not in html and "#fff8e1" not in html
     assert "nth-child(even)" not in html
+
+
+def test_gutter_grids_reach_both_rails():
+    """나란한 모듈은 본문 양쪽 레일에 정확히 닿아야 한다.
+
+    `border-spacing`으로 단 사이 간격을 만들면 표 바깥쪽에도 같은 간격이 생긴다. 음수
+    여백으로 왼쪽만 당기고 폭을 100%로 두면 오른쪽 끝이 간격 두 배만큼 짧아진다 —
+    PR #148 첫 렌더에서 KPI 스트립·자산 3단·수행/관측 2단이 모두 레일보다 32pt 짧았다.
+    음수 여백을 쓰는 규칙은 같은 간격 두 배를 폭에 더해야 한다.
+    """
+    import re
+
+    html = _render(_sample_attribution(), talking_points=_POINTS)
+    rules = re.findall(r"([.\w-]+) \{([^}]*calc\(-1 \* var\((--s\d)\)\)[^}]*)\}", html)
+    names = {name for name, _, _ in rules}
+    assert {".metrics", ".asset-grid", ".readout", ".kpi-grid"} <= names
+    for name, body, gutter in rules:
+        assert f"width:calc(100% + 2 * var({gutter}))" in body, name
+
+
+def test_reports_carry_the_newvisit_signal_system():
+    """보고서 지면은 뉴비짓 소개서와 같은 신호 체계를 쓴다.
+
+    주황은 두 값으로 나눈다. `#ff3d00`은 막대·룰·면처럼 크기가 있는 표시에만 쓰고, 작은
+    글자는 흰 바탕 대비 5:1인 `#d13200`으로 쓴다. `#ff3d00` 단독은 3.6:1이라 9pt 라벨이
+    읽히지 않는다. 옛 파랑과 청회색이 남으면 두 브랜드가 한 문서에 섞인다.
+    """
+    html = _render(_sample_attribution(), talking_points=_POINTS)
+    assert "--accent:#ff3d00" in html and "--accent-ink:#d13200" in html
+    for retired in ("#0672ed", "#525b69", "#dce3ed", "#eef5ff", "#b9c4d2"):
+        assert retired not in html, retired
+    assert "by Newvisit" in html and "NEWVISIT · RE:PUTATION" in html

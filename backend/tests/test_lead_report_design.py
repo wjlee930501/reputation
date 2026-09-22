@@ -121,7 +121,7 @@ def test_operating_page_keeps_prices_and_volumes_separate_from_recommendations(d
 
 def test_report_uses_editorial_rules_instead_of_saas_card_effects(design_payload):
     html = lead_report.render_lead_report_html(design_payload)
-    assert "#0672ed" in html
+    assert "#ff3d00" in html
     assert "#99522e" not in html
     assert "border-radius" not in html
     assert "box-shadow" not in html

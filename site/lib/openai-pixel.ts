@@ -60,9 +60,39 @@ export function pageViewedContent(
   return null
 }
 
-/** 접수 레코드 ID를 이벤트 ID로 만든다 — 서버 중복 전송이 붙어도 한 번만 집계된다(PIX-007). */
-export function leadEventId(diagnosisId: string): string {
-  return `diagnosis_${diagnosisId}`
+/**
+ * 전환이 나오는 두 접수 경로.
+ *
+ * - `inquiry`: 랜딩 도입문의 폼(`#lead`). 랜딩의 모든 CTA가 여기를 가리키므로 광고 유입의
+ *   주 전환이다. 성공 응답의 `lead_id`가 저장된 레코드다.
+ * - `diagnosis`: 셀프서브 무료 진단(`/ai-diagnosis`). 성공 응답의 `diagnosis_id`가 저장된 레코드다.
+ */
+export type LeadSource = 'inquiry' | 'diagnosis'
+
+const LEAD_RECORD_KEY: Record<LeadSource, 'lead_id' | 'diagnosis_id'> = {
+  inquiry: 'lead_id',
+  diagnosis: 'diagnosis_id',
+}
+
+/**
+ * 접수 성공 응답에서 **실제로 저장된** 레코드 ID를 꺼낸다. 없으면 null.
+ *
+ * 허니팟에 걸린 요청도 200을 받는다 — 백엔드는 레코드 ID를 null로, Site BFF는 ID 없이
+ * `{ ok: true }`만 돌려준다. HTTP 상태만 보고 전환을 쏘면 봇 제출이 전환이 되고, 입찰
+ * 알고리즘이 그것을 "좋은 클릭"으로 학습한다. GA4 `generate_lead`도 같은 값으로 묶는다.
+ */
+export function storedRecordId(source: LeadSource, data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null
+  const value = (data as Record<string, unknown>)[LEAD_RECORD_KEY[source]]
+  return typeof value === 'string' && value.trim() ? value : null
+}
+
+/**
+ * 접수 레코드 ID를 이벤트 ID로 만든다 — 서버 중복 전송(Conversions API)이 붙어도 한 번만
+ * 집계된다(PIX-007). 두 경로의 ID가 우연히 겹쳐도 다른 전환으로 남도록 접두어를 나눈다.
+ */
+export function leadEventId(source: LeadSource, recordId: string): string {
+  return `${source === 'inquiry' ? 'lead' : 'diagnosis'}_${recordId}`
 }
 
 function getOaiq(): Oaiq | null {
@@ -152,16 +182,15 @@ export function trackPixelPageViewed(pathname: string): void {
 /**
  * 전환 — **접수가 서버에서 성공 처리된 뒤에만** 부른다(PIX-002).
  *
- * `diagnosisId`가 없으면 보내지 않는다. 백엔드는 허니팟에 걸린 요청에도 200을 주되
- * `diagnosis_id`를 null로 돌려주므로, 이 값의 유무가 **실제로 저장된 신청인지**의
- * 가장 정확한 신호다. 봇 제출이 전환으로 잡히면 입찰 알고리즘이 그것을 학습한다.
+ * 레코드 ID가 없으면 보내지 않는다. 마감(429)·중복(409)·검증 실패는 호출부에서 이미
+ * 걸러지고, 허니팟 200은 여기서 걸러진다(`storedRecordId` 참조).
  */
-export function trackPixelLeadCreated(diagnosisId: string | null | undefined): void {
-  if (!diagnosisId) return
+export function trackPixelLeadCreated(source: LeadSource, recordId: string | null | undefined): void {
+  if (!recordId) return
   trackPixelEvent(
     'lead_created',
     { type: 'customer_action' },
-    { event_id: leadEventId(diagnosisId) },
+    { event_id: leadEventId(source, recordId) },
   )
 }
 
@@ -176,7 +205,7 @@ export function pendingPixelEventsForTest(): ReadonlyArray<PendingEvent> {
   return pending
 }
 
-/** 테스트용 — init이 끝났는지. */
+/** 테스트용 — 전송 대상 없이 init이 끝난 상태로 만든다. */
 export function markPixelInitializedForTest(): void {
   initialized = true
   pending.splice(0, pending.length)

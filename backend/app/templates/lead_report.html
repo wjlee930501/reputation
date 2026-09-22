@@ -1,11 +1,11 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{{ payload.hospital_name }} · 우리 병원 AI 노출 진단·개선 제안서</title>
 <style>{% include 'report_editorial.css' %}
-{% if payload.sample_label or payload.internal %}@page { @top-right { content:'{{ '검증용 가상 사례' if payload.sample_label else '' }}{{ ' · ' if payload.sample_label and payload.internal else '' }}{{ 'AE 전용 · INTERNAL' if payload.internal else '' }} · ' counter(page) ' / ' counter(pages); font-family:"Pretendard"; font-size:9pt; color:#525b69; font-variant-numeric:tabular-nums; vertical-align:bottom; padding-bottom:8pt; } }{% endif %}
+{% if payload.sample_label or payload.internal %}@page { @top-right { content:'{{ '검증용 가상 사례' if payload.sample_label else '' }}{{ ' · ' if payload.sample_label and payload.internal else '' }}{{ 'AE 전용 · INTERNAL' if payload.internal else '' }} · ' counter(page) ' / ' counter(pages); font-family:"Pretendard"; font-size:9pt; font-weight:700; letter-spacing:.08em; color:#a3a3a3; font-variant-numeric:tabular-nums; vertical-align:bottom; padding-bottom:8pt; } }{% endif %}
 </style></head><body class="diagnosis">
 <section class="page page-summary" id="main-1-start">
-<div class="masthead"><span class="wordmark"><b>Re:putation</b> by MotionLabs</span><span class="section-label">01 / DISCOVERY</span></div>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> by Newvisit</span><span class="section-label"><span class="ord">01 /</span> DISCOVERY</span></div>
 <p class="descriptor">우리 병원 AI 노출 진단·개선 제안서 · {{ payload.region }}</p>
-<h1 class="brand-promise">우리 병원의 강점이,<br>AI가 답할 근거가 되도록.</h1>
+<h1 class="brand-promise">우리 병원의 강점이,<br><em>AI가 답할 근거가 되도록.</em></h1>
 <div class="identity-rail"><p class="hero-identity">{{ payload.hospital_name }}</p><p>우리 지역의 진료 질문에서, 병원이 이해되고 발견될 수 있도록 준비합니다.</p></div>
 <div class="metrics" id="result">{% for segment in payload.segments %}<div class="metric"><span class="metric-label">{{ segment.vendor_label }} · 병원명 언급 / 확인한 답변</span><strong class="{{ 'withheld' if not segment.measured else '' }}">{{ segment.mentioned ~ ' / ' ~ segment.measured if segment.measured else '확인 불가' }}</strong>{% if segment.measured %}<div class="scale"><div class="bar" style="width:{{ segment.mention_rate }}%"></div></div>{% endif %}<p class="caption">계획 {{ segment.planned }}회 · 실패 {{ segment.failed }}회 · 보류 {{ segment.ambiguous }}회 · 미실행 {{ segment.pending }}회</p></div>{% endfor %}</div>
 <p class="caption">질문 {{ payload.queries|length }}개 · 환자 수가 아닌 확정 반복 중 언급 횟수입니다. API 관찰은 앱 화면·개인화 노출과 다르며, 미확정은 미언급 0이 아닙니다.</p>
@@ -16,9 +16,9 @@
 <div id="main-1-end"></div></section>
 
 <section class="page page-proposals" id="main-2-start">
-<div class="masthead"><span class="wordmark"><b>Re:putation</b> by MotionLabs</span><span class="section-label">02 / WHY NOW</span></div>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> by Newvisit</span><span class="section-label"><span class="ord">02 /</span> WHY NOW</span></div>
 <p class="kicker">왜 지금 시작해야 하나요?</p>
-<div class="statement-band"><h1>기다린 시간은<br>발행 이력이 되지 않습니다.</h1><p>유용한 병원 정보, 공개된 발행 기록, 비교할 측정 기준선은<br>운영을 시작한 뒤에 쌓입니다.</p></div>
+<div class="statement-band"><h1>기다린 시간은<br><em>발행 이력이 되지 않습니다.</em></h1><p>유용한 병원 정보, 공개된 발행 기록, 비교할 측정 기준선은<br>운영을 시작한 뒤에 쌓입니다.</p></div>
 <p class="caption">먼저 시작하면 순위가 오른다는 뜻이 아닙니다. 지금 준비할 수 있는 정보와 기록부터 만듭니다.</p>
 <h2>이 질문부터, 답할 근거를 만듭니다</h2>
 {% for item in proposal.proposals %}<article class="proposal"><div class="proposal-heading"><span class="number">0{{ loop.index }}</span><h3>{{ item.question }}</h3></div>
@@ -29,13 +29,13 @@
 <div id="main-2-end"></div></section>
 
 <section class="page page-plan" id="main-3-start">
-<div class="masthead"><span class="wordmark"><b>Re:putation</b> by MotionLabs</span><span class="section-label">03 / YOUR NEXT STEP</span></div>
-<h1>환자가 병원을 이해할 근거,<br>원장님이 변화를 확인할 기록.</h1>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> by Newvisit</span><span class="section-label"><span class="ord">03 /</span> YOUR NEXT STEP</span></div>
+<h1>환자가 병원을 이해할 근거,<br><em>원장님이 변화를 확인할 기록.</em></h1>
 <div class="asset-grid"><div><span class="kicker">01 / PUBLIC HUB</span><h3>공개 정보 허브</h3><p>병원 공식 정보를 모은<br>별도의 공개 공간</p></div><div><span class="kicker">02 / CONTENT</span><h3>질문별 콘텐츠</h3><p>환자 질문에 답하는<br>근거 있는 진료 안내</p></div><div><span class="kicker">03 / MONTHLY REVIEW</span><h3>월간 해석과 조정</h3><p>반복 관측 결과와<br>다음 운영할 질문</p></div></div>
 <p class="caption">기존 홈페이지와 블로그는 그대로 유지합니다. 병원 소유 도메인 사용은 온보딩에서 협의합니다.</p>
 <h2>첫 달에는 이렇게 시작합니다 <span class="section-aside">정보 정리 · 콘텐츠 운영 · 반복 측정</span></h2>
 <div class="process"><p><b>01 / 자료 정리</b> 공식 진료 사실과 공개 주소·운영 기준을 확인합니다.</p><p><b>02 / 정보 설계</b> 환자 질문에 맞춰 설명과 참고 근거를 구성합니다.</p><p><b>03 / 검수와 발행</b> 승인된 근거와 자동 안전 검사를 거쳐 공개합니다.</p><p><b>04 / 재측정과 보고</b> 같은 질문의 언급·인용을 확인해 운영을 조정합니다.</p></div>
-<div class="marketer-followthrough"><h3>WHY MOTIONLABS · 전담 마케터가 설명합니다</h3><p>병원의 사실을 답변 가능한 정보로 바꾸고, 공개 운영과 반복 관측까지 연결합니다. 전담 마케터가 월간 결과의 의미와 다음 실행을 설명합니다.</p></div>
+<div class="marketer-followthrough"><h3>WHY NEWVISIT · 전담 마케터가 설명합니다</h3><p>병원의 사실을 답변 가능한 정보로 바꾸고, 공개 운영과 반복 관측까지 연결합니다. 전담 마케터가 월간 결과의 의미와 다음 실행을 설명합니다.</p></div>
 <h2>계약 범위</h2>
 <table class="pricing"><thead><tr><th>운영 규모</th><th>월 발행 약정</th><th>월 비용</th></tr></thead><tbody><tr><td>STARTER</td><td>월 12편 발행</td><td>월 60만 원 · 부가세 별도</td></tr><tr><td>GROWER</td><td>월 16편 발행</td><td>월 90만 원 · 부가세 별도</td></tr><tr><td>LEADER</td><td>월 20편 발행</td><td>월 120만 원 · 부가세 별도</td></tr></tbody></table>
 <p class="caption regional-policy">동일 지역·유사 진료 분야는 기존 운영 병원과의 중복을 확인한 뒤 안내합니다. 진료 포지셔닝의 차별화 가능성도 함께 검토합니다.</p>
@@ -43,7 +43,7 @@
 {% else %}{% if payload.contact.phone %}<a class="cta" href="tel:{{ payload.contact.phone }}">우리 지역 운영 가능 여부 확인 · {{ payload.contact.phone }}</a>{% elif payload.contact.email %}<a class="cta" href="mailto:{{ payload.contact.email }}">우리 지역 운영 가능 여부 확인 · {{ payload.contact.email }}</a>{% else %}<p class="internal-note">상담 연락처가 아직 설정되지 않았습니다.</p>{% endif %}<p class="caption">{{ payload.contact.name }} {{ payload.contact.role }}</p>{% endif %}
 <div id="main-3-end"></div></section>
 
-<section class="appendix" id="lead-details"><div class="masthead"><span class="wordmark"><b>Re:putation</b> by MotionLabs</span><span class="section-label">APPENDIX / 측정 기록</span></div>
+<section class="appendix" id="lead-details"><div class="masthead"><span class="wordmark"><b>Re:putation</b> by Newvisit</span><span class="section-label"><span class="ord">APPENDIX /</span> 측정 기록</span></div>
 <h1>질문과 측정 조건</h1>
 <p class="caption">문서 생성 {{ payload.generated_at.strftime('%Y-%m-%d') }} · 아래 확인일은 캐시의 원본 측정일을 보존합니다.</p>
 

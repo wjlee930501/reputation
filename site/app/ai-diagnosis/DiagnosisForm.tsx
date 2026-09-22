@@ -6,7 +6,7 @@ import { DiagnosisQuota, useDiagnosisSlots } from '@/app/_components/DiagnosisQu
 import { attributionEventParams, decorateSourcePath, type Attribution } from '@/lib/ad-attribution'
 import { ensureAttributionCaptured } from '@/lib/ad-attribution-client'
 import { trackEvent } from '@/lib/analytics'
-import { trackPixelLeadCreated } from '@/lib/openai-pixel'
+import { storedRecordId, trackPixelLeadCreated } from '@/lib/openai-pixel'
 import {
   EMPTY_FORM,
   type DiagnosisFormValues,
@@ -118,15 +118,11 @@ export default function DiagnosisForm() {
       }
       // 접수 성공 응답을 받은 뒤에만 발화한다(REP-002·PIX-002). 확인 버튼 클릭이
       // 아니라 여기인 이유는, 마감(429)·중복(409)·검증 실패가 전부 리드로 집계되면
-      // 안 되기 때문이다.
-      //
-      // `diagnosis_id`까지 보는 이유: 백엔드는 **허니팟에 걸린 요청에도 200을 주되**
-      // 이 값을 null로 돌려준다. 그 응답으로 전환을 쏘면 봇 제출이 전환이 되고,
-      // 광고 입찰 알고리즘이 그것을 "좋은 클릭"으로 학습한다.
-      const diagnosisId = typeof data?.diagnosis_id === 'string' ? data.diagnosis_id : null
+      // 안 되기 때문이다. 허니팟 200은 저장된 ID가 없어 여기서 걸러진다.
+      const diagnosisId = storedRecordId('diagnosis', data)
       if (diagnosisId) {
         trackEvent('generate_lead', attributionEventParams(attribution.current))
-        trackPixelLeadCreated(diagnosisId)
+        trackPixelLeadCreated('diagnosis', diagnosisId)
       }
       setSubmission({
         phase: 'done',

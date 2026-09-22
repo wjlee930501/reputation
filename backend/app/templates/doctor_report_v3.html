@@ -1,19 +1,19 @@
 <!doctype html><html lang="ko"><head><meta charset="utf-8"><title>{{ view.hospital_name }} · {{ view.narrative.title }}</title>
 <style>{% include 'report_editorial.css' %}
-{% if view.sample_label %}@page { @top-right { content:'검증용 가상 사례 · ' counter(page) ' / ' counter(pages); font-family:"Pretendard"; font-size:9pt; color:#525b69; font-variant-numeric:tabular-nums; vertical-align:bottom; padding-bottom:8pt; } }{% endif %}
+{% if view.sample_label %}@page { @top-right { content:'검증용 가상 사례 · ' counter(page) ' / ' counter(pages); font-family:"Pretendard"; font-size:9pt; font-weight:700; letter-spacing:.08em; color:#a3a3a3; font-variant-numeric:tabular-nums; vertical-align:bottom; padding-bottom:8pt; } }{% endif %}
 </style></head><body class="monthly {{ density|default('comfortable') }}">
 {% set n = view.narrative %}
 <section class="page" id="main-1-start">
-<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label">01 / 관측과 결론</span></div>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">01 /</span> 관측과 결론</span></div>
 
 <p class="descriptor">{{ n.title }}</p>
 <p class="identity hero-identity">{{ view.hospital_name }}</p>
 <h1 class="editorial-result">{{ n.conclusion }}</h1>
 
 <div class="metrics"><div class="metric"><span class="metric-label">지난달</span><strong class="{{ 'withheld' if n.previous is none else '' }}">{{ '%.1f%%'|format(n.previous) if n.previous is not none else '비교 보류' }}</strong>{% if n.previous is not none %}<div class="scale"><div class="bar prior" style="width:{{ n.previous }}%"></div></div>{% endif %}</div>
-<div class="metric"><span class="metric-label">이번 달</span><strong class="{{ 'withheld' if n.current is none else '' }}">{{ '%.1f%%'|format(n.current) if n.current is not none else '확인 불가' }}</strong>{% if n.current is not none %}<div class="scale"><div class="bar" style="width:{{ n.current }}%"></div></div>{% endif %}{% if n.current is not none and n.previous is not none %}<p class="caption">지난달 대비 <span class="delta">{{ '%+.1f'|format(n.current - n.previous) }}%p</span></p>{% endif %}</div>
+<div class="metric current"><span class="metric-label">이번 달</span><strong class="{{ 'withheld' if n.current is none else '' }}">{{ '%.1f%%'|format(n.current) if n.current is not none else '확인 불가' }}</strong>{% if n.current is not none %}<div class="scale"><div class="bar" style="width:{{ n.current }}%"></div></div>{% endif %}{% if n.current is not none and n.previous is not none %}<p class="caption">지난달 대비 <span class="delta">{{ '%+.1f'|format(n.current - n.previous) }}%p</span></p>{% endif %}</div>
 </div>
-<p class="caption">공통 눈금 0–100%{% if n.previous is not none and n.current is not none %} · 지난달은 검정, 이번 달은 파랑 막대입니다{% endif %}</p>
+<p class="caption">공통 눈금 0–100%{% if n.previous is not none and n.current is not none %} · 지난달은 검정, 이번 달은 주황 막대입니다{% endif %}</p>
 <p class="caption">{{ n.denominator }}</p>
 {% if n.previous is none %}<p class="caption">{{ n.comparison_note }}</p>{% endif %}
 <p class="caption">자동 측정(API)은 소비자용 앱 화면·개인화 노출과 다릅니다. 미확정은 미언급 0으로 세지 않으며, 일부 측정만 확정된 결과는 달라질 수 있습니다.</p>
@@ -30,9 +30,9 @@
 </section>
 
 <section class="page" id="main-2-start">
-<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label">02 / 수행과 증거</span></div>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">02 /</span> 수행과 증거</span></div>
 
-<h1>{% if view.report_kind == 'INITIAL' %}최초 관측과<br>확인한 근거{% else %}이번 달 만든 정보와<br>활용 결과{% endif %}</h1>
+<h1>{% if view.report_kind == 'INITIAL' %}최초 관측과<br><em>확인한 근거</em>{% else %}이번 달 만든 정보와<br><em>활용 결과</em>{% endif %}</h1>
 
 {% if n.works|selectattr('cited_cells')|list %}<p>병원이 운영한 글이 AI 답변의 출처로 확인됐습니다.</p>{% else %}<p>발행 기록을 정리하고, 답변의 출처로 연결됐는지 확인합니다.</p>{% endif %}
 
@@ -51,9 +51,9 @@
 </section>
 
 <section class="page monthly-plan" id="main-3-start">
-<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label">03 / 다음 결정</span></div>
+<div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">03 /</span> 다음 결정</span></div>
 
-<h1>{{ '다음 관측을 준비합니다' if view.report_kind == 'INITIAL' else '다음 달 집중할 진료 질문' }}</h1>
+<h1>{% if view.report_kind == 'INITIAL' %}다음 관측을 <em>준비합니다</em>{% else %}다음 달 집중할 <em>진료 질문</em>{% endif %}</h1>
 <p>전담 마케터가 아래 우선순위를 운영에 반영하고, 다음 보고에서 확인 결과를 설명합니다.</p>
 
 <div class="ledger">{% for line in n.priorities[:3] %}<div class="rule-row"><span class="number">0{{ loop.index }}</span><p>{{ line }}</p>
@@ -74,7 +74,7 @@
 
 </section>
 
-<section class="appendix" id="appendix-start"><div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label">APPENDIX / 근거 부록</span></div>
+<section class="appendix" id="appendix-start"><div class="masthead"><span class="wordmark"><b>Re:putation</b> / {{ period_label }}</span><span class="section-label"><span class="ord">APPENDIX /</span> 근거 부록</span></div>
 <h1>확인한 질문 전체</h1>
 
 <p class="caption">전체 {{ view.appendix_rows|length }}개 질문. 질문별 수치는 플랫폼 합산 확정 반복 횟수입니다. 첫 장의 비교 비율은 동일 조건이 확인된 조합의 확정 반복을 합산합니다. —는 확인된 근거가 없다는 뜻입니다.</p>
