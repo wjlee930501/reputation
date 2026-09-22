@@ -6217,6 +6217,39 @@ def test_per_item_task_refuses_a_stale_or_mismatched_claim(monkeypatch):
     assert [state for _item_id, state in finished] == [OperationRunState.CANCELLED]
 
 
+@pytest.mark.parametrize("explicit_run", [False, True])
+def test_claimed_item_fallback_only_finishes_runs_without_explicit_ownership(
+    monkeypatch, explicit_run
+):
+    """실행 소유권 CAS 실패를 standalone 종료 경로로 우회하지 않는다."""
+
+    run_id = uuid.uuid4()
+    task = SimpleNamespace(
+        request=SimpleNamespace(
+            id="worker-1",
+            headers={"operation_run_id": str(run_id)} if explicit_run else {},
+            operation_run_claim_version=1 if explicit_run else None,
+        )
+    )
+    fallback_calls = []
+    monkeypatch.setattr(tasks, "finish_explicit_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks,
+        "finish_item_run",
+        lambda *_args, **_kwargs: fallback_calls.append(True),
+    )
+
+    tasks._finish_claimed_item_run(
+        object(),
+        task,
+        uuid.uuid4(),
+        SimpleNamespace(),
+        OperationRunState.CANCELLED,
+    )
+
+    assert fallback_calls == ([] if explicit_run else [True])
+
+
 def test_claimed_item_load_requires_the_current_unexpired_lease():
     token = uuid.uuid4()
     now = datetime(2026, 8, 19, 23, 30, tzinfo=timezone.utc)
