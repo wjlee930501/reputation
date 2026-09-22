@@ -6217,6 +6217,47 @@ def test_per_item_task_refuses_a_stale_or_mismatched_claim(monkeypatch):
     assert [state for _item_id, state in finished] == [OperationRunState.CANCELLED]
 
 
+@pytest.mark.parametrize(
+    ("explicit_run", "same_run", "expected_calls"),
+    [
+        pytest.param(False, False, 1, id="standalone"),
+        pytest.param(True, True, 0, id="explicit-own-run-cas-miss"),
+        pytest.param(True, False, 1, id="explicit-mismatched-run"),
+    ],
+)
+def test_claimed_item_fallback_respects_explicit_run_identity(
+    monkeypatch, explicit_run, same_run, expected_calls
+):
+    """자기 run의 CAS 실패만 fallback으로 우회하지 않는다."""
+
+    context_run_id = uuid.uuid4()
+    task = SimpleNamespace(
+        request=SimpleNamespace(
+            id="worker-1",
+            headers={"operation_run_id": str(context_run_id)} if explicit_run else {},
+            operation_run_claim_version=1 if explicit_run else None,
+        )
+    )
+    run = SimpleNamespace(id=context_run_id if same_run else uuid.uuid4())
+    fallback_calls = []
+    monkeypatch.setattr(tasks, "finish_explicit_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks,
+        "finish_item_run",
+        lambda *_args, **_kwargs: fallback_calls.append(True),
+    )
+
+    tasks._finish_claimed_item_run(
+        object(),
+        task,
+        uuid.uuid4(),
+        run,
+        OperationRunState.CANCELLED,
+    )
+
+    assert len(fallback_calls) == expected_calls
+
+
 def test_claimed_item_load_requires_the_current_unexpired_lease():
     token = uuid.uuid4()
     now = datetime(2026, 8, 19, 23, 30, tzinfo=timezone.utc)
