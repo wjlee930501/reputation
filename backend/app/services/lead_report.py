@@ -46,7 +46,7 @@ PRETENDARD_FONT_PATH = (
 
 # 템플릿이 바뀌면 같은 데이터라도 다른 리포트가 나온다. artifact에 기록해
 # "같은 병원인데 숫자가 왜 다르냐"에 답할 수 있게 한다.
-TEMPLATE_VERSION = "lead-v11"
+TEMPLATE_VERSION = "lead-v12"
 
 # 공급자 표기 — 사람이 읽는 이름이지 "ChatGPT 화면"이 아니다.
 _VENDOR_LABELS = {"chatgpt": "OpenAI API", "gemini": "Google Gemini API"}

@@ -18,7 +18,7 @@ def test_diagnosis_connects_why_now_assets_and_regional_fit(measured, mentioned,
     # When the customer document renders.
     html = render_lead_report_html(report)
     # Then the approved decision narrative exists independently of results.
-    assert TEMPLATE_VERSION == "lead-v11"
+    assert TEMPLATE_VERSION == "lead-v12"
     assert "우리 병원의 강점이," in html and "AI가 답할 근거가 되도록." in html
     assert "기다린 시간은 발행 이력이 되지 않습니다." in html.replace("<br>", " ")
     assert "공개 정보 허브" in html and "전담 마케터" in html
