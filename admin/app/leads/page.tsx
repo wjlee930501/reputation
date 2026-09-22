@@ -80,7 +80,7 @@ const ACTION_COPY: Record<
   rebuild: {
     title: '보고서 다시 만들기',
     description: '기존 보고서는 보관하고 새 보고서를 만듭니다.',
-    placeholder: '예) 보고서가 열리지 않아 다시 만들기',
+    placeholder: '예) 보고서 생성 기준이 바뀌어 최신 기준으로 다시 만들기',
     submit: '보고서 다시 만들기',
   },
 }

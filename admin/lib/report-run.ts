@@ -78,7 +78,7 @@ function copyForStage(stage: string): RunCopy {
         whatHappened: '이번 달에 계획한 측정 결과가 모두 모였습니다.',
         customerImpact: '원장 전달용 PDF 확인이 끝나기 전에는 전달할\u00a0수\u00a0없습니다.',
         nextAction: '원장 전달용 PDF 준비 상태를 이어서 확인해 주세요.',
-        canRebuild: false,
+        canRebuild: true,
         primaryAction: 'review',
         attentionLabel: '검수 필요',
       }
@@ -88,7 +88,7 @@ function copyForStage(stage: string): RunCopy {
         whatHappened: '측정 집계와 보고서 생성은 끝났지만 원장 전달용 PDF 확인이 남았습니다.',
         customerImpact: '확인 전 파일은 원장님께 전달할\u00a0수\u00a0없습니다.',
         nextAction: '원장 전달용 PDF를 열어 글자·페이지·내용을 확인해 주세요.',
-        canRebuild: false,
+        canRebuild: true,
         primaryAction: 'review',
         attentionLabel: '검수 필요',
       }
@@ -98,7 +98,7 @@ function copyForStage(stage: string): RunCopy {
         whatHappened: '원장 전달용 PDF의 본문·근거 부록, 한글, 필수 안내와 링크를 확인했습니다.',
         customerImpact: '최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.',
         nextAction: '보고서 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.',
-        canRebuild: false,
+        canRebuild: true,
         primaryAction: 'review',
         attentionLabel: '최종 확인 필요',
       }
@@ -175,17 +175,22 @@ export function isValidReportRebuildReason(value: string): boolean {
   return value.trim().length >= 3 && value.trim().length <= 200
 }
 
-export function reportRebuildIdempotencyKey(runId: string, requestId: string): string {
-  return `monthly-report-rebuild:${runId}:${requestId}`
+/**
+ * 재생성 요청 키. `scopeId`는 작업 카드에서는 작업 ID, 보고서 목록 행에서는 보고서 ID다 —
+ * 두 화면이 같은 요청을 두 번 보내도 서버가 한 번만 실행하도록 묶는 값이라 무엇이든
+ * 그 요청을 유일하게 가리키기만 하면 된다.
+ */
+export function reportRebuildIdempotencyKey(scopeId: string, requestId: string): string {
+  return `monthly-report-rebuild:${scopeId}:${requestId}`
 }
 
 export function reportRebuildFingerprint(
-  runId: string,
+  scopeId: string,
   periodYear: number,
   periodMonth: number,
   reason: string,
 ): string {
-  return [runId, periodYear, periodMonth, reason.trim()].join('\u0000')
+  return [scopeId, periodYear, periodMonth, reason.trim()].join('\u0000')
 }
 
 export function getOrCreateReportRequestKey(

@@ -64,7 +64,9 @@ test('versioned rebuild names the prior report without exposing raw state', () =
   // Then: the new version and validation action are explicit
   assert.equal(run?.statusLabel, '원장 전달용 PDF 확인이 필요합니다')
   assert.equal(run?.versionLabel, '새 버전 2 · 이전 보고서 보존')
-  assert.equal(run?.canRebuild, false)
+  // 정상 완료도 다시 만들 수 있다 — 생성 로직을 고친 뒤 다시 돌릴 길이 있어야 한다.
+  // 다만 먼저 할 일은 검수이므로 주 행동은 그대로 review다.
+  assert.equal(run?.canRebuild, true)
   assert.equal(run?.primaryAction, 'review')
   assert.equal(run?.attentionLabel, '검수 필요')
 })
@@ -80,6 +82,7 @@ test('validated PDF stage stays distinct from final delivery readiness', () => {
   assert.equal(run?.statusLabel, '원장 전달용 PDF 검증 완료')
   assert.equal(run?.customerImpact, '최종 전달 가능 여부는 최신 병원 자료와 공개 상태를 함께 확인해야 합니다.')
   assert.equal(run?.nextAction, '보고서 화면에서 최신 자료와 전달 가능 상태를 확인해 주세요.')
+  assert.equal(run?.canRebuild, true)
   assert.doesNotMatch(JSON.stringify(run), /CUSTOMER_READY|SLA/)
 })
 

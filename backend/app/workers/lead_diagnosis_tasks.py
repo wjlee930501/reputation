@@ -371,12 +371,19 @@ async def _claim_for_report(
         LeadDiagnosis.execution_status.in_(sorted(REPORTABLE_EXECUTION_STATUSES)),
     ]
     if recovery:
+        # 복구는 생성 실패(BLOCKED)와 이미 만들어진 리포트(READY)를 모두 다시 만든다.
+        # HTTP 경계(lead_recovery._ensure_recoverable)와 같은 집합이어야 한다 — 한쪽만
+        # 넓히면 요청은 받아 놓고 워커가 조용히 물러나 사람이 영문을 모른 채 기다린다.
         predicates.extend(
             (
-                LeadDiagnosis.report_status == ReportStatus.BLOCKED.value,
+                LeadDiagnosis.report_status.in_(
+                    (ReportStatus.BLOCKED.value, ReportStatus.READY.value)
+                ),
                 LeadDiagnosis.report_attempts == recovery_expected_attempts,
-                LeadDiagnosis.delivery_status.notin_(
-                    (DeliveryStatus.SENDING.value, DeliveryStatus.SENT.value)
+                # 고객에게 나간 리포트는 제자리 재생성 대상이 아니다
+                # (lead_recovery._ensure_recoverable와 같은 집합).
+                LeadDiagnosis.delivery_status.in_(
+                    (DeliveryStatus.PENDING.value, DeliveryStatus.INTERNAL.value)
                 ),
             )
         )
@@ -475,10 +482,24 @@ async def _build_lead_report(
             ).scalar_one()
             if row.report_status == ReportStatus.PURGED.value:
                 raise
-            exhausted = row.report_attempts >= MAX_REPORT_ATTEMPTS
-            row.report_status = (
-                ReportStatus.BLOCKED.value if exhausted else ReportStatus.PENDING.value
+            # 이미 낼 수 있는 리포트가 있으면 READY로 되돌린다. READY 상태에서 시작한
+            # 재생성이 실패했을 때 PENDING/BLOCKED로 내리면, 멀쩡한 콜용 보고서를 가진
+            # 진단이 "만들지 못했다"로 표시되고 폴러가 같은 실패를 되풀이한다.
+            servable = await session.scalar(
+                select(LeadReportArtifact.id)
+                .where(
+                    LeadReportArtifact.diagnosis_id == pk,
+                    LeadReportArtifact.purged_at.is_(None),
+                )
+                .limit(1)
             )
+            exhausted = servable is None and row.report_attempts >= MAX_REPORT_ATTEMPTS
+            if servable is not None:
+                row.report_status = ReportStatus.READY.value
+            else:
+                row.report_status = (
+                    ReportStatus.BLOCKED.value if exhausted else ReportStatus.PENDING.value
+                )
             row.error = f"리포트 생성 실패: {type(exc).__name__}: {exc}"[:2000]
             await session.commit()
             if exhausted:

@@ -6,6 +6,7 @@ import {
   shouldShowDeliveryProblem,
 } from '@/lib/report-delivery'
 import type { ReportView } from '@/lib/report-review'
+import { ReportRebuildButton } from './ReportRebuildButton'
 
 function formatDate(value: string | null): string {
   if (!value) return '-'
@@ -15,11 +16,15 @@ function formatDate(value: string | null): string {
 export function ReportList({
   reports,
   loadingId,
+  rebuildBusy,
   onOpen,
+  onRebuild,
 }: {
   reports: readonly ReportView[]
   loadingId: string | null
+  rebuildBusy: boolean
   onOpen: (report: ReportView) => void
+  onRebuild: (report: ReportView, reason: string) => void
 }) {
   const { delivered, ready, blocked } = reportSummaryCounts(reports)
   return (
@@ -49,7 +54,8 @@ export function ReportList({
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--color-revisit-coolgrey-20)]">
-              {/* 초기 진단(V0)과 월간이 한 줄씩, 행동은 ‘열기’ 하나뿐이다. */}
+              {/* 초기 진단(V0)과 월간이 한 줄씩. 행동은 ‘열기’와, 월간에 한해 ‘다시 만들기’다 —
+                  작업 카드는 최근 3건만 보여 주므로 과거 월은 이 행에서만 다시 만들 수 있다. */}
               {reports.map((report) => (
                 <tr key={report.id} className="align-top">
                   <td className="px-5 py-4 font-bold text-[var(--color-revisit-text-title)]" data-primary="true">
@@ -89,6 +95,11 @@ export function ReportList({
                     <button type="button" onClick={() => onOpen(report)} disabled={loadingId === report.id} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 text-xs font-bold text-white disabled:opacity-50">
                       {loadingId === report.id ? '여는 중' : '열기'}
                     </button>
+                    <ReportRebuildButton
+                      report={report}
+                      disabled={rebuildBusy || loadingId === report.id}
+                      onRebuild={(reason) => onRebuild(report, reason)}
+                    />
                   </td>
                 </tr>
               ))}

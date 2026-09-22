@@ -25,10 +25,13 @@ export function ReportRunStatus({
   hospitalId,
   reportPeriods,
   onReview,
+  refreshToken = 0,
 }: {
   hospitalId: string
   reportPeriods: ReadonlyArray<{ periodYear: number; periodMonth: number }>
   onReview: (reportId: string) => void
+  /** 값이 바뀌면 작업 기록을 다시 읽는다 — 목록 행에서 새 버전을 요청했을 때 쓴다. */
+  refreshToken?: number
 }) {
   const operationalPeriod = opsRelevantMonthValue(reportPeriods)
   const [runs, setRuns] = useState<readonly ReportRunView[]>([])
@@ -59,7 +62,7 @@ export function ReportRunStatus({
     }
   }, [hospitalId])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => { void refresh() }, [refresh, refreshToken])
   useEffect(() => {
     if (reportPeriods.length > 0) setPeriod(operationalPeriod)
   }, [operationalPeriod, reportPeriods.length])
