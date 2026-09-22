@@ -1,5 +1,16 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 최신 운영 배포 — 2026-09-22 통합 안정성 보완
+
+PR #138의 main 소스 `a35b7f2a0c8d7ee568abbd9a7abdda75a231576f`를 5개 서비스에 배포했다.
+현재 suffix는 `integrity-a35b7f2`, DB head는 `0079_topic_swap_fallback`이다.
+main CI 9/9와 별도 큐 리허설을 통과했고, 운영에서 5개 서비스의 digest·트래픽·설정 보존,
+16개 readiness 검사·새 release 7개 큐, 공개 9개 병원·기존 글 보존을 확인했다.
+2026-09-22 10:05 KST까지 새 리비전 오류 조회 0건이다. 전체 사용자 E2E와 향후 주기 관측은
+별도 범위이며, 이 문서의 갱신 커밋은 런타임 이미지 소스가 아니다.
+실제 digest·롤백 좌표·검증 범위는 [통합 안정성 배포 기록](docs/releases/2026-09-22-integrity-production.md)을 따른다.
+아래 날짜별 ‘최신/현재’ 표시는 각 배포 당시의 이력이다.
+
 ## 최신 운영 배포 — 2026-09-17 통합 보완
 
 PR #120의 main 소스 `2381566883cfcfcf87d317a2c9671b96817499a8`를 API·Worker·Beat에 배포했다.
