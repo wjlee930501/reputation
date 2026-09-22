@@ -4,6 +4,7 @@ import {
   answerDemo,
   answerExamples,
   ctaSection,
+  inquirySection,
   faqItems,
   faqSection,
   funnelSection,
@@ -32,15 +33,23 @@ import { platformSiteUrl } from "@/lib/site-url";
 import { JsonLd } from "./[slug]/_components/JsonLd";
 
 import AnswerExplorer from "./_components/AnswerExplorer";
-import LiveDiagnosisQuota from "./_components/DiagnosisQuota";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
+import InquiryForm from "./_components/InquiryForm";
 import MotionToggle from "./_components/MotionToggle";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
 import SceneSequence from "./_components/SceneSequence";
 import ScrollReveal from "./_components/ScrollReveal";
 
+/**
+ * 페이지의 유일한 전환 지점 — 도입 문의 폼.
+ *
+ * 앞서는 셀프서브 무료 진단(`/ai-diagnosis`)이 모든 CTA의 목적지였다. 지금 파는 것은
+ * "리포트를 보내드립니다"가 아니라 "문의를 주시면 진단해서 연락드립니다"이고, 그 진단은
+ * 문의 접수와 동시에 시작된다. 셀프서브 경로 자체는 그대로 살아 있으며 푸터에서 간다.
+ */
+const INQUIRY_ANCHOR = "#lead";
 const DIAGNOSIS_PATH = "/ai-diagnosis";
 
 /** 접지 않고 세워 두는 질문 수. 나머지는 "질문 N개 더 보기" 뒤로 들어간다. */
@@ -109,9 +118,9 @@ export default function Home() {
           <a href="#faq">자주 묻는 질문</a>
         </nav>
 
-        <Link className="header-cta" href={DIAGNOSIS_PATH}>
-          무료 진단
-        </Link>
+        <a className="header-cta" href={INQUIRY_ANCHOR}>
+          도입 문의
+        </a>
       </header>
 
       {/* ── ① 히어로 — 큰 카피 · 서브 카피 · CTA · 선착순 고지만 ─────
@@ -141,12 +150,10 @@ export default function Home() {
           <p className="hero-subcopy">{landingHero.subcopy}</p>
 
           <div className="hero-actions" aria-label="주요 행동">
-            <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
+            <a className="btn btn-primary btn-lg" href={INQUIRY_ANCHOR}>
               {landingHero.primaryCta}
-            </Link>
+            </a>
           </div>
-
-          <LiveDiagnosisQuota variant="hero" />
         </div>
       </section>
 
@@ -385,24 +392,34 @@ export default function Home() {
         </p>
       </section>
 
-      {/* ── ⑥ 무료 진단 ──────────────────────────────────────────── */}
-      <section id="lead" className="cta-section" aria-labelledby="cta-heading">
+      {/* ── ⑥ 도입 문의 ───────────────────────────────────────────
+          딥블루 밴드가 마지막 설득이고, 바로 아래 흰 면의 폼이 행동이다. 밴드 위에
+          입력칸을 얹지 않는 이유는 대비를 맞추려면 반투명 필드를 만들어야 하고 그
+          순간 순백 규칙이 깨지기 때문이다. 밴드의 버튼은 아래로 내려가는 앵커다. */}
+      <section className="cta-section" aria-labelledby="cta-heading">
         <div className="cta-inner" data-reveal>
           <p className="section-label">{ctaSection.label}</p>
           <h2 id="cta-heading">{ctaSection.heading}</h2>
           <p className="cta-body">{ctaSection.body}</p>
 
-          <LiveDiagnosisQuota variant="cta" />
-
-          <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
+          <a className="btn btn-primary btn-lg" href={INQUIRY_ANCHOR}>
             {ctaSection.primaryCta}
-          </Link>
+          </a>
 
           <ul className="cta-notes">
             {ctaSection.notes.map((note) => (
               <li key={note}>{note}</li>
             ))}
           </ul>
+        </div>
+      </section>
+
+      <section id="lead" className="lead-section" aria-labelledby="lead-heading">
+        <div className="lead-inner" data-reveal>
+          <p className="section-label">{inquirySection.label}</p>
+          <h2 id="lead-heading">{inquirySection.heading}</h2>
+          <p>{inquirySection.body}</p>
+          <InquiryForm />
         </div>
       </section>
 
@@ -419,9 +436,9 @@ export default function Home() {
           JS가 죽으면 올라오지 않지만, 그 경우에도 히어로와 최종 CTA는 그대로 남는다. */}
       <div className="mobile-cta">
         <p className="mobile-cta-note">{ctaSection.body}</p>
-        <Link className="btn btn-primary" href={DIAGNOSIS_PATH}>
+        <a className="btn btn-primary" href={INQUIRY_ANCHOR}>
           {ctaSection.primaryCta}
-        </Link>
+        </a>
       </div>
 
       <footer className="site-footer">

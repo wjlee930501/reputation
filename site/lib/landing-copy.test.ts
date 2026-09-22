@@ -9,6 +9,7 @@ import {
   faqItems,
   faqSection,
   funnelSection,
+  inquirySection,
 
   pricingSection,
   landingHero,
@@ -47,6 +48,9 @@ const ALL_COPY = [
   ctaSection.body,
   ctaSection.primaryCta,
   ...ctaSection.notes,
+  inquirySection.label,
+  inquirySection.heading,
+  inquirySection.body,
   painSection.label,
   painSection.heading,
   ...painPoints.flatMap((p) => [p.quote, p.answer]),

@@ -2,18 +2,44 @@ import { NextResponse } from 'next/server'
 import { getApiBase } from '@/lib/config'
 import { containsPatientSensitiveLeadText, leadSafetyError } from '@/lib/lead-safety'
 import { buildLeadOutboundHeaders, isLeadValidationUpstreamStatus } from '@/lib/leads-proxy'
+// 키워드 정리 규칙은 무료 진단 폼과 같은 것을 쓴다 — 두 벌로 나뉘면 한쪽만 백엔드
+// `clean_keywords`와 어긋난 채로 남는다.
+import { parseKeywords } from '@/lib/diagnosis-form'
 import { BodyTooLargeError, readFormDataBodyWithLimit } from '@/lib/request-body'
 
 export const runtime = 'nodejs'
 
-const REQUIRED_FIELDS = ['clinicName', 'clinicType', 'contact', 'question'] as const
+/**
+ * 진료과·지역·핵심 키워드는 선택이 아니다.
+ *
+ * 이 셋이 모두 와야 백엔드가 접수 즉시 초도 노출 진단을 만든다
+ * (`LeadCreate.diagnosis_input` — 하나라도 비면 Admin 수동 생성으로 남는다).
+ * 도입문의의 목적 자체가 "문의가 들어오면 보고서가 준비되어 있는 것"이므로,
+ * 여기서 빼먹으면 폼은 접수되는데 정작 연락할 근거가 만들어지지 않는다.
+ */
+const REQUIRED_FIELDS = [
+  'clinicName',
+  'clinicType',
+  'contact',
+  'question',
+  'specialty',
+  'regionKeyword',
+  'coreKeywords',
+] as const
 const FIELD_MAX = {
   clinicName: 200,
   clinicType: 200,
   contact: 200,
   question: 1000,
+  specialty: 100,
+  regionKeyword: 100,
+  // 원시 입력은 넉넉히 받고 정리 뒤 4개로 자른다 — 키워드가 많다고 문의를 거절하지 않는다.
+  coreKeywords: 400,
+  contactName: 100,
   consent_version: 40,
 } as const
+
+
 const MAX_BODY_BYTES = 64 * 1024 // 64KB — 정상 폼은 ~1KB. 그 이상이면 abuse.
 
 function readField(formData: FormData, field: string, max: number) {
@@ -23,6 +49,8 @@ function readField(formData: FormData, field: string, max: number) {
 }
 
 export async function POST(request: Request) {
+  // JSON을 요청한 쪽(랜딩 도입문의 폼)은 이 `error` 문자열을 그대로 화면에 띄운다.
+  // 개발용 영문 메시지를 남겨 두면 원장이 그것을 읽게 된다.
   const wantsJson = request.headers.get('accept')?.includes('application/json') ?? false
 
   let formData: FormData
@@ -31,11 +59,11 @@ export async function POST(request: Request) {
   } catch (error) {
     if (error instanceof BodyTooLargeError) {
       return wantsJson
-        ? NextResponse.json({ ok: false, error: 'Payload too large' }, { status: 413 })
+        ? NextResponse.json({ ok: false, error: '입력 내용이 너무 깁니다. 문의 내용을 줄여 다시 시도해 주세요.' }, { status: 413 })
         : NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
     }
     return wantsJson
-      ? NextResponse.json({ ok: false, error: 'Invalid form payload' }, { status: 400 })
+      ? NextResponse.json({ ok: false, error: '입력 형식을 확인할 수 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.' }, { status: 400 })
       : NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
   }
 
@@ -47,11 +75,16 @@ export async function POST(request: Request) {
       : NextResponse.redirect(new URL('/?lead=success#lead', request.url), 303)
   }
 
-  const missingFields = REQUIRED_FIELDS.filter((field) => readField(formData, field, FIELD_MAX[field]).length === 0)
+  const coreKeywords = parseKeywords(readField(formData, 'coreKeywords', FIELD_MAX.coreKeywords))
+  const missingFields = REQUIRED_FIELDS.filter((field) => (
+    field === 'coreKeywords'
+      ? coreKeywords.length === 0
+      : readField(formData, field, FIELD_MAX[field]).length === 0
+  ))
   const privacyAccepted = formData.get('privacy') === 'on'
 
   if (missingFields.length > 0 || !privacyAccepted) {
-    const error = '병원명, 진료과/지역, 연락처, 환자 질문, 개인정보 동의는 필수입니다.'
+    const error = '병원명, 진료과, 지역, 핵심 키워드, 연락처, 문의 내용, 개인정보 동의는 필수입니다.'
     if (wantsJson) {
       return NextResponse.json({ ok: false, error, missingFields }, { status: 400 })
     }
@@ -59,7 +92,13 @@ export async function POST(request: Request) {
   }
 
   const question = readField(formData, 'question', FIELD_MAX.question)
-  if (containsPatientSensitiveLeadText(question)) {
+  const specialty = readField(formData, 'specialty', FIELD_MAX.specialty)
+  const regionKeyword = readField(formData, 'regionKeyword', FIELD_MAX.regionKeyword)
+  const contactName = readField(formData, 'contactName', FIELD_MAX.contactName)
+  // 자유 텍스트는 question만이 아니다 — 진단 입력도 Slack과 Admin에 그대로 나간다.
+  // 백엔드가 최종 검증자지만, 왕복 전에 같은 규칙으로 걸러 이유를 바로 보여준다.
+  const freeText = [question, specialty, regionKeyword, contactName, ...coreKeywords]
+  if (freeText.some((value) => value.length > 0 && containsPatientSensitiveLeadText(value))) {
     const error = leadSafetyError()
     if (wantsJson) {
       return NextResponse.json({ ok: false, error }, { status: 400 })
@@ -81,6 +120,10 @@ export async function POST(request: Request) {
     privacy: privacyAccepted,
     consent_version: consentVersion,
     source_path: sourcePath,
+    specialty,
+    region_keyword: regionKeyword,
+    core_keywords: coreKeywords,
+    ...(contactName ? { contact_name: contactName } : {}),
   }
 
   const apiBase = getApiBase(true)
@@ -103,7 +146,7 @@ export async function POST(request: Request) {
     })
   } catch {
     if (wantsJson) {
-      return NextResponse.json({ ok: false, error: 'Upstream unreachable' }, { status: 502 })
+      return NextResponse.json({ ok: false, error: '접수 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.' }, { status: 502 })
     }
     return NextResponse.redirect(new URL('/?lead=error#lead', request.url), 303)
   }
@@ -150,7 +193,7 @@ export async function POST(request: Request) {
       return NextResponse.redirect(new URL('/?lead=invalid#lead', request.url), 303)
     }
 
-    const error = '무료 진단 요청을 접수하지 못했습니다. 잠시 후 다시 시도해 주세요.'
+    const error = '도입 문의를 접수하지 못했습니다. 잠시 후 다시 시도해 주세요.'
     if (wantsJson) {
       return NextResponse.json({ ok: false, error, upstreamStatus: response.status }, { status: 502 })
     }
