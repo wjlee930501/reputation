@@ -51,18 +51,23 @@ const GA_SCRIPT_SRC = 'https://*.googletagmanager.com'
 const GA_CONNECT_SRC =
   'https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com'
 
+// OpenAI 전환 픽셀(oaiq) 출처 — SDK는 CDN에서 받고, 이벤트는 수집 엔드포인트로 보낸다.
+// 픽셀별 설정 조회가 CDN으로도 나가므로 connect-src에 둘 다 필요하다.
+const OPENAI_PIXEL_SCRIPT_SRC = 'https://bzrcdn.openai.com'
+const OPENAI_PIXEL_CONNECT_SRC = 'https://bzr.openai.com https://bzrcdn.openai.com'
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  `script-src 'self' 'unsafe-inline' ${GA_SCRIPT_SRC}${devUnsafeEval}`,
+  `script-src 'self' 'unsafe-inline' ${GA_SCRIPT_SRC} ${OPENAI_PIXEL_SCRIPT_SRC}${devUnsafeEval}`,
   "style-src 'self' 'unsafe-inline'",
-  // img-src는 이미 https: 전체를 허용하므로 GA 수집 픽셀은 따로 적지 않는다.
+  // img-src는 이미 https: 전체를 허용하므로 GA·픽셀의 이미지 폴백은 따로 적지 않는다.
   `img-src 'self' data: blob: https:${devLocalImgSrc}`,
   "font-src 'self' data:",
-  `connect-src 'self' ${GA_CONNECT_SRC}`,
+  `connect-src 'self' ${GA_CONNECT_SRC} ${OPENAI_PIXEL_CONNECT_SRC}`,
 ].join('; ')
 
 const securityHeaders = [
