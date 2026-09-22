@@ -3,12 +3,14 @@ import test from 'node:test'
 
 import {
   OPENAI_PIXEL_ID,
+  initPixel,
   leadEventId,
   markPixelInitializedForTest,
   pageViewedContent,
   pendingPixelEventsForTest,
   resetPixelStateForTest,
   resolvePixelId,
+  storedRecordId,
   trackPixelEvent,
   trackPixelLeadCreated,
   trackPixelPageViewed,
@@ -54,14 +56,34 @@ test('page_viewed describes only the two surfaces the brief defines', () => {
   assert.equal(pageViewedContent('/privacy'), null)
 })
 
-test('the lead event id is derived from the stored record', () => {
-  assert.equal(leadEventId('abc-123'), 'diagnosis_abc-123')
+test('the lead event id is derived from the stored record, per intake path', () => {
+  // 무료 진단의 형식은 첫 배포 그대로 유지한다 — 이미 쌓인 전환과 이어져야 한다.
+  assert.equal(leadEventId('diagnosis', 'abc-123'), 'diagnosis_abc-123')
+  assert.equal(leadEventId('inquiry', 'abc-123'), 'lead_abc-123')
+})
+
+test('only a stored record id counts as an accepted submission', () => {
+  // 정상 접수
+  assert.equal(storedRecordId('inquiry', { ok: true, lead_id: 'L-1', diagnosis_id: 'D-1' }), 'L-1')
+  assert.equal(storedRecordId('diagnosis', { ok: true, diagnosis_id: 'D-1' }), 'D-1')
+  // 백엔드 허니팟: 200 + null
+  assert.equal(storedRecordId('inquiry', { ok: true, lead_id: null, created_at: null }), null)
+  assert.equal(storedRecordId('diagnosis', { ok: true, diagnosis_id: null }), null)
+  // Site BFF 허니팟: 200 + ID 없음
+  assert.equal(storedRecordId('inquiry', { ok: true }), null)
+  // 도입문의의 diagnosis_id는 부수효과라 리드 저장 여부의 신호가 아니다.
+  assert.equal(storedRecordId('inquiry', { ok: true, diagnosis_id: 'D-1' }), null)
+  // 본문 파싱 실패·이상한 값
+  assert.equal(storedRecordId('inquiry', {}), null)
+  assert.equal(storedRecordId('inquiry', null), null)
+  assert.equal(storedRecordId('inquiry', { lead_id: '  ' }), null)
+  assert.equal(storedRecordId('inquiry', { lead_id: 42 }), null)
 })
 
 test('events fired before init are queued in order, not lost', () => {
   resetPixelStateForTest()
   trackPixelPageViewed('/')
-  trackPixelLeadCreated('abc-123')
+  trackPixelLeadCreated('diagnosis', 'abc-123')
   assert.deepEqual(
     pendingPixelEventsForTest().map((event) => event.name),
     ['page_viewed', 'lead_created'],
@@ -73,9 +95,9 @@ test('events fired before init are queued in order, not lost', () => {
 test('a rejected or bot submission never becomes a conversion', () => {
   resetPixelStateForTest()
   // 백엔드는 허니팟에 걸린 요청에도 200을 주되 diagnosis_id를 null로 돌려준다.
-  trackPixelLeadCreated(null)
-  trackPixelLeadCreated(undefined)
-  trackPixelLeadCreated('')
+  trackPixelLeadCreated('inquiry', null)
+  trackPixelLeadCreated('inquiry', undefined)
+  trackPixelLeadCreated('diagnosis', '')
   assert.equal(pendingPixelEventsForTest().length, 0)
   resetPixelStateForTest()
 })
@@ -94,4 +116,40 @@ test('after init, events no longer queue', () => {
   trackPixelPageViewed('/')
   assert.equal(pendingPixelEventsForTest().length, 0)
   resetPixelStateForTest()
+})
+
+test('init goes out first, then queued events flush in order without debug', () => {
+  resetPixelStateForTest()
+  const calls: unknown[][] = []
+  const globals = globalThis as unknown as { window?: unknown }
+  const previous = globals.window
+  globals.window = {
+    oaiq: (...args: unknown[]) => {
+      calls.push(args)
+    },
+  }
+  try {
+    trackPixelPageViewed('/')
+    trackPixelLeadCreated('inquiry', 'L-1')
+    assert.equal(calls.length, 0, 'init 전에는 아무것도 나가지 않는다')
+
+    initPixel(OPENAI_PIXEL_ID)
+    assert.deepEqual(calls[0], ['init', { pixelId: OPENAI_PIXEL_ID }])
+    assert.deepEqual(
+      calls.slice(1).map((args) => [args[0], args[1]]),
+      [
+        ['measure', 'page_viewed'],
+        ['measure', 'lead_created'],
+      ],
+    )
+    assert.deepEqual(calls[2][3], { event_id: 'lead_L-1' })
+    assert.equal(pendingPixelEventsForTest().length, 0)
+
+    // SPA 재마운트가 init을 다시 부르지 않는다.
+    initPixel(OPENAI_PIXEL_ID)
+    assert.equal(calls.filter((args) => args[0] === 'init').length, 1)
+  } finally {
+    globals.window = previous
+    resetPixelStateForTest()
+  }
 })

@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { attributionEventParams, decorateSourcePath, type Attribution } from '@/lib/ad-attribution'
 import { ensureAttributionCaptured } from '@/lib/ad-attribution-client'
 import { trackEvent } from '@/lib/analytics'
+import { storedRecordId, trackPixelLeadCreated } from '@/lib/openai-pixel'
 import {
   EMPTY_INQUIRY,
   toInquiryFormData,
@@ -118,7 +119,13 @@ export default function InquiryForm() {
         })
         return
       }
-      trackEvent('generate_lead', attributionEventParams(attribution.current))
+      // 랜딩의 모든 CTA가 이 폼을 가리키므로 광고 유입의 주 전환이 여기서 나온다(PIX-002).
+      // 허니팟에 걸린 제출도 200을 받지만 저장된 `lead_id`가 없어 전환으로 잡히지 않는다.
+      const leadId = storedRecordId('inquiry', data)
+      if (leadId) {
+        trackEvent('generate_lead', attributionEventParams(attribution.current))
+        trackPixelLeadCreated('inquiry', leadId)
+      }
       setSubmission({ phase: 'done' })
     } catch {
       setSubmission({
