@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { ManualDiagnosisForm } from '@/app/_components/ManualDiagnosisForm'
+import { DiagnosisHistory } from './DiagnosisHistory'
 import { safeOperatorError } from '@/lib/operations-journey'
 
 type Created = {
@@ -22,6 +23,8 @@ export default function ManualDiagnosisPage() {
   const [submitting, setSubmitting] = useState(false)
   const [created, setCreated] = useState<Created | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // 만든 직후 아래 목록이 그 건을 바로 보여줘야 한다 — 그게 이 화면의 확인 수단이다.
+  const [reloadToken, setReloadToken] = useState(0)
 
   async function submit(payload: Record<string, unknown>) {
     setSubmitting(true)
@@ -32,6 +35,7 @@ export default function ManualDiagnosisPage() {
         { method: 'POST', body: JSON.stringify(payload) },
       )
       setCreated({ leadId: response.lead_id, diagnosisId: response.diagnosis_id })
+      setReloadToken((token) => token + 1)
     } catch (caught) {
       // 서버 거절 사유(병원명 혼입, 도입문의 아님 등)는 그대로 보여준다 — 운영자가
       // 고칠 수 있는 입력 문제다.
@@ -60,22 +64,23 @@ export default function ManualDiagnosisPage() {
         <section className="rounded-xl border border-slate-200 bg-white p-5" role="status">
           <h3 className="font-bold text-slate-900">진단을 접수했습니다</h3>
           <p className="mt-2 text-sm leading-6 text-slate-600 [word-break:keep-all]">
-            측정이 끝나면 콜용 보고서가 준비됩니다. 진행 상태는 상담 요청 화면에서 확인해 주세요.
+            측정이 끝나면 콜용 보고서가 준비됩니다. 진행 상태는 아래 목록 맨 위에서 바로 확인할 수 있고,
+            준비되면 같은 자리에 ‘보고서 열기’가 생깁니다.
           </p>
           <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-            <Link
-              href="/leads"
-              className="inline-flex min-h-11 items-center justify-center rounded-lg bg-blue-600 px-5 text-sm font-bold text-white"
-            >
-              상담 요청에서 진행 상태 보기
-            </Link>
             <button
               type="button"
               onClick={() => setCreated(null)}
-              className="min-h-11 rounded-lg border border-slate-200 bg-white px-5 text-sm font-bold text-slate-600"
+              className="min-h-11 rounded-lg bg-blue-600 px-5 text-sm font-bold text-white"
             >
               하나 더 만들기
             </button>
+            <Link
+              href="/leads"
+              className="inline-flex min-h-11 items-center justify-center rounded-lg border border-slate-200 bg-white px-5 text-sm font-bold text-slate-600"
+            >
+              상담 요청 화면으로
+            </Link>
           </div>
         </section>
       ) : (
@@ -88,6 +93,8 @@ export default function ManualDiagnosisPage() {
           <ManualDiagnosisForm submitting={submitting} onSubmit={(payload) => void submit(payload)} />
         </section>
       )}
+
+      <DiagnosisHistory reloadToken={reloadToken} />
     </div>
   )
 }

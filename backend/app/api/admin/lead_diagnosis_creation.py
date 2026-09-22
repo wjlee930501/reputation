@@ -17,7 +17,7 @@ INTERNAL로 태어난다. 고객 발송 폴러가 건드리지 않는다.
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,7 +33,7 @@ from app.models.lead import (
     SalesLead,
     is_internal_inquiry,
 )
-from app.models.lead_diagnosis import DeliveryStatus
+from app.models.lead_diagnosis import DeliveryStatus, LeadDiagnosis, ReportStatus
 from app.services import inquiry_diagnosis
 
 router = APIRouter(prefix="/admin/lead-diagnoses", tags=["Admin — Lead diagnoses"])
@@ -185,3 +185,59 @@ async def create_manual_diagnosis(
         "delivery_status": DeliveryStatus.INTERNAL.value,
         "superseded_diagnosis_id": str(existing.id) if existing is not None else None,
     }
+
+
+def _serialize_history_row(diagnosis: LeadDiagnosis, lead: SalesLead | None) -> dict:
+    """생성 화면이 "내가 방금 만든 것"을 확인할 수 있는 최소한의 정보.
+
+    연락처·이메일·문의 원문은 담지 않는다. 이 목록의 용도는 식별과 진행 상태 확인이고,
+    상담 요청 목록처럼 대량 PII를 여는 표면이 되면 안 된다(그쪽은 그래서 감사 로그를
+    남긴다). 병원명·진료과·지역·키워드는 측정 입력 그 자체라 여기 없으면 무엇을
+    만들었는지 알 수 없다.
+    """
+    return {
+        "id": str(diagnosis.id),
+        "lead_id": str(diagnosis.lead_id),
+        "clinic_name": lead.clinic_name if lead else None,
+        "specialty": lead.specialty if lead else None,
+        "region_keyword": diagnosis.subject_region,
+        "core_keywords": list(lead.core_keywords or []) if lead else [],
+        "execution_status": diagnosis.execution_status,
+        "report_status": diagnosis.report_status,
+        "delivery_status": diagnosis.delivery_status,
+        "superseded_at": diagnosis.superseded_at.isoformat()
+        if diagnosis.superseded_at
+        else None,
+        "superseded_by_id": str(diagnosis.superseded_by_id)
+        if diagnosis.superseded_by_id
+        else None,
+        "report_ready": diagnosis.report_status == ReportStatus.READY.value,
+        "created_at": diagnosis.created_at.isoformat() if diagnosis.created_at else None,
+    }
+
+
+@router.get("")
+async def list_manual_diagnoses(
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(default=20, ge=1, le=100),
+    _actor: AdminUser = Depends(require_active_account),
+) -> dict:
+    """최근 콜용 진단 목록. 생성 화면 하단에서 만든 것을 바로 확인하고 연다.
+
+    만든 뒤 "상담 요청에서 보세요"로 넘기면, 리드가 수십 건인 목록에서 방금 만든 것을
+    찾아야 한다. 만든 화면이 만든 결과를 보여주는 편이 맞다.
+
+    대상은 INTERNAL(콜용)뿐이다. 무료 진단 신청은 성격이 다르고 이 화면의 일이 아니다.
+    """
+    # 모델에 관계가 없으므로 명시적으로 조인한다. 관계를 새로 더하면 이 화면 하나 때문에
+    # 다른 경로의 로딩 전략까지 바뀐다.
+    rows = (
+        await db.execute(
+            select(LeadDiagnosis, SalesLead)
+            .join(SalesLead, SalesLead.id == LeadDiagnosis.lead_id)
+            .where(LeadDiagnosis.delivery_status == DeliveryStatus.INTERNAL.value)
+            .order_by(LeadDiagnosis.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return {"items": [_serialize_history_row(diagnosis, lead) for diagnosis, lead in rows]}
