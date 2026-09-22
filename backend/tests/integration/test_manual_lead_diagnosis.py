@@ -270,3 +270,106 @@ class TestSupersededWorkIsAbandoned:
         await pg_async_session.flush()
         exhausted = await leadgen_tasks._exhausted_to_failed(pg_async_session)
         assert old.id not in {row.id for row in exhausted}
+
+
+@pytest.mark.asyncio
+class TestHistoryListing:
+    async def test_the_creation_screen_can_show_what_it_created(self, pg_async_session):
+        # Given: 방금 만든 콜용 진단.
+        created = await manual_api.create_manual_diagnosis(
+            _request(clinic_name="이력확인정형외과의원", reason="이력 확인"),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+
+        # When: 생성 화면 하단 목록을 읽는다.
+        listing = await manual_api.list_manual_diagnoses(
+            db=pg_async_session, limit=50, _actor=_actor()
+        )
+
+        # Then: 방금 만든 것이 무엇으로 만들어졌는지와 함께 보인다.
+        row = next(
+            item for item in listing["items"] if item["id"] == created["diagnosis_id"]
+        )
+        assert row["clinic_name"] == "이력확인정형외과의원"
+        assert row["specialty"] == "정형외과"
+        assert row["region_keyword"] == "강남역"
+        assert row["core_keywords"] == ["도수치료", "허리통증"]
+        assert row["lead_id"] == created["lead_id"]
+        assert row["report_ready"] is False
+        assert row["superseded_at"] is None
+
+    async def test_the_listing_never_carries_contact_details(self, pg_async_session):
+        # 이 목록은 식별과 진행 상태 확인용이다. 연락처를 실으면 상담 요청 목록과 같은
+        # 대량 PII 표면이 되고, 그쪽이 감사 로그를 남기는 이유가 사라진다.
+        await manual_api.create_manual_diagnosis(
+            _request(contact="010-9999-8888", contact_name="박원장"),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+        listing = await manual_api.list_manual_diagnoses(
+            db=pg_async_session, limit=50, _actor=_actor()
+        )
+        body = str(listing)
+        assert "010-9999-8888" not in body
+        assert "박원장" not in body
+
+    async def test_free_diagnosis_applications_stay_out_of_this_listing(
+        self, pg_async_session
+    ):
+        # Given: 고객에게 발송되는 무료 진단 신청 건.
+        lead = SalesLead(
+            clinic_name="무료진단신청의원",
+            clinic_type="내과",
+            contact="010-0000-0000",
+            privacy=True,
+            source="AI_DIAGNOSIS",
+        )
+        pg_async_session.add(lead)
+        await pg_async_session.flush()
+        pg_async_session.add(
+            LeadDiagnosis(
+                lead_id=lead.id,
+                applicant_email_hash=uuid.uuid4().hex,
+                subject_phone_hash=uuid.uuid4().hex,
+                subject_hospital_name=lead.clinic_name,
+                subject_region="강남역",
+                queries=[{"slot": 1, "kind": "진료과형", "text": "강남역 근처 내과"}],
+                requested_models={"openai": "m", "gemini": "g", "judge": "j"},
+                repeat_count=3,
+                delivery_status=DeliveryStatus.PENDING.value,
+            )
+        )
+        await pg_async_session.flush()
+
+        # Then: 콜용 화면의 목록에는 섞이지 않는다.
+        listing = await manual_api.list_manual_diagnoses(
+            db=pg_async_session, limit=100, _actor=_actor()
+        )
+        assert all(item["clinic_name"] != "무료진단신청의원" for item in listing["items"])
+
+    async def test_a_superseded_row_says_so_instead_of_disappearing(
+        self, pg_async_session
+    ):
+        lead = await _inquiry_lead(pg_async_session)
+        first = await manual_api.create_manual_diagnosis(
+            _request(lead_id=lead.id, reason="최초 생성"),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+        second = await manual_api.create_manual_diagnosis(
+            _request(lead_id=lead.id, specialty="정형외과", reason="고쳐서 다시"),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+
+        listing = await manual_api.list_manual_diagnoses(
+            db=pg_async_session, limit=50, _actor=_actor()
+        )
+        old = next(i for i in listing["items"] if i["id"] == first["diagnosis_id"])
+        assert old["superseded_at"] is not None
+        assert old["superseded_by_id"] == second["diagnosis_id"]
