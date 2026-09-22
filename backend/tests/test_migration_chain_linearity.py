@@ -47,9 +47,10 @@ INQUIRY_INTERNAL_DIAGNOSIS = "0076_inquiry_internal_diagnosis"
 INQUIRY_INTAKE_AUTOMATION = "0077_inquiry_intake_automation"
 HOSPITAL_PHYSICIANS = "0078_add_hospital_physicians"
 TOPIC_SWAP_FALLBACK = "0079_topic_swap_fallback"
+LEAD_DIAGNOSIS_SUPERSEDE = "0080_lead_diagnosis_supersede"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = TOPIC_SWAP_FALLBACK
+HEAD = LEAD_DIAGNOSIS_SUPERSEDE
 
 
 def _script_directory() -> ScriptDirectory:
@@ -163,6 +164,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        LEAD_DIAGNOSIS_SUPERSEDE,
         TOPIC_SWAP_FALLBACK,
         HOSPITAL_PHYSICIANS,
         INQUIRY_INTAKE_AUTOMATION,
@@ -199,7 +201,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-28:] == [
+    assert applied[-29:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -228,4 +230,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         INQUIRY_INTAKE_AUTOMATION,
         HOSPITAL_PHYSICIANS,
         TOPIC_SWAP_FALLBACK,
+        LEAD_DIAGNOSIS_SUPERSEDE,
     ]

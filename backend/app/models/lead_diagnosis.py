@@ -164,6 +164,14 @@ class LeadDiagnosis(Base):
 
     error: Mapped[str | None] = mapped_column(Text)
 
+    # ── 갈음. 입력이 틀린 채로 측정이 끝난 진단을 고쳐 다시 만들 때 쓴다.
+    # 옛 행은 지우지 않는다 — 실제로 지출한 공급자 호출과 그때 무엇을 쟀는지가
+    # 기록으로 남아야 한다. NULL이 활성이며 리드당 활성은 하나뿐이다.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    superseded_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("lead_diagnoses.id", ondelete="SET NULL")
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()

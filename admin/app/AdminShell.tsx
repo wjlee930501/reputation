@@ -45,6 +45,17 @@ const NAV_ITEMS = [
     ),
   },
   {
+    href: '/diagnoses',
+    label: '노출 진단 생성',
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <circle cx="9" cy="9" r="5" />
+        <path d="M13 13l4 4" />
+        <path d="M9 7v4M7 9h4" />
+      </svg>
+    ),
+  },
+  {
     href: '/operations',
     label: '운영 센터',
     meta: '현황',

@@ -26,7 +26,21 @@ export interface LeadDiagnosisSummary {
   needs_attention?: boolean
   error?: string | null
   created_at?: string | null
+  /** 갈음된 시각. 값이 있으면 이 진단은 더 이상 이 리드의 현재 판이 아니다. */
+  superseded_at?: string | null
+  superseded_by_id?: string | null
   recovery_runs?: DiagnosisRecoveryRuns
+}
+
+/**
+ * 갈음된 진단인가.
+ *
+ * 입력이 틀린 채로 측정이 끝난 진단을 AE가 고쳐 다시 만들면 옛 행이 이렇게 남는다.
+ * 지우지 않는 이유는 실제로 지출한 공급자 호출이 있기 때문이고, 그래서 화면에는
+ * 보이되 **조치 대상이 아니라는 것**이 분명해야 한다.
+ */
+export function isSuperseded(diagnosis: LeadDiagnosisSummary): boolean {
+  return Boolean(diagnosis.superseded_at)
 }
 
 export type RecoveryRunState =
@@ -118,6 +132,8 @@ export function diagnosisBadges(diagnosis: LeadDiagnosisSummary): AxisBadge[] {
 
 /** AE가 손을 써야 하는가. 백엔드 판정을 신뢰하되, 없으면 같은 규칙으로 계산한다. */
 export function needsAttention(diagnosis: LeadDiagnosisSummary): boolean {
+  // 갈음된 진단은 사람이 이미 대체본을 만들었다 — 운영자 큐에 올리면 없는 일을 시킨다.
+  if (isSuperseded(diagnosis)) return false
   if (typeof diagnosis.needs_attention === 'boolean') return diagnosis.needs_attention
   return (
     diagnosis.execution_status === 'FAILED' ||
@@ -139,6 +155,7 @@ export function diagnosisReportHref(
   leadId: string,
   diagnosis: LeadDiagnosisSummary,
 ): string | null {
+  // 갈음된 판의 보고서도 열 수 있어야 한다 — 무엇을 잘못 쟀는지 확인할 유일한 방법이다.
   if (diagnosis.report_status !== 'READY') return null
   return `/api/admin/leads/${encodeURIComponent(leadId)}/diagnoses/${encodeURIComponent(diagnosis.id)}/report`
 }
@@ -164,6 +181,8 @@ function activeRecoveryRun(diagnosis: LeadDiagnosisSummary): DiagnosisRecoveryRu
 export function recoveryAction(
   diagnosis: LeadDiagnosisSummary,
 ): DiagnosisRecoveryAction | null {
+  // 갈음된 판은 복구하지 않는다. 고칠 것은 현재 판이다.
+  if (isSuperseded(diagnosis)) return null
   const active = activeRecoveryRun(diagnosis)
   if (active) {
     return {
@@ -253,6 +272,9 @@ export function recoveryAction(
  * 목록에서 배지 세 개를 다 읽게 만들면 아무도 안 읽는다 — 무엇을 해야 하는지를 문장으로 준다.
  */
 export function diagnosisHint(diagnosis: LeadDiagnosisSummary): string {
+  if (isSuperseded(diagnosis)) {
+    return '값을 고쳐 새로 만든 진단으로 갈음됐습니다. 기록으로만 남깁니다.'
+  }
   if (diagnosis.report_status === 'PURGED') return '개인정보가 파기된 진단입니다.'
   // 콜용(내부 보관) 진단에는 고객 발송 단계가 없다. 목록의 「콜용 / 고객 미발송」과 같은 말로,
   // 신청자에게 무엇이 갔는지가 아니라 AE가 콜에 쓸 보고서가 있는지만 말한다.

@@ -536,7 +536,16 @@ def _serialize_diagnosis(
         if diagnosis.lock_released_at
         else None,
         "lock_released_by": diagnosis.lock_released_by,
-        "needs_attention": (
+        "superseded_at": diagnosis.superseded_at.isoformat()
+        if diagnosis.superseded_at
+        else None,
+        "superseded_by_id": str(diagnosis.superseded_by_id)
+        if diagnosis.superseded_by_id
+        else None,
+        # 갈음된 진단은 조치 대상이 아니다. 사람이 이미 대체본을 만들었는데 옛 행이
+        # 운영자 큐에 남으면 없는 일을 시키는 셈이다.
+        "needs_attention": diagnosis.superseded_at is None
+        and (
             diagnosis.execution_status == ExecutionStatus.FAILED.value
             or diagnosis.report_status == ReportStatus.BLOCKED.value
             or diagnosis.delivery_status == DeliveryStatus.FAILED.value

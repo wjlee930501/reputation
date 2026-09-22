@@ -1,6 +1,6 @@
 # 도입문의 접수 자동 처리 — 초도 노출 진단과 안내 문자
 
-문서 버전: **1.1** · 갱신일: **2026-09-22 (Asia/Seoul)**
+문서 버전: **1.2** · 갱신일: **2026-09-22 (Asia/Seoul)**
 범위: 공개 랜딩의 도입문의 폼(`POST /public/leads`)이 접수된 직후 백엔드가 자동으로 하는 두 가지 일과, 사람이 개입하는 지점.
 
 ## 랜딩의 자리
@@ -24,6 +24,25 @@ JSON을 요청한 쪽(폼)은 프록시의 `error` 문자열을 그대로 화면
 5. 원장 연락처가 휴대전화면 `services/inquiry_sms.acknowledge_inquiry`가 NHN Cloud Notification SMS(v3.0 MMS 엔드포인트, 첨부 없는 LMS)로 안내 문자를 보낸다. 발신번호는 `INQUIRY_SMS_SENDER_NO`(기본 010-2492-8543, 마케팅팀 김효진 팀장)이며 콘솔에 사전 등록돼 있어야 한다. 같은 연락처가 `INQUIRY_SMS_DEDUP_HOURS`(기본 6시간) 안에 다시 접수되면 보내지 않는다.
 6. 결과는 리드 행에 남는다. `ack_sms_status`(SENT/FAILED/SKIPPED)·`ack_sms_error`·`ack_sms_sent_at`. Admin 리드 목록이 발송 완료·미발송을 표시한다.
 
+## 값이 틀렸을 때
+
+폼이 비어 있으면 자동 생성이 거절돼 Admin에서 채우면 된다. **틀린 값은 다르다** —
+자동 생성을 그대로 통과해 잘못된 질의로 측정이 끝나고 콜용 보고서까지 만들어진다.
+`다시 측정`은 저장된 그 질의를 다시 묻고 `보고서 다시 만들기`는 같은 측정 결과로 PDF만
+다시 만들므로, 둘 다 입력을 고치지 못한다.
+
+상담 요청 화면의 `값 고쳐 다시 만들기`가 그 경로다. 진료과·지역·키워드를 고쳐 새 진단을
+만들고 옛 진단은 `superseded_at`·`superseded_by_id`로 갈음해 남긴다. 지우지 않는 이유는
+실제로 지출한 공급자 호출과 그때 무엇을 쟀는지가 기록으로 남아야 하기 때문이다.
+갈음된 진단은 운영자 큐·복구 버튼·폴러 어디에도 올라오지 않으며, 보고서는 무엇을 잘못
+쟀는지 확인할 수 있도록 계속 열린다. 고객에게 나간 진단(`SENDING`·`SENT`·`FAILED`)은
+갈음 대상이 아니다 — 공개 토큰 뷰가 최신 버전을 서빙하므로 이미 보낸 링크의 내용이 바뀐다.
+
+문의가 없는 병원은 Admin 네비의 `노출 진단 생성`에서 새로 만든다. 리드 행이 함께
+생기며 `privacy`는 False다(원장이 동의한 적이 없다). 이 화면에는 리드 검색이 없다 —
+리드 목록 조회는 대량 PII 열람이라 감사 로그를 남기는 표면이고, 고칠 리드는 상담 요청
+화면에 이미 떠 있다.
+
 ## 사람이 하는 일
 
 - 자동 처리 한 줄이 `자동 시작`이 아니면 Admin 리드 화면에서 `진단 생성(내부용)`을 눌러 진료과·지역·키워드를 채운다. 폼 기본값은 리드의 `specialty`·`region_keyword`·`core_keywords`를 그대로 가져온다.
@@ -46,5 +65,7 @@ JSON을 요청한 쪽(폼)은 프록시의 `error` 문자열을 그대로 화면
 
 - 단위: `backend/tests/test_public_leads.py`, `backend/tests/test_inquiry_sms.py`
 - 랜딩 폼·프록시: `site/lib/inquiry-form.test.ts`, `site/lib/inquiry-intake.test.ts`
+- 수동 생성·갈음: `backend/tests/integration/test_manual_lead_diagnosis.py`, `admin/lib/manual-diagnosis.test.ts`
+- 마이그레이션: `0080_lead_diagnosis_supersede` (`lead_diagnoses.superseded_at`, `superseded_by_id`)
 - 실제 Postgres: `backend/tests/integration/test_inquiry_internal_diagnosis.py::TestPublicIntakeAutoDiagnosis`
 - 마이그레이션: `0077_inquiry_intake_automation` (`sales_leads.specialty`, `ack_sms_*`)

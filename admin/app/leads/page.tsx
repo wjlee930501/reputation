@@ -19,6 +19,8 @@ import {
   type RealLeadSummary,
 } from '@/lib/lead-list'
 import { safeCauseText } from '@/lib/operations-center'
+import { CorrectDiagnosisDialog } from './CorrectDiagnosisDialog'
+import type { ManualDiagnosisValues } from '@/lib/manual-diagnosis'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -27,6 +29,7 @@ import {
   diagnosisBadges,
   diagnosisHint,
   diagnosisReportHref,
+  isSuperseded,
   needsAttention,
   recoveryAction,
 } from '@/lib/lead-diagnosis-status'
@@ -128,6 +131,26 @@ function IntroductionInquiryDetails({ lead }: { lead: SalesLead }) {
   )
 }
 
+/**
+ * 고쳐 만들기 폼의 기본값 — 지금 저장된 값을 그대로 보여준다.
+ *
+ * 비워서 보여주면 AE가 무엇이 틀렸는지 비교할 수 없다. 틀린 값을 띄워 두고 고치게 한다.
+ */
+function correctionDefaults(lead: SalesLead): Partial<ManualDiagnosisValues> {
+  const details = readInquiryDetails(lead)
+  const contact = lead.contact?.trim() ?? ''
+  return {
+    clinicName: lead.clinic_name?.trim() ?? '',
+    specialty:
+      lead.specialty?.trim()
+      || (lead.clinic_type?.trim() === '도입문의' ? '' : lead.clinic_type?.trim() || ''),
+    regionKeyword: lead.region_keyword?.trim() || details.address || '',
+    coreKeywords: (lead.core_keywords ?? []).join(', '),
+    contact: lead.clinic_phone?.trim() || contact,
+    contactName: lead.contact_name?.trim() || details.directorName || '',
+  }
+}
+
 function internalDiagnosisDefaults(lead: SalesLead): InternalDiagnosisForm {
   const details = readInquiryDetails(lead)
   const contact = lead.contact?.trim() ?? ''
@@ -183,6 +206,10 @@ export default function LeadsPage() {
   const [internalDiagnosisForm, setInternalDiagnosisForm] = useState<InternalDiagnosisForm | null>(null)
   const [internalDiagnosisSubmitting, setInternalDiagnosisSubmitting] = useState(false)
   const [internalDiagnosisError, setInternalDiagnosisError] = useState<string | null>(null)
+  // 값이 틀린 채로 측정이 끝난 진단을 고쳐 다시 만드는 창. 진단 생성(내부용)과 다른 경로다.
+  const [correctTarget, setCorrectTarget] = useState<SalesLead | null>(null)
+  const [correctSubmitting, setCorrectSubmitting] = useState(false)
+  const [correctError, setCorrectError] = useState<string | null>(null)
   const internalDiagnosisDialogRef = useRef<HTMLDivElement>(null)
   const modalBusyRef = useRef(false)
 
@@ -327,6 +354,38 @@ export default function LeadsPage() {
     setInternalDiagnosisForm(internalDiagnosisDefaults(lead))
     setInternalDiagnosisError(null)
     setActionNotice(null)
+  }
+
+  function openCorrectDiagnosis(lead: SalesLead) {
+    setCorrectTarget(lead)
+    setCorrectError(null)
+    setActionNotice(null)
+  }
+
+  async function handleCorrectDiagnosis(payload: Record<string, unknown>) {
+    if (!correctTarget || correctSubmitting) return
+    setCorrectSubmitting(true)
+    setCorrectError(null)
+    try {
+      await fetchAPI('/admin/lead-diagnoses', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      })
+      setCorrectTarget(null)
+      setActionNotice(
+        '고친 값으로 새 진단을 접수했습니다. 지금 진단은 기록으로 남습니다. 측정이 끝나면 이 화면에서 새 보고서를 열 수 있습니다.',
+      )
+      await loadLeads(0, { limit: Math.min(Math.max(leads.length, PAGE_SIZE), RELOAD_MAX) })
+    } catch (caught) {
+      // 서버가 알려주는 거절 사유(병원명 혼입, 고객 발송 이력 등)는 운영자가 고칠 수 있다.
+      const detail =
+        caught instanceof ApiError && typeof caught.detail === 'string' ? caught.detail : null
+      setCorrectError(
+        detail ?? safeOperatorError('leads', '입력값을 확인하고 다시 시도해 주세요.'),
+      )
+    } finally {
+      setCorrectSubmitting(false)
+    }
   }
 
   async function handleCreateInternalDiagnosis() {
@@ -632,6 +691,11 @@ export default function LeadsPage() {
                                 </span>
                               ))}
                             </div>
+                            {isSuperseded(diagnosis) && (
+                              <span className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600">
+                                갈음됨 · 기록 보관
+                              </span>
+                            )}
                             <p
                               className={`mt-1 break-keep text-[11px] ${
                                 needsAttention(diagnosis)
@@ -671,6 +735,18 @@ export default function LeadsPage() {
                               >
                                 보고서 열기
                               </a>
+                            )}
+                            {/* 원장이 진료과·지역·키워드를 틀리게 적으면 자동 생성이 그대로
+                                통과해 잘못된 질의로 측정이 끝난다. 다시 측정도 보고서 다시
+                                만들기도 저장된 그 질의를 쓰므로, 값 자체를 고칠 길이 필요하다. */}
+                            {isIntroductionInquiry(lead) && !isSuperseded(diagnosis) && (
+                              <button
+                                type="button"
+                                onClick={() => openCorrectDiagnosis(lead)}
+                                className="mt-2 ml-0 inline-flex min-h-11 items-center rounded-lg border border-violet-200 bg-white px-3 py-2 text-xs font-semibold text-violet-700 shadow-sm hover:bg-violet-50 sm:ml-2"
+                              >
+                                값 고쳐 다시 만들기
+                              </button>
                             )}
                             {(() => {
                               const recovery = recoveryAction(diagnosis)
@@ -837,6 +913,21 @@ export default function LeadsPage() {
           )}
         </div>
       )}
+
+      {correctTarget && typeof document !== 'undefined' && createPortal((
+        <CorrectDiagnosisDialog
+          clinicName={correctTarget.clinic_name}
+          leadId={correctTarget.id}
+          initialValues={correctionDefaults(correctTarget)}
+          submitting={correctSubmitting}
+          error={correctError}
+          onSubmit={(payload) => void handleCorrectDiagnosis(payload)}
+          onClose={() => {
+            if (correctSubmitting) return
+            setCorrectTarget(null)
+          }}
+        />
+      ), document.body)}
 
       {internalDiagnosisTarget && internalDiagnosisForm && typeof document !== 'undefined' && createPortal((
         <div
