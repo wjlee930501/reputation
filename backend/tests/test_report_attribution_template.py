@@ -221,3 +221,21 @@ def test_ae_report_shares_the_editorial_rules_without_saas_card_effects():
     assert "linear-gradient" not in html
     assert "#1A4B8C" not in html and "#fff8e1" not in html
     assert "nth-child(even)" not in html
+
+
+def test_gutter_grids_reach_both_rails():
+    """나란한 모듈은 본문 양쪽 레일에 정확히 닿아야 한다.
+
+    `border-spacing`으로 단 사이 간격을 만들면 표 바깥쪽에도 같은 간격이 생긴다. 음수
+    여백으로 왼쪽만 당기고 폭을 100%로 두면 오른쪽 끝이 간격 두 배만큼 짧아진다 —
+    PR #148 첫 렌더에서 KPI 스트립·자산 3단·수행/관측 2단이 모두 레일보다 32pt 짧았다.
+    음수 여백을 쓰는 규칙은 같은 간격 두 배를 폭에 더해야 한다.
+    """
+    import re
+
+    html = _render(_sample_attribution(), talking_points=_POINTS)
+    rules = re.findall(r"([.\w-]+) \{([^}]*calc\(-1 \* var\((--s\d)\)\)[^}]*)\}", html)
+    names = {name for name, _, _ in rules}
+    assert {".metrics", ".asset-grid", ".readout", ".kpi-grid"} <= names
+    for name, body, gutter in rules:
+        assert f"width:calc(100% + 2 * var({gutter}))" in body, name

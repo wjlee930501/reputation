@@ -37,7 +37,7 @@ a { color:var(--accent); text-decoration:underline; text-underline-offset:2pt; }
 .delta { color:var(--accent); font-weight:700; font-variant-numeric:tabular-nums; }
 
 /* KPI strip: a rule above every metric, no grid, figures in ink. */
-.metrics { display:table; width:100%; table-layout:fixed; border-collapse:separate; border-spacing:var(--s4) 0; margin:var(--s3) calc(-1 * var(--s4)) var(--s2); }
+.metrics { display:table; width:calc(100% + 2 * var(--s4)); table-layout:fixed; border-collapse:separate; border-spacing:var(--s4) 0; margin:var(--s3) calc(-1 * var(--s4)) var(--s2); }
 .metric { display:table-cell; vertical-align:top; border-top:1.5pt solid var(--ink); padding:var(--s2) 0 var(--s1); }
 .metric-label { font-size:9pt; color:var(--muted); font-weight:600; letter-spacing:.02em; }
 .metric strong { display:block; font-size:44pt; font-weight:800; line-height:1.08; letter-spacing:-.035em; color:var(--ink); font-variant-numeric:tabular-nums; margin:var(--s2) 0 var(--s1); }
@@ -67,7 +67,8 @@ a { color:var(--accent); text-decoration:underline; text-underline-offset:2pt; }
 .proposal-heading { display:table; width:100%; }
 .proposal-heading .number { display:table-cell; width:9%; font-size:20pt; line-height:1.2; vertical-align:top; }
 .proposal-heading h3 { display:table-cell; width:91%; font-size:14pt; vertical-align:middle; letter-spacing:-.015em; }
-.spec { display:table; width:91%; margin:var(--s2) 0 0 9%; border-collapse:collapse; }
+.spec { display:table; width:91%; margin:var(--s2) 0 0 9%; border-collapse:collapse; border-bottom:0.6pt solid var(--rule); }
+.proposal + .caption { margin-top:var(--s3); }
 .spec-row { display:table-row; }
 .spec-key,.spec-val { display:table-cell; vertical-align:top; border-top:0.6pt solid var(--rule); padding:6pt 0; }
 .spec-key { width:20%; font-size:9pt; color:var(--muted); font-weight:600; padding-top:8pt; padding-right:var(--s2); letter-spacing:.02em; }
@@ -77,7 +78,7 @@ dt { float:left; clear:left; width:19%; font-size:9pt; color:var(--muted); font-
 dd { margin:0 0 var(--s2) 19%; }
 
 /* Asset grid and process ledger. */
-.asset-grid { display:table; width:100%; table-layout:fixed; border-collapse:separate; border-spacing:var(--s3) 0; margin:var(--s3) calc(-1 * var(--s3)) var(--s2); }
+.asset-grid { display:table; width:calc(100% + 2 * var(--s3)); table-layout:fixed; border-collapse:separate; border-spacing:var(--s3) 0; margin:var(--s3) calc(-1 * var(--s3)) var(--s2); }
 .asset-grid > div { display:table-cell; vertical-align:top; border-top:1.5pt solid var(--ink); padding:var(--s2) 0 0; }
 .asset-grid h3 { font-size:12pt; margin:var(--s1) 0 var(--s1); letter-spacing:-.01em; }
 .asset-grid p { font-size:9.5pt; color:var(--muted); margin:0; }
@@ -110,13 +111,13 @@ tr { break-inside:avoid; }
 .sample { font-size:9pt; color:var(--muted); }
 
 /* Monthly modules. */
-.readout { display:table; width:100%; table-layout:fixed; border-collapse:separate; border-spacing:var(--s4) 0; margin:var(--s4) calc(-1 * var(--s4)) var(--s2); }
+.readout { display:table; width:calc(100% + 2 * var(--s4)); table-layout:fixed; border-collapse:separate; border-spacing:var(--s4) 0; margin:var(--s4) calc(-1 * var(--s4)) var(--s2); }
 .readout > div { display:table-cell; vertical-align:top; border-top:1.5pt solid var(--ink); padding-top:var(--s2); }
 .readout h3 { font-size:14pt; letter-spacing:-.015em; margin:var(--s1) 0 var(--s2); }
 .readout p { margin-bottom:var(--s1); }
 .work-proof { display:table; width:100%; border-top:0.6pt solid var(--rule); padding:var(--s3) 0; break-inside:avoid; }
 .work-proof .work-title { display:table-cell; width:58%; padding-right:var(--s4); vertical-align:top; }
-.work-proof .work-observation { display:table-cell; width:42%; vertical-align:top; padding-top:var(--s1); }
+.work-proof .work-observation { display:table-cell; width:42%; vertical-align:top; }
 .work-proof h3 { font-size:14pt; letter-spacing:-.015em; margin:var(--s1) 0 var(--s1); }
 .work-proof .caption { margin-bottom:var(--s1); }
 .evidence-pair { margin-top:var(--s4); border-bottom:0.6pt solid var(--rule); }
@@ -130,7 +131,8 @@ tr { break-inside:avoid; }
 .delivery-ledger h2 { color:var(--white); border:0; padding:0; margin:0 0 var(--s3); font-size:12pt; letter-spacing:.02em; }
 .delivery-ledger p { margin-bottom:var(--s2); }
 .delivery-ledger .caption { color:var(--surface); }
-.delivery-ledger strong { font-size:36pt; font-weight:800; letter-spacing:-.035em; margin-left:var(--s3); font-variant-numeric:tabular-nums; }
+/* Label over figure, the same reading order as the KPI strip. */
+.delivery-ledger strong { display:block; font-size:36pt; font-weight:800; line-height:1.1; letter-spacing:-.035em; margin-top:var(--s1); font-variant-numeric:tabular-nums; }
 .monthly-plan .rule-row { display:table; width:100%; padding:var(--s3) 0; }
 .monthly-plan .rule-row .number { display:table-cell; width:9%; font-size:20pt; line-height:1.2; vertical-align:top; }
 .monthly-plan .rule-row p { display:table-cell; width:91%; vertical-align:top; margin:0; }

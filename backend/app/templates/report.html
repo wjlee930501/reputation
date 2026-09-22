@@ -11,7 +11,7 @@
   .internal h3 { font-size:10.5pt; margin:var(--s4) 0 var(--s1); }
   .meta { font-size:9pt; color:var(--muted); margin-bottom:var(--s4); }
   .badge { display:inline-block; color:var(--accent); font-size:9pt; font-weight:700; letter-spacing:.06em; margin-bottom:var(--s2); }
-  .kpi-grid { display:table; width:100%; table-layout:fixed; border-collapse:separate; border-spacing:var(--s3) 0; margin:var(--s3) calc(-1 * var(--s3)) var(--s2); break-inside:avoid; }
+  .kpi-grid { display:table; width:calc(100% + 2 * var(--s3)); table-layout:fixed; border-collapse:separate; border-spacing:var(--s3) 0; margin:var(--s3) calc(-1 * var(--s3)) var(--s2); break-inside:avoid; }
   .kpi { display:table-cell; vertical-align:top; border-top:1.5pt solid var(--ink); padding:var(--s2) 0 var(--s1); }
   .kpi .val { font-size:20pt; font-weight:800; letter-spacing:-.03em; line-height:1.2; font-variant-numeric:tabular-nums; }
   .kpi .lbl { font-size:9pt; color:var(--muted); font-weight:600; margin-top:var(--s1); }
@@ -23,7 +23,7 @@
   .action-box dd { margin:2pt 0 0; }
   table { margin:var(--s2) 0 var(--s3); font-size:9.5pt; }
   th, td { overflow-wrap:anywhere; }
-  ol { padding-left:var(--s4); } ol li { margin-bottom:var(--s1); }
+  ol { padding-left:var(--s4); } .talking-points { break-inside:avoid; } ol li { margin-bottom:var(--s1); }
   .footer { margin-top:var(--s8); border-top:0.75pt solid var(--ink); padding-top:var(--s2); font-size:9pt; color:var(--muted); line-height:1.5; }
 </style>
 </head>
@@ -197,7 +197,8 @@
 {% endif %}
 
 {% if report_type == 'MONTHLY' and talking_points %}
-<h2> 원장 미팅 토킹 포인트</h2>
+<section class="talking-points">
+<h2>원장 미팅 토킹 포인트</h2>
 <p class="note">
   원장님 보고 자리에서 그대로 읽을 수 있게 만든 3문장입니다. 숫자는 이 리포트의 값에서 그대로
   가져왔으며 문장을 새로 쓰지 않았습니다. 이 섹션은 원장 전달용 PDF에는 들어가지 않습니다.
@@ -205,6 +206,7 @@
 <ol>
   {% for line in talking_points %}<li>{{ line }}</li>{% endfor %}
 </ol>
+</section>
 {% endif %}
 
 {% if report_type == 'MONTHLY' and attribution %}
