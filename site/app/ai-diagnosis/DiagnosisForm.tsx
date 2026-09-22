@@ -1,8 +1,11 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DiagnosisQuota, useDiagnosisSlots } from '@/app/_components/DiagnosisQuota'
+import { attributionEventParams, decorateSourcePath, type Attribution } from '@/lib/ad-attribution'
+import { ensureAttributionCaptured } from '@/lib/ad-attribution-client'
+import { trackEvent } from '@/lib/analytics'
 import {
   EMPTY_FORM,
   type DiagnosisFormValues,
@@ -59,10 +62,29 @@ export default function DiagnosisForm() {
   const [submission, setSubmission] = useState<Submission>({ phase: 'idle' })
   const slots = useDiagnosisSlots()
 
+  // 광고 유입 캡처값 — GA4 이벤트 파라미터이자 리드 레코드에 남길 유입 경로다.
+  // ref로 두는 이유: 값이 바뀌어도 폼을 다시 그릴 필요가 없다.
+  const attribution = useRef<Attribution | null>(null)
+  // `lead_form_start`는 한 번만 — 타이핑할 때마다 쏘면 시작 수가 타건 수가 된다.
+  const started = useRef(false)
+  // 이펙트는 StrictMode(개발)·리마운트에서 두 번 돈다. 조회를 두 번 세면 전환율이 반토막 난다.
+  const viewed = useRef(false)
+
   const emailSuggestion = useMemo(() => suggestEmailCorrection(values.email), [values.email])
   const soldOut = slots !== null && slots.remaining <= 0
 
+  useEffect(() => {
+    attribution.current = ensureAttributionCaptured()
+    if (viewed.current) return
+    viewed.current = true
+    trackEvent('lead_form_view', attributionEventParams(attribution.current))
+  }, [])
+
   const update = useCallback((name: keyof DiagnosisFormValues, value: string | boolean) => {
+    if (!started.current) {
+      started.current = true
+      trackEvent('lead_form_start', attributionEventParams(attribution.current))
+    }
     setValues((prev) => ({ ...prev, [name]: value }))
     setErrors((prev) => ({ ...prev, [name]: undefined }))
   }, [])
@@ -82,13 +104,19 @@ export default function DiagnosisForm() {
       const response = await fetch('/api/diagnosis', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(toRequestPayload(values, '/ai-diagnosis')),
+        body: JSON.stringify(
+          toRequestPayload(values, decorateSourcePath('/ai-diagnosis', attribution.current)),
+        ),
       })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) {
+        // 마감(429)·중복(409)·검증 실패는 리드가 아니다. 여기서 전환을 쏘면
+        // 거절된 제출이 전부 리드로 집계된다.
         setSubmission({ phase: 'error', message: data?.error || '접수에 실패했습니다.' })
         return
       }
+      // 접수 성공 응답을 받은 뒤에만 발화한다(REP-002).
+      trackEvent('generate_lead', attributionEventParams(attribution.current))
       setSubmission({
         phase: 'done',
         statusUrl: data.status_url,

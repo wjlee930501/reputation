@@ -44,17 +44,25 @@ const devLocalImgSrc = isDev ? ' http://localhost:8000 http://127.0.0.1:8000' : 
 // eval을 쓰지 않으므로 이 완화는 프로덕션에 영향이 없다.
 const devUnsafeEval = isDev ? " 'unsafe-eval'" : ''
 
+// GA4(gtag.js) 출처 — Google이 공개한 필요 출처 그대로다.
+// 이걸 빠뜨리면 계측 코드가 있어도 **스크립트 로드 자체가 CSP에 막혀** 이벤트가 한 건도
+// 나가지 않는다. 화면에는 아무 증상이 없고 콘솔에만 남으므로 놓치기 쉽다.
+const GA_SCRIPT_SRC = 'https://*.googletagmanager.com'
+const GA_CONNECT_SRC =
+  'https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com'
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  `script-src 'self' 'unsafe-inline'${devUnsafeEval}`,
+  `script-src 'self' 'unsafe-inline' ${GA_SCRIPT_SRC}${devUnsafeEval}`,
   "style-src 'self' 'unsafe-inline'",
+  // img-src는 이미 https: 전체를 허용하므로 GA 수집 픽셀은 따로 적지 않는다.
   `img-src 'self' data: blob: https:${devLocalImgSrc}`,
   "font-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self' ${GA_CONNECT_SRC}`,
 ].join('; ')
 
 const securityHeaders = [
