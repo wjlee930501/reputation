@@ -410,7 +410,7 @@ class TestAdminTerminalRecovery:
         assert "another-secret" not in audit_text
         assert "[email redacted]" in audit_text
 
-    async def test_recovery_prevents_parallel_axis_duplicate_and_ready_rebuild(
+    async def test_recovery_prevents_parallel_axis_duplicate_and_delivered_rebuild(
         self, pg_async_session, monkeypatch
     ):
         # Given: 복구 가능한 측정 실패와 OWNER 운영자.
@@ -458,16 +458,39 @@ class TestAdminTerminalRecovery:
         assert duplicate.value.status_code == 409
         assert "operation_run_id" in duplicate.value.detail
 
-        # Given: 이미 고객에게 전달 가능한 READY 리포트.
+        # Given: 실패하지 않고 만들어졌으며 아직 고객에게 나가지 않은 READY 리포트.
+        monkeypatch.setattr(
+            recovery_commands.recover_lead_diagnosis_report,
+            "apply_async",
+            lambda **_kwargs: _QueuedTask(),
+        )
         ready, _ = await _seed(pg_async_session, report_status=ReportStatus.READY.value)
 
-        # When/Then: 안전하지 않은 덮어쓰기 재생성은 큐에 들어가지 않는다.
+        # When: 생성 기준이 바뀌어 다시 만들기를 요청한다.
+        accepted = await recovery_api.rebuild_lead_diagnosis_report(
+            ready.lead_id,
+            ready.id,
+            request,
+            "ready-rebuild",
+            pg_async_session,
+            actor,
+        )
+
+        # Then: 접수된다 — 이전 버전은 아티팩트로 남는다.
+        assert accepted["operation_run_id"]
+
+        # Given: 이미 신청자에게 발송이 끝난 READY 리포트.
+        delivered, _ = await _seed(pg_async_session, report_status=ReportStatus.READY.value)
+        delivered.delivery_status = DeliveryStatus.SENT.value
+        await pg_async_session.flush()
+
+        # When/Then: 공개 링크의 내용을 갈아끼우는 재생성은 큐에 들어가지 않는다.
         with pytest.raises(HTTPException) as unsafe:
             await recovery_api.rebuild_lead_diagnosis_report(
-                ready.lead_id,
-                ready.id,
+                delivered.lead_id,
+                delivered.id,
                 request,
-                "unsafe-ready",
+                "unsafe-delivered",
                 pg_async_session,
                 actor,
             )

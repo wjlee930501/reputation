@@ -9722,3 +9722,204 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   .clinic-article-tldr { padding: 20px; }
   .clinic-content-groups { gap: 32px; }
 }
+
+/* ─── 도입 문의 폼 (#lead) ────────────────────────────────────────
+   딥블루 CTA 밴드가 마지막 설득이라면 이 섹션은 그 바로 아래의 행동이다. 폼을 밴드
+   위에 얹지 않는 이유는 둘이다 — 입력 필드를 딥블루 면에 올리면 대비를 맞추려고
+   반투명 입력칸을 만들어야 하고, 그 순간 랜딩의 순백 규칙이 깨진다. 밴드는 그대로
+   두고 흰 면에서 받는다.
+
+   셀프서브 신청 폼(.dg-*)과 클래스를 나눈 이유: 그쪽 토큰은 `.dg-page`에 걸려 있어
+   랜딩에서 쓰면 변수가 비어 무너진다. */
+.lead-section {
+  max-width: var(--shell-max);
+  margin: 0 auto;
+  padding: var(--section-pad) var(--shell-pad);
+}
+
+.lead-inner {
+  max-width: var(--prose-max);
+  margin: 0 auto;
+}
+
+.lead-inner h2 {
+  margin: 0;
+  font-size: clamp(1.375rem, 1.05rem + 1.4vw, 1.875rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.lead-inner > p {
+  margin: 12px 0 0;
+  font-size: 1rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.lead-form {
+  margin-top: 28px;
+}
+
+/* 두 열이면 8칸 폼이 한 화면에 들어온다. 좁은 화면에서는 한 열로 접힌다. */
+.lead-form-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 560px) {
+  .lead-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.lead-field-wide {
+  margin-top: 16px;
+}
+
+.lead-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.lead-field input,
+.lead-field textarea {
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-input);
+  background: #ffffff;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.lead-field textarea {
+  resize: vertical;
+  line-height: 1.6;
+}
+
+.lead-field input:focus-visible,
+.lead-field textarea:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  border-color: var(--accent);
+}
+
+.lead-field input[aria-invalid="true"],
+.lead-field textarea[aria-invalid="true"] {
+  border-color: var(--color-revisit-red-50);
+}
+
+.lead-field input:disabled,
+.lead-field textarea:disabled {
+  background: var(--tint);
+  color: var(--muted);
+}
+
+.lead-hint {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.lead-error {
+  margin: 6px 0 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--color-revisit-red-50);
+}
+
+.lead-error-block {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-input);
+  background: #fdf0f0;
+  font-size: 0.875rem;
+}
+
+.lead-consent {
+  margin-top: 20px;
+}
+
+.lead-consent label {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.lead-consent input {
+  margin-top: 3px;
+  /* 44px 조작 영역을 만들되 레이아웃은 밀지 않는다. */
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+
+.lead-consent span {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.lead-submit {
+  width: 100%;
+  margin-top: 24px;
+}
+
+/* 봇만 채운다 — 화면에서도 보조기술에서도 빠진다(display:none은 일부 봇이 건너뛴다). */
+.lead-form-honeypot {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.lead-form-done {
+  padding: 28px;
+  border: 1px solid var(--tint-line);
+  border-radius: var(--radius-card);
+  background: var(--tint);
+}
+
+.lead-form-done h3 {
+  margin: 0 0 10px;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.lead-form-done p {
+  margin: 0;
+  font-size: 0.9375rem;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.lead-form-note {
+  margin-top: 8px !important;
+  font-size: 0.8125rem !important;
+  color: var(--muted) !important;
+}
+
+.lead-notes {
+  margin: 20px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lead-notes li {
+  margin-top: 6px;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--muted);
+}

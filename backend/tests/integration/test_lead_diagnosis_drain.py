@@ -20,6 +20,7 @@ from app.models.lead_diagnosis import (
     ReportStatus,
 )
 from app.workers import lead_diagnosis_tasks as leadgen_tasks
+from app.workers.lead_diagnosis_tasks import MAX_REPORT_ATTEMPTS
 from app.workers.lead_report_writeback import finalize_lead_report_artifact
 
 
@@ -268,7 +269,7 @@ class TestExecutionRecovery:
         # Then: 행을 덮어쓰지 않는다.
         assert claimed is False
 
-    async def test_terminal_report_rebuild_preserves_attempt_count_and_blocks_sent_report(
+    async def test_terminal_report_rebuild_preserves_attempt_count_and_reaches_ready_reports(
         self, pg_async_session
     ):
         # Given: 측정은 유효하지만 렌더링이 세 번 실패한 진단.
@@ -290,22 +291,50 @@ class TestExecutionRecovery:
         assert diagnosis.report_status == ReportStatus.BUILDING.value
         assert diagnosis.report_attempts == 4
 
-        # Given: 이미 고객에게 전달된 별도 리포트 기록.
-        delivered = await _seed(
+        # Given: 이미 만들어진 콜용(INTERNAL) 보고서 — 도입문의 초도 진단이 이 모양이다.
+        call_report = await _seed(
             pg_async_session,
             execution_status=ExecutionStatus.SUCCEEDED.value,
             report_status=ReportStatus.READY.value,
             report_attempts=3,
-            delivery_status=DeliveryStatus.SENT.value,
+            delivery_status=DeliveryStatus.INTERNAL.value,
         )
 
-        # When: 자동 재생성을 요청한다.
-        unsafe_claim = await leadgen_tasks._claim_for_report(
-            pg_async_session, delivered.id, recovery_expected_attempts=3
+        # When: 운영자가 생성 로직 개선 뒤 재생성을 요청한다.
+        rebuilt = await leadgen_tasks._claim_for_report(
+            pg_async_session, call_report.id, recovery_expected_attempts=3
         )
 
-        # Then: 전달 이력이 있는 리포트는 바꾸지 않는다.
-        assert unsafe_claim is False
+        # Then: 실패하지 않은 보고서도 새 버전으로 다시 만든다 — 이전 판은 아티팩트로 남는다.
+        await pg_async_session.refresh(call_report)
+        assert rebuilt is True
+        assert call_report.report_status == ReportStatus.BUILDING.value
+        assert call_report.report_attempts == 4
+
+    async def test_a_delivered_report_is_never_rebuilt_in_place(self, pg_async_session):
+        """고객에게 나간 리포트는 제자리에서 새 버전으로 갈아끼우지 않는다.
+
+        DB 제약(ck_lead_diagnoses_delivery_requires_report)도 같은 말을 한다 —
+        PENDING·INTERNAL이 아니면 report_status는 READY/PURGED를 벗어날 수 없다.
+        """
+        for delivery in (
+            DeliveryStatus.SENDING.value,
+            DeliveryStatus.SENT.value,
+            DeliveryStatus.FAILED.value,
+        ):
+            diagnosis = await _seed(
+                pg_async_session,
+                execution_status=ExecutionStatus.SUCCEEDED.value,
+                report_status=ReportStatus.READY.value,
+                report_attempts=1,
+                delivery_status=delivery,
+            )
+            assert (
+                await leadgen_tasks._claim_for_report(
+                    pg_async_session, diagnosis.id, recovery_expected_attempts=1
+                )
+                is False
+            ), delivery
 
     async def test_report_writeback_loses_to_purge_and_deletes_uploaded_object(
         self, pg_async_session, tmp_path
@@ -348,6 +377,60 @@ class TestExecutionRecovery:
         assert row is not None and row.report_status == ReportStatus.PURGED.value
         assert stored is None
         assert not uploaded.exists()
+
+    async def test_a_failed_rebuild_keeps_the_existing_report_ready(
+        self, pg_async_session, monkeypatch
+    ):
+        """재생성이 실패해도 이미 낼 수 있는 보고서를 "만들지 못했다"로 내리지 않는다."""
+        # Given: 콜용 보고서가 이미 만들어져 있는 진단.
+        diagnosis = await _seed(
+            pg_async_session,
+            execution_status=ExecutionStatus.SUCCEEDED.value,
+            report_status=ReportStatus.READY.value,
+            report_attempts=MAX_REPORT_ATTEMPTS,
+            delivery_status=DeliveryStatus.INTERNAL.value,
+        )
+        diagnosis_id = diagnosis.id
+        pg_async_session.add(
+            LeadReportArtifact(
+                diagnosis_id=diagnosis_id,
+                version=1,
+                storage_uri="memory://existing.pdf",
+                content_hash="hash-v1",
+                byte_size=10,
+                template_version="lead-v1",
+            )
+        )
+        await pg_async_session.flush()
+
+        def boom(payload):
+            raise RuntimeError("renderer exploded")
+
+        monkeypatch.setattr(leadgen_tasks.lead_report, "render_lead_report_pdf", boom)
+
+        class _Ctx:
+            async def __aenter__(self):
+                return pg_async_session
+
+            async def __aexit__(self, *exc):
+                return False
+
+        monkeypatch.setattr(leadgen_tasks, "get_async_sessionmaker", lambda: _Ctx)
+
+        # When: 운영자 재생성이 렌더 단계에서 실패한다.
+        with pytest.raises(RuntimeError):
+            await leadgen_tasks._build_lead_report(
+                str(diagnosis_id), recovery_expected_attempts=MAX_REPORT_ATTEMPTS
+            )
+
+        # Then: 기존 보고서는 그대로 READY다 — 실패 사유만 남는다.
+        row = (
+            await pg_async_session.execute(
+                select(LeadDiagnosis).where(LeadDiagnosis.id == diagnosis_id)
+            )
+        ).scalar_one()
+        assert row.report_status == ReportStatus.READY.value
+        assert "renderer exploded" in (row.error or "")
 
     async def test_a_crash_returns_the_row_to_pending(self, pg_async_session, monkeypatch):
         """RUNNING으로 남겨두고 리스 만료를 기다리면 15분 SLA 안에 재시도할 기회가 사라진다."""

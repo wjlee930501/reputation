@@ -204,8 +204,15 @@ export function recoveryAction(
     }
   }
 
-  if (diagnosis.report_status !== 'BLOCKED') return null
-  if (diagnosis.delivery_status === 'SENT' || diagnosis.delivery_status === 'SENDING') {
+  // 생성 실패(BLOCKED)뿐 아니라 이미 만들어진 보고서(READY)도 다시 만들 수 있다 —
+  // 보고서 생성 로직을 고친 뒤 기존 진단에 적용할 길이 있어야 한다.
+  if (diagnosis.report_status !== 'BLOCKED' && diagnosis.report_status !== 'READY') return null
+  // 고객에게 나간 보고서는 제자리에서 갈아끼우지 않는다. 공개 링크가 최신 버전을 서빙하므로
+  // 새 버전을 얹으면 신청자가 이미 받은 링크의 내용이 조용히 바뀐다. 백엔드도 같은 선을
+  // 긋는다(lead_recovery._ensure_recoverable, ck_lead_diagnoses_delivery_requires_report).
+  if (diagnosis.delivery_status !== 'PENDING' && diagnosis.delivery_status !== 'INTERNAL') {
+    // 정상 발송된 보고서에까지 '개발팀 확인 필요'를 띄우면 조치할 일이 없는데 있는 것처럼 읽힌다.
+    if (diagnosis.report_status !== 'BLOCKED') return null
     return {
       kind: 'support',
       enabled: false,
@@ -218,6 +225,8 @@ export function recoveryAction(
     diagnosis.execution_status !== 'SUCCEEDED' &&
     diagnosis.execution_status !== 'PARTIAL'
   ) {
+    // 측정 결과가 없으면 만들 것도 없다. 다만 이미 보고서가 있는 진단에는 해당하지 않는다.
+    if (diagnosis.report_status !== 'BLOCKED') return null
     return {
       kind: 'support',
       enabled: false,
@@ -230,7 +239,10 @@ export function recoveryAction(
     kind: 'rebuild',
     enabled: true,
     label: '보고서 다시 만들기',
-    description: '기존 보고서는 보관하고 새 보고서를 만듭니다.',
+    description:
+      diagnosis.report_status === 'READY'
+        ? '지금 보고서는 그대로 보관하고 최신 기준으로 새 보고서를 만듭니다.'
+        : '기존 보고서는 보관하고 새 보고서를 만듭니다.',
     previousRun: reportRun?.state === 'FAILED' ? reportRun : null,
   }
 }

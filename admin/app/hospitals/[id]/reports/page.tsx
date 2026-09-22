@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'next/navigation'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { fetchCurrentAccount } from '@/lib/current-account'
@@ -12,6 +12,11 @@ import {
   type DeliveryIssue,
 } from '@/lib/report-delivery'
 import { parseReport, parseReports, type ReportView } from '@/lib/report-review'
+import {
+  getOrCreateReportRequestKey,
+  reportRebuildFingerprint,
+  reportRebuildIdempotencyKey,
+} from '@/lib/report-run'
 import { preflightDeliveryAction } from '@/lib/report-component-behavior'
 import { DirectorFeedback } from './DirectorFeedback'
 import { ReportList } from './ReportList'
@@ -39,6 +44,11 @@ export default function ReportsPage() {
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   // 이 화면이 실제로 내려받은 원장 전달용 파일의 확인 번호. 전달 기록은 이 값에만 결합한다.
   const [downloadedSha256, setDownloadedSha256] = useState<string | null>(null)
+  // 목록 행에서 새 버전을 요청하면 작업 카드도 같이 갱신해야 한다 — 카드가 자기 주기로만
+  // 새로고침하면 방금 만든 작업이 한참 뒤에야 나타난다.
+  const [runRefreshToken, setRunRefreshToken] = useState(0)
+  const [rebuildBusy, setRebuildBusy] = useState(false)
+  const rebuildKeys = useRef(new Map<string, string>())
 
   const loadDetail = useCallback(async (reportId: string): Promise<ReportView> => {
     const payload = await fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports/${reportId}`)
@@ -60,6 +70,10 @@ export default function ReportsPage() {
     catch { setPageError('보고서 상세를 불러오지 못했습니다. 고객 영향: 최신 근거를 확인할 수 없습니다. 지금 할 일: 다시 시도하고 계속 실패하면 개발팀에 문의해 주세요.') }
     finally { setLoadingId(null) }
   }, [applyReport, loadDetail])
+
+  const loadReports = useCallback(async () => {
+    setReports(parseReports(await fetchAPI<unknown>(`/admin/hospitals/${hospitalId}/reports`)))
+  }, [hospitalId])
 
   useEffect(() => {
     let active = true
@@ -124,6 +138,38 @@ export default function ReportsPage() {
     } finally { setBusy(false) }
   }, [applyReport, busy, hospitalId, loadDetail, selected])
 
+  /**
+   * 목록 행의 '다시 만들기'. 작업 카드와 같은 엔드포인트·같은 사유 계약을 쓴다.
+   * 이미 전달한 보고서도 막지 않는다 — 새 버전은 이전 보고서와 전달 기록을 보존한다.
+   */
+  const handleRebuild = useCallback(async (report: ReportView, reason: string) => {
+    if (rebuildBusy) return
+    setRebuildBusy(true)
+    setIssue(null)
+    setPageError(null)
+    const fingerprint = reportRebuildFingerprint(report.id, report.periodYear, report.periodMonth, reason)
+    try {
+      const key = getOrCreateReportRequestKey(
+        rebuildKeys.current,
+        fingerprint,
+        () => reportRebuildIdempotencyKey(report.id, crypto.randomUUID()),
+      )
+      await fetchAPI(
+        `/admin/hospitals/${hospitalId}/operations/generate-monthly-report?year=${report.periodYear}&month=${report.periodMonth}&rebuild=true`,
+        { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ reason }) },
+      )
+      // 같은 사유로 다시 누르면 새 요청이어야 한다 — 성공한 키는 버린다.
+      rebuildKeys.current.delete(fingerprint)
+      setStatusMessage('새 버전 생성을 요청했습니다. 기존 보고서와 전달 기록은 그대로 보존됩니다. 진행 상황은 위 작업 기록에서 확인해 주세요.')
+      setRunRefreshToken((token) => token + 1)
+      await loadReports()
+    } catch {
+      setPageError('문제: 새 버전 생성 요청을 완료하지 못했습니다. 고객 영향: 새 원장 보고 자료가 만들어지지 않았습니다. 지금 할 일: 다시 시도하고, 계속 실패하면 개발팀 문의용 정보를 복사해 전달해 주세요.')
+    } finally {
+      setRebuildBusy(false)
+    }
+  }, [hospitalId, loadReports, rebuildBusy])
+
   const closeDialog = useCallback(() => { setSelected(null); setIssue(null); setDownloadedSha256(null) }, [])
   async function copyDeveloperInfo() {
     try {
@@ -146,10 +192,11 @@ export default function ReportsPage() {
           periodMonth: report.periodMonth,
         }))}
         onReview={(reportId) => void openReport(reportId)}
+        refreshToken={runRefreshToken}
       />
       {statusMessage && <p className="mb-4 rounded-lg bg-[var(--color-revisit-primary-95)] p-3 text-sm" role="status">{statusMessage}</p>}
       {pageError && <div className="mb-4 rounded-lg border border-[var(--color-revisit-red-50)] p-3 text-sm text-[var(--color-revisit-red-50)]" role="alert"><p>{pageError}</p><div className="mt-3 flex flex-col gap-2 sm:flex-row"><button type="button" onClick={() => window.location.reload()} className="min-h-11 rounded-lg bg-[var(--color-revisit-primary-40)] px-4 font-bold text-white">보고서 목록 다시 시도</button><button type="button" onClick={() => void copyDeveloperInfo()} className="min-h-11 rounded-lg border border-[var(--color-revisit-coolgrey-20)] px-4 font-bold text-[var(--color-revisit-text-title)]">개발팀 문의용 정보 복사</button></div></div>}
-      {loading ? <p className="py-12 text-center text-sm" role="status">보고서 목록을 불러오는 중입니다.</p> : <ReportList reports={reports} loadingId={loadingId} onOpen={(report) => void openReport(report.id)} />}
+      {loading ? <p className="py-12 text-center text-sm" role="status">보고서 목록을 불러오는 중입니다.</p> : <ReportList reports={reports} loadingId={loadingId} rebuildBusy={rebuildBusy} onOpen={(report) => void openReport(report.id)} onRebuild={(report, reason) => void handleRebuild(report, reason)} />}
       {selected && <ReportDialog report={selected} issue={issue} isOwner={isOwner} busy={busy} downloadedSha256={downloadedSha256} onDownloaded={setDownloadedSha256} onClose={closeDialog} onRefresh={() => void refreshSelected()} onAction={(action) => void handleAction(action)} onCopyDeveloperInfo={() => void copyDeveloperInfo()} />}
     </div>
   )

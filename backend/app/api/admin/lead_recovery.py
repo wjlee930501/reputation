@@ -94,19 +94,32 @@ def _ensure_recoverable(diagnosis: LeadDiagnosis, axis: RecoveryAxis) -> int:
                 ExecutionStatus.SUCCEEDED.value,
                 ExecutionStatus.PARTIAL.value,
             }
-            delivery_safe = diagnosis.delivery_status not in {
-                DeliveryStatus.SENDING.value,
-                DeliveryStatus.SENT.value,
+            # 생성 실패(BLOCKED)뿐 아니라 이미 만들어진 리포트(READY)도 다시 만들 수 있다.
+            # 리포트 생성 로직을 고친 뒤 기존 진단에 적용할 길이 없으면, 콜용 보고서는
+            # 만들어진 그 순간의 품질에 영구히 묶인다. 아티팩트는 버전으로 쌓이므로
+            # 이전 판은 지워지지 않는다.
+            rebuildable = diagnosis.report_status in {
+                ReportStatus.BLOCKED.value,
+                ReportStatus.READY.value,
             }
-            if diagnosis.report_status != ReportStatus.BLOCKED.value or not measurement_ready:
+            if not rebuildable or not measurement_ready:
                 raise HTTPException(
                     status_code=409,
-                    detail="측정이 끝난 뒤 생성 실패로 종료된 리포트만 다시 만들 수 있습니다.",
+                    detail="측정이 끝난 뒤 만들어졌거나 생성 실패로 종료된 리포트만 다시 만들 수 있습니다.",
                 )
-            if not delivery_safe:
+            # 고객에게 나간 리포트는 제자리에서 다시 만들지 않는다. 재생성은 report_status를
+            # 잠시 BUILDING으로 내리는데, DB 제약(ck_lead_diagnoses_delivery_requires_report)이
+            # "PENDING·INTERNAL이 아니면 report_status는 READY/PURGED여야 한다"를 강제한다.
+            # 공개 토큰 뷰가 최신 버전을 서빙하므로, 이 제약은 이미 보낸 링크의 내용이
+            # 조용히 바뀌지 않게 막는 장치이기도 하다. 콜용(INTERNAL)에는 고객 링크가 없어
+            # 이 위험이 없고, 도입문의 초도 진단이 바로 이 경우다.
+            if diagnosis.delivery_status not in {
+                DeliveryStatus.PENDING.value,
+                DeliveryStatus.INTERNAL.value,
+            }:
                 raise HTTPException(
                     status_code=409,
-                    detail="이미 전달 중이거나 전달된 리포트는 자동으로 다시 만들 수 없습니다.",
+                    detail="이미 신청자에게 나간 리포트는 다시 만들 수 없습니다. 개발팀에 진단 ID를 알려 주세요.",
                 )
             return diagnosis.report_attempts
         case unreachable:

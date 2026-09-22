@@ -63,7 +63,8 @@ test('복구 사유 최소 길이는 API 계약과 같은 3자다', () => {
 test('복구 모달은 개발 용어 없이 운영자가 확인한 사실을 적게 한다', () => {
   assert.doesNotMatch(LEADS_PAGE, /공급자 설정|PDF 렌더링/)
   assert.match(LEADS_PAGE, /같은 질문으로 다시 확인이 필요해 재측정/)
-  assert.match(LEADS_PAGE, /보고서가 열리지 않아 다시 만들기/)
+  // 재생성은 실패 복구만이 아니다 — 생성 기준이 바뀌어 다시 만드는 경우도 예시로 든다.
+  assert.match(LEADS_PAGE, /보고서 생성 기준이 바뀌어 최신 기준으로 다시 만들기/)
 })
 
 test('복구 모달 실행과 취소 버튼은 44px 조작 영역을 가진다', () => {
@@ -255,4 +256,36 @@ test('an unsafe sent report rebuild is disabled with an operations-center handof
   assert.equal(action?.kind, 'support')
   assert.equal(action?.enabled, false)
   assert.match(action?.description ?? '', /고객에게 발송/)
+})
+
+test('a ready call report can be rebuilt after the generation logic improves', () => {
+  // Given: 도입문의로 만들어진 콜용 보고서 — 실패하지 않았고 고객에게 나가지도 않는다
+  const action = recoveryAction(
+    make({ execution_status: 'SUCCEEDED', report_status: 'READY', delivery_status: 'INTERNAL' }),
+  )
+
+  // Then: 생성 로직을 고친 뒤 최신 기준으로 다시 만들 수 있다
+  assert.equal(action?.kind, 'rebuild')
+  assert.equal(action?.enabled, true)
+  assert.match(action?.description ?? '', /그대로 보관하고 최신 기준/)
+})
+
+test('a ready report already sent to the applicant offers no rebuild at all', () => {
+  // Given: 신청자에게 발송이 끝난 정상 보고서
+  const action = recoveryAction(
+    make({ execution_status: 'SUCCEEDED', report_status: 'READY', delivery_status: 'SENT' }),
+  )
+
+  // Then: 조치할 일이 없으므로 '개발팀 확인 필요'조차 띄우지 않는다.
+  // 공개 링크가 최신 버전을 서빙하므로 제자리 재생성은 백엔드도 막는다.
+  assert.equal(action, null)
+})
+
+test('a ready report still being delivered is left alone', () => {
+  assert.equal(
+    recoveryAction(
+      make({ execution_status: 'SUCCEEDED', report_status: 'READY', delivery_status: 'SENDING' }),
+    ),
+    null,
+  )
 })

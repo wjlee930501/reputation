@@ -16,5 +16,5 @@ export function containsPatientSensitiveLeadText(value: string): boolean {
 }
 
 export function leadSafetyError(): string {
-  return '환자 개인정보는 무료 진단 요청에 포함할 수 없습니다.'
+  return '환자 개인정보는 도입 문의에 포함할 수 없습니다.'
 }
