@@ -15,7 +15,7 @@ import {
 } from './session-revocation.ts'
 import { readSessionToken } from './session.ts'
 
-const ALLOWED_PREFIXES = [
+export const ALLOWED_PREFIXES = [
   'hospitals',
   'leads',
   'handoffs',
@@ -23,6 +23,9 @@ const ALLOWED_PREFIXES = [
   // 여기 없으면 백엔드에 라우터가 있어도 프록시가 403으로 끊는다.
   'operations',
   'accounts',
+  // 콜용 노출 진단 수동 생성(/admin/lead-diagnoses). `leads`와 별개의 최상위 경로라
+  // 여기 없으면 백엔드 라우터가 있어도 프록시가 403으로 끊는다 — 실제로 그렇게 나갔다.
+  'lead-diagnoses',
 ]
 const ALLOWED_METHODS = new Set(['GET', 'POST', 'PATCH', 'DELETE'])
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9_.:-]{1,255}$/
