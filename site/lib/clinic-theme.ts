@@ -4,7 +4,7 @@ import { resolveAssetUrl, type Hospital } from './hospital-payload.ts'
 
 export const DEFAULT_CLINIC_PRIMARY = '#17365D'
 
-const CLINIC_INK = '#0A1B2F'
+export const CLINIC_INK = '#0A1B2F'
 const CLINIC_PAPER = '#FBFAF7'
 const WHITE = '#FFFFFF'
 const HEX_COLOR = /^#[0-9a-f]{6}$/i
