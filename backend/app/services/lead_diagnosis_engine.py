@@ -13,6 +13,7 @@
 """
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -20,6 +21,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_async_sessionmaker
 from app.models.lead_diagnosis import (
     AnswerSource,
     ExecutionStatus,
@@ -357,11 +359,28 @@ def resolve_execution_status(diagnosis: LeadDiagnosis, planned: list[_Measuremen
     return ExecutionStatus.PARTIAL.value
 
 
+async def is_superseded(diagnosis_id: uuid.UUID | str) -> bool:
+    """다른 세션이 이 진단을 갈음했는지 새 세션으로 확인한다.
+
+    측정·리포트 생성 중에 AE가 값을 고쳐 갈음하면, 실행 중인 세션이 들고 있는 행은
+    그 사실을 모른다. 갈음 시점에 열려 있던 인시던트는 갈음 트랜잭션이 닫지만, 그 뒤에
+    끝난 실행이 새로 여는 인시던트는 닫을 주체가 없다 — 폴러도 복구 버튼도 이 행을 다시
+    보지 않는다. 행을 찾지 못하면 갈음되지 않은 것으로 본다(알림을 삼키지 않는 쪽).
+    """
+    async with get_async_sessionmaker()() as session:
+        superseded_at = await session.scalar(
+            select(LeadDiagnosis.superseded_at).where(LeadDiagnosis.id == diagnosis_id)
+        )
+    return superseded_at is not None
+
+
 async def _notify_budget_blocked(
     diagnosis: LeadDiagnosis, live_calls: int, reason: str | None
 ) -> None:
     """Persist one deduplicated incident; the deferred row recovers without human polling."""
     try:
+        if await is_superseded(diagnosis.id):
+            return
         await open_ops_incident(
             pipeline="lead_diagnosis",
             object_type="diagnosis",

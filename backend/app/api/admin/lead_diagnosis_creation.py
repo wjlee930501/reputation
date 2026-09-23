@@ -206,7 +206,9 @@ def _serialize_history_row(diagnosis: LeadDiagnosis, lead: SalesLead | None) -> 
     return {
         "id": str(diagnosis.id),
         "lead_id": str(diagnosis.lead_id),
-        "clinic_name": lead.clinic_name if lead else None,
+        # 판정 대상은 진단에 고정된 이름이다. 값을 고쳐 만들면 리드의 병원명이 바뀌므로,
+        # 리드에서 읽으면 갈음된 진단이 실제로 쟀던 이름 대신 새 이름을 보여준다.
+        "clinic_name": diagnosis.subject_hospital_name,
         "specialty": lead.specialty if lead else None,
         "region_keyword": diagnosis.subject_region,
         "core_keywords": list(lead.core_keywords or []) if lead else [],

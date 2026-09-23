@@ -301,6 +301,8 @@ async def _run_lead_diagnosis(
             and result.get("blocked") != "cost_guard"
         ):
             try:
+                if await lead_diagnosis_engine.is_superseded(diagnosis_id):
+                    return result
                 await open_ops_incident(
                     pipeline="lead_diagnosis",
                     object_type="diagnosis",
@@ -513,6 +515,9 @@ async def _build_lead_report(
 
 async def _notify_report_blocked(diagnosis: LeadDiagnosis) -> None:
     try:
+        # 생성 중에 갈음된 진단은 아무도 다시 만들지 않는다 — 닫힐 수 없는 인시던트를 열지 않는다.
+        if await lead_diagnosis_engine.is_superseded(diagnosis.id):
+            return
         await open_ops_incident(
             pipeline="lead_report",
             object_type="diagnosis",

@@ -177,6 +177,14 @@ class TestManualCreation:
         # 원장이 남긴 연락처는 고쳐 만들기가 덮지 않는다.
         assert lead.contact == original_contact
 
+        # And: 이력 목록은 각 진단이 실제로 쟀던 이름을 보여준다.
+        listing = await manual_api.list_manual_diagnoses(
+            db=pg_async_session, limit=50, _actor=_actor()
+        )
+        names = {item["id"]: item["clinic_name"] for item in listing["items"]}
+        assert names[first["diagnosis_id"]] == "연세정정의원"
+        assert names[second["diagnosis_id"]] == "강남연세정정의원"
+
     async def test_the_corrected_name_is_the_one_kept_out_of_the_keywords(
         self, pg_async_session
     ):
