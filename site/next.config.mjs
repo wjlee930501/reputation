@@ -101,6 +101,8 @@ const nextConfig = {
   // 소개서 원본은 라우트가 런타임에 파일로 읽는다 — standalone 번들에 함께 실어야 한다.
   outputFileTracingIncludes: {
     '/brochure/doc': ['./content/brochure/**/*'],
+    // 병원 모노그램 탭 아이콘이 런타임에 읽는 폰트.
+    '/favicon/[slug]': ['./assets/fonts/Pretendard-Bold.subset.otf'],
   },
   images: {
     // Keep negotiated AVIF/WebP: WebP-only increased mobile transfer in measured photos.
