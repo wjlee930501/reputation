@@ -256,6 +256,7 @@ from app.services.measurement_slots import (
     claim_slot_stage,
     ensure_monthly_slots,
     ensure_v0_slots,
+    release_interrupted_stage,
     slot_is_terminal,
     slot_needs_answer,
     slot_needs_judgment,
@@ -1532,6 +1533,10 @@ class MonthlyBatchIncompleteError(RuntimeError):
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 SOV_CHUNK_STOP_SECONDS = 1650
+# 월간 측정의 청크 이어가기 상한. 청크 경계는 실패가 아니므로 실제 실패 재시도
+# 예산(failure_retry_count)과 따로 센다.
+SOV_CONTINUATION_MAX_RETRIES = 200
+SOV_CONTINUATION_COUNTDOWN_SECONDS = 120
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
 V0_CHUNK_STOP_SECONDS = 480
 V0_CONTINUATION_MAX_RETRIES = 200
@@ -6633,6 +6638,7 @@ def run_sov_for_hospital(
     measurement_mode: str | None = None,
     measurement_year: int | None = None,
     measurement_month: int | None = None,
+    failure_retry_count: int = 0,
 ):
     task_started_at = monotonic()
     reserved_units = 0
@@ -6950,6 +6956,10 @@ def run_sov_for_hospital(
                 if _sov_chunk_deadline_reached(task_started_at):
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
+                    if monthly and _sov_continuation_available(self):
+                        raise SovMeasurementResumable(
+                            "monthly measurement chunk stopped with pending slots"
+                        )
                     error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                     _record_weekly_sov_failure(
                         hospital,
@@ -7040,9 +7050,18 @@ def run_sov_for_hospital(
                     continue
 
                 slots = slots_by_cell[spec["manifest_cell"].id]
+                cost_blocked = False
                 try:
                     for slot in slots:
-                        _execute_paid_observation_slot(
+                        if (
+                            monthly
+                            and not slot_is_terminal(slot)
+                            and _sov_chunk_deadline_reached(task_started_at)
+                        ):
+                            raise SovMeasurementResumable(
+                                "monthly measurement chunk stopped between slots"
+                            )
+                        slot_result = _execute_paid_observation_slot(
                             db,
                             slot=slot,
                             hospital=hospital,
@@ -7053,9 +7072,27 @@ def run_sov_for_hospital(
                             variant_id=spec["variant_id"],
                             monthly_cell=spec["manifest_cell"],
                         )
-                except (SoftTimeLimitExceeded, DispatchAuthorizationError, WorkerLostError):
+                        if slot_result.get("failure_reason") == "cost_guard_blocked":
+                            cost_blocked = True
+                            break
+                except (
+                    SovMeasurementResumable,
+                    SoftTimeLimitExceeded,
+                    DispatchAuthorizationError,
+                    WorkerLostError,
+                ) as exc:
+                    chunk_stop = isinstance(
+                        exc, (SovMeasurementResumable, SoftTimeLimitExceeded)
+                    )
+                    if chunk_stop:
+                        # An uncommitted stage claim must not be committed with the run.
+                        db.rollback()
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
+                    if chunk_stop and monthly and _sov_continuation_available(self):
+                        raise SovMeasurementResumable(
+                            "monthly measurement chunk stopped inside a cell"
+                        ) from exc
                     error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                     _record_weekly_sov_failure(
                         hospital,
@@ -7070,6 +7107,19 @@ def run_sov_for_hospital(
                         OperationRunState.PARTIAL,
                         error_code,
                         _sov_operation_error_message(error_code),
+                    )
+                    return
+                if cost_blocked:
+                    _stop_sov_for_cost_guard(
+                        db,
+                        self,
+                        run=run,
+                        hospital=hospital,
+                        period_key=period_key,
+                        failure_prefix=failure_prefix,
+                        measurement_mode=measurement_mode,
+                        success_count=success_count,
+                        failure_count=failure_count,
                     )
                     return
 
@@ -7091,6 +7141,10 @@ def run_sov_for_hospital(
                 ):
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
+                    if monthly and _sov_continuation_available(self):
+                        raise SovMeasurementResumable(
+                            "monthly measurement chunk stopped between cells"
+                        )
                     error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                     _record_weekly_sov_failure(
                         hospital,
@@ -7157,9 +7211,17 @@ def run_sov_for_hospital(
                 "인증된 작업 실행 시간이 지나 측정을 시작하지 못했습니다.",
             )
         return
-    except (SoftTimeLimitExceeded, WorkerLostError):
+    except SovMeasurementResumable as exc:
+        raise _retry_sov_continuation(self, exc, failure_retry_count)
+    except (SoftTimeLimitExceeded, WorkerLostError) as exc:
         if reserved_units:
             _run_async(cost_guard.release_reservation("sov", reserved_units))
+        if (
+            measurement_mode == "monthly"
+            and isinstance(exc, SoftTimeLimitExceeded)
+            and _sov_continuation_available(self)
+        ):
+            raise _retry_sov_continuation(self, exc, failure_retry_count)
         with SyncSessionLocal() as db:
             _finish_sov_operation_run(
                 db,
@@ -7170,11 +7232,75 @@ def run_sov_for_hospital(
             )
         return
     except Exception as exc:
-        raise self.retry(exc=exc, countdown=300)
+        if measurement_mode != "monthly":
+            raise self.retry(exc=exc, countdown=300)
+        if failure_retry_count >= self.max_retries:
+            raise
+        raise self.retry(
+            exc=exc,
+            countdown=300,
+            kwargs=_v0_retry_kwargs(self, failure_retry_count + 1),
+            max_retries=SOV_CONTINUATION_MAX_RETRIES,
+        )
+
+
+class SovMeasurementResumable(RuntimeError):
+    """A monthly chunk stopped at its time budget with durable slots still pending."""
 
 
 def _sov_chunk_deadline_reached(started_at: float) -> bool:
     return monotonic() - started_at >= SOV_CHUNK_STOP_SECONDS
+
+
+def _sov_continuation_available(task) -> bool:
+    retries = getattr(getattr(task, "request", None), "retries", None) or 0
+    return isinstance(retries, int) and retries < SOV_CONTINUATION_MAX_RETRIES
+
+
+def _retry_sov_continuation(task, exc: BaseException, failure_retry_count: int):
+    """Continue the same claimed OperationRun; completed slots are never bought again."""
+    return task.retry(
+        exc=exc,
+        countdown=SOV_CONTINUATION_COUNTDOWN_SECONDS,
+        kwargs=_v0_retry_kwargs(task, failure_retry_count),
+        max_retries=SOV_CONTINUATION_MAX_RETRIES,
+    )
+
+
+def _stop_sov_for_cost_guard(
+    db,
+    task,
+    *,
+    run,
+    hospital: Hospital,
+    period_key: str,
+    failure_prefix: str,
+    measurement_mode: str,
+    success_count: int,
+    failure_count: int,
+) -> None:
+    """A cost-guard denial is FAILED + COST_GUARD_BLOCKED, never a PARTIAL measurement.
+
+    Monthly catch-up rearms a cost-blocked run only when the remaining budget fits the
+    pending slots, so this state must not be reported as a partially failed measurement.
+    """
+    _finish_measurement_run(run, success_count, failure_count)
+    db.commit()
+    error_code = f"{failure_prefix}_COST_GUARD_BLOCKED"
+    _record_weekly_sov_failure(
+        hospital,
+        period_key,
+        error_code,
+        _operation_run_id_from_task(task),
+        measurement_mode=measurement_mode,
+    )
+    _finish_sov_operation_run(
+        db,
+        task,
+        OperationRunState.FAILED,
+        error_code,
+        _sov_operation_error_message(error_code),
+    )
 
 
 def _resolve_monthly_measurement_period(
@@ -7776,63 +7902,67 @@ def _execute_paid_observation_slot(
         slot_id = slot.id
         answer_attempt = slot.answer_attempt_count
         answer_reservation = 1
-        decision = _run_async(
-            cost_guard.reserve(
-                "sov",
-                count=answer_reservation,
-                reservation_id=f"measurement:{slot_id}:answer:{answer_attempt}",
-            )
-        )
-        if not decision.allowed:
-            db.rollback()
-            return {
-                "measurement_status": "FAILED",
-                "failure_reason": "cost_guard_blocked",
-            }
-        db.commit()
-        try:
-            answer = _run_async(
-                fetch_answer(
-                    query_text,
-                    slot.platform,
-                    requested_model=(
-                        protocol.get("openai_model_query")
-                        if slot.platform == "chatgpt"
-                        else protocol.get("gemini_model")
-                    ),
-                    hospital_id=hospital.id,
-                    workflow=f"{slot.scope.lower()}_sov_answer",
-                    run_id=str(slot.measurement_run_id),
-                    item_id=str(slot.id),
-                    attempt_id=str(answer_attempt),
+        with _SlotStageSoftLimitGuard(
+            db, slot_id, stage="ANSWER", lease_token=lease_token
+        ) as stage_guard:
+            decision = _run_async(
+                cost_guard.reserve(
+                    "sov",
+                    count=answer_reservation,
+                    reservation_id=f"measurement:{slot_id}:answer:{answer_attempt}",
                 )
             )
-        except SoftTimeLimitExceeded:
-            raise
-        except Exception as exc:  # provider may have accepted the request; keep reservation
-            answer = {
-                "measurement_status": "FAILED",
-                "failure_reason": f"answer_exception:{type(exc).__name__}",
-                "provider_calls": answer_reservation,
-            }
-        answer_calls = max(0, int(answer.get("provider_calls") or 0))
-        _run_async(
-            cost_guard.settle_reservation(
-                decision.receipt,
-                consumed_units=min(answer_calls, answer_reservation),
+            if not decision.allowed:
+                db.rollback()
+                return {
+                    "measurement_status": "FAILED",
+                    "failure_reason": "cost_guard_blocked",
+                }
+            db.commit()
+            try:
+                answer = _run_async(
+                    fetch_answer(
+                        query_text,
+                        slot.platform,
+                        requested_model=(
+                            protocol.get("openai_model_query")
+                            if slot.platform == "chatgpt"
+                            else protocol.get("gemini_model")
+                        ),
+                        hospital_id=hospital.id,
+                        workflow=f"{slot.scope.lower()}_sov_answer",
+                        run_id=str(slot.measurement_run_id),
+                        item_id=str(slot.id),
+                        attempt_id=str(answer_attempt),
+                    )
+                )
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as exc:  # provider may have accepted the request; keep reservation
+                answer = {
+                    "measurement_status": "FAILED",
+                    "failure_reason": f"answer_exception:{type(exc).__name__}",
+                    "provider_calls": answer_reservation,
+                }
+            answer_calls = max(0, int(answer.get("provider_calls") or 0))
+            stage_guard.settlement_started = True
+            _run_async(
+                cost_guard.settle_reservation(
+                    decision.receipt,
+                    consumed_units=min(answer_calls, answer_reservation),
+                )
             )
-        )
-        checkpointed = checkpoint_answer(
-            db, slot_id, answer, lease_token=lease_token
-        )
-        if checkpointed is None:
-            db.rollback()
-            return {
-                "measurement_status": "FAILED",
-                "failure_reason": "stale_slot_answer_discarded",
-            }
-        slot = checkpointed
-        db.commit()
+            checkpointed = checkpoint_answer(
+                db, slot_id, answer, lease_token=lease_token
+            )
+            if checkpointed is None:
+                db.rollback()
+                return {
+                    "measurement_status": "FAILED",
+                    "failure_reason": "stale_slot_answer_discarded",
+                }
+            slot = checkpointed
+            db.commit()
         if slot.answer_status != "RECEIVED":
             return dict(answer)
 
@@ -7877,83 +8007,132 @@ def _execute_paid_observation_slot(
     slot, lease_token = claim
     slot_id = slot.id
     judgment_attempt = slot.judgment_attempt_count
-    decision = _run_async(
-        cost_guard.reserve(
-            "sov",
-            count=judgment_reservation,
-            reservation_id=f"measurement:{slot_id}:judgment:{judgment_attempt}",
-        )
-    )
-    if not decision.allowed:
-        db.rollback()
-        return {
-            **answer_artifact(slot),
-            "measurement_status": "FAILED",
-            "failure_reason": "cost_guard_blocked",
-        }
-    db.commit()
-    try:
-        judgment = _run_async(
-            judge_answer(
-                judgment_hospital_name,
-                slot.raw_response or "",
-                region=judgment_region,
-                competitors=competitors,
-                hospital_identity=str(hospital.id),
-                hospital_id=hospital.id,
-                workflow=f"{slot.scope.lower()}_sov_judgment",
-                run_id=str(slot.measurement_run_id),
-                item_id=str(slot.id),
-                attempt_id=str(judgment_attempt),
-                policy=protocol,
+    with _SlotStageSoftLimitGuard(
+        db, slot_id, stage="JUDGMENT", lease_token=lease_token
+    ) as stage_guard:
+        decision = _run_async(
+            cost_guard.reserve(
+                "sov",
+                count=judgment_reservation,
+                reservation_id=f"measurement:{slot_id}:judgment:{judgment_attempt}",
             )
         )
-    except SoftTimeLimitExceeded:
-        raise
-    except Exception as exc:  # retain answer; only the judgment stage failed
-        judgment = {
-            "measurement_status": "FAILED",
-            "failure_reason": f"judgment_exception:{type(exc).__name__}",
-            "provider_calls": judgment_reservation,
-        }
-    judgment_calls = max(0, int(judgment.get("provider_calls") or 0))
-    _run_async(
-        cost_guard.settle_reservation(
-            decision.receipt,
-            consumed_units=min(judgment_calls, judgment_reservation),
+        if not decision.allowed:
+            db.rollback()
+            return {
+                **answer_artifact(slot),
+                "measurement_status": "FAILED",
+                "failure_reason": "cost_guard_blocked",
+            }
+        db.commit()
+        try:
+            judgment = _run_async(
+                judge_answer(
+                    judgment_hospital_name,
+                    slot.raw_response or "",
+                    region=judgment_region,
+                    competitors=competitors,
+                    hospital_identity=str(hospital.id),
+                    hospital_id=hospital.id,
+                    workflow=f"{slot.scope.lower()}_sov_judgment",
+                    run_id=str(slot.measurement_run_id),
+                    item_id=str(slot.id),
+                    attempt_id=str(judgment_attempt),
+                    policy=protocol,
+                )
+            )
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception as exc:  # retain answer; only the judgment stage failed
+            judgment = {
+                "measurement_status": "FAILED",
+                "failure_reason": f"judgment_exception:{type(exc).__name__}",
+                "provider_calls": judgment_reservation,
+            }
+        judgment_calls = max(0, int(judgment.get("provider_calls") or 0))
+        stage_guard.settlement_started = True
+        _run_async(
+            cost_guard.settle_reservation(
+                decision.receipt,
+                consumed_units=min(judgment_calls, judgment_reservation),
+            )
         )
-    )
-    result = {**answer_artifact(slot), **judgment}
-    record = _build_sov_record_from_result(
-        hospital_id=hospital.id,
-        query_id=slot.query_id,
-        measurement_run_id=slot.measurement_run_id,
-        platform=slot.platform,
-        result=result,
-        target_id=target_id,
-        variant_id=variant_id,
-    )
-    if slot.answered_at is not None:
-        record.measured_at = slot.answered_at
-    checkpointed = checkpoint_judgment(
-        db,
-        slot_id,
-        fingerprint=fingerprint,
-        result=judgment,
-        sov_record=record,
-        lease_token=lease_token,
-    )
-    if checkpointed is None:
-        db.rollback()
-        return {
-            "measurement_status": "FAILED",
-            "failure_reason": "stale_slot_judgment_discarded",
-        }
-    slot, judgment_status = checkpointed
-    if monthly_cell is not None and judgment_status in {"CONFIRMED", "AMBIGUOUS"}:
-        db.add(link_attempt(monthly_cell, record))
-    db.commit()
+        result = {**answer_artifact(slot), **judgment}
+        record = _build_sov_record_from_result(
+            hospital_id=hospital.id,
+            query_id=slot.query_id,
+            measurement_run_id=slot.measurement_run_id,
+            platform=slot.platform,
+            result=result,
+            target_id=target_id,
+            variant_id=variant_id,
+        )
+        if slot.answered_at is not None:
+            record.measured_at = slot.answered_at
+        checkpointed = checkpoint_judgment(
+            db,
+            slot_id,
+            fingerprint=fingerprint,
+            result=judgment,
+            sov_record=record,
+            lease_token=lease_token,
+        )
+        if checkpointed is None:
+            db.rollback()
+            return {
+                "measurement_status": "FAILED",
+                "failure_reason": "stale_slot_judgment_discarded",
+            }
+        slot, judgment_status = checkpointed
+        if monthly_cell is not None and judgment_status in {"CONFIRMED", "AMBIGUOUS"}:
+            db.add(link_attempt(monthly_cell, record))
+        db.commit()
     return result
+
+
+class _SlotStageSoftLimitGuard:
+    """Hand an interrupted paid stage back before the soft-limit continuation.
+
+    The claim is committed before the provider call, so without this a chunk boundary
+    keeps a 15-minute lease and one of the bounded stage attempts, and the resumed
+    chunk reads the slot as leased or failed.
+    """
+
+    def __init__(self, db, slot_id: uuid.UUID, *, stage: str, lease_token: uuid.UUID):
+        self.db = db
+        self.slot_id = slot_id
+        self.stage = stage
+        self.lease_token = lease_token
+        self.settlement_started = False
+
+    def __enter__(self) -> "_SlotStageSoftLimitGuard":
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb) -> bool:
+        if exc_type is None or not issubclass(exc_type, SoftTimeLimitExceeded):
+            return False
+        try:
+            self.db.rollback()
+            release_interrupted_stage(
+                self.db,
+                self.slot_id,
+                stage=self.stage,
+                lease_token=self.lease_token,
+                refund_attempt=not self.settlement_started,
+            )
+            self.db.commit()
+        except Exception:
+            logger.warning(
+                "Interrupted measurement slot stage was not released: slot=%s stage=%s",
+                self.slot_id,
+                self.stage,
+                exc_info=True,
+            )
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+        return False
 
 
 def _build_measurement_specs(

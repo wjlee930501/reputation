@@ -61,6 +61,7 @@ from app.services.monthly_period import (
     require_closed_period,
     scheduled_report_period,
 )
+from app.services.monthly_remasure_gate import ManualRemasureLocked, authorize_manual_remasure
 from app.services.operation_run_payloads import UnsafeDispatchPayload, parse_stored_dispatch
 from app.services.operation_runs import (
     DispatchTask,
@@ -198,6 +199,7 @@ async def _enqueue_with_truthful_audit(
     args: list[JSONValue],
     queue: str,
     idempotency_key: str | None = None,
+    request_payload_extra: dict[str, JSONValue] | None = None,
 ) -> OperationDispatch:
     """Durably record request, dispatch, then record broker acceptance."""
     try:
@@ -213,6 +215,7 @@ async def _enqueue_with_truthful_audit(
                 target_id=str(target_id),
                 queue=queue,
                 task_args=tuple(args),
+                request_payload_extra=request_payload_extra,
             ),
             task,
         )
@@ -613,6 +616,7 @@ async def run_sov_operation(
         )
     task_args: list[JSONValue] = [str(hospital.id)]
     operation_key = idempotency_key
+    request_payload_extra: dict[str, JSONValue] | None = None
     detail = "AI 언급률 측정이 큐에 등록되었습니다."
     if measurement_mode == "monthly":
         now_kst = datetime.now(ZoneInfo("Asia/Seoul"))
@@ -638,10 +642,29 @@ async def run_sov_operation(
                 detail="중복 측정을 막는 요청 키가 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
             )
         request_fingerprint = hashlib.sha256(idempotency_key.encode()).hexdigest()[:20]
-        operation_key = (
-            f"monthly-sov-remasure:{hospital.id}:{period.year:04d}-{period.month:02d}:"
-            f"{request_fingerprint}"
-        )
+        try:
+            authorization = await authorize_manual_remasure(
+                db,
+                hospital_id=hospital.id,
+                year=period.year,
+                month=period.month,
+                request_fingerprint=request_fingerprint,
+            )
+        except ManualRemasureLocked as exc:
+            decision = exc.decision
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": decision.code,
+                    "message": decision.message,
+                    "stalled_since": (
+                        decision.stalled_since.isoformat() if decision.stalled_since else None
+                    ),
+                    "remaining_work": decision.remaining_work,
+                },
+            ) from exc
+        operation_key = authorization.operation_key
+        request_payload_extra = authorization.request_payload_extra
         task_args = [str(hospital.id), "monthly", period.year, period.month]
         detail = (
             f"{period.year}년 {period.month}월 월간 AI 언급률 재측정이 큐에 등록되었습니다."
@@ -656,6 +679,7 @@ async def run_sov_operation(
         args=task_args,
         queue="sov",
         idempotency_key=operation_key,
+        request_payload_extra=request_payload_extra,
     )
     return {
         "detail": detail,

@@ -20,7 +20,7 @@ from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import OperationRun
-from app.services import audit_log, content_yield, operation_runs
+from app.services import audit_log, content_yield, monthly_remasure_gate, operation_runs
 
 
 class FakeTask:
@@ -203,26 +203,100 @@ async def test_run_sov_operation_queues_task_after_audit_commit(monkeypatch):
     assert audit_rows[0].actor == "AE-test"
 
 
-async def test_run_sov_operation_dispatches_prior_month_in_monthly_mode(monkeypatch):
-    hospital = _hospital(
-        status=HospitalStatus.ACTIVE,
-        monthly_sov_cohort=True,
-    )
-    db = FakeDB(hospital=hospital)
-    task = FakeTask()
+_REMASURE_NOW = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
 
+
+def _patch_monthly_remasure(monkeypatch, db, task, progress):
     class _FixedDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
-            value = datetime(2026, 9, 2, 9, 0, tzinfo=timezone.utc)
+            value = _REMASURE_NOW
             return value.astimezone(tz) if tz is not None else value.replace(tzinfo=None)
 
     async def active_variant(_db, _hospital_id):
         return True
 
+    async def prior_runs(_db, hospital_id, year, month):
+        prefix = monthly_remasure_gate.manual_remasure_key_prefix(hospital_id, year, month)
+        return [
+            row
+            for row in db.added
+            if isinstance(row, OperationRun) and row.idempotency_key.startswith(prefix)
+        ]
+
+    async def load_progress(_db, _hospital_id, _year, _month):
+        return progress
+
     monkeypatch.setattr(operations_api, "datetime", _FixedDateTime)
+    monkeypatch.setattr(monthly_remasure_gate, "datetime", _FixedDateTime)
     monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+    monkeypatch.setattr(monthly_remasure_gate, "_prior_manual_remasure_runs", prior_runs)
+    monkeypatch.setattr(monthly_remasure_gate, "load_monthly_recovery_progress", load_progress)
+
+
+def _stalled_progress(hours_without_progress: float, *, remaining_work: int = 6):
+    automatic_run = SimpleNamespace(
+        state="QUEUED", safe_error_code=None, lease_expires_at=None
+    )
+    return monthly_remasure_gate.MonthlyRecoveryProgress(
+        automatic_run=automatic_run,
+        remaining_work=remaining_work,
+        last_progress_at=_REMASURE_NOW - timedelta(hours=hours_without_progress),
+    )
+
+
+async def test_monthly_remasure_is_locked_by_default(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE, monthly_sov_cohort=True)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+    _patch_monthly_remasure(
+        monkeypatch,
+        db,
+        task,
+        monthly_remasure_gate.MonthlyRecoveryProgress(None, None, None),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-click",
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == monthly_remasure_gate.LOCKED
+    assert task.calls == []
+    assert db.added == []
+
+
+async def test_monthly_remasure_stays_locked_while_recovery_progressed_within_12h(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE, monthly_sov_cohort=True)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+    # 2h without progress is already stale for coverage recovery (1h) but not for this gate.
+    _patch_monthly_remasure(monkeypatch, db, task, _stalled_progress(2))
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-click",
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == monthly_remasure_gate.LOCKED
+    assert exc.value.detail["remaining_work"] == 6
+    assert task.calls == []
+
+
+async def test_monthly_remasure_opens_once_after_12h_without_progress(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE, monthly_sov_cohort=True)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+    _patch_monthly_remasure(monkeypatch, db, task, _stalled_progress(13))
 
     response = await operations_api.run_sov_operation(
         hospital.id,
@@ -235,10 +309,119 @@ async def test_run_sov_operation_dispatches_prior_month_in_monthly_mode(monkeypa
         {"args": [str(hospital.id), "monthly", 2026, 8], "queue": "sov"}
     ]
     run = next(row for row in db.added if isinstance(row, OperationRun))
-    assert run.idempotency_key.startswith(
-        f"monthly-sov-remasure:{hospital.id}:2026-08:"
-    )
+    assert run.idempotency_key == f"monthly-sov-remasure:{hospital.id}:2026-08:stall-unlock"
+    assert run.request_payload["manual_remasure"]["remaining_work"] == 6
     assert response["detail"] == "2026년 8월 월간 AI 언급률 재측정이 큐에 등록되었습니다."
+    assert response["idempotent_replay"] is False
+
+    # A browser retry of the same click replays the run instead of dispatching again.
+    replay = await operations_api.run_sov_operation(
+        hospital.id,
+        measurement_mode="monthly",
+        db=db,
+        idempotency_key="monthly-remeasure-click",
+    )
+    assert replay["operation_run_id"] == response["operation_run_id"]
+    assert replay["idempotent_replay"] is True
+
+    # A new click is rejected even though the automatic path is still stalled.
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-second-click",
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == monthly_remasure_gate.ALREADY_USED
+    assert len(task.calls) == 1
+
+
+class _KeyedRunDB(FakeDB):
+    """FakeDB whose idempotency lookup matches the requested key, like the real query."""
+
+    async def scalar(self, stmt):
+        if stmt.column_descriptions[0].get("entity") is OperationRun:
+            requested = set(stmt.compile().params.values())
+            return next(
+                (
+                    item
+                    for item in self.added
+                    if isinstance(item, OperationRun) and item.idempotency_key in requested
+                ),
+                None,
+            )
+        return await super().scalar(stmt)
+
+    async def execute(self, statement):
+        if getattr(statement, "is_update", False):
+            run = [item for item in self.added if isinstance(item, OperationRun)][-1]
+            run.state = "QUEUED"
+            run.queued_at = datetime.now(timezone.utc)
+            run.version += 1
+            return SimpleNamespace(scalar_one_or_none=lambda: run)
+        return await super().execute(statement)
+
+
+async def test_broker_failure_does_not_burn_the_monthly_remasure_unlock(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE, monthly_sov_cohort=True)
+    db = _KeyedRunDB(hospital=hospital)
+    task = FakeTask()
+    _patch_monthly_remasure(monkeypatch, db, task, _stalled_progress(13))
+
+    async def record_incident(_db, _request, **_kwargs):
+        return SimpleNamespace()
+
+    def broker_down(*, args, queue, headers, task_id):
+        del args, queue, headers, task_id
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", broker_down)
+
+    with pytest.raises(HTTPException) as failed:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-click",
+        )
+    assert failed.value.status_code == 503
+    dead = next(row for row in db.added if isinstance(row, OperationRun))
+    assert (dead.state, dead.safe_error_code) == ("FAILED", "BROKER_UNAVAILABLE")
+
+    # The broker recovers and the operator retries the same click: it queues for real.
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+    retried = await operations_api.run_sov_operation(
+        hospital.id,
+        measurement_mode="monthly",
+        db=db,
+        idempotency_key="monthly-remeasure-click",
+    )
+    assert retried["idempotent_replay"] is False
+    assert retried["operation_run_id"] != str(dead.id)
+    assert retried["operation_state"] == "QUEUED"
+    assert task.calls == [{"args": [str(hospital.id), "monthly", 2026, 8], "queue": "sov"}]
+    live = next(
+        row
+        for row in db.added
+        if isinstance(row, OperationRun) and str(row.id) == retried["operation_run_id"]
+    )
+    assert live.idempotency_key == (
+        f"monthly-sov-remasure:{hospital.id}:2026-08:stall-unlock:2"
+    )
+
+    # Once a run actually queued, the single allowance is spent.
+    with pytest.raises(HTTPException) as spent:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-second-click",
+        )
+    assert spent.value.status_code == 409
+    assert spent.value.detail["code"] == monthly_remasure_gate.ALREADY_USED
+    assert len(task.calls) == 1
 
 
 async def test_queue_failure_never_records_queued_true(monkeypatch):
