@@ -7050,6 +7050,7 @@ def run_sov_for_hospital(
                     continue
 
                 slots = slots_by_cell[spec["manifest_cell"].id]
+                cost_blocked = False
                 try:
                     for slot in slots:
                         if (
@@ -7060,7 +7061,7 @@ def run_sov_for_hospital(
                             raise SovMeasurementResumable(
                                 "monthly measurement chunk stopped between slots"
                             )
-                        _execute_paid_observation_slot(
+                        slot_result = _execute_paid_observation_slot(
                             db,
                             slot=slot,
                             hospital=hospital,
@@ -7071,6 +7072,9 @@ def run_sov_for_hospital(
                             variant_id=spec["variant_id"],
                             monthly_cell=spec["manifest_cell"],
                         )
+                        if slot_result.get("failure_reason") == "cost_guard_blocked":
+                            cost_blocked = True
+                            break
                 except (
                     SovMeasurementResumable,
                     SoftTimeLimitExceeded,
@@ -7103,6 +7107,19 @@ def run_sov_for_hospital(
                         OperationRunState.PARTIAL,
                         error_code,
                         _sov_operation_error_message(error_code),
+                    )
+                    return
+                if cost_blocked:
+                    _stop_sov_for_cost_guard(
+                        db,
+                        self,
+                        run=run,
+                        hospital=hospital,
+                        period_key=period_key,
+                        failure_prefix=failure_prefix,
+                        measurement_mode=measurement_mode,
+                        success_count=success_count,
+                        failure_count=failure_count,
                     )
                     return
 
@@ -7247,6 +7264,42 @@ def _retry_sov_continuation(task, exc: BaseException, failure_retry_count: int):
         countdown=SOV_CONTINUATION_COUNTDOWN_SECONDS,
         kwargs=_v0_retry_kwargs(task, failure_retry_count),
         max_retries=SOV_CONTINUATION_MAX_RETRIES,
+    )
+
+
+def _stop_sov_for_cost_guard(
+    db,
+    task,
+    *,
+    run,
+    hospital: Hospital,
+    period_key: str,
+    failure_prefix: str,
+    measurement_mode: str,
+    success_count: int,
+    failure_count: int,
+) -> None:
+    """A cost-guard denial is FAILED + COST_GUARD_BLOCKED, never a PARTIAL measurement.
+
+    Monthly catch-up rearms a cost-blocked run only when the remaining budget fits the
+    pending slots, so this state must not be reported as a partially failed measurement.
+    """
+    _finish_measurement_run(run, success_count, failure_count)
+    db.commit()
+    error_code = f"{failure_prefix}_COST_GUARD_BLOCKED"
+    _record_weekly_sov_failure(
+        hospital,
+        period_key,
+        error_code,
+        _operation_run_id_from_task(task),
+        measurement_mode=measurement_mode,
+    )
+    _finish_sov_operation_run(
+        db,
+        task,
+        OperationRunState.FAILED,
+        error_code,
+        _sov_operation_error_message(error_code),
     )
 
 

@@ -198,10 +198,7 @@ async def _open_sov_failure(
                     f"{period_label} AI 노출 측정이 완료되지 않아 월간 리포트 근거가 비게 됩니다."
                 ),
                 source_type=("MONTHLY_SOV_MEASUREMENT" if monthly else _SOURCE_TYPE),
-                next_action=(
-                    "측정 질문 설정, 비용 한도, 외부 측정 서비스 장애 여부를 확인한 뒤 "
-                    f"{period_label} 측정을 재시도하세요."
-                ),
+                next_action=_next_action(error_code, period_label),
                 admin_path=f"/hospitals/{hospital_id}/reports",
                 hospital_id=hospital_id,
                 operation_run_id=operation_run_id,
@@ -294,6 +291,18 @@ async def _recover_sov_failure(
         )
         await db.commit()
         return isinstance(recovered, Incident)
+
+
+def _next_action(error_code: str, period_label: str) -> str:
+    if error_code.endswith("COST_GUARD_BLOCKED"):
+        return (
+            "비용 한도가 회복되면 자동 복구가 남은 측정을 이어서 실행합니다. "
+            "한도 조정이 필요한지 운영센터에서 확인하세요."
+        )
+    return (
+        "측정 질문 설정과 외부 측정 서비스 장애 여부를 확인한 뒤 "
+        f"{period_label} 측정을 재시도하세요."
+    )
 
 
 def _safe_message(error_code: str) -> str:
