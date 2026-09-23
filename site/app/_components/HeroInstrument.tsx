@@ -1,5 +1,3 @@
-import type { CSSProperties } from "react";
-
 import { instrumentSection, measuredFigures } from "@/lib/landing-copy";
 
 /**
@@ -49,7 +47,6 @@ function FigureGlyph({ filled }: { filled: number }) {
           key={i}
           viewBox="0 0 34 46"
           data-on={i < filled ? "" : undefined}
-          style={i < filled ? ({ "--d": i * 8 } as CSSProperties) : undefined}
         >
           <circle cx="17" cy="9" r="8" />
           <path d="M3 44c0-10 6-17 14-17s14 7 14 17z" />
