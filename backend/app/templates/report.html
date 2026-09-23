@@ -387,7 +387,7 @@
   본 리포트는 MotionLabs Re:putation 시스템이 자동 생성하였습니다.<br>
   AI 검색 결과는 알고리즘 특성상 매회 상이합니다. 본 수치는 반복 측정한 언급 빈도의 평균이며,
   표본에서 오는 오차 범위가 있습니다.<br>
-  문의: contact@motionlabs.co.kr
+  {% if contact_email %}문의: {{ contact_email }}{% endif %}
 </div>
 </body>
 </html>

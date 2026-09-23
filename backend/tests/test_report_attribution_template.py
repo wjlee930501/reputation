@@ -253,3 +253,12 @@ def test_reports_carry_the_newvisit_signal_system():
     for retired in ("#0672ed", "#525b69", "#dce3ed", "#eef5ff", "#b9c4d2"):
         assert retired not in html, retired
     assert "by Newvisit" in html and "NEWVISIT · RE:PUTATION" in html
+
+
+def test_ae_report_uses_the_configured_contact_address():
+    """문의 주소는 진단 제안서 CTA와 같은 설정값에서 온다. 옛 co.kr 주소가 남지 않는다."""
+    html = _render(_sample_attribution(), contact_email="hjkim@motionlabs.kr")
+    assert "문의: hjkim@motionlabs.kr" in html
+    assert "motionlabs.co.kr" not in html
+    # 주소가 비어 있으면 빈 '문의:' 줄을 남기지 않는다.
+    assert "문의:" not in _render(_sample_attribution(), contact_email="")

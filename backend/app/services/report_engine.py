@@ -520,6 +520,8 @@ def generate_pdf_report(
         # AE가 원장 앞에서 그대로 읽을 3문장. 원장 PDF에는 넣지 않는다 —
         # 이건 내부 준비물이지 고객 문서가 아니다.
         talking_points=talking_points or [],
+        # 진단 제안서 CTA와 같은 문의 주소를 쓴다 — 두 문서가 다른 곳으로 문의를 보내지 않게.
+        contact_email=settings.LEAD_REPORT_CONTACT_EMAIL,
         generated_at=now.datetime,
     )
 
