@@ -1,5 +1,29 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 배포 대기 — 2026-09-23 통합 정합성 보완 (미배포)
+
+PR #144~#153이 main에 병합됐고 **운영에는 아직 없다**(운영은 아래 `300a663`). 런타임 소스는
+`6ca8d24`(PR #153)이며 DB migration·RedBeat·Terraform 변경은 없다. 실행 명령과 배포 후 확인은
+[배포 준비 문서](docs/releases/2026-09-23-integration-hardening-deploy-plan.md)를 따른다.
+PR #153이 더한 계약:
+
+- 갈음된 리드 진단의 복구 요청은 HTTP 경계에서 409다(워커 claim과 같은 집합). 갈음은 옛 진단의
+  lead 인시던트를 같은 트랜잭션에서 닫고, 실행 도중 갈음된 진단은 새 인시던트를 열지 않는다.
+  값 고쳐 다시 만들기는 고친 병원명을 리드·판정 대상에 반영하고 연락처는 덮지 않는다.
+- `POST /admin/lead-diagnoses`는 `Idempotency-Key`로 멱등하다(`CREATE_LEAD_DIAGNOSIS`
+  OperationRun 영수증). Admin BFF는 키 없는 생성 요청을 막는다.
+- 원장용 PDF는 내부 전용 표식("내부 검수용"·"원장 전달 불가"·"토킹 포인트"·"AE 전용")이
+  읽히면 검증에서 거절된다.
+- 백엔드 Admin 링크는 병원 4개 탭 경로만 만든다. 옛 경로로 저장된 인시던트 `admin_path`는
+  읽는 시점에 새 탭으로 바뀐다(`incident_safety.current_admin_path`, `route-redirects.ts`와 동기).
+- Admin의 V0 판정은 `report_type`이다. 서버의 `delivery_tracked`는 V0에도 true다.
+- `site/app` 최상위 정적 라우트는 모두 백엔드 예약 slug여야 한다(`contact`·`brochure` 추가).
+- NHN 문자 secret은 `INQUIRY_SMS_PROVIDER=nhn`일 때만 조회하고, readiness `facts.inquiry_sms`가
+  문자 설정 상태를 참고 사실로 보여준다.
+- 미결: 랜딩 병합(#151)이 `/ai-diagnosis` 셀프 신청을 Site에서 종료했고 폼 앵커가 `#contact`로
+  바뀌었다(`#lead`는 `#contact`로 보낸다). 아래 도입문의 절의 `#lead`·`/ai-diagnosis 유지` 문구는
+  대표 결정 뒤 함께 고친다. 처리방침 버전·수집 항목, `/brochure` 저장 경로도 같은 상태다.
+
 ## 최신 운영 배포 — 2026-09-22 노출 진단 수동 생성
 
 main tip `300a6636aee6d5fb73141848f34189194a86c9e5`(기능은 PR #143 `c104bad`)를 5개 서비스에 배포했다.
