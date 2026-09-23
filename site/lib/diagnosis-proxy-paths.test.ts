@@ -19,9 +19,9 @@ import test from 'node:test'
  * 런타임 전에 알 수 있는 사실이고, 그걸 확인하지 않으면 다음에 또 배포로 배운다.
  */
 
+// 신청 접수(route.ts)와 남은 자리(slots)는 셀프 신청을 닫으면서 백엔드를 부르지 않게 됐다.
+// 기존 신청자의 결과 확인 경로 둘만 남는다.
 const ROUTES = [
-  'app/api/diagnosis/route.ts',
-  'app/api/diagnosis/slots/route.ts',
   'app/api/diagnosis/[token]/status/route.ts',
   'app/api/diagnosis/[token]/report/route.ts',
 ]
@@ -60,7 +60,7 @@ test('diagnosis proxies target the diagnosis namespace', () => {
 
 test('the existing leads proxy shows the same convention', () => {
   // 기존 코드가 진실의 기준이다 — leads는 `${apiBase}/leads`로 쓴다(/public 없음).
-  const source = readFileSync(join(process.cwd(), 'app/api/leads/route.ts'), 'utf8')
+  const source = readFileSync(join(process.cwd(), 'lib/leads-route.ts'), 'utf8')
   assert.match(source, /\$\{apiBase\}\/leads/)
   assert.ok(!/\$\{apiBase\}\/public\//.test(source))
 })

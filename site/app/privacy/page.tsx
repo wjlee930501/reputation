@@ -1,12 +1,12 @@
-import Link from "next/link";
+import { SiteFooter, SiteHeader } from "../_components/SiteChrome";
 
 export const metadata = {
   title: "개인정보 처리방침 — Re:putation",
   description: "주식회사 모션랩스가 운영하는 Re:putation의 개인정보 처리방침입니다.",
 };
 
-const CONSENT_VERSION = "v1.2026-08";
-const EFFECTIVE_DATE = "2026-08-09";
+const CONSENT_VERSION = "v1.2026-09";
+const EFFECTIVE_DATE = "2026-09-23";
 
 const SECTIONS = [
   {
@@ -15,6 +15,8 @@ const SECTIONS = [
       "Re:putation은 무료 진단 상담을 위해 다음 항목을 수집합니다.",
       "필수: 병원명, 진료과, 지역, 병원 대표번호, 핵심 키워드, 담당자 이름·연락처, 리포트 수신 이메일",
       "자동 수집: 동의 시각, 동의 시점 IP, 처리방침 동의 버전",
+      "서비스 소개서 열람 신청 시 필수: 병원명, 원장 성함, 휴대폰 번호",
+      "서비스 소개서 열람 기록(동의 시): 열람 일시, 페이지별 열람 시간, 도달한 페이지, 소개서 내 버튼 클릭, 공유 링크 사용 여부, 기기 구분값",
     ],
   },
   {
@@ -22,6 +24,7 @@ const SECTIONS = [
     body: [
       "AI 노출 진단 범위 확인 및 진단 결과 안내",
       "유료 서비스 도입 의향이 있는 경우 후속 상담 진행",
+      "서비스 소개서 제공, 소개서 열람 기록을 바탕으로 한 도입 상담 안내",
       "민감정보(건강·진료기록) 및 환자 개인정보는 수집하지 않습니다.",
     ],
   },
@@ -63,6 +66,8 @@ const SECTIONS = [
       "- _ga, _ga_K8DQWCD39Y (최대 2년): Google Analytics 4의 방문자 구분·세션 식별값. 수집 주체 Google LLC.",
       "- reputation_ad_attribution (30일): 광고 클릭으로 유입된 경우의 캠페인 식별값(utm_source 등)과 최초 진입 경로. 회사가 직접 수집합니다.",
       "- __oppref (30일), __obref (365일): OpenAI 광고 전환 측정 식별값. 수집 주체 OpenAI, OpCo, LLC (미국).",
+      "- rp_brochure (180일): 서비스 소개서 열람을 신청한 브라우저의 열람 식별값. 다시 방문하셨을 때 입력 없이 소개서를 열고, 열람 기록을 같은 신청 건에 잇는 데 씁니다. 회사가 직접 수집합니다.",
+      "- rp_brochure_device (브라우저 저장소): 소개서를 연 기기의 구분값. 공유 링크가 다른 기기에서 열렸는지 가르는 데만 씁니다.",
       "OpenAI로 전송되는 항목은 위 쿠키 식별값, 방문한 페이지 주소, 브라우저 정보, 접수 완료 여부와 접수 번호입니다. 회사는 병원명·성함·연락처 등 입력한 신청 내용을 OpenAI에 보내지 않습니다. 이전 국가: 미국, 이전 목적: 광고 성과 측정.",
       "쿠키는 브라우저 설정에서 차단하거나 삭제할 수 있으며, 차단해도 무료 진단 신청을 포함한 서비스 이용에는 제한이 없습니다.",
     ],
@@ -103,32 +108,35 @@ const SECTIONS = [
 
 export default function PrivacyPage() {
   return (
-    <main id="main-content" className="legal-shell">
-      <header className="legal-header">
-        <Link href="/" className="legal-back">← Re:putation 홈으로</Link>
-        <span className="motionlabs-chip" style={{ marginTop: 12 }}>
-          <strong>MotionLabs</strong> Research Preview
-        </span>
-        <h1 className="heading1" style={{ marginTop: 12 }}>개인정보 처리방침</h1>
-        <p className="body4">버전 {CONSENT_VERSION} · 시행일 {EFFECTIVE_DATE}</p>
-      </header>
-      <article className="legal-body">
-        <p>
-          주식회사 모션랩스(이하 &ldquo;회사&rdquo;)는 Re:putation 서비스(이하 &ldquo;서비스&rdquo;)
-          를 제공하면서 이용자의 개인정보를 다음과 같이 처리합니다.
-        </p>
-        {SECTIONS.map((section) => (
-          <section key={section.title}>
-            <h2>{section.title}</h2>
-            {section.body.map((line) => (
-              <p key={line}>{line}</p>
-            ))}
-          </section>
-        ))}
-        <p className="legal-effective">
-          본 처리방침은 {EFFECTIVE_DATE}부터 시행됩니다.
-        </p>
-      </article>
+    <main id="main-content" className="landing-shell landing-edge landing-sub">
+      <SiteHeader />
+      <div className="legal-shell">
+        <header className="legal-header">
+          <span className="motionlabs-chip" style={{ marginTop: 12 }}>
+            <strong>MotionLabs</strong> Research Preview
+          </span>
+          <h1 className="heading1" style={{ marginTop: 12 }}>개인정보 처리방침</h1>
+          <p className="body4">버전 {CONSENT_VERSION} · 시행일 {EFFECTIVE_DATE}</p>
+        </header>
+        <article className="legal-body">
+          <p>
+            주식회사 모션랩스(이하 &ldquo;회사&rdquo;)는 Re:putation 서비스(이하 &ldquo;서비스&rdquo;)
+            를 제공하면서 이용자의 개인정보를 다음과 같이 처리합니다.
+          </p>
+          {SECTIONS.map((section) => (
+            <section key={section.title}>
+              <h2>{section.title}</h2>
+              {section.body.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </section>
+          ))}
+          <p className="legal-effective">
+            본 처리방침은 {EFFECTIVE_DATE}부터 시행됩니다.
+          </p>
+        </article>
+      </div>
+      <SiteFooter />
     </main>
   );
 }

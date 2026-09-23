@@ -1,4 +1,5 @@
 import type { Metadata } from 'next'
+import { SiteFooter, SiteHeader } from '../../../_components/SiteChrome'
 import StatusView from './StatusView'
 
 // 개인에게 발급된 링크다 — 색인 대상이 아니다 (PRD F5-4).
@@ -16,8 +17,12 @@ export default async function DiagnosisStatusPage({
 }) {
   const { token } = await params
   return (
-    <main id="main-content" className="dg-page">
-      <StatusView token={token} />
+    <main id="main-content" className="landing-shell landing-edge landing-sub">
+      <SiteHeader />
+      <div className="dg-page">
+        <StatusView token={token} />
+      </div>
+      <SiteFooter />
     </main>
   )
 }

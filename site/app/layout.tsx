@@ -4,6 +4,9 @@ import Analytics from "./_components/Analytics";
 import { ReactDevTools } from "./ReactDevTools";
 import "./fonts/pretendard-subset.css";
 import "./globals.css";
+/* Re:putation 표면(홈과 하위 페이지)의 시각 레이어. `.landing-edge` 셸 안에서만 켜지므로
+   병원 공개 페이지(`.clinic-shell`)에는 닿지 않는다. globals 뒤에 둬야 같은 특이성에서 이긴다. */
+import "./landing-edge.css";
 
 /* Pretendard는 여전히 자체호스팅이다(CDN 의존 없음). 달라진 것은 **한 덩어리로 주지
    않는다**는 것이다.

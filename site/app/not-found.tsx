@@ -7,22 +7,22 @@ export const metadata: Metadata = {
 }
 
 // 브랜드된 404 — notFound() 호출 시 Next 기본 화면 대신 노출.
+//
+// **Re:putation 헤더·푸터·도입문의 CTA를 붙이지 않는다.** 이 화면은 병원 커스텀
+// 도메인에서 없는 경로를 열었을 때도 뜬다(proxy가 /{slug}/…로 rewrite한 뒤 라우트가
+// 없으면 루트 404로 떨어진다). 환자가 보는 자리에 우리 영업 문구가 나오면 안 된다.
+// 타이포와 면만 랜딩과 맞추고, 버튼은 오렌지가 아니라 먹색으로 둔다.
 export default function NotFound() {
   return (
-    <main id="main-content" className="min-h-screen flex items-center justify-center bg-slate-50 px-6">
-      <div className="text-center max-w-md">
-        <p className="text-sm font-semibold text-blue-600 mb-2">404</p>
-        <h1 className="text-2xl font-bold text-slate-800 mb-3">페이지를 찾을 수 없습니다</h1>
-        <p className="text-slate-500 mb-8 text-sm leading-relaxed">
-          주소가 잘못되었거나 페이지가 이동·삭제되었을 수 있습니다.
-        </p>
-        <Link
-          href="/"
-          className="inline-block bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors"
-        >
+    <main id="main-content" className="landing-shell landing-edge landing-sub">
+      <section className="edge-message">
+        <p className="edge-message-code">404</p>
+        <h1>페이지를 찾을 수 없습니다</h1>
+        <p>주소가 잘못되었거나 페이지가 이동·삭제되었을 수 있습니다.</p>
+        <Link className="btn edge-message-action" href="/">
           홈으로 이동
         </Link>
-      </div>
+      </section>
     </main>
   )
 }

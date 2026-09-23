@@ -24,6 +24,17 @@ register(
         if (/^next\\/[a-z-]+$/.test(specifier)) {
           try { return await next(specifier + '.js', context) } catch {}
         }
+        // 페이지가 공용 크롬(SiteChrome → MotionToggle → @/lib/…)을 불러오므로
+        // 확장자 없는 상대 경로와 '@/' 별칭도 .tsx/.ts로 풀어 준다(tsconfig paths와 같은 규칙).
+        const bare = !/\\.[a-z]+$/.test(specifier)
+        if (bare && (specifier.startsWith('.') || specifier.startsWith('@/'))) {
+          const base = specifier.startsWith('@/')
+            ? new URL(specifier.slice(2), ${JSON.stringify(new URL('../', import.meta.url).href)})
+            : new URL(specifier, context.parentURL)
+          for (const ext of ['.tsx', '.ts']) {
+            try { return await next(base.href + ext, context) } catch {}
+          }
+        }
         return next(specifier, context)
       }
       export async function load(url, context, next) {
@@ -123,7 +134,7 @@ test('privacy disclosure names every cookie the site actually sets', async () =>
   // 어긋나는 것이 고지 누락의 가장 흔한 형태다.
   const text = await renderPrivacyText()
 
-  for (const cookie of ['_ga', 'reputation_ad_attribution', '__oppref', '__obref']) {
+  for (const cookie of ['_ga', 'reputation_ad_attribution', '__oppref', '__obref', 'rp_brochure']) {
     assert.ok(text.includes(cookie), `쿠키 고지에 "${cookie}"가 없다`)
   }
   // 수집 주체가 누구인지가 고지의 핵심이다.

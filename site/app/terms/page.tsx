@@ -1,4 +1,4 @@
-import Link from "next/link";
+import { SiteFooter, SiteHeader } from "../_components/SiteChrome";
 
 export const metadata = {
   title: "이용약관 — Re:putation",
@@ -64,26 +64,29 @@ const SECTIONS = [
 
 export default function TermsPage() {
   return (
-    <main id="main-content" className="legal-shell">
-      <header className="legal-header">
-        <Link href="/" className="legal-back">← Re:putation 홈으로</Link>
-        <span className="motionlabs-chip" style={{ marginTop: 12 }}>
-          <strong>MotionLabs</strong> Research Preview
-        </span>
-        <h1 className="heading1" style={{ marginTop: 12 }}>이용약관</h1>
-        <p className="body4">시행일 {EFFECTIVE_DATE}</p>
-      </header>
-      <article className="legal-body">
-        {SECTIONS.map((section) => (
-          <section key={section.title}>
-            <h2>{section.title}</h2>
-            {section.body.map((line) => (
-              <p key={line}>{line}</p>
-            ))}
-          </section>
-        ))}
-        <p className="legal-effective">본 약관은 {EFFECTIVE_DATE}부터 시행됩니다.</p>
-      </article>
+    <main id="main-content" className="landing-shell landing-edge landing-sub">
+      <SiteHeader />
+      <div className="legal-shell">
+        <header className="legal-header">
+          <span className="motionlabs-chip" style={{ marginTop: 12 }}>
+            <strong>MotionLabs</strong> Research Preview
+          </span>
+          <h1 className="heading1" style={{ marginTop: 12 }}>이용약관</h1>
+          <p className="body4">시행일 {EFFECTIVE_DATE}</p>
+        </header>
+        <article className="legal-body">
+          {SECTIONS.map((section) => (
+            <section key={section.title}>
+              <h2>{section.title}</h2>
+              {section.body.map((line) => (
+                <p key={line}>{line}</p>
+              ))}
+            </section>
+          ))}
+          <p className="legal-effective">본 약관은 {EFFECTIVE_DATE}부터 시행됩니다.</p>
+        </article>
+      </div>
+      <SiteFooter />
     </main>
   );
 }
