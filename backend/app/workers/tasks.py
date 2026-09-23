@@ -1533,6 +1533,10 @@ class MonthlyBatchIncompleteError(RuntimeError):
 
 SOV_REPEAT_WEEKLY = min(settings.SOV_REPEAT_COUNT_WEEKLY, 20)  # 주간 측정용
 SOV_CHUNK_STOP_SECONDS = 1650
+# 월간 측정의 청크 이어가기 상한. 청크 경계는 실패가 아니므로 실제 실패 재시도
+# 예산(failure_retry_count)과 따로 센다.
+SOV_CONTINUATION_MAX_RETRIES = 200
+SOV_CONTINUATION_COUNTDOWN_SECONDS = 120
 V0_REPEAT_COUNT = 5  # V0 첫 측정 쿼리당 반복 횟수
 V0_CHUNK_STOP_SECONDS = 480
 V0_CONTINUATION_MAX_RETRIES = 200
@@ -6634,6 +6638,7 @@ def run_sov_for_hospital(
     measurement_mode: str | None = None,
     measurement_year: int | None = None,
     measurement_month: int | None = None,
+    failure_retry_count: int = 0,
 ):
     task_started_at = monotonic()
     reserved_units = 0
@@ -6951,6 +6956,10 @@ def run_sov_for_hospital(
                 if _sov_chunk_deadline_reached(task_started_at):
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
+                    if monthly and _sov_continuation_available(self):
+                        raise SovMeasurementResumable(
+                            "monthly measurement chunk stopped with pending slots"
+                        )
                     error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                     _record_weekly_sov_failure(
                         hospital,
@@ -7043,6 +7052,14 @@ def run_sov_for_hospital(
                 slots = slots_by_cell[spec["manifest_cell"].id]
                 try:
                     for slot in slots:
+                        if (
+                            monthly
+                            and not slot_is_terminal(slot)
+                            and _sov_chunk_deadline_reached(task_started_at)
+                        ):
+                            raise SovMeasurementResumable(
+                                "monthly measurement chunk stopped between slots"
+                            )
                         _execute_paid_observation_slot(
                             db,
                             slot=slot,
@@ -7054,9 +7071,24 @@ def run_sov_for_hospital(
                             variant_id=spec["variant_id"],
                             monthly_cell=spec["manifest_cell"],
                         )
-                except (SoftTimeLimitExceeded, DispatchAuthorizationError, WorkerLostError):
+                except (
+                    SovMeasurementResumable,
+                    SoftTimeLimitExceeded,
+                    DispatchAuthorizationError,
+                    WorkerLostError,
+                ) as exc:
+                    chunk_stop = isinstance(
+                        exc, (SovMeasurementResumable, SoftTimeLimitExceeded)
+                    )
+                    if chunk_stop:
+                        # An uncommitted stage claim must not be committed with the run.
+                        db.rollback()
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
+                    if chunk_stop and monthly and _sov_continuation_available(self):
+                        raise SovMeasurementResumable(
+                            "monthly measurement chunk stopped inside a cell"
+                        ) from exc
                     error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                     _record_weekly_sov_failure(
                         hospital,
@@ -7092,6 +7124,10 @@ def run_sov_for_hospital(
                 ):
                     _finish_measurement_run(run, success_count, failure_count)
                     db.commit()
+                    if monthly and _sov_continuation_available(self):
+                        raise SovMeasurementResumable(
+                            "monthly measurement chunk stopped between cells"
+                        )
                     error_code = f"{failure_prefix}_MEASUREMENT_PARTIAL"
                     _record_weekly_sov_failure(
                         hospital,
@@ -7158,9 +7194,17 @@ def run_sov_for_hospital(
                 "인증된 작업 실행 시간이 지나 측정을 시작하지 못했습니다.",
             )
         return
-    except (SoftTimeLimitExceeded, WorkerLostError):
+    except SovMeasurementResumable as exc:
+        raise _retry_sov_continuation(self, exc, failure_retry_count)
+    except (SoftTimeLimitExceeded, WorkerLostError) as exc:
         if reserved_units:
             _run_async(cost_guard.release_reservation("sov", reserved_units))
+        if (
+            measurement_mode == "monthly"
+            and isinstance(exc, SoftTimeLimitExceeded)
+            and _sov_continuation_available(self)
+        ):
+            raise _retry_sov_continuation(self, exc, failure_retry_count)
         with SyncSessionLocal() as db:
             _finish_sov_operation_run(
                 db,
@@ -7171,11 +7215,39 @@ def run_sov_for_hospital(
             )
         return
     except Exception as exc:
-        raise self.retry(exc=exc, countdown=300)
+        if measurement_mode != "monthly":
+            raise self.retry(exc=exc, countdown=300)
+        if failure_retry_count >= self.max_retries:
+            raise
+        raise self.retry(
+            exc=exc,
+            countdown=300,
+            kwargs=_v0_retry_kwargs(self, failure_retry_count + 1),
+            max_retries=SOV_CONTINUATION_MAX_RETRIES,
+        )
+
+
+class SovMeasurementResumable(RuntimeError):
+    """A monthly chunk stopped at its time budget with durable slots still pending."""
 
 
 def _sov_chunk_deadline_reached(started_at: float) -> bool:
     return monotonic() - started_at >= SOV_CHUNK_STOP_SECONDS
+
+
+def _sov_continuation_available(task) -> bool:
+    retries = getattr(getattr(task, "request", None), "retries", None) or 0
+    return isinstance(retries, int) and retries < SOV_CONTINUATION_MAX_RETRIES
+
+
+def _retry_sov_continuation(task, exc: BaseException, failure_retry_count: int):
+    """Continue the same claimed OperationRun; completed slots are never bought again."""
+    return task.retry(
+        exc=exc,
+        countdown=SOV_CONTINUATION_COUNTDOWN_SECONDS,
+        kwargs=_v0_retry_kwargs(task, failure_retry_count),
+        max_retries=SOV_CONTINUATION_MAX_RETRIES,
+    )
 
 
 def _resolve_monthly_measurement_period(
