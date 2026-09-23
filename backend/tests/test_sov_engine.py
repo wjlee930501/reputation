@@ -849,3 +849,155 @@ def test_measurement_models_are_pinned_to_dated_snapshots():
     assert defaults["GEMINI_MODEL"].default == "google/gemini-3.6-flash"
     for field in ("OPENAI_MODEL_QUERY", "OPENAI_MODEL_PARSE", "GEMINI_MODEL"):
         assert not defaults[field].default.endswith("-latest"), field
+
+
+class _FlakyAnswerCompletions:
+    """Chat-completions answer client failing transiently `failures` times, then answering."""
+
+    def __init__(self, failures: int, *, error: type[Exception] = _TransientRateLimitError):
+        self.failures = failures
+        self.error = error
+        self.calls = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error("provider hiccup")
+        return SimpleNamespace(
+            choices=[_FakeChoice("가나의원을 추천합니다.")],
+            usage=SimpleNamespace(prompt_tokens=3, completion_tokens=5),
+            model="answer-model",
+        )
+
+
+def _patch_attempt_plumbing(monkeypatch):
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    # Metering hooks are stubbed out; the attempt count must not depend on them.
+    monkeypatch.setattr(sov_engine, "_record_provider_attempt", _noop)
+    monkeypatch.setattr(sov_engine, "_record_sov_provider_call", _noop)
+    monkeypatch.setattr(sov_engine._query_chatgpt.retry, "sleep", _noop)
+    monkeypatch.setattr(sov_engine._request_judge_completion.retry, "sleep", _noop)
+
+
+def _patch_answer_client(monkeypatch, completions):
+    monkeypatch.setattr(sov_engine.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", False)
+    monkeypatch.setattr(
+        sov_engine,
+        "openai_query_client",
+        SimpleNamespace(chat=SimpleNamespace(completions=completions)),
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failures", [0, 1, 2])
+async def test_fetch_answer_reports_every_tenacity_attempt_on_success(monkeypatch, failures):
+    _patch_attempt_plumbing(monkeypatch)
+    completions = _FlakyAnswerCompletions(failures)
+    _patch_answer_client(monkeypatch, completions)
+
+    answer = await sov_engine.fetch_answer("강남 내과 추천", "chatgpt")
+
+    assert answer["measurement_status"] == "SUCCESS"
+    assert completions.calls == failures + 1
+    assert answer["provider_calls"] == failures + 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_answer_reports_all_attempts_when_retries_are_exhausted(monkeypatch):
+    _patch_attempt_plumbing(monkeypatch)
+    completions = _FlakyAnswerCompletions(failures=10)
+    _patch_answer_client(monkeypatch, completions)
+
+    answer = await sov_engine.fetch_answer("강남 내과 추천", "chatgpt")
+
+    assert answer["measurement_status"] == "FAILED"
+    assert completions.calls == 3
+    assert answer["provider_calls"] == 3
+
+
+@pytest.mark.asyncio
+async def test_fetch_answer_non_retryable_failure_is_one_attempt(monkeypatch):
+    _patch_attempt_plumbing(monkeypatch)
+    completions = _FlakyAnswerCompletions(failures=10, error=_QuotaError)
+    _patch_answer_client(monkeypatch, completions)
+
+    answer = await sov_engine.fetch_answer("강남 내과 추천", "chatgpt")
+
+    assert answer["measurement_status"] == "FAILED"
+    assert completions.calls == 1
+    assert answer["provider_calls"] == 1
+
+
+@pytest.mark.asyncio
+async def test_fetch_answer_without_any_http_attempt_reports_zero(monkeypatch):
+    _patch_attempt_plumbing(monkeypatch)
+    monkeypatch.setattr(sov_engine.settings, "OPENAI_CHATGPT_USE_WEB_SEARCH", True)
+    monkeypatch.setattr(sov_engine, "openai_query_client", SimpleNamespace(responses=None))
+
+    answer = await sov_engine.fetch_answer("강남 내과 추천", "chatgpt")
+
+    assert answer["measurement_status"] == "FAILED"
+    assert answer["provider_calls"] == 0
+
+
+class _ScriptedJudgeCompletions:
+    """Judge client: transient failures first, then self verdict, then competitor verdict."""
+
+    def __init__(self, failures: int):
+        self.failures = failures
+        self.calls = 0
+        self.successes = 0
+
+    async def create(self, **_kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise _TransientRateLimitError("judge hiccup")
+        self.successes += 1
+        payload = (
+            {
+                "verdict": "MATCHED",
+                "matched_text": "가나의원",
+                "mention_rank": 1,
+                "sentiment": "neutral",
+                "mention_context": None,
+            }
+            if self.successes == 1
+            else {"competitors": [{"name": "다라병원", "is_mentioned": True, "mention_rank": 2}]}
+        )
+        return SimpleNamespace(
+            choices=[_FakeChoice(json.dumps(payload))],
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_judge_answer_counts_retried_self_and_competitor_attempts(monkeypatch):
+    _patch_attempt_plumbing(monkeypatch)
+    completions = _ScriptedJudgeCompletions(failures=2)
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", completions)
+
+    judgment = await sov_engine.judge_answer(
+        "가나의원", "가나의원과 다라병원을 추천합니다.", competitors=["다라병원"]
+    )
+
+    assert judgment["measurement_status"] == "SUCCESS"
+    # self: 2 transient failures + 1 success; competitors: 1 success.
+    assert completions.calls == 4
+    assert judgment["provider_calls"] == 4
+
+
+@pytest.mark.asyncio
+async def test_judge_answer_hard_failure_reports_exhausted_attempts(monkeypatch):
+    _patch_attempt_plumbing(monkeypatch)
+    completions = _ScriptedJudgeCompletions(failures=10)
+    monkeypatch.setattr(sov_engine.openai_client.chat, "completions", completions)
+
+    judgment = await sov_engine.judge_answer(
+        "가나의원", "가나의원과 다라병원을 추천합니다.", competitors=["다라병원"]
+    )
+
+    assert judgment["measurement_status"] == "FAILED"
+    assert completions.calls == 3
+    assert judgment["provider_calls"] == 3

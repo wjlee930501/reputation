@@ -48,6 +48,12 @@ _provider_attempt_id: ContextVar[str | None] = ContextVar(
 _provider_http_attempts: ContextVar[dict[str, int] | None] = ContextVar(
     "sov_provider_http_attempts", default=None
 )
+# 한 실행 경계(답변 1건 또는 판정 1건) 안에서 실제로 공급자에 나간 HTTP 시도 수.
+# tenacity 재시도는 데코레이터 안에서 본문을 다시 실행하므로, 본문이 요청 직전에 센 값이
+# 곧 실제 시도 횟수다. 리스트로 감싸 같은 경계 안의 코루틴이 한 카운터를 공유한다.
+_provider_call_attempts: ContextVar[list[int] | None] = ContextVar(
+    "sov_provider_call_attempts", default=None
+)
 
 
 @contextmanager
@@ -76,6 +82,7 @@ def provider_execution_context(
         (_provider_item_id, _provider_item_id.set(item_id)),
         (_provider_attempt_id, _provider_attempt_id.set(attempt_id)),
         (_provider_http_attempts, _provider_http_attempts.set({})),
+        (_provider_call_attempts, _provider_call_attempts.set([0])),
     )
     try:
         yield
@@ -149,6 +156,19 @@ async def _record_sov_provider_call(count: int = 1) -> None:
     from app.services import cost_guard
 
     await cost_guard.record_provider_call(_provider_cost_category.get(), count=count)
+
+
+async def _begin_provider_http_attempt() -> None:
+    """Count one real provider HTTP attempt for the active boundary, then meter it."""
+    counter = _provider_call_attempts.get()
+    if counter is not None:
+        counter[0] += 1
+    await _record_sov_provider_call()
+
+
+def _provider_calls_made() -> int:
+    counter = _provider_call_attempts.get()
+    return counter[0] if counter is not None else 0
 
 
 async def _record_sov_usage(input_tokens: int | None, output_tokens: int | None) -> None:
@@ -822,7 +842,7 @@ async def _query_chatgpt(query: str) -> dict[str, Any]:
     """
     if settings.OPENAI_CHATGPT_USE_WEB_SEARCH:
         return await _query_chatgpt_with_search_result(query)
-    await _record_sov_provider_call()
+    await _begin_provider_http_attempt()
     try:
         response = await openai_query_client.chat.completions.create(
             model=settings.OPENAI_MODEL_QUERY,
@@ -882,7 +902,7 @@ async def _query_chatgpt_with_search_result(query: str) -> dict[str, Any]:
             "source_urls": [],
             "measurement_method": "OPENROUTER_RESPONSES_WEB_SEARCH",
         }
-    await _record_sov_provider_call()
+    await _begin_provider_http_attempt()
     try:
         response = await create_response(
             model=settings.OPENAI_MODEL_QUERY,
@@ -963,7 +983,7 @@ async def _query_gemini_result(query: str) -> dict[str, Any]:
             "source_urls": [],
             "measurement_method": "OPENROUTER_GEMINI_WEB_SEARCH",
         }
-    await _record_sov_provider_call()
+    await _begin_provider_http_attempt()
     try:
         response = await client.chat.completions.create(
             model=settings.GEMINI_MODEL,
@@ -1159,7 +1179,7 @@ async def _request_judge_completion(
     logical_call_id: str,
 ) -> Any:
     """Issue one explicitly retried judge request and meter every HTTP attempt."""
-    await _record_sov_provider_call()
+    await _begin_provider_http_attempt()
     try:
         result = await openai_client.chat.completions.create(
             model=settings.OPENAI_MODEL_PARSE,
@@ -1523,7 +1543,8 @@ async def fetch_answer(
             except Exception as exc:  # noqa: BLE001 — 측정 1건의 실패는 진단을 멈추지 않는다.
                 failure_reason = provider_failure_reason(exc)
                 logger.error("Query failed (%s): %s", platform, failure_reason)
-                return failed(failure_reason, provider_calls=1)
+                return failed(failure_reason, provider_calls=_provider_calls_made())
+            provider_calls = _provider_calls_made()
 
     if isinstance(provider_result, str):
         provider_result = {"text": provider_result, "source_urls": []}
@@ -1531,7 +1552,7 @@ async def fetch_answer(
     if not raw.strip():
         return failed(
             "empty_raw_response",
-            provider_calls=1,
+            provider_calls=provider_calls,
             source_urls=_normalize_source_urls(provider_result.get("source_urls") or []),
         )
     return {
@@ -1545,7 +1566,7 @@ async def fetch_answer(
         "input_tokens": provider_result.get("input_tokens"),
         "output_tokens": provider_result.get("output_tokens"),
         "measurement_method": provider_result.get("measurement_method"),
-        "provider_calls": 1,
+        "provider_calls": provider_calls,
         "measurement_status": "SUCCESS",
         "failure_reason": None,
     }
@@ -1645,10 +1666,6 @@ async def judge_answer(
         competitors=competitors,
         policy=policy,
     )
-    own_provider_call, competitor_provider_call = _judgment_provider_call_plan(
-        hospital_name, response_text, competitors
-    )
-    provider_calls = int(own_provider_call)
     with provider_execution_context(
         pool=pool,
         hospital_id=hospital_id,
@@ -1661,7 +1678,6 @@ async def judge_answer(
         async with _get_semaphore(f"{pool}:openai-judge"):
             try:
                 parsed = await _parse_mention(hospital_name, response_text, region)
-                provider_calls += int(competitor_provider_call)
                 competitor_mentions = (
                     await _parse_competitors(competitors, response_text) if competitors else []
                 )
@@ -1672,9 +1688,10 @@ async def judge_answer(
                     "measurement_status": "FAILED",
                     "failure_reason": "mention_parse_failed",
                     "judgment_input_fingerprint": fingerprint,
-                    "provider_calls": max(provider_calls, 1 if own_provider_call else 0),
+                    "provider_calls": _provider_calls_made(),
                     "provider_failure_reason": provider_failure_reason(exc),
                 }
+            provider_calls = _provider_calls_made()
     return {
         **parsed,
         "competitor_mentions": competitor_mentions or None,
