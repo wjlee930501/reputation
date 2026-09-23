@@ -38,11 +38,16 @@ export const viewport: Viewport = {
  * 이것이기 때문이다. 의료 이미지를 매일 보는 사람에게 생성 티가 나는 X-ray를 첫인상으로
  * 내밀 이유가 없다.
  *
- * 지금 이미지는 `backend/app/templates/lead_report.html`을 익명 payload로 렌더한
- * 진짜 지면이다(`scripts/build_og_report_html.py`). 병원명만 ○○ 플레이스홀더이고
- * 표·라벨·고지 문구·모델명은 프로덕션과 동일하다. 모델이나 규약이 바뀌면 다시 만든다.
+ * 지금 이미지는 랜딩 톤(검정 면·주황 강조)에 맞춘 **설명 그림**이다 — 랜딩의 "지역 경쟁"
+ * 지도와 같은 그림으로, AI 답변에 나온 병원 세 곳과 비어 있는 우리 병원 자리를 보여준다.
+ * 제품 화면인 척하지 않는다(병원명은 ○○ 플레이스홀더, 바탕은 회색 단색 지도 그림).
+ * 앞 버전은 진단 리포트 지면이었는데 "무료 진단"을 팔던 때의 것이라 도입문의로 바뀐 뒤
+ * 맞지 않게 됐다. 원본은 `scripts/og-image/og.html` — 헤드리스 Chrome으로 1200×630 캡처한다.
  */
-const OG_IMAGE = "/landing/reputation-diagnosis-report-og.png";
+const OG_IMAGE = "/landing/reputation-og.png";
+const OG_TITLE = "우리 병원은 AI 답변에 잘 노출되고 있을까요? | Re:putation";
+const OG_DESCRIPTION =
+  "이제 환자들은 ChatGPT·Gemini에게 병원을 묻습니다. 어떤 질문에서 노출이 부족한지 진단해 드리고, 원장님의 진료 철학과 경험을 AI 노출에 활용할 수 있도록 모션랩스가 함께합니다.";
 const googleSiteVerification = process.env.NEXT_PUBLIC_GOOGLE_SITE_VERIFICATION?.trim();
 
 export const metadata: Metadata = {
@@ -53,11 +58,10 @@ export const metadata: Metadata = {
   // 같은 내용이 여러 주소로 흩어지면 AI·검색이 평가를 나눠 본다.
   alternates: { canonical: "/" },
   description:
-    "MotionLabs가 운영하는 Re:putation Research Preview. ChatGPT·Gemini가 환자 질문에 답할 때 우리 병원이 어떻게 보이는지 진단하고, 빠진 정보와 근거 콘텐츠 운영 순서를 정리합니다.",
+    "환자는 이제 ChatGPT·Gemini에게 병원을 묻습니다. Re:putation은 어떤 질문에서 우리 병원 노출이 부족한지 진단하고, 전담 마케터가 병원 정보와 콘텐츠 운영을 함께 맡습니다.",
   openGraph: {
-    title: "Re:putation — MotionLabs Research Preview",
-    description:
-      "환자는 이제 AI에게 병원을 묻습니다. 우리 병원은 그 답변 안에 제대로 보이고 있을까요?",
+    title: OG_TITLE,
+    description: OG_DESCRIPTION,
     siteName: "Re:putation by MotionLabs",
     locale: "ko_KR",
     type: "website",
@@ -66,15 +70,14 @@ export const metadata: Metadata = {
         url: OG_IMAGE,
         width: 1200,
         height: 630,
-        alt: "무료 AI 노출 진단 리포트 예시 — OpenAI API·Google Gemini API 측정 횟수와 언급 횟수가 표로 정리되어 있다",
+        alt: "우리 병원은 AI 답변에 잘 노출되고 있을까요? — AI 답변에 나온 병원 세 곳과 비어 있는 우리 병원 자리를 표시한 동네 지도",
       },
     ],
   },
   twitter: {
     card: "summary_large_image",
-    title: "Re:putation — MotionLabs Research Preview",
-    description:
-      "환자는 이제 AI에게 병원을 묻습니다. 우리 병원은 그 답변 안에 제대로 보이고 있을까요?",
+    title: OG_TITLE,
+    description: OG_DESCRIPTION,
     images: [OG_IMAGE],
   },
   ...(googleSiteVerification
