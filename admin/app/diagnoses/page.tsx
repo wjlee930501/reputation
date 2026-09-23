@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import Link from 'next/link'
 import { ApiError, fetchAPI } from '@/lib/api'
 import { ManualDiagnosisForm } from '@/app/_components/ManualDiagnosisForm'
@@ -26,6 +26,9 @@ export default function ManualDiagnosisPage() {
   const [error, setError] = useState<string | null>(null)
   // 만든 직후 아래 목록이 그 건을 바로 보여줘야 한다 — 그게 이 화면의 확인 수단이다.
   const [reloadToken, setReloadToken] = useState(0)
+  // 한 번의 생성 시도에 키 하나. 응답이 유실돼 다시 눌러도 서버가 같은 진단을 돌려준다.
+  // 만들어진 뒤에만 새 키를 쓴다 — 다음 병원은 다른 진단이다.
+  const attemptKey = useRef<string | null>(null)
 
   async function submit(payload: Record<string, unknown>) {
     setSubmitting(true)
@@ -33,8 +36,13 @@ export default function ManualDiagnosisPage() {
     try {
       const response = await fetchAPI<{ lead_id: string; diagnosis_id: string }>(
         '/admin/lead-diagnoses',
-        { method: 'POST', body: JSON.stringify(payload) },
+        {
+          method: 'POST',
+          headers: { 'Idempotency-Key': (attemptKey.current ??= crypto.randomUUID()) },
+          body: JSON.stringify(payload),
+        },
       )
+      attemptKey.current = null
       setCreated({ leadId: response.lead_id, diagnosisId: response.diagnosis_id })
       setReloadToken((token) => token + 1)
     } catch (caught) {

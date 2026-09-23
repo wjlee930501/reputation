@@ -503,3 +503,87 @@ async def test_superseding_closes_the_failures_left_on_the_old_diagnosis(pg_asyn
     assert stale_report.state == IncidentState.ACKNOWLEDGED.value
     assert unrelated.state == IncidentState.OPEN.value
     assert isinstance(unrelated, Incident)
+
+
+async def _saved_actor(session) -> AdminUser:
+    actor = AdminUser(
+        email=f"ae-{uuid.uuid4().hex[:8]}@motionlabs.kr",
+        name="AE",
+        role="OPERATOR",
+        password_hash="not-used",
+        is_active=True,
+    )
+    session.add(actor)
+    await session.flush()
+    return actor
+
+
+@pytest.mark.asyncio
+class TestCreationIsIdempotent:
+    """진단 한 건은 유료 공급자 호출을 산다 — 같은 제출이 두 번 와도 한 번만 산다."""
+
+    async def test_the_same_submission_twice_creates_one_diagnosis(self, pg_async_session):
+        actor = await _saved_actor(pg_async_session)
+        body = _request()
+
+        first = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="k-1"
+        )
+        queued = BackgroundTasks()
+        second = await manual_api.create_manual_diagnosis(
+            body, queued, db=pg_async_session, actor=actor, idempotency_key="k-1"
+        )
+
+        assert second["diagnosis_id"] == first["diagnosis_id"]
+        assert second["lead_id"] == first["lead_id"]
+        assert first["idempotent_replay"] is False
+        assert second["idempotent_replay"] is True
+        # 두 번째는 큐에 다시 넣지도 않는다.
+        assert queued.tasks == []
+        leads = (
+            await pg_async_session.execute(
+                select(SalesLead).where(SalesLead.clinic_name == body.clinic_name)
+            )
+        ).scalars().all()
+        assert len(leads) == 1
+
+    async def test_a_repeated_correction_does_not_supersede_what_it_just_made(
+        self, pg_async_session
+    ):
+        actor = await _saved_actor(pg_async_session)
+        lead = await _inquiry_lead(pg_async_session)
+        body = _request(lead_id=lead.id, contact=None, reason="진료과 정정")
+
+        first = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="fix-1"
+        )
+        second = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="fix-1"
+        )
+
+        assert second["diagnosis_id"] == first["diagnosis_id"]
+        made = await pg_async_session.get(LeadDiagnosis, uuid.UUID(first["diagnosis_id"]))
+        assert made.superseded_at is None
+
+    async def test_the_same_key_with_different_values_is_refused(self, pg_async_session):
+        actor = await _saved_actor(pg_async_session)
+        await manual_api.create_manual_diagnosis(
+            _request(), BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="k-2"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await manual_api.create_manual_diagnosis(
+                _request(), BackgroundTasks(), db=pg_async_session, actor=actor,
+                idempotency_key="k-2",
+            )
+        assert exc.value.status_code == 409
+
+    async def test_different_keys_are_different_diagnoses(self, pg_async_session):
+        actor = await _saved_actor(pg_async_session)
+        body = _request()
+        first = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="a"
+        )
+        second = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="b"
+        )
+        assert first["diagnosis_id"] != second["diagnosis_id"]

@@ -208,6 +208,7 @@ export default function LeadsPage() {
   const [internalDiagnosisError, setInternalDiagnosisError] = useState<string | null>(null)
   // 값이 틀린 채로 측정이 끝난 진단을 고쳐 다시 만드는 창. 진단 생성(내부용)과 다른 경로다.
   const [correctTarget, setCorrectTarget] = useState<SalesLead | null>(null)
+  const correctKey = useRef<string | null>(null)
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctError, setCorrectError] = useState<string | null>(null)
   const internalDiagnosisDialogRef = useRef<HTMLDivElement>(null)
@@ -357,6 +358,8 @@ export default function LeadsPage() {
   }
 
   function openCorrectDiagnosis(lead: SalesLead) {
+    // 창 하나에 키 하나 — 응답이 유실돼 다시 눌러도 방금 만든 진단을 또 갈음하지 않는다.
+    correctKey.current = crypto.randomUUID()
     setCorrectTarget(lead)
     setCorrectError(null)
     setActionNotice(null)
@@ -369,6 +372,7 @@ export default function LeadsPage() {
     try {
       await fetchAPI('/admin/lead-diagnoses', {
         method: 'POST',
+        headers: correctKey.current ? { 'Idempotency-Key': correctKey.current } : undefined,
         body: JSON.stringify(payload),
       })
       setCorrectTarget(null)
