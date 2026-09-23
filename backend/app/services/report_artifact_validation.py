@@ -25,6 +25,15 @@ DOCTOR_ARTIFACT_VALIDATION_VERSION = "doctor-pdf-v2"
 _A4_WIDTH_PT = 595.28
 _A4_HEIGHT_PT = 841.89
 _PAGE_TOLERANCE_PT = 2.0
+# 내부용 판본(report.html·lead_report.html)에만 찍히는 표식. 원장용 PDF에서 하나라도
+# 읽히면 내부 판본이 섞였거나 내부 섹션(토킹 포인트 등)이 새어 나온 것이다. 필수 문구
+# 검사는 "있어야 할 것"만 보므로, 템플릿이 내부 필드를 찍어도 그대로 통과했다.
+INTERNAL_ONLY_MARKERS = (
+    "내부 검수용",
+    "원장 전달 불가",
+    "토킹 포인트",
+    "AE 전용",
+)
 def parse_doctor_artifact_metadata(value: object) -> DoctorArtifactMetadata | None:
     try:
         return DoctorArtifactMetadata.model_validate(value)
@@ -78,6 +87,14 @@ def validate_doctor_pdf(
 
     extracted_text = page.extract_text() or ""
     normalized_text = _normalize_text(extracted_text)
+    leaked = internal_markers_in(
+        "\n".join(sheet.extract_text() or "" for sheet in reader.pages)
+    )
+    if leaked:
+        raise DoctorPdfValidationError(
+            "DOCTOR_PDF_INTERNAL_TEXT_PRESENT",
+            "원장 전달용 PDF에 내부용 문구가 들어 있습니다: " + ", ".join(leaked) + ".",
+        )
     required = (
         ("hospital_name", expectation.hospital_name),
     )
@@ -171,6 +188,12 @@ def validate_doctor_pdf(
         sha256=digest,
         byte_size=len(pdf_bytes),
     )
+
+
+def internal_markers_in(text: str) -> list[str]:
+    """원장에게 나가면 안 되는 내부 표식 중 본문에서 읽히는 것."""
+    normalized = _normalize_text(text)
+    return [marker for marker in INTERNAL_ONLY_MARKERS if _normalize_text(marker) in normalized]
 
 
 def _normalize_text(value: str) -> str:

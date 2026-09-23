@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -211,43 +211,111 @@ async def recover_ops_incidents_for_hospital(
             .scalars()
             .all()
         )
-        recovered_count = 0
-        for incident in incidents:
-            current = incident
-            if current.state == IncidentState.OPEN.value:
-                retrying = await mark_retrying(
-                    db,
-                    current.id,
-                    expected_version=current.version,
-                    actor=actor,
-                    reason=reason,
+        recovered_count = await _recover_incidents(
+            db,
+            incidents,
+            hospital_name=hospital_name,
+            actor=actor,
+            reason=reason,
+            notify=notify,
+        )
+        await db.commit()
+        return recovered_count
+
+
+async def recover_ops_incidents_for_source(
+    db: AsyncSession,
+    *,
+    source_id: str,
+    pipelines: tuple[str, ...],
+    hospital_name: str = "시스템 공통 작업",
+    actor: str = "system",
+    reason: str,
+    notify: bool = True,
+) -> int:
+    """Close active incidents whose object no longer needs anyone, in the caller's transaction.
+
+    A superseded lead diagnosis is the case: nothing will ever retry it, so an incident
+    left OPEN on it would sit in the operator queue forever. Running inside the caller's
+    transaction keeps the close and the supersede atomic — neither is visible without
+    the other. The caller commits.
+    """
+
+    incidents = list(
+        (
+            await db.execute(
+                select(Incident).where(
+                    Incident.source_id == source_id,
+                    or_(
+                        *(
+                            Incident.dedupe_key.startswith(f"incident:v1:{pipeline}:")
+                            for pipeline in pipelines
+                        )
+                    ),
+                    Incident.state.in_(
+                        (IncidentState.OPEN.value, IncidentState.RETRYING.value)
+                    ),
                 )
-                if not isinstance(retrying, Incident):
-                    continue
-                current = retrying
-            if current.state != IncidentState.RETRYING.value:
-                continue
-            recovered = await mark_recovered(
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return await _recover_incidents(
+        db,
+        incidents,
+        hospital_name=hospital_name,
+        actor=actor,
+        reason=reason,
+        notify=notify,
+    )
+
+
+async def _recover_incidents(
+    db: AsyncSession,
+    incidents: list[Incident],
+    *,
+    hospital_name: str,
+    actor: str,
+    reason: str,
+    notify: bool,
+) -> int:
+    recovered_count = 0
+    for incident in incidents:
+        current = incident
+        if current.state == IncidentState.OPEN.value:
+            retrying = await mark_retrying(
                 db,
                 current.id,
                 expected_version=current.version,
-                observed_success=True,
                 actor=actor,
                 reason=reason,
             )
-            if not isinstance(recovered, Incident):
+            if not isinstance(retrying, Incident):
                 continue
-            recovered_count += 1
-            await _close_recovered_incident(
-                db,
-                recovered,
-                hospital_name=hospital_name,
-                actor=actor,
-                reason=reason,
-                notify=notify,
-            )
-        await db.commit()
-        return recovered_count
+            current = retrying
+        if current.state != IncidentState.RETRYING.value:
+            continue
+        recovered = await mark_recovered(
+            db,
+            current.id,
+            expected_version=current.version,
+            observed_success=True,
+            actor=actor,
+            reason=reason,
+        )
+        if not isinstance(recovered, Incident):
+            continue
+        recovered_count += 1
+        await _close_recovered_incident(
+            db,
+            recovered,
+            hospital_name=hospital_name,
+            actor=actor,
+            reason=reason,
+            notify=notify,
+        )
+    return recovered_count
 
 
 async def _close_recovered_incident(

@@ -20,3 +20,10 @@ test('leaves clean and unrelated fragments alone', () => {
   assert.equal(normalizeContactHash('#faq'), null)
   assert.equal(normalizeContactHash(''), null)
 })
+
+test('sends links built for the pre-redesign #lead anchor to the same form', () => {
+  assert.equal(normalizeContactHash('#lead'), '#contact')
+  assert.equal(normalizeContactHash('#lead?utm_source=sms'), '#contact')
+  assert.equal(normalizeContactHash('#leader'), null)
+  assert.equal(normalizeContactHash('#lead-magnet'), null)
+})

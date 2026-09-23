@@ -97,6 +97,28 @@ def test_required_text_names_every_field_that_is_truly_missing(
     assert "hospital_name" not in exc.value.problem
 
 
+@pytest.mark.parametrize("leak", ["원장 미팅 토킹 포인트", "내부 검수용 · 원장 전달 불가", "AE 전용 · INTERNAL"])
+def test_internal_only_text_never_passes_as_a_doctor_artifact(
+    monkeypatch: pytest.MonkeyPatch, leak: str
+) -> None:
+    # Given: 필수 문구는 모두 있지만 내부 판본의 표식이 함께 찍힌 PDF.
+    expectation = _expectation()
+    extracted_text = "\n".join(
+        (expectation.hospital_name, expectation.coverage_text, expectation.caveat_text, leak)
+    )
+    _stub_valid_pdf(monkeypatch, extracted_text)
+
+    # Then: 필수 문구가 있다는 이유로 통과하지 않는다.
+    with pytest.raises(DoctorPdfValidationError) as exc:
+        validate_doctor_pdf(b"simulated-pdf", expectation)
+    assert exc.value.code == "DOCTOR_PDF_INTERNAL_TEXT_PRESENT"
+
+
+def test_internal_markers_survive_extractor_line_wraps() -> None:
+    assert report_artifact_validation.internal_markers_in("원장 전달\n불가") == ["원장 전달 불가"]
+    assert report_artifact_validation.internal_markers_in("원장님께 전달드립니다") == []
+
+
 def test_validator_rejects_a_two_page_artifact_when_no_appendix_was_rendered() -> None:
     """부록이 없는데 2쪽이면 본문이 넘친 것이다 — 그 파일은 원장에게 나가면 안 된다."""
     with pytest.raises(DoctorPdfValidationError) as exc:

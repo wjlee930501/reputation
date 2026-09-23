@@ -49,3 +49,30 @@ def test_backend_reserves_every_path_the_site_reserves():
     """
     site_only = _site_reserved_prefixes() - RESERVED_SITE_SLUGS - {"_next"}
     assert not site_only, f"백엔드 예약 목록에 없는 site 예약 경로: {sorted(site_only)}"
+
+
+def _site_static_route_segments() -> set[str]:
+    """`site/app` 최상위의 정적 라우트 — `[slug]`보다 먼저 잡히는 경로들."""
+    app_dir = _HOST_ROUTING.parents[1] / "app"
+    segments = set()
+    for child in app_dir.iterdir():
+        name = child.name
+        if not child.is_dir() or name[0] in "[_(" or "." in name:
+            continue
+        if any(child.rglob("page.tsx")) or any(child.rglob("route.ts")):
+            segments.add(name)
+    return segments
+
+
+def test_every_static_site_route_is_a_reserved_slug():
+    """랜딩 개편처럼 site에 최상위 페이지가 새로 생기면 백엔드 예약 slug에도 들어가야 한다.
+
+    빠지면 그 이름의 slug를 가진 병원이 만들어지고, 플랫폼 도메인에서는 정적 라우트가
+    `[slug]`보다 먼저 잡혀 그 병원 페이지가 영원히 열리지 않는다. site의 rewrite 예약
+    목록(`RESERVED_PREFIXES`)은 병원 자기 도메인에서 플랫폼 페이지를 보일지의 문제라
+    여기서 강제하지 않는다 — `/contact`·`/brochure`는 환자가 보는 병원 도메인에
+    내보이지 않는다.
+    """
+    segments = _site_static_route_segments()
+    assert "contact" in segments  # 파싱이 조용히 비지 않았는지
+    assert not segments - RESERVED_SITE_SLUGS, sorted(segments - RESERVED_SITE_SLUGS)

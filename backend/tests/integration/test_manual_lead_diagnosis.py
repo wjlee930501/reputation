@@ -61,6 +61,12 @@ async def _inquiry_lead(session, *, clinic_name: str | None = None) -> SalesLead
     return lead
 
 
+def test_a_new_hospital_still_needs_a_contact():
+    # 고쳐 만드는 경로만 연락처를 생략할 수 있다 — 새 리드에는 연락할 수단이 없다.
+    with pytest.raises(ValueError):
+        _request(contact=None)
+
+
 @pytest.mark.asyncio
 class TestManualCreation:
     async def test_a_hospital_that_never_wrote_to_us_can_be_diagnosed(
@@ -136,6 +142,66 @@ class TestManualCreation:
 
         active = await inquiry_diagnosis.active_diagnosis_for(pg_async_session, lead.id)
         assert active is not None and active.id == new.id
+
+    async def test_a_corrected_clinic_name_is_what_gets_measured(self, pg_async_session):
+        # Given: 원장이 병원명을 줄여 적은 도입문의와 그 이름으로 만들어진 진단.
+        lead = await _inquiry_lead(pg_async_session, clinic_name="연세정정의원")
+        original_contact = lead.contact
+        first = await manual_api.create_manual_diagnosis(
+            _request(lead_id=lead.id, clinic_name="연세정정의원", reason="최초 생성"),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+
+        # When: AE가 간판의 정식 병원명으로 고쳐 다시 만든다. 연락처는 보내지 않는다.
+        second = await manual_api.create_manual_diagnosis(
+            _request(
+                lead_id=lead.id,
+                clinic_name="강남연세정정의원",
+                contact=None,
+                reason="병원명을 간판 이름으로 정정",
+            ),
+            BackgroundTasks(),
+            db=pg_async_session,
+            actor=_actor(),
+        )
+
+        # Then: 새 진단은 고친 이름으로 판정하고, 옛 진단은 그때 쟀던 이름을 보존한다.
+        old = await pg_async_session.get(LeadDiagnosis, uuid.UUID(first["diagnosis_id"]))
+        new = await pg_async_session.get(LeadDiagnosis, uuid.UUID(second["diagnosis_id"]))
+        assert new.subject_hospital_name == "강남연세정정의원"
+        assert old.subject_hospital_name == "연세정정의원"
+        await pg_async_session.refresh(lead)
+        assert lead.clinic_name == "강남연세정정의원"
+        # 원장이 남긴 연락처는 고쳐 만들기가 덮지 않는다.
+        assert lead.contact == original_contact
+
+        # And: 이력 목록은 각 진단이 실제로 쟀던 이름을 보여준다.
+        listing = await manual_api.list_manual_diagnoses(
+            db=pg_async_session, limit=50, _actor=_actor()
+        )
+        names = {item["id"]: item["clinic_name"] for item in listing["items"]}
+        assert names[first["diagnosis_id"]] == "연세정정의원"
+        assert names[second["diagnosis_id"]] == "강남연세정정의원"
+
+    async def test_the_corrected_name_is_the_one_kept_out_of_the_keywords(
+        self, pg_async_session
+    ):
+        lead = await _inquiry_lead(pg_async_session, clinic_name="짧은이름의원")
+        with pytest.raises(HTTPException) as exc:
+            await manual_api.create_manual_diagnosis(
+                _request(
+                    lead_id=lead.id,
+                    clinic_name="강남바른정형외과의원",
+                    core_keywords=["강남바른정형외과의원 도수치료"],
+                ),
+                BackgroundTasks(),
+                db=pg_async_session,
+                actor=_actor(),
+            )
+        # 판정은 저장된 옛 이름이 아니라 고친 이름으로 한다 — 화면 검증과 같은 기준이다.
+        assert exc.value.status_code == 400
 
     async def test_a_delivered_diagnosis_is_never_superseded(self, pg_async_session):
         # Given: 고객에게 나간 진단이 붙은 리드.
@@ -373,3 +439,151 @@ class TestHistoryListing:
         old = next(i for i in listing["items"] if i["id"] == first["diagnosis_id"])
         assert old["superseded_at"] is not None
         assert old["superseded_by_id"] == second["diagnosis_id"]
+
+
+def _lead_incident(diagnosis_id: uuid.UUID, pipeline: str = "lead_diagnosis"):
+    from app.models.operations import IncidentSeverity
+    from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+
+    return IncidentOpenRequest(
+        pipeline=pipeline,
+        object_type="diagnosis",
+        object_id=str(diagnosis_id),
+        fingerprint=IncidentFingerprint.UNKNOWN,
+        incident_type="LEAD_DIAGNOSIS_FAILED",
+        severity=IncidentSeverity.HIGH,
+        customer_impact="신청자에게 진단 리포트를 전달할 수 없습니다.",
+        source_type="LEAD_DIAGNOSIS",
+        source_id=str(diagnosis_id),
+        next_action="운영센터에서 원인을 확인하세요.",
+        admin_path="/operations",
+        safe_error_code="LEAD_DIAGNOSIS_FAILED",
+    )
+
+
+@pytest.mark.asyncio
+async def test_superseding_closes_the_failures_left_on_the_old_diagnosis(pg_async_session):
+    """갈음된 진단은 아무도 다시 집지 않는다 — 그 위의 인시던트가 운영자 큐에 남으면 안 된다."""
+    from app.models.operations import Incident, IncidentState
+    from app.services.incidents import open_or_touch_incident
+
+    # Given: 실패로 끝나 인시던트가 열린 진단과, 상관없는 다른 진단의 인시던트.
+    lead = await _inquiry_lead(pg_async_session)
+    first = await manual_api.create_manual_diagnosis(
+        _request(lead_id=lead.id, reason="최초 생성"),
+        BackgroundTasks(),
+        db=pg_async_session,
+        actor=_actor(),
+    )
+    old_id = uuid.UUID(first["diagnosis_id"])
+    stale = await open_or_touch_incident(
+        pg_async_session, _lead_incident(old_id), actor="test", reason="seed"
+    )
+    stale_report = await open_or_touch_incident(
+        pg_async_session, _lead_incident(old_id, "lead_report"), actor="test", reason="seed"
+    )
+    unrelated = await open_or_touch_incident(
+        pg_async_session, _lead_incident(uuid.uuid4()), actor="test", reason="seed"
+    )
+    await pg_async_session.flush()
+
+    # When: AE가 값을 고쳐 새 진단으로 갈음한다.
+    await manual_api.create_manual_diagnosis(
+        _request(lead_id=lead.id, specialty="정형외과", reason="진료과 정정"),
+        BackgroundTasks(),
+        db=pg_async_session,
+        actor=_actor(),
+    )
+
+    # Then: 옛 진단의 인시던트만 기계가 닫는다.
+    for incident in (stale, stale_report, unrelated):
+        await pg_async_session.refresh(incident)
+    assert stale.state == IncidentState.ACKNOWLEDGED.value
+    assert stale.acknowledged_by_id is None
+    assert stale_report.state == IncidentState.ACKNOWLEDGED.value
+    assert unrelated.state == IncidentState.OPEN.value
+    assert isinstance(unrelated, Incident)
+
+
+async def _saved_actor(session) -> AdminUser:
+    actor = AdminUser(
+        email=f"ae-{uuid.uuid4().hex[:8]}@motionlabs.kr",
+        name="AE",
+        role="OPERATOR",
+        password_hash="not-used",
+        is_active=True,
+    )
+    session.add(actor)
+    await session.flush()
+    return actor
+
+
+@pytest.mark.asyncio
+class TestCreationIsIdempotent:
+    """진단 한 건은 유료 공급자 호출을 산다 — 같은 제출이 두 번 와도 한 번만 산다."""
+
+    async def test_the_same_submission_twice_creates_one_diagnosis(self, pg_async_session):
+        actor = await _saved_actor(pg_async_session)
+        body = _request()
+
+        first = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="k-1"
+        )
+        queued = BackgroundTasks()
+        second = await manual_api.create_manual_diagnosis(
+            body, queued, db=pg_async_session, actor=actor, idempotency_key="k-1"
+        )
+
+        assert second["diagnosis_id"] == first["diagnosis_id"]
+        assert second["lead_id"] == first["lead_id"]
+        assert first["idempotent_replay"] is False
+        assert second["idempotent_replay"] is True
+        # 두 번째는 큐에 다시 넣지도 않는다.
+        assert queued.tasks == []
+        leads = (
+            await pg_async_session.execute(
+                select(SalesLead).where(SalesLead.clinic_name == body.clinic_name)
+            )
+        ).scalars().all()
+        assert len(leads) == 1
+
+    async def test_a_repeated_correction_does_not_supersede_what_it_just_made(
+        self, pg_async_session
+    ):
+        actor = await _saved_actor(pg_async_session)
+        lead = await _inquiry_lead(pg_async_session)
+        body = _request(lead_id=lead.id, contact=None, reason="진료과 정정")
+
+        first = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="fix-1"
+        )
+        second = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="fix-1"
+        )
+
+        assert second["diagnosis_id"] == first["diagnosis_id"]
+        made = await pg_async_session.get(LeadDiagnosis, uuid.UUID(first["diagnosis_id"]))
+        assert made.superseded_at is None
+
+    async def test_the_same_key_with_different_values_is_refused(self, pg_async_session):
+        actor = await _saved_actor(pg_async_session)
+        await manual_api.create_manual_diagnosis(
+            _request(), BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="k-2"
+        )
+        with pytest.raises(HTTPException) as exc:
+            await manual_api.create_manual_diagnosis(
+                _request(), BackgroundTasks(), db=pg_async_session, actor=actor,
+                idempotency_key="k-2",
+            )
+        assert exc.value.status_code == 409
+
+    async def test_different_keys_are_different_diagnoses(self, pg_async_session):
+        actor = await _saved_actor(pg_async_session)
+        body = _request()
+        first = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="a"
+        )
+        second = await manual_api.create_manual_diagnosis(
+            body, BackgroundTasks(), db=pg_async_session, actor=actor, idempotency_key="b"
+        )
+        assert first["diagnosis_id"] != second["diagnosis_id"]

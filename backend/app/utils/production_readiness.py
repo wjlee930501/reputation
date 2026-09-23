@@ -299,7 +299,24 @@ def build_report() -> dict[str, Any]:
     return {
         "ready": all(checks.values()),
         "checks": checks,
-        "facts": {**database, "worker_canaries": canaries},
+        "facts": {**database, "worker_canaries": canaries, "inquiry_sms": _inquiry_sms_facts()},
+    }
+
+
+def _inquiry_sms_facts() -> dict[str, Any]:
+    """도입문의 안내 문자 설정 — 참고 사실이며 준비 판정(`ready`)을 막지 않는다.
+
+    문자는 선택 기능이다(비어 있으면 리드에 SKIPPED로 남는다). 다만 꺼져 있다는 사실이
+    Admin의 리드 한 줄로만 드러나면 모든 문의가 조용히 문자 없이 접수된다. 배포 확인에서
+    한 번에 읽히게 둔다.
+    """
+    from app.services.inquiry_sms import provider_configured  # noqa: PLC0415
+
+    problem = provider_configured()
+    return {
+        "provider": settings.INQUIRY_SMS_PROVIDER.strip().lower() or None,
+        "configured": problem is None,
+        "skip_reason": problem,
     }
 
 

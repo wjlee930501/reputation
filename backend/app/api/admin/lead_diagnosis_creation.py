@@ -14,12 +14,15 @@
 INTERNAL로 태어난다. 고객 발송 폴러가 건드리지 않는다.
 """
 
+import hashlib
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.accounts import require_active_account
@@ -34,7 +37,9 @@ from app.models.lead import (
     is_internal_inquiry,
 )
 from app.models.lead_diagnosis import DeliveryStatus, LeadDiagnosis, ReportStatus
+from app.models.operations import OperationRun, OperationRunState
 from app.services import inquiry_diagnosis
+from app.services.operation_run_keys import normalize_operation_key
 
 router = APIRouter(prefix="/admin/lead-diagnoses", tags=["Admin — Lead diagnoses"])
 
@@ -47,8 +52,9 @@ class ManualDiagnosisRequest(BaseModel):
     specialty: str = Field(min_length=1, max_length=100)
     region_keyword: str = Field(min_length=1, max_length=100)
     core_keywords: list[str] = Field(min_length=1, max_length=4)
-    # 영업 기록이므로 연락할 수단은 남긴다. 병원 대표번호도 괜찮다.
-    contact: str = Field(min_length=1, max_length=200)
+    # 영업 기록이므로 연락할 수단은 남긴다. 병원 대표번호도 괜찮다. 고쳐 만드는 경로는
+    # 리드에 원장이 남긴 연락처가 이미 있고 그 값을 덮지 않으므로 받지 않아도 된다.
+    contact: str | None = Field(default=None, min_length=1, max_length=200)
     contact_name: str | None = Field(default=None, max_length=100)
     # 기존 도입문의를 고쳐 만드는 경우에만 준다. 활성 진단이 있으면 갈음한다.
     lead_id: uuid.UUID | None = None
@@ -66,6 +72,12 @@ class ManualDiagnosisRequest(BaseModel):
         if not cleaned:
             raise ValueError("Must not be blank")
         return cleaned
+
+    @model_validator(mode="after")
+    def contact_required_for_new_lead(self) -> "ManualDiagnosisRequest":
+        if self.lead_id is None and self.contact is None:
+            raise ValueError("연락할 수단을 남겨 주세요. 병원 대표번호도 괜찮습니다.")
+        return self
 
     @field_validator("core_keywords")
     @classmethod
@@ -136,6 +148,41 @@ def _new_outbound_lead(body: ManualDiagnosisRequest, actor: str) -> SalesLead:
     )
 
 
+# 생성 영수증. 진단 한 건은 유료 공급자 호출 18회를 산다 — 같은 제출이 두 번 도착하면
+# (두 번 누름, 프록시·브라우저 재전송) 두 번째는 새로 사지 않고 첫 결과를 돌려준다.
+# 고쳐 만드는 경로라면 방금 만든 진단을 곧바로 갈음해 두 건을 모두 사게 된다.
+CREATE_OPERATION_TYPE = "CREATE_LEAD_DIAGNOSIS"
+IdempotencyKey = Annotated[
+    str | None, Header(alias="Idempotency-Key", min_length=1, max_length=255)
+]
+
+
+def _request_fingerprint(body: ManualDiagnosisRequest) -> str:
+    return hashlib.sha256(body.model_dump_json().encode()).hexdigest()
+
+
+async def _replayed_creation(
+    db: AsyncSession, actor: AdminUser, key: str, fingerprint: str
+) -> dict | None:
+    run = await db.scalar(
+        select(OperationRun).where(
+            OperationRun.operation_type == CREATE_OPERATION_TYPE,
+            OperationRun.requested_by_id == actor.id,
+            OperationRun.hospital_id.is_(None),
+            OperationRun.idempotency_key == key,
+        )
+    )
+    if run is None:
+        return None
+    payload = run.request_payload or {}
+    if payload.get("request_fingerprint") != fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail="같은 요청 키로 다른 값이 들어왔습니다. 화면을 새로 고친 뒤 다시 만들어 주세요.",
+        )
+    return {**payload["response"], "idempotent_replay": True}
+
+
 def _enqueue(diagnosis_id: str) -> None:
     """Best-effort fast path; the PENDING database drain remains the guarantee."""
     inquiry_diagnosis.enqueue_inquiry_diagnosis(diagnosis_id)
@@ -147,8 +194,15 @@ async def create_manual_diagnosis(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     actor: AdminUser = Depends(require_active_account),
+    idempotency_key: IdempotencyKey = None,
 ) -> dict:
     """콜용 노출 진단 1건을 만든다. 기존 진단이 있으면 갈음하고 보존한다."""
+    key = normalize_operation_key(idempotency_key)
+    fingerprint = _request_fingerprint(body)
+    if key is not None:
+        replay = await _replayed_creation(db, actor, key, fingerprint)
+        if replay is not None:
+            return replay
     if body.lead_id is not None:
         lead = await _load_inquiry_lead(db, body.lead_id)
         existing = await inquiry_diagnosis.active_diagnosis_for(db, lead.id)
@@ -167,6 +221,7 @@ async def create_manual_diagnosis(
                 region_keyword=body.region_keyword,
                 core_keywords=list(body.core_keywords),
                 contact_name=body.contact_name,
+                clinic_name=body.clinic_name,
             ),
             actor=actor.email,
             # 활성 진단이 없으면 갈음할 것도 없다. 사유는 그때만 넘긴다.
@@ -176,15 +231,40 @@ async def create_manual_diagnosis(
         await db.rollback()
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
-    await db.commit()
-    background_tasks.add_task(_enqueue, str(diagnosis.id))
-    return {
+    response = {
         "detail": "manual_diagnosis_queued",
         "lead_id": str(lead.id),
         "diagnosis_id": str(diagnosis.id),
         "delivery_status": DeliveryStatus.INTERNAL.value,
         "superseded_diagnosis_id": str(existing.id) if existing is not None else None,
     }
+    if key is not None:
+        now = datetime.now(timezone.utc)
+        db.add(
+            OperationRun(
+                operation_type=CREATE_OPERATION_TYPE,
+                state=OperationRunState.SUCCEEDED.value,
+                idempotency_key=key,
+                requested_by_id=actor.id,
+                request_payload={
+                    "source_id": str(diagnosis.id),
+                    "request_fingerprint": fingerprint,
+                    "response": response,
+                },
+                completed_at=now,
+            )
+        )
+    try:
+        await db.commit()
+    except IntegrityError:
+        # 같은 키의 요청이 동시에 들어와 먼저 커밋했다. 이 요청의 리드·진단은 함께 되돌려진다.
+        await db.rollback()
+        replay = await _replayed_creation(db, actor, key, fingerprint) if key else None
+        if replay is None:
+            raise
+        return replay
+    background_tasks.add_task(_enqueue, str(diagnosis.id))
+    return {**response, "idempotent_replay": False}
 
 
 def _serialize_history_row(diagnosis: LeadDiagnosis, lead: SalesLead | None) -> dict:
@@ -198,7 +278,9 @@ def _serialize_history_row(diagnosis: LeadDiagnosis, lead: SalesLead | None) -> 
     return {
         "id": str(diagnosis.id),
         "lead_id": str(diagnosis.lead_id),
-        "clinic_name": lead.clinic_name if lead else None,
+        # 판정 대상은 진단에 고정된 이름이다. 값을 고쳐 만들면 리드의 병원명이 바뀌므로,
+        # 리드에서 읽으면 갈음된 진단이 실제로 쟀던 이름 대신 새 이름을 보여준다.
+        "clinic_name": diagnosis.subject_hospital_name,
         "specialty": lead.specialty if lead else None,
         "region_keyword": diagnosis.subject_region,
         "core_keywords": list(lead.core_keywords or []) if lead else [],

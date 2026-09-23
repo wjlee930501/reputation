@@ -66,7 +66,7 @@ async def open_monthly_slot_failure(
                     "병원의 콘텐츠 스케줄에서 발행요일과 요금제가 월간 편수를 수용하는지 확인한 뒤 "
                     "다음 자동 복구 주기 결과를 확인하세요."
                 ),
-                admin_path=f"/hospitals/{hospital_id}/schedule",
+                admin_path=f"/hospitals/{hospital_id}/content",
                 hospital_id=hospital_id,
                 source_id=f"{hospital_id}:{period_key}",
                 safe_error_code="MONTHLY_SLOT_GENERATION_FAILED",

@@ -124,6 +124,12 @@ test('Task17 recovery rejects missing or invalid Idempotency-Key before backend 
       assert.equal(response.status, 400)
       assert.deepEqual(await response.json(), { error: 'Invalid Idempotency-Key' })
     }
+    // 노출 진단 생성도 키 없이는 백엔드에 닿지 않는다 — 한 번의 제출이 유료 측정을 산다.
+    const unkeyedCreate = await handleAdminApiProxy(
+      await buildAuthorizedRequest('POST', sessionPayload.csrfToken),
+      { params: Promise.resolve({ path: ['lead-diagnoses'] }) },
+    )
+    assert.equal(unkeyedCreate.status, 400)
     assert.equal(backendMutationCalled, false)
     for (const invalid of ['line\r\nbreak', 'tab\tkey', 'unsafe key', ' 앞공백', '한글키']) {
       assert.deepEqual(validateAdminIdempotencyKey(invalid), { valid: false })

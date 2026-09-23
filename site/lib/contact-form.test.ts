@@ -61,3 +61,11 @@ test('contact form derives source_path from pathname via inquirySourcePath', () 
     'source_path must not be hardcoded to /#contact',
   )
 })
+
+test('contact form keeps a real honeypot field and submits what a bot typed into it', () => {
+  // 이 폼의 제출은 유료 초도 진단과 안내 문자를 일으킨다. honeypot을 상수 ''로 보내면
+  // 서버 쪽 함정(leads-route.ts·backend public/leads.py)이 영원히 걸리지 않는다.
+  assert.match(source, /name="website"/)
+  assert.match(source, /body\.set\('website', honeypot\.current\?\.value \?\? ''\)/)
+  assert.doesNotMatch(source, /body\.set\('website', ''\)/)
+})

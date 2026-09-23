@@ -50,6 +50,14 @@ function isLeadRecoveryPath(path: string): boolean {
   )
 }
 
+/**
+ * 노출 진단 생성은 유료 공급자 호출을 산다. 같은 제출이 두 번 도착해도 한 번만 사도록
+ * 백엔드가 키로 첫 결과를 돌려주는데, 키 없이 오면 그 방어선이 없다.
+ */
+function isLeadDiagnosisCreatePath(path: string): boolean {
+  return path === 'lead-diagnoses'
+}
+
 type AdminApiProxyContext = {
   params: Promise<{ path: string[] }>
 }
@@ -127,7 +135,9 @@ export async function handleAdminApiProxy(
   )
   if (
     !idempotency.valid ||
-    (isWriteMethod && isLeadRecoveryPath(path) && idempotency.value === null)
+    (isWriteMethod &&
+      (isLeadRecoveryPath(path) || (req.method === 'POST' && isLeadDiagnosisCreatePath(path))) &&
+      idempotency.value === null)
   ) {
     return jsonNoStore({ error: 'Invalid Idempotency-Key' }, { status: 400 })
   }

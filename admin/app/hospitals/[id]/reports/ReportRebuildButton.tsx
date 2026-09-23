@@ -27,7 +27,7 @@ export function ReportRebuildButton({
   const plan = reportRebuildPlan({
     periodYear: report.periodYear,
     periodMonth: report.periodMonth,
-    deliveryTracked: report.deliveryTracked,
+    initialReport: report.isInitialReport,
     delivered: isEffectivelyDelivered(report),
   })
 

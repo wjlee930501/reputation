@@ -562,3 +562,53 @@ class TestExecutionRecovery:
         ).scalar_one()
         assert row.execution_status == ExecutionStatus.FAILED.value
         assert row.execution_attempts == leadgen_tasks.MAX_EXECUTION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("superseded", [False, True])
+async def test_a_run_superseded_midway_does_not_open_an_unclosable_incident(
+    pg_async_session, monkeypatch, superseded
+):
+    """측정 중에 AE가 값을 고쳐 갈음하면, 그 뒤 끝난 실패는 닫을 주체가 없다.
+
+    갈음 트랜잭션은 그 시점에 열려 있던 인시던트만 닫는다. 늦게 끝난 실행이 새로 여는
+    인시던트는 폴러도 복구 버튼도 다시 보지 않아 운영자 큐에 영원히 남는다.
+    """
+    diagnosis = await _seed(
+        pg_async_session, execution_attempts=leadgen_tasks.MAX_EXECUTION_ATTEMPTS - 1
+    )
+    diagnosis_id = diagnosis.id
+
+    async def fake_measure(_session, diag):
+        diag.execution_status = ExecutionStatus.FAILED.value
+        diag.finished_at = datetime.now(timezone.utc)
+        diag.running_since = None
+        if superseded:
+            # 다른 세션(Admin)의 갈음이 실행 도중 커밋된 상황.
+            diag.superseded_at = datetime.now(timezone.utc)
+        await _session.commit()
+        return {"planned": 18, "succeeded": 0, "confirmed": 0, "status": diag.execution_status}
+
+    opened: list[str] = []
+
+    async def capture(**kwargs):
+        opened.append(kwargs["incident_type"])
+        return uuid.uuid4()
+
+    class _Ctx:
+        async def __aenter__(self):
+            return pg_async_session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        leadgen_tasks.lead_diagnosis_engine, "run_diagnosis_measurements", fake_measure
+    )
+    monkeypatch.setattr(leadgen_tasks, "get_async_sessionmaker", lambda: _Ctx)
+    monkeypatch.setattr(leadgen_tasks.lead_diagnosis_engine, "get_async_sessionmaker", lambda: _Ctx)
+    monkeypatch.setattr(leadgen_tasks, "open_ops_incident", capture)
+
+    await leadgen_tasks._run_lead_diagnosis(str(diagnosis_id))
+
+    assert opened == ([] if superseded else ["LEAD_DIAGNOSIS_FAILED"])

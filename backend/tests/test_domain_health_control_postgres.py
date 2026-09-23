@@ -207,7 +207,7 @@ async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
             assert len(incidents) == 1
             assert incidents[0].state == IncidentState.RECOVERED.value
             assert incidents[0].occurrence_count == 3
-            assert incidents[0].admin_path == f"/hospitals/{hospital_id}/onboarding"
+            assert incidents[0].admin_path == f"/hospitals/{hospital_id}/info"
             assert run_count == 8
             assert outbox_count == 1
     finally:

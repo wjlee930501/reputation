@@ -20,7 +20,7 @@ import {
 } from '@/lib/lead-list'
 import { safeCauseText } from '@/lib/operations-center'
 import { CorrectDiagnosisDialog } from './CorrectDiagnosisDialog'
-import type { ManualDiagnosisValues } from '@/lib/manual-diagnosis'
+import { manualDiagnosisRefusal, type ManualDiagnosisValues } from '@/lib/manual-diagnosis'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -208,6 +208,7 @@ export default function LeadsPage() {
   const [internalDiagnosisError, setInternalDiagnosisError] = useState<string | null>(null)
   // 값이 틀린 채로 측정이 끝난 진단을 고쳐 다시 만드는 창. 진단 생성(내부용)과 다른 경로다.
   const [correctTarget, setCorrectTarget] = useState<SalesLead | null>(null)
+  const correctKey = useRef<string | null>(null)
   const [correctSubmitting, setCorrectSubmitting] = useState(false)
   const [correctError, setCorrectError] = useState<string | null>(null)
   const internalDiagnosisDialogRef = useRef<HTMLDivElement>(null)
@@ -357,6 +358,8 @@ export default function LeadsPage() {
   }
 
   function openCorrectDiagnosis(lead: SalesLead) {
+    // 창 하나에 키 하나 — 응답이 유실돼 다시 눌러도 방금 만든 진단을 또 갈음하지 않는다.
+    correctKey.current = crypto.randomUUID()
     setCorrectTarget(lead)
     setCorrectError(null)
     setActionNotice(null)
@@ -369,6 +372,7 @@ export default function LeadsPage() {
     try {
       await fetchAPI('/admin/lead-diagnoses', {
         method: 'POST',
+        headers: correctKey.current ? { 'Idempotency-Key': correctKey.current } : undefined,
         body: JSON.stringify(payload),
       })
       setCorrectTarget(null)
@@ -379,7 +383,9 @@ export default function LeadsPage() {
     } catch (caught) {
       // 서버가 알려주는 거절 사유(병원명 혼입, 고객 발송 이력 등)는 운영자가 고칠 수 있다.
       const detail =
-        caught instanceof ApiError && typeof caught.detail === 'string' ? caught.detail : null
+        caught instanceof ApiError
+          ? manualDiagnosisRefusal(caught.detail, caught.status, caught.message)
+          : null
       setCorrectError(
         detail ?? safeOperatorError('leads', '입력값을 확인하고 다시 시도해 주세요.'),
       )

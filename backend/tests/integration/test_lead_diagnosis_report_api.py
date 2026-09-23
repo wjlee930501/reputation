@@ -496,6 +496,70 @@ class TestAdminTerminalRecovery:
             )
         assert unsafe.value.status_code == 409
 
+    @pytest.mark.parametrize("axis", ["remeasure", "rebuild"])
+    async def test_a_superseded_diagnosis_is_refused_before_any_run_is_created(
+        self, pg_async_session, monkeypatch, axis
+    ):
+        # Given: 값을 고쳐 다시 만든 뒤 기록으로만 남은 진단. 워커 claim은 이 행을
+        # 집지 않으므로, HTTP가 받아 주면 복구 실패 인시던트가 운영자 큐에 열린다.
+        if axis == "remeasure":
+            diagnosis, _ = await _seed(
+                pg_async_session,
+                execution_status=ExecutionStatus.FAILED.value,
+                report_status=ReportStatus.BLOCKED.value,
+                with_artifact=False,
+            )
+            diagnosis.execution_attempts = 3
+        else:
+            diagnosis, _ = await _seed(pg_async_session, report_status=ReportStatus.READY.value)
+        diagnosis.delivery_status = DeliveryStatus.INTERNAL.value
+        diagnosis.superseded_at = datetime.now(timezone.utc)
+        actor = AdminUser(
+            email=f"owner-{uuid.uuid4()}@example.com",
+            name="복구 담당자",
+            role=ROLE_OWNER,
+            password_hash="not-used",
+            is_active=True,
+        )
+        pg_async_session.add(actor)
+        await pg_async_session.flush()
+        dispatches = 0
+
+        def fake_apply_async(**_kwargs):
+            nonlocal dispatches
+            dispatches += 1
+            return _QueuedTask()
+
+        for task in (
+            recovery_commands.recover_lead_diagnosis_measurement,
+            recovery_commands.recover_lead_diagnosis_report,
+        ):
+            monkeypatch.setattr(task, "apply_async", fake_apply_async)
+        endpoint = (
+            recovery_api.remeasure_lead_diagnosis
+            if axis == "remeasure"
+            else recovery_api.rebuild_lead_diagnosis_report
+        )
+
+        # When: 오래 열어 둔 화면에서 복구를 누른다.
+        with pytest.raises(HTTPException) as refused:
+            await endpoint(
+                diagnosis.lead_id,
+                diagnosis.id,
+                recovery_api.LeadRecoveryRequest(reason="오래된 화면에서 다시 실행"),
+                f"superseded-{axis}",
+                pg_async_session,
+                actor,
+            )
+
+        # Then: 409로 거절되고 작업·인시던트가 생기지 않는다.
+        assert refused.value.status_code == 409
+        assert dispatches == 0
+        runs = (await pg_async_session.execute(select(OperationRun))).scalars().all()
+        assert not [
+            run for run in runs if run.request_payload.get("source_id") == str(diagnosis.id)
+        ]
+
 
 @pytest.fixture(autouse=True)
 def report_storage_root(tmp_path, monkeypatch):

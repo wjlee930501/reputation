@@ -11,7 +11,11 @@ from html import unescape
 from urllib.parse import urljoin, urlsplit
 
 from app.models.operations import JSONValue
-from app.services.incident_safety import normalize_incident_code, sanitize_operator_text
+from app.services.incident_safety import (
+    current_admin_path,
+    normalize_incident_code,
+    sanitize_operator_text,
+)
 from app.services.incident_types import notification_channel_for_incident_type
 from app.services.notification_contracts import (
     IncidentSlackProjection,
@@ -224,6 +228,9 @@ def _admin_url(base_url: str, path: str) -> str:
     ):
         raise NotificationPayloadError("ADMIN_URL_INVALID")
     validate_admin_url(base_url)
+    # 옛 병원 화면 경로로 저장된 인시던트의 Slack 링크도 지금의 탭을 가리킨다.
+    if not path_parts.query and not path_parts.fragment:
+        path = current_admin_path(path)
     return urljoin(f"{base_url.rstrip('/')}/", path.lstrip("/"))
 
 

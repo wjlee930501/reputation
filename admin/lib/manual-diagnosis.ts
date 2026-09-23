@@ -105,7 +105,8 @@ export type ManualDiagnosisPayload = {
   specialty: string
   region_keyword: string
   core_keywords: string[]
-  contact: string
+  /** 고쳐 만드는 경로에서는 보내지 않는다 — 원장이 남긴 연락처를 덮지 않는다. */
+  contact?: string
   contact_name?: string
   lead_id?: string
   reason: string
@@ -121,9 +122,29 @@ export function toManualDiagnosisPayload(
     specialty: values.specialty.trim(),
     region_keyword: values.regionKeyword.trim(),
     core_keywords: parseKeywords(values.coreKeywords),
-    contact: values.contact.trim(),
+    ...(leadId ? {} : { contact: values.contact.trim() }),
     ...(contactName ? { contact_name: contactName } : {}),
     ...(leadId ? { lead_id: leadId } : {}),
     reason: values.reason.trim(),
   }
+}
+
+/**
+ * 서버가 알려준 거절 사유 중 운영자가 고칠 수 있는 것만 꺼낸다.
+ *
+ * 갈음 거절(409)은 `{message, diagnosis_id}` 객체로, 입력 검증(422)은 배열로 온다.
+ * 문자열만 보면 둘 다 일반 안내로 떨어져 AE가 무엇을 고쳐야 하는지 모른다.
+ */
+export function manualDiagnosisRefusal(
+  detail: unknown,
+  status: number,
+  message: string,
+): string | null {
+  if (typeof detail === 'string' && detail.trim()) return detail
+  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
+    const text = (detail as { message?: unknown }).message
+    if (typeof text === 'string' && text.trim()) return text
+  }
+  if (status === 422 && message.trim()) return message
+  return null
 }
