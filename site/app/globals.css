@@ -935,20 +935,28 @@ summary:focus-visible {
 }
 
 /* **카드 높이를 고정한다.** 단계가 저절로 순환하므로, 답이 찼다 비었다 할 때마다
-   카드가 자라고 줄면 옆 문장과 아래 섹션이 계속 들썩인다. 가장 큰 단계(목록 셋 +
-   출처 + 자리 한 줄)에 맞춰 두고 그 안에서 내용만 바뀌게 한다.
-   스크롤로 넘길 때는 카드가 자라는 게 자연스러웠지만, 반복되는 순환에서는 아니다. */
-.scene {
-  /* 실측: 가장 큰 단계가 458px이다. 27.5rem(440px)으로 뒀더니 순환할 때마다 18px씩
-     들썩였다. 넉넉히 잡아 어느 단계에서도 높이가 변하지 않게 한다. */
-  min-height: 29rem;
+   카드가 자라고 줄면 옆 문장과 아래 섹션이 계속 들썩인다. 앞 버전은 29rem 고정값으로
+   막았는데, 가장 큰 단계가 폭에 따라 그보다 커져(1197px에서 490px) 순환마다 26px씩
+   들썩였다. 이제 가장 큰 단계를 보이지 않게 같은 칸에 겹쳐 두어(`.scene-ghost`)
+   카드가 늘 그 높이를 차지한다. */
+.scene-frame {
+  flex: 1;
+  display: grid;
 }
 
-@media (max-width: 560px) {
-  /* 좁은 화면은 줄바꿈이 늘어 같은 내용도 더 높다. 고정 높이가 오히려 여백을 만든다. */
-  .scene {
-    min-height: 0;
-  }
+.scene-frame > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+
+.scene-body {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.scene-ghost {
+  visibility: hidden;
 }
 
 /* ─── 환자가 AI에 묻는 장면 ─────────────────────────────────────
@@ -1274,14 +1282,6 @@ summary:focus-visible {
   min-width: 0;
 }
 
-.dx-platform-name em {
-  font-style: normal;
-  font-size: 0.75rem;
-  font-weight: 400;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
 .dx-logo {
   width: 15px;
   height: 15px;
@@ -1510,8 +1510,7 @@ summary:focus-visible {
   vertical-align: baseline;
   /* 로고 양옆 숨쉴 틈. 앞뒤가 한글 조사("환자들은", "에 병원을")라 글자가 로고에
      바로 붙어 답답하게 읽혔다 — 로고는 워드마크라 자간이 조밀해서 더 그렇다.
-     **창(`.rolling-ai-window`)이 아니라 바깥 래퍼에 준다.** 창 폭은 JS가 현재 칸을
-     재서 `--rolling-w`로 넣으므로, 창에 여백을 주면 그 계산과 어긋나 슬롯이 흔들린다. */
+     창(`.rolling-ai-window`)이 아니라 바깥 래퍼에 준다 — 창은 칸 폭만 담는다. */
   margin-inline: 0.22em;
 }
 
@@ -1522,18 +1521,14 @@ summary:focus-visible {
   display: inline-block;
   overflow: hidden;
   height: var(--rolling-line);
-  /* 폭도 현재 칸을 따라간다. `auto`면 가장 넓은 칸(ChatGPT)에 고정돼, 짧은 Gemini가
-     올라왔을 때 문장 한가운데 빈칸이 남는다("…✦ Gemini␣␣␣에 병원을…").
-     JS가 재기 전에는 auto — 0으로 시작하면 슬롯이 아예 사라진다. */
-  width: var(--rolling-w, auto);
-  transition: width 0.62s var(--ease-enter);
+  /* **폭은 가장 넓은 칸(ChatGPT)에 고정한다.** 앞 버전은 창 폭이 현재 칸을 따라
+     움직였는데, 그러면 로고가 바뀔 때마다 뒤 문장("에 병원을 묻습니다")이 좌우로
+     30px 넘게 밀리고, 좁은 화면에서는 줄바꿈 위치까지 바뀌어 제목 높이가 28px씩
+     튀었다 — 히어로 아래 전체가 2.8초마다 위아래로 흔들린 것이다.
+     짧은 칸이 남기는 여백은 아래 `.rolling-ai-track`의 가운데 정렬로 로고 **양옆에
+     반씩** 나눈다. 한쪽에 몰면 그쪽 띄어쓰기만 눈에 띄게 벌어진다. */
+  width: auto;
   vertical-align: -0.2em;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .rolling-ai-window {
-    transition: none;
-  }
 }
 
 /* 미는 거리는 **한 칸 높이 × 인덱스**다.
@@ -1543,9 +1538,8 @@ summary:focus-visible {
 .rolling-ai-track {
   display: flex;
   flex-direction: column;
-  /* 세로 플렉스의 기본값 `stretch`는 칸을 **가장 넓은 칸 폭**으로 늘린다. 그러면
-     칸을 재도 전부 같은 값이 나와 창 폭을 따라가게 만들 수 없다. 내용 폭으로 둔다. */
-  align-items: flex-start;
+  /* 트랙 폭 = 가장 넓은 칸. 짧은 칸은 그 가운데에 세워 여백을 앞뒤로 나눈다. */
+  align-items: center;
   transform: translateY(calc(var(--rolling-i, 0) * -1 * var(--rolling-line)));
   transition: transform 0.62s var(--ease-enter);
 }
@@ -1603,13 +1597,6 @@ summary:focus-visible {
 
 /* ─── 수치 카드 (외부 조사) ───────────────────────────────────
    숫자는 ink로 둔다. 자체 실측만 accent를 쓰므로, 색이 곧 출처의 구분이 된다. */
-.market-section {
-  max-width: var(--shell-max);
-  margin: 0 auto;
-  padding: var(--section-pad) clamp(20px, 5vw, 40px);
-  border-top: 1px solid var(--line);
-}
-
 /* 우리가 직접 잰 숫자만 파랑이다 — 색이 곧 출처의 구분이다. */
 .figure-card.is-measured dt {
   color: var(--accent);
@@ -1819,6 +1806,119 @@ summary:focus-visible {
   color: rgba(255, 255, 255, 0.78);
 }
 
+/* ─── 도입문의 폼 (CTA 딥블루 면 위) ─── */
+.inquiry-panel {
+  margin: 32px auto 0;
+  max-width: 28rem;
+  text-align: left;
+}
+
+.inquiry-form {
+  display: grid;
+  gap: 16px;
+}
+
+.inquiry-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.inquiry-field input,
+.inquiry-field textarea {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--accent-deep, #00437f);
+  background: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+}
+
+.inquiry-field textarea {
+  min-height: 110px;
+  resize: vertical;
+}
+
+.inquiry-field input[aria-invalid='true'],
+.inquiry-field textarea[aria-invalid='true'] {
+  border-color: #ffb4b4;
+}
+
+.inquiry-hint {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.72);
+  word-break: keep-all;
+}
+
+.inquiry-consent label {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.inquiry-consent input {
+  margin-top: 3px;
+  width: auto;
+  min-height: auto;
+}
+
+.inquiry-consent span {
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.inquiry-consent a {
+  color: #ffffff;
+  text-decoration: underline;
+}
+
+.inquiry-error {
+  margin: 6px 0 0;
+  font-size: 0.8125rem;
+  color: #ffd0d0;
+}
+
+.inquiry-error-block {
+  padding: 10px 12px;
+  background: rgba(255, 80, 80, 0.18);
+  border-radius: 8px;
+}
+
+.inquiry-submit {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.inquiry-done {
+  padding: 24px 20px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  text-align: center;
+}
+
+.inquiry-done h3 {
+  margin: 0 0 10px;
+  font-size: 1.25rem;
+  color: #ffffff;
+}
+
+.inquiry-done p {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.82);
+}
+
 /* ─── Footer ─── */
 .site-footer {
   max-width: var(--shell-max);
@@ -1940,33 +2040,6 @@ summary:focus-visible {
   font-size: 1rem;
   line-height: 1.7;
   color: var(--text);
-}
-
-/* ─── 측정 범위 ─────────────────────────────────────────────── */
-.share-block {
-  margin-top: clamp(40px, 6vh, 64px);
-  padding-top: clamp(32px, 5vh, 48px);
-  border-top: 1px solid var(--line);
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: clamp(28px, 5vw, 64px);
-  align-items: start;
-}
-
-.share-nudge {
-  margin: 0;
-  font-size: 1.0625rem;
-  line-height: 1.55;
-  letter-spacing: -0.015em;
-  color: var(--ink);
-  font-weight: 600;
-}
-
-.share-source {
-  margin: 0;
-  font-size: 0.875rem;
-  line-height: 1.55;
-  color: var(--muted);
 }
 
 /* ─── 자주 받는 질문 ────────────────────────────────────────── */
@@ -2098,11 +2171,6 @@ summary:focus-visible {
   .pain-list li:first-child {
     padding-top: 0;
     border-top: 0;
-  }
-
-  .share-block {
-    grid-template-columns: 1fr;
-    gap: 28px;
   }
 
   .share-row {
@@ -9243,43 +9311,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   text-wrap: balance;
 }
 
-/* 파라미터 — 사라지지 않되 헤드라인을 차지하지 않는다. */
-.instrument-spec {
-  margin: 14px 0 0;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  font-size: 0.8125rem;
-  line-height: 1.6;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.instrument-spec span {
-  position: relative;
-  padding-left: 15px;
-}
-
-/* 항목 사이 구분점. 문자를 쓰지 않는 이유는 스크린리더가 읽어 버리기 때문이다. */
-.instrument-spec span::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 0.62em;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--line-strong);
-}
-
-/* 방법론을 공개하는 목적. 파라미터보다 이 문장이 실제로 파는 것이다. */
-.instrument-repro {
-  margin: 10px 0 0;
-  font-size: 0.875rem;
-  line-height: 1.6;
-  color: var(--text);
-}
-
 .instrument-result {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: clamp(24px, 4vw, 56px);
@@ -9335,25 +9366,9 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
 }
 
 @media (max-width: 820px) {
-  /* 좁은 화면에서 두 판을 나란히 두면 규약 값이 줄바꿈으로 부서진다. */
+  /* 좁은 화면에서는 문장 판과 숫자 판을 위아래로 쌓는다. */
   .instrument {
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  /* 각 항목을 제 줄에 세운다. `flex-wrap`으로 두면 폰트가 폴백 → Pretendard로
-     바뀌는 순간 줄 수가 달라지고, 세로 배치인 모바일에서는 그 아래 전체가 밀린다.
-     실제로 이것 때문에 모바일 CLS가 0.011 → 0.060으로 뛰었다. */
-  .instrument-spec {
-    display: grid;
-    gap: 2px;
-  }
-
-  .instrument-spec span {
-    padding-left: 0;
-  }
-
-  .instrument-spec span::before {
-    content: none;
   }
 
   .instrument-result {
@@ -9439,148 +9454,6 @@ a.clinic-tx-index-row:hover .clinic-tx-index-name {
   font-size: 1rem;
   line-height: 1.6;
   color: var(--ink-2);
-}
-
-/* ── 우리가 서 있는 자리 (퍼널) ──────────────────────────────────────
-   대체재가 아니라 상류 보완재임을 그림으로 말한다. 파랑은 한 칸에만 —
-   이 페이지에서 파랑은 "우리가 만들고 재는 것"이고, 나머지 칸은 우리 몫이 아니다.
-   그림 자체가 한계 고백이 되도록 색을 아낀다. */
-/* **틴트 면이다.** market·funnel·operation이 전부 흰색이라 1,913px가 한 덩어리로
-   이어졌다. 가운데를 틴트로 바꾸면 흰-틴트-흰이 되어 세 마디가 셋으로 보인다.
-   풀블리드로 까는 이유는 다른 틴트 섹션(scene·report)이 전부 풀블리드이기 때문이다 —
-   여기만 1,280에서 띠가 끊기면 혼자 다른 규칙으로 보인다. */
-.funnel-section {
-  background: var(--tint);
-  border-top: 1px solid var(--tint-line);
-  border-bottom: 1px solid var(--tint-line);
-  padding: var(--section-pad) clamp(20px, 5vw, 40px);
-}
-
-.funnel-section > * {
-  max-width: var(--shell-inner);
-  margin-left: auto;
-  margin-right: auto;
-}
-
-/* ── 답변 한 건의 자리 ────────────────────────────────────────────────
-   퍼널 5칸(`AI 답변에 언급 → … → 내원`)을 대체한다. 그 그림은 우리 위치를
-   설명했지만, 섹션 논조가 시점으로 바뀐 뒤에는 문장과 그림이 다른 말을 했다 —
-   문장은 자리가 유한하다 하고 그림은 단계가 이어진다고 했다.
-
-   지금 그림은 실측값을 그대로 그린다. 세 칸에는 이름이 있고 마지막 칸만 파랑이다 —
-   이 페이지에서 파랑은 "우리 몫"이고, 그 칸은 단정이 아니라 물음표다. */
-.slot-chart {
-  margin-top: clamp(28px, 4vh, 44px);
-}
-
-.slot-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  counter-reset: slot;
-}
-
-.slot-row li {
-  display: grid;
-  gap: 10px;
-  align-content: start;
-  padding: 20px 18px 22px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-card);
-  background: #ffffff;
-}
-
-/* 우리 칸. 채우되 진하게 하지 않는다 — 단정이 아니라 질문이기 때문이다.
-   점선은 "아직 정해지지 않았다"를 선 하나로 말한다. */
-.slot-row li[data-ours="yes"] {
-  border: 1px dashed var(--accent);
-  background: var(--accent-weak);
-}
-
-.slot-index {
-  font-size: 0.75rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.slot-row li[data-ours="yes"] .slot-index {
-  color: var(--accent);
-}
-
-.slot-name {
-  font-size: 1rem;
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  line-height: 1.45;
-  color: var(--ink-2);
-}
-
-.slot-row li[data-ours="yes"] .slot-name {
-  color: var(--accent-dark);
-}
-
-.slot-caption {
-  margin: 14px 0 0;
-  font-size: 0.875rem;
-  line-height: 1.5;
-  color: var(--muted);
-}
-
-.slot-legend {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 24px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--line);
-}
-
-.slot-legend p {
-  margin: 0;
-  font-size: 0.875rem;
-  line-height: 1.5;
-}
-
-.slot-legend-ours {
-  font-weight: 600;
-  color: var(--accent);
-}
-
-.slot-legend-rest {
-  color: var(--muted);
-}
-
-.slot-caveat {
-  margin: 14px 0 0;
-  max-width: var(--prose-max);
-  font-size: 0.9375rem;
-  line-height: 1.6;
-  color: var(--text);
-}
-
-@media (max-width: 760px) {
-  /* 네 칸을 한 줄에 두면 병원명이 글자마다 줄바꿈된다. 두 줄로 접는다. */
-  .slot-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .slot-legend {
-    grid-template-columns: minmax(0, 1fr);
-  }
-}
-
-
-/* 우리 칸. 채우되 진하게 하지 않는다 — 이 칸은 퍼널의 끝이 아니라 시작이다. */
-
-/* 칸 사이 진행 방향. 첫 칸 앞에는 붙지 않는다. */
-
-@media (max-width: 760px) {
-  /* 다섯 칸을 가로로 두면 글자가 부서진다. 세로로 세우고 화살표를 아래로 돌린다. */
 }
 
 /* ── 요금제 ──────────────────────────────────────────────────────────

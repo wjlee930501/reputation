@@ -44,18 +44,39 @@ const devLocalImgSrc = isDev ? ' http://localhost:8000 http://127.0.0.1:8000' : 
 // eval을 쓰지 않으므로 이 완화는 프로덕션에 영향이 없다.
 const devUnsafeEval = isDev ? " 'unsafe-eval'" : ''
 
+// GA4(gtag.js) 출처 — Google이 공개한 필요 출처 그대로다.
+// 이걸 빠뜨리면 계측 코드가 있어도 **스크립트 로드 자체가 CSP에 막혀** 이벤트가 한 건도
+// 나가지 않는다. 화면에는 아무 증상이 없고 콘솔에만 남으므로 놓치기 쉽다.
+const GA_SCRIPT_SRC = 'https://*.googletagmanager.com'
+const GA_CONNECT_SRC =
+  'https://*.google-analytics.com https://*.analytics.google.com https://*.googletagmanager.com'
+
+// OpenAI 전환 픽셀(oaiq) 출처 — SDK는 CDN에서 받고, 이벤트는 수집 엔드포인트로 보낸다.
+// 픽셀별 설정 조회가 CDN으로도 나가므로 connect-src에 둘 다 필요하다.
+const OPENAI_PIXEL_SCRIPT_SRC = 'https://bzrcdn.openai.com'
+const OPENAI_PIXEL_CONNECT_SRC = 'https://bzr.openai.com https://bzrcdn.openai.com'
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "object-src 'none'",
-  `script-src 'self' 'unsafe-inline'${devUnsafeEval}`,
+  `script-src 'self' 'unsafe-inline' ${GA_SCRIPT_SRC} ${OPENAI_PIXEL_SCRIPT_SRC}${devUnsafeEval}`,
   "style-src 'self' 'unsafe-inline'",
+  // img-src는 이미 https: 전체를 허용하므로 GA·픽셀의 이미지 폴백은 따로 적지 않는다.
   `img-src 'self' data: blob: https:${devLocalImgSrc}`,
   "font-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self' ${GA_CONNECT_SRC} ${OPENAI_PIXEL_CONNECT_SRC}`,
 ].join('; ')
+
+// 소개서 문서(`/brochure/doc`)만 같은 출처의 iframe 임베드를 허용한다. 나머지 경로는
+// 그대로 `frame-ancestors 'none'` + `X-Frame-Options: DENY`다. Next는 같은 키가 여러 규칙에
+// 걸리면 **뒤에 선언한 값**을 쓰므로, 아래 headers()에서 이 규칙을 전역 규칙 뒤에 둔다.
+const brochureFrameHeaders = [
+  { key: 'Content-Security-Policy', value: contentSecurityPolicy.replace("frame-ancestors 'none'", "frame-ancestors 'self'") },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+]
 
 const securityHeaders = [
   { key: 'Content-Security-Policy', value: contentSecurityPolicy },
@@ -77,6 +98,10 @@ const nextConfig = {
   // Cloud Run 컨테이너 배포용 — .next/standalone에 self-contained 서버 번들 생성.
   output: 'standalone',
   outputFileTracingRoot: appDir,
+  // 소개서 원본은 라우트가 런타임에 파일로 읽는다 — standalone 번들에 함께 실어야 한다.
+  outputFileTracingIncludes: {
+    '/brochure/doc': ['./content/brochure/**/*'],
+  },
   images: {
     formats: ['image/avif', 'image/webp'],
     qualities: [75, 84],
@@ -88,11 +113,21 @@ const nextConfig = {
       ...backendImageHosts,
     ],
   },
+  // 무료 진단 셀프 신청 화면은 닫았다. 진단 리포트는 도입문의 뒤 담당 마케터가 만들어
+  // 연락과 함께 전달한다. 광고·북마크로 들어오는 방문은 도입문의로 보낸다(쿼리는 유지된다).
+  // 기존 신청자의 결과 확인 경로(/ai-diagnosis/status/…)는 이 규칙에 걸리지 않는다.
+  async redirects() {
+    return [{ source: '/ai-diagnosis', destination: '/contact', permanent: false }]
+  },
   async headers() {
     return [
       {
         source: '/:path*',
         headers: securityHeaders,
+      },
+      {
+        source: '/brochure/doc',
+        headers: brochureFrameHeaders,
       },
     ]
   },

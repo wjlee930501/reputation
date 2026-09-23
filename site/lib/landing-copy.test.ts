@@ -8,20 +8,19 @@ import {
   ctaSection,
   faqItems,
   faqSection,
-  funnelSection,
-
   pricingSection,
   landingHero,
   limitItems,
   limitsSection,
-  marketSection,
+  exposureGradeIndex,
+  exposureGrades,
+  instrumentSection,
+  localSection,
   measuredFigures,
-  measurementSpec,
   operationSection,
   operationSteps,
   painPoints,
   painSection,
-  platformShareSection,
   previewSection,
   sceneSection,
 } from './landing-copy.ts'
@@ -32,8 +31,6 @@ const ALL_COPY = [
   landingHero.titleMain,
   landingHero.subcopy,
   landingHero.primaryCta,
-  marketSection.label,
-  marketSection.heading,
   sceneSection.label,
   sceneSection.heading,
   sceneSection.askLine,
@@ -49,9 +46,17 @@ const ALL_COPY = [
   ...ctaSection.notes,
   painSection.label,
   painSection.heading,
+  painSection.punchline,
   ...painPoints.flatMap((p) => [p.quote, p.answer]),
-  platformShareSection.nudge,
-  platformShareSection.sourceNote,
+  instrumentSection.label,
+  instrumentSection.lead,
+  localSection.label,
+  localSection.heading,
+  ...Object.values(localSection.legend),
+  localSection.ours,
+  localSection.mapNote,
+  ...localSection.points.flatMap((p) => [p.title, p.body]),
+  localSection.caveat,
   faqSection.label,
   faqSection.heading,
   pricingSection.label,
@@ -59,30 +64,21 @@ const ALL_COPY = [
   pricingSection.note,
   pricingSection.management,
   ...pricingSection.plans.flatMap((p) => [p.name, p.price, p.note]),
-
-
-
-  funnelSection.label,
-  funnelSection.heading,
-  funnelSection.body,
-  funnelSection.oursNote,
-  funnelSection.restNote,
-  funnelSection.caveat,
-  ...funnelSection.slots.map((s) => s.name),
-  funnelSection.slotsCaption,
   previewSection.label,
   previewSection.heading,
+  previewSection.note,
   previewSection.includesLabel,
   ...previewSection.includes,
+  previewSection.gradeLabel,
+  previewSection.explainLabel,
+  previewSection.explain,
+  ...exposureGrades.map((g) => g.label),
   ...faqItems.flatMap((f) => [f.question, f.answer]),
   ...measuredFigures.flatMap((f) => [f.value, f.label, f.meaning, f.source]),
-  measurementSpec.premise,
-  measurementSpec.headline,
-  measurementSpec.spec,
-  measurementSpec.condition,
-  measurementSpec.reproducibility,
-  ...operationSteps.flatMap((s) => [s.label, s.title, s.body]),
-  ...limitItems.flatMap((l) => [l.title, l.body]),
+  ...operationSteps.flatMap((s) => [s.label, s.title, s.body, s.output]),
+  limitsSection.noLabel,
+  limitsSection.keepLabel,
+  ...limitItems.flatMap((l) => [l.title, l.body, l.keep]),
   answerDemo.disclaimer,
   ...answerExamples.flatMap((e) => [
     e.tag,
@@ -174,13 +170,14 @@ test('the page states explicitly what it does not do', () => {
    * 문구를 그대로 검사하지 않는다 — 카피를 다듬을 때마다 테스트가 깨지고, 정작
    * **무엇을 못 한다고 밝혔는가**는 검사하지 못한다. 항목의 존재와 부정 의미만 본다.
    */
-  const limitText = limitItems.map((l) => `${l.title} ${l.body}`).join(' ')
+  const limitText = limitItems.map((l) => `${l.title} ${l.body} ${l.keep}`).join(' ')
   assert.ok(limitItems.length >= 3)
   // 이 둘은 반드시 '못 하는 것'으로 밝혀야 한다.
   assert.match(limitText, /순위/)
   assert.match(limitText, /환자 수|내원/)
   // 각 항목이 실제로 부정·한계를 말하고 있는가.
   for (const item of limitItems) {
+    assert.ok(item.keep.length > 0, `"${item.title}"에 대신 지키는 것이 없습니다.`)
     assert.match(
       `${item.title} ${item.body}`,
       /(않습니다|아닙니다|없습니다|못|밖입니다|걸러냅니다|확인합니다)/,
@@ -233,13 +230,6 @@ test('every figure in the evidence band declares whose number it is', () => {
       )
     }
   }
-})
-
-test('the evidence band still carries at least one thing we can point at', () => {
-  // 전부 인용값이 되면 계기판은 남의 자료 모음이 된다. 왼쪽 판(측정 규약)이 우리 몫을
-  // 들고 있어야 하고, 그 규약은 백엔드 계약과 묶여 있다(아래 규약 테스트가 잡는다).
-  assert.ok(measurementSpec.spec.length > 0)
-  assert.ok(measurementSpec.reproducibility.length > 0)
 })
 
 test('measured figures quote only the models we actually run', () => {
@@ -296,7 +286,7 @@ test('every specialty answer example stays a safe placeholder example', () => {
 test('post-publication human review copy matches the sampling policy', () => {
   const reviewCopy = [
     ...operationSteps.map((s) => s.body),
-    ...limitItems.map((l) => l.body),
+    ...limitItems.flatMap((l) => [l.body, l.keep]),
     ...faqItems.map((f) => f.answer),
   ].join(' ')
 
@@ -382,7 +372,7 @@ test('every pricing tier includes direct MotionLabs marketer management', () => 
   )
   // 전담 관리 문구는 표 아래 한 줄이다 — 세 카드가 같은 문장을 하나씩 들고 있으면
   // 카드가 말해야 할 차이(편수·가격·추천 대상)가 반복 문구에 밀린다.
-  assert.match(pricingSection.management, /모션랩스.*전담 마케터.*직접.*관리.*소통/)
+  assert.match(pricingSection.management, /전담 마케터.*직접.*소통/)
   for (const plan of pricingSection.plans) {
     assert.equal(plan.vatExcluded, true)
     assert.equal(
@@ -415,19 +405,106 @@ test('pain point answers do not promise an outcome', () => {
   assert.doesNotMatch(answers, /반드시|틀림없이|확실히 (오릅|늘)/)
 })
 
-// ── 측정 범위 = 서로 다른 공급자 경로의 교차 관찰 ───────────────────
-test('measurement scope explains the two-provider comparison without a market-share claim', () => {
-  const copy = `${marketSection.heading} ${platformShareSection.nudge}`
-  assert.match(copy, /OpenAI API/)
-  assert.match(copy, /Google Gemini API/)
-  assert.match(copy, /(같은|동일한) 환자 질문/)
-  assert.doesNotMatch(copy, /83\.9|84%|점유율/)
+// ── 측정 방식은 FAQ 한 항목에 모은다 ─────────────────────────────────
+// 원장님께 모델명·반복 횟수는 설득 근거가 아니다. 그래도 실무자가 확인하려 할 때 답이
+// 있어야 하므로 지우지 않고 FAQ "측정은 어떻게 하나요?"에 모은다.
+const methodItem = faqItems.find((f) => /측정은 어떻게/.test(f.question))
+
+test('the FAQ keeps the measurement contract the backend runs', () => {
+  /**
+   * 백엔드 규약은 `LEADGEN_QUERY_COUNT=3` × `LEADGEN_REPEAT_COUNT=3` × 플랫폼 2 = 18건이다
+   * (`lead_diagnosis_engine.plan_measurements`). 등급의 분모 9도 여기서 온다.
+   */
+  assert.ok(methodItem, 'FAQ에 측정 방식 항목이 없습니다.')
+  assert.match(methodItem.answer, /질문 3개/)
+  assert.match(methodItem.answer, /세 번씩/)
+  assert.match(methodItem.answer, /18번/)
+  assert.equal(MEASUREMENT_TRIALS, 9)
+  assert.match(methodItem.answer, new RegExp(`${MEASUREMENT_TRIALS}번`))
 })
 
-test('measurement scope states what the synthetic panel does not represent', () => {
-  assert.match(platformShareSection.sourceNote, /소비자용 앱/)
-  assert.match(platformShareSection.sourceNote, /개인화 노출/)
-  assert.match(platformShareSection.sourceNote, /실제 환자 유입/)
+test('the method answer names both providers without a market-share claim', () => {
+  assert.ok(methodItem)
+  assert.match(methodItem.answer, /OpenAI API/)
+  assert.match(methodItem.answer, /Google Gemini API/)
+  assert.doesNotMatch(methodItem.answer, /83\.9|84%|점유율/)
+})
+
+test('the method answer states what the fixed panel does not represent', () => {
+  assert.ok(methodItem)
+  assert.match(methodItem.answer, /소비자용 앱/)
+  assert.match(methodItem.answer, /개인화 노출/)
+  assert.match(methodItem.answer, /실제 환자 유입/)
+})
+
+test('the page body leads with outcomes, not model names or trial counts', () => {
+  /**
+   * 사는 사람은 원장님이다. 본문(FAQ 밖)에 API 이름·모델명·"18번"·"9회" 같은 측정
+   * 파라미터가 다시 올라오면, 원장님이 가장 먼저 읽는 숫자가 측정 횟수가 된다.
+   */
+  const body = ALL_COPY.replace(faqItems.map((f) => `${f.question} ${f.answer}`).join(' '), '')
+  assert.doesNotMatch(body, /API|gpt-|gemini-\d/)
+  assert.doesNotMatch(body, /\d+ ?(번|회)(씩| 물| 중| 등장|\b)/)
+  assert.doesNotMatch(body, /[×x] ?\d/)
+})
+
+// ── 노출 등급 ───────────────────────────────────────────────────────
+test('exposure grades cover every count from 0 to the denominator without gaps', () => {
+  assert.equal(exposureGrades.length, 5)
+  assert.deepEqual(
+    exposureGrades.map((g) => g.label),
+    ['매우 부족', '부족', '보통', '우수', '매우 우수'],
+  )
+  // 상한이 증가하고 마지막이 분모와 같아야 0~9 모든 값이 정확히 한 등급에 들어간다.
+  for (let i = 1; i < exposureGrades.length; i++) {
+    assert.ok(exposureGrades[i].max > exposureGrades[i - 1].max)
+  }
+  assert.equal(exposureGrades.at(-1)!.max, MEASUREMENT_TRIALS)
+  assert.equal(exposureGradeIndex(0), 0)
+  assert.equal(exposureGradeIndex(2), 0)
+  assert.equal(exposureGradeIndex(3), 1)
+  assert.equal(exposureGradeIndex(6), 2)
+  assert.equal(exposureGradeIndex(7), 3)
+  assert.equal(exposureGradeIndex(8), 4)
+  assert.equal(exposureGradeIndex(9), 4)
+})
+
+// ── 지역 경쟁(선점) ─────────────────────────────────────────────────
+test('the local-competition section argues structure without promising a result', () => {
+  /**
+   * "먼저 들어갈수록 유리한 구조"는 논리이지 우리가 측정한 값이 아니다. 숫자를 붙이지 않고,
+   * 순위·노출을 보장하지 않는다는 줄로 잠근다.
+   */
+  const text = [localSection.heading, ...localSection.points.flatMap((p) => [p.title, p.body])].join(' ')
+  assert.doesNotMatch(text, /\d/, '선점 논리에 근거 없는 숫자가 붙었습니다.')
+  assert.doesNotMatch(text, /1위|반드시|확실히|보장합니다/)
+  assert.match(localSection.caveat, /보장하지 않습니다/)
+  assert.ok(localSection.picked.length >= 3 && localSection.picked.length <= 4)
+  for (const name of localSection.picked) assert.match(name, /○○|△△|□□/)
+})
+
+// ── 리포트 전달 정책 ─────────────────────────────────────────────────
+test('the report is delivered with a sales contact, not auto-mailed', () => {
+  /**
+   * 예전에는 신청하면 리포트를 자동 메일로 보냈다. 리포트만 받고 연락이 끊기는 경우가
+   * 많아, 도입문의를 받은 뒤 담당자가 리포트를 만들어 연락과 함께 전달하는 구조로 바꿨다.
+   * 옛 문구("15분 안에 메일로", "리포트를 메일로 보내드립니다")가 남으면 약속과 운영이 어긋난다.
+   */
+  assert.doesNotMatch(ALL_COPY, /15분|메일로 보내|자동으로 보내|순차 발송|선착순/)
+  assert.match(ctaSection.body, /리포트/)
+  assert.match(ctaSection.body, /담당/)
+  assert.match(previewSection.note, /도입문의/)
+})
+
+// ── 말투: 흔한 "AI 최적화" 랜딩과 겹치는 말 ─────────────────────────
+test('the copy avoids the stock vocabulary of generic AI-marketing pages', () => {
+  const STOCK = [
+    '최적화', '극대화', '혁신', '차별화', '시너지', '선도', '압도적', '탁월', '완벽',
+    '패러다임', '생태계', '원스톱', '한 단계 도약', '다양한', '지속적으로', '적극적으로', '효율적으로',
+  ]
+  for (const word of STOCK) {
+    assert.ok(!ALL_COPY.includes(word), `상투 표현 "${word}"이 랜딩 카피에 있습니다.`)
+  }
 })
 
 // ── FAQ ─────────────────────────────────────────────────────────────
@@ -442,38 +519,9 @@ test('the FAQ answers the objections we would otherwise get on a call', () => {
   assert.match(rankItem.answer, /아닙니다|보장하지 않/)
 })
 
-test('the hero instrument states the same measurement contract the backend runs', () => {
-  /**
-   * 계기판은 접힘 위에서 "이렇게 잰다"를 약속한다. 백엔드 규약은
-   * `LEADGEN_QUERY_COUNT=3` × `LEADGEN_REPEAT_COUNT=3` × 플랫폼 2 = 18건이고
-   * (`lead_diagnosis_engine.plan_measurements`가 "계획된 18건"을 만든다),
-   * 여기 문자열이 어긋나면 랜딩과 실제 리포트가 다른 말을 하게 된다.
-   *
-   * 문자열을 통째로 고정하지 않고 **곱이 맞는지**만 본다 — 표현을 다듬을 때마다
-   * 테스트가 깨지면 정작 지켜야 할 숫자를 못 지킨다.
-   */
-  assert.equal(measurementSpec.totalCalls, 18)
-  assert.match(measurementSpec.spec, new RegExp(String(measurementSpec.totalCalls)))
-  // 플랫폼당 호출 수 × 플랫폼 2 = 총 호출 수.
-  assert.equal(measurementSpec.perPlatform * 2, measurementSpec.totalCalls)
-})
-
-test('the instrument headline explains the service without implementation identifiers', () => {
-  assert.match(measurementSpec.headline, /환자.*질문 (방식|패턴)/)
-  assert.match(measurementSpec.headline, /측정.*노출 전략/)
-  assert.doesNotMatch(measurementSpec.headline, /API|gpt-|gemini-\d|파라미터/)
-})
-
-test('the instrument states the premise before the number', () => {
-  // 논증 없이 숫자만 던지면 "반복 3회"가 왜 필요한지 설명되지 않는다.
-  assert.ok(measurementSpec.premise.length > 0)
-  assert.doesNotMatch(measurementSpec.premise, /\d/, '전제 문장에는 숫자가 없어야 합니다.')
-})
-
-test('the instrument names the platforms we actually measure', () => {
-  assert.match(measurementSpec.headline, /ChatGPT/)
-  assert.match(measurementSpec.headline, /Gemini/)
-  assert.doesNotMatch(measurementSpec.condition, /gpt-|gemini-\d|API/)
+test('the hero names the platforms we actually check', () => {
+  assert.match(landingHero.subcopy, /ChatGPT/)
+  assert.match(landingHero.subcopy, /Gemini/)
 })
 
 test('every measured figure carries a plain-language meaning', () => {
@@ -526,7 +574,7 @@ const HEADINGS = [
   previewSection.heading,
   previewSection.includesLabel,
   ...previewSection.includes,
-  marketSection.heading,
+  localSection.heading,
   painSection.heading,
   operationSection.heading,
   limitsSection.heading,

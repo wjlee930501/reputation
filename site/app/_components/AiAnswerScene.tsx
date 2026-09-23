@@ -31,6 +31,31 @@ export default function AiAnswerScene({
 }) {
   return (
     <div className="scene" data-step={step}>
+      {/* 가장 큰 단계(2)를 보이지 않게 같은 칸에 겹쳐 그린다. 카드는 늘 그 높이를 차지하고
+          보이는 단계만 그 안에서 바뀐다 — 고정 수치 없이 어느 폭에서도 높이가 같다. */}
+      <div className="scene-frame">
+        <SceneBody example={example} disclaimer={disclaimer} askLine={askLine} step={step} />
+        <div className="scene-ghost" aria-hidden="true" inert>
+          <SceneBody example={example} disclaimer={disclaimer} askLine={askLine} step={2} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SceneBody({
+  example,
+  disclaimer,
+  askLine,
+  step,
+}: {
+  example: AnswerContent;
+  disclaimer: string;
+  askLine: string;
+  step: SceneStep;
+}) {
+  return (
+    <div className="scene-body">
       <div className="scene-ask">
         <span className="scene-eyebrow">환자가 묻습니다</span>
         <p>{example.question}</p>
@@ -67,8 +92,16 @@ export default function AiAnswerScene({
         )}
       </div>
 
-      {/* 이 한 줄이 화면을 주장으로 바꾼다. 목록만 두면 그냥 검색 결과다. */}
-      {step === 2 && <p className="scene-ask-line">{askLine}</p>}
+      {/* 이 한 줄이 화면을 주장으로 바꾼다. 목록만 두면 그냥 검색 결과다.
+          목록 아래 비어 있는 "넷째 자리"로 그린다 — 지도의 우리 병원 자리와 같은 주황 점선 원. */}
+      {step === 2 && (
+        <div className="scene-ask-line">
+          <span className="scene-ask-slot" aria-hidden="true">
+            ?
+          </span>
+          <p>{askLine}</p>
+        </div>
+      )}
       <p className="scene-disclaimer">{disclaimer}</p>
     </div>
   );

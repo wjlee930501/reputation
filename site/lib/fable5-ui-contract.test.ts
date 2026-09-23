@@ -14,9 +14,8 @@ test('clinic-local 404 offers known clinic contact routes and preserves the glob
   assert.match(local, /Re:putation 홈으로 이동/)
 })
 
-test('skip-link destinations exist on diagnosis, status, error, and not-found pages', () => {
+test('skip-link destinations exist on status, error, and not-found pages', () => {
   const pages = [
-    '../app/ai-diagnosis/page.tsx',
     '../app/ai-diagnosis/status/[token]/page.tsx',
     '../app/error.tsx',
     '../app/not-found.tsx',

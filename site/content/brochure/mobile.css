@@ -1,0 +1,455 @@
+/*
+ * 소개서 세로 흐름 — 760px 이하(`html.rp-flow`).
+ *
+ * 원본은 1280×720 고정 캔버스를 화면 크기에 맞춰 축소하는 슬라이드다. 390px 폰에서는
+ * 배율이 0.3이 되어 13px 본문이 4px로 찍힌다. 원장님 열람은 대부분 폰에서 일어나므로,
+ * 좁은 화면에서는 슬라이드를 풀어 페이지를 세로로 흘리고 각 페이지 안의 격자를 1단으로
+ * 접는다. 색·타일·타이포는 원본 그대로 두고 배치만 바꾼다.
+ */
+html.rp-flow,
+html.rp-flow body {
+  height: auto;
+  overflow: auto;
+  background: var(--canvas);
+}
+.rp-flow #viewport {
+  position: static;
+  display: block;
+}
+.rp-flow #stage {
+  width: 100%;
+  height: auto;
+  transform: none !important;
+  border-radius: 0;
+  overflow: visible;
+}
+.rp-flow #ui,
+.rp-flow #hint,
+.rp-flow #topbar {
+  display: none;
+}
+.rp-flow .page {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: auto;
+  opacity: 1;
+  visibility: visible;
+  transition: none;
+}
+.rp-flow .page + .page {
+  border-top: 1px solid var(--g20);
+}
+.rp-flow .pad {
+  position: relative;
+  inset: auto;
+  padding: 28px 18px 36px;
+}
+.rp-flow .body {
+  flex: none;
+  display: block;
+  padding-top: 20px !important;
+}
+
+/* 등장 모션: 화면에 처음 들어온 페이지에서만 */
+.rp-flow .page .st,
+.rp-flow .page .pp {
+  opacity: 1;
+  animation: none;
+}
+.rp-flow .page:not(.seen) .st {
+  opacity: 0;
+}
+.rp-flow .page.seen .st {
+  animation: rise 0.7s var(--e) both;
+  animation-delay: calc(var(--i, 0) * 0.06s);
+}
+.rp-flow .page.seen .pc .lines i {
+  animation: growy 0.6s var(--e) both;
+  animation-delay: calc(0.3s + var(--d, 0) * 0.02s);
+}
+.rp-flow .page.seen .track .fill {
+  animation: none;
+}
+
+/* ── 공통 머리 ─────────────────────────────────────────────── */
+.rp-flow .nav {
+  height: auto;
+}
+.rp-flow .tabs {
+  display: none;
+}
+.rp-flow .ttl {
+  margin-top: 18px;
+  font-size: 25px;
+  line-height: 1.35;
+}
+.rp-flow .lead {
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+.rp-flow .t {
+  border-radius: 20px;
+  padding: 22px 20px;
+}
+.rp-flow .btn {
+  height: 50px;
+  font-size: 15.5px;
+}
+
+/* ── 01 표지 ─────────────────────────────────────────────── */
+.rp-flow .cover .pad {
+  min-height: 92svh;
+}
+.rp-flow .cover .big {
+  font-size: 260px;
+  right: -30px;
+  bottom: -40px;
+}
+.rp-flow .cover .top .rpw {
+  font-size: 21px;
+}
+.rp-flow .cover .mid {
+  padding: 36px 0 28px;
+}
+.rp-flow .cover h1 {
+  font-size: 38px;
+}
+.rp-flow .cover .sub {
+  font-size: 15.5px;
+  line-height: 1.55;
+}
+.rp-flow .prompt {
+  width: 100% !important;
+  height: 56px;
+  padding: 0 7px 0 16px;
+  gap: 10px;
+}
+.rp-flow .prompt .txt {
+  font-size: 14.5px;
+}
+.rp-flow .prompt .send {
+  width: 40px;
+  height: 40px;
+}
+.rp-flow .cover .chips,
+.rp-flow .cta .chips {
+  flex-wrap: wrap;
+}
+
+/* ── 02 이용 현황 ───────────────────────────────────────── */
+.rp-flow .b2 {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: auto;
+}
+.rp-flow .b2 .a,
+.rp-flow .b2 .b {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 20px;
+}
+.rp-flow .waffle {
+  grid-template-columns: repeat(10, 1fr);
+  width: 100%;
+  gap: 5px;
+}
+.rp-flow .waffle i {
+  width: auto;
+  aspect-ratio: 1;
+  height: auto;
+  border-radius: 4px;
+}
+.rp-flow .b2 .a .num {
+  font-size: 84px;
+}
+.rp-flow .b2 .b .num {
+  font-size: 68px;
+}
+.rp-flow .b2 h3 {
+  font-size: 18px;
+}
+.rp-flow .b2 .c {
+  gap: 14px;
+  padding: 20px;
+}
+.rp-flow .b2 .c p {
+  font-size: 16px;
+}
+
+/* ── 03 추천 구조 ───────────────────────────────────────── */
+.rp-flow .b3 {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: auto;
+}
+/* 지도 SVG는 `xMidYMid slice`라 높이를 키울수록 좌우가 더 잘린다. 260px면 오른쪽
+   끝의 "우리 병원" 라벨까지 들어온다. */
+.rp-flow .b3 .field {
+  height: 260px;
+}
+.rp-flow .b3 .field .cap {
+  left: 16px;
+  top: 14px;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11px;
+}
+.rp-flow .b3 .field .fine {
+  left: 16px;
+  bottom: 12px;
+}
+
+/* ── 04 빠지는 이유 ─────────────────────────────────────── */
+.rp-flow .b4c {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+/* ── 05 서비스 정의 ─────────────────────────────────────── */
+.rp-flow .dg {
+  grid-template-columns: 1fr;
+  gap: 32px;
+}
+.rp-flow .dw {
+  font-size: 58px;
+}
+.rp-flow .dd {
+  font-size: 18px;
+  margin-top: 22px;
+  padding-top: 22px;
+}
+.rp-flow .dpos {
+  flex-wrap: wrap;
+}
+.rp-flow .dr {
+  border-left: 0;
+  padding-left: 0;
+  border-top: 1px solid #262626;
+  padding-top: 18px;
+}
+.rp-flow .drow {
+  grid-template-columns: 48px 1fr;
+  padding: 18px 0;
+}
+.rp-flow .drow .n {
+  font-size: 24px;
+}
+.rp-flow .drow h3 {
+  font-size: 19px;
+}
+
+/* ── 06 운영 프로세스 ───────────────────────────────────── */
+.rp-flow .pflow {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+.rp-flow .pa {
+  height: 36px;
+  transform: rotate(90deg);
+}
+.rp-flow .loopbar {
+  height: auto;
+  margin-top: 14px;
+}
+.rp-flow .loopbar svg {
+  display: none;
+}
+.rp-flow .loopbar .lt {
+  position: static;
+  transform: none;
+  white-space: normal;
+  height: auto;
+  padding: 10px 16px 10px 8px;
+  border-radius: 20px;
+  line-height: 1.45;
+}
+
+/* ── 07 운영 원칙 ───────────────────────────────────────── */
+.rp-flow .pgrid {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.rp-flow .pgrid .pcd,
+.rp-flow .pcd .no {
+  height: auto;
+}
+.rp-flow .pcd .yes {
+  min-height: 0;
+}
+.rp-flow .pcd h4 {
+  font-size: 19px;
+}
+
+/* ── 08 측정 방식 ───────────────────────────────────────── */
+.rp-flow .b8 {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: auto;
+}
+.rp-flow .b8 .mx {
+  padding: 20px 14px 16px;
+  overflow-x: auto;
+}
+.rp-flow .mx table {
+  min-width: 330px;
+}
+.rp-flow .mx td {
+  padding: 12px 0;
+}
+.rp-flow .mx td.q span {
+  font-size: 12.5px;
+}
+.rp-flow .cl {
+  width: 18px;
+  height: 18px;
+}
+.rp-flow .mx .lg {
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+.rp-flow .eqv .x,
+.rp-flow .eqv .r {
+  font-size: 44px;
+}
+
+/* ── 09 진단 리포트 ─────────────────────────────────────── */
+.rp-flow .b9 {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: auto;
+}
+.rp-flow .b9 .paper {
+  padding: 34px 14px 30px;
+}
+.rp-flow .sheet {
+  width: 100%;
+  transform: none;
+  padding: 18px 16px;
+}
+.rp-flow .stamp {
+  right: -8px;
+  top: -24px;
+  width: 70px;
+  height: 70px;
+}
+.rp-flow .stamp b {
+  font-size: 19px;
+}
+.rp-flow .sheet .sh .d {
+  margin-right: 46px;
+}
+.rp-flow .lg2 .rw {
+  grid-template-columns: 1fr 56px 56px 58px;
+  font-size: 10.5px;
+}
+.rp-flow .inc li {
+  font-size: 15px;
+}
+.rp-flow .inc .btn {
+  margin-top: 20px;
+}
+
+/* ── 10 도입 절차 ───────────────────────────────────────── */
+.rp-flow .b10n .tl {
+  padding: 24px 20px;
+}
+.rp-flow .track .rail,
+.rp-flow .track .fill {
+  display: none;
+}
+.rp-flow .track .pts {
+  grid-template-columns: 1fr;
+  gap: 0;
+}
+.rp-flow .track .pts > div {
+  display: grid;
+  grid-template-columns: 27px 1fr;
+  column-gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid var(--g10);
+}
+.rp-flow .track .pts > div:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.rp-flow .track .pts > div > :not(.d) {
+  grid-column: 2;
+}
+.rp-flow .track .d {
+  grid-row: 1 / span 3;
+}
+.rp-flow .b10n .track .w {
+  margin-top: 2px;
+}
+.rp-flow .b10n .track p {
+  padding-right: 0;
+}
+.rp-flow .b10n .fx {
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+/* ── 11 요금제 ─────────────────────────────────────────── */
+.rp-flow .plans {
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+.rp-flow .pc .pr {
+  font-size: 44px;
+}
+.rp-flow .incl {
+  flex-wrap: wrap;
+  border-radius: 20px;
+  padding: 18px 18px;
+  gap: 8px;
+}
+.rp-flow .incl .lb {
+  width: 100%;
+}
+.rp-flow .incl .fine {
+  margin: 4px 0 0;
+  width: 100%;
+}
+.rp-flow .incl .btn {
+  margin-top: 6px;
+}
+
+/* ── 12 마무리 ─────────────────────────────────────────── */
+.rp-flow .cta .pad {
+  min-height: 92svh;
+}
+.rp-flow .cta .big {
+  font-size: 240px;
+  top: -40px;
+}
+.rp-flow .cta .mid {
+  padding: 40px 0 28px;
+}
+.rp-flow .cta h2 {
+  font-size: 30px;
+}
+.rp-flow .cta .sub {
+  font-size: 15px;
+  line-height: 1.6;
+}
+.rp-flow .cta .row {
+  margin-top: 26px;
+}
+.rp-flow .cta .prompt .go {
+  height: 42px;
+  padding: 0 14px;
+  font-size: 14px;
+}
+.rp-flow .cta .foot {
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.rp-flow .cta .foot > div:first-child,
+.rp-flow .cta .foot > div:last-child {
+  grid-column: 1 / -1;
+}

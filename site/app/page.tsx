@@ -6,16 +6,14 @@ import {
   ctaSection,
   faqItems,
   faqSection,
-  funnelSection,
   landingHero,
   limitItems,
   limitsSection,
-  marketSection,
+  localSection,
   operationSection,
   operationSteps,
   painPoints,
   painSection,
-  platformShareSection,
   previewSection,
   pricingSection,
   sceneSection,
@@ -27,21 +25,26 @@ import {
   buildServiceJsonLd,
   buildWebSiteJsonLd,
 } from "@/lib/landing-schema";
+import { BROCHURE_ENABLED } from "@/lib/brochure-flag";
 import { platformSiteUrl } from "@/lib/site-url";
 
 import { JsonLd } from "./[slug]/_components/JsonLd";
 
+import Accent from "./_components/Accent";
 import AnswerExplorer from "./_components/AnswerExplorer";
-import LiveDiagnosisQuota from "./_components/DiagnosisQuota";
+import ContactHashNormalizer from "./_components/ContactHashNormalizer";
+import ContactForm from "./_components/ContactForm";
 import HeaderScrollState from "./_components/HeaderScrollState";
 import HeroInstrument from "./_components/HeroInstrument";
-import MotionToggle from "./_components/MotionToggle";
+import LocalField from "./_components/LocalField";
 import QueryMarquee from "./_components/QueryMarquee";
 import RollingAiLogo from "./_components/RollingAiLogo";
 import SceneSequence from "./_components/SceneSequence";
 import ScrollReveal from "./_components/ScrollReveal";
+import { SiteFooter, SiteHeader } from "./_components/SiteChrome";
 
-const DIAGNOSIS_PATH = "/ai-diagnosis";
+
+const CONTACT_HREF = "#contact";
 
 /** 접지 않고 세워 두는 질문 수. 나머지는 "질문 N개 더 보기" 뒤로 들어간다. */
 const FAQ_OPEN_COUNT = 4;
@@ -49,36 +52,24 @@ const FAQ_OPEN_COUNT = 4;
 /**
  * 랜딩의 논증 순서 — 이 순서 자체가 이 서비스의 주장이다.
  *
- *   ① 환자가 보는 화면은 이렇다 (장면)
- *   ② 그게 내 얘기다 (원장의 말 — 자기 인식)
- *   ③ 그래서 무엇을 받는가 (리포트 실물 + 담기는 것)
- *   ④ 그 답변은 어디서 일어나는가 (점유율 · 비용 판단)
- *   ⑤ 그래서 언제 시작해야 하는가 (자리는 서너 곳 · 시점)
- *   ⑥ 그 자리를 만들려면 무엇이 필요한가 (운영 방식)
- *   ⑦ 무엇은 못 하는가 (하지 않는 것 → FAQ → 요금제)
- *   ⑧ 그래서 지금 확인해보라 (무료 진단)
+ *   히어로 · 계기판(환자의 AI 이용 현황) · 질문 띠
+ *   01 환자가 보는 화면 (장면)
+ *   02 원장님의 고민 (자기 인식)
+ *   03 지역 경쟁 (왜 지금, 왜 우리 동네인가 — 선점 구조)
+ *   04 진단 리포트 (질문별 노출 등급)
+ *   05 운영 방식 (단계별 산출물)
+ *   06 운영 원칙 (하지 않는 것 ↔ 대신 지키는 것)
+ *   07 FAQ · 08 요금제 · 09 도입문의
  *
- * **③은 원래 ⑥이었다**(운영 방식 뒤, 문서 한가운데 y≈4,000). "신청 직전에 보여준다"는
- * 배치였는데, 외부 검토에서 "이름을 세어 숫자만 주는 것 같다"는 말이 나왔다 — 산출물이
- * 절반을 지나야 나오니 그 전에 판단이 끝난 것이다. 받는 것을 통증 바로 뒤로 올리고,
- * 신청 직전 신뢰 다지기는 ⑦(하지 않는 것 → FAQ)이 그대로 맡는다.
- *
- * ⑤를 ①②③ 앞에 두면 기능 소개가 되고, ⑦을 빼면 노출 대행과 구별되지 않는다.
- *
- * **②는 원래 ③ 뒤에 있었다.** 근거(점유율)를 먼저 깔고 통증을 나중에 꺼내는 순서였는데,
- * 그러면 원장이 자기 문제로 인식하기 전에 남의 숫자부터 읽게 된다. 장면을 본 직후가
- * "이거 우리 얘기네"가 가장 크게 울리는 자리이므로, 자기 인식을 근거 앞으로 올린다.
- *
- * ④는 원래 FAQ **뒤**에 있었다("신청 직전에 보여준다"). 그 원칙은 독자가 거기까지
- * 온다는 전제에 기대는데, 모바일 8,000px에서 리포트 카드가 y≈6,300이었고 그 앞을
- * FAQ 열한 개가 막고 있었다. 반론(⑤)은 갖고 싶은 마음이 생긴 뒤에 나오므로,
- * 받는 것을 먼저 보여주고 못 하는 것과 FAQ를 신청 직전 신뢰 다지기로 쓴다.
+ * **사는 사람은 원장님이다.** 모델명·반복 횟수·질문 × 회차 표 같은 정량 근거는 원장님께
+ * 설득 근거가 되지 못해 FAQ 한 항목으로 내렸다. 본문은 환자 장면, 동네 경쟁 구조,
+ * 원장님 손이 가지 않는 운영, 의료광고법 안전으로 말한다.
  */
 export default function Home() {
   const siteUrl = platformSiteUrl();
 
   return (
-    <main id="main-content" className="landing-shell">
+    <main id="main-content" className="landing-shell landing-edge">
       {/* 구조화 데이터 — 이 페이지가 파는 것을 이 페이지가 지킨다.
           앞서는 JSON-LD가 한 줄도 없어서, 경쟁사의 공개 진단 도구에 우리 랜딩을 넣으면
           "구조화 데이터 없음 0/6 · FAQ 이름표 없음 0/4"가 그대로 찍혔다.
@@ -96,29 +87,18 @@ export default function Home() {
 
       <ScrollReveal />
       <HeaderScrollState />
+      <ContactHashNormalizer />
 
-      <header className="site-header">
-        <a className="brand-lockup" href="#top" aria-label="MotionLabs Re:putation 홈">
-          <strong>Re:putation</strong>
-          <small>by MotionLabs</small>
-        </a>
+      {/* 홈은 하단 고정 CTA 바가 있으므로 좁은 화면에서 헤더 CTA를 접는다. */}
+      <SiteHeader sectionBase="" ctaHref={CONTACT_HREF} keepCtaOnMobile={false} />
 
-        <nav className="header-nav" aria-label="랜딩 페이지 섹션">
-          <a href="#numbers">측정 방식</a>
-          <a href="#operation">운영 방식</a>
-          <a href="#faq">자주 묻는 질문</a>
-        </nav>
-
-        <Link className="header-cta" href={DIAGNOSIS_PATH}>
-          무료 진단
-        </Link>
-      </header>
-
-      {/* ── ① 히어로 — 큰 카피 · 서브 카피 · CTA · 선착순 고지만 ─────
+      {/* ── 히어로 — 큰 카피 · 서브 카피 · CTA만 ─────
           시각물은 아래 미리보기 섹션으로 분리했다. 히어로에 목업을 붙이면 두 개를
           동시에 읽어야 하고, 정작 팔아야 하는 한 줄이 묻힌다. */}
       <section id="top" className="hero-section">
-
+        {/* 오른쪽 위 모서리에 걸친 오렌지 원 하나. 장식이므로 읽히지 않고, 글이 앉는
+            자리 밖에만 놓여 대비를 깎지 않는다. 좁은 화면에서는 뺀다. */}
+        <div className="hero-mark" aria-hidden="true" />
 
         {/* 아트는 섹션(화면 전체)에 깔리고 글은 이 래퍼가 잡는다.
             앞 버전은 섹션 자신이 860px이라 배경 아트도 860px에 갇혀, 키우면 잘리기만 했다. */}
@@ -132,6 +112,8 @@ export default function Home() {
               <RollingAiLogo />
               {landingHero.titleLead.split("{ai}")[1]}
             </span>
+            {/* 히어로 제목은 흰색 한 톤으로 둔다. 이 화면의 오렌지는 모서리의 원(조형)과
+                버튼(행동) 둘뿐이다 — 제목까지 칠하면 오렌지가 세 곳에서 시선을 나눠 갖는다. */}
             <strong>{landingHero.titleMain}</strong>
           </h1>
 
@@ -141,12 +123,17 @@ export default function Home() {
           <p className="hero-subcopy">{landingHero.subcopy}</p>
 
           <div className="hero-actions" aria-label="주요 행동">
-            <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
+            <a className="btn btn-primary btn-lg" href={CONTACT_HREF}>
               {landingHero.primaryCta}
-            </Link>
+            </a>
+            {/* 낮은 사다리. 도입문의보다 한 단계 약하게(밑줄 글자) 둔다 — 버튼 두 개가 같은
+                무게로 서면 강한 쪽을 약한 쪽이 대신하게 된다. */}
+            {BROCHURE_ENABLED && (
+              <Link className="hero-secondary" href="/brochure">
+                먼저 소개서로 살펴보기
+              </Link>
+            )}
           </div>
-
-          <LiveDiagnosisQuota variant="hero" />
         </div>
       </section>
 
@@ -156,25 +143,29 @@ export default function Home() {
       {/* 환자 질문 띠 — 히어로와 장면 사이. 설명하기 전에 눈으로 읽게 한다. */}
       <QueryMarquee />
 
-      {/* ── ② 환자가 보는 화면 — 히어로 바로 다음 ─────────────────
+      {/* ── 01 환자가 보는 화면 — 히어로 바로 다음 ─────────────────
           리포트를 먼저 보여주면 "우리가 파는 것"부터 말하는 셈이다. 먼저 볼 것은
           환자가 실제로 보는 답변이고, 거기 병원 이름이 서너 개뿐이라는 사실이다. */}
       <section id="scene" className="scene-section" aria-labelledby="scene-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{sceneSection.label}</p>
-          <h2 id="scene-heading">{sceneSection.heading}</h2>
+          <h2 id="scene-heading">
+            <Accent text={sceneSection.heading} />
+          </h2>
         </div>
 
         <SceneSequence example={answerExamples[0]} disclaimer={answerDemo.disclaimer} />
       </section>
 
-      {/* ── ② 원장님이 하시는 말 — 장면 바로 뒤 ────────────────────
+      {/* ── 02 원장님이 하시는 말 — 장면 바로 뒤 ────────────────────
           3인칭 선언문만으로는 읽는 사람이 자기 문제로 인식하지 않는다.
           통증은 당사자의 문장으로 적고, 장면을 본 직후에 둔다. */}
       <section className="pain-section" aria-labelledby="pain-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{painSection.label}</p>
-          <h2 id="pain-heading">{painSection.heading}</h2>
+          <h2 id="pain-heading">
+            <Accent text={painSection.heading} />
+          </h2>
         </div>
 
         <ul className="pain-list">
@@ -185,9 +176,48 @@ export default function Home() {
             </li>
           ))}
         </ul>
+
+        {/* 세 고민을 한 질문으로 닫는 검은 띠. 섹션 폭 전체를 쓰고 섹션 바닥에 붙는다. */}
+        <p className="section-punchline" data-reveal>
+          <Accent text={painSection.punchline} accent={painSection.punchlineAccent} />
+        </p>
       </section>
 
-      {/* ── ④ 받으시는 것 — 운영 방식 바로 뒤 ─────────────────────────
+      {/* ── 03 지역 경쟁 — 왜 지금, 왜 우리 동네인가 ─────────────────
+          원장님께 통하는 근거는 측정 규약이 아니라 경쟁 구조다. AI 답변 자리는 동네마다
+          서너 곳이고, 그 자리를 두고 겨루는 상대는 전국이 아니라 같은 동네 같은 진료과다.
+          근거(정보와 글)는 쌓이는 것이라 먼저 시작한 병원이 앞서 있다 — 구조를 말하되
+          결과는 약속하지 않는다(caveat). */}
+      <section id="local" className="local-section" aria-labelledby="local-heading">
+        <div className="section-heading" data-reveal>
+          <p className="section-label">{localSection.label}</p>
+          <h2 id="local-heading">
+            <Accent text={localSection.heading} />
+          </h2>
+        </div>
+
+        <div className="local-body">
+          <div data-reveal>
+            <LocalField />
+          </div>
+
+          <ol className="local-points" data-reveal>
+            {localSection.points.map((point, index) => (
+              <li key={point.title}>
+                <span className="local-num">{String(index + 1).padStart(2, "0")}</span>
+                <h3>{point.title}</h3>
+                <p>{point.body}</p>
+              </li>
+            ))}
+          </ol>
+        </div>
+
+        <p className="local-caveat" data-reveal>
+          {localSection.caveat}
+        </p>
+      </section>
+
+      {/* ── 04 진단 리포트 — 지역 경쟁 바로 뒤 ─────────────────────────
           앞 버전은 이 섹션이 FAQ 뒤(데스크톱 y≈4,450 · 모바일 y≈6,300)에 있었다.
           "신청 직전에 보여준다"는 원칙이었지만, 그 원칙은 **독자가 거기까지 온다는
           전제**에 기댄다 — 모바일 8,000px에 FAQ 열한 개가 보상 바로 앞을 막고 있었다.
@@ -202,7 +232,9 @@ export default function Home() {
         <div className="report-inner">
           <div className="section-heading" data-reveal>
             <p className="section-label">{previewSection.label}</p>
-            <h2 id="preview-heading">{previewSection.heading}</h2>
+            <h2 id="preview-heading">
+            <Accent text={previewSection.heading} />
+          </h2>
             {/* 계기판의 18회와 아래 리포트의 9회를 잇는 한 줄. 없으면 읽는 사람이
                 두 분모의 관계를 스스로 추론해야 한다. */}
             <p className="section-note">{previewSection.note}</p>
@@ -223,61 +255,13 @@ export default function Home() {
         </div>
       </section>
 
-      <section id="numbers" className="market-section" aria-labelledby="market-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{marketSection.label}</p>
-          <h2 id="market-heading">{marketSection.heading}</h2>
-        </div>
-
-        {/* 공급자별 결과를 교차 관찰하는 이유와 한계를 함께 밝힌다. */}
-        <div className="share-block" data-reveal>
-          <p className="share-nudge">{platformShareSection.nudge}</p>
-          <p className="share-source">{platformShareSection.sourceNote}</p>
-        </div>
-      </section>
-
-      {/* ── ②-b 우리가 서 있는 자리 ───────────────────────────────
-          원장은 이미 블로그·플레이스에 돈을 쓰고 있고, 그 시장은 "노출은 성과가 아니다"라는
-          자기비판을 이미 끝냈다. 그 한가운데에 노출보다 더 상류인 지표를 들고 가면
-          "순위 올려준다던 곳이랑 뭐가 다르냐"로 먼저 읽힌다.
-          대체재가 아니라 상류 보완재라는 것을 그림으로 먼저 못 박는다. */}
-      <section className="funnel-section" aria-labelledby="funnel-heading">
-        <div className="section-heading" data-reveal>
-          <p className="section-label">{funnelSection.label}</p>
-          <h2 id="funnel-heading">{funnelSection.heading}</h2>
-          <p className="section-note">{funnelSection.body}</p>
-        </div>
-
-        <div className="slot-chart" data-reveal>
-          {/* 실측값을 그대로 그린 그림 — 답변 한 건에 병원이 서너 곳 적힌다.
-              마지막 칸은 비어 있다고 쓰지 않고 물음표를 둔다. 자리가 남아 있다는 것은
-              우리가 재지 않은 사실이고, 물음표는 이 페이지가 내내 던진 질문이다. */}
-          <ol className="slot-row">
-            {funnelSection.slots.map((slot, index) => (
-              <li key={slot.name} data-ours={slot.ours ? "yes" : "no"}>
-                <span className="slot-index">{index + 1}</span>
-                <span className="slot-name">{slot.name}</span>
-              </li>
-            ))}
-          </ol>
-
-          <p className="slot-caption">{funnelSection.slotsCaption}</p>
-
-          <div className="slot-legend">
-            <p className="slot-legend-ours">{funnelSection.oursNote}</p>
-            <p className="slot-legend-rest">{funnelSection.restNote}</p>
-          </div>
-
-          {/* 그림이 성과 약속으로 읽히지 않게 잠그는 줄. */}
-          <p className="slot-caveat">{funnelSection.caveat}</p>
-        </div>
-      </section>
-
-      {/* ── ③ 운영 방식 ──────────────────────────────────────────── */}
+      {/* ── 05 운영 방식 ──────────────────────────────────────────── */}
       <section id="operation" className="operation-section" aria-labelledby="operation-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{operationSection.label}</p>
-          <h2 id="operation-heading">{operationSection.heading}</h2>
+          <h2 id="operation-heading">
+            <Accent text={operationSection.heading} />
+          </h2>
         </div>
 
         <ol className="process-grid">
@@ -287,30 +271,42 @@ export default function Home() {
               <p className="process-label">{step.label}</p>
               <h3>{step.title}</h3>
               <p>{step.body}</p>
+              {/* 이 단계가 원장님께 남기는 것. */}
+              <p className="process-output">{step.output}</p>
             </li>
           ))}
         </ol>
       </section>
 
 
-      {/* ── ⑤ 하지 않는 것 ───────────────────────────────────────── */}
+      {/* ── 06 운영 원칙 ───────────────────────────────────────── */}
       <section className="limits-section" aria-labelledby="limits-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{limitsSection.label}</p>
-          <h2 id="limits-heading">{limitsSection.heading}</h2>
+          <h2 id="limits-heading">
+            <Accent text={limitsSection.heading} />
+          </h2>
         </div>
 
-        <ul className="limits-grid">
+        {/* 한 줄에 한 쌍 — 왼쪽은 긋고(하지 않는 것), 오른쪽은 그 자리에서 하는 일. */}
+        <ul className="limits-grid limits-pairs">
           {limitItems.map((item) => (
             <li key={item.title} data-reveal>
-              <h3>{item.title}</h3>
-              <p>{item.body}</p>
+              <div className="limit-no">
+                <p className="limit-tag">{limitsSection.noLabel}</p>
+                <h3>{item.title}</h3>
+                <p>{item.body}</p>
+              </div>
+              <div className="limit-keep">
+                <p className="limit-tag">{limitsSection.keepLabel}</p>
+                <p className="limit-keep-text">{item.keep}</p>
+              </div>
             </li>
           ))}
         </ul>
       </section>
 
-      {/* ── ⑤-b 자주 묻는 질문 ────────────────────────────────────
+      {/* ── 07 자주 묻는 질문 ────────────────────────────────────
           반론을 피하지 않는다. 여기서 답하지 않으면 상담에서 같은 질문을 다시 받는다. */}
       <section id="faq" className="faq-section" aria-labelledby="faq-heading">
         <div className="faq-inner">
@@ -350,7 +346,7 @@ export default function Home() {
         </div>
       </section>
 
-      {/* ── 요금제 ────────────────────────────────────────────────
+      {/* ── 08 요금제 ────────────────────────────────────────────────
           같은 카테고리 국내 16곳 중 가격을 공개하는 곳은 SaaS형 둘뿐이고, 대행 형태는
           전부 "무료 상담 후 견적"이다. 원장은 가격을 알려면 매번 영업 통화를 해야 하고
           그 마찰이 비교 자체를 막는다. 표로 적어 두면 혼자 판단할 수 있다 —
@@ -358,7 +354,9 @@ export default function Home() {
       <section id="pricing" className="pricing-section" aria-labelledby="pricing-heading">
         <div className="section-heading" data-reveal>
           <p className="section-label">{pricingSection.label}</p>
-          <h2 id="pricing-heading">{pricingSection.heading}</h2>
+          <h2 id="pricing-heading">
+            <Accent text={pricingSection.heading} />
+          </h2>
           <p className="section-note">{pricingSection.note}</p>
         </div>
 
@@ -383,20 +381,23 @@ export default function Home() {
         <p className="pricing-management" data-reveal>
           {pricingSection.management}
         </p>
+        {BROCHURE_ENABLED && (
+          <p className="pricing-brochure" data-reveal>
+            <Link href="/brochure">요금제와 운영 방식을 소개서로 정리해 보기</Link>
+          </p>
+        )}
       </section>
 
-      {/* ── ⑥ 무료 진단 ──────────────────────────────────────────── */}
-      <section id="lead" className="cta-section" aria-labelledby="cta-heading">
+      {/* ── 09 도입문의 ──────────────────────────────────────────── */}
+      <section id="contact" className="cta-section" aria-labelledby="cta-heading" tabIndex={-1}>
         <div className="cta-inner" data-reveal>
           <p className="section-label">{ctaSection.label}</p>
-          <h2 id="cta-heading">{ctaSection.heading}</h2>
+          <h2 id="cta-heading">
+            <Accent text={ctaSection.heading} />
+          </h2>
           <p className="cta-body">{ctaSection.body}</p>
 
-          <LiveDiagnosisQuota variant="cta" />
-
-          <Link className="btn btn-primary btn-lg" href={DIAGNOSIS_PATH}>
-            {ctaSection.primaryCta}
-          </Link>
+          <ContactForm />
 
           <ul className="cta-notes">
             {ctaSection.notes.map((note) => (
@@ -419,46 +420,12 @@ export default function Home() {
           JS가 죽으면 올라오지 않지만, 그 경우에도 히어로와 최종 CTA는 그대로 남는다. */}
       <div className="mobile-cta">
         <p className="mobile-cta-note">{ctaSection.body}</p>
-        <Link className="btn btn-primary" href={DIAGNOSIS_PATH}>
+        <a className="btn btn-primary" href={CONTACT_HREF}>
           {ctaSection.primaryCta}
-        </Link>
+        </a>
       </div>
 
-      <footer className="site-footer">
-        <div className="footer-brand">
-          <strong>Re:putation</strong>
-          <p>
-            병원 정보를 AI가 읽을 수 있는 형태로 정리하고, 근거 기반 콘텐츠를 매달 발행하는
-            AI 노출 컨설팅·콘텐츠 운영 서비스입니다.
-          </p>
-          {/* 사업자 정보는 링크로 미루지 않고 여기 적는다. 앞 버전은 "사업자 정보는
-              motionlabs.kr에서 확인하실 수 있습니다"로 넘겼는데, 그러면 사람도 한 번 더
-              눌러야 하고 기계는 아예 못 읽는다(E-E-A-T 신호 누락).
-              주소도 틀려 있었다 — "강남구"로 적혀 있었지만 운영사 등기 주소는 성동구다. */}
-          <p className="footer-biz">
-            운영사: 주식회사 모션랩스(MotionLabs Inc.) · 대표 이우진
-            <br />
-            사업자등록번호 466-88-01551 · 서울특별시 성동구 아차산로 38, 406호
-            <br />
-            <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">
-              motionlabs.kr
-            </a>
-          </p>
-        </div>
-        <div className="footer-links">
-          <a href="https://motionlabs.kr" target="_blank" rel="noopener noreferrer">
-            motionlabs.kr ↗
-          </a>
-          <a href="mailto:contact@motionlabs.kr">contact@motionlabs.kr</a>
-          <Link href="/privacy">개인정보 처리방침</Link>
-          <Link href="/terms">이용약관</Link>
-          <Link href={DIAGNOSIS_PATH}>무료 진단</Link>
-          {/* 헤더 내비에서 내려온 자리다 — 내비에는 섹션 링크만 남기되, 페이지를 멈추는
-              수단 자체는 남긴다(WCAG 2.2.2). 자동으로 움직이는 것은 질문 띠와 로고뿐이고
-              둘 다 이 토글 하나로 멈춘다. */}
-          <MotionToggle />
-        </div>
-      </footer>
+      <SiteFooter />
     </main>
   );
 }
