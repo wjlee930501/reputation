@@ -256,6 +256,7 @@ from app.services.measurement_slots import (
     claim_slot_stage,
     ensure_monthly_slots,
     ensure_v0_slots,
+    release_interrupted_stage,
     slot_is_terminal,
     slot_needs_answer,
     slot_needs_judgment,
@@ -7776,63 +7777,67 @@ def _execute_paid_observation_slot(
         slot_id = slot.id
         answer_attempt = slot.answer_attempt_count
         answer_reservation = 1
-        decision = _run_async(
-            cost_guard.reserve(
-                "sov",
-                count=answer_reservation,
-                reservation_id=f"measurement:{slot_id}:answer:{answer_attempt}",
-            )
-        )
-        if not decision.allowed:
-            db.rollback()
-            return {
-                "measurement_status": "FAILED",
-                "failure_reason": "cost_guard_blocked",
-            }
-        db.commit()
-        try:
-            answer = _run_async(
-                fetch_answer(
-                    query_text,
-                    slot.platform,
-                    requested_model=(
-                        protocol.get("openai_model_query")
-                        if slot.platform == "chatgpt"
-                        else protocol.get("gemini_model")
-                    ),
-                    hospital_id=hospital.id,
-                    workflow=f"{slot.scope.lower()}_sov_answer",
-                    run_id=str(slot.measurement_run_id),
-                    item_id=str(slot.id),
-                    attempt_id=str(answer_attempt),
+        with _SlotStageSoftLimitGuard(
+            db, slot_id, stage="ANSWER", lease_token=lease_token
+        ) as stage_guard:
+            decision = _run_async(
+                cost_guard.reserve(
+                    "sov",
+                    count=answer_reservation,
+                    reservation_id=f"measurement:{slot_id}:answer:{answer_attempt}",
                 )
             )
-        except SoftTimeLimitExceeded:
-            raise
-        except Exception as exc:  # provider may have accepted the request; keep reservation
-            answer = {
-                "measurement_status": "FAILED",
-                "failure_reason": f"answer_exception:{type(exc).__name__}",
-                "provider_calls": answer_reservation,
-            }
-        answer_calls = max(0, int(answer.get("provider_calls") or 0))
-        _run_async(
-            cost_guard.settle_reservation(
-                decision.receipt,
-                consumed_units=min(answer_calls, answer_reservation),
+            if not decision.allowed:
+                db.rollback()
+                return {
+                    "measurement_status": "FAILED",
+                    "failure_reason": "cost_guard_blocked",
+                }
+            db.commit()
+            try:
+                answer = _run_async(
+                    fetch_answer(
+                        query_text,
+                        slot.platform,
+                        requested_model=(
+                            protocol.get("openai_model_query")
+                            if slot.platform == "chatgpt"
+                            else protocol.get("gemini_model")
+                        ),
+                        hospital_id=hospital.id,
+                        workflow=f"{slot.scope.lower()}_sov_answer",
+                        run_id=str(slot.measurement_run_id),
+                        item_id=str(slot.id),
+                        attempt_id=str(answer_attempt),
+                    )
+                )
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception as exc:  # provider may have accepted the request; keep reservation
+                answer = {
+                    "measurement_status": "FAILED",
+                    "failure_reason": f"answer_exception:{type(exc).__name__}",
+                    "provider_calls": answer_reservation,
+                }
+            answer_calls = max(0, int(answer.get("provider_calls") or 0))
+            stage_guard.settlement_started = True
+            _run_async(
+                cost_guard.settle_reservation(
+                    decision.receipt,
+                    consumed_units=min(answer_calls, answer_reservation),
+                )
             )
-        )
-        checkpointed = checkpoint_answer(
-            db, slot_id, answer, lease_token=lease_token
-        )
-        if checkpointed is None:
-            db.rollback()
-            return {
-                "measurement_status": "FAILED",
-                "failure_reason": "stale_slot_answer_discarded",
-            }
-        slot = checkpointed
-        db.commit()
+            checkpointed = checkpoint_answer(
+                db, slot_id, answer, lease_token=lease_token
+            )
+            if checkpointed is None:
+                db.rollback()
+                return {
+                    "measurement_status": "FAILED",
+                    "failure_reason": "stale_slot_answer_discarded",
+                }
+            slot = checkpointed
+            db.commit()
         if slot.answer_status != "RECEIVED":
             return dict(answer)
 
@@ -7877,83 +7882,132 @@ def _execute_paid_observation_slot(
     slot, lease_token = claim
     slot_id = slot.id
     judgment_attempt = slot.judgment_attempt_count
-    decision = _run_async(
-        cost_guard.reserve(
-            "sov",
-            count=judgment_reservation,
-            reservation_id=f"measurement:{slot_id}:judgment:{judgment_attempt}",
-        )
-    )
-    if not decision.allowed:
-        db.rollback()
-        return {
-            **answer_artifact(slot),
-            "measurement_status": "FAILED",
-            "failure_reason": "cost_guard_blocked",
-        }
-    db.commit()
-    try:
-        judgment = _run_async(
-            judge_answer(
-                judgment_hospital_name,
-                slot.raw_response or "",
-                region=judgment_region,
-                competitors=competitors,
-                hospital_identity=str(hospital.id),
-                hospital_id=hospital.id,
-                workflow=f"{slot.scope.lower()}_sov_judgment",
-                run_id=str(slot.measurement_run_id),
-                item_id=str(slot.id),
-                attempt_id=str(judgment_attempt),
-                policy=protocol,
+    with _SlotStageSoftLimitGuard(
+        db, slot_id, stage="JUDGMENT", lease_token=lease_token
+    ) as stage_guard:
+        decision = _run_async(
+            cost_guard.reserve(
+                "sov",
+                count=judgment_reservation,
+                reservation_id=f"measurement:{slot_id}:judgment:{judgment_attempt}",
             )
         )
-    except SoftTimeLimitExceeded:
-        raise
-    except Exception as exc:  # retain answer; only the judgment stage failed
-        judgment = {
-            "measurement_status": "FAILED",
-            "failure_reason": f"judgment_exception:{type(exc).__name__}",
-            "provider_calls": judgment_reservation,
-        }
-    judgment_calls = max(0, int(judgment.get("provider_calls") or 0))
-    _run_async(
-        cost_guard.settle_reservation(
-            decision.receipt,
-            consumed_units=min(judgment_calls, judgment_reservation),
+        if not decision.allowed:
+            db.rollback()
+            return {
+                **answer_artifact(slot),
+                "measurement_status": "FAILED",
+                "failure_reason": "cost_guard_blocked",
+            }
+        db.commit()
+        try:
+            judgment = _run_async(
+                judge_answer(
+                    judgment_hospital_name,
+                    slot.raw_response or "",
+                    region=judgment_region,
+                    competitors=competitors,
+                    hospital_identity=str(hospital.id),
+                    hospital_id=hospital.id,
+                    workflow=f"{slot.scope.lower()}_sov_judgment",
+                    run_id=str(slot.measurement_run_id),
+                    item_id=str(slot.id),
+                    attempt_id=str(judgment_attempt),
+                    policy=protocol,
+                )
+            )
+        except SoftTimeLimitExceeded:
+            raise
+        except Exception as exc:  # retain answer; only the judgment stage failed
+            judgment = {
+                "measurement_status": "FAILED",
+                "failure_reason": f"judgment_exception:{type(exc).__name__}",
+                "provider_calls": judgment_reservation,
+            }
+        judgment_calls = max(0, int(judgment.get("provider_calls") or 0))
+        stage_guard.settlement_started = True
+        _run_async(
+            cost_guard.settle_reservation(
+                decision.receipt,
+                consumed_units=min(judgment_calls, judgment_reservation),
+            )
         )
-    )
-    result = {**answer_artifact(slot), **judgment}
-    record = _build_sov_record_from_result(
-        hospital_id=hospital.id,
-        query_id=slot.query_id,
-        measurement_run_id=slot.measurement_run_id,
-        platform=slot.platform,
-        result=result,
-        target_id=target_id,
-        variant_id=variant_id,
-    )
-    if slot.answered_at is not None:
-        record.measured_at = slot.answered_at
-    checkpointed = checkpoint_judgment(
-        db,
-        slot_id,
-        fingerprint=fingerprint,
-        result=judgment,
-        sov_record=record,
-        lease_token=lease_token,
-    )
-    if checkpointed is None:
-        db.rollback()
-        return {
-            "measurement_status": "FAILED",
-            "failure_reason": "stale_slot_judgment_discarded",
-        }
-    slot, judgment_status = checkpointed
-    if monthly_cell is not None and judgment_status in {"CONFIRMED", "AMBIGUOUS"}:
-        db.add(link_attempt(monthly_cell, record))
-    db.commit()
+        result = {**answer_artifact(slot), **judgment}
+        record = _build_sov_record_from_result(
+            hospital_id=hospital.id,
+            query_id=slot.query_id,
+            measurement_run_id=slot.measurement_run_id,
+            platform=slot.platform,
+            result=result,
+            target_id=target_id,
+            variant_id=variant_id,
+        )
+        if slot.answered_at is not None:
+            record.measured_at = slot.answered_at
+        checkpointed = checkpoint_judgment(
+            db,
+            slot_id,
+            fingerprint=fingerprint,
+            result=judgment,
+            sov_record=record,
+            lease_token=lease_token,
+        )
+        if checkpointed is None:
+            db.rollback()
+            return {
+                "measurement_status": "FAILED",
+                "failure_reason": "stale_slot_judgment_discarded",
+            }
+        slot, judgment_status = checkpointed
+        if monthly_cell is not None and judgment_status in {"CONFIRMED", "AMBIGUOUS"}:
+            db.add(link_attempt(monthly_cell, record))
+        db.commit()
     return result
+
+
+class _SlotStageSoftLimitGuard:
+    """Hand an interrupted paid stage back before the soft-limit continuation.
+
+    The claim is committed before the provider call, so without this a chunk boundary
+    keeps a 15-minute lease and one of the bounded stage attempts, and the resumed
+    chunk reads the slot as leased or failed.
+    """
+
+    def __init__(self, db, slot_id: uuid.UUID, *, stage: str, lease_token: uuid.UUID):
+        self.db = db
+        self.slot_id = slot_id
+        self.stage = stage
+        self.lease_token = lease_token
+        self.settlement_started = False
+
+    def __enter__(self) -> "_SlotStageSoftLimitGuard":
+        return self
+
+    def __exit__(self, exc_type, _exc, _tb) -> bool:
+        if exc_type is None or not issubclass(exc_type, SoftTimeLimitExceeded):
+            return False
+        try:
+            self.db.rollback()
+            release_interrupted_stage(
+                self.db,
+                self.slot_id,
+                stage=self.stage,
+                lease_token=self.lease_token,
+                refund_attempt=not self.settlement_started,
+            )
+            self.db.commit()
+        except Exception:
+            logger.warning(
+                "Interrupted measurement slot stage was not released: slot=%s stage=%s",
+                self.slot_id,
+                self.stage,
+                exc_info=True,
+            )
+            try:
+                self.db.rollback()
+            except Exception:
+                pass
+        return False
 
 
 def _build_measurement_specs(

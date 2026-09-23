@@ -294,6 +294,35 @@ def _release_lease(slot: MeasurementObservationSlot) -> None:
     slot.version += 1
 
 
+def release_interrupted_stage(
+    session,
+    slot_id: uuid.UUID,
+    *,
+    stage: str,
+    lease_token: uuid.UUID,
+    refund_attempt: bool,
+) -> bool:
+    """Hand back a stage claim that a chunk boundary interrupted before checkpoint.
+
+    Refund only while the stage's cost reservation is unsettled: the next claim then
+    reuses the same attempt number, hence the same idempotent reservation id. Once
+    settlement has started the attempt was paid for and stays counted.
+    """
+    if stage not in {"ANSWER", "JUDGMENT"}:
+        raise ValueError("measurement slot stage must be ANSWER or JUDGMENT")
+    slot = _claimed_slot_for_checkpoint(session, slot_id, lease_token)
+    if slot is None:
+        return False
+    if refund_attempt:
+        if stage == "ANSWER":
+            slot.answer_attempt_count = max(0, slot.answer_attempt_count - 1)
+        else:
+            slot.judgment_attempt_count = max(0, slot.judgment_attempt_count - 1)
+    _release_lease(slot)
+    session.flush()
+    return True
+
+
 def checkpoint_answer(
     session,
     slot_id: uuid.UUID,
