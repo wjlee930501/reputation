@@ -140,3 +140,75 @@ async def test_stalled_manifest_unlocks_once(pg_async_session):
             now=NOW,
         )
     assert exc.value.decision.code == gate.ALREADY_USED
+
+
+def _manual_run(hospital_id, key, payload, *, state, error_code=None):
+    return OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="RUN_SOV",
+        state=state,
+        idempotency_key=key,
+        task_id=str(uuid.uuid4()),
+        attempt_count=0,
+        total_count=0,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=payload,
+        safe_error_code=error_code,
+        version=1,
+    )
+
+
+async def test_broker_rejected_unlock_retries_under_next_key(pg_async_session):
+    hospital = await _seed(pg_async_session, last_progress_at=NOW - timedelta(hours=13))
+    first = await gate.authorize_manual_remasure(
+        pg_async_session,
+        hospital_id=hospital.id,
+        year=2026,
+        month=8,
+        request_fingerprint="click-1",
+        now=NOW,
+    )
+    pg_async_session.add(
+        _manual_run(
+            hospital.id,
+            first.operation_key,
+            first.request_payload_extra,
+            state=OperationRunState.FAILED,
+            error_code="BROKER_UNAVAILABLE",
+        )
+    )
+    await pg_async_session.flush()
+
+    retried = await gate.authorize_manual_remasure(
+        pg_async_session,
+        hospital_id=hospital.id,
+        year=2026,
+        month=8,
+        request_fingerprint="click-1",
+        now=NOW,
+    )
+    assert retried.operation_key == f"{first.operation_key}:2"
+    # The unique idempotency index accepts the retry key next to the dead run.
+    pg_async_session.add(
+        _manual_run(
+            hospital.id,
+            retried.operation_key,
+            retried.request_payload_extra,
+            state=OperationRunState.QUEUED,
+        )
+    )
+    await pg_async_session.flush()
+
+    with pytest.raises(gate.ManualRemasureLocked) as exc:
+        await gate.authorize_manual_remasure(
+            pg_async_session,
+            hospital_id=hospital.id,
+            year=2026,
+            month=8,
+            request_fingerprint="click-2",
+            now=NOW,
+        )
+    assert exc.value.decision.code == gate.ALREADY_USED

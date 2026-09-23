@@ -165,6 +165,14 @@ def decide_manual_remasure(
     )
 
 
+def _never_reached_broker(run: OperationRun) -> bool:
+    """A publish rejected by the broker is terminal and bought nothing.
+
+    REQUESTED runs still count: the autonomous recovery sweep redispatches them.
+    """
+    return run.state == OperationRunState.FAILED and run.safe_error_code == "BROKER_UNAVAILABLE"
+
+
 def _replayed_run(
     runs: Iterable[OperationRun], *, legacy_key: str, request_fingerprint: str
 ) -> OperationRun | None:
@@ -244,19 +252,21 @@ async def authorize_manual_remasure(
     """Return the operation key for an allowed or replayed remasure, else raise.
 
     A browser retry with the same client key replays its own run. Any other earlier manual
-    remasure for the period means the single allowance is spent.
+    remasure for the period means the single allowance is spent, except a run the broker
+    rejected: it never queued, so the next request re-evaluates the stall under a fresh key.
     """
     moment = _aware(now) or datetime.now(UTC)
     prefix = manual_remasure_key_prefix(hospital_id, year, month)
     prior_runs = await _prior_manual_remasure_runs(db, hospital_id, year, month)
+    spent_runs = [run for run in prior_runs if not _never_reached_broker(run)]
     replay = _replayed_run(
-        prior_runs,
+        spent_runs,
         legacy_key=f"{prefix}{request_fingerprint}",
         request_fingerprint=request_fingerprint,
     )
     if replay is not None and replay.idempotency_key:
         return RemasureAuthorization(replay.idempotency_key, None)
-    if prior_runs:
+    if spent_runs:
         raise ManualRemasureLocked(
             RemasureGateDecision(
                 False,
@@ -270,8 +280,12 @@ async def authorize_manual_remasure(
     )
     if not decision.allowed:
         raise ManualRemasureLocked(decision)
+    # Every earlier key in this family belongs to a broker-rejected run, so the count of
+    # those runs names the next unused key; concurrent requests still collapse on it.
+    broker_rejected = len(prior_runs) - len(spent_runs)
+    attempt_suffix = f":{broker_rejected + 1}" if broker_rejected else ""
     return RemasureAuthorization(
-        f"{prefix}{_STALL_UNLOCK_SUFFIX}",
+        f"{prefix}{_STALL_UNLOCK_SUFFIX}{attempt_suffix}",
         {
             "manual_remasure": {
                 "request_fingerprint": request_fingerprint,

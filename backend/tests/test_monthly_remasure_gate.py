@@ -152,6 +152,8 @@ async def test_authorization_allows_once_and_replays_the_same_request(monkeypatc
         SimpleNamespace(
             idempotency_key=allowed.operation_key,
             request_payload=allowed.request_payload_extra,
+            state=OperationRunState.QUEUED,
+            safe_error_code=None,
         )
     )
     replay = await gate.authorize_manual_remasure(
@@ -174,6 +176,8 @@ async def test_earlier_manual_remasure_spends_the_single_allowance(monkeypatch):
     legacy = SimpleNamespace(
         idempotency_key=f"monthly-sov-remasure:{hospital_id}:2026-08:abc123",
         request_payload={},
+        state=OperationRunState.SUCCEEDED,
+        safe_error_code=None,
     )
 
     async def prior_runs(_db, *_args):
@@ -191,3 +195,73 @@ async def test_earlier_manual_remasure_spends_the_single_allowance(monkeypatch):
             request_fingerprint="new-click", now=NOW,
         )
     assert exc.value.decision.code == gate.ALREADY_USED
+
+
+async def test_broker_rejected_remasure_does_not_spend_the_allowance(monkeypatch):
+    hospital_id = uuid.uuid4()
+    prefix = f"monthly-sov-remasure:{hospital_id}:2026-08:"
+    broker_rejected = SimpleNamespace(
+        idempotency_key=f"{prefix}stall-unlock",
+        request_payload={"manual_remasure": {"request_fingerprint": "first"}},
+        state=OperationRunState.FAILED,
+        safe_error_code="BROKER_UNAVAILABLE",
+    )
+    runs = [broker_rejected]
+
+    async def prior_runs(_db, *_args):
+        return list(runs)
+
+    async def progress(_db, *_args):
+        return _progress(_auto_run())
+
+    monkeypatch.setattr(gate, "_prior_manual_remasure_runs", prior_runs)
+    monkeypatch.setattr(gate, "load_monthly_recovery_progress", progress)
+
+    # The same click is not replayed onto the dead run; it gets a fresh, dispatchable key.
+    retried = await gate.authorize_manual_remasure(
+        None, hospital_id=hospital_id, year=2026, month=8,
+        request_fingerprint="first", now=NOW,
+    )
+    assert retried.operation_key == f"{prefix}stall-unlock:2"
+    assert retried.request_payload_extra["manual_remasure"]["request_fingerprint"] == "first"
+
+    runs.append(
+        SimpleNamespace(
+            idempotency_key=retried.operation_key,
+            request_payload=retried.request_payload_extra,
+            state=OperationRunState.QUEUED,
+            safe_error_code=None,
+        )
+    )
+    with pytest.raises(gate.ManualRemasureLocked) as exc:
+        await gate.authorize_manual_remasure(
+            None, hospital_id=hospital_id, year=2026, month=8,
+            request_fingerprint="second", now=NOW,
+        )
+    assert exc.value.decision.code == gate.ALREADY_USED
+
+
+async def test_broker_rejected_remasure_still_requires_a_stall(monkeypatch):
+    hospital_id = uuid.uuid4()
+    broker_rejected = SimpleNamespace(
+        idempotency_key=f"monthly-sov-remasure:{hospital_id}:2026-08:stall-unlock",
+        request_payload={},
+        state=OperationRunState.FAILED,
+        safe_error_code="BROKER_UNAVAILABLE",
+    )
+
+    async def prior_runs(_db, *_args):
+        return [broker_rejected]
+
+    async def progress(_db, *_args):
+        return _progress(_auto_run(), hours_ago=1)
+
+    monkeypatch.setattr(gate, "_prior_manual_remasure_runs", prior_runs)
+    monkeypatch.setattr(gate, "load_monthly_recovery_progress", progress)
+
+    with pytest.raises(gate.ManualRemasureLocked) as exc:
+        await gate.authorize_manual_remasure(
+            None, hospital_id=hospital_id, year=2026, month=8,
+            request_fingerprint="first", now=NOW,
+        )
+    assert exc.value.decision.code == gate.LOCKED

@@ -337,6 +337,93 @@ async def test_monthly_remasure_opens_once_after_12h_without_progress(monkeypatc
     assert len(task.calls) == 1
 
 
+class _KeyedRunDB(FakeDB):
+    """FakeDB whose idempotency lookup matches the requested key, like the real query."""
+
+    async def scalar(self, stmt):
+        if stmt.column_descriptions[0].get("entity") is OperationRun:
+            requested = set(stmt.compile().params.values())
+            return next(
+                (
+                    item
+                    for item in self.added
+                    if isinstance(item, OperationRun) and item.idempotency_key in requested
+                ),
+                None,
+            )
+        return await super().scalar(stmt)
+
+    async def execute(self, statement):
+        if getattr(statement, "is_update", False):
+            run = [item for item in self.added if isinstance(item, OperationRun)][-1]
+            run.state = "QUEUED"
+            run.queued_at = datetime.now(timezone.utc)
+            run.version += 1
+            return SimpleNamespace(scalar_one_or_none=lambda: run)
+        return await super().execute(statement)
+
+
+async def test_broker_failure_does_not_burn_the_monthly_remasure_unlock(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE, monthly_sov_cohort=True)
+    db = _KeyedRunDB(hospital=hospital)
+    task = FakeTask()
+    _patch_monthly_remasure(monkeypatch, db, task, _stalled_progress(13))
+
+    async def record_incident(_db, _request, **_kwargs):
+        return SimpleNamespace()
+
+    def broker_down(*, args, queue, headers, task_id):
+        del args, queue, headers, task_id
+        raise ConnectionError("broker unavailable")
+
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", broker_down)
+
+    with pytest.raises(HTTPException) as failed:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-click",
+        )
+    assert failed.value.status_code == 503
+    dead = next(row for row in db.added if isinstance(row, OperationRun))
+    assert (dead.state, dead.safe_error_code) == ("FAILED", "BROKER_UNAVAILABLE")
+
+    # The broker recovers and the operator retries the same click: it queues for real.
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+    retried = await operations_api.run_sov_operation(
+        hospital.id,
+        measurement_mode="monthly",
+        db=db,
+        idempotency_key="monthly-remeasure-click",
+    )
+    assert retried["idempotent_replay"] is False
+    assert retried["operation_run_id"] != str(dead.id)
+    assert retried["operation_state"] == "QUEUED"
+    assert task.calls == [{"args": [str(hospital.id), "monthly", 2026, 8], "queue": "sov"}]
+    live = next(
+        row
+        for row in db.added
+        if isinstance(row, OperationRun) and str(row.id) == retried["operation_run_id"]
+    )
+    assert live.idempotency_key == (
+        f"monthly-sov-remasure:{hospital.id}:2026-08:stall-unlock:2"
+    )
+
+    # Once a run actually queued, the single allowance is spent.
+    with pytest.raises(HTTPException) as spent:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-second-click",
+        )
+    assert spent.value.status_code == 409
+    assert spent.value.detail["code"] == monthly_remasure_gate.ALREADY_USED
+    assert len(task.calls) == 1
+
+
 async def test_queue_failure_never_records_queued_true(monkeypatch):
     hospital = _hospital(status=HospitalStatus.ACTIVE)
     db = FakeDB(hospital=hospital)
