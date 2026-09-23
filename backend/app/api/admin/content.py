@@ -462,7 +462,7 @@ async def set_schedule(
                 source_type="CONTENT_SCHEDULE",
                 hospital_name=hospital.name,
                 hospital_id=hospital.id,
-                admin_path=f"/hospitals/{hospital.id}/schedule",
+                admin_path=f"/hospitals/{hospital.id}/content",
                 actor="admin-content-api",
                 notify=False,
             )

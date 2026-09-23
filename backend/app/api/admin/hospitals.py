@@ -741,7 +741,7 @@ async def create_hospital(
                         "id": str(candidate.id),
                         "name": candidate.name,
                         "status": candidate.status.value,
-                        "onboarding_url": f"/hospitals/{candidate.id}/onboarding",
+                        "onboarding_url": f"/hospitals/{candidate.id}/info",
                     }
                     for candidate in duplicate_candidates
                 ],
@@ -828,7 +828,7 @@ async def list_hospital_name_candidates(
                 "id": str(candidate.id),
                 "name": candidate.name,
                 "status": candidate.status.value,
-                "onboarding_url": f"/hospitals/{candidate.id}/onboarding",
+                "onboarding_url": f"/hospitals/{candidate.id}/info",
             }
             for candidate in candidates
         ],

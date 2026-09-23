@@ -91,7 +91,7 @@ async def open_certificate_failure_incident(
             customer_impact=_CUSTOMER_IMPACT,
             source_type=CERTIFICATE_INCIDENT_SOURCE_TYPE,
             next_action=_NEXT_ACTION,
-            admin_path=f"/hospitals/{hospital_id}/onboarding",
+            admin_path=f"/hospitals/{hospital_id}/info",
             hospital_id=hospital_id,
             source_id=object_id,
             safe_error_code=cause.value,

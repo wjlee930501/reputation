@@ -289,7 +289,7 @@ async def convert_sales_lead(
         return {
             "lead": _serialize_lead(lead),
             "hospital": _serialize_hospital(hospital) if hospital else None,
-            "onboarding_url": f"/hospitals/{hospital.id}/onboarding" if hospital else None,
+            "onboarding_url": f"/hospitals/{hospital.id}/info" if hospital else None,
             "handoff": _serialize_handoff(handoff),
         }
 
@@ -334,7 +334,7 @@ async def convert_sales_lead(
                             "status": candidate.status.value
                             if hasattr(candidate.status, "value")
                             else str(candidate.status),
-                            "onboarding_url": f"/hospitals/{candidate.id}/onboarding",
+                            "onboarding_url": f"/hospitals/{candidate.id}/info",
                         }
                         for candidate in duplicates
                     ],
@@ -412,7 +412,7 @@ async def convert_sales_lead(
     return {
         "lead": _serialize_lead(lead),
         "hospital": _serialize_hospital(hospital),
-        "onboarding_url": f"/hospitals/{hospital.id}/onboarding",
+        "onboarding_url": f"/hospitals/{hospital.id}/info",
         "handoff": _serialize_handoff(handoff),
         # 운영자가 "새 병원으로 생성"을 눌렀는데 기존 병원으로 이어진 경우를 화면이
         # 알 수 있어야 한다 — 말없이 다른 병원의 온보딩으로 보내면 안 된다.
@@ -648,7 +648,7 @@ def _serialize_hospital(hospital: Hospital | None) -> dict | None:
         "status": hospital.status.value if hospital.status else None,
         "plan": hospital.plan.value if hospital.plan else None,
         "source_lead_id": str(hospital.source_lead_id) if hospital.source_lead_id else None,
-        "onboarding_url": f"/hospitals/{hospital.id}/onboarding",
+        "onboarding_url": f"/hospitals/{hospital.id}/info",
     }
 
 

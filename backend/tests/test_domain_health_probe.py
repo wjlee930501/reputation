@@ -124,7 +124,7 @@ def test_notification_preserves_the_stored_failure_instead_of_generic_text(reaso
         severity="HIGH",
         customer_impact="공개 주소 확인 필요",
         next_action=safe_domain_next_action(reason),
-        admin_path=f"/hospitals/{HOSPITAL}/onboarding",
+        admin_path=f"/hospitals/{HOSPITAL}/info",
         version=1,
         episode_seq=1,
         incident_type="DOMAIN_UNHEALTHY",

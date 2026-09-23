@@ -122,7 +122,7 @@ async def test_convert_sales_lead_creates_draft_hospital_from_lead():
     assert hospital.specialties == [lead.clinic_type]
     assert lead.status == "CONVERTED"
     assert lead.converted_hospital_id == hospital.id
-    assert response["onboarding_url"] == f"/hospitals/{hospital.id}/onboarding"
+    assert response["onboarding_url"] == f"/hospitals/{hospital.id}/info"
 
 
 class _CaptureDB(FakeDB):

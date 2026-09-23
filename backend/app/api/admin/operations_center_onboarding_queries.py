@@ -131,7 +131,7 @@ async def load_onboarding_queue(
             customer=OperationsCustomer(
                 hospital_id=hospital.id,
                 name=hospital.name,
-                admin_path=f"/hospitals/{hospital.id}/onboarding",
+                admin_path=f"/hospitals/{hospital.id}/info",
             ),
             status=hospital.status.value,
             severity="HIGH"
@@ -150,7 +150,7 @@ async def load_onboarding_queue(
                 kind="CONTINUE_ONBOARDING",
                 label="온보딩 계속",
                 method="GET",
-                path=f"/hospitals/{hospital.id}/onboarding",
+                path=f"/hospitals/{hospital.id}/info",
             ),
             retry=None,
             safe_cause=None,

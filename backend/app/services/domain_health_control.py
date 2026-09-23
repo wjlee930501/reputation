@@ -179,7 +179,7 @@ async def _open_domain_incident(
             customer_impact="환자와 AI가 병원 연결 주소에서 공개 콘텐츠를 열지 못할 수 있습니다.",
             source_type=_SOURCE_TYPE,
             next_action=safe_domain_next_action(safe_reason),
-            admin_path=f"/hospitals/{hospital.id}/onboarding",
+            admin_path=f"/hospitals/{hospital.id}/info",
             hospital_id=hospital.id,
             operation_run_id=run.id,
             source_id=source_id,

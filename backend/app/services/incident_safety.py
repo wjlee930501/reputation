@@ -22,6 +22,31 @@ _SECRET: Final = re.compile(
 _PHONE: Final = re.compile(r"(?<!\d)(?:\+?82[- ]?)?0?1\d[- ]?\d{3,4}[- ]?\d{4}(?!\d)")
 _ADMIN_ROUTE_ROOTS: Final = ("/operations", "/hospitals", "/leads")
 
+# 옛 병원 화면 경로 → 새 탭(admin/lib/route-redirects.ts의 TARGETS와 같은 대응).
+# Admin의 redirect는 2026-10-09에 사라진다. 그 전에 저장된 인시던트의 admin_path는
+# 다시 touch되기 전까지 옛 경로를 들고 있으므로, 읽는 시점에 새 탭으로 바꾼다.
+_RETIRED_HOSPITAL_TABS: Final = {
+    "dashboard": "",
+    "essence": "",
+    "onboarding": "/info",
+    "profile": "/info",
+    "wiki": "/info",
+    "schedule": "/content",
+    "query-targets": "/content",
+    "exposure-actions": "/content",
+}
+_RETIRED_HOSPITAL_PATH = re.compile(
+    r"^(/hospitals/[^/]+)/(%s)/?$" % "|".join(re.escape(key) for key in _RETIRED_HOSPITAL_TABS)
+)
+
+
+def current_admin_path(path: str) -> str:
+    """옛 병원 화면 경로를 지금의 탭 경로로 바꾼다. 그 밖의 경로는 그대로 둔다."""
+    match = _RETIRED_HOSPITAL_PATH.match(path)
+    if match is None:
+        return path
+    return f"{match.group(1)}{_RETIRED_HOSPITAL_TABS[match.group(2)]}"
+
 
 def build_incident_key(
     pipeline: str,
@@ -145,7 +170,7 @@ def normalize_admin_path(value: str) -> str:
     if path.startswith("//") or any(part == ".." for part in path.split("/")):
         return "/operations"
     allowed = any(path == root or path.startswith(f"{root}/") for root in _ADMIN_ROUTE_ROOTS)
-    return path if allowed else "/operations"
+    return current_admin_path(path) if allowed else "/operations"
 
 
 def _segment(value: str) -> str:
