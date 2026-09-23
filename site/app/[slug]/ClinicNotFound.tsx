@@ -97,19 +97,21 @@ export default function ClinicNotFound() {
   )
 }
 
+// 모르는 slug(플랫폼 도메인의 오타 주소 등)에서만 보인다 — 병원이 확인되면 위의 병원 테마
+// 404가 대신 그린다. 루트 404(`app/not-found.tsx`)와 같은 중립 화면이다.
 function GlobalNotFoundFallback({ loading }: { loading: boolean }) {
   return (
-    <main id="main-content" className="min-h-screen flex items-center justify-center bg-slate-50 px-6">
-      <div className="text-center max-w-md" aria-live="polite">
-        <p className="text-sm font-semibold text-blue-600 mb-2">404</p>
-        <h1 className="text-2xl font-bold text-slate-800 mb-3">페이지를 찾을 수 없습니다</h1>
-        <p className="text-slate-500 mb-8 text-sm leading-relaxed">
+    <main id="main-content" className="landing-shell landing-edge landing-sub">
+      <section className="edge-message" aria-live="polite">
+        <p className="edge-message-code">404</p>
+        <h1>페이지를 찾을 수 없습니다</h1>
+        <p>
           {loading ? '병원 정보를 확인하고 있습니다.' : '주소가 잘못되었거나 페이지가 이동·삭제되었을 수 있습니다.'}
         </p>
-        <Link href="/" className="inline-block bg-blue-600 text-white px-6 py-2.5 rounded-lg font-medium hover:bg-blue-700 transition-colors">
+        <Link href="/" className="btn edge-message-action">
           Re:putation 홈으로 이동
         </Link>
-      </div>
+      </section>
     </main>
   )
 }

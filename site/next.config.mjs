@@ -70,6 +70,14 @@ const contentSecurityPolicy = [
   `connect-src 'self' ${GA_CONNECT_SRC} ${OPENAI_PIXEL_CONNECT_SRC}`,
 ].join('; ')
 
+// 소개서 문서(`/brochure/doc`)만 같은 출처의 iframe 임베드를 허용한다. 나머지 경로는
+// 그대로 `frame-ancestors 'none'` + `X-Frame-Options: DENY`다. Next는 같은 키가 여러 규칙에
+// 걸리면 **뒤에 선언한 값**을 쓰므로, 아래 headers()에서 이 규칙을 전역 규칙 뒤에 둔다.
+const brochureFrameHeaders = [
+  { key: 'Content-Security-Policy', value: contentSecurityPolicy.replace("frame-ancestors 'none'", "frame-ancestors 'self'") },
+  { key: 'X-Frame-Options', value: 'SAMEORIGIN' },
+]
+
 const securityHeaders = [
   { key: 'Content-Security-Policy', value: contentSecurityPolicy },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
@@ -90,6 +98,10 @@ const nextConfig = {
   // Cloud Run 컨테이너 배포용 — .next/standalone에 self-contained 서버 번들 생성.
   output: 'standalone',
   outputFileTracingRoot: appDir,
+  // 소개서 원본은 라우트가 런타임에 파일로 읽는다 — standalone 번들에 함께 실어야 한다.
+  outputFileTracingIncludes: {
+    '/brochure/doc': ['./content/brochure/**/*'],
+  },
   images: {
     // Keep negotiated AVIF/WebP: WebP-only increased mobile transfer in measured photos.
     formats: ['image/avif', 'image/webp'],
@@ -104,11 +116,21 @@ const nextConfig = {
       ...backendImageHosts,
     ],
   },
+  // 무료 진단 셀프 신청 화면은 닫았다. 진단 리포트는 도입문의 뒤 담당 마케터가 만들어
+  // 연락과 함께 전달한다. 광고·북마크로 들어오는 방문은 도입문의로 보낸다(쿼리는 유지된다).
+  // 기존 신청자의 결과 확인 경로(/ai-diagnosis/status/…)는 이 규칙에 걸리지 않는다.
+  async redirects() {
+    return [{ source: '/ai-diagnosis', destination: '/contact', permanent: false }]
+  },
   async headers() {
     return [
       {
         source: '/:path*',
         headers: securityHeaders,
+      },
+      {
+        source: '/brochure/doc',
+        headers: brochureFrameHeaders,
       },
     ]
   },
