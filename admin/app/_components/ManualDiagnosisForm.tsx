@@ -83,7 +83,8 @@ export function ManualDiagnosisForm({
   return (
     <form onSubmit={handleSubmit} noValidate>
       <div className="grid gap-4 sm:grid-cols-2">
-        {FIELDS.map((field) => {
+        {/* 고쳐 만드는 경로는 원장이 남긴 연락처를 그대로 둔다 — 여기서 받지 않는다. */}
+        {FIELDS.filter((field) => !(leadId && field.name === 'contact')).map((field) => {
           const error = errors[field.name]
           const id = `manual-${field.name}`
           return (

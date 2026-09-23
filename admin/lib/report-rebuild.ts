@@ -20,8 +20,8 @@ export type ReportRebuildPlan =
 type RebuildContract = {
   readonly periodYear: number
   readonly periodMonth: number
-  /** 월간 전달 기록 파이프라인 대상인지. false면 초기 진단(V0)이다. */
-  readonly deliveryTracked: boolean
+  /** 초기 진단(V0)인지. 서버의 `delivery_tracked`는 V0에도 true라 기준이 될 수 없다. */
+  readonly initialReport: boolean
   /** 원장에게 전달한 기록이 남아 있는지. */
   readonly delivered: boolean
 }
@@ -40,7 +40,7 @@ export function reportRebuildPlan(
   report: RebuildContract,
   now: Date = new Date(),
 ): ReportRebuildPlan {
-  if (!report.deliveryTracked) {
+  if (report.initialReport) {
     return { kind: 'unavailable', reason: V0_UNAVAILABLE }
   }
   // 서버도 같은 경계를 본다(require_closed_period). 먼저 판정해 400 대신 이유를 보여준다.

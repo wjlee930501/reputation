@@ -63,6 +63,12 @@ export type ReportView = {
   periodYear: number
   periodMonth: number
   typeLabel: string
+  /**
+   * 초기 진단(V0)인지. 전달 추적 여부(`deliveryTracked`)로 가르지 않는다 — 서버는 V0와
+   * 월간 모두 `delivery_tracked: true`를 보낸다. 월간 생성 경로로 다시 만들 수 없는 것을
+   * 가르는 기준은 보고서 종류다.
+   */
+  isInitialReport: boolean
   statusLabel: string
   hasPdf: boolean
   internalDownloadUrl: string | null
@@ -305,6 +311,7 @@ export function parseReport(value: unknown): ReportView | null {
     periodYear: number(root.period_year),
     periodMonth: number(root.period_month),
     typeLabel: reportTypeLabel(text(root.report_type), text(display?.report_type_label)),
+    isInitialReport: text(root.report_type) === 'V0',
     statusLabel: text(display?.screening_status_label, '검수 필요'),
     hasPdf: root.has_pdf === true,
     internalDownloadUrl: text(root.download_url) || null,

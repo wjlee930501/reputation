@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,8 +47,9 @@ class ManualDiagnosisRequest(BaseModel):
     specialty: str = Field(min_length=1, max_length=100)
     region_keyword: str = Field(min_length=1, max_length=100)
     core_keywords: list[str] = Field(min_length=1, max_length=4)
-    # 영업 기록이므로 연락할 수단은 남긴다. 병원 대표번호도 괜찮다.
-    contact: str = Field(min_length=1, max_length=200)
+    # 영업 기록이므로 연락할 수단은 남긴다. 병원 대표번호도 괜찮다. 고쳐 만드는 경로는
+    # 리드에 원장이 남긴 연락처가 이미 있고 그 값을 덮지 않으므로 받지 않아도 된다.
+    contact: str | None = Field(default=None, min_length=1, max_length=200)
     contact_name: str | None = Field(default=None, max_length=100)
     # 기존 도입문의를 고쳐 만드는 경우에만 준다. 활성 진단이 있으면 갈음한다.
     lead_id: uuid.UUID | None = None
@@ -66,6 +67,12 @@ class ManualDiagnosisRequest(BaseModel):
         if not cleaned:
             raise ValueError("Must not be blank")
         return cleaned
+
+    @model_validator(mode="after")
+    def contact_required_for_new_lead(self) -> "ManualDiagnosisRequest":
+        if self.lead_id is None and self.contact is None:
+            raise ValueError("연락할 수단을 남겨 주세요. 병원 대표번호도 괜찮습니다.")
+        return self
 
     @field_validator("core_keywords")
     @classmethod
@@ -167,6 +174,7 @@ async def create_manual_diagnosis(
                 region_keyword=body.region_keyword,
                 core_keywords=list(body.core_keywords),
                 contact_name=body.contact_name,
+                clinic_name=body.clinic_name,
             ),
             actor=actor.email,
             # 활성 진단이 없으면 갈음할 것도 없다. 사유는 그때만 넘긴다.

@@ -25,11 +25,16 @@ from app.models.lead import LEAD_CLINIC_TYPE_INQUIRY_MARKER, SalesLead, is_inter
 from app.models.lead_diagnosis import DeliveryStatus, LeadDiagnosis
 from app.services import sov_engine
 from app.services.audit_log import write_audit_log
+from app.services.ops_incident_alerts import recover_ops_incidents_for_source
 from app.services.query_mapper import QueryMappingError, build_lead_diagnosis_queries
 
 logger = logging.getLogger(__name__)
 
 PUBLIC_INTAKE_ACTOR = "system:public-inquiry"
+
+# 진단 한 건에 붙는 인시던트의 파이프라인. 모두 진단 ID를 source_id로 쓴다
+# (lead_diagnosis_tasks·lead_diagnosis_engine·lead_recovery_incidents).
+SUPERSEDED_INCIDENT_PIPELINES = ("lead_diagnosis", "lead_report")
 
 
 class InquiryDiagnosisError(Exception):
@@ -49,15 +54,9 @@ class InquiryDiagnosisInput:
     email: str | None = None
     clinic_phone: str | None = None
     contact_name: str | None = None
-
-
-async def latest_diagnosis_for(db: AsyncSession, lead_id: uuid.UUID) -> LeadDiagnosis | None:
-    return await db.scalar(
-        select(LeadDiagnosis)
-        .where(LeadDiagnosis.lead_id == lead_id)
-        .order_by(LeadDiagnosis.created_at.desc())
-        .limit(1)
-    )
+    # 정식 병원명 정정. 언급 판정이 이 문자열에 달려 있으므로, 값을 고쳐 다시 만드는
+    # 경로가 병원명을 고쳤다면 검증·질의·판정 대상 모두 새 이름을 써야 한다.
+    clinic_name: str | None = None
 
 
 async def active_diagnosis_for(db: AsyncSession, lead_id: uuid.UUID) -> LeadDiagnosis | None:
@@ -139,9 +138,12 @@ async def create_inquiry_diagnosis(
             },
         )
 
-    queries = build_inquiry_queries(lead.clinic_name, spec)
+    subject_name = spec.clinic_name or lead.clinic_name
+    queries = build_inquiry_queries(subject_name, spec)
 
     # 여기서부터 mutate. 위 검증이 모두 통과한 뒤라 예외로 세션이 반쯤 바뀌는 일이 없다.
+    previous_clinic_name = lead.clinic_name
+    lead.clinic_name = subject_name
     if spec.email is not None:
         lead.email = spec.email
     # 도입문의 표식은 남겨둔다. clinic_type 하나만 보는 판정(Admin 목록 배지·도입문의 상세
@@ -161,7 +163,7 @@ async def create_inquiry_diagnosis(
         lead_id=lead.id,
         applicant_email_hash=None,
         subject_phone_hash=None,
-        subject_hospital_name=lead.clinic_name,
+        subject_hospital_name=subject_name,
         subject_region=spec.region_keyword,
         slot_date=None,
         slot_no=None,
@@ -182,6 +184,17 @@ async def create_inquiry_diagnosis(
         # 만들어지면 폴러와 Admin 목록이 서로 다른 것을 본다.
         existing.superseded_at = datetime.now(timezone.utc)
         existing.superseded_by_id = diagnosis.id
+        # 갈음된 진단은 다시 집히지 않는다 — 워커도 복구 버튼도 이 행을 보지 않는다. 그 위에
+        # 열려 있던 실패 인시던트는 닫을 주체가 없어 운영자 큐에 영원히 남으므로, 갈음과 같은
+        # 트랜잭션에서 닫는다.
+        await recover_ops_incidents_for_source(
+            db,
+            source_id=str(existing.id),
+            pipelines=SUPERSEDED_INCIDENT_PIPELINES,
+            hospital_name=existing.subject_hospital_name,
+            actor=actor,
+            reason="값을 고쳐 새 진단으로 갈음됨",
+        )
     await write_audit_log(
         db,
         action="create_internal_inquiry_diagnosis",
@@ -198,6 +211,7 @@ async def create_inquiry_diagnosis(
             "free_slot_claimed": False,
             "applicant_locks_claimed": False,
             "superseded_diagnosis_id": str(existing.id) if existing is not None else None,
+            "clinic_name_corrected": previous_clinic_name != subject_name,
             "supersede_reason": supersede_reason,
         },
     )

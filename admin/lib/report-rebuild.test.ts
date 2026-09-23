@@ -5,6 +5,7 @@ import {
   REPORT_REBUILD_DELIVERED_WARNING,
   reportRebuildPlan,
 } from './report-rebuild.ts'
+import { parseReport } from './report-review.ts'
 
 // 2026-08-10 12:00 KST — 2026년 7월은 마감됐고 8월은 아직이다.
 const NOW = new Date('2026-08-10T03:00:00Z')
@@ -12,7 +13,7 @@ const NOW = new Date('2026-08-10T03:00:00Z')
 test('a finished monthly report can be rebuilt from the list row', () => {
   // Given: 정상적으로 만들어졌고 아직 전달하지 않은 지난달 보고서
   const plan = reportRebuildPlan(
-    { periodYear: 2026, periodMonth: 7, deliveryTracked: true, delivered: false },
+    { periodYear: 2026, periodMonth: 7, initialReport: false, delivered: false },
     NOW,
   )
 
@@ -23,7 +24,7 @@ test('a finished monthly report can be rebuilt from the list row', () => {
 
 test('a delivered report stays rebuildable but says the new version must be re-sent', () => {
   const plan = reportRebuildPlan(
-    { periodYear: 2026, periodMonth: 7, deliveryTracked: true, delivered: true },
+    { periodYear: 2026, periodMonth: 7, initialReport: false, delivered: true },
     NOW,
   )
 
@@ -38,7 +39,7 @@ test('a delivered report stays rebuildable but says the new version must be re-s
 
 test('the initial diagnosis is not rebuilt through the monthly path', () => {
   const plan = reportRebuildPlan(
-    { periodYear: 2026, periodMonth: 7, deliveryTracked: false, delivered: false },
+    { periodYear: 2026, periodMonth: 7, initialReport: true, delivered: false },
     NOW,
   )
 
@@ -48,10 +49,46 @@ test('the initial diagnosis is not rebuilt through the monthly path', () => {
 
 test('an unclosed period is refused with the reason instead of a server error', () => {
   const plan = reportRebuildPlan(
-    { periodYear: 2026, periodMonth: 8, deliveryTracked: true, delivered: false },
+    { periodYear: 2026, periodMonth: 8, initialReport: false, delivered: false },
     NOW,
   )
 
   assert.equal(plan.kind, 'unavailable')
   assert.match(plan.kind === 'unavailable' ? plan.reason : '', /마감되지 않은 달/)
+})
+
+test('a V0 row from the server is refused even though the server marks it delivery-tracked', () => {
+  // Given: 서버는 V0에도 delivery_tracked=true를 보낸다(backend reports.py 직렬화).
+  // 이 값으로 V0를 가르면 V0 행에 버튼이 붙고, 누르면 그 달의 월간 보고서가 생긴다.
+  const v0 = parseReport({
+    id: 'v0-1',
+    hospital_id: 'hospital-1',
+    period_year: 2026,
+    period_month: 7,
+    report_type: 'V0',
+    delivery_tracked: true,
+  })
+  const monthly = parseReport({
+    id: 'monthly-1',
+    hospital_id: 'hospital-1',
+    period_year: 2026,
+    period_month: 7,
+    report_type: 'MONTHLY',
+    delivery_tracked: true,
+  })
+  assert.ok(v0 && monthly)
+
+  const plan = (report: NonNullable<typeof v0>) =>
+    reportRebuildPlan(
+      {
+        periodYear: report.periodYear,
+        periodMonth: report.periodMonth,
+        initialReport: report.isInitialReport,
+        delivered: false,
+      },
+      NOW,
+    )
+
+  assert.equal(plan(v0).kind, 'unavailable')
+  assert.equal(plan(monthly).kind, 'available')
 })

@@ -20,7 +20,7 @@ import {
 } from '@/lib/lead-list'
 import { safeCauseText } from '@/lib/operations-center'
 import { CorrectDiagnosisDialog } from './CorrectDiagnosisDialog'
-import type { ManualDiagnosisValues } from '@/lib/manual-diagnosis'
+import { manualDiagnosisRefusal, type ManualDiagnosisValues } from '@/lib/manual-diagnosis'
 import {
   type LeadDiagnosisSummary,
   type Tone,
@@ -379,7 +379,9 @@ export default function LeadsPage() {
     } catch (caught) {
       // 서버가 알려주는 거절 사유(병원명 혼입, 고객 발송 이력 등)는 운영자가 고칠 수 있다.
       const detail =
-        caught instanceof ApiError && typeof caught.detail === 'string' ? caught.detail : null
+        caught instanceof ApiError
+          ? manualDiagnosisRefusal(caught.detail, caught.status, caught.message)
+          : null
       setCorrectError(
         detail ?? safeOperatorError('leads', '입력값을 확인하고 다시 시도해 주세요.'),
       )

@@ -87,6 +87,9 @@ export default function ContactForm() {
   const attribution = useRef<Attribution | null>(null)
   const started = useRef(false)
   const viewed = useRef(false)
+  // honeypot은 DOM에만 있다 — 본문을 손으로 만들면 값이 빠져 함정이 죽는다. 이 폼의 제출은
+  // 유료 초도 진단과 안내 문자를 일으키므로, 봇이 채운 제출은 서버가 조용히 버려야 한다.
+  const honeypot = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     attribution.current = ensureAttributionCaptured()
@@ -129,8 +132,7 @@ export default function ContactForm() {
       body.set('privacy', 'on')
       body.set('consent_version', 'v1.2026-08')
       body.set('source_path', decorateSourcePath(inquirySourcePath(pathname), attribution.current))
-      // honeypot — leave empty
-      body.set('website', '')
+      body.set('website', honeypot.current?.value ?? '')
 
       const response = await fetch('/api/leads', {
         method: 'POST',
@@ -180,6 +182,18 @@ export default function ContactForm() {
   return (
     <div className="inquiry-panel">
       <form className="inquiry-form" onSubmit={handleSubmit} noValidate>
+        {/* Honeypot — 봇이 자동으로 채우는 필드. 사람에게는 보이지 않는다. */}
+        <div className="sr-only" aria-hidden="true">
+          <label htmlFor="inquiry-website">website</label>
+          <input
+            id="inquiry-website"
+            name="website"
+            type="text"
+            ref={honeypot}
+            tabIndex={-1}
+            autoComplete="off"
+          />
+        </div>
         <div className="inquiry-field">
           <label htmlFor="inquiry-clinicName">병원명</label>
           <input

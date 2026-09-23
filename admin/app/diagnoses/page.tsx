@@ -6,6 +6,7 @@ import { ApiError, fetchAPI } from '@/lib/api'
 import { ManualDiagnosisForm } from '@/app/_components/ManualDiagnosisForm'
 import { DiagnosisHistory } from './DiagnosisHistory'
 import { safeOperatorError } from '@/lib/operations-journey'
+import { manualDiagnosisRefusal } from '@/lib/manual-diagnosis'
 
 type Created = {
   readonly leadId: string
@@ -40,7 +41,9 @@ export default function ManualDiagnosisPage() {
       // 서버 거절 사유(병원명 혼입, 도입문의 아님 등)는 그대로 보여준다 — 운영자가
       // 고칠 수 있는 입력 문제다.
       const detail =
-        caught instanceof ApiError && typeof caught.detail === 'string' ? caught.detail : null
+        caught instanceof ApiError
+          ? manualDiagnosisRefusal(caught.detail, caught.status, caught.message)
+          : null
       setError(
         detail ??
           safeOperatorError('leads', '입력값을 확인하고 다시 시도해 주세요. 계속 실패하면 개발팀 문의용 정보를 전달하세요.'),

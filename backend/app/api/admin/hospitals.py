@@ -636,13 +636,16 @@ def _serialize_readiness_check(check: ReadinessCheck) -> dict:
     }
 
 
-# site/lib/host-routing.ts의 RESERVED_PREFIXES와 동기 유지해야 한다.
-# 한쪽만 고치면 "등록은 되는데 페이지가 안 열리는 병원"이 조용히 생긴다.
+# site/lib/host-routing.ts의 RESERVED_PREFIXES와 site/app 최상위 정적 라우트를 모두
+# 포함해야 한다(tests/test_reserved_slugs.py). 빠지면 "등록은 되는데 페이지가 안 열리는
+# 병원"이 조용히 생긴다.
 RESERVED_SITE_SLUGS = frozenset(
     {
         ".well-known",
         "api",
         "ai-diagnosis",
+        "brochure",
+        "contact",
         "landing",
         "privacy",
         "terms",

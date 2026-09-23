@@ -74,6 +74,14 @@ def _authorize(actor: AdminUser) -> None:
 
 
 def _ensure_recoverable(diagnosis: LeadDiagnosis, axis: RecoveryAxis) -> int:
+    # 워커 claim(`_claim_for_execution`·`_claim_for_report`)은 갈음된 진단을 집지 않는다.
+    # 여기서 받아 주면 OperationRun이 생기고 워커가 거절한 뒤 복구 실패 인시던트가
+    # 운영자 큐에 열린다 — HTTP 경계와 워커 claim은 같은 집합을 봐야 한다.
+    if diagnosis.superseded_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="값을 고쳐 다시 만든 진단은 기록으로만 남습니다. 새 진단에서 진행해 주세요.",
+        )
     match axis:
         case RecoveryAxis.MEASUREMENT:
             safe_downstream = diagnosis.report_status not in {
