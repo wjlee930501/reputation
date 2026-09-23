@@ -127,7 +127,8 @@ export const painSection = {
   label: "원장님들의 고민",
   // 줄바꿈(\n)은 화면에서 그대로 지킨다(`.pain-section h2`의 white-space).
   heading: "AI로 병원을 찾는 시대,\n우리 병원은 잘 준비되어 있을까요?",
-  punchline: "환자들이 AI에서 병원을 찾을 때, 우리 병원은 잘 노출되고 있을까요?",
+  // 줄바꿈(\n)은 화면에서 그대로 지킨다(`.section-punchline`의 white-space).
+  punchline: "환자들이 AI에서 병원을 찾을 때,\n우리 병원은 잘 노출되고 있을까요?",
   punchlineAccent: "잘 노출되고 있을까요?",
 }
 

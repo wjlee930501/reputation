@@ -357,27 +357,9 @@
   fill: var(--e-ink);
 }
 
-/* 화면에 들어올 때 앞 칸부터 차례로 칠한다. 모션을 줄였거나 멈춤을 누르면 처음부터 칠해 둔다. */
-@keyframes edge-glyph-fill {
-  from {
-    fill: var(--e-g20);
-  }
-}
-
-.reveal-ready .landing-shell.landing-edge .instrument.in-view .glyph-people svg[data-on] {
-  animation: edge-glyph-fill 0.2s steps(1) both;
-  animation-delay: calc(var(--d, 0) * 12ms + 200ms);
-}
-
-[data-motion="paused"] .landing-shell.landing-edge .glyph-people svg[data-on] {
-  animation: none;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .landing-shell.landing-edge .glyph-people svg[data-on] {
-    animation: none;
-  }
-}
+/* 칠한 사람 수가 곧 숫자다 — 차례로 칠하는 애니메이션을 두지 않는다. 앞 버전은 한 명씩
+   칠했는데, 도중에 보면(특히 iOS Safari는 스크롤하는 동안 멈춘다) 80%와 60%가 둘 다
+   4명으로 보였다. 어느 순간에 봐도 값이 맞게 처음부터 칠해 둔다. */
 
 /* ── 질문 띠 · 검정 티커 ─────────────────────────────────────────
    흰 계기판과 회색 장면 사이의 단단한 경계. 가장자리 페이드 마스크는 뒤의 흰
@@ -655,6 +637,8 @@
   letter-spacing: -0.03em;
   line-height: 1.55;
   color: #ffffff;
+  white-space: pre-line;
+  word-break: keep-all;
 }
 
 .landing-shell.landing-edge .section-punchline em.accent {
