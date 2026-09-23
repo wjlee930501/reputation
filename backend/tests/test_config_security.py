@@ -205,6 +205,26 @@ def test_production_does_not_probe_optional_unmanaged_jina_secret(monkeypatch):
     assert "JINA_API_KEY" not in resolved
 
 
+@pytest.mark.parametrize(("provider", "probed"), [("", False), ("nhn", True)])
+def test_production_probes_the_nhn_secret_only_when_sms_is_on(monkeypatch, provider, probed):
+    # 문자 발송이 꺼져 있으면 값 버전이 없는 컨테이너를 매 부팅 조회해 경고만 남긴다.
+    from app.core import config
+
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("NHN_SMS_SECRET_KEY", raising=False)
+    resolved: list[str] = []
+
+    def record_secret_lookup(name: str, default: str = "") -> str:
+        resolved.append(name)
+        return default
+
+    monkeypatch.setattr(config, "_resolve_secret", record_secret_lookup)
+
+    Settings(**_valid_prod_kwargs(INQUIRY_SMS_PROVIDER=provider))
+
+    assert ("NHN_SMS_SECRET_KEY" in resolved) is probed
+
+
 def test_production_requires_chatgpt_web_search(monkeypatch):
     monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
     with pytest.raises(ValueError, match="OPENAI_CHATGPT_USE_WEB_SEARCH"):

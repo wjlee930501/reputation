@@ -239,6 +239,11 @@ def test_build_report_requires_schema_owner_and_runtime_dependencies(monkeypatch
 
     assert report["ready"] is True
     assert report["checks"]["active_owner_available"] is True
+    # 문자 설정은 참고 사실이다 — 꺼져 있어도 준비 판정을 막지 않고, 사유가 읽힌다.
+    assert "inquiry_sms" not in report["checks"]
+    sms = report["facts"]["inquiry_sms"]
+    assert set(sms) == {"provider", "configured", "skip_reason"}
+    assert sms["configured"] is (sms["skip_reason"] is None)
 
 
 def test_build_report_fails_closed_without_active_owner(monkeypatch) -> None:

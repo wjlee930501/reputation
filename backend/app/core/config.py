@@ -178,7 +178,13 @@ class Settings(BaseSettings):
                 "LEAD_REPORT_TOKEN_SECRET", self.LEAD_REPORT_TOKEN_SECRET
             )
             self.RESEND_API_KEY = _resolve_secret("RESEND_API_KEY", self.RESEND_API_KEY)
-            self.NHN_SMS_SECRET_KEY = _resolve_secret("NHN_SMS_SECRET_KEY", self.NHN_SMS_SECRET_KEY)
+            # 문자 발송이 꺼져 있으면(INQUIRY_SMS_PROVIDER 비어 있음) 조회하지 않는다. Terraform은
+            # 값 버전이 없는 컨테이너만 만들므로, 매 부팅 조회가 실패 경고를 남겨 진짜 시크릿
+            # 장애를 가렸다. Jina와 같은 이유다.
+            if self.INQUIRY_SMS_PROVIDER.strip().lower() == "nhn":
+                self.NHN_SMS_SECRET_KEY = _resolve_secret(
+                    "NHN_SMS_SECRET_KEY", self.NHN_SMS_SECRET_KEY
+                )
             self._fail_if_critical_production_secrets_empty()
             self._validate_production_config()
             self._warn_if_production_flow_config_incomplete()
