@@ -1,10 +1,18 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 배포 대기 — 2026-09-23 통합 정합성 보완 (미배포)
+## 최신 운영 배포 — 2026-09-23~24 통합 정합성 보완·파비콘
 
-PR #144~#153이 main에 병합됐고 **운영에는 아직 없다**(운영은 아래 `300a663`). 런타임 소스는
-`6ca8d24`(PR #153)이며 DB migration·RedBeat·Terraform 변경은 없다. 실행 명령과 배포 후 확인은
-[배포 준비 문서](docs/releases/2026-09-23-integration-hardening-deploy-plan.md)를 따른다.
+main `38cff0e`(PR #153 런타임)를 5개 서비스에, 이어 Site만 `fad966d`(PR #155·#156 파비콘)까지 배포했다.
+현재 리비전은 api `00201-g5w`, worker `00190-f9b`, beat `00186-8sg`, site `00142-xh2`, admin `00096-rrh`,
+DB head는 `0080_lead_diagnosis_supersede` 그대로다. readiness Job, 공개 9개 병원 헬스, 새 리비전 오류 0건을
+확인했고 Admin 신규 화면 조작·도입문의 실제 제출은 남아 있다. 배포 전 `.env.production`을 운영 env와
+대조한다 — `deploy.sh`가 서비스 env를 파일로 통째로 바꾸며, 이번에는 오래된 파일을 운영 값으로 다시 만들었다.
+상세는 [통합 정합성 보완 배포 기록](docs/releases/2026-09-23-integration-hardening-production.md)을 본다.
+
+- 병원 페이지 탭 아이콘은 Re:putation 심볼이 아니라 `/favicon/{slug}`의 병원 모노그램(대표색 바탕 + 병원명
+  첫 글자, `lib/clinic-favicon.ts`)이다. 병원 조회 실패 시에도 플랫폼 심볼로 떨어지지 않는다.
+  플랫폼 `favicon.ico`는 `site/public/`에 둔다(`app/`에 두면 Next가 병원 페이지에도 링크한다).
+
 PR #153이 더한 계약:
 
 - 갈음된 리드 진단의 복구 요청은 HTTP 경계에서 409다(워커 claim과 같은 집합). 갈음은 옛 진단의

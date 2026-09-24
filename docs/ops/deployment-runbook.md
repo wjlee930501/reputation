@@ -1,11 +1,18 @@
 # 현재 배포와 헬스체크
 
-## 배포 대기 — 2026-09-23 통합 정합성 보완
+## 최신 운영 배포 — 2026-09-23~24 통합 정합성 보완·파비콘
 
-main `6ca8d24`(PR #153 병합)까지 #144~#153이 병합됐으나 **운영은 아래 `300a663`이다.**
-migration·RedBeat·Terraform 변경은 없다. 실행 명령·배포 후 확인·롤백은
-[배포 준비 문서](../releases/2026-09-23-integration-hardening-deploy-plan.md)를 따르고, 실행 뒤
-결과를 `2026-09-23-…-production.md` 기록으로 남긴 다음 이 절을 최신 운영 배포 절로 바꾼다.
+main `38cff0e`(PR #153 런타임, #154 문서)를 5개 서비스에 배포했고, 이어 Site만 두 번
+(`a649cc1` PR #155 플랫폼 파비콘, `fad966d` PR #156 병원 모노그램 파비콘) 배포했다.
+현재 리비전은 api `00201-g5w`, worker `00190-f9b`, beat `00186-8sg`, site `00142-xh2`,
+admin `00096-rrh`이고 DB head는 `0080_lead_diagnosis_supersede` 그대로다(migration 없음).
+readiness Job, 공개 9개 병원 헬스 200·새 site 리비전, 새 리비전 오류 0건을 확인했다.
+
+**배포 전 `.env.production`을 운영 env와 대조한다.** `deploy.sh`는 서비스 env를 파일 내용으로
+통째로 바꾼다. 이번에는 작업 PC 파일이 오래돼 운영 API 리비전의 평문 env로 다시 만들었고,
+배포 후 env가 `REPUTATION_RELEASE_REVISION`만 바뀐 것을 확인했다. 배포 전 실제 운영은 준비
+문서의 `300a663`이 아니라 `62caa56`이었다(기록 없는 배포 2건). 리비전·검증·롤백 좌표는
+[통합 정합성 보완 배포 기록](../releases/2026-09-23-integration-hardening-production.md)을 따른다.
 
 ## 최신 운영 배포 — 2026-09-22 노출 진단 수동 생성
 
