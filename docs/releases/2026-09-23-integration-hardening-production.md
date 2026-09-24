@@ -52,16 +52,15 @@ API·Worker·Beat의 평문 env는 `SERVICE`만 달랐다. Terraform env 드롭 
 ## 배포 1 — 이미지와 런타임
 
 이미지 태그 `20260923-232611` 3종(`reputation`·`site`·`admin`)을 같은 소스에서 빌드했다.
-digest는 기록 시점에 gcloud 인증이 만료돼 조회하지 못했다 — 필요하면
-`gcloud run revisions describe <리비전> --format='value(status.imageDigest)'`로 채운다.
+digest는 각 리비전의 `status.imageDigest`(Artifact Registry `reputation` 저장소)다.
 
-| 서비스 | 배포 후 리비전 |
-|---|---|
-| `reputation-api` | `reputation-api-00201-g5w` |
-| `reputation-worker` | `reputation-worker-00190-f9b` |
-| `reputation-beat` | `reputation-beat-00186-8sg` |
-| `reputation-site` | `reputation-site-00140-h7t` |
-| `reputation-admin` | `reputation-admin-00096-rrh` |
+| 서비스 | 배포 후 리비전 | 이미지 digest |
+|---|---|---|
+| `reputation-api` | `reputation-api-00201-g5w` | `sha256:249e1bdd579a9c3a6d6eddcf25dd3c4abf13a707a8a7cc561bc07e9e336fefad` |
+| `reputation-worker` | `reputation-worker-00190-f9b` | 〃 |
+| `reputation-beat` | `reputation-beat-00186-8sg` | 〃 |
+| `reputation-site` | `reputation-site-00140-h7t` | `sha256:e8f153c086322c5e35ea947c8ecedffc9409730fb1dcd424aa660e04893104cf` |
+| `reputation-admin` | `reputation-admin-00096-rrh` | `sha256:afde602fe38fadba073adbc95de5ee85d86a6a79838d467151603559e3cefaa5` |
 
 순서는 runbook과 같다 — 롤백 좌표 → 이미지 3종 → 마이그레이션(`reputation-migrate-lmlkw`,
 변경 없음) → Worker → RedBeat 재조정(`reputation-redbeat-reconcile-p6qxz`) → Beat →
@@ -78,10 +77,12 @@ readiness gate(`reputation-production-readiness-zkwbf`) → API → Site → Adm
 
 ## 배포 2·3 — 파비콘
 
-- **배포 2**(`reputation-site-00141-7g9`, `site:20260924-032152`): `app/favicon.ico`를 새 주황
+- **배포 2**(`reputation-site-00141-7g9`, `site:20260924-032152`,
+  `sha256:dbec165a782b0fa10d3f5182ec2d41887364b7e7256555a551779f4d0f5e6cd1`): `app/favicon.ico`를 새 주황
   심볼(16/32/48)로 바꾸고 `icon.png`(512)·`apple-icon.png`(180)를 더했다. 운영 `/favicon.ico`가
   저장소 파일과 바이트 일치, 세 파일 200을 확인했다.
-- **배포 3**(`reputation-site-00142-xh2`, `site:20260924-072009`): 병원 페이지가 플랫폼 심볼을
+- **배포 3**(`reputation-site-00142-xh2`, `site:20260924-072009`,
+  `sha256:055897f4bd25e5d39c95272dec2916f529214b298712910bee7494acd2795a8a`): 병원 페이지가 플랫폼 심볼을
   내보내지 않도록 `/favicon/{slug}`가 대표색 바탕에 병원명 첫 글자를 얹은 PNG를 만든다.
   `app/favicon.ico`는 Next가 하위 세그먼트에도 항상 링크하므로 `public/`으로 옮겼다.
   - 병원 9곳(커스텀 도메인 6·기본 주소 3) 모두 모노그램 링크 2개(icon·apple)만 있고
