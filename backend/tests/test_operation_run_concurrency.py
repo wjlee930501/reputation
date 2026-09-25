@@ -8,11 +8,13 @@ from typing import Never
 
 import anyio
 import pytest
-from sqlalchemy import func, select, text
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import sessionmaker
 
 from app.models.operations import Incident, JSONValue, OperationRun, OperationRunState
 from app.services import incidents as incident_service
+from app.services import monthly_remasure_gate as remasure_gate
 from app.services import operation_runs as operation_run_service
 from app.services.operation_runs import (
     OperationCommand,
@@ -21,10 +23,15 @@ from app.services.operation_runs import (
     dispatch_operation,
     retry_operation_run,
 )
+from app.workers import operation_run_signals
 
 _DATABASE_URL = os.getenv(
     "OPERATION_RUN_CONCURRENCY_DATABASE_URL",
     "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
+)
+_SYNC_DATABASE_URL = os.getenv(
+    "OPERATIONS_TEST_DATABASE_URL",
+    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
 )
 
 
@@ -142,6 +149,116 @@ async def test_concurrent_broker_failures_share_one_atomic_incident(
             )
             await cleanup.commit()
         await engine.dispose()
+
+
+class ClaimedThenFailingTask:
+    """The broker accepted the publish and a worker claimed it before the client raised."""
+
+    def __init__(self) -> None:
+        self.claimed_version: int | None = None
+
+    def apply_async(
+        self,
+        *,
+        args: list[JSONValue],
+        queue: str,
+        headers: dict[str, str],
+        task_id: str,
+    ) -> Never:
+        del args, queue
+        self.claimed_version = operation_run_signals._claim_safely(
+            uuid.UUID(headers["operation_run_id"]),
+            task_id,
+            datetime.now(UTC),
+            redelivered=False,
+        )
+        raise ConnectionError("broker reply lost after the message was stored")
+
+
+@pytest.mark.asyncio
+async def test_broker_error_after_worker_claim_keeps_the_run_and_spends_the_remasure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: a manual monthly remasure whose publish reached a worker before the error
+    engine = create_async_engine(_DATABASE_URL)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    sync_engine = create_engine(_SYNC_DATABASE_URL)
+    monkeypatch.setattr(
+        operation_run_signals,
+        "SyncSessionLocal",
+        sessionmaker(bind=sync_engine, expire_on_commit=False),
+    )
+    monkeypatch.setattr(operation_run_service, "write_audit_log", _no_audit)
+    monkeypatch.setattr(incident_service, "_audit", _no_audit)
+    hospital_id = uuid.uuid4()
+    async with sessions() as setup:
+        await setup.execute(
+            text("INSERT INTO hospitals (id, name, slug) VALUES (:id, :name, :slug)"),
+            {
+                "id": hospital_id,
+                "name": "Claimed Publish QA Clinic",
+                "slug": f"claimed-publish-{hospital_id.hex}",
+            },
+        )
+        await setup.commit()
+    key = f"{remasure_gate.manual_remasure_key_prefix(hospital_id, 2026, 8)}stall-unlock"
+    command = OperationCommand(
+        operation_type="RUN_SOV",
+        hospital_id=hospital_id,
+        requested_by_id=None,
+        idempotency_key=key,
+        audit_actor="qa@example.test",
+        target_type="hospital",
+        target_id=str(hospital_id),
+        queue="sov",
+        task_args=(str(hospital_id), "monthly", 2026, 8),
+    )
+    task = ClaimedThenFailingTask()
+
+    try:
+        # When: the client-side publish raises only after the worker owns the run
+        async with sessions() as db:
+            dispatch = await dispatch_operation(db, command, task)
+
+        # Then: the worker's claim survives and the single allowance stays spent
+        assert task.claimed_version is not None
+        assert dispatch.replayed is False
+        async with sessions() as verify:
+            run = await verify.get(OperationRun, dispatch.run.id)
+            assert run is not None
+            assert run.state == OperationRunState.RUNNING
+            assert run.version == task.claimed_version
+            assert run.safe_error_code is None
+            assert run.lease_owner == run.task_id
+            assert await verify.scalar(
+                select(func.count(Incident.id)).where(Incident.hospital_id == hospital_id)
+            ) == 0
+            with pytest.raises(remasure_gate.ManualRemasureLocked) as locked:
+                await remasure_gate.authorize_manual_remasure(
+                    verify,
+                    hospital_id=hospital_id,
+                    year=2026,
+                    month=8,
+                    request_fingerprint="second-click",
+                )
+            assert locked.value.decision.code == remasure_gate.ALREADY_USED
+    finally:
+        async with sessions() as cleanup:
+            await cleanup.execute(
+                text("DELETE FROM incidents WHERE hospital_id = :hospital_id"),
+                {"hospital_id": hospital_id},
+            )
+            await cleanup.execute(
+                text("DELETE FROM operation_runs WHERE hospital_id = :hospital_id"),
+                {"hospital_id": hospital_id},
+            )
+            await cleanup.execute(
+                text("DELETE FROM hospitals WHERE id = :hospital_id"),
+                {"hospital_id": hospital_id},
+            )
+            await cleanup.commit()
+        await engine.dispose()
+        sync_engine.dispose()
 
 
 @pytest.mark.asyncio

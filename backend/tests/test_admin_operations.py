@@ -34,6 +34,18 @@ class FakeTask:
         return SimpleNamespace(id=task_id)
 
 
+def _apply_run_update(run, statement):
+    """Apply an OperationRun CAS update the way Postgres would: precondition, then values."""
+    params = statement.compile().params
+    if "state_1" in params and run.state != params["state_1"]:
+        return None
+    for field in ("state", "queued_at", "completed_at", "safe_error_code", "safe_error_message"):
+        if field in params:
+            setattr(run, field, params[field])
+    run.version += 1
+    return run
+
+
 class FakeDB:
     """Records ordering between add()/commit() so we can assert audit→commit→queue."""
 
@@ -82,10 +94,8 @@ class FakeDB:
         if not getattr(_statement, "is_update", False):
             return SimpleNamespace(scalar_one_or_none=lambda: uuid.uuid4())
         run = next(item for item in self.added if isinstance(item, OperationRun))
-        run.state = "QUEUED"
-        run.queued_at = datetime.now(timezone.utc)
-        run.version += 1
-        return SimpleNamespace(scalar_one_or_none=lambda: run)
+        updated = _apply_run_update(run, _statement)
+        return SimpleNamespace(scalar_one_or_none=lambda: updated)
 
     @property
     def added(self):
@@ -347,7 +357,8 @@ class _KeyedRunDB(FakeDB):
                 (
                     item
                     for item in self.added
-                    if isinstance(item, OperationRun) and item.idempotency_key in requested
+                    if isinstance(item, OperationRun)
+                    and (item.idempotency_key in requested or item.id in requested)
                 ),
                 None,
             )
@@ -356,10 +367,8 @@ class _KeyedRunDB(FakeDB):
     async def execute(self, statement):
         if getattr(statement, "is_update", False):
             run = [item for item in self.added if isinstance(item, OperationRun)][-1]
-            run.state = "QUEUED"
-            run.queued_at = datetime.now(timezone.utc)
-            run.version += 1
-            return SimpleNamespace(scalar_one_or_none=lambda: run)
+            updated = _apply_run_update(run, statement)
+            return SimpleNamespace(scalar_one_or_none=lambda: updated)
         return await super().execute(statement)
 
 
@@ -422,6 +431,53 @@ async def test_broker_failure_does_not_burn_the_monthly_remasure_unlock(monkeypa
     assert spent.value.status_code == 409
     assert spent.value.detail["code"] == monthly_remasure_gate.ALREADY_USED
     assert len(task.calls) == 1
+
+
+async def test_publish_error_after_worker_claim_spends_the_monthly_remasure(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE, monthly_sov_cohort=True)
+    db = _KeyedRunDB(hospital=hospital)
+    task = FakeTask()
+    _patch_monthly_remasure(monkeypatch, db, task, _stalled_progress(13))
+
+    async def record_incident(_db, _request, **_kwargs):
+        pytest.fail("a claimed publish must not open a broker incident")
+
+    def stored_then_lost(*, args, queue, headers, task_id):
+        del args, queue, headers, task_id
+        # The broker kept the message and a worker claimed the run before the reply was lost.
+        claimed = next(row for row in db.added if isinstance(row, OperationRun))
+        claimed.state = "RUNNING"
+        claimed.version += 2
+        raise ConnectionError("broker reply lost")
+
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", stored_then_lost)
+
+    response = await operations_api.run_sov_operation(
+        hospital.id,
+        measurement_mode="monthly",
+        db=db,
+        idempotency_key="monthly-remeasure-click",
+    )
+
+    run = next(row for row in db.added if isinstance(row, OperationRun))
+    assert (run.state, run.safe_error_code) == ("RUNNING", None)
+    assert response["operation_run_id"] == str(run.id)
+    assert response["operation_state"] == "RUNNING"
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov"]
+
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+    with pytest.raises(HTTPException) as spent:
+        await operations_api.run_sov_operation(
+            hospital.id,
+            measurement_mode="monthly",
+            db=db,
+            idempotency_key="monthly-remeasure-second-click",
+        )
+    assert spent.value.status_code == 409
+    assert spent.value.detail["code"] == monthly_remasure_gate.ALREADY_USED
+    assert task.calls == []
 
 
 async def test_queue_failure_never_records_queued_true(monkeypatch):
