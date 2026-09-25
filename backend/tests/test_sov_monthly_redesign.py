@@ -1,6 +1,6 @@
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -910,3 +910,75 @@ def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry():
     assert run.failure_count == 0
     assert run.version == 4
     assert db.commits == 1
+
+
+def _running_monthly_operation(lease_expires_at: datetime):
+    return SimpleNamespace(
+        state=tasks.OperationRunState.RUNNING,
+        task_id=str(uuid.uuid4()),
+        queued_at=datetime(2026, 9, 26, 0, 0, tzinfo=UTC),
+        started_at=datetime(2026, 9, 26, 0, 0, tzinfo=UTC),
+        completed_at=None,
+        lease_owner="chunk-worker",
+        lease_expires_at=lease_expires_at,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        safe_error_code=None,
+        safe_error_message=None,
+        version=7,
+    )
+
+
+class _SingleRunDB:
+    def __init__(self, existing):
+        self.existing = existing
+        self.commits = 0
+
+    def execute(self, _stmt):
+        existing = self.existing
+
+        class _Result:
+            def scalar_one_or_none(self):
+                return existing
+
+        return _Result()
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_monthly_run_left_running_after_its_lease_expired_is_rearmed():
+    # A chunk whose continuation publish failed (Celery raises Reject, postrun state
+    # REJECTED) or whose RETRY requeue write failed keeps RUNNING with its lease.
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    existing = _running_monthly_operation(observed_at - timedelta(minutes=1))
+    old_task_id = existing.task_id
+    db = _SingleRunDB(existing)
+
+    run = tasks._ensure_monthly_sov_operation_run(
+        db, SimpleNamespace(id=uuid.uuid4()), "2026-09", observed_at
+    )
+
+    assert run is existing
+    assert run.state == tasks.OperationRunState.REQUESTED
+    assert run.task_id != old_task_id
+    assert run.lease_owner is None
+    assert run.lease_expires_at is None
+    assert run.version == 8
+    assert db.commits == 1
+
+
+def test_monthly_run_with_a_live_chunk_lease_is_not_redispatched():
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    existing = _running_monthly_operation(observed_at + timedelta(minutes=30))
+    db = _SingleRunDB(existing)
+
+    run = tasks._ensure_monthly_sov_operation_run(
+        db, SimpleNamespace(id=uuid.uuid4()), "2026-09", observed_at
+    )
+
+    assert run is None
+    assert existing.state == tasks.OperationRunState.RUNNING
+    assert existing.lease_owner == "chunk-worker"
+    assert db.commits == 0
