@@ -141,22 +141,25 @@ async def dispatch_operation(
             task_id=broker_task_id,
         )
     except (BrokerOperationalError, OSError) as exc:
-        run.state = OperationRunState.FAILED
-        run.completed_at = datetime.now(UTC)
-        run.safe_error_code = "BROKER_UNAVAILABLE"
-        run.safe_error_message = _BROKER_ERROR_MESSAGE
-        run.version += 1
-        await _open_queue_incident(db, run, command.audit_actor)
-        await _write_run_audit(
+        failed = await transitions.mark_operation_dispatch_failed(
             db,
-            command,
-            run,
-            "queue_failed",
-            queued=False,
-            error_code="BROKER_UNAVAILABLE",
+            run.id,
+            datetime.now(UTC),
+            safe_error_code="BROKER_UNAVAILABLE",
+            safe_error_message=_BROKER_ERROR_MESSAGE,
         )
-        await db.commit()
-        raise OperationQueueUnavailable(run_id=run.id) from exc
+        if failed is not None:
+            await _open_queue_incident(db, failed, command.audit_actor)
+            await _write_run_audit(
+                db,
+                command,
+                failed,
+                "queue_failed",
+                queued=False,
+                error_code="BROKER_UNAVAILABLE",
+            )
+            await db.commit()
+            raise OperationQueueUnavailable(run_id=failed.id) from exc
 
     run = await transitions.mark_operation_queued(db, run.id, datetime.now(UTC))
     await _write_run_audit(db, command, run, "queued", queued=True)

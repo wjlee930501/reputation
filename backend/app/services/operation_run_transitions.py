@@ -97,6 +97,37 @@ async def mark_operation_queued(
     return current
 
 
+async def mark_operation_dispatch_failed(
+    db: AsyncSession,
+    run_id: uuid.UUID,
+    failed_at: datetime,
+    *,
+    safe_error_code: str,
+    safe_error_message: str,
+) -> OperationRun | None:
+    """Fail a run whose publish raised, unless a worker already claimed it.
+
+    A publish can raise after the broker stored the message. The worker then owns the run,
+    and a FAILED overwrite would hide real execution behind a never-dispatched code.
+    """
+    statement = (
+        update(OperationRun)
+        .where(
+            OperationRun.id == run_id,
+            OperationRun.state == OperationRunState.REQUESTED,
+        )
+        .values(
+            state=OperationRunState.FAILED,
+            completed_at=failed_at,
+            safe_error_code=safe_error_code,
+            safe_error_message=safe_error_message,
+            version=OperationRun.version + 1,
+        )
+        .returning(OperationRun)
+    )
+    return (await db.execute(statement)).scalar_one_or_none()
+
+
 async def claim_operation_run(db: AsyncSession, claim: LeaseClaim) -> OperationRun | None:
     """Claim a queued run or reclaim a RUNNING run whose lease expired."""
     expires_at = claim.claimed_at + timedelta(seconds=claim.lease_seconds)
