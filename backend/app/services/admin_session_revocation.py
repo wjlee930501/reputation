@@ -29,6 +29,8 @@ class RedisRevocationClient(Protocol):
 
 
 _redis_client: RedisRevocationClient | None = None
+_CONNECT_TIMEOUT_SECONDS = 0.5
+_COMMAND_TIMEOUT_SECONDS = 0.7
 
 
 def _key(token_hash: str) -> str:
@@ -43,10 +45,12 @@ def _client() -> RedisRevocationClient:
         # 유휴 중 네트워크가 끊어 둔 풀 커넥션은 다음 명령에서 곧바로 reset된다. from_url의
         # 기본 재시도는 0회라 그 요청만 확인 불가(503)가 된다. 연결 오류에 한해 새 커넥션으로
         # 한 번 더 묻는다. Redis가 실제로 죽었으면 재시도도 실패하고 종전처럼 닫힌다.
+        # 재시도까지 합친 최악(2 × (연결 + 응답))이 BFF의 폐기 확인 예산 3초 안에 끝나야
+        # BFF가 먼저 끊어 확인 불가로 닫는 일이 없다.
         _redis_client = redis_async.from_url(
             settings.REDIS_URL,
-            socket_connect_timeout=2,
-            socket_timeout=2,
+            socket_connect_timeout=_CONNECT_TIMEOUT_SECONDS,
+            socket_timeout=_COMMAND_TIMEOUT_SECONDS,
             retry=Retry(NoBackoff(), 1, supported_errors=(RedisConnectionError,)),
         )
     return _redis_client

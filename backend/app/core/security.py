@@ -36,7 +36,7 @@ _ADMIN_REVOCATION_RATE_LIMIT = parse("30/minute")
 # 같은 버킷을 쓰면 BFF IP 하나가 두 몫을 소진해 확인이 429로 떨어지고, BFF는 그것을
 # 확인 불가(503)로 닫는다. 확인은 요청 버킷과 같은 크기의 자기 버킷을 쓴다.
 _ADMIN_SESSION_CHECK_RATE_LIMIT = parse("100/minute")
-_SESSION_CHECK_PATH = re.compile(r"^/api/v1/admin/auth/sessions/[0-9a-f]{64}/revocation$")
+_SESSION_CHECK_PATH = re.compile(r"/api/v1/admin/auth/sessions/[0-9a-f]{64}/revocation")
 
 # 인가는 공유 X-Admin-Key로 이뤄지므로 계정 비활성화만으로는 백엔드 권한이 끊기지 않는다.
 # 최소한 "검증되지 않은 actor가 상태를 바꾸는" 순간은 반드시 드러나야 하므로, 쓰기 메서드는
@@ -211,7 +211,7 @@ async def verify_admin_rate_limit(request: Request) -> None:
     # use a separate bounded lane, not an unlimited authentication exemption.
     revoking = (request.method == "POST"
                 and request.url.path == "/api/v1/admin/auth/sessions/revoke")
-    checking = request.method == "GET" and bool(_SESSION_CHECK_PATH.match(request.url.path))
+    checking = request.method == "GET" and bool(_SESSION_CHECK_PATH.fullmatch(request.url.path))
     if revoking:
         lane, rate = "admin-session-revoke", _ADMIN_REVOCATION_RATE_LIMIT
     elif checking:

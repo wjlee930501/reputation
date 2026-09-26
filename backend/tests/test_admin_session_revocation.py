@@ -236,3 +236,21 @@ async def test_revocation_store_outage_stays_fail_closed(reset_proxy):
 
     with pytest.raises(AdminSessionRevocationUnavailable):
         await is_admin_session_hash_revoked(TOKEN_HASH)
+
+
+@pytest.mark.asyncio
+async def test_revocation_client_worst_case_fits_the_bff_three_second_budget(monkeypatch):
+    """재연결 1회를 포함한 최악 2 × (연결 + 응답)이 BFF의 3초 확인 예산 안이어야 한다."""
+    monkeypatch.setattr(revocation_service, "_redis_client", None)
+    client = revocation_service._client()
+    try:
+        kwargs = client.connection_pool.connection_kwargs
+        connect = kwargs["socket_connect_timeout"]
+        command = kwargs["socket_timeout"]
+        retries = kwargs["retry"].get_retries()
+
+        assert connect and command
+        assert (retries + 1) * (connect + command) < 3.0
+    finally:
+        await client.aclose()
+        monkeypatch.setattr(revocation_service, "_redis_client", None)
