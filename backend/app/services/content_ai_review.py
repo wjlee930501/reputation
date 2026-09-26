@@ -14,7 +14,7 @@ import math
 import re
 import unicodedata
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
@@ -183,6 +183,8 @@ class ContentAiFinding:
     kind: ContentAiFindingKind
     message: str
     quote: str = ""
+    # 승인 필수 문구 판정으로 SOFT가 되기 전의 판정(HARD/UNCERTAIN). 감사용이다.
+    softened_from: str | None = None
 
     @property
     def blocks_publication(self) -> bool:
@@ -191,11 +193,13 @@ class ContentAiFinding:
             ContentAiFindingSeverity.UNCERTAIN,
         }
 
-    def payload(self) -> dict[str, str]:
+    def payload(self) -> dict[str, str | None]:
         return {
             "severity": self.severity.value,
             "kind": self.kind.value,
             "message": self.message,
+            "quote": self.quote,
+            "softened_from": self.softened_from,
         }
 
 
@@ -385,7 +389,10 @@ def candidate_review_coverage(content: dict[str, Any] | object) -> dict[str, int
     }
 
 
-def _parse_finding(value: object) -> ContentAiFinding | None:
+def _parse_finding(
+    value: object,
+    must_use_quote: Callable[[str], bool] | None = None,
+) -> ContentAiFinding | None:
     if isinstance(value, str):
         message = _bounded_text(value, 240)
         if not message:
@@ -408,6 +415,7 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
         kind = ContentAiFindingKind(str(value.get("kind") or "").upper())
     except ValueError:
         kind = ContentAiFindingKind.MEDICAL_SAFETY
+    quote = _bounded_text(value.get("quote"), 600)
     if (
         severity == ContentAiFindingSeverity.SOFT
         and kind
@@ -421,21 +429,52 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
         # REFERENCE는 여기에 들어가지 않는다 — 참고자료 주제 불일치는 사실·안전
         # 판단이 아니라 결정적으로 떼어 낼 수 있는 조언이므로 SOFT로 남는다.
         severity = ContentAiFindingSeverity.UNCERTAIN
-    return ContentAiFinding(severity, kind, message, _bounded_text(value.get("quote"), 600))
+    # 승인된 필수 문구 판정은 모델이 준 HARD/SOFT 모두에 적용한다. 프롬프트대로 SOFT를
+    # 준 지적이 위 승격으로 다시 UNCERTAIN이 되면 같은 문장이 계속 발행을 막는다.
+    model_severity = str(value.get("severity") or "").upper()
+    if (
+        severity != ContentAiFindingSeverity.SOFT
+        and model_severity in {"HARD", "SOFT"}
+        and must_use_quote is not None
+        and must_use_quote(quote)
+    ):
+        return ContentAiFinding(
+            ContentAiFindingSeverity.SOFT, kind, message, quote, softened_from=severity.value
+        )
+    return ContentAiFinding(severity, kind, message, quote)
 
 
-_QUOTED_SPAN = re.compile(r"“([^”]+)”|\"([^\"]+)\"|‘([^’]+)’|'([^']+)'|「([^」]+)」|『([^』]+)』")
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
+_LIST_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
+_QUOTE_CHARS = frozenset("\"'“”‘’「」『』«»")
+_MARKDOWN_CHARS = frozenset("*_#>`|")
+# 숫자 옆에 있으면 뜻을 바꾸는 부호(9.5%≠95%, 3-5일≠35일). 숫자 옆이 아니어도 지우지
+# 않는다 — 지우는 것은 공백·문장 끝 부호·따옴표·마크다운 기호뿐이다.
+_NUMERIC_MARKS = frozenset("·.,-%/~")
+_SENTENCE_END_CHARS = frozenset(".!?。…")
 
 
 def _normalized_phrase(value: object) -> str:
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    return "".join(
+    text = _LIST_MARKER.sub("", unicodedata.normalize("NFKC", str(value or "")))
+    chars = [
         char
         for char in text
-        if not char.isspace() and not unicodedata.category(char).startswith("P")
-    )
+        if not char.isspace() and char not in _QUOTE_CHARS and char not in _MARKDOWN_CHARS
+    ]
+    # 마크다운 취소선(~~)은 숫자 범위(3~5일)가 아닐 때만 기호로 본다.
+    kept = [
+        char
+        for index, char in enumerate(chars)
+        if char != "~"
+        or any(
+            0 <= neighbour < len(chars) and chars[neighbour].isdigit()
+            for neighbour in (index - 1, index + 1)
+        )
+    ]
+    while kept and kept[-1] in _SENTENCE_END_CHARS:
+        kept.pop()
+    return "".join(kept)
 
 
 def _normalized_sentences(value: object) -> list[str]:
@@ -466,53 +505,27 @@ def _must_use_used_verbatim(must_use: str, candidate: dict[str, Any]) -> bool:
     return occurrences > 0 and occurrences == whole_sentence_runs
 
 
-def _targets_only_must_use(
-    finding: ContentAiFinding,
-    must_use_messages: Sequence[object],
-    candidate: dict[str, Any],
-) -> bool:
-    """HARD 지적의 대상이 승인된 필수 문구 그 자체뿐인지. 애매하면 False."""
-
-    verbatim = {
-        normalized
-        for message in must_use_messages
-        if (normalized := _normalized_phrase(message))
-        and _must_use_used_verbatim(str(message), candidate)
-    }
-    if not verbatim:
-        return False
-    targets = [finding.quote] if finding.quote else []
-    targets += [
-        next(group for group in match.groups() if group)
-        for match in _QUOTED_SPAN.finditer(finding.message)
-    ]
-    normalized_targets = [_normalized_phrase(target) for target in targets]
-    if not normalized_targets or not any(target in verbatim for target in normalized_targets):
-        return False
-    if finding.quote and _normalized_phrase(finding.quote) not in verbatim:
-        return False
-    # 메시지 안의 다른 인용은 같은 필수 문구의 일부일 때만 허용한다.
-    return all(
-        target and any(target in phrase for phrase in verbatim)
-        for target in normalized_targets
-    )
-
-
-def _soften_must_use_findings(
-    findings: tuple[ContentAiFinding, ...],
+def _must_use_quote_matcher(
     must_use_messages: Sequence[object],
     reviewed_content: dict[str, Any] | object,
-) -> tuple[ContentAiFinding, ...]:
+) -> Callable[[str], bool] | None:
+    """지적의 quote가 후보에 온전히 쓰인 승인 필수 문구와 정확히 같은지 판정한다.
+
+    message 안의 인용은 근거로 쓰지 않는다 — quote가 비었거나 다르면 강등하지 않는다.
+    """
+
     if not must_use_messages:
-        return findings
+        return None
     candidate = candidate_review_payload(reviewed_content)
-    return tuple(
-        replace(finding, severity=ContentAiFindingSeverity.SOFT)
-        if finding.severity == ContentAiFindingSeverity.HARD
-        and _targets_only_must_use(finding, must_use_messages, candidate)
-        else finding
-        for finding in findings
-    )
+    verbatim = {
+        "".join(_normalized_sentences(message))
+        for message in must_use_messages
+        if _must_use_used_verbatim(str(message), candidate)
+    }
+    verbatim.discard("")
+    if not verbatim:
+        return None
+    return lambda quote: bool(quote) and "".join(_normalized_sentences(quote)) in verbatim
 
 
 def hospital_review_profile(hospital: Hospital) -> dict[str, Any]:
@@ -686,21 +699,20 @@ def _build_review(
     if not isinstance(raw_findings, list):
         raise ValueError("content reviewer findings must be a list")
     parsed: list[ContentAiFinding] = []
+    # 승인된 필수 문구를 그대로 쓴 문장만 겨눈 지적은 운영 기준이 요구한 문장이다.
+    # 프롬프트 지시와 별개로 판정 규칙에서 결정적으로 SOFT로 내린다.
+    must_use_quote = _must_use_quote_matcher(must_use_messages, reviewed_content or {})
     for value in raw_findings:
         # A malformed safety signal cannot disappear and turn an otherwise
         # high-confidence PASS into a clear result.
-        finding = _parse_finding(value)
+        finding = _parse_finding(value, must_use_quote)
         if finding is None:
             raise ValueError("content reviewer finding is incomplete")
         parsed.append(finding)
     # The response itself is already bounded by max_tokens. Classifying only
     # the first five entries lets a provider put a HARD fact finding after five
     # style notes and silently remove it from the publication policy.
-    # 승인된 필수 문구를 그대로 쓴 문장만 겨눈 HARD는 운영 기준이 요구한 문장이다.
-    # 프롬프트 지시와 별개로 여기서 결정적으로 SOFT로 내린다.
-    parsed_findings = _soften_must_use_findings(
-        tuple(parsed), must_use_messages, reviewed_content or {}
-    )
+    parsed_findings = tuple(parsed)
     blocking_findings = tuple(
         finding for finding in parsed_findings if finding.blocks_publication
     )

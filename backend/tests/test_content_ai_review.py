@@ -735,19 +735,92 @@ async def test_hard_finding_on_a_verbatim_must_use_sentence_is_softened_end_to_e
     assert result.payload()["blocking"] is False
 
 
-def test_must_use_quoted_only_inside_the_message_is_softened() -> None:
+def test_must_use_quoted_only_inside_the_message_is_not_softened() -> None:
+    """message 안의 인용은 근거가 아니다 — 따옴표 밖의 우려(누락·추가 주장)를 볼 수 없다."""
+    for message in (
+        "“대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다”는 단정적입니다.",
+        "“대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다” 뒤에 위험 정보가 누락됐습니다.",
+        "\"대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다\" 문장과 함께 본문 끝에서 "
+        "완치를 보장합니다.",
+    ):
+        result = _must_use_review(
+            [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message}]
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, message
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_model_soft_on_a_must_use_sentence_is_not_upgraded_back_to_a_block() -> None:
+    """프롬프트대로 SOFT를 준 사실·안전 지적이 UNCERTAIN으로 되돌아가 막히지 않는다."""
+    for kind in ("MEDICAL_SAFETY", "HOSPITAL_FACT"):
+        result = _must_use_review(
+            [{"severity": "SOFT", "kind": kind, "message": "우려", "quote": _MUST_USE}]
+        )
+
+        assert result.status == ContentAiReviewStatus.PASS, kind
+        assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+        assert result.findings[0].softened_from == "UNCERTAIN"
+
+    # 필수 문구가 아닌 문장의 SOFT 사실·안전 지적은 종전처럼 UNCERTAIN으로 막는다.
+    result = _must_use_review([{
+        "severity": "SOFT", "kind": "MEDICAL_SAFETY", "message": "우려",
+        "quote": "검사 주기는 전문의와 상의해 정하세요.",
+    }])
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.UNCERTAIN
+
+
+def test_numeric_marks_are_not_normalized_away() -> None:
+    """9.5%≠95%, 3-5일≠35일 — 숫자 옆 부호가 사라지면 다른 수치가 필수 문구로 통과한다."""
+    cases = [
+        ("시술 후 통증 개선율은 9.5%입니다.", "시술 후 통증 개선율은 95%입니다."),
+        ("회복 기간은 3-5일입니다.", "회복 기간은 35일입니다."),
+        ("회복 기간은 3~5일입니다.", "회복 기간은 35일입니다."),
+        ("비용은 1,000원입니다.", "비용은 1000원입니다."),
+        ("투약은 1/2정입니다.", "투약은 12정입니다."),
+        ("개선율은 95%입니다.", "개선율은 95입니다."),
+        ("주 3·4회 복용합니다.", "주 34회 복용합니다."),
+    ]
+    for must_use, written in cases:
+        result = _must_use_review(
+            [{"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "수치", "quote": written}],
+            body=f"안내입니다.\n\n{written}\n\n끝입니다.",
+            must_use=(must_use,),
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, (must_use, written)
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_whitespace_end_marks_quotes_and_markdown_still_match() -> None:
+    must_use = "회복 기간은 3-5일이며 개인차가 있습니다."
+    body = "안내입니다.\n\n- **회복 기간은**  “3-5일”이며 개인차가 있습니다!\n\n끝입니다."
     result = _must_use_review(
-        [
-            {
-                "severity": "HARD",
-                "kind": "MEDICAL_SAFETY",
-                "message": "“대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다”는 단정적입니다.",
-            }
-        ]
+        [{
+            "severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "기간 단정",
+            "quote": "회복 기간은 3-5일이며 개인차가 있습니다",
+        }],
+        body=body,
+        must_use=(must_use,),
     )
 
     assert result.status == ContentAiReviewStatus.PASS
     assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+
+
+def test_softened_finding_payload_keeps_quote_and_original_severity() -> None:
+    result = _must_use_review([
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정", "quote": _MUST_USE},
+        {"severity": "SOFT", "kind": "STYLE", "message": "문장이 깁니다.", "quote": "검사"},
+    ])
+
+    softened, style = result.payload()["findings"]
+    assert softened == {
+        "severity": "SOFT", "kind": "MEDICAL_SAFETY", "message": "단정",
+        "quote": _MUST_USE, "softened_from": "HARD",
+    }
+    assert style["softened_from"] is None
+    assert style["quote"] == "검사"
 
 
 def test_hard_finding_unrelated_to_must_use_stays_hard() -> None:
