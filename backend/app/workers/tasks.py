@@ -78,6 +78,7 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
     hospital_review_facts_fingerprint,
+    must_use_messages_fingerprint,
     review_generated_content,
 )
 from app.services.content_engine import (
@@ -667,20 +668,28 @@ def _hospital_review_facts(item: ContentItem, hospital: Hospital | None = None) 
 
 
 def _approved_facts_changed_since_block(
-    item: ContentItem, hospital: Hospital | None = None
+    item: ContentItem,
+    hospital: Hospital | None = None,
+    philosophy: HospitalContentPhilosophy | None = None,
 ) -> bool:
-    """차단을 남긴 뒤 승인된 병원 사실이 실제로 바뀌었는가.
+    """차단을 남긴 뒤 승인된 병원 사실이나 운영 기준의 필수 문구가 실제로 바뀌었는가.
 
     사실·의료 안전 HARD는 "승인 자료에 없다"는 판정이라 본문을 다시 쓴다고 풀리지 않는다.
-    그 자료를 사람이 채운 것만이 다음 단계다. 지문을 남긴 적이 없는 기록은 비교할 대상이
-    없으므로 바뀌었다고 단정하지 않는다 — 배포만으로 재생성이 몰리지 않게 한다.
+    그 자료나 필수 문구가 바뀐 것만이 다음 단계다. 지문을 남긴 적이 없는 기록은 비교할
+    대상이 없으므로 바뀌었다고 단정하지 않는다 — 배포만으로 재생성이 몰리지 않게 한다.
     """
 
-    stored = _stored_generation_attempt(item).get("approved_facts")
-    if not isinstance(stored, str) or not stored:
+    attempt = _stored_generation_attempt(item)
+    stored = attempt.get("approved_facts")
+    if isinstance(stored, str) and stored:
+        current = _hospital_review_facts(item, hospital)
+        if current and current != stored:
+            return True
+    stored_must_use = attempt.get("approved_must_use")
+    if not isinstance(stored_must_use, str) or not stored_must_use:
         return False
-    current = _hospital_review_facts(item, hospital)
-    return bool(current) and current != stored
+    current_must_use = must_use_messages_fingerprint(philosophy)
+    return bool(current_must_use) and current_must_use != stored_must_use
 
 
 def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
@@ -918,11 +927,16 @@ def _remember_generation_attempt(
     }
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
-    # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
-    # 그 사실을 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
+    # 이 차단이 어떤 승인 사실·필수 문구 위에서 내려졌는지 남긴다. 그 자료나 문구가 바뀌면
+    # 스윕이 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
     approved_facts = _hospital_review_facts(item) or previous.get("approved_facts")
     if isinstance(approved_facts, str) and approved_facts:
         attempt["approved_facts"] = approved_facts
+    approved_must_use = must_use_messages_fingerprint(philosophy) or previous.get(
+        "approved_must_use"
+    )
+    if isinstance(approved_must_use, str) and approved_must_use:
+        attempt["approved_must_use"] = approved_must_use
     stored_diagnostic = (
         previous.get(_IMAGE_POLICY_DIAGNOSTIC_KEY) if same_context else None
     )
@@ -5814,8 +5828,8 @@ def _generate_single_content_item(
                 # claim만 하고 물러나는 패스가 이 분류의 복구를 대신할 수 없다.
                 or _stored_block_is_sample_remediable(item, stored_assessment.code)
                 # 모델이 HARD로 단정한 사실·안전 지적은 재작성이 아니라 승인 자료가 푼다.
-                # 그 자료가 실제로 바뀐 뒤에만 한 번의 재생성을 준다.
-                or _approved_facts_changed_since_block(item, hospital)
+                # 그 자료나 필수 문구가 실제로 바뀐 뒤에만 한 번의 재생성을 준다.
+                or _approved_facts_changed_since_block(item, hospital, philosophy)
             )
         )
         if repairable_body and _body_repair_session_is_due(item):

@@ -660,3 +660,458 @@ def test_system_prompt_restores_the_reference_topic_criterion() -> None:
     assert "references의 제목·기관이 글의 주제와 명백히 어긋나는 경우" in prompt
     assert "kind REFERENCE, severity SOFT" in prompt
     assert "REFERENCE" in prompt.split('"kind":', 1)[1].splitlines()[0]
+
+
+# ── 승인된 필수 문구(must_use_messages)를 그대로 쓴 문장은 HARD가 아니다 ──
+
+_MUST_USE = "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."
+_MUST_USE_BODY = (
+    "대장내시경은 선종을 찾아 제거하는 검사입니다.\n\n"
+    # 공백·문장부호만 다르게 쓴 필수 문구 — 정규화하면 같은 문장이다.
+    "대장 선종은  시간이 지나면 대장암으로 진행할 수 있습니다!\n\n"
+    "검사 주기는 전문의와 상의해 정하세요."
+)
+
+
+def _must_use_review(findings: list[dict], *, body: str = _MUST_USE_BODY, must_use=(_MUST_USE,)):
+    return content_ai_review._build_review(
+        {
+            "decision": "REVISE",
+            "confidence": 0.93,
+            "findings": findings,
+            "summary": "검수 결과",
+        },
+        reviewed_content={"title": "대장내시경 안내", "body": body},
+        must_use_messages=list(must_use),
+    )
+
+
+def test_system_prompt_tells_the_reviewer_must_use_messages_are_not_hard() -> None:
+    prompt = content_ai_review._SYSTEM_PROMPT
+
+    assert "must_use_messages" in prompt
+    assert "HARD로 판정하지 마세요" in prompt
+    assert '"quote"' in prompt
+    finding_schema = content_ai_review.REVIEW_TOOL["input_schema"]["properties"]["findings"]
+    assert "quote" in finding_schema["items"]["properties"]
+    assert "quote" not in finding_schema["items"]["required"]
+
+
+async def test_hard_finding_on_a_verbatim_must_use_sentence_is_softened_end_to_end(
+    monkeypatch,
+) -> None:
+    """9/22 차단 재현: 승인된 필수 문구를 HARD MEDICAL_SAFETY로 막으면 영구 차단된다."""
+    harness = _install_reviewer(
+        monkeypatch,
+        [
+            json.dumps(
+                {
+                    "decision": "REVISE",
+                    "confidence": 0.9,
+                    "findings": [
+                        {
+                            "severity": "HARD",
+                            "kind": "MEDICAL_SAFETY",
+                            "message": "선종의 암 진행을 단정해 불안을 조장합니다.",
+                            "quote": "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다.",
+                        }
+                    ],
+                    "summary": "의료 안전 우려",
+                }
+            )
+        ],
+    )
+
+    result = await _review(
+        philosophy=SimpleNamespace(must_use_messages=[_MUST_USE]),
+        content={"title": "대장내시경 안내", "body": _MUST_USE_BODY},
+    )
+
+    assert len(harness.calls) == 1
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.blocking_findings == ()
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+    assert result.findings[0].kind == ContentAiFindingKind.MEDICAL_SAFETY
+    assert result.payload()["blocking"] is False
+
+
+def test_must_use_quoted_only_inside_the_message_is_not_softened() -> None:
+    """message 안의 인용은 근거가 아니다 — 따옴표 밖의 우려(누락·추가 주장)를 볼 수 없다."""
+    for message in (
+        "“대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다”는 단정적입니다.",
+        "“대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다” 뒤에 위험 정보가 누락됐습니다.",
+        "\"대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다\" 문장과 함께 본문 끝에서 "
+        "완치를 보장합니다.",
+    ):
+        result = _must_use_review(
+            [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message}]
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, message
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_model_soft_on_a_must_use_sentence_is_not_upgraded_back_to_a_block() -> None:
+    """프롬프트대로 SOFT를 준 사실·안전 지적이 UNCERTAIN으로 되돌아가 막히지 않는다."""
+    for kind in ("MEDICAL_SAFETY", "HOSPITAL_FACT"):
+        result = _must_use_review(
+            [{"severity": "SOFT", "kind": kind, "message": "단정적 표현이 우려됩니다", "quote": _MUST_USE}]
+        )
+
+        assert result.status == ContentAiReviewStatus.PASS, kind
+        assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+        assert result.findings[0].softened_from == "UNCERTAIN"
+
+    # 필수 문구가 아닌 문장의 SOFT 사실·안전 지적은 종전처럼 UNCERTAIN으로 막는다.
+    result = _must_use_review([{
+        "severity": "SOFT", "kind": "MEDICAL_SAFETY", "message": "우려",
+        "quote": "검사 주기는 전문의와 상의해 정하세요.",
+    }])
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.UNCERTAIN
+
+
+def test_numeric_marks_are_not_normalized_away() -> None:
+    """9.5%≠95%, 3-5일≠35일 — 숫자 옆 부호가 사라지면 다른 수치가 필수 문구로 통과한다."""
+    cases = [
+        ("시술 후 통증 개선율은 9.5%입니다.", "시술 후 통증 개선율은 95%입니다."),
+        ("회복 기간은 3-5일입니다.", "회복 기간은 35일입니다."),
+        ("회복 기간은 3~5일입니다.", "회복 기간은 35일입니다."),
+        ("비용은 1,000원입니다.", "비용은 1000원입니다."),
+        ("투약은 1/2정입니다.", "투약은 12정입니다."),
+        ("개선율은 95%입니다.", "개선율은 95입니다."),
+        ("주 3·4회 복용합니다.", "주 34회 복용합니다."),
+    ]
+    for must_use, written in cases:
+        result = _must_use_review(
+            [{"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "수치", "quote": written}],
+            body=f"안내입니다.\n\n{written}\n\n끝입니다.",
+            must_use=(must_use,),
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, (must_use, written)
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_whitespace_end_marks_quotes_and_markdown_still_match() -> None:
+    must_use = "회복 기간은 3-5일이며 개인차가 있습니다."
+    body = "안내입니다.\n\n- **회복 기간은**  “3-5일”이며 개인차가 있습니다!\n\n끝입니다."
+    result = _must_use_review(
+        [{
+            "severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "기간 단정",
+            "quote": "회복 기간은 3-5일이며 개인차가 있습니다",
+        }],
+        body=body,
+        must_use=(must_use,),
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+
+
+def test_softened_finding_payload_keeps_quote_and_original_severity() -> None:
+    result = _must_use_review([
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정", "quote": _MUST_USE},
+        {"severity": "SOFT", "kind": "STYLE", "message": "문장이 깁니다.", "quote": "검사"},
+    ])
+
+    softened, style = result.payload()["findings"]
+    assert softened == {
+        "severity": "SOFT", "kind": "MEDICAL_SAFETY", "message": "단정",
+        "quote": _MUST_USE, "softened_from": "HARD",
+    }
+    assert style["softened_from"] is None
+    assert style["quote"] == "검사"
+
+
+def test_hard_finding_unrelated_to_must_use_stays_hard() -> None:
+    result = _must_use_review(
+        [
+            {
+                "severity": "HARD",
+                "kind": "MEDICAL_SAFETY",
+                "message": "검사 주기를 환자 스스로 정하도록 안내합니다.",
+                "quote": "검사 주기는 전문의와 상의해 정하세요.",
+            }
+        ]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_must_use_with_an_added_risk_claim_in_the_same_sentence_stays_hard() -> None:
+    body = (
+        "대장내시경은 선종을 찾아 제거하는 검사입니다. "
+        "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다, 그러니 지금 바로 저희 병원에서 "
+        "절제하지 않으면 생명이 위험합니다."
+    )
+    for quote in (
+        _MUST_USE,
+        "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다, 그러니 지금 바로 저희 병원에서 "
+        "절제하지 않으면 생명이 위험합니다.",
+    ):
+        result = _must_use_review(
+            [
+                {
+                    "severity": "HARD",
+                    "kind": "MEDICAL_SAFETY",
+                    "message": "공포를 조장해 즉시 시술을 권합니다.",
+                    "quote": quote,
+                }
+            ],
+            body=body,
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, quote
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_must_use_used_verbatim_once_and_extended_elsewhere_stays_hard() -> None:
+    body = _MUST_USE_BODY + (
+        "\n\n대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다 그래서 모든 선종은 반드시 "
+        "수술해야 합니다."
+    )
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": _MUST_USE}],
+        body=body,
+    )
+
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_ambiguous_or_mismatched_targets_stay_hard() -> None:
+    cases = [
+        # 인용이 전혀 없다 — 무엇을 지적했는지 알 수 없다.
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "암 진행 표현이 단정적입니다."},
+        # 필수 문구의 일부만 인용했다.
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": "대장암으로 진행"},
+        # 필수 문구와 다른 문장을 함께 지적했다.
+        {
+            "severity": "HARD",
+            "kind": "MEDICAL_SAFETY",
+            "message": "'대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다'와 "
+            "'검사 주기는 전문의와 상의해 정하세요'가 위험합니다.",
+        },
+        # UNCERTAIN은 강등 대상이 아니다.
+        {"severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확인 필요", "quote": _MUST_USE},
+    ]
+    for finding in cases:
+        result = _must_use_review([finding])
+
+        assert result.status == ContentAiReviewStatus.REVISE, finding
+        assert result.blocking_findings, finding
+
+
+def test_must_use_not_present_in_the_candidate_stays_hard() -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": _MUST_USE}],
+        body="대장내시경은 선종을 찾아 제거하는 검사입니다.",
+    )
+
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_without_approved_must_use_messages_hard_stays_hard() -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": _MUST_USE}],
+        must_use=(),
+    )
+
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_omission_finding_on_a_must_use_quote_is_not_softened() -> None:
+    """quote가 필수 문구와 같아도 '무엇이 빠졌다'는 지적은 본문의 공백을 겨눈다."""
+    for message in (
+        "선종 진행 설명 뒤에 정기 검진 권고가 누락됐습니다.",
+        "암 진행 가능성만 말하고 제거 후 예후는 언급하지 않습니다.",
+        "위험을 말하면서 대처 방법 안내가 없습니다.",
+    ):
+        result = _must_use_review(
+            [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, message
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+        assert result.blocking_findings[0].softened_from is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "이 문장 뒤에 부작용 설명이 빠졌습니다",
+        "부작용·위험 정보가 없음",
+        "위험 고지의 부재",
+        "위험 설명 결여",
+        "위험을 명시하지 않았다",
+        "위험 안내 없이 단정합니다",
+        "부작용 정보를 추가해야 합니다",
+        "위험 정보 보완이 필요합니다",
+        "부작용 정보 누락",
+        "위험 설명 생략",
+        "부작용 미기재",
+        "위험 정보 미포함",
+        "부작용 미언급",
+        "위험 미고지",
+        "Side-effect information is Missing",
+        "It OMITS risk information",
+        "Lacks risk context",
+        "Stated without caveats",
+    ],
+)
+def test_omission_phrasing_keeps_hard_even_with_an_exact_must_use_quote(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+    assert result.blocking_findings[0].softened_from is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "선종의 암 진행을 단정해 불안을 조장합니다.",
+        "진행 가능성을 단정적으로 표현합니다.",
+        "공포를 유발할 수 있는 표현입니다.",
+    ],
+)
+def test_pure_regulatory_concern_on_an_exact_must_use_quote_is_softened(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.findings[0].softened_from == "HARD"
+
+
+def test_exact_quote_with_a_forbidden_claim_outside_the_quote_stays_hard() -> None:
+    """정확 인용이라도 message가 인용에 없는 의료광고 금지 표현을 짚으면 인용 밖을 겨눈다."""
+    result = _must_use_review(
+        [{
+            "severity": "HARD", "kind": "MEDICAL_SAFETY",
+            "message": "본문 끝의 완치 보장 표현도 문제", "quote": _MUST_USE,
+        }],
+        body=_MUST_USE_BODY + "\n\n100% 완치를 보장합니다.",
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    ("must_use", "written"),
+    [
+        ("수치가 5>3이면 재검사합니다.", "수치가 53이면 재검사합니다."),
+        ("#1 원칙은 안전입니다.", "1 원칙은 안전입니다."),
+        ("하루 2 3회 복용합니다.", "하루 23회 복용합니다."),
+        ("검사 결과는 1|2 단계입니다.", "검사 결과는 12 단계입니다."),
+        ("주 2*3회 복용합니다.", "주 23회 복용합니다."),
+    ],
+)
+def test_inline_markers_and_spaces_between_digits_are_not_normalized_away(
+    must_use, written
+) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "수치", "quote": written}],
+        body=f"안내입니다.\n\n{written}\n\n끝입니다.",
+        must_use=(must_use,),
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    ("must_use", "line"),
+    [
+        (_MUST_USE, "## 대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."),
+        (_MUST_USE, "> 대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."),
+        (_MUST_USE, "- 대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."),
+        ("하루 2 3회 복용합니다.", "하루 2  3회 복용합니다."),
+    ],
+)
+def test_line_start_markdown_markers_and_extra_spaces_still_match(must_use, line) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정", "quote": must_use}],
+        body=f"안내입니다.\n\n{line}\n\n끝입니다.",
+        must_use=(must_use,),
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "부작용 설명이 필요합니다",
+        "주의사항 안내 필요",
+        "위험성도 함께 알려야 합니다",
+        "합병증 가능성을 언급해야 함",
+        "위험 정보가 제외되었습니다",
+        "부작용 안내를 덧붙이세요",
+        "fails to mention side effects",
+        "does not mention risks",
+        "단정적 표현이라 위험 안내를 함께 해야 합니다",
+    ],
+)
+def test_prescriptive_omission_keeps_hard_even_with_an_exact_must_use_quote(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "‘시술 후 바로 일상생활이 가능합니다’라는 과장 표현도 있습니다",
+        "시술 후 바로 일상생활이 가능합니다 문장도 과장 표현입니다",
+        'The "results appear within a day" line is an exaggerated expression',
+    ],
+)
+def test_exact_quote_with_another_non_forbidden_claim_stays_hard(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}],
+        body=_MUST_USE_BODY + "\n\n시술 후 바로 일상생활이 가능합니다.",
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    "message", ["x", "이 문장을 확인하세요", "사실과 다를 수 있습니다", "근거를 확인하기 어렵습니다"]
+)
+def test_exact_quote_without_a_wording_concern_stays_hard(message) -> None:
+    """허용어 방식: 문구 자체의 표현을 문제 삼는 지적이 아니면 기본은 HARD다."""
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    ("must_use", "line", "softened"),
+    [
+        ("하루 2 3회 복용합니다.", "하루 2 **3**회 복용합니다.", True),
+        ("하루 23회 복용합니다.", "하루 2 **3**회 복용합니다.", False),
+        ("10만원 이상이 듭니다.", "비용은 다릅니다. >10만원 이상이 듭니다.", False),
+    ],
+)
+def test_emphasis_between_spaced_digits_and_mid_line_gt_are_kept_apart(
+    must_use, line, softened
+) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정", "quote": must_use}],
+        body=f"안내입니다.\n\n{line}\n\n끝입니다.",
+        must_use=(must_use,),
+    )
+
+    assert (result.status == ContentAiReviewStatus.PASS) is softened

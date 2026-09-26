@@ -69,6 +69,7 @@ GENERATION_LADDER_KEYS = (
     "guard_deferral_count",
     "first_observed_at",
     "approved_facts",
+    "approved_must_use",
 )
 
 
