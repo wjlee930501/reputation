@@ -497,3 +497,64 @@ def test_withheld_sample_still_reads_as_withheld():
     serialized = _serialize(item, philosophy_id)
 
     assert serialized["display"]["review"]["label"] == "공개 보류"
+
+
+def _draft(**overrides):
+    item, philosophy_id = _published(
+        status=ContentStatus.DRAFT, published_at=None, published_by=None, **overrides
+    )
+    return item, philosophy_id
+
+
+def _blocking_ai_review(item):
+    from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
+
+    return {
+        "ai_review": {
+            "status": "REVISE",
+            "blocking": True,
+            "schema_version": "content-review-v2",
+            "findings": [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정"}],
+            "candidate_sha256": candidate_sha256(item),
+            "coverage": candidate_review_coverage(item),
+        }
+    }
+
+
+def test_ready_draft_display_is_publishable_only_when_compliance_passes():
+    item, philosophy_id = _draft()
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["compliance"]["status"] == "PASS"
+    assert serialized["display"]["review"] == {
+        "label": "자동 발행 대기",
+        "reason": None,
+        "publishable": True,
+    }
+
+
+def test_ai_review_block_is_never_displayed_as_publishable():
+    """essence는 ALIGNED로 남아도 저장된 AI 검수가 막고 있으면 발행 가능이 아니다."""
+    item, philosophy_id = _draft()
+    item.essence_check_summary = _blocking_ai_review(item)
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["compliance"]["status"] == "BLOCKED"
+    review = serialized["display"]["review"]
+    assert review["publishable"] is False
+    assert review["label"] == "자동 발행 차단"
+    assert review["reason"] == "독립 검수 지적 미해결"
+    assert set(review) == {"label", "reason", "publishable"}
+
+
+def test_draft_without_a_certified_image_is_not_displayed_as_publishable():
+    item, philosophy_id = _draft(image_policy_verified_at=None, image_content_hash=None)
+
+    serialized = _serialize(item, philosophy_id)
+
+    assert serialized["compliance"]["status"] == "BLOCKED"
+    review = serialized["display"]["review"]
+    assert review["publishable"] is False
+    assert review["reason"] == "대표 이미지 준비 전"
