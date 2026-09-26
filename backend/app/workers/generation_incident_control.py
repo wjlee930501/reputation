@@ -309,6 +309,7 @@ def generation_operator_action(code: str) -> str:
     return _generation_operator_copy(code)[1]
 
 
+_MIXED_HARD_FINDING_KINDS = "MIXED"
 _HARD_FINDING_ACTIONS_BY_KIND = {
     "HOSPITAL_FACT": (
         "지적된 병원 사실(장비·술기·경력·실적)을 병원 정보 탭의 승인 자료에 채우세요. 승인 "
@@ -318,8 +319,8 @@ _HARD_FINDING_ACTIONS_BY_KIND = {
     "MEDICAL_SAFETY": (
         "지적된 의료 안전 표현(단정적 진단·효과 보장·위험 정보 누락)은 본문을 다시 써도 같은 "
         "판정이 반복됩니다. 그 문장이 운영 기준의 필수 문구에서 왔다면 병원 정보 탭의 근거 "
-        "자료를 확인하세요. 운영 기준이 바뀌면 다음 자동 복구가 본문을 다시 씁니다. 공개할 수 "
-        "없는 글이라면 운영 센터에서 해당 항목을 종료하세요."
+        "자료를 확인하세요. 운영 기준의 필수 문구가 바뀌면 다음 자동 복구가 본문을 다시 "
+        "씁니다. 공개할 수 없는 글이라면 운영 센터에서 해당 항목을 종료하세요."
     ),
     "REFERENCE": (
         "운영 센터에서 지적된 참고 자료와 글 주제가 맞는지 확인하세요. 주제에 맞는 승인 참고 "
@@ -329,11 +330,17 @@ _HARD_FINDING_ACTIONS_BY_KIND = {
         "문체 지적이 차단으로 기록되었습니다. 운영 센터에서 지적 내용을 확인하고 공개할 수 "
         "없는 글이라면 해당 항목을 종료하세요."
     ),
+    _MIXED_HARD_FINDING_KINDS: (
+        "독립 검수가 서로 다른 종류의 지적을 함께 남겼습니다. 운영 센터에서 지적마다 내용을 "
+        "확인하세요. 병원 사실은 병원 정보 탭의 승인 자료에 채우고, 필수 문구에서 온 문장은 "
+        "근거 자료를 확인하세요. 승인 자료나 필수 문구가 바뀌면 다음 자동 복구가 본문을 다시 "
+        "씁니다. 공개할 수 없는 글이라면 해당 항목을 종료하세요."
+    ),
 }
 
 
 def _stored_hard_finding_kind(item: object) -> str | None:
-    """저장된 독립 검수가 HARD로 단정한 지적의 종류. 한 종류로 모일 때만 돌려준다."""
+    """저장된 독립 검수가 HARD로 단정한 지적의 종류. 여러 종류면 공통 안내 키를 돌려준다."""
 
     summary = getattr(item, "essence_check_summary", None)
     review = summary.get("ai_review") if isinstance(summary, dict) else None
@@ -345,7 +352,9 @@ def _stored_hard_finding_kind(item: object) -> str | None:
         for finding in findings
         if isinstance(finding, dict) and str(finding.get("severity") or "").upper() == "HARD"
     }
-    return kinds.pop() if len(kinds) == 1 else None
+    if len(kinds) > 1:
+        return _MIXED_HARD_FINDING_KINDS
+    return kinds.pop() if kinds else None
 
 
 def _generation_operator_copy(code: str, finding_kind: str | None = None) -> tuple[str, str]:

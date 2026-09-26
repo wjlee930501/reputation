@@ -1055,7 +1055,7 @@ def test_hard_finding_operator_copy_is_split_by_finding_kind() -> None:
     assert copy("PROVIDER_TIMEOUT", "MEDICAL_SAFETY") == copy("PROVIDER_TIMEOUT")
 
 
-def test_stored_hard_finding_kind_needs_one_model_declared_kind() -> None:
+def test_stored_hard_finding_kind_reports_one_kind_or_mixed() -> None:
     def item(*findings):
         return SimpleNamespace(essence_check_summary={"ai_review": {"findings": list(findings)}})
 
@@ -1065,7 +1065,7 @@ def test_stored_hard_finding_kind_needs_one_model_declared_kind() -> None:
     kind_of = generation_incident_control._stored_hard_finding_kind
 
     assert kind_of(item(safety, uncertain)) == "MEDICAL_SAFETY"
-    assert kind_of(item(safety, fact)) is None
+    assert kind_of(item(safety, fact)) == "MIXED"
     assert kind_of(item(uncertain)) is None
     assert kind_of(SimpleNamespace(essence_check_summary=None)) is None
     assert kind_of(None) is None
@@ -1130,3 +1130,23 @@ async def test_medical_safety_hard_incident_carries_the_medical_safety_action(
             "CONTENT_AI_HARD_FINDING", "MEDICAL_SAFETY"
         )[1]
     )
+
+
+def test_mixed_hard_kinds_get_common_guidance_not_the_fact_only_copy() -> None:
+    copy = generation_incident_control._generation_operator_copy
+    _, fallback = copy("CONTENT_AI_HARD_FINDING")
+    _, fact = copy("CONTENT_AI_HARD_FINDING", "HOSPITAL_FACT")
+    mixed_item = SimpleNamespace(essence_check_summary={"ai_review": {"findings": [
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정"},
+        {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "근거 없음"},
+    ]}})
+
+    _, mixed = copy(
+        "CONTENT_AI_HARD_FINDING",
+        generation_incident_control._stored_hard_finding_kind(mixed_item),
+    )
+
+    assert mixed not in {fallback, fact}
+    assert "서로 다른 종류" in mixed
+    assert "병원 정보 탭" in mixed
+    assert "필수 문구" in mixed
