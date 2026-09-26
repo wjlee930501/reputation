@@ -2,6 +2,7 @@ import asyncio
 import os
 import socket
 import struct
+import time
 from datetime import UTC, datetime, timedelta
 from urllib.parse import urlparse
 
@@ -238,19 +239,105 @@ async def test_revocation_store_outage_stays_fail_closed(reset_proxy):
         await is_admin_session_hash_revoked(TOKEN_HASH)
 
 
-@pytest.mark.asyncio
-async def test_revocation_client_worst_case_fits_the_bff_three_second_budget(monkeypatch):
-    """재연결 1회를 포함한 최악 2 × (연결 + 응답)이 BFF의 3초 확인 예산 안이어야 한다."""
-    monkeypatch.setattr(revocation_service, "_redis_client", None)
-    client = revocation_service._client()
-    try:
-        kwargs = client.connection_pool.connection_kwargs
-        connect = kwargs["socket_connect_timeout"]
-        command = kwargs["socket_timeout"]
-        retries = kwargs["retry"].get_retries()
+class _SlowRedis:
+    """RESP 명령마다 delay만큼 늦게 답하는 가짜 Redis. EXISTS에서는 끊거나(close) 멈춘다(hang)."""
 
-        assert connect and command
-        assert (retries + 1) * (connect + command) < 3.0
-    finally:
-        await client.aclose()
+    def __init__(self, *, delay: float, on_exists: str):
+        self.delay = delay
+        self.on_exists = on_exists
+        self.commands: list[bytes] = []
+        self.writers: list = []
+
+    async def start(self) -> int:
+        self.server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        return self.server.sockets[0].getsockname()[1]
+
+    async def _handle(self, reader, writer):
+        self.writers.append(writer)
+        buffer = b""
+        while data := await reader.read(4096):
+            buffer += data
+            while buffer.startswith(b"*") and b"\r\n" in buffer:
+                parts = buffer.split(b"\r\n")
+                needed = 1 + 2 * int(parts[0][1:])
+                if len(parts) - 1 < needed:
+                    break
+                command = parts[2].upper()
+                buffer = b"\r\n".join(parts[needed:])
+                self.commands.append(command)
+                await asyncio.sleep(self.delay)
+                if command == b"EXISTS" and self.on_exists == "hang":
+                    await asyncio.sleep(3600)
+                if command == b"EXISTS" and self.on_exists == "close":
+                    writer.transport.abort()
+                    return
+                writer.write(b":0\r\n" if command == b"EXISTS" else b"+OK\r\n")
+                await writer.drain()
+
+    def close(self) -> None:
+        self.server.close()
+        for writer in self.writers:
+            writer.transport.abort()
+
+
+@pytest.fixture
+async def slow_redis(monkeypatch):
+    servers: list[_SlowRedis] = []
+
+    async def start(*, delay: float, on_exists: str) -> _SlowRedis:
+        server = _SlowRedis(delay=delay, on_exists=on_exists)
+        port = await server.start()
+        monkeypatch.setattr(revocation_service.settings, "REDIS_URL", f"redis://127.0.0.1:{port}/0")
         monkeypatch.setattr(revocation_service, "_redis_client", None)
+        servers.append(server)
+        return server
+
+    yield start
+    client = revocation_service._redis_client
+    if client is not None:
+        await client.aclose()
+    for server in servers:
+        server.close()
+
+
+async def _timed_check() -> tuple[object, float]:
+    started = time.monotonic()
+    try:
+        outcome: object = await is_admin_session_hash_revoked(TOKEN_HASH)
+    except AdminSessionRevocationUnavailable as exc:
+        outcome = exc
+    return outcome, time.monotonic() - started
+
+
+@pytest.mark.asyncio
+async def test_new_connections_do_not_send_client_setinfo(slow_redis):
+    server = await slow_redis(delay=0, on_exists="reply")
+
+    assert await is_admin_session_hash_revoked(TOKEN_HASH) is False
+    assert server.commands == [b"EXISTS"]
+
+
+@pytest.mark.asyncio
+async def test_slow_store_that_drops_connections_closes_within_the_bff_budget(slow_redis):
+    """검수 실측: 답마다 0.65초 늦고 EXISTS에서 끊는 저장소가 종전에는 3.91초 뒤 503이었다."""
+    await slow_redis(delay=0.65, on_exists="close")
+
+    outcome, elapsed = await _timed_check()
+
+    assert isinstance(outcome, AdminSessionRevocationUnavailable)
+    assert elapsed < 3.0, f"{elapsed:.2f}s"
+    assert elapsed < revocation_service._CALL_DEADLINE_SECONDS + 0.2
+
+
+@pytest.mark.asyncio
+async def test_call_deadline_bounds_a_hanging_store_even_with_long_socket_timeouts(
+    slow_redis, monkeypatch
+):
+    monkeypatch.setattr(revocation_service, "_COMMAND_TIMEOUT_SECONDS", 10.0)
+    await slow_redis(delay=0, on_exists="hang")
+
+    outcome, elapsed = await _timed_check()
+
+    assert isinstance(outcome, AdminSessionRevocationUnavailable), "기한 초과도 닫힌다"
+    assert elapsed < 3.0, f"{elapsed:.2f}s"
+    assert elapsed < revocation_service._CALL_DEADLINE_SECONDS + 0.2
