@@ -1,12 +1,18 @@
+import logging
 import math
 import re
 from datetime import UTC, datetime
 from typing import Protocol
 
 import redis.asyncio as redis_async
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
+from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import RedisError
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 TOKEN_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 KEY_PREFIX = "admin-session-revoked:"
@@ -34,10 +40,14 @@ def _key(token_hash: str) -> str:
 def _client() -> RedisRevocationClient:
     global _redis_client
     if _redis_client is None:
+        # 유휴 중 네트워크가 끊어 둔 풀 커넥션은 다음 명령에서 곧바로 reset된다. from_url의
+        # 기본 재시도는 0회라 그 요청만 확인 불가(503)가 된다. 연결 오류에 한해 새 커넥션으로
+        # 한 번 더 묻는다. Redis가 실제로 죽었으면 재시도도 실패하고 종전처럼 닫힌다.
         _redis_client = redis_async.from_url(
             settings.REDIS_URL,
             socket_connect_timeout=2,
             socket_timeout=2,
+            retry=Retry(NoBackoff(), 1, supported_errors=(RedisConnectionError,)),
         )
     return _redis_client
 
@@ -64,6 +74,7 @@ async def revoke_admin_session_hash(
     try:
         await (redis_client or _client()).set(_key(token_hash), "1", ex=ttl_seconds)
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+        logger.warning("admin session revocation store unavailable: %s", type(exc).__name__)
         raise AdminSessionRevocationUnavailable("redis unavailable") from exc
     return ttl_seconds
 
@@ -76,4 +87,5 @@ async def is_admin_session_hash_revoked(
     try:
         return bool(await (redis_client or _client()).exists(_key(token_hash)))
     except (OSError, RedisError, RuntimeError, TimeoutError) as exc:
+        logger.warning("admin session revocation store unavailable: %s", type(exc).__name__)
         raise AdminSessionRevocationUnavailable("redis unavailable") from exc
