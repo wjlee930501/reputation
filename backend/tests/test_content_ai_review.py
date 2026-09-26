@@ -660,3 +660,188 @@ def test_system_prompt_restores_the_reference_topic_criterion() -> None:
     assert "references의 제목·기관이 글의 주제와 명백히 어긋나는 경우" in prompt
     assert "kind REFERENCE, severity SOFT" in prompt
     assert "REFERENCE" in prompt.split('"kind":', 1)[1].splitlines()[0]
+
+
+# ── 승인된 필수 문구(must_use_messages)를 그대로 쓴 문장은 HARD가 아니다 ──
+
+_MUST_USE = "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."
+_MUST_USE_BODY = (
+    "대장내시경은 선종을 찾아 제거하는 검사입니다.\n\n"
+    # 공백·문장부호만 다르게 쓴 필수 문구 — 정규화하면 같은 문장이다.
+    "대장 선종은  시간이 지나면 대장암으로 진행할 수 있습니다!\n\n"
+    "검사 주기는 전문의와 상의해 정하세요."
+)
+
+
+def _must_use_review(findings: list[dict], *, body: str = _MUST_USE_BODY, must_use=(_MUST_USE,)):
+    return content_ai_review._build_review(
+        {
+            "decision": "REVISE",
+            "confidence": 0.93,
+            "findings": findings,
+            "summary": "검수 결과",
+        },
+        reviewed_content={"title": "대장내시경 안내", "body": body},
+        must_use_messages=list(must_use),
+    )
+
+
+def test_system_prompt_tells_the_reviewer_must_use_messages_are_not_hard() -> None:
+    prompt = content_ai_review._SYSTEM_PROMPT
+
+    assert "must_use_messages" in prompt
+    assert "HARD로 판정하지 마세요" in prompt
+    assert '"quote"' in prompt
+    finding_schema = content_ai_review.REVIEW_TOOL["input_schema"]["properties"]["findings"]
+    assert "quote" in finding_schema["items"]["properties"]
+    assert "quote" not in finding_schema["items"]["required"]
+
+
+async def test_hard_finding_on_a_verbatim_must_use_sentence_is_softened_end_to_end(
+    monkeypatch,
+) -> None:
+    """9/22 차단 재현: 승인된 필수 문구를 HARD MEDICAL_SAFETY로 막으면 영구 차단된다."""
+    harness = _install_reviewer(
+        monkeypatch,
+        [
+            json.dumps(
+                {
+                    "decision": "REVISE",
+                    "confidence": 0.9,
+                    "findings": [
+                        {
+                            "severity": "HARD",
+                            "kind": "MEDICAL_SAFETY",
+                            "message": "선종의 암 진행을 단정해 불안을 조장합니다.",
+                            "quote": "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다.",
+                        }
+                    ],
+                    "summary": "의료 안전 우려",
+                }
+            )
+        ],
+    )
+
+    result = await _review(
+        philosophy=SimpleNamespace(must_use_messages=[_MUST_USE]),
+        content={"title": "대장내시경 안내", "body": _MUST_USE_BODY},
+    )
+
+    assert len(harness.calls) == 1
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.blocking_findings == ()
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+    assert result.findings[0].kind == ContentAiFindingKind.MEDICAL_SAFETY
+    assert result.payload()["blocking"] is False
+
+
+def test_must_use_quoted_only_inside_the_message_is_softened() -> None:
+    result = _must_use_review(
+        [
+            {
+                "severity": "HARD",
+                "kind": "MEDICAL_SAFETY",
+                "message": "“대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다”는 단정적입니다.",
+            }
+        ]
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+
+
+def test_hard_finding_unrelated_to_must_use_stays_hard() -> None:
+    result = _must_use_review(
+        [
+            {
+                "severity": "HARD",
+                "kind": "MEDICAL_SAFETY",
+                "message": "검사 주기를 환자 스스로 정하도록 안내합니다.",
+                "quote": "검사 주기는 전문의와 상의해 정하세요.",
+            }
+        ]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_must_use_with_an_added_risk_claim_in_the_same_sentence_stays_hard() -> None:
+    body = (
+        "대장내시경은 선종을 찾아 제거하는 검사입니다. "
+        "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다, 그러니 지금 바로 저희 병원에서 "
+        "절제하지 않으면 생명이 위험합니다."
+    )
+    for quote in (
+        _MUST_USE,
+        "대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다, 그러니 지금 바로 저희 병원에서 "
+        "절제하지 않으면 생명이 위험합니다.",
+    ):
+        result = _must_use_review(
+            [
+                {
+                    "severity": "HARD",
+                    "kind": "MEDICAL_SAFETY",
+                    "message": "공포를 조장해 즉시 시술을 권합니다.",
+                    "quote": quote,
+                }
+            ],
+            body=body,
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, quote
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_must_use_used_verbatim_once_and_extended_elsewhere_stays_hard() -> None:
+    body = _MUST_USE_BODY + (
+        "\n\n대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다 그래서 모든 선종은 반드시 "
+        "수술해야 합니다."
+    )
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": _MUST_USE}],
+        body=body,
+    )
+
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_ambiguous_or_mismatched_targets_stay_hard() -> None:
+    cases = [
+        # 인용이 전혀 없다 — 무엇을 지적했는지 알 수 없다.
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "암 진행 표현이 단정적입니다."},
+        # 필수 문구의 일부만 인용했다.
+        {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": "대장암으로 진행"},
+        # 필수 문구와 다른 문장을 함께 지적했다.
+        {
+            "severity": "HARD",
+            "kind": "MEDICAL_SAFETY",
+            "message": "'대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다'와 "
+            "'검사 주기는 전문의와 상의해 정하세요'가 위험합니다.",
+        },
+        # UNCERTAIN은 강등 대상이 아니다.
+        {"severity": "UNCERTAIN", "kind": "MEDICAL_SAFETY", "message": "확인 필요", "quote": _MUST_USE},
+    ]
+    for finding in cases:
+        result = _must_use_review([finding])
+
+        assert result.status == ContentAiReviewStatus.REVISE, finding
+        assert result.blocking_findings, finding
+
+
+def test_must_use_not_present_in_the_candidate_stays_hard() -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": _MUST_USE}],
+        body="대장내시경은 선종을 찾아 제거하는 검사입니다.",
+    )
+
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_without_approved_must_use_messages_hard_stays_hard() -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "과장", "quote": _MUST_USE}],
+        must_use=(),
+    )
+
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD

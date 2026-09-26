@@ -11,7 +11,10 @@ import hashlib
 import json
 import logging
 import math
+import re
+import unicodedata
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
@@ -82,6 +85,10 @@ DATA_BLOCK의 deterministic_gates_passed는 이 후보가 결정적 검증기를
 규칙으로 이미 승인됐으므로 다시 지적하지 마세요. 특히 그 목록이 허용한 통계·수치·출처를
 근거 부족으로 다시 올리지 마세요. approved_essence와 hospital_profile에 있는 내용은
 승인된 병원 사실이므로 근거가 있는 것으로 취급합니다.
+approved_essence.must_use_messages는 승인된 운영 기준의 필수 사용 문구입니다. 후보가 그 문구를
+그대로(공백·문장부호 차이만 있게) 사용한 문장은 HARD로 판정하지 마세요. 그 문장에 우려가 있으면
+SOFT로 기록하세요. 필수 문구에 다른 주장을 덧붙이거나 바꾼 문장은 이 예외가 아니며 평소 기준대로
+판정합니다. 모든 finding의 quote에는 지적 대상 문장을 후보 원문에서 그대로 옮겨 적으세요.
 
 각 finding은 심각도와 종류를 내용 자체로 판정하세요. confidence 숫자만으로 hard/soft를
 나누지 마세요. 병원 고유 사실의 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
@@ -93,7 +100,7 @@ UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구�
   "decision": "PASS 또는 REVISE",
   "confidence": 0.0,
   "findings": [
-    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "message": "수정 가능한 구체적 지적"}
+    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "message": "수정 가능한 구체적 지적", "quote": "지적 대상 문장 원문"}
   ],
   "summary": "한 문장 검수 요약"
 }
@@ -130,6 +137,7 @@ REVIEW_TOOL = {
                             ],
                         },
                         "message": {"type": "string"},
+                        "quote": {"type": "string"},
                     },
                     "required": ["severity", "kind", "message"],
                 },
@@ -174,6 +182,7 @@ class ContentAiFinding:
     severity: ContentAiFindingSeverity
     kind: ContentAiFindingKind
     message: str
+    quote: str = ""
 
     @property
     def blocks_publication(self) -> bool:
@@ -412,7 +421,98 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
         # REFERENCE는 여기에 들어가지 않는다 — 참고자료 주제 불일치는 사실·안전
         # 판단이 아니라 결정적으로 떼어 낼 수 있는 조언이므로 SOFT로 남는다.
         severity = ContentAiFindingSeverity.UNCERTAIN
-    return ContentAiFinding(severity, kind, message)
+    return ContentAiFinding(severity, kind, message, _bounded_text(value.get("quote"), 600))
+
+
+_QUOTED_SPAN = re.compile(r"“([^”]+)”|\"([^\"]+)\"|‘([^’]+)’|'([^']+)'|「([^」]+)」|『([^』]+)』")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
+_MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
+
+
+def _normalized_phrase(value: object) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(
+        char
+        for char in text
+        if not char.isspace() and not unicodedata.category(char).startswith("P")
+    )
+
+
+def _normalized_sentences(value: object) -> list[str]:
+    sentences = (_normalized_phrase(part) for part in _SENTENCE_BREAK.split(str(value or "")))
+    return [sentence for sentence in sentences if sentence]
+
+
+def _must_use_used_verbatim(must_use: str, candidate: dict[str, Any]) -> bool:
+    """필수 문구가 후보 어디에서나 온전한 문장(들)으로만 쓰였는가.
+
+    한 곳이라도 필수 문구에 다른 주장이 붙은 문장으로 쓰였다면 검수자가 그 문장을
+    지적했을 수 있으므로 강등하지 않는다.
+    """
+
+    target = _normalized_sentences(must_use)
+    if not target:
+        return False
+    joined_target = "".join(target)
+    occurrences = whole_sentence_runs = 0
+    for field in _MUST_USE_TEXT_FIELDS:
+        sentences = _normalized_sentences(candidate.get(field))
+        occurrences += "".join(sentences).count(joined_target)
+        whole_sentence_runs += sum(
+            1
+            for start in range(len(sentences) - len(target) + 1)
+            if sentences[start : start + len(target)] == target
+        )
+    return occurrences > 0 and occurrences == whole_sentence_runs
+
+
+def _targets_only_must_use(
+    finding: ContentAiFinding,
+    must_use_messages: Sequence[object],
+    candidate: dict[str, Any],
+) -> bool:
+    """HARD 지적의 대상이 승인된 필수 문구 그 자체뿐인지. 애매하면 False."""
+
+    verbatim = {
+        normalized
+        for message in must_use_messages
+        if (normalized := _normalized_phrase(message))
+        and _must_use_used_verbatim(str(message), candidate)
+    }
+    if not verbatim:
+        return False
+    targets = [finding.quote] if finding.quote else []
+    targets += [
+        next(group for group in match.groups() if group)
+        for match in _QUOTED_SPAN.finditer(finding.message)
+    ]
+    normalized_targets = [_normalized_phrase(target) for target in targets]
+    if not normalized_targets or not any(target in verbatim for target in normalized_targets):
+        return False
+    if finding.quote and _normalized_phrase(finding.quote) not in verbatim:
+        return False
+    # 메시지 안의 다른 인용은 같은 필수 문구의 일부일 때만 허용한다.
+    return all(
+        target and any(target in phrase for phrase in verbatim)
+        for target in normalized_targets
+    )
+
+
+def _soften_must_use_findings(
+    findings: tuple[ContentAiFinding, ...],
+    must_use_messages: Sequence[object],
+    reviewed_content: dict[str, Any] | object,
+) -> tuple[ContentAiFinding, ...]:
+    if not must_use_messages:
+        return findings
+    candidate = candidate_review_payload(reviewed_content)
+    return tuple(
+        replace(finding, severity=ContentAiFindingSeverity.SOFT)
+        if finding.severity == ContentAiFindingSeverity.HARD
+        and _targets_only_must_use(finding, must_use_messages, candidate)
+        else finding
+        for finding in findings
+    )
 
 
 def hospital_review_profile(hospital: Hospital) -> dict[str, Any]:
@@ -439,6 +539,17 @@ def hospital_review_profile(hospital: Hospital) -> dict[str, Any]:
     return hospital_profile
 
 
+def review_operating_standard(philosophy: HospitalContentPhilosophy | object) -> dict[str, list]:
+    """검수자가 판정 기준으로 받는 운영 기준(필수 문구·위험 규칙)."""
+
+    safety_policy = effective_safety_policy(philosophy)
+    return {
+        "must_use_messages": list(getattr(philosophy, "must_use_messages", None) or [])[:12],
+        "avoid_messages": safety_policy["avoid_messages"][:12],
+        "medical_ad_risk_rules": safety_policy["medical_ad_risk_rules"][:12],
+    }
+
+
 def hospital_review_facts_fingerprint(hospital: Hospital | None) -> str | None:
     """사실 HARD 판정이 근거로 삼은 승인 사실의 지문.
 
@@ -462,7 +573,7 @@ def content_review_input_payload(
     content: dict[str, Any],
     content_brief: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    safety_policy = effective_safety_policy(philosophy)
+    operating_standard = review_operating_standard(philosophy)
     candidate = candidate_review_payload(content)
     hospital_profile = hospital_review_profile(hospital)
 
@@ -477,9 +588,7 @@ def content_review_input_payload(
         "treatment_narratives": _bounded_items(
             getattr(philosophy, "treatment_narratives", None), limit=10, item_limit=300
         ),
-        "must_use_messages": list(getattr(philosophy, "must_use_messages", None) or [])[:12],
-        "avoid_messages": safety_policy["avoid_messages"][:12],
-        "medical_ad_risk_rules": safety_policy["medical_ad_risk_rules"][:12],
+        **operating_standard,
     }
     # 모델에 없을 수 있는 선호 필드는 있을 때만 싣는다.
     for optional_field in ("prefer_messages", "prefer_topics"):
@@ -522,6 +631,7 @@ def _parse_response(
     *,
     reviewed_content: dict[str, Any] | object | None = None,
     model: str | None = None,
+    must_use_messages: Sequence[object] = (),
 ) -> ContentAiReview:
     clean = (raw or "").strip()
     if clean.startswith("```"):
@@ -533,7 +643,12 @@ def _parse_response(
     data = json.loads(clean)
     if not isinstance(data, dict):
         raise ValueError("content reviewer returned a non-object")
-    return _build_review(data, reviewed_content=reviewed_content, model=model)
+    return _build_review(
+        data,
+        reviewed_content=reviewed_content,
+        model=model,
+        must_use_messages=must_use_messages,
+    )
 
 
 def _build_review(
@@ -541,6 +656,7 @@ def _build_review(
     *,
     reviewed_content: dict[str, Any] | object | None = None,
     model: str | None = None,
+    must_use_messages: Sequence[object] = (),
 ) -> ContentAiReview:
     """판정 규칙. 전송 수단(도구 호출/텍스트)과 무관하게 같은 dict를 받는다."""
 
@@ -558,7 +674,11 @@ def _build_review(
     # The response itself is already bounded by max_tokens. Classifying only
     # the first five entries lets a provider put a HARD fact finding after five
     # style notes and silently remove it from the publication policy.
-    parsed_findings = tuple(parsed)
+    # 승인된 필수 문구를 그대로 쓴 문장만 겨눈 HARD는 운영 기준이 요구한 문장이다.
+    # 프롬프트 지시와 별개로 여기서 결정적으로 SOFT로 내린다.
+    parsed_findings = _soften_must_use_findings(
+        tuple(parsed), must_use_messages, reviewed_content or {}
+    )
     blocking_findings = tuple(
         finding for finding in parsed_findings if finding.blocks_publication
     )
@@ -626,16 +746,23 @@ def _review_from_response(
     *,
     reviewed_content: dict[str, Any] | object | None = None,
     model: str | None = None,
+    must_use_messages: Sequence[object] = (),
 ) -> ContentAiReview:
     """강제 도구 호출이 정상 경로이고, 텍스트는 도구를 쓰지 않는 응답만의 보루다."""
 
     tool_input = llm_structured_output.tool_use_input(response, tool_name=REVIEW_TOOL_NAME)
     if tool_input is not None:
-        return _build_review(tool_input, reviewed_content=reviewed_content, model=model)
+        return _build_review(
+            tool_input,
+            reviewed_content=reviewed_content,
+            model=model,
+            must_use_messages=must_use_messages,
+        )
     return _parse_response(
         llm_structured_output.first_text(response),
         reviewed_content=reviewed_content,
         model=model,
+        must_use_messages=must_use_messages,
     )
 
 
@@ -671,6 +798,7 @@ async def _provider_review(
     logical_call_id: str,
     attempt_id: str,
     http_attempt: int,
+    must_use_messages: Sequence[object] = (),
 ) -> ContentAiReview:
     """Run one metered reviewer round; every failure mode stays UNAVAILABLE."""
 
@@ -751,7 +879,12 @@ async def _provider_review(
 
     try:
         return replace(
-            _review_from_response(response, reviewed_content=content, model=model),
+            _review_from_response(
+                response,
+                reviewed_content=content,
+                model=model,
+                must_use_messages=must_use_messages,
+            ),
             provider_attempted=True,
         )
     except Exception as exc:  # parser failure is advisory-unavailable; HTTP was recorded above
@@ -819,6 +952,7 @@ async def review_generated_content(
         )
 
     logical_call_id = logical_call_id or str(uuid.uuid4())
+    must_use_messages = review_operating_standard(philosophy)["must_use_messages"]
     first = await _provider_review(
         client=client,
         payload=payload,
@@ -829,6 +963,7 @@ async def review_generated_content(
         logical_call_id=logical_call_id,
         attempt_id=attempt_id or f"{logical_call_id}:http:{http_attempt}",
         http_attempt=http_attempt,
+        must_use_messages=must_use_messages,
     )
     if not first.escalation_eligible:
         return first
@@ -853,6 +988,7 @@ async def review_generated_content(
         logical_call_id=logical_call_id,
         attempt_id=f"{logical_call_id}:escalated:http:{http_attempt + 1}",
         http_attempt=http_attempt + 1,
+        must_use_messages=must_use_messages,
     )
     if second.status == ContentAiReviewStatus.UNAVAILABLE:
         # 공급자·파서 오류는 PASS를 만들 수 없다. 첫 차단 판정을 유지한다.
@@ -880,4 +1016,5 @@ __all__ = (
     "hospital_review_facts_fingerprint",
     "hospital_review_profile",
     "review_generated_content",
+    "review_operating_standard",
 )
