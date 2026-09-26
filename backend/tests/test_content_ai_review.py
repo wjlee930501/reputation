@@ -934,3 +934,67 @@ def test_omission_finding_on_a_must_use_quote_is_not_softened() -> None:
         assert result.status == ContentAiReviewStatus.REVISE, message
         assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
         assert result.blocking_findings[0].softened_from is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "이 문장 뒤에 부작용 설명이 빠졌습니다",
+        "부작용·위험 정보가 없음",
+        "위험 고지의 부재",
+        "위험 설명 결여",
+        "위험을 명시하지 않았다",
+        "위험 안내 없이 단정합니다",
+        "부작용 정보를 추가해야 합니다",
+        "위험 정보 보완이 필요합니다",
+        "부작용 정보 누락",
+        "위험 설명 생략",
+        "부작용 미기재",
+        "위험 정보 미포함",
+        "부작용 미언급",
+        "위험 미고지",
+        "Side-effect information is Missing",
+        "It OMITS risk information",
+        "Lacks risk context",
+        "Stated without caveats",
+    ],
+)
+def test_omission_phrasing_keeps_hard_even_with_an_exact_must_use_quote(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+    assert result.blocking_findings[0].softened_from is None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "선종의 암 진행을 단정해 불안을 조장합니다.",
+        "진행 가능성을 단정적으로 표현합니다.",
+        "공포를 유발할 수 있는 표현입니다.",
+    ],
+)
+def test_pure_regulatory_concern_on_an_exact_must_use_quote_is_softened(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.findings[0].softened_from == "HARD"
+
+
+def test_exact_quote_with_a_forbidden_claim_outside_the_quote_stays_hard() -> None:
+    """정확 인용이라도 message가 인용에 없는 의료광고 금지 표현을 짚으면 인용 밖을 겨눈다."""
+    result = _must_use_review(
+        [{
+            "severity": "HARD", "kind": "MEDICAL_SAFETY",
+            "message": "본문 끝의 완치 보장 표현도 문제", "quote": _MUST_USE,
+        }],
+        body=_MUST_USE_BODY + "\n\n100% 완치를 보장합니다.",
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD

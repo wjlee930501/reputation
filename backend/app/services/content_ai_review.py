@@ -27,6 +27,7 @@ from app.models.hospital import Hospital
 from app.services import cost_guard, llm_structured_output, openrouter
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.essence_engine import effective_safety_policy
+from app.utils.medical_filter import check_forbidden
 
 logger = logging.getLogger(__name__)
 
@@ -438,8 +439,7 @@ def _parse_finding(
         and model_severity in {"HARD", "SOFT"}
         and must_use_quote is not None
         and must_use_quote(quote)
-        # 필수 문구 옆에 무엇이 빠졌다는 지적은 그 문장 자체가 아니라 본문의 공백을 겨눈다.
-        and not any(marker in message for marker in _OMISSION_MARKERS)
+        and not _points_beyond_the_quote(message, quote)
     ):
         return ContentAiFinding(
             ContentAiFindingSeverity.SOFT, kind, message, quote, softened_from=severity.value
@@ -447,21 +447,27 @@ def _parse_finding(
     return ContentAiFinding(severity, kind, message, quote)
 
 
-_OMISSION_MARKERS = (
-    "누락",
-    "빠져",
-    "빠진",
-    "빠뜨",
-    "생략",
-    "언급하지 않",
-    "언급이 없",
-    "안내하지 않",
-    "안내가 없",
-    "설명하지 않",
-    "설명이 없",
-    "포함하지 않",
-    "포함되지 않",
+# 누락 지적의 어간. 넓게 잡아 생기는 오판은 "강등하지 않음"(HARD 유지) 쪽이다.
+_OMISSION_STEMS = (
+    "없", "않", "빠", "부재", "결여", "누락", "생략",
+    "미기재", "미포함", "미언급", "미고지", "추가해야", "보완",
+    "missing", "omit", "lack", "without",
 )
+
+
+def _points_beyond_the_quote(message: str, quote: str) -> bool:
+    """지적이 인용한 필수 문구 밖을 겨누는가. 애매하면 True(강등하지 않음).
+
+    - 무엇이 빠졌다는 누락 지적은 그 문장이 아니라 본문의 공백을 겨눈다.
+    - quote에 없는 의료광고 금지 표현을 message가 짚으면 인용 밖의 다른 주장을 겨눈다.
+    """
+
+    lowered = message.casefold()
+    if any(stem in lowered for stem in _OMISSION_STEMS):
+        return True
+    return bool(set(check_forbidden(message)) - set(check_forbidden(quote)))
+
+
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
 _LIST_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
