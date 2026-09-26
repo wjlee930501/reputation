@@ -1030,3 +1030,103 @@ def test_per_item_essence_rejection_is_weekly_even_after_remediation_exhaustion(
         item=item,
         observed_at=datetime(2026, 8, 18, 23, 0, tzinfo=UTC),
     )
+
+
+def test_hard_finding_operator_copy_is_split_by_finding_kind() -> None:
+    copy = generation_incident_control._generation_operator_copy
+    _, fallback = copy("CONTENT_AI_HARD_FINDING")
+    actions = {
+        kind: copy("CONTENT_AI_HARD_FINDING", kind)[1]
+        for kind in ("HOSPITAL_FACT", "MEDICAL_SAFETY", "REFERENCE", "STYLE")
+    }
+
+    assert len(set(actions.values())) == 4
+    assert "병원 정보 탭의 승인 자료" in actions["HOSPITAL_FACT"]
+    assert "의료 안전 표현" in actions["MEDICAL_SAFETY"]
+    assert "필수 문구" in actions["MEDICAL_SAFETY"]
+    assert "지적된 사실을" not in actions["MEDICAL_SAFETY"]
+    assert "참고 자료" in actions["REFERENCE"]
+    assert "문체" in actions["STYLE"]
+    # 모르는 종류와 종류 없음은 기존 문구 그대로다.
+    assert copy("CONTENT_AI_HARD_FINDING", "UNKNOWN_KIND")[1] == fallback
+    assert copy("CONTENT_AI_HARD_FINDING", None)[1] == fallback
+    assert "지적된 사실을 병원 정보 탭의 승인 자료에 채우세요" in fallback
+    # 다른 원인 코드는 종류와 무관하다.
+    assert copy("PROVIDER_TIMEOUT", "MEDICAL_SAFETY") == copy("PROVIDER_TIMEOUT")
+
+
+def test_stored_hard_finding_kind_needs_one_model_declared_kind() -> None:
+    def item(*findings):
+        return SimpleNamespace(essence_check_summary={"ai_review": {"findings": list(findings)}})
+
+    safety = {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정"}
+    fact = {"severity": "HARD", "kind": "HOSPITAL_FACT", "message": "근거 없음"}
+    uncertain = {"severity": "UNCERTAIN", "kind": "HOSPITAL_FACT", "message": "확신 부족"}
+    kind_of = generation_incident_control._stored_hard_finding_kind
+
+    assert kind_of(item(safety, uncertain)) == "MEDICAL_SAFETY"
+    assert kind_of(item(safety, fact)) is None
+    assert kind_of(item(uncertain)) is None
+    assert kind_of(SimpleNamespace(essence_check_summary=None)) is None
+    assert kind_of(None) is None
+
+
+async def test_medical_safety_hard_incident_carries_the_medical_safety_action(
+    monkeypatch,
+) -> None:
+    captured = {}
+    stored_item = SimpleNamespace(
+        scheduled_date=date(2026, 9, 22),
+        body="stored body",
+        image_url=None,
+        essence_check_summary={"ai_review": {"findings": [
+            {"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "선종 진행 단정"}
+        ]}},
+    )
+
+    class FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def scalar(self, _statement):
+            return None
+
+        async def get(self, _model, _item_id):
+            return stored_item
+
+        async def commit(self):
+            return None
+
+    async def capture_request(_db, request, **_kwargs):
+        captured["request"] = request
+        return SimpleNamespace(
+            id=uuid.uuid4(), state="OPEN", severity="HIGH",
+            customer_impact=request.customer_impact, next_action=request.next_action,
+            admin_path=request.admin_path, hospital_id=request.hospital_id, version=1,
+            safe_error_code=request.safe_error_code,
+            safe_error_message=request.safe_error_message, episode_seq=1,
+        )
+
+    monkeypatch.setattr(
+        generation_incident_control, "get_async_sessionmaker", lambda: lambda: FakeSession()
+    )
+    monkeypatch.setattr(generation_incident_control, "open_or_touch_incident", capture_request)
+
+    await generation_incident_control.open_generation_incident(
+        item_id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        hospital_name="선종의원",
+        run_id=uuid.uuid4(),
+        code="CONTENT_AI_HARD_FINDING",
+        message="선종 진행 단정",
+        notify=False,
+    )
+
+    assert captured["request"].next_action == (
+        generation_incident_control._generation_operator_copy(
+            "CONTENT_AI_HARD_FINDING", "MEDICAL_SAFETY"
+        )[1]
+    )

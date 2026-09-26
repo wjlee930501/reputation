@@ -309,7 +309,46 @@ def generation_operator_action(code: str) -> str:
     return _generation_operator_copy(code)[1]
 
 
-def _generation_operator_copy(code: str) -> tuple[str, str]:
+_HARD_FINDING_ACTIONS_BY_KIND = {
+    "HOSPITAL_FACT": (
+        "지적된 병원 사실(장비·술기·경력·실적)을 병원 정보 탭의 승인 자료에 채우세요. 승인 "
+        "자료가 바뀌면 다음 자동 복구가 그 자료로 본문을 다시 씁니다. 사실이 아니라면 운영 "
+        "센터에서 해당 항목을 종료하세요."
+    ),
+    "MEDICAL_SAFETY": (
+        "지적된 의료 안전 표현(단정적 진단·효과 보장·위험 정보 누락)은 본문을 다시 써도 같은 "
+        "판정이 반복됩니다. 그 문장이 운영 기준의 필수 문구에서 왔다면 병원 정보 탭의 근거 "
+        "자료를 확인하세요. 운영 기준이 바뀌면 다음 자동 복구가 본문을 다시 씁니다. 공개할 수 "
+        "없는 글이라면 운영 센터에서 해당 항목을 종료하세요."
+    ),
+    "REFERENCE": (
+        "운영 센터에서 지적된 참고 자료와 글 주제가 맞는지 확인하세요. 주제에 맞는 승인 참고 "
+        "자료가 없다면 해당 항목을 종료하세요."
+    ),
+    "STYLE": (
+        "문체 지적이 차단으로 기록되었습니다. 운영 센터에서 지적 내용을 확인하고 공개할 수 "
+        "없는 글이라면 해당 항목을 종료하세요."
+    ),
+}
+
+
+def _stored_hard_finding_kind(item: object) -> str | None:
+    """저장된 독립 검수가 HARD로 단정한 지적의 종류. 한 종류로 모일 때만 돌려준다."""
+
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    findings = review.get("findings") if isinstance(review, dict) else None
+    if not isinstance(findings, list):
+        return None
+    kinds = {
+        str(finding.get("kind") or "").upper()
+        for finding in findings
+        if isinstance(finding, dict) and str(finding.get("severity") or "").upper() == "HARD"
+    }
+    return kinds.pop() if len(kinds) == 1 else None
+
+
+def _generation_operator_copy(code: str, finding_kind: str | None = None) -> tuple[str, str]:
     impact = (
         "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
         if code in PUBLISHED_IMAGE_RECERTIFY_CODES
@@ -387,6 +426,8 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             f"자동 재인증이 반복 실패했습니다. {recertification.OPERATOR_ACTION}"
         ),
     }
+    if code == "CONTENT_AI_HARD_FINDING" and finding_kind in _HARD_FINDING_ACTIONS_BY_KIND:
+        return impact, _HARD_FINDING_ACTIONS_BY_KIND[finding_kind]
     action = actions.get(
         code,
         "운영 센터에 “작업 다시 시도”가 보이면 누르고 완료 결과를 확인하세요.",
@@ -706,7 +747,9 @@ async def open_generation_incident(
             incident = blocking_cause
             notification_code = incident.safe_error_code or code
         else:
-            customer_impact, next_action = _generation_operator_copy(code)
+            customer_impact, next_action = _generation_operator_copy(
+                code, _stored_hard_finding_kind(swapped_item)
+            )
             safe_cause = (
                 safe_generation_rejection_message(message)
                 if code == "GENERATION_REJECTED"
