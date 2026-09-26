@@ -470,31 +470,41 @@ def _points_beyond_the_quote(message: str, quote: str) -> bool:
 
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
 _LIST_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
+# 제목(# ) 표식과 인용(>) 표식은 줄 맨 앞에서만 마크다운이다. 문장 안의 #1, 5>3은 내용이다.
+_LINE_MARKER = re.compile(r"^\s*(?:#{1,6}\s+|>+\s*)")
 _MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
 _QUOTE_CHARS = frozenset("\"'“”‘’「」『』«»")
-_MARKDOWN_CHARS = frozenset("*_#>`|")
+_EMPHASIS_CHARS = frozenset("*_`")
 # 지우는 것은 공백·문장 끝 부호·따옴표·마크다운 기호뿐이다. · . , - % / 같은 부호는
-# 숫자 옆에서 뜻을 바꾸므로(9.5%≠95%, 3-5일≠35일) 남긴다.
+# 숫자 옆에서 뜻을 바꾸므로(9.5%≠95%, 3-5일≠35일) 남긴다. 숫자와 숫자 사이의 공백·강조
+# 기호도 구분자로 남긴다(2 3회≠23회).
 _SENTENCE_END_CHARS = frozenset(".!?。…")
 
 
 def _normalized_phrase(value: object) -> str:
-    text = _LIST_MARKER.sub("", unicodedata.normalize("NFKC", str(value or "")))
-    chars = [
-        char
-        for char in text
-        if not char.isspace() and char not in _QUOTE_CHARS and char not in _MARKDOWN_CHARS
-    ]
-    # 마크다운 취소선(~~)은 숫자 범위(3~5일)가 아닐 때만 기호로 본다.
-    kept = [
-        char
-        for index, char in enumerate(chars)
-        if char != "~"
-        or any(
-            0 <= neighbour < len(chars) and chars[neighbour].isdigit()
-            for neighbour in (index - 1, index + 1)
-        )
-    ]
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = _LIST_MARKER.sub("", _LINE_MARKER.sub("", _LIST_MARKER.sub("", text)))
+    chars = [char for char in text if char not in _QUOTE_CHARS]
+
+    def neighbour_is_digit(index: int, step: int) -> bool:
+        index += step
+        while 0 <= index < len(chars) and chars[index].isspace():
+            index += step
+        return 0 <= index < len(chars) and chars[index].isdigit()
+
+    kept: list[str] = []
+    for index, char in enumerate(chars):
+        between_digits = neighbour_is_digit(index, -1) and neighbour_is_digit(index, 1)
+        if char.isspace():
+            if between_digits and kept and kept[-1] != " ":
+                kept.append(" ")
+            continue
+        if char in _EMPHASIS_CHARS and not between_digits:
+            continue
+        # 마크다운 취소선(~~)은 숫자 범위(3~5일)가 아닐 때만 기호로 본다.
+        if char == "~" and not (neighbour_is_digit(index, -1) or neighbour_is_digit(index, 1)):
+            continue
+        kept.append(char)
     while kept and kept[-1] in _SENTENCE_END_CHARS:
         kept.pop()
     return "".join(kept)

@@ -998,3 +998,46 @@ def test_exact_quote_with_a_forbidden_claim_outside_the_quote_stays_hard() -> No
 
     assert result.status == ContentAiReviewStatus.REVISE
     assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    ("must_use", "written"),
+    [
+        ("수치가 5>3이면 재검사합니다.", "수치가 53이면 재검사합니다."),
+        ("#1 원칙은 안전입니다.", "1 원칙은 안전입니다."),
+        ("하루 2 3회 복용합니다.", "하루 23회 복용합니다."),
+        ("검사 결과는 1|2 단계입니다.", "검사 결과는 12 단계입니다."),
+        ("주 2*3회 복용합니다.", "주 23회 복용합니다."),
+    ],
+)
+def test_inline_markers_and_spaces_between_digits_are_not_normalized_away(
+    must_use, written
+) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "수치", "quote": written}],
+        body=f"안내입니다.\n\n{written}\n\n끝입니다.",
+        must_use=(must_use,),
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    ("must_use", "line"),
+    [
+        (_MUST_USE, "## 대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."),
+        (_MUST_USE, "> 대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."),
+        (_MUST_USE, "- 대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."),
+        ("하루 2 3회 복용합니다.", "하루 2  3회 복용합니다."),
+    ],
+)
+def test_line_start_markdown_markers_and_extra_spaces_still_match(must_use, line) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정", "quote": must_use}],
+        body=f"안내입니다.\n\n{line}\n\n끝입니다.",
+        must_use=(must_use,),
+    )
+
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
