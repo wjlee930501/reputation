@@ -449,9 +449,8 @@ _LIST_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
 _QUOTE_CHARS = frozenset("\"'“”‘’「」『』«»")
 _MARKDOWN_CHARS = frozenset("*_#>`|")
-# 숫자 옆에 있으면 뜻을 바꾸는 부호(9.5%≠95%, 3-5일≠35일). 숫자 옆이 아니어도 지우지
-# 않는다 — 지우는 것은 공백·문장 끝 부호·따옴표·마크다운 기호뿐이다.
-_NUMERIC_MARKS = frozenset("·.,-%/~")
+# 지우는 것은 공백·문장 끝 부호·따옴표·마크다운 기호뿐이다. · . , - % / 같은 부호는
+# 숫자 옆에서 뜻을 바꾸므로(9.5%≠95%, 3-5일≠35일) 남긴다.
 _SENTENCE_END_CHARS = frozenset(".!?。…")
 
 
