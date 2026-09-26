@@ -558,3 +558,23 @@ def test_draft_without_a_certified_image_is_not_displayed_as_publishable():
     review = serialized["display"]["review"]
     assert review["publishable"] is False
     assert review["reason"] == "대표 이미지 준비 전"
+
+
+def test_unavailable_or_stale_review_is_shown_as_waiting_for_re_review():
+    """공급자 실패·원고 변경은 지적이 아니다 — '지적 미해결'로 말하면 AE가 원인을 오해한다."""
+    unavailable_item, philosophy_id = _draft()
+    unavailable_item.essence_check_summary = {
+        "ai_review": {"status": "UNAVAILABLE", "findings": [], "unavailable_reason": "PROVIDER_ERROR"}
+    }
+    stale_item, _ = _draft()
+    stale_item.essence_check_summary = _blocking_ai_review(stale_item)
+    stale_item.body = stale_item.body + " 편집된 문장."
+
+    for item in (unavailable_item, stale_item):
+        review = _serialize(item, philosophy_id)["display"]["review"]
+
+        assert review == {
+            "label": "자동 발행 대기",
+            "reason": "독립 검수 재검수 대기",
+            "publishable": False,
+        }

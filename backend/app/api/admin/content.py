@@ -50,6 +50,7 @@ from app.services.content_engine import (
 )
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
+    _blocking_ai_review_state,
     apply_publication_assessment,
     assess_content_publication,
     count_citable_references,
@@ -1532,8 +1533,12 @@ def _content_review_display(
         return {"label": "자동 발행 차단", "reason": reason, "publishable": False}
     # compliance 요약(`_build_compliance_summary`)과 같은 판정 함수를 쓴다 — 여기만
     # 발행 가능으로 말하면 AE는 차단된 글을 곧 나갈 글로 믿는다.
-    if not public_candidate_review_safe(item):
-        return {"label": "자동 발행 차단", "reason": "독립 검수 지적 미해결", "publishable": False}
+    review_block = _blocking_ai_review_state(item)
+    if review_block is not None:
+        if review_block[0] == "CURRENT":
+            return {"label": "자동 발행 차단", "reason": "독립 검수 지적 미해결", "publishable": False}
+        # UNAVAILABLE(공급자 실패)·STALE(원고 변경)은 지적이 아니라 재검수를 기다리는 상태다.
+        return {"label": "자동 발행 대기", "reason": "독립 검수 재검수 대기", "publishable": False}
     if not image_certification_current(item):
         return {"label": "자동 발행 대기", "reason": "대표 이미지 준비 전", "publishable": False}
     return {"label": "자동 발행 대기", "reason": None, "publishable": True}
