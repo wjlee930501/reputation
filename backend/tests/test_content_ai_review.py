@@ -918,3 +918,19 @@ def test_without_approved_must_use_messages_hard_stays_hard() -> None:
     )
 
     assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+def test_omission_finding_on_a_must_use_quote_is_not_softened() -> None:
+    """quote가 필수 문구와 같아도 '무엇이 빠졌다'는 지적은 본문의 공백을 겨눈다."""
+    for message in (
+        "선종 진행 설명 뒤에 정기 검진 권고가 누락됐습니다.",
+        "암 진행 가능성만 말하고 제거 후 예후는 언급하지 않습니다.",
+        "위험을 말하면서 대처 방법 안내가 없습니다.",
+    ):
+        result = _must_use_review(
+            [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+        )
+
+        assert result.status == ContentAiReviewStatus.REVISE, message
+        assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+        assert result.blocking_findings[0].softened_from is None

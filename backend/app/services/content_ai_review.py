@@ -88,7 +88,8 @@ DATA_BLOCK의 deterministic_gates_passed는 이 후보가 결정적 검증기를
 approved_essence.must_use_messages는 승인된 운영 기준의 필수 사용 문구입니다. 후보가 그 문구를
 그대로(공백·문장부호 차이만 있게) 사용한 문장은 HARD로 판정하지 마세요. 그 문장에 우려가 있으면
 SOFT로 기록하세요. 필수 문구에 다른 주장을 덧붙이거나 바꾼 문장은 이 예외가 아니며 평소 기준대로
-판정합니다. 모든 finding의 quote에는 지적 대상 문장을 후보 원문에서 그대로 옮겨 적으세요.
+판정합니다. 필요한 정보가 빠졌다는 누락 지적도 이 예외가 아니며 평소 기준대로 판정합니다.
+모든 finding의 quote에는 지적 대상 문장을 후보 원문에서 그대로 옮겨 적으세요.
 
 각 finding은 심각도와 종류를 내용 자체로 판정하세요. confidence 숫자만으로 hard/soft를
 나누지 마세요. 병원 고유 사실의 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
@@ -437,6 +438,8 @@ def _parse_finding(
         and model_severity in {"HARD", "SOFT"}
         and must_use_quote is not None
         and must_use_quote(quote)
+        # 필수 문구 옆에 무엇이 빠졌다는 지적은 그 문장 자체가 아니라 본문의 공백을 겨눈다.
+        and not any(marker in message for marker in _OMISSION_MARKERS)
     ):
         return ContentAiFinding(
             ContentAiFindingSeverity.SOFT, kind, message, quote, softened_from=severity.value
@@ -444,6 +447,21 @@ def _parse_finding(
     return ContentAiFinding(severity, kind, message, quote)
 
 
+_OMISSION_MARKERS = (
+    "누락",
+    "빠져",
+    "빠진",
+    "빠뜨",
+    "생략",
+    "언급하지 않",
+    "언급이 없",
+    "안내하지 않",
+    "안내가 없",
+    "설명하지 않",
+    "설명이 없",
+    "포함하지 않",
+    "포함되지 않",
+)
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
 _LIST_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
 _MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
