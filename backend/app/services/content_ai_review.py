@@ -550,27 +550,41 @@ def review_operating_standard(philosophy: HospitalContentPhilosophy | object) ->
     }
 
 
-def hospital_review_facts_fingerprint(
-    hospital: Hospital | None,
-    philosophy: HospitalContentPhilosophy | object | None = None,
-) -> str | None:
-    """사실·안전 HARD 판정이 근거로 삼은 승인 사실과 운영 기준의 지문.
+def hospital_review_facts_fingerprint(hospital: Hospital | None) -> str | None:
+    """사실 HARD 판정이 근거로 삼은 승인 사실의 지문.
 
-    이 값이 달라졌다는 것은 검수자가 "승인 자료에서 확인할 수 없다"고 말한 그 자료나
-    판정 기준으로 받은 운영 기준(필수 문구·위험 규칙)이 실제로 바뀌었다는 뜻이다. 저장된
-    차단은 옛 자료에 대한 판정이므로 그때 한 번의 재생성을 받을 자격이 생긴다. 판정
-    자체를 무르는 값이 아니다. 운영 기준을 모르는 호출은 병원 사실만으로 지문을 만든다.
+    이 값이 달라졌다는 것은 검수자가 "승인 자료에서 확인할 수 없다"고 말한 그 자료가
+    실제로 바뀌었다는 뜻이다. 저장된 차단은 옛 사실에 대한 판정이므로 그때 한 번의
+    재생성을 받을 자격이 생긴다. 판정 자체를 무르는 값이 아니다.
     """
 
     if hospital is None:
         return None
-    basis: dict[str, Any] = hospital_review_profile(hospital)
-    if philosophy is not None:
-        basis = {
-            "hospital_profile": basis,
-            "operating_standard": review_operating_standard(philosophy),
+    payload = json.dumps(
+        hospital_review_profile(hospital), ensure_ascii=False, sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def must_use_messages_fingerprint(
+    philosophy: HospitalContentPhilosophy | object | None,
+) -> str | None:
+    """승인 운영 기준의 필수 문구만으로 만든 지문.
+
+    위험 규칙·avoid·원장 피드백은 넣지 않는다 — 플랫폼 금지 표현 목록이나 피드백이
+    바뀔 때마다 기존 차단 글을 다시 만들면 "기존 글 일괄 재생성 금지"와 어긋난다.
+    """
+
+    if philosophy is None:
+        return None
+    messages = sorted(
+        {
+            " ".join(str(message).split())
+            for message in getattr(philosophy, "must_use_messages", None) or []
+            if str(message).strip()
         }
-    payload = json.dumps(basis, ensure_ascii=False, sort_keys=True, default=str)
+    )
+    payload = json.dumps(messages, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
@@ -1023,6 +1037,7 @@ __all__ = (
     "deterministic_gates_passed",
     "hospital_review_facts_fingerprint",
     "hospital_review_profile",
+    "must_use_messages_fingerprint",
     "review_generated_content",
     "review_operating_standard",
 )

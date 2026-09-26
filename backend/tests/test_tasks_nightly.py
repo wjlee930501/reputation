@@ -40,6 +40,7 @@ from app.services.post_publish_review_policy import auto_publish_catchup_start
 from app.workers import generation_incident_control, nightly_generation_batch, tasks
 from app.workers.content_backlog_recovery import _next_available_dates
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
+from app.workers.generation_attempt_state import GENERATION_LADDER_KEYS
 from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
@@ -6125,86 +6126,197 @@ def test_model_hard_block_waits_for_an_approved_fact_change_then_regenerates(mon
 def _operating_standard(**overrides):
     base = dict(
         id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
         must_use_messages=["대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."],
         avoid_messages=["통증이 전혀 없다고 단정하지 않습니다."],
         medical_ad_risk_rules=["치료 효과를 보장하지 않습니다."],
+        prefer_topics=[],
+        prefer_messages=[],
     )
     base.update(overrides)
     return SimpleNamespace(**base)
 
 
-def test_review_fingerprint_follows_the_operating_standard_and_is_stable_otherwise():
+def _legacy_facts_fingerprint(hospital) -> str:
+    """c09f380 이전과 같은 계산 — 병원 사실만."""
+
+    import hashlib
+    import json
+
+    from app.services.content_ai_review import hospital_review_profile
+
+    payload = json.dumps(
+        hospital_review_profile(hospital), ensure_ascii=False, sort_keys=True, default=str
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def test_approved_facts_stays_byte_identical_and_must_use_gets_its_own_key():
     hospital = SimpleNamespace(name="강심장", treatments=["내과 진료"])
     philosophy = _operating_standard()
-    fingerprint = tasks.hospital_review_facts_fingerprint(hospital, philosophy)
-
-    # 같은 운영 기준이면 같은 지문이다 — 재시도 루프를 만들지 않는다.
-    same = _operating_standard(
-        id=philosophy.id,
-        must_use_messages=list(philosophy.must_use_messages),
-        avoid_messages=list(philosophy.avoid_messages),
-        medical_ad_risk_rules=list(philosophy.medical_ad_risk_rules),
+    item = SimpleNamespace(
+        hospital=hospital, content_type=SimpleNamespace(value="DISEASE"),
+        query_target_id=None, scheduled_date=date(2026, 9, 22), essence_check_summary={},
     )
-    assert tasks.hospital_review_facts_fingerprint(hospital, same) == fingerprint
-    assert tasks.hospital_review_facts_fingerprint(hospital, philosophy) == fingerprint
 
-    for changed in (
-        _operating_standard(id=philosophy.id, must_use_messages=["선종은 조기에 제거합니다."]),
-        _operating_standard(id=philosophy.id, avoid_messages=["완치를 약속하지 않습니다."]),
-        _operating_standard(id=philosophy.id, medical_ad_risk_rules=["전후 사진을 쓰지 않습니다."]),
+    tasks._remember_generation_attempt(
+        _NightlyTaskDB(), item, philosophy, "CONTENT_AI_HARD_FINDING"
+    )
+
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["approved_facts"] == _legacy_facts_fingerprint(hospital)
+    assert attempt["approved_must_use"] == tasks.must_use_messages_fingerprint(philosophy)
+    assert "approved_must_use" in GENERATION_LADDER_KEYS
+
+
+def test_must_use_fingerprint_ignores_avoid_risk_feedback_order_and_spacing():
+    from app.models.director_delta import DirectorDeltaStatus
+    from app.services.director_delta import merge_director_deltas
+
+    philosophy = _operating_standard(
+        must_use_messages=["둘째 문구입니다.", "대장 선종은  시간이 지나면 진행할 수 있습니다."]
+    )
+    fingerprint = tasks.must_use_messages_fingerprint(philosophy)
+    delta = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=philosophy.hospital_id,
+        status=DirectorDeltaStatus.ACTIVE,
+        avoid_messages=["원장 피드백: 비용을 언급하지 않습니다."], prefer_topics=[],
+        prefer_messages=[],
+    )
+    with_feedback = merge_director_deltas(philosophy, [delta])
+
+    assert with_feedback.avoid_messages != philosophy.avoid_messages
+    for same in (
+        with_feedback,
+        _operating_standard(
+            must_use_messages=["대장 선종은 시간이 지나면 진행할 수 있습니다.", "둘째 문구입니다."],
+            avoid_messages=["완전히 다른 금지 문구"],
+            medical_ad_risk_rules=["완전히 다른 위험 규칙"],
+        ),
     ):
-        assert tasks.hospital_review_facts_fingerprint(hospital, changed) != fingerprint
+        assert tasks.must_use_messages_fingerprint(same) == fingerprint
+    assert tasks.must_use_messages_fingerprint(
+        _operating_standard(must_use_messages=["둘째 문구입니다."])
+    ) != fingerprint
+    assert tasks.must_use_messages_fingerprint(None) is None
 
-    # 운영 기준을 모르는 호출은 종전과 같은 병원 사실 지문을 만든다.
-    assert tasks.hospital_review_facts_fingerprint(hospital, None) == (
-        tasks.hospital_review_facts_fingerprint(hospital)
-    )
 
+def _hard_blocked_sweep(monkeypatch, philosophy, *, attempt=None):
+    """모델 HARD로 막힌 저장 본문 한 편과, 스윕 한 번을 실행하는 함수를 만든다."""
 
-def test_operating_standard_change_reopens_a_model_hard_block_once(monkeypatch):
-    """필수 문구를 HARD로 막은 차단은 운영 기준이 바뀌면 한 번의 재생성을 받는다."""
-
-    philosophy = _operating_standard()
     hospital = SimpleNamespace(
-        id=uuid.uuid4(), name="강심장", slug="brave-heart", treatments=["내과 진료"]
+        id=philosophy.hospital_id, name="강심장", slug="brave-heart", treatments=["내과 진료"]
     )
+    hard_review = {"status": "REVISE", "blocking": True, "findings": [{
+        "severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "선종의 암 진행을 단정합니다.",
+    }]}
     item = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=hospital.id, hospital=hospital,
         body="stored body", title="stored title", image_url=None,
         content_philosophy_id=philosophy.id, content_revision=1,
         content_type=SimpleNamespace(value="DISEASE"), query_target_id=None,
         scheduled_date=date(2026, 9, 22), published_at=None, generation_claim_token=None,
-        essence_check_summary={"ai_review": {"status": "REVISE", "blocking": True, "findings": [{
-            "severity": "HARD", "kind": "MEDICAL_SAFETY",
-            "message": "선종의 암 진행을 단정합니다.",
-        }]}},
+        essence_check_summary={"ai_review": dict(hard_review)},
     )
-    db, writer_calls, gate_calls = _sweep_regeneration_harness(monkeypatch, philosophy, item)
-    blocked = SimpleNamespace(code="CONTENT_AI_HARD_FINDING", message="의료 안전 지적")
-    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: blocked)
-
-    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_AI_HARD_FINDING")
-    assert tasks._stored_generation_attempt(item)["retry_class"] == (
-        GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    if attempt is not None:
+        item.essence_check_summary["generation_attempt"] = dict(attempt)
+    sweep_philosophy = {"current": philosophy}
+    db, writer_calls, _gate_calls = _sweep_regeneration_harness(
+        monkeypatch, philosophy, item
     )
-    assert tasks._approved_facts_changed_since_block(item, hospital, philosophy) is False
+    monkeypatch.setattr(
+        tasks, "_generation_philosophy_sync", lambda *_args: sweep_philosophy["current"]
+    )
+    # 다시 쓴 본문도 같은 HARD를 받는다 — 그래야 재생성이 "정확히 몇 번"인지 셀 수 있다.
+    monkeypatch.setattr(
+        tasks, "_generation_summary", lambda *_args: {"ai_review": dict(hard_review)}
+    )
+    monkeypatch.setattr(tasks, "apply_publication_assessment", lambda *_args: None)
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: SimpleNamespace(
+        code="CONTENT_AI_HARD_FINDING", message="의료 안전 지적"
+    ))
 
-    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
-    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
-    assert writer_calls == [], "같은 운영 기준에서는 다시 사지 않는다"
+    def sweep(times=1):
+        for _ in range(times):
+            tasks._generate_single_content_item(db, item, hospital)
+        return len(writer_calls)
+
+    return SimpleNamespace(
+        item=item, hospital=hospital, db=db, sweep=sweep, philosophy=sweep_philosophy
+    )
+
+
+def test_legacy_block_record_is_not_regenerated_after_deploy(monkeypatch):
+    """기존 형식 지문만 남은 차단 기록은 배포만으로 재생성되지 않는다."""
+
+    philosophy = _operating_standard()
+    hospital_facts = _legacy_facts_fingerprint(
+        SimpleNamespace(name="강심장", treatments=["내과 진료"])
+    )
+    run = _hard_blocked_sweep(monkeypatch, philosophy, attempt={
+        "reason": "CONTENT_AI_HARD_FINDING",
+        "retry_class": GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+        "approved_facts": hospital_facts,
+    })
+
+    assert run.sweep(times=3) == 0
+
+
+def test_director_feedback_does_not_regenerate_a_hard_block(monkeypatch):
+    """원장 피드백 추가는 다음 신규 생성부터 반영한다 — 기존 차단 글을 다시 만들지 않는다."""
+
+    from app.models.director_delta import DirectorDeltaStatus
+    from app.services.director_delta import merge_director_deltas
+
+    philosophy = _operating_standard()
+    run = _hard_blocked_sweep(monkeypatch, philosophy)
+    # 07:45 게이트가 피드백 전 운영 기준으로 차단 기록을 남긴다.
+    tasks._remember_generation_attempt(
+        run.db, run.item, philosophy, "CONTENT_AI_HARD_FINDING", count_attempt=False
+    )
+    delta = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=philosophy.hospital_id,
+        status=DirectorDeltaStatus.ACTIVE,
+        avoid_messages=["원장 피드백: 비용을 언급하지 않습니다."],
+        prefer_topics=[], prefer_messages=["원장 피드백: 생활 습관을 먼저 설명합니다."],
+    )
+    run.philosophy["current"] = merge_director_deltas(philosophy, [delta])
+
+    assert run.sweep(times=3) == 0
+
+
+def test_forbidden_expression_list_change_does_not_regenerate_a_hard_block(monkeypatch):
+    from app.services import essence_engine
+
+    philosophy = _operating_standard()
+    run = _hard_blocked_sweep(monkeypatch, philosophy)
+    tasks._remember_generation_attempt(
+        run.db, run.item, philosophy, "CONTENT_AI_HARD_FINDING", count_attempt=False
+    )
+    monkeypatch.setattr(
+        essence_engine,
+        "MANDATORY_AVOID_MESSAGES",
+        (*essence_engine.MANDATORY_AVOID_MESSAGES, "새 금지 표현: 기적의"),
+    )
+
+    assert run.sweep(times=3) == 0
+
+
+def test_must_use_change_regenerates_a_hard_block_exactly_once(monkeypatch):
+    philosophy = _operating_standard()
+    run = _hard_blocked_sweep(monkeypatch, philosophy)
+    tasks._remember_generation_attempt(
+        run.db, run.item, philosophy, "CONTENT_AI_HARD_FINDING", count_attempt=False
+    )
+    assert run.sweep() == 0, "같은 필수 문구에서는 다시 사지 않는다"
 
     philosophy.must_use_messages = ["대장 선종은 발견 즉시 제거하는 것이 원칙입니다."]
-    assert tasks._approved_facts_changed_since_block(item, hospital, philosophy) is True
-    assessments = iter([blocked, SimpleNamespace(code=None, message=None)])
-    monkeypatch.setattr(
-        tasks, "assess_content_publication", lambda *_args: next(assessments)
+    assert tasks._approved_facts_changed_since_block(run.item, run.hospital, philosophy)
+
+    assert run.sweep(times=3) == 1
+    assert tasks._stored_generation_attempt(run.item)["approved_must_use"] == (
+        tasks.must_use_messages_fingerprint(philosophy)
     )
-
-    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
-
-    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
-    assert writer_calls == [str(item.id)]
-    assert gate_calls == ["다시 쓴 본문"]
 
 
 # ── 야간 생성 팬아웃: claim은 배치가, 생성은 슬롯별 태스크가 한다 ──
