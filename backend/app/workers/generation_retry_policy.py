@@ -150,6 +150,8 @@ def retry_class_for(
         return GenerationRetryClass.ENVIRONMENT_RECOVERABLE
     if code == "CONTENT_AI_HARD_FINDING" and model_declared_hard:
         # 모델이 HARD로 단정한 사실·안전 지적은 삭제형 재작성까지 마친 뒤의 종착이다.
+        # 승인 사실·운영 기준(필수 문구·위험 규칙)이 바뀐 것만 이 종착을 연다 — 스윕이
+        # 시도 기록의 `approved_facts` 지문으로 그 변화를 관측한다.
         return GenerationRetryClass.INPUT_CHANGE_REQUIRED
     if code in _SAMPLE_CODES:
         return GenerationRetryClass.SAMPLE_RECOVERABLE

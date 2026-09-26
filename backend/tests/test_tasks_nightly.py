@@ -6122,6 +6122,91 @@ def test_model_hard_block_waits_for_an_approved_fact_change_then_regenerates(mon
     assert gate_calls == ["다시 쓴 본문"], "승인 자료가 바뀌어도 발행 게이트는 그대로 거친다"
 
 
+def _operating_standard(**overrides):
+    base = dict(
+        id=uuid.uuid4(),
+        must_use_messages=["대장 선종은 시간이 지나면 대장암으로 진행할 수 있습니다."],
+        avoid_messages=["통증이 전혀 없다고 단정하지 않습니다."],
+        medical_ad_risk_rules=["치료 효과를 보장하지 않습니다."],
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def test_review_fingerprint_follows_the_operating_standard_and_is_stable_otherwise():
+    hospital = SimpleNamespace(name="강심장", treatments=["내과 진료"])
+    philosophy = _operating_standard()
+    fingerprint = tasks.hospital_review_facts_fingerprint(hospital, philosophy)
+
+    # 같은 운영 기준이면 같은 지문이다 — 재시도 루프를 만들지 않는다.
+    same = _operating_standard(
+        id=philosophy.id,
+        must_use_messages=list(philosophy.must_use_messages),
+        avoid_messages=list(philosophy.avoid_messages),
+        medical_ad_risk_rules=list(philosophy.medical_ad_risk_rules),
+    )
+    assert tasks.hospital_review_facts_fingerprint(hospital, same) == fingerprint
+    assert tasks.hospital_review_facts_fingerprint(hospital, philosophy) == fingerprint
+
+    for changed in (
+        _operating_standard(id=philosophy.id, must_use_messages=["선종은 조기에 제거합니다."]),
+        _operating_standard(id=philosophy.id, avoid_messages=["완치를 약속하지 않습니다."]),
+        _operating_standard(id=philosophy.id, medical_ad_risk_rules=["전후 사진을 쓰지 않습니다."]),
+    ):
+        assert tasks.hospital_review_facts_fingerprint(hospital, changed) != fingerprint
+
+    # 운영 기준을 모르는 호출은 종전과 같은 병원 사실 지문을 만든다.
+    assert tasks.hospital_review_facts_fingerprint(hospital, None) == (
+        tasks.hospital_review_facts_fingerprint(hospital)
+    )
+
+
+def test_operating_standard_change_reopens_a_model_hard_block_once(monkeypatch):
+    """필수 문구를 HARD로 막은 차단은 운영 기준이 바뀌면 한 번의 재생성을 받는다."""
+
+    philosophy = _operating_standard()
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(), name="강심장", slug="brave-heart", treatments=["내과 진료"]
+    )
+    item = SimpleNamespace(
+        id=uuid.uuid4(), hospital_id=hospital.id, hospital=hospital,
+        body="stored body", title="stored title", image_url=None,
+        content_philosophy_id=philosophy.id, content_revision=1,
+        content_type=SimpleNamespace(value="DISEASE"), query_target_id=None,
+        scheduled_date=date(2026, 9, 22), published_at=None, generation_claim_token=None,
+        essence_check_summary={"ai_review": {"status": "REVISE", "blocking": True, "findings": [{
+            "severity": "HARD", "kind": "MEDICAL_SAFETY",
+            "message": "선종의 암 진행을 단정합니다.",
+        }]}},
+    )
+    db, writer_calls, gate_calls = _sweep_regeneration_harness(monkeypatch, philosophy, item)
+    blocked = SimpleNamespace(code="CONTENT_AI_HARD_FINDING", message="의료 안전 지적")
+    monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: blocked)
+
+    tasks._remember_generation_attempt(db, item, philosophy, "CONTENT_AI_HARD_FINDING")
+    assert tasks._stored_generation_attempt(item)["retry_class"] == (
+        GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+    )
+    assert tasks._approved_facts_changed_since_block(item, hospital, philosophy) is False
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert writer_calls == [], "같은 운영 기준에서는 다시 사지 않는다"
+
+    philosophy.must_use_messages = ["대장 선종은 발견 즉시 제거하는 것이 원칙입니다."]
+    assert tasks._approved_facts_changed_since_block(item, hospital, philosophy) is True
+    assessments = iter([blocked, SimpleNamespace(code=None, message=None)])
+    monkeypatch.setattr(
+        tasks, "assess_content_publication", lambda *_args: next(assessments)
+    )
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [str(item.id)]
+    assert gate_calls == ["다시 쓴 본문"]
+
+
 # ── 야간 생성 팬아웃: claim은 배치가, 생성은 슬롯별 태스크가 한다 ──
 
 

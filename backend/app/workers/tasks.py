@@ -661,25 +661,32 @@ def _stored_block_is_sample_remediable(item: ContentItem, code: str | None) -> b
     )
 
 
-def _hospital_review_facts(item: ContentItem, hospital: Hospital | None = None) -> str | None:
+def _hospital_review_facts(
+    item: ContentItem,
+    hospital: Hospital | None = None,
+    philosophy: HospitalContentPhilosophy | None = None,
+) -> str | None:
     target = hospital if hospital is not None else getattr(item, "hospital", None)
-    return hospital_review_facts_fingerprint(target)
+    return hospital_review_facts_fingerprint(target, philosophy)
 
 
 def _approved_facts_changed_since_block(
-    item: ContentItem, hospital: Hospital | None = None
+    item: ContentItem,
+    hospital: Hospital | None = None,
+    philosophy: HospitalContentPhilosophy | None = None,
 ) -> bool:
-    """차단을 남긴 뒤 승인된 병원 사실이 실제로 바뀌었는가.
+    """차단을 남긴 뒤 승인된 병원 사실이나 운영 기준이 실제로 바뀌었는가.
 
     사실·의료 안전 HARD는 "승인 자료에 없다"는 판정이라 본문을 다시 쓴다고 풀리지 않는다.
-    그 자료를 사람이 채운 것만이 다음 단계다. 지문을 남긴 적이 없는 기록은 비교할 대상이
-    없으므로 바뀌었다고 단정하지 않는다 — 배포만으로 재생성이 몰리지 않게 한다.
+    그 자료나 판정 기준(필수 문구·위험 규칙)이 바뀐 것만이 다음 단계다. 지문을 남긴 적이
+    없는 기록은 비교할 대상이 없으므로 바뀌었다고 단정하지 않는다 — 배포만으로 재생성이
+    몰리지 않게 한다.
     """
 
     stored = _stored_generation_attempt(item).get("approved_facts")
     if not isinstance(stored, str) or not stored:
         return False
-    current = _hospital_review_facts(item, hospital)
+    current = _hospital_review_facts(item, hospital, philosophy)
     return bool(current) and current != stored
 
 
@@ -918,9 +925,11 @@ def _remember_generation_attempt(
     }
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
-    # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
-    # 그 사실을 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
-    approved_facts = _hospital_review_facts(item) or previous.get("approved_facts")
+    # 이 차단이 어떤 승인 사실·운영 기준 위에서 내려졌는지 남긴다. 그 자료나 기준이 바뀌면
+    # 스윕이 관측해 한 번의 재생성을 준다. 읽지 못한 실행이 기존 지문을 지우지 않는다.
+    approved_facts = (
+        _hospital_review_facts(item, philosophy=philosophy) or previous.get("approved_facts")
+    )
     if isinstance(approved_facts, str) and approved_facts:
         attempt["approved_facts"] = approved_facts
     stored_diagnostic = (
@@ -5814,8 +5823,8 @@ def _generate_single_content_item(
                 # claim만 하고 물러나는 패스가 이 분류의 복구를 대신할 수 없다.
                 or _stored_block_is_sample_remediable(item, stored_assessment.code)
                 # 모델이 HARD로 단정한 사실·안전 지적은 재작성이 아니라 승인 자료가 푼다.
-                # 그 자료가 실제로 바뀐 뒤에만 한 번의 재생성을 준다.
-                or _approved_facts_changed_since_block(item, hospital)
+                # 그 자료나 운영 기준이 실제로 바뀐 뒤에만 한 번의 재생성을 준다.
+                or _approved_facts_changed_since_block(item, hospital, philosophy)
             )
         )
         if repairable_body and _body_repair_session_is_due(item):
