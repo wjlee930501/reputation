@@ -393,7 +393,7 @@ def candidate_review_coverage(content: dict[str, Any] | object) -> dict[str, int
 
 def _parse_finding(
     value: object,
-    must_use_quote: Callable[[str], bool] | None = None,
+    must_use_quote: Callable[[str, str], bool] | None = None,
 ) -> ContentAiFinding | None:
     if isinstance(value, str):
         message = _bounded_text(value, 240)
@@ -438,8 +438,7 @@ def _parse_finding(
         severity != ContentAiFindingSeverity.SOFT
         and model_severity in {"HARD", "SOFT"}
         and must_use_quote is not None
-        and must_use_quote(quote)
-        and not _points_beyond_the_quote(message, quote)
+        and must_use_quote(quote, message)
     ):
         return ContentAiFinding(
             ContentAiFindingSeverity.SOFT, kind, message, quote, softened_from=severity.value
@@ -447,25 +446,44 @@ def _parse_finding(
     return ContentAiFinding(severity, kind, message, quote)
 
 
-# 누락 지적의 어간. 넓게 잡아 생기는 오판은 "강등하지 않음"(HARD 유지) 쪽이다.
+# 누락·처방 지적의 어간. 이 중 하나라도 있으면 그 지적은 본문의 공백을 겨눈다.
+# 넓게 잡아 생기는 오판은 "강등하지 않음"(HARD 유지) 쪽이다.
 _OMISSION_STEMS = (
     "없", "않", "빠", "부재", "결여", "누락", "생략",
     "미기재", "미포함", "미언급", "미고지", "추가해야", "보완",
     "missing", "omit", "lack", "without",
+    "해야", "필요", "함께", "덧붙", "알려", "언급", "제외",
+    "mention", "should", "need",
 )
+# 문구 자체에 대한 우려의 어간. 강등은 이 우려만 말하는 지적에 한한다(허용어 방식).
+_WORDING_CONCERN_STEMS = (
+    "단정", "불안", "공포", "과장", "오해", "표현", "자극", "강조",
+    "assert", "alarm", "fear", "exaggerat", "overstat", "mislead",
+    "wording", "phrasing", "tone", "sensational", "emphas",
+)
+_QUOTED_SPAN = re.compile(r"“([^”]+)”|\"([^\"]+)\"|‘([^’]+)’|'([^']+)'|「([^」]+)」|『([^』]+)』")
+_OTHER_SENTENCE_MIN_CHARS = 8
 
 
-def _points_beyond_the_quote(message: str, quote: str) -> bool:
-    """지적이 인용한 필수 문구 밖을 겨누는가. 애매하면 True(강등하지 않음).
-
-    - 무엇이 빠졌다는 누락 지적은 그 문장이 아니라 본문의 공백을 겨눈다.
-    - quote에 없는 의료광고 금지 표현을 message가 짚으면 인용 밖의 다른 주장을 겨눈다.
-    """
+def _concerns_only_the_wording(
+    message: str, quote: str, normalized_quote: str, other_sentences: frozenset[str]
+) -> bool:
+    """지적이 인용한 필수 문구의 표현만 겨누는가. 애매하면 False(강등하지 않음)."""
 
     lowered = message.casefold()
     if any(stem in lowered for stem in _OMISSION_STEMS):
-        return True
-    return bool(set(check_forbidden(message)) - set(check_forbidden(quote)))
+        return False
+    if not any(stem in lowered for stem in _WORDING_CONCERN_STEMS):
+        return False
+    # quote에 없는 금지 표현·따옴표 구간·다른 후보 문장을 짚으면 인용 밖을 겨눈다.
+    if set(check_forbidden(message)) - set(check_forbidden(quote)):
+        return False
+    for match in _QUOTED_SPAN.finditer(message):
+        span = "".join(_normalized_sentences(next(group for group in match.groups() if group)))
+        if span and span not in normalized_quote:
+            return False
+    normalized_message = "".join(_normalized_sentences(message))
+    return not any(sentence in normalized_message for sentence in other_sentences)
 
 
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
@@ -541,24 +559,38 @@ def _must_use_used_verbatim(must_use: str, candidate: dict[str, Any]) -> bool:
 def _must_use_quote_matcher(
     must_use_messages: Sequence[object],
     reviewed_content: dict[str, Any] | object,
-) -> Callable[[str], bool] | None:
-    """지적의 quote가 후보에 온전히 쓰인 승인 필수 문구와 정확히 같은지 판정한다.
+) -> Callable[[str, str], bool] | None:
+    """지적을 SOFT로 내려도 되는지 판정하는 함수를 만든다.
 
-    message 안의 인용은 근거로 쓰지 않는다 — quote가 비었거나 다르면 강등하지 않는다.
+    quote가 후보에 온전히 쓰인 승인 필수 문구와 정확히 같고, message가 그 문구의 표현만
+    겨눌 때만 True다. message 안의 인용은 강등 근거로 쓰지 않는다.
     """
 
     if not must_use_messages:
         return None
     candidate = candidate_review_payload(reviewed_content)
-    verbatim = {
-        "".join(_normalized_sentences(message))
-        for message in must_use_messages
-        if _must_use_used_verbatim(str(message), candidate)
-    }
+    used = [str(message) for message in must_use_messages if _must_use_used_verbatim(str(message), candidate)]
+    verbatim = {"".join(_normalized_sentences(message)) for message in used}
     verbatim.discard("")
     if not verbatim:
         return None
-    return lambda quote: bool(quote) and "".join(_normalized_sentences(quote)) in verbatim
+    must_use_sentences = {sentence for message in used for sentence in _normalized_sentences(message)}
+    other_sentences = frozenset(
+        sentence
+        for field in _MUST_USE_TEXT_FIELDS
+        for sentence in _normalized_sentences(candidate.get(field))
+        if len(sentence) >= _OTHER_SENTENCE_MIN_CHARS and sentence not in must_use_sentences
+    )
+
+    def may_soften(quote: str, message: str) -> bool:
+        if not quote:
+            return False
+        normalized_quote = "".join(_normalized_sentences(quote))
+        return normalized_quote in verbatim and _concerns_only_the_wording(
+            message, quote, normalized_quote, other_sentences
+        )
+
+    return may_soften
 
 
 def hospital_review_profile(hospital: Hospital) -> dict[str, Any]:

@@ -755,7 +755,7 @@ def test_model_soft_on_a_must_use_sentence_is_not_upgraded_back_to_a_block() -> 
     """프롬프트대로 SOFT를 준 사실·안전 지적이 UNCERTAIN으로 되돌아가 막히지 않는다."""
     for kind in ("MEDICAL_SAFETY", "HOSPITAL_FACT"):
         result = _must_use_review(
-            [{"severity": "SOFT", "kind": kind, "message": "우려", "quote": _MUST_USE}]
+            [{"severity": "SOFT", "kind": kind, "message": "단정적 표현이 우려됩니다", "quote": _MUST_USE}]
         )
 
         assert result.status == ContentAiReviewStatus.PASS, kind
@@ -1041,3 +1041,57 @@ def test_line_start_markdown_markers_and_extra_spaces_still_match(must_use, line
 
     assert result.status == ContentAiReviewStatus.PASS
     assert result.findings[0].severity == ContentAiFindingSeverity.SOFT
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "부작용 설명이 필요합니다",
+        "주의사항 안내 필요",
+        "위험성도 함께 알려야 합니다",
+        "합병증 가능성을 언급해야 함",
+        "위험 정보가 제외되었습니다",
+        "부작용 안내를 덧붙이세요",
+        "fails to mention side effects",
+        "does not mention risks",
+        "단정적 표현이라 위험 안내를 함께 해야 합니다",
+    ],
+)
+def test_prescriptive_omission_keeps_hard_even_with_an_exact_must_use_quote(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "‘시술 후 바로 일상생활이 가능합니다’라는 과장 표현도 있습니다",
+        "시술 후 바로 일상생활이 가능합니다 문장도 과장 표현입니다",
+        'The "results appear within a day" line is an exaggerated expression',
+    ],
+)
+def test_exact_quote_with_another_non_forbidden_claim_stays_hard(message) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}],
+        body=_MUST_USE_BODY + "\n\n시술 후 바로 일상생활이 가능합니다.",
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    "message", ["x", "이 문장을 확인하세요", "사실과 다를 수 있습니다", "근거를 확인하기 어렵습니다"]
+)
+def test_exact_quote_without_a_wording_concern_stays_hard(message) -> None:
+    """허용어 방식: 문구 자체의 표현을 문제 삼는 지적이 아니면 기본은 HARD다."""
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": message, "quote": _MUST_USE}]
+    )
+
+    assert result.status == ContentAiReviewStatus.REVISE
+    assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
