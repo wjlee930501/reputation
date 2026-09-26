@@ -1095,3 +1095,23 @@ def test_exact_quote_without_a_wording_concern_stays_hard(message) -> None:
 
     assert result.status == ContentAiReviewStatus.REVISE
     assert result.blocking_findings[0].severity == ContentAiFindingSeverity.HARD
+
+
+@pytest.mark.parametrize(
+    ("must_use", "line", "softened"),
+    [
+        ("하루 2 3회 복용합니다.", "하루 2 **3**회 복용합니다.", True),
+        ("하루 23회 복용합니다.", "하루 2 **3**회 복용합니다.", False),
+        ("10만원 이상이 듭니다.", "비용은 다릅니다. >10만원 이상이 듭니다.", False),
+    ],
+)
+def test_emphasis_between_spaced_digits_and_mid_line_gt_are_kept_apart(
+    must_use, line, softened
+) -> None:
+    result = _must_use_review(
+        [{"severity": "HARD", "kind": "MEDICAL_SAFETY", "message": "단정", "quote": must_use}],
+        body=f"안내입니다.\n\n{line}\n\n끝입니다.",
+        must_use=(must_use,),
+    )
+
+    assert (result.status == ContentAiReviewStatus.PASS) is softened

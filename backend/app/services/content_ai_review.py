@@ -486,38 +486,51 @@ def _concerns_only_the_wording(
     return not any(sentence in normalized_message for sentence in other_sentences)
 
 
-_SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+|\n+")
+_LINE_BREAK = re.compile(r"\n+")
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?。])\s+")
 _LIST_MARKER = re.compile(r"^\s*(?:[-*+•]|\d+[.)])\s+")
-# 제목(# ) 표식과 인용(>) 표식은 줄 맨 앞에서만 마크다운이다. 문장 안의 #1, 5>3은 내용이다.
+# 제목(# ) 표식과 인용(>) 표식은 줄 맨 앞에서만 마크다운이다. 문장 안의 #1, 5>3, 문장 사이의
+# ">10만원"은 내용이다. 그래서 문장으로 나누기 전에 줄 단위로만 지운다.
 _LINE_MARKER = re.compile(r"^\s*(?:#{1,6}\s+|>+\s*)")
 _MUST_USE_TEXT_FIELDS = ("title", "body", "meta_description", "faq_question", "faq_answer_summary")
 _QUOTE_CHARS = frozenset("\"'“”‘’「」『』«»")
 _EMPHASIS_CHARS = frozenset("*_`")
 # 지우는 것은 공백·문장 끝 부호·따옴표·마크다운 기호뿐이다. · . , - % / 같은 부호는
-# 숫자 옆에서 뜻을 바꾸므로(9.5%≠95%, 3-5일≠35일) 남긴다. 숫자와 숫자 사이의 공백·강조
-# 기호도 구분자로 남긴다(2 3회≠23회).
+# 숫자 옆에서 뜻을 바꾸므로(9.5%≠95%, 3-5일≠35일) 남긴다. 숫자와 숫자 사이의 공백은
+# 강조 기호를 건너뛰어도 구분자로 남기고(2 **3**회 = 2 3회≠23회), 강조 기호는 바로 양옆이
+# 숫자일 때(2*3)만 내용으로 본다.
 _SENTENCE_END_CHARS = frozenset(".!?。…")
 
 
 def _normalized_phrase(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or ""))
-    text = _LIST_MARKER.sub("", _LINE_MARKER.sub("", _LIST_MARKER.sub("", text)))
     chars = [char for char in text if char not in _QUOTE_CHARS]
+
+    def is_digit_at(index: int) -> bool:
+        return 0 <= index < len(chars) and chars[index].isdigit()
 
     def neighbour_is_digit(index: int, step: int) -> bool:
         index += step
-        while 0 <= index < len(chars) and chars[index].isspace():
+        while 0 <= index < len(chars) and (
+            chars[index].isspace() or chars[index] in _EMPHASIS_CHARS
+        ):
             index += step
-        return 0 <= index < len(chars) and chars[index].isdigit()
+        return is_digit_at(index)
 
     kept: list[str] = []
     for index, char in enumerate(chars):
-        between_digits = neighbour_is_digit(index, -1) and neighbour_is_digit(index, 1)
         if char.isspace():
-            if between_digits and kept and kept[-1] != " ":
+            if (
+                neighbour_is_digit(index, -1)
+                and neighbour_is_digit(index, 1)
+                and kept
+                and kept[-1] != " "
+            ):
                 kept.append(" ")
             continue
-        if char in _EMPHASIS_CHARS and not between_digits:
+        if char in _EMPHASIS_CHARS:
+            if is_digit_at(index - 1) and is_digit_at(index + 1):
+                kept.append(char)
             continue
         # 마크다운 취소선(~~)은 숫자 범위(3~5일)가 아닐 때만 기호로 본다.
         if char == "~" and not (neighbour_is_digit(index, -1) or neighbour_is_digit(index, 1)):
@@ -529,7 +542,10 @@ def _normalized_phrase(value: object) -> str:
 
 
 def _normalized_sentences(value: object) -> list[str]:
-    sentences = (_normalized_phrase(part) for part in _SENTENCE_BREAK.split(str(value or "")))
+    sentences: list[str] = []
+    for line in _LINE_BREAK.split(unicodedata.normalize("NFKC", str(value or ""))):
+        line = _LIST_MARKER.sub("", _LINE_MARKER.sub("", _LIST_MARKER.sub("", line)))
+        sentences.extend(_normalized_phrase(part) for part in _SENTENCE_BREAK.split(line))
     return [sentence for sentence in sentences if sentence]
 
 
