@@ -206,7 +206,6 @@ from app.services.image_policy import ImagePolicyRejectedError
 from app.services.incident_types import IncidentFingerprint
 from app.services.measurement_manifest_policy import (
     ManifestPolicyVersionTransition,
-    manifest_policy_version_transition,
 )
 from app.services.measurement_manifest_policy import (
     manifest_cell_slots_resolved as _manifest_cell_slots_resolved,  # noqa: F401 -- stable legacy worker import
@@ -216,6 +215,9 @@ from app.services.measurement_manifest_policy import (
 )
 from app.services.measurement_manifest_policy import (
     manifest_observation_adequacy as _manifest_observation_adequacy,  # noqa: F401 -- stable legacy worker import
+)
+from app.services.measurement_manifest_policy import (
+    manifest_policy_version_transition as _manifest_policy_version_transition,
 )
 from app.services.measurement_manifest_policy import (
     manifest_slot_repeat_count as _manifest_slot_repeat_count,  # noqa: F401 -- stable legacy worker import
@@ -6910,7 +6912,7 @@ def run_sov_for_hospital(
                     _operation_run_id_from_task(self),
                     measurement_mode=measurement_mode,
                     policy_transition=(
-                        None if monthly else manifest_policy_version_transition(manifest)
+                        None if monthly else _manifest_policy_version_transition(manifest)
                     ),
                 )
                 _finish_sov_operation_run(
