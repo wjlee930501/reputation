@@ -1314,6 +1314,7 @@ def test_weekly_sov_failure_records_operator_visible_incident(monkeypatch):
             "week_key": "2026-W33",
             "error_code": "WEEKLY_SOV_NO_MEASUREMENT_MANIFEST",
             "operation_run_id": run_id,
+            "policy_transition": None,
         }
     ]
 

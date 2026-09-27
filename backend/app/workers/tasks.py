@@ -205,6 +205,10 @@ from app.services.image_engine import (
 from app.services.image_policy import ImagePolicyRejectedError
 from app.services.incident_types import IncidentFingerprint
 from app.services.measurement_manifest_policy import (
+    ManifestPolicyVersionTransition,
+    manifest_policy_version_transition,
+)
+from app.services.measurement_manifest_policy import (
     manifest_cell_slots_resolved as _manifest_cell_slots_resolved,  # noqa: F401 -- stable legacy worker import
 )
 from app.services.measurement_manifest_policy import (
@@ -6905,6 +6909,9 @@ def run_sov_for_hospital(
                     error_code := f"{failure_prefix}_MEASUREMENT_POLICY_DRIFT",
                     _operation_run_id_from_task(self),
                     measurement_mode=measurement_mode,
+                    policy_transition=(
+                        None if monthly else manifest_policy_version_transition(manifest)
+                    ),
                 )
                 _finish_sov_operation_run(
                     db,
@@ -7699,6 +7706,7 @@ def _record_weekly_sov_failure(
     operation_run_id: uuid.UUID | None,
     *,
     measurement_mode: str = "weekly",
+    policy_transition: ManifestPolicyVersionTransition | None = None,
 ) -> None:
     if measurement_mode == "monthly":
         coroutine = open_monthly_sov_failure(
@@ -7715,6 +7723,7 @@ def _record_weekly_sov_failure(
             week_key=week_key,
             error_code=error_code,
             operation_run_id=operation_run_id,
+            policy_transition=policy_transition,
         )
     _run_async(coroutine)
 
