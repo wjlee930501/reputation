@@ -39,8 +39,16 @@ async def test_unreachable_db_fails_when_a_url_env_var_is_set(
     monkeypatch.delenv(_SYNC_URL_ENV, raising=False)
     monkeypatch.setenv(explicit_env, "postgresql://explicitly-set")
 
-    with pytest.raises(pytest.fail.Exception, match=explicit_env):
+    # Skipped is not a Failed, so pytest.raises(pytest.fail.Exception) would let a skip
+    # through and report this test SKIPPED: catch it and fail instead.
+    try:
         await _probe_closed_port()
+    except pytest.skip.Exception:
+        pytest.fail(f"fixture skipped although {explicit_env} was set")
+    except pytest.fail.Exception as exc:
+        assert explicit_env in str(exc)
+    else:
+        pytest.fail("fixture neither failed nor skipped")
 
 
 async def test_unreachable_db_skips_when_no_url_env_var_is_set(
@@ -49,5 +57,11 @@ async def test_unreachable_db_skips_when_no_url_env_var_is_set(
     monkeypatch.delenv(_ASYNC_URL_ENV, raising=False)
     monkeypatch.delenv(_SYNC_URL_ENV, raising=False)
 
-    with pytest.raises(pytest.skip.Exception):
+    try:
         await _probe_closed_port()
+    except pytest.fail.Exception as exc:
+        pytest.fail(f"fixture failed although no signal-store URL env var was set: {exc}")
+    except pytest.skip.Exception:
+        pass
+    else:
+        pytest.fail("fixture neither skipped nor failed")

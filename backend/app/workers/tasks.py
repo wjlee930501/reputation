@@ -8662,6 +8662,7 @@ def _ensure_monthly_sov_operation_run(
     ).scalar_one_or_none()
     if existing is not None:
         def _write_unchanged(
+            action: str,
             expected_state: OperationRunState,
             values: dict[str, Any],
             *guards: ColumnElement[bool],
@@ -8685,8 +8686,9 @@ def _ensure_monthly_sov_operation_run(
             db.commit()
             if rowcount != 1:
                 logger.warning(
-                    "monthly RUN_SOV re-arm skipped: %s run %s was re-claimed or changed "
+                    "monthly RUN_SOV %s skipped: %s run %s was re-claimed or changed "
                     "concurrently",
+                    action,
                     expected_state.value,
                     existing.id,
                 )
@@ -8698,6 +8700,7 @@ def _ensure_monthly_sov_operation_run(
             # Still waiting for its worker: refresh the payload and re-dispatch under the
             # same task_id.
             return _write_unchanged(
+                "payload refresh",
                 OperationRunState.REQUESTED,
                 dict(
                     request_payload=dispatch_payload,
@@ -8715,6 +8718,7 @@ def _ensure_monthly_sov_operation_run(
             # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
             # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
             return _write_unchanged(
+                "re-arm",
                 expected_state,
                 dict(
                     state=OperationRunState.REQUESTED,
