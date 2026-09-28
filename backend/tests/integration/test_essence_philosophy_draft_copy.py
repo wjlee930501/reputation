@@ -4,12 +4,15 @@
 하나를 고치려면 승인본을 그대로 옮긴 초안이 필요하다. 이 파일은 그 복사가
 - 내용·근거·자료 snapshot을 그대로 옮기고 승인본을 건드리지 않는지,
 - 병원당 초안이 둘 생기지 않는지(실제 동시 커밋 포함),
+- 자료가 승인본의 snapshot과 어긋나 승인이 거절할 사본을 만들지 않는지,
 - 합성·검수·큐 호출 없이 끝나는지,
 - 복사와 문장 수정이 감사 기록에 남는지,
 - 복사 → 문장 수정 → 기존 승인 경로로 새 판이 되는지를 고정한다.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -18,6 +21,7 @@ import pytest
 from celery.app.task import Task
 from fastapi import HTTPException
 from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.api.admin import essence as essence_api
@@ -346,8 +350,7 @@ async def test_copy_is_refused_while_the_hospital_already_has_a_draft(
         await _copy_as(pg_async_session, hospital.id, approved.id)
 
     assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "PHILOSOPHY_DRAFT_EXISTS"
-    assert exc.value.detail["draft_id"] == str(existing.id)
+    assert exc.value.detail == essence_api.COPY_DRAFT_EXISTS_DETAIL
     rows = await _philosophies(pg_async_session, hospital.id)
     assert len(rows) == 3
     assert [row.id for row in rows if row.status == PhilosophyStatus.DRAFT] == [existing.id]
@@ -411,7 +414,7 @@ async def test_copy_is_refused_while_an_authority_refresh_is_pending(pg_async_se
         await _copy_as(pg_async_session, hospital.id, approved.id)
 
     assert exc.value.status_code == 409
-    assert exc.value.detail["code"] == "ESSENCE_AUTHORITY_REFRESH_PENDING"
+    assert exc.value.detail == essence_api.COPY_AUTHORITY_REFRESH_PENDING_DETAIL
     assert len(await _philosophies(pg_async_session, hospital.id)) == 2
 
 
@@ -424,6 +427,190 @@ async def test_copy_requires_a_verified_account(pg_async_session, actor):
 
     assert exc.value.status_code == 403
     assert len(await _philosophies(pg_async_session, hospital.id)) == 2
+
+
+# ── 자료가 승인본의 snapshot과 어긋난 복사 ─────────────────────────────
+
+
+async def _add_required_source(db, hospital_id, *, status: SourceStatus) -> HospitalSourceAsset:
+    source = HospitalSourceAsset(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        source_type=SourceType.INTERVIEW,
+        title="승인 뒤 추가된 인터뷰",
+        raw_text="예약 전 상담에서 비용과 기간을 먼저 안내합니다.",
+        content_hash=f"{uuid.uuid4().hex[:8]}-added",
+        status=status,
+        processed_at=datetime.now(timezone.utc) if status == SourceStatus.PROCESSED else None,
+    )
+    db.add(source)
+    await db.commit()
+    return source
+
+
+async def _assert_nothing_was_copied(db, hospital_id) -> None:
+    rows = await _philosophies(db, hospital_id)
+    assert [row.status for row in rows] == [PhilosophyStatus.APPROVED, PhilosophyStatus.ARCHIVED]
+    assert await _audit_rows(db, hospital_id, COPY_ACTION) == []
+
+
+@pytest.mark.parametrize(
+    "added_status",
+    [SourceStatus.PROCESSED, SourceStatus.PENDING],
+    ids=["processed_source_added", "unprocessed_source_added"],
+)
+async def test_copy_is_refused_while_sources_are_out_of_sync_with_the_approved_snapshot(
+    pg_async_session, monkeypatch, added_status
+):
+    """승인이 거절할 사본은 만들지 않는다. 만들면 그 초안이 다음 복사까지 막는다."""
+    calls = _record_llm_and_queue_calls(monkeypatch)
+    hospital, _note, approved, _archived = await _seed(pg_async_session)
+    added = await _add_required_source(pg_async_session, hospital.id, status=added_status)
+
+    for _attempt in range(2):
+        # 두 번째 시도도 '초안 있음'이 아니라 같은 이유로 거절된다 — 남은 초안이 없다.
+        with pytest.raises(HTTPException) as exc:
+            await _copy_as(pg_async_session, hospital.id, approved.id)
+        assert exc.value.status_code == 409
+        assert exc.value.detail == (
+            essence_api.COPY_SOURCES_CHANGED_DETAIL
+            if added_status == SourceStatus.PROCESSED
+            else essence_api._copy_unprocessed_sources_detail(1)
+        )
+        await _assert_nothing_was_copied(pg_async_session, hospital.id)
+    assert calls == []
+
+    # 자료가 다시 승인본의 snapshot과 같아지면 복사가 된다.
+    added.status = SourceStatus.EXCLUDED
+    await pg_async_session.commit()
+    response = await _copy_as(pg_async_session, hospital.id, approved.id)
+    assert response["status"] == PhilosophyStatus.DRAFT
+    assert len(await _audit_rows(pg_async_session, hospital.id, COPY_ACTION)) == 1
+
+
+async def test_copy_is_refused_when_the_approved_snapshot_source_was_excluded(pg_async_session):
+    hospital, _note, approved, _archived = await _seed(pg_async_session)
+    source = await pg_async_session.get(
+        HospitalSourceAsset, uuid.UUID(approved.source_asset_ids[0])
+    )
+    source.status = SourceStatus.EXCLUDED
+    await pg_async_session.commit()
+
+    with pytest.raises(HTTPException) as exc:
+        await _copy_as(pg_async_session, hospital.id, approved.id)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == essence_api.COPY_SOURCES_CHANGED_DETAIL
+    await _assert_nothing_was_copied(pg_async_session, hospital.id)
+
+
+@pytest.mark.parametrize(
+    ("added_status", "expected_detail"),
+    [
+        (
+            SourceStatus.PROCESSED,
+            "초안 생성 후 처리된 병원 자료가 변경되었습니다(자료 집합이 다릅니다). "
+            "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요.",
+        ),
+        (
+            SourceStatus.PENDING,
+            "처리되지 않은 병원 자료 1개가 남아 있습니다. "
+            "자료를 처리하거나 제외한 뒤 초안을 다시 생성해 주세요.",
+        ),
+    ],
+    ids=["processed_source_added", "unprocessed_source_added"],
+)
+async def test_approve_keeps_its_source_snapshot_refusals_unchanged(
+    pg_async_session, added_status, expected_detail
+):
+    """복사와 판정을 나눠 써도 승인의 409는 상태 코드·문자열 detail·무변경 그대로다."""
+    hospital, _note, approved, _archived = await _seed(pg_async_session)
+    hospital_id = hospital.id
+    response = await _copy_as(pg_async_session, hospital_id, approved.id)
+    draft_id = uuid.UUID(response["id"])
+    await _add_required_source(pg_async_session, hospital_id, status=added_status)
+    row_ids = [row.id for row in await _philosophies(pg_async_session, hospital_id)]
+    before = [
+        await _column_snapshot(pg_async_session, HospitalContentPhilosophy, row_id)
+        for row_id in row_ids
+    ]
+
+    token = set_request_actor(OPERATOR)
+    try:
+        with pytest.raises(HTTPException) as exc:
+            await essence_api.approve_philosophy(
+                hospital_id,
+                draft_id,
+                essence_api.PhilosophyApprove(
+                    reviewed_by="MotionLabs", confirm_evidence_reviewed=True
+                ),
+                db=pg_async_session,
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail == expected_detail
+    await pg_async_session.rollback()
+    after = [
+        await _column_snapshot(pg_async_session, HospitalContentPhilosophy, row_id)
+        for row_id in row_ids
+    ]
+    assert after == before
+    assert await _audit_rows(pg_async_session, hospital_id, "approve_philosophy") == []
+
+
+# ── 복사 409의 detail 형식 ──────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    ["draft_exists", "authority_pending", "sources_changed", "sources_unprocessed", "concurrent"],
+)
+async def test_every_copy_conflict_uses_a_plain_string_detail(
+    pg_async_session, monkeypatch, scenario
+):
+    """이 파일의 409 detail 관례(문자열)를 복사의 모든 409가 따른다."""
+    extra_gaps = (
+        [{"field": AUTHORITY_CHANGE_FIELD, "reason": "근거 자료 철회"}]
+        if scenario == "authority_pending"
+        else None
+    )
+    hospital, _note, approved, _archived = await _seed(pg_async_session, extra_gaps=extra_gaps)
+    if scenario == "draft_exists":
+        pg_async_session.add(
+            HospitalContentPhilosophy(
+                id=uuid.uuid4(),
+                hospital_id=hospital.id,
+                version=6,
+                status=PhilosophyStatus.DRAFT,
+                created_by="system:essence-auto",
+            )
+        )
+        await pg_async_session.commit()
+    elif scenario == "sources_changed":
+        await _add_required_source(pg_async_session, hospital.id, status=SourceStatus.PROCESSED)
+    elif scenario == "sources_unprocessed":
+        await _add_required_source(pg_async_session, hospital.id, status=SourceStatus.PENDING)
+    elif scenario == "concurrent":
+
+        async def _commit_loses_the_race():
+            raise IntegrityError("INSERT", {}, Exception("duplicate version"))
+
+        monkeypatch.setattr(pg_async_session, "commit", _commit_loses_the_race)
+
+    with pytest.raises(HTTPException) as exc:
+        await _copy_as(pg_async_session, hospital.id, approved.id)
+
+    assert exc.value.status_code == 409
+    expected_detail = {
+        "draft_exists": essence_api.COPY_DRAFT_EXISTS_DETAIL,
+        "authority_pending": essence_api.COPY_AUTHORITY_REFRESH_PENDING_DETAIL,
+        "sources_changed": essence_api.COPY_SOURCES_CHANGED_DETAIL,
+        "sources_unprocessed": essence_api._copy_unprocessed_sources_detail(1),
+        "concurrent": essence_api.COPY_CONCURRENT_CHANGE_DETAIL,
+    }[scenario]
+    assert exc.value.detail == expected_detail
 
 
 # ── PATCH 감사 ──────────────────────────────────────────────────────
@@ -464,6 +651,75 @@ async def test_patch_records_before_and_after_of_changed_fields_only(pg_async_se
                 "after": new_messages,
             }
         },
+    }
+
+
+def _serialized(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+async def test_patch_audit_caps_oversized_values_with_preview_hash_and_length(pg_async_session):
+    hospital, _note, approved, _archived = await _seed(pg_async_session)
+    response = await _copy_as(pg_async_session, hospital.id, approved.id)
+    draft_id = uuid.UUID(response["id"])
+    long_notes = "근거를 다시 확인한 메모. " * 400
+    long_conflicts = [{"note": f"상충 {index}", "detail": "가" * 200} for index in range(40)]
+    new_messages = ["진료 전에 충분히, 천천히 설명합니다", "환자마다 선택지가 다릅니다"]
+
+    await essence_api.patch_philosophy(
+        hospital.id,
+        draft_id,
+        essence_api.PhilosophyPatch(
+            synthesis_notes=long_notes,
+            conflict_notes=long_conflicts,
+            must_use_messages=new_messages,
+        ),
+        db=pg_async_session,
+    )
+
+    rows = await _audit_rows(pg_async_session, hospital.id, PATCH_ACTION)
+    assert len(rows) == 1
+    changes = rows[0].detail["changes"]
+    # 작은 값은 그대로다.
+    assert changes["synthesis_notes"]["before"] == "합성 메모"
+    assert changes["conflict_notes"]["before"] == [{"note": "상충 없음"}]
+    assert changes["must_use_messages"] == {
+        "before": ["진료 전에 충분히 설명합니다", "환자마다 선택지가 다릅니다"],
+        "after": new_messages,
+    }
+    # 큰 값은 앞부분·전체 hash·길이만 남는다.
+    for field_name, full_value in (
+        ("synthesis_notes", long_notes),
+        ("conflict_notes", long_conflicts),
+    ):
+        serialized = _serialized(full_value)
+        assert len(serialized) > essence_api.PATCH_AUDIT_VALUE_MAX_CHARS
+        assert changes[field_name]["after"] == {
+            "truncated": True,
+            "preview": serialized[: essence_api.PATCH_AUDIT_PREVIEW_CHARS],
+            "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "length": len(serialized),
+        }
+    # 저장된 초안 자체는 자르지 않는다.
+    draft = next(
+        row for row in await _philosophies(pg_async_session, hospital.id) if row.id == draft_id
+    )
+    assert draft.synthesis_notes == long_notes
+    assert draft.conflict_notes == long_conflicts
+
+
+def test_patch_audit_value_cap_boundary():
+    at_cap = "x" * (essence_api.PATCH_AUDIT_VALUE_MAX_CHARS - 2)  # 따옴표 2자 포함 = 상한
+    over_cap = at_cap + "x"
+
+    assert essence_api._patch_audit_value(at_cap) == at_cap
+    assert essence_api._patch_audit_value(None) is None
+    capped = essence_api._patch_audit_value(over_cap)
+    assert capped == {
+        "truncated": True,
+        "preview": _serialized(over_cap)[: essence_api.PATCH_AUDIT_PREVIEW_CHARS],
+        "sha256": hashlib.sha256(_serialized(over_cap).encode("utf-8")).hexdigest(),
+        "length": essence_api.PATCH_AUDIT_VALUE_MAX_CHARS + 1,
     }
 
 
@@ -553,8 +809,8 @@ async def test_concurrent_copies_create_exactly_one_draft(pg_engine, monkeypatch
     감사 기록(모든 검사를 통과한 뒤, 커밋 직전) 지점에 랑데부를 심는다. 첫 요청은
     나머지 요청의 연결이 모두 잠금을 기다리는 모습(pg_locks)이 보이거나 랑데부에
     도착할 때까지 커밋하지 않는다. 잠금이 있으면 나머지는 잠금 뒤에서 커밋된 초안을
-    보고 PHILOSOPHY_DRAFT_EXISTS로 물러난다. 잠금이 없으면 모두 검사를 통과해 같은
-    version을 만들다 부딪히므로 그 코드가 나오지 않는다.
+    보고 '초안 있음' 409로 물러난다. 잠금이 없으면 모두 검사를 통과해 같은
+    version을 만들다 부딪히므로 그 detail이 나오지 않는다.
 
     감사 기록은 append-only(0024 트리거)라 지울 수 없어 남는다. 나머지 행은 병원 삭제
     cascade로 지운다.
@@ -618,10 +874,8 @@ async def test_concurrent_copies_create_exactly_one_draft(pg_engine, monkeypatch
         assert len(refusals) == concurrency - 1, results
         for refusal in refusals:
             assert refusal.status_code == 409
-            # 잠금 없이 같은 version으로 부딪힌 409(문자열 detail)가 아니어야 한다.
-            assert isinstance(refusal.detail, dict), refusal.detail
-            assert refusal.detail["code"] == "PHILOSOPHY_DRAFT_EXISTS"
-            assert refusal.detail["draft_id"] == successes[0]["id"]
+            # 잠금 없이 같은 version으로 부딪힌 409(동시 변경)가 아니어야 한다.
+            assert refusal.detail == essence_api.COPY_DRAFT_EXISTS_DETAIL
 
         async with AsyncSession(engine) as check:
             drafts = (

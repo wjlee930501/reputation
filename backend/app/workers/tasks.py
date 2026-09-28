@@ -27,7 +27,7 @@ import arrow
 import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -8670,41 +8670,22 @@ def _ensure_monthly_sov_operation_run(
             db.commit()
             return existing
 
-        def _rearm_existing() -> OperationRun:
+        def _rearm_unchanged(
+            expected_state: OperationRunState, *guards: ColumnElement[bool]
+        ) -> OperationRun | None:
             # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
             # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
             # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
-            existing.state = OperationRunState.REQUESTED
-            existing.task_id = str(uuid.uuid4())
-            existing.queued_at = None
-            existing.started_at = None
-            existing.completed_at = None
-            existing.lease_owner = None
-            existing.lease_expires_at = None
-            existing.success_count = 0
-            existing.failure_count = 0
-            existing.skipped_count = 0
-            existing.safe_error_code = None
-            existing.safe_error_message = None
-            existing.request_payload = dispatch_payload
-            existing.result_summary = {
-                "measurement_month": period_key,
-                "measurement_mode": "monthly",
-            }
-            existing.version += 1
-            db.commit()
-            return existing
-
-        def _rearm_expired_running() -> OperationRun | None:
-            # A redelivered message may re-claim the expired lease between our read and
-            # this write (operation_run_signals._claim_safely). Re-arm only the row we
-            # read so the claim and the re-dispatch cannot both run the month.
+            # A redelivered message may re-claim an expired lease between our read and
+            # this write (operation_run_signals._claim_safely), and lifecycle signals may
+            # move the run on. Re-arm only the row we read so the claim and the
+            # re-dispatch cannot both run the month.
             rearmed = db.execute(
                 update(OperationRun)
                 .where(
                     OperationRun.id == existing.id,
-                    OperationRun.state == OperationRunState.RUNNING,
-                    OperationRun.lease_expires_at <= observed_at,
+                    OperationRun.state == expected_state,
+                    *guards,
                     OperationRun.version == existing.version,
                 )
                 .values(
@@ -8733,8 +8714,9 @@ def _ensure_monthly_sov_operation_run(
             db.commit()
             if rowcount != 1:
                 logger.warning(
-                    "monthly RUN_SOV re-arm skipped: run %s was re-claimed or changed "
+                    "monthly RUN_SOV re-arm skipped: %s run %s was re-claimed or changed "
                     "concurrently",
+                    expected_state.value,
                     existing.id,
                 )
                 return None
@@ -8744,7 +8726,7 @@ def _ensure_monthly_sov_operation_run(
         if existing.state == OperationRunState.PARTIAL and _monthly_sov_retry_window(
             period_key, observed_at
         ):
-            return _rearm_existing()
+            return _rearm_unchanged(OperationRunState.PARTIAL)
         # No live worker holds an expired claim (task time_limit < claim lease), and
         # nothing else re-dispatches a RUNNING RUN_SOV: a lost continuation publish or
         # RETRY requeue would otherwise strand the month's measurement here.
@@ -8753,20 +8735,23 @@ def _ensure_monthly_sov_operation_run(
             and _operation_lease_expired(existing, observed_at)
             and _monthly_sov_retry_window(period_key, observed_at)
         ):
-            return _rearm_expired_running()
+            return _rearm_unchanged(
+                OperationRunState.RUNNING,
+                OperationRun.lease_expires_at <= observed_at,
+            )
         if existing.state == OperationRunState.FAILED:
             code = existing.safe_error_code or ""
             retry_window = _monthly_sov_retry_window(period_key, observed_at)
             if code.endswith("COST_GUARD_BLOCKED") and retry_window and (
                 _monthly_sov_pending_budget_fits(db, hospital, period_key)
             ):
-                return _rearm_existing()
+                return _rearm_unchanged(OperationRunState.FAILED)
             if retry_window and not code.endswith("COST_GUARD_BLOCKED"):
                 failed_cell_count = _monthly_sov_failed_cell_count(
                     db, hospital.id, period_key
                 )
                 if failed_cell_count is None or failed_cell_count > 0:
-                    return _rearm_existing()
+                    return _rearm_unchanged(OperationRunState.FAILED)
             return None
         return None
     run = OperationRun(
