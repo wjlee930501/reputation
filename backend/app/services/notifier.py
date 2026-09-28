@@ -248,13 +248,15 @@ def _safe_summary_value(value: str | None) -> str:
 
 
 # 사이트가 보내는 유입 경로(site/lib/inquiry-lead.ts의 inquirySourcePath)와 옛 랜딩 앵커만
-# 그대로 보여 준다. 그 밖의 값은 공개 API에 누가 무엇을 넣었든 Slack으로 옮기지 않는다 —
-# 경로나 쿼리에 연락처·주민번호가 들어가면 기존 마스킹 패턴을 비켜 간다.
+# 그대로 보여 준다. 사이트는 광고 유입 값을 쿼리로 덧붙이므로(site/lib/ad-attribution.ts의
+# decorateSourcePath) 쿼리를 떼고 경로만 비교하며, 쿼리 값은 싣지 않는다. 그 밖의 경로는
+# 공개 API에 누가 무엇을 넣었든 Slack으로 옮기지 않는다 — 경로나 쿼리에 연락처·주민번호가
+# 들어가면 기존 마스킹 패턴을 비켜 간다.
 _KNOWN_SOURCE_PATHS = frozenset({"/", "/contact", "/#contact", "/#lead"})
 
 
 def _safe_source_path(value: str | None) -> str:
-    path = (value or "").strip()
+    path = (value or "").split("?", 1)[0].strip()
     if not path:
         return "(미입력)"
     return path if path in _KNOWN_SOURCE_PATHS else "(기타)"
