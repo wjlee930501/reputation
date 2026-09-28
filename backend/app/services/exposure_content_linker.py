@@ -20,7 +20,8 @@ async def link_content_to_exposure_action(
 ) -> None:
     """Link one draft content item to one content-producing exposure action."""
     _ensure_brief_capable_action(action)
-    if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
+    # 비공개(보존) 글도 공개됐던 판을 그대로 들고 있어 새 작업의 슬롯이 아니다.
+    if _enum_value(item.status) in {ContentStatus.PUBLISHED.value, ContentStatus.WITHHELD.value}:
         raise HTTPException(
             status_code=409,
             detail="Cannot link a published content item to an AI exposure work item",

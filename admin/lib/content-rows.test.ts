@@ -132,6 +132,25 @@ test('표본 확인은 공개 페이지에 실제로 있는 미확인 표본에�
     false,
   )
   assert.equal(canConfirmSample({ ...sample, status: 'DRAFT' }), false)
+  // 비공개(보존)는 발행 기록이 남아 있어도 표본 확인 대상이 아니다.
+  assert.equal(canConfirmSample({ ...sample, status: 'WITHHELD' }), false)
+})
+
+test('비공개(보존) 글은 서버가 준 기존 공개 보류 행 판정을 그대로 쓴다', () => {
+  // 백엔드는 WITHHELD에 새 kind를 만들지 않고 row_state.kind='withheld'·사유 '비공개(보존)'을 준다.
+  const withheldItem: ContentRowItem = {
+    row_state: rowState({ kind: 'withheld', label: '공개 보류', reason: '비공개(보존)' }),
+    status: 'WITHHELD',
+  }
+  assert.deepEqual(describeRowState(withheldItem.row_state), {
+    label: '공개 보류',
+    detail: '비공개(보존)',
+    tone: 'warn',
+    href: null,
+  })
+  assert.equal(matchesRowFilter(withheldItem, 'withheld'), true)
+  assert.equal(matchesRowFilter(withheldItem, 'public'), false)
+  assert.equal(summarizeRows([withheldItem]).withheld, 1)
 })
 
 test('판정이 없는 응답에는 확인 버튼을 열지 않는다', () => {

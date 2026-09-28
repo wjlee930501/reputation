@@ -186,6 +186,7 @@ function contentStatusLabel(value: string): string {
     DRAFT: '초안',
     READY: '발행 대기',
     PUBLISHED: '발행 완료',
+    WITHHELD: '비공개(보존)',
     REJECTED: '반려',
     CANCELLED: '취소',
   }

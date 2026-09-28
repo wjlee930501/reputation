@@ -616,6 +616,12 @@ class Settings(BaseSettings):
     INDEXNOW_ENABLED: bool = True
     INDEXNOW_KEY: str = ""  # 미설정이면 제출을 건너뛴다(발행은 정상 진행)
 
+    # 예약 자동 발행 보류 — ""이면 꺼짐(기본, 동작 변화 없음), "*"이면 전체 병원,
+    # 그 밖에는 병원 UUID를 쉼표로 나열한다. 공백·빈 항목은 무시하고, UUID가 아닌 항목은
+    # 경고 로그를 남기고 무시한다. 수동 발행(/publish)과 이미 공개된 글에는 영향이 없다.
+    # 해석은 `post_publish_review_policy.auto_publish_hold` 한 곳에서만 한다.
+    AUTO_PUBLISH_HOLD_HOSPITALS: str = ""
+
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수
     LEAD_CONSENT_VERSION: str = "v1.2026-08"  # 처리방침 버전 — 변경 시 재동의 필요

@@ -9,6 +9,8 @@ POST   /admin/hospitals/{id}/content/{cid}/reschedule — 미발행 콘텐츠 �
 POST   /admin/hospitals/{id}/content/{cid}/cancel    — 중복·노후 슬롯 종료
 POST   /admin/hospitals/{id}/content/{cid}/publish  — 발행
 POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
+POST   /admin/hospitals/{id}/content/{cid}/withhold — 공개 글 비공개(보존) 전환
+POST   /admin/hospitals/{id}/content/{cid}/restore  — 비공개(보존) 글 다시 공개
 """
 
 import logging
@@ -134,7 +136,9 @@ CONTENT_STATUS_DISPLAY_LABELS = {
     "PUBLISHED": "발행 완료",
     "REJECTED": "반려",
     "CANCELLED": "종료",
+    "WITHHELD": "비공개(보존)",
 }
+WITHHELD_DISPLAY_LABEL: Final = CONTENT_STATUS_DISPLAY_LABELS["WITHHELD"]
 
 BRIEF_STATUS_DISPLAY_LABELS = {
     "DRAFT": "콘텐츠 가이드 작성중",
@@ -240,6 +244,18 @@ class RejectBody(BaseModel):
     누가 왜 내렸는지가 남아야 나중에 판단을 되짚을 수 있다. 반려자는 요청 본문이 아니라
     확인된 요청 actor로 기록한다 (H-09, 발행과 같은 규칙).
     """
+
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class WithholdBody(BaseModel):
+    """비공개(보존) 전환 사유. 처리자는 확인된 요청 actor로 기록한다(H-09)."""
+
+    reason: str = Field(min_length=3, max_length=500)
+
+
+class RestoreBody(BaseModel):
+    """다시 공개 사유. 처리자는 확인된 요청 actor로 기록한다(H-09)."""
 
     reason: str = Field(min_length=3, max_length=500)
 
@@ -597,7 +613,20 @@ async def update_content(
         if item is None:
             raise HTTPException(status_code=404, detail="Content not found")
     hospital = await _get_hospital(db, hospital_id)
+    if item.status == ContentStatus.WITHHELD and body.model_fields_set - {"references"}:
+        # 비공개(보존) 글은 재인증·재검수 경로(스윕·이미지 태스크)가 모두 비켜 간다. 제목을
+        # 고쳐 이미지 인증이 풀리면 restore가 영구히 막히므로 참고자료 보정만 받는다.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "비공개(보존) 글은 참고자료만 수정할 수 있습니다. "
+                "본문을 고치려면 restore 후 수정하거나 reject 하세요."
+            ),
+        )
     was_published = item.status == ContentStatus.PUBLISHED
+    # 비공개(보존) 글도 발행된 판이다 — 참고자료 편집의 확인 기록 무효화·편집 시각은
+    # 공개 글과 같게 남긴다. 공개 표면 갱신·색인·빈 참고자료 거절은 공개 중인 글만 한다.
+    has_published_edition = was_published or item.status == ContentStatus.WITHHELD
     should_revalidate = was_published and _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()
@@ -697,10 +726,10 @@ async def update_content(
     # body_updated_at은 컬럼 이름과 달리 "공개 텍스트가 편집된 시각"이다. 제목·meta·FAQ·
     # 참고자료도 공개 표면에 나가는 텍스트인데 본문 변경만 기록하면, 공개 뒤 제목만 고친
     # 글이 사람 확인 표본(post_publish_review_policy)과 Site 재검증 키에서 빠진다.
-    if body_changed or (was_published and public_fields_changed):
+    if body_changed or (has_published_edition and public_fields_changed):
         item.body_updated_at = datetime.now(timezone.utc)
 
-    if was_published and public_fields_changed:
+    if has_published_edition and public_fields_changed:
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
 
@@ -825,10 +854,10 @@ async def reschedule_content(
     """
 
     item = await _get_content(db, content_id, hospital_id)
-    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED, ContentStatus.WITHHELD):
         raise HTTPException(
             status_code=409,
-            detail="Published or cancelled content cannot be rescheduled",
+            detail="Published, withheld or cancelled content cannot be rescheduled",
         )
 
     today_kst = arrow.now("Asia/Seoul").date()
@@ -882,6 +911,10 @@ async def cancel_content(
     item = await _get_content(db, content_id, hospital_id)
     if item.status == ContentStatus.PUBLISHED:
         raise HTTPException(status_code=409, detail="Published content must be rejected instead")
+    if item.status == ContentStatus.WITHHELD:
+        raise HTTPException(
+            status_code=409, detail="Withheld content must be restored or rejected instead"
+        )
     if item.status == ContentStatus.CANCELLED:
         return await _serialize_single(db, hospital_id, item)
 
@@ -980,6 +1013,17 @@ async def publish_content(
         raise HTTPException(status_code=400, detail="Already published")
     if current_status == ContentStatus.CANCELLED:
         raise HTTPException(status_code=409, detail="Cancelled content cannot be published")
+    if current_status == ContentStatus.WITHHELD:
+        # 새로 발행하면 발행 시각·발행자가 덮인다. 보존된 공개 판은 restore로만 되돌린다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTENT_WITHHELD",
+                "message": (
+                    "비공개(보존) 상태의 글입니다. 다시 공개하려면 restore를 사용해 주세요."
+                ),
+            },
+        )
 
     # 잠금은 status 스칼라만 가져오므로 ORM 객체의 본문·참고자료는 여전히 잠금 이전
     # 스냅샷이다. 그대로 판정하면 "발행 요청이 로드한 안전한 원고"로 검사해 놓고
@@ -1272,6 +1316,199 @@ async def reject_content(
     return {"detail": "Rejected. Will be regenerated tonight."}
 
 
+@router.post("/{hospital_id}/content/{content_id}/withhold")
+async def withhold_content(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: WithholdBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """공개 글을 비공개(보존)로 전환 — 반려와 달리 본문·발행 이력을 지우지 않는다.
+
+    공개 목록·상세·이미지·sitemap·IndexNow·자동 작업은 모두 `status == PUBLISHED`로
+    대상을 고르므로 상태만 바꾸면 빠진다. restore로 같은 발행 시각 그대로 되돌린다.
+    """
+    withheld_by = verified_request_actor()
+    if withheld_by is None:
+        raise HTTPException(
+            status_code=403,
+            detail="비공개 처리자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
+        )
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    item = await _get_content(db, content_id, hospital_id)
+    await _lock_content_status(db, hospital_id, content_id, item.status)
+    if hasattr(db, "refresh"):
+        await db.refresh(item)
+    hospital = await _get_hospital(db, hospital_id)
+    if item.status != ContentStatus.PUBLISHED:
+        raise HTTPException(
+            status_code=409,
+            detail="발행된 글만 비공개(보존)로 전환할 수 있습니다.",
+        )
+    should_revalidate = _has_public_site(hospital)
+    if should_revalidate:
+        ensure_site_revalidate_configured()
+
+    published_at = item.published_at
+    item.status = ContentStatus.WITHHELD
+    item.generation_claimed_at = None
+    item.generation_claim_token = None
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
+    if getattr(item, "first_published_at", None) is None and published_at is not None:
+        # 반려와 같은 규칙 — 롤링 배포 중 옛 발행기가 published_at만 채운 행의 최초 발행
+        # 사실을 지금 붙잡는다. 현재 공개 판(published_at·published_by)은 그대로 둔다.
+        item.first_published_at = published_at
+        item.first_published_by = item.published_by
+    await write_audit_log(
+        db,
+        action="withhold_content",
+        hospital_id=hospital_id,
+        actor=withheld_by,
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "title": item.title,
+            "previous_status": ContentStatus.PUBLISHED.value,
+            "published_at": published_at.isoformat() if published_at else None,
+            "published_by": item.published_by,
+            "reason": body.reason.strip(),
+            "revision": int(item.content_revision),
+            "withheld_by": withheld_by,
+        },
+    )
+    if should_revalidate and isinstance(item, ContentItem):
+        await indexnow.enqueue_content_published(
+            db,
+            slug=hospital.slug,
+            content_id=item.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=int(item.content_revision),
+        )
+    enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
+    await db.commit()
+    if should_revalidate:
+        # 반려와 같은 경로 — published_at이 캐시에 남은 판을 가리키는 재시도 식별자다.
+        await trigger_content_site_revalidate_safe(
+            hospital.slug,
+            item.id,
+            hospital_name=hospital.name,
+            treatments=hospital.treatments,
+            unpublished_from=published_at,
+            edition_revision=int(item.content_revision),
+        )
+    return {
+        "detail": "Withheld",
+        "status": ContentStatus.WITHHELD.value,
+        "published_at": published_at.isoformat() if published_at else None,
+        "content_revision": int(item.content_revision),
+    }
+
+
+@router.post("/{hospital_id}/content/{content_id}/restore")
+async def restore_content(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: RestoreBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """비공개(보존) 글을 원래 발행 시각 그대로 다시 공개한다.
+
+    새 발행이 아니다 — LLM·이미지 호출도 발행 알림도 없다. 공개 사이트가 이 글을
+    다시 내보낼 수 있을 때만 되돌린다: 병원 공개 게이트와, 상태를 뺀 나머지 공개
+    가시성 판정(근거 변경·기준 불일치·참고자료·이미지 인증·검수·금지 표현)이 모두 통과해야
+    한다. 막히면 409와 사유를 돌려주고 아무것도 바꾸지 않는다.
+    """
+    restored_by = verified_request_actor()
+    if restored_by is None:
+        raise HTTPException(
+            status_code=403,
+            detail="공개 처리자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
+        )
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    item = await _get_content(db, content_id, hospital_id)
+    await _lock_content_status(db, hospital_id, content_id, item.status)
+    if hasattr(db, "refresh"):
+        await db.refresh(item)
+    hospital = await _get_hospital(db, hospital_id)
+    if item.status != ContentStatus.WITHHELD:
+        raise HTTPException(
+            status_code=409,
+            detail="비공개(보존) 상태의 글만 다시 공개할 수 있습니다.",
+        )
+    # 공개 사이트의 병원 게이트 그대로다 — 되돌려도 사이트가 내보내지 않는 병원이면
+    # "다시 공개됨"은 거짓 성공이다.
+    if not is_public_serving_hospital(hospital):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "HOSPITAL_NOT_PUBLIC",
+                "message": "공개 운영 중인 병원만 다시 공개할 수 있습니다. 일시정지 상태면 먼저 재개해 주세요.",
+            },
+        )
+    visibility = assess_public_visibility(
+        item, await get_public_approved_philosophy_id(db, hospital_id)
+    )
+    blockers = tuple(code for code in visibility.blockers if code != "STATUS_NOT_PUBLISHED")
+    if blockers:
+        blocked = PublicVisibility(visible=False, blockers=blockers)
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "RESTORE_BLOCKED",
+                "message": "공개 페이지가 이 글을 내보낼 수 없어 다시 공개할 수 없습니다: "
+                + " · ".join(blocked.blocker_labels),
+                "blockers": list(blockers),
+                "blocker_labels": blocked.blocker_labels,
+            },
+        )
+    ensure_site_revalidate_configured()
+
+    item.status = ContentStatus.PUBLISHED
+    item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
+    await write_audit_log(
+        db,
+        action="restore_content",
+        hospital_id=hospital_id,
+        actor=restored_by,
+        target_type="content_item",
+        target_id=content_id,
+        detail={
+            "title": item.title,
+            "previous_status": ContentStatus.WITHHELD.value,
+            "published_at": item.published_at.isoformat() if item.published_at else None,
+            "published_by": item.published_by,
+            "reason": body.reason.strip(),
+            "revision": int(item.content_revision),
+            "restored_by": restored_by,
+        },
+    )
+    if isinstance(item, ContentItem):
+        await indexnow.enqueue_content_published(
+            db,
+            slug=hospital.slug,
+            content_id=item.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=int(item.content_revision),
+        )
+    enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
+    await db.commit()
+    await trigger_content_site_revalidate_safe(
+        hospital.slug,
+        item.id,
+        hospital_name=hospital.name,
+        treatments=hospital.treatments,
+        edition_revision=int(item.content_revision),
+    )
+    return {
+        "detail": "Restored",
+        "status": ContentStatus.PUBLISHED.value,
+        "published_at": item.published_at.isoformat() if item.published_at else None,
+        "content_revision": int(item.content_revision),
+    }
+
+
 # ── 헬퍼 ─────────────────────────────────────────────────────────
 async def _get_hospital(db, hospital_id) -> Hospital:
     h = await db.get(Hospital, hospital_id)
@@ -1381,7 +1618,10 @@ async def _apply_content_brief_update(
     if "exposure_action_id" in fields:
         link_changed = True
         if body.exposure_action_id:
-            if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
+            if _enum_value(item.status) in {
+                ContentStatus.PUBLISHED.value,
+                ContentStatus.WITHHELD.value,
+            }:
                 raise HTTPException(
                     status_code=409,
                     detail="Cannot link a published content item to an AI exposure work item",
@@ -1519,6 +1759,13 @@ def _content_review_display(
         return {"label": "반려됨", "reason": "야간 재생성 대기", "publishable": False}
     if status_value == ContentStatus.CANCELLED.value:
         return {"label": "종료됨", "reason": "중복·노후 슬롯", "publishable": False}
+    if status_value == ContentStatus.WITHHELD.value:
+        # 본문이 있어도 자동 발행 대상이 아니다 — 아래 분기로 떨어지면 "자동 발행 대기"로 보인다.
+        return {
+            "label": WITHHELD_DISPLAY_LABEL,
+            "reason": "공개 사이트에서 내린 글입니다. 되돌리기(restore)로 다시 공개할 수 있습니다.",
+            "publishable": False,
+        }
     if not item.title or not item.body:
         return {"label": "생성 전", "reason": "야간 자동 생성 대기", "publishable": False}
     if item.essence_status != ESSENCE_STATUS_ALIGNED:
@@ -1585,6 +1832,8 @@ def _build_compliance_summary(
         blockers.append("이미 발행된 콘텐츠입니다.")
     if status_value == ContentStatus.CANCELLED.value:
         blockers.append("종료된 콘텐츠 슬롯입니다.")
+    if status_value == ContentStatus.WITHHELD.value:
+        blockers.append("비공개(보존) 상태입니다. 다시 공개하려면 restore를 사용해 주세요.")
     if not item.title or not item.body:
         blockers.append("본문 생성이 필요합니다.")
     if forbidden_violations:
