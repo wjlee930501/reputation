@@ -34,6 +34,10 @@ from app.services.essence_engine import (
     MANDATORY_MEDICAL_AD_RISK_RULES,
     effective_safety_policy,
 )
+from app.services.must_use_verbatim import (
+    missing_must_use_messages,
+    required_must_use_messages,
+)
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
 from app.utils.authority_sources import (
     CURATED_SOURCE_URLS,
@@ -186,6 +190,15 @@ class TruncatedProviderOutputError(ValueError):
     """
 
 
+class MissingMustUseMessagesError(ValueError):
+    """승인된 필수 문구가 본문에 원문 그대로 들어가지 않았다.
+
+    다른 결정적 거절과 같이 기존 재작성 루프(GENERATION_REMEDIATION_ROUNDS·
+    GENERATION_PROVIDER_CALL_BUDGET)가 빠진 문구를 작가에게 넘겨 다시 쓰게 한다.
+    끝내 빠지면 GENERATION_REJECTED(본문 표본 실패) 경로를 탄다.
+    """
+
+
 class DirectorNameMissingError(ValueError):
     """Keep the last provider result available for one deterministic name heal."""
 
@@ -260,7 +273,11 @@ __MANDATORY_SAFETY_RULES__
   본원 제공과 명확히 구분합니다.
 - **의료진 자격·경력·출신은 프로파일에 명시된 것만** 사용하세요. 없는 자격(예: 'OO 세부전문의')이나
   경력('OO 출신')을 지어내지 마세요. 자격명은 프로파일 표기 그대로 씁니다.
-- 가이드의 must_use_messages(병원 핵심 시술·강점)가 있으면 본문에 자연스럽게 반영하고, avoid_messages는 피합니다.
+- **must_use_messages(병원이 승인한 필수 문구)는 의역하지 말고 원문 그대로** 본문에 넣으세요.
+  각 문구를 한 글자도 바꾸지 말고(조사·어미·쉼표·숫자·단위 포함) 독립된 문장으로 쓰며,
+  문구 앞뒤에 말을 덧붙여 한 문장으로 잇거나 따옴표로 감싸지 마세요. 설명이 더 필요하면
+  다음 문장에서 이어 씁니다. 시스템이 생성 후 원문 포함 여부를 검사하며 빠지면 저장되지 않습니다.
+  avoid_messages는 피합니다.
 - 회복기간·입원·마취 후 경과 등은 프로파일/가이드의 실제 운영 방침과 어긋나지 않게 적습니다.
 
 [출력 형식 — JSON]
@@ -1218,6 +1235,7 @@ async def _generate_content_attempt(
         content_type,
         content_brief,
         reference_drop_notes=reference_drops,
+        must_use_messages=required_must_use_messages(philosophy, content_brief),
     )
 
 
@@ -1273,6 +1291,7 @@ def _validate_generated_result(
     content_brief: dict | None,
     *,
     reference_drop_notes: list[str] | None = None,
+    must_use_messages: list[str] | None = None,
 ) -> dict:
     """Apply every stored-content hard gate to one normalized provider result."""
 
@@ -1335,6 +1354,8 @@ def _validate_generated_result(
         )
         raise ValueError(f"Forbidden medical expressions require complete regeneration: {violations}")
 
+    _validate_must_use_verbatim(result.get("body"), must_use_messages)
+
     # references는 GEO 검증 전에 이미 정규화됨(list[{title,url,source_type}]) — 중복 정규화 불필요.
 
     # meta_description 컬럼은 VARCHAR(300) — 프롬프트는 100~150자를 요구하지만 모델 출력은
@@ -1342,6 +1363,32 @@ def _validate_generated_result(
     result["meta_description"] = _trim_or_none(result.get("meta_description"), 300)
 
     return result
+
+
+# 빠진 필수 문구를 재작성 지적에 옮길 때 한 문구당 앞부분 길이. 지적 한 줄은
+# `_validator_remediation_findings`가 240자로 자르므로 전체 문구를 싣지 않는다 —
+# 원문은 작가가 이미 보는 [승인된 콘텐츠 운영 기준]의 must_use_messages에 있다.
+_MUST_USE_EXCERPT_CHARS = 24
+
+
+def _validate_must_use_verbatim(body: object, must_use_messages: list[str] | None) -> None:
+    """승인된 필수 문구가 본문에 원문 그대로, 독립된 문장으로 들어 있는지 검사한다.
+
+    판정 규칙은 독립 검수가 필수 문구 지적을 가려낼 때와 같다(`must_use_verbatim`).
+    """
+
+    missing = missing_must_use_messages(body, must_use_messages or [])
+    if not missing:
+        return
+    excerpts = ", ".join(
+        f"「{message[:_MUST_USE_EXCERPT_CHARS]}{'…' if len(message) > _MUST_USE_EXCERPT_CHARS else ''}」"
+        for message in missing
+    )
+    raise MissingMustUseMessagesError(
+        f"Required must_use messages missing verbatim ({len(missing)}): "
+        "must_use_messages의 필수 문구를 의역하지 말고 원문 그대로 독립된 문장으로 "
+        f"본문에 넣으세요 — {excerpts}"
+    )
 
 
 # 엔지니어 로그에 남기는 실패 상세의 길이 상한. 우리 검증기의 메시지는 모두 이보다 짧고,
@@ -1395,6 +1442,8 @@ async def generate_content(
     # 결정적 거절을 모두 지니고 간다.
     validator_findings: list[str] = []
     last_error: ValueError | None = None
+    # 결정적 치유도 필수 문구 검사를 건너뛰지 않는다 — 작가 회차와 같은 집합이다.
+    must_use_messages = required_must_use_messages(philosophy, content_brief)
 
     for _round in range(GENERATION_REMEDIATION_ROUNDS):
         if int(attempt_context.get("http_attempt") or 0) >= GENERATION_PROVIDER_CALL_BUDGET:
@@ -1413,7 +1462,11 @@ async def generate_content(
             last_error = exc
             try:
                 healed = _heal_from_curated_catalog(
-                    exc, hospital, content_type, content_brief
+                    exc,
+                    hospital,
+                    content_type,
+                    content_brief,
+                    must_use_messages=must_use_messages,
                 )
             except ValueError as heal_error:
                 # 큐레이션 근거를 붙였더니 다른 게이트가 걸렸다. 그 사유를 그대로
@@ -1428,7 +1481,11 @@ async def generate_content(
             last_error = exc
             try:
                 healed = _heal_missing_director_name(
-                    exc, hospital, content_type, content_brief
+                    exc,
+                    hospital,
+                    content_type,
+                    content_brief,
+                    must_use_messages=must_use_messages,
                 )
             except ValueError as heal_error:
                 # 이름을 붙였더니 다른 게이트가 걸렸다 — 그 사유로 다시 쓰게 한다.
@@ -1484,6 +1541,8 @@ def _heal_from_curated_catalog(
     hospital: Hospital,
     content_type: ContentType,
     content_brief: dict | None,
+    *,
+    must_use_messages: list[str] | None = None,
 ) -> dict | None:
     """Recover an empty reference list from the human-verified catalog, or give up.
 
@@ -1497,7 +1556,9 @@ def _heal_from_curated_catalog(
     if not curated_references:
         return None
     result["references"] = curated_references
-    return _validate_generated_result(result, hospital, content_type, content_brief)
+    return _validate_generated_result(
+        result, hospital, content_type, content_brief, must_use_messages=must_use_messages
+    )
 
 
 def _heal_missing_director_name(
@@ -1505,6 +1566,8 @@ def _heal_missing_director_name(
     hospital: Hospital,
     content_type: ContentType,
     content_brief: dict | None,
+    *,
+    must_use_messages: list[str] | None = None,
 ) -> dict | None:
     """Append the approved director name once, in the same round, or give up.
 
@@ -1518,7 +1581,9 @@ def _heal_missing_director_name(
     if not director or director in body:
         return None
     result["body"] = f"{body}\n\n{hospital.name}의 원장은 {director}입니다."
-    return _validate_generated_result(result, hospital, content_type, content_brief)
+    return _validate_generated_result(
+        result, hospital, content_type, content_brief, must_use_messages=must_use_messages
+    )
 
 
 # Keep the transport retry controller observable/configurable at the public seam used by

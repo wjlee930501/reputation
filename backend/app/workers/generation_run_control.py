@@ -61,6 +61,10 @@ _REJECTION_MESSAGES = {
         "생성 출력이 잘려 완전한 원고를 받지 못했습니다. "
         "다음 예약 배치가 분량을 줄여 다시 생성합니다."
     ),
+    "must_use": (
+        "승인된 필수 문구가 재작성 후에도 원문 그대로 들어가지 않았습니다. "
+        "운영 센터에서 병원 정보 탭의 필수 문구를 확인해 주세요."
+    ),
 }
 GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
     {_DEFAULT_REJECTION_MESSAGE, *_REJECTION_MESSAGES.values()}
@@ -195,6 +199,8 @@ def _safe_rejection_message(error: ValueError) -> str:
         return _REJECTION_MESSAGES["forbidden"]
     if "faq output requires" in detail or "faq question must" in detail:
         return _REJECTION_MESSAGES["faq"]
+    if "must_use messages missing verbatim" in detail:
+        return _REJECTION_MESSAGES["must_use"]
     return _DEFAULT_REJECTION_MESSAGE
 
 
