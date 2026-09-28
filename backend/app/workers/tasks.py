@@ -327,6 +327,7 @@ from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_catchup_start,
     auto_publish_due_predicate,
+    auto_publish_hold,
     publicly_operational_hospital_predicate,
 )
 from app.services.public_surface_intents import enqueue_public_surface_intent
@@ -5085,7 +5086,11 @@ def regenerate_content_item(self, content_id: str):
             db, self, item_id, item.hospital_id
         ):
             raise PermissionError("operation run does not authorize this content target")
-        if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        if item.status in (
+            ContentStatus.PUBLISHED,
+            ContentStatus.CANCELLED,
+            ContentStatus.WITHHELD,
+        ):
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
         hospital = db.get(Hospital, item.hospital_id)
@@ -5537,7 +5542,11 @@ def generate_content_image(self, content_id: str):
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
-        if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        if item.status in (
+            ContentStatus.PUBLISHED,
+            ContentStatus.CANCELLED,
+            ContentStatus.WITHHELD,
+        ):
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
         hospital = db.get(Hospital, item.hospital_id)
@@ -6438,6 +6447,10 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             return None
         if item.status not in AUTO_PUBLISHABLE_STATUSES:
             _log_auto_publish_skip("not_publishable_status", content_id, item=item)
+            return None
+        if auto_publish_hold().holds(item.hospital_id):
+            # 후보 목록은 참고용이다 — 목록을 만든 뒤 보류가 켜졌으면 잠금 뒤에 다시 본다.
+            _log_auto_publish_skip("auto_publish_hold", content_id, item=item)
             return None
         today_kst = arrow.now("Asia/Seoul").date()
         if hasattr(item, "content_revision") and not (

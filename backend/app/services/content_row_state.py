@@ -58,6 +58,11 @@ def content_row_state(
     if status_value == ContentStatus.CANCELLED.value:
         return RowState("closed", "종료됨", None)
 
+    if status_value == ContentStatus.WITHHELD.value:
+        # 공개됐다가 운영자가 내린 글 — 자동 작업이 다시 집지 않으므로 "예정"·"생성 중"이
+        # 아니다. 공개 페이지에 없다는 사실은 공개 보류와 같고, 사유로 구분한다.
+        return RowState("withheld", "비공개(보존)", None)
+
     # 미발행 글 — 자동 복구가 도는 중인지, 사람이 볼 차단인지를 링크가 가른다.
     blockers_text = " · ".join(compliance_blockers) or None
     if blocked_link is not None:

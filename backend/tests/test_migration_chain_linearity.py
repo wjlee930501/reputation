@@ -48,9 +48,10 @@ INQUIRY_INTAKE_AUTOMATION = "0077_inquiry_intake_automation"
 HOSPITAL_PHYSICIANS = "0078_add_hospital_physicians"
 TOPIC_SWAP_FALLBACK = "0079_topic_swap_fallback"
 LEAD_DIAGNOSIS_SUPERSEDE = "0080_lead_diagnosis_supersede"
+WITHHELD_CONTENT_STATUS = "0081_add_withheld_content_status"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = LEAD_DIAGNOSIS_SUPERSEDE
+HEAD = WITHHELD_CONTENT_STATUS
 
 
 def _script_directory() -> ScriptDirectory:
@@ -120,6 +121,8 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         INQUIRY_INTAKE_AUTOMATION,
         HOSPITAL_PHYSICIANS,
         TOPIC_SWAP_FALLBACK,
+        LEAD_DIAGNOSIS_SUPERSEDE,
+        WITHHELD_CONTENT_STATUS,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -153,6 +156,8 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         INQUIRY_INTAKE_AUTOMATION: INQUIRY_INTERNAL_DIAGNOSIS,
         HOSPITAL_PHYSICIANS: INQUIRY_INTAKE_AUTOMATION,
         TOPIC_SWAP_FALLBACK: HOSPITAL_PHYSICIANS,
+        LEAD_DIAGNOSIS_SUPERSEDE: TOPIC_SWAP_FALLBACK,
+        WITHHELD_CONTENT_STATUS: LEAD_DIAGNOSIS_SUPERSEDE,
     }
 
 
@@ -164,6 +169,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        WITHHELD_CONTENT_STATUS,
         LEAD_DIAGNOSIS_SUPERSEDE,
         TOPIC_SWAP_FALLBACK,
         HOSPITAL_PHYSICIANS,
@@ -201,7 +207,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-29:] == [
+    assert applied[-30:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -231,4 +237,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         HOSPITAL_PHYSICIANS,
         TOPIC_SWAP_FALLBACK,
         LEAD_DIAGNOSIS_SUPERSEDE,
+        WITHHELD_CONTENT_STATUS,
     ]
