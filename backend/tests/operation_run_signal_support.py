@@ -3,16 +3,17 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import create_engine, delete
+from sqlalchemy import create_engine, delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.hospital import Hospital
-from app.models.operations import JSONValue, OperationRun
+from app.models.operations import JSONValue, OperationRun, OperationRunState
 from app.services import operation_runs
 from app.services.operation_runs import DispatchTask, OperationCommand, dispatch_operation
 from app.workers import operation_run_signals
@@ -126,3 +127,59 @@ async def dispatch_test_run(
             task,
         )
         return result.run
+
+
+def seed_closed_monthly_sov_run(
+    hospital_id: UUID,
+    period_key: str,
+    state: OperationRunState,
+    *,
+    safe_error_code: str,
+    version: int = 3,
+) -> OperationRun:
+    """Commit a finished monthly RUN_SOV row (PARTIAL/FAILED) through the signal store."""
+    finished_at = datetime(2026, 8, 27, tzinfo=UTC)
+    run = OperationRun(
+        id=uuid4(),
+        hospital_id=hospital_id,
+        operation_type="RUN_SOV",
+        state=state,
+        idempotency_key=f"monthly-sov:{hospital_id}:{period_key}",
+        task_id=str(uuid4()),
+        attempt_count=1,
+        total_count=1,
+        success_count=0,
+        failure_count=1,
+        skipped_count=0,
+        request_payload={},
+        queued_at=finished_at,
+        started_at=finished_at,
+        completed_at=finished_at,
+        lease_owner="worker",
+        lease_expires_at=finished_at,
+        safe_error_code=safe_error_code,
+        safe_error_message="failed",
+        version=version,
+    )
+    with operation_run_signals.SyncSessionLocal() as db:
+        db.add(run)
+        db.commit()
+    return run
+
+
+def stored_operation_run(run_id: UUID) -> OperationRun:
+    with operation_run_signals.SyncSessionLocal() as db:
+        return db.execute(select(OperationRun).where(OperationRun.id == run_id)).scalar_one()
+
+
+def count_commits(db: Session) -> list[None]:
+    """Record each commit the code under test issues on ``db``."""
+    commits: list[None] = []
+    commit = db.commit
+
+    def _counted_commit() -> None:
+        commits.append(None)
+        commit()
+
+    db.commit = _counted_commit
+    return commits

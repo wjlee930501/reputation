@@ -1,13 +1,16 @@
 import logging
 import threading
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import create_engine, select, text, update
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.core.celery_app import celery_app
 from app.core.config import Settings
 from app.models.operations import OperationRun
 from app.services import sov_engine, sov_tracking_set
@@ -29,6 +32,12 @@ from app.services.sov_tracking_set import (
     tracking_set_members,
 )
 from app.workers import operation_run_signals, tasks
+from tests.operation_run_signal_support import (
+    SYNC_DATABASE_URL,
+    count_commits,
+    seed_closed_monthly_sov_run,
+    stored_operation_run,
+)
 from tests.operation_run_signal_support import (
     signal_store as _signal_store_fixture,  # noqa: F401
 )
@@ -868,54 +877,40 @@ def test_monthly_measurement_copy_guard_strings_are_preserved():
     assert '"Monthly measurement window is not open: %s"' in source
 
 
-def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry():
-    old_task_id = str(uuid.uuid4())
-    existing = SimpleNamespace(
-        state=tasks.OperationRunState.PARTIAL,
-        task_id=old_task_id,
-        queued_at=datetime.now(UTC),
-        started_at=datetime.now(UTC),
-        completed_at=datetime.now(UTC),
-        lease_owner="worker",
-        lease_expires_at=datetime.now(UTC),
-        success_count=0,
-        failure_count=1,
-        skipped_count=0,
-        safe_error_code="MONTHLY_SOV_MEASUREMENT_PARTIAL",
-        safe_error_message="failed",
-        version=3,
-    )
-
-    class _Result:
-        def scalar_one_or_none(self):
-            return existing
-
-    class _DB:
-        commits = 0
-
-        def execute(self, _stmt):
-            return _Result()
-
-        def commit(self):
-            self.commits += 1
-
-    db = _DB()
-    hospital = SimpleNamespace(id=uuid.uuid4())
-
-    run = tasks._ensure_monthly_sov_operation_run(
-        db,
-        hospital,
+def test_partial_monthly_operation_is_rearmed_for_failed_cell_retry(signal_store):
+    # Real PG: the PARTIAL re-arm is a conditional UPDATE, not an ORM mutation.
+    _factory, hospital_id = signal_store
+    seeded = seed_closed_monthly_sov_run(
+        hospital_id,
         "2026-08",
-        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+        tasks.OperationRunState.PARTIAL,
+        safe_error_code="MONTHLY_SOV_MEASUREMENT_PARTIAL",
     )
 
-    assert run is existing
+    with operation_run_signals.SyncSessionLocal() as db:
+        commits = count_commits(db)
+        run = tasks._ensure_monthly_sov_operation_run(
+            db,
+            SimpleNamespace(id=hospital_id),
+            "2026-08",
+            datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+        )
+
+    assert run is not None
+    assert run.id == seeded.id
     assert run.state == tasks.OperationRunState.REQUESTED
-    assert run.task_id != old_task_id
+    assert run.task_id != seeded.task_id
     assert run.completed_at is None
     assert run.failure_count == 0
     assert run.version == 4
-    assert db.commits == 1
+    assert len(commits) == 1
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == tasks.OperationRunState.REQUESTED
+    assert stored.task_id == run.task_id
+    assert stored.lease_owner is None
+    assert stored.lease_expires_at is None
+    assert stored.safe_error_code is None
+    assert stored.version == 4
 
 
 def _running_monthly_operation(lease_expires_at: datetime):
@@ -1124,3 +1119,351 @@ def test_monthly_run_with_a_live_chunk_lease_is_not_redispatched():
     assert existing.state == tasks.OperationRunState.RUNNING
     assert existing.lease_owner == "chunk-worker"
     assert db.commits == 0
+
+
+# ── real row-lock contention: monthly re-arm vs. redelivered lease claim ────────
+
+_LOCK_WAIT_SECONDS = 10.0
+# Each session gives up on a lock or statement long before the suite could hang; the
+# holder is always released (finally) well before these fire in a passing run.
+_SESSION_TIMEOUT_MS = 15_000
+
+
+@pytest.fixture(name="bounded_signal_store")
+def bounded_signal_store(signal_store, monkeypatch):
+    engine = create_engine(
+        SYNC_DATABASE_URL,
+        connect_args={
+            "options": f"-c lock_timeout={_SESSION_TIMEOUT_MS} "
+            f"-c statement_timeout={_SESSION_TIMEOUT_MS}"
+        },
+    )
+    factory = sessionmaker(engine, expire_on_commit=False, class_=Session)
+    monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", factory)
+    try:
+        yield engine, factory, signal_store[1]
+    finally:
+        engine.dispose()
+
+
+class _TrackedSessions:
+    """Session factory that records backend pids and can hold the first commit."""
+
+    def __init__(self, factory, *, hold_commit: bool = False):
+        self._factory = factory
+        self._hold_commit = hold_commit
+        self.pids: list[int] = []
+        self.holding = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self) -> Session:
+        db = self._factory()
+        self.pids.append(db.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        if self._hold_commit:
+            commit = db.commit
+
+            def _held_commit() -> None:
+                # The caller's UPDATE already ran, so its row lock is held until here.
+                self.holding.set()
+                if not self.release.wait(_SESSION_TIMEOUT_MS / 1000):
+                    raise AssertionError("row-lock holder was never released")
+                commit()
+
+            db.commit = _held_commit
+        return db
+
+
+class _Concurrent:
+    def __init__(self, target):
+        self._outcome: dict[str, object] = {}
+        self._thread = threading.Thread(target=self._run, args=(target,), daemon=True)
+        self._thread.start()
+
+    def _run(self, target) -> None:
+        try:
+            self._outcome["value"] = target()
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the test thread
+            self._outcome["error"] = exc
+
+    def result(self):
+        self._thread.join(_LOCK_WAIT_SECONDS)
+        assert not self._thread.is_alive(), "concurrent session did not finish in time"
+        if "error" in self._outcome:
+            raise self._outcome["error"]
+        return self._outcome["value"]
+
+    def join(self) -> None:
+        self._thread.join(_LOCK_WAIT_SECONDS)
+
+
+def _await_row_lock_wait(engine, waiter: _TrackedSessions, holder_pid: int):
+    """Poll from a third connection until the waiter is blocked on the holder."""
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    observed = None
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+        while time.monotonic() < deadline:
+            if waiter.pids:
+                observed = (
+                    conn.execute(
+                        text(
+                            "SELECT a.wait_event_type, pg_blocking_pids(a.pid) AS blockers, "
+                            "EXISTS (SELECT 1 FROM pg_locks l "
+                            "WHERE l.pid = a.pid AND NOT l.granted) AS ungranted "
+                            "FROM pg_stat_activity a WHERE a.pid = :pid"
+                        ),
+                        {"pid": waiter.pids[0]},
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if (
+                    observed is not None
+                    and observed["wait_event_type"] == "Lock"
+                    and holder_pid in observed["blockers"]
+                    and observed["ungranted"]
+                ):
+                    return dict(observed)
+            time.sleep(0.01)
+    raise AssertionError(f"waiter never blocked on the holder's row lock: {observed}")
+
+
+def _ensure_monthly_in(sessions: _TrackedSessions, hospital_id, observed_at):
+    with sessions() as db:
+        return tasks._ensure_monthly_sov_operation_run(
+            db, SimpleNamespace(id=hospital_id), "2026-09", observed_at
+        )
+
+
+def test_claim_waits_on_the_rearm_row_lock_then_finds_the_run_rearmed(
+    bounded_signal_store, monkeypatch, caplog
+):
+    engine, factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    seeded = _seed_running_monthly_operation(
+        hospital_id, "2026-09", observed_at - timedelta(minutes=1)
+    )
+    rearm_sessions = _TrackedSessions(factory, hold_commit=True)
+    claim_sessions = _TrackedSessions(factory)
+    monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", claim_sessions)
+    rearm = claim = None
+    try:
+        with caplog.at_level(logging.WARNING):
+            rearm = _Concurrent(
+                lambda: _ensure_monthly_in(rearm_sessions, hospital_id, observed_at)
+            )
+            assert rearm_sessions.holding.wait(_LOCK_WAIT_SECONDS), "re-arm never wrote"
+            claim = _Concurrent(
+                lambda: operation_run_signals._claim_safely(
+                    seeded.id, seeded.task_id, observed_at, redelivered=True
+                )
+            )
+            observed = _await_row_lock_wait(engine, claim_sessions, rearm_sessions.pids[0])
+            rearm_sessions.release.set()
+            rearmed = rearm.result()
+            claimed = claim.result()
+    finally:
+        rearm_sessions.release.set()
+        for worker in (rearm, claim):
+            if worker is not None:
+                worker.join()
+    monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", factory)
+
+    assert observed["wait_event_type"] == "Lock"
+    assert rearm_sessions.pids[0] in observed["blockers"]
+    # _claim_safely swallows SQLAlchemyError (a lock timeout included) as None.
+    assert "lifecycle claim unavailable" not in caplog.text
+    assert claimed is None
+    assert rearmed is not None
+    assert rearmed.state == tasks.OperationRunState.REQUESTED
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == tasks.OperationRunState.REQUESTED
+    assert stored.task_id == rearmed.task_id != seeded.task_id
+    assert stored.lease_owner is None
+    assert stored.lease_expires_at is None
+    assert stored.attempt_count == 1
+    assert stored.version == 8
+
+
+def test_rearm_waits_on_the_claim_row_lock_then_skips_the_reclaimed_run(
+    bounded_signal_store, monkeypatch, caplog
+):
+    engine, factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    seeded = _seed_running_monthly_operation(
+        hospital_id, "2026-09", observed_at - timedelta(minutes=1)
+    )
+    claim_sessions = _TrackedSessions(factory, hold_commit=True)
+    rearm_sessions = _TrackedSessions(factory)
+    monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", claim_sessions)
+    claim = rearm = None
+    try:
+        with caplog.at_level(logging.WARNING):
+            claim = _Concurrent(
+                lambda: operation_run_signals._claim_safely(
+                    seeded.id, seeded.task_id, observed_at, redelivered=True
+                )
+            )
+            assert claim_sessions.holding.wait(_LOCK_WAIT_SECONDS), "claim never wrote"
+            monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", factory)
+            rearm = _Concurrent(
+                lambda: _ensure_monthly_in(rearm_sessions, hospital_id, observed_at)
+            )
+            observed = _await_row_lock_wait(engine, rearm_sessions, claim_sessions.pids[0])
+            claim_sessions.release.set()
+            claimed = claim.result()
+            rearmed = rearm.result()
+    finally:
+        claim_sessions.release.set()
+        for worker in (claim, rearm):
+            if worker is not None:
+                worker.join()
+
+    assert observed["wait_event_type"] == "Lock"
+    assert claim_sessions.pids[0] in observed["blockers"]
+    assert claimed == 8
+    assert rearmed is None
+    assert f"RUNNING run {seeded.id} was re-claimed or changed concurrently" in caplog.text
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == tasks.OperationRunState.RUNNING
+    assert stored.task_id == seeded.task_id
+    assert stored.lease_owner == seeded.task_id
+    assert stored.lease_expires_at > observed_at
+    assert stored.attempt_count == 2
+    assert stored.version == 8
+
+
+def _bump_run_after_read(monkeypatch, factory, run_id, hook_name: str, values):
+    """Commit ``values`` on another session right after the re-arm read ``existing``."""
+    original = getattr(tasks, hook_name)
+    rowcounts: list[int] = []
+
+    def _hook(*args):
+        outcome = original(*args)
+        if not rowcounts:
+            with factory() as other:
+                rowcounts.append(
+                    other.execute(
+                        update(OperationRun)
+                        .where(OperationRun.id == run_id)
+                        .values(**values)
+                    ).rowcount
+                )
+                other.commit()
+        return outcome
+
+    monkeypatch.setattr(tasks, hook_name, _hook)
+    return rowcounts
+
+
+def test_running_rearm_skips_a_run_whose_version_alone_changed(
+    bounded_signal_store, monkeypatch, caplog
+):
+    # Lease still expired and state still RUNNING: only the version predicate fences.
+    _engine, factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    seeded = _seed_running_monthly_operation(
+        hospital_id, "2026-09", observed_at - timedelta(minutes=1)
+    )
+    bumped = _bump_run_after_read(
+        monkeypatch,
+        factory,
+        seeded.id,
+        "_operation_lease_expired",
+        {"version": OperationRun.version + 1},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        rearmed = _run_with_timeout(
+            lambda: _ensure_in_new_session(hospital_id, observed_at)
+        )
+
+    assert bumped == [1]
+    assert rearmed is None
+    assert f"RUNNING run {seeded.id} was re-claimed or changed concurrently" in caplog.text
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == tasks.OperationRunState.RUNNING
+    assert stored.lease_expires_at == seeded.lease_expires_at
+    assert stored.lease_expires_at <= observed_at
+    assert stored.task_id == seeded.task_id
+    assert stored.lease_owner == "chunk-worker"
+    assert stored.version == 8
+
+
+_PARTIAL_RETRY = (
+    tasks.OperationRunState.PARTIAL,
+    "MONTHLY_SOV_MEASUREMENT_PARTIAL",
+    datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+)
+_FAILED_RETRY = (
+    tasks.OperationRunState.FAILED,
+    "MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
+    datetime(2026, 8, 28, tzinfo=UTC),
+)
+_VERSION_BUMP = {"version": OperationRun.version + 1}
+# Every current writer bumps the version; this isolates the state predicate on its own.
+_STATE_CHANGE_SAME_VERSION = {"state": tasks.OperationRunState.SUCCEEDED}
+
+
+@pytest.mark.parametrize(
+    ("closed", "change"),
+    [
+        (_PARTIAL_RETRY, _VERSION_BUMP),
+        (_FAILED_RETRY, _VERSION_BUMP),
+        (_PARTIAL_RETRY, _STATE_CHANGE_SAME_VERSION),
+        (_FAILED_RETRY, _STATE_CHANGE_SAME_VERSION),
+    ],
+    ids=["partial-version", "failed-version", "partial-state", "failed-state"],
+)
+def test_closed_monthly_rearm_skips_a_concurrently_changed_run(
+    bounded_signal_store, monkeypatch, caplog, closed, change
+):
+    _engine, factory, hospital_id = bounded_signal_store
+    state, code, observed_at = closed
+    seeded = seed_closed_monthly_sov_run(
+        hospital_id, "2026-08", state, safe_error_code=code
+    )
+    # The retry-window check is the first call after ``existing`` is read, for both
+    # the PARTIAL and FAILED branches.
+    changed = _bump_run_after_read(
+        monkeypatch, factory, seeded.id, "_monthly_sov_retry_window", change
+    )
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        rearmed = _run_with_timeout(
+            lambda: _ensure_closed_monthly_in_new_session(hospital_id, observed_at)
+        )
+
+    assert changed == [1]
+    assert rearmed is None
+    assert f"{state.value} run {seeded.id} was re-claimed or changed concurrently" in (
+        caplog.text
+    )
+    stored = stored_operation_run(seeded.id)
+    if change is _VERSION_BUMP:
+        assert (stored.state, stored.version) == (state, 4)
+    else:
+        assert (stored.state, stored.version) == (tasks.OperationRunState.SUCCEEDED, 3)
+    assert stored.task_id == seeded.task_id
+    assert stored.completed_at == seeded.completed_at
+    assert stored.lease_owner == "worker"
+    assert stored.failure_count == 1
+    assert stored.safe_error_code == code
+
+
+def _ensure_closed_monthly_in_new_session(hospital_id: uuid.UUID, observed_at: datetime):
+    with operation_run_signals.SyncSessionLocal() as db:
+        return tasks._ensure_monthly_sov_operation_run(
+            db, SimpleNamespace(id=hospital_id), "2026-08", observed_at
+        )
+
+
+def test_sov_task_hard_time_limit_stays_below_the_claim_lease():
+    # The RUNNING re-arm assumes no live worker still holds an expired claim: Celery
+    # kills run_sov_for_hospital before the lease _claim_safely grants can run out.
+    task = tasks.run_sov_for_hospital
+    lease_seconds = operation_run_signals._LEASE_SECONDS
+
+    assert task.time_limit is not None
+    assert task.time_limit < lease_seconds
+    # The worker falls back to the global hard limit if the decorator value is dropped.
+    assert celery_app.conf.task_time_limit < lease_seconds

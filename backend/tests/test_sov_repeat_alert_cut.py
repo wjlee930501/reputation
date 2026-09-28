@@ -12,13 +12,27 @@ import pytest
 
 from app.core.celery_app import celery_app
 from app.models.hospital import HospitalStatus
+from app.models.monthly_control import MonthlyMeasurementCell, MonthlyMeasurementManifest
 from app.models.operations import OperationRunState
 from app.services.monthly_period import (
     is_august_2026_conversion_window,
     scheduled_report_period,
 )
-from app.workers import task_incident_control, tasks, weekly_sov_incident_control
+from app.workers import (
+    operation_run_signals,
+    task_incident_control,
+    tasks,
+    weekly_sov_incident_control,
+)
 from app.workers.tasks import ManifestError, ManifestPolicyDrift
+from tests.operation_run_signal_support import (
+    count_commits,
+    seed_closed_monthly_sov_run,
+    stored_operation_run,
+)
+from tests.operation_run_signal_support import (
+    signal_store as _signal_store_fixture,  # noqa: F401
+)
 
 # ── 1. terminal failures must not Celery-retry ──────────────────────────────
 
@@ -385,102 +399,114 @@ def _failed_monthly_run(*, code: str, state=OperationRunState.FAILED):
     )
 
 
-def test_partial_monthly_run_rearms_for_failed_cell_retry():
-    existing = _failed_monthly_run(
-        code="MONTHLY_SOV_MEASUREMENT_PARTIAL",
-        state=OperationRunState.PARTIAL,
-    )
-    old_task_id = existing.task_id
-
-    class _DB:
-        commits = 0
-
-        def execute(self, _stmt):
-            return SimpleNamespace(scalar_one_or_none=lambda: existing)
-
-        def commit(self):
-            self.commits += 1
-
-    db = _DB()
-    run = tasks._ensure_monthly_sov_operation_run(
-        db,
-        SimpleNamespace(id=uuid.uuid4()),
+def test_partial_monthly_run_rearms_for_failed_cell_retry(signal_store):
+    _factory, hospital_id = signal_store
+    seeded = seed_closed_monthly_sov_run(
+        hospital_id,
         "2026-08",
-        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+        OperationRunState.PARTIAL,
+        safe_error_code="MONTHLY_SOV_MEASUREMENT_PARTIAL",
     )
 
-    assert run is existing
+    with operation_run_signals.SyncSessionLocal() as db:
+        commits = count_commits(db)
+        run = tasks._ensure_monthly_sov_operation_run(
+            db,
+            SimpleNamespace(id=hospital_id),
+            "2026-08",
+            datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+        )
+
+    assert run is not None
+    assert run.id == seeded.id
     assert run.state == OperationRunState.REQUESTED
-    assert run.task_id != old_task_id
+    assert run.task_id != seeded.task_id
     assert run.version == 4
-    assert db.commits == 1
+    assert len(commits) == 1
+    assert stored_operation_run(seeded.id).state == OperationRunState.REQUESTED
+
+
+def _seed_failed_manifest_cell(hospital_id: uuid.UUID) -> None:
+    with operation_run_signals.SyncSessionLocal() as db:
+        manifest = MonthlyMeasurementManifest(
+            hospital_id=hospital_id,
+            period_year=2026,
+            period_month=8,
+            configured_platforms=["chatgpt"],
+            platform_provenance={},
+            closes_at=datetime(2026, 9, 1, tzinfo=UTC),
+        )
+        manifest.cells.append(
+            MonthlyMeasurementCell(
+                query_key="q1", query_text="q1", platform="chatgpt", state="FAILED"
+            )
+        )
+        db.add(manifest)
+        db.commit()
 
 
 @pytest.mark.parametrize(
     "code",
     ["MONTHLY_SOV_MEASUREMENT_POLICY_DRIFT", "MONTHLY_SOV_MEASUREMENT_PARTIAL"],
 )
-def test_non_cost_failed_monthly_run_rearms_failed_cells_in_month_end_window(code):
-    existing = _failed_monthly_run(code=code)
-    manifest = SimpleNamespace(cells=[SimpleNamespace(state="FAILED")])
+def test_non_cost_failed_monthly_run_rearms_failed_cells_in_month_end_window(
+    signal_store, code
+):
+    _factory, hospital_id = signal_store
+    seeded = seed_closed_monthly_sov_run(
+        hospital_id, "2026-08", OperationRunState.FAILED, safe_error_code=code
+    )
+    _seed_failed_manifest_cell(hospital_id)
 
-    class _DB:
-        commits = 0
+    with operation_run_signals.SyncSessionLocal() as db:
+        commits = count_commits(db)
+        run = tasks._ensure_monthly_sov_operation_run(
+            db,
+            SimpleNamespace(id=hospital_id),
+            "2026-08",
+            datetime(2026, 8, 28, tzinfo=UTC),
+        )
 
-        def __init__(self):
-            self.results = iter((existing, manifest))
+    assert run is not None
+    assert run.id == seeded.id
+    assert run.state == OperationRunState.REQUESTED
+    assert run.version == 4
+    assert len(commits) == 1
 
-        def execute(self, _stmt):
-            value = next(self.results)
-            return SimpleNamespace(scalar_one_or_none=lambda: value)
 
-        def commit(self):
-            self.commits += 1
-
-    db = _DB()
-    run = tasks._ensure_monthly_sov_operation_run(
-        db,
-        SimpleNamespace(id=uuid.uuid4()),
+def test_non_cost_failed_monthly_run_without_manifest_rearms_in_retry_window(
+    signal_store,
+):
+    _factory, hospital_id = signal_store
+    seeded = seed_closed_monthly_sov_run(
+        hospital_id,
         "2026-08",
-        datetime(2026, 8, 28, tzinfo=UTC),
+        OperationRunState.FAILED,
+        safe_error_code="MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
     )
 
-    assert run is existing
-    assert existing.state == OperationRunState.REQUESTED
-    assert existing.version == 4
-    assert db.commits == 1
+    with operation_run_signals.SyncSessionLocal() as db:
+        commits = count_commits(db)
+        run = tasks._ensure_monthly_sov_operation_run(
+            db,
+            SimpleNamespace(id=hospital_id),
+            "2026-08",
+            datetime(2026, 8, 28, tzinfo=UTC),
+        )
 
-
-def test_non_cost_failed_monthly_run_without_manifest_rearms_in_retry_window():
-    existing = _failed_monthly_run(code="MONTHLY_SOV_NO_MEASUREMENT_MANIFEST")
-    old_task_id = existing.task_id
-
-    class _DB:
-        commits = 0
-
-        def __init__(self):
-            self.results = iter((existing, None))
-
-        def execute(self, _stmt):
-            value = next(self.results)
-            return SimpleNamespace(scalar_one_or_none=lambda: value)
-
-        def commit(self):
-            self.commits += 1
-
-    db = _DB()
-    run = tasks._ensure_monthly_sov_operation_run(
-        db,
-        SimpleNamespace(id=uuid.uuid4()),
-        "2026-08",
-        datetime(2026, 8, 28, tzinfo=UTC),
-    )
-
-    assert run is existing
-    assert existing.state == OperationRunState.REQUESTED
-    assert existing.task_id != old_task_id
-    assert existing.version == 4
-    assert db.commits == 1
+    assert run is not None
+    assert run.id == seeded.id
+    assert run.state == OperationRunState.REQUESTED
+    assert run.task_id != seeded.task_id
+    assert run.version == 4
+    assert len(commits) == 1
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == OperationRunState.REQUESTED
+    assert stored.task_id == run.task_id
+    assert stored.completed_at is None
+    assert stored.lease_owner is None
+    assert stored.safe_error_code is None
+    assert stored.version == 4
 
 
 def test_non_cost_failed_monthly_run_stays_closed_outside_bounded_windows():
@@ -549,28 +575,28 @@ def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypat
     assert existing.version == 3
 
 
-def test_cost_guard_failed_run_rearms_when_remaining_units_cover_pending(monkeypatch):
-    existing = _failed_monthly_run(code="MONTHLY_SOV_COST_GUARD_BLOCKED")
-
-    class _DB:
-        commits = 0
-
-        def execute(self, _stmt):
-            return SimpleNamespace(scalar_one_or_none=lambda: existing)
-
-        def commit(self):
-            self.commits += 1
-
+def test_cost_guard_failed_run_rearms_when_remaining_units_cover_pending(
+    signal_store, monkeypatch
+):
+    _factory, hospital_id = signal_store
+    seeded = seed_closed_monthly_sov_run(
+        hospital_id,
+        "2026-08",
+        OperationRunState.FAILED,
+        safe_error_code="MONTHLY_SOV_COST_GUARD_BLOCKED",
+    )
     monkeypatch.setattr(tasks, "_monthly_sov_pending_budget_fits", lambda *_args: True)
 
-    run = tasks._ensure_monthly_sov_operation_run(
-        _DB(),
-        SimpleNamespace(id=uuid.uuid4()),
-        "2026-08",
-        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
-    )
+    with operation_run_signals.SyncSessionLocal() as db:
+        run = tasks._ensure_monthly_sov_operation_run(
+            db,
+            SimpleNamespace(id=hospital_id),
+            "2026-08",
+            datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+        )
 
-    assert run is existing
+    assert run is not None
+    assert run.id == seeded.id
     assert run.state == OperationRunState.REQUESTED
     assert run.version == 4
 
