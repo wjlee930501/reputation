@@ -827,6 +827,16 @@ async def update_content_brief(
 ):
     """Update query/action links and the operator-editable content brief."""
     item = await _get_content(db, content_id, hospital_id)
+    if item.status == ContentStatus.WITHHELD:
+        # 가이드 승인은 content_philosophy_id를 현재 기준으로 바꿔 restore의
+        # PHILOSOPHY_MISMATCH 검사를 비켜 가게 한다 — 보존 중인 판은 건드리지 않는다.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "비공개(보존) 글의 콘텐츠 가이드는 수정할 수 없습니다. "
+                "restore 후 수정하거나 reject 하세요."
+            ),
+        )
     hospital = await _get_hospital(db, hospital_id)
     await _apply_content_brief_update(db, hospital, item, body)
     item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
