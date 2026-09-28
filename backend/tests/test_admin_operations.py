@@ -4,6 +4,7 @@ Single-actor model: actor is sourced from settings.ADMIN_ACTOR_NAME, not from
 client headers. Transaction order: OperationRun + audit → commit → apply_async.
 """
 
+import logging
 import uuid
 from datetime import datetime, time, timedelta, timezone
 from types import SimpleNamespace
@@ -478,6 +479,93 @@ async def test_publish_error_after_worker_claim_spends_the_monthly_remasure(monk
     assert spent.value.status_code == 409
     assert spent.value.detail["code"] == monthly_remasure_gate.ALREADY_USED
     assert task.calls == []
+
+
+def _patch_claimed_then_lost_publish(monkeypatch, db):
+    async def active_variant(_db, _hospital_id):
+        return True
+
+    async def record_incident(_db, _request, **_kwargs):
+        pytest.fail("a claimed publish must not open a broker incident")
+
+    def stored_then_lost(*, args, queue, headers, task_id):
+        del args, queue, headers, task_id
+        claimed = next(row for row in db.added if isinstance(row, OperationRun))
+        claimed.state = "RUNNING"
+        claimed.version += 2
+        raise ConnectionError("broker reply lost")
+
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", stored_then_lost)
+
+
+async def test_publish_error_after_worker_claim_logs_a_warning(monkeypatch, caplog):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    _patch_claimed_then_lost_publish(monkeypatch, db)
+
+    with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
+        response = await operations_api.run_sov_operation(hospital.id, db=db)
+
+    run = next(row for row in db.added if isinstance(row, OperationRun))
+    assert response["operation_run_id"] == str(run.id)
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == operation_runs.__name__ and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert str(run.id) in message
+    assert "ConnectionError" in message
+    assert "broker reply lost" not in message
+
+
+async def test_publish_error_after_worker_claim_marks_the_queued_audit(monkeypatch):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    _patch_claimed_then_lost_publish(monkeypatch, db)
+
+    await operations_api.run_sov_operation(hospital.id, db=db)
+
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov"]
+    assert "publish_error_type" not in audit_rows[0].detail
+    assert audit_rows[1].detail["queued"] is True
+    assert audit_rows[1].detail["error_code"] is None
+    assert audit_rows[1].detail["publish_error_type"] == "ConnectionError"
+
+
+async def test_normal_publish_leaves_no_publish_error_marker_or_warning(monkeypatch, caplog):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+
+    async def active_variant(_db, _hospital_id):
+        return True
+
+    monkeypatch.setattr(operations_api, "_has_active_query_variant", active_variant)
+    monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", task.apply_async)
+
+    with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
+        await operations_api.run_sov_operation(hospital.id, db=db)
+
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov"]
+    assert all("publish_error_type" not in row.detail for row in audit_rows)
+    assert list(audit_rows[1].detail) == [
+        "queued",
+        "queue",
+        "operation_run_id",
+        "source_type",
+        "source_id",
+        "task_id",
+        "error_code",
+    ]
+    assert not [
+        record for record in caplog.records if record.name == operation_runs.__name__
+    ]
 
 
 async def test_queue_failure_never_records_queued_true(monkeypatch):
