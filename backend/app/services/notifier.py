@@ -247,15 +247,17 @@ def _safe_summary_value(value: str | None) -> str:
     return _safe_operator_label(_safe_label(value), limit=100)
 
 
-_SOURCE_PATH = re.compile(r"[/#A-Za-z0-9_\-]{1,60}")
+# 사이트가 보내는 유입 경로(site/lib/inquiry-lead.ts의 inquirySourcePath)와 옛 랜딩 앵커만
+# 그대로 보여 준다. 그 밖의 값은 공개 API에 누가 무엇을 넣었든 Slack으로 옮기지 않는다 —
+# 경로나 쿼리에 연락처·주민번호가 들어가면 기존 마스킹 패턴을 비켜 간다.
+_KNOWN_SOURCE_PATHS = frozenset({"/", "/contact", "/#contact", "/#lead"})
 
 
 def _safe_source_path(value: str | None) -> str:
-    """유입 경로는 경로만 보낸다. 쿼리(광고 파라미터)는 URL 인코딩된 식별정보를 담을 수 있다."""
-    path = (value or "").split("?", 1)[0].split("&", 1)[0].strip()
+    path = (value or "").strip()
     if not path:
         return "(미입력)"
-    return path if _SOURCE_PATH.fullmatch(path) else "(기타)"
+    return path if path in _KNOWN_SOURCE_PATHS else "(기타)"
 
 
 async def notify_lead_diagnosis_received(

@@ -285,21 +285,24 @@ async def test_inquiry_summary_marks_missing_fields(monkeypatch):
     assert "접수 시각" not in body
 
 
-async def test_inquiry_source_path_drops_query_values(monkeypatch):
-    """광고 파라미터는 URL 인코딩된 이메일·전화번호를 담을 수 있어 경로만 보낸다."""
+async def test_inquiry_source_path_shows_only_known_site_paths(monkeypatch):
+    """경로·쿼리에 담긴 연락처·주민번호는 마스킹을 비켜 가므로 알려진 경로만 보여 준다."""
     captured = _capture_send(monkeypatch)
 
-    await notifier.notify_lead_created(
-        clinic_name="도입문의의원",
-        contact="010-1234-5678",
-        source_path="/#contact?utm_source=doctor%40example.com&tel=010%2D9999%2D8888",
-    )
-    body = captured["blocks"][0]["text"]["text"]
-    assert "유입 경로: /#contact" in body
-    assert "doctor" not in body and "9999" not in body
+    for source_path in (
+        "/#contact?utm_source=doctor%40example.com",
+        "/010-1234-5678",
+        "/900101-1234567",
+        "/<!channel>",
+    ):
+        await notifier.notify_lead_created(
+            clinic_name="도입문의의원", contact="010-0000-0000", source_path=source_path
+        )
+        body = captured["blocks"][0]["text"]["text"]
+        assert "유입 경로: (기타)" in body
+        assert "doctor" not in body and "1234" not in body and "<!channel>" not in body
 
     await notifier.notify_lead_created(
-        clinic_name="도입문의의원", contact="010-1234-5678", source_path="/<!channel> 010%2D1234"
+        clinic_name="도입문의의원", contact="010-0000-0000", source_path="/contact"
     )
-    body = captured["blocks"][0]["text"]["text"]
-    assert "유입 경로: (기타)" in body
+    assert "유입 경로: /contact" in captured["blocks"][0]["text"]["text"]
