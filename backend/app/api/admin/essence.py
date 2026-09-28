@@ -1,6 +1,7 @@
 """Admin API — hospital source-backed content operating standard."""
 
 import asyncio
+import copy
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -72,7 +73,11 @@ from app.services.essence_sources import (
 from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
-from app.services.knowledge_changes import invalidate_source_authority
+from app.services.knowledge_changes import (
+    AUTHORITY_CHANGE_FIELD,
+    authority_refresh_required,
+    invalidate_source_authority,
+)
 from app.services.naver_handoff import (
     NaverCrawlOptions,
     NaverRetryRequest,
@@ -1463,6 +1468,160 @@ async def get_approved_philosophy(hospital_id: uuid.UUID, db: AsyncSession = Dep
     return {"approved": _serialize_philosophy(approved) if approved else None}
 
 
+# 승인본을 사람이 고칠 초안으로 복사할 때 옮기는 내용 컬럼. 식별자·생애주기·승인
+# 메타데이터(id, version, status, is_base, created_by, reviewed_by, approved_at,
+# approval_note, evidence_noise_hash, created_at, updated_at)는 옮기지 않는다 —
+# evidence_noise_hash는 승인 시점의 제외 집합이라 승인이 다시 기록한다.
+PHILOSOPHY_DRAFT_COPY_FIELDS = (
+    "positioning_statement",
+    "doctor_voice",
+    "patient_promise",
+    "content_principles",
+    "tone_guidelines",
+    "must_use_messages",
+    "avoid_messages",
+    "treatment_narratives",
+    "local_context",
+    "medical_ad_risk_rules",
+    "evidence_map",
+    "source_asset_ids",
+    "unsupported_gaps",
+    "conflict_notes",
+    "synthesis_notes",
+    "source_snapshot_hash",
+)
+
+
+@router.post(
+    "/philosophy/{philosophy_id}/draft-copy",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PhilosophyResponse,
+)
+async def copy_approved_philosophy_to_draft(
+    hospital_id: uuid.UUID,
+    philosophy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """승인된 운영 기준을 사람이 문장을 고칠 새 초안으로 복사한다.
+
+    승인본은 수정할 수 없고 초안은 워커의 자동 재합성만 만든다. 사람이 승인본의 문장을
+    고치려면 이 복사본을 PATCH한 뒤 기존 승인 경로로 승인한다. 복사만으로는 합성·검수·
+    큐 등록을 하지 않는다 — 초안의 작성자가 사람이므로 워커는 이 초안을 재시도 대상으로
+    보지 않는다.
+
+    병원에 초안이 이미 있으면(어떤 초안이든) 만들지 않는다. 병원 advisory lock 아래에서
+    확인하므로 동시 요청도 초안을 둘 만들지 못한다.
+    """
+    creator = verified_request_actor()
+    if creator is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "요청자의 로그인 계정을 확인할 수 없습니다. 다시 로그인한 뒤 "
+                "승인본을 초안으로 복사해 주세요."
+            ),
+        )
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    await _get_hospital_or_404(db, hospital_id)
+    approved = await db.scalar(
+        select(HospitalContentPhilosophy)
+        .where(
+            HospitalContentPhilosophy.id == philosophy_id,
+            HospitalContentPhilosophy.hospital_id == hospital_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if approved is None:
+        raise HTTPException(status_code=404, detail="Philosophy not found")
+    if approved.status != PhilosophyStatus.APPROVED:
+        raise HTTPException(
+            status_code=400,
+            detail="승인된 콘텐츠 운영 기준만 초안으로 복사할 수 있습니다.",
+        )
+    if authority_refresh_required(approved):
+        # 근거 철회·수정으로 재합성이 예정된 승인본이다. 지금 복사하면 워커가 새 판을
+        # 자동 승인해 사람이 고친 초안이 옛 근거 위에 남는다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "ESSENCE_AUTHORITY_REFRESH_PENDING",
+                "message": (
+                    "근거 자료가 철회·수정되어 운영 기준 재생성이 예정되어 있습니다. "
+                    "재생성이 끝난 뒤 다시 복사해 주세요."
+                ),
+            },
+        )
+    existing_draft_id = await db.scalar(
+        select(HospitalContentPhilosophy.id)
+        .where(
+            HospitalContentPhilosophy.hospital_id == hospital_id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
+        )
+        .limit(1)
+    )
+    if existing_draft_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "PHILOSOPHY_DRAFT_EXISTS",
+                "draft_id": str(existing_draft_id),
+                "message": (
+                    "이미 검토 중인 초안이 있습니다. 그 초안을 승인하거나 보관한 뒤 "
+                    "다시 복사해 주세요."
+                ),
+            },
+        )
+    max_version = await db.scalar(
+        select(func.max(HospitalContentPhilosophy.version)).where(
+            HospitalContentPhilosophy.hospital_id == hospital_id
+        )
+    )
+    draft = HospitalContentPhilosophy(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        version=int(max_version or 0) + 1,
+        status=PhilosophyStatus.DRAFT,
+        is_base=False,
+        created_by=creator,
+        **{
+            field_name: copy.deepcopy(getattr(approved, field_name))
+            for field_name in PHILOSOPHY_DRAFT_COPY_FIELDS
+        },
+    )
+    draft.unsupported_gaps = [
+        gap
+        for gap in (draft.unsupported_gaps or [])
+        if not (isinstance(gap, dict) and gap.get("field") == AUTHORITY_CHANGE_FIELD)
+    ]
+    db.add(draft)
+    await write_audit_log(
+        db,
+        action="copy_philosophy_to_draft",
+        hospital_id=hospital_id,
+        actor=creator,
+        target_type="philosophy",
+        target_id=draft.id,
+        detail={
+            "source_philosophy_id": str(approved.id),
+            "source_version": approved.version,
+            "new_philosophy_id": str(draft.id),
+            "new_version": draft.version,
+        },
+    )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # 같은 병원 lock을 잡지 않는 경로가 같은 version을 먼저 만든 경우.
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="운영 기준이 동시에 변경되었습니다. 새로고침 후 다시 확인해 주세요.",
+        ) from exc
+    await db.refresh(draft)
+    return _serialize_philosophy(draft)
+
+
 @router.patch("/philosophy/{philosophy_id}", response_model=PhilosophyResponse)
 async def patch_philosophy(
     hospital_id: uuid.UUID,
@@ -1478,6 +1637,7 @@ async def patch_philosophy(
         )
 
     update = body.model_dump(exclude_unset=True)
+    before = {field_name: getattr(philosophy, field_name) for field_name in update}
     if "unsupported_gaps" in update:
         # 자동 검수 finding은 서버 소유다 — 클라이언트가 지워서 예외 승인 게이트를 우회하지
         # 못하게 저장된 항목을 그대로 보존한다(H-03). 지우는 유일한 경로는 재검수다.
@@ -1505,6 +1665,22 @@ async def patch_philosophy(
         if grounding_errors:
             raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
+    # 사람이 어느 문장을 바꿨는지 남긴다. 실제로 값이 달라진 필드만 기록한다.
+    changes = {
+        field_name: {"before": before[field_name], "after": getattr(philosophy, field_name)}
+        for field_name in update
+        if before[field_name] != getattr(philosophy, field_name)
+    }
+    if changes:
+        await write_audit_log(
+            db,
+            action="patch_philosophy",
+            hospital_id=hospital_id,
+            actor=default_actor(),
+            target_type="philosophy",
+            target_id=philosophy.id,
+            detail={"version": philosophy.version, "changes": changes},
+        )
     await db.commit()
     await db.refresh(philosophy)
     return _serialize_philosophy(philosophy)

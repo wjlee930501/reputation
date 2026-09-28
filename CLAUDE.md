@@ -1,5 +1,14 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
+## 최신 운영 배포 — 2026-09-28 도입문의 Slack 채널 분리
+
+main `7266674`(PR #164·#165)를 API·Worker·Beat에 배포했다. 현재 리비전은 api `00206-8hf`,
+worker `00195-7dt`, beat `00190-bqz`이고 Site·Admin과 DB head `0080_lead_diagnosis_supersede`는 그대로다.
+공개 도입문의 접수 알림은 선택 secret `SLACK_WEBHOOK_URL_INQUIRY`(`#noti-도입문의-뉴비짓`)로 가며,
+비어 있으면 `SLACK_WEBHOOK_URL`로 간다. Aside로 실제 문의 2건을 제출해 새 채널 수신을 확인했다.
+요약은 처리방침의 Slack 고지 범위(병원명·진료과·지역·마스킹 연락처·알려진 유입 경로·접수 시각·
+자동 처리)만 싣고 제목에 `[Re:putation]` 출처를 붙인다. 상세는 [도입문의 Slack 채널 분리 배포 기록](docs/releases/2026-09-28-inquiry-slack-channel-production.md)을 본다.
+
 ## 최신 운영 배포 — 2026-09-23~24 통합 정합성 보완·파비콘
 
 main `38cff0e`(PR #153 런타임)를 5개 서비스에, 이어 Site만 `fad966d`(PR #155·#156 파비콘)까지 배포했다.
