@@ -104,7 +104,7 @@ async def test_slack_http_failure_logs_safe_status_code_only(monkeypatch, caplog
 def _capture_send(monkeypatch):
     captured = {}
 
-    async def fake_send(text, blocks=None):
+    async def fake_send(text, blocks=None, **_kwargs):
         captured["text"] = text
         captured["blocks"] = blocks
         return True
@@ -182,3 +182,127 @@ async def test_zero_pii_purge_does_not_send_daily_noise(monkeypatch):
 
     monkeypatch.setattr(notifier, "_send", should_not_send)
     assert await notifier.notify_lead_purge_result(purged=0) is False
+
+
+class _RecordingClient:
+    posted: list[tuple[str, dict]] = []
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return None
+
+    async def post(self, url, json):
+        _RecordingClient.posted.append((url, json))
+        return httpx.Response(200, request=httpx.Request("POST", url), text="ok")
+
+
+async def test_inquiry_goes_to_the_inquiry_webhook_when_configured(monkeypatch):
+    _RecordingClient.posted = []
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/ops")
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "https://hooks.slack.com/services/inquiry")
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _RecordingClient)
+
+    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is True
+
+    assert [url for url, _ in _RecordingClient.posted] == ["https://hooks.slack.com/services/inquiry"]
+
+
+async def test_inquiry_falls_back_to_the_operator_webhook_when_unset(monkeypatch):
+    _RecordingClient.posted = []
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/ops")
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "")
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _RecordingClient)
+
+    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is True
+
+    assert [url for url, _ in _RecordingClient.posted] == ["https://hooks.slack.com/services/ops"]
+
+
+async def test_inquiry_webhook_is_held_to_the_same_host_allowlist(monkeypatch):
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/ops")
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "https://evil.example.test/hook")
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _ShouldNotPostClient)
+
+    assert await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678") is False
+
+
+async def test_other_notifications_stay_on_the_operator_webhook(monkeypatch):
+    _RecordingClient.posted = []
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/services/ops")
+    monkeypatch.setattr(notifier.settings, "SLACK_WEBHOOK_URL_INQUIRY", "https://hooks.slack.com/services/inquiry")
+    monkeypatch.setattr(notifier.httpx, "AsyncClient", _RecordingClient)
+
+    await notifier.notify_lead_purge_result(purged=0, error="파기 결과 확정 실패")
+
+    assert [url for url, _ in _RecordingClient.posted] == ["https://hooks.slack.com/services/ops"]
+
+
+async def test_inquiry_message_summarizes_the_application_and_names_reputation(monkeypatch):
+    from datetime import UTC, datetime
+
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_lead_created(
+        clinic_name="장편한외과의원",
+        contact="010-1234-5678",
+        diagnosis_note="초도 노출 진단 자동 시작",
+        specialty="외과",
+        region_keyword="강남역",
+        source_path="/#contact",
+        created_at=datetime(2026, 9, 28, 5, 3, tzinfo=UTC),
+    )
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert captured["text"].startswith("[Lead : 도입 문의] [Re:putation] [새 문의] 장편한외과의원")
+    assert "*[Re:putation] [새 문의] 장편한외과의원*" in body
+    for line in (
+        "진료과: 외과",
+        "지역: 강남역",
+        "연락처: `010-****-5678`",
+        "유입 경로: /#contact",
+        "접수 시각: 2026-09-28 14:03 KST",
+        "자동 처리: 초도 노출 진단 자동 시작",
+    ):
+        assert line in body
+    assert "010-1234-5678" not in f"{captured['text']} {body}"
+    assert "핵심 키워드" not in body
+
+
+async def test_inquiry_summary_marks_missing_fields(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678")
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "진료과: (미입력)" in body
+    assert "지역: (미입력)" in body
+    assert "유입 경로: (미입력)" in body
+    assert "접수 시각" not in body
+
+
+async def test_inquiry_source_path_shows_only_known_site_paths(monkeypatch):
+    """경로·쿼리에 담긴 연락처·주민번호는 마스킹을 비켜 가므로 알려진 경로만 보여 준다."""
+    captured = _capture_send(monkeypatch)
+
+    for source_path in (
+        "/#contact?utm_source=doctor%40example.com",
+        "/010-1234-5678",
+        "/900101-1234567",
+        "/<!channel>",
+    ):
+        await notifier.notify_lead_created(
+            clinic_name="도입문의의원", contact="010-0000-0000", source_path=source_path
+        )
+        body = captured["blocks"][0]["text"]["text"]
+        assert "유입 경로: (기타)" in body
+        assert "doctor" not in body and "1234" not in body and "<!channel>" not in body
+
+    await notifier.notify_lead_created(
+        clinic_name="도입문의의원", contact="010-0000-0000", source_path="/contact"
+    )
+    assert "유입 경로: /contact" in captured["blocks"][0]["text"]["text"]

@@ -262,7 +262,7 @@ async def test_notify_lead_created_masks_residual_identifiers_in_clinic_name(mon
     """입력 검증을 통과해도 Slack 라벨에는 식별정보가 남지 않는다(2차 방어)."""
     sent = {}
 
-    async def fake_send(text, blocks=None):
+    async def fake_send(text, blocks=None, **_kwargs):
         sent["text"] = text
         sent["blocks"] = blocks
         return True
@@ -287,7 +287,7 @@ async def test_notify_lead_created_truncates_and_flattens_long_clinic_name(monke
     """긴 자유 텍스트/개행으로 Slack 블록을 밀어내는 스팸을 막는다."""
     sent = {}
 
-    async def fake_send(text, blocks=None):
+    async def fake_send(text, blocks=None, **_kwargs):
         sent["text"] = text
         sent["blocks"] = blocks
         return True
@@ -412,6 +412,11 @@ async def test_intake_with_diagnosis_fields_creates_the_internal_diagnosis(monke
     assert response["diagnosis_id"] == "diag-1"
     assert response["ack_sms"] == "sent"
     assert slack[0]["diagnosis_note"] == leads_api.DIAGNOSIS_NOTE_QUEUED
+    # Slack 요약은 처리방침 고지 범위의 필드만 받는다 — 핵심 키워드·문의 본문·담당자 성함은 넘기지 않는다.
+    assert slack[0]["specialty"] == "내과"
+    assert slack[0]["region_keyword"] == "강남역"
+    assert slack[0]["source_path"] == "/contact"
+    assert not {"question", "contact_name", "core_keywords"} & slack[0].keys()
 
 
 async def test_intake_without_diagnosis_fields_leaves_creation_to_admin(monkeypatch):

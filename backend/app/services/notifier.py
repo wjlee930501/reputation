@@ -9,6 +9,7 @@
 import asyncio
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 from typing import TypedDict
 from urllib.parse import urlsplit
 
@@ -19,6 +20,8 @@ from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import safe_text as _slack_safe_text
 
 logger = logging.getLogger(__name__)
+
+_KST = timezone(timedelta(hours=9))
 
 
 def _is_allowed_webhook(url: str) -> bool:
@@ -111,11 +114,22 @@ def _validated_admin_path(candidate_url: str) -> str:
     return candidate.path
 
 
-async def _send(text: str, blocks: list | None = None) -> bool:
-    if not settings.SLACK_WEBHOOK_URL:
+# 도입문의 채널(#noti-도입문의-뉴비짓)은 뉴비짓의 여러 제품 문의가 함께 들어온다.
+# 제목 줄과 fallback text 모두에 출처를 표시해 Re:putation 문의임을 바로 알 수 있게 한다.
+INQUIRY_SOURCE_TAG = "[Re:putation]"
+
+
+def _inquiry_webhook_url() -> str:
+    """도입문의 전용 채널 웹훅. 비어 있으면 기존 운영 채널(SLACK_WEBHOOK_URL)로 보낸다."""
+    return settings.SLACK_WEBHOOK_URL_INQUIRY.strip() or settings.SLACK_WEBHOOK_URL
+
+
+async def _send(text: str, blocks: list | None = None, *, webhook_url: str | None = None) -> bool:
+    url = webhook_url or settings.SLACK_WEBHOOK_URL
+    if not url:
         logger.warning("Slack webhook not configured")
         return False
-    if not _is_allowed_webhook(settings.SLACK_WEBHOOK_URL):
+    if not _is_allowed_webhook(url):
         logger.error("Slack webhook URL rejected: host not in allowlist (SSRF guard)")
         return False
     attempts = 3
@@ -123,7 +137,7 @@ async def _send(text: str, blocks: list | None = None) -> bool:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.post(
-                    settings.SLACK_WEBHOOK_URL,
+                    url,
                     json={"text": text, **({"blocks": blocks} if blocks else {})},
                 )
                 r.raise_for_status()
@@ -182,36 +196,68 @@ async def notify_lead_created(
     contact: str,
     admin_url: str | None = None,
     diagnosis_note: str | None = None,
+    specialty: str | None = None,
+    region_keyword: str | None = None,
+    source_path: str | None = None,
+    created_at: datetime | None = None,
 ) -> bool:
-    """공개 문의 접수 → AE에게.
+    """공개 도입문의 접수 → 도입문의 채널(SLACK_WEBHOOK_URL_INQUIRY, 미설정 시 운영 채널).
 
-    공개 폼의 clinic_type은 받지 않는다 — 문의 유형은 언제나 "일반 문의"로 고정 안내하고,
-    자유 텍스트를 Slack(국외 이전)으로 더 내보낼 이유가 없다.
+    신청 정보를 요약해 보내되 처리방침의 Slack 국외 이전 고지 범위(병원명·진료과/지역·
+    마스킹된 연락처·운영 메타데이터)를 넘지 않는다. 고지에 없는 핵심 키워드·문의 본문(주소·
+    원장 성함·홈페이지가 담긴다)·담당자 성함은 보내지 않는다 — 상세 확인은 Admin UI deep-link에서.
 
-    PII 보호: 연락처는 마스킹, 환자 질문 본문은 Slack 채널로 송출하지 않음.
-    상세 확인은 Admin UI deep-link에서.
-
-    clinic_name도 공개 폼의 자유 텍스트라 입력 검증(leads API)을 통과한 뒤에도
-    Slack(국외 이전)으로 그대로 나가면 안 된다 — 검증 패턴이 놓친 식별정보가 남을 수 있고,
-    긴 본문을 병원명 칸에 밀어넣는 채널 스팸도 가능하다. 여기서 한 번 더 마스킹·절단한다.
+    자유 텍스트는 입력 검증(leads API)을 통과한 뒤에도 Slack(국외 이전)으로 그대로 나가면
+    안 된다 — 검증 패턴이 놓친 식별정보가 남을 수 있고, 긴 본문으로 채널 스팸도 가능하다.
+    여기서 한 번 더 마스킹·절단한다.
     """
     masked = mask_contact(contact)
     safe_clinic_name = _safe_operator_label(_safe_label(clinic_name), limit=100)
     action_path = _validated_admin_path(admin_url or settings.ADMIN_BASE_URL.rstrip("/") + "/leads")
-    note_line = f"자동 처리: {_safe_operator_label(diagnosis_note, limit=100)}\n" if diagnosis_note else ""
-    return await _send(
-        text=prefixed_for_event("LEAD_CREATED", f"[새 문의] {safe_clinic_name} | 담당자를 정해 신청자에게 연락해 주세요."),
-        blocks=[{
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": (
-                prefixed_for_event("LEAD_CREATED", f"*[새 문의] {safe_clinic_name}*\n"
-                "문의 유형: 일반 문의\n"
-                f"연락처: `{masked}`\n"
-                f"{note_line}"
-                "신청 내역에서 담당자를 지정하고 상담 연락을 진행해 주세요.")
-            )},
-        }, _admin_action_block(path=action_path, label="도입 문의 확인")],
+    summary_lines = [
+        "문의 유형: 일반 문의",
+        f"진료과: {_safe_summary_value(specialty)}",
+        f"지역: {_safe_summary_value(region_keyword)}",
+        f"연락처: `{masked}`",
+        f"유입 경로: {_safe_source_path(source_path)}",
+    ]
+    if created_at is not None:
+        summary_lines.append(f"접수 시각: {created_at.astimezone(_KST):%Y-%m-%d %H:%M} KST")
+    if diagnosis_note:
+        summary_lines.append(f"자동 처리: {_safe_operator_label(diagnosis_note, limit=100)}")
+    body = (
+        f"*{INQUIRY_SOURCE_TAG} [새 문의] {safe_clinic_name}*\n"
+        + "\n".join(summary_lines)
+        + "\n담당자를 지정하고 상담 연락을 진행해 주세요."
     )
+    return await _send(
+        text=prefixed_for_event(
+            "LEAD_CREATED",
+            f"{INQUIRY_SOURCE_TAG} [새 문의] {safe_clinic_name} | 담당자를 정해 신청자에게 연락해 주세요.",
+        ),
+        blocks=[
+            {"type": "section", "text": {"type": "mrkdwn", "text": prefixed_for_event("LEAD_CREATED", body)}},
+            _admin_action_block(path=action_path, label="도입 문의 확인"),
+        ],
+        webhook_url=_inquiry_webhook_url(),
+    )
+
+
+def _safe_summary_value(value: str | None) -> str:
+    return _safe_operator_label(_safe_label(value), limit=100)
+
+
+# 사이트가 보내는 유입 경로(site/lib/inquiry-lead.ts의 inquirySourcePath)와 옛 랜딩 앵커만
+# 그대로 보여 준다. 그 밖의 값은 공개 API에 누가 무엇을 넣었든 Slack으로 옮기지 않는다 —
+# 경로나 쿼리에 연락처·주민번호가 들어가면 기존 마스킹 패턴을 비켜 간다.
+_KNOWN_SOURCE_PATHS = frozenset({"/", "/contact", "/#contact", "/#lead"})
+
+
+def _safe_source_path(value: str | None) -> str:
+    path = (value or "").strip()
+    if not path:
+        return "(미입력)"
+    return path if path in _KNOWN_SOURCE_PATHS else "(기타)"
 
 
 async def notify_lead_diagnosis_received(

@@ -130,6 +130,8 @@ declare -A SECRETS=(
   # outbox HOLD로 남고 운영 채널로 폴백하지 않는다. deploy.sh가 optional secret으로
   # mount하므로 컨테이너와 버전(빈 문자열이라도)은 있어야 한다.
   ["SLACK_WEBHOOK_URL_DEV"]="개발팀 전용 Slack 웹훅 URL (미설정 시 개발 알림 HOLD)"
+  # 도입문의 전용 채널. 값을 비워 두면 도입문의 알림은 SLACK_WEBHOOK_URL로 나간다.
+  ["SLACK_WEBHOOK_URL_INQUIRY"]="도입문의 전용 Slack 웹훅 URL (미설정 시 운영 채널)"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
   # API와 Admin이 같은 값을 읽어야 한다 — Admin BFF가 사람 변경 요청의 actor 단언을 서명하고 API가 검증한다.
   ["BFF_ACTOR_SECRET"]="Admin BFF actor 단언 서명키 (API·Admin 공통, 개행 없이 저장)"
