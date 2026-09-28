@@ -12,11 +12,13 @@ from datetime import date, datetime, timezone
 
 import pytest
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin import content as content_api
 from app.api.admin import operations as operations_api
 from app.api.public import site as site_api
+from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
@@ -28,6 +30,9 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.models.operations import OperationRun, OperationRunState
+from app.services import indexnow, site_revalidate
+from app.services import site_revalidation_control as revalidation_control
 from app.services.audit_log import reset_request_actor, set_request_actor
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.image_engine import (
@@ -72,6 +77,31 @@ def revalidations(monkeypatch):
 
     monkeypatch.setattr(content_api, "trigger_content_site_revalidate_safe", fake_revalidate)
     return calls
+
+
+@pytest.fixture
+def failing_site_revalidation(pg_async_session, monkeypatch):
+    """실제 재시도 제어 경로 — 사이트 갱신은 매번 실패하고 재시도 디스패치만 기록한다."""
+    dispatched: list[str] = []
+
+    async def site_down(**_kwargs):
+        raise RuntimeError("site revalidate unavailable")
+
+    def control_sessions():
+        # 테스트 트랜잭션과 같은 연결 — 라우트가 커밋한 행을 보고, 끝나면 함께 롤백된다.
+        return AsyncSession(
+            bind=pg_async_session.bind,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+
+    def send_task(_name, *, args, **_kwargs):
+        dispatched.append(args[0])
+
+    monkeypatch.setattr(site_revalidate, "trigger_site_revalidate", site_down)
+    monkeypatch.setattr(revalidation_control, "get_async_sessionmaker", lambda: control_sessions)
+    monkeypatch.setattr(celery_app, "send_task", send_task)
+    return dispatched
 
 
 async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, ContentItem]:
@@ -270,6 +300,7 @@ async def test_withhold_preserves_the_edition_and_leaves_every_public_surface(
             "hospital_name": hospital.name,
             "treatments": hospital.treatments,
             "unpublished_from": _PUBLISHED_AT,
+            "edition_revision": 4,
         })
     ]
 
@@ -340,6 +371,43 @@ async def test_restore_republishes_with_the_same_published_at(
     assert audit.detail["published_at"] == _PUBLISHED_AT.isoformat()
     assert audit.detail["revision"] == 5
     assert revalidations[-1][2].get("unpublished_from") is None
+    assert revalidations[-1][2]["edition_revision"] == 5
+
+
+async def test_each_withhold_and_restore_opens_its_own_cache_refresh_retry(
+    pg_async_session, verified_actor, failing_site_revalidation
+):
+    """withhold·restore는 published_at을 보존한다 — 재시도 키가 발행 시각만 보면
+    withhold→restore→withhold의 두 번째 withhold가 이미 성공으로 닫힌 첫 run에 흡수돼
+    재시도 없이 사라지고, 내린 글이 캐시에 남는다. restore 뒤 restore도 같다."""
+    session = pg_async_session
+    hospital, item = await _seed(session)
+
+    # 공개 표면 intent(public-surface:*)도 같은 operation_type이다 — 재시도 run만 본다.
+    retry_runs = (
+        OperationRun.hospital_id == hospital.id,
+        OperationRun.operation_type == "SITE_REVALIDATION",
+        OperationRun.idempotency_key.startswith(f"site-revalidation:{item.id}:"),
+    )
+    for step in (_withhold, _restore, _withhold, _restore):
+        await step(session, hospital, item)
+        # 앞 전환의 재시도는 성공으로 닫혔다 — 다음 전환이 거기에 흡수되면 안 된다.
+        await session.execute(
+            update(OperationRun)
+            .where(*retry_runs)
+            .values(state=OperationRunState.SUCCEEDED.value)
+        )
+        await session.commit()
+
+    runs = (await session.execute(select(OperationRun).where(*retry_runs))).scalars().all()
+    edition = _PUBLISHED_AT.isoformat()
+    assert {run.idempotency_key: run.request_payload["direction"] for run in runs} == {
+        f"site-revalidation:{item.id}:unpublish:{edition}:rev4": "UNPUBLISH",
+        f"site-revalidation:{item.id}:{edition}:rev5": "PUBLISH",
+        f"site-revalidation:{item.id}:unpublish:{edition}:rev6": "UNPUBLISH",
+        f"site-revalidation:{item.id}:{edition}:rev7": "PUBLISH",
+    }
+    assert sorted(failing_site_revalidation) == sorted(str(run.id) for run in runs)
 
 
 async def test_restore_is_refused_when_references_were_emptied(
@@ -492,9 +560,26 @@ async def test_withheld_content_cannot_be_published_and_points_at_restore(
     assert item.published_at == _PUBLISHED_AT
 
 
-async def test_withheld_content_references_can_be_edited(pg_async_session, verified_actor):
+async def test_withheld_content_references_can_be_edited(
+    pg_async_session, verified_actor, revalidations, monkeypatch
+):
     session = pg_async_session
-    hospital, item = await _seed(session, status=ContentStatus.WITHHELD)
+    hospital, item = await _seed(session)
+    reviewed_at = datetime(2026, 9, 11, 1, 0, tzinfo=timezone.utc)
+    item.post_publish_reviewed_at = reviewed_at
+    item.post_publish_reviewed_by = _ACTOR
+    await session.commit()
+    await _withhold(session, hospital, item)
+    await session.refresh(item)
+    revision_before = item.content_revision
+    image_before = (item.image_content_hash, item.image_subject_hash, item.image_policy_version)
+    revalidations.clear()
+    indexnow_calls: list[dict] = []
+
+    async def record_indexnow(_db, **kwargs):
+        indexnow_calls.append(kwargs)
+
+    monkeypatch.setattr(indexnow, "enqueue_content_published", record_indexnow)
     replacement = {
         "title": "국가건강정보포털 위내시경",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfoView.do",
@@ -509,13 +594,66 @@ async def test_withheld_content_references_can_be_edited(pg_async_session, verif
     await session.refresh(item)
     assert item.status == ContentStatus.WITHHELD
     assert [ref["url"] for ref in item.references_list] == [replacement["url"]]
+    # 공개 글의 참고자료 편집과 같은 기록 — 옛 확인 기록은 새 판을 보증하지 않는다.
+    assert item.post_publish_reviewed_at is None
+    assert item.post_publish_reviewed_by is None
+    assert item.body_updated_at is not None
+    assert item.human_edited_at is not None
+    assert item.content_revision == revision_before + 1
+    assert (
+        item.image_content_hash, item.image_subject_hash, item.image_policy_version
+    ) == image_before
+    assert item.published_at == _PUBLISHED_AT
+    # 공개 중이 아니므로 공개 표면 갱신·색인 제출은 없다(restore가 한다).
+    assert revalidations == []
+    assert indexnow_calls == []
 
+    # 공개 글과 달리 0개로도 고칠 수 있다 — restore가 MISSING_REFERENCES로 막는다.
     await content_api.update_content(
         hospital.id, item.id, content_api.ContentPatch(references=[]), db=session
     )
     await session.refresh(item)
     assert item.references_list == []
     assert item.status == ContentStatus.WITHHELD
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"title": "제목을 바꾼 위내시경 안내"},
+        {"body": "본문을 고친 판입니다."},
+        {"meta_description": "설명을 고친 판입니다."},
+        {"title": "제목을 바꾼 위내시경 안내", "references": []},
+    ],
+    ids=["title", "body", "meta", "title-with-references"],
+)
+async def test_withheld_content_refuses_edits_other_than_references(
+    pg_async_session, verified_actor, revalidations, patch
+):
+    """제목 편집은 이미지 인증을 풀고, WITHHELD 글은 재인증 경로가 모두 비켜 가므로
+    restore가 영구히 막힌다. 참고자료 외 필드가 하나라도 오면 아무것도 바꾸지 않고 409."""
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    await _withhold(session, hospital, item)
+    await session.refresh(item)
+    columns = (
+        "title", "body", "meta_description", "references_list", "content_revision",
+        "body_updated_at", "human_edited_at", "image_content_hash", "image_subject_hash",
+        "image_policy_version", "image_policy_verified_at",
+    )
+    before = {column: getattr(item, column) for column in columns}
+
+    error = await _http_error(
+        content_api.update_content(
+            hospital.id, item.id, content_api.ContentPatch(**patch), db=session
+        )
+    )
+
+    assert error.status_code == 409
+    assert "참고자료만" in error.detail
+    await session.refresh(item)
+    assert item.status == ContentStatus.WITHHELD
+    assert {column: getattr(item, column) for column in columns} == before
 
 
 async def test_withheld_content_can_still_be_rejected(

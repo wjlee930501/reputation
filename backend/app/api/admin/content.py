@@ -613,7 +613,20 @@ async def update_content(
         if item is None:
             raise HTTPException(status_code=404, detail="Content not found")
     hospital = await _get_hospital(db, hospital_id)
+    if item.status == ContentStatus.WITHHELD and body.model_fields_set - {"references"}:
+        # 비공개(보존) 글은 재인증·재검수 경로(스윕·이미지 태스크)가 모두 비켜 간다. 제목을
+        # 고쳐 이미지 인증이 풀리면 restore가 영구히 막히므로 참고자료 보정만 받는다.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "비공개(보존) 글은 참고자료만 수정할 수 있습니다. "
+                "본문을 고치려면 restore 후 수정하거나 reject 하세요."
+            ),
+        )
     was_published = item.status == ContentStatus.PUBLISHED
+    # 비공개(보존) 글도 발행된 판이다 — 참고자료 편집의 확인 기록 무효화·편집 시각은
+    # 공개 글과 같게 남긴다. 공개 표면 갱신·색인·빈 참고자료 거절은 공개 중인 글만 한다.
+    has_published_edition = was_published or item.status == ContentStatus.WITHHELD
     should_revalidate = was_published and _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()
@@ -713,10 +726,10 @@ async def update_content(
     # body_updated_at은 컬럼 이름과 달리 "공개 텍스트가 편집된 시각"이다. 제목·meta·FAQ·
     # 참고자료도 공개 표면에 나가는 텍스트인데 본문 변경만 기록하면, 공개 뒤 제목만 고친
     # 글이 사람 확인 표본(post_publish_review_policy)과 Site 재검증 키에서 빠진다.
-    if body_changed or (was_published and public_fields_changed):
+    if body_changed or (has_published_edition and public_fields_changed):
         item.body_updated_at = datetime.now(timezone.utc)
 
-    if was_published and public_fields_changed:
+    if has_published_edition and public_fields_changed:
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
 
@@ -1382,6 +1395,7 @@ async def withhold_content(
             hospital_name=hospital.name,
             treatments=hospital.treatments,
             unpublished_from=published_at,
+            edition_revision=int(item.content_revision),
         )
     return {
         "detail": "Withheld",
@@ -1485,6 +1499,7 @@ async def restore_content(
         item.id,
         hospital_name=hospital.name,
         treatments=hospital.treatments,
+        edition_revision=int(item.content_revision),
     )
     return {
         "detail": "Restored",

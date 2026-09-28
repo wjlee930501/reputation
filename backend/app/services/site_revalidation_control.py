@@ -104,11 +104,16 @@ async def start_revalidation_failure(
     content_id: uuid.UUID,
     *,
     unpublished_from: datetime | None = None,
+    edition_revision: int | None = None,
 ) -> RevalidationRetryPlan | None:
     """Persist the first failed cache refresh for a committed publish **or** unpublish.
 
     `unpublished_from`은 반려 직전의 published_at이다. 반려 경로가 발행 메타를 지우므로
     이 값이 없으면 "내려간 글"의 캐시 판(edition)을 식별할 수 없다.
+
+    `edition_revision`은 비공개(보존)·되돌리기가 넘기는 content_revision이다. 두 경로는
+    published_at을 보존하므로 발행 시각만으로 키를 만들면 withhold→restore→withhold의
+    두 번째 요청이 첫 run(이미 SUCCEEDED)에 흡수돼 재시도 없이 사라진다. 없으면 종전 키.
     """
 
     normalized_slug = slug.strip().lower()
@@ -147,6 +152,8 @@ async def start_revalidation_failure(
             if direction == DIRECTION_PUBLISH
             else f"site-revalidation:{content.id}:unpublish:{edition.isoformat()}"
         )
+        if edition_revision is not None:
+            key = f"{key}:rev{edition_revision}"
         existing = await db.scalar(
             select(OperationRun).where(
                 OperationRun.hospital_id == hospital_id,
