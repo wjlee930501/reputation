@@ -90,6 +90,21 @@ class OperationQueueUnavailable(Exception):
         return _BROKER_ERROR_MESSAGE
 
 
+def _warn_swallowed_publish_error(
+    run_id: uuid.UUID, publish_error_type: str, outcome: str, state: str
+) -> None:
+    # publish가 예외를 냈지만 실행이 이미 REQUESTED가 아니어서 FAILED로 덮지 않은 경우다.
+    # 결과는 추측하지 않고 mark_operation_queued가 다시 읽은 행으로 판정한다.
+    logger.warning(
+        "operation run %s publish raised %s and the run was not marked failed; "
+        "resulting state: %s (state=%s)",
+        run_id,
+        publish_error_type,
+        outcome,
+        state,
+    )
+
+
 async def dispatch_operation(
     db: AsyncSession, command: OperationCommand, task: DispatchTask
 ) -> OperationDispatch:
@@ -165,13 +180,20 @@ async def dispatch_operation(
             await db.commit()
             raise OperationQueueUnavailable(run_id=failed.id) from exc
         publish_error_type = type(exc).__name__
-        logger.warning(
-            "operation run %s publish raised %s after a worker claimed it; keeping the claim",
+
+    try:
+        run = await transitions.mark_operation_queued(db, run.id, datetime.now(UTC))
+    except transitions.OperationTransitionRejected as rejected:
+        if publish_error_type is not None:
+            _warn_swallowed_publish_error(run.id, publish_error_type, "row missing", rejected.state)
+        raise
+    if publish_error_type is not None:
+        _warn_swallowed_publish_error(
             run.id,
             publish_error_type,
+            "completed" if transitions.is_terminal_state(run.state) else "in progress",
+            str(run.state),
         )
-
-    run = await transitions.mark_operation_queued(db, run.id, datetime.now(UTC))
     await _write_run_audit(
         db, command, run, "queued", queued=True, publish_error_type=publish_error_type
     )

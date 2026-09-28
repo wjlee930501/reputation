@@ -21,7 +21,13 @@ from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import OperationRun
-from app.services import audit_log, content_yield, monthly_remasure_gate, operation_runs
+from app.services import (
+    audit_log,
+    content_yield,
+    monthly_remasure_gate,
+    operation_run_transitions,
+    operation_runs,
+)
 
 
 class FakeTask:
@@ -481,7 +487,7 @@ async def test_publish_error_after_worker_claim_spends_the_monthly_remasure(monk
     assert task.calls == []
 
 
-def _patch_claimed_then_lost_publish(monkeypatch, db):
+def _patch_claimed_then_lost_publish(monkeypatch, db, *, worker_state="RUNNING"):
     async def active_variant(_db, _hospital_id):
         return True
 
@@ -491,7 +497,7 @@ def _patch_claimed_then_lost_publish(monkeypatch, db):
     def stored_then_lost(*, args, queue, headers, task_id):
         del args, queue, headers, task_id
         claimed = next(row for row in db.added if isinstance(row, OperationRun))
-        claimed.state = "RUNNING"
+        claimed.state = worker_state
         claimed.version += 2
         raise ConnectionError("broker reply lost")
 
@@ -500,26 +506,64 @@ def _patch_claimed_then_lost_publish(monkeypatch, db):
     monkeypatch.setattr(operations_api.run_sov_for_hospital, "apply_async", stored_then_lost)
 
 
-async def test_publish_error_after_worker_claim_logs_a_warning(monkeypatch, caplog):
+def _dispatch_warnings(caplog) -> list[logging.LogRecord]:
+    return [
+        record
+        for record in caplog.records
+        if record.name == operation_runs.__name__ and record.levelno == logging.WARNING
+    ]
+
+
+def _watch_mark_queued(monkeypatch, caplog) -> list[tuple[str, object]]:
+    """mark_operation_queued 호출 시점의 경고 수와, 그 함수가 낸 예외를 기록한다."""
+    seen: list[tuple[str, object]] = []
+    real = operation_run_transitions.mark_operation_queued
+
+    async def watched(db, run_id, accepted_at):
+        seen.append(("warnings_before", len(_dispatch_warnings(caplog))))
+        try:
+            return await real(db, run_id, accepted_at)
+        except operation_run_transitions.OperationTransitionRejected as exc:
+            seen.append(("raised", exc))
+            raise
+
+    monkeypatch.setattr(operation_run_transitions, "mark_operation_queued", watched)
+    return seen
+
+
+@pytest.mark.parametrize(
+    ("worker_state", "outcome"),
+    [
+        ("RUNNING", "in progress"),
+        ("QUEUED", "in progress"),
+        ("SUCCEEDED", "completed"),
+        ("PARTIAL", "completed"),
+        ("FAILED", "completed"),
+        ("CANCELLED", "completed"),
+    ],
+)
+async def test_publish_error_after_worker_claim_logs_a_warning(
+    monkeypatch, caplog, worker_state, outcome
+):
     hospital = _hospital(status=HospitalStatus.ACTIVE)
     db = FakeDB(hospital=hospital)
-    _patch_claimed_then_lost_publish(monkeypatch, db)
+    _patch_claimed_then_lost_publish(monkeypatch, db, worker_state=worker_state)
+    seen = _watch_mark_queued(monkeypatch, caplog)
 
     with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
         response = await operations_api.run_sov_operation(hospital.id, db=db)
 
     run = next(row for row in db.added if isinstance(row, OperationRun))
     assert response["operation_run_id"] == str(run.id)
-    warnings = [
-        record
-        for record in caplog.records
-        if record.name == operation_runs.__name__ and record.levelno == logging.WARNING
-    ]
+    assert response["operation_state"] == worker_state
+    # 경고는 결과 상태를 다시 읽은 뒤에만 남는다.
+    assert seen == [("warnings_before", 0)]
+    warnings = _dispatch_warnings(caplog)
     assert len(warnings) == 1
-    message = warnings[0].getMessage()
-    assert str(run.id) in message
-    assert "ConnectionError" in message
-    assert "broker reply lost" not in message
+    assert warnings[0].getMessage() == (
+        f"operation run {run.id} publish raised ConnectionError and the run was not "
+        f"marked failed; resulting state: {outcome} (state={worker_state})"
+    )
 
 
 async def test_publish_error_after_worker_claim_marks_the_queued_audit(monkeypatch):
@@ -566,6 +610,152 @@ async def test_normal_publish_leaves_no_publish_error_marker_or_warning(monkeypa
     assert not [
         record for record in caplog.records if record.name == operation_runs.__name__
     ]
+
+
+class _RunDeletedDB(FakeDB):
+    """publish 도중 실행 행이 사라진 DB. CAS update도 재조회도 행을 찾지 못한다."""
+
+    run_deleted = False
+
+    async def scalar(self, stmt):
+        if self.run_deleted and stmt.column_descriptions[0].get("entity") is OperationRun:
+            return None
+        return await super().scalar(stmt)
+
+    async def execute(self, _statement):
+        if self.run_deleted and getattr(_statement, "is_update", False):
+            return SimpleNamespace(scalar_one_or_none=lambda: None)
+        return await super().execute(_statement)
+
+
+def _sov_command(hospital_id, idempotency_key=None) -> operation_runs.OperationCommand:
+    return operation_runs.OperationCommand(
+        operation_type="RUN_SOV",
+        hospital_id=hospital_id,
+        requested_by_id=None,
+        idempotency_key=idempotency_key,
+        audit_actor="AE-test",
+        target_type="hospital",
+        target_id=str(hospital_id),
+        queue="sov",
+        task_args=(str(hospital_id),),
+    )
+
+
+@pytest.mark.parametrize("publish_raises", [True, False])
+async def test_run_row_missing_after_publish_reraises_the_same_rejection(
+    monkeypatch, caplog, publish_raises
+):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = _RunDeletedDB(hospital=hospital)
+
+    async def record_incident(_db, _request, **_kwargs):
+        pytest.fail("a vanished run must not open a broker incident")
+
+    class VanishingTask:
+        def apply_async(self, *, args, queue, headers, task_id):
+            del args, queue, headers
+            db.run_deleted = True
+            if publish_raises:
+                raise ConnectionError("broker reply lost")
+            return SimpleNamespace(id=task_id)
+
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
+    seen = _watch_mark_queued(monkeypatch, caplog)
+
+    with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
+        with pytest.raises(operation_run_transitions.OperationTransitionRejected) as exc:
+            await operation_runs.dispatch_operation(db, _sov_command(hospital.id), VanishingTask())
+
+    run = next(row for row in db.added if isinstance(row, OperationRun))
+    assert seen == [("warnings_before", 0), ("raised", exc.value)]
+    assert (exc.value.run_id, exc.value.state) == (run.id, "MISSING")
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested"]
+    warnings = _dispatch_warnings(caplog)
+    if not publish_raises:
+        # publish 오류를 삼키지 않았으면 경고 없이 같은 예외만 올라간다.
+        assert warnings == []
+        return
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == (
+        f"operation run {run.id} publish raised ConnectionError and the run was not "
+        "marked failed; resulting state: row missing (state=MISSING)"
+    )
+
+
+async def test_queue_failure_marks_failed_without_publish_warning_or_marker(monkeypatch, caplog):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+
+    class DeadBrokerTask:
+        def apply_async(self, *, args, queue, headers, task_id):
+            del args, queue, headers, task_id
+            raise ConnectionError("broker unavailable")
+
+    async def record_incident(_db, _request, **_kwargs):
+        return SimpleNamespace()
+
+    monkeypatch.setattr(operation_runs, "open_or_touch_incident", record_incident)
+
+    with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
+        with pytest.raises(operation_runs.OperationQueueUnavailable):
+            await operation_runs.dispatch_operation(db, _sov_command(hospital.id), DeadBrokerTask())
+
+    run = next(row for row in db.added if isinstance(row, OperationRun))
+    assert run.state == "FAILED"
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov_queue_failed"]
+    assert all("publish_error_type" not in row.detail for row in audit_rows)
+    assert _dispatch_warnings(caplog) == []
+
+
+async def test_idempotent_replay_leaves_no_publish_warning_or_marker(monkeypatch, caplog):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+    task = FakeTask()
+    command = _sov_command(hospital.id, idempotency_key="OPS-QA-REPLAY-NO-WARNING")
+
+    with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
+        first = await operation_runs.dispatch_operation(db, command, task)
+        second = await operation_runs.dispatch_operation(db, command, task)
+
+    assert (first.replayed, second.replayed) == (False, True)
+    assert second.run is first.run
+    assert len(task.calls) == 1
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov"]
+    assert all("publish_error_type" not in row.detail for row in audit_rows)
+    assert _dispatch_warnings(caplog) == []
+
+
+async def test_normal_publish_onto_an_already_finished_run_leaves_no_warning_or_marker(
+    monkeypatch, caplog
+):
+    hospital = _hospital(status=HospitalStatus.ACTIVE)
+    db = FakeDB(hospital=hospital)
+
+    class FastWorkerTask:
+        def apply_async(self, *, args, queue, headers, task_id):
+            del args, queue, headers
+            # 워커가 publish 응답보다 먼저 실행을 끝냈다.
+            finished = next(row for row in db.added if isinstance(row, OperationRun))
+            finished.state = "SUCCEEDED"
+            finished.version += 2
+            return SimpleNamespace(id=task_id)
+
+    with caplog.at_level(logging.WARNING, logger=operation_runs.__name__):
+        dispatch = await operation_runs.dispatch_operation(
+            db, _sov_command(hospital.id), FastWorkerTask()
+        )
+
+    assert dispatch.replayed is False
+    assert dispatch.run.state == "SUCCEEDED"
+    audit_rows = [row for row in db.added if isinstance(row, AdminAuditLog)]
+    assert [row.action for row in audit_rows] == ["run_sov_requested", "run_sov"]
+    assert audit_rows[1].detail["queued"] is True
+    assert all("publish_error_type" not in row.detail for row in audit_rows)
+    assert _dispatch_warnings(caplog) == []
 
 
 async def test_queue_failure_never_records_queued_true(monkeypatch):
