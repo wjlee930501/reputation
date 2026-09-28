@@ -249,6 +249,7 @@ def _requeue_from_signal(task_id: str | None, task: _SignalTask | None) -> None:
         )
         .values(
             state=OperationRunState.QUEUED,
+            queued_at=datetime.now(UTC),
             heartbeat_at=None,
             lease_owner=None,
             lease_expires_at=None,

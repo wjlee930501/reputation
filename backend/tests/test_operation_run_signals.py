@@ -155,6 +155,46 @@ async def test_retry_signal_requeues_then_next_attempt_can_finish(
 
 
 @pytest.mark.asyncio
+async def test_retry_requeue_is_not_mistaken_for_a_lost_publish(
+    signal_store: tuple[async_sessionmaker[AsyncSession], UUID],
+) -> None:
+    from app.workers import autonomous_recovery
+
+    factory, hospital_id = signal_store
+    task = RecordingTask()
+    run = await dispatch_test_run(
+        factory, hospital_id, task, "signal-retry-requeue-age", operation_type="RUN_SOV"
+    )
+    first_queued_at = datetime.now(UTC) - timedelta(hours=2)
+    async with factory() as db:
+        await db.execute(
+            update(OperationRun)
+            .where(OperationRun.id == run.id)
+            .values(queued_at=first_queued_at)
+        )
+        await db.commit()
+    celery_task = SimpleNamespace(
+        request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
+    )
+    operation_run_signals.track_operation_prerun(task_id=run.task_id, task=celery_task)
+    operation_run_signals.track_operation_postrun(
+        task_id=run.task_id,
+        task=celery_task,
+        state="RETRY",
+    )
+
+    async with factory() as db:
+        waiting = await db.get(OperationRun, run.id)
+    assert waiting is not None
+    assert waiting.state == OperationRunState.QUEUED.value
+    assert waiting.queued_at is not None
+    assert waiting.queued_at > first_queued_at
+    # The retry message is already on the broker with its countdown; the one-minute
+    # reconciler must not publish a second copy as if the delivery had been lost.
+    assert not autonomous_recovery._operation_redispatch_is_due(waiting, datetime.now(UTC))
+
+
+@pytest.mark.asyncio
 async def test_duplicate_delivery_cannot_finish_until_expired_lease_is_reclaimed(
     signal_store: tuple[async_sessionmaker[AsyncSession], UUID],
 ) -> None:

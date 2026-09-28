@@ -8695,10 +8695,65 @@ def _ensure_monthly_sov_operation_run(
             db.commit()
             return existing
 
+        def _rearm_expired_running() -> OperationRun | None:
+            # A redelivered message may re-claim the expired lease between our read and
+            # this write (operation_run_signals._claim_safely). Re-arm only the row we
+            # read so the claim and the re-dispatch cannot both run the month.
+            rearmed = db.execute(
+                update(OperationRun)
+                .where(
+                    OperationRun.id == existing.id,
+                    OperationRun.state == OperationRunState.RUNNING,
+                    OperationRun.lease_expires_at <= observed_at,
+                    OperationRun.version == existing.version,
+                )
+                .values(
+                    state=OperationRunState.REQUESTED,
+                    task_id=str(uuid.uuid4()),
+                    queued_at=None,
+                    started_at=None,
+                    completed_at=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    success_count=0,
+                    failure_count=0,
+                    skipped_count=0,
+                    safe_error_code=None,
+                    safe_error_message=None,
+                    request_payload=dispatch_payload,
+                    result_summary={
+                        "measurement_month": period_key,
+                        "measurement_mode": "monthly",
+                    },
+                    version=OperationRun.version + 1,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            rowcount = rearmed.rowcount
+            db.commit()
+            if rowcount != 1:
+                logger.warning(
+                    "monthly RUN_SOV re-arm skipped: run %s was re-claimed or changed "
+                    "concurrently",
+                    existing.id,
+                )
+                return None
+            db.refresh(existing)
+            return existing
+
         if existing.state == OperationRunState.PARTIAL and _monthly_sov_retry_window(
             period_key, observed_at
         ):
             return _rearm_existing()
+        # No live worker holds an expired claim (task time_limit < claim lease), and
+        # nothing else re-dispatches a RUNNING RUN_SOV: a lost continuation publish or
+        # RETRY requeue would otherwise strand the month's measurement here.
+        if (
+            existing.state == OperationRunState.RUNNING
+            and _operation_lease_expired(existing, observed_at)
+            and _monthly_sov_retry_window(period_key, observed_at)
+        ):
+            return _rearm_expired_running()
         if existing.state == OperationRunState.FAILED:
             code = existing.safe_error_code or ""
             retry_window = _monthly_sov_retry_window(period_key, observed_at)
@@ -8751,6 +8806,15 @@ def _ensure_monthly_sov_operation_run(
             raise
         return existing if existing.state == OperationRunState.REQUESTED else None
     return run
+
+
+def _operation_lease_expired(run: OperationRun, observed_at: datetime) -> bool:
+    lease_expires_at = run.lease_expires_at
+    if lease_expires_at is None:
+        return False
+    if lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    return lease_expires_at <= observed_at
 
 
 def _monthly_sov_retry_window(period_key: str, observed_at: datetime) -> bool:
