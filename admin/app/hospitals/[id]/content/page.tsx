@@ -1292,6 +1292,10 @@ export default function ContentPage() {
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
                     이 콘텐츠 항목은 중복되었거나 발행 시점이 지나 종료됐으며, 자동 생성과 발행에서 제외됩니다.
                   </div>
+                ) : selected.status === 'WITHHELD' ? (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    비공개(보존) — 공개 사이트에서 내린 글입니다. 발행 기록은 그대로 보존됩니다.
+                  </div>
                 ) : null}
               </div>
             )}

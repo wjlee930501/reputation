@@ -90,6 +90,10 @@ export function getContentOperationsState(item: ContentOperationsItem): ContentO
     // 세야 한다 — 아니면 화면 숫자가 큐보다 항상 크고, AE는 처리할 수 없는 건수를 본다.
     return item.post_publish_review_required === true ? 'postReviewPending' : 'published'
   }
+  // 비공개(보존): 사람이 공개 사이트에서 내린 발행 글. 제목·발행 기록이 남아 있어도
+  // 자동 발행 대상이 아니므로 'publishable'/'needsReview' 판정으로 흘려보내지 않는다.
+  // 서버 row_state.kind와 같은 'withheld'로 둔다.
+  if (item.status === 'WITHHELD') return 'withheld'
   if (item.status === 'REJECTED') return 'rejected'
   if (item.status === 'CANCELLED') return 'cancelled'
   if (!item.title) return 'notGenerated'
@@ -142,7 +146,7 @@ export function countCarriedOver(items: CarriedOverItem[]): number {
 /** 아직 발행되지 않은 이월 슬롯 수 — 대시보드 우선 처리 알림 기준. */
 export function countUnpublishedCarriedOver(items: CarriedOverItem[]): number {
   return items.filter(
-    (item) => isCarriedOver(item) && !['PUBLISHED', 'CANCELLED'].includes(item.status ?? ''),
+    (item) => isCarriedOver(item) && !['PUBLISHED', 'WITHHELD', 'CANCELLED'].includes(item.status ?? ''),
   ).length
 }
 
