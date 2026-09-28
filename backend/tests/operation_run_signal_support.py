@@ -9,8 +9,10 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, delete, select
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from app.models.hospital import Hospital
 from app.models.operations import JSONValue, OperationRun, OperationRunState
@@ -26,6 +28,36 @@ SYNC_DATABASE_URL = os.getenv(
     "OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL",
     "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
 )
+
+# Seconds a reachability probe waits for a connection before the fixture skips.
+_PROBE_CONNECT_TIMEOUT = 2
+
+
+async def _skip_unless_postgres_reachable() -> None:
+    """Skip when either signal-store URL cannot be connected to.
+
+    Only a failed connection skips. Once connected, schema or query errors still fail.
+    """
+    sync_probe = create_engine(
+        SYNC_DATABASE_URL,
+        poolclass=NullPool,
+        connect_args={"connect_timeout": _PROBE_CONNECT_TIMEOUT},
+    )
+    async_probe = create_async_engine(
+        DATABASE_URL,
+        poolclass=NullPool,
+        connect_args={"timeout": _PROBE_CONNECT_TIMEOUT},
+    )
+    try:
+        with sync_probe.connect():
+            pass
+        async with async_probe.connect():
+            pass
+    except (OSError, OperationalError) as exc:
+        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+    finally:
+        sync_probe.dispose()
+        await async_probe.dispose()
 
 
 async def _skip_audit(
@@ -82,6 +114,7 @@ class InlineSuccessTask:
 async def signal_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[tuple[async_sessionmaker[AsyncSession], UUID]]:
+    await _skip_unless_postgres_reachable()
     async_engine = create_async_engine(DATABASE_URL)
     async_factory = async_sessionmaker(async_engine, expire_on_commit=False)
     sync_engine = create_engine(SYNC_DATABASE_URL)

@@ -504,6 +504,15 @@ async def test_copy_is_refused_when_the_approved_snapshot_source_was_excluded(pg
     await _assert_nothing_was_copied(pg_async_session, hospital.id)
 
 
+def test_copy_sources_changed_detail_ends_with_the_approve_next_action():
+    """복사의 자료 불일치 409도 승인 409와 같은 다음 행동 문장으로 끝난다."""
+    assert essence_api.COPY_SOURCES_CHANGED_DETAIL == (
+        "승인본을 만든 뒤 처리된 병원 자료가 변경되어(자료 집합이 다릅니다) 이 승인본을 "
+        "복사한 초안은 승인할 수 없습니다. 초안을 만들지 않았습니다. "
+        "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+    )
+
+
 @pytest.mark.parametrize(
     ("added_status", "expected_detail"),
     [
