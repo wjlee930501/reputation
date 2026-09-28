@@ -20,7 +20,7 @@ JSON을 요청한 쪽(폼)은 프록시의 `error` 문자열을 그대로 화면
 1. 랜딩 폼이 병원명·주소·원장 성함·연락처·홈페이지에 더해 진료과(`specialty`)·지역 키워드(`region_keyword`)·핵심 키워드(`core_keywords`, 1~4개)를 보낸다. `clinic_type`은 도입문의 표식(`도입문의`)으로 고정되며 진료과가 이 칸을 덮지 않는다.
 2. 리드를 저장하고 커밋한다. 이 시점부터 아래 두 부수효과가 실패해도 접수는 성공이다.
 3. 진료과·지역·키워드가 모두 있으면 `services/inquiry_diagnosis.create_inquiry_diagnosis`가 INTERNAL 진단 1건을 만들고 `run_lead_diagnosis`에 큐잉한다. Admin의 `POST /admin/leads/{id}/diagnoses/internal`과 같은 함수라 규칙(리드당 1건, 병원명 포함 거절, 무료 진단 자리·잠금·공개 토큰 미소비, 고객 발송 영구 차단)이 두 경로에서 같다. 감사 로그 actor는 `system:public-inquiry`다.
-4. Slack 도입문의 알림은 `#noti-도입문의-뉴비짓`(`SLACK_WEBHOOK_URL_INQUIRY`, 비어 있으면 `SLACK_WEBHOOK_URL`)으로 가며, 제목에 `[Re:putation]` 출처 표시와 신청 요약(진료과·지역·마스킹된 연락처·유입 경로(사이트의 알려진 경로만)·접수 시각)이 붙는다. 처리방침의 Slack 고지 범위 밖인 핵심 키워드·문의 본문·원장 성함은 싣지 않는다. 끝에 자동 처리 한 줄이 붙는다. `초도 노출 진단 자동 시작` · `진료과·지역·키워드 미입력 — Admin에서 초도 진단 생성` · `초도 노출 진단 자동 생성 거절 — Admin에서 입력값 확인 후 생성` 셋 중 하나이며 사용자 입력은 섞이지 않는다.
+4. Slack 도입문의 알림은 `#noti-도입문의-뉴비짓`(`SLACK_WEBHOOK_URL_INQUIRY`, 비어 있으면 `SLACK_WEBHOOK_URL`)으로 가며, 제목에 `[Re:putation]` 출처 표시와 신청 요약(진료과·지역·마스킹된 연락처·유입 경로(사이트의 알려진 경로만, 광고 쿼리 제외)·접수 시각)이 붙는다. 처리방침의 Slack 고지 범위 밖인 핵심 키워드·문의 본문·원장 성함은 싣지 않는다. 끝에 자동 처리 한 줄이 붙는다. `초도 노출 진단 자동 시작` · `진료과·지역·키워드 미입력 — Admin에서 초도 진단 생성` · `초도 노출 진단 자동 생성 거절 — Admin에서 입력값 확인 후 생성` 셋 중 하나이며 사용자 입력은 섞이지 않는다.
 5. 원장 연락처가 휴대전화면 `services/inquiry_sms.acknowledge_inquiry`가 NHN Cloud Notification SMS(v3.0 MMS 엔드포인트, 첨부 없는 LMS)로 안내 문자를 보낸다. 발신번호는 `INQUIRY_SMS_SENDER_NO`(기본 010-2492-8543, 마케팅팀 김효진 팀장)이며 콘솔에 사전 등록돼 있어야 한다. 같은 연락처가 `INQUIRY_SMS_DEDUP_HOURS`(기본 6시간) 안에 다시 접수되면 보내지 않는다.
 6. 결과는 리드 행에 남는다. `ack_sms_status`(SENT/FAILED/SKIPPED)·`ack_sms_error`·`ack_sms_sent_at`. Admin 리드 목록이 발송 완료·미발송을 표시한다.
 

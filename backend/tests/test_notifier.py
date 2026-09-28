@@ -290,7 +290,7 @@ async def test_inquiry_source_path_shows_only_known_site_paths(monkeypatch):
     captured = _capture_send(monkeypatch)
 
     for source_path in (
-        "/#contact?utm_source=doctor%40example.com",
+        "/%23contact?utm_source=doctor%40example.com",
         "/010-1234-5678",
         "/900101-1234567",
         "/<!channel>",
@@ -306,3 +306,17 @@ async def test_inquiry_source_path_shows_only_known_site_paths(monkeypatch):
         clinic_name="도입문의의원", contact="010-0000-0000", source_path="/contact"
     )
     assert "유입 경로: /contact" in captured["blocks"][0]["text"]["text"]
+
+
+async def test_inquiry_source_path_keeps_the_known_path_under_ad_attribution(monkeypatch):
+    """사이트는 광고 유입 값을 쿼리로 덧붙인다 — 경로는 살리고 쿼리 값은 버린다."""
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_lead_created(
+        clinic_name="도입문의의원",
+        contact="010-0000-0000",
+        source_path="/contact?utm_source=chatgpt&landing_path=%2Fcontact%3Ftel%3D01012345678",
+    )
+    body = captured["blocks"][0]["text"]["text"]
+    assert "유입 경로: /contact\n" in body
+    assert "chatgpt" not in body and "0101234" not in body
