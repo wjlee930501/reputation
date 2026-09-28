@@ -49,6 +49,13 @@ resource "google_secret_manager_secret" "slack_webhook_url_inquiry" {
   }
 }
 
+# 2026-09-28 운영 반영 때 gcloud로 먼저 만들었다(버전 1, reputation-sa 접근 권한 포함).
+# 이미 존재하는 컨테이너를 apply가 실패 없이 입양하도록 한다.
+import {
+  to = google_secret_manager_secret.slack_webhook_url_inquiry
+  id = "projects/${var.project_id}/secrets/SLACK_WEBHOOK_URL_INQUIRY"
+}
+
 resource "google_secret_manager_secret" "admin_secret_key" {
   secret_id = "ADMIN_SECRET_KEY"
   project   = var.project_id
