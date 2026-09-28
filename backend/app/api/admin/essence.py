@@ -1542,6 +1542,11 @@ async def _check_required_source_snapshot(
     )
 
 
+# 자료 집합이 달라 승인할 수 없을 때의 다음 행동. 승인과 승인본 복사의 409가 같이 쓴다.
+REGENERATE_FROM_CURRENT_SOURCES_ACTION = (
+    "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+)
+
 # 승인본 복사의 409 detail. 이 파일의 409는 대부분 문자열 detail이다.
 COPY_DRAFT_EXISTS_DETAIL = (
     "이미 검토 중인 초안이 있습니다. 그 초안을 승인하거나 보관한 뒤 다시 복사해 주세요."
@@ -1552,7 +1557,8 @@ COPY_AUTHORITY_REFRESH_PENDING_DETAIL = (
 )
 COPY_SOURCES_CHANGED_DETAIL = (
     "승인본을 만든 뒤 처리된 병원 자료가 변경되어(자료 집합이 다릅니다) 이 승인본을 "
-    "복사한 초안은 승인할 수 없습니다. 초안을 만들지 않았습니다."
+    "복사한 초안은 승인할 수 없습니다. 초안을 만들지 않았습니다. "
+    + REGENERATE_FROM_CURRENT_SOURCES_ACTION
 )
 COPY_CONCURRENT_CHANGE_DETAIL = "운영 기준이 동시에 변경되었습니다. 새로고침 후 다시 확인해 주세요."
 
@@ -1954,7 +1960,7 @@ async def approve_philosophy(
             status_code=409,
             detail=(
                 "초안 생성 후 처리된 병원 자료가 변경되었습니다(자료 집합이 다릅니다). "
-                "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+                + REGENERATE_FROM_CURRENT_SOURCES_ACTION
             ),
         )
 

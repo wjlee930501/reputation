@@ -1287,6 +1287,7 @@ def test_claim_waits_on_the_rearm_row_lock_then_finds_the_run_rearmed(
 def test_rearm_waits_on_the_claim_row_lock_then_skips_the_reclaimed_run(
     bounded_signal_store, monkeypatch, caplog
 ):
+    # 행 잠금 대기 뒤 skip을 확인하며, lease와 version 중 어느 쪽 가드인지는 구분하지 않음
     engine, factory, hospital_id = bounded_signal_store
     observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
     seeded = _seed_running_monthly_operation(
@@ -1379,7 +1380,10 @@ def test_running_rearm_skips_a_run_whose_version_alone_changed(
 
     assert bumped == [1]
     assert rearmed is None
-    assert f"RUNNING run {seeded.id} was re-claimed or changed concurrently" in caplog.text
+    assert (
+        f"monthly RUN_SOV re-arm skipped: RUNNING run {seeded.id} was re-claimed or changed "
+        "concurrently"
+    ) in caplog.text
     stored = stored_operation_run(seeded.id)
     assert stored.state == tasks.OperationRunState.RUNNING
     assert stored.lease_expires_at == seeded.lease_expires_at
@@ -1387,6 +1391,42 @@ def test_running_rearm_skips_a_run_whose_version_alone_changed(
     assert stored.task_id == seeded.task_id
     assert stored.lease_owner == "chunk-worker"
     assert stored.version == 8
+
+
+def test_running_rearm_skips_a_run_whose_lease_alone_was_renewed(
+    bounded_signal_store, monkeypatch, caplog
+):
+    # Synthetic lease renewal without a version bump (no current writer does this): state
+    # and version still match, so only the lease predicate fences the re-arm.
+    _engine, factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    renewed_until = observed_at + timedelta(minutes=10)
+    seeded = _seed_running_monthly_operation(
+        hospital_id, "2026-09", observed_at - timedelta(minutes=1)
+    )
+    # The retry-window check runs after the expired lease was read on ``existing``.
+    renewed = _bump_run_after_read(
+        monkeypatch,
+        factory,
+        seeded.id,
+        "_monthly_sov_retry_window",
+        {"lease_expires_at": renewed_until},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        rearmed = _run_with_timeout(
+            lambda: _ensure_in_new_session(hospital_id, observed_at)
+        )
+
+    assert renewed == [1]
+    assert rearmed is None
+    assert f"RUNNING run {seeded.id} was re-claimed or changed concurrently" in caplog.text
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == tasks.OperationRunState.RUNNING
+    assert stored.lease_expires_at == renewed_until
+    assert stored.task_id == seeded.task_id
+    assert stored.lease_owner == "chunk-worker"
+    assert stored.version == 7
 
 
 _PARTIAL_RETRY = (
@@ -1400,7 +1440,12 @@ _FAILED_RETRY = (
     datetime(2026, 8, 28, tzinfo=UTC),
 )
 _VERSION_BUMP = {"version": OperationRun.version + 1}
-# Every current writer bumps the version; this isolates the state predicate on its own.
+# No real writer changes a monthly RUN_SOV row's state without bumping its version: the
+# lifecycle signals (_claim_safely, _finish_from_signal, _requeue_from_signal), the task-body
+# CAS finishes, _mark_weekly_sov_operation_queued, _mark_monthly_measurement_incomplete,
+# autonomous_recovery's redispatch and unsafe-dispatch failure, operation_run_transitions,
+# and both writes in _ensure_monthly_sov_operation_run (the REQUESTED payload refresh and
+# the re-arm) all bump it. This synthetic state-only change isolates the state predicate.
 _STATE_CHANGE_SAME_VERSION = {"state": tasks.OperationRunState.SUCCEEDED}
 
 
@@ -1455,6 +1500,237 @@ def _ensure_closed_monthly_in_new_session(hospital_id: uuid.UUID, observed_at: d
         return tasks._ensure_monthly_sov_operation_run(
             db, SimpleNamespace(id=hospital_id), "2026-08", observed_at
         )
+
+
+# ── REQUESTED payload refresh: conditional UPDATE on the row that was read ──────
+
+_STALE_PAYLOAD = {"stale": True}
+_STALE_SUMMARY = {"measurement_month": "stale"}
+
+
+def _seed_requested_monthly_operation(hospital_id: uuid.UUID) -> OperationRun:
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="RUN_SOV",
+        state=tasks.OperationRunState.REQUESTED,
+        idempotency_key=f"monthly-sov:{hospital_id}:2026-09",
+        task_id=str(uuid.uuid4()),
+        attempt_count=0,
+        total_count=1,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=_STALE_PAYLOAD,
+        result_summary=_STALE_SUMMARY,
+        requested_at=datetime(2026, 9, 26, 0, 0, tzinfo=UTC),
+        version=5,
+    )
+    with operation_run_signals.SyncSessionLocal() as db:
+        db.add(run)
+        db.commit()
+    return run
+
+
+def _change_run_after_first_read(monkeypatch, factory, run_id, values):
+    """Commit ``values`` on another session right after the caller's first statement.
+
+    The REQUESTED branch calls nothing between its SELECT and its UPDATE, so the hook
+    sits on the session: the first ``execute`` is that SELECT.
+    """
+    rowcounts: list[int] = []
+
+    def _session() -> Session:
+        db = factory()
+        execute = db.execute
+
+        def _execute(*args, **kwargs):
+            outcome = execute(*args, **kwargs)
+            if not rowcounts:
+                with factory() as other:
+                    rowcounts.append(
+                        other.execute(
+                            update(OperationRun)
+                            .where(OperationRun.id == run_id)
+                            .values(**values)
+                        ).rowcount
+                    )
+                    other.commit()
+            return outcome
+
+        db.execute = _execute
+        return db
+
+    monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", _session)
+    return rowcounts
+
+
+@pytest.mark.parametrize(
+    ("change", "expected_state", "expected_version"),
+    [
+        ({"version": OperationRun.version + 1}, tasks.OperationRunState.REQUESTED, 6),
+        # Synthetic state-only change, as for the closed re-arm: isolates the state predicate.
+        ({"state": tasks.OperationRunState.QUEUED}, tasks.OperationRunState.QUEUED, 5),
+    ],
+    ids=["version", "state"],
+)
+def test_requested_refresh_skips_a_concurrently_changed_run(
+    bounded_signal_store, monkeypatch, caplog, change, expected_state, expected_version
+):
+    _engine, factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    seeded = _seed_requested_monthly_operation(hospital_id)
+    changed = _change_run_after_first_read(monkeypatch, factory, seeded.id, change)
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        refreshed = _run_with_timeout(
+            lambda: _ensure_in_new_session(hospital_id, observed_at)
+        )
+
+    assert changed == [1]
+    assert refreshed is None
+    assert (
+        f"monthly RUN_SOV payload refresh skipped: REQUESTED run {seeded.id} was "
+        "re-claimed or changed concurrently"
+    ) in caplog.text
+    stored = stored_operation_run(seeded.id)
+    assert (stored.state, stored.version) == (expected_state, expected_version)
+    assert stored.request_payload == _STALE_PAYLOAD
+    assert stored.result_summary == _STALE_SUMMARY
+    assert stored.task_id == seeded.task_id
+
+
+def test_requested_refresh_rewrites_the_payload_and_bumps_the_version(
+    bounded_signal_store, caplog
+):
+    _engine, _factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    seeded = _seed_requested_monthly_operation(hospital_id)
+    hospital_key = str(hospital_id)
+    expected_payload = {
+        "source_type": "hospital",
+        "source_id": hospital_key,
+        "_dispatch": {
+            "target_type": "hospital",
+            "target_id": hospital_key,
+            "queue": "sov",
+            "task_args": [hospital_key, "monthly", 2026, 9],
+        },
+    }
+    expected_summary = {"measurement_month": "2026-09", "measurement_mode": "monthly"}
+
+    with operation_run_signals.SyncSessionLocal() as db:
+        commits = count_commits(db)
+        with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+            run = tasks._ensure_monthly_sov_operation_run(
+                db, SimpleNamespace(id=hospital_id), "2026-09", observed_at
+            )
+
+    assert run is not None
+    assert run.id == seeded.id
+    assert run.state == tasks.OperationRunState.REQUESTED
+    assert run.task_id == seeded.task_id
+    assert run.request_payload == expected_payload
+    assert run.result_summary == expected_summary
+    assert run.version == 6
+    assert len(commits) == 1
+    assert "was re-claimed or changed concurrently" not in caplog.text
+    stored = stored_operation_run(seeded.id)
+    assert stored.state == tasks.OperationRunState.REQUESTED
+    assert stored.task_id == seeded.task_id
+    assert stored.request_payload == expected_payload
+    assert stored.result_summary == expected_summary
+    assert stored.requested_at == seeded.requested_at
+    assert stored.attempt_count == 0
+    assert stored.version == 6
+
+
+def _record_monthly_dispatch(monkeypatch) -> tuple[list[dict], list[uuid.UUID]]:
+    """Record broker publishes and the REQUESTED->QUEUED mark both monthly callers use."""
+    published: list[dict] = []
+    queued: list[uuid.UUID] = []
+    mark_queued = tasks._mark_weekly_sov_operation_queued
+
+    def _mark(db, run_id, observed_at):
+        queued.append(run_id)
+        return mark_queued(db, run_id, observed_at)
+
+    monkeypatch.setattr(
+        tasks.run_sov_for_hospital,
+        "apply_async",
+        lambda *_args, **kwargs: published.append(kwargs),
+    )
+    monkeypatch.setattr(tasks, "_mark_weekly_sov_operation_queued", _mark)
+    return published, queued
+
+
+def _assert_requested_run_left_undispatched(seeded: OperationRun) -> None:
+    stored = stored_operation_run(seeded.id)
+    assert (stored.state, stored.version) == (tasks.OperationRunState.REQUESTED, 6)
+    assert stored.queued_at is None
+    assert stored.task_id == seeded.task_id
+    assert stored.request_payload == _STALE_PAYLOAD
+
+
+def test_monthly_catchup_does_not_dispatch_when_the_requested_refresh_loses(
+    bounded_signal_store, monkeypatch
+):
+    _engine, factory, hospital_id = bounded_signal_store
+    observed_at = datetime(2026, 9, 26, 6, 0, tzinfo=UTC)
+    seeded = _seed_requested_monthly_operation(hospital_id)
+    changed = _change_run_after_first_read(
+        monkeypatch, factory, seeded.id, {"version": OperationRun.version + 1}
+    )
+    published, queued = _record_monthly_dispatch(monkeypatch)
+
+    def _catchup():
+        with operation_run_signals.SyncSessionLocal() as db:
+            return tasks._dispatch_monthly_sov_catchup(
+                db, SimpleNamespace(id=hospital_id), "2026-09", observed_at
+            )
+
+    dispatched = _run_with_timeout(_catchup)
+
+    assert changed == [1]
+    assert dispatched is None
+    assert published == []
+    assert queued == []
+    _assert_requested_run_left_undispatched(seeded)
+
+
+def test_monthly_beat_does_not_dispatch_when_the_requested_refresh_loses(
+    bounded_signal_store, monkeypatch
+):
+    _engine, factory, hospital_id = bounded_signal_store
+    seeded = _seed_requested_monthly_operation(hospital_id)
+    changed = _change_run_after_first_read(
+        monkeypatch, factory, seeded.id, {"version": OperationRun.version + 1}
+    )
+    published, queued = _record_monthly_dispatch(monkeypatch)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", operation_run_signals.SyncSessionLocal)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_args, **_kwargs: tasks.arrow.get(2026, 9, 26, 15, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "register_convertible_tracking_sets",
+        lambda *_args, **_kwargs: {"registered": [], "blocked": []},
+    )
+    monkeypatch.setattr(
+        tasks,
+        "iter_monthly_sov_cohort",
+        lambda *_args, **_kwargs: [SimpleNamespace(id=hospital_id)],
+    )
+
+    _run_with_timeout(tasks.run_monthly_sov_measurement.run)
+
+    assert changed == [1]
+    assert published == []
+    assert queued == []
+    _assert_requested_run_left_undispatched(seeded)
 
 
 def test_sov_task_hard_time_limit_stays_below_the_claim_lease():

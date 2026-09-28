@@ -8674,26 +8674,17 @@ def _ensure_monthly_sov_operation_run(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        if existing.state == OperationRunState.REQUESTED:
-            existing.request_payload = dispatch_payload
-            existing.result_summary = {
-                "measurement_month": period_key,
-                "measurement_mode": "monthly",
-            }
-            db.commit()
-            return existing
-
-        def _rearm_unchanged(
-            expected_state: OperationRunState, *guards: ColumnElement[bool]
+        def _write_unchanged(
+            action: str,
+            expected_state: OperationRunState,
+            values: dict[str, Any],
+            *guards: ColumnElement[bool],
         ) -> OperationRun | None:
-            # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
-            # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
-            # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
             # A redelivered message may re-claim an expired lease between our read and
             # this write (operation_run_signals._claim_safely), and lifecycle signals may
-            # move the run on. Re-arm only the row we read so the claim and the
+            # move the run on. Write only the row we read so the claim and the
             # re-dispatch cannot both run the month.
-            rearmed = db.execute(
+            written = db.execute(
                 update(OperationRun)
                 .where(
                     OperationRun.id == existing.id,
@@ -8701,7 +8692,48 @@ def _ensure_monthly_sov_operation_run(
                     *guards,
                     OperationRun.version == existing.version,
                 )
-                .values(
+                .values(**values, version=OperationRun.version + 1)
+                .execution_options(synchronize_session=False)
+            )
+            rowcount = written.rowcount
+            db.commit()
+            if rowcount != 1:
+                logger.warning(
+                    "monthly RUN_SOV %s skipped: %s run %s was re-claimed or changed "
+                    "concurrently",
+                    action,
+                    expected_state.value,
+                    existing.id,
+                )
+                return None
+            db.refresh(existing)
+            return existing
+
+        if existing.state == OperationRunState.REQUESTED:
+            # Still waiting for its worker: refresh the payload and re-dispatch under the
+            # same task_id.
+            return _write_unchanged(
+                "payload refresh",
+                OperationRunState.REQUESTED,
+                dict(
+                    request_payload=dispatch_payload,
+                    result_summary={
+                        "measurement_month": period_key,
+                        "measurement_mode": "monthly",
+                    },
+                ),
+            )
+
+        def _rearm_unchanged(
+            expected_state: OperationRunState, *guards: ColumnElement[bool]
+        ) -> OperationRun | None:
+            # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
+            # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
+            # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
+            return _write_unchanged(
+                "re-arm",
+                expected_state,
+                dict(
                     state=OperationRunState.REQUESTED,
                     task_id=str(uuid.uuid4()),
                     queued_at=None,
@@ -8719,22 +8751,9 @@ def _ensure_monthly_sov_operation_run(
                         "measurement_month": period_key,
                         "measurement_mode": "monthly",
                     },
-                    version=OperationRun.version + 1,
-                )
-                .execution_options(synchronize_session=False)
+                ),
+                *guards,
             )
-            rowcount = rearmed.rowcount
-            db.commit()
-            if rowcount != 1:
-                logger.warning(
-                    "monthly RUN_SOV re-arm skipped: %s run %s was re-claimed or changed "
-                    "concurrently",
-                    expected_state.value,
-                    existing.id,
-                )
-                return None
-            db.refresh(existing)
-            return existing
 
         if existing.state == OperationRunState.PARTIAL and _monthly_sov_retry_window(
             period_key, observed_at
@@ -8750,6 +8769,10 @@ def _ensure_monthly_sov_operation_run(
         ):
             return _rearm_unchanged(
                 OperationRunState.RUNNING,
+                # Defense in depth, redundant with the version condition: the lease we
+                # read was expired, and every writer that renews or re-claims a lease
+                # also bumps the version. Kept so a future writer that forgets the bump
+                # still cannot have its live lease re-armed.
                 OperationRun.lease_expires_at <= observed_at,
             )
         if existing.state == OperationRunState.FAILED:
