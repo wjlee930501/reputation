@@ -20,31 +20,52 @@ from app.services import operation_runs
 from app.services.operation_runs import DispatchTask, OperationCommand, dispatch_operation
 from app.workers import operation_run_signals
 
-DATABASE_URL = os.getenv(
-    "OPERATION_RUN_SIGNAL_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
+_ASYNC_URL_ENV = "OPERATION_RUN_SIGNAL_DATABASE_URL"
+_SYNC_URL_ENV = "OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL"
+DATABASE_URL = (
+    os.getenv(_ASYNC_URL_ENV)
+    or "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
 )
-SYNC_DATABASE_URL = os.getenv(
-    "OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL",
-    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
+SYNC_DATABASE_URL = (
+    os.getenv(_SYNC_URL_ENV)
+    or "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test"
 )
 
-# Seconds a reachability probe waits for a connection before the fixture skips.
+# Seconds a reachability probe waits for a connection before the fixture gives up.
 _PROBE_CONNECT_TIMEOUT = 2
 
 
-async def _skip_unless_postgres_reachable() -> None:
-    """Skip when either signal-store URL cannot be connected to.
+def _unavailable(reason: str) -> None:
+    """Skip locally, fail loudly wherever the signal-store DB was promised.
 
-    Only a failed connection skips. Once connected, schema or query errors still fail.
+    Same policy as tests/integration/conftest.py: either URL env var explicitly set (CI sets
+    both) makes an unreachable database a hard failure. Read at call time, not import time.
+    """
+    explicit = [name for name in (_ASYNC_URL_ENV, _SYNC_URL_ENV) if os.getenv(name)]
+    if explicit:
+        pytest.fail(
+            f"{' and '.join(explicit)} set, so the signal-store Postgres is required "
+            f"and must not be skipped: {reason}",
+            pytrace=False,
+        )
+    pytest.skip(reason)
+
+
+async def _require_postgres_reachable(
+    database_url: str = DATABASE_URL,
+    sync_database_url: str = SYNC_DATABASE_URL,
+) -> None:
+    """Skip (or fail, see `_unavailable`) when either signal-store URL cannot be connected to.
+
+    Only a failed connection is handled. Once connected, schema or query errors still fail.
     """
     sync_probe = create_engine(
-        SYNC_DATABASE_URL,
+        sync_database_url,
         poolclass=NullPool,
         connect_args={"connect_timeout": _PROBE_CONNECT_TIMEOUT},
     )
     async_probe = create_async_engine(
-        DATABASE_URL,
+        database_url,
         poolclass=NullPool,
         connect_args={"timeout": _PROBE_CONNECT_TIMEOUT},
     )
@@ -54,7 +75,7 @@ async def _skip_unless_postgres_reachable() -> None:
         async with async_probe.connect():
             pass
     except (OSError, OperationalError) as exc:
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        _unavailable(f"local PostgreSQL unavailable: {type(exc).__name__}")
     finally:
         sync_probe.dispose()
         await async_probe.dispose()
@@ -114,7 +135,7 @@ class InlineSuccessTask:
 async def signal_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[tuple[async_sessionmaker[AsyncSession], UUID]]:
-    await _skip_unless_postgres_reachable()
+    await _require_postgres_reachable()
     async_engine = create_async_engine(DATABASE_URL)
     async_factory = async_sessionmaker(async_engine, expire_on_commit=False)
     sync_engine = create_engine(SYNC_DATABASE_URL)

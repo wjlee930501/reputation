@@ -113,6 +113,9 @@ jobs:
       # os.getenv가 None이라 pytest.skip으로 조용히 빠져 CI에서 한 번도 돌지 않는다.
       INCIDENT_TEST_DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
       OPERATIONS_TEST_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test
+      # signal_store 픽스처도 postgres_aux(5434)를 쓰며, 값이 설정돼 있으면 DB 미접속을 skip이 아닌 실패로 본다.
+      OPERATION_RUN_SIGNAL_DATABASE_URL: postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test
+      OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test
       MIGRATION_UPGRADE_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_autonomy_migration
       REDELIVERY_TEST_SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:55432/reputation_redelivery_test
       COST_GUARD_REDIS_URL: redis://localhost:6379/2
