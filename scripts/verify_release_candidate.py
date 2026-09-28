@@ -37,7 +37,7 @@ def configure(database=BASE):
     os.environ.update(OPENROUTER_API_KEY="test-openrouter-key",
         IMAGE_FALLBACK_PROVIDER="",
         GOOGLE_APPLICATION_CREDENTIALS="/tmp/reputation-release-no-credentials.json",
-        GCP_PROJECT_ID="", GOOGLE_CLOUD_PROJECT="", SLACK_WEBHOOK_URL="", SLACK_WEBHOOK_URL_DEV="",
+        GCP_PROJECT_ID="", GOOGLE_CLOUD_PROJECT="", SLACK_WEBHOOK_URL="", SLACK_WEBHOOK_URL_DEV="", SLACK_WEBHOOK_URL_INQUIRY="",
         BFF_ACTOR_SECRET="test-actor-key", WORKER_DISPATCH_SECRET="test-dispatch-key",
         SITE_BFF_SECRET="test-site-bff-key", SITE_REVALIDATE_SECRET="test-revalidate-key",
         SITE_BASE_URL=f"http://127.0.0.1:{SITE_PORT}", ADMIN_BASE_URL=f"http://127.0.0.1:{ADMIN_PORT}",
@@ -66,8 +66,8 @@ def configure(database=BASE):
     if database != UI:
         # Production-settings tests supply their own secrets and URL kwargs.
         # Empty env overrides them in _resolve_secret; never poison those fixtures.
-        for key in ("SLACK_WEBHOOK_URL", "SLACK_WEBHOOK_URL_DEV", "BFF_ACTOR_SECRET",
-                    "SITE_BFF_SECRET", "SITE_BASE_URL", "ADMIN_BASE_URL", "WORKER_DISPATCH_SECRET"):
+        for key in ("SLACK_WEBHOOK_URL", "SLACK_WEBHOOK_URL_DEV", "SLACK_WEBHOOK_URL_INQUIRY",
+                    "BFF_ACTOR_SECRET", "SITE_BFF_SECRET", "SITE_BASE_URL", "ADMIN_BASE_URL", "WORKER_DISPATCH_SECRET"):
             os.environ.pop(key, None)
     os.chdir(ROOT / "backend")
     sys.path.insert(0, str(ROOT / "backend"))
