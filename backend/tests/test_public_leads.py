@@ -412,12 +412,11 @@ async def test_intake_with_diagnosis_fields_creates_the_internal_diagnosis(monke
     assert response["diagnosis_id"] == "diag-1"
     assert response["ack_sms"] == "sent"
     assert slack[0]["diagnosis_note"] == leads_api.DIAGNOSIS_NOTE_QUEUED
-    # Slack 요약은 처리방침 고지 범위의 필드만 받는다 — 문의 본문과 담당자 성함은 넘기지 않는다.
+    # Slack 요약은 처리방침 고지 범위의 필드만 받는다 — 핵심 키워드·문의 본문·담당자 성함은 넘기지 않는다.
     assert slack[0]["specialty"] == "내과"
     assert slack[0]["region_keyword"] == "강남역"
-    assert slack[0]["core_keywords"] == ["고혈압", "심장초음파"]
     assert slack[0]["source_path"] == "/contact"
-    assert "question" not in slack[0] and "contact_name" not in slack[0]
+    assert not {"question", "contact_name", "core_keywords"} & slack[0].keys()
 
 
 async def test_intake_without_diagnosis_fields_leaves_creation_to_admin(monkeypatch):

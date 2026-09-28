@@ -253,7 +253,6 @@ async def test_inquiry_message_summarizes_the_application_and_names_reputation(m
         diagnosis_note="초도 노출 진단 자동 시작",
         specialty="외과",
         region_keyword="강남역",
-        core_keywords=["치질", "탈장"],
         source_path="/#contact",
         created_at=datetime(2026, 9, 28, 5, 3, tzinfo=UTC),
     )
@@ -264,7 +263,6 @@ async def test_inquiry_message_summarizes_the_application_and_names_reputation(m
     for line in (
         "진료과: 외과",
         "지역: 강남역",
-        "핵심 키워드: 치질, 탈장",
         "연락처: `010-****-5678`",
         "유입 경로: /#contact",
         "접수 시각: 2026-09-28 14:03 KST",
@@ -272,19 +270,36 @@ async def test_inquiry_message_summarizes_the_application_and_names_reputation(m
     ):
         assert line in body
     assert "010-1234-5678" not in f"{captured['text']} {body}"
+    assert "핵심 키워드" not in body
 
 
-async def test_inquiry_summary_marks_missing_fields_and_masks_keywords(monkeypatch):
+async def test_inquiry_summary_marks_missing_fields(monkeypatch):
+    captured = _capture_send(monkeypatch)
+
+    await notifier.notify_lead_created(clinic_name="도입문의의원", contact="010-1234-5678")
+
+    body = captured["blocks"][0]["text"]["text"]
+    assert "진료과: (미입력)" in body
+    assert "지역: (미입력)" in body
+    assert "유입 경로: (미입력)" in body
+    assert "접수 시각" not in body
+
+
+async def test_inquiry_source_path_drops_query_values(monkeypatch):
+    """광고 파라미터는 URL 인코딩된 이메일·전화번호를 담을 수 있어 경로만 보낸다."""
     captured = _capture_send(monkeypatch)
 
     await notifier.notify_lead_created(
         clinic_name="도입문의의원",
         contact="010-1234-5678",
-        core_keywords=["무릎", "문의 010-9999-8888"],
+        source_path="/#contact?utm_source=doctor%40example.com&tel=010%2D9999%2D8888",
     )
-
     body = captured["blocks"][0]["text"]["text"]
-    assert "진료과: (미입력)" in body
-    assert "지역: (미입력)" in body
-    assert "접수 시각" not in body
-    assert "010-9999-8888" not in body
+    assert "유입 경로: /#contact" in body
+    assert "doctor" not in body and "9999" not in body
+
+    await notifier.notify_lead_created(
+        clinic_name="도입문의의원", contact="010-1234-5678", source_path="/<!channel> 010%2D1234"
+    )
+    body = captured["blocks"][0]["text"]["text"]
+    assert "유입 경로: (기타)" in body

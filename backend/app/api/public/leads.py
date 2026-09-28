@@ -217,7 +217,6 @@ async def create_lead(
         diagnosis_note=diagnosis_note,
         specialty=body.specialty,
         region_keyword=body.region_keyword,
-        core_keywords=body.core_keywords,
         source_path=body.source_path,
         created_at=lead.created_at,
     )

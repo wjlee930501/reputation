@@ -198,16 +198,14 @@ async def notify_lead_created(
     diagnosis_note: str | None = None,
     specialty: str | None = None,
     region_keyword: str | None = None,
-    core_keywords: list[str] | None = None,
     source_path: str | None = None,
     created_at: datetime | None = None,
 ) -> bool:
     """공개 도입문의 접수 → 도입문의 채널(SLACK_WEBHOOK_URL_INQUIRY, 미설정 시 운영 채널).
 
     신청 정보를 요약해 보내되 처리방침의 Slack 국외 이전 고지 범위(병원명·진료과/지역·
-    마스킹된 연락처·운영 메타데이터)를 넘지 않는다. 핵심 키워드는 병원의 진료 분야 키워드라
-    진료과와 같은 취급이다. 문의 본문(주소·원장 성함·홈페이지가 담긴다)과 담당자 성함은
-    보내지 않는다 — 상세 확인은 Admin UI deep-link에서.
+    마스킹된 연락처·운영 메타데이터)를 넘지 않는다. 고지에 없는 핵심 키워드·문의 본문(주소·
+    원장 성함·홈페이지가 담긴다)·담당자 성함은 보내지 않는다 — 상세 확인은 Admin UI deep-link에서.
 
     자유 텍스트는 입력 검증(leads API)을 통과한 뒤에도 Slack(국외 이전)으로 그대로 나가면
     안 된다 — 검증 패턴이 놓친 식별정보가 남을 수 있고, 긴 본문으로 채널 스팸도 가능하다.
@@ -216,14 +214,12 @@ async def notify_lead_created(
     masked = mask_contact(contact)
     safe_clinic_name = _safe_operator_label(_safe_label(clinic_name), limit=100)
     action_path = _validated_admin_path(admin_url or settings.ADMIN_BASE_URL.rstrip("/") + "/leads")
-    keyword_text = ", ".join(_safe_label(keyword) for keyword in core_keywords or []) or None
     summary_lines = [
         "문의 유형: 일반 문의",
         f"진료과: {_safe_summary_value(specialty)}",
         f"지역: {_safe_summary_value(region_keyword)}",
-        f"핵심 키워드: {_safe_summary_value(keyword_text)}",
         f"연락처: `{masked}`",
-        f"유입 경로: {_safe_summary_value(source_path)}",
+        f"유입 경로: {_safe_source_path(source_path)}",
     ]
     if created_at is not None:
         summary_lines.append(f"접수 시각: {created_at.astimezone(_KST):%Y-%m-%d %H:%M} KST")
@@ -249,6 +245,17 @@ async def notify_lead_created(
 
 def _safe_summary_value(value: str | None) -> str:
     return _safe_operator_label(_safe_label(value), limit=100)
+
+
+_SOURCE_PATH = re.compile(r"[/#A-Za-z0-9_\-]{1,60}")
+
+
+def _safe_source_path(value: str | None) -> str:
+    """유입 경로는 경로만 보낸다. 쿼리(광고 파라미터)는 URL 인코딩된 식별정보를 담을 수 있다."""
+    path = (value or "").split("?", 1)[0].split("&", 1)[0].strip()
+    if not path:
+        return "(미입력)"
+    return path if _SOURCE_PATH.fullmatch(path) else "(기타)"
 
 
 async def notify_lead_diagnosis_received(
