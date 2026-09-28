@@ -101,6 +101,9 @@ Admin 콘텐츠 목록·월간 리포트·주간 수율·재검증 작업이 예
   `deploy.sh`는 `.env.production`의 비밀이 아닌 키를 api·worker·beat·migrate에 똑같이 넣으므로,
   `.env.production`에 `AUTO_PUBLISH_HOLD_HOSPITALS=*`(또는 UUID 목록)를 적고 `bash scripts/deploy.sh api`로
   세 서비스를 함께 올리면 된다. 빈 값은 전달되지 않아 기본값 `""`(꺼짐)이 된다.
+  `deploy.sh`는 값을 YAML 큰따옴표 문자열로 `--env-vars-file`에 넣으므로 `.env.production`에는
+  쉼표 목록을 따옴표·이스케이프 없이 그대로 적는다(`AUTO_PUBLISH_HOLD_HOSPITALS=<uuid>,<uuid>`).
+  같은 줄 뒤에 `# 주석`을 붙이지 않는다 — 주석까지 값으로 들어간다.
 - 급하게 콘솔/`gcloud run services update --update-env-vars`로 바꿨다면 **같은 값을 `.env.production`에도
   적는다.** 적지 않으면 다음 `deploy.sh`가 값을 지워 보류가 조용히 풀린다. 쉼표가 들어간 목록은
   구분자를 바꿔야 한다: `--update-env-vars='^@^AUTO_PUBLISH_HOLD_HOSPITALS=<uuid>,<uuid>'`.
