@@ -215,6 +215,11 @@ async def create_lead(
         contact=body.contact,
         admin_url=admin_url,
         diagnosis_note=diagnosis_note,
+        specialty=body.specialty,
+        region_keyword=body.region_keyword,
+        core_keywords=body.core_keywords,
+        source_path=body.source_path,
+        created_at=lead.created_at,
     )
     lead.notification_status = "SENT" if notified else "FAILED"
     lead.notification_error = None if notified else "Slack/webhook delivery failed or is not configured."

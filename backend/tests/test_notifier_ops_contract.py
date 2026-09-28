@@ -15,7 +15,9 @@ class _CapturedPayload(TypedDict):
 def _capture_send(monkeypatch) -> _CapturedPayload:
     captured: _CapturedPayload = {"text": "", "blocks": []}
 
-    async def fake_send(text: str, blocks: list[_SlackBlock] | None = None) -> bool:
+    async def fake_send(
+        text: str, blocks: list[_SlackBlock] | None = None, **_kwargs: object
+    ) -> bool:
         captured["text"] = text
         captured["blocks"] = blocks or []
         return True

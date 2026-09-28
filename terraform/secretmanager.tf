@@ -39,6 +39,16 @@ resource "google_secret_manager_secret" "slack_webhook_url_dev" {
   }
 }
 
+# 도입문의 전용 Slack 채널(#noti-도입문의-뉴비짓). 공개 도입문의 접수 알림만 이쪽으로 나간다.
+# 값이 빈 문자열이면 backend는 기존대로 SLACK_WEBHOOK_URL로 보낸다(SLACK_WEBHOOK_URL_DEV와 같은 취급).
+resource "google_secret_manager_secret" "slack_webhook_url_inquiry" {
+  secret_id = "SLACK_WEBHOOK_URL_INQUIRY"
+  project   = var.project_id
+  replication {
+    auto {}
+  }
+}
+
 resource "google_secret_manager_secret" "admin_secret_key" {
   secret_id = "ADMIN_SECRET_KEY"
   project   = var.project_id
@@ -156,22 +166,23 @@ resource "google_secret_manager_secret" "nhn_sms_secret_key" {
 # Secret Manager IAM — service account access
 locals {
   app_secret_env = {
-    OPENROUTER_API_KEY       = google_secret_manager_secret.openrouter_api_key.secret_id
-    SLACK_WEBHOOK_URL        = google_secret_manager_secret.slack_webhook_url.secret_id
-    SLACK_WEBHOOK_URL_DEV    = google_secret_manager_secret.slack_webhook_url_dev.secret_id
-    ADMIN_SECRET_KEY         = google_secret_manager_secret.admin_secret_key.secret_id
-    WORKER_DISPATCH_SECRET   = google_secret_manager_secret.worker_dispatch_secret.secret_id
-    ADMIN_SESSION_SECRET     = google_secret_manager_secret.admin_session_secret.secret_id
-    BFF_ACTOR_SECRET         = google_secret_manager_secret.bff_actor_secret.secret_id
-    PIPELINE_WATCHDOG_TOKEN  = google_secret_manager_secret.pipeline_watchdog_token.secret_id
-    DB_PASSWORD              = google_secret_manager_secret.db_password.secret_id
-    SITE_REVALIDATE_SECRET   = google_secret_manager_secret.site_revalidate_secret.secret_id
-    SITE_BFF_SECRET          = google_secret_manager_secret.site_bff_secret.secret_id
-    INDEXNOW_KEY             = google_secret_manager_secret.indexnow_key.secret_id
-    LEAD_LOCK_HASH_PEPPER    = google_secret_manager_secret.lead_lock_hash_pepper.secret_id
-    LEAD_REPORT_TOKEN_SECRET = google_secret_manager_secret.lead_report_token_secret.secret_id
-    RESEND_API_KEY           = google_secret_manager_secret.resend_api_key.secret_id
-    NHN_SMS_SECRET_KEY       = google_secret_manager_secret.nhn_sms_secret_key.secret_id
+    OPENROUTER_API_KEY        = google_secret_manager_secret.openrouter_api_key.secret_id
+    SLACK_WEBHOOK_URL         = google_secret_manager_secret.slack_webhook_url.secret_id
+    SLACK_WEBHOOK_URL_DEV     = google_secret_manager_secret.slack_webhook_url_dev.secret_id
+    SLACK_WEBHOOK_URL_INQUIRY = google_secret_manager_secret.slack_webhook_url_inquiry.secret_id
+    ADMIN_SECRET_KEY          = google_secret_manager_secret.admin_secret_key.secret_id
+    WORKER_DISPATCH_SECRET    = google_secret_manager_secret.worker_dispatch_secret.secret_id
+    ADMIN_SESSION_SECRET      = google_secret_manager_secret.admin_session_secret.secret_id
+    BFF_ACTOR_SECRET          = google_secret_manager_secret.bff_actor_secret.secret_id
+    PIPELINE_WATCHDOG_TOKEN   = google_secret_manager_secret.pipeline_watchdog_token.secret_id
+    DB_PASSWORD               = google_secret_manager_secret.db_password.secret_id
+    SITE_REVALIDATE_SECRET    = google_secret_manager_secret.site_revalidate_secret.secret_id
+    SITE_BFF_SECRET           = google_secret_manager_secret.site_bff_secret.secret_id
+    INDEXNOW_KEY              = google_secret_manager_secret.indexnow_key.secret_id
+    LEAD_LOCK_HASH_PEPPER     = google_secret_manager_secret.lead_lock_hash_pepper.secret_id
+    LEAD_REPORT_TOKEN_SECRET  = google_secret_manager_secret.lead_report_token_secret.secret_id
+    RESEND_API_KEY            = google_secret_manager_secret.resend_api_key.secret_id
+    NHN_SMS_SECRET_KEY        = google_secret_manager_secret.nhn_sms_secret_key.secret_id
   }
 
   # 프론트엔드(Next.js) 서비스가 마운트하는 secret — admin BFF 세션/키, site
