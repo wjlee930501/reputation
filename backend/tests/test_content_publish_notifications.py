@@ -700,14 +700,18 @@ def test_weekly_rollup_is_skipped_when_there_is_nothing_to_report() -> None:
         build_generation_rejection_weekly_rollup_intent(date(2026, 9, 7), [], [])
 
 
-# ── 07:45 요약의 진료비·병원 선택 글 참고자료 보류 줄 ─────────────────────────────
+# ── 아침 요약(07:45·08:00)의 진료비·병원 선택 글 참고자료 보류 줄 ─────────────────
 # 차단 코드는 MISSING_REFERENCES 그대로이고 outcome의 `copy_code`가 문구만 고른다. 평범한
 # 참고자료 보류(주간 요약)의 문구와 요약 식별자는 바뀌지 않는다.
 
+_OPERATOR_HOLD_SENTENCES = (
+    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 글의 주장을 직접 뒷받침하는 공공·학술 기관 "
+    "문서를 “참고 자료 추가”로 넣거나 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요.",
+    "참고 자료 없이는 발행되지 않고, 자동 복구는 이 글을 다시 쓰지 않습니다.",
+)
 _OPERATOR_HOLD_COPY = notification_copy.ActionCopy(
     "참고 자료 운영자 판단",
-    "콘텐츠 탭에서 이 글의 참고 자료를 정해 주세요. 공공·학술 기관 문서가 없으면 주제를 바꾸거나 "
-    "항목을 종료해 주세요. 자동 복구는 이 글을 다시 쓰지 않습니다.",
+    " ".join(_OPERATOR_HOLD_SENTENCES),
     "참고 자료 확인",
 )
 _GENERIC_BLOCKER_COPY = notification_copy.ActionCopy(
@@ -744,6 +748,14 @@ def test_operator_hold_copy_is_its_own_and_generic_missing_references_is_unchang
         notification_copy.blocker_copy(notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE)
         == _OPERATOR_HOLD_COPY
     )
+    # 문장 단위로도 고정한다 — 두 문장 모두, 이 순서로, 다른 문장 없이.
+    action = notification_copy.blocker_copy(
+        notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+    ).action
+    assert action.split(". ") == [
+        *(sentence.removesuffix(".") for sentence in _OPERATOR_HOLD_SENTENCES[:-1]),
+        _OPERATOR_HOLD_SENTENCES[-1],
+    ]
     # 주간 요약이 쓰는 평범한 참고자료 보류 문구는 그대로다.
     assert notification_copy.blocker_copy("MISSING_REFERENCES") == _GENERIC_BLOCKER_COPY
 

@@ -149,7 +149,7 @@ def display_time(value: datetime) -> str:
     return value.astimezone(KST).strftime("%m/%d %H:%M KST")
 
 
-# 07:45 요약의 진료비·병원 선택 글 참고자료 보류 줄만 쓰는 문구 키. 차단 코드는 그대로
+# 아침 요약(07:45·08:00)의 진료비·병원 선택 글 참고자료 보류 줄만 쓰는 문구 키. 차단 코드는 그대로
 # MISSING_REFERENCES이고(인시던트·요약 식별자), 주간 요약의 평범한 참고자료 보류 문구는 바꾸지 않는다.
 REFERENCES_OPERATOR_DECIDES_COPY_CODE = "MISSING_REFERENCES_OPERATOR_DECIDES"
 
@@ -185,10 +185,13 @@ def blocker_copy(code: object) -> ActionCopy:
             "검수 상태 확인",
         )
     if value == REFERENCES_OPERATOR_DECIDES_COPY_CODE:
+        # 인시던트 조치(`REFERENCES_OPERATOR_DECIDES_ACTION`)의 요약 한 줄 — 콘텐츠 화면에 실제로 있는
+        # 조작(“콘텐츠 수정”·“참고 자료 추가”·제목·본문 저장)만 말한다. 항목 종료·재생성 버튼은 없다.
         return ActionCopy(
             "참고 자료 운영자 판단",
-            "콘텐츠 탭에서 이 글의 참고 자료를 정해 주세요. 공공·학술 기관 문서가 없으면 주제를 바꾸거나 "
-            "항목을 종료해 주세요. 자동 복구는 이 글을 다시 쓰지 않습니다.",
+            "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 글의 주장을 직접 뒷받침하는 공공·학술 기관 "
+            "문서를 “참고 자료 추가”로 넣거나 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요. "
+            "참고 자료 없이는 발행되지 않고, 자동 복구는 이 글을 다시 쓰지 않습니다.",
             "참고 자료 확인",
         )
     return ActionCopy(
