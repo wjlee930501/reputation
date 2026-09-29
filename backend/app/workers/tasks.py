@@ -312,6 +312,7 @@ from app.services.monthly_report_gap_notifications import (
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.monthly_sov_types import ManifestCellInput
+from app.services.notification_copy import REFERENCES_OPERATOR_DECIDES_COPY_CODE
 from app.services.onboarding_notifications import (
     build_hospital_activated_notification,
     build_site_built_notification,
@@ -451,6 +452,7 @@ from app.workers.generation_incident_control import (
     generation_notify_requested,
     generation_safe_cause,
     open_generation_incident,
+    operator_decides_digest_due,
     operator_decides_references,
     recover_generation_incidents,
 )
@@ -6336,7 +6338,12 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         if code == "MISSING_APPROVED_ESSENCE":
             _heal_missing_essence_for_digest(hospital.id, healed_hospitals)
         summary = item.essence_check_summary or {}
-        if generation_block_digest_due(
+        # 주간 요약이 소유하는 코드라도 오늘 예정인 진료비·병원 선택 글의 참고자료 보류는
+        # 사람만 풀 수 있어 한 줄로 알린다(`operator_decides_digest_due`, 08:00도 같다).
+        operator_line = operator_decides_digest_due(
+            code, item, batch=PREPUBLISH_MORNING_BATCH, today=observed.date()
+        )
+        if operator_line or generation_block_digest_due(
             code, batch=PREPUBLISH_MORNING_BATCH,
             remediation_exhausted=essence_remediation_exhausted(summary),
         ):
@@ -6352,6 +6359,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                     "attempt_fingerprint": _stored_generation_attempt(item).get(
                         "context"
                     ),
+                    "copy_code": REFERENCES_OPERATOR_DECIDES_COPY_CODE if operator_line else None,
                 }
             )
         paged += 1
@@ -6444,7 +6452,9 @@ def morning_content_auto_publish(self):
                     if outcome["code"] == "MISSING_APPROVED_ESSENCE":
                         _heal_missing_essence_for_digest(outcome["hospital_id"], healed_hospitals)
                     summary = outcome.get("essence_check_summary") or {}
-                    if generation_block_digest_due(
+                    # 07:45와 같은 줄을 싣는다 — 두 요약의 식별자 집합이 같아야 08:00이 합쳐진다.
+                    operator_line = bool(outcome.get("operator_line"))
+                    if operator_line or generation_block_digest_due(
                         outcome["code"], batch=PUBLISH_MORNING_BATCH,
                         remediation_exhausted=essence_remediation_exhausted(summary),
                     ):
@@ -6458,6 +6468,9 @@ def morning_content_auto_publish(self):
                                 "code": outcome["code"],
                                 "cause": _publication_digest_cause(outcome["code"], summary),
                                 "attempt_fingerprint": outcome.get("attempt_fingerprint"),
+                                "copy_code": (
+                                    REFERENCES_OPERATOR_DECIDES_COPY_CODE if operator_line else None
+                                ),
                             }
                         )
                     continue
@@ -6766,6 +6779,10 @@ def _auto_publish_one(
                 "admin_url": admin_url,
                 "run_id": blocked_run.id,
                 "attempt_fingerprint": _stored_generation_attempt(item).get("context"),
+                # 잠근 행으로 판정한다 — 08:00 요약에는 행이 없다.
+                "operator_line": operator_decides_digest_due(
+                    code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
+                ),
             }
 
         # Publishing without a working cache invalidation path can leave a successful DB

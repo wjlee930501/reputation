@@ -149,6 +149,11 @@ def display_time(value: datetime) -> str:
     return value.astimezone(KST).strftime("%m/%d %H:%M KST")
 
 
+# 07:45 요약의 진료비·병원 선택 글 참고자료 보류 줄만 쓰는 문구 키. 차단 코드는 그대로
+# MISSING_REFERENCES이고(인시던트·요약 식별자), 주간 요약의 평범한 참고자료 보류 문구는 바꾸지 않는다.
+REFERENCES_OPERATOR_DECIDES_COPY_CODE = "MISSING_REFERENCES_OPERATOR_DECIDES"
+
+
 def blocker_copy(code: object) -> ActionCopy:
     value = str(code or "")
     if value == "REFERENCE_SITE_UNREACHABLE":
@@ -178,6 +183,13 @@ def blocker_copy(code: object) -> ActionCopy:
             "자동 검수 미완료",
             "콘텐츠에서 검수 상태와 자동 재시도 여부를 확인해 주세요.",
             "검수 상태 확인",
+        )
+    if value == REFERENCES_OPERATOR_DECIDES_COPY_CODE:
+        return ActionCopy(
+            "참고 자료 운영자 판단",
+            "콘텐츠 탭에서 이 글의 참고 자료를 정해 주세요. 공공·학술 기관 문서가 없으면 주제를 바꾸거나 "
+            "항목을 종료해 주세요. 자동 복구는 이 글을 다시 쓰지 않습니다.",
+            "참고 자료 확인",
         )
     return ActionCopy(
         "본문·근거 확인 필요",

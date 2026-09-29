@@ -26,7 +26,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.models.sov import SovRecord
-from app.services import content_publication
+from app.services import content_publication, content_publish_notifications
 from app.services.content_ai_review import (
     ContentAiFinding,
     ContentAiFindingKind,
@@ -37,7 +37,11 @@ from app.services.content_ai_review import (
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.post_publish_review_policy import auto_publish_catchup_start
-from app.services.reference_verification import item_topic_fingerprint, reference_check_record
+from app.services.reference_verification import (
+    item_topic_fingerprint,
+    override_reference_fetcher,
+    reference_check_record,
+)
 from app.workers import generation_incident_control, nightly_generation_batch, tasks
 from app.workers.content_backlog_recovery import _next_available_dates
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
@@ -45,6 +49,7 @@ from app.workers.generation_incident_control import scheduled_recovery_owns_bloc
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
     ENVIRONMENT_ATTEMPT_BUDGET,
+    OPERATOR_DECIDES_KEY,
     SAMPLE_BODY_DAILY_BUDGET,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
@@ -53,6 +58,7 @@ from app.workers.generation_retry_policy import (
     next_recovery_deadline,
 )
 from app.workers.topic_swap_fallback import exhausted_body_sample_reason
+from tests.reference_fetch_doubles import PageFetcher
 
 
 def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_content():
@@ -6510,3 +6516,410 @@ def test_an_own_topic_image_is_not_reported_as_substituted():
 
     assert payload["image_reused"] is False
     assert "reused_from" not in payload
+
+
+# ── 07:45·08:00 요약: 오늘 예정인 진료비·병원 선택 글의 참고자료 보류 한 줄 ─────────────────
+#
+# MISSING_REFERENCES는 주간 요약이 소유해 아침 요약에 없다. 진료비·병원 선택 글의 보류는
+# 자동 복구가 풀지 않으므로(사람이 정한다) 예정일 당일 07:45·08:00 요약에 한 줄을 싣는다.
+# 두 요약의 식별자 집합이 같아 평소에는 08:00이 합쳐진다. 지난 예정일(catch-up)·평범한
+# 참고자료 보류는 종전 그대로 싣지 않는다.
+
+_OD_COST_TITLE = "치질 수술 비용 — 보험 적용과 본인부담"
+_OD_MEDICAL_TITLE = "치질 수술 후 회복 기간과 통증 관리"
+_OD_DEAD_URL = (
+    "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/"
+    "gnrlzHealthInfoView.do?cntnts_sn=2480"
+)
+_OD_TODAY = date(2026, 6, 10)
+_OD_SEVEN_FORTY_FIVE = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+_OD_LINE_TITLE = "참고 자료 운영자 판단"
+
+
+class _DigestGateDB:
+    """07:45 게이트·08:00 발행기 더블 — 예정 글 목록, id 조회·잠금, 병원 잠금, outbox 중복 키.
+
+    같은 인스턴스를 07:45 `db`와 08:00 `SyncSessionLocal`로 함께 쓰면 앞 실행의 outbox 행이
+    뒤 실행의 dedupe 조회에 걸린다(실제 outbox 테이블처럼).
+    """
+
+    def __init__(self, *items):
+        self.items = list(items)
+        self.added: list = []
+        self.commits = 0
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def execute(self, stmt):
+        description = stmt.column_descriptions[0]
+        entity = description["entity"]
+        if entity is NotificationOutbox:
+            key = stmt.whereclause.right.value
+            match = next((row for row in self.outbox() if row.dedupe_key == key), None)
+            return SimpleNamespace(scalar_one_or_none=lambda: match)
+        if entity is Hospital:
+            item_hospitals = {item.hospital.id: item.hospital for item in self.items}
+            match = item_hospitals.get(stmt.whereclause.right.value)
+            return SimpleNamespace(scalar_one_or_none=lambda: match)
+        if description["name"] == "id":  # 08:00 발행 후보 id 목록
+            ids = [item.id for item in self.items]
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: ids))
+        clause = stmt.whereclause
+        if getattr(getattr(clause, "left", None), "key", None) == "id":  # 한 글 조회·잠금
+            match = next(item for item in self.items if item.id == clause.right.value)
+            return SimpleNamespace(scalar_one_or_none=lambda: match)
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: list(self.items)))
+
+    def add(self, value):
+        self.added.append(value)
+
+    def commit(self):
+        self.commits += 1
+
+    def outbox(self):
+        return [row for row in self.added if isinstance(row, NotificationOutbox)]
+
+
+def _od_gate(monkeypatch):
+    """게이트 밖 부수효과만 막는다 — 평가·보류 코드·시도 기록·요약 조립은 실제 경로다."""
+
+    incidents: list[dict] = []
+
+    async def capture_incident(**kwargs):
+        incidents.append(kwargs)
+
+    philosophy = _approved_philosophy()
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_a: philosophy)
+    monkeypatch.setattr(
+        tasks, "ensure_publication_block_run", lambda *_a, **_k: SimpleNamespace(id=uuid.uuid4())
+    )
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+    return incidents
+
+
+def _od_written(hospital, *, title, scheduled_date=_OD_TODAY):
+    """발행 전 검증에서 참고자료가 모두 빠지는 작성된 글(죽은 주소 하나)."""
+
+    item = _publication_item(hospital, body="진료 기준과 내원 시점을 안내합니다.", title=title)
+    item.references_list = [{"title": "추측 주소", "url": _OD_DEAD_URL}]
+    item.reference_checks = None
+    item.scheduled_date = scheduled_date
+    return item
+
+
+def _od_unwritten(hospital, *, scheduled_date=_OD_TODAY):
+    """작가 회차 뒤 참고자료가 없어 생성이 사람의 결정으로 남긴, 쓰이지 않은 진료비 슬롯."""
+
+    item = _publication_item(hospital, body="임시", title="임시")
+    item.title = None
+    item.body = None
+    item.references_list = []
+    item.reference_checks = None
+    item.scheduled_date = scheduled_date
+    item.essence_check_summary = {
+        "generation_attempt": {
+            "context": "od-slot-context",
+            "reason": "MISSING_REFERENCES",
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+            "next_retry_at": None,
+            OPERATOR_DECIDES_KEY: True,
+        }
+    }
+    return item
+
+
+def _od_run(db):
+    with override_reference_fetcher(PageFetcher()):  # 모든 문서가 404 — 치유도 통과하지 못한다
+        return tasks._page_morning_stored_publication_gates(db, now_kst=_OD_SEVEN_FORTY_FIVE)
+
+
+def _od_digest_text(row) -> str:
+    return "\n".join(
+        block["text"]["text"]
+        for block in row.payload["blocks"]
+        if block.get("type") == "section"
+    )
+
+
+def test_seven_forty_five_names_a_same_day_cost_post_left_to_the_operator(monkeypatch):
+    hospital = _publication_hospital()
+    item = _od_written(hospital, title=_OD_COST_TITLE)
+    incidents = _od_gate(monkeypatch)
+    db = _DigestGateDB(item)
+
+    assert _od_run(db) == 1
+
+    assert item.references_list == []  # 죽은 주소만 빠졌고 수기 목록으로 채우지 않았다
+    # 인시던트·시도 기록은 종전 그대로 — 코드는 MISSING_REFERENCES, 사람의 결정(기한 없음).
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
+    assert incidents[0]["notify"] is False
+    attempt = item.essence_check_summary["generation_attempt"]
+    assert attempt["reason"] == "MISSING_REFERENCES"
+    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert attempt[OPERATOR_DECIDES_KEY] is True
+    assert attempt["next_retry_at"] is None
+    [row] = db.outbox()
+    assert row.notification_type == "GENERATION_BLOCKED_DIGEST"
+    text = _od_digest_text(row)
+    assert text.count(_OD_LINE_TITLE) == 1
+    assert f"{_OD_LINE_TITLE} 1편" in text
+    assert "자동 복구는 이 글을 다시 쓰지 않습니다." in text
+    assert "발행 보류 1편" in text
+    # 주간 요약의 평범한 참고자료 보류 문구로 떨어지지 않는다.
+    assert "본문·근거 확인 필요" not in text
+
+
+def test_seven_forty_five_names_a_same_day_unwritten_slot_left_to_the_operator(monkeypatch):
+    hospital = _publication_hospital()
+    slot = _od_unwritten(hospital)
+    stored = dict(slot.essence_check_summary["generation_attempt"])
+    incidents = _od_gate(monkeypatch)
+    db = _DigestGateDB(slot)
+
+    assert _od_run(db) == 1
+
+    # 증상(CONTENT_NOT_GENERATED)이 아니라 생성이 남긴 사람의 결정으로 연다.
+    assert [(call["code"], call["message"]) for call in incidents] == [
+        ("MISSING_REFERENCES", generation_incident_control.REFERENCES_OPERATOR_DECIDES_CAUSE)
+    ]
+    assert slot.essence_check_summary["generation_attempt"] == stored
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert text.count(_OD_LINE_TITLE) == 1
+    assert f"{_OD_LINE_TITLE} 1편" in text
+    assert "본문·근거 확인 필요" not in text
+
+
+def test_seven_forty_five_keeps_an_ordinary_missing_reference_hold_out_of_the_digest(
+    monkeypatch,
+):
+    hospital = _publication_hospital()
+    item = _od_written(hospital, title=_OD_MEDICAL_TITLE)
+    incidents = _od_gate(monkeypatch)
+    db = _DigestGateDB(item)
+
+    assert _od_run(db) == 1
+
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
+    assert not generation_incident_control.operator_decides_references("MISSING_REFERENCES", item)
+    assert db.outbox() == []  # 수리 예산이 소유한다 — 주간 요약만 싣는다
+
+
+def test_seven_forty_five_does_not_repeat_a_past_day_operator_hold(monkeypatch):
+    """catch-up(지난 예정일) 글은 예정일 07:45에 이미 알렸다 — 매일 다시 싣지 않는다."""
+
+    hospital = _publication_hospital()
+    written = _od_written(hospital, title=_OD_COST_TITLE, scheduled_date=_OD_TODAY - timedelta(days=1))
+    unwritten = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=3))
+    incidents = _od_gate(monkeypatch)
+    db = _DigestGateDB(written, unwritten)
+
+    assert _od_run(db) == 2
+
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES", "MISSING_REFERENCES"]
+    assert all(
+        generation_incident_control.operator_decides_references("MISSING_REFERENCES", item)
+        for item in (written, unwritten)
+    )
+    assert db.outbox() == []
+
+
+def test_seven_forty_five_operator_line_lives_beside_other_blockers_once(monkeypatch):
+    """같은 병원의 다른 차단(원고 미생성)과 한 메시지에 섞이되 보류 줄은 한 번뿐이다."""
+
+    hospital = _publication_hospital()
+    held = _od_written(hospital, title=_OD_COST_TITLE)
+    missing = _publication_item(hospital, body="임시", title="임시")
+    missing.title = None
+    missing.body = None
+    missing.sequence_no = 2
+    missing.essence_check_summary = {"automatic_remediation_attempts": 0}
+    _od_gate(monkeypatch)
+    db = _DigestGateDB(held, missing)
+
+    assert _od_run(db) == 2
+
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert "발행 보류 2편" in text
+    assert text.count(_OD_LINE_TITLE) == 1
+    assert f"{_OD_LINE_TITLE} 1편" in text
+
+
+def test_rerunning_seven_forty_five_keeps_one_digest_for_the_operator_hold(monkeypatch):
+    hospital = _publication_hospital()
+    written = _od_written(hospital, title=_OD_COST_TITLE)
+    unwritten = _od_unwritten(hospital)
+    unwritten.sequence_no = 2
+    _od_gate(monkeypatch)
+    keys: list[str] = []
+    build = content_publish_notifications.build_generation_blocked_digest_intent
+
+    def recording_build(*args, **kwargs):
+        intent = build(*args, **kwargs)
+        keys.append(intent.dedupe_key)
+        return intent
+
+    monkeypatch.setattr(
+        content_publish_notifications, "build_generation_blocked_digest_intent", recording_build
+    )
+    db = _DigestGateDB(written, unwritten)
+
+    _od_run(db)
+    first_attempts = [dict(item.essence_check_summary["generation_attempt"]) for item in (written, unwritten)]
+    _od_run(db)
+
+    assert len(keys) == 2 and keys[0] == keys[1]
+    assert len(db.outbox()) == 1  # 같은 날 다시 돌아도 outbox가 중복 키로 합친다
+    assert [item.essence_check_summary["generation_attempt"] for item in (written, unwritten)] == (
+        first_attempts
+    )
+    assert _od_digest_text(db.outbox()[0]).count(_OD_LINE_TITLE) == 1
+
+
+def _od_run_eight(monkeypatch, db):
+    """08:00 발행기 전체를 같은 더블로 돌린다 — `_auto_publish_one`·요약 조립·중복 키는 실제다."""
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", db)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_k: _OD_SEVEN_FORTY_FIVE.shift(minutes=15))
+    with override_reference_fetcher(PageFetcher()):
+        tasks.morning_content_auto_publish.run()
+
+
+def _od_digest_keys(monkeypatch) -> list[tuple[str, str]]:
+    """요약을 조립할 때마다 (batch, dedupe_key)를 남긴다 — 08:00이 합쳐졌는지 조립 여부와 가른다."""
+
+    keys: list[tuple[str, str]] = []
+    build = content_publish_notifications.build_generation_blocked_digest_intent
+
+    def recording_build(cycle_date, batch, *args, **kwargs):
+        intent = build(cycle_date, batch, *args, **kwargs)
+        keys.append((batch, intent.dedupe_key))
+        return intent
+
+    monkeypatch.setattr(
+        content_publish_notifications, "build_generation_blocked_digest_intent", recording_build
+    )
+    return keys
+
+
+def _od_unwritten_slot_without_attempt(hospital, *, sequence_no):
+    """아직 쓰이지 않은 평범한 슬롯 — 두 요약이 모두 싣는 지속 차단(원고 미생성)."""
+
+    slot = _publication_item(hospital, body="임시", title="임시")
+    slot.title = None
+    slot.body = None
+    slot.sequence_no = sequence_no
+    slot.essence_check_summary = {"automatic_remediation_attempts": 0}
+    return slot
+
+
+def test_eight_oclock_alone_names_the_same_day_operator_hold_once(monkeypatch):
+    """07:45가 돌지 않은 날에도 08:00 요약이 이 보류를 운영자 문구로 한 번 싣는다."""
+
+    hospital = _publication_hospital()
+    item = _od_written(hospital, title=_OD_COST_TITLE)
+    incidents = _od_gate(monkeypatch)
+    keys = _od_digest_keys(monkeypatch)
+    db = _DigestGateDB(item)
+
+    _od_run_eight(monkeypatch, db)
+
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
+    assert item.status is tasks.ContentStatus.DRAFT
+    assert [batch for batch, _key in keys] == [generation_incident_control.PUBLISH_MORNING_BATCH]
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert text.count(_OD_LINE_TITLE) == 1
+    assert f"{_OD_LINE_TITLE} 1편" in text
+    assert "자동 복구는 이 글을 다시 쓰지 않습니다." in text
+    assert "발행 보류 1편" in text
+    assert "본문·근거 확인 필요" not in text
+
+
+@pytest.mark.parametrize("with_other_blocker", [True, False], ids=["hold_and_other", "hold_only"])
+def test_seven_forty_five_then_eight_oclock_send_one_digest_for_the_operator_hold(
+    monkeypatch, with_other_blocker
+):
+    """평소 아침: 07:45 {A,B} == 08:00 {A,B} → 같은 중복 키 → 08:00은 합쳐져 한 건뿐이다.
+
+    A는 오늘 예정인 사람의 결정 보류, B는 두 요약이 모두 싣는 지속 차단(원고 미생성)이다.
+    """
+
+    hospital = _publication_hospital()
+    held = _od_written(hospital, title=_OD_COST_TITLE)
+    items = [held]
+    if with_other_blocker:
+        items.append(_od_unwritten_slot_without_attempt(hospital, sequence_no=2))
+    incidents = _od_gate(monkeypatch)
+    keys = _od_digest_keys(monkeypatch)
+    db = _DigestGateDB(*items)
+
+    _od_run(db)
+    attempts = [dict(item.essence_check_summary["generation_attempt"]) for item in items]
+    _od_run_eight(monkeypatch, db)
+
+    # 08:00도 요약을 조립했고(A를 실었다) 07:45와 같은 키라 outbox가 합쳤다.
+    assert [batch for batch, _key in keys] == [
+        generation_incident_control.PREPUBLISH_MORNING_BATCH,
+        generation_incident_control.PUBLISH_MORNING_BATCH,
+    ]
+    assert keys[0][1] == keys[1][1]
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert text.count(_OD_LINE_TITLE) == 1
+    assert f"발행 보류 {len(items)}편" in text
+    # 08:00 게이트가 시도 기록(지문)을 바꾸지 않았다 — 같은 키의 근거다.
+    assert [item.essence_check_summary["generation_attempt"] for item in items] == attempts
+    assert [call["code"] for call in incidents].count("MISSING_REFERENCES") == 2
+
+
+def test_eight_oclock_leaves_out_past_day_and_ordinary_reference_holds(monkeypatch):
+    hospital = _publication_hospital()
+    past = _od_written(hospital, title=_OD_COST_TITLE, scheduled_date=_OD_TODAY - timedelta(days=1))
+    past_slot = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=3))
+    ordinary = _od_written(hospital, title=_OD_MEDICAL_TITLE)
+    incidents = _od_gate(monkeypatch)
+    db = _DigestGateDB(past, past_slot, ordinary)
+
+    _od_run_eight(monkeypatch, db)
+
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"] * 3
+    assert all(
+        generation_incident_control.operator_decides_references("MISSING_REFERENCES", item)
+        for item in (past, past_slot)
+    )
+    assert db.outbox() == []
+
+
+def test_operator_hold_digest_predicate_is_the_same_day_morning_hold_only():
+    hospital = _publication_hospital()
+    today_hold = _od_unwritten(hospital)
+    yesterday_hold = _od_unwritten(hospital, scheduled_date=_OD_TODAY - timedelta(days=1))
+    ordinary = _od_written(hospital, title=_OD_MEDICAL_TITLE)
+    due = generation_incident_control.operator_decides_digest_due
+    prepublish = generation_incident_control.PREPUBLISH_MORNING_BATCH
+    publish = generation_incident_control.PUBLISH_MORNING_BATCH
+
+    # 두 아침 요약 모두 — 같은 식별자 집합이어야 08:00이 07:45와 합쳐진다.
+    assert due("MISSING_REFERENCES", today_hold, batch=prepublish, today=_OD_TODAY)
+    assert due("MISSING_REFERENCES", today_hold, batch=publish, today=_OD_TODAY)
+    # 다른 배치 이름(주간 요약 등)은 아니다.
+    for other in ("WEEKLY_ROLLUP", "", "PREPUBLISH_0745 "):
+        assert not due("MISSING_REFERENCES", today_hold, batch=other, today=_OD_TODAY)
+    for batch in (prepublish, publish):
+        assert not due("MISSING_REFERENCES", yesterday_hold, batch=batch, today=_OD_TODAY)
+        assert not due("MISSING_REFERENCES", ordinary, batch=batch, today=_OD_TODAY)
+        assert not due("CONTENT_NOT_GENERATED", today_hold, batch=batch, today=_OD_TODAY)
+        # 기존 아침 요약 판정은 그대로 — MISSING_REFERENCES는 여전히 주간 요약이 소유한다.
+        assert not generation_incident_control.generation_block_digest_due(
+            "MISSING_REFERENCES", batch=batch
+        )

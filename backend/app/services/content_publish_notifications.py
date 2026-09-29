@@ -335,16 +335,21 @@ def build_generation_blocked_digest_intent(
     ).hexdigest()[:32]
     hospitals: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
     for (
-        hospital_id,
-        hospital_name,
-        _content_id,
-        _scheduled_date,
-        code,
-        cause,
-        title,
-        _attempt_fingerprint,
-    ) in entries:
-        hospitals.setdefault((hospital_id, hospital_name), []).append((title, code, cause))
+        (
+            hospital_id,
+            hospital_name,
+            _content_id,
+            _scheduled_date,
+            code,
+            cause,
+            title,
+            _attempt_fingerprint,
+        ),
+        outcome,
+    ) in zip(entries, blocked_outcomes, strict=True):
+        # `copy_code`는 같은 차단 코드에 다른 문구만 고른다 — 식별자(dedupe)는 그대로 코드다.
+        copy_code = str(outcome.get("copy_code") or code)
+        hospitals.setdefault((hospital_id, hospital_name), []).append((title, copy_code, cause))
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
     shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
     hidden = len(hospitals) - len(shown)

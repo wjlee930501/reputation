@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.operations import NotificationOutboxState
+from app.services import notification_copy
 from app.services.content_publish_notifications import (
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
@@ -697,3 +698,108 @@ def test_weekly_rollup_is_skipped_when_there_is_nothing_to_report() -> None:
     )
     with pytest.raises(NotificationPayloadError):
         build_generation_rejection_weekly_rollup_intent(date(2026, 9, 7), [], [])
+
+
+# ── 07:45 요약의 진료비·병원 선택 글 참고자료 보류 줄 ─────────────────────────────
+# 차단 코드는 MISSING_REFERENCES 그대로이고 outcome의 `copy_code`가 문구만 고른다. 평범한
+# 참고자료 보류(주간 요약)의 문구와 요약 식별자는 바뀌지 않는다.
+
+_OPERATOR_HOLD_COPY = notification_copy.ActionCopy(
+    "참고 자료 운영자 판단",
+    "콘텐츠 탭에서 이 글의 참고 자료를 정해 주세요. 공공·학술 기관 문서가 없으면 주제를 바꾸거나 "
+    "항목을 종료해 주세요. 자동 복구는 이 글을 다시 쓰지 않습니다.",
+    "참고 자료 확인",
+)
+_GENERIC_BLOCKER_COPY = notification_copy.ActionCopy(
+    "본문·근거 확인 필요",
+    "콘텐츠에서 해당 글의 차단 사유와 병원 근거 자료를 확인해 주세요. 미해결 안전 지적은 승인하지 마세요.",
+    "차단 사유 확인",
+)
+
+
+def _operator_hold_outcome(hospital_id: str, *, copy_code: object) -> dict[str, object]:
+    return {
+        "hospital_id": hospital_id,
+        "hospital_name": "비용보류의원",
+        "content_id": "content-hold",
+        "scheduled_date": "2026-08-19",
+        "title": "치질 수술 비용 — 보험 적용과 본인부담",
+        "code": "MISSING_REFERENCES",
+        "cause": "참고 자료",
+        "attempt_fingerprint": "ctx-hold",
+        "copy_code": copy_code,
+    }
+
+
+def _section_text(intent) -> str:
+    return "\n".join(
+        block["text"]["text"]
+        for block in intent.message.payload()["blocks"]
+        if block.get("type") == "section"
+    )
+
+
+def test_operator_hold_copy_is_its_own_and_generic_missing_references_is_unchanged() -> None:
+    assert (
+        notification_copy.blocker_copy(notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE)
+        == _OPERATOR_HOLD_COPY
+    )
+    # 주간 요약이 쓰는 평범한 참고자료 보류 문구는 그대로다.
+    assert notification_copy.blocker_copy("MISSING_REFERENCES") == _GENERIC_BLOCKER_COPY
+
+
+def test_weekly_rollup_keeps_the_generic_copy_for_missing_references() -> None:
+    intent = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 8, 17),
+        [
+            {
+                "hospital_id": "hospital-a",
+                "hospital_name": "주간의원",
+                "code": "MISSING_REFERENCES",
+            }
+        ],
+    )
+
+    text = _section_text(intent)
+    assert "본문·근거 확인 필요 1건" in text
+    assert "참고 자료 운영자 판단" not in text
+
+
+def test_blocked_digest_renders_the_operator_hold_line_exactly() -> None:
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PREPUBLISH_MORNING_BATCH,
+        [
+            _operator_hold_outcome(
+                "hospital-a", copy_code=notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+            )
+        ],
+    )
+
+    assert _section_text(intent).splitlines()[1:] == [
+        "• *비용보류의원* — 발행 보류 1편",
+        "  참고 자료 운영자 판단 1편",
+        f"  {_OPERATOR_HOLD_COPY.action}",
+    ]
+
+
+def test_blocked_digest_copy_code_changes_the_words_but_not_the_identity() -> None:
+    held = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PREPUBLISH_MORNING_BATCH,
+        [
+            _operator_hold_outcome(
+                "hospital-a", copy_code=notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+            )
+        ],
+    )
+    plain = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PREPUBLISH_MORNING_BATCH,
+        [_operator_hold_outcome("hospital-a", copy_code=None)],
+    )
+
+    # 식별자 체계(병원:글:예정일:코드:원인:지문)는 그대로 — 문구 키는 들어가지 않는다.
+    assert held.dedupe_key == plain.dedupe_key
+    assert "참고 자료 운영자 판단 1편" in _section_text(held)
+    assert "본문·근거 확인 필요 1편" in _section_text(plain)
