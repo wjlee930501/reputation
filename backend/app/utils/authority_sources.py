@@ -10,9 +10,9 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 - _normalize_references 단계에서 white-list domain 외 항목 검출(선택).
 """
 
-import itertools
 import re
-from urllib.parse import parse_qsl, unquote, urlencode, urlparse
+import unicodedata
+from urllib.parse import parse_qsl, unquote, urlparse
 
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
     {"name": "질병관리청 국가건강정보포털", "domain": "health.kdca.go.kr"},
@@ -599,8 +599,8 @@ CURATED_SOURCE_URLS: frozenset[str] = frozenset(
 
 # 사람이 실제 GET으로 확인해 근거로 쓸 수 없다고 판정한 주소(2026-09-29 김실장 2차 점검,
 # /workspace/ref-fix-20260929/REPORT_FULL_2.md). 수기 목록에도, 모델 참고자료로도 쓰지 않는다 —
-# 사이트가 언젠가 리다이렉트를 멈추거나 제목만 채워 돌려줘도 막힌다. 비교는 정규화한 주소로
-# 한다(scheme·www·끝 슬래시·질의 순서·fragment 무시, `normalize_reference_url`).
+# 사이트가 언젠가 리다이렉트를 멈추거나 제목만 채워 돌려줘도 막힌다. 비교는 수기 목록과 같은
+# 문서 동일성 판정으로 한다(`_matching_documents` — 별칭도 같은 제외 주소다).
 REFERENCE_URL_EXCLUSIONS: tuple[dict[str, str], ...] = (
     {
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6263",
@@ -644,136 +644,137 @@ REFERENCE_URL_EXCLUSIONS: tuple[dict[str, str], ...] = (
 )
 
 
-def normalize_reference_url(url: object) -> str:
-    """같은 문서를 가리키는 주소 표기 차이를 지운 비교용 키.
-
-    scheme(http/https)·호스트 대소문자·앞의 `www.`·끝 슬래시·질의 순서·fragment를 무시한다.
-    경로와 질의 값의 대소문자는 문서를 가를 수 있어 그대로 둔다.
-    """
-    text = str(url or "").strip()
-    if not text:
-        return ""
-    if "://" not in text:
-        text = f"https://{text}"
-    try:
-        parsed = urlparse(text)
-    except ValueError:
-        return text
-    host = (parsed.hostname or "").lower()
-    if host.startswith("www."):
-        host = host[4:]
-    try:
-        port = parsed.port
-    except ValueError:
-        # 깨진 포트 — 화이트리스트 밖이라 인용되지 않는다. 비교 키는 원문 그대로 둔다.
-        return text
-    if port:
-        host = f"{host}:{port}"
-    path = parsed.path.rstrip("/")
-    query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
-    return f"{host}{path}" + (f"?{query}" if query else "")
-
-
-_EXCLUDED_REFERENCE_REASONS: dict[str, str] = {
-    normalize_reference_url(entry["url"]): entry["reason"] for entry in REFERENCE_URL_EXCLUSIONS
-}
-
-
-def reference_exclusion_reason(url: object) -> str | None:
-    """제외 목록에 있는 주소면 그 사유, 아니면 None."""
-    return _EXCLUDED_REFERENCE_REASONS.get(normalize_reference_url(url))
-
-
-# 수기 목록 URL에 실제로 쓰인 질의 이름 가운데 문서를 가르는 것(값은 정수로 비교한다).
-# 나머지(`MODE` 같은 보기 방식, 모르는 `utm_source`·`from` …)는 같은 문서를 가리키므로 무시한다.
+# 수기 목록·제외 목록 URL에 실제로 쓰인 질의 이름 가운데 문서를 가르는 것. 나머지(`MODE` 같은
+# 보기 방식, 모르는 `utm_source`·`from` …)는 같은 문서를 가리키므로 무시한다.
 CURATED_DOCUMENT_ID_PARAMS: frozenset[str] = frozenset(
-    {"cntnts_sn", "contentId", "thtimt_cntnts_sn", "SEQ", "SEQ_HISTORY"}
+    {"cntnts_sn", "contentId", "thtimt_cntnts_sn", "SEQ", "SEQ_HISTORY", "cancer_seq"}
 )
 _DEFAULT_PORTS: frozenset[int] = frozenset({80, 443})
-_CURATED_KEY_MAX_VARIANTS = 16
+_LEADING_INTEGER = re.compile(r"\s*\+?(\d+)")
+_DOCUMENT_ID_MAX_DIGITS = 18
 
 
-def _document_id_value(value: str) -> str:
-    text = value.strip()
-    try:
-        return str(int(text))
-    except ValueError:
-        return text
+def _document_id_value(value: str) -> int | None:
+    """서버처럼 id 값의 앞 정수를 읽는다 — `3796abc`·`3796+`·`03796`·전각 숫자는 모두 3796.
 
-
-def curated_document_keys(url: object) -> frozenset[str]:
-    """수기 목록 문서 동일성 키 — 이 주소가 가리킬 수 있는 문서의 키들.
-
-    scheme·앞의 `www.`·호스트 대소문자·기본 포트(80·443)·끝 슬래시·fragment·`;params`와
-    문서 id가 아닌 질의(`utm_source`·`from`·`MODE` …)는 무시하고, 문서 id 질의
-    (`CURATED_DOCUMENT_ID_PARAMS`)는 정수로 비교한다(`cntnts_sn=03796`은 3796). 경로
-    대소문자는 다른 문서(대개 404)라 그대로 둔다. 같은 id 질의가 여러 번 오면 어느 값을 서버가
-    쓰는지 모르므로 값마다 키를 낸다 — 하나라도 목록 문서면 목록 문서로 본다.
+    앞에 숫자가 없는 값(`abc`·빈 값)은 어떤 문서 id와도 맞지 않는다.
     """
+
+    match = _LEADING_INTEGER.match(value)
+    if match is None:
+        return None
+    digits = "".join(str(unicodedata.decimal(char)) for char in match.group(1)).lstrip("0")
+    if len(digits) > _DOCUMENT_ID_MAX_DIGITS:
+        return None  # 목록 문서 id가 될 수 없는 길이(정수 변환 한도 전에 끊는다)
+    return int(digits or "0")
+
+
+def _document_location(url: object) -> tuple[str, list[tuple[str, str]]] | None:
+    """(문서 위치, 질의 쌍) — 위치는 scheme·앞의 `www.`·호스트 대소문자·기본 포트(80·443)·
+    퍼센트 인코딩·겹친 `/`·끝 슬래시·fragment·`;params`를 지운 호스트+경로다. 경로 대소문자는
+    다른 문서(대개 404)라 그대로 둔다."""
 
     text = str(url or "").strip()
     if not text:
-        return frozenset()
+        return None
     if "://" not in text:
         text = f"https://{text}"
     try:
         parsed = urlparse(text)
         port = parsed.port
     except ValueError:
-        return frozenset()
+        return None  # 깨진 포트 — 화이트리스트 밖이라 인용되지 않는다
     host = (parsed.hostname or "").lower().rstrip(".")
     if host.startswith("www."):
         host = host[4:]
     if not host:
-        return frozenset()
+        return None
     if port and port not in _DEFAULT_PORTS:
         host = f"{host}:{port}"
     path = re.sub(r"/{2,}", "/", unquote(parsed.path)).rstrip("/")
-    values: dict[str, set[str]] = {}
-    for name, value in parse_qsl(parsed.query, keep_blank_values=True):
+    return f"{host}{path}", parse_qsl(parsed.query, keep_blank_values=True)
+
+
+def _document_matcher(url: str) -> tuple[str, tuple[tuple[str, int], ...]]:
+    """목록 항목 하나의 판정 기준 — (위치, 그 항목 URL 자신의 문서 id 이름과 정수 값)."""
+
+    located = _document_location(url)
+    if located is None:
+        raise ValueError(f"목록 URL을 해석할 수 없다: {url}")
+    location, pairs = located
+    ids: dict[str, int] = {}
+    for name, value in pairs:
         if name in CURATED_DOCUMENT_ID_PARAMS:
-            values.setdefault(name, set()).add(_document_id_value(value))
-    names = sorted(values)
-    keys: set[str] = set()
-    for combination in itertools.islice(
-        itertools.product(*(sorted(values[name]) for name in names)), _CURATED_KEY_MAX_VARIANTS
-    ):
-        query = "&".join(f"{name}={value}" for name, value in zip(names, combination, strict=True))
-        keys.add(f"{host}{path}" + (f"?{query}" if query else ""))
-    return frozenset(keys)
+            number = _document_id_value(value)
+            if number is None or name in ids:
+                raise ValueError(f"목록 URL의 문서 id가 하나의 정수가 아니다: {url}")
+            ids[name] = number
+    return location, tuple(sorted(ids.items()))
 
 
-def curated_document_key(url: object) -> str:
-    """주소 하나의 대표 동일성 키(목록 URL은 id 질의가 한 번씩이라 키가 하나다)."""
+def _document_index(entries):  # type: ignore[no-untyped-def]
+    index: dict[str, list[tuple[tuple[tuple[str, int], ...], object]]] = {}
+    for url, value in entries:
+        location, ids = _document_matcher(str(url))
+        index.setdefault(location, []).append((ids, value))
+    return index
 
-    return min(curated_document_keys(url), default="")
+
+def _matching_documents(url: object, index) -> list:  # type: ignore[no-untyped-def]
+    """이 주소가 가리킬 수 있는 목록 항목들.
+
+    위치가 같고, 항목 URL이 쓰는 문서 id 이름마다 이 주소에 그 이름의 값이 있어 그 가운데
+    하나라도 앞 정수가 항목의 값과 같으면 그 항목이다. 항목이 쓰지 않는 id 이름(`contentId`·
+    `SEQ` …)은 서버도 읽지 않으므로 보지 않는다. 같은 이름이 여러 번 오면 서버가 어느 값을
+    쓰는지 모르므로 상한 없이 모든 값을 본다 — 여러 항목과 맞으면 모두 돌려준다.
+    """
+
+    located = _document_location(url)
+    if located is None:
+        return []
+    location, pairs = located
+    candidates = index.get(location)
+    if not candidates:
+        return []
+    values: dict[str, set[int]] = {}
+    for name, value in pairs:
+        if name in CURATED_DOCUMENT_ID_PARAMS:
+            number = _document_id_value(value)
+            if number is not None:
+                values.setdefault(name, set()).add(number)
+    return [
+        entry
+        for ids, entry in candidates
+        if all(number in values.get(name, ()) for name, number in ids)
+    ]
 
 
-_CURATED_SOURCE_KEYS: frozenset[str] = frozenset(
-    curated_document_key(url) for url in CURATED_SOURCE_URLS
+_EXCLUDED_DOCUMENTS = _document_index(
+    (entry["url"], entry["reason"]) for entry in REFERENCE_URL_EXCLUSIONS
+)
+
+
+def reference_exclusion_reason(url: object) -> str | None:
+    """제외 목록에 있는 문서(별칭 포함)면 그 사유, 아니면 None."""
+    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS)
+    return str(reasons[0]) if reasons else None
+
+
+_CURATED_DOCUMENTS = _document_index(
+    (source["url"], source) for source in CURATED_MEDICAL_SOURCE_PAGES
 )
 
 
 def curated_source_entries(url: object) -> list[dict[str, object]]:
-    """이 주소가 가리키는 수기 목록 항목들(동일성 키로 비교).
+    """이 주소가 가리키는 수기 목록 항목들 — 같은 문서의 별칭도 그 항목이다
+    (`_matching_documents`). id 값이 여러 번 와서 여러 항목과 맞으면 모두 돌려준다."""
 
-    id 질의가 겹쳐 어느 문서인지 하나로 정해지지 않는 주소는 빈 목록이다 — 목록 문서로는
-    보되(`is_curated_source_url`), 카탈로그 주제 대조로 통과시키지는 않는다.
-    """
-
-    keys = curated_document_keys(url)
-    if len(keys) != 1:
-        return []
-    return [
-        source
-        for source in CURATED_MEDICAL_SOURCE_PAGES
-        if curated_document_key(source["url"]) in keys
-    ]
+    return list(_matching_documents(url, _CURATED_DOCUMENTS))
 
 
 def is_curated_source_url(url: object) -> bool:
-    """수기 목록 문서인가 — 같은 문서의 별칭(`curated_document_keys`)도 목록 문서다."""
-    return not _CURATED_SOURCE_KEYS.isdisjoint(curated_document_keys(url))
+    """수기 목록 문서인가 — 같은 문서의 별칭도 목록 문서다."""
+    return bool(_matching_documents(url, _CURATED_DOCUMENTS))
 
 
 _INSTITUTION_TITLE_TOKENS: frozenset[str] = frozenset(

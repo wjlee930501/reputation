@@ -893,14 +893,14 @@ async def test_malformed_port_url_is_rejected_without_crashing_or_fetching():
     from app.services.content_engine import _normalize_references
     from app.utils.authority_sources import (
         is_citable_reference_url,
+        is_curated_source_url,
         is_whitelisted_url,
-        normalize_reference_url,
         reference_exclusion_reason,
     )
 
     assert not is_whitelisted_url(MALFORMED_PORT_URL)
     assert not is_citable_reference_url(MALFORMED_PORT_URL)
-    assert normalize_reference_url(MALFORMED_PORT_URL)  # ValueError 없이 비교 키를 낸다
+    assert not is_curated_source_url(MALFORMED_PORT_URL)  # ValueError 없이 목록 밖으로 본다
     assert reference_exclusion_reason(MALFORMED_PORT_URL) is None
     assert _normalize_references([{"title": "치핵", "url": MALFORMED_PORT_URL}]) == []
 
