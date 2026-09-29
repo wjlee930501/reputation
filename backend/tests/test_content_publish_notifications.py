@@ -17,6 +17,7 @@ from app.services.content_publish_notifications import (
     project_publish_notification,
 )
 from app.services.notification_contracts import NotificationPayloadError
+from app.services.notification_copy import ActionCopy, blocker_copy, incident_copy
 from app.workers.generation_incident_control import (
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
@@ -283,6 +284,99 @@ def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
 def test_blocked_digest_refuses_an_empty_batch() -> None:
     with pytest.raises(NotificationPayloadError):
         build_generation_blocked_digest_intent(date(2026, 8, 19), PUBLISH_MORNING_BATCH, [])
+
+
+_BODY_REVIEW_DEFAULT = ActionCopy(
+    "본문·근거 확인 필요",
+    "콘텐츠에서 해당 글의 차단 사유와 병원 근거 자료를 확인해 주세요. 미해결 안전 지적은 승인하지 마세요.",
+    "차단 사유 확인",
+)
+_IMAGE_COPY = ActionCopy(
+    "발행용 이미지 준비 실패",
+    "콘텐츠에서 이미지 오류를 확인해 주세요. 자동 재시도가 남은 글은 다시 실행하지 마세요.",
+    "이미지 오류 확인",
+)
+_REVIEW_PENDING_COPY = ActionCopy(
+    "자동 검수 미완료",
+    "콘텐츠에서 검수 상태와 자동 재시도 여부를 확인해 주세요.",
+    "검수 상태 확인",
+)
+# 원고가 없는 슬롯과 주제를 자동으로 바꾼 슬롯은 검토할 본문·근거가 없다.
+_NO_DRAFT_BLOCKERS = [
+    ("CONTENT_NOT_GENERATED", "발행용 원고 미생성", "생성 상태와 자동 재시도 여부", "생성 상태 확인"),
+    ("TOPIC_SWAPPED", "주제 자동 교체", "콘텐츠에서 새 주제를 확인해 주세요.", "새 주제 확인"),
+]
+
+
+@pytest.mark.parametrize(("code", "title", "action", "button"), _NO_DRAFT_BLOCKERS)
+def test_no_draft_blockers_have_their_own_copy(code, title, action, button) -> None:
+    copy = blocker_copy(code)
+
+    assert copy.title == title
+    assert action in copy.action
+    assert copy.button == button
+    assert copy != _BODY_REVIEW_DEFAULT
+    assert "근거 자료" not in copy.action
+
+
+@pytest.mark.parametrize(("code", "title", "action", "_button"), _NO_DRAFT_BLOCKERS)
+def test_blocked_digest_names_no_draft_blockers_instead_of_body_review(
+    code, title, action, _button
+) -> None:
+    hospital_id = uuid.uuid4()
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PUBLISH_MORNING_BATCH,
+        [_blocked("원고확인의원", code, "", hospital_id=hospital_id) for _ in range(2)],
+    )
+
+    payload = intent.message.payload_json()
+    assert f"{title} 2편" in payload
+    assert action in payload
+    assert _BODY_REVIEW_DEFAULT.title not in payload
+    assert "병원 근거 자료" not in payload
+
+
+@pytest.mark.parametrize(("code", "title", "_action", "_button"), _NO_DRAFT_BLOCKERS)
+def test_weekly_rollup_names_no_draft_blockers_instead_of_body_review(
+    code, title, _action, _button
+) -> None:
+    intent = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 9, 7),
+        [{"hospital_id": uuid.uuid4(), "hospital_name": "원고확인의원", "code": code}],
+    )
+
+    payload = intent.message.payload_json()
+    assert f"{title} 1건" in payload
+    assert _BODY_REVIEW_DEFAULT.title not in payload
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("MISSING_APPROVED_ESSENCE", ActionCopy(
+            "운영 기준 미승인",
+            "병원 정보에서 콘텐츠 운영 기준을 확인하고 승인해 주세요.",
+            "운영 기준 확인",
+        )),
+        ("IMAGE_GENERATION_FAILED", _IMAGE_COPY),
+        ("CONTENT_IMAGE_NOT_READY", _IMAGE_COPY),
+        ("COST_BLOCKED", incident_copy("COST_GUARD_LIMIT_REACHED")),
+        ("CONTENT_AI_REVIEW_UNAVAILABLE", _REVIEW_PENDING_COPY),
+        ("CONTENT_AI_UNCERTAIN", _REVIEW_PENDING_COPY),
+        ("GENERATION_REJECTED", _BODY_REVIEW_DEFAULT),
+        ("GENERATION_FAILED", _BODY_REVIEW_DEFAULT),
+        ("PROVIDER_TIMEOUT", _BODY_REVIEW_DEFAULT),
+        ("FORBIDDEN_EXPRESSION", _BODY_REVIEW_DEFAULT),
+        ("MISSING_REFERENCES", _BODY_REVIEW_DEFAULT),
+        ("CONTENT_AI_HARD_FINDING", _BODY_REVIEW_DEFAULT),
+        ("content_not_generated", _BODY_REVIEW_DEFAULT),
+        ("TOPIC_SWAPPED_LEGACY", _BODY_REVIEW_DEFAULT),
+        (None, _BODY_REVIEW_DEFAULT),
+    ],
+)
+def test_other_blocker_codes_keep_their_previous_copy(code, expected) -> None:
+    assert blocker_copy(code) == expected
 
 
 @pytest.mark.parametrize(
