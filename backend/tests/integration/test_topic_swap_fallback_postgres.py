@@ -286,6 +286,187 @@ def test_the_morning_gate_keeps_the_swap_record_and_the_next_sweep_claims_it(
     assert item_id in {item.id for item in claimed}
 
 
+class _SessionProxy:
+    """`with SyncSessionLocal() as db:`를 테스트 세션에 그대로 붙인다."""
+
+    def __init__(self, session):
+        self._session = session
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self._session
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _capture_gate_reports(monkeypatch):
+    """07:45 게이트의 인시던트·요약 보고를 잡는다(위 테스트와 같은 방식)."""
+
+    incidents: list[tuple[uuid.UUID, str]] = []
+    digested: list[tuple[uuid.UUID, str]] = []
+
+    async def capture_incident(**kwargs):
+        incidents.append((kwargs["item_id"], kwargs["code"]))
+
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_generation_blocked_digest_sync",
+        lambda _db, _day, _batch, outcomes: digested.extend(
+            (row["content_id"], row["code"]) for row in outcomes
+        ),
+    )
+    return incidents, digested
+
+
+def test_a_same_day_swap_survives_the_morning_gate_and_is_claimed_the_same_morning(
+    pg_conn, pg_session, monkeypatch
+):
+    """예정일 당일 07:00:02 교체 → 07:45 게이트는 기록을 지키고 보고만 한다 → 로더가 바로 claim한다."""
+
+    kst = ZoneInfo("Asia/Seoul")
+    hospital_id = _seed_hospital(pg_conn)
+    item_id = _seed_item(pg_conn, hospital_id)  # scheduled_date = SLOT(09-16)
+    swapped_at = datetime(2026, 9, 16, 7, 0, 2, tzinfo=kst)
+
+    report = topic_swap_fallback.swap_exhausted_topics(
+        pg_session,
+        window_start=SLOT - timedelta(days=7),
+        window_end=SLOT + timedelta(days=2),
+        now=swapped_at.astimezone(UTC),
+    )
+    assert report.swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+    swapped = dict(row.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
+    assert datetime.fromisoformat(swapped["next_retry_at"]) == swapped_at
+
+    incidents, digested = _capture_gate_reports(monkeypatch)
+    gate_at = datetime(2026, 9, 16, 7, 45, tzinfo=kst)
+    _freeze(monkeypatch, gate_at)
+    tasks._page_morning_stored_publication_gates(pg_session, now_kst=arrow.get(gate_at))
+
+    pg_session.refresh(row)
+    assert row.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
+    assert incidents == [(item_id, "CONTENT_NOT_GENERATED")]
+    assert digested == [(item_id, "CONTENT_NOT_GENERATED")]
+
+    # 같은 아침의 다음 적격 로더(운영자 재시도·07시대 스윕)가 기다리지 않고 집는다.
+    loader_at = gate_at + timedelta(minutes=1)
+    _freeze(monkeypatch, loader_at)
+    claimed, _truncated, _complete = tasks._load_nightly_generation_batch(
+        pg_session,
+        loader_at.date() - timedelta(days=7),
+        loader_at.date() + timedelta(days=2),
+        is_eligible=tasks._generation_retry_is_eligible(pg_session),
+    )
+
+    assert [item.id for item in claimed] == [item_id]
+
+
+def test_the_morning_gate_skips_only_a_live_claim(pg_conn, pg_session, monkeypatch):
+    """살아 있는 claim의 행은 손대지 않고, 만료된 claim의 같은 행은 종전처럼 처리한다."""
+
+    kst = ZoneInfo("Asia/Seoul")
+    gate_at = datetime(2026, 9, 16, 7, 45, tzinfo=kst)
+    hospital_id = _seed_hospital(pg_conn)
+    # 시도 기록이 없는 같은 모양의 두 행 — 처리됐다면 게이트가 기록을 새로 남긴다.
+    live = _seed_item(
+        pg_conn,
+        hospital_id,
+        sequence_no=1,
+        summary="{}",
+        claimed_at=gate_at - timedelta(minutes=35),
+        claim_token=uuid.uuid4(),
+    )
+    expired = _seed_item(
+        pg_conn,
+        hospital_id,
+        sequence_no=2,
+        summary="{}",
+        claimed_at=gate_at - timedelta(hours=2, minutes=1),
+        claim_token=uuid.uuid4(),
+    )
+    before = pg_conn.execute(
+        text(
+            "SELECT essence_check_summary, content_revision, generation_claimed_at, "
+            "generation_claim_token FROM content_items WHERE id=:id"
+        ),
+        {"id": live},
+    ).one()
+
+    incidents, digested = _capture_gate_reports(monkeypatch)
+    _freeze(monkeypatch, gate_at)
+    tasks._page_morning_stored_publication_gates(pg_session, now_kst=arrow.get(gate_at))
+    pg_session.commit()
+
+    after = pg_conn.execute(
+        text(
+            "SELECT essence_check_summary, content_revision, generation_claimed_at, "
+            "generation_claim_token FROM content_items WHERE id=:id"
+        ),
+        {"id": live},
+    ).one()
+    assert tuple(after) == tuple(before)
+    assert incidents == [(expired, "CONTENT_NOT_GENERATED")]
+    assert digested == [(expired, "CONTENT_NOT_GENERATED")]
+    processed = pg_session.get(ContentItem, expired)
+    pg_session.refresh(processed)
+    assert processed.essence_check_summary[GENERATION_ATTEMPT_KEY]["reason"] == (
+        "CONTENT_NOT_GENERATED"
+    )
+
+
+def test_the_eight_oclock_publisher_keeps_the_swap_record_and_reports_the_block(
+    pg_conn, pg_session, monkeypatch
+):
+    """08:00 발행기(`_auto_publish_one`)도 빈 교체 슬롯의 증상으로 교체 기록을 덮지 않는다."""
+
+    kst = ZoneInfo("Asia/Seoul")
+    hospital_id = _seed_hospital(pg_conn)
+    item_id = _seed_item(pg_conn, hospital_id)
+    swapped_at = datetime(2026, 9, 16, 7, 0, 2, tzinfo=kst)
+    assert (
+        topic_swap_fallback.swap_exhausted_topics(
+            pg_session,
+            window_start=SLOT - timedelta(days=7),
+            window_end=SLOT + timedelta(days=2),
+            now=swapped_at.astimezone(UTC),
+        ).swapped
+        == 1
+    )
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+    swapped = dict(row.essence_check_summary[GENERATION_ATTEMPT_KEY])
+
+    publish_at = datetime(2026, 9, 16, 8, 0, tzinfo=kst)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _SessionProxy(pg_session))
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(publish_at))
+    _freeze(monkeypatch, publish_at)
+
+    outcome = tasks._auto_publish_one(item_id)
+
+    assert outcome is not None
+    assert (outcome["kind"], outcome["code"]) == ("blocked", "CONTENT_NOT_GENERATED")
+    pg_session.refresh(row)
+    assert row.status == ContentStatus.DRAFT
+    assert row.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
+
+
 def test_expired_claim_is_swapped_but_an_active_one_is_left_alone(pg_conn, pg_session):
     hospital_id = _seed_hospital(pg_conn)
     expired = _seed_item(
@@ -486,184 +667,3 @@ def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
     attempt = row.essence_check_summary["generation_attempt"]
     assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
     assert generation_retry_policy.retry_is_due(attempt, NOW) is False
-
-
-class _SessionProxy:
-    """`with SyncSessionLocal() as db:`를 테스트 세션에 그대로 붙인다."""
-
-    def __init__(self, session):
-        self._session = session
-
-    def __call__(self):
-        return self
-
-    def __enter__(self):
-        return self._session
-
-    def __exit__(self, *exc):
-        return False
-
-
-def _capture_gate_reports(monkeypatch):
-    """07:45 게이트의 인시던트·요약 보고를 잡는다(위 테스트와 같은 방식)."""
-
-    incidents: list[tuple[uuid.UUID, str]] = []
-    digested: list[tuple[uuid.UUID, str]] = []
-
-    async def capture_incident(**kwargs):
-        incidents.append((kwargs["item_id"], kwargs["code"]))
-
-    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
-    monkeypatch.setattr(
-        tasks,
-        "ensure_publication_block_run",
-        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
-    )
-    monkeypatch.setattr(
-        tasks,
-        "enqueue_generation_blocked_digest_sync",
-        lambda _db, _day, _batch, outcomes: digested.extend(
-            (row["content_id"], row["code"]) for row in outcomes
-        ),
-    )
-    return incidents, digested
-
-
-def test_a_same_day_swap_survives_the_morning_gate_and_is_claimed_the_same_morning(
-    pg_conn, pg_session, monkeypatch
-):
-    """예정일 당일 07:00:02 교체 → 07:45 게이트는 기록을 지키고 보고만 한다 → 로더가 바로 claim한다."""
-
-    kst = ZoneInfo("Asia/Seoul")
-    hospital_id = _seed_hospital(pg_conn)
-    item_id = _seed_item(pg_conn, hospital_id)  # scheduled_date = SLOT(09-16)
-    swapped_at = datetime(2026, 9, 16, 7, 0, 2, tzinfo=kst)
-
-    report = topic_swap_fallback.swap_exhausted_topics(
-        pg_session,
-        window_start=SLOT - timedelta(days=7),
-        window_end=SLOT + timedelta(days=2),
-        now=swapped_at.astimezone(UTC),
-    )
-    assert report.swapped == 1
-    row = pg_session.get(ContentItem, item_id)
-    pg_session.refresh(row)
-    swapped = dict(row.essence_check_summary[GENERATION_ATTEMPT_KEY])
-    assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
-    assert datetime.fromisoformat(swapped["next_retry_at"]) == swapped_at
-
-    incidents, digested = _capture_gate_reports(monkeypatch)
-    gate_at = datetime(2026, 9, 16, 7, 45, tzinfo=kst)
-    _freeze(monkeypatch, gate_at)
-    tasks._page_morning_stored_publication_gates(pg_session, now_kst=arrow.get(gate_at))
-
-    pg_session.refresh(row)
-    assert row.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
-    assert incidents == [(item_id, "CONTENT_NOT_GENERATED")]
-    assert digested == [(item_id, "CONTENT_NOT_GENERATED")]
-
-    # 같은 아침의 다음 적격 로더(운영자 재시도·07시대 스윕)가 기다리지 않고 집는다.
-    loader_at = gate_at + timedelta(minutes=1)
-    _freeze(monkeypatch, loader_at)
-    claimed, _truncated, _complete = tasks._load_nightly_generation_batch(
-        pg_session,
-        loader_at.date() - timedelta(days=7),
-        loader_at.date() + timedelta(days=2),
-        is_eligible=tasks._generation_retry_is_eligible(pg_session),
-    )
-
-    assert [item.id for item in claimed] == [item_id]
-
-
-def test_the_morning_gate_skips_only_a_live_claim(pg_conn, pg_session, monkeypatch):
-    """살아 있는 claim의 행은 손대지 않고, 만료된 claim의 같은 행은 종전처럼 처리한다."""
-
-    kst = ZoneInfo("Asia/Seoul")
-    gate_at = datetime(2026, 9, 16, 7, 45, tzinfo=kst)
-    hospital_id = _seed_hospital(pg_conn)
-    # 시도 기록이 없는 같은 모양의 두 행 — 처리됐다면 게이트가 기록을 새로 남긴다.
-    live = _seed_item(
-        pg_conn,
-        hospital_id,
-        sequence_no=1,
-        summary="{}",
-        claimed_at=gate_at - timedelta(minutes=35),
-        claim_token=uuid.uuid4(),
-    )
-    expired = _seed_item(
-        pg_conn,
-        hospital_id,
-        sequence_no=2,
-        summary="{}",
-        claimed_at=gate_at - timedelta(hours=2, minutes=1),
-        claim_token=uuid.uuid4(),
-    )
-    before = pg_conn.execute(
-        text(
-            "SELECT essence_check_summary, content_revision, generation_claimed_at, "
-            "generation_claim_token FROM content_items WHERE id=:id"
-        ),
-        {"id": live},
-    ).one()
-
-    incidents, digested = _capture_gate_reports(monkeypatch)
-    _freeze(monkeypatch, gate_at)
-    tasks._page_morning_stored_publication_gates(pg_session, now_kst=arrow.get(gate_at))
-    pg_session.commit()
-
-    after = pg_conn.execute(
-        text(
-            "SELECT essence_check_summary, content_revision, generation_claimed_at, "
-            "generation_claim_token FROM content_items WHERE id=:id"
-        ),
-        {"id": live},
-    ).one()
-    assert tuple(after) == tuple(before)
-    assert incidents == [(expired, "CONTENT_NOT_GENERATED")]
-    assert digested == [(expired, "CONTENT_NOT_GENERATED")]
-    processed = pg_session.get(ContentItem, expired)
-    pg_session.refresh(processed)
-    assert processed.essence_check_summary[GENERATION_ATTEMPT_KEY]["reason"] == (
-        "CONTENT_NOT_GENERATED"
-    )
-
-
-def test_the_eight_oclock_publisher_keeps_the_swap_record_and_reports_the_block(
-    pg_conn, pg_session, monkeypatch
-):
-    """08:00 발행기(`_auto_publish_one`)도 빈 교체 슬롯의 증상으로 교체 기록을 덮지 않는다."""
-
-    kst = ZoneInfo("Asia/Seoul")
-    hospital_id = _seed_hospital(pg_conn)
-    item_id = _seed_item(pg_conn, hospital_id)
-    swapped_at = datetime(2026, 9, 16, 7, 0, 2, tzinfo=kst)
-    assert (
-        topic_swap_fallback.swap_exhausted_topics(
-            pg_session,
-            window_start=SLOT - timedelta(days=7),
-            window_end=SLOT + timedelta(days=2),
-            now=swapped_at.astimezone(UTC),
-        ).swapped
-        == 1
-    )
-    row = pg_session.get(ContentItem, item_id)
-    pg_session.refresh(row)
-    swapped = dict(row.essence_check_summary[GENERATION_ATTEMPT_KEY])
-
-    publish_at = datetime(2026, 9, 16, 8, 0, tzinfo=kst)
-    monkeypatch.setattr(tasks, "SyncSessionLocal", _SessionProxy(pg_session))
-    monkeypatch.setattr(
-        tasks,
-        "ensure_publication_block_run",
-        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
-    )
-    monkeypatch.setattr(tasks.arrow, "now", lambda *_args, **_kwargs: arrow.get(publish_at))
-    _freeze(monkeypatch, publish_at)
-
-    outcome = tasks._auto_publish_one(item_id)
-
-    assert outcome is not None
-    assert (outcome["kind"], outcome["code"]) == ("blocked", "CONTENT_NOT_GENERATED")
-    pg_session.refresh(row)
-    assert row.status == ContentStatus.DRAFT
-    assert row.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
