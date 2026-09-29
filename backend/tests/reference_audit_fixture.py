@@ -3,6 +3,10 @@
 fixture는 공개 참고자료 365건 중 판정이 확정된 111행(정상 48·빈 페이지 37·주제 불일치 22·
 죽은 링크 4)과 그 URL의 실제 HTML(스크립트·스타일·주석만 제거, gzip)이다. 사람 확인
 필요 254행은 판정 대상이 아니다. 네트워크는 쓰지 않는다 — 가짜 fetcher가 fixture를 돌려준다.
+
+같은 디렉터리의 2차 점검(김실장, 같은 날 실제 GET) fixture:
+- `exclusions.json` — 제외 목록(`REFERENCE_URL_EXCLUSIONS`) 5개 주소의 실제 응답.
+- `catalog_seed.json` — 수기 목록에 더한 15개 문서의 실제 응답.
 """
 
 from __future__ import annotations
@@ -30,6 +34,13 @@ def load_manifest() -> dict[str, Any]:
 
 
 @lru_cache(maxsize=None)
+def load_review_rows(name: str) -> tuple[dict[str, Any], ...]:
+    """2차 점검 fixture(`exclusions`·`catalog_seed`)의 행."""
+
+    return tuple(json.loads((FIXTURE_DIR / f"{name}.json").read_text(encoding="utf-8"))["rows"])
+
+
+@lru_cache(maxsize=None)
 def fixture_html(relative: str) -> str:
     return gzip.decompress((FIXTURE_DIR / relative).read_bytes()).decode("utf-8")
 
@@ -37,8 +48,9 @@ def fixture_html(relative: str) -> str:
 class AuditFixtureFetcher:
     """fixture의 상태·최종 URL·HTML을 그대로 돌려주는 가짜 fetcher."""
 
-    def __init__(self) -> None:
-        self.by_url = {row["url"]: row for row in load_manifest()["rows"]}
+    def __init__(self, rows: Any = None) -> None:
+        rows = load_manifest()["rows"] if rows is None else rows
+        self.by_url = {row["url"]: row for row in rows}
         self.calls: list[str] = []
 
     async def __call__(self, url: str) -> FetchResult:
@@ -68,3 +80,17 @@ async def verify_audit_row(row: dict[str, Any]) -> dict[str, Any]:
     )
     assert len(outcome.checks) == 1
     return outcome.checks[0]
+
+
+async def verify_review_row(row: dict[str, Any], topic_terms: list[str]) -> tuple[dict[str, Any], list[str]]:
+    """2차 점검 fixture 한 행을 실제 검증 파이프라인에 태운다 → (판정 기록, GET한 주소)."""
+
+    fetcher = AuditFixtureFetcher([row])
+    verifier = ReferenceVerifier(fetcher, domain_spacing=0)
+    outcome = await verifier.verify([{"title": "", "url": row["url"]}], topic_terms=topic_terms)
+    assert len(outcome.checks) == 1
+    return outcome.checks[0], list(fetcher.calls)
+
+
+def review_row_topic(row: dict[str, Any]) -> list[str]:
+    return article_topic_terms(title=row["article_title"], extra=[row.get("topic")])

@@ -9,10 +9,7 @@ from typing import Any
 from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
-from app.services.content_engine import (
-    FORBIDDEN_CHECK_FIELDS,
-    REFERENCES_REQUIRED_TYPES,
-)
+from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -23,6 +20,10 @@ from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
     image_subject_hash,
+)
+from app.services.reference_requirement import (
+    REFERENCES_REQUIRED_TYPES,
+    references_required,
 )
 from app.utils.authority_sources import is_citable_reference_url
 from app.utils.medical_filter import check_forbidden_content_fields
@@ -72,16 +73,33 @@ _REFERENCES_REQUIRED_VALUES = frozenset(_type_value(t) for t in REFERENCES_REQUI
 
 
 def has_required_references(item: ContentItem) -> bool:
-    """이 항목에 참고 자료가 필수인가.
+    """발행 게이트 — 참고 자료가 필수인 글이면 인용 가능한 참고 자료가 1개 이상 있는가.
 
-    생성 검증(content_engine)과 **같은 유형 집합**을 쓴다. NOTICE는 순수 운영 공지라
-    생성 단계에서 참고 자료를 요구하지 않는데, 발행 게이트만 유형 구분 없이 요구하면
-    NOTICE는 생성은 되고 발행은 매일 MISSING_REFERENCES로 막히다가 조회 대상에서
-    빠져 영구 DRAFT로 사망한다.
+    생성 검증(content_engine)과 **같은 판정**(`reference_requirement.references_required`)을
+    쓴다: 의료 안내 유형은 항상, NOTICE는 의료 주제(측정 질문 연결)를 실었을 때만 필수다.
+    순수 운영 공지는 생성 단계에서 참고 자료를 요구하지 않는데, 발행 게이트만 요구하면
+    생성은 되고 발행은 매일 MISSING_REFERENCES로 막히다가 영구 DRAFT로 사망한다(5821409e).
+    반대로 질문이 연결된 NOTICE를 유형만 보고 면제하면 참고 자료 0개로 공개된다(2af00d02).
+    유형을 못 읽으면 요구하는 쪽(fail-safe)으로 둔다.
+
+    참고 자료의 실제 문서 확인(`reference_checks`)은 발행 경로가 이 판정 전에 따로 요구한다
+    (`reference_publication.publication_references_current`) — 둘을 합치면 "확인된 참고
+    자료 1개 이상"이다.
+    """
+    if not references_required(item):
+        return True
+    return count_citable_references(item) > 0
+
+
+def public_surface_has_required_references(item: ContentItem) -> bool:
+    """공개 가시성(`content_visibility`) 전용 — 유형만 보는 종전 판정.
+
+    이미 공개된 글의 공개 표면을 코드 배포만으로 바꾸지 않기 위해서다: 의료 주제 NOTICE
+    규칙을 여기에도 쓰면 참고 자료 없이 공개된 공지(2af00d02)가 배포 즉시 사이트에서
+    사라진다. 공개 글 교정은 사람이 따로 하며, 새 발행·restore는 `has_required_references`와
+    restore 전용 검사가 막는다. 교정이 끝나면 이 함수를 `has_required_references`로 합친다.
     """
     content_type = getattr(item, "content_type", None)
-    # 유형을 못 읽으면 요구하는 쪽(fail-safe)으로 둔다 — 근거 없는 의료 콘텐츠가
-    # 유형 판정 실패만으로 공개되면 안 된다.
     if content_type is not None and _type_value(content_type) not in _REFERENCES_REQUIRED_VALUES:
         return True
     return count_citable_references(item) > 0

@@ -338,6 +338,7 @@ from app.services.reference_publication import (
     PublicationReferenceRefresh,
     apply_publication_reference_refresh,
     publication_references_current,
+    publication_references_settled,
     reference_outage_alert_due,
     refresh_publication_references,
 )
@@ -6142,6 +6143,8 @@ _REFERENCE_VIEW_FIELDS = (
     "references_list",
     "reference_checks",
     "content_revision",
+    # 참고자료 필수 판정(`references_required`) — 의료 주제 NOTICE는 질문 연결로 판정한다.
+    "query_target_id",
 )
 
 
@@ -6170,7 +6173,7 @@ def _prefetch_publication_references(
         if (
             item is None
             or item.status not in AUTO_PUBLISHABLE_STATUSES
-            or publication_references_current(item)
+            or publication_references_settled(item)
         ):
             return None
         # 세션을 닫은 뒤에도 읽을 수 있게 판정에 필요한 값만 떼어 둔다.
@@ -6213,7 +6216,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     reference_verifier = ReferenceVerifier()
     for item in items:
         hospital = item.hospital
-        if _has_generated_text(item) and not publication_references_current(item):
+        if _has_generated_text(item) and not publication_references_settled(item):
             # GET은 잠금·열린 트랜잭션 밖에서 한다(느린 기관 사이트가 편집·발행을 막지 않게).
             view = _reference_view(item)
             db.commit()

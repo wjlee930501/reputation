@@ -30,6 +30,10 @@ from app.services.essence_engine import (
     effective_safety_policy,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
+from app.services.reference_requirement import (
+    REFERENCES_REQUIRED_TYPES,
+    references_required_for,
+)
 from app.services.reference_verification import (
     REFERENCE_GENERATION_MAX_FETCHES,
     VERDICT_PASS,
@@ -91,20 +95,9 @@ _BODY_LENGTH_BAND = (
 # ── 공개 콘텐츠 품질 검증 상수 ───────────────────────────────────────────────
 # HARD-FAIL (tenacity 재시도 트리거) 기준 — 최소한으로만 유지해 정상 출력이 리젝되지 않도록.
 SEO_H2_MIN = 2           # ## 헤딩이 이것보다 적으면 chunk 구조 붕괴 → hard-fail
-# 의료 안내 유형은 발행 자동화 전에 특정 근거 문서가 반드시 있어야 한다. NOTICE만
-# 순수 운영 공지일 수 있어 예외로 둔다.
-# 참고 자료가 반드시 필요한 콘텐츠 유형. **생성 검증과 발행 게이트가 같은 값을 써야 한다** —
-# 따로 두면 생성은 통과하고 발행만 막혀 슬롯이 영구히 비는 유형이 생긴다(NOTICE가 그랬다).
-REFERENCES_REQUIRED_TYPES: frozenset = frozenset(
-    {
-        ContentType.FAQ,
-        ContentType.DISEASE,
-        ContentType.TREATMENT,
-        ContentType.COLUMN,
-        ContentType.HEALTH,
-        ContentType.LOCAL,
-    }
-)
+# 의료 안내 유형은 발행 자동화 전에 특정 근거 문서가 반드시 있어야 한다. 유형 집합
+# `REFERENCES_REQUIRED_TYPES`와 "의료 주제를 실은 NOTICE" 규칙은 `reference_requirement`
+# 한 곳에 있다 — 생성 검증·프롬프트·스키마·치유와 모든 발행 게이트가 같은 판정을 쓴다.
 
 # 결정적 검증(분량·가격·SEO·GEO·FAQ·금지 표현) 실패에 쓰는 공급자 호출 횟수.
 # 같은 프롬프트로 blind 재시도하지 않고 직전 실패 사유를 작가에게 넘겨 다시 쓰게 한다.
@@ -409,12 +402,17 @@ _REFERENCE_REQUIRED_ARTICLE_INPUT_SCHEMA = _with_verified_reference_guidance(
 _FAQ_ARTICLE_INPUT_SCHEMA = _with_verified_reference_guidance(_FAQ_ARTICLE_INPUT_SCHEMA)
 
 
-def _article_tool_schema(content_type: ContentType) -> dict:
-    """유형이 실제로 요구하는 것만 요구하는 작가 도구 스키마."""
+def _article_tool_schema(
+    content_type: ContentType, content_brief: dict | None = None
+) -> dict:
+    """유형이 실제로 요구하는 것만 요구하는 작가 도구 스키마.
+
+    의료 주제를 실은 NOTICE도 참고자료 필수 글이라 같은 설명을 받는다(`references_required_for`).
+    """
 
     if content_type is ContentType.FAQ:
         return _FAQ_ARTICLE_INPUT_SCHEMA
-    if content_type in REFERENCES_REQUIRED_TYPES:
+    if references_required_for(content_type, content_brief=content_brief):
         return _REFERENCE_REQUIRED_ARTICLE_INPUT_SCHEMA
     return ARTICLE_TOOL["input_schema"]
 
@@ -579,8 +577,9 @@ TYPE_PROMPTS = {
     ).replace(
         "__SECTION_MIN_CHARS__", f"{CONTENT_BODY_SECTION_MIN_CHARS:,}"
     ).replace(
-        # NOTICE는 검증기도 참고자료를 요구하지 않는다 — 요구하지 않는 유형에 규칙을
-        # 렌더하면 순수 운영 공지에 없는 근거를 만들게 한다.
+        # 순수 운영 공지(NOTICE)는 검증기도 참고자료를 요구하지 않는다 — 요구하지 않는 글에
+        # 규칙을 렌더하면 없는 근거를 만들게 한다. 의료 주제를 실은 NOTICE는
+        # `_fill_type_prompt`가 같은 규칙을 덧붙인다.
         "__REFERENCES_RULE__",
         TYPE_PROMPT_REFERENCE_RULE if content_type in REFERENCES_REQUIRED_TYPES else "",
     )
@@ -719,6 +718,12 @@ def _fill_type_prompt(
         region=region_text,
         treatments=[t.get("name", "") for t in (hospital.treatments or [])],
     )
+    # 의료 주제(측정 질문)를 실은 NOTICE도 참고자료 필수 글이다 — 템플릿에 규칙 자리가 없는
+    # 유형이라 여기서 같은 규칙을 붙인다(2af00d02: 규칙 없이 도메인 루트 URL만 쓰고 0개로 공개).
+    if content_type not in REFERENCES_REQUIRED_TYPES and references_required_for(
+        content_type, content_brief=content_brief
+    ):
+        filled = f"{filled.rstrip()}\n{TYPE_PROMPT_REFERENCE_RULE}\n"
     return f"{filled}{_target_prompt_block(content_type, target, profile_regions)}"
 
 
@@ -1092,7 +1097,7 @@ async def _generate_content_attempt(
                     openrouter.function_tool(
                         name=ARTICLE_TOOL_NAME,
                         description=ARTICLE_TOOL["description"],
-                        input_schema=_article_tool_schema(content_type),
+                        input_schema=_article_tool_schema(content_type, content_brief),
                     )
                 ],
                 tool_choice=openrouter.forced_tool_choice(ARTICLE_TOOL_NAME),
@@ -1170,7 +1175,9 @@ async def _generate_content_attempt(
         raw_references, result["references"], _REFERENCE_DROP_NOT_CITABLE
     )
     reference_drops += await _verify_generated_references(
-        result, content_brief, required=content_type in REFERENCES_REQUIRED_TYPES
+        result,
+        content_brief,
+        required=references_required_for(content_type, content_brief=content_brief),
     )
 
     return _validate_generated_result(
@@ -1253,7 +1260,11 @@ def _validate_generated_result(
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
     geo_findings = _validate_geo(
-        result, hospital, content_type, reference_drop_notes=reference_drop_notes
+        result,
+        hospital,
+        content_type,
+        reference_drop_notes=reference_drop_notes,
+        references_required=references_required_for(content_type, content_brief=content_brief),
     )
     # 측정 질의 대응 검사. 워커가 이 목록을 보고 한 번만 보완 재작성을 돌린다.
     target_findings = _validate_target_alignment(result, content_brief, content_type)
@@ -1798,11 +1809,14 @@ def _validate_geo(
     content_type: ContentType,
     *,
     reference_drop_notes: list[str] | None = None,
+    references_required: bool | None = None,
 ) -> list[str]:
     """GEO 엔티티 공출현 + 증거 신호 검증.
 
     HARD (ValueError → tenacity 재시도):
-      • 의료 안내 유형인데 references가 빈 리스트일 때
+      • 참고자료 필수 글(`references_required_for` — 의료 안내 유형과 의료 주제를 실은
+        NOTICE)인데 references가 빈 리스트일 때. 호출부가 브리프로 판정해 넘기며, 넘기지
+        않으면 유형만으로 판정한다
       • 병원명·원장명·지역명 중 프로파일에 있는 값이 본문에서 누락됐을 때
 
     SOFT (반환 리스트에 추가):
@@ -1813,7 +1827,9 @@ def _validate_geo(
     findings: list[str] = []
 
     # ── HARD: 필수 references 빈 리스트 ─────────────────────────────
-    if content_type in REFERENCES_REQUIRED_TYPES and not refs:
+    if references_required is None:
+        references_required = references_required_for(content_type)
+    if references_required and not refs:
         raise MissingCitableReferencesError(
             (
                 f"GEO hard-fail: references is empty for {content_type.value} "

@@ -104,6 +104,8 @@ from app.services.published_image_recertification import (
 from app.services.reference_publication import (
     apply_publication_reference_refresh,
     publication_references_current,
+    publication_references_missing,
+    publication_references_settled,
     reference_snapshot,
     reference_snapshot_matches,
     refresh_publication_references,
@@ -1017,7 +1019,7 @@ async def publish_content(
     # 채우거나 비워 아래 MISSING_REFERENCES 차단으로 보낸다. 적용은 잠근 뒤 비교해서 한다.
     unlocked_item = await _get_content(db, content_id, hospital_id)
     reference_refresh = None
-    if not publication_references_current(unlocked_item):
+    if not publication_references_settled(unlocked_item):
         reference_refresh = await refresh_publication_references(
             unlocked_item, ReferenceVerifier(max_fetches=ADMIN_REFERENCE_FETCH_LIMIT)
         )
@@ -1636,6 +1638,21 @@ async def _require_restorable_references(db, item: ContentItem, verification) ->
                 "message": (
                     "참고 자료 주소를 확인하는 동안 글이 바뀌었습니다. 새로 불러온 뒤 다시 시도해 주세요."
                 ),
+            },
+        )
+    if publication_references_missing(item):
+        # 의료 주제 글(의료 안내 유형·질문이 연결된 NOTICE)인데 참고자료가 하나도 없다. restore는
+        # 채우지 않는다(공개됐던 글의 참고자료를 자동으로 바꾸지 않는다) — 사람이 먼저 넣게 한다.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "MISSING_REFERENCES",
+                "message": (
+                    "공신력 있는 참고 자료가 없어 다시 공개하지 않았습니다 — 의료 주제를 다루는 "
+                    "글은 실제 문서 확인을 통과한 출처가 1개 이상 필요합니다. 참고 자료 수정"
+                    "(PATCH)으로 이 글의 주제와 맞는 실제 문서를 먼저 넣은 뒤 다시 공개해 주세요."
+                ),
+                "failed_references": [],
             },
         )
     failures = unverified_reference_details(item)

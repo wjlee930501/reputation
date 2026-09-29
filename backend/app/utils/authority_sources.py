@@ -11,7 +11,7 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 """
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
     {"name": "질병관리청 국가건강정보포털", "domain": "health.kdca.go.kr"},
@@ -279,6 +279,85 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "title": "질병관리청 국가건강정보포털 — 혈변 및 흑변(성인)",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5434",
     },
+    # ── 2026-09-29 김실장 2차 점검에서 실제 GET(200·같은 주소·실제 문서 제목·주제어 등장)으로
+    # 확인하고 공개 글 교정에 쓴 문서(/workspace/ref-audit2-20260929/verify). 키워드는 실제
+    # 문서 제목에서만 뽑았고 '통증'·'검사' 같은 일반어는 넣지 않는다. 오프라인 fixture로 같은
+    # 검증을 통과함을 고정한다(tests/fixtures/reference_audit_20260929/catalog_seed.json).
+    {
+        "keywords": ("당뇨병", "당뇨", "혈당"),
+        "title": "질병관리청 국가건강정보포털 — 당뇨병",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5305",
+    },
+    {
+        "keywords": ("복부초음파",),
+        "title": "질병관리청 국가건강정보포털 — 복부초음파검사",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1061",
+    },
+    {
+        "keywords": ("족저근막염", "족저근막"),
+        "title": "질병관리청 국가건강정보포털 — 족저근막염",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5975",
+    },
+    {
+        "keywords": ("오십견", "동결견", "유착관절낭염", "유착성관절낭염"),
+        "title": "질병관리청 국가건강정보포털 — 오십견(동결견, 유착관절낭염)",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1567",
+    },
+    {
+        "keywords": ("수근굴", "수근관", "손목터널"),
+        "title": "질병관리청 국가건강정보포털 — 수근굴(수근관) 증후군",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6292",
+    },
+    {
+        "keywords": ("골관절염", "퇴행성관절염", "무릎관절염"),
+        "title": "질병관리청 국가건강정보포털 — 골관절염",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1988",
+    },
+    {
+        "keywords": ("이상지질혈증", "고지혈증", "콜레스테롤"),
+        "title": "질병관리청 국가건강정보포털 — 이상지질혈증",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6715",
+    },
+    {
+        "keywords": ("지질검사", "혈중지질"),
+        "title": "질병관리청 국가건강정보포털 — 지질 검사",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6709",
+    },
+    {
+        "keywords": ("위내시경",),
+        "title": "질병관리청 국가건강정보포털 — 위내시경",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5258",
+    },
+    {
+        "keywords": ("지방간",),
+        "title": "질병관리청 국가건강정보포털 — 대사이상지방간질환",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6673",
+    },
+    {
+        "keywords": ("갑상선초음파", "갑상샘초음파", "갑상선결절", "갑상샘결절"),
+        "title": "질병관리청 국가건강정보포털 — 갑상선 검사(초음파)",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2390",
+    },
+    {
+        "keywords": ("간기능", "간수치"),
+        "title": "질병관리청 국가건강정보포털 — 간기능검사",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5444",
+    },
+    {
+        "keywords": ("부정맥",),
+        "title": "질병관리청 국가건강정보포털 — 부정맥",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1102",
+    },
+    {
+        "keywords": ("경동맥초음파", "경동맥도플러", "경동맥협착"),
+        "title": "MedlinePlus — Carotid duplex (경동맥 초음파)",
+        "url": "https://medlineplus.gov/ency/article/003774.htm",
+    },
+    {
+        "keywords": ("고압산소",),
+        "title": "MedlinePlus — Hyperbaric oxygen therapy (고압산소치료)",
+        "url": "https://medlineplus.gov/ency/article/002375.htm",
+    },
 )
 
 # Schema.org / 운영 통계용 카테고리 식별자. 콘텐츠 references[].source_type 값으로 사용.
@@ -362,6 +441,80 @@ CURATED_SOURCE_URLS: frozenset[str] = frozenset(
     str(source["url"]) for source in CURATED_MEDICAL_SOURCE_PAGES
 )
 
+# 사람이 실제 GET으로 확인해 근거로 쓸 수 없다고 판정한 주소(2026-09-29 김실장 2차 점검,
+# /workspace/ref-fix-20260929/REPORT_FULL_2.md). 수기 목록에도, 모델 참고자료로도 쓰지 않는다 —
+# 사이트가 언젠가 리다이렉트를 멈추거나 제목만 채워 돌려줘도 막힌다. 비교는 정규화한 주소로
+# 한다(scheme·www·끝 슬래시·질의 순서·fragment 무시, `normalize_reference_url`).
+REFERENCE_URL_EXCLUSIONS: tuple[dict[str, str], ...] = (
+    {
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6263",
+        "topic": "소화불량",
+        "reason": (
+            "200이지만 /healthinfo/ 메인으로 리다이렉트되는 빈 템플릿(문서명 칸이 빈 제목) — "
+            "검색 색인에는 '소화불량'으로 있으나 실제 문서가 없다"
+        ),
+    },
+    {
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2351",
+        "topic": "당뇨병 합병증",
+        "reason": (
+            "200이지만 /healthinfo/ 메인으로 리다이렉트되는 빈 템플릿(문서명 칸이 빈 제목) — "
+            "검색 색인에는 '당뇨병 합병증'으로 있으나 실제 문서가 없다"
+        ),
+    },
+    {
+        "url": "https://www.cancer.go.kr/lay1/S1T211C213/contents.do",
+        "topic": "암의 종류 > 위암",
+        "reason": "국가암정보센터 허브 페이지 — 제목(breadcrumb)만 있고 본문이 비어 있다",
+    },
+    {
+        "url": "https://www.cancer.go.kr/lay1/S1T211C214/contents.do",
+        "topic": "암의 종류 > 대장암",
+        "reason": "국가암정보센터 허브 페이지 — 제목(breadcrumb)만 있고 본문이 비어 있다",
+    },
+    {
+        "url": "https://www.cancer.go.kr/lay1/S1T274C286/contents.do",
+        "topic": "치료 > 수술",
+        "reason": "국가암정보센터 허브 페이지 — 제목(breadcrumb)만 있고 본문이 비어 있다",
+    },
+)
+
+
+def normalize_reference_url(url: object) -> str:
+    """같은 문서를 가리키는 주소 표기 차이를 지운 비교용 키.
+
+    scheme(http/https)·호스트 대소문자·앞의 `www.`·끝 슬래시·질의 순서·fragment를 무시한다.
+    경로와 질의 값의 대소문자는 문서를 가를 수 있어 그대로 둔다.
+    """
+    text = str(url or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = f"https://{text}"
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return text
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    path = parsed.path.rstrip("/")
+    query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
+    return f"{host}{path}" + (f"?{query}" if query else "")
+
+
+_EXCLUDED_REFERENCE_REASONS: dict[str, str] = {
+    normalize_reference_url(entry["url"]): entry["reason"] for entry in REFERENCE_URL_EXCLUSIONS
+}
+
+
+def reference_exclusion_reason(url: object) -> str | None:
+    """제외 목록에 있는 주소면 그 사유, 아니면 None."""
+    return _EXCLUDED_REFERENCE_REASONS.get(normalize_reference_url(url))
+
+
 _INSTITUTION_TITLE_TOKENS: frozenset[str] = frozenset(
     re.sub(r"[^0-9a-z가-힣]+", "", part.lower())
     for name in _DOMAIN_TO_INSTITUTION_NAME.values()
@@ -429,7 +582,7 @@ def select_curated_authority_sources(text: str, *, limit: int = 3) -> list[dict[
         if not any(str(keyword).lower() in compact for keyword in keywords):
             continue
         url = str(source["url"])
-        if url in seen_urls:
+        if url in seen_urls or reference_exclusion_reason(url) is not None:
             continue
         selected.append(
             {

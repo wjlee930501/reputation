@@ -22,7 +22,10 @@ URL이었다. 모델이 KDCA `cntnts_sn`, 국가암정보센터 메뉴 코드, �
    있으면(연결 오류·시간 초과·5xx) 같은 URL·같은 글 주제의 직전 통과 판정을 정해진 기간 안에서
    재사용하고, 재사용할 통과가 없는 목록 밖 URL은 **제거하지 않고 미룬다**(`defer_transient`).
    생성 단계는 미루지 않는다 — 판단 불가인 목록 밖 URL은 제거하고 수기 목록으로 채운다.
-6. **통과 판정은 URL과 글 주제에 함께 묶인다.** 기록마다 판정에 쓴 글 주제어의 지문
+6. **사람이 확인해 제외한 주소는 어떤 경로로도 남지 않는다.** `REFERENCE_URL_EXCLUSIONS`
+   (authority_sources)에 있는 주소는 GET·직전 통과 재사용 전에 `excluded_source`로 떨어지고,
+   저장된 통과 기록도 게이트에서 인정되지 않는다. 비교는 정규화한 주소로 한다.
+7. **통과 판정은 URL과 글 주제에 함께 묶인다.** 기록마다 판정에 쓴 글 주제어의 지문
    (`topic_fingerprint`)을 남기고, 지금 글의 주제 지문과 다르면 신선한 통과로 보지 않는다 —
    제목·본문·FAQ·brief가 바뀌면 같은 URL이라도 다시 판정한다.
 
@@ -66,6 +69,7 @@ from app.utils.authority_sources import (
     institution_title_tokens,
     is_citable_reference_url,
     is_whitelisted_url,
+    reference_exclusion_reason,
     select_curated_authority_sources,
 )
 
@@ -129,6 +133,8 @@ REASON_NOT_VERIFIED = "not_verified"
 REASON_SITE_UNREACHABLE = "site_unreachable"
 # 게이트 전용 — 참고자료 항목의 형식이 깨졌다(매핑이 아님·빈 주소).
 REASON_MALFORMED_ENTRY = "malformed_entry"
+# 사람이 실제 GET으로 확인해 제외한 주소(`REFERENCE_URL_EXCLUSIONS`).
+REASON_EXCLUDED_SOURCE = "excluded_source"
 
 PASS_REASONS = frozenset(
     {
@@ -158,6 +164,7 @@ REASON_LABELS: Mapping[str, str] = {
     REASON_NOT_VERIFIED: "주소를 실제로 열어 확인하지 못함",
     REASON_SITE_UNREACHABLE: "기관 사이트에 접속하지 못함(일시 장애)",
     REASON_MALFORMED_ENTRY: "참고 자료 항목 형식 오류",
+    REASON_EXCLUDED_SOURCE: "검수에서 근거로 쓸 수 없다고 확인된 주소(빈 페이지)",
 }
 
 # fetcher가 돌려주는 오류 분류
@@ -951,7 +958,9 @@ def reference_gate_status(
     for reference in entries:
         url = str(reference.get("url") or "").strip()
         check = indexed.get(reference_url_fingerprint(url))
-        if not check_is_fresh_pass(check, now=observed, topic_fingerprint=fingerprint):
+        if reference_exclusion_reason(url) is not None or not check_is_fresh_pass(
+            check, now=observed, topic_fingerprint=fingerprint
+        ):
             missing.append(url)
     return ReferenceGateStatus(
         current=not missing and not malformed,
@@ -1095,6 +1104,16 @@ class ReferenceVerifier:
         async def verify_one(reference: Mapping[str, Any]) -> dict[str, Any] | None:
             url = str(reference.get("url") or "").strip()
             curated = url in CURATED_SOURCE_URLS
+            if reference_exclusion_reason(url) is not None:
+                # 사람이 확인해 제외한 주소 — 저장된 통과를 재사용하지도, 다시 열지도 않는다.
+                return reference_check_record(
+                    url,
+                    verdict=VERDICT_FAIL,
+                    reason=REASON_EXCLUDED_SOURCE,
+                    checked_at=observed,
+                    curated=curated,
+                    topic_fingerprint=fingerprint,
+                )
             prior = previous.get(reference_url_fingerprint(url))
             if reuse_fresh_checks and check_is_fresh_pass(
                 prior, now=observed, topic_fingerprint=fingerprint

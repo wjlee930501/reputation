@@ -7,9 +7,12 @@
   오래됐거나 글 주제가 바뀌었으면 워커가 다시 검증한다 — 표시 전용 순수 함수는 GET하지 않는다.
   형식이 깨진 항목(매핑이 아님·빈 주소)도 통과하지 못한다.
 - 다시 검증해 떨어진 항목은 빼고, 남은 것이 1개 이상이면 그대로 발행한다.
-- 전부 떨어지고 참고자료가 필수인 유형이면 이 글의 주제로 채점한 수기 목록에서 채운다(같은
-  검증을 거친다). 그래도 없으면 참고자료를 비워 기존 `MISSING_REFERENCES` 차단(발행 보류 +
-  인시던트 + 자동 본문 수리 세션)으로 보낸다. 실패한 URL과 사유는 `reference_checks`에 남는다.
+- 전부 떨어지고(또는 처음부터 비어 있고) 참고자료가 필수인 글이면 이 글의 주제로 채점한 수기
+  목록에서 채운다(같은 검증을 거친다). 그래도 없으면 참고자료를 비워 기존 `MISSING_REFERENCES`
+  차단(발행 보류 + 인시던트 + 자동 본문 수리 세션)으로 보낸다. 실패한 URL과 사유는
+  `reference_checks`에 남는다. "필수"는 `reference_requirement.references_required` 한 규칙이다
+  — 의료 안내 유형과 의료 주제(측정 질문)를 실은 NOTICE. 필수인 글이 비어 있으면
+  `publication_references_settled`가 False라 발행 경로가 반드시 치유를 먼저 시도한다(2af00d02).
 - 기관 사이트 장애(연결 오류·시간 초과·프로토콜·5xx·408/429)는 검증기 쪽에서 같은 URL·같은
   주제의 직전 통과 판정을 재사용한다. 재사용할 통과가 없는 목록 밖 URL이면 그 글을 **미룬다**
   (`deferred`, `site_unreachable_urls`) — 제거·치유·`MISSING_REFERENCES`·인시던트가 없고 다음
@@ -33,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from app.services.content_engine import REFERENCES_REQUIRED_TYPES
+from app.services.reference_requirement import references_required
 from app.services.reference_verification import (
     REASON_MALFORMED_ENTRY,
     VERDICT_PASS,
@@ -58,20 +61,6 @@ REFERENCE_SITE_UNREACHABLE_CAUSE = (
 )
 # 발행기는 08~23시 매시 돈다(`celery_app` beat). 이 시각 실행이 예정일의 마지막 기회다.
 REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 23
-
-_REQUIRED_TYPE_VALUES = frozenset(
-    str(getattr(content_type, "value", content_type)).upper()
-    for content_type in REFERENCES_REQUIRED_TYPES
-)
-
-
-def references_required(item: object) -> bool:
-    """생성·발행 게이트와 같은 유형 집합. 유형을 못 읽으면 요구하는 쪽으로 둔다."""
-
-    content_type = getattr(item, "content_type", None)
-    if content_type is None:
-        return True
-    return str(getattr(content_type, "value", content_type) or "").upper() in _REQUIRED_TYPE_VALUES
 
 
 def _references_key(references: object) -> str:
@@ -129,6 +118,28 @@ def publication_references_current(item: object, *, now: datetime | None = None)
     ).current
 
 
+def publication_references_missing(item: object) -> bool:
+    """참고자료가 필수인 글에 주소가 있는 항목이 하나도 없는가(치유 또는 MISSING_REFERENCES 대상)."""
+
+    if not references_required(item):
+        return False
+    entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
+    return not entries
+
+
+def publication_references_settled(item: object, *, now: datetime | None = None) -> bool:
+    """다시 검증할 일이 없는가 — 모든 항목이 신선한 통과이고, 필수인 글이 비어 있지 않다.
+
+    발행 경로(07:45·08:00·catch-up·수동 발행)는 이 값이 False일 때 재검증·치유를 돈다.
+    비어 있는 필수 글을 "통과"로 두면 치유를 건너뛰고 곧장 보류된다 — 또는 게이트가 그 글을
+    필수로 보지 않으면 0개로 공개된다(2af00d02).
+    """
+
+    return publication_references_current(item, now=now) and not publication_references_missing(
+        item
+    )
+
+
 def _deferred_urls(checks: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
     return tuple(str(check.get("url") or "") for check in checks)
 
@@ -148,9 +159,12 @@ async def refresh_publication_references(
     previous_checks = getattr(item, "reference_checks", None)
     topic_terms = item_topic_terms(item)
     required = references_required(item)
-    if reference_gate_status(
-        raw_references, previous_checks, topic_terms=topic_terms, now=observed
-    ).current:
+    if (
+        reference_gate_status(
+            raw_references, previous_checks, topic_terms=topic_terms, now=observed
+        ).current
+        and not (required and not references)
+    ):
         return PublicationReferenceRefresh(
             snapshot=snapshot,
             references=references,
