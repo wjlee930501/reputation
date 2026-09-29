@@ -6,12 +6,12 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.exc import OperationalError
 
-from tests.db_env import fail_unreachable, require_db_url, require_db_urls
+from tests.db_env import fail_unreachable, require_db_url, require_db_urls, require_redis_url
 
 _FIRST = "DB_ENV_HELPER_TEST_FIRST_URL"
 _SECOND = "DB_ENV_HELPER_TEST_SECOND_URL"
 # Port 1 on loopback is closed: the connection is refused at once, no DB is involved.
-_CLOSED_PORT_URL = "postgresql+psycopg2://x:x@127.0.0.1:1/x"
+_CLOSED_PORT_URL = "postgresql+psycopg2://x:x@127.0.0.1:1/x_test"
 
 
 def _expect_failure(call) -> str:
@@ -50,16 +50,16 @@ def test_empty_url_counts_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_set_url_is_returned(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_FIRST, "postgresql://example.invalid/db")
+    monkeypatch.setenv(_FIRST, "postgresql://example.invalid/reputation_test")
 
-    assert require_db_url(_FIRST) == "postgresql://example.invalid/db"
+    assert require_db_url(_FIRST) == "postgresql://example.invalid/reputation_test"
 
 
 def test_fallback_chain_returns_the_first_non_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_FIRST, "")
-    monkeypatch.setenv(_SECOND, "postgresql://second.invalid/db")
+    monkeypatch.setenv(_SECOND, "postgresql://second.invalid/reputation_test")
 
-    assert require_db_url(_FIRST, _SECOND) == "postgresql://second.invalid/db"
+    assert require_db_url(_FIRST, _SECOND) == "postgresql://second.invalid/reputation_test"
 
 
 def test_fallback_chain_fails_naming_every_variable_when_all_unset() -> None:
@@ -70,7 +70,7 @@ def test_fallback_chain_fails_naming_every_variable_when_all_unset() -> None:
 
 
 def test_all_required_fails_naming_only_the_missing(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_FIRST, "postgresql://first.invalid/db")
+    monkeypatch.setenv(_FIRST, "postgresql://first.invalid/reputation_test")
     monkeypatch.setenv(_SECOND, "")
 
     message = _expect_failure(lambda: require_db_urls(_FIRST, _SECOND))
@@ -80,13 +80,56 @@ def test_all_required_fails_naming_only_the_missing(monkeypatch: pytest.MonkeyPa
 
 
 def test_all_required_returns_every_url_in_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(_FIRST, "postgresql://first.invalid/db")
-    monkeypatch.setenv(_SECOND, "postgresql://second.invalid/db")
+    monkeypatch.setenv(_FIRST, "postgresql://first.invalid/reputation_test")
+    monkeypatch.setenv(_SECOND, "postgresql://second.invalid/reputation_test")
 
     assert require_db_urls(_FIRST, _SECOND) == (
-        "postgresql://first.invalid/db",
-        "postgresql://second.invalid/db",
+        "postgresql://first.invalid/reputation_test",
+        "postgresql://second.invalid/reputation_test",
     )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "postgresql+psycopg2://secret-user:secret-pw@db.invalid:5432/reputation",
+        "postgresql://secret-user:secret-pw@db.invalid/postgres",
+        "postgresql://secret-user:secret-pw@db.invalid",
+    ],
+)
+def test_url_naming_a_non_test_database_fails_without_echoing_it(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv(_FIRST, url)
+
+    for call in (lambda: require_db_url(_FIRST), lambda: require_db_urls(_FIRST)):
+        message = _expect_failure(call)
+
+        assert message.startswith(f"{_FIRST} names database")
+        assert "not a test database" in message
+        assert "secret-pw" not in message
+        assert "secret-user" not in message
+
+
+def test_dedicated_migration_database_is_a_test_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    url = "postgresql+psycopg2://x:x@db.invalid/reputation_autonomy_migration"
+    monkeypatch.setenv(_FIRST, url)
+
+    assert require_db_url(_FIRST) == url
+
+
+def test_redis_url_unset_fails_naming_the_variable() -> None:
+    message = _expect_failure(lambda: require_redis_url(_FIRST))
+
+    assert message.startswith(f"{_FIRST} is not set")
+
+
+def test_redis_url_is_returned_without_a_database_name_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(_FIRST, "redis://redis.invalid:6379/3")
+
+    assert require_redis_url(_FIRST) == "redis://redis.invalid:6379/3"
 
 
 def test_unreachable_set_url_fails_naming_the_variable_and_exception(

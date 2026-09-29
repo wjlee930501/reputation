@@ -2,7 +2,7 @@
 
 병원의 공식 자료를 근거가 있는 콘텐츠로 바꾸고, AI 답변의 병원 언급을 측정해 콘텐츠 보완과 월간 보고로 연결하는 MotionLabs의 관리형 서비스다. 운영 목표는 **최소한의 사람 개입, 자동 복구, 필요한 알림만 전달**이다.
 
-문서 버전: **2.6** · 갱신일: **2026-09-29 (Asia/Seoul)**
+문서 버전: **2.7** · 갱신일: **2026-09-29 (Asia/Seoul)**
 소스 기준선: **`39dc1f8a98abe9193a8e2202395d2272c370fe8e`**
 구현 상태: **기준선 위 A01~A17 로컬 검증 완료. 운영 전환·배포 전**
 
@@ -52,11 +52,13 @@ make copy-guard
 
 Backend 통합 검증은 테스트 PostgreSQL/Redis와 PDF 의존성이 필요하다. skip이 있는 결과를 전체 통합 검증 완료로 보고하지 않는다. 호스트의 `make test-backend-local`이 전체 스위트 진입점이며, Docker의 `make test`에는 저장소 마운트에 관한 알려진 제약이 있다. 자세한 내용은 [Makefile](Makefile)과 [CI](.github/workflows/ci.yml)를 본다.
 
-테스트 DB URL에는 기본값(`localhost:5434` 등)이 없다. 아래 변수를 직접 export해야 하며, 빠진 변수를 쓰는 DB 테스트는 skip이 아니라 변수 이름을 밝힌 실패로 끝난다. 값이 있는데 DB에 접속하지 못해도 skip이 아니라 실패다. 값과 드라이버 스킴(`postgresql://`·`+asyncpg`·`+psycopg2`)은 CI backend 잡 env를 따른다.
+테스트 DB·Redis URL에는 기본값(`localhost:5432`·`localhost:5434`·`localhost:6379` 등)이 없고, 테스트는 `backend/.env`를 읽지 않는다. 아래 변수를 직접 export해야 하며(`make test-backend-local`은 빠진 변수를 나열하고 바로 멈춘다), 빠진 변수를 쓰는 테스트는 skip이 아니라 변수 이름을 밝힌 실패로 끝난다. 앱 코드가 연결 오류를 삼키는 경로도 같다. 값이 있는데 DB에 접속하지 못해도 skip이 아니라 실패다. DB URL은 이름이 `_test`로 끝나는 DB(또는 아래 전용 DB)를 가리켜야 한다. 값과 드라이버 스킴(`postgresql://`·`+asyncpg`·`+psycopg2`)은 CI backend 잡 env를 따른다.
 
-- 무접미 `postgresql://`: `INTEGRATION_DATABASE_URL`, `TASK16_DATABASE_URL`, `TASK22_DATABASE_URL`, `TASK24_DATABASE_URL`
+- 앱 자체: `DATABASE_URL`(`postgresql+asyncpg://`), `SYNC_DATABASE_URL`(`postgresql+psycopg2://`) — DB 이름이 `_test`로 끝나지 않으면 세션이 시작되지 않는다.
+- Redis: `REDIS_URL`, `COST_GUARD_REDIS_URL`, `INTEGRATION_REDIS_URL` — 개발 앱과 같은 Redis라면 다른 DB 번호를 쓴다(`make test`는 `/1`·`/2`·`/3`, 전용 서비스를 쓰는 CI는 `/0`·`/2`·`/3`).
+- 무접미 `postgresql://`: `INTEGRATION_DATABASE_URL`, `TASK16_DATABASE_URL`, `TASK24_DATABASE_URL`
 - `postgresql+asyncpg://`: `INCIDENT_TEST_DATABASE_URL`, `OPERATION_RUN_SIGNAL_DATABASE_URL`, `OPERATION_RUNS_DATABASE_URL`, `OPERATION_RUN_TRANSITIONS_DATABASE_URL`, `OPERATION_RUN_CONCURRENCY_DATABASE_URL`, `NOTIFICATION_OUTBOX_DATABASE_URL`, `ONBOARDING_PROJECTOR_DATABASE_URL`, `CONTENT_PUBLISH_RECOVERY_DATABASE_URL`, `TASK13_DATABASE_URL`, `TASK18_DATABASE_URL`, `TASK19_ASYNC_DATABASE_URL`, `TASK20_DATABASE_URL`
-- `postgresql+psycopg2://`: `OPERATIONS_TEST_DATABASE_URL`, `OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL`, `TASK19_SYNC_DATABASE_URL`, `MIGRATION_UPGRADE_DATABASE_URL`, `REDELIVERY_TEST_SYNC_DATABASE_URL`
+- `postgresql+psycopg2://`: `TASK22_DATABASE_URL`, `OPERATIONS_TEST_DATABASE_URL`, `OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL`, `TASK19_SYNC_DATABASE_URL`, `MIGRATION_UPGRADE_DATABASE_URL`, `REDELIVERY_TEST_SYNC_DATABASE_URL`
   - `MIGRATION_UPGRADE_DATABASE_URL`은 루프백 호스트(`127.0.0.1`/`localhost`)의 `reputation_autonomy_migration` DB여야 한다. 테스트가 `public` 스키마를 지우고 다시 만들므로 다른 변수와 같은 DB를 쓰지 않는다.
   - `REDELIVERY_TEST_SYNC_DATABASE_URL`은 `127.0.0.1`의 49152~65535 포트에 있는 `reputation_redelivery_test` DB여야 한다.
 

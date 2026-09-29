@@ -15,7 +15,7 @@ runs, not at import, so collecting this directory never errors the session.
 """
 import pytest
 
-from tests.db_env import require_db_url
+from tests.db_env import fail_unreachable, require_db_url
 
 _URL_ENV = "INTEGRATION_DATABASE_URL"
 
@@ -60,7 +60,7 @@ def pg_engine():
         with engine.connect() as conn:
             conn.execute(sqlalchemy.text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
-        _unavailable(f"No integration Postgres at {url}: {exc.__class__.__name__}: {exc}")
+        fail_unreachable(_URL_ENV, exc)
     return engine
 
 
@@ -110,7 +110,7 @@ async def pg_async_session():
         try:
             conn = await engine.connect()
         except Exception as exc:  # noqa: BLE001
-            _unavailable(f"No integration Postgres at {url}: {exc.__class__.__name__}: {exc}")
+            fail_unreachable(_URL_ENV, exc)
         trans = await conn.begin()
         try:
             await conn.run_sync(_assert_migrated)

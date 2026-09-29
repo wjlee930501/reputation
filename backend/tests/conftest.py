@@ -4,8 +4,12 @@ import os
 # 다른 ADMIN_SECRET_KEY를 깔아두면 setdefault로는 401이 난다 (suite를 hermetic하게 유지).
 os.environ["ADMIN_SECRET_KEY"] = "test-admin-key"
 os.environ.setdefault("APP_ENV", "test")
-os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test")
-os.environ.setdefault("SYNC_DATABASE_URL", "postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test")
+# backend/.env(개발 DB·Redis)가 테스트 설정에 섞이지 않게 dotenv를 끈다 — 테스트 설정은
+# 프로세스 env와 아래 기본값에서만 온다. Settings가 import 시점에 읽으므로 app import 전에 둔다.
+os.environ["REPUTATION_DISABLE_DOTENV"] = "1"
+# DATABASE_URL·SYNC_DATABASE_URL·REDIS_URL에는 기본값을 넣지 않는다. 비어 있으면 아래에서
+# settings만 연결 불가능한 표지 호스트로 바꾸고, 그 호스트로 연결하면 변수 이름을 밝힌
+# 실패가 난다(tests/db_env.py).
 # 모든 LLM·이미지 호출은 OpenRouter 키 하나로 나간다 — 테스트에서도 동일한 계약.
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 # Google 이미지 경로가 실패하는 테스트가 실제 OpenAI로 새지 않게 폴백은 기본 꺼 둔다.
@@ -13,6 +17,49 @@ os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 os.environ.setdefault("IMAGE_FALLBACK_PROVIDER", "")
 
 import pytest  # noqa: E402 — 위 환경변수 설정이 app import보다 먼저여야 한다.
+
+from app.core.config import settings  # noqa: E402
+from tests.db_env import (  # noqa: E402
+    app_database_url_problem,
+    drain_unset_url_uses,
+    install_unset_url_guards,
+    point_unset_app_urls_at_sentinels,
+    unset_app_url_message,
+)
+
+# app 모듈이 import 시점에 settings 값을 읽기도 하므로(celery broker 등) 다른 app import보다 먼저.
+point_unset_app_urls_at_sentinels(settings)
+install_unset_url_guards()
+
+_FAILURE_REPORTED = pytest.StashKey[bool]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """설정된 앱 DB URL이 테스트 DB(`*_test`)가 아니면 세션을 시작하지 않는다 —
+    `make test`의 .env나 개발자 셸의 개발 DB `reputation`에 테스트가 쓰지 않게 한다."""
+    problem = app_database_url_problem(os.environ)
+    if problem:
+        raise pytest.UsageError(problem)
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
+    report = yield
+    if report.failed:
+        item.stash[_FAILURE_REPORTED] = True
+    return report
+
+
+@pytest.fixture(autouse=True)
+def _fail_on_unset_app_url_use(request: pytest.FixtureRequest):
+    """표지 호스트 연결은 그 자리에서 pytest.fail을 올리지만, 앱 코드가 BaseException을
+    삼키거나 백그라운드 태스크에서 났다면 테스트가 통과해 버린다 — 끝에서 다시 확인한다.
+    이미 실패로 보고된 테스트는 같은 원인으로 두 번 보고하지 않는다."""
+    drain_unset_url_uses()
+    yield
+    used = drain_unset_url_uses()
+    if used and not request.node.stash.get(_FAILURE_REPORTED, False):
+        pytest.fail("\n".join(unset_app_url_message(name) for name in used), pytrace=False)
 
 
 @pytest.fixture(autouse=True)

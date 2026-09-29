@@ -1,6 +1,5 @@
 """Real database checks for orphaned contractual work and ownership boundaries."""
 
-import os
 import uuid
 from datetime import UTC, date, datetime
 
@@ -12,18 +11,14 @@ from sqlalchemy.orm import Session
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.workers.content_backlog_recovery import _stranded_content_stmt
+from tests.db_env import require_db_url
 
 TODAY = date(2026, 9, 17)
 
 
 @pytest.fixture
 def db():
-    url = make_url(
-        os.environ.get(
-            "SYNC_DATABASE_URL",
-            "postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test",
-        )
-    )
+    url = make_url(require_db_url("SYNC_DATABASE_URL"))
     assert url.database == "reputation_test", "Only the test database may be used"
     engine = create_engine(url)
     with engine.connect() as connection:

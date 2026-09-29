@@ -32,12 +32,16 @@ revision:
 
 # 컨테이너 안에서 도는 DB 기반 테스트(~50개 파일)가 쓰는 별도 테스트 DB.
 # compose의 db 서비스는 POSTGRES_DB=reputation 하나만 만들고, 호스트 포트는 5434지만
-# 컨테이너 네트워크에서는 db:5432다. 테스트 DB URL에는 기본값이 없어서(tests/db_env.py)
+# 컨테이너 네트워크에서는 db:5432다. 테스트 DB·Redis URL에는 기본값이 없어서(tests/db_env.py)
 # 아래 `test` 타깃이 필요한 변수를 전부 명시적으로 넘긴다 — 빠진 변수가 있으면 그 변수를
 # 쓰는 테스트는 skip이 아니라 변수 이름을 밝힌 실패로 끝난다.
 TEST_DB_PLAIN := postgresql://reputation:reputation@db:5432/reputation_test
 TEST_DB_ASYNC := postgresql+asyncpg://reputation:reputation@db:5432/reputation_test
 TEST_DB_SYNC  := postgresql+psycopg2://reputation:reputation@db:5432/reputation_test
+# compose redis 서비스의 DB 번호 중 개발 앱이 쓰지 않는 것(.env.example은 /0). CI와 같은 번호 배치.
+TEST_REDIS_APP         := redis://redis:6379/1
+TEST_REDIS_COST_GUARD  := redis://redis:6379/2
+TEST_REDIS_INTEGRATION := redis://redis:6379/3
 
 test-db-setup:
 	# 멱등 — 이미 있으면 CREATE DATABASE가 실패하고, 그 다음 SELECT가 "정말 있는지"를
@@ -53,6 +57,9 @@ test-db-setup:
 # 읽는 계약 테스트가 FileNotFoundError로 깨진다. 이 타깃보다 넓은 문제다 — 전체 스위트는
 # `make test-backend-local`(호스트 실행)이 정본이고, 이 타깃은 컨테이너 환경 자체를
 # 검증하는 용도다. 테스트 DB 변수 목록은 .github/workflows/ci.yml backend 잡과 맞춘다.
+# api 컨테이너는 env_file: .env로 개발 DB(reputation)·개발 Redis(/0)를 받으므로 앱 자체의
+# DATABASE_URL·SYNC_DATABASE_URL·REDIS_URL도 반드시 덮어쓴다 — 테스트는 DB 이름이 `_test`로
+# 끝나지 않으면 세션을 시작하지 않는다(tests/conftest.py).
 # MIGRATION_UPGRADE_DATABASE_URL·REDELIVERY_TEST_SYNC_DATABASE_URL은 넘기지 않는다 — 두
 # 테스트는 루프백 호스트(127.0.0.1/localhost)와 전용 DB(reputation_autonomy_migration,
 # 49152~65535 포트의 reputation_redelivery_test)를 단언하는데 컨테이너의 db:5432로는
@@ -73,6 +80,11 @@ test: test-db-setup
 	docker compose exec \
 		-e UV_PROJECT_ENVIRONMENT=/opt/venv \
 		-e PYTHONDONTWRITEBYTECODE=1 \
+		-e DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e SYNC_DATABASE_URL="$(TEST_DB_SYNC)" \
+		-e REDIS_URL="$(TEST_REDIS_APP)" \
+		-e COST_GUARD_REDIS_URL="$(TEST_REDIS_COST_GUARD)" \
+		-e INTEGRATION_REDIS_URL="$(TEST_REDIS_INTEGRATION)" \
 		-e INTEGRATION_DATABASE_URL="$(TEST_DB_PLAIN)" \
 		-e TASK16_DATABASE_URL="$(TEST_DB_PLAIN)" \
 		-e TASK22_DATABASE_URL="$(TEST_DB_PLAIN)" \
@@ -96,10 +108,14 @@ test: test-db-setup
 
 test-local: test-backend-local test-frontend copy-guard
 
-# 테스트 DB URL에는 기본값이 없다 — 아래 변수를 호스트에서 직접 export해야 하며, 빠지거나
-# 그 DB에 접속하지 못하면 그 변수를 쓰는 DB 테스트가 변수 이름과 함께 실패한다. 값·드라이버 스킴의 정본은
+# 테스트 DB·Redis URL에는 기본값이 없다 — 아래 변수를 호스트에서 직접 export해야 하며, 빠지거나
+# 그 DB에 접속하지 못하면 그 변수를 쓰는 테스트가 변수 이름과 함께 실패한다. 값·드라이버 스킴의 정본은
 # .github/workflows/ci.yml backend 잡 env다. MIGRATION_UPGRADE_DATABASE_URL·
 # REDELIVERY_TEST_SYNC_DATABASE_URL은 다른 변수와 떨어진 전용 DB를 가리켜야 한다(README 참고).
+# 앱 자체의 URL(TEST_APP_URL_VARS)도 기본값이 없다. DATABASE_URL·SYNC_DATABASE_URL의 DB 이름은
+# `_test`로 끝나야 하고, Redis는 개발 앱과 다른 DB 번호를 쓴다.
+TEST_APP_URL_VARS := DATABASE_URL SYNC_DATABASE_URL \
+    REDIS_URL COST_GUARD_REDIS_URL INTEGRATION_REDIS_URL
 TEST_DB_URL_VARS := INTEGRATION_DATABASE_URL TASK16_DATABASE_URL TASK22_DATABASE_URL \
     TASK24_DATABASE_URL INCIDENT_TEST_DATABASE_URL OPERATIONS_TEST_DATABASE_URL \
     OPERATION_RUN_SIGNAL_DATABASE_URL OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL \
@@ -111,8 +127,15 @@ TEST_DB_URL_VARS := INTEGRATION_DATABASE_URL TASK16_DATABASE_URL TASK22_DATABASE
     MIGRATION_UPGRADE_DATABASE_URL REDELIVERY_TEST_SYNC_DATABASE_URL
 
 test-backend-local: db-budget-guard
-	@echo "backend 테스트 DB URL은 기본값 없이 export해야 한다 (ci.yml backend 잡 env 참고):"
-	@echo "  $(TEST_DB_URL_VARS)"
+	@missing=""; \
+	for var in $(TEST_APP_URL_VARS) $(TEST_DB_URL_VARS); do \
+		[ -n "$$(printenv $$var)" ] || missing="$$missing $$var"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "backend 테스트 URL은 기본값 없이 export해야 한다 (ci.yml backend 잡 env 참고). 빠진 변수:"; \
+		for var in $$missing; do echo "  $$var"; done; \
+		exit 1; \
+	fi
 	backend/.venv/bin/python -m ruff check backend
 	cd backend && .venv/bin/python -m pytest
 

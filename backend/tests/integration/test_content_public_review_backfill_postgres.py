@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import os
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -41,6 +40,7 @@ from app.services.cost_guard import CostGuardDecision, ReservationReceipt
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.evidence_noise import compute_evidence_noise_hash
 from app.services.sync_async_bridge import SyncAsyncBridge
+from tests.db_env import require_redis_url
 
 
 @dataclass
@@ -717,17 +717,13 @@ def test_cancelled_retry_counters_remain_exclusive_when_attempt_three_fails(
     assert (run.success_count, run.failure_count, run.skipped_count) == (0, 1, 0)
 
 
-@pytest.mark.skipif(
-    not os.getenv("COST_GUARD_REDIS_URL"),
-    reason="COST_GUARD_REDIS_URL is not configured",
-)
 def test_two_items_share_real_redis_loop_and_fully_refund_unused_reservations(
     committed_db, monkeypatch
 ) -> None:
+    url = require_redis_url("COST_GUARD_REDIS_URL")
     db, tracked = committed_db
     first = _seed(db, tracked)
     second = _seed(db, tracked)
-    url = os.environ["COST_GUARD_REDIS_URL"]
     monkeypatch.setattr(cost_guard.settings, "REDIS_URL", url)
     monkeypatch.setattr(cost_guard.settings, "COST_GUARD_ENABLED", True)
     monkeypatch.setattr(cost_guard.settings, "COST_GUARD_DAILY_CONTENT_CALLS", 10000)
@@ -756,7 +752,12 @@ def test_two_items_share_real_redis_loop_and_fully_refund_unused_reservations(
         with SyncAsyncBridge() as bridge:
             bridge.run(cost_guard._client().aclose())
         cost_guard._redis_client = None
-        pytest.skip("isolated Redis cost guard kill switch is active")
+        pytest.fail(
+            "COST_GUARD_REDIS_URL's Redis has the cost guard kill switch active. It must "
+            "be an isolated test Redis; clear the kill switch key there instead of "
+            "skipping this test.",
+            pytrace=False,
+        )
 
     async def no_provider(**kwargs):
         decision = kwargs["cost_decision"]

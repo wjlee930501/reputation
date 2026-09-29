@@ -58,7 +58,7 @@ async def test_fails_naming_the_other_var_when_only_one_is_set(
     missing_env: str,
 ) -> None:
     monkeypatch.delenv(missing_env, raising=False)
-    monkeypatch.setenv(set_env, "postgresql://explicitly-set")
+    monkeypatch.setenv(set_env, "postgresql://explicitly-set/reputation_test")
 
     message = await _expect_probe_failure()
 
@@ -68,7 +68,7 @@ async def test_fails_naming_the_other_var_when_only_one_is_set(
 
 async def test_empty_url_env_var_counts_as_unset(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(_ASYNC_URL_ENV, "")
-    monkeypatch.setenv(_SYNC_URL_ENV, "postgresql://explicitly-set")
+    monkeypatch.setenv(_SYNC_URL_ENV, "postgresql://explicitly-set/reputation_test")
 
     message = await _expect_probe_failure()
 

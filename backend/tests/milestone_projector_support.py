@@ -30,9 +30,11 @@ async def monthly_session_factory():
         )
     if not has_current_schema:
         await engine.dispose()
-        pytest.skip(
+        pytest.fail(
             "real-PostgreSQL projector test requires a fresh Alembic-head schema; "
-            "set TASK13_DATABASE_URL to an isolated migrated database"
+            "set TASK13_DATABASE_URL to an isolated migrated database "
+            "(this fails instead of skipping)",
+            pytrace=False,
         )
 
     async def cleanup() -> None:

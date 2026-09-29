@@ -137,6 +137,9 @@ jobs:
       TASK24_DATABASE_URL: postgresql://reputation:reputation@localhost:5434/reputation_test
       MIGRATION_UPGRADE_DATABASE_URL: postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_autonomy_migration
       REDELIVERY_TEST_SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@127.0.0.1:55432/reputation_redelivery_test
+      # 테스트에는 REDIS_URL 기본값이 없다 — 비어 있으면 앱 Redis를 쓰는 테스트가 변수 이름을
+      # 밝힌 실패로 끝난다(tests/conftest.py). 값은 예전 config.py 기본값과 같아 동작은 그대로다.
+      REDIS_URL: redis://localhost:6379/0
       COST_GUARD_REDIS_URL: redis://localhost:6379/2
       INTEGRATION_REDIS_URL: redis://localhost:6379/3
       # 블러 리포트 검사(F5-3)는 실제 PDF에서 텍스트를 추출해 가림 대상이 0회 등장하는지
