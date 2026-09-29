@@ -44,8 +44,8 @@ async def test_fails_when_both_url_env_vars_are_unset(monkeypatch: pytest.Monkey
 
     message = await _expect_probe_failure()
 
-    assert _ASYNC_URL_ENV in message
-    assert _SYNC_URL_ENV in message
+    assert message.startswith(f"{_ASYNC_URL_ENV} / {_SYNC_URL_ENV} are not set")
+    assert "unreachable" not in message
 
 
 @pytest.mark.parametrize(
