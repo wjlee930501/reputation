@@ -2303,6 +2303,18 @@ MUTANTS: tuple[Mutant, ...] = (
         "    if name in _DIGITS_ONLY_ID_PARAMS and not exact:\n        found = _NON_DIGITS.sub",
         (f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",),
     ),
+    Mutant(
+        "#185 리뷰 A2 인시던트는 살아 있는 claim 행의 저장 기한 키를 지우지 않는다(가드 제거)",
+        f"{INCIDENT}:open_generation_incident",
+        INCIDENT,
+        "            if item is not None and not generation_claim_is_active(item, now=observed_at):\n",
+        "            if item is not None:\n",
+        (
+            f"{T_OPD}::test_the_incident_leaves_the_attempt_of_a_live_claimed_row_alone",
+            f"{T_LAST_PG}::test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run",
+        ),
+        note="PG",
+    ),
 )
 
 
