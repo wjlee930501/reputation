@@ -31,6 +31,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRun, OperationRunState
+from app.schemas.content import ContentBriefUpdate
 from app.services import indexnow, site_revalidate
 from app.services import site_revalidation_control as revalidation_control
 from app.services.audit_log import reset_request_actor, set_request_actor
@@ -654,6 +655,59 @@ async def test_withheld_content_refuses_edits_other_than_references(
     await session.refresh(item)
     assert item.status == ContentStatus.WITHHELD
     assert {column: getattr(item, column) for column in columns} == before
+
+
+async def test_withheld_content_brief_patch_is_refused_so_philosophy_id_cannot_dodge_restore(
+    pg_async_session, verified_actor, revalidations
+):
+    """가이드 승인(brief_status=APPROVED)은 content_philosophy_id를 현재 승인 기준으로
+    바꾼다. WITHHELD 글에 이를 허용하면 옛 기준에 묶인 판이 restore 직전에
+    PHILOSOPHY_MISMATCH를 지우고 그대로 다시 공개된다. brief PATCH는 무엇도 바꾸지 않고 409."""
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    # 옛 기준 — 지금은 보관된 판이다. 현재 승인 기준은 _seed의 v1이다.
+    stale = HospitalContentPhilosophy(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        version=2,
+        status=PhilosophyStatus.ARCHIVED,
+        positioning_statement="예전 기준입니다.",
+        patient_promise="예전 약속입니다.",
+    )
+    session.add(stale)
+    await session.flush()
+    item.content_philosophy_id = stale.id
+    # 가드가 없으면 승인이 실제로 통과하도록 쓸 수 있는 가이드를 둔다.
+    item.content_brief = {"target_query": "위내시경 전 확인할 점"}
+    await session.flush()
+    await _withhold(session, hospital, item)
+    await session.refresh(item)
+    revision_before = item.content_revision
+
+    error = await _http_error(
+        content_api.update_content_brief(
+            hospital.id,
+            item.id,
+            ContentBriefUpdate(brief_status="APPROVED", brief_approved_by=_ACTOR),
+            db=session,
+        )
+    )
+
+    assert error.status_code == 409
+    await session.refresh(item)
+    assert item.status == ContentStatus.WITHHELD
+    assert item.content_philosophy_id == stale.id
+    assert item.content_revision == revision_before
+    assert item.brief_approved_at is None
+
+    # 우회가 일어나지 않았다 — restore는 여전히 기준 불일치로 막힌다.
+    restore_error = await _http_error(_restore(session, hospital, item))
+    assert restore_error.status_code == 409
+    assert restore_error.detail["code"] == "RESTORE_BLOCKED"
+    assert "PHILOSOPHY_MISMATCH" in restore_error.detail["blockers"]
+    await session.refresh(item)
+    assert item.status == ContentStatus.WITHHELD
+    assert item.content_philosophy_id == stale.id
 
 
 async def test_withheld_content_can_still_be_rejected(
