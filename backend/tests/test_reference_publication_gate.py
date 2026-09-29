@@ -462,6 +462,37 @@ def test_seven_forty_five_refreshes_a_slot_whose_claim_expired(monkeypatch):
     assert publication_references_current(item)
 
 
+def test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh(monkeypatch):
+    """재검증을 적용한 뒤, 판정 전에 생성 워커가 잡은 슬롯 — 보류·인시던트를 만들지 않는다.
+
+    대조군(`..._holds_and_pages_the_real_cause_when_nothing_survives`)과 같은 글이 claim만 없으면
+    MISSING_REFERENCES로 보류된다. 판정 직후의 claim 재확인이 없으면 여기서도 보류된다.
+    """
+
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료비 기준을 안내합니다.", title="경산 내과 진료비 안내")
+    item.references_list = [{"title": "진료비", "url": GUESSED}]
+    item.reference_checks = None
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    claimed_after_apply: list[bool] = []
+
+    def philosophy_after_a_claim(*_args):
+        # 적용·commit 뒤 판정 직전 — 07시 스윕의 워커가 이 슬롯을 잡았다.
+        claimed_after_apply.append(item.references_list == [])
+        _claim(item, observed.datetime)
+        return _approved_philosophy()
+
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", philosophy_after_a_claim)
+
+    with override_reference_fetcher(PageFetcher({GUESSED: (404, GUESSED, "")})):
+        paged = tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert claimed_after_apply == [True]  # 재검증은 적용됐다(claim 전이다)
+    assert (paged, incidents) == (0, [])
+
+
 def test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives(monkeypatch):
     hospital = _publication_hospital()
     item = _publication_item(hospital, body="진료비 기준을 안내합니다.", title="경산 내과 진료비 안내")
@@ -765,6 +796,88 @@ def test_outage_deferral_is_reported_from_the_last_publisher_run_with_its_real_c
     assert "확보하지 못" not in entry["cause"]
     copy = blocker_copy(entry["code"])
     assert "기관 사이트" in copy.title and "확보" not in copy.title
+
+
+# ── 08:00 발행기도 살아 있는 claim의 참고자료를 재검증하지 않는다(PR #183 후속) ─────
+
+
+def _stale_publish_setup(monkeypatch):
+    url = KDCA_VIEW.format(9601)
+    stale = _pass(url, age=REFERENCE_CHECK_MAX_AGE + timedelta(hours=2))
+    item, db, effects = _publish_setup(
+        monkeypatch, references=[{"title": "치핵", "url": url}], checks=[stale]
+    )
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(url, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+    return item, url, fetcher
+
+
+def _assert_untouched(item, before):
+    assert item.content_revision == 3
+    assert (item.references_list, item.reference_checks) == before
+    assert item.status is tasks.ContentStatus.DRAFT
+
+
+def test_eight_does_not_refresh_a_slot_a_live_worker_is_writing(monkeypatch):
+    """잠금 없는 읽기에서 살아 있는 claim을 보면 GET하지 않고, 잠근 뒤에도 적용·발행·보류하지 않는다."""
+
+    item, _url, fetcher = _stale_publish_setup(monkeypatch)
+    _claim(item, _now() - timedelta(minutes=10))
+    before = (copy.deepcopy(item.references_list), copy.deepcopy(item.reference_checks))
+    verifier = ReferenceVerifier(fetcher, domain_spacing=0)
+
+    assert tasks._prefetch_publication_references(item.id, verifier) is None
+    payload = tasks._auto_publish_one(item.id, reference_verifier=verifier)
+
+    assert payload is None and fetcher.calls == []
+    _assert_untouched(item, before)
+
+
+def test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get(monkeypatch):
+    item, url, fetcher = _stale_publish_setup(monkeypatch)
+    fetcher.pages[url] = (404, url, "")  # 재검증이 참고자료를 바꾼다(빼고 치유) — 판이 오를 일이다
+    before = (copy.deepcopy(item.references_list), copy.deepcopy(item.reference_checks))
+
+    def worker_claims():
+        _claim(item, _now())  # GET 사이에 생성 워커가 잡았다
+
+    payload = tasks._auto_publish_one(
+        item.id,
+        reference_verifier=ReferenceVerifier(
+            _MutatingFetcher(worker_claims, fetcher.pages), domain_spacing=0
+        ),
+    )
+
+    assert payload is None
+    _assert_untouched(item, before)
+
+
+def test_eight_refreshes_a_slot_whose_claim_expired(monkeypatch):
+    """대조군 — 만료된 claim은 살아 있는 작업이 아니다(종전처럼 재검증하고 발행한다)."""
+
+    item, url, fetcher = _stale_publish_setup(monkeypatch)
+    _claim(item, _now() - timedelta(days=2))
+
+    tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert fetcher.calls == [url]
+    assert item.status is tasks.ContentStatus.PUBLISHED
+
+
+def test_eight_judges_a_live_claimed_slot_whose_references_are_settled_as_before(monkeypatch):
+    """확인이 끝난 참고자료(신선한 통과)는 재검증할 일이 없다 — claim과 무관하게 종전 판정이다."""
+
+    url = KDCA_VIEW.format(9602)
+    item, _db, _effects = _publish_setup(
+        monkeypatch, references=[{"title": "치핵", "url": url}], checks=[_pass(url)]
+    )
+    _claim(item, _now() - timedelta(minutes=10))
+    fetcher = _hemorrhoid_fetcher()
+
+    payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher))
+
+    assert fetcher.calls == [] and item.content_revision == 3
+    assert payload is not None and item.status is tasks.ContentStatus.PUBLISHED
 
 
 # ── Pass 2: GET은 잠금 밖, 적용은 잠근 뒤 비교해서 ─────────────────────────────

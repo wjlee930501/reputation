@@ -6217,7 +6217,8 @@ def _prefetch_publication_references(
 
     잠금 없는 읽기로 필요한 값을 스냅샷에 담고 세션을 닫은 뒤 GET한다. 결과는 호출부가 행을
     잠근 뒤 `apply_publication_reference_refresh`로 비교 후 적용한다(그 사이 행이 바뀌었으면
-    쓰지 않는다). 발행 대상이 아니거나 이미 신선한 통과가 있으면 GET 없이 None.
+    쓰지 않는다). 발행 대상이 아니거나 이미 신선한 통과가 있거나 생성 워커가 지금 이 슬롯을
+    잡고 있으면(살아 있는 claim) GET 없이 None.
     """
 
     with SyncSessionLocal() as db:
@@ -6229,6 +6230,8 @@ def _prefetch_publication_references(
             or item.status not in AUTO_PUBLISHABLE_STATUSES
             # 아직 생성되지 않은 슬롯은 참고자료를 건드리지 않는다(판이 올라 생성 저장이 버려진다).
             or not _has_generated_text(item)
+            # 생성 워커가 쓰는 중인 슬롯도 같다 — 07:45와 같은 규칙이다(만료된 claim은 종전처럼).
+            or generation_claim_is_active(item, now=datetime.now(timezone.utc))
             or publication_references_settled(item)
         ):
             return None
@@ -6671,6 +6674,15 @@ def _auto_publish_one(
             # this row lock is held and the authoritative date is re-read.
             _log_auto_publish_skip("outside_catchup_window", content_id, item=item)
             return None
+        if generation_claim_is_active(item, now=datetime.now(timezone.utc)):
+            # 생성 워커가 이 슬롯을 잡고 있다(잠금 전 읽기 때부터, 또는 GET 사이에). 재검증을
+            # 적용하면 판이 올라 워커가 공급자 비용을 치른 결과를 버린다 — 적용하지 않는다.
+            reference_refresh = None
+            if _has_generated_text(item) and not publication_references_settled(item):
+                # 확인되지 않은 참고자료로 발행·보류하지도 않고 다음 시간대가 다시 본다(07:45와
+                # 같다). 이미 확인이 끝난 글은 아래 판정을 종전대로 거친다.
+                _log_auto_publish_skip("generation_claim_active", content_id, item=item)
+                return None
         # 참고자료 게이트: 모든 참고자료에 같은 URL·같은 글 주제의 신선한 통과 기록이 있어야
         # 공개한다. 잠금 밖에서 다시 검증한 결과는 판·참고자료·주제가 그대로일 때만 쓴다.
         if reference_refresh is not None:

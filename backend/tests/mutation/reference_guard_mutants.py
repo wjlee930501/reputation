@@ -75,6 +75,7 @@ RETRY = "app/workers/generation_retry_policy.py"
 T_OPD = "tests/test_reference_operator_decides.py"
 T_ALIAS = "tests/test_reference_curated_alias.py"
 T_COPY = "tests/test_reference_operator_copy.py"
+T_CLAIM_PG = "tests/integration/test_reference_claim_publisher_postgres.py"
 
 
 @dataclass(frozen=True)
@@ -252,8 +253,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "07:45 게이트의 재검증(08:00 GET 몰림 방지)",
         f"{TASKS}:_page_morning_stored_publication_gates",
         TASKS,
-        "        if _has_generated_text(item) and not publication_references_settled(item):",
-        "        if False:",
+        "        if _has_generated_text(item) and not publication_references_settled(item):\n"
+        "            # GET은 잠금·열린 트랜잭션 밖에서 한다",
+        "        if False:\n"
+        "            # GET은 잠금·열린 트랜잭션 밖에서 한다",
         (
             f"{T_GATE}::test_seven_forty_five_reverifies_stale_references_so_eight_does_not_burst",
             f"{T_GATE}::test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives",
@@ -1633,7 +1636,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "8a 문서 id는 정수로 비교 — 앞 0이 아무리 많아도(정수 변환 한도 전에 정리)",
         f"{AS}:_document_id_value",
         AS,
-        '    digits = "".join(str(unicodedata.decimal(char)) for char in found).lstrip("0")\n',
+        '    digits = found.lstrip("0")\n',
         "    digits = found\n",
         (f"{T_ALIAS}::test_default_ports_and_decorations_are_the_same_document",),
     ),
@@ -1729,6 +1732,7 @@ MUTANTS: tuple[Mutant, ...] = (
         (
             f"{T_ALIAS}::test_generation_keeps_a_redirect_to_a_curated_document_on_a_medical_title",
             f"{T_ALIAS}::test_patch_accepts_a_redirect_to_a_curated_document_on_a_medical_post",
+            f"{T_ALIAS}::test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url",
         ),
     ),
     Mutant(
@@ -2012,6 +2016,113 @@ MUTANTS: tuple[Mutant, ...] = (
         "            ):\n",
         "            if locked.status not in AUTO_PUBLISHABLE_STATUSES:\n",
         (f"{T_GATE}::test_seven_forty_five_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",),
+    ),
+    # ── PR #183 후속: ASCII 숫자만, 08:00 claim, 미고정 줄(3a·3b·3d) ─────────────────────
+    Mutant(
+        "#183 후속 1 `cntnts_sn`의 숫자 모으기는 ASCII 0-9만(전각 ３７９６은 숫자가 아니다)",
+        f"{AS}:_NON_DIGITS",
+        AS,
+        '_NON_DIGITS = re.compile(r"[^0-9]+")\n',
+        '_NON_DIGITS = re.compile(r"\\D+")\n',
+        (
+            f"{T_ALIAS}::test_a_fullwidth_id_is_not_a_catalog_document",
+            f"{T_ALIAS}::test_generation_judges_a_fullwidth_id_on_a_cost_title_by_its_page",
+            f"{T_ALIAS}::test_publication_refresh_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+            f"{T_ALIAS}::test_patch_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+        ),
+        note="`int()`가 유니코드 숫자를 읽으므로 옛 전각 매핑 없이도 전각 id가 3796이 된다.",
+    ),
+    Mutant(
+        "#183 후속 1 앞 정수 규칙도 ASCII 0-9만(AMC `contentId=３１７７３`)",
+        f"{AS}:_LEADING_INTEGER",
+        AS,
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?([0-9]+)")\n',
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?(\\d+)")\n',
+        (
+            f"{T_ALIAS}::test_a_fullwidth_id_is_not_a_catalog_document",
+            f"{T_ALIAS}::test_generation_judges_a_fullwidth_id_on_a_cost_title_by_its_page",
+            f"{T_ALIAS}::test_publication_refresh_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+            f"{T_ALIAS}::test_patch_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+        ),
+    ),
+    Mutant(
+        "#183 후속 1 두 규칙 모두 유니코드 숫자(수정 전 동작 복원 — 전각 → ASCII)",
+        f"{AS}:_LEADING_INTEGER/_NON_DIGITS",
+        AS,
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?([0-9]+)")\n_NON_DIGITS = re.compile(r"[^0-9]+")\n',
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?(\\d+)")\n_NON_DIGITS = re.compile(r"\\D+")\n',
+        (
+            f"{T_ALIAS}::test_a_fullwidth_id_never_equals_a_catalog_or_excluded_document",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_fullwidth_id_is_judged_by_its_page",
+        ),
+        note="전각 매핑만 되살리는 편집은 등가 변이다 — ASCII 정규식이 전각 문자를 숫자 문자열에 넣지 않는다.",
+    ),
+    Mutant(
+        "#183 후속 2 08:00 잠금 전 읽기 — 살아 있는 claim이면 GET하지 않는다",
+        f"{TASKS}:_prefetch_publication_references",
+        TASKS,
+        "            or generation_claim_is_active(item, now=datetime.now(timezone.utc))\n"
+        "            or publication_references_settled(item)\n",
+        "            or publication_references_settled(item)\n",
+        (
+            f"{T_GATE}::test_eight_does_not_refresh_a_slot_a_live_worker_is_writing",
+            f"{T_CLAIM_PG}::test_eight_does_not_refresh_a_row_a_live_worker_is_writing",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#183 후속 2 08:00 잠근 뒤 — GET 사이에 워커가 잡은 행에는 재검증을 적용하지 않는다",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "        if generation_claim_is_active(item, now=datetime.now(timezone.utc)):\n",
+        "        if False:\n",
+        (
+            f"{T_GATE}::test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",
+            f"{T_CLAIM_PG}::test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#183 후속 3a 장애 폴백 — 최종 주소가 제외 문서인 옛 통과는 재사용하지 않는다",
+        f"{RV}:_reusable_previous_pass",
+        RV,
+        '    if not check or check.get("verdict") != VERDICT_PASS or _final_url_excluded(check):\n'
+        "        return False\n"
+        "    if not _same_topic(check, topic_fingerprint):\n"
+        "        return False\n"
+        '    return _age_within(check.get("verified_at")',
+        '    if not check or check.get("verdict") != VERDICT_PASS:\n'
+        "        return False\n"
+        "    if not _same_topic(check, topic_fingerprint):\n"
+        "        return False\n"
+        '    return _age_within(check.get("verified_at")',
+        (f"{T_ALIAS}::test_an_old_pass_whose_final_url_is_excluded_is_not_reused_on_outage",),
+    ),
+    Mutant(
+        "#183 후속 3b 카탈로그 대조 주소 — 주소가 목록 문서면(첫 값) 주소, 아니면 최종 주소(항상 최종 주소)",
+        f"{RV}:judge_fetched_page",
+        RV,
+        "    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)",
+        "    catalog_url = fetched.final_url or url",
+        (f"{T_ALIAS}::test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url",),
+    ),
+    Mutant(
+        "#183 후속 3b 카탈로그 대조 주소의 판정은 첫 값 규칙(어느 값이든 판정으로 바꾸기)",
+        f"{RV}:judge_fetched_page",
+        RV,
+        "    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)",
+        "    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)",
+        (f"{T_ALIAS}::test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url",),
+    ),
+    Mutant(
+        "#183 후속 3d 07:45 — 재검증 적용 뒤·판정 전에 워커가 잡은 슬롯은 보류·인시던트 없음",
+        f"{TASKS}:_page_morning_stored_publication_gates",
+        TASKS,
+        "        if generation_claim_is_active(item, now=observed.datetime):\n"
+        "            # 재검증을 적용한 뒤에",
+        "        if False:\n"
+        "            # 재검증을 적용한 뒤에",
+        (f"{T_GATE}::test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh",),
     ),
 )
 
