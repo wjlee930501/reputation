@@ -7,14 +7,22 @@ mock으로는 확인할 수 없는 것만 본다: 어떤 행이 `FOR UPDATE SKIP
 
 import uuid
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
+import arrow
 import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem, ContentStatus
 from app.models.operations import Incident, IncidentSeverity
-from app.workers import generation_retry_policy, topic_swap_fallback
+from app.workers import (
+    generation_retry_policy,
+    nightly_generation_batch,
+    tasks,
+    topic_swap_fallback,
+)
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import (
@@ -195,6 +203,87 @@ def test_a_same_day_swap_leaves_exactly_one_writer_session_due_now(pg_conn, pg_s
         attempt, "GENERATION_REJECTED", swapped_at + timedelta(minutes=5)
     )
     assert count == SAMPLE_BODY_DAILY_BUDGET
+
+
+def _freeze(monkeypatch, moment: datetime) -> None:
+    """로더·재시도 정책·게이트 기록이 같은 '지금'을 보게 한다(단위 테스트와 같은 방식)."""
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return moment.astimezone(tz) if tz is not None else moment.replace(tzinfo=None)
+
+    for module in (tasks, generation_retry_policy, nightly_generation_batch):
+        monkeypatch.setattr(module, "datetime", _Frozen)
+
+
+def test_the_morning_gate_keeps_the_swap_record_and_the_next_sweep_claims_it(
+    pg_conn, pg_session, monkeypatch
+):
+    """교체(실제 SQL) → 07:45 게이트(실제 후보 조회·판정) → 다음 적격 스윕 로더가 claim한다.
+
+    게이트가 빈 슬롯의 증상으로 교체 기록을 OPERATOR_REQUIRED로 덮으면 로더의 적격
+    술어가 이 슬롯을 영영 거르고, 교체 이력 때문에 다시 교체되지도 않는다.
+    """
+
+    kst = ZoneInfo("Asia/Seoul")
+    hospital_id = _seed_hospital(pg_conn)
+    item_id = _seed_item(pg_conn, hospital_id)  # scheduled_date = SLOT(09-16)
+    swapped_at = datetime(2026, 9, 17, 7, 0, 2, tzinfo=kst)  # 예정일 다음 날 07:00 스윕
+
+    report = topic_swap_fallback.swap_exhausted_topics(
+        pg_session,
+        window_start=swapped_at.date() - timedelta(days=7),
+        window_end=swapped_at.date() + timedelta(days=2),
+        now=swapped_at.astimezone(UTC),
+    )
+    assert report.swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+    swapped = dict(row.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
+    assert datetime.fromisoformat(swapped["next_retry_at"]) == datetime(2026, 9, 18, 1, 0, tzinfo=kst)
+
+    incidents: list[tuple[uuid.UUID, str]] = []
+    digested: list[tuple[uuid.UUID, str]] = []
+
+    async def capture_incident(**kwargs):
+        # 인시던트는 자기 async 세션을 쓴다(테스트 트랜잭션 밖) — 보고된 코드만 잡는다.
+        incidents.append((kwargs["item_id"], kwargs["code"]))
+
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_generation_blocked_digest_sync",
+        lambda _db, _day, _batch, outcomes: digested.extend(
+            (row["content_id"], row["code"]) for row in outcomes
+        ),
+    )
+    gate_at = datetime(2026, 9, 17, 7, 45, tzinfo=kst)
+    _freeze(monkeypatch, gate_at)
+    tasks._page_morning_stored_publication_gates(pg_session, now_kst=arrow.get(gate_at))
+
+    pg_session.refresh(row)
+    assert row.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
+    # 보고 경로는 종전 그대로다.
+    assert (item_id, "CONTENT_NOT_GENERATED") in incidents
+    assert (item_id, "CONTENT_NOT_GENERATED") in digested
+
+    next_sweep = datetime(2026, 9, 18, 1, 0, tzinfo=kst)
+    _freeze(monkeypatch, next_sweep)
+    claimed, _truncated, _complete = tasks._load_nightly_generation_batch(
+        pg_session,
+        next_sweep.date() - timedelta(days=7),
+        next_sweep.date() + timedelta(days=2),
+        is_eligible=tasks._generation_retry_is_eligible(pg_session),
+    )
+
+    assert item_id in {item.id for item in claimed}
 
 
 def test_expired_claim_is_swapped_but_an_active_one_is_left_alone(pg_conn, pg_session):

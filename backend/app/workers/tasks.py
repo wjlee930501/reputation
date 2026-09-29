@@ -502,6 +502,7 @@ from app.workers.nightly_generation_batch import (
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     _stuck_claims_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     claim_generation_lease,
+    generation_claim_is_active,
     load_claimed_generation_item,
     load_stuck_claims,
     release_generation_claim,
@@ -512,7 +513,7 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
-from app.workers.topic_swap_fallback import swap_exhausted_topics
+from app.workers.topic_swap_fallback import TOPIC_SWAPPED_REASON, swap_exhausted_topics
 from app.workers.v0_checkpoint import (
     find_resumable_v0_measurement_run,
     find_reusable_v0_measurement_run,
@@ -1007,6 +1008,11 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     ):
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
+        return
+    if code == "CONTENT_NOT_GENERATED" and stored_reason == TOPIC_SWAPPED_REASON:
+        # 주제 교체 직후의 빈 슬롯도 증상이다. 교체 기록(SAMPLE_RECOVERABLE·다음 시도 시각)을
+        # OPERATOR_REQUIRED로 덮으면 새 주제를 어떤 스윕도 쓰지 않고, 교체 이력이 있어 다시
+        # 교체되지도 않는다. 보고 코드(CONTENT_NOT_GENERATED)는 호출부에서 그대로다.
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
@@ -6295,6 +6301,12 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
         if assessment.publishable:
+            continue
+        if generation_claim_is_active(item, now=observed.datetime):
+            # 생성 워커가 지금 이 슬롯을 쓰고 있다(07:00 스윕의 글 단위 태스크 등). 자동
+            # 복구가 소유한 일이라 기록·인시던트·요약 어느 것도 남기지 않는다 — 워커가
+            # 결과를 남기고, 그래도 막히면 08:00 발행기가 최종 판정을 소유한다. 만료된
+            # claim은 살아 있는 작업이 아니므로 종전처럼 처리한다.
             continue
 
         apply_publication_assessment(item, assessment)
