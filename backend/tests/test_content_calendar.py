@@ -7,8 +7,6 @@
 import os
 
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
-os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///tmp/reputation-test.db")
-os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///tmp/reputation-test.db")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 
 import uuid  # noqa: E402

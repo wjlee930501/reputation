@@ -1,7 +1,6 @@
 """A worker crash after report commit is repaired from durable database truth."""
 
 import asyncio
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -24,26 +23,28 @@ from app.workers import (
     monthly_artifact_recovery_control,
 )
 from app.workers.monthly_artifact_incident_contracts import MonthlyArtifactIncidentContext
+from tests.db_env import fail_unreachable, require_db_url
 
-_POSTGRES_URL = os.getenv(
-    "TASK24_DATABASE_URL",
-    "postgresql://reputation:reputation@localhost:5434/reputation_test",
-)
+_URL_ENV = "TASK24_DATABASE_URL"
+
+
+def _postgres_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 @pytest.mark.parametrize("quality", ["COMPLETE", "DEGRADED"])
 def test_committed_blocked_report_repairs_missing_incident_once(
     monkeypatch: pytest.MonkeyPatch, quality: str,
 ) -> None:
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     connection.close()
     session = Session(engine, expire_on_commit=False)
-    async_url = _POSTGRES_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    async_url = _postgres_url().replace("postgresql://", "postgresql+asyncpg://", 1)
     async_engine = create_async_engine(async_url, poolclass=NullPool)
     async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     hospital_id = uuid.uuid4()
@@ -253,15 +254,15 @@ def test_committed_blocked_report_repairs_missing_incident_once(
 def test_valid_paginated_artifact_recovers_false_invalid_incident(
     monkeypatch: pytest.MonkeyPatch, quality: str, pdf_version: str, pages: int,
 ) -> None:
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     connection.close()
     session = Session(engine, expire_on_commit=False)
-    async_url = _POSTGRES_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    async_url = _postgres_url().replace("postgresql://", "postgresql+asyncpg://", 1)
     async_engine = create_async_engine(async_url, poolclass=NullPool)
     async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     hospital_id = uuid.uuid4()

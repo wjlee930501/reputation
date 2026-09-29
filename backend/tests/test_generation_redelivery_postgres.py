@@ -1,5 +1,4 @@
 """Real PostgreSQL ownership proofs; require a disposable test DSN explicitly."""
-import os
 import subprocess
 import sys
 import threading
@@ -23,17 +22,22 @@ from app.workers.nightly_generation_batch import (
     release_unfinished_claims,
     write_back_generated_content,
 )
+from tests.db_env import require_db_url
 
-URL = os.getenv("REDELIVERY_TEST_SYNC_DATABASE_URL")
-pytestmark = pytest.mark.skipif(not URL, reason="Explicit disposable PostgreSQL URL required")
+_URL_ENV = "REDELIVERY_TEST_SYNC_DATABASE_URL"
+
+
+def _database_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 @pytest.fixture
 def live(monkeypatch):
-    parsed = make_url(URL)
+    url = _database_url()
+    parsed = make_url(url)
     assert parsed.host == "127.0.0.1" and parsed.database == "reputation_redelivery_test"
     assert parsed.port and 49152 <= parsed.port <= 65535
-    engine = create_engine(URL, pool_size=5, connect_args={"options": "-c lock_timeout=5000 -c statement_timeout=15000"})
+    engine = create_engine(url, pool_size=5, connect_args={"options": "-c lock_timeout=5000 -c statement_timeout=15000"})
     sessions = sessionmaker(engine, expire_on_commit=False)
     monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", sessions)
     with sessions() as db:
@@ -159,7 +163,7 @@ with Session(create_engine(url), expire_on_commit=False) as db:
         raise RuntimeError("Initial execution was not claimed")
     os._exit(73)
 """
-    child = subprocess.run([sys.executable, "-c", code, URL, str(item_id), str(reservation),
+    child = subprocess.run([sys.executable, "-c", code, _database_url(), str(item_id), str(reservation),
         str(context.run_id), context.worker_id, str(context.version), NOW.isoformat()],
         capture_output=True, text=True, timeout=20)
     assert child.returncode == 73, child.stderr

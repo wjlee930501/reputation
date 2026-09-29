@@ -4,42 +4,38 @@ These tests exercise actual SQL: unique constraints, the audit append-only trigg
 NOT NULL columns, covering indexes, and the public API's cross-tenant predicates —
 paths the mock-based unit suite cannot reach.
 
-Availability policy (deliberately asymmetric):
+Availability policy: `INTEGRATION_DATABASE_URL` is **required** and has no default.
+Unset → the tests that need the database fail, naming the variable. Set but
+unreachable or unmigrated → hard failure too. Without this, a missing or degraded
+Postgres silently skips the only tests in the repo that run real SQL and the build
+still goes green.
 
-* `INTEGRATION_DATABASE_URL` **explicitly set** (CI sets it) → an unreachable or
-  unmigrated database is a **hard failure**. Without this, a degraded Postgres
-  service silently skips the only tests in the repo that run real SQL and the
-  build still goes green.
-* Not set (a developer's laptop) → fall back to the local docker-compose Postgres
-  and *skip* when it is absent, so the default unit run stays portable.
-
-Point INTEGRATION_DATABASE_URL at a migrated test DB. Default matches the local
-docker-compose Postgres exposed on host port 5434.
+Point INTEGRATION_DATABASE_URL at a migrated test DB. The URL is read when a fixture
+runs, not at import, so collecting this directory never errors the session.
 """
-import os
-
 import pytest
 
-DEFAULT_URL = "postgresql://reputation:reputation@localhost:5434/reputation_test"
-_EXPLICIT_URL = os.getenv("INTEGRATION_DATABASE_URL")
-INTEGRATION_URL = _EXPLICIT_URL or DEFAULT_URL
-# CI is expected to export INTEGRATION_DATABASE_URL; anything else is a local run.
-INTEGRATION_REQUIRED = bool(_EXPLICIT_URL)
+from tests.db_env import fail_unreachable, require_db_url
+
+_URL_ENV = "INTEGRATION_DATABASE_URL"
+
+
+def integration_url() -> str:
+    """INTEGRATION_DATABASE_URL, or fail the calling test when it is unset."""
+    return require_db_url(_URL_ENV)
 
 
 def _unavailable(reason: str):
-    """Skip locally, fail loudly wherever the integration DB was promised."""
-    if INTEGRATION_REQUIRED:
-        pytest.fail(
-            "INTEGRATION_DATABASE_URL is set, so the integration Postgres is required "
-            f"and must not be skipped: {reason}",
-            pytrace=False,
-        )
-    pytest.skip(reason)
+    """The integration DB is always required: fail loudly, never skip."""
+    pytest.fail(
+        f"{_URL_ENV} is set, so the integration Postgres is required "
+        f"and must not be skipped: {reason}",
+        pytrace=False,
+    )
 
 
 def _require(module: str):
-    """importorskip, but a hard failure when the integration DB is required."""
+    """importorskip, but a hard failure: the integration DB is always required."""
     try:
         return __import__(module)
     except ImportError as exc:  # pragma: no cover - depends on the environment
@@ -56,14 +52,15 @@ def _async_url(url: str) -> str:
 
 @pytest.fixture(scope="session")
 def pg_engine():
+    url = integration_url()
     sqlalchemy = _require("sqlalchemy")
     _require("psycopg2")
-    engine = sqlalchemy.create_engine(INTEGRATION_URL, future=True)
+    engine = sqlalchemy.create_engine(url, future=True)
     try:
         with engine.connect() as conn:
             conn.execute(sqlalchemy.text("SELECT 1"))
     except Exception as exc:  # noqa: BLE001
-        _unavailable(f"No integration Postgres at {INTEGRATION_URL}: {exc.__class__.__name__}: {exc}")
+        fail_unreachable(_URL_ENV, exc)
     return engine
 
 
@@ -104,17 +101,16 @@ async def pg_async_session():
     The public API (`app.api.public.site`) is async-only, so the cross-tenant
     isolation tests need a real async connection rather than the psycopg2 one.
     """
+    url = integration_url()
     _require("asyncpg")
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-    engine = create_async_engine(_async_url(INTEGRATION_URL), future=True)
+    engine = create_async_engine(_async_url(url), future=True)
     try:
         try:
             conn = await engine.connect()
         except Exception as exc:  # noqa: BLE001
-            _unavailable(
-                f"No integration Postgres at {INTEGRATION_URL}: {exc.__class__.__name__}: {exc}"
-            )
+            fail_unreachable(_URL_ENV, exc)
         trans = await conn.begin()
         try:
             await conn.run_sync(_assert_migrated)
