@@ -650,20 +650,30 @@ CURATED_DOCUMENT_ID_PARAMS: frozenset[str] = frozenset(
     {"cntnts_sn", "contentId", "thtimt_cntnts_sn", "SEQ", "SEQ_HISTORY", "cancer_seq"}
 )
 _DEFAULT_PORTS: frozenset[int] = frozenset({80, 443})
+# 값에서 숫자만 모아 읽는 id 이름. KDCA `cntnts_sn`은 실제 서버가 `a3796`·`-3796`·`37a96`·
+# `3796%26x%3D`를 모두 요통(3796) 문서로, `3796-1`·`3796%26x%3D1`은 없는 문서(37961)로 돌려준다
+# (PR #177 5차 리뷰 공개 GET). 나머지 이름은 그런 관측이 없어 앞 정수 규칙을 그대로 쓴다.
+_DIGITS_ONLY_ID_PARAMS: frozenset[str] = frozenset({"cntnts_sn"})
 _LEADING_INTEGER = re.compile(r"\s*\+?(\d+)")
+_NON_DIGITS = re.compile(r"\D+")
 _DOCUMENT_ID_MAX_DIGITS = 18
 
 
-def _document_id_value(value: str) -> int | None:
-    """서버처럼 id 값의 앞 정수를 읽는다 — `3796abc`·`3796+`·`03796`·전각 숫자는 모두 3796.
+def _document_id_value(value: str, *, name: str = "") -> int | None:
+    """서버처럼 id 값을 정수로 읽는다 — `3796abc`·`3796+`·`03796`·전각 숫자는 모두 3796.
 
-    앞에 숫자가 없는 값(`abc`·빈 값)은 어떤 문서 id와도 맞지 않는다.
+    `cntnts_sn`(`_DIGITS_ONLY_ID_PARAMS`)은 값의 숫자만 모은다(`a3796`·`37a96`도 3796). 다른
+    이름은 앞 정수다. 읽을 숫자가 없는 값(`abc`·빈 값)은 어떤 문서 id와도 맞지 않는다.
     """
 
-    match = _LEADING_INTEGER.match(value)
-    if match is None:
+    if name in _DIGITS_ONLY_ID_PARAMS:
+        found = _NON_DIGITS.sub("", value)
+    else:
+        match = _LEADING_INTEGER.match(value)
+        found = match.group(1) if match is not None else ""
+    if not found:
         return None
-    digits = "".join(str(unicodedata.decimal(char)) for char in match.group(1)).lstrip("0")
+    digits = "".join(str(unicodedata.decimal(char)) for char in found).lstrip("0")
     if len(digits) > _DOCUMENT_ID_MAX_DIGITS:
         return None  # 목록 문서 id가 될 수 없는 길이(정수 변환 한도 전에 끊는다)
     return int(digits or "0")
@@ -705,7 +715,7 @@ def _document_matcher(url: str) -> tuple[str, tuple[tuple[str, int], ...]]:
     ids: dict[str, int] = {}
     for name, value in pairs:
         if name in CURATED_DOCUMENT_ID_PARAMS:
-            number = _document_id_value(value)
+            number = _document_id_value(value, name=name)
             if number is None or name in ids:
                 raise ValueError(f"목록 URL의 문서 id가 하나의 정수가 아니다: {url}")
             ids[name] = number
@@ -720,13 +730,17 @@ def _document_index(entries):  # type: ignore[no-untyped-def]
     return index
 
 
-def _matching_documents(url: object, index) -> list:  # type: ignore[no-untyped-def]
+def _matching_documents(url: object, index, *, first_value_only: bool = False) -> list:  # type: ignore[no-untyped-def]
     """이 주소가 가리킬 수 있는 목록 항목들.
 
-    위치가 같고, 항목 URL이 쓰는 문서 id 이름마다 이 주소에 그 이름의 값이 있어 그 가운데
-    하나라도 앞 정수가 항목의 값과 같으면 그 항목이다. 항목이 쓰지 않는 id 이름(`contentId`·
-    `SEQ` …)은 서버도 읽지 않으므로 보지 않는다. 같은 이름이 여러 번 오면 서버가 어느 값을
-    쓰는지 모르므로 상한 없이 모든 값을 본다 — 여러 항목과 맞으면 모두 돌려준다.
+    위치가 같고, 항목 URL이 쓰는 문서 id 이름마다 이 주소에 그 이름의 값이 있어 그 값을 읽은
+    정수(`_document_id_value`)가 항목의 값과 같으면 그 항목이다. 항목이 쓰지 않는 id 이름
+    (`contentId`·`SEQ` …)은 서버도 읽지 않으므로 보지 않는다.
+
+    같은 이름이 여러 번 오면 서버는 첫 값을 쓴다. `first_value_only`는 그 첫 값만 본다 — 목록
+    문서로 인정해 주는 쪽(의료 글의 카탈로그 주제 대조·장애 시 유지)이 쓴다. 기본은 상한 없이
+    모든 값을 본다 — 목록 문서라서 빼는 쪽(진료비·병원 선택 글·PATCH 422·제외 목록)이 쓴다.
+    여러 항목과 맞으면 모두 돌려준다.
     """
 
     located = _document_location(url)
@@ -737,9 +751,13 @@ def _matching_documents(url: object, index) -> list:  # type: ignore[no-untyped-
     if not candidates:
         return []
     values: dict[str, set[int]] = {}
+    seen: set[str] = set()
     for name, value in pairs:
         if name in CURATED_DOCUMENT_ID_PARAMS:
-            number = _document_id_value(value)
+            if first_value_only and name in seen:
+                continue
+            seen.add(name)
+            number = _document_id_value(value, name=name)
             if number is not None:
                 values.setdefault(name, set()).add(number)
     return [
@@ -766,14 +784,19 @@ _CURATED_DOCUMENTS = _document_index(
 
 
 def curated_source_entries(url: object) -> list[dict[str, object]]:
-    """이 주소가 가리키는 수기 목록 항목들 — 같은 문서의 별칭도 그 항목이다
-    (`_matching_documents`). id 값이 여러 번 와서 여러 항목과 맞으면 모두 돌려준다."""
+    """이 주소로 서버가 돌려주는 수기 목록 항목들 — 같은 문서의 별칭도 그 항목이다.
 
-    return list(_matching_documents(url, _CURATED_DOCUMENTS))
+    반복된 id는 서버처럼 첫 값만 본다(`first_value_only`). 목록 문서로 인정해 주는 판정
+    (카탈로그 주제 대조·검증기의 `curated`)이 쓴다 — `cntnts_sn=1&cntnts_sn=3796`은 요통 문서가
+    아니다. 빼는 판정은 `is_curated_source_url`이다.
+    """
+
+    return list(_matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True))
 
 
 def is_curated_source_url(url: object) -> bool:
-    """수기 목록 문서인가 — 같은 문서의 별칭도 목록 문서다."""
+    """수기 목록 문서일 수 있는가 — 같은 문서의 별칭, 반복된 id의 어느 한 값이 목록 문서인
+    주소도 목록 문서다. 진료비·병원 선택 글에서 빼고 PATCH가 422로 거절하는 쪽이 쓴다."""
     return bool(_matching_documents(url, _CURATED_DOCUMENTS))
 
 

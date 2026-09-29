@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import copy
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -378,6 +379,86 @@ def test_seven_forty_five_reverifies_stale_references_so_eight_does_not_burst(mo
 
     assert fetcher.calls == [url]
     assert db.locks == 1
+    assert publication_references_current(item)
+
+
+def _stale_claimable_item():
+    url = KDCA_VIEW.format(9101)
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    item.references_list = [{"title": "치핵", "url": url}]
+    item.reference_checks = [_pass(url, age=timedelta(hours=33))]
+    item.content_revision = 5
+    _stamp(item)
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(url, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+    return item, url, fetcher
+
+
+def _claim(item, at):
+    item.generation_claim_token = uuid.uuid4()
+    item.generation_claimed_at = at
+
+
+def test_seven_forty_five_does_not_refresh_a_slot_a_live_worker_is_writing(monkeypatch):
+    """3차 F4 — 살아 있는 claim이 있는 슬롯은 참고자료 재검증(GET·잠금·판 올림)부터 건너뛴다.
+
+    재검증이 판을 올리면 워커가 공급자 비용을 치른 저장이 판 불일치로 버려진다.
+    """
+
+    item, _url, fetcher = _stale_claimable_item()
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    _claim(item, observed.datetime - timedelta(minutes=10))
+    before = (copy.deepcopy(item.references_list), copy.deepcopy(item.reference_checks))
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+
+    with override_reference_fetcher(fetcher):
+        paged = tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert fetcher.calls == [] and db.locks == 0
+    assert (paged, incidents) == (0, [])
+    assert item.content_revision == 5
+    assert (item.references_list, item.reference_checks) == before
+
+
+def test_seven_forty_five_does_not_apply_a_refresh_when_a_worker_claims_during_the_get(
+    monkeypatch,
+):
+    item, url, fetcher = _stale_claimable_item()
+    fetcher.pages[url] = (404, url, "")  # 재검증이 참고자료를 바꾼다(빼고 치유) — 판이 오를 일이다
+    before = copy.deepcopy(item.references_list)
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    real_fetch = fetcher.__call__
+
+    async def claiming_fetch(fetched_url):
+        _claim(item, observed.datetime)  # GET 사이에 07시 스윕의 워커가 잡았다
+        return await real_fetch(fetched_url)
+
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+
+    with override_reference_fetcher(claiming_fetch):
+        paged = tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert fetcher.calls[0] == url and db.locks == 1
+    assert (paged, incidents) == (0, [])
+    assert (item.content_revision, item.references_list) == (5, before)
+
+
+def test_seven_forty_five_refreshes_a_slot_whose_claim_expired(monkeypatch):
+    """대조군 — 만료된 claim은 살아 있는 작업이 아니다(종전처럼 재검증한다)."""
+
+    item, url, fetcher = _stale_claimable_item()
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    _claim(item, observed.datetime - timedelta(days=2))
+    db = _GateDB(item)
+    _gate_setup(monkeypatch, item)
+
+    with override_reference_fetcher(fetcher):
+        tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert fetcher.calls == [url] and db.locks == 1
     assert publication_references_current(item)
 
 

@@ -608,8 +608,18 @@ def item_topic_fingerprint(item: object) -> str:
 
 
 def _curated_entries(url: str) -> list[Mapping[str, object]]:
-    # 같은 문서의 별칭(`utm_source`·`:443`·`cntnts_sn=03796` …)도 그 목록 항목이다.
+    # 같은 문서의 별칭(`utm_source`·`:443`·`cntnts_sn=03796` …)도 그 목록 항목이다. 반복된 id는
+    # 서버가 쓰는 첫 값만 본다 — 목록 문서로 인정해 주는 판정이기 때문이다.
     return list(curated_source_entries(url))
+
+
+def _serves_curated_document(url: object) -> bool:
+    """서버가 이 주소로 수기 목록 문서를 돌려주는가(반복 id는 첫 값) — 검증기의 `curated`.
+
+    카탈로그 주제 대조·장애 시 유지처럼 목록 문서라서 남기는 쪽의 판정이다. 진료비·병원 선택
+    글에서 빼는 쪽은 어느 값이든 목록 문서면 빼는 `is_curated_source_url`(`names_curated_document`).
+    """
+    return bool(curated_source_entries(url))
 
 
 def _curated_title_topic(title: object) -> str:
@@ -749,7 +759,7 @@ def judge_fetched_page(
     주소는 그 목록 항목의 카탈로그로 대조한다.
     """
 
-    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)
+    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)
     title = html_page_title(fetched.html)
     body_text = html_body_text(fetched.html) if fetched.html else ""
     text_len = len(body_text)
@@ -912,10 +922,15 @@ def _same_topic(check: Mapping[str, Any], topic_fingerprint: str) -> bool:
     return isinstance(stored, str) and bool(stored) and stored == topic_fingerprint
 
 
+def _final_url_excluded(check: Mapping[str, Any]) -> bool:
+    # 제외 문서로 리다이렉트되는 주소의 통과 기록(수정 전 코드가 남긴 것)은 통과가 아니다.
+    return reference_exclusion_reason(check.get("final_url")) is not None
+
+
 def check_is_fresh_pass(
     check: Mapping[str, Any] | None, *, now: datetime, topic_fingerprint: str
 ) -> bool:
-    if not check or check.get("verdict") != VERDICT_PASS:
+    if not check or check.get("verdict") != VERDICT_PASS or _final_url_excluded(check):
         return False
     if not _same_topic(check, topic_fingerprint):
         return False
@@ -925,7 +940,7 @@ def check_is_fresh_pass(
 def _reusable_previous_pass(
     check: Mapping[str, Any] | None, *, now: datetime, topic_fingerprint: str
 ) -> bool:
-    if not check or check.get("verdict") != VERDICT_PASS:
+    if not check or check.get("verdict") != VERDICT_PASS or _final_url_excluded(check):
         return False
     if not _same_topic(check, topic_fingerprint):
         return False
@@ -1120,7 +1135,7 @@ class ReferenceVerifier:
 
         async def verify_one(reference: Mapping[str, Any]) -> dict[str, Any] | None:
             url = str(reference.get("url") or "").strip()
-            curated = is_curated_source_url(url)
+            curated = _serves_curated_document(url)
             if reference_exclusion_reason(url) is not None:
                 # 사람이 확인해 제외한 주소 — 저장된 통과를 재사용하지도, 다시 열지도 않는다.
                 return reference_check_record(
@@ -1148,7 +1163,19 @@ class ReferenceVerifier:
             fetched = await self.fetch(
                 url, semaphore=semaphore, domain_semaphores=domain_semaphores
             )
-            if not curated and is_curated_source_url(fetched.final_url):
+            if reference_exclusion_reason(fetched.final_url) is not None:
+                # 제외 문서로 리다이렉트되는 주소는 그 제외 문서다 — 직접 인용한 것과 같다.
+                return reference_check_record(
+                    url,
+                    verdict=VERDICT_FAIL,
+                    reason=REASON_EXCLUDED_SOURCE,
+                    checked_at=observed,
+                    curated=curated,
+                    status=fetched.status,
+                    final_url=fetched.final_url,
+                    topic_fingerprint=fingerprint,
+                )
+            if not curated and _serves_curated_document(fetched.final_url):
                 # 목록 문서로 리다이렉트되는 주소는 그 목록 문서다(진료비·병원 선택 글이 뺀다).
                 curated = True
             if fetched.error == FETCH_ERROR_BUDGET and not curated:

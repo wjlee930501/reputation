@@ -666,6 +666,15 @@ async def update_content(
         _reject_curated_references_for_no_source_topic(
             item, body, normalized_refs, checks=patched_reference_checks
         )
+    elif body.title is not None:
+        # 참고자료 없이 제목만 바꿔도 저장될 제목이 진료비·병원 선택이면 이미 있던 목록 문서가
+        # 같은 422다 — 받아 두면 다음 발행 재검증이 빼고 글은 다시 참고 자료 보류로 돌아간다.
+        _reject_curated_references_for_no_source_topic(
+            item,
+            body,
+            list(getattr(item, "references_list", None) or []),
+            checks=getattr(item, "reference_checks", None),
+        )
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.WITHHELD and body.model_fields_set - {"references"}:
         # 비공개(보존) 글은 재인증·재검수 경로(스윕·이미지 태스크)가 모두 비켜 간다. 제목을
@@ -1747,7 +1756,8 @@ def _reject_curated_references_for_no_source_topic(
 
     그 문서는 이 글의 주장이 아니라 주제만 겹친 질환 문서라, 받아 두면 다음 발행 재검증이 빼고
     글은 다시 참고 자료 보류로 돌아간다(`reference_publication`). 제출한 목록에 들어 있으면
-    거절한다 — 이전부터 있던 문서를 그대로 둔 경우도 같다. 공개·보존된 글과 의료 글은 그대로다.
+    거절한다 — 이전부터 있던 문서를 그대로 둔 경우도 같다. 참고자료 없이 제목만 바꾸면 저장된
+    목록을 새 제목으로 판정한다. 공개·보존된 글과 의료 글은 그대로다.
     """
 
     urls = disallowed_curated_references(item, references, title=body.title, checks=checks)

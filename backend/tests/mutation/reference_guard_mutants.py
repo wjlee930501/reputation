@@ -1024,8 +1024,11 @@ MUTANTS: tuple[Mutant, ...] = (
         "B1 07:45 잠근 행이 발행 전 상태가 아니면 아무것도 쓰지 않음",
         f"{TASKS}:_page_morning_stored_publication_gates",
         TASKS,
-        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES:\n"
+        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES or generation_claim_is_active(\n"
+        "                locked, now=observed.datetime\n"
+        "            ):\n"
         "                # GET 사이에 수동 발행·취소됐다 — 공개된 글의 참고자료를 자동으로 바꾸지 않는다.\n"
+        "                # 또는 GET 사이에 생성 워커가 이 슬롯을 잡았다 — 위와 같이 워커의 결과를 둔다.\n"
         "                db.commit()\n"
         "                continue\n",
         "",
@@ -1630,8 +1633,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "8a 문서 id는 정수로 비교 — 앞 0이 아무리 많아도(정수 변환 한도 전에 정리)",
         f"{AS}:_document_id_value",
         AS,
-        '    digits = "".join(str(unicodedata.decimal(char)) for char in match.group(1)).lstrip("0")\n',
-        "    digits = match.group(1)\n",
+        '    digits = "".join(str(unicodedata.decimal(char)) for char in found).lstrip("0")\n',
+        "    digits = found\n",
         (f"{T_ALIAS}::test_default_ports_and_decorations_are_the_same_document",),
     ),
     Mutant(
@@ -1667,25 +1670,27 @@ MUTANTS: tuple[Mutant, ...] = (
         "                values[name] = {number}\n",
         (
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
-            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_matches_both",
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
         ),
     ),
     Mutant(
-        "4차 두 목록 id가 반복된 주소는 두 항목 모두다(첫 항목만 돌려주기)",
+        "5차 인정해 주는 판정(목록 항목·카탈로그 대조)은 반복 id의 첫 값만 — 모든 값 보기로 되돌리기",
         f"{AS}:curated_source_entries",
         AS,
+        "    return list(_matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True))",
         "    return list(_matching_documents(url, _CURATED_DOCUMENTS))",
-        "    return list(_matching_documents(url, _CURATED_DOCUMENTS))[:1]",
         (
-            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_matches_both",
-            f"{T_ALIAS}::test_a_medical_post_citing_a_two_document_url_matches_either_topic",
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_two_document_url_matches_only_the_first_value",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_catalog_id_after_another_id_is_not_that_document",
+            f"{T_ALIAS}::test_a_repeated_id_is_kept_on_outage_only_when_the_catalog_id_comes_first",
         ),
     ),
     Mutant(
         "8b 검증기의 수기 판정이 동일성 키를 쓴다(원문 정확 비교로 되돌리기)",
         f"{RV}:ReferenceVerifier.verify",
         RV,
-        "            curated = is_curated_source_url(url)\n",
+        "            curated = _serves_curated_document(url)\n",
         '            curated = url in {str(s["url"]) for s in CURATED_MEDICAL_SOURCE_PAGES}\n',
         (
             f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",
@@ -1708,7 +1713,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "8c 검증기 — GET의 최종 주소가 목록 문서면 목록 문서(리다이렉트)",
         f"{RV}:ReferenceVerifier.verify",
         RV,
-        "            if not curated and is_curated_source_url(fetched.final_url):\n",
+        "            if not curated and _serves_curated_document(fetched.final_url):\n",
         "            if False:\n",
         (
             f"{T_ALIAS}::test_generation_drops_an_outside_url_that_redirects_to_a_curated_document",
@@ -1719,7 +1724,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "8c 리다이렉트된 주소는 최종 주소의 목록 항목으로 카탈로그 대조",
         f"{RV}:judge_fetched_page",
         RV,
-        "    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)",
+        "    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)",
         "    catalog_url = url",
         (
             f"{T_ALIAS}::test_generation_keeps_a_redirect_to_a_curated_document_on_a_medical_title",
@@ -1802,9 +1807,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "4차 (a) id 값은 앞 정수로 읽는다(3796abc·3796%2B) — 값 전체가 정수일 때만 보기",
         f"{AS}:_document_id_value",
         AS,
-        "    match = _LEADING_INTEGER.match(value)\n",
-        "    match = re.fullmatch(r\"\\s*\\+?(\\d+)\\s*\", value)\n",
+        "        match = _LEADING_INTEGER.match(value)\n",
+        "        match = re.fullmatch(r\"\\s*\\+?(\\d+)\\s*\", value)\n",
         (
+            f"{T_ALIAS}::test_only_cntnts_sn_reads_every_digit",
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
             f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
             f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
@@ -1815,14 +1821,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "4차 (e) 반복 id 상한 없음 — 정렬해 16개로 자르기",
         f"{AS}:_matching_documents",
         AS,
-        "    for name, value in pairs:\n"
-        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n"
-        "            number = _document_id_value(value)\n"
-        "            if number is not None:\n",
-        "    for name, value in sorted(pairs)[:16]:\n"
-        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n"
-        "            number = _document_id_value(value)\n"
-        "            if number is not None:\n",
+        "    seen: set[str] = set()\n    for name, value in pairs:\n",
+        "    seen: set[str] = set()\n    for name, value in sorted(pairs)[:16]:\n",
         (
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
             f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
@@ -1836,7 +1836,11 @@ MUTANTS: tuple[Mutant, ...] = (
         AS,
         "                values.setdefault(name, set()).add(number)\n",
         "                values.setdefault(name, {number})\n",
-        (f"{T_ALIAS}::test_an_alias_is_the_curated_document",),
+        (
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
     ),
     Mutant(
         "4차 r20 반복 id — 대표 값(최솟값) 하나만 비교",
@@ -1899,6 +1903,115 @@ MUTANTS: tuple[Mutant, ...] = (
         '    if environ.get("CI"):\n',
         "    if False:\n",
         (f"{T_COPY}::test_admin_source_guard_fails_under_ci_and_skips_locally",),
+    ),
+    # ── 리뷰 5차 후속: cntnts_sn 숫자만 읽기, 반복 id 첫 값(인정)·모든 값(뺌), 제외 문서 리다이렉트,
+    #    F2(제목만 PATCH), F4(07:45 claim 먼저) ─────────────────────────────────────────────────
+    Mutant(
+        "5차 cntnts_sn은 값의 숫자만 모아 읽는다(a3796·-3796·37a96) — 앞 정수로 되돌리기",
+        f"{AS}:_document_id_value",
+        AS,
+        "    if name in _DIGITS_ONLY_ID_PARAMS:\n",
+        "    if False:\n",
+        (
+            f"{T_ALIAS}::test_digits_forming_a_catalog_id_name_that_document",
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "5차 숫자만 읽기 — 후보 주소의 값도 id 이름으로 읽는다(이름 전달 빼기)",
+        f"{AS}:_matching_documents",
+        AS,
+        "            number = _document_id_value(value, name=name)\n            if number is not None:\n",
+        "            number = _document_id_value(value)\n            if number is not None:\n",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_a_different_document_is_not_curated",
+        ),
+    ),
+    Mutant(
+        "5차 검증기의 curated(카탈로그 대조·장애 시 유지)는 반복 id의 첫 값만 — 모든 값으로 되돌리기",
+        f"{RV}:ReferenceVerifier.verify",
+        RV,
+        "            curated = _serves_curated_document(url)\n",
+        "            curated = is_curated_source_url(url)\n",
+        (
+            f"{T_ALIAS}::test_a_medical_post_citing_a_catalog_id_after_another_id_is_not_that_document",
+            f"{T_ALIAS}::test_a_repeated_id_is_kept_on_outage_only_when_the_catalog_id_comes_first",
+        ),
+    ),
+    Mutant(
+        "5차 빼는 판정(진료비·병원 선택·PATCH 422)은 반복 id의 어느 값이든 — 첫 값만으로 좁히기",
+        f"{AS}:is_curated_source_url",
+        AS,
+        "    return bool(_matching_documents(url, _CURATED_DOCUMENTS))\n",
+        "    return bool(_matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True))\n",
+        (
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "5차 제외 목록은 반복 id의 어느 값이든 — 첫 값만으로 좁히기",
+        f"{AS}:reference_exclusion_reason",
+        AS,
+        "    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS)\n",
+        "    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS, first_value_only=True)\n",
+        (f"{T_ALIAS}::test_the_exclusion_list_uses_the_same_document_matcher",),
+    ),
+    Mutant(
+        "5차 제외 문서로 리다이렉트되는 주소는 제외 주소와 같다(GET 최종 주소 판정 끄기)",
+        f"{RV}:ReferenceVerifier.verify",
+        RV,
+        "            if reference_exclusion_reason(fetched.final_url) is not None:\n",
+        "            if False:\n",
+        (
+            f"{T_ALIAS}::test_a_redirect_to_an_excluded_document_is_judged_like_the_excluded_url",
+            f"{T_ALIAS}::test_generation_drops_a_redirect_to_an_excluded_document",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_redirect_to_an_excluded_document",
+            f"{T_ALIAS}::test_patch_rejects_a_redirect_to_an_excluded_document_like_the_excluded_url",
+        ),
+        note="검증기 하나가 생성·발행 전 재검증·PATCH 세 경로를 모두 판정한다 — 세 경로 테스트가 각각 잡는다.",
+    ),
+    Mutant(
+        "5차 저장된 통과 기록의 최종 주소가 제외 문서면 통과가 아니다(수정 전 기록 재사용 막기)",
+        f"{RV}:_final_url_excluded",
+        RV,
+        "    return reference_exclusion_reason(check.get(\"final_url\")) is not None\n",
+        "    return False\n",
+        (f"{T_ALIAS}::test_publication_refresh_drops_a_redirect_to_an_excluded_document",),
+    ),
+    Mutant(
+        "5차 F2 제목만 바꾸는 PATCH도 저장된 목록 문서로 422",
+        f"{ADMIN}:update_content",
+        ADMIN,
+        "    elif body.title is not None:\n",
+        "    elif False:\n",
+        (f"{T_OPD}::test_a_title_only_patch_that_makes_stored_curated_references_disallowed_is_422",),
+    ),
+    Mutant(
+        "5차 F4 07:45 — 살아 있는 claim이 있는 슬롯은 참고자료 재검증부터 건너뛴다",
+        f"{TASKS}:_page_morning_stored_publication_gates",
+        TASKS,
+        "        if generation_claim_is_active(item, now=observed.datetime):\n"
+        "            # 생성 워커가 지금 이 슬롯을 쓰고 있다",
+        "        if False:\n"
+        "            # 생성 워커가 지금 이 슬롯을 쓰고 있다",
+        (f"{T_GATE}::test_seven_forty_five_does_not_refresh_a_slot_a_live_worker_is_writing",),
+    ),
+    Mutant(
+        "5차 F4 07:45 — GET 사이에 워커가 잡은 슬롯에는 재검증을 적용하지 않는다",
+        f"{TASKS}:_page_morning_stored_publication_gates",
+        TASKS,
+        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES or generation_claim_is_active(\n"
+        "                locked, now=observed.datetime\n"
+        "            ):\n",
+        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES:\n",
+        (f"{T_GATE}::test_seven_forty_five_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",),
     ),
 )
 
