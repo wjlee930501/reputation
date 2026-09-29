@@ -26,7 +26,7 @@ import pytest
 
 from app.workers import tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
-from app.workers.generation_retry_policy import GenerationRetryClass
+from app.workers.generation_retry_policy import GenerationRetryClass, recovery_is_abandoned
 from app.workers.topic_swap_fallback import TOPIC_SWAPPED_REASON
 from tests.test_topic_swap_fallback import (
     _RECORD_ATTEMPT,
@@ -421,3 +421,142 @@ def test_a_written_slot_is_reported_and_recorded_by_its_own_blocker(monkeypatch)
 
     assert _stored(item)["reason"] == code
 
+
+# ── `next_retry_at` 키가 없는 9월 이전 기록 ─────────────────────────────────────
+
+_LEGACY_ENV = {
+    "reason": "PROVIDER_TIMEOUT",
+    "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+}
+_LEGACY_SAMPLE = {
+    "reason": "CONTENT_AI_HARD_FINDING",
+    "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+}
+
+
+def _legacy_slot(monkeypatch, record: dict):
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    item.essence_check_summary = {
+        GENERATION_ATTEMPT_KEY: {
+            **record,
+            "context": tasks._generation_attempt_context(item, philosophy),
+            "attempt_period": "2026-09-16",
+            "exhausted_days": 0,
+        }
+    }
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    return philosophy, item, _stored(item)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        # 환경 예산 4회를 다 썼다 — 키가 없으니 "집을 스윕이 없다"는 결정도 없다.
+        pytest.param({**_LEGACY_ENV, "provider_attempt_count": 4}, id="environment_exhausted"),
+        # 오늘의 본문 표본 예산 2회를 다 썼다.
+        pytest.param({**_LEGACY_SAMPLE, "provider_attempt_count": 2}, id="sample_spent_today"),
+    ],
+)
+def test_a_legacy_record_without_a_schedule_that_is_not_due_is_overwritten(monkeypatch, record):
+    """키가 없고 지금 기한도 아닌 레거시 기록은 소유자가 없다 — 종전처럼 게이트 코드가 대신한다.
+
+    `recovery_is_abandoned`는 `next_retry_at=None`을 명시한 기록만 알아본다. 이 기록을
+    지키면 로더는 기한 미도래로 거르고(`_generation_attempt_is_unchanged`), 표본 실패는
+    운영자 재시도도 억제되어 어느 쪽도 이 슬롯을 쓰지 않는다.
+    """
+
+    philosophy, item, legacy = _legacy_slot(monkeypatch, record)
+    assert "next_retry_at" not in legacy
+    assert tasks.retry_is_due(legacy) is False
+    assert recovery_is_abandoned(legacy) is False  # 종전 가드가 지키던 이유
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is True
+
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, "CONTENT_NOT_GENERATED")
+
+    after = _stored(item)
+    assert after["reason"] == "CONTENT_NOT_GENERATED"
+    assert after["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(
+            {
+                **_LEGACY_ENV,
+                "provider_attempt_count": 1,
+                "next_retry_at": _kst(2026, 9, 16, 12, 0).astimezone(UTC).isoformat(),
+            },
+            id="environment",
+        ),
+        pytest.param(
+            {
+                **_LEGACY_SAMPLE,
+                "provider_attempt_count": 2,
+                "next_retry_at": _TOMORROW_SWEEP.astimezone(UTC).isoformat(),
+            },
+            id="sample",
+        ),
+    ],
+)
+def test_a_record_with_a_stored_schedule_is_kept_before_it_is_due(monkeypatch, record):
+    """같은 모양이라도 저장된 다음 시도 시각이 있으면 그 시각의 스윕이 소유한다."""
+
+    philosophy, item, stored = _legacy_slot(monkeypatch, record)
+    assert tasks.retry_is_due(stored) is False
+
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, "CONTENT_NOT_GENERATED")
+
+    assert _stored(item) == stored
+
+
+def test_a_legacy_record_that_is_already_due_is_kept_for_the_sweep(monkeypatch):
+    """키가 없어도 예산이 남은 레거시 기록은 `_due_time_reached`가 기한으로 읽는다.
+
+    로더가 곧바로 집는 슬롯이라 스윕이 소유한다 — 덮어 사람의 일로 만들지 않는다.
+    """
+
+    philosophy, item, legacy = _legacy_slot(
+        monkeypatch, {**_LEGACY_ENV, "provider_attempt_count": 1}
+    )
+    assert "next_retry_at" not in legacy
+    assert tasks.retry_is_due(legacy) is True
+
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, "CONTENT_NOT_GENERATED")
+
+    assert _stored(item) == legacy
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+
+
+@pytest.mark.parametrize(
+    ("reason", "retry_class"),
+    [
+        # 본문 수리 코드는 분류가 OPERATOR_REQUIRED여도 수리 예산의 기한을 문자열로 남긴다.
+        ("MISSING_REFERENCES", GenerationRetryClass.OPERATOR_REQUIRED),
+        ("FORBIDDEN_EXPRESSION", GenerationRetryClass.INPUT_CHANGE_REQUIRED),
+    ],
+)
+def test_a_terminal_class_is_overwritten_even_with_a_stored_schedule(
+    monkeypatch, reason, retry_class
+):
+    """다음 시도 시각이 있어도 판정 기준은 두 복구 분류다 — 종착 분류는 종전처럼 덮는다."""
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    _freeze(monkeypatch, _WRITTEN_AT)
+    tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, reason)
+    recorded = _stored(item)
+    assert recorded["retry_class"] == retry_class.value
+    if not isinstance(recorded.get("next_retry_at"), str):
+        # 실제 기록이 기한을 남기지 않는 분류도 같은 모양(기한 문자열)에서 확인한다.
+        recorded["next_retry_at"] = _NEXT_SWEEP.astimezone(UTC).isoformat()
+        item.essence_check_summary = {GENERATION_ATTEMPT_KEY: recorded}
+
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, "CONTENT_NOT_GENERATED")
+
+    after = _stored(item)
+    assert after["reason"] == "CONTENT_NOT_GENERATED"
+    assert after["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
