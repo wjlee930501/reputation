@@ -301,7 +301,11 @@ MUTANTS: tuple[Mutant, ...] = (
         (
             f"{T_GATE}::test_heal_never_borrows_a_curated_document_from_another_topic",
             f"{T_CE}::test_hospital_wide_messaging_never_picks_evidence_for_an_unnamed_slot",
+            f"{T_AS}::test_select_curated_authority_sources_supports_dehydration_content",
+            f"{T_OPD}::test_a_provider_or_routing_keyword_alone_never_passes_any_curated_document",
         ),
+        "r7: CE 테스트의 병원 선택 브리프는 이제 프롬프트 힌트 가드(7a)가 먼저 비운다 — 선택 결과를 "
+        "그대로 보는 테스트를 더했다",
     ),
     Mutant(
         "발행 직전 0개면 수기 목록으로 치유",
@@ -1317,19 +1321,29 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     Mutant(
         "4a 의료 주제 — 진료과 이름 키워드(정형외과·심장내과…)는 주제가 아니다",
-        f"{REQ}:_names_provider",
-        REQ,
-        "    return keyword in _PROVIDER_ROUTING_TEXTS or any(noun in keyword for noun in _PROVIDER_NOUNS)",
-        "    return keyword in _PROVIDER_ROUTING_TEXTS",
-        (f"{T_OPD}::test_provider_choice_is_only_a_choice_post_without_a_medical_subject",),
+        f"{AS}:keyword_names_provider",
+        AS,
+        "    return text in _PROVIDER_ROUTING_TEXTS or any(noun in text for noun in PROVIDER_NOUNS)",
+        "    return text in _PROVIDER_ROUTING_TEXTS",
+        (
+            f"{T_OPD}::test_provider_choice_is_only_a_choice_post_without_a_medical_subject",
+            f"{T_OPD}::test_provider_keywords_are_exactly_the_specialty_and_routing_keywords",
+            f"{T_AS}::test_select_curated_authority_sources_does_not_route_on_a_specialty_name",
+        ),
+        "r7: 술어가 authority_sources로 옮겨 치유 선택·수기 문서 대조도 같이 본다",
     ),
     Mutant(
         "4a 의료 주제 — 병원 고르기 FAQ 경로 키워드(병원선택·통증종류)는 주제가 아니다",
-        f"{REQ}:_names_provider",
-        REQ,
-        "    return keyword in _PROVIDER_ROUTING_TEXTS or any(",
+        f"{AS}:keyword_names_provider",
+        AS,
+        "    return text in _PROVIDER_ROUTING_TEXTS or any(",
         "    return any(",
-        (f"{T_OPD}::test_provider_choice_is_only_a_choice_post_without_a_medical_subject",),
+        (
+            f"{T_OPD}::test_provider_choice_is_only_a_choice_post_without_a_medical_subject",
+            f"{T_OPD}::test_provider_keywords_are_exactly_the_specialty_and_routing_keywords",
+            f"{T_OPD}::test_a_routing_only_post_gets_no_heal_at_publication",
+        ),
+        "r7: 술어가 authority_sources로 옮겨 치유 선택·수기 문서 대조도 같이 본다",
     ),
     Mutant(
         "4a 의료 주제 — 제외 목록 문서의 키워드는 세지 않는다(붙일 수 있는 문서만)",
@@ -1437,8 +1451,8 @@ MUTANTS: tuple[Mutant, ...] = (
         RP,
         "    if status is not None and status not in _REFERENCE_WRITABLE_STATUSES:\n"
         "        return False\n"
-        "    return references_left_to_operator(item)",
-        "    return references_left_to_operator(item)",
+        "    return references_left_to_operator(item, title=title)",
+        "    return references_left_to_operator(item, title=title)",
         (f"{T_OPD}::test_published_post_with_a_curated_document_stays_byte_identical",),
     ),
     Mutant(
@@ -1469,6 +1483,127 @@ MUTANTS: tuple[Mutant, ...] = (
         "        )",
         "        notes = []",
         (f"{T_OPD}::test_generation_does_not_accept_a_cited_curated_document",),
+    ),
+    # ── r7: 2차 리뷰(4dc64119 BLOCK) — 가짜 출처 세 경로·p07·관리자 PATCH 422 ──
+    Mutant(
+        "7a 생성 프롬프트 — 진료비·병원 선택 브리프에는 검증된 문서 힌트를 주지 않는다",
+        f"{CE}:_topic_aligned_curated_sources",
+        CE,
+        "    if result is None and _brief_names_no_source_topic(content_brief):",
+        "    if False and _brief_names_no_source_topic(content_brief):",
+        (f"{T_OPD}::test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief",),
+    ),
+    Mutant(
+        "7a 생성 프롬프트 — 브리프의 핵심 키워드(target_keyword)도 본다",
+        f"{CE}:_brief_names_no_source_topic",
+        CE,
+        "        content_brief.get(\"target_keyword\"),\n        content_brief.get(\"target_question\"),",
+        "        content_brief.get(\"target_question\"),",
+        (f"{T_OPD}::test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief",),
+    ),
+    Mutant(
+        "7a 생성 프롬프트 — 브리프의 측정 질문 이름(query_target.name)도 본다",
+        f"{CE}:_brief_names_no_source_topic",
+        CE,
+        "        query_target.get(\"name\") if isinstance(query_target, dict) else None,\n    )\n"
+        "    return any(",
+        "        None,\n    )\n    return any(",
+        (f"{T_OPD}::test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief",),
+    ),
+    Mutant(
+        "7b 치유 선택 — 진료과 이름·병원 고르기 경로 키워드만 겹친 글에 수기 목록 문서를 고르지 않는다",
+        f"{AS}:select_curated_authority_sources",
+        AS,
+        "        keywords = [\n"
+        "            keyword for keyword in source[\"keywords\"] if not keyword_names_provider(keyword)\n"
+        "        ]",
+        "        keywords = list(source[\"keywords\"])",
+        (
+            f"{T_OPD}::test_a_provider_or_routing_keyword_alone_never_passes_any_curated_document",
+            f"{T_OPD}::test_a_routing_only_post_gets_no_heal_at_publication",
+            f"{T_AS}::test_select_curated_authority_sources_does_not_route_a_clinic_choice_faq",
+        ),
+    ),
+    Mutant(
+        "7b 수기 문서 대조 — 진료과 이름·경로 키워드만 겹쳐서는 curated_verified가 아니다",
+        f"{RV}:curated_topic_relevant",
+        RV,
+        "            if keyword and not keyword_names_provider(keyword)\n",
+        "            if keyword\n",
+        (
+            f"{T_OPD}::test_a_provider_choice_post_citing_the_spine_documents_is_not_curated_verified",
+            f"{T_OPD}::test_a_provider_or_routing_keyword_alone_never_passes_any_curated_document",
+        ),
+    ),
+    Mutant(
+        "7c 병원 선택 — '병원 고를 때'(고를)도 고르기 말이다",
+        f"{REQ}:_PROVIDER_CHOICE_TERMS",
+        REQ,
+        "        \"고를\",\n        \"을고를\",\n        \"를고를\",\n",
+        "",
+        (f"{T_OPD}::test_choosing_a_clinic_with_goreul_is_a_provider_choice_post",),
+    ),
+    Mutant(
+        "7d 저장된 사람 결정 표시는 본문 없는(쓰이지 않은) 슬롯에서만 판정이 된다 (p07)",
+        f"{INCIDENT}:operator_decides_references",
+        INCIDENT,
+        "        not getattr(item, \"body\", None)\n        and attempt.get(\"reason\") == code\n",
+        "        attempt.get(\"reason\") == code\n",
+        (f"{T_OPD}::test_a_leftover_operator_flag_does_not_decide_a_written_medical_post",),
+    ),
+    Mutant(
+        "7e 관리자 PATCH — 발행 전 진료비·병원 선택 글의 수기 목록 문서는 GET 전에 422",
+        f"{ADMIN}:update_content",
+        ADMIN,
+        "        _reject_curated_references_for_no_source_topic(unlocked_item, body, normalized_refs)\n",
+        "",
+        (f"{T_OPD}::test_patch_rejects_a_curated_document_on_a_scheduled_cost_or_choice_post",),
+    ),
+    Mutant(
+        "7e 관리자 PATCH — 잠근 행으로 다시 판정(필수 여부는 스냅샷 밖)",
+        f"{ADMIN}:update_content",
+        ADMIN,
+        "        _reject_curated_references_for_no_source_topic(item, body, normalized_refs)\n",
+        "",
+        (f"{T_OPD}::test_patch_rechecks_on_the_locked_row_when_the_post_becomes_reference_required",),
+    ),
+    Mutant(
+        "7e 관리자 PATCH — 거절 자체(가드 제거)",
+        f"{ADMIN}:_reject_curated_references_for_no_source_topic",
+        ADMIN,
+        "    if not urls:\n        return\n    raise HTTPException(\n        status_code=422,",
+        "    if True:\n        return\n    raise HTTPException(\n        status_code=422,",
+        (
+            f"{T_OPD}::test_patch_rejects_a_curated_document_on_a_scheduled_cost_or_choice_post",
+            f"{T_OPD}::test_patch_judges_the_title_it_saves",
+        ),
+    ),
+    Mutant(
+        "7e 관리자 PATCH — 저장될 제목(바꾸면 새 제목)으로 판정",
+        f"{ADMIN}:_reject_curated_references_for_no_source_topic",
+        ADMIN,
+        "    urls = disallowed_curated_references(item, references, title=body.title)",
+        "    urls = disallowed_curated_references(item, references)",
+        (f"{T_OPD}::test_patch_judges_the_title_it_saves",),
+    ),
+    Mutant(
+        "7e 관리자 PATCH — 공개·보존된 글에는 적용하지 않는다",
+        f"{RP}:disallowed_curated_references",
+        RP,
+        "    if not _strips_curated_references(item, title=title):\n        return []",
+        "    if not references_left_to_operator(item, title=title):\n        return []",
+        (f"{T_OPD}::test_patch_on_a_published_cost_post_is_unaffected",),
+    ),
+    Mutant(
+        "7e 관리자 PATCH — 진료비·병원 선택이 아닌 글(의료 제목)에는 적용하지 않는다",
+        f"{RP}:disallowed_curated_references",
+        RP,
+        "    if not _strips_curated_references(item, title=title):\n        return []",
+        "    if _status_value(item) not in _REFERENCE_WRITABLE_STATUSES:\n        return []",
+        (
+            f"{T_OPD}::test_patch_accepts_a_curated_document_on_a_medical_post",
+            f"{T_OPD}::test_patch_judges_the_title_it_saves",
+        ),
     ),
 )
 

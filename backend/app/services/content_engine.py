@@ -949,6 +949,21 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     return " ".join(str(value) for value in values if value)
 
 
+def _brief_names_no_source_topic(content_brief: dict | None) -> bool:
+    """브리프의 측정 질문(질의·핵심 키워드·질문 이름)이 진료비·병원 선택인가 — 칸마다 따로 본다."""
+
+    if not isinstance(content_brief, dict):
+        return False
+    query_target = content_brief.get("query_target")
+    values = (
+        content_brief.get("target_query"),
+        content_brief.get("target_keyword"),
+        content_brief.get("target_question"),
+        query_target.get("name") if isinstance(query_target, dict) else None,
+    )
+    return any(topic_without_authoritative_source(value) for value in values if value)
+
+
 def _topic_aligned_curated_sources(
     content_brief: dict | None, result: dict | None = None
 ) -> list[dict[str, str]]:
@@ -964,6 +979,12 @@ def _topic_aligned_curated_sources(
         # 진료비·병원 선택 글은 그 주장을 뒷받침할 공신력 있는 문서가 본질적으로 없다 —
         # 주제만 겹치는 수기 문서로 채우지 않는다(`reference_requirement`). 생성의 두 치유
         # (검증 뒤 채우기·GEO 거절 뒤 채우기)가 여기를 지난다. 발행 치유는 `reference_publication`.
+        return []
+    if result is None and _brief_names_no_source_topic(content_brief):
+        # 프롬프트 시점(`_generate_content_attempt`)에는 제목이 없다. 측정 질문이 진료비·병원
+        # 선택이면('도수치료 비용') 검증된 문서 힌트를 주지 않는다 — 작가가 그 문서를 인용하면
+        # 주제만 겹친 가짜 근거가 된다. 오탐이면 힌트만 빠진다. 생성 뒤 치유는 위처럼 작가 제목으로
+        # 판정한다(브리프로 판정하지 않는다 — 98f586a8).
         return []
     failed = {
         str(check.get("url") or "")

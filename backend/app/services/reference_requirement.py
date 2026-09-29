@@ -48,7 +48,8 @@ from app.models.content import ContentType
 from app.services.content_similarity import normalize_topic_text
 from app.utils.authority_sources import (
     CURATED_MEDICAL_SOURCE_PAGES,
-    PROVIDER_ROUTING_KEYWORDS,
+    PROVIDER_NOUNS,
+    keyword_names_provider,
     reference_exclusion_reason,
 )
 
@@ -129,29 +130,26 @@ NO_SOURCE_TOPIC_COST = "COST"
 NO_SOURCE_TOPIC_PROVIDER_CHOICE = "PROVIDER_CHOICE"
 # 비용 글. 제목에 한 번이라도 나오면 비용 글이다(본문은 보지 않는다).
 _COST_TOPIC_TERMS = ("진료비", "비용", "가격", "비급여", "본인부담")
-# 고르는 대상. '진료과목'은 '진료과'를 담지만 '진료과목선택'을 잡으려고 따로 둔다. 진료과
-# 이름은 끝말(내과·외과·의학과…)로 묶는다 — '신경외과'·'소화기내과'·'마취통증의학과'.
-_PROVIDER_NOUNS = (
-    "병원",
-    "의원",
-    "전문의",
-    "진료과목",
-    "진료과",
-    "내과",
-    "외과",
-    "의학과",
-    "청소년과",
-    "부인과",
-    "피부과",
-    "이비인후과",
-    "안과",
-    "치과",
-)
-# 대상 바로 뒤에 붙는 고르기 말('병원 추천'·'신경외과 선택'·'병원을 고르는').
+# 고르는 대상(병원·의원·전문의·진료과 이름의 끝말)은 `authority_sources.PROVIDER_NOUNS` —
+# 수기 목록 키워드 채점과 같은 목록이다.
+_PROVIDER_NOUNS = PROVIDER_NOUNS
+# 대상 바로 뒤에 붙는 고르기 말('병원 추천'·'신경외과 선택'·'병원을 고르는'·'병원 고를 때').
+# '고르'와 '고를'은 다른 음절이다 — '고를 때'는 '고르'로 잡히지 않는다.
 _PROVIDER_CHOICE_TERMS = tuple(
     f"{noun}{verb}"
     for noun in _PROVIDER_NOUNS
-    for verb in ("추천", "선택", "을선택", "를선택", "고르", "을고르", "를고르")
+    for verb in (
+        "추천",
+        "선택",
+        "을선택",
+        "를선택",
+        "고르",
+        "을고르",
+        "를고르",
+        "고를",
+        "을고를",
+        "를고를",
+    )
 ) + tuple(
     f"{which}{noun}"
     for which in ("어느", "어떤")
@@ -175,27 +173,12 @@ _DETACHED_CHOICE_TERMS = (
 )
 
 
-_PROVIDER_ROUTING_TEXTS = frozenset(
-    normalize_topic_text(term) for term in PROVIDER_ROUTING_KEYWORDS
-)
-
-
-def _names_provider(keyword: str) -> bool:
-    """수기 목록 키워드가 질환·시술이 아니라 고르는 대상·고르기 경로를 가리키는가.
-
-    '정형외과'·'심장내과'·'순환기내과'(진료과 이름)와 병원 고르기 FAQ 경로 키워드
-    (`PROVIDER_ROUTING_KEYWORDS`: 병원선택·통증종류 …)는 의료 주제가 아니다.
-    """
-
-    return keyword in _PROVIDER_ROUTING_TEXTS or any(noun in keyword for noun in _PROVIDER_NOUNS)
-
-
 def title_names_medical_subject(title: object) -> bool:
     """제목이 수기 목록이 문서를 가진 질환·시술을 말하는가 — 치유가 고르는 것과 같은 키워드.
 
     수기 목록(`CURATED_MEDICAL_SOURCE_PAGES`) 가운데 제외 목록에 없는 문서의 키워드를
     정규화해 제목 안의 부분 문자열로 찾는다(`select_curated_authority_sources`와 같은 비교).
-    진료과 이름·병원 고르기 경로 키워드(`_names_provider`)는 세지 않는다.
+    진료과 이름·병원 고르기 경로 키워드(`keyword_names_provider`)는 세지 않는다.
     """
 
     text = normalize_topic_text(title)
@@ -206,7 +189,7 @@ def title_names_medical_subject(title: object) -> bool:
             continue
         for keyword in source["keywords"]:
             term = normalize_topic_text(keyword)
-            if term and term in text and not _names_provider(term):
+            if term and term in text and not keyword_names_provider(term):
                 return True
     return False
 

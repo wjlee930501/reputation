@@ -158,20 +158,41 @@ def publication_references_missing(item: object) -> bool:
     return not entries
 
 
-def _strips_curated_references(item: object) -> bool:
+def _strips_curated_references(item: object, *, title: object = None) -> bool:
     """발행 전 진료비·병원 선택 글인가 — 수기 목록 문서를 남기지 않는다.
 
     공개·보존된 글(DRAFT·READY 밖)은 거짓이다. 그 참고자료는 어떤 자동 경로도 바꾸지 않는다.
+    `title`은 저장될 제목(관리자 PATCH가 제목도 바꿀 때)이다 — 없으면 행의 제목으로 판정한다.
     """
 
     status = _status_value(item)
     if status is not None and status not in _REFERENCE_WRITABLE_STATUSES:
         return False
-    return references_left_to_operator(item)
+    return references_left_to_operator(item, title=title)
 
 
 def _is_curated_entry(entry: Mapping[str, Any]) -> bool:
     return is_curated_source_url(entry.get("url"))
+
+
+def disallowed_curated_references(
+    item: object, references: Sequence[Mapping[str, Any]], *, title: object = None
+) -> list[str]:
+    """이 발행 전 진료비·병원 선택 글에 넣을 수 없는 수기 목록 문서 주소(관리자 PATCH용).
+
+    다음 발행 재검증이 어차피 빼는 문서다 — 저장을 받아 두면 운영자는 넣었다고 알고 글은 다시
+    `MISSING_REFERENCES`로 보류된다. 그래서 PATCH가 GET 전에 거절한다. 제출한 목록에 **들어 있으면**
+    거절한다(이전 목록에 이미 있던 문서를 그대로 둔 경우도 — 남겨 둬도 다음 재검증이 뺀다).
+    공개·보존된 글과 의료 글은 빈 목록이다.
+    """
+
+    if not _strips_curated_references(item, title=title):
+        return []
+    return [
+        str(entry.get("url"))
+        for entry in references
+        if isinstance(entry, Mapping) and _is_curated_entry(entry)
+    ]
 
 
 def publication_references_settled(item: object, *, now: datetime | None = None) -> bool:

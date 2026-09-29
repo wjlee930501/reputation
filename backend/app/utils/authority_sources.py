@@ -83,9 +83,46 @@ _ORTHOPEDIC_FAQ_KEYWORDS = (
     "통증종류",
     "통증종류별",
 )
-# 위 묶음은 병원 고르기 FAQ를 정형외과 문서로 보내는 경로다. 질환·시술 이름이 아니므로
-# 병원 선택 글의 '의료 주제' 판정에는 쓰지 않는다(`reference_requirement`).
+# 위 묶음은 예전에 병원 고르기 FAQ를 정형외과 문서로 보내던 경로다. 질환·시술 이름이 아니므로
+# 치유 선택·수기 문서 주제 대조·병원 선택 글의 '의료 주제' 판정 어디서도 세지 않는다
+# (`keyword_names_provider`). 무릎관절염 5969는 이 키워드뿐이라 카탈로그 제목 대조로만 통과한다.
 PROVIDER_ROUTING_KEYWORDS: frozenset[str] = frozenset(_ORTHOPEDIC_FAQ_KEYWORDS)
+
+# 고르는 대상(병원·전문의·진료과 이름의 끝말). '진료과목'은 '진료과'를 담지만 '진료과목선택'을
+# 잡으려고 따로 둔다. 진료과 이름은 끝말(내과·외과·의학과…)로 묶는다 — '신경외과'·'소화기내과'·
+# '마취통증의학과'. 병원 선택 글 판정(`reference_requirement`)과 수기 목록 키워드 채점이 같이 쓴다.
+PROVIDER_NOUNS: tuple[str, ...] = (
+    "병원",
+    "의원",
+    "전문의",
+    "진료과목",
+    "진료과",
+    "내과",
+    "외과",
+    "의학과",
+    "청소년과",
+    "부인과",
+    "피부과",
+    "이비인후과",
+    "안과",
+    "치과",
+)
+_PROVIDER_ROUTING_TEXTS: frozenset[str] = frozenset(
+    re.sub(r"[\W_]+", "", keyword.lower()) for keyword in PROVIDER_ROUTING_KEYWORDS
+)
+
+
+def keyword_names_provider(keyword: object) -> bool:
+    """수기 목록 키워드가 질환·시술이 아니라 고르는 대상·고르기 경로를 가리키는가.
+
+    '정형외과'·'심장내과'·'순환기내과'(진료과 이름)와 병원 고르기 FAQ 경로 키워드
+    (`PROVIDER_ROUTING_KEYWORDS`: 병원선택·통증종류 …)는 의료 주제가 아니다. 이 키워드만 겹친
+    글('노원구 마취통증의학과 병원 추천', '정형외과 병원 고를 때')에 요통·디스크 문서를 붙이면
+    가짜 근거다 — 치유 선택·수기 문서 주제 판정·의료 주제 판정 모두 이 키워드를 세지 않는다.
+    """
+
+    text = re.sub(r"[\W_]+", "", str(keyword or "").lower())
+    return text in _PROVIDER_ROUTING_TEXTS or any(noun in text for noun in PROVIDER_NOUNS)
 
 # '간질환' 단독은 공백·구두점을 지운 비교에서 "회복 기간 — 질환과"(기간질환)에도 붙는다
 # (6b70fe41 고압산소 글이 간염 문서를 받는 것을 재생에서 확인) — 뒤에 오는 말까지 묶는다.
@@ -720,7 +757,10 @@ def select_curated_authority_sources(text: str, *, limit: int = 3) -> list[dict[
     selected: list[dict[str, str]] = []
     seen_urls: set[str] = set()
     for source in CURATED_MEDICAL_SOURCE_PAGES:
-        keywords = source["keywords"]
+        # 진료과 이름·병원 고르기 경로 키워드는 주제가 아니다(`keyword_names_provider`).
+        keywords = [
+            keyword for keyword in source["keywords"] if not keyword_names_provider(keyword)
+        ]
         if not any(str(keyword).lower() in compact for keyword in keywords):
             continue
         url = str(source["url"])

@@ -103,6 +103,7 @@ from app.services.published_image_recertification import (
 )
 from app.services.reference_publication import (
     apply_publication_reference_refresh,
+    disallowed_curated_references,
     publication_references_current,
     publication_references_missing,
     publication_references_settled,
@@ -628,6 +629,9 @@ async def update_content(
     if body.references is not None:
         normalized_refs = _validated_patch_references(body)
         unlocked_item = await _get_content(db, content_id, hospital_id)
+        # 발행 전 진료비·병원 선택 글에 검증된 문서 목록의 문서는 GET 전에 거절한다 — 다음 발행
+        # 재검증이 어차피 뺀다. 판정은 저장될 제목(바꾸면 새 제목)으로 한다.
+        _reject_curated_references_for_no_source_topic(unlocked_item, body, normalized_refs)
         pre_patch_snapshot = reference_snapshot(unlocked_item)
         patched_reference_checks = await _verify_patched_references(
             unlocked_item, body, normalized_refs
@@ -655,6 +659,10 @@ async def update_content(
                 ),
             },
         )
+    if normalized_refs is not None:
+        # 스냅샷은 상태·판·참고자료·글 주제를 본다. 필수 여부(유형·질문 연결)는 주제 지문 밖이라
+        # 잠근 행으로 한 번 더 판정한다 — 네트워크 없이 끝난다.
+        _reject_curated_references_for_no_source_topic(item, body, normalized_refs)
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.WITHHELD and body.model_fields_set - {"references"}:
         # 비공개(보존) 글은 재인증·재검수 경로(스윕·이미지 태스크)가 모두 비켜 간다. 제목을
@@ -1714,6 +1722,34 @@ def _validated_patch_references(body: "ContentPatch") -> list[dict]:
             },
         )
     return normalized_refs
+
+
+def _reject_curated_references_for_no_source_topic(
+    item: ContentItem, body: "ContentPatch", references: list[dict]
+) -> None:
+    """발행 전 진료비·병원 선택 글의 PATCH가 검증된 문서 목록의 문서를 담으면 422로 거절한다.
+
+    그 문서는 이 글의 주장이 아니라 주제만 겹친 질환 문서라, 받아 두면 다음 발행 재검증이 빼고
+    글은 다시 참고 자료 보류로 돌아간다(`reference_publication`). 제출한 목록에 들어 있으면
+    거절한다 — 이전부터 있던 문서를 그대로 둔 경우도 같다. 공개·보존된 글과 의료 글은 그대로다.
+    """
+
+    urls = disallowed_curated_references(item, references, title=body.title)
+    if not urls:
+        return
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "code": "CURATED_REFERENCE_NOT_ALLOWED",
+            "message": (
+                "진료비·병원 선택 글에는 검증된 문서 목록의 질환 문서를 참고 자료로 넣을 수 "
+                "없습니다. 이 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서만 넣어 주세요. "
+                "없으면 제목·본문을 질환·검사 안내로 바꾸거나 해당 항목을 종료하세요. "
+                f"넣을 수 없는 주소: {', '.join(urls)}"
+            ),
+            "urls": urls,
+        },
+    )
 
 
 async def _verify_patched_references(

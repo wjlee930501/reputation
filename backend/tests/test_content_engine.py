@@ -750,10 +750,11 @@ async def test_generate_content_keeps_valid_model_reference_when_catalog_also_ma
         "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/"
         "gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796"
     )
+    # 요통 문서가 이 글의 주제여야 한다 — '정형외과'(진료과 이름)만 겹쳐서는 통과하지 않는다.
     payload = {
-        "title": "노원 통증 진료 기준",
+        "title": "노원 허리통증 진료 기준",
         "body": body,
-        "meta_description": "노원 지역 통증 진료에서 확인할 증상과 검사 기준을 안내합니다.",
+        "meta_description": "노원 지역 허리통증 진료에서 확인할 증상과 검사 기준을 안내합니다.",
         "references": [{"title": "질병관리청 건강정보", "url": model_url}],
         "faq_question": None,
         "faq_answer_summary": None,
@@ -773,7 +774,7 @@ async def test_generate_content_keeps_valid_model_reference_when_catalog_also_ma
     result = await content_engine.generate_content(
         hospital,
         ContentType.DISEASE,
-        content_brief={"target_query": "노원 정형외과 통증 진료 기준"},
+        content_brief={"target_query": "노원 정형외과 허리통증 진료 기준"},
     )
 
     assert calls == 1
@@ -796,7 +797,8 @@ async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkey
     )
     # 제목이 "병원 선택"이면 진료비·병원 선택 규칙으로 목록 채움을 하지 않는다
     # (tests/test_reference_operator_decides.py) — 이 테스트는 일반 정형외과 FAQ의 채움을 본다.
-    focus = "노원구 정형외과 통증 종류별 진단·치료 항목 비교"
+    # 정형외과·통증종류는 병원 고르기 경로 키워드라 채움 근거가 아니다 — 질환(허리디스크)이 있어야 한다.
+    focus = "노원구 정형외과 허리디스크 통증 종류별 진단·치료 항목 비교"
     body = (
         "## 통증 종류별로 확인할 점\n"
         "노원탑365의원 김원장은 노원 지역에서 통증의 위치와 양상을 먼저 확인합니다. "
@@ -836,7 +838,6 @@ async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkey
 
     locked_urls = {
         "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
-        "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
         "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
     }
     reference_urls = [reference["url"] for reference in result["references"]]

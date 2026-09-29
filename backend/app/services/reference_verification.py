@@ -69,6 +69,7 @@ from app.utils.authority_sources import (
     institution_title_tokens,
     is_citable_reference_url,
     is_whitelisted_url,
+    keyword_names_provider,
     reference_exclusion_reason,
     select_curated_authority_sources,
 )
@@ -618,7 +619,12 @@ def _curated_title_topic(title: object) -> str:
 
 
 def curated_topic_relevant(url: str, topic_terms: Sequence[str]) -> bool:
-    """수기 목록 문서가 이 글의 주제인가 — 카탈로그 키워드·확인된 제목으로만 판정한다."""
+    """수기 목록 문서가 이 글의 주제인가 — 카탈로그 키워드·확인된 제목으로만 판정한다.
+
+    진료과 이름·병원 고르기 경로 키워드(`keyword_names_provider`: 정형외과·병원선택·통증종류 …)는
+    주제가 아니다 — 그것만 겹친 '정형외과 병원 추천' 글이 요통·디스크 문서로 통과하지 않는다.
+    제목 대조의 카탈로그 제목은 질환·시술 이름뿐이다(기관명은 빼고 본다).
+    """
 
     entries = _curated_entries(url)
     if not entries or not topic_terms:
@@ -626,7 +632,11 @@ def curated_topic_relevant(url: str, topic_terms: Sequence[str]) -> bool:
     joined = normalize_topic_text(" ".join(topic_terms))
     for entry in entries:
         keywords = entry.get("keywords") or ()
-        if any(normalize_topic_text(keyword) in joined for keyword in keywords if keyword):
+        if any(
+            normalize_topic_text(keyword) in joined
+            for keyword in keywords
+            if keyword and not keyword_names_provider(keyword)
+        ):
             return True
         score = reference_topic_match(
             _curated_title_topic(entry.get("title")),

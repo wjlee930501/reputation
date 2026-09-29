@@ -45,13 +45,25 @@ from app.services.reference_requirement import (
     title_names_medical_subject,
     topic_without_authoritative_source,
 )
-from app.services.reference_verification import ReferenceVerifier, override_reference_fetcher
-from app.utils.authority_sources import CURATED_MEDICAL_SOURCE_PAGES, CURATED_SOURCE_URLS
+from app.services.reference_verification import (
+    ReferenceVerifier,
+    article_topic_terms,
+    curated_sources_for_topic,
+    curated_topic_relevant,
+    override_reference_fetcher,
+)
+from app.utils.authority_sources import (
+    CURATED_MEDICAL_SOURCE_PAGES,
+    CURATED_SOURCE_URLS,
+    keyword_names_provider,
+    select_curated_authority_sources,
+)
 from app.workers import generation_incident_control, tasks, topic_swap_fallback
 from app.workers.generation_incident_control import (
     REFERENCES_OPERATOR_DECIDES_ACTION,
     REFERENCES_OPERATOR_DECIDES_CAUSE,
     generation_block_is_terminal,
+    operator_decides_references,
     scheduled_recovery_owns_blocker,
 )
 from app.workers.generation_retry_policy import (
@@ -61,6 +73,7 @@ from app.workers.generation_retry_policy import (
 )
 from tests import test_topic_swap_fallback as swap_tests
 from tests.reference_fetch_doubles import PageFetcher
+from tests.test_content_compliance_faq import _content_item, _hospital, _PatchDB, _wire
 from tests.test_generation_recovery_ladder import _FakeIncidentSession, _freeze, _kst
 from tests.test_reference_publication_gate import (
     CURATED_HEMORRHOID_AMC,
@@ -72,6 +85,7 @@ from tests.test_reference_publication_gate import (
     _gate_setup,
     _GateDB,
     _hemorrhoid_fetcher,
+    _MutatingFetcher,
     _pass,
     _publish_setup,
     _stamp,
@@ -92,14 +106,21 @@ from tests.test_tasks_nightly import _NightlyTaskDB, _publication_hospital, _pub
 COST_TITLE = "치질 수술 비용 — 보험 적용과 본인부담"
 CHOICE_TITLE = "대장항문외과 병원 추천 — 병원 선택 기준과 진료 흐름"
 CURATED_HEMORRHOID = {CURATED_HEMORRHOID_KDCA, CURATED_HEMORRHOID_AMC}
-# 병원 선택 제목의 '병원선택'이 카탈로그 경로 키워드라 요통 문서가 수기 목록 대조를 통과한다.
+# 요통 문서. 진료과 이름·'병원선택' 경로 키워드는 주제가 아니라(`keyword_names_provider`) 병원
+# 선택 제목만으로는 수기 목록 대조를 통과하지 않는다 — 본문 첫 H2가 허리통증을 말해야 통과한다.
 CURATED_LOW_BACK = KDCA_VIEW.format(3796)
+CHOICE_BODY = "## 허리통증이 오래갈 때 먼저 확인할 점\n진료 기준과 내원 시점을 안내합니다."
 # 목록 밖 문서 — 실제 GET(제목·본문이 글 주제와 일치)으로만 통과한다.
 UNLISTED_HEMORRHOID = KDCA_VIEW.format(9001)
 # 글 제목 → 작가가 인용했고 수기 목록 대조를 통과하는 수기 목록 문서.
 CITED_CURATED = {
     COST_TITLE: (CURATED_HEMORRHOID_KDCA, "치핵"),
     CHOICE_TITLE: (CURATED_LOW_BACK, "요통"),
+}
+# 그 통과의 근거가 되는 본문 — 비용 글은 제목의 '치질'로, 병원 선택 글은 첫 H2의 '허리통증'으로.
+CITED_BODY = {
+    COST_TITLE: "진료 기준과 내원 시점을 안내합니다.",
+    CHOICE_TITLE: CHOICE_BODY,
 }
 _SEVEN_FORTY_FIVE = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
 
@@ -532,6 +553,7 @@ def _cited_curated_setup(monkeypatch, title, *, fresh):
         checks=[_pass(url)] if fresh else None,
         title=title,
     )
+    item.body = CITED_BODY[title]
     _stamp(item)
     fetcher = _hemorrhoid_fetcher()
     fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
@@ -624,6 +646,7 @@ async def test_published_post_with_a_curated_document_stays_byte_identical(monke
 
     url, topic = CITED_CURATED[title]
     item = _published(title, tasks.ContentStatus.PUBLISHED)
+    item.body = CITED_BODY[title]
     item.references_list = [{"title": topic, "url": url}]
     item.reference_checks = [_pass(url)]
     _stamp(item)
@@ -672,11 +695,13 @@ GENERATION_CHOICE_TITLE = "마포 내과 병원 추천 — 병원 선택 기준�
 
 
 def _curated_generation(monkeypatch, title):
-    """작가가 수기 목록 문서 하나만 인용한 응답(그 문서는 수기 목록 대조를 통과한다)."""
+    """작가가 수기 목록 문서 하나만 인용한 응답(그 문서는 수기 목록 대조를 통과한다).
 
-    url, topic = (
-        (CURATED_HYPERTENSION, "고혈압") if title == GENERATION_COST_TITLE else CITED_CURATED[CHOICE_TITLE]
-    )
+    고혈압 문서는 브리프의 측정 키워드('고혈압')로 통과한다 — 병원 선택 제목 자체는 의료 주제가
+    없어 어떤 수기 목록 문서도 제목으로는 통과하지 않는다.
+    """
+
+    url, topic = CURATED_HYPERTENSION, "고혈압"
     payload = _notice_payload([{"title": topic, "url": url}])
     payload["title"] = title
     calls = _stub_writer(monkeypatch, payload)
@@ -927,6 +952,419 @@ def test_an_ordinary_unwritten_slot_keeps_the_sample_ladder_and_its_topic_swap(m
     assert len(writer_calls) > 1  # 사다리가 작가를 다시 샀다
     assert {call["code"] for call in incidents} == {"GENERATION_REJECTED"}
     assert topic_swap_fallback.exhausted_body_sample_reason(slot) == "GENERATION_REJECTED"
+
+
+# ── (vii) 2차 리뷰(4dc64119 BLOCK) — 가짜 출처가 남는 세 경로 ──────────────────────────
+#
+# (a) 생성 프롬프트의 '검증된 문서' 힌트는 브리프의 측정 질문이 진료비·병원 선택이면 비운다.
+# (b) 진료과 이름·병원 고르기 경로 키워드(정형외과·병원선택·통증종류 …)만 겹쳐서는 수기 목록
+#     문서가 통과하지도(`curated_topic_relevant`), 치유로 골리지도(`select_curated_authority_sources`)
+#     않는다 — `title_names_medical_subject`와 같은 술어(`keyword_names_provider`).
+# (c) '병원 고를 때'도 병원 선택 글이다('고르'와 '고를'은 다른 음절).
+
+LOW_BACK_URL = CURATED_LOW_BACK
+DISC_URL = KDCA_VIEW.format(3348)
+KNEE_URL = KDCA_VIEW.format(5969)
+HYPERTENSION_URL = KDCA_VIEW.format(6765)
+
+
+def _prompt_of(monkeypatch, brief) -> str:
+    """`_generate_content_attempt`가 공급자에 보내는 요청 전체(JSON 문자열)."""
+
+    sent: list[dict] = []
+
+    def capture(*_args, **kwargs):
+        sent.append(kwargs)
+        raise ValueError("stop after the prompt")  # 검증 오류 계열이라 재시도하지 않는다
+
+    _stub_writer(monkeypatch, {})
+    monkeypatch.setattr(content_engine.client.chat.completions, "create", capture)
+    with pytest.raises(ValueError):
+        asyncio.run(
+            content_engine._generate_content_attempt(
+                _mapo_hospital(), ContentType.TREATMENT, content_brief=brief
+            )
+        )
+    assert len(sent) == 1
+    return json.dumps(sent[0], ensure_ascii=False, default=str)
+
+
+# 각 브리프는 진료비·병원 선택 칸 하나와, 그것만 없으면 요통 문서를 힌트로 받게 하는 의료 키워드를 함께 싣는다.
+NO_SOURCE_BRIEFS = {
+    "cost_target_query": {"target_query": "도수치료 비용", "target_keyword": "도수치료"},
+    "cost_target_keyword": {"target_query": "노원 허리통증 도수치료", "target_keyword": "도수치료 비용"},
+    "cost_query_target_name": {
+        "target_query": "노원 도수치료",
+        "target_keyword": "도수치료",
+        "query_target": {"name": "노원 도수치료 가격 얼마예요", "treatment": "도수치료"},
+    },
+    "choice_target_query": {
+        "target_query": "노원구 정형외과 병원 추천해줘",
+        "target_keyword": "허리통증",
+    },
+    "choice_goreul": {
+        "target_query": "노원 정형외과 병원 고를 때 확인할 점",
+        "target_keyword": "허리디스크",
+    },
+}
+
+
+@pytest.mark.parametrize("name", sorted(NO_SOURCE_BRIEFS))
+def test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief(monkeypatch, name):
+    brief = NO_SOURCE_BRIEFS[name]
+
+    assert content_engine._topic_aligned_curated_sources(dict(brief)) == []
+    assert LOW_BACK_URL not in _prompt_of(monkeypatch, dict(brief))
+
+
+@pytest.mark.parametrize("name", sorted(NO_SOURCE_BRIEFS))
+def test_the_cost_or_choice_brief_would_get_the_hint_without_the_rule(monkeypatch, name):
+    """대조군 — 브리프 판정을 끄면 같은 브리프가 요통 문서를 힌트로 받는다(위 테스트의 전제)."""
+
+    monkeypatch.setattr(content_engine, "_brief_names_no_source_topic", lambda _brief: False)
+
+    assert LOW_BACK_URL in _prompt_of(monkeypatch, dict(NO_SOURCE_BRIEFS[name]))
+
+
+def test_a_medical_brief_still_gets_its_curated_hint(monkeypatch):
+    brief = {"target_query": "노원 도수치료 효과와 횟수", "target_keyword": "도수치료"}
+
+    assert LOW_BACK_URL in {ref["url"] for ref in content_engine._topic_aligned_curated_sources(brief)}
+    assert LOW_BACK_URL in _prompt_of(monkeypatch, brief)
+
+
+def test_the_post_generation_heal_still_judges_by_the_writer_title():
+    """오탐이면 힌트만 빠진다 — 생성 뒤 치유는 브리프가 아니라 작가 제목으로 판정한다(98f586a8)."""
+
+    brief = NO_SOURCE_BRIEFS["cost_target_query"]
+    medical = content_engine._topic_aligned_curated_sources(
+        dict(brief), {"title": "도수치료, 허리통증에 어떻게 쓰이나요", "reference_checks": []}
+    )
+    assert LOW_BACK_URL in {ref["url"] for ref in medical}
+    assert (
+        content_engine._topic_aligned_curated_sources(
+            {"target_query": "노원 도수치료 효과"}, {"title": "도수치료 비용 안내"}
+        )
+        == []
+    )
+
+
+# 진료과 이름·병원 고르기 경로 키워드만 담은 제목. 제목에 의료 주제가 없다.
+PROVIDER_ONLY_TITLES = [
+    "노원구 마취통증의학과 병원 추천해 주시겠어요?",
+    "노원구 마취통증의학과 전문의 추천은 어디인가요?",
+    "정형외과 병원 추천",
+    "정형외과 병원 고를 때 확인할 점",
+    "경산 정형외과 병원 찾을 때 볼 것",
+    "정형외과 잘하는 곳 찾는 법",
+    "노원구 정형외과 병원 선택 기준 — 통증 종류별 진단·치료 항목 비교",
+    "심장내과 순환기내과 진료 안내",
+]
+
+
+@pytest.mark.parametrize("title", PROVIDER_ONLY_TITLES)
+def test_a_provider_or_routing_keyword_alone_never_passes_any_curated_document(title):
+    """카탈로그 키워드와 카탈로그 제목(대조의 두 갈래) 어느 쪽으로도 통과하지 않는다."""
+
+    terms = article_topic_terms(title=title, body="진료 기준을 안내합니다.", content_brief=None)
+    passing = [url for url in CURATED_SOURCE_URLS if curated_topic_relevant(url, terms)]
+
+    assert passing == []
+    assert curated_sources_for_topic(terms) == []
+    assert select_curated_authority_sources(title) == []
+
+
+@pytest.mark.parametrize("url", [LOW_BACK_URL, DISC_URL])
+@pytest.mark.parametrize("title", PROVIDER_ONLY_TITLES[:3])
+async def test_a_provider_choice_post_citing_the_spine_documents_is_not_curated_verified(url, title):
+    fetcher = PageFetcher()
+    fetcher.add_document(url, "요통 | 국가건강정보포털 | 질병관리청", topic="요통")
+    terms = article_topic_terms(title=title, body="진료 기준을 안내합니다.", content_brief=None)
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "요통", "url": url}], topic_terms=terms
+    )
+
+    assert outcome.kept == []
+    assert [check["reason"] for check in outcome.checks] == ["unrelated_topic"]
+
+
+@pytest.mark.parametrize(
+    "title, url",
+    [
+        ("노원 허리디스크 도수치료 안내", LOW_BACK_URL),
+        ("노원 허리디스크 도수치료 안내", DISC_URL),
+        ("정형외과에서 보는 요통의 원인", LOW_BACK_URL),
+        ("심장내과에서 고혈압을 관리하는 법", HYPERTENSION_URL),
+        ("무릎관절염 운동, 정형외과에서 알려드립니다", KNEE_URL),
+    ],
+)
+async def test_a_medical_title_still_passes_its_curated_document(title, url):
+    fetcher = PageFetcher()
+    fetcher.add_document(url, "문서 | 국가건강정보포털 | 질병관리청", topic="문서")
+    terms = article_topic_terms(title=title, body="진료 기준을 안내합니다.", content_brief=None)
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=terms
+    )
+
+    assert [ref["url"] for ref in outcome.kept] == [url]
+    assert [check["reason"] for check in outcome.checks] == ["curated_verified"]
+
+
+def test_provider_keywords_are_exactly_the_specialty_and_routing_keywords():
+    """치유 선택·수기 문서 대조·의료 주제 판정이 버리는 키워드 — 질환·시술 키워드는 남는다."""
+
+    dropped = sorted(
+        {
+            keyword
+            for source in CURATED_MEDICAL_SOURCE_PAGES
+            for keyword in source["keywords"]
+            if keyword_names_provider(keyword)
+        }
+    )
+    assert dropped == sorted({"정형외과", "병원선택", "병원선택기준", "통증종류", "통증종류별", "심장내과", "순환기내과"})
+    for keyword in ("도수치료", "허리디스크", "요통", "척추", "디스크", "고혈압", "치질", "대장내시경"):
+        assert not keyword_names_provider(keyword)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "경산 정형외과 병원 찾을 때 볼 것",
+        "정형외과 잘하는 곳 찾는 법",
+        "노원구 정형외과 통증 종류별 진료 흐름",
+    ],
+)
+async def test_a_routing_only_post_gets_no_heal_at_publication(title):
+    """병원 선택으로 분류되지 않는 제목도 경로 키워드만으로는 요통·무릎·디스크 문서를 받지 않는다."""
+
+    assert topic_without_authoritative_source(title) is None
+    item = _published(title, tasks.ContentStatus.DRAFT)
+    fetcher = _hemorrhoid_fetcher()
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.references == [] and not refresh.healed
+    assert not refresh.operator_decides  # 의료 글 규칙 — 종전 MISSING_REFERENCES 사다리
+    assert fetcher.calls == [GUESSED]
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "정형외과 병원 고를 때 확인할 점",
+        "경산 내과 병원을 고를 때 체크리스트",
+        "피부과 의원 고를 때 알아둘 것",
+        "소아청소년과 전문의를 고를 때",
+    ],
+)
+async def test_choosing_a_clinic_with_goreul_is_a_provider_choice_post(title):
+    assert topic_without_authoritative_source(title) == NO_SOURCE_TOPIC_PROVIDER_CHOICE
+    item = _published(title, tasks.ContentStatus.DRAFT)
+    fetcher = _hemorrhoid_fetcher()
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.operator_decides and not refresh.healed and refresh.references == []
+    assert fetcher.calls == [GUESSED]
+
+
+def test_goreul_with_a_medical_subject_stays_a_medical_post():
+    assert topic_without_authoritative_source("허리디스크 병원 고를 때 확인할 점") is None
+
+
+# ── (viii) 저장된 사람 결정 표시는 아직 쓰이지 않은 슬롯에서만 판정이 된다 ─────────────────
+
+
+def _row_with_operator_flag(title, body):
+    row = _slot(title)
+    row.body = body
+    row.essence_check_summary = {
+        "generation_attempt": {"reason": "MISSING_REFERENCES", OPERATOR_DECIDES_KEY: True}
+    }
+    return row
+
+
+def test_a_leftover_operator_flag_does_not_decide_a_written_medical_post():
+    """사람이 본문을 쓴 뒤의 의료 글은 제목이 판정한다 — 남은 표시로 수리 대상에서 빠지지 않는다."""
+
+    written = _row_with_operator_flag("치질 수술 후 회복 기간", "## 회복\n사람이 쓴 본문입니다.")
+    unwritten = _row_with_operator_flag(None, None)
+
+    assert not operator_decides_references("MISSING_REFERENCES", written)
+    assert operator_decides_references("MISSING_REFERENCES", unwritten)
+
+
+# ── (ix) 관리자 PATCH: 발행 전 진료비·병원 선택 글에 수기 목록 문서를 넣지 못한다(422) ─────────
+
+
+def _patch_setup(monkeypatch, *, title, status="DRAFT", references=None, **overrides):
+    hospital = _hospital(site_live=False)
+    item = _content_item(
+        hospital_id=hospital.id,
+        title=title,
+        status=status,
+        content_type=overrides.pop("content_type", "TREATMENT"),
+        references_list=list(references or []),
+        **overrides,
+    )
+    item.content_revision = 3
+    item.reference_checks = None
+    _wire(monkeypatch, item, hospital)
+    return hospital, item
+
+
+def _patch(hospital, item, **fields):
+    return content_api.update_content(
+        hospital.id, item.id, content_api.ContentPatch(**fields), db=_PatchDB(hospital)
+    )
+
+
+def _spine_and_hemorrhoid_fetcher():
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(LOW_BACK_URL, "요통 | 국가건강정보포털 | 질병관리청", topic="요통")
+    fetcher.add_document(UNLISTED_HEMORRHOID, "치질 | 국가건강정보포털 | 질병관리청", topic="치질")
+    return fetcher
+
+
+@pytest.mark.parametrize("status", ["DRAFT", "READY"])
+@pytest.mark.parametrize(
+    "title, curated",
+    [(COST_TITLE, CURATED_HEMORRHOID_KDCA), (CHOICE_TITLE, LOW_BACK_URL)],
+    ids=["cost", "provider_choice"],
+)
+async def test_patch_rejects_a_curated_document_on_a_scheduled_cost_or_choice_post(
+    monkeypatch, title, curated, status
+):
+    hospital, item = _patch_setup(monkeypatch, title=title, status=status)
+    fetcher = _spine_and_hemorrhoid_fetcher()
+
+    with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+        await _patch(
+            hospital,
+            item,
+            references=[
+                {"title": "치질", "url": UNLISTED_HEMORRHOID},
+                {"title": "문서", "url": curated},
+            ],
+        )
+
+    assert raised.value.status_code == 422
+    detail = raised.value.detail
+    assert detail["code"] == "CURATED_REFERENCE_NOT_ALLOWED"
+    assert detail["urls"] == [curated]
+    assert "진료비·병원 선택 글" in detail["message"] and curated in detail["message"]
+    assert fetcher.calls == []  # 네트워크 전에 거절한다
+    assert item.references_list == [] and item.content_revision == 3
+
+
+async def test_patch_judges_the_title_it_saves(monkeypatch):
+    """제목도 함께 바꾸면 저장될 제목으로 판정한다 — 의료 → 진료비는 거절, 진료비 → 의료는 받는다."""
+
+    hospital, item = _patch_setup(monkeypatch, title=HEMORRHOID_TITLE)
+    with override_reference_fetcher(PageFetcher()), pytest.raises(HTTPException) as raised:
+        await _patch(
+            hospital,
+            item,
+            title=COST_TITLE,
+            references=[{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}],
+        )
+    assert raised.value.status_code == 422
+    assert item.title == HEMORRHOID_TITLE
+
+    hospital, item = _patch_setup(monkeypatch, title=COST_TITLE)
+    with override_reference_fetcher(_hemorrhoid_fetcher()):
+        await _patch(
+            hospital,
+            item,
+            title=HEMORRHOID_TITLE,
+            references=[{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}],
+        )
+    assert [ref["url"] for ref in item.references_list] == [CURATED_HEMORRHOID_KDCA]
+
+
+async def test_patch_keeps_an_ordinary_passing_url_on_a_cost_post(monkeypatch):
+    hospital, item = _patch_setup(monkeypatch, title=COST_TITLE)
+    fetcher = _spine_and_hemorrhoid_fetcher()
+
+    with override_reference_fetcher(fetcher):
+        await _patch(hospital, item, references=[{"title": "치질", "url": UNLISTED_HEMORRHOID}])
+
+    assert [ref["url"] for ref in item.references_list] == [UNLISTED_HEMORRHOID]
+    assert fetcher.calls == [UNLISTED_HEMORRHOID]
+    assert [check["reason"] for check in item.reference_checks] == ["page_verified"]
+
+
+async def test_patch_accepts_a_curated_document_on_a_medical_post(monkeypatch):
+    hospital, item = _patch_setup(monkeypatch, title=HEMORRHOID_TITLE)
+
+    with override_reference_fetcher(_hemorrhoid_fetcher()):
+        await _patch(hospital, item, references=[{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}])
+
+    assert [ref["url"] for ref in item.references_list] == [CURATED_HEMORRHOID_KDCA]
+    assert [check["reason"] for check in item.reference_checks] == ["curated_verified"]
+
+
+@pytest.mark.parametrize("status", ["PUBLISHED", "WITHHELD"])
+async def test_patch_on_a_published_cost_post_is_unaffected(monkeypatch, status):
+    """공개·보존된 글은 이 규칙 밖이다 — 사람의 편집은 종전처럼 검증을 통과하면 저장된다."""
+
+    references = [{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}]
+    hospital, item = _patch_setup(
+        monkeypatch, title=COST_TITLE, status=status, references=[dict(ref) for ref in references]
+    )
+
+    with override_reference_fetcher(_hemorrhoid_fetcher()):
+        await _patch(hospital, item, references=[dict(ref) for ref in references])
+
+    assert [ref["url"] for ref in item.references_list] == [CURATED_HEMORRHOID_KDCA]
+    assert [check["reason"] for check in item.reference_checks] == ["curated_verified"]
+
+
+async def test_patch_refuses_when_the_title_turns_cost_during_the_check(monkeypatch):
+    """GET 사이에 다른 편집이 제목을 진료비 글로 바꾸면 스냅샷 대조가 409로 막는다."""
+
+    hospital, item = _patch_setup(monkeypatch, title=HEMORRHOID_TITLE)
+
+    def concurrent_title_edit():
+        item.title = COST_TITLE
+
+    fetcher = _MutatingFetcher(concurrent_title_edit)
+    fetcher.add_document(CURATED_HEMORRHOID_KDCA, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+
+    with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+        await _patch(hospital, item, references=[{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}])
+
+    assert raised.value.status_code == 409
+    assert raised.value.detail["code"] == "CONTENT_CHANGED_DURING_REFERENCE_CHECK"
+    assert item.references_list == []
+
+
+async def test_patch_rechecks_on_the_locked_row_when_the_post_becomes_reference_required(
+    monkeypatch,
+):
+    """필수 여부(질문 연결)는 주제 지문 밖이다 — GET 사이에 공지가 질문에 연결되면 잠근 행으로 거절한다."""
+
+    notice_title = "치질 수술 비용 안내"
+    hospital, item = _patch_setup(
+        monkeypatch, title=notice_title, content_type="NOTICE", query_target_id=None
+    )
+    assert not references_left_to_operator(item)  # 순수 운영 공지 — 참고자료 필수가 아니다
+
+    def link_a_query_target():
+        item.query_target_id = uuid.uuid4()
+
+    fetcher = _MutatingFetcher(link_a_query_target)
+    fetcher.add_document(CURATED_HEMORRHOID_KDCA, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+
+    with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+        await _patch(hospital, item, references=[{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}])
+
+    assert fetcher.calls == [CURATED_HEMORRHOID_KDCA]  # 잠그기 전 검사는 통과했다
+    assert raised.value.status_code == 422
+    assert raised.value.detail["code"] == "CURATED_REFERENCE_NOT_ALLOWED"
+    assert item.references_list == []
 
 
 # ── 도우미 ────────────────────────────────────────────────────────────────

@@ -101,14 +101,17 @@ def test_select_curated_authority_sources_supports_cardiovascular_topics():
     assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
 
 
-def test_select_curated_authority_sources_repairs_generic_cardiology_focus():
-    sources = select_curated_authority_sources("심장내과 순환기 질환 안내", limit=3)
+def test_select_curated_authority_sources_does_not_route_on_a_specialty_name():
+    """진료과 이름('심장내과')은 주제가 아니다 — 고혈압·협심증·뇌졸중 문서를 붙이지 않는다.
 
-    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
-        "6765",
-        "6566",
-        "5495",
-    ]
+    예전에는 이 이름만으로 세 문서를 골랐다. 진료과 이름만 겹친 글에 특정 질환 문서를 붙이면
+    가짜 근거다(2026-09-29 팀장 결정, `keyword_names_provider`). 질환 이름이 있으면 그대로 고른다.
+    """
+    assert select_curated_authority_sources("심장내과 순환기 질환 안내", limit=3) == []
+    assert [
+        source["url"].rsplit("=", 1)[-1]
+        for source in select_curated_authority_sources("심장내과 고혈압 관리 안내", limit=3)
+    ] == ["6765"]
 
 
 def test_select_curated_authority_sources_supports_dehydration_content():
@@ -162,16 +165,24 @@ def test_select_curated_authority_sources_supports_trauma_emergency_content():
     assert all(source["source_type"] == SOURCE_TYPE_GOV_KR for source in sources)
 
 
-def test_select_curated_authority_sources_supports_orthopedic_faq_content():
-    sources = select_curated_authority_sources(
-        "노원구 정형외과 병원 선택 기준 — 통증 종류별 진단·치료 항목 비교",
-    )
+def test_select_curated_authority_sources_does_not_route_a_clinic_choice_faq():
+    """정형외과·병원선택·통증종류(병원 고르기 경로 키워드)만 겹친 글은 문서를 받지 않는다.
 
-    assert [source["url"].rsplit("=", 1)[-1] for source in sources] == [
-        "3796",
-        "5969",
-        "3348",
-    ]
+    예전에는 요통 3796·무릎 5969·디스크 3348을 골랐다 — 병원 고르기를 뒷받침하지 않는 가짜 근거다.
+    허리통증·디스크 같은 질환 이름이 있으면 그 문서만 고른다.
+    """
+    assert (
+        select_curated_authority_sources(
+            "노원구 정형외과 병원 선택 기준 — 통증 종류별 진단·치료 항목 비교",
+        )
+        == []
+    )
+    assert [
+        source["url"].rsplit("=", 1)[-1]
+        for source in select_curated_authority_sources(
+            "노원구 정형외과 병원 선택 기준 — 허리디스크 통증 종류별 진단·치료 항목 비교",
+        )
+    ] == ["3796", "3348"]
 
 
 def test_select_curated_authority_sources_supports_spine_joint_pain_query():
