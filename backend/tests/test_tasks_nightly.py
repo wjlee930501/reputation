@@ -26,7 +26,7 @@ from app.models.essence import (
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import NotificationOutbox, OperationRun, OperationRunState
 from app.models.sov import SovRecord
-from app.services import content_publication, content_publish_notifications
+from app.services import content_publication, content_publish_notifications, notification_copy
 from app.services.content_ai_review import (
     ContentAiFinding,
     ContentAiFindingKind,
@@ -6615,6 +6615,16 @@ _OD_SEVEN_FORTY_FIVE = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
 _OD_LINE_TITLE = "참고 자료 운영자 판단"
 
 
+def _od_action(*, written: bool) -> str:
+    """작성된 글과 아직 쓰이지 않은 슬롯은 요약 문구가 다르다('고쳐 저장' / '새로 쓰기')."""
+
+    return notification_copy.blocker_copy(
+        notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+        if written
+        else notification_copy.REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE
+    ).action
+
+
 class _DigestGateDB:
     """07:45 게이트·08:00 발행기 더블 — 예정 글 목록, id 조회·잠금, 병원 잠금, outbox 중복 키.
 
@@ -6749,7 +6759,8 @@ def test_seven_forty_five_names_a_same_day_cost_post_left_to_the_operator(monkey
     text = _od_digest_text(row)
     assert text.count(_OD_LINE_TITLE) == 1
     assert f"{_OD_LINE_TITLE} 1편" in text
-    assert "자동 복구는 이 글을 다시 쓰지 않습니다." in text
+    assert "이 글을 다시 쓰지 않습니다." in text
+    assert _od_action(written=True) in text
     assert "발행 보류 1편" in text
     # 주간 요약의 평범한 참고자료 보류 문구로 떨어지지 않는다.
     assert "본문·근거 확인 필요" not in text
@@ -6774,6 +6785,70 @@ def test_seven_forty_five_names_a_same_day_unwritten_slot_left_to_the_operator(m
     assert text.count(_OD_LINE_TITLE) == 1
     assert f"{_OD_LINE_TITLE} 1편" in text
     assert "본문·근거 확인 필요" not in text
+    # 고칠 제목·본문이 없다 — '새로 쓰기' 문구이고 작성된 글의 '고쳐 저장' 문구가 아니다.
+    assert _od_action(written=False) in text
+    assert _od_action(written=True) not in text
+
+
+@pytest.mark.parametrize(
+    ("build", "line", "copy_code"),
+    [
+        pytest.param(
+            lambda hospital: _od_written(hospital, title=_OD_COST_TITLE),
+            True,
+            notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE,
+            id="written_cost_post",
+        ),
+        pytest.param(
+            _od_unwritten,
+            True,
+            notification_copy.REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE,
+            id="unwritten_slot",
+        ),
+        pytest.param(
+            lambda hospital: _od_written(hospital, title=_OD_MEDICAL_TITLE),
+            False,
+            None,
+            id="ordinary_reference_hold",
+        ),
+    ],
+)
+def test_eight_oclock_payload_keeps_operator_line_a_bool_and_carries_the_copy_key(
+    monkeypatch, build, line, copy_code
+):
+    """`operator_line`은 bool 계약 그대로다(다른 경로의 테스트가 `is True`/`is False`로 읽는다).
+
+    작성 여부에 따른 문구 키는 따로 `operator_copy_code`로 싣는다.
+    """
+
+    item = build(_publication_hospital())
+    _od_gate(monkeypatch)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _DigestGateDB(item))
+
+    with override_reference_fetcher(PageFetcher()):
+        payload = tasks._auto_publish_one(item.id, today_kst=_OD_TODAY)
+
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "MISSING_REFERENCES"
+    assert payload["operator_line"] is line
+    assert payload["operator_copy_code"] == copy_code
+
+
+def test_eight_oclock_names_a_same_day_unwritten_slot_with_the_new_draft_copy(monkeypatch):
+    """08:00만 돈 날에도 쓰이지 않은 슬롯은 '새로 쓰기' 문구로 싣는다(잠근 행의 본문으로 판정)."""
+
+    hospital = _publication_hospital()
+    slot = _od_unwritten(hospital)
+    _od_gate(monkeypatch)
+    db = _DigestGateDB(slot)
+
+    _od_run_eight(monkeypatch, db)
+
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert f"{_OD_LINE_TITLE} 1편" in text
+    assert _od_action(written=False) in text
+    assert _od_action(written=True) not in text
 
 
 def test_seven_forty_five_keeps_an_ordinary_missing_reference_hold_out_of_the_digest(
@@ -6919,9 +6994,27 @@ def test_eight_oclock_alone_names_the_same_day_operator_hold_once(monkeypatch):
     text = _od_digest_text(row)
     assert text.count(_OD_LINE_TITLE) == 1
     assert f"{_OD_LINE_TITLE} 1편" in text
-    assert "자동 복구는 이 글을 다시 쓰지 않습니다." in text
+    assert "이 글을 다시 쓰지 않습니다." in text
+    assert _od_action(written=True) in text
     assert "발행 보류 1편" in text
     assert "본문·근거 확인 필요" not in text
+
+
+def test_eight_oclock_alone_keeps_the_operator_copy_off_an_ordinary_blocker(monkeypatch):
+    """문구 키는 `operator_line`이 참인 줄에만 붙는다 — 평범한 원고 미생성 줄은 제 문구 그대로다."""
+
+    hospital = _publication_hospital()
+    slot = _od_unwritten_slot_without_attempt(hospital, sequence_no=2)
+    _od_gate(monkeypatch)
+    db = _DigestGateDB(slot)
+
+    _od_run_eight(monkeypatch, db)
+
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert "발행용 원고 미생성 1편" in text
+    assert _OD_LINE_TITLE not in text
+    assert _od_action(written=True) not in text
 
 
 @pytest.mark.parametrize("with_other_blocker", [True, False], ids=["hold_and_other", "hold_only"])

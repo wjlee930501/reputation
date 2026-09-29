@@ -312,7 +312,10 @@ from app.services.monthly_report_gap_notifications import (
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.monthly_sov_types import ManifestCellInput
-from app.services.notification_copy import REFERENCES_OPERATOR_DECIDES_COPY_CODE
+from app.services.notification_copy import (
+    REFERENCES_OPERATOR_DECIDES_COPY_CODE,
+    references_operator_decides_copy_code,
+)
 from app.services.onboarding_notifications import (
     build_hospital_activated_notification,
     build_site_built_notification,
@@ -798,6 +801,14 @@ def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str,
             else generation_safe_cause(stored_code)
         )
     return code, message
+
+
+def _operator_decides_copy_code(item: ContentItem) -> str:
+    """아침 요약의 사람 결정 보류 줄 문구 키 — 본문이 없는 슬롯은 '새로 쓰기' 문구다."""
+
+    return references_operator_decides_copy_code(
+        written=bool(str(getattr(item, "body", None) or "").strip())
+    )
 
 
 def _generation_attempt_is_unchanged(
@@ -6401,7 +6412,9 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                     "attempt_fingerprint": _stored_generation_attempt(item).get(
                         "context"
                     ),
-                    "copy_code": REFERENCES_OPERATOR_DECIDES_COPY_CODE if operator_line else None,
+                    "copy_code": (
+                        _operator_decides_copy_code(item) if operator_line else None
+                    ),
                 }
             )
         paged += 1
@@ -6512,9 +6525,13 @@ def morning_content_auto_publish(self):
                                 "code": outcome["code"],
                                 "cause": _publication_digest_cause(outcome["code"], summary),
                                 "attempt_fingerprint": outcome.get("attempt_fingerprint"),
+                                # 문구 키는 작성 여부로 따로 온다(`operator_copy_code`).
                                 "copy_code": (
-                                    REFERENCES_OPERATOR_DECIDES_COPY_CODE if operator_line else None
-                                ),
+                                    outcome.get("operator_copy_code")
+                                    or REFERENCES_OPERATOR_DECIDES_COPY_CODE
+                                )
+                                if operator_line
+                                else None,
                             }
                         )
                     continue
@@ -6815,6 +6832,9 @@ def _auto_publish_one(
             # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
             _record_gate_blocker_decision(db, item, philosophy, code)
             db.commit()
+            operator_line = operator_decides_digest_due(
+                code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
+            )
             return {
                 "kind": "blocked",
                 "code": code,
@@ -6829,9 +6849,9 @@ def _auto_publish_one(
                 "run_id": blocked_run.id,
                 "attempt_fingerprint": _stored_generation_attempt(item).get("context"),
                 # 잠근 행으로 판정한다 — 08:00 요약에는 행이 없다.
-                "operator_line": operator_decides_digest_due(
-                    code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
-                ),
+                "operator_line": operator_line,
+                # 문구 키(작성된 글 / 쓰이지 않은 슬롯). `operator_line`은 bool 계약 그대로다.
+                "operator_copy_code": _operator_decides_copy_code(item) if operator_line else None,
             }
 
         # Publishing without a working cache invalidation path can leave a successful DB

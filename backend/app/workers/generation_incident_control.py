@@ -31,6 +31,7 @@ from app.services.incidents import (
     open_or_touch_incident,
 )
 from app.services.notification_contracts import IncidentSlackProjection
+from app.services.notification_copy import display_time
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
 from app.services.reference_requirement import references_left_to_operator
@@ -262,6 +263,42 @@ def scheduled_recovery_deadline(item, code: str) -> datetime | None:
     )
 
 
+def environment_recovery_exhausted(code: str, item) -> bool:
+    """공급자 장애의 환경 예산이 끝나 예약 복구가 이 빈 슬롯을 더 집지 않는가.
+
+    `ENVIRONMENT_ATTEMPT_BUDGET`을 다 쓰면 재시도 정책이 다음 시도 시각을 `None`으로 저장한다
+    (`recovery_is_abandoned`). 그 뒤에도 '다음 예약 배치가 다시 시도합니다'라고 하면 사람이 할
+    일이 없는 것처럼 보인다. 본문이 있는 글은 저장 본문 수리가 소유하므로 여기 들지 않는다.
+    """
+
+    if code not in _ENVIRONMENT_WAIT_CODES or item is None:
+        return False
+    if str(getattr(item, "body", None) or "").strip():
+        return False
+    attempt = _stored_generation_attempt(item)
+    return attempt.get("reason") == code and recovery_is_abandoned(attempt)
+
+
+def operator_retry_releases(item) -> bool:
+    """운영센터 “작업 다시 시도”가 이 빈 슬롯의 저장된 억제를 푸는가.
+
+    조치 문구가 “작업 다시 시도”를 권할지 정하는 판정이다. `tasks.regenerate_content_item`이
+    Admin이 만든 실행에서 억제를 푸는 조건(#182)과 같은 조건을 여기 따로 적는다 — 두 곳이 갈리지
+    않는지는 저장 기록의 분류·원인마다 실제 태스크를 돌려 확인한다
+    (`tests/test_generation_incident_copy_retry.py`). 게이트가 남긴 원고 미생성 기록과 환경 실패
+    기록(PROVIDER_*·COST_BLOCKED 등 ENVIRONMENT_RECOVERABLE)만 풀린다. 표본 실패(주제 교체 기록
+    포함)는 하루 예산이 소유해 기한 전에는 그대로 억제된다.
+    """
+
+    if item is None or str(getattr(item, "body", None) or "").strip():
+        return False
+    attempt = _stored_generation_attempt(item)
+    return (
+        attempt.get("reason") == "CONTENT_NOT_GENERATED"
+        or attempt.get("retry_class") == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    )
+
+
 def generation_block_is_terminal(code: str, item) -> bool:
     """자동 재시도가 끝난 차단인가. 끝났으면 기한 없는 OPEN(사람의 일)이다."""
 
@@ -361,6 +398,39 @@ def generation_operator_action(code: str, message: str | None = None) -> str:
     return _generation_operator_copy(code, message)[1]
 
 
+# '지금은 기다리세요'라고 말하는 공급자 장애 코드. 환경 예산이 끝나면 그 말이 틀린다.
+_ENVIRONMENT_WAIT_CODES = frozenset({"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"})
+
+# 원고 미생성은 07:45·08:00 게이트가 기록한다(`tasks._record_gate_blocker_decision`). 분류는
+# OPERATOR_REQUIRED이고 다음 시도 시각이 없어 01·04·07·12·18·22시 복구와 23시 야간 배치 어느
+# 것도 이 슬롯을 다시 쓰지 않는다(`_generation_attempt_is_unchanged`). 예외는 생성 지문(운영 기준·
+# 유형·측정 질문·검사 규칙 판, `tasks._generation_attempt_context`)이 바뀐 때뿐이다. 운영센터의
+# “작업 다시 시도”는 이 기록의 억제를 풀고 원고를 만든다(`tasks.regenerate_content_item`).
+CONTENT_NOT_GENERATED_OPERATOR_ACTION = (
+    "예약된 자동 복구는 이 글의 원고를 다시 만들지 않습니다(운영 기준이 새로 승인되는 등 "
+    "생성 조건이 바뀔 때만 다시 만듭니다). 운영센터에서 해당 항목의 “작업 다시 시도”를 누르세요."
+)
+# 게이트가 원고 미생성을 기록하지 않고 스윕이 소유한 기록을 보존한 슬롯(`tasks.
+# _record_gate_blocker_decision`). 표본 실패(주제 교체 뒤의 새 주제 등)는 저장된 다음 시도 시각
+# 전에는 “작업 다시 시도”도 같은 기록 때문에 건너뛰어진다.
+CONTENT_NOT_GENERATED_SCHEDULED_ACTION = (
+    "자동 복구가 {due}에 이 글의 원고를 다시 만듭니다. 그 전에는 “작업 다시 시도”를 눌러도 "
+    "원고를 만들지 않으니, 그 뒤 운영센터에서 결과를 확인하세요."
+)
+# 같은 보존이지만 환경 실패 기록이면 “작업 다시 시도”가 억제를 풀어 바로 원고를 만든다
+# (`operator_retry_releases`). 비용 한도 보류는 누른 실행도 비용 가드를 다시 거친다.
+CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION = (
+    "자동 복구가 {due}에 이 글의 원고를 다시 만듭니다. 원인이 풀렸으면 운영센터에서 해당 항목의 "
+    "“작업 다시 시도”를 눌러 지금 바로 만들 수도 있습니다."
+)
+# 환경 예산을 다 쓴 공급자 장애(`environment_recovery_exhausted`). 예약 복구는 더 집지 않지만
+# “작업 다시 시도”는 환경 실패 기록의 억제를 풀어 바로 원고를 만든다(`operator_retry_releases`).
+ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION = (
+    "자동 재시도 횟수를 모두 사용해 예약된 자동 복구가 이 글의 원고를 더 만들지 않습니다. "
+    "외부 서비스가 정상인지 확인한 뒤 운영센터에서 해당 항목의 “작업 다시 시도”를 누르세요."
+)
+
+
 # 생성 거절 중 원인이 참고자료 확보 실패인 경우의 조치. 예전에는 GENERATION_REJECTED 전체가
 # "가격·지역·검색 구조 게이트" 문구를 받아 운영자가 엉뚱한 곳을 봤다(2026-09-29 점검 §4).
 # 사람이 이 문구를 보는 행은 대개 본문이 없다(표본 예산·주제 교체를 다 쓴 빈 슬롯). 저장 본문
@@ -390,16 +460,34 @@ REFERENCES_OPERATOR_DECIDES_CAUSE = (
 # (`admin/lib/content-page-contract.test.ts`, `tests/test_reference_operator_copy.py`).
 # 검증된 문서 목록의 문서는 관리자 수정이 422로 거절하고(`disallowed_curated_references`),
 # 병원 누리집은 허용 출처가 아니며, 참고 자료가 필수인 글은 0개로 발행되지 않는다.
+# 질환·검사 안내 글로 고치면 더 이상 진료비·병원 선택 글이 아니라(제목 기준) 평범한 참고자료
+# 보류가 되고, 문서 없이 저장한 본문은 저장 본문 수리(`BODY_REPAIR_CODES`)가 작가에게 돌려 다시
+# 쓴다. 진료비·병원 선택 글로 두는 동안에도 새 운영 기준 승인은 옛 기준의 본문을 한 번 다시
+# 쓴다(`tasks._generate_single_content_item`) — 그래서 '다시 쓰지 않습니다'에 단서를 붙인다.
 REFERENCES_OPERATOR_DECIDES_ACTION = (
     "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "
     "뒷받침하는 공공·학술 기관 문서가 있으면 “참고 자료 추가”로 넣고 저장합니다. 없으면 "
     "제목·본문을 질환·검사 안내 글로 고쳐 저장합니다 — 다음 발행 확인이 검증된 문서로 참고 "
     "자료를 채울 수 있습니다. 병원 누리집과 검증된 문서 목록의 질환 문서는 이 글의 참고 자료가 "
-    "될 수 없고, 참고 자료 없이는 발행되지 않습니다. 자동 복구는 이 글을 다시 쓰지 않습니다."
+    "될 수 없고, 참고 자료 없이는 발행되지 않습니다. 질환·검사 안내 글로 고쳐 참고 자료 없이 "
+    "저장하면 자동 복구가 참고 자료를 찾으며 본문을 다시 쓸 수 있습니다. 진료비·병원 선택 글로 "
+    "두면 자동 복구는 운영 기준이 새로 승인되는 등 생성 조건이 바뀌기 전에는 이 글을 다시 쓰지 "
+    "않습니다."
 )
 
 
-def _generation_operator_copy(code: str, message: str | None = None) -> tuple[str, str]:
+def _generation_operator_copy(
+    code: str,
+    message: str | None = None,
+    *,
+    retry_at: datetime | None = None,
+    retry_releasable: bool = False,
+    environment_exhausted: bool = False,
+) -> tuple[str, str]:
+    """`retry_at`은 스윕이 아직 소유한 원고 미생성 슬롯의 저장된 다음 시도 시각, `retry_releasable`은
+    “작업 다시 시도”가 그 기록의 억제를 푸는지(`operator_retry_releases`), `environment_exhausted`는
+    공급자 장애의 환경 예산이 끝났다는 판정이다."""
+
     impact = (
         "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
         if code in PUBLISHED_IMAGE_RECERTIFY_CODES
@@ -432,10 +520,7 @@ def _generation_operator_copy(code: str, message: str | None = None) -> tuple[st
             "이전 작업 기록이 남아 자동 생성이 시작되지 않았습니다. 운영 센터를 새로고침해 "
             "현재 상태를 다시 확인하세요."
         ),
-        "CONTENT_NOT_GENERATED": (
-            "운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요. 자동 복구는 "
-            "01시·04시·07시·07시 45분에도 다시 실행됩니다."
-        ),
+        "CONTENT_NOT_GENERATED": CONTENT_NOT_GENERATED_OPERATOR_ACTION,
         "MISSING_REFERENCES": (
             "참고 자료가 실제 문서 확인(없는 문서·빈 페이지·주제 불일치)에서 모두 빠지고 "
             "검증된 목록에서도 채우지 못해 발행을 보류했습니다. 다음 자동 복구가 검증된 "
@@ -446,10 +531,14 @@ def _generation_operator_copy(code: str, message: str | None = None) -> tuple[st
         ),
         "ESSENCE_NOT_ALIGNED": ("병원 온보딩에서 승인된 운영 기준과 차단된 문구를 확인하세요."),
         "FAQ_FIELDS_MISSING": ("운영 센터에서 FAQ 질문과 직접 답변 요약의 누락 원인을 확인하세요."),
+        # 항목 종료 버튼은 없다. 콘텐츠 화면의 편집(“콘텐츠 수정”·“참고 자료 추가”)으로 고친
+        # 후보는 독립 검수가 다시 본다(`content_publication`: 차단 뒤 바뀐 후보는 STALE → 재검수).
         "CONTENT_AI_HARD_FINDING": (
             "지적된 사실을 병원 정보 탭의 승인 자료에 채우세요. 승인 자료가 바뀌면 다음 "
-            "자동 복구가 그 자료로 본문을 다시 씁니다. 사실이 아니라면 운영 센터에서 "
-            "해당 항목을 종료하세요."
+            "자동 복구가 그 자료로 본문을 다시 씁니다. 지적이 사실과 다르면 콘텐츠 탭에서 "
+            "이 글의 “콘텐츠 수정”을 눌러 지적된 내용을 고치거나, 그 내용을 직접 뒷받침하는 "
+            "공공·학술 기관 문서를 “참고 자료 추가”로 넣어 저장하세요. 저장한 글은 독립 검수를 "
+            "다시 받습니다."
         ),
         "CONTENT_AI_REVIEW_STALE": ("운영 센터에서 변경된 원고와 재검수 대기 상태를 확인하세요."),
         "CONTENT_AI_REVIEW_UNAVAILABLE": (
@@ -485,6 +574,15 @@ def _generation_operator_copy(code: str, message: str | None = None) -> tuple[st
         return impact, REFERENCE_REJECTION_OPERATOR_ACTION
     if code == "MISSING_REFERENCES" and message == REFERENCES_OPERATOR_DECIDES_CAUSE:
         return impact, REFERENCES_OPERATOR_DECIDES_ACTION
+    if code == "CONTENT_NOT_GENERATED" and retry_at is not None:
+        template = (
+            CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION
+            if retry_releasable
+            else CONTENT_NOT_GENERATED_SCHEDULED_ACTION
+        )
+        return impact, template.format(due=display_time(retry_at))
+    if code in _ENVIRONMENT_WAIT_CODES and environment_exhausted:
+        return impact, ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
     action = actions.get(
         code,
         "운영 센터에 “작업 다시 시도”가 보이면 누르고 완료 결과를 확인하세요.",
@@ -729,6 +827,7 @@ async def open_generation_incident(
     subject_hash: str | None = None,
 ) -> uuid.UUID:
     sessions = get_async_sessionmaker()
+    observed_at = datetime.now(UTC)
     async with sessions() as db:
         # 주제 교체 뒤의 실패는 새 epoch로 열려야 하므로 신원을 정하기 전에 이력을 읽는다.
         get_item = getattr(db, "get", None)
@@ -815,7 +914,17 @@ async def open_generation_incident(
                 if operator_decides_references(code, swapped_item)
                 else _generation_safe_cause(code)
             )
-            customer_impact, next_action = _generation_operator_copy(code, safe_cause)
+            customer_impact, next_action = _generation_operator_copy(
+                code,
+                safe_cause,
+                retry_at=(
+                    _stored_retry_deadline(_stored_generation_attempt(swapped_item))
+                    if code == "CONTENT_NOT_GENERATED" and swapped_item is not None
+                    else None
+                ),
+                retry_releasable=operator_retry_releases(swapped_item),
+                environment_exhausted=environment_recovery_exhausted(code, swapped_item),
+            )
             incident = await open_or_touch_incident(
                 db,
                 IncidentOpenRequest(
@@ -839,7 +948,6 @@ async def open_generation_incident(
                 reason="generation attempt failed",
             )
             notification_code = code
-        observed_at = datetime.now(UTC)
         item = swapped_item
         if notification_code == "MISSING_APPROVED_ESSENCE":
             # This incident records system work. Human action is represented by
@@ -874,6 +982,8 @@ async def open_generation_incident(
                 incident = retrying
             incident.sla_due_at = deadline
             incident.severity = IncidentSeverity.MEDIUM
+        elif blocking_cause is not None:
+            _refresh_reused_cause(incident, item, code, observed_at)
         if blocking_cause is None:
             await _recover_superseded_generation_incidents(
                 db,
@@ -927,6 +1037,25 @@ async def open_generation_incident(
             await enqueue_notification(db, notification)
         await db.commit()
         return incident.id
+
+
+def _refresh_reused_cause(incident: Incident, item, code: str, observed_at: datetime) -> None:
+    """원고 미생성 관측이 재사용한 앞선 원인의 기한·조치를 지금 시도 기록에 맞춘다.
+
+    재사용한 인시던트는 앞선 시도가 남긴 기한과 조치를 들고 있다. 게이트가 시도 기록을 원고
+    미생성(OPERATOR_REQUIRED, 기한 없음)으로 바꿨다면 그 기한의 스윕은 이 슬롯을 집지 않고,
+    앞선 원인의 '기다리세요'도 더는 사실이 아니다. 스윕 소유 기록(주제 교체 등)이 남아 있으면
+    그 기록의 다음 시도 시각이 새 기한이다.
+    """
+
+    attempt = _stored_generation_attempt(item) if item is not None else {}
+    deadline = _stored_retry_deadline(attempt)
+    if incident.state == IncidentState.RETRYING.value:
+        # 다음 시도가 없으면 복구 창이 지금 닫혔다고 적는다 — 기한이 지난 RETRYING은 사람의 일이다.
+        incident.sla_due_at = deadline or observed_at
+    if attempt.get("reason") == code and deadline is None:
+        # 사람이 할 일은 게이트 기록이 정한다.
+        incident.next_action = generation_operator_action(code)
 
 
 async def _recover_superseded_generation_incidents(
