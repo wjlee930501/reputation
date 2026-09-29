@@ -59,13 +59,13 @@ from app.services.reference_verification import (
     index_reference_checks,
     item_topic_terms,
     merge_reference_checks,
+    names_curated_document,
     reason_label,
     reference_gate_status,
     reference_url_fingerprint,
     split_reference_entries,
     topic_fingerprint,
 )
-from app.utils.authority_sources import is_curated_source_url
 
 # 08:00 발행 요약에 실리는, 기관 사이트 장애로 발행을 미룬 글의 코드와 원인 문구.
 # '참고 자료 확보 실패'가 아니다 — 문서가 없다는 증거가 아니라 사이트가 열리지 않았다.
@@ -171,19 +171,20 @@ def _strips_curated_references(item: object, *, title: object = None) -> bool:
     return references_left_to_operator(item, title=title)
 
 
-def _is_curated_entry(entry: Mapping[str, Any]) -> bool:
-    return is_curated_source_url(entry.get("url"))
-
-
 def disallowed_curated_references(
-    item: object, references: Sequence[Mapping[str, Any]], *, title: object = None
+    item: object,
+    references: Sequence[Mapping[str, Any]],
+    *,
+    title: object = None,
+    checks: object = None,
 ) -> list[str]:
     """이 발행 전 진료비·병원 선택 글에 넣을 수 없는 수기 목록 문서 주소(관리자 PATCH용).
 
     다음 발행 재검증이 어차피 빼는 문서다 — 저장을 받아 두면 운영자는 넣었다고 알고 글은 다시
     `MISSING_REFERENCES`로 보류된다. 그래서 PATCH가 GET 전에 거절한다. 제출한 목록에 **들어 있으면**
     거절한다(이전 목록에 이미 있던 문서를 그대로 둔 경우도 — 남겨 둬도 다음 재검증이 뺀다).
-    공개·보존된 글과 의료 글은 빈 목록이다.
+    공개·보존된 글과 의료 글은 빈 목록이다. `checks`(PATCH의 GET 결과)를 주면 목록 문서로
+    리다이렉트된 주소도 거절 대상이다.
     """
 
     if not _strips_curated_references(item, title=title):
@@ -191,7 +192,7 @@ def disallowed_curated_references(
     return [
         str(entry.get("url"))
         for entry in references
-        if isinstance(entry, Mapping) and _is_curated_entry(entry)
+        if isinstance(entry, Mapping) and names_curated_document(entry, checks)
     ]
 
 
@@ -207,8 +208,10 @@ def publication_references_settled(item: object, *, now: datetime | None = None)
         return False
     if _strips_curated_references(item):
         entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
-        # 발행 전 진료비·병원 선택 글의 수기 목록 문서는 통과 기록이 있어도 빼야 한다.
-        return not any(_is_curated_entry(entry) for entry in entries)
+        # 발행 전 진료비·병원 선택 글의 수기 목록 문서는 통과 기록이 있어도 빼야 한다
+        # (목록 문서로 리다이렉트된 주소도 — 기록의 최종 주소로 본다).
+        checks = getattr(item, "reference_checks", None)
+        return not any(names_curated_document(entry, checks) for entry in entries)
     return True
 
 
@@ -238,8 +241,10 @@ async def refresh_publication_references(
     topic_terms = item_topic_terms(item)
     required = references_required(item)
     # 발행 전 진료비·병원 선택 글: 작가가 인용해 통과한 수기 목록 문서도 남기지 않는다(GET 없이 뺀다).
-    strip_curated = _strips_curated_references(item) and any(
-        _is_curated_entry(entry) for entry in references
+    # 지난 GET에서 목록 문서로 리다이렉트된 주소도 같다.
+    strips_curated = _strips_curated_references(item)
+    strip_curated = strips_curated and any(
+        names_curated_document(entry, previous_checks) for entry in references
     )
     if (
         reference_gate_status(
@@ -263,7 +268,11 @@ async def refresh_publication_references(
             checks=merge_reference_checks(previous_checks),
         )
     outcome = await verifier.verify(
-        [entry for entry in references if not (strip_curated and _is_curated_entry(entry))],
+        [
+            entry
+            for entry in references
+            if not (strip_curated and names_curated_document(entry, previous_checks))
+        ],
         topic_terms=topic_terms,
         previous_checks=previous_checks,
         reuse_fresh_checks=True,
@@ -281,6 +290,9 @@ async def refresh_publication_references(
             site_unreachable_urls=_deferred_urls(outcome.deferred_checks()),
         )
     kept = outcome.kept
+    if strips_curated:
+        # 이번 GET에서 목록 문서로 리다이렉트된 주소도 목록 문서를 인용한 것과 같다.
+        kept = [entry for entry in kept if not names_curated_document(entry, outcome.checks)]
     healed = False
     operator_decides = not kept and references_left_to_operator(item)
     if not kept and required and not operator_decides:

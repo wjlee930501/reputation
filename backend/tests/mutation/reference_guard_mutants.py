@@ -73,6 +73,8 @@ REQ = "app/services/reference_requirement.py"
 CP = "app/services/content_publication.py"
 RETRY = "app/workers/generation_retry_policy.py"
 T_OPD = "tests/test_reference_operator_decides.py"
+T_ALIAS = "tests/test_reference_curated_alias.py"
+T_COPY = "tests/test_reference_operator_copy.py"
 
 
 @dataclass(frozen=True)
@@ -197,7 +199,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "수기 목록도 카탈로그 주제 대조(무조건 통과 아님)",
         f"{RV}:judge_fetched_page",
         RV,
-        "        if curated_topic_relevant(url, topic_terms):\n"
+        "        if curated_topic_relevant(catalog_url, topic_terms):\n"
         "            return judgement(VERDICT_PASS, REASON_CURATED_VERIFIED)\n"
         "        return judgement(VERDICT_FAIL, REASON_UNRELATED)",
         "        return judgement(VERDICT_PASS, REASON_CURATED_VERIFIED)",
@@ -977,8 +979,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "P3 정규화 비교 — www 무시",
         f"{AS}:normalize_reference_url",
         AS,
-        '    if host.startswith("www."):\n        host = host[4:]\n',
-        "",
+        '    host = (parsed.hostname or "").lower()\n    if host.startswith("www."):\n        host = host[4:]\n',
+        '    host = (parsed.hostname or "").lower()\n',
         (f"{T_EXCL}::test_exclusion_matches_by_normalized_url",),
     ),
     Mutant(
@@ -1422,7 +1424,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "5 발행 재검증 — 발행 전 진료비·병원 선택 글의 수기 목록 문서는 통과해도 뺀다",
         f"{RP}:refresh_publication_references",
         RP,
-        "    strip_curated = _strips_curated_references(item) and any(",
+        "    strip_curated = strips_curated and any(",
         "    strip_curated = False and any(",
         (
             f"{T_OPD}::test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes",
@@ -1433,7 +1435,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "5 settled — 신선한 통과 기록이 있어도 수기 목록 문서가 남은 예정 글은 재검증 대상",
         f"{RP}:publication_references_settled",
         RP,
-        "        return not any(_is_curated_entry(entry) for entry in entries)",
+        "        return not any(names_curated_document(entry, checks) for entry in entries)",
         "        return True",
         (f"{T_OPD}::test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes",),
     ),
@@ -1459,16 +1461,19 @@ MUTANTS: tuple[Mutant, ...] = (
         "5 수기 목록 판정은 정규화한 주소(scheme·www 표기 차이도 같은 문서)",
         f"{AS}:is_curated_source_url",
         AS,
-        "    return bool(key) and key in _CURATED_SOURCE_KEYS",
+        "    return not _CURATED_SOURCE_KEYS.isdisjoint(curated_document_keys(url))",
         "    return str(url or \"\").strip() in CURATED_SOURCE_URLS",
-        (f"{T_OPD}::test_a_curated_document_is_dropped_in_any_spelling",),
+        (
+            f"{T_OPD}::test_a_curated_document_is_dropped_in_any_spelling",
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+        ),
     ),
     Mutant(
         "5 생성 — 진료비·병원 선택 제목이면 작가가 인용한 수기 목록 문서를 받지 않는다",
         f"{CE}:_verify_generated_references",
         CE,
-        "    if result[\"references\"] and required and topic_without_authoritative_source(",
-        "    if False and topic_without_authoritative_source(",
+        "    if result[\"references\"] and no_source_topic:",
+        "    if False and no_source_topic:",
         (
             f"{T_OPD}::test_generation_does_not_accept_a_cited_curated_document",
             f"{T_OPD}::test_unwritten_slot_whose_writer_cited_a_curated_document_goes_to_the_operator",
@@ -1563,7 +1568,9 @@ MUTANTS: tuple[Mutant, ...] = (
         "7e 관리자 PATCH — 잠근 행으로 다시 판정(필수 여부는 스냅샷 밖)",
         f"{ADMIN}:update_content",
         ADMIN,
-        "        _reject_curated_references_for_no_source_topic(item, body, normalized_refs)\n",
+        "        _reject_curated_references_for_no_source_topic(\n"
+        "            item, body, normalized_refs, checks=patched_reference_checks\n"
+        "        )\n",
         "",
         (f"{T_OPD}::test_patch_rechecks_on_the_locked_row_when_the_post_becomes_reference_required",),
     ),
@@ -1582,8 +1589,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "7e 관리자 PATCH — 저장될 제목(바꾸면 새 제목)으로 판정",
         f"{ADMIN}:_reject_curated_references_for_no_source_topic",
         ADMIN,
-        "    urls = disallowed_curated_references(item, references, title=body.title)",
-        "    urls = disallowed_curated_references(item, references)",
+        "    urls = disallowed_curated_references(item, references, title=body.title, checks=checks)",
+        "    urls = disallowed_curated_references(item, references, checks=checks)",
         (f"{T_OPD}::test_patch_judges_the_title_it_saves",),
     ),
     Mutant(
@@ -1604,6 +1611,168 @@ MUTANTS: tuple[Mutant, ...] = (
             f"{T_OPD}::test_patch_accepts_a_curated_document_on_a_medical_post",
             f"{T_OPD}::test_patch_judges_the_title_it_saves",
         ),
+    ),
+    # ── 리뷰 3차 F1: 수기 목록 문서의 별칭·리다이렉트, F5: 운영자 문구, F6: q04 ──────────
+    Mutant(
+        "8a 동일성 키 — 문서 id는 정수로 비교(cntnts_sn=03796은 3796)",
+        f"{AS}:_document_id_value",
+        AS,
+        "    try:\n        return str(int(text))\n    except ValueError:\n        return text",
+        "    return text",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "8a 동일성 키 — 기본 포트(80·443)는 같은 문서",
+        f"{AS}:curated_document_keys",
+        AS,
+        "    if port and port not in _DEFAULT_PORTS:",
+        "    if port:",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_default_ports_and_decorations_are_the_same_document",
+        ),
+    ),
+    Mutant(
+        "8a 동일성 키 — 문서 id 밖의 질의(utm_source·from …)는 무시",
+        f"{AS}:curated_document_keys",
+        AS,
+        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n",
+        "        if True:\n",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+        ),
+    ),
+    Mutant(
+        "8a 동일성 키 — 겹친 id 질의는 값마다 키(하나라도 목록 문서면 목록 문서)",
+        f"{AS}:curated_document_keys",
+        AS,
+        "            values.setdefault(name, set()).add(_document_id_value(value))",
+        "            values[name] = {_document_id_value(value)}",
+        (f"{T_ALIAS}::test_an_ambiguous_repeated_id_is_curated_but_never_topic_matched",),
+    ),
+    Mutant(
+        "8a 겹친 id로 문서가 하나로 정해지지 않으면 카탈로그 대조로 통과시키지 않는다",
+        f"{AS}:curated_source_entries",
+        AS,
+        "    if len(keys) != 1:\n        return []",
+        "    if not keys:\n        return []",
+        (f"{T_ALIAS}::test_an_ambiguous_repeated_id_is_curated_but_never_topic_matched",),
+    ),
+    Mutant(
+        "8b 검증기의 수기 판정이 동일성 키를 쓴다(원문 정확 비교로 되돌리기)",
+        f"{RV}:ReferenceVerifier.verify",
+        RV,
+        "            curated = is_curated_source_url(url)\n",
+        '            curated = url in {str(s["url"]) for s in CURATED_MEDICAL_SOURCE_PAGES}\n',
+        (
+            f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",
+            f"{T_ALIAS}::test_an_alias_is_judged_by_the_catalog_when_its_site_is_down",
+        ),
+        note=(
+            "GET이 최종 주소를 주면 최종 주소 판정(8c)이 별칭을 다시 목록 문서로 본다 — "
+            "접속 불가(최종 주소 없음)에서만 드러난다."
+        ),
+    ),
+    Mutant(
+        "8b 카탈로그 대조의 목록 항목 찾기도 동일성 키(원문 정확 비교로 되돌리기)",
+        f"{RV}:_curated_entries",
+        RV,
+        "    return list(curated_source_entries(url))",
+        '    return [entry for entry in CURATED_MEDICAL_SOURCE_PAGES if str(entry["url"]) == url]',
+        (f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",),
+    ),
+    Mutant(
+        "8c 검증기 — GET의 최종 주소가 목록 문서면 목록 문서(리다이렉트)",
+        f"{RV}:ReferenceVerifier.verify",
+        RV,
+        "            if not curated and is_curated_source_url(fetched.final_url):\n",
+        "            if False:\n",
+        (
+            f"{T_ALIAS}::test_generation_drops_an_outside_url_that_redirects_to_a_curated_document",
+            f"{T_ALIAS}::test_generation_keeps_a_redirect_to_a_curated_document_on_a_medical_title",
+        ),
+    ),
+    Mutant(
+        "8c 리다이렉트된 주소는 최종 주소의 목록 항목으로 카탈로그 대조",
+        f"{RV}:judge_fetched_page",
+        RV,
+        "    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)",
+        "    catalog_url = url",
+        (
+            f"{T_ALIAS}::test_generation_keeps_a_redirect_to_a_curated_document_on_a_medical_title",
+            f"{T_ALIAS}::test_patch_accepts_a_redirect_to_a_curated_document_on_a_medical_post",
+        ),
+    ),
+    Mutant(
+        "8c 생성 — GET에서 목록 문서로 리다이렉트된 주소도 진료비·병원 선택 글에서 뺀다",
+        f"{CE}:_verify_generated_references",
+        CE,
+        "                if not names_curated_document(reference, outcome.checks)\n",
+        "                if True\n",
+        (f"{T_ALIAS}::test_generation_drops_an_outside_url_that_redirects_to_a_curated_document",),
+    ),
+    Mutant(
+        "8c 발행 재검증 — 이번 GET에서 목록 문서로 리다이렉트된 주소도 뺀다",
+        f"{RP}:refresh_publication_references",
+        RP,
+        "        kept = [entry for entry in kept if not names_curated_document(entry, outcome.checks)]",
+        "        pass",
+        (f"{T_ALIAS}::test_publication_refresh_drops_a_redirect_to_a_curated_document",),
+    ),
+    Mutant(
+        "8c 저장된 기록의 최종 주소가 목록 문서면 settled가 아니고 GET 없이 뺀다",
+        f"{RV}:names_curated_document",
+        RV,
+        '    return check is not None and is_curated_source_url(check.get("final_url"))',
+        "    return False",
+        (
+            f"{T_ALIAS}::test_a_stored_pass_whose_final_url_is_curated_is_not_settled",
+            f"{T_ALIAS}::test_patch_rejects_a_url_that_redirects_to_a_curated_document",
+        ),
+    ),
+    Mutant(
+        "8d 관리자 PATCH — GET이 목록 문서로 리다이렉트되면 같은 422",
+        f"{ADMIN}:update_content",
+        ADMIN,
+        "            item, body, normalized_refs, checks=patched_reference_checks\n",
+        "            item, body, normalized_refs\n",
+        (f"{T_ALIAS}::test_patch_rejects_a_url_that_redirects_to_a_curated_document",),
+    ),
+    Mutant(
+        "8e 운영자 문구 — 없는 조작('항목 종료')을 말하지 않는다(보류 조치)",
+        f"{INCIDENT}:REFERENCES_OPERATOR_DECIDES_ACTION",
+        INCIDENT,
+        '    "제목·본문을 질환·검사 안내 글로 고쳐 저장합니다 — 다음 발행 확인이 검증된 문서로 참고 "',
+        '    "제목·본문을 질환·검사 안내 글로 고쳐 저장하거나 해당 항목을 종료합니다 — 다음 발행 확인이 검증된 문서로 참고 "',
+        (f"{T_COPY}::test_the_copy_names_only_the_two_real_ways_out",),
+    ),
+    Mutant(
+        "8e 운영자 문구 — 없는 조작('항목 종료')을 말하지 않는다(PATCH 422)",
+        f"{ADMIN}:CURATED_REFERENCE_NOT_ALLOWED_MESSAGE",
+        ADMIN,
+        '    "저장하거나, 그런 문서가 없으면 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요."',
+        '    "저장하거나, 그런 문서가 없으면 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요. 없으면 해당 항목을 종료하세요."',
+        (f"{T_COPY}::test_the_copy_names_only_the_two_real_ways_out",),
+    ),
+    Mutant(
+        "8e 운영자 문구 — 따옴표로 이름 붙인 버튼이 콘텐츠 화면에 있다",
+        f"{INCIDENT}:REFERENCES_OPERATOR_DECIDES_ACTION",
+        INCIDENT,
+        '    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "',
+        '    "콘텐츠 탭에서 이 글의 “항목 정리”를 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "',
+        (f"{T_COPY}::test_every_quoted_control_in_the_copy_exists_on_the_content_screen",),
+    ),
+    Mutant(
+        "7a q04 — 브리프의 target_question 칸도 따로 본다",
+        f"{CE}:_brief_names_no_source_topic",
+        CE,
+        '        content_brief.get("target_question"),\n',
+        "",
+        (f"{T_OPD}::test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief",),
     ),
 )
 

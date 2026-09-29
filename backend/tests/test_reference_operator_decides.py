@@ -540,8 +540,13 @@ def test_cost_post_with_a_passing_unlisted_reference_keeps_it_and_publishes(monk
 
 
 def _curated_rule_off(monkeypatch):
-    monkeypatch.setattr(reference_publication, "is_curated_source_url", lambda _url: False)
+    monkeypatch.setattr(
+        reference_publication, "names_curated_document", lambda _entry, _checks=None: False
+    )
     monkeypatch.setattr(content_engine, "is_curated_source_url", lambda _url: False)
+    monkeypatch.setattr(
+        content_engine, "names_curated_document", lambda _entry, _checks=None: False
+    )
 
 
 def _cited_curated_setup(monkeypatch, title, *, fresh):
@@ -1005,6 +1010,13 @@ NO_SOURCE_BRIEFS = {
     "choice_goreul": {
         "target_query": "노원 정형외과 병원 고를 때 확인할 점",
         "target_keyword": "허리디스크",
+    },
+    # 질문 칸만 진료비다(질의·키워드·질문 이름은 의료 주제) — 그 칸도 따로 본다(리뷰 3차 q04).
+    "cost_target_question_only": {
+        "target_query": "노원 도수치료 효과",
+        "target_keyword": "도수치료",
+        "target_question": "도수치료 비용은 얼마인가요?",
+        "query_target": {"name": "노원 도수치료", "treatment": "도수치료"},
     },
 }
 
