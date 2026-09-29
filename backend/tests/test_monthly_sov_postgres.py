@@ -1,9 +1,7 @@
 """Real PostgreSQL proof for fixed-manifest SoV persistence and API detail output."""
 
-import os
 import uuid
 
-import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
@@ -20,19 +18,14 @@ from app.services.monthly_manifest import (
 )
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
+from tests.db_env import require_db_url
 
-POSTGRES_URL = os.getenv(
-    "TASK22_DATABASE_URL",
-    "postgresql://reputation:reputation@localhost:5434/reputation_test",
-)
-pytestmark = pytest.mark.skipif(
-    "TASK22_DATABASE_URL" not in os.environ,
-    reason="set TASK22_DATABASE_URL to an isolated Alembic-head PostgreSQL database",
-)
+# TASK22_DATABASE_URL must point at an isolated Alembic-head PostgreSQL database. It has
+# no default: unset fails the test (read at test time, so collection never errors).
 
 
 def test_migrated_postgres_cells_round_trip_to_persisted_summary_and_detail_api() -> None:
-    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    engine = create_engine(require_db_url("TASK22_DATABASE_URL"), pool_pre_ping=True)
     with Session(engine) as db:
         hospital = Hospital(name="고정 측정표 테스트의원", slug=f"task22-{uuid.uuid4().hex}")
         owner = AdminUser(

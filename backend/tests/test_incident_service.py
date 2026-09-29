@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from collections import Counter
 from collections.abc import AsyncIterator
@@ -40,24 +39,19 @@ from app.services.incidents import (
     project_incident_labels,
     sanitize_operator_text,
 )
-
-DEFAULT_DATABASE_URL = (
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
-)
+from tests.db_env import fail_unreachable, require_db_url
 
 
 @pytest.fixture
 async def db() -> AsyncIterator[AsyncSession]:
-    url = os.getenv("INCIDENT_TEST_DATABASE_URL", DEFAULT_DATABASE_URL)
-    required = "INCIDENT_TEST_DATABASE_URL" in os.environ
+    # No default: unset fails here, and a set-but-unreachable or unmigrated DB fails too.
+    url = require_db_url("INCIDENT_TEST_DATABASE_URL")
     engine = create_async_engine(url, future=True)
     try:
         try:
             connection = await engine.connect()
         except OSError as exc:
-            if required:
-                pytest.fail(f"required incident PostgreSQL unavailable: {exc}", pytrace=False)
-            pytest.skip("local incident PostgreSQL is unavailable")
+            fail_unreachable("INCIDENT_TEST_DATABASE_URL", exc)
         transaction = await connection.begin()
         operations_schema_ready = await connection.scalar(
             text(
@@ -68,12 +62,10 @@ async def db() -> AsyncIterator[AsyncSession]:
         if not operations_schema_ready:
             await transaction.rollback()
             await connection.close()
-            if required:
-                pytest.fail(
-                    "incident PostgreSQL must include the operations control schema",
-                    pytrace=False,
-                )
-            pytest.skip("local incident PostgreSQL lacks the operations control schema")
+            pytest.fail(
+                "incident PostgreSQL must include the operations control schema",
+                pytrace=False,
+            )
         session = AsyncSession(
             bind=connection,
             expire_on_commit=False,

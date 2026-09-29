@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -34,18 +33,18 @@ from app.services.notification_outbox import (
     enqueue_notification,
     retry_notification,
 )
+from tests.db_env import require_db_url
 
-_ASYNC_URL = os.getenv(
-    "CONTENT_PUBLISH_RECOVERY_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _async_database_url() -> str:
+    return require_db_url("CONTENT_PUBLISH_RECOVERY_DATABASE_URL")
 
 
 @pytest.mark.asyncio
 async def test_failed_manual_publish_notification_recovers_without_republish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = create_async_engine(_ASYNC_URL)
+    engine = create_async_engine(_async_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     schedule_id = uuid.uuid4()

@@ -6,7 +6,6 @@
 아니면 복구 자체가 엉뚱한 달을 만든다.
 """
 
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -39,11 +38,13 @@ from app.services.report_artifact_validation import (
     DoctorPdfValidationError,
 )
 from app.workers import monthly_artifact_incident_control, tasks
+from tests.db_env import fail_unreachable, require_db_url
 
-_POSTGRES_URL = os.getenv(
-    "TASK16_DATABASE_URL",
-    "postgresql://reputation:reputation@localhost:5434/reputation_test",
-)
+_URL_ENV = "TASK16_DATABASE_URL"
+
+
+def _postgres_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def _valid_artifact_metadata(sha: str = "a" * 64, byte_size: int = 4096) -> dict:
@@ -629,12 +630,12 @@ async def test_rebuild_replay_compares_append_only_reason_audit(monkeypatch) -> 
 
 @pytest.fixture
 def monthly_pg_session():
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     transaction = connection.begin()
     session = Session(
         bind=connection,
@@ -655,18 +656,18 @@ def test_doctor_artifact_storage_failure_keeps_report_blocked_and_opens_recovery
     monkeypatch: pytest.MonkeyPatch,
     storage_step: str,
 ) -> None:
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     connection.close()
     session = Session(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     run_id = uuid.uuid4()
     report_id: uuid.UUID | None = None
-    async_url = _POSTGRES_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    async_url = _postgres_url().replace("postgresql://", "postgresql+asyncpg://", 1)
     async_engine = create_async_engine(async_url, poolclass=NullPool)
     async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(

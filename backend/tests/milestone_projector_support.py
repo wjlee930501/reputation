@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import os
 import uuid
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-DATABASE_URL = os.environ.get(
-    "TASK13_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+from tests.db_env import require_db_url
+
+_DATABASE_URL_ENV = "TASK13_DATABASE_URL"
 SLUG = "ops-qa-t13-monthly-ready"
 NAME = "OPS-QA-T13-MONTHLY-READY"
 ADMIN_ID = uuid.UUID("a1340000-0000-0000-0000-000000000001")
@@ -19,7 +17,7 @@ ADMIN_EMAIL = "task13-validator@example.invalid"
 
 @pytest.fixture(name="monthly_sessions")
 async def monthly_session_factory():
-    engine = create_async_engine(DATABASE_URL)
+    engine = create_async_engine(require_db_url(_DATABASE_URL_ENV))
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.connect() as connection:
         has_current_schema = await connection.scalar(

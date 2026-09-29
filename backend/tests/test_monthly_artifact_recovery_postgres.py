@@ -1,6 +1,5 @@
 """월간 원장용 PDF 실패 뒤 재생성 복구를 실제 PostgreSQL로 검증한다."""
 
-import os
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -25,22 +24,27 @@ from app.workers import (
     monthly_artifact_recovery_control,
     tasks,
 )
+from tests.db_env import fail_unreachable, require_db_url
 
-_POSTGRES_URL = os.getenv("TASK24_DATABASE_URL", "postgresql://reputation:reputation@localhost:5434/reputation_test")
+_URL_ENV = "TASK24_DATABASE_URL"
+
+
+def _postgres_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     connection.close()
     session = Session(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     run_ids = (uuid.uuid4(), uuid.uuid4())
-    async_url = _POSTGRES_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+    async_url = _postgres_url().replace("postgresql://", "postgresql+asyncpg://", 1)
     async_engine = create_async_engine(async_url, poolclass=NullPool)
     async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
     monkeypatch.setattr(

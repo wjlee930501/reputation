@@ -32,8 +32,9 @@ revision:
 
 # 컨테이너 안에서 도는 DB 기반 테스트(~50개 파일)가 쓰는 별도 테스트 DB.
 # compose의 db 서비스는 POSTGRES_DB=reputation 하나만 만들고, 호스트 포트는 5434지만
-# 컨테이너 네트워크에서는 db:5432다. 기본값(localhost:5434)을 그대로 두면 컨테이너
-# 안에서는 접속이 안 돼 그 테스트들이 전부 조용히 skip된다.
+# 컨테이너 네트워크에서는 db:5432다. 테스트 DB URL에는 기본값이 없어서(tests/db_env.py)
+# 아래 `test` 타깃이 필요한 변수를 전부 명시적으로 넘긴다 — 빠진 변수가 있으면 그 변수를
+# 쓰는 테스트는 skip이 아니라 변수 이름을 밝힌 실패로 끝난다.
 TEST_DB_PLAIN := postgresql://reputation:reputation@db:5432/reputation_test
 TEST_DB_ASYNC := postgresql+asyncpg://reputation:reputation@db:5432/reputation_test
 TEST_DB_SYNC  := postgresql+psycopg2://reputation:reputation@db:5432/reputation_test
@@ -49,10 +50,10 @@ test-db-setup:
 
 # 알려진 한계: 이 타깃은 아직 전체 스위트를 통과시키지 못한다. compose api는
 # ./backend만 /app에 마운트하므로 리포 루트 파일(docker-compose.yml, site/, Makefile)을
-# 읽는 계약 테스트가 FileNotFoundError로 깨지고, 테스트 DB URL을 env로 받지 않고
-# localhost:5434를 하드코딩한 파일들(backend/tests에 26개)은 컨테이너 네트워크에서
-# 접속하지 못한다. 둘 다 이 타깃보다 넓은 문제다 — 전체 스위트는 `make test-backend-local`
-# (호스트 실행)이 정본이고, 이 타깃은 컨테이너 환경 자체를 검증하는 용도다.
+# 읽는 계약 테스트가 FileNotFoundError로 깨진다. 이 타깃보다 넓은 문제다 — 전체 스위트는
+# `make test-backend-local`(호스트 실행)이 정본이고, 이 타깃은 컨테이너 환경 자체를
+# 검증하는 용도다. 테스트 DB 변수 목록은 .github/workflows/ci.yml backend 잡과 맞춘다
+# (MIGRATION_UPGRADE_·REDELIVERY_TEST_는 전용 DB가 필요해 여기서 넘기지 않는다).
 test: test-db-setup
 	# backend/Dockerfile builds the api image with `uv sync --locked --no-dev`, so
 	# pytest isn't installed in the running container — sync the dev extra into the
@@ -70,13 +71,44 @@ test: test-db-setup
 		-e UV_PROJECT_ENVIRONMENT=/opt/venv \
 		-e PYTHONDONTWRITEBYTECODE=1 \
 		-e INTEGRATION_DATABASE_URL="$(TEST_DB_PLAIN)" \
+		-e TASK16_DATABASE_URL="$(TEST_DB_PLAIN)" \
+		-e TASK22_DATABASE_URL="$(TEST_DB_PLAIN)" \
+		-e TASK24_DATABASE_URL="$(TEST_DB_PLAIN)" \
 		-e INCIDENT_TEST_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e OPERATION_RUN_SIGNAL_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e OPERATION_RUNS_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e OPERATION_RUN_TRANSITIONS_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e OPERATION_RUN_CONCURRENCY_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e NOTIFICATION_OUTBOX_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e ONBOARDING_PROJECTOR_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e CONTENT_PUBLISH_RECOVERY_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e TASK13_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e TASK18_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e TASK19_ASYNC_DATABASE_URL="$(TEST_DB_ASYNC)" \
+		-e TASK20_DATABASE_URL="$(TEST_DB_ASYNC)" \
 		-e OPERATIONS_TEST_DATABASE_URL="$(TEST_DB_SYNC)" \
+		-e OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL="$(TEST_DB_SYNC)" \
+		-e TASK19_SYNC_DATABASE_URL="$(TEST_DB_SYNC)" \
 		api uv run --no-sync pytest -v -p no:cacheprovider
 
 test-local: test-backend-local test-frontend copy-guard
 
+# 테스트 DB URL에는 기본값이 없다 — 아래 변수를 호스트에서 직접 export해야 하며, 빠지거나
+# 그 DB에 접속하지 못하면 그 변수를 쓰는 DB 테스트가 변수 이름과 함께 실패한다. 값·드라이버 스킴의 정본은
+# .github/workflows/ci.yml backend 잡 env다(MIGRATION_UPGRADE_·REDELIVERY_TEST_ 전용 DB
+# 변수도 거기 있다 — 이 둘은 비어 있으면 해당 테스트가 skip된다).
+TEST_DB_URL_VARS := INTEGRATION_DATABASE_URL TASK16_DATABASE_URL TASK22_DATABASE_URL \
+    TASK24_DATABASE_URL INCIDENT_TEST_DATABASE_URL OPERATIONS_TEST_DATABASE_URL \
+    OPERATION_RUN_SIGNAL_DATABASE_URL OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL \
+    OPERATION_RUNS_DATABASE_URL OPERATION_RUN_TRANSITIONS_DATABASE_URL \
+    OPERATION_RUN_CONCURRENCY_DATABASE_URL NOTIFICATION_OUTBOX_DATABASE_URL \
+    ONBOARDING_PROJECTOR_DATABASE_URL CONTENT_PUBLISH_RECOVERY_DATABASE_URL \
+    TASK13_DATABASE_URL TASK18_DATABASE_URL TASK19_ASYNC_DATABASE_URL \
+    TASK19_SYNC_DATABASE_URL TASK20_DATABASE_URL
+
 test-backend-local: db-budget-guard
+	@echo "backend 테스트 DB URL은 기본값 없이 export해야 한다 (ci.yml backend 잡 env 참고):"
+	@echo "  $(TEST_DB_URL_VARS)"
 	backend/.venv/bin/python -m ruff check backend
 	cd backend && .venv/bin/python -m pytest
 

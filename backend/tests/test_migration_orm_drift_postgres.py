@@ -14,7 +14,6 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from alembic.autogenerate import compare_metadata
@@ -25,11 +24,13 @@ from sqlalchemy import create_engine, text
 
 import app.models  # noqa: F401 — Base.metadata에 모든 모델을 등록시킨다
 from app.core.database import Base
+from tests.db_env import require_db_url
 
-_SYNC_URL = os.getenv(
-    "TASK19_SYNC_DATABASE_URL",
-    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _sync_url() -> str:
+    return require_db_url("TASK19_SYNC_DATABASE_URL")
+
+
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 # 컬럼 존재 여부만 본다. 나머지 diff 종류는 기존 잡음이라 여기서 판정하지 않는다.
@@ -59,7 +60,7 @@ def _describe(diff: tuple) -> str:
 
 
 def test_migrated_database_has_no_column_drift_against_the_orm() -> None:
-    engine = create_engine(_SYNC_URL)
+    engine = create_engine(_sync_url())
     try:
         with engine.connect() as connection:
             applied = connection.execute(

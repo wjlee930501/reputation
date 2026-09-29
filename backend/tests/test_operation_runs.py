@@ -1,6 +1,5 @@
 """Real-Postgres contract tests for truthful operational commands."""
 
-import os
 import uuid
 from dataclasses import replace
 from types import SimpleNamespace
@@ -20,11 +19,13 @@ from app.services.operation_runs import (
     dispatch_operation,
     retry_operation_run,
 )
+from tests.db_env import fail_unreachable, require_db_url
 
-_DATABASE_URL = os.getenv(
-    "OPERATION_RUNS_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+_URL_ENV = "OPERATION_RUNS_DATABASE_URL"
+
+
+def _database_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 class RecordingTask:
@@ -49,12 +50,12 @@ class RecordingTask:
 
 @pytest.fixture
 async def operation_db() -> AsyncSession:
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     try:
         connection = await engine.connect()
     except OSError as exc:
         await engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     transaction = await connection.begin()
     session = AsyncSession(
         bind=connection,

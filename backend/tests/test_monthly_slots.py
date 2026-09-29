@@ -2,9 +2,9 @@
 
 이 로직의 결함은 전부 "어떤 행이 이미 있는가"를 SQL로 판정하는 지점에서 나왔으므로
 mock DB로는 재현되지 않는다. tests/integration/conftest.py와 같은 가용성 정책을 쓴다 —
-INTEGRATION_DATABASE_URL이 명시되면(CI) 접속 실패는 하드 실패, 로컬이면 skip.
+INTEGRATION_DATABASE_URL은 필수이며 기본값이 없다. 비어 있거나 접속에 실패하면 skip이
+아니라 실패다.
 """
-import os
 import uuid
 from datetime import date
 
@@ -22,11 +22,9 @@ from app.models.content import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.workers.monthly_slots import create_next_month_slots_for_schedule
+from tests.db_env import fail_unreachable, require_db_url
 
-DEFAULT_URL = "postgresql://reputation:reputation@localhost:5434/reputation_test"
-_EXPLICIT_URL = os.getenv("INTEGRATION_DATABASE_URL")
-INTEGRATION_URL = _EXPLICIT_URL or DEFAULT_URL
-INTEGRATION_REQUIRED = bool(_EXPLICIT_URL)
+_URL_ENV = "INTEGRATION_DATABASE_URL"
 
 # 대상 월은 2026-08 고정 — 실행 시점에 따라 달라지면 발행 가능 요일 수가 바뀌어 테스트가
 # 계절적으로 깨진다.
@@ -37,15 +35,12 @@ MONTH_END = date(2026, 8, 31)
 
 @pytest.fixture(scope="module")
 def pg_engine():
-    engine = create_engine(INTEGRATION_URL, future=True)
+    engine = create_engine(require_db_url(_URL_ENV), future=True)
     try:
         with engine.connect() as conn:
             conn.exec_driver_sql("SELECT 1")
     except Exception as exc:  # noqa: BLE001
-        reason = f"No integration Postgres at {INTEGRATION_URL}: {exc.__class__.__name__}: {exc}"
-        if INTEGRATION_REQUIRED:
-            pytest.fail(reason, pytrace=False)
-        pytest.skip(reason)
+        fail_unreachable(_URL_ENV, exc)
     return engine
 
 

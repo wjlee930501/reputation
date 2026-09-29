@@ -1,7 +1,6 @@
 """System doctor-artifact validation schema contract."""
 
 import importlib.util
-import os
 import uuid
 from pathlib import Path
 from types import ModuleType
@@ -11,6 +10,7 @@ import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError, OperationalError
 
 from app.models.monthly_control import MonthlyReportArtifact
+from tests.db_env import fail_unreachable, require_db_url
 
 MIGRATION_PATH = (
     Path(__file__).parents[1]
@@ -18,10 +18,13 @@ MIGRATION_PATH = (
     / "versions"
     / "0043_allow_system_report_artifact_validation.py"
 )
-_POSTGRES_URL = os.getenv(
-    "TASK24_DATABASE_URL",
-    "postgresql://reputation:reputation@localhost:5434/reputation_test",
-)
+
+
+_URL_ENV = "TASK24_DATABASE_URL"
+
+
+def _postgres_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def _load() -> ModuleType:
@@ -85,12 +88,12 @@ def test_downgrade_refuses_system_validations_before_schema_mutation(monkeypatch
 
 
 def test_postgres_rejects_unattributed_validation_and_accepts_system_source() -> None:
-    engine = sa.create_engine(_POSTGRES_URL, future=True)
+    engine = sa.create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     hospital_id = uuid.uuid4()
     report_id = uuid.uuid4()
     try:

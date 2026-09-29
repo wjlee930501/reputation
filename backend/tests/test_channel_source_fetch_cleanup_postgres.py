@@ -6,7 +6,6 @@
 """
 
 import asyncio
-import os
 import uuid
 
 import pytest
@@ -34,11 +33,13 @@ from app.workers import channel_source_fetch_cleanup, tasks
 from app.workers.channel_source_fetch_cleanup import (
     retire_channel_source_fetch_incidents,
 )
+from tests.db_env import fail_unreachable, require_db_url
 
-_POSTGRES_URL = os.getenv(
-    "OPERATIONS_TEST_DATABASE_URL",
-    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
-)
+_URL_ENV = "OPERATIONS_TEST_DATABASE_URL"
+
+
+def _postgres_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def _async_url(url: str) -> str:
@@ -95,14 +96,14 @@ async def _open_incident(
 @pytest.fixture
 def pg(monkeypatch: pytest.MonkeyPatch):
     """실 Postgres 세션 한 쌍(sync/async)과 병원 하나. 만든 행은 끝에서 직접 지운다."""
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         engine.connect().close()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     session = Session(engine, expire_on_commit=False)
-    async_engine = create_async_engine(_async_url(_POSTGRES_URL), poolclass=NullPool)
+    async_engine = create_async_engine(_async_url(_postgres_url()), poolclass=NullPool)
     async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
 
     class SessionContext:
