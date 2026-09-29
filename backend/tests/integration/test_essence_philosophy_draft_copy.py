@@ -13,7 +13,6 @@
 import asyncio
 import hashlib
 import json
-import os
 import uuid
 from datetime import datetime, timezone
 
@@ -50,6 +49,7 @@ from app.services.essence_engine import (
     compute_sources_snapshot_hash,
 )
 from app.services.knowledge_changes import AUTHORITY_CHANGE_FIELD
+from tests.db_env import require_db_url
 
 OPERATOR = "copy.operator@example.com"
 PREVIOUS_APPROVER = "first.approver@example.com"
@@ -802,9 +802,7 @@ async def test_copy_patch_approve_makes_the_edited_sentence_the_new_standard(
 
 
 def _integration_async_url() -> str:
-    url = os.getenv("INTEGRATION_DATABASE_URL") or (
-        "postgresql://reputation:reputation@localhost:5434/reputation_test"
-    )
+    url = require_db_url("INTEGRATION_DATABASE_URL")
     for prefix in ("postgresql+psycopg2://", "postgresql+psycopg://", "postgresql://"):
         if url.startswith(prefix):
             return "postgresql+asyncpg://" + url[len(prefix) :]

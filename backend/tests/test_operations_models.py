@@ -1,4 +1,3 @@
-import os
 from enum import StrEnum
 
 import pytest
@@ -6,6 +5,13 @@ import sqlalchemy as sa
 
 import app.models as models
 from app.core.database import Base
+from tests.db_env import require_db_url
+
+_URL_ENV = "OPERATIONS_TEST_DATABASE_URL"
+
+
+def _database_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def _enum_values(enum_type: type[StrEnum]) -> set[str]:
@@ -109,10 +115,7 @@ def test_operations_tables_encode_keys_versions_leases_and_queue_indexes() -> No
 
 def test_postgres_preserves_recovery_and_scopes_terminal_idempotency() -> None:
     # Given: a real PostgreSQL database migrated through 0042
-    database_url = os.getenv("OPERATIONS_TEST_DATABASE_URL")
-    if database_url is None:
-        pytest.skip("OPERATIONS_TEST_DATABASE_URL is required for PostgreSQL constraint proof")
-    engine = sa.create_engine(database_url)
+    engine = sa.create_engine(_database_url())
     actor_a = "73000000-0000-0000-0000-000000000001"
     actor_b = "73000000-0000-0000-0000-000000000002"
     hospital_a = "73000000-0000-0000-0000-000000000003"

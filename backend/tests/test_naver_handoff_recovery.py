@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import uuid
 from types import SimpleNamespace
 
@@ -31,21 +30,23 @@ from app.services.naver_handoff_incidents import (
 )
 from app.services.naver_handoff_runs import NaverRetryConflict
 from app.workers import naver_sync
+from tests.db_env import fail_unreachable, require_db_url
 
-_DATABASE_URL = os.environ.get(
-    "TASK18_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+_URL_ENV = "TASK18_DATABASE_URL"
+
+
+def _database_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 @pytest.fixture
 async def naver_db() -> AsyncSession:
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     try:
         connection = await engine.connect()
     except OSError as exc:
         await engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     transaction = await connection.begin()
     session = AsyncSession(
         bind=connection,
@@ -438,7 +439,7 @@ async def test_concurrent_retry_creates_one_child_and_one_fetch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Two real transactions must serialize one stable URL retry claim."""
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     hospital_id: uuid.UUID | None = None
     release_fetch = asyncio.Event()
@@ -509,7 +510,7 @@ async def test_concurrent_retry_creates_one_child_and_one_fetch(
                 )
             ) == 1
     except OSError as exc:
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     finally:
         release_fetch.set()
         if hospital_id is not None:

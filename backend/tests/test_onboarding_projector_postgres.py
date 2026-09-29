@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -22,17 +21,19 @@ from app.workers.milestone_event_tasks import (
 )
 from app.workers.milestone_onboarding_projection import observe_onboarding_milestones
 from app.workers.milestone_projection_support import event_uuid
+from tests.db_env import require_db_url
 
-_DATABASE_URL = os.getenv(
-    "ONBOARDING_PROJECTOR_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _database_url() -> str:
+    return require_db_url("ONBOARDING_PROJECTOR_DATABASE_URL")
+
+
 _PREFIX = "OPS-QA-T13-ONBOARDING"
 
 
 @pytest.fixture
 async def onboarding_sessions():
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
 
     async def cleanup() -> None:

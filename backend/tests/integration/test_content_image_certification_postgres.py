@@ -1,4 +1,3 @@
-import os
 import uuid
 from datetime import date, datetime, timezone
 
@@ -10,6 +9,7 @@ from app.services import content_image_certification as backfill
 from app.services.image_engine import CertifiedImageArtifact, image_subject_hash
 from app.services.image_policy import ImagePolicyAssessment, ImagePolicyRejectedError
 from app.services.sync_async_bridge import SyncAsyncBridge
+from tests.db_env import require_redis_url
 
 
 @pytest.fixture
@@ -642,9 +642,7 @@ def test_replacement_diagnostic_is_durable_and_two_attempt_cap_never_resets(
 def test_two_items_share_real_redis_loop_and_settle_both_reservations(
     pg_conn, pg_session, monkeypatch
 ):
-    redis_url = os.getenv("INTEGRATION_REDIS_URL")
-    if not redis_url:
-        pytest.skip("INTEGRATION_REDIS_URL is required for the real Redis loop check")
+    redis_url = require_redis_url("INTEGRATION_REDIS_URL")
     import redis
 
     from app.services import cost_guard

@@ -1,6 +1,5 @@
 """Concurrent PostgreSQL proof for broker-failure incident deduplication."""
 
-import os
 import uuid
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -24,15 +23,15 @@ from app.services.operation_runs import (
     retry_operation_run,
 )
 from app.workers import operation_run_signals
+from tests.db_env import require_db_url
 
-_DATABASE_URL = os.getenv(
-    "OPERATION_RUN_CONCURRENCY_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
-_SYNC_DATABASE_URL = os.getenv(
-    "OPERATIONS_TEST_DATABASE_URL",
-    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _database_url() -> str:
+    return require_db_url("OPERATION_RUN_CONCURRENCY_DATABASE_URL")
+
+
+def _sync_database_url() -> str:
+    return require_db_url("OPERATIONS_TEST_DATABASE_URL")
 
 
 class FailingTask:
@@ -88,7 +87,7 @@ async def test_concurrent_broker_failures_share_one_atomic_incident(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: two independently committed commands for the same operation scope
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     async with sessions() as setup:
@@ -180,9 +179,9 @@ async def test_broker_error_after_worker_claim_keeps_the_run_and_spends_the_rema
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: a manual monthly remasure whose publish reached a worker before the error
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    sync_engine = create_engine(_SYNC_DATABASE_URL)
+    sync_engine = create_engine(_sync_database_url())
     monkeypatch.setattr(
         operation_run_signals,
         "SyncSessionLocal",
@@ -266,7 +265,7 @@ async def test_concurrent_same_retry_key_creates_and_dispatches_one_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given: one failed parent run and two HTTP retries carrying the same request key
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     parent_id = uuid.uuid4()

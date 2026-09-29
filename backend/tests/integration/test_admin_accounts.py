@@ -29,6 +29,7 @@ from app.schemas.admin_account import (
     AdminAccountUpdateRequest,
 )
 from app.services.admin_passwords import verify_admin_password
+from tests.db_env import require_db_url
 
 pytestmark = pytest.mark.asyncio
 
@@ -328,7 +329,6 @@ async def test_concurrent_demotions_cannot_remove_every_active_owner(pg_engine, 
     도착하지 못하므로, 첫 번째가 타임아웃으로 풀려 커밋하고 두 번째는 갱신된 상태를 본다.
     """
     import asyncio
-    import os
 
     from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
@@ -352,9 +352,7 @@ async def test_concurrent_demotions_cannot_remove_every_active_owner(pg_engine, 
 
     monkeypatch.setattr(accounts_module, "write_audit_log", rendezvous_write_audit_log)
 
-    url = os.getenv("INTEGRATION_DATABASE_URL") or (
-        "postgresql://reputation:reputation@localhost:5434/reputation_test"
-    )
+    url = require_db_url("INTEGRATION_DATABASE_URL")
     for prefix in ("postgresql+psycopg2://", "postgresql+psycopg://", "postgresql://"):
         if url.startswith(prefix):
             url = "postgresql+asyncpg://" + url[len(prefix) :]

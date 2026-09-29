@@ -1,6 +1,5 @@
 """Lease and terminal compare-and-swap proofs for OperationRun."""
 
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -21,11 +20,11 @@ from app.services.operation_runs import (
     finish_operation_run,
     heartbeat_operation_run,
 )
+from tests.db_env import require_db_url
 
-_DATABASE_URL = os.getenv(
-    "OPERATION_RUN_TRANSITIONS_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _database_url() -> str:
+    return require_db_url("OPERATION_RUN_TRANSITIONS_DATABASE_URL")
 
 
 class RecordingTask:
@@ -43,7 +42,7 @@ class RecordingTask:
 
 @pytest.fixture
 async def operation_db() -> AsyncSession:
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     connection = await engine.connect()
     transaction = await connection.begin()
     session = AsyncSession(
