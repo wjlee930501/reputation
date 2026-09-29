@@ -1001,6 +1001,9 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     `_IMAGE_FAILURE_REASONS` 밖으로 나가 `_image_reuse_is_due`가 거짓이 되므로, 예산
     소진 뒤 같은 병원의 인증 이미지를 빌리는 계약 자체가 실행되지 않는다. 본문이 멀쩡한
     슬롯이 매일 이미지를 다시 사고 매일 아침 기록을 잃는 조용한 루프가 그것이다.
+
+    빈 슬롯의 증상(CONTENT_NOT_GENERATED)도 같다. 자동 재시도가 남은 기록을 대신 쓰면
+    OPERATOR_REQUIRED·기한 없음으로 굳어 어떤 스윕도 그 슬롯을 다시 쓰지 않는다.
     """
 
     stored = _stored_generation_attempt(item)
@@ -1015,6 +1018,27 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 주제 교체 직후의 빈 슬롯도 증상이다. 교체 기록(SAMPLE_RECOVERABLE·다음 시도 시각)을
         # OPERATOR_REQUIRED로 덮으면 새 주제를 어떤 스윕도 쓰지 않고, 교체 이력이 있어 다시
         # 교체되지도 않는다. 보고 코드(CONTENT_NOT_GENERATED)는 호출부에서 그대로다.
+        return
+    stored = _stored_generation_attempt(item)
+    if (
+        code == "CONTENT_NOT_GENERATED"
+        and stored.get("retry_class")
+        in (
+            GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
+            GenerationRetryClass.SAMPLE_RECOVERABLE,
+        )
+        and (retry_is_due(stored) or isinstance(stored.get("next_retry_at"), str))
+    ):
+        # 스윕이 아직 소유한 실패(PROVIDER_TIMEOUT 등)도 같다. 덮으면 로더가 다시 집지
+        # 않고, CONTENT_NOT_GENERATED는 교체 후보 코드가 아니라 교체 이력과 무관하게 영영
+        # 멈춘다. 소유 판정은 두 복구 분류(ENVIRONMENT/SAMPLE_RECOVERABLE) 중 지금 기한이
+        # 됐거나(`retry_is_due`) 저장된 다음 시도 시각(문자열 `next_retry_at`)이 있는
+        # 기록이다. 둘 다 아니면 어떤 스윕도 집지 않으므로 종전처럼 게이트 코드가 대신한다
+        # — `next_retry_at=None`으로 굳은 기록(`recovery_is_abandoned`)과, 키가 아예 없는
+        # 9월 이전 레거시 기록 중 예산이 끝난 것이다. 레거시 기록은 `_due_time_reached`가
+        # 시각 제한 없이 읽어 예산이 남았으면 기한이 된 것이므로 로더가 집는다(보존).
+        # `scheduled_recovery_owns_blocker`와는 다른 판정이다 — 그 함수는 환경 원인을
+        # 증상 코드와 다른 원인으로 보고 소유를 인정하지 않는다.
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
@@ -5170,14 +5194,23 @@ def regenerate_content_item(self, content_id: str):
             )
             return
         try:
+            stored_attempt = _stored_generation_attempt(item)
             if (
                 explicit_run_context(self) is not None
                 and not (getattr(item, "body", None) or "").strip()
-                and _stored_generation_attempt(item).get("reason") == "CONTENT_NOT_GENERATED"
+                and (
+                    stored_attempt.get("reason") == "CONTENT_NOT_GENERATED"
+                    or stored_attempt.get("retry_class")
+                    == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+                )
             ):
                 # 07:45·08:00 게이트가 예산 없이 남긴 증상 기록(원고 없음)은 운영자가 누른
-                # “작업 다시 시도”를 같은 원인으로 건너뛰게 만든다. Admin이 만든 실행에서만
-                # 억제를 풀고 예산 계수는 남긴다. 다른 원인과 자동 경로는 그대로 억제한다.
+                # “작업 다시 시도”를 같은 원인으로 건너뛰게 만든다. 게이트가 덮지 않고 남긴
+                # 환경 실패 기록(PROVIDER_TIMEOUT 등, 다음 시도 시각이 아직 오지 않음)도
+                # 같다 — 공급자 장애는 운영자가 다시 시도할 수 있는 일이다. Admin이 만든
+                # 실행에서만 억제를 풀고 예산 계수는 남긴다. 표본 실패(SAMPLE_RECOVERABLE,
+                # 주제 교체 기록 포함)는 하루 예산이 소유하므로 그대로 억제하고, 자동 경로도
+                # 그대로 억제한다.
                 _release_generation_attempt_for_repair(db, item)
             outcome, code, message = _generate_single_content_item(db, item, hospital)
         except Exception as exc:
