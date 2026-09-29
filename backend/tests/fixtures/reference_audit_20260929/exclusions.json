@@ -1,0 +1,60 @@
+{
+ "source": "/workspace/ref-audit2-20260929 (김실장 2차 점검, 2026-09-29 실제 GET)",
+ "stripping": "script/style/noscript/svg/template blocks and HTML comments removed, whitespace runs collapsed, gzip(mtime=0)",
+ "rows": [
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6263",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "topic": "소화불량",
+   "article_title": "(교체 후보였던 주제) 소화불량",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k6263.html",
+   "html": "html/c4405ec62db96fb7-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2351",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "topic": "당뇨병 합병증",
+   "article_title": "창원 마산 당뇨 진료 병원, 혈당 관리와 합병증 검사 함께 받기",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k2351.html",
+   "html": "html/f3f2458c51855813-r2.html.gz"
+  },
+  {
+   "url": "https://www.cancer.go.kr/lay1/S1T211C213/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T211C213/contents.do",
+   "topic": "암의 종류 > 위암",
+   "article_title": "대구 동구 소화기내과 진료비, 검사 종류에 따라 얼마나 다를까요",
+   "evidence": "/workspace/ref-audit2-20260929/raw/html/878d919c84423074.html",
+   "html": "html/1844124c7d158b33-r2.html.gz"
+  },
+  {
+   "url": "https://www.cancer.go.kr/lay1/S1T211C214/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T211C214/contents.do",
+   "topic": "암의 종류 > 대장암",
+   "article_title": "대구 동구 내과 진료비, 검사 종류별로 얼마나 준비해야 할까요",
+   "evidence": "/workspace/ref-audit2-20260929/raw/html/504412090aec1fc8.html",
+   "html": "html/d7ae2bd7f9606929-r2.html.gz"
+  },
+  {
+   "url": "https://www.cancer.go.kr/lay1/S1T274C286/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T274C286/contents.do",
+   "topic": "치료 > 수술",
+   "article_title": "경산 내과 진료비, 증상 확인부터 검사까지 어떻게 정해지나요?",
+   "evidence": "/workspace/ref-audit2-20260929/raw/html/07e181e23878104d.html",
+   "html": "html/d6debc8b9e055aa3-r2.html.gz"
+  },
+  {
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "topic": "대장암",
+   "article_title": "대장암 조기검진 시기·증상·대장내시경 — 수원 장편한외과",
+   "evidence": "/workspace/ref-audit2-20260929/verify/cancer3797.html",
+   "html": "html/8f7be50a5c2c116a-r3.html.gz"
+  }
+ ]
+}

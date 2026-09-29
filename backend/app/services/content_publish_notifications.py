@@ -19,7 +19,7 @@ from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
 )
-from app.services.notification_copy import blocker_copy
+from app.services.notification_copy import REFERENCES_OPERATOR_DECIDES_COPY_CODE, blocker_copy
 from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
@@ -335,16 +335,25 @@ def build_generation_blocked_digest_intent(
     ).hexdigest()[:32]
     hospitals: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
     for (
-        hospital_id,
-        hospital_name,
-        _content_id,
-        _scheduled_date,
-        code,
-        cause,
-        title,
-        _attempt_fingerprint,
-    ) in entries:
-        hospitals.setdefault((hospital_id, hospital_name), []).append((title, code, cause))
+        (
+            hospital_id,
+            hospital_name,
+            _content_id,
+            _scheduled_date,
+            code,
+            cause,
+            title,
+            _attempt_fingerprint,
+        ),
+        outcome,
+    ) in zip(entries, blocked_outcomes, strict=True):
+        # `copy_code`는 같은 차단 코드에 다른 문구만 고른다 — 식별자(dedupe)는 그대로 코드다.
+        copy_code = str(outcome.get("copy_code") or code)
+        hospitals.setdefault((hospital_id, hospital_name), []).append((title, copy_code, cause))
+    for items in hospitals.values():
+        # 사람이 정해야 하는 글의 조치는 개수 상한에 잘리지 않게 맨 앞에 둔다. 나머지는 게이트
+        # 순서 그대로이고(안정 정렬), 편수·제목 줄은 순서와 무관하다.
+        items.sort(key=lambda item: item[1] != REFERENCES_OPERATOR_DECIDES_COPY_CODE)
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
     shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
     hidden = len(hospitals) - len(shown)

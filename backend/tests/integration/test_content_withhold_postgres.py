@@ -41,6 +41,12 @@ from app.services.image_engine import (
     image_content_hash_from_url,
     image_subject_hash,
 )
+from app.services.reference_verification import (
+    item_topic_fingerprint,
+    override_reference_fetcher,
+    reference_check_record,
+)
+from tests.reference_fetch_doubles import PageFetcher
 
 pytestmark = pytest.mark.asyncio
 
@@ -191,6 +197,25 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=philosophy.id,
     )
+    # 공개됐던 글이 받은 실제 문서 확인 기록(같은 URL·같은 글 주제·신선함). restore의 참고자료
+    # 게이트는 이 기록이 없거나 낡았으면 다시 확인하고, 통과하지 못하면 거절한다.
+    verified_at = datetime.now(timezone.utc)
+    item.reference_checks = [
+        reference_check_record(
+            reference["url"],
+            verdict="pass",
+            reason="page_verified",
+            checked_at=verified_at,
+            curated=False,
+            status=200,
+            final_url=reference["url"],
+            page_title="위내시경 | 국가건강정보포털 | 질병관리청",
+            text_len=900,
+            verified_at=verified_at,
+            topic_fingerprint=item_topic_fingerprint(item),
+        )
+        for reference in _REFERENCES
+    ]
     session.add(item)
     await session.flush()
     return hospital, item
@@ -585,14 +610,22 @@ async def test_withheld_content_references_can_be_edited(
         "title": "국가건강정보포털 위내시경",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfoView.do",
     }
-
-    await content_api.update_content(
-        hospital.id,
-        item.id,
-        content_api.ContentPatch(references=[replacement]),
-        db=session,
+    # PATCH는 사람이 고른 주소도 실제로 열어 이 글의 주제인지 확인한다(네트워크 없이 가짜
+    # fetcher가 그 주소의 위내시경 문서를 돌려준다).
+    fetcher = PageFetcher()
+    fetcher.add_document(
+        replacement["url"], "위내시경 | 국가건강정보포털 | 질병관리청", topic="위내시경"
     )
+
+    with override_reference_fetcher(fetcher):
+        await content_api.update_content(
+            hospital.id,
+            item.id,
+            content_api.ContentPatch(references=[replacement]),
+            db=session,
+        )
     await session.refresh(item)
+    assert fetcher.calls == [replacement["url"]]
     assert item.status == ContentStatus.WITHHELD
     assert [ref["url"] for ref in item.references_list] == [replacement["url"]]
     # 공개 글의 참고자료 편집과 같은 기록 — 옛 확인 기록은 새 판을 보증하지 않는다.
@@ -605,6 +638,9 @@ async def test_withheld_content_references_can_be_edited(
         item.image_content_hash, item.image_subject_hash, item.image_policy_version
     ) == image_before
     assert item.published_at == _PUBLISHED_AT
+    checks = {check["url"]: check for check in item.reference_checks}
+    assert checks[replacement["url"]]["verdict"] == "pass"
+    assert checks[replacement["url"]]["topic_fingerprint"] == item_topic_fingerprint(item)
     # 공개 중이 아니므로 공개 표면 갱신·색인 제출은 없다(restore가 한다).
     assert revalidations == []
     assert indexnow_calls == []
@@ -795,3 +831,108 @@ async def test_manual_publish_is_allowed_while_auto_publish_is_held(
     await session.refresh(item)
     assert item.status == ContentStatus.PUBLISHED
     assert item.published_by == _ACTOR
+
+
+# ── 참고자료 게이트: restore는 검증만 하고, 통과하지 못하면 거절한다 ──────────────
+
+
+async def _stale_reference_checks(session, item) -> None:
+    """공개 당시 기록이 없는 레거시 공개 글(0082 이전) 모양."""
+    item.reference_checks = None
+    await session.commit()
+
+
+async def test_restore_is_refused_when_a_legacy_reference_fails_a_real_get(
+    pg_async_session, verified_actor, revalidations
+):
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    await _withhold(session, hospital, item)
+    await _stale_reference_checks(session, item)
+    await session.refresh(item)
+    before = {
+        "references_list": item.references_list,
+        "content_revision": item.content_revision,
+        "status": item.status,
+    }
+    url = _REFERENCES[0]["url"]
+    fetcher = PageFetcher({url: (404, url, "")})
+
+    with override_reference_fetcher(fetcher):
+        error = await _http_error(_restore(session, hospital, item))
+
+    assert error.status_code == 409
+    assert error.detail["code"] == "REFERENCES_NOT_VERIFIED"
+    assert url in error.detail["message"]
+    assert "PATCH" in error.detail["message"]
+    assert fetcher.calls == [url]
+    await session.refresh(item)
+    # 공개됐던 글의 참고자료는 빼지도·채우지도·바꾸지도 않는다. 검증 기록만 남는다.
+    assert {
+        "references_list": item.references_list,
+        "content_revision": item.content_revision,
+        "status": item.status,
+    } == before
+    assert item.status == ContentStatus.WITHHELD
+    assert item.reference_checks[0]["reason"] == "dead_link"
+    assert await _audit(session, item, "restore_content") == []
+    assert str(item.id) not in await _public_ids(session, hospital)
+
+
+async def test_restore_is_refused_while_the_institution_site_is_down(
+    pg_async_session, verified_actor, revalidations
+):
+    import httpx
+
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    await _withhold(session, hospital, item)
+    await _stale_reference_checks(session, item)
+    url = _REFERENCES[0]["url"]
+
+    with override_reference_fetcher(PageFetcher({url: httpx.ConnectError("down")})):
+        error = await _http_error(_restore(session, hospital, item))
+
+    assert error.status_code == 409
+    assert "기관 사이트에 접속하지 못함" in error.detail["message"]
+    await session.refresh(item)
+    assert item.status == ContentStatus.WITHHELD
+    assert item.references_list == _REFERENCES
+
+
+async def test_restore_reverifies_a_legacy_reference_and_republishes_when_it_passes(
+    pg_async_session, verified_actor, revalidations
+):
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    await _withhold(session, hospital, item)
+    await _stale_reference_checks(session, item)
+    url = _REFERENCES[0]["url"]
+    fetcher = PageFetcher()
+    fetcher.add_document(url, "위내시경 | 국가건강정보포털 | 질병관리청", topic="위내시경")
+
+    with override_reference_fetcher(fetcher):
+        result = await _restore(session, hospital, item)
+
+    assert result["detail"] == "Restored"
+    assert fetcher.calls == [url]
+    await session.refresh(item)
+    assert item.status == ContentStatus.PUBLISHED
+    assert item.references_list == _REFERENCES
+    assert item.reference_checks[0]["verdict"] == "pass"
+    assert item.reference_checks[0]["topic_fingerprint"] == item_topic_fingerprint(item)
+
+
+async def test_restore_uses_a_fresh_same_topic_pass_without_a_get(
+    pg_async_session, verified_actor, revalidations
+):
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    await _withhold(session, hospital, item)
+    fetcher = PageFetcher()
+
+    with override_reference_fetcher(fetcher):
+        result = await _restore(session, hospital, item)
+
+    assert result["detail"] == "Restored"
+    assert fetcher.calls == []
