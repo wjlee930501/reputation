@@ -62,7 +62,8 @@ logger = logging.getLogger(__name__)
 TOPIC_SWAP_ACTOR = "system:topic-swap"
 TOPIC_SWAP_REASON = "topic swapped"
 # 교체 직후 슬롯에 남기는 시도 기록의 원인. 실패가 아니라 "오늘 예산은 이미 썼고 새 주제로
-# 내일 다시 쓴다"는 자동 복구 상태다(`generation_incident_control`이 운영자 문구를 가진다).
+# 내일 다시 쓴다"(예정일 당일 교체면 "오늘 한 번만 새 주제로 쓴다")는 자동 복구 상태다
+# (`generation_incident_control`이 운영자 문구를 가진다).
 TOPIC_SWAPPED_REASON = "TOPIC_SWAPPED"
 # 한 페이지가 읽는 행 상한과 그 페이지 수. 교체는 드문 종착 사건이지만, SQL이 거르지
 # 못하는 비후보가 한 페이지를 통째로 채울 수 있으므로 정렬 키로 그 뒤를 이어 읽는다.
@@ -387,21 +388,34 @@ def _record_topic_swapped_attempt(db, item: ContentItem, *, now: datetime) -> No
     `count_attempt=False`). 다음 적격 시각은 그 예산 규칙이 스스로 계산한다 — 오늘 예산이
     소진으로 읽히므로 내일의 첫 적격 스윕이다. 날이 바뀌면 같은 지문이라도 하루 예산이
     초기화되므로 새 주제의 첫 실패는 1회차부터 다시 센다.
+
+    예외는 **예정일 당일(KST)의 교체**다. 내일로 미루면 그날 08:00 발행을 구조적으로
+    놓친다. 그래서 오늘 예산을 한 회만 남기고 기한을 지금으로 둔다 — 교체 pass 바로 뒤의
+    같은 스윕 로더가 새 주제를 한 번 쓴다. 그 1회가 실패하면 정상 예산 규칙이 오늘 예산을
+    소진으로 읽고(다음은 내일), 교체 자체가 슬롯 평생 한 번이라 이 1회도 다시 생기지 않는다.
     """
 
     tasks = _tasks()
     philosophy = tasks._generation_philosophy_sync(db, item.hospital_id)
+    scheduled_date = getattr(item, "scheduled_date", None)
+    same_day = (
+        scheduled_date is not None
+        and environment_attempt_period(now) == scheduled_date.isoformat()
+    )
+    spent_count = SAMPLE_BODY_DAILY_BUDGET - 1 if same_day else SAMPLE_BODY_DAILY_BUDGET
     spent = {
         "reason": TOPIC_SWAPPED_REASON,
         "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
         "attempt_period": environment_attempt_period(now),
-        "provider_attempt_count": SAMPLE_BODY_DAILY_BUDGET,
+        "provider_attempt_count": spent_count,
         # 구형 판독기가 읽는 이름도 같은 값으로 맞춘다.
-        "attempt_count": SAMPLE_BODY_DAILY_BUDGET,
+        "attempt_count": spent_count,
         "exhausted_days": 0,
     }
-    deadline = next_recovery_deadline(
-        spent, scheduled_date=getattr(item, "scheduled_date", None), now=now
+    deadline = (
+        now
+        if same_day
+        else next_recovery_deadline(spent, scheduled_date=scheduled_date, now=now)
     )
     tasks._remember_generation_attempt(
         db,
