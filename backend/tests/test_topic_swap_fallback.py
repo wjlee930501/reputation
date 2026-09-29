@@ -803,6 +803,9 @@ def _patch_generation(monkeypatch, philosophy, slot, *, fail: bool) -> list[uuid
         item.image_subject_hash = tasks.image_subject_hash(item.content_type, item.title)
         item.image_policy_version = tasks.IMAGE_POLICY_VERSION
         item.image_policy_verified_at = datetime.now()
+        # 실제 이미지 저장(`write_back_generated_image`)은 같은 UPDATE로 생성 claim을 푼다.
+        item.generation_claim_token = None
+        item.generation_claimed_at = None
         return tasks.GenerationItemState.SUCCEEDED
 
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)

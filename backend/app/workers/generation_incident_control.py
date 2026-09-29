@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -33,8 +33,10 @@ from app.services.incidents import (
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
+from app.services.reference_requirement import references_left_to_operator
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
+    OPERATOR_DECIDES_KEY,
     GenerationRetryClass,
     next_recovery_deadline,
     recovery_is_abandoned,
@@ -44,7 +46,10 @@ from app.workers.generation_retry_policy import (
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_STATE_KEY as BODY_REPAIR_STATE_KEY_POLICY,
 )
-from app.workers.generation_run_control import safe_generation_rejection_message
+from app.workers.generation_run_control import (
+    GENERATION_REFERENCE_REJECTION_MESSAGE,
+    safe_generation_rejection_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +166,28 @@ def _body_repair_budget_remains(item) -> bool:
     return repair_recovery_remains(state)
 
 
+def operator_decides_references(code: str, item) -> bool:
+    """진료비·병원 선택 글의 참고자료 보류인가 — 자동 본문 수리가 아니라 사람이 정한다.
+
+    그 주제의 공신력 있는 문서가 본질적으로 없어 작가 세션으로 풀리지 않는다. 수리 예산이
+    저장된 분류(`OPERATOR_REQUIRED`)보다 앞서는 다른 본문 수리 코드와 달리 곧바로 종착이다.
+
+    아직 쓰이지 않은 슬롯은 판정할 제목이 행에 없다. 생성이 작가의 제목으로 판정해 남긴 시도
+    기록의 표시(`OPERATOR_DECIDES_KEY`)가 그 판정이다(`tasks._run_generation_item`).
+    """
+
+    if code != "MISSING_REFERENCES" or item is None:
+        return False
+    if references_left_to_operator(item):
+        return True
+    attempt = _stored_generation_attempt(item)
+    return (
+        not getattr(item, "body", None)
+        and attempt.get("reason") == code
+        and bool(attempt.get(OPERATOR_DECIDES_KEY))
+    )
+
+
 def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """Return whether a sweep still owns this cause, so it is not operator work.
 
@@ -169,6 +196,8 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """
 
     attempt = _stored_generation_attempt(item)
+    if operator_decides_references(code, item):
+        return False
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 저장된 분류보다 앞선다. 예산이 남아 있으면 아직 시스템의 일이다.
         return _body_repair_budget_remains(item)
@@ -237,6 +266,8 @@ def generation_block_is_terminal(code: str, item) -> bool:
     """자동 재시도가 끝난 차단인가. 끝났으면 기한 없는 OPEN(사람의 일)이다."""
 
     attempt = _stored_generation_attempt(item) if item is not None else {}
+    if operator_decides_references(code, item):
+        return True
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 남아 있으면 종착이 아니다 — `scheduled_recovery_owns_blocker`와
         # 같은 술어를 쓴다. 두 판정이 갈리면 기한 없는 OPEN과 RETRYING이 동시에 참이 된다.
@@ -297,19 +328,78 @@ def generation_block_digest_due(
     return True
 
 
+def operator_decides_digest_due(code: str, item, *, batch: str, today: date) -> bool:
+    """오늘 발행 예정인 진료비·병원 선택 글의 참고자료 보류를 아침 요약에 한 줄로 올리는가.
+
+    MISSING_REFERENCES는 주간 요약이 소유해 `generation_block_digest_due`가 아침 요약에서
+    뺀다. 이 보류는 자동 복구가 풀지 않으므로(`operator_decides_references`) 주간 요약을
+    기다리면 운영자가 모르는 채 발행일이 지난다. 그 판정을 넓히지 않고 따로 둔다 — 다른
+    코드와 평범한 참고자료 보류의 아침 요약 여부는 그대로다.
+
+    07:45와 08:00 두 요약이 모두 싣는다. 두 요약은 같은 식별자 집합이면 같은 중복 키를
+    쓰므로, 두 요약이 함께 싣는 다른 지속 차단처럼 평소 아침에는 08:00이 합쳐져 한 번만
+    나간다. 한쪽만 실으면 집합이 갈려 08:00이 다른 줄까지 다시 보낸다. 예정일 당일에만
+    싣는다 — 지난 예정일(catch-up)은 매일 반복하지 않는다.
+    """
+
+    return (
+        batch in (PREPUBLISH_MORNING_BATCH, PUBLISH_MORNING_BATCH)
+        and getattr(item, "scheduled_date", None) == today
+        and operator_decides_references(code, item)
+    )
+
+
 def generation_safe_cause(code: str) -> str:
     """Operator-safe Korean cause for one generation blocker code."""
 
     return _generation_safe_cause(code)
 
 
-def generation_operator_action(code: str) -> str:
+def generation_operator_action(code: str, message: str | None = None) -> str:
     """Operator-safe Korean next action for one generation blocker code."""
 
-    return _generation_operator_copy(code)[1]
+    return _generation_operator_copy(code, message)[1]
 
 
-def _generation_operator_copy(code: str) -> tuple[str, str]:
+# 생성 거절 중 원인이 참고자료 확보 실패인 경우의 조치. 예전에는 GENERATION_REJECTED 전체가
+# "가격·지역·검색 구조 게이트" 문구를 받아 운영자가 엉뚱한 곳을 봤다(2026-09-29 점검 §4).
+# 사람이 이 문구를 보는 행은 대개 본문이 없다(표본 예산·주제 교체를 다 쓴 빈 슬롯). 저장 본문
+# 수리가 실패한 행은 옛 본문이 남아 있다. 두 경우 모두 "콘텐츠 수정"은 제목·본문·참고 자료
+# 전체 편집을 열고, 저장하면 본문이 있는 행이라 일반 스윕·발행 전 검사로 돌아간다(저장된 거절
+# 기록은 본문 없는 행만 막는다). 참고 자료 없이 저장한 필수 유형 글은 복구 스윕이 작가에게
+# 돌려 본문을 다시 쓴다(`nightly_generation_batch._needs_generation_recovery`) — 그래서 문서를
+# 함께 넣으라고 하고, 빼면 본문이 다시 쓰일 수 있다고 말한다. "다음 자동 재시도"는 약속하지
+# 않는다. 조작은 콘텐츠 화면의 실제 버튼뿐이다(`tests/test_reference_operator_copy.py`).
+REFERENCE_REJECTION_OPERATOR_ACTION = (
+    "실제 문서 확인을 통과한 공신력 있는 참고 자료가 없어 원고를 저장하지 못했습니다. "
+    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 제목·본문을 질환·검사 안내 글로 쓰거나 "
+    "고치고, 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 추가”로 넣어 "
+    "저장하세요. 저장한 글은 일반 글과 같이 발행 전 검사를 거칩니다. 참고 자료 없이 저장하면 "
+    "자동 복구가 참고 자료를 찾으며 본문을 다시 쓸 수 있습니다. 병원 누리집은 참고 자료가 될 수 "
+    "없고, 참고 자료 없이는 발행되지 않습니다."
+)
+
+# 진료비·병원 선택 글의 참고자료 보류(`operator_decides_references`). 같은 MISSING_REFERENCES지만
+# 자동 복구가 본문을 다시 쓰지 않으므로 "다음 자동 복구가 다시 씁니다"라고 말하지 않는다.
+REFERENCES_OPERATOR_DECIDES_CAUSE = (
+    "진료비·병원 선택처럼 공신력 있는 문서가 없는 주제라 참고 자료를 자동으로 채우지 않고 "
+    "발행을 보류했습니다."
+)
+# Admin에 실제로 있는 조작만 말한다 — 콘텐츠 화면의 "콘텐츠 수정"(참고 자료 추가·제목·본문
+# 편집)뿐이고, 항목 종료·재생성·발행일 이동 버튼은 콘텐츠 화면에 없다
+# (`admin/lib/content-page-contract.test.ts`, `tests/test_reference_operator_copy.py`).
+# 검증된 문서 목록의 문서는 관리자 수정이 422로 거절하고(`disallowed_curated_references`),
+# 병원 누리집은 허용 출처가 아니며, 참고 자료가 필수인 글은 0개로 발행되지 않는다.
+REFERENCES_OPERATOR_DECIDES_ACTION = (
+    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "
+    "뒷받침하는 공공·학술 기관 문서가 있으면 “참고 자료 추가”로 넣고 저장합니다. 없으면 "
+    "제목·본문을 질환·검사 안내 글로 고쳐 저장합니다 — 다음 발행 확인이 검증된 문서로 참고 "
+    "자료를 채울 수 있습니다. 병원 누리집과 검증된 문서 목록의 질환 문서는 이 글의 참고 자료가 "
+    "될 수 없고, 참고 자료 없이는 발행되지 않습니다. 자동 복구는 이 글을 다시 쓰지 않습니다."
+)
+
+
+def _generation_operator_copy(code: str, message: str | None = None) -> tuple[str, str]:
     impact = (
         "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
         if code in PUBLISHED_IMAGE_RECERTIFY_CODES
@@ -346,7 +436,11 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             "운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요. 자동 복구는 "
             "01시·04시·07시·07시 45분에도 다시 실행됩니다."
         ),
-        "MISSING_REFERENCES": ("운영 센터에서 콘텐츠 주제와 승인된 참고 자료를 확인하세요."),
+        "MISSING_REFERENCES": (
+            "참고 자료가 실제 문서 확인(없는 문서·빈 페이지·주제 불일치)에서 모두 빠지고 "
+            "검증된 목록에서도 채우지 못해 발행을 보류했습니다. 다음 자동 복구가 검증된 "
+            "문서로 본문을 다시 씁니다. 반복되면 병원 정보 탭에서 이 글의 주제를 확인하세요."
+        ),
         "FORBIDDEN_EXPRESSION": (
             "운영 센터에서 의료광고 금지 표현이 차단된 공개 필드와 승인된 대체 문구를 확인하세요."
         ),
@@ -387,6 +481,10 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             f"자동 재인증이 반복 실패했습니다. {recertification.OPERATOR_ACTION}"
         ),
     }
+    if code == "GENERATION_REJECTED" and message == GENERATION_REFERENCE_REJECTION_MESSAGE:
+        return impact, REFERENCE_REJECTION_OPERATOR_ACTION
+    if code == "MISSING_REFERENCES" and message == REFERENCES_OPERATOR_DECIDES_CAUSE:
+        return impact, REFERENCES_OPERATOR_DECIDES_ACTION
     action = actions.get(
         code,
         "운영 센터에 “작업 다시 시도”가 보이면 누르고 완료 결과를 확인하세요.",
@@ -409,7 +507,9 @@ def _generation_safe_cause(code: str) -> str:
         "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
         # 실패가 아니라 자동 폴백의 중간 상태다 — 같은 슬롯을 다른 주제로 다시 쓴다.
         "TOPIC_SWAPPED": "같은 주제로 자동 생성이 소진되어 다른 주제로 다시 준비합니다.",
-        "MISSING_REFERENCES": "의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.",
+        "MISSING_REFERENCES": (
+            "실제 문서 확인을 통과한 공신력 있는 참고 자료를 확보하지 못해 발행을 보류했습니다."
+        ),
         "FAQ_FIELDS_MISSING": "FAQ 질문과 직접 답변 요약이 준비되지 않았습니다.",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
@@ -706,14 +806,16 @@ async def open_generation_incident(
             incident = blocking_cause
             notification_code = incident.safe_error_code or code
         else:
-            customer_impact, next_action = _generation_operator_copy(code)
             safe_cause = (
                 safe_generation_rejection_message(message)
                 if code == "GENERATION_REJECTED"
                 else message
                 if code == "CONTENT_AI_HARD_FINDING"
+                else REFERENCES_OPERATOR_DECIDES_CAUSE
+                if operator_decides_references(code, swapped_item)
                 else _generation_safe_cause(code)
             )
+            customer_impact, next_action = _generation_operator_copy(code, safe_cause)
             incident = await open_or_touch_incident(
                 db,
                 IncidentOpenRequest(

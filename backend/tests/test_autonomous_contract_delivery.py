@@ -57,7 +57,7 @@ def test_failed_monthly_insertion_is_not_reported_as_already_complete(monkeypatc
         "insert", {}, RuntimeError("unexpected foreign key failure")
     )
     monkeypatch.setattr(monthly_slots, "acquire_hospital_advisory_lock_sync", lambda *args: None)
-    monkeypatch.setattr(monthly_slots, "build_gap_targets", lambda rows: [])
+    monkeypatch.setattr(monthly_slots, "build_gap_targets", lambda rows, **_kwargs: [])
 
     @contextmanager
     def savepoint():
@@ -80,7 +80,7 @@ def test_publisher_visits_healthy_rows_after_an_individual_failure(monkeypatch):
 
     visited = []
 
-    def publish(content_id):
+    def publish(content_id, **_kwargs):
         visited.append(content_id)
         if content_id == "broken":
             raise ValueError("one malformed legacy row")
