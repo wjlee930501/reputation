@@ -3125,6 +3125,95 @@ def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatc
     assert len(pages) == 1
 
 
+@pytest.mark.parametrize(
+    ("claimed_minutes_ago", "worker_owns_it"),
+    [
+        (45, True),  # 07:00 스윕의 글 단위 태스크가 아직 쓰고 있다
+        (nightly_generation_batch.NIGHTLY_GENERATION_CLAIM_TTL_HOURS * 60 + 45, False),
+    ],
+    ids=["active_claim", "stale_claim"],
+)
+def test_seven_forty_five_leaves_a_slot_a_live_worker_is_generating_alone(
+    monkeypatch, claimed_minutes_ago, worker_owns_it
+):
+    """살아 있는 생성 claim은 자동 복구가 소유한 일이다 — 기록·인시던트·요약을 남기지 않는다.
+
+    만료된 claim은 죽은 워커의 흔적이라 종전처럼 차단을 기록하고 보고한다.
+    """
+
+    gate_at = arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul")
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="생성중의원")
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital=hospital,
+        hospital_id=hospital.id,
+        scheduled_date=date(2026, 8, 19),
+        sequence_no=1,
+        title=None,
+        body=None,
+        image_url=None,
+        essence_check_summary={},
+        generation_claim_token=uuid.uuid4(),
+        generation_claimed_at=gate_at.shift(minutes=-claimed_minutes_ago).datetime,
+    )
+
+    class DB:
+        def __init__(self):
+            self.added = []
+
+        def execute(self, _statement):
+            return SimpleNamespace(
+                scalars=lambda: SimpleNamespace(all=lambda: [item]),
+                scalar_one_or_none=lambda: None,
+            )
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            return None
+
+    projected = []
+    incident_calls = []
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "assess_content_publication",
+        lambda *_args: SimpleNamespace(
+            publishable=False,
+            code="CONTENT_NOT_GENERATED",
+            message="제목과 본문이 아직 생성되지 않았습니다.",
+        ),
+    )
+    monkeypatch.setattr(
+        tasks, "apply_publication_assessment", lambda *args: projected.append(args)
+    )
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        tasks, "open_generation_incident", lambda **kwargs: incident_calls.append(kwargs)
+    )
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    db = DB()
+    paged = tasks._page_morning_stored_publication_gates(db, now_kst=gate_at)
+    digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
+
+    if worker_owns_it:
+        assert paged == 0
+        assert (projected, incident_calls, digests) == ([], [], [])
+        assert item.essence_check_summary == {}  # 워커의 기록을 건드리지 않는다
+        return
+    assert paged == 1
+    assert [call["code"] for call in incident_calls] == ["CONTENT_NOT_GENERATED"]
+    assert len(projected) == 1
+    assert len(digests) == 1
+    assert item.essence_check_summary["generation_attempt"]["reason"] == "CONTENT_NOT_GENERATED"
+
+
 def test_auto_publish_block_alert_key_changes_only_when_reason_changes():
     content_id = uuid.uuid4()
 
