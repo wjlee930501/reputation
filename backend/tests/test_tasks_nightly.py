@@ -2893,7 +2893,10 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(
     assert len(digests) == 1
     assert digests[0].notification_type == "GENERATION_BLOCKED_DIGEST"
     assert "게이트확인의원" in str(digests[0].payload)
-    assert "본문·근거 확인 필요" in str(digests[0].payload)
+    # 원고가 아예 없는 슬롯이다 — 검토할 본문·근거가 없으므로 생성 상태를 가리킨다.
+    assert "발행용 원고 미생성 1편" in str(digests[0].payload)
+    assert "자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요." in str(digests[0].payload)
+    assert "본문·근거 확인 필요" not in str(digests[0].payload)
     if code == "ESSENCE_NOT_ALIGNED":
         assert "피해야 할 문구" in str(digests[0].payload)
         assert "<!channel>" not in str(digests[0].payload)
@@ -2993,6 +2996,82 @@ def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
     assert heals == []
     assert digests == []
     assert visible_cause in incident_calls[0]["message"]
+
+
+def test_seven_forty_five_digest_calls_a_topic_swapped_slot_a_missing_draft(monkeypatch):
+    # 주제 교체는 제목·본문을 비우고 시도 기록에 TOPIC_SWAPPED를 남긴다. 게이트는
+    # CONTENT_NOT_GENERATED로 읽으므로 Slack은 본문·근거 검토가 아니라 원고 미생성을 말해야 한다.
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="주제교체의원")
+    item = SimpleNamespace(
+        id=uuid.uuid4(),
+        hospital=hospital,
+        hospital_id=hospital.id,
+        scheduled_date=date(2026, 8, 19),
+        sequence_no=1,
+        title=None,
+        body=None,
+        image_url=None,
+        essence_check_summary={
+            "generation_attempt": {"context": "swapped", "reason": "TOPIC_SWAPPED"}
+        },
+    )
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [item]
+
+        def scalar_one_or_none(self):
+            return None
+
+    class DB:
+        def __init__(self):
+            self.added = []
+
+        def execute(self, _statement):
+            return Result()
+
+        def add(self, value):
+            self.added.append(value)
+
+        def commit(self):
+            return None
+
+    incident_calls = []
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(
+        tasks,
+        "open_generation_incident",
+        lambda **kwargs: incident_calls.append(kwargs),
+    )
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    db = DB()
+    paged = tasks._page_morning_stored_publication_gates(
+        db,
+        now_kst=arrow.get(2026, 8, 19, 7, 45, tzinfo="Asia/Seoul"),
+    )
+
+    assert paged == 1
+    assert incident_calls[0]["code"] == "CONTENT_NOT_GENERATED"
+    digests = [row for row in db.added if isinstance(row, NotificationOutbox)]
+    assert len(digests) == 1
+    payload = str(digests[0].payload)
+    assert "주제교체의원" in payload
+    assert "발행용 원고 미생성 1편" in payload
+    assert "본문·근거 확인 필요" not in payload
+    # #180: 게이트는 보고 코드만 CONTENT_NOT_GENERATED로 쓰고 교체 기록은 덮지 않는다.
+    assert item.essence_check_summary["generation_attempt"] == {
+        "context": "swapped",
+        "reason": "TOPIC_SWAPPED",
+    }
 
 
 def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):
