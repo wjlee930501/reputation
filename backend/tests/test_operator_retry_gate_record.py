@@ -5,7 +5,9 @@
 억제가 그 기록을 그대로 읽어 운영자가 누른 재시도까지 작가 호출 0회로 끝냈다
 (PR #179 2차 리뷰 B1). 이제 Admin이 만든 실행(`regenerate_content_item`의 explicit run)에서
 본문이 없고 저장 원인이 CONTENT_NOT_GENERATED이거나 저장 분류가 ENVIRONMENT_RECOVERABLE일
-때만 억제를 풀고 예산 계수는 남긴다.
+때만 억제를 풀고, 기록에 남은 계수는 그대로 둔다. 게이트가 CONTENT_NOT_GENERATED로 덮은
+기록은 원인이 바뀌어 계수가 이미 0에서 다시 시작한 것이라(`_remember_generation_attempt`)
+그 경우 남는 계수는 0이다. 게이트가 덮지 않고 지킨 환경 실패 기록만 실제 계수를 잇는다.
 
 환경 실패는 #182의 게이트 가드와 합쳐져 생긴 경우다. 게이트가 스윕이 소유한
 PROVIDER_TIMEOUT 등을 CONTENT_NOT_GENERATED로 덮지 않고 남기므로, 원인 문자열만 보면
@@ -17,7 +19,7 @@ PROVIDER_TIMEOUT 등을 CONTENT_NOT_GENERATED로 덮지 않고 남기므로, 원
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from test_topic_swap_fallback import (
@@ -38,6 +40,10 @@ from app.models.operations import OperationRunState
 from app.workers import tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY, GENERATION_LADDER_KEYS
 from app.workers.generation_retry_policy import GenerationRetryClass
+from app.workers.nightly_generation_batch import (
+    GENERATION_WRITE_BACK_STATUSES,
+    generation_claim_is_active,
+)
 
 _GATE_AT = _kst(2026, 9, 17, 7, 45)
 _SAME_DAY = _GATE_AT + timedelta(minutes=30)
@@ -84,6 +90,42 @@ def _gate_recorded_slot(monkeypatch):
     return item, record, writer_calls, seen_at_writer
 
 
+def _install_item_lease(monkeypatch, item) -> list:
+    """글 단위 lease(`claim_generation_lease`·토큰 해제)를 이 글 하나에 대해 흉내 낸다.
+
+    살아 있는 claim의 판정은 실제 술어(`generation_claim_is_active`)를 그대로 쓴다. 해제는
+    자기 토큰만 푼다 — 토큰 없는 해제는 여기서 실패한다. 실제 UPDATE 술어는
+    `tests/integration/test_operator_regenerate_lease_postgres.py`가 본다. 반환값은
+    해제 요청의 (토큰, 푼 행 수) 목록이다.
+    """
+
+    released: list = []
+
+    def claim(_db, _item_id, *, now=None):
+        observed_at = now or tasks.datetime.now(timezone.utc)
+        if item.status not in GENERATION_WRITE_BACK_STATUSES or generation_claim_is_active(
+            item, now=observed_at
+        ):
+            return None
+        token = uuid.uuid4()
+        item.generation_claimed_at = observed_at
+        item.generation_claim_token = token
+        return item, token
+
+    def release(_db, _item_ids, *, expected_claimed_at=None, expected_claim_token=None):
+        assert expected_claim_token is not None, "운영자 재생성은 자기 토큰으로만 푼다"
+        rows = int(item.generation_claim_token == expected_claim_token)
+        if rows:
+            item.generation_claimed_at = None
+            item.generation_claim_token = None
+        released.append((expected_claim_token, rows))
+        return rows
+
+    monkeypatch.setattr(tasks, "claim_generation_lease", claim)
+    monkeypatch.setattr(tasks, "release_unfinished_claims", release)
+    return released
+
+
 def _press_retry(monkeypatch, item, moment, *, operator: bool) -> list:
     """`regenerate_content_item`을 실제로 돌린다.
 
@@ -94,6 +136,7 @@ def _press_retry(monkeypatch, item, moment, *, operator: bool) -> list:
     """
 
     _freeze(monkeypatch, moment)
+    _install_item_lease(monkeypatch, item)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _TaskDB(item))
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
     monkeypatch.setattr(tasks, "explicit_run_matches", lambda *_args, **_kwargs: True)
@@ -131,7 +174,8 @@ def test_operator_retry_writes_the_gate_recorded_empty_slot_once(monkeypatch, mo
 
     assert writer_calls == [item.id]
     assert finished == [(OperationRunState.SUCCEEDED, None)]
-    # 작가가 불릴 때의 기록: 억제(원인·분류·관측 시각)만 빠지고 예산 사다리는 그대로다.
+    # 작가가 불릴 때의 기록: 억제(원인·분류·관측 시각)만 빠지고 게이트 기록의 사다리는
+    # 그대로다. 게이트가 예산 없이 새로 쓴 기록이라 그 계수는 0이다.
     assert seen_at_writer == [_ladder(record)]
     released = seen_at_writer[0]
     assert {"reason", "retry_class", "observed_at", "next_retry_at"}.isdisjoint(released)
@@ -382,10 +426,12 @@ def test_operator_retry_keeps_a_sample_budget_suppression(monkeypatch, record_fa
 
 
 def test_a_legacy_sample_record_the_gate_overwrites_is_retried_by_the_operator(monkeypatch):
-    """`next_retry_at` 키가 없는 9월 이전 기록(오늘 예산 소진)은 게이트가 종전처럼 덮는다.
+    """`next_retry_at` 키가 없는 2026-09-07 이전 기록(오늘 예산 소진)은 게이트가 종전처럼 덮는다.
 
     지켰다면 스윕도(기한 미도래) 운영자 재시도도(표본 실패 억제) 이 슬롯을 쓰지 못한다.
-    덮인 CONTENT_NOT_GENERATED는 운영자 재시도가 푼다.
+    덮인 CONTENT_NOT_GENERATED는 운영자 재시도가 푼다. 원인이 바뀌어 덮을 때 계수가 0에서
+    다시 시작하므로(`_remember_generation_attempt`) 운영자 해제가 남기는 사다리도 그 0이다
+    — 덮이기 전의 표본 계수(2회)가 아니다.
     """
 
     philosophy, item, writer_calls, seen_at_writer = _slot_with_writer(monkeypatch, swapped=True)
@@ -408,6 +454,7 @@ def test_a_legacy_sample_record_the_gate_overwrites_is_retried_by_the_operator(m
     overwritten = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
     assert overwritten["reason"] == "CONTENT_NOT_GENERATED"
     assert overwritten["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert overwritten["provider_attempt_count"] == 0  # 원인이 바뀌어 계수가 리셋됐다
 
     finished = _press_retry(monkeypatch, item, _kst(2026, 9, 16, 7, 50), operator=True)
 
