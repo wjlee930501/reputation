@@ -794,7 +794,9 @@ async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkey
         director_philosophy="",
         treatments=[],
     )
-    focus = "노원구 정형외과 병원 선택 기준 — 통증 종류별 진단·치료 항목 비교"
+    # 제목이 "병원 선택"이면 진료비·병원 선택 규칙으로 목록 채움을 하지 않는다
+    # (tests/test_reference_operator_decides.py) — 이 테스트는 일반 정형외과 FAQ의 채움을 본다.
+    focus = "노원구 정형외과 통증 종류별 진단·치료 항목 비교"
     body = (
         "## 통증 종류별로 확인할 점\n"
         "노원탑365의원 김원장은 노원 지역에서 통증의 위치와 양상을 먼저 확인합니다. "
@@ -805,7 +807,7 @@ async def test_generate_content_uses_curated_orthopedic_documents_for_faq(monkey
     payload = {
         "title": focus,
         "body": body,
-        "meta_description": "노원구 정형외과 병원 선택 기준과 통증 종류별 진단 및 치료 항목을 안내합니다.",
+        "meta_description": "노원구 정형외과의 통증 종류별 진단 및 치료 항목을 안내합니다.",
         "references": [
             {"title": "대한정형외과학회", "url": "https://www.koa.or.kr"},
         ],
