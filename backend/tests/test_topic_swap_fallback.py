@@ -936,3 +936,144 @@ def test_a_second_same_day_swap_pass_grants_nothing(chosen_target, recorded_atte
     assert (report.considered, report.swapped) == (0, 0)
     assert recorded_attempts == []
     assert db.updates == []
+
+
+# ── 07:45·08:00 게이트는 교체 기록을 덮지 않는다 ─────────────────────────────────
+
+
+class _GateDB:
+    """07:45 `_page_morning_stored_publication_gates`의 후보 조회를 이 슬롯으로 답한다."""
+
+    def __init__(self, item) -> None:
+        self._item = item
+        self.added: list = []
+
+    def execute(self, _statement):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [self._item]))
+
+    def add(self, value) -> None:
+        self.added.append(value)
+
+    def commit(self) -> None:
+        return None
+
+
+def _run_morning_gates(monkeypatch, item, philosophy, gate_day: date) -> tuple[list, list]:
+    """07:45 게이트와 08:00 발행기를 실제 판정·기록 경로로 돌리고 보고된 코드를 잡는다."""
+
+    from app.workers import tasks
+
+    incidents: list[str] = []
+    digests: list[str] = []
+
+    async def capture_incident(**kwargs):
+        incidents.append(kwargs["code"])
+
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_generation_blocked_digest_sync",
+        lambda _db, _day, _batch, outcomes: digests.extend(row["code"] for row in outcomes),
+    )
+
+    gate_at = _kst(gate_day.year, gate_day.month, gate_day.day, 7, 45)
+    _freeze(monkeypatch, gate_at)
+    assert tasks._page_morning_stored_publication_gates(
+        _GateDB(item), now_kst=arrow.get(gate_at)
+    ) == 1
+
+    publish_at = _kst(gate_day.year, gate_day.month, gate_day.day, 8, 0)
+    _freeze(monkeypatch, publish_at)
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_kw: arrow.get(publish_at))
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _AutoPublishDB(item, item.hospital))
+    outcome = tasks._auto_publish_one(item.id)
+    assert outcome is not None and outcome["kind"] == "blocked"
+    return incidents + [outcome["code"]], digests
+
+
+@pytest.mark.parametrize(
+    ("swapped_at", "next_sweep"),
+    [
+        # 예정일 다음 날 07:00의 교체(스윕 창은 오늘-7부터다) — 오늘 예산은 소진, 내일 01시.
+        (_kst(2026, 9, 17, 7, 0, 2), _kst(2026, 9, 18, 1, 0)),
+        # 예정일 당일 교체인데 같은 스윕 로더가 닿지 못했다(상한·잘림) — 당일 1회가 남아 있다.
+        (_SWAPPED_AT, _kst(2026, 9, 17, 1, 0)),
+    ],
+    ids=["past_due_swap", "same_day_swap_not_reached"],
+)
+def test_the_morning_gates_keep_the_swap_record_so_a_sweep_writes_the_new_topic(
+    monkeypatch, swapped_at, next_sweep
+):
+    """교체 → 07:45 → 08:00 → 다음 적격 스윕이 새 주제를 쓴다.
+
+    게이트가 빈 슬롯의 증상(CONTENT_NOT_GENERATED)으로 교체 기록을 덮으면 분류가
+    OPERATOR_REQUIRED·기한 없음으로 굳어 로더가 영영 집지 않고, 교체 이력이 있어
+    다시 교체되지도 않았다. 보고 코드(인시던트·요약)는 종전 그대로 CONTENT_NOT_GENERATED다.
+    """
+
+    from app.workers import tasks
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=False)
+
+    _freeze(monkeypatch, swapped_at)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at)
+    swapped = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
+    assert swapped["next_retry_at"] is not None
+
+    reported, digested = _run_morning_gates(monkeypatch, item, philosophy, swapped_at.date())
+
+    # 기록은 한 글자도 바뀌지 않는다 — 원인·분류·기한·계수 모두.
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
+    assert swapped["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    # 보고 경로는 종전 그대로다: 07:45 인시던트·08:00 차단, 두 요약 모두 같은 코드.
+    assert reported == ["CONTENT_NOT_GENERATED", "CONTENT_NOT_GENERATED"]
+    assert digested == ["CONTENT_NOT_GENERATED"]
+    assert writer_calls == []  # 게이트는 작가를 부르지 않는다
+
+    # 로더와 워커가 같은 기록을 읽고 다음 적격 스윕에서 새 주제를 한 번 쓴다.
+    _freeze(monkeypatch, next_sweep)
+    assert tasks.retry_is_due(item.essence_check_summary[GENERATION_ATTEMPT_KEY]) is True
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+    assert _claims_at(monkeypatch, item, next_sweep) is True
+    state, code, _message = _generate_once(monkeypatch, item, next_sweep + timedelta(seconds=1))
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [item.id]
+    assert item.title == "대장내시경 전 준비할 점"
+
+
+@pytest.mark.parametrize(
+    ("gate_code", "kept"),
+    [
+        ("CONTENT_NOT_GENERATED", True),
+        # 빈 슬롯의 증상이 아닌 실제 원인은 종전처럼 정본 기록이 된다.
+        ("CONTENT_AUTHORITY_CHANGED", False),
+    ],
+)
+def test_only_the_empty_slot_symptom_leaves_the_swap_record_alone(
+    monkeypatch, gate_code, kept
+):
+    from app.workers import tasks
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    _freeze(monkeypatch, _SWAPPED_AT)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+    swapped = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, gate_code)
+
+    after = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
+    assert (after == swapped) is kept
+    assert after["reason"] == (topic_swap_fallback.TOPIC_SWAPPED_REASON if kept else gate_code)
