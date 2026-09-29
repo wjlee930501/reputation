@@ -31,6 +31,12 @@
 그대로 옮기는 일이 많다('당뇨 진료를 받으려는데 하남시 어느 병원으로 가야 해?' → 제목 '하남시 당뇨
 진료 병원 — 혈당 확인부터 합병증 검사까지').
 
+병원 선택 글은 **의료 주제가 없는** 고르기 글만이다(2026-09-29 팀장 결정). 제목이 수기 목록의
+질환·시술 키워드를 담으면(`title_names_medical_subject`) 그 문서가 정당한 근거이므로 병원 선택
+글이 아니다 — '경산 경동맥초음파 검사, 어느 병원에서 받아야 할까요?'는 경동맥초음파 문서를 받는
+의료 글이고, '경산 내과 병원 추천 — 증상별 진료 흐름과 판단 기준'은 붙일 문서가 없는 병원 선택
+글이다. 즉 "정당하게 붙일 문서가 있다" == "의료 주제". 진료비 규칙은 이 예외를 두지 않는다.
+
 이 모듈은 가벼워야 한다 — content_engine·content_publication·reference_publication이 모두 읽는다.
 """
 
@@ -40,6 +46,11 @@ from collections.abc import Mapping
 
 from app.models.content import ContentType
 from app.services.content_similarity import normalize_topic_text
+from app.utils.authority_sources import (
+    CURATED_MEDICAL_SOURCE_PAGES,
+    PROVIDER_ROUTING_KEYWORDS,
+    reference_exclusion_reason,
+)
 
 # 참고 자료가 반드시 필요한 콘텐츠 유형. **생성 검증과 발행 게이트가 같은 값을 써야 한다** —
 # 따로 두면 생성은 통과하고 발행만 막혀 슬롯이 영구히 비는 유형이 생긴다(NOTICE가 그랬다).
@@ -164,28 +175,76 @@ _DETACHED_CHOICE_TERMS = (
 )
 
 
+_PROVIDER_ROUTING_TEXTS = frozenset(
+    normalize_topic_text(term) for term in PROVIDER_ROUTING_KEYWORDS
+)
+
+
+def _names_provider(keyword: str) -> bool:
+    """수기 목록 키워드가 질환·시술이 아니라 고르는 대상·고르기 경로를 가리키는가.
+
+    '정형외과'·'심장내과'·'순환기내과'(진료과 이름)와 병원 고르기 FAQ 경로 키워드
+    (`PROVIDER_ROUTING_KEYWORDS`: 병원선택·통증종류 …)는 의료 주제가 아니다.
+    """
+
+    return keyword in _PROVIDER_ROUTING_TEXTS or any(noun in keyword for noun in _PROVIDER_NOUNS)
+
+
+def title_names_medical_subject(title: object) -> bool:
+    """제목이 수기 목록이 문서를 가진 질환·시술을 말하는가 — 치유가 고르는 것과 같은 키워드.
+
+    수기 목록(`CURATED_MEDICAL_SOURCE_PAGES`) 가운데 제외 목록에 없는 문서의 키워드를
+    정규화해 제목 안의 부분 문자열로 찾는다(`select_curated_authority_sources`와 같은 비교).
+    진료과 이름·병원 고르기 경로 키워드(`_names_provider`)는 세지 않는다.
+    """
+
+    text = normalize_topic_text(title)
+    if not text:
+        return False
+    for source in CURATED_MEDICAL_SOURCE_PAGES:
+        if reference_exclusion_reason(source["url"]) is not None:
+            continue
+        for keyword in source["keywords"]:
+            term = normalize_topic_text(keyword)
+            if term and term in text and not _names_provider(term):
+                return True
+    return False
+
+
 def topic_without_authoritative_source(title: object) -> str | None:
-    """제목이 진료비(`COST`)나 병원 선택(`PROVIDER_CHOICE`) 글인가. 아니면 None."""
+    """제목이 진료비(`COST`)나 병원 선택(`PROVIDER_CHOICE`) 글인가. 아니면 None.
+
+    - COST: 제목에 `_COST_TOPIC_TERMS` 중 하나.
+    - PROVIDER_CHOICE: 대상+고르기 말(`_PROVIDER_CHOICE_TERMS`)이나 떨어진 고르기 말+대상이
+      있고, **의료 주제가 없다**(`title_names_medical_subject`가 거짓).
+    """
 
     text = normalize_topic_text(title)
     if not text:
         return None
     if any(term in text for term in _COST_TOPIC_TERMS):
         return NO_SOURCE_TOPIC_COST
-    if any(term in text for term in _PROVIDER_CHOICE_TERMS) or (
-        any(term in text for term in _DETACHED_CHOICE_TERMS)
-        and any(noun in text for noun in _PROVIDER_NOUNS)
-    ):
+    if (
+        any(term in text for term in _PROVIDER_CHOICE_TERMS)
+        or (
+            any(term in text for term in _DETACHED_CHOICE_TERMS)
+            and any(noun in text for noun in _PROVIDER_NOUNS)
+        )
+    ) and not title_names_medical_subject(text):
         return NO_SOURCE_TOPIC_PROVIDER_CHOICE
     return None
 
 
-def references_left_to_operator(item: object) -> bool:
+def references_left_to_operator(item: object, *, title: object = None) -> bool:
     """참고자료가 필수인데 공신력 있는 문서가 본질적으로 없는 주제의 글인가.
 
     이 글은 수기 목록 치유를 하지 않고, 참고자료가 비면 자동 본문 수리 대신 사람이 정한다.
+    `title`은 아직 쓰이지 않은 슬롯에서 작가가 만든 제목이다(행의 제목 대신 판정한다).
     """
 
     return references_required(item) and (
-        topic_without_authoritative_source(getattr(item, "title", None)) is not None
+        topic_without_authoritative_source(
+            title if title is not None else getattr(item, "title", None)
+        )
+        is not None
     )

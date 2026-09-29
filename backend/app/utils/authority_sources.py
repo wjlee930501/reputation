@@ -83,6 +83,9 @@ _ORTHOPEDIC_FAQ_KEYWORDS = (
     "통증종류",
     "통증종류별",
 )
+# 위 묶음은 병원 고르기 FAQ를 정형외과 문서로 보내는 경로다. 질환·시술 이름이 아니므로
+# 병원 선택 글의 '의료 주제' 판정에는 쓰지 않는다(`reference_requirement`).
+PROVIDER_ROUTING_KEYWORDS: frozenset[str] = frozenset(_ORTHOPEDIC_FAQ_KEYWORDS)
 
 # '간질환' 단독은 공백·구두점을 지운 비교에서 "회복 기간 — 질환과"(기간질환)에도 붙는다
 # (6b70fe41 고압산소 글이 간염 문서를 받는 것을 재생에서 확인) — 뒤에 오는 말까지 묶는다.

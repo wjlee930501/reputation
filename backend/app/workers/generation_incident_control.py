@@ -36,6 +36,7 @@ from app.services.notification_store import enqueue_notification
 from app.services.reference_requirement import references_left_to_operator
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
+    OPERATOR_DECIDES_KEY,
     GenerationRetryClass,
     next_recovery_deadline,
     recovery_is_abandoned,
@@ -170,9 +171,21 @@ def operator_decides_references(code: str, item) -> bool:
 
     그 주제의 공신력 있는 문서가 본질적으로 없어 작가 세션으로 풀리지 않는다. 수리 예산이
     저장된 분류(`OPERATOR_REQUIRED`)보다 앞서는 다른 본문 수리 코드와 달리 곧바로 종착이다.
+
+    아직 쓰이지 않은 슬롯은 판정할 제목이 행에 없다. 생성이 작가의 제목으로 판정해 남긴 시도
+    기록의 표시(`OPERATOR_DECIDES_KEY`)가 그 판정이다(`tasks._run_generation_item`).
     """
 
-    return code == "MISSING_REFERENCES" and item is not None and references_left_to_operator(item)
+    if code != "MISSING_REFERENCES" or item is None:
+        return False
+    if references_left_to_operator(item):
+        return True
+    attempt = _stored_generation_attempt(item)
+    return (
+        not getattr(item, "body", None)
+        and attempt.get("reason") == code
+        and bool(attempt.get(OPERATOR_DECIDES_KEY))
+    )
 
 
 def scheduled_recovery_owns_blocker(code: str, item) -> bool:

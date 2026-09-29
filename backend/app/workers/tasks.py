@@ -83,6 +83,7 @@ from app.services.content_ai_review import (
 )
 from app.services.content_engine import (
     EXISTING_TITLE_PROMPT_LIMIT,
+    MissingCitableReferencesError,
     generate_content,
     generation_failure_detail,
 )
@@ -342,6 +343,7 @@ from app.services.reference_publication import (
     reference_outage_alert_due,
     refresh_publication_references,
 )
+from app.services.reference_requirement import references_left_to_operator
 from app.services.reference_verification import ReferenceVerifier
 from app.services.report_artifact_validation import DoctorPdfValidationError
 from app.services.report_attribution import (
@@ -442,6 +444,7 @@ from app.workers.generation_incident_control import (
     AUTO_REMEDIATION_MAX_GENERATIONS,
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
+    REFERENCES_OPERATOR_DECIDES_CAUSE,
     WEEKLY_REJECTED_GENERATION_CODES,
     essence_remediation_exhausted,
     generation_block_digest_due,
@@ -780,6 +783,10 @@ def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str,
         return code, message
 
     stored_code = _stored_generation_attempt(item).get("reason")
+    if operator_decides_references(stored_code, item):
+        # 쓰이지 않은 진료비·병원 선택 슬롯의 참고자료 보류(생성이 남긴 사람의 결정). 증상
+        # (CONTENT_NOT_GENERATED)으로 기록을 덮어쓰면 표시가 사라져 자동 재생성으로 돌아간다.
+        return stored_code, REFERENCES_OPERATOR_DECIDES_CAUSE
     if stored_code in _STORED_EMPTY_CONTENT_BLOCK_CODES:
         stored_message = _stored_generation_attempt(item).get("message")
         return stored_code, (
@@ -844,11 +851,14 @@ def _remember_generation_attempt(
     diagnostics: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
     count_attempt: bool = True,
+    operator_decides: bool = False,
 ) -> dict[str, Any]:
     """Persist one no-body outcome without adding a schema column.
 
     `count_attempt=False`는 예산을 쓰지 않은 결정만 남긴다(게이트가 시도 기록보다 먼저
     차단을 관측한 경우). 시도 수·소진 일수·가드 보류 수를 올리지 않는다.
+    `operator_decides=True`는 생성이 작가의 제목으로 판정한 진료비·병원 선택 슬롯의 참고자료
+    보류다(행에는 아직 제목이 없다) — 기한 계산 전에 표시를 남긴다.
     """
 
     summary = getattr(item, "essence_check_summary", None)
@@ -946,7 +956,7 @@ def _remember_generation_attempt(
         stored_diagnostic = dict(policy_rejection)
     if reason == _IMAGE_POLICY_REJECTION_CODE and isinstance(stored_diagnostic, dict):
         attempt[_IMAGE_POLICY_DIAGNOSTIC_KEY] = stored_diagnostic
-    if operator_decides_references(reason, item):
+    if operator_decides or operator_decides_references(reason, item):
         # 진료비·병원 선택 글의 참고자료 보류 — 분류는 이미 OPERATOR_REQUIRED다(`retry_class_for`).
         # 이 표시가 수리 세션 예산의 소유를 끊어 다음 시도 시각이 없다(사람이 정한다).
         attempt[OPERATOR_DECIDES_KEY] = True
@@ -4662,6 +4672,20 @@ def _finish_claimed_item_run(
         )
 
 
+def _generation_left_references_to_operator(error: BaseException, item: ContentItem) -> bool:
+    """생성이 참고자료 없이 끝난 진료비·병원 선택 슬롯인가 — 작가가 만든 제목으로 판정한다.
+
+    쓰이지 않은 슬롯의 행에는 판정할 제목이 없다. 발행 쪽 규칙과 같이 제목만 보며, 브리프의
+    `target_keyword`·측정 질문으로 판정하지 않는다('간질환 치료 비용' 질문에 답한 의료 글).
+    작가가 제목을 내지 못했으면 종전의 생성 거절이다.
+    """
+
+    if not isinstance(error, MissingCitableReferencesError):
+        return False
+    title = (error.result or {}).get("title")
+    return bool(title) and references_left_to_operator(item, title=title)
+
+
 def _run_generation_item(
     db,
     recorder,
@@ -5017,8 +5041,17 @@ def _run_generation_item(
         )
         db.rollback()
         db.expire_all()
-        if not getattr(item, "body", None):
-            _remember_generation_attempt(db, item, philosophy, code, message=message)
+        unwritten = not getattr(item, "body", None)
+        operator_decides = unwritten and _generation_left_references_to_operator(e, item)
+        if operator_decides:
+            # 작가 회차를 다 쓰고도 통과한 참고자료가 없는 진료비·병원 선택 슬롯이다. 다시 써도
+            # 그 주제의 공신력 있는 문서는 생기지 않는다 — 표본 사다리·주제 교체가 아니라
+            # 곧바로 사람의 결정(OPERATOR_REQUIRED, 기한 없는 OPEN)이다.
+            code, message = "MISSING_REFERENCES", REFERENCES_OPERATOR_DECIDES_CAUSE
+        if unwritten:
+            _remember_generation_attempt(
+                db, item, philosophy, code, message=message, operator_decides=operator_decides
+            )
         recorder.record(
             item.id,
             GenerationItemState.FAILED,
