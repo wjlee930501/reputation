@@ -771,7 +771,7 @@ async def test_apply_refuses_a_refresh_whose_row_changed():
     url = KDCA_VIEW.format(9503)
     item = SimpleNamespace(
         title=HEMORRHOID_TITLE,
-        body="",
+        body="치질 수술 뒤 회복 기간을 안내합니다.",
         content_brief=None,
         faq_question=None,
         content_type="FAQ",
@@ -1074,3 +1074,571 @@ async def test_generation_outage_heals_from_the_curated_list_instead_of_rejectin
     urls = [ref["url"] for ref in result["references"]]
     assert urls and guessed not in urls
     assert set(urls) <= {CURATED_HEMORRHOID_KDCA, CURATED_HEMORRHOID_AMC}
+
+
+# ── 리뷰 B1: GET 사이에 공개된 글의 참고자료를 다시 쓰지 않는다 ────────────────────
+
+
+def test_seven_forty_five_never_rewrites_a_row_published_during_the_get(monkeypatch):
+    """07:45 GET 도중 운영자가 수동 발행했다 — 발행은 판·참고자료·주제를 바꾸지 않는다."""
+
+    url = KDCA_VIEW.format(9901)
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    original = [{"title": "치핵", "url": url}]
+    item.references_list = [dict(ref) for ref in original]
+    item.reference_checks = None
+    item.content_revision = 3
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+
+    def concurrent_publish():
+        item.status = tasks.ContentStatus.PUBLISHED
+
+    # 404 → 제거 후 수기 목록 치유가 될 결과다. 적용되면 공개 글의 참고자료가 바뀐다.
+    fetcher = _MutatingFetcher(concurrent_publish, {url: (404, url, "")})
+    with override_reference_fetcher(fetcher):
+        tasks._page_morning_stored_publication_gates(
+            db, now_kst=arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+        )
+
+    assert url in fetcher.calls  # 잠금 밖에서 다시 검증했다(제거·치유 결과가 만들어졌다)
+    assert item.status is tasks.ContentStatus.PUBLISHED
+    assert item.references_list == original
+    assert item.content_revision == 3
+    assert item.reference_checks is None
+    assert incidents == []
+
+
+def test_seven_forty_five_writes_nothing_to_a_row_that_is_not_publishable_at_lock(monkeypatch):
+    """잠근 행이 발행 전 상태가 아니면 검증 기록도, 발행 판정·인시던트도 남기지 않는다."""
+
+    url = KDCA_VIEW.format(9902)
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    item.status = tasks.ContentStatus.PUBLISHED
+    item.references_list = [{"title": "치핵", "url": url}]
+    item.reference_checks = None
+    item.content_revision = 3
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+    fetcher = PageFetcher()
+    fetcher.add_document(url, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")  # 통과할 문서
+
+    with override_reference_fetcher(fetcher):
+        tasks._page_morning_stored_publication_gates(
+            db, now_kst=arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+        )
+
+    assert item.reference_checks is None
+    assert item.references_list == [{"title": "치핵", "url": url}]
+    assert item.content_revision == 3
+    assert incidents == []
+
+
+async def test_apply_refuses_a_refresh_once_the_row_left_the_publishable_states():
+    from app.services.reference_publication import apply_publication_reference_refresh
+
+    dead = KDCA_VIEW.format(9903)
+    live = KDCA_VIEW.format(9904)
+    fetcher = PageFetcher({dead: (404, dead, "")})
+    fetcher.add_document(live, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+
+    def row(url, status):
+        return SimpleNamespace(
+            title=HEMORRHOID_TITLE,
+            body="치질 수술 뒤 회복 기간을 안내합니다.",
+            content_brief=None,
+            faq_question=None,
+            content_type="FAQ",
+            content_revision=2,
+            status=status,
+            references_list=[{"title": "치핵", "url": url}],
+            reference_checks=None,
+        )
+
+    verifier = ReferenceVerifier(fetcher, domain_spacing=0)
+    for url, changes_references in ((dead, True), (live, False)):
+        item = row(url, tasks.ContentStatus.DRAFT)
+        refresh = await refresh_publication_references(item, verifier)
+        assert refresh.references_changed is changes_references
+        # GET 사이에 공개됐다(발행은 판·참고자료·주제를 바꾸지 않는다) — 검증 기록조차 쓰지 않는다.
+        item.status = tasks.ContentStatus.PUBLISHED
+        before = dict(vars(item))
+        assert not apply_publication_reference_refresh(item, refresh)
+        assert vars(item) == before
+
+    # 처음부터 공개된 행으로 만든 결과(스냅샷이 같아도)는 참고자료를 바꾸지 않는다.
+    published = row(dead, tasks.ContentStatus.PUBLISHED)
+    refresh = await refresh_publication_references(published, verifier)
+    before = dict(vars(published))
+    assert not apply_publication_reference_refresh(published, refresh)
+    assert vars(published) == before
+
+
+# ── 리뷰 B2: 아직 생성되지 않은 슬롯의 참고자료·판을 건드리지 않는다 ────────────────
+
+
+@pytest.mark.parametrize(
+    "references",
+    [[], [{"title": "치핵", "url": KDCA_VIEW.format(9905)}]],
+    ids=["empty", "stale"],
+)
+def test_publisher_leaves_an_ungenerated_slot_untouched(monkeypatch, references):
+    """생성은 brief를 저장한 뒤 그 판을 잡고 공급자를 부른다 — 판이 오르면 결과가 버려진다."""
+
+    item, _db, _effects = _publish_setup(monkeypatch, references=list(references), checks=None)
+    item.title = None
+    item.body = None
+    item.content_brief = {"target_keyword": "치핵", "query_target": {"name": "치핵 수술 병원"}}
+    fetcher = _hemorrhoid_fetcher()
+    refreshed: list[object] = []
+    real_refresh = tasks.refresh_publication_references
+
+    async def spy_refresh(row, verifier, **kwargs):
+        refreshed.append(row)
+        return await real_refresh(row, verifier, **kwargs)
+
+    monkeypatch.setattr(tasks, "refresh_publication_references", spy_refresh)
+    verifier = ReferenceVerifier(fetcher, domain_spacing=0)
+
+    assert tasks._prefetch_publication_references(item.id, verifier) is None
+    payload = tasks._auto_publish_one(item.id, reference_verifier=verifier)
+
+    assert refreshed == []  # 재검증 자체를 하지 않는다
+    assert fetcher.calls == []
+    assert item.content_revision == 3
+    assert item.references_list == references
+    assert item.reference_checks is None
+    assert payload is not None and payload["code"] == "CONTENT_NOT_GENERATED"
+    assert item.status is tasks.ContentStatus.DRAFT
+
+
+@pytest.mark.parametrize(
+    "references",
+    [[], [{"title": "치핵", "url": KDCA_VIEW.format(9905)}]],
+    ids=["empty", "stale"],
+)
+async def test_manual_publish_leaves_an_ungenerated_slot_untouched(monkeypatch, references):
+    hospital = _hospital()
+    item = _content_item(
+        hospital_id=hospital.id,
+        title="",
+        body="",
+        references_list=[dict(ref) for ref in references],
+        content_brief={"target_keyword": "치핵", "query_target": {"name": "치핵 수술 병원"}},
+    )
+    item.content_revision = 3
+    item.reference_checks = None
+    _wire(monkeypatch, item, hospital)
+    fetcher = _hemorrhoid_fetcher()
+    refreshed: list[object] = []
+    real_refresh = content_api.refresh_publication_references
+
+    async def spy_refresh(row, verifier, **kwargs):
+        refreshed.append(row)
+        return await real_refresh(row, verifier, **kwargs)
+
+    monkeypatch.setattr(content_api, "refresh_publication_references", spy_refresh)
+    token = set_request_actor("ae@example.com")
+    try:
+        with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+            await content_api.publish_content(
+                hospital.id, item.id, content_api.PublishBody(), db=_NoExecuteDB()
+            )
+    finally:
+        reset_request_actor(token)
+
+    # 참고자료 게이트(409)가 아니라 종전 그대로 "아직 생성되지 않음"(400)이다.
+    assert raised.value.status_code == 400
+    assert raised.value.detail == "Content not generated yet"
+    assert refreshed == []
+    assert fetcher.calls == []
+    assert item.references_list == references
+    assert item.content_revision == 3
+    assert item.reference_checks is None
+
+
+async def test_refresh_never_heals_a_row_without_generated_text():
+    item = SimpleNamespace(
+        title=None,
+        body=None,
+        content_brief={"target_keyword": "치핵"},
+        faq_question=None,
+        content_type="FAQ",
+        content_revision=3,
+        references_list=[],
+        reference_checks=None,
+    )
+    fetcher = _hemorrhoid_fetcher()
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert fetcher.calls == []
+    assert not refresh.references_changed
+    assert not refresh.healed
+    assert refresh.references == []
+
+
+# ── 공개된 글의 참고자료는 어떤 자동 경로에서도 바뀌지 않는다 ─────────────────────
+#
+# 생성 write-back은 공개 행에 쓰지 않는다(`GENERATION_WRITE_BACK_STATUSES`, PG 고정:
+# tests/integration/test_generation_write_back_guard.py). 나머지 자동 경로를 여기서 고정한다.
+
+
+def _published_references():
+    # 404 문서 — 재검증 결과가 적용되면 빼고 수기 목록으로 채우는(판이 오르는) 주소다.
+    return [{"title": "치질 수술 안내", "url": GUESSED}]
+
+
+def _assert_unchanged(item, references, revision):
+    assert item.references_list == references
+    assert item.content_revision == revision
+
+
+def test_published_references_never_change_on_the_worker_paths(monkeypatch):
+    # 07:45 게이트
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    item.status = tasks.ContentStatus.PUBLISHED
+    item.references_list = _published_references()
+    item.reference_checks = None
+    item.content_revision = 7
+    _gate_setup(monkeypatch, item)
+    with override_reference_fetcher(_hemorrhoid_fetcher()):
+        tasks._page_morning_stored_publication_gates(
+            _GateDB(item), now_kst=arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+        )
+    _assert_unchanged(item, _published_references(), 7)
+
+    # 08:00 발행기(예정일 당일)와 catch-up(지난 예정일)
+    for scheduled in (arrow.get(2026, 6, 10).date(), arrow.get(2026, 6, 7).date()):
+        item, _db, _effects = _publish_setup(
+            monkeypatch, references=_published_references(), checks=None
+        )
+        item.status = tasks.ContentStatus.PUBLISHED
+        item.scheduled_date = scheduled
+        fetcher = _hemorrhoid_fetcher()
+        assert tasks._auto_publish_one(
+            item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
+        ) is None
+        assert fetcher.calls == []
+        _assert_unchanged(item, _published_references(), 3)
+        assert item.reference_checks is None
+
+
+async def test_published_references_never_change_on_apply_restore_or_manual_publish(monkeypatch):
+    from app.services.reference_publication import apply_publication_reference_refresh
+
+    def published(status):
+        return SimpleNamespace(
+            title=HEMORRHOID_TITLE,
+            body="치질 수술 뒤 회복 기간을 안내합니다.",
+            content_brief=None,
+            faq_question=None,
+            content_type="FAQ",
+            content_revision=7,
+            status=status,
+            references_list=_published_references(),
+            reference_checks=None,
+        )
+
+    # 재검증 결과 적용
+    item = published(tasks.ContentStatus.PUBLISHED)
+    refresh = await refresh_publication_references(
+        item, ReferenceVerifier(_hemorrhoid_fetcher(), domain_spacing=0)
+    )
+    assert refresh.references_changed
+    assert not apply_publication_reference_refresh(item, refresh)
+    _assert_unchanged(item, _published_references(), 7)
+
+    # restore(비공개 보존 글) — 검증 기록만 남기고 거절한다
+    for status in (tasks.ContentStatus.WITHHELD, tasks.ContentStatus.PUBLISHED):
+        item = published(status)
+        verification = await verify_publication_references(
+            item, ReferenceVerifier(_hemorrhoid_fetcher(), domain_spacing=0)
+        )
+        with pytest.raises(HTTPException):
+            await content_api._require_restorable_references(_CommitDB(), item, verification)
+        _assert_unchanged(item, _published_references(), 7)
+
+    # 수동 발행 — 이미 공개된 글은 400이고 잠금 전 재검증 결과를 쓰지 않는다
+    hospital = _hospital()
+    item = _content_item(
+        hospital_id=hospital.id,
+        title=HEMORRHOID_TITLE,
+        status=content_api.ContentStatus.PUBLISHED,
+        references_list=_published_references(),
+    )
+    item.content_revision = 7
+    item.reference_checks = None
+    _wire(monkeypatch, item, hospital)
+    token = set_request_actor("ae@example.com")
+    try:
+        with override_reference_fetcher(_hemorrhoid_fetcher()), pytest.raises(HTTPException) as raised:
+            await content_api.publish_content(
+                hospital.id, item.id, content_api.PublishBody(), db=_NoExecuteDB()
+            )
+    finally:
+        reset_request_actor(token)
+    assert raised.value.status_code == 400
+    _assert_unchanged(item, _published_references(), 7)
+    assert item.reference_checks is None
+
+
+# ── 수동 발행: 잠금 전에 통과였어도 잠근 행으로 다시 본다 ──────────────────────────
+
+
+async def test_manual_publish_rechecks_the_gate_on_the_locked_row(monkeypatch):
+    """잠금 전에는 신선한 통과(재검증 없음)였는데 잠금을 기다리는 사이 참고자료가 바뀌었다."""
+
+    hospital = _hospital()
+    url = KDCA_VIEW.format(9906)
+    item = _content_item(
+        hospital_id=hospital.id,
+        title=HEMORRHOID_TITLE,
+        references_list=[{"title": "치핵", "url": url}],
+    )
+    item.content_revision = 1
+    item.reference_checks = [_pass(url)]
+    _stamp(item)
+    assert publication_references_current(item)
+    _wire(monkeypatch, item, hospital)
+    monkeypatch.setattr(
+        content_api,
+        "assess_content_publication",
+        lambda _item, philosophy: SimpleNamespace(
+            publishable=True,
+            code=None,
+            message=None,
+            violations=(),
+            essence_status=content_api.ESSENCE_STATUS_ALIGNED,
+            essence_summary={"ok": True},
+            philosophy_id=None,
+        ),
+    )
+
+    class ConcurrentEditDB(_NoExecuteDB):
+        async def refresh(self, row):
+            # 잠금을 기다리는 동안 다른 요청이 검증 기록 없는 주소로 바꿨다.
+            row.references_list = [{"title": "치핵", "url": KDCA_VIEW.format(9907)}]
+            row.content_revision = 2
+
+    fetcher = PageFetcher()
+    token = set_request_actor("ae@example.com")
+    try:
+        with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+            await content_api.publish_content(
+                hospital.id, item.id, content_api.PublishBody(), db=ConcurrentEditDB()
+            )
+    finally:
+        reset_request_actor(token)
+
+    assert fetcher.calls == []  # 잠금 전에는 통과였으니 GET하지 않았다
+    assert raised.value.status_code == 409
+    assert raised.value.detail["code"] == "REFERENCES_NOT_VERIFIED"
+    assert item.status != content_api.ContentStatus.PUBLISHED
+
+
+# ── 공개 글 PATCH: 필수 글의 참고자료를 비울 수 없다 ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("content_type", "query_target_id"),
+    [("FAQ", None), ("NOTICE", uuid.uuid4())],
+    ids=["medical_type", "notice_with_query_link"],
+)
+async def test_patch_cannot_empty_the_references_of_a_published_post(
+    monkeypatch, content_type, query_target_id
+):
+    hospital = _hospital()
+    references = [{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}]
+    item = _content_item(
+        hospital_id=hospital.id,
+        title=HEMORRHOID_TITLE,
+        content_type=content_type,
+        query_target_id=query_target_id,
+        status=content_api.ContentStatus.PUBLISHED,
+        references_list=[dict(ref) for ref in references],
+    )
+    item.content_revision = 4
+    item.reference_checks = None
+    _wire(monkeypatch, item, hospital)
+    monkeypatch.setattr(content_api, "ensure_site_revalidate_configured", lambda: None)
+
+    with override_reference_fetcher(PageFetcher()), pytest.raises(HTTPException) as raised:
+        await content_api.update_content(
+            hospital.id,
+            item.id,
+            content_api.ContentPatch(references=[]),
+            db=_PatchDB(hospital),
+        )
+
+    assert raised.value.status_code == 400
+    assert "비울 수 없습니다" in raised.value.detail["message"]
+
+
+# ── 08:00 발행기: GET 사이에 바뀐 행은 장애 알림 대상도 아니다 ──────────────────────
+
+
+def test_publisher_does_not_report_an_outage_for_a_row_changed_during_the_get(monkeypatch):
+    url = KDCA_VIEW.format(9908)
+    item, _db, _effects = _publish_setup(
+        monkeypatch, references=[{"title": "치핵", "url": url}], checks=None
+    )
+    concurrent = [{"title": "치핵(사람이 고친 주소)", "url": CURATED_HEMORRHOID_KDCA}]
+
+    def concurrent_patch():
+        item.references_list = concurrent
+        item.content_revision = 4
+
+    fetcher = _MutatingFetcher(concurrent_patch, {url: httpx.ConnectError("down")})
+
+    payload = tasks._auto_publish_one(
+        item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
+    )
+
+    # 옛 주소의 접속 장애를 08:00 요약에 '기관 사이트 접속 불가'로 올리지 않는다 — 그 주소는
+    # 이제 이 글에 없다. 다음 시간대 발행기가 바뀐 행으로 다시 본다.
+    assert payload is None
+    assert item.references_list == concurrent
+    assert item.reference_checks is None
+
+
+# ── 깨진 포트 주소 하나가 07:45 루프 전체를 멈추지 않는다 ──────────────────────────
+
+
+class _ManyGateDB(_GateDB):
+    def __init__(self, items):
+        super().__init__(items[0])
+        self.items = {item.id: item for item in items}
+        self.ordered = list(items)
+
+    def execute(self, stmt):
+        if getattr(stmt, "_for_update_arg", None) is not None:
+            self.locks += 1
+            row = self.items[stmt.whereclause.right.value]
+            return SimpleNamespace(scalar_one_or_none=lambda: row)
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: list(self.ordered)))
+
+
+def test_seven_forty_five_rejects_a_malformed_port_url_and_keeps_going(monkeypatch):
+    malformed = (
+        "https://health.kdca.go.kr:bad/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/"
+        "gnrlzHealthInfoView.do?cntnts_sn=5818"
+    )
+    hospital = _publication_hospital()
+    broken = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    broken.references_list = [{"title": "치핵", "url": malformed}]
+    broken.reference_checks = None
+    healthy_url = KDCA_VIEW.format(9909)
+    healthy = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    healthy.references_list = [{"title": "치핵", "url": healthy_url}]
+    healthy.reference_checks = None
+    _gate_setup(monkeypatch, broken)
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(healthy_url, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+
+    with override_reference_fetcher(fetcher):
+        tasks._page_morning_stored_publication_gates(
+            _ManyGateDB([broken, healthy]),
+            now_kst=arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul"),
+        )
+
+    assert malformed not in fetcher.calls
+    assert malformed not in [ref["url"] for ref in broken.references_list]
+    assert [c["reason"] for c in broken.reference_checks if c["url"] == malformed] == [
+        "not_citable"
+    ]
+    # 다음 글도 이어서 검증했다.
+    assert healthy_url in fetcher.calls
+    assert publication_references_current(healthy)
+
+
+# ── 생성은 검증 기록을 저장한다 — 07:45·08:00이 같은 URL을 다시 열지 않는다 ─────────
+
+
+def _generated_with_checks(item, url):
+    """생성 엔진이 돌려주는 모양 — 참고자료와 그 실제 문서 검증 기록(글 주제에 묶음)."""
+
+    result = {
+        "title": HEMORRHOID_TITLE,
+        "body": "## 치질 수술 뒤 회복\n수술 뒤 통증과 배변 관리를 의료진과 확인합니다.",
+        "meta_description": "치질 수술 뒤 회복 기간을 정리했습니다.",
+        "references": [{"title": "치핵", "url": url}],
+        "faq_question": "치질 수술 뒤 회복은 얼마나 걸리나요?",
+        "faq_answer_summary": "수술 방법과 상태에 따라 달라집니다.",
+    }
+    record = _pass(url)
+    record["topic_fingerprint"] = item_topic_fingerprint(
+        SimpleNamespace(
+            title=result["title"],
+            body=result["body"],
+            faq_question=result["faq_question"],
+            content_brief=getattr(item, "content_brief", None),
+        )
+    )
+    result["reference_checks"] = [record]
+    return result
+
+
+def test_first_generation_stores_the_reference_checks_for_the_publication_gates(monkeypatch):
+    from app.services.reference_publication import publication_references_settled
+    from tests.test_topic_swap_fallback import _approved_philosophy as _swap_philosophy
+    from tests.test_topic_swap_fallback import (
+        _generate_once,
+        _kst,
+        _patch_generation,
+        _swapped_slot,
+    )
+
+    philosophy = _swap_philosophy()
+    item = _swapped_slot(philosophy)  # 본문 없는 슬롯 — 배치의 첫 생성 경로
+    _patch_generation(monkeypatch, philosophy, item, fail=False)
+    url = KDCA_VIEW.format(9910)
+    stored: list[dict] = []
+
+    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+        result = _generated_with_checks(item, url)
+        stored.extend(result["reference_checks"])
+        return result, SimpleNamespace(status=None, summary={})
+
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", writer)
+
+    state, code, _message = _generate_once(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 4))
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert item.reference_checks == stored and stored
+    assert publication_references_settled(item)  # 07:45·08:00은 GET 없이 지나간다
+
+
+def test_regeneration_stores_the_reference_checks_for_the_publication_gates(monkeypatch):
+    from app.services.reference_publication import publication_references_settled
+    from tests.test_tasks_nightly import _sweep_regeneration_harness, _uncertain_only_item
+
+    philosophy = SimpleNamespace(id=uuid.uuid4())
+    item = _uncertain_only_item(philosophy)
+    item.scheduled_date = arrow.get(2026, 9, 13).date()
+    item.generation_claim_token = None
+    item.content_revision = 1
+    hospital = SimpleNamespace(id=item.hospital_id, name="검증기록의원", slug="checks")
+    db, _writer_calls, _gate_calls = _sweep_regeneration_harness(monkeypatch, philosophy, item)
+    url = KDCA_VIEW.format(9911)
+    stored: list[dict] = []
+
+    async def writer(**kwargs):
+        result = _generated_with_checks(kwargs["item"], url)
+        stored.extend(result["reference_checks"])
+        return result, SimpleNamespace(status="ALIGNED", summary={"blocking": False})
+
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", writer)
+    # 저장 본문 수리 경로로 들어가게 한다(재검수 없이 곧바로 작가 세션).
+    item.essence_check_summary["ai_review"]["findings"][0]["severity"] = "HARD"
+    item.essence_check_summary["ai_review"]["findings"][0]["kind"] = "STYLE"
+
+    state, code, _message = tasks._generate_single_content_item(db, item, hospital)
+
+    assert stored, "작가 세션까지 가야 이 테스트가 의미가 있다"
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert item.reference_checks == stored
+    assert publication_references_settled(item)

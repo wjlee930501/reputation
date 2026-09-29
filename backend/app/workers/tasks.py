@@ -6145,6 +6145,8 @@ _REFERENCE_VIEW_FIELDS = (
     "content_revision",
     # 참고자료 필수 판정(`references_required`) — 의료 주제 NOTICE는 질문 연결로 판정한다.
     "query_target_id",
+    # 스냅샷 비교 — GET 사이에 공개된 글에는 결과를 쓰지 않는다.
+    "status",
 )
 
 
@@ -6173,6 +6175,8 @@ def _prefetch_publication_references(
         if (
             item is None
             or item.status not in AUTO_PUBLISHABLE_STATUSES
+            # 아직 생성되지 않은 슬롯은 참고자료를 건드리지 않는다(판이 올라 생성 저장이 버려진다).
+            or not _has_generated_text(item)
             or publication_references_settled(item)
         ):
             return None
@@ -6229,6 +6233,10 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
             ).scalar_one_or_none()
             if locked is None:
                 # 다른 작업이 이 글을 잡고 있다 — 08:00 발행기가 잠금 뒤에 다시 확인한다.
+                continue
+            if locked.status not in AUTO_PUBLISHABLE_STATUSES:
+                # GET 사이에 수동 발행·취소됐다 — 공개된 글의 참고자료를 자동으로 바꾸지 않는다.
+                db.commit()
                 continue
             applied = apply_publication_reference_refresh(locked, refresh)
             db.commit()
@@ -6619,7 +6627,8 @@ def _auto_publish_one(
                     "scheduled_date": item.scheduled_date,
                     "unreachable_urls": list(reference_refresh.site_unreachable_urls),
                 }
-        if not publication_references_current(item):
+        if _has_generated_text(item) and not publication_references_current(item):
+            # 생성 전 슬롯은 아래 판정이 CONTENT_NOT_GENERATED로 막는다.
             db.commit()
             _log_auto_publish_skip("reference_verification_pending", content_id, item=item)
             return None

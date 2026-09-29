@@ -828,3 +828,74 @@ async def test_verifier_state_survives_across_event_loops():
 
 def test_fetch_result_defaults_are_an_unreachable_observation():
     assert FetchResult(url="x").status is None
+
+
+# ── 가드: 제목만 맞고 본문이 다른 문서는 통과가 아니다 ──────────────────────────────
+
+
+def _title_only_page(title: str, body: str) -> str:
+    """제목은 <title>에만 두고 본문에는 다시 쓰지 않는다(본문 토큰 검사를 따로 본다)."""
+    return f"<html><head><title>{title}</title></head><body><main><p>{body}</p></main></body></html>"
+
+
+async def test_matching_title_over_a_different_document_body_is_not_a_pass():
+    url = KDCA_VIEW.format(99111)
+    title = "치핵 | 국가건강정보포털 | 질병관리청"
+    fetcher = PageFetcher(
+        {
+            url: (200, url, _title_only_page(title, document_body("악구충증"))),
+            KDCA_VIEW.format(99112): (
+                200,
+                KDCA_VIEW.format(99112),
+                _title_only_page(title, document_body("치핵")),
+            ),
+        }
+    )
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "치핵", "url": url}, {"title": "치핵", "url": KDCA_VIEW.format(99112)}],
+        topic_terms=HEMORRHOID_TOPIC,
+    )
+
+    reasons = {check["url"]: check["reason"] for check in outcome.checks}
+    assert reasons[url] == "unrelated_topic"  # 제목은 치핵, 본문은 다른 질환
+    assert reasons[KDCA_VIEW.format(99112)] == "page_verified"  # 같은 제목·본문도 치핵이면 통과
+    assert [ref["url"] for ref in outcome.kept] == [KDCA_VIEW.format(99112)]
+
+
+# ── 가드: 깨진 포트 주소는 거절하고 크래시하지 않는다 ──────────────────────────────
+
+
+MALFORMED_PORT_URL = (
+    "https://health.kdca.go.kr:bad/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/"
+    "gnrlzHealthInfoView.do?cntnts_sn=5818"
+)
+
+
+async def test_malformed_port_url_is_rejected_without_crashing_or_fetching():
+    from app.services.content_engine import _normalize_references
+    from app.utils.authority_sources import (
+        is_citable_reference_url,
+        is_whitelisted_url,
+        normalize_reference_url,
+        reference_exclusion_reason,
+    )
+
+    assert not is_whitelisted_url(MALFORMED_PORT_URL)
+    assert not is_citable_reference_url(MALFORMED_PORT_URL)
+    assert normalize_reference_url(MALFORMED_PORT_URL)  # ValueError 없이 비교 키를 낸다
+    assert reference_exclusion_reason(MALFORMED_PORT_URL) is None
+    assert _normalize_references([{"title": "치핵", "url": MALFORMED_PORT_URL}]) == []
+
+    status = reference_gate_status(
+        [{"title": "치핵", "url": MALFORMED_PORT_URL}], None, topic_terms=HEMORRHOID_TOPIC
+    )
+    assert not status.current
+
+    fetcher = PageFetcher()
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "치핵", "url": MALFORMED_PORT_URL}], topic_terms=HEMORRHOID_TOPIC
+    )
+    assert outcome.kept == []
+    assert outcome.checks[0]["reason"] == "not_citable"
+    assert fetcher.calls == []

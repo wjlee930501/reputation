@@ -21,9 +21,12 @@
   한 줄로 한 번 알린다(같은 상태는 요약 dedupe가 다시 보내지 않는다). 발행기 catch-up 기간
   (`AUTO_PUBLISH_CATCHUP_DAYS`)이 재시도의 끝이다.
 - 실행당 GET 상한을 넘으면 그 글은 이번 실행에서 미룬다 — 차단·인시던트·알림이 아니다.
-- 네트워크 GET은 행 잠금 밖에서 한다. 재검증 결과는 시작 시점의 스냅샷(판·참고자료·주제 지문)을
-  들고 다니고, 잠금 뒤 `apply_publication_reference_refresh`가 스냅샷이 그대로일 때만 쓴다 —
-  그 사이 편집·재생성이 있었으면 아무것도 덮어쓰지 않고 False를 돌려준다.
+- 네트워크 GET은 행 잠금 밖에서 한다. 재검증 결과는 시작 시점의 스냅샷(상태·판·참고자료·주제
+  지문)을 들고 다니고, 잠금 뒤 `apply_publication_reference_refresh`가 스냅샷이 그대로일 때만 쓴다
+  — 그 사이 편집·재생성·발행이 있었으면 아무것도 덮어쓰지 않고 False를 돌려준다. 발행 전
+  (DRAFT·READY)이 아닌 행의 참고자료는 어떤 경우에도 바꾸지 않는다.
+- 아직 생성되지 않은 슬롯(제목·본문 없음)은 재검증·치유하지 않는다. 판이 오르면 진행 중인
+  생성의 저장이 판 불일치로 버려진다.
 - restore(비공개 보존 글 재공개)는 `verify_publication_references`로 **검증만** 한다. 공개됐던
   글의 참고자료는 빼지도, 채우지도, 바꾸지도 않는다 — 통과하지 못하면 restore를 거절한다.
 """
@@ -36,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services.post_publish_review_policy import AUTO_PUBLISHABLE_STATUSES
 from app.services.reference_requirement import references_required
 from app.services.reference_verification import (
     REASON_MALFORMED_ENTRY,
@@ -63,6 +67,17 @@ REFERENCE_SITE_UNREACHABLE_CAUSE = (
 REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 23
 
 
+# 참고자료를 고칠 수 있는 상태(발행 전). 공개·보존된 글의 참고자료는 자동 경로가 바꾸지 않는다.
+_REFERENCE_WRITABLE_STATUSES = frozenset(
+    getattr(status, "value", status) for status in AUTO_PUBLISHABLE_STATUSES
+)
+
+
+def _status_value(item: object) -> str | None:
+    status = getattr(item, "status", None)
+    return None if status is None else str(getattr(status, "value", status))
+
+
 def _references_key(references: object) -> str:
     try:
         return json.dumps(references, sort_keys=True, ensure_ascii=False, default=str)
@@ -77,12 +92,15 @@ class ReferenceSnapshot:
     content_revision: int | None
     references_key: str
     topic_fingerprint: str
+    # 발행은 판·참고자료·주제를 바꾸지 않는다 — GET 사이에 공개된 글을 상태로 알아본다.
+    status: str | None = None
 
 
 def reference_snapshot(item: object) -> ReferenceSnapshot:
     revision = getattr(item, "content_revision", None)
     return ReferenceSnapshot(
         content_revision=int(revision) if revision is not None else None,
+        status=_status_value(item),
         references_key=_references_key(getattr(item, "references_list", None)),
         topic_fingerprint=topic_fingerprint(item_topic_terms(item)),
     )
@@ -140,6 +158,12 @@ def publication_references_settled(item: object, *, now: datetime | None = None)
     )
 
 
+def _has_generated_text(item: object) -> bool:
+    return bool(str(getattr(item, "title", None) or "").strip()) and bool(
+        str(getattr(item, "body", None) or "").strip()
+    )
+
+
 def _deferred_urls(checks: Sequence[Mapping[str, Any]]) -> tuple[str, ...]:
     return tuple(str(check.get("url") or "") for check in checks)
 
@@ -170,6 +194,14 @@ async def refresh_publication_references(
             references=references,
             checks=merge_reference_checks(previous_checks),
             already_current=True,
+        )
+    if not _has_generated_text(item):
+        # 아직 생성되지 않은 슬롯 — 빼거나 채우면 판이 올라가 진행 중인 생성의 저장이 버려진다.
+        # 호출부가 먼저 거르지만, 여기서도 아무것도 바꾸지 않는다.
+        return PublicationReferenceRefresh(
+            snapshot=snapshot,
+            references=references,
+            checks=merge_reference_checks(previous_checks),
         )
     outcome = await verifier.verify(
         references,
@@ -270,10 +302,18 @@ def apply_publication_reference_refresh(
 ) -> bool:
     """잠금 뒤 비교 후 적용. 스냅샷 이후 행이 바뀌었으면 아무것도 쓰지 않고 False.
 
-    호출부가 행 잠금과 커밋을 소유한다. 참고자료가 바뀌는 적용은 판을 올린다.
+    호출부가 행 잠금과 커밋을 소유한다. 참고자료가 바뀌는 적용은 판을 올린다. 발행 전
+    (DRAFT·READY)이 아닌 행의 참고자료는 스냅샷이 같아도 바꾸지 않는다(False).
     """
 
     if not reference_snapshot_matches(item, refresh.snapshot):
+        return False
+    status = _status_value(item)
+    if (
+        refresh.references_changed
+        and status is not None
+        and status not in _REFERENCE_WRITABLE_STATUSES
+    ):
         return False
     item.reference_checks = refresh.checks
     if refresh.deferred or not refresh.references_changed:

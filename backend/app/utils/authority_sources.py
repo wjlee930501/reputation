@@ -392,7 +392,11 @@ def _extract_hostname(url: str) -> str | None:
     if not url:
         return None
     try:
-        hostname = urlparse(url).hostname
+        parsed = urlparse(url)
+        hostname = parsed.hostname
+        # 깨진 포트(`host:bad`)는 hostname만 보면 화이트리스트를 통과하고 뒤에서 `.port`가
+        # ValueError를 던진다 — 인용할 수 없는 주소로 거절한다.
+        _ = parsed.port
     except ValueError:
         return None
     return hostname.lower() if hostname else None
@@ -498,8 +502,13 @@ def normalize_reference_url(url: object) -> str:
     host = (parsed.hostname or "").lower()
     if host.startswith("www."):
         host = host[4:]
-    if parsed.port:
-        host = f"{host}:{parsed.port}"
+    try:
+        port = parsed.port
+    except ValueError:
+        # 깨진 포트 — 화이트리스트 밖이라 인용되지 않는다. 비교 키는 원문 그대로 둔다.
+        return text
+    if port:
+        host = f"{host}:{port}"
     path = parsed.path.rstrip("/")
     query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))
     return f"{host}{path}" + (f"?{query}" if query else "")

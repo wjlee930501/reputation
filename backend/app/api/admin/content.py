@@ -1019,7 +1019,9 @@ async def publish_content(
     # 채우거나 비워 아래 MISSING_REFERENCES 차단으로 보낸다. 적용은 잠근 뒤 비교해서 한다.
     unlocked_item = await _get_content(db, content_id, hospital_id)
     reference_refresh = None
-    if not publication_references_settled(unlocked_item):
+    # 생성 전 슬롯은 참고자료를 건드리지 않는다 — 판이 올라 진행 중인 생성의 저장이 버려진다.
+    # 아래 판정이 "Content not generated yet"으로 막는다.
+    if _has_generated_text(unlocked_item) and not publication_references_settled(unlocked_item):
         reference_refresh = await refresh_publication_references(
             unlocked_item, ReferenceVerifier(max_fetches=ADMIN_REFERENCE_FETCH_LIMIT)
         )
@@ -1080,7 +1082,7 @@ async def publish_content(
     if (
         not reference_applied
         or (reference_refresh is not None and reference_refresh.deferred)
-        or not publication_references_current(item)
+        or (_has_generated_text(item) and not publication_references_current(item))
     ):
         if hasattr(db, "commit"):
             await db.commit()
@@ -1613,6 +1615,10 @@ async def _get_hospital_for_schedule_update(
 
 def _has_public_site(hospital: Hospital) -> bool:
     return hospital.status == HospitalStatus.ACTIVE and bool(hospital.site_live)
+
+
+def _has_generated_text(item: ContentItem) -> bool:
+    return bool((item.title or "").strip()) and bool((item.body or "").strip())
 
 
 def _has_required_references(item: ContentItem) -> bool:
