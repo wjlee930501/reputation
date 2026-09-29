@@ -12,6 +12,7 @@ Celery 태스크 전체
 """
 
 import asyncio
+import copy
 import hashlib
 import logging
 import threading
@@ -29,7 +30,8 @@ import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
 from sqlalchemy import ColumnElement, and_, delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import IntegrityError, NoInspectionAvailable
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
@@ -6212,15 +6214,52 @@ def _reference_view(item: ContentItem) -> SimpleNamespace:
     )
 
 
+async def _never_fetch(url: str):  # pragma: no cover — 한도 0이라 부르지 않는다
+    raise RuntimeError(f"stored-state judgement must not GET: {url}")
+
+
+def _stored_state_reference_verifier() -> ReferenceVerifier:
+    """GET을 하지 않는 검증기(실행당 GET 한도 0) — 저장된 상태만으로 판정한다.
+
+    마지막 발행기의 claim 행에 잠금 전 재검증 결과가 없을 때만 쓴다(잠금 전 읽기와 잠금 사이에
+    워커가 본문을 쓰거나 일정이 바뀐 경합). 신선한 통과는 재사용하고, 제외 목록·인용 불가 주소는
+    GET 전에 떨어지고, 수기 목록 문서는 카탈로그로 판정된다. 그 밖의 주소(신선한 통과가 없는 목록
+    밖 주소)는 GET 한도 초과로 미뤄진다 — 발행기가 한도 초과를 다루듯 다음 시간대로 넘긴다.
+    """
+
+    return ReferenceVerifier(_never_fetch, max_fetches=0)
+
+
+def _detached_publication_view(item: ContentItem) -> SimpleNamespace:
+    """행 값의 깊은 사본으로 만든 판정용 보기 — 여기에 쓰는 값은 행·세션에 닿지 않는다."""
+
+    try:
+        names = [attr.key for attr in sa_inspect(item).mapper.column_attrs]
+    except NoInspectionAvailable:
+        names = [name for name in vars(item) if not name.startswith("_") and name != "hospital"]
+    view = SimpleNamespace(
+        **{name: copy.deepcopy(getattr(item, name, None)) for name in names}
+    )
+    view.hospital = getattr(item, "hospital", None)
+    return view
+
+
 def _prefetch_publication_references(
-    content_id: uuid.UUID, verifier: ReferenceVerifier
+    content_id: uuid.UUID,
+    verifier: ReferenceVerifier,
+    *,
+    now_kst: arrow.Arrow | None = None,
 ) -> PublicationReferenceRefresh | None:
     """발행 직전 참고자료 재검증의 네트워크 쪽 — **행 잠금 없이** 한다.
 
     잠금 없는 읽기로 필요한 값을 스냅샷에 담고 세션을 닫은 뒤 GET한다. 결과는 호출부가 행을
     잠근 뒤 `apply_publication_reference_refresh`로 비교 후 적용한다(그 사이 행이 바뀌었으면
-    쓰지 않는다). 발행 대상이 아니거나 이미 신선한 통과가 있거나 생성 워커가 지금 이 슬롯을
-    잡고 있으면(살아 있는 claim) GET 없이 None.
+    쓰지 않는다). 발행 대상이 아니거나 이미 신선한 통과가 있으면 GET 없이 None.
+
+    생성 워커가 지금 이 슬롯을 잡고 있으면(살아 있는 claim) 대개 GET 없이 None이다. 예외는
+    예정일의 마지막 발행기(23시)와 지난 예정일(`reference_outage_alert_due`, `now_kst`는 발행기
+    실행의 시각)이다 — 건너뛰면 그 행의 보류·운영자 줄이 조용히 빠지므로 종전처럼 GET하고,
+    호출부는 결과를 행이 아닌 분리된 사본에만 적용한다. GET은 행을 쓰지 않는다.
     """
 
     with SyncSessionLocal() as db:
@@ -6232,10 +6271,15 @@ def _prefetch_publication_references(
             or item.status not in AUTO_PUBLISHABLE_STATUSES
             # 아직 생성되지 않은 슬롯은 참고자료를 건드리지 않는다(판이 올라 생성 저장이 버려진다).
             or not _has_generated_text(item)
-            # 생성 워커가 쓰는 중인 슬롯도 같다 — 07:45와 같은 규칙이다(만료된 claim은 종전처럼).
-            or generation_claim_is_active(item, now=datetime.now(timezone.utc))
             or publication_references_settled(item)
         ):
+            return None
+        if generation_claim_is_active(
+            item, now=datetime.now(timezone.utc)
+        ) and not reference_outage_alert_due(
+            item.scheduled_date, now_kst or arrow.now("Asia/Seoul")
+        ):
+            # 생성 워커가 쓰는 중인 슬롯 — 07:45와 같은 규칙이다(만료된 claim은 종전처럼).
             return None
         # 세션을 닫은 뒤에도 읽을 수 있게 판정에 필요한 값만 떼어 둔다.
         view = _reference_view(item)
@@ -6411,7 +6455,10 @@ def morning_content_auto_publish(self):
         for content_id in due_ids:
             try:
                 outcome = _auto_publish_one(
-                    content_id, reference_verifier=reference_verifier, today_kst=today
+                    content_id,
+                    reference_verifier=reference_verifier,
+                    today_kst=today,
+                    now_kst=observed_kst,
                 )
                 if outcome is None:
                     skipped_count += 1
@@ -6661,10 +6708,14 @@ def _auto_publish_one(
     *,
     reference_verifier: ReferenceVerifier | None = None,
     today_kst: date | None = None,
+    now_kst: arrow.Arrow | None = None,
 ) -> dict | None:
+    # 08:00 실행은 기준일·시각을 한 번 정해 넘긴다 — 자정을 넘긴 글이 다음 날로 판정되지 않는다.
+    if now_kst is None:
+        now_kst = arrow.now("Asia/Seoul")
     # 참고자료 재검증의 GET은 행 잠금 전에 끝낸다. 결과는 아래에서 잠근 행과 비교해 적용한다.
     reference_refresh = _prefetch_publication_references(
-        content_id, reference_verifier or ReferenceVerifier()
+        content_id, reference_verifier or ReferenceVerifier(), now_kst=now_kst
     )
     with SyncSessionLocal() as db:
         item = db.execute(
@@ -6684,9 +6735,8 @@ def _auto_publish_one(
             # 후보 목록은 참고용이다 — 목록을 만든 뒤 보류가 켜졌으면 잠금 뒤에 다시 본다.
             _log_auto_publish_skip("auto_publish_hold", content_id, item=item)
             return None
-        # 08:00 실행은 기준일을 한 번 정해 넘긴다 — 자정을 넘긴 글이 다음 날로 판정되지 않는다.
         if today_kst is None:
-            today_kst = arrow.now("Asia/Seoul").date()
+            today_kst = now_kst.date()
         if hasattr(item, "content_revision") and not (
             auto_publish_catchup_start(today_kst) <= item.scheduled_date <= today_kst
         ):
@@ -6694,15 +6744,33 @@ def _auto_publish_one(
             # this row lock is held and the authoritative date is re-read.
             _log_auto_publish_skip("outside_catchup_window", content_id, item=item)
             return None
+        # 마지막 발행기의 claim 행이면 실제 행 — 그때 `item`은 판정용 사본이다.
+        read_only_row: ContentItem | None = None
         if generation_claim_is_active(item, now=datetime.now(timezone.utc)):
             # 생성 워커가 이 슬롯을 잡고 있다(잠금 전 읽기 때부터, 또는 GET 사이에). 재검증을
-            # 적용하면 판이 올라 워커가 공급자 비용을 치른 결과를 버린다 — 적용하지 않는다.
-            reference_refresh = None
-            if _has_generated_text(item) and not publication_references_settled(item):
+            # 행에 적용하면 판이 올라 워커가 공급자 비용을 치른 결과를 버린다 — 적용하지 않는다.
+            if not (_has_generated_text(item) and not publication_references_settled(item)):
+                # 이미 확인이 끝난 글(또는 생성 전 슬롯)은 아래 판정을 종전대로 거친다.
+                reference_refresh = None
+            elif not reference_outage_alert_due(item.scheduled_date, now_kst):
                 # 확인되지 않은 참고자료로 발행·보류하지도 않고 다음 시간대가 다시 본다(07:45와
-                # 같다). 이미 확인이 끝난 글은 아래 판정을 종전대로 거친다.
+                # 같다).
                 _log_auto_publish_skip("generation_claim_active", content_id, item=item)
                 return None
+            else:
+                # 예정일의 마지막 발행기(23시)이거나 이미 지난 예정일이다 — 건너뛰면 이 행의
+                # 보류·운영자 줄이 조용히 빠진다. 잠금 전 재검증(GET)은 종전처럼 했다. 그 결과를
+                # 분리된 사본에만 적용해 아래의 종전 판정을 사본에서 거친다 — 행은 쓰지 않는다
+                # (재검증 적용·판 올림·발행·판정 기록 없음). 미룸(기관 장애·GET 한도)도 claim 없는
+                # 글과 같은 결과다.
+                read_only_row = item
+                item = _detached_publication_view(item)
+                if reference_refresh is None:
+                    # 잠금 전 읽기와 잠금 사이의 경합(워커가 본문을 쓰는 등)으로 잠금 전 재검증이
+                    # 없다 — 저장된 상태로만 판정한다(판정할 수 없는 주소는 GET 한도처럼 미룬다).
+                    reference_refresh = _run_async(
+                        refresh_publication_references(item, _stored_state_reference_verifier())
+                    )
         # 참고자료 게이트: 모든 참고자료에 같은 URL·같은 글 주제의 신선한 통과 기록이 있어야
         # 공개한다. 잠금 밖에서 다시 검증한 결과는 판·참고자료·주제가 그대로일 때만 쓴다.
         if reference_refresh is not None:
@@ -6780,6 +6848,7 @@ def _auto_publish_one(
                     "code": code,
                     "reason": message,
                     "scheduled_date": str(item.scheduled_date),
+                    **({"generation_claim_active": True} if read_only_row is not None else {}),
                 },
             )
             blocked_run = ensure_publication_block_run(
@@ -6789,8 +6858,10 @@ def _auto_publish_one(
                 code=code,
                 message=message,
             )
-            # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
-            _record_gate_blocker_decision(db, item, philosophy, code)
+            if read_only_row is None:
+                # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행은
+                # 워커가 시도 기록의 소유자라 쓰지 않는다 — 인시던트가 같은 규칙으로 기한을 계산한다.
+                _record_gate_blocker_decision(db, item, philosophy, code)
             db.commit()
             return {
                 "kind": "blocked",
@@ -6811,6 +6882,11 @@ def _auto_publish_one(
                 ),
             }
 
+        if read_only_row is not None:
+            # 저장된 상태로는 보류가 아니다(종전 23시라면 발행했을 글) — 생성 중인 행은 공개하지
+            # 않는다. claim이 풀린 뒤 발행기가 발행한다.
+            _log_auto_publish_skip("generation_claim_active", content_id, item=read_only_row)
+            return None
         # Publishing without a working cache invalidation path can leave a successful DB
         # transaction invisible. Check only after blocker projection so a missing body/image
         # still reaches Operations Center even when the revalidation dependency is unavailable.

@@ -997,21 +997,24 @@ def test_a_fullwidth_id_is_not_a_catalog_document(name):
 
 
 @pytest.mark.parametrize(
-    ("url", "expected"),
+    ("url", "recognised", "removed"),
     [
-        (KDCA_VIEW.format("3796３"), LOW_BACK),  # 전각 문자는 숫자가 아니다 — 모으면 3796
-        (KDCA_VIEW.format("３3796"), LOW_BACK),
-        (AMC_DETAIL.format("31773３"), ANAL_FISSURE),  # 앞 정수 31773 뒤의 비숫자
-        (AMC_DETAIL.format("３31773"), None),  # 앞이 숫자가 아니다
-        (KDCA_VIEW.format("3７96"), None),  # 396 — 목록에 없는 문서
+        (KDCA_VIEW.format("3796３"), LOW_BACK, LOW_BACK),  # 전각 문자는 숫자가 아니다 — 모으면 3796
+        (KDCA_VIEW.format("３3796"), LOW_BACK, LOW_BACK),
+        # 앞 정수 31773 뒤의 비숫자 — 빼는 쪽은 앞 정수로 치열 문서다. 인정해 주는 쪽은 값 전체가
+        # ASCII 숫자여야 한다(#185 1차 리뷰 후속: 서버는 `7３`에 500을 준다).
+        (AMC_DETAIL.format("31773３"), None, ANAL_FISSURE),
+        (AMC_DETAIL.format("３31773"), None, None),  # 앞이 숫자가 아니다
+        (KDCA_VIEW.format("3７96"), None, None),  # 396 — 목록에 없는 문서
     ],
     ids=["kdca_trailing_fullwidth", "kdca_leading_fullwidth", "amc_trailing_fullwidth", "amc_leading_fullwidth", "kdca_396"],
 )
-def test_only_ascii_digits_are_read(url, expected):
-    if expected is None:
-        assert curated_source_entries(url) == [] and not is_curated_source_url(url)
+def test_only_ascii_digits_are_read(url, recognised, removed):
+    if recognised is None:
+        assert curated_source_entries(url) == []
     else:
-        assert curated_source_entries(url) == curated_source_entries(expected) != []
+        assert curated_source_entries(url) == curated_source_entries(recognised) != []
+    assert is_curated_source_url(url) is (removed is not None)
 
 
 def test_a_fullwidth_id_never_equals_a_catalog_or_excluded_document():
@@ -1160,3 +1163,169 @@ async def test_patch_judges_a_fullwidth_id_on_a_cost_post_by_its_page(monkeypatc
         assert failure["url"] == url
         assert failure["reason"] not in {"curated_verified", "curated_unreachable"}
         assert item.references_list == [] and item.content_revision == 3
+
+
+# ── 목록 문서로 인정할 때 앞 정수 이름은 ASCII 숫자만인 값(#185 1차 리뷰 후속) ──────────────
+# `thtimt_cntnts_sn`·AMC `contentId`·`SEQ`·`cancer_seq`는 앞 정수로 읽는다. 목록 문서라서 **빼는**
+# 판정은 그 관대한 해석 그대로다(`7a`도 7번 문서일 수 있다). 목록 문서로 **인정해 주는** 판정
+# (카탈로그 주제 대조·장애 시 유지·검증기의 `curated`)은 값 전체가 ASCII 숫자일 때만이다 — 서버는
+# `7３`에 500을 준다. 인정받지 못한 주소는 의료 글에서 실제 본문으로 판정된다.
+
+CHECKUP_VIEW = (
+    "https://health.kdca.go.kr/healthinfo/biz/health/ntcnInfo/healthSourc/thtimtCntnts/"
+    "thtimtCntntsView.do?thtimt_cntnts_sn={}"
+)
+# 이름 → (URL 틀, 목록 id, 의료 제목, 진료비 제목, 주제어)
+LEADING_INTEGER_DOCS = {
+    "thtimt_cntnts_sn": (
+        CHECKUP_VIEW,
+        7,
+        "건강검진 결과지 읽는 법 — 수치별 의미",
+        "건강검진 비용 — 항목별 본인부담",
+        "건강검진",
+    ),
+    "amc_contentId": (
+        AMC_DETAIL,
+        31773,
+        "치열이 생겼을 때 — 원인과 치료",
+        "치열 수술 비용 — 보험 적용과 본인부담",
+        "치열",
+    ),
+}
+# 값 → 퍼센트 인코딩된 질의 값(`parse_qsl`이 풀어 읽는다).
+INEXACT_ID_VALUES = {
+    "fullwidth_suffix": "{}%EF%BC%93",  # 7３
+    "letter_suffix": "{}a",  # 7a
+    "encoded_plus": "%2B{}",  # +7
+    "encoded_space": "%20{}",  # ' 7'
+    "raw_plus": "+{}",  # 질의의 `+`는 공백 — ' 7'
+}
+EXACT_ID_VALUES = {"plain": "{}", "zero_padded": "00{}"}
+INEXACT_CASES = sorted((doc, value) for doc in LEADING_INTEGER_DOCS for value in INEXACT_ID_VALUES)
+
+
+def _leading_integer_url(doc: str, value: str) -> tuple[str, str]:
+    template, number, *_rest = LEADING_INTEGER_DOCS[doc]
+    pattern = {**INEXACT_ID_VALUES, **EXACT_ID_VALUES}[value]
+    return template.format(pattern.format(number)), template.format(number)
+
+
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+def test_an_inexact_leading_integer_id_is_not_recognised_but_still_removed(doc, value):
+    from app.services.reference_verification import _serves_curated_document, names_curated_document
+
+    url, canonical = _leading_integer_url(doc, value)
+    assert curated_source_entries(canonical) != []
+    assert curated_source_entries(url) == []  # 인정해 주는 쪽
+    assert not _serves_curated_document(url)
+    assert is_curated_source_url(url)  # 빼는 쪽 — 관대한 앞 정수 해석
+    assert names_curated_document({"url": url})
+
+
+@pytest.mark.parametrize("value", sorted(EXACT_ID_VALUES))
+@pytest.mark.parametrize("doc", sorted(LEADING_INTEGER_DOCS))
+def test_an_exact_leading_integer_id_is_recognised(doc, value):
+    url, canonical = _leading_integer_url(doc, value)
+    assert curated_source_entries(url) == curated_source_entries(canonical) != []
+    assert is_curated_source_url(url)
+
+
+@pytest.mark.parametrize("outcome", ["real_page", "site_down"])
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_a_medical_post_citing_an_inexact_leading_integer_id_is_judged_by_its_page(
+    doc, value, outcome
+):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, medical_title, _cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    fetcher = PageFetcher()
+    if outcome == "real_page":
+        fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    else:
+        fetcher.pages[url] = TimeoutError("site down")
+
+    result = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[medical_title], defer_transient=True
+    )
+
+    assert fetcher.calls == [url]
+    (check,) = result.checks
+    _assert_not_curated_check(check)
+    if outcome == "real_page":
+        assert [ref["url"] for ref in result.kept] == [url] and check["reason"] == "page_verified"
+    else:
+        # 목록 문서로 인정되던 때는 `curated_unreachable`로 남았다 — 이제는 미룬다.
+        assert result.kept == [] and [ref["url"] for ref in result.deferred] == [url]
+
+
+@pytest.mark.parametrize("value", sorted(EXACT_ID_VALUES))
+@pytest.mark.parametrize("doc", sorted(LEADING_INTEGER_DOCS))
+async def test_a_medical_post_citing_an_exact_leading_integer_id_keeps_the_catalog(doc, value):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, medical_title, _cost_title, _topic = LEADING_INTEGER_DOCS[doc]
+    fetcher = PageFetcher({url: TimeoutError("site down")})
+
+    result = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[medical_title], defer_transient=True
+    )
+
+    (check,) = result.checks
+    assert check["reason"] == "curated_unreachable" and check["curated"] is True
+    assert [ref["url"] for ref in result.kept] == [url]
+
+
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_generation_still_drops_an_inexact_leading_integer_id_on_a_cost_title(doc, value):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, _medical_title, cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    fetcher = PageFetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    result = {
+        "title": cost_title,
+        "body": f"## {topic}의 원인과 치료\n{topic} 진료 안내\n## 비용\n본문",
+        "faq_question": None,
+        "references": [{"title": topic, "url": url}],
+    }
+
+    with override_reference_fetcher(fetcher):
+        notes = await content_engine._verify_generated_references(
+            result, {"target_keyword": topic}, required=True
+        )
+
+    assert result["references"] == [] and fetcher.calls == []
+    assert any("수기 목록 문서를 쓰지 않음" in note for note in notes)
+
+
+@pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_publication_refresh_still_drops_an_inexact_leading_integer_id_on_a_cost_post(
+    doc, value, status
+):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, _medical_title, cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    item = _published(cost_title, status)
+    item.body = f"## {topic}의 원인과 치료\n{topic} 진료 안내"
+    item.references_list = [{"title": topic, "url": url}]
+    item.reference_checks = None
+    fetcher = PageFetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.references == [] and refresh.operator_decides and fetcher.calls == []
+
+
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_patch_still_rejects_an_inexact_leading_integer_id_on_a_cost_post(
+    monkeypatch, doc, value
+):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, _medical_title, cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    hospital, item = _patch_setup(monkeypatch, title=cost_title)
+    fetcher = PageFetcher()
+
+    with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+        await _patch(hospital, item, references=[{"title": topic, "url": url}])
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail["code"] == "CURATED_REFERENCE_NOT_ALLOWED"
+    assert fetcher.calls == [] and item.references_list == []
