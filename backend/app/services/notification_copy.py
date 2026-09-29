@@ -160,7 +160,7 @@ def blocker_copy(code: object) -> ActionCopy:
     if value == "CONTENT_NOT_GENERATED":
         return ActionCopy(
             "발행용 원고 미생성",
-            "콘텐츠에서 해당 글의 생성 상태와 자동 재시도 여부를 확인해 주세요. 자동 재시도가 남은 글은 다시 실행하지 마세요.",
+            "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
             "생성 상태 확인",
         )
     if value == "TOPIC_SWAPPED":

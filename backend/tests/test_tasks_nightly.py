@@ -2895,7 +2895,7 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(
     assert "게이트확인의원" in str(digests[0].payload)
     # 원고가 아예 없는 슬롯이다 — 검토할 본문·근거가 없으므로 생성 상태를 가리킨다.
     assert "발행용 원고 미생성 1편" in str(digests[0].payload)
-    assert "생성 상태와 자동 재시도 여부" in str(digests[0].payload)
+    assert "자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요." in str(digests[0].payload)
     assert "본문·근거 확인 필요" not in str(digests[0].payload)
     if code == "ESSENCE_NOT_ALIGNED":
         assert "피해야 할 문구" in str(digests[0].payload)
@@ -3067,6 +3067,11 @@ def test_seven_forty_five_digest_calls_a_topic_swapped_slot_a_missing_draft(monk
     assert "주제교체의원" in payload
     assert "발행용 원고 미생성 1편" in payload
     assert "본문·근거 확인 필요" not in payload
+    # #180: 게이트는 보고 코드만 CONTENT_NOT_GENERATED로 쓰고 교체 기록은 덮지 않는다.
+    assert item.essence_check_summary["generation_attempt"] == {
+        "context": "swapped",
+        "reason": "TOPIC_SWAPPED",
+    }
 
 
 def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatch):
