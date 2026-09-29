@@ -116,3 +116,37 @@ def test_beside_one_other_blocker_the_whole_action_leads_in_gate_order():
     )
     other = blocker_copy("CONTENT_NOT_GENERATED").action
     assert lines[-1] == f"  {_DIGEST_ACTION} {other}"
+
+
+_EARLIER_BLOCKERS = ("CONTENT_NOT_GENERATED", "MISSING_APPROVED_ESSENCE", "CONTENT_IMAGE_NOT_READY")
+
+
+@pytest.mark.parametrize("earlier", [1, 2, 3], ids=["one_before", "two_before", "three_before"])
+def test_the_operator_action_leads_even_when_other_blockers_come_first(earlier):
+    """게이트 순서로 다른 조치가 먼저 와도 사람이 정할 글의 조치가 맨 앞에 서서 상한에 잘리지 않는다.
+
+    상한(현재 2, #179 뒤 3)은 하드코딩하지 않고 렌더된 줄에서 읽는다 — 줄은 반드시
+    [운영자 조치, 나머지(처음 본 순서)…]의 앞부분이어야 한다.
+    """
+
+    codes = _EARLIER_BLOCKERS[:earlier]
+    lines = _hospital_line(
+        [
+            *(_outcome(f"c-{index}", code) for index, code in enumerate(codes)),
+            _outcome("c-op", "MISSING_REFERENCES", copy_code=REFERENCES_OPERATOR_DECIDES_COPY_CODE),
+        ]
+    )
+    others = [blocker_copy(code).action for code in codes]
+    assert len(set(others)) == len(others)  # 모두 서로 다른 조치다
+    expected = [_DIGEST_ACTION, *others]
+    shown = [
+        count
+        for count in range(1, len(expected) + 1)
+        if lines[-1] == "  " + " ".join(expected[:count])
+    ]
+    assert len(shown) == 1, lines[-1]
+    assert shown[0] >= min(2, len(expected))  # 상한이 1로 줄지 않았다
+    assert lines[-1].startswith(f"  {_DIGEST_ACTION}")
+    # 제목·편수 줄은 그대로다.
+    assert f"발행 보류 {earlier + 1}편" in lines[0]
+    assert "참고 자료 운영자 판단 1편" in lines[1]

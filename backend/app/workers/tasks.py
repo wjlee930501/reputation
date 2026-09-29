@@ -6400,7 +6400,9 @@ def morning_content_auto_publish(self):
         reference_verifier = ReferenceVerifier()
         for content_id in due_ids:
             try:
-                outcome = _auto_publish_one(content_id, reference_verifier=reference_verifier)
+                outcome = _auto_publish_one(
+                    content_id, reference_verifier=reference_verifier, today_kst=today
+                )
                 if outcome is None:
                     skipped_count += 1
                     continue
@@ -6645,7 +6647,10 @@ def _log_auto_publish_skip(reason: str, content_id, *, item=None, hospital=None)
 
 
 def _auto_publish_one(
-    content_id: uuid.UUID, *, reference_verifier: ReferenceVerifier | None = None
+    content_id: uuid.UUID,
+    *,
+    reference_verifier: ReferenceVerifier | None = None,
+    today_kst: date | None = None,
 ) -> dict | None:
     # 참고자료 재검증의 GET은 행 잠금 전에 끝낸다. 결과는 아래에서 잠근 행과 비교해 적용한다.
     reference_refresh = _prefetch_publication_references(
@@ -6669,7 +6674,9 @@ def _auto_publish_one(
             # 후보 목록은 참고용이다 — 목록을 만든 뒤 보류가 켜졌으면 잠금 뒤에 다시 본다.
             _log_auto_publish_skip("auto_publish_hold", content_id, item=item)
             return None
-        today_kst = arrow.now("Asia/Seoul").date()
+        # 08:00 실행은 기준일을 한 번 정해 넘긴다 — 자정을 넘긴 글이 다음 날로 판정되지 않는다.
+        if today_kst is None:
+            today_kst = arrow.now("Asia/Seoul").date()
         if hasattr(item, "content_revision") and not (
             auto_publish_catchup_start(today_kst) <= item.scheduled_date <= today_kst
         ):

@@ -6923,3 +6923,53 @@ def test_operator_hold_digest_predicate_is_the_same_day_morning_hold_only():
         assert not generation_incident_control.generation_block_digest_due(
             "MISSING_REFERENCES", batch=batch
         )
+
+
+class _OdMidnightClock:
+    """첫 읽기(08:00 실행 시작)는 D 23:59:59.9, 그 뒤의 모든 읽기는 D+1 00:00:00.1이다."""
+
+    def __init__(self):
+        self.start = arrow.get(2026, 6, 10, 23, 59, 59, 900000, tzinfo="Asia/Seoul")
+        self.after = arrow.get(2026, 6, 11, 0, 0, 0, 100000, tzinfo="Asia/Seoul")
+        self.reads = 0
+
+    def __call__(self, *_args, **_kwargs):
+        self.reads += 1
+        return self.start if self.reads == 1 else self.after
+
+
+def test_eight_oclock_judges_every_post_with_the_date_the_run_started(monkeypatch):
+    """자정을 넘긴 실행도 모든 글을 시작한 날(D)로 판정한다 — 글마다 시계를 다시 읽지 않는다."""
+
+    clock = _OdMidnightClock()
+    today = clock.start.date()
+    assert today == _OD_TODAY and clock.after.date() == today + timedelta(days=1)
+    boundary = today - timedelta(days=7)
+    # D로는 따라잡기 창의 첫날, D+1로는 창 밖 — 두 날짜가 갈리는 경계다.
+    assert auto_publish_catchup_start(today) == boundary
+    assert auto_publish_catchup_start(clock.after.date()) > boundary
+
+    hospital = _publication_hospital()
+    held = _od_unwritten(hospital)  # D 예정, 사람의 결정 보류 — D+1이면 당일이 아니다
+    catchup = _od_written(hospital, title=_OD_MEDICAL_TITLE, scheduled_date=boundary)
+    for item in (held, catchup):
+        item.content_revision = 1  # 잠근 뒤 따라잡기 창을 다시 보는 경로를 탄다
+    incidents = _od_gate(monkeypatch)
+    db = _DigestGateDB(held, catchup)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", db)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
+    monkeypatch.setattr(tasks.arrow, "now", clock)
+
+    with override_reference_fetcher(PageFetcher()):
+        tasks.morning_content_auto_publish.run()
+
+    # (b) D-7 글도 창 안으로 판정돼 보류됐다(D+1이면 창 밖이라 건너뛴다).
+    assert sorted(str(call["item_id"]) for call in incidents) == sorted(
+        str(item.id) for item in (held, catchup)
+    )
+    assert {call["code"] for call in incidents} == {"MISSING_REFERENCES"}
+    # (a) D 예정 보류가 운영자 줄을 받았다(D+1이면 예정일이 오늘이 아니라 빠진다).
+    [row] = db.outbox()
+    text = _od_digest_text(row)
+    assert text.count(_OD_LINE_TITLE) == 1
+    assert "발행 보류 1편" in text

@@ -293,7 +293,7 @@ def test_publisher_never_publishes_when_the_gate_is_not_current(monkeypatch):
 def test_morning_publisher_shares_one_verifier_across_the_run(monkeypatch):
     seen: list[object] = []
 
-    def publish(content_id, *, reference_verifier):
+    def publish(content_id, *, reference_verifier, today_kst=None):
         seen.append(reference_verifier)
         return None
 
