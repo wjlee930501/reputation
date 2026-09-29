@@ -8,8 +8,10 @@
   `OPERATOR_REQUIRED`(사람의 결정)다.
 - 이미 공개된 글의 참고자료·상태·판은 그대로다. 공개됐던 글을 다시 여는 restore만
   참고자료를 보고, 통과하지 못하면 409로 사람에게 알린다.
-- 통과한 참고자료가 있는 진료비 글은 그대로 발행한다. 본문에서 비용을 말할 뿐인 의료 글은
-  종전처럼 치유한다.
+- 발행 전 글(예정 DRAFT·READY, 쓰이지 않은 슬롯의 생성)은 작가가 인용해 통과한 수기 목록
+  문서도 남기지 않는다 — 그 통과는 GET이 아니라 치유와 같은 카탈로그 키워드 대조다(2026-09-29
+  실장 결정). 목록 밖 문서가 실제 GET으로 통과했으면 그대로 발행한다. 본문에서 비용을 말할
+  뿐인 의료 글은 종전처럼 치유한다.
 
 네트워크·DB는 쓰지 않는다 — 가짜 fetcher와 더블만 쓴다.
 """
@@ -17,6 +19,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import uuid
 from datetime import UTC, timedelta
 from types import SimpleNamespace
@@ -26,9 +30,11 @@ import pytest
 from fastapi import HTTPException
 
 from app.api.admin import content as content_api
-from app.services import content_engine, reference_requirement
+from app.models.content import ContentType
+from app.services import content_engine, reference_publication, reference_requirement
 from app.services.reference_publication import (
     apply_publication_reference_refresh,
+    publication_references_settled,
     refresh_publication_references,
     verify_publication_references,
 )
@@ -40,7 +46,7 @@ from app.services.reference_requirement import (
     topic_without_authoritative_source,
 )
 from app.services.reference_verification import ReferenceVerifier, override_reference_fetcher
-from app.utils.authority_sources import CURATED_MEDICAL_SOURCE_PAGES
+from app.utils.authority_sources import CURATED_MEDICAL_SOURCE_PAGES, CURATED_SOURCE_URLS
 from app.workers import generation_incident_control, tasks, topic_swap_fallback
 from app.workers.generation_incident_control import (
     REFERENCES_OPERATOR_DECIDES_ACTION,
@@ -54,17 +60,28 @@ from app.workers.generation_retry_policy import (
     retry_is_due,
 )
 from tests import test_topic_swap_fallback as swap_tests
+from tests.reference_fetch_doubles import PageFetcher
 from tests.test_generation_recovery_ladder import _FakeIncidentSession, _freeze, _kst
 from tests.test_reference_publication_gate import (
     CURATED_HEMORRHOID_AMC,
     CURATED_HEMORRHOID_KDCA,
     GUESSED,
     HEMORRHOID_TITLE,
+    KDCA_VIEW,
     _CommitDB,
     _gate_setup,
     _GateDB,
     _hemorrhoid_fetcher,
+    _pass,
     _publish_setup,
+    _stamp,
+)
+from tests.test_reference_requirement import (
+    CURATED_HYPERTENSION,
+    _brief_hypertension,
+    _mapo_hospital,
+    _notice_payload,
+    _stub_writer,
 )
 from tests.test_tasks_nightly import _NightlyTaskDB, _publication_hospital, _publication_item
 
@@ -75,6 +92,15 @@ from tests.test_tasks_nightly import _NightlyTaskDB, _publication_hospital, _pub
 COST_TITLE = "치질 수술 비용 — 보험 적용과 본인부담"
 CHOICE_TITLE = "대장항문외과 병원 추천 — 병원 선택 기준과 진료 흐름"
 CURATED_HEMORRHOID = {CURATED_HEMORRHOID_KDCA, CURATED_HEMORRHOID_AMC}
+# 병원 선택 제목의 '병원선택'이 카탈로그 경로 키워드라 요통 문서가 수기 목록 대조를 통과한다.
+CURATED_LOW_BACK = KDCA_VIEW.format(3796)
+# 목록 밖 문서 — 실제 GET(제목·본문이 글 주제와 일치)으로만 통과한다.
+UNLISTED_HEMORRHOID = KDCA_VIEW.format(9001)
+# 글 제목 → 작가가 인용했고 수기 목록 대조를 통과하는 수기 목록 문서.
+CITED_CURATED = {
+    COST_TITLE: (CURATED_HEMORRHOID_KDCA, "치핵"),
+    CHOICE_TITLE: (CURATED_LOW_BACK, "요통"),
+}
 _SEVEN_FORTY_FIVE = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
 
 
@@ -463,20 +489,278 @@ def test_medical_post_mentioning_cost_in_its_body_still_heals(monkeypatch):
     assert item.status is tasks.ContentStatus.PUBLISHED
 
 
-def test_cost_post_with_a_passing_reference_keeps_it_and_publishes(monkeypatch):
+def test_cost_post_with_a_passing_unlisted_reference_keeps_it_and_publishes(monkeypatch):
+    """목록 밖 문서가 실제 GET으로 통과했으면 남는다 — 같이 인용한 수기 목록 문서만 빠진다."""
+
     item, _db, _effects = _publish_setup(
         monkeypatch,
-        references=[{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}],
+        references=[
+            {"title": "치핵", "url": CURATED_HEMORRHOID_KDCA},
+            {"title": "치질", "url": UNLISTED_HEMORRHOID},
+        ],
         checks=None,
         title=COST_TITLE,
     )
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(UNLISTED_HEMORRHOID, "치질 | 국가건강정보포털 | 질병관리청", topic="치질")
 
-    tasks._auto_publish_one(
-        item.id, reference_verifier=ReferenceVerifier(_hemorrhoid_fetcher(), domain_spacing=0)
+    tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert item.references_list == [{"title": "치질", "url": UNLISTED_HEMORRHOID}]
+    assert fetcher.calls == [UNLISTED_HEMORRHOID]  # 수기 목록 문서는 열지도 않고 뺐다
+    assert item.status is tasks.ContentStatus.PUBLISHED
+
+
+# ── (vi) 작가가 인용해 통과한 수기 목록 문서도 발행 전 진료비·병원 선택 글에는 남지 않는다 ──────
+#
+# 2026-09-29 실장 결정. 수기 목록 문서의 통과는 GET으로 본문을 확인한 것이 아니라 치유와 같은
+# 카탈로그 키워드 대조다('도수치료 비용' 글이 프롬프트 힌트의 요통 문서를 인용해 통과했다).
+# 각 테스트는 규칙을 끈 대조군으로 "그 문서가 실제로 통과한다"는 전제를 함께 확인한다.
+
+
+def _curated_rule_off(monkeypatch):
+    monkeypatch.setattr(reference_publication, "is_curated_source_url", lambda _url: False)
+    monkeypatch.setattr(content_engine, "is_curated_source_url", lambda _url: False)
+
+
+def _cited_curated_setup(monkeypatch, title, *, fresh):
+    url, topic = CITED_CURATED[title]
+    assert url in CURATED_SOURCE_URLS
+    item, _db, effects = _publish_setup(
+        monkeypatch,
+        references=[{"title": topic, "url": url}],
+        checks=[_pass(url)] if fresh else None,
+        title=title,
+    )
+    _stamp(item)
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    return item, effects, fetcher, url
+
+
+@pytest.mark.parametrize("fresh", [False, True], ids=["unchecked", "fresh_pass"])
+@pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
+def test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes(
+    monkeypatch, title, fresh
+):
+    item, effects, fetcher, _url = _cited_curated_setup(monkeypatch, title, fresh=fresh)
+    _freeze(monkeypatch, _kst(2026, 6, 10, 8, 0))
+
+    payload = tasks._auto_publish_one(
+        item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
     )
 
-    assert [ref["url"] for ref in item.references_list] == [CURATED_HEMORRHOID_KDCA]
+    assert payload["kind"] == "blocked"
+    assert payload["code"] == "MISSING_REFERENCES"
+    assert item.references_list == []  # 빼고, 수기 목록으로 다시 채우지도 않는다
+    assert fetcher.calls == []  # 뺄 문서도, 치유 후보도 열지 않는다
+    assert item.status is tasks.ContentStatus.DRAFT
+    assert effects == {"revalidate": [], "indexnow": []}
+    attempt = item.essence_check_summary["generation_attempt"]
+    assert attempt["reason"] == "MISSING_REFERENCES"
+    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert attempt[OPERATOR_DECIDES_KEY] is True
+    assert attempt["next_retry_at"] is None
+
+
+@pytest.mark.parametrize("fresh", [False, True], ids=["unchecked", "fresh_pass"])
+@pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
+def test_the_cited_curated_document_would_pass_without_the_rule(monkeypatch, title, fresh):
+    """대조군 — 규칙을 끄면 같은 문서가 통과해 그대로 발행된다(위 테스트의 전제)."""
+
+    item, _effects, fetcher, url = _cited_curated_setup(monkeypatch, title, fresh=fresh)
+    _curated_rule_off(monkeypatch)
+    _freeze(monkeypatch, _kst(2026, 6, 10, 8, 0))
+
+    tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert [ref["url"] for ref in item.references_list] == [url]
     assert item.status is tasks.ContentStatus.PUBLISHED
+
+
+@pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
+async def test_publication_refresh_drops_the_cited_curated_document_without_a_heal(title):
+    url, topic = CITED_CURATED[title]
+    item = _published(title, tasks.ContentStatus.DRAFT)
+    item.references_list = [{"title": topic, "url": url}]
+    fetcher = _hemorrhoid_fetcher()
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.references == [] and refresh.references_changed
+    assert refresh.operator_decides and not refresh.healed and not refresh.deferred
+    assert fetcher.calls == []
+    assert apply_publication_reference_refresh(item, refresh)
+    assert (item.references_list, item.content_revision) == ([], 8)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        CURATED_HEMORRHOID_KDCA.replace("https://", "http://"),
+        CURATED_HEMORRHOID_KDCA.replace("https://", "https://www."),
+        CURATED_HEMORRHOID_AMC.replace("https://www.", "https://"),
+    ],
+    ids=["http", "www", "no_www"],
+)
+async def test_a_curated_document_is_dropped_in_any_spelling(spelling):
+    """표기 차이(scheme·www)는 같은 수기 목록 문서다 — 목록 밖 URL로 GET해 남기지 않는다."""
+
+    assert spelling not in CURATED_SOURCE_URLS
+    item = _published(COST_TITLE, tasks.ContentStatus.READY)
+    item.references_list = [{"title": "치핵", "url": spelling}]
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(spelling, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.references == [] and refresh.operator_decides
+    assert fetcher.calls == []
+
+
+@pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
+async def test_published_post_with_a_curated_document_stays_byte_identical(monkeypatch, title):
+    """공개된 글은 규칙 밖이다 — 신선한 통과든 오래된 기록이든 무엇도 바뀌지 않는다."""
+
+    url, topic = CITED_CURATED[title]
+    item = _published(title, tasks.ContentStatus.PUBLISHED)
+    item.references_list = [{"title": topic, "url": url}]
+    item.reference_checks = [_pass(url)]
+    _stamp(item)
+    before = json.dumps(vars(copy.deepcopy(item)), default=str, sort_keys=True)
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+
+    assert publication_references_settled(item)  # 발행 경로가 재검증하지 않는다
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+    assert refresh.already_current and refresh.references == item.references_list
+    assert not refresh.references_changed and not refresh.operator_decides
+    assert fetcher.calls == []
+    assert json.dumps(vars(item), default=str, sort_keys=True) == before
+
+    # 기록이 없어도(재검증은 돈다) 수기 목록 문서를 빼는 결과를 만들지 않는다.
+    item.reference_checks = None
+    stale = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+    assert stale.references == item.references_list and not stale.references_changed
+
+
+@pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
+def test_published_cost_post_with_a_curated_document_is_untouched_by_both_gates(
+    monkeypatch, title
+):
+    url, topic = CITED_CURATED[title]
+    item, _db, effects = _publish_setup(
+        monkeypatch, references=[{"title": topic, "url": url}], checks=None, title=title
+    )
+    item.status = tasks.ContentStatus.PUBLISHED
+    item.content_revision = 7
+    incidents = _gate_setup(monkeypatch, item)
+    before = json.dumps(vars(copy.deepcopy(item)), default=str, sort_keys=True)
+    fetcher = _hemorrhoid_fetcher()
+
+    assert tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher)) is None
+    with override_reference_fetcher(fetcher):
+        tasks._page_morning_stored_publication_gates(_GateDB(item), now_kst=_SEVEN_FORTY_FIVE)
+
+    assert json.dumps(vars(item), default=str, sort_keys=True) == before
+    assert incidents == [] and effects == {"revalidate": [], "indexnow": []}
+
+
+# 생성 경로의 제목 — 고혈압 브리프(의료 주제 NOTICE, 참고자료 필수)에 맞춘다.
+GENERATION_COST_TITLE = "마포 고혈압 진료비 — 검사·약값과 건강보험 본인부담"
+GENERATION_CHOICE_TITLE = "마포 내과 병원 추천 — 병원 선택 기준과 진료 흐름"
+
+
+def _curated_generation(monkeypatch, title):
+    """작가가 수기 목록 문서 하나만 인용한 응답(그 문서는 수기 목록 대조를 통과한다)."""
+
+    url, topic = (
+        (CURATED_HYPERTENSION, "고혈압") if title == GENERATION_COST_TITLE else CITED_CURATED[CHOICE_TITLE]
+    )
+    payload = _notice_payload([{"title": topic, "url": url}])
+    payload["title"] = title
+    calls = _stub_writer(monkeypatch, payload)
+    fetcher = PageFetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    return calls, fetcher, url
+
+
+@pytest.mark.parametrize(
+    "title", [GENERATION_COST_TITLE, GENERATION_CHOICE_TITLE], ids=["cost", "provider_choice"]
+)
+async def test_generation_does_not_accept_a_cited_curated_document(monkeypatch, title):
+    _calls, fetcher, url = _curated_generation(monkeypatch, title)
+
+    with override_reference_fetcher(fetcher):
+        with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
+            await content_engine.generate_content(
+                _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
+            )
+
+    assert raised.value.result["references"] == []
+    assert fetcher.calls == []  # 인용한 수기 목록 문서도, 치유 후보도 열지 않는다
+    assert "수기 목록 문서를 쓰지 않음" in str(raised.value)  # 작가에게 이유가 간다
+    # 쓰이지 않은 슬롯이면 이 거절이 곧바로 사람의 결정이 된다(작가가 만든 제목으로 판정).
+    slot = _unwritten_slot()
+    assert tasks._generation_left_references_to_operator(raised.value, slot)
+
+
+@pytest.mark.parametrize(
+    "title", [GENERATION_COST_TITLE, GENERATION_CHOICE_TITLE], ids=["cost", "provider_choice"]
+)
+async def test_generation_would_keep_the_cited_curated_document_without_the_rule(
+    monkeypatch, title
+):
+    """대조군 — 규칙을 끄면 그 문서가 검증을 통과해 저장된다(위 테스트의 전제)."""
+
+    _calls, fetcher, url = _curated_generation(monkeypatch, title)
+    _curated_rule_off(monkeypatch)
+
+    with override_reference_fetcher(fetcher):
+        result = await content_engine.generate_content(
+            _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
+        )
+
+    assert [ref["url"] for ref in result["references"]] == [url]
+    assert result["reference_checks"][-1]["reason"] == "curated_verified"
+
+
+@pytest.mark.parametrize(
+    "title", [GENERATION_COST_TITLE, GENERATION_CHOICE_TITLE], ids=["cost", "provider_choice"]
+)
+def test_unwritten_slot_whose_writer_cited_a_curated_document_goes_to_the_operator(
+    monkeypatch, title
+):
+    """생성 경로 끝까지: 작가가 인용한 수기 목록 문서는 저장되지 않고 슬롯은 사람의 결정이 된다."""
+
+    _calls, fetcher, _url = _curated_generation(monkeypatch, title)
+    with override_reference_fetcher(fetcher):
+        with pytest.raises(content_engine.MissingCitableReferencesError) as raised:
+            asyncio.run(
+                content_engine.generate_content(
+                    _mapo_hospital(), ContentType.NOTICE, content_brief=_brief_hypertension()
+                )
+            )
+    slot = _unwritten_slot()
+    philosophy, writer_calls, incidents = _refless_generation(monkeypatch, slot, title)
+
+    async def real_rejection(*, item, **_kwargs):
+        writer_calls.append(item.id)
+        raise raised.value
+
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", real_rejection)
+    state, code, message = swap_tests._generate_once(monkeypatch, slot, _LADDER_SWEEPS[0])
+
+    assert (state, code, message) == (
+        tasks.GenerationItemState.FAILED,
+        "MISSING_REFERENCES",
+        REFERENCES_OPERATOR_DECIDES_CAUSE,
+    )
+    assert slot.body is None and slot.title is None
+    assert not getattr(slot, "references_list", None)  # 수기 목록 문서를 저장하지 않았다
+    attempt = _attempt_of(slot)
+    assert attempt[OPERATOR_DECIDES_KEY] is True and attempt["next_retry_at"] is None
+    assert [call["code"] for call in incidents] == ["MISSING_REFERENCES"]
 
 
 # ── 쓰이지 않은 슬롯: 생성이 통과한 참고자료를 못 만들면 곧바로 사람의 결정 ──────────────

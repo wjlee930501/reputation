@@ -646,6 +646,17 @@ def reference_exclusion_reason(url: object) -> str | None:
     return _EXCLUDED_REFERENCE_REASONS.get(normalize_reference_url(url))
 
 
+_CURATED_SOURCE_KEYS: frozenset[str] = frozenset(
+    normalize_reference_url(url) for url in CURATED_SOURCE_URLS
+)
+
+
+def is_curated_source_url(url: object) -> bool:
+    """수기 목록 문서인가 — 표기 차이(scheme·www·끝 슬래시·질의 순서)는 같은 문서로 본다."""
+    key = normalize_reference_url(url)
+    return bool(key) and key in _CURATED_SOURCE_KEYS
+
+
 _INSTITUTION_TITLE_TOKENS: frozenset[str] = frozenset(
     re.sub(r"[^0-9a-z가-힣]+", "", part.lower())
     for name in _DOMAIN_TO_INSTITUTION_NAME.values()

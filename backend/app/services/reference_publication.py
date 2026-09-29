@@ -16,7 +16,10 @@
 - 진료비·병원 선택 글(`reference_requirement.references_left_to_operator`)은 수기 목록에서 채우지
   않는다 — 그 주제의 공신력 있는 문서가 본질적으로 없어 채우면 가짜 근거가 된다. 전부 빠지면
   `operator_decides`로 비워 `MISSING_REFERENCES` 보류로 보내고, 그 보류는 자동 본문 수리가 아니라
-  사람의 결정(`OPERATOR_REQUIRED`)이다. 통과한 참고자료는 그대로 남는다.
+  사람의 결정(`OPERATOR_REQUIRED`)이다. 수기 목록 문서(`is_curated_source_url`)는 작가가 직접
+  인용해 통과했어도 발행 전(DRAFT·READY) 글에서 뺀다 — 그 통과는 GET이 아니라 치유와 같은 카탈로그
+  키워드 대조라 채우기와 다르지 않다(2026-09-29 실장 결정). 목록 밖 참고자료는 실제 GET으로
+  통과했으면 그대로 남는다. 공개된 글의 참고자료는 그대로다(아래 불변).
 - 기관 사이트 장애(연결 오류·시간 초과·프로토콜·5xx·408/429)는 검증기 쪽에서 같은 URL·같은
   주제의 직전 통과 판정을 재사용한다. 재사용할 통과가 없는 목록 밖 URL이면 그 글을 **미룬다**
   (`deferred`, `site_unreachable_urls`) — 제거·치유·`MISSING_REFERENCES`·인시던트가 없고 다음
@@ -62,6 +65,7 @@ from app.services.reference_verification import (
     split_reference_entries,
     topic_fingerprint,
 )
+from app.utils.authority_sources import is_curated_source_url
 
 # 08:00 발행 요약에 실리는, 기관 사이트 장애로 발행을 미룬 글의 코드와 원인 문구.
 # '참고 자료 확보 실패'가 아니다 — 문서가 없다는 증거가 아니라 사이트가 열리지 않았다.
@@ -154,6 +158,22 @@ def publication_references_missing(item: object) -> bool:
     return not entries
 
 
+def _strips_curated_references(item: object) -> bool:
+    """발행 전 진료비·병원 선택 글인가 — 수기 목록 문서를 남기지 않는다.
+
+    공개·보존된 글(DRAFT·READY 밖)은 거짓이다. 그 참고자료는 어떤 자동 경로도 바꾸지 않는다.
+    """
+
+    status = _status_value(item)
+    if status is not None and status not in _REFERENCE_WRITABLE_STATUSES:
+        return False
+    return references_left_to_operator(item)
+
+
+def _is_curated_entry(entry: Mapping[str, Any]) -> bool:
+    return is_curated_source_url(entry.get("url"))
+
+
 def publication_references_settled(item: object, *, now: datetime | None = None) -> bool:
     """다시 검증할 일이 없는가 — 모든 항목이 신선한 통과이고, 필수인 글이 비어 있지 않다.
 
@@ -162,9 +182,13 @@ def publication_references_settled(item: object, *, now: datetime | None = None)
     필수로 보지 않으면 0개로 공개된다(2af00d02).
     """
 
-    return publication_references_current(item, now=now) and not publication_references_missing(
-        item
-    )
+    if not publication_references_current(item, now=now) or publication_references_missing(item):
+        return False
+    if _strips_curated_references(item):
+        entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
+        # 발행 전 진료비·병원 선택 글의 수기 목록 문서는 통과 기록이 있어도 빼야 한다.
+        return not any(_is_curated_entry(entry) for entry in entries)
+    return True
 
 
 def _has_generated_text(item: object) -> bool:
@@ -192,11 +216,16 @@ async def refresh_publication_references(
     previous_checks = getattr(item, "reference_checks", None)
     topic_terms = item_topic_terms(item)
     required = references_required(item)
+    # 발행 전 진료비·병원 선택 글: 작가가 인용해 통과한 수기 목록 문서도 남기지 않는다(GET 없이 뺀다).
+    strip_curated = _strips_curated_references(item) and any(
+        _is_curated_entry(entry) for entry in references
+    )
     if (
         reference_gate_status(
             raw_references, previous_checks, topic_terms=topic_terms, now=observed
         ).current
         and not (required and not references)
+        and not strip_curated
     ):
         return PublicationReferenceRefresh(
             snapshot=snapshot,
@@ -213,7 +242,7 @@ async def refresh_publication_references(
             checks=merge_reference_checks(previous_checks),
         )
     outcome = await verifier.verify(
-        references,
+        [entry for entry in references if not (strip_curated and _is_curated_entry(entry))],
         topic_terms=topic_terms,
         previous_checks=previous_checks,
         reuse_fresh_checks=True,

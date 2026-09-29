@@ -48,6 +48,7 @@ from app.utils.authority_sources import (
     infer_source_type,
     institution_label_for_url,
     is_citable_reference_url,
+    is_curated_source_url,
     render_source_hint_block,
 )
 from app.utils.medical_filter import (
@@ -1884,6 +1885,7 @@ def _validate_geo(
 # 참고자료가 단계별로 제거되는 사유. 재작성 지적에 그대로 실린다.
 # 이후 단계(실제 문서 검증)의 사유는 `reference_verification.REASON_LABELS`가 가진다.
 _REFERENCE_DROP_NOT_CITABLE = "화이트리스트 밖이거나 문서 URL이 아님"
+_REFERENCE_DROP_NO_SOURCE_TOPIC = "진료비·병원 선택 글에는 수기 목록 문서를 쓰지 않음"
 
 # 지적 한 줄은 `_validator_remediation_findings`에서 240자로 잘린다. 핵심 문장이
 # 잘려 나가지 않도록 제외 목록의 개수와 호스트 길이를 여기서 묶는다.
@@ -1986,6 +1988,9 @@ async def _verify_generated_references(
     모델이 붙인 제목(라벨)은 판정에 쓰지 않는다. 전부 빠지고 참고자료가 필수인 유형이면
     이 글의 주제로 채점한 수기 목록에서 채우고, 그 후보도 같은 검증을 거친다. 그래도 없으면
     GEO 게이트가 MissingCitableReferencesError로 거절한다(지어내지 않는다).
+    진료비·병원 선택 글(필수 + `topic_without_authoritative_source`)은 작가가 인용한 수기 목록
+    문서도 받지 않는다 — 그 통과는 치유와 같은 카탈로그 키워드 대조다(2026-09-29 실장 결정).
+    목록 밖 URL은 같은 GET 검증을 거쳐 남는다.
     반환값은 제거된 항목의 '호스트(사유)' — 재작성 지적에 실린다.
     """
 
@@ -1993,11 +1998,21 @@ async def _verify_generated_references(
     verifier = ReferenceVerifier(max_fetches=REFERENCE_GENERATION_MAX_FETCHES)
     checks: list[dict] = []
     notes: list[str] = []
+    if result["references"] and required and topic_without_authoritative_source(
+        result.get("title")
+    ):
+        cited = result["references"]
+        result["references"] = [
+            reference for reference in cited if not is_curated_source_url(reference.get("url"))
+        ]
+        notes = _reference_drop_notes(
+            cited, result["references"], _REFERENCE_DROP_NO_SOURCE_TOPIC
+        )
     if result["references"]:
         outcome = await verifier.verify(result["references"], topic_terms=topic_terms)
         result["references"] = outcome.kept
         checks.extend(outcome.checks)
-        notes = drop_notes(outcome.failed_checks(), host_chars=_REFERENCE_DROP_HOST_CHARS)
+        notes += drop_notes(outcome.failed_checks(), host_chars=_REFERENCE_DROP_HOST_CHARS)
     result["reference_checks"] = merge_reference_checks(checks)
     if not result["references"] and required:
         candidates = _topic_aligned_curated_sources(content_brief, result)

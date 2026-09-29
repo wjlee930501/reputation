@@ -813,10 +813,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "P3 필수 글이 비어 있으면 재검증·치유 대상(settled) — 치유가 보류보다 먼저",
         f"{RP}:publication_references_settled",
         RP,
-        "    return publication_references_current(item, now=now) and not publication_references_missing(\n"
-        "        item\n"
-        "    )",
-        "    return publication_references_current(item, now=now)",
+        "    if not publication_references_current(item, now=now) or publication_references_missing(item):\n",
+        "    if not publication_references_current(item, now=now):\n",
         (
             f"{T_REQ}::test_medical_notice_with_no_references_is_healed_from_the_curated_list_first",
             f"{T_REQ}::test_seven_forty_five_heals_an_empty_medical_notice_before_paging",
@@ -1405,6 +1403,72 @@ MUTANTS: tuple[Mutant, ...] = (
         "    if result and topic_without_authoritative_source(",
         "    if False and topic_without_authoritative_source(",
         (f"{T_OPD}::test_generation_heal_never_fills_a_cost_or_choice_slot",),
+    ),
+    Mutant(
+        "5 발행 재검증 — 발행 전 진료비·병원 선택 글의 수기 목록 문서는 통과해도 뺀다",
+        f"{RP}:refresh_publication_references",
+        RP,
+        "    strip_curated = _strips_curated_references(item) and any(",
+        "    strip_curated = False and any(",
+        (
+            f"{T_OPD}::test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes",
+            f"{T_OPD}::test_publication_refresh_drops_the_cited_curated_document_without_a_heal",
+        ),
+    ),
+    Mutant(
+        "5 settled — 신선한 통과 기록이 있어도 수기 목록 문서가 남은 예정 글은 재검증 대상",
+        f"{RP}:publication_references_settled",
+        RP,
+        "        return not any(_is_curated_entry(entry) for entry in entries)",
+        "        return True",
+        (f"{T_OPD}::test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes",),
+    ),
+    Mutant(
+        "5 재검증의 '이미 current' 단락이 수기 목록 문서 빼기를 건너뛰지 않음",
+        f"{RP}:refresh_publication_references",
+        RP,
+        "        and not (required and not references)\n        and not strip_curated\n",
+        "        and not (required and not references)\n",
+        (f"{T_OPD}::test_scheduled_post_drops_a_cited_curated_document_even_when_it_passes",),
+    ),
+    Mutant(
+        "5 공개된 글은 규칙 밖 — DRAFT·READY 밖이면 수기 목록 문서를 빼지 않는다",
+        f"{RP}:_strips_curated_references",
+        RP,
+        "    if status is not None and status not in _REFERENCE_WRITABLE_STATUSES:\n"
+        "        return False\n"
+        "    return references_left_to_operator(item)",
+        "    return references_left_to_operator(item)",
+        (f"{T_OPD}::test_published_post_with_a_curated_document_stays_byte_identical",),
+    ),
+    Mutant(
+        "5 수기 목록 판정은 정규화한 주소(scheme·www 표기 차이도 같은 문서)",
+        f"{AS}:is_curated_source_url",
+        AS,
+        "    return bool(key) and key in _CURATED_SOURCE_KEYS",
+        "    return str(url or \"\").strip() in CURATED_SOURCE_URLS",
+        (f"{T_OPD}::test_a_curated_document_is_dropped_in_any_spelling",),
+    ),
+    Mutant(
+        "5 생성 — 진료비·병원 선택 제목이면 작가가 인용한 수기 목록 문서를 받지 않는다",
+        f"{CE}:_verify_generated_references",
+        CE,
+        "    if result[\"references\"] and required and topic_without_authoritative_source(",
+        "    if False and topic_without_authoritative_source(",
+        (
+            f"{T_OPD}::test_generation_does_not_accept_a_cited_curated_document",
+            f"{T_OPD}::test_unwritten_slot_whose_writer_cited_a_curated_document_goes_to_the_operator",
+        ),
+    ),
+    Mutant(
+        "5 생성 — 뺀 수기 목록 문서의 사유가 재작성 지적에 실린다",
+        f"{CE}:_verify_generated_references",
+        CE,
+        "        notes = _reference_drop_notes(\n"
+        "            cited, result[\"references\"], _REFERENCE_DROP_NO_SOURCE_TOPIC\n"
+        "        )",
+        "        notes = []",
+        (f"{T_OPD}::test_generation_does_not_accept_a_cited_curated_document",),
     ),
 )
 
