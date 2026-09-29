@@ -447,6 +447,7 @@ from app.workers.generation_retry_policy import (
     environment_attempt_period,
     has_model_declared_hard_finding,
     next_recovery_deadline,
+    recovery_is_abandoned,
     repair_session_is_available,
     retry_class_for,
     retry_is_due,
@@ -971,6 +972,9 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     `_IMAGE_FAILURE_REASONS` 밖으로 나가 `_image_reuse_is_due`가 거짓이 되므로, 예산
     소진 뒤 같은 병원의 인증 이미지를 빌리는 계약 자체가 실행되지 않는다. 본문이 멀쩡한
     슬롯이 매일 이미지를 다시 사고 매일 아침 기록을 잃는 조용한 루프가 그것이다.
+
+    빈 슬롯의 증상(CONTENT_NOT_GENERATED)도 같다. 자동 재시도가 남은 기록을 대신 쓰면
+    OPERATOR_REQUIRED·기한 없음으로 굳어 어떤 스윕도 그 슬롯을 다시 쓰지 않는다.
     """
 
     stored_reason = _stored_generation_attempt(item).get("reason")
@@ -982,6 +986,21 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 주제 교체 직후의 빈 슬롯도 증상이다. 교체 기록(SAMPLE_RECOVERABLE·다음 시도 시각)을
         # OPERATOR_REQUIRED로 덮으면 새 주제를 어떤 스윕도 쓰지 않고, 교체 이력이 있어 다시
         # 교체되지도 않는다. 보고 코드(CONTENT_NOT_GENERATED)는 호출부에서 그대로다.
+        return
+    stored = _stored_generation_attempt(item)
+    if (
+        code == "CONTENT_NOT_GENERATED"
+        and stored.get("retry_class")
+        in (
+            GenerationRetryClass.ENVIRONMENT_RECOVERABLE,
+            GenerationRetryClass.SAMPLE_RECOVERABLE,
+        )
+        and not recovery_is_abandoned(stored)
+    ):
+        # 스윕이 아직 소유한 실패(PROVIDER_TIMEOUT 등)도 같다. 덮으면 로더가 다시 집지
+        # 않고, CONTENT_NOT_GENERATED는 교체 후보 코드가 아니라 교체 이력과 무관하게 영영
+        # 멈춘다. 종착으로 전이했거나 예산이 끝나 어떤 스윕도 집지 않는 기록은 종전처럼
+        # 게이트 코드가 대신한다(`scheduled_recovery_owns_blocker`와 같은 소유 판정).
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
