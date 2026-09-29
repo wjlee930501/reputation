@@ -899,7 +899,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "P3 제외 목록 끄기(전체)",
         f"{AS}:reference_exclusion_reason",
         AS,
-        "    return _EXCLUDED_REFERENCE_REASONS.get(normalize_reference_url(url))",
+        "    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS)\n"
+        "    return str(reasons[0]) if reasons else None",
         "    return None",
         (
             f"{T_EXCL}::test_exclusion_list_row_is_blocked",
@@ -976,28 +977,39 @@ MUTANTS: tuple[Mutant, ...] = (
         (f"{T_EXCL}::test_catalog_selection_skips_an_excluded_entry",),
     ),
     Mutant(
-        "P3 정규화 비교 — www 무시",
-        f"{AS}:normalize_reference_url",
+        "P3 문서 판정 — www 무시(제외 목록)",
+        f"{AS}:_document_location",
         AS,
-        '    host = (parsed.hostname or "").lower()\n    if host.startswith("www."):\n        host = host[4:]\n',
-        '    host = (parsed.hostname or "").lower()\n',
+        '    host = (parsed.hostname or "").lower().rstrip(".")\n    if host.startswith("www."):\n        host = host[4:]\n',
+        '    host = (parsed.hostname or "").lower().rstrip(".")\n',
         (f"{T_EXCL}::test_exclusion_matches_by_normalized_url",),
     ),
     Mutant(
-        "P3 정규화 비교 — 질의 순서 무시",
-        f"{AS}:normalize_reference_url",
+        "4차 제외 목록이 목록 문서와 같은 판정을 쓴다(옛 정규화 비교로 되돌리기)",
+        f"{AS}:reference_exclusion_reason",
         AS,
-        "    query = urlencode(sorted(parse_qsl(parsed.query, keep_blank_values=True)))\n",
-        "    query = parsed.query\n",
-        (f"{T_EXCL}::test_normalization_ignores_query_order_scheme_www_and_trailing_slash",),
+        "    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS)\n",
+        "    def _norm(value):\n"
+        "        parsed = urlparse(str(value or '').strip())\n"
+        "        host = (parsed.hostname or '').lower().removeprefix('www.')\n"
+        "        return (host, parsed.path.rstrip('/'), sorted(parse_qsl(parsed.query)))\n"
+        "    reasons = [e['reason'] for e in REFERENCE_URL_EXCLUSIONS if _norm(e['url']) == _norm(url)]\n",
+        (
+            f"{T_ALIAS}::test_the_exclusion_list_uses_the_same_document_matcher",
+            f"{T_EXCL}::test_normalization_ignores_query_order_scheme_www_and_trailing_slash",
+        ),
     ),
     Mutant(
-        "P3 정규화 비교 — 끝 슬래시 무시",
-        f"{AS}:normalize_reference_url",
+        "P3·4차 r05 문서 판정 — 끝 슬래시 무시(목록 URL에 있거나 없거나, 리다이렉트 없이)",
+        f"{AS}:_document_location",
         AS,
-        '    path = parsed.path.rstrip("/")\n',
-        "    path = parsed.path\n",
-        (f"{T_EXCL}::test_exclusion_matches_by_normalized_url",),
+        '    path = re.sub(r"/{2,}", "/", unquote(parsed.path)).rstrip("/")\n',
+        '    path = re.sub(r"/{2,}", "/", unquote(parsed.path))\n',
+        (
+            f"{T_EXCL}::test_exclusion_matches_by_normalized_url",
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+        ),
     ),
     Mutant(
         "P3 수기 목록에 제외 주소가 없음(카탈로그 검사)",
@@ -1100,14 +1112,15 @@ MUTANTS: tuple[Mutant, ...] = (
         (f"{T_RV}::test_malformed_port_url_is_rejected_without_crashing_or_fetching",),
     ),
     Mutant(
-        "P1 정규화가 깨진 포트로 크래시하지 않음(07:45 루프 계속)",
-        f"{AS}:normalize_reference_url",
+        "P1 문서 판정이 깨진 포트로 크래시하지 않음(07:45 루프 계속)",
+        f"{AS}:_document_location",
         AS,
         "    try:\n"
+        "        parsed = urlparse(text)\n"
         "        port = parsed.port\n"
         "    except ValueError:\n"
-        "        # 깨진 포트 — 화이트리스트 밖이라 인용되지 않는다. 비교 키는 원문 그대로 둔다.\n"
-        "        return text\n",
+        "        return None  # 깨진 포트 — 화이트리스트 밖이라 인용되지 않는다\n",
+        "    parsed = urlparse(text)\n"
         "    port = parsed.port\n",
         (
             f"{T_RV}::test_malformed_port_url_is_rejected_without_crashing_or_fetching",
@@ -1461,7 +1474,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "5 수기 목록 판정은 정규화한 주소(scheme·www 표기 차이도 같은 문서)",
         f"{AS}:is_curated_source_url",
         AS,
-        "    return not _CURATED_SOURCE_KEYS.isdisjoint(curated_document_keys(url))",
+        "    return bool(_matching_documents(url, _CURATED_DOCUMENTS))",
         "    return str(url or \"\").strip() in CURATED_SOURCE_URLS",
         (
             f"{T_OPD}::test_a_curated_document_is_dropped_in_any_spelling",
@@ -1614,19 +1627,16 @@ MUTANTS: tuple[Mutant, ...] = (
     ),
     # ── 리뷰 3차 F1: 수기 목록 문서의 별칭·리다이렉트, F5: 운영자 문구, F6: q04 ──────────
     Mutant(
-        "8a 동일성 키 — 문서 id는 정수로 비교(cntnts_sn=03796은 3796)",
+        "8a 문서 id는 정수로 비교 — 앞 0이 아무리 많아도(정수 변환 한도 전에 정리)",
         f"{AS}:_document_id_value",
         AS,
-        "    try:\n        return str(int(text))\n    except ValueError:\n        return text",
-        "    return text",
-        (
-            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
-            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
-        ),
+        '    digits = "".join(str(unicodedata.decimal(char)) for char in match.group(1)).lstrip("0")\n',
+        "    digits = match.group(1)\n",
+        (f"{T_ALIAS}::test_default_ports_and_decorations_are_the_same_document",),
     ),
     Mutant(
-        "8a 동일성 키 — 기본 포트(80·443)는 같은 문서",
-        f"{AS}:curated_document_keys",
+        "8a 문서 판정 — 기본 포트(80·443)는 같은 문서",
+        f"{AS}:_document_location",
         AS,
         "    if port and port not in _DEFAULT_PORTS:",
         "    if port:",
@@ -1636,31 +1646,40 @@ MUTANTS: tuple[Mutant, ...] = (
         ),
     ),
     Mutant(
-        "8a 동일성 키 — 문서 id 밖의 질의(utm_source·from …)는 무시",
-        f"{AS}:curated_document_keys",
+        "4차 (b)-(d) 항목이 쓰지 않는 id 이름(contentId·SEQ·thtimt_cntnts_sn)은 보지 않는다",
+        f"{AS}:_matching_documents",
         AS,
-        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n",
-        "        if True:\n",
+        "        if all(number in values.get(name, ()) for name, number in ids)\n",
+        "        if all(number in values.get(name, ()) for name, number in ids)\n"
+        "        and set(values) <= {name for name, _number in ids}\n",
         (
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
             f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
         ),
     ),
     Mutant(
-        "8a 동일성 키 — 겹친 id 질의는 값마다 키(하나라도 목록 문서면 목록 문서)",
-        f"{AS}:curated_document_keys",
+        "8a 반복 id는 모든 값을 본다 — 마지막 값만 보기",
+        f"{AS}:_matching_documents",
         AS,
-        "            values.setdefault(name, set()).add(_document_id_value(value))",
-        "            values[name] = {_document_id_value(value)}",
-        (f"{T_ALIAS}::test_an_ambiguous_repeated_id_is_curated_but_never_topic_matched",),
+        "                values.setdefault(name, set()).add(number)\n",
+        "                values[name] = {number}\n",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_matches_both",
+        ),
     ),
     Mutant(
-        "8a 겹친 id로 문서가 하나로 정해지지 않으면 카탈로그 대조로 통과시키지 않는다",
+        "4차 두 목록 id가 반복된 주소는 두 항목 모두다(첫 항목만 돌려주기)",
         f"{AS}:curated_source_entries",
         AS,
-        "    if len(keys) != 1:\n        return []",
-        "    if not keys:\n        return []",
-        (f"{T_ALIAS}::test_an_ambiguous_repeated_id_is_curated_but_never_topic_matched",),
+        "    return list(_matching_documents(url, _CURATED_DOCUMENTS))",
+        "    return list(_matching_documents(url, _CURATED_DOCUMENTS))[:1]",
+        (
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_matches_both",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_two_document_url_matches_either_topic",
+        ),
     ),
     Mutant(
         "8b 검증기의 수기 판정이 동일성 키를 쓴다(원문 정확 비교로 되돌리기)",
@@ -1746,9 +1765,11 @@ MUTANTS: tuple[Mutant, ...] = (
         "8e 운영자 문구 — 없는 조작('항목 종료')을 말하지 않는다(보류 조치)",
         f"{INCIDENT}:REFERENCES_OPERATOR_DECIDES_ACTION",
         INCIDENT,
-        '    "제목·본문을 질환·검사 안내 글로 고쳐 저장합니다 — 다음 발행 확인이 검증된 문서로 참고 "',
-        '    "제목·본문을 질환·검사 안내 글로 고쳐 저장하거나 해당 항목을 종료합니다 — 다음 발행 확인이 검증된 문서로 참고 "',
-        (f"{T_COPY}::test_the_copy_names_only_the_two_real_ways_out",),
+        '    "제목·본문을 질환·검사 안내 글로 고쳐 저장합니다 — 다음 발행 확인이 검증된 문서로 참고 "\n'
+        '    "자료를 채울 수 있습니다. 병원 누리집과 검증된 문서 목록의 질환 문서는 이 글의 참고 자료가 "',
+        '    "제목·본문을 질환·검사 안내 글로 고쳐 저장하거나 해당 항목을 종료합니다 — 다음 발행 확인이 검증된 문서로 참고 "\n'
+        '    "자료를 채울 수 있습니다. 병원 누리집과 검증된 문서 목록의 질환 문서는 이 글의 참고 자료가 "',
+        (f"{T_COPY}::test_the_copy_names_only_the_real_ways_out",),
     ),
     Mutant(
         "8e 운영자 문구 — 없는 조작('항목 종료')을 말하지 않는다(PATCH 422)",
@@ -1756,13 +1777,15 @@ MUTANTS: tuple[Mutant, ...] = (
         ADMIN,
         '    "저장하거나, 그런 문서가 없으면 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요."',
         '    "저장하거나, 그런 문서가 없으면 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요. 없으면 해당 항목을 종료하세요."',
-        (f"{T_COPY}::test_the_copy_names_only_the_two_real_ways_out",),
+        (f"{T_COPY}::test_the_copy_names_only_the_real_ways_out",),
     ),
     Mutant(
         "8e 운영자 문구 — 따옴표로 이름 붙인 버튼이 콘텐츠 화면에 있다",
         f"{INCIDENT}:REFERENCES_OPERATOR_DECIDES_ACTION",
         INCIDENT,
+        'REFERENCES_OPERATOR_DECIDES_ACTION = (\n'
         '    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "',
+        'REFERENCES_OPERATOR_DECIDES_ACTION = (\n'
         '    "콘텐츠 탭에서 이 글의 “항목 정리”를 눌러 둘 중 하나를 하세요. 글의 주장을 직접 "',
         (f"{T_COPY}::test_every_quoted_control_in_the_copy_exists_on_the_content_screen",),
     ),
@@ -1773,6 +1796,109 @@ MUTANTS: tuple[Mutant, ...] = (
         '        content_brief.get("target_question"),\n',
         "",
         (f"{T_OPD}::test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief",),
+    ),
+    # ── 리뷰 4차: 남은 별칭 5종(a)-(e), 리뷰어 생존 뮤턴트 r05·r06·r20·r22, 문구, CI 가드 ──────
+    Mutant(
+        "4차 (a) id 값은 앞 정수로 읽는다(3796abc·3796%2B) — 값 전체가 정수일 때만 보기",
+        f"{AS}:_document_id_value",
+        AS,
+        "    match = _LEADING_INTEGER.match(value)\n",
+        "    match = re.fullmatch(r\"\\s*\\+?(\\d+)\\s*\", value)\n",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "4차 (e) 반복 id 상한 없음 — 정렬해 16개로 자르기",
+        f"{AS}:_matching_documents",
+        AS,
+        "    for name, value in pairs:\n"
+        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n"
+        "            number = _document_id_value(value)\n"
+        "            if number is not None:\n",
+        "    for name, value in sorted(pairs)[:16]:\n"
+        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n"
+        "            number = _document_id_value(value)\n"
+        "            if number is not None:\n",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "4차 (e) 반복 id — 첫 값만 보기",
+        f"{AS}:_matching_documents",
+        AS,
+        "                values.setdefault(name, set()).add(number)\n",
+        "                values.setdefault(name, {number})\n",
+        (f"{T_ALIAS}::test_an_alias_is_the_curated_document",),
+    ),
+    Mutant(
+        "4차 r20 반복 id — 대표 값(최솟값) 하나만 비교",
+        f"{AS}:_matching_documents",
+        AS,
+        "                values.setdefault(name, set()).add(number)\n",
+        "                values[name] = {min(values.get(name, {number}) | {number})}\n",
+        (f"{T_ALIAS}::test_an_alias_is_the_curated_document",),
+    ),
+    Mutant(
+        "4차 r06 경로의 퍼센트 인코딩은 같은 문서(unquote 끄기)",
+        f"{AS}:_document_location",
+        AS,
+        '    path = re.sub(r"/{2,}", "/", unquote(parsed.path)).rstrip("/")\n',
+        '    path = re.sub(r"/{2,}", "/", parsed.path).rstrip("/")\n',
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+        ),
+    ),
+    Mutant(
+        "4차 r22 겹친 슬래시는 같은 문서(축약 끄기)",
+        f"{AS}:_document_location",
+        AS,
+        '    path = re.sub(r"/{2,}", "/", unquote(parsed.path)).rstrip("/")\n',
+        '    path = unquote(parsed.path).rstrip("/")\n',
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_the_exclusion_list_uses_the_same_document_matcher",
+        ),
+    ),
+    Mutant(
+        "4차 F5 운영자 문구 — 없는 조작('항목 종료')을 말하지 않는다(생성 거절 조치)",
+        f"{INCIDENT}:REFERENCE_REJECTION_OPERATOR_ACTION",
+        INCIDENT,
+        '    "저장하세요. 저장한 글은 일반 글과 같이 발행 전 검사를 거칩니다. 참고 자료 없이 저장하면 "',
+        '    "저장하세요. 주제가 맞지 않으면 해당 항목을 종료하세요. 참고 자료 없이 저장하면 "',
+        (f"{T_COPY}::test_the_copy_names_only_the_real_ways_out",),
+    ),
+    Mutant(
+        "4차 F5 생성 거절 조치 — 자동 재시도를 약속하지 않는다(사람이 볼 때는 재시도가 끝났다)",
+        f"{INCIDENT}:REFERENCE_REJECTION_OPERATOR_ACTION",
+        INCIDENT,
+        '    "저장하세요. 저장한 글은 일반 글과 같이 발행 전 검사를 거칩니다. 참고 자료 없이 저장하면 "',
+        '    "저장하세요. 넣지 않아도 다음 자동 재시도가 검증된 문서를 다시 찾습니다. 참고 자료 없이 저장하면 "',
+        (f"{T_COPY}::test_the_copy_names_only_the_real_ways_out",),
+    ),
+    Mutant(
+        "4차 F5 생성 거절 조치 — 문서 없이 저장하면 본문이 다시 쓰일 수 있다고 알린다",
+        f"{INCIDENT}:REFERENCE_REJECTION_OPERATOR_ACTION",
+        INCIDENT,
+        '    "자동 복구가 참고 자료를 찾으며 본문을 다시 쓸 수 있습니다. 병원 누리집은 참고 자료가 될 수 "',
+        '    "다음 발행 확인이 참고 자료를 채울 수 있습니다. 병원 누리집은 참고 자료가 될 수 "',
+        (f"{T_COPY}::test_the_copy_names_only_the_real_ways_out",),
+    ),
+    Mutant(
+        "4차 CI에서 Admin 소스가 없으면 건너뛰지 않고 실패",
+        "tests/test_reference_operator_copy.py:require_admin_source",
+        T_COPY,
+        '    if environ.get("CI"):\n',
+        "    if False:\n",
+        (f"{T_COPY}::test_admin_source_guard_fails_under_ci_and_skips_locally",),
     ),
 )
 

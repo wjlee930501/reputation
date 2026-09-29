@@ -29,7 +29,6 @@ from app.utils.authority_sources import (
     CURATED_MEDICAL_SOURCE_PAGES,
     CURATED_SOURCE_URLS,
     REFERENCE_URL_EXCLUSIONS,
-    normalize_reference_url,
     reference_exclusion_reason,
     select_curated_authority_sources,
 )
@@ -147,13 +146,12 @@ def test_other_documents_are_not_excluded(other):
 
 
 def test_normalization_ignores_query_order_scheme_www_and_trailing_slash():
-    assert normalize_reference_url("https://www.example.go.kr/a/b.do?x=1&y=2") == (
-        normalize_reference_url("http://example.go.kr/a/b.do/?y=2&x=1#frag")
+    variant = KDCA_6263.replace("https://", "http://www.").replace(
+        "cntnts_sn=6263", "utm_source=x&cntnts_sn=6263"
     )
+    assert reference_exclusion_reason(variant.replace(".do?", ".do/?") + "#frag") is not None
     # 문서를 가르는 값은 지우지 않는다.
-    assert normalize_reference_url("https://example.go.kr/a.do?x=1") != normalize_reference_url(
-        "https://example.go.kr/a.do?x=2"
-    )
+    assert reference_exclusion_reason(variant.replace("6263", "6264")) is None
 
 
 def test_no_catalog_entry_is_excluded():
