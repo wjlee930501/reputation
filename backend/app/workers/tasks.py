@@ -5111,6 +5111,15 @@ def regenerate_content_item(self, content_id: str):
             )
             return
         try:
+            if (
+                explicit_run_context(self) is not None
+                and not (getattr(item, "body", None) or "").strip()
+                and _stored_generation_attempt(item).get("reason") == "CONTENT_NOT_GENERATED"
+            ):
+                # 07:45·08:00 게이트가 예산 없이 남긴 증상 기록(원고 없음)은 운영자가 누른
+                # “작업 다시 시도”를 같은 원인으로 건너뛰게 만든다. Admin이 만든 실행에서만
+                # 억제를 풀고 예산 계수는 남긴다. 다른 원인과 자동 경로는 그대로 억제한다.
+                _release_generation_attempt_for_repair(db, item)
             outcome, code, message = _generate_single_content_item(db, item, hospital)
         except Exception as exc:
             db.rollback()
