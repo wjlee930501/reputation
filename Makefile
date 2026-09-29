@@ -52,8 +52,11 @@ test-db-setup:
 # ./backend만 /app에 마운트하므로 리포 루트 파일(docker-compose.yml, site/, Makefile)을
 # 읽는 계약 테스트가 FileNotFoundError로 깨진다. 이 타깃보다 넓은 문제다 — 전체 스위트는
 # `make test-backend-local`(호스트 실행)이 정본이고, 이 타깃은 컨테이너 환경 자체를
-# 검증하는 용도다. 테스트 DB 변수 목록은 .github/workflows/ci.yml backend 잡과 맞춘다
-# (MIGRATION_UPGRADE_·REDELIVERY_TEST_는 전용 DB가 필요해 여기서 넘기지 않는다).
+# 검증하는 용도다. 테스트 DB 변수 목록은 .github/workflows/ci.yml backend 잡과 맞춘다.
+# MIGRATION_UPGRADE_DATABASE_URL·REDELIVERY_TEST_SYNC_DATABASE_URL은 넘기지 않는다 — 두
+# 테스트는 루프백 호스트(127.0.0.1/localhost)와 전용 DB(reputation_autonomy_migration,
+# 49152~65535 포트의 reputation_redelivery_test)를 단언하는데 컨테이너의 db:5432로는
+# 맞출 수 없다. 그래서 이 컨테이너에서 두 테스트는 skip이 아니라 변수 이름을 밝힌 실패로 끝난다.
 test: test-db-setup
 	# backend/Dockerfile builds the api image with `uv sync --locked --no-dev`, so
 	# pytest isn't installed in the running container — sync the dev extra into the
@@ -95,8 +98,8 @@ test-local: test-backend-local test-frontend copy-guard
 
 # 테스트 DB URL에는 기본값이 없다 — 아래 변수를 호스트에서 직접 export해야 하며, 빠지거나
 # 그 DB에 접속하지 못하면 그 변수를 쓰는 DB 테스트가 변수 이름과 함께 실패한다. 값·드라이버 스킴의 정본은
-# .github/workflows/ci.yml backend 잡 env다(MIGRATION_UPGRADE_·REDELIVERY_TEST_ 전용 DB
-# 변수도 거기 있다 — 이 둘은 비어 있으면 해당 테스트가 skip된다).
+# .github/workflows/ci.yml backend 잡 env다. MIGRATION_UPGRADE_DATABASE_URL·
+# REDELIVERY_TEST_SYNC_DATABASE_URL은 다른 변수와 떨어진 전용 DB를 가리켜야 한다(README 참고).
 TEST_DB_URL_VARS := INTEGRATION_DATABASE_URL TASK16_DATABASE_URL TASK22_DATABASE_URL \
     TASK24_DATABASE_URL INCIDENT_TEST_DATABASE_URL OPERATIONS_TEST_DATABASE_URL \
     OPERATION_RUN_SIGNAL_DATABASE_URL OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL \
@@ -104,7 +107,8 @@ TEST_DB_URL_VARS := INTEGRATION_DATABASE_URL TASK16_DATABASE_URL TASK22_DATABASE
     OPERATION_RUN_CONCURRENCY_DATABASE_URL NOTIFICATION_OUTBOX_DATABASE_URL \
     ONBOARDING_PROJECTOR_DATABASE_URL CONTENT_PUBLISH_RECOVERY_DATABASE_URL \
     TASK13_DATABASE_URL TASK18_DATABASE_URL TASK19_ASYNC_DATABASE_URL \
-    TASK19_SYNC_DATABASE_URL TASK20_DATABASE_URL
+    TASK19_SYNC_DATABASE_URL TASK20_DATABASE_URL \
+    MIGRATION_UPGRADE_DATABASE_URL REDELIVERY_TEST_SYNC_DATABASE_URL
 
 test-backend-local: db-budget-guard
 	@echo "backend 테스트 DB URL은 기본값 없이 export해야 한다 (ci.yml backend 잡 env 참고):"

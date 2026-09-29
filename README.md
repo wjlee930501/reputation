@@ -2,7 +2,7 @@
 
 병원의 공식 자료를 근거가 있는 콘텐츠로 바꾸고, AI 답변의 병원 언급을 측정해 콘텐츠 보완과 월간 보고로 연결하는 MotionLabs의 관리형 서비스다. 운영 목표는 **최소한의 사람 개입, 자동 복구, 필요한 알림만 전달**이다.
 
-문서 버전: **2.5** · 갱신일: **2026-09-29 (Asia/Seoul)**
+문서 버전: **2.6** · 갱신일: **2026-09-29 (Asia/Seoul)**
 소스 기준선: **`39dc1f8a98abe9193a8e2202395d2272c370fe8e`**
 구현 상태: **기준선 위 A01~A17 로컬 검증 완료. 운영 전환·배포 전**
 
@@ -56,7 +56,9 @@ Backend 통합 검증은 테스트 PostgreSQL/Redis와 PDF 의존성이 필요�
 
 - 무접미 `postgresql://`: `INTEGRATION_DATABASE_URL`, `TASK16_DATABASE_URL`, `TASK22_DATABASE_URL`, `TASK24_DATABASE_URL`
 - `postgresql+asyncpg://`: `INCIDENT_TEST_DATABASE_URL`, `OPERATION_RUN_SIGNAL_DATABASE_URL`, `OPERATION_RUNS_DATABASE_URL`, `OPERATION_RUN_TRANSITIONS_DATABASE_URL`, `OPERATION_RUN_CONCURRENCY_DATABASE_URL`, `NOTIFICATION_OUTBOX_DATABASE_URL`, `ONBOARDING_PROJECTOR_DATABASE_URL`, `CONTENT_PUBLISH_RECOVERY_DATABASE_URL`, `TASK13_DATABASE_URL`, `TASK18_DATABASE_URL`, `TASK19_ASYNC_DATABASE_URL`, `TASK20_DATABASE_URL`
-- `postgresql+psycopg2://`: `OPERATIONS_TEST_DATABASE_URL`, `OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL`, `TASK19_SYNC_DATABASE_URL`
+- `postgresql+psycopg2://`: `OPERATIONS_TEST_DATABASE_URL`, `OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL`, `TASK19_SYNC_DATABASE_URL`, `MIGRATION_UPGRADE_DATABASE_URL`, `REDELIVERY_TEST_SYNC_DATABASE_URL`
+  - `MIGRATION_UPGRADE_DATABASE_URL`은 루프백 호스트(`127.0.0.1`/`localhost`)의 `reputation_autonomy_migration` DB여야 한다. 테스트가 `public` 스키마를 지우고 다시 만들므로 다른 변수와 같은 DB를 쓰지 않는다.
+  - `REDELIVERY_TEST_SYNC_DATABASE_URL`은 `127.0.0.1`의 49152~65535 포트에 있는 `reputation_redelivery_test` DB여야 한다.
 
 ## 운영 설정·배포
 

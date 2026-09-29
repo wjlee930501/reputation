@@ -14,18 +14,19 @@ import sys
 import uuid
 from pathlib import Path
 
-import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-_URL = os.getenv("MIGRATION_UPGRADE_DATABASE_URL")
+from tests.db_env import require_db_url
+
+_URL_ENV = "MIGRATION_UPGRADE_DATABASE_URL"
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _PREVIOUS = "0080_lead_diagnosis_supersede"
 _REVISION = "0081_add_withheld_content_status"
 
-pytestmark = pytest.mark.skipif(
-    not _URL, reason="MIGRATION_UPGRADE_DATABASE_URL is not configured"
-)
+
+def _database_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def _sync_url(value: str) -> str:
@@ -40,9 +41,10 @@ def _async_url(value: str) -> str:
 
 
 def _alembic(command: str, revision: str) -> subprocess.CompletedProcess:
+    database_url = _database_url()
     env = os.environ.copy()
-    env["DATABASE_URL"] = _async_url(_URL)
-    env["SYNC_DATABASE_URL"] = _sync_url(_URL)
+    env["DATABASE_URL"] = _async_url(database_url)
+    env["SYNC_DATABASE_URL"] = _sync_url(database_url)
     return subprocess.run(
         [sys.executable, "-m", "alembic", command, revision],
         cwd=_BACKEND_ROOT,
@@ -74,8 +76,7 @@ def _version(connection) -> str:
 
 
 def test_0081_adds_withheld_and_refuses_to_downgrade_while_rows_use_it() -> None:
-    assert _URL is not None
-    parsed = make_url(_sync_url(_URL))
+    parsed = make_url(_sync_url(_database_url()))
     assert parsed.host in {"127.0.0.1", "localhost"}
     assert parsed.database == "reputation_autonomy_migration"
     engine = create_engine(parsed)

@@ -107,8 +107,9 @@ jobs:
       ADMIN_SECRET_KEY: test-admin-key
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reputation_test
       SYNC_DATABASE_URL: postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test
-      # INTEGRATION_DATABASE_URL부터 TASK24_DATABASE_URL까지의 테스트 DB URL은 필수이며
-      # 테스트 코드에 기본값(localhost 포트)이 없다. 값이 비어 있으면 해당 DB 테스트는 skip이
+      # INTEGRATION_DATABASE_URL부터 TASK24_DATABASE_URL까지, 그리고 전용 DB를 쓰는
+      # MIGRATION_UPGRADE_DATABASE_URL·REDELIVERY_TEST_SYNC_DATABASE_URL의 테스트 DB URL은
+      # 모두 필수이며 테스트 코드에 기본값(localhost 포트)이 없다. 값이 비어 있으면 해당 DB 테스트는 skip이
       # 아니라 변수 이름을 밝힌 실패로 끝나고, 값이 있는데 DB에 접속하지 못해도 skip이 아니라
       # 실패다(tests/db_env.py) — Postgres 서비스가 죽었는데 CI가 초록으로 끝나지 않게 한다.
       # 드라이버 스킴은 각 테스트가 기대하는 것(asyncpg/psycopg2/무접미)과 같아야 한다.
