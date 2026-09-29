@@ -98,6 +98,7 @@ def _candidate(paragraph: str, *extra_paragraphs: str) -> dict:
 
 def _philosophy(must_use: list[str]) -> SimpleNamespace:
     return SimpleNamespace(
+        status="APPROVED",
         must_use_messages=list(must_use),
         avoid_messages=[],
         medical_ad_risk_rules=[],

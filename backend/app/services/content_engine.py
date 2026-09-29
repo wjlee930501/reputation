@@ -34,8 +34,11 @@ from app.services.essence_engine import (
     MANDATORY_MEDICAL_AD_RISK_RULES,
     effective_safety_policy,
 )
+from app.services.must_use_exclusions import approved_must_use_messages_with_record
 from app.services.must_use_verbatim import (
+    approved_philosophy,
     missing_must_use_messages,
+    normalize_verbatim,
     required_must_use_messages,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
@@ -50,6 +53,7 @@ from app.utils.authority_sources import (
     select_curated_authority_sources,
 )
 from app.utils.medical_filter import (
+    check_forbidden,
     check_forbidden_content_fields,
     forbidden_vocabulary_for_prompt,
 )
@@ -273,7 +277,8 @@ __MANDATORY_SAFETY_RULES__
   본원 제공과 명확히 구분합니다.
 - **의료진 자격·경력·출신은 프로파일에 명시된 것만** 사용하세요. 없는 자격(예: 'OO 세부전문의')이나
   경력('OO 출신')을 지어내지 마세요. 자격명은 프로파일 표기 그대로 씁니다.
-- **must_use_messages(병원이 승인한 필수 문구)는 의역하지 말고 원문 그대로** 본문에 넣으세요.
+- **[승인된 콘텐츠 운영 기준]의 must_use_messages(병원이 승인한 필수 문구)는 의역하지 말고 원문 그대로**
+  본문에 넣으세요.
   각 문구를 한 글자도 바꾸지 말고(조사·어미·쉼표·숫자·단위 포함) 독립된 문장으로 쓰며,
   문구 앞뒤에 말을 덧붙여 한 문장으로 잇거나 따옴표로 감싸지 마세요. 설명이 더 필요하면
   다음 문장에서 이어 씁니다. 시스템이 생성 후 원문 포함 여부를 검사하며 빠지면 저장되지 않습니다.
@@ -778,7 +783,7 @@ content_principles:
 tone_guidelines:
 {_bullet_list(philosophy.tone_guidelines or [])}
 must_use_messages:
-{_bullet_list(philosophy.must_use_messages or [])}
+{_bullet_list(required_must_use_messages(philosophy))}
 avoid_messages:
 {_bullet_list(safety_policy['avoid_messages'])}
 medical_ad_risk_rules:
@@ -873,6 +878,62 @@ def _brief_safety_bullets(
     return _bullet_list(values)
 
 
+def _brief_matches_approved(
+    content_brief: dict, philosophy: HospitalContentPhilosophy | None
+) -> bool:
+    """가이드가 현재 승인본(같은 id·버전)에서 만들어졌는가."""
+
+    approved = approved_philosophy(philosophy)
+    reference = content_brief.get("philosophy_reference")
+    return (
+        approved is not None
+        and isinstance(reference, dict)
+        and reference.get("id") == str(getattr(approved, "id", ""))
+        and reference.get("version") == getattr(approved, "version", None)
+    )
+
+
+def _brief_must_use_context(
+    content_brief: dict, philosophy: HospitalContentPhilosophy | None
+) -> str:
+    """가이드의 must_use_messages를 원문 요구 목록과 섞이지 않게 렌더링한다.
+
+    원문 그대로 요구하는 필수 문구는 현재 승인본 문구뿐이다(`must_use_verbatim`) — 생성 후
+    검증도, 독립 검수의 필수 문구 면제도 그 집합만 본다. 가이드는 대부분 승인본의 사본이라
+    참조 한 줄로 대신한다. 가이드에만 있는 문구(운영자가 덧붙인 작성 방향)는 가이드가 현재
+    승인본 버전에서 만들어졌을 때만 원문 요구가 아닌 별도 줄로 남긴다 — 옛 버전 가이드의
+    문구는 승인본에서 고쳐진 문장(2cm→1cm)일 수 있다. 의료광고 금지 표현에 걸리는 문구는
+    어느 쪽에도 싣지 않는다.
+    """
+
+    lines = _SAME_AS_PHILOSOPHY if philosophy is not None else _bullet_list([])
+    brief_values = content_brief.get("must_use_messages")
+    if not isinstance(brief_values, list) or not _brief_matches_approved(
+        content_brief, philosophy
+    ):
+        return lines
+    required_keys = {
+        normalize_verbatim(message)
+        for message in (getattr(philosophy, "must_use_messages", None) or [])
+    }
+    extras: list[str] = []
+    seen: set[str] = set()
+    for value in brief_values:
+        if not isinstance(value, str) or not value.strip() or check_forbidden(value):
+            continue
+        key = normalize_verbatim(value)
+        if key in required_keys or key in seen:
+            continue
+        seen.add(key)
+        extras.append(value.strip())
+    if extras:
+        lines += (
+            "\nguide_only_messages (가이드에만 있는 작성 방향 — 원문 그대로 요구하지 않음):\n"
+            + _bullet_list(extras)
+        )
+    return lines
+
+
 def _build_content_brief_context(
     content_brief: dict | None,
     philosophy: HospitalContentPhilosophy | None = None,
@@ -880,16 +941,10 @@ def _build_content_brief_context(
     if not content_brief:
         return ""
 
-    philosophy_must_use: list[str] | None = None
     philosophy_avoid: list[str] | None = None
     philosophy_risk: list[str] | None = None
     if philosophy is not None:
         hospital_safety = _hospital_specific_safety(philosophy)
-        philosophy_must_use = [
-            str(value)
-            for value in (getattr(philosophy, "must_use_messages", None) or [])
-            if str(value).strip()
-        ]
         philosophy_avoid = hospital_safety["avoid_messages"]
         philosophy_risk = hospital_safety["medical_ad_risk_rules"]
 
@@ -899,7 +954,7 @@ target_query: {content_brief.get('target_query') or ''}
 patient_intent: {content_brief.get('patient_intent') or ''}
 treatment_narrative: {_format_treatment_narrative(content_brief.get('treatment_narrative'))}
 must_use_messages:
-{_brief_safety_bullets(content_brief.get('must_use_messages'), philosophy_must_use)}
+{_brief_must_use_context(content_brief, philosophy)}
 avoid_messages:
 {_brief_safety_bullets(content_brief.get('avoid_messages'), philosophy_avoid)}
 medical_risk_rules:
@@ -1235,7 +1290,7 @@ async def _generate_content_attempt(
         content_type,
         content_brief,
         reference_drop_notes=reference_drops,
-        must_use_messages=required_must_use_messages(philosophy, content_brief),
+        must_use_messages=required_must_use_messages(philosophy),
     )
 
 
@@ -1443,7 +1498,8 @@ async def generate_content(
     validator_findings: list[str] = []
     last_error: ValueError | None = None
     # 결정적 치유도 필수 문구 검사를 건너뛰지 않는다 — 작가 회차와 같은 집합이다.
-    must_use_messages = required_must_use_messages(philosophy, content_brief)
+    # 금지 표현 때문에 요구에서 뺀 승인본 문구는 여기서 경고·운영자 기록을 남긴다.
+    must_use_messages = await approved_must_use_messages_with_record(hospital, philosophy)
 
     for _round in range(GENERATION_REMEDIATION_ROUNDS):
         if int(attempt_context.get("http_attempt") or 0) >= GENERATION_PROVIDER_CALL_BUDGET:

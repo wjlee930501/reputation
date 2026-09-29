@@ -96,23 +96,28 @@ def test_multi_sentence_must_use_needs_every_sentence_in_order() -> None:
     assert not appears_as_standalone_sentence("첫 번째 문장입니다. 사이 문장. 두 번째 문장입니다.", message)
 
 
-def test_required_messages_merge_philosophy_and_brief_without_duplicates() -> None:
-    philosophy = SimpleNamespace(must_use_messages=[MUST_USE, " ", None, "짧은 문구입니다."])
-    brief = {"must_use_messages": [f"**{MUST_USE}**", "가이드에만 있는 문구입니다."]}
+def test_required_messages_come_only_from_the_current_approved_essence() -> None:
+    philosophy = SimpleNamespace(
+        status="APPROVED",
+        must_use_messages=[MUST_USE, " ", "짧은 문구입니다.", f"**{MUST_USE}**"],
+    )
 
-    assert required_must_use_messages(philosophy, brief) == [
-        MUST_USE,
-        "짧은 문구입니다.",
-        "가이드에만 있는 문구입니다.",
-    ]
-    assert required_must_use_messages(None, None) == []
+    assert required_must_use_messages(philosophy) == [MUST_USE, "짧은 문구입니다."]
+    # 승인본이 아니면(초안·보관·없음) 원문 요구도 검수 면제도 없다.
+    for status in ("DRAFT", "ARCHIVED", None):
+        assert required_must_use_messages(
+            SimpleNamespace(status=status, must_use_messages=[MUST_USE])
+        ) == []
+    assert required_must_use_messages(None) == []
 
 
 def test_required_messages_skip_ones_the_forbidden_expression_filter_blocks() -> None:
     """금지 표현이 든 필수 문구를 원문 그대로 요구하면 저장·발행 게이트와 영구히 충돌한다."""
 
-    philosophy = SimpleNamespace(must_use_messages=["저희 병원은 완치를 보장합니다.", MUST_USE])
-    assert required_must_use_messages(philosophy, None) == [MUST_USE]
+    philosophy = SimpleNamespace(
+        status="APPROVED", must_use_messages=["저희 병원은 완치를 보장합니다.", MUST_USE]
+    )
+    assert required_must_use_messages(philosophy) == [MUST_USE]
 
 
 def test_missing_messages_lists_only_the_absent_ones() -> None:

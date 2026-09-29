@@ -61,6 +61,7 @@ def _hospital() -> SimpleNamespace:
 
 def _philosophy(must_use: list[str]) -> SimpleNamespace:
     return SimpleNamespace(
+        status="APPROVED",
         version=2,
         positioning_statement="",
         doctor_voice="",

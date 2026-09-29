@@ -24,10 +24,8 @@ from app.models.hospital import Hospital
 from app.services import cost_guard, llm_structured_output, openrouter
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.essence_engine import effective_safety_policy
-from app.services.must_use_verbatim import (
-    matched_must_use_message,
-    required_must_use_messages,
-)
+from app.services.must_use_exclusions import approved_must_use_messages_with_record
+from app.services.must_use_verbatim import matched_must_use_message
 
 logger = logging.getLogger(__name__)
 
@@ -936,8 +934,10 @@ async def review_generated_content(
         )
 
     logical_call_id = logical_call_id or str(uuid.uuid4())
-    # 작가가 원문 그대로 넣어야 하는 것과 같은 집합이다(`content_engine`).
-    must_use_messages = required_must_use_messages(philosophy, content_brief)
+    # 작가가 원문 그대로 넣어야 하는 것과 같은 집합이다(`content_engine`). 현재 APPROVED
+    # 승인본 문구만 면제 근거다 — 저장 본문 재검수·공개 재검수 백필이 넘기는 옛 가이드
+    # (`content_brief`)의 문구는 승인이 철회·수정된 값일 수 있어 면제하지 않는다.
+    must_use_messages = await approved_must_use_messages_with_record(hospital, philosophy)
     first = await _provider_review(
         client=client,
         payload=payload,
