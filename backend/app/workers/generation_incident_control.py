@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime, time
+from datetime import UTC, date, datetime, time
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -326,6 +326,27 @@ def generation_block_digest_due(
     if batch == PREPUBLISH_MORNING_BATCH and is_provider_transient_generation_code(code):
         return False
     return True
+
+
+def operator_decides_digest_due(code: str, item, *, batch: str, today: date) -> bool:
+    """오늘 발행 예정인 진료비·병원 선택 글의 참고자료 보류를 아침 요약에 한 줄로 올리는가.
+
+    MISSING_REFERENCES는 주간 요약이 소유해 `generation_block_digest_due`가 아침 요약에서
+    뺀다. 이 보류는 자동 복구가 풀지 않으므로(`operator_decides_references`) 주간 요약을
+    기다리면 운영자가 모르는 채 발행일이 지난다. 그 판정을 넓히지 않고 따로 둔다 — 다른
+    코드와 평범한 참고자료 보류의 아침 요약 여부는 그대로다.
+
+    07:45와 08:00 두 요약이 모두 싣는다. 두 요약은 같은 식별자 집합이면 같은 중복 키를
+    쓰므로, 두 요약이 함께 싣는 다른 지속 차단처럼 평소 아침에는 08:00이 합쳐져 한 번만
+    나간다. 한쪽만 실으면 집합이 갈려 08:00이 다른 줄까지 다시 보낸다. 예정일 당일에만
+    싣는다 — 지난 예정일(catch-up)은 매일 반복하지 않는다.
+    """
+
+    return (
+        batch in (PREPUBLISH_MORNING_BATCH, PUBLISH_MORNING_BATCH)
+        and getattr(item, "scheduled_date", None) == today
+        and operator_decides_references(code, item)
+    )
 
 
 def generation_safe_cause(code: str) -> str:
