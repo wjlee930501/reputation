@@ -44,7 +44,10 @@ from app.workers.generation_retry_policy import (
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_STATE_KEY as BODY_REPAIR_STATE_KEY_POLICY,
 )
-from app.workers.generation_run_control import safe_generation_rejection_message
+from app.workers.generation_run_control import (
+    GENERATION_REFERENCE_REJECTION_MESSAGE,
+    safe_generation_rejection_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -303,13 +306,22 @@ def generation_safe_cause(code: str) -> str:
     return _generation_safe_cause(code)
 
 
-def generation_operator_action(code: str) -> str:
+def generation_operator_action(code: str, message: str | None = None) -> str:
     """Operator-safe Korean next action for one generation blocker code."""
 
-    return _generation_operator_copy(code)[1]
+    return _generation_operator_copy(code, message)[1]
 
 
-def _generation_operator_copy(code: str) -> tuple[str, str]:
+# 생성 거절 중 원인이 참고자료 확보 실패인 경우의 조치. 예전에는 GENERATION_REJECTED 전체가
+# "가격·지역·검색 구조 게이트" 문구를 받아 운영자가 엉뚱한 곳을 봤다(2026-09-29 점검 §4).
+REFERENCE_REJECTION_OPERATOR_ACTION = (
+    "실제 문서 확인을 통과한 공신력 있는 참고 자료가 없어 원고를 저장하지 못했습니다. "
+    "병원 정보 탭에서 이 글의 주제가 병원 진료와 맞는지 확인하세요. 맞지 않으면 콘텐츠 "
+    "탭에서 해당 항목을 종료하고, 맞으면 다음 자동 재시도가 검증된 문서를 다시 찾습니다."
+)
+
+
+def _generation_operator_copy(code: str, message: str | None = None) -> tuple[str, str]:
     impact = (
         "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
         if code in PUBLISHED_IMAGE_RECERTIFY_CODES
@@ -346,7 +358,11 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             "운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요. 자동 복구는 "
             "01시·04시·07시·07시 45분에도 다시 실행됩니다."
         ),
-        "MISSING_REFERENCES": ("운영 센터에서 콘텐츠 주제와 승인된 참고 자료를 확인하세요."),
+        "MISSING_REFERENCES": (
+            "참고 자료가 실제 문서 확인(없는 문서·빈 페이지·주제 불일치)에서 모두 빠지고 "
+            "검증된 목록에서도 채우지 못해 발행을 보류했습니다. 다음 자동 복구가 검증된 "
+            "문서로 본문을 다시 씁니다. 반복되면 병원 정보 탭에서 이 글의 주제를 확인하세요."
+        ),
         "FORBIDDEN_EXPRESSION": (
             "운영 센터에서 의료광고 금지 표현이 차단된 공개 필드와 승인된 대체 문구를 확인하세요."
         ),
@@ -387,6 +403,8 @@ def _generation_operator_copy(code: str) -> tuple[str, str]:
             f"자동 재인증이 반복 실패했습니다. {recertification.OPERATOR_ACTION}"
         ),
     }
+    if code == "GENERATION_REJECTED" and message == GENERATION_REFERENCE_REJECTION_MESSAGE:
+        return impact, REFERENCE_REJECTION_OPERATOR_ACTION
     action = actions.get(
         code,
         "운영 센터에 “작업 다시 시도”가 보이면 누르고 완료 결과를 확인하세요.",
@@ -409,7 +427,9 @@ def _generation_safe_cause(code: str) -> str:
         "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
         # 실패가 아니라 자동 폴백의 중간 상태다 — 같은 슬롯을 다른 주제로 다시 쓴다.
         "TOPIC_SWAPPED": "같은 주제로 자동 생성이 소진되어 다른 주제로 다시 준비합니다.",
-        "MISSING_REFERENCES": "의료 콘텐츠에 필요한 참고 자료가 준비되지 않았습니다.",
+        "MISSING_REFERENCES": (
+            "실제 문서 확인을 통과한 공신력 있는 참고 자료를 확보하지 못해 발행을 보류했습니다."
+        ),
         "FAQ_FIELDS_MISSING": "FAQ 질문과 직접 답변 요약이 준비되지 않았습니다.",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현이 발견되어 공개를 중단했습니다.",
         "ESSENCE_NOT_ALIGNED": "콘텐츠가 승인된 운영 기준의 자동 검사를 통과하지 못했습니다.",
@@ -706,7 +726,6 @@ async def open_generation_incident(
             incident = blocking_cause
             notification_code = incident.safe_error_code or code
         else:
-            customer_impact, next_action = _generation_operator_copy(code)
             safe_cause = (
                 safe_generation_rejection_message(message)
                 if code == "GENERATION_REJECTED"
@@ -714,6 +733,7 @@ async def open_generation_incident(
                 if code == "CONTENT_AI_HARD_FINDING"
                 else _generation_safe_cause(code)
             )
+            customer_impact, next_action = _generation_operator_copy(code, safe_cause)
             incident = await open_or_touch_incident(
                 db,
                 IncidentOpenRequest(

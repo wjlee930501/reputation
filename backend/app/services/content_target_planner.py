@@ -27,6 +27,10 @@ from app.services.query_target_structure import (
     apply_structure_to_target,
     target_is_question_form,
 )
+from app.services.specialty_compatibility import (
+    target_conflicts_with_hospital,
+    target_fits_hospital,
+)
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 
 ACTIVE_ACTION_STATUSES = {"OPEN", "IN_PROGRESS"}
@@ -90,8 +94,12 @@ def prepare_automatic_content_brief_sync(
 
     _lock_target_planning(db, hospital.id)
     target = _load_target(db, getattr(item, "query_target_id", None), hospital.id)
+    if target is not None and target_conflicts_with_hospital(target, hospital):
+        # 달력이 미리 배정한 질문이 병원 대표 진료과와 어울리지 않는다(내과 병원의
+        # 영상의학과 질문 등). 이 슬롯은 어울리는 질문으로 다시 고른다.
+        target = None
     if target is None:
-        target = _choose_target(db, item=item, hospital_id=hospital.id)
+        target = _choose_target(db, item=item, hospital_id=hospital.id, hospital=hospital)
         item.query_target_id = target.id if target is not None else None
 
     action = _load_or_choose_action(db, item=item, target=target, hospital_id=hospital.id)
@@ -176,11 +184,13 @@ def _choose_target(
     item: ContentItem,
     hospital_id: Any,
     exclude_target_ids: Any = None,
+    hospital: Any = None,
 ) -> AIQueryTarget | None:
     """이 슬롯이 답할 측정 질문을 고른다.
 
     `exclude_target_ids`는 주제 교체 폴백이 "이미 실패한 주제"를 빼는 데 쓴다. 비어
-    있으면(기본) 종전과 같은 후보 집합이다.
+    있으면(기본) 종전과 같은 후보 집합이다. `hospital`이 주어지면 대표 진료과와
+    어울리지 않는 질문(`specialty_compatibility`)을 후보에서 뺀다.
     """
     _lock_target_planning(db, hospital_id)
     excluded = {str(value) for value in (exclude_target_ids or ()) if value}
@@ -196,7 +206,7 @@ def _choose_target(
         )
         .scalars()
         .all()
-        if str(target.id) not in excluded
+        if str(target.id) not in excluded and target_fits_hospital(target, hospital)
     ]
     if not targets:
         return None

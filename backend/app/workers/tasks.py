@@ -20,6 +20,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -331,6 +332,16 @@ from app.services.post_publish_review_policy import (
     publicly_operational_hospital_predicate,
 )
 from app.services.public_surface_intents import enqueue_public_surface_intent
+from app.services.reference_publication import (
+    REFERENCE_SITE_UNREACHABLE_CAUSE,
+    REFERENCE_SITE_UNREACHABLE_CODE,
+    PublicationReferenceRefresh,
+    apply_publication_reference_refresh,
+    publication_references_current,
+    reference_outage_alert_due,
+    refresh_publication_references,
+)
+from app.services.reference_verification import ReferenceVerifier
 from app.services.report_artifact_validation import DoctorPdfValidationError
 from app.services.report_attribution import (
     CitationAttributionInput,
@@ -543,7 +554,7 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-09-13.1"
+GENERATION_GATE_CATALOG_VERSION = "2026-09-29.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -4822,6 +4833,9 @@ def _run_generation_item(
                 "body": content_data["body"],
                 "meta_description": content_data.get("meta_description"),
                 "references_list": content_data.get("references") or [],
+                # 생성 시 실제 문서 검증 기록 — 08:00 발행 게이트가 같은 URL의 신선한
+                # 통과를 확인한다(생성 시 검증이 기본이라 08:00에 GET이 몰리지 않는다).
+                "reference_checks": content_data.get("reference_checks") or [],
                 "faq_question": content_data.get("faq_question"),
                 "faq_answer_summary": content_data.get("faq_answer_summary"),
                 "image_url": None,
@@ -5968,6 +5982,7 @@ def _generate_single_content_item(
             "body": content_data["body"],
             "meta_description": content_data.get("meta_description"),
             "references_list": content_data.get("references") or [],
+            "reference_checks": content_data.get("reference_checks") or [],
             "faq_question": content_data.get("faq_question"),
             "faq_answer_summary": content_data.get("faq_answer_summary"),
             "image_url": None,
@@ -6095,6 +6110,74 @@ def _publication_digest_cause(code: str, summary) -> str:
     return cause
 
 
+def _has_generated_text(item: ContentItem) -> bool:
+    return bool((getattr(item, "title", None) or "").strip()) and bool(
+        (getattr(item, "body", None) or "").strip()
+    )
+
+
+def _log_reference_refresh(content_id, refresh: PublicationReferenceRefresh) -> None:
+    if refresh.deferred:
+        logger.info(
+            "publication reference verification deferred: content_id=%s unreachable=%d",
+            content_id,
+            len(refresh.site_unreachable_urls),
+        )
+    elif refresh.references_changed:
+        logger.warning(
+            "publication references re-verified: content_id=%s kept=%d healed=%s",
+            content_id,
+            len(refresh.references),
+            refresh.healed,
+        )
+
+
+_REFERENCE_VIEW_FIELDS = (
+    "id",
+    "content_type",
+    "title",
+    "body",
+    "content_brief",
+    "faq_question",
+    "references_list",
+    "reference_checks",
+    "content_revision",
+)
+
+
+def _reference_view(item: ContentItem) -> SimpleNamespace:
+    """참고자료 재검증에 필요한 값만 담은 분리된 사본(행 잠금·세션 없이 GET하려고)."""
+
+    return SimpleNamespace(
+        **{name: getattr(item, name, None) for name in _REFERENCE_VIEW_FIELDS}
+    )
+
+
+def _prefetch_publication_references(
+    content_id: uuid.UUID, verifier: ReferenceVerifier
+) -> PublicationReferenceRefresh | None:
+    """발행 직전 참고자료 재검증의 네트워크 쪽 — **행 잠금 없이** 한다.
+
+    잠금 없는 읽기로 필요한 값을 스냅샷에 담고 세션을 닫은 뒤 GET한다. 결과는 호출부가 행을
+    잠근 뒤 `apply_publication_reference_refresh`로 비교 후 적용한다(그 사이 행이 바뀌었으면
+    쓰지 않는다). 발행 대상이 아니거나 이미 신선한 통과가 있으면 GET 없이 None.
+    """
+
+    with SyncSessionLocal() as db:
+        item = db.execute(
+            select(ContentItem).where(ContentItem.id == content_id)
+        ).scalar_one_or_none()
+        if (
+            item is None
+            or item.status not in AUTO_PUBLISHABLE_STATUSES
+            or publication_references_current(item)
+        ):
+            return None
+        # 세션을 닫은 뒤에도 읽을 수 있게 판정에 필요한 값만 떼어 둔다.
+        view = _reference_view(item)
+    return _run_async(refresh_publication_references(view, verifier))
+
+
 def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     """At 07:45, record the persisted blockers and summarize them in one Slack message.
 
@@ -6125,8 +6208,33 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     paged = 0
     blocked_outcomes: list[dict[str, object]] = []
     healed_hospitals: set = set()
+    # 이 실행의 참고자료 GET 한도·도메인 장애 상태. 23:00 D-2 생성분처럼 검증 기록이
+    # 오래된 글을 여기서 다시 확인해 08:00 발행기에 GET이 몰리지 않게 한다.
+    reference_verifier = ReferenceVerifier()
     for item in items:
         hospital = item.hospital
+        if _has_generated_text(item) and not publication_references_current(item):
+            # GET은 잠금·열린 트랜잭션 밖에서 한다(느린 기관 사이트가 편집·발행을 막지 않게).
+            view = _reference_view(item)
+            db.commit()
+            refresh = _run_async(refresh_publication_references(view, reference_verifier))
+            locked = db.execute(
+                select(ContentItem)
+                .where(ContentItem.id == item.id)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if locked is None:
+                # 다른 작업이 이 글을 잡고 있다 — 08:00 발행기가 잠금 뒤에 다시 확인한다.
+                continue
+            applied = apply_publication_reference_refresh(locked, refresh)
+            db.commit()
+            _log_reference_refresh(locked.id, refresh)
+            if not applied or refresh.deferred:
+                # 그 사이 글이 바뀌었거나(덮어쓰지 않는다) 일시 장애·GET 한도로 미뤘다.
+                # 차단이 아니다 — 08:00 발행기가 이어서 확인한다.
+                continue
+            item = locked
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
         if assessment.publishable:
@@ -6197,7 +6305,8 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
 def morning_content_auto_publish(self):
     """Publish verified content silently and summarize only exhausted blockers."""
     require_dispatch(self, "morning-content-auto-publish")
-    today = arrow.now("Asia/Seoul").date()
+    observed_kst = arrow.now("Asia/Seoul")
+    today = observed_kst.date()
 
     try:
         with SyncSessionLocal() as db:
@@ -6210,11 +6319,31 @@ def morning_content_auto_publish(self):
         published_count = 0
         blocked_codes: Counter[str] = Counter()
         skipped_count = 0
+        # 한 실행 전체가 GET 한도·도메인 장애 상태를 공유한다(기관 사이트 장애 폴백).
+        reference_verifier = ReferenceVerifier()
         for content_id in due_ids:
             try:
-                outcome = _auto_publish_one(content_id)
+                outcome = _auto_publish_one(content_id, reference_verifier=reference_verifier)
                 if outcome is None:
                     skipped_count += 1
+                    continue
+                if outcome["kind"] == "reference_deferred":
+                    # 기관 사이트 일시 장애로 참고자료를 확인하지 못해 미뤘다. 다음 시간대가 다시
+                    # 연다. 예정일의 마지막 발행기(23시)부터는 요약에 원인 그대로 한 줄 싣는다.
+                    skipped_count += 1
+                    if reference_outage_alert_due(outcome.get("scheduled_date"), observed_kst):
+                        blocked_outcomes.append(
+                            {
+                                "hospital_id": outcome["hospital_id"],
+                                "hospital_name": outcome.get("hospital_name"),
+                                "content_id": content_id,
+                                "scheduled_date": str(outcome.get("scheduled_date")),
+                                "title": outcome.get("title"),
+                                "code": REFERENCE_SITE_UNREACHABLE_CODE,
+                                "cause": REFERENCE_SITE_UNREACHABLE_CAUSE,
+                                "attempt_fingerprint": "",
+                            }
+                        )
                     continue
                 if outcome.get("image_reused"):
                     reused_image_outcomes.append(
@@ -6433,7 +6562,13 @@ def _log_auto_publish_skip(reason: str, content_id, *, item=None, hospital=None)
     )
 
 
-def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
+def _auto_publish_one(
+    content_id: uuid.UUID, *, reference_verifier: ReferenceVerifier | None = None
+) -> dict | None:
+    # 참고자료 재검증의 GET은 행 잠금 전에 끝낸다. 결과는 아래에서 잠근 행과 비교해 적용한다.
+    reference_refresh = _prefetch_publication_references(
+        content_id, reference_verifier or ReferenceVerifier()
+    )
     with SyncSessionLocal() as db:
         item = db.execute(
             select(ContentItem)
@@ -6459,6 +6594,31 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             # The candidate list is only a hint. A concurrent reschedule wins once
             # this row lock is held and the authoritative date is re-read.
             _log_auto_publish_skip("outside_catchup_window", content_id, item=item)
+            return None
+        # 참고자료 게이트: 모든 참고자료에 같은 URL·같은 글 주제의 신선한 통과 기록이 있어야
+        # 공개한다. 잠금 밖에서 다시 검증한 결과는 판·참고자료·주제가 그대로일 때만 쓴다.
+        if reference_refresh is not None:
+            if not apply_publication_reference_refresh(item, reference_refresh):
+                # 재검증하는 동안 편집·재생성이 있었다 — 덮어쓰지 않고 다음 시간대에 다시 본다.
+                _log_auto_publish_skip("reference_snapshot_changed", content_id, item=item)
+                return None
+            _log_reference_refresh(content_id, reference_refresh)
+            if reference_refresh.deferred:
+                db.commit()
+                _log_auto_publish_skip("reference_verification_deferred", content_id, item=item)
+                if not reference_refresh.site_unreachable_urls:
+                    return None  # 실행당 GET 한도 — 다음 시간대가 이어서 확인한다.
+                return {
+                    "kind": "reference_deferred",
+                    "hospital_id": item.hospital_id,
+                    "hospital_name": getattr(getattr(item, "hospital", None), "name", None),
+                    "title": item.title,
+                    "scheduled_date": item.scheduled_date,
+                    "unreachable_urls": list(reference_refresh.site_unreachable_urls),
+                }
+        if not publication_references_current(item):
+            db.commit()
+            _log_auto_publish_skip("reference_verification_pending", content_id, item=item)
             return None
         # 콘텐츠 검사와 동시에 병원이 PAUSED/비공개로 전환되는 경합을 막는다. 병원 행을
         # 같은 트랜잭션에서 잠근 뒤 ACTIVE/LIVE를 재확인해야 공개 중지 요청 이후 새 글이

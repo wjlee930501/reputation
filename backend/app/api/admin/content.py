@@ -101,6 +101,22 @@ from app.services.published_image_recertification import RECERTIFY_OPERATION
 from app.services.published_image_recertification import (
     base_key as published_recertify_key,
 )
+from app.services.reference_publication import (
+    apply_publication_reference_refresh,
+    publication_references_current,
+    reference_snapshot,
+    reference_snapshot_matches,
+    refresh_publication_references,
+    unverified_reference_details,
+    verify_publication_references,
+)
+from app.services.reference_verification import (
+    REASON_NOT_VERIFIED,
+    ReferenceVerifier,
+    article_topic_terms,
+    merge_reference_checks,
+    reason_label,
+)
 from app.services.schedule_reconciliation import (
     month_items_query,
     remaining_month_slots,
@@ -366,7 +382,8 @@ async def set_schedule(
     # 측정된 미언급 격차가 이번 달 슬롯의 유형과 대상 질문을 정하게 한다.
     # 격차가 없으면(첫 스케줄 등) 정적 배분 결과를 그대로 쓴다.
     gap_targets = build_gap_targets(
-        (await db.execute(gap_target_rows_stmt(hospital_id))).all()
+        (await db.execute(gap_target_rows_stmt(hospital_id))).all(),
+        hospital=hospital,
     )
     # The monthly planner must inherit already allocated targets and its spent
     # redistribution budget on this path just as it does in monthly repair.
@@ -600,6 +617,19 @@ async def update_content(
     제목/본문/meta/FAQ/참고자료 수정.
     저장 시 의료광고 금지표현 검사 → 위반 시 400 + 위반 목록 반환.
     """
+    # 참고자료의 실제 문서 검증(GET)은 병원 잠금·행 잠금을 잡기 **전에** 끝낸다. 느린 기관
+    # 사이트가 같은 병원의 편집·발행을 막지 않게 하고, 잠근 뒤에는 검증 당시의 행(판·참고자료·
+    # 글 주제)이 그대로인지만 비교한다 — 바뀌었으면 409로 다시 시도하게 한다.
+    normalized_refs: list[dict] | None = None
+    patched_reference_checks: list[dict] = []
+    pre_patch_snapshot = None
+    if body.references is not None:
+        normalized_refs = _validated_patch_references(body)
+        unlocked_item = await _get_content(db, content_id, hospital_id)
+        pre_patch_snapshot = reference_snapshot(unlocked_item)
+        patched_reference_checks = await _verify_patched_references(
+            unlocked_item, body, normalized_refs
+        )
     await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
     if isinstance(item, ContentItem):
@@ -612,6 +642,17 @@ async def update_content(
         item = locked_result.scalar_one_or_none()
         if item is None:
             raise HTTPException(status_code=404, detail="Content not found")
+    if pre_patch_snapshot is not None and not reference_snapshot_matches(item, pre_patch_snapshot):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTENT_CHANGED_DURING_REFERENCE_CHECK",
+                "message": (
+                    "참고 자료 주소를 확인하는 동안 글이 바뀌어 저장하지 않았습니다. "
+                    "새로 불러온 뒤 다시 저장해 주세요."
+                ),
+            },
+        )
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.WITHHELD and body.model_fields_set - {"references"}:
         # 비공개(보존) 글은 재인증·재검수 경로(스윕·이미지 태스크)가 모두 비켜 간다. 제목을
@@ -662,38 +703,14 @@ async def update_content(
     # 처리 상태를 바꾸지 않는다는 계약이라, 필드 제시 여부가 아니라 값 비교로 판정한다.
     editable_before = _human_editable_snapshot(item)
 
-    if body.references is not None:
-        raw_refs = [ref.model_dump() for ref in body.references]
-        normalized_refs = _normalize_references(raw_refs)
-        if len(normalized_refs) < len(raw_refs):
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": (
-                        "참고 자료 중 사용할 수 없는 항목이 있습니다. "
-                        "허용된 공신력 있는 출처의 http(s) URL과 제목을 입력해 주세요. (최대 5개)"
-                    ),
-                    "accepted_count": len(normalized_refs),
-                    "submitted_count": len(raw_refs),
-                },
-            )
-        reference_title_violations = check_forbidden_content_fields(
-            {
-                "reference_titles": " ".join(
-                    reference["title"] for reference in normalized_refs
-                )
-            },
-            ("reference_titles",),
-        )
-        if reference_title_violations:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "참고 자료 제목에 의료광고 금지 표현이 포함되어 있습니다.",
-                    "violations": reference_title_violations,
-                },
-            )
+    if normalized_refs is not None:
+        # 생성·발행과 같은 실제 문서 검증을 위에서(잠금 전) 마쳤다. 사람이 고른 주소도
+        # 제목·본문을 열어 이 글의 주제인지 확인했고(라벨로 판정하지 않는다), 하나라도
+        # 떨어졌으면 저장하지 않고 400으로 돌려줬다. 통과한 기록은 발행 게이트가 그대로 쓴다.
         item.references_list = normalized_refs
+        item.reference_checks = merge_reference_checks(
+            getattr(item, "reference_checks", None), patched_reference_checks
+        )
         if was_published and not has_required_references(item):
             raise HTTPException(
                 status_code=400,
@@ -995,6 +1012,15 @@ async def publish_content(
             status_code=403,
             detail="발행자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
         )
+    # 참고자료 재검증(GET)은 잠금 전에 한다 — 자동 발행과 같은 규칙. 같은 URL·같은 글 주제의
+    # 신선한 통과 기록이 없으면 다시 검증해 떨어진 항목을 빼고, 전부 빠지면 수기 목록으로
+    # 채우거나 비워 아래 MISSING_REFERENCES 차단으로 보낸다. 적용은 잠근 뒤 비교해서 한다.
+    unlocked_item = await _get_content(db, content_id, hospital_id)
+    reference_refresh = None
+    if not publication_references_current(unlocked_item):
+        reference_refresh = await refresh_publication_references(
+            unlocked_item, ReferenceVerifier(max_fetches=ADMIN_REFERENCE_FETCH_LIMIT)
+        )
     # 자동 발행과 동일하게 병원 행을 잠근 뒤 공개 게이트를 재확인한다. 잠금이 없으면
     # 공개 중지 요청과 경합해 PAUSED 직후 새 글이 튀어나오는 TOCTOU가 남는다.
     await acquire_hospital_advisory_lock(db, hospital_id)
@@ -1043,6 +1069,33 @@ async def publish_content(
     should_revalidate = _has_public_site(hospital)
     if should_revalidate:
         ensure_site_revalidate_configured()
+
+    # 참고자료 게이트 — 잠금 전에 다시 검증한 결과를 잠근 행과 비교해 적용한다. 그 사이
+    # 글이 바뀌었으면 쓰지 않는다(아래 게이트가 current가 아니므로 409로 다시 시도하게 한다).
+    reference_applied = True
+    if reference_refresh is not None:
+        reference_applied = apply_publication_reference_refresh(item, reference_refresh)
+    if (
+        not reference_applied
+        or (reference_refresh is not None and reference_refresh.deferred)
+        or not publication_references_current(item)
+    ):
+        if hasattr(db, "commit"):
+            await db.commit()
+        unreachable = reference_refresh.site_unreachable_urls if reference_refresh else ()
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REFERENCES_NOT_VERIFIED",
+                "message": (
+                    "참고 자료 기관 사이트에 접속하지 못해 주소를 확인하지 못했습니다: "
+                    + ", ".join(unreachable)
+                    + ". 잠시 뒤 다시 시도해 주세요."
+                    if unreachable
+                    else "참고 자료 주소 검증을 마치지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+                ),
+            },
+        )
 
     # 제목/본문·참고자료·금지 표현은 DB 조회 없이 먼저 차단한다. 안전한 원고만 최신
     # 승인 운영 기준을 조회해 최종 screening 하므로, 정적 위반이 운영 기준 상태에 가려지지 않는다.
@@ -1435,6 +1488,17 @@ async def restore_content(
             status_code=403,
             detail="공개 처리자의 로그인 계정을 확인할 수 없습니다. 다시 로그인해 주세요.",
         )
+    # 참고자료는 **검증만** 한다(GET은 잠금 전). 공개됐던 글의 참고자료를 빼거나 채우거나
+    # 바꾸지 않는다 — 모든 항목이 같은 URL·같은 글 주제의 신선한 통과를 받지 못하면 아래에서
+    # restore를 거절하고 PATCH로 참고자료를 먼저 고치게 한다.
+    unlocked_item = await _get_content(db, content_id, hospital_id)
+    reference_verification = None
+    if unlocked_item.status == ContentStatus.WITHHELD and not publication_references_current(
+        unlocked_item
+    ):
+        reference_verification = await verify_publication_references(
+            unlocked_item, ReferenceVerifier(max_fetches=ADMIN_REFERENCE_FETCH_LIMIT)
+        )
     await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
     await _lock_content_status(db, hospital_id, content_id, item.status)
@@ -1472,6 +1536,7 @@ async def restore_content(
                 "blocker_labels": blocked.blocker_labels,
             },
         )
+    await _require_restorable_references(db, item, reference_verification)
     ensure_site_revalidate_configured()
 
     item.status = ContentStatus.PUBLISHED
@@ -1550,6 +1615,147 @@ def _has_public_site(hospital: Hospital) -> bool:
 
 def _has_required_references(item: ContentItem) -> bool:
     return has_required_references(item)
+
+
+# 관리자 요청 한 번의 GET 상한 — 참고자료는 최대 5개이고 수동 발행 치유 후보가 더해진다.
+ADMIN_REFERENCE_FETCH_LIMIT = 10
+
+
+async def _require_restorable_references(db, item: ContentItem, verification) -> None:
+    """restore의 참고자료 게이트 — 검증 기록만 남기고, 통과하지 못하면 409로 거절한다.
+
+    `verification`은 잠금 전에 만든 검증 결과다. 잠근 행이 그때와 같을 때만 기록을 붙인다.
+    참고자료 목록 자체는 절대 바꾸지 않는다(공개됐던 글의 참고자료를 자동으로 고치지 않는다).
+    """
+
+    if verification is not None and not apply_publication_reference_refresh(item, verification):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "CONTENT_CHANGED_DURING_REFERENCE_CHECK",
+                "message": (
+                    "참고 자료 주소를 확인하는 동안 글이 바뀌었습니다. 새로 불러온 뒤 다시 시도해 주세요."
+                ),
+            },
+        )
+    failures = unverified_reference_details(item)
+    if not failures:
+        return
+    # 거절해도 이번 검증 기록(reference_checks)은 남긴다. 참고자료 목록·상태·판은 그대로다.
+    await db.commit()
+    summary = "; ".join(
+        f"{entry['url'] or '(주소 없는 항목)'} — {entry['reason_label']}" for entry in failures
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "REFERENCES_NOT_VERIFIED",
+            "message": (
+                "참고 자료 주소 확인을 통과하지 못해 다시 공개하지 않았습니다: "
+                f"{summary}. 참고 자료 수정(PATCH)으로 실제 문서를 열어 이 글의 주제와 맞는 "
+                "주소로 먼저 고친 뒤 다시 공개해 주세요. 기관 사이트 일시 장애라면 잠시 뒤 다시 "
+                "시도해 주세요."
+            ),
+            "failed_references": failures,
+        },
+    )
+
+
+def _validated_patch_references(body: "ContentPatch") -> list[dict]:
+    """PATCH 참고자료의 정규화·화이트리스트·제목 금지 표현 검사(생성 경로와 같다). 실패는 400."""
+
+    raw_refs = [ref.model_dump() for ref in body.references or []]
+    normalized_refs = _normalize_references(raw_refs)
+    if len(normalized_refs) < len(raw_refs):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "참고 자료 중 사용할 수 없는 항목이 있습니다. "
+                    "허용된 공신력 있는 출처의 http(s) URL과 제목을 입력해 주세요. (최대 5개)"
+                ),
+                "accepted_count": len(normalized_refs),
+                "submitted_count": len(raw_refs),
+            },
+        )
+    reference_title_violations = check_forbidden_content_fields(
+        {"reference_titles": " ".join(reference["title"] for reference in normalized_refs)},
+        ("reference_titles",),
+    )
+    if reference_title_violations:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "참고 자료 제목에 의료광고 금지 표현이 포함되어 있습니다.",
+                "violations": reference_title_violations,
+            },
+        )
+    return normalized_refs
+
+
+async def _verify_patched_references(
+    item: ContentItem, body: "ContentPatch", references: list[dict]
+) -> list[dict]:
+    """PATCH로 들어온 참고자료를 실제 문서로 검증한다. 실패가 있으면 400으로 거절한다.
+
+    판정 기준은 PATCH가 적용된 뒤의 글 주제(바뀌는 제목·본문·FAQ 질문 + 현재 brief)다 —
+    저장되는 기록의 주제 지문이 저장 뒤 행의 주제 지문과 같아야 발행 게이트가 그대로 쓴다.
+    기관 사이트 일시 장애도 통과로 치지 않고 사유와 함께 돌려준다.
+    """
+
+    if not references:
+        return []
+    brief = getattr(item, "content_brief", None)
+    topic_terms = article_topic_terms(
+        title=body.title if body.title is not None else getattr(item, "title", None),
+        body=body.body if body.body is not None else getattr(item, "body", None),
+        content_brief=brief if isinstance(brief, dict) else None,
+        faq_question=(
+            body.faq_question
+            if body.faq_question is not None
+            else getattr(item, "faq_question", None)
+        ),
+    )
+    outcome = await ReferenceVerifier(max_fetches=ADMIN_REFERENCE_FETCH_LIMIT).verify(
+        references, topic_terms=topic_terms, defer_transient=True
+    )
+    judged = outcome.failed_checks() + outcome.deferred_checks()
+    judged_urls = {str(check.get("url") or "") for check in judged}
+    unjudged = [
+        dict(reference)
+        for reference in outcome.deferred
+        if str(reference.get("url") or "") not in judged_urls
+    ]
+    if judged or unjudged:
+        failures = [
+            {
+                "url": check.get("url"),
+                "reason": check.get("reason"),
+                "reason_label": reason_label(check.get("reason")),
+                "status": check.get("status"),
+            }
+            for check in judged
+        ] + [
+            {
+                "url": reference.get("url"),
+                "reason": REASON_NOT_VERIFIED,
+                "reason_label": reason_label(REASON_NOT_VERIFIED),
+                "status": None,
+            }
+            for reference in unjudged
+        ]
+        summary = "; ".join(f"{entry['url']} — {entry['reason_label']}" for entry in failures)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": (
+                    "참고 자료 주소 검증을 통과하지 못한 항목이 있어 저장하지 않았습니다: "
+                    f"{summary}. 실제 문서를 열어 이 글의 주제와 맞는 주소로 바꿔 주세요."
+                ),
+                "failed_references": failures,
+            },
+        )
+    return outcome.checks
 
 
 async def _get_content(db, content_id, hospital_id) -> ContentItem:

@@ -161,7 +161,9 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5696",
     },
     {
-        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),
+        # '통증'·'관절'은 어깨·손목·무릎 글에도 요통 문서를 붙였다(2026-09-29 점검 후속) —
+        # 허리·척추를 말하는 글에만 붙는다.
+        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "요통", "허리통증"),
         "title": "질병관리청 국가건강정보포털 — 요통",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
     },
@@ -171,7 +173,7 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
     },
     {
-        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),
+        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "추간판", "디스크"),
         "title": "질병관리청 국가건강정보포털 — 추간판탈출증(디스크)",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
     },
@@ -247,7 +249,8 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
     },
     {
-        "keywords": ("대장내시경", "내시경", "장정결"),
+        # '내시경'만으로는 위내시경 글에도 대장내시경 문서가 붙는다.
+        "keywords": ("대장내시경", "장정결"),
         "title": "질병관리청 국가건강정보포털 — 대장내시경검사",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
     },
@@ -446,11 +449,13 @@ def render_source_hint_block() -> str:
     lines = [
         "[참고 출처 화이트리스트 — references는 아래 도메인만 사용]",
         "- 기관 홈페이지 루트 URL은 근거가 아닙니다. 주장을 실제로 담은 특정 문서 URL만 쓰세요.",
-        "- references에는 아래 도메인의 **실제 문서 URL을 최소 1개** 반드시 넣으세요. "
-        "빈 references는 저장되지 않습니다.",
-        "- 확신이 없는 URL은 지어내지 말고 **확신이 있는 다른 문서로 바꿔 넣으세요**. 항목을 빼기만 해서 "
-        "references가 비면 글 전체가 저장되지 않습니다. 본문에서 확인할 수 없는 주장·수치는 제거합니다.",
-        "- 아래 [현재 주제와 일치하는 검증된 문서]가 함께 주어지면 그 URL을 그대로 쓰는 것이 가장 안전합니다.",
+        "- [현재 주제와 일치하는 검증된 문서]가 함께 주어지면 **그 URL을 그대로** 쓰세요. "
+        "사람이 제목과 주소를 확인한 문서입니다.",
+        "- 문서 번호(cntnts_sn·contentId 등)나 메뉴 코드를 추측해 URL을 지어내지 마세요. "
+        "확실하지 않은 항목은 빼세요 — 추측한 주소는 대부분 없는 문서이거나 다른 질환 문서입니다.",
+        "- 목록 밖 URL은 시스템이 실제로 열어 제목·본문이 이 글의 주제와 맞는지 확인한 것만 남깁니다. "
+        "남는 출처가 없으면 검증된 목록에서 채우고, 그래도 없으면 발행을 보류합니다. "
+        "본문에서 확인할 수 없는 주장·수치는 제거합니다.",
     ]
     for label, group in (
         ("한국 공공", KR_PUBLIC_SOURCES),

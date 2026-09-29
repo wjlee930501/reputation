@@ -359,3 +359,78 @@ def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
 
     assert _swap(pg_session).swapped == 0
     assert len(pg_session.get(ContentItem, item_id).topic_swap_history) == 1
+
+
+def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(
+    pg_conn, pg_session
+):
+    """신기한속 f0217d98: 61810ef4(영상의학과)가 소진되면 d7a5603e(영상의학과)가 아니라
+    같은 병원의 내과 질문으로 바꾼다. 병원 진료과 목록에는 영상의학과도 들어 있다."""
+    hospital_id = uuid.uuid4()
+    pg_conn.execute(
+        text(
+            "INSERT INTO hospitals (id, name, slug, status, site_live, specialties) VALUES "
+            "(:id, '신기한속내과연합의원', :slug, 'ACTIVE', true, "
+            "'[\"내과\", \"소화기내과\", \"영상의학과\", \"건강검진\"]'::json)"
+        ),
+        {"id": hospital_id, "slug": f"swap-im-{uuid.uuid4().hex[:8]}"},
+    )
+    targets = {
+        "61810ef4": ("대구 동구 영상의학과 병원 어디가 좋은지 비교해줘", "동구 영상의학과", "HIGH"),
+        "d7a5603e": ("대구 동구 영상의학과 병원 추천해줘", "동구 영상의학과", "HIGH"),
+        "internal": ("대구 동구 내과 병원 추천해줘", "동구 내과", "NORMAL"),
+    }
+    ids = {}
+    for key, (name, specialty, priority) in targets.items():
+        ids[key] = uuid.uuid4()
+        pg_conn.execute(
+            text(
+                "INSERT INTO ai_query_targets (id, hospital_id, name, target_intent, "
+                "region_terms, decision_criteria, platforms, competitor_names, specialty, "
+                "patient_language, priority, status) VALUES "
+                "(:id, :hospital_id, :name, '추천 탐색', '[\"대구\"]', '[]', '[]', '[]', "
+                ":specialty, 'ko', :priority, 'ACTIVE')"
+            ),
+            {
+                "id": ids[key],
+                "hospital_id": hospital_id,
+                "name": name,
+                "specialty": specialty,
+                "priority": priority,
+            },
+        )
+    schedule_id = uuid.uuid4()
+    item_id = uuid.uuid4()
+    pg_conn.execute(
+        text(
+            "INSERT INTO content_schedules (id, hospital_id, plan, publish_days, active_from) "
+            "VALUES (:id, :hospital_id, 'PLAN_12', '[1]'::json, DATE '2026-09-01')"
+        ),
+        {"id": schedule_id, "hospital_id": hospital_id},
+    )
+    pg_conn.execute(
+        text(
+            "INSERT INTO content_items (id, hospital_id, schedule_id, query_target_id, "
+            "content_type, sequence_no, total_count, title, scheduled_date, status, "
+            "essence_check_summary, content_revision) VALUES "
+            "(:id, :hospital_id, :schedule_id, :target, 'FAQ', 1, 12, NULL, :slot, 'DRAFT', "
+            "CAST(:summary AS jsonb), 4)"
+        ),
+        {
+            "id": item_id,
+            "hospital_id": hospital_id,
+            "schedule_id": schedule_id,
+            "target": ids["61810ef4"],
+            "slot": SLOT,
+            "summary": '{"generation_attempt": {"reason": "GENERATION_REJECTED",'
+            ' "retry_class": "OPERATOR_REQUIRED"}}',
+        },
+    )
+
+    report = _swap(pg_session)
+
+    assert report.swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+    assert row.query_target_id == ids["internal"]
+    assert row.query_target_id != ids["d7a5603e"]

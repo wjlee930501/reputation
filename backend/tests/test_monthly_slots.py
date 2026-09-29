@@ -293,3 +293,71 @@ def test_reconciliation_preserves_legacy_total_on_existing_posts(db):
     db.refresh(item)
     assert item.total_count == 8  # Historical allocation metadata is not rewritten.
     assert item.scheduled_date == date(2026, 8, 4)
+
+
+def test_internal_medicine_calendar_never_assigns_a_radiology_gap_target(db):
+    """신기한속 61810ef4 모양 — 내과 병원의 영상의학과 미언급 격차는 달력 슬롯에 배정되지 않는다."""
+    from app.models.sov import AIQueryTarget, ExposureGap
+
+    suffix = uuid.uuid4().hex[:10]
+    hospital = Hospital(
+        name=f"신기한속내과연합의원-{suffix}",
+        slug=f"slot-im-{suffix}",
+        status=HospitalStatus.ACTIVE,
+        specialties=["내과", "소화기내과", "영상의학과", "건강검진"],
+    )
+    db.add(hospital)
+    db.flush()
+    schedule = ContentSchedule(
+        hospital_id=hospital.id,
+        plan="PLAN_12",
+        publish_days=[0, 1, 2, 3, 4],
+        active_from=date(2026, 1, 1),
+        is_active=True,
+    )
+    db.add(schedule)
+    radiology = AIQueryTarget(
+        hospital_id=hospital.id,
+        name="대구 동구 영상의학과 병원 어디가 좋은지 비교해줘",
+        target_intent="비교 검토",
+        region_terms=["대구"],
+        specialty="동구 영상의학과",
+        priority="HIGH",
+        status="ACTIVE",
+        created_by="V0 자동 시드",
+    )
+    internal = AIQueryTarget(
+        hospital_id=hospital.id,
+        name="대구 동구 내과 병원 추천해줘",
+        target_intent="추천 탐색",
+        region_terms=["대구"],
+        specialty="동구 내과",
+        priority="NORMAL",
+        status="ACTIVE",
+        created_by="V0 자동 시드",
+    )
+    db.add_all([radiology, internal])
+    db.flush()
+    for target in (radiology, internal):
+        db.add(
+            ExposureGap(
+                hospital_id=hospital.id,
+                query_target_id=target.id,
+                gap_type="MISSING_MENTION",
+                status="OPEN",
+            )
+        )
+    db.flush()
+
+    assert _run(db, schedule) is True
+
+    assigned = set(
+        db.execute(
+            select(ContentItem.query_target_id).where(
+                ContentItem.schedule_id == schedule.id,
+                ContentItem.query_target_id.is_not(None),
+            )
+        ).scalars()
+    )
+    assert radiology.id not in assigned
+    assert internal.id in assigned

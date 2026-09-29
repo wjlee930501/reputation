@@ -31,10 +31,13 @@ from app.services.content_engine import (  # noqa: E402
     _validate_geo,
     _validate_unverified_price_claims,
 )
+from app.services.reference_verification import override_reference_fetcher  # noqa: E402
+from app.utils.authority_sources import CURATED_SOURCE_URLS  # noqa: E402
 from app.utils.medical_filter import (  # noqa: E402
     check_forbidden_content_fields,
     forbidden_vocabulary_for_prompt,
 )
+from tests.reference_fetch_doubles import PageFetcher  # noqa: E402
 
 
 def test_parse_json_response_accepts_fenced_json():
@@ -148,22 +151,20 @@ def test_curated_reference_focus_excludes_incidental_body_topics():
     assert "대장내시경" not in focus
 
 
-def test_approved_must_use_messages_supply_a_topic_only_for_an_unnamed_slot():
-    """질의가 임상 주제를 말하지 않는 슬롯은 승인된 병원 문구가 유일한 단서다."""
+def test_hospital_wide_messaging_never_picks_evidence_for_an_unnamed_slot():
+    """임상 주제가 없는 슬롯에 병원 단위 문구로 수기 문서를 고르지 않는다(점검 원인 6).
+
+    예전에는 target_keyword가 없으면 병원의 승인 문구 전체로 카탈로그를 골라, 글과 무관한
+    수기 문서(예: 병원 선택 글에 국가암검진사업)가 근거로 붙었다.
+    """
     brief = {
         "target_query": "경산 일반의원 전문의 추천",
         "must_use_messages": ["발열과 탈수 관리를 내과 관점에서 살핍니다."],
     }
 
     assert "발열" not in _curated_reference_focus(brief)
-    assert "발열" in content_engine._hospital_wide_reference_focus(brief)
-
-    titles = [
-        source["title"]
-        for source in content_engine._topic_aligned_curated_sources(brief)
-    ]
-
-    assert titles == ["질병관리청 국가건강정보포털 — 탈수"]
+    assert not hasattr(content_engine, "_hospital_wide_reference_focus")
+    assert content_engine._topic_aligned_curated_sources(brief) == []
 
 
 def test_hospital_wide_messaging_cannot_pick_evidence_for_another_disease():
@@ -1302,15 +1303,17 @@ def test_column_and_health_prompts_now_require_a_whitelisted_document(content_ty
     """두 유형은 참고자료를 **언급조차** 하지 않으면서 빈 references로 폐기됐다."""
     prompt = content_engine.TYPE_PROMPTS[content_type]
 
-    assert "references에 최소 1개" in prompt
-    assert "지어내지" in prompt
+    assert "실제 문서 URL" in prompt
+    assert "추측해 URL을" in prompt
 
 
-def test_static_system_block_requires_at_least_one_real_document_url():
+def test_static_system_block_prefers_verified_documents_over_guessed_urls():
     block = content_engine.STATIC_SYSTEM_BLOCK
 
     assert "references를 비워" not in block
-    assert "최소 1개" in block
+    assert "최소 1개" not in block
+    assert "그 URL을 그대로" in block
+    assert "메뉴 코드를 추측해" in block
 
 
 # ── 유형 템플릿의 분량 단위·FAQ 필드 계약 (2026-09-20 생성 실패) ────────────────
@@ -1392,12 +1395,16 @@ def test_non_faq_types_keep_the_nullable_faq_fields(content_type):
 @pytest.mark.parametrize(
     "content_type", sorted(content_engine.REFERENCES_REQUIRED_TYPES, key=str)
 )
-def test_reference_required_types_reject_an_empty_references_array(content_type):
-    """빈 references는 GEO 하드 거절이다 — 스키마도 그것을 유효한 출력으로 두지 않는다."""
+def test_reference_required_types_do_not_force_a_url_through_the_schema(content_type):
+    """`minItems: 1`은 확신 없는 작가에게 URL을 지어내게 했다 — 스키마가 개수를 강제하지 않는다.
+
+    빈 참고자료는 여전히 GEO 하드 거절이고, 검증된 목록 치유가 못 채우면 발행 보류다.
+    """
     schema = content_engine._article_tool_schema(content_type)
 
     assert "references" in schema["required"]
-    assert schema["properties"]["references"]["minItems"] == 1
+    assert "minItems" not in schema["properties"]["references"]
+    assert "추측" in schema["properties"]["references"]["description"]
 
 
 def test_notice_is_not_asked_for_evidence_it_does_not_need():
@@ -1576,78 +1583,8 @@ def test_article_topic_terms_use_only_the_approved_topic_fields():
     assert all("안내" != term for term in terms)
 
 
-def test_reference_unrelated_to_the_article_topic_is_dropped():
-    references = [
-        {"title": "질병관리청 국가건강정보포털 - 무릎 관절염", "url": "https://health.kdca.go.kr/a"},
-        {"title": "국가암정보센터 - 대장암 예방", "url": "https://cancer.go.kr/b"},
-    ]
-
-    kept = content_engine._drop_unrelated_references(
-        references, _KNEE_RESULT, _KNEE_BRIEF
-    )
-
-    assert [reference["url"] for reference in kept] == ["https://health.kdca.go.kr/a"]
-
-
-def test_related_kdca_reference_survives_a_differently_worded_article():
-    """요통 문서는 허리 디스크 글의 근거다 — 표기가 달라도 떨구지 않는다."""
-    result = {
-        "title": "허리디스크 초기 증상과 치료 방법",
-        "body": "## 허리디스크는 왜 생기나요\n설명입니다.",
-    }
-    references = [{"title": "질병관리청 국가건강정보포털 - 요통", "url": "https://health.kdca.go.kr/c"}]
-
-    kept = content_engine._drop_unrelated_references(
-        references, result, {"target_keyword": "허리디스크"}
-    )
-
-    assert kept == references
-
-
-def test_english_and_institution_only_titles_are_never_dropped():
-    references = [
-        {"title": "Mayo Clinic - Colorectal cancer", "url": "https://mayoclinic.org/x"},
-        {"title": "대한정형외과학회 진료 지침", "url": "https://koa.or.kr/y"},
-    ]
-
-    kept = content_engine._drop_unrelated_references(
-        references, _KNEE_RESULT, _KNEE_BRIEF
-    )
-
-    assert kept == references
-
-
-def test_curated_catalog_reference_is_trusted_without_scoring():
-    curated_url = next(iter(content_engine.CURATED_SOURCE_URLS))
-    references = [{"title": "대장암 예방 안내", "url": curated_url}]
-
-    kept = content_engine._drop_unrelated_references(
-        references, _KNEE_RESULT, _KNEE_BRIEF
-    )
-
-    assert kept == references
-
-
-def test_fetched_page_title_can_reveal_an_unrelated_reference():
-    references = [{"title": "권위 기관 자료", "url": "https://health.kdca.go.kr/d"}]
-
-    kept = content_engine._drop_unrelated_references(
-        references,
-        _KNEE_RESULT,
-        _KNEE_BRIEF,
-        {"https://health.kdca.go.kr/d": "대장암 | 국가건강정보포털"},
-    )
-
-    assert kept == []
-
-
-def test_html_page_title_is_extracted_from_an_already_fetched_response():
-    response = SimpleNamespace(
-        text="<html><head><title>  요통 |\n 국가건강정보포털 </title></head><body>x</body></html>"
-    )
-
-    assert content_engine._html_page_title(response) == "요통 | 국가건강정보포털"
-    assert content_engine._html_page_title(SimpleNamespace()) == ""
+# 실제 문서 판정(라벨 제외·빈 템플릿·soft-404·통계 페이지·판단 불가)은
+# tests/test_reference_verification.py가 맡는다. 여기서는 생성 경로에 연결됐는지만 본다.
 
 
 async def test_unrelated_reference_is_dropped_without_rejecting_the_article(monkeypatch):
@@ -1692,20 +1629,31 @@ async def test_unrelated_reference_is_dropped_without_rejecting_the_article(monk
         return _FakeResponse()
 
     monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
-
-    result = await content_engine.generate_content(
-        hospital,
-        ContentType.DISEASE,
-        content_brief={
-            "target_keyword": "무릎 통증",
-            "target_query": "노원 무릎 통증 병원",
-        },
+    # 두 라벨 모두 공개됐던 모양 그대로다. 판정은 실제 문서 제목·본문으로만 한다 —
+    # 대장암 링크는 라벨이 아니라 실제 문서가 대장암이라서 빠진다.
+    fetcher = PageFetcher()
+    fetcher.add_document(
+        "https://health.kdca.go.kr/knee", "무릎관절염 | 국가건강정보포털 | 질병관리청"
     )
+    fetcher.add_document("https://cancer.go.kr/colon", "대장암 | 국가암정보센터")
+
+    with override_reference_fetcher(fetcher):
+        result = await content_engine.generate_content(
+            hospital,
+            ContentType.DISEASE,
+            content_brief={
+                "target_keyword": "무릎 통증",
+                "target_query": "노원 무릎 통증 병원",
+            },
+        )
 
     assert calls == 1, "주제 불일치 자료는 재생성을 사지 않는다"
     assert [reference["url"] for reference in result["references"]] == [
         "https://health.kdca.go.kr/knee"
     ]
+    checks = {check["url"]: check for check in result["reference_checks"]}
+    assert checks["https://health.kdca.go.kr/knee"]["verdict"] == "pass"
+    assert checks["https://cancer.go.kr/colon"]["reason"] == "unrelated_topic"
 
 
 async def _capture_user_message(monkeypatch, *, existing_titles, brief) -> str:
@@ -1814,14 +1762,17 @@ async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monk
         )
 
     monkeypatch.setattr(content_engine.client.chat.completions, "create", fake_create)
+    fetcher = PageFetcher()
+    fetcher.add_document(reference["url"], "이명 | 국가건강정보포털 | 질병관리청")
 
     # 재작성 루프는 유형과 무관하게 같다. FAQ 필수 필드가 거절 순서를 가리지 않도록
     # 여기서는 DISEASE로 같은 왕복을 재현한다.
-    await content_engine.generate_content(
-        hospital,
-        ContentType.DISEASE,
-        content_brief={"target_keyword": "이명", "target_query": "노원 이명 병원"},
-    )
+    with override_reference_fetcher(fetcher):
+        await content_engine.generate_content(
+            hospital,
+            ContentType.DISEASE,
+            content_brief={"target_keyword": "이명", "target_query": "노원 이명 병원"},
+        )
 
     assert len(user_messages) == 3
     # 2회차는 빈 references 지적만 봤다.
@@ -1834,30 +1785,66 @@ async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monk
 @pytest.mark.parametrize(
     "content_type", sorted(content_engine.REFERENCES_REQUIRED_TYPES, key=str)
 )
-def test_reference_required_type_prompts_do_not_license_an_empty_list(content_type):
-    """유형 템플릿은 시스템 규칙보다 뒤에 읽힌다 — 여기서 "없으면 생략"이라 하면 그쪽을 따른다."""
+def test_reference_required_type_prompts_point_to_verified_documents(content_type):
+    """유형 템플릿은 시스템 규칙보다 뒤에 읽힌다 — 검증 문서 우선·추측 금지를 같은 말로 한다."""
     prompt = content_engine.TYPE_PROMPTS[content_type]
 
-    assert "references에 최소 1개" in prompt
-    assert "지어내지" in prompt
-    assert "없으면 생략" not in prompt
+    assert "검증된 문서" in prompt
+    assert "추측해 URL을" in prompt
+    assert "references에 최소 1개" not in prompt
 
 
-def test_the_static_block_never_resolves_uncertainty_into_an_empty_reference_list():
-    """유형 템플릿만 고치면 부족하다 — 정적 블록이 여전히 '빼라'고 말하면 그쪽이 이긴다.
+# 2026-09-29 점검: "확신 없는 URL은 다른 문서로 바꿔 넣어라·비면 저장되지 않는다"는 지시가
+# 모델에게 문서 번호·메뉴 코드를 추측한 URL을 쓰게 했다. 어느 프롬프트 표면에도 남지 않는다.
+FABRICATION_PRESSURE_PHRASES = (
+    "확신이 있는 다른 공신력 문서",
+    "확신이 있는 다른 문서로 바꿔 넣으세요",
+    "확신이 있는 다른 문서를",
+    "빈 references는 저장되지 않습니다",
+    "references가 비면 글 전체가 저장되지 않습니다",
+    "references를 비우라는 뜻이 아닙니다",
+    "비우는 선택지는 없으니",
+    "다른 문서를 쓰세요",
+    "최소 1개",
+)
 
-    작성 원칙 3과 출처 화이트리스트는 항상 실리는 블록이고 날조 금지와 함께 읽히므로
-    "확신이 없으면 인용하지 않습니다"·"그 항목만 빼세요"는 작가가 references를 통째로
-    비우는 정당한 근거가 된다. 확신이 없을 때의 해결은 생략이 아니라 교체여야 한다.
-    """
+
+def _prompt_surfaces() -> dict[str, str]:
+    surfaces = {
+        "static_system_block": content_engine.STATIC_SYSTEM_BLOCK,
+        "reference_rule": content_engine.TYPE_PROMPT_REFERENCE_RULE,
+        "empty_reference_cause": content_engine._empty_reference_cause(None),
+        "dropped_reference_cause": content_engine._empty_reference_cause(
+            ["health.kdca.go.kr(제목·본문이 빈 페이지)"]
+        ),
+    }
+    for content_type, prompt in content_engine.TYPE_PROMPTS.items():
+        surfaces[f"type:{content_type.value}"] = prompt
+    for content_type in ContentType:
+        schema = content_engine._article_tool_schema(content_type)
+        surfaces[f"schema:{content_type.value}"] = json.dumps(schema, ensure_ascii=False)
+    return surfaces
+
+
+@pytest.mark.parametrize("phrase", FABRICATION_PRESSURE_PHRASES)
+def test_no_prompt_surface_pressures_the_writer_to_invent_a_url(phrase):
+    offending = [name for name, text in _prompt_surfaces().items() if phrase in text]
+
+    assert offending == []
+
+
+def test_schema_never_forces_a_minimum_number_of_references():
+    for content_type in ContentType:
+        schema = content_engine._article_tool_schema(content_type)
+        assert "minItems" not in schema["properties"]["references"], content_type
+
+
+def test_the_static_block_tells_the_writer_to_omit_rather_than_guess():
     block = content_engine.STATIC_SYSTEM_BLOCK
 
-    assert "확신이 없으면 인용하지 않습니다" not in block
-    assert "차라리 인용을 생략하세요" not in block
-    assert "**그 항목만 빼세요**" not in block
-    assert "확신이 있는 다른 공신력 문서" in block
-    assert "확신이 있는 다른 문서로 바꿔 넣으세요" in block
-    assert "빈 references는 저장되지 않습니다" in block
+    assert "그 URL을 그대로" in block
+    assert "확실하지 않은 항목은 빼" in block
+    assert "발행을 보류" in block
 
 
 async def test_prompt_keeps_the_plain_duplicate_list_for_other_keywords(monkeypatch):
@@ -1869,50 +1856,6 @@ async def test_prompt_keeps_the_plain_duplicate_list_for_other_keywords(monkeypa
 
     assert "중복 금지" in message
     assert "질문·관점·독자 상황을 다르게" not in message
-
-
-async def test_broken_reference_check_returns_page_titles_without_extra_requests(
-    monkeypatch,
-):
-    import httpx
-
-    references = [
-        {"title": "권위 자료", "url": "https://health.kdca.go.kr/ok"},
-        {"title": "없는 자료", "url": "https://health.kdca.go.kr/missing"},
-    ]
-    requested: list[str] = []
-
-    class _Client:
-        def __init__(self, *_args, **_kwargs):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return False
-
-        async def get(self, url, headers):
-            requested.append(url)
-            status = 404 if url.endswith("missing") else 200
-            return httpx.Response(
-                status,
-                request=httpx.Request("GET", url),
-                headers={"content-type": "text/html"},
-                text="<html><head><title>요통 | 국가건강정보포털</title></head></html>",
-            )
-
-    monkeypatch.setattr(content_engine.httpx, "AsyncClient", _Client)
-
-    kept, titles = await content_engine._drop_definitively_broken_references(
-        references, with_titles=True
-    )
-
-    assert kept == [references[0]]
-    assert titles == {"https://health.kdca.go.kr/ok": "요통 | 국가건강정보포털"}
-    assert requested == [reference["url"] for reference in references], (
-        "제목 수집이 추가 요청을 만들면 안 된다"
-    )
 
 
 async def test_dropping_every_reference_falls_back_to_the_curated_catalog(monkeypatch):
@@ -1966,10 +1909,7 @@ async def test_dropping_every_reference_falls_back_to_the_curated_catalog(monkey
 
     assert calls == 1, "치유 경로는 공급자를 다시 부르지 않는다"
     assert result["references"]
-    assert all(
-        reference["url"] in content_engine.CURATED_SOURCE_URLS
-        for reference in result["references"]
-    )
+    assert all(reference["url"] in CURATED_SOURCE_URLS for reference in result["references"])
 
 
 async def test_a_dropped_reference_reaches_the_next_round_as_a_named_cause(monkeypatch):

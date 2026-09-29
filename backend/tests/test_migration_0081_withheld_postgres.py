@@ -15,6 +15,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
@@ -59,6 +61,12 @@ def _migration_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _script_directory() -> ScriptDirectory:
+    config = Config()
+    config.set_main_option("script_location", str(_BACKEND_ROOT / "alembic"))
+    return ScriptDirectory.from_config(config)
 
 
 def _labels(connection) -> set[str]:
@@ -144,10 +152,24 @@ def test_0081_adds_withheld_and_refuses_to_downgrade_while_rows_use_it() -> None
             # 의도한 no-op: 값은 남지만 어떤 행도 쓰지 않는다.
             assert "WITHHELD" in _labels(connection)
 
-        # IF NOT EXISTS — 남은 값 위로 다시 올려도 멱등하다.
-        again = _alembic("upgrade", "head")
+        # IF NOT EXISTS — 남은 값 위로 0081을 다시 올려도 멱등하다. head는 뒤 리비전이 생기면
+        # 움직이므로 이 리비전을 이름으로 올린다.
+        again = _alembic("upgrade", _REVISION)
         assert again.returncode == 0, again.stderr
         with engine.connect() as connection:
             assert _version(connection) == _REVISION
+            assert "WITHHELD" in _labels(connection)
+
+        # 뒤 리비전도 그 위로 올라가고, 0081은 head까지의 체인 안에 남는다.
+        to_head = _alembic("upgrade", "head")
+        assert to_head.returncode == 0, to_head.stderr
+        script = _script_directory()
+        with engine.connect() as connection:
+            current = _version(connection)
+            assert current == script.get_current_head()
+            assert _REVISION in {
+                revision.revision for revision in script.iterate_revisions(current, "base")
+            }
+            assert "WITHHELD" in _labels(connection)
     finally:
         engine.dispose()

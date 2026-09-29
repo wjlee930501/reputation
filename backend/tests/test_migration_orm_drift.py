@@ -55,3 +55,12 @@ def test_content_items_has_content_focus_topic_column():
     assert isinstance(column.type, sa.String)
     assert column.type.length == 40
     assert column.nullable is True
+
+
+def test_content_items_has_reference_checks_column():
+    """migration 0082: content_items.reference_checks (JSON/JSONB, nullable)."""
+    table = Base.metadata.tables["content_items"]
+    assert "reference_checks" in table.c
+    column = table.c["reference_checks"]
+    assert isinstance(column.type, sa.JSON)
+    assert column.nullable is True

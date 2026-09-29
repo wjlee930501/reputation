@@ -10,7 +10,6 @@ import re
 import uuid
 from urllib.parse import urlparse
 
-import httpx
 from tenacity import (
     before_sleep_log,
     retry,
@@ -24,26 +23,27 @@ from app.models.content import ContentType
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services import llm_structured_output, openrouter
-from app.services.content_similarity import (
-    REFERENCE_TOKEN_MATCH_MIN,
-    normalize_topic_text,
-    reference_topic_match,
-)
+from app.services.content_similarity import normalize_topic_text
 from app.services.essence_engine import (
     MANDATORY_AVOID_MESSAGES,
     MANDATORY_MEDICAL_AD_RISK_RULES,
     effective_safety_policy,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
+from app.services.reference_verification import (
+    REFERENCE_GENERATION_MAX_FETCHES,
+    VERDICT_PASS,
+    ReferenceVerifier,
+    article_topic_terms,
+    curated_sources_for_topic,
+    drop_notes,
+    merge_reference_checks,
+)
 from app.utils.authority_sources import (
-    CURATED_SOURCE_URLS,
     infer_source_type,
     institution_label_for_url,
-    institution_title_tokens,
     is_citable_reference_url,
-    is_whitelisted_url,
     render_source_hint_block,
-    select_curated_authority_sources,
 )
 from app.utils.medical_filter import (
     check_forbidden_content_fields,
@@ -214,10 +214,10 @@ _SYSTEM_PROMPT_TEMPLATE = """\
      특정 퍼센트("재발률 40%", "환자 70%")를 **특정 기관에 귀속시키지 마세요.** 확실한 출처가 없으면
      수치를 빼고 정성적으로 적습니다("상당수", "대부분", "드뭅니다").
    - 인용: 실재하고 그 내용을 실제로 담은 공신력 기관(국가암정보센터·질병관리청·대한대장항문학회 진료지침 등)만,
-     references에 실제 URL과 함께. 어떤 URL에 확신이 없으면 **그 URL 대신 확신이 있는 다른 공신력 문서**를 넣으세요.
-     '확신이 없다'는 references를 비우라는 뜻이 아닙니다 — 참고자료가 필수인 유형에서 빈 references는 저장되지 않습니다.
-   - **"Mayo Clinic은 40% 낮춘다" 같은 [기관명+미검증 수치] 조합은 절대 금지.** 그 수치를 본문에서 빼고,
-     references에는 이 글의 주제를 다루는 확실한 문서를 넣으세요.
+     references에 실제 URL과 함께. [현재 주제와 일치하는 검증된 문서]가 주어지면 그 URL을 그대로 쓰세요.
+     문서 번호(cntnts_sn·contentId 등)나 메뉴 코드를 추측해 URL을 만들지 마세요 — 확실하지 않은 항목은 빼는 것이 맞습니다.
+     목록 밖 URL은 시스템이 실제로 열어 제목·본문이 이 글의 주제와 맞는지 확인한 것만 남깁니다.
+   - **"Mayo Clinic은 40% 낮춘다" 같은 [기관명+미검증 수치] 조합은 절대 금지.** 그 수치를 본문에서 빼세요.
 4. **명확한 문장**: 모호한 홍보 문구를 피하고, 의학적 불확실성·개인차는 정확히 표시합니다.
 5. **읽기 쉬운 구조**: 페이지 제목은 시스템이 별도 H1으로 표시하므로 본문에는 `# H1`을 절대 넣지 말고,
    `## H2` 소제목부터 사용합니다. 단계·비교가 실제 이해에 도움이 될 때만 목록이나 표를 씁니다.
@@ -379,13 +379,12 @@ _FAQ_ARTICLE_INPUT_SCHEMA = {
 }
 
 
-def _with_non_empty_references(schema: dict) -> dict:
-    """빈 references 가 공급자 쪽에서 유효하지 않게 한다.
+def _with_verified_reference_guidance(schema: dict) -> dict:
+    """참고자료 필수 유형의 스키마 설명 — 개수를 강제하지 않는다.
 
-    `references`는 이미 required 지만 JSON Schema 에서 빈 배열은 유효하다. 그래서
-    참고자료가 필수인 유형에서도 `references: []` 가 정상 도구 호출로 돌아오고, 우리는
-    이미 결제한 글 한 편을 GEO 하드 거절로 버린 뒤 같은 계약을 산문으로만 다시 말해
-    재작성을 산다. 검증기가 요구하는 것을 스키마도 요구하게 해 그 왕복을 없앤다.
+    예전에는 `minItems: 1`로 빈 배열을 공급자 쪽에서 막았다. 확신 있는 문서가 없는 작가에게
+    그 제약은 URL을 지어내라는 압력이었다(2026-09-29 점검: 문서 번호·메뉴 코드 추측).
+    비어 있으면 시스템이 검증된 목록에서 채우거나 발행을 보류한다.
     """
 
     references = schema["properties"]["references"]
@@ -395,20 +394,19 @@ def _with_non_empty_references(schema: dict) -> dict:
             **schema["properties"],
             "references": {
                 **references,
-                "minItems": 1,
                 "description": (
-                    "이 글의 주제를 다루는 화이트리스트 도메인의 실제 문서. 최소 1개가 "
-                    "필요하며 빈 배열은 저장되지 않는다."
+                    "이 글의 주제를 다루는 화이트리스트 도메인의 실제 문서. 주어진 검증 문서 "
+                    "URL을 우선 쓰고, 문서 번호·메뉴 코드를 추측한 URL은 넣지 않는다."
                 ),
             },
         },
     }
 
 
-_REFERENCE_REQUIRED_ARTICLE_INPUT_SCHEMA = _with_non_empty_references(
+_REFERENCE_REQUIRED_ARTICLE_INPUT_SCHEMA = _with_verified_reference_guidance(
     ARTICLE_TOOL["input_schema"]
 )
-_FAQ_ARTICLE_INPUT_SCHEMA = _with_non_empty_references(_FAQ_ARTICLE_INPUT_SCHEMA)
+_FAQ_ARTICLE_INPUT_SCHEMA = _with_verified_reference_guidance(_FAQ_ARTICLE_INPUT_SCHEMA)
 
 
 def _article_tool_schema(content_type: ContentType) -> dict:
@@ -468,16 +466,16 @@ TYPE_PROMPT_BODY_LENGTH_RULE = (
     f"본문 분량은 공백·마크다운 기호를 제외한 **{_BODY_LENGTH_BAND}**입니다. 순수 글자 수 "
     f"{CONTENT_BODY_MIN_CHARS:,}자 미만은 저장되지 않으므로 각 H2 절을 고르게 채우세요."
 )
-# 같은 이유로 참고자료도 유형 템플릿이 검증기와 같은 말을 해야 한다. FAQ·질환·시술·지역
-# 템플릿은 인용을 "공신력 출처가 있을 때만 … 없으면 생략"이라고 말해 왔다. 그 문장은
-# 시스템 규칙("최소 1개 반드시")보다 뒤에, 더 구체적인 지시로 읽혀 빈 references를
-# 허락했고, 그것이 곧 GEO 게이트의 하드 거절이었다.
+# 같은 이유로 참고자료도 유형 템플릿이 검증기와 같은 말을 해야 한다. 2026-09-29 점검 뒤로
+# 그 말은 "검증된 문서를 그대로 쓰고, 추측한 URL은 넣지 말라"다 — "최소 1개·비면 저장되지
+# 않는다·다른 문서로 바꿔 넣으라"는 압력이 문서 번호·메뉴 코드를 추측한 URL을 낳았다.
+# 비면 시스템이 검증된 목록으로 채우거나 발행을 보류한다(`_verify_generated_references`).
 TYPE_PROMPT_REFERENCE_RULE = (
-    "화이트리스트 도메인에서 확인할 수 있는 **실제 문서 URL을 references에 최소 1개** "
-    "넣으세요 — 빈 references는 저장되지 않습니다. 본문에 인용할 수치가 없어도 이 글의 "
-    "주제를 다루는 공신력 문서(질병관리청 국가건강정보포털·학회 진료지침·국가암정보센터 "
-    "등)를 근거로 답니다. URL을 지어내지 말고, 확신이 없으면 확신이 있는 다른 문서를 "
-    "쓰세요. 이 글의 주제와 다른 질환·시술을 다루는 문서는 넣지 마세요."
+    "references에는 이 글의 주제를 다루는 공신력 문서(질병관리청 국가건강정보포털·학회 "
+    "진료지침·국가암정보센터 등)의 **실제 문서 URL**을 답니다. 아래 [현재 주제와 일치하는 "
+    "검증된 문서]가 있으면 그 URL을 그대로 쓰세요. 문서 번호·메뉴 코드를 추측해 URL을 "
+    "만들지 말고, 확실하지 않은 항목은 빼세요(목록 밖 URL은 시스템이 실제로 열어 확인한 "
+    "것만 남깁니다). 이 글의 주제와 다른 질환·시술을 다루는 문서는 넣지 마세요."
 )
 
 _TYPE_PROMPT_TEMPLATES = {
@@ -919,8 +917,8 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     and generated heading define the topic; incidental body phrases must not change
     its evidence set.
 
-    병원 단위로 승인된 `must_use_messages`도 같은 이유로 여기 들어오지 않는다
-    (`_hospital_wide_reference_focus` 참고).
+    병원 단위로 승인된 `must_use_messages`도 같은 이유로 여기 들어오지 않는다 — 그 문구는
+    병원의 모든 글에 같이 실리므로 이 글의 주제가 아니다.
     """
     values: list[object] = []
     if content_brief:
@@ -944,45 +942,24 @@ def _curated_reference_focus(content_brief: dict | None, result: dict | None = N
     return " ".join(str(value) for value in values if value)
 
 
-def _hospital_wide_reference_focus(content_brief: dict | None) -> str:
-    """Approved hospital-wide messaging, usable only when the slot names no topic.
-
-    `must_use_messages`는 병원마다 한 벌이고 그 병원의 모든 글에 같이 실린다. 그 문장이
-    이 글과 다른 질환·시술을 말하면(간 질환 글을 쓰는 병원의 승인 문구에 "대장내시경·
-    용종절제"가 있는 식) 카탈로그는 그 질환의 검증된 문서를 고르고, 작가는 그것을
-    "현재 주제와 일치하는 검증된 문서 — 이 URL만 인용"으로 받는다. 큐레이션 URL은 주제
-    불일치 제거를 면제받으므로 그 근거는 끝까지 남아 독립 검수의 REFERENCE 지적
-    (CONTENT_AI_HARD_FINDING)이 된다. 주제 불일치 제거(`_article_topic_terms`)가 병원
-    단위 문구를 글의 주제로 보지 않는 것과 같은 이유로, 선택에서도 이 문구는 글 자신의
-    주제가 없을 때의 마지막 단서일 뿐이다.
-    """
-
-    if not content_brief:
-        return ""
-    return " ".join(
-        str(message)
-        for message in (content_brief.get("must_use_messages") or [])
-        if message
-    )
-
-
 def _topic_aligned_curated_sources(
     content_brief: dict | None, result: dict | None = None
 ) -> list[dict[str, str]]:
-    """Curated documents for *this article's* topic, not for the hospital at large."""
+    """Curated documents for *this article's* topic, not for the hospital at large.
 
-    sources = select_curated_authority_sources(
-        _curated_reference_focus(content_brief, result)
-    )
-    if sources:
-        return sources
-    if normalize_topic_text((content_brief or {}).get("target_keyword")):
-        # 이 슬롯은 다룰 임상 키워드를 스스로 갖고 있다. 카탈로그에 그 주제의 문서가
-        # 없다는 뜻이므로, 병원의 다른 진료 문구로 근거를 대신 채우지 않는다. 빈 결과는
-        # 기존 GEO 하드 거절 → 재작성 경로로 가서 작가가 주제에 맞는 출처를 찾는다.
-        return []
-    return select_curated_authority_sources(
-        _hospital_wide_reference_focus(content_brief)
+    글 자신의 주제(`_curated_reference_focus`)로만 카탈로그 키워드를 채점한다. 예전에는
+    그 결과가 비면 병원 단위 승인 문구(must_use_messages)로 다시 골랐는데, 그 문구가 다른
+    질환·시술을 말하면 무관한 수기 문서가 근거로 붙었다(2026-09-29 점검 원인 6). 이번 생성에서
+    실제 검증에 실패한 수기 URL은 다시 고르지 않는다.
+    """
+
+    failed = {
+        str(check.get("url") or "")
+        for check in ((result or {}).get("reference_checks") or [])
+        if isinstance(check, dict) and check.get("verdict") != VERDICT_PASS
+    }
+    return curated_sources_for_topic(
+        [_curated_reference_focus(content_brief, result)], exclude_urls=failed
     )
 
 
@@ -1192,25 +1169,9 @@ async def _generate_content_attempt(
     reference_drops = _reference_drop_notes(
         raw_references, result["references"], _REFERENCE_DROP_NOT_CITABLE
     )
-    page_titles: dict[str, str] = {}
-    if settings.APP_ENV == "production" and result["references"]:
-        fetched_from = result["references"]
-        result["references"], page_titles = await _drop_definitively_broken_references(
-            fetched_from, with_titles=True
-        )
-        reference_drops += _reference_drop_notes(
-            fetched_from, result["references"], _REFERENCE_DROP_BROKEN
-        )
-    if result["references"]:
-        # 주제와 어긋나는 근거는 거절 사유가 아니라 제거 대상이다. 비면 아래 GEO 게이트가
-        # 기존대로 MissingCitableReferencesError → 큐레이션 치유 경로로 보낸다.
-        scored_from = result["references"]
-        result["references"] = _drop_unrelated_references(
-            scored_from, result, content_brief, page_titles
-        )
-        reference_drops += _reference_drop_notes(
-            scored_from, result["references"], _REFERENCE_DROP_UNRELATED
-        )
+    reference_drops += await _verify_generated_references(
+        result, content_brief, required=content_type in REFERENCES_REQUIRED_TYPES
+    )
 
     return _validate_generated_result(
         result,
@@ -1856,7 +1817,7 @@ def _validate_geo(
         raise MissingCitableReferencesError(
             (
                 f"GEO hard-fail: references is empty for {content_type.value} "
-                f"— 학회/KDCA 출처 1개 이상 필수. "
+                f"— 검증을 통과한 학회/KDCA 출처 없음. "
                 f"{_empty_reference_cause(reference_drop_notes)}"
             ),
             result,
@@ -1899,9 +1860,8 @@ def _validate_geo(
 
 
 # 참고자료가 단계별로 제거되는 사유. 재작성 지적에 그대로 실린다.
+# 이후 단계(실제 문서 검증)의 사유는 `reference_verification.REASON_LABELS`가 가진다.
 _REFERENCE_DROP_NOT_CITABLE = "화이트리스트 밖이거나 문서 URL이 아님"
-_REFERENCE_DROP_BROKEN = "접속했더니 문서가 없음"
-_REFERENCE_DROP_UNRELATED = "이 글의 주제와 다른 문서"
 
 # 지적 한 줄은 `_validator_remediation_findings`에서 240자로 잘린다. 핵심 문장이
 # 잘려 나가지 않도록 제외 목록의 개수와 호스트 길이를 여기서 묶는다.
@@ -1939,17 +1899,19 @@ def _reference_drop_notes(before: object, after: list[dict], reason: str) -> lis
 
 
 def _empty_reference_cause(notes: list[str] | None) -> str:
-    """빈 references의 원인을 작가가 다음 회차에 고칠 수 있는 문장으로 바꾼다."""
+    """빈 references의 원인을 작가가 다음 회차에 고칠 수 있는 문장으로 바꾼다.
+
+    다른 URL을 "바꿔 넣으라"고 말하지 않는다 — 그 지시가 문서 번호·메뉴 코드를 추측한
+    URL을 낳았다. 제외 사유를 알리고, 검증 문서가 없으면 추측하지 말라고 말한다.
+    """
     dropped = [note for note in (notes or []) if note][:_REFERENCE_DROP_NOTE_LIMIT]
+    guidance = "검증 문서가 없으면 추측한 URL 대신 비워 두세요."
     if not dropped:
-        return (
-            "직전 응답은 references를 비워 보냈습니다 — 비우는 선택지는 없으니 이 글의 "
-            "주제를 다루는 화이트리스트 문서 URL을 1개 이상 넣으세요."
-        )
+        return f"주어진 검증 문서 URL을 쓰고, {guidance}"
     return (
-        "직전 응답의 출처는 모두 제외됐습니다("
+        "직전 출처는 모두 제외됐습니다("
         + ", ".join(dropped)
-        + "). 같은 사유를 피해 다른 문서를 쓰세요."
+        + f"). 같은 주소·번호를 다시 쓰지 말고, {guidance}"
     )
 
 
@@ -1983,137 +1945,43 @@ def _article_topic_terms(result: dict, content_brief: dict | None) -> list[str]:
 
     본문 전체를 쓰지 않는다 — 스쳐 지나가는 문장 하나가 주제를 바꿔 엉뚱한 자료를
     붙잡아 두는 일을 막기 위해, 승인된 측정 키워드·질의와 제목·첫 H2·진료 서사만 쓴다.
+    발행 게이트·관리자 수정이 같은 규칙(`reference_verification.article_topic_terms`)을 쓴다.
     """
-    terms: list[str] = [str(result.get("title") or "")]
-    body = str(result.get("body") or "")
-    first_h2 = re.search(r"^##\s+(.+)$", body, flags=re.MULTILINE)
-    if first_h2:
-        terms.append(first_h2.group(1))
-    brief = content_brief or {}
-    terms.append(str(brief.get("target_keyword") or ""))
-    terms.append(str(brief.get("target_query") or ""))
-    query_target = brief.get("query_target")
-    if isinstance(query_target, dict):
-        terms.append(str(query_target.get("name") or ""))
-    narrative = brief.get("treatment_narrative")
-    if isinstance(narrative, dict):
-        terms.append(str(narrative.get("treatment") or ""))
-        terms.append(str(narrative.get("angle") or ""))
-    elif narrative:
-        terms.append(str(narrative))
-    return [term for term in terms if term.strip()]
-
-
-def _reference_is_unrelated(
-    reference: dict,
-    page_title: str,
-    article_terms: list[str],
-    keyword: str,
-) -> bool:
-    """이 참고자료가 글의 주제와 명백히 어긋나는가.
-
-    보수적으로만 참이 된다. 핵심 키워드를 제목에 담고 있거나, 주제를 판단할 한글
-    토큰이 없거나(영문 전용 국제 자료), 토큰 하나라도 주제 풀과 절반 이상 겹치면
-    무관이 아니다. 애매하면 남긴다 — 근거를 잘못 버리면 발행이 막힌다.
-    """
-    if reference.get("url") in CURATED_SOURCE_URLS:
-        return False
-    text = f"{reference.get('title') or ''} {page_title or ''}".strip()
-    if keyword and keyword in normalize_topic_text(text):
-        return False
-    score = reference_topic_match(
-        text, article_terms, ignored_tokens=institution_title_tokens()
+    return article_topic_terms(
+        title=result.get("title"),
+        body=result.get("body"),
+        content_brief=content_brief,
+        faq_question=result.get("faq_question"),
     )
-    return score is not None and score < REFERENCE_TOKEN_MATCH_MIN
 
 
-def _drop_unrelated_references(
-    references: list[dict],
-    result: dict,
-    content_brief: dict | None,
-    page_titles: dict[str, str] | None = None,
-) -> list[dict]:
-    """주제와 어긋나는 참고자료를 제거한다 — 거절이 아니라 제거다.
+async def _verify_generated_references(
+    result: dict, content_brief: dict | None, *, required: bool
+) -> list[str]:
+    """생성 결과의 참고자료를 실제 문서로 검증하고 결과를 `reference_checks`에 남긴다.
 
-    비게 되면 기존 큐레이션 치유(_heal_from_curated_catalog) 또는
-    MissingCitableReferencesError 경로가 그대로 적용된다.
+    수기 목록 URL은 카탈로그 주제 대조로, 목록 밖 URL은 실제 GET(제목·본문)로만 남는다.
+    모델이 붙인 제목(라벨)은 판정에 쓰지 않는다. 전부 빠지고 참고자료가 필수인 유형이면
+    이 글의 주제로 채점한 수기 목록에서 채우고, 그 후보도 같은 검증을 거친다. 그래도 없으면
+    GEO 게이트가 MissingCitableReferencesError로 거절한다(지어내지 않는다).
+    반환값은 제거된 항목의 '호스트(사유)' — 재작성 지적에 실린다.
     """
-    article_terms = _article_topic_terms(result, content_brief)
-    if not article_terms:
-        return references
-    keyword = normalize_topic_text((content_brief or {}).get("target_keyword"))
-    kept: list[dict] = []
-    for reference in references:
-        page_title = (page_titles or {}).get(str(reference.get("url") or ""), "")
-        if _reference_is_unrelated(reference, page_title, article_terms, keyword):
-            logger.info(
-                "Dropping a reference unrelated to the article topic: host=%s",
-                urlparse(str(reference.get("url") or "")).hostname,
-            )
-            continue
-        kept.append(reference)
-    return kept
 
-
-_HTML_TITLE_PATTERN = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-
-
-def _html_page_title(response: object) -> str:
-    """이미 받아 둔 응답 본문에서 <title>만 뽑는다 — 추가 요청은 하지 않는다."""
-    text = getattr(response, "text", "") or ""
-    if not isinstance(text, str):
-        return ""
-    match = _HTML_TITLE_PATTERN.search(text[:20000])
-    if not match:
-        return ""
-    return " ".join(match.group(1).split())[:200]
-
-
-async def _drop_definitively_broken_references(
-    references: list[dict], *, with_titles: bool = False
-) -> list[dict] | tuple[list[dict], dict[str, str]]:
-    """확정적으로 없는 URL과 화이트리스트 밖으로 이탈한 리다이렉트를 제거한다.
-
-    권위 사이트가 봇 요청을 403/429로 막거나 일시 네트워크 오류가 난 경우에는 정상
-    자료를 잘못 버리지 않기 위해 유지한다. 404/410과 최종 호스트 이탈만 실패로 본다.
-
-    `with_titles=True`면 이미 받은 응답에서 뽑은 <title>을 함께 돌려준다. 주제 적합성
-    판정이 모델이 지어낸 제목 대신 실제 문서 제목도 볼 수 있게 하기 위한 것이며,
-    요청을 추가로 보내지 않는다.
-    """
-    kept: list[dict] = []
-    page_titles: dict[str, str] = {}
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "Chrome/126.0.0.0 Safari/537.36"
-        )
-    }
-    async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
-        for reference in references:
-            url = reference["url"]
-            try:
-                response = await client.get(url, headers=headers)
-            except (httpx.TimeoutException, httpx.NetworkError):
-                kept.append(reference)
-                continue
-            if response.status_code in {404, 410}:
-                logger.warning(
-                    "Dropping broken authority reference status=%s host=%s",
-                    response.status_code,
-                    urlparse(url).hostname,
-                )
-                continue
-            final_url = str(response.url)
-            if not is_whitelisted_url(final_url):
-                logger.warning(
-                    "Dropping authority reference redirected outside whitelist: host=%s",
-                    urlparse(final_url).hostname,
-                )
-                continue
-            if with_titles:
-                title = _html_page_title(response)
-                if title:
-                    page_titles[url] = title
-            kept.append(reference)
-    return (kept, page_titles) if with_titles else kept
+    topic_terms = _article_topic_terms(result, content_brief)
+    verifier = ReferenceVerifier(max_fetches=REFERENCE_GENERATION_MAX_FETCHES)
+    checks: list[dict] = []
+    notes: list[str] = []
+    if result["references"]:
+        outcome = await verifier.verify(result["references"], topic_terms=topic_terms)
+        result["references"] = outcome.kept
+        checks.extend(outcome.checks)
+        notes = drop_notes(outcome.failed_checks(), host_chars=_REFERENCE_DROP_HOST_CHARS)
+    result["reference_checks"] = merge_reference_checks(checks)
+    if not result["references"] and required:
+        candidates = _topic_aligned_curated_sources(content_brief, result)
+        if candidates:
+            filled = await verifier.verify(candidates, topic_terms=topic_terms)
+            result["references"] = filled.kept
+            checks.extend(filled.checks)
+            result["reference_checks"] = merge_reference_checks(checks)
+    return notes

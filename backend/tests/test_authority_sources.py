@@ -8,6 +8,7 @@ os.environ.setdefault("SYNC_DATABASE_URL", "sqlite:///tmp/reputation-test.db")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 
 from app.utils.authority_sources import (  # noqa: E402
+    CURATED_MEDICAL_SOURCE_PAGES,
     SOURCE_TYPE_CLINIC,
     SOURCE_TYPE_GOV_GLOBAL,
     SOURCE_TYPE_GOV_KR,
@@ -245,21 +246,53 @@ def test_select_curated_authority_sources_does_not_misclassify_patient_status_as
     assert selected_document_ids.isdisjoint(trauma_document_ids)
 
 
-def test_source_hint_block_requires_a_document_url_instead_of_an_empty_list():
-    """프롬프트가 "비워 두세요"라고 말하고 검증기가 빈 references를 버리던 모순을 없앤다.
+def test_source_hint_block_prefers_verified_documents_and_forbids_guessing():
+    """확신 없는 URL을 '다른 문서로 바꿔 넣으라'는 압력이 문서 번호 추측을 낳았다(2026-09-29).
 
-    작가는 지시를 그대로 따랐을 뿐인데 6개 유형에서 완성된 글이 hard-fail 됐다
-    (2026-09-12 수율 계획 §1.1).
+    검증된 목록 URL을 그대로 쓰게 하고, 확실하지 않은 항목은 빼게 한다. 비면 시스템이
+    검증된 목록으로 채우거나 발행을 보류한다 — 작가가 지어낼 이유가 없다.
     """
     block = render_source_hint_block()
 
-    assert "references를 비워 두세요" not in block
-    assert "시스템이 검증된 문서를 보완합니다" not in block
-    assert "최소 1개" in block
-    # 확신 없는 URL을 지어내라는 뜻이 아니다 — 그 항목만 빼라고 말해야 한다.
-    assert "지어내지 말고" in block
+    assert "그 URL을 그대로" in block
+    assert "추측해 URL을 지어내지 마세요" in block
+    assert "확실하지 않은 항목은 빼세요" in block
+    for pressure in (
+        "최소 1개",
+        "빈 references는 저장되지 않습니다",
+        "확신이 있는 다른 문서로 바꿔 넣으세요",
+        "references가 비면 글 전체가 저장되지 않습니다",
+    ):
+        assert pressure not in block
 
 
 def test_source_hint_block_is_byte_stable_for_the_prompt_cache():
     """정적 시스템 블록의 접두어라 호출마다 같아야 한다(시각·UUID 금지)."""
     assert render_source_hint_block() == render_source_hint_block()
+
+
+@pytest.mark.parametrize(
+    "topic",
+    ["위내시경 전 확인할 점", "어깨 통증 진료 안내", "손목 통증과 저림", "무릎 관절 주사 치료"],
+)
+def test_generic_words_do_not_pull_an_unrelated_curated_document(topic):
+    """'내시경'·'통증'·'관절'만으로 대장내시경·요통·디스크 문서를 붙이지 않는다(점검 후속)."""
+    urls = [source["url"] for source in select_curated_authority_sources(topic, limit=10)]
+
+    assert not any(
+        marker in url for url in urls for marker in ("cntnts_sn=3796", "cntnts_sn=3348")
+    )
+    colonoscopy = [
+        entry["url"]
+        for entry in CURATED_MEDICAL_SOURCE_PAGES
+        if "대장내시경" in str(entry["title"])
+    ]
+    assert not set(colonoscopy) & set(urls)
+
+
+def test_specific_spine_and_colonoscopy_words_still_select_their_documents():
+    spine = [s["url"] for s in select_curated_authority_sources("허리 디스크와 요통 관리", limit=10)]
+    assert any("cntnts_sn=3796" in url for url in spine)
+    assert any("cntnts_sn=3348" in url for url in spine)
+    colon = select_curated_authority_sources("대장내시경 전 장정결 방법")
+    assert colon

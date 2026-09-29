@@ -250,7 +250,10 @@ def assess_content_publication(
     if not has_required_references(item):
         return _blocked(
             code="MISSING_REFERENCES",
-            message="권위 있는 참고 자료가 1개 이상 필요합니다.",
+            message=(
+                "공신력 있는 참고 자료를 확보하지 못했습니다 — 실제 문서 확인을 통과한 "
+                "출처가 1개 이상 필요합니다."
+            ),
             item=item,
             philosophy=philosophy,
         )
