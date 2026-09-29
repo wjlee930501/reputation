@@ -4554,13 +4554,19 @@ def generate_claimed_content_item(
 
         hospital = item.hospital
         claim_time = item.generation_claimed_at
-        run = _resolve_claimed_item_run(db, self, item)
-        recorder = GenerationItemRecorder(db, run)
         try:
+            run = _resolve_claimed_item_run(db, self, item)
+            recorder = GenerationItemRecorder(db, run)
             state, code, message = _run_generation_item(
                 db, recorder, item, hospital, notify=notify
             )
+        except BaseException:
+            # 예외로 빠져나온 실행의 미커밋 쓰기는 버린다. 깨진 트랜잭션을 그대로 두면
+            # 아래 해제 UPDATE도 실패해 claim이 TTL까지 남는다.
+            db.rollback()
+            raise
         finally:
+            # 어떤 종료든 이 실행의 lease는 여기서 끝난다(토큰이 다르면 0행).
             released = release_unfinished_claims(
                 db,
                 [item_id],
@@ -5644,6 +5650,8 @@ def generate_content_image(self, content_id: str):
             )
             if written == 0:
                 db.rollback()
+                release_generation_claim(db, item_id, claim_token)
+                db.commit()
                 finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
                 logger.warning(
                     "Image write-back skipped for %s — status changed during regeneration",
