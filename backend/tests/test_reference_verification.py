@@ -15,6 +15,7 @@ import pytest
 
 from app.services import reference_verification as rv
 from app.services.reference_verification import (
+    REASON_EXCLUDED_SOURCE,
     REFERENCE_CHECK_CLOCK_SKEW,
     REFERENCE_CHECK_MAX_AGE,
     REFERENCE_CHECK_REUSE_WINDOW,
@@ -32,7 +33,7 @@ from app.services.reference_verification import (
     reference_url_fingerprint,
     topic_fingerprint,
 )
-from app.utils.authority_sources import CURATED_SOURCE_URLS
+from app.utils.authority_sources import CURATED_SOURCE_URLS, reference_exclusion_reason
 from tests.reference_audit_fixture import (
     EXPECT_PASS,
     EXPECT_REMOVED,
@@ -69,7 +70,10 @@ def _row_id(row: dict) -> str:
 async def test_audit_fixture_row_is_judged_like_the_audit(row):
     check = await verify_audit_row(row)
 
-    if row["category"] in EXPECT_PASS:
+    if reference_exclusion_reason(row["url"]) is not None:
+        # 1차 점검 뒤 2차 점검(김실장)이 제외한 주소 — 사람의 나중 판정이 이긴다.
+        assert check["verdict"] == "fail" and check["reason"] == REASON_EXCLUDED_SOURCE, check
+    elif row["category"] in EXPECT_PASS:
         assert check["verdict"] == "pass", check
     else:
         assert row["category"] in EXPECT_REMOVED
@@ -85,8 +89,21 @@ def test_audit_fixture_covers_every_categorised_row():
     assert counts == {"정상": 48, "빈 페이지": 37, "주제 불일치": 22, "죽은 링크": 4}
     # 사람 확인 필요 254행은 판정 대상이 아니다(정보 제공용 개수만 남긴다).
     assert manifest["informational_human_review_rows"] == 254
-    # 정상 48건은 전부 수기 목록, 불량 63건 중 수기 목록은 국가암검진사업 1건뿐이다.
-    assert all(row["url"] in CURATED_SOURCE_URLS for row in manifest["rows"] if row["category"] == "정상")
+    # 정상 48건은 제외 목록으로 옮긴 주소(대장암 3797)를 빼면 전부 수기 목록, 불량 63건 중
+    # 수기 목록은 국가암검진사업 1건뿐이다.
+    assert all(
+        row["url"] in CURATED_SOURCE_URLS
+        for row in manifest["rows"]
+        if row["category"] == "정상" and reference_exclusion_reason(row["url"]) is None
+    )
+    excluded_normal = [
+        row["url"]
+        for row in manifest["rows"]
+        if row["category"] == "정상" and reference_exclusion_reason(row["url"]) is not None
+    ]
+    assert excluded_normal == [
+        "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797"
+    ] * 6
     bad_curated = [
         row["url"]
         for row in manifest["rows"]

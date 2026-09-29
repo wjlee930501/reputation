@@ -54,6 +54,11 @@ BODY_REPAIR_CODES = frozenset(
     }
 )
 
+# 사람이 정하는 참고자료 보류의 표시(`MISSING_REFERENCES` 시도 기록). 진료비·병원 선택 글은
+# 공신력 있는 문서가 본질적으로 없어 작가가 다시 써도 풀리지 않는다 — 수리 세션 예산이 아니라
+# 저장된 `OPERATOR_REQUIRED`가 이 보류를 소유한다(`reference_requirement.references_left_to_operator`).
+OPERATOR_DECIDES_KEY = "operator_decides"
+
 
 class GenerationRetryClass(StrEnum):
     INPUT_CHANGE_REQUIRED = "INPUT_CHANGE_REQUIRED"
@@ -276,10 +281,12 @@ def _earliest_eligible_date(
     if (
         attempt.get("reason") in BODY_REPAIR_CODES
         and retry_class != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+        and not attempt.get(OPERATOR_DECIDES_KEY)
     ):
         # 이 코드들의 복구는 재시도 클래스가 아니라 수리 세션 예산이 소유한다
         # (`retry_class_for`의 기본값은 다른 용도로 그대로 둔다). 다만 승인된 입력 자체가
-        # 틀렸다는 판정(INPUT_CHANGE_REQUIRED)은 작가 세션으로 고칠 수 없는 종착이다.
+        # 틀렸다는 판정(INPUT_CHANGE_REQUIRED)과 사람이 정하는 참고자료 보류는 작가 세션으로
+        # 고칠 수 없는 종착이다.
         return next_repair_session_date(repair_state, observed)
     if retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE.value:
         try:

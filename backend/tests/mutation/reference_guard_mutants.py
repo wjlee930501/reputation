@@ -71,6 +71,8 @@ T_EXCL = "tests/test_reference_exclusions.py"
 T_PUB = "tests/test_content_publication.py"
 REQ = "app/services/reference_requirement.py"
 CP = "app/services/content_publication.py"
+RETRY = "app/workers/generation_retry_policy.py"
+T_OPD = "tests/test_reference_operator_decides.py"
 
 
 @dataclass(frozen=True)
@@ -305,7 +307,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "발행 직전 0개면 수기 목록으로 치유",
         f"{RP}:refresh_publication_references",
         RP,
-        "    if not kept and required:",
+        "    if not kept and required and not operator_decides:",
         "    if False:",
         (f"{T_GATE}::test_nothing_left_is_healed_from_the_topic_matched_curated_list",),
     ),
@@ -746,8 +748,9 @@ MUTANTS: tuple[Mutant, ...] = (
         "P2 넓은 카탈로그 키워드 축소 — '통증'·'관절'(요통)",
         f"{AS}:CURATED_MEDICAL_SOURCE_PAGES",
         AS,
-        '        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "요통", "허리통증"),',
-        '        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "관절", "통증"),',
+        '            "요통",\n            "허리통증",\n            "도수치료",',
+        '            "요통",\n            "허리통증",\n            "관절",\n            "통증",\n'
+        '            "도수치료",',
         (f"{T_AS}::test_generic_words_do_not_pull_an_unrelated_curated_document",),
     ),
     Mutant(
@@ -1157,6 +1160,154 @@ MUTANTS: tuple[Mutant, ...] = (
         "apply_publication_reference_refresh(item, reference_refresh)\n            if False:",
         (f"{T_GATE}::test_publisher_does_not_report_an_outage_for_a_row_changed_during_the_get",),
         "리뷰어는 equivalent로 봤다 — 미룸 결과면 이미 없는 주소를 '기관 사이트 접속 불가'로 알린다",
+    ),
+    # ── r3 (2026-09-29 김실장 결정): 요통·디스크 좁은 키워드, 3797 제외, 진료비·병원 선택 글 ──
+    Mutant(
+        "1a 요통(3796) 좁은 키워드 — 단독 '허리'·'도수'는 허리둘레·빈도수·알코올 도수에 걸린다",
+        f"{AS}:CURATED_MEDICAL_SOURCE_PAGES",
+        AS,
+        '            "허리통증",\n            "도수치료",\n            "허리디스크",\n            "허리다리",\n',
+        '            "허리통증",\n            "도수",\n            "허리",\n',
+        (f"{T_AS}::test_short_waist_or_degree_words_do_not_pull_low_back_or_disc_documents",),
+    ),
+    Mutant(
+        "1a 디스크(3348) 좁은 키워드 — 단독 '허리'·'도수' 금지",
+        f"{AS}:CURATED_MEDICAL_SOURCE_PAGES",
+        AS,
+        '            "디스크",\n            "도수치료",\n            "허리디스크",\n            "허리다리",\n',
+        '            "디스크",\n            "도수",\n            "허리",\n',
+        (f"{T_AS}::test_short_waist_or_degree_words_do_not_pull_low_back_or_disc_documents",),
+    ),
+    Mutant(
+        "1a 요통(3796) 도수치료·허리디스크·허리다리 복원 (도수치료 글이 요통 문서를 받는다)",
+        f"{AS}:CURATED_MEDICAL_SOURCE_PAGES",
+        AS,
+        '            "허리통증",\n            "도수치료",\n            "허리디스크",\n            "허리다리",\n',
+        '            "허리통증",\n',
+        (f"{T_AS}::test_manual_therapy_and_lumbar_disc_titles_select_low_back_and_disc_documents",),
+    ),
+    Mutant(
+        "2 cancer_seq=3797 제외 (www·비www 모두 GET 0회 excluded_source)",
+        f"{AS}:REFERENCE_URL_EXCLUSIONS",
+        AS,
+        '        "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",\n'
+        '        "topic": "대장암",',
+        '        "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797x",\n'
+        '        "topic": "대장암",',
+        (
+            f"{T_EXCL}::test_colon_cancer_3797_is_excluded_without_a_fetch",
+            f"{T_EXCL}::test_exclusion_list_is_the_reviewed_six_with_a_reason_each",
+        ),
+    ),
+    Mutant(
+        "3 분류 — 제목·FAQ 질문의 비용 말(진료비·비용·가격·비급여·본인부담)",
+        f"{REQ}:topic_without_authoritative_source",
+        REQ,
+        "    if any(term in text for term in _COST_TOPIC_TERMS):",
+        "    if False:",
+        (f"{T_OPD}::test_title_classification_is_deterministic_and_conservative",),
+    ),
+    Mutant(
+        "3 분류 — 떨어진 고르기 말은 대상(병원·전문의·진료과)이 같은 제목에 있을 때만",
+        f"{REQ}:topic_without_authoritative_source",
+        REQ,
+        "        and any(noun in text for noun in _PROVIDER_NOUNS)\n",
+        "",
+        (f"{T_OPD}::test_title_classification_is_deterministic_and_conservative",),
+    ),
+    Mutant(
+        "3 분류 — 필수가 아닌 글(순수 공지)은 사람 결정 대상이 아니다",
+        f"{REQ}:references_left_to_operator",
+        REQ,
+        "    return references_required(item) and (\n        topic_without_authoritative_source(",
+        "    return (\n        topic_without_authoritative_source(",
+        (f"{T_OPD}::test_a_post_whose_references_are_not_required_is_never_left_to_the_operator",),
+    ),
+    Mutant(
+        "3 발행 치유 금지 — 진료비·병원 선택 글을 수기 목록으로 채우지 않는다",
+        f"{RP}:refresh_publication_references",
+        RP,
+        "    operator_decides = not kept and references_left_to_operator(item)",
+        "    operator_decides = False",
+        (
+            f"{T_OPD}::test_scheduled_post_is_held_for_the_operator_without_a_curated_fill",
+            f"{T_OPD}::test_published_post_is_never_changed_and_restore_reports_it",
+        ),
+    ),
+    Mutant(
+        "3 생성 치유 금지 — 검증 뒤 채우기·GEO 거절 뒤 채우기",
+        f"{CE}:_topic_aligned_curated_sources",
+        CE,
+        "    if result and topic_without_authoritative_source(",
+        "    if False and topic_without_authoritative_source(",
+        (f"{T_OPD}::test_generation_never_fills_the_post_from_the_curated_list",),
+    ),
+    Mutant(
+        "3 OPERATOR_REQUIRED 라우팅 — 시도 기록에 사람 결정 표시",
+        f"{TASKS}:_remember_generation_attempt",
+        TASKS,
+        "    if operator_decides_references(reason, item):",
+        "    if False:",
+        (f"{T_OPD}::test_scheduled_post_is_held_for_the_operator_without_a_curated_fill",),
+    ),
+    Mutant(
+        "3 OPERATOR_REQUIRED 라우팅 — 표시가 수리 세션 예산의 소유를 끊는다(다음 시도 없음)",
+        f"{RETRY}:_earliest_eligible_date",
+        RETRY,
+        "        and not attempt.get(OPERATOR_DECIDES_KEY)\n",
+        "",
+        (f"{T_OPD}::test_scheduled_post_is_held_for_the_operator_without_a_curated_fill",),
+    ),
+    Mutant(
+        "3 OPERATOR_REQUIRED 라우팅 — 배포 전 기록도 게이트가 다시 쓴다",
+        f"{TASKS}:_record_gate_blocker_decision",
+        TASKS,
+        "    if stored_reason == code and bool(stored.get(OPERATOR_DECIDES_KEY)) == (\n"
+        "        operator_decides_references(code, item)\n    ):",
+        "    if stored_reason == code:",
+        (f"{T_OPD}::test_a_stored_record_from_before_the_rule_is_rewritten_as_operator_work",),
+    ),
+    Mutant(
+        "3 자동 본문 수리(LLM) 금지 — 복구 스윕이 작가를 부르지 않는다",
+        f"{TASKS}:_generate_single_content_item",
+        TASKS,
+        "            and not operator_decides_references(stored_assessment.code, item)\n",
+        "",
+        (f"{T_OPD}::test_recovery_sweep_never_buys_a_body_repair_for_the_hold",),
+    ),
+    Mutant(
+        "3 인시던트 — 스윕이 소유하지 않는다(RETRYING 아님)",
+        f"{INCIDENT}:scheduled_recovery_owns_blocker",
+        INCIDENT,
+        "    if operator_decides_references(code, item):\n        return False\n",
+        "",
+        (f"{T_OPD}::test_the_hold_is_an_open_operator_incident_with_its_own_copy",),
+    ),
+    Mutant(
+        "3 인시던트 — 종착(기한 없는 OPEN)",
+        f"{INCIDENT}:generation_block_is_terminal",
+        INCIDENT,
+        "    if operator_decides_references(code, item):\n        return True\n",
+        "",
+        (f"{T_OPD}::test_the_hold_is_an_open_operator_incident_with_its_own_copy",),
+    ),
+    Mutant(
+        "3 인시던트 문구 — '자동 복구가 다시 씁니다'가 아니라 사람의 결정",
+        f"{INCIDENT}:open_generation_incident",
+        INCIDENT,
+        "                if operator_decides_references(code, swapped_item)\n",
+        "                if False\n",
+        (f"{T_OPD}::test_the_hold_is_an_open_operator_incident_with_its_own_copy",),
+    ),
+    Mutant(
+        "3 공개 글 불변 — 공개 글에는 재검증 결과를 적용하지 않는다",
+        f"{RP}:apply_publication_reference_refresh",
+        RP,
+        "    if not reference_snapshot_matches(item, refresh.snapshot):\n        return False\n"
+        "    status = _status_value(item)\n    if (",
+        "    if not reference_snapshot_matches(item, refresh.snapshot):\n        return False\n"
+        "    status = _status_value(item)\n    if False and (",
+        (f"{T_OPD}::test_published_post_is_never_changed_and_restore_reports_it",),
     ),
 )
 

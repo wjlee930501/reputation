@@ -21,6 +21,16 @@
 필수다. 모델이 쓴 도메인 루트 URL 2개가 빠져 0개가 되면 생성은 수기 목록 치유 또는 참고자료
 거절, 발행은 치유 또는 MISSING_REFERENCES 보류가 된다.
 
+진료비·병원 선택 글(2026-09-29 김실장 결정): 비용·가격이나 병원·전문의·진료과 고르기를 다루는
+글에는 그 주장을 뒷받침할 공신력 있는 문서가 본질적으로 없다. 수기 목록에서 채우면 주제만 겹치는
+질환 문서가 가짜 근거로 붙는다(예: '도수치료 비용' 글에 요통 문서). 그래서 이 글들은 참고자료가
+전부 빠져도 수기 목록 치유를 하지 않고, 발행 보류를 자동 본문 수리가 아니라 사람의 결정
+(`OPERATOR_REQUIRED`)으로 보낸다(`references_left_to_operator`). 필수 여부는 그대로다 — 통과한
+참고자료가 있으면 그대로 발행한다. 판정은 제목만 본다 — 본문·측정 질문·FAQ 질문은 보지 않는다.
+'간질환 치료 비용' 질문에 답한 '간질환 환자 진료 흐름' 글은 의료 글이고, FAQ 질문은 측정 질문을
+그대로 옮기는 일이 많다('당뇨 진료를 받으려는데 하남시 어느 병원으로 가야 해?' → 제목 '하남시 당뇨
+진료 병원 — 혈당 확인부터 합병증 검사까지').
+
 이 모듈은 가벼워야 한다 — content_engine·content_publication·reference_publication이 모두 읽는다.
 """
 
@@ -29,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from app.models.content import ContentType
+from app.services.content_similarity import normalize_topic_text
 
 # 참고 자료가 반드시 필요한 콘텐츠 유형. **생성 검증과 발행 게이트가 같은 값을 써야 한다** —
 # 따로 두면 생성은 통과하고 발행만 막혀 슬롯이 영구히 비는 유형이 생긴다(NOTICE가 그랬다).
@@ -98,4 +109,83 @@ def references_required(item: object) -> bool:
         getattr(item, "content_type", None),
         content_brief=getattr(item, "content_brief", None),
         query_target_id=getattr(item, "query_target_id", None),
+    )
+
+
+# ── 공신력 있는 문서가 본질적으로 없는 주제(진료비·병원 선택) ─────────────────────────────
+# 비교는 `normalize_topic_text`(소문자, 한글·영숫자만) 뒤의 부분 문자열이다.
+NO_SOURCE_TOPIC_COST = "COST"
+NO_SOURCE_TOPIC_PROVIDER_CHOICE = "PROVIDER_CHOICE"
+# 비용 글. 제목에 한 번이라도 나오면 비용 글이다(본문은 보지 않는다).
+_COST_TOPIC_TERMS = ("진료비", "비용", "가격", "비급여", "본인부담")
+# 고르는 대상. '진료과목'은 '진료과'를 담지만 '진료과목선택'을 잡으려고 따로 둔다. 진료과
+# 이름은 끝말(내과·외과·의학과…)로 묶는다 — '신경외과'·'소화기내과'·'마취통증의학과'.
+_PROVIDER_NOUNS = (
+    "병원",
+    "의원",
+    "전문의",
+    "진료과목",
+    "진료과",
+    "내과",
+    "외과",
+    "의학과",
+    "청소년과",
+    "부인과",
+    "피부과",
+    "이비인후과",
+    "안과",
+    "치과",
+)
+# 대상 바로 뒤에 붙는 고르기 말('병원 추천'·'신경외과 선택'·'병원을 고르는').
+_PROVIDER_CHOICE_TERMS = tuple(
+    f"{noun}{verb}"
+    for noun in _PROVIDER_NOUNS
+    for verb in ("추천", "선택", "을선택", "를선택", "고르", "을고르", "를고르")
+) + tuple(
+    f"{which}{noun}"
+    for which in ("어느", "어떤")
+    for noun in ("병원", "의원", "전문의", "진료과")
+)
+# 대상과 떨어져 나오는 고르기 말. 같은 제목에 대상이 있을 때만 병원 선택 글이다
+# ('경산 내과 병원, … 어떻게 선택할까요?'). '치료 선택'·'수술 선택'은 여기 없다.
+_DETACHED_CHOICE_TERMS = (
+    "기준으로선택",
+    "기준으로비교",
+    "어떻게선택",
+    "어떻게고르",
+    "어떻게골라",
+    "골라야",
+    "고르는법",
+    "고르는방법",
+    "어디가좋",
+    "비교해야",
+    "비교기준",
+    "선택고민",
+)
+
+
+def topic_without_authoritative_source(title: object) -> str | None:
+    """제목이 진료비(`COST`)나 병원 선택(`PROVIDER_CHOICE`) 글인가. 아니면 None."""
+
+    text = normalize_topic_text(title)
+    if not text:
+        return None
+    if any(term in text for term in _COST_TOPIC_TERMS):
+        return NO_SOURCE_TOPIC_COST
+    if any(term in text for term in _PROVIDER_CHOICE_TERMS) or (
+        any(term in text for term in _DETACHED_CHOICE_TERMS)
+        and any(noun in text for noun in _PROVIDER_NOUNS)
+    ):
+        return NO_SOURCE_TOPIC_PROVIDER_CHOICE
+    return None
+
+
+def references_left_to_operator(item: object) -> bool:
+    """참고자료가 필수인데 공신력 있는 문서가 본질적으로 없는 주제의 글인가.
+
+    이 글은 수기 목록 치유를 하지 않고, 참고자료가 비면 자동 본문 수리 대신 사람이 정한다.
+    """
+
+    return references_required(item) and (
+        topic_without_authoritative_source(getattr(item, "title", None)) is not None
     )

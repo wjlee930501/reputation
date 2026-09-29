@@ -84,6 +84,17 @@ _ORTHOPEDIC_FAQ_KEYWORDS = (
     "통증종류별",
 )
 
+# '간질환' 단독은 공백·구두점을 지운 비교에서 "회복 기간 — 질환과"(기간질환)에도 붙는다
+# (6b70fe41 고압산소 글이 간염 문서를 받는 것을 재생에서 확인) — 뒤에 오는 말까지 묶는다.
+_LIVER_DISEASE_KEYWORDS = (
+    "간질환환자",
+    "간질환치료",
+    "간질환진료",
+    "간질환전문",
+    "간질환검사",
+    "만성간질환",
+)
+
 # 브라우징 없이 생성하는 모델에게 URL을 추측시키면 존재하는 다른 질환 문서나 기관
 # 홈페이지가 인용되는 문제가 생긴다. 아래 목록은 사람이 실제 제목과 URL을 확인한
 # 특정 문서만 담는 작은 신뢰 카탈로그다. 키워드가 맞는 문서가 있을 때는 모델이 만든
@@ -162,8 +173,18 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
     },
     {
         # '통증'·'관절'은 어깨·손목·무릎 글에도 요통 문서를 붙였다(2026-09-29 점검 후속) —
-        # 허리·척추를 말하는 글에만 붙는다.
-        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "요통", "허리통증"),
+        # 허리·척추·도수치료를 말하는 글에만 붙는다. 선택은 공백·구두점을 지운 부분 문자열
+        # 비교라 단독 '허리'·'도수'는 허리둘레(대사증후군)·빈도수·알코올/안경 도수 글에도
+        # 걸린다 — '도수치료'·'허리디스크'·'허리다리'로 묶는다(추간판탈출증 항목도 같다).
+        "keywords": (
+            *_ORTHOPEDIC_FAQ_KEYWORDS,
+            "척추",
+            "요통",
+            "허리통증",
+            "도수치료",
+            "허리디스크",
+            "허리다리",
+        ),
         "title": "질병관리청 국가건강정보포털 — 요통",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3796",
     },
@@ -173,7 +194,15 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5969",
     },
     {
-        "keywords": (*_ORTHOPEDIC_FAQ_KEYWORDS, "척추", "추간판", "디스크"),
+        "keywords": (
+            *_ORTHOPEDIC_FAQ_KEYWORDS,
+            "척추",
+            "추간판",
+            "디스크",
+            "도수치료",
+            "허리디스크",
+            "허리다리",
+        ),
         "title": "질병관리청 국가건강정보포털 — 추간판탈출증(디스크)",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3348",
     },
@@ -258,11 +287,6 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "keywords": ("대장용종", "대장폴립", "용종절제", "용종"),
         "title": "질병관리청 국가건강정보포털 — 대장용종",
         "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531",
-    },
-    {
-        "keywords": ("대장암", "대장암검진", "암검진"),
-        "title": "국가암정보센터 — 대장암",
-        "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
     },
     {
         "keywords": ("대장암", "대장암검진", "암검진"),
@@ -357,6 +381,93 @@ CURATED_MEDICAL_SOURCE_PAGES: tuple[dict[str, object], ...] = (
         "keywords": ("고압산소",),
         "title": "MedlinePlus — Hyperbaric oxygen therapy (고압산소치료)",
         "url": "https://medlineplus.gov/ency/article/002375.htm",
+    },
+    # ── 2026-09-29 보류 재생(PR #177 리뷰) 후속: 보류를 만든 주제군의 문서. 실제 GET(200·같은 주소·
+    # 본문 1,500자 이상·문서 주제 확인)과 오프라인 검증기 통과를 확인했다
+    # (/workspace/ref-url-guard/r2/vetting). 영문 문서는 제목으로 주제를 판정할 수 없어
+    # (undeterminable) 목록에 있어야만 남는다 — 한국어 키워드로 글 주제에 묶는다. 오프라인
+    # fixture: tests/fixtures/reference_audit_20260929/catalog_seed_r3.json.
+    {
+        "keywords": ("예방접종", "백신접종", "예방주사"),
+        "title": "MedlinePlus — Vaccines (immunizations) (예방접종)",
+        "url": "https://medlineplus.gov/ency/article/002024.htm",
+    },
+    {
+        "keywords": ("인플루엔자", "독감"),
+        "title": "질병관리청 국가건강정보포털 — 인플루엔자",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5232",
+    },
+    {
+        "keywords": ("대상포진", "수두"),
+        "title": "질병관리청 국가건강정보포털 — 수두와 대상포진",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6679",
+    },
+    {
+        "keywords": ("자궁경부암백신", "자궁경부암예방접종", "HPV백신", "사람유두종바이러스"),
+        "title": "질병관리청 국가건강정보포털 — 자궁경부암 백신",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3987",
+    },
+    {
+        "keywords": (*_LIVER_DISEASE_KEYWORDS, "바이러스성간염", "간염바이러스"),
+        "title": "질병관리청 국가건강정보포털 — 바이러스성 간염",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6553",
+    },
+    {
+        "keywords": ("B형간염",),
+        "title": "질병관리청 국가건강정보포털 — B형간염",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6672",
+    },
+    {
+        "keywords": ("간경변", "간경화", *_LIVER_DISEASE_KEYWORDS),
+        "title": "질병관리청 국가건강정보포털 — 간경변증",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6560",
+    },
+    {
+        "keywords": ("간경변", "간경화"),
+        "title": "서울아산병원 질환백과 — 간경화",
+        "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=30480",
+    },
+    {
+        "keywords": (*_LIVER_DISEASE_KEYWORDS, "급성간염", "만성간염"),
+        "title": "서울아산병원 질환백과 — 간염",
+        "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31687",
+    },
+    {
+        "keywords": ("건강검진", "일반건강검진", "국가건강검진"),
+        "title": "국민건강보험공단 — 일반건강검진 실시안내",
+        "url": "https://www.nhis.or.kr/nhis/healthin/wbhaca04500m01.do",
+    },
+    {
+        "keywords": ("건강검진", "일반건강검진", "국가건강검진", "검진결과"),
+        "title": "질병관리청 국가건강정보포털 — 알아두면 도움이 되는 건강검진",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/ntcnInfo/healthSourc/thtimtCntnts/thtimtCntntsView.do?thtimt_cntnts_sn=7",
+    },
+    {
+        "keywords": ("건강검진", "국가건강검진", "암검진"),
+        "title": "질병관리청 국가건강정보포털 — 건강검진(암 검진)",
+        "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5296",
+    },
+    {
+        "keywords": ("PRP", "자가혈", "혈소판풍부혈장"),
+        "title": "Cleveland Clinic — Platelet-Rich Plasma (PRP) Injection (자가혈 혈소판풍부혈장 주사)",
+        "url": "https://my.clevelandclinic.org/health/treatments/platelet-rich-plasma-prp-injection",
+    },
+    {
+        "keywords": ("수액", "정맥주사", "링거"),
+        "title": "Cleveland Clinic — IV Fluids (수액·정맥 수액 요법)",
+        "url": "https://my.clevelandclinic.org/health/treatments/21635-iv-fluids",
+    },
+    # 영문 MedlinePlus 문서는 목록 밖이면 undeterminable로 빠졌다(cbdafc4e CT, 42ef2b13 골밀도).
+    # 'CT' 단독은 소문자 부분 문자열 비교에서 injection·doctor 같은 영어 단어에 걸린다.
+    {
+        "keywords": ("CT검사", "CT촬영", "컴퓨터단층촬영", "전산화단층촬영"),
+        "title": "MedlinePlus — CT Scans (CT·컴퓨터단층촬영)",
+        "url": "https://medlineplus.gov/ctscans.html",
+    },
+    {
+        "keywords": ("골다공증", "골밀도"),
+        "title": "MedlinePlus — Osteoporosis (골다공증·골밀도)",
+        "url": "https://medlineplus.gov/osteoporosis.html",
     },
 )
 
@@ -480,6 +591,14 @@ REFERENCE_URL_EXCLUSIONS: tuple[dict[str, str], ...] = (
         "url": "https://www.cancer.go.kr/lay1/S1T274C286/contents.do",
         "topic": "치료 > 수술",
         "reason": "국가암정보센터 허브 페이지 — 제목(breadcrumb)만 있고 본문이 비어 있다",
+    },
+    {
+        "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+        "topic": "대장암",
+        "reason": (
+            "200·같은 주소지만 제목이 breadcrumb뿐이고 본문(요약설명)이 얇다 — 2차 점검 verify "
+            "ok=false(본문 1,110자, '대장암' 7회)"
+        ),
     },
 )
 

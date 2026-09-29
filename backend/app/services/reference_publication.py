@@ -13,6 +13,10 @@
   `reference_checks`에 남는다. "필수"는 `reference_requirement.references_required` 한 규칙이다
   — 의료 안내 유형과 의료 주제(측정 질문)를 실은 NOTICE. 필수인 글이 비어 있으면
   `publication_references_settled`가 False라 발행 경로가 반드시 치유를 먼저 시도한다(2af00d02).
+- 진료비·병원 선택 글(`reference_requirement.references_left_to_operator`)은 수기 목록에서 채우지
+  않는다 — 그 주제의 공신력 있는 문서가 본질적으로 없어 채우면 가짜 근거가 된다. 전부 빠지면
+  `operator_decides`로 비워 `MISSING_REFERENCES` 보류로 보내고, 그 보류는 자동 본문 수리가 아니라
+  사람의 결정(`OPERATOR_REQUIRED`)이다. 통과한 참고자료는 그대로 남는다.
 - 기관 사이트 장애(연결 오류·시간 초과·프로토콜·5xx·408/429)는 검증기 쪽에서 같은 URL·같은
   주제의 직전 통과 판정을 재사용한다. 재사용할 통과가 없는 목록 밖 URL이면 그 글을 **미룬다**
   (`deferred`, `site_unreachable_urls`) — 제거·치유·`MISSING_REFERENCES`·인시던트가 없고 다음
@@ -40,7 +44,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.post_publish_review_policy import AUTO_PUBLISHABLE_STATUSES
-from app.services.reference_requirement import references_required
+from app.services.reference_requirement import (
+    references_left_to_operator,
+    references_required,
+)
 from app.services.reference_verification import (
     REASON_MALFORMED_ENTRY,
     VERDICT_PASS,
@@ -123,6 +130,8 @@ class PublicationReferenceRefresh:
     already_current: bool = False
     # 일시 장애로 미룬 목록 밖 URL(비어 있으면 실행당 GET 한도로 미룬 것).
     site_unreachable_urls: tuple[str, ...] = ()
+    # 진료비·병원 선택 글이라 치유하지 않고 비웠다 — 보류는 사람이 정한다.
+    operator_decides: bool = False
 
 
 def publication_references_current(item: object, *, now: datetime | None = None) -> bool:
@@ -223,7 +232,8 @@ async def refresh_publication_references(
         )
     kept = outcome.kept
     healed = False
-    if not kept and required:
+    operator_decides = not kept and references_left_to_operator(item)
+    if not kept and required and not operator_decides:
         failed_urls = {
             str(check.get("url") or "")
             for check in checks
@@ -251,6 +261,7 @@ async def refresh_publication_references(
         checks=checks,
         references_changed=bool(malformed) or kept != references,
         healed=healed,
+        operator_decides=operator_decides,
     )
 
 

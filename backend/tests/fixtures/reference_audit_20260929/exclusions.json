@@ -46,6 +46,15 @@
    "article_title": "경산 내과 진료비, 증상 확인부터 검사까지 어떻게 정해지나요?",
    "evidence": "/workspace/ref-audit2-20260929/raw/html/07e181e23878104d.html",
    "html": "html/d6debc8b9e055aa3-r2.html.gz"
+  },
+  {
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "topic": "대장암",
+   "article_title": "대장암 조기검진 시기·증상·대장내시경 — 수원 장편한외과",
+   "evidence": "/workspace/ref-audit2-20260929/verify/cancer3797.html",
+   "html": "html/8f7be50a5c2c116a-r3.html.gz"
   }
  ]
 }

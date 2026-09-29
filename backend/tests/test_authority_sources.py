@@ -5,6 +5,7 @@ import pytest
 os.environ.setdefault("ADMIN_SECRET_KEY", "test-admin-key")
 os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 
+from app.services.reference_verification import curated_sources_for_topic  # noqa: E402
 from app.utils.authority_sources import (  # noqa: E402
     CURATED_MEDICAL_SOURCE_PAGES,
     SOURCE_TYPE_CLINIC,
@@ -294,3 +295,104 @@ def test_specific_spine_and_colonoscopy_words_still_select_their_documents():
     assert any("cntnts_sn=3348" in url for url in spine)
     colon = select_curated_authority_sources("대장내시경 전 장정결 방법")
     assert colon
+
+
+_LOW_BACK = "cntnts_sn=3796"
+_DISC = "cntnts_sn=3348"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "도수치료 후 회복 기간, 얼마나 걸리나요?",
+        "허리디스크 초기 증상",
+        "허리·다리 저림, 어느 과로 가야 하나요?",
+    ],
+)
+def test_manual_therapy_and_lumbar_disc_titles_select_low_back_and_disc_documents(title):
+    """'도수치료'·'허리디스크'·'허리다리'는 요통(3796)·추간판탈출증(3348) 문서를 붙인다
+    (2026-09-29 보류 재생: 도수치료 4편·허리 1편이 이 두 문서로 치유된다)."""
+    urls = [s["url"] for s in select_curated_authority_sources(title, limit=50)]
+    topic_urls = [s["url"] for s in curated_sources_for_topic([title], limit=50)]
+
+    for picked in (urls, topic_urls):
+        assert any(_LOW_BACK in url for url in picked), picked
+        assert any(_DISC in url for url in picked), picked
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "대사증후군 진단 기준 — 허리둘레·혈압·혈당",  # '허리' ⊂ 허리둘레
+        "허리둘레 줄이는 운동과 대사증후군",
+        "두통 빈도수가 늘었다면 확인할 것",  # '도수' ⊂ 빈도수
+        "알코올 도수와 간 건강",  # 알코올 도수
+        "안경 도수 맞추기",
+        "어깨 통증 원인",
+        "손목 통증 진료",
+        "무릎 통증 치료",
+    ],
+)
+def test_short_waist_or_degree_words_do_not_pull_low_back_or_disc_documents(title):
+    """선택은 공백·구두점을 지운 부분 문자열 비교다 — 단독 '허리'·'도수'나 '통증'만으로는
+    요통·디스크 문서를 붙이지 않는다."""
+    urls = [s["url"] for s in select_curated_authority_sources(title, limit=50)]
+    topic_urls = [s["url"] for s in curated_sources_for_topic([title], limit=50)]
+
+    for picked in (urls, topic_urls):
+        assert not any(marker in url for url in picked for marker in (_LOW_BACK, _DISC)), picked
+
+
+def test_low_back_and_disc_keywords_have_no_bare_waist_or_degree_word():
+    for marker in (_LOW_BACK, _DISC):
+        entry = next(e for e in CURATED_MEDICAL_SOURCE_PAGES if str(e["url"]).endswith(marker))
+        keywords = set(entry["keywords"])
+        assert {"도수치료", "허리디스크", "허리다리"} <= keywords
+        assert not keywords & {"허리", "도수", "통증", "관절"}
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("대상포진 예방접종 대상과 시기", {"002024.htm", "cntnts_sn=6679"}),
+        ("독감(인플루엔자) 예방접종, 언제 맞아야 하나요?", {"002024.htm", "cntnts_sn=5232"}),
+        ("자궁경부암 백신(HPV) 접종 안내", {"cntnts_sn=3987"}),
+        ("B형간염 보유자, 정기 검사는 얼마나 자주 받아야 하나요?", {"cntnts_sn=6672"}),
+        ("간경화(간경변) 진단 후 관리와 추적검사", {"cntnts_sn=6560", "contentId=30480"}),
+        (
+            "하남시 위례 간질환 환자 진료 흐름 — 초음파·혈액검사·추적",
+            {"cntnts_sn=6553", "cntnts_sn=6560", "contentId=31687"},
+        ),
+        ("PRP 자가혈 재생치료 비용", {"platelet-rich-plasma-prp-injection"}),
+        ("위례 수액치료 병원 — 개인 상태 평가 후 맞춤형 처방", {"21635-iv-fluids"}),
+        ("대구 동구 CT 검사, 신기한속내과연합의원에서 가능합니다", {"ctscans.html"}),
+        ("마산 골밀도검사, 병원 방문 전 내과에서 먼저 확인할 것들", {"osteoporosis.html"}),
+    ],
+)
+def test_held_topic_groups_select_their_new_documents(title, expected):
+    urls = [s["url"] for s in select_curated_authority_sources(title, limit=50)]
+
+    for marker in expected:
+        assert any(url.endswith(marker) for url in urls), (marker, urls)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "치질 수술 후 회복 기간 — 질환과 생활 관리",  # '간질환' ⊂ 기간질환
+        "고압산소치료 회복 기간 — 질환별 차이",
+        "주사 치료 전 의사(doctor)와 상담할 것",  # 'ct' ⊂ doctor·injection
+        "어깨 통증 원인",
+    ],
+)
+def test_new_documents_do_not_attach_to_unrelated_titles(title):
+    new_markers = (
+        "cntnts_sn=6553",
+        "cntnts_sn=6560",
+        "contentId=31687",
+        "ctscans.html",
+        "platelet-rich-plasma-prp-injection",
+    )
+    urls = [s["url"] for s in select_curated_authority_sources(title, limit=50)]
+
+    assert not any(url.endswith(marker) for url in urls for marker in new_markers), urls

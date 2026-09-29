@@ -5,8 +5,9 @@ fixture는 공개 참고자료 365건 중 판정이 확정된 111행(정상 48·
 필요 254행은 판정 대상이 아니다. 네트워크는 쓰지 않는다 — 가짜 fetcher가 fixture를 돌려준다.
 
 같은 디렉터리의 2차 점검(김실장, 같은 날 실제 GET) fixture:
-- `exclusions.json` — 제외 목록(`REFERENCE_URL_EXCLUSIONS`) 5개 주소의 실제 응답.
+- `exclusions.json` — 제외 목록(`REFERENCE_URL_EXCLUSIONS`) 6개 주소의 실제 응답.
 - `catalog_seed.json` — 수기 목록에 더한 15개 문서의 실제 응답.
+- `catalog_seed_r3.json` — 보류 재생 후속(같은 날 1회 GET)으로 더한 16개 문서의 실제 응답.
 """
 
 from __future__ import annotations
@@ -35,7 +36,7 @@ def load_manifest() -> dict[str, Any]:
 
 @lru_cache(maxsize=None)
 def load_review_rows(name: str) -> tuple[dict[str, Any], ...]:
-    """2차 점검 fixture(`exclusions`·`catalog_seed`)의 행."""
+    """2차 점검 fixture(`exclusions`·`catalog_seed`·`catalog_seed_r3`)의 행."""
 
     return tuple(json.loads((FIXTURE_DIR / f"{name}.json").read_text(encoding="utf-8"))["rows"])
 

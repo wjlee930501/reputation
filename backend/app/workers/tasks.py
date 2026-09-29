@@ -448,11 +448,13 @@ from app.workers.generation_incident_control import (
     generation_notify_requested,
     generation_safe_cause,
     open_generation_incident,
+    operator_decides_references,
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
     BODY_REPAIR_STATE_KEY,
+    OPERATOR_DECIDES_KEY,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
@@ -555,7 +557,7 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-09-29.1"
+GENERATION_GATE_CATALOG_VERSION = "2026-09-29.2"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -944,6 +946,10 @@ def _remember_generation_attempt(
         stored_diagnostic = dict(policy_rejection)
     if reason == _IMAGE_POLICY_REJECTION_CODE and isinstance(stored_diagnostic, dict):
         attempt[_IMAGE_POLICY_DIAGNOSTIC_KEY] = stored_diagnostic
+    if operator_decides_references(reason, item):
+        # 진료비·병원 선택 글의 참고자료 보류 — 분류는 이미 OPERATOR_REQUIRED다(`retry_class_for`).
+        # 이 표시가 수리 세션 예산의 소유를 끊어 다음 시도 시각이 없다(사람이 정한다).
+        attempt[OPERATOR_DECIDES_KEY] = True
     deadline = next_recovery_deadline(
         attempt,
         scheduled_date=getattr(item, "scheduled_date", None),
@@ -984,8 +990,11 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     슬롯이 매일 이미지를 다시 사고 매일 아침 기록을 잃는 조용한 루프가 그것이다.
     """
 
-    stored_reason = _stored_generation_attempt(item).get("reason")
-    if stored_reason == code:
+    stored = _stored_generation_attempt(item)
+    stored_reason = stored.get("reason")
+    if stored_reason == code and bool(stored.get(OPERATOR_DECIDES_KEY)) == (
+        operator_decides_references(code, item)
+    ):
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
         return
@@ -5829,7 +5838,11 @@ def _generate_single_content_item(
                 )
             else:
                 _clear_generation_attempt(db, item)
-        repairable_body = stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES or (
+        repairable_body = (
+            stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES
+            # 진료비·병원 선택 글의 참고자료 보류는 다시 써도 풀리지 않는다 — 사람이 정한다.
+            and not operator_decides_references(stored_assessment.code, item)
+        ) or (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             and (
                 _stored_ai_review_is_remediable(item)

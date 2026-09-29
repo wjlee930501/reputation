@@ -33,6 +33,7 @@ from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
 from app.services.reference_requirement import (
     REFERENCES_REQUIRED_TYPES,
     references_required_for,
+    topic_without_authoritative_source,
 )
 from app.services.reference_verification import (
     REFERENCE_GENERATION_MAX_FETCHES,
@@ -958,6 +959,11 @@ def _topic_aligned_curated_sources(
     실제 검증에 실패한 수기 URL은 다시 고르지 않는다.
     """
 
+    if result and topic_without_authoritative_source(result.get("title")):
+        # 진료비·병원 선택 글은 그 주장을 뒷받침할 공신력 있는 문서가 본질적으로 없다 —
+        # 주제만 겹치는 수기 문서로 채우지 않는다(`reference_requirement`). 생성의 두 치유
+        # (검증 뒤 채우기·GEO 거절 뒤 채우기)가 여기를 지난다. 발행 치유는 `reference_publication`.
+        return []
     failed = {
         str(check.get("url") or "")
         for check in ((result or {}).get("reference_checks") or [])

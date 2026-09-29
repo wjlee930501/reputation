@@ -33,6 +33,7 @@ from app.services.incidents import (
 from app.services.notification_contracts import IncidentSlackProjection
 from app.services.notification_messages import build_open_incident_notification
 from app.services.notification_store import enqueue_notification
+from app.services.reference_requirement import references_left_to_operator
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
     GenerationRetryClass,
@@ -164,6 +165,16 @@ def _body_repair_budget_remains(item) -> bool:
     return repair_recovery_remains(state)
 
 
+def operator_decides_references(code: str, item) -> bool:
+    """진료비·병원 선택 글의 참고자료 보류인가 — 자동 본문 수리가 아니라 사람이 정한다.
+
+    그 주제의 공신력 있는 문서가 본질적으로 없어 작가 세션으로 풀리지 않는다. 수리 예산이
+    저장된 분류(`OPERATOR_REQUIRED`)보다 앞서는 다른 본문 수리 코드와 달리 곧바로 종착이다.
+    """
+
+    return code == "MISSING_REFERENCES" and item is not None and references_left_to_operator(item)
+
+
 def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """Return whether a sweep still owns this cause, so it is not operator work.
 
@@ -172,6 +183,8 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
     """
 
     attempt = _stored_generation_attempt(item)
+    if operator_decides_references(code, item):
+        return False
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 저장된 분류보다 앞선다. 예산이 남아 있으면 아직 시스템의 일이다.
         return _body_repair_budget_remains(item)
@@ -240,6 +253,8 @@ def generation_block_is_terminal(code: str, item) -> bool:
     """자동 재시도가 끝난 차단인가. 끝났으면 기한 없는 OPEN(사람의 일)이다."""
 
     attempt = _stored_generation_attempt(item) if item is not None else {}
+    if operator_decides_references(code, item):
+        return True
     if code in _AUTOMATIC_BODY_REPAIR_CODES and not _stored_input_change(attempt, code):
         # 수리 예산이 남아 있으면 종착이 아니다 — `scheduled_recovery_owns_blocker`와
         # 같은 술어를 쓴다. 두 판정이 갈리면 기한 없는 OPEN과 RETRYING이 동시에 참이 된다.
@@ -318,6 +333,18 @@ REFERENCE_REJECTION_OPERATOR_ACTION = (
     "실제 문서 확인을 통과한 공신력 있는 참고 자료가 없어 원고를 저장하지 못했습니다. "
     "병원 정보 탭에서 이 글의 주제가 병원 진료와 맞는지 확인하세요. 맞지 않으면 콘텐츠 "
     "탭에서 해당 항목을 종료하고, 맞으면 다음 자동 재시도가 검증된 문서를 다시 찾습니다."
+)
+
+# 진료비·병원 선택 글의 참고자료 보류(`operator_decides_references`). 같은 MISSING_REFERENCES지만
+# 자동 복구가 본문을 다시 쓰지 않으므로 "다음 자동 복구가 다시 씁니다"라고 말하지 않는다.
+REFERENCES_OPERATOR_DECIDES_CAUSE = (
+    "진료비·병원 선택처럼 공신력 있는 문서가 없는 주제라 참고 자료를 자동으로 채우지 않고 "
+    "발행을 보류했습니다."
+)
+REFERENCES_OPERATOR_DECIDES_ACTION = (
+    "콘텐츠 탭에서 이 글을 확인하세요. 글의 주장을 직접 뒷받침하는 공신력 있는 문서가 있으면 "
+    "참고 자료로 넣은 뒤 발행하고, 없으면 해당 항목을 종료하세요. 자동 복구는 이 글을 다시 "
+    "쓰지 않습니다."
 )
 
 
@@ -405,6 +432,8 @@ def _generation_operator_copy(code: str, message: str | None = None) -> tuple[st
     }
     if code == "GENERATION_REJECTED" and message == GENERATION_REFERENCE_REJECTION_MESSAGE:
         return impact, REFERENCE_REJECTION_OPERATOR_ACTION
+    if code == "MISSING_REFERENCES" and message == REFERENCES_OPERATOR_DECIDES_CAUSE:
+        return impact, REFERENCES_OPERATOR_DECIDES_ACTION
     action = actions.get(
         code,
         "운영 센터에 “작업 다시 시도”가 보이면 누르고 완료 결과를 확인하세요.",
@@ -731,6 +760,8 @@ async def open_generation_incident(
                 if code == "GENERATION_REJECTED"
                 else message
                 if code == "CONTENT_AI_HARD_FINDING"
+                else REFERENCES_OPERATOR_DECIDES_CAUSE
+                if operator_decides_references(code, swapped_item)
                 else _generation_safe_cause(code)
             )
             customer_impact, next_action = _generation_operator_copy(code, safe_cause)
