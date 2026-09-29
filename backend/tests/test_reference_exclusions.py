@@ -294,12 +294,9 @@ async def test_english_medlineplus_document_is_kept_once_curated(monkeypatch, ur
     assert outcome.checks[0]["reason"] == "curated_verified", outcome.checks[0]
 
     # 같은 fixture로 목록에서 빼면 종전처럼 판정 불가로 제거된다 — 목록 항목이 유일한 연결 고리다.
-    monkeypatch.setattr(rv, "CURATED_SOURCE_URLS", CURATED_SOURCE_URLS - {url})
-    monkeypatch.setattr(
-        rv,
-        "CURATED_MEDICAL_SOURCE_PAGES",
-        tuple(entry for entry in CURATED_MEDICAL_SOURCE_PAGES if entry["url"] != url),
-    )
+    listed = rv.is_curated_source_url
+    monkeypatch.setattr(rv, "is_curated_source_url", lambda value: listed(value) and value != url)
+    monkeypatch.setattr(rv, "curated_source_entries", lambda _value: [])
     outside = await ReferenceVerifier(AuditFixtureFetcher(rows), domain_spacing=0).verify(
         reference, topic_terms=terms
     )

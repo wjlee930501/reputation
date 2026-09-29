@@ -65,9 +65,10 @@ from app.services.content_similarity import (
 )
 from app.utils.authority_sources import (
     CURATED_MEDICAL_SOURCE_PAGES,
-    CURATED_SOURCE_URLS,
+    curated_source_entries,
     institution_title_tokens,
     is_citable_reference_url,
+    is_curated_source_url,
     is_whitelisted_url,
     keyword_names_provider,
     reference_exclusion_reason,
@@ -607,7 +608,8 @@ def item_topic_fingerprint(item: object) -> str:
 
 
 def _curated_entries(url: str) -> list[Mapping[str, object]]:
-    return [entry for entry in CURATED_MEDICAL_SOURCE_PAGES if str(entry["url"]) == url]
+    # 같은 문서의 별칭(`utm_source`·`:443`·`cntnts_sn=03796` …)도 그 목록 항목이다.
+    return list(curated_source_entries(url))
 
 
 def _curated_title_topic(title: object) -> str:
@@ -741,8 +743,13 @@ def judge_fetched_page(
     *,
     curated: bool,
 ) -> PageJudgement:
-    """한 번의 GET 관측을 판정한다. 모델 라벨은 입력으로 받지도 않는다."""
+    """한 번의 GET 관측을 판정한다. 모델 라벨은 입력으로 받지도 않는다.
 
+    `curated`는 주소나 GET의 최종 주소가 수기 목록 문서라는 뜻이다 — 목록 문서로 리다이렉트된
+    주소는 그 목록 항목의 카탈로그로 대조한다.
+    """
+
+    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)
     title = html_page_title(fetched.html)
     body_text = html_body_text(fetched.html) if fetched.html else ""
     text_len = len(body_text)
@@ -752,7 +759,7 @@ def judge_fetched_page(
 
     if fetched.error is not None or fetched.status is None:
         # 접속 자체를 확인하지 못했다(시간 초과·연결 오류·오프라인·도메인 장애).
-        if curated and curated_topic_relevant(url, topic_terms):
+        if curated and curated_topic_relevant(catalog_url, topic_terms):
             return judgement(VERDICT_PASS, REASON_CURATED_UNREACHABLE)
         if curated:
             return judgement(VERDICT_FAIL, REASON_UNRELATED)
@@ -767,7 +774,7 @@ def judge_fetched_page(
         return judgement(VERDICT_FAIL, REASON_REDIRECT_OUTSIDE)
     if status != 200:
         # 403/429(봇 차단)·5xx·203 등은 문서 내용을 볼 수 없다.
-        if curated and curated_topic_relevant(url, topic_terms):
+        if curated and curated_topic_relevant(catalog_url, topic_terms):
             return judgement(VERDICT_PASS, REASON_CURATED_UNREACHABLE)
         if curated:
             return judgement(VERDICT_FAIL, REASON_UNRELATED)
@@ -786,7 +793,7 @@ def judge_fetched_page(
 
     if curated:
         # 수기 목록의 주제는 사람이 확인한 카탈로그가 말한다.
-        if curated_topic_relevant(url, topic_terms):
+        if curated_topic_relevant(catalog_url, topic_terms):
             return judgement(VERDICT_PASS, REASON_CURATED_VERIFIED)
         return judgement(VERDICT_FAIL, REASON_UNRELATED)
 
@@ -1113,7 +1120,7 @@ class ReferenceVerifier:
 
         async def verify_one(reference: Mapping[str, Any]) -> dict[str, Any] | None:
             url = str(reference.get("url") or "").strip()
-            curated = url in CURATED_SOURCE_URLS
+            curated = is_curated_source_url(url)
             if reference_exclusion_reason(url) is not None:
                 # 사람이 확인해 제외한 주소 — 저장된 통과를 재사용하지도, 다시 열지도 않는다.
                 return reference_check_record(
@@ -1141,6 +1148,9 @@ class ReferenceVerifier:
             fetched = await self.fetch(
                 url, semaphore=semaphore, domain_semaphores=domain_semaphores
             )
+            if not curated and is_curated_source_url(fetched.final_url):
+                # 목록 문서로 리다이렉트되는 주소는 그 목록 문서다(진료비·병원 선택 글이 뺀다).
+                curated = True
             if fetched.error == FETCH_ERROR_BUDGET and not curated:
                 # 목록 밖 URL은 열어 보지 않고는 판정할 수 없다 — 다음 실행으로 미룬다.
                 # 수기 목록 URL은 아래에서 카탈로그 주제 대조로 판정한다(GET이 필요 없다).
@@ -1222,6 +1232,17 @@ class ReferenceVerifier:
                     record.get("status"),
                 )
         return outcome
+
+
+def names_curated_document(reference: Mapping[str, Any], checks: object = None) -> bool:
+    """이 참고자료가 수기 목록 문서인가 — 주소가 목록 문서(별칭 포함)이거나, 그 주소의 최근
+    검증 기록에서 GET의 최종 주소가 목록 문서다(목록 문서로 리다이렉트되는 주소)."""
+
+    url = str(reference.get("url") or "").strip()
+    if is_curated_source_url(url):
+        return True
+    check = index_reference_checks(checks).get(reference_url_fingerprint(url))
+    return check is not None and is_curated_source_url(check.get("final_url"))
 
 
 def merge_reference_checks(*groups: object) -> list[dict[str, Any]]:

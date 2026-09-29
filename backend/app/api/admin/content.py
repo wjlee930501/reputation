@@ -661,8 +661,11 @@ async def update_content(
         )
     if normalized_refs is not None:
         # 스냅샷은 상태·판·참고자료·글 주제를 본다. 필수 여부(유형·질문 연결)는 주제 지문 밖이라
-        # 잠근 행으로 한 번 더 판정한다 — 네트워크 없이 끝난다.
-        _reject_curated_references_for_no_source_topic(item, body, normalized_refs)
+        # 잠근 행으로 한 번 더 판정한다 — 네트워크 없이 끝난다. 이번 GET 기록도 넘겨 목록 문서로
+        # 리다이렉트된 주소(목록 밖 주소로 넣은 목록 문서)도 같은 422로 거절한다.
+        _reject_curated_references_for_no_source_topic(
+            item, body, normalized_refs, checks=patched_reference_checks
+        )
     hospital = await _get_hospital(db, hospital_id)
     if item.status == ContentStatus.WITHHELD and body.model_fields_set - {"references"}:
         # 비공개(보존) 글은 재인증·재검수 경로(스윕·이미지 태스크)가 모두 비켜 간다. 제목을
@@ -1724,8 +1727,21 @@ def _validated_patch_references(body: "ContentPatch") -> list[dict]:
     return normalized_refs
 
 
+# 콘텐츠 편집 화면에서 실제로 할 수 있는 것만 말한다(참고 자료 추가, 제목·본문 수정 —
+# `tests/test_reference_operator_copy.py`). 항목 종료 버튼은 콘텐츠 화면에 없다.
+CURATED_REFERENCE_NOT_ALLOWED_MESSAGE = (
+    "진료비·병원 선택 글에는 검증된 문서 목록의 질환 문서(그 문서로 이어지는 주소 포함)를 참고 "
+    "자료로 넣을 수 없습니다. 이 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서를 넣어 "
+    "저장하거나, 그런 문서가 없으면 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요."
+)
+
+
 def _reject_curated_references_for_no_source_topic(
-    item: ContentItem, body: "ContentPatch", references: list[dict]
+    item: ContentItem,
+    body: "ContentPatch",
+    references: list[dict],
+    *,
+    checks: list[dict] | None = None,
 ) -> None:
     """발행 전 진료비·병원 선택 글의 PATCH가 검증된 문서 목록의 문서를 담으면 422로 거절한다.
 
@@ -1734,7 +1750,7 @@ def _reject_curated_references_for_no_source_topic(
     거절한다 — 이전부터 있던 문서를 그대로 둔 경우도 같다. 공개·보존된 글과 의료 글은 그대로다.
     """
 
-    urls = disallowed_curated_references(item, references, title=body.title)
+    urls = disallowed_curated_references(item, references, title=body.title, checks=checks)
     if not urls:
         return
     raise HTTPException(
@@ -1742,10 +1758,8 @@ def _reject_curated_references_for_no_source_topic(
         detail={
             "code": "CURATED_REFERENCE_NOT_ALLOWED",
             "message": (
-                "진료비·병원 선택 글에는 검증된 문서 목록의 질환 문서를 참고 자료로 넣을 수 "
-                "없습니다. 이 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서만 넣어 주세요. "
-                "없으면 제목·본문을 질환·검사 안내로 바꾸거나 해당 항목을 종료하세요. "
-                f"넣을 수 없는 주소: {', '.join(urls)}"
+                CURATED_REFERENCE_NOT_ALLOWED_MESSAGE
+                + f" 넣을 수 없는 주소: {', '.join(urls)}"
             ),
             "urls": urls,
         },

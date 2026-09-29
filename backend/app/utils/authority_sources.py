@@ -10,8 +10,9 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 - _normalize_references 단계에서 white-list domain 외 항목 검출(선택).
 """
 
+import itertools
 import re
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse
 
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
     {"name": "질병관리청 국가건강정보포털", "domain": "health.kdca.go.kr"},
@@ -683,15 +684,96 @@ def reference_exclusion_reason(url: object) -> str | None:
     return _EXCLUDED_REFERENCE_REASONS.get(normalize_reference_url(url))
 
 
+# 수기 목록 URL에 실제로 쓰인 질의 이름 가운데 문서를 가르는 것(값은 정수로 비교한다).
+# 나머지(`MODE` 같은 보기 방식, 모르는 `utm_source`·`from` …)는 같은 문서를 가리키므로 무시한다.
+CURATED_DOCUMENT_ID_PARAMS: frozenset[str] = frozenset(
+    {"cntnts_sn", "contentId", "thtimt_cntnts_sn", "SEQ", "SEQ_HISTORY"}
+)
+_DEFAULT_PORTS: frozenset[int] = frozenset({80, 443})
+_CURATED_KEY_MAX_VARIANTS = 16
+
+
+def _document_id_value(value: str) -> str:
+    text = value.strip()
+    try:
+        return str(int(text))
+    except ValueError:
+        return text
+
+
+def curated_document_keys(url: object) -> frozenset[str]:
+    """수기 목록 문서 동일성 키 — 이 주소가 가리킬 수 있는 문서의 키들.
+
+    scheme·앞의 `www.`·호스트 대소문자·기본 포트(80·443)·끝 슬래시·fragment·`;params`와
+    문서 id가 아닌 질의(`utm_source`·`from`·`MODE` …)는 무시하고, 문서 id 질의
+    (`CURATED_DOCUMENT_ID_PARAMS`)는 정수로 비교한다(`cntnts_sn=03796`은 3796). 경로
+    대소문자는 다른 문서(대개 404)라 그대로 둔다. 같은 id 질의가 여러 번 오면 어느 값을 서버가
+    쓰는지 모르므로 값마다 키를 낸다 — 하나라도 목록 문서면 목록 문서로 본다.
+    """
+
+    text = str(url or "").strip()
+    if not text:
+        return frozenset()
+    if "://" not in text:
+        text = f"https://{text}"
+    try:
+        parsed = urlparse(text)
+        port = parsed.port
+    except ValueError:
+        return frozenset()
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return frozenset()
+    if port and port not in _DEFAULT_PORTS:
+        host = f"{host}:{port}"
+    path = re.sub(r"/{2,}", "/", unquote(parsed.path)).rstrip("/")
+    values: dict[str, set[str]] = {}
+    for name, value in parse_qsl(parsed.query, keep_blank_values=True):
+        if name in CURATED_DOCUMENT_ID_PARAMS:
+            values.setdefault(name, set()).add(_document_id_value(value))
+    names = sorted(values)
+    keys: set[str] = set()
+    for combination in itertools.islice(
+        itertools.product(*(sorted(values[name]) for name in names)), _CURATED_KEY_MAX_VARIANTS
+    ):
+        query = "&".join(f"{name}={value}" for name, value in zip(names, combination, strict=True))
+        keys.add(f"{host}{path}" + (f"?{query}" if query else ""))
+    return frozenset(keys)
+
+
+def curated_document_key(url: object) -> str:
+    """주소 하나의 대표 동일성 키(목록 URL은 id 질의가 한 번씩이라 키가 하나다)."""
+
+    return min(curated_document_keys(url), default="")
+
+
 _CURATED_SOURCE_KEYS: frozenset[str] = frozenset(
-    normalize_reference_url(url) for url in CURATED_SOURCE_URLS
+    curated_document_key(url) for url in CURATED_SOURCE_URLS
 )
 
 
+def curated_source_entries(url: object) -> list[dict[str, object]]:
+    """이 주소가 가리키는 수기 목록 항목들(동일성 키로 비교).
+
+    id 질의가 겹쳐 어느 문서인지 하나로 정해지지 않는 주소는 빈 목록이다 — 목록 문서로는
+    보되(`is_curated_source_url`), 카탈로그 주제 대조로 통과시키지는 않는다.
+    """
+
+    keys = curated_document_keys(url)
+    if len(keys) != 1:
+        return []
+    return [
+        source
+        for source in CURATED_MEDICAL_SOURCE_PAGES
+        if curated_document_key(source["url"]) in keys
+    ]
+
+
 def is_curated_source_url(url: object) -> bool:
-    """수기 목록 문서인가 — 표기 차이(scheme·www·끝 슬래시·질의 순서)는 같은 문서로 본다."""
-    key = normalize_reference_url(url)
-    return bool(key) and key in _CURATED_SOURCE_KEYS
+    """수기 목록 문서인가 — 같은 문서의 별칭(`curated_document_keys`)도 목록 문서다."""
+    return not _CURATED_SOURCE_KEYS.isdisjoint(curated_document_keys(url))
 
 
 _INSTITUTION_TITLE_TOKENS: frozenset[str] = frozenset(

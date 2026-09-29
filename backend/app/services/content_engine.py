@@ -43,6 +43,7 @@ from app.services.reference_verification import (
     curated_sources_for_topic,
     drop_notes,
     merge_reference_checks,
+    names_curated_document,
 )
 from app.utils.authority_sources import (
     infer_source_type,
@@ -2011,6 +2012,7 @@ async def _verify_generated_references(
     GEO 게이트가 MissingCitableReferencesError로 거절한다(지어내지 않는다).
     진료비·병원 선택 글(필수 + `topic_without_authoritative_source`)은 작가가 인용한 수기 목록
     문서도 받지 않는다 — 그 통과는 치유와 같은 카탈로그 키워드 대조다(2026-09-29 실장 결정).
+    같은 문서의 별칭(`is_curated_source_url`)과 GET에서 목록 문서로 리다이렉트된 주소도 같다.
     목록 밖 URL은 같은 GET 검증을 거쳐 남는다.
     반환값은 제거된 항목의 '호스트(사유)' — 재작성 지적에 실린다.
     """
@@ -2019,9 +2021,8 @@ async def _verify_generated_references(
     verifier = ReferenceVerifier(max_fetches=REFERENCE_GENERATION_MAX_FETCHES)
     checks: list[dict] = []
     notes: list[str] = []
-    if result["references"] and required and topic_without_authoritative_source(
-        result.get("title")
-    ):
+    no_source_topic = required and topic_without_authoritative_source(result.get("title"))
+    if result["references"] and no_source_topic:
         cited = result["references"]
         result["references"] = [
             reference for reference in cited if not is_curated_source_url(reference.get("url"))
@@ -2034,6 +2035,17 @@ async def _verify_generated_references(
         result["references"] = outcome.kept
         checks.extend(outcome.checks)
         notes += drop_notes(outcome.failed_checks(), host_chars=_REFERENCE_DROP_HOST_CHARS)
+        if no_source_topic:
+            # 목록 밖 주소가 GET에서 수기 목록 문서로 리다이렉트됐다면 그 문서를 인용한 것과 같다.
+            passed = result["references"]
+            result["references"] = [
+                reference
+                for reference in passed
+                if not names_curated_document(reference, outcome.checks)
+            ]
+            notes += _reference_drop_notes(
+                passed, result["references"], _REFERENCE_DROP_NO_SOURCE_TOPIC
+            )
     result["reference_checks"] = merge_reference_checks(checks)
     if not result["references"] and required:
         candidates = _topic_aligned_curated_sources(content_brief, result)
