@@ -40,11 +40,11 @@ from app.workers.generation_retry_policy import (
     OPERATOR_DECIDES_KEY,
     GenerationRetryClass,
     next_recovery_deadline,
-    next_recovery_sweep,
     recovery_is_abandoned,
     repair_recovery_remains,
     retry_class_for,
     retry_is_due,
+    sweep_claims_slot,
 )
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_STATE_KEY as BODY_REPAIR_STATE_KEY_POLICY,
@@ -318,15 +318,44 @@ def announced_recovery_time(item, now: datetime) -> datetime | None:
     """스윕이 소유한 빈 슬롯의 조치 문구가 말할 다음 자동 복구 시각.
 
     저장된 다음 시도 시각이 이미 지났으면 그 시각은 약속이 아니다 — 그 스윕은 이 슬롯을 집지
-    않았다. 그때는 다음 복구 스윕 시각을 말한다(`next_recovery_sweep`).
+    않았다. 그때는 저장 때와 같은 규칙(`next_recovery_deadline`: 스윕마다 다른 창·표본 예산·수리
+    예산, `tasks._remember_generation_attempt`와 같은 인자)으로 지금부터 다시 구한다. 다음 정시
+    스윕이 아니다 — 23:00 야간 배치는 내일·모레 글만 본다. 구한 시각이 생성 스윕이 이 슬롯을 집는
+    시각이 아니면(22:30 백로그 복구의 판정 시각) 원고 생성 시도가 아니므로, 어떤 스윕도 집지 않을
+    때와 같이 `None`이다. 그때 문구는 시각을 말하지 않는다(`recovery_time_unannounced`).
     """
 
     if item is None:
         return None
-    retry_at = _stored_retry_deadline(_stored_generation_attempt(item))
+    attempt = _stored_generation_attempt(item)
+    retry_at = _stored_retry_deadline(attempt)
     if retry_at is None:
         return None
-    return retry_at if retry_at > now else next_recovery_sweep(now)
+    scheduled_date = getattr(item, "scheduled_date", None)
+    if retry_at <= now:
+        summary = getattr(item, "essence_check_summary", None)
+        retry_at = next_recovery_deadline(
+            attempt,
+            scheduled_date=scheduled_date,
+            now=now,
+            repair_state=(
+                summary.get(_BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
+            ),
+        )
+    if retry_at is None or not sweep_claims_slot(retry_at, scheduled_date):
+        return None
+    return retry_at
+
+
+def recovery_time_unannounced(item, now: datetime) -> bool:
+    """스윕이 다음 시도 시각을 정했던 기록인데 지금 말할 시각이 없는가(시각 없는 조치 문구)."""
+
+    if item is None:
+        return False
+    return (
+        _stored_retry_deadline(_stored_generation_attempt(item)) is not None
+        and announced_recovery_time(item, now) is None
+    )
 
 
 def generation_block_is_terminal(code: str, item) -> bool:
@@ -455,6 +484,18 @@ CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION = (
     "자동 복구가 {due}에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 운영 센터에서 해당 "
     "항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
 )
+# 위 두 문구의 시각 없는 변형. 스윕이 시각을 정했던 기록이지만 그 시각이 지났고, 지금부터 이 슬롯을
+# 집는 생성 스윕이 없는 경우다(`recovery_time_unannounced`: 예산 소진, catch-up 창을 벗어나 22:30
+# 백로그 복구가 날짜를 옮길 차례인 글). 그때는 다시 시도한다고도, 하지 않는다고도 말하지 않는다 —
+# 백로그 복구가 날짜를 옮기면 다시 시도할 수 있다. “작업 다시 시도”의 결과는 시각 있는 문구와 같다.
+CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION = (
+    "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 지금은 "
+    "“작업 다시 시도”를 눌러도 원고를 만들지 않으니, 운영 센터에서 이 글의 상태를 확인하세요."
+)
+CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION = (
+    "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 원인이 "
+    "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+)
 # 환경 예산을 다 쓴 공급자 장애(`environment_recovery_exhausted`). 예약 복구는 더 집지 않지만
 # “작업 다시 시도”는 환경 실패 기록의 억제를 풀어 바로 원고를 만든다(`operator_retry_releases`).
 ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION = (
@@ -542,14 +583,18 @@ def _generation_operator_copy(
     message: str | None = None,
     *,
     retry_at: datetime | None = None,
+    retry_unscheduled: bool = False,
     retry_releasable: bool = False,
     environment_exhausted: bool = False,
     unwritten: bool = False,
+    recovery_owned: bool = False,
 ) -> tuple[str, str]:
     """`retry_at`은 스윕이 아직 소유한 원고 미생성 슬롯의 다음 자동 복구 시각
-    (`announced_recovery_time`), `retry_releasable`은 지금 “작업 다시 시도”를 누르면 원고 생성을 다시
-    시도하는지(`operator_retry_writes_now`), `environment_exhausted`는 공급자 장애의 환경 예산이
-    끝났다는 판정, `unwritten`은 글에 본문이 아직 없다는 사실이다."""
+    (`announced_recovery_time`), `retry_unscheduled`는 스윕이 시각을 정했던 기록인데 지금 말할 시각이
+    없다는 판정(`recovery_time_unannounced`), `retry_releasable`은 지금 “작업 다시 시도”를 누르면 원고
+    생성을 다시 시도하는지(`operator_retry_writes_now`), `environment_exhausted`는 공급자 장애의 환경
+    예산이 끝났다는 판정, `unwritten`은 글에 본문이 아직 없다는 사실, `recovery_owned`는 예약 복구가
+    이 원인을 아직 소유한다는 판정(`scheduled_recovery_owns_blocker`)이다."""
 
     impact = (
         "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
@@ -587,7 +632,7 @@ def _generation_operator_copy(
         "MISSING_REFERENCES": (
             "참고 자료가 실제 문서 확인(없는 문서·빈 페이지·주제 불일치)에서 모두 빠지고 "
             "검증된 목록에서도 채우지 못해 발행을 보류했습니다. 다음 자동 복구가 검증된 "
-            "문서로 본문을 다시 씁니다. 반복되면 병원 정보 탭에서 이 글의 주제를 확인하세요."
+            "문서로 본문 다시 쓰기를 시도합니다. 반복되면 병원 정보 탭에서 이 글의 주제를 확인하세요."
         ),
         "FORBIDDEN_EXPRESSION": (
             "운영 센터에서 의료광고 금지 표현이 차단된 공개 필드와 승인된 대체 문구를 확인하세요."
@@ -598,7 +643,7 @@ def _generation_operator_copy(
         # 후보는 독립 검수가 다시 본다(`content_publication`: 차단 뒤 바뀐 후보는 STALE → 재검수).
         "CONTENT_AI_HARD_FINDING": (
             "지적된 사실을 병원 정보 탭의 승인 자료에 채우세요. 승인 자료가 바뀌면 다음 "
-            "자동 복구가 그 자료로 본문을 다시 씁니다. 지적이 사실과 다르면 콘텐츠 탭에서 "
+            "자동 복구가 그 자료로 본문 다시 쓰기를 시도합니다. 지적이 사실과 다르면 콘텐츠 탭에서 "
             "이 글의 “콘텐츠 수정”을 눌러 지적된 내용을 고치거나, 그 내용을 직접 뒷받침하는 "
             "공공·학술 기관 문서를 “참고 자료 추가”로 넣어 저장하세요. 저장한 글은 독립 검수를 "
             "다시 받습니다."
@@ -611,7 +656,7 @@ def _generation_operator_copy(
             "독립 검수 공급자 인증과 모델 설정을 확인하세요. 자동 재시도 대상이 아닙니다."
         ),
         "CONTENT_IMAGE_NOT_READY": (
-            "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지를 다시 생성합니다."
+            "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지 생성을 다시 시도합니다."
         ),
         "CONTENT_IMAGE_NOT_VERIFIED": (
             "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지 정책 검사를 다시 실행합니다."
@@ -641,7 +686,9 @@ def _generation_operator_copy(
             if unwritten
             else REFERENCES_OPERATOR_DECIDES_ACTION
         )
-    if code == "CONTENT_AI_HARD_FINDING" and unwritten:
+    if code == "CONTENT_AI_HARD_FINDING" and unwritten and not recovery_owned:
+        # '다시 쓰이지 않고'는 예약 복구가 소유하지 않을 때만 참이다(종착·비소유). 표본 예산이 남은
+        # 기록이면 종전 조치를 그대로 쓴다.
         return impact, CONTENT_AI_HARD_FINDING_UNWRITTEN_ACTION
     if code == "CONTENT_NOT_GENERATED" and retry_at is not None:
         template = (
@@ -650,6 +697,12 @@ def _generation_operator_copy(
             else CONTENT_NOT_GENERATED_SCHEDULED_ACTION
         )
         return impact, template.format(due=display_time(retry_at))
+    if code == "CONTENT_NOT_GENERATED" and retry_unscheduled:
+        return impact, (
+            CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION
+            if retry_releasable
+            else CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION
+        )
     if code in _ENVIRONMENT_WAIT_CODES and environment_exhausted:
         return impact, ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
     if code in _ENVIRONMENT_WAIT_CODES and unwritten and retry_releasable:
@@ -675,7 +728,7 @@ def _generation_safe_cause(code: str) -> str:
         "STALE_GENERATION_CLAIM": "완료되지 않은 이전 작업 기록 때문에 새 생성을 시작하지 못했습니다.",
         "CONTENT_NOT_GENERATED": "발행 시각까지 콘텐츠 제목과 본문이 준비되지 않았습니다.",
         # 실패가 아니라 자동 폴백의 중간 상태다 — 같은 슬롯을 다른 주제로 다시 쓴다.
-        "TOPIC_SWAPPED": "같은 주제로 자동 생성이 소진되어 다른 주제로 다시 준비합니다.",
+        "TOPIC_SWAPPED": "같은 주제로 자동 생성이 소진되어 다른 주제로 원고 생성을 다시 시도합니다.",
         "MISSING_REFERENCES": (
             "실제 문서 확인을 통과한 공신력 있는 참고 자료를 확보하지 못해 발행을 보류했습니다."
         ),
@@ -993,9 +1046,14 @@ async def open_generation_incident(
                     if code == "CONTENT_NOT_GENERATED" and swapped_item is not None
                     else None
                 ),
+                retry_unscheduled=(
+                    code == "CONTENT_NOT_GENERATED"
+                    and recovery_time_unannounced(swapped_item, observed_at)
+                ),
                 retry_releasable=operator_retry_writes_now(swapped_item, observed_at),
                 environment_exhausted=environment_recovery_exhausted(code, swapped_item),
                 unwritten=swapped_item is not None and not _has_body(swapped_item),
+                recovery_owned=scheduled_recovery_owns_blocker(code, swapped_item),
             )
             incident = await open_or_touch_incident(
                 db,
@@ -1150,7 +1208,9 @@ def _name_unwritten_cause_action(incident: Incident, item) -> None:
         return
     if operator_decides_references(cause, item):
         incident.next_action = REFERENCES_OPERATOR_DECIDES_UNWRITTEN_ACTION
-    elif cause == "CONTENT_AI_HARD_FINDING":
+    elif cause == "CONTENT_AI_HARD_FINDING" and not scheduled_recovery_owns_blocker(cause, item):
+        # 새 인시던트와 같은 제한이다(`recovery_owned`). 호출 순서상 소유 원인은 여기 오지 않지만,
+        # 오면 '다시 쓰이지 않고'가 거짓이므로 조치를 그대로 둔다.
         incident.next_action = CONTENT_AI_HARD_FINDING_UNWRITTEN_ACTION
 
 

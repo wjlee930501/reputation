@@ -38,6 +38,8 @@ from app.workers.generation_incident_control import (
     CONTENT_NOT_GENERATED_OPERATOR_ACTION,
     CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
     CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
+    CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
     ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     PROVIDER_RETRY_NOW_ACTIONS,
     REFERENCES_OPERATOR_DECIDES_ACTION,
@@ -381,7 +383,7 @@ def test_the_hard_finding_action_names_real_controls_instead_of_closing_the_item
 
     assert action == (
         "지적된 사실을 병원 정보 탭의 승인 자료에 채우세요. 승인 자료가 바뀌면 다음 자동 복구가 "
-        "그 자료로 본문을 다시 씁니다. 지적이 사실과 다르면 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 "
+        "그 자료로 본문 다시 쓰기를 시도합니다. 지적이 사실과 다르면 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 "
         "눌러 지적된 내용을 고치거나, 그 내용을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 "
         "추가”로 넣어 저장하세요. 저장한 글은 독립 검수를 다시 받습니다."
     )
@@ -397,6 +399,8 @@ _TOUCHED_ACTIONS = {
     "not_generated": CONTENT_NOT_GENERATED_OPERATOR_ACTION,
     "not_generated_scheduled": CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
     "not_generated_releasable": CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
+    "not_generated_unscheduled": CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+    "not_generated_unscheduled_releasable": CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
     "environment_exhausted": ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     "provider_timeout_retry_now": PROVIDER_RETRY_NOW_ACTIONS["PROVIDER_TIMEOUT"],
     "provider_unavailable_retry_now": PROVIDER_RETRY_NOW_ACTIONS["PROVIDER_UNAVAILABLE"],
@@ -425,6 +429,8 @@ def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling
         "not_generated",
         "not_generated_scheduled",
         "not_generated_releasable",
+        "not_generated_unscheduled",
+        "not_generated_unscheduled_releasable",
         "environment_exhausted",
         "provider_timeout_retry_now",
         "provider_unavailable_retry_now",
@@ -442,6 +448,8 @@ def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling
     [
         (CONTENT_NOT_GENERATED_OPERATOR_ACTION, _OPERATION_DETAIL),
         (CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION, _OPERATION_DETAIL),
+        (CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION, _OPERATION_DETAIL),
+        (CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION, _OPERATION_DETAIL),
         (ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION, _OPERATION_DETAIL),
         (blocker_copy("PROVIDER_TIMEOUT").action, _OPERATION_DETAIL),
         (blocker_copy("GENERATION_FAILED").action, _OPERATION_DETAIL),
@@ -453,6 +461,8 @@ def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling
     ids=[
         "not_generated",
         "not_generated_releasable",
+        "not_generated_unscheduled",
+        "not_generated_unscheduled_releasable",
         "environment_exhausted",
         "provider_digest",
         "generation_failed_digest",
@@ -490,7 +500,7 @@ _WRITTEN_OPERATOR_DECIDES_ACTION = (
 )
 _WRITTEN_HARD_ACTION = (
     "지적된 사실을 병원 정보 탭의 승인 자료에 채우세요. 승인 자료가 바뀌면 다음 자동 복구가 "
-    "그 자료로 본문을 다시 씁니다. 지적이 사실과 다르면 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 "
+    "그 자료로 본문 다시 쓰기를 시도합니다. 지적이 사실과 다르면 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 "
     "눌러 지적된 내용을 고치거나, 그 내용을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 "
     "추가”로 넣어 저장하세요. 저장한 글은 독립 검수를 다시 받습니다."
 )
@@ -667,7 +677,9 @@ async def test_a_reused_open_cause_keeps_its_deadline(monkeypatch):
     assert cause.sla_due_at == kept
 
 
-# ── 기한이 지난 다음 시도 시각(#187 2차 B) ────────────────────────────────────
+# ── 기한이 지난 다음 시도 시각(#187 2차 B, 3차 B') ─────────────────────────────
+# 기대 시각을 실제 beat 일정·태스크 창·claim 술어에서 따로 구해 비교하는 것은
+# `test_generation_incident_recovery_time.py`다.
 
 
 @pytest.mark.parametrize(
@@ -676,7 +688,8 @@ async def test_a_reused_open_cause_keeps_its_deadline(monkeypatch):
         (_kst(9, 16, 6, 59), _kst(9, 16, 7)),  # 기한 전 — 저장된 시각
         (_kst(9, 16, 7), _kst(9, 16, 12)),  # 기한 그 시각 — 이미 약속이 아니다(다음 스윕)
         (_kst(9, 16, 7, 45), _kst(9, 16, 12)),
-        (_kst(9, 16, 22, 30), _kst(9, 16, 23)),
+        # 23:00 야간 배치는 내일·모레 글만 본다 — 오늘 글의 다음 시도는 다음 날 01:00이다(#187 3차 B').
+        (_kst(9, 16, 22, 30), _kst(9, 17, 1)),
     ],
     ids=["before", "at", "0745", "2230"],
 )
@@ -694,3 +707,175 @@ def test_the_announced_recovery_time_never_is_a_past_time(now, announced):
 
     assert shown == announced
     assert shown > now
+
+
+# ── 시각을 말할 수 없는 스윕 소유 기록(#187 3차 B') ──────────────────────────────
+
+
+def test_the_untimed_scheduled_actions_name_no_time_and_promise_no_attempt():
+    """스윕이 소유했던 기록이지만 다음 시도 시각을 말할 수 없을 때의 두 문구(시각 없는 변형)."""
+
+    assert CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION == (
+        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 지금은 "
+        "“작업 다시 시도”를 눌러도 원고를 만들지 않으니, 운영 센터에서 이 글의 상태를 확인하세요."
+    )
+    assert CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION == (
+        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 원인이 "
+        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+    )
+    for action in (
+        CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+        CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
+    ):
+        assert "{due}" not in action
+        assert "KST" not in action
+        assert "다시 시도합니다" not in action  # 시도 자체도 약속하지 않는다
+
+
+# ── 결과 약속 동사(#187 3차 A 잔여) ──────────────────────────────────────────
+
+
+def test_the_missing_references_action_promises_an_attempt_not_a_rewrite():
+    action = generation_operator_action("MISSING_REFERENCES")
+
+    assert action == (
+        "참고 자료가 실제 문서 확인(없는 문서·빈 페이지·주제 불일치)에서 모두 빠지고 검증된 목록에서도 "
+        "채우지 못해 발행을 보류했습니다. 다음 자동 복구가 검증된 문서로 본문 다시 쓰기를 시도합니다. "
+        "반복되면 병원 정보 탭에서 이 글의 주제를 확인하세요."
+    )
+
+
+def test_the_image_not_ready_action_promises_an_attempt_not_an_image():
+    assert generation_operator_action("CONTENT_IMAGE_NOT_READY") == (
+        "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지 생성을 다시 시도합니다."
+    )
+
+
+def test_the_topic_swapped_cause_promises_an_attempt_not_a_post():
+    assert generation_incident_control.generation_safe_cause("TOPIC_SWAPPED") == (
+        "같은 주제로 자동 생성이 소진되어 다른 주제로 원고 생성을 다시 시도합니다."
+    )
+
+
+_RESULT_PROMISES = ("다시 씁니다", "다시 만듭니다", "고칩니다", "발행합니다", "채웁니다", "다시 생성합니다", "다시 준비합니다")
+
+
+@pytest.mark.parametrize(
+    "code",
+    sorted(
+        {
+            "PROVIDER_TIMEOUT",
+            "PROVIDER_UNAVAILABLE",
+            "GENERATION_REJECTED",
+            "MISSING_APPROVED_ESSENCE",
+            "COST_BLOCKED",
+            "GENERATION_LEASE_ACTIVE",
+            "STALE_GENERATION_CLAIM",
+            "CONTENT_NOT_GENERATED",
+            "MISSING_REFERENCES",
+            "FORBIDDEN_EXPRESSION",
+            "ESSENCE_NOT_ALIGNED",
+            "FAQ_FIELDS_MISSING",
+            "CONTENT_AI_HARD_FINDING",
+            "CONTENT_AI_REVIEW_STALE",
+            "CONTENT_AI_REVIEW_UNAVAILABLE",
+            "CONTENT_AI_REVIEW_CONFIG_ERROR",
+            "CONTENT_IMAGE_NOT_READY",
+            "CONTENT_IMAGE_NOT_VERIFIED",
+            "IMAGE_GENERATION_FAILED",
+            "IMAGE_GENERATION_RETRIES_EXHAUSTED",
+            "CONTENT_IMAGE_POLICY_REJECTED",
+            "TOPIC_SWAPPED",
+        }
+    ),
+)
+def test_no_generation_copy_promises_a_result(code):
+    texts = (
+        generation_operator_action(code),
+        generation_incident_control.generation_safe_cause(code),
+    )
+    for text in texts:
+        for verb in _RESULT_PROMISES:
+            assert verb not in text, f"{code}: “{verb}”는 코드가 보장하지 못하는 결과를 약속한다"
+
+
+# ── 공백뿐인 본문은 본문이 없다(#187 3차, 리뷰 뮤턴트 z27) ────────────────────────
+
+
+def test_a_whitespace_only_body_counts_as_no_body():
+    assert generation_incident_control._has_body(_slot(body=" \n\t ")) is False
+    assert generation_incident_control._has_body(_slot(body="본문")) is True
+    assert generation_incident_control._has_body(_slot(body=None)) is False
+
+
+@pytest.mark.asyncio
+async def test_a_whitespace_only_hard_finding_slot_gets_the_write_it_yourself_action(monkeypatch):
+    item = _slot(body=" \n\t ")
+    item.essence_check_summary = {
+        "generation_attempt": _hard_record(GenerationRetryClass.INPUT_CHANGE_REQUIRED)
+    }
+    _freeze(monkeypatch, _kst(9, 16, 7, 1))
+
+    request, _incident_row = await _open(monkeypatch, item, "CONTENT_AI_HARD_FINDING")
+
+    assert request.next_action == C2_HARD_FINDING_UNWRITTEN
+
+
+@pytest.mark.asyncio
+async def test_a_reused_whitespace_only_hard_cause_gets_the_write_it_yourself_action(monkeypatch):
+    item = _slot(body=" \n\t ")
+    item.essence_check_summary = {
+        "generation_attempt": _hard_record(GenerationRetryClass.INPUT_CHANGE_REQUIRED)
+    }
+    cause = _incident("CONTENT_AI_HARD_FINDING", state=IncidentState.OPEN.value)
+    _freeze(monkeypatch, _kst(9, 16, 7, 45))
+
+    await _open(monkeypatch, item, "CONTENT_NOT_GENERATED", scalars=(None, cause))
+
+    assert cause.next_action == C2_HARD_FINDING_UNWRITTEN
+
+
+# ── C2는 스윕이 소유하지 않는 HARD 지적에만(#187 3차, 방어) ──────────────────────
+# 본문 없는 HARD 기록은 실제로는 생기지 않는다(HARD 기록은 본문 저장 뒤에만 남는다). 그래도 표본
+# 예산이 남은 기록이면 다음 스윕이 다시 쓰므로 '다시 쓰이지 않고'라는 C2는 거짓이다.
+
+
+def _owned_hard_record() -> dict:
+    return {
+        "reason": "CONTENT_AI_HARD_FINDING",
+        "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+        "attempt_period": "2026-09-16",
+        "provider_attempt_count": 1,
+        "exhausted_days": 0,
+        "next_retry_at": _kst(9, 16, 12).astimezone(UTC).isoformat(),
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_unwritten_hard_finding_a_sweep_owns_keeps_the_existing_action(monkeypatch):
+    item = _slot()
+    item.essence_check_summary = {"generation_attempt": _owned_hard_record()}
+    _freeze(monkeypatch, _kst(9, 16, 7, 45))
+    assert generation_incident_control.scheduled_recovery_owns_blocker(
+        "CONTENT_AI_HARD_FINDING", item
+    )
+
+    request, incident = await _open(monkeypatch, item, "CONTENT_AI_HARD_FINDING")
+
+    assert request.next_action == _WRITTEN_HARD_ACTION
+    assert request.next_action != C2_HARD_FINDING_UNWRITTEN
+    assert incident.state == IncidentState.RETRYING.value
+
+
+def test_a_reused_unwritten_hard_cause_a_sweep_owns_keeps_its_action(monkeypatch):
+    item = _slot()
+    item.essence_check_summary = {"generation_attempt": _owned_hard_record()}
+    cause = _incident("CONTENT_AI_HARD_FINDING", state=IncidentState.OPEN.value)
+    observed = _kst(9, 16, 7, 45)
+    _freeze(monkeypatch, observed)
+
+    generation_incident_control._refresh_reused_cause(
+        cause, item, "CONTENT_NOT_GENERATED", observed.astimezone(UTC)
+    )
+
+    assert cause.next_action == "앞선 원인의 조치"
