@@ -141,3 +141,44 @@ def test_the_real_sweep_claims_the_slot_only_at_the_announced_hour(
     )
     pg_session.refresh(row)
     assert row.generation_claim_token is not None
+
+
+def test_a_slot_moved_by_the_backlog_recovery_is_claimed_at_the_newly_announced_hour(
+    pg_conn, pg_session, monkeypatch
+):
+    """X 15:00 창 밖(X-8) 글의 실패(저장 23:30, 백로그 판정) → 22:30 백로그가 X+1로 옮김 → 22:45 렌더.
+
+    저장된 시각은 아직 오지 않았지만 생성 스윕 시각이 아니다. 23:00 야간 배치는 옮긴 날짜를 창에
+    담아도 기한 전이라 집지 않고, 문구가 새로 말하는 다음 날 01:00 복구 스윕이 집는다(#187 3차).
+    """
+
+    item_id = _seed_empty_slot(pg_conn)
+    row = pg_session.get(ContentItem, item_id)
+    row.scheduled_date = date(2026, 9, 8)
+    pg_session.flush()
+
+    _freeze(monkeypatch, datetime(2026, 9, 16, 15, 0, tzinfo=KST))
+    tasks._remember_generation_attempt(pg_session, row, None, "PROVIDER_TIMEOUT")
+    stored = row.essence_check_summary["generation_attempt"]
+    assert datetime.fromisoformat(stored["next_retry_at"]) == datetime(
+        2026, 9, 16, 23, 30, tzinfo=KST
+    )
+    # `content_backlog_recovery.reconcile`처럼 기록은 두고 날짜만 옮긴다.
+    row.scheduled_date = date(2026, 9, 17)
+    pg_session.flush()
+
+    render = datetime(2026, 9, 16, 22, 45, tzinfo=KST)
+    announced = generation_incident_control.announced_recovery_time(row, render.astimezone(UTC))
+    assert announced == datetime(2026, 9, 17, 1, tzinfo=KST)
+
+    assert item_id not in _run_sweep(
+        monkeypatch, pg_session, tasks.nightly_content_generation, datetime(2026, 9, 16, 23, tzinfo=KST)
+    )
+    pg_session.refresh(row)
+    assert row.generation_claim_token is None
+
+    assert item_id in _run_sweep(
+        monkeypatch, pg_session, tasks.overnight_content_generation_recovery, announced
+    )
+    pg_session.refresh(row)
+    assert row.generation_claim_token is not None

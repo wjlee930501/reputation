@@ -28,8 +28,10 @@ from app.services.notification_copy import display_time
 from app.workers import tasks
 from app.workers.generation_incident_control import (
     CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION,
     CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
     CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
     CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
     announced_recovery_time,
 )
@@ -151,20 +153,35 @@ def _stored_deadline(item) -> datetime:
     return datetime.fromisoformat(tasks._stored_generation_attempt(item)["next_retry_at"])
 
 
-_TIMED = (CONTENT_NOT_GENERATED_SCHEDULED_ACTION, CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION)
-_UNTIMED = (CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION, CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION)
+_TIMED = (
+    CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
+    CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION,
+)
+_UNTIMED = (
+    CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
+    CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
+)
 
 
 async def _assert_copy_names(monkeypatch, item, render: datetime, expected: datetime | None) -> str:
+    """문구가 말하는 자동 복구 시각은 ``expected``뿐이다. 누름 게이트 시각(`{opens}`)은 복구 약속이 아니다."""
+
     _freeze(monkeypatch, render.astimezone(UTC))
     request, _incident = await _open(monkeypatch, item, "CONTENT_NOT_GENERATED")
     action = request.next_action
+    times = _KST_TIME.findall(action)
+    opens = times[-1] if times else None
     if expected is None:
-        assert action in _UNTIMED
-        assert not _KST_TIME.search(action)
+        assert action in {template.format(opens=opens) for template in _UNTIMED}
+        assert not action.startswith("자동 복구가 ")
+        assert "다시 시도합니다" not in action
     else:
-        assert action in {template.format(due=display_time(expected)) for template in _TIMED}
-        assert _KST_TIME.findall(action) == [display_time(expected)]
+        assert times[0] == display_time(expected)
+        assert action in {
+            template.format(due=display_time(expected), opens=opens) for template in _TIMED
+        }
     return action
 
 
@@ -259,10 +276,11 @@ async def test_a_record_no_sweep_will_claim_names_no_time(monkeypatch, record, r
     assert _oracle(monkeypatch, item, render) is None
     assert announced_recovery_time(item, render.astimezone(UTC)) is None
     action = await _assert_copy_names(monkeypatch, item, render, None)
+    # 비해제형도 '지금은 눌러도 안 된다'고 하지 않는다 — 누른 실행이 풀리는 시각이 없다(#187 3차 차단).
     assert action == (
         CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION
         if releasable
-        else CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION
+        else CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION
     )
 
 
@@ -324,6 +342,78 @@ async def test_a_future_stored_time_is_kept_when_an_earlier_sweep_would_not_clai
     expected = _oracle(monkeypatch, item, render)
 
     assert expected == _at(_D, 18)  # 12:00 스윕은 기한 전이라 집지 않는다
+    assert announced_recovery_time(item, render.astimezone(UTC)) == expected
+    await _assert_copy_names(monkeypatch, item, render, expected)
+
+
+# ── 예정일이 바뀐 뒤의 저장 시각(#187 3차: 22:30 백로그 이동·일정 변경, 리뷰 뮤턴트 n8) ─────────
+# 백로그 복구(`content_backlog_recovery.reconcile`)와 일정 변경은 시도 기록을 두고 예정일만 바꾼다.
+# 저장된 시각이 아직 오지 않았어도 그 시각의 스윕 창에 새 예정일이 없으면 그 스윕은 집지 않는다 —
+# 그 시각 뒤 새 예정일을 창에 담는 첫 생성 스윕이 실제 시각이다.
+
+
+def _moved(monkeypatch, *, scheduled: date, record: str, failed_at: datetime, moved_to: date):
+    item = _failed_slot(monkeypatch, scheduled=scheduled, record=record, failed_at=failed_at)
+    item.scheduled_date = moved_to
+    return item
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("record", ["ENV", "SAMPLE"])
+@pytest.mark.parametrize(
+    ("scheduled", "failed_at", "stored", "moved_to", "render", "expected"),
+    [
+        # X 15:00 운영자 재시도가 창 밖(X-8) 글에서 실패 → 저장 23:30(백로그 판정) → 22:30 이동.
+        pytest.param(
+            _D - timedelta(days=8),
+            _at(_D, 15),
+            _at(_D, 23, 30),
+            _D + timedelta(days=1),
+            _at(_D, 22, 45),
+            _at(_D + timedelta(days=1), 1),
+            id="backlog-moved-to-tomorrow",
+        ),
+        pytest.param(
+            _D - timedelta(days=8),
+            _at(_D, 15),
+            _at(_D, 23, 30),
+            _D + timedelta(days=3),
+            _at(_D, 22, 45),
+            _at(_D + timedelta(days=1), 1),
+            id="backlog-moved-past-the-nightly-window",
+        ),
+        # X+1 글이 X 22:00 스윕에서 실패 → 저장 23:00(야간 배치) → 예정일을 X로 당김.
+        pytest.param(
+            _D + timedelta(days=1),
+            _at(_D, 22, 0, 4),
+            _at(_D, 23),
+            _D,
+            _at(_D, 22, 10),
+            _at(_D + timedelta(days=1), 1),
+            id="pulled-into-today",
+        ),
+        # 같은 저장 23:00, 예정일을 창 안(X+2)으로 옮기면 그 시각이 그대로 실제 시각이다.
+        pytest.param(
+            _D + timedelta(days=1),
+            _at(_D, 22, 0, 4),
+            _at(_D, 23),
+            _D + timedelta(days=2),
+            _at(_D, 22, 10),
+            _at(_D, 23),
+            id="moved-inside-the-window",
+        ),
+    ],
+)
+async def test_a_stored_time_recorded_before_the_date_changed_names_the_sweep_that_claims_the_new_date(
+    monkeypatch, record, scheduled, failed_at, stored, moved_to, render, expected
+):
+    item = _moved(
+        monkeypatch, scheduled=scheduled, record=record, failed_at=failed_at, moved_to=moved_to
+    )
+    assert _stored_deadline(item) == stored
+    assert stored > render  # 저장된 시각은 아직 미래다
+
+    assert _oracle(monkeypatch, item, render) == expected
     assert announced_recovery_time(item, render.astimezone(UTC)) == expected
     await _assert_copy_names(monkeypatch, item, render, expected)
 

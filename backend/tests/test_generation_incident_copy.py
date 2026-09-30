@@ -37,8 +37,10 @@ from app.workers.generation_incident_control import (
     CONTENT_AI_HARD_FINDING_UNWRITTEN_ACTION,
     CONTENT_NOT_GENERATED_OPERATOR_ACTION,
     CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION,
     CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
     CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+    CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
     CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
     ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     PROVIDER_RETRY_NOW_ACTIONS,
@@ -399,7 +401,9 @@ _TOUCHED_ACTIONS = {
     "not_generated": CONTENT_NOT_GENERATED_OPERATOR_ACTION,
     "not_generated_scheduled": CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
     "not_generated_releasable": CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
+    "not_generated_early_open": CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION,
     "not_generated_unscheduled": CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+    "not_generated_unscheduled_closed": CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
     "not_generated_unscheduled_releasable": CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
     "environment_exhausted": ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     "provider_timeout_retry_now": PROVIDER_RETRY_NOW_ACTIONS["PROVIDER_TIMEOUT"],
@@ -429,7 +433,7 @@ def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling
         "not_generated",
         "not_generated_scheduled",
         "not_generated_releasable",
-        "not_generated_unscheduled",
+        "not_generated_unscheduled_closed",
         "not_generated_unscheduled_releasable",
         "environment_exhausted",
         "provider_timeout_retry_now",
@@ -448,6 +452,7 @@ def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling
     [
         (CONTENT_NOT_GENERATED_OPERATOR_ACTION, _OPERATION_DETAIL),
         (CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION, _OPERATION_DETAIL),
+        (CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION, _OPERATION_DETAIL),
         (CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION, _OPERATION_DETAIL),
         (CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION, _OPERATION_DETAIL),
         (ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION, _OPERATION_DETAIL),
@@ -461,6 +466,7 @@ def test_touched_actions_that_name_the_operations_center_use_the_spaced_spelling
     ids=[
         "not_generated",
         "not_generated_releasable",
+        "not_generated_early_open",
         "not_generated_unscheduled",
         "not_generated_unscheduled_releasable",
         "environment_exhausted",
@@ -713,11 +719,21 @@ def test_the_announced_recovery_time_never_is_a_past_time(now, announced):
 
 
 def test_the_untimed_scheduled_actions_name_no_time_and_promise_no_attempt():
-    """스윕이 소유했던 기록이지만 다음 시도 시각을 말할 수 없을 때의 두 문구(시각 없는 변형)."""
+    """스윕이 소유했던 기록이지만 다음 시도 시각을 말할 수 없을 때의 세 문구(시각 없는 변형).
+
+    비해제형의 '눌러도 원고를 만들지 않는다'는 누름 게이트가 풀리는 시각({opens})까지만 말하고,
+    게이트가 풀리지 않는 기록은 누름에 대해 단정하지 않는다(#187 3차 차단). {opens}는 복구 약속이
+    아니다 — 자동 복구 시각은 여전히 말하지 않는다.
+    """
 
     assert CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION == (
-        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 지금은 "
-        "“작업 다시 시도”를 눌러도 원고를 만들지 않으니, 운영 센터에서 이 글의 상태를 확인하세요."
+        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. {opens} 전에는 "
+        "“작업 다시 시도”를 눌러도 원고를 만들지 않고, 그 뒤에는 원인이 풀렸으면 눌러 다시 시도할 수 "
+        "있습니다."
+    )
+    assert CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION == (
+        "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 운영 센터에서 "
+        "이 글의 상태를 확인하세요."
     )
     assert CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION == (
         "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 원인이 "
@@ -725,11 +741,23 @@ def test_the_untimed_scheduled_actions_name_no_time_and_promise_no_attempt():
     )
     for action in (
         CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+        CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
         CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
     ):
         assert "{due}" not in action
         assert "KST" not in action
+        assert "지금은" not in action  # 시한 없는 '지금은 눌러도 안 된다'를 하지 않는다
         assert "다시 시도합니다" not in action  # 시도 자체도 약속하지 않는다
+    assert "눌러도" not in CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION
+
+
+def test_the_early_open_action_names_the_recovery_and_bounds_the_press_claim():
+    """누름 게이트가 자동 복구보다 먼저 풀리는 기록 — '그 전에는'을 자동 복구 시각까지 늘리지 않는다."""
+
+    assert CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION == (
+        "자동 복구가 {due}에 이 글의 원고 생성을 다시 시도합니다. {opens} 전에는 “작업 다시 시도”를 "
+        "눌러도 원고를 만들지 않고, 그 뒤에는 원인이 풀렸으면 눌러 다시 시도할 수 있습니다."
+    )
 
 
 # ── 결과 약속 동사(#187 3차 A 잔여) ──────────────────────────────────────────
@@ -797,6 +825,24 @@ def test_no_generation_copy_promises_a_result(code):
     for text in texts:
         for verb in _RESULT_PROMISES:
             assert verb not in text, f"{code}: “{verb}”는 코드가 보장하지 못하는 결과를 약속한다"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        CONTENT_NOT_GENERATED_SCHEDULED_ACTION,
+        CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION,
+        CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION,
+        CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION,
+        CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION,
+        CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION,
+    ],
+)
+def test_the_timed_and_untimed_not_generated_variants_promise_no_result(template):
+    """코드별 기본 문구만 보던 금지어 검사의 틈(3차 리뷰 비차단) — 시각 있는·없는 변형도 본다."""
+
+    for verb in _RESULT_PROMISES:
+        assert verb not in template
 
 
 # ── 공백뿐인 본문은 본문이 없다(#187 3차, 리뷰 뮤턴트 z27) ────────────────────────

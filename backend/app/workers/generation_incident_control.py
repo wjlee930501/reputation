@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -44,6 +44,7 @@ from app.workers.generation_retry_policy import (
     repair_recovery_remains,
     retry_class_for,
     retry_is_due,
+    stored_attempt_period,
     sweep_claims_slot,
 )
 from app.workers.generation_retry_policy import (
@@ -323,6 +324,11 @@ def announced_recovery_time(item, now: datetime) -> datetime | None:
     스윕이 아니다 — 23:00 야간 배치는 내일·모레 글만 본다. 구한 시각이 생성 스윕이 이 슬롯을 집는
     시각이 아니면(22:30 백로그 복구의 판정 시각) 원고 생성 시도가 아니므로, 어떤 스윕도 집지 않을
     때와 같이 `None`이다. 그때 문구는 시각을 말하지 않는다(`recovery_time_unannounced`).
+
+    저장된 시각이 아직 오지 않았어도 그 시각에 지금 예정일을 집는 생성 스윕이 없으면(백로그 판정
+    시각, 또는 22:30 백로그 복구·일정 변경이 기록을 두고 예정일만 옮긴 경우) 같은 규칙으로 그 시각
+    뒤부터 다시 구한다. 기한 전에는 로더가 이 기록을 집지 않으므로(`retry_is_due`) 그 사이의 스윕은
+    후보가 아니다.
     """
 
     if item is None:
@@ -332,12 +338,12 @@ def announced_recovery_time(item, now: datetime) -> datetime | None:
     if retry_at is None:
         return None
     scheduled_date = getattr(item, "scheduled_date", None)
-    if retry_at <= now:
+    if retry_at <= now or not sweep_claims_slot(retry_at, scheduled_date):
         summary = getattr(item, "essence_check_summary", None)
         retry_at = next_recovery_deadline(
             attempt,
             scheduled_date=scheduled_date,
-            now=now,
+            now=max(retry_at, now),
             repair_state=(
                 summary.get(_BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
             ),
@@ -345,6 +351,38 @@ def announced_recovery_time(item, now: datetime) -> datetime | None:
     if retry_at is None or not sweep_claims_slot(retry_at, scheduled_date):
         return None
     return retry_at
+
+
+def operator_retry_opens_at(item, now: datetime) -> datetime | None:
+    """“작업 다시 시도”를 누르면 이 슬롯의 원고 생성을 다시 시도하기 시작하는 첫 시각(``now`` 이후).
+
+    복구 약속이 아니다 — 누른 실행의 같은 원인 억제(`tasks._generation_attempt_is_unchanged`)가
+    풀리는 시각이다. 기록이 그대로면 `operator_retry_writes_now`의 값은 저장된 다음 시도 시각과
+    기록 날짜(KST 하루 예산)가 바뀌는 자정에서만 바뀐다. 그 경계마다 같은 판정을 물어 처음 참이
+    되는 시각을 고른다. 어느 경계에서도 참이 되지 않으면(소진·종착 분류) `None`이다. 생성 지문
+    (운영 기준 등)이 바뀌면 그 전에도 풀리지만, 그것은 렌더 뒤의 변화라 여기서 말하지 않는다.
+    """
+
+    if item is None:
+        return None
+    if operator_retry_writes_now(item, now):
+        return now
+    attempt = _stored_generation_attempt(item)
+    boundaries = {_stored_retry_deadline(attempt)}
+    period = stored_attempt_period(attempt)
+    try:
+        day = date.fromisoformat(period) if period else None
+    except ValueError:
+        day = None
+    if day is not None:
+        boundaries |= {
+            datetime.combine(day + timedelta(days=offset), time(), tzinfo=_KST)
+            for offset in (0, 1)
+        }
+    for moment in sorted(b for b in boundaries if b is not None and b > now):
+        if operator_retry_writes_now(item, moment):
+            return moment
+    return None
 
 
 def recovery_time_unannounced(item, now: datetime) -> bool:
@@ -484,13 +522,28 @@ CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION = (
     "자동 복구가 {due}에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 운영 센터에서 해당 "
     "항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
 )
-# 위 두 문구의 시각 없는 변형. 스윕이 시각을 정했던 기록이지만 그 시각이 지났고, 지금부터 이 슬롯을
-# 집는 생성 스윕이 없는 경우다(`recovery_time_unannounced`: 예산 소진, catch-up 창을 벗어나 22:30
-# 백로그 복구가 날짜를 옮길 차례인 글). 그때는 다시 시도한다고도, 하지 않는다고도 말하지 않는다 —
-# 백로그 복구가 날짜를 옮기면 다시 시도할 수 있다. “작업 다시 시도”의 결과는 시각 있는 문구와 같다.
+# 비해제형인데 누름 게이트가 자동 복구보다 먼저 풀리는 기록(`operator_retry_opens_at` < 자동 복구
+# 시각: 22:30 백로그 복구·일정 변경이 예정일을 옮긴 뒤의 저장 시각). '그 전에는'이 자동 복구 시각까지
+# 늘어나면 그 사이의 누름에 대해 틀린다. {opens}는 복구 약속이 아니라 누른 실행이 풀리는 시각이다.
+CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION = (
+    "자동 복구가 {due}에 이 글의 원고 생성을 다시 시도합니다. {opens} 전에는 “작업 다시 시도”를 "
+    "눌러도 원고를 만들지 않고, 그 뒤에는 원인이 풀렸으면 눌러 다시 시도할 수 있습니다."
+)
+# 위 문구들의 시각 없는 변형. 스윕이 시각을 정했던 기록이지만 지금부터 이 슬롯을 집는 생성 스윕이
+# 없는 경우다(`recovery_time_unannounced`: 예산 소진, catch-up 창을 벗어나 22:30 백로그 복구가 날짜를
+# 옮길 차례인 글). 그때는 자동 복구가 다시 시도한다고도, 하지 않는다고도 말하지 않는다 — 백로그
+# 복구가 날짜를 옮기면 다시 시도할 수 있다. '눌러도 원고를 만들지 않는다'는 누름 게이트가 풀리는
+# 시각({opens}, `operator_retry_opens_at`)까지만 말한다 — 그 글은 다시 그려지지 않을 수 있어 시한
+# 없는 '지금은'은 게이트가 풀린 뒤 거짓으로 남는다(#187 3차 차단). 게이트가 풀리지 않는 기록은
+# 누름에 대해 아무것도 단정하지 않는다(`CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION`).
 CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION = (
-    "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 지금은 "
-    "“작업 다시 시도”를 눌러도 원고를 만들지 않으니, 운영 센터에서 이 글의 상태를 확인하세요."
+    "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. {opens} 전에는 "
+    "“작업 다시 시도”를 눌러도 원고를 만들지 않고, 그 뒤에는 원인이 풀렸으면 눌러 다시 시도할 수 "
+    "있습니다."
+)
+CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION = (
+    "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 운영 센터에서 "
+    "이 글의 상태를 확인하세요."
 )
 CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION = (
     "예약된 자동 복구가 이 글의 원고 생성을 다시 시도할 시각이 정해져 있지 않습니다. 원인이 "
@@ -585,6 +638,7 @@ def _generation_operator_copy(
     retry_at: datetime | None = None,
     retry_unscheduled: bool = False,
     retry_releasable: bool = False,
+    retry_opens_at: datetime | None = None,
     environment_exhausted: bool = False,
     unwritten: bool = False,
     recovery_owned: bool = False,
@@ -592,7 +646,8 @@ def _generation_operator_copy(
     """`retry_at`은 스윕이 아직 소유한 원고 미생성 슬롯의 다음 자동 복구 시각
     (`announced_recovery_time`), `retry_unscheduled`는 스윕이 시각을 정했던 기록인데 지금 말할 시각이
     없다는 판정(`recovery_time_unannounced`), `retry_releasable`은 지금 “작업 다시 시도”를 누르면 원고
-    생성을 다시 시도하는지(`operator_retry_writes_now`), `environment_exhausted`는 공급자 장애의 환경
+    생성을 다시 시도하는지(`operator_retry_writes_now`), `retry_opens_at`은 누르면 다시 시도하기 시작하는
+    첫 시각(`operator_retry_opens_at`, 복구 약속이 아니다), `environment_exhausted`는 공급자 장애의 환경
     예산이 끝났다는 판정, `unwritten`은 글에 본문이 아직 없다는 사실, `recovery_owned`는 예약 복구가
     이 원인을 아직 소유한다는 판정(`scheduled_recovery_owns_blocker`)이다."""
 
@@ -691,17 +746,23 @@ def _generation_operator_copy(
         # 기록이면 종전 조치를 그대로 쓴다.
         return impact, CONTENT_AI_HARD_FINDING_UNWRITTEN_ACTION
     if code == "CONTENT_NOT_GENERATED" and retry_at is not None:
-        template = (
-            CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION
-            if retry_releasable
-            else CONTENT_NOT_GENERATED_SCHEDULED_ACTION
+        if retry_releasable:
+            template = CONTENT_NOT_GENERATED_SCHEDULED_RELEASABLE_ACTION
+        elif retry_opens_at is not None and retry_opens_at < retry_at:
+            template = CONTENT_NOT_GENERATED_SCHEDULED_EARLY_OPEN_ACTION
+        else:
+            template = CONTENT_NOT_GENERATED_SCHEDULED_ACTION
+        return impact, template.format(
+            due=display_time(retry_at),
+            opens=display_time(retry_opens_at) if retry_opens_at is not None else "",
         )
-        return impact, template.format(due=display_time(retry_at))
     if code == "CONTENT_NOT_GENERATED" and retry_unscheduled:
-        return impact, (
-            CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION
-            if retry_releasable
-            else CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION
+        if retry_releasable:
+            return impact, CONTENT_NOT_GENERATED_UNSCHEDULED_RELEASABLE_ACTION
+        if retry_opens_at is None:
+            return impact, CONTENT_NOT_GENERATED_UNSCHEDULED_CLOSED_ACTION
+        return impact, CONTENT_NOT_GENERATED_UNSCHEDULED_ACTION.format(
+            opens=display_time(retry_opens_at)
         )
     if code in _ENVIRONMENT_WAIT_CODES and environment_exhausted:
         return impact, ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
@@ -1051,6 +1112,7 @@ async def open_generation_incident(
                     and recovery_time_unannounced(swapped_item, observed_at)
                 ),
                 retry_releasable=operator_retry_writes_now(swapped_item, observed_at),
+                retry_opens_at=operator_retry_opens_at(swapped_item, observed_at),
                 environment_exhausted=environment_recovery_exhausted(code, swapped_item),
                 unwritten=swapped_item is not None and not _has_body(swapped_item),
                 recovery_owned=scheduled_recovery_owns_blocker(code, swapped_item),
