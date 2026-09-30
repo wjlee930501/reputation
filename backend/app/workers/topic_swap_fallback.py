@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, cast, func, literal, or_, select, tuple_, update
+from sqlalchemy import and_, case, cast, func, literal, select, tuple_, update
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import get_async_sessionmaker
@@ -56,6 +56,7 @@ from app.workers.generation_retry_policy import (
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
     NIGHTLY_GENERATION_CLAIM_TTL_HOURS,
+    _nightly_generation_claim_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,10 +105,8 @@ def _claim_expiry(now: datetime) -> datetime:
 
 
 def _inactive_claim_filter(expiry: datetime):
-    return or_(
-        ContentItem.generation_claim_token.is_(None),
-        ContentItem.generation_claimed_at < expiry,
-    )
+    # 로더와 같은 술어다 — 토큰만 남고 claim 시각이 빈 행(운영센터의 claim 해제)도 비활성이다.
+    return _nightly_generation_claim_filter(expiry)
 
 
 def _order_columns():

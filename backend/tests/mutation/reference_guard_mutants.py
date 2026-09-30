@@ -2147,8 +2147,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "#185 S2 마지막 발행기의 claim 행 사본 판정 끄기(늘 건너뛰기)",
         f"{TASKS}:_auto_publish_one",
         TASKS,
-        "            elif not reference_outage_alert_due(item.scheduled_date, now_kst):\n",
-        "            elif True:\n",
+        "            if not reference_outage_alert_due(item.scheduled_date, now_kst):\n",
+        "            if True:\n",
         (
             f"{T_GATE}::test_last_run_reports_a_claimed_cost_post_without_touching_it",
             f"{T_LAST_PG}::test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_reported_once",
@@ -2159,8 +2159,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "#185 S2 사본 판정은 마지막 발행기만(매시 켜기)",
         f"{TASKS}:_auto_publish_one",
         TASKS,
-        "            elif not reference_outage_alert_due(item.scheduled_date, now_kst):\n",
-        "            elif False:\n",
+        "            if not reference_outage_alert_due(item.scheduled_date, now_kst):\n",
+        "            if False:\n",
         (
             f"{T_GATE}::test_a_claimed_row_is_neither_published_nor_held_at_a_non_last_hour",
             f"{T_LAST_PG}::test_a_claimed_cost_post_at_noon_is_skipped_with_nothing_reported",
@@ -2172,7 +2172,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "#185 S2 마지막 발행기의 claim 행은 분리된 사본에서 판정(행에 재검증 적용·판 올림 허용)",
         f"{TASKS}:_auto_publish_one",
         TASKS,
-        "                item = _detached_publication_view(item)\n",
+        "            item = _detached_publication_view(item)\n",
         "",
         (
             f"{T_GATE}::test_last_run_reports_a_claimed_cost_post_without_touching_it",
@@ -2202,10 +2202,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "#185 S2 잠금 전 재검증이 없으면 저장된 상태로 판정(대체 경로 끄기)",
         f"{TASKS}:_auto_publish_one",
         TASKS,
-        "                if reference_refresh is None:\n"
-        "                    # 잠금 전 읽기와 잠금 사이의 경합",
-        "                if False:\n"
-        "                    # 잠금 전 읽기와 잠금 사이의 경합",
+        "            elif reference_refresh is None:\n"
+        "                # 잠금 전 재검증(GET)은 종전 23시처럼 했다",
+        "            elif False:\n"
+        "                # 잠금 전 재검증(GET)은 종전 23시처럼 했다",
         (f"{T_GATE}::test_last_run_falls_back_to_the_stored_state_without_a_prefetched_refresh",),
     ),
     Mutant(

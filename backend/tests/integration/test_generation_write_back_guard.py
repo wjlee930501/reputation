@@ -458,9 +458,13 @@ def test_all_due_items_behind_live_leases_finish_failed(pg_conn, pg_session, mon
 
     item_id = _seed_item(pg_conn, status="DRAFT")
     pg_conn.execute(
-        text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
+        # 살아 있는 lease는 토큰과 claim 시각이 함께 있다 — 토큰 없는 claim 시각은 로더가 집는다.
+        text(
+            "UPDATE content_items SET generation_claimed_at = :t, "
+            "generation_claim_token = :token WHERE id = :id"
+        ),
         # 팬아웃 뒤 30분 유예 안의 claim은 진행 중인 일감이다 — 유예를 넘긴 lease만 stuck이다.
-        {"t": datetime.now(timezone.utc) - timedelta(minutes=45), "id": item_id},
+        {"t": datetime.now(timezone.utc) - timedelta(minutes=45), "token": uuid.uuid4(), "id": item_id},
     )
     recorder = GenerationBatchRecorder(
         pg_session,
@@ -501,8 +505,12 @@ def test_processed_and_live_lease_items_finish_partial(pg_conn, pg_session, monk
         {"id": success_id},
     )
     pg_conn.execute(
-        text("UPDATE content_items SET generation_claimed_at = :t WHERE id = :id"),
-        {"t": datetime.now(timezone.utc) - timedelta(minutes=45), "id": locked_id},
+        # 살아 있는 lease는 토큰과 claim 시각이 함께 있다 — 토큰 없는 claim 시각은 로더가 집는다.
+        text(
+            "UPDATE content_items SET generation_claimed_at = :t, "
+            "generation_claim_token = :token WHERE id = :id"
+        ),
+        {"t": datetime.now(timezone.utc) - timedelta(minutes=45), "token": uuid.uuid4(), "id": locked_id},
     )
     recorder = GenerationBatchRecorder(
         pg_session,
