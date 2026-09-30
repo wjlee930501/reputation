@@ -36,7 +36,7 @@ def _diagnosis() -> LeadDiagnosis:
             {"slot": 3, "kind": "증상형", "text": "치질이 있는데 수서역 근처 병원 어디로 가야해?"},
         ],
         requested_models={
-            "openai": "gpt-5.6-luna",
+            "openai": "gpt-6-luna",
             "gemini": "gemini-3.6-flash",
             "judge": "gpt-4o-mini-2024-07-18",
         },
@@ -230,7 +230,7 @@ class TestRenderedOutputIsClean:
         assert "수서역 근처 외과 병원 추천해줘" in html          # 질의 원문
         assert "치질이 있는데 수서역 근처 병원 어디로 가야해?" in html
         assert lead_report.sov_engine.SYSTEM_PROMPT_SOV in html   # 시스템 프롬프트 전문
-        assert "gpt-5.6-luna" in html                             # 답변 모델
+        assert "gpt-6-luna" in html                             # 답변 모델
         assert "gpt-4o-mini-2024-07-18" in html                   # 판정 모델
         assert "광고물이 아닙니다" in html                        # F5-5 고지
         assert "인공지능" in html                                 # F5-5 AI 생성 고지
@@ -238,7 +238,7 @@ class TestRenderedOutputIsClean:
     def test_platform_columns_use_api_and_model_names_not_product_names(self, payload):
         """'ChatGPT 9번 중 0번'이라고 쓰면 철회한 주장을 라벨로 되살리는 셈이다 (F5-1)."""
         html = lead_report.render_lead_report_html(payload)
-        assert "OpenAI API · gpt-5.6-luna" in html
+        assert "OpenAI API · gpt-6-luna" in html
         assert "Google Gemini API · gemini-3.6-flash" in html
 
     def test_sample_limitation_is_disclosed(self, payload):

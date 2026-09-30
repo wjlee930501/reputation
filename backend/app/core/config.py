@@ -79,7 +79,7 @@ def normalize_openrouter_model(field_name: str, value: str) -> str:
             raise ValueError(
                 f"{field_name}={value!r} is not an OpenRouter model slug. Every model call goes "
                 "through the OpenRouter gateway, which expects exactly one 'vendor/model' pair "
-                "(e.g. anthropic/claude-sonnet-5) — not a provider resource path."
+                "(e.g. anthropic/claude-sonnet-5.5) — not a provider resource path."
             )
         return slug
 
@@ -442,7 +442,7 @@ class Settings(BaseSettings):
     # 모든 모델 식별자는 `vendor/model` 슬러그다.
     OPENROUTER_API_KEY: str = ""
     # Anthropic 계열 — 콘텐츠 생성
-    CLAUDE_MODEL: str = "anthropic/claude-sonnet-5"
+    CLAUDE_MODEL: str = "anthropic/claude-sonnet-5.5"
     CLAUDE_MODEL_FAST: str = "anthropic/claude-haiku-4.5"
     # 프로파일 자동 채우기는 결정론적 grounding 검증이 뒤따르는 구조화 추출 작업이라
     # 빠른 모델로 충분하다. 비우면 CLAUDE_MODEL_FAST를 쓰고, 값을 넣으면 되돌릴 수 있다.
@@ -499,7 +499,7 @@ class Settings(BaseSettings):
     #   비용은 병원당 월 약 $9 증가(측정 호출 기준). 요금제 대비 1% 미만.
     # OPENAI_MODEL_PARSE  = 판정 모델(측정 도구=자). 답변 모델과 의도적으로 분리하며,
     #      기준선 유지를 위해 바꾸지 않는다. 폐기 예정 없음.
-    OPENAI_MODEL_QUERY: str = "openai/gpt-5.6-luna"
+    OPENAI_MODEL_QUERY: str = "openai/gpt-6-luna"
     OPENAI_MODEL_PARSE: str = "openai/gpt-4o-mini-2024-07-18"
     # 프로덕션은 Responses API + web_search tool만 허용한다. False는 모델 recall이므로
     # _validate_production_config에서 부팅을 차단한다.

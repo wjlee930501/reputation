@@ -75,7 +75,7 @@ def test_answer_settlement_uses_actual_provider_attempts(monkeypatch, provider_c
         hospital=SimpleNamespace(id=uuid.uuid4(), name="가나의원", region=["강남"]),
         query_text="강남 내과 추천",
         competitors=[],
-        protocol={"openai_model_query": "openai/gpt-5.6-luna"},
+        protocol={"openai_model_query": "openai/gpt-6-luna"},
     )
 
     # Zero attempts releases the reservation; retries beyond it stay in the actual-call meter.
