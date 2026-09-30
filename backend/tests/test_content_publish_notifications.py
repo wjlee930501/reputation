@@ -305,8 +305,14 @@ _REVIEW_PENDING_COPY = ActionCopy(
 )
 _PROVIDER_OUTAGE_COPY = ActionCopy(
     "생성 서비스 일시 장애",
-    "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영센터에서 해당 글의 생성 "
+    "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
     "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요.",
+    "생성 상태 확인",
+)
+_GENERATION_ERROR_COPY = ActionCopy(
+    "생성 서비스 오류",
+    "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요.",
     "생성 상태 확인",
 )
 _NOT_GENERATED_COPY = ActionCopy(
@@ -468,7 +474,8 @@ def test_weekly_rollup_names_no_draft_blockers_instead_of_body_review(
         # 검수 라벨은 코드 그대로 맞춘다 — 앱이 만든 적 없는 이름은 부분 문자열로 끌려가지 않는다.
         ("CONTENT_AI_UNCERTAIN", _BODY_REVIEW_DEFAULT),
         ("GENERATION_REJECTED", _BODY_REVIEW_DEFAULT),
-        ("GENERATION_FAILED", _BODY_REVIEW_DEFAULT),
+        # 분류되지 않은 생성 오류는 환경 실패다 — 본문·근거 확인이 아니다(#187 2차 s2).
+        ("GENERATION_FAILED", _GENERATION_ERROR_COPY),
         ("PROVIDER_TIMEOUT", _PROVIDER_OUTAGE_COPY),
         ("PROVIDER_UNAVAILABLE", _PROVIDER_OUTAGE_COPY),
         ("FORBIDDEN_EXPRESSION", _BODY_REVIEW_DEFAULT),

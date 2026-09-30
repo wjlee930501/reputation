@@ -17,6 +17,7 @@ import asyncio
 import sys
 import uuid
 from datetime import UTC
+from types import SimpleNamespace
 
 import pytest
 from test_operator_retry_gate_record import (
@@ -44,7 +45,7 @@ from tests.test_generation_incident_copy import _freeze, _open
 
 _PRESS = _kst(2026, 9, 16, 7, 50)
 _PRESS_ANYTIME = "“작업 다시 시도”를 누르세요"
-_PRESS_NOW = "“작업 다시 시도”를 눌러 지금 바로 만들 수도 있습니다"
+_PRESS_NOW = "“작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다"
 _PRESS_DOES_NOTHING = "그 전에는 “작업 다시 시도”를 눌러도 원고를 만들지 않으니"
 
 
@@ -116,8 +117,8 @@ def test_a_gate_kept_environment_failure_names_the_sweep_and_the_button(monkeypa
     due = generation_incident_control._stored_retry_deadline(record)
     assert due is not None and due.tzinfo is not None
     assert action == (
-        f"자동 복구가 {display_time(due.astimezone(UTC))}에 이 글의 원고를 다시 만듭니다. 원인이 "
-        "풀렸으면 운영센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 만들 수도 있습니다."
+        f"자동 복구가 {display_time(due.astimezone(UTC))}에 이 글의 원고 생성을 다시 시도합니다. 원인이 "
+        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
     )
     assert _PRESS_NOW in action and _PRESS_DOES_NOTHING not in action
     assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
@@ -233,3 +234,165 @@ def test_the_copy_predicate_agrees_with_what_the_real_task_releases(monkeypatch,
     _press_retry(monkeypatch, item, _PRESS, operator=True)
 
     assert bool(released) is predicted
+
+
+# ── 기한이 지난 스윕 소유 기록(#187 2차 B) ─────────────────────────────────────
+# 07:00 스윕이 상한·라운드로빈으로 집지 못한 기록은 기한이 지난 채 게이트에 보존된다. 지난
+# 시각을 약속으로 말하지 않고 다음 자동 복구 시각을 말한다. 기한이 된 기록은 “작업 다시 시도”가
+# 같은 원인 억제에 막히지 않으므로(`tasks._generation_attempt_is_unchanged`) 지금 눌러도 된다고 한다.
+
+_FAILED_0405 = _kst(2026, 9, 16, 4, 5)
+_PAST_DUE_ACTION = (
+    "자동 복구가 09/16 12:00 KST에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 운영 센터에서 "
+    "해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+)
+
+
+@pytest.mark.parametrize("reason", ["GENERATION_REJECTED", "CONTENT_AI_HARD_FINDING"])
+def test_a_past_due_sample_record_names_the_next_sweep_and_pressing_writes_it(monkeypatch, reason):
+    """04:05 표본 실패(기한 07:00) → 07:00 스윕이 못 집음 → 07:45 게이트 → 07:50 클릭(리뷰 프로브)."""
+
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
+    record = _remember(monkeypatch, item, philosophy, _FAILED_0405, reason)
+    assert record["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert generation_incident_control._stored_retry_deadline(record) == _kst(2026, 9, 16, 7)
+    if reason == "CONTENT_AI_HARD_FINDING":
+        # 실제 게이트의 원인 해석도 이 빈 슬롯을 원고 미생성으로 보고한다(GENERATION_REJECTED는
+        # 저장 원인 이름으로 보고되므로 이 프로브는 리뷰처럼 게이트 코드를 원고 미생성으로 둔다).
+        gate_code, _message = tasks._publication_block_details(
+            item, SimpleNamespace(code="CONTENT_NOT_GENERATED", message="")
+        )
+        assert gate_code == "CONTENT_NOT_GENERATED"
+    _gate(monkeypatch, item, philosophy)
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record  # 스윕 소유 — 보존
+
+    action = _action(monkeypatch, item, "CONTENT_NOT_GENERATED", _SLOT_GATE_AT)
+
+    assert action == _PAST_DUE_ACTION
+    assert "07:00" not in action and _PRESS_DOES_NOTHING not in action
+    assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
+        (OperationRunState.SUCCEEDED, None)
+    ]
+    assert writer_calls == [item.id]
+
+
+def test_a_past_due_environment_record_names_the_next_sweep_and_pressing_writes_it(monkeypatch):
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
+    record = _remember(monkeypatch, item, philosophy, _FAILED_0405, "PROVIDER_TIMEOUT")
+    assert record["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    assert generation_incident_control._stored_retry_deadline(record) == _kst(2026, 9, 16, 7)
+    _gate(monkeypatch, item, philosophy)
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
+
+    action = _action(monkeypatch, item, "CONTENT_NOT_GENERATED", _SLOT_GATE_AT)
+
+    assert action == _PAST_DUE_ACTION
+    assert "07:00" not in action
+    assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
+        (OperationRunState.SUCCEEDED, None)
+    ]
+    assert writer_calls == [item.id]
+
+
+def test_a_future_sample_record_keeps_its_stored_time_and_wait_copy(monkeypatch):
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=True)
+    gate_code = _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch)
+    record = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    _gate(monkeypatch, item, philosophy, gate_code)
+
+    action = _action(monkeypatch, item, gate_code, _SLOT_GATE_AT)
+
+    due = generation_incident_control._stored_retry_deadline(record)
+    assert due is not None and due > _SLOT_GATE_AT
+    assert action == (
+        f"자동 복구가 {display_time(due)}에 이 글의 원고 생성을 다시 시도합니다. 그 전에는 “작업 다시 "
+        "시도”를 눌러도 원고를 만들지 않으니, 그 뒤 운영 센터에서 결과를 확인하세요."
+    )
+    assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
+        (OperationRunState.FAILED, record["reason"])
+    ]
+    assert writer_calls == []
+
+
+def test_a_future_environment_record_keeps_its_stored_time(monkeypatch):
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
+    record = _remember(monkeypatch, item, philosophy, _FAILED_AT, "PROVIDER_TIMEOUT")
+    _gate(monkeypatch, item, philosophy)
+
+    action = _action(monkeypatch, item, "CONTENT_NOT_GENERATED", _SLOT_GATE_AT)
+
+    due = generation_incident_control._stored_retry_deadline(record)
+    assert due is not None and due > _SLOT_GATE_AT
+    assert action == (
+        f"자동 복구가 {display_time(due)}에 이 글의 원고 생성을 다시 시도합니다. 원인이 풀렸으면 운영 "
+        "센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+    )
+    assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
+        (OperationRunState.SUCCEEDED, None)
+    ]
+    assert writer_calls == [item.id]
+
+
+# ── 예산이 남은 공급자 장애(#187 2차 s1) ─────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("code", "opening"),
+    [("PROVIDER_TIMEOUT", "일시적인 응답 지연입니다."), ("PROVIDER_UNAVAILABLE", "일시적인 외부 서비스 장애입니다.")],
+)
+def test_a_provider_failure_with_budget_left_names_the_button_and_pressing_writes_it(
+    monkeypatch, code, opening
+):
+    """요약('서비스가 복구됐으면 “작업 다시 시도”')과 같은 말을 하고, 누르면 실제로 한 번 쓴다."""
+
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
+    record = _remember(monkeypatch, item, philosophy, _FAILED_AT, code)
+    assert isinstance(record["next_retry_at"], str)  # 예산이 남았다
+
+    action = _action(monkeypatch, item, code, _FAILED_AT)
+
+    assert action == (
+        f"{opening} 다음 예약 배치가 자동으로 다시 시도합니다. 서비스가 복구됐으면 운영 센터에서 해당 "
+        "항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+    )
+    assert "기다리세요" not in action
+    assert _press_retry(monkeypatch, item, _kst(2026, 9, 16, 7, 10), operator=True) == [
+        (OperationRunState.SUCCEEDED, None)
+    ]
+    assert writer_calls == [item.id]
+
+
+# ── 문구의 '지금 누르면 다시 시도한다' ⇔ 실제 태스크의 작가 호출 ──────────────────
+
+
+def _failed_at(reason: str, moment):
+    def record(monkeypatch, item, philosophy) -> None:
+        _remember(monkeypatch, item, philosophy, moment, reason)
+
+    return record
+
+
+_EMPTY_RECORDS = [
+    *(param for param in _RECORDS if not param.id.startswith(("written-", "whitespace-"))),
+    pytest.param(_failed_at("GENERATION_REJECTED", _FAILED_0405), id="SAMPLE-due-GENERATION_REJECTED"),
+    pytest.param(
+        _failed_at("CONTENT_AI_HARD_FINDING", _FAILED_0405), id="SAMPLE-due-CONTENT_AI_HARD_FINDING"
+    ),
+    pytest.param(_failed_at("PROVIDER_TIMEOUT", _FAILED_0405), id="ENV-due-PROVIDER_TIMEOUT"),
+]
+
+
+@pytest.mark.parametrize("record_failure", _EMPTY_RECORDS)
+def test_the_press_now_choice_agrees_with_whether_pressing_writes(monkeypatch, record_failure):
+    """문구 변형의 판정(억제를 푸는 기록 또는 기한이 된 기록)은 누른 실행이 작가를 부르는 바로 그 경우다."""
+
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
+    record_failure(monkeypatch, item, philosophy)
+    attempt = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    predicted = operator_retry_releases(item) or generation_retry_policy.retry_is_due(
+        attempt, _PRESS.astimezone(UTC)
+    )
+
+    _press_retry(monkeypatch, item, _PRESS, operator=True)
+
+    assert bool(writer_calls) is predicted

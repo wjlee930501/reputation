@@ -169,9 +169,20 @@ _OPERATOR_DECIDES_OUTCOME = (
     "참고 자료 없이는 발행되지 않고, 자동 복구는 운영 기준이 새로 승인되는 등 생성 조건이 "
     "바뀌기 전에는 이 글을 다시 쓰지 않습니다."
 )
+# 아직 쓰이지 않은 슬롯의 결과. 질환·검사 안내 글로 새로 쓰면 더 이상 진료비·병원 선택 글이 아니라
+# 자동 복구가 참고 자료를 찾는다 — 그 예외를 먼저 말한다. 인시던트 조치
+# (`generation_incident_control.REFERENCES_OPERATOR_DECIDES_UNWRITTEN_ACTION`)의 끝 두 문장과 같다.
+_OPERATOR_DECIDES_UNWRITTEN_OUTCOME = (
+    "질환·검사 안내 글로 쓰면 참고 자료 없이 저장해도 자동 복구가 참고 자료를 찾습니다. 그대로 두면 "
+    "생성 조건이 바뀌기 전에는 자동 복구가 이 글을 쓰지 않고, 참고 자료 없이는 발행되지 않습니다."
+)
 # 콘텐츠 생성 서비스의 일시 장애. 독립 검수 라벨과 섞지 않는다. 이 코드의 빈 슬롯은 “작업 다시
 # 시도”가 환경 실패 기록의 억제를 풀어 바로 원고를 만든다(`operator_retry_releases`).
 _PROVIDER_OUTAGE_CODES = frozenset({"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"})
+# 분류되지 않은 생성 작업 오류. 공급자 장애처럼 환경 실패(ENVIRONMENT_RECOVERABLE)라 예산 안에서
+# 자동 재시도하고, 빈 슬롯은 “작업 다시 시도”가 억제를 풀어 바로 다시 시도한다. 본문·근거 확인이
+# 아니다.
+_GENERATION_ERROR_CODES = frozenset({"GENERATION_FAILED"})
 # 독립 검수가 끝나지 않은 코드. 부분 문자열이 아니라 코드 그대로 맞춘다 — "UNAVAILABLE"을
 # 포함한다는 이유로 생성 서비스 장애까지 검수 미완료로 부르면 운영자가 엉뚱한 곳을 본다.
 _REVIEW_PENDING_CODES = frozenset({"CONTENT_AI_REVIEW_UNAVAILABLE"})
@@ -226,8 +237,15 @@ def blocker_copy(code: object) -> ActionCopy:
     if value in _PROVIDER_OUTAGE_CODES:
         return ActionCopy(
             "생성 서비스 일시 장애",
-            "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영센터에서 해당 글의 생성 "
+            "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
             "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요.",
+            "생성 상태 확인",
+        )
+    if value in _GENERATION_ERROR_CODES:
+        return ActionCopy(
+            "생성 서비스 오류",
+            "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+            "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요.",
             "생성 상태 확인",
         )
     if value in _REVIEW_PENDING_CODES:
@@ -253,7 +271,7 @@ def blocker_copy(code: object) -> ActionCopy:
             "아직 원고가 없는 글입니다. 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 질환·검사 안내 "
             "글로 제목·본문을 새로 쓰거나 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 "
             f"추가”로 함께 넣어 새 원고를 저장해 주세요. {_OPERATOR_DECIDES_CURATED_WARNING} "
-            f"{_OPERATOR_DECIDES_OUTCOME}",
+            f"{_OPERATOR_DECIDES_UNWRITTEN_OUTCOME}",
             "참고 자료 확인",
         )
     return ActionCopy(

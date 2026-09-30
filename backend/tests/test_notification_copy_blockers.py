@@ -22,9 +22,11 @@ from app.workers.generation_incident_control import (
     _MORNING_GENERATION_NOTIFICATION_CODES,
     WEEKLY_REJECTED_GENERATION_CODES,
 )
+from app.workers.generation_retry_policy import GenerationRetryClass, retry_class_for
 
 _REVIEW_PENDING = "자동 검수 미완료"
 _PROVIDER_OUTAGE = "생성 서비스 일시 장애"
+_GENERATION_ERROR = "생성 서비스 오류"
 _BODY_REVIEW = "본문·근거 확인 필요"
 _IMAGE = "발행용 이미지 준비 실패"
 
@@ -33,7 +35,7 @@ EXPECTED_TITLES = {
     # 아침 요약(07:45·08:00)
     "PROVIDER_TIMEOUT": _PROVIDER_OUTAGE,
     "PROVIDER_UNAVAILABLE": _PROVIDER_OUTAGE,
-    "GENERATION_FAILED": _BODY_REVIEW,
+    "GENERATION_FAILED": _GENERATION_ERROR,
     "CONTENT_NOT_GENERATED": "발행용 원고 미생성",
     "GENERATION_LEASE_ACTIVE": _BODY_REVIEW,
     "STALE_GENERATION_CLAIM": _BODY_REVIEW,
@@ -84,6 +86,31 @@ def test_a_provider_outage_is_not_called_an_unfinished_review():
         # #182 뒤에는 환경 실패 기록의 빈 슬롯도 “작업 다시 시도”가 바로 푼다.
         assert re.findall(r"“([^”]+)”", copy.action) == ["작업 다시 시도"]
     assert blocker_copy("PROVIDER_UNAVAILABLE") == blocker_copy("PROVIDER_TIMEOUT")
+
+
+def test_a_generation_error_is_a_service_error_not_a_body_review():
+    """GENERATION_FAILED는 환경 실패(ENVIRONMENT_RECOVERABLE)다 — 본문·근거 확인이 아니다(#187 2차 s2).
+
+    빈 슬롯의 환경 실패 기록은 “작업 다시 시도”가 억제를 풀어 바로 다시 시도한다
+    (`test_generation_incident_copy_retry`의 ENV-GENERATION_FAILED).
+    """
+
+    assert retry_class_for("GENERATION_FAILED") == GenerationRetryClass.ENVIRONMENT_RECOVERABLE
+    copy = blocker_copy("GENERATION_FAILED")
+    assert copy.title == _GENERATION_ERROR
+    assert copy.title != _BODY_REVIEW
+    assert copy.action == (
+        "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+        "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요."
+    )
+    assert copy.button == "생성 상태 확인"
+
+
+def test_the_provider_outage_digest_spells_the_operations_center_with_a_space():
+    assert blocker_copy("PROVIDER_TIMEOUT").action == (
+        "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+        "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요."
+    )
 
 
 @pytest.mark.parametrize(

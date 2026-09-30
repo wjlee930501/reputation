@@ -125,12 +125,29 @@ def test_the_written_digest_line_is_pinned_sentence_for_sentence():
     )
 
 
+# 원고 없는 슬롯의 요약 줄(#187 2차 s3)은 인시던트 조치(C1)와 같은 두 문장으로 끝난다 — 질환·검사
+# 안내 글로 쓰면 자동 복구가 참고 자료를 찾는다는 예외와, 그대로 두면 쓰지 않는다는 결과.
+_UNWRITTEN_EXCEPTION = "질환·검사 안내 글로 쓰면 참고 자료 없이 저장해도 자동 복구가 참고 자료를 찾습니다."
+_UNWRITTEN_OUTCOME = (
+    "그대로 두면 생성 조건이 바뀌기 전에는 자동 복구가 이 글을 쓰지 않고, 참고 자료 없이는 "
+    "발행되지 않습니다."
+)
+
+
+def test_the_unwritten_digest_line_ends_like_the_unwritten_incident_action():
+    from tests.test_generation_incident_copy import C1_UNWRITTEN_OPERATOR_DECIDES
+
+    assert _UNWRITTEN_ACTION.endswith(f"{_UNWRITTEN_EXCEPTION} {_UNWRITTEN_OUTCOME}")
+    assert C1_UNWRITTEN_OPERATOR_DECIDES.endswith(f"{_UNWRITTEN_EXCEPTION} {_UNWRITTEN_OUTCOME}")
+    assert "다시 쓰지 않습니다" not in _UNWRITTEN_ACTION
+
+
 def test_the_unwritten_digest_line_asks_for_a_new_draft_not_an_edit():
     assert _UNWRITTEN_ACTION == (
         "아직 원고가 없는 글입니다. 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 질환·검사 안내 "
         "글로 제목·본문을 새로 쓰거나 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 "
         f"추가”로 함께 넣어 새 원고를 저장해 주세요. {_CURATED_422} "
-        f"참고 자료 없이는 발행되지 않고, 자동 복구는 {_CAVEAT} 이 글을 다시 쓰지 않습니다."
+        f"{_UNWRITTEN_EXCEPTION} {_UNWRITTEN_OUTCOME}"
     )
     assert "고쳐" not in _UNWRITTEN_ACTION  # 고칠 원고가 없다
     assert _UNWRITTEN_ACTION != _DIGEST_ACTION
@@ -144,7 +161,8 @@ def test_the_unwritten_digest_line_asks_for_a_new_draft_not_an_edit():
 def test_both_digest_lines_warn_about_the_curated_422_and_bound_the_no_rewrite_promise(name):
     action = _BOTH_ACTIONS[name]
     assert _CURATED_422 in action
-    assert _CAVEAT in action
+    # 원고 없는 슬롯은 인시던트 조치(C1)와 같은 말로 한정한다(#187 2차 s3).
+    assert (_CAVEAT if name == "written" else "생성 조건이 바뀌기 전에는") in action
 
 
 def _outcome(content_id: str, code: str, *, copy_code: str | None = None) -> dict[str, object]:
