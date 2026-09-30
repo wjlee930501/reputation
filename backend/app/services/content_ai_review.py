@@ -6,7 +6,6 @@ stored candidate still has to pass the deterministic publication assessment.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
