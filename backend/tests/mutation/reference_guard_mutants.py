@@ -56,6 +56,7 @@ PLANNER = "app/services/content_target_planner.py"
 GAP = "app/services/gap_driven_slots.py"
 SPEC = "app/services/specialty_compatibility.py"
 NOTIF_COPY = "app/services/notification_copy.py"
+CELERY = "app/core/celery_app.py"
 
 T_RV = "tests/test_reference_verification.py"
 T_GATE = "tests/test_reference_publication_gate.py"
@@ -77,6 +78,7 @@ T_ALIAS = "tests/test_reference_curated_alias.py"
 T_COPY = "tests/test_reference_operator_copy.py"
 T_CLAIM_PG = "tests/integration/test_reference_claim_publisher_postgres.py"
 T_LAST_PG = "tests/integration/test_reference_claim_last_run_postgres.py"
+T_SCHED = "tests/test_reference_outage_last_publisher_schedule.py"
 
 
 @dataclass(frozen=True)
@@ -2302,6 +2304,56 @@ MUTANTS: tuple[Mutant, ...] = (
         "    if name in _DIGITS_ONLY_ID_PARAMS:\n        found = _NON_DIGITS.sub",
         "    if name in _DIGITS_ONLY_ID_PARAMS and not exact:\n        found = _NON_DIGITS.sub",
         (f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",),
+    ),
+    Mutant(
+        "#185 리뷰 A2 인시던트는 살아 있는 claim 행의 저장 기한 키를 지우지 않는다(가드 제거)",
+        f"{INCIDENT}:open_generation_incident",
+        INCIDENT,
+        "            if item is not None and not generation_claim_is_active(item, now=observed_at):\n",
+        "            if item is not None:\n",
+        (
+            f"{T_OPD}::test_the_incident_leaves_the_attempt_of_a_live_claimed_row_alone",
+            f"{T_LAST_PG}::test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 리뷰 2차 2 마지막 발행기 시각 = beat의 마지막 실행(발행기를 22시에 끝냄)",
+        f"{CELERY}:beat_schedule[morning-content-auto-publish]",
+        CELERY,
+        '            "schedule": crontab(hour="8-23", minute=0),\n',
+        '            "schedule": crontab(hour="8-22", minute=0),\n',
+        (
+            f"{T_SCHED}::test_the_last_publisher_hour_is_the_last_beat_run_of_the_day",
+            f"{T_SCHED}::test_alert_is_due_on_exactly_the_last_real_run_of_the_scheduled_date",
+        ),
+    ),
+    Mutant(
+        "#185 리뷰 2차 2 마지막 발행기 시각 이후 실행은 하루 한 번(23:30 발행기 추가)",
+        f"{CELERY}:beat_schedule",
+        CELERY,
+        '        "morning-content-auto-publish": {\n',
+        '        "late-content-auto-publish": {\n'
+        '            "task": "app.workers.tasks.morning_content_auto_publish",\n'
+        '            "schedule": crontab(hour=23, minute=30),\n'
+        '        },\n'
+        '        "morning-content-auto-publish": {\n',
+        (
+            f"{T_SCHED}::test_the_last_publisher_hour_is_the_last_beat_run_of_the_day",
+            f"{T_SCHED}::test_alert_is_due_on_exactly_the_last_real_run_of_the_scheduled_date",
+        ),
+    ),
+    Mutant(
+        "#185 리뷰 2차 2 상수가 beat의 마지막 실행 시(時)와 같다(23 → 22)",
+        f"{RP}:REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR",
+        RP,
+        "REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 23\n",
+        "REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 22\n",
+        (
+            f"{T_SCHED}::test_the_last_publisher_hour_is_the_last_beat_run_of_the_day",
+            f"{T_SCHED}::test_alert_is_due_on_exactly_the_last_real_run_of_the_scheduled_date",
+        ),
+        note="24로 바꿔도 같은 두 테스트가 잡는다(최대 시 23 ≠ 24, 알림 시각 0회).",
     ),
 )
 

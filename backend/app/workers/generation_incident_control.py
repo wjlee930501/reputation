@@ -50,6 +50,7 @@ from app.workers.generation_run_control import (
     GENERATION_REFERENCE_REJECTION_MESSAGE,
     safe_generation_rejection_message,
 )
+from app.workers.nightly_generation_batch import generation_claim_is_active
 
 logger = logging.getLogger(__name__)
 
@@ -858,8 +859,10 @@ async def open_generation_incident(
         elif generation_block_is_terminal(notification_code, item):
             # 종착 판정이 먼저다. 저장된 시도 기록이 이 원인을 종착으로 굳혔다면 어떤
             # 스윕도 다시 사지 않으므로 RETRYING이 될 수 없다. 이전 episode의 기한을
-            # 물려받아 "아직 재시도 중"으로 보이지 않게 저장값까지 지운다.
-            if item is not None:
+            # 물려받아 "아직 재시도 중"으로 보이지 않게 저장값까지 지운다. 살아 있는 claim이 잡은
+            # 행(마지막 발행기의 사본 판정)은 워커가 시도 기록의 소유자라 쓰지 않는다 — 인시던트의
+            # 기한만 지운다.
+            if item is not None and not generation_claim_is_active(item, now=observed_at):
                 drop_stored_retry_deadline(item, notification_code)
             incident.sla_due_at = None
         elif scheduled_recovery_owns_blocker(notification_code, item):

@@ -6,15 +6,20 @@
 줄을 낸다. 행의 판·참고자료·검증 기록·상태는 DB에서 다시 읽어도 그대로다. 기관 장애로 미뤄진
 글은 claim 없는 글과 같은 결과(기관 접속 불가 요약 줄, 보류 없음)다. 같은 행이 12시(마지막
 발행기가 아님)에는 GET 없이 건너뛰고, 다음 날 발행기는 운영자 줄을 다시 싣지 않는다. 인시던트는
-별도 async 세션이라 호출만 잡는다. 참고자료 GET은 가짜 fetcher가 받는다(네트워크 없음).
+별도 async 세션이라 대개 호출만 잡는다 — 인시던트 경로가 claim 행을 쓰지 않는지 보는 테스트만
+실제 `open_generation_incident`를 같은 테스트 트랜잭션 위에서 돌린다(#185 리뷰 A2). 참고자료 GET은
+가짜 fetcher가 받는다(네트워크 없음).
 """
 
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import arrow
+import pytest
+from sqlalchemy import select, text
 
 from app.models.content import ContentStatus
+from app.models.operations import Incident
 from app.services import content_publish_notifications
 from app.services.reference_publication import REFERENCE_SITE_UNREACHABLE_CODE
 from app.services.reference_verification import (
@@ -22,7 +27,13 @@ from app.services.reference_verification import (
     override_reference_fetcher,
     reference_check_record,
 )
-from app.workers import generation_retry_policy, nightly_generation_batch, tasks
+from app.workers import (
+    generation_incident_control,
+    generation_retry_policy,
+    nightly_generation_batch,
+    tasks,
+)
+from app.workers.generation_retry_policy import OPERATOR_DECIDES_KEY, GenerationRetryClass
 from tests.integration import test_operator_decides_digest_postgres as digest
 from tests.integration.test_operator_decides_digest_postgres import (
     COST_TITLE,
@@ -34,6 +45,7 @@ from tests.integration.test_operator_decides_digest_postgres import (
     _section_text,
     _written,
 )
+from tests.integration.test_published_image_recertification_postgres import _AsyncSessionFacade
 from tests.reference_fetch_doubles import PageFetcher
 
 # #181 요약 테스트의 실제 행·outbox 픽스처를 그대로 쓴다(발행기 세션·승인 운영 기준·인시던트 캡처).
@@ -62,7 +74,13 @@ def _set_clock(monkeypatch, moment):
         def now(cls, tz=None):
             return now.astimezone(tz) if tz is not None else now.replace(tzinfo=None)
 
-    for module in (tasks, generation_retry_policy, nightly_generation_batch):
+    # 인시던트 경로도 같은 '지금'으로 claim을 판정한다(실제 인시던트를 쓰는 테스트).
+    for module in (
+        tasks,
+        generation_retry_policy,
+        nightly_generation_batch,
+        generation_incident_control,
+    ):
         monkeypatch.setattr(module, "datetime", _Frozen)
     monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_k: moment)
 
@@ -258,3 +276,100 @@ def test_a_claimed_cost_post_with_a_dead_outside_url_at_noon_is_not_fetched(
     assert fetcher.calls == [] and incidents == []
     assert _digests_for(db, hospital) == []
     assert _stored(db, item) == before
+
+
+# ── 인시던트 경로(#185 리뷰 A2) ───────────────────────────────────────────
+
+
+@pytest.fixture
+def real_incidents(gate_db, monkeypatch):
+    """실제 `open_generation_incident`가 같은 테스트 트랜잭션의 세션으로 돈다(캡처 없음)."""
+
+    monkeypatch.setattr(
+        generation_incident_control,
+        "get_async_sessionmaker",
+        lambda: (lambda: _AsyncSessionFacade(gate_db)),
+    )
+    return gate_db
+
+
+def _decided_attempt() -> dict:
+    """사람의 결정으로 굳은 저장 시도 기록 — 종착이라 인시던트가 `next_retry_at` 키를 지운다."""
+
+    return {
+        "context": "a2-pg-context",
+        "reason": "MISSING_REFERENCES",
+        "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+        "next_retry_at": None,
+        OPERATOR_DECIDES_KEY: True,
+    }
+
+
+def _row_json(db, item) -> str:
+    db.expire_all()
+    return db.execute(
+        text("SELECT row_to_json(c)::text FROM content_items c WHERE c.id = :id"),
+        {"id": item.id},
+    ).scalar_one()
+
+
+def _item_incidents(db, item) -> list[Incident]:
+    return list(
+        db.execute(
+            select(Incident).where(
+                Incident.source_type == "CONTENT_GENERATION",
+                Incident.source_id == str(item.id),
+            )
+        ).scalars()
+    )
+
+
+def test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run(
+    real_incidents, monkeypatch
+):
+    """A2 — 23시 사본 판정 뒤의 실제 인시던트도 claim이 살아 있는 행은 쓰지 않는다."""
+
+    db = real_incidents
+    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, 22, 10))
+    item.essence_check_summary = {"generation_attempt": _decided_attempt()}
+    db.commit()
+    before = _row_json(db, item)
+
+    _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+
+    assert _row_json(db, item) == before  # 모든 열이 바이트 그대로(시도 기록의 기한 키 포함)
+    [incident] = _item_incidents(db, item)
+    assert (incident.state, incident.safe_error_code, incident.sla_due_at) == (
+        "OPEN",
+        "MISSING_REFERENCES",
+        None,
+    )
+    assert _operator_lines(db, hospital) == 1
+
+
+@pytest.mark.parametrize(
+    "claimed_hour", [None, 20], ids=["unclaimed", "expired_claim"]
+)
+def test_the_real_incident_still_drops_the_deadline_of_an_unowned_row(
+    real_incidents, monkeypatch, claimed_hour
+):
+    """대조 — claim이 없거나 만료된(TTL 2h) 행은 종전처럼 인시던트가 기한 키를 지운다."""
+
+    db = real_incidents
+    hospital, item = _claimed_cost_post(db, claimed_at=_kst(TODAY, claimed_hour or 22, 10))
+    item.essence_check_summary = {"generation_attempt": _decided_attempt()}
+    if claimed_hour is None:
+        item.generation_claim_token = None
+        item.generation_claimed_at = None
+    db.commit()
+
+    _publisher_run(db, monkeypatch, _kst(TODAY, 23))
+
+    db.expire_all()
+    db.refresh(item)
+    attempt = item.essence_check_summary["generation_attempt"]
+    assert attempt["reason"] == "MISSING_REFERENCES"
+    assert "next_retry_at" not in attempt
+    [incident] = _item_incidents(db, item)
+    assert (incident.state, incident.sla_due_at) == ("OPEN", None)
+    assert _operator_lines(db, hospital) == 1
