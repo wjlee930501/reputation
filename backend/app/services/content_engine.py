@@ -1016,8 +1016,6 @@ async def _generate_content_attempt(
     Claude Sonnet으로 콘텐츠 생성.
     Returns: {"title": str, "body": str, "meta_description": str}
     """
-    import asyncio
-
     profile_ctx = _build_profile_context(hospital)
     philosophy_ctx = _build_philosophy_context(philosophy)
     brief_ctx = _build_content_brief_context(content_brief, philosophy)
@@ -1085,14 +1083,13 @@ async def _generate_content_attempt(
     ).strip()
 
     # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 OpenRouter 클라이언트는
-    # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다. 여기서 세지 않으면 비용 화면의
+    # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다(강제 tool_choice 거절 뒤 auto
+    # 재시도가 붙으면 2회이며 그 1회도 따로 센다). 여기서 세지 않으면 비용 화면의
     # '예약'과 '실제'가 최대 3배까지 벌어져도 드러나지 않는다.
     from app.services import cost_guard
 
     await cost_guard.record_provider_call("content")
 
-    # asyncio에서 sync OpenAI-호환(OpenRouter) 클라이언트 호출
-    loop = asyncio.get_running_loop()
     from app.services import provider_usage
 
     attempt_context = _attempt_context if _attempt_context is not None else {}
@@ -1101,27 +1098,7 @@ async def _generate_content_attempt(
     attempt_context["http_attempt"] = http_attempt
     attempt_id = f"{logical_call_id}:http:{http_attempt}"
 
-    try:
-        response = await loop.run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=settings.CLAUDE_MODEL,
-                max_tokens=12000,
-                messages=[
-                    openrouter.system_message(system_blocks),
-                    {"role": "user", "content": user_message},
-                ],
-                tools=[
-                    openrouter.function_tool(
-                        name=ARTICLE_TOOL_NAME,
-                        description=ARTICLE_TOOL["description"],
-                        input_schema=_article_tool_schema(content_type),
-                    )
-                ],
-                tool_choice=openrouter.forced_tool_choice(ARTICLE_TOOL_NAME),
-            ),
-        )
-    except Exception:
+    async def _record_failed_attempt() -> None:
         await provider_usage.record_attempt(
             provider="openrouter",
             model=settings.CLAUDE_MODEL,
@@ -1133,6 +1110,37 @@ async def _generate_content_attempt(
             http_attempt=http_attempt,
             usage_known=False,
         )
+
+    async def _begin_auto_tool_choice_attempt(_exc: BaseException) -> None:
+        # 거절된 강제 시도도 실제 HTTP 시도다. 원장·계수·호출 예산에 그대로 남긴다.
+        nonlocal http_attempt, attempt_id
+        await _record_failed_attempt()
+        http_attempt = int(attempt_context.get("http_attempt") or 0) + 1
+        attempt_context["http_attempt"] = http_attempt
+        attempt_id = f"{logical_call_id}:http:{http_attempt}"
+        await cost_guard.record_provider_call("content")
+
+    try:
+        response = await openrouter.create_required_tool_completion(
+            client,
+            tool_name=ARTICLE_TOOL_NAME,
+            on_forced_tool_choice_rejected=_begin_auto_tool_choice_attempt,
+            model=settings.CLAUDE_MODEL,
+            max_tokens=12000,
+            messages=[
+                openrouter.system_message(system_blocks),
+                {"role": "user", "content": user_message},
+            ],
+            tools=[
+                openrouter.function_tool(
+                    name=ARTICLE_TOOL_NAME,
+                    description=ARTICLE_TOOL["description"],
+                    input_schema=_article_tool_schema(content_type),
+                )
+            ],
+        )
+    except Exception:
+        await _record_failed_attempt()
         raise
 
     usage = getattr(response, "usage", None)

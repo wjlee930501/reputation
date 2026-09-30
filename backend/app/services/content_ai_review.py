@@ -671,36 +671,21 @@ async def _provider_review(
     logical_call_id: str,
     attempt_id: str,
     http_attempt: int,
+    attempt_counter: dict[str, int] | None = None,
 ) -> ContentAiReview:
-    """Run one metered reviewer round; every failure mode stays UNAVAILABLE."""
+    """Run one metered reviewer round; every failure mode stays UNAVAILABLE.
+
+    `attempt_counter["http_attempt"]`에는 이 라운드가 마지막으로 쓴 HTTP 시도 번호를
+    남긴다 — 강제 tool_choice 거절 뒤 auto 재시도가 붙으면 번호를 하나 더 쓴다.
+    """
 
     await cost_guard.record_provider_call("content")
     from app.services import provider_usage
 
-    try:
-        response = await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=model,
-                max_tokens=1200,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": payload,
-                    },
-                ],
-                tools=[
-                    openrouter.function_tool(
-                        name=REVIEW_TOOL_NAME,
-                        description=REVIEW_TOOL["description"],
-                        input_schema=REVIEW_TOOL["input_schema"],
-                    )
-                ],
-                tool_choice=openrouter.forced_tool_choice(REVIEW_TOOL_NAME),
-            ),
-        )
-    except Exception as exc:
+    counter = attempt_counter if attempt_counter is not None else {}
+    counter["http_attempt"] = http_attempt
+
+    async def _record_failed_attempt() -> None:
         await provider_usage.record_attempt(
             provider="openrouter",
             model=model,
@@ -712,6 +697,40 @@ async def _provider_review(
             http_attempt=http_attempt,
             usage_known=False,
         )
+
+    async def _begin_auto_tool_choice_attempt(_exc: BaseException) -> None:
+        # 거절된 강제 시도도 실제 HTTP 시도다. 원장·계수에 그대로 남긴다.
+        nonlocal http_attempt, attempt_id
+        await _record_failed_attempt()
+        attempt_id = f"{attempt_id}:tool-choice-auto"
+        http_attempt += 1
+        counter["http_attempt"] = http_attempt
+        await cost_guard.record_provider_call("content")
+
+    try:
+        response = await openrouter.create_required_tool_completion(
+            client,
+            tool_name=REVIEW_TOOL_NAME,
+            on_forced_tool_choice_rejected=_begin_auto_tool_choice_attempt,
+            model=model,
+            max_tokens=1200,
+            messages=[
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": payload,
+                },
+            ],
+            tools=[
+                openrouter.function_tool(
+                    name=REVIEW_TOOL_NAME,
+                    description=REVIEW_TOOL["description"],
+                    input_schema=REVIEW_TOOL["input_schema"],
+                )
+            ],
+        )
+    except Exception as exc:
+        await _record_failed_attempt()
         logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)
         return _unavailable_review(
             content=content,
@@ -819,6 +838,7 @@ async def review_generated_content(
         )
 
     logical_call_id = logical_call_id or str(uuid.uuid4())
+    attempt_counter = {"http_attempt": http_attempt}
     first = await _provider_review(
         client=client,
         payload=payload,
@@ -829,6 +849,7 @@ async def review_generated_content(
         logical_call_id=logical_call_id,
         attempt_id=attempt_id or f"{logical_call_id}:http:{http_attempt}",
         http_attempt=http_attempt,
+        attempt_counter=attempt_counter,
     )
     if not first.escalation_eligible:
         return first
@@ -843,6 +864,7 @@ async def review_generated_content(
     if not escalation_decision.allowed:
         # 예산이 막으면 첫 판정을 그대로 유지한다(차단은 풀리지 않는다).
         return first
+    escalated_http_attempt = attempt_counter["http_attempt"] + 1
     second = await _provider_review(
         client=client,
         payload=payload,
@@ -851,8 +873,8 @@ async def review_generated_content(
         content=content,
         decision=escalation_decision,
         logical_call_id=logical_call_id,
-        attempt_id=f"{logical_call_id}:escalated:http:{http_attempt + 1}",
-        http_attempt=http_attempt + 1,
+        attempt_id=f"{logical_call_id}:escalated:http:{escalated_http_attempt}",
+        http_attempt=escalated_http_attempt,
     )
     if second.status == ContentAiReviewStatus.UNAVAILABLE:
         # 공급자·파서 오류는 PASS를 만들 수 없다. 첫 차단 판정을 유지한다.
