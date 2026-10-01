@@ -38,10 +38,9 @@ def _narrative(cells):
 def test_unequal_repeats_use_pooled_headline_not_cell_average():
     narrative = _narrative((_cell(1, (True,)), _cell(2, (False,) * 5)))
     assert narrative.current == 16.67
-    assert "확정 반복 6회 중 언급 1회" in narrative.denominator
-    assert "합산한 언급 비율" in narrative.denominator
-    assert "조합별 언급 비율 평균" not in narrative.denominator
-    assert "질문별 평균 50.0%" in narrative.platform_details[0]
+    assert "모두 6번 물었고, 그중 1번 우리 병원이 소개됐습니다." in narrative.denominator
+    assert "평균" not in narrative.denominator
+    assert "질문별로 소개된 비율의 평균 50.0%" in narrative.platform_details[0]
 
 
 @pytest.mark.parametrize("mixed", [False, True])
@@ -51,8 +50,8 @@ def test_missing_slot_lineage_does_not_become_zero_or_a_total(mixed):
         first = replace(first, slot_lineage="SLOTTED", planned_repeat_count=1,
                         received_answer_count=1, confirmed_slot_count=1)
     narrative = _narrative((first, _cell(2, (False,) * 5)))
-    assert "반복 관측 슬롯: 계획 0회" not in " ".join(narrative.methods)
-    assert "일부만 확인 가능" in narrative.methods[-1] if mixed else "기록 미확인" in narrative.methods[-1]
+    assert "계획 0번" not in " ".join(narrative.methods)
+    assert "일부만 남아 있어" in narrative.methods[-1] if mixed else "남아 있지 않아" in narrative.methods[-1]
 
 
 def test_limited_slot_status_is_explained_as_partial():
@@ -60,8 +59,8 @@ def test_limited_slot_status_is_explained_as_partial():
                    planned_repeat_count=3, received_answer_count=1,
                    confirmed_slot_count=1, pending_slot_count=2)
     narrative = _narrative((cell,))
-    assert "상태 일부 확정" in narrative.methods[-1]
-    assert "계획 3회 / 확정 1회" in narrative.methods[-1]
+    assert "일부만 확인" in narrative.methods[-1]
+    assert "계획 3번 / 답 확인 1번" in narrative.methods[-1]
 
 
 def test_table_clinic_names_keep_wrap_opportunities():

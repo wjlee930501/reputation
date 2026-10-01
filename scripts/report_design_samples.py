@@ -46,14 +46,17 @@ def main() -> None:
         loader=FileSystemLoader(templates), autoescape=select_autoescape(("html",))
     )
     manifest = []
-    for name, state, dense in (
-        ("monthly-growth", "growth", False),
-        ("monthly-decline", "decline", False),
-        ("monthly-flat", "flat", False),
-        ("monthly-unavailable", "unavailable", False),
-        ("monthly-dense", "growth", True),
+    for name, state, dense, reason, kind in (
+        ("monthly-growth", "growth", False, None, "MONTHLY"),
+        ("monthly-decline", "decline", False, None, "MONTHLY"),
+        ("monthly-flat", "flat", False, None, "MONTHLY"),
+        ("monthly-unavailable", "unavailable", False, None, "MONTHLY"),
+        ("monthly-dense", "growth", True, None, "MONTHLY"),
+        ("monthly-first", "growth", False, "NO_PRIOR_MANIFEST", "MONTHLY"),
+        ("monthly-method-changed", "flat", True, "MEASUREMENT_POLICY_CHANGED", "MONTHLY"),
+        ("initial", "growth", False, "NO_PRIOR_MANIFEST", "INITIAL"),
     ):
-        view = monthly_sample(state, dense=dense)
+        view = monthly_sample(state, dense=dense, reason=reason, kind=kind)
         expectation = DoctorPdfExpectation(
             hospital_name=view["hospital_name"],
             coverage_text=view["coverage_text"],

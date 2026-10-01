@@ -87,11 +87,22 @@ class DoctorV0Baseline(TypedDict):
     sentence: str
 
 
+class DoctorHighlights(TypedDict):
+    """월간 원장용 첫 장의 좋은 소식 칸. 모르는 값은 None이고 0과 섞지 않는다."""
+
+    measured_questions: int | None
+    mentioned_questions: int | None
+    published_this_month: int
+    cumulative_published: int | None
+    cited_questions: int | None
+
+
 class DoctorReportView(TypedDict):
     """Legacy fields plus an optional typed three-page MONTHLY/BASELINE narrative."""
 
     report_kind: NotRequired[ReportKind]
     narrative: NotRequired[MonthlyNarrative]
+    highlights: NotRequired[DoctorHighlights]
     sample_label: NotRequired[str]
     measured: bool
     hospital_name: str

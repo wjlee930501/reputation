@@ -9886,6 +9886,16 @@ def _build_monthly_report_for_hospital(
         ),
         current_cells=current_loaded.cells if current_loaded is not None else (),
     )
+    # 원장용 첫 장의 "지금까지 올린 글" 칸. 최초 공개 사실은 철회돼도 지워지지 않으므로
+    # 닫힌 달 기준 누적 발행 편수를 그대로 말할 수 있다.
+    cumulative_published_count = db.execute(
+        select(func.count())
+        .select_from(ContentItem)
+        .where(
+            ContentItem.hospital_id == h.id,
+            previous_first_publication_at < period_end,
+        )
+    ).scalar_one()
     # 원장 뷰를 AE PDF보다 **먼저** 만든다. 토킹 포인트는 이 뷰가 바인딩한 숫자에서
     # 나오고, 내부 PDF와 Admin이 그 같은 문장을 읽어야 한 자리에서 두 말이 안 된다.
     doctor_view = build_doctor_report_view(
@@ -9908,6 +9918,7 @@ def _build_monthly_report_for_hospital(
         platforms=report_platforms,
         sov_coverage=monthly_sov_payload,
         comparison_reason=monthly_sov_payload["comparison"]["reason"],
+        cumulative_published_count=cumulative_published_count,
     )
     talking_points = list(doctor_view["talking_points"])
 

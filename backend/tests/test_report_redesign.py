@@ -29,14 +29,14 @@ def test_monthly_has_distinct_typed_narrative_and_retains_baseline():
     # When the monthly narrative is built.
     view = monthly_view(v0_baseline=baseline)
     # Then the baseline survives and comparison is withheld.
-    assert view["narrative"].title == "월간 AI 노출 변화·기여 보고서"
+    assert view["narrative"].title == "AI 답변 노출 월간 보고서"
     assert view["narrative"].previous is None
     assert view["v0_baseline"] == baseline
     assert view["trimmed"] == []
 
 
 @pytest.mark.parametrize(
-    "kind,title", [("INITIAL", "초기 기준선 보고서"), ("MONTHLY", "월간 AI 노출 변화·기여 보고서")]
+    "kind,title", [("INITIAL", "첫 측정 보고서"), ("MONTHLY", "AI 답변 노출 월간 보고서")]
 )
 def test_report_kind_owns_title(kind, title):
     view = monthly_view(report_kind=kind)
@@ -46,11 +46,13 @@ def test_report_kind_owns_title(kind, title):
 @pytest.mark.parametrize(
     "current,prior,word",
     [
-        (60, 30, "더 자주 확인"),
-        (30, 30, "변화가 없습니다"),
-        (10, 30, "줄어든 질문"),
-        (0, 30, "줄어든 질문"),
-        (None, 30, "판단할 수 없습니다"),
+        (60, 30, "지난달보다 AI 답변에 더 자주 소개됐습니다."),
+        (30, 30, "지난달과 비슷하게 꾸준히 소개되고 있습니다."),
+        (25, 30, "지난달보다 조금 줄었습니다. 빠진 질문부터 다시 채우겠습니다."),
+        (10, 30, "지난달보다 줄었습니다. 빠진 질문부터 다시 채우겠습니다."),
+        (0, 30, "지난달보다 줄었습니다. 빠진 질문부터 다시 채우겠습니다."),
+        (0, 0, "지난달처럼 아직 AI 답변에 소개되지 않았습니다."),
+        (None, 30, "이번 달은 측정을 마치지 못했습니다."),
     ],
 )
 def test_monthly_direction_requires_matching_comparison(current, prior, word):
@@ -67,7 +69,7 @@ def test_monthly_direction_requires_matching_comparison(current, prior, word):
         sov_coverage={"comparison": comparison, "planned_count": 2, "success_count": 2},
     )
     assert word in view["narrative"].conclusion
-    assert "확정 반복을 합산한 언급 비율" in view["narrative"].denominator
+    assert "환자 수가 아니라 AI 답변 횟수입니다." in view["narrative"].denominator
 
 
 @pytest.mark.parametrize(
@@ -212,7 +214,7 @@ def test_v3_retains_dense_questions_baseline_positive_and_negative_evidence():
     assert all("".join(row["query_text"].split()) in text for row in rows)
     assert "검증용긍정근거를보존합니다" in text
     assert "검증용부정근거를보존합니다" in text
-    assert "초기측정기준선" in text
+    assert "처음측정했을때와비교" in text
 
 
 @pytest.mark.parametrize("name", ["가" * 201, "검증\x00병원"])
@@ -264,7 +266,8 @@ def test_partial_measurement_keeps_failed_ambiguous_and_pending_slots():
     }
     view = monthly_view(sov_pct=0, sov_coverage=coverage)
     methods = " ".join(view["narrative"].methods)
-    assert "판정 보류 2" in methods and "응답 실패 1" in methods and "대기 1" in methods
+    assert "판단하기 어려움 2번" in methods and "답변 실패 1번" in methods
+    assert "기다리는 중 1번" in methods
     assert view["narrative"].current == 0
     assert view["narrative"].previous is None
 
@@ -291,9 +294,9 @@ def test_baseline_renderer_is_initial_measurement_not_monthly_work():
         "".join(page.extract_text().split())
         for page in PdfReader(BytesIO(rendered.pdf_bytes)).pages
     )
-    assert "초기기준선보고서" in text
-    assert "계약이행원장" not in text
-    assert "대상월미이행" not in text
+    assert "첫측정보고서" in text
+    assert "약속한글발행을보고하는문서는아닙니다" in text
+    assert "아직올리지못했습니다" not in text
 
 
 def test_unavailable_citation_appendix_has_explicit_unknown_state():
@@ -309,4 +312,5 @@ def test_unavailable_citation_appendix_has_explicit_unknown_state():
         view=view, period_label="2026-08", public_url="https://fictional.example.invalid/"
     )
     appendix = html.split('id="appendix-start"')[1]
-    assert "확정 관측이 없어 소유 URL 인용 여부를 확인할 수 없습니다" in appendix
+    assert "우리 병원 글이 출처로 쓰였는지 알 수 없습니다" in appendix
+    assert "0번이라는 뜻은 아닙니다" in appendix

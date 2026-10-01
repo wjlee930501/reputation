@@ -31,7 +31,7 @@ def test_diagnosis_connects_why_now_assets_and_regional_fit(measured, mentioned,
     assert "#ff3d00" in html and "#99522e" not in html
 
 
-@pytest.mark.parametrize("cited_cells,label", [(None, "인용 집계 미확인"), (0, "관측한 인용 0개 조합"), (2, "출처로 확인 · 2개 질문×플랫폼 조합")])
+@pytest.mark.parametrize("cited_cells,label", [(None, "AI 답변에 쓰였는지는 아직 확인하지 못했습니다"), (0, "이번 달 AI 답변의 출처로는 아직 쓰이지 않았습니다"), (2, "AI 답변의 출처로 쓰였습니다 · 질문 2건")])
 def test_portfolio_distinguishes_unknown_absence_and_citation(cited_cells, label):
     # Given fictional work with independently specified citation coverage.
     view = monthly_view()
@@ -42,7 +42,7 @@ def test_portfolio_distinguishes_unknown_absence_and_citation(cited_cells, label
     page = html.split('id="main-2-start"')[1].split('id="main-3-start"')[0]
     # Then unknown cannot be presented as observed absence.
     assert label in page
-    assert "전담 마케터" in html and 'class="delivery-ledger"' in html
+    assert "담당 마케터" in html and 'class="delivery-ledger"' in html
 
 
 def test_comparison_bars_have_equal_tracks_and_visible_proportional_fills():
@@ -81,8 +81,8 @@ def test_no_work_and_no_observations_cannot_claim_completed_publication():
         view=view, period_label='2026-08', public_url='https://fictional.example.invalid/'
     )
     proof_page = html.split('id="main-2-start"')[1].split('id="main-3-start"')[0]
-    assert '공개 기록은 있습니다.' not in proof_page
-    assert '확인할 근거부터' in proof_page
+    assert '글은 올렸습니다.' not in proof_page
+    assert '답변 예시부터' in proof_page
 
 
 def test_diagnosis_outcome_is_understanding_and_evidence_not_promised_patients():

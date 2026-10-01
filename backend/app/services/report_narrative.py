@@ -12,6 +12,14 @@ from app.services.report_attribution import CitationSummaryPayload, ContentAttri
 ReportKind = Literal["LEGACY", "MONTHLY", "INITIAL"]
 
 
+# 원장용 문장의 플랫폼 이름은 랜딩과 같은 제품명을 쓴다(API 이름이 아니다).
+PLATFORM_NAMES = {"chatgpt": "ChatGPT", "gemini": "Gemini"}
+
+
+def platform_name(platform: str) -> str:
+    return PLATFORM_NAMES.get(str(platform or "").lower(), "AI 서비스")
+
+
 @dataclass(frozen=True, slots=True)
 class PublishedWork:
     title: str
@@ -22,11 +30,20 @@ class PublishedWork:
 
     @property
     def citation_label(self) -> str:
+        """본문 카드의 한 줄. 미확인(None)과 확인한 0을 다르게 말한다."""
         if self.cited_cells is None:
-            return "인용 집계 미확인"
+            return "AI 답변에 쓰였는지는 아직 확인하지 못했습니다"
         if self.cited_cells == 0:
-            return "관측한 인용 0개 조합"
-        return f"출처로 확인 · {self.cited_cells}개 질문×플랫폼 조합"
+            return "이번 달 AI 답변의 출처로는 아직 쓰이지 않았습니다"
+        return f"AI 답변의 출처로 쓰였습니다 · 질문 {self.cited_cells}건"
+
+    @property
+    def appendix_label(self) -> str:
+        if self.cited_cells is None:
+            return "확인 못 함"
+        if self.cited_cells == 0:
+            return "아직 없음"
+        return f"질문 {self.cited_cells}건"
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +61,74 @@ class MonthlyNarrative:
     citation_scope: str
     citation_details: tuple[str, ...]
     fulfillment_note: str
+    # 숫자가 없을 때 칸에 쓰는 말. 첫 측정과 '비교하지 않음'을 구분한다.
+    previous_label: str = "비교 없음"
+    current_label: str = "측정 못 함"
+
+
+# 비교하지 않은 이유를 원장님이 읽을 수 있는 한 문장으로. 한 보고서에는 하나만 나온다.
+_NOT_COMPARED = "이번 달은 지난달과 나란히 비교하지 않았습니다."
+_FIRST_MEASUREMENT_NOTE = (
+    "첫 측정이라 지난달과 비교할 숫자가 없습니다. 다음 달부터 이번 달과 나란히 비교해 드립니다."
+)
+_COMPARISON_NOTES = {
+    "NO_PRIOR_MANIFEST": _FIRST_MEASUREMENT_NOTE,
+    "ANSWER_MODEL_CHANGED": f"AI 서비스의 답변 모델이 바뀌어 {_NOT_COMPARED}",
+    "MEASUREMENT_POLICY_CHANGED": (
+        f"측정 방식이 바뀌어 {_NOT_COMPARED} 다음 달부터 다시 비교해 드립니다."
+    ),
+    "QUERY_TEXT_CHANGED": f"물어보는 질문 문장이 바뀌어 {_NOT_COMPARED}",
+    "PLATFORM_COHORT_MISSING": f"두 달에 물어본 AI 서비스가 달라 {_NOT_COMPARED}",
+    "INTENT_SNAPSHOT_MISSING": f"지난달 질문 기록이 온전하지 않아 {_NOT_COMPARED}",
+    "NO_MATCHED_CELLS": f"두 달에 똑같이 물어본 질문이 없어 {_NOT_COMPARED}",
+    "ANSWER_MODEL_UNKNOWN": f"어떤 AI 모델이 답했는지 기록이 없어 {_NOT_COMPARED}",
+    "SAMPLE_SHAPE_CHANGED": f"질문마다 물어본 횟수가 지난달과 달라 {_NOT_COMPARED}",
+}
+_DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건인지 확인하지 못해 {_NOT_COMPARED}"
+_COMPARABLE_NOTE = "지난달과 같은 질문을 같은 방식으로 물어본 결과끼리 비교했습니다."
+# 이 폭 이하로 줄었을 때만 '조금'이라고 쓴다. 크게 줄어든 달을 작게 말하지 않는다.
+_SMALL_DROP_POINTS = 10
+
+
+def _conclusion(value: float | None, prior: float | None, *, first: bool) -> str:
+    if value is None:
+        return "이번 달은 측정을 마치지 못했습니다. 다시 확인해 알려 드리겠습니다."
+    if first:
+        return "이번 달 결과가 앞으로의 출발점이 됩니다."
+    if prior is None:
+        return "이번 달 결과를 새 출발점으로 삼겠습니다."
+    if value > prior:
+        return "지난달보다 AI 답변에 더 자주 소개됐습니다."
+    if value < prior:
+        small = value > 0 and prior - value <= _SMALL_DROP_POINTS
+        return (
+            f"지난달보다 {'조금 ' if small else ''}줄었습니다. "
+            "빠진 질문부터 다시 채우겠습니다."
+        )
+    if value == 0:
+        return "지난달처럼 아직 AI 답변에 소개되지 않았습니다. 질문에 맞는 글부터 채우겠습니다."
+    return "지난달과 비슷하게 꾸준히 소개되고 있습니다."
+
+
+def _denominator(
+    *, value: float | None, attempts: object, mentions: object, platforms: str, comparable: bool
+) -> str:
+    tail = "환자 수가 아니라 AI 답변 횟수입니다."
+    if value is None:
+        return f"이번 달은 AI 답변을 충분히 확인하지 못해 비율을 계산하지 않았습니다. {tail}"
+    if type(attempts) is not int or type(mentions) is not int:
+        return f"물어본 횟수 기록이 없어 비율의 근거를 함께 보여 드리지 못했습니다. {tail}"
+    asked = (
+        f"지난달과 같은 질문으로 {platforms}에 모두 {attempts}번 물었고"
+        if comparable
+        else f"{platforms}에 환자 질문을 모두 {attempts}번 물었고"
+    )
+    found = (
+        f"그중 {mentions}번 우리 병원이 소개됐습니다."
+        if mentions
+        else "아직 우리 병원이 소개된 답변은 없었습니다."
+    )
+    return f"{asked}, {found} {tail}"
 
 
 def build_monthly_narrative(
@@ -74,64 +159,43 @@ def build_monthly_narrative(
     )
     prior = comparison.get("prior_sov_pct") if comparable else None
     value = comparison.get("current_sov_pct") if comparable else current
-    if value is None:
-        conclusion = "이번 달은 노출 변화를 판단할 수 없습니다."
-    elif kind == "INITIAL" or prior is None:
-        conclusion = "이번 달 결과를 다음 비교의 기준으로 남깁니다."
-    elif value > prior:
-        conclusion = "동일한 질문에서 병원 언급이 더 자주 확인됐습니다."
-    elif value < prior:
-        conclusion = "줄어든 질문부터 다음 운영을 조정합니다."
-    else:
-        conclusion = "같은 조건의 관측값에 변화가 없습니다."
     reason = comparison.get("reason") or comparison_reason
-    note = "같은 질문·플랫폼·모델·측정 기준이 확인된 조합만 비교합니다."
-    if not comparable:
-        reasons = {
-            "NO_PRIOR_MANIFEST": "이전 유효 측정이 없어 증감을 계산하지 않습니다. 최초 측정은 서비스 전 성과가 아닙니다.",
-            "ANSWER_MODEL_CHANGED": "응답 모델이 달라 증감을 계산하지 않습니다.",
-            "MEASUREMENT_POLICY_CHANGED": "측정 기준이 달라 증감을 계산하지 않습니다.",
-            "QUERY_TEXT_CHANGED": "질문 문장이 달라 증감을 계산하지 않습니다.",
-            "PLATFORM_COHORT_MISSING": "두 기간의 AI 플랫폼 구성이 달라 증감을 계산하지 않습니다.",
-            "INTENT_SNAPSHOT_MISSING": "이전 질문 유형의 고정 기록이 없어 비교할 수 없습니다.",
-            "NO_MATCHED_CELLS": "두 기간에 공통으로 확정된 질문·플랫폼 조합이 없어 비교할 수 없습니다.",
-            "ANSWER_MODEL_UNKNOWN": "실제 응답 모델 기록이 없어 같은 조건인지 확인할 수 없습니다.",
-            "SAMPLE_SHAPE_CHANGED": "질문별 반복 관측 구성이 달라 증감을 계산하지 않습니다.",
-        }
-        note = reasons.get(
-            reason,
-            "질문·플랫폼·모델·측정 기준의 비교 가능성을 확인하지 못해 증감을 표시하지 않습니다.",
-        )
-    cells = (
-        comparison.get("matched_cell_count")
-        if comparable
-        else (data.get("measurement_basis") or {}).get("cell_count")
-    )
-    scope_label = (
-        f"질문×플랫폼 {cells}개 조합" if cells is not None else "질문×플랫폼 조합 수 기록 없음"
-    )
+    first = not comparable and (kind == "INITIAL" or reason == "NO_PRIOR_MANIFEST")
+    conclusion = _conclusion(value, prior, first=first)
+    if comparable:
+        note = _COMPARABLE_NOTE
+    elif value is None:
+        note = "이번 달은 AI 답변을 충분히 확인하지 못해 지난달과 비교하지 않았습니다."
+    elif kind == "INITIAL":
+        note = _FIRST_MEASUREMENT_NOTE
+    else:
+        note = _COMPARISON_NOTES.get(reason, _DEFAULT_COMPARISON_NOTE)
+    platform_names = "·".join(
+        dict.fromkeys(platform_name(row["platform"]) for row in data.get("platforms", []))
+    ) or "ChatGPT·Gemini"
     attempts = comparison.get("current_attempts_used") if comparable else data.get("attempts_used")
     mentions = (
         comparison.get("current_mentioned_attempts")
         if comparable
         else data.get("mentioned_attempts")
     )
-    counts = (
-        f"확정 반복 {attempts}회 중 언급 {mentions}회"
-        if type(attempts) is int and type(mentions) is int
-        else "확정 반복 건수 기록 없음"
-    )
-    denominator = (
-        f"{scope_label} · {counts} · 확정 반복을 합산한 언급 비율(%) · 환자 수가 아닙니다."
+    denominator = _denominator(
+        value=value,
+        attempts=attempts,
+        mentions=mentions,
+        platforms=platform_names,
+        comparable=comparable,
     )
     priorities: list[str] = []
     if value is None:
         priorities.append(
-            "측정 복구를 우선합니다. 같은 질문·플랫폼의 판정 확정 후 현재 기준선을 다시 확인합니다."
+            "이번 달 측정을 다시 진행하겠습니다. 같은 질문으로 결과를 확인해 알려 드리겠습니다."
         )
     for row in (attribution or {}).get("lost_mention_cells", []) if comparable else []:
         priorities.append(
-            f"‘{row['query_text']}’ · {row['platform_label']}에서 언급이 빠졌습니다. 공식 진료 안내를 대조·보완하고 같은 질문으로 회복 여부를 다시 확인합니다."
+            f"“{row['query_text']}”라고 {row['platform_label']}에 물었을 때 지난달과 달리 "
+            "이번 달에는 우리 병원이 나오지 않았습니다. 진료 안내 글을 보강한 뒤 같은 "
+            "질문으로 다시 확인하겠습니다."
         )
     lost_questions = (
         {row["query_text"] for row in (attribution or {}).get("lost_mention_cells", [])}
@@ -143,27 +207,32 @@ def build_monthly_narrative(
             continue
         if row.get("current_attempts_used", 0) and not row.get("current_mentioned_attempts", 0):
             priorities.append(
-                f"‘{row['query_text']}’ · 확정 관측에서 미언급. 공식 자료에서 답할 수 있는 범위를 안내에 반영하고, 공개 후 언급·인용을 다시 확인합니다."
+                f"“{row['query_text']}”라고 물었을 때 아직 우리 병원이 나오지 않았습니다. "
+                "이 질문에 답이 되는 진료 안내 글을 보강하고, 다음 달에 다시 확인하겠습니다."
             )
     if not priorities and comparable:
         for row in (attribution or {}).get("new_mention_cells", [])[:2]:
             priorities.append(
-                f"제안 — ‘{row['query_text']}’ ({row['platform_label']}): 새 언급이 다음 관측에서도 유지되는지 같은 조건으로 확인합니다."
+                f"“{row['query_text']}”라고 {row['platform_label']}에 물었을 때 이번 달 "
+                "새로 우리 병원이 소개됐습니다. 다음 달에도 이어지는지 지켜보겠습니다."
             )
     if not priorities:
         priorities.append(
-            "제안 — 다음 회차에도 같은 질문을 확인하고, 부족한 관측이 있으면 먼저 보완합니다."
+            "다음 달에도 같은 질문으로 다시 물어보고, 달라진 점을 알려 드리겠습니다."
         )
     platforms: list[str] = []
     methods: list[str] = [
-        f"측정 기준: {protocol_label or '기록 없음 — 현재 설정으로 대체하지 않았습니다'}"
+        f"측정 방식 버전: {protocol_label or '기록 없음 — 지금 설정으로 대신 적지 않았습니다'}"
     ]
     for row in data.get("platforms", []):
-        name = "OpenAI API" if row["platform"] == "chatgpt" else "Google Gemini API"
+        name = platform_name(row["platform"])
         rate = row.get("mention_rate")
-        score = f"{rate:.1f}%" if rate is not None else "측정 미완료"
+        score = f"{rate:.1f}%" if rate is not None else "측정 못 함"
         platforms.append(
-            f"{name} · 질문별 평균 {score} · 확정 반복 {row.get('attempts_used', 0)}회 중 언급 {row.get('mentioned_attempts', 0)}회 · 조합 {row.get('planned_count', 0)}개 중 성공 {row.get('success_count', 0)} / 실패 {row.get('failed_count', 0)} / 제외 {row.get('excluded_count', 0)}"
+            f"{name} · 질문별로 소개된 비율의 평균 {score} · 모두 {row.get('attempts_used', 0)}번 "
+            f"물어 {row.get('mentioned_attempts', 0)}번 소개 · 질문 {row.get('planned_count', 0)}건 중 "
+            f"답 확인 {row.get('success_count', 0)}건, 실패 {row.get('failed_count', 0)}건, "
+            f"제외 {row.get('excluded_count', 0)}건"
         )
         slots = [
             cell["observation_slots"]
@@ -183,36 +252,40 @@ def build_monthly_narrative(
                 )
             }
             methods.append(
-                f"{name} 반복 슬롯: 계획 {counts['planned']} / 확정 {counts['confirmed']} / 판정 보류 {counts['ambiguous']} / 응답 실패 {counts['answer_failed']} / 판정 실패 {counts['judgment_failed']} / 대기 {counts['pending']}회"
+                f"{name}에 물어본 횟수: 계획 {counts['planned']}번 / 답 확인 {counts['confirmed']}번"
+                f" / 판단하기 어려움 {counts['ambiguous']}번 / 답변 실패 {counts['answer_failed']}번"
+                f" / 판단 실패 {counts['judgment_failed']}번 / 기다리는 중 {counts['pending']}번"
             )
         methods.append(
-            f"{name} 응답 모델: {', '.join(row.get('answer_models', [])) or '기록 없음'}"
+            f"{name} 답변 모델: {', '.join(row.get('answer_models', [])) or '기록 없음'}"
         )
     adequate = data.get("observation_adequacy") or {}
     if adequate.get("lineage") == "SLOTTED":
         status_label = {
-            "COMPLETE": "전체 확정",
-            "LIMITED": "일부 확정",
-            "UNAVAILABLE": "확정 관측 없음",
-        }.get(adequate.get("status"), "충분성 확인 필요")
+            "COMPLETE": "모두 확인",
+            "LIMITED": "일부만 확인",
+            "UNAVAILABLE": "확인한 답 없음",
+        }.get(adequate.get("status"), "확인 필요")
         methods.append(
-            f"반복 관측 슬롯: 계획 {adequate.get('planned_slots', '기록 없음')}회 / 확정 {adequate.get('confirmed_slots', '기록 없음')}회 · 상태 {status_label}"
+            f"같은 질문 반복 확인: 계획 {adequate.get('planned_slots', '기록 없음')}번 / "
+            f"답 확인 {adequate.get('confirmed_slots', '기록 없음')}번 · {status_label}"
         )
     elif adequate:
         methods.append(
-            "반복 관측 슬롯 이력: 일부만 확인 가능 — 아래 건수를 전체 측정으로 해석하지 않습니다."
+            "같은 질문 반복 확인 기록: 일부만 남아 있어, 위 횟수를 전체 측정으로 보지 않습니다."
             if adequate.get("lineage") == "MIXED"
-            else "반복 관측 슬롯 이력: 기록 미확인 — 계획·확정 건수를 0으로 표시하지 않습니다."
+            else "같은 질문 반복 확인 기록: 남아 있지 않아, 계획·확인 횟수를 0으로 적지 않았습니다."
         )
     cite = citations or {}
     scope = (
-        f"소유 URL 인용: 확인한 질문×플랫폼 {cite.get('measured_cell_count', 0)}개 조합 중 {cite.get('cited_cell_count', 0)}개. "
-        "제목 유사도는 인용 증거가 아니며, 인용·언급만으로 운영의 인과 효과를 증명할 수 없습니다."
+        f"물어본 질문 {cite.get('measured_cell_count', 0)}건 중 {cite.get('cited_cell_count', 0)}건에서 "
+        "우리 병원 글이나 안내 페이지가 AI 답변의 출처로 쓰였습니다. 출처로 쓰인 것만으로 "
+        "결과가 달라진 이유를 단정하지는 않습니다."
     )
     details: list[str] = []
     for item in cite.get("cited_items", []):
         details.append(
-            f"소유 글 인용 · {item.get('title') or '제목 없음'} · {item['cited_cell_count']}개 질문×플랫폼 조합"
+            f"우리 병원 글 · {item.get('title') or '제목 없음'} · 출처로 쓰인 질문 {item['cited_cell_count']}건"
         )
         details.extend(
             f"{query['query_text']} · {query['platform_label']}"
@@ -220,7 +293,7 @@ def build_monthly_narrative(
         )
     for item in cite.get("hub_pages", []):
         details.append(
-            f"소유 허브 인용 · {item['label']} · {item['cited_cell_count']}개 질문×플랫폼 조합"
+            f"우리 병원 안내 페이지 · {item['label']} · 출처로 쓰인 질문 {item['cited_cell_count']}건"
         )
         details.extend(
             f"{query['query_text']} · {query['platform_label']}"
@@ -228,12 +301,16 @@ def build_monthly_narrative(
         )
     if citations is not None and not cite.get("measured_cell_count"):
         scope = (
-            "확정 관측이 없어 소유 URL 인용 여부를 확인할 수 없습니다. 미확인은 인용 0이 아닙니다."
+            "이번 달은 확인한 AI 답변이 없어, 우리 병원 글이 출처로 쓰였는지 알 수 없습니다. "
+            "확인하지 못한 것이지 0번이라는 뜻은 아닙니다."
         )
     if citations is None:
-        scope = "소유 URL 인용 집계가 없습니다. 미확인은 인용 0이 아니며 운영의 인과 효과도 판단하지 않습니다."
+        scope = (
+            "이번 달은 우리 병원 글이 AI 답변의 출처로 쓰였는지 집계하지 못했습니다. "
+            "확인하지 못한 것이지 0번이라는 뜻은 아닙니다."
+        )
     return MonthlyNarrative(
-        title="초기 기준선 보고서" if kind == "INITIAL" else "월간 AI 노출 변화·기여 보고서",
+        title="첫 측정 보고서" if kind == "INITIAL" else "AI 답변 노출 월간 보고서",
         conclusion=conclusion,
         current=value,
         previous=prior,
@@ -246,8 +323,11 @@ def build_monthly_narrative(
         citation_scope=scope,
         citation_details=tuple(details),
         fulfillment_note=(
-            f"약정 미이행 {shortfall}편: 차단 원인을 확인하고 안전 기준을 통과한 글부터 보충합니다."
+            f"약속한 글 중 {shortfall}편을 아직 올리지 못했습니다. 이유를 확인해, "
+            "안전 기준을 통과한 글부터 채워 올리겠습니다."
             if shortfall
-            else "발행 기록을 바탕으로 다음 운영할 질문과 자료를 준비합니다."
+            else "다음 달에도 계획한 글을 차례로 올리겠습니다."
         ),
+        previous_label="첫 측정" if first else "비교 없음",
+        current_label="측정 못 함",
     )

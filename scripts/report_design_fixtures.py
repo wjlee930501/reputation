@@ -21,7 +21,10 @@ CONTENT_ID = UUID("00000000-0000-4000-8000-000000000002")
 PUBLIC_URL = "https://fictional-clinic.example.invalid/"
 
 
-def monthly_sample(state: str, *, dense: bool = False):
+def monthly_sample(
+    state: str, *, dense: bool = False, reason: str | None = None, kind: str = "MONTHLY"
+):
+    """`reason` makes a measured month non-comparable (first month, method change)."""
     hospital = SimpleNamespace(
         id=HOSPITAL_ID,
         name=(
@@ -50,16 +53,17 @@ def monthly_sample(state: str, *, dense: bool = False):
         for index in range(len(questions))
     ]
     value = None if unavailable else round(sum(counts) / (len(questions) * 6) * 100, 1)
+    comparable = not unavailable and reason is None
     comparison = {
-        "status": "NON_COMPARABLE" if unavailable else "COMPARABLE",
-        "reason": "NO_MATCHED_CELLS" if unavailable else "MATCHED_COHORT",
+        "status": "COMPARABLE" if comparable else "NON_COMPARABLE",
+        "reason": "NO_MATCHED_CELLS" if unavailable else reason or "MATCHED_COHORT",
         "matched_cell_count": 0 if unavailable else len(questions) * 2,
         "current_sov_pct": value,
         "current_attempts_used": 0 if unavailable else len(questions) * 6,
         "current_mentioned_attempts": 0 if unavailable else sum(counts),
         "prior_attempts_used": len(questions) * 6,
         "prior_mentioned_attempts": len(questions) * 2,
-        "prior_sov_pct": previous,
+        "prior_sov_pct": previous if comparable or unavailable else None,
     }
     coverage = {
         "measurement_basis": {"cell_count": len(questions) * 2},
@@ -100,7 +104,7 @@ def monthly_sample(state: str, *, dense: bool = False):
             }
         )
     attribution = {
-        "has_prior_month": True,
+        "has_prior_month": reason != "NO_PRIOR_MANIFEST",
         "new_mention_cells": [],
         "lost_mention_cells": [],
         "question_rows": [],
@@ -112,23 +116,23 @@ def monthly_sample(state: str, *, dense: bool = False):
             {
                 "query_text": question,
                 "prior_measured": True,
-                "prior_comparable": not unavailable,
+                "prior_comparable": comparable,
                 "prior_attempts_used": 6,
                 "prior_mentioned_attempts": [0, 2, 4][index % 3],
                 "current_attempts_used": 0 if unavailable else 6,
                 "current_mentioned_attempts": 0 if unavailable else counts[index],
             }
         )
-    if not unavailable:
+    if comparable:
         for index, question in enumerate(questions):
             prior_count = [0, 2, 4][index % 3]
             if prior_count == 0 and counts[index]:
                 attribution["new_mention_cells"].append(
-                    {"query_text": question, "platform_label": "OpenAI API"}
+                    {"query_text": question, "platform_label": "ChatGPT"}
                 )
             if prior_count and counts[index] == 0:
                 attribution["lost_mention_cells"].append(
-                    {"query_text": question, "platform_label": "OpenAI API"}
+                    {"query_text": question, "platform_label": "ChatGPT"}
                 )
     content = SimpleNamespace(
         id=CONTENT_ID,
@@ -158,7 +162,7 @@ def monthly_sample(state: str, *, dense: bool = False):
                 "title": content.title,
                 "cited_cell_count": 1,
                 "queries": [
-                    {"query_text": questions[0], "platform_label": "OpenAI API"}
+                    {"query_text": questions[0], "platform_label": "ChatGPT"}
                 ],
             }
         ]
@@ -190,7 +194,7 @@ def monthly_sample(state: str, *, dense: bool = False):
     view = build_doctor_report_view(
         hospital=hospital,
         sov_pct=value,
-        prev_sov_pct=previous,
+        prev_sov_pct=previous if comparable else None,
         published_count=len(contents),
         plan_quota=12,
         attribution=attribution,
@@ -199,8 +203,9 @@ def monthly_sample(state: str, *, dense: bool = False):
         published_contents=contents,
         sov_coverage=coverage,
         comparison_reason=comparison["reason"],
-        report_kind="MONTHLY",
+        report_kind=kind,
         platforms=["chatgpt", "gemini"],
+        cumulative_published_count=None if unavailable else len(contents) + 28,
         v0_baseline=None
         if unavailable
         else {

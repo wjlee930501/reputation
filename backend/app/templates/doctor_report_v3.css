@@ -1,0 +1,63 @@
+/* 원장용 월간 보고서(v3) 전용 레이어. report_editorial.css 뒤에 읽혀 그 토큰을 그대로 쓴다.
+   lead_report.html과 내부 report.html은 이 파일을 읽지 않는다.
+   랜딩(reputation.motionlabs.kr)과 같은 문법: 흰 면 · 검정 면 하나 · 오렌지 한 색, 모서리·그림자·
+   그라데이션 없음. 첫 장은 좋은 소식을 먼저 — 큰 숫자, 막대 하나, 쉬운 문장 한 줄. */
+.monthly { --dark-text:#bdbdbd; --dark-line:#2b2b2b; }
+.monthly p { margin-bottom:var(--s2); }
+
+/* 첫 장 머리: 랜딩 히어로처럼 검정 면에 흰 제목, 오렌지 점 하나. */
+.monthly .hero-band { background:var(--black); color:var(--white); padding:22pt 24pt 24pt; margin:0 0 var(--s4); break-inside:avoid; }
+.monthly .hero-band .greeting { color:var(--accent); font-size:10.5pt; font-weight:700; margin:0 0 var(--s3); }
+.monthly .hero-band .greeting::before { content:''; display:inline-block; width:7pt; height:7pt; border-radius:50%; background:var(--accent); margin-right:6pt; vertical-align:1pt; }
+.monthly .hero-band .descriptor { color:var(--dark-text); margin:0 0 var(--s1); font-size:9.5pt; }
+.monthly .hero-band .hero-identity { color:var(--white); font-size:15pt; margin:0 0 var(--s2); }
+.monthly .hero-band .editorial-result { color:var(--white); font-size:24pt; line-height:1.3; margin:0; letter-spacing:-.03em; }
+.monthly .hero-band .headline-note { color:var(--dark-text); font-size:11pt; margin:var(--s3) 0 0; }
+
+/* 큰 숫자: 무엇의 비율인지 먼저 말하고, 막대와 쉬운 문장 한 줄로 받친다. */
+.monthly .metric-question { font-size:11pt; font-weight:700; margin:0 0 var(--s1); }
+.monthly .metrics { margin-top:var(--s2); }
+.monthly .metric strong { font-size:40pt; }
+.monthly .metric strong.withheld { font-size:22pt; }
+.monthly .metric-plain { font-size:12pt; font-weight:600; margin:var(--s3) 0 var(--s1); }
+.monthly .metric-plain b { color:var(--accent-ink); }
+
+/* 좋은 소식 세 칸. */
+.monthly .facts { display:table; width:calc(100% + 2 * var(--s4)); table-layout:fixed; border-collapse:separate; border-spacing:var(--s4) 0; margin:var(--s4) calc(-1 * var(--s4)) var(--s2); }
+.monthly .fact { display:table-cell; vertical-align:top; border-top:2pt solid var(--ink); padding-top:var(--s2); }
+.monthly .fact-label { font-size:9pt; color:var(--muted); font-weight:700; margin:0 0 var(--s1); }
+.monthly .fact-value { font-size:20pt; font-weight:800; letter-spacing:-.03em; line-height:1.15; margin:0 0 var(--s1); font-variant-numeric:tabular-nums; }
+.monthly .fact-value.withheld { font-size:14pt; color:var(--muted); }
+.monthly .fact .caption { margin:0; }
+
+/* 다음 달 할 일 한 줄. */
+.monthly .next-step { background:var(--surface); padding:var(--s3) var(--s4); margin:var(--s4) 0 var(--s3); break-inside:avoid; }
+.monthly .next-step .kicker { display:block; margin-bottom:var(--s1); letter-spacing:.04em; }
+.monthly .next-step p { margin:0; font-size:11pt; }
+
+/* 둘째 장: '한 일'과 '그 결과'를 두 묶음으로. */
+.monthly .part-head { margin:var(--s4) 0 var(--s2); padding-top:var(--s2); border-top:2pt solid var(--ink); }
+.monthly .part-head .kicker { display:block; margin-bottom:2pt; letter-spacing:.04em; }
+.monthly .part-head h2 { border:0; padding:0; margin:0; font-size:15pt; }
+.monthly .kicker { letter-spacing:.04em; }
+.monthly .work-proof .work-title h3 { margin-top:0; font-size:13pt; }
+.monthly .work-observation p { margin-bottom:var(--s1); }
+.monthly .work-observation .cited { color:var(--accent-ink); font-weight:700; font-size:10.5pt; }
+.monthly .evidence-pair { margin-top:var(--s2); }
+.monthly .case h3 { font-size:11pt; }
+.monthly .case .label { display:block; font-size:9pt; font-weight:800; color:var(--accent-ink); margin-bottom:2pt; letter-spacing:.04em; }
+.monthly .case.negative .label { color:var(--muted); }
+
+/* 셋째 장. */
+.monthly .plan-intro { font-size:11pt; }
+.monthly .steps { margin-top:var(--s4); }
+.monthly .steps h3 { font-size:12pt; margin-bottom:var(--s2); }
+
+/* 부록: 표 머리글은 읽을 수 있는 회색으로. */
+.monthly .appendix th { color:var(--muted); letter-spacing:.02em; }
+.monthly .appendix h2 { font-size:12pt; }
+.monthly .reading-guide p { margin-bottom:var(--s1); }
+.compact.monthly .hero-band { padding:16pt 20pt 18pt; margin-bottom:var(--s3); }
+.compact.monthly .hero-band .editorial-result { font-size:21pt; }
+.compact.monthly .facts { margin-top:var(--s3); }
+.compact.monthly .next-step { margin:var(--s3) 0 var(--s2); }
