@@ -6391,6 +6391,17 @@ def _stored_state_reference_verifier() -> ReferenceVerifier:
     return ReferenceVerifier(_never_fetch, max_fetches=0)
 
 
+class _DetachedViewSession:
+    """분리된 사본에 판정·시도 기록을 남길 때 넘기는 세션 — 사본은 어느 세션에도 속하지 않아
+    커밋할 것이 없다. 발행기의 실제 세션을 중간에 커밋하지 않게 한다(행 잠금이 그대로다)."""
+
+    def commit(self) -> None:
+        return None
+
+
+_DETACHED_VIEW_SESSION = _DetachedViewSession()
+
+
 def _detached_publication_view(item: ContentItem) -> SimpleNamespace:
     """행 값의 깊은 사본으로 만든 판정용 보기 — 여기에 쓰는 값은 행·세션에 닿지 않는다."""
 
@@ -6914,30 +6925,33 @@ def _auto_publish_one(
         # 마지막 발행기의 claim 행이면 실제 행 — 그때 `item`은 판정용 사본이다.
         read_only_row: ContentItem | None = None
         if generation_claim_is_active(item, now=datetime.now(timezone.utc)):
-            # 생성 워커가 이 슬롯을 잡고 있다(잠금 전 읽기 때부터, 또는 GET 사이에). 재검증을
-            # 행에 적용하면 판이 올라 워커가 공급자 비용을 치른 결과를 버린다 — 적용하지 않는다.
-            if not (_has_generated_text(item) and not publication_references_settled(item)):
-                # 이미 확인이 끝난 글(또는 생성 전 슬롯)은 아래 판정을 종전대로 거친다.
-                reference_refresh = None
-            elif not reference_outage_alert_due(item.scheduled_date, now_kst):
-                # 확인되지 않은 참고자료로 발행·보류하지도 않고 다음 시간대가 다시 본다(07:45와
-                # 같다).
+            # 생성 워커가 이 슬롯을 잡고 있다(잠금 전 읽기 때부터, 또는 GET 사이에). 워커는 본문·
+            # 이미지·시도 기록을 쓰는 중이고, 그 추적 객체는 이 발행기가 쓴 값을 모른다 — 판정
+            # 기록(`apply_publication_assessment`)·시도 기록을 여기서 쓰면 워커가 뒤이어 오래된
+            # JSON으로 덮어쓰고(인시던트만 남는다), 재검증을 적용하면 판이 올라 워커의 저장이
+            # 버려지고, 발행하면 쓰는 중인 글이 공개된다. 행 모양(빈 슬롯·확인이 끝난 참고자료·
+            # 미확정 참고자료)과 무관하게 07:45와 같이 이 행을 쓰지 않는다.
+            if not reference_outage_alert_due(item.scheduled_date, now_kst):
+                # 마지막 발행기가 아니다 — 판정·보고·발행 없이 다음 시간대가 다시 본다(07:45와 같다).
                 _log_auto_publish_skip("generation_claim_active", content_id, item=item)
                 return None
-            else:
-                # 예정일의 마지막 발행기(23시)이거나 이미 지난 예정일이다 — 건너뛰면 이 행의
-                # 보류·운영자 줄이 조용히 빠진다. 잠금 전 재검증(GET)은 종전처럼 했다. 그 결과를
-                # 분리된 사본에만 적용해 아래의 종전 판정을 사본에서 거친다 — 행은 쓰지 않는다
-                # (재검증 적용·판 올림·발행·판정 기록 없음). 미룸(기관 장애·GET 한도)도 claim 없는
-                # 글과 같은 결과다.
-                read_only_row = item
-                item = _detached_publication_view(item)
-                if reference_refresh is None:
-                    # 잠금 전 읽기와 잠금 사이의 경합(워커가 본문을 쓰는 등)으로 잠금 전 재검증이
-                    # 없다 — 저장된 상태로만 판정한다(판정할 수 없는 주소는 GET 한도처럼 미룬다).
-                    reference_refresh = _run_async(
-                        refresh_publication_references(item, _stored_state_reference_verifier())
-                    )
+            # 예정일의 마지막 발행기(23시)이거나 이미 지난 예정일이다 — 건너뛰면 이 행의 보류·운영자
+            # 줄이 조용히 빠진다. 아래의 종전 판정을 분리된 사본에서 거친다. 보류면 claim 없는 글과
+            # 같은 인시던트·요약 줄을 내고, 보류가 아니면 공개하지 않고 건너뛴다. 행은 쓰지 않는다
+            # (재검증 적용·판 올림·판정 기록·시도 기록·발행 없음).
+            read_only_row = item
+            item = _detached_publication_view(item)
+            if not (_has_generated_text(item) and not publication_references_settled(item)):
+                # 재검증할 참고자료가 없다(생성 전 슬롯·확인이 끝난 글). 잠금 전 결과가 있더라도
+                # 그 사이 워커가 쓴 행에 맞지 않는다 — 아래 판정만 거친다.
+                reference_refresh = None
+            elif reference_refresh is None:
+                # 잠금 전 재검증(GET)은 종전 23시처럼 했다(`_prefetch_publication_references`). 그
+                # 결과가 없다면 잠금 전 읽기와 잠금 사이의 경합(워커가 본문을 쓰는 등)이다 — 저장된
+                # 상태로만 판정한다(판정할 수 없는 주소는 GET 한도처럼 미룬다).
+                reference_refresh = _run_async(
+                    refresh_publication_references(item, _stored_state_reference_verifier())
+                )
         # 참고자료 게이트: 모든 참고자료에 같은 URL·같은 글 주제의 신선한 통과 기록이 있어야
         # 공개한다. 잠금 밖에서 다시 검증한 결과는 판·참고자료·주제가 그대로일 때만 쓴다.
         if reference_refresh is not None:
@@ -7025,10 +7039,14 @@ def _auto_publish_one(
                 code=code,
                 message=message,
             )
-            if read_only_row is None:
-                # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행은
-                # 워커가 시도 기록의 소유자라 쓰지 않는다 — 인시던트가 같은 규칙으로 기한을 계산한다.
-                _record_gate_blocker_decision(db, item, philosophy, code)
+            # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행이면
+            # `item`은 분리된 사본이라 기록도 사본에만 남는다 — 워커가 시도 기록의 소유자다.
+            # 사본에 남기는 것은 요약의 시도 지문(`attempt_fingerprint`)을 claim 없는 글과 같게
+            # 하려는 것이다. 다음 날 claim이 풀린 행이 같은 기록을 남겨도 같은 줄을 다시 싣지 않는다.
+            # 사본의 기록은 이 세션을 커밋하지 않는다 — 잠금은 아래 한 번의 커밋에서 풀린다.
+            _record_gate_blocker_decision(
+                db if read_only_row is None else _DETACHED_VIEW_SESSION, item, philosophy, code
+            )
             db.commit()
             operator_line = operator_decides_digest_due(
                 code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst

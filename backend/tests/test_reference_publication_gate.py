@@ -865,20 +865,23 @@ def test_eight_refreshes_a_slot_whose_claim_expired(monkeypatch):
     assert item.status is tasks.ContentStatus.PUBLISHED
 
 
-def test_eight_judges_a_live_claimed_slot_whose_references_are_settled_as_before(monkeypatch):
-    """확인이 끝난 참고자료(신선한 통과)는 재검증할 일이 없다 — claim과 무관하게 종전 판정이다."""
+def test_eight_skips_a_live_claimed_slot_even_when_its_references_are_settled(monkeypatch):
+    """확인이 끝난 참고자료(신선한 통과)라도 워커가 잡은 글은 공개하지 않는다 — 참고자료만이 아니라
+    행 전체를 워커가 쓰는 중이다(`tests/test_publisher_live_claim.py`). 만료된 claim은 종전처럼 연다."""
 
     url = KDCA_VIEW.format(9602)
-    item, _db, _effects = _publish_setup(
+    item, db, effects = _publish_setup(
         monkeypatch, references=[{"title": "치핵", "url": url}], checks=[_pass(url)]
     )
     _claim(item, _now() - timedelta(minutes=10))
+    before = _row_bytes(item)
     fetcher = _hemorrhoid_fetcher()
 
     payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher))
 
-    assert fetcher.calls == [] and item.content_revision == 3
-    assert payload is not None and item.status is tasks.ContentStatus.PUBLISHED
+    assert payload is None and fetcher.calls == []
+    assert _row_bytes(item) == before and item.status is tasks.ContentStatus.DRAFT
+    assert db.added == [] and effects == {"revalidate": [], "indexnow": []}
 
 
 # ── 그날 마지막 발행기의 claim 행 — 종전처럼 GET하고, 행이 아닌 사본으로 판정한다(#185 리뷰 S2) ──
