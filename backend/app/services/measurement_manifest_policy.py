@@ -1,6 +1,7 @@
 """Frozen measurement completion rules; never widen a resumed sampling cohort."""
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 from app.models.monthly_control import MonthlyMeasurementCell, MonthlyMeasurementManifest
 from app.services import sov_engine
@@ -154,4 +155,45 @@ def manifest_execution_policy_matches(manifest: MonthlyMeasurementManifest) -> b
         snapshot,
         sov_engine.measurement_protocol(),
         platforms=platforms,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestPolicyVersionTransition:
+    period_key: str
+    frozen_version: str
+    current_version: str
+
+
+def manifest_policy_version_transition(
+    manifest: MonthlyMeasurementManifest,
+) -> ManifestPolicyVersionTransition | None:
+    """The frozen and live `policy_version` values, only when both exist and differ.
+
+    Only the recorded version string decides this. Any other execution-policy
+    difference under the same version, or a missing/unreadable version, returns None.
+    """
+
+    provenance = getattr(manifest, "platform_provenance", None)
+    snapshot = provenance.get("measurement_protocol") if isinstance(provenance, dict) else None
+    frozen = snapshot.get("policy_version") if isinstance(snapshot, dict) else None
+    current = sov_engine.measurement_protocol().get("policy_version")
+    year = getattr(manifest, "period_year", None)
+    month = getattr(manifest, "period_month", None)
+    if (
+        not isinstance(frozen, str)
+        or not frozen.strip()
+        or not isinstance(current, str)
+        or not current.strip()
+        or frozen == current
+        or not isinstance(year, int)
+        or isinstance(year, bool)
+        or not isinstance(month, int)
+        or isinstance(month, bool)
+    ):
+        return None
+    return ManifestPolicyVersionTransition(
+        period_key=f"{year:04d}-{month:02d}",
+        frozen_version=frozen,
+        current_version=current,
     )

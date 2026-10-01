@@ -29,6 +29,7 @@ from app.services.content_publish_notifications import (
 )
 from app.services.cost_guard import _build_cost_alert_intent
 from app.services.fleet_heartbeat import FleetFacts, build_fleet_heartbeat
+from app.services.measurement_manifest_policy import ManifestPolicyVersionTransition
 from app.services.monthly_report_gap_notifications import (
     MonthlyReportGap,
     build_monthly_report_gap_summary,
@@ -72,6 +73,7 @@ from app.services.pipeline_watchdog import (
     build_alert_text,
     build_recovery_text,
 )
+from app.workers.weekly_sov_incident_control import _policy_transition_notification
 
 _ADMIN = "http://localhost:3000"
 _NOW = datetime(2026, 9, 20, 9, 0, tzinfo=UTC)
@@ -426,6 +428,20 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
         ),
     ),
     ("NAVER_SOURCE_RECOVERED", NotificationLabel.REPORT, _naver_recovery_intent),
+    (
+        "SOV_MEASUREMENT_POLICY_TRANSITION",
+        NotificationLabel.REPORT,
+        lambda: _policy_transition_notification(
+            hospital_id=_HOSPITAL,
+            hospital_name="장편한외과의원",
+            transition=ManifestPolicyVersionTransition(
+                "2026-09", "v2.1-neutral-auto-systemrole", "v3.0-openrouter-gateway"
+            ),
+            incident_id=uuid.UUID("a1000000-0000-0000-0000-000000000001"),
+            operation_run_id=None,
+            admin_path=f"/hospitals/{_HOSPITAL}/reports",
+        ),
+    ),
     (
         "CONTENT_BATCH_BLOCKED",
         NotificationLabel.ERROR,
