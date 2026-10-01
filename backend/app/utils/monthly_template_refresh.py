@@ -113,12 +113,15 @@ def _target_hospitals(db, year: int, month: int, hospital_ids: Sequence[str]) ->
     return list(db.execute(query).scalars())
 
 
-def precheck_hospital(db, hospital: Hospital, anchor: arrow.Arrow) -> HospitalResult:
+def precheck_hospital(
+    db, hospital: Hospital, anchor: arrow.Arrow, *, allow_recovery_pending: bool = False
+) -> HospitalResult:
     """새 버전을 메모리에서만 만들어 숫자를 비교한다. 호출자가 세션을 롤백한다."""
     from app.workers.tasks import _public_site_url, build_monthly_template_refresh_plan
 
     plan = build_monthly_template_refresh_plan(
-        db, hospital, anchor, observed_now=datetime.now(UTC)
+        db, hospital, anchor, observed_now=datetime.now(UTC),
+        allow_recovery_pending=allow_recovery_pending,
     )
     verdict = plan.verdict
     latest = plan.superseded
@@ -221,13 +224,19 @@ def _print_table(title: str, results: Sequence[HospitalResult]) -> None:
     print("합계: " + ", ".join(f"{key} {value}" for key, value in sorted(counts.items())))
 
 
-def run_precheck(year: int, month: int, hospital_ids: Sequence[str]) -> list[HospitalResult]:
+def run_precheck(
+    year: int, month: int, hospital_ids: Sequence[str], *, allow_recovery_pending: bool = False
+) -> list[HospitalResult]:
     anchor = _anchor(year, month)
     results: list[HospitalResult] = []
     with SyncSessionLocal() as db:
         for hospital in _target_hospitals(db, year, month, hospital_ids):
             try:
-                results.append(precheck_hospital(db, hospital, anchor))
+                results.append(
+                    precheck_hospital(
+                        db, hospital, anchor, allow_recovery_pending=allow_recovery_pending
+                    )
+                )
             finally:
                 db.rollback()
     return results
@@ -245,18 +254,25 @@ def run_postcheck(year: int, month: int, hospital_ids: Sequence[str]) -> list[Ho
 
 
 def _request_refresh(
-    client: httpx.Client, result: HospitalResult, year: int, month: int, reason: str
+    client: httpx.Client,
+    result: HospitalResult,
+    year: int,
+    month: int,
+    reason: str,
+    *,
+    allow_recovery_pending: bool = False,
 ) -> str:
+    params = {"year": year, "month": month, "rebuild": "true", "template_only": "true"}
+    key = f"template-refresh:{result.hospital_id}:{year:04d}-{month:02d}:v{result.version}"
+    if allow_recovery_pending:
+        params["allow_recovery_pending"] = "true"
+        key += ":allow-recovery-pending"
     response = client.post(
         f"/api/v1/admin/hospitals/{result.hospital_id}/operations/generate-monthly-report",
-        params={"year": year, "month": month, "rebuild": "true", "template_only": "true"},
+        params=params,
         json={"reason": reason},
-        headers={
-            # 같은 원본 버전에 대한 재요청은 새 버전을 또 만들지 않고 기존 작업을 돌려준다.
-            "Idempotency-Key": (
-                f"template-refresh:{result.hospital_id}:{year:04d}-{month:02d}:v{result.version}"
-            ),
-        },
+        # 같은 원본 버전에 대한 재요청은 새 버전을 또 만들지 않고 기존 작업을 돌려준다.
+        headers={"Idempotency-Key": key},
     )
     response.raise_for_status()
     return str(response.json()["operation_run_id"])
@@ -283,8 +299,11 @@ def run_execute(
     api_base: str,
     confirm: bool,
     timeout: float,
+    allow_recovery_pending: bool = False,
 ) -> int:
-    results = run_precheck(year, month, hospital_ids)
+    results = run_precheck(
+        year, month, hospital_ids, allow_recovery_pending=allow_recovery_pending
+    )
     _print_table("사전 확인", results)
     targets = [result for result in results if result.verdict.passed]
     skipped = [result for result in results if not result.verdict.passed]
@@ -299,11 +318,17 @@ def run_execute(
     with httpx.Client(base_url=api_base.rstrip("/"), headers=headers, timeout=30) as client:
         for result in targets:
             # 요청 직전에 한 번 더 확인한다 — 사전 확인 뒤 상태가 바뀌었을 수 있다.
-            again = run_precheck(year, month, [str(result.hospital_id)])
+            again = run_precheck(
+                year, month, [str(result.hospital_id)],
+                allow_recovery_pending=allow_recovery_pending,
+            )
             if not again or not again[0].verdict.passed:
                 _print_table("요청 직전 재확인 실패 — 중단", again)
                 return 1
-            run_id = _request_refresh(client, again[0], year, month, reason)
+            run_id = _request_refresh(
+                client, again[0], year, month, reason,
+                allow_recovery_pending=allow_recovery_pending,
+            )
             state = _wait_for_run(client, result.hospital_id, run_id, timeout)
             print(f"{result.name}: 작업 {run_id} → {state}")
             if state != "SUCCEEDED":
@@ -325,6 +350,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         command.add_argument("--year", type=int, required=True)
         command.add_argument("--month", type=int, required=True)
         command.add_argument("--hospital-id", action="append", default=[])
+        if name in ("precheck", "execute"):
+            # 복구 기간에 측정이 덜 끝난 병원도 지금 저장된 숫자로 갱신한다(운영자 명시).
+            command.add_argument("--allow-recovery-pending", action="store_true")
         if name == "execute":
             command.add_argument("--reason", required=True)
             command.add_argument("--api-base", required=True)
@@ -333,7 +361,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "precheck":
-            results = run_precheck(args.year, args.month, args.hospital_id)
+            results = run_precheck(
+                args.year, args.month, args.hospital_id,
+                allow_recovery_pending=args.allow_recovery_pending,
+            )
             _print_table("사전 확인", results)
             return 0 if results and all(result.verdict.passed for result in results) else 1
         if args.command == "postcheck":
@@ -351,6 +382,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             api_base=args.api_base,
             confirm=args.confirm,
             timeout=args.timeout,
+            allow_recovery_pending=args.allow_recovery_pending,
         )
     except MonthlyPeriodError as exc:
         print(str(exc), file=sys.stderr)

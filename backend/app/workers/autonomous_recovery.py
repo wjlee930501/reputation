@@ -91,6 +91,8 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
             (_INTEGER_ARG, _INTEGER_ARG, True, True),
             # 문구·디자인만 다시 만들기(template_only). 숫자 판정은 워커가 다시 한다.
             (_INTEGER_ARG, _INTEGER_ARG, True, False, True),
+            # 운영자 지정으로 측정 미완료 병원도 템플릿 갱신(allow_recovery_pending).
+            (_INTEGER_ARG, _INTEGER_ARG, True, False, True, True),
         ),
     ),
     "REGENERATE_CONTENT": _RedispatchPolicy(
@@ -812,6 +814,12 @@ def _stored_monthly_report_flags(run: OperationRun) -> tuple[object, ...]:
     )
     if automatic:
         return True, True
+    # 템플릿 갱신(숫자 그대로)을 일반 재생성으로 다시 보내면 지금 행으로 숫자를 다시 센다.
+    # 저장된 인자 꼴 그대로(rebuild, False, template_only[, allow_recovery_pending]) 되살린다.
+    if rebuild and len(raw_args) >= 6 and raw_args[4] is False and raw_args[5] is True:
+        if len(raw_args) >= 7 and raw_args[6] is True:
+            return True, False, True, True
+        return True, False, True
     return (True,) if rebuild else ()
 
 
