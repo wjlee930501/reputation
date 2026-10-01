@@ -422,7 +422,7 @@ def test_a_written_slot_is_reported_and_recorded_by_its_own_blocker(monkeypatch)
     assert _stored(item)["reason"] == code
 
 
-# ── `next_retry_at` 키가 없는 9월 이전 기록 ─────────────────────────────────────
+# ── `next_retry_at` 키가 없는 2026-09-07 이전 기록 ──────────────────────────────
 
 _LEGACY_ENV = {
     "reason": "PROVIDER_TIMEOUT",

@@ -1037,7 +1037,8 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 됐거나(`retry_is_due`) 저장된 다음 시도 시각(문자열 `next_retry_at`)이 있는
         # 기록이다. 둘 다 아니면 어떤 스윕도 집지 않으므로 종전처럼 게이트 코드가 대신한다
         # — `next_retry_at=None`으로 굳은 기록(`recovery_is_abandoned`)과, 키가 아예 없는
-        # 9월 이전 레거시 기록 중 예산이 끝난 것이다. 레거시 기록은 `_due_time_reached`가
+        # 2026-09-07(8bc83538, 시도 기록에 `next_retry_at` 도입) 이전 레거시 기록 중 예산이
+        # 끝난 것이다. 레거시 기록은 `_due_time_reached`가
         # 시각 제한 없이 읽어 예산이 남았으면 기한이 된 것이므로 로더가 집는다(보존).
         # `scheduled_recovery_owns_blocker`와는 다른 판정이다 — 그 함수는 환경 원인을
         # 증상 코드와 다른 원인으로 보고 소유를 인정하지 않는다.
@@ -1069,6 +1070,74 @@ def _release_generation_attempt_for_repair(db, item: ContentItem) -> None:
         getattr(item, "essence_check_summary", None)
     )
     db.commit()
+
+
+def _rollback_quietly(db, item_id) -> None:
+    """예외 경로의 rollback. 실패해도 진행 중인 원래 예외를 가리지 않는다."""
+
+    try:
+        db.rollback()
+    except Exception as exc:
+        logger.warning(
+            "Rollback after a failed generation for %s also failed: %s",
+            item_id,
+            type(exc).__name__,
+        )
+
+
+def _release_own_generation_claim(
+    db,
+    item_id,
+    claim_token: uuid.UUID,
+    *,
+    claimed_at: datetime | None = None,
+) -> None:
+    """이 실행의 lease만 푼다(#184의 토큰 해제). 실패해도 원래 결과·예외를 가리지 않는다.
+
+    해제 UPDATE나 커밋이 실패하면 claim은 TTL 뒤 스윕이 인수한다(`STALE_GENERATION_CLAIM`).
+    그 실패를 전파하면 예외 경로에서는 진행 중인 원래 예외가 가려지고, 성공 경로에서는
+    실행 종결을 건너뛴다. 로그에는 예외 이름만 남긴다.
+    """
+
+    try:
+        released = release_unfinished_claims(
+            db,
+            [item_id],
+            expected_claimed_at=claimed_at,
+            expected_claim_token=claim_token,
+        )
+        if released:
+            db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Generation claim release failed for %s: %s", item_id, type(exc).__name__
+        )
+        _rollback_quietly(db, item_id)
+
+
+def _remember_regeneration_failure(
+    db, item: ContentItem, hospital_id, code: str, message: str | None
+) -> None:
+    """운영자 재생성의 예외도 야간 경로처럼 빈 슬롯의 시도 기록으로 남긴다.
+
+    운영자 재시도는 작가를 부르기 전에 억제를 푼다. 예외를 기록하지 않으면 풀린 기록(원인
+    없음)이 그대로 남아, 자동 경로가 다음 시도 시각과 예산 없이 같은 슬롯을 다시 산다.
+    풀린 기록의 사다리(context·기간·계수)에서 이어 세므로 예산 계수는 그대로 이어진다.
+    호출부는 이미 rollback했다. 기록이 실패해도 원래 예외를 가리지 않는다.
+    """
+
+    try:
+        if (getattr(item, "body", None) or "").strip():
+            return
+        philosophy = _generation_philosophy_sync(db, hospital_id)
+        _remember_generation_attempt(db, item, philosophy, code, message=message)
+    except Exception as exc:
+        logger.warning(
+            "Recording the failed regeneration for %s failed: %s",
+            getattr(item, "id", None),
+            type(exc).__name__,
+        )
+        _rollback_quietly(db, getattr(item, "id", None))
 
 
 def _image_failure_code(diagnostics: Mapping[str, object] | None = None) -> str:
@@ -4621,19 +4690,14 @@ def generate_claimed_content_item(
             )
         except BaseException:
             # 예외로 빠져나온 실행의 미커밋 쓰기는 버린다. 깨진 트랜잭션을 그대로 두면
-            # 아래 해제 UPDATE도 실패해 claim이 TTL까지 남는다.
-            db.rollback()
+            # 아래 해제 UPDATE도 실패해 claim이 TTL까지 남는다. rollback 자체가 실패해도
+            # 원래 예외를 그대로 올린다.
+            _rollback_quietly(db, item_id)
             raise
         finally:
-            # 어떤 종료든 이 실행의 lease는 여기서 끝난다(토큰이 다르면 0행).
-            released = release_unfinished_claims(
-                db,
-                [item_id],
-                expected_claimed_at=claim_time,
-                expected_claim_token=token,
-            )
-            if released:
-                db.commit()
+            # 어떤 종료든 이 실행의 lease는 여기서 끝난다(토큰이 다르면 0행). 해제가 실패해도
+            # 원래 예외를 가리거나 아래 실행 종결을 건너뛰지 않는다.
+            _release_own_generation_claim(db, item_id, token, claimed_at=claim_time)
         _finish_claimed_item_run(
             db,
             self,
@@ -5201,121 +5265,157 @@ def regenerate_content_item(self, content_id: str):
                 safe_error_message="병원 정보를 찾을 수 없어 생성 작업을 중단했습니다.",
             )
             return
-        try:
-            stored_attempt = _stored_generation_attempt(item)
-            if (
-                explicit_run_context(self) is not None
-                and not (getattr(item, "body", None) or "").strip()
-                and (
-                    stored_attempt.get("reason") == "CONTENT_NOT_GENERATED"
-                    or stored_attempt.get("retry_class")
-                    == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
-                )
-            ):
-                # 07:45·08:00 게이트가 예산 없이 남긴 증상 기록(원고 없음)은 운영자가 누른
-                # “작업 다시 시도”를 같은 원인으로 건너뛰게 만든다. 게이트가 덮지 않고 남긴
-                # 환경 실패 기록(PROVIDER_TIMEOUT 등, 다음 시도 시각이 아직 오지 않음)도
-                # 같다 — 공급자 장애는 운영자가 다시 시도할 수 있는 일이다. Admin이 만든
-                # 실행에서만 억제를 풀고 예산 계수는 남긴다. 표본 실패(SAMPLE_RECOVERABLE,
-                # 주제 교체 기록 포함)는 하루 예산이 소유하므로 그대로 억제하고, 자동 경로도
-                # 그대로 억제한다.
-                _release_generation_attempt_for_repair(db, item)
-            outcome, code, message = _generate_single_content_item(db, item, hospital)
-        except Exception as exc:
-            db.rollback()
-            code, message = classify_generation_failure(exc)
-            run_id = finish_explicit_run(
-                db,
-                self,
-                item_id,
-                OperationRunState.FAILED,
-                safe_error_code=code,
-                safe_error_message=message,
-            )
-            if run_id is not None:
-                _run_async(
-                    open_generation_incident(
-                        item_id=item_id,
-                        hospital_id=hospital.id,
-                        hospital_name=hospital.name,
-                        run_id=run_id,
-                        code=code,
-                        message=message,
-                        notify=generation_notify_requested(code),
-                    )
-                )
-            logger.error(
-                "regenerate_content_item failed for %s: %s",
-                content_id,
-                generation_failure_detail(exc),
-                exc_info=exc,
-            )
-            raise
-
-        if outcome == GenerationItemState.DISCARDED:
-            finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
-            return
-        if outcome == GenerationItemState.PARTIAL:
-            parent_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
-            if parent_id is not None and code is not None and message is not None:
-                _run_async(
-                    recover_generation_incidents(
-                        item_id,
-                        hospital.id,
-                        hospital.name,
-                        parent_id,
-                        include_image=False,
-                    )
-                )
-                image_run = create_item_run(
+        # 야간 생성·단독 이미지 태스크와 같은 글 단위 lease를 공급자 호출 전에 커밋한다.
+        # 살아 있는 다른 claim이 있으면 그 작업이 이 글을 쓰는 중이다 — 작가를 한 번 더 사지
+        # 않고 억제 기록도 풀지 않은 채 물러난다. 종전에는 lease 없이 행에 남은 토큰(대개
+        # NULL)으로 써서, 그 사이 들어온 claim과 작가 호출이 겹치고 이미지 저장이 그 claim을
+        # 지웠다. write-back은 이 lease의 토큰(`item.generation_claim_token`)을 쓴다.
+        leased = claim_generation_lease(db, item_id)
+        if leased is None:
+            if generation_claim_is_active(item, now=datetime.now(timezone.utc)):
+                logger.info("Regeneration deferred for %s — active generation lease", item_id)
+                finish_explicit_run(
                     db,
-                    parent_run_id=parent_id,
-                    item_id=item_id,
-                    hospital_id=hospital.id,
-                    operation_type="REGENERATE_CONTENT_IMAGE",
-                    state=OperationRunState.FAILED,
-                    result={"state": "FAILED", "safe_error_code": code},
+                    self,
+                    item_id,
+                    OperationRunState.CANCELLED,
+                    safe_error_code="GENERATION_LEASE_ACTIVE",
+                    safe_error_message=generation_safe_cause("GENERATION_LEASE_ACTIVE"),
+                )
+            else:
+                # claim 직전에 쓰기 대상 상태를 벗어났다(발행·취소·비공개).
+                finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
+            return
+        item, claim_token = leased
+        try:
+            try:
+                stored_attempt = _stored_generation_attempt(item)
+                if (
+                    explicit_run_context(self) is not None
+                    and not (getattr(item, "body", None) or "").strip()
+                    and (
+                        stored_attempt.get("reason") == "CONTENT_NOT_GENERATED"
+                        or stored_attempt.get("retry_class")
+                        == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+                    )
+                ):
+                    # 운영자가 누른 “작업 다시 시도”가 같은 원인 억제에 걸려 작가 0회로 끝나지
+                    # 않게, 억제만 푸는 조건은 셋이 모두 맞을 때다.
+                    # 1) Admin이 만든 실행이다(`explicit_run_context` — 헤더와 claim 버전).
+                    # 2) 본문이 비어 있다(공백만 있는 본문도 빈 것으로 본다).
+                    # 3) 저장 원인이 정확히 CONTENT_NOT_GENERATED(07:45·08:00 게이트가 예산 없이
+                    #    남긴 증상 기록)이거나, 저장 분류가 ENVIRONMENT_RECOVERABLE이다 — 게이트가
+                    #    덮지 않고 남긴 PROVIDER_TIMEOUT 등과 비용 가드 보류(COST_BLOCKED)가 여기에
+                    #    든다. COST_BLOCKED는 풀려도 가드가 호출 시점에 다시 막는다.
+                    # 표본 실패(SAMPLE_RECOVERABLE, 주제 교체 기록 포함)와 그 밖의 원인은 하루
+                    # 예산·사람의 결정이 소유하므로 그대로 억제하고, 자동 경로도 그대로 억제한다.
+                    # 해제는 억제만 걷고 기록에 남은 계수는 그대로 둔다. 다만 게이트가 덮은
+                    # CONTENT_NOT_GENERATED 기록은 원인이 바뀌어 이미 0에서 다시 센 것이다
+                    # (`_remember_generation_attempt`) — 이 경우 이어지는 계수는 그 0이다.
+                    # 작가가 예외로 끝나면 아래 except가 실패를 기록해 억제를 되살린다.
+                    _release_generation_attempt_for_repair(db, item)
+                outcome, code, message = _generate_single_content_item(db, item, hospital)
+            except Exception as exc:
+                _rollback_quietly(db, item_id)
+                code, message = classify_generation_failure(exc)
+                # 야간 경로(`_run_generation_item`)와 같이 빈 슬롯의 실패를 기록한다. 위에서 푼
+                # 억제가 원인 없는 기록으로 남으면 자동 경로가 예산 없이 다시 산다.
+                _remember_regeneration_failure(db, item, hospital.id, code, message)
+                run_id = finish_explicit_run(
+                    db,
+                    self,
+                    item_id,
+                    OperationRunState.FAILED,
                     safe_error_code=code,
                     safe_error_message=message,
                 )
-                _run_async(
-                    open_generation_incident(
-                        item_id=item_id,
-                        hospital_id=hospital.id,
-                        hospital_name=hospital.name,
-                        run_id=image_run.id,
-                        code=code,
-                        message=message,
-                        notify=generation_notify_requested(code),
+                if run_id is not None:
+                    _run_async(
+                        open_generation_incident(
+                            item_id=item_id,
+                            hospital_id=hospital.id,
+                            hospital_name=hospital.name,
+                            run_id=run_id,
+                            code=code,
+                            message=message,
+                            notify=generation_notify_requested(code),
+                        )
                     )
+                logger.error(
+                    "regenerate_content_item failed for %s: %s",
+                    content_id,
+                    generation_failure_detail(exc),
+                    exc_info=exc,
                 )
-            return
-        if outcome in (GenerationItemState.SKIPPED, GenerationItemState.FAILED):
-            run_id = finish_explicit_run(
-                db,
-                self,
-                item_id,
-                OperationRunState.FAILED,
-                safe_error_code=code,
-                safe_error_message=message,
-            )
-            if run_id is not None and code is not None and message is not None:
-                _run_async(
-                    open_generation_incident(
-                        item_id=item_id,
-                        hospital_id=hospital.id,
-                        hospital_name=hospital.name,
-                        run_id=run_id,
-                        code=code,
-                        message=message,
-                        notify=generation_notify_requested(code),
-                    )
-                )
-            return
-        run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
-        if run_id is not None:
-            _run_async(recover_generation_incidents(item_id, hospital.id, hospital.name, run_id))
+                raise
 
+            if outcome == GenerationItemState.DISCARDED:
+                finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
+                return
+            if outcome == GenerationItemState.PARTIAL:
+                parent_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+                if parent_id is not None and code is not None and message is not None:
+                    _run_async(
+                        recover_generation_incidents(
+                            item_id,
+                            hospital.id,
+                            hospital.name,
+                            parent_id,
+                            include_image=False,
+                        )
+                    )
+                    image_run = create_item_run(
+                        db,
+                        parent_run_id=parent_id,
+                        item_id=item_id,
+                        hospital_id=hospital.id,
+                        operation_type="REGENERATE_CONTENT_IMAGE",
+                        state=OperationRunState.FAILED,
+                        result={"state": "FAILED", "safe_error_code": code},
+                        safe_error_code=code,
+                        safe_error_message=message,
+                    )
+                    _run_async(
+                        open_generation_incident(
+                            item_id=item_id,
+                            hospital_id=hospital.id,
+                            hospital_name=hospital.name,
+                            run_id=image_run.id,
+                            code=code,
+                            message=message,
+                            notify=generation_notify_requested(code),
+                        )
+                    )
+                return
+            if outcome in (GenerationItemState.SKIPPED, GenerationItemState.FAILED):
+                run_id = finish_explicit_run(
+                    db,
+                    self,
+                    item_id,
+                    OperationRunState.FAILED,
+                    safe_error_code=code,
+                    safe_error_message=message,
+                )
+                if run_id is not None and code is not None and message is not None:
+                    _run_async(
+                        open_generation_incident(
+                            item_id=item_id,
+                            hospital_id=hospital.id,
+                            hospital_name=hospital.name,
+                            run_id=run_id,
+                            code=code,
+                            message=message,
+                            notify=generation_notify_requested(code),
+                        )
+                    )
+                return
+            run_id = finish_explicit_run(db, self, item_id, OperationRunState.SUCCEEDED)
+            if run_id is not None:
+                _run_async(recover_generation_incidents(item_id, hospital.id, hospital.name, run_id))
+        finally:
+            # 어떤 종료든 이 실행의 lease만 푼다(다른 토큰이면 0행). 이미지 저장이 이미
+            # 풀었으면 0행이다.
+            _release_own_generation_claim(db, item_id, claim_token)
 
 def _recertify_runs(db, item_id: uuid.UUID, hospital_id: uuid.UUID) -> list[OperationRun]:
     """이 글의 재인증 실행 이력. 예산·차단 판정의 유일한 근거다.
