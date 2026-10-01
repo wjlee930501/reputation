@@ -17,6 +17,7 @@ from types import ModuleType
 import pytest
 import test_generation_redelivery_postgres
 import test_migration_0081_withheld_postgres
+import test_migration_0082_reference_checks_postgres
 import test_migration_upgrade_0064_to_head_postgres
 import test_operations_models
 
@@ -27,6 +28,7 @@ _REDELIVERY = "REDELIVERY_TEST_SYNC_DATABASE_URL"
 _CASES = [
     pytest.param(test_operations_models, _OPERATIONS, id="operations_models"),
     pytest.param(test_migration_0081_withheld_postgres, _MIGRATION, id="migration_0081"),
+    pytest.param(test_migration_0082_reference_checks_postgres, _MIGRATION, id="migration_0082"),
     pytest.param(
         test_migration_upgrade_0064_to_head_postgres, _MIGRATION, id="migration_0064_to_head"
     ),

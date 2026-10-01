@@ -35,7 +35,7 @@ async def test_schedule_save_keeps_prior_gap_targets_and_budget(db, monkeypatch)
     db.commit()
     monkeypatch.setattr(content_api, "_schedule_readiness_blockers", AsyncMock(return_value=[]))
     monkeypatch.setattr(content_api.arrow, "now", lambda *args: arrow.get(NOW))
-    monkeypatch.setattr(content_api, "build_gap_targets", lambda rows: [
+    monkeypatch.setattr(content_api, "build_gap_targets", lambda rows, **_kwargs: [
         GapTarget(target_id, "지역 진료 안내", 0, 0, region_terms=("수원",))
     ])
     original = content_api.plan_gap_driven_slots

@@ -151,6 +151,14 @@ def display_time(value: datetime) -> str:
 
 def blocker_copy(code: object) -> ActionCopy:
     value = str(code or "")
+    if value == "REFERENCE_SITE_UNREACHABLE":
+        # 문서가 없다는 판정이 아니다 — 기관 사이트가 열리지 않아 확인을 미뤘다.
+        return ActionCopy(
+            "기관 사이트 접속 불가로 발행 대기",
+            "참고 자료 기관 사이트에 접속하지 못해 발행을 미뤘습니다. 다음 발행 시간대에 "
+            "자동으로 다시 확인하며, 사이트가 계속 열리지 않으면 콘텐츠에서 참고 자료 주소를 바꿔 주세요.",
+            "참고 자료 확인",
+        )
     if value == "MISSING_APPROVED_ESSENCE":
         return ActionCopy(
             "운영 기준 미승인",

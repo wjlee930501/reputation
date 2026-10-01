@@ -15,6 +15,11 @@ from typing import Any, Final, Literal
 
 from app.models.content import ContentStatus
 from app.services.content_visibility import PublicVisibility
+from app.workers.generation_run_control import GENERATION_REFERENCE_REJECTION_MESSAGE
+
+# 생성이 참고자료 확보 실패로 거절돼 다음 자동 재시도를 기다리는 빈 슬롯의 사유.
+# "발행 전날 23:00 자동 생성"으로 두면 이미 시도했다가 실패한 사실이 가려진다(점검 §4).
+REFERENCE_RETRY_ROW_REASON = "공신력 있는 참고 자료를 확보하지 못해 자동 재시도 대기"
 
 RowStateKind = Literal["public", "withheld", "scheduled", "generating", "blocked", "closed"]
 
@@ -80,6 +85,8 @@ def content_row_state(
             # 전날 23:00 자동 생성이 지나갔는데 본문이 없다. "생성 중"으로 두면 이미
             # 놓친 날짜가 앞으로 알아서 처리될 일처럼 보인다.
             return RowState("blocked", "발행일이 지났지만 아직 생성되지 않았습니다.", None)
+        if _last_rejection_was_references(item):
+            return RowState("generating", REFERENCE_RETRY_ROW_REASON, None)
         return RowState("generating", "발행 전날 23:00 자동 생성", None)
 
     if compliance_blockers:
@@ -91,3 +98,13 @@ def content_row_state(
         return RowState("blocked", "발행일이 지났지만 아직 공개되지 않았습니다.", None)
 
     return RowState("scheduled", None, None)
+
+
+def _last_rejection_was_references(item: Any) -> bool:
+    summary = getattr(item, "essence_check_summary", None)
+    attempt = summary.get("generation_attempt") if isinstance(summary, dict) else None
+    return (
+        isinstance(attempt, dict)
+        and attempt.get("reason") == "GENERATION_REJECTED"
+        and attempt.get("message") == GENERATION_REFERENCE_REJECTION_MESSAGE
+    )

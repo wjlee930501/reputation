@@ -8,6 +8,21 @@ from fastapi import HTTPException
 
 from app.api.admin import content as content_api
 from app.services.audit_log import reset_request_actor, set_request_actor
+from app.services.reference_verification import override_reference_fetcher
+from tests.reference_fetch_doubles import PageFetcher
+
+# 참고자료 PATCH는 실제 문서 검증을 거친다(목록 밖 주소는 GET 통과분만). 이 모듈의 주소는
+# 어깨 통증 문서를 돌려주는 가짜 fetcher로 확인한다 — 네트워크는 쓰지 않는다.
+_SHOULDER_DOCUMENTS = ("https://kdca.go.kr/shoulder", "https://kdca.go.kr/guide")
+
+
+@pytest.fixture(autouse=True)
+def _shoulder_reference_pages():
+    fetcher = PageFetcher()
+    for url in _SHOULDER_DOCUMENTS:
+        fetcher.add_document(url, "어깨 통증 | 질병관리청", topic="어깨 통증")
+    with override_reference_fetcher(fetcher):
+        yield fetcher
 
 
 def _hospital(hospital_id=None, **overrides):

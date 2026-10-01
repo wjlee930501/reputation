@@ -37,6 +37,7 @@ from app.services.content_ai_review import (
 )
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.post_publish_review_policy import auto_publish_catchup_start
+from app.services.reference_verification import item_topic_fingerprint, reference_check_record
 from app.workers import generation_incident_control, nightly_generation_batch, tasks
 from app.workers.content_backlog_recovery import _next_available_dates
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
@@ -4427,7 +4428,7 @@ def test_morning_publish_cycle_has_no_success_slack(monkeypatch):
         "now",
         lambda *_args, **_kwargs: arrow.get(cycle_date, tzinfo="Asia/Seoul"),
     )
-    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id, **_kw: outcomes[content_id])
     monkeypatch.setattr(tasks, "_run_async", finish_async)
     monkeypatch.setattr(
         tasks,
@@ -4493,11 +4494,12 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
         def __init__(self):
             self.added = []
 
-        def execute(self, _stmt):
-            results = [_Result(items=[item]), _Result(items=[hospital])]
-            result = results[self.execute_calls]
+        def execute(self, stmt):
+            # 대상 엔티티로 답한다 — 발행기가 참고자료 재검증용 잠금 없는 읽기를 먼저 해도
+            # 조회 순서에 기대지 않는다.
             self.execute_calls += 1
-            return result
+            entity = _statement_entity(stmt)
+            return _Result(items=[item] if entity is ContentItem else [hospital])
 
         def commit(self):
             self.commits += 1
@@ -4652,7 +4654,7 @@ def _publication_hospital():
 
 def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
     image_hash = "c" * 64
-    return SimpleNamespace(
+    item = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
         hospital=hospital,
@@ -4667,13 +4669,25 @@ def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
         meta_description="진료 전 확인할 점을 정리했습니다.",
         faq_question="진료 전에 무엇을 확인해야 하나요?",
         faq_answer_summary="현재 증상과 복용약을 정리해 의료진에게 알려 주세요.",
-        # 참고 자료 게이트(MISSING_REFERENCES)는 이 테스트들의 관심사가 아니므로
-        # 화이트리스트 도메인의 실제 문서 URL로 미리 통과시켜 둔다.
+        # 참고 자료 게이트(MISSING_REFERENCES·실제 문서 검증)는 이 테스트들의 관심사가
+        # 아니므로 화이트리스트 도메인의 실제 문서 URL과, 생성 시 남긴 신선한 통과 기록으로
+        # 미리 통과시켜 둔다(발행 직전 재검증 GET이 일어나지 않는다).
         references_list=[
             {
                 "title": "질병관리청 국가건강정보포털",
                 "url": "https://health.kdca.go.kr/healthinfo/example",
             }
+        ],
+        reference_checks=[
+            reference_check_record(
+                "https://health.kdca.go.kr/healthinfo/example",
+                verdict="pass",
+                reason="page_verified",
+                checked_at=datetime.now(timezone.utc),
+                curated=False,
+                status=200,
+                verified_at=datetime.now(timezone.utc),
+            )
         ],
         sequence_no=1,
         total_count=8,
@@ -4689,6 +4703,10 @@ def _publication_item(hospital, *, body, title="진료 전 확인할 점"):
         post_publish_reviewed_at=None,
         post_publish_reviewed_by=None,
     )
+    # 통과 기록은 URL과 이 글의 주제(제목·첫 H2·FAQ 질문·brief)에 함께 묶인다.
+    for check in item.reference_checks:
+        check["topic_fingerprint"] = item_topic_fingerprint(item)
+    return item
 
 
 def _approved_philosophy():
@@ -5063,7 +5081,7 @@ def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
     heals, digests, incidents = [], [], []
     monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
-    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: {
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id, **_kw: {
         "kind": "blocked", "code": code, "message": "blocked",
         "hospital_id": hospital_id, "hospital_name": "자율복구의원",
         "run_id": uuid.uuid4(), "title": "진료 안내",
@@ -5131,7 +5149,7 @@ def test_a_morning_pass_records_what_it_did_even_when_nothing_was_published(
     }
     monkeypatch.setattr(tasks, "SyncSessionLocal", DB)
     monkeypatch.setattr(tasks, "require_dispatch", lambda *_args: None)
-    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id: outcomes[content_id])
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda content_id, **_kw: outcomes[content_id])
     monkeypatch.setattr(tasks, "_run_async", lambda value: value)
     monkeypatch.setattr(tasks, "open_generation_incident", lambda **kwargs: None)
 
@@ -5781,7 +5799,7 @@ def test_reused_image_publication_reaches_the_eight_oclock_digest(monkeypatch):
     monkeypatch.setattr(
         tasks, "trigger_content_site_revalidate_safe", lambda *_args, **_kwargs: True
     )
-    monkeypatch.setattr(tasks, "_auto_publish_one", lambda _id: {
+    monkeypatch.setattr(tasks, "_auto_publish_one", lambda _id, **_kw: {
         "kind": "published",
         "hospital_id": hospital_id,
         "hospital_name": "재사용의원",

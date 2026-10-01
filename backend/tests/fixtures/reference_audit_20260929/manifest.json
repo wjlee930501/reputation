@@ -1,0 +1,1117 @@
+{
+ "source": "/workspace/ref-url-audit-20260929 (공개 199편 참고자료 365건 전수 점검, 2026-09-29)",
+ "stripping": "script/style/noscript/svg/template blocks and HTML comments removed, whitespace runs collapsed, gzip(mtime=0)",
+ "informational_human_review_rows": 254,
+ "rows": [
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T216C217/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T216C217/contents.do",
+   "article_title": "대구 동구 CT 검사, 신기한속내과연합의원에서 가능합니다",
+   "treatment": "CT 검사",
+   "ref_label": "국가암정보센터 - 암 진단검사(영상검사) 안내",
+   "html": "html/1cb45adc53b3614a.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5527",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5527",
+   "article_title": "대구 동구 헬리코박터균, 증상부터 치료까지 알아보기",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 헬리코박터균 감염증",
+   "html": "html/6b85b129192f3391.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31976",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31976",
+   "article_title": "대구 동구 헬리코박터균, 증상부터 치료까지 알아보기",
+   "treatment": "",
+   "ref_label": "서울아산병원 질환백과 - 헬리코박터균감염",
+   "html": "html/61cec10e9e75d24c.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "복부초음파 검사, 어떤 증상일 때 받나요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 - 복부초음파",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/management/managementDetail.do?managementId=282",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/management/managementDetail.do?managementId=282",
+   "article_title": "복부초음파 검사, 어떤 증상일 때 받나요?",
+   "treatment": "",
+   "ref_label": "서울아산병원 질환백과 - 복부초음파",
+   "html": "html/0e93056d6cdf1eb6.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "건강검진 결과 상담, 왜 중요한가요?",
+   "treatment": "",
+   "ref_label": "국가건강검진 - 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "정기 건강검진, 왜 미루시나요? 원장이 전하는 조기 발견의 가치",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 - 건강검진",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T639C641/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T639C641/contents.do",
+   "article_title": "대장내시경 검사, 언제 받아야 하나요?",
+   "treatment": "",
+   "ref_label": "국가암정보센터 - 대장암",
+   "html": "html/ac4fbd56ceaff4b8.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "대장내시경 검사, 언제 받아야 하나요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 - 대장내시경",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5827",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5827",
+   "article_title": "만성 변비 검사와 진료 — 수원에서 오래된 변비 어떻게 확인하나요",
+   "treatment": "변비 진료",
+   "ref_label": "질병관리청 국가건강정보포털 — 변비",
+   "html": "html/1bea2713dc573c1d.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 수술 시기와 비수술 치료 기준 — 언제 수술이 필요한가요",
+   "treatment": "치질 비수술 치료·수술",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 수술 후 회복 기간과 통증 관리 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "대장내시경 장정결·수면검사·회복 과정 — 수원 장편한외과",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 수술 후 회복 기간과 통증 관리 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "article_title": "치질 수술 후 회복 기간과 통증 관리 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "서울아산병원 질환백과 — 치핵",
+   "html": "html/2e77378175f45cf0.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "article_title": "항문 출혈, 어느 과로 가야 하나요? — 수원 장편한외과",
+   "treatment": "대장항문 진료",
+   "ref_label": "국가암정보센터 — 대장암",
+   "html": "html/8f7be50a5c2c116a.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31773",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31773",
+   "article_title": "치열 증상·진단·치료 과정 — 수원 장편한외과",
+   "treatment": "치열 진료",
+   "ref_label": "서울아산병원 질환백과 — 치열",
+   "html": "html/c60e56c9736041b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "대장내시경 장정결·수면검사·회복 과정 — 수원 장편한외과",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31775",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31775",
+   "article_title": "치루·항문농양 병원 선택 기준 — 수원 장편한외과의원",
+   "treatment": "치루·항문농양 진료",
+   "ref_label": "서울아산병원 질환백과 — 치루",
+   "html": "html/bae2170af6f4d62c.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "대장내시경 용종 발견 시 당일 절제 가능 여부와 치료 과정",
+   "treatment": "대장용종 절제",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531",
+   "article_title": "대장내시경 용종 발견 시 당일 절제 가능 여부와 치료 과정",
+   "treatment": "대장용종 절제",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장용종",
+   "html": "html/5a5a685c06cf0bc6.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "article_title": "대장내시경 용종 발견 시 당일 절제 가능 여부와 치료 과정",
+   "treatment": "대장용종 절제",
+   "ref_label": "국가암정보센터 — 대장암",
+   "html": "html/8f7be50a5c2c116a.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5827",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5827",
+   "article_title": "변비가 오래가면 어떤 검사를 받아야 하나요? — 수원 장편한외과",
+   "treatment": "변비 진료",
+   "ref_label": "질병관리청 국가건강정보포털 — 변비",
+   "html": "html/1bea2713dc573c1d.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31773",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31773",
+   "article_title": "치열 통증과 출혈 진료 과정 — 증상·진단·치료·회복 관리",
+   "treatment": "치열 진료",
+   "ref_label": "서울아산병원 질환백과 — 치열",
+   "html": "html/c60e56c9736041b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31775",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31775",
+   "article_title": "치루·항문농양 진단·치료·회복 — 수원 장편한외과 질환 가이드",
+   "treatment": "치루·항문농양 진료",
+   "ref_label": "서울아산병원 질환백과 — 치루",
+   "html": "html/bae2170af6f4d62c.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 수술 후 회복 기간과 통증 관리 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "article_title": "치질 수술 후 회복 기간과 통증 관리 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "서울아산병원 질환백과 — 치핵",
+   "html": "html/2e77378175f45cf0.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "수원 대장내시경 병원 선택 기준 — 검사 정확도와 안전을 결정하는 요소",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "article_title": "수원 대장내시경 병원 선택 기준 — 검사 정확도와 안전을 결정하는 요소",
+   "treatment": "대장내시경",
+   "ref_label": "국가암정보센터 — 대장암",
+   "html": "html/8f7be50a5c2c116a.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 출혈, 화장지에 피 묻으면 바로 병원 가야 하나요?",
+   "treatment": "대장항문 진료",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31775",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31775",
+   "article_title": "치루 수술 후 재발률과 재발 방지 — 수술 후 관리와 추적 관찰",
+   "treatment": "치루·항문농양 진료",
+   "ref_label": "서울아산병원 질환백과 — 항문 누공",
+   "html": "html/bae2170af6f4d62c.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "수원 대장내시경 검사 과정 — 장정결부터 수면·회복까지 단계별 안내",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6531",
+   "article_title": "대장용종 증상·원인·제거 — 선종성 용종과 대장암 진행 위험",
+   "treatment": "대장용종 절제",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장용종",
+   "html": "html/5a5a685c06cf0bc6.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "article_title": "대장용종 증상·원인·제거 — 선종성 용종과 대장암 진행 위험",
+   "treatment": "대장용종 절제",
+   "ref_label": "국가암정보센터 — 대장암",
+   "html": "html/8f7be50a5c2c116a.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "article_title": "대장암 조기검진 시기·증상·대장내시경 — 수원 장편한외과",
+   "treatment": "대장내시경",
+   "ref_label": "국가암정보센터 — 대장암",
+   "html": "html/8f7be50a5c2c116a.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 좌욕 제대로 하는 법 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "article_title": "치질 좌욕 제대로 하는 법 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "서울아산병원 질환백과 — 치핵",
+   "html": "html/2e77378175f45cf0.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "혈변·배변습관 변화, 바로 검사받아야 하나요 — 수원 장편한외과",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "status": 200,
+   "final_url": "https://cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3797",
+   "article_title": "혈변·배변습관 변화, 바로 검사받아야 하나요 — 수원 장편한외과",
+   "treatment": "대장내시경",
+   "ref_label": "국가암정보센터 — 대장암",
+   "html": "html/8f7be50a5c2c116a.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "대장내시경 장 청소, 4리터 다 마셔야 하나요? — 수원 장편한외과",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5818",
+   "article_title": "치질 수술 통증·마취·입원이 걱정될 때 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "질병관리청 국가건강정보포털 — 치핵",
+   "html": "html/2e08b849fd36c9b3.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31772",
+   "article_title": "치질 수술 통증·마취·입원이 걱정될 때 — 수원 장편한외과",
+   "treatment": "치질 수술",
+   "ref_label": "서울아산병원 질환백과 — 치핵",
+   "html": "html/2e77378175f45cf0.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5205",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "도화동 족저근막염 진료 가능한 병원은 어디인가요?",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 족저근막염",
+   "html": "html/81ae778ffbbea5a4.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=32235",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=32235",
+   "article_title": "도화동 족저근막염 진료 가능한 병원은 어디인가요?",
+   "treatment": "",
+   "ref_label": "서울아산병원 질환백과 - 족저근막염",
+   "html": "html/c97c773ca25aeea3.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31596",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31596",
+   "article_title": "도화동 방아쇠수지 진료 가능 병원 — 증상·진단·치료 흐름",
+   "treatment": "",
+   "ref_label": "서울아산병원 질환백과 — 방아쇠수지",
+   "html": "html/670965a15a477894.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31587",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31587",
+   "article_title": "PRP 자가혈 재생치료 비용 — 어떤 요인에 따라 달라지나요?",
+   "treatment": "PRP 자가혈 재생치료",
+   "ref_label": "혈소판풍부혈장(PRP) 치료 — 서울아산병원 질환백과",
+   "html": "html/36d26a81261dbace.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2449",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "마포구 무릎 관절염 진료 — 증상·진단·치료 흐름 안내",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 골관절염",
+   "html": "html/cbc74605573bbc42.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마포구 신경외과 진료비 — 어떤 검사·치료에 따라 달라지나요?",
+   "treatment": "",
+   "ref_label": "허리디스크(요추 추간판 탈출증) - 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5856",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5856",
+   "article_title": "마포구 신경외과 선택 고민 — 진단 정확성을 우선하는 이유",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 - 척추관협착증",
+   "html": "html/e50d721bb865dd00.html.gz"
+  },
+  {
+   "category": "죽은 링크",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6292",
+   "status": 404,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6292",
+   "article_title": "도화동 손목 통증 진료 — 원인·검사·치료 흐름 안내",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 수근굴(수근관) 증후군",
+   "html": "html/ebe91b7035d8e0e2.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6765",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6765",
+   "article_title": "하남시 고혈압 진료, 어느 병원으로 가야 할까요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 고혈압",
+   "html": "html/504c4b14584f9fa0.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5520",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "하남시 경동맥초음파, 어느 병원에서 받아야 할까요?",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 동맥경화증",
+   "html": "html/1700b72e249bba55.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5205",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "간질환 치료하려면 어떤 전문의를 찾아야 할까요?",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 간질환",
+   "html": "html/81ae778ffbbea5a4.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=32077",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=32077",
+   "article_title": "하남시 간질환 진료, 어느 병원으로 가야 할까 — 증상부터 검사 흐름까지",
+   "treatment": "",
+   "ref_label": "서울아산병원 질환백과 - 간질환",
+   "html": "html/2e8e8d122a5bf74d.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "간질환 치료 비용 — 검사 범위와 보험 적용 기준",
+   "treatment": "간질환 치료",
+   "ref_label": "질병관리청 국가건강정보포털 간질환",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2445",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "하남시 갑상선초음파 진료 병원 — 결절 평가와 추적 절차",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 갑상선암",
+   "html": "html/87e569f695021186.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T211C218/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T211C218/contents.do",
+   "article_title": "하남시 갑상선결절 진료 병원 — 초음파 평가와 추적 절차",
+   "treatment": "",
+   "ref_label": "국가암정보센터 — 갑상선암",
+   "html": "html/a0636df45f03b307.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T261C262/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T261C262/contents.do",
+   "article_title": "위례·송파 진료 가능한 병원 선택 시 확인할 점",
+   "treatment": "",
+   "ref_label": "국가암정보센터 — 대장암 검진 권고",
+   "html": "html/7cf98da430d9724f.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "article_title": "골절 치료, 어떤 전문의에게 가야 하나요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 골절",
+   "html": "html/cb4b868456e3ae70.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "article_title": "골절 치료 비용 — 검사·처치 범위와 보험 적용에 따른 차이",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 골절",
+   "html": "html/cb4b868456e3ae70.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "article_title": "골절 초기 증상 — 놓치기 쉬운 신호와 확인이 필요한 경우",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 골절",
+   "html": "html/cb4b868456e3ae70.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "노원구 경증 응급·외상 진료 병원 — 야간·주말 골절·상처 봉합",
+   "treatment": "",
+   "ref_label": "응급의료 - 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "article_title": "노원구 주말·공휴일 진료 병원 — 야간 외상·골절·통증 365일 진료",
+   "treatment": "응급·외상 처치, 골절 평가, 상처 봉합",
+   "ref_label": "질병관리청 국가건강정보포털 — 골절",
+   "html": "html/cb4b868456e3ae70.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "상계동 체외충격파 치료 병원 — 통증 원인 진단부터 시작",
+   "treatment": "체외충격파 치료",
+   "ref_label": "질병관리청 국가건강정보포털 — 족저근막염",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5463",
+   "article_title": "노원구 응급의학과 병원 추천 — 외상·골절·통증 종합 진단",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 골절",
+   "html": "html/cb4b868456e3ae70.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "노원구 경증 응급·외상 진료 — 골절·상처봉합·야간 주말 365일 진료",
+   "treatment": "",
+   "ref_label": "응급의료 — 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "노원구 주말·공휴일 진료 병원 — 365일 밤 9시까지 응급·외상·통증 진료",
+   "treatment": "응급·외상 처치, 골절 평가, 상처 봉합",
+   "ref_label": "질병관리청 국가건강정보포털 — 응급처치",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5106",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5106",
+   "article_title": "경산 압량읍·대동·사동 일반의원, 아이 발열·구토설사 언제 가야 할까요?",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 소아 발열",
+   "html": "html/24779038d93da75f.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T639C640/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T639C640/contents.do",
+   "article_title": "경산 내과 진료비, 무엇에 따라 달라지나요 — 김효진 원장의 안내",
+   "treatment": "",
+   "ref_label": "대한소화기학회 관련 정보 - 국가암정보센터 위염·소화기 증상 안내",
+   "html": "html/3c2a577d61ecf1b8.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "경산에서 구토 설사 치료하는 병원, 탈수 확인부터 회복까지",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "소아 탈수 치료 비용, 경산 행복드림의원 김효진 원장이 설명합니다",
+   "treatment": "소아 탈수 치료",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "소아 탈수 치료 비용 — 진료 목적과 검사 범위에 따른 안내",
+   "treatment": "소아 탈수 치료",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "소아 탈수 치료하려면 어떤 전문의에게 가야 하나요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "경산 내과 병원, 발열·탈수 진료 흐름과 선택 기준",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "소아 탈수 치료 비용 — 진료 목적과 검사 범위에 따른 안내",
+   "treatment": "소아 탈수 치료",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "소아 탈수 치료, 어느 과에서 받아야 할까요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6551",
+   "article_title": "경산 구토·설사 병원, 탈수 확인부터 수액 판단까지",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/96936871dcd7d718.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "경산 소화기내과 진료비 어느 정도인가요? 증상별 검사 비용 안내",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 소화불량",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T274C286/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T274C286/contents.do",
+   "article_title": "경산 내과 진료비, 증상 확인부터 검사까지 어떻게 정해지나요?",
+   "treatment": "",
+   "ref_label": "국가암정보센터 - 위암 진단검사",
+   "html": "html/d6debc8b9e055aa3.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T639C640/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T639C640/contents.do",
+   "article_title": "경산 대장내시경 용종 절제, 치료 비용은 어떻게 정해지나요?",
+   "treatment": "경산 치료",
+   "ref_label": "국가암정보센터 대장암 검진",
+   "html": "html/3c2a577d61ecf1b8.html.gz"
+  },
+  {
+   "category": "정상",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5254",
+   "article_title": "대장내시경 후 회복 기간, 개인 상태에 따라 어떻게 달라지나요?",
+   "treatment": "대장내시경",
+   "ref_label": "질병관리청 국가건강정보포털 — 대장내시경검사",
+   "html": "html/0e8e5314abbf6f04.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5389",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5389",
+   "article_title": "마산회원구 당뇨 진료, 어느 병원에서 어떤 검사부터 받아야 할까요?",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 - 당뇨병",
+   "html": "html/90a2844ad7cf3fe3.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2480",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "갑상선초음파 치료하려면 어떤 전문의한테 가야 해?",
+   "treatment": "",
+   "ref_label": "갑상선 질환 - 질병관리청 국가건강정보포털",
+   "html": "html/062bf84327e8532f.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.cancer.go.kr/lay1/S1T211C215/contents.do",
+   "status": 200,
+   "final_url": "https://www.cancer.go.kr/lay1/S1T211C215/contents.do",
+   "article_title": "갑상선초음파 치료하려면 어떤 전문의한테 가야 해?",
+   "treatment": "",
+   "ref_label": "갑상선암 - 국가암정보센터",
+   "html": "html/6789293af4985671.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=32309",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=32309",
+   "article_title": "갑상선초음파 치료 비용보다 먼저 확인해야 할 것들",
+   "treatment": "갑상선초음파 치료",
+   "ref_label": "갑상선결절 - 서울아산병원 질환백과",
+   "html": "html/4e499b7bb7136812.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마산 혈액검사 가능한 병원 — 검사 항목과 진료 흐름 안내",
+   "treatment": "혈액검사",
+   "ref_label": "질병관리청 국가건강정보포털 - 혈액검사",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2527",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "창원시 마산회원구 내과 진료 병원 — 증상별 검사 순서 안내",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 고혈압",
+   "html": "html/3dfaf91ae9b3a4fc.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "창원시 마산회원구 갑상선초음파 검사 — 내과 검사 가능 병원",
+   "treatment": "",
+   "ref_label": "갑상선 결절 — 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "죽은 링크",
+   "url": "https://www.kdca.go.kr/contents.es?mid=a20305020000",
+   "status": 404,
+   "final_url": "https://www.kdca.go.kr/contents.es?mid=a20305020000",
+   "article_title": "창원시 마산회원구 갑상선초음파 검사 — 내과 검사 가능 병원",
+   "treatment": "",
+   "ref_label": "갑상선질환 — 질병관리청",
+   "html": "html/8d3959e5e976e95b.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2534",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "창원 마산 진료 가능한 병원, 증상에 맞는 검사 순서를 먼저 확인하세요",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 고혈압",
+   "html": "html/3ff34507b51132a1.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2445",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "창원 마산 진료 가능한 병원, 증상에 맞는 검사 순서를 먼저 확인하세요",
+   "treatment": "",
+   "ref_label": "국가건강정보포털 — 당뇨병",
+   "html": "html/87e569f695021186.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마산 심장검사 병원 — 검사 순서와 진료 기준 안내",
+   "treatment": "심장검사",
+   "ref_label": "질병관리청 국가건강정보포털 — 심장질환",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마산 수액치료, 증상 원인 확인이 먼저입니다",
+   "treatment": "수액치료",
+   "ref_label": "질병관리청 국가건강정보포털 — 탈수",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마산 복부초음파 검사 가능한 병원 — 검사 과정과 진료 기준",
+   "treatment": "",
+   "ref_label": "복부초음파 검사 — 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31596",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31596",
+   "article_title": "마산에서 심장 두근거림 진료 받을 수 있는 병원 — 증상별 검사와 관리",
+   "treatment": "",
+   "ref_label": "부정맥 - 서울아산병원 질환백과",
+   "html": "html/670965a15a477894.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/management/managementDetail.do?managementId=488",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/management/managementDetail.do?managementId=488",
+   "article_title": "마산에서 심장 두근거림 진료 받을 수 있는 병원 — 증상별 검사와 관리",
+   "treatment": "",
+   "ref_label": "심전도검사 - 서울아산병원 건강정보",
+   "html": "html/d7cad69fed55f753.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마산에서 당뇨 진료 받을 수 있는 병원은 어디인가요?",
+   "treatment": "",
+   "ref_label": "당뇨병 - 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "마산 고혈압 진료 병원 — 혈압 이상 원인 확인과 관리 방향",
+   "treatment": "",
+   "ref_label": "고혈압 - 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31506",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31506",
+   "article_title": "마산 고혈압 진료 병원 — 혈압 이상 원인 확인과 관리 방향",
+   "treatment": "",
+   "ref_label": "고혈압 질환백과 - 서울아산병원",
+   "html": "html/12282aace45bab3a.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2593",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "창원 마산 당뇨 진료 병원, 혈당 관리와 합병증 검사 함께 받기",
+   "treatment": "",
+   "ref_label": "당뇨병 - 질병관리청 국가건강정보포털",
+   "html": "html/898ebdfdda07c2a1.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2477",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "경동맥초음파 검사 — 창원시 마산회원구 강심장내과의원",
+   "treatment": "",
+   "ref_label": "뇌졸중 - 질병관리청 국가건강정보포털",
+   "html": "html/5db26c0061754153.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2411",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "경동맥초음파 검사 — 창원시 마산회원구 강심장내과의원",
+   "treatment": "",
+   "ref_label": "고지혈증 - 질병관리청 국가건강정보포털",
+   "html": "html/aa01e45fe739e001.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "경동맥초음파 검사, 어느 과 전문의에게 받아야 할까요?",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 - 동맥경화증",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "경동맥초음파 검사 비용, 건강보험 적용과 내원 전 확인사항",
+   "treatment": "경동맥초음파 치료",
+   "ref_label": "질병관리청 국가건강정보포털 — 동맥경화증",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5604",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "갑상선초음파 어느 과에서 받아야 하나요? 진료과 선택 가이드",
+   "treatment": "",
+   "ref_label": "갑상선 결절 - 질병관리청 국가건강정보포털",
+   "html": "html/a527df20a0142c8a.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "창원 마산 갑상선초음파 검사 비용, 건강보험 적용 여부와 함께 확인하세요",
+   "treatment": "갑상선초음파 치료",
+   "ref_label": "질병관리청 국가건강정보포털 - 갑상선 결절",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "주제 불일치",
+   "url": "https://www.hira.or.kr/dummy.do?pgmid=HIRAA030069000000",
+   "status": 200,
+   "final_url": "https://www.hira.or.kr/rc/insu/insuadtcrtr/InsuAdtCrtrList.do?pgmid=HIRAA030069000400&isFavorite=0&isDev=false&exceptSingCert=false&WWW=http%3A%2F%2Fwww.hira.or.kr&SSL=https%3A%2F%2Fwww.hira.or.kr&contextPath=&actionPath=%2Fdummy.do&logout=%2Fra%2Flogin%2Flogout.do&login=https%3A%2F%2Fptl.hira.or.kr&rbCertChk=%2Frb%2Fcmmn%2FrbCertReturn.do",
+   "article_title": "창원 마산 갑상선초음파 검사 비용, 건강보험 적용 여부와 함께 확인하세요",
+   "treatment": "갑상선초음파 치료",
+   "ref_label": "건강보험심사평가원 - 비급여 진료비용",
+   "html": "html/a3a586e3df3b1bb5.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/main/mainPage/main.do",
+   "article_title": "창원시 마산회원구 갑상선초음파 검사 병원 — 강심장내과의원",
+   "treatment": "",
+   "ref_label": "갑상선질환 - 질병관리청 국가건강정보포털",
+   "html": "html/bfefe4582c0509dd.html.gz"
+  },
+  {
+   "category": "죽은 링크",
+   "url": "https://www.cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=4846",
+   "status": 500,
+   "final_url": "https://www.cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=4846",
+   "article_title": "창원시 마산회원구 갑상선초음파 검사 병원 — 강심장내과의원",
+   "treatment": "",
+   "ref_label": "갑상선암 - 국가암정보센터",
+   "html": "html/9b728fd2af3c419d.html.gz"
+  },
+  {
+   "category": "빈 페이지",
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2398",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/",
+   "article_title": "경산 갑상선초음파 진료 — 결절 조기 발견과 추적 검사 기준",
+   "treatment": "",
+   "ref_label": "질병관리청 국가건강정보포털 — 갑상선질환",
+   "html": "html/590ad11709ffeefc.html.gz"
+  },
+  {
+   "category": "죽은 링크",
+   "url": "https://www.cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3805",
+   "status": 500,
+   "final_url": "https://www.cancer.go.kr/lay1/program/S1T211C223/cancer/view.do?cancer_seq=3805",
+   "article_title": "경산 갑상선초음파 진료 — 결절 조기 발견과 추적 검사 기준",
+   "treatment": "",
+   "ref_label": "국가암정보센터 — 갑상선암",
+   "html": "html/0e12b15aa332b202.html.gz"
+  }
+ ]
+}

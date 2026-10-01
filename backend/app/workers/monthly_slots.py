@@ -76,7 +76,9 @@ def create_next_month_slots_for_schedule(
     # 유형 상한을 정확히 지킬 수 있으므로, 기존 순번 필터링보다 **먼저** 적용한다.
     # 이미 만들어진 슬롯은 `existing`으로 넘겨 재실행이 상한을 다시 쓰지 못하게 한다 —
     # 넘기지 않으면 1회차와 2회차 결과의 합집합이 "유형 배분의 절반" 상한을 넘는다.
-    gap_targets = build_gap_targets(db.execute(gap_target_rows_stmt(hospital.id)).all())
+    gap_targets = build_gap_targets(
+        db.execute(gap_target_rows_stmt(hospital.id)).all(), hospital=hospital
+    )
     planned = plan_gap_driven_slots(
         slots, plan=schedule.plan, gap_targets=gap_targets, existing=existing_slots
     )
