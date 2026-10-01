@@ -1296,6 +1296,53 @@ async def test_patch_judges_the_title_it_saves(monkeypatch):
     assert [ref["url"] for ref in item.references_list] == [CURATED_HEMORRHOID_KDCA]
 
 
+@pytest.mark.parametrize("status", ["DRAFT", "READY"])
+async def test_a_title_only_patch_that_makes_stored_curated_references_disallowed_is_422(
+    monkeypatch, status
+):
+    """3차 F2 — 참고자료를 보내지 않고 제목만 의료 → 진료비로 바꿔도 저장된 목록 문서로 거절한다."""
+
+    stored = [{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}]
+    hospital, item = _patch_setup(
+        monkeypatch, title=HEMORRHOID_TITLE, status=status, references=[dict(r) for r in stored]
+    )
+    fetcher = PageFetcher()
+
+    with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+        await _patch(hospital, item, title=COST_TITLE)
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail["code"] == "CURATED_REFERENCE_NOT_ALLOWED"
+    assert raised.value.detail["urls"] == [CURATED_HEMORRHOID_KDCA]
+    assert fetcher.calls == []
+    assert (item.title, item.references_list, item.content_revision) == (
+        HEMORRHOID_TITLE,
+        stored,
+        3,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "title"),
+    [
+        ("DRAFT", "치핵이 오래갈 때 — 원인과 치료"),  # 의료 → 의료
+        ("PUBLISHED", COST_TITLE),  # 공개된 글은 규칙 밖
+    ],
+    ids=["medical_to_medical", "published"],
+)
+async def test_a_title_only_patch_is_saved_when_the_stored_references_stay_allowed(
+    monkeypatch, status, title
+):
+    stored = [{"title": "치핵", "url": CURATED_HEMORRHOID_KDCA}]
+    hospital, item = _patch_setup(
+        monkeypatch, title=HEMORRHOID_TITLE, status=status, references=[dict(r) for r in stored]
+    )
+
+    await _patch(hospital, item, title=title)
+
+    assert item.title == title and item.references_list == stored
+
+
 async def test_patch_keeps_an_ordinary_passing_url_on_a_cost_post(monkeypatch):
     hospital, item = _patch_setup(monkeypatch, title=COST_TITLE)
     fetcher = _spine_and_hemorrhoid_fetcher()
@@ -1306,6 +1353,68 @@ async def test_patch_keeps_an_ordinary_passing_url_on_a_cost_post(monkeypatch):
     assert [ref["url"] for ref in item.references_list] == [UNLISTED_HEMORRHOID]
     assert fetcher.calls == [UNLISTED_HEMORRHOID]
     assert [check["reason"] for check in item.reference_checks] == ["page_verified"]
+
+
+class _OpenIncidentPatchDB(_PatchDB):
+    """행 상태의 차단 링크 조회에 이 글의 인시던트 하나를 돌려준다(없으면 빈 결과)."""
+
+    def __init__(self, hospital, incident_row=None):
+        super().__init__(hospital)
+        self.incident_row = incident_row
+
+    async def execute(self, statement):
+        if self.incident_row is not None and "FROM incidents" in str(statement):
+            rows = [self.incident_row]
+            return SimpleNamespace(all=lambda: rows)
+        return await super().execute(statement)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"references": [{"title": "치질", "url": UNLISTED_HEMORRHOID}]},
+        {"title": "치질 수술 비용 — 수술 방법별 본인부담", "body": "## 비용\n본문을 고쳤다."},
+    ],
+    ids=["adds_a_reference", "edits_title_and_body"],
+)
+async def test_a_saved_blocked_post_stays_blocked_while_its_incident_is_open(monkeypatch, fields):
+    """사람의 결정으로 막힌 글을 저장해도 인시던트가 OPEN인 동안은 '차단'이다(PR #177 5차 후속).
+
+    PATCH는 인시던트를 닫지 않는다 — 다음 발행 확인·복구가 결과를 보고 닫는다. 그때까지 응답의
+    행 상태는 인시던트 링크와 조치 문장을 그대로 보여 준다.
+    """
+
+    hospital, item = _patch_setup(monkeypatch, title=COST_TITLE, body="## 비용\n본문")
+    incident_id = uuid.uuid4()
+    open_row = (
+        str(item.id),
+        incident_id,
+        REFERENCES_OPERATOR_DECIDES_ACTION,
+        "OPEN",
+        None,
+    )
+
+    with override_reference_fetcher(_spine_and_hemorrhoid_fetcher()):
+        saved = await content_api.update_content(
+            hospital.id,
+            item.id,
+            content_api.ContentPatch(**fields),
+            db=_OpenIncidentPatchDB(hospital, open_row),
+        )
+
+    row_state = saved["row_state"]
+    assert row_state["kind"] == "blocked"
+    assert row_state["reason"] == REFERENCES_OPERATOR_DECIDES_ACTION
+    assert row_state["link"]["kind"] == "incident"
+    assert str(incident_id) in row_state["link"]["href"]
+
+    # 대조군 — 인시던트가 닫힌 뒤에는 그 링크·조치 문장이 행을 정하지 않는다(이 더블 글의 남은
+    # 차단은 이미지 인증·운영 기준 같은 발행 준비 사유다).
+    closed = await content_api._serialize_single(
+        _OpenIncidentPatchDB(hospital), hospital.id, item
+    )
+    assert closed["row_state"]["link"] is None
+    assert closed["row_state"]["reason"] != REFERENCES_OPERATOR_DECIDES_ACTION
 
 
 async def test_patch_accepts_a_curated_document_on_a_medical_post(monkeypatch):

@@ -1,15 +1,20 @@
-"""수기 목록 문서의 별칭·리다이렉트도 수기 목록 문서다(PR #177 리뷰 3차 F1).
+"""수기 목록 문서의 별칭·리다이렉트도 수기 목록 문서다(PR #177 리뷰 3차 F1 이후).
 
 같은 문서를 가리키는 주소 표기(`&utm_source=x`·`:443`·`cntnts_sn=03796`·MedlinePlus `?from=x`)가
 목록 밖 URL로 판정되면, 제목이 그 문서의 주제어를 품은 진료비 글("요통 도수치료 비용")에서 실제
 GET으로 통과해 남았다. 발행 전 진료비·병원 선택 글의 수기 목록 문서 금지(2026-09-29 실장 결정)를
-표기만 바꿔 비껴 간 것이다. 이제 동일성 키(`authority_sources.curated_document_keys`)로 판정하고,
-GET의 최종 주소가 목록 문서면(리다이렉트) 그 주소도 목록 문서로 본다.
+표기만 바꿔 비껴 간 것이다. 그래서 목록 항목별 판정(`authority_sources._matching_documents`)으로
+본다 — 위치가 같고 항목 URL 자신의 id 이름마다 서버가 읽는 정수가 같은 값이 있으면 그 항목이다.
+GET의 최종 주소가 목록 문서면(리다이렉트) 그 주소도 목록 문서다.
 
-4차 리뷰: 실제 KDCA 서버는 id 값의 앞 정수를 읽고(`3796abc`·`3796%2B`), 목록 항목이 쓰지 않는
-id 이름(`contentId`·`SEQ`·`thtimt_cntnts_sn`)은 무시하며, 같은 이름이 반복되면 그 가운데 한 값을
-쓴다. 그래서 동일성 키 대신 목록 항목별 판정(`authority_sources._matching_documents`)으로 본다 —
-위치가 같고 항목 URL 자신의 id 이름마다 앞 정수가 같은 값이 하나라도 있으면 그 항목이다.
+- 4차 리뷰: 서버는 목록 항목이 쓰지 않는 id 이름(`contentId`·`SEQ`·`thtimt_cntnts_sn`)을 무시하고
+  id 값의 앞 정수를 읽는다(`3796abc`·`3796%2B`).
+- 5차 리뷰: KDCA `cntnts_sn`은 값의 숫자만 모아 읽는다(`a3796`·`-3796`·`37a96`도 요통 3796).
+  다른 id 이름은 관측이 없어 앞 정수 규칙이다.
+- 같은 이름이 반복되면 서버는 첫 값을 쓴다. 목록 문서라서 **빼는** 판정(진료비·병원 선택 글의
+  생성·발행 전 재검증·PATCH 422·제외 목록)은 어느 값이든 맞으면 목록 문서로 보고, 목록 문서로
+  **인정해 주는** 판정(의료 글의 카탈로그 주제 대조·장애 시 유지)은 첫 값만 본다.
+- 제외 목록 문서로 리다이렉트되는 주소는 그 제외 문서다(생성·발행 전 재검증·PATCH).
 
 - 생성 검증·발행 전 재검증·관리자 PATCH(422) 모두 별칭을 잡는다.
 - 다른 문서 id(3797·37960·99999·숫자 없는 값, 다른 MedlinePlus 글)나 항목이 쓰지 않는 이름에만
@@ -95,7 +100,12 @@ ALIASES = {
         LOW_BACK,
     ),
     "repeated_other_after": (LOW_BACK + "&cntnts_sn=1", LOW_BACK),
-    "repeated_other_first": (KDCA_VIEW.format("1") + "&cntnts_sn=3796", LOW_BACK),
+    # 5차: KDCA `cntnts_sn`은 값의 숫자만 모아 읽는다(리뷰어 공개 GET, hold/bypass7b.py).
+    "digits_after_letter": (KDCA_VIEW.format("a3796"), LOW_BACK),
+    "digits_after_minus": (KDCA_VIEW.format("-3796"), LOW_BACK),
+    "digits_around_letter": (KDCA_VIEW.format("37a96"), LOW_BACK),
+    "digits_between_letters": (KDCA_VIEW.format("3a7b9c6"), LOW_BACK),
+    "digits_after_encoded_plus": (KDCA_VIEW.format("%2B3796"), LOW_BACK),
     # 경로 표기: 끝 슬래시(목록 URL에 있거나 없거나)·퍼센트 인코딩·겹친 슬래시.
     "trailing_slash_dropped": (SHOCKWAVE.rstrip("/"), SHOCKWAVE),
     "trailing_slash_added": (CAROTID + "/", CAROTID),
@@ -106,6 +116,13 @@ ALIASES = {
     "double_slash_path": (LOW_BACK.replace("/healthinfo/biz/", "/healthinfo//biz/"), LOW_BACK),
 }
 ALIAS_IDS = sorted(ALIASES)
+# 빼는 판정만 목록 문서로 보는 주소 — 반복 id의 첫 값이 아닌 값이 목록 문서다. 서버는 첫 값(1)을
+# 돌려주므로 의료 글에서 요통 문서로 인정하지 않지만, 진료비 글에서는 어느 값이든 뺀다.
+STRICT_ONLY_ALIASES = {
+    "repeated_other_first": (KDCA_VIEW.format("1") + "&cntnts_sn=3796", LOW_BACK),
+}
+REMOVED_ALIASES = {**ALIASES, **STRICT_ONLY_ALIASES}
+REMOVED_ALIAS_IDS = sorted(REMOVED_ALIASES)
 # 별칭이 가리키는 문서의 주제어를 제목에 품은 발행 전 진료비 글 — 목록 밖 URL이었다면 GET으로 통과했다.
 COST_TITLE_FOR = {
     LOW_BACK: ("요통 도수치료 비용 — 보험 적용과 횟수에 따라 달라지는 이유", "요통"),
@@ -124,7 +141,7 @@ REDIRECTING = KDCA_VIEW.format(9002)
 def _fetcher(*urls: str, redirect_to: str | None = None) -> PageFetcher:
     fetcher = PageFetcher()
     for url in urls:
-        canonical = next((c for a, c in ALIASES.values() if a == url), url)
+        canonical = next((c for a, c in REMOVED_ALIASES.values() if a == url), url)
         _title, topic = MEDICAL_TITLE_FOR.get(canonical, ("", "요통"))
         fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
     if redirect_to is not None:
@@ -200,6 +217,7 @@ def test_an_alias_is_the_curated_document(name):
         KDCA_VIEW.format("0" * 5000 + "3796"),
         LOW_BACK.replace("cntnts_sn=", "cntnts%5Fsn="),
         LOW_BACK.replace("https://", "https://user:pw@"),
+        LOW_BACK.replace(".go.kr/", ".go.kr./", 1),  # 호스트 끝 점(인용 불가지만 같은 문서)
     ],
     ids=[
         "explicit_80",
@@ -211,6 +229,7 @@ def test_an_alias_is_the_curated_document(name):
         "many_leading_zeros",
         "percent_encoded_name",
         "userinfo",
+        "trailing_dot_host",
     ],
 )
 def test_default_ports_and_decorations_are_the_same_document(url):
@@ -227,6 +246,12 @@ def test_default_ports_and_decorations_are_the_same_document(url):
         KDCA_VIEW.format(99999),
         KDCA_VIEW.format("abc"),
         KDCA_VIEW.format(""),
+        # 숫자만 모아도 다른 id — 서버도 없는 문서(37961)·다른 문서를 준다.
+        KDCA_VIEW.format("a3797"),
+        KDCA_VIEW.format("37a97"),
+        KDCA_VIEW.format("3796-1"),
+        KDCA_VIEW.format("3796%26x%3D1"),
+        KDCA_VIEW.format("3796;x=1"),
         KDCA_VIEW.format("0x0ED4"),
         KDCA_VIEW.format("9" * 5000),
         LOW_BACK.replace("cntnts_sn=", "CNTNTS_SN="),
@@ -248,6 +273,11 @@ def test_default_ports_and_decorations_are_the_same_document(url):
         "id_99999",
         "no_leading_digits",
         "empty_id",
+        "letter_then_3797",
+        "digits_37_97",
+        "minus_suffix_37961",
+        "encoded_query_suffix_37961",
+        "semicolon_suffix_37961",
         "hex_id",
         "overlong_id",
         "uppercase_name",
@@ -275,28 +305,26 @@ _OTHER_KDCA_SOURCE = next(
 )
 
 
-def test_a_repeated_id_naming_two_catalog_documents_matches_both():
-    """서버가 어느 값을 쓰는지 모르면 두 항목 모두다 — 목록 문서이고, 어느 쪽 주제와도 대조된다.
-
-    (3차에는 '목록 문서지만 항목 없음'이라 의료 글에서 주제 불일치로 빠졌다.)
-    """
+def test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first():
+    """빼는 판정은 어느 값이든 목록 문서다. 인정해 주는 판정(항목)은 서버가 쓰는 첫 값의 문서다."""
 
     both = LOW_BACK + "&cntnts_sn=6765"
     reversed_order = KDCA_VIEW.format(6765) + "&cntnts_sn=3796"
     (low_back,) = curated_source_entries(LOW_BACK)
-    for url in (both, reversed_order):
-        assert is_curated_source_url(url)
-        assert sorted(entry["url"] for entry in curated_source_entries(url)) == sorted(
-            [low_back["url"], _OTHER_KDCA_SOURCE["url"]]
-        )
+    assert is_curated_source_url(both) and is_curated_source_url(reversed_order)
+    assert curated_source_entries(both) == [low_back]
+    assert curated_source_entries(reversed_order) == [_OTHER_KDCA_SOURCE]
 
 
 @pytest.mark.parametrize(
-    "title",
-    ["요통이 오래갈 때 — 원인과 치료", "고혈압 약을 먹기 시작할 때 — 생활 관리"],
-    ids=["first_entry_topic", "second_entry_topic"],
+    ("title", "reason"),
+    [
+        ("요통이 오래갈 때 — 원인과 치료", "curated_verified"),
+        ("고혈압 약을 먹기 시작할 때 — 생활 관리", "unrelated_topic"),
+    ],
+    ids=["first_value_topic", "second_value_topic"],
 )
-async def test_a_medical_post_citing_a_two_document_url_matches_either_topic(title):
+async def test_a_medical_post_citing_a_two_document_url_matches_only_the_first_value(title, reason):
     url = LOW_BACK + "&cntnts_sn=6765"
     fetcher = PageFetcher()
     fetcher.add_document(url, "요통 | 국가건강정보포털 | 질병관리청", topic="요통")
@@ -306,7 +334,71 @@ async def test_a_medical_post_citing_a_two_document_url_matches_either_topic(tit
     )
 
     (check,) = outcome.checks
-    assert check["reason"] == "curated_verified" and check["curated"] is True
+    assert check["reason"] == reason and check["curated"] is True
+
+
+async def test_a_medical_post_citing_a_catalog_id_after_another_id_is_not_that_document():
+    """`cntnts_sn=1&cntnts_sn=3796` — 서버는 1번 문서를 준다. 요통 카탈로그로 통과하지 않고
+    목록 밖 문서로 실제 GET 본문을 판정한다(여기서는 1번 문서가 요통 글이 아니다)."""
+
+    title, _topic = MEDICAL_TITLE_FOR[LOW_BACK]
+    alias = STRICT_ONLY_ALIASES["repeated_other_first"][0]
+    assert curated_source_entries(alias) == []
+    fetcher = PageFetcher()
+    fetcher.add_document(alias, "사마귀 | 국가건강정보포털 | 질병관리청", topic="사마귀")
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": alias}], topic_terms=[title]
+    )
+
+    assert fetcher.calls == [alias] and outcome.kept == []
+    (check,) = outcome.checks
+    assert check["curated"] is False and check["reason"] not in {
+        "curated_verified",
+        "curated_unreachable",
+    }
+
+
+@pytest.mark.parametrize(
+    ("url", "kept"),
+    [(LOW_BACK + "&cntnts_sn=1", True), (KDCA_VIEW.format(1) + "&cntnts_sn=3796", False)],
+    ids=["catalog_id_first", "catalog_id_second"],
+)
+async def test_a_repeated_id_is_kept_on_outage_only_when_the_catalog_id_comes_first(url, kept):
+    title, _topic = MEDICAL_TITLE_FOR[LOW_BACK]
+    fetcher = PageFetcher({url: TimeoutError("site down")})
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[title], defer_transient=True
+    )
+
+    (check,) = outcome.checks
+    if kept:
+        assert [ref["url"] for ref in outcome.kept] == [url]
+        assert check["reason"] == "curated_unreachable"
+    else:
+        # 목록 밖 주소의 일시 장애 — 인정하지 않고 다음 시간대로 미룬다.
+        assert outcome.kept == [] and check["curated"] is False
+        assert check["reason"] != "curated_unreachable"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("a3796", 3796), ("-3796", 3796), ("37a96", 3796), ("6a7b6c5", 6765), ("%2B6765", 6765)],
+)
+def test_digits_forming_a_catalog_id_name_that_document(value, expected):
+    (entry,) = curated_source_entries(KDCA_VIEW.format(value))
+    assert entry["url"] == KDCA_VIEW.format(expected)
+
+
+def test_only_cntnts_sn_reads_every_digit():
+    """다른 id 이름은 서버 관측이 없어 앞 정수 규칙 그대로다(AMC `contentId`)."""
+
+    amc = "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId={}"
+    assert is_curated_source_url(amc.format(31773))
+    assert is_curated_source_url(amc.format("31773abc"))
+    assert is_curated_source_url(amc.format("%2B31773"))  # 앞의 `+`(퍼센트 인코딩)
+    assert not is_curated_source_url(amc.format("a31773"))
 
 
 def test_the_exclusion_list_uses_the_same_document_matcher():
@@ -319,6 +411,8 @@ def test_the_exclusion_list_uses_the_same_document_matcher():
     for alias in (
         excluded.replace("6263", "06263"),
         excluded.replace("6263", "6263abc"),
+        excluded.replace("6263", "a6263"),
+        excluded.replace("6263", "-62a63"),
         excluded + "&utm_source=x&contentId=1",
         excluded.replace(".go.kr/", ".go.kr:443/", 1),
         excluded.replace("cntnts_sn=6263", "cntnts_sn=1&cntnts_sn=6263"),
@@ -336,9 +430,9 @@ def test_the_exclusion_list_uses_the_same_document_matcher():
 # ── (i) 생성 검증 ──────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("name", ALIAS_IDS)
+@pytest.mark.parametrize("name", REMOVED_ALIAS_IDS)
 async def test_generation_drops_a_curated_alias_cited_on_a_cost_title(name):
-    alias, canonical = ALIASES[name]
+    alias, canonical = REMOVED_ALIASES[name]
     title, topic = COST_TITLE_FOR[canonical]
     fetcher = _fetcher(alias)
     result = {
@@ -460,9 +554,9 @@ def _scheduled_cost_post(url: str, *, canonical: str, status, checks=None):
 
 @pytest.mark.parametrize("fresh", [False, True], ids=["unchecked", "fresh_page_pass"])
 @pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
-@pytest.mark.parametrize("name", ALIAS_IDS)
+@pytest.mark.parametrize("name", REMOVED_ALIAS_IDS)
 async def test_publication_refresh_drops_a_curated_alias_on_a_cost_post(name, status, fresh):
-    alias, canonical = ALIASES[name]
+    alias, canonical = REMOVED_ALIASES[name]
     item = _scheduled_cost_post(
         alias, canonical=canonical, status=status, checks=[_page_pass(alias)] if fresh else None
     )
@@ -548,9 +642,9 @@ async def test_a_published_post_with_an_alias_or_redirect_stays_byte_identical(u
 
 
 @pytest.mark.parametrize("status", ["DRAFT", "READY"])
-@pytest.mark.parametrize("name", ALIAS_IDS)
+@pytest.mark.parametrize("name", REMOVED_ALIAS_IDS)
 async def test_patch_rejects_a_curated_alias_before_any_get(monkeypatch, name, status):
-    alias, canonical = ALIASES[name]
+    alias, canonical = REMOVED_ALIASES[name]
     title, topic = COST_TITLE_FOR[canonical]
     hospital, item = _patch_setup(monkeypatch, title=title, status=status)
     fetcher = _fetcher(alias)
@@ -628,3 +722,127 @@ async def test_an_alias_is_judged_by_the_catalog_when_its_site_is_down(name):
     assert [ref["url"] for ref in outcome.kept] == [alias]
     (check,) = outcome.checks
     assert check["reason"] == "curated_unreachable" and check["curated"] is True
+
+
+@pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
+async def test_publication_refresh_drops_a_trailing_dot_host_alias_before_any_get(status):
+    alias = LOW_BACK.replace(".go.kr/", ".go.kr./", 1)
+    item = _scheduled_cost_post(alias, canonical=LOW_BACK, status=status)
+    fetcher = _fetcher(alias)
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.references == [] and refresh.operator_decides
+    assert fetcher.calls == []
+    assert refresh.checks == []  # 목록 문서로 빠졌다(인용 불가 판정 기록이 아니다)
+
+
+# ── 제외 목록 문서로 리다이렉트되는 주소(5차 후속) ──────────────────────
+
+EXCLUDED = REFERENCE_URL_EXCLUSIONS[0]["url"]  # KDCA cntnts_sn=6263 '소화불량'
+REDIRECT_TO_EXCLUDED = KDCA_VIEW.format(9005)
+DYSPEPSIA_TITLE = "소화불량이 계속될 때 — 원인과 치료"
+
+
+def _excluded_redirect_fetcher(target: str = EXCLUDED) -> PageFetcher:
+    """목록 밖 주소가 GET에서 `target`으로 리다이렉트되고, 받은 본문은 주제가 맞는 문서처럼 보인다."""
+
+    fetcher = PageFetcher()
+    fetcher.add_document(target, "소화불량 | 국가건강정보포털 | 질병관리청", topic="소화불량")
+    status, _final, html = fetcher.pages[target]
+    fetcher.pages[REDIRECT_TO_EXCLUDED] = (status, target, html)
+    return fetcher
+
+
+def _medical_post(url: str, *, status, checks=None):
+    item = _published(DYSPEPSIA_TITLE, status)
+    item.content_type = "DISEASE"
+    item.body = "## 소화불량의 원인과 치료\n소화불량 진료 안내"
+    item.references_list = [{"title": "소화불량", "url": url}]
+    item.reference_checks = checks
+    return _stamp(item)
+
+
+async def test_a_redirect_to_an_excluded_document_is_judged_like_the_excluded_url():
+    outcome = await ReferenceVerifier(_excluded_redirect_fetcher(), domain_spacing=0).verify(
+        [{"title": "a", "url": REDIRECT_TO_EXCLUDED}, {"title": "b", "url": EXCLUDED}],
+        topic_terms=[DYSPEPSIA_TITLE],
+    )
+
+    assert outcome.kept == []
+    redirect, direct = outcome.checks
+    assert (redirect["verdict"], redirect["reason"]) == (direct["verdict"], direct["reason"])
+    assert redirect["reason"] == "excluded_source" and redirect["final_url"] == EXCLUDED
+
+
+async def test_generation_drops_a_redirect_to_an_excluded_document():
+    fetcher = _excluded_redirect_fetcher()
+    result = {
+        "title": DYSPEPSIA_TITLE,
+        "body": "## 소화불량의 원인과 치료\n소화불량 진료 안내",
+        "faq_question": None,
+        "references": [{"title": "소화불량", "url": REDIRECT_TO_EXCLUDED}],
+    }
+
+    with override_reference_fetcher(fetcher):
+        await content_engine._verify_generated_references(
+            result, {"target_keyword": "소화불량"}, required=True
+        )
+
+    assert REDIRECT_TO_EXCLUDED not in [ref["url"] for ref in result["references"]]
+    assert fetcher.calls[0] == REDIRECT_TO_EXCLUDED
+    (check,) = [c for c in result["reference_checks"] if c["url"] == REDIRECT_TO_EXCLUDED]
+    assert check["reason"] == "excluded_source"
+
+
+@pytest.mark.parametrize("stored", [False, True], ids=["unchecked", "stored_page_pass"])
+@pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
+async def test_publication_refresh_drops_a_redirect_to_an_excluded_document(status, stored):
+    """수정 전 코드가 남긴 통과 기록(최종 주소가 제외 문서)도 통과로 치지 않고 다시 연다."""
+
+    checks = [_page_pass(REDIRECT_TO_EXCLUDED, final_url=EXCLUDED)] if stored else None
+    item = _medical_post(REDIRECT_TO_EXCLUDED, status=status, checks=checks)
+    fetcher = _excluded_redirect_fetcher()
+
+    assert not publication_references_settled(item)
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert fetcher.calls[0] == REDIRECT_TO_EXCLUDED
+    assert REDIRECT_TO_EXCLUDED not in [ref["url"] for ref in refresh.references]
+    (check,) = [c for c in refresh.checks if c["url"] == REDIRECT_TO_EXCLUDED]
+    assert check["reason"] == "excluded_source"
+    assert apply_publication_reference_refresh(item, refresh)
+    assert REDIRECT_TO_EXCLUDED not in [ref["url"] for ref in item.references_list]
+
+
+@pytest.mark.parametrize("url", [REDIRECT_TO_EXCLUDED, EXCLUDED], ids=["redirect", "direct"])
+async def test_patch_rejects_a_redirect_to_an_excluded_document_like_the_excluded_url(
+    monkeypatch, url
+):
+    hospital, item = _patch_setup(monkeypatch, title=DYSPEPSIA_TITLE, content_type="DISEASE")
+
+    with override_reference_fetcher(_excluded_redirect_fetcher()), pytest.raises(
+        HTTPException
+    ) as raised:
+        await _patch(hospital, item, references=[{"title": "소화불량", "url": url}])
+
+    assert raised.value.status_code == 400
+    (failure,) = raised.value.detail["failed_references"]
+    assert (failure["url"], failure["reason"]) == (url, "excluded_source")
+    assert item.references_list == [] and item.content_revision == 3
+
+
+async def test_a_redirect_to_a_document_that_is_not_excluded_is_unaffected(monkeypatch):
+    """대조군 — 같은 경로의 다른 문서(6264)로 가는 리다이렉트는 실제 본문 판정대로 남는다."""
+
+    other = EXCLUDED.replace("6263", "6264")
+    outcome = await ReferenceVerifier(_excluded_redirect_fetcher(other), domain_spacing=0).verify(
+        [{"title": "a", "url": REDIRECT_TO_EXCLUDED}], topic_terms=[DYSPEPSIA_TITLE]
+    )
+    assert [ref["url"] for ref in outcome.kept] == [REDIRECT_TO_EXCLUDED]
+    assert outcome.checks[0]["reason"] == "page_verified"
+
+    hospital, item = _patch_setup(monkeypatch, title=DYSPEPSIA_TITLE, content_type="DISEASE")
+    with override_reference_fetcher(_excluded_redirect_fetcher(other)):
+        await _patch(hospital, item, references=[{"title": "소화불량", "url": REDIRECT_TO_EXCLUDED}])
+    assert [ref["url"] for ref in item.references_list] == [REDIRECT_TO_EXCLUDED]

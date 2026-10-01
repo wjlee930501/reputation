@@ -6272,6 +6272,13 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     reference_verifier = ReferenceVerifier()
     for item in items:
         hospital = item.hospital
+        if generation_claim_is_active(item, now=observed.datetime):
+            # 생성 워커가 지금 이 슬롯을 쓰고 있다(07:00 스윕의 글 단위 태스크 등). 자동
+            # 복구가 소유한 일이라 참고자료 재검증도 기록·인시던트·요약도 하지 않는다 — 재검증이
+            # 판을 올리면 워커가 공급자 비용을 치른 결과를 버린다. 워커가 결과를 남기고, 그래도
+            # 막히면 08:00 발행기가 최종 판정을 소유한다. 만료된 claim은 살아 있는 작업이 아니므로
+            # 종전처럼 처리한다.
+            continue
         if _has_generated_text(item) and not publication_references_settled(item):
             # GET은 잠금·열린 트랜잭션 밖에서 한다(느린 기관 사이트가 편집·발행을 막지 않게).
             view = _reference_view(item)
@@ -6286,8 +6293,11 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
             if locked is None:
                 # 다른 작업이 이 글을 잡고 있다 — 08:00 발행기가 잠금 뒤에 다시 확인한다.
                 continue
-            if locked.status not in AUTO_PUBLISHABLE_STATUSES:
+            if locked.status not in AUTO_PUBLISHABLE_STATUSES or generation_claim_is_active(
+                locked, now=observed.datetime
+            ):
                 # GET 사이에 수동 발행·취소됐다 — 공개된 글의 참고자료를 자동으로 바꾸지 않는다.
+                # 또는 GET 사이에 생성 워커가 이 슬롯을 잡았다 — 위와 같이 워커의 결과를 둔다.
                 db.commit()
                 continue
             applied = apply_publication_reference_refresh(locked, refresh)
@@ -6303,10 +6313,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         if assessment.publishable:
             continue
         if generation_claim_is_active(item, now=observed.datetime):
-            # 생성 워커가 지금 이 슬롯을 쓰고 있다(07:00 스윕의 글 단위 태스크 등). 자동
-            # 복구가 소유한 일이라 기록·인시던트·요약 어느 것도 남기지 않는다 — 워커가
-            # 결과를 남기고, 그래도 막히면 08:00 발행기가 최종 판정을 소유한다. 만료된
-            # claim은 살아 있는 작업이 아니므로 종전처럼 처리한다.
+            # 재검증을 적용한 뒤에 생성 워커가 이 슬롯을 잡았다 — 위와 같이 워커의 일이다.
             continue
 
         apply_publication_assessment(item, assessment)

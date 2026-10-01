@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { curatedReferenceRejectionMessage } from '@/lib/content-save-errors'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
@@ -564,9 +565,13 @@ export default function ContentPage() {
       setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
     } catch (e: unknown) {
       const violationList = readViolationsFromError(e)
+      const curatedRejection = curatedReferenceRejectionMessage(e)
       if (violationList.length > 0) {
         setViolations(violationList)
         setEditError(`금지 표현: ${violationList.join(', ')}`)
+      } else if (curatedRejection) {
+        // 목록 문서 거절(422)은 어느 주소를 빼야 하는지 서버 문장이 말한다.
+        setEditError(curatedRejection)
       } else {
         setEditError(safeOperatorError('content', '입력 내용을 확인한 뒤 ‘저장’을 다시 누르세요.'))
       }
