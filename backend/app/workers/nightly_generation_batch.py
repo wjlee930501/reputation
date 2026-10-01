@@ -208,6 +208,9 @@ def generation_claim_is_active(item, *, now: datetime) -> bool:
     """
 
     claimed_at = getattr(item, "generation_claimed_at", None)
+    if claimed_at is not None and claimed_at.tzinfo is None:
+        # `load_claimed_generation_item`과 같이 naive 값은 UTC로 읽는다.
+        claimed_at = claimed_at.replace(tzinfo=timezone.utc)
     return (
         getattr(item, "generation_claim_token", None) is not None
         and claimed_at is not None
@@ -522,14 +525,20 @@ def release_unfinished_claims(
     실행은 claim 필터에 걸려 아무것도 못 잡은 채 "생성할 것 없음"으로 **성공 종료**한다.
     다음 기회는 다음날 밤이라 슬롯이 하루 밀리고, 그 사이 08:00 자동 발행은 body가
     없어 아무것도 발행하지 못한다. 그래서 끝날 때 반드시 되돌린다.
+
+    `expected_claim_token`이 있으면 끝난 워커가 자기 lease를 푸는 것이라 행의 결함과
+    무관하게 푼다. 복구 필터 밖의 이유(내용 hash 불일치 등)로 막힌 채 끝난 행에 claim이
+    남으면 07:45 게이트가 그 행을 "작업 중"으로 보고 조용히 건너뛴다. 토큰이 다르면
+    다른 소유자의 lease이므로 0행이다. 토큰 없는 해제만 종전처럼 복구 필터로 좁힌다.
     """
     if not item_ids:
         return 0
     predicates = [
         ContentItem.id.in_(item_ids),
-        _needs_generation_recovery(),
         ContentItem.generation_claimed_at.isnot(None),
     ]
+    if expected_claim_token is None:
+        predicates.append(_needs_generation_recovery())
     if expected_claimed_at is not None:
         predicates.append(ContentItem.generation_claimed_at == expected_claimed_at)
     if expected_claim_token is not None:

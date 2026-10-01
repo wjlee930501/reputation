@@ -56,6 +56,7 @@ PLANNER = "app/services/content_target_planner.py"
 GAP = "app/services/gap_driven_slots.py"
 SPEC = "app/services/specialty_compatibility.py"
 NOTIF_COPY = "app/services/notification_copy.py"
+CELERY = "app/core/celery_app.py"
 
 T_RV = "tests/test_reference_verification.py"
 T_GATE = "tests/test_reference_publication_gate.py"
@@ -75,6 +76,9 @@ RETRY = "app/workers/generation_retry_policy.py"
 T_OPD = "tests/test_reference_operator_decides.py"
 T_ALIAS = "tests/test_reference_curated_alias.py"
 T_COPY = "tests/test_reference_operator_copy.py"
+T_CLAIM_PG = "tests/integration/test_reference_claim_publisher_postgres.py"
+T_LAST_PG = "tests/integration/test_reference_claim_last_run_postgres.py"
+T_SCHED = "tests/test_reference_outage_last_publisher_schedule.py"
 
 
 @dataclass(frozen=True)
@@ -240,7 +244,7 @@ MUTANTS: tuple[Mutant, ...] = (
         f"{TASKS}:_auto_publish_one",
         TASKS,
         "    reference_refresh = _prefetch_publication_references(\n"
-        "        content_id, reference_verifier or ReferenceVerifier()\n"
+        "        content_id, reference_verifier or ReferenceVerifier(), now_kst=now_kst\n"
         "    )",
         "    reference_refresh = None",
         (
@@ -252,8 +256,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "07:45 게이트의 재검증(08:00 GET 몰림 방지)",
         f"{TASKS}:_page_morning_stored_publication_gates",
         TASKS,
-        "        if _has_generated_text(item) and not publication_references_settled(item):",
-        "        if False:",
+        "        if _has_generated_text(item) and not publication_references_settled(item):\n"
+        "            # GET은 잠금·열린 트랜잭션 밖에서 한다",
+        "        if False:\n"
+        "            # GET은 잠금·열린 트랜잭션 밖에서 한다",
         (
             f"{T_GATE}::test_seven_forty_five_reverifies_stale_references_so_eight_does_not_burst",
             f"{T_GATE}::test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives",
@@ -1024,8 +1030,11 @@ MUTANTS: tuple[Mutant, ...] = (
         "B1 07:45 잠근 행이 발행 전 상태가 아니면 아무것도 쓰지 않음",
         f"{TASKS}:_page_morning_stored_publication_gates",
         TASKS,
-        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES:\n"
+        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES or generation_claim_is_active(\n"
+        "                locked, now=observed.datetime\n"
+        "            ):\n"
         "                # GET 사이에 수동 발행·취소됐다 — 공개된 글의 참고자료를 자동으로 바꾸지 않는다.\n"
+        "                # 또는 GET 사이에 생성 워커가 이 슬롯을 잡았다 — 위와 같이 워커의 결과를 둔다.\n"
         "                db.commit()\n"
         "                continue\n",
         "",
@@ -1630,8 +1639,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "8a 문서 id는 정수로 비교 — 앞 0이 아무리 많아도(정수 변환 한도 전에 정리)",
         f"{AS}:_document_id_value",
         AS,
-        '    digits = "".join(str(unicodedata.decimal(char)) for char in match.group(1)).lstrip("0")\n',
-        "    digits = match.group(1)\n",
+        '    digits = found.lstrip("0")\n',
+        "    digits = found\n",
         (f"{T_ALIAS}::test_default_ports_and_decorations_are_the_same_document",),
     ),
     Mutant(
@@ -1667,25 +1676,27 @@ MUTANTS: tuple[Mutant, ...] = (
         "                values[name] = {number}\n",
         (
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
-            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_matches_both",
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
         ),
     ),
     Mutant(
-        "4차 두 목록 id가 반복된 주소는 두 항목 모두다(첫 항목만 돌려주기)",
+        "5차 인정해 주는 판정(목록 항목·카탈로그 대조)은 반복 id의 첫 값만 — 모든 값 보기로 되돌리기",
         f"{AS}:curated_source_entries",
         AS,
-        "    return list(_matching_documents(url, _CURATED_DOCUMENTS))",
-        "    return list(_matching_documents(url, _CURATED_DOCUMENTS))[:1]",
+        "_matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True, exact_ids=True)",
+        "_matching_documents(url, _CURATED_DOCUMENTS, exact_ids=True)",
         (
-            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_matches_both",
-            f"{T_ALIAS}::test_a_medical_post_citing_a_two_document_url_matches_either_topic",
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_two_document_url_matches_only_the_first_value",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_catalog_id_after_another_id_is_not_that_document",
+            f"{T_ALIAS}::test_a_repeated_id_is_kept_on_outage_only_when_the_catalog_id_comes_first",
         ),
     ),
     Mutant(
         "8b 검증기의 수기 판정이 동일성 키를 쓴다(원문 정확 비교로 되돌리기)",
         f"{RV}:ReferenceVerifier.verify",
         RV,
-        "            curated = is_curated_source_url(url)\n",
+        "            curated = _serves_curated_document(url)\n",
         '            curated = url in {str(s["url"]) for s in CURATED_MEDICAL_SOURCE_PAGES}\n',
         (
             f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",
@@ -1708,7 +1719,7 @@ MUTANTS: tuple[Mutant, ...] = (
         "8c 검증기 — GET의 최종 주소가 목록 문서면 목록 문서(리다이렉트)",
         f"{RV}:ReferenceVerifier.verify",
         RV,
-        "            if not curated and is_curated_source_url(fetched.final_url):\n",
+        "            if not curated and _serves_curated_document(fetched.final_url):\n",
         "            if False:\n",
         (
             f"{T_ALIAS}::test_generation_drops_an_outside_url_that_redirects_to_a_curated_document",
@@ -1719,11 +1730,12 @@ MUTANTS: tuple[Mutant, ...] = (
         "8c 리다이렉트된 주소는 최종 주소의 목록 항목으로 카탈로그 대조",
         f"{RV}:judge_fetched_page",
         RV,
-        "    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)",
+        "    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)",
         "    catalog_url = url",
         (
             f"{T_ALIAS}::test_generation_keeps_a_redirect_to_a_curated_document_on_a_medical_title",
             f"{T_ALIAS}::test_patch_accepts_a_redirect_to_a_curated_document_on_a_medical_post",
+            f"{T_ALIAS}::test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url",
         ),
     ),
     Mutant(
@@ -1802,9 +1814,10 @@ MUTANTS: tuple[Mutant, ...] = (
         "4차 (a) id 값은 앞 정수로 읽는다(3796abc·3796%2B) — 값 전체가 정수일 때만 보기",
         f"{AS}:_document_id_value",
         AS,
-        "    match = _LEADING_INTEGER.match(value)\n",
-        "    match = re.fullmatch(r\"\\s*\\+?(\\d+)\\s*\", value)\n",
+        "        match = _LEADING_INTEGER.match(value)\n",
+        "        match = re.fullmatch(r\"\\s*\\+?(\\d+)\\s*\", value)\n",
         (
+            f"{T_ALIAS}::test_only_cntnts_sn_reads_every_digit",
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
             f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
             f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
@@ -1815,14 +1828,8 @@ MUTANTS: tuple[Mutant, ...] = (
         "4차 (e) 반복 id 상한 없음 — 정렬해 16개로 자르기",
         f"{AS}:_matching_documents",
         AS,
-        "    for name, value in pairs:\n"
-        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n"
-        "            number = _document_id_value(value)\n"
-        "            if number is not None:\n",
-        "    for name, value in sorted(pairs)[:16]:\n"
-        "        if name in CURATED_DOCUMENT_ID_PARAMS:\n"
-        "            number = _document_id_value(value)\n"
-        "            if number is not None:\n",
+        "    seen: set[str] = set()\n    for name, value in pairs:\n",
+        "    seen: set[str] = set()\n    for name, value in sorted(pairs)[:16]:\n",
         (
             f"{T_ALIAS}::test_an_alias_is_the_curated_document",
             f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
@@ -1836,7 +1843,11 @@ MUTANTS: tuple[Mutant, ...] = (
         AS,
         "                values.setdefault(name, set()).add(number)\n",
         "                values.setdefault(name, {number})\n",
-        (f"{T_ALIAS}::test_an_alias_is_the_curated_document",),
+        (
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
     ),
     Mutant(
         "4차 r20 반복 id — 대표 값(최솟값) 하나만 비교",
@@ -1899,6 +1910,450 @@ MUTANTS: tuple[Mutant, ...] = (
         '    if environ.get("CI"):\n',
         "    if False:\n",
         (f"{T_COPY}::test_admin_source_guard_fails_under_ci_and_skips_locally",),
+    ),
+    # ── 리뷰 5차 후속: cntnts_sn 숫자만 읽기, 반복 id 첫 값(인정)·모든 값(뺌), 제외 문서 리다이렉트,
+    #    F2(제목만 PATCH), F4(07:45 claim 먼저) ─────────────────────────────────────────────────
+    Mutant(
+        "5차 cntnts_sn은 값의 숫자만 모아 읽는다(a3796·-3796·37a96) — 앞 정수로 되돌리기",
+        f"{AS}:_document_id_value",
+        AS,
+        "    if name in _DIGITS_ONLY_ID_PARAMS:\n",
+        "    if False:\n",
+        (
+            f"{T_ALIAS}::test_digits_forming_a_catalog_id_name_that_document",
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "5차 숫자만 읽기 — 후보 주소의 값도 id 이름으로 읽는다(이름 전달 빼기)",
+        f"{AS}:_matching_documents",
+        AS,
+        "            number = _document_id_value(value, name=name, exact=exact_ids)\n            if number is not None:\n",
+        "            number = _document_id_value(value, exact=exact_ids)\n            if number is not None:\n",
+        (
+            f"{T_ALIAS}::test_an_alias_is_the_curated_document",
+            f"{T_ALIAS}::test_a_different_document_is_not_curated",
+        ),
+    ),
+    Mutant(
+        "5차 검증기의 curated(카탈로그 대조·장애 시 유지)는 반복 id의 첫 값만 — 모든 값으로 되돌리기",
+        f"{RV}:ReferenceVerifier.verify",
+        RV,
+        "            curated = _serves_curated_document(url)\n",
+        "            curated = is_curated_source_url(url)\n",
+        (
+            f"{T_ALIAS}::test_a_medical_post_citing_a_catalog_id_after_another_id_is_not_that_document",
+            f"{T_ALIAS}::test_a_repeated_id_is_kept_on_outage_only_when_the_catalog_id_comes_first",
+        ),
+    ),
+    Mutant(
+        "5차 빼는 판정(진료비·병원 선택·PATCH 422)은 반복 id의 어느 값이든 — 첫 값만으로 좁히기",
+        f"{AS}:is_curated_source_url",
+        AS,
+        "    return bool(_matching_documents(url, _CURATED_DOCUMENTS))\n",
+        "    return bool(_matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True))\n",
+        (
+            f"{T_ALIAS}::test_a_repeated_id_naming_two_catalog_documents_is_curated_but_served_as_the_first",
+            f"{T_ALIAS}::test_generation_drops_a_curated_alias_cited_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_curated_alias_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_rejects_a_curated_alias_before_any_get",
+        ),
+    ),
+    Mutant(
+        "5차 제외 목록은 반복 id의 어느 값이든 — 첫 값만으로 좁히기",
+        f"{AS}:reference_exclusion_reason",
+        AS,
+        "    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS)\n",
+        "    reasons = _matching_documents(url, _EXCLUDED_DOCUMENTS, first_value_only=True)\n",
+        (f"{T_ALIAS}::test_the_exclusion_list_uses_the_same_document_matcher",),
+    ),
+    Mutant(
+        "5차 제외 문서로 리다이렉트되는 주소는 제외 주소와 같다(GET 최종 주소 판정 끄기)",
+        f"{RV}:ReferenceVerifier.verify",
+        RV,
+        "            if reference_exclusion_reason(fetched.final_url) is not None:\n",
+        "            if False:\n",
+        (
+            f"{T_ALIAS}::test_a_redirect_to_an_excluded_document_is_judged_like_the_excluded_url",
+            f"{T_ALIAS}::test_generation_drops_a_redirect_to_an_excluded_document",
+            f"{T_ALIAS}::test_publication_refresh_drops_a_redirect_to_an_excluded_document",
+            f"{T_ALIAS}::test_patch_rejects_a_redirect_to_an_excluded_document_like_the_excluded_url",
+        ),
+        note="검증기 하나가 생성·발행 전 재검증·PATCH 세 경로를 모두 판정한다 — 세 경로 테스트가 각각 잡는다.",
+    ),
+    Mutant(
+        "5차 저장된 통과 기록의 최종 주소가 제외 문서면 통과가 아니다(수정 전 기록 재사용 막기)",
+        f"{RV}:_final_url_excluded",
+        RV,
+        "    return reference_exclusion_reason(check.get(\"final_url\")) is not None\n",
+        "    return False\n",
+        (f"{T_ALIAS}::test_publication_refresh_drops_a_redirect_to_an_excluded_document",),
+    ),
+    Mutant(
+        "5차 F2 제목만 바꾸는 PATCH도 저장된 목록 문서로 422",
+        f"{ADMIN}:update_content",
+        ADMIN,
+        "    elif body.title is not None:\n",
+        "    elif False:\n",
+        (f"{T_OPD}::test_a_title_only_patch_that_makes_stored_curated_references_disallowed_is_422",),
+    ),
+    Mutant(
+        "5차 F4 07:45 — 살아 있는 claim이 있는 슬롯은 참고자료 재검증부터 건너뛴다",
+        f"{TASKS}:_page_morning_stored_publication_gates",
+        TASKS,
+        "        if generation_claim_is_active(item, now=observed.datetime):\n"
+        "            # 생성 워커가 지금 이 슬롯을 쓰고 있다",
+        "        if False:\n"
+        "            # 생성 워커가 지금 이 슬롯을 쓰고 있다",
+        (f"{T_GATE}::test_seven_forty_five_does_not_refresh_a_slot_a_live_worker_is_writing",),
+    ),
+    Mutant(
+        "5차 F4 07:45 — GET 사이에 워커가 잡은 슬롯에는 재검증을 적용하지 않는다",
+        f"{TASKS}:_page_morning_stored_publication_gates",
+        TASKS,
+        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES or generation_claim_is_active(\n"
+        "                locked, now=observed.datetime\n"
+        "            ):\n",
+        "            if locked.status not in AUTO_PUBLISHABLE_STATUSES:\n",
+        (f"{T_GATE}::test_seven_forty_five_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",),
+    ),
+    # ── PR #183 후속: ASCII 숫자만, 08:00 claim, 미고정 줄(3a·3b·3d) ─────────────────────
+    Mutant(
+        "#183 후속 1 `cntnts_sn`의 숫자 모으기는 ASCII 0-9만(전각 ３７９６은 숫자가 아니다)",
+        f"{AS}:_NON_DIGITS",
+        AS,
+        '_NON_DIGITS = re.compile(r"[^0-9]+")\n',
+        '_NON_DIGITS = re.compile(r"\\D+")\n',
+        (
+            f"{T_ALIAS}::test_a_fullwidth_id_is_not_a_catalog_document",
+            f"{T_ALIAS}::test_generation_judges_a_fullwidth_id_on_a_cost_title_by_its_page",
+            f"{T_ALIAS}::test_publication_refresh_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+            f"{T_ALIAS}::test_patch_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+        ),
+        note="`int()`가 유니코드 숫자를 읽으므로 옛 전각 매핑 없이도 전각 id가 3796이 된다.",
+    ),
+    Mutant(
+        "#183 후속 1 앞 정수 규칙도 ASCII 0-9만(AMC `contentId=３１７７３`)",
+        f"{AS}:_LEADING_INTEGER",
+        AS,
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?([0-9]+)")\n',
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?(\\d+)")\n',
+        (
+            f"{T_ALIAS}::test_a_fullwidth_id_is_not_a_catalog_document",
+            f"{T_ALIAS}::test_generation_judges_a_fullwidth_id_on_a_cost_title_by_its_page",
+            f"{T_ALIAS}::test_publication_refresh_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+            f"{T_ALIAS}::test_patch_judges_a_fullwidth_id_on_a_cost_post_by_its_page",
+        ),
+    ),
+    Mutant(
+        "#183 후속 1 두 규칙 모두 유니코드 숫자(수정 전 동작 복원 — 전각 → ASCII)",
+        f"{AS}:_LEADING_INTEGER/_NON_DIGITS",
+        AS,
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?([0-9]+)")\n_NON_DIGITS = re.compile(r"[^0-9]+")\n',
+        '_LEADING_INTEGER = re.compile(r"\\s*\\+?(\\d+)")\n_NON_DIGITS = re.compile(r"\\D+")\n',
+        (
+            f"{T_ALIAS}::test_a_fullwidth_id_never_equals_a_catalog_or_excluded_document",
+            f"{T_ALIAS}::test_a_medical_post_citing_a_fullwidth_id_is_judged_by_its_page",
+        ),
+        note="전각 매핑만 되살리는 편집은 등가 변이다 — ASCII 정규식이 전각 문자를 숫자 문자열에 넣지 않는다.",
+    ),
+    Mutant(
+        "#183 후속 2 08:00 잠금 전 읽기 — 살아 있는 claim이면 GET하지 않는다",
+        f"{TASKS}:_prefetch_publication_references",
+        TASKS,
+        "        if generation_claim_is_active(\n"
+        "            item, now=datetime.now(timezone.utc)\n"
+        "        ) and not reference_outage_alert_due(\n",
+        "        if False and not reference_outage_alert_due(\n",
+        (
+            f"{T_GATE}::test_eight_does_not_refresh_a_slot_a_live_worker_is_writing",
+            f"{T_CLAIM_PG}::test_eight_does_not_refresh_a_row_a_live_worker_is_writing",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#183 후속 2 08:00 잠근 뒤 — GET 사이에 워커가 잡은 행에는 재검증을 적용하지 않는다",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "        if generation_claim_is_active(item, now=datetime.now(timezone.utc)):\n",
+        "        if False:\n",
+        (
+            f"{T_GATE}::test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",
+            f"{T_CLAIM_PG}::test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#183 후속 3a 장애 폴백 — 최종 주소가 제외 문서인 옛 통과는 재사용하지 않는다",
+        f"{RV}:_reusable_previous_pass",
+        RV,
+        '    if not check or check.get("verdict") != VERDICT_PASS or _final_url_excluded(check):\n'
+        "        return False\n"
+        "    if not _same_topic(check, topic_fingerprint):\n"
+        "        return False\n"
+        '    return _age_within(check.get("verified_at")',
+        '    if not check or check.get("verdict") != VERDICT_PASS:\n'
+        "        return False\n"
+        "    if not _same_topic(check, topic_fingerprint):\n"
+        "        return False\n"
+        '    return _age_within(check.get("verified_at")',
+        (f"{T_ALIAS}::test_an_old_pass_whose_final_url_is_excluded_is_not_reused_on_outage",),
+    ),
+    Mutant(
+        "#183 후속 3b 카탈로그 대조 주소 — 주소가 목록 문서면(첫 값) 주소, 아니면 최종 주소(항상 최종 주소)",
+        f"{RV}:judge_fetched_page",
+        RV,
+        "    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)",
+        "    catalog_url = fetched.final_url or url",
+        (f"{T_ALIAS}::test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url",),
+    ),
+    Mutant(
+        "#183 후속 3b 카탈로그 대조 주소의 판정은 첫 값 규칙(어느 값이든 판정으로 바꾸기)",
+        f"{RV}:judge_fetched_page",
+        RV,
+        "    catalog_url = url if _serves_curated_document(url) else (fetched.final_url or url)",
+        "    catalog_url = url if is_curated_source_url(url) else (fetched.final_url or url)",
+        (f"{T_ALIAS}::test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url",),
+    ),
+    Mutant(
+        "#183 후속 3d 07:45 — 재검증 적용 뒤·판정 전에 워커가 잡은 슬롯은 보류·인시던트 없음",
+        f"{TASKS}:_page_morning_stored_publication_gates",
+        TASKS,
+        "        if generation_claim_is_active(item, now=observed.datetime):\n"
+        "            # 재검증을 적용한 뒤에",
+        "        if False:\n"
+        "            # 재검증을 적용한 뒤에",
+        (f"{T_GATE}::test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh",),
+    ),
+    # ── PR #185 1차 리뷰: 마지막 발행기의 claim 행 읽기 전용 판정(S2), O7, 앞 정수 인정 규칙 ────────
+    Mutant(
+        "#185 O7 마지막 발행기가 아닌 시각 — claim 행(본문·미확정 참고자료)은 발행·보류 없이 건너뛴다",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        '                _log_auto_publish_skip("generation_claim_active", content_id, item=item)\n'
+        "                return None\n",
+        "                pass\n",
+        (
+            f"{T_GATE}::test_a_claimed_row_is_neither_published_nor_held_at_a_non_last_hour",
+            f"{T_LAST_PG}::test_a_claimed_cost_post_at_noon_is_skipped_with_nothing_reported",
+            f"{T_LAST_PG}::test_a_claimed_cost_post_with_a_dead_outside_url_at_noon_is_not_fetched",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 S2 마지막 발행기의 claim 행 사본 판정 끄기(늘 건너뛰기)",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "            elif not reference_outage_alert_due(item.scheduled_date, now_kst):\n",
+        "            elif True:\n",
+        (
+            f"{T_GATE}::test_last_run_reports_a_claimed_cost_post_without_touching_it",
+            f"{T_LAST_PG}::test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_reported_once",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 S2 사본 판정은 마지막 발행기만(매시 켜기)",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "            elif not reference_outage_alert_due(item.scheduled_date, now_kst):\n",
+        "            elif False:\n",
+        (
+            f"{T_GATE}::test_a_claimed_row_is_neither_published_nor_held_at_a_non_last_hour",
+            f"{T_LAST_PG}::test_a_claimed_cost_post_at_noon_is_skipped_with_nothing_reported",
+            f"{T_LAST_PG}::test_a_claimed_cost_post_with_a_dead_outside_url_at_noon_is_not_fetched",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 S2 마지막 발행기의 claim 행은 분리된 사본에서 판정(행에 재검증 적용·판 올림 허용)",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "                item = _detached_publication_view(item)\n",
+        "",
+        (
+            f"{T_GATE}::test_last_run_reports_a_claimed_cost_post_without_touching_it",
+            f"{T_LAST_PG}::test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_reported_once",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 S2 사본 판정이 보류가 아니면 공개하지 않는다(사본 공개 허용)",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "        if read_only_row is not None:\n"
+        "            # 저장된 상태로는 보류가 아니다",
+        "        if False:\n"
+        "            # 저장된 상태로는 보류가 아니다",
+        (f"{T_GATE}::test_last_run_does_not_report_or_publish_a_claimed_medical_post_the_catalog_heals",),
+    ),
+    Mutant(
+        "#185 S2 잠금 전 재검증이 없을 때의 저장된 상태 판정은 GET하지 않는다(GET 한도 0 제거)",
+        f"{TASKS}:_stored_state_reference_verifier",
+        TASKS,
+        "    return ReferenceVerifier(_never_fetch, max_fetches=0)\n",
+        "    return ReferenceVerifier(_never_fetch)\n",
+        (f"{T_GATE}::test_last_run_falls_back_to_the_stored_state_without_a_prefetched_refresh",),
+    ),
+    Mutant(
+        "#185 S2 잠금 전 재검증이 없으면 저장된 상태로 판정(대체 경로 끄기)",
+        f"{TASKS}:_auto_publish_one",
+        TASKS,
+        "                if reference_refresh is None:\n"
+        "                    # 잠금 전 읽기와 잠금 사이의 경합",
+        "                if False:\n"
+        "                    # 잠금 전 읽기와 잠금 사이의 경합",
+        (f"{T_GATE}::test_last_run_falls_back_to_the_stored_state_without_a_prefetched_refresh",),
+    ),
+    Mutant(
+        "#185 S2 잠금 전 재검증 — 마지막 발행기에는 claim 행도 종전처럼 GET(예외 끄기)",
+        f"{TASKS}:_prefetch_publication_references",
+        TASKS,
+        "        if generation_claim_is_active(\n"
+        "            item, now=datetime.now(timezone.utc)\n"
+        "        ) and not reference_outage_alert_due(\n"
+        '            item.scheduled_date, now_kst or arrow.now("Asia/Seoul")\n'
+        "        ):\n",
+        "        if generation_claim_is_active(item, now=datetime.now(timezone.utc)):\n",
+        (
+            f"{T_GATE}::test_prefetch_gets_a_claimed_row_only_in_the_last_window",
+            f"{T_GATE}::test_last_run_reports_a_claimed_cost_post_without_touching_it",
+            f"{T_LAST_PG}::test_s2_a_claimed_cost_post_with_a_dead_outside_url_is_reported_once",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 S2 잠금 전 재검증 — 마지막 발행기가 아니면 claim 행은 GET 없이(예외를 매시에)",
+        f"{TASKS}:_prefetch_publication_references",
+        TASKS,
+        "        if generation_claim_is_active(\n"
+        "            item, now=datetime.now(timezone.utc)\n"
+        "        ) and not reference_outage_alert_due(\n"
+        '            item.scheduled_date, now_kst or arrow.now("Asia/Seoul")\n'
+        "        ):\n",
+        "        if False:\n",
+        (
+            f"{T_GATE}::test_prefetch_gets_a_claimed_row_only_in_the_last_window",
+            f"{T_GATE}::test_a_claimed_row_is_neither_published_nor_held_at_a_non_last_hour",
+            f"{T_LAST_PG}::test_a_claimed_cost_post_with_a_dead_outside_url_at_noon_is_not_fetched",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 후속 3 인정해 주는 판정은 앞 정수 이름의 값이 ASCII 숫자만(curated_source_entries에서 끄기)",
+        f"{AS}:curated_source_entries",
+        AS,
+        "first_value_only=True, exact_ids=True)",
+        "first_value_only=True)",
+        (
+            f"{T_ALIAS}::test_an_inexact_leading_integer_id_is_not_recognised_but_still_removed",
+            f"{T_ALIAS}::test_a_medical_post_citing_an_inexact_leading_integer_id_is_judged_by_its_page",
+            f"{T_ALIAS}::test_only_ascii_digits_are_read",
+        ),
+    ),
+    Mutant(
+        "#185 후속 3 값 규칙 — exact면 값 전체가 숫자여야 한다(규칙 끄기)",
+        f"{AS}:_document_id_value",
+        AS,
+        "    elif exact:\n",
+        "    elif False:\n",
+        (
+            f"{T_ALIAS}::test_an_inexact_leading_integer_id_is_not_recognised_but_still_removed",
+            f"{T_ALIAS}::test_a_medical_post_citing_an_inexact_leading_integer_id_is_judged_by_its_page",
+        ),
+    ),
+    Mutant(
+        "#185 후속 3 빼는 판정은 관대한 앞 정수 해석 그대로(엄격 규칙을 빼는 쪽에도 쓰기)",
+        f"{AS}:_matching_documents",
+        AS,
+        "            number = _document_id_value(value, name=name, exact=exact_ids)\n",
+        "            number = _document_id_value(value, name=name, exact=True)\n",
+        (
+            f"{T_ALIAS}::test_generation_still_drops_an_inexact_leading_integer_id_on_a_cost_title",
+            f"{T_ALIAS}::test_publication_refresh_still_drops_an_inexact_leading_integer_id_on_a_cost_post",
+            f"{T_ALIAS}::test_patch_still_rejects_an_inexact_leading_integer_id_on_a_cost_post",
+        ),
+    ),
+    Mutant(
+        "#185 후속 3 인정 값은 부호·공백 없이(`+7`·` 7` 받기)",
+        f"{AS}:_EXACT_ID_VALUE",
+        AS,
+        '_EXACT_ID_VALUE = re.compile(r"[0-9]+")\n',
+        '_EXACT_ID_VALUE = re.compile(r"\\s*\\+?[0-9]+")\n',
+        (f"{T_ALIAS}::test_an_inexact_leading_integer_id_is_not_recognised_but_still_removed",),
+    ),
+    Mutant(
+        "#185 후속 3 인정 값은 ASCII 숫자(`\\d`로 전각 `7３` 받기)",
+        f"{AS}:_EXACT_ID_VALUE",
+        AS,
+        '_EXACT_ID_VALUE = re.compile(r"[0-9]+")\n',
+        '_EXACT_ID_VALUE = re.compile(r"\\d+")\n',
+        (
+            f"{T_ALIAS}::test_an_inexact_leading_integer_id_is_not_recognised_but_still_removed",
+            f"{T_ALIAS}::test_a_fullwidth_id_is_not_a_catalog_document",
+        ),
+        note="`7３`은 `int()`가 73으로 읽어 어차피 7이 아니다 — 전각만의 `３１７７３`이 잡는다.",
+    ),
+    Mutant(
+        "#185 후속 3 `cntnts_sn`은 인정할 때도 숫자만 모은다(엄격 규칙을 cntnts_sn에도 쓰기)",
+        f"{AS}:_document_id_value",
+        AS,
+        "    if name in _DIGITS_ONLY_ID_PARAMS:\n        found = _NON_DIGITS.sub",
+        "    if name in _DIGITS_ONLY_ID_PARAMS and not exact:\n        found = _NON_DIGITS.sub",
+        (f"{T_ALIAS}::test_a_medical_post_citing_an_alias_passes_as_the_curated_document",),
+    ),
+    Mutant(
+        "#185 리뷰 A2 인시던트는 살아 있는 claim 행의 저장 기한 키를 지우지 않는다(가드 제거)",
+        f"{INCIDENT}:open_generation_incident",
+        INCIDENT,
+        "            if item is not None and not generation_claim_is_active(item, now=observed_at):\n",
+        "            if item is not None:\n",
+        (
+            f"{T_OPD}::test_the_incident_leaves_the_attempt_of_a_live_claimed_row_alone",
+            f"{T_LAST_PG}::test_the_real_incident_does_not_write_a_live_claimed_row_at_the_last_run",
+        ),
+        note="PG",
+    ),
+    Mutant(
+        "#185 리뷰 2차 2 마지막 발행기 시각 = beat의 마지막 실행(발행기를 22시에 끝냄)",
+        f"{CELERY}:beat_schedule[morning-content-auto-publish]",
+        CELERY,
+        '            "schedule": crontab(hour="8-23", minute=0),\n',
+        '            "schedule": crontab(hour="8-22", minute=0),\n',
+        (
+            f"{T_SCHED}::test_the_last_publisher_hour_is_the_last_beat_run_of_the_day",
+            f"{T_SCHED}::test_alert_is_due_on_exactly_the_last_real_run_of_the_scheduled_date",
+        ),
+    ),
+    Mutant(
+        "#185 리뷰 2차 2 마지막 발행기 시각 이후 실행은 하루 한 번(23:30 발행기 추가)",
+        f"{CELERY}:beat_schedule",
+        CELERY,
+        '        "morning-content-auto-publish": {\n',
+        '        "late-content-auto-publish": {\n'
+        '            "task": "app.workers.tasks.morning_content_auto_publish",\n'
+        '            "schedule": crontab(hour=23, minute=30),\n'
+        '        },\n'
+        '        "morning-content-auto-publish": {\n',
+        (
+            f"{T_SCHED}::test_the_last_publisher_hour_is_the_last_beat_run_of_the_day",
+            f"{T_SCHED}::test_alert_is_due_on_exactly_the_last_real_run_of_the_scheduled_date",
+        ),
+    ),
+    Mutant(
+        "#185 리뷰 2차 2 상수가 beat의 마지막 실행 시(時)와 같다(23 → 22)",
+        f"{RP}:REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR",
+        RP,
+        "REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 23\n",
+        "REFERENCE_OUTAGE_LAST_PUBLISHER_HOUR = 22\n",
+        (
+            f"{T_SCHED}::test_the_last_publisher_hour_is_the_last_beat_run_of_the_day",
+            f"{T_SCHED}::test_alert_is_due_on_exactly_the_last_real_run_of_the_scheduled_date",
+        ),
+        note="24로 바꿔도 같은 두 테스트가 잡는다(최대 시 23 ≠ 24, 알림 시각 0회).",
     ),
 )
 

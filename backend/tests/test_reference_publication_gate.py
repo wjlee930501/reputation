@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import copy
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -293,7 +295,7 @@ def test_publisher_never_publishes_when_the_gate_is_not_current(monkeypatch):
 def test_morning_publisher_shares_one_verifier_across_the_run(monkeypatch):
     seen: list[object] = []
 
-    def publish(content_id, *, reference_verifier, today_kst=None):
+    def publish(content_id, *, reference_verifier, today_kst=None, now_kst=None):
         seen.append(reference_verifier)
         return None
 
@@ -379,6 +381,117 @@ def test_seven_forty_five_reverifies_stale_references_so_eight_does_not_burst(mo
     assert fetcher.calls == [url]
     assert db.locks == 1
     assert publication_references_current(item)
+
+
+def _stale_claimable_item():
+    url = KDCA_VIEW.format(9101)
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료 기준을 안내합니다.", title=HEMORRHOID_TITLE)
+    item.references_list = [{"title": "치핵", "url": url}]
+    item.reference_checks = [_pass(url, age=timedelta(hours=33))]
+    item.content_revision = 5
+    _stamp(item)
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(url, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+    return item, url, fetcher
+
+
+def _claim(item, at):
+    item.generation_claim_token = uuid.uuid4()
+    item.generation_claimed_at = at
+
+
+def test_seven_forty_five_does_not_refresh_a_slot_a_live_worker_is_writing(monkeypatch):
+    """3차 F4 — 살아 있는 claim이 있는 슬롯은 참고자료 재검증(GET·잠금·판 올림)부터 건너뛴다.
+
+    재검증이 판을 올리면 워커가 공급자 비용을 치른 저장이 판 불일치로 버려진다.
+    """
+
+    item, _url, fetcher = _stale_claimable_item()
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    _claim(item, observed.datetime - timedelta(minutes=10))
+    before = (copy.deepcopy(item.references_list), copy.deepcopy(item.reference_checks))
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+
+    with override_reference_fetcher(fetcher):
+        paged = tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert fetcher.calls == [] and db.locks == 0
+    assert (paged, incidents) == (0, [])
+    assert item.content_revision == 5
+    assert (item.references_list, item.reference_checks) == before
+
+
+def test_seven_forty_five_does_not_apply_a_refresh_when_a_worker_claims_during_the_get(
+    monkeypatch,
+):
+    item, url, fetcher = _stale_claimable_item()
+    fetcher.pages[url] = (404, url, "")  # 재검증이 참고자료를 바꾼다(빼고 치유) — 판이 오를 일이다
+    before = copy.deepcopy(item.references_list)
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    real_fetch = fetcher.__call__
+
+    async def claiming_fetch(fetched_url):
+        _claim(item, observed.datetime)  # GET 사이에 07시 스윕의 워커가 잡았다
+        return await real_fetch(fetched_url)
+
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+
+    with override_reference_fetcher(claiming_fetch):
+        paged = tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert fetcher.calls[0] == url and db.locks == 1
+    assert (paged, incidents) == (0, [])
+    assert (item.content_revision, item.references_list) == (5, before)
+
+
+def test_seven_forty_five_refreshes_a_slot_whose_claim_expired(monkeypatch):
+    """대조군 — 만료된 claim은 살아 있는 작업이 아니다(종전처럼 재검증한다)."""
+
+    item, url, fetcher = _stale_claimable_item()
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    _claim(item, observed.datetime - timedelta(days=2))
+    db = _GateDB(item)
+    _gate_setup(monkeypatch, item)
+
+    with override_reference_fetcher(fetcher):
+        tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert fetcher.calls == [url] and db.locks == 1
+    assert publication_references_current(item)
+
+
+def test_seven_forty_five_does_not_page_a_slot_a_worker_claims_after_the_refresh(monkeypatch):
+    """재검증을 적용한 뒤, 판정 전에 생성 워커가 잡은 슬롯 — 보류·인시던트를 만들지 않는다.
+
+    대조군(`..._holds_and_pages_the_real_cause_when_nothing_survives`)과 같은 글이 claim만 없으면
+    MISSING_REFERENCES로 보류된다. 판정 직후의 claim 재확인이 없으면 여기서도 보류된다.
+    """
+
+    hospital = _publication_hospital()
+    item = _publication_item(hospital, body="진료비 기준을 안내합니다.", title="경산 내과 진료비 안내")
+    item.references_list = [{"title": "진료비", "url": GUESSED}]
+    item.reference_checks = None
+    db = _GateDB(item)
+    incidents = _gate_setup(monkeypatch, item)
+    observed = arrow.get(2026, 6, 10, 7, 45, tzinfo="Asia/Seoul")
+    claimed_after_apply: list[bool] = []
+
+    def philosophy_after_a_claim(*_args):
+        # 적용·commit 뒤 판정 직전 — 07시 스윕의 워커가 이 슬롯을 잡았다.
+        claimed_after_apply.append(item.references_list == [])
+        _claim(item, observed.datetime)
+        return _approved_philosophy()
+
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", philosophy_after_a_claim)
+
+    with override_reference_fetcher(PageFetcher({GUESSED: (404, GUESSED, "")})):
+        paged = tasks._page_morning_stored_publication_gates(db, now_kst=observed)
+
+    assert claimed_after_apply == [True]  # 재검증은 적용됐다(claim 전이다)
+    assert (paged, incidents) == (0, [])
 
 
 def test_seven_forty_five_holds_and_pages_the_real_cause_when_nothing_survives(monkeypatch):
@@ -684,6 +797,357 @@ def test_outage_deferral_is_reported_from_the_last_publisher_run_with_its_real_c
     assert "확보하지 못" not in entry["cause"]
     copy = blocker_copy(entry["code"])
     assert "기관 사이트" in copy.title and "확보" not in copy.title
+
+
+# ── 08:00 발행기도 살아 있는 claim의 참고자료를 재검증하지 않는다(PR #183 후속) ─────
+
+
+def _stale_publish_setup(monkeypatch):
+    url = KDCA_VIEW.format(9601)
+    stale = _pass(url, age=REFERENCE_CHECK_MAX_AGE + timedelta(hours=2))
+    item, db, effects = _publish_setup(
+        monkeypatch, references=[{"title": "치핵", "url": url}], checks=[stale]
+    )
+    fetcher = _hemorrhoid_fetcher()
+    fetcher.add_document(url, "치핵 | 국가건강정보포털 | 질병관리청", topic="치핵")
+    return item, url, fetcher
+
+
+def _assert_untouched(item, before):
+    assert item.content_revision == 3
+    assert (item.references_list, item.reference_checks) == before
+    assert item.status is tasks.ContentStatus.DRAFT
+
+
+def test_eight_does_not_refresh_a_slot_a_live_worker_is_writing(monkeypatch):
+    """잠금 없는 읽기에서 살아 있는 claim을 보면 GET하지 않고, 잠근 뒤에도 적용·발행·보류하지 않는다."""
+
+    item, _url, fetcher = _stale_publish_setup(monkeypatch)
+    _claim(item, _now() - timedelta(minutes=10))
+    before = (copy.deepcopy(item.references_list), copy.deepcopy(item.reference_checks))
+    verifier = ReferenceVerifier(fetcher, domain_spacing=0)
+
+    assert tasks._prefetch_publication_references(item.id, verifier) is None
+    payload = tasks._auto_publish_one(item.id, reference_verifier=verifier)
+
+    assert payload is None and fetcher.calls == []
+    _assert_untouched(item, before)
+
+
+def test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get(monkeypatch):
+    item, url, fetcher = _stale_publish_setup(monkeypatch)
+    fetcher.pages[url] = (404, url, "")  # 재검증이 참고자료를 바꾼다(빼고 치유) — 판이 오를 일이다
+    before = (copy.deepcopy(item.references_list), copy.deepcopy(item.reference_checks))
+
+    def worker_claims():
+        _claim(item, _now())  # GET 사이에 생성 워커가 잡았다
+
+    payload = tasks._auto_publish_one(
+        item.id,
+        reference_verifier=ReferenceVerifier(
+            _MutatingFetcher(worker_claims, fetcher.pages), domain_spacing=0
+        ),
+    )
+
+    assert payload is None
+    _assert_untouched(item, before)
+
+
+def test_eight_refreshes_a_slot_whose_claim_expired(monkeypatch):
+    """대조군 — 만료된 claim은 살아 있는 작업이 아니다(종전처럼 재검증하고 발행한다)."""
+
+    item, url, fetcher = _stale_publish_setup(monkeypatch)
+    _claim(item, _now() - timedelta(days=2))
+
+    tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert fetcher.calls == [url]
+    assert item.status is tasks.ContentStatus.PUBLISHED
+
+
+def test_eight_judges_a_live_claimed_slot_whose_references_are_settled_as_before(monkeypatch):
+    """확인이 끝난 참고자료(신선한 통과)는 재검증할 일이 없다 — claim과 무관하게 종전 판정이다."""
+
+    url = KDCA_VIEW.format(9602)
+    item, _db, _effects = _publish_setup(
+        monkeypatch, references=[{"title": "치핵", "url": url}], checks=[_pass(url)]
+    )
+    _claim(item, _now() - timedelta(minutes=10))
+    fetcher = _hemorrhoid_fetcher()
+
+    payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher))
+
+    assert fetcher.calls == [] and item.content_revision == 3
+    assert payload is not None and item.status is tasks.ContentStatus.PUBLISHED
+
+
+# ── 그날 마지막 발행기의 claim 행 — 종전처럼 GET하고, 행이 아닌 사본으로 판정한다(#185 리뷰 S2) ──
+# 23시(예정일의 마지막 발행기)에 생성 워커가 잡은 행을 그냥 건너뛰면 그 행의 보류·운영자 줄이
+# 조용히 빠진다. 잠금 전 재검증(GET)은 종전 23시처럼 하고 — GET은 행을 쓰지 않는다 — 그 결과를
+# 분리된 사본에 적용해 종전 판정을 사본에서 거친다. 행은 그대로다(재검증 적용·판 올림·발행·판정
+# 기록 없음). 다른 시간대는 종전처럼 GET 없이 건너뛴다.
+
+COST_POST_TITLE = "경산 내과 진료비, 무엇에 따라 달라지나요"
+NO_CATALOG_TITLE = "귀지가 막혔을 때 — 집에서 해도 되는 관리"  # 수기 목록 치유 후보가 없는 의료 글
+LOW_BACK = KDCA_VIEW.format(3796)
+LAST_RUN = arrow.get(2026, 6, 10, 23, 0, tzinfo="Asia/Seoul")
+NOON = arrow.get(2026, 6, 10, 12, 0, tzinfo="Asia/Seoul")
+DEAD_OUTSIDE = [{"title": "진료비", "url": GUESSED}]  # 리뷰어 S2 — 신선한 통과가 없는 목록 밖 죽은 주소
+
+
+def _claimed_post(monkeypatch, *, at, references, checks=None, title=COST_POST_TITLE, claimed=True):
+    item, db, effects = _publish_setup(monkeypatch, references=references, checks=checks, title=title)
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_k: at)
+    if claimed:
+        _claim(item, _now() - timedelta(minutes=50))
+    return item, db, effects
+
+
+def _stored_state_fetcher(monkeypatch, fetcher: PageFetcher) -> PageFetcher:
+    """저장된 상태 판정(대체 경로)의 검증기가 GET하면 이 fetcher에 기록되게 한다(한도 0이면 부르지 않는다)."""
+
+    monkeypatch.setattr(tasks, "_never_fetch", fetcher)
+    return fetcher
+
+
+def _row_bytes(item) -> str:
+    return json.dumps(vars(item), default=str, sort_keys=True)
+
+
+def _catalog_pass():
+    return [{"title": "요통", "url": LOW_BACK}], [_pass(LOW_BACK)]
+
+
+def _refs_for(case):
+    if case == "catalog_fresh_pass":
+        return _catalog_pass()
+    if case == "dead_outside_url":
+        return list(DEAD_OUTSIDE), None
+    return [], None
+
+
+def _dead_fetcher() -> PageFetcher:
+    return _hemorrhoid_fetcher(**{GUESSED: (404, GUESSED, "")})
+
+
+@pytest.mark.parametrize(
+    ("refs", "gets"),
+    [("catalog_fresh_pass", []), ("empty", []), ("dead_outside_url", [GUESSED])],
+)
+def test_last_run_reports_a_claimed_cost_post_without_touching_it(monkeypatch, refs, gets):
+    """S2 재현 — 진료비 글(예정일 D, 본문 있음), claim이 살아 있는 채 23시. 종전 23시처럼 GET하고
+    (죽은 목록 밖 주소), 목록 문서는 GET 없이 빼서 사람의 결정 보류로 보고한다. 행은 그대로다."""
+
+    references, checks = _refs_for(refs)
+    item, _db, effects = _claimed_post(
+        monkeypatch, at=LAST_RUN, references=references, checks=checks
+    )
+    before = _row_bytes(item)
+    fetcher = _dead_fetcher()
+    fallback = _stored_state_fetcher(monkeypatch, PageFetcher())
+
+    payload = tasks._auto_publish_one(
+        item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
+    )
+
+    assert payload is not None and payload["kind"] == "blocked"
+    assert payload["code"] == "MISSING_REFERENCES"
+    assert payload["operator_line"] is True  # #181 요약의 운영자 판단 줄
+    assert fetcher.calls == gets and fallback.calls == []  # 잠금 전 재검증이 종전처럼 GET했다
+    assert _row_bytes(item) == before  # 판·참고자료·검증 기록·상태·판정 기록 모두 그대로
+    assert effects == {"revalidate": [], "indexnow": []}
+
+
+def test_prefetch_gets_a_claimed_row_only_in_the_last_window(monkeypatch):
+    item, _db, _effects = _claimed_post(monkeypatch, at=NOON, references=list(DEAD_OUTSIDE))
+    fetcher = _dead_fetcher()
+    verifier = ReferenceVerifier(fetcher, domain_spacing=0)
+
+    assert tasks._prefetch_publication_references(item.id, verifier, now_kst=NOON) is None
+    assert fetcher.calls == []
+    refresh = tasks._prefetch_publication_references(item.id, verifier, now_kst=LAST_RUN)
+    assert fetcher.calls == [GUESSED]
+    assert refresh is not None and refresh.references == [] and refresh.operator_decides
+
+
+def test_last_run_reports_a_claimed_medical_post_that_nothing_can_heal(monkeypatch):
+    item, _db, _effects = _claimed_post(
+        monkeypatch, at=LAST_RUN, references=[], title=NO_CATALOG_TITLE
+    )
+    before = _row_bytes(item)
+
+    payload = tasks._auto_publish_one(
+        item.id, reference_verifier=ReferenceVerifier(_hemorrhoid_fetcher())
+    )
+
+    assert payload["kind"] == "blocked" and payload["code"] == "MISSING_REFERENCES"
+    assert payload["operator_line"] is False  # 평범한 참고자료 보류는 주간 요약 몫이다
+    assert _row_bytes(item) == before
+
+
+def test_last_run_does_not_report_or_publish_a_claimed_medical_post_the_catalog_heals(monkeypatch):
+    """빈 필수 참고자료라도 수기 목록 치유가 통과하면 보류가 아니다 — 보고하지 않고, 생성 중인
+    행이라 공개하지도 않는다(종전 23시라면 치유해 공개했을 글). 치유 GET은 종전처럼 한다."""
+
+    item, _db, effects = _claimed_post(
+        monkeypatch, at=LAST_RUN, references=[], title=HEMORRHOID_TITLE
+    )
+    before = _row_bytes(item)
+    fetcher = _hemorrhoid_fetcher()
+
+    assert tasks._auto_publish_one(
+        item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
+    ) is None
+    assert fetcher.calls  # 치유 후보 GET
+    assert _row_bytes(item) == before
+    assert effects == {"revalidate": [], "indexnow": []}
+
+
+@pytest.mark.parametrize("deferral", ["site_down", "get_limit"])
+def test_last_run_defers_a_claimed_row_exactly_like_an_unclaimed_one(monkeypatch, deferral):
+    """미룸(기관 장애·GET 한도)은 claim 없는 글의 23시와 같은 결과다 — 장애는 기관 접속 불가
+    요약용 결과, GET 한도는 조용히 다음 시간대. 보류는 없다. claim 행만 행이 그대로다."""
+
+    outcomes = {}
+    for claimed in (False, True):
+        item, _db, _effects = _claimed_post(
+            monkeypatch, at=LAST_RUN, references=list(DEAD_OUTSIDE), claimed=claimed
+        )
+        before = _row_bytes(item)
+        if deferral == "site_down":
+            verifier = ReferenceVerifier(
+                _hemorrhoid_fetcher(**{GUESSED: TimeoutError("site down")}), domain_spacing=0
+            )
+        else:
+            verifier = ReferenceVerifier(_hemorrhoid_fetcher(), max_fetches=0)
+        payload = tasks._auto_publish_one(item.id, reference_verifier=verifier)
+        outcomes[claimed] = (
+            None
+            if payload is None
+            else {key: payload[key] for key in ("kind", "title", "scheduled_date", "unreachable_urls")}
+        )
+        if claimed:
+            assert _row_bytes(item) == before
+        assert item.status is tasks.ContentStatus.DRAFT and item.references_list == DEAD_OUTSIDE
+
+    assert outcomes[True] == outcomes[False]
+    if deferral == "site_down":
+        assert outcomes[True]["kind"] == "reference_deferred"
+        assert outcomes[True]["unreachable_urls"] == [GUESSED]
+    else:
+        assert outcomes[True] is None
+
+
+def test_last_run_uses_the_prefetched_refresh_when_the_claim_is_taken_during_the_get(monkeypatch):
+    item, _db, _effects = _claimed_post(
+        monkeypatch, at=LAST_RUN, references=list(DEAD_OUTSIDE), claimed=False
+    )
+    before_refs = copy.deepcopy(item.references_list)
+
+    def worker_claims():
+        _claim(item, _now())  # 잠금 전 읽기 뒤, GET 사이에 워커가 잡았다
+
+    payload = tasks._auto_publish_one(
+        item.id,
+        reference_verifier=ReferenceVerifier(
+            _MutatingFetcher(worker_claims, _dead_fetcher().pages), domain_spacing=0
+        ),
+    )
+
+    assert payload["kind"] == "blocked" and payload["operator_line"] is True
+    assert (item.content_revision, item.references_list, item.reference_checks) == (
+        3,
+        before_refs,
+        None,
+    )
+
+
+@pytest.mark.parametrize(
+    ("refs", "expected"),
+    [("catalog_fresh_pass", "blocked"), ("dead_outside_url", None)],
+)
+def test_last_run_falls_back_to_the_stored_state_without_a_prefetched_refresh(
+    monkeypatch, refs, expected
+):
+    """경합(잠금 전 읽기 뒤 워커가 본문을 씀 등)으로 잠금 전 재검증이 없으면 저장된 상태로만
+    판정한다 — 목록 문서는 GET 없이 판정되고, 목록 밖 주소는 GET 한도처럼 미뤄진다."""
+
+    references, checks = _refs_for(refs)
+    item, _db, _effects = _claimed_post(
+        monkeypatch, at=LAST_RUN, references=references, checks=checks
+    )
+    before = _row_bytes(item)
+    monkeypatch.setattr(tasks, "_prefetch_publication_references", lambda *_a, **_k: None)
+    fallback = _stored_state_fetcher(monkeypatch, _dead_fetcher())
+
+    payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(_dead_fetcher()))
+
+    assert (payload or {}).get("kind") == expected
+    assert fallback.calls == [] and _row_bytes(item) == before
+
+
+def test_a_claimed_row_past_its_date_is_judged_like_the_last_run(monkeypatch):
+    """지난 예정일(catch-up)은 이미 마지막 발행기를 지났다(`reference_outage_alert_due`) — 어느
+    시각이든 종전처럼 GET하고 사본으로 판정한다. 운영자 줄은 예정일 당일만이다(#181)."""
+
+    next_day_noon = arrow.get(2026, 6, 11, 12, 0, tzinfo="Asia/Seoul")
+    item, _db, _effects = _claimed_post(
+        monkeypatch, at=next_day_noon, references=list(DEAD_OUTSIDE)
+    )
+    before = _row_bytes(item)
+    fetcher = _dead_fetcher()
+
+    payload = tasks._auto_publish_one(
+        item.id, reference_verifier=ReferenceVerifier(fetcher, domain_spacing=0)
+    )
+
+    assert payload["kind"] == "blocked" and payload["code"] == "MISSING_REFERENCES"
+    assert payload["operator_line"] is False
+    assert fetcher.calls == [GUESSED] and _row_bytes(item) == before
+
+
+@pytest.mark.parametrize(
+    ("refs", "title"),
+    [
+        ("catalog_fresh_pass", COST_POST_TITLE),  # (a) 발행 전 진료비 글 + 목록 문서의 신선한 통과
+        ("empty", COST_POST_TITLE),  # (c) 필수 참고자료가 빈 글
+        ("empty", NO_CATALOG_TITLE),
+        ("dead_outside_url", COST_POST_TITLE),  # 리뷰어 S2의 글 — 12시에는 GET도 없다
+    ],
+    ids=["catalog_on_cost_post", "empty_cost_post", "empty_medical_post", "dead_outside_url"],
+)
+def test_a_claimed_row_is_neither_published_nor_held_at_a_non_last_hour(monkeypatch, refs, title):
+    """리뷰어 O7 — 마지막 발행기가 아닌 시각의 claim 건너뛰기가 유일한 가드다. 없으면 (a)는
+    `publication_references_current`·판정이 목록 문서를 보지 않아 공개되고, (c)는 보류된다."""
+
+    references, checks = _refs_for(refs)
+    item, _db, effects = _claimed_post(
+        monkeypatch, at=NOON, references=references, checks=checks, title=title
+    )
+    before = _row_bytes(item)
+    fetcher = _dead_fetcher()
+
+    assert tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher)) is None
+    assert fetcher.calls == [] and _row_bytes(item) == before
+    assert effects == {"revalidate": [], "indexnow": []}
+
+
+def test_an_unclaimed_cost_post_citing_a_catalog_document_is_held_for_the_operator(monkeypatch):
+    """(b) 대조군 — claim이 없으면 종전대로 목록 문서를 빼고(GET 없이) 사람의 결정으로 보류한다."""
+
+    references, checks = _catalog_pass()
+    item, _db, _effects = _claimed_post(
+        monkeypatch, at=NOON, references=references, checks=checks, claimed=False
+    )
+    fetcher = _hemorrhoid_fetcher()
+
+    payload = tasks._auto_publish_one(item.id, reference_verifier=ReferenceVerifier(fetcher))
+
+    assert payload["kind"] == "blocked" and payload["code"] == "MISSING_REFERENCES"
+    assert payload["operator_line"] is True
+    assert item.references_list == [] and item.content_revision == 4
+    assert item.status is tasks.ContentStatus.DRAFT
+    assert fetcher.calls == []
 
 
 # ── Pass 2: GET은 잠금 밖, 적용은 잠근 뒤 비교해서 ─────────────────────────────
