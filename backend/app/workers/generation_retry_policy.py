@@ -201,6 +201,24 @@ def _sweep_window(candidate: datetime) -> tuple[date, date]:
     )
 
 
+def sweep_claims_slot(moment: datetime, scheduled_date: date | None) -> bool:
+    """``moment``가 생성 스윕 시각이고 그 스윕의 창에 ``scheduled_date``가 드는가.
+
+    `next_recovery_deadline`의 백로그 복구 판정 시각(22:30 + 1시간)은 원고 생성 시도가 아니다 —
+    그 시각을 "다시 시도합니다"로 말하지 않게 문구 쪽이 구분할 때 쓴다.
+    """
+
+    if scheduled_date is None:
+        return False
+    observed = moment.astimezone(KST)
+    if observed.hour not in RECOVERY_SWEEP_HOURS or observed != observed.replace(
+        minute=0, second=0, microsecond=0
+    ):
+        return False
+    window_start, window_end = _sweep_window(observed)
+    return window_start <= scheduled_date <= window_end
+
+
 def _candidate_sweeps(observed: datetime):
     """Yield the scheduled sweep datetimes after ``observed``, in time order."""
 

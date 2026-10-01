@@ -303,6 +303,18 @@ _REVIEW_PENDING_COPY = ActionCopy(
     "콘텐츠에서 검수 상태와 자동 재시도 여부를 확인해 주세요.",
     "검수 상태 확인",
 )
+_PROVIDER_OUTAGE_COPY = ActionCopy(
+    "생성 서비스 일시 장애",
+    "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요.",
+    "생성 상태 확인",
+)
+_GENERATION_ERROR_COPY = ActionCopy(
+    "생성 서비스 오류",
+    "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요.",
+    "생성 상태 확인",
+)
 _NOT_GENERATED_COPY = ActionCopy(
     "발행용 원고 미생성",
     "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
@@ -353,7 +365,7 @@ def test_not_generated_slack_action_matches_the_incident_operator_action() -> No
         assert "기다리" not in action
 
 
-def test_blocked_digest_keeps_three_distinct_actions_in_first_seen_order() -> None:
+def test_blocked_digest_keeps_distinct_actions_in_first_seen_order() -> None:
     hospital_id = uuid.uuid4()
     intent = build_generation_blocked_digest_intent(
         date(2026, 8, 19),
@@ -372,33 +384,47 @@ def test_blocked_digest_keeps_three_distinct_actions_in_first_seen_order() -> No
     payload = intent.message.payload_json()
     positions = [
         payload.find(copy.action)
-        for copy in (_NOT_GENERATED_COPY, _IMAGE_COPY, _BODY_REVIEW_DEFAULT)
+        for copy in (_NOT_GENERATED_COPY, _IMAGE_COPY, blocker_copy("PROVIDER_TIMEOUT"))
     ]
     assert -1 not in positions
     assert positions == sorted(positions)
 
 
-def test_blocked_digest_caps_distinct_actions_at_three() -> None:
-    # PROVIDER_UNAVAILABLE은 08:00 digest 대상이고 "UNAVAILABLE" 분기로 네 번째 조치가 된다.
-    hospital_id = uuid.uuid4()
-    intent = build_generation_blocked_digest_intent(
-        date(2026, 8, 19),
-        PUBLISH_MORNING_BATCH,
-        [
-            _blocked("조치네개의원", code, "", hospital_id=hospital_id)
-            for code in (
-                "CONTENT_NOT_GENERATED",
-                "IMAGE_GENERATION_FAILED",
-                "PROVIDER_TIMEOUT",
-                "PROVIDER_UNAVAILABLE",
-            )
-        ],
-    )
+def test_blocked_digest_keeps_every_distinct_action_beyond_three() -> None:
+    """조치 문장 개수 상한은 없다 — 서로 다른 조치는 모두, 처음 본 순서대로, 한 번씩 실린다.
 
-    payload = intent.message.payload_json()
-    assert _BODY_REVIEW_DEFAULT.action in payload
-    assert _REVIEW_PENDING_COPY.action not in payload
-    assert f"{_REVIEW_PENDING_COPY.title} 1편" in payload
+    #179의 `actions[:3]`은 네 번째 조치(합본에서는 참고 자료 주소 교체 안내)를 잘랐다. 운영자
+    판단 조치는 맨 앞이고(#181), 나머지는 게이트 순서 그대로다.
+    """
+
+    hospital_id = uuid.uuid4()
+    codes = (
+        "CONTENT_NOT_GENERATED",
+        "IMAGE_GENERATION_FAILED",
+        "PROVIDER_TIMEOUT",
+        "CONTENT_NOT_GENERATED",  # 같은 조치는 한 번만
+        "MISSING_APPROVED_ESSENCE",
+        "REFERENCE_SITE_UNREACHABLE",
+        "COST_BLOCKED",
+    )
+    outcomes = [_blocked("조치여럿의원", code, "", hospital_id=hospital_id) for code in codes]
+    outcomes.append(
+        {
+            **_blocked("조치여럿의원", "MISSING_REFERENCES", "", hospital_id=hospital_id),
+            "copy_code": notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE,
+        }
+    )
+    intent = build_generation_blocked_digest_intent(date(2026, 8, 19), PUBLISH_MORNING_BATCH, outcomes)
+
+    distinct = list(dict.fromkeys(blocker_copy(code).action for code in codes))
+    assert len(distinct) == 6  # 상한 3을 넘는다
+    expected = [
+        blocker_copy(notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE).action,
+        *distinct,
+    ]
+    lines = _section_text(intent).splitlines()
+    assert lines[-1] == "  " + " ".join(expected)
+    assert "발행 보류 8편" in lines[1]
 
 
 @pytest.mark.parametrize(("code", "title", "action", "_button"), _NO_DRAFT_BLOCKERS)
@@ -445,10 +471,13 @@ def test_weekly_rollup_names_no_draft_blockers_instead_of_body_review(
         ("CONTENT_IMAGE_NOT_READY", _IMAGE_COPY),
         ("COST_BLOCKED", incident_copy("COST_GUARD_LIMIT_REACHED")),
         ("CONTENT_AI_REVIEW_UNAVAILABLE", _REVIEW_PENDING_COPY),
-        ("CONTENT_AI_UNCERTAIN", _REVIEW_PENDING_COPY),
+        # 검수 라벨은 코드 그대로 맞춘다 — 앱이 만든 적 없는 이름은 부분 문자열로 끌려가지 않는다.
+        ("CONTENT_AI_UNCERTAIN", _BODY_REVIEW_DEFAULT),
         ("GENERATION_REJECTED", _BODY_REVIEW_DEFAULT),
-        ("GENERATION_FAILED", _BODY_REVIEW_DEFAULT),
-        ("PROVIDER_TIMEOUT", _BODY_REVIEW_DEFAULT),
+        # 분류되지 않은 생성 오류는 환경 실패다 — 본문·근거 확인이 아니다(#187 2차 s2).
+        ("GENERATION_FAILED", _GENERATION_ERROR_COPY),
+        ("PROVIDER_TIMEOUT", _PROVIDER_OUTAGE_COPY),
+        ("PROVIDER_UNAVAILABLE", _PROVIDER_OUTAGE_COPY),
         ("FORBIDDEN_EXPRESSION", _BODY_REVIEW_DEFAULT),
         ("MISSING_REFERENCES", _BODY_REVIEW_DEFAULT),
         ("CONTENT_AI_HARD_FINDING", _BODY_REVIEW_DEFAULT),
@@ -882,7 +911,9 @@ def test_weekly_rollup_is_skipped_when_there_is_nothing_to_report() -> None:
 _OPERATOR_HOLD_SENTENCES = (
     "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 글의 주장을 직접 뒷받침하는 공공·학술 기관 "
     "문서를 “참고 자료 추가”로 넣거나 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요.",
-    "참고 자료 없이는 발행되지 않고, 자동 복구는 이 글을 다시 쓰지 않습니다.",
+    "진료비·병원 선택 글에는 검증된 문서 목록의 문서를 넣을 수 없어 저장이 거절됩니다.",
+    "참고 자료 없이는 발행되지 않고, 자동 복구는 운영 기준이 새로 승인되는 등 생성 조건이 "
+    "바뀌기 전에는 이 글을 다시 쓰지 않습니다.",
 )
 _OPERATOR_HOLD_COPY = notification_copy.ActionCopy(
     "참고 자료 운영자 판단",
@@ -923,7 +954,7 @@ def test_operator_hold_copy_is_its_own_and_generic_missing_references_is_unchang
         notification_copy.blocker_copy(notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE)
         == _OPERATOR_HOLD_COPY
     )
-    # 문장 단위로도 고정한다 — 두 문장 모두, 이 순서로, 다른 문장 없이.
+    # 문장 단위로도 고정한다 — 세 문장 모두, 이 순서로, 다른 문장 없이.
     action = notification_copy.blocker_copy(
         notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
     ).action

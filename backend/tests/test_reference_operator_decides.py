@@ -62,6 +62,7 @@ from app.workers import generation_incident_control, tasks, topic_swap_fallback
 from app.workers.generation_incident_control import (
     REFERENCES_OPERATOR_DECIDES_ACTION,
     REFERENCES_OPERATOR_DECIDES_CAUSE,
+    REFERENCES_OPERATOR_DECIDES_UNWRITTEN_ACTION,
     generation_block_is_terminal,
     operator_decides_references,
     scheduled_recovery_owns_blocker,
@@ -295,9 +296,13 @@ def test_seven_forty_five_removes_a_dead_reference_but_never_fills_it(monkeypatc
     assert fetcher.calls == [GUESSED]  # 죽은 주소만 확인했고 수기 목록 후보는 열지 않았다
 
 
+@pytest.mark.parametrize("written", [True, False], ids=["written", "unwritten"])
 @pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
-async def test_the_hold_is_an_open_operator_incident_with_its_own_copy(monkeypatch, title):
+async def test_the_hold_is_an_open_operator_incident_with_its_own_copy(
+    monkeypatch, title, written
+):
     item = _slot(title)
+    item.body = "이미 쓴 본문입니다." if written else None
     _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
     tasks._record_gate_blocker_decision(
         _NightlyTaskDB(), item, SimpleNamespace(id="p1"), "MISSING_REFERENCES"
@@ -309,8 +314,12 @@ async def test_the_hold_is_an_open_operator_incident_with_its_own_copy(monkeypat
 
     assert (incident.state, incident.sla_due_at) == ("OPEN", None)
     assert request.safe_error_message == REFERENCES_OPERATOR_DECIDES_CAUSE
-    assert request.next_action == REFERENCES_OPERATOR_DECIDES_ACTION
-    assert "다시 쓰지 않습니다" in request.next_action
+    if written:
+        assert request.next_action == REFERENCES_OPERATOR_DECIDES_ACTION
+        assert "다시 쓰지 않습니다" in request.next_action
+    else:
+        # 원고가 없는 글은 '새로 쓰기' 조치다(#187 2차 C).
+        assert request.next_action == REFERENCES_OPERATOR_DECIDES_UNWRITTEN_ACTION
 
 
 @pytest.mark.parametrize(
@@ -954,7 +963,9 @@ def test_the_generation_hold_is_an_open_incident_without_a_deadline(monkeypatch,
 
     assert (incident.state, incident.sla_due_at) == ("OPEN", None)
     assert request.safe_error_message == REFERENCES_OPERATOR_DECIDES_CAUSE
-    assert request.next_action == REFERENCES_OPERATOR_DECIDES_ACTION
+    # 작가 회차가 참고 자료 0개로 끝나 원고가 저장되지 않았다 — 원고 없는 글의 조치다(#187 2차 C).
+    assert not (getattr(slot, "body", None) or "").strip()
+    assert request.next_action == REFERENCES_OPERATOR_DECIDES_UNWRITTEN_ACTION
 
 
 @pytest.mark.parametrize("title", [COST_TITLE, CHOICE_TITLE], ids=["cost", "provider_choice"])
