@@ -47,5 +47,6 @@ def test_unknown_citations_are_not_printed_as_zero_in_monthly_pdf():
         expectation=expectation,
     )
     text = "".join("".join(page.extract_text().split()) for page in PdfReader(BytesIO(result.pdf_bytes)).pages)
-    assert "소유URL인용미확인" in text
-    assert "소유URL인용0개조합" not in text
+    assert "AI답변에쓰였는지는아직확인하지못했습니다" in text
+    assert "확인못함" in text
+    assert "아직없음" not in text

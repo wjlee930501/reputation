@@ -83,25 +83,33 @@ def v3_expectation(
     page_count: int,
 ) -> DoctorPdfExpectation:
     n = view["narrative"]
-    page1 = [n.title, n.conclusion, n.denominator, "지난달", "이번 달"]
-    if n.previous is None:
+    initial = view.get("report_kind") == "INITIAL"
+    tile = view["tiles"][0]
+    page1 = [
+        n.title,
+        n.conclusion,
+        n.denominator,
+        "AI에게 물었을 때 우리 병원이 언급된 비율",
+        "지난달",
+        "이번 달",
+        "AI가 언급한 질문",
+        "AI가 참고한 우리 글",
+        "다음 달에 할 일",
+        n.priorities[0],
+        f"{n.current:.1f}%" if n.current is not None else n.current_label,
+        f"{n.previous:.1f}%" if n.previous is not None else n.previous_label,
+    ]
+    if n.previous is None and n.current is not None:
         page1.append(n.comparison_note)
-    elif n.current is not None:
-        page1.append(f"{n.current - n.previous:+.1f}%p")
-    page1.extend(
-        (
-            f"{n.current:.1f}%" if n.current is not None else "확인 불가",
-            f"{n.previous:.1f}%" if n.previous is not None else "비교 보류",
-        )
-    )
+    if n.current is not None and round(n.current) > 0:
+        page1.append(f"100번 물으면 약 {round(n.current)}번 우리 병원이 언급된 셈입니다.")
+    if not initial:
+        page1.extend((tile["label"], tile["value"]))
     if view.get("v0_baseline"):
         base = view["v0_baseline"]
-        page1.append(f"최초 측정 {base['of_hundred']}% / 이번 관측 {base['current_of_hundred']}%")
-    page2 = (
-        ["최초 관측과", "확인한 근거"]
-        if view.get("report_kind") == "INITIAL"
-        else ["이번 달 만든 정보와", "활용 결과"]
-    )
+        page1.append(f"처음 측정 {base['of_hundred']}% / 이번 달 {base['current_of_hundred']}%")
+    page2 = ["첫 측정에서", "확인한 내용"] if initial else ["이번 달 한 일을", "보고드립니다", "그 결과"]
+    page2.append("AI 답변 속 우리 병원")
     for work in n.works[:2]:
         page2.append(work.title)
         page2.append(work.citation_label)
@@ -113,17 +121,16 @@ def v3_expectation(
             preview = excerpt[:130] + "…" if len(excerpt) > 130 else excerpt
             page2.extend((case["question"], preview, case["platform"]))
     page3 = [
-        "다음 달 집중할 진료 질문",
-        "이번 달 약정 이행",
-        view["tiles"][0]["label"],
-        view["tiles"][0]["value"],
-        view["tiles"][0]["hint"],
+        "다음 달에 할 일",
+        tile["label"],
+        tile["value"],
+        tile["hint"],
         n.fulfillment_note,
-        "전담 마케터의 다음 실행",
+        "담당 마케터는 이렇게 진행합니다",
         *n.priorities[:3],
     ]
-    if view.get("report_kind") == "INITIAL":
-        page3 = ["최초 관측 기록", *n.priorities[:3]]
+    if initial:
+        page3 = ["앞으로 할 일", "첫 측정 보고서입니다", *n.priorities[:3]]
     appendix = list(expectation.required_appendix_texts)
     for case in view["evidence"].values():
         if case:
@@ -133,7 +140,7 @@ def v3_expectation(
     appendix.extend(n.citation_details)
     appendix.extend(n.priorities[3:])
     for work in n.works:
-        appendix.extend((work.title, (f"소유 URL 인용 {work.cited_cells}개 조합" if work.cited_cells is not None else "소유 URL 인용 미확인"), *work.queries))
+        appendix.extend((work.title, work.appendix_label, *work.queries))
     for item in (*view["new_mention_sentences"], *view["lost_mention_sentences"]):
         appendix.extend((item["query_text"], item["platform_label"]))
     return replace(

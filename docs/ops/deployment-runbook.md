@@ -155,6 +155,14 @@ bash scripts/deploy.sh all
 
 2026-09-07~08 전환은 로컬 업로드 지연 때문에 Cloud Build와 digest 기반 rollout을 사용했고 기존 서비스 환경·secret 참조 hash 보존을 별도로 검증했다. 이 실행을 `scripts/deploy.sh`의 기본 Cloud Build 기능으로 오해하지 않는다. 반복 가능한 기본 진입점은 위 스크립트이며 대체 배포도 같은 마이그레이션·Worker/Beat·readiness 순서를 지켜야 한다.
 
+## 월간 리포트 템플릿 갱신 (숫자 그대로)
+
+원장용 월간 PDF 템플릿을 바꿔 배포한 뒤 이미 만든 달의 리포트를 새 문구·디자인으로 다시 찍을 때는
+일반 재생성(`rebuild=true`)을 쓰지 않는다 — 마감을 지금으로 잡아 숫자가 흔들린다.
+`rebuild=true&template_only=true`(`TEMPLATE_REFRESH`)와 `python -m app.utils.monthly_template_refresh`
+의 사전 확인 → 실행 → 사후 확인을 쓴다. 측정 복구 기간(매월 1~7일 KST)에는 실행하지 않는다.
+절차·판정·명령은 [템플릿 갱신 절차](monthly-template-refresh.md)를 따른다.
+
 ## 파이프라인 외부 감시 (Cloud Scheduler)
 
 Beat나 Worker가 죽으면 23:00 생성과 08:00 발행이 조용히 멈춘다. 그 사실을 알릴 작업도 같은 Beat 위에 있으므로 감시는 Celery 밖에 둔다. Cloud Scheduler 두 개가 API를 직접 호출한다 — `reputation-watchdog-heartbeat`(5분마다)와 `reputation-watchdog-publish-check`(매일 08:30 KST). 둘 다 공개 LB를 거쳐 `POST https://reputation.motionlabs.kr/api/v1/admin/watchdog/pipeline/alert`를 부르고 `X-Watchdog-Token` 헤더로 인증한다(선언: [terraform/watchdog.tf](../../terraform/watchdog.tf), 판정: [pipeline_watchdog.py](../../backend/app/services/pipeline_watchdog.py)). 새 Celery 태스크나 Beat 스케줄은 추가하지 않았다.

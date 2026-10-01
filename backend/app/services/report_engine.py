@@ -25,6 +25,7 @@ from app.services.doctor_pdf_contracts import (
     DoctorAppendixRow,
     DoctorEvidence,
     DoctorEvidenceCase,
+    DoctorHighlights,
     DoctorMentionSentence,
     DoctorNextActions,
     DoctorPublishedItem,
@@ -38,7 +39,7 @@ from app.services.report_attribution import (
     ContentAttributionPayload,
     QuestionRowPayload,
 )
-from app.services.report_narrative import ReportKind, build_monthly_narrative
+from app.services.report_narrative import ReportKind, build_monthly_narrative, platform_name
 from app.services.report_work_evidence import published_work_evidence
 from app.services.sov_statistics import DeltaSignificance
 from app.utils.medical_filter import check_forbidden
@@ -993,6 +994,219 @@ def _page1_line_cost(
     return total
 
 
+# 원장용 월간 PDF는 랜딩과 같은 제품명을 쓴다. 레거시 뷰의 한글 표기를 옮겨 적는다.
+_DIRECTOR_PLATFORM_NAMES = {label: platform_name(key) for key, label in _PLATFORM_LABELS.items()}
+_DIRECTOR_CAVEAT = "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다."
+
+
+def _director_tile(
+    *,
+    plan_quota: int | None,
+    published_count: int,
+    fulfilled_count: int,
+    supplementary_count: int,
+    early_publication_count: int,
+    late_recovery_count: int,
+) -> DoctorTile:
+    hint = [f"이번 달 실제로 올린 글 {published_count}편"]
+    if supplementary_count:
+        hint.append(f"이전 달 몫을 채운 글 {supplementary_count}편 포함")
+    if early_publication_count:
+        hint.append(f"기간 전에 미리 올린 약속분 {early_publication_count}편")
+    if late_recovery_count:
+        hint.append(f"기간이 지난 뒤 채워 올린 약속분 {late_recovery_count}편")
+    return {
+        "label": "약속한 글 발행" if plan_quota is not None else "이번 달 올린 글",
+        "value": (
+            f"{published_count}편" if plan_quota is None
+            else f"{plan_quota}편 중 {fulfilled_count}편"
+        ),
+        "hint": " · ".join(hint) + ".",
+    }
+
+
+def _director_coverage_text(
+    coverage: MonthlySovPayload | dict,
+    *,
+    names: str,
+    has_coverage: bool,
+    records: Sequence[Any],
+) -> str:
+    if has_coverage:
+        parts = [
+            f"측정 범위: {names}에 질문 {coverage.get('planned_count', 0)}건을 물어 "
+            f"{coverage.get('success_count', 0)}건의 답을 확인했습니다."
+        ]
+    else:
+        parts = [f"측정 범위: {names}에 물어본 AI 답변을 바탕으로 했습니다."]
+    adequacy = coverage.get("observation_adequacy")
+    if isinstance(adequacy, dict) and adequacy.get("lineage", "SLOTTED") == "SLOTTED":
+        partial = "일부만 확인한 달입니다. " if adequacy.get("status") != "COMPLETE" else ""
+        parts.append(
+            f"{partial}같은 질문을 되풀이해 묻기로 한 {int(adequacy.get('planned_slots') or 0)}번 중 "
+            f"{int(adequacy.get('confirmed_slots') or 0)}번 답을 확인했고, 확인하지 못한 답은 "
+            "‘언급되지 않음’으로 세지 않았습니다."
+        )
+    comparison = coverage.get("comparison") or {}
+    if comparison.get("status") == "COMPARABLE":
+        parts.append(
+            "첫 장의 지난달 비교는 두 달 모두 물어본 같은 질문 "
+            f"{comparison.get('matched_cell_count', 0)}건으로 계산했습니다."
+        )
+        if coverage.get("sov_pct_all_cells") is not None:
+            parts.append(
+                f"이번 달에 물어본 질문 전체로 계산하면 {coverage['sov_pct_all_cells']:.1f}%입니다."
+            )
+    dates = sorted({
+        arrow.get(record.measured_at).to("Asia/Seoul").format("YYYY-MM-DD")
+        for record in records if getattr(record, "measured_at", None) is not None
+    })
+    if dates:
+        parts.append(f"실제 확인일: {dates[0]} ~ {dates[-1]}.")
+    return " ".join(parts)
+
+
+def _director_footnotes(
+    coverage: MonthlySovPayload | dict,
+    *,
+    names: str,
+    first_measured_questions: int,
+    non_comparable_questions: int,
+    has_v0_baseline: bool,
+) -> list[str]:
+    notes = [
+        f"{names}에 자동으로 물어본 결과라 실제 이용자 화면이나 검색 순위와 다를 수 있습니다.",
+        "같은 질문에도 AI 답변은 매번 조금씩 달라집니다. 결과가 달라진 이유를 하나로 단정하지 않습니다.",
+        _DIRECTOR_CAVEAT,
+    ]
+    if first_measured_questions:
+        notes.append(
+            f"이번 달 처음 물어본 질문 {first_measured_questions}개는 지난달 결과가 없어, "
+            "새로 좋아진 결과로 세지 않았습니다."
+        )
+    if non_comparable_questions:
+        notes.append(
+            f"지난달과 같은 방식으로 비교할 수 없는 질문 {non_comparable_questions}건은 "
+            "새로 언급된 질문 계산에서 뺐습니다."
+        )
+    low, high = coverage.get("ci95_low"), coverage.get("ci95_high")
+    if low is not None and high is not None:
+        notes.append(
+            f"AI 답변은 물을 때마다 조금씩 달라서, 이번 달 비율은 대략 {low:.1f}% ~ {high:.1f}% "
+            "사이로 보시는 것이 안전합니다."
+        )
+    if has_v0_baseline:
+        notes.append("처음 측정한 값은 참고용입니다. 서비스를 시작하기 전에 잰 값이 아닙니다.")
+    return _medical_safe_lines(notes)
+
+
+def _director_highlights(
+    *,
+    attribution: ContentAttributionPayload | None,
+    citations: CitationSummaryPayload | None,
+    published_count: int,
+    cumulative_published_count: int | None,
+) -> DoctorHighlights:
+    rows = (attribution or {}).get("question_rows") or []
+    measured = {
+        str(row.get("query_text") or "").strip()
+        for row in rows if int(row.get("current_attempts_used") or 0) > 0
+    } - {""}
+    mentioned = {
+        str(row.get("query_text") or "").strip()
+        for row in rows if int(row.get("current_mentioned_attempts") or 0) > 0
+    } - {""}
+    cited_known = bool((citations or {}).get("measured_cell_count"))
+    return {
+        "measured_questions": len(measured) if rows else None,
+        "mentioned_questions": len(mentioned & measured) if rows else None,
+        "published_this_month": published_count,
+        "cumulative_published": cumulative_published_count,
+        "cited_questions": (
+            int((citations or {}).get("cited_cell_count") or 0) if cited_known else None
+        ),
+    }
+
+
+def _director_copy(
+    view: DoctorReportView,
+    *,
+    coverage: MonthlySovPayload | dict,
+    attribution: ContentAttributionPayload | None,
+    citations: CitationSummaryPayload | None,
+    platforms: list[str] | None,
+    records: Sequence[Any],
+    plan_quota: int | None,
+    published_count: int,
+    fulfilled_count: int,
+    supplementary_count: int,
+    early_publication_count: int,
+    late_recovery_count: int,
+    cumulative_published_count: int | None,
+    first_measured_questions: int,
+    non_comparable_questions: int,
+    comparison_reason: str | None,
+) -> dict[str, Any]:
+    """원장용 월간 PDF가 읽는 문장을 쉬운 말로 다시 만든다. 숫자는 레거시 뷰와 같다."""
+    names = ", ".join(platform_name(p) for p in (platforms or [])) or "ChatGPT, Gemini"
+    compared = view["narrative"].previous is not None
+    new_count = int((attribution or {}).get("new_mention_count") or 0)
+    if compared and new_count and not view["new_mention_sentences"]:
+        empty = f"새로 언급된 질문 {new_count}건은 앞의 질문표에서 확인하실 수 있습니다."
+    elif compared and comparison_reason in (None, "MATCHED_COHORT"):
+        empty = "새로 언급되는 질문이 늘도록 다음 달에는 키워드를 넓혀 공략하겠습니다."
+    else:
+        empty = (
+            "이번 달은 지난달과 나란히 비교하지 않아, 새로 언급된 질문을 따로 세지 않았습니다."
+        )
+    evidence = {
+        key: (
+            {**case, "platform": _DIRECTOR_PLATFORM_NAMES.get(case["platform"], case["platform"])}
+            if case else None
+        )
+        for key, case in view["evidence"].items()
+    }
+    rows = [
+        {
+            **row,
+            "prev_label": "비교하지 않음" if row["prev_label"] == "비교 불가" else row["prev_label"],
+        }
+        for row in view["appendix_rows"]
+    ]
+    tile = _director_tile(
+        plan_quota=plan_quota,
+        published_count=published_count,
+        fulfilled_count=fulfilled_count,
+        supplementary_count=supplementary_count,
+        early_publication_count=early_publication_count,
+        late_recovery_count=late_recovery_count,
+    )
+    return {
+        "tiles": [tile, *view["tiles"][1:]],
+        "coverage_text": _director_coverage_text(
+            coverage, names=names, has_coverage=bool(coverage), records=records
+        ),
+        "footnotes": _director_footnotes(
+            coverage,
+            names=names,
+            first_measured_questions=first_measured_questions,
+            non_comparable_questions=non_comparable_questions,
+            has_v0_baseline=bool(view["v0_baseline"]),
+        ),
+        "evidence": evidence,
+        "appendix_rows": rows,
+        "new_mention_sentences": view["new_mention_sentences"] if compared else [],
+        "lost_mention_sentences": view["lost_mention_sentences"] if compared else [],
+        "new_mention_empty_text": empty,
+        "highlights": _director_highlights(
+            attribution=attribution,
+            citations=citations,
+            published_count=published_count,
+            cumulative_published_count=cumulative_published_count,
+        ),
+    }
+
+
 def build_doctor_report_view(
     *,
     hospital: Any,
@@ -1015,6 +1229,7 @@ def build_doctor_report_view(
     contract_published_count: int | None = None,
     report_kind: ReportKind = "LEGACY",
     protocol_label: str | None = None,
+    cumulative_published_count: int | None = None,
 ) -> DoctorReportView:
     """Build legacy summary or an explicit MONTHLY/BASELINE value narrative.
 
@@ -1432,18 +1647,6 @@ def build_doctor_report_view(
     }
 
     if report_kind != "LEGACY":
-        view["footnotes"] = [
-            f"{platform_names} 자동 측정(API)이며 이용자 화면·검색 순위와 다릅니다.",
-            "같은 질문에서도 답변은 달라질 수 있습니다. 관측 변화는 인과 효과가 아닙니다.",
-            "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
-            *[note for note in footnotes[3:] if note != _v0_footnote()],
-        ]
-        if coverage.get("ci95_low") is not None and coverage.get("ci95_high") is not None:
-            view["footnotes"].append(f"확정 반복 합산 언급 비율의 95% 구간: {coverage['ci95_low']:.1f}% ~ {coverage['ci95_high']:.1f}%. 관측 표본의 불확실성을 함께 해석합니다.")
-        if v0_baseline:
-            view["footnotes"].append("초기 기준선은 최초 측정의 참고값이며, 서비스 전 측정으로 확인된 값이 아닙니다.")
-        if coverage.get("sov_pct_all_cells") is not None:
-            view["coverage_text"] = coverage_text.replace(f"이번 달 전체 확정 답변 기준은 100번 환산 {coverage['sov_pct_all_cells']:.1f}번입니다.", f"이번 달 전체 확정 반복 합산 언급 비율은 {coverage['sov_pct_all_cells']:.1f}%입니다.")
         view["report_kind"] = report_kind
         view["narrative"] = build_monthly_narrative(
             kind=report_kind, coverage=sov_coverage, attribution=attribution, citations=citations,
@@ -1451,8 +1654,24 @@ def build_doctor_report_view(
             current=sov_pct, previous=prev_sov_pct, comparison_reason=comparison_reason,
             shortfall=shortfall if report_kind == "MONTHLY" else 0, protocol_label=protocol_label,
         )
-        if view["narrative"].previous is None:
-            view["new_mention_sentences"] = []
-            view["lost_mention_sentences"] = []
-            view["new_mention_empty_text"] = "같은 조건의 이전 관측이 없어 새 언급·빠진 언급을 계산하지 않았습니다."
+        view.update(
+            _director_copy(
+                view,
+                coverage=coverage,
+                attribution=attribution,
+                citations=citations,
+                platforms=platforms,
+                records=records,
+                plan_quota=plan_quota,
+                published_count=published_count,
+                fulfilled_count=fulfilled_count,
+                supplementary_count=supplementary_count,
+                early_publication_count=early_publication_count,
+                late_recovery_count=late_recovery_count,
+                cumulative_published_count=cumulative_published_count,
+                first_measured_questions=first_measured_questions,
+                non_comparable_questions=non_comparable_questions,
+                comparison_reason=comparison_reason,
+            )
+        )
     return view
