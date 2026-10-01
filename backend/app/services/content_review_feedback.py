@@ -117,10 +117,12 @@ def non_reference_remediation_messages(review: Any) -> list[str]:
             for message in (getattr(review, "remediation_messages", ()) or ())
             if str(message).strip()
         ]
+    # 필수 문구 지적은 작가가 바꿀 수 없는 승인 자료에 대한 기록이라 재작성 지시가 아니다.
     return [
         str(getattr(finding, "message", "")).strip()
         for finding in review_finding_items(review)
         if finding_label(getattr(finding, "kind", None)) != _REFERENCE_FINDING_KIND
+        and not getattr(finding, "targets_must_use_message", False)
         and str(getattr(finding, "message", "")).strip()
     ]
 

@@ -24,6 +24,8 @@ from app.models.hospital import Hospital
 from app.services import cost_guard, llm_structured_output, openrouter
 from app.services.ai_prompt_boundary import untrusted_json_block
 from app.services.essence_engine import effective_safety_policy
+from app.services.must_use_exclusions import approved_must_use_messages_with_record
+from app.services.must_use_verbatim import matched_must_use_message
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +85,9 @@ DATA_BLOCK의 deterministic_gates_passed는 이 후보가 결정적 검증기를
 근거 부족으로 다시 올리지 마세요. approved_essence와 hospital_profile에 있는 내용은
 승인된 병원 사실이므로 근거가 있는 것으로 취급합니다.
 
+각 finding은 후보의 문장 하나만 다루고, quote에 그 문장을 후보에서 한 글자도 바꾸지 말고
+그대로 복사하세요. 특정 문장을 짚을 수 없는 지적이면 quote를 빈 문자열로 두세요.
+
 각 finding은 심각도와 종류를 내용 자체로 판정하세요. confidence 숫자만으로 hard/soft를
 나누지 마세요. 병원 고유 사실의 근거 부족, 의료적 위험, 환자 안전 오해는 HARD입니다.
 문체·가독성·구성 개선과 참고자료 주제 불일치는 SOFT입니다. 사실 또는 의료 안전을 판단할 근거가 부족하면
@@ -93,7 +98,7 @@ UNCERTAIN입니다. SOFT만 있으면 안전 게이트를 막지 않지만 구�
   "decision": "PASS 또는 REVISE",
   "confidence": 0.0,
   "findings": [
-    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "message": "수정 가능한 구체적 지적"}
+    {"severity": "HARD 또는 SOFT 또는 UNCERTAIN", "kind": "HOSPITAL_FACT 또는 MEDICAL_SAFETY 또는 REFERENCE 또는 STYLE", "quote": "지적한 후보 문장 원문 또는 빈 문자열", "message": "수정 가능한 구체적 지적"}
   ],
   "summary": "한 문장 검수 요약"
 }
@@ -129,9 +134,16 @@ REVIEW_TOOL = {
                                 "STYLE",
                             ],
                         },
+                        "quote": {
+                            "type": "string",
+                            "description": (
+                                "지적한 후보 문장 하나를 후보에서 한 글자도 바꾸지 않고 "
+                                "그대로 복사한 원문. 특정 문장이 없으면 빈 문자열."
+                            ),
+                        },
                         "message": {"type": "string"},
                     },
-                    "required": ["severity", "kind", "message"],
+                    "required": ["severity", "kind", "quote", "message"],
                 },
             },
             "summary": {"type": "string"},
@@ -169,25 +181,51 @@ class ContentAiFindingKind(StrEnum):
     STYLE = "STYLE"
 
 
+class ContentAiFindingTarget(StrEnum):
+    """지적이 짚은 문장의 종류. 모델이 아니라 시스템이 인용문을 대조해 정한다."""
+
+    # 작가가 쓴 문장. 심각도 그대로 판정한다.
+    CANDIDATE_TEXT = "CANDIDATE_TEXT"
+    # 승인된 필수 문구(must_use_messages)를 원문 그대로 쓴 문장. 작가가 바꿀 수 없는
+    # 승인 자료이므로 기록만 남기고 발행을 막지 않는다(`must_use_verbatim`).
+    MUST_USE_MESSAGE = "MUST_USE_MESSAGE"
+
+
 @dataclass(frozen=True, slots=True)
 class ContentAiFinding:
     severity: ContentAiFindingSeverity
     kind: ContentAiFindingKind
     message: str
+    quote: str = ""
+    target: ContentAiFindingTarget = ContentAiFindingTarget.CANDIDATE_TEXT
+    # 필수 문구 일치로 SOFT가 되기 전 모델이 매긴 심각도. 기록용이며 판정에 쓰지 않는다.
+    original_severity: ContentAiFindingSeverity | None = None
 
     @property
     def blocks_publication(self) -> bool:
+        if self.target == ContentAiFindingTarget.MUST_USE_MESSAGE:
+            return False
         return self.severity in {
             ContentAiFindingSeverity.HARD,
             ContentAiFindingSeverity.UNCERTAIN,
         }
 
+    @property
+    def targets_must_use_message(self) -> bool:
+        return self.target == ContentAiFindingTarget.MUST_USE_MESSAGE
+
     def payload(self) -> dict[str, str]:
-        return {
+        payload = {
             "severity": self.severity.value,
             "kind": self.kind.value,
             "message": self.message,
+            "target": self.target.value,
         }
+        if self.quote:
+            payload["quote"] = self.quote
+        if self.original_severity is not None:
+            payload["original_severity"] = self.original_severity.value
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +263,13 @@ class ContentAiReview:
 
     @property
     def remediation_messages(self) -> tuple[str, ...]:
-        return tuple(finding.message for finding in self._typed_findings())
+        # 필수 문구 지적은 작가가 고칠 수 없는 승인 자료에 대한 기록이다. 재작성 지시로
+        # 넘기면 작가가 필수 문구를 바꾸고, 그 글은 원문 보존 검증에서 다시 거절된다.
+        return tuple(
+            finding.message
+            for finding in self._typed_findings()
+            if not finding.targets_must_use_message
+        )
 
     @property
     def rewrite_is_safe(self) -> bool:
@@ -391,6 +435,7 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
     message = _bounded_text(value.get("message"), 240)
     if not message:
         return None
+    quote = _bounded_text(value.get("quote"), 1000)
     try:
         severity = ContentAiFindingSeverity(str(value.get("severity") or "").upper())
     except ValueError:
@@ -412,7 +457,41 @@ def _parse_finding(value: object) -> ContentAiFinding | None:
         # REFERENCE는 여기에 들어가지 않는다 — 참고자료 주제 불일치는 사실·안전
         # 판단이 아니라 결정적으로 떼어 낼 수 있는 조언이므로 SOFT로 남는다.
         severity = ContentAiFindingSeverity.UNCERTAIN
-    return ContentAiFinding(severity, kind, message)
+    return ContentAiFinding(severity, kind, message, quote=quote)
+
+
+def _record_must_use_findings(
+    findings: list[ContentAiFinding],
+    *,
+    must_use_messages: list[str],
+    reviewed_content: dict[str, Any] | object | None,
+) -> list[ContentAiFinding]:
+    """승인된 필수 문구를 원문 그대로 쓴 문장에 대한 차단 지적을 기록용 SOFT로 내린다.
+
+    판정은 지적의 인용문과 필수 문구 원문의 정규화 문자열 완전 일치뿐이다
+    (`must_use_verbatim.matched_must_use_message`). 인용문이 없거나, 일부만 겹치거나,
+    말을 덧붙인 문장은 그대로 차단한다.
+    """
+
+    if not must_use_messages or reviewed_content is None:
+        return findings
+    candidate = candidate_review_payload(reviewed_content)
+    recorded: list[ContentAiFinding] = []
+    for finding in findings:
+        if finding.blocks_publication and matched_must_use_message(
+            quote=finding.quote,
+            finding_message=finding.message,
+            messages=must_use_messages,
+            candidate=candidate,
+        ):
+            finding = replace(
+                finding,
+                severity=ContentAiFindingSeverity.SOFT,
+                target=ContentAiFindingTarget.MUST_USE_MESSAGE,
+                original_severity=finding.severity,
+            )
+        recorded.append(finding)
+    return recorded
 
 
 def hospital_review_profile(hospital: Hospital) -> dict[str, Any]:
@@ -522,6 +601,7 @@ def _parse_response(
     *,
     reviewed_content: dict[str, Any] | object | None = None,
     model: str | None = None,
+    must_use_messages: list[str] | None = None,
 ) -> ContentAiReview:
     clean = (raw or "").strip()
     if clean.startswith("```"):
@@ -533,7 +613,12 @@ def _parse_response(
     data = json.loads(clean)
     if not isinstance(data, dict):
         raise ValueError("content reviewer returned a non-object")
-    return _build_review(data, reviewed_content=reviewed_content, model=model)
+    return _build_review(
+        data,
+        reviewed_content=reviewed_content,
+        model=model,
+        must_use_messages=must_use_messages,
+    )
 
 
 def _build_review(
@@ -541,6 +626,7 @@ def _build_review(
     *,
     reviewed_content: dict[str, Any] | object | None = None,
     model: str | None = None,
+    must_use_messages: list[str] | None = None,
 ) -> ContentAiReview:
     """판정 규칙. 전송 수단(도구 호출/텍스트)과 무관하게 같은 dict를 받는다."""
 
@@ -555,6 +641,11 @@ def _build_review(
         if finding is None:
             raise ValueError("content reviewer finding is incomplete")
         parsed.append(finding)
+    parsed = _record_must_use_findings(
+        parsed,
+        must_use_messages=list(must_use_messages or []),
+        reviewed_content=reviewed_content,
+    )
     # The response itself is already bounded by max_tokens. Classifying only
     # the first five entries lets a provider put a HARD fact finding after five
     # style notes and silently remove it from the publication policy.
@@ -562,14 +653,24 @@ def _build_review(
     blocking_findings = tuple(
         finding for finding in parsed_findings if finding.blocks_publication
     )
+    must_use_findings = tuple(
+        finding for finding in parsed_findings if finding.targets_must_use_message
+    )
     soft_findings = tuple(
-        finding for finding in parsed_findings if not finding.blocks_publication
+        finding
+        for finding in parsed_findings
+        if not finding.blocks_publication and not finding.targets_must_use_message
     )
     # Keep every safety-relevant finding. The display cap applies only to advisory
-    # style feedback; it can never truncate HARD or UNCERTAIN policy state.
-    findings = blocking_findings + soft_findings[
-        : max(0, _MAX_FINDINGS - len(blocking_findings))
-    ]
+    # style feedback; it can never truncate HARD or UNCERTAIN policy state. 필수 문구로
+    # 내린 지적도 판정 기록이므로 표시 상한에 잘리지 않는다.
+    findings = (
+        blocking_findings
+        + must_use_findings
+        + soft_findings[
+            : max(0, _MAX_FINDINGS - len(blocking_findings) - len(must_use_findings))
+        ]
+    )
     raw_confidence = data.get("confidence")
     if isinstance(raw_confidence, bool):
         raise ValueError("content reviewer confidence must be numeric")
@@ -583,6 +684,7 @@ def _build_review(
     unexplained_non_pass = (
         requested != ContentAiReviewStatus.PASS.value and not blocking_findings
         and not soft_findings
+        and not must_use_findings
     )
     invalid_decision = requested not in {
         ContentAiReviewStatus.PASS.value,
@@ -626,16 +728,23 @@ def _review_from_response(
     *,
     reviewed_content: dict[str, Any] | object | None = None,
     model: str | None = None,
+    must_use_messages: list[str] | None = None,
 ) -> ContentAiReview:
     """강제 도구 호출이 정상 경로이고, 텍스트는 도구를 쓰지 않는 응답만의 보루다."""
 
     tool_input = llm_structured_output.tool_use_input(response, tool_name=REVIEW_TOOL_NAME)
     if tool_input is not None:
-        return _build_review(tool_input, reviewed_content=reviewed_content, model=model)
+        return _build_review(
+            tool_input,
+            reviewed_content=reviewed_content,
+            model=model,
+            must_use_messages=must_use_messages,
+        )
     return _parse_response(
         llm_structured_output.first_text(response),
         reviewed_content=reviewed_content,
         model=model,
+        must_use_messages=must_use_messages,
     )
 
 
@@ -671,6 +780,7 @@ async def _provider_review(
     logical_call_id: str,
     attempt_id: str,
     http_attempt: int,
+    must_use_messages: list[str] | None = None,
 ) -> ContentAiReview:
     """Run one metered reviewer round; every failure mode stays UNAVAILABLE."""
 
@@ -751,7 +861,12 @@ async def _provider_review(
 
     try:
         return replace(
-            _review_from_response(response, reviewed_content=content, model=model),
+            _review_from_response(
+                response,
+                reviewed_content=content,
+                model=model,
+                must_use_messages=must_use_messages,
+            ),
             provider_attempted=True,
         )
     except Exception as exc:  # parser failure is advisory-unavailable; HTTP was recorded above
@@ -819,6 +934,10 @@ async def review_generated_content(
         )
 
     logical_call_id = logical_call_id or str(uuid.uuid4())
+    # 작가가 원문 그대로 넣어야 하는 것과 같은 집합이다(`content_engine`). 현재 APPROVED
+    # 승인본 문구만 면제 근거다 — 저장 본문 재검수·공개 재검수 백필이 넘기는 옛 가이드
+    # (`content_brief`)의 문구는 승인이 철회·수정된 값일 수 있어 면제하지 않는다.
+    must_use_messages = await approved_must_use_messages_with_record(hospital, philosophy)
     first = await _provider_review(
         client=client,
         payload=payload,
@@ -829,6 +948,7 @@ async def review_generated_content(
         logical_call_id=logical_call_id,
         attempt_id=attempt_id or f"{logical_call_id}:http:{http_attempt}",
         http_attempt=http_attempt,
+        must_use_messages=must_use_messages,
     )
     if not first.escalation_eligible:
         return first
@@ -853,6 +973,7 @@ async def review_generated_content(
         logical_call_id=logical_call_id,
         attempt_id=f"{logical_call_id}:escalated:http:{http_attempt + 1}",
         http_attempt=http_attempt + 1,
+        must_use_messages=must_use_messages,
     )
     if second.status == ContentAiReviewStatus.UNAVAILABLE:
         # 공급자·파서 오류는 PASS를 만들 수 없다. 첫 차단 판정을 유지한다.
@@ -869,6 +990,7 @@ __all__ = (
     "ContentAiFinding",
     "ContentAiFindingKind",
     "ContentAiFindingSeverity",
+    "ContentAiFindingTarget",
     "ContentAiReview",
     "ContentAiReviewStatus",
     "ContentAiReviewUnavailableReason",
