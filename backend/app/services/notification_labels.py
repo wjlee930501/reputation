@@ -62,6 +62,8 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     "NAVER_SOURCE_RECOVERED": NotificationLabel.REPORT,
     "PRIVACY_RETENTION_COMPLETED": NotificationLabel.REPORT,
     "PIPELINE_WATCHDOG_RECOVERY": NotificationLabel.REPORT,
+    # 정책 버전 전환으로 동결 기준표와 실행 기준이 갈린 사실. 다음 달 기준표에서 저절로 풀린다.
+    "SOV_MEASUREMENT_POLICY_TRANSITION": NotificationLabel.REPORT,
 }
 
 
