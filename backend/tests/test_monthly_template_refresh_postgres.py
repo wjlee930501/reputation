@@ -263,10 +263,52 @@ def test_precheck_blocks_open_manifest_in_flight_runs_and_recovery_window(pg_ses
     codes = {finding.code for finding in plan.verdict.findings if finding.kind == "BLOCKER"}
     assert plan.verdict.status == "BLOCKED"
     assert {
-        "MANIFEST_NOT_CLOSED", "OPERATION_IN_FLIGHT", "RECOVERY_WINDOW_OPEN",
+        "MANIFEST_NOT_CLOSED", "OPERATION_IN_FLIGHT", "RECOVERY_PENDING",
         "NO_VALID_DOCTOR_ARTIFACT", "STORED_SUMMARY_INCOMPLETE",
     } <= codes
     assert plan.doctor_view is None
+
+
+def test_recovery_window_only_blocks_hospitals_whose_measurement_is_incomplete(pg_session):
+    """1~7일 자동 복구는 측정이 덜 끝난 병원만 다시 만든다 — 전부 확정된 병원은 막지 않는다."""
+
+    def report_with(quality: str, success: int) -> tuple[Hospital, MonthlyReport]:
+        hospital = Hospital(name="복구 기간 가상 의원", slug=f"window-{uuid.uuid4().hex}")
+        pg_session.add(hospital)
+        pg_session.flush()
+        manifest = MonthlyMeasurementManifest(
+            hospital_id=hospital.id, period_year=2026, period_month=7,
+            configured_platforms=["chatgpt"], platform_provenance={},
+            closes_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+            closed_at=datetime(2026, 8, 1, tzinfo=timezone.utc),
+        )
+        pg_session.add(manifest)
+        pg_session.flush()
+        report = MonthlyReport(
+            hospital_id=hospital.id, period_year=2026, period_month=7, report_type="MONTHLY",
+            version=1, manifest_id=manifest.id, sov_summary={}, content_summary={},
+            quality=quality, planned_count=6, success_count=success, failed_count=6 - success,
+            excluded_count=0,
+        )
+        pg_session.add(report)
+        pg_session.commit()
+        return hospital, report
+
+    in_window = datetime(2026, 8, 3, tzinfo=timezone.utc)
+    after_window = datetime(2026, 8, 9, tzinfo=timezone.utc)
+
+    def blockers(hospital, observed_now):
+        plan = tasks.build_monthly_template_refresh_plan(
+            pg_session, hospital, ANCHOR, observed_now=observed_now
+        )
+        return {f.code for f in plan.verdict.findings if f.kind == "BLOCKER"}
+
+    complete, _ = report_with("COMPLETE", 6)
+    partial, _ = report_with("DEGRADED", 4)
+
+    assert "RECOVERY_PENDING" not in blockers(complete, in_window)
+    assert "RECOVERY_PENDING" in blockers(partial, in_window)
+    assert "RECOVERY_PENDING" not in blockers(partial, after_window)
 
 
 def _rendered_text(view) -> str:

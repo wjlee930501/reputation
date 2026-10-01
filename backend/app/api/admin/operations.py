@@ -853,11 +853,6 @@ async def generate_monthly_report_operation(
             status_code=400,
             detail="문구·디자인만 다시 만들기는 새 버전 만들기와 함께 요청해 주세요.",
         )
-    if template_only and is_monthly_recovery_window(now_kst, year, month):
-        raise HTTPException(
-            status_code=409,
-            detail="측정 복구 기간(매월 1~7일)에는 문구·디자인만 다시 만들 수 없습니다. 8일 이후에 요청해 주세요.",
-        )
     rebuild_reason = sanitize_operator_text(payload.reason if payload is not None else None, limit=200)
     if rebuild and (rebuild_reason is None or len(rebuild_reason) < 3):
         raise HTTPException(

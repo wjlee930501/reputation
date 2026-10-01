@@ -166,21 +166,13 @@ async def test_template_only_requires_a_rebuild_request():
 
 
 @pytest.mark.asyncio
-async def test_template_only_is_refused_during_the_recovery_window(monkeypatch):
-    monkeypatch.setattr(operations, "is_monthly_recovery_window", lambda *_a: True)
-    with pytest.raises(HTTPException) as caught:
-        await operations.generate_monthly_report_operation(
-            uuid.uuid4(), year=2025, month=12, rebuild=True, template_only=True,
-            payload=operations.MonthlyReportBuildRequest(reason="새 템플릿 반영"),
-            db=AsyncMock(), idempotency_key="k",
-        )
-    assert caught.value.status_code == 409
-
-
-@pytest.mark.asyncio
-async def test_template_only_dispatches_its_own_arguments_and_audit_mode(monkeypatch):
+@pytest.mark.parametrize("recovery_window", [False, True])
+async def test_template_only_dispatches_its_own_arguments_and_audit_mode(
+    monkeypatch, recovery_window
+):
+    """복구 기간에도 API는 받는다 — 막을 병원은 워커의 판정(RECOVERY_PENDING)이 고른다."""
     hospital_id = uuid.uuid4()
-    monkeypatch.setattr(operations, "is_monthly_recovery_window", lambda *_a: False)
+    monkeypatch.setattr(operations, "is_monthly_recovery_window", lambda *_a: recovery_window)
     monkeypatch.setattr(
         operations, "_get_hospital_or_404", AsyncMock(return_value=SimpleNamespace(id=hospital_id))
     )
