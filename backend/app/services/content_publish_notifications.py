@@ -19,7 +19,7 @@ from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
 )
-from app.services.notification_copy import blocker_copy
+from app.services.notification_copy import REFERENCES_OPERATOR_DECIDES_COPY_CODES, blocker_copy
 from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import (
     RenderedSlackMessage,
@@ -335,16 +335,25 @@ def build_generation_blocked_digest_intent(
     ).hexdigest()[:32]
     hospitals: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
     for (
-        hospital_id,
-        hospital_name,
-        _content_id,
-        _scheduled_date,
-        code,
-        cause,
-        title,
-        _attempt_fingerprint,
-    ) in entries:
-        hospitals.setdefault((hospital_id, hospital_name), []).append((title, code, cause))
+        (
+            hospital_id,
+            hospital_name,
+            _content_id,
+            _scheduled_date,
+            code,
+            cause,
+            title,
+            _attempt_fingerprint,
+        ),
+        outcome,
+    ) in zip(entries, blocked_outcomes, strict=True):
+        # `copy_code`는 같은 차단 코드에 다른 문구만 고른다 — 식별자(dedupe)는 그대로 코드다.
+        copy_code = str(outcome.get("copy_code") or code)
+        hospitals.setdefault((hospital_id, hospital_name), []).append((title, copy_code, cause))
+    for items in hospitals.values():
+        # 사람이 정해야 하는 글의 조치를 맨 앞에 둔다. 나머지는 게이트 순서 그대로이고(안정 정렬),
+        # 편수·제목 줄은 순서와 무관하다.
+        items.sort(key=lambda item: item[1] not in REFERENCES_OPERATOR_DECIDES_COPY_CODES)
     action_url = admin_url(settings.ADMIN_BASE_URL, "/operations?queue=incidents&status=OPEN")
     shown = sorted(hospitals.items())[:_DIGEST_MAX_HOSPITALS]
     hidden = len(hospitals) - len(shown)
@@ -352,8 +361,9 @@ def build_generation_blocked_digest_intent(
     for (_hospital_id, hospital_name), items in shown:
         counts = Counter(blocker_copy(code).title for _title, code, _cause in items)
         detail = " · ".join(f"{label} {count}편" for label, count in sorted(counts.items()))
+        # 서로 다른 조치는 개수 상한 없이 모두 싣는다 — 잘린 조치는 운영자가 볼 방법이 없다.
         actions = list(dict.fromkeys(blocker_copy(code).action for _title, code, _cause in items))
-        lines.append(f"• *{_publish_safe_text(hospital_name, 80)}* — 발행 보류 {len(items)}편\n  {detail}\n  {' '.join(actions[:2])}")
+        lines.append(f"• *{_publish_safe_text(hospital_name, 80)}* — 발행 보류 {len(items)}편\n  {detail}\n  {' '.join(actions)}")
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}곳")
     summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"

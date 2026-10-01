@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.models.operations import NotificationOutboxState
+from app.services import notification_copy
 from app.services.content_publish_notifications import (
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
@@ -17,12 +18,14 @@ from app.services.content_publish_notifications import (
     project_publish_notification,
 )
 from app.services.notification_contracts import NotificationPayloadError
+from app.services.notification_copy import ActionCopy, blocker_copy, incident_copy
 from app.workers.generation_incident_control import (
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
     generation_block_digest_due,
     generation_notification_cadence,
     generation_notify_requested,
+    generation_operator_action,
 )
 
 
@@ -283,6 +286,208 @@ def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
 def test_blocked_digest_refuses_an_empty_batch() -> None:
     with pytest.raises(NotificationPayloadError):
         build_generation_blocked_digest_intent(date(2026, 8, 19), PUBLISH_MORNING_BATCH, [])
+
+
+_BODY_REVIEW_DEFAULT = ActionCopy(
+    "본문·근거 확인 필요",
+    "콘텐츠에서 해당 글의 차단 사유와 병원 근거 자료를 확인해 주세요. 미해결 안전 지적은 승인하지 마세요.",
+    "차단 사유 확인",
+)
+_IMAGE_COPY = ActionCopy(
+    "발행용 이미지 준비 실패",
+    "콘텐츠에서 이미지 오류를 확인해 주세요. 자동 재시도가 남은 글은 다시 실행하지 마세요.",
+    "이미지 오류 확인",
+)
+_REVIEW_PENDING_COPY = ActionCopy(
+    "자동 검수 미완료",
+    "콘텐츠에서 검수 상태와 자동 재시도 여부를 확인해 주세요.",
+    "검수 상태 확인",
+)
+_PROVIDER_OUTAGE_COPY = ActionCopy(
+    "생성 서비스 일시 장애",
+    "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요.",
+    "생성 상태 확인",
+)
+_GENERATION_ERROR_COPY = ActionCopy(
+    "생성 서비스 오류",
+    "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+    "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요.",
+    "생성 상태 확인",
+)
+_NOT_GENERATED_COPY = ActionCopy(
+    "발행용 원고 미생성",
+    "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
+    "생성 상태 확인",
+)
+_TOPIC_SWAPPED_COPY = ActionCopy(
+    "주제 자동 교체",
+    "같은 주제로 자동 생성이 소진되어 다른 주제로 바꿨습니다. 콘텐츠에서 새 주제를 확인해 주세요. "
+    "새 주제 생성은 자동으로 진행되니 다시 실행하지 마세요.",
+    "새 주제 확인",
+)
+# 원고가 없는 슬롯과 주제를 자동으로 바꾼 슬롯은 검토할 본문·근거가 없다.
+_NO_DRAFT_BLOCKERS = [
+    ("CONTENT_NOT_GENERATED", "발행용 원고 미생성", "“작업 다시 시도”를 눌러 주세요", "생성 상태 확인"),
+    ("TOPIC_SWAPPED", "주제 자동 교체", "콘텐츠에서 새 주제를 확인해 주세요.", "새 주제 확인"),
+]
+
+
+@pytest.mark.parametrize(("code", "title", "action", "button"), _NO_DRAFT_BLOCKERS)
+def test_no_draft_blockers_have_their_own_copy(code, title, action, button) -> None:
+    copy = blocker_copy(code)
+
+    assert copy.title == title
+    assert action in copy.action
+    assert copy.button == button
+    assert copy != _BODY_REVIEW_DEFAULT
+    assert "근거 자료" not in copy.action
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [("CONTENT_NOT_GENERATED", _NOT_GENERATED_COPY), ("TOPIC_SWAPPED", _TOPIC_SWAPPED_COPY)],
+)
+def test_no_draft_blocker_copy_is_pinned_sentence_for_sentence(code, expected) -> None:
+    # 부분 문자열만 보면 문장 하나가 빠져도 통과한다. 조치 문장 전체를 고정한다.
+    assert blocker_copy(code) == expected
+
+
+def test_not_generated_slack_action_matches_the_incident_operator_action() -> None:
+    # 게이트가 CONTENT_NOT_GENERATED로 기록한 슬롯은 OPERATOR_REQUIRED라 자동 재시도가
+    # 남아 있지 않다. Slack과 운영센터 인시던트가 같은 조치(다시 시도)를 가리켜야 한다.
+    slack_action = blocker_copy("CONTENT_NOT_GENERATED").action
+    incident_action = generation_operator_action("CONTENT_NOT_GENERATED")
+
+    for action in (slack_action, incident_action):
+        assert "“작업 다시 시도”" in action
+        assert "다시 실행하지 마세요" not in action
+        assert "기다리" not in action
+
+
+def test_blocked_digest_keeps_distinct_actions_in_first_seen_order() -> None:
+    hospital_id = uuid.uuid4()
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PUBLISH_MORNING_BATCH,
+        [
+            _blocked("조치세개의원", code, "", hospital_id=hospital_id)
+            for code in (
+                "CONTENT_NOT_GENERATED",
+                "IMAGE_GENERATION_FAILED",
+                "PROVIDER_TIMEOUT",
+                "CONTENT_NOT_GENERATED",
+            )
+        ],
+    )
+
+    payload = intent.message.payload_json()
+    positions = [
+        payload.find(copy.action)
+        for copy in (_NOT_GENERATED_COPY, _IMAGE_COPY, blocker_copy("PROVIDER_TIMEOUT"))
+    ]
+    assert -1 not in positions
+    assert positions == sorted(positions)
+
+
+def test_blocked_digest_keeps_every_distinct_action_beyond_three() -> None:
+    """조치 문장 개수 상한은 없다 — 서로 다른 조치는 모두, 처음 본 순서대로, 한 번씩 실린다.
+
+    #179의 `actions[:3]`은 네 번째 조치(합본에서는 참고 자료 주소 교체 안내)를 잘랐다. 운영자
+    판단 조치는 맨 앞이고(#181), 나머지는 게이트 순서 그대로다.
+    """
+
+    hospital_id = uuid.uuid4()
+    codes = (
+        "CONTENT_NOT_GENERATED",
+        "IMAGE_GENERATION_FAILED",
+        "PROVIDER_TIMEOUT",
+        "CONTENT_NOT_GENERATED",  # 같은 조치는 한 번만
+        "MISSING_APPROVED_ESSENCE",
+        "REFERENCE_SITE_UNREACHABLE",
+        "COST_BLOCKED",
+    )
+    outcomes = [_blocked("조치여럿의원", code, "", hospital_id=hospital_id) for code in codes]
+    outcomes.append(
+        {
+            **_blocked("조치여럿의원", "MISSING_REFERENCES", "", hospital_id=hospital_id),
+            "copy_code": notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE,
+        }
+    )
+    intent = build_generation_blocked_digest_intent(date(2026, 8, 19), PUBLISH_MORNING_BATCH, outcomes)
+
+    distinct = list(dict.fromkeys(blocker_copy(code).action for code in codes))
+    assert len(distinct) == 6  # 상한 3을 넘는다
+    expected = [
+        blocker_copy(notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE).action,
+        *distinct,
+    ]
+    lines = _section_text(intent).splitlines()
+    assert lines[-1] == "  " + " ".join(expected)
+    assert "발행 보류 8편" in lines[1]
+
+
+@pytest.mark.parametrize(("code", "title", "action", "_button"), _NO_DRAFT_BLOCKERS)
+def test_blocked_digest_names_no_draft_blockers_instead_of_body_review(
+    code, title, action, _button
+) -> None:
+    hospital_id = uuid.uuid4()
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PUBLISH_MORNING_BATCH,
+        [_blocked("원고확인의원", code, "", hospital_id=hospital_id) for _ in range(2)],
+    )
+
+    payload = intent.message.payload_json()
+    assert f"{title} 2편" in payload
+    assert action in payload
+    assert _BODY_REVIEW_DEFAULT.title not in payload
+    assert "병원 근거 자료" not in payload
+
+
+@pytest.mark.parametrize(("code", "title", "_action", "_button"), _NO_DRAFT_BLOCKERS)
+def test_weekly_rollup_names_no_draft_blockers_instead_of_body_review(
+    code, title, _action, _button
+) -> None:
+    intent = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 9, 7),
+        [{"hospital_id": uuid.uuid4(), "hospital_name": "원고확인의원", "code": code}],
+    )
+
+    payload = intent.message.payload_json()
+    assert f"{title} 1건" in payload
+    assert _BODY_REVIEW_DEFAULT.title not in payload
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("MISSING_APPROVED_ESSENCE", ActionCopy(
+            "운영 기준 미승인",
+            "병원 정보에서 콘텐츠 운영 기준을 확인하고 승인해 주세요.",
+            "운영 기준 확인",
+        )),
+        ("IMAGE_GENERATION_FAILED", _IMAGE_COPY),
+        ("CONTENT_IMAGE_NOT_READY", _IMAGE_COPY),
+        ("COST_BLOCKED", incident_copy("COST_GUARD_LIMIT_REACHED")),
+        ("CONTENT_AI_REVIEW_UNAVAILABLE", _REVIEW_PENDING_COPY),
+        # 검수 라벨은 코드 그대로 맞춘다 — 앱이 만든 적 없는 이름은 부분 문자열로 끌려가지 않는다.
+        ("CONTENT_AI_UNCERTAIN", _BODY_REVIEW_DEFAULT),
+        ("GENERATION_REJECTED", _BODY_REVIEW_DEFAULT),
+        # 분류되지 않은 생성 오류는 환경 실패다 — 본문·근거 확인이 아니다(#187 2차 s2).
+        ("GENERATION_FAILED", _GENERATION_ERROR_COPY),
+        ("PROVIDER_TIMEOUT", _PROVIDER_OUTAGE_COPY),
+        ("PROVIDER_UNAVAILABLE", _PROVIDER_OUTAGE_COPY),
+        ("FORBIDDEN_EXPRESSION", _BODY_REVIEW_DEFAULT),
+        ("MISSING_REFERENCES", _BODY_REVIEW_DEFAULT),
+        ("CONTENT_AI_HARD_FINDING", _BODY_REVIEW_DEFAULT),
+        ("content_not_generated", _BODY_REVIEW_DEFAULT),
+        ("TOPIC_SWAPPED_LEGACY", _BODY_REVIEW_DEFAULT),
+        (None, _BODY_REVIEW_DEFAULT),
+    ],
+)
+def test_other_blocker_codes_keep_their_previous_copy(code, expected) -> None:
+    assert blocker_copy(code) == expected
 
 
 @pytest.mark.parametrize(
@@ -697,3 +902,122 @@ def test_weekly_rollup_is_skipped_when_there_is_nothing_to_report() -> None:
     )
     with pytest.raises(NotificationPayloadError):
         build_generation_rejection_weekly_rollup_intent(date(2026, 9, 7), [], [])
+
+
+# ── 아침 요약(07:45·08:00)의 진료비·병원 선택 글 참고자료 보류 줄 ─────────────────
+# 차단 코드는 MISSING_REFERENCES 그대로이고 outcome의 `copy_code`가 문구만 고른다. 평범한
+# 참고자료 보류(주간 요약)의 문구와 요약 식별자는 바뀌지 않는다.
+
+_OPERATOR_HOLD_SENTENCES = (
+    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 글의 주장을 직접 뒷받침하는 공공·학술 기관 "
+    "문서를 “참고 자료 추가”로 넣거나 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요.",
+    "진료비·병원 선택 글에는 검증된 문서 목록의 문서를 넣을 수 없어 저장이 거절됩니다.",
+    "참고 자료 없이는 발행되지 않고, 자동 복구는 운영 기준이 새로 승인되는 등 생성 조건이 "
+    "바뀌기 전에는 이 글을 다시 쓰지 않습니다.",
+)
+_OPERATOR_HOLD_COPY = notification_copy.ActionCopy(
+    "참고 자료 운영자 판단",
+    " ".join(_OPERATOR_HOLD_SENTENCES),
+    "참고 자료 확인",
+)
+_GENERIC_BLOCKER_COPY = notification_copy.ActionCopy(
+    "본문·근거 확인 필요",
+    "콘텐츠에서 해당 글의 차단 사유와 병원 근거 자료를 확인해 주세요. 미해결 안전 지적은 승인하지 마세요.",
+    "차단 사유 확인",
+)
+
+
+def _operator_hold_outcome(hospital_id: str, *, copy_code: object) -> dict[str, object]:
+    return {
+        "hospital_id": hospital_id,
+        "hospital_name": "비용보류의원",
+        "content_id": "content-hold",
+        "scheduled_date": "2026-08-19",
+        "title": "치질 수술 비용 — 보험 적용과 본인부담",
+        "code": "MISSING_REFERENCES",
+        "cause": "참고 자료",
+        "attempt_fingerprint": "ctx-hold",
+        "copy_code": copy_code,
+    }
+
+
+def _section_text(intent) -> str:
+    return "\n".join(
+        block["text"]["text"]
+        for block in intent.message.payload()["blocks"]
+        if block.get("type") == "section"
+    )
+
+
+def test_operator_hold_copy_is_its_own_and_generic_missing_references_is_unchanged() -> None:
+    assert (
+        notification_copy.blocker_copy(notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE)
+        == _OPERATOR_HOLD_COPY
+    )
+    # 문장 단위로도 고정한다 — 세 문장 모두, 이 순서로, 다른 문장 없이.
+    action = notification_copy.blocker_copy(
+        notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+    ).action
+    assert action.split(". ") == [
+        *(sentence.removesuffix(".") for sentence in _OPERATOR_HOLD_SENTENCES[:-1]),
+        _OPERATOR_HOLD_SENTENCES[-1],
+    ]
+    # 주간 요약이 쓰는 평범한 참고자료 보류 문구는 그대로다.
+    assert notification_copy.blocker_copy("MISSING_REFERENCES") == _GENERIC_BLOCKER_COPY
+
+
+def test_weekly_rollup_keeps_the_generic_copy_for_missing_references() -> None:
+    intent = build_generation_rejection_weekly_rollup_intent(
+        date(2026, 8, 17),
+        [
+            {
+                "hospital_id": "hospital-a",
+                "hospital_name": "주간의원",
+                "code": "MISSING_REFERENCES",
+            }
+        ],
+    )
+
+    text = _section_text(intent)
+    assert "본문·근거 확인 필요 1건" in text
+    assert "참고 자료 운영자 판단" not in text
+
+
+def test_blocked_digest_renders_the_operator_hold_line_exactly() -> None:
+    intent = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PREPUBLISH_MORNING_BATCH,
+        [
+            _operator_hold_outcome(
+                "hospital-a", copy_code=notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+            )
+        ],
+    )
+
+    assert _section_text(intent).splitlines()[1:] == [
+        "• *비용보류의원* — 발행 보류 1편",
+        "  참고 자료 운영자 판단 1편",
+        f"  {_OPERATOR_HOLD_COPY.action}",
+    ]
+
+
+def test_blocked_digest_copy_code_changes_the_words_but_not_the_identity() -> None:
+    held = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PREPUBLISH_MORNING_BATCH,
+        [
+            _operator_hold_outcome(
+                "hospital-a", copy_code=notification_copy.REFERENCES_OPERATOR_DECIDES_COPY_CODE
+            )
+        ],
+    )
+    plain = build_generation_blocked_digest_intent(
+        date(2026, 8, 19),
+        PREPUBLISH_MORNING_BATCH,
+        [_operator_hold_outcome("hospital-a", copy_code=None)],
+    )
+
+    # 식별자 체계(병원:글:예정일:코드:원인:지문)는 그대로 — 문구 키는 들어가지 않는다.
+    assert held.dedupe_key == plain.dedupe_key
+    assert "참고 자료 운영자 판단 1편" in _section_text(held)
+    assert "본문·근거 확인 필요 1편" in _section_text(plain)
