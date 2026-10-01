@@ -144,6 +144,7 @@ async def _prepare_monthly_rebuild_audit(
     year: int | None,
     month: int | None,
     reason: str,
+    template_only: bool = False,
 ) -> bool:
     """Lock the hospital and stage a reason audit before durable dispatch.
 
@@ -167,7 +168,10 @@ async def _prepare_monthly_rebuild_audit(
         )
         .order_by(AdminAuditLog.created_at.desc())
     )
-    expected = {"period_year": year, "period_month": month, "reason": reason}
+    expected: dict[str, JSONValue] = {"period_year": year, "period_month": month, "reason": reason}
+    if template_only:
+        # 템플릿 갱신은 같은 사유라도 일반 재생성과 다른 요청이다. 키를 섞어 쓰면 409.
+        expected["mode"] = "TEMPLATE_REFRESH"
     if existing is not None:
         if existing.detail != expected:
             raise HTTPException(
@@ -813,6 +817,7 @@ async def generate_monthly_report_operation(
     year: int | None = Query(default=None, ge=2000, le=2200),
     month: int | None = Query(default=None, ge=1, le=12),
     rebuild: bool = Query(default=False),
+    template_only: bool = Query(default=False),
     payload: MonthlyReportBuildRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
     idempotency_key: IdempotencyKeyHeader = None,
@@ -823,6 +828,10 @@ async def generate_monthly_report_operation(
     경로가 `make monthly-report`(전체 병원·마지막 날 한정)뿐이었다. year/month를 주지
     않으면 지난달을 만든다 — 배치 실패는 대개 달이 바뀐 뒤에 발견된다.
     이미 있는 리포트는 덮어쓰지 않는다.
+
+    `rebuild=true&template_only=true`는 저장된 숫자를 그대로 두고 원장·AE PDF의 문구와
+    디자인만 새 버전으로 다시 그린다(새 템플릿 배포 뒤 지난달 리포트 갱신용). 측정 복구
+    기간(1~7일)에는 받지 않고, 숫자 판정이 어긋나면 워커가 새 버전을 만들지 않는다.
     """
     if (year is None) != (month is None):
         raise HTTPException(
@@ -838,6 +847,17 @@ async def generate_monthly_report_operation(
     except MonthlyPeriodError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     year, month = period.year, period.month
+    template_only = template_only is True
+    if template_only and not rebuild:
+        raise HTTPException(
+            status_code=400,
+            detail="문구·디자인만 다시 만들기는 새 버전 만들기와 함께 요청해 주세요.",
+        )
+    if template_only and is_monthly_recovery_window(now_kst, year, month):
+        raise HTTPException(
+            status_code=409,
+            detail="측정 복구 기간(매월 1~7일)에는 문구·디자인만 다시 만들 수 없습니다. 8일 이후에 요청해 주세요.",
+        )
     rebuild_reason = sanitize_operator_text(payload.reason if payload is not None else None, limit=200)
     if rebuild and (rebuild_reason is None or len(rebuild_reason) < 3):
         raise HTTPException(
@@ -850,7 +870,13 @@ async def generate_monthly_report_operation(
             detail="중복 요청을 막는 요청 키가 없습니다. 화면을 새로고침한 뒤 다시 시도해 주세요.",
         )
     hospital = await _get_hospital_or_404(db, hospital_id)
-    task_args: list[JSONValue] = [str(hospital.id), year, month, *([True] if rebuild else [])]
+    task_args: list[JSONValue] = [
+        str(hospital.id),
+        year,
+        month,
+        *([True] if rebuild else []),
+        *([False, True] if template_only else []),
+    ]
     rebuild_audit_created = False
     if rebuild:
         assert idempotency_key is not None
@@ -862,6 +888,7 @@ async def generate_monthly_report_operation(
             year=year,
             month=month,
             reason=rebuild_reason,
+            template_only=template_only,
         )
     dispatch = await _enqueue_with_truthful_audit(
         db,

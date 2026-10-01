@@ -89,6 +89,8 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
             (_INTEGER_ARG, _INTEGER_ARG),
             (_INTEGER_ARG, _INTEGER_ARG, True),
             (_INTEGER_ARG, _INTEGER_ARG, True, True),
+            # 문구·디자인만 다시 만들기(template_only). 숫자 판정은 워커가 다시 한다.
+            (_INTEGER_ARG, _INTEGER_ARG, True, False, True),
         ),
     ),
     "REGENERATE_CONTENT": _RedispatchPolicy(
@@ -855,6 +857,8 @@ def _arg_matches_shape(value: object, expected: object) -> bool:
         return value is None
     if expected is True:
         return value is True
+    if expected is False:
+        return value is False
     return value == expected
 
 

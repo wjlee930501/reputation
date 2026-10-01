@@ -19,6 +19,7 @@ import threading
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
 from types import SimpleNamespace
@@ -143,7 +144,7 @@ from app.services.content_review_feedback import (
 )
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
 from app.services.content_yield import compute_content_yield
-from app.services.doctor_pdf_contracts import DoctorV0Baseline
+from app.services.doctor_pdf_contracts import DoctorReportView, DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
 from app.services.domain_health_control import record_domain_health_check
 from app.services.domain_health_probe import check_custom_domain_https as _check_custom_domain_https
@@ -314,6 +315,17 @@ from app.services.monthly_report_gap_notifications import (
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.monthly_sov_types import ManifestCellInput
+from app.services.monthly_template_refresh import (
+    IN_FLIGHT_OPERATION_TYPES,
+    IN_FLIGHT_STATES,
+    RefreshVerdict,
+    TemplateRefreshRefused,
+    doctor_view_expectations,
+    missing_stored_paths,
+    number_tokens,
+    numeric_diff,
+    stored_observed_at,
+)
 from app.services.notification_copy import (
     REFERENCES_OPERATOR_DECIDES_COPY_CODE,
     references_operator_decides_copy_code,
@@ -10513,6 +10525,21 @@ def _build_monthly_report_for_hospital(
         if action.linked_report_id is None and str(action.id) in reported_next_action_ids:
             action.linked_report_id = report.id
 
+    return _attach_doctor_artifact_and_commit(
+        db, h, report, period_start, doctor_view, now, operation_run_id
+    )
+
+
+def _attach_doctor_artifact_and_commit(
+    db,
+    h: Hospital,
+    report: MonthlyReport,
+    period_start: datetime,
+    doctor_view,
+    now: arrow.Arrow,
+    operation_run_id: uuid.UUID | None,
+) -> str:
+    """원장용 PDF를 검증·저장해 리포트에 붙이고 커밋한다. 일반 생성과 템플릿 갱신이 공유한다."""
     artifact_error: DoctorPdfValidationError | None = None
     try:
         public_url = _public_site_url(h.aeo_domain, h.slug)
@@ -10563,6 +10590,270 @@ def _build_monthly_report_for_hospital(
         _run_async(recover_monthly_artifact_failures(incident_context))
 
     return "blocked_artifact" if artifact_error is not None else "created"
+
+
+@dataclass(frozen=True, slots=True)
+class MonthlyTemplateRefreshPlan:
+    """템플릿 갱신이 만들 새 버전의 내용과, 숫자를 지킬 수 있는지에 대한 판정."""
+
+    superseded: MonthlyReport | None
+    doctor_view: DoctorReportView | None
+    content_summary: dict | None
+    verdict: RefreshVerdict
+
+
+def _template_refresh_blockers(
+    db,
+    h: Hospital,
+    now: arrow.Arrow,
+    latest: MonthlyReport | None,
+    manifest: MonthlyMeasurementManifest | None,
+    *,
+    observed_now: datetime,
+    exclude_run_id: uuid.UUID | None,
+    verdict: RefreshVerdict,
+) -> None:
+    if is_monthly_recovery_window(observed_now, now.year, now.month):
+        verdict.add("BLOCKER", "RECOVERY_WINDOW_OPEN", "측정 복구 기간(1~7일)이 끝난 뒤 실행")
+    in_flight = db.execute(
+        select(OperationRun.id, OperationRun.operation_type).where(
+            OperationRun.hospital_id == h.id,
+            OperationRun.operation_type.in_(IN_FLIGHT_OPERATION_TYPES),
+            OperationRun.state.in_(IN_FLIGHT_STATES),
+        )
+    ).all()
+    for run_id, operation_type in in_flight:
+        if run_id != exclude_run_id:
+            verdict.add("BLOCKER", "OPERATION_IN_FLIGHT", f"{operation_type} {run_id}")
+    if latest is None:
+        verdict.add("BLOCKER", "NO_REPORT")
+        return
+    if manifest is None:
+        verdict.add("BLOCKER", "MANIFEST_MISSING")
+    elif manifest.closed_at is None:
+        verdict.add("BLOCKER", "MANIFEST_NOT_CLOSED")
+    if not _has_valid_doctor_artifact(db, latest):
+        verdict.add("BLOCKER", "NO_VALID_DOCTOR_ARTIFACT", f"v{latest.version}")
+    for path in missing_stored_paths(latest.content_summary, latest.sov_summary):
+        verdict.add("BLOCKER", "STORED_SUMMARY_INCOMPLETE", path)
+
+
+def build_monthly_template_refresh_plan(
+    db,
+    h: Hospital,
+    now: arrow.Arrow,
+    *,
+    observed_now: datetime,
+    exclude_run_id: uuid.UUID | None = None,
+) -> MonthlyTemplateRefreshPlan:
+    """저장된 최신 버전에서 새 원장 뷰를 만들고 숫자가 그대로인지 판정한다. 쓰기·저장소·공급자 호출 없음.
+
+    마감 시각은 지금이 아니라 대체할 버전에 저장된 `contract_timing.observed_at`이다.
+    측정 요약·콘텐츠 운영·귀속·인용·전략·Essence는 저장된 값을 그대로 쓰고, 현재 행에서는
+    원장에게 보여 줄 공개 글 제목·답변 발췌·초기 측정 참고선·누적 발행 편수만 읽는다.
+    """
+    verdict = RefreshVerdict()
+    period = reporting_period(now.year, now.month)
+    latest = _latest_monthly_report(db, h.id, now.year, now.month)
+    manifest = None
+    if latest is not None and latest.manifest_id is not None:
+        manifest = db.get(MonthlyMeasurementManifest, latest.manifest_id)
+    _template_refresh_blockers(
+        db, h, now, latest, manifest,
+        observed_now=observed_now, exclude_run_id=exclude_run_id, verdict=verdict,
+    )
+    if latest is None or manifest is None or verdict.status == "BLOCKED":
+        return MonthlyTemplateRefreshPlan(latest, None, None, verdict)
+    sov = latest.sov_summary
+    content = latest.content_summary
+    operations = content["operations"]
+    timing = content["contract_timing"]
+    try:
+        observed_at = stored_observed_at(content)
+    except ValueError as exc:
+        verdict.add("BLOCKER", "OBSERVED_AT_INVALID", str(exc))
+        return MonthlyTemplateRefreshPlan(latest, None, None, verdict)
+
+    current_loaded = load_monthly_sov_manifest(db, manifest)
+    prior_manifest = _prior_monthly_manifest(db, h.id, now)
+    prior_loaded = (
+        load_monthly_sov_manifest(db, prior_manifest) if prior_manifest is not None else None
+    )
+    protocol = (manifest.platform_provenance or {}).get("measurement_protocol")
+    monthly_sov = build_monthly_sov(
+        current_loaded.cells,
+        tuple(manifest.configured_platforms),
+        prior_cells=prior_loaded.cells if prior_loaded is not None else None,
+        prior_platforms=(
+            tuple(prior_manifest.configured_platforms) if prior_manifest is not None else None
+        ),
+        current_protocol=protocol,
+        prior_protocol=(
+            (prior_manifest.platform_provenance or {}).get("measurement_protocol")
+            if prior_manifest is not None
+            else None
+        ),
+    )
+    # 출력 숫자는 저장된 요약에서 나온다. 다시 계산한 값이 다르면 기록만 남긴다.
+    for line in numeric_diff(sov, monthly_sov.to_payload(), prefix="sov_summary")[:5]:
+        verdict.add("WARN", "SOV_RECOMPUTE_DRIFT", line)
+
+    actual, visible, contract = _load_monthly_publication_facts(
+        db, h.id, period.starts_at, period.ends_at, observed_at
+    )
+    early, late = _contract_publication_timing_counts(contract, period.starts_at, period.ends_at)
+    for code, live, stored in (
+        ("PUBLISHED_COUNT", len(actual), content["published_count"]),
+        ("CONTRACT_PUBLISHED_COUNT", len(contract), timing["published_for_contract_count"]),
+        ("EARLY_PUBLICATION_COUNT", early, timing["early_publication_count"]),
+        ("LATE_RECOVERY_COUNT", late, timing["late_recovery_count"]),
+    ):
+        if live != stored:
+            verdict.add("DIFF", code, f"저장 {stored} / 같은 마감 기준 재계산 {live}")
+
+    first_publication_at = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
+    cumulative_published_count = db.execute(
+        select(func.count())
+        .select_from(ContentItem)
+        .where(
+            ContentItem.hospital_id == h.id,
+            first_publication_at < period.ends_at,
+            first_publication_at <= observed_at,
+        )
+    ).scalar_one()
+    v0_baseline = _load_v0_baseline(
+        db,
+        h.id,
+        current_sov_pct=(
+            sov["sov_pct"]
+            if _headline_uses_full_current_cohort(monthly_sov, current_loaded.cells)
+            else None
+        ),
+        tracking_query_texts=[
+            cell.query_text for cell in current_loaded.cells if cell.query_intent == "LOCAL"
+        ],
+        current_platforms=tuple(manifest.configured_platforms),
+        current_protocol=protocol,
+        current_cells=current_loaded.cells,
+    )
+    doctor_view = build_doctor_report_view(
+        report_kind="MONTHLY",
+        protocol_label=str((protocol or {}).get("policy_version") or "기록 없음"),
+        hospital=h,
+        sov_pct=sov["sov_pct"],
+        prev_sov_pct=(sov.get("comparison") or {}).get("prior_sov_pct"),
+        published_count=content["published_count"],
+        plan_quota=operations["plan_quota"],
+        supplementary_count=operations["supplementary_count"],
+        early_publication_count=timing["early_publication_count"],
+        late_recovery_count=timing["late_recovery_count"],
+        contract_published_count=timing["published_for_contract_count"],
+        attribution=content["attribution"],
+        citations=content["citations"],
+        published_contents=list(visible),
+        v0_baseline=v0_baseline,
+        records=list(current_loaded.scored_records),
+        platforms=list(manifest.configured_platforms),
+        sov_coverage=sov,
+        comparison_reason=(sov.get("comparison") or {}).get("reason"),
+        cumulative_published_count=cumulative_published_count,
+    )
+    stored_points = number_tokens(content.get("talking_points") or [])
+    new_points = number_tokens(doctor_view["talking_points"])
+    if stored_points != new_points:
+        verdict.add("DIFF", "TALKING_POINT_NUMBERS", f"{stored_points} → {new_points}")
+    for problem in doctor_view_expectations(
+        doctor_view, sov_summary=sov, content_summary=content
+    ):
+        verdict.add("DIFF", "DOCTOR_VIEW_NUMBER", problem)
+    scratch = SimpleNamespace()
+    apply_manifest_to_report(scratch, manifest)
+    for name in ("quality", "planned_count", "success_count", "failed_count", "excluded_count"):
+        if getattr(scratch, name) != getattr(latest, name):
+            verdict.add(
+                "DIFF", "MANIFEST_SUMMARY", f"{name}: {getattr(latest, name)} → {getattr(scratch, name)}"
+            )
+    new_content = copy.deepcopy(content)
+    new_content["talking_points"] = list(doctor_view["talking_points"])
+    return MonthlyTemplateRefreshPlan(latest, doctor_view, new_content, verdict)
+
+
+def _build_monthly_template_refresh(
+    db,
+    h: Hospital,
+    now: arrow.Arrow,
+    *,
+    correlation_key: str,
+    operation_run_id: uuid.UUID | None = None,
+) -> str:
+    """대체할 버전의 숫자를 그대로 옮기고 원장·AE PDF만 새 템플릿으로 다시 그린다.
+
+    노출 행동 연결·Essence 재집계·매니페스트 마감 같은 부수효과가 없다. 숫자 판정이
+    하나라도 어긋나면 아무것도 쓰지 않고 `TemplateRefreshRefused`를 올린다.
+    """
+    period = reporting_period(now.year, now.month)
+    version_plan = lock_report_version_plan(
+        db,
+        hospital_id=h.id,
+        period=period,
+        reason_code=ReportBuildReason.TEMPLATE_REFRESH,
+        correlation_key=correlation_key,
+    )
+    plan = build_monthly_template_refresh_plan(
+        db, h, now, observed_now=datetime.now(timezone.utc), exclude_run_id=operation_run_id
+    )
+    if not plan.verdict.passed:
+        raise TemplateRefreshRefused(plan.verdict)
+    old = plan.superseded
+    assert old is not None and plan.doctor_view is not None and plan.content_summary is not None
+    if old.id != version_plan.supersedes_report_id:
+        raise RuntimeError("template refresh lost the report version race")
+    sov = copy.deepcopy(old.sov_summary)
+    content = plan.content_summary
+    pdf_path = generate_pdf_report(
+        hospital=h,
+        period_start=period.starts_at,
+        period_end=period.ends_at,
+        report_type="MONTHLY",
+        sov_pct=sov["sov_pct"],
+        published_count=content["published_count"],
+        repeat_count=SOV_REPEAT_WEEKLY,
+        attribution=content["attribution"],
+        strategy=content["strategy"],
+        sov_coverage=sov,
+        content_operations=content["operations"],
+        citations=content["citations"],
+        talking_points=content["talking_points"],
+        report_version=version_plan.version,
+    )
+    blockers = [b for b in (old.delivery_blockers or []) if b != "DOCTOR_ARTIFACT_UNVALIDATED"]
+    report = MonthlyReport(
+        hospital_id=h.id,
+        period_year=now.year,
+        period_month=now.month,
+        report_type="MONTHLY",
+        version=version_plan.version,
+        supersedes_report_id=version_plan.supersedes_report_id,
+        manifest_id=old.manifest_id,
+        cutoff_at=old.cutoff_at,
+        quality=old.quality,
+        planned_count=old.planned_count,
+        success_count=old.success_count,
+        failed_count=old.failed_count,
+        excluded_count=old.excluded_count,
+        customer_ready=False,
+        delivery_blockers=[*blockers, "DOCTOR_ARTIFACT_UNVALIDATED"],
+        pdf_path=pdf_path,
+        doctor_pdf_path=None,
+        sov_summary=sov,
+        content_summary=content,
+        essence_summary=copy.deepcopy(old.essence_summary),
+    )
+    db.add(report)
+    db.flush()
+    return _attach_doctor_artifact_and_commit(
+        db, h, report, period.starts_at, plan.doctor_view, now, operation_run_id
+    )
 
 
 @celery_app.task(
@@ -10758,8 +11049,12 @@ def generate_monthly_report_for_hospital(
     month: int | None = None,
     rebuild: bool = False,
     automatic_recovery: bool = False,
+    template_only: bool = False,
 ):
     """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
+
+    `template_only=True`는 저장된 숫자를 그대로 두고 PDF 문구·디자인만 새 버전으로 다시
+    그리는 템플릿 갱신이다(`_build_monthly_template_refresh`). 숫자 판정이 어긋나면 만들지 않는다.
 
     월간 배치가 반복 실패해도 운영자가 해당 병원만 다시 만들 수 있는 복구 경로다.
 
@@ -10813,6 +11108,42 @@ def generate_monthly_report_for_hospital(
             if run_id is not None
             else f"manual:{hospital.id}:{anchor.year}-{anchor.month:02d}"
         )
+        if template_only:
+            try:
+                outcome = _build_monthly_template_refresh(
+                    db,
+                    hospital,
+                    anchor,
+                    correlation_key=correlation_key,
+                    operation_run_id=run_id,
+                )
+            except TemplateRefreshRefused as refused:
+                # 숫자를 지킬 수 없다는 판정은 재시도해도 같다 — 재시도 없이 실패로 닫는다.
+                db.rollback()
+                logger.warning(
+                    "Monthly template refresh refused: hospital_id=%s %s",
+                    hospital.id,
+                    refused.verdict.summary(),
+                )
+                _fail_monthly_operation_run(db, run_id, hospital.id, anchor.year, anchor.month)
+                return {
+                    "status": "template_refresh_refused",
+                    "verdict": refused.verdict.status,
+                    "year": anchor.year,
+                    "month": anchor.month,
+                }
+            except Exception as e:
+                logger.error(f"Monthly template refresh failed for {hospital.name}: {e}")
+                db.rollback()
+                if self.request.retries >= self.max_retries:
+                    _fail_monthly_operation_run(
+                        db, run_id, hospital.id, anchor.year, anchor.month
+                    )
+                raise
+            _finish_monthly_operation_run(
+                db, run_id, hospital.id, anchor.year, anchor.month, outcome
+            )
+            return {"status": outcome, "year": anchor.year, "month": anchor.month}
         try:
             build_kwargs = {
                 "rebuild": rebuild,
