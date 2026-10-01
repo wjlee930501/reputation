@@ -1068,20 +1068,35 @@ NO_SOURCE_BRIEFS = {
 
 
 @pytest.mark.parametrize("name", sorted(NO_SOURCE_BRIEFS))
-def test_prompt_offers_no_curated_document_for_a_cost_or_choice_brief(monkeypatch, name):
-    brief = NO_SOURCE_BRIEFS[name]
+def test_a_cost_or_choice_brief_steers_the_title_to_the_medical_subject(monkeypatch, name):
+    """진료비·병원 선택 질문이어도 글은 바탕의 질환·검사·시술을 설명한다 — 그 주제의 검증된
+    문서가 근거가 되어, 참고자료가 없어 매번 사람에게 넘어가는 글을 만들지 않는다(2026-10-02)."""
 
-    assert content_engine._topic_aligned_curated_sources(dict(brief)) == []
-    assert LOW_BACK_URL not in _prompt_of(monkeypatch, dict(brief))
+    prompt = _prompt_of(monkeypatch, dict(NO_SOURCE_BRIEFS[name]))
+
+    assert "제목에는 비용·가격·추천·병원 고르기 표현을 넣지 말고" in prompt
+    assert "특정 병원을 추천하거나 비교하지 마세요" in prompt
+    assert LOW_BACK_URL in prompt
 
 
-@pytest.mark.parametrize("name", sorted(NO_SOURCE_BRIEFS))
-def test_the_cost_or_choice_brief_would_get_the_hint_without_the_rule(monkeypatch, name):
-    """대조군 — 브리프 판정을 끄면 같은 브리프가 요통 문서를 힌트로 받는다(위 테스트의 전제)."""
+def test_a_medical_brief_gets_no_cost_or_choice_steering(monkeypatch):
+    prompt = _prompt_of(monkeypatch, {"target_query": "노원 도수치료 효과", "target_keyword": "도수치료"})
 
-    monkeypatch.setattr(content_engine, "_brief_names_no_source_topic", lambda _brief: False)
+    assert "진료비·병원 고르기 질문입니다" not in prompt
 
-    assert LOW_BACK_URL in _prompt_of(monkeypatch, dict(NO_SOURCE_BRIEFS[name]))
+
+def test_a_cost_or_choice_title_on_a_cost_brief_asks_for_one_rewrite():
+    brief = dict(NO_SOURCE_BRIEFS["cost_target_query"])
+    keyword = brief.get("target_keyword") or ""
+    body = f"## {keyword} 안내\n본문"
+
+    findings = content_engine._validate_target_alignment(
+        {"title": "도수치료 비용 안내", "body": body}, brief, ContentType.DISEASE
+    )
+    assert any(f.startswith(content_engine.NO_SOURCE_TITLE_FINDING_PREFIX) for f in findings)
+    assert content_engine._validate_target_alignment(
+        {"title": "도수치료, 허리통증에 어떻게 쓰이나요", "body": body}, brief, ContentType.DISEASE
+    ) == []
 
 
 def test_a_medical_brief_still_gets_its_curated_hint(monkeypatch):

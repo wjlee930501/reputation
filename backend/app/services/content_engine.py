@@ -661,6 +661,7 @@ def _target_steering(content_brief: dict | None) -> dict[str, object]:
             for term in (brief.get("target_region_terms") or [])
             if str(term).strip()
         ],
+        "no_source_topic": _brief_names_no_source_topic(content_brief),
     }
 
 
@@ -684,9 +685,24 @@ def _target_prompt_block(
         lines.append(f"- 측정 질의 원문: {target['query']}")
     if target["question"]:
         lines.append(f"- 환자 질문 문장: {target['question']}")
-    if target["keyword"]:
+    if target["keyword"] and target.get("no_source_topic"):
+        lines.append(f"- 핵심 키워드(첫 H2에 반드시 그대로 포함): {target['keyword']}")
+    elif target["keyword"]:
         lines.append(
             f"- 핵심 키워드(제목 또는 첫 H2에 반드시 그대로 포함): {target['keyword']}"
+        )
+    if target.get("no_source_topic"):
+        # 진료비·병원 선택 제목의 글은 공신력 있는 문서가 없어 참고자료 없이는 발행되지 않고
+        # 매번 사람의 판단으로 넘어간다(`reference_requirement`). 같은 질문에 답하되 글의 주제는
+        # 그 바탕의 질환·검사·시술로 잡아 검증된 문서가 근거가 되게 한다.
+        lines.append(
+            "- 이 질문은 진료비·병원 고르기 질문입니다. 제목에는 비용·가격·추천·병원 고르기 "
+            "표현을 넣지 말고, 이 질문의 바탕이 되는 질환·검사·시술 이름을 넣어 그것이 "
+            "무엇이고 어떻게 진행되며 언제 필요한지를 설명하는 글로 쓰세요."
+        )
+        lines.append(
+            "- 비용·병원 고르기에 대한 답은 첫 H2 아래에서 진료 목적·검사 범위·진행 과정에 "
+            "따라 달라지는 이유로 설명하세요. 특정 병원을 추천하거나 비교하지 마세요."
         )
     if target["regions"]:
         # 조향은 측정 지역이 앞서지만 프로파일 region을 빼고 말하지 않는다. `_validate_geo`는
@@ -1053,12 +1069,10 @@ def _topic_aligned_curated_sources(
         # 주제만 겹치는 수기 문서로 채우지 않는다(`reference_requirement`). 생성의 두 치유
         # (검증 뒤 채우기·GEO 거절 뒤 채우기)가 여기를 지난다. 발행 치유는 `reference_publication`.
         return []
-    if result is None and _brief_names_no_source_topic(content_brief):
-        # 프롬프트 시점(`_generate_content_attempt`)에는 제목이 없다. 측정 질문이 진료비·병원
-        # 선택이면('도수치료 비용') 검증된 문서 힌트를 주지 않는다 — 작가가 그 문서를 인용하면
-        # 주제만 겹친 가짜 근거가 된다. 오탐이면 힌트만 빠진다. 생성 뒤 치유는 위처럼 작가 제목으로
-        # 판정한다(브리프로 판정하지 않는다 — 98f586a8).
-        return []
+    # 프롬프트 시점(`_generate_content_attempt`)에는 제목이 없다. 측정 질문이 진료비·병원
+    # 선택이어도 작가는 그 바탕의 질환·검사·시술을 제목으로 쓰도록 지시받으므로(`_target_prompt_block`)
+    # 그 주제의 검증된 문서 힌트를 준다. 작가가 그래도 진료비·병원 선택 제목을 쓰면 생성 뒤
+    # 치유가 위처럼 작가 제목으로 판정해 수기 문서를 붙이지 않는다(98f586a8).
     failed = {
         str(check.get("url") or "")
         for check in ((result or {}).get("reference_checks") or [])
@@ -1923,6 +1937,7 @@ def _validate_seo(
 # 보완 재작성을 돌린다. 무한 재시도가 아니다 — 두 번째도 놓치면 글은 살리고 soft
 # finding으로 남겨 Admin에서 보이게 한다.
 TARGET_KEYWORD_FINDING_PREFIX = "측정 질의 키워드 미반영"
+NO_SOURCE_TITLE_FINDING_PREFIX = "진료비·병원 선택 제목"
 
 
 def _validate_target_alignment(
@@ -1941,23 +1956,32 @@ def _validate_target_alignment(
         return []
 
     brief = content_brief or {}
+    title = str(result.get("title") or "")
+    findings: list[str] = []
+    if _brief_names_no_source_topic(content_brief) and topic_without_authoritative_source(title):
+        findings.append(
+            f"{NO_SOURCE_TITLE_FINDING_PREFIX}: 제목 '{title}'이(가) 진료비·병원 고르기 글로 "
+            "읽힙니다. 비용·추천·병원 고르기 표현을 빼고 바탕이 되는 질환·검사·시술 이름으로 "
+            "제목을 다시 쓰세요."
+        )
+
     keyword = str(brief.get("target_keyword") or "").strip()
     if not keyword:
-        return []
+        return findings
 
-    title = str(result.get("title") or "")
     faq_question = str(result.get("faq_question") or "")
     body = str(result.get("body") or "")
     first_h2_match = re.search(r"^##\s+(.+)$", body, flags=re.MULTILINE)
     first_h2 = first_h2_match.group(1) if first_h2_match else ""
 
     if any(keyword in place for place in (title, first_h2, faq_question)):
-        return []
+        return findings
 
     target_query = str(brief.get("target_query") or "").strip()
     return [
+        *findings,
         f"{TARGET_KEYWORD_FINDING_PREFIX}: '{keyword}'이(가) 제목·첫 H2·FAQ 질문 어디에도 "
-        f"없습니다. 측정 질의: {target_query or '(없음)'}"
+        f"없습니다. 측정 질의: {target_query or '(없음)'}",
     ]
 
 

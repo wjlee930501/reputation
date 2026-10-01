@@ -586,7 +586,7 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-09-29.2"
+GENERATION_GATE_CATALOG_VERSION = "2026-10-02.1"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
