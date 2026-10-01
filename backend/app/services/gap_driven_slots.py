@@ -48,6 +48,7 @@ from app.services.content_target_planner import (
     _content_type_affinity,
 )
 from app.services.query_target_structure import apply_structure_to_target
+from app.services.specialty_compatibility import target_conflicts_with_hospital
 
 # 격차 기반 재배정 대상 유형. AI 답변에서 병원이 언급될 확률을 직접 움직이는 네 가지다
 # (CLAUDE.md 콘텐츠 유형표의 ★★★ 등급).
@@ -139,14 +140,18 @@ def gap_target_rows_stmt(hospital_id: uuid.UUID):
     )
 
 
-def build_gap_targets(rows) -> list[GapTarget]:
+def build_gap_targets(rows, *, hospital) -> list[GapTarget]:
     """(AIQueryTarget, gap_type) 행 → 중복 없는 GapTarget 목록(급한 순 정렬).
 
-    같은 타깃에 격차가 여러 건 열려 있으면 가장 급한 등급을 쓴다.
+    같은 타깃에 격차가 여러 건 열려 있으면 가장 급한 등급을 쓴다. 병원 대표 진료과와
+    어울리지 않는 질문(내과 병원의 영상의학과 질문 등)은 달력 슬롯에 배정하지 않는다 —
+    `hospital`은 필수 인자라 호출부가 빠뜨릴 수 없다.
     """
     best: dict[str, GapTarget] = {}
     for target, gap_type in rows:
         if target is None or getattr(target, "id", None) is None:
+            continue
+        if target_conflicts_with_hospital(target, hospital):
             continue
         # 구조 필드가 비어 있으면 유형 적합도가 상수가 된다 — 여기서도 되짚어 채운다.
         apply_structure_to_target(target)

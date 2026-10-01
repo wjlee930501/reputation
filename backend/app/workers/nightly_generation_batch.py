@@ -140,7 +140,8 @@ def write_back_published_image(
             title_clause,
             ContentItem.content_revision == expected_revision,
             ContentItem.generation_claim_token == expected_claim_token,
-            ContentItem.generation_claimed_at > datetime.now(timezone.utc)
+            # 경계 시각의 lease는 아직 소유자의 것이다(`generation_claim_is_active`와 같다).
+            ContentItem.generation_claimed_at >= datetime.now(timezone.utc)
             - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
         )
         .values(**values, generation_claimed_at=None, generation_claim_token=None)
@@ -194,9 +195,29 @@ def _nightly_generation_claim_cutoff() -> datetime:
 
 
 def _nightly_generation_claim_filter(claim_cutoff: datetime):
+    """claim할 수 있는 행 — `generation_claim_is_active`의 정확한 SQL 부정이다.
+
+    토큰이 없거나, claim 시각이 없거나, claim 시각이 TTL 경계보다 이르면 살아 있는 claim이
+    아니다(`claim_cutoff`는 now − TTL이고 경계 시각의 claim은 살아 있다). 토큰 없이 claim 시각만
+    남은 행을 Python은 비어 있다고 보는데(`claim_generation_lease`가 인수한다) 이 술어가 claim
+    시각만 보면 로더·백로그 복구가 TTL까지 그 슬롯을 집지 않는다. 주제 교체·게시 이미지 교체도
+    이 술어를 쓴다.
+    """
+
     return or_(
+        ContentItem.generation_claim_token.is_(None),
         ContentItem.generation_claimed_at.is_(None),
         ContentItem.generation_claimed_at < claim_cutoff,
+    )
+
+
+def _live_generation_claim_predicate(claim_cutoff: datetime):
+    """살아 있는 claim — `generation_claim_is_active`의 SQL 형태(위 술어의 정확한 부정)."""
+
+    return and_(
+        ContentItem.generation_claim_token.is_not(None),
+        ContentItem.generation_claimed_at.is_not(None),
+        ContentItem.generation_claimed_at >= claim_cutoff,
     )
 
 
@@ -208,6 +229,9 @@ def generation_claim_is_active(item, *, now: datetime) -> bool:
     """
 
     claimed_at = getattr(item, "generation_claimed_at", None)
+    if claimed_at is not None and claimed_at.tzinfo is None:
+        # `load_claimed_generation_item`과 같이 naive 값은 UTC로 읽는다.
+        claimed_at = claimed_at.replace(tzinfo=timezone.utc)
     return (
         getattr(item, "generation_claim_token", None) is not None
         and claimed_at is not None
@@ -522,14 +546,20 @@ def release_unfinished_claims(
     실행은 claim 필터에 걸려 아무것도 못 잡은 채 "생성할 것 없음"으로 **성공 종료**한다.
     다음 기회는 다음날 밤이라 슬롯이 하루 밀리고, 그 사이 08:00 자동 발행은 body가
     없어 아무것도 발행하지 못한다. 그래서 끝날 때 반드시 되돌린다.
+
+    `expected_claim_token`이 있으면 끝난 워커가 자기 lease를 푸는 것이라 행의 결함과
+    무관하게 푼다. 복구 필터 밖의 이유(내용 hash 불일치 등)로 막힌 채 끝난 행에 claim이
+    남으면 07:45 게이트가 그 행을 "작업 중"으로 보고 조용히 건너뛴다. 토큰이 다르면
+    다른 소유자의 lease이므로 0행이다. 토큰 없는 해제만 종전처럼 복구 필터로 좁힌다.
     """
     if not item_ids:
         return 0
     predicates = [
         ContentItem.id.in_(item_ids),
-        _needs_generation_recovery(),
         ContentItem.generation_claimed_at.isnot(None),
     ]
+    if expected_claim_token is None:
+        predicates.append(_needs_generation_recovery())
     if expected_claimed_at is not None:
         predicates.append(ContentItem.generation_claimed_at == expected_claimed_at)
     if expected_claim_token is not None:
@@ -590,8 +620,8 @@ def _stuck_claims_stmt(
             _needs_generation_recovery(),
             Hospital.status.in_(NIGHTLY_GENERATION_HOSPITAL_STATUSES),
             Hospital.site_live.is_(True),
-            ContentItem.generation_claimed_at.isnot(None),
-            ContentItem.generation_claimed_at >= claim_cutoff,
+            # 로더가 집지 않는 살아 있는 claim만 멈춤 후보다(토큰 없는 행은 로더가 집는다).
+            _live_generation_claim_predicate(claim_cutoff),
             ContentItem.generation_claimed_at <= in_flight_cutoff,
         )
         .options(joinedload(ContentItem.hospital))

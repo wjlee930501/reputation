@@ -19,9 +19,9 @@ from app.models.content import ContentItem, ContentStatus
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     has_required_faq_fields,
-    has_required_references,
     image_certification_current,
     public_candidate_review_safe,
+    public_surface_has_required_references,
     publication_field_values,
 )
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
@@ -124,7 +124,7 @@ def assess_public_visibility(
         blockers.append("NOT_PUBLISHED_AT")
     if not has_required_faq_fields(item):
         blockers.append("FAQ_FIELDS_MISSING")
-    if not has_required_references(item):
+    if not public_surface_has_required_references(item):
         blockers.append("MISSING_REFERENCES")
     if not image_certification_current(item):
         blockers.append("IMAGE_NOT_CERTIFIED")
