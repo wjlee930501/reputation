@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -27,6 +26,7 @@ from app.models.operations import Incident, NotificationOutbox
 from app.services import content_ai_review, ops_incident_alerts
 from app.services.incident_safety import build_incident_key
 from app.services.incident_types import IncidentFingerprint
+from tests.db_env import fail_unreachable, require_db_url
 from tests.must_use_review_support import install_fake_reviewer, verdict
 from tests.provider_network_guard_support import (
     forbid_external_network as _forbid_external_network_fixture,  # noqa: F401
@@ -34,7 +34,7 @@ from tests.provider_network_guard_support import (
 
 FORBIDDEN_MESSAGE = "저희 병원은 대장암 완치를 보장합니다."
 ALLOWED_MESSAGE = "국립암센터는 50대 이상에게 5~10년 주기의 대장내시경 검사를 권고하고 있습니다."
-DEFAULT_DATABASE_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_URL_ENV = "INCIDENT_TEST_DATABASE_URL"
 
 
 @pytest.fixture(autouse=True)
@@ -44,16 +44,12 @@ def _no_external_calls(forbid_external_network):
 
 @pytest.fixture
 async def db(monkeypatch) -> AsyncIterator[AsyncSession]:
-    url = os.getenv("INCIDENT_TEST_DATABASE_URL", DEFAULT_DATABASE_URL)
-    required = "INCIDENT_TEST_DATABASE_URL" in os.environ
-    engine = create_async_engine(url, future=True)
+    engine = create_async_engine(require_db_url(_URL_ENV), future=True)
     try:
         try:
             connection = await engine.connect()
         except OSError as exc:
-            if required:
-                pytest.fail(f"required incident PostgreSQL unavailable: {exc}", pytrace=False)
-            pytest.skip("local incident PostgreSQL is unavailable")
+            fail_unreachable(_URL_ENV, exc)
         transaction = await connection.begin()
         ready = await connection.scalar(text("SELECT to_regclass('public.incidents') IS NOT NULL"))
         if not ready:
