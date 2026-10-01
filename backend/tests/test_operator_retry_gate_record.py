@@ -4,18 +4,26 @@
 기록한다. 예산을 쓰지 않은 증상 기록이지만, 같은 생성 context에서는 워커의 동일 원인
 억제가 그 기록을 그대로 읽어 운영자가 누른 재시도까지 작가 호출 0회로 끝냈다
 (PR #179 2차 리뷰 B1). 이제 Admin이 만든 실행(`regenerate_content_item`의 explicit run)에서
-본문이 없고 저장 원인이 정확히 CONTENT_NOT_GENERATED일 때만 억제를 풀고 예산 계수는 남긴다.
-자동 경로와 다른 원인은 그대로 억제한다.
+본문이 없고 저장 원인이 CONTENT_NOT_GENERATED이거나 저장 분류가 ENVIRONMENT_RECOVERABLE일
+때만 억제를 풀고 예산 계수는 남긴다.
+
+환경 실패는 #182의 게이트 가드와 합쳐져 생긴 경우다. 게이트가 스윕이 소유한
+PROVIDER_TIMEOUT 등을 CONTENT_NOT_GENERATED로 덮지 않고 남기므로, 원인 문자열만 보면
+운영자 재시도가 다시 작가 0회로 끝난다. 표본 실패(SAMPLE_RECOVERABLE, 주제 교체 기록
+포함)는 하루 예산이 소유하므로 운영자 재시도에도 그대로 억제한다. 자동 경로와 그 밖의
+원인·분류도 그대로 억제한다.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import pytest
 from test_topic_swap_fallback import (
+    _RECORD_ATTEMPT,
     _approved_philosophy,
+    _FakeDB,
     _freeze,
     _generate_once,
     _kst,
@@ -219,3 +227,190 @@ def test_operator_retry_keeps_an_operator_decides_reference_block(monkeypatch):
     assert writer_calls == []
     assert finished == [(OperationRunState.FAILED, "MISSING_REFERENCES")]
     assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == stored
+
+
+# ── #182 가드와의 결합: 게이트가 덮지 않고 남긴 환경 실패 기록 ─────────────────────
+
+_FAILED_AT = _kst(2026, 9, 16, 7, 0, 4)  # 예정일 07:00 스윕의 글 단위 태스크가 실패한다
+_SLOT_GATE_AT = _kst(2026, 9, 16, 7, 45)  # 같은 날 07:45 게이트
+_OPERATOR_PRESSES = [
+    pytest.param(_kst(2026, 9, 16, 7, 50), id="0750"),
+    pytest.param(_kst(2026, 9, 16, 8, 5), id="0805"),  # 08:00 발행기가 막힌 뒤
+]
+_SWAP_HISTORY = [
+    pytest.param(True, id="swapped"),
+    pytest.param(False, id="not_swapped"),
+]
+
+
+def _slot_with_writer(monkeypatch, *, swapped: bool):
+    """빈 슬롯과 작가 호출·작가 호출 시점의 시도 기록."""
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    if not swapped:
+        item.topic_swap_history = None
+    writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=False)
+    seen_at_writer: list = []
+    writer = tasks._generate_with_auto_review
+
+    async def snapshot_then_write(**kwargs):
+        summary = item.essence_check_summary or {}
+        seen_at_writer.append(summary.get(GENERATION_ATTEMPT_KEY))
+        return await writer(**kwargs)
+
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", snapshot_then_write)
+    return philosophy, item, writer_calls, seen_at_writer
+
+
+def _gate(monkeypatch, item, philosophy, code: str = "CONTENT_NOT_GENERATED") -> None:
+    _freeze(monkeypatch, _SLOT_GATE_AT)
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, code)
+
+
+def _gate_kept_environment_failure(monkeypatch, *, swapped: bool):
+    """실제 `_remember_generation_attempt`가 남긴 PROVIDER_TIMEOUT을 07:45 게이트가 지킨다."""
+
+    philosophy, item, writer_calls, seen_at_writer = _slot_with_writer(monkeypatch, swapped=swapped)
+    _freeze(monkeypatch, _FAILED_AT)
+    tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, "PROVIDER_TIMEOUT")
+    record = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert record["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    assert record["provider_attempt_count"] == 1
+    # 다음 시도 시각은 운영자가 누르는 두 시각보다 뒤다 — 기한으로는 억제가 풀리지 않는다.
+    assert datetime.fromisoformat(record["next_retry_at"]) > _kst(2026, 9, 16, 8, 5)
+
+    _gate(monkeypatch, item, philosophy)
+
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
+    return item, record, writer_calls, seen_at_writer
+
+
+@pytest.mark.parametrize("moment", _OPERATOR_PRESSES)
+@pytest.mark.parametrize("swapped", _SWAP_HISTORY)
+def test_operator_retry_writes_a_gate_kept_environment_failure_once(monkeypatch, swapped, moment):
+    """환경 실패 → 07:45 게이트가 기록을 지킴 → 운영자 재시도가 작가를 정확히 한 번 부른다.
+
+    #182 단독으로는 게이트가 기록을 지키고, #179 단독으로는 운영자 재시도가
+    CONTENT_NOT_GENERATED만 풀었다. 둘을 합치면 남은 PROVIDER_TIMEOUT(기한 미도래)이
+    운영자 재시도를 같은 원인으로 건너뛰게 만들었다(작가 0회).
+    """
+
+    item, record, writer_calls, seen_at_writer = _gate_kept_environment_failure(
+        monkeypatch, swapped=swapped
+    )
+
+    finished = _press_retry(monkeypatch, item, moment, operator=True)
+
+    assert writer_calls == [item.id]
+    assert finished == [(OperationRunState.SUCCEEDED, None)]
+    # 작가가 불릴 때의 기록: 억제만 빠지고 예산 사다리(환경 실패 1회 포함)는 그대로다.
+    assert seen_at_writer == [_ladder(record)]
+    released = seen_at_writer[0]
+    assert {"reason", "retry_class", "observed_at", "next_retry_at"}.isdisjoint(released)
+    assert released["provider_attempt_count"] == 1
+    assert released["attempt_period"] == "2026-09-16"
+    assert released["first_observed_at"] == record["first_observed_at"]
+    assert (item.topic_swap_history is not None) is swapped  # 교체 이력은 건드리지 않는다
+
+    # 첫 재시도가 원고를 썼다. 바로 이어 한 번 더 눌러도 작가를 다시 사지 않는다.
+    assert (item.body or "").strip()
+    again = _press_retry(monkeypatch, item, moment + timedelta(minutes=1), operator=True)
+
+    assert writer_calls == [item.id]
+    # 저장 본문이 현재 기준으로 이미 쓰였으므로 작가 없이 성공으로 끝난다.
+    assert again == [(OperationRunState.SUCCEEDED, None)]
+
+
+@pytest.mark.parametrize("moment", _OPERATOR_PRESSES)
+@pytest.mark.parametrize("swapped", _SWAP_HISTORY)
+def test_dispatch_without_an_operator_run_keeps_a_gate_kept_environment_failure(
+    monkeypatch, swapped, moment
+):
+    item, record, writer_calls, _seen = _gate_kept_environment_failure(monkeypatch, swapped=swapped)
+
+    finished = _press_retry(monkeypatch, item, moment, operator=False)
+
+    assert writer_calls == []
+    assert finished == [(OperationRunState.FAILED, "PROVIDER_TIMEOUT")]
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
+
+
+def _spend_sample_budget_today(item, philosophy, monkeypatch) -> str:
+    """본문 표본 실패 2회로 오늘 예산을 다 쓴다(다음 시도는 내일)."""
+
+    for hour in (1, 4):
+        _freeze(monkeypatch, _kst(2026, 9, 16, hour, 0, 4))
+        tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, "GENERATION_REJECTED")
+    return "GENERATION_REJECTED"
+
+
+def _swap_a_slot_scheduled_tomorrow(item, philosophy, monkeypatch) -> str:
+    """예정일 전날의 교체 — 오늘 예산을 소진으로 남기고 다음 시도는 내일 01시다."""
+
+    item.scheduled_date = item.scheduled_date + timedelta(days=1)
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 0, 2))
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_kst(2026, 9, 16, 7, 0, 2))
+    return "CONTENT_NOT_GENERATED"
+
+
+@pytest.mark.parametrize("moment", _OPERATOR_PRESSES)
+@pytest.mark.parametrize(
+    "record_failure",
+    [
+        pytest.param(_spend_sample_budget_today, id="GENERATION_REJECTED"),
+        pytest.param(_swap_a_slot_scheduled_tomorrow, id="TOPIC_SWAPPED"),
+    ],
+)
+def test_operator_retry_keeps_a_sample_budget_suppression(monkeypatch, record_failure, moment):
+    """표본 실패(주제 교체 기록 포함)는 하루 예산이 소유한다 — 운영자 재시도도 억제된다."""
+
+    philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=True)
+    gate_code = record_failure(item, philosophy, monkeypatch)
+    record = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert record["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert datetime.fromisoformat(record["next_retry_at"]) > _kst(2026, 9, 16, 8, 5)
+
+    _gate(monkeypatch, item, philosophy, gate_code)
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
+
+    finished = _press_retry(monkeypatch, item, moment, operator=True)
+
+    assert writer_calls == []
+    assert finished == [(OperationRunState.FAILED, record["reason"])]
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
+
+
+def test_a_legacy_sample_record_the_gate_overwrites_is_retried_by_the_operator(monkeypatch):
+    """`next_retry_at` 키가 없는 9월 이전 기록(오늘 예산 소진)은 게이트가 종전처럼 덮는다.
+
+    지켰다면 스윕도(기한 미도래) 운영자 재시도도(표본 실패 억제) 이 슬롯을 쓰지 못한다.
+    덮인 CONTENT_NOT_GENERATED는 운영자 재시도가 푼다.
+    """
+
+    philosophy, item, writer_calls, seen_at_writer = _slot_with_writer(monkeypatch, swapped=True)
+    item.essence_check_summary = {
+        GENERATION_ATTEMPT_KEY: {
+            "reason": "GENERATION_REJECTED",
+            "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+            "context": tasks._generation_attempt_context(item, philosophy),
+            "attempt_period": "2026-09-16",
+            "provider_attempt_count": 2,
+            "attempt_count": 2,
+            "exhausted_days": 0,
+        }
+    }
+    _freeze(monkeypatch, _SLOT_GATE_AT)
+    assert tasks.retry_is_due(item.essence_check_summary[GENERATION_ATTEMPT_KEY]) is False
+
+    _gate(monkeypatch, item, philosophy)
+
+    overwritten = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert overwritten["reason"] == "CONTENT_NOT_GENERATED"
+    assert overwritten["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+
+    finished = _press_retry(monkeypatch, item, _kst(2026, 9, 16, 7, 50), operator=True)
+
+    assert writer_calls == [item.id]
+    assert finished == [(OperationRunState.SUCCEEDED, None)]
+    assert seen_at_writer == [_ladder(overwritten)]
