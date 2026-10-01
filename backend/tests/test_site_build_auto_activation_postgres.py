@@ -13,7 +13,6 @@
 
 from __future__ import annotations
 
-import os
 import threading
 import time
 import uuid
@@ -26,11 +25,12 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.monthly_control import HospitalServiceInterval
 from app.services.hospital_activation import ACTIVATE_AUDIT_ACTION
 from app.workers import tasks
+from tests.db_env import require_db_url
 
-_SYNC_URL = os.getenv(
-    "TASK19_SYNC_DATABASE_URL",
-    "postgresql+psycopg2://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _sync_url() -> str:
+    return require_db_url("TASK19_SYNC_DATABASE_URL")
+
 
 # 워커 스레드가 잠긴 행에서 **실제로 막혀 있는 것**을 확인할 때까지 기다린다. 고정
 # sleep으로 대신하면 두 방향으로 틀린다: 느린 러너에서는 워커가 아직 SELECT에 닿지도
@@ -137,7 +137,7 @@ def _activation_audit_count(sessions, hospital_id: uuid.UUID) -> int:
 def test_pause_committed_mid_build_is_not_overwritten(monkeypatch) -> None:
     """판정 직전에 커밋된 `/pause`가 자동 활성화에 덮이지 않는다."""
 
-    engine = create_engine(_SYNC_URL)
+    engine = create_engine(_sync_url())
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     slug = f"lock-pause-{hospital_id.hex[:10]}"
@@ -196,7 +196,7 @@ def test_pause_committed_mid_build_is_not_overwritten(monkeypatch) -> None:
 def test_two_concurrent_builds_activate_exactly_once(monkeypatch) -> None:
     """동시에 도는 두 build가 감사행도 활성화 알림도 하나만 남긴다."""
 
-    engine = create_engine(_SYNC_URL)
+    engine = create_engine(_sync_url())
     sessions = sessionmaker(bind=engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     slug = f"lock-double-{hospital_id.hex[:10]}"

@@ -12,13 +12,16 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import arrow
 import pytest
 from sqlalchemy import Update, select
 from sqlalchemy.sql.elements import BindParameter
 
 from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.essence import PhilosophyStatus
+from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, IncidentState
-from app.workers import generation_retry_policy, topic_swap_fallback
+from app.workers import generation_retry_policy, nightly_generation_batch, topic_swap_fallback
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import GenerationRetryClass
@@ -527,8 +530,8 @@ def test_candidate_select_targets_content_items():
 # ── 교체 뒤의 하루 예산 ──────────────────────────────────────────────────────
 
 
-def _kst(year, month, day, hour=0, minute=0) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=KST)
+def _kst(year, month, day, hour=0, minute=0, second=0) -> datetime:
+    return datetime(year, month, day, hour, minute, second, tzinfo=KST)
 
 
 def _recorded_attempt(monkeypatch, *, scheduled_date=SLOT, now=NOW) -> dict:
@@ -552,10 +555,15 @@ def _recorded_attempt(monkeypatch, *, scheduled_date=SLOT, now=NOW) -> dict:
     return captured
 
 
-def test_the_swap_leaves_todays_writer_budget_spent(monkeypatch):
-    """교체가 소진된 하루 예산을 되살리면 안 된다 — 다음 시도는 내일이다."""
+@pytest.mark.parametrize(
+    "scheduled_date",
+    [SLOT + timedelta(days=1), SLOT - timedelta(days=1)],
+    ids=["before_the_scheduled_day", "after_the_scheduled_day"],
+)
+def test_the_swap_leaves_todays_writer_budget_spent(monkeypatch, scheduled_date):
+    """예정일이 아닌 날의 교체는 소진된 하루 예산을 되살리지 않는다 — 다음 시도는 내일이다."""
 
-    attempt = _recorded_attempt(monkeypatch)
+    attempt = _recorded_attempt(monkeypatch, scheduled_date=scheduled_date)
 
     assert attempt["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
     assert attempt["count_attempt"] is False  # 예산을 쓴 결정이 아니다
@@ -569,6 +577,15 @@ def test_the_swap_leaves_todays_writer_budget_spent(monkeypatch):
     )
 
 
+def test_a_slot_without_a_scheduled_date_gets_no_same_day_grant(monkeypatch):
+    """예정일을 읽지 못한 행은 종전 기록 그대로다(당일 1회도, 기한도 없다)."""
+
+    attempt = _recorded_attempt(monkeypatch, scheduled_date=None)
+
+    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET
+    assert attempt["next_retry_at"] is None
+
+
 def _freeze(monkeypatch, moment: datetime) -> None:
     """워커와 정책이 같은 '지금'을 보게 한다(사다리 테스트와 같은 방식)."""
 
@@ -579,17 +596,17 @@ def _freeze(monkeypatch, moment: datetime) -> None:
         def now(cls, tz=None):
             return moment.astimezone(tz) if tz is not None else moment.replace(tzinfo=None)
 
-    for module in (tasks, generation_retry_policy):
+    for module in (tasks, generation_retry_policy, nightly_generation_batch):
         monkeypatch.setattr(module, "datetime", _Frozen)
 
 
 def test_the_loader_skips_the_swapped_slot_today_and_takes_it_tomorrow(monkeypatch):
-    """04시 소진 → 07시 교체 → 그날은 로더가 집지 않고, 다음 날 01시에 집는다."""
+    """D-1 04시 소진 → 07시 교체 → 그날은 로더가 집지 않고, 다음 날(D) 01시에 집는다."""
 
     from app.workers import tasks
 
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda db, hospital_id: None)
-    item = _item()
+    item = _item(scheduled_date=SLOT + timedelta(days=1))
     swapped_at = _kst(2026, 9, 16, 7, 0)
     _freeze(monkeypatch, swapped_at)
     _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at)
@@ -612,3 +629,451 @@ def test_the_new_topics_first_failure_counts_from_one(monkeypatch):
     )
 
     assert (count, exhausted_days) == (1, 0)
+
+
+# ── 예정일 당일의 교체: 그날 한 번만 새 주제로 쓴다 ─────────────────────────────
+
+
+_SWAPPED_AT = _kst(2026, 9, 16, 7, 0, 2)  # 07:00 복구 스윕의 교체 pass
+
+
+class _PageDB:
+    """로더의 keyset 페이지를 한 번에 하나씩 돌려준다(복구 사다리 테스트와 같은 더블)."""
+
+    def __init__(self, *pages) -> None:
+        self._pages = [list(page) for page in pages]
+
+    def execute(self, _statement):
+        page = self._pages.pop(0) if self._pages else []
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: page))
+
+    def commit(self) -> None:
+        return None
+
+
+class _WorkerDB:
+    """`_run_generation_item`이 쓰는 세션 표면. 기존 제목 조회는 빈 목록이다."""
+
+    def execute(self, _statement):
+        return SimpleNamespace(all=lambda: [])
+
+    def commit(self) -> None:
+        return None
+
+    def refresh(self, _item) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def expire_all(self) -> None:
+        return None
+
+
+class _Recorder:
+    def __init__(self) -> None:
+        self.run = SimpleNamespace(id=uuid.uuid4())
+        self.states: list = []
+
+    def record(self, _item_id, state, **_kwargs) -> None:
+        self.states.append(state)
+
+    def item_run(self, *_args, **_kwargs):
+        return SimpleNamespace(id=uuid.uuid4())
+
+
+class _AutoPublishDB:
+    """08:00 `_auto_publish_one`의 조회를 대상 엔티티로 답한다."""
+
+    def __init__(self, item, hospital) -> None:
+        self._rows = {ContentItem: item, Hospital: hospital}
+        self.added: list = []
+
+    def execute(self, statement):
+        row = self._rows[statement.column_descriptions[0]["entity"]]
+        return SimpleNamespace(scalar_one_or_none=lambda: row)
+
+    def add(self, value) -> None:
+        self.added.append(value)
+
+    def commit(self) -> None:
+        return None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+
+def _swapped_slot(philosophy) -> SimpleNamespace:
+    """교체 UPDATE 직후의 슬롯 — 본문·이미지·시도 기록이 비고 history가 한 칸이다."""
+
+    hospital = SimpleNamespace(
+        id=uuid.uuid4(),
+        name="당일교체의원",
+        slug="same-day-swap",
+        aeo_domain="same-day-swap.example.com",
+        treatments=[],
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+    )
+    return _item(
+        hospital=hospital,
+        hospital_id=hospital.id,
+        title=None,
+        body=None,
+        meta_description=None,
+        faq_question=None,
+        faq_answer_summary=None,
+        references_list=None,
+        image_url=None,
+        image_prompt=None,
+        image_content_hash=None,
+        image_subject_hash=None,
+        image_policy_version=None,
+        image_policy_verified_at=None,
+        image_reused_from_content_id=None,
+        image_fallback_source=None,
+        essence_check_summary=None,
+        essence_status=None,
+        content_philosophy_id=philosophy.id,
+        content_revision=5,
+        total_count=12,
+        published_at=None,
+        published_by=None,
+        post_publish_notified_at=None,
+        post_publish_reviewed_at=None,
+        post_publish_reviewed_by=None,
+        topic_swap_history=[{"to_target_id": "new", "incident_recovered": True}],
+    )
+
+
+def _approved_philosophy():
+    return SimpleNamespace(
+        id=uuid.uuid4(), version=3, status=PhilosophyStatus.APPROVED, avoid_messages=[]
+    )
+
+
+def _patch_generation(monkeypatch, philosophy, slot, *, fail: bool) -> list[uuid.UUID]:
+    """공급자 대신 작가 호출 수만 세는 가짜 생성 경로를 건다."""
+
+    from app.workers import tasks
+
+    writer_calls: list[uuid.UUID] = []
+
+    async def allowed(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def ignore(*_args, **_kwargs):
+        return None
+
+    async def fake_writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+        writer_calls.append(item.id)
+        if fail:
+            raise ValueError("GEO hard-fail: references is empty for FAQ")
+        title = "대장내시경 전 준비할 점"
+        return (
+            {
+                "title": title,
+                "body": "검사 전날의 식사와 복용약을 의료진과 미리 확인합니다.",
+                "meta_description": "대장내시경 전 준비할 점을 정리했습니다.",
+                "references": [
+                    {
+                        "title": "질병관리청 국가건강정보포털",
+                        "url": "https://health.kdca.go.kr/healthinfo/example",
+                    }
+                ],
+                "faq_question": "대장내시경 전에 무엇을 준비하나요?",
+                "faq_answer_summary": "식사 조절과 복용약 확인이 필요합니다.",
+            },
+            SimpleNamespace(status=None, summary={}),
+        )
+
+    def write_back(_db, *, item_id, values, expected_revision, expected_claim_token):
+        assert expected_claim_token == slot.generation_claim_token
+        for field, value in values.items():
+            setattr(slot, field, value)
+        return 1
+
+    def certified_image(_db, item, _hospital, _philosophy):
+        image_hash = "c" * 64
+        item.image_url = f"gs://reputation-images/content/{image_hash}-content.png"
+        item.image_content_hash = image_hash
+        item.image_subject_hash = tasks.image_subject_hash(item.content_type, item.title)
+        item.image_policy_version = tasks.IMAGE_POLICY_VERSION
+        item.image_policy_verified_at = datetime.now()
+        return tasks.GenerationItemState.SUCCEEDED
+
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+    monkeypatch.setattr(
+        tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {}
+    )
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", fake_writer)
+    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: {})
+    monkeypatch.setattr(tasks, "write_back_generated_content", write_back)
+    monkeypatch.setattr(tasks, "_recover_missing_content_image", certified_image)
+    monkeypatch.setattr(tasks, "recover_generation_incidents", ignore)
+    monkeypatch.setattr(tasks, "open_generation_incident", ignore)
+    return writer_calls
+
+
+def _claims_at(monkeypatch, item, moment: datetime) -> bool:
+    """그 시각의 복구 스윕 로더가 이 슬롯을 claim하는가(실제 로더·실제 적격 술어)."""
+
+    from app.workers import tasks
+
+    _freeze(monkeypatch, moment)
+    item.generation_claim_token = None
+    item.generation_claimed_at = None
+    page_db = _PageDB([item])
+    claimed, _truncated, _complete = tasks._load_nightly_generation_batch(
+        page_db,
+        SLOT - timedelta(days=7),
+        SLOT + timedelta(days=2),
+        is_eligible=tasks._generation_retry_is_eligible(page_db),
+    )
+    return [row.id for row in claimed] == [item.id]
+
+
+def _generate_once(monkeypatch, item, moment: datetime):
+    from app.workers import tasks
+
+    _freeze(monkeypatch, moment)
+    return tasks._run_generation_item(_WorkerDB(), _Recorder(), item, item.hospital)
+
+
+def test_a_same_day_swap_is_generated_by_the_same_sweep_and_published_at_eight(monkeypatch):
+    """07:00 교체 → 같은 스윕 로더가 새 주제를 한 번 쓴다 → 08:00 자동 발행이 공개한다.
+
+    신기한속내과 f0217d98: 예정일 07:00에 교체된 슬롯이 오늘 예산을 소진으로 기록해 같은
+    스윕이 "No content to generate"로 끝나고 08:00 발행을 놓쳤다.
+    """
+
+    from app.workers import tasks
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=False)
+
+    _freeze(monkeypatch, _SWAPPED_AT)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+    attempt = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
+    # 오늘 예산은 한 회만 남고, 기한은 지금이다(다음 스윕이 아니라 이 스윕).
+    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET - 1
+    assert datetime.fromisoformat(attempt["next_retry_at"]) == _SWAPPED_AT
+
+    # 교체 pass 바로 뒤의 같은 07:00 스윕 로더가 집는다.
+    assert _claims_at(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 3)) is True
+    state, code, _message = _generate_once(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 4))
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [item.id]
+
+    # 08:00 자동 발행 — 실제 assess_content_publication을 지난다.
+    publish_db = _AutoPublishDB(item, item.hospital)
+    _freeze(monkeypatch, _kst(2026, 9, 16, 8, 0))
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *_a, **_kw: arrow.get(_kst(2026, 9, 16, 8, 0))
+    )
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: publish_db)
+    monkeypatch.setattr(
+        tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy
+    )
+    monkeypatch.setattr(tasks, "ensure_site_revalidate_configured", lambda: None)
+
+    payload = tasks._auto_publish_one(item.id)
+
+    assert payload is not None and payload["kind"] == "published"
+    assert item.status is ContentStatus.PUBLISHED
+    assert writer_calls == [item.id]  # 발행 경로는 작가를 다시 부르지 않는다
+
+
+def test_the_same_day_grant_is_one_writer_session_only(monkeypatch):
+    """그 1회가 실패하면 그날 남은 스윕은 다시 사지 않고, 내일 01시에야 다시 집는다."""
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=True)
+
+    _freeze(monkeypatch, _SWAPPED_AT)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+    assert _claims_at(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 3)) is True
+    _generate_once(monkeypatch, item, _kst(2026, 9, 16, 7, 0, 4))
+    assert writer_calls == [item.id]
+
+    attempt = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
+    assert attempt["reason"] == "GENERATION_REJECTED"
+    assert attempt["provider_attempt_count"] == generation_retry_policy.SAMPLE_BODY_DAILY_BUDGET
+    for moment in (
+        _kst(2026, 9, 16, 7, 0, 30),
+        _kst(2026, 9, 16, 12, 0),
+        _kst(2026, 9, 16, 18, 0),
+        _kst(2026, 9, 16, 22, 0),
+        _kst(2026, 9, 16, 23, 0),
+    ):
+        assert _claims_at(monkeypatch, item, moment) is False, moment
+    # 워커 쪽 SKIPPED 판정도 같은 말을 한다 — 로더를 우회해도 작가를 다시 사지 않는다.
+    _generate_once(monkeypatch, item, _kst(2026, 9, 16, 12, 0))
+    assert writer_calls == [item.id]
+
+    # 날이 바뀌면 정상 예산 규칙대로 다시 적격이다.
+    assert _claims_at(monkeypatch, item, _kst(2026, 9, 17, 1, 0)) is True
+
+
+def test_a_second_same_day_swap_pass_grants_nothing(chosen_target, recorded_attempts):
+    """교체는 슬롯 평생 한 번이다 — 같은 날 다시 소진돼 보여도 두 번째 당일 1회는 없다."""
+
+    item = _item(
+        topic_swap_history=[{"to_target_id": "new", "incident_recovered": True}],
+        essence_check_summary=_attempt(),  # 새 주제도 소진된 것처럼 보이는 기록
+    )
+    db = _FakeDB([item])
+
+    report = _run(db)  # NOW는 SLOT(예정일) 당일 KST다
+
+    assert (report.considered, report.swapped) == (0, 0)
+    assert recorded_attempts == []
+    assert db.updates == []
+
+
+# ── 07:45·08:00 게이트는 교체 기록을 덮지 않는다 ─────────────────────────────────
+
+
+class _GateDB:
+    """07:45 `_page_morning_stored_publication_gates`의 후보 조회를 이 슬롯으로 답한다."""
+
+    def __init__(self, item) -> None:
+        self._item = item
+        self.added: list = []
+
+    def execute(self, _statement):
+        return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: [self._item]))
+
+    def add(self, value) -> None:
+        self.added.append(value)
+
+    def commit(self) -> None:
+        return None
+
+
+def _run_morning_gates(monkeypatch, item, philosophy, gate_day: date) -> tuple[list, list]:
+    """07:45 게이트와 08:00 발행기를 실제 판정·기록 경로로 돌리고 보고된 코드를 잡는다."""
+
+    from app.workers import tasks
+
+    incidents: list[str] = []
+    digests: list[str] = []
+
+    async def capture_incident(**kwargs):
+        incidents.append(kwargs["code"])
+
+    monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
+    monkeypatch.setattr(
+        tasks,
+        "ensure_publication_block_run",
+        lambda *_args, **_kwargs: SimpleNamespace(id=uuid.uuid4()),
+    )
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+    monkeypatch.setattr(
+        tasks,
+        "enqueue_generation_blocked_digest_sync",
+        lambda _db, _day, _batch, outcomes: digests.extend(row["code"] for row in outcomes),
+    )
+
+    gate_at = _kst(gate_day.year, gate_day.month, gate_day.day, 7, 45)
+    _freeze(monkeypatch, gate_at)
+    assert tasks._page_morning_stored_publication_gates(
+        _GateDB(item), now_kst=arrow.get(gate_at)
+    ) == 1
+
+    publish_at = _kst(gate_day.year, gate_day.month, gate_day.day, 8, 0)
+    _freeze(monkeypatch, publish_at)
+    monkeypatch.setattr(tasks.arrow, "now", lambda *_a, **_kw: arrow.get(publish_at))
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _AutoPublishDB(item, item.hospital))
+    outcome = tasks._auto_publish_one(item.id)
+    assert outcome is not None and outcome["kind"] == "blocked"
+    return incidents + [outcome["code"]], digests
+
+
+@pytest.mark.parametrize(
+    ("swapped_at", "next_sweep"),
+    [
+        # 예정일 다음 날 07:00의 교체(스윕 창은 오늘-7부터다) — 오늘 예산은 소진, 내일 01시.
+        (_kst(2026, 9, 17, 7, 0, 2), _kst(2026, 9, 18, 1, 0)),
+        # 예정일 당일 교체인데 같은 스윕 로더가 닿지 못했다(상한·잘림) — 당일 1회가 남아 있다.
+        (_SWAPPED_AT, _kst(2026, 9, 17, 1, 0)),
+    ],
+    ids=["past_due_swap", "same_day_swap_not_reached"],
+)
+def test_the_morning_gates_keep_the_swap_record_so_a_sweep_writes_the_new_topic(
+    monkeypatch, swapped_at, next_sweep
+):
+    """교체 → 07:45 → 08:00 → 다음 적격 스윕이 새 주제를 쓴다.
+
+    게이트가 빈 슬롯의 증상(CONTENT_NOT_GENERATED)으로 교체 기록을 덮으면 분류가
+    OPERATOR_REQUIRED·기한 없음으로 굳어 로더가 영영 집지 않고, 교체 이력이 있어
+    다시 교체되지도 않았다. 보고 코드(인시던트·요약)는 종전 그대로 CONTENT_NOT_GENERATED다.
+    """
+
+    from app.workers import tasks
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    writer_calls = _patch_generation(monkeypatch, philosophy, item, fail=False)
+
+    _freeze(monkeypatch, swapped_at)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=swapped_at)
+    swapped = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+    assert swapped["reason"] == topic_swap_fallback.TOPIC_SWAPPED_REASON
+    assert swapped["next_retry_at"] is not None
+
+    reported, digested = _run_morning_gates(monkeypatch, item, philosophy, swapped_at.date())
+
+    # 기록은 한 글자도 바뀌지 않는다 — 원인·분류·기한·계수 모두.
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == swapped
+    assert swapped["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    # 보고 경로는 종전 그대로다: 07:45 인시던트·08:00 차단, 두 요약 모두 같은 코드.
+    assert reported == ["CONTENT_NOT_GENERATED", "CONTENT_NOT_GENERATED"]
+    assert digested == ["CONTENT_NOT_GENERATED"]
+    assert writer_calls == []  # 게이트는 작가를 부르지 않는다
+
+    # 로더와 워커가 같은 기록을 읽고 다음 적격 스윕에서 새 주제를 한 번 쓴다.
+    _freeze(monkeypatch, next_sweep)
+    assert tasks.retry_is_due(item.essence_check_summary[GENERATION_ATTEMPT_KEY]) is True
+    assert tasks._generation_attempt_is_unchanged(item, philosophy) is False
+    assert _claims_at(monkeypatch, item, next_sweep) is True
+    state, code, _message = _generate_once(monkeypatch, item, next_sweep + timedelta(seconds=1))
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [item.id]
+    assert item.title == "대장내시경 전 준비할 점"
+
+
+@pytest.mark.parametrize(
+    ("gate_code", "kept"),
+    [
+        ("CONTENT_NOT_GENERATED", True),
+        # 빈 슬롯의 증상이 아닌 실제 원인은 종전처럼 정본 기록이 된다.
+        ("CONTENT_AUTHORITY_CHANGED", False),
+    ],
+)
+def test_only_the_empty_slot_symptom_leaves_the_swap_record_alone(
+    monkeypatch, gate_code, kept
+):
+    from app.workers import tasks
+
+    philosophy = _approved_philosophy()
+    item = _swapped_slot(philosophy)
+    monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
+    _freeze(monkeypatch, _SWAPPED_AT)
+    _RECORD_ATTEMPT(_FakeDB([]), item, now=_SWAPPED_AT)
+    swapped = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
+
+    _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))
+    tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, gate_code)
+
+    after = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
+    assert (after == swapped) is kept
+    assert after["reason"] == (topic_swap_fallback.TOPIC_SWAPPED_REASON if kept else gate_code)

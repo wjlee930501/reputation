@@ -1,20 +1,16 @@
-"""Real-Redis checks for Lua receipt atomicity (opt-in via COST_GUARD_REDIS_URL)."""
+"""Real-Redis checks for Lua receipt atomicity (COST_GUARD_REDIS_URL is required)."""
 
-import os
 import uuid
 from datetime import datetime
 
-import pytest
 import redis.asyncio as redis_async
 
 from app.services import cost_guard
+from tests.db_env import require_redis_url
 
 
-@pytest.mark.skipif(
-    not os.getenv("COST_GUARD_REDIS_URL"), reason="COST_GUARD_REDIS_URL is not configured"
-)
 async def test_real_redis_receipt_boundary_duplicate_and_zero_kill_switch(monkeypatch):
-    client = redis_async.from_url(os.environ["COST_GUARD_REDIS_URL"])
+    client = redis_async.from_url(require_redis_url("COST_GUARD_REDIS_URL"))
     reservation_id = f"integration-{uuid.uuid4()}"
     before = datetime(2026, 8, 31, 23, 59, tzinfo=cost_guard._KST)
     daily_key = cost_guard._daily_key("content", "20260831")

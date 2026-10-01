@@ -112,7 +112,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.10** · 갱신일: **2026-09-16 (Asia/Seoul)**
+문서 버전: **2.12** · 갱신일: **2026-09-29 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
@@ -128,7 +128,7 @@ Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 l
 ## 현재 기술·책임 경계
 
 - Backend: Python 3.11/FastAPI, PostgreSQL/SQLAlchemy/Alembic, Celery/Redis/RedBeat, Jinja2/WeasyPrint. API async와 Worker sync 세션이 공존한다.
-- Admin/Site: Next App Router, 저장소 선언 기준 Next 16.3.3, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다. 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)은 BFF가 서명한 actor 단언(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET`, 120초)을 요구하며, 배치·CLI는 `X-Admin-Actor-System`으로 감사에 `system:<job>`으로 남는다. 공유 `X-Admin-Key`만으로 actor를 고르는 경로는 없다.
+- Admin/Site: Next App Router, 저장소 선언 기준 Next 16.3.8, standalone 서버. Admin은 내부 전체 병원 운영 콘솔이며 브라우저→인증 BFF→Backend 구조다. 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)은 BFF가 서명한 actor 단언(`X-Admin-Actor-Assertion`, `BFF_ACTOR_SECRET`, 120초)을 요구하며, 배치·CLI는 `X-Admin-Actor-System`으로 감사에 `system:<job>`으로 남는다. 공유 `X-Admin-Key`만으로 actor를 고르는 경로는 없다.
 - 운영 배포: API, Worker, Beat, Admin, Site 모두 GCP Cloud Run. Cloud SQL, Memorystore, GCS, HTTPS Load Balancer와 인증서 구성을 사용한다.
 - 모든 LLM·이미지 호출은 `OPENROUTER_API_KEY` 하나로 OpenRouter 게이트웨이를 거친다 — 콘텐츠는 Claude 계열, 이미지는 Gemini/OpenAI 계열, 측정은 OpenAI/Gemini 계열 모델을 `vendor/model` 슬러그로 호출한다. 공급자 직결 SDK(Anthropic·OpenAI·google-genai·Vertex)는 쓰지 않는다. 개발 에이전트 모델과 서비스의 모델을 혼동하지 않는다. 실제 모델은 `backend/app/core/config.py`와 배포 설정으로 확인한다.
 - `build_aeo_site`는 상태 준비·자동 활성화 작업이다. 별도의 `site_builder.py`나 병원별 HTML/CSS 생성기를 전제로 개발하지 않는다.
@@ -196,7 +196,7 @@ Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 l
 
 ## 검증과 배포
 
-변경 범위에 맞는 테스트·타입·lint·계약 검사를 수행한다. 기본 진입점은 `make test-backend-local`, `make test-frontend`, `make copy-guard`, `make db-budget-guard`다. 통합 테스트의 DB/Redis/PDF 의존성과 skip 여부를 함께 기록한다. `make test`의 컨테이너 경로 제약, `make setup`의 기존 `.env` 덮어쓰기 동작에 유의한다.
+변경 범위에 맞는 테스트·타입·lint·계약 검사를 수행한다. 기본 진입점은 `make test-backend-local`, `make test-frontend`, `make copy-guard`, `make db-budget-guard`다. 통합 테스트의 DB/Redis/PDF 의존성과 skip 여부를 함께 기록한다. 테스트 DB·Redis URL에는 기본값이 없고 테스트는 `backend/.env`를 읽지 않는다 — 전용 테스트 URL뿐 아니라 앱 자체의 `DATABASE_URL`·`SYNC_DATABASE_URL`·`REDIS_URL`도 같다. 변수가 비어 있으면 그 변수를 쓰는 테스트는 변수 이름을 밝힌 실패로 끝나며, 앱 코드가 연결 오류를 삼키는 경로도 연결 불가능한 표지 호스트 가드(`tests/conftest.py`)가 실패시킨다. 값이 있는데 DB에 접속하지 못해도 실패이고, DB URL은 `_test`로 끝나는 DB(또는 `db_env`의 전용 DB)만 허용한다. 그러니 README의 목록(CI backend 잡 env와 같다)을 모두 export하고 DB·Redis를 띄운다. 새 DB/Redis 테스트도 `tests/db_env.py`의 `require_db_url`·`require_redis_url`로 URL을 읽고, 접속 실패는 skip 대신 `fail_unreachable`로 끝낸다. DB/Redis 테스트 모듈의 skip·xfail과 로컬 포트 기본값은 `test_no_skip_in_db_tests.py`·`test_no_default_test_db_port.py`가 막는다. `make test`의 컨테이너 경로 제약, `make setup`의 기존 `.env` 덮어쓰기 동작에 유의한다.
 
 배포는 [현재 배포 안내](docs/ops/deployment-runbook.md)를 따른다. 병원별 헬스는 HTTP 200만 보지 않고 hospital ID·canonical host·현재 리비전까지 확인한다. 배포 후 페이지·sitemap·llms·콘텐츠·이미지·큐 canary·스키마를 변경 범위에 맞게 확인한다. 문서만 변경했다면 런타임이 바뀐 것처럼 새 배포 성공을 주장하지 않는다.
 

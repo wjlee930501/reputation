@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import json
-import os
 import uuid
 
-import pytest
 import redis
 from celery.beat import ScheduleEntry, Scheduler
 from kombu import Connection
@@ -17,15 +15,14 @@ from app.core.celery_app import celery_app
 from app.workers import autonomous_recovery as _autonomous_recovery  # noqa: F401
 from app.workers import provider_usage_recovery as _provider_usage_recovery  # noqa: F401
 from app.workers.dispatch_auth import build_dispatch_headers
+from tests.db_env import require_redis_url
 
 CONTROL_TASK = "app.workers.autonomous_recovery.reconcile"
 BACKGROUND_TASK = "app.workers.provider_usage_recovery.drain"
 
 
 def test_actual_redis_consumer_key_order_prioritizes_control() -> None:
-    redis_url = os.getenv("INTEGRATION_REDIS_URL")
-    if not redis_url:
-        pytest.skip("INTEGRATION_REDIS_URL is required for the real Redis priority check")
+    redis_url = require_redis_url("INTEGRATION_REDIS_URL")
 
     suffix = uuid.uuid4().hex
     control_queue = f"itest-control-{suffix}"
@@ -63,9 +60,7 @@ def test_actual_redis_consumer_key_order_prioritizes_control() -> None:
 
 def test_actual_redis_publishers_put_control_on_priority_zero_key() -> None:
     """Beat's registered Task path and direct send_task must agree on wire priority."""
-    redis_url = os.getenv("INTEGRATION_REDIS_URL")
-    if not redis_url:
-        pytest.skip("INTEGRATION_REDIS_URL is required for the real Redis priority check")
+    redis_url = require_redis_url("INTEGRATION_REDIS_URL")
 
     suffix = uuid.uuid4().hex
     beat_queue = f"itest-beat-control-{suffix}"

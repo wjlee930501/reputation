@@ -1,6 +1,5 @@
 """Two actual database sessions cannot spend the same uncovered question twice."""
 
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -16,15 +15,11 @@ from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.hospital import Hospital
 from app.models.sov import AIQueryTarget
 from app.services.content_target_planner import prepare_automatic_content_brief_sync
+from tests.db_env import require_db_url
 
 
 def test_parallel_writers_serialize_question_selection_until_the_brief_is_committed():
-    url = make_url(
-        os.environ.get(
-            "SYNC_DATABASE_URL",
-            "postgresql+psycopg2://postgres:postgres@localhost:5432/reputation_test",
-        )
-    )
+    url = make_url(require_db_url("SYNC_DATABASE_URL"))
     assert url.database == "reputation_test"
     engine = create_engine(url)
     first_planned, second_entered, release_first = (
