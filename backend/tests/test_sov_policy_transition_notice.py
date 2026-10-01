@@ -12,7 +12,6 @@ outbox는 격리된 로컬 PostgreSQL(`INCIDENT_TEST_DATABASE_URL`)의 롤백 �
 
 from __future__ import annotations
 
-import os
 import socket
 import uuid
 from collections.abc import Iterator
@@ -30,8 +29,9 @@ from app.models.operations import Incident, NotificationOutbox, OperationRunStat
 from app.services import sov_engine
 from app.services.notification_labels import ERROR_LABEL, REPORT_LABEL
 from app.workers import tasks, weekly_sov_incident_control
+from tests.db_env import fail_unreachable, require_db_url
 
-DEFAULT_DATABASE_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+_URL_ENV = "INCIDENT_TEST_DATABASE_URL"
 HOSPITAL_NAME = "장앤김테스트의원"
 FROZEN_VERSION = "v2.1-neutral-auto-systemrole"
 TRANSITION_TYPE = "SOV_MEASUREMENT_POLICY_TRANSITION"
@@ -75,8 +75,7 @@ class _Postgres:
 
 @pytest.fixture
 def postgres(monkeypatch) -> Iterator[_Postgres]:
-    url = os.getenv("INCIDENT_TEST_DATABASE_URL", DEFAULT_DATABASE_URL)
-    required = "INCIDENT_TEST_DATABASE_URL" in os.environ
+    url = require_db_url(_URL_ENV)
     engine = create_async_engine(url, poolclass=NullPool)
 
     async def begin():
@@ -94,9 +93,7 @@ def postgres(monkeypatch) -> Iterator[_Postgres]:
         connection, transaction, ready = tasks._run_async(begin())
     except OSError as exc:
         tasks._run_async(engine.dispose())
-        if required:
-            pytest.fail(f"required incident PostgreSQL unavailable: {exc}", pytrace=False)
-        pytest.skip("local incident PostgreSQL is unavailable")
+        fail_unreachable(_URL_ENV, exc)
 
     async def finish():
         await transaction.rollback()
@@ -105,9 +102,7 @@ def postgres(monkeypatch) -> Iterator[_Postgres]:
 
     if not ready:
         tasks._run_async(finish())
-        if required:
-            pytest.fail("incident PostgreSQL must include the operations schema", pytrace=False)
-        pytest.skip("local incident PostgreSQL lacks the operations schema")
+        pytest.fail("incident PostgreSQL must include the operations schema", pytrace=False)
 
     harness = _Postgres(connection=connection, hospital_id=uuid.uuid4())
 
