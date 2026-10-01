@@ -145,6 +145,7 @@ async def _prepare_monthly_rebuild_audit(
     month: int | None,
     reason: str,
     template_only: bool = False,
+    allow_recovery_pending: bool = False,
 ) -> bool:
     """Lock the hospital and stage a reason audit before durable dispatch.
 
@@ -172,6 +173,8 @@ async def _prepare_monthly_rebuild_audit(
     if template_only:
         # 템플릿 갱신은 같은 사유라도 일반 재생성과 다른 요청이다. 키를 섞어 쓰면 409.
         expected["mode"] = "TEMPLATE_REFRESH"
+    if allow_recovery_pending:
+        expected["allow_recovery_pending"] = True
     if existing is not None:
         if existing.detail != expected:
             raise HTTPException(
@@ -818,6 +821,7 @@ async def generate_monthly_report_operation(
     month: int | None = Query(default=None, ge=1, le=12),
     rebuild: bool = Query(default=False),
     template_only: bool = Query(default=False),
+    allow_recovery_pending: bool = Query(default=False),
     payload: MonthlyReportBuildRequest | None = Body(default=None),
     db: AsyncSession = Depends(get_db),
     idempotency_key: IdempotencyKeyHeader = None,
@@ -830,8 +834,10 @@ async def generate_monthly_report_operation(
     이미 있는 리포트는 덮어쓰지 않는다.
 
     `rebuild=true&template_only=true`는 저장된 숫자를 그대로 두고 원장·AE PDF의 문구와
-    디자인만 새 버전으로 다시 그린다(새 템플릿 배포 뒤 지난달 리포트 갱신용). 측정 복구
-    기간(1~7일)에는 받지 않고, 숫자 판정이 어긋나면 워커가 새 버전을 만들지 않는다.
+    디자인만 새 버전으로 다시 그린다(새 템플릿 배포 뒤 지난달 리포트 갱신용). 숫자 판정이
+    어긋나면 워커가 새 버전을 만들지 않는다. 측정 복구 기간(1~7일)에 측정이 덜 끝난 병원은
+    워커가 막고, `allow_recovery_pending=true`(템플릿 갱신 전용)를 함께 주면 운영자 지정으로
+    지금 저장된 숫자 그대로 갱신한다.
     """
     if (year is None) != (month is None):
         raise HTTPException(
@@ -853,6 +859,12 @@ async def generate_monthly_report_operation(
             status_code=400,
             detail="문구·디자인만 다시 만들기는 새 버전 만들기와 함께 요청해 주세요.",
         )
+    allow_recovery_pending = allow_recovery_pending is True
+    if allow_recovery_pending and not template_only:
+        raise HTTPException(
+            status_code=400,
+            detail="측정 미완료 병원 허용은 문구·디자인만 다시 만들기에서만 쓸 수 있습니다.",
+        )
     rebuild_reason = sanitize_operator_text(payload.reason if payload is not None else None, limit=200)
     if rebuild and (rebuild_reason is None or len(rebuild_reason) < 3):
         raise HTTPException(
@@ -871,6 +883,7 @@ async def generate_monthly_report_operation(
         month,
         *([True] if rebuild else []),
         *([False, True] if template_only else []),
+        *([True] if allow_recovery_pending else []),
     ]
     rebuild_audit_created = False
     if rebuild:
@@ -884,6 +897,7 @@ async def generate_monthly_report_operation(
             month=month,
             reason=rebuild_reason,
             template_only=template_only,
+            allow_recovery_pending=allow_recovery_pending,
         )
     dispatch = await _enqueue_with_truthful_audit(
         db,

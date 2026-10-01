@@ -10623,17 +10623,27 @@ def _template_refresh_blockers(
     observed_now: datetime,
     exclude_run_id: uuid.UUID | None,
     verdict: RefreshVerdict,
+    allow_recovery_pending: bool = False,
 ) -> None:
     # 1~7일 복구 기간의 자동 복구는 측정이 덜 끝난 병원만 다시 측정·재생성한다. 측정이 전부
     # 확정된 병원은 복구 대상이 아니라 숫자가 바뀌지 않으므로 기간 중에도 갱신할 수 있다.
+    # 운영자가 지금 숫자로 보내기로 명시하면(allow_recovery_pending) 막지 않고 기록만 남긴다 —
+    # 갱신은 저장된 숫자를 옮길 뿐이고, 자동 복구가 측정을 마저 채우면 그때 새 버전이 따로 생긴다.
     if is_monthly_recovery_window(
         observed_now, now.year, now.month
     ) and not _monthly_report_quality_is_complete(latest):
-        verdict.add(
-            "BLOCKER",
-            "RECOVERY_PENDING",
-            "측정이 덜 끝나 복구 기간(1~7일) 자동 복구 대상 — 8일 이후 실행",
-        )
+        if allow_recovery_pending:
+            verdict.add(
+                "WARN",
+                "RECOVERY_PENDING_ALLOWED",
+                "측정 미완료 — 운영자 지정으로 지금 숫자 그대로 갱신(자동 복구가 끝나면 새 버전이 또 생길 수 있음)",
+            )
+        else:
+            verdict.add(
+                "BLOCKER",
+                "RECOVERY_PENDING",
+                "측정이 덜 끝나 복구 기간(1~7일) 자동 복구 대상 — 8일 이후 실행",
+            )
     in_flight = db.execute(
         select(OperationRun.id, OperationRun.operation_type).where(
             OperationRun.hospital_id == h.id,
@@ -10664,6 +10674,7 @@ def build_monthly_template_refresh_plan(
     *,
     observed_now: datetime,
     exclude_run_id: uuid.UUID | None = None,
+    allow_recovery_pending: bool = False,
 ) -> MonthlyTemplateRefreshPlan:
     """저장된 최신 버전에서 새 원장 뷰를 만들고 숫자가 그대로인지 판정한다. 쓰기·저장소·공급자 호출 없음.
 
@@ -10680,6 +10691,7 @@ def build_monthly_template_refresh_plan(
     _template_refresh_blockers(
         db, h, now, latest, manifest,
         observed_now=observed_now, exclude_run_id=exclude_run_id, verdict=verdict,
+        allow_recovery_pending=allow_recovery_pending,
     )
     if latest is None or manifest is None or verdict.status == "BLOCKED":
         return MonthlyTemplateRefreshPlan(latest, None, None, verdict)
@@ -10804,6 +10816,7 @@ def _build_monthly_template_refresh(
     *,
     correlation_key: str,
     operation_run_id: uuid.UUID | None = None,
+    allow_recovery_pending: bool = False,
 ) -> str:
     """대체할 버전의 숫자를 그대로 옮기고 원장·AE PDF만 새 템플릿으로 다시 그린다.
 
@@ -10819,7 +10832,8 @@ def _build_monthly_template_refresh(
         correlation_key=correlation_key,
     )
     plan = build_monthly_template_refresh_plan(
-        db, h, now, observed_now=datetime.now(timezone.utc), exclude_run_id=operation_run_id
+        db, h, now, observed_now=datetime.now(timezone.utc), exclude_run_id=operation_run_id,
+        allow_recovery_pending=allow_recovery_pending,
     )
     if not plan.verdict.passed:
         raise TemplateRefreshRefused(plan.verdict)
@@ -11069,11 +11083,14 @@ def generate_monthly_report_for_hospital(
     rebuild: bool = False,
     automatic_recovery: bool = False,
     template_only: bool = False,
+    allow_recovery_pending: bool = False,
 ):
     """병원 1곳의 월간 리포트를 수동으로 만든다 (Admin '월간 리포트 생성').
 
     `template_only=True`는 저장된 숫자를 그대로 두고 PDF 문구·디자인만 새 버전으로 다시
     그리는 템플릿 갱신이다(`_build_monthly_template_refresh`). 숫자 판정이 어긋나면 만들지 않는다.
+    `allow_recovery_pending=True`는 운영자가 측정 미완료 병원도 지금 숫자로 갱신하라고 명시한
+    경우다 — 숫자는 저장값을 옮기므로 필수 측정 관문과 복구 기간 차단을 건너뛴다.
 
     월간 배치가 반복 실패해도 운영자가 해당 병원만 다시 만들 수 있는 복구 경로다.
 
@@ -11106,7 +11123,10 @@ def generate_monthly_report_for_hospital(
         if hospital is None:
             logger.error(f"Monthly report requested for unknown hospital {hospital_id}")
             return {"status": "hospital_not_found"}
-        if _hospital_requires_monthly_sov_success(db, hospital, period) and not (
+        recovery_pending_allowed = template_only and allow_recovery_pending is True
+        if not recovery_pending_allowed and _hospital_requires_monthly_sov_success(
+            db, hospital, period
+        ) and not (
             _monthly_sov_measurement_succeeded(
                 db, hospital.id, f"{period.year:04d}-{period.month:02d}"
             )
@@ -11135,6 +11155,7 @@ def generate_monthly_report_for_hospital(
                     anchor,
                     correlation_key=correlation_key,
                     operation_run_id=run_id,
+                    allow_recovery_pending=recovery_pending_allowed,
                 )
             except TemplateRefreshRefused as refused:
                 # 숫자를 지킬 수 없다는 판정은 재시도해도 같다 — 재시도 없이 실패로 닫는다.
