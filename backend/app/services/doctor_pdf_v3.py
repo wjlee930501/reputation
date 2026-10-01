@@ -89,10 +89,10 @@ def v3_expectation(
         n.title,
         n.conclusion,
         n.denominator,
-        "AI에게 물었을 때 우리 병원이 나온 비율",
+        "AI에게 물었을 때 우리 병원이 언급된 비율",
         "지난달",
         "이번 달",
-        "AI가 소개한 질문",
+        "AI가 언급한 질문",
         "AI가 참고한 우리 글",
         "다음 달에 할 일",
         n.priorities[0],
@@ -102,14 +102,14 @@ def v3_expectation(
     if n.previous is None and n.current is not None:
         page1.append(n.comparison_note)
     if n.current is not None and round(n.current) > 0:
-        page1.append(f"100번 물으면 약 {round(n.current)}번 우리 병원이 나온 셈입니다.")
+        page1.append(f"100번 물으면 약 {round(n.current)}번 우리 병원이 언급된 셈입니다.")
     if not initial:
         page1.extend((tile["label"], tile["value"]))
     if view.get("v0_baseline"):
         base = view["v0_baseline"]
         page1.append(f"처음 측정 {base['of_hundred']}% / 이번 달 {base['current_of_hundred']}%")
     page2 = ["첫 측정에서", "확인한 내용"] if initial else ["이번 달 한 일을", "보고드립니다", "그 결과"]
-    page2.append("AI 답변에 우리 병원이 나왔는지")
+    page2.append("AI 답변 속 우리 병원")
     for work in n.works[:2]:
         page2.append(work.title)
         page2.append(work.citation_label)

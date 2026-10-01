@@ -21,6 +21,8 @@ BANNED_IN_MONTHLY_PDF = [
     "확정 관측", "확정 반복", "판정 보류", "조합", "소유 URL", "관측", "수행",
     "약정", "기준선", "코호트", "DELIVERED", "OBSERVED", "APPENDIX", "baseline",
     "OpenAI API", "Google Gemini API", "챗GPT", "제미나이", "비교 불가",
+    # 대표 지시(2026-10): '소개' 대신 '언급', '출발점' 대신 '기준점', 결손 나열 대신 다음 수.
+    "소개", "출발점", "빠진 질문부터", "줄었습니다", "빠졌", "나오지 않았습니다",
     "내부 검수용", "원장 전달 불가", "토킹 포인트", "AE 전용",
 ]
 
@@ -150,12 +152,12 @@ def test_director_pdf_passes_the_medical_ad_filter(name):
 @pytest.mark.parametrize(
     "name,headline,prior_cell",
     [
-        ("up", "지난달보다 AI 답변에 더 자주 소개됐습니다.", "30.0%"),
-        ("down", "지난달보다 줄었습니다. 빠진 질문부터 다시 채우겠습니다.", "30.0%"),
-        ("first", "이번 달 결과가 앞으로의 출발점이 됩니다.", "첫 측정"),
-        ("method", "이번 달 결과를 새 출발점으로 삼겠습니다.", "비교 없음"),
-        ("unavailable", "이번 달은 측정을 마치지 못했습니다. 다시 확인해 알려 드리겠습니다.", "비교 없음"),
-        ("initial", "이번 달 결과가 앞으로의 출발점이 됩니다.", "첫 측정"),
+        ("up", "지난달보다 AI 답변에 더 자주 언급됐습니다.", "30.0%"),
+        ("down", "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다.", "30.0%"),
+        ("first", "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다.", "첫 측정"),
+        ("method", "이번 달 결과를 새 기준점으로 삼겠습니다.", "비교 없음"),
+        ("unavailable", "이번 달 측정을 다시 진행해, 결과를 확인하는 대로 알려 드리겠습니다.", "비교 없음"),
+        ("initial", "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다.", "첫 측정"),
     ],
 )
 def test_first_page_leads_with_a_plain_headline_per_branch(name, headline, prior_cell):
@@ -164,7 +166,7 @@ def test_first_page_leads_with_a_plain_headline_per_branch(name, headline, prior
     assert view["narrative"].conclusion == headline
     assert headline in page
     assert prior_cell in page
-    assert "AI에게 물었을 때 우리 병원이 나온 비율" in page
+    assert "AI에게 물었을 때 우리 병원이 언급된 비율" in page
     assert "다음 달에 할 일" in page
     assert "약속드리지는 않습니다" in page
 
@@ -193,27 +195,41 @@ def test_every_noncomparable_reason_has_its_own_plain_sentence():
 def test_comparable_month_explains_the_number_in_everyday_words():
     view = _view("up")
     page = _page(_html(view), 1)
-    assert "100번 물으면 약 50번 우리 병원이 나온 셈입니다." in page
-    assert "지난달과 같은 질문으로 ChatGPT·Gemini에 모두 18번 물었고, 그중 9번 우리 병원이 소개됐습니다." in page
+    assert "100번 물으면 약 50번 우리 병원이 언급된 셈입니다." in page
+    assert "지난달과 같은 질문으로 ChatGPT·Gemini에 모두 18번 물었고, 그중 9번 우리 병원이 언급됐습니다." in page
     assert "환자 수가 아니라 AI 답변 횟수입니다." in page
 
 
-def test_a_small_drop_is_called_small_and_a_large_drop_is_not():
-    small = monthly_view(sov_pct=25.0, comparison_reason="MATCHED_COHORT",
-                         sov_coverage=_coverage(25.0, 30.0))
-    large = _view("down")
-    assert small["narrative"].conclusion.startswith("지난달보다 조금 줄었습니다.")
-    assert "조금" not in large["narrative"].conclusion
+def test_a_lower_month_leads_with_our_plan_while_the_numbers_stay_visible():
+    view = _view("down")
+    page = _page(_html(view), 1)
+    assert view["narrative"].conclusion == "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다."
+    assert "30.0%" in page and "10.0%" in page
+    assert "더 자주" not in page
 
 
 def test_lost_and_never_mentioned_questions_become_next_month_actions():
     priorities = _view("down")["narrative"].priorities
-    assert priorities[0].startswith("“가상동 혈압 상담 병원”라고 Gemini에 물었을 때")
+    assert priorities[0] == (
+        "“가상동 혈압 상담 병원” 질문에서 Gemini 답변에 다시 언급되도록, "
+        "관련 진료 안내 글을 보강하겠습니다."
+    )
     first = _view("first")["narrative"].priorities
     assert first[0] == (
-        "“가상동 혈압 상담 병원”라고 물었을 때 아직 우리 병원이 나오지 않았습니다. "
-        "이 질문에 답이 되는 진료 안내 글을 보강하고, 다음 달에 다시 확인하겠습니다."
+        "“가상동 혈압 상담 병원”처럼 환자가 묻는 질문에서도 언급되도록, "
+        "이 질문에 답이 되는 진료 안내 글을 더하겠습니다."
     )
+
+
+def test_repeated_next_steps_do_not_repeat_the_same_sentence():
+    rows = [
+        {"query_text": f"가상동 질문 {index}", "current_attempts_used": 6,
+         "current_mentioned_attempts": 0}
+        for index in range(3)
+    ]
+    priorities = monthly_view(attribution={"question_rows": rows})["narrative"].priorities
+    endings = {line.split(", ", 1)[1] for line in priorities}
+    assert len(endings) == 3
 
 
 def test_good_news_tiles_come_from_real_counts_and_keep_unknown_apart_from_zero():
@@ -243,7 +259,7 @@ def test_contract_tile_uses_plain_words():
     assert tile["label"] == "약속한 글 발행"
     assert tile["value"] == "12편 중 11편"
     assert tile["hint"] == "이번 달 실제로 올린 글 13편 · 이전 달 몫을 채운 글 2편 포함."
-    assert "약속한 글 중 1편을 아직 올리지 못했습니다." in view["narrative"].fulfillment_note
+    assert view["narrative"].fulfillment_note == "남은 1편은 안전 기준을 통과하는 대로 이어서 올리겠습니다."
 
 
 def test_page_markers_are_plain_korean():

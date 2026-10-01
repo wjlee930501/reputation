@@ -1045,7 +1045,7 @@ def _director_coverage_text(
         parts.append(
             f"{partial}같은 질문을 되풀이해 묻기로 한 {int(adequacy.get('planned_slots') or 0)}번 중 "
             f"{int(adequacy.get('confirmed_slots') or 0)}번 답을 확인했고, 확인하지 못한 답은 "
-            "‘소개되지 않음’으로 세지 않았습니다."
+            "‘언급되지 않음’으로 세지 않았습니다."
         )
     comparison = coverage.get("comparison") or {}
     if comparison.get("status") == "COMPARABLE":
@@ -1087,7 +1087,7 @@ def _director_footnotes(
     if non_comparable_questions:
         notes.append(
             f"지난달과 같은 방식으로 비교할 수 없는 질문 {non_comparable_questions}건은 "
-            "새로 소개된 질문·빠진 질문 계산에서 뺐습니다."
+            "새로 언급된 질문 계산에서 뺐습니다."
         )
     low, high = coverage.get("ci95_low"), coverage.get("ci95_high")
     if low is not None and high is not None:
@@ -1152,13 +1152,12 @@ def _director_copy(
     compared = view["narrative"].previous is not None
     new_count = int((attribution or {}).get("new_mention_count") or 0)
     if compared and new_count and not view["new_mention_sentences"]:
-        empty = f"새로 소개된 질문 {new_count}건은 앞의 질문표에서 확인하실 수 있습니다."
+        empty = f"새로 언급된 질문 {new_count}건은 앞의 질문표에서 확인하실 수 있습니다."
     elif compared and comparison_reason in (None, "MATCHED_COHORT"):
-        empty = "이번 달 새로 소개된 질문은 없었습니다."
+        empty = "새로 언급되는 질문이 늘도록 다음 달에는 키워드를 넓혀 공략하겠습니다."
     else:
         empty = (
-            "이번 달은 지난달과 나란히 비교하지 않아, 새로 소개된 질문과 빠진 질문을 "
-            "따로 세지 않았습니다."
+            "이번 달은 지난달과 나란히 비교하지 않아, 새로 언급된 질문을 따로 세지 않았습니다."
         )
     evidence = {
         key: (

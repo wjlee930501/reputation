@@ -86,28 +86,34 @@ _COMPARISON_NOTES = {
 }
 _DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건인지 확인하지 못해 {_NOT_COMPARED}"
 _COMPARABLE_NOTE = "지난달과 같은 질문을 같은 방식으로 물어본 결과끼리 비교했습니다."
-# 이 폭 이하로 줄었을 때만 '조금'이라고 쓴다. 크게 줄어든 달을 작게 말하지 않는다.
-_SMALL_DROP_POINTS = 10
+# 같은 종류의 할 일이 여러 줄일 때 문장이 똑같이 반복되지 않게 돌려 쓴다.
+_LOST_MOVES = (
+    "관련 진료 안내 글을 보강하겠습니다",
+    "같은 주제를 다른 각도에서 다룬 글을 더하겠습니다",
+    "환자가 실제로 묻는 표현에 맞춰 안내 글을 다듬겠습니다",
+)
+_UNMENTIONED_MOVES = (
+    "이 질문에 답이 되는 진료 안내 글을 더하겠습니다",
+    "이 질문을 다루는 글을 새로 써서 공략하겠습니다",
+    "관련 키워드를 넓혀 안내 글을 채우겠습니다",
+)
 
 
 def _conclusion(value: float | None, prior: float | None, *, first: bool) -> str:
+    """첫 장의 한 문장. 숫자는 칸에 그대로 두고, 문장은 우리의 다음 수를 말한다."""
     if value is None:
-        return "이번 달은 측정을 마치지 못했습니다. 다시 확인해 알려 드리겠습니다."
+        return "이번 달 측정을 다시 진행해, 결과를 확인하는 대로 알려 드리겠습니다."
     if first:
-        return "이번 달 결과가 앞으로의 출발점이 됩니다."
+        return "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다."
     if prior is None:
-        return "이번 달 결과를 새 출발점으로 삼겠습니다."
+        return "이번 달 결과를 새 기준점으로 삼겠습니다."
     if value > prior:
-        return "지난달보다 AI 답변에 더 자주 소개됐습니다."
+        return "지난달보다 AI 답변에 더 자주 언급됐습니다."
     if value < prior:
-        small = value > 0 and prior - value <= _SMALL_DROP_POINTS
-        return (
-            f"지난달보다 {'조금 ' if small else ''}줄었습니다. "
-            "빠진 질문부터 다시 채우겠습니다."
-        )
+        return "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다."
     if value == 0:
-        return "지난달처럼 아직 AI 답변에 소개되지 않았습니다. 질문에 맞는 글부터 채우겠습니다."
-    return "지난달과 비슷하게 꾸준히 소개되고 있습니다."
+        return "AI 답변에 언급되도록, 더 넓은 키워드와 새로운 질문 유형을 공략하겠습니다."
+    return "지난달과 비슷하게 꾸준히 언급되고 있습니다. 다음 달에는 새로운 질문 유형까지 공략하겠습니다."
 
 
 def _denominator(
@@ -124,9 +130,9 @@ def _denominator(
         else f"{platforms}에 환자 질문을 모두 {attempts}번 물었고"
     )
     found = (
-        f"그중 {mentions}번 우리 병원이 소개됐습니다."
+        f"그중 {mentions}번 우리 병원이 언급됐습니다."
         if mentions
-        else "아직 우리 병원이 소개된 답변은 없었습니다."
+        else "이번 달 답변에서는 아직 언급되지 않았습니다."
     )
     return f"{asked}, {found} {tail}"
 
@@ -189,36 +195,39 @@ def build_monthly_narrative(
     priorities: list[str] = []
     if value is None:
         priorities.append(
-            "이번 달 측정을 다시 진행하겠습니다. 같은 질문으로 결과를 확인해 알려 드리겠습니다."
+            "이번 달 측정을 다시 진행하고, 결과를 확인하는 대로 알려 드리겠습니다."
         )
-    for row in (attribution or {}).get("lost_mention_cells", []) if comparable else []:
+    lost_rows = (attribution or {}).get("lost_mention_cells", []) if comparable else []
+    for index, row in enumerate(lost_rows):
         priorities.append(
-            f"“{row['query_text']}”라고 {row['platform_label']}에 물었을 때 지난달과 달리 "
-            "이번 달에는 우리 병원이 나오지 않았습니다. 진료 안내 글을 보강한 뒤 같은 "
-            "질문으로 다시 확인하겠습니다."
+            f"“{row['query_text']}” 질문에서 {row['platform_label']} 답변에 다시 언급되도록, "
+            f"{_LOST_MOVES[index % len(_LOST_MOVES)]}."
         )
     lost_questions = (
         {row["query_text"] for row in (attribution or {}).get("lost_mention_cells", [])}
         if comparable
         else set()
     )
-    for row in (attribution or {}).get("question_rows", []):
-        if row["query_text"] in lost_questions:
-            continue
-        if row.get("current_attempts_used", 0) and not row.get("current_mentioned_attempts", 0):
-            priorities.append(
-                f"“{row['query_text']}”라고 물었을 때 아직 우리 병원이 나오지 않았습니다. "
-                "이 질문에 답이 되는 진료 안내 글을 보강하고, 다음 달에 다시 확인하겠습니다."
-            )
+    unmentioned = [
+        row for row in (attribution or {}).get("question_rows", [])
+        if row["query_text"] not in lost_questions
+        and row.get("current_attempts_used", 0)
+        and not row.get("current_mentioned_attempts", 0)
+    ]
+    for index, row in enumerate(unmentioned):
+        priorities.append(
+            f"“{row['query_text']}”처럼 환자가 묻는 질문에서도 언급되도록, "
+            f"{_UNMENTIONED_MOVES[index % len(_UNMENTIONED_MOVES)]}."
+        )
     if not priorities and comparable:
         for row in (attribution or {}).get("new_mention_cells", [])[:2]:
             priorities.append(
-                f"“{row['query_text']}”라고 {row['platform_label']}에 물었을 때 이번 달 "
-                "새로 우리 병원이 소개됐습니다. 다음 달에도 이어지는지 지켜보겠습니다."
+                f"“{row['query_text']}” 질문에서 {row['platform_label']} 답변에 새로 "
+                "언급되기 시작했습니다. 같은 주제의 글을 이어 써 언급을 넓히겠습니다."
             )
     if not priorities:
         priorities.append(
-            "다음 달에도 같은 질문으로 다시 물어보고, 달라진 점을 알려 드리겠습니다."
+            "언급 범위를 넓히기 위해, 새로운 질문 유형과 더 넓은 키워드를 공략하겠습니다."
         )
     platforms: list[str] = []
     methods: list[str] = [
@@ -229,8 +238,8 @@ def build_monthly_narrative(
         rate = row.get("mention_rate")
         score = f"{rate:.1f}%" if rate is not None else "측정 못 함"
         platforms.append(
-            f"{name} · 질문별로 소개된 비율의 평균 {score} · 모두 {row.get('attempts_used', 0)}번 "
-            f"물어 {row.get('mentioned_attempts', 0)}번 소개 · 질문 {row.get('planned_count', 0)}건 중 "
+            f"{name} · 질문별로 언급된 비율의 평균 {score} · 모두 {row.get('attempts_used', 0)}번 "
+            f"물어 {row.get('mentioned_attempts', 0)}번 언급 · 질문 {row.get('planned_count', 0)}건 중 "
             f"답 확인 {row.get('success_count', 0)}건, 실패 {row.get('failed_count', 0)}건, "
             f"제외 {row.get('excluded_count', 0)}건"
         )
@@ -323,8 +332,7 @@ def build_monthly_narrative(
         citation_scope=scope,
         citation_details=tuple(details),
         fulfillment_note=(
-            f"약속한 글 중 {shortfall}편을 아직 올리지 못했습니다. 이유를 확인해, "
-            "안전 기준을 통과한 글부터 채워 올리겠습니다."
+            f"남은 {shortfall}편은 안전 기준을 통과하는 대로 이어서 올리겠습니다."
             if shortfall
             else "다음 달에도 계획한 글을 차례로 올리겠습니다."
         ),
