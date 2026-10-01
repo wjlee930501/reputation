@@ -46,6 +46,7 @@ from app.services.monthly_template_refresh import (
     compare_doctor_pdf_facts,
     number_tokens,
     numeric_diff,
+    stored_pdf_fact_tokens,
 )
 from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 
@@ -142,7 +143,11 @@ def precheck_hospital(db, hospital: Hospital, anchor: arrow.Arrow) -> HospitalRe
             verdict.add("DIFF", "NEW_DOCTOR_PDF_INVALID", exc.code)
         else:
             if old_text is not None:
-                for problem in compare_doctor_pdf_facts(old_text, _pdf_text(rendered.pdf_bytes)):
+                for problem in compare_doctor_pdf_facts(
+                    old_text,
+                    _pdf_text(rendered.pdf_bytes),
+                    stored_facts=stored_pdf_fact_tokens(latest.sov_summary),
+                ):
                     verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(
         hospital.id, hospital.name, latest.version if latest is not None else None, verdict
@@ -193,7 +198,9 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     old_text = _stored_doctor_text(db, previous, verdict)
     new_text = _stored_doctor_text(db, latest, verdict)
     if old_text is not None and new_text is not None:
-        for problem in compare_doctor_pdf_facts(old_text, new_text):
+        for problem in compare_doctor_pdf_facts(
+            old_text, new_text, stored_facts=stored_pdf_fact_tokens(previous.sov_summary)
+        ):
             verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(hospital.id, hospital.name, latest.version, verdict)
 

@@ -24,6 +24,7 @@ from app.services.monthly_template_refresh import (
     number_tokens,
     numeric_diff,
     pdf_fact_tokens,
+    stored_pdf_fact_tokens,
 )
 from app.workers import autonomous_recovery, tasks
 
@@ -102,6 +103,23 @@ def test_pdf_fact_comparison_passes_same_numbers_and_flags_any_change():
         "옛 PDF에만 있음: 12편중12편",
         "새 PDF에만 있음: 12편중11편",
     ]
+
+
+def test_new_sentence_from_stored_slot_counts_is_not_a_number_change():
+    """새 템플릿이 저장된 반복 관측 횟수를 'N번 중 M번'으로 처음 적어도 숫자는 그대로다."""
+    stored = {"observation_adequacy": {"planned_slots": 150, "confirmed_slots": 150}}
+    facts = stored_pdf_fact_tokens(stored)
+    assert facts == frozenset({"150번중150번"})
+    new_text = (
+        "지난달 33.3% 이번 달 66.7% 약속한 글 12편 중 12편 처음 측정 17% / 이번 달 67% "
+        "대략 50.0% ~ 80.0% 6번 중 6번 되풀이해 묻기로 한 150번 중 150번 답을 확인"
+    )
+    assert compare_doctor_pdf_facts(OLD_PAGE, new_text, stored_facts=facts) == []
+    # 저장값과 다른 횟수는 여전히 차이다.
+    assert compare_doctor_pdf_facts(OLD_PAGE, new_text.replace("150번 중 150번", "150번 중 149번"),
+                                    stored_facts=facts) == ["새 PDF에만 있음: 150번중149번"]
+    assert stored_pdf_fact_tokens({}) == frozenset()
+    assert stored_pdf_fact_tokens({"observation_adequacy": {"planned_slots": "150"}}) == frozenset()
 
 
 def _pdf_text(view) -> str:
