@@ -12,6 +12,7 @@ Celery 태스크 전체
 """
 
 import asyncio
+import copy
 import hashlib
 import logging
 import threading
@@ -20,6 +21,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta, timezone
 from time import monotonic
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -28,7 +30,8 @@ import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
 from sqlalchemy import ColumnElement, and_, delete, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.exc import IntegrityError, NoInspectionAvailable
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.core.celery_app import celery_app
@@ -82,6 +85,7 @@ from app.services.content_ai_review import (
 )
 from app.services.content_engine import (
     EXISTING_TITLE_PROMPT_LIMIT,
+    MissingCitableReferencesError,
     generate_content,
     generation_failure_detail,
 )
@@ -310,6 +314,7 @@ from app.services.monthly_report_gap_notifications import (
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.monthly_sov_types import ManifestCellInput
+from app.services.notification_copy import REFERENCES_OPERATOR_DECIDES_COPY_CODE
 from app.services.onboarding_notifications import (
     build_hospital_activated_notification,
     build_site_built_notification,
@@ -331,6 +336,18 @@ from app.services.post_publish_review_policy import (
     publicly_operational_hospital_predicate,
 )
 from app.services.public_surface_intents import enqueue_public_surface_intent
+from app.services.reference_publication import (
+    REFERENCE_SITE_UNREACHABLE_CAUSE,
+    REFERENCE_SITE_UNREACHABLE_CODE,
+    PublicationReferenceRefresh,
+    apply_publication_reference_refresh,
+    publication_references_current,
+    publication_references_settled,
+    reference_outage_alert_due,
+    refresh_publication_references,
+)
+from app.services.reference_requirement import references_left_to_operator
+from app.services.reference_verification import ReferenceVerifier
 from app.services.report_artifact_validation import DoctorPdfValidationError
 from app.services.report_attribution import (
     CitationAttributionInput,
@@ -430,17 +447,21 @@ from app.workers.generation_incident_control import (
     AUTO_REMEDIATION_MAX_GENERATIONS,
     PREPUBLISH_MORNING_BATCH,
     PUBLISH_MORNING_BATCH,
+    REFERENCES_OPERATOR_DECIDES_CAUSE,
     WEEKLY_REJECTED_GENERATION_CODES,
     essence_remediation_exhausted,
     generation_block_digest_due,
     generation_notify_requested,
     generation_safe_cause,
     open_generation_incident,
+    operator_decides_digest_due,
+    operator_decides_references,
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
     BODY_REPAIR_STATE_KEY,
+    OPERATOR_DECIDES_KEY,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
@@ -544,7 +565,7 @@ _GENERATION_ATTEMPT_KEY = "generation_attempt"
 # price/coverage rules, curated KDCA catalog selection, or GEO/season semantics.  The
 # token lets already rejected slots receive one bounded re-evaluation after a deploy;
 # the newly stored context then restores H-08's identical-input loop suppression.
-GENERATION_GATE_CATALOG_VERSION = "2026-09-13.1"
+GENERATION_GATE_CATALOG_VERSION = "2026-09-29.2"
 _STORED_EMPTY_CONTENT_BLOCK_CODES = frozenset(
     {"MISSING_APPROVED_ESSENCE", "COST_BLOCKED", "GENERATION_REJECTED"}
 )
@@ -767,6 +788,10 @@ def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str,
         return code, message
 
     stored_code = _stored_generation_attempt(item).get("reason")
+    if operator_decides_references(stored_code, item):
+        # 쓰이지 않은 진료비·병원 선택 슬롯의 참고자료 보류(생성이 남긴 사람의 결정). 증상
+        # (CONTENT_NOT_GENERATED)으로 기록을 덮어쓰면 표시가 사라져 자동 재생성으로 돌아간다.
+        return stored_code, REFERENCES_OPERATOR_DECIDES_CAUSE
     if stored_code in _STORED_EMPTY_CONTENT_BLOCK_CODES:
         stored_message = _stored_generation_attempt(item).get("message")
         return stored_code, (
@@ -831,11 +856,14 @@ def _remember_generation_attempt(
     diagnostics: Mapping[str, object] | None = None,
     extra: Mapping[str, object] | None = None,
     count_attempt: bool = True,
+    operator_decides: bool = False,
 ) -> dict[str, Any]:
     """Persist one no-body outcome without adding a schema column.
 
     `count_attempt=False`는 예산을 쓰지 않은 결정만 남긴다(게이트가 시도 기록보다 먼저
     차단을 관측한 경우). 시도 수·소진 일수·가드 보류 수를 올리지 않는다.
+    `operator_decides=True`는 생성이 작가의 제목으로 판정한 진료비·병원 선택 슬롯의 참고자료
+    보류다(행에는 아직 제목이 없다) — 기한 계산 전에 표시를 남긴다.
     """
 
     summary = getattr(item, "essence_check_summary", None)
@@ -933,6 +961,10 @@ def _remember_generation_attempt(
         stored_diagnostic = dict(policy_rejection)
     if reason == _IMAGE_POLICY_REJECTION_CODE and isinstance(stored_diagnostic, dict):
         attempt[_IMAGE_POLICY_DIAGNOSTIC_KEY] = stored_diagnostic
+    if operator_decides or operator_decides_references(reason, item):
+        # 진료비·병원 선택 글의 참고자료 보류 — 분류는 이미 OPERATOR_REQUIRED다(`retry_class_for`).
+        # 이 표시가 수리 세션 예산의 소유를 끊어 다음 시도 시각이 없다(사람이 정한다).
+        attempt[OPERATOR_DECIDES_KEY] = True
     deadline = next_recovery_deadline(
         attempt,
         scheduled_date=getattr(item, "scheduled_date", None),
@@ -976,8 +1008,11 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     OPERATOR_REQUIRED·기한 없음으로 굳어 어떤 스윕도 그 슬롯을 다시 쓰지 않는다.
     """
 
-    stored_reason = _stored_generation_attempt(item).get("reason")
-    if stored_reason == code:
+    stored = _stored_generation_attempt(item)
+    stored_reason = stored.get("reason")
+    if stored_reason == code and bool(stored.get(OPERATOR_DECIDES_KEY)) == (
+        operator_decides_references(code, item)
+    ):
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
         return
@@ -4741,6 +4776,20 @@ def _finish_claimed_item_run(
         )
 
 
+def _generation_left_references_to_operator(error: BaseException, item: ContentItem) -> bool:
+    """생성이 참고자료 없이 끝난 진료비·병원 선택 슬롯인가 — 작가가 만든 제목으로 판정한다.
+
+    쓰이지 않은 슬롯의 행에는 판정할 제목이 없다. 발행 쪽 규칙과 같이 제목만 보며, 브리프의
+    `target_keyword`·측정 질문으로 판정하지 않는다('간질환 치료 비용' 질문에 답한 의료 글).
+    작가가 제목을 내지 못했으면 종전의 생성 거절이다.
+    """
+
+    if not isinstance(error, MissingCitableReferencesError):
+        return False
+    title = (error.result or {}).get("title")
+    return bool(title) and references_left_to_operator(item, title=title)
+
+
 def _run_generation_item(
     db,
     recorder,
@@ -4922,6 +4971,9 @@ def _run_generation_item(
                 "body": content_data["body"],
                 "meta_description": content_data.get("meta_description"),
                 "references_list": content_data.get("references") or [],
+                # 생성 시 실제 문서 검증 기록 — 08:00 발행 게이트가 같은 URL의 신선한
+                # 통과를 확인한다(생성 시 검증이 기본이라 08:00에 GET이 몰리지 않는다).
+                "reference_checks": content_data.get("reference_checks") or [],
                 "faq_question": content_data.get("faq_question"),
                 "faq_answer_summary": content_data.get("faq_answer_summary"),
                 "image_url": None,
@@ -5093,8 +5145,17 @@ def _run_generation_item(
         )
         db.rollback()
         db.expire_all()
-        if not getattr(item, "body", None):
-            _remember_generation_attempt(db, item, philosophy, code, message=message)
+        unwritten = not getattr(item, "body", None)
+        operator_decides = unwritten and _generation_left_references_to_operator(e, item)
+        if operator_decides:
+            # 작가 회차를 다 쓰고도 통과한 참고자료가 없는 진료비·병원 선택 슬롯이다. 다시 써도
+            # 그 주제의 공신력 있는 문서는 생기지 않는다 — 표본 사다리·주제 교체가 아니라
+            # 곧바로 사람의 결정(OPERATOR_REQUIRED, 기한 없는 OPEN)이다.
+            code, message = "MISSING_REFERENCES", REFERENCES_OPERATOR_DECIDES_CAUSE
+        if unwritten:
+            _remember_generation_attempt(
+                db, item, philosophy, code, message=message, operator_decides=operator_decides
+            )
         recorder.record(
             item.id,
             GenerationItemState.FAILED,
@@ -5970,7 +6031,11 @@ def _generate_single_content_item(
                 )
             else:
                 _clear_generation_attempt(db, item)
-        repairable_body = stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES or (
+        repairable_body = (
+            stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES
+            # 진료비·병원 선택 글의 참고자료 보류는 다시 써도 풀리지 않는다 — 사람이 정한다.
+            and not operator_decides_references(stored_assessment.code, item)
+        ) or (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
             and (
                 _stored_ai_review_is_remediable(item)
@@ -6124,6 +6189,7 @@ def _generate_single_content_item(
             "body": content_data["body"],
             "meta_description": content_data.get("meta_description"),
             "references_list": content_data.get("references") or [],
+            "reference_checks": content_data.get("reference_checks") or [],
             "faq_question": content_data.get("faq_question"),
             "faq_answer_summary": content_data.get("faq_answer_summary"),
             "image_url": None,
@@ -6251,6 +6317,125 @@ def _publication_digest_cause(code: str, summary) -> str:
     return cause
 
 
+def _has_generated_text(item: ContentItem) -> bool:
+    return bool((getattr(item, "title", None) or "").strip()) and bool(
+        (getattr(item, "body", None) or "").strip()
+    )
+
+
+def _log_reference_refresh(content_id, refresh: PublicationReferenceRefresh) -> None:
+    if refresh.deferred:
+        logger.info(
+            "publication reference verification deferred: content_id=%s unreachable=%d",
+            content_id,
+            len(refresh.site_unreachable_urls),
+        )
+    elif refresh.references_changed:
+        logger.warning(
+            "publication references re-verified: content_id=%s kept=%d healed=%s",
+            content_id,
+            len(refresh.references),
+            refresh.healed,
+        )
+
+
+_REFERENCE_VIEW_FIELDS = (
+    "id",
+    "content_type",
+    "title",
+    "body",
+    "content_brief",
+    "faq_question",
+    "references_list",
+    "reference_checks",
+    "content_revision",
+    # 참고자료 필수 판정(`references_required`) — 의료 주제 NOTICE는 질문 연결로 판정한다.
+    "query_target_id",
+    # 스냅샷 비교 — GET 사이에 공개된 글에는 결과를 쓰지 않는다.
+    "status",
+)
+
+
+def _reference_view(item: ContentItem) -> SimpleNamespace:
+    """참고자료 재검증에 필요한 값만 담은 분리된 사본(행 잠금·세션 없이 GET하려고)."""
+
+    return SimpleNamespace(
+        **{name: getattr(item, name, None) for name in _REFERENCE_VIEW_FIELDS}
+    )
+
+
+async def _never_fetch(url: str):  # pragma: no cover — 한도 0이라 부르지 않는다
+    raise RuntimeError(f"stored-state judgement must not GET: {url}")
+
+
+def _stored_state_reference_verifier() -> ReferenceVerifier:
+    """GET을 하지 않는 검증기(실행당 GET 한도 0) — 저장된 상태만으로 판정한다.
+
+    마지막 발행기의 claim 행에 잠금 전 재검증 결과가 없을 때만 쓴다(잠금 전 읽기와 잠금 사이에
+    워커가 본문을 쓰거나 일정이 바뀐 경합). 신선한 통과는 재사용하고, 제외 목록·인용 불가 주소는
+    GET 전에 떨어지고, 수기 목록 문서는 카탈로그로 판정된다. 그 밖의 주소(신선한 통과가 없는 목록
+    밖 주소)는 GET 한도 초과로 미뤄진다 — 발행기가 한도 초과를 다루듯 다음 시간대로 넘긴다.
+    """
+
+    return ReferenceVerifier(_never_fetch, max_fetches=0)
+
+
+def _detached_publication_view(item: ContentItem) -> SimpleNamespace:
+    """행 값의 깊은 사본으로 만든 판정용 보기 — 여기에 쓰는 값은 행·세션에 닿지 않는다."""
+
+    try:
+        names = [attr.key for attr in sa_inspect(item).mapper.column_attrs]
+    except NoInspectionAvailable:
+        names = [name for name in vars(item) if not name.startswith("_") and name != "hospital"]
+    view = SimpleNamespace(
+        **{name: copy.deepcopy(getattr(item, name, None)) for name in names}
+    )
+    view.hospital = getattr(item, "hospital", None)
+    return view
+
+
+def _prefetch_publication_references(
+    content_id: uuid.UUID,
+    verifier: ReferenceVerifier,
+    *,
+    now_kst: arrow.Arrow | None = None,
+) -> PublicationReferenceRefresh | None:
+    """발행 직전 참고자료 재검증의 네트워크 쪽 — **행 잠금 없이** 한다.
+
+    잠금 없는 읽기로 필요한 값을 스냅샷에 담고 세션을 닫은 뒤 GET한다. 결과는 호출부가 행을
+    잠근 뒤 `apply_publication_reference_refresh`로 비교 후 적용한다(그 사이 행이 바뀌었으면
+    쓰지 않는다). 발행 대상이 아니거나 이미 신선한 통과가 있으면 GET 없이 None.
+
+    생성 워커가 지금 이 슬롯을 잡고 있으면(살아 있는 claim) 대개 GET 없이 None이다. 예외는
+    예정일의 마지막 발행기(23시)와 지난 예정일(`reference_outage_alert_due`, `now_kst`는 발행기
+    실행의 시각)이다 — 건너뛰면 그 행의 보류·운영자 줄이 조용히 빠지므로 종전처럼 GET하고,
+    호출부는 결과를 행이 아닌 분리된 사본에만 적용한다. GET은 행을 쓰지 않는다.
+    """
+
+    with SyncSessionLocal() as db:
+        item = db.execute(
+            select(ContentItem).where(ContentItem.id == content_id)
+        ).scalar_one_or_none()
+        if (
+            item is None
+            or item.status not in AUTO_PUBLISHABLE_STATUSES
+            # 아직 생성되지 않은 슬롯은 참고자료를 건드리지 않는다(판이 올라 생성 저장이 버려진다).
+            or not _has_generated_text(item)
+            or publication_references_settled(item)
+        ):
+            return None
+        if generation_claim_is_active(
+            item, now=datetime.now(timezone.utc)
+        ) and not reference_outage_alert_due(
+            item.scheduled_date, now_kst or arrow.now("Asia/Seoul")
+        ):
+            # 생성 워커가 쓰는 중인 슬롯 — 07:45와 같은 규칙이다(만료된 claim은 종전처럼).
+            return None
+        # 세션을 닫은 뒤에도 읽을 수 있게 판정에 필요한 값만 떼어 둔다.
+        view = _reference_view(item)
+    return _run_async(refresh_publication_references(view, verifier))
+
+
 def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     """At 07:45, record the persisted blockers and summarize them in one Slack message.
 
@@ -6281,17 +6466,53 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
     paged = 0
     blocked_outcomes: list[dict[str, object]] = []
     healed_hospitals: set = set()
+    # 이 실행의 참고자료 GET 한도·도메인 장애 상태. 23:00 D-2 생성분처럼 검증 기록이
+    # 오래된 글을 여기서 다시 확인해 08:00 발행기에 GET이 몰리지 않게 한다.
+    reference_verifier = ReferenceVerifier()
     for item in items:
         hospital = item.hospital
+        if generation_claim_is_active(item, now=observed.datetime):
+            # 생성 워커가 지금 이 슬롯을 쓰고 있다(07:00 스윕의 글 단위 태스크 등). 자동
+            # 복구가 소유한 일이라 참고자료 재검증도 기록·인시던트·요약도 하지 않는다 — 재검증이
+            # 판을 올리면 워커가 공급자 비용을 치른 결과를 버린다. 워커가 결과를 남기고, 그래도
+            # 막히면 08:00 발행기가 최종 판정을 소유한다. 만료된 claim은 살아 있는 작업이 아니므로
+            # 종전처럼 처리한다.
+            continue
+        if _has_generated_text(item) and not publication_references_settled(item):
+            # GET은 잠금·열린 트랜잭션 밖에서 한다(느린 기관 사이트가 편집·발행을 막지 않게).
+            view = _reference_view(item)
+            db.commit()
+            refresh = _run_async(refresh_publication_references(view, reference_verifier))
+            locked = db.execute(
+                select(ContentItem)
+                .where(ContentItem.id == item.id)
+                .with_for_update(skip_locked=True)
+                .execution_options(populate_existing=True)
+            ).scalar_one_or_none()
+            if locked is None:
+                # 다른 작업이 이 글을 잡고 있다 — 08:00 발행기가 잠금 뒤에 다시 확인한다.
+                continue
+            if locked.status not in AUTO_PUBLISHABLE_STATUSES or generation_claim_is_active(
+                locked, now=observed.datetime
+            ):
+                # GET 사이에 수동 발행·취소됐다 — 공개된 글의 참고자료를 자동으로 바꾸지 않는다.
+                # 또는 GET 사이에 생성 워커가 이 슬롯을 잡았다 — 위와 같이 워커의 결과를 둔다.
+                db.commit()
+                continue
+            applied = apply_publication_reference_refresh(locked, refresh)
+            db.commit()
+            _log_reference_refresh(locked.id, refresh)
+            if not applied or refresh.deferred:
+                # 그 사이 글이 바뀌었거나(덮어쓰지 않는다) 일시 장애·GET 한도로 미뤘다.
+                # 차단이 아니다 — 08:00 발행기가 이어서 확인한다.
+                continue
+            item = locked
         philosophy = get_current_approved_philosophy_sync(db, hospital.id)
         assessment = assess_content_publication(item, philosophy)
         if assessment.publishable:
             continue
         if generation_claim_is_active(item, now=observed.datetime):
-            # 생성 워커가 지금 이 슬롯을 쓰고 있다(07:00 스윕의 글 단위 태스크 등). 자동
-            # 복구가 소유한 일이라 기록·인시던트·요약 어느 것도 남기지 않는다 — 워커가
-            # 결과를 남기고, 그래도 막히면 08:00 발행기가 최종 판정을 소유한다. 만료된
-            # claim은 살아 있는 작업이 아니므로 종전처럼 처리한다.
+            # 재검증을 적용한 뒤에 생성 워커가 이 슬롯을 잡았다 — 위와 같이 워커의 일이다.
             continue
 
         apply_publication_assessment(item, assessment)
@@ -6321,7 +6542,12 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         if code == "MISSING_APPROVED_ESSENCE":
             _heal_missing_essence_for_digest(hospital.id, healed_hospitals)
         summary = item.essence_check_summary or {}
-        if generation_block_digest_due(
+        # 주간 요약이 소유하는 코드라도 오늘 예정인 진료비·병원 선택 글의 참고자료 보류는
+        # 사람만 풀 수 있어 한 줄로 알린다(`operator_decides_digest_due`, 08:00도 같다).
+        operator_line = operator_decides_digest_due(
+            code, item, batch=PREPUBLISH_MORNING_BATCH, today=observed.date()
+        )
+        if operator_line or generation_block_digest_due(
             code, batch=PREPUBLISH_MORNING_BATCH,
             remediation_exhausted=essence_remediation_exhausted(summary),
         ):
@@ -6337,6 +6563,7 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
                     "attempt_fingerprint": _stored_generation_attempt(item).get(
                         "context"
                     ),
+                    "copy_code": REFERENCES_OPERATOR_DECIDES_COPY_CODE if operator_line else None,
                 }
             )
         paged += 1
@@ -6359,7 +6586,8 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
 def morning_content_auto_publish(self):
     """Publish verified content silently and summarize only exhausted blockers."""
     require_dispatch(self, "morning-content-auto-publish")
-    today = arrow.now("Asia/Seoul").date()
+    observed_kst = arrow.now("Asia/Seoul")
+    today = observed_kst.date()
 
     try:
         with SyncSessionLocal() as db:
@@ -6372,11 +6600,36 @@ def morning_content_auto_publish(self):
         published_count = 0
         blocked_codes: Counter[str] = Counter()
         skipped_count = 0
+        # 한 실행 전체가 GET 한도·도메인 장애 상태를 공유한다(기관 사이트 장애 폴백).
+        reference_verifier = ReferenceVerifier()
         for content_id in due_ids:
             try:
-                outcome = _auto_publish_one(content_id)
+                outcome = _auto_publish_one(
+                    content_id,
+                    reference_verifier=reference_verifier,
+                    today_kst=today,
+                    now_kst=observed_kst,
+                )
                 if outcome is None:
                     skipped_count += 1
+                    continue
+                if outcome["kind"] == "reference_deferred":
+                    # 기관 사이트 일시 장애로 참고자료를 확인하지 못해 미뤘다. 다음 시간대가 다시
+                    # 연다. 예정일의 마지막 발행기(23시)부터는 요약에 원인 그대로 한 줄 싣는다.
+                    skipped_count += 1
+                    if reference_outage_alert_due(outcome.get("scheduled_date"), observed_kst):
+                        blocked_outcomes.append(
+                            {
+                                "hospital_id": outcome["hospital_id"],
+                                "hospital_name": outcome.get("hospital_name"),
+                                "content_id": content_id,
+                                "scheduled_date": str(outcome.get("scheduled_date")),
+                                "title": outcome.get("title"),
+                                "code": REFERENCE_SITE_UNREACHABLE_CODE,
+                                "cause": REFERENCE_SITE_UNREACHABLE_CAUSE,
+                                "attempt_fingerprint": "",
+                            }
+                        )
                     continue
                 if outcome.get("image_reused"):
                     reused_image_outcomes.append(
@@ -6408,7 +6661,9 @@ def morning_content_auto_publish(self):
                     if outcome["code"] == "MISSING_APPROVED_ESSENCE":
                         _heal_missing_essence_for_digest(outcome["hospital_id"], healed_hospitals)
                     summary = outcome.get("essence_check_summary") or {}
-                    if generation_block_digest_due(
+                    # 07:45와 같은 줄을 싣는다 — 두 요약의 식별자 집합이 같아야 08:00이 합쳐진다.
+                    operator_line = bool(outcome.get("operator_line"))
+                    if operator_line or generation_block_digest_due(
                         outcome["code"], batch=PUBLISH_MORNING_BATCH,
                         remediation_exhausted=essence_remediation_exhausted(summary),
                     ):
@@ -6422,6 +6677,9 @@ def morning_content_auto_publish(self):
                                 "code": outcome["code"],
                                 "cause": _publication_digest_cause(outcome["code"], summary),
                                 "attempt_fingerprint": outcome.get("attempt_fingerprint"),
+                                "copy_code": (
+                                    REFERENCES_OPERATOR_DECIDES_COPY_CODE if operator_line else None
+                                ),
                             }
                         )
                     continue
@@ -6595,7 +6853,20 @@ def _log_auto_publish_skip(reason: str, content_id, *, item=None, hospital=None)
     )
 
 
-def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
+def _auto_publish_one(
+    content_id: uuid.UUID,
+    *,
+    reference_verifier: ReferenceVerifier | None = None,
+    today_kst: date | None = None,
+    now_kst: arrow.Arrow | None = None,
+) -> dict | None:
+    # 08:00 실행은 기준일·시각을 한 번 정해 넘긴다 — 자정을 넘긴 글이 다음 날로 판정되지 않는다.
+    if now_kst is None:
+        now_kst = arrow.now("Asia/Seoul")
+    # 참고자료 재검증의 GET은 행 잠금 전에 끝낸다. 결과는 아래에서 잠근 행과 비교해 적용한다.
+    reference_refresh = _prefetch_publication_references(
+        content_id, reference_verifier or ReferenceVerifier(), now_kst=now_kst
+    )
     with SyncSessionLocal() as db:
         item = db.execute(
             select(ContentItem)
@@ -6614,13 +6885,67 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             # 후보 목록은 참고용이다 — 목록을 만든 뒤 보류가 켜졌으면 잠금 뒤에 다시 본다.
             _log_auto_publish_skip("auto_publish_hold", content_id, item=item)
             return None
-        today_kst = arrow.now("Asia/Seoul").date()
+        if today_kst is None:
+            today_kst = now_kst.date()
         if hasattr(item, "content_revision") and not (
             auto_publish_catchup_start(today_kst) <= item.scheduled_date <= today_kst
         ):
             # The candidate list is only a hint. A concurrent reschedule wins once
             # this row lock is held and the authoritative date is re-read.
             _log_auto_publish_skip("outside_catchup_window", content_id, item=item)
+            return None
+        # 마지막 발행기의 claim 행이면 실제 행 — 그때 `item`은 판정용 사본이다.
+        read_only_row: ContentItem | None = None
+        if generation_claim_is_active(item, now=datetime.now(timezone.utc)):
+            # 생성 워커가 이 슬롯을 잡고 있다(잠금 전 읽기 때부터, 또는 GET 사이에). 재검증을
+            # 행에 적용하면 판이 올라 워커가 공급자 비용을 치른 결과를 버린다 — 적용하지 않는다.
+            if not (_has_generated_text(item) and not publication_references_settled(item)):
+                # 이미 확인이 끝난 글(또는 생성 전 슬롯)은 아래 판정을 종전대로 거친다.
+                reference_refresh = None
+            elif not reference_outage_alert_due(item.scheduled_date, now_kst):
+                # 확인되지 않은 참고자료로 발행·보류하지도 않고 다음 시간대가 다시 본다(07:45와
+                # 같다).
+                _log_auto_publish_skip("generation_claim_active", content_id, item=item)
+                return None
+            else:
+                # 예정일의 마지막 발행기(23시)이거나 이미 지난 예정일이다 — 건너뛰면 이 행의
+                # 보류·운영자 줄이 조용히 빠진다. 잠금 전 재검증(GET)은 종전처럼 했다. 그 결과를
+                # 분리된 사본에만 적용해 아래의 종전 판정을 사본에서 거친다 — 행은 쓰지 않는다
+                # (재검증 적용·판 올림·발행·판정 기록 없음). 미룸(기관 장애·GET 한도)도 claim 없는
+                # 글과 같은 결과다.
+                read_only_row = item
+                item = _detached_publication_view(item)
+                if reference_refresh is None:
+                    # 잠금 전 읽기와 잠금 사이의 경합(워커가 본문을 쓰는 등)으로 잠금 전 재검증이
+                    # 없다 — 저장된 상태로만 판정한다(판정할 수 없는 주소는 GET 한도처럼 미룬다).
+                    reference_refresh = _run_async(
+                        refresh_publication_references(item, _stored_state_reference_verifier())
+                    )
+        # 참고자료 게이트: 모든 참고자료에 같은 URL·같은 글 주제의 신선한 통과 기록이 있어야
+        # 공개한다. 잠금 밖에서 다시 검증한 결과는 판·참고자료·주제가 그대로일 때만 쓴다.
+        if reference_refresh is not None:
+            if not apply_publication_reference_refresh(item, reference_refresh):
+                # 재검증하는 동안 편집·재생성이 있었다 — 덮어쓰지 않고 다음 시간대에 다시 본다.
+                _log_auto_publish_skip("reference_snapshot_changed", content_id, item=item)
+                return None
+            _log_reference_refresh(content_id, reference_refresh)
+            if reference_refresh.deferred:
+                db.commit()
+                _log_auto_publish_skip("reference_verification_deferred", content_id, item=item)
+                if not reference_refresh.site_unreachable_urls:
+                    return None  # 실행당 GET 한도 — 다음 시간대가 이어서 확인한다.
+                return {
+                    "kind": "reference_deferred",
+                    "hospital_id": item.hospital_id,
+                    "hospital_name": getattr(getattr(item, "hospital", None), "name", None),
+                    "title": item.title,
+                    "scheduled_date": item.scheduled_date,
+                    "unreachable_urls": list(reference_refresh.site_unreachable_urls),
+                }
+        if _has_generated_text(item) and not publication_references_current(item):
+            # 생성 전 슬롯은 아래 판정이 CONTENT_NOT_GENERATED로 막는다.
+            db.commit()
+            _log_auto_publish_skip("reference_verification_pending", content_id, item=item)
             return None
         # 콘텐츠 검사와 동시에 병원이 PAUSED/비공개로 전환되는 경합을 막는다. 병원 행을
         # 같은 트랜잭션에서 잠근 뒤 ACTIVE/LIVE를 재확인해야 공개 중지 요청 이후 새 글이
@@ -6673,6 +6998,7 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                     "code": code,
                     "reason": message,
                     "scheduled_date": str(item.scheduled_date),
+                    **({"generation_claim_active": True} if read_only_row is not None else {}),
                 },
             )
             blocked_run = ensure_publication_block_run(
@@ -6682,8 +7008,10 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 code=code,
                 message=message,
             )
-            # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다).
-            _record_gate_blocker_decision(db, item, philosophy, code)
+            if read_only_row is None:
+                # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행은
+                # 워커가 시도 기록의 소유자라 쓰지 않는다 — 인시던트가 같은 규칙으로 기한을 계산한다.
+                _record_gate_blocker_decision(db, item, philosophy, code)
             db.commit()
             return {
                 "kind": "blocked",
@@ -6698,8 +7026,17 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
                 "admin_url": admin_url,
                 "run_id": blocked_run.id,
                 "attempt_fingerprint": _stored_generation_attempt(item).get("context"),
+                # 잠근 행으로 판정한다 — 08:00 요약에는 행이 없다.
+                "operator_line": operator_decides_digest_due(
+                    code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
+                ),
             }
 
+        if read_only_row is not None:
+            # 저장된 상태로는 보류가 아니다(종전 23시라면 발행했을 글) — 생성 중인 행은 공개하지
+            # 않는다. claim이 풀린 뒤 발행기가 발행한다.
+            _log_auto_publish_skip("generation_claim_active", content_id, item=read_only_row)
+            return None
         # Publishing without a working cache invalidation path can leave a successful DB
         # transaction invisible. Check only after blocker projection so a missing body/image
         # still reaches Operations Center even when the revalidation dependency is unavailable.

@@ -137,6 +137,12 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
+**10/1 배치(PR #177, `0082_add_content_reference_checks`) — 0082 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
+- 역순이면 새 ORM이 아직 없는 `content_items.reference_checks`를 읽는다. 그러면 콘텐츠를 조회하는 모든 경로(공개 사이트 포함)가 `UndefinedColumn`으로 실패한다.
+- `deploy.sh`의 Backend 대상(`all`·`backend`·`api`·`worker`·`beat`)은 4단계에서 마이그레이션을 먼저 실행한다.
+- digest 기반 수동 rollout 같은 대체 경로를 쓰면 `migrate`를 먼저 돌린다. 운영 DB current head가 `0082_add_content_reference_checks`인지 확인한 뒤에 새 리비전을 올린다.
+- 0082 적용 뒤 옛 코드는 영향이 없다(추가형·NULL 허용 컬럼).
+
 체크포인트 2(release `a774851`, 2026-09-08 21:11Z)는 [기록](../releases/2026-09-09-checkpoint-2.md)대로 head `0071`을 적용했다. 현재 운영 DB의 마이그레이션 체인은 `0065_provider_usage` → `0066_content_contracts` → `0067_measurement_slots` → `0068_lead_cost_deferral` → `0069_content_first_publication` → `0070_essence_evidence_noise_hash` → `0071_plan_enum_cleanup`이고 expected head는 `0071_plan_enum_cleanup`다. `0071`은 남은 `PLAN_8` 행을 `PLAN_12`로 옮긴 뒤 `hospitals.plan`·`content_schedules.plan`에 12/16/20 CHECK만 건다. `plan` enum 타입은 손대지 않고 폐기 label도 타입에 남긴다 — 값을 지우려면 타입 rename-swap이 필요한데 그러면 타입 OID가 바뀌어, 롤링 중 아직 도는 옛 API·Worker 리비전의 asyncpg/psycopg2 연결 풀이 들고 있는 타입 OID·prepared statement 캐시가 깨진다(stale type OID / `InvalidCachedStatementError`). 제약 추가는 타입 정체성을 바꾸지 않으므로 롤링 중 실행해도 안전하고, 두 컬럼 모두 CHECK가 막으므로 어떤 행도 `PLAN_8`을 가질 수 없다(코드의 `Plan`도 12/16/20뿐). `0070`은 승인 당시 노이즈로 제외한 근거 노트 집합 hash를 기록한다 — 기존 승인 행은 NULL이며 다음 재조정에서 병원당 1회 유료 재검수가 발생한다(운영 7곳). 공급자 시도 원장, 콘텐츠 revision·provenance·이미지 인증, 월간/V0 고정 관측 슬롯, 무료 진단 비용 차단 재개 시각, 최초 공개 시각·주체를 추가했다. `0069`는 남아 있던 `published_at`·`published_by`만 최초 공개 사실로 백필했다. 이전 수동 반려가 이미 지운 과거 값은 추정하지 않고 NULL로 남겼다. 배포 직전 이미지의 expected head, Alembic heads와 운영 DB current head를 다시 읽어 모두 일치시킨다.
 
 ### 2026-09-07~08 기존 공개 콘텐츠 전환
