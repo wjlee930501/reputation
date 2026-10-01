@@ -310,6 +310,14 @@ def test_recovery_window_only_blocks_hospitals_whose_measurement_is_incomplete(p
     assert "RECOVERY_PENDING" in blockers(partial, in_window)
     assert "RECOVERY_PENDING" not in blockers(partial, after_window)
 
+    # 운영자가 지금 숫자로 보내기로 명시하면 막지 않고 WARN으로만 남긴다.
+    allowed = tasks.build_monthly_template_refresh_plan(
+        pg_session, partial, ANCHOR, observed_now=in_window, allow_recovery_pending=True
+    )
+    codes = {(f.kind, f.code) for f in allowed.verdict.findings}
+    assert ("BLOCKER", "RECOVERY_PENDING") not in codes
+    assert ("WARN", "RECOVERY_PENDING_ALLOWED") in codes
+
 
 def _rendered_text(view) -> str:
     from io import BytesIO

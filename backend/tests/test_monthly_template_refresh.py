@@ -219,13 +219,78 @@ async def test_template_only_dispatches_its_own_arguments_and_audit_mode(
     assert seen["audit"]["template_only"] is True
 
 
+@pytest.mark.asyncio
+async def test_allow_recovery_pending_is_only_for_template_refresh():
+    with pytest.raises(HTTPException) as caught:
+        await operations.generate_monthly_report_operation(
+            uuid.uuid4(), year=2025, month=12, rebuild=True, template_only=False,
+            allow_recovery_pending=True,
+            payload=operations.MonthlyReportBuildRequest(reason="새 템플릿 반영"),
+            db=AsyncMock(), idempotency_key="k",
+        )
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_allow_recovery_pending_adds_its_task_argument_and_audit_flag(monkeypatch):
+    hospital_id = uuid.uuid4()
+    monkeypatch.setattr(
+        operations, "_get_hospital_or_404", AsyncMock(return_value=SimpleNamespace(id=hospital_id))
+    )
+    seen: dict = {}
+
+    async def prepare(*_args, **kwargs):
+        seen["audit"] = kwargs
+        return True
+
+    async def enqueue(*_args, **kwargs):
+        seen["args"] = kwargs["args"]
+        run = OperationRun(
+            id=uuid.uuid4(), hospital_id=hospital_id, operation_type="GENERATE_MONTHLY_REPORT",
+            state=OperationRunState.QUEUED, request_payload={},
+        )
+        return SimpleNamespace(run=run, replayed=False)
+
+    monkeypatch.setattr(operations, "_prepare_monthly_rebuild_audit", prepare)
+    monkeypatch.setattr(operations, "_enqueue_with_truthful_audit", enqueue)
+    await operations.generate_monthly_report_operation(
+        hospital_id, year=2025, month=12, rebuild=True, template_only=True,
+        allow_recovery_pending=True,
+        payload=operations.MonthlyReportBuildRequest(reason="새 템플릿 반영"),
+        db=AsyncMock(), idempotency_key="template-refresh:k:allow-recovery-pending",
+    )
+    assert seen["args"] == [str(hospital_id), 2025, 12, True, False, True, True]
+    assert seen["audit"]["allow_recovery_pending"] is True
+
+
 def test_lost_template_refresh_dispatch_is_recoverable():
     policy = autonomous_recovery._OPERATION_REDISPATCH_POLICIES["GENERATE_MONTHLY_REPORT"]
     target = str(uuid.uuid4())
     payload = SimpleNamespace(target_id=target, task_args=(target, 2026, 9, True, False, True))
     assert autonomous_recovery._args_match_policy(payload, policy)
+    allowed = SimpleNamespace(
+        target_id=target, task_args=(target, 2026, 9, True, False, True, True)
+    )
+    assert autonomous_recovery._args_match_policy(allowed, policy)
     wrong = SimpleNamespace(target_id=target, task_args=(target, 2026, 9, True, 0, True))
     assert not autonomous_recovery._args_match_policy(wrong, policy)
+
+
+@pytest.mark.parametrize(
+    ("stored_args", "flags"),
+    [
+        ([None, 2026, 9, True], (True,)),
+        ([None, 2026, 9, True, True], (True, True)),
+        ([None, 2026, 9, True, False, True], (True, False, True)),
+        ([None, 2026, 9, True, False, True, True], (True, False, True, True)),
+    ],
+)
+def test_lost_template_refresh_is_redispatched_as_a_template_refresh(stored_args, flags):
+    """유실된 템플릿 갱신을 일반 재생성으로 되살리면 지금 행으로 숫자를 다시 센다."""
+    run = SimpleNamespace(
+        request_payload={"_dispatch": {"task_args": stored_args}}, result_summary={}
+    )
+    assert autonomous_recovery._stored_monthly_report_flags(run) == flags
 
 
 class _Session:
@@ -274,3 +339,40 @@ def test_refused_template_refresh_fails_the_run_without_retrying(monkeypatch):
     assert result["verdict"] == "DIFF"
     assert session.rolled_back == 1
     assert len(failed) == 1
+
+
+@pytest.mark.parametrize(
+    ("template_only", "allow", "gated"),
+    [(True, False, True), (False, True, True), (True, True, False)],
+)
+def test_measurement_gate_is_skipped_only_for_an_allowed_template_refresh(
+    monkeypatch, template_only, allow, gated
+):
+    """필수 측정 관문은 운영자가 명시한 템플릿 갱신에서만 건너뛴다 — 숫자는 저장값을 옮긴다."""
+    hospital = SimpleNamespace(id=uuid.uuid4(), name="가상 의원")
+    session = _Session(hospital)
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: session)
+    monkeypatch.setattr(tasks, "_hospital_requires_monthly_sov_success", lambda *_a: True)
+    monkeypatch.setattr(tasks, "_monthly_sov_measurement_succeeded", lambda *_a: False)
+    monkeypatch.setattr(tasks, "_mark_monthly_report_measurement_incomplete", lambda *_a: None)
+    monkeypatch.setattr(tasks, "_mark_monthly_operation_run_running", lambda *_a: None)
+    seen: dict = {}
+
+    def refresh(*_args, **kwargs):
+        seen["allow"] = kwargs["allow_recovery_pending"]
+        return "created"
+
+    monkeypatch.setattr(tasks, "_build_monthly_template_refresh", refresh)
+    monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", lambda *_a, **_k: "created")
+    monkeypatch.setattr(tasks, "_finish_monthly_operation_run", lambda *_a, **_k: None, raising=False)
+
+    result = tasks.generate_monthly_report_for_hospital(
+        str(hospital.id), 2026, 2, rebuild=True, template_only=template_only,
+        allow_recovery_pending=allow,
+    )
+
+    if gated:
+        assert result["status"] == "measurement_not_succeeded"
+        assert "allow" not in seen
+    else:
+        assert seen["allow"] is True
