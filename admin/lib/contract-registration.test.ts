@@ -5,8 +5,6 @@ import {
   registrationFailure,
   registrationBlockReason,
   registrationPayload,
-  suggestContractReference,
-  todayInKorea,
   type ContractRegistrationForm,
 } from './contract-registration.ts'
 
@@ -14,47 +12,30 @@ function form(overrides: Partial<ContractRegistrationForm> = {}): ContractRegist
   return {
     name: ' 장편한외과의원 ',
     leadId: 'lead-1',
-    contractReference: ' RP-202609-a1b2 ',
-    effectiveDate: '2026-09-09',
     plan: 'PLAN_16',
     aeOwnerId: 'ae-1',
-    salesOwnerId: 'sales-1',
     ...overrides,
   }
 }
 
-test('the suggested contract reference carries the Korean year-month and a hex suffix', () => {
-  // 2026-09-01 00:30 KST = 2026-08-31 15:30 UTC — 제안값은 한국 달을 따라야 한다.
-  const reference = suggestContractReference(new Date('2026-08-31T15:30:00Z'), () => 0.99)
-  assert.equal(reference, 'RP-202609-ffff')
-  assert.match(suggestContractReference(new Date('2026-09-09T00:00:00Z'), () => 0), /^RP-202609-0000$/)
-})
-
-test('the default effective date is today in Korea', () => {
-  assert.equal(todayInKorea(new Date('2026-08-31T15:30:00Z')), '2026-09-01')
-  assert.equal(todayInKorea(new Date('2026-09-09T14:59:00Z')), '2026-09-09')
-})
-
-test('the payload trims operator input and sends empty owners as null', () => {
+test('the payload trims the name and leaves the server-filled contract facts out', () => {
   assert.deepEqual(registrationPayload(form()), {
     name: '장편한외과의원',
     lead_id: 'lead-1',
-    contract_reference: 'RP-202609-a1b2',
-    contract_effective_at: '2026-09-09',
     plan: 'PLAN_16',
     ae_owner_id: 'ae-1',
-    sales_owner_id: 'sales-1',
   })
-  const walkIn = registrationPayload(form({ leadId: null, salesOwnerId: '' }))
-  assert.equal(walkIn.lead_id, null)
-  assert.equal(walkIn.sales_owner_id, null)
+  // 계약 번호·효력일·영업 담당은 저장만 되고 아무 동작도 바꾸지 않는다 — 서버가 채운다.
+  const payload = registrationPayload(form({ leadId: null })) as Record<string, unknown>
+  assert.equal(payload.lead_id, null)
+  for (const key of ['contract_reference', 'contract_effective_at', 'sales_owner_id']) {
+    assert.ok(!(key in payload), `unexpected field: ${key}`)
+  }
 })
 
 test('the block reason names the one field that is still missing', () => {
   assert.equal(registrationBlockReason(form()), null)
   assert.match(registrationBlockReason(form({ name: '  ' })) ?? '', /병원명/)
-  assert.match(registrationBlockReason(form({ contractReference: '' })) ?? '', /계약 번호/)
-  assert.match(registrationBlockReason(form({ effectiveDate: '' })) ?? '', /효력일/)
   assert.match(registrationBlockReason(form({ aeOwnerId: '' })) ?? '', /담당 AE/)
 })
 
@@ -77,11 +58,16 @@ test('only the two "already exists" codes offer the existing hospital to open', 
 test('each failure code gets its own line naming what to fix', () => {
   // 서버 문장이 있으면 그것이 정본이다.
   assert.equal(
-    registrationFailure({ code: 'CONTRACT_REFERENCE_EXISTS', message: '이미 사용된 계약 번호입니다.' })
-      .message,
-    '이미 사용된 계약 번호입니다.',
+    registrationFailure({ code: 'HOSPITAL_EXISTS', message: '서버 문장' }).message,
+    '서버 문장',
   )
-  assert.match(registrationFailure({ code: 'CONTRACT_REFERENCE_EXISTS' }).message, /계약 번호/)
+  // 계약 번호는 화면이 받지 않으므로 "번호를 고쳐라"는 서버 문장 대신 다시 누르라고 한다.
+  const collision = registrationFailure({
+    code: 'CONTRACT_REFERENCE_EXISTS',
+    message: '이미 사용된 계약 번호입니다. 다른 번호를 입력해 주세요.',
+  }).message
+  assert.match(collision, /한 번 더 눌러/)
+  assert.doesNotMatch(collision, /입력/)
   assert.match(registrationFailure({ code: 'ACTIVE_OWNER_REQUIRED' }).message, /담당 AE/)
   assert.match(registrationFailure({ code: 'HANDOFF_NOT_ASSIGNED' }).message, /담당 AE 본인/)
   assert.match(registrationFailure({ code: 'LEAD_NOT_FOUND' }).message, /상담 요청/)

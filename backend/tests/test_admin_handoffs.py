@@ -730,6 +730,33 @@ async def test_register_contract_creates_hospital_and_accepts_in_one_commit(
     assert response["id"] == str(hospital.id)
 
 
+async def test_register_contract_fills_the_contract_facts_the_screen_no_longer_asks_for(
+    _verified_actor,
+) -> None:
+    """화면은 병원명·요금제·담당 AE만 받는다. 계약 번호·효력일·영업 담당은 서버가 채운다."""
+    from app.schemas.handoff import ContractRegistration
+
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+    body = ContractRegistration(name="장편한외과의원", plan=Plan.PLAN_12, ae_owner_id=ae.id)
+
+    await handoffs_api.register_contract(body, db=db, actor=ae)
+
+    handoff = next(row for row in db.added if isinstance(row, HospitalHandoff))
+    accepted_kst = handoff.accepted_at.astimezone(handoffs_api.KST)
+    assert handoff.contract_reference.startswith(f"RP-{accepted_kst:%Y%m}-")
+    assert len(handoff.contract_reference) == len("RP-202610-") + 12
+    assert handoff.contract_effective_at.date() == accepted_kst.date()
+    assert handoff.sales_owner_id == ae.id
+    assert db.committed is True
+
+
+async def test_register_contract_generates_a_distinct_reference_each_time() -> None:
+    now = datetime.now(UTC)
+    references = {handoffs_api._generated_contract_reference(now) for _ in range(50)}
+    assert len(references) == 50
+
+
 def _lead(**overrides) -> SalesLead:
     values = {
         "id": uuid.uuid4(),
