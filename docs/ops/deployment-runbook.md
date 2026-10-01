@@ -1,6 +1,16 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-09-28 도입문의 Slack 채널 분리
+## 최신 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
+
+main `a8a86b57`을 5개 서비스에, #194·#196·#197(최종 `ce731db7`)을 API·Worker·Beat에 배포했다. 현재 리비전은
+api `00215-mtl`, worker `00204-q9m`, beat `00199-gq7`, site `00143-mvd`, admin `00099-fc4`,
+DB head는 `0082_add_content_reference_checks`.
+`deploy.sh`는 `PUBLIC_DOMAIN=reputation.motionlabs.kr ADMIN_DOMAIN=admin.reputation.motionlabs.kr` 셸 변수가 필요하다.
+9월 보고서 9곳 템플릿 갱신 결과는 [배포 기록](../releases/2026-10-01-report-plain-language-production.md)을 본다.
+`reputation-migrate` Job의 기본 task timeout은 300초라 여러 병원의 `execute`는 `--task-timeout=1800s`로 돌리고,
+`--args` 안에서 같은 플래그를 반복할 수 없으므로 병원은 `--hospital-id=ID` 꼴로 넘긴다.
+
+## 이전 운영 배포 — 2026-09-28 도입문의 Slack 채널 분리
 
 main `7266674`(PR #164·#165)를 API·Worker·Beat에 배포했다. 현재 리비전은 api `00206-8hf`,
 worker `00195-7dt`, beat `00190-bqz`이고 Site·Admin과 DB head `0080_lead_diagnosis_supersede`는 그대로다.

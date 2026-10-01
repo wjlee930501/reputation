@@ -1,6 +1,17 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-09-28 도입문의 Slack 채널 분리
+## 최신 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
+
+main `a8a86b57`(PR #163·#168·#177·#179·#181~#193)을 5개 서비스에, 이어 #194·#196·#197을 API·Worker·Beat에
+배포했다(최종 main `ce731db7`). 현재 리비전은 api `00215-mtl`, worker `00204-q9m`, beat `00199-gq7`,
+site `00143-mvd`, admin `00099-fc4`, **DB head는 `0082_add_content_reference_checks`**다. 원장용 월간 보고서가
+쉬운 말·새 디자인으로 바뀌었고, 9월 보고서 9곳 전부를 `TEMPLATE_REFRESH`로 숫자 그대로 v2를 만들었다
+(postcheck 9/9 PASS, 측정 미완료 4곳은 운영자 지정 `allow_recovery_pending`). 새 버전은 원장에게 재전달해야 한다.
+일일 운영 요약이 9/24부터 `fallback_text` 1000자 초과로 저장에 실패하던 기존 장애를 #197로 고쳤다.
+배포 전 `.env.production`을 운영 API env로 다시 만들었다(작업 PC 파일이 10/1 모델 변경 이전 값이었다). 상세는
+[원장 보고서 개편 배포 기록](docs/releases/2026-10-01-report-plain-language-production.md)을 본다.
+
+## 이전 운영 배포 — 2026-09-28 도입문의 Slack 채널 분리
 
 main `7266674`(PR #164·#165)를 API·Worker·Beat에 배포했다. 현재 리비전은 api `00206-8hf`,
 worker `00195-7dt`, beat `00190-bqz`이고 Site·Admin과 DB head `0080_lead_diagnosis_supersede`는 그대로다.
