@@ -10624,8 +10624,16 @@ def _template_refresh_blockers(
     exclude_run_id: uuid.UUID | None,
     verdict: RefreshVerdict,
 ) -> None:
-    if is_monthly_recovery_window(observed_now, now.year, now.month):
-        verdict.add("BLOCKER", "RECOVERY_WINDOW_OPEN", "측정 복구 기간(1~7일)이 끝난 뒤 실행")
+    # 1~7일 복구 기간의 자동 복구는 측정이 덜 끝난 병원만 다시 측정·재생성한다. 측정이 전부
+    # 확정된 병원은 복구 대상이 아니라 숫자가 바뀌지 않으므로 기간 중에도 갱신할 수 있다.
+    if is_monthly_recovery_window(
+        observed_now, now.year, now.month
+    ) and not _monthly_report_quality_is_complete(latest):
+        verdict.add(
+            "BLOCKER",
+            "RECOVERY_PENDING",
+            "측정이 덜 끝나 복구 기간(1~7일) 자동 복구 대상 — 8일 이후 실행",
+        )
     in_flight = db.execute(
         select(OperationRun.id, OperationRun.operation_type).where(
             OperationRun.hospital_id == h.id,
