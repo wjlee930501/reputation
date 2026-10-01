@@ -113,3 +113,15 @@ test('편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한
   assert.match(page, /method: 'PATCH'/)
   assert.match(page, /저장하면 자동 안전검사·재검수, 공개 글은 이미지 재인증까지 자동으로 진행됩니다/)
 })
+
+test('저장 실패 중 목록 문서 거절(422)만 서버 안내 문장을 보여 준다', () => {
+  const start = page.indexOf('async function handleSaveEdit()')
+  const handler = page.slice(start, page.indexOf('const currentYear', start))
+  // 분기(금지 표현 → 422 코드 → 일반 안내)는 `saveEditFailure` 한 곳이다(content-save-errors.test.ts).
+  assert.match(handler, /const failure = saveEditFailure\(e\)/)
+  assert.match(handler, /if \(failure\.violations\.length > 0\) setViolations\(failure\.violations\)/)
+  assert.match(handler, /setEditError\(failure\.message\)/)
+  // 화면이 따로 거절 코드를 읽거나 일반 안내로 덮어쓰지 않는다.
+  assert.doesNotMatch(handler, /curatedReferenceRejectionMessage|readViolationsFromError/)
+  assert.doesNotMatch(handler, /catch \(e: unknown\) \{[\s\S]*safeOperatorError[\s\S]*\} finally/)
+})

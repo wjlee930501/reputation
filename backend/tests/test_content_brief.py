@@ -339,13 +339,15 @@ async def test_publish_content_rejects_generated_content_without_references(monk
     item = _content_item(
         id=item_id,
         hospital_id=hospital_id,
-        title="치질 수술 전 확인할 점",
+        # 참고자료가 비면 발행 경로는 이 글의 주제로 수기 목록 치유를 먼저 시도한다. 수기 목록에
+        # 맞는 문서가 없는 주제(진료비)라야 '참고자료 없음' 거절까지 간다.
+        title="경산 내과 진료비 확인할 점",
         body="환자 상태에 따라 진료 방향을 설명합니다.",
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[],
-        faq_question="치질 수술 전에 무엇을 확인해야 하나요?",
-        faq_answer_summary="환자 상태를 확인한 뒤 진료 방향을 정합니다.",
+        faq_question="경산 내과 진료비는 무엇에 따라 달라지나요?",
+        faq_answer_summary="검사 범위와 보험 적용에 따라 달라집니다.",
         image_url="gs://bucket/content.png",
         image_policy_verified_at=datetime.now(timezone.utc),
     )
@@ -390,12 +392,14 @@ async def test_publish_content_rejects_non_whitelisted_references(monkeypatch, v
     item = _content_item(
         id=item_id,
         hospital_id=hospital_id,
-        title="치질 수술 전 확인할 점",
+        # 수기 목록에 없는 주제로 둔다 — 치질 같은 주제면 발행 직전 게이트가 광고 블로그를
+        # 빼고 검증된 치핵 문서로 채워 이 차단까지 오지 않는다.
+        title="손목 저림 진료 전 확인할 점",
         body="환자 상태에 따라 진료 방향을 설명합니다.",
         meta_description="진료 전 확인할 점을 정리합니다.",
         essence_status="ALIGNED",
         references_list=[{"title": "광고 블로그", "url": "https://ad-blog.example.com/promo"}],
-        faq_question="치질 수술 전에 무엇을 확인해야 하나요?",
+        faq_question="손목 저림 진료 전에 무엇을 확인해야 하나요?",
         faq_answer_summary="환자 상태를 확인한 뒤 진료 방향을 정합니다.",
         image_url="gs://bucket/content.png",
         image_policy_verified_at=datetime.now(timezone.utc),

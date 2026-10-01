@@ -1,0 +1,156 @@
+{
+ "source": "/workspace/ref-audit2-20260929 (김실장 2차 점검, 2026-09-29 실제 GET)",
+ "stripping": "script/style/noscript/svg/template blocks and HTML comments removed, whitespace runs collapsed, gzip(mtime=0)",
+ "rows": [
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5305",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5305",
+   "page_title": "당뇨병 | 국가건강정보포털 | 질병관리청",
+   "article_title": "마산회원구 당뇨 진료, 어느 병원에서 어떤 검사부터 받아야 할까요?",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k5305.html",
+   "html": "html/64f5baee62920086-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1061",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1061",
+   "page_title": "복부초음파검사 | 국가건강정보포털 | 질병관리청",
+   "article_title": "복부초음파 검사, 어떤 증상일 때 받나요?",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k1061.html",
+   "html": "html/1e102e460fb8f04d-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5975",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5975",
+   "page_title": "족저근막염 | 국가건강정보포털 | 질병관리청",
+   "article_title": "도화동 족저근막염 진료 가능한 병원은 어디인가요?",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k5975.html",
+   "html": "html/efc8015c1a675152-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1567",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1567",
+   "page_title": "오십견(동결견, 유착관절낭염) | 국가건강정보포털 | 질병관리청",
+   "article_title": "오십견(동결견) 진료 안내",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k1567.html",
+   "html": "html/a6d3be6d176e38b1-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6292",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6292",
+   "page_title": "수근굴(수근관) 증후군 | 국가건강정보포털 | 질병관리청",
+   "article_title": "수근굴(수근관) 증후군 진료 안내",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k6292.html",
+   "html": "html/f4b1ba5dbcf54a5c-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1988",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1988",
+   "page_title": "골관절염 | 국가건강정보포털 | 질병관리청",
+   "article_title": "마포구 무릎 관절염 진료 — 증상·진단·치료 흐름 안내",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k1988.html",
+   "html": "html/c5eb7a7c4fe6fd4f-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6715",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6715",
+   "page_title": "이상지질혈증 | 국가건강정보포털 | 질병관리청",
+   "article_title": "이상지질혈증(고지혈증) 관리 안내",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k6715.html",
+   "html": "html/1924e666d9c4bd21-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6709",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6709",
+   "page_title": "지질 검사 | 국가건강정보포털 | 질병관리청",
+   "article_title": "지질검사 전 준비와 결과 보는 법",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k6709.html",
+   "html": "html/47786c8225331a04-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5258",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5258",
+   "page_title": "위내시경 | 국가건강정보포털 | 질병관리청",
+   "article_title": "위내시경 검사 준비와 과정",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k5258.html",
+   "html": "html/1bd01d7377178f9c-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6673",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6673",
+   "page_title": "대사이상지방간질환 | 국가건강정보포털 | 질병관리청",
+   "article_title": "지방간 진료 안내",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k6673.html",
+   "html": "html/761888bf5e6eb879-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2390",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=2390",
+   "page_title": "갑상선 검사(초음파) | 국가건강정보포털 | 질병관리청",
+   "article_title": "하남시 갑상선초음파 진료 병원 — 결절 평가와 추적 절차",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k2390.html",
+   "html": "html/a7c2e3c9eed4a03b-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5444",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5444",
+   "page_title": "간기능검사 | 국가건강정보포털 | 질병관리청",
+   "article_title": "간기능검사 결과 보는 법",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k5444.html",
+   "html": "html/7a63a7c79650ab4e-r2.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1102",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=1102",
+   "page_title": "부정맥 | 국가건강정보포털 | 질병관리청",
+   "article_title": "부정맥 진료 안내",
+   "article_source": "page_title",
+   "evidence": "/workspace/ref-audit2-20260929/verify/k1102.html",
+   "html": "html/4d6c2c451e577410-r2.html.gz"
+  },
+  {
+   "url": "https://medlineplus.gov/ency/article/003774.htm",
+   "status": 200,
+   "final_url": "https://medlineplus.gov/ency/article/003774.htm",
+   "page_title": "Carotid duplex: MedlinePlus Medical Encyclopedia",
+   "article_title": "하남시 경동맥초음파, 어느 병원에서 받아야 할까요?",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/ml_carotid.html",
+   "html": "html/a9163564b411c710-r2.html.gz"
+  },
+  {
+   "url": "https://medlineplus.gov/ency/article/002375.htm",
+   "status": 200,
+   "final_url": "https://medlineplus.gov/ency/article/002375.htm",
+   "page_title": "Hyperbaric oxygen therapy: MedlinePlus Medical Encyclopedia",
+   "article_title": "고압산소치료 비용 — 치료 목적·보험 적용 기준",
+   "article_source": "review",
+   "evidence": "/workspace/ref-audit2-20260929/verify/ml_hbot.html",
+   "html": "html/49fc9542c47e32e2-r2.html.gz"
+  }
+ ]
+}

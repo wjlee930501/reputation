@@ -6,6 +6,7 @@ import { useParams } from 'next/navigation'
 import Image from 'next/image'
 import ReactMarkdown from 'react-markdown'
 import { ApiError, fetchAPI } from '@/lib/api'
+import { saveEditFailure } from '@/lib/content-save-errors'
 import { OperatorIssuePanel } from '@/app/_components/OperatorIssuePanel'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
 import {
@@ -87,16 +88,6 @@ const FORBIDDEN_RULES: ForbiddenRule[] = [
   { label: '통증 없는', pattern: /통증\s*없[는이]|무통[증]?[의]?\s*(시술|수술|치료)|아프지\s*않[은는]/ },
   { label: '흉터 없는', pattern: /흉터\s*(없|zero|제로|걱정\s*없|남지\s*않)/ },
 ]
-
-function readViolationsFromError(error: unknown): string[] {
-  if (!(error instanceof ApiError)) return []
-  const detail = error.detail
-  if (detail && typeof detail === 'object' && !Array.isArray(detail)) {
-    const violations = (detail as { violations?: unknown }).violations
-    if (Array.isArray(violations)) return violations.map((v) => String(v))
-  }
-  return []
-}
 
 function checkForbidden(text: string): string[] {
   if (!text) return []
@@ -563,13 +554,10 @@ export default function ContentPage() {
       setEditMode(false)
       setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
     } catch (e: unknown) {
-      const violationList = readViolationsFromError(e)
-      if (violationList.length > 0) {
-        setViolations(violationList)
-        setEditError(`금지 표현: ${violationList.join(', ')}`)
-      } else {
-        setEditError(safeOperatorError('content', '입력 내용을 확인한 뒤 ‘저장’을 다시 누르세요.'))
-      }
+      // 금지 표현 → 목록 문서 거절(422)의 서버 문장 → 일반 안내 순서다(`saveEditFailure`).
+      const failure = saveEditFailure(e)
+      if (failure.violations.length > 0) setViolations(failure.violations)
+      setEditError(failure.message)
     } finally {
       setEditSaving(false)
     }

@@ -16,15 +16,11 @@ os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
 
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from app.models.content import ContentType
 from app.services.content_engine import (
-    _REFERENCE_DROP_BROKEN,
     _REFERENCE_DROP_NOT_CITABLE,
-    _REFERENCE_DROP_UNRELATED,
-    _drop_definitively_broken_references,
     _normalize_references,
     _reference_drop_notes,
     _validate_geo,
@@ -397,46 +393,7 @@ class TestValidateGeo:
         assert not findings
 
 
-class _ReferenceClient:
-    def __init__(self, responses, *args, **kwargs):
-        self.responses = responses
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *_args):
-        return False
-
-    async def get(self, url, headers):
-        status, final_url = self.responses[url]
-        return httpx.Response(
-            status,
-            request=httpx.Request("GET", url),
-            headers={"content-type": "text/html"},
-            extensions={},
-        ) if final_url == url else SimpleNamespace(status_code=status, url=httpx.URL(final_url))
-
-
-@pytest.mark.asyncio
-async def test_reference_verification_drops_404_and_external_redirect(monkeypatch):
-    refs = [
-        {"title": "정상", "url": "https://health.kdca.go.kr/good"},
-        {"title": "없음", "url": "https://health.kdca.go.kr/missing"},
-        {"title": "이탈", "url": "https://health.kdca.go.kr/redirect"},
-    ]
-    responses = {
-        refs[0]["url"]: (200, refs[0]["url"]),
-        refs[1]["url"]: (404, refs[1]["url"]),
-        refs[2]["url"]: (200, "https://example.com/landing"),
-    }
-    monkeypatch.setattr(
-        "app.services.content_engine.httpx.AsyncClient",
-        lambda *args, **kwargs: _ReferenceClient(responses, *args, **kwargs),
-    )
-
-    kept = await _drop_definitively_broken_references(refs)
-
-    assert kept == [refs[0]]
+# 실제 문서 검증(404·홈 리다이렉트·빈 템플릿·주제)은 tests/test_reference_verification.py가 맡는다.
 
 
 # ── 빈 references 거절이 재작성 회차에 넘기는 사유 ─────────────────────────────
@@ -445,7 +402,8 @@ async def test_reference_verification_drops_404_and_external_redirect(monkeypatc
 class TestEmptyReferenceCause:
     """참고자료가 왜 하나도 남지 않았는지 작가가 알 수 있어야 회차가 달라진다."""
 
-    def test_writer_that_sent_nothing_is_told_that_omitting_is_not_an_option(self):
+    def test_writer_that_sent_nothing_is_not_pushed_to_invent_a_url(self):
+        """빈 참고자료를 "다른 문서로 채우라"고 압박하면 문서 번호를 추측한 URL이 나온다."""
         h = _hospital()
         result = _good_result(h)
         result["references"] = []
@@ -454,8 +412,10 @@ class TestEmptyReferenceCause:
             _validate_geo(result, h, ContentType.FAQ)
 
         message = str(raised.value)
-        assert "references를 비워 보냈습니다" in message
-        assert "비우는 선택지는 없으니" in message
+        assert "검증 문서" in message
+        assert "추측한 URL 대신 비워 두세요" in message
+        assert "비우는 선택지는 없으니" not in message
+        assert "다른 문서를 쓰세요" not in message
 
     def test_dropped_urls_are_named_with_the_reason_they_were_dropped(self):
         """종전에는 URL을 냈는데도 "references is empty"만 돌아가 같은 URL을 다시 냈다."""
@@ -478,7 +438,8 @@ class TestEmptyReferenceCause:
         assert "모두 제외됐습니다" in message
         assert "ad-blog.example.com" in message
         assert _REFERENCE_DROP_NOT_CITABLE in message
-        assert "같은 사유를 피해" in message
+        assert "같은 주소·번호를 다시 쓰지 말고" in message
+        assert "다른 문서를 쓰세요" not in message
 
     def test_the_cause_survives_the_rewrite_finding_truncation(self):
         """지적 한 줄은 240자에서 잘린다 — 사유가 그 안에 들어와야 작가에게 닿는다."""
@@ -492,7 +453,7 @@ class TestEmptyReferenceCause:
                 {"title": "c", "url": "https://third-host.example.net/doc"},
             ],
             [],
-            _REFERENCE_DROP_UNRELATED,
+            "이 글의 주제와 다른 문서",
         )
 
         with pytest.raises(ValueError) as raised:
@@ -500,7 +461,7 @@ class TestEmptyReferenceCause:
 
         message = " ".join(str(raised.value).split())
         assert len(message) <= 240
-        assert "같은 사유를 피해" in message
+        assert "추측한 URL 대신 비워 두세요" in message
 
 
 class TestReferenceDropNotes:
@@ -517,8 +478,8 @@ class TestReferenceDropNotes:
     def test_nothing_is_reported_when_every_entry_survived(self):
         kept = [{"title": "KDCA", "url": "https://health.kdca.go.kr/doc?cntnts_sn=1"}]
 
-        assert _reference_drop_notes(kept, kept, _REFERENCE_DROP_UNRELATED) == []
+        assert _reference_drop_notes(kept, kept, _REFERENCE_DROP_NOT_CITABLE) == []
 
     def test_a_missing_or_malformed_list_is_not_a_crash(self):
-        assert _reference_drop_notes(None, [], _REFERENCE_DROP_BROKEN) == []
-        assert _reference_drop_notes(["not-a-dict"], [], _REFERENCE_DROP_BROKEN) == []
+        assert _reference_drop_notes(None, [], _REFERENCE_DROP_NOT_CITABLE) == []
+        assert _reference_drop_notes(["not-a-dict"], [], _REFERENCE_DROP_NOT_CITABLE) == []

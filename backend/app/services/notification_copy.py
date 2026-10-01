@@ -149,13 +149,82 @@ def display_time(value: datetime) -> str:
     return value.astimezone(KST).strftime("%m/%d %H:%M KST")
 
 
+# 아침 요약(07:45·08:00)의 진료비·병원 선택 글 참고자료 보류 줄만 쓰는 문구 키. 차단 코드는 그대로
+# MISSING_REFERENCES이고(인시던트·요약 식별자), 주간 요약의 평범한 참고자료 보류 문구는 바꾸지 않는다.
+REFERENCES_OPERATOR_DECIDES_COPY_CODE = "MISSING_REFERENCES_OPERATOR_DECIDES"
+# 같은 보류의 아직 쓰이지 않은 슬롯(생성이 작가의 제목으로 판정해 남긴 결정) — 고칠 제목·본문이
+# 없으므로 '새로 쓰기'를 말한다.
+REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE = "MISSING_REFERENCES_OPERATOR_DECIDES_UNWRITTEN"
+REFERENCES_OPERATOR_DECIDES_COPY_CODES = frozenset(
+    {REFERENCES_OPERATOR_DECIDES_COPY_CODE, REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE}
+)
+# 두 모양이 함께 싣는 경고. 진료비·병원 선택 글(저장될 제목 기준)에 검증된 문서 목록의 문서를 담은
+# 저장은 422 `CURATED_REFERENCE_NOT_ALLOWED`로 거절된다. 자동 복구가 다시 쓰지 않는 것은 생성
+# 조건이 그대로인 동안이다 — 새 운영 기준 승인은 옛 기준의 본문을, 생성 지문(운영 기준·유형·측정
+# 질문 등, `tasks._generation_attempt_context`) 변화는 쓰이지 않은 슬롯을 다시 쓴다.
+_OPERATOR_DECIDES_CURATED_WARNING = (
+    "진료비·병원 선택 글에는 검증된 문서 목록의 문서를 넣을 수 없어 저장이 거절됩니다."
+)
+_OPERATOR_DECIDES_OUTCOME = (
+    "참고 자료 없이는 발행되지 않고, 자동 복구는 운영 기준이 새로 승인되는 등 생성 조건이 "
+    "바뀌기 전에는 이 글을 다시 쓰지 않습니다."
+)
+# 아직 쓰이지 않은 슬롯의 결과. 질환·검사 안내 글로 새로 쓰면 더 이상 진료비·병원 선택 글이 아니라
+# 자동 복구가 참고 자료를 찾는다 — 그 예외를 먼저 말한다. 인시던트 조치
+# (`generation_incident_control.REFERENCES_OPERATOR_DECIDES_UNWRITTEN_ACTION`)의 끝 두 문장과 같다.
+_OPERATOR_DECIDES_UNWRITTEN_OUTCOME = (
+    "질환·검사 안내 글로 쓰면 참고 자료 없이 저장해도 자동 복구가 참고 자료를 찾습니다. 그대로 두면 "
+    "생성 조건이 바뀌기 전에는 자동 복구가 이 글을 쓰지 않고, 참고 자료 없이는 발행되지 않습니다."
+)
+# 콘텐츠 생성 서비스의 일시 장애. 독립 검수 라벨과 섞지 않는다. 이 코드의 빈 슬롯은 “작업 다시
+# 시도”가 환경 실패 기록의 억제를 풀어 바로 원고를 만든다(`operator_retry_releases`).
+_PROVIDER_OUTAGE_CODES = frozenset({"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"})
+# 분류되지 않은 생성 작업 오류. 공급자 장애처럼 환경 실패(ENVIRONMENT_RECOVERABLE)라 예산 안에서
+# 자동 재시도하고, 빈 슬롯은 “작업 다시 시도”가 억제를 풀어 바로 다시 시도한다. 본문·근거 확인이
+# 아니다.
+_GENERATION_ERROR_CODES = frozenset({"GENERATION_FAILED"})
+# 독립 검수가 끝나지 않은 코드. 부분 문자열이 아니라 코드 그대로 맞춘다 — "UNAVAILABLE"을
+# 포함한다는 이유로 생성 서비스 장애까지 검수 미완료로 부르면 운영자가 엉뚱한 곳을 본다.
+_REVIEW_PENDING_CODES = frozenset({"CONTENT_AI_REVIEW_UNAVAILABLE"})
+
+
+def references_operator_decides_copy_code(*, written: bool) -> str:
+    """사람이 정하는 참고자료 보류 줄의 문구 키 — 작성된 글은 '고쳐 저장', 빈 슬롯은 '새로 쓰기'."""
+
+    return (
+        REFERENCES_OPERATOR_DECIDES_COPY_CODE
+        if written
+        else REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE
+    )
+
+
 def blocker_copy(code: object) -> ActionCopy:
     value = str(code or "")
+    if value == "REFERENCE_SITE_UNREACHABLE":
+        # 문서가 없다는 판정이 아니다 — 기관 사이트가 열리지 않아 확인을 미뤘다.
+        return ActionCopy(
+            "기관 사이트 접속 불가로 발행 대기",
+            "참고 자료 기관 사이트에 접속하지 못해 발행을 미뤘습니다. 다음 발행 시간대에 "
+            "자동으로 다시 확인하며, 사이트가 계속 열리지 않으면 콘텐츠에서 참고 자료 주소를 바꿔 주세요.",
+            "참고 자료 확인",
+        )
     if value == "MISSING_APPROVED_ESSENCE":
         return ActionCopy(
             "운영 기준 미승인",
             "병원 정보에서 콘텐츠 운영 기준을 확인하고 승인해 주세요.",
             "운영 기준 확인",
+        )
+    if value == "CONTENT_NOT_GENERATED":
+        return ActionCopy(
+            "발행용 원고 미생성",
+            "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
+            "생성 상태 확인",
+        )
+    if value == "TOPIC_SWAPPED":
+        return ActionCopy(
+            "주제 자동 교체",
+            "같은 주제로 자동 생성이 소진되어 다른 주제로 바꿨습니다. 콘텐츠에서 새 주제를 확인해 주세요. 새 주제 생성은 자동으로 진행되니 다시 실행하지 마세요.",
+            "새 주제 확인",
         )
     if "IMAGE" in value:
         return ActionCopy(
@@ -165,11 +234,45 @@ def blocker_copy(code: object) -> ActionCopy:
         )
     if "COST" in value:
         return incident_copy("COST_GUARD_LIMIT_REACHED")
-    if "UNCERTAIN" in value or "UNAVAILABLE" in value:
+    if value in _PROVIDER_OUTAGE_CODES:
+        return ActionCopy(
+            "생성 서비스 일시 장애",
+            "콘텐츠 생성 서비스의 일시 장애로 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+            "상태를 확인하고, 서비스가 복구됐으면 “작업 다시 시도”를 눌러 주세요.",
+            "생성 상태 확인",
+        )
+    if value in _GENERATION_ERROR_CODES:
+        return ActionCopy(
+            "생성 서비스 오류",
+            "콘텐츠 생성 작업이 오류로 중단돼 원고를 만들지 못했습니다. 운영 센터에서 해당 글의 생성 "
+            "상태를 확인하고, 오류가 풀렸으면 “작업 다시 시도”를 눌러 주세요.",
+            "생성 상태 확인",
+        )
+    if value in _REVIEW_PENDING_CODES:
         return ActionCopy(
             "자동 검수 미완료",
             "콘텐츠에서 검수 상태와 자동 재시도 여부를 확인해 주세요.",
             "검수 상태 확인",
+        )
+    if value == REFERENCES_OPERATOR_DECIDES_COPY_CODE:
+        # 인시던트 조치(`REFERENCES_OPERATOR_DECIDES_ACTION`)의 요약 한 줄 — 콘텐츠 화면에 실제로 있는
+        # 조작(“콘텐츠 수정”·“참고 자료 추가”·제목·본문 저장)만 말한다. 항목 종료·재생성 버튼은 없다.
+        return ActionCopy(
+            "참고 자료 운영자 판단",
+            "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 글의 주장을 직접 뒷받침하는 공공·학술 기관 "
+            "문서를 “참고 자료 추가”로 넣거나 제목·본문을 질환·검사 안내 글로 고쳐 저장해 주세요. "
+            f"{_OPERATOR_DECIDES_CURATED_WARNING} {_OPERATOR_DECIDES_OUTCOME}",
+            "참고 자료 확인",
+        )
+    if value == REFERENCES_OPERATOR_DECIDES_UNWRITTEN_COPY_CODE:
+        # 아직 쓰이지 않은 슬롯 — 콘텐츠 수정은 빈 제목·본문 편집을 연다. 고칠 원고가 없다.
+        return ActionCopy(
+            "참고 자료 운영자 판단",
+            "아직 원고가 없는 글입니다. 콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러, 질환·검사 안내 "
+            "글로 제목·본문을 새로 쓰거나 글의 주장을 직접 뒷받침하는 공공·학술 기관 문서를 “참고 자료 "
+            f"추가”로 함께 넣어 새 원고를 저장해 주세요. {_OPERATOR_DECIDES_CURATED_WARNING} "
+            f"{_OPERATOR_DECIDES_UNWRITTEN_OUTCOME}",
+            "참고 자료 확인",
         )
     return ActionCopy(
         "본문·근거 확인 필요",
