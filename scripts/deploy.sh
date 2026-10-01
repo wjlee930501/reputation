@@ -904,7 +904,7 @@ require_openrouter_model_slugs() {
     [[ -z "$value" ]] && continue
 
     [[ "$value" == */* ]] \
-      || fail "${name}=${value} 에 공급자 접두사가 없습니다. 모든 모델 호출은 OpenRouter 게이트웨이로 나가므로 'vendor/model' 슬러그를 쓰세요 (예: anthropic/claude-sonnet-5, openai/gpt-4o-mini-2024-07-18, google/gemini-3.6-flash)."
+      || fail "${name}=${value} 에 공급자 접두사가 없습니다. 모든 모델 호출은 OpenRouter 게이트웨이로 나가므로 'vendor/model' 슬러그를 쓰세요 (예: anthropic/claude-sonnet-5.5, openai/gpt-4o-mini-2024-07-18, google/gemini-3.6-flash)."
 
     vendor="${value%%/*}"
     model="${value#*/}"
@@ -950,14 +950,14 @@ require_pinned_measurement_models() {
     #   (b) 버전/변종 식별자가 없는 맨 계열명(gpt-5, gpt-5-mini, gemini-flash) — 새 스냅샷으로 옮겨간다
     # 그 둘만 거부하고 나머지는 통과시킨다.
     [[ "$slug" == *-latest ]] \
-      && fail "${name}=${value} 는 부동 별칭입니다. 고정 모델을 쓰세요 (예: openai/gpt-5.6-luna, openai/gpt-4o-mini-2024-07-18, google/gemini-3.6-flash)."
+      && fail "${name}=${value} 는 부동 별칭입니다. 고정 모델을 쓰세요 (예: openai/gpt-6-luna, openai/gpt-4o-mini-2024-07-18, google/gemini-3.6-flash)."
 
     case "$name" in
       OPENAI_MODEL_*)
         # 맨 계열명 거부: gpt-5 / gpt-5-mini / gpt-4o / gpt-4o-mini 처럼
         # 뒤에 날짜 스냅샷도 변종 이름도 없는 형태.
         if [[ "$slug" =~ ^gpt-[0-9]+(\.[0-9]+)?o?(-(mini|nano|pro|chat|codex))*$ ]]; then
-          fail "${name}=${value} 는 공급자가 새 스냅샷으로 옮기는 계열명입니다. 날짜 스냅샷(openai/gpt-4o-mini-2024-07-18)이나 변종 고정명(openai/gpt-5.6-luna)을 쓰세요."
+          fail "${name}=${value} 는 공급자가 새 스냅샷으로 옮기는 계열명입니다. 날짜 스냅샷(openai/gpt-4o-mini-2024-07-18)이나 변종 고정명(openai/gpt-6-luna)을 쓰세요."
         fi
         ;;
       GEMINI_MODEL)

@@ -38,7 +38,7 @@ def design_payload() -> lead_report.LeadReportPayload:
             lead_report.PlatformSegment(
                 platform="chatgpt",
                 vendor_label="OpenAI API",
-                model="gpt-5.6-luna",
+                model="gpt-6-luna",
                 planned=9,
                 measured=8,
                 mentioned=2,

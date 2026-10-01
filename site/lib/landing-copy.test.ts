@@ -235,7 +235,7 @@ test('every figure in the evidence band declares whose number it is', () => {
 test('measured figures quote only the models we actually run', () => {
   /**
    * 실측 표에는 더 유리한 값이 있다 — gpt-5-mini의 잡음률 27%. 하지만 프로덕션은
-   * gpt-5.6-luna와 gemini-3.6-flash를 쓴다. 쓰지 않는 모델의 좋은 숫자를 인용하면
+   * gpt-6-luna와 gemini-3.6-flash를 쓴다. 쓰지 않는 모델의 좋은 숫자를 인용하면
    * 데이터를 파는 것이 아니라 인상을 파는 것이 된다.
    *
    * 프로덕션 모델은 backend/app/core/config.py의 OPENAI_MODEL_QUERY·GEMINI_MODEL이다.
@@ -246,7 +246,7 @@ test('measured figures quote only the models we actually run', () => {
   assert.doesNotMatch(sources, /terra/)
   // 모델명을 언급하는 출처가 있다면 운영 모델이어야 한다.
   if (/gpt-|gemini-/.test(sources)) {
-    assert.match(sources, /gpt-5\.6-luna|gemini-3\.6-flash/)
+    assert.match(sources, /gpt-6-luna|gemini-3\.6-flash/)
   }
 })
 

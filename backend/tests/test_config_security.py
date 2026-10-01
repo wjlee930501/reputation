@@ -340,10 +340,10 @@ def test_vendor_prefixed_slugs_and_empty_overrides_pass_through(monkeypatch):
 
     settings = Settings(
         _env_file=None,
-        CLAUDE_MODEL="anthropic/claude-sonnet-5",
+        CLAUDE_MODEL="anthropic/claude-sonnet-5.5",
         # 빈 값은 "기본값(CLAUDE_MODEL_FAST)을 쓴다"는 뜻이라 통과해야 한다.
         AUTOFILL_MODEL="",
     )
 
-    assert settings.CLAUDE_MODEL == "anthropic/claude-sonnet-5"
+    assert settings.CLAUDE_MODEL == "anthropic/claude-sonnet-5.5"
     assert settings.AUTOFILL_MODEL == ""

@@ -301,7 +301,7 @@ class TestPinnedModelDrift:
             return {"text": "x", "source_urls": []}
 
         monkeypatch.setattr(sov_engine, "_query_chatgpt", should_not_run)
-        monkeypatch.setattr(settings, "OPENAI_MODEL_QUERY", "gpt-5.6-luna")
+        monkeypatch.setattr(settings, "OPENAI_MODEL_QUERY", "gpt-6-luna")
 
         answer = await sov_engine.fetch_answer(
             "수서역 근처 외과 병원 추천해줘", "chatgpt", requested_model="gpt-5-mini-2025-08-07"
@@ -315,10 +315,10 @@ class TestPinnedModelDrift:
             return {"text": "답변", "source_urls": []}
 
         monkeypatch.setattr(sov_engine, "_query_chatgpt", ok)
-        monkeypatch.setattr(settings, "OPENAI_MODEL_QUERY", "gpt-5.6-luna")
+        monkeypatch.setattr(settings, "OPENAI_MODEL_QUERY", "gpt-6-luna")
 
         answer = await sov_engine.fetch_answer(
-            "q", "chatgpt", requested_model="gpt-5.6-luna"
+            "q", "chatgpt", requested_model="gpt-6-luna"
         )
         assert answer["measurement_status"] == "SUCCESS"
 

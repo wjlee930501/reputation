@@ -127,7 +127,7 @@ flowchart LR
 
 1. 대상 슬롯을 claim하고 lease·운영 실행 기록을 저장한다. 자동 생성은 ACTIVE/live 병원을 대상으로 하고 한 번에 최대 50개, 기본 2시간 lease를 사용한다. 23:00 배치의 예정일 창은 `NIGHTLY_GENERATION_LOOKAHEAD_DAYS`(기본 2)로 **[내일, 모레]**라 한 밤이 실패해도 같은 슬롯이 두 번째 밤의 기회를 갖는다. 후보는 상한의 2배까지 읽어 병원 간 라운드로빈으로 섞은 뒤 50개를 claim하므로 이월이 많은 병원 하나가 상한을 통째로 가져가지 못한다(병원 안의 이월 → 예정일 → 순번 순서는 그대로다). 배치 태스크는 **claim과 배포까지만** 한다. claim한 슬롯마다 `generate_claimed_content_item`(content 큐, claim token 동봉, soft 900s, `acks_late`, 자체 재시도 없음)을 하나씩 배포하고, 그 태스크가 lease 토큰이 현재 값이고 만료 전일 때만 공급자를 부른다. 유실된 배포는 슬롯별 `GENERATE_CONTENT_ITEM` 실행 기록으로 자율 복구가 같은 인자·큐에 다시 배포한다. 한 밤의 처리량은 대략 `동시성 × (8시간 ÷ 한 편 6분)`이고, claim 수가 07:45까지 남은 시간의 추정 처리량을 넘으면 배포 시점에 경고 한 줄을 남긴다 — 운영자의 손잡이는 `CELERY_CONCURRENCY` 하나다.
 2. 질문 타깃·보완 행동·최근 제목을 바탕으로 brief를 만들고 현재 Essence·source snapshot과 치료별 환자 설명·주의·근거를 writer와 reviewer에 같은 입력으로 넣는다. 생성 당시와 최근 재검사 Essence ID는 따로 보존한다.
-3. Anthropic Claude(OpenRouter 경유, `anthropic/claude-sonnet-5`)로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**이며 프롬프트도 같은 단위로 2,400~4,500자를 요구한다. `max_tokens`는 12,000이고 `stop_reason`이 `max_tokens`/`refusal`이면 잘림으로 거절한다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다(프롬프트도 화이트리스트 문서 URL 1개 이상을 요구한다). 결정적 검증기(분량·가격·SEO·GEO·FAQ·금지 표현·잘림)의 거절은 같은 프롬프트로 재시도하지 않고 지적 내용을 다음 회차의 보완 지시로 넘긴다(최대 3회 공급자 호출). tenacity는 전송·공급자 오류에만 남는다. 화이트리스트 도메인 참고자료의 제목이 금지 표현에 걸리면 기관명 라벨로 치환하고, 그 뒤 모든 제목을 다시 검사한다.
+3. Anthropic Claude(OpenRouter 경유, `anthropic/claude-sonnet-5.5`)로 구조화된 본문을 생성한다. 현재 분량 검사는 공백 등을 제외한 평문 **1,800~5,200자**이며 프롬프트도 같은 단위로 2,400~4,500자를 요구한다. `max_tokens`는 12,000이고 `stop_reason`이 `max_tokens`/`refusal`이면 잘림으로 거절한다. FAQ는 질문과 답변 요약을 별도로 요구하고 NOTICE를 제외한 의료 유형은 인용 가능한 참고자료를 요구한다(프롬프트도 화이트리스트 문서 URL 1개 이상을 요구한다). 결정적 검증기(분량·가격·SEO·GEO·FAQ·금지 표현·잘림)의 거절은 같은 프롬프트로 재시도하지 않고 지적 내용을 다음 회차의 보완 지시로 넘긴다(최대 3회 공급자 호출). tenacity는 전송·공급자 오류에만 남는다. 화이트리스트 도메인 참고자료의 제목이 금지 표현에 걸리면 기관명 라벨로 치환하고, 그 뒤 모든 제목을 다시 검사한다.
 4. 제목·본문·FAQ·참고자료 제목과 URL 등 전체 공개 후보를 hash하고 필드별 coverage를 남긴다. 독립 검수는 HARD/SOFT/UNCERTAIN finding을 보존하며, unresolved HARD/UNCERTAIN은 발행을 막는다. 개선된 후보는 새 hash로 다시 검수한다. 결정적 금지 표현·근거·형식 검사도 함께 적용한다. 검수자는 Haiku(`CLAUDE_MODEL_FAST`)이며 확신도 0.70 미만이나 형식 문제로 붙은 합성 UNCERTAIN만 남았을 때는 같은 호출 안에서 `CLAUDE_MODEL`로 1회 재검수한다. SOFT·STYLE만 남으면 PASS다. HARD 사실·안전 지적은 "지적된 주장을 삭제·완화하고 새 사실을 넣지 말라"는 삭제형 재작성을 1회 허용한 뒤 다시 검수한다. 한 세션의 유료 생성은 최대 3회다. 저장된 UNCERTAIN 차단은 스윕이 `SAMPLE_RECOVERABLE` 예산 안에서 재검수한다. 2026-09-07~08 전환에서는 고정 manifest의 FAQ 3건을 CAS 수정하고 본문 22건을 독립 재검수한 뒤, 공개 글 115건의 strict gate를 read-only로 확인했다. AI 검수 레거시 상태만을 이유로 나머지 글을 유료 재검수하지 않았다.
 5. 대표 이미지는 생성, 정책 검수, 업로드를 별도 단계로 처리한다. 기존 업로드 이미지는 다시 내려받아 검수할 수 있고, 업로드 일시 실패는 생성·검수를 반복하지 않는다. 새 발행에는 이미지 내용 hash·콘텐츠 주제 hash·정책 버전에 묶인 인증이 필요하다. 2026-09-07~08 일회성 전환은 당시 공개 이미지 115건의 실제 바이트를 다시 검수하고 content-addressed 불변 사본과 인증을 CAS로 저장했으며, 79건은 바이트를 유지하고 36건은 교체했다. 공개 GCS 이미지 프록시 URL에는 인증된 내용 hash를 `?v=`로 붙인다. Site 이미지 최적화 캐시의 최소 TTL이 86,400초이므로 교체된 바이트의 hash가 URL cache key도 바꾼다. 새 API와 비공개 기존 행의 일반 생성·발행에는 엄격한 byte-bound gate를 적용하며 영구 레거시 우회나 가짜 인증값을 허용하지 않는다. 이미지 생성이 실패해 당일 예산(4회)이 소진되거나 정책 거절·예산 소진이 저장되면 같은 병원의 PUBLISHED 글 중 인증이 현재이고 자기도 빌린 것이 아닌 가장 오래된 이미지를 빌려 붙인다(`content_image_reuse.py`). 빌린 행은 원본의 내용 hash·주제 hash·정책 버전·검수 시각을 그대로 옮기고 `image_reused_from_content_id`(마이그레이션 0074)로 결합 대상을 명시한다. `image_certification_current`는 완전 인증 또는 재사용 인증(마커 + 내용 hash 일치 + 정책 버전 현재)을 통과로 본다. 교체 스윕 `published_image_refresh`가 01:20·04:20·07:20에 그 글의 주제 이미지를 만들어 인증하고 마커를 지운다. 정책 거절은 저장된 진단으로 `policy_repair` 프롬프트를 1회 더 시도한다. 이미지 실패는 `image_failure_class`(COST_GUARD / PROVIDER_QUOTA / POLICY_REJECTED / PROVIDER_ERROR)로 분류해 08:00 요약이 크레딧·할당량 확인을 안내한다.
 6. 결과 저장은 `generation_claim_token`과 `content_revision`을 조건부 UPDATE로 확인한다. 운영자 편집·취소·발행이나 새 claim 뒤에 도착한 늦은 응답은 현재 행을 덮어쓰지 않는다.
@@ -252,12 +252,12 @@ Backend 최종 인증 경계는 공유 Admin key다. BFF 세션과 actor만으�
 
 | 용도 | 코드 기본값 |
 |---|---|
-| 본문 | `anthropic/claude-sonnet-5` |
+| 본문 | `anthropic/claude-sonnet-5.5` |
 | 빠른 작업(검수·추출) | `anthropic/claude-haiku-4.5` |
 | 대표 이미지 | `IMAGE_PROVIDER=google`, `google/gemini-3.1-flash-image` |
 | 대표 이미지 폴백 | `IMAGE_FALLBACK_PROVIDER=openai`, `openai/gpt-5-image-mini` — Google 계열 경로가 안전 차단·정책 거절·공급자 오류로 끝날 때 |
 | 선택 OpenAI 계열 이미지 우선 | `IMAGE_PROVIDER=openai`, Google 계열 fallback 경로 |
-| ChatGPT 측정 | `openai/gpt-5.6-luna` |
+| ChatGPT 측정 | `openai/gpt-6-luna` |
 | 판정·파싱 | `openai/gpt-4o-mini-2024-07-18` |
 | Gemini 측정 | `google/gemini-3.6-flash` |
 

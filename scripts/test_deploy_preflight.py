@@ -403,6 +403,7 @@ def test_model_gate_accepts_the_current_pinned_models() -> None:
     측정 무결성을 지키려던 검사가 무결성 개선을 막았다.
     """
     for value in (
+        "openai/gpt-6-luna",
         "openai/gpt-5.6-luna",
         "openai/gpt-5.6-terra",
         "openai/gpt-4o-mini-2024-07-18",
@@ -449,7 +450,7 @@ def _slug_gate(key: str, value: str) -> int:
 
 def test_slug_gate_accepts_vendor_prefixed_models_and_unset_values() -> None:
     for key, value in (
-        ("CLAUDE_MODEL", "anthropic/claude-sonnet-5"),
+        ("CLAUDE_MODEL", "anthropic/claude-sonnet-5.5"),
         ("OPENAI_MODEL_PARSE", "openai/gpt-4o-mini-2024-07-18"),
         ("GEMINI_MODEL", "google/gemini-3.6-flash"),
         ("GOOGLE_IMAGE_MODEL", "google/gemini-3.1-flash-image"),
@@ -467,7 +468,7 @@ def test_slug_gate_blocks_provider_direct_model_names() -> None:
     """
     for key, value in (
         ("CLAUDE_MODEL", "claude-sonnet-4-5-20250929"),
-        ("OPENAI_MODEL_QUERY", "gpt-5.6-luna"),
+        ("OPENAI_MODEL_QUERY", "gpt-6-luna"),
         ("OPENAI_MODEL_PARSE", "gpt-4o-mini-2024-07-18"),
         ("GEMINI_MODEL", "gemini-3.6-flash"),
         ("OPENAI_IMAGE_MODEL", "gpt-5-image-mini"),

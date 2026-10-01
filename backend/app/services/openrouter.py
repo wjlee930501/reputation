@@ -1,8 +1,8 @@
 """OpenRouter — 모든 LLM·이미지 호출의 단일 게이트웨이.
 
 콘텐츠 생성·Essence·SoV 측정·이미지 생성/검수가 전부 `OPENROUTER_API_KEY` 하나로
-나간다. 모델 식별자는 전부 `vendor/model` 슬러그(`anthropic/claude-sonnet-5`,
-`openai/gpt-5.6-luna`, `google/gemini-3.6-flash` …)다.
+나간다. 모델 식별자는 전부 `vendor/model` 슬러그(`anthropic/claude-sonnet-5.5`,
+`openai/gpt-6-luna`, `google/gemini-3.6-flash` …)다.
 
 OpenRouter는 OpenAI 호환 API다 — `openai` SDK가 chat completions·Responses·usage
 형식을 그대로 쓴다. Anthropic Messages·google-genai SDK는 더 이상 쓰지 않는다.
