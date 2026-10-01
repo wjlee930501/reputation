@@ -12,10 +12,13 @@ test('contract registration submits once to the single-transaction endpoint', ()
   assert.doesNotMatch(PAGE, /handoffs\/|\/convert|onboarding_request_id|sessionStorage/)
 })
 
-test('the screen asks for the six contract fields and nothing else', () => {
-  for (const label of ['병원명', '계약 번호', '계약 효력일', '영업 담당']) {
-    assert.ok(PAGE.includes(label), `missing field: ${label}`)
+test('the screen asks only for the hospital name, plan and AE', () => {
+  assert.ok(PAGE.includes('병원명'))
+  // 저장만 되고 아무 동작도 바꾸지 않는 값은 운영자에게 묻지 않는다 — 서버가 채운다.
+  for (const label of ['계약 번호', '계약 효력일', '영업 담당']) {
+    assert.ok(!PAGE.includes(label), `field should be gone: ${label}`)
   }
+  assert.doesNotMatch(PAGE, /type="date"|setContractReference|setSalesOwnerId/)
   // 요금제·담당 AE는 통일 용어 상수를 그대로 읽는다.
   assert.match(PAGE, /\{ADMIN_COPY\.plan\}/)
   assert.match(PAGE, /\{ADMIN_COPY\.aeOwner\}/)

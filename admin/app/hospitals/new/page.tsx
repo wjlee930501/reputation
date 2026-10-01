@@ -11,8 +11,6 @@ import {
   registrationBlockReason,
   registrationFailure,
   registrationPayload,
-  suggestContractReference,
-  todayInKorea,
   type ContractRegistrationFailure,
 } from '@/lib/contract-registration'
 import { isExpectedOperatorRequestFailure, safeOperatorError } from '@/lib/operations-journey'
@@ -29,11 +27,8 @@ export default function RegisterContractPage() {
   const router = useRouter()
   const [leadId, setLeadId] = useState<string | null>(null)
   const [name, setName] = useState('')
-  const [contractReference, setContractReference] = useState(() => suggestContractReference())
-  const [effectiveDate, setEffectiveDate] = useState(() => todayInKorea())
   const [plan, setPlan] = useState<PlanCode>('PLAN_12')
   const [aeOwnerId, setAeOwnerId] = useState('')
-  const [salesOwnerId, setSalesOwnerId] = useState('')
   const [accounts, setAccounts] = useState<AdminAccountSummary[]>([])
   const [loading, setLoading] = useState(false)
   const [leadLoading, setLeadLoading] = useState(false)
@@ -51,7 +46,6 @@ export default function RegisterContractPage() {
       if (cancelled || !account) return
       // 등록하는 사람이 곧 인수하는 담당 AE다. 다른 사람으로 바꿀 수는 있다.
       setAeOwnerId((current) => current || account.accountId)
-      setSalesOwnerId((current) => current || account.accountId)
     })
     fetchAPI<AdminAccountSummary[]>('/admin/accounts')
       .then((rows) => {
@@ -96,7 +90,7 @@ export default function RegisterContractPage() {
     }
   }, [])
 
-  const form = { name, leadId, contractReference, effectiveDate, plan, aeOwnerId, salesOwnerId }
+  const form = { name, leadId, plan, aeOwnerId }
   const blockReason = registrationBlockReason(form)
 
   async function handleSubmit(event: React.FormEvent) {
@@ -164,34 +158,6 @@ export default function RegisterContractPage() {
           </div>
         )}
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block text-sm font-medium text-slate-700">
-            계약 번호 <span className="text-red-500">*</span>
-            <input
-              required
-              value={contractReference}
-              onChange={(e) => setContractReference(e.target.value)}
-              className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm"
-            />
-            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">
-              제안한 번호입니다. 계약서의 실제 번호로 고쳐 주세요.
-            </span>
-          </label>
-          <label className="block text-sm font-medium text-slate-700">
-            계약 효력일 <span className="text-red-500">*</span>
-            <input
-              required
-              type="date"
-              value={effectiveDate}
-              onChange={(e) => setEffectiveDate(e.target.value)}
-              className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 px-3 text-sm"
-            />
-            <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">
-              계약서에 적힌 시작일입니다.
-            </span>
-          </label>
-        </div>
-
         <label className="block text-sm font-medium text-slate-700">
           {ADMIN_COPY.plan} <span className="text-red-500">*</span>
           <select
@@ -205,33 +171,22 @@ export default function RegisterContractPage() {
           </select>
         </label>
 
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block text-sm font-medium text-slate-700">
-            {ADMIN_COPY.aeOwner} <span className="text-red-500">*</span>
-            <select
-              required
-              value={aeOwnerId}
-              onChange={(e) => setAeOwnerId(e.target.value)}
-              className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
-            >
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>{account.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block text-sm font-medium text-slate-700">
-            영업 담당
-            <select
-              value={salesOwnerId}
-              onChange={(e) => setSalesOwnerId(e.target.value)}
-              className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
-            >
-              {accounts.map((account) => (
-                <option key={account.id} value={account.id}>{account.name}</option>
-              ))}
-            </select>
-          </label>
-        </div>
+        <label className="block text-sm font-medium text-slate-700">
+          {ADMIN_COPY.aeOwner} <span className="text-red-500">*</span>
+          <select
+            required
+            value={aeOwnerId}
+            onChange={(e) => setAeOwnerId(e.target.value)}
+            className="mt-1.5 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm"
+          >
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>{account.name}</option>
+            ))}
+          </select>
+          <span className="mt-1 block break-keep text-xs font-normal leading-5 text-slate-500">
+            이 병원에 생기는 문제와 보고서 전달을 맡는 사람입니다.
+          </span>
+        </label>
 
         {error && (
           <OperatorIssuePanel

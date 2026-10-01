@@ -436,6 +436,15 @@ async def correct_contract(
     return await _payload(db, handoff)
 
 
+def _generated_contract_reference(now: datetime) -> str:
+    """운영자가 번호를 주지 않았을 때 쓰는 계약 번호. 표시·감사에만 쓰이는 식별자다.
+
+    DB CHECK가 인수 완료 행에 번호를 요구하므로 비워 둘 수 없다. 12자리 hex라 충돌은
+    사실상 없고, 나더라도 아래 중복 검사가 409로 막아 다시 누르면 새 번호가 나온다.
+    """
+    return f"RP-{now.astimezone(KST):%Y%m}-{uuid.uuid4().hex[:12]}"
+
+
 @hospitals_router.post("/register-contract", status_code=status.HTTP_201_CREATED)
 async def register_contract(
     body: ContractRegistration,
@@ -476,7 +485,9 @@ async def register_contract(
     if duplicates:
         raise HTTPException(status_code=409, detail=_hospital_exists(duplicates[0].id))
 
-    contract_reference = body.contract_reference
+    accepted_at = datetime.now(UTC)
+    contract_reference = body.contract_reference or _generated_contract_reference(accepted_at)
+    contract_effective_on = body.contract_effective_at or accepted_at.astimezone(KST).date()
     taken = (
         await db.execute(
             select(HospitalHandoff).where(
@@ -494,7 +505,6 @@ async def register_contract(
             },
         )
 
-    accepted_at = datetime.now(UTC)
     hospital = Hospital(
         name=name,
         slug=await allocate_hospital_slug(db, name),
@@ -510,7 +520,7 @@ async def register_contract(
         sales_owner_id=sales_owner_id,
         ae_owner_id=body.ae_owner_id,
         contract_reference=contract_reference,
-        contract_effective_at=datetime.combine(body.contract_effective_at, time.min, tzinfo=KST),
+        contract_effective_at=datetime.combine(contract_effective_on, time.min, tzinfo=KST),
         plan=body.plan,
         # 기한과 승인 시각이 같다 — 이 요청에서 담당 AE가 바로 인수했다는 사실 그대로다.
         # DB CHECK가 CONTRACTED 이후 상태에서 non-null을 요구해 비워 둘 수 없다. 읽는 쪽은
