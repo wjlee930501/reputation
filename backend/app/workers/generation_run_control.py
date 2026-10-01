@@ -32,6 +32,10 @@ from app.workers.generation_retry_policy import (
 )
 
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
+GENERATION_REFERENCE_REJECTION_MESSAGE = (
+    "공신력 있는 참고 자료를 확보하지 못했습니다 — 실제 문서 확인을 통과한 출처가 없어 "
+    "원고를 저장하지 않았습니다. 다음 자동 재시도가 검증된 문서를 다시 찾습니다."
+)
 _DEFAULT_REJECTION_MESSAGE = (
     "가격·지역·검색 구조 자동 검수 게이트가 재작성 후에도 통과되지 않았습니다. "
     "운영 센터에서 차단 원인과 승인된 입력 자료를 확인해 주세요."
@@ -45,6 +49,9 @@ _REJECTION_MESSAGES = {
         "지역·의료 근거 검수에 필요한 공신력 있는 참고 자료를 확보하지 못했습니다. "
         "운영 센터에서 승인된 자료와 콘텐츠 주제를 확인해 주세요."
     ),
+    # 참고자료가 실제 문서 확인(빈 페이지·없는 문서·주제 불일치 제거)과 검증 목록 치유 뒤에도
+    # 하나도 남지 않았다. 병원명·지역 누락(GEO) 거절과 원인이 달라 문구를 나눈다.
+    "references": GENERATION_REFERENCE_REJECTION_MESSAGE,
     "seo": (
         "검색 문서 구조 검수가 재작성 후에도 통과되지 않았습니다. "
         "운영 센터에서 제목과 문서 구조 차단 원인을 확인해 주세요."
@@ -60,6 +67,10 @@ _REJECTION_MESSAGES = {
     "truncated": (
         "생성 출력이 잘려 완전한 원고를 받지 못했습니다. "
         "다음 예약 배치가 분량을 줄여 다시 생성합니다."
+    ),
+    "must_use": (
+        "승인된 필수 문구가 재작성 후에도 원문 그대로 들어가지 않았습니다. "
+        "운영 센터에서 병원 정보 탭의 필수 문구를 확인해 주세요."
     ),
 }
 GENERATION_REJECTION_SAFE_MESSAGES = frozenset(
@@ -187,6 +198,8 @@ def _safe_rejection_message(error: ValueError) -> str:
         return _REJECTION_MESSAGES["truncated"]
     if "unverified fixed price or coverage" in detail:
         return _REJECTION_MESSAGES["price"]
+    if "references is empty" in detail:
+        return _REJECTION_MESSAGES["references"]
     if "geo hard-fail" in detail or "citable reference" in detail:
         return _REJECTION_MESSAGES["geo"]
     if "seo hard-fail" in detail:
@@ -195,6 +208,8 @@ def _safe_rejection_message(error: ValueError) -> str:
         return _REJECTION_MESSAGES["forbidden"]
     if "faq output requires" in detail or "faq question must" in detail:
         return _REJECTION_MESSAGES["faq"]
+    if "must_use messages missing verbatim" in detail:
+        return _REJECTION_MESSAGES["must_use"]
     return _DEFAULT_REJECTION_MESSAGE
 
 

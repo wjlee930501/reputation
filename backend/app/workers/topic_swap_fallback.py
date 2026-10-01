@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, cast, func, literal, or_, select, tuple_, update
+from sqlalchemy import and_, case, cast, func, literal, select, tuple_, update
 from sqlalchemy.dialects.postgresql import JSONB
 
 from app.core.database import get_async_sessionmaker
@@ -38,6 +38,7 @@ from app.services.content_brief import PLANNING_REASON_KEY
 from app.services.content_similarity import DUPLICATE_TITLE_THRESHOLD, topic_similarity
 from app.services.content_target_planner import _choose_target
 from app.services.incidents import mark_recovered, mark_retrying
+from app.services.specialty_compatibility import target_conflicts_with_hospital
 from app.services.sync_async_bridge import SyncAsyncBridge
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
@@ -55,6 +56,7 @@ from app.workers.generation_retry_policy import (
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
     NIGHTLY_GENERATION_CLAIM_TTL_HOURS,
+    _nightly_generation_claim_filter,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ class SwapReport:
     considered: int = 0
     swapped: int = 0
     no_candidate_target: int = 0
+    incompatible_specialty: int = 0
     similar_topic: int = 0
     write_conflicts: int = 0
     incidents_recovered: int = 0
@@ -102,10 +105,8 @@ def _claim_expiry(now: datetime) -> datetime:
 
 
 def _inactive_claim_filter(expiry: datetime):
-    return or_(
-        ContentItem.generation_claim_token.is_(None),
-        ContentItem.generation_claimed_at < expiry,
-    )
+    # 로더와 같은 술어다 — 토큰만 남고 claim 시각이 빈 행(운영센터의 claim 해제)도 비활성이다.
+    return _nightly_generation_claim_filter(expiry)
 
 
 def _order_columns():
@@ -276,6 +277,8 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
         "faq_question": None,
         "faq_answer_summary": None,
         "references_list": None,
+        # 참고자료 검증 기록도 옛 주제의 것이다(주제 적합성을 옛 제목으로 판정했다).
+        "reference_checks": None,
         # 독립 검수 메타와 저장된 생성 시도 기록이 한 JSON에 있다. 새 주제에는 둘 다
         # 근거가 없으므로 통째로 비운다 — 시도 기록이 지워져야 로더 필터를 통과한다.
         "essence_check_summary": None,
@@ -312,14 +315,20 @@ def _superseded_incident(db, item: ContentItem, reason: str) -> Incident | None:
 def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dict | None, str]:
     """한 슬롯의 주제를 바꾼다. `(history 항목 또는 None, 결과 라벨)`."""
 
+    # 병원 대표 진료과와 어울리지 않는 질문(내과 병원의 영상의학과 질문 등)은 교체 후보에서
+    # 뺀다. 61810ef4 → d7a5603e처럼 같은 계열로 바꿔 봐야 같은 이유로 다시 소진된다.
+    hospital = getattr(item, "hospital", None)
     target = _choose_target(
         db,
         item=item,
         hospital_id=item.hospital_id,
         exclude_target_ids={item.query_target_id},
+        hospital=hospital,
     )
     if target is None:
         return None, "no_candidate_target"
+    if target_conflicts_with_hospital(target, hospital):
+        return None, "incompatible_specialty"
     new_topic = str(target.name or "")
     if _topic_is_too_similar(new_topic, item):
         return None, "similar_topic"
@@ -572,6 +581,7 @@ def swap_exhausted_topics(
         considered=outcomes.get("considered", 0),
         swapped=outcomes.get("swapped", 0),
         no_candidate_target=outcomes.get("no_candidate_target", 0),
+        incompatible_specialty=outcomes.get("incompatible_specialty", 0),
         similar_topic=outcomes.get("similar_topic", 0),
         write_conflicts=outcomes.get("write_conflict", 0),
         incidents_recovered=_reconcile_history(db, swapped_rows),

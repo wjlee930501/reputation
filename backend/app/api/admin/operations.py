@@ -1086,7 +1086,9 @@ async def force_release_generation_claim(
                 ContentItem.body.is_(None),
                 ContentItem.generation_claimed_at == payload.expected_claimed_at,
             )
-            .values(generation_claimed_at=None)
+            # 토큰도 함께 지운다. 시각만 지우면 풀어 준 줄 안 워커의 토큰 가드 write-back이
+            # 여전히 맞아, 새 소유자가 잡기 전의 슬롯에 늦은 결과를 쓸 수 있다.
+            .values(generation_claimed_at=None, generation_claim_token=None)
             .returning(ContentItem.id)
         )
     ).scalar_one_or_none()

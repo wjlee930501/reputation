@@ -55,6 +55,7 @@ from app.workers.generation_retry_policy import (
 )
 from app.workers.nightly_generation_batch import (
     NIGHTLY_GENERATION_CLAIM_TTL_HOURS,
+    _nightly_generation_claim_filter,
     release_generation_claim,
     write_back_published_image,
 )
@@ -125,10 +126,10 @@ def _claim_image_refresh(db, item_id):
         _reused_image_stmt()
         .where(
             ContentItem.id == item_id,
-            or_(
-                ContentItem.generation_claimed_at.is_(None),
-                ContentItem.generation_claimed_at
-                <= now - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
+            # 로더와 같은 "claim할 수 있는 행"이다(`generation_claim_is_active`의 부정, 경계 시각의
+            # claim은 살아 있다). 토큰 없이 claim 시각만 남은 행도 비어 있다.
+            _nightly_generation_claim_filter(
+                now - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS)
             ),
         )
         .with_for_update(of=ContentItem, skip_locked=True)
@@ -159,8 +160,9 @@ def _remember_claimed_failure(db, item, token, title, revision, reason):
             ContentItem.title == title,
             ContentItem.content_revision == revision,
             ContentItem.generation_claim_token == token,
+            # 경계 시각의 lease는 아직 이 실행의 것이다(`generation_claim_is_active`와 같다).
             ContentItem.generation_claimed_at
-            > datetime.now(UTC) - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
+            >= datetime.now(UTC) - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS),
         )
         .with_for_update()
         .execution_options(populate_existing=True)

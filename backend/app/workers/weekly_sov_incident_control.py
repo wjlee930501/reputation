@@ -22,11 +22,30 @@ from app.services.incidents import (
     mark_retrying,
     open_or_touch_incident,
 )
-from app.services.notification_contracts import IncidentSlackProjection
+from app.services.measurement_manifest_policy import ManifestPolicyVersionTransition
+from app.services.notification_contracts import (
+    IncidentSlackProjection,
+    NotificationIntent,
+)
+from app.services.notification_labels import prefixed_for_event
 from app.services.notification_messages import build_open_incident_notification
+from app.services.notification_milestone_rendering import (
+    RenderedSlackMessage,
+    action_block,
+    admin_url,
+    header_block,
+    safe_text,
+    section_block,
+    validated_message,
+)
 from app.services.notification_store import enqueue_notification
 
 _SOURCE_TYPE = "WEEKLY_SOV_MEASUREMENT"
+POLICY_TRANSITION_NOTIFICATION_TYPE = "SOV_MEASUREMENT_POLICY_TRANSITION"
+_POLICY_TRANSITION_NEXT_ACTION = (
+    "측정 정책 버전 전환으로 이번 달 기준표와 현재 실행 기준이 다릅니다. "
+    "다음 달 기준표부터 자동 해소되며 조치가 필요 없습니다."
+)
 _CAPACITY_DIGEST_MESSAGE = "이번 주 HIGH 우선순위 측정 항목이 안전 상한으로 제외되었습니다."
 _CAPACITY_DIGEST_DETAILS = "병원별 제외: "
 
@@ -134,6 +153,7 @@ async def open_weekly_sov_failure(
     week_key: str,
     error_code: str,
     operation_run_id: uuid.UUID | None = None,
+    policy_transition: ManifestPolicyVersionTransition | None = None,
 ) -> uuid.UUID:
     return await _open_sov_failure(
         hospital_id=hospital_id,
@@ -142,6 +162,7 @@ async def open_weekly_sov_failure(
         error_code=error_code,
         operation_run_id=operation_run_id,
         monthly=False,
+        policy_transition=policy_transition,
     )
 
 
@@ -171,8 +192,14 @@ async def _open_sov_failure(
     error_code: str,
     operation_run_id: uuid.UUID | None,
     monthly: bool,
+    policy_transition: ManifestPolicyVersionTransition | None = None,
 ) -> uuid.UUID:
     observed_at = datetime.now(UTC)
+    transition = (
+        policy_transition
+        if not monthly and error_code == "WEEKLY_SOV_MEASUREMENT_POLICY_DRIFT"
+        else None
+    )
     pipeline = "monthly_sov" if monthly else "weekly_sov"
     object_type = "hospital_month" if monthly else "hospital_week"
     incident_type = (
@@ -198,7 +225,11 @@ async def _open_sov_failure(
                     f"{period_label} AI 노출 측정이 완료되지 않아 월간 리포트 근거가 비게 됩니다."
                 ),
                 source_type=("MONTHLY_SOV_MEASUREMENT" if monthly else _SOURCE_TYPE),
-                next_action=_next_action(error_code, period_label),
+                next_action=(
+                    _POLICY_TRANSITION_NEXT_ACTION
+                    if transition is not None
+                    else _next_action(error_code, period_label)
+                ),
                 admin_path=f"/hospitals/{hospital_id}/reports",
                 hospital_id=hospital_id,
                 operation_run_id=operation_run_id,
@@ -210,7 +241,19 @@ async def _open_sov_failure(
             reason=f"{pipeline} visibility measurement failed",
             now=observed_at,
         )
-        if not error_code.endswith("COST_GUARD_BLOCKED") and (
+        if transition is not None:
+            await enqueue_notification(
+                db,
+                _policy_transition_notification(
+                    hospital_id=hospital_id,
+                    hospital_name=hospital_name,
+                    transition=transition,
+                    incident_id=incident.id,
+                    operation_run_id=incident.operation_run_id,
+                    admin_path=incident.admin_path,
+                ),
+            )
+        elif not error_code.endswith("COST_GUARD_BLOCKED") and (
             previous_state is None
             or previous_state
             in {
@@ -291,6 +334,56 @@ async def _recover_sov_failure(
         )
         await db.commit()
         return isinstance(recovered, Incident)
+
+
+def _policy_transition_notification(
+    *,
+    hospital_id: uuid.UUID,
+    hospital_name: str,
+    transition: ManifestPolicyVersionTransition,
+    incident_id: uuid.UUID,
+    operation_run_id: uuid.UUID | None,
+    admin_path: str,
+) -> NotificationIntent:
+    """One Report notice per hospital, frozen month and (frozen, current) version pair."""
+
+    year, _, month = transition.period_key.partition("-")
+    frozen = safe_text(transition.frozen_version, 64)
+    current = safe_text(transition.current_version, 64)
+    name = safe_text(hospital_name, 90)
+    title = prefixed_for_event(
+        POLICY_TRANSITION_NOTIFICATION_TYPE, "[참고] 주간 AI 노출 측정 기준 전환"
+    )
+    body = (
+        f"{year}년 {int(month)}월 측정 기준표는 {frozen} 정책으로 동결됐고, "
+        f"현재 측정은 {current} 정책으로 실행됩니다. 정책 버전이 달라 이번 달 남은 "
+        "주간 측정은 외부 AI 호출 없이 건너뜁니다.\n"
+        "다음 달 기준표부터 자동 해소되며 조치가 필요 없습니다."
+    )
+    url = admin_url(settings.ADMIN_BASE_URL, admin_path)
+    message = validated_message(
+        RenderedSlackMessage(
+            f"{title} · {name} | {body}",
+            (
+                header_block("sov_policy_transition_header", title),
+                section_block("sov_policy_transition_body", f"*{name}*\n{body}"),
+                action_block("sov_policy_transition_action", url, "측정 기록 보기"),
+            ),
+            url,
+        ),
+        settings.ADMIN_BASE_URL,
+    )
+    return NotificationIntent(
+        dedupe_key=(
+            f"{POLICY_TRANSITION_NOTIFICATION_TYPE}:{hospital_id}:{transition.period_key}:"
+            f"{transition.frozen_version[:64]}->{transition.current_version[:64]}"
+        ),
+        notification_type=POLICY_TRANSITION_NOTIFICATION_TYPE,
+        message=message,
+        hospital_id=hospital_id,
+        incident_id=incident_id,
+        operation_run_id=operation_run_id,
+    )
 
 
 def _next_action(error_code: str, period_label: str) -> str:

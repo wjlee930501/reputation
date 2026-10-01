@@ -14,15 +14,21 @@ OpenRouter는 OpenAI 호환 API다 — `openai` SDK가 chat completions·Respons
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import logging
+import re
 import threading
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
 from openai import AsyncOpenAI, OpenAI
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
@@ -232,6 +238,132 @@ def is_retryable_llm_error(exc: BaseException) -> bool:
     return not isinstance(exc, NON_RETRYABLE_LLM_ERRORS)
 
 
+# ── 강제 도구 호출을 거절하는 모델 ───────────────────────────────────
+#
+# 일부 모델은 강제 tool_choice(OpenAI `{type:function}`·`required` = Anthropic
+# type tool/any)를 모든 공급자에서 400으로 거절한다. OpenRouter endpoints 목록은 그런
+# 모델도 `tool_choice`를 지원한다고 광고하므로 공급자 라우팅(require_parameters·order·
+# ignore)으로는 거를 수 없다. 모델 목록을 하드코딩하지 않고, 그 400을 실제로 받은
+# 모델만 프로세스 안에서 기억해 tools는 그대로 둔 채 `tool_choice="auto"`로 보낸다.
+
+_FORCED_TOOL_CHOICE_UNSUPPORTED_SIGNATURE = (
+    "tool_choice: type tool and any are not supported for this model"
+)
+_forced_tool_choice_lock = threading.Lock()
+_forced_tool_choice_unsupported_models: set[str] = set()
+
+
+def _normalized_error_text(exc: BaseException) -> str:
+    """오류 메시지와 본문을 이스케이프·따옴표 없이 소문자 한 줄로 편다.
+
+    공급자 원문은 `metadata.raw` 안에 JSON 문자열로 이중 이스케이프돼 온다.
+    """
+    parts = [str(exc)]
+    body = getattr(exc, "body", None)
+    if body is not None:
+        parts.append(json.dumps(body, ensure_ascii=False, default=str))
+    text = re.sub(r"[\\\"']", "", " ".join(parts))
+    return " ".join(text.lower().split())
+
+
+def is_forced_tool_choice_unsupported(exc: BaseException) -> bool:
+    """모델이 강제 tool_choice 자체를 거절한 400인지. 다른 400은 False다."""
+    if not isinstance(exc, openai.BadRequestError):
+        return False
+    return _FORCED_TOOL_CHOICE_UNSUPPORTED_SIGNATURE in _normalized_error_text(exc)
+
+
+def forced_tool_choice_supported(model: str) -> bool:
+    with _forced_tool_choice_lock:
+        return model not in _forced_tool_choice_unsupported_models
+
+
+def remember_forced_tool_choice_unsupported(model: str) -> None:
+    with _forced_tool_choice_lock:
+        _forced_tool_choice_unsupported_models.add(model)
+
+
+def reset_forced_tool_choice_memory_for_tests() -> None:
+    with _forced_tool_choice_lock:
+        _forced_tool_choice_unsupported_models.clear()
+
+
+def required_tool_call_directive(tool_name: str) -> str:
+    return (
+        f"반드시 `{tool_name}` 도구를 호출해 결과를 제출하세요. "
+        "도구 호출 없이 텍스트로만 답하지 마세요."
+    )
+
+
+def require_tool_call_messages(
+    messages: list[dict[str, Any]], *, tool_name: str
+) -> list[dict[str, Any]]:
+    """마지막 user 메시지 끝에 도구 호출 지시문을 붙인 사본.
+
+    system 블록은 건드리지 않는다 — 프롬프트 캐시 접두어가 그대로 남아야 한다.
+    """
+    directive = required_tool_call_directive(tool_name)
+    copied = [dict(message) for message in messages]
+    for message in reversed(copied):
+        if message.get("role") != "user":
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = f"{content}\n\n{directive}" if content else directive
+            return copied
+        if isinstance(content, list):
+            message["content"] = [*content, {"type": "text", "text": directive}]
+            return copied
+        break
+    copied.append({"role": "user", "content": directive})
+    return copied
+
+
+async def create_required_tool_completion(
+    client: Any,
+    *,
+    tool_name: str,
+    on_forced_tool_choice_rejected: Callable[[BaseException], Awaitable[None]] | None = None,
+    **request: Any,
+) -> Any:
+    """`tool_name` 호출을 요구하는 chat completion 한 건(HTTP 최대 2회).
+
+    강제를 받는 모델에는 종전 그대로 `forced_tool_choice`로 보낸다. 강제 미지원 400이면
+    그 모델을 기억하고, 같은 요청을 `tool_choice="auto"`와 도구 호출 지시문으로 정확히
+    1회 다시 보낸다. 거절된 시도는 재시도 직전에 `on_forced_tool_choice_rejected`로
+    넘겨 호출부가 시도 원장과 실제 호출 계수에 따로 남기게 한다. 이미 기억된 모델은
+    처음부터 auto로 보낸다. auto 응답에 도구 호출이 없으면 호출부의 기존 파서가
+    처리한다. `extra_body` 등 나머지 인자는 두 시도 모두 그대로 전달한다.
+    """
+    model = str(request.get("model") or "")
+    loop = asyncio.get_running_loop()
+
+    def send(payload: dict[str, Any]) -> Awaitable[Any]:
+        return loop.run_in_executor(None, lambda: client.chat.completions.create(**payload))
+
+    if forced_tool_choice_supported(model):
+        try:
+            return await send({**request, "tool_choice": forced_tool_choice(tool_name)})
+        except openai.BadRequestError as exc:
+            if not is_forced_tool_choice_unsupported(exc):
+                raise
+            remember_forced_tool_choice_unsupported(model)
+            logger.warning(
+                "forced tool_choice rejected by model=%s; retrying tool=%s with auto",
+                model,
+                tool_name,
+            )
+            if on_forced_tool_choice_rejected is not None:
+                await on_forced_tool_choice_rejected(exc)
+    return await send(
+        {
+            **request,
+            "tool_choice": "auto",
+            "messages": require_tool_call_messages(request["messages"], tool_name=tool_name),
+        }
+    )
+
+
 # ── 이미지 생성 — 전용 /images 엔드포인트 ────────────────────────────
 #
 # OpenRouter의 이미지 API는 OpenAI SDK의 /images/generations 경로가 아니라
@@ -351,6 +483,13 @@ __all__ = (
     "usage_cost_usd",
     "NON_RETRYABLE_LLM_ERRORS",
     "is_retryable_llm_error",
+    "is_forced_tool_choice_unsupported",
+    "forced_tool_choice_supported",
+    "remember_forced_tool_choice_unsupported",
+    "reset_forced_tool_choice_memory_for_tests",
+    "required_tool_call_directive",
+    "require_tool_call_messages",
+    "create_required_tool_completion",
     "ImageResponseError",
     "generate_image",
 )
