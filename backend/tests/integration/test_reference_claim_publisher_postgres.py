@@ -120,7 +120,20 @@ def _dead_link_fetcher() -> PageFetcher:
     return PageFetcher({URL: (404, URL, "")})
 
 
-def test_eight_does_not_refresh_a_row_a_live_worker_is_writing(worker_db):
+@pytest.fixture
+def before_last_publisher(monkeypatch):
+    """예정일 23시(마지막 발행기)부터는 claim 행도 GET한다(`reference_outage_alert_due`).
+
+    claim을 존중하는 규칙을 보는 테스트는 그 전의 발행기여야 한다 — 실제 시계를 쓰면
+    23시 이후 CI에서만 실패한다. 오늘 KST 10시로 고정한다.
+    """
+    real_now = tasks.arrow.now
+    monkeypatch.setattr(
+        tasks.arrow, "now", lambda *args, **kwargs: real_now(*args, **kwargs).replace(hour=10)
+    )
+
+
+def test_eight_does_not_refresh_a_row_a_live_worker_is_writing(worker_db, before_last_publisher):
     item = _stale_item(worker_db, claimed_at=datetime.now(timezone.utc) - timedelta(minutes=10))
     before = _stored(worker_db, item.id)
     fetcher = _dead_link_fetcher()
@@ -134,7 +147,9 @@ def test_eight_does_not_refresh_a_row_a_live_worker_is_writing(worker_db):
     assert before[3] is ContentStatus.DRAFT
 
 
-def test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get(worker_db):
+def test_eight_does_not_apply_a_refresh_when_a_worker_claims_during_the_get(
+    worker_db, before_last_publisher
+):
     item = _stale_item(worker_db, claimed_at=None)
     before = _stored(worker_db, item.id)
     fetcher = _dead_link_fetcher()
