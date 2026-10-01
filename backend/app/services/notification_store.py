@@ -29,6 +29,17 @@ from app.services.notification_contracts import (
     validate_message,
 )
 
+# `notification_outbox.fallback_text`는 String(1000)이다. 전송 payload(JSONB)는 전문을 그대로
+# 싣고, 이 칸은 목록·검색용 미리보기라 길이에 맞춰 자른다. 자르지 않으면 긴 일일 요약이
+# StringDataRightTruncation으로 저장 자체가 실패해 알림이 사라진다.
+_FALLBACK_TEXT_COLUMN_LIMIT = 1000
+
+
+def _stored_fallback_text(text: str) -> str:
+    if len(text) <= _FALLBACK_TEXT_COLUMN_LIMIT:
+        return text
+    return text[: _FALLBACK_TEXT_COLUMN_LIMIT - 1] + "…"
+
 
 @dataclass(frozen=True, slots=True)
 class ClaimedNotification:
@@ -76,7 +87,7 @@ async def enqueue_notification(
             channel=intent.channel,
             state=NotificationOutboxState.PENDING.value,
             payload=intent.message.payload(),
-            fallback_text=intent.message.fallback_text,
+            fallback_text=_stored_fallback_text(intent.message.fallback_text),
             max_attempts=intent.max_attempts,
             next_attempt_at=created_at,
             created_at=created_at,
@@ -113,7 +124,7 @@ def enqueue_notification_sync(
             channel=intent.channel,
             state=NotificationOutboxState.PENDING.value,
             payload=intent.message.payload(),
-            fallback_text=intent.message.fallback_text,
+            fallback_text=_stored_fallback_text(intent.message.fallback_text),
             max_attempts=intent.max_attempts,
             next_attempt_at=created_at,
             created_at=created_at,
