@@ -170,6 +170,18 @@ def blocker_copy(code: object) -> ActionCopy:
             "병원 정보에서 콘텐츠 운영 기준을 확인하고 승인해 주세요.",
             "운영 기준 확인",
         )
+    if value == "CONTENT_NOT_GENERATED":
+        return ActionCopy(
+            "발행용 원고 미생성",
+            "운영센터에서 해당 글의 생성 상태를 확인하고, 자동 재시도 중이 아니면 “작업 다시 시도”를 눌러 주세요.",
+            "생성 상태 확인",
+        )
+    if value == "TOPIC_SWAPPED":
+        return ActionCopy(
+            "주제 자동 교체",
+            "같은 주제로 자동 생성이 소진되어 다른 주제로 바꿨습니다. 콘텐츠에서 새 주제를 확인해 주세요. 새 주제 생성은 자동으로 진행되니 다시 실행하지 마세요.",
+            "새 주제 확인",
+        )
     if "IMAGE" in value:
         return ActionCopy(
             "발행용 이미지 준비 실패",

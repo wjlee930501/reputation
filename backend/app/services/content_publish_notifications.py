@@ -362,7 +362,7 @@ def build_generation_blocked_digest_intent(
         counts = Counter(blocker_copy(code).title for _title, code, _cause in items)
         detail = " · ".join(f"{label} {count}편" for label, count in sorted(counts.items()))
         actions = list(dict.fromkeys(blocker_copy(code).action for _title, code, _cause in items))
-        lines.append(f"• *{_publish_safe_text(hospital_name, 80)}* — 발행 보류 {len(items)}편\n  {detail}\n  {' '.join(actions[:2])}")
+        lines.append(f"• *{_publish_safe_text(hospital_name, 80)}* — 발행 보류 {len(items)}편\n  {detail}\n  {' '.join(actions[:3])}")
     if hidden > 0:
         lines.append(f"• 그 외 {hidden}곳")
     summary = f"병원 {len(hospitals)}곳 · 글 {len(entries)}건"
