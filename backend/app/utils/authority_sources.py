@@ -11,7 +11,6 @@ SE Ranking YMYL Health Study(2025) 등에서 AI 답변(ChatGPT/Gemini/Perplexity
 """
 
 import re
-import unicodedata
 from urllib.parse import parse_qsl, unquote, urlparse
 
 KR_PUBLIC_SOURCES: list[dict[str, str]] = [
@@ -654,26 +653,39 @@ _DEFAULT_PORTS: frozenset[int] = frozenset({80, 443})
 # `3796%26x%3D`를 모두 요통(3796) 문서로, `3796-1`·`3796%26x%3D1`은 없는 문서(37961)로 돌려준다
 # (PR #177 5차 리뷰 공개 GET). 나머지 이름은 그런 관측이 없어 앞 정수 규칙을 그대로 쓴다.
 _DIGITS_ONLY_ID_PARAMS: frozenset[str] = frozenset({"cntnts_sn"})
-_LEADING_INTEGER = re.compile(r"\s*\+?(\d+)")
-_NON_DIGITS = re.compile(r"\D+")
+# 숫자는 ASCII `0-9`만이다. `\d`는 전각 `３`·아랍 숫자까지 받는데 서버가 그 값을 같은 문서로
+# 읽는다는 관측이 없다 — 전각 id 주소는 목록 밖 주소로 실제 GET 판정을 받는다.
+_LEADING_INTEGER = re.compile(r"\s*\+?([0-9]+)")
+_NON_DIGITS = re.compile(r"[^0-9]+")
+# 목록 문서로 **인정**할 때 앞 정수 이름(`cntnts_sn` 밖)이 받는 값 — ASCII 숫자만으로 된 값.
+# 서버는 `7３`에 500을 준다(PR #185 1차 리뷰 공개 GET). `7a`·`+7`·` 7`도 같은 문서라는 관측이 없다.
+_EXACT_ID_VALUE = re.compile(r"[0-9]+")
 _DOCUMENT_ID_MAX_DIGITS = 18
 
 
-def _document_id_value(value: str, *, name: str = "") -> int | None:
-    """서버처럼 id 값을 정수로 읽는다 — `3796abc`·`3796+`·`03796`·전각 숫자는 모두 3796.
+def _document_id_value(value: str, *, name: str = "", exact: bool = False) -> int | None:
+    """서버처럼 id 값을 정수로 읽는다 — `3796abc`·`3796+`·`03796`은 모두 3796.
 
     `cntnts_sn`(`_DIGITS_ONLY_ID_PARAMS`)은 값의 숫자만 모은다(`a3796`·`37a96`도 3796). 다른
-    이름은 앞 정수다. 읽을 숫자가 없는 값(`abc`·빈 값)은 어떤 문서 id와도 맞지 않는다.
+    이름은 앞 정수다. 숫자는 ASCII `0-9`만 읽는다 — 전각 `３７９６`은 숫자가 없는 값이고, 섞인
+    `3７96`은 `cntnts_sn`이면 396, 앞 정수 이름이면 3이다. 읽을 숫자가 없는 값(`abc`·빈 값·전각만)은
+    어떤 문서 id와도 맞지 않는다.
+
+    `exact`(목록 문서로 인정해 주는 판정)이면 앞 정수 이름은 값 전체가 ASCII 숫자여야 한다
+    (`007`은 7, `7a`·`+7`·` 7`·`7３`은 어떤 문서도 아니다). `cntnts_sn`은 서버가 ASCII 숫자를
+    이어 붙이므로 양쪽 모두 숫자만 모은다.
     """
 
     if name in _DIGITS_ONLY_ID_PARAMS:
         found = _NON_DIGITS.sub("", value)
+    elif exact:
+        found = value if _EXACT_ID_VALUE.fullmatch(value) else ""
     else:
         match = _LEADING_INTEGER.match(value)
         found = match.group(1) if match is not None else ""
     if not found:
         return None
-    digits = "".join(str(unicodedata.decimal(char)) for char in found).lstrip("0")
+    digits = found.lstrip("0")
     if len(digits) > _DOCUMENT_ID_MAX_DIGITS:
         return None  # 목록 문서 id가 될 수 없는 길이(정수 변환 한도 전에 끊는다)
     return int(digits or "0")
@@ -730,7 +742,9 @@ def _document_index(entries):  # type: ignore[no-untyped-def]
     return index
 
 
-def _matching_documents(url: object, index, *, first_value_only: bool = False) -> list:  # type: ignore[no-untyped-def]
+def _matching_documents(  # type: ignore[no-untyped-def]
+    url: object, index, *, first_value_only: bool = False, exact_ids: bool = False
+) -> list:
     """이 주소가 가리킬 수 있는 목록 항목들.
 
     위치가 같고, 항목 URL이 쓰는 문서 id 이름마다 이 주소에 그 이름의 값이 있어 그 값을 읽은
@@ -740,6 +754,8 @@ def _matching_documents(url: object, index, *, first_value_only: bool = False) -
     같은 이름이 여러 번 오면 서버는 첫 값을 쓴다. `first_value_only`는 그 첫 값만 본다 — 목록
     문서로 인정해 주는 쪽(의료 글의 카탈로그 주제 대조·장애 시 유지)이 쓴다. 기본은 상한 없이
     모든 값을 본다 — 목록 문서라서 빼는 쪽(진료비·병원 선택 글·PATCH 422·제외 목록)이 쓴다.
+    `exact_ids`는 인정해 주는 쪽의 값 규칙이다 — 앞 정수 이름의 값은 ASCII 숫자만이어야 한다
+    (`_document_id_value`). 빼는 쪽은 관대한 앞 정수 해석을 그대로 쓴다.
     여러 항목과 맞으면 모두 돌려준다.
     """
 
@@ -757,7 +773,7 @@ def _matching_documents(url: object, index, *, first_value_only: bool = False) -
             if first_value_only and name in seen:
                 continue
             seen.add(name)
-            number = _document_id_value(value, name=name)
+            number = _document_id_value(value, name=name, exact=exact_ids)
             if number is not None:
                 values.setdefault(name, set()).add(number)
     return [
@@ -788,10 +804,13 @@ def curated_source_entries(url: object) -> list[dict[str, object]]:
 
     반복된 id는 서버처럼 첫 값만 본다(`first_value_only`). 목록 문서로 인정해 주는 판정
     (카탈로그 주제 대조·검증기의 `curated`)이 쓴다 — `cntnts_sn=1&cntnts_sn=3796`은 요통 문서가
-    아니다. 빼는 판정은 `is_curated_source_url`이다.
+    아니다. 앞 정수 이름의 값은 ASCII 숫자만으로 된 값만 받는다(`exact_ids`) — `contentId=31773a`는
+    치열 문서로 인정하지 않는다. 빼는 판정은 `is_curated_source_url`이다.
     """
 
-    return list(_matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True))
+    return list(
+        _matching_documents(url, _CURATED_DOCUMENTS, first_value_only=True, exact_ids=True)
+    )
 
 
 def is_curated_source_url(url: object) -> bool:

@@ -313,6 +313,41 @@ async def test_the_hold_is_an_open_operator_incident_with_its_own_copy(monkeypat
     assert "다시 쓰지 않습니다" in request.next_action
 
 
+@pytest.mark.parametrize(
+    ("claim_age", "kept"),
+    [(None, False), (timedelta(minutes=30), True), (timedelta(hours=3), False)],
+    ids=["unclaimed", "live_claim", "expired_claim"],
+)
+async def test_the_incident_leaves_the_attempt_of_a_live_claimed_row_alone(
+    monkeypatch, claim_age, kept
+):
+    """#185 리뷰 A2 — 종착 원인의 기한 키 삭제는 살아 있는 claim이 잡은 행에는 하지 않는다."""
+
+    item = _slot(COST_TITLE)
+    item.essence_check_summary = {
+        "generation_attempt": {
+            "reason": "MISSING_REFERENCES",
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+            "next_retry_at": None,
+            OPERATOR_DECIDES_KEY: True,
+        }
+    }
+    # 인시던트는 실제 시계로 claim을 판정한다.
+    item.generation_claim_token = uuid.uuid4() if claim_age is not None else None
+    item.generation_claimed_at = (
+        arrow.utcnow().datetime - claim_age if claim_age is not None else None
+    )
+    before = copy.deepcopy(item.essence_check_summary)
+
+    incident, _request = await _open_incident(monkeypatch, item)
+
+    assert (incident.state, incident.sla_due_at) == ("OPEN", None)
+    attempt = item.essence_check_summary["generation_attempt"]
+    assert ("next_retry_at" in attempt) is kept
+    if kept:
+        assert item.essence_check_summary == before
+
+
 async def test_an_ordinary_missing_reference_hold_keeps_its_repair_copy(monkeypatch):
     item = _slot(HEMORRHOID_TITLE)
     _freeze(monkeypatch, _kst(2026, 9, 16, 7, 45))

@@ -11,6 +11,7 @@ GET의 최종 주소가 목록 문서면(리다이렉트) 그 주소도 목록 �
   id 값의 앞 정수를 읽는다(`3796abc`·`3796%2B`).
 - 5차 리뷰: KDCA `cntnts_sn`은 값의 숫자만 모아 읽는다(`a3796`·`-3796`·`37a96`도 요통 3796).
   다른 id 이름은 관측이 없어 앞 정수 규칙이다.
+- 숫자는 ASCII `0-9`만이다(#183 후속). 전각 `３７９６`은 목록 문서가 아닌 주소로 실제 GET 판정을 받는다.
 - 같은 이름이 반복되면 서버는 첫 값을 쓴다. 목록 문서라서 **빼는** 판정(진료비·병원 선택 글의
   생성·발행 전 재검증·PATCH 422·제외 목록)은 어느 값이든 맞으면 목록 문서로 보고, 목록 문서로
   **인정해 주는** 판정(의료 글의 카탈로그 주제 대조·장애 시 유지)은 첫 값만 본다.
@@ -213,7 +214,6 @@ def test_an_alias_is_the_curated_document(name):
         LOW_BACK.replace("https://", "https://WWW.") + "#section",
         LOW_BACK.replace("gnrlzHealthInfoView.do", "gnrlzHealthInfoView.do;jsessionid=AB12"),
         LOW_BACK + "&cntnts_sn=3796",
-        KDCA_VIEW.format("%EF%BC%93%EF%BC%97%EF%BC%99%EF%BC%96"),  # 전각 ３７９６
         KDCA_VIEW.format("0" * 5000 + "3796"),
         LOW_BACK.replace("cntnts_sn=", "cntnts%5Fsn="),
         LOW_BACK.replace("https://", "https://user:pw@"),
@@ -225,7 +225,6 @@ def test_an_alias_is_the_curated_document(name):
         "www_fragment",
         "jsessionid",
         "repeated_same_id",
-        "full_width_digits",
         "many_leading_zeros",
         "percent_encoded_name",
         "userinfo",
@@ -520,6 +519,42 @@ async def test_generation_keeps_a_redirect_to_a_curated_document_on_a_medical_ti
 
     assert [ref["url"] for ref in result["references"]] == [REDIRECTING]
     assert result["reference_checks"][-1]["reason"] == "curated_verified"
+
+
+# ── 카탈로그 대조 주소(`judge_fetched_page`의 `catalog_url`) ─────────────────
+# 주소 자신이 목록 문서를 돌려주면(반복 id는 첫 값) 그 주소의 카탈로그로, 아니면 GET의 최종 주소로
+# 대조한다. 목록 문서 주소가 목록 밖으로 리다이렉트돼도 주소의 카탈로그가 말하고, 첫 값이 목록
+# 문서가 아닌 반복 id 주소가 목록 문서로 리다이렉트되면 최종 주소의 카탈로그가 말한다.
+
+_CATALOG_REDIRECTS = {
+    # 목록 문서(요통) → 목록 밖 문서. 최종 주소로 대조하면 카탈로그가 없다.
+    "catalog_to_outside": (LOW_BACK, KDCA_VIEW.format(9006), "요통이 오래갈 때 — 원인과 치료"),
+    # 반복 id의 둘째 값만 목록 문서(빼는 판정에서만 목록 문서) → 고혈압 목록 문서.
+    # 주소로 대조하면(어느 값이든 판정) 첫 값의 문서가 없어 카탈로그가 없다.
+    "second_value_to_catalog": (
+        KDCA_VIEW.format(1) + "&cntnts_sn=3796",
+        KDCA_VIEW.format(6765),
+        "고혈압 약을 먹기 시작할 때 — 생활 관리",
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(_CATALOG_REDIRECTS))
+async def test_the_catalog_is_the_served_document_of_the_url_or_else_the_final_url(name):
+    url, final_url, title = _CATALOG_REDIRECTS[name]
+    fetcher = PageFetcher()
+    fetcher.add_document(final_url, "문서 | 국가건강정보포털 | 질병관리청", topic="문서")
+    status, _final, html = fetcher.pages[final_url]
+    fetcher.pages[url] = (status, final_url, html)
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[title]
+    )
+
+    (check,) = outcome.checks
+    assert check["curated"] is True and check["final_url"] == final_url
+    assert check["reason"] == "curated_verified"
+    assert [ref["url"] for ref in outcome.kept] == [url]
 
 
 # ── 의료 글은 별칭도 목록 문서로 인정한다 ─────────────────────────────
@@ -832,6 +867,60 @@ async def test_patch_rejects_a_redirect_to_an_excluded_document_like_the_exclude
     assert item.references_list == [] and item.content_revision == 3
 
 
+@pytest.mark.parametrize(
+    ("final_url", "reused"),
+    [(EXCLUDED, False), (REDIRECT_TO_EXCLUDED, True)],
+    ids=["final_url_excluded", "control_final_url_not_excluded"],
+)
+async def test_an_old_pass_whose_final_url_is_excluded_is_not_reused_on_outage(final_url, reused):
+    """장애 폴백(`_reusable_previous_pass`) — 7일 재사용 기간 안이지만 24시간 신선도 밖의 통과 기록.
+
+    신선한 통과(`check_is_fresh_pass`)가 아니라서 그 판정과 무관하다. 기록의 최종 주소가 제외
+    문서면(수정 전 코드가 남긴 리다이렉트 통과) 장애 때도 재사용하지 않고 미룬다. 대조군은 같은
+    기록의 최종 주소만 제외 문서가 아닌 것 — 재사용된다.
+    """
+
+    from datetime import timedelta
+
+    from app.services.reference_verification import check_is_fresh_pass, topic_fingerprint
+
+    fingerprint = topic_fingerprint([DYSPEPSIA_TITLE])
+    old = _now() - timedelta(days=2)
+    prior = reference_check_record(
+        REDIRECT_TO_EXCLUDED,
+        verdict="pass",
+        reason="page_verified",
+        checked_at=old,
+        curated=False,
+        status=200,
+        final_url=final_url,
+        page_title="소화불량 | 국가건강정보포털 | 질병관리청",
+        text_len=800,
+        verified_at=old,
+        topic_fingerprint=fingerprint,
+    )
+    assert not check_is_fresh_pass(prior, now=_now(), topic_fingerprint=fingerprint)
+    fetcher = PageFetcher({REDIRECT_TO_EXCLUDED: TimeoutError("site down")})
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "소화불량", "url": REDIRECT_TO_EXCLUDED}],
+        topic_terms=[DYSPEPSIA_TITLE],
+        previous_checks=[prior],
+        reuse_fresh_checks=True,
+        defer_transient=True,
+    )
+
+    assert fetcher.calls == [REDIRECT_TO_EXCLUDED]
+    (check,) = outcome.checks
+    if reused:
+        assert check["reason"] == "reused_previous_pass"
+        assert [ref["url"] for ref in outcome.kept] == [REDIRECT_TO_EXCLUDED]
+    else:
+        assert check["reason"] != "reused_previous_pass"
+        assert outcome.kept == []
+        assert [ref["url"] for ref in outcome.deferred] == [REDIRECT_TO_EXCLUDED]
+
+
 async def test_a_redirect_to_a_document_that_is_not_excluded_is_unaffected(monkeypatch):
     """대조군 — 같은 경로의 다른 문서(6264)로 가는 리다이렉트는 실제 본문 판정대로 남는다."""
 
@@ -846,3 +935,397 @@ async def test_a_redirect_to_a_document_that_is_not_excluded_is_unaffected(monke
     with override_reference_fetcher(_excluded_redirect_fetcher(other)):
         await _patch(hospital, item, references=[{"title": "소화불량", "url": REDIRECT_TO_EXCLUDED}])
     assert [ref["url"] for ref in item.references_list] == [REDIRECT_TO_EXCLUDED]
+
+
+# ── 전각 숫자 id는 목록 문서가 아니다(PR #183 후속) ──────────────────────
+# 문서 id는 ASCII `0-9`만 읽는다. 서버가 전각 `３７９６`을 3796으로 읽는다는 관측이 없으므로, 전각
+# id 주소는 목록 밖 주소로 실제 GET 판정을 받는다 — 목록 문서로 인정받지도(`curated_*`) 않고, GET
+# 전에 목록 문서로 빠지지도 않는다. 진료비 글에서는 실제 본문 통과가 있어야만 남는다.
+
+AMC_DETAIL = "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId={}"
+ANAL_FISSURE = AMC_DETAIL.format(31773)  # 앞 정수 규칙 이름(`contentId`)의 목록 문서 — 치열
+FULLWIDTH_COST_TITLE_FOR = {
+    **COST_TITLE_FOR,
+    ANAL_FISSURE: ("치열 수술 비용 — 보험 적용과 본인부담", "치열"),
+}
+FULLWIDTH_MEDICAL_TITLE_FOR = {
+    **MEDICAL_TITLE_FOR,
+    ANAL_FISSURE: ("치열이 생겼을 때 — 원인과 치료", "치열"),
+}
+FULLWIDTH = {
+    "kdca_fullwidth": (KDCA_VIEW.format("３７９６"), LOW_BACK),
+    "kdca_mixed": (KDCA_VIEW.format("3７96"), LOW_BACK),  # 숫자만 모으면 396
+    "kdca_percent_encoded": (KDCA_VIEW.format("%EF%BC%93%EF%BC%97%EF%BC%99%EF%BC%96"), LOW_BACK),
+    "amc_fullwidth": (AMC_DETAIL.format("３１７７３"), ANAL_FISSURE),
+    "amc_mixed": (AMC_DETAIL.format("3１773"), ANAL_FISSURE),  # 앞 정수는 3
+    "amc_percent_encoded": (AMC_DETAIL.format("%EF%BC%93%EF%BC%91%EF%BC%97%EF%BC%97%EF%BC%93"), ANAL_FISSURE),
+}
+FULLWIDTH_IDS = sorted(FULLWIDTH)
+# 페이지 관측 세 가지 — 서버가 실제 문서를 준다 / 없는 문서(빈 템플릿) / 접속 불가.
+PAGE_OUTCOMES = ("real_page", "empty_template", "site_down")
+
+
+def _fullwidth_fetcher(url: str, canonical: str, outcome: str) -> PageFetcher:
+    _title, topic = FULLWIDTH_MEDICAL_TITLE_FOR[canonical]
+    fetcher = PageFetcher()
+    if outcome == "real_page":
+        fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    elif outcome == "empty_template":
+        fetcher.pages[url] = (200, url, "<html><head><title>국가건강정보포털</title></head><body></body></html>")
+    else:
+        fetcher.pages[url] = TimeoutError("site down")
+    return fetcher
+
+
+def _assert_not_curated_check(check: dict) -> None:
+    assert check["curated"] is False
+    assert check["reason"] not in {"curated_verified", "curated_unreachable"}
+
+
+@pytest.mark.parametrize("name", FULLWIDTH_IDS)
+def test_a_fullwidth_id_is_not_a_catalog_document(name):
+    from app.services.reference_verification import _serves_curated_document, names_curated_document
+    from app.utils.authority_sources import reference_exclusion_reason
+
+    url, canonical = FULLWIDTH[name]
+    assert is_curated_source_url(canonical)  # 대조군 — ASCII id는 그 목록 문서다
+    assert not is_curated_source_url(url)
+    assert curated_source_entries(url) == []
+    assert not _serves_curated_document(url)
+    assert not names_curated_document({"url": url, "final_url": url})
+    assert reference_exclusion_reason(url) is None
+
+
+@pytest.mark.parametrize(
+    ("url", "recognised", "removed"),
+    [
+        (KDCA_VIEW.format("3796３"), LOW_BACK, LOW_BACK),  # 전각 문자는 숫자가 아니다 — 모으면 3796
+        (KDCA_VIEW.format("３3796"), LOW_BACK, LOW_BACK),
+        # 앞 정수 31773 뒤의 비숫자 — 빼는 쪽은 앞 정수로 치열 문서다. 인정해 주는 쪽은 값 전체가
+        # ASCII 숫자여야 한다(#185 1차 리뷰 후속: 서버는 `7３`에 500을 준다).
+        (AMC_DETAIL.format("31773３"), None, ANAL_FISSURE),
+        (AMC_DETAIL.format("３31773"), None, None),  # 앞이 숫자가 아니다
+        (KDCA_VIEW.format("3７96"), None, None),  # 396 — 목록에 없는 문서
+    ],
+    ids=["kdca_trailing_fullwidth", "kdca_leading_fullwidth", "amc_trailing_fullwidth", "amc_leading_fullwidth", "kdca_396"],
+)
+def test_only_ascii_digits_are_read(url, recognised, removed):
+    if recognised is None:
+        assert curated_source_entries(url) == []
+    else:
+        assert curated_source_entries(url) == curated_source_entries(recognised) != []
+    assert is_curated_source_url(url) is (removed is not None)
+
+
+def test_a_fullwidth_id_never_equals_a_catalog_or_excluded_document():
+    """목록·제외 목록의 모든 id를 전각으로 바꿔도 어떤 항목과도 같지 않다."""
+
+    from app.utils.authority_sources import reference_exclusion_reason
+
+    fullwidth = str.maketrans("0123456789", "０１２３４５６７８９")
+    for url in [*CURATED_SOURCE_URLS, *(entry["url"] for entry in REFERENCE_URL_EXCLUSIONS)]:
+        base, _, query = url.partition("?")
+        if not query:
+            continue
+        variant = f"{base}?{query.translate(fullwidth)}"
+        assert not is_curated_source_url(variant), variant
+        assert reference_exclusion_reason(variant) is None, variant
+
+
+@pytest.mark.parametrize("outcome", PAGE_OUTCOMES)
+@pytest.mark.parametrize("name", FULLWIDTH_IDS)
+async def test_a_medical_post_citing_a_fullwidth_id_is_judged_by_its_page(name, outcome):
+    url, canonical = FULLWIDTH[name]
+    title, _topic = FULLWIDTH_MEDICAL_TITLE_FOR[canonical]
+    fetcher = _fullwidth_fetcher(url, canonical, outcome)
+
+    result = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[title], defer_transient=True
+    )
+
+    assert fetcher.calls == [url]
+    (check,) = result.checks
+    _assert_not_curated_check(check)
+    kept = [ref["url"] for ref in result.kept]
+    if outcome == "real_page":
+        assert kept == [url] and check["reason"] == "page_verified"
+    elif outcome == "empty_template":
+        assert kept == [] and result.deferred == []
+    else:
+        assert kept == [] and [ref["url"] for ref in result.deferred] == [url]
+
+
+@pytest.mark.parametrize("outcome", PAGE_OUTCOMES)
+@pytest.mark.parametrize("name", FULLWIDTH_IDS)
+async def test_generation_judges_a_fullwidth_id_on_a_cost_title_by_its_page(name, outcome):
+    url, canonical = FULLWIDTH[name]
+    title, topic = FULLWIDTH_COST_TITLE_FOR[canonical]
+    fetcher = _fullwidth_fetcher(url, canonical, outcome)
+    result = {
+        "title": title,
+        "body": f"## {topic}의 원인과 치료\n{topic} 진료 안내\n## 비용\n본문",
+        "faq_question": None,
+        "references": [{"title": topic, "url": url}],
+    }
+
+    with override_reference_fetcher(fetcher):
+        notes = await content_engine._verify_generated_references(
+            result, {"target_keyword": topic}, required=True
+        )
+
+    assert fetcher.calls == [url]  # 목록 문서처럼 GET 전에 빼지 않는다
+    assert not any("수기 목록 문서를 쓰지 않음" in note for note in notes)
+    (check,) = [c for c in result["reference_checks"] if c["url"] == url]
+    _assert_not_curated_check(check)
+    kept = [ref["url"] for ref in result["references"]]
+    if outcome == "real_page":
+        assert kept == [url] and check["reason"] == "page_verified"
+    else:
+        assert kept == []  # 실제 본문 통과 없이는 남지 않는다(목록 밖 판단 불가는 제거)
+
+
+@pytest.mark.parametrize("outcome", PAGE_OUTCOMES)
+@pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
+@pytest.mark.parametrize("name", FULLWIDTH_IDS)
+async def test_publication_refresh_judges_a_fullwidth_id_on_a_cost_post_by_its_page(
+    name, status, outcome
+):
+    url, canonical = FULLWIDTH[name]
+    title, topic = FULLWIDTH_COST_TITLE_FOR[canonical]
+    item = _published(title, status)
+    item.body = f"## {topic}의 원인과 치료\n{topic} 진료 안내"
+    item.references_list = [{"title": topic, "url": url}]
+    item.reference_checks = None
+    fetcher = _fullwidth_fetcher(url, canonical, outcome)
+
+    assert not publication_references_settled(item)
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert fetcher.calls == [url]  # GET 전에 목록 문서로 빠지지 않는다
+    (check,) = [c for c in refresh.checks if c["url"] == url]
+    _assert_not_curated_check(check)
+    kept = [ref["url"] for ref in refresh.references]
+    if outcome == "real_page":
+        assert kept == [url] and not refresh.operator_decides
+        assert check["reason"] == "page_verified"
+    elif outcome == "empty_template":
+        assert kept == [] and refresh.operator_decides and not refresh.healed
+    else:
+        # 목록 밖 주소의 일시 장애 — 남기지도 빼지도 않고 다음 시간대로 미룬다(통과가 아니다).
+        assert refresh.deferred and not publication_references_settled(item)
+
+
+@pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
+@pytest.mark.parametrize("name", FULLWIDTH_IDS)
+async def test_a_stored_page_pass_keeps_a_fullwidth_id_on_a_cost_post(name, status):
+    """실제 본문 통과 기록이 있으면(목록 밖 판정) 진료비 글에 남는다 — 다시 열지 않는다."""
+
+    url, canonical = FULLWIDTH[name]
+    title, topic = FULLWIDTH_COST_TITLE_FOR[canonical]
+    item = _published(title, status)
+    item.body = f"## {topic}의 원인과 치료\n{topic} 진료 안내"
+    item.references_list = [{"title": topic, "url": url}]
+    item.reference_checks = [_page_pass(url)]
+    _stamp(item)
+    fetcher = _fullwidth_fetcher(url, canonical, "site_down")
+
+    assert publication_references_settled(item)
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.already_current and [ref["url"] for ref in refresh.references] == [url]
+    assert fetcher.calls == []
+
+
+@pytest.mark.parametrize("outcome", PAGE_OUTCOMES)
+@pytest.mark.parametrize("name", FULLWIDTH_IDS)
+async def test_patch_judges_a_fullwidth_id_on_a_cost_post_by_its_page(monkeypatch, name, outcome):
+    url, canonical = FULLWIDTH[name]
+    title, topic = FULLWIDTH_COST_TITLE_FOR[canonical]
+    hospital, item = _patch_setup(monkeypatch, title=title)
+    fetcher = _fullwidth_fetcher(url, canonical, outcome)
+
+    with override_reference_fetcher(fetcher):
+        if outcome == "real_page":
+            await _patch(hospital, item, references=[{"title": topic, "url": url}])
+        else:
+            with pytest.raises(HTTPException) as raised:
+                await _patch(hospital, item, references=[{"title": topic, "url": url}])
+
+    assert fetcher.calls == [url]  # 422(목록 문서) 없이 실제 GET으로 판정한다
+    if outcome == "real_page":
+        assert [ref["url"] for ref in item.references_list] == [url]
+        (check,) = item.reference_checks
+        assert check["reason"] == "page_verified" and check["curated"] is False
+    else:
+        assert raised.value.status_code == 400
+        assert raised.value.detail.get("code") != "CURATED_REFERENCE_NOT_ALLOWED"
+        (failure,) = raised.value.detail["failed_references"]
+        assert failure["url"] == url
+        assert failure["reason"] not in {"curated_verified", "curated_unreachable"}
+        assert item.references_list == [] and item.content_revision == 3
+
+
+# ── 목록 문서로 인정할 때 앞 정수 이름은 ASCII 숫자만인 값(#185 1차 리뷰 후속) ──────────────
+# `thtimt_cntnts_sn`·AMC `contentId`·`SEQ`·`cancer_seq`는 앞 정수로 읽는다. 목록 문서라서 **빼는**
+# 판정은 그 관대한 해석 그대로다(`7a`도 7번 문서일 수 있다). 목록 문서로 **인정해 주는** 판정
+# (카탈로그 주제 대조·장애 시 유지·검증기의 `curated`)은 값 전체가 ASCII 숫자일 때만이다 — 서버는
+# `7３`에 500을 준다. 인정받지 못한 주소는 의료 글에서 실제 본문으로 판정된다.
+
+CHECKUP_VIEW = (
+    "https://health.kdca.go.kr/healthinfo/biz/health/ntcnInfo/healthSourc/thtimtCntnts/"
+    "thtimtCntntsView.do?thtimt_cntnts_sn={}"
+)
+# 이름 → (URL 틀, 목록 id, 의료 제목, 진료비 제목, 주제어)
+LEADING_INTEGER_DOCS = {
+    "thtimt_cntnts_sn": (
+        CHECKUP_VIEW,
+        7,
+        "건강검진 결과지 읽는 법 — 수치별 의미",
+        "건강검진 비용 — 항목별 본인부담",
+        "건강검진",
+    ),
+    "amc_contentId": (
+        AMC_DETAIL,
+        31773,
+        "치열이 생겼을 때 — 원인과 치료",
+        "치열 수술 비용 — 보험 적용과 본인부담",
+        "치열",
+    ),
+}
+# 값 → 퍼센트 인코딩된 질의 값(`parse_qsl`이 풀어 읽는다).
+INEXACT_ID_VALUES = {
+    "fullwidth_suffix": "{}%EF%BC%93",  # 7３
+    "letter_suffix": "{}a",  # 7a
+    "encoded_plus": "%2B{}",  # +7
+    "encoded_space": "%20{}",  # ' 7'
+    "raw_plus": "+{}",  # 질의의 `+`는 공백 — ' 7'
+}
+EXACT_ID_VALUES = {"plain": "{}", "zero_padded": "00{}"}
+INEXACT_CASES = sorted((doc, value) for doc in LEADING_INTEGER_DOCS for value in INEXACT_ID_VALUES)
+
+
+def _leading_integer_url(doc: str, value: str) -> tuple[str, str]:
+    template, number, *_rest = LEADING_INTEGER_DOCS[doc]
+    pattern = {**INEXACT_ID_VALUES, **EXACT_ID_VALUES}[value]
+    return template.format(pattern.format(number)), template.format(number)
+
+
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+def test_an_inexact_leading_integer_id_is_not_recognised_but_still_removed(doc, value):
+    from app.services.reference_verification import _serves_curated_document, names_curated_document
+
+    url, canonical = _leading_integer_url(doc, value)
+    assert curated_source_entries(canonical) != []
+    assert curated_source_entries(url) == []  # 인정해 주는 쪽
+    assert not _serves_curated_document(url)
+    assert is_curated_source_url(url)  # 빼는 쪽 — 관대한 앞 정수 해석
+    assert names_curated_document({"url": url})
+
+
+@pytest.mark.parametrize("value", sorted(EXACT_ID_VALUES))
+@pytest.mark.parametrize("doc", sorted(LEADING_INTEGER_DOCS))
+def test_an_exact_leading_integer_id_is_recognised(doc, value):
+    url, canonical = _leading_integer_url(doc, value)
+    assert curated_source_entries(url) == curated_source_entries(canonical) != []
+    assert is_curated_source_url(url)
+
+
+@pytest.mark.parametrize("outcome", ["real_page", "site_down"])
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_a_medical_post_citing_an_inexact_leading_integer_id_is_judged_by_its_page(
+    doc, value, outcome
+):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, medical_title, _cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    fetcher = PageFetcher()
+    if outcome == "real_page":
+        fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    else:
+        fetcher.pages[url] = TimeoutError("site down")
+
+    result = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[medical_title], defer_transient=True
+    )
+
+    assert fetcher.calls == [url]
+    (check,) = result.checks
+    _assert_not_curated_check(check)
+    if outcome == "real_page":
+        assert [ref["url"] for ref in result.kept] == [url] and check["reason"] == "page_verified"
+    else:
+        # 목록 문서로 인정되던 때는 `curated_unreachable`로 남았다 — 이제는 미룬다.
+        assert result.kept == [] and [ref["url"] for ref in result.deferred] == [url]
+
+
+@pytest.mark.parametrize("value", sorted(EXACT_ID_VALUES))
+@pytest.mark.parametrize("doc", sorted(LEADING_INTEGER_DOCS))
+async def test_a_medical_post_citing_an_exact_leading_integer_id_keeps_the_catalog(doc, value):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, medical_title, _cost_title, _topic = LEADING_INTEGER_DOCS[doc]
+    fetcher = PageFetcher({url: TimeoutError("site down")})
+
+    result = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "문서", "url": url}], topic_terms=[medical_title], defer_transient=True
+    )
+
+    (check,) = result.checks
+    assert check["reason"] == "curated_unreachable" and check["curated"] is True
+    assert [ref["url"] for ref in result.kept] == [url]
+
+
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_generation_still_drops_an_inexact_leading_integer_id_on_a_cost_title(doc, value):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, _medical_title, cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    fetcher = PageFetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+    result = {
+        "title": cost_title,
+        "body": f"## {topic}의 원인과 치료\n{topic} 진료 안내\n## 비용\n본문",
+        "faq_question": None,
+        "references": [{"title": topic, "url": url}],
+    }
+
+    with override_reference_fetcher(fetcher):
+        notes = await content_engine._verify_generated_references(
+            result, {"target_keyword": topic}, required=True
+        )
+
+    assert result["references"] == [] and fetcher.calls == []
+    assert any("수기 목록 문서를 쓰지 않음" in note for note in notes)
+
+
+@pytest.mark.parametrize("status", [tasks.ContentStatus.DRAFT, tasks.ContentStatus.READY])
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_publication_refresh_still_drops_an_inexact_leading_integer_id_on_a_cost_post(
+    doc, value, status
+):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, _medical_title, cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    item = _published(cost_title, status)
+    item.body = f"## {topic}의 원인과 치료\n{topic} 진료 안내"
+    item.references_list = [{"title": topic, "url": url}]
+    item.reference_checks = None
+    fetcher = PageFetcher()
+    fetcher.add_document(url, f"{topic} | 국가건강정보포털 | 질병관리청", topic=topic)
+
+    refresh = await refresh_publication_references(item, ReferenceVerifier(fetcher, domain_spacing=0))
+
+    assert refresh.references == [] and refresh.operator_decides and fetcher.calls == []
+
+
+@pytest.mark.parametrize(("doc", "value"), INEXACT_CASES)
+async def test_patch_still_rejects_an_inexact_leading_integer_id_on_a_cost_post(
+    monkeypatch, doc, value
+):
+    url, _canonical = _leading_integer_url(doc, value)
+    _template, _number, _medical_title, cost_title, topic = LEADING_INTEGER_DOCS[doc]
+    hospital, item = _patch_setup(monkeypatch, title=cost_title)
+    fetcher = PageFetcher()
+
+    with override_reference_fetcher(fetcher), pytest.raises(HTTPException) as raised:
+        await _patch(hospital, item, references=[{"title": topic, "url": url}])
+
+    assert raised.value.status_code == 422
+    assert raised.value.detail["code"] == "CURATED_REFERENCE_NOT_ALLOWED"
+    assert fetcher.calls == [] and item.references_list == []
