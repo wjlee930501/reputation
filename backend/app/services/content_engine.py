@@ -29,6 +29,13 @@ from app.services.essence_engine import (
     MANDATORY_MEDICAL_AD_RISK_RULES,
     effective_safety_policy,
 )
+from app.services.must_use_exclusions import approved_must_use_messages_with_record
+from app.services.must_use_verbatim import (
+    approved_philosophy,
+    missing_must_use_messages,
+    normalize_verbatim,
+    required_must_use_messages,
+)
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
 from app.services.reference_requirement import (
     REFERENCES_REQUIRED_TYPES,
@@ -53,6 +60,7 @@ from app.utils.authority_sources import (
     render_source_hint_block,
 )
 from app.utils.medical_filter import (
+    check_forbidden,
     check_forbidden_content_fields,
     forbidden_vocabulary_for_prompt,
 )
@@ -182,6 +190,15 @@ class TruncatedProviderOutputError(ValueError):
     """
 
 
+class MissingMustUseMessagesError(ValueError):
+    """승인된 필수 문구가 본문에 원문 그대로 들어가지 않았다.
+
+    다른 결정적 거절과 같이 기존 재작성 루프(GENERATION_REMEDIATION_ROUNDS·
+    GENERATION_PROVIDER_CALL_BUDGET)가 빠진 문구를 작가에게 넘겨 다시 쓰게 한다.
+    끝내 빠지면 GENERATION_REJECTED(본문 표본 실패) 경로를 탄다.
+    """
+
+
 class DirectorNameMissingError(ValueError):
     """Keep the last provider result available for one deterministic name heal."""
 
@@ -256,7 +273,12 @@ __MANDATORY_SAFETY_RULES__
   본원 제공과 명확히 구분합니다.
 - **의료진 자격·경력·출신은 프로파일에 명시된 것만** 사용하세요. 없는 자격(예: 'OO 세부전문의')이나
   경력('OO 출신')을 지어내지 마세요. 자격명은 프로파일 표기 그대로 씁니다.
-- 가이드의 must_use_messages(병원 핵심 시술·강점)가 있으면 본문에 자연스럽게 반영하고, avoid_messages는 피합니다.
+- **[승인된 콘텐츠 운영 기준]의 must_use_messages(병원이 승인한 필수 문구)는 의역하지 말고 원문 그대로**
+  본문에 넣으세요.
+  각 문구를 한 글자도 바꾸지 말고(조사·어미·쉼표·숫자·단위 포함) 독립된 문장으로 쓰며,
+  문구 앞뒤에 말을 덧붙여 한 문장으로 잇거나 따옴표로 감싸지 마세요. 설명이 더 필요하면
+  다음 문장에서 이어 씁니다. 시스템이 생성 후 원문 포함 여부를 검사하며 빠지면 저장되지 않습니다.
+  avoid_messages는 피합니다.
 - 회복기간·입원·마취 후 경과 등은 프로파일/가이드의 실제 운영 방침과 어긋나지 않게 적습니다.
 
 [출력 형식 — JSON]
@@ -767,7 +789,7 @@ content_principles:
 tone_guidelines:
 {_bullet_list(philosophy.tone_guidelines or [])}
 must_use_messages:
-{_bullet_list(philosophy.must_use_messages or [])}
+{_bullet_list(required_must_use_messages(philosophy))}
 avoid_messages:
 {_bullet_list(safety_policy['avoid_messages'])}
 medical_ad_risk_rules:
@@ -862,6 +884,62 @@ def _brief_safety_bullets(
     return _bullet_list(values)
 
 
+def _brief_matches_approved(
+    content_brief: dict, philosophy: HospitalContentPhilosophy | None
+) -> bool:
+    """가이드가 현재 승인본(같은 id·버전)에서 만들어졌는가."""
+
+    approved = approved_philosophy(philosophy)
+    reference = content_brief.get("philosophy_reference")
+    return (
+        approved is not None
+        and isinstance(reference, dict)
+        and reference.get("id") == str(getattr(approved, "id", ""))
+        and reference.get("version") == getattr(approved, "version", None)
+    )
+
+
+def _brief_must_use_context(
+    content_brief: dict, philosophy: HospitalContentPhilosophy | None
+) -> str:
+    """가이드의 must_use_messages를 원문 요구 목록과 섞이지 않게 렌더링한다.
+
+    원문 그대로 요구하는 필수 문구는 현재 승인본 문구뿐이다(`must_use_verbatim`) — 생성 후
+    검증도, 독립 검수의 필수 문구 면제도 그 집합만 본다. 가이드는 대부분 승인본의 사본이라
+    참조 한 줄로 대신한다. 가이드에만 있는 문구(운영자가 덧붙인 작성 방향)는 가이드가 현재
+    승인본 버전에서 만들어졌을 때만 원문 요구가 아닌 별도 줄로 남긴다 — 옛 버전 가이드의
+    문구는 승인본에서 고쳐진 문장(2cm→1cm)일 수 있다. 의료광고 금지 표현에 걸리는 문구는
+    어느 쪽에도 싣지 않는다.
+    """
+
+    lines = _SAME_AS_PHILOSOPHY if philosophy is not None else _bullet_list([])
+    brief_values = content_brief.get("must_use_messages")
+    if not isinstance(brief_values, list) or not _brief_matches_approved(
+        content_brief, philosophy
+    ):
+        return lines
+    required_keys = {
+        normalize_verbatim(message)
+        for message in (getattr(philosophy, "must_use_messages", None) or [])
+    }
+    extras: list[str] = []
+    seen: set[str] = set()
+    for value in brief_values:
+        if not isinstance(value, str) or not value.strip() or check_forbidden(value):
+            continue
+        key = normalize_verbatim(value)
+        if key in required_keys or key in seen:
+            continue
+        seen.add(key)
+        extras.append(value.strip())
+    if extras:
+        lines += (
+            "\nguide_only_messages (가이드에만 있는 작성 방향 — 원문 그대로 요구하지 않음):\n"
+            + _bullet_list(extras)
+        )
+    return lines
+
+
 def _build_content_brief_context(
     content_brief: dict | None,
     philosophy: HospitalContentPhilosophy | None = None,
@@ -869,16 +947,10 @@ def _build_content_brief_context(
     if not content_brief:
         return ""
 
-    philosophy_must_use: list[str] | None = None
     philosophy_avoid: list[str] | None = None
     philosophy_risk: list[str] | None = None
     if philosophy is not None:
         hospital_safety = _hospital_specific_safety(philosophy)
-        philosophy_must_use = [
-            str(value)
-            for value in (getattr(philosophy, "must_use_messages", None) or [])
-            if str(value).strip()
-        ]
         philosophy_avoid = hospital_safety["avoid_messages"]
         philosophy_risk = hospital_safety["medical_ad_risk_rules"]
 
@@ -888,7 +960,7 @@ target_query: {content_brief.get('target_query') or ''}
 patient_intent: {content_brief.get('patient_intent') or ''}
 treatment_narrative: {_format_treatment_narrative(content_brief.get('treatment_narrative'))}
 must_use_messages:
-{_brief_safety_bullets(content_brief.get('must_use_messages'), philosophy_must_use)}
+{_brief_must_use_context(content_brief, philosophy)}
 avoid_messages:
 {_brief_safety_bullets(content_brief.get('avoid_messages'), philosophy_avoid)}
 medical_risk_rules:
@@ -1027,8 +1099,6 @@ async def _generate_content_attempt(
     Claude Sonnet으로 콘텐츠 생성.
     Returns: {"title": str, "body": str, "meta_description": str}
     """
-    import asyncio
-
     profile_ctx = _build_profile_context(hospital)
     philosophy_ctx = _build_philosophy_context(philosophy)
     brief_ctx = _build_content_brief_context(content_brief, philosophy)
@@ -1096,14 +1166,13 @@ async def _generate_content_attempt(
     ).strip()
 
     # 실제 공급자 호출 계수. 이 함수는 tenacity로 최대 3회 재시도되고 OpenRouter 클라이언트는
-    # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다. 여기서 세지 않으면 비용 화면의
+    # max_retries=0이라, 본문 1회 실행 = HTTP 요청 1회다(강제 tool_choice 거절 뒤 auto
+    # 재시도가 붙으면 2회이며 그 1회도 따로 센다). 여기서 세지 않으면 비용 화면의
     # '예약'과 '실제'가 최대 3배까지 벌어져도 드러나지 않는다.
     from app.services import cost_guard
 
     await cost_guard.record_provider_call("content")
 
-    # asyncio에서 sync OpenAI-호환(OpenRouter) 클라이언트 호출
-    loop = asyncio.get_running_loop()
     from app.services import provider_usage
 
     attempt_context = _attempt_context if _attempt_context is not None else {}
@@ -1112,27 +1181,7 @@ async def _generate_content_attempt(
     attempt_context["http_attempt"] = http_attempt
     attempt_id = f"{logical_call_id}:http:{http_attempt}"
 
-    try:
-        response = await loop.run_in_executor(
-            None,
-            lambda: client.chat.completions.create(
-                model=settings.CLAUDE_MODEL,
-                max_tokens=12000,
-                messages=[
-                    openrouter.system_message(system_blocks),
-                    {"role": "user", "content": user_message},
-                ],
-                tools=[
-                    openrouter.function_tool(
-                        name=ARTICLE_TOOL_NAME,
-                        description=ARTICLE_TOOL["description"],
-                        input_schema=_article_tool_schema(content_type, content_brief),
-                    )
-                ],
-                tool_choice=openrouter.forced_tool_choice(ARTICLE_TOOL_NAME),
-            ),
-        )
-    except Exception:
+    async def _record_failed_attempt() -> None:
         await provider_usage.record_attempt(
             provider="openrouter",
             model=settings.CLAUDE_MODEL,
@@ -1144,6 +1193,37 @@ async def _generate_content_attempt(
             http_attempt=http_attempt,
             usage_known=False,
         )
+
+    async def _begin_auto_tool_choice_attempt(_exc: BaseException) -> None:
+        # 거절된 강제 시도도 실제 HTTP 시도다. 원장·계수·호출 예산에 그대로 남긴다.
+        nonlocal http_attempt, attempt_id
+        await _record_failed_attempt()
+        http_attempt = int(attempt_context.get("http_attempt") or 0) + 1
+        attempt_context["http_attempt"] = http_attempt
+        attempt_id = f"{logical_call_id}:http:{http_attempt}"
+        await cost_guard.record_provider_call("content")
+
+    try:
+        response = await openrouter.create_required_tool_completion(
+            client,
+            tool_name=ARTICLE_TOOL_NAME,
+            on_forced_tool_choice_rejected=_begin_auto_tool_choice_attempt,
+            model=settings.CLAUDE_MODEL,
+            max_tokens=12000,
+            messages=[
+                openrouter.system_message(system_blocks),
+                {"role": "user", "content": user_message},
+            ],
+            tools=[
+                openrouter.function_tool(
+                    name=ARTICLE_TOOL_NAME,
+                    description=ARTICLE_TOOL["description"],
+                    input_schema=_article_tool_schema(content_type, content_brief),
+                )
+            ],
+        )
+    except Exception:
+        await _record_failed_attempt()
         raise
 
     usage = getattr(response, "usage", None)
@@ -1215,6 +1295,7 @@ async def _generate_content_attempt(
         content_type,
         content_brief,
         reference_drop_notes=reference_drops,
+        must_use_messages=required_must_use_messages(philosophy),
     )
 
 
@@ -1270,6 +1351,7 @@ def _validate_generated_result(
     content_brief: dict | None,
     *,
     reference_drop_notes: list[str] | None = None,
+    must_use_messages: list[str] | None = None,
 ) -> dict:
     """Apply every stored-content hard gate to one normalized provider result."""
 
@@ -1336,6 +1418,8 @@ def _validate_generated_result(
         )
         raise ValueError(f"Forbidden medical expressions require complete regeneration: {violations}")
 
+    _validate_must_use_verbatim(result.get("body"), must_use_messages)
+
     # references는 GEO 검증 전에 이미 정규화됨(list[{title,url,source_type}]) — 중복 정규화 불필요.
 
     # meta_description 컬럼은 VARCHAR(300) — 프롬프트는 100~150자를 요구하지만 모델 출력은
@@ -1343,6 +1427,32 @@ def _validate_generated_result(
     result["meta_description"] = _trim_or_none(result.get("meta_description"), 300)
 
     return result
+
+
+# 빠진 필수 문구를 재작성 지적에 옮길 때 한 문구당 앞부분 길이. 지적 한 줄은
+# `_validator_remediation_findings`가 240자로 자르므로 전체 문구를 싣지 않는다 —
+# 원문은 작가가 이미 보는 [승인된 콘텐츠 운영 기준]의 must_use_messages에 있다.
+_MUST_USE_EXCERPT_CHARS = 24
+
+
+def _validate_must_use_verbatim(body: object, must_use_messages: list[str] | None) -> None:
+    """승인된 필수 문구가 본문에 원문 그대로, 독립된 문장으로 들어 있는지 검사한다.
+
+    판정 규칙은 독립 검수가 필수 문구 지적을 가려낼 때와 같다(`must_use_verbatim`).
+    """
+
+    missing = missing_must_use_messages(body, must_use_messages or [])
+    if not missing:
+        return
+    excerpts = ", ".join(
+        f"「{message[:_MUST_USE_EXCERPT_CHARS]}{'…' if len(message) > _MUST_USE_EXCERPT_CHARS else ''}」"
+        for message in missing
+    )
+    raise MissingMustUseMessagesError(
+        f"Required must_use messages missing verbatim ({len(missing)}): "
+        "must_use_messages의 필수 문구를 의역하지 말고 원문 그대로 독립된 문장으로 "
+        f"본문에 넣으세요 — {excerpts}"
+    )
 
 
 # 엔지니어 로그에 남기는 실패 상세의 길이 상한. 우리 검증기의 메시지는 모두 이보다 짧고,
@@ -1396,6 +1506,9 @@ async def generate_content(
     # 결정적 거절을 모두 지니고 간다.
     validator_findings: list[str] = []
     last_error: ValueError | None = None
+    # 결정적 치유도 필수 문구 검사를 건너뛰지 않는다 — 작가 회차와 같은 집합이다.
+    # 금지 표현 때문에 요구에서 뺀 승인본 문구는 여기서 경고·운영자 기록을 남긴다.
+    must_use_messages = await approved_must_use_messages_with_record(hospital, philosophy)
 
     for _round in range(GENERATION_REMEDIATION_ROUNDS):
         if int(attempt_context.get("http_attempt") or 0) >= GENERATION_PROVIDER_CALL_BUDGET:
@@ -1414,7 +1527,11 @@ async def generate_content(
             last_error = exc
             try:
                 healed = _heal_from_curated_catalog(
-                    exc, hospital, content_type, content_brief
+                    exc,
+                    hospital,
+                    content_type,
+                    content_brief,
+                    must_use_messages=must_use_messages,
                 )
             except ValueError as heal_error:
                 # 큐레이션 근거를 붙였더니 다른 게이트가 걸렸다. 그 사유를 그대로
@@ -1429,7 +1546,11 @@ async def generate_content(
             last_error = exc
             try:
                 healed = _heal_missing_director_name(
-                    exc, hospital, content_type, content_brief
+                    exc,
+                    hospital,
+                    content_type,
+                    content_brief,
+                    must_use_messages=must_use_messages,
                 )
             except ValueError as heal_error:
                 # 이름을 붙였더니 다른 게이트가 걸렸다 — 그 사유로 다시 쓰게 한다.
@@ -1485,6 +1606,8 @@ def _heal_from_curated_catalog(
     hospital: Hospital,
     content_type: ContentType,
     content_brief: dict | None,
+    *,
+    must_use_messages: list[str] | None = None,
 ) -> dict | None:
     """Recover an empty reference list from the human-verified catalog, or give up.
 
@@ -1498,7 +1621,9 @@ def _heal_from_curated_catalog(
     if not curated_references:
         return None
     result["references"] = curated_references
-    return _validate_generated_result(result, hospital, content_type, content_brief)
+    return _validate_generated_result(
+        result, hospital, content_type, content_brief, must_use_messages=must_use_messages
+    )
 
 
 def _heal_missing_director_name(
@@ -1506,6 +1631,8 @@ def _heal_missing_director_name(
     hospital: Hospital,
     content_type: ContentType,
     content_brief: dict | None,
+    *,
+    must_use_messages: list[str] | None = None,
 ) -> dict | None:
     """Append the approved director name once, in the same round, or give up.
 
@@ -1519,7 +1646,9 @@ def _heal_missing_director_name(
     if not director or director in body:
         return None
     result["body"] = f"{body}\n\n{hospital.name}의 원장은 {director}입니다."
-    return _validate_generated_result(result, hospital, content_type, content_brief)
+    return _validate_generated_result(
+        result, hospital, content_type, content_brief, must_use_messages=must_use_messages
+    )
 
 
 # Keep the transport retry controller observable/configurable at the public seam used by
