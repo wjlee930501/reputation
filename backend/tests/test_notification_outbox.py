@@ -400,6 +400,27 @@ async def test_enqueue_is_caller_transactional_and_deduplicated(outbox_sessions)
 
 
 @pytest.mark.asyncio
+async def test_long_fallback_text_is_stored_trimmed_and_full_text_stays_in_payload(
+    outbox_sessions,
+) -> None:
+    # Given: a daily summary whose preview text is longer than the 1000-char column
+    long_text = "가" * 1500
+    intent = _intent("OPS-QA-LONG-FALLBACK")
+    intent = replace(intent, message=replace(intent.message, fallback_text=long_text))
+
+    # When: it is enqueued (this used to fail with StringDataRightTruncation)
+    async with outbox_sessions() as db:
+        row = await enqueue_notification(db, intent, now=_NOW)
+        await db.flush()
+
+        # Then: the column keeps a trimmed preview and the payload keeps the full text
+        assert len(row.fallback_text) == 1000
+        assert row.fallback_text.endswith("…")
+        assert row.payload["text"] == long_text
+        await db.rollback()
+
+
+@pytest.mark.asyncio
 async def test_enqueue_rejects_non_admin_link(outbox_sessions) -> None:
     # Given: structurally valid Block Kit pointing away from the configured Admin
     unsafe = _intent("OPS-QA-T10-UNSAFE-LINK")
