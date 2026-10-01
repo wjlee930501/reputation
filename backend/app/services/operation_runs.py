@@ -1,5 +1,6 @@
 """Durable command dispatch and compare-and-swap OperationRun transitions."""
 
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -20,6 +21,8 @@ from app.services.incidents import (
     IncidentOpenRequest,
     open_or_touch_incident,
 )
+
+logger = logging.getLogger(__name__)
 
 Heartbeat = transitions.Heartbeat
 LeaseClaim = transitions.LeaseClaim
@@ -87,6 +90,21 @@ class OperationQueueUnavailable(Exception):
         return _BROKER_ERROR_MESSAGE
 
 
+def _warn_swallowed_publish_error(
+    run_id: uuid.UUID, publish_error_type: str, outcome: str, state: str
+) -> None:
+    # publish가 예외를 냈지만 실행이 이미 REQUESTED가 아니어서 FAILED로 덮지 않은 경우다.
+    # 결과는 추측하지 않고 mark_operation_queued가 다시 읽은 행으로 판정한다.
+    logger.warning(
+        "operation run %s publish raised %s and the run was not marked failed; "
+        "resulting state: %s (state=%s)",
+        run_id,
+        publish_error_type,
+        outcome,
+        state,
+    )
+
+
 async def dispatch_operation(
     db: AsyncSession, command: OperationCommand, task: DispatchTask
 ) -> OperationDispatch:
@@ -133,6 +151,7 @@ async def dispatch_operation(
             raise
         return OperationDispatch(run=replay, replayed=True)
 
+    publish_error_type: str | None = None
     try:
         task.apply_async(
             args=list(command.task_args),
@@ -141,25 +160,43 @@ async def dispatch_operation(
             task_id=broker_task_id,
         )
     except (BrokerOperationalError, OSError) as exc:
-        run.state = OperationRunState.FAILED
-        run.completed_at = datetime.now(UTC)
-        run.safe_error_code = "BROKER_UNAVAILABLE"
-        run.safe_error_message = _BROKER_ERROR_MESSAGE
-        run.version += 1
-        await _open_queue_incident(db, run, command.audit_actor)
-        await _write_run_audit(
+        failed = await transitions.mark_operation_dispatch_failed(
             db,
-            command,
-            run,
-            "queue_failed",
-            queued=False,
-            error_code="BROKER_UNAVAILABLE",
+            run.id,
+            datetime.now(UTC),
+            safe_error_code="BROKER_UNAVAILABLE",
+            safe_error_message=_BROKER_ERROR_MESSAGE,
         )
-        await db.commit()
-        raise OperationQueueUnavailable(run_id=run.id) from exc
+        if failed is not None:
+            await _open_queue_incident(db, failed, command.audit_actor)
+            await _write_run_audit(
+                db,
+                command,
+                failed,
+                "queue_failed",
+                queued=False,
+                error_code="BROKER_UNAVAILABLE",
+            )
+            await db.commit()
+            raise OperationQueueUnavailable(run_id=failed.id) from exc
+        publish_error_type = type(exc).__name__
 
-    run = await transitions.mark_operation_queued(db, run.id, datetime.now(UTC))
-    await _write_run_audit(db, command, run, "queued", queued=True)
+    try:
+        run = await transitions.mark_operation_queued(db, run.id, datetime.now(UTC))
+    except transitions.OperationTransitionRejected as rejected:
+        if publish_error_type is not None:
+            _warn_swallowed_publish_error(run.id, publish_error_type, "row missing", rejected.state)
+        raise
+    if publish_error_type is not None:
+        _warn_swallowed_publish_error(
+            run.id,
+            publish_error_type,
+            "completed" if transitions.is_terminal_state(run.state) else "in progress",
+            str(run.state),
+        )
+    await _write_run_audit(
+        db, command, run, "queued", queued=True, publish_error_type=publish_error_type
+    )
     await db.commit()
     return OperationDispatch(run=run, replayed=False)
 async def retry_operation_run(
@@ -229,9 +266,21 @@ async def _write_run_audit(
     *,
     queued: bool,
     error_code: str | None = None,
+    publish_error_type: str | None = None,
 ) -> None:
     action = command.operation_type.lower()
     suffix = "" if event == "queued" else f"_{event}"
+    detail: dict[str, JSONValue] = {
+        "queued": queued,
+        "queue": command.queue,
+        "operation_run_id": str(run.id),
+        "source_type": command.target_type,
+        "source_id": command.target_id,
+        "task_id": run.task_id,
+        "error_code": error_code,
+    }
+    if publish_error_type is not None:
+        detail["publish_error_type"] = publish_error_type
     await write_audit_log(
         db,
         action=f"{action}{suffix}",
@@ -239,15 +288,7 @@ async def _write_run_audit(
         actor=command.audit_actor,
         target_type="operation_run",
         target_id=run.id,
-        detail={
-            "queued": queued,
-            "queue": command.queue,
-            "operation_run_id": str(run.id),
-            "source_type": command.target_type,
-            "source_id": command.target_id,
-            "task_id": run.task_id,
-            "error_code": error_code,
-        },
+        detail=detail,
     )
 
 

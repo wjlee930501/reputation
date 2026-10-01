@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, date, datetime
 
@@ -14,18 +13,18 @@ from app.models.content import ContentItem, ContentSchedule, ContentStatus, Cont
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.operations import Incident, IncidentState, NotificationOutbox, OperationRun
 from app.services import site_revalidation_control as control
+from tests.db_env import require_db_url
 
-_ASYNC_URL = os.getenv(
-    "TASK19_ASYNC_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _async_database_url() -> str:
+    return require_db_url("TASK19_ASYNC_DATABASE_URL")
 
 
 @pytest.mark.asyncio
 async def test_cache_refresh_failure_escalates_once_without_undoing_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = create_async_engine(_ASYNC_URL)
+    engine = create_async_engine(_async_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     schedule_id = uuid.uuid4()

@@ -25,6 +25,7 @@ for key, value in {
     "SYNC_DATABASE_URL": config["SYNC_DATABASE_URL"].rsplit("/", 1)[0] + "/" + DB,
     "REDIS_URL": config["REDIS_URL"].rsplit("/", 1)[0] + "/13", "COST_GUARD_REDIS_URL": config["REDIS_URL"].rsplit("/", 1)[0] + "/14",
     "REPORT_OUTPUT_DIR": "/tmp/reports", "SLACK_WEBHOOK_URL": "", "SLACK_WEBHOOK_URL_DEV": "",
+    "SLACK_WEBHOOK_URL_INQUIRY": "",
     "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt", "PORT": "8080",
     "REPUTATION_RELEASE_REVISION": "stock-" + (ROOT / "runtime-sha").read_text().strip(),
 }.items():

@@ -1,4 +1,3 @@
-import os
 import uuid
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -24,11 +23,13 @@ from app.services.monthly_manifest import (
     reopen_incomplete_manifest_for_recovery,
     summarize_manifest,
 )
+from tests.db_env import fail_unreachable, require_db_url
 
-_POSTGRES_URL = os.getenv(
-    "TASK22_DATABASE_URL",
-    "postgresql://reputation:reputation@localhost:5434/reputation_test",
-)
+_URL_ENV = "TASK22_DATABASE_URL"
+
+
+def _postgres_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 class FakeSession:
@@ -296,12 +297,12 @@ def test_recovery_reopen_uses_only_the_recovery_guard() -> None:
 
 
 def test_postgres_supersede_cannot_reopen_but_recovery_can() -> None:
-    engine = create_engine(_POSTGRES_URL, future=True)
+    engine = create_engine(_postgres_url(), future=True)
     try:
         connection = engine.connect()
     except OperationalError as exc:
         engine.dispose()
-        pytest.skip(f"local PostgreSQL unavailable: {type(exc).__name__}")
+        fail_unreachable(_URL_ENV, exc)
     connection.close()
     hospital_id = uuid.uuid4()
     closed_at = datetime(2026, 9, 1, 0, 15, tzinfo=timezone.utc)

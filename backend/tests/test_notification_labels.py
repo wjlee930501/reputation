@@ -539,7 +539,7 @@ def test_watchdog_alert_is_an_error_and_its_recovery_is_a_report() -> None:
 async def test_lead_intake_messages_carry_the_lead_label(monkeypatch) -> None:
     sent: dict[str, object] = {}
 
-    async def fake_send(text, blocks=None):
+    async def fake_send(text, blocks=None, **_kwargs):
         sent["text"] = text
         sent["blocks"] = blocks
         return True
@@ -569,7 +569,7 @@ async def test_lead_intake_messages_carry_the_lead_label(monkeypatch) -> None:
 async def test_privacy_purge_failure_is_an_error_and_success_is_silent(monkeypatch) -> None:
     sent: dict[str, object] = {}
 
-    async def fake_send(text, blocks=None):
+    async def fake_send(text, blocks=None, **_kwargs):
         sent["text"] = text
         sent["blocks"] = blocks
         return True

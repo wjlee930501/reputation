@@ -47,6 +47,9 @@ class ContentStatus(str, enum.Enum):
     PUBLISHED = "PUBLISHED"   # 발행 완료
     REJECTED = "REJECTED"     # 반려 (재생성 필요)
     CANCELLED = "CANCELLED"   # 중복·오래된 슬롯 종료 (자동 재생성/발행 제외)
+    # 공개됐던 글을 본문·참고자료·이미지·발행 이력을 보존한 채 공개 사이트에서 내린 상태.
+    # restore로만 PUBLISHED로 되돌린다. 자동 발행·재생성·이미지 작업 대상이 아니다(0081).
+    WITHHELD = "WITHHELD"     # 비공개(보존)
 
 
 # 요금제별 유형·편수 배분

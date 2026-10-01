@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Coroutine
 from typing import TypeVar
 
@@ -8,11 +7,9 @@ from sqlalchemy import text
 
 from app.core import database
 from app.workers import lead_diagnosis_tasks, tasks
+from tests.db_env import require_db_url
 
 _Result = TypeVar("_Result")
-_DEFAULT_DATABASE_URL = (
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
-)
 
 
 async def _select_one() -> int:
@@ -32,7 +29,7 @@ def _reset_loop(owner: object) -> None:
 def test_twenty_worker_turns_share_one_async_resource_owner(monkeypatch) -> None:
     """Given mixed Celery tasks, every DB turn must stay on its resource-owning loop."""
 
-    database_url = os.getenv("TASK20_DATABASE_URL", _DEFAULT_DATABASE_URL)
+    database_url = require_db_url("TASK20_DATABASE_URL")
     monkeypatch.setenv("SERVICE", "worker")
     monkeypatch.setattr(database.settings, "DATABASE_URL", database_url)
     database.engine = None

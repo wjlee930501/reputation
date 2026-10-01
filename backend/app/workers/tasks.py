@@ -27,7 +27,7 @@ import arrow
 import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -333,6 +333,7 @@ from app.services.post_publish_review_policy import (
     AUTO_PUBLISHABLE_STATUSES,
     auto_publish_catchup_start,
     auto_publish_due_predicate,
+    auto_publish_hold,
     publicly_operational_hospital_predicate,
 )
 from app.services.public_surface_intents import enqueue_public_surface_intent
@@ -490,6 +491,7 @@ from app.workers.nightly_generation_batch import (
     _nightly_generation_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     _stuck_claims_stmt,  # noqa: F401 — test_tasks_nightly가 tasks 경유로 참조하는 re-export
     claim_generation_lease,
+    generation_claim_is_active,
     load_claimed_generation_item,
     load_stuck_claims,
     release_generation_claim,
@@ -500,7 +502,7 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
-from app.workers.topic_swap_fallback import swap_exhausted_topics
+from app.workers.topic_swap_fallback import TOPIC_SWAPPED_REASON, swap_exhausted_topics
 from app.workers.v0_checkpoint import (
     find_resumable_v0_measurement_run,
     find_reusable_v0_measurement_run,
@@ -981,6 +983,11 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
     if stored_reason == code:
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
+        return
+    if code == "CONTENT_NOT_GENERATED" and stored_reason == TOPIC_SWAPPED_REASON:
+        # 주제 교체 직후의 빈 슬롯도 증상이다. 교체 기록(SAMPLE_RECOVERABLE·다음 시도 시각)을
+        # OPERATOR_REQUIRED로 덮으면 새 주제를 어떤 스윕도 쓰지 않고, 교체 이력이 있어 다시
+        # 교체되지도 않는다. 보고 코드(CONTENT_NOT_GENERATED)는 호출부에서 그대로다.
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
@@ -5091,7 +5098,11 @@ def regenerate_content_item(self, content_id: str):
             db, self, item_id, item.hospital_id
         ):
             raise PermissionError("operation run does not authorize this content target")
-        if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        if item.status in (
+            ContentStatus.PUBLISHED,
+            ContentStatus.CANCELLED,
+            ContentStatus.WITHHELD,
+        ):
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
         hospital = db.get(Hospital, item.hospital_id)
@@ -5543,7 +5554,11 @@ def generate_content_image(self, content_id: str):
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
-        if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+        if item.status in (
+            ContentStatus.PUBLISHED,
+            ContentStatus.CANCELLED,
+            ContentStatus.WITHHELD,
+        ):
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
         hospital = db.get(Hospital, item.hospital_id)
@@ -6128,6 +6143,12 @@ def _page_morning_stored_publication_gates(db, *, now_kst=None) -> int:
         assessment = assess_content_publication(item, philosophy)
         if assessment.publishable:
             continue
+        if generation_claim_is_active(item, now=observed.datetime):
+            # 생성 워커가 지금 이 슬롯을 쓰고 있다(07:00 스윕의 글 단위 태스크 등). 자동
+            # 복구가 소유한 일이라 기록·인시던트·요약 어느 것도 남기지 않는다 — 워커가
+            # 결과를 남기고, 그래도 막히면 08:00 발행기가 최종 판정을 소유한다. 만료된
+            # claim은 살아 있는 작업이 아니므로 종전처럼 처리한다.
+            continue
 
         apply_publication_assessment(item, assessment)
         code, message = _publication_block_details(item, assessment)
@@ -6444,6 +6465,10 @@ def _auto_publish_one(content_id: uuid.UUID) -> dict | None:
             return None
         if item.status not in AUTO_PUBLISHABLE_STATUSES:
             _log_auto_publish_skip("not_publishable_status", content_id, item=item)
+            return None
+        if auto_publish_hold().holds(item.hospital_id):
+            # 후보 목록은 참고용이다 — 목록을 만든 뒤 보류가 켜졌으면 잠금 뒤에 다시 본다.
+            _log_auto_publish_skip("auto_publish_hold", content_id, item=item)
             return None
         today_kst = arrow.now("Asia/Seoul").date()
         if hasattr(item, "content_revision") and not (
@@ -8672,57 +8697,120 @@ def _ensure_monthly_sov_operation_run(
         )
     ).scalar_one_or_none()
     if existing is not None:
-        if existing.state == OperationRunState.REQUESTED:
-            existing.request_payload = dispatch_payload
-            existing.result_summary = {
-                "measurement_month": period_key,
-                "measurement_mode": "monthly",
-            }
+        def _write_unchanged(
+            action: str,
+            expected_state: OperationRunState,
+            values: dict[str, Any],
+            *guards: ColumnElement[bool],
+        ) -> OperationRun | None:
+            # A redelivered message may re-claim an expired lease between our read and
+            # this write (operation_run_signals._claim_safely), and lifecycle signals may
+            # move the run on. Write only the row we read so the claim and the
+            # re-dispatch cannot both run the month.
+            written = db.execute(
+                update(OperationRun)
+                .where(
+                    OperationRun.id == existing.id,
+                    OperationRun.state == expected_state,
+                    *guards,
+                    OperationRun.version == existing.version,
+                )
+                .values(**values, version=OperationRun.version + 1)
+                .execution_options(synchronize_session=False)
+            )
+            rowcount = written.rowcount
             db.commit()
+            if rowcount != 1:
+                logger.warning(
+                    "monthly RUN_SOV %s skipped: %s run %s was re-claimed or changed "
+                    "concurrently",
+                    action,
+                    expected_state.value,
+                    existing.id,
+                )
+                return None
+            db.refresh(existing)
             return existing
 
-        def _rearm_existing() -> OperationRun:
+        if existing.state == OperationRunState.REQUESTED:
+            # Still waiting for its worker: refresh the payload and re-dispatch under the
+            # same task_id.
+            return _write_unchanged(
+                "payload refresh",
+                OperationRunState.REQUESTED,
+                dict(
+                    request_payload=dispatch_payload,
+                    result_summary={
+                        "measurement_month": period_key,
+                        "measurement_mode": "monthly",
+                    },
+                ),
+            )
+
+        def _rearm_unchanged(
+            expected_state: OperationRunState, *guards: ColumnElement[bool]
+        ) -> OperationRun | None:
             # 같은 병원×월 OperationRun을 다시 REQUESTED로 열어 월말 윈도우의 다음
             # 6시간 슬롯이 실패한 manifest cells만 재시도하게 한다. 새 월간 키를 만들지
             # 않으므로 중복 full run은 없고, 성공한 셀은 pending 필터에서 계속 빠진다.
-            existing.state = OperationRunState.REQUESTED
-            existing.task_id = str(uuid.uuid4())
-            existing.queued_at = None
-            existing.started_at = None
-            existing.completed_at = None
-            existing.lease_owner = None
-            existing.lease_expires_at = None
-            existing.success_count = 0
-            existing.failure_count = 0
-            existing.skipped_count = 0
-            existing.safe_error_code = None
-            existing.safe_error_message = None
-            existing.request_payload = dispatch_payload
-            existing.result_summary = {
-                "measurement_month": period_key,
-                "measurement_mode": "monthly",
-            }
-            existing.version += 1
-            db.commit()
-            return existing
+            return _write_unchanged(
+                "re-arm",
+                expected_state,
+                dict(
+                    state=OperationRunState.REQUESTED,
+                    task_id=str(uuid.uuid4()),
+                    queued_at=None,
+                    started_at=None,
+                    completed_at=None,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    success_count=0,
+                    failure_count=0,
+                    skipped_count=0,
+                    safe_error_code=None,
+                    safe_error_message=None,
+                    request_payload=dispatch_payload,
+                    result_summary={
+                        "measurement_month": period_key,
+                        "measurement_mode": "monthly",
+                    },
+                ),
+                *guards,
+            )
 
         if existing.state == OperationRunState.PARTIAL and _monthly_sov_retry_window(
             period_key, observed_at
         ):
-            return _rearm_existing()
+            return _rearm_unchanged(OperationRunState.PARTIAL)
+        # No live worker holds an expired claim (task time_limit < claim lease), and
+        # nothing else re-dispatches a RUNNING RUN_SOV: a lost continuation publish or
+        # RETRY requeue would otherwise strand the month's measurement here.
+        if (
+            existing.state == OperationRunState.RUNNING
+            and _operation_lease_expired(existing, observed_at)
+            and _monthly_sov_retry_window(period_key, observed_at)
+        ):
+            return _rearm_unchanged(
+                OperationRunState.RUNNING,
+                # Defense in depth, redundant with the version condition: the lease we
+                # read was expired, and every writer that renews or re-claims a lease
+                # also bumps the version. Kept so a future writer that forgets the bump
+                # still cannot have its live lease re-armed.
+                OperationRun.lease_expires_at <= observed_at,
+            )
         if existing.state == OperationRunState.FAILED:
             code = existing.safe_error_code or ""
             retry_window = _monthly_sov_retry_window(period_key, observed_at)
             if code.endswith("COST_GUARD_BLOCKED") and retry_window and (
                 _monthly_sov_pending_budget_fits(db, hospital, period_key)
             ):
-                return _rearm_existing()
+                return _rearm_unchanged(OperationRunState.FAILED)
             if retry_window and not code.endswith("COST_GUARD_BLOCKED"):
                 failed_cell_count = _monthly_sov_failed_cell_count(
                     db, hospital.id, period_key
                 )
                 if failed_cell_count is None or failed_cell_count > 0:
-                    return _rearm_existing()
+                    return _rearm_unchanged(OperationRunState.FAILED)
             return None
         return None
     run = OperationRun(
@@ -8762,6 +8850,15 @@ def _ensure_monthly_sov_operation_run(
             raise
         return existing if existing.state == OperationRunState.REQUESTED else None
     return run
+
+
+def _operation_lease_expired(run: OperationRun, observed_at: datetime) -> bool:
+    lease_expires_at = run.lease_expires_at
+    if lease_expires_at is None:
+        return False
+    if lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    return lease_expires_at <= observed_at
 
 
 def _monthly_sov_retry_window(period_key: str, observed_at: datetime) -> bool:

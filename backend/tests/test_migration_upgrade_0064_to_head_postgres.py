@@ -16,13 +16,15 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
-_URL = os.getenv("MIGRATION_UPGRADE_DATABASE_URL")
+from tests.db_env import require_db_url
+
+_URL_ENV = "MIGRATION_UPGRADE_DATABASE_URL"
 _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _BASELINE = "0064_manifest_recovery_guard"
 
-pytestmark = pytest.mark.skipif(
-    not _URL, reason="MIGRATION_UPGRADE_DATABASE_URL is not configured"
-)
+
+def _database_url() -> str:
+    return require_db_url(_URL_ENV)
 
 
 def _sync_url(value: str) -> str:
@@ -61,8 +63,8 @@ def _upgrade(revision: str, database_url: str) -> None:
 
 def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
 ) -> None:
-    assert _URL is not None
-    parsed = make_url(_sync_url(_URL))
+    database_url = _database_url()
+    parsed = make_url(_sync_url(database_url))
     assert parsed.host in {"127.0.0.1", "localhost"}
     assert parsed.database == "reputation_autonomy_migration"
 
@@ -87,7 +89,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
         with engine.begin() as connection:
             connection.execute(text("DROP SCHEMA public CASCADE"))
             connection.execute(text("CREATE SCHEMA public"))
-        _upgrade(_BASELINE, _URL)
+        _upgrade(_BASELINE, database_url)
 
         with engine.begin() as connection:
             connection.execute(
@@ -225,7 +227,7 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                 {"id": other_diagnosis_id, "lead_id": other_lead_id},
             )
 
-        _upgrade("head", _URL)
+        _upgrade("head", database_url)
 
         with engine.connect() as connection:
             assert (

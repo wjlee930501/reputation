@@ -450,6 +450,12 @@ def _has_existing_linked_brief(action: ExposureAction, item: ContentItem) -> boo
     return item_action_id == action_id or (item_id is not None and action_content_id == item_id)
 
 
+# 비공개(보존) 글도 공개됐던 판을 그대로 들고 있다 — 새 가이드를 붙일 빈 슬롯이 아니다.
+_PUBLISHED_EDITION_STATUSES = frozenset(
+    {ContentStatus.PUBLISHED.value, ContentStatus.WITHHELD.value}
+)
+
+
 async def _resolve_content_slot_for_brief(
     db: AsyncSession,
     hospital_id: uuid.UUID,
@@ -459,7 +465,7 @@ async def _resolve_content_slot_for_brief(
     if body.content_id:
         await _lock_content_item_for_update(db, hospital_id, body.content_id)
         item = await _get_content_item_or_404(db, hospital_id, body.content_id)
-        if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
+        if _enum_value(item.status) in _PUBLISHED_EDITION_STATUSES:
             raise HTTPException(
                 status_code=409,
                 detail="Cannot create a draft content guide on published content",
@@ -474,7 +480,7 @@ async def _resolve_content_slot_for_brief(
     if action.linked_content_id:
         await _lock_content_item_for_update(db, hospital_id, action.linked_content_id)
         item = await _get_content_item_or_404(db, hospital_id, action.linked_content_id)
-        if _enum_value(item.status) == ContentStatus.PUBLISHED.value:
+        if _enum_value(item.status) in _PUBLISHED_EDITION_STATUSES:
             raise HTTPException(
                 status_code=409,
                 detail="Cannot regenerate a draft content guide on published linked content",
@@ -513,7 +519,7 @@ async def _find_available_content_slot(
             ContentItem.scheduled_date >= period_start,
             ContentItem.scheduled_date <= period_end,
             ContentItem.content_type == content_type,
-            ContentItem.status != ContentStatus.PUBLISHED,
+            ContentItem.status.notin_((ContentStatus.PUBLISHED, ContentStatus.WITHHELD)),
             ContentItem.exposure_action_id.is_(None),
         )
         .order_by(ContentItem.scheduled_date, ContentItem.sequence_no)

@@ -278,7 +278,9 @@ export interface ContentItem {
   meta_description: string | null
   image_url: string | null
   scheduled_date: string
-  status: 'DRAFT' | 'READY' | 'PUBLISHED' | 'REJECTED' | 'CANCELLED'
+  // WITHHELD = 비공개(보존): 발행됐다가 공개 사이트에서 내린 글. published_at·published_by는
+  // 남아 있고 되돌릴 수 있다. 행 판정은 서버가 기존 row_state.kind 'withheld'로 내려준다.
+  status: 'DRAFT' | 'READY' | 'PUBLISHED' | 'WITHHELD' | 'REJECTED' | 'CANCELLED'
   // 반려 슬롯이 월 경계를 넘어 이월된 경우의 원래 예정일 — 다음 달 최우선 처리 대상
   carried_over_from?: string | null
   references?: ContentReference[]

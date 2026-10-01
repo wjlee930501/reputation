@@ -1,5 +1,4 @@
 import asyncio
-import os
 import socket
 import struct
 import time
@@ -20,6 +19,7 @@ from app.services.admin_session_revocation import (
     is_admin_session_hash_revoked,
     revoke_admin_session_hash,
 )
+from tests.db_env import require_redis_url
 
 TOKEN_HASH = "a" * 64
 
@@ -196,9 +196,7 @@ class _ResetProxy:
 
 @pytest.fixture
 async def reset_proxy(monkeypatch):
-    raw = os.getenv("INTEGRATION_REDIS_URL")
-    if not raw:
-        pytest.skip("INTEGRATION_REDIS_URL is required for the stale-connection proof")
+    raw = require_redis_url("INTEGRATION_REDIS_URL")
     target = urlparse(raw)
     proxy = _ResetProxy(target.hostname or "127.0.0.1", target.port or 6379)
     port = await proxy.start()

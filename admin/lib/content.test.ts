@@ -69,6 +69,15 @@ test('countUnpublishedCarriedOver excludes published carried items', () => {
   assert.equal(countUnpublishedCarriedOver(items), 2)
 })
 
+test('countUnpublishedCarriedOver does not count a withheld (비공개(보존)) carried item as pending', () => {
+  const items = [
+    { carried_over_from: '2026-05-26', status: 'WITHHELD' },
+    { carried_over_from: '2026-05-28', status: 'DRAFT' },
+  ]
+
+  assert.equal(countUnpublishedCarriedOver(items), 1)
+})
+
 // 공개 사이트가 실제로 내보내는 중이라는 서버 판정. 발행 글의 판정은 이것이 먼저다.
 const VISIBLE = {
   publishable: false,
@@ -189,6 +198,34 @@ test('a withheld published item is never bucketed as published, post-review, or 
     }),
     'published',
   )
+})
+
+test('a WITHHELD (비공개(보존)) item is withheld, never publishable or pending auto-publish', () => {
+  // 발행 뒤 사람이 공개 사이트에서 내린 글 — 제목과 발행 기록이 남아 있어도 자동 발행
+  // 대기('publishable')나 공개 묶음으로 떨어지면 안 된다. 서버 row_state.kind와 같은 값이다.
+  const item = {
+    status: 'WITHHELD',
+    title: '보존된 글',
+    post_publish_reviewed_at: '2026-07-16T09:00:00Z',
+    display: {
+      review: {
+        label: '비공개(보존)',
+        reason: '공개 사이트에서 내린 글입니다. 되돌리기(restore)로 다시 공개할 수 있습니다.',
+        publishable: false,
+      },
+    },
+    compliance: { publishable: false },
+  }
+  assert.equal(getContentOperationsState(item), 'withheld')
+  // 서버가 준법 판정을 잘못 true로 내려도 자동 발행 대기로 보이지 않는다.
+  assert.equal(
+    getContentOperationsState({ ...item, compliance: { publishable: true } }),
+    'withheld',
+  )
+  assert.equal(getContentOperationsBucket(item), 'needsReview')
+  for (const filter of ['publishable', 'published', 'postReviewPending', 'notificationPending'] as const) {
+    assert.equal(matchesContentOperationsFilter(item, filter), false, filter)
+  }
 })
 
 test('a published item without a visibility judgment is withheld, never published', () => {

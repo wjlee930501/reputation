@@ -142,6 +142,7 @@ async def trigger_content_site_revalidate_safe(
     hospital_name: str | None = None,
     treatments: list | None = None,
     unpublished_from: datetime | None = None,
+    edition_revision: int | None = None,
 ) -> bool:
     """커밋 이후 호출용 — 실패해도 절대 raise하지 않는다 (P2-9b).
 
@@ -152,6 +153,9 @@ async def trigger_content_site_revalidate_safe(
     반려가 발행 메타를 지우기 때문에, 이 값이 없으면 내려간 글이 어느 판(edition)으로
     캐시에 남아 있는지 식별할 수 없어 내구성 있는 재시도가 열리지 않는다.
     무효화 경로 자체는 올림과 동일한 content_site_paths 전체다.
+
+    비공개(보존)·되돌리기는 published_at을 보존하므로 `edition_revision`(content_revision)을
+    넘겨 순환마다 별도 재시도 run을 연다. 다른 호출자는 넘기지 않아 종전 키 그대로다.
     """
     try:
         return await trigger_site_revalidate(paths=content_site_paths(slug, content_id, treatments))
@@ -163,8 +167,12 @@ async def trigger_content_site_revalidate_safe(
             logger.warning("revalidation failure has invalid content identity")
             return False
         try:
+            # 넘기지 않은 호출자에게는 종전 호출 모양 그대로다.
+            revision_kwargs = (
+                {} if edition_revision is None else {"edition_revision": edition_revision}
+            )
             plan = await start_revalidation_failure(
-                slug, parsed_content_id, unpublished_from=unpublished_from
+                slug, parsed_content_id, unpublished_from=unpublished_from, **revision_kwargs
             )
             if plan is None:
                 logger.warning(

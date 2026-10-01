@@ -1,8 +1,12 @@
 """Admin API — hospital source-backed content operating standard."""
 
 import asyncio
+import copy
+import hashlib
+import json
 import logging
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
@@ -72,7 +76,10 @@ from app.services.essence_sources import (
 from app.services.evidence_noise import load_evidence_noise_hash, not_noise_note_predicate
 from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
-from app.services.knowledge_changes import invalidate_source_authority
+from app.services.knowledge_changes import (
+    authority_refresh_required,
+    invalidate_source_authority,
+)
 from app.services.naver_handoff import (
     NaverCrawlOptions,
     NaverRetryRequest,
@@ -123,6 +130,10 @@ UPLOAD_CHUNK_BYTES = 1024 * 1024  # 1MB
 # 재검수 한 번은 워커에서 유료 합성을 최대 두 번 부른다. 전역 비용 가드만으로는
 # 한 병원이 클릭 속도만큼 예산을 소진할 수 있어, 병원별 최소 간격을 둔다.
 RE_REVIEW_COOLDOWN = timedelta(minutes=30)
+# PATCH 감사 기록의 before/after 값 하나(JSON 직렬화 문자 수)의 상한과, 넘을 때 남기는
+# 앞부분 길이. 필드 전체를 다시 쓴 PATCH가 감사 행을 필드 크기의 두 배로 키우지 않게 한다.
+PATCH_AUDIT_VALUE_MAX_CHARS = 4000
+PATCH_AUDIT_PREVIEW_CHARS = 500
 logger = logging.getLogger(__name__)
 
 
@@ -1463,6 +1474,233 @@ async def get_approved_philosophy(hospital_id: uuid.UUID, db: AsyncSession = Dep
     return {"approved": _serialize_philosophy(approved) if approved else None}
 
 
+# 승인본을 사람이 고칠 초안으로 복사할 때 옮기는 내용 컬럼. 식별자·생애주기·승인
+# 메타데이터(id, version, status, is_base, created_by, reviewed_by, approved_at,
+# approval_note, evidence_noise_hash, created_at, updated_at)는 옮기지 않는다 —
+# evidence_noise_hash는 승인 시점의 제외 집합이라 승인이 다시 기록한다.
+PHILOSOPHY_DRAFT_COPY_FIELDS = (
+    "positioning_statement",
+    "doctor_voice",
+    "patient_promise",
+    "content_principles",
+    "tone_guidelines",
+    "must_use_messages",
+    "avoid_messages",
+    "treatment_narratives",
+    "local_context",
+    "medical_ad_risk_rules",
+    "evidence_map",
+    "source_asset_ids",
+    "unsupported_gaps",
+    "conflict_notes",
+    "synthesis_notes",
+    "source_snapshot_hash",
+)
+
+
+@dataclass(frozen=True)
+class _SourceSnapshotCheck:
+    unprocessed_count: int
+    current_snapshot_hash: str
+    # 처리되지 않은 자료가 없을 때만 의미가 있다. 승인은 그 검사를 먼저 한다.
+    matches: bool
+
+
+async def _check_required_source_snapshot(
+    db: AsyncSession,
+    hospital_id: uuid.UUID,
+    philosophy: HospitalContentPhilosophy,
+) -> _SourceSnapshotCheck:
+    """운영 기준 행이 선언한 자료 snapshot이 지금의 필수 자료 전체와 같은지 본다.
+
+    승인과 승인본 복사가 같은 판정을 쓴다 — 복사가 따로 판정하면 승인이 거절할 사본을
+    만들 수 있다.
+    """
+    # A draft may have been created from a selected subset. Approval is only valid
+    # for the complete processed-source snapshot that exists at approval time.
+    required_result = await db.execute(
+        select(HospitalSourceAsset).where(
+            HospitalSourceAsset.hospital_id == hospital_id,
+            required_text_source_predicate(),
+        )
+    )
+    current_sources = list(required_result.scalars().all())
+    unprocessed = [source for source in current_sources if source.status != SourceStatus.PROCESSED]
+    current_snapshot_hash = compute_sources_snapshot_hash(current_sources)
+    # snapshot hash는 지금 필수인 자료들만 요약한다. 초안이 선언한 자료 집합이 그보다
+    # 넓으면(예: 본문 없는 URL 전용 자료) hash는 같아도 승인 근거가 달라진다.
+    declared_source_ids = {str(source_id) for source_id in (philosophy.source_asset_ids or [])}
+    current_source_ids = {str(source.id) for source in current_sources}
+    return _SourceSnapshotCheck(
+        unprocessed_count=len(unprocessed),
+        current_snapshot_hash=current_snapshot_hash,
+        matches=(
+            bool(current_sources)
+            and philosophy.source_snapshot_hash == current_snapshot_hash
+            and declared_source_ids == current_source_ids
+        ),
+    )
+
+
+# 자료 집합이 달라 승인할 수 없을 때의 다음 행동. 승인과 승인본 복사의 409가 같이 쓴다.
+REGENERATE_FROM_CURRENT_SOURCES_ACTION = (
+    "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+)
+
+# 승인본 복사의 409 detail. 이 파일의 409는 대부분 문자열 detail이다.
+COPY_DRAFT_EXISTS_DETAIL = (
+    "이미 검토 중인 초안이 있습니다. 그 초안을 승인하거나 보관한 뒤 다시 복사해 주세요."
+)
+COPY_AUTHORITY_REFRESH_PENDING_DETAIL = (
+    "근거 자료가 철회·수정되어 운영 기준 재생성이 예정되어 있습니다. "
+    "재생성이 끝난 뒤 다시 복사해 주세요."
+)
+COPY_SOURCES_CHANGED_DETAIL = (
+    "승인본을 만든 뒤 처리된 병원 자료가 변경되어(자료 집합이 다릅니다) 이 승인본을 "
+    "복사한 초안은 승인할 수 없습니다. 초안을 만들지 않았습니다. "
+    + REGENERATE_FROM_CURRENT_SOURCES_ACTION
+)
+COPY_CONCURRENT_CHANGE_DETAIL = "운영 기준이 동시에 변경되었습니다. 새로고침 후 다시 확인해 주세요."
+
+
+def _copy_unprocessed_sources_detail(count: int) -> str:
+    return (
+        f"처리되지 않은 병원 자료 {count}개가 남아 있어 이 승인본을 복사한 초안은 "
+        "승인할 수 없습니다. 초안을 만들지 않았습니다."
+    )
+
+
+@router.post(
+    "/philosophy/{philosophy_id}/draft-copy",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PhilosophyResponse,
+)
+async def copy_approved_philosophy_to_draft(
+    hospital_id: uuid.UUID,
+    philosophy_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+):
+    """승인된 운영 기준을 사람이 문장을 고칠 새 초안으로 복사한다.
+
+    승인본은 수정할 수 없고 초안은 워커의 자동 재합성만 만든다. 사람이 승인본의 문장을
+    고치려면 이 복사본을 PATCH한 뒤 기존 승인 경로로 승인한다. 복사만으로는 합성·검수·
+    큐 등록을 하지 않는다 — 초안의 작성자가 사람이므로 워커는 이 초안을 재시도 대상으로
+    보지 않는다.
+
+    병원에 초안이 이미 있으면(어떤 초안이든) 만들지 않는다. 병원 advisory lock 아래에서
+    확인하므로 동시 요청도 초안을 둘 만들지 못한다. 자료가 승인본의 snapshot과 어긋나
+    승인 경로가 사본을 거절할 상황이면 초안을 만들지 않는다.
+    """
+    creator = verified_request_actor()
+    if creator is None:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "요청자의 로그인 계정을 확인할 수 없습니다. 다시 로그인한 뒤 "
+                "승인본을 초안으로 복사해 주세요."
+            ),
+        )
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    await _get_hospital_or_404(db, hospital_id)
+    approved = await db.scalar(
+        select(HospitalContentPhilosophy)
+        .where(
+            HospitalContentPhilosophy.id == philosophy_id,
+            HospitalContentPhilosophy.hospital_id == hospital_id,
+        )
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if approved is None:
+        raise HTTPException(status_code=404, detail="Philosophy not found")
+    if approved.status != PhilosophyStatus.APPROVED:
+        raise HTTPException(
+            status_code=400,
+            detail="승인된 콘텐츠 운영 기준만 초안으로 복사할 수 있습니다.",
+        )
+    if authority_refresh_required(approved):
+        # 근거 철회·수정으로 재합성이 예정된 승인본이다. 지금 복사하면 워커가 새 판을
+        # 자동 승인해 사람이 고친 초안이 옛 근거 위에 남는다.
+        raise HTTPException(status_code=409, detail=COPY_AUTHORITY_REFRESH_PENDING_DETAIL)
+    existing_draft_id = await db.scalar(
+        select(HospitalContentPhilosophy.id)
+        .where(
+            HospitalContentPhilosophy.hospital_id == hospital_id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.DRAFT,
+        )
+        .limit(1)
+    )
+    if existing_draft_id is not None:
+        raise HTTPException(status_code=409, detail=COPY_DRAFT_EXISTS_DETAIL)
+    # 사본은 승인본의 자료 snapshot을 그대로 가져가고 사람은 그 값을 고칠 수 없다. 승인이
+    # 이 사본을 거절할 상황이면 여기서 막는다 — 만들면 그 초안이 다음 복사까지 막는다.
+    snapshot = await _check_required_source_snapshot(db, hospital_id, approved)
+    if snapshot.unprocessed_count:
+        raise HTTPException(
+            status_code=409,
+            detail=_copy_unprocessed_sources_detail(snapshot.unprocessed_count),
+        )
+    if not snapshot.matches:
+        raise HTTPException(status_code=409, detail=COPY_SOURCES_CHANGED_DETAIL)
+    max_version = await db.scalar(
+        select(func.max(HospitalContentPhilosophy.version)).where(
+            HospitalContentPhilosophy.hospital_id == hospital_id
+        )
+    )
+    draft = HospitalContentPhilosophy(
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        version=int(max_version or 0) + 1,
+        status=PhilosophyStatus.DRAFT,
+        is_base=False,
+        created_by=creator,
+        **{
+            field_name: copy.deepcopy(getattr(approved, field_name))
+            for field_name in PHILOSOPHY_DRAFT_COPY_FIELDS
+        },
+    )
+    db.add(draft)
+    await write_audit_log(
+        db,
+        action="copy_philosophy_to_draft",
+        hospital_id=hospital_id,
+        actor=creator,
+        target_type="philosophy",
+        target_id=draft.id,
+        detail={
+            "source_philosophy_id": str(approved.id),
+            "source_version": approved.version,
+            "new_philosophy_id": str(draft.id),
+            "new_version": draft.version,
+        },
+    )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # 같은 병원 lock을 잡지 않는 경로가 같은 version을 먼저 만든 경우.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail=COPY_CONCURRENT_CHANGE_DETAIL) from exc
+    await db.refresh(draft)
+    return _serialize_philosophy(draft)
+
+
+def _patch_audit_value(value):
+    """PATCH 감사 기록의 before/after 값. 큰 값은 앞부분과 전체 hash·길이만 남긴다.
+
+    작은 값은 그대로 둔다. 잘린 값의 기준은 `json.dumps(value, ensure_ascii=False,
+    sort_keys=True, default=str)` 문자열이며, 그 UTF-8 sha256으로 원래 값과 대조한다.
+    """
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if len(serialized) <= PATCH_AUDIT_VALUE_MAX_CHARS:
+        return value
+    return {
+        "truncated": True,
+        "preview": serialized[:PATCH_AUDIT_PREVIEW_CHARS],
+        "sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        "length": len(serialized),
+    }
+
+
 @router.patch("/philosophy/{philosophy_id}", response_model=PhilosophyResponse)
 async def patch_philosophy(
     hospital_id: uuid.UUID,
@@ -1478,6 +1716,7 @@ async def patch_philosophy(
         )
 
     update = body.model_dump(exclude_unset=True)
+    before = {field_name: getattr(philosophy, field_name) for field_name in update}
     if "unsupported_gaps" in update:
         # 자동 검수 finding은 서버 소유다 — 클라이언트가 지워서 예외 승인 게이트를 우회하지
         # 못하게 저장된 항목을 그대로 보존한다(H-03). 지우는 유일한 경로는 재검수다.
@@ -1505,6 +1744,25 @@ async def patch_philosophy(
         if grounding_errors:
             raise HTTPException(status_code=422, detail={"grounding_errors": grounding_errors})
 
+    # 사람이 어느 문장을 바꿨는지 남긴다. 실제로 값이 달라진 필드만 기록한다.
+    changes = {
+        field_name: {
+            "before": _patch_audit_value(before[field_name]),
+            "after": _patch_audit_value(getattr(philosophy, field_name)),
+        }
+        for field_name in update
+        if before[field_name] != getattr(philosophy, field_name)
+    }
+    if changes:
+        await write_audit_log(
+            db,
+            action="patch_philosophy",
+            hospital_id=hospital_id,
+            actor=default_actor(),
+            target_type="philosophy",
+            target_id=philosophy.id,
+            detail={"version": philosophy.version, "changes": changes},
+        )
     await db.commit()
     await db.refresh(philosophy)
     return _serialize_philosophy(philosophy)
@@ -1687,40 +1945,22 @@ async def approve_philosophy(
             },
         )
 
-    # A draft may have been created from a selected subset. Approval is only valid
-    # for the complete processed-source snapshot that exists at approval time.
-    required_result = await db.execute(
-        select(HospitalSourceAsset).where(
-            HospitalSourceAsset.hospital_id == hospital_id,
-            required_text_source_predicate(),
-        )
-    )
-    required_sources = list(required_result.scalars().all())
-    unprocessed = [source for source in required_sources if source.status != SourceStatus.PROCESSED]
-    if unprocessed:
+    snapshot = await _check_required_source_snapshot(db, hospital_id, philosophy)
+    if snapshot.unprocessed_count:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"처리되지 않은 병원 자료 {len(unprocessed)}개가 남아 있습니다. "
+                f"처리되지 않은 병원 자료 {snapshot.unprocessed_count}개가 남아 있습니다. "
                 "자료를 처리하거나 제외한 뒤 초안을 다시 생성해 주세요."
             ),
         )
-    current_sources = required_sources
-    current_snapshot_hash = compute_sources_snapshot_hash(current_sources)
-    # snapshot hash는 지금 필수인 자료들만 요약한다. 초안이 선언한 자료 집합이 그보다
-    # 넓으면(예: 본문 없는 URL 전용 자료) hash는 같아도 승인 근거가 달라진다.
-    draft_source_ids = {str(source_id) for source_id in (philosophy.source_asset_ids or [])}
-    current_source_ids = {str(source.id) for source in current_sources}
-    if (
-        not current_sources
-        or philosophy.source_snapshot_hash != current_snapshot_hash
-        or draft_source_ids != current_source_ids
-    ):
+    current_snapshot_hash = snapshot.current_snapshot_hash
+    if not snapshot.matches:
         raise HTTPException(
             status_code=409,
             detail=(
                 "초안 생성 후 처리된 병원 자료가 변경되었습니다(자료 집합이 다릅니다). "
-                "현재 전체 자료로 콘텐츠 운영 기준 초안을 다시 생성해 주세요."
+                + REGENERATE_FROM_CURRENT_SOURCES_ACTION
             ),
         )
 

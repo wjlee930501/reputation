@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -46,11 +45,13 @@ from app.services.notification_outbox import (
 )
 from app.services.notification_success_hooks import reconcile_sent_notification_incidents
 from app.workers import notification_tasks
+from tests.db_env import require_db_url
 
-_DATABASE_URL = os.getenv(
-    "NOTIFICATION_OUTBOX_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _database_url() -> str:
+    return require_db_url("NOTIFICATION_OUTBOX_DATABASE_URL")
+
+
 _NOW = datetime(2026, 8, 10, 9, 0, tzinfo=UTC)
 
 
@@ -105,7 +106,7 @@ def _urls(value: object) -> list[str]:
 
 @pytest.fixture
 async def outbox_sessions():
-    engine = create_async_engine(_DATABASE_URL)
+    engine = create_async_engine(_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     async with sessions() as cleanup:
         await cleanup.execute(text("DELETE FROM incidents WHERE source_type='NOTIFICATION_OUTBOX' AND source_id IN (SELECT id::text FROM notification_outbox WHERE dedupe_key LIKE 'OPS-QA-T10-%')"))

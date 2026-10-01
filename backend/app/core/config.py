@@ -557,6 +557,9 @@ class Settings(BaseSettings):
     # 알림 전송·캐시 갱신·원장 PDF 렌더)는 이 웹훅으로 보낸다. 비워 두면 기존과 동일하게
     # SLACK_WEBHOOK_URL 한 곳으로만 나간다 — 설정 전 동작 변화가 없다.
     SLACK_WEBHOOK_URL_DEV: str = ""
+    # 도입문의 전용 채널(#noti-도입문의-뉴비짓). 공개 도입문의 접수 알림만 이 웹훅으로 보낸다.
+    # 비워 두면 기존과 동일하게 SLACK_WEBHOOK_URL로 나간다 — 설정 전 동작 변화가 없다.
+    SLACK_WEBHOOK_URL_INQUIRY: str = ""
     # webhook SSRF 방어 — 허용 호스트(쉼표 구분). 기본은 Slack 공식 호스트만(V-013).
     SLACK_WEBHOOK_ALLOWED_HOSTS: str = "hooks.slack.com"
 
@@ -612,6 +615,12 @@ class Settings(BaseSettings):
     # 키는 site/app/indexnow-key.txt 라우트가 같은 값을 응답해야 한다(호스트 소유 증명).
     INDEXNOW_ENABLED: bool = True
     INDEXNOW_KEY: str = ""  # 미설정이면 제출을 건너뛴다(발행은 정상 진행)
+
+    # 예약 자동 발행 보류 — ""이면 꺼짐(기본, 동작 변화 없음), "*"이면 전체 병원,
+    # 그 밖에는 병원 UUID를 쉼표로 나열한다. 공백·빈 항목은 무시하고, UUID가 아닌 항목은
+    # 경고 로그를 남기고 무시한다. 수동 발행(/publish)과 이미 공개된 글에는 영향이 없다.
+    # 해석은 `post_publish_review_policy.auto_publish_hold` 한 곳에서만 한다.
+    AUTO_PUBLISH_HOLD_HOSPITALS: str = ""
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수

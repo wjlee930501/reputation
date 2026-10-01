@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import os
 import uuid
 from datetime import UTC, datetime
 
@@ -21,8 +20,7 @@ from app.models.hospital import (
 )
 from app.models.operations import Incident, NotificationOutbox
 from app.services.domain_certificate_manager import DomainCertificateResult
-
-_DEFAULT_URL = "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test"
+from tests.db_env import require_db_url
 
 
 def _jobs():
@@ -38,7 +36,7 @@ def _worker():
 
 
 def _async_url() -> str:
-    raw = os.getenv("INTEGRATION_DATABASE_URL") or _DEFAULT_URL
+    raw = require_db_url("INTEGRATION_DATABASE_URL")
     for prefix in ("postgresql+psycopg2://", "postgresql+psycopg://", "postgresql://"):
         if raw.startswith(prefix):
             return "postgresql+asyncpg://" + raw[len(prefix) :]

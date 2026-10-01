@@ -1,5 +1,13 @@
 # 현재 배포와 헬스체크
 
+## 최신 운영 배포 — 2026-09-28 도입문의 Slack 채널 분리
+
+main `7266674`(PR #164·#165)를 API·Worker·Beat에 배포했다. 현재 리비전은 api `00206-8hf`,
+worker `00195-7dt`, beat `00190-bqz`이고 Site·Admin과 DB head `0080_lead_diagnosis_supersede`는 그대로다.
+공개 도입문의 접수 알림은 선택 secret `SLACK_WEBHOOK_URL_INQUIRY`(`#noti-도입문의-뉴비짓`)로 가며,
+비어 있으면 `SLACK_WEBHOOK_URL`로 간다. Aside로 실제 문의 2건을 제출해 새 채널 수신을 확인했다.
+상세는 [도입문의 Slack 채널 분리 배포 기록](../releases/2026-09-28-inquiry-slack-channel-production.md)을 본다.
+
 ## 최신 운영 배포 — 2026-09-23~24 통합 정합성 보완·파비콘
 
 main `38cff0e`(PR #153 런타임, #154 문서)를 5개 서비스에 배포했고, 이어 Site만 두 번

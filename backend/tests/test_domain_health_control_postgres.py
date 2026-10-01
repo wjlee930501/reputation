@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -13,11 +12,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.operations import Incident, IncidentState, NotificationOutbox, OperationRun
 from app.services import domain_health_control as control
+from tests.db_env import require_db_url
 
-_ASYNC_URL = os.getenv(
-    "TASK19_ASYNC_DATABASE_URL",
-    "postgresql+asyncpg://reputation:reputation@localhost:5434/reputation_test",
-)
+
+def _async_database_url() -> str:
+    return require_db_url("TASK19_ASYNC_DATABASE_URL")
 
 
 @pytest.mark.asyncio
@@ -107,7 +106,7 @@ async def test_auto_recovery_closes_domain_incident_without_success_slack(
 async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = create_async_engine(_ASYNC_URL)
+    engine = create_async_engine(_async_database_url())
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     hospital_id = uuid.uuid4()
     domain = f"task19-{hospital_id.hex[:10]}.example.com"

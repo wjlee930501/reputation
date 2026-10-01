@@ -937,10 +937,14 @@ async def regenerate_content_operation(
     item = await db.get(ContentItem, content_id)
     if not item or item.hospital_id != hospital.id:
         raise HTTPException(status_code=404, detail="Content not found")
-    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+    if item.status in (
+        ContentStatus.PUBLISHED,
+        ContentStatus.CANCELLED,
+        ContentStatus.WITHHELD,
+    ):
         raise HTTPException(
             status_code=409,
-            detail="Published or cancelled content cannot be regenerated",
+            detail="Published, cancelled or withheld content cannot be regenerated",
         )
     dispatch = await _enqueue_with_truthful_audit(
         db,
@@ -974,10 +978,14 @@ async def regenerate_content_image_operation(
     item = await db.get(ContentItem, content_id)
     if not item or item.hospital_id != hospital.id:
         raise HTTPException(status_code=404, detail="Content not found")
-    if item.status in (ContentStatus.PUBLISHED, ContentStatus.CANCELLED):
+    if item.status in (
+        ContentStatus.PUBLISHED,
+        ContentStatus.CANCELLED,
+        ContentStatus.WITHHELD,
+    ):
         raise HTTPException(
             status_code=409,
-            detail="Published or cancelled content image cannot be regenerated",
+            detail="Published, cancelled or withheld content image cannot be regenerated",
         )
     dispatch = await _enqueue_with_truthful_audit(
         db,

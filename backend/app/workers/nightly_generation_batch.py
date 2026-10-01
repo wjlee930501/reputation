@@ -200,6 +200,21 @@ def _nightly_generation_claim_filter(claim_cutoff: datetime):
     )
 
 
+def generation_claim_is_active(item, *, now: datetime) -> bool:
+    """Whether a live (unexpired) generation lease owns this row right now.
+
+    `claim_generation_lease`가 새 claim을 거절하는 바로 그 술어다. 만료된 claim은 죽은
+    워커의 흔적이라 다음 스윕이 인수한다(`STALE_GENERATION_CLAIM`) — 살아 있지 않다.
+    """
+
+    claimed_at = getattr(item, "generation_claimed_at", None)
+    return (
+        getattr(item, "generation_claim_token", None) is not None
+        and claimed_at is not None
+        and claimed_at >= now - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS)
+    )
+
+
 def claim_generation_lease(
     db,
     item_id,
@@ -218,12 +233,7 @@ def claim_generation_lease(
     if item is None or item.status not in GENERATION_WRITE_BACK_STATUSES:
         db.rollback()
         return None
-    claim_cutoff = observed_at - timedelta(hours=NIGHTLY_GENERATION_CLAIM_TTL_HOURS)
-    if (
-        item.generation_claim_token is not None
-        and item.generation_claimed_at is not None
-        and item.generation_claimed_at >= claim_cutoff
-    ):
+    if generation_claim_is_active(item, now=observed_at):
         db.rollback()
         return None
     claim_token = uuid.uuid4()
