@@ -209,7 +209,7 @@ def test_build_gap_targets_backfills_structure_and_sorts_missing_first():
     missing = _orm_target("강남역에서 허리디스크 치료하는 병원 알려줘")
 
     targets = build_gap_targets(
-        [(low, "LOW_MENTION_SHARE"), (missing, "MISSING_MENTION")]
+        [(low, "LOW_MENTION_SHARE"), (missing, "MISSING_MENTION")], hospital=None
     )
 
     assert [target.id for target in targets] == [missing.id, low.id]
@@ -222,7 +222,7 @@ def test_build_gap_targets_dedupes_to_the_most_urgent_gap():
     target = _orm_target("역삼동 오십견 진료 가능한 병원")
 
     targets = build_gap_targets(
-        [(target, "LOW_MENTION_SHARE"), (target, "MISSING_MENTION")]
+        [(target, "LOW_MENTION_SHARE"), (target, "MISSING_MENTION")], hospital=None
     )
 
     assert len(targets) == 1

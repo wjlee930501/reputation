@@ -107,7 +107,8 @@ def test_generation_safe_cause_hides_raw_provider_messages() -> None:
 
 def test_publication_blockers_name_the_exact_operator_recovery() -> None:
     expected = {
-        "CONTENT_NOT_GENERATED": "01시·04시·07시·07시 45분",
+        # 게이트가 기록한 뒤에는 어떤 스윕도 다시 쓰지 않는다 — 스윕 시각을 약속하지 않는다.
+        "CONTENT_NOT_GENERATED": "“작업 다시 시도”를 누르세요",
         "MISSING_REFERENCES": "참고 자료",
         "FORBIDDEN_EXPRESSION": "의료광고 금지 표현",
         "ESSENCE_NOT_ALIGNED": "운영 기준",

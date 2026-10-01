@@ -1,0 +1,166 @@
+{
+ "source": "/workspace/ref-url-guard/r2/vetting (2026-09-29 1회 GET, vet.py)",
+ "stripping": "script/style/noscript/svg/template blocks and HTML comments removed, whitespace runs collapsed, gzip(mtime=0)",
+ "rows": [
+  {
+   "url": "https://medlineplus.gov/ency/article/002024.htm",
+   "status": 200,
+   "final_url": "https://medlineplus.gov/ency/article/002024.htm",
+   "page_title": "Vaccines - immunizations: MedlinePlus Medical Encyclopedia",
+   "article_title": "예방접종 초기 증상이 뭔지 알려줘 — 접종 후 반응 확인과 진료 기준",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/ea22a0fed4ba09fa.html.gz",
+   "html": "html/ea22a0fed4ba09fa-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5232",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5232",
+   "page_title": "인플루엔자 | 국가건강정보포털 | 질병관리청",
+   "article_title": "독감(인플루엔자) 예방접종, 언제 맞아야 하나요?",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/b3b1f32ca01a0474.html.gz",
+   "html": "html/b3b1f32ca01a0474-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6679",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6679",
+   "page_title": "수두와 대상포진 | 국가건강정보포털 | 질병관리청",
+   "article_title": "대상포진 예방접종 대상과 시기",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/62bbd388a8c2cc6a.html.gz",
+   "html": "html/62bbd388a8c2cc6a-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3987",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=3987",
+   "page_title": "자궁경부암 백신 | 국가건강정보포털 | 질병관리청",
+   "article_title": "자궁경부암 백신(HPV) 접종 안내",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/d85ddd190f335e23.html.gz",
+   "html": "html/d85ddd190f335e23-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6553",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6553",
+   "page_title": "바이러스성 간염 | 국가건강정보포털 | 질병관리청",
+   "article_title": "하남시 위례 간질환 환자 진료 흐름 — 초음파·혈액검사·추적",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/58c5b3d4775eccaa.html.gz",
+   "html": "html/58c5b3d4775eccaa-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6672",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6672",
+   "page_title": "B형간염 | 국가건강정보포털 | 질병관리청",
+   "article_title": "B형간염 보유자, 정기 검사는 얼마나 자주 받아야 하나요?",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/267d303707b923fd.html.gz",
+   "html": "html/267d303707b923fd-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6560",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=6560",
+   "page_title": "간경변증 | 국가건강정보포털 | 질병관리청",
+   "article_title": "간경화(간경변) 진단 후 관리와 추적검사",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/44f2453a1e302cb9.html.gz",
+   "html": "html/44f2453a1e302cb9-r3.html.gz"
+  },
+  {
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=30480",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=30480",
+   "page_title": "간경화(Liver cirrhosis) | 질환백과 | 의료정보 | 건강정보 | 서울아산병원",
+   "article_title": "간경화(간경변) 진단 후 관리와 추적검사",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/f39ab5c4fed5a246.html.gz",
+   "html": "html/f39ab5c4fed5a246-r3.html.gz"
+  },
+  {
+   "url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31687",
+   "status": 200,
+   "final_url": "https://www.amc.seoul.kr/asan/healthinfo/disease/diseaseDetail.do?contentId=31687",
+   "page_title": "간염(Hepatitis) | 질환백과 | 의료정보 | 건강정보 | 서울아산병원",
+   "article_title": "하남시 위례 간질환 환자 진료 흐름 — 초음파·혈액검사·추적",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/c57fd1d72d62d811.html.gz",
+   "html": "html/c57fd1d72d62d811-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/ntcnInfo/healthSourc/thtimtCntnts/thtimtCntntsView.do?thtimt_cntnts_sn=7",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/ntcnInfo/healthSourc/thtimtCntnts/thtimtCntntsView.do?thtimt_cntnts_sn=7",
+   "page_title": "이달의 건강정보 - 상세내용 | 국가건강정보포털 | 질병관리청",
+   "article_title": "국가건강검진 결과표 보는 법 — 혈압·혈당·간수치",
+   "article_source": "synthetic",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/1f16605bafa58238.html.gz",
+   "html": "html/1f16605bafa58238-r3.html.gz"
+  },
+  {
+   "url": "https://www.nhis.or.kr/nhis/healthin/wbhaca04500m01.do",
+   "status": 200,
+   "final_url": "https://www.nhis.or.kr/nhis/healthin/wbhaca04500m01.do",
+   "page_title": "일반건강검진 < 건강검진 실시안내 < 나의 건강 < 건강모아 | 국민건강보험",
+   "article_title": "정기 건강검진, 왜 미루시나요? 원장이 전하는 조기 발견의 가치",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/1892b73a8c1a6912.html.gz",
+   "html": "html/1892b73a8c1a6912-r3.html.gz"
+  },
+  {
+   "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5296",
+   "status": 200,
+   "final_url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo/gnrlzHealthInfoView.do?cntnts_sn=5296",
+   "page_title": "건강검진(암 검진) | 국가건강정보포털 | 질병관리청",
+   "article_title": "정기 건강검진, 왜 미루시나요? 원장이 전하는 조기 발견의 가치",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/91d1b2b39b517569.html.gz",
+   "html": "html/91d1b2b39b517569-r3.html.gz"
+  },
+  {
+   "url": "https://my.clevelandclinic.org/health/treatments/platelet-rich-plasma-prp-injection",
+   "status": 200,
+   "final_url": "https://my.clevelandclinic.org/health/treatments/platelet-rich-plasma-prp-injection",
+   "page_title": "Platelet-Rich Plasma (PRP Injection): What It Is & Uses",
+   "article_title": "PRP 자가혈 재생치료 비용 — 어떤 요인에 따라 달라지나요?",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/1eb969f62a0bbdb8.html.gz",
+   "html": "html/1eb969f62a0bbdb8-r3.html.gz"
+  },
+  {
+   "url": "https://my.clevelandclinic.org/health/treatments/21635-iv-fluids",
+   "status": 200,
+   "final_url": "https://my.clevelandclinic.org/health/treatments/21635-iv-fluids",
+   "page_title": "IV Fluids (Intravenous Fluids): Types & Uses",
+   "article_title": "위례 수액치료 병원 — 개인 상태 평가 후 맞춤형 처방",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/80175d6761814550.html.gz",
+   "html": "html/80175d6761814550-r3.html.gz"
+  },
+  {
+   "url": "https://medlineplus.gov/ctscans.html",
+   "status": 200,
+   "final_url": "https://medlineplus.gov/ctscans.html",
+   "page_title": "CT Scans: MedlinePlus",
+   "article_title": "대구 동구 CT 검사, 신기한속내과연합의원에서 가능합니다",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/d3654245e58b4093.html.gz",
+   "html": "html/d3654245e58b4093-r3.html.gz"
+  },
+  {
+   "url": "https://medlineplus.gov/osteoporosis.html",
+   "status": 200,
+   "final_url": "https://medlineplus.gov/osteoporosis.html",
+   "page_title": "Osteoporosis | MedlinePlus",
+   "article_title": "마산 골밀도검사, 병원 방문 전 내과에서 먼저 확인할 것들",
+   "article_source": "hold_replay_2026-09-29",
+   "evidence": "/workspace/ref-url-guard/r2/vetting/html/9b0f62cc6b9d55f8.html.gz",
+   "html": "html/9b0f62cc6b9d55f8-r3.html.gz"
+  }
+ ]
+}

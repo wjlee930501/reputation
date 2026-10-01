@@ -86,7 +86,11 @@ def test_claim_loser_cannot_purchase_and_claim_query_is_locked():
     assert refresh._claim_image_refresh(db, uuid.uuid4()) is None
     sql = str(db.execute.call_args.args[0].compile(dialect=postgresql.dialect()))
     assert "FOR UPDATE OF content_items SKIP LOCKED" in sql
-    assert "generation_claimed_at <=" in sql
+    # 로더와 같은 "claim할 수 있는 행" — 토큰 없음·claim 시각 없음·TTL 경계보다 이른 claim
+    # (경계 시각의 claim은 살아 있다, `generation_claim_is_active`).
+    assert "content_items.generation_claim_token IS NULL" in sql
+    assert "content_items.generation_claimed_at <" in sql
+    assert "generation_claimed_at <=" not in sql
     assert db.commit.call_count == 1
 
 

@@ -54,6 +54,11 @@ BODY_REPAIR_CODES = frozenset(
     }
 )
 
+# 사람이 정하는 참고자료 보류의 표시(`MISSING_REFERENCES` 시도 기록). 진료비·병원 선택 글은
+# 공신력 있는 문서가 본질적으로 없어 작가가 다시 써도 풀리지 않는다 — 수리 세션 예산이 아니라
+# 저장된 `OPERATOR_REQUIRED`가 이 보류를 소유한다(`reference_requirement.references_left_to_operator`).
+OPERATOR_DECIDES_KEY = "operator_decides"
+
 
 class GenerationRetryClass(StrEnum):
     INPUT_CHANGE_REQUIRED = "INPUT_CHANGE_REQUIRED"
@@ -196,6 +201,24 @@ def _sweep_window(candidate: datetime) -> tuple[date, date]:
     )
 
 
+def sweep_claims_slot(moment: datetime, scheduled_date: date | None) -> bool:
+    """``moment``가 생성 스윕 시각이고 그 스윕의 창에 ``scheduled_date``가 드는가.
+
+    `next_recovery_deadline`의 백로그 복구 판정 시각(22:30 + 1시간)은 원고 생성 시도가 아니다 —
+    그 시각을 "다시 시도합니다"로 말하지 않게 문구 쪽이 구분할 때 쓴다.
+    """
+
+    if scheduled_date is None:
+        return False
+    observed = moment.astimezone(KST)
+    if observed.hour not in RECOVERY_SWEEP_HOURS or observed != observed.replace(
+        minute=0, second=0, microsecond=0
+    ):
+        return False
+    window_start, window_end = _sweep_window(observed)
+    return window_start <= scheduled_date <= window_end
+
+
 def _candidate_sweeps(observed: datetime):
     """Yield the scheduled sweep datetimes after ``observed``, in time order."""
 
@@ -276,10 +299,12 @@ def _earliest_eligible_date(
     if (
         attempt.get("reason") in BODY_REPAIR_CODES
         and retry_class != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+        and not attempt.get(OPERATOR_DECIDES_KEY)
     ):
         # 이 코드들의 복구는 재시도 클래스가 아니라 수리 세션 예산이 소유한다
         # (`retry_class_for`의 기본값은 다른 용도로 그대로 둔다). 다만 승인된 입력 자체가
-        # 틀렸다는 판정(INPUT_CHANGE_REQUIRED)은 작가 세션으로 고칠 수 없는 종착이다.
+        # 틀렸다는 판정(INPUT_CHANGE_REQUIRED)과 사람이 정하는 참고자료 보류는 작가 세션으로
+        # 고칠 수 없는 종착이다.
         return next_repair_session_date(repair_state, observed)
     if retry_class == GenerationRetryClass.SAMPLE_RECOVERABLE.value:
         try:
