@@ -10017,12 +10017,19 @@ def _prior_reported_sov_pct(db, prior_manifest) -> float | None:
     """
     if prior_manifest is None:
         return None
+    return reported_monthly_sov_pct(
+        db, prior_manifest.hospital_id, prior_manifest.period_year, prior_manifest.period_month
+    )
+
+
+def reported_monthly_sov_pct(db, hospital_id, year: int, month: int) -> float | None:
+    """그 달 최신 월간 보고서에 저장된 언급 비율. 없거나 숫자가 아니면 None."""
     row = db.execute(
         select(MonthlyReport.sov_summary)
         .where(
-            MonthlyReport.hospital_id == prior_manifest.hospital_id,
-            MonthlyReport.period_year == prior_manifest.period_year,
-            MonthlyReport.period_month == prior_manifest.period_month,
+            MonthlyReport.hospital_id == hospital_id,
+            MonthlyReport.period_year == year,
+            MonthlyReport.period_month == month,
             MonthlyReport.report_type == "MONTHLY",
         )
         .order_by(MonthlyReport.version.desc())
