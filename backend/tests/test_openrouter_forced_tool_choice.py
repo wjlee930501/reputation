@@ -552,8 +552,7 @@ async def test_review_escalation_numbers_after_the_auto_retry(monkeypatch, ledge
     monkeypatch.setattr(content_ai_review, "_llm_client", lambda: client)
     monkeypatch.setattr(content_ai_review.cost_guard, "reserve", reserve)
     monkeypatch.setattr(content_ai_review.settings, "OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setattr(content_ai_review.settings, "CLAUDE_MODEL_FAST", FORCED_REJECTING_MODEL)
-    monkeypatch.setattr(content_ai_review.settings, "CLAUDE_MODEL", FORCED_SUPPORTED_MODEL)
+    monkeypatch.setattr(content_ai_review.settings, "CLAUDE_MODEL_REVIEW", FORCED_REJECTING_MODEL)
 
     review = await content_ai_review.review_generated_content(
         hospital=SimpleNamespace(id=None, name="병원"),
@@ -564,10 +563,11 @@ async def test_review_escalation_numbers_after_the_auto_retry(monkeypatch, ledge
     )
 
     assert review.status == content_ai_review.ContentAiReviewStatus.PASS
+    # 재검수도 같은 검수 모델이다 — 강제 tool choice를 거절한다고 기억한 모델이라 바로 auto로 부른다.
     assert [call["tool_choice"] for call in client.chat.completions.calls] == [
         openrouter.forced_tool_choice(content_ai_review.REVIEW_TOOL_NAME),
         "auto",
-        openrouter.forced_tool_choice(content_ai_review.REVIEW_TOOL_NAME),
+        "auto",
     ]
     assert [(a["attempt_id"], a["http_attempt"]) for a in ledger.attempts] == [
         ("review-2:http:1", 1),

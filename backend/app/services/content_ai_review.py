@@ -716,7 +716,7 @@ def _build_review(
         confidence=confidence,
         findings=findings,
         summary=_bounded_text(data.get("summary"), 300),
-        model=model or settings.CLAUDE_MODEL_FAST,
+        model=model or settings.CLAUDE_MODEL_REVIEW,
         candidate_sha256=candidate_sha256(reviewed_content),
         coverage=candidate_review_coverage(reviewed_content),
     )
@@ -915,7 +915,7 @@ async def review_generated_content(
     if not decision.allowed:
         return _unavailable_review(
             content=content,
-            model=settings.CLAUDE_MODEL_FAST,
+            model=settings.CLAUDE_MODEL_REVIEW,
             summary="비용 가드로 독립 AI 검수를 실행하지 않았습니다.",
             reason=ContentAiReviewUnavailableReason.COST_BLOCKED,
             provider_attempted=False,
@@ -924,7 +924,7 @@ async def review_generated_content(
         await cost_guard.settle_reservation(decision.receipt, consumed_units=0)
         return _unavailable_review(
             content=content,
-            model=settings.CLAUDE_MODEL_FAST,
+            model=settings.CLAUDE_MODEL_REVIEW,
             summary="독립 AI 검수 공급자가 설정되지 않았습니다.",
             reason=ContentAiReviewUnavailableReason.PROVIDER_UNCONFIGURED,
             provider_attempted=False,
@@ -945,7 +945,7 @@ async def review_generated_content(
         logger.warning("Independent content AI review unavailable: %s", type(exc).__name__)
         return _unavailable_review(
             content=content,
-            model=settings.CLAUDE_MODEL_FAST,
+            model=settings.CLAUDE_MODEL_REVIEW,
             summary="독립 AI 검수 공급자를 초기화하지 못했습니다.",
             reason=ContentAiReviewUnavailableReason.PROVIDER_ERROR,
             provider_attempted=False,
@@ -960,7 +960,7 @@ async def review_generated_content(
     first = await _provider_review(
         client=client,
         payload=payload,
-        model=settings.CLAUDE_MODEL_FAST,
+        model=settings.CLAUDE_MODEL_REVIEW,
         hospital=hospital,
         content=content,
         decision=decision,
@@ -974,10 +974,12 @@ async def review_generated_content(
         return first
 
     # 확신도·형식 때문에 붙은 합성 UNCERTAIN만 막고 있다. 이 글을 영구 폐기하는 대신
-    # 같은 호출 안에서 상위 모델로 정확히 1회 재검수한다. 모델이 실제로 지적한
-    # HARD/UNCERTAIN이 하나라도 있으면 여기까지 오지 않는다.
-    escalated_model = settings.CLAUDE_MODEL
-    if not escalated_model or escalated_model == settings.CLAUDE_MODEL_FAST:
+    # 같은 호출 안에서 검수 모델로 정확히 1회 다시 검수한다. 검수 모델이 이미 최상위
+    # (Opus)라 더 높은 모델은 없다 — 합성 UNCERTAIN은 확신도·형식 표본 문제라 한 번 더
+    # 받는 것으로 풀린다. 모델이 실제로 지적한 HARD/UNCERTAIN이 하나라도 있으면 여기까지
+    # 오지 않는다.
+    escalated_model = settings.CLAUDE_MODEL_REVIEW
+    if not escalated_model:
         return first
     escalation_decision = await cost_guard.reserve("content")
     if not escalation_decision.allowed:

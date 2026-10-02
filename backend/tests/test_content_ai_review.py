@@ -375,17 +375,18 @@ async def test_low_confidence_only_block_escalates_once_and_can_pass(monkeypatch
 
     result = await _review()
 
+    # 검수 모델(Opus)이 이미 최상위라 같은 모델로 정확히 한 번 더 받는다.
     assert [call["model"] for call in harness.calls] == [
-        content_ai_review.settings.CLAUDE_MODEL_FAST,
-        content_ai_review.settings.CLAUDE_MODEL,
+        content_ai_review.settings.CLAUDE_MODEL_REVIEW,
+        content_ai_review.settings.CLAUDE_MODEL_REVIEW,
     ]
     assert result.status == ContentAiReviewStatus.PASS
     assert result.blocking_findings == ()
     payload = result.payload()
     assert payload["blocking"] is False
-    assert payload["escalated_model"] == content_ai_review.settings.CLAUDE_MODEL
+    assert payload["escalated_model"] == content_ai_review.settings.CLAUDE_MODEL_REVIEW
     assert payload["review_rounds"] == 2
-    assert payload["model"] == content_ai_review.settings.CLAUDE_MODEL
+    assert payload["model"] == content_ai_review.settings.CLAUDE_MODEL_REVIEW
     assert payload["schema_version"] == content_ai_review.REVIEW_SCHEMA_VERSION
     # 승격 호출도 같은 예약 경로로 계량된다.
     assert harness.reservations == ["content", "content"]

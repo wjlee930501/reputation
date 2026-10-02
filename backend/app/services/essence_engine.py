@@ -414,7 +414,7 @@ async def metered_llm_calls(
                 )
                 await provider_usage.record_attempt(
                     provider="openrouter",
-                    model=settings.CLAUDE_MODEL_FAST,
+                    model=event.get("model") or settings.CLAUDE_MODEL_FAST,
                     workflow=workflow,
                     cost_category="content",
                     hospital_id=hospital_id,
@@ -438,8 +438,10 @@ def _call_llm_json(
     output_schema: dict[str, Any] | None = None,
     attempts: int = 3,
     timeout_seconds: float = 60.0,
+    model: str | None = None,
 ) -> dict[str, Any]:
-    """Call the fast model with bounded retries and schema-constrained JSON."""
+    """Call one model (default: the fast model) with bounded retries and schema-constrained JSON."""
+    resolved_model = model or settings.CLAUDE_MODEL_FAST
     if attempts < 1:
         raise ValueError("attempts must be at least 1")
     counter = _llm_call_counter.get()
@@ -464,8 +466,11 @@ def _call_llm_json(
                 if counter is not None
                 else None
             )
+            if event is not None:
+                # 사용량 원장에 실제로 부른 모델을 남긴다(호출마다 모델이 다를 수 있다).
+                event["model"] = resolved_model
             request: dict[str, Any] = {
-                "model": settings.CLAUDE_MODEL_FAST,
+                "model": resolved_model,
                 "max_tokens": max_tokens,
                 "messages": [
                     {"role": "system", "content": system},
@@ -613,6 +618,9 @@ def _process_source_asset_llm(asset: HospitalSourceAsset) -> list[EvidenceNotePa
             user_message,
             max_tokens=3000,
             output_schema=_SOURCE_PROCESSING_OUTPUT_SCHEMA,
+            # 근거 노트는 Essence 승인의 바탕이다 — 원문에 없는 주장을 노트로 만들지 않게
+            # 판단 모델을 쓴다.
+            model=settings.CLAUDE_MODEL_REVIEW,
         )
         for payload in _llm_payloads_from_response(
             asset,
