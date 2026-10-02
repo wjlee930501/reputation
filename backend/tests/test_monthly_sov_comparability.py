@@ -1,6 +1,8 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from app.services import sov_engine
 from app.services.monthly_sov import build_monthly_sov
 from app.services.monthly_sov_types import (
@@ -738,3 +740,49 @@ def test_legacy_manifest_without_intent_snapshot_suppresses_delta() -> None:
     assert comparison.status == "NON_COMPARABLE"
     assert comparison.reason == "INTENT_SNAPSHOT_MISSING"
     assert comparison.change_pct is None
+
+
+@pytest.mark.parametrize(
+    "prior_model,current_model",
+    [
+        ("openai/gpt-5.6-luna", "openai/gpt-6-luna"),
+        ("gpt-5.6-luna", "openai/gpt-5.6-luna"),
+    ],
+)
+def test_equivalent_answer_models_keep_the_monthly_comparison(prior_model, current_model) -> None:
+    """2026-10-02 운영 결정: gpt-5.6-luna와 gpt-6-luna는 월간 비교에서 같은 답변 모델이다."""
+    cells = (_cell("q1", "chatgpt", mentioned=True),)
+    prior = (_cell("q1", "chatgpt", mentioned=False),)
+    current_protocol = {**sov_engine.measurement_protocol(), "openai_model_query": current_model}
+    prior_protocol = {**current_protocol, "openai_model_query": prior_model}
+
+    summary = build_monthly_sov(
+        cells, ("chatgpt",), prior_cells=prior, prior_platforms=("chatgpt",),
+        current_protocol=current_protocol, prior_protocol=prior_protocol,
+    )
+
+    assert summary.comparison.status == "COMPARABLE"
+
+
+def test_a_different_answer_model_still_breaks_the_monthly_comparison() -> None:
+    cells = (_cell("q1", "chatgpt", mentioned=True),)
+    prior = (_cell("q1", "chatgpt", mentioned=False),)
+    current_protocol = {**sov_engine.measurement_protocol(), "openai_model_query": "openai/gpt-6-luna"}
+    prior_protocol = {**current_protocol, "openai_model_query": "openai/gpt-6-sol"}
+
+    summary = build_monthly_sov(
+        cells, ("chatgpt",), prior_cells=prior, prior_platforms=("chatgpt",),
+        current_protocol=current_protocol, prior_protocol=prior_protocol,
+    )
+
+    assert summary.comparison.reason == "MEASUREMENT_POLICY_CHANGED"
+
+
+def test_model_equivalence_never_relaxes_the_manifest_or_execution_checks() -> None:
+    base = sov_engine.measurement_protocol()
+    five = {**base, "openai_model_query": "openai/gpt-5.6-luna"}
+    six = {**base, "openai_model_query": "openai/gpt-6-luna"}
+
+    assert sov_engine.comparable_across_months(six, five, platforms=("chatgpt",))
+    assert not sov_engine.same_measurement_basis(six, five, platforms=("chatgpt",))
+    assert not sov_engine.same_execution_policy(six, five, platforms=("chatgpt",))

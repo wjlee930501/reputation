@@ -1230,6 +1230,7 @@ def build_doctor_report_view(
     report_kind: ReportKind = "LEGACY",
     protocol_label: str | None = None,
     cumulative_published_count: int | None = None,
+    reference_prev_sov_pct: float | None = None,
 ) -> DoctorReportView:
     """Build legacy summary or an explicit MONTHLY/BASELINE value narrative.
 
@@ -1653,6 +1654,7 @@ def build_doctor_report_view(
             works=published_work_evidence(hospital, published_contents, citations),
             current=sov_pct, previous=prev_sov_pct, comparison_reason=comparison_reason,
             shortfall=shortfall if report_kind == "MONTHLY" else 0, protocol_label=protocol_label,
+            reference_previous=reference_prev_sov_pct,
         )
         view.update(
             _director_copy(

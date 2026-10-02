@@ -20,7 +20,7 @@
 </div>
 
 <p class="metric-question">AI에게 물었을 때 우리 병원이 언급된 비율</p>
-<div class="metrics"><div class="metric"><span class="metric-label">지난달</span><strong class="{{ 'withheld' if n.previous is none else '' }}">{{ '%.1f%%'|format(n.previous) if n.previous is not none else n.previous_label }}</strong>{% if n.previous is not none %}<div class="scale"><div class="bar prior" style="width:{{ n.previous }}%"></div></div>{% endif %}</div>
+<div class="metrics">{% if n.previous is none and n.reference_previous is not none %}<div class="metric reference"><span class="metric-label">지난달(참고)</span><strong>{{ '%.1f%%'|format(n.reference_previous) }}</strong><div class="scale"><div class="bar prior" style="width:{{ n.reference_previous }}%"></div></div></div>{% else %}<div class="metric"><span class="metric-label">지난달</span><strong class="{{ 'withheld' if n.previous is none else '' }}">{{ '%.1f%%'|format(n.previous) if n.previous is not none else n.previous_label }}</strong>{% if n.previous is not none %}<div class="scale"><div class="bar prior" style="width:{{ n.previous }}%"></div></div>{% endif %}</div>{% endif %}
 <div class="metric current"><span class="metric-label">이번 달</span><strong class="{{ 'withheld' if n.current is none else '' }}">{{ '%.1f%%'|format(n.current) if n.current is not none else n.current_label }}</strong>{% if n.current is not none %}<div class="scale"><div class="bar" style="width:{{ n.current }}%"></div></div>{% endif %}</div>
 </div>
 {% if n.current is not none %}<p class="metric-plain">{% if n.current|round|int > 0 %}100번 물으면 약 <b>{{ n.current|round|int }}번</b> 우리 병원이 언급된 셈입니다.{% else %}다음 달에는 언급이 시작되도록 질문 범위를 넓히겠습니다.{% endif %}</p>{% endif %}

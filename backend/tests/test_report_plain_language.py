@@ -93,6 +93,10 @@ SCENARIOS = {
     "method": dict(sov_pct=40.0, prev_sov_pct=None, comparison_reason="MEASUREMENT_POLICY_CHANGED",
                    sov_coverage=_coverage(40.0, None, reason="MEASUREMENT_POLICY_CHANGED"),
                    attribution=_attribution(prior=True)),
+    # 측정 방식이 바뀐 달이지만 원장님이 지난달 받은 수치가 있다(몇 달째 관리해 온 병원).
+    "method_reference": dict(sov_pct=50.3, prev_sov_pct=None, comparison_reason="MEASUREMENT_POLICY_CHANGED",
+                             sov_coverage=_coverage(50.3, None, reason="MEASUREMENT_POLICY_CHANGED"),
+                             attribution=_attribution(prior=True), reference_prev_sov_pct=40.0),
     "unavailable": dict(sov_pct=None, prev_sov_pct=30.0, comparison_reason="NO_MATCHED_CELLS",
                         sov_coverage=_coverage(None, 30.0, reason="NO_MATCHED_CELLS"),
                         attribution=None, citations={"measured_cell_count": 0, "cited_items": []}),
@@ -156,6 +160,7 @@ def test_director_pdf_passes_the_medical_ad_filter(name):
         ("down", "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다.", "30.0%"),
         ("first", "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다.", "첫 측정"),
         ("method", "이번 달 결과를 새 기준점으로 삼겠습니다.", "비교 없음"),
+        ("method_reference", "측정 방식이 바뀐 달이라, 지난달 수치는 참고로 함께 보여 드립니다.", "40.0%"),
         ("unavailable", "이번 달 측정을 다시 진행해, 결과를 확인하는 대로 알려 드리겠습니다.", "비교 없음"),
         ("initial", "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다.", "첫 측정"),
     ],
@@ -297,3 +302,28 @@ def test_every_branch_renders_and_passes_the_director_pdf_validator(name):
     text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(rendered.pdf_bytes)).pages)
     assert internal_markers_in(text) == []
     assert "".join(view["narrative"].conclusion.split()) in "".join(text.split())
+
+
+def test_a_method_change_month_shows_last_month_as_reference_not_as_a_trend():
+    """몇 달째 관리해 온 병원에 '기준점'이라 말하지 않되, 측정 방식 변경을 증감으로 팔지 않는다."""
+    view = _view("method_reference")
+    narrative = view["narrative"]
+    page = _page(_html(view), 1)
+
+    assert narrative.previous is None  # 비교 값이 아니다 — 증감 문장·검증은 이것만 본다
+    assert narrative.reference_previous == 40.0
+    assert "지난달(참고)" in page and "40.0%" in page and "50.3%" in page
+    assert "지난달 수치는 참고로만 보여 드립니다" in page
+    assert "기준점" not in page
+    for trend in ("더 자주 언급됐습니다", "줄었", "늘었"):
+        assert trend not in narrative.conclusion
+
+
+def test_a_first_month_never_shows_a_reference_value():
+    view = monthly_view(
+        sov_pct=40.0, prev_sov_pct=None, comparison_reason="NO_PRIOR_MANIFEST",
+        sov_coverage=_coverage(40.0, None, reason="NO_PRIOR_MANIFEST"),
+        attribution=_attribution(prior=False), reference_prev_sov_pct=30.0,
+    )
+    assert view["narrative"].reference_previous is None
+    assert view["narrative"].conclusion == "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다."
