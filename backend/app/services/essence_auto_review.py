@@ -1019,6 +1019,7 @@ def _review_essence_candidate_shard(
         max_tokens=1600,
         output_schema=_REVIEW_OUTPUT_SCHEMA,
         attempts=2,
+        model=settings.CLAUDE_MODEL_REVIEW,
     )
     primary = EssenceAiReview(
         decision=str(response.get("decision") or "ESCALATE").strip().upper(),
@@ -1028,7 +1029,7 @@ def _review_essence_candidate_shard(
         # not by asking the model to copy dozens of UUIDs without omission.
         reviewed_evidence_note_ids=tuple(sorted(reviewed_ids)),
         summary=" ".join(str(response.get("summary") or "").split())[:300],
-        model=settings.CLAUDE_MODEL_FAST,
+        model=settings.CLAUDE_MODEL_REVIEW,
     )
     if primary.approves:
         return primary
@@ -1048,7 +1049,7 @@ def _review_essence_candidate_shard(
             findings=primary.findings or ("2차 독립 AI 검수가 자동 승인을 보류했습니다.",),
             reviewed_evidence_note_ids=tuple(sorted(reviewed_ids)),
             summary="관련 근거 미확인 — 1차 blocker와 연결된 근거를 특정하지 못해 2차 재정을 생략했습니다.",
-            model=settings.CLAUDE_MODEL_FAST,
+            model=settings.CLAUDE_MODEL_REVIEW,
         )
 
     adjudication_notes = [
@@ -1081,6 +1082,7 @@ def _review_essence_candidate_shard(
         max_tokens=1600,
         output_schema=_ADJUDICATION_OUTPUT_SCHEMA,
         attempts=2,
+        model=settings.CLAUDE_MODEL_REVIEW,
     )
     adjudication_findings = _review_findings(adjudication)
     adjudication_confidence = _review_confidence(adjudication)
@@ -1100,7 +1102,7 @@ def _review_essence_candidate_shard(
         findings=final_findings,
         reviewed_evidence_note_ids=tuple(sorted(reviewed_ids)),
         summary=" ".join(str(adjudication.get("summary") or "").split())[:300],
-        model=settings.CLAUDE_MODEL_FAST,
+        model=settings.CLAUDE_MODEL_REVIEW,
     )
 
 
@@ -1142,7 +1144,7 @@ def review_essence_candidate(
                     )
                 ),
                 summary=f"독립 검수 {index}/{len(shards)} 보류: {review.summary}"[:300],
-                model=settings.CLAUDE_MODEL_FAST,
+                model=settings.CLAUDE_MODEL_REVIEW,
             )
 
     reviewed_required_ids = {
@@ -1155,7 +1157,7 @@ def review_essence_candidate(
             findings=("후보의 연결 근거 중 독립 검수가 완료되지 않은 항목이 있습니다.",),
             reviewed_evidence_note_ids=tuple(sorted(reviewed_required_ids & required_ids)),
             summary="독립 검수 coverage 미완료",
-            model=settings.CLAUDE_MODEL_FAST,
+            model=settings.CLAUDE_MODEL_REVIEW,
         )
     return EssenceAiReview(
         decision="APPROVE",
@@ -1167,7 +1169,7 @@ def review_essence_candidate(
             if len(reviews) == 1
             else f"전체 근거 {len(notes)}건을 {len(reviews)}개 독립 검수 범위로 확인했습니다."
         ),
-        model=settings.CLAUDE_MODEL_FAST,
+        model=settings.CLAUDE_MODEL_REVIEW,
     )
 
 
@@ -1892,7 +1894,7 @@ def refresh_essence_snapshot(
             "new_version": candidate.version,
             "source_snapshot_hash": snapshot_hash,
             "source_asset_ids": [str(source.id) for source in current_sources],
-            "reviewer_model": ai_review.model if ai_review else settings.CLAUDE_MODEL_FAST,
+            "reviewer_model": ai_review.model if ai_review else settings.CLAUDE_MODEL_REVIEW,
             "reviewer_decision": ai_review.decision if ai_review else "NOT_RUN",
             "reviewer_confidence": ai_review.confidence if ai_review else 0.0,
             "reviewed_evidence_note_ids": (

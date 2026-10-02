@@ -57,6 +57,7 @@ _NON_VENDOR_PATH_SEGMENTS = frozenset(
 _OPENROUTER_MODEL_FIELDS = (
     "CLAUDE_MODEL",
     "CLAUDE_MODEL_FAST",
+    "CLAUDE_MODEL_REVIEW",
     "AUTOFILL_MODEL",
     "GOOGLE_IMAGE_MODEL",
     "OPENAI_IMAGE_MODEL",
@@ -444,6 +445,10 @@ class Settings(BaseSettings):
     # Anthropic 계열 — 콘텐츠 생성
     CLAUDE_MODEL: str = "anthropic/claude-sonnet-5.5"
     CLAUDE_MODEL_FAST: str = "anthropic/claude-haiku-4.5"
+    # 판단 작업 — 콘텐츠 독립 검수·Essence 자동 검수·근거 자료 추출. 의학 사실 오류·승인 근거
+    # 밖의 주장·의료광고 위반을 찾아내는 일이라 작성보다 어렵고, 출력이 짧아(검수 1회 입력 약
+    # 1.3만·출력 약 400토큰) 상위 모델로 올려도 비용 차이가 작다(2026-10-02, 월 수 달러).
+    CLAUDE_MODEL_REVIEW: str = "anthropic/claude-opus-5.5"
     # 프로파일 자동 채우기는 결정론적 grounding 검증이 뒤따르는 구조화 추출 작업이라
     # 빠른 모델로 충분하다. 비우면 CLAUDE_MODEL_FAST를 쓰고, 값을 넣으면 되돌릴 수 있다.
     AUTOFILL_MODEL: str = ""
