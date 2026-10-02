@@ -84,6 +84,13 @@ async def deliver_once(
         return TransportDecision(
             NotificationOutboxState.SENT, None, provider, attempted=True
         )
+    if 300 <= response.status_code <= 399:
+        # 리다이렉트는 Slack이 메시지를 받지 않았다는 뜻이다(httpx는 따라가지 않는다). 수신이
+        # 불확실한 것이 아니라 웹훅 주소가 잘못된 설정 오류다 — 2026-09-20부터 개발 채널 웹훅이
+        # 302를 돌려줘 알림마다 '수신 여부 확인' 사고가 열렸다.
+        return TransportDecision(
+            NotificationOutboxState.FAILED, "WEBHOOK_URL_REJECTED", provider, attempted=True
+        )
     if response.status_code == 429:
         return TransportDecision(
             NotificationOutboxState.RETRYING,

@@ -46,6 +46,7 @@ from app.services.site_revalidation_control import retry_delay
 from app.workers import generation_run_control
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
+from app.workers.incident_backlog import close_resolved_backlog_incidents
 from app.workers.task_incident_control import close_resolved_task_incidents
 
 _BATCH_SIZE: Final = 100
@@ -264,6 +265,7 @@ def reconcile() -> RecoveryCounts:
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
         resolved_task_incidents = close_resolved_task_incidents(db)
+        resolved_task_incidents += close_resolved_backlog_incidents(db)
         db.commit()
     return {
         "site_builds": site_builds,

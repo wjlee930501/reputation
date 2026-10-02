@@ -973,3 +973,48 @@ async def test_sent_delivery_incident_is_recovered_by_periodic_reconciliation(
         assert all(incident is not None for incident in incidents)
         assert all(incident.state == IncidentState.RECOVERED for incident in incidents)
         assert all(incident.recovered_at == _NOW for incident in incidents)
+
+
+@pytest.mark.asyncio
+async def test_a_redirect_is_one_channel_configuration_incident_not_a_delivery_check(
+    outbox_sessions,
+) -> None:
+    """302는 Slack이 받지 않았다는 뜻이다 — '수신 여부 확인' 사고를 알림마다 열지 않는다(2026-10-02)."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(302, headers={"Location": "https://example.invalid/"})
+
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-REDIRECT-1", handler)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-REDIRECT-2", handler)
+
+    async with outbox_sessions() as verify:
+        rows = (
+            await verify.execute(
+                select(NotificationOutbox).where(
+                    NotificationOutbox.dedupe_key.in_(("OPS-QA-T10-REDIRECT-1", "OPS-QA-T10-REDIRECT-2"))
+                )
+            )
+        ).scalars().all()
+        assert {row.state for row in rows} == {NotificationOutboxState.FAILED}
+        assert {row.safe_error_code for row in rows} == {"WEBHOOK_URL_REJECTED"}
+        incident_ids = {row.incident_id for row in rows}
+        assert len(incident_ids) == 1  # 채널 하나의 설정 오류 사고 하나
+        incident = await verify.get(Incident, incident_ids.pop())
+        assert incident.incident_type == "NOTIFICATION_DELIVERY_FAILED"
+        assert incident.hospital_id is None
+        assert incident.source_id == rows[0].channel
+        unknown = await verify.scalar(
+            select(func.count(Incident.id)).where(
+                Incident.incident_type == "NOTIFICATION_DELIVERY_UNKNOWN",
+                Incident.source_id.in_([str(row.id) for row in rows]),
+            )
+        )
+        assert unknown == 0
+        # 채널 단위 사고는 공용 픽스처 정리(outbox 단위) 밖이라 여기서 지운다.
+        await verify.execute(
+            text("UPDATE notification_outbox SET incident_id = NULL WHERE dedupe_key LIKE 'OPS-QA-T10-REDIRECT-%'")
+        )
+        await verify.execute(
+            text("DELETE FROM incidents WHERE id = :id"), {"id": incident.id}
+        )
+        await verify.commit()

@@ -25,6 +25,7 @@ def _no_resolved_task_incidents(monkeypatch):
     # 해결된 사고 정리는 실제 Postgres 테스트(test_resolved_task_incidents_postgres)가 맡는다.
     # 여기 가짜 세션은 그 질의를 흉내 내지 않는다.
     monkeypatch.setattr(autonomous_recovery, "close_resolved_task_incidents", lambda _db: 0)
+    monkeypatch.setattr(autonomous_recovery, "close_resolved_backlog_incidents", lambda _db: 0)
 
 
 class _ScalarResult:
