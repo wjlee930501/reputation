@@ -214,7 +214,11 @@ def compare_doctor_pdf_facts(
 
     `stored_facts`는 저장값에서 그대로 옮긴 사실이라 새 PDF에만 있어도 차이로 보지 않는다.
     """
-    old = set(pdf_fact_tokens(old_text, ignore=OLD_PDF_STATIC_TOKENS))
+    # 옛 PDF가 이미 새 템플릿으로 만든 버전이면 새 부록의 설명 예시도 들어 있다 — 고정 문구는
+    # 양쪽에서 똑같이 뺀다(2026-10-02: v2→v3 갱신이 '옛 PDF에만 있음: 6번중2번'으로 막혔다).
+    old = set(
+        pdf_fact_tokens(old_text, ignore=OLD_PDF_STATIC_TOKENS | NEW_PDF_STATIC_TOKENS)
+    )
     new = set(pdf_fact_tokens(new_text, ignore=NEW_PDF_STATIC_TOKENS))
     problems = [f"옛 PDF에만 있음: {token}" for token in sorted(old - new)]
     problems.extend(
