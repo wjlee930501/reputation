@@ -793,6 +793,42 @@ def same_measurement_basis(
     return _same_on(left, right, execution_keys + _QUERY_DESIGN_KEYS)
 
 
+# 월간 비교에서만 같은 답변 모델로 보는 이름들. 2026-10-02 운영 결정: ChatGPT 답변 모델을
+# gpt-5.6-luna → gpt-6-luna로 올리면서 9월↔10월 비교를 끊지 않는다(대표 결정, 책임 명시).
+# 측정 실행 조건(`same_execution_policy`)과 매니페스트 고정 판정에는 쓰지 않는다 — 접수한
+# 조건과 다른 모델로 재는 것을 막는 계약은 그대로다.
+_MONTHLY_COMPARISON_MODEL_EQUIVALENTS: dict[str, dict[str, str]] = {
+    "openai_model_query": {"gpt-5.6-luna": "gpt-luna", "gpt-6-luna": "gpt-luna"},
+}
+
+
+def _bare_model(value: object) -> object:
+    # 게이트웨이 슬러그(`openai/gpt-5.6-luna`)와 직결 이름(`gpt-5.6-luna`)은 같은 모델이다.
+    return value.rsplit("/", 1)[-1] if isinstance(value, str) else value
+
+
+def _for_monthly_comparison(protocol: dict) -> dict:
+    normalized = dict(protocol)
+    for key, aliases in _MONTHLY_COMPARISON_MODEL_EQUIVALENTS.items():
+        bare = _bare_model(normalized.get(key))
+        normalized[key] = aliases.get(bare, bare) if isinstance(bare, str) else bare
+    return normalized
+
+
+def comparable_across_months(
+    current: dict | None,
+    prior: dict | None,
+    *,
+    platforms: tuple[str, ...] | None = None,
+) -> bool:
+    """두 달의 측정을 나란히 비교해도 되는가 — 같은 측정 기반이되 동등 모델은 같게 본다."""
+    if not current or not prior:
+        return False
+    return same_measurement_basis(
+        _for_monthly_comparison(current), _for_monthly_comparison(prior), platforms=platforms
+    )
+
+
 def record_is_confirmed(record) -> bool:
     """이 측정 레코드가 언급률 분모에 들어갈 자격이 있는가 — **모든 집계가 이걸 쓴다.**
 

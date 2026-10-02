@@ -376,3 +376,34 @@ def test_measurement_gate_is_skipped_only_for_an_allowed_template_refresh(
         assert "allow" not in seen
     else:
         assert seen["allow"] is True
+
+
+def test_last_month_reference_value_is_a_known_fact_not_a_new_number(monkeypatch):
+    """측정 방식이 바뀐 달의 '지난달(참고)' 칸은 지난달 보고서에 저장된 값이다 — 그 값만 허용한다."""
+    from types import SimpleNamespace
+
+    from app.services.monthly_template_refresh import compare_doctor_pdf_facts
+    from app.utils import monthly_template_refresh as refresh_cli
+    from app.workers import tasks
+
+    seen = {}
+
+    def reported(_db, hospital_id, year, month):
+        seen["period"] = (hospital_id, year, month)
+        return 40.0
+
+    monkeypatch.setattr(tasks, "reported_monthly_sov_pct", reported)
+    report = SimpleNamespace(hospital_id="h-1", period_year=2026, period_month=9)
+
+    facts = refresh_cli._prior_reference_fact(None, report)
+
+    assert facts == frozenset({"40.0%"})
+    assert seen["period"] == ("h-1", 2026, 8)
+    old = "이번 달 50.3% 12편 중 12편"
+    assert compare_doctor_pdf_facts(old, old + " 지난달(참고) 40.0%", stored_facts=facts) == []
+    assert compare_doctor_pdf_facts(old, old + " 지난달(참고) 41.0%", stored_facts=facts) == [
+        "새 PDF에만 있음: 41.0%"
+    ]
+    january = SimpleNamespace(hospital_id="h-1", period_year=2027, period_month=1)
+    refresh_cli._prior_reference_fact(None, january)
+    assert seen["period"] == ("h-1", 2026, 12)

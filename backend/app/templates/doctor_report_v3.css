@@ -19,6 +19,7 @@
 .monthly .metrics { margin-top:var(--s2); }
 .monthly .metric strong { font-size:40pt; }
 .monthly .metric strong.withheld { font-size:22pt; }
+.monthly .metric.reference strong { color:var(--muted); }
 .monthly .metric-plain { font-size:12pt; font-weight:600; margin:var(--s3) 0 var(--s1); }
 .monthly .metric-plain b { color:var(--accent-ink); }
 

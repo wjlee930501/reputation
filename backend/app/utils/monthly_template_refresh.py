@@ -149,12 +149,30 @@ def precheck_hospital(
                 for problem in compare_doctor_pdf_facts(
                     old_text,
                     _pdf_text(rendered.pdf_bytes),
-                    stored_facts=stored_pdf_fact_tokens(latest.sov_summary),
+                    stored_facts=stored_pdf_fact_tokens(latest.sov_summary)
+                    | _prior_reference_fact(db, latest),
                 ):
                     verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(
         hospital.id, hospital.name, latest.version if latest is not None else None, verdict
     )
+
+
+def _prior_reference_fact(db, report: MonthlyReport) -> frozenset[str]:
+    """지난달 보고서에 저장된 언급 비율 — 새 PDF가 '지난달(참고)' 칸에 옮겨 적는 사실.
+
+    측정 방식이 바뀌어 비교하지 않는 달에 새 템플릿이 처음 보여 주는 숫자다. 새 뷰가 아니라
+    지난달 보고서 행에서 따로 읽어, 그 값과 정확히 같을 때만 숫자가 바뀐 것으로 보지 않는다.
+    """
+    from app.workers.tasks import reported_monthly_sov_pct
+
+    prior_year, prior_month = (
+        (report.period_year - 1, 12)
+        if report.period_month == 1
+        else (report.period_year, report.period_month - 1)
+    )
+    value = reported_monthly_sov_pct(db, report.hospital_id, prior_year, prior_month)
+    return frozenset() if value is None else frozenset({f"{value:.1f}%"})
 
 
 def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> HospitalResult:
@@ -202,7 +220,10 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
     new_text = _stored_doctor_text(db, latest, verdict)
     if old_text is not None and new_text is not None:
         for problem in compare_doctor_pdf_facts(
-            old_text, new_text, stored_facts=stored_pdf_fact_tokens(previous.sov_summary)
+            old_text,
+            new_text,
+            stored_facts=stored_pdf_fact_tokens(previous.sov_summary)
+            | _prior_reference_fact(db, previous),
         ):
             verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(hospital.id, hospital.name, latest.version, verdict)

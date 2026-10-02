@@ -97,7 +97,13 @@ def v3_expectation(
         "다음 달에 할 일",
         n.priorities[0],
         f"{n.current:.1f}%" if n.current is not None else n.current_label,
-        f"{n.previous:.1f}%" if n.previous is not None else n.previous_label,
+        (
+            f"{n.previous:.1f}%"
+            if n.previous is not None
+            else f"{n.reference_previous:.1f}%"
+            if n.reference_previous is not None
+            else n.previous_label
+        ),
     ]
     if n.previous is None and n.current is not None:
         page1.append(n.comparison_note)

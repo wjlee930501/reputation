@@ -10010,6 +10010,35 @@ def _prior_monthly_manifest(db, hospital_id: uuid.UUID, now: arrow.Arrow):
     ).scalar_one_or_none()
 
 
+def _prior_reported_sov_pct(db, prior_manifest) -> float | None:
+    """원장님이 지난달 받은 언급 비율 — 그 달 최신 월간 보고서에 저장된 값.
+
+    측정 방식이 바뀌어 나란히 비교하지 않는 달에 참고로만 보여 준다(비교 값이 아니다).
+    """
+    if prior_manifest is None:
+        return None
+    return reported_monthly_sov_pct(
+        db, prior_manifest.hospital_id, prior_manifest.period_year, prior_manifest.period_month
+    )
+
+
+def reported_monthly_sov_pct(db, hospital_id, year: int, month: int) -> float | None:
+    """그 달 최신 월간 보고서에 저장된 언급 비율. 없거나 숫자가 아니면 None."""
+    row = db.execute(
+        select(MonthlyReport.sov_summary)
+        .where(
+            MonthlyReport.hospital_id == hospital_id,
+            MonthlyReport.period_year == year,
+            MonthlyReport.period_month == month,
+            MonthlyReport.report_type == "MONTHLY",
+        )
+        .order_by(MonthlyReport.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    value = (row or {}).get("sov_pct") if isinstance(row, dict) else None
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def _finish_monthly_operation_run(
     db,
     run_id: uuid.UUID | None,
@@ -10467,6 +10496,7 @@ def _build_monthly_report_for_hospital(
         sov_coverage=monthly_sov_payload,
         comparison_reason=monthly_sov_payload["comparison"]["reason"],
         cumulative_published_count=cumulative_published_count,
+        reference_prev_sov_pct=_prior_reported_sov_pct(db, prior_manifest),
     )
     talking_points = list(doctor_view["talking_points"])
 
@@ -10788,6 +10818,7 @@ def build_monthly_template_refresh_plan(
         sov_coverage=sov,
         comparison_reason=(sov.get("comparison") or {}).get("reason"),
         cumulative_published_count=cumulative_published_count,
+        reference_prev_sov_pct=_prior_reported_sov_pct(db, prior_manifest),
     )
     stored_points = number_tokens(content.get("talking_points") or [])
     new_points = number_tokens(doctor_view["talking_points"])

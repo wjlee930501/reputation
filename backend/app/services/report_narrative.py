@@ -64,6 +64,9 @@ class MonthlyNarrative:
     # 숫자가 없을 때 칸에 쓰는 말. 첫 측정과 '비교하지 않음'을 구분한다.
     previous_label: str = "비교 없음"
     current_label: str = "측정 못 함"
+    # 측정 방식이 바뀌어 나란히 비교하지 않는 달에도 원장님이 지난달 받은 수치는 참고로
+    # 보여 준다. `previous`(비교 값)와 섞지 않는다 — 증감 문장·검증은 `previous`만 본다.
+    reference_previous: float | None = None
 
 
 # 비교하지 않은 이유를 원장님이 읽을 수 있는 한 문장으로. 한 보고서에는 하나만 나온다.
@@ -85,6 +88,14 @@ _COMPARISON_NOTES = {
     "SAMPLE_SHAPE_CHANGED": f"질문마다 물어본 횟수가 지난달과 달라 {_NOT_COMPARED}",
 }
 _DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건인지 확인하지 못해 {_NOT_COMPARED}"
+_REFERENCE_CONCLUSION = "측정 방식이 바뀐 달이라, 지난달 수치는 참고로 함께 보여 드립니다."
+_REFERENCE_TAIL = "지난달 수치는 참고로만 보여 드립니다."
+_REFERENCE_NOTES = {
+    "MEASUREMENT_POLICY_CHANGED": (
+        "AI 답변을 받는 방식이 바뀌어 지난달 수치는 참고로만 보여 드립니다. "
+        "다음 달부터 같은 방식으로 비교해 드립니다."
+    ),
+}
 _COMPARABLE_NOTE = "지난달과 같은 질문을 같은 방식으로 물어본 결과끼리 비교했습니다."
 # 같은 종류의 할 일이 여러 줄일 때 문장이 똑같이 반복되지 않게 돌려 쓴다.
 _LOST_MOVES = (
@@ -149,6 +160,7 @@ def build_monthly_narrative(
     comparison_reason: str | None,
     shortfall: int,
     protocol_label: str | None = None,
+    reference_previous: float | None = None,
 ) -> MonthlyNarrative:
     data = coverage or {}
     comparison = data.get("comparison") or {}
@@ -167,7 +179,24 @@ def build_monthly_narrative(
     value = comparison.get("current_sov_pct") if comparable else current
     reason = comparison.get("reason") or comparison_reason
     first = not comparable and (kind == "INITIAL" or reason == "NO_PRIOR_MANIFEST")
-    conclusion = _conclusion(value, prior, first=first)
+    # 나란히 비교하지 않는 달이라도 원장님이 지난달 받은 수치가 있으면 참고로 보여 준다.
+    # 몇 달째 관리해 온 병원에 "기준점"이라고 말하지 않는다(2026-10-02).
+    reference = (
+        reference_previous
+        if (
+            kind == "MONTHLY"
+            and not comparable
+            and not first
+            and value is not None
+            and reference_previous is not None
+            and isfinite(reference_previous)
+            and 0 <= reference_previous <= 100
+        )
+        else None
+    )
+    conclusion = (
+        _REFERENCE_CONCLUSION if reference is not None else _conclusion(value, prior, first=first)
+    )
     if comparable:
         note = _COMPARABLE_NOTE
     elif value is None:
@@ -176,6 +205,8 @@ def build_monthly_narrative(
         note = _FIRST_MEASUREMENT_NOTE
     else:
         note = _COMPARISON_NOTES.get(reason, _DEFAULT_COMPARISON_NOTE)
+    if reference is not None:
+        note = _REFERENCE_NOTES.get(reason, f"{note} {_REFERENCE_TAIL}")
     platform_names = "·".join(
         dict.fromkeys(platform_name(row["platform"]) for row in data.get("platforms", []))
     ) or "ChatGPT·Gemini"
@@ -337,5 +368,6 @@ def build_monthly_narrative(
             else "다음 달에도 계획한 글을 차례로 올리겠습니다."
         ),
         previous_label="첫 측정" if first else "비교 없음",
+        reference_previous=reference,
         current_label="측정 못 함",
     )
