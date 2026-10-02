@@ -46,6 +46,7 @@ from app.services.site_revalidation_control import retry_delay
 from app.workers import generation_run_control
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
+from app.workers.task_incident_control import close_resolved_task_incidents
 
 _BATCH_SIZE: Final = 100
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
@@ -121,6 +122,7 @@ class RecoveryCounts(TypedDict):
     site_revalidations: int
     operation_runs: int
     image_recertifications: int
+    resolved_task_incidents: int
 
 
 def _now() -> datetime:
@@ -261,12 +263,14 @@ def reconcile() -> RecoveryCounts:
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
+        resolved_task_incidents = close_resolved_task_incidents(db)
         db.commit()
     return {
         "site_builds": site_builds,
         "site_revalidations": len(runs),
         "operation_runs": operation_redispatches,
         "image_recertifications": recertifications,
+        "resolved_task_incidents": resolved_task_incidents,
     }
 
 

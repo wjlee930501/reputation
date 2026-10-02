@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import arrow
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
@@ -17,6 +18,13 @@ from app.services import published_image_recertification as recertification
 from app.services.image_engine import image_subject_hash
 from app.services.incident_safety import site_build_incident_key
 from app.workers import autonomous_recovery, tasks
+
+
+@pytest.fixture(autouse=True)
+def _no_resolved_task_incidents(monkeypatch):
+    # 해결된 사고 정리는 실제 Postgres 테스트(test_resolved_task_incidents_postgres)가 맡는다.
+    # 여기 가짜 세션은 그 질의를 흉내 내지 않는다.
+    monkeypatch.setattr(autonomous_recovery, "close_resolved_task_incidents", lambda _db: 0)
 
 
 class _ScalarResult:
@@ -194,6 +202,7 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
         "site_revalidations": 1,
         "operation_runs": 0,
         "image_recertifications": 0,
+        "resolved_task_incidents": 0,
     }
     assert dispatched == [
         (
@@ -554,6 +563,7 @@ def test_site_build_incident_race_falls_back_to_the_committed_row(monkeypatch) -
         "site_revalidations": 0,
         "operation_runs": 0,
         "image_recertifications": 0,
+        "resolved_task_incidents": 0,
     }
     assert session.added == []
     assert winner.occurrence_count == 1
@@ -725,6 +735,7 @@ def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -
         "site_revalidations": 0,
         "operation_runs": 1,
         "image_recertifications": 0,
+        "resolved_task_incidents": 0,
     }
     assert dispatched == [
         (
@@ -782,6 +793,7 @@ def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch
         "site_revalidations": 0,
         "operation_runs": 0,
         "image_recertifications": 0,
+        "resolved_task_incidents": 0,
     }
     assert run.state == OperationRunState.QUEUED
     assert run.queued_at == now - timedelta(minutes=3)
@@ -916,6 +928,7 @@ def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypa
         "site_revalidations": 0,
         "operation_runs": 1,
         "image_recertifications": 0,
+        "resolved_task_incidents": 0,
     }
     assert dispatched == [
         (
@@ -987,6 +1000,7 @@ def test_reconciler_fails_unrebuildable_dispatch_with_incident_and_open_intent(
         "site_revalidations": 0,
         "operation_runs": 0,
         "image_recertifications": 0,
+        "resolved_task_incidents": 0,
     }
     assert run.state == OperationRunState.FAILED
     assert run.safe_error_code == "UNSAFE_STORED_DISPATCH"
