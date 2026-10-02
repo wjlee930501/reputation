@@ -6,13 +6,14 @@ import uuid
 from datetime import UTC, datetime
 from typing import Protocol
 
-from sqlalchemy import case, select, update
+from sqlalchemy import String, and_, case, exists, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
 from app.models.audit import AdminAuditLog
+from app.models.content import ContentItem
 from app.models.hospital import Hospital
 from app.models.operations import (
     Incident,
@@ -21,6 +22,7 @@ from app.models.operations import (
     NotificationOutbox,
     NotificationOutboxState,
     OperationRun,
+    OperationRunState,
 )
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
@@ -278,6 +280,110 @@ def _tracked_run(db: Session, run_id: uuid.UUID, task_id: str) -> OperationRun |
     return db.scalar(
         select(OperationRun).where(OperationRun.id == run_id, OperationRun.task_id == task_id)
     )
+
+
+# 한 tick에 닫는 해결된 사고 상한. 밀린 백로그도 몇 분 안에 비워진다.
+RESOLVED_TASK_INCIDENT_BATCH = 50
+
+
+def _dispatch_target(payload_column):
+    return payload_column["_dispatch"]["target_id"].as_string()
+
+
+def _resolved_run_condition():
+    """이 실행이 맡았던 일이 이미 끝났다는 DB 근거.
+
+    사고는 실행(run) 하나에 묶여 그 실행의 성공만 닫았다(`record_task_success`). 다음 주
+    측정·다음 생성처럼 **새 실행**이 같은 일을 끝내도 옛 사고는 계속 열려 일일 요약의
+    '백그라운드 작업 중단'으로 쌓였다(2026-10-02 운영 96건 중 86건). 셋 중 하나면 해결이다.
+    - 그 실행 자체가 결국 SUCCEEDED로 끝났다(실패 신호 뒤 같은 run의 재시도가 성공).
+    - 같은 종류·같은 대상(`_dispatch.target_id`)의 더 나중 실행이 SUCCEEDED다.
+    - 대상이 콘텐츠이고 그 글이 실행 뒤에 처음 공개됐다.
+    """
+
+    later = OperationRun.__table__.alias("later_run")
+    target = _dispatch_target(OperationRun.request_payload)
+    later_succeeded = exists().where(
+        later.c.operation_type == OperationRun.operation_type,
+        _dispatch_target(later.c.request_payload) == target,
+        later.c.state == OperationRunState.SUCCEEDED.value,
+        later.c.requested_at > OperationRun.requested_at,
+    )
+    published_after = and_(
+        OperationRun.request_payload["_dispatch"]["target_type"].as_string() == "content_item",
+        exists().where(
+            ContentItem.id.cast(String) == target,
+            ContentItem.first_published_at > OperationRun.requested_at,
+        ),
+    )
+    return or_(
+        OperationRun.state == OperationRunState.SUCCEEDED.value,
+        later_succeeded,
+        published_after,
+    )
+
+
+def close_resolved_task_incidents(
+    db: Session, *, limit: int = RESOLVED_TASK_INCIDENT_BATCH
+) -> int:
+    """이미 해결된 일을 가리키는 generic 작업 실패 사고를 조용히 닫는다.
+
+    Slack 복구 알림은 보내지 않는다 — 지나간 일을 한꺼번에 정리하는 것이라 채널에 복구
+    메시지가 쏟아진다. 감사 기록만 남기고, 사람에게 보이는 표면(운영센터·일일 요약)에서
+    빠지게 한다. 커밋은 호출자가 한다.
+    """
+
+    live = (IncidentState.OPEN.value, IncidentState.RETRYING.value)
+    candidates = list(
+        db.execute(
+            select(Incident)
+            .join(OperationRun, OperationRun.id == Incident.operation_run_id)
+            .where(
+                Incident.incident_type == "BACKGROUND_TASK_FAILED",
+                Incident.source_type == "OPERATION_RUN",
+                Incident.state.in_(live),
+                _resolved_run_condition(),
+            )
+            .order_by(Incident.created_at, Incident.id)
+            .with_for_update(of=Incident, skip_locked=True)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    closed = 0
+    for incident in candidates:
+        current: Incident | None = incident
+        if current.state == IncidentState.OPEN.value:
+            current = _transition_incident(
+                db, current, expected_state=IncidentState.OPEN, next_state=IncidentState.RETRYING
+            )
+        if current is None:
+            continue
+        current = _transition_incident(
+            db,
+            current,
+            expected_state=IncidentState.RETRYING,
+            next_state=IncidentState.RECOVERED,
+            recovered=True,
+        )
+        if current is None:
+            continue
+        acknowledged = _transition_incident(
+            db,
+            current,
+            expected_state=IncidentState.RECOVERED,
+            next_state=IncidentState.ACKNOWLEDGED,
+            acknowledged=True,
+        )
+        _audit(
+            db,
+            acknowledged or current,
+            "incident_recovered_by_later_success",
+            detail_extra={"slack_suppressed": True},
+        )
+        closed += 1
+    return closed
 
 
 def _incident_key(run_id: uuid.UUID) -> str:

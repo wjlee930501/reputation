@@ -186,21 +186,26 @@ async def _finalize(
             .values(incident_id=incident_id, updated_at=now)
         )
     if finalized and decision.state == NotificationOutboxState.FAILED:
+        configuration_error = decision.code in {
+            "WEBHOOK_NOT_CONFIGURED",
+            "WEBHOOK_URL_REJECTED",
+            "SLACK_PERMANENT_ERROR",
+        }
+        # 웹훅 주소 자체의 문제는 채널 하나의 사고다. 메시지 하나가 거절된 4xx는 그 알림의 일이다.
+        channel_wide = decision.code in {"WEBHOOK_NOT_CONFIGURED", "WEBHOOK_URL_REJECTED"}
         fingerprint = (
             IncidentFingerprint.CONFIGURATION_ERROR
-            if decision.code in {
-                "WEBHOOK_NOT_CONFIGURED",
-                "WEBHOOK_URL_REJECTED",
-                "SLACK_PERMANENT_ERROR",
-            }
+            if configuration_error
             else IncidentFingerprint.DELIVERY_FAILED
         )
         incident = await open_or_touch_incident(
             db,
             IncidentOpenRequest(
                 pipeline="notification",
-                object_type="outbox",
-                object_id=str(claimed.id),
+                # 설정 오류는 채널 하나의 문제다 — 알림마다 사고를 열면 웹훅 하나가 잘못됐을 때
+                # 같은 사고가 수십 건 쌓인다. 일시 전송 실패만 알림 단위로 남긴다.
+                object_type="channel" if channel_wide else "outbox",
+                object_id=claimed.channel if channel_wide else str(claimed.id),
                 fingerprint=fingerprint,
                 incident_type="NOTIFICATION_DELIVERY_FAILED",
                 severity=IncidentSeverity.HIGH,
@@ -208,9 +213,9 @@ async def _finalize(
                 source_type="NOTIFICATION_OUTBOX",
                 next_action="Slack 설정을 확인한 뒤 알림을 수동 재시도해 주세요.",
                 admin_path="/operations",
-                hospital_id=claimed.hospital_id,
-                operation_run_id=claimed.operation_run_id,
-                source_id=str(claimed.id),
+                hospital_id=None if channel_wide else claimed.hospital_id,
+                operation_run_id=None if channel_wide else claimed.operation_run_id,
+                source_id=claimed.channel if channel_wide else str(claimed.id),
                 safe_error_code=decision.code,
                 safe_error_message=safe_error_message(decision.code),
             ),
