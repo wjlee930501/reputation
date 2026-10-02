@@ -407,3 +407,16 @@ def test_last_month_reference_value_is_a_known_fact_not_a_new_number(monkeypatch
     january = SimpleNamespace(hospital_id="h-1", period_year=2027, period_month=1)
     refresh_cli._prior_reference_fact(None, january)
     assert seen["period"] == ("h-1", 2026, 12)
+
+
+def test_a_refresh_of_a_new_template_version_ignores_the_appendix_example_on_both_sides():
+    """옛 버전도 새 템플릿이면 부록의 설명 예시 '6번 중 2번'이 양쪽에 있다 — 숫자 사실이 아니다."""
+    from app.services.monthly_template_refresh import compare_doctor_pdf_facts
+
+    old = "이번 달 50.3% 12편 중 12편 예: 6번 중 2번"
+    assert compare_doctor_pdf_facts(old, old) == []
+    assert compare_doctor_pdf_facts(old, "이번 달 50.3% 12편 중 12편") == []
+    assert compare_doctor_pdf_facts(old, "이번 달 50.3% 12편 중 11편 예: 6번 중 2번") == [
+        "옛 PDF에만 있음: 12편중12편",
+        "새 PDF에만 있음: 12편중11편",
+    ]
