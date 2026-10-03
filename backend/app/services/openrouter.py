@@ -324,6 +324,7 @@ async def create_required_tool_completion(
     *,
     tool_name: str,
     on_forced_tool_choice_rejected: Callable[[BaseException], Awaitable[None]] | None = None,
+    auto_max_tokens: int | None = None,
     **request: Any,
 ) -> Any:
     """`tool_name` 호출을 요구하는 chat completion 한 건(HTTP 최대 2회).
@@ -334,6 +335,10 @@ async def create_required_tool_completion(
     넘겨 호출부가 시도 원장과 실제 호출 계수에 따로 남기게 한다. 이미 기억된 모델은
     처음부터 auto로 보낸다. auto 응답에 도구 호출이 없으면 호출부의 기존 파서가
     처리한다. `extra_body` 등 나머지 인자는 두 시도 모두 그대로 전달한다.
+
+    `auto_max_tokens`를 주면 auto 시도에만 그 `max_tokens`를 쓴다. 강제를 거절하는 모델은
+    사고(thinking)를 끌 수 없는 모델이라, 사고 토큰이 같은 `max_tokens` 안에서 먼저 쓰인다.
+    강제 시도의 payload는 바뀌지 않는다.
     """
     model = str(request.get("model") or "")
     loop = asyncio.get_running_loop()
@@ -355,13 +360,14 @@ async def create_required_tool_completion(
             )
             if on_forced_tool_choice_rejected is not None:
                 await on_forced_tool_choice_rejected(exc)
-    return await send(
-        {
-            **request,
-            "tool_choice": "auto",
-            "messages": require_tool_call_messages(request["messages"], tool_name=tool_name),
-        }
-    )
+    auto_request = {
+        **request,
+        "tool_choice": "auto",
+        "messages": require_tool_call_messages(request["messages"], tool_name=tool_name),
+    }
+    if auto_max_tokens is not None:
+        auto_request["max_tokens"] = auto_max_tokens
+    return await send(auto_request)
 
 
 # ── 이미지 생성 — 전용 /images 엔드포인트 ────────────────────────────

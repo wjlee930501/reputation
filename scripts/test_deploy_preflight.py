@@ -476,6 +476,29 @@ def test_slug_gate_blocks_provider_direct_model_names() -> None:
         assert _slug_gate(key, value) == 1, f"{key}={value} 가 통과했다 (접두사가 없는데)"
 
 
+def test_slug_gate_covers_every_openrouter_model_setting() -> None:
+    """config.py가 슬러그로 검증하는 모델 설정은 배포 전 검사도 모두 본다.
+
+    `CLAUDE_MODEL_REVIEW`(독립 검수)가 목록에서 빠져 있어, 잘못된 값이 배포를 통과하고
+    런타임 부팅에서야 막혔다.
+    """
+    config_text = (PROJECT_ROOT / "backend" / "app" / "core" / "config.py").read_text()
+    block = re.search(r"^_OPENROUTER_MODEL_FIELDS = \((.*?)^\)", config_text, re.M | re.S)
+    assert block is not None, "config.py의 _OPENROUTER_MODEL_FIELDS를 찾지 못했다"
+    config_fields = set(re.findall(r'"([A-Z][A-Z0-9_]*)"', block.group(1)))
+    deploy_names = set(
+        re.findall(
+            r'^\s*"([A-Z][A-Z0-9_]*)"\s*$',
+            _bash_array_block(DEPLOY_SCRIPT.read_text(), "OPENROUTER_MODEL_ENV_NAMES=("),
+            re.M,
+        )
+    )
+    assert "CLAUDE_MODEL_REVIEW" in config_fields
+    assert deploy_names == config_fields
+    assert _slug_gate("CLAUDE_MODEL_REVIEW", "claude-opus-5-5") == 1
+    assert _slug_gate("CLAUDE_MODEL_REVIEW", "anthropic/claude-opus-5.5") == 0
+
+
 def test_slug_gate_blocks_provider_resource_paths() -> None:
     """슬래시가 있다고 슬러그인 것은 아니다 — 마지막 `/` 뒤만 보는 검사의 구멍."""
     for key, value in (

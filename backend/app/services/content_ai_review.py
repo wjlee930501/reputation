@@ -29,6 +29,12 @@ from app.services.must_use_verbatim import matched_must_use_message
 logger = logging.getLogger(__name__)
 
 _MAX_FINDINGS = 5
+# 판정 도구 입력(지적 5개·요약 300자)은 1200 토큰 안에 들어간다. 강제 tool_choice를 거절하는
+# 모델(Opus 5.5 등)은 사고(thinking)를 끌 수 없고 사고 토큰도 `max_tokens`에서 먼저 빠지므로,
+# 그 모델이 쓰는 auto 경로만 사고와 판정이 함께 들어갈 여유를 준다. 상한일 뿐 과금은 실제
+# 생성 토큰만큼이며, 호출 수 예약(cost_guard)은 그대로다.
+_REVIEW_MAX_TOKENS = 1200
+_REVIEW_AUTO_TOOL_CHOICE_MAX_TOKENS = 8000
 # 검수자의 자기 확신도는 안전 신호가 아니라 표본 잡음이다. 0.85는 정상 후보를
 # 대량으로 UNCERTAIN으로 만들었다. 모델이 명시한 HARD/UNCERTAIN finding은
 # 확신도와 무관하게 그대로 차단한다.
@@ -821,8 +827,9 @@ async def _provider_review(
             client,
             tool_name=REVIEW_TOOL_NAME,
             on_forced_tool_choice_rejected=_begin_auto_tool_choice_attempt,
+            auto_max_tokens=_REVIEW_AUTO_TOOL_CHOICE_MAX_TOKENS,
             model=model,
-            max_tokens=1200,
+            max_tokens=_REVIEW_MAX_TOKENS,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {
@@ -868,7 +875,13 @@ async def _provider_review(
     # 않았는데 안전 게이트를 여는 셈이므로, 작가 경로(content_engine)와 같게 여기서 끊는다.
     stop_reason = llm_structured_output.incomplete_reason(response)
     if stop_reason is not None:
-        logger.warning("Independent content AI review truncated: stop_reason=%s", stop_reason)
+        logger.warning(
+            "Independent content AI review truncated: stop_reason=%s "
+            "completion_tokens=%s reasoning_tokens=%s",
+            stop_reason,
+            getattr(usage, "completion_tokens", None),
+            getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None),
+        )
         return _unavailable_review(
             content=content,
             model=model,
