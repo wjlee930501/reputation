@@ -1072,6 +1072,17 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # `scheduled_recovery_owns_blocker`와는 다른 판정이다 — 그 함수는 환경 원인을
         # 증상 코드와 다른 원인으로 보고 소유를 인정하지 않는다.
         return
+    if (
+        code == "CONTENT_NOT_GENERATED"
+        and stored_reason
+        and stored.get("context") != _generation_attempt_context(item, philosophy)
+    ):
+        # 저장된 기록이 다른 생성 문맥(운영 기준·유형·측정 질문·검사 규칙 판)의 것이다. 문맥이
+        # 바뀐 빈 슬롯은 로더가 한 번 더 집는다(`_generation_attempt_is_unchanged`) — 아직 그
+        # 시도 전이다. 여기서 증상을 지금 문맥의 기한 없는 OPERATOR_REQUIRED로 쓰면 그 시도가
+        # 작가 0회로 사라진다(2026-10-02 gate_catalog 갱신 뒤 09:00 발행기가 4건을 그렇게
+        # 굳혔다). 기록이 아예 없는 빈 슬롯은 종전대로 아래에서 기록한다.
+        return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 
 
