@@ -32,10 +32,10 @@ class PublishedWork:
     def citation_label(self) -> str:
         """본문 카드의 한 줄. 미확인(None)과 확인한 0을 다르게 말한다."""
         if self.cited_cells is None:
-            return "AI 답변에 쓰였는지는 아직 확인하지 못했습니다"
+            return "AI 답변의 출처로 쓰였는지 아직 확인하지 못했습니다"
         if self.cited_cells == 0:
-            return "이번 달 AI 답변의 출처로는 아직 쓰이지 않았습니다"
-        return f"AI 답변의 출처로 쓰였습니다 · 질문 {self.cited_cells}건"
+            return "아직 AI 답변의 출처로 쓰인 적은 없습니다"
+        return f"질문 {self.cited_cells}건에서 AI 답변의 출처로 쓰였습니다"
 
     @property
     def appendix_label(self) -> str:
@@ -64,88 +64,131 @@ class MonthlyNarrative:
     # 숫자가 없을 때 칸에 쓰는 말. 첫 측정과 '비교하지 않음'을 구분한다.
     previous_label: str = "비교 없음"
     current_label: str = "측정 못 함"
-    # 측정 방식이 바뀌어 나란히 비교하지 않는 달에도 원장님이 지난달 받은 수치는 참고로
+    # 측정 방식이 바뀌어 직접 비교하지 않는 달에도 원장님이 지난달 받은 수치는 참고로
     # 보여 준다. `previous`(비교 값)와 섞지 않는다 — 증감 문장·검증은 `previous`만 본다.
     reference_previous: float | None = None
+    # 각 장의 서술 문단. 원장이 숫자의 의미를 바로 이해하도록 돕는다.
+    result_story: str = ""
+    work_story: str = ""
+    plan_story: str = ""
 
 
 # 비교하지 않은 이유를 원장님이 읽을 수 있는 한 문장으로. 한 보고서에는 하나만 나온다.
-_NOT_COMPARED = "이번 달은 지난달과 나란히 비교하지 않았습니다."
+_NOT_COMPARED = "지난달 결과와 직접 비교하지는 않았습니다."
 _FIRST_MEASUREMENT_NOTE = (
-    "첫 측정이라 지난달과 비교할 숫자가 없습니다. 다음 달부터 이번 달과 나란히 비교해 드립니다."
+    "이번이 첫 측정이라 견줄 지난달 숫자는 아직 없습니다. 다음 달부터 이번 결과와 직접 비교해 보여 드리겠습니다."
 )
 _COMPARISON_NOTES = {
     "NO_PRIOR_MANIFEST": _FIRST_MEASUREMENT_NOTE,
-    "ANSWER_MODEL_CHANGED": f"AI 서비스의 답변 모델이 바뀌어 {_NOT_COMPARED}",
+    "ANSWER_MODEL_CHANGED": f"AI 서비스의 답변 모델이 바뀌어서 {_NOT_COMPARED}",
     "MEASUREMENT_POLICY_CHANGED": (
-        f"측정 방식이 바뀌어 {_NOT_COMPARED} 다음 달부터 다시 비교해 드립니다."
+        f"측정 방식이 바뀌어서 {_NOT_COMPARED} 다음 달부터 다시 견주어 보여 드리겠습니다."
     ),
-    "QUERY_TEXT_CHANGED": f"물어보는 질문 문장이 바뀌어 {_NOT_COMPARED}",
-    "PLATFORM_COHORT_MISSING": f"두 달에 물어본 AI 서비스가 달라 {_NOT_COMPARED}",
-    "INTENT_SNAPSHOT_MISSING": f"지난달 질문 기록이 온전하지 않아 {_NOT_COMPARED}",
-    "NO_MATCHED_CELLS": f"두 달에 똑같이 물어본 질문이 없어 {_NOT_COMPARED}",
-    "ANSWER_MODEL_UNKNOWN": f"어떤 AI 모델이 답했는지 기록이 없어 {_NOT_COMPARED}",
-    "SAMPLE_SHAPE_CHANGED": f"질문마다 물어본 횟수가 지난달과 달라 {_NOT_COMPARED}",
+    "QUERY_TEXT_CHANGED": f"AI에게 묻는 질문 문장이 달라져서 {_NOT_COMPARED}",
+    "PLATFORM_COHORT_MISSING": f"두 달 동안 물어본 AI 서비스가 서로 달라서 {_NOT_COMPARED}",
+    "INTENT_SNAPSHOT_MISSING": f"지난달 질문 기록이 일부 비어 있어서 {_NOT_COMPARED}",
+    "NO_MATCHED_CELLS": f"두 달에 걸쳐 똑같이 물어본 질문이 없어서 {_NOT_COMPARED}",
+    "ANSWER_MODEL_UNKNOWN": f"어떤 AI 모델이 답했는지 남은 기록이 없어서 {_NOT_COMPARED}",
+    "SAMPLE_SHAPE_CHANGED": f"질문마다 물어본 횟수가 지난달과 달라서 {_NOT_COMPARED}",
 }
-_DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건인지 확인하지 못해 {_NOT_COMPARED}"
-_REFERENCE_CONCLUSION = "측정 방식이 바뀐 달이라, 지난달 수치는 참고로 함께 보여 드립니다."
-_REFERENCE_TAIL = "지난달 수치는 참고로만 보여 드립니다."
+_DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건에서 물었는지 확인되지 않아 {_NOT_COMPARED}"
+_REFERENCE_CONCLUSION = "측정 방식을 새로 바꾼 달이어서, 지난달 수치는 참고로 곁에 적어 두었습니다."
+_REFERENCE_TAIL = "흐름을 보실 수 있도록 지난달 수치는 참고로만 적어 두었습니다."
 _REFERENCE_NOTES = {
     "MEASUREMENT_POLICY_CHANGED": (
-        "AI 답변을 받는 방식이 바뀌어 지난달 수치는 참고로만 보여 드립니다. "
-        "다음 달부터 같은 방식으로 비교해 드립니다."
+        "AI 답변을 받아 오는 방식이 바뀌어, 지난달 수치는 참고로만 적어 두었습니다. "
+        "다음 달부터는 같은 방식으로 견주어 보여 드리겠습니다."
     ),
 }
-_COMPARABLE_NOTE = "지난달과 같은 질문을 같은 방식으로 물어본 결과끼리 비교했습니다."
+_COMPARABLE_NOTE = "지난달과 똑같은 질문을 같은 방식으로 물어, 그 결과끼리 견주었습니다."
 # 같은 종류의 할 일이 여러 줄일 때 문장이 똑같이 반복되지 않게 돌려 쓴다.
 _LOST_MOVES = (
     "관련 진료 안내 글을 보강하겠습니다",
-    "같은 주제를 다른 각도에서 다룬 글을 더하겠습니다",
-    "환자가 실제로 묻는 표현에 맞춰 안내 글을 다듬겠습니다",
+    "같은 주제를 새로운 시각으로 풀어낸 글을 더해 보겠습니다",
+    "환자분들이 실제로 쓰는 표현에 맞춰 안내 글을 다듬겠습니다",
 )
 _UNMENTIONED_MOVES = (
-    "이 질문에 답이 되는 진료 안내 글을 더하겠습니다",
-    "이 질문을 다루는 글을 새로 써서 공략하겠습니다",
-    "관련 키워드를 넓혀 안내 글을 채우겠습니다",
+    "이 질문에 바로 답이 되는 진료 안내 글을 준비하겠습니다",
+    "이 질문을 정면으로 다루는 글을 새로 쓰겠습니다",
+    "관련 키워드를 넓혀 글을 보강하겠습니다",
 )
 
 
 def _conclusion(value: float | None, prior: float | None, *, first: bool) -> str:
     """첫 장의 한 문장. 숫자는 칸에 그대로 두고, 문장은 우리의 다음 수를 말한다."""
     if value is None:
-        return "이번 달 측정을 다시 진행해, 결과를 확인하는 대로 알려 드리겠습니다."
+        return "측정을 다시 진행한 뒤, 결과가 확인되는 대로 바로 알려 드리겠습니다."
     if first:
-        return "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다."
+        return "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다."
     if prior is None:
-        return "이번 달 결과를 새 기준점으로 삼겠습니다."
+        return "이번 결과를 새 기준점으로 두고, 다음 달부터 흐름을 짚어 드리겠습니다."
     if value > prior:
-        return "지난달보다 AI 답변에 더 자주 언급됐습니다."
+        return "AI 답변이 지난달보다 우리 병원을 더 자주 언급했습니다."
     if value < prior:
-        return "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다."
+        return "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다."
     if value == 0:
-        return "AI 답변에 언급되도록, 더 넓은 키워드와 새로운 질문 유형을 공략하겠습니다."
-    return "지난달과 비슷하게 꾸준히 언급되고 있습니다. 다음 달에는 새로운 질문 유형까지 공략하겠습니다."
+        return "AI 답변에서 우리 병원 이름이 보이도록, 키워드를 넓히고 새 질문 유형까지 다뤄 보겠습니다."
+    return "지난달만큼 꾸준히 언급되고 있습니다. 다음 달에는 새로운 질문 유형으로 범위를 넓혀 보겠습니다."
 
 
 def _denominator(
     *, value: float | None, attempts: object, mentions: object, platforms: str, comparable: bool
 ) -> str:
-    tail = "환자 수가 아니라 AI 답변 횟수입니다."
+    tail = "환자 수가 아닌 AI 답변 횟수 기준입니다."
     if value is None:
-        return f"이번 달은 AI 답변을 충분히 확인하지 못해 비율을 계산하지 않았습니다. {tail}"
+        return f"확인된 AI 답변이 충분하지 않아 이번 달 비율은 계산하지 않았습니다. {tail}"
     if type(attempts) is not int or type(mentions) is not int:
-        return f"물어본 횟수 기록이 없어 비율의 근거를 함께 보여 드리지 못했습니다. {tail}"
+        return f"물어본 횟수가 기록에 남지 않아, 비율의 근거는 함께 싣지 못했습니다. {tail}"
     asked = (
-        f"지난달과 같은 질문으로 {platforms}에 모두 {attempts}번 물었고"
+        f"지난달과 같은 질문을 {platforms}에 모두 {attempts}번 물었고"
         if comparable
         else f"{platforms}에 환자 질문을 모두 {attempts}번 물었고"
     )
     found = (
-        f"그중 {mentions}번 우리 병원이 언급됐습니다."
+        f"그중 {mentions}번 답변에 우리 병원이 언급됐습니다."
         if mentions
-        else "이번 달 답변에서는 아직 언급되지 않았습니다."
+        else "아직은 답변에 우리 병원이 언급되지 않았습니다."
     )
     return f"{asked}, {found} {tail}"
+
+
+def _result_story(value, prior, first, attempts, mentions, new_mention_count=0):
+    """1장의 서술 문단. 숫자가 무슨 일인지 두 문장으로 풀어 쓴다."""
+    if value is None:
+        return "이번 달은 AI 답변을 충분히 확인하지 못해 비율을 내지 못했습니다."
+    new_part = f" 새로 언급된 질문 {new_mention_count}개 포함." if new_mention_count else ""
+    if first:
+        return f"저희가 처음 측정한 결과입니다.{new_part}"
+    if prior is not None:
+        if value > prior:
+            return f"지난달 {prior:.1f}%에서 {value:.1f}%로 올랐습니다.{new_part}"
+        if value < prior:
+            return f"지난달 {prior:.1f}%에서 {value:.1f}%로 내려갔습니다. 언급이 줄은 질문부터 계획에 넣었습니다."
+        return f"지난달과 같은 {value:.1f}%를 유지했습니다.{new_part}"
+    return f"이번 달 {value:.1f}%가 나왔습니다.{new_part}"
+
+
+def _work_story(works):
+    """2장의 서술 문단. 이번 달에 한 일을 풀어 쓴다."""
+    if not works:
+        return "이번 달에 올린 글은 없습니다. 다음 달에는 계획한 글을 올리고 결과를 알려 드리겠습니다."
+    cited = [w for w in works if w.cited_cells]
+    if cited:
+        return (
+            f"이번 달 글 {len(works)}편을 올렸고, 그중 {len(cited)}편이 AI 답변의 출처로 쓰였습니다. "
+            "글이 실제 답변을 만드는 데 쓰이고 있다는 뜻입니다."
+        )
+    return (
+        f"이번 달 글 {len(works)}편을 올렸습니다. "
+        "다음 달에는 AI 답변이 참고할 만한 글로 다듬어 올리겠습니다."
+    )
+
+
+def _plan_story(priorities):
+    """3장의 서술 문단. 다음 달 계획의 방향을 풀어 쓴다."""
+    if not priorities:
+        return ""
+    return "다음 달에는 아래 세 가지를 먼저 챙기고, 같은 질문으로 다시 물어 결과를 보고드리겠습니다."
 
 
 def build_monthly_narrative(
@@ -179,7 +222,7 @@ def build_monthly_narrative(
     value = comparison.get("current_sov_pct") if comparable else current
     reason = comparison.get("reason") or comparison_reason
     first = not comparable and (kind == "INITIAL" or reason == "NO_PRIOR_MANIFEST")
-    # 나란히 비교하지 않는 달이라도 원장님이 지난달 받은 수치가 있으면 참고로 보여 준다.
+    # 직접 비교하지 않는 달이라도 원장님이 지난달 받은 수치가 있으면 참고로 보여 준다.
     # 몇 달째 관리해 온 병원에 "기준점"이라고 말하지 않는다(2026-10-02).
     reference = (
         reference_previous
@@ -200,7 +243,7 @@ def build_monthly_narrative(
     if comparable:
         note = _COMPARABLE_NOTE
     elif value is None:
-        note = "이번 달은 AI 답변을 충분히 확인하지 못해 지난달과 비교하지 않았습니다."
+        note = "충분한 AI 답변을 확인하지 못해 이번 달은 지난달과 비교하지 않았습니다."
     elif kind == "INITIAL":
         note = _FIRST_MEASUREMENT_NOTE
     else:
@@ -226,7 +269,7 @@ def build_monthly_narrative(
     priorities: list[str] = []
     if value is None:
         priorities.append(
-            "이번 달 측정을 다시 진행하고, 결과를 확인하는 대로 알려 드리겠습니다."
+            "이번 달 측정을 다시 진행하고, 결과를 받는 대로 정리해 전해 드리겠습니다."
         )
     lost_rows = (attribution or {}).get("lost_mention_cells", []) if comparable else []
     for index, row in enumerate(lost_rows):
@@ -247,22 +290,22 @@ def build_monthly_narrative(
     ]
     for index, row in enumerate(unmentioned):
         priorities.append(
-            f"“{row['query_text']}”처럼 환자가 묻는 질문에서도 언급되도록, "
+            f"“{row['query_text']}”처럼 환자분들이 묻는 질문에서도 우리 병원이 보이도록, "
             f"{_UNMENTIONED_MOVES[index % len(_UNMENTIONED_MOVES)]}."
         )
     if not priorities and comparable:
         for row in (attribution or {}).get("new_mention_cells", [])[:2]:
             priorities.append(
                 f"“{row['query_text']}” 질문에서 {row['platform_label']} 답변에 새로 "
-                "언급되기 시작했습니다. 같은 주제의 글을 이어 써 언급을 넓히겠습니다."
+                "언급되기 시작했습니다. 같은 주제의 글을 이어 쓰며 이 흐름을 넓혀 가겠습니다."
             )
     if not priorities:
         priorities.append(
-            "언급 범위를 넓히기 위해, 새로운 질문 유형과 더 넓은 키워드를 공략하겠습니다."
+            "새로운 질문 유형과 더 넓은 키워드로, 언급되는 범위를 한 걸음 더 넓히겠습니다."
         )
     platforms: list[str] = []
     methods: list[str] = [
-        f"측정 방식 버전: {protocol_label or '기록 없음 — 지금 설정으로 대신 적지 않았습니다'}"
+        f"측정 방식 버전: {protocol_label or '기록 없음 (현재 설정값으로 채우지 않았습니다)'}"
     ]
     for row in data.get("platforms", []):
         name = platform_name(row["platform"])
@@ -312,15 +355,15 @@ def build_monthly_narrative(
         )
     elif adequate:
         methods.append(
-            "같은 질문 반복 확인 기록: 일부만 남아 있어, 위 횟수를 전체 측정으로 보지 않습니다."
+            "같은 질문 반복 확인 기록: 일부만 남아 있어 위 횟수를 전체 측정으로 보지는 않습니다."
             if adequate.get("lineage") == "MIXED"
-            else "같은 질문 반복 확인 기록: 남아 있지 않아, 계획·확인 횟수를 0으로 적지 않았습니다."
+            else "같은 질문 반복 확인 기록: 남아 있지 않아 계획·확인 횟수를 0으로 적지 않았습니다."
         )
     cite = citations or {}
     scope = (
-        f"물어본 질문 {cite.get('measured_cell_count', 0)}건 중 {cite.get('cited_cell_count', 0)}건에서 "
-        "우리 병원 글이나 안내 페이지가 AI 답변의 출처로 쓰였습니다. 출처로 쓰인 것만으로 "
-        "결과가 달라진 이유를 단정하지는 않습니다."
+        f"물어본 질문 {cite.get('measured_cell_count', 0)}건 가운데 {cite.get('cited_cell_count', 0)}건에서 "
+        "우리 병원 글이나 안내 페이지가 AI 답변의 출처로 쓰였습니다. "
+        "다만 출처로 쓰였다는 사실만으로 결과가 달라진 이유를 단정하지는 않습니다."
     )
     details: list[str] = []
     for item in cite.get("cited_items", []):
@@ -341,13 +384,13 @@ def build_monthly_narrative(
         )
     if citations is not None and not cite.get("measured_cell_count"):
         scope = (
-            "이번 달은 확인한 AI 답변이 없어, 우리 병원 글이 출처로 쓰였는지 알 수 없습니다. "
-            "확인하지 못한 것이지 0번이라는 뜻은 아닙니다."
+            "확인된 AI 답변이 없어 우리 병원 글이 출처로 쓰였는지 알 수 없었습니다. "
+            "확인하지 못했을 뿐, 0번이라는 뜻은 아닙니다."
         )
     if citations is None:
         scope = (
-            "이번 달은 우리 병원 글이 AI 답변의 출처로 쓰였는지 집계하지 못했습니다. "
-            "확인하지 못한 것이지 0번이라는 뜻은 아닙니다."
+            "우리 병원 글이 AI 답변의 출처로 쓰였는지는 이번 달 집계하지 못했습니다. "
+            "확인하지 못했을 뿐, 0번이라는 뜻은 아닙니다."
         )
     return MonthlyNarrative(
         title="첫 측정 보고서" if kind == "INITIAL" else "AI 답변 노출 월간 보고서",
@@ -363,11 +406,17 @@ def build_monthly_narrative(
         citation_scope=scope,
         citation_details=tuple(details),
         fulfillment_note=(
-            f"남은 {shortfall}편은 안전 기준을 통과하는 대로 이어서 올리겠습니다."
+            f"남은 {shortfall}편도 검수가 끝나는 대로 올려 드리겠습니다."
             if shortfall
-            else "다음 달에도 계획한 글을 차례로 올리겠습니다."
+            else "다음 달에도 계획한 글을 일정대로 꾸준히 올리겠습니다."
         ),
         previous_label="첫 측정" if first else "비교 없음",
         reference_previous=reference,
         current_label="측정 못 함",
+        result_story=_result_story(
+            value, prior, first, attempts, mentions,
+            new_mention_count=len((attribution or {}).get("new_mention_cells", [])),
+        ),
+        work_story=_work_story(tuple(sorted(works, key=lambda work: -(work.cited_cells or 0)))),
+        plan_story=_plan_story(tuple(dict.fromkeys(priorities))),
     )

@@ -62,3 +62,69 @@
 .compact.monthly .hero-band .editorial-result { font-size:21pt; }
 .compact.monthly .facts { margin-top:var(--s3); }
 .compact.monthly .next-step { margin:var(--s3) 0 var(--s2); }
+
+/* 4쪽 목표 압축: 여백과 자간을 조여 본문 3장+부록 1장에 담는다. */
+.monthly .hero-band { padding:18pt 22pt 20pt; margin-bottom:var(--s3); }
+.monthly .hero-band .editorial-result { font-size:22pt; }
+.monthly .hero-band .hero-identity { font-size:13pt; }
+.monthly .metric strong { font-size:34pt; }
+.monthly .metric-plain { font-size:11pt; }
+.monthly .facts { margin-top:var(--s3); margin-bottom:var(--s1); }
+.monthly .fact-value { font-size:17pt; }
+.monthly .masthead { margin-bottom:14pt; }
+.monthly h1 { font-size:24pt; margin:var(--s2) 0 14pt; }
+.monthly .part-head { margin:var(--s3) 0 var(--s2); }
+.monthly .part-head h2 { font-size:13pt; }
+/* 부록 압축: 표와 설명을 한 장에. */
+.monthly .appendix h1 { font-size:20pt; margin:var(--s2) 0 10pt; }
+.monthly .appendix h2 { font-size:11pt; margin:var(--s2) 0 var(--s1); padding-top:var(--s1); }
+.monthly .appendix table { font-size:9.5pt; }
+.monthly .appendix th, .monthly .appendix td { padding:4pt 6pt; }
+.monthly .appendix .reading-guide h2 { border-top:0; padding-top:0; margin-top:var(--s2); }
+.monthly .appendix-lead h1 { font-size:20pt; }
+
+/* 부록 1장 압축: 표와 자간을 더 조인다. */
+.monthly .appendix { font-size:10pt; }
+.monthly .appendix table { font-size:9pt; }
+.monthly .appendix th, .monthly .appendix td { padding:3pt 5pt; }
+.monthly .appendix p { margin-bottom:var(--s1); }
+.monthly .appendix .caption { font-size:8.5pt; }
+.monthly .appendix-lead p { margin-bottom:var(--s1); }
+.monthly .appendix-lead h2 { font-size:10.5pt; }
+
+/* 마지막 4줄 오버플로우 해소. */
+.monthly .appendix h2 { margin-top:6pt; }
+.monthly .appendix .rule-row { margin-bottom:6pt; }
+
+.monthly .appendix { font-size:9.5pt; line-height:1.45; }
+
+/* 각 장의 서술 문단. */
+.monthly .story { font-size:11pt; line-height:1.6; margin:var(--s2) 0 var(--s3); color:var(--ink); }
+/* 서술 문단을 넣은 만큼 다른 여백을 조인다. */
+.monthly .hero-band { padding:16pt 20pt 18pt; margin-bottom:var(--s2); }
+.monthly .hero-band .editorial-result { font-size:20pt; }
+.monthly .metrics { margin-top:var(--s1); }
+.monthly .metric strong { font-size:32pt; }
+
+/* 1장 하단 여백 해소: 콘텐츠를 페이지에 고르게 펼친다. */
+.monthly #main-1-start .hero-band { padding:26pt 24pt 28pt; margin-bottom:var(--s4); }
+.monthly #main-1-start .hero-band .editorial-result { font-size:23pt; }
+.monthly #main-1-start .story { margin:var(--s3) 0 var(--s4); font-size:11.5pt; }
+.monthly #main-1-start .metrics { margin-top:var(--s3); }
+.monthly #main-1-start .metric strong { font-size:38pt; }
+.monthly #main-1-start .metric-plain { margin:var(--s3) 0 var(--s2); }
+.monthly #main-1-start .facts { margin:var(--s4) calc(-1 * var(--s4)) var(--s3); }
+.monthly #main-1-start .fact { padding-top:var(--s3); }
+
+.monthly #main-1-start .hero-band { padding:32pt 24pt 34pt; }
+.monthly #main-1-start .story { margin:var(--s4) 0 var(--s4); }
+.monthly #main-1-start .facts { margin:var(--s6) calc(-1 * var(--s4)) var(--s4); }
+
+/* 부록 여백 완화: 1-3장과 비슷한 숨으로. */
+.monthly .appendix { font-size:10.5pt; line-height:1.6; }
+.monthly .appendix table { font-size:10pt; }
+.monthly .appendix th, .monthly .appendix td { padding:6pt 8pt; }
+.monthly .appendix h2 { font-size:12pt; margin:14pt 0 6pt; padding-top:8pt; }
+.monthly .appendix p { margin-bottom:8pt; }
+.monthly .appendix .caption { font-size:9.5pt; }
+.monthly .appendix-lead p { margin-bottom:8pt; font-size:11pt; }

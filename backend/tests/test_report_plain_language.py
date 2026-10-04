@@ -156,13 +156,13 @@ def test_director_pdf_passes_the_medical_ad_filter(name):
 @pytest.mark.parametrize(
     "name,headline,prior_cell",
     [
-        ("up", "지난달보다 AI 답변에 더 자주 언급됐습니다.", "30.0%"),
-        ("down", "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다.", "30.0%"),
-        ("first", "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다.", "첫 측정"),
-        ("method", "이번 달 결과를 새 기준점으로 삼겠습니다.", "비교 없음"),
-        ("method_reference", "측정 방식이 바뀐 달이라, 지난달 수치는 참고로 함께 보여 드립니다.", "40.0%"),
-        ("unavailable", "이번 달 측정을 다시 진행해, 결과를 확인하는 대로 알려 드리겠습니다.", "비교 없음"),
-        ("initial", "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다.", "첫 측정"),
+        ("up", "AI 답변이 지난달보다 우리 병원을 더 자주 언급했습니다.", "30.0%"),
+        ("down", "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다.", "30.0%"),
+        ("first", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
+        ("method", "이번 결과를 새 기준점으로 두고, 다음 달부터 흐름을 짚어 드리겠습니다.", "비교 없음"),
+        ("method_reference", "측정 방식을 새로 바꾼 달이어서, 지난달 수치는 참고로 곁에 적어 두었습니다.", "40.0%"),
+        ("unavailable", "측정을 다시 진행한 뒤, 결과가 확인되는 대로 바로 알려 드리겠습니다.", "비교 없음"),
+        ("initial", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
     ],
 )
 def test_first_page_leads_with_a_plain_headline_per_branch(name, headline, prior_cell):
@@ -172,15 +172,14 @@ def test_first_page_leads_with_a_plain_headline_per_branch(name, headline, prior
     assert headline in page
     assert prior_cell in page
     assert "AI에게 물었을 때 우리 병원이 언급된 비율" in page
-    assert "다음 달에 할 일" in page
     assert "약속드리지는 않습니다" in page
 
 
 @pytest.mark.parametrize(
     "name,reason",
     [
-        ("first", "첫 측정이라 지난달과 비교할 숫자가 없습니다."),
-        ("method", "측정 방식이 바뀌어 이번 달은 지난달과 나란히 비교하지 않았습니다."),
+        ("first", "이번이 첫 측정이라 견줄 지난달 숫자는 아직 없습니다."),
+        ("method", "측정 방식이 바뀌어서 지난달 결과와 직접 비교하지는 않았습니다."),
     ],
 )
 def test_a_month_that_was_not_compared_says_why_in_one_sentence(name, reason):
@@ -201,14 +200,14 @@ def test_comparable_month_explains_the_number_in_everyday_words():
     view = _view("up")
     page = _page(_html(view), 1)
     assert "100번 물으면 약 50번 우리 병원이 언급된 셈입니다." in page
-    assert "지난달과 같은 질문으로 ChatGPT·Gemini에 모두 18번 물었고, 그중 9번 우리 병원이 언급됐습니다." in page
-    assert "환자 수가 아니라 AI 답변 횟수입니다." in page
+    assert "지난달과 같은 질문을 ChatGPT·Gemini에 모두 18번 물었고, 그중 9번 답변에 우리 병원이 언급됐습니다." in page
+    assert "환자 수가 아닌 AI 답변 횟수 기준입니다." in page
 
 
 def test_a_lower_month_leads_with_our_plan_while_the_numbers_stay_visible():
     view = _view("down")
     page = _page(_html(view), 1)
-    assert view["narrative"].conclusion == "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다."
+    assert view["narrative"].conclusion == "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다."
     assert "30.0%" in page and "10.0%" in page
     assert "더 자주" not in page
 
@@ -221,8 +220,8 @@ def test_lost_and_never_mentioned_questions_become_next_month_actions():
     )
     first = _view("first")["narrative"].priorities
     assert first[0] == (
-        "“가상동 혈압 상담 병원”처럼 환자가 묻는 질문에서도 언급되도록, "
-        "이 질문에 답이 되는 진료 안내 글을 더하겠습니다."
+        "“가상동 혈압 상담 병원”처럼 환자분들이 묻는 질문에서도 우리 병원이 보이도록, "
+        "이 질문에 바로 답이 되는 진료 안내 글을 준비하겠습니다."
     )
 
 
@@ -264,12 +263,12 @@ def test_contract_tile_uses_plain_words():
     assert tile["label"] == "약속한 글 발행"
     assert tile["value"] == "12편 중 11편"
     assert tile["hint"] == "이번 달 실제로 올린 글 13편 · 이전 달 몫을 채운 글 2편 포함."
-    assert view["narrative"].fulfillment_note == "남은 1편은 안전 기준을 통과하는 대로 이어서 올리겠습니다."
+    assert view["narrative"].fulfillment_note == "남은 1편도 검수가 끝나는 대로 올려 드리겠습니다."
 
 
 def test_page_markers_are_plain_korean():
     html = _html(_view("up"))
-    for marker in ("이번 달 결과", "이번 달 한 일", "다음 달 계획", "자세한 기록"):
+    for marker in ("이번 달 결과", "이번 달 한 일", "다음 달 계획", "숫자를 읽는 법", "자세한 기록"):
         assert marker in html
 
 
@@ -313,7 +312,7 @@ def test_a_method_change_month_shows_last_month_as_reference_not_as_a_trend():
     assert narrative.previous is None  # 비교 값이 아니다 — 증감 문장·검증은 이것만 본다
     assert narrative.reference_previous == 40.0
     assert "지난달(참고)" in page and "40.0%" in page and "50.3%" in page
-    assert "지난달 수치는 참고로만 보여 드립니다" in page
+    assert "지난달 수치는 참고로만 적어 두었습니다" in page
     assert "기준점" not in page
     for trend in ("더 자주 언급됐습니다", "줄었", "늘었"):
         assert trend not in narrative.conclusion
@@ -326,4 +325,4 @@ def test_a_first_month_never_shows_a_reference_value():
         attribution=_attribution(prior=False), reference_prev_sov_pct=30.0,
     )
     assert view["narrative"].reference_previous is None
-    assert view["narrative"].conclusion == "이번 달 결과는 첫 측정 결과로서, 앞으로의 기준점이 됩니다."
+    assert view["narrative"].conclusion == "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다."
