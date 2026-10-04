@@ -46,12 +46,12 @@ def test_report_kind_owns_title(kind, title):
 @pytest.mark.parametrize(
     "current,prior,word",
     [
-        (60, 30, "지난달보다 AI 답변에 더 자주 언급됐습니다."),
-        (30, 30, "지난달과 비슷하게 꾸준히 언급되고 있습니다."),
-        (25, 30, "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다."),
-        (0, 30, "AI 언급 횟수를 늘리기 위해, 더 넓은 키워드를 공략하겠습니다."),
-        (0, 0, "AI 답변에 언급되도록, 더 넓은 키워드와 새로운 질문 유형을 공략하겠습니다."),
-        (None, 30, "이번 달 측정을 다시 진행해, 결과를 확인하는 대로 알려 드리겠습니다."),
+        (60, 30, "AI 답변이 지난달보다 우리 병원을 더 자주 언급했습니다."),
+        (30, 30, "지난달만큼 꾸준히 언급되고 있습니다."),
+        (25, 30, "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다."),
+        (0, 30, "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다."),
+        (0, 0, "AI 답변에서 우리 병원 이름이 보이도록, 키워드를 넓히고 새 질문 유형까지 다뤄 보겠습니다."),
+        (None, 30, "측정을 다시 진행한 뒤, 결과가 확인되는 대로 바로 알려 드리겠습니다."),
     ],
 )
 def test_monthly_direction_requires_matching_comparison(current, prior, word):
@@ -68,7 +68,7 @@ def test_monthly_direction_requires_matching_comparison(current, prior, word):
         sov_coverage={"comparison": comparison, "planned_count": 2, "success_count": 2},
     )
     assert word in view["narrative"].conclusion
-    assert "환자 수가 아니라 AI 답변 횟수입니다." in view["narrative"].denominator
+    assert "환자 수가 아닌 AI 답변 횟수 기준입니다." in view["narrative"].denominator
 
 
 @pytest.mark.parametrize(
@@ -311,5 +311,5 @@ def test_unavailable_citation_appendix_has_explicit_unknown_state():
         view=view, period_label="2026-08", public_url="https://fictional.example.invalid/"
     )
     appendix = html.split('id="appendix-start"')[1]
-    assert "우리 병원 글이 출처로 쓰였는지 알 수 없습니다" in appendix
+    assert "우리 병원 글이 출처로 쓰였는지 알 수 없었습니다" in appendix
     assert "0번이라는 뜻은 아닙니다" in appendix

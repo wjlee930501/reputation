@@ -38,7 +38,7 @@ def _narrative(cells):
 def test_unequal_repeats_use_pooled_headline_not_cell_average():
     narrative = _narrative((_cell(1, (True,)), _cell(2, (False,) * 5)))
     assert narrative.current == 16.67
-    assert "모두 6번 물었고, 그중 1번 우리 병원이 언급됐습니다." in narrative.denominator
+    assert "모두 6번 물었고, 그중 1번 답변에 우리 병원이 언급됐습니다." in narrative.denominator
     assert "평균" not in narrative.denominator
     assert "질문별로 언급된 비율의 평균 50.0%" in narrative.platform_details[0]
 

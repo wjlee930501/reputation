@@ -85,17 +85,22 @@ def v3_expectation(
     n = view["narrative"]
     initial = view.get("report_kind") == "INITIAL"
     tile = view["tiles"][0]
+    h = view.get("highlights") or {}
+    has_opportunity = (
+        h.get("measured_questions")
+        and h.get("mentioned_questions") is not None
+        and h["measured_questions"] > h["mentioned_questions"]
+    )
     page1 = [
         n.title,
         n.conclusion,
+        n.result_story,
         n.denominator,
         "AI에게 물었을 때 우리 병원이 언급된 비율",
         "지난달",
         "이번 달",
         "AI가 언급한 질문",
         "AI가 참고한 우리 글",
-        "다음 달에 할 일",
-        n.priorities[0],
         f"{n.current:.1f}%" if n.current is not None else n.current_label,
         (
             f"{n.previous:.1f}%"
@@ -115,6 +120,7 @@ def v3_expectation(
         base = view["v0_baseline"]
         page1.append(f"처음 측정 {base['of_hundred']}% / 이번 달 {base['current_of_hundred']}%")
     page2 = ["첫 측정에서", "확인한 내용"] if initial else ["이번 달 한 일을", "보고드립니다", "그 결과"]
+    page2.append(n.work_story)
     page2.append("AI 답변 속 우리 병원")
     for work in n.works[:2]:
         page2.append(work.title)
@@ -128,27 +134,35 @@ def v3_expectation(
             page2.extend((case["question"], preview, case["platform"]))
     page3 = [
         "다음 달에 할 일",
-        tile["label"],
-        tile["value"],
-        tile["hint"],
+        n.plan_story,
+        *(
+            [
+                "지금 언급되는 질문",
+                f"{h['measured_questions']}개 중 {h['mentioned_questions']}개",
+                f"남은 {h['measured_questions'] - h['mentioned_questions']}개는 위 순서대로 다음 달부터 다룹니다.",
+            ]
+            if has_opportunity
+            else [tile["label"], tile["value"], tile["hint"]]
+        ),
         n.fulfillment_note,
         "담당 마케터는 이렇게 진행합니다",
         *n.priorities[:3],
     ]
     if initial:
-        page3 = ["앞으로 할 일", "첫 측정 보고서입니다", *n.priorities[:3]]
+        page3 = ["앞으로 할 일", "첫 측정 보고서입니다", n.plan_story, *n.priorities[:3]]
     appendix = list(expectation.required_appendix_texts)
-    for case in view["evidence"].values():
-        if case:
-            appendix.extend((case["question"], case["excerpt"], case["platform"]))
+    appendix.extend(
+        (
+            "숫자를 읽는 법",
+            "환자가 AI에게 병원을 물었을 때 우리 병원이 답에 오르는 정도를 뜻합니다.",
+        )
+    )
     appendix.extend(view["footnotes"])
     appendix.extend((*n.methods, *n.platform_details, n.comparison_note, n.citation_scope))
     appendix.extend(n.citation_details)
     appendix.extend(n.priorities[3:])
     for work in n.works:
         appendix.extend((work.title, work.appendix_label, *work.queries))
-    for item in (*view["new_mention_sentences"], *view["lost_mention_sentences"]):
-        appendix.extend((item["query_text"], item["platform_label"]))
     return replace(
         expectation,
         expected_page_count=page_count,
