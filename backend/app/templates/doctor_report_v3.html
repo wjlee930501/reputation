@@ -63,7 +63,7 @@
 {% endif %}{% endfor %}
 {% if not view.evidence.found and not view.evidence.missing %}<div class="statement-band"><h2>{% if n.works %}글은 올렸습니다.<br>답변 예시는 아직 모으지 못했습니다.{% else %}답변 예시부터<br>다시 모으겠습니다.{% endif %}</h2><p>이번 달에는 보여 드릴 AI 답변을 확인하지 못했습니다.<br>같은 질문으로 다시 물어 확인하겠습니다.</p></div><div class="process"><p><b>01 다시 묻기</b> 같은 질문을 ChatGPT·Gemini에 다시 물어 답을 모읍니다.</p><p><b>02 출처 살피기</b> 우리 병원 글이 답변의 출처로 쓰였는지 살핍니다.</p><p><b>03 결과 알리기</b> 확인한 것과 아직 모르는 것을 나눠 알려 드립니다.</p></div>
 {% endif %}
-</div><p class="caption">올린 글 전체 목록은 뒤쪽 부록에 있습니다.</p>
+</div><p class="caption">올린 글 전체와 답변 전문은 뒤쪽 부록에 있습니다.</p>
 <div id="main-2-end"></div>
 
 </section>
@@ -122,6 +122,12 @@
 <td>{{ item.appendix_label }}{% if item.url %} · <a href="{{ item.url }}">글 보기</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="2">올린 글 목록이 없습니다.</td></tr>{% endfor %}
 </tbody></table>
+{% if n.works|selectattr('cited_cells', 'none')|list %}<p class="caption">‘확인 못 함’인 글은 AI 답변에 쓰였는지는 아직 확인하지 못했습니다. 0번이라는 뜻은 아닙니다.</p>{% endif %}
+{% if view.evidence.found or view.evidence.missing %}<h2>AI 답변 전문</h2>{% endif %}
+{% for key,label in [('found','우리 병원이 언급된 답변'),('missing','다음에 공략할 질문의 답변')] %}{% set case=view.evidence[key] %}{% if case %}
+<div class="rule-row"><h3>{{ label }} — “{{ case.question }}”</h3><p>{{ case.excerpt }}</p>
+<p class="caption">{{ case.platform }}{% if case.measured_at %} · {{ case.measured_at.strftime('%Y-%m-%d') }} 확인{% endif %} · 실제 답변에서 옮겨 둔 부분</p></div>
+{% endif %}{% endfor %}
 <h2>AI 답변의 출처로 쓰인 우리 병원 글</h2>
 {% for line in n.citation_details %}<p class="caption">{{ line }}</p>
 {% else %}<p class="caption">{{ n.citation_scope }}</p>
