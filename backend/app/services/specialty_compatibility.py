@@ -84,13 +84,136 @@ def _target_texts(target: Any) -> Iterable[str]:
 
 
 def target_conflicts_with_hospital(target: Any, hospital: object) -> bool:
-    """측정 질문(대상 진료과·질문 문장)이 이 병원 대표 진료과와 어울리지 않는가."""
+    """측정 질문이 이 병원에 배정할 수 없는 주제인가.
 
+    두 규칙 중 하나라도 맞으면 그렇다. (1) 질문의 진료과가 병원 대표 진료과와 어울리지 않는다.
+    (2) 질문이 묻는 검사·시술이 병원 키워드에만 있고 승인 프로필의 진료 항목에는 없다
+    (`target_names_unoffered_service`).
+    """
+
+    if target_names_unoffered_service(target, hospital):
+        return True
     forbidden = forbidden_topic_departments(hospital)
     if not forbidden:
         return False
     texts = list(_target_texts(target))
     return any(_mentions(text, department) for text in texts for department in forbidden)
+
+
+# 질문 문장에서 검사·시술 이름을 읽는 접미. "골밀도검사"·"유방초음파"·"위내시경"처럼 붙여 쓴다.
+# `치료`·`요법`은 넣지 않는다 — "허리디스크치료"·"관절염치료"는 특정 검사·시술이 아니라 질환을
+# 고치는 일 전반이라, 진료 항목의 표기와 글자가 달라도 그 병원이 하는 진료다.
+_SERVICE_SUFFIXES = ("내시경", "초음파", "검사", "시술", "수술", "주사", "촬영", "접종")
+_SERVICE_TERM = re.compile(r"[가-힣A-Za-z0-9]{1,12}(?:" + "|".join(_SERVICE_SUFFIXES) + ")")
+# 이름과 접미를 띄어 쓴 모양("골밀도 검사"). 앞 낱말이 검사·시술 이름이 아닐 수 있으므로("허리 수술")
+# 붙여 쓴 전체 이름이 키워드에 있을 때만 이 규칙의 대상이다(`_target_service_terms`).
+_SPACED_SERVICE_TERM = re.compile(
+    r"(?<![가-힣A-Za-z0-9])[가-힣A-Za-z0-9]{1,12} (?:" + "|".join(_SERVICE_SUFFIXES) + ")"
+)
+# "비수술"·"무수술"처럼 검사·시술이 없음을 말하는 앞말. 특정 서비스가 아니므로 대상이 아니다.
+_NEGATING_STEMS = frozenset({"비", "무", "非", "無"})
+# 진료 항목·키워드 표기에서 대조 전에 지우는 기호. "위·대장내시경"·"위/대장 내시경"을 같게 본다.
+_SEPARATORS = re.compile(r"[\s·・/,、&+()\[\]-]+")
+
+
+def _normalize(value: object) -> str:
+    return _SEPARATORS.sub("", str(value or ""))
+
+
+def _target_service_terms(target: Any) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """질문이 묻는 검사·시술과, 키워드에서 찾을 이름들. 구조화된 `treatment`가 있으면 그것만 쓴다.
+
+    구조화된 값도 검사·시술 접미(`_SERVICE_SUFFIXES`)로 끝날 때만 이 규칙의 대상이다.
+    "비수술"처럼 없음을 말하는 이름은 대상이 아니다.
+    """
+
+    if isinstance(target, Mapping):
+        treatment, name = target.get("treatment"), target.get("name")
+    else:
+        treatment, name = getattr(target, "treatment", None), getattr(target, "name", None)
+    structured = _normalize(treatment)
+    if structured:
+        terms = [(structured, _term_keys(structured))] if structured.endswith(_SERVICE_SUFFIXES) else []
+    else:
+        text = str(name or "")
+        # 띄어 쓴 낱말 단위로 읽는다 — 공백을 먼저 지우면 "마산 골밀도검사"가 "마산골밀도검사"가 된다.
+        terms = [(term, _term_keys(term)) for term in _SERVICE_TERM.findall(text)]
+        terms += [
+            (joined, (joined,))
+            for joined in (_normalize(term) for term in _SPACED_SERVICE_TERM.findall(text))
+        ]
+    selected: dict[str, tuple[str, ...]] = {}
+    for term, keys in terms:
+        if _split_service(term)[0] in _NEGATING_STEMS:
+            continue
+        selected.setdefault(term, keys)
+    return tuple(selected.items())
+
+
+def _split_service(term: str) -> tuple[str, str]:
+    """'골밀도검사' → ('골밀도', '검사'). 접미가 없으면 (원형, '')."""
+
+    for suffix in _SERVICE_SUFFIXES:
+        if term.endswith(suffix) and len(term) > len(suffix):
+            return term[: -len(suffix)], suffix
+    return term, ""
+
+
+def _term_keys(term: str) -> tuple[str, ...]:
+    """'골밀도검사' → ('골밀도검사', '골밀도'). 접미를 뗀 이름이 두 글자 미만이면 원형만."""
+
+    stem, suffix = _split_service(term)
+    return (term, stem) if suffix and len(stem) >= 2 else (term,)
+
+
+def _offered_matches(term: str, service: str) -> bool:
+    """질문의 검사·시술이 진료 항목 하나에 해당하는가.
+
+    글자 포함(`골밀도` ⊂ `골밀도측정`) 말고도, 접미가 같고 질문의 이름이 진료 항목의 이름에
+    들어 있으면 같은 진료로 본다 — "위내시경"은 "위·대장내시경"(정규화 뒤 `위대장내시경`)이다.
+    """
+
+    if any(key in service for key in _term_keys(term)) or service in term:
+        return True
+    stem, suffix = _split_service(term)
+    service_stem, service_suffix = _split_service(service)
+    if bool(suffix) and suffix == service_suffix and bool(stem) and stem in service_stem:
+        return True
+    if service_suffix and service_stem in _SERVICE_SUFFIXES and service_stem in term:
+        # 진료 항목이 계열 전체다 — "초음파 검사"는 "복부초음파"를, "내시경 검사"는 "위내시경"을 덮는다.
+        return True
+    # 접미가 겹친 이름은 겉 접미를 떼고 다시 본다 — "위내시경검사"는 "위내시경"(`위·대장내시경`)이다.
+    return stem.endswith(_SERVICE_SUFFIXES) and _offered_matches(stem, service)
+
+
+def target_names_unoffered_service(target: Any, hospital: object) -> bool:
+    """질문의 검사·시술이 병원 키워드에만 있고 승인 프로필 진료 항목에는 없는가.
+
+    2026-10-04 강심장내과의원 글이 키워드에만 있던 `골밀도검사`를 이 병원이 하는 검사처럼
+    썼다(진료 항목에는 없었다). 키워드는 검색어 후보이지 병원이 제공하는 서비스의 근거가
+    아니다. 진료 항목(`treatments`)·진료과(`specialties`)가 비어 있으면 판단할 근거가 없으므로
+    막지 않는다. 표기 차이(`위·대장내시경`과 `위내시경`, 띄어쓰기)는 같은 진료로 본다.
+    """
+
+    if hospital is None:
+        return False
+    keywords = [_normalize(value) for value in (getattr(hospital, "keywords", None) or [])]
+    keywords = [value for value in keywords if value]
+    offered = [
+        _normalize(value)
+        for field in ("treatments", "specialties", "hero_specialties")
+        for value in (getattr(hospital, field, None) or [])
+        if isinstance(value, str)
+    ]
+    offered = [value for value in offered if len(value) >= 2]
+    if not keywords or not offered:
+        return False
+    for term, keys in _target_service_terms(target):
+        in_keywords = any(key in keyword for key in keys for keyword in keywords)
+        in_profile = any(_offered_matches(term, service) for service in offered)
+        if in_keywords and not in_profile:
+            return True
+    return False
 
 
 def target_fits_hospital(target: Any, hospital: object) -> bool:

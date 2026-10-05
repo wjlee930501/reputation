@@ -81,6 +81,7 @@ from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
+    candidate_sha256,
     hospital_review_facts_fingerprint,
     review_generated_content,
 )
@@ -98,6 +99,15 @@ from app.services.content_generation_review import (
     GenerationReviewLimits,
     generate_reviewed_content,
 )
+from app.services.content_minimal_correction import (
+    AUTO_CORRECTION_KEY,
+    CorrectionDependencies,
+    correction_allowed_for,
+    correction_limits,
+    plan_corrections,
+    propose_sentence_corrections,
+    run_minimal_correction,
+)
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     HOSPITAL_FALLBACK_IMAGE_SOURCE,
@@ -106,6 +116,7 @@ from app.services.content_publication import (
     image_certification_current,
     image_is_hospital_fallback,
     image_is_reused,
+    public_candidate_review_safe,
     record_publication_identity,
 )
 from app.services.content_publish_notifications import (
@@ -332,6 +343,7 @@ from app.services.monthly_template_refresh import (
     numeric_diff,
     stored_observed_at,
 )
+from app.services.must_use_verbatim import required_must_use_messages
 from app.services.notification_copy import (
     REFERENCES_OPERATOR_DECIDES_COPY_CODE,
     references_operator_decides_copy_code,
@@ -456,6 +468,7 @@ from app.workers.content_publication_block_control import ensure_publication_blo
 from app.workers.dispatch_auth import (
     DispatchAuthorizationError,
     build_dispatch_headers,
+    expected_purpose,
     require_dispatch,
 )
 from app.workers.generation_attempt_state import released_generation_attempt
@@ -478,11 +491,14 @@ from app.workers.generation_incident_control import (
     operator_decides_digest_due,
     operator_decides_references,
     recover_generation_incidents,
+    review_retries_exhausted,
 )
 from app.workers.generation_retry_policy import (
+    AUTO_CORRECTION_EXHAUSTED_KEY,
     BODY_REPAIR_CODES,
     BODY_REPAIR_STATE_KEY,
     OPERATOR_DECIDES_KEY,
+    REVIEW_UNAVAILABLE_CODE,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
@@ -615,6 +631,15 @@ _STORED_IMAGE_TERMINAL_CODES = frozenset(
 # 워커가 실제로 결제해 남긴 이미지 원인. 게이트가 관측하는 증상(`_IMAGE_SYMPTOM_CODES`)이
 # 이 기록을 대신 쓰면 예산 사다리와 재사용 자격이 함께 사라진다.
 _STORED_IMAGE_CAUSE_CODES = _IMAGE_FAILURE_REASONS | {"COST_BLOCKED", _IMAGE_REUSED_CODE}
+# 이미지 때문에만 막힌 글에 발행기가 스스로 거는 이미지 재생성 한도. 글당 KST 하루 1회,
+# 누적 3회다. 계수는 배포를 큐에 넣을 때 쓰고(`auto_image_regeneration`), 한도를 넘으면 종전
+# 이미지 예산·재사용·인시던트 흐름이 그대로 소유한다.
+AUTO_IMAGE_REGEN_DAILY_CAP = 1
+AUTO_IMAGE_REGEN_TOTAL_CAP = 3
+_AUTO_IMAGE_REGEN_KEY = "auto_image_regeneration"
+_AUTO_IMAGE_REGEN_KEY_PREFIX = "auto-image-regen:"
+_AUTO_IMAGE_REGEN_OPERATION = "REGENERATE_CONTENT_IMAGE"
+_GENERATE_CONTENT_IMAGE_TASK = "app.workers.tasks.generate_content_image"
 
 
 def _generation_attempt_context(
@@ -737,6 +762,17 @@ def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
     return merged
 
 
+def _with_auto_correction_state(summary: Any, state: Mapping[str, Any] | None) -> Any:
+    """새로 쓴 본문에도 글(주제)당 교정 계수를 이어 준다. 교정본 hash는 옛 본문의 것이라 뺀다."""
+
+    if not state or not isinstance(summary, dict):
+        return summary
+    carried = {key: value for key, value in state.items() if key != "corrected_sha256"}
+    merged = dict(summary)
+    merged[AUTO_CORRECTION_KEY] = carried
+    return merged
+
+
 def _stored_body_repair_state(item: ContentItem) -> dict[str, Any] | None:
     summary = getattr(item, "essence_check_summary", None)
     state = summary.get(_BODY_REPAIR_KEY) if isinstance(summary, dict) else None
@@ -790,6 +826,320 @@ def _content_ai_unavailable_code(review: Any) -> str:
     return "CONTENT_AI_REVIEW_UNAVAILABLE"
 
 
+# 최소 교정 패스가 차단을 풀었다는 표시. 호출부는 이 값을 받으면 이미지·발행 준비 판정으로
+# 이어 간다 — 발행 자체는 언제나 기존 발행기와 같은 게이트가 한다.
+_AUTO_CORRECTION_RESOLVED = "auto_correction_resolved"
+# 교정은 했지만 남은 차단이 이 패스의 몫이 아니다(인용 없는 UNCERTAIN 등). 호출부는 저장된
+# 판정을 다시 읽어 기존 경로(재검수·표본 재작성)로 넘긴다.
+_AUTO_CORRECTION_REASSESS = "auto_correction_reassess"
+_AUTO_CORRECTION_HISTORY_LIMIT = 6
+_AUTO_CORRECTION_SWAP_MESSAGE = (
+    "지적 문장 자동 교정 상한을 다 써서 다음 복구 스윕이 같은 날짜로 주제를 바꿔 다시 씁니다."
+)
+_AUTO_CORRECTION_OPERATOR_MESSAGE = (
+    "지적 문장 자동 교정과 주제 교체를 모두 거쳤지만 독립 검수의 사실·의료 안전 지적이 남았습니다. "
+    "콘텐츠 탭에서 지적 문장을 확인해 주세요."
+)
+
+
+def _stored_auto_correction_state(item: ContentItem) -> dict[str, Any]:
+    summary = getattr(item, "essence_check_summary", None)
+    state = summary.get(AUTO_CORRECTION_KEY) if isinstance(summary, dict) else None
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def _topic_swap_budget_left(item: ContentItem) -> bool:
+    history = getattr(item, "topic_swap_history", None)
+    used = len(history) if isinstance(history, list) else 0
+    return used < max(0, int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX))
+
+
+def _stored_candidate(item: ContentItem) -> dict[str, Any]:
+    """독립 검수와 교정이 보는 후보 — 저장된 행의 공개 필드 그대로."""
+
+    return {
+        field: getattr(item, field, None)
+        for field in (
+            "title",
+            "body",
+            "meta_description",
+            "faq_question",
+            "faq_answer_summary",
+            "references_list",
+        )
+    }
+
+
+def _swap_deadline_passed(attempt: Mapping[str, Any]) -> bool:
+    raw = attempt.get("next_retry_at")
+    if not isinstance(raw, str):
+        return True
+    try:
+        due = datetime.fromisoformat(raw)
+    except ValueError:
+        return True
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) >= due
+
+
+def _escalate_exhausted_correction(
+    db,
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy,
+    state: dict[str, Any],
+) -> tuple[GenerationItemState, str, str]:
+    """교정 상한을 다 쓴 차단을 다음 계단으로 넘긴다 — 주제 교체, 그것도 없으면 사람.
+
+    주제 교체는 스윕이 로더보다 먼저 도는 별도 pass가 한다(`topic_swap_fallback`). 여기서는
+    그 pass가 이 슬롯을 집도록 시도 기록에 표시와 기한(다음 스윕)을 남긴다 — 그동안은 자동
+    복구가 소유한 RETRYING이다. 기한이 지난 뒤에도 이 슬롯이 그대로 여기 왔다면 그 시각의 교체
+    pass가 바꾸지 못한 것이다(교체할 질문 없음 등). 그때 사람의 일(OPERATOR_REQUIRED)로 열고,
+    교체 요청은 주제당 한 번이므로(`swap_requested_at`) 다음 스윕에도 그 자리에 머문다.
+    """
+
+    code = "CONTENT_AI_HARD_FINDING"
+    stored = _stored_generation_attempt(item)
+    pending_swap = (
+        stored.get("reason") == code
+        and stored.get(AUTO_CORRECTION_EXHAUSTED_KEY)
+        and stored.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    )
+    # 교체 요청은 이 주제의 교정 기록에 한 번만 남긴다. 시도 기록은 다른 경로가 다시 쓸 수
+    # 있지만 교정 기록은 주제 교체가 행을 비울 때만 사라진다 — 교체 pass가 바꾸지 못한 슬롯이
+    # "교체 대기"와 "사람의 일"을 스윕마다 오가지 않게 하는 표시다.
+    swap_requested = bool(state.get("swap_requested_at")) or pending_swap
+    if pending_swap and not _swap_deadline_passed(stored):
+        # 교체 pass가 아직 돌지 않았다(같은 스윕·운영자 재시도). 아무것도 사지 않는다.
+        return GenerationItemState.FAILED, code, _AUTO_CORRECTION_SWAP_MESSAGE
+    exhausted_state = {**state, "exhausted": True}
+    if exhausted_state != state:
+        summary = dict(item.essence_check_summary or {})
+        summary[AUTO_CORRECTION_KEY] = exhausted_state
+        item.essence_check_summary = summary
+        db.commit()
+    if _topic_swap_budget_left(item) and not swap_requested:
+        deadline = next_recovery_deadline(
+            {
+                "reason": code,
+                "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+                "exhausted_days": 0,
+                "provider_attempt_count": 0,
+            },
+            scheduled_date=getattr(item, "scheduled_date", None),
+        )
+        if deadline is not None:
+            summary = dict(item.essence_check_summary or {})
+            summary[AUTO_CORRECTION_KEY] = {
+                **exhausted_state,
+                "swap_requested_at": datetime.now(timezone.utc).isoformat(),
+            }
+            item.essence_check_summary = summary
+            _remember_generation_attempt(
+                db,
+                item,
+                philosophy,
+                code,
+                count_attempt=False,
+                extra={
+                    "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+                    AUTO_CORRECTION_EXHAUSTED_KEY: True,
+                    "next_retry_at": deadline.isoformat(),
+                    # 교체 대기는 작가 예산을 쓰지 않은 결정이다 — 표본 계수를 물려받지 않는다.
+                    "provider_attempt_count": 0,
+                    "attempt_count": 0,
+                    "exhausted_days": 0,
+                },
+            )
+            logger.info(
+                "Minimal correction exhausted for %s; topic swap requested at %s",
+                item.id,
+                deadline.isoformat(),
+            )
+            return GenerationItemState.FAILED, code, _AUTO_CORRECTION_SWAP_MESSAGE
+    _remember_generation_attempt(
+        db,
+        item,
+        philosophy,
+        code,
+        count_attempt=False,
+        extra={
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+            AUTO_CORRECTION_EXHAUSTED_KEY: True,
+            "next_retry_at": None,
+        },
+    )
+    logger.warning(
+        "Minimal correction and topic swap exhausted for %s; operator required", item.id
+    )
+    return GenerationItemState.FAILED, code, _AUTO_CORRECTION_OPERATOR_MESSAGE
+
+
+def _review_wait_blocks_correction(
+    item: ContentItem, philosophy: HospitalContentPhilosophy
+) -> tuple[GenerationItemState, str, str] | None:
+    """독립 검수 장애·비용 보류의 대기 중이면 교정 패스를 돌리지 않는다.
+
+    교정은 끝에 독립 재검수를 산다. 저장된 판정이 HARD로 남아 있어도 직전 시도가 검수 장애
+    (물러서기·한도, `review_unavailable_not_before`)나 비용 가드 보류였다면 그 대기가 이 후보의
+    다음 검수 시각을 소유한다 — 위의 재검수 경로와 같은 조건·같은 결과로 물러난다. 교정 계수와
+    검수 장애 계수는 서로의 기록을 읽거나 쓰지 않는다.
+    """
+
+    previous_attempt = _stored_generation_attempt(item)
+    if previous_attempt.get("reason") in {
+        "CONTENT_AI_REVIEW_UNAVAILABLE",
+        "CONTENT_AI_REVIEW_CONFIG_ERROR",
+        "COST_BLOCKED",
+    } and _generation_attempt_is_unchanged(item, philosophy):
+        return (
+            GenerationItemState.SKIPPED,
+            str(previous_attempt["reason"]),
+            "독립 검수의 다음 자동 재검수 조건을 기다립니다.",
+        )
+    return None
+
+
+def _auto_correct_blocked_body(
+    db,
+    item: ContentItem,
+    hospital: Hospital,
+    philosophy: HospitalContentPhilosophy,
+) -> tuple[GenerationItemState, str | None, str | None] | str | None:
+    """독립 검수의 사실·안전 지적을 지적 문장만 고쳐 푼다(`content_minimal_correction`).
+
+    반환값:
+    - ``None``: 이 패스가 맡을 지적이 없다. 호출부는 기존 경로를 그대로 탄다.
+    - ``_AUTO_CORRECTION_RESOLVED``: 교정본이 그 hash에 묶인 독립 재검수 PASS를 받아 저장됐다.
+    - ``_AUTO_CORRECTION_REASSESS``: 교정본은 저장됐고, 남은 차단은 기존 경로의 몫이다.
+    - 상태 튜플: 호출부가 그대로 돌려줄 결과(실패·주제 교체 대기·사람의 일·폐기).
+
+    교정본은 반드시 그 재검수 판정과 **한 번의 상태 가드 UPDATE**로 저장한다 — 교정본만 먼저
+    저장되면 그 사이 게이트가 볼 검수 결과가 없다. 게이트도 교정 기록(`AUTO_CORRECTION_KEY`)을
+    보고 교정본 hash에 묶인 PASS 없이는 통과시키지 않는다.
+    """
+
+    if not correction_allowed_for(item):
+        # 발행 이력·사람 편집·보존 상태의 글은 이 패스가 고치지 않는다. 기존 경로가 그대로 맡는다.
+        return None
+    waiting = _review_wait_blocks_correction(item, philosophy)
+    if waiting is not None:
+        return waiting
+    review = _stored_ai_review(item)
+    candidate = _stored_candidate(item)
+    must_use = required_must_use_messages(philosophy)
+    plan = plan_corrections(candidate, review, must_use_messages=must_use)
+    state = _stored_auto_correction_state(item)
+    if not plan.applicable:
+        if (
+            state.get("passes") or state.get("exhausted") or state.get("swap_requested_at")
+        ) and _stored_model_declared_hard(item):
+            # 이 주제는 이미 교정을 거쳤는데 남은 HARD를 문장 단위로 고칠 수 없다(인용 없음·제목
+            # 인용 등). 기존 경로로 돌려보내면 교체 pass가 바꾸지 못한 슬롯이 기한 지난
+            # SAMPLE_RECOVERABLE로 남는다 — 같은 계단(교체, 그다음 사람)으로 넘긴다.
+            return _escalate_exhausted_correction(db, item, philosophy, state)
+        return None
+    limits = correction_limits()
+    passes = int(state.get("passes") or 0)
+    rereviews = int(state.get("rereviews") or 0)
+    if state.get("exhausted") or passes >= limits.max_passes or rereviews >= limits.max_rereviews:
+        return _escalate_exhausted_correction(db, item, philosophy, state)
+
+    expected_revision = int(getattr(item, "content_revision", 1) or 1)
+    outcome = _run_async(
+        run_minimal_correction(
+            hospital=hospital,
+            philosophy=philosophy,
+            content=candidate,
+            review=review,
+            content_brief=getattr(item, "content_brief", None),
+            must_use_messages=must_use,
+            state=state,
+            limits=limits,
+            dependencies=CorrectionDependencies(
+                propose=propose_sentence_corrections,
+                review=review_generated_content,
+            ),
+        )
+    )
+    if outcome.status == "NOT_APPLICABLE":
+        return None
+    if outcome.status == "EXHAUSTED":
+        return _escalate_exhausted_correction(db, item, philosophy, state)
+    new_state: dict[str, Any] = {
+        **state,
+        "passes": outcome.passes,
+        "rereviews": outcome.rereviews,
+        "history": (list(state.get("history") or []) + outcome.history)[
+            -_AUTO_CORRECTION_HISTORY_LIMIT:
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if outcome.content is not None and outcome.review is not None:
+        corrected = outcome.content
+        new_state["corrected_sha256"] = candidate_sha256(corrected)
+        summary = (
+            dict(item.essence_check_summary)
+            if isinstance(item.essence_check_summary, dict)
+            else {}
+        )
+        summary["ai_review"] = outcome.review.payload()
+        summary[AUTO_CORRECTION_KEY] = new_state
+        if outcome.status == "PASS":
+            summary.pop(_GENERATION_ATTEMPT_KEY, None)
+        written = write_back_generated_content(
+            db,
+            item_id=item.id,
+            expected_revision=expected_revision,
+            expected_claim_token=getattr(item, "generation_claim_token", None),
+            correction_only=True,
+            values={
+                "body": corrected.get("body"),
+                "faq_answer_summary": corrected.get("faq_answer_summary"),
+                "meta_description": corrected.get("meta_description"),
+                "body_updated_at": datetime.now(timezone.utc),
+                "essence_check_summary": summary,
+            },
+        )
+        if written == 0:
+            db.rollback()
+            logger.info(
+                "Discarding minimal correction for %s — row changed during correction", item.id
+            )
+            return GenerationItemState.DISCARDED, None, None
+        db.commit()
+        db.refresh(item)
+    else:
+        # 범위 검사가 교정본을 거절했다 — 본문은 그대로 두고 쓴 회차만 센다.
+        summary = dict(item.essence_check_summary or {})
+        summary[AUTO_CORRECTION_KEY] = new_state
+        item.essence_check_summary = summary
+        db.commit()
+
+    if outcome.status == "PASS":
+        logger.info(
+            "Minimal correction resolved %s after %d pass(es)", item.id, outcome.passes
+        )
+        return _AUTO_CORRECTION_RESOLVED
+    if outcome.status == "UNAVAILABLE":
+        code = _content_ai_unavailable_code(outcome.review)
+        _remember_generation_attempt(db, item, philosophy, code)
+        return (
+            GenerationItemState.FAILED,
+            code,
+            "교정한 본문의 독립 재검수를 끝내지 못해 다음 자동 재검수를 기다립니다.",
+        )
+    budget_spent = (
+        outcome.passes >= limits.max_passes or outcome.rereviews >= limits.max_rereviews
+    )
+    if budget_spent or _stored_model_declared_hard(item) or outcome.status == "REJECTED":
+        # 교정을 거친 뒤에도 남은 사실·안전 HARD는 다시 교정할 문장이 없거나 상한이 끝났다.
+        return _escalate_exhausted_correction(
+            db, item, philosophy, _stored_auto_correction_state(item)
+        )
+    return _AUTO_CORRECTION_REASSESS
+
+
 def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str, str]:
     """Prefer a persisted generation cause over the empty-content symptom."""
 
@@ -840,6 +1190,15 @@ def _generation_attempt_is_unchanged(
         and previous.get("context") == _generation_attempt_context(item, philosophy)
     )
     if not unchanged:
+        return False
+    stored_candidate = previous.get("review_unavailable_candidate")
+    if (
+        previous.get("reason") == REVIEW_UNAVAILABLE_CODE
+        and stored_candidate
+        and stored_candidate != candidate_sha256(item)
+    ):
+        # 검수 장애의 물러서기·한도는 그 후보에 대한 결정이다. 사람이 원고를 고쳤으면 새 후보라
+        # 옛 후보의 기한을 기다리지 않고 다음 스윕이 다시 검수한다.
         return False
     return not retry_is_due(previous)
 
@@ -994,6 +1353,26 @@ def _remember_generation_attempt(
         # 진료비·병원 선택 글의 참고자료 보류 — 분류는 이미 OPERATOR_REQUIRED다(`retry_class_for`).
         # 이 표시가 수리 세션 예산의 소유를 끊어 다음 시도 시각이 없다(사람이 정한다).
         attempt[OPERATOR_DECIDES_KEY] = True
+    review_cap_reached = False
+    if reason == REVIEW_UNAVAILABLE_CODE and count_attempt:
+        # 같은 후보의 연속 검수 장애를 KST 날을 넘어 센다(하루 4회 예산의 일일 초기화와 무관).
+        # 후보·원인이 바뀌거나 검수가 끝나 기록이 지워지면 0부터 다시 센다. 한도에 닿으면 그
+        # 후보로는 어떤 스윕도 다시 사지 않고 사람의 일로 넘긴다.
+        # 계수는 후보로만 묶는다 — 생성 문맥(운영 기준·검사 규칙 판)이 바뀌어도 이어 센다.
+        candidate = candidate_sha256(item)
+        failures = 1 + (
+            int(previous.get("review_unavailable_total") or 0)
+            if previous.get("reason") == reason
+            and previous.get("review_unavailable_candidate") == candidate
+            else 0
+        )
+        attempt["review_unavailable_total"] = failures
+        attempt["review_unavailable_candidate"] = candidate
+        if failures >= settings.CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES:
+            review_cap_reached = True
+            retry_class = GenerationRetryClass.OPERATOR_REQUIRED
+            attempt["retry_class"] = retry_class.value
+            attempt["review_unavailable_cap_reached"] = True
     deadline = next_recovery_deadline(
         attempt,
         scheduled_date=getattr(item, "scheduled_date", None),
@@ -1008,6 +1387,9 @@ def _remember_generation_attempt(
         # 첫 시각만 저장한다 — `retry_is_due`와 인시던트 기한이 같은 값을 읽게 된다.
         # `None`은 "어떤 스윕도 집지 않는다"는 결정이며 그대로 저장한다.
         attempt["next_retry_at"] = deadline.isoformat() if deadline else None
+    if review_cap_reached:
+        # 어떤 스윕도 이 후보를 다시 사지 않는다는 결정이다(`recovery_is_abandoned`).
+        attempt["next_retry_at"] = None
     for key, value in (extra or {}).items():
         attempt[key] = value
     updated[_GENERATION_ATTEMPT_KEY] = attempt
@@ -1647,6 +2029,12 @@ def _record_generation_batch_outcome(
             safe_error_code=code,
             safe_error_message=message,
         )
+        incident_notify = generation_notify_requested(code) if notify is None else notify
+        if review_retries_exhausted(code, item):
+            # 검수 장애 자동 재검수가 한도에 닿은 실패는 사람의 일로 넘어가는 전이다 — 이 시간대
+            # 요약이 알림을 소유하더라도 이 전이만은 기존 인시던트 알림으로 한 번 보낸다. 같은
+            # episode의 중복 알림은 인시던트 outbox 키가 막는다.
+            incident_notify = True
         _run_async(
             open_generation_incident(
                 item_id=item.id,
@@ -1655,7 +2043,7 @@ def _record_generation_batch_outcome(
                 run_id=failed_run.id,
                 code=code,
                 message=message,
-                notify=generation_notify_requested(code) if notify is None else notify,
+                notify=incident_notify,
             )
         )
         return
@@ -5136,6 +5524,22 @@ def _run_generation_item(
         db.refresh(item)  # expire_on_commit=False — 조건부 UPDATE 결과를 다시 읽어온다
         logger.info(f"Content generated: {hospital.name} — {item.title}")
 
+        # 첫 생성도 저장 본문 경로(`_generate_single_content_item`)와 같은 최소 교정 패스를
+        # 이미지 구매 전에 거친다. 거치지 않으면 모델이 단정한 HARD가 교정·주제 교체 없이
+        # 곧바로 종착(INPUT_CHANGE_REQUIRED) 인시던트가 된다.
+        first_write_assessment = assess_content_publication(item, philosophy)
+        if (
+            first_write_assessment.code == "CONTENT_AI_HARD_FINDING"
+            and not _stored_ai_review_is_remediable(item)
+        ):
+            corrected = _auto_correct_blocked_body(db, item, hospital, philosophy)
+            if isinstance(corrected, tuple):
+                state, code, message = corrected
+                _record_generation_batch_outcome(
+                    db, recorder, item, hospital, state, code, message, notify=notify
+                )
+                return state, code, message
+
         # 대표 이미지는 비어 있을 때만 채운다. 기존 이미지가 있으면 공급자 파이프를
         # 절대 다시 호출하지 않는다.
         image_state = _recover_missing_content_image(db, item, hospital, philosophy)
@@ -5910,6 +6314,9 @@ def generate_content_image(self, content_id: str):
     """Regenerate only the cover image while preserving operator-reviewed text."""
     item_id = uuid.UUID(content_id)
     with SyncSessionLocal() as db:
+        # 발행기가 스스로 건 실행이면 실패해도 바로 알리지 않는다 — 누른 사람이 없고, 남은 예산의
+        # 복구는 스윕이 소유한다(RETRYING). 알림은 종전처럼 아침 요약이 소유한다.
+        notify_failure = not _is_auto_image_regeneration_run(db, self)
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
@@ -5988,6 +6395,7 @@ def generate_content_image(self, content_id: str):
                             run_id=run_id,
                             code=code,
                             message=message,
+                            notify=notify_failure,
                         )
                     )
                 return
@@ -6065,6 +6473,7 @@ def generate_content_image(self, content_id: str):
                         run_id=run_id,
                         code=code,
                         message=message,
+                        notify=notify_failure,
                     )
                 )
             logger.error("generate_content_image failed for %s: %s", content_id, type(exc).__name__)
@@ -6126,6 +6535,9 @@ def _generate_single_content_item(
             and _stored_review_has_uncertain_finding(item)
             # 문체/SOFT만 남은 차단은 재작성이 고친다. 그 경로를 가로채지 않는다.
             and not _stored_ai_review_is_remediable(item)
+            # 지적 문장 교정의 재검수 상한을 다 쓴 주제는 더 사지 않는다. 교체·사람의 일로
+            # 넘기는 판정은 아래 `_auto_correct_blocked_body`가 한다.
+            and not _stored_auto_correction_state(item).get("exhausted")
         )
         stored_attempt = _stored_generation_attempt(item)
         sample_rereview_due = uncertain_only_block and (
@@ -6212,6 +6624,21 @@ def _generate_single_content_item(
                     stored_assessment.code,
                     stored_assessment.message,
                 )
+        if (
+            stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            # 운영자 재검수 전용 실행은 교정(공급자 호출)을 하지 않는다. 교정은 자동 스윕이 맡는다.
+            and not review_only
+            # 승인 자료가 바뀐 뒤의 한 번의 재생성은 아래 기존 경로가 그대로 맡는다.
+            and not _approved_facts_changed_since_block(item, hospital)
+            and not _stored_ai_review_is_remediable(item)
+        ):
+            # 사실·안전 지적은 사람의 PATCH를 기다리지 않고 지적 문장만 교정해 재검수받는다.
+            # 23:00 야간 배치의 창이 내일 글을 담으므로 다음 날 아침 전에 이 교정이 끝난다.
+            corrected = _auto_correct_blocked_body(db, item, hospital, philosophy)
+            if isinstance(corrected, tuple):
+                return corrected
+            if corrected is not None:
+                stored_assessment = assess_content_publication(item, philosophy)
         repairable_body = (
             stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES
             # 진료비·병원 선택 글의 참고자료 보류는 다시 써도 풀리지 않는다 — 사람이 정한다.
@@ -6393,11 +6820,14 @@ def _generate_single_content_item(
             "generation_philosophy_id": philosophy.id,
             "last_reviewed_philosophy_id": philosophy.id,
             "essence_status": screening.status,
-            "essence_check_summary": _with_body_repair_state(
-                _generation_summary(
-                    db, hospital.id, screening, philosophy, approved_brief
+            "essence_check_summary": _with_auto_correction_state(
+                _with_body_repair_state(
+                    _generation_summary(
+                        db, hospital.id, screening, philosophy, approved_brief
+                    ),
+                    carried_repair_state,
                 ),
-                carried_repair_state,
+                _stored_auto_correction_state(item),
             ),
         },
     )
@@ -6411,6 +6841,17 @@ def _generate_single_content_item(
     db.refresh(item)
 
     post_write_assessment = assess_content_publication(item, philosophy)
+    if (
+        post_write_assessment.code == "CONTENT_AI_HARD_FINDING"
+        and not _stored_ai_review_is_remediable(item)
+    ):
+        # 막 쓴 본문도 같은 최소 교정 패스를 거친다 — 이미지를 사기 전에 지적 문장을 고쳐
+        # 재검수 PASS를 받으면 아래 이미지·발행 준비 판정으로 그대로 이어 간다.
+        corrected = _auto_correct_blocked_body(db, item, hospital, philosophy)
+        if isinstance(corrected, tuple):
+            return corrected
+        if corrected is not None:
+            post_write_assessment = assess_content_publication(item, philosophy)
     if (
         post_write_assessment.code == "CONTENT_AI_HARD_FINDING"
         and not _stored_ai_review_is_remediable(item)
@@ -7216,6 +7657,20 @@ def _auto_publish_one(
                 code=code,
                 message=message,
             )
+            # 이미지 때문에만 막힌 글은 Admin “이미지 다시 만들기”와 같은 작업을 시스템 실행으로
+            # 한 번 건다. 행·병원 잠금을 쥔 채 판정 기록보다 먼저 예약한다 — 실행 기록·계수·시도
+            # 기록이 아래의 첫 커밋(시도 기록이 하는 커밋 또는 그 뒤의 커밋) 하나에 함께 실린다.
+            # 배포는 그 커밋 뒤에만 한다.
+            spent_image_runs = (
+                _auto_image_regeneration_due(db, item, assessment, today_kst)
+                if read_only_row is None
+                else None
+            )
+            auto_image_run = (
+                _reserve_auto_image_regeneration(db, item, today_kst, spent_image_runs)
+                if spent_image_runs is not None
+                else None
+            )
             # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행이면
             # `item`은 분리된 사본이라 기록도 사본에만 남는다 — 워커가 시도 기록의 소유자다.
             # 사본에 남기는 것은 요약의 시도 지문(`attempt_fingerprint`)을 claim 없는 글과 같게
@@ -7225,6 +7680,8 @@ def _auto_publish_one(
                 db if read_only_row is None else _DETACHED_VIEW_SESSION, item, philosophy, code
             )
             db.commit()
+            if auto_image_run is not None:
+                _send_auto_image_regeneration(auto_image_run)
             operator_line = operator_decides_digest_due(
                 code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
             )
@@ -7292,6 +7749,155 @@ def _auto_publish_one(
         enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
         db.commit()
         return payload
+
+
+def _auto_image_regeneration_key_prefix(item_id: object) -> str:
+    return f"{_AUTO_IMAGE_REGEN_KEY_PREFIX}{item_id}:"
+
+
+def _is_auto_image_regeneration_run(db, task) -> bool:
+    """이 이미지 태스크가 발행기가 스스로 건 시스템 실행 아래에서 도는가.
+
+    표지는 발행기가 남긴 실행의 멱등 키(`auto-image-regen:<글>:<KST 날짜>`)다. Admin 실행은 요청 헤더의
+    키를 쓰고, 실행 문맥이 없는 직접 호출은 어느 쪽도 아니다.
+    """
+
+    context = explicit_run_context(task)
+    if context is None:
+        return False
+    run = db.get(OperationRun, context.run_id)
+    return (
+        run is not None
+        and run.operation_type == _AUTO_IMAGE_REGEN_OPERATION
+        and run.requested_by_id is None
+        and str(run.idempotency_key or "").startswith(_AUTO_IMAGE_REGEN_KEY_PREFIX)
+    )
+
+
+def _auto_image_regeneration_due(
+    db, item: ContentItem, assessment: Any, today_kst: date
+) -> tuple[str, ...] | None:
+    """이 차단에 발행기가 이미지 재생성을 스스로 걸 수 있으면 이미 쓴 시스템 실행 키를, 아니면 `None`.
+
+    게이트 순서상 이미지 코드는 본문·참고자료·금지 표현·독립 검수·운영 기준을 모두 통과한 뒤에만
+    나온다. 그래도 저장된 검수가 막고 있으면 사지 않는다 — 막힌 본문에 이미지를 사지 않는다.
+    오늘 이미지 예산을 다 쓴 글, 비용 가드 보류, 종착 이미지 원인은 종전 흐름이 소유한다.
+    하루·누적 한도는 지금까지 만든 시스템 실행 행으로 센다 — 요약의 계수는 본문 재작성이 요약을
+    통째로 다시 쓰면 사라지지만 실행 기록은 남는다.
+    """
+
+    if assessment.code not in _IMAGE_SYMPTOM_CODES:
+        return None
+    if not public_candidate_review_safe(item):
+        return None
+    if _stored_generation_attempt(item).get("reason") in (
+        {"COST_BLOCKED"} | _STORED_IMAGE_TERMINAL_CODES
+    ):
+        return None
+    if _image_attempts_exhausted_today(item):
+        return None
+    prefix = _auto_image_regeneration_key_prefix(item.id)
+    # 시스템 실행만 센다(`_is_auto_image_regeneration_run`과 같은 정의). 취소·실패로 끝난 실행도
+    # 센다 — 계수는 큐에 넣을 때 쓴 것이다.
+    keys = tuple(
+        str(key)
+        for key in db.execute(
+            select(OperationRun.idempotency_key).where(
+                OperationRun.hospital_id == item.hospital_id,
+                OperationRun.operation_type == _AUTO_IMAGE_REGEN_OPERATION,
+                OperationRun.requested_by_id.is_(None),
+                OperationRun.idempotency_key.startswith(prefix, autoescape=True),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    today_count = sum(key == f"{prefix}{today_kst.isoformat()}" for key in keys)
+    if today_count >= AUTO_IMAGE_REGEN_DAILY_CAP or len(keys) >= AUTO_IMAGE_REGEN_TOTAL_CAP:
+        return None
+    return keys
+
+
+def _reserve_auto_image_regeneration(
+    db, item: ContentItem, today_kst: date, spent_keys: tuple[str, ...] = ()
+) -> OperationRun | None:
+    """시스템 소유 이미지 재생성 실행을 만들고 계수를 쓴다. 커밋은 호출자가 한다.
+
+    Admin 경로와 같은 실행 종류(REGENERATE_CONTENT_IMAGE)·같은 저장 payload라 Worker 인증과
+    자율 복구의 재배포가 그대로 적용된다. 요청자는 없다(시스템 실행) — Admin 감사를 만들지 않는다.
+    멱등 키는 글·KST 날짜로 정해, 같은 날 두 번 사지 않는다(유일 인덱스가 겹친 쪽을 막는다).
+    `spent_keys`는 한도 판정이 읽은 이 글의 시스템 실행 키다 — 표시용 계수도 이것으로 만든다.
+    """
+
+    target_id = str(item.id)
+    observed_at = datetime.now(timezone.utc)
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=item.hospital_id,
+        operation_type=_AUTO_IMAGE_REGEN_OPERATION,
+        state=OperationRunState.REQUESTED,
+        idempotency_key=f"{_auto_image_regeneration_key_prefix(target_id)}{today_kst.isoformat()}",
+        requested_by_id=None,
+        task_id=str(uuid.uuid4()),
+        requested_at=observed_at,
+        attempt_count=0,
+        total_count=0,
+        success_count=0,
+        failure_count=0,
+        skipped_count=0,
+        request_payload=operation_run_payloads.build_request_payload(
+            operation_run_payloads.DispatchPayload(
+                "content_item", target_id, "content", (target_id,)
+            )
+        ),
+        version=1,
+    )
+    savepoint = db.begin_nested()
+    try:
+        db.add(run)
+        savepoint.commit()
+    except IntegrityError:
+        # 같은 날의 시스템 실행이 이미 있다 — 이 시간대는 사지 않는다.
+        savepoint.rollback()
+        return None
+    # 화면·감사용 계수. 저장된 요약을 다시 읽지 않고 한도 판정이 읽은 실행 행에 이번 한 건을 더한다
+    # — 요약이 깨졌거나 지워졌어도 실패하지 않고 1부터 다시 세지도 않는다.
+    period = today_kst.isoformat()
+    today_key = run.idempotency_key
+    item.essence_check_summary = {
+        **(item.essence_check_summary or {}),
+        _AUTO_IMAGE_REGEN_KEY: {
+            "period": period,
+            "count": sum(key == today_key for key in spent_keys) + 1,
+            "total": len(spent_keys) + 1,
+            "last_triggered_at": observed_at.isoformat(),
+        },
+    }
+    return run
+
+
+def _send_auto_image_regeneration(run: OperationRun) -> None:
+    """커밋된 실행을 서명된 봉투로 배포한다. 브로커 장애면 저장된 REQUESTED 실행을 자율 복구가 잇는다."""
+
+    target_id = str(run.request_payload["_dispatch"]["target_id"])
+    try:
+        generate_content_image.apply_async(
+            args=[target_id],
+            queue="content",
+            task_id=run.task_id,
+            headers={
+                **build_dispatch_headers(
+                    expected_purpose(_GENERATE_CONTENT_IMAGE_TASK), target_id
+                ),
+                "operation_run_id": str(run.id),
+            },
+        )
+    except Exception as error:
+        logger.warning(
+            "auto image regeneration publish failed for %s: %s",
+            target_id,
+            type(error).__name__,
+        )
 
 
 def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> dict:

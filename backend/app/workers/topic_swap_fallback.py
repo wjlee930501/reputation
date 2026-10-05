@@ -1,4 +1,4 @@
-"""본문 표본 실패의 마지막 폴백 계단 — 슬롯의 주제를 한 번만 바꿔 다시 쓴다.
+"""본문 표본 실패의 마지막 폴백 계단 — 슬롯의 주제를 바꿔 다시 쓴다(기본 한 번).
 
 이미지에는 "인증 이미지 빌려 쓰기" 폴백이 있는데 본문에는 없었다. 그래서 같은 주제로
 3일 예산을 다 쓴 슬롯은 `OPERATOR_REQUIRED`에서 멈췄다. LLM 출력은 확률적이지만 어떤
@@ -9,8 +9,10 @@
 
 1. **공개 이력·사람 편집이 있는 글은 손대지 않는다.** `first_published_at IS NULL`과
    `human_edited_at IS NULL`이 그 경계다.
-2. **교체는 한 번뿐이다.** `topic_swap_history`가 비어 있는 행만 후보이므로, 새 주제가
-   같은 코드로 다시 소진되면 그때는 사람의 일이다.
+2. **교체 횟수에 상한이 있다.** `topic_swap_history` 길이가 `CONTENT_AUTO_TOPIC_SWAP_MAX`
+   (기본 1) 미만인 행만 후보이므로, 새 주제가 같은 코드로 다시 소진되면 그때는 사람의 일이다.
+   지적 문장 최소 교정을 상한까지 거친 사실·안전 차단도 같은 계단을 탄다
+   (`AUTO_CORRECTION_EXHAUSTED_KEY`).
 3. **인시던트 epoch가 바뀐다.** 옛 주제의 인시던트는 `RECOVERED`로 닫고, 새 주제의
    실패는 새 key로 열린다(`generation_incident_control.content_generation_object_id`).
 
@@ -27,9 +29,10 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, cast, func, literal, select, tuple_, update
+from sqlalchemy import and_, case, cast, func, literal, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import JSONB
 
+from app.core.config import settings
 from app.core.database import get_async_sessionmaker
 from app.models.content import ContentItem
 from app.models.operations import Incident, IncidentState
@@ -46,6 +49,7 @@ from app.workers.generation_attempt_state import (
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import (
+    AUTO_CORRECTION_EXHAUSTED_KEY,
     SAMPLE_BODY_CODES,
     SAMPLE_BODY_DAILY_BUDGET,
     GenerationRetryClass,
@@ -127,13 +131,28 @@ def _exhausted_body_sample_filter():
     상한을 비후보가 먼저 채우면 그 뒤의 적격 슬롯이 굶는다. 시도 기록의 종착 여부와
     원인 코드는 JSONB에서 바로 읽을 수 있으므로 여기서 거른다. 기록이 없거나 키가
     없으면 `->>`가 NULL이라 비교가 NULL이 되어 자연히 제외된다(원하는 결과다).
+
+    최소 교정 상한을 다 쓴 사실·안전 차단(`AUTO_CORRECTION_EXHAUSTED_KEY`)도 후보다 — 그
+    기록은 교체를 기다리는 동안 RETRYING(`SAMPLE_RECOVERABLE`)으로 남는다.
     """
 
     attempt = _stored_attempt_json()
-    return and_(
-        attempt["retry_class"].as_string() == GenerationRetryClass.OPERATOR_REQUIRED.value,
-        attempt["reason"].as_string().in_(sorted(SAMPLE_BODY_CODES)),
+    return or_(
+        and_(
+            attempt["retry_class"].as_string() == GenerationRetryClass.OPERATOR_REQUIRED.value,
+            attempt["reason"].as_string().in_(sorted(SAMPLE_BODY_CODES)),
+        ),
+        and_(
+            attempt["reason"].as_string() == "CONTENT_AI_HARD_FINDING",
+            attempt[AUTO_CORRECTION_EXHAUSTED_KEY].as_boolean().is_(True),
+        ),
     )
+
+
+def topic_swap_limit() -> int:
+    """같은 슬롯의 자동 주제 교체 상한(`CONTENT_AUTO_TOPIC_SWAP_MAX`, 기본 1)."""
+
+    return max(0, int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX))
 
 
 def _candidate_stmt(
@@ -146,7 +165,7 @@ def _candidate_stmt(
         ContentItem.status.in_(GENERATION_WRITE_BACK_STATUSES),
         ContentItem.first_published_at.is_(None),
         ContentItem.human_edited_at.is_(None),
-        _history_length(ContentItem.topic_swap_history) == 0,
+        _history_length(ContentItem.topic_swap_history) < topic_swap_limit(),
         _inactive_claim_filter(expiry),
         _exhausted_body_sample_filter(),
     ]
@@ -205,14 +224,18 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
     바꿔도 해결되지 않는다(`INPUT_CHANGE_REQUIRED`). 이미지 코드도 자기 폴백이 있다.
     """
 
-    if list(getattr(item, "topic_swap_history", None) or []):
-        # 교체는 한 번뿐이다. 후보 SQL과 같은 규칙을 파이썬에도 둔 방어선이며,
-        # 두 번째 소진은 사람의 일이다.
+    if len(list(getattr(item, "topic_swap_history", None) or [])) >= topic_swap_limit():
+        # 교체 상한(기본 한 번)을 다 썼다. 후보 SQL과 같은 규칙을 파이썬에도 둔 방어선이며,
+        # 그 뒤의 소진은 사람의 일이다.
         return None
     attempt = read_generation_attempt(item)
+    reason = str(attempt.get("reason") or "")
+    if reason == "CONTENT_AI_HARD_FINDING" and attempt.get(AUTO_CORRECTION_EXHAUSTED_KEY):
+        # 지적 문장 최소 교정을 상한까지 거친 사실·안전 차단이다. 승인 자료 변경만 기다리지
+        # 않고 같은 슬롯·예정일로 다른 질문을 답하게 한다(`tasks._escalate_exhausted_correction`).
+        return reason
     if attempt.get("retry_class") != GenerationRetryClass.OPERATOR_REQUIRED.value:
         return None
-    reason = str(attempt.get("reason") or "")
     if reason not in SAMPLE_BODY_CODES:
         return None
     if has_model_declared_hard_finding(_stored_review(item)):
@@ -294,7 +317,7 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
         "image_policy_version": None,
         "image_reused_from_content_id": None,
         "image_fallback_source": None,
-        "topic_swap_history": [history_entry],
+        "topic_swap_history": [*list(item.topic_swap_history or []), history_entry],
         "content_revision": ContentItem.content_revision + 1,
         "generation_claimed_at": None,
         "generation_claim_token": None,
@@ -304,10 +327,11 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
 def _superseded_incident(db, item: ContentItem, reason: str) -> Incident | None:
     """교체가 대체하는 옛 epoch의 생성 인시던트."""
 
+    swap_count = len(list(getattr(item, "topic_swap_history", None) or []))
     return db.execute(
         select(Incident).where(
             Incident.dedupe_key
-            == generation_incident_dedupe_key(item.id, reason, topic_swap_count=0)
+            == generation_incident_dedupe_key(item.id, reason, topic_swap_count=swap_count)
         )
     ).scalar_one_or_none()
 

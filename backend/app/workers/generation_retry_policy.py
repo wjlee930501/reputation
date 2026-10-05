@@ -30,6 +30,12 @@ BACKLOG_RECOVERY_MINUTE = 30
 BACKLOG_RECOVERY_GRACE = timedelta(hours=1)
 ENVIRONMENT_ATTEMPT_BUDGET = 4
 DAILY_RESET_ENVIRONMENT_CODES = frozenset({"CONTENT_AI_REVIEW_UNAVAILABLE"})
+# 같은 후보의 독립 검수 장애가 이어지면 다음 재검수를 물린다. n번째 연속 실패 뒤에는
+# `관측 + min(1시간·2^(n-1), 24시간)` 이전에 다시 사지 않는다. 계수(`review_unavailable_total`)는
+# KST 날을 넘어 누적되므로 위의 일일 초기화가 이 물러서기를 지우지 않는다.
+REVIEW_UNAVAILABLE_CODE = "CONTENT_AI_REVIEW_UNAVAILABLE"
+REVIEW_UNAVAILABLE_BACKOFF_BASE = timedelta(hours=1)
+REVIEW_UNAVAILABLE_BACKOFF_MAX = timedelta(hours=24)
 
 # 표본(확률적) 실패 예산. LLM은 같은 입력에서도 매번 다른 출력을 낸다 — 한 번의 거절을
 # "입력 변경 필요"로 굳히면 배포 전까지 슬롯이 비어 있게 된다. 대신 KST 하루 단위로
@@ -58,6 +64,12 @@ BODY_REPAIR_CODES = frozenset(
 # 공신력 있는 문서가 본질적으로 없어 작가가 다시 써도 풀리지 않는다 — 수리 세션 예산이 아니라
 # 저장된 `OPERATOR_REQUIRED`가 이 보류를 소유한다(`reference_requirement.references_left_to_operator`).
 OPERATOR_DECIDES_KEY = "operator_decides"
+
+# 독립 검수 지적의 최소 교정 패스가 글(주제)당 상한을 다 쓴 표시(`CONTENT_AI_HARD_FINDING` 시도
+# 기록). 이 표시가 있는 기록은 주제 교체 후보다 — 모델이 HARD로 단정한 지적이라도 교정을 이미
+# 거쳤으므로 승인 자료 변경을 기다리지 않고 같은 슬롯·예정일로 다른 질문을 한 번 답하게 한다
+# (`topic_swap_fallback.exhausted_body_sample_reason`). 교체 상한까지 쓰면 사람의 일이다.
+AUTO_CORRECTION_EXHAUSTED_KEY = "auto_correction_exhausted"
 
 
 class GenerationRetryClass(StrEnum):
@@ -117,6 +129,39 @@ def stored_attempt_period(attempt: dict) -> str | None:
     if observed.tzinfo is None:
         observed = observed.replace(tzinfo=UTC)
     return environment_attempt_period(observed)
+
+
+def review_unavailable_backoff(failures: int) -> timedelta:
+    """n번째 연속 검수 장애 뒤 다음 재검수까지의 최소 간격."""
+
+    if failures < 1:
+        return timedelta(0)
+    # 2^5시간이 이미 상한(24시간)을 넘는다 — 지수를 묶어 큰 n에서도 넘치지 않게 한다.
+    return min(
+        REVIEW_UNAVAILABLE_BACKOFF_BASE * 2 ** min(failures - 1, 5),
+        REVIEW_UNAVAILABLE_BACKOFF_MAX,
+    )
+
+
+def review_unavailable_not_before(attempt: Mapping) -> datetime | None:
+    """검수 장애 기록이 다음 재검수를 허락하는 가장 이른 시각. 계수가 없는 기록은 `None`."""
+
+    if attempt.get("reason") != REVIEW_UNAVAILABLE_CODE:
+        return None
+    try:
+        failures = int(attempt.get("review_unavailable_total") or 0)
+    except (TypeError, ValueError):
+        return None
+    raw_observed = attempt.get("observed_at")
+    if failures < 1 or not isinstance(raw_observed, str):
+        return None
+    try:
+        observed = datetime.fromisoformat(raw_observed)
+    except ValueError:
+        return None
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    return observed + review_unavailable_backoff(failures)
 
 
 def has_model_declared_hard_finding(review: object) -> bool:
@@ -360,8 +405,11 @@ def next_recovery_deadline(
     earliest_date = _earliest_eligible_date(attempt, observed, repair_state)
     if earliest_date is None:
         return None
+    not_before = review_unavailable_not_before(attempt)
     for candidate in _candidate_sweeps(observed):
         if candidate.date() < earliest_date:
+            continue
+        if not_before is not None and candidate < not_before:
             continue
         window_start, window_end = _sweep_window(candidate)
         if window_start <= scheduled_date <= window_end:
@@ -527,6 +575,10 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
     # already-written due slot cannot remain empty forever. Other provider failures
     # retain their finite H-08 budget.
     if count >= ENVIRONMENT_ATTEMPT_BUDGET and not budget_reset_due:
+        return False
+    not_before = review_unavailable_not_before(attempt)
+    if not_before is not None and observed < not_before:
+        # 검수 장애의 물러서기는 일일 초기화보다 앞선다 — 새 날이라고 더 일찍 사지 않는다.
         return False
     if budget_reset_due and _sweep_window_was_abandoned(attempt):
         # 어제 저장한 "집을 스윕이 없다"는 예측보다, 오늘의 새 예산이 나중에 내려진
