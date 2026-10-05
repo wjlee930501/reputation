@@ -306,6 +306,10 @@ def operator_retry_releases(item) -> bool:
     (`tests/test_generation_incident_copy_retry.py`). 게이트가 남긴 원고 미생성 기록과 환경 실패
     기록(PROVIDER_*·COST_BLOCKED 등 ENVIRONMENT_RECOVERABLE)만 풀린다. 표본 실패(주제 교체 기록
     포함)는 하루 예산이 소유해 기한 전에는 그대로 억제된다.
+
+    이 판정은 **빈 슬롯**만 다룬다. 본문이 있는 글의 독립 검수 공급자 실패
+    (CONTENT_AI_REVIEW_UNAVAILABLE)를 재검수만 하려고 푸는 해제는 `regenerate_content_item`의
+    별도 경로(재검수 전용 실행)이며 여기에 포함하지 않는다.
     """
 
     if item is None or str(getattr(item, "body", None) or "").strip():
