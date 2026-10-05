@@ -38,6 +38,7 @@ from app.services.reference_requirement import references_left_to_operator
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_CODES,
     OPERATOR_DECIDES_KEY,
+    REVIEW_UNAVAILABLE_CODE,
     GenerationRetryClass,
     next_recovery_deadline,
     recovery_is_abandoned,
@@ -281,6 +282,19 @@ def environment_recovery_exhausted(code: str, item) -> bool:
         return False
     attempt = _stored_generation_attempt(item)
     return attempt.get("reason") == code and recovery_is_abandoned(attempt)
+
+
+def review_retries_exhausted(code: str, item) -> bool:
+    """같은 원고 후보의 독립 검수 장애 자동 재검수가 한도에 닿았는가.
+
+    한도 기록(`review_unavailable_cap_reached`)은 OPERATOR_REQUIRED·다음 시도 없음이다 — 어떤 스윕도
+    그 후보를 다시 사지 않으므로 사람의 일이다. 원고가 바뀌면 새 후보라 이 판정이 풀린다.
+    """
+
+    if code != REVIEW_UNAVAILABLE_CODE or item is None:
+        return False
+    attempt = _stored_generation_attempt(item)
+    return attempt.get("reason") == code and bool(attempt.get("review_unavailable_cap_reached"))
 
 
 def operator_retry_releases(item) -> bool:
@@ -556,6 +570,13 @@ ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION = (
     "자동 재시도 횟수를 모두 사용해 예약된 자동 복구가 이 글의 원고를 더 만들지 않습니다. "
     "외부 서비스가 정상인지 확인한 뒤 운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요."
 )
+# 같은 원고의 독립 검수 장애가 자동 재검수 한도에 닿았다(`review_retries_exhausted`). 예약 복구는 이
+# 원고를 더 재검수하지 않는다. 원고를 고쳐 저장하면 새 후보라 자동 재검수가 다시 시작된다.
+REVIEW_UNAVAILABLE_EXHAUSTED_OPERATOR_ACTION = (
+    "독립 검수가 같은 원고에서 연속으로 끝나지 않아 자동 재검수 횟수 한도에 닿았습니다. 예약된 자동 "
+    "복구는 이 원고를 더 재검수하지 않으니 사람이 확인해야 합니다. 독립 검수 공급자가 정상인지 확인하고, "
+    "콘텐츠 탭에서 이 글의 “콘텐츠 수정”을 눌러 원고를 고쳐 저장하면 자동 재검수가 다시 시작됩니다."
+)
 # 예산이 남은 공급자 장애의 빈 슬롯. 다음 배치가 다시 시도하고, 환경 실패 기록은 “작업 다시
 # 시도”가 억제를 풀어 바로 다시 시도한다(`operator_retry_releases`) — 아침 요약의 '서비스가
 # 복구됐으면 “작업 다시 시도”'(`notification_copy.blocker_copy`)와 같은 말이다. 본문이 있는 글은
@@ -643,6 +664,7 @@ def _generation_operator_copy(
     environment_exhausted: bool = False,
     unwritten: bool = False,
     recovery_owned: bool = False,
+    review_exhausted: bool = False,
 ) -> tuple[str, str]:
     """`retry_at`은 스윕이 아직 소유한 원고 미생성 슬롯의 다음 자동 복구 시각
     (`announced_recovery_time`), `retry_unscheduled`는 스윕이 시각을 정했던 기록인데 지금 말할 시각이
@@ -650,7 +672,8 @@ def _generation_operator_copy(
     생성을 다시 시도하는지(`operator_retry_writes_now`), `retry_opens_at`은 누르면 다시 시도하기 시작하는
     첫 시각(`operator_retry_opens_at`, 복구 약속이 아니다), `environment_exhausted`는 공급자 장애의 환경
     예산이 끝났다는 판정, `unwritten`은 글에 본문이 아직 없다는 사실, `recovery_owned`는 예약 복구가
-    이 원인을 아직 소유한다는 판정(`scheduled_recovery_owns_blocker`)이다."""
+    이 원인을 아직 소유한다는 판정(`scheduled_recovery_owns_blocker`), `review_exhausted`는 독립 검수
+    장애의 자동 재검수가 한도에 닿았다는 판정(`review_retries_exhausted`)이다."""
 
     impact = (
         "이미 공개한 글이 대표 이미지 인증이 풀려 공개 페이지에서 내려가 있습니다."
@@ -767,6 +790,8 @@ def _generation_operator_copy(
         )
     if code in _ENVIRONMENT_WAIT_CODES and environment_exhausted:
         return impact, ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION
+    if code == REVIEW_UNAVAILABLE_CODE and review_exhausted:
+        return impact, REVIEW_UNAVAILABLE_EXHAUSTED_OPERATOR_ACTION
     if code in _ENVIRONMENT_WAIT_CODES and unwritten and retry_releasable:
         return impact, PROVIDER_RETRY_NOW_ACTIONS[code]
     action = actions.get(
@@ -932,6 +957,9 @@ def _morning_notification_due(
     """Page only for an unresolved due slot at/after its 07:45 KST close sweep."""
 
     if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES:
+        return True
+    if review_retries_exhausted(code, item):
+        # 자동 재검수 한도 도달은 사람의 일로 넘어가는 전이다 — 설정 오류처럼 바로 한 번 알린다.
         return True
     if code not in _MORNING_GENERATION_NOTIFICATION_CODES or item is None:
         return False
@@ -1115,6 +1143,7 @@ async def open_generation_incident(
                 retry_releasable=operator_retry_writes_now(swapped_item, observed_at),
                 retry_opens_at=operator_retry_opens_at(swapped_item, observed_at),
                 environment_exhausted=environment_recovery_exhausted(code, swapped_item),
+                review_exhausted=review_retries_exhausted(code, swapped_item),
                 unwritten=swapped_item is not None and not _has_body(swapped_item),
                 recovery_owned=scheduled_recovery_owns_blocker(code, swapped_item),
             )

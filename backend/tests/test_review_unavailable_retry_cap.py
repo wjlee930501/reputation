@@ -590,6 +590,66 @@ async def test_the_cap_notifies_once_under_the_error_label(monkeypatch):
     assert notification.message.fallback_text.startswith(ERROR_LABEL)
 
 
+def _record_failed_outcome(monkeypatch, item, code, *, notify):
+    """스윕이 저장 본문 재검수 실패를 기록하는 실제 경로(`_record_generation_batch_outcome`)."""
+
+    opened: list[dict] = []
+
+    async def capture(**kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(tasks, "open_generation_incident", capture)
+    recorder = SimpleNamespace(
+        run=SimpleNamespace(id=uuid.uuid4()),
+        record=lambda *_a, **_k: None,
+        item_run=lambda *_a, **_k: SimpleNamespace(id=uuid.uuid4()),
+    )
+    tasks._record_generation_batch_outcome(
+        _NightlyTaskDB(),
+        recorder,
+        item,
+        item.hospital,
+        tasks.GenerationItemState.FAILED,
+        code,
+        "독립 검수 공급자 복구 후 자동 재검수를 다시 시도합니다.",
+        notify=notify,
+    )
+    assert len(opened) == 1
+    return opened[0]
+
+
+@pytest.mark.parametrize("notify", [None, False])
+def test_the_sweep_that_records_the_cap_asks_for_the_notification(monkeypatch, notify):
+    """복구 스윕은 시간대 요약이 알림을 소유해 `notify=False`로 기록한다. 한도 전이만은 그래도 기존
+    인시던트 알림을 요청한다(같은 episode의 반복은 outbox 키가 막는다)."""
+
+    item = _capped_slot(monkeypatch)
+
+    call = _record_failed_outcome(monkeypatch, item, CODE, notify=notify)
+
+    assert call["code"] == CODE and call["notify"] is True
+
+
+@pytest.mark.parametrize("notify", [None, False])
+def test_an_outage_below_the_cap_keeps_the_callers_notify_choice(monkeypatch, notify):
+    item = _below_cap_slot(monkeypatch)
+
+    call = _record_failed_outcome(monkeypatch, item, CODE, notify=notify)
+
+    assert call["notify"] is False
+
+
+@pytest.mark.parametrize(("notify", "expected"), [(None, True), (False, False)])
+def test_other_codes_keep_their_notify_choice(monkeypatch, notify, expected):
+    item = _capped_slot(monkeypatch)  # 한도 기록이 있어도 다른 원인의 알림 판정은 그대로다
+
+    call = _record_failed_outcome(
+        monkeypatch, item, "CONTENT_AI_REVIEW_CONFIG_ERROR", notify=notify
+    )
+
+    assert call["notify"] is expected
+
+
 # ── 종전 그대로: 비용 가드 보류와 설정 오류 ──────────────────────────────────────────
 
 
