@@ -415,6 +415,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # 공개 이미지 재인증 차단 표시는 제목(subject)에 매인 사실이다. 제목을
             # 건드리지 않는 편집이 지우면 sweep이 같은 답을 다시 사러 간다 (H-01).
             "image_recertification",
+            # 발행기가 스스로 건 이미지 재생성의 하루·누적 계수. 매시 게이트 기록이 지우면
+            # 매시 다시 사고 누적 한도도 영영 닿지 않는다.
+            "auto_image_regeneration",
         ):
             value = previous_summary.get(key)
             if value is not None:
@@ -457,6 +460,8 @@ def apply_essence_revalidation(
             "legacy_image_certification",
             # 재승인은 제목을 바꾸지 않는다. 재인증 차단 표시를 지우면 안 된다 (H-01).
             "image_recertification",
+            # 자동 이미지 재생성 계수 — 재승인이 지우면 누적 한도가 다시 열린다.
+            "auto_image_regeneration",
         ):
             if key in previous:
                 summary[key] = previous[key]

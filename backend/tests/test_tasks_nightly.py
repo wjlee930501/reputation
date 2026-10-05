@@ -4662,6 +4662,10 @@ def test_auto_publish_does_not_treat_profile_hero_as_verified_content_image(monk
         "now",
         lambda *_args, **_kwargs: arrow.get(2026, 8, 19, 8, 0, tzinfo="Asia/Seoul"),
     )
+    dispatched: list[dict] = []
+    monkeypatch.setattr(
+        tasks.generate_content_image, "apply_async", lambda **kwargs: dispatched.append(kwargs)
+    )
 
     outcome = tasks._auto_publish_one(item.id)
 
@@ -4672,6 +4676,8 @@ def test_auto_publish_does_not_treat_profile_hero_as_verified_content_image(monk
     assert [log.action for log in db.added if hasattr(log, "action")] == [
         "auto_publish_blocked",
     ]
+    # 대체 이미지를 붙이는 대신 이미지 재생성 시스템 실행을 한 번 건다(PR-B, 발행은 하지 않는다).
+    assert [call["args"] for call in dispatched] == [[str(item.id)]]
 
 
 # ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──
@@ -4718,6 +4724,13 @@ class _AutoPublishDB:
 
     def commit(self):
         self.commits += 1
+
+    def begin_nested(self):
+        # 발행기가 이미지 때문에만 막힌 글의 시스템 실행을 savepoint 안에서 넣는다(PR-B).
+        mark = len(self.added)
+        return SimpleNamespace(
+            commit=lambda: None, rollback=lambda: self.added.__delitem__(slice(mark, None))
+        )
 
     def __enter__(self):
         return self
