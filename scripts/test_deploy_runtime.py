@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -1176,8 +1178,10 @@ def test_site_only_deploy_does_not_require_backend_only_secrets(tmp_path: Path) 
     assert "secrets describe SITE_BFF_SECRET" in commands
     assert "secrets describe OPENROUTER_API_KEY" not in commands
     assert "secrets describe REDIS_URL" not in commands
-    assert "gsutil ls -b gs://reputation-assets" in commands
-    assert commands.index("gsutil ls -b gs://reputation-assets") < commands.index("docker build")
+    assert "gcloud storage buckets describe gs://reputation-assets" in commands
+    assert commands.index("gcloud storage buckets describe gs://reputation-assets") < commands.index(
+        "docker build"
+    )
     assert "gcloud run deploy reputation-site" in commands
     # INDEXNOW_KEY가 없는 환경이어도 site 배포는 성공해야 하고, 없는 시크릿을
     # Cloud Run에 주입하려 들면 안 된다.
@@ -1273,3 +1277,222 @@ def test_site_deploy_wires_indexnow_key_when_the_secret_exists(tmp_path: Path) -
     # 필수 시크릿이 선택 시크릿 때문에 밀려나지 않는다 — 단일 플래그에 모두 들어간다.
     assert "SITE_REVALIDATE_SECRET=SITE_REVALIDATE_SECRET:latest" in site_secrets
     assert "SITE_BFF_SECRET=SITE_BFF_SECRET:latest" in site_secrets
+
+
+# ─── GCS 자산 버킷 preflight: "없다"와 "못 봤다"를 구분한다 ─────────────────
+# 실제 gcloud(googlecloudsdk/api_lib/storage/errors.py)가 남기는 문구를 그대로 쓴다.
+_BUCKET_MISSING_MESSAGE = (
+    "GCS 자산 버킷 gs://reputation-assets이 존재하지 않습니다. "
+    "scripts/setup-gcp.sh로 먼저 생성하거나 SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회하세요."
+)
+_BUCKET_UNVERIFIED_MESSAGE = "GCS 자산 버킷 gs://reputation-assets의 존재를 확인하지 못했습니다"
+_BUCKET_DESCRIBE = (
+    "gcloud storage buckets describe gs://reputation-assets"
+    " --project=test-project --format=value(name)"
+)
+
+# 기본 gcloud 스텁에 `storage buckets describe` 실패 분기만 덧붙인다.
+# FAKE_BUCKET_DESCRIBE_STDERR가 있으면 그 문구를 stderr에 남기고 실패한다.
+_FAKE_GCLOUD_WITH_BUCKET = _FAKE_GCLOUD.replace(
+    'case "$*" in\n',
+    "\n".join(
+        [
+            'case "$*" in',
+            '  "storage buckets describe "*)',
+            '    if [[ -n "${FAKE_BUCKET_DESCRIBE_STDERR:-}" ]]; then',
+            '      printf "%s\\n" "$FAKE_BUCKET_DESCRIBE_STDERR" >&2',
+            "      exit 1",
+            "    fi",
+            '    echo "${4#gs://}"',
+            "    exit 0",
+            "    ;;",
+            "",
+        ]
+    ),
+    1,
+)
+
+# gsutil이 호출되면 기록하고 실패하는 shim. PATH 디렉터리를 빼서 gsutil을 숨기면
+# /usr/bin의 bash·coreutils까지 사라지므로, 앞에 붙은 스텁 디렉터리에서 가로챈다.
+_FAILING_GSUTIL = "\n".join(
+    [
+        "#!/usr/bin/env bash",
+        'echo "gsutil $*" >> "$FAKE_COMMAND_LOG"',
+        'echo "gsutil must not be used by the asset bucket preflight" >&2',
+        "exit 1",
+        "",
+    ]
+)
+
+
+def _run_site_with_asset_bucket(
+    tmp_path: Path, bucket: str = "reputation-assets", **extra: str
+) -> tuple[subprocess.CompletedProcess[str], str]:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    _write_executable(fake_bin / "gcloud", _FAKE_GCLOUD_WITH_BUCKET)
+    _write_executable(fake_bin / "gsutil", _FAILING_GSUTIL)
+    (project / ".env.production").write_text(f"GCP_STORAGE_BUCKET={bucket}\n")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "site"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            PUBLIC_DOMAIN="reputation.example.test",
+            SKIP_PUBLIC_DNS_PREFLIGHT="1",
+            **extra,
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    commands = command_log.read_text() if command_log.exists() else ""
+    return result, commands
+
+
+def test_asset_bucket_preflight_uses_gcloud_storage_and_passes_when_bucket_exists(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_site_with_asset_bucket(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert _BUCKET_DESCRIBE in commands
+    assert commands.index(_BUCKET_DESCRIBE) < commands.index("docker build")
+    assert "gcloud run deploy reputation-site" in commands
+
+
+def test_asset_bucket_preflight_never_invokes_gsutil(tmp_path: Path) -> None:
+    """gsutil이 PATH 맨 앞에 있고 실패하더라도 preflight는 gcloud storage만 쓴다."""
+    result, commands = _run_site_with_asset_bucket(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "gsutil" not in commands
+    assert "gsutil" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    "gcloud_stderr",
+    [
+        "ERROR: (gcloud.storage.buckets.describe) gs://reputation-assets not found: 404.",
+        "ERROR: (gcloud.storage.buckets.describe) HTTPError 404: The specified bucket does not exist.",
+    ],
+    ids=["gcs-not-found-404", "http-error-404"],
+)
+def test_asset_bucket_preflight_reports_missing_only_on_confirmed_404(
+    tmp_path: Path, gcloud_stderr: str
+) -> None:
+    result, commands = _run_site_with_asset_bucket(
+        tmp_path, FAKE_BUCKET_DESCRIBE_STDERR=gcloud_stderr
+    )
+
+    assert result.returncode != 0
+    assert _BUCKET_MISSING_MESSAGE in result.stderr
+    assert gcloud_stderr in result.stderr
+    assert _BUCKET_UNVERIFIED_MESSAGE not in result.stderr
+    assert "docker build" not in commands
+    assert "gsutil" not in commands
+
+
+@pytest.mark.parametrize(
+    ("gcloud_stderr", "expected_hint"),
+    [
+        (
+            "ERROR: (gcloud.storage.buckets.describe) HTTPError 403: "
+            "deployer@test-project.iam.gserviceaccount.com does not have storage.buckets.get "
+            "access to the Google Cloud Storage bucket. Permission 'storage.buckets.get' "
+            "denied on resource (or it may not exist).",
+            "storage.buckets.get 권한이 없습니다",
+        ),
+        (
+            "ERROR: (gcloud.storage.buckets.describe) PERMISSION_DENIED: "
+            "The caller does not have permission",
+            "storage.buckets.get 권한이 없습니다",
+        ),
+        (
+            "ERROR: (gcloud.storage.buckets.describe) There was a problem refreshing your "
+            "current auth tokens: Reauthentication failed. cannot prompt during "
+            "non-interactive execution.\nPlease run:\n\n  $ gcloud auth login\n\n"
+            "to obtain new credentials.",
+            "gcloud 인증이 만료된 것으로 보입니다",
+        ),
+        (
+            "ERROR: (gcloud.storage.buckets.describe) There was a problem connecting to "
+            "storage.googleapis.com: [Errno -3] Temporary failure in name resolution",
+            "gcloud 출력을 보고 원인을 해결한 뒤 다시 실행하세요.",
+        ),
+        (
+            "ERROR: (gcloud) Invalid choice: 'storage'.\n"
+            "The requested command group was not found in this gcloud installation.",
+            "gcloud 출력을 보고 원인을 해결한 뒤 다시 실행하세요.",
+        ),
+        (
+            "ERROR: (gcloud.storage.buckets.describe) Project [test-project] not found.",
+            "gcloud 출력을 보고 원인을 해결한 뒤 다시 실행하세요.",
+        ),
+    ],
+    ids=[
+        "http-403",
+        "permission-denied",
+        "auth-expired",
+        "network",
+        "missing-command-not-found",
+        "project-not-found",
+    ],
+)
+def test_asset_bucket_preflight_does_not_call_unverified_bucket_missing(
+    tmp_path: Path, gcloud_stderr: str, expected_hint: str
+) -> None:
+    """인증·권한·네트워크·무관한 "not found"는 부재가 아니다 — 버킷을 만들라고 안내하면 안 된다."""
+    result, commands = _run_site_with_asset_bucket(
+        tmp_path, FAKE_BUCKET_DESCRIBE_STDERR=gcloud_stderr
+    )
+
+    assert result.returncode != 0
+    assert _BUCKET_UNVERIFIED_MESSAGE in result.stderr
+    assert expected_hint in result.stderr
+    assert "존재하지 않습니다" not in result.stderr
+    assert "setup-gcp.sh" not in result.stderr
+    # gcloud stderr 원문을 줄 단위까지 그대로 보여준다.
+    for line in gcloud_stderr.splitlines():
+        assert line in result.stderr
+    assert "docker build" not in commands
+    assert "gsutil" not in commands
+
+
+def test_asset_bucket_preflight_skip_flag_is_unchanged(tmp_path: Path) -> None:
+    result, commands = _run_site_with_asset_bucket(
+        tmp_path,
+        SKIP_ASSET_BUCKET_PREFLIGHT="1",
+        FAKE_BUCKET_DESCRIBE_STDERR="ERROR: (gcloud.storage.buckets.describe) HTTPError 403: denied",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "SKIP_ASSET_BUCKET_PREFLIGHT=1 — GCS 자산 버킷 preflight를 건너뜁니다." in result.stderr
+    assert "storage buckets describe" not in commands
+    assert "gsutil" not in commands
+
+
+def test_asset_bucket_preflight_empty_bucket_name_is_unchanged(tmp_path: Path) -> None:
+    result, commands = _run_site_with_asset_bucket(tmp_path, bucket="")
+
+    assert result.returncode != 0
+    assert "GCP_STORAGE_BUCKET(자산 버킷)이 설정되지 않았습니다 (.env.production)." in result.stderr
+    assert "storage buckets describe" not in commands
+    assert "gsutil" not in commands
+
+
+@pytest.mark.parametrize("placeholder", ["reputation-images", "reputation-reports"])
+def test_asset_bucket_preflight_placeholder_bucket_is_unchanged(
+    tmp_path: Path, placeholder: str
+) -> None:
+    result, commands = _run_site_with_asset_bucket(tmp_path, bucket=placeholder)
+
+    assert result.returncode != 0
+    assert (
+        f"GCP_STORAGE_BUCKET가 placeholder 기본값 '{placeholder}'입니다 — 전역 유일 제약상 "
+        f"실제 버킷일 수 없습니다. '{placeholder}-test-project' 규칙으로 설정하세요."
+    ) in result.stderr
+    assert "storage buckets describe" not in commands
+    assert "gsutil" not in commands
