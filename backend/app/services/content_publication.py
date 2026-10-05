@@ -471,6 +471,8 @@ def apply_essence_revalidation(
             "legacy_image_certification",
             # 재승인은 제목을 바꾸지 않는다. 재인증 차단 표시를 지우면 안 된다 (H-01).
             "image_recertification",
+            # 자동 교정 기록 — 지우면 글(주제)당 교정 상한이 초기화된다.
+            AUTO_CORRECTION_KEY,
         ):
             if key in previous:
                 summary[key] = previous[key]

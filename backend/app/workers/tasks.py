@@ -984,9 +984,16 @@ def _auto_correct_blocked_body(
     candidate = _stored_candidate(item)
     must_use = required_must_use_messages(philosophy)
     plan = plan_corrections(candidate, review, must_use_messages=must_use)
-    if not plan.applicable:
-        return None
     state = _stored_auto_correction_state(item)
+    if not plan.applicable:
+        if (
+            state.get("passes") or state.get("exhausted") or state.get("swap_requested_at")
+        ) and _stored_model_declared_hard(item):
+            # 이 주제는 이미 교정을 거쳤는데 남은 HARD를 문장 단위로 고칠 수 없다(인용 없음·제목
+            # 인용 등). 기존 경로로 돌려보내면 교체 pass가 바꾸지 못한 슬롯이 기한 지난
+            # SAMPLE_RECOVERABLE로 남는다 — 같은 계단(교체, 그다음 사람)으로 넘긴다.
+            return _escalate_exhausted_correction(db, item, philosophy, state)
+        return None
     limits = correction_limits()
     passes = int(state.get("passes") or 0)
     rereviews = int(state.get("rereviews") or 0)

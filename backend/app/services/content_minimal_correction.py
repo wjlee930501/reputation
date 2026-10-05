@@ -136,6 +136,13 @@ _GENERIC_STEMS = frozenset(
         "가능", "여부", "방법", "자세", "자세히", "충분", "충분히", "직접", "함께", "통해",
     }
 )
+# 사실을 싣지 않는 한 글자 낱말. 이 밖의 한 글자 낱말(성 `박`·`이`, `뇌`·`암` 같은 기관·질환)은
+# 근거 자료에 같은 낱말로 있어야 한다.
+_GENERIC_SINGLE_WORDS = frozenset(
+    {"및", "등", "더", "또", "곧", "잘", "꼭", "각", "그", "것", "때", "중", "후", "수", "좀"}
+)
+# 한 글자 낱말 뒤에 붙는 조사 한 글자(`암은`·`뇌를`). 근거 자료의 낱말을 읽을 때만 뗀다.
+_ONE_CHAR_PARTICLES = frozenset("은는이가을를에의도만과와로")
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,7 +259,11 @@ def emergency_template_group(*texts: object) -> str:
 
 # ── 문장 위치 ────────────────────────────────────────────────────────────────
 
-_SENTENCE_END = re.compile(r"[.?!。](?=\s|$)|\n")
+# 문장 끝: 종결 부호 뒤에 닫는 기호(`.**`·`.)`·`."`)가 붙어도 그 기호까지가 문장이다.
+_CLOSERS = ")]}\"'”’»」』*_~`"
+_SENTENCE_END = re.compile(r"[.?!。][" + re.escape(_CLOSERS) + r"]*(?=\s|$)|\n")
+# 문장 안에 남으면 안 되는 종결 부호. 숫자 사이의 점(`1.5cm`)은 소수점이다.
+_INNER_TERMINATOR = re.compile(r"[.?!。](?!(?<=\d\.)\d)")
 _LINE_PREFIX = re.compile(r"[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]*)?")
 
 
@@ -272,13 +283,33 @@ def _find_quote(text: str, quote: str) -> tuple[int, int] | None:
     return (match.start(), match.end()) if match else None
 
 
-def sentence_span(text: str, start: int, end: int) -> tuple[int, int] | None:
-    """[start, end)를 감싸는 문장(들)의 구간. 제목 줄 안이면 ``None``(제목은 바꾸지 않는다)."""
+def is_single_sentence(sentence: str) -> bool:
+    """한 줄 안의 문장 하나인가 — 끝의 종결 부호·닫는 기호 말고는 문장 끝이 없어야 한다.
 
+    `sentence_span`의 경계 규칙과 독립된 검사다. 경계 규칙이 놓친 모양(`.**이웃 문장`처럼
+    부호 뒤에 공백이 없는 이웃 문장)도 문장 하나로 받아들이지 않는다.
+    """
+
+    if "\n" in sentence:
+        return False
+    core = sentence.strip().rstrip(_CLOSERS).rstrip(".?!。").rstrip(_CLOSERS)
+    return _INNER_TERMINATOR.search(core) is None
+
+
+def sentence_span(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """[start, end)를 감싸는 문장 하나의 구간.
+
+    ``None``이면 이 패스가 고치지 않는다 — 인용이 줄을 넘거나(제목 줄이 끼어들 수 있다), 제목·
+    표 줄이거나, 문장 하나로 자를 수 없는 경우다.
+    """
+
+    if "\n" in text[start:end]:
+        return None
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", end)
     line_end = len(text) if line_end < 0 else line_end
-    if text[line_start:line_end].lstrip().startswith("#"):
+    line = text[line_start:line_end].lstrip()
+    if line.startswith("#") or line.startswith("|"):
         return None
     sentence_start = line_start
     for match in _SENTENCE_END.finditer(text, line_start, start):
@@ -289,13 +320,18 @@ def sentence_span(text: str, start: int, end: int) -> tuple[int, int] | None:
     while sentence_start < start and text[sentence_start] in " \t":
         sentence_start += 1
     tail = end
-    # 인용이 이미 마침표로 끝났으면 그 문장에서 멈춘다.
+    # 인용이 이미 마침표로 끝났으면 그 문장에서 멈춘다(바로 뒤의 닫는 기호까지).
     if tail > 0 and text[tail - 1] in ".?!。":
-        return sentence_start, tail
-    match = _SENTENCE_END.search(text, tail, line_end)
-    if match is None:
-        return sentence_start, line_end
-    sentence_end = match.end() if match.group() != "\n" else match.start()
+        while tail < line_end and text[tail] in _CLOSERS:
+            tail += 1
+        sentence_end = tail
+    else:
+        match = _SENTENCE_END.search(text, tail, line_end)
+        sentence_end = line_end if match is None else (
+            match.end() if match.group() != "\n" else match.start()
+        )
+    if not is_single_sentence(text[sentence_start:sentence_end]):
+        return None
     return sentence_start, sentence_end
 
 
@@ -417,6 +453,18 @@ def _hangul_prefixes(text: str) -> set[str]:
     return prefixes
 
 
+def _hangul_single_words(text: str) -> set[str]:
+    """근거 자료의 한 글자 낱말 — 홀로 쓰였거나 조사 한 글자만 붙은 것(`암`·`암은`)."""
+
+    words: set[str] = set()
+    for token in _HANGUL.findall(text):
+        if len(token) == 1:
+            words.add(token)
+        elif len(token) == 2 and token[1] in _ONE_CHAR_PARTICLES:
+            words.add(token[0])
+    return words
+
+
 def unsupported_terms(text: str, sources: Iterable[object]) -> list[str]:
     """`text`에서 근거 자료(`sources`)에 없는 숫자·영문·한글 낱말.
 
@@ -428,7 +476,8 @@ def unsupported_terms(text: str, sources: Iterable[object]) -> list[str]:
       `18:30`으로 근거가 되지 않는다).
     - 영문 낱말은 근거 자료의 영문 낱말과 같아야 한다(대소문자 무시).
     - 한글 낱말은 끝의 조사·어미를 뗀 어간이 근거 자료의 한글 낱말의 앞부분이어야 한다.
-      사실을 싣지 않는 일반 낱말(`_GENERIC_STEMS`)은 허용한다.
+      한 글자 낱말(`박`·`뇌`·`암`)은 근거 자료에 같은 낱말로 있어야 한다. 사실을 싣지 않는
+      일반 낱말(`_GENERIC_STEMS`·`_GENERIC_SINGLE_WORDS`)은 허용한다.
 
     낱말 단위의 필요조건일 뿐이다. 승인 자료의 낱말을 다시 엮은 새 주장은 이 검사가 아니라
     교정본이 반드시 받는 독립 재검수가 거른다.
@@ -438,6 +487,7 @@ def unsupported_terms(text: str, sources: Iterable[object]) -> list[str]:
     numbers = _number_terms(corpus)
     latin = {word.lower() for word in _LATIN.findall(corpus)}
     hangul = _hangul_prefixes(corpus)
+    single_words = _hangul_single_words(corpus)
     missing: list[str] = []
     for number, unit in _NUMBER.findall(text):
         if (number.replace(",", ""), unit) not in numbers:
@@ -447,7 +497,23 @@ def unsupported_terms(text: str, sources: Iterable[object]) -> list[str]:
             missing.append(word)
     for word in _HANGUL.findall(text):
         stem = _stem(word)
-        if len(stem) < 2 or stem in _GENERIC_STEMS or word in _GENERIC_STEMS:
+        if len(stem) < 2:
+            # 한 글자 낱말은 앞부분 대조가 무의미하다(`박`은 `박사`의 앞부분이다). 사실을
+            # 싣지 않는 낱말이 아니면 근거 자료에 같은 낱말로 있어야 한다.
+            if word not in _GENERIC_SINGLE_WORDS and word not in _GENERIC_STEMS and (
+                word not in single_words
+            ):
+                missing.append(word)
+            continue
+        if stem in _GENERIC_STEMS or word in _GENERIC_STEMS:
+            continue
+        if (
+            stem not in hangul
+            and len(word) == 2
+            and word[1] in _ONE_CHAR_PARTICLES
+            and (word[0] in _GENERIC_SINGLE_WORDS or word[0] in single_words)
+        ):
+            # 한 글자 낱말에 조사 한 글자(`등을`·`암은`) — 한 글자 낱말 규칙으로 본다.
             continue
         if stem not in hangul:
             missing.append(word)
@@ -482,7 +548,7 @@ def replacement_problem(
         return "empty"
     if "\n" in text or "#" in text:
         return "not_one_sentence"
-    if len(_SENTENCE_END.findall(text.rstrip(".?!。"))) > 0:
+    if not is_single_sentence(text):
         return "not_one_sentence"
     if len(text) > max(int(len(target.sentence) * 1.5), len(target.sentence) + 60):
         return "too_long"
@@ -600,6 +666,15 @@ def verify_correction_scope(
         for target in plan.targets:
             if target.field != name:
                 continue
+            # 허용 구간은 문장 하나다. 계획(`sentence_span`)을 믿지 않고 원문에서 다시 본다 —
+            # 이웃 문장·다른 줄(제목 포함)이 구간에 묶이면 그 삭제·교체를 받아들이지 않는다.
+            if before[target.start : target.end] != target.sentence or not is_single_sentence(
+                target.sentence
+            ):
+                raise CorrectionScopeError(f"field {name} target is not one finding sentence")
+            target_line_start = before.rfind("\n", 0, target.start) + 1
+            if before[target_line_start:].lstrip().startswith(("#", "|")):
+                raise CorrectionScopeError(f"field {name} target is on a heading or table line")
             # 줄을 통째로 지우면 목록 기호 같은 줄 표지도 함께 사라진다 — 그 표지까지 구간이다.
             line_start = before.rfind("\n", 0, target.start) + 1
             start = (

@@ -1025,3 +1025,230 @@ def test_2300_sweep_claims_tomorrows_hard_blocked_post():
     eligible = tasks._generation_retry_is_eligible(_DB())
     item = SimpleNamespace(body="저장된 본문", essence_check_summary={}, hospital_id=uuid.uuid4())
     assert eligible(item)
+
+
+# ── 검수 지적 반영: 문장 경계·한 글자 낱말·서비스 표기·교체 불가 종착 ───────────
+
+
+BOLD_NEIGHBOR = "허리 통증이 6주 넘게 이어지면 진료가 필요합니다."
+
+
+@pytest.mark.parametrize(("opener", "closer"), [("**", "**"), ("(", ")"), ('"', '"'), ("“", "”")])
+def test_closing_mark_after_period_keeps_the_neighbor_sentence_out_of_scope(opener, closer):
+    """`.**`·`.)`·`."`로 끝나는 이웃 문장이 지적 문장과 한 구간으로 묶이지 않는다."""
+
+    neighbor = f"{opener}{BOLD_NEIGHBOR}{closer}"
+    body = _body(neighbor, WRONG_TRAINING, NEUTRAL_A)
+    content = _content(body)
+    plan = mc.plan_corrections(
+        content,
+        _review_payload(
+            content,
+            _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", quote=WRONG_TRAINING),
+        ),
+    )
+    sources = mc.approved_fact_texts(_hospital(), _philosophy())
+    assert [target.sentence for target in plan.targets] == [WRONG_TRAINING]
+
+    deleted = mc.apply_corrections(content, plan, {})
+    assert neighbor in deleted["body"] and WRONG_TRAINING not in deleted["body"]
+    mc.verify_correction_scope(content, deleted, plan, sources=sources)
+
+    # 지적 문장과 함께 이웃 문장까지 지운 교정본은 거절된다.
+    both_gone = dict(content, body=body.replace(f"{neighbor} {WRONG_TRAINING} ", ""))
+    with pytest.raises(mc.CorrectionScopeError):
+        mc.verify_correction_scope(content, both_gone, plan, sources=sources)
+
+    # 범위 검사는 계획의 구간을 믿지 않는다 — 두 문장을 묶은 구간이 들어와도 거절한다.
+    start = body.index(neighbor)
+    end = body.index(WRONG_TRAINING) + len(WRONG_TRAINING)
+    merged = mc.CorrectionPlan(
+        targets=(
+            mc.SentenceTarget("S1", "body", start, end, body[start:end], ("수련기관",)),
+        ),
+        insertions=(),
+        uncorrectable=(),
+        blocks_on_uncorrectable_hard=False,
+    )
+    with pytest.raises(mc.CorrectionScopeError):
+        mc.verify_correction_scope(content, both_gone, merged, sources=sources)
+
+
+def test_neighbor_without_space_after_closing_mark_is_not_taken():
+    """`.**이웃`처럼 경계가 애매하면 문장 하나로 자르지 않고 맡지 않는다(보수적)."""
+
+    body = _body(f"**{BOLD_NEIGHBOR}**이현진 원장은 수련 중 다양한 증례를 보았습니다.", NEUTRAL_A)
+    content = _content(body)
+    plan = mc.plan_corrections(
+        content,
+        _review_payload(
+            content,
+            _finding("HARD", "HOSPITAL_FACT", "근거가 없습니다.", quote="수련 중 다양한 증례를 보았습니다."),
+        ),
+    )
+    assert plan.targets == () and not plan.applicable
+
+
+def test_quote_crossing_a_heading_line_is_not_taken():
+    """인용이 문단을 넘으면 제목 줄이 삭제 구간에 들어간다 — 이 패스는 맡지 않는다."""
+
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    content = _content(body)
+    quote = "수련을 마쳤습니다.\n\n## 내원 전 확인\n통증이 오래가면"
+    assert quote in body
+    plan = mc.plan_corrections(
+        content,
+        _review_payload(content, _finding("HARD", "HOSPITAL_FACT", "근거가 없습니다.", quote=quote)),
+    )
+    assert plan.targets == () and not plan.applicable
+
+    start = body.index(WRONG_TRAINING)
+    end = body.index(NEUTRAL_B) + len(NEUTRAL_B)
+    forged = mc.CorrectionPlan(
+        targets=(mc.SentenceTarget("S1", "body", start, end, body[start:end], ("근거",)),),
+        insertions=(),
+        uncorrectable=(),
+        blocks_on_uncorrectable_hard=False,
+    )
+    removed = dict(content, body=body[:start].rstrip())
+    with pytest.raises(mc.CorrectionScopeError):
+        mc.verify_correction_scope(
+            content, removed, forged, sources=mc.approved_fact_texts(_hospital(), _philosophy())
+        )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "term"),
+    [
+        # 다른 성 — `박`은 승인 낱말 `박사` 같은 낱말의 앞부분이라도 근거가 아니다.
+        ("박 원장은 가톨릭대학교 성모병원에서 정형외과 전공의 수련을 마쳤습니다.", "박"),
+        ("이현진 원장은 뇌 수련을 마쳤습니다.", "뇌"),
+        ("본원은 암 진료를 원칙으로 합니다.", "암"),
+    ],
+)
+def test_single_character_new_fact_is_rejected(replacement, term):
+    career = "가톨릭대학교 성모병원 정형외과 전공의 수련, 정형외과 박사"
+    sources = mc.approved_fact_texts(_hospital(director_career=career), _philosophy())
+    target = mc.SentenceTarget("S1", "body", 0, len(WRONG_TRAINING), WRONG_TRAINING, ("x",))
+
+    assert term in mc.unsupported_terms(replacement, [WRONG_TRAINING, *sources])
+    problem = mc.replacement_problem(target, replacement, sources)
+    assert problem is not None and problem.startswith("unsupported_terms")
+    # 승인 문장과 사실을 싣지 않는 한 글자 낱말(`및`·`등`)은 그대로 쓸 수 있다.
+    assert mc.replacement_problem(target, MAPO_PROFILE_SENTENCE, sources) is None
+    assert mc.unsupported_terms("도수치료 및 체외충격파 등을 합니다.", sources) == []
+    # 근거 자료에 같은 한 글자 낱말로 있으면 근거가 된다.
+    assert mc.unsupported_terms("암 검진을 합니다.", ["암 검진을 합니다"]) == []
+    assert mc.unsupported_terms("암은 검진을 합니다.", ["암 검진을 합니다"]) == []
+
+
+def _singihan(**overrides):
+    values = {
+        "name": "신기한속내과연합의원",
+        "specialties": ["내과"],
+        "treatments": ["위·대장내시경", "복부초음파"],
+        "keywords": ["대구 내과", "위내시경", "대장내시경", "갑상선초음파"],
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _ortho(**overrides):
+    values = {
+        "name": "마포성모탑정형외과의원",
+        "specialties": ["정형외과"],
+        "treatments": ["도수치료", "체외충격파", "비수술 척추치료"],
+        "keywords": ["허리디스크치료", "관절염치료", "어깨통증치료", "골밀도 검사"],
+    }
+    values.update(overrides)
+    return SimpleNamespace(**values)
+
+
+def _target(name, treatment=None):
+    return SimpleNamespace(name=name, treatment=treatment, specialty=None)
+
+
+def test_offered_service_written_differently_is_not_excluded():
+    """표기가 다른 실제 제공 서비스(`위·대장내시경`과 `위내시경`)를 키워드 전용으로 오판하지 않는다."""
+
+    assert target_fits_hospital(_target("위내시경 잘하는 병원"), _singihan())
+    assert target_fits_hospital(_target("대구 대장내시경 병원 추천"), _singihan())
+    assert target_fits_hospital(_target("위내시경 잘하는 병원"), _singihan(treatments=["위/대장 내시경"]))
+    assert target_fits_hospital(_target("위내시경 잘하는 병원"), _singihan(treatments=["위대장내시경"]))
+    assert target_fits_hospital(_target("검진", treatment="위 내시경"), _singihan())
+    # 진료 항목에 없는 같은 계열 검사는 그대로 제외된다.
+    assert not target_fits_hospital(_target("갑상선초음파 가능한 내과"), _singihan())
+    # 띄어쓰기만 다른 진료 항목은 같은 검사다.
+    assert target_fits_hospital(
+        _target("마산 골밀도검사 가능한 병원"), _gangsimjang(treatments=["골밀도 검사"])
+    )
+    # 강심장 사례는 그대로다.
+    assert not target_fits_hospital(_target("마산 골밀도검사 가능한 병원 찾기"), _gangsimjang())
+    assert target_fits_hospital(_target("홀터검사 받을 수 있는 병원"), _gangsimjang())
+
+
+@pytest.mark.parametrize("name", ["허리디스크치료 잘하는 곳", "관절염치료 병원", "어깨통증치료 추천"])
+def test_disease_treatment_questions_are_not_excluded(name):
+    """질환명에 `치료`를 붙인 질문은 특정 검사·시술이 아니다 — 키워드 전용 규칙의 대상이 아니다."""
+
+    assert target_fits_hospital(_target(name), _ortho())
+    assert target_fits_hospital(_target("병원 찾기", treatment=name.split()[0]), _ortho())
+    # 같은 병원에서도 진료 항목에 없는 검사는 제외된다.
+    assert not target_fits_hospital(_target("골밀도검사 가능한 정형외과"), _ortho())
+
+
+def test_corrected_topic_left_with_uncorrectable_hard_reaches_operator(worker, monkeypatch):
+    """교정 뒤 재검수가 인용 없는 HARD를 남기고 교체 pass도 바꾸지 못하면 사람의 일로 굳는다."""
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, MAPO_PROFILE_SENTENCE)
+    finding = _finding("HARD", "HOSPITAL_FACT", "승인 자료에서 심장 초음파를 확인할 수 없습니다.")
+    hospital = _hospital()
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    # 교정을 거치지 않은 주제의 인용 없는 HARD는 이 패스가 맡지 않는다(기존 경로).
+    fresh = _blocked_item(philosophy, body, finding)
+    assert tasks._auto_correct_blocked_body(_DB(), fresh, hospital, philosophy) is None
+
+    item = _blocked_item(philosophy, body, finding)
+    item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 1, "rereviews": 1}
+    calls["item"] = item
+
+    state, code, message = tasks._auto_correct_blocked_body(_DB(), item, hospital, philosophy)
+    attempt = tasks._stored_generation_attempt(item)
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert attempt[AUTO_CORRECTION_EXHAUSTED_KEY] is True and "주제" in message
+
+    # 교체 시각이 지났는데도 그대로다 — 교체 pass가 바꾸지 못했다. 스윕이 몇 번 돌아도 사람의 일이다.
+    _expire_swap_wait(item)
+    for _sweep in range(3):
+        state, code, _message = tasks._auto_correct_blocked_body(_DB(), item, hospital, philosophy)
+        attempt = tasks._stored_generation_attempt(item)
+        assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+        assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+        assert generation_incident_control.generation_block_is_terminal(code, item)
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []
+
+
+def test_essence_revalidation_keeps_the_correction_record(monkeypatch):
+    """재승인 재검사가 교정 기록을 지우면 글(주제)당 교정 상한이 초기화된다."""
+
+    from app.services import content_publication
+
+    philosophy = _philosophy()
+    item = _blocked_item(
+        philosophy,
+        _body(NEUTRAL_A),
+        _finding("HARD", "HOSPITAL_FACT", "근거가 없습니다.", quote=NEUTRAL_A),
+    )
+    item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
+    monkeypatch.setattr(
+        content_publication,
+        "screen_content_against_philosophy",
+        lambda *_a: SimpleNamespace(summary={}, essence_status="ALIGNED"),
+    )
+
+    content_publication.apply_essence_revalidation(item, philosophy)
+
+    assert item.essence_check_summary[mc.AUTO_CORRECTION_KEY] == {"passes": 2, "rereviews": 2}

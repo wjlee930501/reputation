@@ -101,31 +101,63 @@ def target_conflicts_with_hospital(target: Any, hospital: object) -> bool:
 
 
 # 질문 문장에서 검사·시술 이름을 읽는 접미. "골밀도검사"·"유방초음파"·"위내시경"처럼 붙여 쓴다.
-_SERVICE_TERM = re.compile(
-    r"[가-힣A-Za-z0-9]{1,12}(?:검사|시술|수술|주사|내시경|초음파|촬영|치료|요법|접종)"
-)
-_SERVICE_SUFFIX = re.compile(r"(?:검사|시술|수술|주사|치료|요법|접종)$")
+# `치료`·`요법`은 넣지 않는다 — "허리디스크치료"·"관절염치료"는 특정 검사·시술이 아니라 질환을
+# 고치는 일 전반이라, 진료 항목의 표기와 글자가 달라도 그 병원이 하는 진료다.
+_SERVICE_SUFFIXES = ("내시경", "초음파", "검사", "시술", "수술", "주사", "촬영", "접종")
+_SERVICE_TERM = re.compile(r"[가-힣A-Za-z0-9]{1,12}(?:" + "|".join(_SERVICE_SUFFIXES) + ")")
+# 진료 항목·키워드 표기에서 대조 전에 지우는 기호. "위·대장내시경"·"위/대장 내시경"을 같게 본다.
+_SEPARATORS = re.compile(r"[\s·・/,、&+()\[\]-]+")
+
+
+def _normalize(value: object) -> str:
+    return _SEPARATORS.sub("", str(value or ""))
 
 
 def _target_service_terms(target: Any) -> tuple[str, ...]:
-    """질문이 묻는 검사·시술. 구조화된 `treatment`가 있으면 그것만 쓴다."""
+    """질문이 묻는 검사·시술. 구조화된 `treatment`가 있으면 그것만 쓴다.
+
+    구조화된 값도 검사·시술 접미(`_SERVICE_SUFFIXES`)로 끝날 때만 이 규칙의 대상이다.
+    """
 
     if isinstance(target, Mapping):
         treatment, name = target.get("treatment"), target.get("name")
     else:
         treatment, name = getattr(target, "treatment", None), getattr(target, "name", None)
-    structured = _compact(treatment)
+    structured = _normalize(treatment)
     if structured:
-        return (structured,)
+        return (structured,) if structured.endswith(_SERVICE_SUFFIXES) else ()
     # 띄어 쓴 낱말 단위로 읽는다 — 공백을 먼저 지우면 "마산 골밀도검사"가 "마산골밀도검사"가 된다.
     return tuple(dict.fromkeys(_SERVICE_TERM.findall(str(name or ""))))
+
+
+def _split_service(term: str) -> tuple[str, str]:
+    """'골밀도검사' → ('골밀도', '검사'). 접미가 없으면 (원형, '')."""
+
+    for suffix in _SERVICE_SUFFIXES:
+        if term.endswith(suffix) and len(term) > len(suffix):
+            return term[: -len(suffix)], suffix
+    return term, ""
 
 
 def _term_keys(term: str) -> tuple[str, ...]:
     """'골밀도검사' → ('골밀도검사', '골밀도'). 접미를 뗀 이름이 두 글자 미만이면 원형만."""
 
-    stem = _SERVICE_SUFFIX.sub("", term)
-    return (term, stem) if stem != term and len(stem) >= 2 else (term,)
+    stem, suffix = _split_service(term)
+    return (term, stem) if suffix and len(stem) >= 2 else (term,)
+
+
+def _offered_matches(term: str, service: str) -> bool:
+    """질문의 검사·시술이 진료 항목 하나에 해당하는가.
+
+    글자 포함(`골밀도` ⊂ `골밀도측정`) 말고도, 접미가 같고 질문의 이름이 진료 항목의 이름에
+    들어 있으면 같은 진료로 본다 — "위내시경"은 "위·대장내시경"(정규화 뒤 `위대장내시경`)이다.
+    """
+
+    if any(key in service for key in _term_keys(term)) or service in term:
+        return True
+    stem, suffix = _split_service(term)
+    service_stem, service_suffix = _split_service(service)
+    return bool(suffix) and suffix == service_suffix and bool(stem) and stem in service_stem
 
 
 def target_names_unoffered_service(target: Any, hospital: object) -> bool:
@@ -134,15 +166,15 @@ def target_names_unoffered_service(target: Any, hospital: object) -> bool:
     2026-10-04 강심장내과의원 글이 키워드에만 있던 `골밀도검사`를 이 병원이 하는 검사처럼
     썼다(진료 항목에는 없었다). 키워드는 검색어 후보이지 병원이 제공하는 서비스의 근거가
     아니다. 진료 항목(`treatments`)·진료과(`specialties`)가 비어 있으면 판단할 근거가 없으므로
-    막지 않는다.
+    막지 않는다. 표기 차이(`위·대장내시경`과 `위내시경`, 띄어쓰기)는 같은 진료로 본다.
     """
 
     if hospital is None:
         return False
-    keywords = [_compact(value) for value in (getattr(hospital, "keywords", None) or [])]
+    keywords = [_normalize(value) for value in (getattr(hospital, "keywords", None) or [])]
     keywords = [value for value in keywords if value]
     offered = [
-        _compact(value)
+        _normalize(value)
         for field in ("treatments", "specialties", "hero_specialties")
         for value in (getattr(hospital, field, None) or [])
         if isinstance(value, str)
@@ -151,11 +183,9 @@ def target_names_unoffered_service(target: Any, hospital: object) -> bool:
     if not keywords or not offered:
         return False
     for term in _target_service_terms(target):
-        keys = _term_keys(term)
-        in_keywords = any(key in keyword for key in keys for keyword in keywords)
-        in_profile = any(
-            key in service or service in term for key in keys for service in offered
-        )
+        term = _normalize(term)
+        in_keywords = any(key in keyword for key in _term_keys(term) for keyword in keywords)
+        in_profile = any(_offered_matches(term, service) for service in offered)
         if in_keywords and not in_profile:
             return True
     return False
