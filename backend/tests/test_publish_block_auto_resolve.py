@@ -215,7 +215,7 @@ def test_unsupported_terms_rejects_new_numbers_and_proper_nouns():
     sources = mc.approved_fact_texts(_hospital(), _philosophy())
 
     assert mc.unsupported_terms(MAPO_PROFILE_SENTENCE, [WRONG_TRAINING, *sources]) == []
-    assert "15" in mc.unsupported_terms(
+    assert "15년" in mc.unsupported_terms(
         "이현진 원장은 15년 동안 정형외과 진료를 했습니다.", [WRONG_TRAINING, *sources]
     )
     assert any(
@@ -224,6 +224,78 @@ def test_unsupported_terms_rejects_new_numbers_and_proper_nouns():
             "이현진 원장은 연세세브란스병원에서 수련했습니다.", [WRONG_TRAINING, *sources]
         )
     )
+
+
+def _profile_with_numbers():
+    return _hospital(
+        address="서울 마포구 마포대로 120",
+        phone="02-1234-5678",
+        business_hours={"평일": "09:00-18:30", "토요일": "09:00-13:00"},
+        director_career="가톨릭대학교 성모병원 정형외과 전공의 수련, 정형외과 전문의 15년",
+    )
+
+
+@pytest.mark.parametrize(
+    ("sentence", "term"),
+    [
+        # 주소 `마포대로 120`의 20, 전화의 34, 진료시간 `18:30`의 30이 새 경력 수치를 통과시키면 안 된다.
+        ("이현진 원장은 20년 수련을 마쳤습니다.", "20년"),
+        ("이현진 원장은 정형외과 전문의 34년 원장입니다.", "34년"),
+        ("이현진 원장은 30년 수련을 마쳤습니다.", "30년"),
+        # 승인 낱말의 가운데 조각(`정형외과`의 `외과`)도 근거가 아니다.
+        ("이현진 원장은 외과 전공의 수련을 마쳤습니다.", "외과"),
+    ],
+)
+def test_unsupported_terms_checks_whole_tokens_of_a_real_profile(sentence, term):
+    """주소·전화·진료시간이 든 실제 프로필에서도 새 수치·낱말은 근거가 되지 않는다."""
+
+    sources = mc.approved_fact_texts(_profile_with_numbers(), _philosophy())
+
+    assert term in mc.unsupported_terms(sentence, [WRONG_TRAINING, *sources])
+    # 승인 자료에 단위까지 그대로 있는 수치와 승인 문장은 그대로 쓸 수 있다.
+    assert mc.unsupported_terms(
+        "이현진 원장은 정형외과 전문의 15년 경력입니다.", [WRONG_TRAINING, *sources]
+    ) == ["경력입니다"]
+    assert mc.unsupported_terms(MAPO_PROFILE_SENTENCE, [WRONG_TRAINING, *sources]) == []
+
+
+@pytest.mark.parametrize(
+    "invented",
+    [
+        "이현진 원장은 20년 수련을 마쳤습니다.",
+        "이현진 원장은 정형외과 전문의 34년 원장입니다.",
+        "이현진 원장은 30년 수련을 마쳤습니다.",
+    ],
+)
+async def test_new_number_from_profile_digits_is_deleted_not_replaced(invented):
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    content = _content(body)
+    review = _review_payload(
+        content,
+        _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", quote=WRONG_TRAINING),
+    )
+
+    async def inventive_llm(*, targets, **_kwargs):
+        return {targets[0].key: ("REPLACE", invented)}
+
+    async def reviewer(**kwargs):
+        return _review(kwargs["content"])
+
+    outcome = await mc.run_minimal_correction(
+        hospital=_profile_with_numbers(),
+        philosophy=_philosophy(),
+        content=content,
+        review=review,
+        content_brief=None,
+        must_use_messages=[],
+        state=None,
+        limits=mc.CorrectionLimits(max_passes=2, max_rereviews=2),
+        dependencies=mc.CorrectionDependencies(propose=inventive_llm, review=reviewer),
+    )
+
+    assert invented not in outcome.content["body"]
+    assert outcome.content["body"] == body.replace(f" {WRONG_TRAINING}", "")
+    assert outcome.history[0]["sentences"][0]["decision"].startswith("rejected:")
 
 
 def test_scope_check_rejects_change_outside_finding_sentence():
@@ -554,6 +626,102 @@ def test_two_failed_corrections_swap_topic_then_alert_operator(worker, monkeypat
     assert generation_incident_control.generation_block_is_terminal(code, item)
     assert not generation_incident_control.scheduled_recovery_owns_blocker(code, item)
     assert (calls["llm"], len(calls["reviews"])) == before
+
+
+def _expire_swap_wait(item):
+    item.essence_check_summary["generation_attempt"]["next_retry_at"] = (
+        datetime.now(UTC) - timedelta(minutes=1)
+    ).isoformat()
+
+
+def test_unswappable_slot_stays_with_operator_across_sweeps(worker, monkeypatch):
+    """교체 pass가 바꾸지 못한 슬롯(사람 편집·후보 없음 등)은 사람의 일에 머문다.
+
+    교체 대기(RETRYING)와 사람의 일(OPEN)을 스윕마다 오가면 07:45·08:00 요약에 실리는지가
+    직전 스윕의 홀짝에 달린다.
+    """
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
+    calls["item"] = item
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+    hospital = _hospital(id=item.hospital_id)
+
+    tasks._generate_single_content_item(_DB(), item, hospital)
+    assert (
+        tasks._stored_generation_attempt(item)["retry_class"]
+        == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    )
+    _expire_swap_wait(item)
+
+    classes = []
+    for _sweep in range(8):
+        state, code, message = tasks._generate_single_content_item(_DB(), item, hospital)
+        attempt = tasks._stored_generation_attempt(item)
+        classes.append(attempt["retry_class"])
+        assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+        assert "확인해 주세요" in message
+        assert generation_incident_control.generation_block_is_terminal(code, item)
+        assert not generation_incident_control.scheduled_recovery_owns_blocker(code, item)
+    assert classes == [GenerationRetryClass.OPERATOR_REQUIRED.value] * 8
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []
+
+
+def test_exhausted_uncertain_emergency_buys_no_rereview_and_reaches_operator(
+    worker, monkeypatch
+):
+    """교정 상한을 다 쓴 뒤 남은 UNCERTAIN 응급 지적은 유료 재검수를 더 사지 않고 사람에게 간다."""
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, NERVE_SENTENCE)
+    finding = _finding(
+        "UNCERTAIN",
+        "MEDICAL_SAFETY",
+        "다리 힘 빠짐·대소변 장애 같은 응급 신호를 119·응급실 안내 없이 다뤘습니다.",
+        NERVE_SENTENCE,
+    )
+    item = _blocked_item(philosophy, body, finding)
+    item.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {
+        "passes": 2,
+        "rereviews": 2,
+        "exhausted": True,
+    }
+    calls["item"] = item
+
+    async def review(**kwargs):
+        return _review(
+            kwargs["content"],
+            ContentAiReviewStatus.REVISE,
+            (
+                ContentAiFinding(
+                    ContentAiFindingSeverity.UNCERTAIN,
+                    ContentAiFindingKind.MEDICAL_SAFETY,
+                    finding["message"],
+                    quote=NERVE_SENTENCE,
+                ),
+            ),
+        )
+
+    _install(monkeypatch, calls, propose=_no_provider, review=review)
+    hospital = _hospital(id=item.hospital_id)
+
+    tasks._generate_single_content_item(_DB(), item, hospital)
+    assert (
+        tasks._stored_generation_attempt(item)["retry_class"]
+        == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    )
+    for _sweep in range(10):
+        _expire_swap_wait(item)
+        state, code, _message = tasks._generate_single_content_item(_DB(), item, hospital)
+        attempt = tasks._stored_generation_attempt(item)
+        assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+        assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert calls["reviews"] == [], "상한을 다 쓴 주제는 재검수를 더 사지 않는다"
+    assert calls["llm"] == 0 and calls["writer"] == 0
+    assert item.essence_check_summary[mc.AUTO_CORRECTION_KEY]["swap_requested_at"]
 
 
 def test_swapped_topic_that_fails_correction_again_goes_to_operator(worker, monkeypatch):

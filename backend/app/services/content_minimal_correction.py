@@ -105,10 +105,10 @@ _EMERGENCY_GROUP_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 # ── 새 사실 검사 ─────────────────────────────────────────────────────────────
-_NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+# 숫자 하나와 바로 뒤의 단위 한 글자(년·개·%·cm …). 숫자는 앞뒤가 숫자가 아닌 온전한 값만 본다.
+_NUMBER = re.compile(r"(?<![\d.,])(\d+(?:[.,]\d+)*)\s*([가-힣A-Za-z%]?)")
 _LATIN = re.compile(r"[A-Za-z][A-Za-z0-9+\-]*")
 _HANGUL = re.compile(r"[가-힣]+")
-_SPACE = re.compile(r"\s+")
 # 낱말 끝의 조사·어미. 가장 긴 것부터 한 번만 떼어 어간을 얻는다(형태소 분석이 아니라 보수적
 # 근사다 — 근사가 틀리면 교정을 거절하고 문장을 지우는 쪽으로 넘어진다).
 _SUFFIXES = tuple(
@@ -399,10 +399,6 @@ def plan_corrections(
 # ── 새 사실 검사 ─────────────────────────────────────────────────────────────
 
 
-def _compact(text: object) -> str:
-    return _SPACE.sub("", str(text or ""))
-
-
 def _stem(token: str) -> str:
     for suffix in _SUFFIXES:
         if token.endswith(suffix) and len(token) - len(suffix) >= 2:
@@ -410,28 +406,50 @@ def _stem(token: str) -> str:
     return token
 
 
+def _number_terms(text: str) -> set[tuple[str, str]]:
+    return {(number.replace(",", ""), unit) for number, unit in _NUMBER.findall(text)}
+
+
+def _hangul_prefixes(text: str) -> set[str]:
+    prefixes: set[str] = set()
+    for token in _HANGUL.findall(text):
+        prefixes.update(token[:size] for size in range(2, len(token) + 1))
+    return prefixes
+
+
 def unsupported_terms(text: str, sources: Iterable[object]) -> list[str]:
     """`text`에서 근거 자료(`sources`)에 없는 숫자·영문·한글 낱말.
 
-    숫자와 영문 낱말은 그대로, 한글 낱말은 끝의 조사·어미를 뗀 어간으로 근거 자료(공백 제거)에
-    들어 있는지 본다. 사실을 싣지 않는 일반 낱말(`_GENERIC_STEMS`)은 허용한다.
+    부분 문자열이 아니라 낱말 단위로 본다 — 승인 자료를 이어 붙인 문자열에서 찾으면 주소·전화·
+    진료시간의 숫자(`마포대로 120`의 20, `18:30`의 30)나 다른 낱말의 가운데 조각이 새 수치·
+    고유명사를 통과시킨다.
+
+    - 숫자는 온전한 값과 바로 뒤의 단위 한 글자가 함께 근거 자료에 있어야 한다(`30년`은
+      `18:30`으로 근거가 되지 않는다).
+    - 영문 낱말은 근거 자료의 영문 낱말과 같아야 한다(대소문자 무시).
+    - 한글 낱말은 끝의 조사·어미를 뗀 어간이 근거 자료의 한글 낱말의 앞부분이어야 한다.
+      사실을 싣지 않는 일반 낱말(`_GENERIC_STEMS`)은 허용한다.
+
+    낱말 단위의 필요조건일 뿐이다. 승인 자료의 낱말을 다시 엮은 새 주장은 이 검사가 아니라
+    교정본이 반드시 받는 독립 재검수가 거른다.
     """
 
-    corpus = _compact(" ".join(str(source or "") for source in sources))
-    corpus_digits = corpus.replace(",", "")
-    lowered = corpus.lower()
+    corpus = " ".join(str(source or "") for source in sources)
+    numbers = _number_terms(corpus)
+    latin = {word.lower() for word in _LATIN.findall(corpus)}
+    hangul = _hangul_prefixes(corpus)
     missing: list[str] = []
-    for number in _NUMBER.findall(text):
-        if number.replace(",", "") not in corpus_digits:
-            missing.append(number)
+    for number, unit in _NUMBER.findall(text):
+        if (number.replace(",", ""), unit) not in numbers:
+            missing.append(number + unit)
     for word in _LATIN.findall(text):
-        if word.lower() not in lowered:
+        if word.lower() not in latin:
             missing.append(word)
     for word in _HANGUL.findall(text):
         stem = _stem(word)
         if len(stem) < 2 or stem in _GENERIC_STEMS or word in _GENERIC_STEMS:
             continue
-        if stem not in corpus:
+        if stem not in hangul:
             missing.append(word)
     return missing
 

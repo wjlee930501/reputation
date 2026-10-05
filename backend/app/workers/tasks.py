@@ -880,25 +880,31 @@ def _escalate_exhausted_correction(
     주제 교체는 스윕이 로더보다 먼저 도는 별도 pass가 한다(`topic_swap_fallback`). 여기서는
     그 pass가 이 슬롯을 집도록 시도 기록에 표시와 기한(다음 스윕)을 남긴다 — 그동안은 자동
     복구가 소유한 RETRYING이다. 기한이 지난 뒤에도 이 슬롯이 그대로 여기 왔다면 그 시각의 교체
-    pass가 바꾸지 못한 것이다(교체할 질문 없음 등). 그때 사람의 일(OPERATOR_REQUIRED)로 연다.
+    pass가 바꾸지 못한 것이다(교체할 질문 없음 등). 그때 사람의 일(OPERATOR_REQUIRED)로 열고,
+    교체 요청은 주제당 한 번이므로(`swap_requested_at`) 다음 스윕에도 그 자리에 머문다.
     """
 
     code = "CONTENT_AI_HARD_FINDING"
-    if not state.get("exhausted"):
-        summary = dict(item.essence_check_summary or {})
-        summary[AUTO_CORRECTION_KEY] = {**state, "exhausted": True}
-        item.essence_check_summary = summary
-        db.commit()
     stored = _stored_generation_attempt(item)
     pending_swap = (
         stored.get("reason") == code
         and stored.get(AUTO_CORRECTION_EXHAUSTED_KEY)
         and stored.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
     )
+    # 교체 요청은 이 주제의 교정 기록에 한 번만 남긴다. 시도 기록은 다른 경로가 다시 쓸 수
+    # 있지만 교정 기록은 주제 교체가 행을 비울 때만 사라진다 — 교체 pass가 바꾸지 못한 슬롯이
+    # "교체 대기"와 "사람의 일"을 스윕마다 오가지 않게 하는 표시다.
+    swap_requested = bool(state.get("swap_requested_at")) or pending_swap
     if pending_swap and not _swap_deadline_passed(stored):
         # 교체 pass가 아직 돌지 않았다(같은 스윕·운영자 재시도). 아무것도 사지 않는다.
         return GenerationItemState.FAILED, code, _AUTO_CORRECTION_SWAP_MESSAGE
-    if _topic_swap_budget_left(item) and not pending_swap:
+    exhausted_state = {**state, "exhausted": True}
+    if exhausted_state != state:
+        summary = dict(item.essence_check_summary or {})
+        summary[AUTO_CORRECTION_KEY] = exhausted_state
+        item.essence_check_summary = summary
+        db.commit()
+    if _topic_swap_budget_left(item) and not swap_requested:
         deadline = next_recovery_deadline(
             {
                 "reason": code,
@@ -909,6 +915,12 @@ def _escalate_exhausted_correction(
             scheduled_date=getattr(item, "scheduled_date", None),
         )
         if deadline is not None:
+            summary = dict(item.essence_check_summary or {})
+            summary[AUTO_CORRECTION_KEY] = {
+                **exhausted_state,
+                "swap_requested_at": datetime.now(timezone.utc).isoformat(),
+            }
+            item.essence_check_summary = summary
             _remember_generation_attempt(
                 db,
                 item,
@@ -6282,6 +6294,9 @@ def _generate_single_content_item(
             and _stored_review_has_uncertain_finding(item)
             # 문체/SOFT만 남은 차단은 재작성이 고친다. 그 경로를 가로채지 않는다.
             and not _stored_ai_review_is_remediable(item)
+            # 지적 문장 교정의 재검수 상한을 다 쓴 주제는 더 사지 않는다. 교체·사람의 일로
+            # 넘기는 판정은 아래 `_auto_correct_blocked_body`가 한다.
+            and not _stored_auto_correction_state(item).get("exhausted")
         )
         stored_attempt = _stored_generation_attempt(item)
         sample_rereview_due = uncertain_only_block and (
