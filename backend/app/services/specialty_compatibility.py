@@ -84,13 +84,81 @@ def _target_texts(target: Any) -> Iterable[str]:
 
 
 def target_conflicts_with_hospital(target: Any, hospital: object) -> bool:
-    """측정 질문(대상 진료과·질문 문장)이 이 병원 대표 진료과와 어울리지 않는가."""
+    """측정 질문이 이 병원에 배정할 수 없는 주제인가.
 
+    두 규칙 중 하나라도 맞으면 그렇다. (1) 질문의 진료과가 병원 대표 진료과와 어울리지 않는다.
+    (2) 질문이 묻는 검사·시술이 병원 키워드에만 있고 승인 프로필의 진료 항목에는 없다
+    (`target_names_unoffered_service`).
+    """
+
+    if target_names_unoffered_service(target, hospital):
+        return True
     forbidden = forbidden_topic_departments(hospital)
     if not forbidden:
         return False
     texts = list(_target_texts(target))
     return any(_mentions(text, department) for text in texts for department in forbidden)
+
+
+# 질문 문장에서 검사·시술 이름을 읽는 접미. "골밀도검사"·"유방초음파"·"위내시경"처럼 붙여 쓴다.
+_SERVICE_TERM = re.compile(
+    r"[가-힣A-Za-z0-9]{1,12}(?:검사|시술|수술|주사|내시경|초음파|촬영|치료|요법|접종)"
+)
+_SERVICE_SUFFIX = re.compile(r"(?:검사|시술|수술|주사|치료|요법|접종)$")
+
+
+def _target_service_terms(target: Any) -> tuple[str, ...]:
+    """질문이 묻는 검사·시술. 구조화된 `treatment`가 있으면 그것만 쓴다."""
+
+    if isinstance(target, Mapping):
+        treatment, name = target.get("treatment"), target.get("name")
+    else:
+        treatment, name = getattr(target, "treatment", None), getattr(target, "name", None)
+    structured = _compact(treatment)
+    if structured:
+        return (structured,)
+    # 띄어 쓴 낱말 단위로 읽는다 — 공백을 먼저 지우면 "마산 골밀도검사"가 "마산골밀도검사"가 된다.
+    return tuple(dict.fromkeys(_SERVICE_TERM.findall(str(name or ""))))
+
+
+def _term_keys(term: str) -> tuple[str, ...]:
+    """'골밀도검사' → ('골밀도검사', '골밀도'). 접미를 뗀 이름이 두 글자 미만이면 원형만."""
+
+    stem = _SERVICE_SUFFIX.sub("", term)
+    return (term, stem) if stem != term and len(stem) >= 2 else (term,)
+
+
+def target_names_unoffered_service(target: Any, hospital: object) -> bool:
+    """질문의 검사·시술이 병원 키워드에만 있고 승인 프로필 진료 항목에는 없는가.
+
+    2026-10-04 강심장내과의원 글이 키워드에만 있던 `골밀도검사`를 이 병원이 하는 검사처럼
+    썼다(진료 항목에는 없었다). 키워드는 검색어 후보이지 병원이 제공하는 서비스의 근거가
+    아니다. 진료 항목(`treatments`)·진료과(`specialties`)가 비어 있으면 판단할 근거가 없으므로
+    막지 않는다.
+    """
+
+    if hospital is None:
+        return False
+    keywords = [_compact(value) for value in (getattr(hospital, "keywords", None) or [])]
+    keywords = [value for value in keywords if value]
+    offered = [
+        _compact(value)
+        for field in ("treatments", "specialties", "hero_specialties")
+        for value in (getattr(hospital, field, None) or [])
+        if isinstance(value, str)
+    ]
+    offered = [value for value in offered if len(value) >= 2]
+    if not keywords or not offered:
+        return False
+    for term in _target_service_terms(target):
+        keys = _term_keys(term)
+        in_keywords = any(key in keyword for key in keys for keyword in keywords)
+        in_profile = any(
+            key in service or service in term for key in keys for service in offered
+        )
+        if in_keywords and not in_profile:
+            return True
+    return False
 
 
 def target_fits_hospital(target: Any, hospital: object) -> bool:

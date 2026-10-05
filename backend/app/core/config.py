@@ -523,6 +523,13 @@ class Settings(BaseSettings):
     # 한 편(작가 최대 3회 + 독립 검수 + 이미지)의 관측 소요 시간. 배치가 07:45까지
     # 남은 시간 안에 처리될 수 있는지 경고할 때만 쓰는 용량 추정값이다.
     CONTENT_GENERATION_ITEM_MINUTES: int = 6
+    # 발행 차단 자동 해결의 글(주제)당 비용 상한. 독립 검수의 사실·안전 지적을 지적 문장만 고치는
+    # 최소 교정 패스(`content_minimal_correction`)와 그 뒤 독립 재검수의 횟수다. 상한을 넘기면
+    # 주제 교체(`topic_swap_fallback`), 교체 상한까지 넘기면 사람의 일(OPEN 인시던트)이다.
+    # 0이면 그 단계를 끈다.
+    CONTENT_AUTO_CORRECTION_MAX_PASSES: int = 2
+    CONTENT_AUTO_CORRECTION_MAX_REREVIEWS: int = 2
+    CONTENT_AUTO_TOPIC_SWAP_MAX: int = 1
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2

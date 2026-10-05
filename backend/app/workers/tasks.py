@@ -81,6 +81,7 @@ from app.services.audit_log import write_audit_log_sync
 from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
+    candidate_sha256,
     hospital_review_facts_fingerprint,
     review_generated_content,
 )
@@ -97,6 +98,14 @@ from app.services.content_generation_review import (
     ContentReviewDependencies,
     GenerationReviewLimits,
     generate_reviewed_content,
+)
+from app.services.content_minimal_correction import (
+    AUTO_CORRECTION_KEY,
+    CorrectionDependencies,
+    correction_limits,
+    plan_corrections,
+    propose_sentence_corrections,
+    run_minimal_correction,
 )
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
@@ -332,6 +341,7 @@ from app.services.monthly_template_refresh import (
     numeric_diff,
     stored_observed_at,
 )
+from app.services.must_use_verbatim import required_must_use_messages
 from app.services.notification_copy import (
     REFERENCES_OPERATOR_DECIDES_COPY_CODE,
     references_operator_decides_copy_code,
@@ -480,6 +490,7 @@ from app.workers.generation_incident_control import (
     recover_generation_incidents,
 )
 from app.workers.generation_retry_policy import (
+    AUTO_CORRECTION_EXHAUSTED_KEY,
     BODY_REPAIR_CODES,
     BODY_REPAIR_STATE_KEY,
     OPERATOR_DECIDES_KEY,
@@ -737,6 +748,17 @@ def _with_body_repair_state(summary: Any, state: dict[str, Any] | None) -> Any:
     return merged
 
 
+def _with_auto_correction_state(summary: Any, state: Mapping[str, Any] | None) -> Any:
+    """새로 쓴 본문에도 글(주제)당 교정 계수를 이어 준다. 교정본 hash는 옛 본문의 것이라 뺀다."""
+
+    if not state or not isinstance(summary, dict):
+        return summary
+    carried = {key: value for key, value in state.items() if key != "corrected_sha256"}
+    merged = dict(summary)
+    merged[AUTO_CORRECTION_KEY] = carried
+    return merged
+
+
 def _stored_body_repair_state(item: ContentItem) -> dict[str, Any] | None:
     summary = getattr(item, "essence_check_summary", None)
     state = summary.get(_BODY_REPAIR_KEY) if isinstance(summary, dict) else None
@@ -788,6 +810,269 @@ def _content_ai_unavailable_code(review: Any) -> str:
     if review.unavailable_reason == ContentAiReviewUnavailableReason.PROVIDER_UNCONFIGURED:
         return "CONTENT_AI_REVIEW_CONFIG_ERROR"
     return "CONTENT_AI_REVIEW_UNAVAILABLE"
+
+
+# 최소 교정 패스가 차단을 풀었다는 표시. 호출부는 이 값을 받으면 이미지·발행 준비 판정으로
+# 이어 간다 — 발행 자체는 언제나 기존 발행기와 같은 게이트가 한다.
+_AUTO_CORRECTION_RESOLVED = "auto_correction_resolved"
+# 교정은 했지만 남은 차단이 이 패스의 몫이 아니다(인용 없는 UNCERTAIN 등). 호출부는 저장된
+# 판정을 다시 읽어 기존 경로(재검수·표본 재작성)로 넘긴다.
+_AUTO_CORRECTION_REASSESS = "auto_correction_reassess"
+_AUTO_CORRECTION_HISTORY_LIMIT = 6
+_AUTO_CORRECTION_SWAP_MESSAGE = (
+    "지적 문장 자동 교정 상한을 다 써서 다음 복구 스윕이 같은 날짜로 주제를 바꿔 다시 씁니다."
+)
+_AUTO_CORRECTION_OPERATOR_MESSAGE = (
+    "지적 문장 자동 교정과 주제 교체를 모두 거쳤지만 독립 검수의 사실·의료 안전 지적이 남았습니다. "
+    "콘텐츠 탭에서 지적 문장을 확인해 주세요."
+)
+
+
+def _stored_auto_correction_state(item: ContentItem) -> dict[str, Any]:
+    summary = getattr(item, "essence_check_summary", None)
+    state = summary.get(AUTO_CORRECTION_KEY) if isinstance(summary, dict) else None
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def _topic_swap_budget_left(item: ContentItem) -> bool:
+    history = getattr(item, "topic_swap_history", None)
+    used = len(history) if isinstance(history, list) else 0
+    return used < max(0, int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX))
+
+
+def _stored_candidate(item: ContentItem) -> dict[str, Any]:
+    """독립 검수와 교정이 보는 후보 — 저장된 행의 공개 필드 그대로."""
+
+    return {
+        field: getattr(item, field, None)
+        for field in (
+            "title",
+            "body",
+            "meta_description",
+            "faq_question",
+            "faq_answer_summary",
+            "references_list",
+        )
+    }
+
+
+def _swap_deadline_passed(attempt: Mapping[str, Any]) -> bool:
+    raw = attempt.get("next_retry_at")
+    if not isinstance(raw, str):
+        return True
+    try:
+        due = datetime.fromisoformat(raw)
+    except ValueError:
+        return True
+    if due.tzinfo is None:
+        due = due.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) >= due
+
+
+def _escalate_exhausted_correction(
+    db,
+    item: ContentItem,
+    philosophy: HospitalContentPhilosophy,
+    state: dict[str, Any],
+) -> tuple[GenerationItemState, str, str]:
+    """교정 상한을 다 쓴 차단을 다음 계단으로 넘긴다 — 주제 교체, 그것도 없으면 사람.
+
+    주제 교체는 스윕이 로더보다 먼저 도는 별도 pass가 한다(`topic_swap_fallback`). 여기서는
+    그 pass가 이 슬롯을 집도록 시도 기록에 표시와 기한(다음 스윕)을 남긴다 — 그동안은 자동
+    복구가 소유한 RETRYING이다. 기한이 지난 뒤에도 이 슬롯이 그대로 여기 왔다면 그 시각의 교체
+    pass가 바꾸지 못한 것이다(교체할 질문 없음 등). 그때 사람의 일(OPERATOR_REQUIRED)로 연다.
+    """
+
+    code = "CONTENT_AI_HARD_FINDING"
+    if not state.get("exhausted"):
+        summary = dict(item.essence_check_summary or {})
+        summary[AUTO_CORRECTION_KEY] = {**state, "exhausted": True}
+        item.essence_check_summary = summary
+        db.commit()
+    stored = _stored_generation_attempt(item)
+    pending_swap = (
+        stored.get("reason") == code
+        and stored.get(AUTO_CORRECTION_EXHAUSTED_KEY)
+        and stored.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    )
+    if pending_swap and not _swap_deadline_passed(stored):
+        # 교체 pass가 아직 돌지 않았다(같은 스윕·운영자 재시도). 아무것도 사지 않는다.
+        return GenerationItemState.FAILED, code, _AUTO_CORRECTION_SWAP_MESSAGE
+    if _topic_swap_budget_left(item) and not pending_swap:
+        deadline = next_recovery_deadline(
+            {
+                "reason": code,
+                "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+                "exhausted_days": 0,
+                "provider_attempt_count": 0,
+            },
+            scheduled_date=getattr(item, "scheduled_date", None),
+        )
+        if deadline is not None:
+            _remember_generation_attempt(
+                db,
+                item,
+                philosophy,
+                code,
+                count_attempt=False,
+                extra={
+                    "retry_class": GenerationRetryClass.SAMPLE_RECOVERABLE.value,
+                    AUTO_CORRECTION_EXHAUSTED_KEY: True,
+                    "next_retry_at": deadline.isoformat(),
+                    # 교체 대기는 작가 예산을 쓰지 않은 결정이다 — 표본 계수를 물려받지 않는다.
+                    "provider_attempt_count": 0,
+                    "attempt_count": 0,
+                    "exhausted_days": 0,
+                },
+            )
+            logger.info(
+                "Minimal correction exhausted for %s; topic swap requested at %s",
+                item.id,
+                deadline.isoformat(),
+            )
+            return GenerationItemState.FAILED, code, _AUTO_CORRECTION_SWAP_MESSAGE
+    _remember_generation_attempt(
+        db,
+        item,
+        philosophy,
+        code,
+        count_attempt=False,
+        extra={
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+            AUTO_CORRECTION_EXHAUSTED_KEY: True,
+            "next_retry_at": None,
+        },
+    )
+    logger.warning(
+        "Minimal correction and topic swap exhausted for %s; operator required", item.id
+    )
+    return GenerationItemState.FAILED, code, _AUTO_CORRECTION_OPERATOR_MESSAGE
+
+
+def _auto_correct_blocked_body(
+    db,
+    item: ContentItem,
+    hospital: Hospital,
+    philosophy: HospitalContentPhilosophy,
+) -> tuple[GenerationItemState, str | None, str | None] | str | None:
+    """독립 검수의 사실·안전 지적을 지적 문장만 고쳐 푼다(`content_minimal_correction`).
+
+    반환값:
+    - ``None``: 이 패스가 맡을 지적이 없다. 호출부는 기존 경로를 그대로 탄다.
+    - ``_AUTO_CORRECTION_RESOLVED``: 교정본이 그 hash에 묶인 독립 재검수 PASS를 받아 저장됐다.
+    - ``_AUTO_CORRECTION_REASSESS``: 교정본은 저장됐고, 남은 차단은 기존 경로의 몫이다.
+    - 상태 튜플: 호출부가 그대로 돌려줄 결과(실패·주제 교체 대기·사람의 일·폐기).
+
+    교정본은 반드시 그 재검수 판정과 **한 번의 상태 가드 UPDATE**로 저장한다 — 교정본만 먼저
+    저장되면 그 사이 게이트가 볼 검수 결과가 없다. 게이트도 교정 기록(`AUTO_CORRECTION_KEY`)을
+    보고 교정본 hash에 묶인 PASS 없이는 통과시키지 않는다.
+    """
+
+    review = _stored_ai_review(item)
+    candidate = _stored_candidate(item)
+    must_use = required_must_use_messages(philosophy)
+    plan = plan_corrections(candidate, review, must_use_messages=must_use)
+    if not plan.applicable:
+        return None
+    state = _stored_auto_correction_state(item)
+    limits = correction_limits()
+    passes = int(state.get("passes") or 0)
+    rereviews = int(state.get("rereviews") or 0)
+    if state.get("exhausted") or passes >= limits.max_passes or rereviews >= limits.max_rereviews:
+        return _escalate_exhausted_correction(db, item, philosophy, state)
+
+    expected_revision = int(getattr(item, "content_revision", 1) or 1)
+    outcome = _run_async(
+        run_minimal_correction(
+            hospital=hospital,
+            philosophy=philosophy,
+            content=candidate,
+            review=review,
+            content_brief=getattr(item, "content_brief", None),
+            must_use_messages=must_use,
+            state=state,
+            limits=limits,
+            dependencies=CorrectionDependencies(
+                propose=propose_sentence_corrections,
+                review=review_generated_content,
+            ),
+        )
+    )
+    if outcome.status == "NOT_APPLICABLE":
+        return None
+    if outcome.status == "EXHAUSTED":
+        return _escalate_exhausted_correction(db, item, philosophy, state)
+    new_state: dict[str, Any] = {
+        **state,
+        "passes": outcome.passes,
+        "rereviews": outcome.rereviews,
+        "history": (list(state.get("history") or []) + outcome.history)[
+            -_AUTO_CORRECTION_HISTORY_LIMIT:
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if outcome.content is not None and outcome.review is not None:
+        corrected = outcome.content
+        new_state["corrected_sha256"] = candidate_sha256(corrected)
+        summary = (
+            dict(item.essence_check_summary)
+            if isinstance(item.essence_check_summary, dict)
+            else {}
+        )
+        summary["ai_review"] = outcome.review.payload()
+        summary[AUTO_CORRECTION_KEY] = new_state
+        if outcome.status == "PASS":
+            summary.pop(_GENERATION_ATTEMPT_KEY, None)
+        written = write_back_generated_content(
+            db,
+            item_id=item.id,
+            expected_revision=expected_revision,
+            expected_claim_token=getattr(item, "generation_claim_token", None),
+            values={
+                "body": corrected.get("body"),
+                "faq_answer_summary": corrected.get("faq_answer_summary"),
+                "meta_description": corrected.get("meta_description"),
+                "body_updated_at": datetime.now(timezone.utc),
+                "essence_check_summary": summary,
+            },
+        )
+        if written == 0:
+            db.rollback()
+            logger.info(
+                "Discarding minimal correction for %s — row changed during correction", item.id
+            )
+            return GenerationItemState.DISCARDED, None, None
+        db.commit()
+        db.refresh(item)
+    else:
+        # 범위 검사가 교정본을 거절했다 — 본문은 그대로 두고 쓴 회차만 센다.
+        summary = dict(item.essence_check_summary or {})
+        summary[AUTO_CORRECTION_KEY] = new_state
+        item.essence_check_summary = summary
+        db.commit()
+
+    if outcome.status == "PASS":
+        logger.info(
+            "Minimal correction resolved %s after %d pass(es)", item.id, outcome.passes
+        )
+        return _AUTO_CORRECTION_RESOLVED
+    if outcome.status == "UNAVAILABLE":
+        code = _content_ai_unavailable_code(outcome.review)
+        _remember_generation_attempt(db, item, philosophy, code)
+        return (
+            GenerationItemState.FAILED,
+            code,
+            "교정한 본문의 독립 재검수를 끝내지 못해 다음 자동 재검수를 기다립니다.",
+        )
+    budget_spent = (
+        outcome.passes >= limits.max_passes or outcome.rereviews >= limits.max_rereviews
+    )
+    if budget_spent or _stored_model_declared_hard(item) or outcome.status == "REJECTED":
+        # 교정을 거친 뒤에도 남은 사실·안전 HARD는 다시 교정할 문장이 없거나 상한이 끝났다.
+        return _escalate_exhausted_correction(
+            db, item, philosophy, _stored_auto_correction_state(item)
+        )
+    return _AUTO_CORRECTION_REASSESS
 
 
 def _publication_block_details(item: ContentItem, assessment: Any) -> tuple[str, str]:
@@ -6071,6 +6356,19 @@ def _generate_single_content_item(
                 )
             else:
                 _clear_generation_attempt(db, item)
+        if (
+            stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            # 승인 자료가 바뀐 뒤의 한 번의 재생성은 아래 기존 경로가 그대로 맡는다.
+            and not _approved_facts_changed_since_block(item, hospital)
+            and not _stored_ai_review_is_remediable(item)
+        ):
+            # 사실·안전 지적은 사람의 PATCH를 기다리지 않고 지적 문장만 교정해 재검수받는다.
+            # 23:00 야간 배치의 창이 내일 글을 담으므로 다음 날 아침 전에 이 교정이 끝난다.
+            corrected = _auto_correct_blocked_body(db, item, hospital, philosophy)
+            if isinstance(corrected, tuple):
+                return corrected
+            if corrected is not None:
+                stored_assessment = assess_content_publication(item, philosophy)
         repairable_body = (
             stored_assessment.code in _AUTOMATIC_BODY_REPAIR_CODES
             # 진료비·병원 선택 글의 참고자료 보류는 다시 써도 풀리지 않는다 — 사람이 정한다.
@@ -6245,11 +6543,14 @@ def _generate_single_content_item(
             "generation_philosophy_id": philosophy.id,
             "last_reviewed_philosophy_id": philosophy.id,
             "essence_status": screening.status,
-            "essence_check_summary": _with_body_repair_state(
-                _generation_summary(
-                    db, hospital.id, screening, philosophy, approved_brief
+            "essence_check_summary": _with_auto_correction_state(
+                _with_body_repair_state(
+                    _generation_summary(
+                        db, hospital.id, screening, philosophy, approved_brief
+                    ),
+                    carried_repair_state,
                 ),
-                carried_repair_state,
+                _stored_auto_correction_state(item),
             ),
         },
     )
@@ -6263,6 +6564,17 @@ def _generate_single_content_item(
     db.refresh(item)
 
     post_write_assessment = assess_content_publication(item, philosophy)
+    if (
+        post_write_assessment.code == "CONTENT_AI_HARD_FINDING"
+        and not _stored_ai_review_is_remediable(item)
+    ):
+        # 막 쓴 본문도 같은 최소 교정 패스를 거친다 — 이미지를 사기 전에 지적 문장을 고쳐
+        # 재검수 PASS를 받으면 아래 이미지·발행 준비 판정으로 그대로 이어 간다.
+        corrected = _auto_correct_blocked_body(db, item, hospital, philosophy)
+        if isinstance(corrected, tuple):
+            return corrected
+        if corrected is not None:
+            post_write_assessment = assess_content_publication(item, philosophy)
     if (
         post_write_assessment.code == "CONTENT_AI_HARD_FINDING"
         and not _stored_ai_review_is_remediable(item)

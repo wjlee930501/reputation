@@ -10,6 +10,7 @@ from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
+from app.services.content_minimal_correction import AUTO_CORRECTION_KEY
 from app.services.essence_engine import (
     ESSENCE_STATUS_ALIGNED,
     ESSENCE_STATUS_MISSING_APPROVED,
@@ -150,6 +151,16 @@ def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] |
 
     summary = getattr(item, "essence_check_summary", None)
     review = summary.get("ai_review") if isinstance(summary, dict) else None
+    correction = summary.get(AUTO_CORRECTION_KEY) if isinstance(summary, dict) else None
+    if isinstance(correction, dict) and correction.get("corrected_sha256"):
+        current_sha = candidate_sha256(item)
+        if correction["corrected_sha256"] == current_sha and (
+            not isinstance(review, dict) or review.get("candidate_sha256") != current_sha
+        ):
+            # 자동 교정이 쓴 본문 그대로다. 그 본문에 묶인 독립 재검수 결과가 없으면 — 검수
+            # 기록이 비었거나 교정 전 본문의 PASS가 남아 있어도 — 통과시키지 않는다. 교정은
+            # 검수를 대신하지 못한다(`content_minimal_correction`).
+            return "STALE", dict(review) if isinstance(review, dict) else {}
     if not isinstance(review, dict):
         return None
     review_status = review.get("status")
@@ -415,6 +426,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # 공개 이미지 재인증 차단 표시는 제목(subject)에 매인 사실이다. 제목을
             # 건드리지 않는 편집이 지우면 sweep이 같은 답을 다시 사러 간다 (H-01).
             "image_recertification",
+            # 자동 교정 기록. 게이트가 이 기록으로 교정본에 묶인 재검수 PASS를 요구하고, 워커는
+            # 글(주제)당 교정 상한을 센다 — 지우면 검수 없는 교정본이 통과하고 상한도 초기화된다.
+            AUTO_CORRECTION_KEY,
         ):
             value = previous_summary.get(key)
             if value is not None:
