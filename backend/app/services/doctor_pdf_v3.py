@@ -151,6 +151,11 @@ def v3_expectation(
     if initial:
         page3 = ["앞으로 할 일", "첫 측정 보고서입니다", n.plan_story, *n.priorities[:3]]
     appendix = list(expectation.required_appendix_texts)
+    for case in view["evidence"].values():
+        if case:
+            appendix.extend((case["question"], case["excerpt"], case["platform"]))
+    if any(work.cited_cells is None for work in n.works):
+        appendix.append("AI 답변에 쓰였는지는 아직 확인하지 못했습니다.")
     appendix.extend(
         (
             "숫자를 읽는 법",
