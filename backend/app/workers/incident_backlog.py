@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -18,6 +19,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
+from app.models.lead_diagnosis import (
+    REPORTABLE_EXECUTION_STATUSES,
+    LeadDiagnosis,
+    LeadReportArtifact,
+    ReportStatus,
+)
 from app.models.operations import (
     Incident,
     IncidentState,
@@ -117,6 +124,71 @@ def _redirected_delivery(db: Session, incident: Incident, _now: datetime) -> str
     return None
 
 
+def _lead_diagnosis_gone(
+    db: Session, incident: Incident
+) -> tuple[LeadDiagnosis | None, str | None]:
+    """복구 사고가 가리키는 그 진단과, 축과 무관하게 복구할 것이 없다는 근거.
+
+    병원으로 전환되지 않은 리드의 사고는 같은 진단의 다음 복구 성공(RETRYING에서만 닫힘)만
+    기다렸다. 아래 셋은 HTTP 복구 경계와 워커 claim이 모두 거절하는 상태라 누구도 이 사고를
+    처리할 수 없다(`lead_diagnosis_tasks._claim_for_execution`·보고서 claim).
+    - 행이 없다: 리드와 함께 지워졌다. 복구할 대상 자체가 없다.
+    - PURGED: 개인정보 파기로 리포트와 질의 원문이 지워졌다. 되살릴 수 없고 되살려서도 안 된다.
+    - 갈음됐다: AE가 값을 고쳐 새 진단을 만들었다. 갈음 경로는 그 순간 열린 사고만 닫으므로,
+      이미 큐에 있던 복구가 갈음 뒤 claim을 잃고 다시 연 사고는 여기서만 닫힌다.
+    리드의 병원 전환 여부(`converted_hospital_id`)는 보지 않는다 — 그 공백이 이 규칙의 이유다.
+    """
+
+    # `open_or_touch_incident`가 정규화해 저장한 값(`lead_diagnosis` → `LEAD_DIAGNOSIS`).
+    if incident.source_type != "LEAD_DIAGNOSIS":
+        return None, None
+    try:
+        diagnosis_id = uuid.UUID(str(incident.source_id))
+    except ValueError:
+        return None, None  # 알 수 없는 참조는 근거가 아니다. 열어 둔다.
+    # 식별자 맵이 아니라 DB의 현재 행을 읽는다 — 지워진 행을 메모리 사본으로 '있다'고 보지 않는다.
+    diagnosis = db.scalar(
+        select(LeadDiagnosis)
+        .where(LeadDiagnosis.id == diagnosis_id)
+        .execution_options(populate_existing=True)
+    )
+    if diagnosis is None:
+        return None, "lead_diagnosis_missing"
+    if diagnosis.report_status == ReportStatus.PURGED.value:
+        return diagnosis, "lead_diagnosis_purged"
+    if diagnosis.superseded_at is not None:
+        return diagnosis, "lead_diagnosis_superseded"
+    return diagnosis, None
+
+
+def _lead_measurement_recovered(db: Session, incident: Incident, _now: datetime) -> str | None:
+    diagnosis, gone = _lead_diagnosis_gone(db, incident)
+    if gone is not None or diagnosis is None:
+        return gone
+    # 폴러나 다른 경로가 그 진단의 측정을 리포트 가능한 상태로 끝냈다. 여전히 FAILED인 활성
+    # 진단은 사람이 복구를 다시 걸어야 할 수 있으므로 나이와 무관하게 열어 둔다.
+    if diagnosis.execution_status in REPORTABLE_EXECUTION_STATUSES:
+        return "lead_measurement_succeeded"
+    return None
+
+
+def _lead_report_recovered(db: Session, incident: Incident, _now: datetime) -> str | None:
+    diagnosis, gone = _lead_diagnosis_gone(db, incident)
+    if gone is not None or diagnosis is None:
+        return gone
+    # 측정 성공은 리포트 축의 근거가 아니다. READY 표시만으로도 부족하다 — 실제로 서빙할 수
+    # 있는(파기되지 않은) 산출물이 있어야 리포트가 만들어진 것이다. BLOCKED는 열어 둔다.
+    if diagnosis.report_status != ReportStatus.READY.value:
+        return None
+    servable = db.scalar(
+        select(LeadReportArtifact.id).where(
+            LeadReportArtifact.diagnosis_id == diagnosis.id,
+            LeadReportArtifact.purged_at.is_(None),
+        ).limit(1)
+    )
+    return "lead_report_ready" if servable is not None else None
+
+
 RESOLVERS: dict[str, Resolver] = {
     "WEEKLY_SOV_MEASUREMENT_FAILED": _later_weekly_measurement,
     "SOV_HIGH_PRIORITY_CAP_EXCEEDED": _weekly_capacity,
@@ -124,6 +196,8 @@ RESOLVERS: dict[str, Resolver] = {
     "V0_REPORT_FAILED": _v0_report_created,
     "CONTENT_GENERATION_FAILED": _content_published,
     "NOTIFICATION_DELIVERY_UNKNOWN": _redirected_delivery,
+    "RECOVER_LEAD_MEASUREMENT": _lead_measurement_recovered,
+    "RECOVER_LEAD_REPORT": _lead_report_recovered,
 }
 
 
