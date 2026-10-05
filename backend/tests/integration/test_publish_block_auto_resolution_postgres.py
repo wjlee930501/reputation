@@ -17,6 +17,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.admin_user import AdminUser
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, NotificationOutbox, OperationRun
@@ -84,19 +85,44 @@ def test_the_total_cap_is_counted_from_the_durable_rows(db):
     # 다른 글의 실행은 세지 않는다(같은 병원, 다른 글 id 접두사).
     assert tasks._reserve_auto_image_regeneration(db, _image_blocked_post(hospital.id), DAY)
 
+    # Admin “이미지 다시 만들기”가 같은 접두사의 키를 썼더라도 요청자가 있으면 시스템 실행이 아니다.
+    admin = AdminUser(
+        email=f"auto-resolve-{uuid.uuid4().hex[:8]}@example.test",
+        name="가상 운영자",
+        password_hash="not-a-real-hash",
+    )
+    db.add(admin)
+    db.flush()
+    db.add(
+        OperationRun(
+            hospital_id=hospital.id,
+            operation_type="REGENERATE_CONTENT_IMAGE",
+            state="SUCCEEDED",
+            requested_by_id=admin.id,
+            idempotency_key=f"auto-image-regen:{item.id}:{DAY.isoformat()}",
+            request_payload={},
+        )
+    )
+    db.flush()
+
     decisions = []
     for offset in range(4):
         day = DAY + timedelta(days=offset)
-        item.essence_check_summary = {}  # 본문 재작성이 요약을 통째로 다시 썼다
-        due = tasks._auto_image_regeneration_due(db, item, assessment, day)
-        decisions.append(due)
-        if due:
-            assert tasks._reserve_auto_image_regeneration(db, item, day) is not None
+        item.essence_check_summary = {  # 본문 재작성·오래된 JSON이 계수를 깨뜨렸다
+            "auto_image_regeneration": {"period": day.isoformat(), "count": "x", "total": None}
+        }
+        spent = tasks._auto_image_regeneration_due(db, item, assessment, day)
+        decisions.append(spent is not None)
+        if spent is not None:
+            assert tasks._reserve_auto_image_regeneration(db, item, day, spent) is not None
+            # 표시용 계수는 실행 행에서 만든다 — 깨진 요약 때문에 실패하거나 1부터 다시 세지 않는다.
+            counter = item.essence_check_summary["auto_image_regeneration"]
+            assert (counter["count"], counter["total"]) == (1, offset + 1)
         # 같은 날 두 번째 판정은 오늘의 행을 보고 사지 않는다.
-        assert tasks._auto_image_regeneration_due(db, item, assessment, day) is False
+        assert tasks._auto_image_regeneration_due(db, item, assessment, day) is None
 
     assert decisions == [True, True, True, False]
-    assert _system_runs(db, item) == 3
+    assert _system_runs(db, item) == 4  # 시스템 3건 + Admin 1건
 
 
 async def test_a_capped_review_outage_reopens_a_retrying_incident_as_open_and_pages_once(

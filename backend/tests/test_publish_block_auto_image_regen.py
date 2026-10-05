@@ -384,6 +384,25 @@ def test_the_total_cap_survives_a_rewrite_that_drops_the_counter(
     assert len(operation_runs) == 3
 
 
+def test_a_malformed_stored_counter_neither_raises_nor_restarts_the_total(
+    monkeypatch, dispatches, operation_runs
+):
+    """표시용 계수는 실행 행으로 만든다 — 깨진 저장값을 다시 읽지 않는다."""
+
+    item = _image_missing()
+    _run_hourly(monkeypatch, operation_runs, _kst(8), item)
+    item.essence_check_summary = {
+        **item.essence_check_summary,
+        SUMMARY_KEY: {"period": "2026-06-11", "count": "x", "total": "broken"},
+    }
+
+    _run_hourly(monkeypatch, operation_runs, _kst(8, day=SLOT + timedelta(days=1)), item)
+
+    assert _dispatched_ids(dispatches) == [str(item.id), str(item.id)]
+    stored = item.essence_check_summary[SUMMARY_KEY]
+    assert (stored["period"], stored["count"], stored["total"]) == ("2026-06-11", 1, 2)
+
+
 def test_a_new_kst_day_allows_the_next_trigger(monkeypatch, dispatches, operation_runs):
     item = _image_missing()
     _run_hourly(monkeypatch, operation_runs, _kst(23), item)

@@ -7129,10 +7129,14 @@ def _auto_publish_one(
             # 한 번 건다. 행·병원 잠금을 쥔 채 판정 기록보다 먼저 예약한다 — 실행 기록·계수·시도
             # 기록이 아래의 첫 커밋(시도 기록이 하는 커밋 또는 그 뒤의 커밋) 하나에 함께 실린다.
             # 배포는 그 커밋 뒤에만 한다.
-            auto_image_run = (
-                _reserve_auto_image_regeneration(db, item, today_kst)
+            spent_image_runs = (
+                _auto_image_regeneration_due(db, item, assessment, today_kst)
                 if read_only_row is None
-                and _auto_image_regeneration_due(db, item, assessment, today_kst)
+                else None
+            )
+            auto_image_run = (
+                _reserve_auto_image_regeneration(db, item, today_kst, spent_image_runs)
+                if spent_image_runs is not None
                 else None
             )
             # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행이면
@@ -7240,8 +7244,8 @@ def _is_auto_image_regeneration_run(db, task) -> bool:
 
 def _auto_image_regeneration_due(
     db, item: ContentItem, assessment: Any, today_kst: date
-) -> bool:
-    """이 차단에 발행기가 이미지 재생성을 스스로 걸 수 있는가.
+) -> tuple[str, ...] | None:
+    """이 차단에 발행기가 이미지 재생성을 스스로 걸 수 있으면 이미 쓴 시스템 실행 키를, 아니면 `None`.
 
     게이트 순서상 이미지 코드는 본문·참고자료·금지 표현·독립 검수·운영 기준을 모두 통과한 뒤에만
     나온다. 그래도 저장된 검수가 막고 있으면 사지 않는다 — 막힌 본문에 이미지를 사지 않는다.
@@ -7251,40 +7255,46 @@ def _auto_image_regeneration_due(
     """
 
     if assessment.code not in _IMAGE_SYMPTOM_CODES:
-        return False
+        return None
     if not public_candidate_review_safe(item):
-        return False
+        return None
     if _stored_generation_attempt(item).get("reason") in (
         {"COST_BLOCKED"} | _STORED_IMAGE_TERMINAL_CODES
     ):
-        return False
+        return None
     if _image_attempts_exhausted_today(item):
-        return False
+        return None
     prefix = _auto_image_regeneration_key_prefix(item.id)
-    keys = [
+    # 시스템 실행만 센다(`_is_auto_image_regeneration_run`과 같은 정의). 취소·실패로 끝난 실행도
+    # 센다 — 계수는 큐에 넣을 때 쓴 것이다.
+    keys = tuple(
         str(key)
         for key in db.execute(
             select(OperationRun.idempotency_key).where(
                 OperationRun.hospital_id == item.hospital_id,
                 OperationRun.operation_type == _AUTO_IMAGE_REGEN_OPERATION,
+                OperationRun.requested_by_id.is_(None),
                 OperationRun.idempotency_key.startswith(prefix, autoescape=True),
             )
         )
         .scalars()
         .all()
-    ]
+    )
     today_count = sum(key == f"{prefix}{today_kst.isoformat()}" for key in keys)
-    return today_count < AUTO_IMAGE_REGEN_DAILY_CAP and len(keys) < AUTO_IMAGE_REGEN_TOTAL_CAP
+    if today_count >= AUTO_IMAGE_REGEN_DAILY_CAP or len(keys) >= AUTO_IMAGE_REGEN_TOTAL_CAP:
+        return None
+    return keys
 
 
 def _reserve_auto_image_regeneration(
-    db, item: ContentItem, today_kst: date
+    db, item: ContentItem, today_kst: date, spent_keys: tuple[str, ...] = ()
 ) -> OperationRun | None:
     """시스템 소유 이미지 재생성 실행을 만들고 계수를 쓴다. 커밋은 호출자가 한다.
 
     Admin 경로와 같은 실행 종류(REGENERATE_CONTENT_IMAGE)·같은 저장 payload라 Worker 인증과
     자율 복구의 재배포가 그대로 적용된다. 요청자는 없다(시스템 실행) — Admin 감사를 만들지 않는다.
     멱등 키는 글·KST 날짜로 정해, 같은 날 두 번 사지 않는다(유일 인덱스가 겹친 쪽을 막는다).
+    `spent_keys`는 한도 판정이 읽은 이 글의 시스템 실행 키다 — 표시용 계수도 이것으로 만든다.
     """
 
     target_id = str(item.id)
@@ -7318,17 +7328,16 @@ def _reserve_auto_image_regeneration(
         # 같은 날의 시스템 실행이 이미 있다 — 이 시간대는 사지 않는다.
         savepoint.rollback()
         return None
-    # 화면·감사용 계수. 한도 판정은 위의 실행 행으로 한다.
-    counter = (item.essence_check_summary or {}).get(_AUTO_IMAGE_REGEN_KEY)
-    counter = counter if isinstance(counter, dict) else {}
+    # 화면·감사용 계수. 저장된 요약을 다시 읽지 않고 한도 판정이 읽은 실행 행에 이번 한 건을 더한다
+    # — 요약이 깨졌거나 지워졌어도 실패하지 않고 1부터 다시 세지도 않는다.
     period = today_kst.isoformat()
+    today_key = run.idempotency_key
     item.essence_check_summary = {
         **(item.essence_check_summary or {}),
         _AUTO_IMAGE_REGEN_KEY: {
             "period": period,
-            "count": (int(counter.get("count") or 0) if counter.get("period") == period else 0)
-            + 1,
-            "total": int(counter.get("total") or 0) + 1,
+            "count": sum(key == today_key for key in spent_keys) + 1,
+            "total": len(spent_keys) + 1,
             "last_triggered_at": observed_at.isoformat(),
         },
     }
