@@ -102,6 +102,7 @@ from app.services.content_generation_review import (
 from app.services.content_minimal_correction import (
     AUTO_CORRECTION_KEY,
     CorrectionDependencies,
+    correction_allowed_for,
     correction_limits,
     plan_corrections,
     propose_sentence_corrections,
@@ -974,6 +975,31 @@ def _escalate_exhausted_correction(
     return GenerationItemState.FAILED, code, _AUTO_CORRECTION_OPERATOR_MESSAGE
 
 
+def _review_wait_blocks_correction(
+    item: ContentItem, philosophy: HospitalContentPhilosophy
+) -> tuple[GenerationItemState, str, str] | None:
+    """독립 검수 장애·비용 보류의 대기 중이면 교정 패스를 돌리지 않는다.
+
+    교정은 끝에 독립 재검수를 산다. 저장된 판정이 HARD로 남아 있어도 직전 시도가 검수 장애
+    (물러서기·한도, `review_unavailable_not_before`)나 비용 가드 보류였다면 그 대기가 이 후보의
+    다음 검수 시각을 소유한다 — 위의 재검수 경로와 같은 조건·같은 결과로 물러난다. 교정 계수와
+    검수 장애 계수는 서로의 기록을 읽거나 쓰지 않는다.
+    """
+
+    previous_attempt = _stored_generation_attempt(item)
+    if previous_attempt.get("reason") in {
+        "CONTENT_AI_REVIEW_UNAVAILABLE",
+        "CONTENT_AI_REVIEW_CONFIG_ERROR",
+        "COST_BLOCKED",
+    } and _generation_attempt_is_unchanged(item, philosophy):
+        return (
+            GenerationItemState.SKIPPED,
+            str(previous_attempt["reason"]),
+            "독립 검수의 다음 자동 재검수 조건을 기다립니다.",
+        )
+    return None
+
+
 def _auto_correct_blocked_body(
     db,
     item: ContentItem,
@@ -993,6 +1019,12 @@ def _auto_correct_blocked_body(
     보고 교정본 hash에 묶인 PASS 없이는 통과시키지 않는다.
     """
 
+    if not correction_allowed_for(item):
+        # 발행 이력·사람 편집·보존 상태의 글은 이 패스가 고치지 않는다. 기존 경로가 그대로 맡는다.
+        return None
+    waiting = _review_wait_blocks_correction(item, philosophy)
+    if waiting is not None:
+        return waiting
     review = _stored_ai_review(item)
     candidate = _stored_candidate(item)
     must_use = required_must_use_messages(philosophy)
@@ -1060,6 +1092,7 @@ def _auto_correct_blocked_body(
             item_id=item.id,
             expected_revision=expected_revision,
             expected_claim_token=getattr(item, "generation_claim_token", None),
+            correction_only=True,
             values={
                 "body": corrected.get("body"),
                 "faq_answer_summary": corrected.get("faq_answer_summary"),
@@ -5490,6 +5523,22 @@ def _run_generation_item(
         db.commit()
         db.refresh(item)  # expire_on_commit=False — 조건부 UPDATE 결과를 다시 읽어온다
         logger.info(f"Content generated: {hospital.name} — {item.title}")
+
+        # 첫 생성도 저장 본문 경로(`_generate_single_content_item`)와 같은 최소 교정 패스를
+        # 이미지 구매 전에 거친다. 거치지 않으면 모델이 단정한 HARD가 교정·주제 교체 없이
+        # 곧바로 종착(INPUT_CHANGE_REQUIRED) 인시던트가 된다.
+        first_write_assessment = assess_content_publication(item, philosophy)
+        if (
+            first_write_assessment.code == "CONTENT_AI_HARD_FINDING"
+            and not _stored_ai_review_is_remediable(item)
+        ):
+            corrected = _auto_correct_blocked_body(db, item, hospital, philosophy)
+            if isinstance(corrected, tuple):
+                state, code, message = corrected
+                _record_generation_batch_outcome(
+                    db, recorder, item, hospital, state, code, message, notify=notify
+                )
+                return state, code, message
 
         # 대표 이미지는 비어 있을 때만 채운다. 기존 이미지가 있으면 공급자 파이프를
         # 절대 다시 호출하지 않는다.

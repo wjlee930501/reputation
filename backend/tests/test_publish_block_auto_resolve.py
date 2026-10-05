@@ -480,10 +480,15 @@ def worker(monkeypatch):
     """`_generate_single_content_item`의 저장 본문 경로만 남기고 외부 효과를 잡는다."""
 
     philosophy = _philosophy()
-    calls = {"llm": 0, "reviews": [], "writes": [], "image": 0, "writer": 0}
+    calls = {
+        "llm": 0, "reviews": [], "writes": [], "correction_only": [], "image": 0, "writer": 0
+    }
 
-    def write_back(_db, *, item_id, expected_revision, expected_claim_token, values):
+    def write_back(
+        _db, *, item_id, expected_revision, expected_claim_token, values, correction_only=False
+    ):
         calls["writes"].append(dict(values))
+        calls["correction_only"].append(correction_only)
         for name, value in values.items():
             setattr(calls["item"], name, value)
         calls["item"].content_revision += 1
@@ -551,6 +556,8 @@ def test_hard_finding_corrected_and_rereview_pass_leads_to_publish_gate(worker, 
     assert item.body == body.replace(WRONG_TRAINING, MAPO_PROFILE_SENTENCE)
     # 교정본과 그 재검수 판정은 한 번의 상태 가드 UPDATE로 함께 저장된다.
     assert len(calls["writes"]) == 1
+    # 교정 저장은 발행 이력·사람 편집 글을 0행으로 막는 술어를 함께 건다.
+    assert calls["correction_only"] == [True]
     written = calls["writes"][0]
     assert written["essence_check_summary"]["ai_review"]["status"] == "PASS"
     assert written["essence_check_summary"]["ai_review"]["candidate_sha256"] == candidate_sha256(
@@ -1252,3 +1259,536 @@ def test_essence_revalidation_keeps_the_correction_record(monkeypatch):
     content_publication.apply_essence_revalidation(item, philosophy)
 
     assert item.essence_check_summary[mc.AUTO_CORRECTION_KEY] == {"passes": 2, "rereviews": 2}
+
+
+# ── 7. 첫 생성 경로(빈 슬롯)도 교정 패스를 거친다 ───────────────────────────────
+
+
+class _SlotDB(_DB):
+    """`_run_generation_item`의 기존 제목 조회는 빈 목록이다."""
+
+    def execute(self, _statement):
+        return SimpleNamespace(all=lambda: [], scalars=lambda: SimpleNamespace(all=lambda: []))
+
+    def expire_all(self):
+        return None
+
+    def expire(self, _item):
+        return None
+
+
+class _SlotRecorder:
+    def __init__(self):
+        self.run = SimpleNamespace(id=uuid.uuid4())
+        self.states: list = []
+
+    def record(self, _item_id, state, **_kwargs):
+        self.states.append(state)
+
+    def item_run(self, *_args, **_kwargs):
+        return SimpleNamespace(id=uuid.uuid4())
+
+
+def _empty_slot(philosophy):
+    item = _blocked_item(philosophy, "", _finding("HARD", "HOSPITAL_FACT", "x"))
+    for name in ("title", "body", "meta_description", "faq_question", "faq_answer_summary"):
+        setattr(item, name, None)
+    item.references_list = None
+    item.essence_check_summary = None
+    return item
+
+
+def _first_generation(monkeypatch, calls, philosophy, item, body, finding):
+    """작가가 `body`를 쓰고 독립 검수가 `finding`으로 막는 첫 생성을 건다."""
+
+    written = _content(body)
+
+    async def allowed(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def ignore(*_args, **_kwargs):
+        return None
+
+    async def first_writer(**_kwargs):
+        calls["first_writer"] = calls.get("first_writer", 0) + 1
+        return dict(written, references=written["references_list"]), SimpleNamespace(
+            status=None, summary={}
+        )
+
+    def summary(*_args):
+        return {
+            "blocking": True,
+            "findings": [finding["message"]],
+            "ai_review": _review_payload(written, finding),
+        }
+
+    outcomes: list = []
+
+    def record_outcome(_db, _recorder, _item, _hospital, state, code, message, **_kwargs):
+        outcomes.append((state, code, message))
+
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+    monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *_a, **_k: {})
+    monkeypatch.setattr(tasks, "_generate_with_auto_review", first_writer)
+    monkeypatch.setattr(tasks, "_generation_summary", summary)
+    monkeypatch.setattr(tasks, "recover_generation_incidents", ignore)
+    monkeypatch.setattr(tasks, "open_generation_incident", ignore)
+    monkeypatch.setattr(tasks, "_record_generation_batch_outcome", record_outcome)
+    calls["item"] = item
+    return outcomes
+
+
+def test_first_generation_hard_finding_is_corrected_before_image(worker, monkeypatch):
+    """야간 배치가 빈 슬롯을 처음 쓸 때 HARD를 받아도 교정·재검수 PASS로 이미지·발행 준비까지 간다.
+
+    Fable 3차 검수 차단 사유: 이 분기가 교정 없이 곧바로 종착 인시던트를 열었다.
+    """
+
+    philosophy, calls = worker
+    item = _empty_slot(philosophy)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    outcomes = _first_generation(monkeypatch, calls, philosophy, item, body, finding)
+
+    async def propose(*, targets, **_kwargs):
+        return {targets[0].key: ("REPLACE", MAPO_PROFILE_SENTENCE)}
+
+    async def review(**kwargs):
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+    recorder = _SlotRecorder()
+
+    state, code, _message = tasks._run_generation_item(
+        _SlotDB(), recorder, item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert calls["first_writer"] == 1 and calls["llm"] == 1 and len(calls["reviews"]) == 1
+    assert item.body == body.replace(WRONG_TRAINING, MAPO_PROFILE_SENTENCE)
+    # 첫 저장(작가)과 교정 저장. 교정 저장만 발행 이력·사람 편집 글을 막는 술어를 건다.
+    assert calls["correction_only"] == [False, True]
+    assert calls["image"] == 1, "교정본이 PASS를 받은 뒤에만 이미지를 산다"
+    assert recorder.states == [tasks.GenerationItemState.SUCCEEDED]
+    assert outcomes == []
+    assert _blocking_ai_review_state(item) is None
+
+
+def test_first_generation_hard_that_cannot_be_fixed_waits_for_topic_swap_not_operator(
+    worker, monkeypatch
+):
+    """첫 생성의 HARD가 교정 상한까지 안 풀리면 사람의 일이 아니라 주제 교체 대기(RETRYING)다.
+
+    이미지는 사지 않는다.
+    """
+
+    philosophy, calls = worker
+    item = _empty_slot(philosophy)
+    sentences = [WRONG_TRAINING, UNAPPROVED_PHILOSOPHY, NEUTRAL_A]
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    outcomes = _first_generation(
+        monkeypatch, calls, philosophy, item, _body(*sentences), finding
+    )
+
+    async def propose(*, targets, **_kwargs):
+        return {target.key: ("DELETE", "") for target in targets}
+
+    async def review(**kwargs):
+        content = kwargs["content"]
+        remaining = [s for s in sentences if s in content["body"]]
+        return _review(
+            content,
+            ContentAiReviewStatus.REVISE,
+            (
+                ContentAiFinding(
+                    ContentAiFindingSeverity.HARD,
+                    ContentAiFindingKind.HOSPITAL_FACT,
+                    "승인 자료에 없는 문장입니다.",
+                    quote=remaining[0],
+                ),
+            ),
+        )
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    state, code, message = tasks._run_generation_item(
+        _SlotDB(), _SlotRecorder(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert outcomes == [(state, code, message)], "배치 결과 기록은 저장 본문 경로와 같은 함수다"
+    assert len(calls["reviews"]) == settings.CONTENT_AUTO_CORRECTION_MAX_PASSES
+    assert calls["image"] == 0
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
+    assert generation_incident_control.scheduled_recovery_owns_blocker(code, item)
+    assert not generation_incident_control.generation_block_is_terminal(code, item)
+
+
+def test_first_generation_respects_zero_correction_cap_without_provider_calls(
+    worker, monkeypatch
+):
+    """상한을 0으로 내리면 첫 생성 경로에서도 교정·재검수 공급자 호출이 0회다."""
+
+    philosophy, calls = worker
+    monkeypatch.setattr(settings, "CONTENT_AUTO_CORRECTION_MAX_PASSES", 0)
+    monkeypatch.setattr(settings, "CONTENT_AUTO_TOPIC_SWAP_MAX", 0)
+    item = _empty_slot(philosophy)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    _first_generation(
+        monkeypatch, calls, philosophy, item, _body(NEUTRAL_A, WRONG_TRAINING), finding
+    )
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    state, code, _message = tasks._run_generation_item(
+        _SlotDB(), _SlotRecorder(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_HARD_FINDING")
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["image"] == 0
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert generation_incident_control.generation_block_is_terminal(code, item)
+
+
+# ── 8. PR #207(검수 장애 물러서기·한도)과의 공존 ───────────────────────────────
+
+
+def _review_unavailable_twice(item, philosophy):
+    """#207 경로가 같은 후보의 검수 장애를 두 번 기록한 상태(물러서기 중)."""
+
+    for _ in range(2):
+        tasks._remember_generation_attempt(
+            _DB(), item, philosophy, "CONTENT_AI_REVIEW_UNAVAILABLE"
+        )
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["review_unavailable_total"] == 2
+    return attempt
+
+
+def test_correction_does_not_run_during_review_unavailable_backoff(worker, monkeypatch):
+    """저장 판정이 HARD여도 검수 장애 물러서기 중이면 교정 패스(재검수 구매)를 돌리지 않는다.
+
+    물러서기 기록도 그대로 둔다 — 교정 경로가 #207의 계수·기한을 지우지 않는다.
+    """
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+    before = _review_unavailable_twice(item, philosophy)
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert (state, code) == (tasks.GenerationItemState.SKIPPED, "CONTENT_AI_REVIEW_UNAVAILABLE")
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []
+    assert tasks._stored_generation_attempt(item) == before
+    assert mc.AUTO_CORRECTION_KEY not in item.essence_check_summary
+
+
+def test_correction_runs_after_backoff_and_its_pass_clears_the_review_record(
+    worker, monkeypatch
+):
+    """물러서기가 지나면 교정이 돈다. 교정 계수는 검수 장애 계수에서 시작하지 않는다."""
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+    _review_unavailable_twice(item, philosophy)
+    attempt = item.essence_check_summary["generation_attempt"]
+    attempt["observed_at"] = (datetime.now(UTC) - timedelta(days=2)).isoformat()
+    attempt["next_retry_at"] = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+
+    async def propose(*, targets, **_kwargs):
+        return {targets[0].key: ("REPLACE", MAPO_PROFILE_SENTENCE)}
+
+    async def review(**kwargs):
+        return _review(kwargs["content"])
+
+    _install(monkeypatch, calls, propose=propose, review=review)
+
+    state, _code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id)
+    )
+
+    assert state == tasks.GenerationItemState.SUCCEEDED
+    correction = item.essence_check_summary[mc.AUTO_CORRECTION_KEY]
+    assert (correction["passes"], correction["rereviews"]) == (1, 1)
+    assert "review_unavailable_total" not in correction
+    assert tasks._stored_generation_attempt(item) == {}
+
+
+def test_correction_and_review_unavailable_caps_keep_separate_counters(worker, monkeypatch):
+    """교정 재검수가 검수 장애로 끝나면 두 장부가 각자 한 번씩 센다 — 서로의 키를 쓰지 않는다.
+
+    #207 한도(`CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES`)에 닿아도 교정 기록은 그대로이고,
+    교정 상한 소진(주제 교체 대기)도 검수 장애 계수·한도 표시를 만들지 않는다.
+    """
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+
+    async def propose(*, targets, **_kwargs):
+        return {targets[0].key: ("REPLACE", MAPO_PROFILE_SENTENCE)}
+
+    async def unavailable(**kwargs):
+        return _review(kwargs["content"], ContentAiReviewStatus.UNAVAILABLE)
+
+    _install(monkeypatch, calls, propose=propose, review=unavailable)
+    hospital = _hospital(id=item.hospital_id)
+
+    state, code, _message = tasks._generate_single_content_item(_DB(), item, hospital)
+
+    assert (state, code) == (tasks.GenerationItemState.FAILED, "CONTENT_AI_REVIEW_UNAVAILABLE")
+    correction = dict(item.essence_check_summary[mc.AUTO_CORRECTION_KEY])
+    assert (correction["passes"], correction["rereviews"]) == (1, 1)
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["review_unavailable_total"] == 1
+    assert attempt["review_unavailable_candidate"] == candidate_sha256(
+        tasks._stored_candidate(item)
+    )
+    assert AUTO_CORRECTION_EXHAUSTED_KEY not in attempt
+
+    # #207 한도까지 같은 후보의 검수 장애가 이어져도 교정 기록은 바뀌지 않는다.
+    for _ in range(settings.CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES):
+        tasks._remember_generation_attempt(
+            _DB(), item, philosophy, "CONTENT_AI_REVIEW_UNAVAILABLE"
+        )
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["review_unavailable_cap_reached"] is True
+    assert item.essence_check_summary[mc.AUTO_CORRECTION_KEY] == correction
+    assert generation_incident_control.review_retries_exhausted(
+        "CONTENT_AI_REVIEW_UNAVAILABLE", item
+    )
+
+    # 반대로, 교정 상한 소진은 검수 장애 계수·한도 표시를 만들지 않는다.
+    other = _blocked_item(philosophy, body, finding)
+    other.essence_check_summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2}
+    calls["item"] = other
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+    tasks._generate_single_content_item(_DB(), other, _hospital(id=other.hospital_id))
+    other_attempt = tasks._stored_generation_attempt(other)
+    assert other_attempt[AUTO_CORRECTION_EXHAUSTED_KEY] is True
+    assert "review_unavailable_total" not in other_attempt
+    assert "review_unavailable_cap_reached" not in other_attempt
+    assert not generation_incident_control.review_retries_exhausted(
+        "CONTENT_AI_HARD_FINDING", other
+    )
+
+
+def test_review_only_operator_retry_never_runs_the_correction_pass(worker, monkeypatch):
+    """운영자 재검수 전용 실행(main #205)은 저장된 HARD를 교정하지 않는다 — 교정은 자동 스윕의 몫이다."""
+
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    calls["item"] = item
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    state, code, _message = tasks._generate_single_content_item(
+        _DB(), item, _hospital(id=item.hospital_id), review_only=True
+    )
+
+    assert state in {tasks.GenerationItemState.FAILED, tasks.GenerationItemState.SKIPPED}
+    assert code is not None
+    assert calls["llm"] == 0 and calls["writes"] == []
+    assert mc.AUTO_CORRECTION_KEY not in item.essence_check_summary
+
+
+# ── 9. 보호 글: 발행·사람 편집 글과 필수 문구는 고치지 않는다 ───────────────────
+
+
+@pytest.mark.parametrize(
+    "protect",
+    [
+        {"status": SimpleNamespace(value="PUBLISHED")},
+        {"status": SimpleNamespace(value="WITHHELD")},
+        {"status": SimpleNamespace(value="REJECTED"), "first_published_at": datetime.now(UTC)},
+        {"first_published_at": datetime.now(UTC)},
+        {"published_at": datetime.now(UTC)},
+        {"human_edited_at": datetime.now(UTC)},
+    ],
+)
+def test_correction_never_touches_published_or_human_edited_posts(worker, monkeypatch, protect):
+    philosophy, calls = worker
+    body = _body(NEUTRAL_A, WRONG_TRAINING)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    item = _blocked_item(philosophy, body, finding)
+    for name, value in protect.items():
+        setattr(item, name, value)
+    calls["item"] = item
+    _install(monkeypatch, calls, propose=_no_provider, review=_no_provider)
+
+    assert not mc.correction_allowed_for(item)
+    result = tasks._auto_correct_blocked_body(
+        _DB(), item, _hospital(id=item.hospital_id), philosophy
+    )
+
+    assert result is None
+    assert item.body == body
+    assert calls["llm"] == 0 and calls["reviews"] == [] and calls["writes"] == []
+    assert mc.AUTO_CORRECTION_KEY not in item.essence_check_summary
+
+
+def test_correction_write_back_sql_excludes_published_and_human_edited_rows():
+    """교정 저장 UPDATE 자체가 발행 이력·사람 편집·DRAFT/READY 밖의 행을 0행으로 만든다."""
+
+    from sqlalchemy.dialects import postgresql
+
+    from app.workers.nightly_generation_batch import write_back_generated_content
+
+    statements = []
+
+    class _Capture:
+        def execute(self, statement):
+            statements.append(statement)
+            return SimpleNamespace(rowcount=0)
+
+    for correction_only in (False, True):
+        write_back_generated_content(
+            _Capture(),
+            item_id=uuid.uuid4(),
+            expected_revision=3,
+            values={"body": "x"},
+            correction_only=correction_only,
+        )
+    plain, guarded = (
+        str(statement.compile(dialect=postgresql.dialect())) for statement in statements
+    )
+    for clause in (
+        "content_items.first_published_at IS NULL",
+        "content_items.published_at IS NULL",
+        "content_items.human_edited_at IS NULL",
+    ):
+        assert clause in guarded and clause not in plain
+
+
+MUST_USE_TWO = "정확한 진단이 먼저입니다. 필요한 치료만 권합니다."
+
+
+def test_must_use_sentence_is_never_a_correction_target():
+    """여러 문장짜리 필수 문구의 한 문장도 지적 대상이 아니다(인용이 그 문장 하나여도)."""
+
+    body = _body(NEUTRAL_A, MUST_USE_TWO, WRONG_TRAINING)
+    content = _content(body)
+    review = _review_payload(
+        content,
+        _finding("HARD", "HOSPITAL_FACT", "근거 없는 문장입니다.", "필요한 치료만 권합니다."),
+    )
+
+    plan = mc.plan_corrections(content, review, must_use_messages=[MUST_USE_TWO])
+
+    assert not plan.targets
+
+
+def test_scope_check_rejects_a_correction_that_breaks_a_must_use_message():
+    body = _body(NEUTRAL_A, MUST_USE_TWO, WRONG_TRAINING)
+    content = _content(body)
+    finding = _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", WRONG_TRAINING)
+    plan = mc.plan_corrections(
+        content, _review_payload(content, finding), must_use_messages=[MUST_USE_TWO]
+    )
+    assert plan.targets
+    corrected = mc.apply_corrections(
+        content,
+        plan,
+        {plan.targets[0].key: mc.SentenceDecision(plan.targets[0].key, None, "test")},
+    )
+    mc.verify_correction_scope(content, corrected, plan, sources=[], must_use_messages=[MUST_USE_TWO])
+
+    broken = dict(corrected, body=corrected["body"].replace("필요한 치료만 권합니다.", ""))
+    with pytest.raises(mc.CorrectionScopeError):
+        mc.verify_correction_scope(
+            content, broken, plan, sources=[], must_use_messages=[MUST_USE_TWO]
+        )
+
+
+def test_emergency_template_is_not_inserted_inside_a_must_use_message():
+    body = _body(NEUTRAL_A, MUST_USE_TWO)
+    content = _content(body)
+    finding = _finding(
+        "UNCERTAIN",
+        "MEDICAL_SAFETY",
+        "다리 힘 빠짐 같은 응급 신호에 119 안내가 없습니다.",
+        "정확한 진단이 먼저입니다.",
+    )
+    plan = mc.plan_corrections(
+        content, _review_payload(content, finding), must_use_messages=[MUST_USE_TWO]
+    )
+    assert plan.insertions
+    corrected = mc.apply_corrections(content, plan, {})
+    from app.services.must_use_verbatim import appears_as_standalone_sentence
+
+    assert appears_as_standalone_sentence(corrected["body"], MUST_USE_TWO)
+    mc.verify_correction_scope(content, corrected, plan, sources=[], must_use_messages=[MUST_USE_TWO])
+
+
+# ── 10. Fable 3차 NIT ─────────────────────────────────────────────────────────
+
+
+def test_ambiguous_quote_found_in_two_sentences_is_not_taken():
+    """짧은 인용이 두 문장에 있으면 어느 문장인지 모르므로 고치지 않는다(지적 안 한 문장 보호)."""
+
+    first = "본원은 수술 후 관리를 책임집니다."
+    second = "본원은 수술 후 관리를 책임집니다만 일정은 따로 안내합니다."
+    for body in (_body(first, NEUTRAL_A, second), _body(first, NEUTRAL_A, first)):
+        content = _content(body)
+        review = _review_payload(
+            content, _finding("HARD", "HOSPITAL_FACT", "승인 자료에 없습니다.", "수술 후 관리를")
+        )
+        plan = mc.plan_corrections(content, review)
+        assert not plan.targets and not plan.applicable
+    # 다른 칸(본문·FAQ 요약)에 같은 인용이 있어도 맡지 않는다.
+    content = _content(_body(first, NEUTRAL_A), faq_answer_summary=first)
+    review = _review_payload(content, _finding("HARD", "HOSPITAL_FACT", "없습니다.", first))
+    assert not mc.plan_corrections(content, review).targets
+    # 한 곳에만 있으면 그대로 맡는다.
+    content = _content(_body(first, NEUTRAL_A))
+    review = _review_payload(content, _finding("HARD", "HOSPITAL_FACT", "없습니다.", first))
+    assert [target.sentence for target in mc.plan_corrections(content, review).targets] == [first]
+
+
+def test_spaced_keyword_only_service_is_excluded():
+    """띄어 쓴 '골밀도 검사'도 키워드에만 있는 검사면 제외한다."""
+
+    assert not target_fits_hospital(_target("마산 골밀도 검사 가능한 병원"), _gangsimjang())
+    assert target_fits_hospital(
+        _target("마산 골밀도 검사 가능한 병원"), _gangsimjang(treatments=["골밀도검사"])
+    )
+    # 앞말이 검사 이름이 아닌 띄어쓰기("허리 수술")는 키워드에 붙여 쓴 전체 이름이 있을 때만 대상이다.
+    assert target_fits_hospital(_target("허리 수술 안 하는 병원"), _ortho())
+
+
+@pytest.mark.parametrize(
+    ("name", "treatments", "keywords"),
+    [
+        ("위내시경검사 잘하는 곳", ["위·대장내시경"], ["위내시경검사"]),
+        ("복부초음파 가능한 병원", ["초음파 검사"], ["복부초음파"]),
+        ("비수술 치료 잘하는 곳", ["도수치료"], ["비수술치료"]),
+        ("비수술치료 병원", ["도수치료"], ["비수술치료"]),
+    ],
+)
+def test_offered_or_non_service_names_are_not_excluded(name, treatments, keywords):
+    hospital = _singihan(treatments=treatments, keywords=keywords)
+    assert target_fits_hospital(_target(name), hospital)
+
+
+def test_cost_cap_settings_of_both_prs_coexist():
+    """#207의 검수 장애 재검수 한도와 이 PR의 교정·재검수·교체 상한이 모두 설정으로 남는다."""
+
+    assert settings.CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES == 6
+    assert (
+        settings.CONTENT_AUTO_CORRECTION_MAX_PASSES,
+        settings.CONTENT_AUTO_CORRECTION_MAX_REREVIEWS,
+        settings.CONTENT_AUTO_TOPIC_SWAP_MAX,
+    ) == (2, 2, 1)

@@ -39,7 +39,10 @@ from app.services.content_ai_review import (
     candidate_sha256,
     hospital_review_profile,
 )
-from app.services.must_use_verbatim import normalize_verbatim
+from app.services.must_use_verbatim import (
+    appears_as_standalone_sentence,
+    normalize_verbatim,
+)
 from app.utils.medical_filter import check_forbidden, check_forbidden_markdown
 
 logger = logging.getLogger(__name__)
@@ -267,20 +270,40 @@ _INNER_TERMINATOR = re.compile(r"[.?!。](?!(?<=\d\.)\d)")
 _LINE_PREFIX = re.compile(r"[ \t]*(?:#{1,6}[ \t]+|[-*+][ \t]+|\d+[.)][ \t]+|>[ \t]*)?")
 
 
-def _find_quote(text: str, quote: str) -> tuple[int, int] | None:
-    """`quote`의 위치. 공백 차이만 허용한다(검수자는 원문을 복사하도록 지시받았다)."""
+def _quote_matches(text: str, quote: str, limit: int = 2) -> list[tuple[int, int]]:
+    """`quote`가 나오는 위치(최대 `limit`개). 공백 차이만 허용한다(검수자는 원문을 복사하도록
+    지시받았다)."""
 
     quote = quote.strip()
     if len(quote) < 4:
-        return None
+        return []
+    matches: list[tuple[int, int]] = []
     index = text.find(quote)
-    if index >= 0:
-        return index, index + len(quote)
+    while index >= 0 and len(matches) < limit:
+        matches.append((index, index + len(quote)))
+        index = text.find(quote, index + 1)
+    if matches:
+        return matches
     parts = [re.escape(part) for part in quote.split()]
     if not parts:
-        return None
-    match = re.search(r"\s+".join(parts), text)
-    return (match.start(), match.end()) if match else None
+        return []
+    pattern = re.compile(r"\s+".join(parts))
+    position = 0
+    while len(matches) < limit:
+        match = pattern.search(text, position)
+        if match is None:
+            break
+        matches.append((match.start(), match.end()))
+        position = match.start() + 1
+    return matches
+
+
+def _find_quote(text: str, quote: str) -> tuple[int, int] | None:
+    """`quote`의 유일한 위치. 두 곳 이상에 있으면 ``None``이다 — 지적하지 않은 문장을 고칠 수
+    있으므로 맡지 않는다."""
+
+    matches = _quote_matches(text, quote)
+    return matches[0] if len(matches) == 1 else None
 
 
 def is_single_sentence(sentence: str) -> bool:
@@ -336,26 +359,52 @@ def sentence_span(text: str, start: int, end: int) -> tuple[int, int] | None:
 
 
 def _contains_must_use(sentence: str, must_use_messages: Iterable[str]) -> bool:
+    """문장이 필수 문구를 담거나, 여러 문장짜리 필수 문구의 한 문장인가 — 둘 다 고치지 않는다."""
+
     normalized = normalize_verbatim(sentence)
     return any(
-        (key := normalize_verbatim(message)) and key in normalized
+        ((key := normalize_verbatim(message)) and key in normalized)
+        or (normalized and appears_as_standalone_sentence(message, sentence))
         for message in must_use_messages
+    )
+
+
+# 교정 패스가 손댈 수 있는 글의 상태. 발행(공개) 이력이 있거나 사람이 편집한 글, 공개·비공개 보존·
+# 반려·취소 상태의 글은 어떤 경우에도 고치지 않는다 — 워커는 이 판정과 같은 조건을 저장 UPDATE의
+# 술어로도 건다(`write_back_generated_content(correction_only=True)`).
+CORRECTABLE_STATUSES = frozenset({"DRAFT", "READY"})
+
+
+def correction_allowed_for(item: Any) -> bool:
+    """이 글을 최소 교정 패스가 고쳐도 되는가."""
+
+    status = getattr(item, "status", None)
+    status_value = str(getattr(status, "value", status) or "")
+    return (
+        status_value in CORRECTABLE_STATUSES
+        and getattr(item, "first_published_at", None) is None
+        and getattr(item, "published_at", None) is None
+        and getattr(item, "human_edited_at", None) is None
     )
 
 
 def _locate(
     content: Mapping[str, Any], quote: str
 ) -> tuple[str, int, int] | None:
+    found: list[tuple[str, int, int]] = []
     for field_name in CORRECTABLE_FIELDS:
         text = str(content.get(field_name) or "")
-        found = _find_quote(text, quote)
-        if found is None:
-            continue
-        span = sentence_span(text, *found)
-        if span is None:
+        found.extend((field_name, start, end) for start, end in _quote_matches(text, quote))
+        if len(found) > 1:
+            # 같은 인용이 두 곳 이상에 있다 — 어느 문장을 지적했는지 모르므로 맡지 않는다.
             return None
-        return field_name, span[0], span[1]
-    return None
+    if not found:
+        return None
+    field_name, start, end = found[0]
+    span = sentence_span(str(content.get(field_name) or ""), start, end)
+    if span is None:
+        return None
+    return field_name, span[0], span[1]
 
 
 def plan_corrections(
@@ -384,7 +433,13 @@ def plan_corrections(
                 # 이미 같은 템플릿이 들어 있다 — 두 번 넣지 않는다. 남은 판단은 재검수의 몫이다.
                 uncorrectable.append(message)
                 continue
-            if located is not None and located[0] == "body":
+            if (
+                located is not None
+                and located[0] == "body"
+                and not _contains_must_use(
+                    str(content.get("body") or "")[located[1] : located[2]], must_use
+                )
+            ):
                 position = located[2]
             else:
                 position = len(str(content.get("body") or "").rstrip())
@@ -641,8 +696,12 @@ def verify_correction_scope(
     plan: CorrectionPlan,
     *,
     sources: Iterable[object],
+    must_use_messages: Iterable[str] = (),
 ) -> None:
     """교정본이 허용된 범위 안에서만 바뀌었는지 결정적으로 확인한다. 아니면 예외다.
+
+    원문에 독립 문장으로 들어 있던 필수 문구(승인본 `must_use_messages`)는 교정본에도 그대로
+    있어야 한다 — 지우거나 끼어든 글로 끊으면 거절한다.
 
     적용 코드와 독립된 검사다. 각 필드의 원문을 '허용 구간'(지적 문장·템플릿 삽입 지점)으로
     자른 나머지 조각들이 교정본에 같은 순서로 그대로 있어야 하고, 조각 사이에 끼어든 글은
@@ -742,6 +801,14 @@ def verify_correction_scope(
                 before[start:end]
             ):
                 raise CorrectionScopeError(f"correction rejected: {problem}")
+    for message in must_use_messages:
+        if not str(message or "").strip():
+            continue
+        for name in CORRECTABLE_FIELDS:
+            if appears_as_standalone_sentence(
+                original.get(name) or "", message
+            ) and not appears_as_standalone_sentence(corrected.get(name) or "", message):
+                raise CorrectionScopeError(f"field {name} lost a must-use message")
     body = str(corrected.get("body") or "")
     if body and check_forbidden_markdown(body) and not check_forbidden_markdown(
         str(original.get("body") or "")
@@ -996,7 +1063,9 @@ async def run_minimal_correction(
         decisions = decide_sentences(plan, proposals, sources)
         corrected = apply_corrections(current, plan, decisions)
         try:
-            verify_correction_scope(current, corrected, plan, sources=sources)
+            verify_correction_scope(
+                current, corrected, plan, sources=sources, must_use_messages=must_use
+            )
         except CorrectionScopeError as exc:
             # 교정 제안 때문이면 전부 지우는 결정적 교정으로 한 번 더 확인한다.
             logger.warning("Minimal correction scope rejected (%s); deleting instead", exc)
@@ -1006,7 +1075,9 @@ async def run_minimal_correction(
             }
             corrected = apply_corrections(current, plan, decisions)
             try:
-                verify_correction_scope(current, corrected, plan, sources=sources)
+                verify_correction_scope(
+                    current, corrected, plan, sources=sources, must_use_messages=must_use
+                )
             except CorrectionScopeError:
                 # 결정적 삭제조차 범위를 지키지 못한다 — 이 회차는 저장하지 않고 실패로 센다.
                 logger.exception("Minimal correction could not stay within the finding scope")

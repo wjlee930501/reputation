@@ -353,3 +353,60 @@ def test_exhausted_correction_is_swapped_by_the_existing_pass_to_an_offered_serv
     assert swapped.body is None and swapped.title is None
     assert len(swapped.topic_swap_history) == 1
     assert swapped.topic_swap_history[0]["reason_code"] == "CONTENT_AI_HARD_FINDING"
+
+
+def test_correction_leaves_human_edited_and_once_published_posts_alone(
+    gate_db, incidents, monkeypatch
+):
+    """사람이 편집했거나 한 번이라도 공개된 글은 교정 패스가 공급자 호출 없이 그대로 둔다(실제 행)."""
+
+    db = gate_db
+    for protect in ("human_edited_at", "first_published_at"):
+        hospital, item = _blocked_post(db)
+        setattr(item, protect, datetime.now(timezone.utc))
+        db.commit()
+        calls = _fake_providers(monkeypatch, verdict=ContentAiReviewStatus.PASS)
+        philosophy = _approved_philosophy(db, hospital)
+        monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_a, p=philosophy: p)
+
+        assert tasks._auto_correct_blocked_body(db, item, hospital, philosophy) is None
+
+        db.expire_all()
+        stored = db.get(ContentItem, item.id)
+        assert stored.body == BODY and WRONG in stored.body
+        assert calls == {"propose": 0, "review": []}
+        assert mc.AUTO_CORRECTION_KEY not in stored.essence_check_summary
+
+
+def test_correction_write_is_refused_when_a_human_edit_lands_mid_pass(
+    gate_db, incidents, monkeypatch
+):
+    """교정 도중 사람이 편집·발행하면 교정 저장 UPDATE가 0행이다 — 편집을 덮지 않는다."""
+
+    db = gate_db
+    hospital, item = _blocked_post(db)
+    revision = item.content_revision
+    db.execute(
+        ContentItem.__table__.update()
+        .where(ContentItem.id == item.id)
+        .values(human_edited_at=datetime.now(timezone.utc))
+    )
+    db.commit()
+
+    written = nightly_generation_batch.write_back_generated_content(
+        db,
+        item_id=item.id,
+        expected_revision=revision,
+        correction_only=True,
+        values={"body": BODY.replace(WRONG, FIXED)},
+    )
+    db.commit()
+
+    assert written == 0
+    db.expire_all()
+    assert db.get(ContentItem, item.id).body == BODY
+    # 같은 행이라도 일반 생성 저장(술어 없음)은 종전대로 쓴다 — 새 술어는 교정 저장에만 걸린다.
+    assert nightly_generation_batch.write_back_generated_content(
+        db, item_id=item.id, expected_revision=revision, values={"meta_description": "x"}
+    ) == 1
+    db.rollback()
