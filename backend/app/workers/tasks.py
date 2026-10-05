@@ -1484,6 +1484,85 @@ def _remember_regeneration_failure(
         _rollback_quietly(db, getattr(item, "id", None))
 
 
+def _body_written_under_current_philosophy(db, item: ContentItem, hospital_id) -> bool:
+    """저장 본문이 병원의 지금 승인 운영 기준으로 쓰였는가. 기준이 없으면 거짓이다."""
+
+    philosophy = _generation_philosophy_sync(db, hospital_id)
+    return philosophy is not None and getattr(item, "content_philosophy_id", None) == (
+        philosophy.id
+    )
+
+
+def _stored_ai_review_value(item: ContentItem) -> Any:
+    summary = getattr(item, "essence_check_summary", None)
+    return summary.get("ai_review") if isinstance(summary, dict) else None
+
+
+@dataclass(frozen=True)
+class _ReviewOnlySnapshot:
+    """운영자 재검수 전용 실행이 억제를 풀기 직전의 기록과, 푼 직후 남은 기록."""
+
+    original_attempt: dict[str, Any]
+    original_ai_review: Any
+    released_attempt: dict[str, Any]
+
+
+def _release_for_review_only(
+    db, item: ContentItem, stored_attempt: dict[str, Any]
+) -> _ReviewOnlySnapshot:
+    """독립 검수 공급자 실패의 억제를 운영자 재검수 한 번을 위해 푼다.
+
+    같은 KST 날이면 억제만 풀고 사다리(계수·기간)는 남긴다 — 다시 실패하면 그날 예산에서
+    이어 센다. 날이 바뀐 뒤에 누르면 기록을 지운다. 해제는 `reason`을 떨구므로, 남긴 사다리
+    위에 다시 실패를 기록하면 `_remember_generation_attempt`의 CONTENT_AI_REVIEW_UNAVAILABLE
+    하루 초기화(직전 원인이 같고 기간이 다를 때)가 일어나지 않는다. 어제 계수가 오늘로 넘어와
+    하루 예산에 바로 닿고, 그날의 자동 재검수가 사라진다. 지우면 다음 실패가 오늘 1회부터 센다.
+    """
+
+    original_attempt = copy.deepcopy(stored_attempt)
+    original_ai_review = copy.deepcopy(_stored_ai_review_value(item))
+    if stored_attempt_period(stored_attempt) != environment_attempt_period():
+        _clear_generation_attempt(db, item)
+    else:
+        _release_generation_attempt_for_repair(db, item)
+    return _ReviewOnlySnapshot(
+        original_attempt=original_attempt,
+        original_ai_review=original_ai_review,
+        released_attempt=copy.deepcopy(_stored_generation_attempt(item)),
+    )
+
+
+def _restore_review_only_release(
+    db, item: ContentItem, snapshot: _ReviewOnlySnapshot
+) -> None:
+    """재검수 없이 끝난 재검수 전용 실행의 원래 억제 기록을 되돌린다.
+
+    되돌리는 것은 두 가지가 모두 그대로일 때뿐이다. (a) 시도 기록이 해제(또는 새 날의 삭제)가
+    남긴 그대로다. (b) ai_review가 해제 전과 같다. 둘 중 하나라도 바뀌었으면 그 사이 실제
+    재검수·실패 기록이 남은 것이고 그것이 더 새로운 사실이다 — 덮지 않는다. 행은 다시 읽어
+    판정한다(예외 경로는 이미 rollback했다). 실패해도 원래 결과·예외를 가리지 않는다.
+    """
+
+    try:
+        db.refresh(item)
+        if _stored_generation_attempt(item) != snapshot.released_attempt:
+            return
+        if _stored_ai_review_value(item) != snapshot.original_ai_review:
+            return
+        summary = getattr(item, "essence_check_summary", None)
+        updated = dict(summary) if isinstance(summary, dict) else {}
+        updated[_GENERATION_ATTEMPT_KEY] = copy.deepcopy(snapshot.original_attempt)
+        item.essence_check_summary = updated
+        db.commit()
+    except Exception as exc:
+        logger.warning(
+            "Restoring the review-only release for %s failed: %s",
+            getattr(item, "id", None),
+            type(exc).__name__,
+        )
+        _rollback_quietly(db, getattr(item, "id", None))
+
+
 def _image_failure_code(diagnostics: Mapping[str, object] | None = None) -> str:
     reason = str((diagnostics or {}).get("reason") or "").upper()
     if reason == "COST_BLOCKED":
@@ -5631,6 +5710,7 @@ def regenerate_content_item(self, content_id: str):
                 finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
             return
         item, claim_token = leased
+        review_only_snapshot: _ReviewOnlySnapshot | None = None
         try:
             try:
                 stored_attempt = _stored_generation_attempt(item)
@@ -5658,13 +5738,45 @@ def regenerate_content_item(self, content_id: str):
                     # (`_remember_generation_attempt`) — 이 경우 이어지는 계수는 그 0이다.
                     # 작가가 예외로 끝나면 아래 except가 실패를 기록해 억제를 되살린다.
                     _release_generation_attempt_for_repair(db, item)
-                outcome, code, message = _generate_single_content_item(db, item, hospital)
+                elif (
+                    explicit_run_context(self) is not None
+                    and (getattr(item, "body", None) or "").strip()
+                    and stored_attempt.get("retry_class")
+                    == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+                    and stored_attempt.get("reason") == "CONTENT_AI_REVIEW_UNAVAILABLE"
+                    and _body_written_under_current_philosophy(db, item, hospital.id)
+                ):
+                    # 본문이 있는 글의 독립 검수가 공급자 문제(잘린 응답·시간 초과 등)로 끝났으면
+                    # 같은 원인 억제가 운영자의 “작업 다시 시도”까지 검수 0회로 끝낸다(마포성모탑
+                    # 47b36df6, 10/2 12:00 KST 잘린 검수). 억제를 풀고 **재검수만** 하는 조건은
+                    # 다섯이 모두 맞을 때다.
+                    # 1) Admin이 만든 실행이다(`explicit_run_context` — 헤더와 claim 버전).
+                    # 2) 본문이 있다(공백만 있는 본문은 위의 빈 슬롯 해제가 맡는다).
+                    # 3) 저장 분류가 ENVIRONMENT_RECOVERABLE이다.
+                    # 4) 저장 원인이 정확히 CONTENT_AI_REVIEW_UNAVAILABLE이다 — 설정 오류
+                    #    (CONFIG_ERROR)는 사람이 설정을 고쳐야 하고, 비용 가드 보류(COST_BLOCKED)는
+                    #    한도가 소유하므로 그대로 억제한다.
+                    # 5) 본문이 병원의 지금 승인 운영 기준으로 쓰였다. 기준이 바뀐 본문은 재검수가
+                    #    아니라 재생성 대상이고, 기준이 없으면 검수할 기준도 없다.
+                    # 재검수 전용 실행은 작가·원고 계획·본문 수리 세션을 쓰지 않는다
+                    # (`_generate_single_content_item(review_only=True)`).
+                    review_only_snapshot = _release_for_review_only(db, item, stored_attempt)
+                if review_only_snapshot is None:
+                    outcome, code, message = _generate_single_content_item(db, item, hospital)
+                else:
+                    outcome, code, message = _generate_single_content_item(
+                        db, item, hospital, review_only=True
+                    )
             except Exception as exc:
                 _rollback_quietly(db, item_id)
                 code, message = classify_generation_failure(exc)
                 # 야간 경로(`_run_generation_item`)와 같이 빈 슬롯의 실패를 기록한다. 위에서 푼
                 # 억제가 원인 없는 기록으로 남으면 자동 경로가 예산 없이 다시 산다.
                 _remember_regeneration_failure(db, item, hospital.id, code, message)
+                if review_only_snapshot is not None:
+                    # 재검수 전용 실행의 예외는 본문 글이라 위 기록이 남지 않는다. 푼 억제를
+                    # 원래 기록으로 되돌린다(rollback 뒤 다시 읽은 행 기준).
+                    _restore_review_only_release(db, item, review_only_snapshot)
                 run_id = finish_explicit_run(
                     db,
                     self,
@@ -5732,6 +5844,11 @@ def regenerate_content_item(self, content_id: str):
                     )
                 return
             if outcome in (GenerationItemState.SKIPPED, GenerationItemState.FAILED):
+                if review_only_snapshot is not None:
+                    # 재검수 전에 물러난 실행(SKIPPED, 검수 전 FAILED)은 원래 기록을 되돌린다.
+                    # 재검수가 돌았다면 새 시도 기록이나 새 ai_review가 남아 되돌리지 않는다.
+                    # 인시던트가 저장 기록을 읽으므로 인시던트를 열기 전에 되돌린다.
+                    _restore_review_only_release(db, item, review_only_snapshot)
                 run_id = finish_explicit_run(
                     db,
                     self,
@@ -6258,9 +6375,21 @@ def generate_content_image(self, content_id: str):
             raise
 
 
+# 운영자 재검수 전용 실행이 작가에게 넘어갈 자리에서 물러날 때의 결과. 종전 동일 원인 억제가
+# 같은 글에 남기던 원인·문구 그대로다 — 새 운영자 문구를 만들지 않는다.
+_REVIEW_ONLY_SKIPPED = (
+    GenerationItemState.SKIPPED,
+    "CONTENT_AI_REVIEW_UNAVAILABLE",
+    "독립 검수의 다음 자동 재검수 조건을 기다립니다.",
+)
+
+
 def _generate_single_content_item(
-    db, item: ContentItem, hospital: Hospital
+    db, item: ContentItem, hospital: Hospital, *, review_only: bool = False
 ) -> tuple[GenerationItemState, str | None, str | None]:
+    # review_only=True는 운영자 재검수 전용 실행이다(`regenerate_content_item`). 아래 저장
+    # 본문 재검수 구간을 한 번만 돌리고 작가·원고 계획·비용 가드·본문 수리 세션은 쓰지 않는다.
+    # 작가에게 넘어갈 자리에서는 SKIPPED로 물러난다. 기본값(False)의 동작은 그대로다.
     # 저장 본문 수리 세션 계수는 재작성이 essence_check_summary를 통째로 덮어써도
     # 살아남아야 한다. 사라지면 예산이 매일 0에서 다시 시작한다.
     carried_repair_state = _stored_body_repair_state(item)
@@ -6378,8 +6507,22 @@ def _generate_single_content_item(
                 )
             else:
                 _clear_generation_attempt(db, item)
+            if (
+                review_only
+                and stored_assessment.code is not None
+                and stored_assessment.code not in _IMAGE_SYMPTOM_CODES
+            ):
+                # 재검수해도 막힌다. 재검수 전용 실행은 본문 수리(작가)로 넘어가지 않고
+                # 재검수가 남긴 차단을 그대로 돌려준다 — 고칠 수 있는 지적도 마찬가지다.
+                return (
+                    GenerationItemState.FAILED,
+                    stored_assessment.code,
+                    stored_assessment.message,
+                )
         if (
             stored_assessment.code == "CONTENT_AI_HARD_FINDING"
+            # 운영자 재검수 전용 실행은 교정(공급자 호출)을 하지 않는다. 교정은 자동 스윕이 맡는다.
+            and not review_only
             # 승인 자료가 바뀐 뒤의 한 번의 재생성은 아래 기존 경로가 그대로 맡는다.
             and not _approved_facts_changed_since_block(item, hospital)
             and not _stored_ai_review_is_remediable(item)
@@ -6409,6 +6552,9 @@ def _generate_single_content_item(
             )
         )
         if repairable_body and _body_repair_session_is_due(item):
+            if review_only:
+                # 수리 세션을 세지 않고 물러난다. 수리는 자동 스윕의 예산이 소유한다.
+                return _REVIEW_ONLY_SKIPPED
             logger.info(
                 "Regenerating repairable stored content %s: %s",
                 item.id,
@@ -6476,6 +6622,10 @@ def _generate_single_content_item(
             if readiness_failure is not None:
                 return GenerationItemState.FAILED, *readiness_failure
             return GenerationItemState.SUCCEEDED, None, None
+
+    if review_only:
+        # 여기부터는 작가 경로다(지금 기준이 아닌 본문·빈 슬롯). 재검수 전용 실행은 쓰지 않는다.
+        return _REVIEW_ONLY_SKIPPED
 
     # The same empty slot and unchanged generation context gets no second writer
     # call.  A philosophy/context change removes this suppression exactly once.

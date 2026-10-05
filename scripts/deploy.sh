@@ -857,10 +857,33 @@ require_asset_bucket() {
   if [[ "$ASSET_GCS_BUCKET" == "reputation-images" || "$ASSET_GCS_BUCKET" == "reputation-reports" ]]; then
     fail "GCP_STORAGE_BUCKET가 placeholder 기본값 '${ASSET_GCS_BUCKET}'입니다 — 전역 유일 제약상 실제 버킷일 수 없습니다. '${ASSET_GCS_BUCKET}-${PROJECT_ID}' 규칙으로 설정하세요."
   fi
-  command -v gsutil >/dev/null 2>&1 \
-    || fail "gsutil이 설치되지 않았습니다 (GCS 자산 버킷 preflight에 필요). SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회 가능."
-  gsutil ls -b "gs://${ASSET_GCS_BUCKET}" >/dev/null 2>&1 \
-    || fail "GCS 자산 버킷 gs://${ASSET_GCS_BUCKET}이 존재하지 않습니다. scripts/setup-gcp.sh로 먼저 생성하거나 SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회하세요."
+  command -v gcloud >/dev/null 2>&1 \
+    || fail "gcloud CLI가 설치되지 않았습니다 (GCS 자산 버킷 preflight에 필요). SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회 가능."
+  # legacy gsutil 대신 gcloud storage로 조회한다. 시크릿 조회와 같은 이유로 "없다"와
+  # "못 봤다"를 구분해야 한다 — 인증 만료·권한 부족·네트워크 오류를 부재로 안내하면
+  # 운영자가 멀쩡히 있는 버킷을 다시 만들려 든다. 부재는 gcloud의 실제 404 문구
+  # (`gs://<bucket> not found: 404.` / `HTTPError 404: ...`)로만 확인한다. 막연한
+  # "not found"는 gcloud 컴포넌트·명령·프로젝트 누락에서도 나오므로 부재로 보지 않는다.
+  # --project는 다른 조회형 preflight(secrets describe, sql users list)와 맞춘다.
+  local err hint
+  # stdout은 버리고 stderr만 잡는다 — 실패 원인이 거기에만 있다.
+  if err="$(gcloud storage buckets describe "gs://${ASSET_GCS_BUCKET}" --project="$PROJECT_ID" --format='value(name)' 2>&1 >/dev/null)"; then
+    return
+  fi
+  if [[ "$err" == *"gs://${ASSET_GCS_BUCKET} not found: 404"* || "$err" == *"HTTPError 404:"* ]]; then
+    fail "GCS 자산 버킷 gs://${ASSET_GCS_BUCKET}이 존재하지 않습니다. scripts/setup-gcp.sh로 먼저 생성하거나 SKIP_ASSET_BUCKET_PREFLIGHT=1로 우회하세요.
+   gcloud: ${err}"
+  fi
+  hint="gcloud 출력을 보고 원인을 해결한 뒤 다시 실행하세요."
+  case "$err" in
+    *eauthentication*|*credentials*|*invalid_grant*|*"Please run"*)
+      hint="gcloud 인증이 만료된 것으로 보입니다 — \`gcloud auth login\` 후 다시 실행하세요." ;;
+    *PERMISSION_DENIED*|*"HTTPError 403"*|*"does not have"*|*"not have access"*)
+      hint="이 계정에 gs://${ASSET_GCS_BUCKET}의 storage.buckets.get 권한이 없습니다." ;;
+  esac
+  fail "GCS 자산 버킷 gs://${ASSET_GCS_BUCKET}의 존재를 확인하지 못했습니다 — 없다고 확인된 것이 아닙니다.
+   ${BOLD}새로 만들지 마세요.${RESET} ${hint}
+   gcloud: ${err}"
 }
 
 require_backend_runtime_shape() {
