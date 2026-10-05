@@ -939,9 +939,15 @@ def generation_notify_requested(code: str) -> bool:
     )
 
 
-def generation_notification_cadence(code: str) -> str:
-    """Expose the mutually exclusive Slack owner used by workers and tests."""
+def generation_notification_cadence(code: str, item=None) -> str:
+    """Expose the mutually exclusive Slack owner used by workers and tests.
 
+    `item`을 주면 저장된 시도 기록에 달린 예외를 함께 본다 — 검수 장애 자동 재검수 한도에 닿은
+    글(`review_retries_exhausted`)은 그 전이에서 바로 한 번 알린다. 한도 전의 검수 장애는 알리지 않는다.
+    """
+
+    if review_retries_exhausted(code, item):
+        return "IMMEDIATE"
     if code in _IMMEDIATE_GENERATION_NOTIFICATION_CODES:
         return "IMMEDIATE"
     if code in WEEKLY_REJECTED_GENERATION_CODES:

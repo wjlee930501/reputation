@@ -182,8 +182,12 @@ def retry_action(
     run: OperationRun | None,
     *,
     enabled: bool = True,
+    operator_required: bool = False,
 ) -> OperationsAction | None:
-    """Return the Admin BFF retry mutation descriptor only for supported failed runs."""
+    """Return the Admin BFF retry mutation descriptor only for supported failed runs.
+
+    `operator_required`는 연결된 인시던트가 사람의 일(`requires_operator_action`)이라는 판정이다.
+    """
     if (
         run is None
         or run.state not in _RETRYABLE_RUN_STATES
@@ -198,6 +202,10 @@ def retry_action(
         # 남은 예산 검사는 재시도 라우트가 서버에서 한 번 더 한다.
         return None
     code = str(run.safe_error_code or "")
+    if code == "CONTENT_AI_REVIEW_UNAVAILABLE" and operator_required:
+        # 자동 재검수가 한도에 닿아 사람에게 넘어온 검수 장애다. "시스템 재시도 중"은 더는 사실이
+        # 아니고, 할 일은 인시던트 조치 문장(원고 확인·수정)이 말한다 — 재시도 버튼을 내지 않는다.
+        return None
     if code in _SYSTEM_RETRY_CODES:
         return OperationsAction(
             kind="RETRY_RUN",
@@ -312,6 +320,7 @@ def run_summary(
     run: OperationRun | None,
     *,
     retry_enabled: bool = True,
+    operator_required: bool = False,
 ) -> OperationsRunSummary | None:
     """Project a durable operation run and its eligible retry affordance.
 
@@ -338,7 +347,9 @@ def run_summary(
         started_at=run.started_at,
         completed_at=run.completed_at,
         version=run.version,
-        retry=retry_action(hospital_id, run, enabled=retry_enabled),
+        retry=retry_action(
+            hospital_id, run, enabled=retry_enabled, operator_required=operator_required
+        ),
     )
 
 
@@ -407,6 +418,9 @@ def serialize_incident_row(
                 run,
                 # `authorize_run_retry`와 같은 규칙 — OWNER이거나 이 인시던트의 담당자.
                 enabled=True if actor is None else _may_act(actor, incident),
+                operator_required=requires_operator_action(
+                    incident.state, incident.sla_due_at, now
+                ),
             )
             if hospital_id
             else None

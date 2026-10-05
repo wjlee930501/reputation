@@ -112,11 +112,30 @@ class _Savepoint:
         del self.db.added[self.mark :]
 
 
-def _hourly_publisher(monkeypatch, operation_runs, *items):
-    """08:00~23:00 발행기 더블에 savepoint를 더한다 — 실제 세션처럼 실행 기록을 넣을 수 있다."""
+def _is_run_key_query(stmt) -> bool:
+    description = stmt.column_descriptions[0]
+    return description["entity"] is OperationRun and description["name"] == "idempotency_key"
+
+
+def _hourly_publisher(monkeypatch, operation_runs, *items, visible_runs=None):
+    """08:00~23:00 발행기 더블에 savepoint와 시스템 실행 조회를 더한다.
+
+    `visible_runs`는 한도 조회가 보는 실행 기록이다(기본은 커밋된 전부). 다른 발행기가 조회와 삽입
+    사이에 같은 날의 실행을 넣는 경합을 흉내 낼 때만 따로 준다.
+    """
 
     db, incidents, effects = _publisher(monkeypatch, *items)
     db.begin_nested = lambda: _Savepoint(db, operation_runs)
+    execute = db.execute
+
+    def execute_with_runs(stmt):
+        if _is_run_key_query(stmt):
+            runs = operation_runs if visible_runs is None else visible_runs
+            keys = [run.idempotency_key for run in runs]
+            return type("R", (), {"scalars": lambda _s: type("S", (), {"all": lambda _t: keys})()})()
+        return execute(stmt)
+
+    db.execute = execute_with_runs
     return db, incidents, effects
 
 
@@ -230,6 +249,10 @@ def test_the_run_and_the_trigger_are_committed_before_it_is_enqueued(
     _run_publisher()
 
     assert len(dispatches) == 1
+    # 행·병원 잠금을 푸는 첫 커밋 하나에 실행 기록·계수·시도 기록이 함께 실린다.
+    first_summary, first_runs = committed[0]
+    assert first_runs == 1
+    assert SUMMARY_KEY in first_summary and GENERATION_ATTEMPT_KEY in first_summary
     assert seen_at_dispatch and seen_at_dispatch[0] is not None
     summary, committed_runs = seen_at_dispatch[0]
     assert committed_runs == 1, "큐에 넣기 전에 실행 기록이 커밋되지 않았다"
@@ -297,10 +320,10 @@ def test_the_daily_cap_allows_one_trigger_per_kst_day(monkeypatch, dispatches, o
     assert (stored["period"], stored["count"], stored["total"]) == ("2026-06-10", 1, 1)
 
 
-def test_the_same_day_key_blocks_a_second_dispatch_even_if_the_counter_was_lost(
+def test_the_same_day_run_blocks_a_second_dispatch_even_if_the_counter_was_lost(
     monkeypatch, dispatches, operation_runs
 ):
-    """계수가 다른 쓰기(오래된 JSON을 다시 쓰는 워커 등)에 지워져도 같은 KST 날의 멱등 키가 두 번째
+    """계수가 다른 쓰기(오래된 JSON을 다시 쓰는 워커 등)에 지워져도 오늘의 시스템 실행 행이 두 번째
     배포를 막는다. 차단 기록·인시던트는 종전대로 남는다."""
 
     item = _image_missing()
@@ -315,6 +338,50 @@ def test_the_same_day_key_blocks_a_second_dispatch_even_if_the_counter_was_lost(
     assert len(operation_runs) == 1
     assert [call["code"] for call in incidents] == ["CONTENT_IMAGE_NOT_READY"]
     assert SUMMARY_KEY not in item.essence_check_summary  # 배포하지 않은 시도는 계수를 쓰지 않는다
+
+
+def test_a_concurrent_same_day_run_is_rejected_by_the_key_and_nothing_is_sent(
+    monkeypatch, dispatches, operation_runs
+):
+    """한도 조회 뒤·삽입 전에 다른 발행기가 같은 날의 실행을 넣었다 — 유일 키가 이 삽입을 막고, 이
+    시간대는 배포·계수 없이 차단 기록만 남긴다."""
+
+    item = _image_missing()
+    rival = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=item.hospital_id,
+        operation_type=IMAGE_OPERATION,
+        idempotency_key=f"auto-image-regen:{item.id}:2026-06-10",
+        requested_by_id=None,
+    )
+    operation_runs.append(rival)
+    _hourly_publisher(monkeypatch, operation_runs, item, visible_runs=[])
+    _set_clock(monkeypatch, _kst(8))
+
+    _run_publisher()
+
+    assert dispatches == []
+    assert operation_runs == [rival]
+    assert SUMMARY_KEY not in item.essence_check_summary
+    assert item.essence_check_summary[GENERATION_ATTEMPT_KEY]["reason"] == "CONTENT_IMAGE_NOT_READY"
+
+
+def test_the_total_cap_survives_a_rewrite_that_drops_the_counter(
+    monkeypatch, dispatches, operation_runs
+):
+    """본문 재작성은 요약을 통째로 다시 쓴다. 누적 한도는 요약이 아니라 실행 행으로 센다."""
+
+    item = _image_missing()
+    for offset in range(5):
+        summary = dict(item.essence_check_summary or {})
+        summary.pop(SUMMARY_KEY, None)
+        item.essence_check_summary = summary
+        _run_hourly(
+            monkeypatch, operation_runs, _kst(8, day=SLOT + timedelta(days=offset)), item
+        )
+
+    assert _dispatched_ids(dispatches) == [str(item.id)] * 3
+    assert len(operation_runs) == 3
 
 
 def test_a_new_kst_day_allows_the_next_trigger(monkeypatch, dispatches, operation_runs):
@@ -617,6 +684,72 @@ def test_a_failed_image_job_records_the_cause_without_forging_an_admin_audit(mon
     assert attempt["reason"] == "IMAGE_GENERATION_FAILED"
     assert attempt["retry_class"] == GenerationRetryClass.SAMPLE_RECOVERABLE.value
     assert db.added == []
+
+
+@pytest.mark.parametrize("failure", ["no_url", "provider_error"])
+@pytest.mark.parametrize(
+    ("owner", "expected_notify"),
+    [("system", False), ("admin", True)],
+)
+def test_only_admin_image_runs_page_on_failure(monkeypatch, failure, owner, expected_notify):
+    """발행기가 건 시스템 실행의 실패는 바로 알리지 않는다 — 누른 사람이 없고, 예산 안의 복구는 스윕이
+    소유한다. Admin “이미지 다시 만들기”의 실패 알림은 종전 그대로다. 인시던트·실행 종결은 둘 다 같다."""
+
+    item = _image_missing()
+    _set_clock(monkeypatch, _kst(8, 5))
+    db, _provider_calls = _arm_image_task(monkeypatch, item, image_ok=failure != "provider_error")
+    if failure == "no_url":
+
+        async def provider_without_url(*_args, **_kwargs):
+            return None, None
+
+        monkeypatch.setattr(tasks, "generate_image", provider_without_url)
+    else:
+
+        async def provider_error(*_args, **_kwargs):
+            raise RuntimeError("provider down")
+
+        monkeypatch.setattr(tasks, "generate_image", provider_error)
+    run = OperationRun(
+        id=uuid.uuid4(),
+        hospital_id=item.hospital_id,
+        operation_type=IMAGE_OPERATION,
+        requested_by_id=None,  # Admin 경로도 요청자를 남기지 않는다 — 표지는 멱등 키다
+        idempotency_key=(
+            f"auto-image-regen:{item.id}:2026-06-10" if owner == "system" else str(uuid.uuid4())
+        ),
+    )
+    task_get = db.get
+    db.get = lambda model, key: run if model is OperationRun and key == run.id else task_get(model, key)
+    finished: list[tuple] = []
+    monkeypatch.setattr(
+        tasks,
+        "finish_explicit_run",
+        lambda _db, _task, item_id, state, **kwargs: finished.append((state, kwargs)) or run.id,
+    )
+    opened: list[dict] = []
+
+    async def capture_incident(**kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(tasks, "open_generation_incident", capture_incident)
+    task = tasks.generate_content_image
+    task.push_request(
+        id="image-task", headers={"operation_run_id": str(run.id)}, operation_run_claim_version=2
+    )
+    try:
+        if failure == "provider_error":
+            with pytest.raises(RuntimeError):
+                task.run(str(item.id))
+        else:
+            task.run(str(item.id))
+    finally:
+        task.pop_request()
+
+    assert [state for state, _kwargs in finished] == [OperationRunState.FAILED]
+    assert len(opened) == 1 and opened[0]["run_id"] == run.id
+    assert opened[0]["notify"] is expected_notify
+    assert item.status is tasks.ContentStatus.DRAFT
 
 
 # ── 서명된 시스템 실행은 운영 Worker의 인증을 통과하고, 인증 불변식은 그대로다 ──────────────

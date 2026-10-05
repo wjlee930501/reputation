@@ -23,7 +23,10 @@ from app.api.admin.operations_center_query_common import (
     OperationsFilters,
     normalize_filters,
 )
-from app.api.admin.operations_center_serializers import run_summary
+from app.api.admin.operations_center_serializers import (
+    requires_operator_action,
+    run_summary,
+)
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
 from app.models.operations import OperationRun
@@ -107,13 +110,14 @@ async def _incident_detail(
     hospital_scope: uuid.UUID | None,
     actor: AdminUser | None = None,
 ) -> IncidentDetailResponse:
+    now = datetime.now(UTC)
     total, items = await load_incidents_queue(
         db,
         OperationsFilters(recovery=IncidentRecoveryFilter.ALL),
         page=1,
         page_size=1,
         overview=True,
-        now=datetime.now(UTC),
+        now=now,
         incident_id=incident_id,
         hospital_scope=hospital_scope,
         actor=actor,
@@ -126,7 +130,11 @@ async def _incident_detail(
     run = await db.get(OperationRun, item.operation_run_id) if item.operation_run_id else None
     run_projection = (
         run_summary(
-            hospital_scope, run, retry_enabled=await run_retry_enabled(db, actor, run)
+            hospital_scope,
+            run,
+            retry_enabled=await run_retry_enabled(db, actor, run),
+            # 화면은 이 자리의 재시도를 행의 것보다 앞세운다 — 같은 인시던트 판정을 넘긴다.
+            operator_required=requires_operator_action(item.status, item.sla_due_at, now),
         )
         if hospital_scope is not None and run is not None
         else None

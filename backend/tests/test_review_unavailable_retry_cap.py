@@ -481,6 +481,38 @@ def test_a_content_edit_after_the_cap_reopens_one_automatic_review(monkeypatch):
     assert attempt.get("review_unavailable_candidate") == candidate_sha256(item)
 
 
+@pytest.mark.parametrize("edited", [True, False])
+def test_an_edit_below_the_cap_does_not_wait_out_the_old_candidates_backoff(monkeypatch, edited):
+    """세 번째 실패(11:00)의 물러서기는 15:00까지다. 그 사이 사람이 원고를 고치면 새 후보다 — 다음
+    스윕(12:00)이 바로 다시 검수하고 계수는 1부터 센다. 고치지 않았으면 12:00은 건너뛴다."""
+
+    philosophy = _approved_philosophy()
+    item = _stored_post(philosophy)
+    for hour in (9, 10, 11):
+        _remember(monkeypatch, item, _kst(SLOT, hour), philosophy=philosophy)
+    assert _attempt(item)["review_unavailable_total"] == 3
+    assert _attempt(item)["next_retry_at"] == _due(_kst(SLOT, 18))
+    calls = _arm_sweep(
+        monkeypatch,
+        philosophy,
+        _review(
+            ContentAiReviewStatus.UNAVAILABLE, ContentAiReviewUnavailableReason.INVALID_RESPONSE
+        ),
+    )
+    if edited:
+        item.body = "고쳐 쓴 본문입니다. 진료 전 확인할 점을 다시 정리했습니다."
+
+    _run_sweeps(monkeypatch, item, [_kst(SLOT, 12)])
+
+    if edited:
+        assert len(calls) == 1
+        assert _attempt(item)["review_unavailable_total"] == 1
+        assert _attempt(item)["review_unavailable_candidate"] == candidate_sha256(item)
+    else:
+        assert calls == []
+        assert _attempt(item)["review_unavailable_total"] == 3
+
+
 # ── 사람에게 올린다: OPEN 인시던트 + 기존 Slack 정책·라벨 ───────────────────────────────
 
 
@@ -650,6 +682,79 @@ def test_other_codes_keep_their_notify_choice(monkeypatch, notify, expected):
     assert call["notify"] is expected
 
 
+def _review_outage_incident(state: str, sla_due_at=None):
+    from app.models.operations import Incident
+
+    now = datetime(2026, 6, 10, 14, 0, tzinfo=UTC)
+    return Incident(
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
+        operation_run_id=None,
+        dedupe_key=f"test:{uuid.uuid4()}",
+        incident_type="CONTENT_GENERATION_FAILED",
+        state=state,
+        severity="HIGH",
+        customer_impact="발행 예정 콘텐츠가 저장되지 않아 병원 채널에 제때 공개되지 않습니다.",
+        source_type="CONTENT_GENERATION",
+        source_id=str(uuid.uuid4()),
+        safe_error_code=CODE,
+        safe_error_message="독립 AI 검수 공급자를 일시적으로 사용할 수 없습니다.",
+        next_action=generation_incident_control.REVIEW_UNAVAILABLE_EXHAUSTED_OPERATOR_ACTION,
+        admin_path="/operations",
+        sla_due_at=sla_due_at,
+        first_seen_at=now,
+        last_seen_at=now,
+        occurrence_count=1,
+        episode_seq=1,
+        version=1,
+    )
+
+
+def _review_outage_run():
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        parent_run_id=None,
+        state="FAILED",
+        operation_type="REGENERATE_CONTENT",
+        safe_error_code=CODE,
+        safe_error_message="독립 검수 공급자 복구 후 자동 재검수를 다시 시도합니다.",
+    )
+
+
+def test_a_capped_review_outage_card_does_not_claim_the_system_is_retrying():
+    """한도에 닿아 OPEN이 된 검수 장애 카드에 '시스템 재시도 중'을 달지 않는다 — 할 일은 조치 문장이 말한다.
+    기한 안의 RETRYING(자동 복구 중)은 종전 그대로 '시스템 재시도 중'이다."""
+
+    from app.api.admin.operations_center_serializers import retry_action, serialize_incident_row
+
+    now = datetime(2026, 6, 10, 14, 0, tzinfo=UTC)
+    run = _review_outage_run()
+    capped = _review_outage_incident("OPEN")
+    retrying = _review_outage_incident("RETRYING", sla_due_at=now + timedelta(hours=4))
+
+    capped_row = serialize_incident_row(capped, None, None, run, None, now)
+    retrying_row = serialize_incident_row(retrying, None, None, run, None, now)
+
+    assert capped_row.retry is None
+    assert "한도" in capped_row.next_action
+    assert retrying_row.retry is not None and retrying_row.retry.label == "시스템 재시도 중"
+    # 상세 화면이 앞세우는 실행 요약의 재시도도 같은 판정을 따른다.
+    assert retry_action(capped.hospital_id, run, operator_required=True) is None
+    assert retry_action(capped.hospital_id, run).label == "시스템 재시도 중"
+
+
+def test_other_system_retry_codes_keep_their_label_when_operator_required():
+    from app.api.admin.operations_center_serializers import retry_action
+
+    run = _review_outage_run()
+    run.operation_type = "REGENERATE_CONTENT_IMAGE"
+    run.safe_error_code = "IMAGE_GENERATION_FAILED"
+
+    action = retry_action(uuid.uuid4(), run, operator_required=True)
+
+    assert action is not None and action.label == "시스템 재시도 중"
+
+
 # ── 종전 그대로: 비용 가드 보류와 설정 오류 ──────────────────────────────────────────
 
 
@@ -719,6 +824,8 @@ def test_the_unavailable_reasons_still_map_to_the_same_codes():
 
 def _publish_once(monkeypatch, item, philosophy, moment):
     db = _AutoPublishDB(item, item.hospital)
+    # 이미지 때문에만 막힌 글이면 발행기가 이미지 재생성을 건다 — 브로커에는 아무것도 넣지 않는다.
+    monkeypatch.setattr(tasks.generate_content_image, "apply_async", lambda **_kwargs: None)
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_a: philosophy)
     monkeypatch.setattr(tasks, "ensure_site_revalidate_configured", lambda: None)

@@ -626,6 +626,7 @@ _STORED_IMAGE_CAUSE_CODES = _IMAGE_FAILURE_REASONS | {"COST_BLOCKED", _IMAGE_REU
 AUTO_IMAGE_REGEN_DAILY_CAP = 1
 AUTO_IMAGE_REGEN_TOTAL_CAP = 3
 _AUTO_IMAGE_REGEN_KEY = "auto_image_regeneration"
+_AUTO_IMAGE_REGEN_KEY_PREFIX = "auto-image-regen:"
 _AUTO_IMAGE_REGEN_OPERATION = "REGENERATE_CONTENT_IMAGE"
 _GENERATE_CONTENT_IMAGE_TASK = "app.workers.tasks.generate_content_image"
 
@@ -854,10 +855,14 @@ def _generation_attempt_is_unchanged(
     )
     if not unchanged:
         return False
-    if previous.get("review_unavailable_cap_reached") and previous.get(
-        "review_unavailable_candidate"
-    ) != candidate_sha256(item):
-        # 검수 장애 한도는 그 후보에 대한 결정이다. 사람이 원고를 고쳤으면 새 후보다.
+    stored_candidate = previous.get("review_unavailable_candidate")
+    if (
+        previous.get("reason") == REVIEW_UNAVAILABLE_CODE
+        and stored_candidate
+        and stored_candidate != candidate_sha256(item)
+    ):
+        # 검수 장애의 물러서기·한도는 그 후보에 대한 결정이다. 사람이 원고를 고쳤으면 새 후보라
+        # 옛 후보의 기한을 기다리지 않고 다음 스윕이 다시 검수한다.
         return False
     return not retry_is_due(previous)
 
@@ -1017,6 +1022,7 @@ def _remember_generation_attempt(
         # 같은 후보의 연속 검수 장애를 KST 날을 넘어 센다(하루 4회 예산의 일일 초기화와 무관).
         # 후보·원인이 바뀌거나 검수가 끝나 기록이 지워지면 0부터 다시 센다. 한도에 닿으면 그
         # 후보로는 어떤 스윕도 다시 사지 않고 사람의 일로 넘긴다.
+        # 계수는 후보로만 묶는다 — 생성 문맥(운영 기준·검사 규칙 판)이 바뀌어도 이어 센다.
         candidate = candidate_sha256(item)
         failures = 1 + (
             int(previous.get("review_unavailable_total") or 0)
@@ -1608,6 +1614,12 @@ def _record_generation_batch_outcome(
             safe_error_code=code,
             safe_error_message=message,
         )
+        incident_notify = generation_notify_requested(code) if notify is None else notify
+        if review_retries_exhausted(code, item):
+            # 검수 장애 자동 재검수가 한도에 닿은 실패는 사람의 일로 넘어가는 전이다 — 이 시간대
+            # 요약이 알림을 소유하더라도 이 전이만은 기존 인시던트 알림으로 한 번 보낸다. 같은
+            # episode의 중복 알림은 인시던트 outbox 키가 막는다.
+            incident_notify = True
         _run_async(
             open_generation_incident(
                 item_id=item.id,
@@ -1616,14 +1628,7 @@ def _record_generation_batch_outcome(
                 run_id=failed_run.id,
                 code=code,
                 message=message,
-                # 검수 장애 자동 재검수가 한도에 닿은 실패는 사람의 일로 넘어가는 전이다 — 이
-                # 시간대 요약이 알림을 소유하더라도 이 전이만은 기존 인시던트 알림으로 한 번 보낸다.
-                # 같은 episode의 중복 알림은 인시던트 outbox 키가 막는다.
-                notify=True
-                if review_retries_exhausted(code, item)
-                else generation_notify_requested(code)
-                if notify is None
-                else notify,
+                notify=incident_notify,
             )
         )
         return
@@ -5840,6 +5845,9 @@ def generate_content_image(self, content_id: str):
     """Regenerate only the cover image while preserving operator-reviewed text."""
     item_id = uuid.UUID(content_id)
     with SyncSessionLocal() as db:
+        # 발행기가 스스로 건 실행이면 실패해도 바로 알리지 않는다 — 누른 사람이 없고, 남은 예산의
+        # 복구는 스윕이 소유한다(RETRYING). 알림은 종전처럼 아침 요약이 소유한다.
+        notify_failure = not _is_auto_image_regeneration_run(db, self)
         item = db.get(ContentItem, item_id)
         if not item:
             finish_explicit_run(db, self, item_id, OperationRunState.CANCELLED)
@@ -5918,6 +5926,7 @@ def generate_content_image(self, content_id: str):
                             run_id=run_id,
                             code=code,
                             message=message,
+                            notify=notify_failure,
                         )
                     )
                 return
@@ -5995,6 +6004,7 @@ def generate_content_image(self, content_id: str):
                         run_id=run_id,
                         code=code,
                         message=message,
+                        notify=notify_failure,
                     )
                 )
             logger.error("generate_content_image failed for %s: %s", content_id, type(exc).__name__)
@@ -7115,6 +7125,16 @@ def _auto_publish_one(
                 code=code,
                 message=message,
             )
+            # 이미지 때문에만 막힌 글은 Admin “이미지 다시 만들기”와 같은 작업을 시스템 실행으로
+            # 한 번 건다. 행·병원 잠금을 쥔 채 판정 기록보다 먼저 예약한다 — 실행 기록·계수·시도
+            # 기록이 아래의 첫 커밋(시도 기록이 하는 커밋 또는 그 뒤의 커밋) 하나에 함께 실린다.
+            # 배포는 그 커밋 뒤에만 한다.
+            auto_image_run = (
+                _reserve_auto_image_regeneration(db, item, today_kst)
+                if read_only_row is None
+                and _auto_image_regeneration_due(db, item, assessment, today_kst)
+                else None
+            )
             # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행이면
             # `item`은 분리된 사본이라 기록도 사본에만 남는다 — 워커가 시도 기록의 소유자다.
             # 사본에 남기는 것은 요약의 시도 지문(`attempt_fingerprint`)을 claim 없는 글과 같게
@@ -7122,14 +7142,6 @@ def _auto_publish_one(
             # 사본의 기록은 이 세션을 커밋하지 않는다 — 잠금은 아래 한 번의 커밋에서 풀린다.
             _record_gate_blocker_decision(
                 db if read_only_row is None else _DETACHED_VIEW_SESSION, item, philosophy, code
-            )
-            # 이미지 때문에만 막힌 글은 Admin “이미지 다시 만들기”와 같은 작업을 시스템 실행으로
-            # 한 번 건다. 실행 기록·계수는 이 차단 기록과 같은 커밋에 싣고, 배포는 커밋 뒤에만 한다.
-            auto_image_run = (
-                _reserve_auto_image_regeneration(db, item, today_kst)
-                if read_only_row is None
-                and _auto_image_regeneration_due(item, assessment, today_kst)
-                else None
             )
             db.commit()
             if auto_image_run is not None:
@@ -7203,12 +7215,39 @@ def _auto_publish_one(
         return payload
 
 
-def _auto_image_regeneration_due(item: ContentItem, assessment: Any, today_kst: date) -> bool:
+def _auto_image_regeneration_key_prefix(item_id: object) -> str:
+    return f"{_AUTO_IMAGE_REGEN_KEY_PREFIX}{item_id}:"
+
+
+def _is_auto_image_regeneration_run(db, task) -> bool:
+    """이 이미지 태스크가 발행기가 스스로 건 시스템 실행 아래에서 도는가.
+
+    표지는 발행기가 남긴 실행의 멱등 키(`auto-image-regen:<글>:<KST 날짜>`)다. Admin 실행은 요청 헤더의
+    키를 쓰고, 실행 문맥이 없는 직접 호출은 어느 쪽도 아니다.
+    """
+
+    context = explicit_run_context(task)
+    if context is None:
+        return False
+    run = db.get(OperationRun, context.run_id)
+    return (
+        run is not None
+        and run.operation_type == _AUTO_IMAGE_REGEN_OPERATION
+        and run.requested_by_id is None
+        and str(run.idempotency_key or "").startswith(_AUTO_IMAGE_REGEN_KEY_PREFIX)
+    )
+
+
+def _auto_image_regeneration_due(
+    db, item: ContentItem, assessment: Any, today_kst: date
+) -> bool:
     """이 차단에 발행기가 이미지 재생성을 스스로 걸 수 있는가.
 
     게이트 순서상 이미지 코드는 본문·참고자료·금지 표현·독립 검수·운영 기준을 모두 통과한 뒤에만
     나온다. 그래도 저장된 검수가 막고 있으면 사지 않는다 — 막힌 본문에 이미지를 사지 않는다.
     오늘 이미지 예산을 다 쓴 글, 비용 가드 보류, 종착 이미지 원인은 종전 흐름이 소유한다.
+    하루·누적 한도는 지금까지 만든 시스템 실행 행으로 센다 — 요약의 계수는 본문 재작성이 요약을
+    통째로 다시 쓰면 사라지지만 실행 기록은 남는다.
     """
 
     if assessment.code not in _IMAGE_SYMPTOM_CODES:
@@ -7221,18 +7260,21 @@ def _auto_image_regeneration_due(item: ContentItem, assessment: Any, today_kst: 
         return False
     if _image_attempts_exhausted_today(item):
         return False
-    counter = (item.essence_check_summary or {}).get(_AUTO_IMAGE_REGEN_KEY)
-    counter = counter if isinstance(counter, dict) else {}
-    try:
-        today_count = (
-            int(counter.get("count") or 0)
-            if counter.get("period") == today_kst.isoformat()
-            else 0
+    prefix = _auto_image_regeneration_key_prefix(item.id)
+    keys = [
+        str(key)
+        for key in db.execute(
+            select(OperationRun.idempotency_key).where(
+                OperationRun.hospital_id == item.hospital_id,
+                OperationRun.operation_type == _AUTO_IMAGE_REGEN_OPERATION,
+                OperationRun.idempotency_key.startswith(prefix, autoescape=True),
+            )
         )
-        total = int(counter.get("total") or 0)
-    except (TypeError, ValueError):
-        return False
-    return today_count < AUTO_IMAGE_REGEN_DAILY_CAP and total < AUTO_IMAGE_REGEN_TOTAL_CAP
+        .scalars()
+        .all()
+    ]
+    today_count = sum(key == f"{prefix}{today_kst.isoformat()}" for key in keys)
+    return today_count < AUTO_IMAGE_REGEN_DAILY_CAP and len(keys) < AUTO_IMAGE_REGEN_TOTAL_CAP
 
 
 def _reserve_auto_image_regeneration(
@@ -7242,8 +7284,7 @@ def _reserve_auto_image_regeneration(
 
     Admin 경로와 같은 실행 종류(REGENERATE_CONTENT_IMAGE)·같은 저장 payload라 Worker 인증과
     자율 복구의 재배포가 그대로 적용된다. 요청자는 없다(시스템 실행) — Admin 감사를 만들지 않는다.
-    멱등 키는 글·KST 날짜로 정해, 계수가 다른 쓰기에 지워져도 같은 날 두 번 사지 않는다.
-    부수효과라 실패해도 차단 기록을 되돌리지 않는다.
+    멱등 키는 글·KST 날짜로 정해, 같은 날 두 번 사지 않는다(유일 인덱스가 겹친 쪽을 막는다).
     """
 
     target_id = str(item.id)
@@ -7253,7 +7294,7 @@ def _reserve_auto_image_regeneration(
         hospital_id=item.hospital_id,
         operation_type=_AUTO_IMAGE_REGEN_OPERATION,
         state=OperationRunState.REQUESTED,
-        idempotency_key=f"auto-image-regen:{target_id}:{today_kst.isoformat()}",
+        idempotency_key=f"{_auto_image_regeneration_key_prefix(target_id)}{today_kst.isoformat()}",
         requested_by_id=None,
         task_id=str(uuid.uuid4()),
         requested_at=observed_at,
@@ -7269,20 +7310,15 @@ def _reserve_auto_image_regeneration(
         ),
         version=1,
     )
-    savepoint = None
+    savepoint = db.begin_nested()
     try:
-        savepoint = db.begin_nested()
         db.add(run)
         savepoint.commit()
-    except Exception as error:
-        if savepoint is not None:
-            savepoint.rollback()
-        logger.warning(
-            "auto image regeneration not reserved for %s: %s",
-            target_id,
-            type(error).__name__,
-        )
+    except IntegrityError:
+        # 같은 날의 시스템 실행이 이미 있다 — 이 시간대는 사지 않는다.
+        savepoint.rollback()
         return None
+    # 화면·감사용 계수. 한도 판정은 위의 실행 행으로 한다.
     counter = (item.essence_check_summary or {}).get(_AUTO_IMAGE_REGEN_KEY)
     counter = counter if isinstance(counter, dict) else {}
     period = today_kst.isoformat()
