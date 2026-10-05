@@ -39,6 +39,7 @@ def write_back_generated_content(
     values: dict[str, Any],
     expected_revision: int | None = None,
     expected_claim_token: uuid.UUID | None = None,
+    correction_only: bool = False,
 ) -> int:
     """생성 결과를 **상태 가드와 함께** 쓴다. 반환값은 갱신된 행 수.
 
@@ -48,6 +49,10 @@ def write_back_generated_content(
     `expire_on_commit=False`라, 추적 객체에 먼저 값을 넣으면 SQLAlchemy가 다음
     execute/commit 앞에서 autoflush로 그것을 먼저 써버려 가드가 무력화된다.
     반드시 이 함수 하나로만 쓰고, 추적 객체는 이후 refresh 한다.
+
+    `correction_only=True`는 최소 교정 패스의 저장이다. 발행(공개) 이력이 있거나 사람이 편집한
+    글, DRAFT·READY가 아닌 글은 0행이다(`content_minimal_correction.correction_allowed_for`와 같은
+    조건).
     """
     predicates = [
         ContentItem.id == item_id,
@@ -57,6 +62,15 @@ def write_back_generated_content(
         predicates.append(ContentItem.content_revision == expected_revision)
     if expected_claim_token is not None:
         predicates.append(ContentItem.generation_claim_token == expected_claim_token)
+    if correction_only:
+        predicates.extend(
+            (
+                ContentItem.status.in_((ContentStatus.DRAFT, ContentStatus.READY)),
+                ContentItem.first_published_at.is_(None),
+                ContentItem.published_at.is_(None),
+                ContentItem.human_edited_at.is_(None),
+            )
+        )
     guarded_values = dict(values)
     guarded_values["content_revision"] = ContentItem.content_revision + 1
     result = db.execute(

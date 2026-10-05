@@ -103,6 +103,8 @@ def test_stored_rereview_keeps_hard_on_a_stale_brief_must_use_sentence(monkeypat
         "_approved_facts_changed_since_block",
     ):
         monkeypatch.setattr(tasks, name, lambda *_args, **_kwargs: False)
+    # 남은 HARD를 지적 문장 교정으로 푸는 다음 단계도 범위 밖이다(`test_publish_block_auto_resolve`).
+    monkeypatch.setattr(tasks, "_auto_correct_blocked_body", lambda *_args, **_kwargs: None)
 
     state, code, _message = tasks._generate_single_content_item(_DB(), item, hospital)
 

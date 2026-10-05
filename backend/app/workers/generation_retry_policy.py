@@ -65,6 +65,12 @@ BODY_REPAIR_CODES = frozenset(
 # 저장된 `OPERATOR_REQUIRED`가 이 보류를 소유한다(`reference_requirement.references_left_to_operator`).
 OPERATOR_DECIDES_KEY = "operator_decides"
 
+# 독립 검수 지적의 최소 교정 패스가 글(주제)당 상한을 다 쓴 표시(`CONTENT_AI_HARD_FINDING` 시도
+# 기록). 이 표시가 있는 기록은 주제 교체 후보다 — 모델이 HARD로 단정한 지적이라도 교정을 이미
+# 거쳤으므로 승인 자료 변경을 기다리지 않고 같은 슬롯·예정일로 다른 질문을 한 번 답하게 한다
+# (`topic_swap_fallback.exhausted_body_sample_reason`). 교체 상한까지 쓰면 사람의 일이다.
+AUTO_CORRECTION_EXHAUSTED_KEY = "auto_correction_exhausted"
+
 
 class GenerationRetryClass(StrEnum):
     INPUT_CHANGE_REQUIRED = "INPUT_CHANGE_REQUIRED"
