@@ -406,6 +406,13 @@ class Settings(BaseSettings):
             raise ValueError("SOV_TRACKING_SET_N_DEFAULT must be between 10 and 15")
         return value
 
+    @field_validator("CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES")
+    @classmethod
+    def _validate_review_unavailable_max_retries(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES must be at least 1")
+        return value
+
     # DB
     DATABASE_URL: str = ""
     SYNC_DATABASE_URL: str = ""
@@ -530,6 +537,9 @@ class Settings(BaseSettings):
     CONTENT_AUTO_CORRECTION_MAX_PASSES: int = 2
     CONTENT_AUTO_CORRECTION_MAX_REREVIEWS: int = 2
     CONTENT_AUTO_TOPIC_SWAP_MAX: int = 1
+    # 같은 원고 후보의 독립 검수가 공급자 장애·잘린 응답으로 연속 실패할 때 자동 재검수를
+    # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
+    CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2

@@ -2032,7 +2032,12 @@ def _display_label(labels: dict[str, str], value) -> str | None:
 
 
 def _content_review_display(
-    item: ContentItem, status_value: str | None, visibility: PublicVisibility
+    item: ContentItem,
+    status_value: str | None,
+    visibility: PublicVisibility,
+    *,
+    compliance_publishable: bool = True,
+    blocked_reason: str | None = None,
 ) -> dict[str, str | bool | None]:
     if status_value == ContentStatus.PUBLISHED.value:
         if not visibility.visible:
@@ -2076,6 +2081,10 @@ def _content_review_display(
             else "운영 기준 미검수"
         )
         return {"label": "자동 발행 차단", "reason": reason, "publishable": False}
+    if not compliance_publishable:
+        # 운영 기준은 맞아도 발행 게이트가 막는 글(독립 검수 지적·이미지·참고자료 등)을 "자동 발행
+        # 대기"로 부르면 같은 행의 상태(차단)와 갈린다. 사유는 행 상태와 같은 문장이다.
+        return {"label": "자동 발행 차단", "reason": blocked_reason, "publishable": False}
     return {"label": "자동 발행 대기", "reason": None, "publishable": True}
 
 
@@ -2084,8 +2093,17 @@ def _serialize_item_display(
     content_type: str | None,
     status_value: str | None,
     visibility: PublicVisibility,
+    *,
+    compliance_publishable: bool = True,
+    blocked_reason: str | None = None,
 ) -> dict:
-    review = _content_review_display(item, status_value, visibility)
+    review = _content_review_display(
+        item,
+        status_value,
+        visibility,
+        compliance_publishable=compliance_publishable,
+        blocked_reason=blocked_reason,
+    )
     if status_value == ContentStatus.PUBLISHED.value:
         notification = getattr(item, "_publish_notification_projection", None)
         if notification is None:
@@ -2329,7 +2347,14 @@ def _serialize_item(
             str(item.carried_over_from) if getattr(item, "carried_over_from", None) else None
         ),
         "status": status_value,
-        "display": _serialize_item_display(item, content_type, status_value, visibility),
+        "display": _serialize_item_display(
+            item,
+            content_type,
+            status_value,
+            visibility,
+            compliance_publishable=compliance["publishable"],
+            blocked_reason=row_state.reason or " · ".join(compliance["blockers"]) or None,
+        ),
         "generated_at": item.generated_at.isoformat() if item.generated_at else None,
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "published_by": item.published_by,
