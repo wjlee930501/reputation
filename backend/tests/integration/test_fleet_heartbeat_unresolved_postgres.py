@@ -120,7 +120,7 @@ def _run(
     """`at` is the request time; `completed` (default `at`) is when a terminal run finished."""
     done = state in TERMINAL
     finished = (completed or at) if done else None
-    total, success, failure = counts or (
+    total, success, failure, *skipped = counts or (
         1,
         int(state == "SUCCEEDED"),
         int(state in ("FAILED", "PARTIAL")),
@@ -138,7 +138,7 @@ def _run(
         total_count=total,
         success_count=success,
         failure_count=failure,
-        skipped_count=0,
+        skipped_count=skipped[0] if skipped else 0,
         requested_at=at,
         started_at=at,
         completed_at=finished,
@@ -302,11 +302,11 @@ def _monthly_batch(db, at, period, state, *, hospitals=1, completed=None) -> Ope
     )
 
 
-# `_finish_monthly_operation_run`: stage → (run state, (total, success, failure)).
-# `skipped_existing` is SUCCEEDED too, but built nothing (stage EXISTING, success 0).
+# `_finish_monthly_operation_run`: stage → (run state, (total, success, failure[, skipped])).
+# `skipped_existing` is SUCCEEDED too, but built nothing (stage EXISTING, success 0, skipped 1).
 _MONTHLY_STAGES = {
     "ARTIFACT_VALIDATED": ("SUCCEEDED", (1, 1, 0)),
-    "EXISTING": ("SUCCEEDED", (1, 0, 0)),
+    "EXISTING": ("SUCCEEDED", (1, 0, 0, 1)),
     "BLOCKED": ("PARTIAL", (1, 0, 1)),
     "FAILED": ("FAILED", (1, 0, 1)),
 }

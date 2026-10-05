@@ -187,7 +187,7 @@ def _report_period(run):
 def _recovered_by_same_target(now):
     """자동화가 남기지 않는 재시도 계보 대신, 같은 대상의 구체적 근거로 실패를 설명한다.
 
-    모든 항은 NULL이 되지 않는 판정(`IN`·`EXISTS`·`IS NOT NULL`)만 쓴다 — NULL이 섞이면 `NOT`이
+    모든 항은 NULL이 되지 않는 판정(`IN`·`EXISTS`·`IS NOT NULL`·`IS NOT DISTINCT FROM`)만 쓴다 — NULL이 섞이면 `NOT`이
     거짓이 돼 근거 없는 실패가 조용히 빠진다.
     """
 
@@ -245,6 +245,8 @@ def _recovered_by_same_target(now):
     # SUCCEEDED면 그 기간의 모든 대상 병원이 끝났다는 뜻이다(`generate_monthly_reports`가 실패도
     # 보류도 없을 때만 SUCCEEDED). PARTIAL은 아니다. 대상 병원이 0곳인 SUCCEEDED는 아무것도
     # 확인하지 않았으므로 근거가 아니고, 실패한 배치보다 적은 병원을 끝낸 배치도 근거가 아니다.
+    # 날 사이에 대상 병원이 줄어 나중 배치가 그 전부를 끝낸 경우(예: 9곳 실패 → 8/8 성공)도
+    # 실패를 계속 센다 — 빠진 병원이 설명됐는지 알 수 없으므로 일부러 덜 닫는 쪽을 택했다.
     later_batch = aliased(OperationRun)
     monthly_batch = and_(
         run.operation_type == _MONTHLY_BATCH_TYPE,

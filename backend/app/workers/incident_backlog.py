@@ -184,6 +184,9 @@ def _lead_report_failure_anchor(db: Session, incident: Incident) -> datetime:
     사고가 가리키는 실행이 마지막 실패를 낸 그 실행일 때만 쓴다 — 종료 기록(`completed_at`)이
     마지막 관측보다 앞서면 더 나중의 실패가 실행 참조 없이 기록된 것이다. 그 밖에는 실패
     관측 시각을 쓴다(덜 닫는 쪽).
+    워커가 HTTP 처리기의 투영보다 먼저 실패해 처리기가 '이미 끝난 복구가 실패했다'로 다시
+    기록하면(`mark_lead_recovery_started`) `last_seen_at`이 `completed_at`을 넘어 관측 시각으로
+    돌아간다. 그때는 claim을 잃은 경합이 닫히지 않고 OPEN으로 남는다(안전한 쪽).
     """
 
     observed = incident.last_seen_at
