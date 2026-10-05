@@ -62,8 +62,6 @@ def spool(redis_url, monkeypatch):
     index_key = f"provider_usage:recovery:index:test:{uuid.uuid4().hex}"
     monkeypatch.setattr(settings, "REDIS_URL", redis_url)
     monkeypatch.setattr(provider_usage, "_RECOVERY_INDEX_KEY", index_key)
-    # A client cached by an earlier test may point at another Redis/loop.
-    monkeypatch.setattr(provider_usage, "_recovery_redis", None, raising=False)
     client = redis.Redis.from_url(redis_url)
     try:
         client.ping()

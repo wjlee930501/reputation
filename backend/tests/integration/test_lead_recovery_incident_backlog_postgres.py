@@ -6,7 +6,8 @@
 RETRYING·ACKNOWLEDGED는 건드리지 않는다. 근거는 그 사고가 가리키는 **그 진단**의 현재 상태다.
 
 - 측정 사고: 진단 실행이 SUCCEEDED/PARTIAL(`REPORTABLE_EXECUTION_STATUSES`)이다.
-- 리포트 사고: 리포트가 READY이고 파기되지 않은 산출물이 있다.
+- 리포트 사고: 리포트가 READY이고 파기되지 않은 산출물이 그 실패를 낸 복구 요청 뒤에 만들어졌다.
+  복구는 READY도 다시 만들고, 실패해도 기존 산출물로 READY에 돌아오므로 기존 산출물은 근거가 아니다.
 - 두 축 모두: 진단이 갈음됐다(`superseded_at`) · 파기됐다(`report_status=PURGED`) · 행이 없다.
   복구 claim(HTTP·워커)이 셋 모두를 거절하므로 누구도 이 사고를 처리할 수 없다.
 
@@ -24,7 +25,7 @@ from sqlalchemy import func, select, text
 from app.models.audit import AdminAuditLog
 from app.models.lead import SalesLead
 from app.models.lead_diagnosis import LeadDiagnosis, LeadReportArtifact
-from app.models.operations import Incident, NotificationOutbox
+from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.workers import lead_recovery_incidents
 from app.workers.incident_backlog import close_resolved_backlog_incidents
 
@@ -76,11 +77,14 @@ async def _diagnosis(db, lead=None, **status) -> LeadDiagnosis:
     return diagnosis
 
 
-async def _artifact(db, diagnosis, *, purged=False):
+async def _artifact(db, diagnosis, *, purged=False, created_at=None, version=1):
+    # `created_at` is the DB `now()` of the building transaction. The test transaction's `now()`
+    # is fixed at its start, so every scenario states when the artifact was made.
     db.add(
         LeadReportArtifact(
             diagnosis_id=diagnosis.id,
-            version=1,
+            version=version,
+            created_at=created_at or datetime.now(UTC),
             storage_uri=f"gs://test-bucket/lead-reports/{diagnosis.id}.pdf",
             content_hash="0" * 64,
             byte_size=1024,
@@ -91,10 +95,42 @@ async def _artifact(db, diagnosis, *, purged=False):
     await db.flush()
 
 
-async def _failed_recovery(db, diagnosis_id, axis) -> Incident:
+async def _recovery_run(db, diagnosis_id, axis, *, requested_at, completed_at=None):
+    """The Admin-dispatched recovery run (`lead_recovery._dispatch_recovery`), ended FAILED."""
+    run = OperationRun(
+        operation_type=f"RECOVER_LEAD_{axis}",
+        state="FAILED",
+        idempotency_key=f"lead-recovery-test:{uuid.uuid4()}",
+        request_payload={
+            "source_type": "lead_diagnosis",
+            "source_id": str(diagnosis_id),
+            "_dispatch": {"target_type": "lead_diagnosis", "target_id": str(diagnosis_id),
+                          "queue": "leadgen", "task_args": [str(diagnosis_id), 1]},
+        },
+        attempt_count=1,
+        total_count=1,
+        failure_count=1,
+        requested_at=requested_at,
+        started_at=requested_at,
+        # Celery의 실패 신호가 워커의 사고 기록 뒤에 실행을 끝낸다.
+        completed_at=completed_at,
+        safe_error_code="TASK_FAILED",
+    )
+    db.add(run)
+    await db.flush()
+    return run
+
+
+async def _finish_run(db, run, incident):
+    """`track_operation_failure` runs after the task's own incident touch."""
+    run.completed_at = incident.last_seen_at + timedelta(milliseconds=5)
+    await db.flush()
+
+
+async def _failed_recovery(db, diagnosis_id, axis, run=None) -> Incident:
     """The worker's terminal recovery failure (LeadRecoveryRejected → OPEN incident)."""
     await lead_recovery_incidents.mark_lead_recovery_failed(
-        diagnosis_id, axis, None, "measurement recovery state changed"
+        diagnosis_id, axis, run.id if run else None, "measurement recovery state changed"
     )
     incident = await db.scalar(
         select(Incident).where(
@@ -184,9 +220,34 @@ async def test_report_incident_closes_once_that_diagnosis_has_a_servable_report(
         db, execution_status="SUCCEEDED", report_status="BLOCKED", report_attempts=1
     )
     incident = await _failed_recovery(db, diagnosis.id, "REPORT")
+    # 남은 시도로 폴러가 그 뒤에 리포트를 만들었다.
     diagnosis.report_status = "READY"
     await db.flush()
-    await _artifact(db, diagnosis)
+    await _artifact(db, diagnosis, created_at=incident.last_seen_at + timedelta(minutes=5))
+    outbox_before = await _outbox_count(db)
+
+    await _sweep(db)
+
+    await _assert_closed_quietly(db, incident, "lead_report_ready", outbox_before)
+
+
+async def test_a_recovery_that_lost_its_claim_to_a_running_build_closes(worker_session):
+    """거절된 복구는 요청 뒤에 시작된 생성이 그 일을 해냈다. 산출물 시각은 생성 시작이라
+    실패 관측보다 이르다 — 실패를 낸 실행의 요청 시각과 비교한다."""
+    db = worker_session
+    diagnosis = await _diagnosis(
+        db, execution_status="SUCCEEDED", report_status="READY", report_attempts=2
+    )
+    requested = datetime.now(UTC) - timedelta(minutes=10)
+    await _artifact(db, diagnosis, created_at=requested - timedelta(days=2))
+    run = await _recovery_run(db, diagnosis.id, "REPORT", requested_at=requested)
+    # 다른 생성이 요청 뒤에 시작해(트랜잭션 시작 = 산출물 시각) 끝냈고, 이 복구는 claim을 잃었다.
+    await _artifact(
+        db, diagnosis, created_at=requested + timedelta(minutes=1), version=2
+    )
+    incident = await _failed_recovery(db, diagnosis.id, "REPORT", run)
+    await _finish_run(db, run, incident)
+    assert incident.last_seen_at > requested + timedelta(minutes=1)
     outbox_before = await _outbox_count(db)
 
     await _sweep(db)
@@ -294,6 +355,57 @@ async def test_ready_without_a_servable_artifact_is_not_report_evidence(worker_s
     diagnosis.report_status = "READY"
     await db.flush()
     await _artifact(db, diagnosis, purged=True)
+
+    await _sweep(db)
+
+    await _assert_left_alone(db, incident)
+
+
+@pytest.mark.parametrize("with_run", [False, True])
+async def test_a_failed_rebuild_of_a_ready_report_stays_open(worker_session, with_run):
+    """READY도 다시 만든다. 그 재생성이 실패하면 진단은 기존 산출물로 READY에 돌아온다
+    (`_build_lead_report`) — 그 기존 산출물은 이 실패를 해결하지 않았다."""
+    db = worker_session
+    diagnosis = await _diagnosis(
+        db, execution_status="SUCCEEDED", report_status="READY", report_attempts=2
+    )
+    requested = datetime.now(UTC) - timedelta(minutes=10)
+    await _artifact(db, diagnosis, created_at=requested - timedelta(days=2))
+    run = (
+        await _recovery_run(db, diagnosis.id, "REPORT", requested_at=requested)
+        if with_run
+        else None
+    )
+    incident = await _failed_recovery(db, diagnosis.id, "REPORT", run)
+    if run is not None:
+        await _finish_run(db, run, incident)
+
+    await _sweep(db)
+
+    await _assert_left_alone(db, incident)
+
+
+async def test_a_later_failure_recorded_without_its_run_is_not_explained_by_an_older_run(
+    worker_session,
+):
+    """사고가 옛 실행을 가리키는데 더 나중의 실패가 실행 참조 없이 기록됐다면, 옛 요청 시각이
+    아니라 마지막 실패 관측 시각과 비교한다."""
+    db = worker_session
+    diagnosis = await _diagnosis(
+        db, execution_status="SUCCEEDED", report_status="READY", report_attempts=3
+    )
+    old_request = datetime.now(UTC) - timedelta(days=3)
+    old_run = await _recovery_run(
+        db, diagnosis.id, "REPORT", requested_at=old_request,
+        completed_at=old_request + timedelta(minutes=1),
+    )
+    await lead_recovery_incidents.mark_lead_recovery_failed(
+        diagnosis.id, "REPORT", old_run.id, "report render failed"
+    )
+    # 그 뒤 리포트가 한 번 만들어졌고(산출물), 그다음 다시 만들다 실패했다(실행 참조 없음).
+    await _artifact(db, diagnosis, created_at=old_request + timedelta(days=1))
+    incident = await _failed_recovery(db, diagnosis.id, "REPORT")
+    assert incident.operation_run_id == old_run.id
 
     await _sweep(db)
 

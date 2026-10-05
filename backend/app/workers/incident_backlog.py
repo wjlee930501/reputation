@@ -172,18 +172,50 @@ def _lead_measurement_recovered(db: Session, incident: Incident, _now: datetime)
     return None
 
 
+def _lead_report_failure_anchor(db: Session, incident: Incident) -> datetime:
+    """이 사고의 실패를 낸 복구가 요청된 시각. 이보다 나중에 만든 산출물만 그 복구를 대신한다.
+
+    산출물의 `created_at`은 DB `now()`, 곧 그 생성 트랜잭션의 시작 시각(claim 직후·렌더 전)이다.
+    그래서 실패 관측 시각(`last_seen_at`)과 비교하면, 진행 중인 생성에 밀려 거절된 복구(같은
+    기대 시도 수로 요청됐다가 claim을 잃음)가 그 생성이 끝낸 리포트를 '이전 것'으로 본다.
+    복구 요청은 진단 행 잠금 아래 그때의 시도 수를 읽으므로, 요청 뒤에 시작된 생성만 그 복구가
+    하려던 일을 해낸 것이다. READY에서 다시 만들다 실패한 경우는 기존 산출물이 요청보다 먼저라
+    근거가 되지 않는다.
+    사고가 가리키는 실행이 마지막 실패를 낸 그 실행일 때만 쓴다 — 종료 기록(`completed_at`)이
+    마지막 관측보다 앞서면 더 나중의 실패가 실행 참조 없이 기록된 것이다. 그 밖에는 실패
+    관측 시각을 쓴다(덜 닫는 쪽).
+    """
+
+    observed = incident.last_seen_at
+    if incident.operation_run_id is None:
+        return observed
+    run = db.get(OperationRun, incident.operation_run_id)
+    if (
+        run is None
+        or run.operation_type != incident.incident_type
+        or (run.request_payload or {}).get("source_id") != incident.source_id
+        or run.completed_at is None
+        or run.completed_at < observed
+    ):
+        return observed
+    return min(run.requested_at, observed)
+
+
 def _lead_report_recovered(db: Session, incident: Incident, _now: datetime) -> str | None:
     diagnosis, gone = _lead_diagnosis_gone(db, incident)
     if gone is not None or diagnosis is None:
         return gone
     # 측정 성공은 리포트 축의 근거가 아니다. READY 표시만으로도 부족하다 — 실제로 서빙할 수
-    # 있는(파기되지 않은) 산출물이 있어야 리포트가 만들어진 것이다. BLOCKED는 열어 둔다.
+    # 있는(파기되지 않은) 산출물이 이 실패 뒤에 만들어져야 리포트가 다시 만들어진 것이다.
+    # 복구는 READY도 다시 만들고, 그 재생성이 실패해도 진단은 기존 산출물로 READY에 돌아온다
+    # (`_build_lead_report`). 그 기존 산출물은 근거가 아니다. BLOCKED는 열어 둔다.
     if diagnosis.report_status != ReportStatus.READY.value:
         return None
     servable = db.scalar(
         select(LeadReportArtifact.id).where(
             LeadReportArtifact.diagnosis_id == diagnosis.id,
             LeadReportArtifact.purged_at.is_(None),
+            LeadReportArtifact.created_at > _lead_report_failure_anchor(db, incident),
         ).limit(1)
     )
     return "lead_report_ready" if servable is not None else None

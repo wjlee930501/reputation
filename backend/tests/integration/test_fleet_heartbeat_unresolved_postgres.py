@@ -114,8 +114,12 @@ def _run(
     result=None,
     idempotency_key=None,
     counts=None,
+    completed=None,
+    error_code=None,
 ) -> OperationRun:
+    """`at` is the request time; `completed` (default `at`) is when a terminal run finished."""
     done = state in TERMINAL
+    finished = (completed or at) if done else None
     total, success, failure = counts or (
         1,
         int(state == "SUCCEEDED"),
@@ -137,12 +141,12 @@ def _run(
         skipped_count=0,
         requested_at=at,
         started_at=at,
-        completed_at=at if done else None,
+        completed_at=finished,
         lease_owner=None if done else "heartbeat-test",
         lease_expires_at=None if done else at + timedelta(hours=2),
         created_at=at,
-        updated_at=at,
-        safe_error_code=None if state == "SUCCEEDED" else "TEST_FAILURE",
+        updated_at=finished or at,
+        safe_error_code=error_code or (None if state == "SUCCEEDED" else "TEST_FAILURE"),
         version=1,
     )
     db.add(run)
@@ -155,10 +159,16 @@ def _item_payload(item, *task_args):
     return build_request_payload(DispatchPayload("content_item", str(item.id), "content", args))
 
 
-def _batch(db, at, items: dict, state="SUCCEEDED") -> OperationRun:
-    """The 23:00/sweep dispatcher: one hospital-less run whose items are dispatch outcomes."""
+def _batch(db, at, items: dict, state="SUCCEEDED", *, error_code=None) -> OperationRun:
+    """The 23:00/sweep dispatcher: one hospital-less run whose items are dispatch outcomes.
+
+    A FAILED/PARTIAL batch is terminalized by its recorder (`GenerationBatchRecorder._persist`)
+    with `CONTENT_GENERATION_PARTIAL` unless `error_code` says another path ended it.
+    """
     states = [entry["state"] for entry in items.values()]
     failed = states.count("FAILED") + states.count("PARTIAL")
+    if state in ("FAILED", "PARTIAL"):
+        error_code = error_code or "CONTENT_GENERATION_PARTIAL"
     return _run(
         db,
         "NIGHTLY_CONTENT_GENERATION",
@@ -168,6 +178,7 @@ def _batch(db, at, items: dict, state="SUCCEEDED") -> OperationRun:
         result={"items": items},
         idempotency_key=f"nightly:{uuid.uuid4()}",
         counts=(len(states), states.count("SUCCEEDED"), failed),
+        error_code=error_code,
     )
 
 
@@ -198,14 +209,16 @@ def _attempt(db, item, state, at, *, batch=None):
     return batch, child, regenerate
 
 
-def _lease_blocked_batch(db, at, failed_items, *, state="FAILED", succeeded_items=()):
+def _lease_blocked_batch(
+    db, at, failed_items, *, state="FAILED", succeeded_items=(), error_code=None
+):
     """A batch whose slots were held by a live lease: FAILED item + REGENERATE_CONTENT off the batch."""
     items = {
         str(item.id): {"state": "FAILED", "safe_error_code": "GENERATION_LEASE_ACTIVE"}
         for item in failed_items
     }
     items.update({str(item.id): {"state": "SUCCEEDED"} for item in succeeded_items})
-    return _batch(db, at, items, state=state)
+    return _batch(db, at, items, state=state, error_code=error_code)
 
 
 def _lease_blocked_run(db, batch, item, at):
@@ -271,21 +284,47 @@ def _exhausted_attempt() -> dict:
     }
 
 
-def _monthly_batch(db, at, period, state) -> OperationRun:
+def _monthly_batch(db, at, period, state, *, hospitals=1, completed=None) -> OperationRun:
+    """`_finish_monthly_report_batch_run`: SUCCEEDED only when every eligible hospital is done."""
+    succeeded = hospitals if state == "SUCCEEDED" else 0
+    failed = 0 if state == "SUCCEEDED" else hospitals
     return _run(
         db,
         "MONTHLY_REPORT_BATCH",
         state,
         at=at,
         payload={"source_type": "MONTHLY_REPORT_BATCH", "source_id": period},
-        result={"status": state, "total_count": 1, "success_count": int(state == "SUCCEEDED"),
-                "failure_count": int(state != "SUCCEEDED")},
+        result={"status": state, "total_count": hospitals, "success_count": succeeded,
+                "failure_count": failed},
         idempotency_key=f"monthly-report-batch:{uuid.uuid4()}",
+        counts=(hospitals, succeeded, failed),
+        completed=completed,
     )
 
 
-def _scheduled_report_run(db, hospital, period, state, at) -> OperationRun:
+# `_finish_monthly_operation_run`: stage → (run state, (total, success, failure)).
+# `skipped_existing` is SUCCEEDED too, but built nothing (stage EXISTING, success 0).
+_MONTHLY_STAGES = {
+    "ARTIFACT_VALIDATED": ("SUCCEEDED", (1, 1, 0)),
+    "EXISTING": ("SUCCEEDED", (1, 0, 0)),
+    "BLOCKED": ("PARTIAL", (1, 0, 1)),
+    "FAILED": ("FAILED", (1, 0, 1)),
+}
+_DEFAULT_MONTHLY_STAGE = {"SUCCEEDED": "ARTIFACT_VALIDATED", "PARTIAL": "BLOCKED", "FAILED": "FAILED"}
+
+
+def _monthly_outcome(state, stage):
+    stage = stage or _DEFAULT_MONTHLY_STAGE[state]
+    run_state, counts = _MONTHLY_STAGES[stage]
+    assert run_state == state, (state, stage)
+    return stage, counts
+
+
+def _scheduled_report_run(
+    db, hospital, period, state, at, *, stage=None, completed=None
+) -> OperationRun:
     year, month = (int(part) for part in period.split("-"))
+    stage, counts = _monthly_outcome(state, stage)
     return _run(
         db,
         "SCHEDULED_MONTHLY_REPORT",
@@ -293,13 +332,19 @@ def _scheduled_report_run(db, hospital, period, state, at) -> OperationRun:
         at=at,
         hospital=hospital,
         payload={"source_type": "MONTHLY_SCHEDULE", "source_id": period},
-        result={"stage": "DONE", "period_year": year, "period_month": month},
+        result={"stage": stage, "period_year": year, "period_month": month},
         idempotency_key=f"scheduled:{hospital.id}:{period}",
+        counts=counts,
+        completed=completed,
     )
 
 
-def _coverage_recovery_run(db, hospital, period, state, at) -> OperationRun:
+def _coverage_recovery_run(
+    db, hospital, period, state, at, *, stage=None, completed=None
+) -> OperationRun:
+    # 기간은 결과의 period_year/month가 아니라 커버리지 복구 키에서 읽히게 둔다.
     year, month = (int(part) for part in period.split("-"))
+    stage, counts = _monthly_outcome(state, stage)
     return _run(
         db,
         "GENERATE_MONTHLY_REPORT",
@@ -310,7 +355,10 @@ def _coverage_recovery_run(db, hospital, period, state, at) -> OperationRun:
             DispatchPayload("hospital", str(hospital.id), "reports",
                             (str(hospital.id), year, month, True, True))
         ),
+        result={"stage": stage},
         idempotency_key=f"coverage-recovery:{hospital.id}:{period}",
+        counts=counts,
+        completed=completed,
     )
 
 
@@ -399,8 +447,8 @@ def test_a_nightly_batch_with_an_unexplained_failed_item_still_counts(db):
     assert unresolved == 1
 
 
-def test_a_batch_with_an_unexplained_failed_child_run_still_counts_once_or_twice(db):
-    """배치를 셀지 설명 안 된 자식만 셀지는 구현의 선택이다 — 둘 중 하나는 반드시 센다."""
+def test_a_batch_with_an_unexplained_failed_child_run_counts_the_batch_and_the_child(db):
+    """설명 안 된 글이 남은 배치와 그 글의 시도 기록을 각자 센다(합쳐 하나로 세지 않는다)."""
     facts = _Facts(db)
     hospital = _hospital(db)
     recovered, unexplained = _item(db, hospital), _item(db, hospital)
@@ -413,10 +461,10 @@ def test_a_batch_with_an_unexplained_failed_child_run_still_counts_once_or_twice
     failed, unresolved = facts.delta()
 
     assert failed == 3
-    assert unresolved in (1, 2)
+    assert unresolved == 2
 
 
-@pytest.mark.parametrize("shape", ["operator_required", "stale_retrying"])
+@pytest.mark.parametrize("shape", ["operator_required", "stale_retrying", "retrying_without_deadline"])
 def test_an_exhausted_retry_is_not_in_progress(db, shape):
     facts = _Facts(db)
     hospital = _hospital(db)
@@ -425,9 +473,12 @@ def test_an_exhausted_retry_is_not_in_progress(db, shape):
     _, _, latest = _attempt(db, item, "FAILED", RETRIED_AT)
     if shape == "operator_required":
         _generation_incident(db, item, "OPEN", latest)
-    else:
+    elif shape == "stale_retrying":
         # 기한이 지난 RETRYING은 운영센터 규칙(`requires_operator_action`)상 사람의 일이다.
         _generation_incident(db, item, "RETRYING", latest, sla_due_at=NOW - timedelta(days=2))
+    else:
+        # 기한 없는 RETRYING은 끝이 정해지지 않아 '진행 중'의 근거가 아니다.
+        _generation_incident(db, item, "RETRYING", latest, sla_due_at=None)
 
     failed, unresolved = facts.delta()
 
@@ -540,5 +591,115 @@ def test_a_hospital_report_failure_needs_its_own_hospital_and_period(db, shape):
     else:
         _coverage_recovery_run(db, hospital, "2031-01", "SUCCEEDED", RETRIED_AT)
         _monthly_report(db, hospital, "2031-01", RETRIED_AT)
+
+    assert facts.delta() == (1, 1)
+
+
+# ── 근거는 실제로 만든 성공, 앞뒤는 종료 시각으로 잰다 ─────────────────────────────────
+
+
+def test_a_later_success_that_built_nothing_is_not_monthly_report_proof(db):
+    """`skipped_existing`도 SUCCEEDED지만 아무것도 만들지 않았다(stage EXISTING, 성공 0건)."""
+    facts = _Facts(db)
+    hospital = _hospital(db)
+    period = "2031-02"
+    # 정기 마감이 리포트를 만들었지만 검증을 통과하지 못했다(BLOCKED).
+    _scheduled_report_run(db, hospital, period, "PARTIAL", FAILED_AT)
+    _monthly_report(db, hospital, period, FAILED_AT)
+    # rebuild 없는 수동 생성이 이미 있는 리포트를 보고 건너뛰었다.
+    _coverage_recovery_run(db, hospital, period, "SUCCEEDED", RETRIED_AT, stage="EXISTING")
+
+    assert facts.delta() == (1, 1)
+
+
+def test_a_later_monthly_batch_that_covered_no_hospital_is_not_batch_proof(db):
+    facts = _Facts(db)
+    period = "2031-02"
+    _monthly_batch(db, FAILED_AT, period, "FAILED")
+    # 대상 병원이 0곳인 SUCCEEDED는 아무 병원도 끝냈다고 확인하지 않았다.
+    _monthly_batch(db, LATER, period, "SUCCEEDED", hospitals=0)
+
+    assert facts.delta() == (1, 1)
+
+
+@pytest.mark.parametrize("family", ["monthly_report", "content_item"])
+def test_a_failure_that_finished_after_the_other_success_still_counts(db, family):
+    """제자리에서 다시 열린 실행: 요청은 먼저였지만 실패는 다른 실행의 성공 뒤에 끝났다."""
+    facts = _Facts(db)
+    hospital = _hospital(db)
+    if family == "monthly_report":
+        period = "2031-02"
+        _scheduled_report_run(db, hospital, period, "FAILED", FAILED_AT, completed=LATER)
+        _coverage_recovery_run(db, hospital, period, "SUCCEEDED", RETRIED_AT)
+    else:
+        item = _item(db, hospital)
+        batch = _batch(db, FAILED_AT, {str(item.id): {"state": "RUNNING"}})
+        _run(
+            db, "GENERATE_CONTENT_ITEM", "FAILED", at=FAILED_AT, completed=LATER,
+            hospital=hospital, parent=batch,
+            payload=_item_payload(item, str(item.id), str(uuid.uuid4()), None),
+        )
+        _attempt(db, item, "SUCCEEDED", RETRIED_AT)
+
+    assert facts.delta() == (1, 1)
+
+
+def test_a_reopened_success_that_finished_after_the_failure_is_proof(db):
+    """정기 마감 행은 제자리에서 다시 열린다 — 요청이 더 이르더라도 실패 뒤에 끝난 성공이 근거다."""
+    facts = _Facts(db)
+    hospital = _hospital(db)
+    period = "2031-02"
+    _scheduled_report_run(
+        db, hospital, period, "SUCCEEDED", FAILED_AT - timedelta(hours=2), completed=LATER
+    )
+    _coverage_recovery_run(db, hospital, period, "FAILED", FAILED_AT)
+
+    assert facts.delta() == (1, 0)
+
+
+def test_a_monthly_batch_failure_that_finished_after_the_later_close_still_counts(db):
+    facts = _Facts(db)
+    period = "2031-02"
+    # 같은 Celery 작업으로 다시 돈 배치 행: 요청은 처음 그대로, 실패는 다른 배치의 마감 뒤.
+    _monthly_batch(db, FAILED_AT, period, "FAILED", completed=LATER)
+    _monthly_batch(db, RETRIED_AT, period, "SUCCEEDED")
+
+    assert facts.delta() == (1, 1)
+
+
+# ── 배치: 설명은 기록된 실패 하나하나와 그 글의 본문 성공이어야 한다 ─────────────────────
+
+
+def test_a_partial_batch_with_no_failed_item_listed_still_counts(db):
+    facts = _Facts(db)
+    hospital = _hospital(db)
+    item = _item(db, hospital)
+    # 건너뛴 글만 있는 PARTIAL — 설명할 실패 목록이 없으니 근거도 없다.
+    _batch(db, FAILED_AT, {str(item.id): {"state": "SKIPPED"}}, state="PARTIAL")
+
+    assert facts.delta() == (1, 1)
+
+
+def test_an_image_only_success_is_not_batch_proof(db):
+    facts = _Facts(db)
+    hospital = _hospital(db)
+    item = _item(db, hospital)
+    _lease_blocked_batch(db, FAILED_AT, [item])
+    # 이미지 교체 성공은 본문이 생겼다는 근거가 아니다.
+    _run(
+        db, "REGENERATE_CONTENT_IMAGE", "SUCCEEDED", at=RETRIED_AT, hospital=hospital,
+        payload=_item_payload(item),
+    )
+
+    assert facts.delta() == (1, 1)
+
+
+def test_a_batch_ended_outside_its_recorder_still_counts(db):
+    """신호·스윕이 끝낸 배치는 목록 밖의 글이 남았을 수 있다 — 기록된 실패가 설명돼도 센다."""
+    facts = _Facts(db)
+    hospital = _hospital(db)
+    item = _item(db, hospital)
+    _lease_blocked_batch(db, FAILED_AT, [item], error_code="TASK_FAILED")
+    _attempt(db, item, "SUCCEEDED", RETRIED_AT)
 
     assert facts.delta() == (1, 1)

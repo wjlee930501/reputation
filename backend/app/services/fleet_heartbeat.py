@@ -52,11 +52,20 @@ _FAILED_STATES = ("FAILED", "PARTIAL")
 # 10/4 분석이 부풀린 몫으로 짚은 세 계열만 계보 규칙을 더한다. 다른 실행 종류는 종전 규칙
 # (사고 링크·명시적 재시도 계보)만으로 판정한다.
 _GENERATION_ATTEMPT_TYPES = ("GENERATE_CONTENT_ITEM", "REGENERATE_CONTENT", "REGENERATE_CONTENT_IMAGE")
-# 글 하나를 처음부터 끝까지 만든 실행. 이미지 교체 성공은 본문이 생겼다는 근거가 아니다.
+# 글의 본문을 끝낸 실행. 두 종류의 SUCCEEDED는 발행 준비 검사까지 통과한 결과뿐이다(아무것도
+# 하지 않고 물러난 실행은 CANCELLED다). REGENERATE_CONTENT는 이미지만 실패한 경우에도 본문
+# 성공으로 SUCCEEDED가 되고, 그 이미지 실패는 따로 남는 REGENERATE_CONTENT_IMAGE 실행이 자기
+# 규칙으로 센다. 이미지 교체 성공은 본문이 생겼다는 근거가 아니다.
 _FULL_GENERATION_TYPES = ("GENERATE_CONTENT_ITEM", "REGENERATE_CONTENT")
 _GENERATION_BATCH_TYPE = "NIGHTLY_CONTENT_GENERATION"
+# 배치 기록기(`GenerationBatchRecorder._persist`)가 항목 결과만으로 종결한 배치의 코드다. 신호·
+# 스윕이 도중에 끝낸 배치는 목록에 없는 글이 남았을 수 있어 목록만으로 설명하지 않는다.
+_GENERATION_BATCH_RECORDED_CODE = "CONTENT_GENERATION_PARTIAL"
 _MONTHLY_BATCH_TYPE = "MONTHLY_REPORT_BATCH"
 _MONTHLY_REPORT_TYPES = ("SCHEDULED_MONTHLY_REPORT", "GENERATE_MONTHLY_REPORT")
+# `tasks._finish_monthly_operation_run`이 검증된 원장용 산출물을 확인한 성공에만 남기는 단계.
+# 같은 SUCCEEDED라도 `skipped_existing`(EXISTING, 성공 0건)은 아무것도 만들지 않았다.
+_MONTHLY_REPORT_PRODUCED_STAGE = "ARTIFACT_VALIDATED"
 _UUID_TEXT = "^[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$"
 _PERIOD_TEXT = "^[0-9]{4}-[0-9]{2}$"
 
@@ -109,10 +118,16 @@ def _automatic_retry_in_progress(item_key, hospital_id, now):
     return and_(owned, ~operator_work)
 
 
+def _failure_finished_at(run):
+    # 실패를 끝낸 시각. 제자리에서 다시 열린 실행은 처음 `requested_at`을 그대로 두므로 요청
+    # 시각으로 앞뒤를 재면 다른 실행의 성공 뒤에 끝난 실패를 '이전 실패'로 본다.
+    return func.coalesce(run.completed_at, run.updated_at)
+
+
 def _content_item_recovered(item_key, hospital_id, failed_at, now, later_type):
     """그 글에 이 실패가 더는 필요 없다는 구체적 근거(`task_incident_control._resolved_run_condition`).
 
-    같은 글의 더 나중 성공, 실패 뒤의 최초 공개, 기한 안의 자동 재시도 중 하나다. 병원을 함께
+    같은 글의 실패 종료 뒤에 끝난 성공, 실패 뒤의 최초 공개, 기한 안의 자동 재시도 중 하나다. 병원을 함께
     맞춰 다른 병원의 행을 근거로 쓰지 않고, 큰 `operation_runs`도 병원 인덱스로 좁힌다.
     배치 안에서는 두 단계 아래에서 바깥 실행을 참조하므로 상관을 명시한다 — 자동 상관은 바로
     위 단계만 보며, 놓치면 바깥 `operation_runs`가 교차 조인으로 다시 들어온다.
@@ -126,7 +141,7 @@ def _content_item_recovered(item_key, hospital_id, failed_at, now, later_type):
             later_type(later),
             later.state == "SUCCEEDED",
             _content_target(later) == item_key,
-            later.requested_at > failed_at,
+            later.completed_at > failed_at,
         )
         .correlate_except(later)
     )
@@ -184,7 +199,7 @@ def _recovered_by_same_target(now):
         _content_item_recovered(
             _content_target(run),
             run.hospital_id,
-            run.requested_at,
+            _failure_finished_at(run),
             now,
             lambda later: later.operation_type == run.operation_type,
         ),
@@ -194,7 +209,8 @@ def _recovered_by_same_target(now):
     # 시도 실행이 따로 있으면 그것도 자기 규칙대로 센다(배치=배포 결과, 자식=그 시도). 둘을
     # 합쳐 하나로 세는 규칙은 두지 않는다. 덜 세는 쪽으로 틀리지 않게 하려는 선택이다.
     # 배치 행은 같은 실행이 다시 돌며 갱신되므로 글의 실패 시각은 배치의 마지막 종료로 본다.
-    batch_failed_at = func.coalesce(run.completed_at, run.updated_at)
+    # 기록기가 아닌 경로(신호·스윕)로 끝난 배치는 목록 밖의 글이 남았을 수 있어 센다.
+    batch_failed_at = _failure_finished_at(run)
 
     def failed_entries():
         entry = _batch_items(run).alias("batch_item")
@@ -220,10 +236,15 @@ def _recovered_by_same_target(now):
         )
     )
     generation_batch = and_(
-        run.operation_type == _GENERATION_BATCH_TYPE, has_failed_item, ~unexplained_item
+        run.operation_type == _GENERATION_BATCH_TYPE,
+        run.safe_error_code.is_not_distinct_from(_GENERATION_BATCH_RECORDED_CODE),
+        has_failed_item,
+        ~unexplained_item,
     )
-    # 월간 배치: 결과에 실패 병원 목록이 남지 않는다. 같은 기간의 더 나중 배치가 SUCCEEDED면
-    # 그 기간의 모든 대상 병원이 끝났다는 뜻이다(`generate_monthly_reports`). PARTIAL은 아니다.
+    # 월간 배치: 결과에 실패 병원 목록이 남지 않는다. 같은 기간의 실패 뒤에 끝난 배치가
+    # SUCCEEDED면 그 기간의 모든 대상 병원이 끝났다는 뜻이다(`generate_monthly_reports`가 실패도
+    # 보류도 없을 때만 SUCCEEDED). PARTIAL은 아니다. 대상 병원이 0곳인 SUCCEEDED는 아무것도
+    # 확인하지 않았으므로 근거가 아니고, 실패한 배치보다 적은 병원을 끝낸 배치도 근거가 아니다.
     later_batch = aliased(OperationRun)
     monthly_batch = and_(
         run.operation_type == _MONTHLY_BATCH_TYPE,
@@ -233,11 +254,14 @@ def _recovered_by_same_target(now):
                 later_batch.state == "SUCCEEDED",
                 later_batch.request_payload["source_id"].as_string()
                 == run.request_payload["source_id"].as_string(),
-                later_batch.requested_at > run.requested_at,
+                later_batch.completed_at > _failure_finished_at(run),
+                later_batch.success_count > 0,
+                later_batch.success_count >= run.total_count,
             )
         ),
     )
-    # 병원별 월간 리포트: 같은 병원·같은 기간의 더 나중 성공(정기 마감이든 커버리지 복구든).
+    # 병원별 월간 리포트: 같은 병원·같은 기간의 실패 뒤에 끝난, 리포트를 실제로 만들고 검증한
+    # 성공(정기 마감이든 커버리지 복구든). 이미 있어 건너뛴 성공은 근거가 아니다.
     later_report = aliased(OperationRun)
     period = _report_period(run)
     monthly_report = and_(
@@ -249,7 +273,9 @@ def _recovered_by_same_target(now):
                 later_report.hospital_id == run.hospital_id,
                 later_report.operation_type.in_(_MONTHLY_REPORT_TYPES),
                 later_report.state == "SUCCEEDED",
-                later_report.requested_at > run.requested_at,
+                later_report.success_count > 0,
+                later_report.result_summary["stage"].as_string() == _MONTHLY_REPORT_PRODUCED_STAGE,
+                later_report.completed_at > _failure_finished_at(run),
                 _report_period(later_report) == period,
             )
         ),
