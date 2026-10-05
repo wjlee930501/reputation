@@ -6,7 +6,8 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from datetime import date, datetime
 
 import redis.asyncio as redis_async
@@ -30,7 +31,6 @@ _RECOVERY_INDEX_KEY = "provider_usage:recovery:index"
 _RECOVERY_TTL_SECONDS = 7 * 24 * 60 * 60
 _RECOVERY_MAX_ITEMS = 10_000
 _RECOVERY_RETRY_DELAY_SECONDS = 60
-_recovery_redis: redis_async.Redis | None = None
 
 _HOSPITAL_KIND_BY_CATEGORY = {
     "content": HospitalUsageKind.CONTENT.value,
@@ -102,15 +102,36 @@ def _json_safe(value: object, *, depth: int = 0) -> object:
     return str(value)[:500]
 
 
-def _redis() -> redis_async.Redis:
-    global _recovery_redis
-    if _recovery_redis is None:
-        from app.core.config import settings
+@asynccontextmanager
+async def _recovery_redis_client(
+    injected: redis_async.Redis | None = None,
+) -> AsyncIterator[redis_async.Redis]:
+    """A spool client that never outlives the event loop it was opened on.
 
-        _recovery_redis = redis_async.from_url(
-            settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2
-        )
-    return _recovery_redis
+    A `redis.asyncio` connection is bound to the loop that opened it. The module used to
+    cache one client globally, but the worker runs this code on several loops in one
+    process (`drain` is a fresh `asyncio.run` every minute; tasks use their own thread
+    loops). The next loop then failed with `Event loop is closed`, so every other drain
+    was skipped and a spool from another loop lost the usage record. A client per call,
+    closed here, is simpler than a per-loop cache: both callers are rare (one drain a
+    minute, a spool only after a DB failure), and a per-loop cache could never close the
+    clients of loops that `asyncio.run` has already shut down. An injected client belongs
+    to the caller and is never closed.
+    """
+
+    if injected is not None:
+        yield injected
+        return
+    from app.core.config import settings
+
+    client = redis_async.from_url(settings.REDIS_URL, socket_connect_timeout=2, socket_timeout=2)
+    try:
+        yield client
+    finally:
+        try:
+            await client.aclose()
+        except (OSError, RedisError, RuntimeError, TimeoutError):
+            pass
 
 
 def _event_payload(event: ProviderUsageEvent) -> dict[str, object]:
@@ -232,21 +253,21 @@ async def _persist(event: ProviderUsageEvent) -> bool:
 
 
 async def _defer(event: ProviderUsageEvent) -> bool:
-    client = _redis()
     key = f"provider_usage:recovery:event:{event.id}"
-    try:
-        pipe = client.pipeline(transaction=True)
-        pipe.set(key, json.dumps(_event_payload(event)), ex=_RECOVERY_TTL_SECONDS)
-        pipe.zadd(_RECOVERY_INDEX_KEY, {key: event.created_at.timestamp()})
-        pipe.zremrangebyrank(_RECOVERY_INDEX_KEY, 0, -_RECOVERY_MAX_ITEMS - 1)
-        await pipe.execute()
-        return True
-    except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError):
-        logger.warning(
-            "provider usage recovery spool unavailable: idempotency_key=%s",
-            event.idempotency_key,
-        )
-        return False
+    async with _recovery_redis_client() as client:
+        try:
+            pipe = client.pipeline(transaction=True)
+            pipe.set(key, json.dumps(_event_payload(event)), ex=_RECOVERY_TTL_SECONDS)
+            pipe.zadd(_RECOVERY_INDEX_KEY, {key: event.created_at.timestamp()})
+            pipe.zremrangebyrank(_RECOVERY_INDEX_KEY, 0, -_RECOVERY_MAX_ITEMS - 1)
+            await pipe.execute()
+            return True
+        except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError):
+            logger.warning(
+                "provider usage recovery spool unavailable: idempotency_key=%s",
+                event.idempotency_key,
+            )
+            return False
 
 
 async def replay_deferred_attempts(
@@ -255,52 +276,52 @@ async def replay_deferred_attempts(
     """Replay the bounded Redis observation spool; safe for periodic reconciliation."""
     if limit < 1 or limit > 1_000:
         raise ValueError("limit must be between 1 and 1000")
-    client = redis_client or _redis()
     recovered = missing = failed = 0
-    try:
-        # Scores are next-attempt timestamps. Failed rows move into the future so one
-        # permanently invalid FK/payload cannot occupy the first batch and starve newer,
-        # healthy observations. Payload TTL still bounds the total retry lifetime.
-        keys = await client.zrangebyscore(
-            _RECOVERY_INDEX_KEY,
-            "-inf",
-            time.time(),
-            start=0,
-            num=limit,
-        )
-        for raw_key in keys:
-            key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
-            raw_payload = await client.get(key)
-            if raw_payload is None:
-                await client.zrem(_RECOVERY_INDEX_KEY, key)
-                missing += 1
-                continue
-            if isinstance(raw_payload, bytes):
-                raw_payload = raw_payload.decode()
-            try:
-                payload = json.loads(raw_payload)
-                if not isinstance(payload, Mapping):
-                    raise TypeError("provider usage recovery payload must be an object")
-                event = _event_from_payload(payload)
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
-                await client.delete(key)
-                await client.zrem(_RECOVERY_INDEX_KEY, key)
-                missing += 1
-                continue
-            if await _persist(event):
-                await client.delete(key)
-                await client.zrem(_RECOVERY_INDEX_KEY, key)
-                recovered += 1
-            else:
-                await client.zadd(
-                    _RECOVERY_INDEX_KEY,
-                    {key: time.time() + _RECOVERY_RETRY_DELAY_SECONDS},
-                )
-                failed += 1
-        return {"recovered": recovered, "missing": missing, "failed": failed}
-    except (OSError, RedisError, RuntimeError, TimeoutError):
-        logger.warning("provider usage recovery replay skipped: redis unavailable")
-        return {"recovered": recovered, "missing": missing, "failed": failed + 1}
+    async with _recovery_redis_client(redis_client) as client:
+        try:
+            # Scores are next-attempt timestamps. Failed rows move into the future so one
+            # permanently invalid FK/payload cannot occupy the first batch and starve newer,
+            # healthy observations. Payload TTL still bounds the total retry lifetime.
+            keys = await client.zrangebyscore(
+                _RECOVERY_INDEX_KEY,
+                "-inf",
+                time.time(),
+                start=0,
+                num=limit,
+            )
+            for raw_key in keys:
+                key = raw_key.decode() if isinstance(raw_key, bytes) else str(raw_key)
+                raw_payload = await client.get(key)
+                if raw_payload is None:
+                    await client.zrem(_RECOVERY_INDEX_KEY, key)
+                    missing += 1
+                    continue
+                if isinstance(raw_payload, bytes):
+                    raw_payload = raw_payload.decode()
+                try:
+                    payload = json.loads(raw_payload)
+                    if not isinstance(payload, Mapping):
+                        raise TypeError("provider usage recovery payload must be an object")
+                    event = _event_from_payload(payload)
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    await client.delete(key)
+                    await client.zrem(_RECOVERY_INDEX_KEY, key)
+                    missing += 1
+                    continue
+                if await _persist(event):
+                    await client.delete(key)
+                    await client.zrem(_RECOVERY_INDEX_KEY, key)
+                    recovered += 1
+                else:
+                    await client.zadd(
+                        _RECOVERY_INDEX_KEY,
+                        {key: time.time() + _RECOVERY_RETRY_DELAY_SECONDS},
+                    )
+                    failed += 1
+            return {"recovered": recovered, "missing": missing, "failed": failed}
+        except (OSError, RedisError, RuntimeError, TimeoutError):
+            logger.warning("provider usage recovery replay skipped: redis unavailable")
+            return {"recovered": recovered, "missing": missing, "failed": failed + 1}
 
 
 def normalize_cache_status(
