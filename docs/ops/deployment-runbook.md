@@ -1,6 +1,14 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
+## 최신 운영 배포 — 2026-10-06 원장 보고서 마케팅 검토 반영
+
+main `dc4e3803`(#211)·`c2adafa5`(#212)·`61725afd`(#213)을 차례로 API·Worker·Beat에 배포했다. 현재 리비전은
+api `00228-wr6`, worker `00217-nfj`, beat `00212-fbx`, site `00143-mvd`, admin `00100-nvl`, DB head는
+`0082_add_content_reference_checks` 그대로다. 9월 보고서 9곳 템플릿 갱신과 운영 질문·글 제목 수정은
+[배포 기록](../releases/2026-10-06-report-marketing-feedback-production.md)을 본다. `deploy.sh`는 작업 PC의
+Docker로 이미지를 빌드한다 — Docker Desktop이 응답하지 않으면 빌드 단계에서 멈추므로 `docker info`로 먼저 확인한다.
+
+## 이전 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
 
 main `a8a86b57`을 5개 서비스에, #194·#196·#197(최종 `ce731db7`)을 API·Worker·Beat에 배포했다. 현재 리비전은
 api `00215-mtl`, worker `00204-q9m`, beat `00199-gq7`, site `00143-mvd`, admin `00099-fc4`,
