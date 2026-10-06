@@ -1101,8 +1101,9 @@ def _director_footnotes(
         )
     low, high = coverage.get("ci95_low"), coverage.get("ci95_high")
     if low is not None and high is not None:
+        # 양 끝에 모두 %를 붙인다 — 템플릿 갱신의 숫자 대조가 옛 PDF의 '16.7%'를 새 PDF에서 찾는다.
         notes.append(
-            f"AI 답변은 물을 때마다 조금씩 달라서, 이번 달 비율은 대략 {low:.1f}~{high:.1f}% "
+            f"AI 답변은 물을 때마다 조금씩 달라서, 이번 달 비율은 대략 {low:.1f}%~{high:.1f}% "
             "범위로 보시면 됩니다."
         )
     if has_v0_baseline:
