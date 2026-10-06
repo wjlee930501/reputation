@@ -224,3 +224,20 @@ def test_many_unmentioned_questions_render_a_valid_director_pdf():
         "아직 언급되지 않은 질문 5개는 모두 다음 달 계획에 넣었습니다.".split()
     ) in text
     assert "".join(PRIORITY_APPENDIX_LEAD.split()) in text
+
+
+def test_range_footnote_keeps_percent_on_both_ends_for_template_refresh_parity():
+    """옛 PDF의 '16.7% ~ 30.0%'와 새 문구가 같은 숫자 사실(16.7%·30.0%)을 담아야 템플릿 갱신이 통과한다."""
+    from app.services.report_engine import _director_footnotes
+
+    notes = _director_footnotes(
+        {"ci95_low": 16.7, "ci95_high": 30.0},
+        names="ChatGPT, Gemini",
+        first_measured_questions=0,
+        non_comparable_questions=0,
+        has_v0_baseline=False,
+    )
+    line = next(note for note in notes if "범위로 보시면 됩니다" in note)
+    assert "16.7%~30.0%" in line
+    old = "이번 달 비율은 대략 16.7% ~ 30.0% 사이로 보시는 것이 안전합니다."
+    assert compare_doctor_pdf_facts(old, line) == []
