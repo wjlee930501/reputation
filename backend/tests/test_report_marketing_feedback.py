@@ -241,3 +241,17 @@ def test_range_footnote_keeps_percent_on_both_ends_for_template_refresh_parity()
     assert "16.7%~30.0%" in line
     old = "이번 달 비율은 대략 16.7% ~ 30.0% 사이로 보시는 것이 안전합니다."
     assert compare_doctor_pdf_facts(old, line) == []
+
+
+def test_stored_range_bounds_count_as_stored_facts_for_template_refresh():
+    """'8.2~20.0%'로 찍힌 옛 버전을 '8.2%~20.0%'로 다시 찍어도 저장값 그대로면 차이가 아니다."""
+    from app.services.monthly_template_refresh import stored_pdf_fact_tokens
+
+    summary = {"ci95_low": 8.2, "ci95_high": 20.0}
+    facts = stored_pdf_fact_tokens(summary)
+    assert {"8.2%", "20.0%"} <= facts
+    old = "이번 달 비율은 대략 8.2~20.0% 범위로 보시면 됩니다."
+    new = "이번 달 비율은 대략 8.2%~20.0% 범위로 보시면 됩니다."
+    assert compare_doctor_pdf_facts(old, new, stored_facts=facts) == []
+    # 저장값과 다른 숫자는 여전히 차이다.
+    assert compare_doctor_pdf_facts(old, new.replace("8.2%", "9.2%"), stored_facts=facts)

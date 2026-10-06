@@ -197,14 +197,23 @@ def stored_pdf_fact_tokens(sov_summary: Mapping[str, Any] | None) -> frozenset[s
 
     옛 템플릿은 반복 관측의 계획·확인 횟수를 다른 꼴로 적어 숫자 사실로 읽히지 않았다.
     새 PDF에만 나타나도 저장값과 정확히 같으면 숫자가 바뀐 것이 아니다.
+
+    답변 비율 범위(ci95)의 양 끝도 같다. 2026-10-06 하루 동안 템플릿이 범위를 '8.2~20.0%'로
+    찍어 아래쪽 숫자가 사실로 읽히지 않았다 — 그때 만든 버전을 '8.2%~20.0%'로 다시 찍어도
+    저장값 그대로면 차이가 아니다.
     """
-    adequacy = (sov_summary or {}).get("observation_adequacy")
-    if not isinstance(adequacy, Mapping):
-        return frozenset()
-    planned, confirmed = adequacy.get("planned_slots"), adequacy.get("confirmed_slots")
-    if not isinstance(planned, int) or not isinstance(confirmed, int):
-        return frozenset()
-    return frozenset({f"{planned}번중{confirmed}번"})
+    summary = sov_summary or {}
+    facts: set[str] = set()
+    adequacy = summary.get("observation_adequacy")
+    if isinstance(adequacy, Mapping):
+        planned, confirmed = adequacy.get("planned_slots"), adequacy.get("confirmed_slots")
+        if isinstance(planned, int) and isinstance(confirmed, int):
+            facts.add(f"{planned}번중{confirmed}번")
+    for key in ("ci95_low", "ci95_high"):
+        value = summary.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            facts.add(f"{value:.1f}%")
+    return frozenset(facts)
 
 
 def compare_doctor_pdf_facts(
