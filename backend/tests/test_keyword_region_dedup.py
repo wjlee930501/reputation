@@ -49,7 +49,8 @@ def test_rendered_questions_do_not_repeat_region_or_use_filler_keyword():
     texts = [text for text, _ in specs]
     assert not any("마산 추천" in t or "마산 마산" in t for t in texts)
     assert not any("마산합포구 마산" in t for t in texts)
-    assert any("마산합포구 심장초음파 진료 가능한 병원" == t for t in texts)
+    # 심장초음파는 검사라 "진료 가능한 병원"이 아니라 "가능한 병원 추천해줘" 문형을 받는다.
+    assert "마산합포구 심장초음파 가능한 병원 추천해줘" in texts
     # 군더더기뿐인 키워드는 {keyword} 템플릿에서 빠진다.
     assert not any("추천 진료" in t or "추천 치료" in t for t in texts)
 
