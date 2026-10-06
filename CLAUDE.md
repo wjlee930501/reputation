@@ -1,6 +1,16 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
+## 최신 운영 배포 — 2026-10-06 원장 보고서 마케팅 검토 반영
+
+PR #211·#212·#213(최종 main `61725afd`)을 API·Worker·Beat에 배포했다. 현재 리비전은 api `00228-wr6`,
+worker `00217-nfj`, beat `00212-fbx`이고 Site `00143-mvd`·Admin `00100-nvl`과 DB head
+`0082_add_content_reference_checks`는 그대로다. 원장 보고서의 틀 문장·중복 질문·단위 혼동을 고쳤고,
+9월 보고서 9곳 전부를 `TEMPLATE_REFRESH`로 숫자 그대로 다시 만들었다(postcheck 9/9 PASS, 측정 미완료 4곳은
+운영자 지정 `allow_recovery_pending`). 새 버전은 원장에게 재전달해야 한다. 분류 사전에 검사 키워드를 더해
+**10월 월간 측정은 9곳 모두 9월과 비교하지 않는다**(대표 결정). 운영 측정 질문 45건·공개 글 제목 3편의
+잘못된 문형도 고쳤다. 상세는 [마케팅 검토 반영 배포 기록](docs/releases/2026-10-06-report-marketing-feedback-production.md)을 본다.
+
+## 이전 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
 
 main `a8a86b57`(PR #163·#168·#177·#179·#181~#193)을 5개 서비스에, 이어 #194·#196·#197을 API·Worker·Beat에
 배포했다(최종 main `ce731db7`). 현재 리비전은 api `00215-mtl`, worker `00204-q9m`, beat `00199-gq7`,
@@ -123,7 +133,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.13** · 갱신일: **2026-10-05 (Asia/Seoul)**
+문서 버전: **2.14** · 갱신일: **2026-10-06 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
