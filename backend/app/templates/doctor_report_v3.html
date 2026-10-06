@@ -107,7 +107,7 @@
 
 <h1>질문별 자세한 결과</h1>
 
-{% if view.appendix_rows %}<p class="caption">물어본 질문 {{ view.appendix_rows|length }}개입니다.{% if view.appendix_example %} {{ view.appendix_example }}{% endif %} {% if n.previous is not none %}첫 장의 지난달 비교는 두 달 모두 같은 방식으로 물어본 질문만으로 계산했습니다.{% else %}첫 장의 비율은 이번 달에 물어본 질문 전체로 계산했습니다.{% endif %} —는 확인된 내용이 없다는 뜻입니다.</p>{% endif %}
+{% if view.appendix_rows %}<p class="caption">{% set asked = h.measured_questions %}{% if asked is not none and asked < view.appendix_rows|length %}질문 {{ view.appendix_rows|length }}개 가운데 이번 달 물어본 질문은 {{ asked }}개입니다.{% else %}물어본 질문 {{ view.appendix_rows|length }}개입니다.{% endif %}{% if view.appendix_example %} {{ view.appendix_example }}{% endif %} {% if n.previous is not none %}첫 장의 지난달 비교는 두 달 모두 같은 방식으로 물어본 질문만으로 계산했습니다.{% else %}첫 장의 비율은 이번 달에 물어본 질문 전체로 계산했습니다.{% endif %} —는 확인된 내용이 없다는 뜻입니다.</p>{% endif %}
 
 <table><colgroup><col style="width:36%"><col style="width:14%"><col style="width:14%"><col style="width:16%"><col style="width:20%"></colgroup><thead><tr><th>질문</th><th>지난달</th><th>이번 달</th><th>자주 언급된 병원</th><th>출처로 쓰인 우리 글</th></tr>
 </thead>

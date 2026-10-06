@@ -255,3 +255,19 @@ def test_stored_range_bounds_count_as_stored_facts_for_template_refresh():
     assert compare_doctor_pdf_facts(old, new, stored_facts=facts) == []
     # 저장값과 다른 숫자는 여전히 차이다.
     assert compare_doctor_pdf_facts(old, new.replace("8.2%", "9.2%"), stored_facts=facts)
+
+
+def test_appendix_caption_counts_only_questions_asked_this_month():
+    """표에 지난달 질문까지 실려도 '물어본 질문'은 이번 달 실제로 물어본 수만 센다(신기한속 9월: 38개 중 28개)."""
+    rows = [
+        {"query_text": "가상동 검진 상담 병원", "prior_measured": False, "prior_comparable": False,
+         "prior_attempts_used": 0, "prior_mentioned_attempts": 0,
+         "current_attempts_used": 6, "current_mentioned_attempts": 2},
+        {"query_text": "가상동 혈압 상담 병원", "prior_measured": False, "prior_comparable": False,
+         "prior_attempts_used": 0, "prior_mentioned_attempts": 0,
+         "current_attempts_used": 0, "current_mentioned_attempts": 0},
+    ]
+    view = monthly_view(attribution={"question_rows": rows})
+    text = _body_text(_html(view))
+    assert "질문 2개 가운데 이번 달 물어본 질문은 1개입니다." in text
+    assert "물어본 질문 2개입니다." not in text
