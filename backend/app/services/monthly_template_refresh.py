@@ -212,7 +212,7 @@ def compare_doctor_pdf_facts(
 ) -> list[str]:
     """옛 원장 PDF에 있던 숫자 사실이 새 PDF에도 있고, 새 PDF에 없던 숫자가 생기지 않았는가.
 
-    `stored_facts`는 저장값에서 그대로 옮긴 사실이라 새 PDF에만 있어도 차이로 보지 않는다.
+    `stored_facts`는 저장값에서 그대로 옮긴 사실이라 한쪽 PDF에만 있어도 차이로 보지 않는다.
     """
     # 옛 PDF가 이미 새 템플릿으로 만든 버전이면 새 부록의 설명 예시도 들어 있다 — 고정 문구는
     # 양쪽에서 똑같이 뺀다(2026-10-02: v2→v3 갱신이 '옛 PDF에만 있음: 6번중2번'으로 막혔다).
@@ -220,7 +220,9 @@ def compare_doctor_pdf_facts(
         pdf_fact_tokens(old_text, ignore=OLD_PDF_STATIC_TOKENS | NEW_PDF_STATIC_TOKENS)
     )
     new = set(pdf_fact_tokens(new_text, ignore=NEW_PDF_STATIC_TOKENS))
-    problems = [f"옛 PDF에만 있음: {token}" for token in sorted(old - new)]
+    # 저장값에서 옮긴 사실은 문구가 'N번 중 M번' 꼴을 버려도(2026-10: '150회 전부 확인') 숫자가
+    # 바뀐 것이 아니다 — 옛 PDF에만 있어도 차이로 보지 않는다.
+    problems = [f"옛 PDF에만 있음: {token}" for token in sorted(old - new - stored_facts)]
     problems.extend(
         f"새 PDF에만 있음: {token}" for token in sorted(new - old - stored_facts)
     )
