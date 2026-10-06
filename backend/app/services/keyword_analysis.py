@@ -92,6 +92,10 @@ _LEXICON: dict[str, tuple[KeywordClass, str]] = {
     "임플란트": (KeywordClass.PROCEDURE, "임플란트"),
     "라식": (KeywordClass.PROCEDURE, "라식"),
     "라섹": (KeywordClass.PROCEDURE, "라섹"),
+    # 이름만으로는 검사인지 드러나지 않는 검사. 사전에 없으면 '모름'으로 접혀 질환처럼
+    # "{keyword} 치료 비용 …" 질문이 만들어진다(2026-10: '갑상선초음파 치료 비용' 글 제목).
+    "골밀도": (KeywordClass.PROCEDURE, "골밀도 검사"),
+    "심전도": (KeywordClass.PROCEDURE, "심전도 검사"),
     # 질환
     "우울증": (KeywordClass.DISEASE, "우울증"),
     "불안증": (KeywordClass.DISEASE, "불안증"),
@@ -145,7 +149,7 @@ _LEXICON: dict[str, tuple[KeywordClass, str]] = {
 # ── 형태 규칙 (사전에 없을 때만) ──────────────────────────────────
 # 순서가 의미를 가진다. 시술을 먼저 봐야 "종양절제술"이 질환으로 새지 않는다.
 _SUFFIX_RULES: tuple[tuple[re.Pattern[str], KeywordClass], ...] = (
-    (re.compile(r"(내시경|수술|시술|성형|교정|이식|절제|주사|레이저|검진|검사|스케일링)$"),
+    (re.compile(r"(내시경|초음파|촬영|조영술|수술|시술|성형|교정|이식|절제|주사|레이저|검진|검사|스케일링)$"),
      KeywordClass.PROCEDURE),
     (re.compile(r"(치료|요법|재활)$"), KeywordClass.CARE_SERVICE),
     (re.compile(r"(증후군|장애|결석|골절|탈장)$"), KeywordClass.DISEASE),
@@ -220,27 +224,56 @@ def _known_region_keys(regions: Iterable[str] | None) -> set[str]:
     return keys
 
 
+# 임상 개념이 아닌 검색 군더더기. 사전(_LEXICON)·접미 규칙과 **별도로** 둔다 —
+# lexicon_fingerprint()는 그 둘만 지문으로 삼으므로, 여기를 고쳐도 전 병원의 측정
+# 기반 지문이 바뀌지 않는다. 단 이 목록은 새로 만드는 질문 문장에만 영향을 준다.
+_SEARCH_FILLERS = frozenset(
+    {
+        "추천", "추천해줘", "잘하는곳", "잘하는", "잘하는데", "잘보는곳", "좋은곳", "좋은",
+        "근처", "주변", "인근", "가까운", "유명한", "후기", "비용", "가격",
+    }
+)
+
+
+def _is_region_token(token: str, region_keys: set[str]) -> bool:
+    key = _match_key(token)
+    if key in region_keys or _looks_like_region(token):
+        return True
+    # '마산'은 지역 목록의 '마산합포구'(정확 일치 아님)의 앞부분이다. 이걸 지역으로
+    # 못 알아보면 키워드에 남아 "마산합포구 마산 …"처럼 지역이 두 번 나온다.
+    # 사전에 있는 임상어(예: 지역명과 접두가 같은 '대장')는 지역으로 보지 않는다.
+    return (
+        len(key) >= 2
+        and key not in _LEXICON
+        and any(known.startswith(key) and len(known) > len(key) for known in region_keys)
+    )
+
+
 def _split_structure(
     text: str,
     known_regions: Iterable[str] | None = None,
-) -> tuple[str | None, str | None, str]:
-    """'군자역 정형외과 PRP주사' → (군자역, 정형외과, 'PRP주사').
+) -> tuple[str | None, str | None, str, bool]:
+    """'군자역 정형외과 PRP주사' → (군자역, 정형외과, 'PRP주사', 군더더기 여부).
 
     잔여어가 남으면 그것을 다시 분류한다 — 지역·진료과를 지우는 것이 아니라
-    **떼어내고 남은 임상 개념**을 보는 것이 요점이다.
+    **떼어내고 남은 임상 개념**을 보는 것이 요점이다. '추천' 같은 군더더기는
+    임상 개념이 아니므로 잔여어에서 뺀다(뺐다는 사실은 따로 돌려준다).
     """
     region: str | None = None
     specialty: str | None = None
     residue: list[str] = []
+    filler = False
     region_keys = _known_region_keys(known_regions)
     for token in normalize(text).split():
-        if _match_key(token) in region_keys or _looks_like_region(token):
+        if _is_region_token(token, region_keys):
             region = region or token
         elif _looks_like_specialty(token):
             specialty = specialty or token
+        elif _match_key(token) in _SEARCH_FILLERS:
+            filler = True
         else:
             residue.append(token)
-    return region, specialty, " ".join(residue)
+    return region, specialty, " ".join(residue), filler
 
 
 def _classify_term(term: str) -> tuple[KeywordClass, str, str, str]:
@@ -262,11 +295,11 @@ def analyze_keyword(
     known_regions: Iterable[str] | None = None,
 ) -> KeywordAnalysis:
     """키워드 1개를 분석한다. **절대 예외를 던지지 않는다** — 접수를 막으면 리드가 죽는다."""
-    region, specialty, residue = _split_structure(raw, known_regions)
+    region, specialty, residue, filler = _split_structure(raw, known_regions)
 
     # 지역·진료과만 있고 임상 개념이 없으면 검색어 형태다. 이건 진료과 앵커 슬롯과
     # 같은 질문이라 그대로 쓰면 3개 질의가 사실상 1개가 된다.
-    if (region or specialty) and not residue:
+    if (region or specialty or filler) and not residue:
         canonical = canonical_specialty(specialty or "")
         return KeywordAnalysis(
             raw=raw,
@@ -282,7 +315,7 @@ def analyze_keyword(
 
     target = residue or normalize(raw)
     klass, canonical, confidence, source = _classify_term(target)
-    if (region or specialty) and source != "fallback":
+    if (region or specialty or filler) and source != "fallback":
         # 지역·진료과가 섞인 입력에서 임상 개념을 건져낸 경우에만 구조 파싱이 기여했다.
         # 평범한 단일 키워드에까지 이 표시를 붙이면 감사 로그가 거짓말을 한다.
         source = f"structural+{source}"

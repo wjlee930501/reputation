@@ -31,7 +31,7 @@ def test_diagnosis_connects_why_now_assets_and_regional_fit(measured, mentioned,
     assert "#ff3d00" in html and "#99522e" not in html
 
 
-@pytest.mark.parametrize("cited_cells,label", [(None, "AI 답변의 출처로 쓰였는지 아직 확인하지 못했습니다"), (0, "아직 AI 답변의 출처로 쓰인 적은 없습니다"), (2, "질문 2건에서 AI 답변의 출처로 쓰였습니다")])
+@pytest.mark.parametrize("cited_cells,label", [(None, "AI 답변의 출처로 쓰였는지 아직 확인하지 못했습니다"), (0, "아직 AI 답변의 출처로 쓰인 적은 없습니다"), (2, "AI 답변 2건의 출처로 쓰였습니다")])
 def test_portfolio_distinguishes_unknown_absence_and_citation(cited_cells, label):
     # Given fictional work with independently specified citation coverage.
     view = monthly_view()

@@ -39,4 +39,4 @@ def test_long_work_titles_and_both_260_character_quotes_are_preserved():
     assert "이번달한일을보고드립니다" in "".join(pages[1].extract_text().split())
     appendix = "".join("".join(page.extract_text().split()) for page in pages[3:])
     assert appendix.count("".join(excerpt.split())) == 2
-    assert "우리병원이언급된답변" in appendix and "다음에공략할질문의답변" in appendix
+    assert "우리병원이언급된답변" in appendix and "같은질문에서언급되지않은답변" in appendix

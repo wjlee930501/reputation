@@ -9,6 +9,7 @@ from app.services.doctor_pdf_contracts import (
     DoctorPdfValidationError,
     DoctorReportView,
 )
+from app.services.report_narrative import PRIORITY_APPENDIX_LEAD
 
 
 def validate_v3_fields(view: DoctorReportView) -> None:
@@ -99,8 +100,8 @@ def v3_expectation(
         "AI에게 물었을 때 우리 병원이 언급된 비율",
         "지난달",
         "이번 달",
-        "AI가 언급한 질문",
-        "AI가 참고한 우리 글",
+        "우리 병원이 언급된 질문",
+        "우리 글이 출처로 쓰인 답변",
         f"{n.current:.1f}%" if n.current is not None else n.current_label,
         (
             f"{n.previous:.1f}%"
@@ -110,7 +111,7 @@ def v3_expectation(
             else n.previous_label
         ),
     ]
-    if n.previous is None and n.current is not None:
+    if n.previous is None and n.current is not None and n.reference_previous is None:
         page1.append(n.comparison_note)
     if n.current is not None and round(n.current) > 0:
         page1.append(f"100번 물으면 약 {round(n.current)}번 우리 병원이 언급된 셈입니다.")
@@ -119,9 +120,9 @@ def v3_expectation(
     if view.get("v0_baseline"):
         base = view["v0_baseline"]
         page1.append(f"처음 측정 {base['of_hundred']}% / 이번 달 {base['current_of_hundred']}%")
-    page2 = ["첫 측정에서", "확인한 내용"] if initial else ["이번 달 한 일을", "보고드립니다", "그 결과"]
+    page2 = ["첫 측정에서", "확인한 내용"] if initial else ["이번 달 한 일을", "보고드립니다"]
     page2.append(n.work_story)
-    page2.append("AI 답변 속 우리 병원")
+    page2.append("이번 달 AI 답변 속 우리 병원")
     for work in n.works[:2]:
         page2.append(work.title)
         page2.append(work.citation_label)
@@ -139,7 +140,8 @@ def v3_expectation(
             [
                 "지금 언급되는 질문",
                 f"{h['measured_questions']}개 중 {h['mentioned_questions']}개",
-                f"남은 {h['measured_questions'] - h['mentioned_questions']}개는 위 순서대로 다음 달부터 다룹니다.",
+                f"아직 언급되지 않은 질문 {h['measured_questions'] - h['mentioned_questions']}개는 "
+                "모두 다음 달 계획에 넣었습니다.",
             ]
             if has_opportunity
             else [tile["label"], tile["value"], tile["hint"]]
@@ -159,9 +161,13 @@ def v3_expectation(
     appendix.extend(
         (
             "숫자를 읽는 법",
-            "환자가 AI에게 병원을 물었을 때 우리 병원이 답에 오르는 정도를 뜻합니다.",
+            "언급 비율은 환자가 AI에게 병원을 물었을 때 우리 병원이 답변에 오른 정도입니다.",
         )
     )
+    if view.get("appendix_example"):
+        appendix.append(view["appendix_example"])
+    if n.priorities[3:]:
+        appendix.append(PRIORITY_APPENDIX_LEAD)
     appendix.extend(view["footnotes"])
     appendix.extend((*n.methods, *n.platform_details, n.comparison_note, n.citation_scope))
     appendix.extend(n.citation_details)

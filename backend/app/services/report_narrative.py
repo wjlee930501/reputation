@@ -35,7 +35,7 @@ class PublishedWork:
             return "AI 답변의 출처로 쓰였는지 아직 확인하지 못했습니다"
         if self.cited_cells == 0:
             return "아직 AI 답변의 출처로 쓰인 적은 없습니다"
-        return f"질문 {self.cited_cells}건에서 AI 답변의 출처로 쓰였습니다"
+        return f"AI 답변 {self.cited_cells}건의 출처로 쓰였습니다"
 
     @property
     def appendix_label(self) -> str:
@@ -43,7 +43,7 @@ class PublishedWork:
             return "확인 못 함"
         if self.cited_cells == 0:
             return "아직 없음"
-        return f"질문 {self.cited_cells}건"
+        return f"답변 {self.cited_cells}건"
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,26 +92,39 @@ _COMPARISON_NOTES = {
     "SAMPLE_SHAPE_CHANGED": f"질문마다 물어본 횟수가 지난달과 달라서 {_NOT_COMPARED}",
 }
 _DEFAULT_COMPARISON_NOTE = f"지난달과 같은 조건에서 물었는지 확인되지 않아 {_NOT_COMPARED}"
-_REFERENCE_CONCLUSION = "측정 방식을 새로 바꾼 달이어서, 지난달 수치는 참고로 곁에 적어 두었습니다."
-_REFERENCE_TAIL = "흐름을 보실 수 있도록 지난달 수치는 참고로만 적어 두었습니다."
-_REFERENCE_NOTES = {
+# 지난달 수치를 참고로만 두는 달. 첫 장에서는 한 번(제목 문장)만 말하고, 부록의 읽는 법에서는
+# 짧게 되풀이한다 — 같은 말을 세 번 하지 않는다(2026-10 마케팅 검토).
+_REFERENCE_CONCLUSIONS = {
     "MEASUREMENT_POLICY_CHANGED": (
-        "AI 답변을 받아 오는 방식이 바뀌어, 지난달 수치는 참고로만 적어 두었습니다. "
-        "다음 달부터는 같은 방식으로 견주어 보여 드리겠습니다."
+        "이번 달부터 측정 방식이 바뀌어, 지난달 수치는 참고용으로만 함께 적었습니다. "
+        "다음 달부터는 같은 방식으로 비교해 드리겠습니다."
     ),
 }
-_COMPARABLE_NOTE = "지난달과 똑같은 질문을 같은 방식으로 물어, 그 결과끼리 견주었습니다."
-# 같은 종류의 할 일이 여러 줄일 때 문장이 똑같이 반복되지 않게 돌려 쓴다.
+_REFERENCE_CONCLUSION = (
+    "지난달과 같은 조건으로 비교할 수 없어, 지난달 수치는 참고용으로만 함께 적었습니다."
+)
+_REFERENCE_TAIL = "지난달 수치는 참고용으로만 함께 적었습니다."
+_REFERENCE_NOTES = {
+    "MEASUREMENT_POLICY_CHANGED": (
+        "이번 달부터 측정 방식이 바뀌어 지난달 수치는 참고용으로만 적었습니다."
+    ),
+}
+_COMPARABLE_NOTE = "지난달과 같은 질문을 같은 방식으로 물어 두 달의 결과를 비교했습니다."
+# 다음 달 할 일 한 줄은 `“질문”: 할 일.` 꼴이다. 인용한 질문이 곧 목표 질문이므로
+# "~처럼 … 질문에서도" 같은 틀 문장을 앞에 붙이지 않는다(예시가 따로 있는 듯 읽히고,
+# "에서도"는 이미 언급되는 질문을 전제한다). 같은 종류가 여러 줄이면 할 일을 돌려 쓴다.
 _LOST_MOVES = (
-    "관련 진료 안내 글을 보강하겠습니다",
-    "같은 주제를 새로운 시각으로 풀어낸 글을 더해 보겠습니다",
-    "환자분들이 실제로 쓰는 표현에 맞춰 안내 글을 다듬겠습니다",
+    "{platform} 답변에 다시 언급되도록 관련 진료 안내 글을 보강합니다",
+    "{platform} 답변에 다시 언급되도록 같은 주제를 다른 각도로 다룬 글을 더합니다",
+    "{platform} 답변에 다시 언급되도록 환자분들이 쓰는 표현에 맞춰 글을 다듬습니다",
 )
 _UNMENTIONED_MOVES = (
-    "이 질문에 바로 답이 되는 진료 안내 글을 준비하겠습니다",
-    "이 질문을 정면으로 다루는 글을 새로 쓰겠습니다",
-    "관련 키워드를 넓혀 글을 보강하겠습니다",
+    "이 질문에 바로 답하는 진료 안내 글을 준비합니다",
+    "이 질문을 직접 다루는 글을 새로 씁니다",
+    "연관 키워드를 넓혀 기존 글을 보강합니다",
 )
+# 부록 '그 밖에 살펴볼 질문'의 머리글. 줄마다 같은 앞부분을 되풀이하지 않고 여기서 한 번 말한다.
+PRIORITY_APPENDIX_LEAD = "아래 질문에서도 우리 병원이 답변에 나오도록 글 작업을 이어 가겠습니다."
 
 
 def _conclusion(value: float | None, prior: float | None, *, first: bool) -> str:
@@ -140,12 +153,12 @@ def _denominator(
     if type(attempts) is not int or type(mentions) is not int:
         return f"물어본 횟수가 기록에 남지 않아, 비율의 근거는 함께 싣지 못했습니다. {tail}"
     asked = (
-        f"지난달과 같은 질문을 {platforms}에 모두 {attempts}번 물었고"
+        f"지난달과 같은 질문을 {platforms}에 총 {attempts}회 물었고"
         if comparable
-        else f"{platforms}에 환자 질문을 모두 {attempts}번 물었고"
+        else f"{platforms}에 환자 질문을 총 {attempts}회 물었고"
     )
     found = (
-        f"그중 {mentions}번 답변에 우리 병원이 언급됐습니다."
+        f"{mentions}회의 답변에 우리 병원이 언급됐습니다."
         if mentions
         else "아직은 답변에 우리 병원이 언급되지 않았습니다."
     )
@@ -165,7 +178,7 @@ def _result_story(value, prior, first, attempts, mentions, new_mention_count=0):
         if value < prior:
             return f"지난달 {prior:.1f}%에서 {value:.1f}%로 내려갔습니다. 언급이 줄은 질문부터 계획에 넣었습니다."
         return f"지난달과 같은 {value:.1f}%를 유지했습니다.{new_part}"
-    return f"이번 달 {value:.1f}%가 나왔습니다.{new_part}"
+    return f"이번 달 언급 비율은 {value:.1f}%입니다.{new_part}"
 
 
 def _work_story(works):
@@ -180,15 +193,32 @@ def _work_story(works):
         )
     return (
         f"이번 달 글 {len(works)}편을 올렸습니다. "
-        "다음 달에는 AI 답변이 참고할 만한 글로 다듬어 올리겠습니다."
+        "다음 달에는 AI 답변이 참고할 만한 수준으로 글을 다듬어 올리겠습니다."
     )
+
+
+def _question_totals(rows) -> dict[str, tuple[int, int]]:
+    """질문 문장별 (이번 달 물어본 횟수, 언급된 횟수). 문장이 같은 행은 하나로 합친다."""
+    totals: dict[str, tuple[int, int]] = {}
+    for row in rows:
+        text = str(row.get("query_text") or "").strip()
+        if not text:
+            continue
+        attempts_used, mentioned_attempts = totals.get(text, (0, 0))
+        totals[text] = (
+            attempts_used + int(row.get("current_attempts_used") or 0),
+            mentioned_attempts + int(row.get("current_mentioned_attempts") or 0),
+        )
+    return totals
 
 
 def _plan_story(priorities):
     """3장의 서술 문단. 다음 달 계획의 방향을 풀어 쓴다."""
     if not priorities:
         return ""
-    return "다음 달에는 아래 세 가지를 먼저 챙기고, 같은 질문으로 다시 물어 결과를 보고드리겠습니다."
+    # 3쪽에는 앞의 세 줄까지만 싣는다. 실제로 싣는 줄 수와 문장이 어긋나지 않게 센다.
+    count = ("한", "두", "세")[min(len(priorities), 3) - 1]
+    return f"다음 달에는 아래 {count} 가지를 먼저 챙기고, 같은 질문으로 다시 물어 결과를 보고드리겠습니다."
 
 
 def build_monthly_narrative(
@@ -238,7 +268,9 @@ def build_monthly_narrative(
         else None
     )
     conclusion = (
-        _REFERENCE_CONCLUSION if reference is not None else _conclusion(value, prior, first=first)
+        _REFERENCE_CONCLUSIONS.get(reason, _REFERENCE_CONCLUSION)
+        if reference is not None
+        else _conclusion(value, prior, first=first)
     )
     if comparable:
         note = _COMPARABLE_NOTE
@@ -271,28 +303,27 @@ def build_monthly_narrative(
         priorities.append(
             "이번 달 측정을 다시 진행하고, 결과를 받는 대로 정리해 전해 드리겠습니다."
         )
-    lost_rows = (attribution or {}).get("lost_mention_cells", []) if comparable else []
-    for index, row in enumerate(lost_rows):
-        priorities.append(
-            f"“{row['query_text']}” 질문에서 {row['platform_label']} 답변에 다시 언급되도록, "
-            f"{_LOST_MOVES[index % len(_LOST_MOVES)]}."
+    # 한 질문에는 할 일 하나. 질문 행은 측정 키마다 따로 올 수 있어(같은 문장이 둘 이상),
+    # 부록 표·첫 장 칸과 같이 문장 기준으로 합친 뒤에 고른다. 합치지 않으면 다른 키에서
+    # 이미 언급된 질문이 '언급 안 된 질문'으로 계획에 오르고, 같은 질문이 두 번 나온다.
+    question_totals = _question_totals((attribution or {}).get("question_rows", []))
+    lost_by_question: dict[str, list[str]] = {}
+    if comparable:
+        for row in (attribution or {}).get("lost_mention_cells", []):
+            text = str(row.get("query_text") or "").strip()
+            if text:
+                lost_by_question.setdefault(text, []).append(row["platform_label"])
+    for index, (text, labels) in enumerate(lost_by_question.items()):
+        move = _LOST_MOVES[index % len(_LOST_MOVES)].format(
+            platform="·".join(dict.fromkeys(labels))
         )
-    lost_questions = (
-        {row["query_text"] for row in (attribution or {}).get("lost_mention_cells", [])}
-        if comparable
-        else set()
-    )
+        priorities.append(f"“{text}”: {move}.")
     unmentioned = [
-        row for row in (attribution or {}).get("question_rows", [])
-        if row["query_text"] not in lost_questions
-        and row.get("current_attempts_used", 0)
-        and not row.get("current_mentioned_attempts", 0)
+        text for text, (attempts_used, mentioned_attempts) in question_totals.items()
+        if text not in lost_by_question and attempts_used and not mentioned_attempts
     ]
-    for index, row in enumerate(unmentioned):
-        priorities.append(
-            f"“{row['query_text']}”처럼 환자분들이 묻는 질문에서도 우리 병원이 보이도록, "
-            f"{_UNMENTIONED_MOVES[index % len(_UNMENTIONED_MOVES)]}."
-        )
+    for index, text in enumerate(unmentioned):
+        priorities.append(f"“{text}”: {_UNMENTIONED_MOVES[index % len(_UNMENTIONED_MOVES)]}.")
     if not priorities and comparable:
         for row in (attribution or {}).get("new_mention_cells", [])[:2]:
             priorities.append(
@@ -312,7 +343,7 @@ def build_monthly_narrative(
         rate = row.get("mention_rate")
         score = f"{rate:.1f}%" if rate is not None else "측정 못 함"
         platforms.append(
-            f"{name} · 질문별로 언급된 비율의 평균 {score} · 모두 {row.get('attempts_used', 0)}번 "
+            f"{name} · 질문별로 언급된 비율의 평균 {score} · {row.get('attempts_used', 0)}번 "
             f"물어 {row.get('mentioned_attempts', 0)}번 언급 · 질문 {row.get('planned_count', 0)}건 중 "
             f"답 확인 {row.get('success_count', 0)}건, 실패 {row.get('failed_count', 0)}건, "
             f"제외 {row.get('excluded_count', 0)}건"
@@ -360,15 +391,22 @@ def build_monthly_narrative(
             else "같은 질문 반복 확인 기록: 남아 있지 않아 계획·확인 횟수를 0으로 적지 않았습니다."
         )
     cite = citations or {}
+    # 출처 집계의 단위는 질문×AI 서비스의 답변 한 건이다. '질문 30건'이라 쓰면 질문 15개와
+    # 헷갈리므로 답변으로 센다. 0건이면 출처로 쓰였다는 사실을 전제한 단서를 붙이지 않는다.
+    answers = cite.get("measured_cell_count", 0)
+    cited_answers = cite.get("cited_cell_count", 0)
     scope = (
-        f"물어본 질문 {cite.get('measured_cell_count', 0)}건 가운데 {cite.get('cited_cell_count', 0)}건에서 "
-        "우리 병원 글이나 안내 페이지가 AI 답변의 출처로 쓰였습니다. "
-        "다만 출처로 쓰였다는 사실만으로 결과가 달라진 이유를 단정하지는 않습니다."
+        f"{platform_names} 답변 {answers}건을 확인했고, 그중 {cited_answers}건에서 "
+        "우리 병원 글이나 안내 페이지가 출처로 쓰였습니다. "
+        "다만 출처로 쓰였다는 사실만으로 결과의 원인을 판단하지는 않습니다."
+        if cited_answers
+        else f"{platform_names} 답변 {answers}건을 확인했고, "
+        "우리 병원 글이나 안내 페이지가 출처로 쓰인 답변은 없었습니다."
     )
     details: list[str] = []
     for item in cite.get("cited_items", []):
         details.append(
-            f"우리 병원 글 · {item.get('title') or '제목 없음'} · 출처로 쓰인 질문 {item['cited_cell_count']}건"
+            f"우리 병원 글 · {item.get('title') or '제목 없음'} · 출처로 쓰인 답변 {item['cited_cell_count']}건"
         )
         details.extend(
             f"{query['query_text']} · {query['platform_label']}"
@@ -376,7 +414,7 @@ def build_monthly_narrative(
         )
     for item in cite.get("hub_pages", []):
         details.append(
-            f"우리 병원 안내 페이지 · {item['label']} · 출처로 쓰인 질문 {item['cited_cell_count']}건"
+            f"우리 병원 안내 페이지 · {item['label']} · 출처로 쓰인 답변 {item['cited_cell_count']}건"
         )
         details.extend(
             f"{query['query_text']} · {query['platform_label']}"
@@ -408,7 +446,7 @@ def build_monthly_narrative(
         fulfillment_note=(
             f"남은 {shortfall}편도 검수가 끝나는 대로 올려 드리겠습니다."
             if shortfall
-            else "다음 달에도 계획한 글을 일정대로 꾸준히 올리겠습니다."
+            else "다음 달에도 계획한 글을 일정에 맞춰 올리겠습니다."
         ),
         previous_label="첫 측정" if first else "비교 없음",
         reference_previous=reference,

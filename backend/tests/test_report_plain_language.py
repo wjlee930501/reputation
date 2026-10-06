@@ -160,7 +160,7 @@ def test_director_pdf_passes_the_medical_ad_filter(name):
         ("down", "다음 달에는 더 넓은 키워드로 AI 답변 속 언급을 다시 늘려 가겠습니다.", "30.0%"),
         ("first", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
         ("method", "이번 결과를 새 기준점으로 두고, 다음 달부터 흐름을 짚어 드리겠습니다.", "비교 없음"),
-        ("method_reference", "측정 방식을 새로 바꾼 달이어서, 지난달 수치는 참고로 곁에 적어 두었습니다.", "40.0%"),
+        ("method_reference", "이번 달부터 측정 방식이 바뀌어, 지난달 수치는 참고용으로만 함께 적었습니다. 다음 달부터는 같은 방식으로 비교해 드리겠습니다.", "40.0%"),
         ("unavailable", "측정을 다시 진행한 뒤, 결과가 확인되는 대로 바로 알려 드리겠습니다.", "비교 없음"),
         ("initial", "첫 측정 결과입니다. 앞으로 이 숫자와 견주며 변화를 살피겠습니다.", "첫 측정"),
     ],
@@ -200,7 +200,7 @@ def test_comparable_month_explains_the_number_in_everyday_words():
     view = _view("up")
     page = _page(_html(view), 1)
     assert "100번 물으면 약 50번 우리 병원이 언급된 셈입니다." in page
-    assert "지난달과 같은 질문을 ChatGPT·Gemini에 모두 18번 물었고, 그중 9번 답변에 우리 병원이 언급됐습니다." in page
+    assert "지난달과 같은 질문을 ChatGPT·Gemini에 총 18회 물었고, 9회의 답변에 우리 병원이 언급됐습니다." in page
     assert "환자 수가 아닌 AI 답변 횟수 기준입니다." in page
 
 
@@ -215,14 +215,10 @@ def test_a_lower_month_leads_with_our_plan_while_the_numbers_stay_visible():
 def test_lost_and_never_mentioned_questions_become_next_month_actions():
     priorities = _view("down")["narrative"].priorities
     assert priorities[0] == (
-        "“가상동 혈압 상담 병원” 질문에서 Gemini 답변에 다시 언급되도록, "
-        "관련 진료 안내 글을 보강하겠습니다."
+        "“가상동 혈압 상담 병원”: Gemini 답변에 다시 언급되도록 관련 진료 안내 글을 보강합니다."
     )
     first = _view("first")["narrative"].priorities
-    assert first[0] == (
-        "“가상동 혈압 상담 병원”처럼 환자분들이 묻는 질문에서도 우리 병원이 보이도록, "
-        "이 질문에 바로 답이 되는 진료 안내 글을 준비하겠습니다."
-    )
+    assert first[0] == "“가상동 혈압 상담 병원”: 이 질문에 바로 답하는 진료 안내 글을 준비합니다."
 
 
 def test_repeated_next_steps_do_not_repeat_the_same_sentence():
@@ -232,7 +228,7 @@ def test_repeated_next_steps_do_not_repeat_the_same_sentence():
         for index in range(3)
     ]
     priorities = monthly_view(attribution={"question_rows": rows})["narrative"].priorities
-    endings = {line.split(", ", 1)[1] for line in priorities}
+    endings = {line.split("”: ", 1)[1] for line in priorities}
     assert len(endings) == 3
 
 
@@ -312,7 +308,8 @@ def test_a_method_change_month_shows_last_month_as_reference_not_as_a_trend():
     assert narrative.previous is None  # 비교 값이 아니다 — 증감 문장·검증은 이것만 본다
     assert narrative.reference_previous == 40.0
     assert "지난달(참고)" in page and "40.0%" in page and "50.3%" in page
-    assert "지난달 수치는 참고로만 적어 두었습니다" in page
+    assert narrative.conclusion in page
+    assert "지난달 수치는 참고용으로만" in page
     assert "기준점" not in page
     for trend in ("더 자주 언급됐습니다", "줄었", "늘었"):
         assert trend not in narrative.conclusion

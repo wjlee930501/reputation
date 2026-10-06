@@ -94,7 +94,9 @@ class DoctorHighlights(TypedDict):
     mentioned_questions: int | None
     published_this_month: int
     cumulative_published: int | None
+    # 이름은 저장 호환을 위해 두지만 값은 우리 글이 출처로 쓰인 '답변' 수다(질문×AI 서비스).
     cited_questions: int | None
+    cited_answers_measured: NotRequired[int | None]
 
 
 class DoctorReportView(TypedDict):
@@ -124,6 +126,8 @@ class DoctorReportView(TypedDict):
     footnotes: list[str]
     # 2쪽 부록 — 비어 있으면 렌더하지 않고 PDF도 1쪽으로 검증된다.
     appendix_rows: list[DoctorAppendixRow]
+    # 원장용 월간 부록 표의 읽는 법 예시. 표에 실제로 있는 칸에서 만든다.
+    appendix_example: NotRequired[str | None]
     # 페이지 1이 넘칠 때 실제로 무엇을 뺐는지. 트리밍 순서를 테스트로 고정한다.
     trimmed: list[str]
     # 인용 귀속

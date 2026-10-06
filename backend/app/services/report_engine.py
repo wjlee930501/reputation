@@ -1033,24 +1033,32 @@ def _director_coverage_text(
     records: Sequence[Any],
 ) -> str:
     if has_coverage:
+        # 측정 칸은 질문×AI 서비스라 '질문 N건'이라 쓰면 질문 수와 헷갈린다 — 답변으로 센다.
         parts = [
-            f"측정 범위: {names}에 질문 {coverage.get('planned_count', 0)}건을 물어 "
-            f"{coverage.get('success_count', 0)}건의 답을 확인했습니다."
+            f"측정 범위: {names}에서 받기로 한 답변 {coverage.get('planned_count', 0)}건 중 "
+            f"{coverage.get('success_count', 0)}건을 확인했습니다."
         ]
     else:
         parts = [f"측정 범위: {names}에 물어본 AI 답변을 바탕으로 했습니다."]
     adequacy = coverage.get("observation_adequacy")
     if isinstance(adequacy, dict) and adequacy.get("lineage", "SLOTTED") == "SLOTTED":
-        partial = "일부만 확인한 달입니다. " if adequacy.get("status") != "COMPLETE" else ""
-        parts.append(
-            f"{partial}같은 질문을 되풀이해 묻기로 한 {int(adequacy.get('planned_slots') or 0)}번 중 "
-            f"{int(adequacy.get('confirmed_slots') or 0)}번 답을 확인했고, 확인하지 못한 답은 "
-            "‘언급되지 않음’으로 세지 않았습니다."
-        )
+        planned = int(adequacy.get("planned_slots") or 0)
+        confirmed = int(adequacy.get("confirmed_slots") or 0)
+        if planned and confirmed == planned:
+            parts.append(
+                f"같은 질문을 반복해 물은 {planned}회 전부 답을 확인했습니다. "
+                "확인하지 못한 답이 있으면 ‘언급되지 않음’으로 세지 않습니다."
+            )
+        else:
+            partial = "일부만 확인한 달입니다. " if adequacy.get("status") != "COMPLETE" else ""
+            parts.append(
+                f"{partial}같은 질문을 반복해 물은 {planned}회 가운데 {confirmed}회의 답을 "
+                "확인했습니다. 확인하지 못한 답은 ‘언급되지 않음’으로 세지 않았습니다."
+            )
     comparison = coverage.get("comparison") or {}
     if comparison.get("status") == "COMPARABLE":
         parts.append(
-            "첫 장의 지난달 비교는 두 달 모두 물어본 같은 질문 "
+            "첫 장의 지난달 비교는 두 달 모두 같은 질문으로 받은 답변 "
             f"{comparison.get('matched_cell_count', 0)}건으로 계산했습니다."
         )
         if coverage.get("sov_pct_all_cells") is not None:
@@ -1062,7 +1070,9 @@ def _director_coverage_text(
         for record in records if getattr(record, "measured_at", None) is not None
     })
     if dates:
-        parts.append(f"실제 확인일: {dates[0]} ~ {dates[-1]}.")
+        parts.append(
+            f"확인일: {dates[0]}." if dates[0] == dates[-1] else f"확인일: {dates[0]} ~ {dates[-1]}."
+        )
     return " ".join(parts)
 
 
@@ -1076,7 +1086,7 @@ def _director_footnotes(
 ) -> list[str]:
     notes = [
         f"{names}에 자동으로 물어본 결과라 실제 이용자 화면이나 검색 순위와 다를 수 있습니다.",
-        "같은 질문에도 AI 답변은 매번 조금씩 달라집니다. 결과가 달라진 이유를 하나로 단정하지 않습니다.",
+        "같은 질문에도 AI 답변은 매번 조금씩 달라집니다.",
         _DIRECTOR_CAVEAT,
     ]
     if first_measured_questions:
@@ -1087,13 +1097,13 @@ def _director_footnotes(
     if non_comparable_questions:
         notes.append(
             f"지난달과 같은 방식으로 비교할 수 없는 질문 {non_comparable_questions}건은 "
-            "새로 언급된 질문 계산에서 뺐습니다."
+            "지난달과의 비교에서 뺐습니다."
         )
     low, high = coverage.get("ci95_low"), coverage.get("ci95_high")
     if low is not None and high is not None:
         notes.append(
-            f"AI 답변은 물을 때마다 조금씩 달라서, 이번 달 비율은 대략 {low:.1f}% ~ {high:.1f}% "
-            "사이로 보시는 것이 안전합니다."
+            f"AI 답변은 물을 때마다 조금씩 달라서, 이번 달 비율은 대략 {low:.1f}~{high:.1f}% "
+            "범위로 보시면 됩니다."
         )
     if has_v0_baseline:
         notes.append("처음 측정한 값은 참고용입니다. 서비스를 시작하기 전에 잰 값이 아닙니다.")
@@ -1117,6 +1127,7 @@ def _director_highlights(
         for row in rows if int(row.get("current_mentioned_attempts") or 0) > 0
     } - {""}
     cited_known = bool((citations or {}).get("measured_cell_count"))
+    # 출처 집계는 질문×AI 서비스의 답변 단위다. 칸은 'N건 중 M건'으로 기준과 함께 쓴다.
     return {
         "measured_questions": len(measured) if rows else None,
         "mentioned_questions": len(mentioned & measured) if rows else None,
@@ -1124,6 +1135,9 @@ def _director_highlights(
         "cumulative_published": cumulative_published_count,
         "cited_questions": (
             int((citations or {}).get("cited_cell_count") or 0) if cited_known else None
+        ),
+        "cited_answers_measured": (
+            int((citations or {}).get("measured_cell_count") or 0) if cited_known else None
         ),
     }
 
@@ -1173,6 +1187,23 @@ def _director_copy(
         }
         for row in view["appendix_rows"]
     ]
+    # 표 안내의 읽는 법 예시는 표에 실제로 있는 칸에서 가져온다. 고정 예시('6번 중 2번')는
+    # 표의 횟수와 달라 원장님을 헷갈리게 했다.
+    example = next(
+        (
+            row["current_label"] for row in rows
+            if re.fullmatch(r"\d+번 중 [1-9]\d*번", row["current_label"])
+        ),
+        None,
+    )
+    if example:
+        asked, found = re.findall(r"\d+", example)
+        appendix_example = (
+            f"‘{example}’은 {names.replace(', ', '·')}에 합쳐 {asked}번 물어 "
+            f"우리 병원이 {found}번 언급됐다는 뜻입니다."
+        )
+    else:
+        appendix_example = None
     tile = _director_tile(
         plan_quota=plan_quota,
         published_count=published_count,
@@ -1195,6 +1226,7 @@ def _director_copy(
         ),
         "evidence": evidence,
         "appendix_rows": rows,
+        "appendix_example": appendix_example,
         "new_mention_sentences": view["new_mention_sentences"] if compared else [],
         "lost_mention_sentences": view["lost_mention_sentences"] if compared else [],
         "new_mention_empty_text": empty,

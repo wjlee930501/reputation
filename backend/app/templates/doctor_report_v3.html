@@ -16,7 +16,7 @@
 <p class="descriptor">{% if ym|length == 2 %}{{ ym[0] }}년 {{ ym[1]|int }}월 · {% endif %}{{ n.title }}</p>
 <p class="identity hero-identity">{{ view.hospital_name }}</p>
 <h1 class="editorial-result">{{ n.conclusion }}</h1>
-{% if n.previous is none and n.current is not none %}<p class="headline-note">{{ n.comparison_note }}</p>{% endif %}
+{% if n.previous is none and n.current is not none and n.reference_previous is none %}<p class="headline-note">{{ n.comparison_note }}</p>{% endif %}
 </div>
 
 <p class="story">{{ n.result_story }}</p>
@@ -25,13 +25,13 @@
 <div class="metrics">{% if n.previous is none and n.reference_previous is not none %}<div class="metric reference"><span class="metric-label">지난달(참고)</span><strong>{{ '%.1f%%'|format(n.reference_previous) }}</strong><div class="scale"><div class="bar prior" style="width:{{ n.reference_previous }}%"></div></div></div>{% else %}<div class="metric"><span class="metric-label">지난달</span><strong class="{{ 'withheld' if n.previous is none else '' }}">{{ '%.1f%%'|format(n.previous) if n.previous is not none else n.previous_label }}</strong>{% if n.previous is not none %}<div class="scale"><div class="bar prior" style="width:{{ n.previous }}%"></div></div>{% endif %}</div>{% endif %}
 <div class="metric current"><span class="metric-label">이번 달</span><strong class="{{ 'withheld' if n.current is none else '' }}">{{ '%.1f%%'|format(n.current) if n.current is not none else n.current_label }}</strong>{% if n.current is not none %}<div class="scale"><div class="bar" style="width:{{ n.current }}%"></div></div>{% endif %}</div>
 </div>
-{% if n.current is not none %}<p class="metric-plain">{% if n.current|round|int > 0 %}100번 물으면 약 <b>{{ n.current|round|int }}번</b> 우리 병원이 언급된 셈입니다. AI에게 묻는 환자에게 우리 병원이 보인다는 뜻입니다.{% else %}다음 달에는 언급이 시작되도록 질문 범위를 넓히겠습니다.{% endif %}</p>{% endif %}
+{% if n.current is not none %}<p class="metric-plain">{% if n.current|round|int > 0 %}100번 물으면 약 <b>{{ n.current|round|int }}번</b> 우리 병원이 언급된 셈입니다. AI에 병원을 묻는 환자 일부가 답변에서 우리 병원을 봅니다.{% else %}다음 달에는 언급이 시작되도록 질문 범위를 넓히겠습니다.{% endif %}</p>{% endif %}
 <p class="caption">{{ n.denominator }}</p>
 
 <div class="facts">
-<div class="fact"><p class="fact-label">AI가 언급한 질문</p>{% if h.measured_questions %}<p class="fact-value">{{ h.measured_questions }}개 중 {{ h.mentioned_questions }}개</p><p class="caption">이번 달 물어본 질문 가운데 우리 병원이 한 번이라도 언급된 질문입니다.</p>{% else %}<p class="fact-value withheld">확인 못 함</p><p class="caption">이번 달은 질문별 결과를 확인하지 못했습니다.</p>{% endif %}</div>
+<div class="fact"><p class="fact-label">우리 병원이 언급된 질문</p>{% if h.measured_questions %}<p class="fact-value">{{ h.measured_questions }}개 중 {{ h.mentioned_questions }}개</p><p class="caption">이번 달 물어본 질문 가운데 우리 병원이 한 번이라도 언급된 질문입니다.</p>{% else %}<p class="fact-value withheld">확인 못 함</p><p class="caption">이번 달은 질문별 결과를 확인하지 못했습니다.</p>{% endif %}</div>
 {% if not initial %}<div class="fact"><p class="fact-label">{{ tile.label }}</p><p class="fact-value">{{ tile.value }}</p><p class="caption">{% if h.cumulative_published is not none %}지금까지 올린 글은 모두 {{ h.cumulative_published }}편입니다.{% else %}{{ tile.hint }}{% endif %}</p></div>{% endif %}
-<div class="fact"><p class="fact-label">AI가 참고한 우리 글</p>{% if h.cited_questions is none %}<p class="fact-value withheld">확인 못 함</p><p class="caption">이번 달은 집계하지 못했습니다. 0번이라는 뜻은 아닙니다.</p>{% else %}<p class="fact-value">질문 {{ h.cited_questions }}건</p><p class="caption">{% if h.cited_questions %}우리 병원 글이 AI 답변의 출처로 쓰인 질문 수입니다.{% else %}출처로 쓰이도록 글을 계속 다듬겠습니다.{% endif %}</p>{% endif %}</div>
+<div class="fact"><p class="fact-label">우리 글이 출처로 쓰인 답변</p>{% if h.cited_questions is none %}<p class="fact-value withheld">확인 못 함</p><p class="caption">이번 달은 집계하지 못했습니다. 0번이라는 뜻은 아닙니다.</p>{% else %}<p class="fact-value">{% if h.cited_answers_measured %}{{ h.cited_answers_measured }}건 중 {% endif %}{{ h.cited_questions }}건</p><p class="caption">{% if h.cited_questions %}우리 병원 글이 출처로 쓰인 AI 답변 수입니다.{% else %}출처로 쓰이도록 글을 다듬겠습니다.{% endif %}</p>{% endif %}</div>
 </div>
 
 {% if view.v0_baseline %}<div class="rule-row"><h3>처음 측정했을 때와 비교 · 참고</h3><p>처음 측정 {{ view.v0_baseline.of_hundred }}% / 이번 달 {{ view.v0_baseline.current_of_hundred }}%</p>
@@ -55,15 +55,17 @@
 <div class="ledger">{% for item in n.works[:2] %}<div class="work-proof"><div class="work-title"><h3>{{ item.title }}</h3>{% if item.url %}<a class="caption" href="{{ item.url }}">올린 글 보기</a>{% endif %}</div><div class="work-observation"><p class="{{ 'cited' if item.cited_cells else 'caption' }}">{{ item.citation_label }}</p>{% if item.queries %}<p class="caption">답변에 쓰인 질문: {{ item.queries[0] }}</p>{% endif %}</div></div>
 {% else %}<p class="rule-row">보여 드릴 글 목록이 없습니다. 다른 작업으로 대신 채워 말씀드리지 않습니다.</p>{% endfor %}</div>
 
-<div class="part-head"><p class="kicker">그 결과</p><h2>AI 답변 속 우리 병원</h2></div>
+{% set same_question = view.evidence.found and view.evidence.missing and view.evidence.found.question == view.evidence.missing.question %}
+{% set missing_label = '같은 질문에서 언급되지 않은 답변' if same_question else '아직 언급되지 않은 질문의 답변' %}
+<div class="part-head"><p class="kicker">AI 답변</p><h2>이번 달 AI 답변 속 우리 병원</h2></div>
 <div class="evidence-pair">
-{% for key,label in [('found','우리 병원이 언급된 답변'),('missing','아직 언급되지 않은 질문의 답변')] %}{% set case=view.evidence[key] %}{% if case %}<div class="case {{ 'negative' if key == 'missing' else '' }}"><span class="label">{{ label }}</span><h3>“{{ case.question }}”</h3><p class="quote">{{ case.excerpt[:130] ~ "…" if case.excerpt|length > 130 else case.excerpt }}</p>
+{% for key,label in [('found','우리 병원이 언급된 답변'),('missing',missing_label)] %}{% set case=view.evidence[key] %}{% if case %}<div class="case {{ 'negative' if key == 'missing' else '' }}"><span class="label">{{ label }}</span><h3>“{{ case.question }}”</h3><p class="quote">{{ case.excerpt[:130] ~ "…" if case.excerpt|length > 130 else case.excerpt }}</p>
 <p class="caption">{{ case.platform }}{% if case.measured_at %} · {{ case.measured_at.strftime('%Y-%m-%d') }} 확인{% endif %} · 답변 발췌</p>
 </div>
 {% endif %}{% endfor %}
 {% if not view.evidence.found and not view.evidence.missing %}<div class="statement-band"><h2>{% if n.works %}글은 올렸습니다.<br>답변 예시는 아직 모으지 못했습니다.{% else %}답변 예시부터<br>다시 모으겠습니다.{% endif %}</h2><p>이번 달에는 보여 드릴 AI 답변을 확인하지 못했습니다.<br>같은 질문으로 다시 물어 확인하겠습니다.</p></div><div class="process"><p><b>01 다시 묻기</b> 같은 질문을 ChatGPT·Gemini에 다시 물어 답을 모읍니다.</p><p><b>02 출처 살피기</b> 우리 병원 글이 답변의 출처로 쓰였는지 살핍니다.</p><p><b>03 결과 알리기</b> 확인한 것과 아직 모르는 것을 나눠 알려 드립니다.</p></div>
 {% endif %}
-</div><p class="caption">{% if view.evidence.found or view.evidence.missing %}올린 글 전체와 답변 전문은 뒤쪽 부록에 있습니다.{% else %}올린 글 전체 목록은 뒤쪽 부록에 있습니다.{% endif %}</p>
+</div><p class="caption">{% if view.evidence.found or view.evidence.missing %}이번 달 올린 글 전체와 답변 전문은 뒤쪽 부록에 있습니다.{% else %}이번 달 올린 글 전체 목록은 뒤쪽 부록에 있습니다.{% endif %}</p>
 <div id="main-2-end"></div>
 
 </section>
@@ -81,7 +83,7 @@
 <p>처음 잰 결과를 정리한 보고서입니다. 한 달 동안 한 일이나 약속한 글 발행을 보고하는 문서는 아닙니다.</p>
 {% else %}{% if h.measured_questions and h.mentioned_questions is not none and h.measured_questions > h.mentioned_questions %}<h2>지금 언급되는 질문</h2>
 <p><strong>{{ h.measured_questions }}개 중 {{ h.mentioned_questions }}개</strong></p>
-<p class="caption">남은 {{ h.measured_questions - h.mentioned_questions }}개는 위 순서대로 다음 달부터 다룹니다.</p>
+<p class="caption">아직 언급되지 않은 질문 {{ h.measured_questions - h.mentioned_questions }}개는 모두 다음 달 계획에 넣었습니다.{% if n.priorities|length > 3 %} 위 세 가지 밖의 질문은 뒤쪽 부록에 있습니다.{% endif %}</p>
 {% else %}<h2>{{ tile.label }}</h2>
 <p><strong>{{ tile.value }}</strong></p>
 <p class="caption">{{ tile.hint }}</p>
@@ -90,7 +92,7 @@
 {% endif %}
 </div>
 
-<div class="steps"><h3>담당 마케터는 이렇게 진행합니다</h3><div class="process"><p><b>01 질문 넓히기</b> 더 많은 질문에서 언급되도록 키워드와 질문 유형을 넓힙니다.</p><p><b>02 글 보강하기</b> 그 질문에 답이 되는 진료 안내 글을 쓰고 올립니다.</p><p><b>03 다시 확인하기</b> 다음 달 같은 질문으로 다시 물어보고 결과를 알려 드립니다.</p></div></div>
+<div class="steps"><h3>담당 마케터는 이렇게 진행합니다</h3><div class="process"><p><b>01 질문 넓히기</b> 키워드와 질문 유형을 늘려 더 많은 질문에서 언급되게 합니다.</p><p><b>02 글 보강하기</b> 그 질문에 답이 되는 진료 안내 글을 쓰고 올립니다.</p><p><b>03 다시 확인하기</b> 다음 달 같은 질문으로 다시 물어보고 결과를 알려 드립니다.</p></div></div>
 <p class="caveat">질문별 자세한 결과는 뒤쪽 부록에 있습니다.</p>
 <div id="main-3-end"></div>
 
@@ -100,12 +102,12 @@
 
 <div class="reading-guide appendix-lead">
 <h1>숫자를 읽는 법</h1>
-<p>환자가 AI에게 병원을 물었을 때 우리 병원이 답에 오르는 정도를 뜻합니다. 진료과를 정하기 전 AI에게 묻는 환자가 늘고 있어, AI 답변에 오르지 않으면 그 환자에게는 없는 병원과 같습니다. AI가 우리 글을 출처로 삼았다는 건 그 질문에 답을 만들 때 근거로 삼았다는 뜻으로, 어떤 글이 출처가 되었는지 알면 다음 글의 방향을 정하는 데 참고가 됩니다. 지난달과 똑같은 질문을 같은 방식으로 물었을 때만 두 달을 견주고, 조건이 바뀌면 지난달 숫자는 참고로만 둡니다.</p>
+<p>언급 비율은 환자가 AI에게 병원을 물었을 때 우리 병원이 답변에 오른 정도입니다. 진료과를 정하기 전 AI에게 묻는 환자가 늘고 있어, AI 답변에 오르지 않으면 그 환자가 우리 병원을 접하기 어렵습니다. 출처로 쓰였다는 것은 AI가 답을 만들 때 그 글을 근거로 사용했다는 뜻입니다. 어떤 글이 쓰였는지 알면 다음 글의 방향을 잡을 수 있습니다. 지난달과 같은 질문을 같은 방식으로 물었을 때만 두 달을 비교하고, 조건이 바뀌면 지난달 숫자는 참고로만 둡니다.</p>
 </div>
 
 <h1>질문별 자세한 결과</h1>
 
-{% if view.appendix_rows %}<p class="caption">물어본 질문 {{ view.appendix_rows|length }}개입니다. ‘6번 중 2번’은 ChatGPT·Gemini에 모두 6번 물어 우리 병원이 2번 언급됐다는 뜻입니다. 첫 장의 비율은 두 달 모두 같은 방식으로 물어본 질문만으로 계산했습니다. —는 확인된 내용이 없다는 뜻입니다.</p>{% endif %}
+{% if view.appendix_rows %}<p class="caption">물어본 질문 {{ view.appendix_rows|length }}개입니다.{% if view.appendix_example %} {{ view.appendix_example }}{% endif %} {% if n.previous is not none %}첫 장의 지난달 비교는 두 달 모두 같은 방식으로 물어본 질문만으로 계산했습니다.{% else %}첫 장의 비율은 이번 달에 물어본 질문 전체로 계산했습니다.{% endif %} —는 확인된 내용이 없다는 뜻입니다.</p>{% endif %}
 
 <table><colgroup><col style="width:36%"><col style="width:14%"><col style="width:14%"><col style="width:16%"><col style="width:20%"></colgroup><thead><tr><th>질문</th><th>지난달</th><th>이번 달</th><th>자주 언급된 병원</th><th>출처로 쓰인 우리 글</th></tr>
 </thead>
@@ -115,16 +117,16 @@
 {% endfor %}</tbody>
 </table>
 
-<h2>올린 글 전체와 AI 답변 출처</h2>
+<h2>이번 달 올린 글과 AI 답변 출처</h2>
 <table><colgroup><col style="width:70%"><col style="width:30%"></colgroup>
-<thead><tr><th>올린 글 · 출처로 쓰인 질문</th><th>출처로 쓰인 질문 수</th></tr></thead><tbody>
+<thead><tr><th>올린 글</th><th>출처로 쓰인 답변 수</th></tr></thead><tbody>
 {% for item in n.works %}<tr><td><b>{{ item.title }}</b>{% for q in item.queries %}<p class="caption">{{ q }}</p>{% endfor %}</td>
 <td>{{ item.appendix_label }}{% if item.url %} · <a href="{{ item.url }}">글 보기</a>{% endif %}</td></tr>
 {% else %}<tr><td colspan="2">올린 글 목록이 없습니다.</td></tr>{% endfor %}
 </tbody></table>
 {% if n.works|selectattr('cited_cells', 'none')|list %}<p class="caption">‘확인 못 함’은 0번이라는 뜻이 아닙니다. 그 글이 AI 답변에 쓰였는지는 아직 확인하지 못했습니다.</p>{% endif %}
 {% if view.evidence.found or view.evidence.missing %}<h2>AI 답변 전문</h2>{% endif %}
-{% for key,label in [('found','우리 병원이 언급된 답변'),('missing','다음에 공략할 질문의 답변')] %}{% set case=view.evidence[key] %}{% if case %}
+{% for key,label in [('found','우리 병원이 언급된 답변'),('missing','같은 질문에서 언급되지 않은 답변' if same_question else '다음에 공략할 질문의 답변')] %}{% set case=view.evidence[key] %}{% if case %}
 <div class="rule-row"><h3>{{ label }} — “{{ case.question }}”</h3><p>{{ case.excerpt }}</p>
 <p class="caption">{{ case.platform }}{% if case.measured_at %} · {{ case.measured_at.strftime('%Y-%m-%d') }} 확인{% endif %} · 실제 답변에서 옮겨 둔 부분</p></div>
 {% endif %}{% endfor %}
@@ -134,9 +136,10 @@
 {% endfor %}
 
 {% if n.priorities[3:] %}<h2>그 밖에 살펴볼 질문</h2>
+<p>아래 질문에서도 우리 병원이 답변에 나오도록 글 작업을 이어 가겠습니다.</p>
 {% for line in n.priorities[3:] %}<p>{{ line }}</p>
 {% endfor %}{% endif %}
-<h2>이 보고서를 읽는 법</h2><div class="reading-guide"><p class="caption">AI 답변에 언급된 횟수는 환자 수가 아닙니다. 글을 올린 것과 답변에 언급된 것만으로 결과가 달라진 이유를 단정하지 않습니다. 다음 달 계획은 예정 사항이며, 순위나 결과를 약속드리지 않습니다.</p>
+<h2>이 보고서를 읽는 법</h2><div class="reading-guide"><p class="caption">AI 답변에 언급된 횟수는 환자 수가 아닙니다. 글을 올렸다는 사실이나 답변에 언급됐다는 사실만으로 결과의 원인을 판단하지 않습니다. 다음 달 계획은 예정 사항이며, 순위나 결과를 약속드리지 않습니다.</p>
 <p class="caption">{{ n.comparison_note }}</p>
 {% for note in view.footnotes %}<p class="caption">{{ note }}</p>
 {% endfor %}</div>
