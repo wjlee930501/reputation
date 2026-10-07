@@ -589,6 +589,37 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
     return _due_time_reached(attempt, observed)
 
 
+def attempt_is_terminal(attempt: Mapping | None) -> bool:
+    """저장된 기록이 "사람 또는 입력 변경만 풀 수 있다"로 굳은 종착인가.
+
+    스윕이 이 기록의 슬롯을 다시 집어 봐야 작가·검수 공급자 호출은 이미 예산이 끝났고,
+    OperationRun·인시던트 쓰기만 매 스윕(하루 7번) 반복된다. 판정 범위는 **재집기가 아무것도
+    풀지 못하는 코드**로만 좁힌다:
+
+    - 본문 표본 실패(`SAMPLE_BODY_CODES`)가 `OPERATOR_REQUIRED`까지 소진된 것 — 주제 교체는
+      별도 pass(`topic_swap_fallback`)가 소유한다.
+    - 사람이 정하는 참고자료 보류(`OPERATOR_DECIDES_KEY`).
+    - 승인된 Essence가 없는 `MISSING_APPROVED_ESSENCE`(입력 지문이 바뀌어야 풀린다).
+
+    `INPUT_CHANGE_REQUIRED`인 `CONTENT_AI_HARD_FINDING`은 일부러 뺀다 — 최소 교정 패스가 아직
+    그 지적을 풀 수 있는 단계이고, 본문 수리 코드(`BODY_REPAIR_CODES`)·이미지 코드는 재집기가
+    실제로 일을 한다. 입력이 그대로인지는 호출부가 지문(`context`)으로 따로 확인한다.
+    """
+
+    if not isinstance(attempt, Mapping):
+        return False
+    reason = attempt.get("reason")
+    retry_class = attempt.get("retry_class")
+    if retry_class == GenerationRetryClass.OPERATOR_REQUIRED.value:
+        return reason in SAMPLE_BODY_CODES or (
+            reason == "MISSING_REFERENCES" and bool(attempt.get(OPERATOR_DECIDES_KEY))
+        )
+    return (
+        retry_class == GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
+        and reason == "MISSING_APPROVED_ESSENCE"
+    )
+
+
 def recovery_is_abandoned(attempt: Mapping | None, now: datetime | None = None) -> bool:
     """예약 복구가 이 기록을 더 집지 않는가. 인시던트가 RETRYING을 말할 자격의 기준."""
 

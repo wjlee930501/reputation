@@ -155,6 +155,13 @@ def topic_swap_limit() -> int:
     return max(0, int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX))
 
 
+def topic_swap_budget_left(item: ContentItem) -> bool:
+    """이 슬롯이 자동 주제 교체를 한 번 더 쓸 수 있는가 — 교체 상한의 단일 판정."""
+
+    history = getattr(item, "topic_swap_history", None)
+    return (len(history) if isinstance(history, list) else 0) < topic_swap_limit()
+
+
 def _candidate_stmt(
     window_start: date, window_end: date, expiry: datetime, *, after: tuple | None = None
 ):
@@ -224,7 +231,7 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
     바꿔도 해결되지 않는다(`INPUT_CHANGE_REQUIRED`). 이미지 코드도 자기 폴백이 있다.
     """
 
-    if len(list(getattr(item, "topic_swap_history", None) or [])) >= topic_swap_limit():
+    if not topic_swap_budget_left(item):
         # 교체 상한(기본 한 번)을 다 썼다. 후보 SQL과 같은 규칙을 파이썬에도 둔 방어선이며,
         # 그 뒤의 소진은 사람의 일이다.
         return None
