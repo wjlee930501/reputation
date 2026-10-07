@@ -1300,6 +1300,13 @@ async def complete_post_publish_review(
     reviewed_by = default_actor()
     item.post_publish_reviewed_at = reviewed_at
     item.post_publish_reviewed_by = reviewed_by
+    summary = item.essence_check_summary
+    was_flagged = isinstance(summary, dict) and "post_publish_ai_review" in summary
+    if was_flagged:
+        # 자동 검수가 FLAGGED로 남긴 글을 사람이 확인했다 — 표시를 걷고 아래에서 인시던트를 닫는다.
+        item.essence_check_summary = {
+            k: v for k, v in summary.items() if k != "post_publish_ai_review"
+        }
     await write_audit_log(
         db,
         action="post_publish_review_completed",
@@ -1310,6 +1317,27 @@ async def complete_post_publish_review(
         detail={"title": item.title, "note": body.note},
     )
     await db.commit()
+    if was_flagged:
+        # 사람이 정했으니 열린 인시던트를 닫는다. 실패해도 이미 커밋된 확인 기록은 되돌리지 않는다.
+        from app.services.incident_types import IncidentFingerprint
+        from app.services.ops_incident_alerts import recover_ops_incident
+        from app.workers.post_publish_ai_review import (
+            POST_PUBLISH_INCIDENT_OBJECT,
+            POST_PUBLISH_INCIDENT_PIPELINE,
+        )
+
+        try:
+            await recover_ops_incident(
+                pipeline=POST_PUBLISH_INCIDENT_PIPELINE,
+                object_type=POST_PUBLISH_INCIDENT_OBJECT,
+                object_id=str(content_id),
+                fingerprint=IncidentFingerprint.SAFETY_BLOCKED,
+                actor=reviewed_by,
+                reason="operator completed post-publish review",
+                notify=False,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("post-publish flag incident recovery failed for %s", content_id)
     return {
         "detail": "Post-publish review completed",
         "reviewed_at": reviewed_at.isoformat(),

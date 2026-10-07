@@ -101,6 +101,20 @@ def _review_stmt(limit: int):
     )
 
 
+def _withheld_stmt(limit: int):
+    """PATCH로 검수가 낡아진 비공개(보존) 글 — restore 전에 현재 본문의 검수가 필요하다."""
+
+    edited = ContentItem.essence_check_summary["ai_review"]["edited_after_review"].as_boolean()
+    return (
+        select(ContentItem)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(ContentItem.status == ContentStatus.WITHHELD, edited.is_(True))
+        .order_by(ContentItem.body_updated_at, ContentItem.id)
+        .options(joinedload(ContentItem.hospital))
+        .limit(limit)
+    )
+
+
 def _flag_payload(review: ContentAiReview, reviewed_hash: str, now: datetime) -> dict[str, Any]:
     return {
         "status": POST_PUBLISH_FLAGGED,
@@ -123,6 +137,17 @@ def apply_review_outcome(
 
     if review.status == ContentAiReviewStatus.UNAVAILABLE:
         return "UNAVAILABLE"
+    if item.status == ContentStatus.WITHHELD:
+        # 비공개(보존) 글: 야간 생성 스윕은 이 상태를 비켜 가므로(보존 본문을 다시 쓰지 않는다)
+        # PATCH로 낡아진 검수는 여기서만 현재 해시로 되돌린다. restore가 영영 막히지 않게 한다.
+        # 차단 지적이면 그 검수를 그대로 저장해 restore 게이트가 계속 막는다. 사후 검수 표본이
+        # 아니므로 확인 기록·인시던트는 남기지 않는다.
+        if review.candidate_sha256 != candidate_sha256(item):
+            return "SKIPPED"
+        summary = dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
+        summary["ai_review"] = review.payload()
+        item.essence_check_summary = summary
+        return "WITHHELD_REVIEWED"
     if (
         item.status != ContentStatus.PUBLISHED
         or item.post_publish_reviewed_at is not None
@@ -182,7 +207,13 @@ def review_post_publish_samples() -> dict[str, int]:
 
     require_dispatch(current_task, POST_PUBLISH_AI_REVIEW_PURPOSE)
     cap = int(settings.POST_PUBLISH_AI_REVIEW_DAILY_CAP)
-    counts = {"reviewed": 0, "flagged": 0, "unavailable": 0, "skipped": 0}
+    counts = {
+        "reviewed": 0,
+        "flagged": 0,
+        "unavailable": 0,
+        "skipped": 0,
+        "withheld_reviewed": 0,
+    }
     if cap <= 0:
         return counts
     # 순환 import 회피: 워커 태스크 모듈이 이 모듈과 같은 앱을 공유한다.
@@ -191,7 +222,11 @@ def review_post_publish_samples() -> dict[str, int]:
     philosophies: dict[uuid.UUID, Any] = {}
     attempted = consecutive_unavailable = 0
     with SyncSessionLocal() as db:
-        candidates = list(db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all())
+        # 비공개 글(드물다)을 먼저 — restore가 막혀 있는 글이라 표본보다 급하다.
+        candidates = list(db.execute(_withheld_stmt(cap)).unique().scalars().all())
+        candidates += list(
+            db.execute(_review_stmt(cap * _SCAN_MULTIPLIER)).unique().scalars().all()
+        )
         for item in candidates:
             if attempted >= cap or consecutive_unavailable >= _CONSECUTIVE_UNAVAILABLE_LIMIT:
                 break

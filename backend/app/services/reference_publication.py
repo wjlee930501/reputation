@@ -46,6 +46,10 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from app.services.content_ai_review import (
+    candidate_sha256,
+    restamp_review_after_system_reference_change,
+)
 from app.services.post_publish_review_policy import AUTO_PUBLISHABLE_STATUSES
 from app.services.reference_requirement import (
     references_left_to_operator,
@@ -391,7 +395,10 @@ def apply_publication_reference_refresh(
     item.reference_checks = refresh.checks
     if refresh.deferred or not refresh.references_changed:
         return True
+    before_sha = candidate_sha256(item)
     item.references_list = refresh.references
+    # 시스템 편집이다 — 변경 직전 본문에 묶인 PASS는 새 참고자료로 옮긴다(발행 슬롯을 놓치지 않게).
+    restamp_review_after_system_reference_change(item, before_sha)
     if hasattr(item, "content_revision"):
         item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
     return True

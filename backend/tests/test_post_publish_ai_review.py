@@ -128,9 +128,47 @@ def test_already_reviewed_or_unpublished_rows_are_left_alone():
     reviewed.post_publish_reviewed_at = NOW
     assert sweep.apply_review_outcome(reviewed, _review(reviewed), now=NOW) == "SKIPPED"
 
-    withheld = _published()
-    withheld.status = ContentStatus.WITHHELD
-    assert sweep.apply_review_outcome(withheld, _review(withheld), now=NOW) == "SKIPPED"
+    draft = _published()
+    draft.status = ContentStatus.DRAFT
+    assert sweep.apply_review_outcome(draft, _review(draft), now=NOW) == "SKIPPED"
+
+
+def test_withheld_edited_post_gets_current_review_so_restore_is_not_stuck():
+    from app.services.content_publication import _blocking_ai_review_state
+
+    item = _published()
+    item.status = ContentStatus.WITHHELD
+    item.essence_check_summary = {"ai_review": {"status": "PASS", "candidate_sha256": "old",
+                                                "edited_after_review": True}}
+
+    outcome = sweep.apply_review_outcome(item, _review(item), now=NOW)
+
+    assert outcome == "WITHHELD_REVIEWED"
+    assert item.essence_check_summary["ai_review"]["candidate_sha256"] == candidate_sha256(item)
+    assert "edited_after_review" not in item.essence_check_summary["ai_review"]
+    assert _blocking_ai_review_state(item) is None
+    # 비공개 글은 사후 검수 표본이 아니다 — 확인 기록은 남기지 않는다.
+    assert item.post_publish_reviewed_at is None
+
+
+def test_withheld_blocking_review_keeps_restore_blocked():
+    from app.services.content_publication import _blocking_ai_review_state
+
+    item = _published()
+    item.status = ContentStatus.WITHHELD
+
+    sweep.apply_review_outcome(
+        item, _review(item, status=ContentAiReviewStatus.REVISE, findings=[_hard()]), now=NOW
+    )
+
+    assert _blocking_ai_review_state(item)[0] == "CURRENT"
+
+
+def test_withheld_selection_targets_only_edited_marker_rows():
+    sql = str(sweep._withheld_stmt(10).compile(compile_kwargs={"literal_binds": True}))
+
+    assert "edited_after_review" in sql
+    assert "WITHHELD" in sql
 
 
 def test_selection_orders_edited_first_and_skips_flagged_rows():
