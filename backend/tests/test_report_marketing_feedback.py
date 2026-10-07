@@ -16,7 +16,7 @@ from test_report_plain_language import (
 )
 from test_report_redesign import monthly_view
 
-from app.services.monthly_template_refresh import compare_doctor_pdf_facts
+from app.services.monthly_template_refresh import pdf_fact_problems, stored_only_facts
 from app.services.report_narrative import PRIORITY_APPENDIX_LEAD
 
 # 피드백에서 지운 표현. '그 결과'는 글과 답변의 인과를 암시하므로 어디에도 쓰지 않는다.
@@ -189,18 +189,14 @@ def test_coverage_text_uses_single_date_or_range_without_old_label():
     assert "실제 확인일" not in same + ranged
 
 
-def test_stored_fact_only_in_old_pdf_is_not_a_difference():
-    old = "지난달 33.3% 이번 달 66.7% 같은 질문을 반복해 150번 중 150번 답을 확인"
-    new = "지난달 33.3% 이번 달 66.7% 같은 질문을 반복해 물은 150회 전부 답을 확인"
-    assert compare_doctor_pdf_facts(old, new, stored_facts=frozenset({"150번중150번"})) == []
-
-
-def test_old_only_fact_not_in_stored_facts_still_fails():
-    old = "지난달 33.3% 이번 달 66.7% 약속한 글 12편 중 12편 150번 중 150번"
-    new = "지난달 33.3% 이번 달 66.7% 150회 전부"
-    assert compare_doctor_pdf_facts(old, new, stored_facts=frozenset({"150번중150번"})) == [
-        "옛 PDF에만 있음: 12편중12편"
-    ]
+def test_slot_count_sentence_may_drop_the_n_of_m_frame_without_changing_the_verdict():
+    """'150번 중 150번'을 '150회 전부'로 바꿔도 저장된 횟수(150)가 찍혀 있으면 같은 숫자다."""
+    facts = stored_only_facts({"observation_adequacy": {"planned_slots": 150, "confirmed_slots": 150}})
+    assert pdf_fact_problems("같은 질문을 반복해 150번 중 150번 답을 확인", facts) == []
+    assert pdf_fact_problems("같은 질문을 반복해 물은 150회 전부 답을 확인", facts) == []
+    # 횟수가 바뀌거나 빠지면 막는다.
+    assert pdf_fact_problems("같은 질문을 반복해 물은 149회 전부 답을 확인", facts) != []
+    assert pdf_fact_problems("같은 질문을 반복해 답을 확인", facts) != []
 
 
 def test_many_unmentioned_questions_render_a_valid_director_pdf():
@@ -226,35 +222,24 @@ def test_many_unmentioned_questions_render_a_valid_director_pdf():
     assert "".join(PRIORITY_APPENDIX_LEAD.split()) in text
 
 
-def test_range_footnote_keeps_percent_on_both_ends_for_template_refresh_parity():
-    """옛 PDF의 '16.7% ~ 30.0%'와 새 문구가 같은 숫자 사실(16.7%·30.0%)을 담아야 템플릿 갱신이 통과한다."""
+def test_range_footnote_prints_both_bounds_as_stored_for_template_refresh():
+    """범위 문장의 표기('16.7%~30.0%'든 '16.7~30.0%'든)와 상관없이 저장된 양 끝값이 찍혀 있어야 통과한다."""
     from app.services.report_engine import _director_footnotes
 
+    summary = {"ci95_low": 16.7, "ci95_high": 30.0}
     notes = _director_footnotes(
-        {"ci95_low": 16.7, "ci95_high": 30.0},
-        names="ChatGPT, Gemini",
-        first_measured_questions=0,
-        non_comparable_questions=0,
-        has_v0_baseline=False,
+        summary, names="ChatGPT, Gemini", first_measured_questions=0,
+        non_comparable_questions=0, has_v0_baseline=False,
     )
     line = next(note for note in notes if "범위로 보시면 됩니다" in note)
-    assert "16.7%~30.0%" in line
-    old = "이번 달 비율은 대략 16.7% ~ 30.0% 사이로 보시는 것이 안전합니다."
-    assert compare_doctor_pdf_facts(old, line) == []
-
-
-def test_stored_range_bounds_count_as_stored_facts_for_template_refresh():
-    """'8.2~20.0%'로 찍힌 옛 버전을 '8.2%~20.0%'로 다시 찍어도 저장값 그대로면 차이가 아니다."""
-    from app.services.monthly_template_refresh import stored_pdf_fact_tokens
-
-    summary = {"ci95_low": 8.2, "ci95_high": 20.0}
-    facts = stored_pdf_fact_tokens(summary)
-    assert {"8.2%", "20.0%"} <= facts
-    old = "이번 달 비율은 대략 8.2~20.0% 범위로 보시면 됩니다."
-    new = "이번 달 비율은 대략 8.2%~20.0% 범위로 보시면 됩니다."
-    assert compare_doctor_pdf_facts(old, new, stored_facts=facts) == []
-    # 저장값과 다른 숫자는 여전히 차이다.
-    assert compare_doctor_pdf_facts(old, new.replace("8.2%", "9.2%"), stored_facts=facts)
+    facts = stored_only_facts(summary)
+    assert facts == {"ci.low": "16.7%", "ci.high": "30.0%"}
+    assert pdf_fact_problems(line, facts) == []
+    assert pdf_fact_problems(line.replace("16.7%~30.0%", "16.7~30.0%"), facts) == []
+    # 저장값과 다른 끝값은 막는다.
+    assert pdf_fact_problems(line.replace("16.7%", "17.7%"), facts) == [
+        "새 PDF에서 찾지 못함: ci.low=16.7%"
+    ]
 
 
 def test_appendix_caption_counts_only_questions_asked_this_month():

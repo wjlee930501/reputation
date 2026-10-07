@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException
 from pypdf import PdfReader
+from test_report_plain_language import SCENARIOS, _view
 from test_report_redesign import monthly_view
 
 from app.api.admin import operations
@@ -16,15 +17,17 @@ from app.services.doctor_pdf_contracts import DoctorPdfExpectation
 from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
 from app.services.monthly_period import ReportBuildReason, plan_report_version
 from app.services.monthly_template_refresh import (
+    REQUIRE_STORED_BACKING,
     RefreshVerdict,
     TemplateRefreshRefused,
-    compare_doctor_pdf_facts,
+    compare_doctor_facts,
     doctor_view_expectations,
+    doctor_view_facts,
     missing_stored_paths,
     number_tokens,
     numeric_diff,
-    pdf_fact_tokens,
-    stored_pdf_fact_tokens,
+    pdf_fact_problems,
+    stored_only_facts,
 )
 from app.workers import autonomous_recovery, tasks
 
@@ -77,51 +80,6 @@ def test_template_refresh_needs_a_version_to_supersede():
     assert (plan.version, plan.supersedes_report_id, plan.create) == (4, report_id, True)
 
 
-# 옛 v3 원장 PDF 1쪽에서 숫자가 실린 문장(배포 전 템플릿 문구 그대로).
-OLD_PAGE = (
-    "지난달 33.3% 이번 달 66.7% 지난달 대비 +33.4%p 공통 눈금 0–100% · "
-    "대상 월 약정 이행 · 12편 중 12편 최초 측정 17% / 이번 관측 67% "
-    "확정 반복 합산 언급 비율의 95% 구간: 50.0% ~ 80.0%. 6번 중 6번"
-)
-
-
-def test_pdf_facts_ignore_old_static_scale_and_delta_but_keep_values():
-    assert pdf_fact_tokens(OLD_PAGE, ignore=frozenset({"100%", "95%"})) == {
-        "33.3%": 1, "66.7%": 1, "17%": 1, "67%": 1, "50.0%": 1, "80.0%": 1,
-        "12편중12편": 1, "6번중6번": 1,
-    }
-
-
-def test_pdf_fact_comparison_passes_same_numbers_and_flags_any_change():
-    same = (
-        "지난달 33.3% 이번 달 66.7% 약속한 글 12편 중 12편 처음 측정 17% / 이번 달 67% "
-        "대략 50.0% ~ 80.0% 6번 중 6번 ‘6번 중 2번’은 예시입니다"
-    )
-    assert compare_doctor_pdf_facts(OLD_PAGE, same) == []
-    changed = same.replace("12편 중 12편", "12편 중 11편")
-    assert compare_doctor_pdf_facts(OLD_PAGE, changed) == [
-        "옛 PDF에만 있음: 12편중12편",
-        "새 PDF에만 있음: 12편중11편",
-    ]
-
-
-def test_new_sentence_from_stored_slot_counts_is_not_a_number_change():
-    """새 템플릿이 저장된 반복 관측 횟수를 'N번 중 M번'으로 처음 적어도 숫자는 그대로다."""
-    stored = {"observation_adequacy": {"planned_slots": 150, "confirmed_slots": 150}}
-    facts = stored_pdf_fact_tokens(stored)
-    assert facts == frozenset({"150번중150번"})
-    new_text = (
-        "지난달 33.3% 이번 달 66.7% 약속한 글 12편 중 12편 처음 측정 17% / 이번 달 67% "
-        "대략 50.0% ~ 80.0% 6번 중 6번 되풀이해 묻기로 한 150번 중 150번 답을 확인"
-    )
-    assert compare_doctor_pdf_facts(OLD_PAGE, new_text, stored_facts=facts) == []
-    # 저장값과 다른 횟수는 여전히 차이다.
-    assert compare_doctor_pdf_facts(OLD_PAGE, new_text.replace("150번 중 150번", "150번 중 149번"),
-                                    stored_facts=facts) == ["새 PDF에만 있음: 150번중149번"]
-    assert stored_pdf_fact_tokens({}) == frozenset()
-    assert stored_pdf_fact_tokens({"observation_adequacy": {"planned_slots": "150"}}) == frozenset()
-
-
 def _pdf_text(view) -> str:
     expected = DoctorPdfExpectation(
         view["hospital_name"], view["coverage_text"],
@@ -135,27 +93,137 @@ def _pdf_text(view) -> str:
     return "\n".join(page.extract_text() for page in PdfReader(BytesIO(rendered.pdf_bytes)).pages)
 
 
+def _stored_summaries(scenario: dict) -> tuple[dict, dict]:
+    """시나리오(뷰 입력)와 같은 값을 저장 요약 모양으로 되돌린다 — 템플릿 갱신은 이 값에서 뷰를 만든다."""
+    sov = {**(scenario.get("sov_coverage") or {}), "sov_pct": scenario["sov_pct"]}
+    content = {
+        "published_count": 0,
+        "operations": {"plan_quota": 12, "supplementary_count": 0},
+        "contract_timing": {"published_for_contract_count": 0},
+        "attribution": scenario.get("attribution"),
+        "citations": scenario.get("citations"),
+    }
+    return sov, content
+
+
+MONTHLY_SCENARIOS = sorted(name for name in SCENARIOS if name != "initial")
+
+
+@pytest.mark.parametrize("name", MONTHLY_SCENARIOS)
+def test_view_facts_match_facts_rebuilt_from_stored_summaries(name):
+    """뷰가 그리는 숫자 사실은 저장 요약에서 다시 만든 사실과 키마다 같다(누락·추가 없음)."""
+    view = _view(name)
+    sov, content = _stored_summaries(SCENARIOS[name])
+    assert doctor_view_expectations(view, sov_summary=sov, content_summary=content) == []
+    facts = doctor_view_facts(view)
+    assert facts["tile.contract"] == "12편 중 0편"
+    # 지난달 참고 값은 저장 요약이 아니라 지난달 보고서가 근거다.
+    assert ("rate.reference_previous" in facts) == (name == "method_reference")
+
+
+@pytest.mark.parametrize("name", ["up", "first", "method_reference"])
+def test_every_canonical_fact_is_printed_in_the_rendered_pdf(name):
+    """이차 확인: 정본 사실의 값이 실제 렌더된 PDF 본문에 모두 찍힌다."""
+    view = _view(name)
+    sov, _content = _stored_summaries(SCENARIOS[name])
+    facts = {**doctor_view_facts(view), **stored_only_facts(sov)}
+    assert pdf_fact_problems(_pdf_text(view), facts) == []
+
+
+def test_copy_only_changes_do_not_change_the_verdict():
+    """2026-10-06 사고: 범위 표기·횟수 문장만 바뀐 같은 숫자는 막히지 않는다."""
+    facts = {
+        "ci.low": "16.7%", "ci.high": "30.0%",
+        "adequacy.planned_slots": "150", "adequacy.confirmed_slots": "150",
+        "rate.current": "66.7%", "tile.contract": "12편 중 12편",
+    }
+    before = "범위 16.7~30.0% 같은 질문을 반복해 150번 중 150번 답을 확인 이번 달 66.7% 약속한 글 12편 중 12편"
+    after = "범위 16.7%~30.0% 같은 질문을 반복해 물은 150회 전부 답을 확인 이번 달 66.7% 약속한 글 12편 중 12편"
+    assert pdf_fact_problems(before, facts) == []
+    assert pdf_fact_problems(after, facts) == []
+
+
+def test_a_changed_or_dropped_number_is_still_refused():
+    facts = {"rate.current": "66.7%", "tile.contract": "12편 중 12편", "ci.low": "8.2%"}
+    text = "이번 달 66.7% 약속한 글 12편 중 12편 범위 8.2% ~ 20.0%"
+    assert pdf_fact_problems(text, facts) == []
+    assert pdf_fact_problems(text.replace("66.7%", "67.7%"), facts) == [
+        "새 PDF에서 찾지 못함: rate.current=66.7%"
+    ]
+    assert pdf_fact_problems(text.replace("12편 중 12편", "12편 중 11편"), facts) == [
+        "새 PDF에서 찾지 못함: tile.contract=12편 중 12편"
+    ]
+    # 저장된 사실을 PDF가 조용히 버리는 일도 막는다(예전에는 stored_facts 뺄셈이 가렸다).
+    assert pdf_fact_problems(text.replace("8.2%", ""), facts) == [
+        "새 PDF에서 찾지 못함: ci.low=8.2%"
+    ]
+
+
+def test_pdf_fact_check_respects_digit_boundaries():
+    """'16.7%'가 있다고 '6.7%'나 '16.75%'가 있는 것은 아니다."""
+    assert pdf_fact_problems("이번 달 16.7%", {"rate.current": "6.7%"}) != []
+    assert pdf_fact_problems("이번 달 16.75%", {"rate.current": "16.7%"}) != []
+    assert pdf_fact_problems("이번 달 16.7%", {"rate.current": "16.7%"}) == []
+
+
+def test_pdf_fact_check_keeps_counts_not_just_the_set_of_numbers():
+    """집합 비교는 개수를 버렸다 — '5개 중 2개'를 '2개 중 5개'로 뒤집어도 숫자 집합은 같다."""
+    facts = {"highlight.measured_questions": "5", "highlight.mentioned_questions": "2"}
+    assert pdf_fact_problems("질문 5개 중 2개 언급", facts) == []
+    assert pdf_fact_problems("질문 5개 중 3개 언급", facts) == [
+        "새 PDF에서 찾지 못함: highlight.measured_questions=5"
+    ]
+    # 3→4: 같은 숫자가 근처 다른 곳에 있어도 '12편 중 3편' 꼴이 그대로 있어야 한다.
+    tile = {"tile.contract": "12편 중 3편"}
+    assert pdf_fact_problems("약속한 글 12편 중 3편 발행", tile) == []
+    assert pdf_fact_problems("약속한 글 12편 중 4편 발행 (3편 12편)", tile) == [
+        "새 PDF에서 찾지 못함: tile.contract=12편 중 3편"
+    ]
+
+
+def test_facts_the_template_does_not_draw_are_not_expected_in_the_pdf():
+    facts = {"tile.chatgpt": "33.3%", "highlight.published_this_month": "7", "rate.current": "50.0%"}
+    assert pdf_fact_problems("이번 달 50.0%", facts) == []
+
+
+def test_compare_doctor_facts_reports_differences_and_unbacked_view_facts():
+    expected = {"rate.current": "66.7%", "tile.contract": "12편 중 12편"}
+    actual = {"rate.current": "66.7%", "tile.contract": "12편 중 11편", "rate.reference_previous": "40.0%"}
+    problems = compare_doctor_facts(
+        expected, actual, require_backing=REQUIRE_STORED_BACKING | {"rate.reference_previous"}
+    )
+    assert "tile.contract: 저장 12편 중 12편 ≠ 뷰 12편 중 11편" in problems
+    assert "저장값 근거 없음: rate.reference_previous=40.0%" in problems
+    # 기본값은 지난달 참고 값을 저장 요약 근거로 요구하지 않는다(호출부가 지난달 보고서로 맞춘다).
+    assert not any("reference_previous" in problem for problem in compare_doctor_facts(expected, actual))
+    assert compare_doctor_facts(expected, {"rate.current": "66.7%"}) == [
+        "원장 뷰에 없음: tile.contract=12편 중 12편"
+    ]
+    # 뷰에만 있는 값이라도 현재 행에서 읽는 누적 발행 편수는 차이가 아니다.
+    assert compare_doctor_facts(
+        expected, {**expected, "highlight.cumulative_published": "40"}
+    ) == []
+
+
+def test_stored_facts_cover_range_and_slot_counts_for_the_secondary_check():
+    sov = {
+        "ci95_low": 8.2, "ci95_high": 20.0, "planned_count": 6, "success_count": 6,
+        "observation_adequacy": {"planned_slots": 150, "confirmed_slots": 150},
+    }
+    assert stored_only_facts(sov) == {
+        "ci.low": "8.2%", "ci.high": "20.0%",
+        "adequacy.planned_slots": "150", "adequacy.confirmed_slots": "150",
+        "coverage.planned_count": "6", "coverage.success_count": "6",
+    }
+    assert stored_only_facts({}) == {}
+    assert stored_only_facts({"observation_adequacy": {"planned_slots": "150"}}) == {}
+
+
 def test_rendering_the_same_view_twice_gives_identical_pdf_facts():
     view = monthly_view(cumulative_published_count=40)
-    assert compare_doctor_pdf_facts(_pdf_text(view), _pdf_text(view)) == []
-
-
-def test_new_pdf_facts_carry_the_stored_rates_and_no_change_in_points():
-    coverage = {
-        "planned_count": 2, "success_count": 2,
-        "comparison": {
-            "status": "COMPARABLE", "reason": "MATCHED_COHORT", "matched_cell_count": 2,
-            "current_sov_pct": 66.7, "prior_sov_pct": 33.3,
-        },
-    }
-    view = monthly_view(
-        sov_pct=66.7, prev_sov_pct=33.3, comparison_reason="MATCHED_COHORT",
-        sov_coverage=coverage, published_count=12, plan_quota=12,
-    )
-    text = _pdf_text(view)
-    facts = pdf_fact_tokens(text)
-    assert {"33.3%", "66.7%", "12편중12편"} <= set(facts)
-    assert "%p" not in "".join(text.split())
+    facts = doctor_view_facts(view)
+    assert pdf_fact_problems(_pdf_text(view), facts) == []
+    assert facts["highlight.cumulative_published"] == "40"
 
 
 def test_doctor_view_expectations_catch_a_tile_that_does_not_match_storage():
@@ -169,8 +237,22 @@ def test_doctor_view_expectations_catch_a_tile_that_does_not_match_storage():
     assert doctor_view_expectations(view, sov_summary=sov, content_summary=content) == []
     content["contract_timing"]["published_for_contract_count"] = 11
     assert doctor_view_expectations(view, sov_summary=sov, content_summary=content) == [
-        "tile 12편 중 12편 ≠ 12편 중 11편"
+        "tile.contract: 저장 12편 중 11편 ≠ 뷰 12편 중 12편"
     ]
+
+
+def test_doctor_view_expectations_catch_a_changed_stored_rate_and_question_count():
+    scenario = SCENARIOS["up"]
+    view = _view("up")
+    sov, content = _stored_summaries(scenario)
+    sov["comparison"] = {**sov["comparison"], "prior_sov_pct": 31.0}
+    content["attribution"] = {
+        **content["attribution"],
+        "question_rows": content["attribution"]["question_rows"][:1],
+    }
+    problems = doctor_view_expectations(view, sov_summary=sov, content_summary=content)
+    assert "rate.previous: 저장 31.0% ≠ 뷰 30.0%" in problems
+    assert any(problem.startswith("highlight.measured_questions") for problem in problems)
 
 
 @pytest.mark.asyncio
@@ -378,13 +460,9 @@ def test_measurement_gate_is_skipped_only_for_an_allowed_template_refresh(
         assert seen["allow"] is True
 
 
-def test_last_month_reference_value_is_a_known_fact_not_a_new_number(monkeypatch):
-    """측정 방식이 바뀐 달의 '지난달(참고)' 칸은 지난달 보고서에 저장된 값이다 — 그 값만 허용한다."""
-    from types import SimpleNamespace
-
-    from app.services.monthly_template_refresh import compare_doctor_pdf_facts
+def test_last_month_reference_value_is_backed_by_last_months_stored_report(monkeypatch):
+    """측정 방식이 바뀐 달의 '지난달(참고)' 칸은 지난달 보고서에 저장된 값 — 그 값만 허용한다."""
     from app.utils import monthly_template_refresh as refresh_cli
-    from app.workers import tasks
 
     seen = {}
 
@@ -395,28 +473,112 @@ def test_last_month_reference_value_is_a_known_fact_not_a_new_number(monkeypatch
     monkeypatch.setattr(tasks, "reported_monthly_sov_pct", reported)
     report = SimpleNamespace(hospital_id="h-1", period_year=2026, period_month=9)
 
-    facts = refresh_cli._prior_reference_fact(None, report)
+    backing = refresh_cli._prior_reference_fact(None, report)
 
-    assert facts == frozenset({"40.0%"})
+    assert backing == {"rate.reference_previous": "40.0%"}
     assert seen["period"] == ("h-1", 2026, 8)
-    old = "이번 달 50.3% 12편 중 12편"
-    assert compare_doctor_pdf_facts(old, old + " 지난달(참고) 40.0%", stored_facts=facts) == []
-    assert compare_doctor_pdf_facts(old, old + " 지난달(참고) 41.0%", stored_facts=facts) == [
-        "새 PDF에만 있음: 41.0%"
+    keys = frozenset(backing)
+    assert compare_doctor_facts(backing, {"rate.reference_previous": "40.0%"}, require_backing=keys) == []
+    assert compare_doctor_facts(backing, {"rate.reference_previous": "41.0%"}, require_backing=keys) == [
+        "rate.reference_previous: 저장 40.0% ≠ 뷰 41.0%"
     ]
-    january = SimpleNamespace(hospital_id="h-1", period_year=2027, period_month=1)
-    refresh_cli._prior_reference_fact(None, january)
+    # 지난달 값이 없는데 새 뷰가 참고 값을 적으면 근거 없는 숫자다.
+    monkeypatch.setattr(tasks, "reported_monthly_sov_pct", lambda *_a: None)
+    assert refresh_cli._prior_reference_fact(None, report) == {}
+    assert compare_doctor_facts({}, {"rate.reference_previous": "41.0%"}, require_backing=keys) == [
+        "저장값 근거 없음: rate.reference_previous=41.0%"
+    ]
+    monkeypatch.setattr(tasks, "reported_monthly_sov_pct", reported)
+    refresh_cli._prior_reference_fact(None, SimpleNamespace(hospital_id="h-1", period_year=2027, period_month=1))
     assert seen["period"] == ("h-1", 2026, 12)
 
 
-def test_a_refresh_of_a_new_template_version_ignores_the_appendix_example_on_both_sides():
-    """옛 버전도 새 템플릿이면 부록의 설명 예시 '6번 중 2번'이 양쪽에 있다 — 숫자 사실이 아니다."""
-    from app.services.monthly_template_refresh import compare_doctor_pdf_facts
+# ── 실행 단계: 측정 미완료 병원(--allow-recovery-pending)은 PARTIAL·BLOCKED로 끝나도 성공이다 ──
 
-    old = "이번 달 50.3% 12편 중 12편 예: 6번 중 2번"
-    assert compare_doctor_pdf_facts(old, old) == []
-    assert compare_doctor_pdf_facts(old, "이번 달 50.3% 12편 중 12편") == []
-    assert compare_doctor_pdf_facts(old, "이번 달 50.3% 12편 중 11편 예: 6번 중 2번") == [
-        "옛 PDF에만 있음: 12편중12편",
-        "새 PDF에만 있음: 12편중11편",
-    ]
+
+@pytest.mark.parametrize(
+    ("state", "stage", "version", "allow", "ok"),
+    [
+        ("SUCCEEDED", "ARTIFACT_VALIDATED", 4, False, True),
+        ("PARTIAL", "BLOCKED", 4, True, True),
+        # 플래그가 없으면 종전처럼 PARTIAL은 멈춘다.
+        ("PARTIAL", "BLOCKED", 4, False, False),
+        # 새 버전이 생기지 않았으면(옛 버전만 있음) 갱신 성공이 아니다.
+        ("PARTIAL", "BLOCKED", 3, True, False),
+        ("PARTIAL", "BLOCKED", None, True, False),
+        ("PARTIAL", "ARTIFACT_VALIDATED", 4, True, False),
+        ("FAILED", "FAILED", None, True, False),
+        ("CANCELLED", None, None, True, False),
+        ("TIMEOUT", None, None, True, False),
+    ],
+)
+def test_run_counts_as_success(state, stage, version, allow, ok):
+    from app.utils import monthly_template_refresh as refresh_cli
+
+    assert refresh_cli._run_counts_as_success(
+        state, stage, version, previous_version=3, allow_recovery_pending=allow
+    ) is ok
+
+
+def _execute_with(monkeypatch, *, run, post_status, allow):
+    """run_execute를 네트워크·DB 없이 돌린다. run은 (상태, 단계, 보고서 버전), 반환은 (종료 코드, 사후 확인 호출 수)."""
+    from contextlib import contextmanager
+
+    from app.utils import monthly_template_refresh as refresh_cli
+
+    hospital_id = uuid.uuid4()
+    verdict = RefreshVerdict()
+    result = refresh_cli.HospitalResult(hospital_id, "가상 의원", 3, verdict)
+    post_verdict = RefreshVerdict()
+    if post_status == "DIFF":
+        post_verdict.add("DIFF", "DOCTOR_PDF_NUMBER", "x")
+    post_calls: list = []
+
+    @contextmanager
+    def fake_client(**_kwargs):
+        yield object()
+
+    monkeypatch.setattr(refresh_cli.settings, "ADMIN_SECRET_KEY", "test-key")
+    monkeypatch.setattr(refresh_cli.httpx, "Client", fake_client)
+    monkeypatch.setattr(refresh_cli, "run_precheck", lambda *_a, **_k: [result])
+    monkeypatch.setattr(refresh_cli, "_request_refresh", lambda *_a, **_k: "run-1")
+    monkeypatch.setattr(refresh_cli, "_wait_for_run", lambda *_a, **_k: run)
+
+    def post(*_args):
+        post_calls.append(1)
+        return [refresh_cli.HospitalResult(hospital_id, "가상 의원", 4, post_verdict)]
+
+    monkeypatch.setattr(refresh_cli, "run_postcheck", post)
+    code = refresh_cli.run_execute(
+        2026, 9, [], reason="새 템플릿", api_base="https://api.invalid", confirm=True,
+        timeout=1.0, allow_recovery_pending=allow,
+    )
+    return code, len(post_calls)
+
+
+def test_execute_continues_to_postcheck_when_a_measurement_incomplete_report_ends_partial(monkeypatch):
+    code, post_calls = _execute_with(
+        monkeypatch, run=("PARTIAL", "BLOCKED", 4), post_status="PASS", allow=True
+    )
+    assert (code, post_calls) == (0, 1)
+
+
+def test_execute_stops_on_partial_without_the_recovery_pending_flag(monkeypatch):
+    code, post_calls = _execute_with(
+        monkeypatch, run=("PARTIAL", "BLOCKED", 4), post_status="PASS", allow=False
+    )
+    assert (code, post_calls) == (1, 0)
+
+
+def test_execute_stops_on_a_failed_run_even_with_the_flag(monkeypatch):
+    code, post_calls = _execute_with(
+        monkeypatch, run=("FAILED", "FAILED", None), post_status="PASS", allow=True
+    )
+    assert (code, post_calls) == (1, 0)
+
+
+def test_execute_still_stops_on_a_postcheck_diff_after_a_partial_run(monkeypatch):
+    code, post_calls = _execute_with(
+        monkeypatch, run=("PARTIAL", "BLOCKED", 4), post_status="DIFF", allow=True
+    )
+    assert (code, post_calls) == (1, 1)

@@ -1774,11 +1774,16 @@ def _plain_content_text(value: str) -> str:
     return re.sub(r"\s+", "", re.sub(r"[#*_\[\]\(\)`>!\-|]", "", value))
 
 
+def body_plain_length(value: str) -> int:
+    """공백·마크다운을 뺀 순수 글자 수. 생성 검사와 최소 교정 패스가 같은 단위를 쓴다."""
+    return len(_plain_content_text(value))
+
+
 def _validate_body_length(value: object) -> None:
     if not isinstance(value, str):
         raise ValueError("Generated content body is missing")
 
-    body_length = len(_plain_content_text(value))
+    body_length = body_plain_length(value)
     if body_length < CONTENT_BODY_MIN_CHARS:
         # 이 메시지는 재작성 회차에 작가가 읽는 유일한 지적이다(_validator_remediation_findings).
         # 목표 구간만 되풀이하면 작가는 문장 몇 개를 덧붙이고 같은 구간(하한 바로 아래)에
