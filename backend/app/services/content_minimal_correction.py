@@ -389,6 +389,19 @@ def correction_allowed_for(item: Any) -> bool:
     )
 
 
+def published_correction_allowed_for(item: Any) -> bool:
+    """공개 모드: 사후 검수가 FLAGGED한 **공개 중인** 글을 고쳐도 되는가.
+
+    발행 전 모드(`correction_allowed_for`)는 공개 이력·사람 편집이 있는 글을 거절하지만, 공개
+    모드는 공개 중(PUBLISHED)이면 사람이 편집한 글도 허용한다 — 지적이 사실·안전 문제이고 이 패스는
+    지적 문장과 응급 템플릿 삽입 지점 밖을 한 글자도 바꾸지 않으며 필수 문구 문장을 보호하기 때문이다.
+    비공개(보존)·반려·초안 등 다른 상태는 이 경로가 맡지 않는다. 사후 검수 스윕 전용이다.
+    """
+
+    status = getattr(item, "status", None)
+    return str(getattr(status, "value", status) or "") == "PUBLISHED"
+
+
 def _locate(
     content: Mapping[str, Any], quote: str
 ) -> tuple[str, int, int] | None:
@@ -1019,6 +1032,7 @@ class CorrectionOutcome:
     - ``UNAVAILABLE``: 재검수를 끝내지 못했다(교정본과 UNAVAILABLE 판정을 저장한다).
     - ``EXHAUSTED``: 상한이 남지 않았다.
     - ``REJECTED``: 교정본이 범위 검사를 통과하지 못해 저장하지 않는다(회차는 센다).
+    - ``NEEDS_HUMAN``: (공개 모드만) 이 패스가 고칠 수 없는 지적이라 돈을 쓰지 않고 사람에게 넘긴다.
     """
 
     status: str
@@ -1027,6 +1041,8 @@ class CorrectionOutcome:
     passes: int = 0
     rereviews: int = 0
     history: list[dict[str, Any]] = field(default_factory=list)
+    # 공개 모드의 `NEEDS_HUMAN`에서만 채운다 — 사람이 고쳐야 하는 이유(운영자 문구·기록용).
+    reason: str | None = None
 
 
 async def run_minimal_correction(
@@ -1137,3 +1153,83 @@ async def run_minimal_correction(
         rereviews=rereviews,
         history=history,
     )
+
+
+# ── 공개 모드 ────────────────────────────────────────────────────────────────
+
+
+def published_needs_human_reason(
+    content: Mapping[str, Any],
+    review: Mapping[str, Any] | None,
+    *,
+    must_use_messages: Iterable[str] = (),
+) -> str | None:
+    """공개 글의 FLAGGED 지적을 이 패스가 끝까지 풀 수 없는 이유. ``None``이면 맡는다.
+
+    돈을 쓰기 전의 결정적 판정이다. 풀 수 없는 지적이 하나라도 남으면 교정본의 독립 재검수가 그
+    지적을 다시 막으므로 교정·재검수를 사는 것이 낭비다.
+
+    - ``TITLE_FINDING``: 제목을 짚은 지적이 있다. 제목은 대표 이미지의 주제 인증에 묶여 있어 바꾸면
+      인증이 풀리고 글이 숨겨진다 — 어떤 경우에도 바꾸지 않으므로 사람이 고친다.
+    - ``NOT_CORRECTABLE``: 맡을 문장·응급 삽입이 없다(인용 없음·여러 문장에 걸침·필수 문구 문장·
+      표/제목 줄 등).
+    - ``PARTLY_UNCORRECTABLE``: 일부 지적은 고칠 수 있지만 나머지는 고칠 수 없다.
+    """
+
+    title = str(content.get("title") or "")
+    for finding in _blocking_findings(review):
+        quote = str(finding.get("quote") or "").strip()
+        if quote and _quote_matches(title, quote) and _locate(content, quote) is None:
+            return "TITLE_FINDING"
+    plan = plan_corrections(content, review, must_use_messages=must_use_messages)
+    if not plan.applicable:
+        return "NOT_CORRECTABLE"
+    if plan.uncorrectable:
+        return "PARTLY_UNCORRECTABLE"
+    return None
+
+
+async def run_published_correction(
+    *,
+    hospital: Any,
+    philosophy: Any,
+    content: dict[str, Any],
+    review: Mapping[str, Any] | None,
+    content_brief: Mapping[str, Any] | None,
+    must_use_messages: Iterable[str],
+    state: Mapping[str, Any] | None,
+    limits: CorrectionLimits,
+    dependencies: CorrectionDependencies,
+) -> CorrectionOutcome:
+    """사후 검수 전용 공개 모드. `run_minimal_correction`을 그대로 쓰되 먼저 맡을 수 있는지 본다.
+
+    교정본은 메모리에만 있다 — 이 함수는 살아 있는 행을 쓰지 않는다(저장은 호출부의 CAS가 한다).
+    제목은 `verify_correction_scope`가 이미 바꾸지 못하게 하지만, 공개 글에서는 제목 변경이 곧
+    숨김이므로 결과에서 한 번 더 확인한다.
+    """
+
+    must_use = list(must_use_messages)
+    reason = published_needs_human_reason(content, review, must_use_messages=must_use)
+    if reason is not None:
+        return CorrectionOutcome(status="NEEDS_HUMAN", reason=reason)
+    outcome = await run_minimal_correction(
+        hospital=hospital,
+        philosophy=philosophy,
+        content=content,
+        review=review,
+        content_brief=content_brief,
+        must_use_messages=must_use,
+        state=state,
+        limits=limits,
+        dependencies=dependencies,
+    )
+    if outcome.content is not None and outcome.content.get("title") != content.get("title"):
+        logger.error("Published correction changed the title; discarding the candidate")
+        return CorrectionOutcome(
+            status="REJECTED",
+            passes=outcome.passes,
+            rereviews=outcome.rereviews,
+            history=outcome.history,
+            reason="title_changed",
+        )
+    return outcome
