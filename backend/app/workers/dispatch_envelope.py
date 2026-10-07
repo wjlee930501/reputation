@@ -65,6 +65,7 @@ TASK_PURPOSES = {
     "app.workers.published_image_refresh.refresh_reused_content_images": (
         "refresh-reused-content-images"
     ),
+    "app.workers.post_publish_ai_review.review_post_publish_samples": "post-publish-ai-review",
     "app.workers.domain_certificate_tasks.provision_domain_certificate": (
         "provision-domain-certificate"
     ),

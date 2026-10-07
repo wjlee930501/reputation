@@ -37,6 +37,7 @@ from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import indexnow
 from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
+from app.services.content_ai_review import candidate_sha256
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -790,6 +791,12 @@ async def update_content(
         # apply_publication_assessment normally preserves this. Keep the explicit
         # fallback for rolling workers returning a legacy screening-only summary.
         item.essence_check_summary.setdefault("ai_review", previous_ai_review)
+    _mark_review_stale_after_edit(item)
+    if has_published_edition and public_fields_changed and isinstance(item.essence_check_summary, dict):
+        # 고친 본문은 사후 검수 스윕이 새 해시로 다시 본다 — 옛 본문의 FLAGGED 표시를 걷는다.
+        item.essence_check_summary = {
+            k: v for k, v in item.essence_check_summary.items() if k != "post_publish_ai_review"
+        }
 
     if (
         was_published
@@ -1220,6 +1227,31 @@ async def publish_content(
         "content_revision": int(getattr(item, "content_revision", 1) or 1),
         "notification_state": "NOT_REQUIRED",
     }
+
+
+def _mark_review_stale_after_edit(item: ContentItem) -> None:
+    """발행 전 글의 검수 PASS가 편집으로 묶인 본문을 잃으면 야간 재검수 스윕이 집게 표시한다.
+
+    진실은 발행 게이트의 해시 비교(`_blocking_ai_review_state`)다. 이 표시는 SQL 로더가 해시를
+    계산하지 못해 필요한 힌트일 뿐이라 검수 payload 안에 둔다 — 새 검수가 payload를 통째로 갈아
+    끼우면 함께 사라진다. 공개된 글은 사후 검수가 보므로 표시하지 않는다.
+    """
+
+    summary = item.essence_check_summary
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if (
+        not isinstance(review, dict)
+        or not review.get("candidate_sha256")
+        or item.status == ContentStatus.PUBLISHED
+    ):
+        return
+    edited = review["candidate_sha256"] != candidate_sha256(item)
+    if edited == bool(review.get("edited_after_review")):
+        return
+    updated_review = {k: v for k, v in review.items() if k != "edited_after_review"}
+    if edited:
+        updated_review["edited_after_review"] = True
+    item.essence_check_summary = {**summary, "ai_review": updated_review}
 
 
 @router.post("/{hospital_id}/content/{content_id}/post-publish-review")

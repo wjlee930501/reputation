@@ -370,6 +370,8 @@ def _needs_generation_recovery():
     unresolved_ai_review = and_(
         or_(
             ai_review["status"].as_string() == "UNAVAILABLE",
+            # PATCH가 검수된 본문을 고친 PASS — 발행 게이트가 STALE로 막으므로 재검수를 받는다.
+            ai_review["edited_after_review"].as_boolean().is_(True),
             and_(
                 ai_review["status"].as_string() == "REVISE",
                 or_(
