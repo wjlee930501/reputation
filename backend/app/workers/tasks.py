@@ -530,6 +530,10 @@ from app.workers.monthly_artifact_incident_control import (
     record_monthly_artifact_failure,
 )
 from app.workers.monthly_artifact_recovery_control import recover_monthly_artifact_failures
+from app.workers.monthly_cohort_incidents import (
+    open_monthly_cohort_gap,
+    open_monthly_cohort_over_limit,
+)
 from app.workers.monthly_slot_incident_control import (
     open_monthly_slot_failure,
     recover_monthly_slot_failure,
@@ -7995,11 +7999,7 @@ def run_sov_for_hospital(
                 db, self
             )
             monthly = measurement_mode == "monthly"
-            if monthly and not hospital_in_monthly_cohort(
-                db,
-                hospital.id,
-                limit=settings.SOV_MONTHLY_COHORT_LIMIT,
-            ):
+            if monthly and not hospital_in_monthly_cohort(db, hospital.id):
                 logger.info(
                     "Hospital %s is no longer in the monthly measurement cohort", hospital_id
                 )
@@ -9712,6 +9712,50 @@ def _log_blocked_convertible_tracking_sets(registration: Any) -> None:
         )
 
 
+def _commit_new_cohort_enrollments(db, registration: Any) -> None:
+    """편입 플래그는 저장된 진실이라 디스패치 전에 확정한다(run_sov_for_hospital이 다시 읽는다)."""
+    if isinstance(registration, Mapping) and registration.get("enrolled"):
+        db.commit()
+
+
+def _report_monthly_cohort_gaps(registration: Any, period_key: str) -> None:
+    """창이 열렸는데 코호트 밖인 ACTIVE 병원마다 기간별 사고 한 건. 실패해도 측정은 계속한다."""
+    if not isinstance(registration, Mapping):
+        return
+    for item in registration.get("not_enrolled") or []:
+        try:
+            _run_async(
+                open_monthly_cohort_gap(
+                    hospital_id=uuid.UUID(str(item["hospital_id"])),
+                    hospital_name=str(item.get("name") or "unknown"),
+                    period_key=period_key,
+                    reason=str(item.get("reason") or "unknown"),
+                )
+            )
+        except Exception:
+            logger.exception("Monthly cohort gap incident failed", extra={"item": str(item)})
+
+
+def _warn_monthly_cohort_over_limit(cohort_size: int, period_key: str) -> None:
+    """SOV_MONTHLY_COHORT_LIMIT은 비용 경고 기준이다. 병원을 자르지 않고 알리기만 한다."""
+    limit = settings.SOV_MONTHLY_COHORT_LIMIT
+    if cohort_size <= limit:
+        return
+    logger.warning(
+        "Monthly measurement cohort %d exceeds cost warning threshold %d; measuring all",
+        cohort_size,
+        limit,
+    )
+    try:
+        _run_async(
+            open_monthly_cohort_over_limit(
+                period_key=period_key, cohort_size=cohort_size, limit=limit
+            )
+        )
+    except Exception:
+        logger.exception("Monthly cohort over-limit incident failed")
+
+
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     require_dispatch(current_task, "weekly-sov-monitoring")
@@ -9719,16 +9763,12 @@ def run_weekly_monitoring():
     observed_at = datetime.now(timezone.utc)
     week_key = _weekly_measurement_key(today_kst)
     with SyncSessionLocal() as db:
-        registration = register_convertible_tracking_sets(db, n=15)
+        registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
+        _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
-        monthly_ids = {
-            hospital.id
-            for hospital in iter_monthly_sov_cohort(
-                db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
-            )
-        }
+        monthly_ids = {hospital.id for hospital in iter_monthly_sov_cohort(db)}
         # 주간 배치는 매주 월간 코호트를 건너뛴다. 해당 병원의 측정은
         # 월말 창에서 run_monthly_sov_measurement가 전담한다 (CLAUDE.md STEP 8).
         if monthly_ids:
@@ -9789,11 +9829,12 @@ def run_monthly_sov_measurement():
     observed_at = datetime.now(timezone.utc)
     period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
     with SyncSessionLocal() as db:
-        registration = register_convertible_tracking_sets(db, n=15)
+        registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
+        _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
-        hospitals = iter_monthly_sov_cohort(
-            db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
-        )
+        _report_monthly_cohort_gaps(registration, period_key)
+        hospitals = iter_monthly_sov_cohort(db)
+        _warn_monthly_cohort_over_limit(len(hospitals), period_key)
         for hospital in hospitals:
             run = _ensure_monthly_sov_operation_run(db, hospital, period_key, observed_at)
             if run is None or run.task_id is None:
