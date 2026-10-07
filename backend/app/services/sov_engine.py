@@ -19,6 +19,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 from app.core.config import settings
 from app.services import openrouter, query_mapper
 from app.services.keyword_analysis import KeywordClass, analyze_keyword, clinic_phrase
+from app.services.question_wellformed import question_is_wellformed
 
 logger = logging.getLogger(__name__)
 
@@ -385,9 +386,11 @@ _ALL_CLINICAL = frozenset(
         KeywordClass.UNKNOWN,
     }
 )
-_TREATABLE = frozenset(
-    {KeywordClass.DISEASE, KeywordClass.SYMPTOM, KeywordClass.BODY_PART, KeywordClass.UNKNOWN}
-)
+# "치료"를 붙여도 말이 되는 종류. UNKNOWN은 **넣지 않는다** — 사전에 없는 다음 검사·시술명
+# ("도플러", "홀터")이 질환 템플릿을 받아 "갑상선초음파 치료 비용"이 만들어졌다(2026-10).
+# 모르는 말에는 아래 _TREATABLE_OR_UNKNOWN 중립 템플릿("진료")만 쓴다.
+_TREATABLE = frozenset({KeywordClass.DISEASE, KeywordClass.SYMPTOM, KeywordClass.BODY_PART})
+_TREATABLE_OR_UNKNOWN = _TREATABLE | {KeywordClass.UNKNOWN}
 _PROCEDURAL = frozenset({KeywordClass.PROCEDURE, KeywordClass.CARE_SERVICE})
 _DISEASE_ONLY = frozenset({KeywordClass.DISEASE})
 
@@ -400,9 +403,9 @@ _TEMPLATE_SPECS: list[tuple[str, str, frozenset]] = [
     ("{sub_region}에서 {specialty} 진료 받을 수 있는 병원 알려줘", QUERY_INTENT_LOCAL, frozenset()),
     ("{region} {specialty} 진료비 어느 정도야?", QUERY_INTENT_LOCAL, frozenset()),
     # 질환·증상·부위 — "치료받는" 대상이다. "수술"을 붙이지 않는다.
-    ("{keyword} 진료를 받으려는데 {region} 어느 병원으로 가야 해?", QUERY_INTENT_LOCAL, _TREATABLE),
+    ("{keyword} 진료를 받으려는데 {region} 어느 병원으로 가야 해?", QUERY_INTENT_LOCAL, _TREATABLE_OR_UNKNOWN),
     ("{region}에서 {keyword} 치료하는 병원 알려줘", QUERY_INTENT_LOCAL, _TREATABLE),
-    ("{sub_region} {keyword} 진료 가능한 병원", QUERY_INTENT_LOCAL, _TREATABLE),
+    ("{sub_region} {keyword} 진료 가능한 병원", QUERY_INTENT_LOCAL, _TREATABLE_OR_UNKNOWN),
     # 시술·검사·진료방식 — "받는" 대상이다.
     ("{region}에서 {keyword} 받을 수 있는 병원 알려줘", QUERY_INTENT_LOCAL, _PROCEDURAL),
     ("{sub_region} {keyword} 가능한 병원 추천해줘", QUERY_INTENT_LOCAL, _PROCEDURAL),
@@ -571,6 +574,14 @@ def generate_query_matrix_specs(
             specialty=re.sub(r"\s*진료$", "", specialty).strip() or specialty,
             clinic=clinic_phrase(specialty),
         )
+        # 템플릿·사전이 놓친 비문("마산 마산 …", 검사에 '치료')은 저장 전에 버린다. 같은
+        # 키워드의 다른 템플릿이 질문 수를 채우므로 중립 문형으로 따로 갈아 끼우지 않는다.
+        if not question_is_wellformed(
+            q,
+            keyword=rendered_keyword if "{keyword}" in template else None,
+            source="generate_query_matrix_specs",
+        ):
+            continue
         # 서로 다른 템플릿이 같은 문장을 만들면 더 보수적인 쪽(LOCAL)을 남긴다.
         if seen.get(q) != QUERY_INTENT_LOCAL:
             seen[q] = intent

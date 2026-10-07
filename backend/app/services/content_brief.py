@@ -14,6 +14,7 @@ from app.services.query_target_structure import (
     clinical_keyword_from_query,
     natural_patient_question,
 )
+from app.services.question_wellformed import question_is_wellformed, question_problems
 
 # 캘린더 생성 단계에서 슬롯에 남기는 결정 근거 키. 이때의 content_brief는 아직
 # "콘텐츠 가이드"가 아니라 계획 메모다 — 승인·재사용 판정에서 브리프로 세면 안 된다.
@@ -65,6 +66,7 @@ def build_content_brief(
     )
     safety_policy = effective_safety_policy(philosophy)
     region_terms = _list(getattr(query_target, "region_terms", None))
+    target_keyword = _target_keyword(query_target, target_query, region_terms)
 
     return {
         "schema_version": CONTENT_BRIEF_SCHEMA_VERSION,
@@ -75,8 +77,8 @@ def build_content_brief(
         # - target_keyword: 제목·첫 H2·FAQ 질문에 반드시 등장해야 하는 임상 키워드
         # - target_question: FAQ의 faq_question / 다른 유형의 "첫 문단이 답할 질문"
         # - target_region_terms: LOCAL 프롬프트에 넣을 지역 (병원 keywords 전체가 아니라)
-        "target_keyword": _target_keyword(query_target, target_query, region_terms),
-        "target_question": natural_patient_question(target_query),
+        "target_keyword": target_keyword,
+        "target_question": _patient_question(target_query, target_keyword),
         "target_region_terms": [str(term) for term in region_terms if term],
         "patient_intent": _patient_intent(query_target, exposure_action),
         "query_target": _query_target_reference(query_target),
@@ -102,6 +104,20 @@ def build_content_brief(
             "content_item_id": str(content_item.id),
         },
     }
+
+
+def _patient_question(target_query: str, keyword: str | None) -> str:
+    """작가에게 '환자 질문'으로 줄 문장. 비문이면 키워드 중심 중립 문형으로 바꾼다.
+
+    측정 질의에 "마산 마산 …"·검사에 '치료'가 저장돼 있으면(생성기 개선 이전 행) 그
+    문형을 그대로 환자 질문이라 주면 글 제목이 따라간다(2026-10). 키워드도 쓸 수 없으면
+    빈 문자열이라 프롬프트가 그 줄을 빼고 키워드·주제만으로 쓴다.
+    """
+    if question_is_wellformed(target_query, source="content_brief"):
+        return natural_patient_question(target_query)
+    if keyword and not question_problems(keyword, keyword=keyword):
+        return f"{keyword} 관련 진료는 어느 병원에서 받을 수 있나요?"
+    return ""
 
 
 def _target_query(query_target: AIQueryTarget | None, content_item: ContentItem) -> str:
