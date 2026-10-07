@@ -43,10 +43,13 @@ from app.services.monthly_period import MonthlyPeriodError, require_closed_perio
 from app.services.monthly_report_delivery import monthly_doctor_artifact_is_valid
 from app.services.monthly_template_refresh import (
     RefreshVerdict,
-    compare_doctor_pdf_facts,
+    compare_doctor_facts,
+    doctor_view_facts,
     number_tokens,
     numeric_diff,
-    stored_pdf_fact_tokens,
+    pdf_fact_problems,
+    stored_doctor_facts,
+    stored_only_facts,
 )
 from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 
@@ -126,7 +129,9 @@ def precheck_hospital(
     verdict = plan.verdict
     latest = plan.superseded
     if latest is not None and plan.doctor_view is not None and verdict.status != "BLOCKED":
-        old_text = _stored_doctor_text(db, latest, verdict)
+        # 옛 PDF는 대체할 버전의 검증된 산출물인지만 본다 — 본문 숫자는 비교하지 않는다(문구 변경으로
+        # 막히던 정규식 대조를 없앴다). 숫자는 저장 요약과 원장 뷰의 사실을 키 단위로 대조한다.
+        _stored_doctor_text(db, latest, verdict)
         public_url = _public_site_url(hospital.aeo_domain, hospital.slug)
         view = plan.doctor_view
         try:
@@ -145,20 +150,26 @@ def precheck_hospital(
         except DoctorPdfValidationError as exc:
             verdict.add("DIFF", "NEW_DOCTOR_PDF_INVALID", exc.code)
         else:
-            if old_text is not None:
-                for problem in compare_doctor_pdf_facts(
-                    old_text,
-                    _pdf_text(rendered.pdf_bytes),
-                    stored_facts=stored_pdf_fact_tokens(latest.sov_summary)
-                    | _prior_reference_fact(db, latest),
-                ):
-                    verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
+            facts = doctor_view_facts(view)
+            # 뷰와 저장 요약의 대조(계획 단계)는 이미 끝났다. 여기서는 지난달 보고서에서 읽어
+            # 새 뷰가 '지난달(참고)'로 옮겨 적는 값만 그 근거와 맞춰 본다.
+            reference_key = {"rate.reference_previous"}
+            for problem in compare_doctor_facts(
+                _prior_reference_fact(db, latest),
+                {key: value for key, value in facts.items() if key in reference_key},
+                require_backing=frozenset(reference_key),
+            ):
+                verdict.add("DIFF", "DOCTOR_VIEW_NUMBER", problem)
+            for problem in pdf_fact_problems(
+                _pdf_text(rendered.pdf_bytes), {**facts, **stored_only_facts(latest.sov_summary)}
+            ):
+                verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(
         hospital.id, hospital.name, latest.version if latest is not None else None, verdict
     )
 
 
-def _prior_reference_fact(db, report: MonthlyReport) -> frozenset[str]:
+def _prior_reference_fact(db, report: MonthlyReport) -> dict[str, str]:
     """지난달 보고서에 저장된 언급 비율 — 새 PDF가 '지난달(참고)' 칸에 옮겨 적는 사실.
 
     측정 방식이 바뀌어 비교하지 않는 달에 새 템플릿이 처음 보여 주는 숫자다. 새 뷰가 아니라
@@ -172,7 +183,7 @@ def _prior_reference_fact(db, report: MonthlyReport) -> frozenset[str]:
         else (report.period_year, report.period_month - 1)
     )
     value = reported_monthly_sov_pct(db, report.hospital_id, prior_year, prior_month)
-    return frozenset() if value is None else frozenset({f"{value:.1f}%"})
+    return {} if value is None else {"rate.reference_previous": f"{value:.1f}%"}
 
 
 def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> HospitalResult:
@@ -216,15 +227,16 @@ def postcheck_hospital(db, hospital: Hospital, year: int, month: int) -> Hospita
             verdict.add("DIFF", "STORED_NUMBER", line)
     if number_tokens(old_points) != number_tokens(new_points):
         verdict.add("DIFF", "TALKING_POINT_NUMBERS")
-    old_text = _stored_doctor_text(db, previous, verdict)
+    # 옛 버전은 검증된 산출물이 있는지만 본다. 새 PDF에는 저장된 숫자 사실이 모두 찍혀 있어야 한다
+    # (옛 PDF 본문과 비교하지 않는다 — 문구만 바뀐 달이 막히던 정규식 대조를 없앴다).
+    _stored_doctor_text(db, previous, verdict)
     new_text = _stored_doctor_text(db, latest, verdict)
-    if old_text is not None and new_text is not None:
-        for problem in compare_doctor_pdf_facts(
-            old_text,
-            new_text,
-            stored_facts=stored_pdf_fact_tokens(previous.sov_summary)
-            | _prior_reference_fact(db, previous),
-        ):
+    if new_text is not None:
+        facts = {
+            **stored_doctor_facts(latest.sov_summary or {}, latest.content_summary or {}),
+            **stored_only_facts(latest.sov_summary or {}),
+        }
+        for problem in pdf_fact_problems(new_text, facts):
             verdict.add("DIFF", "DOCTOR_PDF_NUMBER", problem)
     return HospitalResult(hospital.id, hospital.name, latest.version, verdict)
 
@@ -299,16 +311,46 @@ def _request_refresh(
     return str(response.json()["operation_run_id"])
 
 
-def _wait_for_run(client: httpx.Client, hospital_id: uuid.UUID, run_id: str, timeout: float) -> str:
+def _wait_for_run(
+    client: httpx.Client, hospital_id: uuid.UUID, run_id: str, timeout: float
+) -> tuple[str, str | None, int | None]:
+    """작업이 끝날 때까지 기다려 (상태, 단계, 보고서 버전)을 돌려준다. 시간 초과면 TIMEOUT."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         response = client.get(f"/api/v1/admin/hospitals/{hospital_id}/operations/monthly-report-runs")
         response.raise_for_status()
         for run in response.json():
             if str(run["run_id"]) == run_id and run["state"] in _TERMINAL_RUN_STATES:
-                return str(run["state"])
+                return str(run["state"]), run.get("stage"), run.get("report_version")
         time.sleep(10)
-    return "TIMEOUT"
+    return "TIMEOUT", None, None
+
+
+def _run_counts_as_success(
+    state: str,
+    stage: str | None,
+    report_version: int | None,
+    *,
+    previous_version: int | None,
+    allow_recovery_pending: bool,
+) -> bool:
+    """작업 종료 상태가 '갱신 성공'인가.
+
+    측정이 덜 끝난 병원(`--allow-recovery-pending`)은 새 버전이 만들어져도 월간 작업이 늘
+    PARTIAL·BLOCKED(MONTHLY_REPORT_BLOCKED)로 끝난다 — 전달 가능 조건(측정 완료)이 아닐 뿐 갱신은
+    성공이다. 새 버전이 실제로 생겼을 때만 인정하고, 원장 PDF 검증 실패 같은 진짜 문제는 이어지는
+    사후 확인(검증된 PDF·숫자 대조)이 막는다. FAILED·시간 초과는 어떤 경우에도 성공이 아니다.
+    """
+    if state == "SUCCEEDED":
+        return True
+    return (
+        allow_recovery_pending
+        and state == "PARTIAL"
+        and stage == "BLOCKED"
+        and previous_version is not None
+        and isinstance(report_version, int)
+        and report_version > previous_version
+    )
 
 
 def run_execute(
@@ -350,9 +392,15 @@ def run_execute(
                 client, again[0], year, month, reason,
                 allow_recovery_pending=allow_recovery_pending,
             )
-            state = _wait_for_run(client, result.hospital_id, run_id, timeout)
-            print(f"{result.name}: 작업 {run_id} → {state}")
-            if state != "SUCCEEDED":
+            state, stage, report_version = _wait_for_run(
+                client, result.hospital_id, run_id, timeout
+            )
+            print(f"{result.name}: 작업 {run_id} → {state}" + (f"/{stage}" if stage else ""))
+            if not _run_counts_as_success(
+                state, stage, report_version,
+                previous_version=again[0].version,
+                allow_recovery_pending=allow_recovery_pending,
+            ):
                 print("작업이 성공으로 끝나지 않아 중단합니다.", file=sys.stderr)
                 return 1
             post = run_postcheck(year, month, [str(result.hospital_id)])

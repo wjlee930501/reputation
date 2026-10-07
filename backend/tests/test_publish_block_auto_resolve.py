@@ -1792,3 +1792,78 @@ def test_cost_cap_settings_of_both_prs_coexist():
         settings.CONTENT_AUTO_CORRECTION_MAX_REREVIEWS,
         settings.CONTENT_AUTO_TOPIC_SWAP_MAX,
     ) == (2, 2, 1)
+
+
+# ── 분량 하한: 교정이 글을 1,800자 아래로 줄이면 거절한다 ─────────────────────────
+
+
+def _long_body(plain_chars: int) -> str:
+    """순수 글자 수가 plain_chars인 본문 — 맨 앞 절 끝에 지적 문장(WRONG_TRAINING)이 있다."""
+    from app.services.content_engine import body_plain_length
+
+    base = body_plain_length(_body("가.", WRONG_TRAINING))
+    # 지적 문장이 앞 문장과 붙지 않게 마침표로 끝낸다.
+    return _body("가" * (plain_chars - base + 1) + ".", WRONG_TRAINING)
+
+
+def _wrong_training_plan(content: dict):
+    return mc.plan_corrections(
+        content,
+        _review_payload(
+            content,
+            _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", quote=WRONG_TRAINING),
+        ),
+    )
+
+
+def test_deleting_a_sentence_below_the_body_minimum_is_a_rejected_correction():
+    from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
+
+    content = _content(_long_body(CONTENT_BODY_MIN_CHARS + 20))
+    assert body_plain_length(content["body"]) >= CONTENT_BODY_MIN_CHARS
+    plan = _wrong_training_plan(content)
+    deleted = mc.apply_corrections(
+        content, plan, {plan.targets[0].key: mc.SentenceDecision(plan.targets[0].key, None, "d")}
+    )
+    assert body_plain_length(deleted["body"]) < CONTENT_BODY_MIN_CHARS
+
+    with pytest.raises(mc.CorrectionScopeError, match="correction rejected: body below"):
+        mc.verify_correction_scope(content, deleted, plan, sources=[])
+
+
+def test_correction_that_keeps_the_body_at_the_minimum_is_accepted():
+    from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
+
+    content = _content(_long_body(CONTENT_BODY_MIN_CHARS + 400))
+    plan = _wrong_training_plan(content)
+    deleted = mc.apply_corrections(
+        content, plan, {plan.targets[0].key: mc.SentenceDecision(plan.targets[0].key, None, "d")}
+    )
+    assert body_plain_length(deleted["body"]) >= CONTENT_BODY_MIN_CHARS
+    mc.verify_correction_scope(content, deleted, plan, sources=[])
+
+
+async def test_pass_that_would_shorten_the_body_below_the_minimum_buys_no_rereview():
+    from app.services.content_engine import CONTENT_BODY_MIN_CHARS
+
+    content = _content(_long_body(CONTENT_BODY_MIN_CHARS + 20))
+    review = _review_payload(
+        content,
+        _finding("HARD", "HOSPITAL_FACT", "수련기관이 프로필과 다릅니다.", quote=WRONG_TRAINING),
+    )
+
+    async def no_llm(**_kwargs):
+        return {}
+
+    async def reviewer(**_kwargs):
+        raise AssertionError("분량 미달 교정본은 재검수로 넘어가면 안 된다")
+
+    outcome = await mc.run_minimal_correction(
+        hospital=_hospital(), philosophy=_philosophy(), content=content, review=review,
+        content_brief=None, must_use_messages=[], state=None,
+        limits=mc.CorrectionLimits(max_passes=2, max_rereviews=2),
+        dependencies=mc.CorrectionDependencies(propose=no_llm, review=reviewer),
+    )
+
+    assert outcome.status == "REJECTED"
+    assert outcome.content is None

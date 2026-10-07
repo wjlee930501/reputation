@@ -16,6 +16,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
+from math import isfinite
 from typing import Any
 
 # 템플릿 갱신이 저장된 값만으로 원장·AE 리포트를 다시 그리려면 반드시 있어야 하는 칸.
@@ -169,72 +170,247 @@ def number_tokens(lines: Iterable[str]) -> list[str]:
     return [token for line in lines for token in _NUMBER.findall(str(line))]
 
 
-# 원장용 PDF에서 '숫자 사실'로 읽는 토큰. 문구·쪽 번호·연도·예시 숫자는 제외한다.
-_PDF_DELTA = re.compile(r"[+\-−]?\d+(?:\.\d+)?%p")
-_PDF_PATTERNS = (
-    re.compile(r"\d+(?:\.\d+)?%"),
-    re.compile(r"\d+편중\d+편"),
-    re.compile(r"\d+번중\d+번"),
+# ── 원장 뷰의 숫자 사실(구조 비교) ─────────────────────────────────────────────
+# 원장 PDF 본문에서 정규식으로 숫자를 뽑아 옛 PDF와 집합으로 비교하지 않는다. 문구만 바뀌어도
+# 사실이 달라 보였다(2026-10-06: '16.7~30.0%'→'16.7%~30.0%', '150번 중 150번'→'150회 전부').
+# 대신 템플릿이 그리는 값(원장 뷰)을 키별 '정본 사실'로 뽑아, 대체할 버전의 저장 요약에서 같은
+# 방식으로 다시 만든 사실과 키 단위로 대조한다. PDF 본문은 그 사실이 실제로 찍혔는지만 보는
+# 이차 확인이며, 옛 PDF 본문은 비교하지 않는다.
+
+# 저장 요약에 근거가 반드시 있어야 하는 뷰 사실 — 근거 없이 뷰에만 생기면 숫자가 새로 생긴 것이다.
+# 지난달 참고 값(`rate.reference_previous`)은 저장 요약이 아니라 지난달 보고서가 근거라 호출부가 따로 맞춘다.
+REQUIRE_STORED_BACKING = frozenset({"rate.current", "rate.previous", "tile.contract"})
+# 현재 템플릿(doctor_report_v3)이 PDF에 그리지 않는 사실 — 뷰·저장값 대조에만 쓴다.
+_NOT_IN_PDF = frozenset({"tile.chatgpt", "tile.gemini", "highlight.published_this_month"})
+_HIGHLIGHT_NAMES = (
+    "measured_questions",
+    "mentioned_questions",
+    "published_this_month",
+    "cumulative_published",
+    "cited_questions",
+    "cited_answers_measured",
 )
-# 옛 템플릿의 고정 문구('공통 눈금 0–100%', '95% 구간')와 새 부록의 설명 예시('6번 중 2번').
-OLD_PDF_STATIC_TOKENS = frozenset({"100%", "95%"})
-NEW_PDF_STATIC_TOKENS = frozenset({"6번중2번"})
+_PDF_WINDOW = 40
 
 
-def pdf_fact_tokens(text: str, *, ignore: frozenset[str] = frozenset()) -> dict[str, int]:
-    compact = "".join(text.split())
-    compact = _PDF_DELTA.sub("", compact)
-    counts: dict[str, int] = {}
-    for pattern in _PDF_PATTERNS:
-        for token in pattern.findall(compact):
-            if token not in ignore:
-                counts[token] = counts.get(token, 0) + 1
-    return counts
+def _number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+        return None
+    return float(value)
 
 
-def stored_pdf_fact_tokens(sov_summary: Mapping[str, Any] | None) -> frozenset[str]:
-    """저장된 측정 요약에서 그대로 옮겨 새 템플릿이 'N번 중 M번'으로 처음 적는 사실.
+def _pct(value: Any) -> str | None:
+    number = _number(value)
+    return None if number is None else f"{number:.1f}%"
 
-    옛 템플릿은 반복 관측의 계획·확인 횟수를 다른 꼴로 적어 숫자 사실로 읽히지 않았다.
-    새 PDF에만 나타나도 저장값과 정확히 같으면 숫자가 바뀐 것이 아니다.
 
-    답변 비율 범위(ci95)의 양 끝도 같다. 2026-10-06 하루 동안 템플릿이 범위를 '8.2~20.0%'로
-    찍어 아래쪽 숫자가 사실로 읽히지 않았다 — 그때 만든 버전을 '8.2%~20.0%'로 다시 찍어도
-    저장값 그대로면 차이가 아니다.
+def _comparable(sov_summary: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """지난달과 직접 비교하는 달이면 저장된 comparison. 서술(narrative)의 판정과 같은 규칙이다."""
+    comparison = sov_summary.get("comparison")
+    if not isinstance(comparison, Mapping):
+        return None
+    values = (comparison.get("prior_sov_pct"), comparison.get("current_sov_pct"))
+    matched = comparison.get("matched_cell_count", 0)
+    if (
+        comparison.get("status") == "COMPARABLE"
+        and comparison.get("reason") == "MATCHED_COHORT"
+        and isinstance(matched, (int, float))
+        and matched > 0
+        and all(_number(value) is not None and 0 <= value <= 100 for value in values)
+    ):
+        return comparison
+    return None
+
+
+def _highlight_facts(highlights: Mapping[str, Any]) -> dict[str, str]:
+    return {
+        f"highlight.{name}": str(highlights[name])
+        for name in _HIGHLIGHT_NAMES
+        if isinstance(highlights.get(name), int) and not isinstance(highlights.get(name), bool)
+    }
+
+
+def _appendix_facts(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    facts: dict[str, str] = {}
+    for index, row in enumerate(rows):
+        for field_name, short in (("prev_label", "prev"), ("current_label", "current")):
+            label = str(row.get(field_name) or "")
+            if _NUMBER.search(label):
+                facts[f"appendix.{index}.{short}"] = label
+    return facts
+
+
+def doctor_view_facts(view: Mapping[str, Any]) -> dict[str, str]:
+    """원장 뷰(템플릿이 그리는 값)의 숫자 사실. 모르는 값(None)은 0과 섞지 않고 뺀다."""
+    facts: dict[str, str] = {}
+    narrative = view["narrative"]
+    for key, value in (
+        ("rate.current", narrative.current),
+        ("rate.previous", narrative.previous),
+        ("rate.reference_previous", narrative.reference_previous),
+    ):
+        text = _pct(value)
+        if text is not None:
+            facts[key] = text
+    tiles = view["tiles"]
+    facts["tile.contract"] = str(tiles[0]["value"])
+    for key, tile in zip(("tile.chatgpt", "tile.gemini"), tiles[1:3], strict=False):
+        facts[key] = str(tile["value"])
+    facts.update(_highlight_facts(view.get("highlights") or {}))
+    facts.update(_appendix_facts(view.get("appendix_rows") or []))
+    baseline = view.get("v0_baseline")
+    if baseline:
+        facts["v0.of_hundred"] = f"{baseline['of_hundred']}%"
+        facts["v0.current_of_hundred"] = f"{baseline['current_of_hundred']}%"
+    return facts
+
+
+def stored_doctor_facts(
+    sov_summary: Mapping[str, Any], content_summary: Mapping[str, Any]
+) -> dict[str, str]:
+    """저장된 요약에서 원장 뷰와 같은 키로 다시 만든 사실(뷰가 만들 수 있는 사실만).
+
+    뷰 빌더와 같은 함수(`_director_highlights`·`_appendix_rows`)에 저장된 귀속·인용을 먹여
+    독립적으로 계산한다. 누적 발행 편수·초기 측정 참고선·지난달 참고 값은 저장 요약에 없으므로
+    여기에 없다(뒤의 둘은 호출부가 따로 근거를 댄다).
     """
-    summary = sov_summary or {}
-    facts: set[str] = set()
-    adequacy = summary.get("observation_adequacy")
-    if isinstance(adequacy, Mapping):
-        planned, confirmed = adequacy.get("planned_slots"), adequacy.get("confirmed_slots")
-        if isinstance(planned, int) and isinstance(confirmed, int):
-            facts.add(f"{planned}번중{confirmed}번")
-    for key in ("ci95_low", "ci95_high"):
-        value = summary.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            facts.add(f"{value:.1f}%")
-    return frozenset(facts)
+    from app.services.report_engine import _appendix_rows, _director_highlights
+
+    facts: dict[str, str] = {}
+    comparison = _comparable(sov_summary)
+    current = comparison["current_sov_pct"] if comparison else sov_summary.get("sov_pct")
+    for key, value in (
+        ("rate.current", current),
+        ("rate.previous", comparison["prior_sov_pct"] if comparison else None),
+    ):
+        text = _pct(value)
+        if text is not None:
+            facts[key] = text
+    operations = content_summary.get("operations") or {}
+    timing = content_summary.get("contract_timing") or {}
+    quota = operations.get("plan_quota")
+    facts["tile.contract"] = (
+        f"{content_summary.get('published_count')}편"
+        if quota is None
+        else f"{quota}편 중 {timing.get('published_for_contract_count')}편"
+    )
+    platforms = {
+        row.get("platform"): row
+        for row in sov_summary.get("platforms") or []
+        if isinstance(row, Mapping)
+    }
+    for platform_id in ("chatgpt", "gemini"):
+        row = platforms.get(platform_id, {})
+        rate = row.get("mention_rate")
+        attempts = int(row.get("attempts_used") or 0)
+        facts[f"tile.{platform_id}"] = (
+            f"{rate:.1f}%" if rate is not None and attempts else "측정 미완료"
+        )
+    attribution = content_summary.get("attribution") or {}
+    facts.update(
+        _highlight_facts(
+            _director_highlights(
+                attribution=attribution,
+                citations=content_summary.get("citations"),
+                published_count=content_summary.get("published_count"),
+                cumulative_published_count=None,
+            )
+        )
+    )
+    facts.update(
+        _appendix_facts(
+            _appendix_rows(
+                attribution.get("question_rows") or [],
+                has_prior_month=bool(attribution.get("has_prior_month")),
+                competitors={},
+                cited_titles={},
+            )
+        )
+    )
+    return facts
 
 
-def compare_doctor_pdf_facts(
-    old_text: str, new_text: str, *, stored_facts: frozenset[str] = frozenset()
+def stored_only_facts(sov_summary: Mapping[str, Any]) -> dict[str, str]:
+    """저장된 측정 요약에만 있고 뷰의 값이 아닌 사실(답변 비율 범위·확인 횟수) — PDF 이차 확인용."""
+    facts: dict[str, str] = {}
+    for key, name in (("ci.low", "ci95_low"), ("ci.high", "ci95_high")):
+        text = _pct(sov_summary.get(name))
+        if text is not None:
+            facts[key] = text
+    adequacy = sov_summary.get("observation_adequacy")
+    for key, source in (
+        ("adequacy.planned_slots", adequacy),
+        ("adequacy.confirmed_slots", adequacy),
+        ("coverage.planned_count", sov_summary),
+        ("coverage.success_count", sov_summary),
+    ):
+        name = key.split(".", 1)[1]
+        value = source.get(name) if isinstance(source, Mapping) else None
+        if isinstance(value, int) and not isinstance(value, bool):
+            facts[key] = str(value)
+    comparison = sov_summary.get("comparison")
+    if isinstance(comparison, Mapping) and comparison.get("status") == "COMPARABLE":
+        text = _pct(sov_summary.get("sov_pct_all_cells"))
+        if text is not None:
+            facts["coverage.sov_pct_all_cells"] = text
+    return facts
+
+
+def compare_doctor_facts(
+    expected: Mapping[str, str],
+    actual: Mapping[str, str],
+    *,
+    require_backing: frozenset[str] = REQUIRE_STORED_BACKING,
 ) -> list[str]:
-    """옛 원장 PDF에 있던 숫자 사실이 새 PDF에도 있고, 새 PDF에 없던 숫자가 생기지 않았는가.
+    """저장값에서 다시 만든 사실(expected)과 원장 뷰의 사실(actual)을 키 단위로 대조한다.
 
-    `stored_facts`는 저장값에서 그대로 옮긴 사실이라 한쪽 PDF에만 있어도 차이로 보지 않는다.
+    저장 사실이 뷰에서 빠지거나 값이 다르면 차이다. 뷰에만 있는 사실은 `require_backing`에 든
+    키만 차이로 본다(누적 발행 편수·초기 측정 참고선은 현재 행에서 읽는 값이다).
     """
-    # 옛 PDF가 이미 새 템플릿으로 만든 버전이면 새 부록의 설명 예시도 들어 있다 — 고정 문구는
-    # 양쪽에서 똑같이 뺀다(2026-10-02: v2→v3 갱신이 '옛 PDF에만 있음: 6번중2번'으로 막혔다).
-    old = set(
-        pdf_fact_tokens(old_text, ignore=OLD_PDF_STATIC_TOKENS | NEW_PDF_STATIC_TOKENS)
-    )
-    new = set(pdf_fact_tokens(new_text, ignore=NEW_PDF_STATIC_TOKENS))
-    # 저장값에서 옮긴 사실은 문구가 'N번 중 M번' 꼴을 버려도(2026-10: '150회 전부 확인') 숫자가
-    # 바뀐 것이 아니다 — 옛 PDF에만 있어도 차이로 보지 않는다.
-    problems = [f"옛 PDF에만 있음: {token}" for token in sorted(old - new - stored_facts)]
+    problems = [
+        (
+            f"원장 뷰에 없음: {key}={expected[key]}"
+            if key not in actual
+            else f"{key}: 저장 {expected[key]} ≠ 뷰 {actual[key]}"
+        )
+        for key in sorted(expected)
+        if actual.get(key) != expected[key]
+    ]
     problems.extend(
-        f"새 PDF에만 있음: {token}" for token in sorted(new - old - stored_facts)
+        f"저장값 근거 없음: {key}={actual[key]}"
+        for key in sorted(set(actual) - set(expected))
+        if key in require_backing
     )
+    return problems
+
+
+def _pdf_number_pattern(value: str) -> re.Pattern[str] | None:
+    numbers = _NUMBER.findall(value)
+    if not numbers:
+        return None
+    # 숫자는 앞뒤가 숫자·소수점으로 이어지지 않는 온전한 값이어야 하고, 사실에 숫자가 여럿이면
+    # ('12편 중 11편') 같은 순서로 가까이 나와야 한다. '%'·단위·조사 같은 문구는 보지 않는다.
+    guarded = [rf"(?<![\d.]){re.escape(number)}(?!\d|\.\d)" for number in numbers]
+    return re.compile(rf"[\s\S]{{0,{_PDF_WINDOW}}}?".join(guarded))
+
+
+def pdf_fact_problems(pdf_text: str, facts: Mapping[str, str]) -> list[str]:
+    """정본 사실의 값이 새 PDF 본문에 모두 찍혔는가(이차 확인). 서식·문구 변화에는 관대하다."""
+    compact = "".join(pdf_text.split())
+    problems: list[str] = []
+    for key in sorted(facts):
+        if key in _NOT_IN_PDF:
+            continue
+        # 템플릿은 질문 수가 0이거나 모를 때 '확인 못 함'만 적고 숫자를 그리지 않는다.
+        if key == "highlight.mentioned_questions" and facts.get(
+            "highlight.measured_questions", "0"
+        ) == "0":
+            continue
+        if key == "highlight.cited_answers_measured" and facts[key] == "0":
+            continue
+        pattern = _pdf_number_pattern(facts[key])
+        if pattern is not None and pattern.search(compact) is None:
+            problems.append(f"새 PDF에서 찾지 못함: {key}={facts[key]}")
     return problems
 
 
@@ -244,28 +420,7 @@ def doctor_view_expectations(
     sov_summary: Mapping[str, Any],
     content_summary: Mapping[str, Any],
 ) -> list[str]:
-    """원장 뷰의 핵심 숫자를 저장된 요약에서 독립적으로 다시 계산해 맞춰 본다."""
-    problems: list[str] = []
-    narrative = view["narrative"]
-    comparison = sov_summary.get("comparison") or {}
-    stored_current = sov_summary.get("sov_pct")
-    comparable = narrative.previous is not None
-    expected_current = comparison.get("current_sov_pct") if comparable else stored_current
-    if narrative.current != expected_current:
-        problems.append(f"narrative.current {narrative.current} ≠ {expected_current}")
-    if comparable and narrative.previous != comparison.get("prior_sov_pct"):
-        problems.append(
-            f"narrative.previous {narrative.previous} ≠ {comparison.get('prior_sov_pct')}"
-        )
-    operations = content_summary.get("operations") or {}
-    timing = content_summary.get("contract_timing") or {}
-    quota = operations.get("plan_quota")
-    tile_value = view["tiles"][0]["value"]
-    expected_tile = (
-        f"{content_summary.get('published_count')}편"
-        if quota is None
-        else f"{quota}편 중 {timing.get('published_for_contract_count')}편"
+    """원장 뷰의 숫자 사실을 저장된 요약에서 독립적으로 다시 계산해 키 단위로 맞춰 본다."""
+    return compare_doctor_facts(
+        stored_doctor_facts(sov_summary, content_summary), doctor_view_facts(view)
     )
-    if tile_value != expected_tile:
-        problems.append(f"tile {tile_value} ≠ {expected_tile}")
-    return problems

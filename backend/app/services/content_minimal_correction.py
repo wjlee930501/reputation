@@ -39,6 +39,7 @@ from app.services.content_ai_review import (
     candidate_sha256,
     hospital_review_profile,
 )
+from app.services.content_engine import CONTENT_BODY_MIN_CHARS, body_plain_length
 from app.services.must_use_verbatim import (
     appears_as_standalone_sentence,
     normalize_verbatim,
@@ -810,6 +811,16 @@ def verify_correction_scope(
             ) and not appears_as_standalone_sentence(corrected.get(name) or "", message):
                 raise CorrectionScopeError(f"field {name} lost a must-use message")
     body = str(corrected.get("body") or "")
+    # 문장 삭제가 분량 하한(생성 검사와 같은 기준)을 깨면 재검수 PASS를 받아도 짧은 글이 발행된다.
+    # 원문이 하한을 지켰는데 교정이 그 아래로 내렸을 때만 거절한다 — 이 거절은 호출부에서
+    # 결정적 삭제 재시도를 거쳐 REJECTED(교정 불가)로 이어진다.
+    if (
+        body_plain_length(str(original.get("body") or "")) >= CONTENT_BODY_MIN_CHARS
+        and body_plain_length(body) < CONTENT_BODY_MIN_CHARS
+    ):
+        raise CorrectionScopeError(
+            f"correction rejected: body below {CONTENT_BODY_MIN_CHARS} chars after correction"
+        )
     if body and check_forbidden_markdown(body) and not check_forbidden_markdown(
         str(original.get("body") or "")
     ):
