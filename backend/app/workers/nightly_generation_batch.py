@@ -8,6 +8,10 @@ from sqlalchemy.orm import joinedload
 from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.reference_requirement import (
+    QUERY_TARGET_TOPIC_FIELDS,
+    REFERENCES_REQUIRED_TYPES,
+)
 
 NIGHTLY_GENERATION_CAP = 50
 NIGHTLY_GENERATION_CLAIM_TTL_HOURS = 2
@@ -317,6 +321,25 @@ def load_claimed_generation_item(
     return item
 
 
+def _filled_json_text(expression):
+    return and_(expression.is_not(None), func.length(func.trim(expression)) > 0)
+
+
+def _brief_links_query_target():
+    """`reference_requirement.references_required_for`의 NOTICE 연결 판정과 같은 SQL 표현."""
+
+    brief = ContentItem.content_brief
+    query_target = brief["query_target"]
+    return or_(
+        ContentItem.query_target_id.is_not(None),
+        *(
+            _filled_json_text(query_target[field].as_string())
+            for field in QUERY_TARGET_TOPIC_FIELDS
+        ),
+        _filled_json_text(brief["exposure_action"]["query_target_id"].as_string()),
+    )
+
+
 def _needs_generation_recovery():
     """Select missing fragments and stored defects the writer can repair.
 
@@ -344,16 +367,12 @@ def _needs_generation_recovery():
         ),
         else_=0,
     )
+    # 참고자료 필수 유형의 정본은 `reference_requirement`다 — 여기서 목록을 복사하지 않는다.
+    # NOTICE는 측정 질문에 연결됐을 때만 필수다(`references_required_for`와 같은 세 칸).
     references_need_repair = and_(
-        ContentItem.content_type.in_(
-            (
-                ContentType.FAQ,
-                ContentType.DISEASE,
-                ContentType.TREATMENT,
-                ContentType.COLUMN,
-                ContentType.HEALTH,
-                ContentType.LOCAL,
-            )
+        or_(
+            ContentItem.content_type.in_(sorted(REFERENCES_REQUIRED_TYPES, key=lambda t: t.value)),
+            and_(ContentItem.content_type == ContentType.NOTICE, _brief_links_query_target()),
         ),
         or_(
             ContentItem.references_list.is_(None),
@@ -370,6 +389,8 @@ def _needs_generation_recovery():
     unresolved_ai_review = and_(
         or_(
             ai_review["status"].as_string() == "UNAVAILABLE",
+            # PATCH가 검수된 본문을 고친 PASS — 발행 게이트가 STALE로 막으므로 재검수를 받는다.
+            ai_review["edited_after_review"].as_boolean().is_(True),
             and_(
                 ai_review["status"].as_string() == "REVISE",
                 or_(

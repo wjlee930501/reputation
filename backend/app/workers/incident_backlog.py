@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem
+from app.models.hospital import Hospital
 from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
     LeadDiagnosis,
@@ -224,7 +225,16 @@ def _lead_report_recovered(db: Session, incident: Incident, _now: datetime) -> s
     return "lead_report_ready" if servable is not None else None
 
 
+def _monthly_cohort_enrolled(db: Session, incident: Incident, _now: datetime) -> str | None:
+    # 사람이 질문·기록을 갖추면 다음 측정 때 자동 편입된다 — 편입이 곧 해결의 근거다.
+    if incident.hospital_id is None:
+        return None
+    hospital = db.get(Hospital, incident.hospital_id)
+    return "enrolled_in_monthly_cohort" if hospital is not None and hospital.monthly_sov_cohort else None
+
+
 RESOLVERS: dict[str, Resolver] = {
+    "MONTHLY_SOV_COHORT_GAP": _monthly_cohort_enrolled,
     "WEEKLY_SOV_MEASUREMENT_FAILED": _later_weekly_measurement,
     "SOV_HIGH_PRIORITY_CAP_EXCEEDED": _weekly_capacity,
     "COST_GUARD_LIMIT_REACHED": _budget_period,

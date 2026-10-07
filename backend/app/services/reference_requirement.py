@@ -69,7 +69,7 @@ REFERENCES_REQUIRED_TYPES: frozenset = frozenset(
 
 _REQUIRED_TYPE_VALUES = frozenset(content_type.value for content_type in REFERENCES_REQUIRED_TYPES)
 # 브리프의 질문 참조에서 의료 주제를 말하는 칸.
-_QUERY_TARGET_TOPIC_FIELDS = ("id", "name", "treatment", "condition_or_symptom", "specialty")
+QUERY_TARGET_TOPIC_FIELDS = ("id", "name", "treatment", "condition_or_symptom", "specialty")
 
 
 def _type_value(content_type: object) -> str:
@@ -87,7 +87,7 @@ def brief_carries_medical_topic(content_brief: object) -> bool:
         return False
     query_target = content_brief.get("query_target")
     if isinstance(query_target, Mapping) and any(
-        _filled(query_target.get(field)) for field in _QUERY_TARGET_TOPIC_FIELDS
+        _filled(query_target.get(field)) for field in QUERY_TARGET_TOPIC_FIELDS
     ):
         return True
     exposure_action = content_brief.get("exposure_action")

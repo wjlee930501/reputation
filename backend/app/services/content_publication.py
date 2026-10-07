@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from app.models.content import ContentItem
+from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy
 from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
 from app.services.content_engine import FORBIDDEN_CHECK_FIELDS
@@ -166,12 +166,23 @@ def _blocking_ai_review_state(item: ContentItem) -> tuple[str, dict[str, Any]] |
     review_status = review.get("status")
     if review_status == "UNAVAILABLE":
         return "UNAVAILABLE", review
-    if review_status != "REVISE":
+    if review_status not in ("PASS", "REVISE"):
         return None
     # v2 explicitly distinguishes soft findings. Legacy REVISE payloads did not,
     # so they are safety-uncertain and require one automatic re-review.
-    is_legacy = review.get("schema_version") is None
-    if not is_legacy and review.get("blocking") is not True:
+    is_legacy = review_status == "REVISE" and review.get("schema_version") is None
+    if review_status == "PASS" or (not is_legacy and review.get("blocking") is not True):
+        # PASS·비차단 REVISE는 그 검수가 본 본문에만 유효하다. 해시를 비교하지 않으면 PATCH로
+        # 고친 본문·제목이 옛 PASS 덕에 검수 없이 발행된다. 해시가 없는 옛 기록은 그 이유만으로
+        # 유료 재검수하지 않으므로 건드리지 않는다. 이미 공개된 글은 숨기지 않는다 — 편집된
+        # 공개 글은 사후 검수(`post_publish_ai_review`)가 같은 해시로 다시 본다.
+        stored_hash = review.get("candidate_sha256")
+        if (
+            stored_hash
+            and getattr(item, "status", None) != ContentStatus.PUBLISHED
+            and stored_hash != candidate_sha256(item)
+        ):
+            return "STALE", review
         return None
     if review.get("candidate_sha256") != candidate_sha256(item):
         return "STALE", review
@@ -432,6 +443,9 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # 발행기가 스스로 건 이미지 재생성의 하루·누적 계수. 매시 게이트 기록이 지우면
             # 매시 다시 사고 누적 한도도 영영 닿지 않는다.
             "auto_image_regeneration",
+            # 사후 검수 스윕이 남긴 FLAGGED 표시. 지우면 같은 본문을 매일 다시 사고 인시던트를
+            # 다시 건드린다. 본문을 고치는 PATCH가 명시적으로 지운다.
+            "post_publish_ai_review",
         ):
             value = previous_summary.get(key)
             if value is not None:

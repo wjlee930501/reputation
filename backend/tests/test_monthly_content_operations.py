@@ -180,3 +180,28 @@ def test_late_recovery_fulfills_contract_without_rewriting_calendar_publications
     assert snapshot.payload["shortfall_count"] == 0
     assert snapshot.payload["early_publication_count"] == 1
     assert snapshot.payload["late_recovery_count"] == 4
+
+
+def test_report_warning_counts_only_samples_the_daily_ai_sweep_had_time_to_review():
+    """사후 검수는 매일 자동 스윕이 처리한다 — 갓 공개된 표본은 경고하지 않는다.
+
+    3일이 지나도 남은 표본(차단 지적으로 사람 확인 대기·검수 불가 지속)만 경고한다.
+    """
+    fresh = _item()  # 7/10 00:00 공개
+
+    snapshot = build_monthly_content_operations_snapshot(
+        plan="PLAN_12",
+        scheduled_items=[fresh],
+        published_items=[fresh],
+        cutoff_at=datetime(2026, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    assert not any("사후검수" in warning for warning in snapshot.delivery_warnings)
+    assert snapshot.payload["post_publish_review"]["pending_count"] == 1
+
+    snapshot = build_monthly_content_operations_snapshot(
+        plan="PLAN_12",
+        scheduled_items=[fresh],
+        published_items=[fresh],
+        cutoff_at=datetime(2026, 7, 13, 0, 0, tzinfo=timezone.utc),
+    )
+    assert any("필수 사후검수 샘플 1건" in warning for warning in snapshot.delivery_warnings)

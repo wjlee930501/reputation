@@ -49,6 +49,7 @@ EXPECTED_BEAT_SCHEDULES = {
     "daytime-content-generation-recovery",
     "prepublish-content-generation-recovery",
     "refresh-reused-content-images",
+    "post-publish-ai-review",
     "morning-content-auto-publish",
     "project-milestone-events",
     "purge-expired-leads",
@@ -101,6 +102,7 @@ EXPECTED_TASKS = {
     "app.workers.tasks.overnight_content_generation_recovery",
     "app.workers.tasks.prepublish_content_generation_recovery",
     "app.workers.published_image_refresh.refresh_reused_content_images",
+    "app.workers.post_publish_ai_review.review_post_publish_samples",
     "app.workers.tasks.process_source_asset_task",
     "app.workers.tasks.purge_expired_leads",
     "app.workers.tasks.regenerate_content_item",
@@ -191,6 +193,7 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.monthly_artifact_reconciliation  # noqa: F401, PLC0415
     import app.workers.naver_sync  # noqa: F401, PLC0415
     import app.workers.notification_tasks  # noqa: F401, PLC0415
+    import app.workers.post_publish_ai_review  # noqa: F401, PLC0415
     import app.workers.provider_usage_recovery  # noqa: F401, PLC0415
     import app.workers.published_image_refresh  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415

@@ -425,6 +425,31 @@ def candidate_review_coverage(content: dict[str, Any] | object) -> dict[str, int
     }
 
 
+def restamp_review_after_system_reference_change(item: Any, before_sha: str) -> None:
+    """시스템이 참고자료를 바꾼 뒤, 바뀌기 전 본문에 묶여 있던 검수를 새 해시로 옮긴다.
+
+    발행 시 치유·제거는 검수가 본 본문을 건드리지 않는 시스템 편집이라, 그 때문에 유효한 PASS가
+    낡아져 예정된 발행을 놓치면 안 된다. **저장된 검수 해시가 변경 직전 해시와 같을 때만**
+    옮긴다 — 이미 사람의 편집으로 낡은 검수는 구제하지 않는다. 사람의 PATCH는 이 함수를 쓰지
+    않으므로 그대로 낡아진다. 차단 지적이 있는 검수는 건드리지 않는다.
+    """
+
+    summary = getattr(item, "essence_check_summary", None)
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if not isinstance(review, dict) or review.get("candidate_sha256") != before_sha:
+        return
+    status = review.get("status")
+    blocking = status == "REVISE" and (
+        review.get("schema_version") is None or review.get("blocking") is True
+    )
+    if status not in ("PASS", "REVISE") or blocking:
+        return
+    restamped = {**review, "candidate_sha256": candidate_sha256(item)}
+    if "coverage" in review:
+        restamped["coverage"] = candidate_review_coverage(item)
+    item.essence_check_summary = {**summary, "ai_review": restamped}
+
+
 def _parse_finding(value: object) -> ContentAiFinding | None:
     if isinstance(value, str):
         message = _bounded_text(value, 240)

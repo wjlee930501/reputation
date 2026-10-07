@@ -406,6 +406,13 @@ class Settings(BaseSettings):
             raise ValueError("SOV_TRACKING_SET_N_DEFAULT must be between 10 and 15")
         return value
 
+    @field_validator("POST_PUBLISH_AI_REVIEW_DAILY_CAP")
+    @classmethod
+    def _validate_post_publish_review_cap(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("POST_PUBLISH_AI_REVIEW_DAILY_CAP must not be negative")
+        return value
+
     @field_validator("CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES")
     @classmethod
     def _validate_review_unavailable_max_retries(cls, value: int) -> int:
@@ -540,6 +547,9 @@ class Settings(BaseSettings):
     # 같은 원고 후보의 독립 검수가 공급자 장애·잘린 응답으로 연속 실패할 때 자동 재검수를
     # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
     CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6
+    # 공개된 글의 미확인 사후 검수 표본을 하루에 독립 AI 검수하는 최대 편수(하루 한 번 실행이라
+    # 실행당 상한이기도 하다). 0이면 스윕을 끈다. 20편 ≈ 하루 $3~6(검수 모델 1회 호출 기준).
+    POST_PUBLISH_AI_REVIEW_DAILY_CAP: int = 20
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2
@@ -598,9 +608,8 @@ class Settings(BaseSettings):
 
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
-    # LIMIT=7 converts the first 7 valid tracking-set hospitals in stable order
-    # (stable Hospital.monthly_sov_cohort flags after register_convertible_tracking_sets).
-    # 0/negative stays empty (register-only). 0 does NOT mean all hospitals.
+    # 월간 코호트(Hospital.monthly_sov_cohort)는 계약된 ACTIVE 병원이 자동 편입되며 전원 측정한다.
+    # 이 값은 자르는 상한이 아니라 비용 경고 기준이다 — 넘으면 경고 로그와 월 1건의 사고만 남긴다.
     SOV_MONTHLY_COHORT_LIMIT: int = 7
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.

@@ -502,6 +502,7 @@ from app.workers.generation_retry_policy import (
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
     GenerationRetryClass,
+    attempt_is_terminal,
     environment_attempt_period,
     has_model_declared_hard_finding,
     next_recovery_deadline,
@@ -530,6 +531,10 @@ from app.workers.monthly_artifact_incident_control import (
     record_monthly_artifact_failure,
 )
 from app.workers.monthly_artifact_recovery_control import recover_monthly_artifact_failures
+from app.workers.monthly_cohort_incidents import (
+    open_monthly_cohort_gap,
+    open_monthly_cohort_over_limit,
+)
 from app.workers.monthly_slot_incident_control import (
     open_monthly_slot_failure,
     recover_monthly_slot_failure,
@@ -554,7 +559,11 @@ from app.workers.nightly_generation_batch import (
 )
 from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
 from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
-from app.workers.topic_swap_fallback import TOPIC_SWAPPED_REASON, swap_exhausted_topics
+from app.workers.topic_swap_fallback import (
+    TOPIC_SWAPPED_REASON,
+    swap_exhausted_topics,
+    topic_swap_budget_left,
+)
 from app.workers.v0_checkpoint import (
     find_resumable_v0_measurement_run,
     find_reusable_v0_measurement_run,
@@ -848,12 +857,6 @@ def _stored_auto_correction_state(item: ContentItem) -> dict[str, Any]:
     return dict(state) if isinstance(state, dict) else {}
 
 
-def _topic_swap_budget_left(item: ContentItem) -> bool:
-    history = getattr(item, "topic_swap_history", None)
-    used = len(history) if isinstance(history, list) else 0
-    return used < max(0, int(settings.CONTENT_AUTO_TOPIC_SWAP_MAX))
-
-
 def _stored_candidate(item: ContentItem) -> dict[str, Any]:
     """독립 검수와 교정이 보는 후보 — 저장된 행의 공개 필드 그대로."""
 
@@ -918,7 +921,7 @@ def _escalate_exhausted_correction(
         summary[AUTO_CORRECTION_KEY] = exhausted_state
         item.essence_check_summary = summary
         db.commit()
-    if _topic_swap_budget_left(item) and not swap_requested:
+    if topic_swap_budget_left(item) and not swap_requested:
         deadline = next_recovery_deadline(
             {
                 "reason": code,
@@ -1203,6 +1206,36 @@ def _generation_attempt_is_unchanged(
     return not retry_is_due(previous)
 
 
+def _terminal_attempt_is_unchanged(
+    item: ContentItem, philosophy: HospitalContentPhilosophy | None
+) -> bool:
+    """종착 기록(`attempt_is_terminal`)이 그 판정 때의 입력 그대로인가.
+
+    입력이 그대로면 다시 집어도 공급자 예산은 이미 끝났고 OperationRun·인시던트 쓰기만 늘어난다.
+    입력 지문(승인 자료·유형·질문)이 바뀌었거나 판정 뒤에 사람이 고쳤으면 종착이 아니라 다시
+    시도할 새 입력이다. 사람 편집은 지문에 없어 `human_edited_at`을 따로 본다.
+    """
+
+    previous = _stored_generation_attempt(item)
+    if not attempt_is_terminal(previous):
+        return False
+    if previous.get("context") != _generation_attempt_context(item, philosophy):
+        return False
+    edited_at = getattr(item, "human_edited_at", None)
+    observed_raw = previous.get("observed_at")
+    if edited_at is None:
+        return True
+    try:
+        observed = datetime.fromisoformat(str(observed_raw))
+    except ValueError:
+        return False
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=timezone.utc)
+    if edited_at.tzinfo is None:
+        edited_at = edited_at.replace(tzinfo=timezone.utc)
+    return edited_at <= observed
+
+
 def _generation_retry_is_eligible(db):
     """로더가 claim 전에 쓰는 술어. 워커의 SKIPPED 판정과 **같은 범위**로 적용한다.
 
@@ -1224,11 +1257,14 @@ def _generation_retry_is_eligible(db):
             # No claims, model calls or one-alert-per-slot while it is pending.
             if philosophies[item.hospital_id] is None:
                 return False
-        if getattr(item, "body", None):
-            return True
         hospital_id = item.hospital_id
         if hospital_id not in philosophies:
             philosophies[hospital_id] = _generation_philosophy_sync(db, hospital_id)
+        # 종착 기록이 입력 그대로면 본문이 있어도 집지 않는다 — 워커의 같은 판정과 짝이다.
+        if _terminal_attempt_is_unchanged(item, philosophies[hospital_id]):
+            return False
+        if getattr(item, "body", None):
+            return True
         return not _generation_attempt_is_unchanged(item, philosophies[hospital_id])
 
     return is_eligible
@@ -5314,6 +5350,19 @@ def _run_generation_item(
     philosophy = None
 
     try:
+        if _terminal_attempt_is_unchanged(item, _generation_philosophy_sync(db, hospital.id)):
+            # 로더가 claim 전에 거르는 규칙(`_generation_retry_is_eligible`)과 같다. 재배달·직접
+            # 호출로 이 자리에 와도 종착 판정을 같은 입력으로 다시 돌리지 않는다.
+            previous = _stored_generation_attempt(item)
+            code = str(previous["reason"])
+            message = "종착 판정 뒤 입력이 달라지지 않아 자동 재시도를 건너뛰었습니다."
+            recorder.record(
+                item.id,
+                GenerationItemState.SKIPPED,
+                safe_error_code=code,
+                safe_error_message=message,
+            )
+            return GenerationItemState.SKIPPED, code, message
         if getattr(item, "body", None):
             state, code, message = _generate_single_content_item(db, item, hospital)
             _record_generation_batch_outcome(
@@ -7995,11 +8044,7 @@ def run_sov_for_hospital(
                 db, self
             )
             monthly = measurement_mode == "monthly"
-            if monthly and not hospital_in_monthly_cohort(
-                db,
-                hospital.id,
-                limit=settings.SOV_MONTHLY_COHORT_LIMIT,
-            ):
+            if monthly and not hospital_in_monthly_cohort(db, hospital.id):
                 logger.info(
                     "Hospital %s is no longer in the monthly measurement cohort", hospital_id
                 )
@@ -9712,6 +9757,50 @@ def _log_blocked_convertible_tracking_sets(registration: Any) -> None:
         )
 
 
+def _commit_new_cohort_enrollments(db, registration: Any) -> None:
+    """편입 플래그는 저장된 진실이라 디스패치 전에 확정한다(run_sov_for_hospital이 다시 읽는다)."""
+    if isinstance(registration, Mapping) and registration.get("enrolled"):
+        db.commit()
+
+
+def _report_monthly_cohort_gaps(registration: Any, period_key: str) -> None:
+    """창이 열렸는데 코호트 밖인 ACTIVE 병원마다 기간별 사고 한 건. 실패해도 측정은 계속한다."""
+    if not isinstance(registration, Mapping):
+        return
+    for item in registration.get("not_enrolled") or []:
+        try:
+            _run_async(
+                open_monthly_cohort_gap(
+                    hospital_id=uuid.UUID(str(item["hospital_id"])),
+                    hospital_name=str(item.get("name") or "unknown"),
+                    period_key=period_key,
+                    reason=str(item.get("reason") or "unknown"),
+                )
+            )
+        except Exception:
+            logger.exception("Monthly cohort gap incident failed", extra={"item": str(item)})
+
+
+def _warn_monthly_cohort_over_limit(cohort_size: int, period_key: str) -> None:
+    """SOV_MONTHLY_COHORT_LIMIT은 비용 경고 기준이다. 병원을 자르지 않고 알리기만 한다."""
+    limit = settings.SOV_MONTHLY_COHORT_LIMIT
+    if cohort_size <= limit:
+        return
+    logger.warning(
+        "Monthly measurement cohort %d exceeds cost warning threshold %d; measuring all",
+        cohort_size,
+        limit,
+    )
+    try:
+        _run_async(
+            open_monthly_cohort_over_limit(
+                period_key=period_key, cohort_size=cohort_size, limit=limit
+            )
+        )
+    except Exception:
+        logger.exception("Monthly cohort over-limit incident failed")
+
+
 @celery_app.task(name="app.workers.tasks.run_weekly_monitoring")
 def run_weekly_monitoring():
     require_dispatch(current_task, "weekly-sov-monitoring")
@@ -9719,16 +9808,12 @@ def run_weekly_monitoring():
     observed_at = datetime.now(timezone.utc)
     week_key = _weekly_measurement_key(today_kst)
     with SyncSessionLocal() as db:
-        registration = register_convertible_tracking_sets(db, n=15)
+        registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
+        _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
-        monthly_ids = {
-            hospital.id
-            for hospital in iter_monthly_sov_cohort(
-                db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
-            )
-        }
+        monthly_ids = {hospital.id for hospital in iter_monthly_sov_cohort(db)}
         # 주간 배치는 매주 월간 코호트를 건너뛴다. 해당 병원의 측정은
         # 월말 창에서 run_monthly_sov_measurement가 전담한다 (CLAUDE.md STEP 8).
         if monthly_ids:
@@ -9789,11 +9874,12 @@ def run_monthly_sov_measurement():
     observed_at = datetime.now(timezone.utc)
     period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
     with SyncSessionLocal() as db:
-        registration = register_convertible_tracking_sets(db, n=15)
+        registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
+        _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
-        hospitals = iter_monthly_sov_cohort(
-            db, limit=settings.SOV_MONTHLY_COHORT_LIMIT
-        )
+        _report_monthly_cohort_gaps(registration, period_key)
+        hospitals = iter_monthly_sov_cohort(db)
+        _warn_monthly_cohort_over_limit(len(hospitals), period_key)
         for hospital in hospitals:
             run = _ensure_monthly_sov_operation_run(db, hospital, period_key, observed_at)
             if run is None or run.task_id is None:
