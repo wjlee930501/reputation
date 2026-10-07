@@ -19,6 +19,7 @@ from app.services.query_target_structure import (
     apply_structure_to_target,
     describe_query_text,
 )
+from app.services.question_wellformed import question_is_wellformed
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,14 @@ async def seed_query_targets_from_matrix(
     skipped = 0
     backfilled = 0
     for q in matrix_rows:
+        # 이미 저장된 매트릭스에 비문이 있을 수 있다(생성기 개선 이전 행). 환자 질문으로
+        # 시드하면 콘텐츠 주제·제목이 그 문형을 따라간다 — 새 target을 만들지 않는다.
+        if q.query_text not in existing_by_name and not question_is_wellformed(
+            q.query_text, source="seed_query_targets_from_matrix"
+        ):
+            skipped += 1
+            continue
+
         # 멱등 체크: 동일 query_text target은 새로 만들지 않고 이중 플랫폼만 보완한다.
         if q.query_text in existing_by_name:
             existing_target = existing_by_name[q.query_text]

@@ -15,7 +15,10 @@ from app.models.content import ContentItem
 from app.models.essence import HospitalContentPhilosophy
 from app.models.hospital import Hospital
 from app.services.content_ai_review import ContentAiReview, ContentAiReviewStatus
-from app.services.content_engine import SEASON_MISMATCH_FINDING_PREFIX
+from app.services.content_engine import (
+    EXAM_TREATMENT_TITLE_FINDING_PREFIX,
+    SEASON_MISMATCH_FINDING_PREFIX,
+)
 from app.services.content_review_feedback import (
     apply_reference_review_findings,
     duplicate_topic_matches,
@@ -199,6 +202,17 @@ async def generate_reviewed_content(
 
     last_content = accepted_content
     last_screening = accepted_screening
+
+    # 검사 이름에 '치료'를 붙인 제목은 한 번의 보완 재작성 뒤에도 남으면 저장하지 않는다.
+    # 다른 보완 지적과 달리 글의 얼굴(제목)이 틀린 말이라 soft로 통과시키면 그대로 공개된다.
+    # ValueError는 기존 결정적 검증 거절 경로(GENERATION_REJECTED → 표본 실패 재시도 사다리)다.
+    if last_content is not None and any(
+        str(finding).startswith(EXAM_TREATMENT_TITLE_FINDING_PREFIX)
+        for finding in (last_content.get("target_alignment_findings") or [])
+    ):
+        raise ValueError(
+            "Exam title with treatment wording survived rewrite; regenerate the title"
+        )
 
     if last_content is None or last_screening is None:
         if last_generation_error is not None:

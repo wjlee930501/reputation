@@ -37,6 +37,7 @@ from app.services.must_use_verbatim import (
     required_must_use_messages,
 )
 from app.services.openrouter import NON_RETRYABLE_LLM_ERRORS
+from app.services.question_wellformed import question_is_wellformed, treatment_applied_to_exam
 from app.services.reference_requirement import (
     REFERENCES_REQUIRED_TYPES,
     references_required_for,
@@ -681,7 +682,10 @@ def _target_prompt_block(
         return ""
 
     lines = ["", "[측정된 환자 질문 — 이 글이 답해야 하는 대상]"]
-    if target["query"]:
+    # 비문("마산 마산 …", 검사에 '치료')은 원문 그대로 보여 주면 제목이 그 문형을 따라간다.
+    if target["query"] and question_is_wellformed(
+        target["query"], source="content_prompt"
+    ):
         lines.append(f"- 측정 질의 원문: {target['query']}")
     if target["question"]:
         lines.append(f"- 환자 질문 문장: {target['question']}")
@@ -1943,6 +1947,9 @@ def _validate_seo(
 # finding으로 남겨 Admin에서 보이게 한다.
 TARGET_KEYWORD_FINDING_PREFIX = "측정 질의 키워드 미반영"
 NO_SOURCE_TITLE_FINDING_PREFIX = "진료비·병원 선택 제목"
+# 검사 이름에 '치료'를 붙인 제목("갑상선초음파 치료 비용"). 한 번의 보완 재작성 뒤에도
+# 남으면 content_generation_review가 글을 거절한다(표본 실패 → 재시도 사다리).
+EXAM_TREATMENT_TITLE_FINDING_PREFIX = "검사 제목에 치료 표현"
 
 
 def _validate_target_alignment(
@@ -1968,6 +1975,13 @@ def _validate_target_alignment(
             f"{NO_SOURCE_TITLE_FINDING_PREFIX}: 제목 '{title}'이(가) 진료비·병원 고르기 글로 "
             "읽힙니다. 비용·추천·병원 고르기 표현을 빼고 바탕이 되는 질환·검사·시술 이름으로 "
             "제목을 다시 쓰세요."
+        )
+
+    if treatment_applied_to_exam(title):
+        findings.append(
+            f"{EXAM_TREATMENT_TITLE_FINDING_PREFIX}: 제목 '{title}'이(가) 검사 이름에 '치료'를 "
+            "붙였습니다. 검사는 치료하는 것이 아니라 받는 것입니다. '치료'를 빼고 검사가 무엇이고 "
+            "언제·어떻게 받는지를 말하는 제목으로 다시 쓰세요."
         )
 
     keyword = str(brief.get("target_keyword") or "").strip()
