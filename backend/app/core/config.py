@@ -548,8 +548,12 @@ class Settings(BaseSettings):
     # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
     CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6
     # 공개된 글의 미확인 사후 검수 표본을 하루에 독립 AI 검수하는 최대 편수(하루 한 번 실행이라
-    # 실행당 상한이기도 하다). 0이면 스윕을 끈다. 20편 ≈ 하루 $3~6(검수 모델 1회 호출 기준).
+    # 실행당 상한이기도 하다). 0이면 스윕을 끈다. 표본은 매달 병원별 첫 글과 공개 뒤 고친 글이라
+    # 밀린 표본(2026-10 기준 95편)을 다 처리하면 한 달에 10~20편 수준이다.
     POST_PUBLISH_AI_REVIEW_DAILY_CAP: int = 20
+    # 사후검수 첫 판정 모델. 발행 전에 검수 모델(Opus)을 이미 통과한 글이라 한 단계 낮은 모델로
+    # 먼저 보고, 확신도 부족으로 애매하면 검수 모델이 한 번 더 본다(2026-10 대표 결정).
+    POST_PUBLISH_AI_REVIEW_MODEL: str = "anthropic/claude-sonnet-5.5"
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2

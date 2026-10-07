@@ -205,3 +205,14 @@ def test_daily_cap_setting_is_bounded():
     assert settings.POST_PUBLISH_AI_REVIEW_DAILY_CAP == 20
     with pytest.raises(ValueError):
         type(settings)(POST_PUBLISH_AI_REVIEW_DAILY_CAP=-1)
+
+
+def test_sweep_reviews_with_the_post_publish_model():
+    """사후검수는 발행 전 검수를 이미 통과한 글이라 값싼 모델로 먼저 본다(2026-10 대표 결정)."""
+    import inspect
+
+    from app.core.config import Settings
+
+    assert Settings.model_fields["POST_PUBLISH_AI_REVIEW_MODEL"].default == "anthropic/claude-sonnet-5.5"
+    source = inspect.getsource(sweep)
+    assert "model=settings.POST_PUBLISH_AI_REVIEW_MODEL" in source

@@ -661,3 +661,39 @@ def test_system_prompt_restores_the_reference_topic_criterion() -> None:
     assert "references의 제목·기관이 글의 주제와 명백히 어긋나는 경우" in prompt
     assert "kind REFERENCE, severity SOFT" in prompt
     assert "REFERENCE" in prompt.split('"kind":', 1)[1].splitlines()[0]
+
+
+async def test_caller_model_runs_first_and_low_confidence_escalates_to_review_model(
+    monkeypatch,
+) -> None:
+    """사후검수처럼 값싼 모델을 지정하면 첫 판정만 그 모델이고, 애매하면 검수 모델로 한 번 더 본다."""
+    harness = _install_reviewer(
+        monkeypatch,
+        [
+            _LOW_CONFIDENCE_VERDICT,
+            json.dumps(
+                {"decision": "PASS", "confidence": 0.93, "findings": [], "summary": "적합"}
+            ),
+        ],
+    )
+
+    result = await _review(model="anthropic/fictional-sonnet")
+
+    assert [call["model"] for call in harness.calls] == [
+        "anthropic/fictional-sonnet",
+        content_ai_review.settings.CLAUDE_MODEL_REVIEW,
+    ]
+    assert result.status == ContentAiReviewStatus.PASS
+    assert result.payload()["escalated_model"] == content_ai_review.settings.CLAUDE_MODEL_REVIEW
+
+
+async def test_caller_model_confident_pass_uses_one_call(monkeypatch) -> None:
+    harness = _install_reviewer(
+        monkeypatch,
+        [json.dumps({"decision": "PASS", "confidence": 0.95, "findings": [], "summary": "적합"})],
+    )
+
+    result = await _review(model="anthropic/fictional-sonnet")
+
+    assert [call["model"] for call in harness.calls] == ["anthropic/fictional-sonnet"]
+    assert result.payload()["model"] == "anthropic/fictional-sonnet"
