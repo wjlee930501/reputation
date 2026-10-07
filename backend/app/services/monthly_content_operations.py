@@ -13,6 +13,10 @@ from app.services.enum_values import enum_value
 from app.services.post_publish_review_policy import is_human_post_publish_review_sample
 
 POST_PUBLISH_REVIEW_OVERDUE_AFTER = timedelta(hours=24)
+# 사후 검수 표본은 매일 자동 스윕(`workers/post_publish_ai_review`)이 독립 AI 검수로 처리한다.
+# 컷오프 시점에 갓 공개된 표본은 아직 차례가 안 온 것이지 문제가 아니라서, 이 유예가 지나도
+# 남은 표본(차단 지적으로 사람 확인 대기·검수 불가 지속)만 보고서 경고로 센다.
+POST_PUBLISH_REVIEW_WARNING_AFTER = timedelta(days=3)
 
 
 class MonthlyContentOperationItem(Protocol):
@@ -74,6 +78,13 @@ def build_monthly_content_operations_snapshot(
         and item.published_at + POST_PUBLISH_REVIEW_OVERDUE_AFTER <= cutoff_at
     ]
 
+    unresolved_samples = [
+        item
+        for item in pending_samples
+        if item.published_at is not None
+        and item.published_at + POST_PUBLISH_REVIEW_WARNING_AFTER <= cutoff_at
+    ]
+
     contracted_published_count = (
         published_count - supplementary_count
         if contract_published_count is None
@@ -89,12 +100,13 @@ def build_monthly_content_operations_snapshot(
         warnings.append("요금제별 약정 콘텐츠 편수를 확인할 수 없습니다.")
     elif shortfall > 0:
         warnings.append(f"약정 콘텐츠 {plan_quota}편 중 {contracted_published_count}편만 발행되었습니다.")
-    if pending_samples:
+    if unresolved_samples:
         # 사후검수는 발행을 이미 통과한 콘텐츠에 대한 관찰용 표본이지 두 번째 승인
         # 큐가 아니다(post_publish_review_policy.py 참고) — 표본 미완료로 원장 전달을
-        # 막지 않는다. 운영 센터 큐에는 여전히 TODO로 남는다.
+        # 막지 않는다. 미확인 표본은 병원 목록의 확인 대기 집계(/attention)와 콘텐츠 탭에만
+        # 보이고 운영자 큐 행은 아니다. 자동 스윕이 처리할 시간을 준 뒤에도 남은 것만 센다.
         warnings.append(
-            f"월간 리포트 필수 사후검수 샘플 {len(pending_samples)}건이 아직 완료되지 않았습니다."
+            f"월간 리포트 필수 사후검수 샘플 {len(unresolved_samples)}건이 아직 완료되지 않았습니다."
         )
 
     payload = {

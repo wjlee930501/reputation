@@ -37,6 +37,7 @@ from app.models.sov import AIQueryTarget, ExposureAction
 from app.schemas.content import ContentBriefUpdate, ContentItemDetail, ContentItemResponse
 from app.services import indexnow
 from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
+from app.services.content_ai_review import candidate_sha256
 from app.services.content_brief import (
     BRIEF_STATUS_APPROVED,
     BRIEF_STATUS_DRAFT,
@@ -790,6 +791,12 @@ async def update_content(
         # apply_publication_assessment normally preserves this. Keep the explicit
         # fallback for rolling workers returning a legacy screening-only summary.
         item.essence_check_summary.setdefault("ai_review", previous_ai_review)
+    _mark_review_stale_after_edit(item)
+    if has_published_edition and public_fields_changed and isinstance(item.essence_check_summary, dict):
+        # 고친 본문은 사후 검수 스윕이 새 해시로 다시 본다 — 옛 본문의 FLAGGED 표시를 걷는다.
+        item.essence_check_summary = {
+            k: v for k, v in item.essence_check_summary.items() if k != "post_publish_ai_review"
+        }
 
     if (
         was_published
@@ -1222,6 +1229,31 @@ async def publish_content(
     }
 
 
+def _mark_review_stale_after_edit(item: ContentItem) -> None:
+    """발행 전 글의 검수 PASS가 편집으로 묶인 본문을 잃으면 야간 재검수 스윕이 집게 표시한다.
+
+    진실은 발행 게이트의 해시 비교(`_blocking_ai_review_state`)다. 이 표시는 SQL 로더가 해시를
+    계산하지 못해 필요한 힌트일 뿐이라 검수 payload 안에 둔다 — 새 검수가 payload를 통째로 갈아
+    끼우면 함께 사라진다. 공개된 글은 사후 검수가 보므로 표시하지 않는다.
+    """
+
+    summary = item.essence_check_summary
+    review = summary.get("ai_review") if isinstance(summary, dict) else None
+    if (
+        not isinstance(review, dict)
+        or not review.get("candidate_sha256")
+        or item.status == ContentStatus.PUBLISHED
+    ):
+        return
+    edited = review["candidate_sha256"] != candidate_sha256(item)
+    if edited == bool(review.get("edited_after_review")):
+        return
+    updated_review = {k: v for k, v in review.items() if k != "edited_after_review"}
+    if edited:
+        updated_review["edited_after_review"] = True
+    item.essence_check_summary = {**summary, "ai_review": updated_review}
+
+
 @router.post("/{hospital_id}/content/{content_id}/post-publish-review")
 async def complete_post_publish_review(
     hospital_id: uuid.UUID,
@@ -1268,6 +1300,13 @@ async def complete_post_publish_review(
     reviewed_by = default_actor()
     item.post_publish_reviewed_at = reviewed_at
     item.post_publish_reviewed_by = reviewed_by
+    summary = item.essence_check_summary
+    was_flagged = isinstance(summary, dict) and "post_publish_ai_review" in summary
+    if was_flagged:
+        # 자동 검수가 FLAGGED로 남긴 글을 사람이 확인했다 — 표시를 걷고 아래에서 인시던트를 닫는다.
+        item.essence_check_summary = {
+            k: v for k, v in summary.items() if k != "post_publish_ai_review"
+        }
     await write_audit_log(
         db,
         action="post_publish_review_completed",
@@ -1278,6 +1317,27 @@ async def complete_post_publish_review(
         detail={"title": item.title, "note": body.note},
     )
     await db.commit()
+    if was_flagged:
+        # 사람이 정했으니 열린 인시던트를 닫는다. 실패해도 이미 커밋된 확인 기록은 되돌리지 않는다.
+        from app.services.incident_types import IncidentFingerprint
+        from app.services.ops_incident_alerts import recover_ops_incident
+        from app.workers.post_publish_ai_review import (
+            POST_PUBLISH_INCIDENT_OBJECT,
+            POST_PUBLISH_INCIDENT_PIPELINE,
+        )
+
+        try:
+            await recover_ops_incident(
+                pipeline=POST_PUBLISH_INCIDENT_PIPELINE,
+                object_type=POST_PUBLISH_INCIDENT_OBJECT,
+                object_id=str(content_id),
+                fingerprint=IncidentFingerprint.SAFETY_BLOCKED,
+                actor=reviewed_by,
+                reason="operator completed post-publish review",
+                notify=False,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("post-publish flag incident recovery failed for %s", content_id)
     return {
         "detail": "Post-publish review completed",
         "reviewed_at": reviewed_at.isoformat(),
