@@ -247,6 +247,7 @@ def review_post_publish_samples() -> dict[str, int]:
                         philosophy=philosophy,
                         content=content,
                         content_brief=getattr(item, "content_brief", None),
+                        model=settings.POST_PUBLISH_AI_REVIEW_MODEL,
                     )
                 )
             except Exception as error:  # noqa: BLE001 - 한 글의 실패가 하루 스윕을 멈추지 않는다.

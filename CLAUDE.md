@@ -182,7 +182,7 @@ Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 l
 - 생성 당시 Essence와 최근 재검사 Essence를 분리한다. 전체 공개 후보 hash·검수 coverage와 unresolved HARD/UNCERTAIN finding을 발행 게이트에서 보존한다.
 - 2026-09-07~08 기존 공개 글 전환은 고정된 운영 manifest와 CAS로 수행했다. FAQ 3건 구두점 수리, 본문 22건 독립 검수, 이미지 115건 인증 뒤 정확한 공개 ID 집합과 새 엄격 공개 gate를 read-only로 검증했다. AI 검수 메타데이터가 레거시인 글을 그 이유만으로 유료 재검수하지 않는 원칙을 유지한다. 상세 수치와 증거는 [운영 전환 기록](docs/releases/2026-09-07-eb55518-partial.md)을 본다.
 - 지연 발행은 원 계약 월을 보존한다. `published_at`·`published_by`는 현재 공개 판을 나타내고, 처음 공개한 사실은 `first_published_at`·`first_published_by`에 한 번만 기록해 실제 발행·계약 이행·귀속의 닫힌 월 집계에 사용한다. 반려나 근거 철회로 현재 공개 판이 내려가도 최초 사실을 지우지 않으며 재발행은 현재 판 시각만 갱신한다. 마이그레이션 전에 반려가 이미 지운 발행일은 추정해 복원하지 않는다.
-- 후행 검수는 조건부 표본 확인이다. 모든 글의 수동 승인이나 월간 보고 차단으로 확대하지 않고, 운영자 큐 행이나 목록 라벨로도 올리지 않으며 콘텐츠 탭과 보고서 증빙에만 보인다. 미확인 표본은 매일 03:10 스윕(`workers/post_publish_ai_review.py`, `POST_PUBLISH_AI_REVIEW_DAILY_CAP` 기본 20, 편집된 글·오래된 글 순)이 생성과 같은 독립 검수로 처리한다 — 현재 본문에 묶인 PASS는 `post_publish_reviewed_by='system:ai-review'`로 기록하고, 차단 지적은 **자동으로 내리지 않고**(`ai_review`에 쓰면 공개가 숨겨진다) `post_publish_ai_review` FLAGGED 표시와 글당 인시던트 하나만 남겨 사람이 정한다. 검수 불가는 다음 실행으로 넘긴다. 월간 보고서의 '필수 사후검수' 경고는 공개 3일이 지나고도 남은 표본만 센다.
+- 후행 검수는 조건부 표본 확인이다. 모든 글의 수동 승인이나 월간 보고 차단으로 확대하지 않고, 운영자 큐 행이나 목록 라벨로도 올리지 않으며 콘텐츠 탭과 보고서 증빙에만 보인다. 미확인 표본은 매일 03:10 스윕(`workers/post_publish_ai_review.py`, `POST_PUBLISH_AI_REVIEW_DAILY_CAP` 기본 20, 편집된 글·오래된 글 순)이 생성과 같은 독립 검수로 처리한다. 첫 판정은 `POST_PUBLISH_AI_REVIEW_MODEL`(기본 Sonnet)이고, 확신도 부족으로 애매하면 검수 모델(Opus)이 한 번 더 본다 — 현재 본문에 묶인 PASS는 `post_publish_reviewed_by='system:ai-review'`로 기록하고, 차단 지적은 **자동으로 내리지 않고**(`ai_review`에 쓰면 공개가 숨겨진다) `post_publish_ai_review` FLAGGED 표시와 글당 인시던트 하나만 남겨 사람이 정한다. 검수 불가는 다음 실행으로 넘긴다. 월간 보고서의 '필수 사후검수' 경고는 공개 3일이 지나고도 남은 표본만 센다.
 
 ### Admin 화면과 사람의 일
 
