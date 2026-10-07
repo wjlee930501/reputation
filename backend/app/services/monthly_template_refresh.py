@@ -190,7 +190,6 @@ _HIGHLIGHT_NAMES = (
     "cited_questions",
     "cited_answers_measured",
 )
-_PDF_WINDOW = 40
 
 
 def _number(value: Any) -> float | None:
@@ -258,10 +257,10 @@ def doctor_view_facts(view: Mapping[str, Any]) -> dict[str, str]:
         facts[key] = str(tile["value"])
     facts.update(_highlight_facts(view.get("highlights") or {}))
     facts.update(_appendix_facts(view.get("appendix_rows") or []))
-    baseline = view.get("v0_baseline")
-    if baseline:
-        facts["v0.of_hundred"] = f"{baseline['of_hundred']}%"
-        facts["v0.current_of_hundred"] = f"{baseline['current_of_hundred']}%"
+    first_measure = view.get("v0_baseline")
+    if first_measure:
+        facts["v0.of_hundred"] = f"{first_measure['of_hundred']}%"
+        facts["v0.current_of_hundred"] = f"{first_measure['current_of_hundred']}%"
     return facts
 
 
@@ -384,34 +383,57 @@ def compare_doctor_facts(
     return problems
 
 
-def _pdf_number_pattern(value: str) -> re.Pattern[str] | None:
-    numbers = _NUMBER.findall(value)
-    if not numbers:
-        return None
-    # 숫자는 앞뒤가 숫자·소수점으로 이어지지 않는 온전한 값이어야 하고, 사실에 숫자가 여럿이면
-    # ('12편 중 11편') 같은 순서로 가까이 나와야 한다. '%'·단위·조사 같은 문구는 보지 않는다.
-    guarded = [rf"(?<![\d.]){re.escape(number)}(?!\d|\.\d)" for number in numbers]
-    return re.compile(rf"[\s\S]{{0,{_PDF_WINDOW}}}?".join(guarded))
+def _exact(token: str) -> re.Pattern[str]:
+    """공백을 뺀 토큰이 그대로 나와야 한다. 앞뒤가 숫자로 이어지면(16.75, 6.7 in 16.7) 다른 값이다."""
+    # 표 칸이 붙어 추출되므로('6번 중 2번6번 중 0번') 단위로 끝나는 토큰은 뒤를 보지 않는다.
+    tail = r"(?!\d|\.\d)" if token[-1].isdigit() else ""
+    return re.compile(rf"(?<![\d.]){re.escape(token)}{tail}")
+
+
+def _pdf_tokens(facts: Mapping[str, str]) -> list[tuple[str, re.Pattern[str]]]:
+    """사실마다 템플릿이 실제로 찍는 토큰(공백 제거)을 만든다.
+
+    비율은 범위 끝처럼 %가 빠질 수 있어 숫자만 정확히 보고, 'N편 중 M편'·'N개 중 M개'·'N건 중 M건'
+    같은 묶음은 그 꼴 그대로 요구한다 — 바뀐 숫자가 근처 다른 숫자에 가려지지 않게 한다.
+    """
+    tokens: list[tuple[str, re.Pattern[str]]] = []
+    for key in sorted(facts):
+        value = "".join(facts[key].split())
+        if key in _NOT_IN_PDF or not _NUMBER.search(value):
+            continue
+        if key == "highlight.measured_questions":
+            # 질문 수가 0이거나 모르면 템플릿은 '확인 못 함'만 적는다.
+            mentioned = facts.get("highlight.mentioned_questions")
+            if value != "0" and mentioned is not None:
+                tokens.append((key, _exact(f"{value}개중{mentioned}개")))
+        elif key == "highlight.mentioned_questions":
+            continue
+        elif key == "highlight.cited_answers_measured":
+            if value != "0":
+                tokens.append((key, _exact(f"{value}건중{facts.get('highlight.cited_questions')}건")))
+        elif key == "highlight.cited_questions":
+            if facts.get("highlight.cited_answers_measured", "0") == "0":
+                tokens.append((key, _exact(f"{value}건")))
+        elif key == "highlight.cumulative_published":
+            tokens.append((key, _exact(f"{value}편")))
+        elif value.endswith("%"):
+            tokens.append((key, re.compile(rf"(?<![\d.]){re.escape(value[:-1])}%?(?!\d|\.\d)")))
+        elif key.startswith(("tile.", "appendix.")):
+            tokens.append((key, _exact(value)))
+        else:
+            # 확인 횟수·답변 수는 문장 틀이 자주 바뀌어 온전한 정수가 있는지만 본다.
+            tokens.append((key, _exact(value)))
+    return tokens
 
 
 def pdf_fact_problems(pdf_text: str, facts: Mapping[str, str]) -> list[str]:
-    """정본 사실의 값이 새 PDF 본문에 모두 찍혔는가(이차 확인). 서식·문구 변화에는 관대하다."""
+    """정본 사실이 새 PDF 본문에 템플릿이 찍는 그대로 모두 있는가(이차 확인). 문구·공백 변화에는 관대하다."""
     compact = "".join(pdf_text.split())
-    problems: list[str] = []
-    for key in sorted(facts):
-        if key in _NOT_IN_PDF:
-            continue
-        # 템플릿은 질문 수가 0이거나 모를 때 '확인 못 함'만 적고 숫자를 그리지 않는다.
-        if key == "highlight.mentioned_questions" and facts.get(
-            "highlight.measured_questions", "0"
-        ) == "0":
-            continue
-        if key == "highlight.cited_answers_measured" and facts[key] == "0":
-            continue
-        pattern = _pdf_number_pattern(facts[key])
-        if pattern is not None and pattern.search(compact) is None:
-            problems.append(f"새 PDF에서 찾지 못함: {key}={facts[key]}")
-    return problems
+    return [
+        f"새 PDF에서 찾지 못함: {key}={facts[key]}"
+        for key, pattern in _pdf_tokens(facts)
+        if pattern.search(compact) is None
+    ]
 
 
 def doctor_view_expectations(

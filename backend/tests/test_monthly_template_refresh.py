@@ -171,7 +171,13 @@ def test_pdf_fact_check_keeps_counts_not_just_the_set_of_numbers():
     facts = {"highlight.measured_questions": "5", "highlight.mentioned_questions": "2"}
     assert pdf_fact_problems("질문 5개 중 2개 언급", facts) == []
     assert pdf_fact_problems("질문 5개 중 3개 언급", facts) == [
-        "새 PDF에서 찾지 못함: highlight.mentioned_questions=2"
+        "새 PDF에서 찾지 못함: highlight.measured_questions=5"
+    ]
+    # 3→4: 같은 숫자가 근처 다른 곳에 있어도 '12편 중 3편' 꼴이 그대로 있어야 한다.
+    tile = {"tile.contract": "12편 중 3편"}
+    assert pdf_fact_problems("약속한 글 12편 중 3편 발행", tile) == []
+    assert pdf_fact_problems("약속한 글 12편 중 4편 발행 (3편 12편)", tile) == [
+        "새 PDF에서 찾지 못함: tile.contract=12편 중 3편"
     ]
 
 
