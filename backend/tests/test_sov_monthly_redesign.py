@@ -195,13 +195,151 @@ def test_registration_uses_flagged_hospitals_and_reports_blockers(monkeypatch):
     ]
 
 
+def test_enroll_new_flags_valid_hospitals_and_reports_gaps(monkeypatch):
+    """계약이 늦은 병원도 기록+유효 세트가 있으면 편입, 없으면 사유와 함께 not_enrolled."""
+    good = SimpleNamespace(id=uuid.uuid4(), name="새 병원", monthly_sov_cohort=False)
+    no_record = SimpleNamespace(id=uuid.uuid4(), name="기록 없음", monthly_sov_cohort=False)
+    short = SimpleNamespace(id=uuid.uuid4(), name="세트 부족", monthly_sov_cohort=False)
+
+    class _DB:
+        def __init__(self):
+            self.calls = 0
+
+        def execute(self, _statement):
+            self.calls += 1
+            rows = [] if self.calls == 1 else [good, no_record, short]
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: rows))
+
+    monkeypatch.setattr(
+        sov_tracking_set, "_hospital_has_sov_record", lambda _db, hid: hid != no_record.id
+    )
+    monkeypatch.setattr(
+        sov_tracking_set,
+        "register_tracking_set",
+        lambda _db, hid, n: {"valid": hid == good.id, "reason": "not enough LOCAL ACTIVE targets"},
+    )
+
+    without = register_convertible_tracking_sets(_DB(), n=15)
+    assert without["enrolled"] == [] and without["not_enrolled"] == []
+    assert good.monthly_sov_cohort is False
+
+    result = register_convertible_tracking_sets(_DB(), n=15, enroll_new=True)
+
+    assert good.monthly_sov_cohort is True
+    assert no_record.monthly_sov_cohort is False and short.monthly_sov_cohort is False
+    assert [item["name"] for item in result["enrolled"]] == ["새 병원"]
+    assert {(item["name"], item["reason"]) for item in result["not_enrolled"]} == {
+        ("기록 없음", "no SovRecord"),
+        ("세트 부족", "not enough LOCAL ACTIVE targets"),
+    }
+
+
+def _monthly_window_db():
+    class _DB:
+        commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    return _DB()
+
+
+def _patch_monthly_window(monkeypatch, db, registration, cohort):
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        tasks.arrow,
+        "now",
+        lambda *_a, **_k: tasks.arrow.get(2026, 10, 25, 12, tzinfo="Asia/Seoul"),
+    )
+    monkeypatch.setattr(tasks, "register_convertible_tracking_sets", lambda *_a, **_k: registration)
+    monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_a, **_k: cohort)
+    monkeypatch.setattr(tasks, "_ensure_monthly_sov_operation_run", lambda *_a, **_k: None)
+
+
+def test_monthly_window_opens_one_gap_incident_per_unenrolled_hospital(monkeypatch):
+    hospital_id = uuid.uuid4()
+    registration = {
+        "registered": [],
+        "blocked": [],
+        "enrolled": [],
+        "not_enrolled": [
+            {"name": "기록 없음", "reason": "no SovRecord", "hospital_id": str(hospital_id)}
+        ],
+    }
+    db = _monthly_window_db()
+    _patch_monthly_window(monkeypatch, db, registration, [])
+    opened: list[dict] = []
+    monkeypatch.setattr(tasks, "open_monthly_cohort_gap", lambda **kw: opened.append(kw) or kw)
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    tasks.run_monthly_sov_measurement.run()
+
+    assert opened == [
+        {
+            "hospital_id": hospital_id,
+            "hospital_name": "기록 없음",
+            "period_key": "2026-10",
+            "reason": "no SovRecord",
+        }
+    ]
+
+
+def test_new_enrollment_is_committed_before_dispatch(monkeypatch):
+    db = _monthly_window_db()
+    registration = {"enrolled": [{"hospital_id": str(uuid.uuid4()), "name": "새 병원"}]}
+    _patch_monthly_window(monkeypatch, db, registration, [])
+
+    tasks.run_monthly_sov_measurement.run()
+
+    assert db.commits == 1
+
+
+def test_cohort_over_limit_measures_everyone_and_opens_one_warning(monkeypatch, caplog):
+    cohort = [SimpleNamespace(id=uuid.uuid4(), name=f"병원{i}") for i in range(3)]
+    db = _monthly_window_db()
+    _patch_monthly_window(monkeypatch, db, {}, cohort)
+    ensured: list[object] = []
+    monkeypatch.setattr(
+        tasks, "_ensure_monthly_sov_operation_run", lambda _db, hospital, *_a: ensured.append(hospital)
+    )
+    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 2)
+    opened: list[dict] = []
+    monkeypatch.setattr(tasks, "open_monthly_cohort_over_limit", lambda **kw: opened.append(kw) or kw)
+    monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+
+    with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
+        tasks.run_monthly_sov_measurement.run()
+
+    assert ensured == cohort  # 상한 초과여도 한 곳도 빠지지 않는다
+    assert opened == [{"period_key": "2026-10", "cohort_size": 3, "limit": 2}]
+    assert any("exceeds cost warning threshold" in r.getMessage() for r in caplog.records)
+
+
+def test_cohort_at_or_under_limit_opens_no_warning(monkeypatch):
+    cohort = [SimpleNamespace(id=uuid.uuid4(), name="병원")]
+    _patch_monthly_window(monkeypatch, _monthly_window_db(), {}, cohort)
+    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 1)
+    monkeypatch.setattr(
+        tasks, "open_monthly_cohort_over_limit", lambda **_k: pytest.fail("no warning expected")
+    )
+
+    tasks.run_monthly_sov_measurement.run()
+
+
 def test_monthly_cohort_membership_survives_hospital_rename():
     hospital = SimpleNamespace(monthly_sov_cohort=True, name="완전히 바뀐 병원명")
 
     assert sov_tracking_set._hospital_matches_monthly_cohort(hospital)
 
 
-def test_non_positive_cohort_limit_is_empty_and_positive_limit_is_applied(monkeypatch):
+def test_cohort_returns_every_enrolled_valid_hospital_without_cutting(monkeypatch):
     first = SimpleNamespace(id=uuid.uuid4(), name="첫 병원", monthly_sov_cohort=True)
     second = SimpleNamespace(id=uuid.uuid4(), name="둘째 병원", monthly_sov_cohort=True)
     invalid = SimpleNamespace(id=uuid.uuid4(), name="부족 병원", monthly_sov_cohort=True)
@@ -223,11 +361,9 @@ def test_non_positive_cohort_limit_is_empty_and_positive_limit_is_applied(monkey
         lambda _db, hospital_id: targets[hospital_id],
     )
 
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=0) == []
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=-1) == []
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=None) == []
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=1) == [first]
-    assert sov_tracking_set.iter_monthly_sov_cohort(object(), limit=7) == [first, second]
+    # 상한으로 자르지 않는다 — 편입·유효 세트 조건을 만족한 병원은 전부 측정 대상이다.
+    # (보호 의도: 외부 병원·세트 부족 병원은 여전히 제외)
+    assert sov_tracking_set.iter_monthly_sov_cohort(object()) == [first, second]
 
 
 class _SpecDB:
@@ -1743,3 +1879,16 @@ def test_sov_task_hard_time_limit_stays_below_the_claim_lease():
     assert task.time_limit < lease_seconds
     # The worker falls back to the global hard limit if the decorator value is dropped.
     assert celery_app.conf.task_time_limit < lease_seconds
+
+
+@pytest.mark.parametrize("enrolled,expected", [(True, "enrolled_in_monthly_cohort"), (False, None)])
+def test_cohort_gap_incident_closes_only_once_hospital_is_enrolled(enrolled, expected):
+    from app.workers.incident_backlog import RESOLVERS
+
+    hospital = SimpleNamespace(monthly_sov_cohort=enrolled)
+    db = SimpleNamespace(get=lambda _model, _id: hospital)
+    incident = SimpleNamespace(hospital_id=uuid.uuid4())
+
+    resolver = RESOLVERS["MONTHLY_SOV_COHORT_GAP"]
+
+    assert resolver(db, incident, datetime.now(UTC)) == expected

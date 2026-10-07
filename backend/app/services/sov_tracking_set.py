@@ -215,10 +215,61 @@ def _hospital_has_sov_record(db, hospital_id: uuid.UUID) -> bool:
     )
 
 
+def _enroll_new_hospitals(
+    db, n: int, registered: list[dict[str, str]], not_enrolled: list[dict[str, str]]
+) -> list[dict[str, str]]:
+    """마이그레이션 0063 이후 계약된 ACTIVE 병원을 월간 코호트에 편입한다.
+
+    플래그가 없으면 월간 측정에서 조용히 빠지고 보고서가 주간 자료로만 만들어져 전달이
+    영구히 막힌다(2026-10 9/7·9/15 계약 병원). 플래그는 저장된 진실로 유지하므로 비교 가능성·
+    manifest 로직은 그대로이고, 한 번 편입한 병원은 자동으로 빼지 않는다.
+    기록(SovRecord)이 없거나 유효한 고정 세트를 만들 수 없는 병원은 편입하지 않고 사유를 돌려준다.
+    """
+
+    hospitals = list(
+        db.execute(
+            select(Hospital)
+            .where(
+                Hospital.status == HospitalStatus.ACTIVE,
+                Hospital.monthly_sov_cohort.is_(False),
+            )
+            .order_by(Hospital.created_at, Hospital.id)
+        )
+        .scalars()
+        .all()
+    )
+    enrolled: list[dict[str, str]] = []
+    for hospital in hospitals:
+        if not _hospital_has_sov_record(db, hospital.id):
+            not_enrolled.append(
+                {
+                    "name": hospital.name,
+                    "reason": "no SovRecord",
+                    "hospital_id": str(hospital.id),
+                }
+            )
+            continue
+        result = register_tracking_set(db, hospital.id, n=n)
+        if bool(result["valid"]):
+            hospital.monthly_sov_cohort = True
+            item = {"hospital_id": str(hospital.id), "name": hospital.name}
+            enrolled.append(item)
+            registered.append(item)
+        else:
+            not_enrolled.append(
+                {
+                    "name": hospital.name,
+                    "reason": str(result["reason"]),
+                    "hospital_id": str(hospital.id),
+                }
+            )
+    return enrolled
+
+
 def register_convertible_tracking_sets(
-    db, n: int = TRACKING_SET_N_DEFAULT
+    db, n: int = TRACKING_SET_N_DEFAULT, *, enroll_new: bool = False
 ) -> dict[str, object]:
-    """Register tracking sets for the stable, explicitly migrated cohort."""
+    """Register tracking sets for the cohort; optionally enroll newly contracted hospitals."""
 
     _validate_n(n)
     registered: list[dict[str, str]] = []
@@ -256,10 +307,16 @@ def register_convertible_tracking_sets(
                     "hospital_id": str(hospital.id),
                 }
             )
+    not_enrolled: list[dict[str, str]] = []
+    enrolled = (
+        _enroll_new_hospitals(db, n, registered, not_enrolled) if enroll_new else []
+    )
     return {
         "target_count": len(hospitals),
         "registered": registered,
         "blocked": blocked,
+        "enrolled": enrolled,
+        "not_enrolled": not_enrolled,
     }
 
 
@@ -267,9 +324,13 @@ def _hospital_matches_monthly_cohort(hospital: Hospital) -> bool:
     return bool(getattr(hospital, "monthly_sov_cohort", False))
 
 
-def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
-    if limit is None or limit <= 0:
-        return []
+def iter_monthly_sov_cohort(db) -> list[Hospital]:
+    """편입된 모든 병원을 돌려준다. 상한으로 자르지 않는다.
+
+    예전에는 SOV_MONTHLY_COHORT_LIMIT에서 잘라 초과 병원이 조용히 측정되지 않았다.
+    상한은 이제 비용 경고 기준일 뿐이다(`run_monthly_sov_measurement`가 경고·인시던트).
+    """
+
     hospitals = _convertible_hospitals(db)
     cohort: list[Hospital] = []
     for hospital in hospitals:
@@ -277,15 +338,11 @@ def iter_monthly_sov_cohort(db, *, limit: int | None) -> list[Hospital]:
             continue
         if _stored_tracking_set_is_valid(_load_targets(db, hospital.id)):
             cohort.append(hospital)
-            if len(cohort) >= limit:
-                break
     return cohort
 
 
-def hospital_in_monthly_cohort(
-    db, hospital_id: uuid.UUID, *, limit: int | None
-) -> bool:
-    return any(hospital.id == hospital_id for hospital in iter_monthly_sov_cohort(db, limit=limit))
+def hospital_in_monthly_cohort(db, hospital_id: uuid.UUID) -> bool:
+    return any(hospital.id == hospital_id for hospital in iter_monthly_sov_cohort(db))
 
 
 def monthly_sov_guard_units(

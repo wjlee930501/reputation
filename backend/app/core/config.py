@@ -598,9 +598,8 @@ class Settings(BaseSettings):
 
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
-    # LIMIT=7 converts the first 7 valid tracking-set hospitals in stable order
-    # (stable Hospital.monthly_sov_cohort flags after register_convertible_tracking_sets).
-    # 0/negative stays empty (register-only). 0 does NOT mean all hospitals.
+    # 월간 코호트(Hospital.monthly_sov_cohort)는 계약된 ACTIVE 병원이 자동 편입되며 전원 측정한다.
+    # 이 값은 자르는 상한이 아니라 비용 경고 기준이다 — 넘으면 경고 로그와 월 1건의 사고만 남긴다.
     SOV_MONTHLY_COHORT_LIMIT: int = 7
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
