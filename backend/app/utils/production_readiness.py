@@ -193,6 +193,7 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.monthly_artifact_reconciliation  # noqa: F401, PLC0415
     import app.workers.naver_sync  # noqa: F401, PLC0415
     import app.workers.notification_tasks  # noqa: F401, PLC0415
+    import app.workers.post_publish_ai_review  # noqa: F401, PLC0415
     import app.workers.provider_usage_recovery  # noqa: F401, PLC0415
     import app.workers.published_image_refresh  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415
