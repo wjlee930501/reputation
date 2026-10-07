@@ -406,6 +406,15 @@ class Settings(BaseSettings):
             raise ValueError("SOV_TRACKING_SET_N_DEFAULT must be between 10 and 15")
         return value
 
+    @field_validator(
+        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES"
+    )
+    @classmethod
+    def _validate_post_publish_correction_budget(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("POST_PUBLISH_AUTO_CORRECTION_* must not be negative")
+        return value
+
     @field_validator("POST_PUBLISH_AI_REVIEW_DAILY_CAP")
     @classmethod
     def _validate_post_publish_review_cap(cls, value: int) -> int:
@@ -554,6 +563,11 @@ class Settings(BaseSettings):
     # 사후검수 첫 판정 모델. 발행 전에 검수 모델(Opus)을 이미 통과한 글이라 한 단계 낮은 모델로
     # 먼저 보고, 확신도 부족으로 애매하면 검수 모델이 한 번 더 본다(2026-10 대표 결정).
     POST_PUBLISH_AI_REVIEW_MODEL: str = "anthropic/claude-sonnet-5.5"
+    # FLAGGED로 표시된 공개 글을 최소 교정 패스(`content_minimal_correction`, 공개 모드)로 자동 교정하는
+    # 하루 편수 상한과 글당 교정 패스 상한. 교정본은 독립 재검수 PASS가 그 hash에 묶여야만 살아 있는
+    # 행에 쓰이므로 비용은 글당 교정 호출 + 재검수 호출이다. 0이면 자동 교정을 끈다(FLAGGED 표시만 남는다).
+    POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP: int = 20
+    POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES: int = 2
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2
