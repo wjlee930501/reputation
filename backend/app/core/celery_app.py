@@ -1,8 +1,16 @@
 import logging
+import socket
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from celery import Celery
 from celery.schedules import crontab
-from celery.signals import before_task_publish, task_failure, task_postrun, task_prerun
+from celery.signals import (
+    before_task_publish,
+    heartbeat_sent,
+    task_failure,
+    task_postrun,
+    task_prerun,
+)
 
 from app.core.config import settings
 from app.core.observability import configure_logging, sentry_before_send, set_request_id
@@ -19,6 +27,7 @@ from app.workers.runtime_queue_observability import (
     record_task_queue_wait,
     stamp_task_enqueue_time,
 )
+from app.workers.worker_liveness import touch_heartbeat
 
 # Redis에 저장된 정적 스케줄과 배포 이미지의 선언을 맞출 때 사용하는 명시적 버전.
 # beat_schedule을 추가/삭제/시간 변경할 때 반드시 올린다. 배포 스크립트의
@@ -42,6 +51,38 @@ ROUTED_TASK_PRIORITIES = {
     "app.workers.indexnow_retry.drain": 9,
     "app.workers.provider_usage_recovery.drain": 9,
 }
+
+# Redis 소켓 보강 (2026-10-08 사고: 워커가 "Connection to broker lost"를 남긴 뒤 4시간 넘게 로그도
+# 실행도 없이 살아 있었다). 시간 제한이 없는 소켓은 반쯤 끊긴 TCP 연결(Memorystore 유지보수·VPC
+# 경로 끊김)에서 읽기·연결을 영원히 기다린다. 모든 값은 시간 제한이 있는 실패로 바꿔 kombu/Celery의
+# 재연결 루프가 다시 돌게 한다. consumer의 BRPOP 대기는 1초라 socket_timeout 30초와 겹치지 않는다.
+REDIS_SOCKET_TIMEOUT_SECONDS = 30
+REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS = 10
+REDIS_HEALTH_CHECK_INTERVAL_SECONDS = 25
+# 유휴 60초 뒤 10초 간격 3회 무응답이면 커널이 연결을 끊는다(약 90초). 플랫폼에 없는 상수는 뺀다
+# (Linux는 TCP_KEEPIDLE, macOS는 TCP_KEEPALIVE).
+REDIS_TCP_KEEPALIVE_OPTIONS = {
+    option: value
+    for option, value in (
+        (getattr(socket, "TCP_KEEPIDLE", getattr(socket, "TCP_KEEPALIVE", None)), 60),
+        (getattr(socket, "TCP_KEEPINTVL", None), 10),
+        (getattr(socket, "TCP_KEEPCNT", None), 3),
+    )
+    if option is not None
+}
+
+
+def _redis_url_with_socket_options(url: str) -> str:
+    """RedBeat는 일반 redis URL을 `StrictRedis.from_url(url)`로만 연다 — 옵션은 질의로 넘긴다."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query))
+    query.setdefault("socket_timeout", str(REDIS_SOCKET_TIMEOUT_SECONDS))
+    query.setdefault("socket_connect_timeout", str(REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS))
+    query.setdefault("socket_keepalive", "true")
+    query.setdefault("retry_on_timeout", "true")
+    query.setdefault("health_check_interval", str(REDIS_HEALTH_CHECK_INTERVAL_SECONDS))
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
 
 if settings.SENTRY_DSN:
     import sentry_sdk
@@ -120,6 +161,8 @@ celery_app = Celery(
 before_task_publish.connect(stamp_published_message, weak=False)
 before_task_publish.connect(stamp_task_enqueue_time, weak=False)
 task_prerun.connect(record_task_queue_wait, weak=False)
+# consumer 루프가 브로커에 붙어 있는 동안 약 2초마다 온다 — /live가 이 파일의 나이를 본다.
+heartbeat_sent.connect(touch_heartbeat, weak=False)
 
 celery_app.conf.update(
     task_serializer="json",
@@ -149,7 +192,28 @@ celery_app.conf.update(
     # 종료 없이 끊겨 7200초 뒤 되돌아온 메시지는 만료돼 거절된다(사고로 보인다). 이제 검증이 claim
     # 보다 먼저라 그 사본이 실행을 FAILED로 끝내지는 못한다. cold shutdown이 정상이면 메시지는 몇 초
     # 안에 되돌아오므로 드문 일이고, 서명 수명을 6시간으로 올리는 다음 릴리스에서 사라진다.
-    broker_transport_options={"queue_order_strategy": "priority", "visibility_timeout": 7200},
+    broker_transport_options={
+        "queue_order_strategy": "priority",
+        "visibility_timeout": 7200,
+        "socket_timeout": REDIS_SOCKET_TIMEOUT_SECONDS,
+        "socket_connect_timeout": REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+        "socket_keepalive": True,
+        "socket_keepalive_options": REDIS_TCP_KEEPALIVE_OPTIONS,
+        "retry_on_timeout": True,
+        "health_check_interval": REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
+    },
+    # 연결이 끊기면 다시 붙는다. 재시도 상한(기본 100회)은 일부러 남긴다 — 재연결이 끝내 안 되면
+    # 워커 프로세스가 끝나고 Cloud Run이 인스턴스를 새로 띄운다. /live의 heartbeat 검사와 별개인
+    # 두 번째 탈출구다. 시작 시 재시도는 명시해 Celery 6의 기본값 변경 경고를 없앤다.
+    broker_connection_retry=True,
+    broker_connection_retry_on_startup=True,
+    broker_connection_max_retries=100,
+    # Redis 결과 백엔드(같은 Memorystore)도 같은 시간 제한을 쓴다.
+    redis_socket_timeout=REDIS_SOCKET_TIMEOUT_SECONDS,
+    redis_socket_connect_timeout=REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS,
+    redis_socket_keepalive=True,
+    redis_retry_on_timeout=True,
+    redis_backend_health_check_interval=REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
     task_queue_max_priority=9,
     task_default_priority=4,
     task_annotations={
@@ -160,7 +224,7 @@ celery_app.conf.update(
     # RedBeat은 Redis 분산 락으로 단일 dispatcher를 보장하고, 스케줄 상태를
     # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
     beat_scheduler="redbeat.RedBeatScheduler",
-    redbeat_redis_url=settings.REDIS_URL,
+    redbeat_redis_url=_redis_url_with_socket_options(settings.REDIS_URL),
     # RedBeat 기본 max loop interval은 300초다. 기존 락 TTL도 정확히 300초여서
     # 다음 tick에서 이미 만료된 락을 extend하며 LockNotOwnedError가 발생했다.
     # 30초마다 갱신해 Redis/Cloud Run 지연이 있어도 TTL 대비 10배 여유를 둔다.

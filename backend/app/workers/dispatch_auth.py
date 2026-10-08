@@ -56,6 +56,14 @@ class DispatchAuthorizationError(PermissionError):
     """The broker message was not created by an authorized server process."""
 
 
+class ExpiredDispatchEnvelope(DispatchAuthorizationError):
+    """The envelope's signed lifetime ended before a worker consumed the message."""
+
+    def __init__(self, *, issued_at: int, current: int) -> None:
+        super().__init__("expired authenticated dispatch envelope")
+        self.age_seconds = current - issued_at
+
+
 class _Request(Protocol):
     headers: Mapping[str, str] | None
     id: str
@@ -87,7 +95,7 @@ def validate_task_dispatch(
     issued_at = _integer_header(observed[ISSUED_HEADER])
     expires_at = _integer_header(observed[EXPIRES_HEADER])
     if current > expires_at:
-        raise DispatchAuthorizationError("expired authenticated dispatch envelope")
+        raise ExpiredDispatchEnvelope(issued_at=issued_at, current=current)
     # 수명은 서명된 두 값의 차이라 위조할 수 없다. '정확히 같음'이면 TTL을 바꾸는 배포마다
     # 이전 릴리스가 서명한 메시지가 전부 거절되므로 상한만 건다.
     lifetime = expires_at - issued_at
@@ -163,14 +171,29 @@ class AuthenticatedTask(Task):
     abstract = True
 
     def before_start(self, task_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        validate_task_dispatch(
-            task_name=self.name,
-            task_id=task_id,
-            args=args,
-            kwargs=kwargs,
-            retries=int(self.request.retries or 0),
-            headers=self.request.headers,
-        )
+        try:
+            validate_task_dispatch(
+                task_name=self.name,
+                task_id=task_id,
+                args=args,
+                kwargs=kwargs,
+                retries=int(self.request.retries or 0),
+                headers=self.request.headers,
+            )
+        except ExpiredDispatchEnvelope as exc:
+            if not _is_run_less_periodic_dispatch(self.name, self.request.headers):
+                raise
+            # 매분 도는 드레인처럼 실행 기록 없는 주기 작업이 워커 정지 동안 쌓였다가 만료된 채
+            # 배달됐다. 다음 주기가 같은 일을 하므로 버려도 잃는 것이 없다. 실패로 올리면 메시지마다
+            # ERROR 로그가 나고 사고 투영까지 간다 — 적체 한 번에 수천 건이다. Ignore는 task_failure를
+            # 내지 않는다. 실행 기록이 있거나 주기 작업이 아닌 봉투는 그대로 실패로 남긴다.
+            logger.warning(
+                "dispatch_expired_dropped task_name=%s task_id=%s age_seconds=%s",
+                self.name,
+                task_id,
+                exc.age_seconds,
+            )
+            raise Ignore() from exc
         from app.workers import operation_run_signals
 
         # 실행 claim은 봉투 검증을 통과한 사본만 한다. task_prerun에서 claim하던 때는 배포 뒤
@@ -226,6 +249,28 @@ class AuthenticatedTask(Task):
         raise DispatchAuthorizationError(
             f"task is not authorized by the claimed operation run ({reason})"
         )
+
+
+def _is_run_less_periodic_dispatch(task_name: str, headers: Mapping[str, Any] | None) -> bool:
+    """A Beat schedule entry's message (same task and purpose) that carries no OperationRun."""
+    if not isinstance(headers, Mapping) or headers.get("operation_run_id"):
+        return False
+    if headers.get(OPERATION_RUN_HEADER) not in (None, "-"):
+        return False
+    from app.core.celery_app import celery_app
+    from app.workers.generation_run_control import operation_run_required
+
+    if operation_run_required(task_name):
+        return False
+    purpose = headers.get(PURPOSE_HEADER)
+    for entry in (celery_app.conf.beat_schedule or {}).values():
+        options = entry.get("options") or {}
+        entry_headers = options.get("headers") or {}
+        # 헤더 없는 Beat 항목은 발행 시 태스크 기본 목적으로 서명된다.
+        entry_purpose = entry_headers.get(PURPOSE_HEADER) or expected_purpose(task_name)
+        if entry.get("task") == task_name and entry_purpose == purpose:
+            return True
+    return False
 
 
 def _integer_header(value: Any) -> int:

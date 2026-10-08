@@ -571,6 +571,11 @@ class Settings(BaseSettings):
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2
+    # 워커 consumer가 heartbeat 없이 이 시간(초)을 넘기면 /live가 실패해 Cloud Run이 인스턴스를
+    # 재시작한다(`workers/worker_liveness.py`). heartbeat는 브로커에 연결된 consumer 루프에서 약 2초마다
+    # 나므로 정상 재연결(수 초)은 걸리지 않는다. 기동 유예 동안은 첫 heartbeat가 없어도 통과한다.
+    WORKER_LIVENESS_STALE_SECONDS: int = 600
+    WORKER_LIVENESS_STARTUP_GRACE_SECONDS: int = 300
 
     # Cost Guard — 전역 비용 가드레일 + 킬스위치.
     # 콘텐츠/이미지/SoV 호출은 병원 수에 비례해 무제한 확장되므로 카테고리별 일/월 호출
