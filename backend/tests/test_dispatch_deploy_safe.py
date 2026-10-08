@@ -610,12 +610,16 @@ def test_a_run_less_v0_delivery_retries_within_the_bound(monkeypatch) -> None:
 # ── claim을 확인하지 못한 배달은 중복이 아니라 되돌린다 ─────────────────────────
 
 
-def test_a_claim_database_error_requeues_instead_of_ignoring(monkeypatch) -> None:
+def test_a_claim_database_error_requeues_instead_of_ignoring(monkeypatch, caplog) -> None:
     from celery.exceptions import Reject
     from sqlalchemy.exc import OperationalError
 
     run = _image_run(task_id="copy", lease_owner="copy")
     _production(monkeypatch, run=run)
+    slept: list[float] = []
+    monkeypatch.setattr(dispatch_auth, "CLAIM_UNAVAILABLE_REQUEUE_DELAY_SECONDS", 0)
+    monkeypatch.setattr(dispatch_auth.time, "sleep", slept.append)
+    caplog.set_level(logging.WARNING, logger="app.workers.dispatch_auth")
 
     def _down(*_args, **_kwargs):
         raise OperationalError("UPDATE operation_runs", {}, Exception("connection lost"))
@@ -631,6 +635,18 @@ def test_a_claim_database_error_requeues_instead_of_ignoring(monkeypatch) -> Non
 
     assert raised.value.requeue is True
     assert getattr(task.request, "operation_run_claim_version", None) is None
+    # DB 장애 동안 즉시 재배달이 쉼 없이 돌지 않도록, 되돌리기 전에 상한 있는 시간만큼 쉰다.
+    assert slept == [0]
+    requeued = [r for r in caplog.records if "dispatch_requeued" in r.getMessage()]
+    assert len(requeued) == 1
+    assert requeued[0].levelno == logging.WARNING
+    assert "task_id=copy" in requeued[0].getMessage()
+    assert "reason=claim_unavailable" in requeued[0].getMessage()
+    assert "error=OperationalError" in requeued[0].getMessage()
+
+
+def test_the_requeue_pause_is_short_and_bounded() -> None:
+    assert 0 < dispatch_auth.CLAIM_UNAVAILABLE_REQUEUE_DELAY_SECONDS <= 5
 
 
 # ── 미룬 실행은 복구로 보이지 않는다 ──────────────────────────────────────────

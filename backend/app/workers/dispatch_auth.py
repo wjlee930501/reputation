@@ -46,6 +46,11 @@ from app.workers.dispatch_envelope import (
 
 logger = logging.getLogger(__name__)
 
+# claim을 확인하지 못해 메시지를 되돌리기 전에 쉬는 시간. Redis 전송은 되돌린 메시지를 곧바로 다시
+# 배달하므로, DB 장애 동안 모든 워커 슬롯이 claim 오류 → 되돌림 → 재배달을 쉼 없이 돌며 로그를
+# 쏟아낸다. 짧게 쉬어 그 회전을 늦춘다(워커 슬롯 하나를 이 시간만큼 잡는다).
+CLAIM_UNAVAILABLE_REQUEUE_DELAY_SECONDS = 5
+
 
 class DispatchAuthorizationError(PermissionError):
     """The broker message was not created by an authorized server process."""
@@ -178,10 +183,14 @@ class AuthenticatedTask(Task):
             # RUNNING에 남는다. 메시지를 큐로 되돌린다 — 되돌린 사본은 redelivered로 표시돼, 이
             # 배달이 이미 가진 RUNNING 실행도 다시 claim할 수 있다. Reject는 task_failure를 내지 않는다.
             logger.warning(
-                "dispatch_requeued reason=claim_unavailable task_name=%s task_id=%s",
+                "dispatch_requeued reason=claim_unavailable task_name=%s task_id=%s "
+                "delay_seconds=%s error=%s",
                 self.name,
                 task_id,
+                CLAIM_UNAVAILABLE_REQUEUE_DELAY_SECONDS,
+                type(exc.__cause__ or exc).__name__,
             )
+            time.sleep(CLAIM_UNAVAILABLE_REQUEUE_DELAY_SECONDS)
             raise Reject(exc, requeue=True) from exc
         if settings.APP_ENV.lower() != "production":
             return
