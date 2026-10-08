@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from app.core.config import settings
+from app.services import published_correction as pc
 from app.workers import post_publish_ai_review as sweep
 from tests.test_published_auto_correction import _flagged_item, _hospital, _philosophy
 
@@ -73,7 +74,10 @@ def test_daily_run_corrects_flagged_posts_within_its_own_cap(monkeypatch):
 
 def test_daily_run_skips_posts_whose_correction_is_finished(monkeypatch):
     done, fresh = _sweep_item(), _sweep_item()
-    done.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["correction"] = {"finished": True}
+    done.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["correction"] = {
+        "finished": True,
+        "rules_version": pc.CORRECTION_RULES_VERSION,
+    }
 
     processed, _counts = _run_sweep(monkeypatch, [done, fresh], cap=5)
 
