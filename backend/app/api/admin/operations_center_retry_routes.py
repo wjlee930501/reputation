@@ -4,7 +4,7 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header
-from sqlalchemy import func, select
+from sqlalchemy import and_, false, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.operations_center_actions import (
@@ -29,6 +29,7 @@ from app.schemas.operations import (
 )
 from app.services.audit_log import write_audit_log
 from app.services.incident_safety import sanitize_operator_text
+from app.services.notification_channel_health import DELIVERY_INCIDENT_TYPES
 from app.services.notification_outbox import NotificationRetryConflict, retry_notification
 from app.services.operation_run_transitions import OperationTransitionRejected
 from app.services.operation_runs import (
@@ -140,10 +141,18 @@ async def _authorize_notification_retry(
 ) -> None:
     if actor.role == ROLE_OWNER:
         return
-    assigned = row.incident_id is not None and await db.scalar(
+    # 이 행을 알리는 사고(incident_id) 또는 이 행의 전송 실패를 가리키는 사고(source_id)의
+    # 담당자면 재시도할 수 있다 — 같은 규칙으로 운영센터가 그 행을 보여 준다.
+    assigned = await db.scalar(
         select(func.count(Incident.id)).where(
-            Incident.id == row.incident_id,
             Incident.owner_id == actor.id,
+            or_(
+                Incident.id == row.incident_id if row.incident_id is not None else false(),
+                and_(
+                    Incident.incident_type.in_(sorted(DELIVERY_INCIDENT_TYPES)),
+                    Incident.source_id == str(row.id),
+                ),
+            ),
         )
     )
     if not assigned:

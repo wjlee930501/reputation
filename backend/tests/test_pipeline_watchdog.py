@@ -681,6 +681,111 @@ async def test_deliver_posts_directly_to_the_audience_webhook(monkeypatch):
     assert seen == [("https://hooks.slack.com/dev", {"text": "본문"})]
 
 
+def _recording_client(seen, responses):
+    import httpx
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, json):
+            seen.append((url, json))
+            status = responses.get(url, 200)
+            headers = {"Location": "https://example.invalid/"} if 300 <= status <= 399 else {}
+            return httpx.Response(
+                status, text="ok", headers=headers, request=httpx.Request("POST", url)
+            )
+
+    return FakeAsyncClient
+
+
+async def test_a_dead_developer_webhook_falls_back_to_the_operator_channel(monkeypatch, caplog):
+    # 2026-09-19부터 개발 웹훅이 302를 돌려줘 감시 경보가 85번 ERROR 로그로만 사라졌다.
+    ops, dev = "https://hooks.slack.com/ops", "https://hooks.slack.com/dev"
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL", ops)
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL_DEV", dev)
+    seen: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        pipeline_watchdog.httpx, "AsyncClient", _recording_client(seen, {dev: 302})
+    )
+    decision = pipeline_watchdog.AlertDecision(
+        True, "ALERT", "developer", "[Error : 오류 발생] 본문", "new_condition_set", dev
+    )
+
+    assert await pipeline_watchdog.deliver(decision) is True
+    assert [url for url, _ in seen] == [dev, ops]
+    assert seen[1][1] == {"text": "[Error : 오류 발생] [채널 대체 전송] 본문"}
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+async def test_single_channel_mode_marks_developer_alerts_on_the_operator_channel(monkeypatch):
+    ops = "https://hooks.slack.com/ops"
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL", ops)
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL_DEV", "")
+    seen: list[tuple[str, dict]] = []
+    monkeypatch.setattr(pipeline_watchdog.httpx, "AsyncClient", _recording_client(seen, {}))
+    decision = pipeline_watchdog.AlertDecision(
+        True,
+        "ALERT",
+        "developer",
+        "[Error : 오류 발생] 본문",
+        "new_condition_set",
+        pipeline_watchdog.webhook_for("developer"),
+    )
+
+    assert await pipeline_watchdog.deliver(decision) is True
+    assert seen == [(ops, {"text": "[Error : 오류 발생] [개발 확인] 본문"})]
+
+
+async def test_a_developer_timeout_is_not_duplicated_on_the_operator_channel(monkeypatch, caplog):
+    import httpx
+
+    ops, dev = "https://hooks.slack.com/ops", "https://hooks.slack.com/dev"
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL", ops)
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL_DEV", dev)
+    seen: list[str] = []
+
+    class TimeoutClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, json):
+            seen.append(url)
+            raise httpx.ReadTimeout("slow", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(pipeline_watchdog.httpx, "AsyncClient", TimeoutClient)
+    decision = pipeline_watchdog.AlertDecision(True, "ALERT", "developer", "본문", "x", dev)
+
+    # 개발 채널이 받았을 수도 있다 — 운영 채널로 중복 전송하지 않고 경고만 남긴다.
+    assert await pipeline_watchdog.deliver(decision) is False
+    assert seen == [dev, dev]
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
+async def test_operator_alerts_never_fall_back(monkeypatch):
+    ops, dev = "https://hooks.slack.com/ops", "https://hooks.slack.com/dev"
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL", ops)
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL_DEV", dev)
+    seen: list[tuple[str, dict]] = []
+    monkeypatch.setattr(pipeline_watchdog.httpx, "AsyncClient", _recording_client(seen, {ops: 404}))
+    decision = pipeline_watchdog.AlertDecision(True, "ALERT", "operator", "본문", "x", ops)
+
+    assert await pipeline_watchdog.deliver(decision) is False
+    assert [url for url, _ in seen] == [ops]
+
+
 async def test_deliver_refuses_a_webhook_outside_the_allowlist(monkeypatch):
     monkeypatch.setattr(
         pipeline_watchdog.settings,

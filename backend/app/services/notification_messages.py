@@ -26,10 +26,56 @@ from app.services.notification_contracts import (
     validate_message,
 )
 from app.services.notification_copy import display_time, incident_copy, readable_detail
-from app.services.notification_labels import prefixed_for_event
+from app.services.notification_labels import NotificationLabel, prefixed_for_event
 
 _MAX_BLOCKS = 50
 _MAX_SECTION_CHARS = 2900
+_MAX_HEADER_CHARS = 150
+
+# 전송 경로가 원래 수신 채널과 다를 때 종류 라벨 바로 뒤에 붙이는 표시. 라벨(첫 토큰)은 그대로다.
+# 개발 채널 없이 운영 채널 하나로 운영할 때 개발 담당 알림임을 알린다(2026-10 대표 결정).
+DEVELOPER_ROUTED_MARKER = "[개발 확인]"
+# 원래 채널의 웹훅이 죽어 다른 채널로 대신 보낼 때.
+CHANNEL_FALLBACK_MARKER = "[채널 대체 전송]"
+_LABELS = tuple(label.value for label in NotificationLabel)
+
+
+def with_routing_marker(text: str, marker: str) -> str:
+    """종류 라벨 뒤에 경로 표시를 한 번만 끼운다. 라벨이 없으면 맨 앞에 붙인다."""
+
+    body = text.lstrip()
+    label = next((item for item in _LABELS if body.startswith(item)), "")
+    rest = body[len(label):].lstrip()
+    if rest.startswith(marker):
+        return body
+    return " ".join(part for part in (label, marker, rest) if part)
+
+
+def payload_with_routing_marker(payload: dict[str, JSONValue], marker: str) -> dict[str, JSONValue]:
+    """저장된 payload를 바꾸지 않고, fallback text와 첫 header(없으면 첫 section)에 표시를 붙인 사본."""
+
+    text = payload.get("text")
+    marked: dict[str, JSONValue] = dict(payload)
+    if isinstance(text, str):
+        marked["text"] = with_routing_marker(text, marker)
+    blocks = payload.get("blocks")
+    if not isinstance(blocks, list):
+        return marked
+    kinds = [block.get("type") for block in blocks if isinstance(block, dict)]
+    target_kind = "header" if "header" in kinds else "section"
+    new_blocks: list[JSONValue] = []
+    done = False
+    for block in blocks:
+        inner = block.get("text") if isinstance(block, dict) else None
+        if not done and isinstance(block, dict) and block.get("type") == target_kind and isinstance(inner, dict) and isinstance(inner.get("text"), str):
+            value = with_routing_marker(inner["text"], marker)
+            if target_kind == "header" and len(value) > _MAX_HEADER_CHARS:
+                value = value[: _MAX_HEADER_CHARS - 1] + "…"
+            block = {**block, "text": {**inner, "text": value}}
+            done = True
+        new_blocks.append(block)
+    marked["blocks"] = new_blocks
+    return marked
 
 
 def build_open_incident_notification(
