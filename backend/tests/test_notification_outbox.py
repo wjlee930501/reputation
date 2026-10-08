@@ -223,6 +223,9 @@ class _FakeSession:
     async def __aexit__(self, *_exc):
         return False
 
+    async def commit(self):
+        return None
+
 
 def _isolate_dispatch(monkeypatch, row, decisions=None) -> None:
     async def recover(*_args, **_kwargs):
@@ -248,6 +251,7 @@ def _isolate_dispatch(monkeypatch, row, decisions=None) -> None:
     monkeypatch.setattr(notification_delivery, "refresh_channel_health", no_health)
     monkeypatch.setattr(notification_delivery, "described_channels", no_health)
     monkeypatch.setattr(notification_delivery, "recover_after_send", nothing)
+    monkeypatch.setattr(notification_delivery, "requeue_channel_held", nothing)
     monkeypatch.setattr(notification_delivery, "run_notification_success_hook", nothing)
 
 
@@ -710,7 +714,11 @@ async def test_rate_limit_honors_retry_after_and_permanent_4xx_fails(outbox_sess
         assert rows["OPS-QA-T10-429"].next_attempt_at == _NOW + timedelta(seconds=7200)
         assert rows["OPS-QA-T10-400"].state == NotificationOutboxState.FAILED
         assert rows["OPS-QA-T10-400"].next_attempt_at is None
-        assert rows["OPS-QA-T10-400"].provider_response == {"http_status": 400, "body_code": "invalid_payload"}
+        assert rows["OPS-QA-T10-400"].provider_response == {
+            "http_status": 400,
+            "body_code": "invalid_payload",
+            "channel_used": "SLACK",  # 실제로 보낸 채널(수신 불명 판정이 이것으로 맞춘다)
+        }
         delivery_incident = await verify.scalar(
             select(Incident).where(
                 Incident.source_type == "NOTIFICATION_OUTBOX",
@@ -1196,8 +1204,23 @@ async def test_hourly_probe_recovers_the_channel_and_requeues_held_rows(outbox_s
         incident = await _channel_incident(verify, "SLACK")
         assert incident is not None
         assert incident.state == IncidentState.ACKNOWLEDGED
+        assert incident.recovered_at == _NOW + timedelta(hours=1, minutes=1)
         row = await verify.get(NotificationOutbox, held)
         assert row is not None and row.state == NotificationOutboxState.SENT
+        assert row.provider_response["channel_used"] == "SLACK"
+        # 채널이 죽어 보낼 곳이 없던 동안 보류된 채널 사고 자신의 열림 알림은, 사고가 이미
+        # 복구됐으므로 지난 사실이다 — 다시 보내지 않고, 전달되지 않은 열림에 복구를 짝짓지 않는다.
+        notices = {
+            notice.notification_type: notice
+            for notice in (
+                await verify.execute(
+                    select(NotificationOutbox).where(NotificationOutbox.incident_id == incident.id)
+                )
+            ).scalars()
+        }
+        assert notices["INCIDENT_OPEN"].state == NotificationOutboxState.FAILED
+        assert notices["INCIDENT_OPEN"].safe_error_code == "STALE_NOT_RESENT"
+        assert "INCIDENT_RECOVERED" not in notices
 
 
 @pytest.mark.asyncio
@@ -1282,7 +1305,145 @@ async def test_a_successful_send_on_the_channel_recovers_its_incident(outbox_ses
                 NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
             )
         )
-        assert recovered_notice == 1  # 열림 알림이 큐에 있었으므로 복구 알림으로 짝을 닫는다
+        # 다른 채널이 없어 열림 알림은 전달되지 못했다 — 전달되지 않은 열림에 복구를 짝짓지 않는다.
+        assert recovered_notice == 0
+
+
+@pytest.mark.asyncio
+async def test_a_delivered_open_notice_is_paired_with_a_recovered_notice(outbox_sessions) -> None:
+    await _seed(outbox_sessions, "OPS-QA-T10-PAIR", channel="SLACK_DEV")
+    dev_dead = True
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == _DEV_URL:
+            if json.loads(request.content) == {}:
+                return httpx.Response(400, text="no_text") if not dev_dead else httpx.Response(302)
+            return httpx.Response(302) if dev_dead else httpx.Response(200, text="ok")
+        return httpx.Response(200, text="ok")
+
+    await _dispatch_two_channels(outbox_sessions, handler, now=_NOW, developer_url=_DEV_URL)
+    await _dispatch_two_channels(
+        outbox_sessions, handler, now=_NOW + timedelta(seconds=5), developer_url=_DEV_URL
+    )
+    dev_dead = False
+    await _dispatch_two_channels(
+        outbox_sessions, handler, now=_NOW + timedelta(hours=1, minutes=1), developer_url=_DEV_URL
+    )
+
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK_DEV")
+        assert incident.state == IncidentState.ACKNOWLEDGED
+        recovered = await verify.scalar(
+            select(func.count(NotificationOutbox.id)).where(
+                NotificationOutbox.incident_id == incident.id,
+                NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
+            )
+        )
+        assert recovered == 1
+
+
+@pytest.mark.asyncio
+async def test_held_rows_resend_only_when_fresh_and_unresolved(outbox_sessions) -> None:
+    from app.services.notification_channel_health import requeue_channel_held
+
+    ids: dict[str, uuid.UUID] = {}
+    async with outbox_sessions() as db:
+        resolved = Incident(
+            dedupe_key="OPS-QA-T10-HELD-SUBJECT",
+            incident_type="BACKGROUND_TASK_FAILED",
+            state=IncidentState.ACKNOWLEDGED,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="TEST",
+            next_action="테스트",
+            admin_path="/operations",
+            recovered_at=_NOW,
+            acknowledged_at=_NOW,
+        )
+        db.add(resolved)
+        await db.flush()
+        for name, created, incident_id in (
+            ("FRESH", _NOW - timedelta(hours=1), None),
+            ("OLD", _NOW - timedelta(hours=25), None),
+            ("RESOLVED", _NOW - timedelta(hours=1), resolved.id),
+        ):
+            row = await enqueue_notification(
+                db, replace(_intent(f"OPS-QA-T10-HELD-{name}"), incident_id=incident_id), now=created
+            )
+            row.state = NotificationOutboxState.HOLD
+            row.next_attempt_at = None
+            row.safe_error_code = "SLACK_CHANNEL_UNAVAILABLE"
+            ids[name] = row.id
+        await db.commit()
+
+    async with outbox_sessions() as db:
+        assert await requeue_channel_held(db, now=_NOW) == 1
+        await db.commit()
+
+    async with outbox_sessions() as verify:
+        rows = {name: await verify.get(NotificationOutbox, row_id) for name, row_id in ids.items()}
+        assert rows["FRESH"].state == NotificationOutboxState.RETRYING
+        assert rows["FRESH"].next_attempt_at == _NOW
+        for name in ("OLD", "RESOLVED"):
+            assert rows[name].state == NotificationOutboxState.FAILED
+            assert rows[name].safe_error_code == "STALE_NOT_RESENT"
+
+
+@pytest.mark.asyncio
+async def test_a_flapping_channel_doubles_its_probe_interval_and_does_not_renotify_today(
+    outbox_sessions,
+) -> None:
+    from app.services.notification_channel_health import probe_interval
+
+    alive = False
+    probes: list[datetime] = []
+    clock = _NOW
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.content) == {}:
+            probes.append(clock)
+            return httpx.Response(400, text="no_text") if alive else httpx.Response(302)
+        return httpx.Response(200, text="ok") if alive else httpx.Response(302)
+
+    async def tick(at: datetime, key: str | None = None) -> None:
+        nonlocal clock
+        clock = at
+        if key:
+            async with outbox_sessions() as db:
+                await enqueue_notification(db, _intent(key), now=at)
+                await db.commit()
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await dispatch_notification_batch(
+                outbox_sessions, client, webhook_url="https://hooks.slack.com/services/T/B/X",
+                worker_id=f"w-{uuid.uuid4().hex}", now=at, limit=10,
+            )
+
+    # dies → recovers by probe → dies again within the hour (a flap)
+    await tick(_NOW, "OPS-QA-T10-FLAP-1")
+    alive = True
+    await tick(_NOW + timedelta(hours=1, minutes=1))
+    alive = False
+    await tick(_NOW + timedelta(hours=1, minutes=10), "OPS-QA-T10-FLAP-2")
+
+    async with outbox_sessions() as db:
+        incident = await _channel_incident(db, "SLACK")
+        assert incident.state == IncidentState.OPEN
+        assert incident.episode_seq == 2
+        assert await probe_interval(db, incident, _NOW + timedelta(hours=1, minutes=10)) == timedelta(hours=2)
+        opens = await db.scalar(
+            select(func.count(NotificationOutbox.id)).where(
+                NotificationOutbox.incident_id == incident.id,
+                NotificationOutbox.notification_type == "INCIDENT_OPEN",
+            )
+        )
+        assert opens == 1  # 같은 KST 날의 두 번째 열림은 알리지 않는다
+
+    # an hour later is still inside the doubled interval — no probe
+    probes.clear()
+    await tick(_NOW + timedelta(hours=2, minutes=20))
+    assert probes == []
+    await tick(_NOW + timedelta(hours=3, minutes=20))
+    assert probes == [_NOW + timedelta(hours=3, minutes=20)]
 
 
 @pytest.mark.asyncio
@@ -1313,18 +1474,26 @@ async def test_channel_cleanup_is_dry_run_by_default_and_closes_only_stale_rows(
     )
     ids: dict[str, uuid.UUID] = {}
     async with outbox_sessions() as db:
-        for name, state in (("CLOSED", IncidentState.ACKNOWLEDGED), ("OPEN", IncidentState.OPEN)):
+        # OVERWRITTEN: PR 전 실패가 incident_id를 (이미 닫힌) 전송 사고로 덮어쓴 FAILED 행 —
+        # 그 알림이 말하던 사고를 알 수 없으므로 '지난 알림'으로 종결하지 않는다.
+        for name, state in (
+            ("CLOSED", IncidentState.ACKNOWLEDGED),
+            ("OPEN", IncidentState.OPEN),
+            ("OVERWRITTEN", IncidentState.ACKNOWLEDGED),
+        ):
             subject = Incident(
                 dedupe_key=f"OPS-QA-T10-CLEAN-SUBJECT-{name}",
-                incident_type="BACKGROUND_TASK_FAILED",
+                incident_type=(
+                    "NOTIFICATION_DELIVERY_FAILED" if name == "OVERWRITTEN" else "BACKGROUND_TASK_FAILED"
+                ),
                 state=state,
                 severity="HIGH",
                 customer_impact="테스트",
                 source_type="TEST",
                 next_action="테스트",
                 admin_path="/operations",
-                recovered_at=_NOW if name == "CLOSED" else None,
-                acknowledged_at=_NOW if name == "CLOSED" else None,
+                recovered_at=_NOW if state == IncidentState.ACKNOWLEDGED else None,
+                acknowledged_at=_NOW if state == IncidentState.ACKNOWLEDGED else None,
             )
             db.add(subject)
             await db.flush()
@@ -1333,9 +1502,10 @@ async def test_channel_cleanup_is_dry_run_by_default_and_closes_only_stale_rows(
                 replace(_intent(f"OPS-QA-T10-CLEAN-{name}"), channel="SLACK_DEV", incident_id=subject.id),
                 now=_NOW,
             )
-            row.state = NotificationOutboxState.HOLD
+            overwritten = name == "OVERWRITTEN"
+            row.state = NotificationOutboxState.FAILED if overwritten else NotificationOutboxState.HOLD
             row.next_attempt_at = None
-            row.safe_error_code = "DEV_WEBHOOK_MISSING"
+            row.safe_error_code = "WEBHOOK_URL_REJECTED" if overwritten else "DEV_WEBHOOK_MISSING"
             ids[name] = row.id
         await db.commit()
 
@@ -1348,6 +1518,7 @@ async def test_channel_cleanup_is_dry_run_by_default_and_closes_only_stale_rows(
 
     # Then: only the stale row became terminal; the channel incident closed as single-channel mode
     assert dry["stale_developer_rows"] == 1 and dry["developer_channel_incident_open"] is True
+    assert dry["resent_developer_rows"] == 1
     assert dry["developer_channel_incident_resolved"] is False
     assert applied["developer_channel_incident_resolved"] is True
     async with outbox_sessions() as verify:
@@ -1355,10 +1526,90 @@ async def test_channel_cleanup_is_dry_run_by_default_and_closes_only_stale_rows(
         still = await verify.get(NotificationOutbox, ids["OPEN"])
         assert closed.state == NotificationOutboxState.FAILED
         assert closed.safe_error_code == "STALE_NOT_RESENT"
-        assert still.state == NotificationOutboxState.HOLD
+        # 그 사고가 아직 열린 개발 알림은 운영 채널로 다시 보낸다(`[개발 확인]`).
+        overwritten = await verify.get(NotificationOutbox, ids["OVERWRITTEN"])
+        assert overwritten.safe_error_code == "WEBHOOK_URL_REJECTED"
+        assert still.state == NotificationOutboxState.RETRYING
+        assert still.safe_error_code is None
         assert (await _channel_incident(verify, "SLACK_DEV")).state == IncidentState.ACKNOWLEDGED
     # 개발 웹훅이 아직 설정돼 있으면 채널 사고는 닫지 않는다(탐침이 맡는다).
     again = await run_cleanup(
         outbox_sessions, confirm=True, developer_webhook_url=_DEV_URL, now=_NOW
     )
     assert again["stale_developer_rows"] == 0
+
+
+@pytest.mark.asyncio
+async def test_operations_center_and_retry_target_the_row_a_delivery_incident_describes(
+    outbox_sessions,
+) -> None:
+    """전송 실패가 더는 행의 incident_id를 덮어쓰지 않으므로, 전송 사고는 source_id로 그 행을 찾는다."""
+
+    from fastapi import HTTPException
+
+    from app.api.admin.operations_center_incident_queries import _load_grouped_rows
+    from app.api.admin.operations_center_retry_routes import _authorize_notification_retry
+    from app.models.admin_user import AdminUser
+
+    async with outbox_sessions() as db:
+        owner, stranger = (
+            AdminUser(
+                email=f"ops-qa-t10-{uuid.uuid4().hex[:8]}@example.test",
+                name=name,
+                role="OPERATOR",
+                password_hash="x",
+            )
+            for name in ("담당 운영자", "다른 운영자")
+        )
+        db.add_all((owner, stranger))
+        await db.flush()
+        subject = Incident(
+            dedupe_key="OPS-QA-T10-LINK-SUBJECT",
+            incident_type="BACKGROUND_TASK_FAILED",
+            state=IncidentState.OPEN,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="TEST",
+            next_action="테스트",
+            admin_path="/operations",
+        )
+        db.add(subject)
+        await db.flush()
+        failed = await enqueue_notification(
+            db, replace(_intent("OPS-QA-T10-LINK-ROW"), incident_id=subject.id), now=_NOW
+        )
+        failed.state = NotificationOutboxState.FAILED
+        failed.next_attempt_at = None
+        delivery = Incident(
+            dedupe_key="OPS-QA-T10-LINK-DELIVERY",
+            incident_type="NOTIFICATION_DELIVERY_FAILED",
+            state=IncidentState.OPEN,
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="NOTIFICATION_OUTBOX",
+            source_id=str(failed.id),
+            next_action="테스트",
+            admin_path="/operations",
+            owner_id=owner.id,
+        )
+        db.add(delivery)
+        await db.flush()
+        # 그 실패를 알리는 전송 사고의 열림 알림(사고의 incident_id 행)은 더 나중에 생긴다.
+        await enqueue_notification(
+            db,
+            replace(_intent("OPS-QA-T10-LINK-NOTICE"), incident_id=delivery.id),
+            now=_NOW + timedelta(minutes=1),
+        )
+        await db.flush()
+
+        rows = await _load_grouped_rows(db, [delivery.id, subject.id], now=_NOW)
+        slack_ids = {row.slack.notification_id for row in rows if row.slack is not None}
+        # 전송 사고 → 실패한 그 행. 일반 사고 → 그 사고를 알리는 행(같은 행). 전송 사고의 열림
+        # 알림 행은 어느 쪽에도 보이지 않는다.
+        assert slack_ids == {failed.id}
+
+        # 전송 사고의 담당자는 그 행을 재시도할 수 있고, 무관한 운영자는 못 한다.
+        await _authorize_notification_retry(db, owner, failed)
+        with pytest.raises(HTTPException):
+            await _authorize_notification_retry(db, stranger, failed)
+        await db.rollback()

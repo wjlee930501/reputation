@@ -4,8 +4,12 @@
 운영 채널 하나로 운영하기로 하면서(2026-10 대표 결정) 다음 둘만 정리한다:
 
 1. `SLACK_DEV`의 HOLD/FAILED 알림 중 그 알림이 말하던 사고가 이미 복구·확인된 것 —
-   지난 사실이므로 다시 보내지 않고 종결(`STALE_NOT_RESENT`)로 표시한다.
-2. 개발 웹훅이 비어 있으면(=단일 채널 모드) 채널 단위 전송 사고를 정상으로 닫는다.
+   지난 사실이므로 다시 보내지 않고 종결(`STALE_NOT_RESENT`)로 표시한다. 이 PR 전에는 실패가
+   행의 `incident_id`를 전송 사고로 덮어썼으므로, 전송 사고를 가리키는 행은 '그 알림이 말하던
+   사고'를 알 수 없어 이 규칙에서 뺀다.
+2. 개발 웹훅이 비어 있으면(=단일 채널 모드) 채널 단위 전송 사고를 정상으로 닫고, 개발 웹훅이
+   없어 보류됐던(`DEV_WEBHOOK_MISSING`) 알림 중 그 사고가 아직 열린 것은 다시 보낸다 —
+   이제 운영 채널로 `[개발 확인]` 표시와 함께 간다.
 
 그 밖에는 아무것도 일괄로 닫지 않는다. 기본은 dry-run이며 `--confirm`일 때만 쓴다::
 
@@ -34,20 +38,44 @@ from app.models.operations import (
 from app.services.audit_log import write_audit_log
 from app.services.incident_types import SLACK_DEVELOPER_CHANNEL
 from app.services.notification_channel_health import (
+    DELIVERY_INCIDENT_TYPES,
+    STALE_CODE,
     load_unhealthy_channels,
     recover_channel_incident,
 )
 
-STALE_CODE = "STALE_NOT_RESENT"
 _STALE_MESSAGE = "이미 해결된 사고의 지난 알림이라 다시 보내지 않았습니다."
+_OPEN_STATES = (IncidentState.OPEN.value, IncidentState.RETRYING.value)
 _CLOSED_STATES = (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
 _ACTOR = "system:notification_channel_cleanup"
+
+
+def _missing_webhook_rows_query():
+    open_subject = (
+        select(Incident.id)
+        .where(
+            Incident.id == NotificationOutbox.incident_id,
+            Incident.state.in_(_OPEN_STATES),
+            Incident.incident_type.notin_(sorted(DELIVERY_INCIDENT_TYPES)),
+        )
+        .exists()
+    )
+    return select(NotificationOutbox.id).where(
+        NotificationOutbox.channel == SLACK_DEVELOPER_CHANNEL,
+        NotificationOutbox.state == NotificationOutboxState.HOLD.value,
+        NotificationOutbox.safe_error_code == "DEV_WEBHOOK_MISSING",
+        open_subject,
+    )
 
 
 def _stale_rows_query():
     closed_incident = (
         select(Incident.id)
-        .where(Incident.id == NotificationOutbox.incident_id, Incident.state.in_(_CLOSED_STATES))
+        .where(
+            Incident.id == NotificationOutbox.incident_id,
+            Incident.state.in_(_CLOSED_STATES),
+            Incident.incident_type.notin_(sorted(DELIVERY_INCIDENT_TYPES)),
+        )
         .exists()
     )
     return select(NotificationOutbox.id).where(
@@ -71,11 +99,15 @@ async def run_cleanup(
     single_channel = not developer_webhook_url.strip()
     async with sessions() as db:
         stale_ids = list((await db.scalars(_stale_rows_query())).all())
+        resend_ids = (
+            list((await db.scalars(_missing_webhook_rows_query())).all()) if single_channel else []
+        )
         channel_incident = (await load_unhealthy_channels(db)).get(SLACK_DEVELOPER_CHANNEL)
         report: dict[str, Any] = {
             "confirm": confirm,
             "single_channel_mode": single_channel,
             "stale_developer_rows": len(stale_ids),
+            "resent_developer_rows": len(resend_ids),
             "developer_channel_incident_open": channel_incident is not None,
             "developer_channel_incident_resolved": False,
         }
@@ -100,6 +132,28 @@ async def run_cleanup(
                 actor=_ACTOR,
                 target_type="notification_outbox",
                 detail={"channel": SLACK_DEVELOPER_CHANNEL, "count": len(stale_ids)},
+            )
+        if resend_ids:
+            # HTTP 요청을 한 번도 하지 않은 행이다 — 다시 보내도 중복 전달이 없다.
+            await db.execute(
+                update(NotificationOutbox)
+                .where(NotificationOutbox.id.in_(resend_ids))
+                .values(
+                    state=NotificationOutboxState.RETRYING.value,
+                    next_attempt_at=observed,
+                    attempt_count=0,
+                    safe_error_code=None,
+                    safe_error_message=None,
+                    version=NotificationOutbox.version + 1,
+                    updated_at=observed,
+                )
+            )
+            await write_audit_log(
+                db,
+                action="notification_held_rows_requeued",
+                actor=_ACTOR,
+                target_type="notification_outbox",
+                detail={"channel": SLACK_DEVELOPER_CHANNEL, "count": len(resend_ids)},
             )
         if single_channel and channel_incident is not None:
             report["developer_channel_incident_resolved"] = await recover_channel_incident(

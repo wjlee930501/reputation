@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import assert_never
 
@@ -26,6 +26,7 @@ from app.services.notification_channel_health import (
     open_channel_incident,
     recover_after_send,
     refresh_channel_health,
+    requeue_channel_held,
 )
 from app.services.notification_messages import (
     CHANNEL_FALLBACK_MARKER,
@@ -96,6 +97,12 @@ async def dispatch_notification_batch(
     async with sessions() as stale_db:
         await recover_stale_sending(stale_db, now=dispatch_at)
     unhealthy = set(await refresh_channel_health(sessions, client, webhooks, now=dispatch_at))
+    if not unhealthy:
+        # 모든 채널이 살아 있다 — 보낼 곳이 없어 보류했던 알림(수신 불명 정리로 옮겨진 것 포함)을
+        # 다시 보내거나 지난 것은 종결한다. 채널이 죽어 있는 동안에는 돌리지 않는다.
+        async with sessions() as requeue_db:
+            await requeue_channel_held(requeue_db, now=dispatch_at)
+            await requeue_db.commit()
     batch_limit = max(1, min(limit, 20))
     async with sessions() as claim_db:
         claimed = await claim_notification_batch(
@@ -162,7 +169,14 @@ async def _send(
         )
         return TransportDecision(NotificationOutboxState.HOLD, CHANNEL_UNAVAILABLE_CODE, None)
     payload = payload_with_routing_marker(row.payload, route.marker) if route.marker else row.payload
-    return await deliver_once(client, route.url, payload, now)
+    decision = await deliver_once(client, route.url, payload, now)
+    if not decision.attempted:
+        return decision
+    # 실제로 보낸 채널을 남긴다 — 나중에 '그 채널이 죽어 있던 동안의 수신 불명'을 판정할 때
+    # 논리 채널(row.channel)이 아니라 이 값으로 맞춘다(`incident_backlog`).
+    return replace(
+        decision, provider_response={**(decision.provider_response or {}), "channel_used": route.channel}
+    )
 
 
 async def _run_success_hook(

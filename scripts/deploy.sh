@@ -443,14 +443,25 @@ probe_secret_exists() {
   return 2
 }
 
-# 0 = latest가 ENABLED · 1 = 쓸 수 있는 버전이 없음 · 2 = 조회 실패
+# 0 = latest가 ENABLED · 1 = 쓸 수 있는 버전이 없음·알 수 없는 상태 · 2 = 조회 실패
+# 3 = latest가 DISABLED/DESTROYED(사람이 의도적으로 끔)
+# 상태는 stdout만 읽는다 — gcloud가 stderr에 쓰는 경고가 상태 문자열에 섞이면
+# ENABLED인 시크릿이 '비활성'으로 읽혀 선택 시크릿이 조용히 빠진다.
 probe_secret_latest_enabled() {
-  local name="$1" out
-  if out="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>&1)"; then
+  local name="$1" out state rc=0
+  out="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>/dev/null)" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
     SECRET_LOOKUP_ERROR=""
-    [[ "${out//[$'\r\n\t ']/}" == "ENABLED" ]] && return 0
+    state="${out//[$'\r\n\t ']/}"
+    case "$state" in
+      ENABLED) return 0 ;;
+      DISABLED|DESTROYED) return 3 ;;
+    esac
+    SECRET_LOOKUP_ERROR="예상하지 못한 상태: ${state:-<빈 값>}"
     return 1
   fi
+  # 실패 원인은 stderr에만 있다 — 원인을 보여 주려고 한 번 더 읽는다.
+  out="$(gcloud secrets versions describe latest --secret="$name" --project="$PROJECT_ID" --format='value(state)' 2>&1 >/dev/null || true)"
   SECRET_LOOKUP_ERROR="$out"
   # 컨테이너는 있는데 버전이 하나도 없으면 여기서도 NOT_FOUND가 난다 — 부재로 본다.
   if [[ "$out" == *NOT_FOUND* || "$out" == *"was not found"* ]]; then
@@ -534,13 +545,16 @@ build_secret_args() {
     if [[ "$status" -eq 2 ]]; then
       fail_secret_lookup "$name"
     fi
-    if [[ "$status" -eq 1 ]]; then
-      # 선택 시크릿의 latest가 비활성(또는 쓸 수 있는 버전 없음)이면 '의도적으로 끔'이다.
-      # Secret Manager는 빈 값을 깔끔히 담지 못하고 시크릿을 지우면 terraform이 어긋나므로,
-      # 끄는 방법은 버전 비활성화다(예: 단일 채널 운영의 SLACK_WEBHOOK_URL_DEV). 주입하지
-      # 않으면 env가 없어 settings 기본값("")이 쓰인다. 조회 실패(2)는 위에서 그대로 멈춘다.
-      info "선택 시크릿 ${name}: 활성 버전이 없어 주입하지 않습니다(의도적으로 끔)."
+    if [[ "$status" -eq 3 ]]; then
+      # 선택 시크릿의 latest가 DISABLED/DESTROYED이면 '의도적으로 끔'이다. Secret Manager는
+      # 빈 값을 받지 않고("Secret Payload cannot be empty") 시크릿을 지우면 terraform이
+      # 어긋나므로, 끄는 방법은 버전 비활성화다(예: 단일 채널 운영의 SLACK_WEBHOOK_URL_DEV).
+      # 주입하지 않으면 env가 없어 settings 기본값("")이 쓰인다. 그 밖의 상태는 아래에서 멈춘다.
+      info "선택 시크릿 ${name}: latest 버전이 비활성이어 주입하지 않습니다(의도적으로 끔)."
       continue
+    fi
+    if [[ "$status" -ne 0 ]]; then
+      fail "Secret Manager secret ${name} latest version must be ENABLED before deploy. ${SECRET_LOOKUP_ERROR}"
     fi
     pairs+="${pairs:+,}${name}=${name}:latest"
   done
@@ -1287,6 +1301,25 @@ capture_rollback_point() {
   fi
 }
 
+# 선택 시크릿을 끄는 방법은 latest 버전 비활성화다(build_secret_args). 그 전에 만든 리비전은
+# 그 시크릿의 `:latest`를 참조할 수 있고, 참조하는 리비전은 새 인스턴스가 뜨지 못한다 —
+# 트래픽을 그쪽으로 돌리면 롤백이 오히려 장애가 된다. 롤백 대상 리비전마다 확인한다.
+require_rollback_secrets_enabled() {
+  local revision="$1" name status spec
+  for name in ${BACKEND_OPTIONAL_SECRET_NAMES[@]+"${BACKEND_OPTIONAL_SECRET_NAMES[@]}"} \
+              ${SITE_OPTIONAL_SECRET_NAMES[@]+"${SITE_OPTIONAL_SECRET_NAMES[@]}"}; do
+    status=0
+    probe_secret_latest_enabled "$name" || status=$?
+    [[ "$status" -eq 3 ]] || continue
+    info "경고: 선택 시크릿 ${name}의 latest 버전이 비활성입니다. 롤백 리비전이 참조하면 먼저 다시 켜야 합니다(gcloud secrets versions enable <버전> --secret=${name})."
+    spec="$(gcloud run revisions describe "$revision" --region="$REGION" --project="$PROJECT_ID" --format=json 2>/dev/null || true)"
+    if [[ "$spec" == *secretKeyRef* && "$spec" == *"\"${name}\""* ]]; then
+      fail "롤백 리비전 ${revision}이 비활성 시크릿 ${name}을 참조합니다 — 이대로 되돌리면 새 인스턴스가 뜨지 못합니다.
+   먼저 다시 켜세요: gcloud secrets versions enable <버전> --secret=${name} --project=${PROJECT_ID}"
+    fi
+  done
+}
+
 run_rollback() {
   [[ -f "$ROLLBACK_STATE_FILE" ]] \
     || fail "롤백 좌표 파일이 없습니다: ${ROLLBACK_STATE_FILE}. 배포를 시작한 머신에서 실행하거나 DEPLOY_ROLLBACK_STATE_FILE로 경로를 지정하세요."
@@ -1302,6 +1335,7 @@ run_rollback() {
       continue
     fi
 
+    require_rollback_secrets_enabled "$revision"
     info "${service} → ${revision} 트래픽 100% 복귀 중..."
     gcloud run services update-traffic "$service" \
       --region="$REGION" \

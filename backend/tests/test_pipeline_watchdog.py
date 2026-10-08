@@ -743,6 +743,37 @@ async def test_single_channel_mode_marks_developer_alerts_on_the_operator_channe
     assert seen == [(ops, {"text": "[Error : 오류 발생] [개발 확인] 본문"})]
 
 
+async def test_a_developer_timeout_is_not_duplicated_on_the_operator_channel(monkeypatch, caplog):
+    import httpx
+
+    ops, dev = "https://hooks.slack.com/ops", "https://hooks.slack.com/dev"
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL", ops)
+    monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL_DEV", dev)
+    seen: list[str] = []
+
+    class TimeoutClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, json):
+            seen.append(url)
+            raise httpx.ReadTimeout("slow", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(pipeline_watchdog.httpx, "AsyncClient", TimeoutClient)
+    decision = pipeline_watchdog.AlertDecision(True, "ALERT", "developer", "본문", "x", dev)
+
+    # 개발 채널이 받았을 수도 있다 — 운영 채널로 중복 전송하지 않고 경고만 남긴다.
+    assert await pipeline_watchdog.deliver(decision) is False
+    assert seen == [dev, dev]
+    assert not [record for record in caplog.records if record.levelname == "ERROR"]
+
+
 async def test_operator_alerts_never_fall_back(monkeypatch):
     ops, dev = "https://hooks.slack.com/ops", "https://hooks.slack.com/dev"
     monkeypatch.setattr(pipeline_watchdog.settings, "SLACK_WEBHOOK_URL", ops)

@@ -254,6 +254,7 @@ def test_slack_webhook_facts_classify_each_configured_webhook(monkeypatch) -> No
         return {"https://hooks.slack.com/ops": "alive", "https://hooks.slack.com/dev": "dead"}[url]
 
     monkeypatch.setattr(production_readiness, "probe_webhook_sync", probe)
+    monkeypatch.setattr(production_readiness, "_WEBHOOK_PROBES", {})
     monkeypatch.setattr(production_readiness.settings, "SLACK_WEBHOOK_URL", "https://hooks.slack.com/ops")
     monkeypatch.setattr(production_readiness.settings, "SLACK_WEBHOOK_URL_DEV", "https://hooks.slack.com/dev")
 
@@ -261,13 +262,16 @@ def test_slack_webhook_facts_classify_each_configured_webhook(monkeypatch) -> No
 
     assert facts == {"operator": "alive", "developer": "dead"}
     assert production_readiness._slack_webhooks_not_dead(facts) is False
+    # 같은 프로세스에서 다시 불러도(대기 루프는 5초마다 부른다) 다시 탐침하지 않는다.
+    production_readiness._slack_webhook_facts()
+    assert probed == ["https://hooks.slack.com/ops", "https://hooks.slack.com/dev"]
 
     # 개발 웹훅을 비웠다 = 운영 채널 하나로 운영한다. 탐침하지 않고 막지도 않는다.
     probed.clear()
     monkeypatch.setattr(production_readiness.settings, "SLACK_WEBHOOK_URL_DEV", "")
     facts = production_readiness._slack_webhook_facts()
     assert facts == {"operator": "alive", "developer": "not_configured"}
-    assert probed == ["https://hooks.slack.com/ops"]
+    assert probed == []  # 운영 웹훅은 이미 탐침했고, 빈 개발 웹훅은 탐침하지 않는다
     assert production_readiness._slack_webhooks_not_dead(facts) is True
     # 5xx·시간 초과(모름)는 준비 판정을 막지 않는다.
     assert production_readiness._slack_webhooks_not_dead({"operator": "unknown", "developer": "not_configured"}) is True

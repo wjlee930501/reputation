@@ -1487,10 +1487,23 @@ def test_asset_bucket_preflight_empty_bucket_name_is_unchanged(tmp_path: Path) -
 _FAKE_GCLOUD_SECRETS = _FAKE_GCLOUD.replace(
     '  "secrets versions describe latest"*)\n    echo "ENABLED"',
     '  "secrets versions describe latest"*)\n'
+    '    for name in ${FAKE_NOISY_SECRETS:-}; do\n'
+    '      if [[ "$*" == *"--secret=${name} "* ]]; then echo "WARNING: newer gcloud available" >&2; fi\n'
+    "    done\n"
+    '    for pair in ${FAKE_SECRET_STATES:-}; do\n'
+    '      if [[ "$*" == *"--secret=${pair%%=*} "* ]]; then echo "${pair#*=}"; exit 0; fi\n'
+    "    done\n"
     '    for name in ${FAKE_DISABLED_SECRETS:-}; do\n'
     '      if [[ "$*" == *"--secret=${name} "* ]]; then echo "DISABLED"; exit 0; fi\n'
     "    done\n"
     '    echo "ENABLED"',
+).replace(
+    '  "run services describe "*)',
+    '  "run revisions describe "*)\n'
+    '    echo "${FAKE_REVISION_SPEC:-{}}"\n'
+    "    exit 0\n"
+    "    ;;\n"
+    '  "run services describe "*)',
 ).replace(
     'case "$*" in\n',
     'case "$*" in\n'
@@ -1517,14 +1530,16 @@ _FAKE_CURL = "\n".join(
 )
 
 
-def _run_backend_with_webhooks(tmp_path: Path, **extra: str):
+def _run_backend_with_webhooks(tmp_path: Path, target: str = "api", **extra: str):
     project, fake_bin, command_log = _make_project(tmp_path)
     shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
     _write_executable(fake_bin / "gcloud", _FAKE_GCLOUD_SECRETS)
     _write_executable(fake_bin / "curl", _FAKE_CURL)
     _write_executable(fake_bin / "sleep", "#!/usr/bin/env bash\nexit 0\n")
+    if target == "rollback":
+        (project / ".deploy-rollback").write_text("reputation-api=reputation-api-00042-abc\n")
     result = subprocess.run(
-        ["bash", "scripts/deploy.sh", "api"],
+        ["bash", "scripts/deploy.sh", target],
         cwd=project,
         env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra),
         text=True,
@@ -1589,11 +1604,67 @@ def test_a_disabled_optional_secret_is_skipped_as_intentionally_off(tmp_path: Pa
     )
 
     assert result.returncode == 0, result.stderr
-    assert "선택 시크릿 SLACK_WEBHOOK_URL_DEV: 활성 버전이 없어 주입하지 않습니다" in result.stderr
+    assert "선택 시크릿 SLACK_WEBHOOK_URL_DEV: latest 버전이 비활성이어 주입하지 않습니다" in result.stderr
     deploy = _api_deploy_line(tmp_path / "commands.log")
     assert "SLACK_WEBHOOK_URL_DEV=" not in deploy
     assert "SLACK_WEBHOOK_URL=SLACK_WEBHOOK_URL:latest" in deploy
     assert commands.count("curl ") == 1  # 끈 개발 웹훅은 확인하지 않는다
+
+
+def test_gcloud_stderr_noise_does_not_drop_an_enabled_optional_secret(tmp_path: Path) -> None:
+    # stderr 경고가 상태 문자열에 섞이면 ENABLED가 '비활성'으로 읽혀 조용히 빠졌다.
+    result, _commands = _run_backend_with_webhooks(
+        tmp_path,
+        FAKE_NOISY_SECRETS="INDEXNOW_KEY SLACK_WEBHOOK_URL_INQUIRY",
+        FAKE_SECRET_VALUES=_OPS_HOOK,
+        FAKE_CURL_RESPONSES="400:no_text",
+    )
+
+    assert result.returncode == 0, result.stderr
+    deploy = _api_deploy_line(tmp_path / "commands.log")
+    assert "INDEXNOW_KEY=INDEXNOW_KEY:latest" in deploy
+    assert "SLACK_WEBHOOK_URL_INQUIRY=SLACK_WEBHOOK_URL_INQUIRY:latest" in deploy
+    assert "주입하지 않습니다" not in result.stderr
+
+
+def test_an_unexpected_optional_secret_state_fails_instead_of_skipping(tmp_path: Path) -> None:
+    result, commands = _run_backend_with_webhooks(
+        tmp_path, FAKE_SECRET_STATES="INDEXNOW_KEY=STATE_UNSPECIFIED", FAKE_SECRET_VALUES=_OPS_HOOK
+    )
+
+    assert result.returncode != 0
+    assert "INDEXNOW_KEY latest version must be ENABLED" in result.stderr
+    assert "run deploy" not in commands
+
+
+def test_rollback_refuses_a_revision_that_references_a_disabled_secret(tmp_path: Path) -> None:
+    spec = (
+        '{"spec":{"containers":[{"env":[{"name":"SLACK_WEBHOOK_URL_DEV","valueFrom":'
+        '{"secretKeyRef":{"key":"latest","name":"SLACK_WEBHOOK_URL_DEV"}}}]}]}}'
+    )
+    result, commands = _run_backend_with_webhooks(
+        tmp_path,
+        target="rollback",
+        FAKE_DISABLED_SECRETS="SLACK_WEBHOOK_URL_DEV",
+        FAKE_REVISION_SPEC=spec,
+    )
+
+    assert result.returncode != 0
+    assert "비활성 시크릿 SLACK_WEBHOOK_URL_DEV을 참조합니다" in result.stderr
+    assert "gcloud secrets versions enable" in result.stderr
+    assert "update-traffic" not in commands
+
+
+def test_rollback_warns_but_proceeds_when_the_revision_does_not_reference_it(
+    tmp_path: Path,
+) -> None:
+    result, commands = _run_backend_with_webhooks(
+        tmp_path, target="rollback", FAKE_DISABLED_SECRETS="SLACK_WEBHOOK_URL_DEV"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "경고: 선택 시크릿 SLACK_WEBHOOK_URL_DEV의 latest 버전이 비활성입니다" in result.stderr
+    assert "update-traffic reputation-api" in commands
 
 
 def test_a_disabled_required_secret_still_blocks_the_deploy(tmp_path: Path) -> None:

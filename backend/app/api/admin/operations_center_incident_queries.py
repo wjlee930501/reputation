@@ -27,6 +27,7 @@ from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.schemas.operations import OperationsOwner, OperationsQueueRow
+from app.services.notification_channel_health import outbox_row_of_incident
 
 HospitalScope = uuid.UUID | None | EllipsisType
 
@@ -283,7 +284,8 @@ async def _load_grouped_rows(
     owner = aliased(AdminUser)
     latest_outbox_id = (
         select(NotificationOutbox.id)
-        .where(NotificationOutbox.incident_id == Incident.id)
+        # 전송 사고는 실패한 그 행을 보여야 재시도 버튼이 그 행을 겨눈다.
+        .where(outbox_row_of_incident(Incident.incident_type, Incident.id, Incident.source_id))
         .order_by(NotificationOutbox.created_at.desc(), NotificationOutbox.id.desc())
         .correlate(Incident)
         .limit(1)

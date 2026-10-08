@@ -288,6 +288,17 @@ def _queue_operator_label(queue: str) -> str:
     }.get(queue, "자동 작업")
 
 
+# 웹훅마다 프로세스당 한 번만 탐침한다 — `wait_production_readiness`가 5초마다 최대 900초 동안
+# build_report를 다시 부르므로, 캐시가 없으면 Slack에 수백 번 빈 POST를 보낸다.
+_WEBHOOK_PROBES: dict[str, str] = {}
+
+
+def _probe_once(url: str) -> str:
+    if url not in _WEBHOOK_PROBES:
+        _WEBHOOK_PROBES[url] = probe_webhook_sync(url)
+    return _WEBHOOK_PROBES[url]
+
+
 def _slack_webhook_facts() -> dict[str, str]:
     """설정된 Slack 웹훅마다 빈 본문 탐침 결과. 비밀값(주소)은 싣지 않는다.
 
@@ -297,9 +308,9 @@ def _slack_webhook_facts() -> dict[str, str]:
 
     developer = settings.SLACK_WEBHOOK_URL_DEV.strip()
     return {
-        "operator": probe_webhook_sync(settings.SLACK_WEBHOOK_URL.strip()),
+        "operator": _probe_once(settings.SLACK_WEBHOOK_URL.strip()),
         # 비어 있으면 운영 채널 하나로 운영하는 정상 상태다.
-        "developer": probe_webhook_sync(developer) if developer else "not_configured",
+        "developer": _probe_once(developer) if developer else "not_configured",
     }
 
 

@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta, timezone
-from typing import Any, Final
+from typing import Any, Final, Literal
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -872,7 +872,8 @@ async def deliver(decision: AlertDecision) -> bool:
     전송 실패는 로그로만 남긴다. 다음 하트비트(5분)가 같은 사실을 다시 판정하며,
     중복 억제 키는 KST 시간 단위라 그때 다시 보낼 수 있다.
 
-    개발 담당 경보가 개발 웹훅에서 실패하면(2xx가 아니면) 운영 웹훅으로 한 번 더 보낸다 —
+    개발 담당 경보를 개발 웹훅이 확정적으로 거절하면(2xx가 아닌 응답) 운영 웹훅으로 한 번 더
+    보낸다. 시간 초과처럼 받았는지 모르면 중복을 피해 대체 전송하지 않는다 —
     2026-09-19부터 개발 웹훅이 302를 돌려줘 경보가 ERROR 로그로만 85번 사라졌다.
     """
     if not (decision.send and decision.text and decision.webhook_url):
@@ -890,21 +891,32 @@ async def deliver(decision: AlertDecision) -> bool:
     if developer and decision.webhook_url == operator:
         # 개발 채널 없이 운영 채널 하나로 운영한다 — 개발 담당 경보임을 표시한다.
         text = with_routing_marker(text, DEVELOPER_ROUTED_MARKER)
-    if await _post_once_with_retry(
+    outcome = await _post_once_with_retry(
         decision.webhook_url, text, decision.audience, quiet=can_fall_back
-    ):
+    )
+    if outcome == "sent":
         return True
-    if not can_fall_back:
+    if not can_fall_back or outcome == "unknown":
+        # 시간 초과·연결 끊김은 개발 채널이 받았을 수도 있다 — 운영 채널에 중복으로 보내지 않는다.
         return False
-    logger.warning("pipeline watchdog: developer webhook failed; falling back to operator channel")
-    return await _post_once_with_retry(
-        operator, with_routing_marker(decision.text, CHANNEL_FALLBACK_MARKER), decision.audience
+    logger.warning("pipeline watchdog: developer webhook rejected; falling back to operator channel")
+    return (
+        await _post_once_with_retry(
+            operator, with_routing_marker(decision.text, CHANNEL_FALLBACK_MARKER), decision.audience
+        )
+        == "sent"
     )
 
 
-async def _post_once_with_retry(url: str, text: str, audience: str, *, quiet: bool = False) -> bool:
-    """한 웹훅에 보낸다. 429·5xx·네트워크 오류만 한 번 더. `quiet`면 실패를 경고로만 남긴다
-    (뒤이어 대체 전송을 하므로 실패 자체는 사람이 볼 오류가 아니다)."""
+async def _post_once_with_retry(
+    url: str, text: str, audience: str, *, quiet: bool = False
+) -> Literal["sent", "rejected", "unknown"]:
+    """한 웹훅에 보낸다. 429·5xx·네트워크 오류만 한 번 더.
+
+    "rejected"는 Slack이 받지 않았다는 확정(2xx가 아닌 응답·허용 밖 주소)이고, "unknown"은
+    시간 초과·연결 오류처럼 받았는지 모르는 경우다. `quiet`면 실패를 경고로만 남긴다
+    (뒤이어 대체 전송을 하거나 받았을 수 있으므로 사람이 볼 오류가 아니다).
+    """
 
     log = logger.warning if quiet else logger.error
     # SSRF 가드는 기존 알림 경로와 같은 허용 목록을 쓴다.
@@ -912,26 +924,26 @@ async def _post_once_with_retry(url: str, text: str, audience: str, *, quiet: bo
 
     if not _is_allowed_webhook(url):
         log("pipeline watchdog: webhook rejected by allowlist audience=%s", audience)
-        return False
+        return "rejected"
     payload = {"text": text}
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.post(url, json=payload)
                 response.raise_for_status()
-                return True
+                return "sent"
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if (status == 429 or status >= 500) and attempt == 0:
                 continue
             log("pipeline watchdog: Slack delivery failed status=%s", status)
-            return False
+            return "rejected"
         except httpx.HTTPError as exc:
             if attempt == 0:
                 continue
             log("pipeline watchdog: Slack delivery failed: %s", exc.__class__.__name__)
-            return False
-    return False
+            return "unknown"
+    return "unknown"
 
 
 async def deliver_all(decisions: tuple[AlertDecision, ...]) -> tuple[bool, ...]:

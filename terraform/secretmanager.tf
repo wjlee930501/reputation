@@ -27,11 +27,12 @@ resource "google_secret_manager_secret" "slack_webhook_url" {
   }
 }
 
-# 개발팀 전용 Slack 채널(선택). 값이 비었거나 latest 버전이 비활성이면(deploy.sh가
-# 주입하지 않는다) backend는 운영 채널(SLACK_WEBHOOK_URL) 하나로 운영한다 — 개발 담당
-# 알림은 운영 채널로 `[개발 확인]` 표시와 함께 간다. 값이 있으면 deploy.sh가 웹훅 생존을
-# 확인하고 죽은 주소(3xx·403·404)면 배포를 멈춘다. 운영 중 죽으면 채널 사고가 열리고
-# 복구될 때까지 운영 채널로 `[채널 대체 전송]` 표시와 함께 대신 보낸다.
+# 개발팀 전용 Slack 채널(선택). Secret Manager는 빈 값을 받지 않으므로 끌 때는 latest 버전을
+# 비활성화한다(deploy.sh가 주입하지 않는다). 그러면 backend는 운영 채널(SLACK_WEBHOOK_URL)
+# 하나로 운영한다 — 개발 담당 알림은 운영 채널로 `[개발 확인]` 표시와 함께 간다. Cloud Run
+# 템플릿(app_secret_env)에는 넣지 않는다(아래 app_access_slack_dev 참고). 값이 있으면
+# deploy.sh가 웹훅 생존을 확인하고 죽은 주소(3xx·403·404)면 배포를 멈춘다. 운영 중 죽으면
+# 채널 사고가 열리고 복구될 때까지 운영 채널로 `[채널 대체 전송]` 표시와 함께 대신 보낸다.
 resource "google_secret_manager_secret" "slack_webhook_url_dev" {
   secret_id = "SLACK_WEBHOOK_URL_DEV"
   project   = var.project_id
@@ -176,7 +177,6 @@ locals {
   app_secret_env = {
     OPENROUTER_API_KEY        = google_secret_manager_secret.openrouter_api_key.secret_id
     SLACK_WEBHOOK_URL         = google_secret_manager_secret.slack_webhook_url.secret_id
-    SLACK_WEBHOOK_URL_DEV     = google_secret_manager_secret.slack_webhook_url_dev.secret_id
     SLACK_WEBHOOK_URL_INQUIRY = google_secret_manager_secret.slack_webhook_url_inquiry.secret_id
     ADMIN_SECRET_KEY          = google_secret_manager_secret.admin_secret_key.secret_id
     WORKER_DISPATCH_SECRET    = google_secret_manager_secret.worker_dispatch_secret.secret_id
@@ -217,6 +217,16 @@ resource "google_secret_manager_secret_iam_member" "app_access" {
   for_each  = local.app_secret_env
   project   = var.project_id
   secret_id = each.value
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.app.email}"
+}
+
+# SLACK_WEBHOOK_URL_DEV는 app_secret_env(=Cloud Run 템플릿의 secretKeyRef)에 두지 않는다.
+# 단일 채널 운영에서는 유일한 버전을 비활성화하는데, 템플릿이 `:latest`를 참조하면 그
+# 템플릿의 새 인스턴스가 뜨지 못한다. 다시 켤 때 deploy.sh가 주입하므로 읽기 권한만 남긴다.
+resource "google_secret_manager_secret_iam_member" "app_access_slack_dev" {
+  project   = var.project_id
+  secret_id = google_secret_manager_secret.slack_webhook_url_dev.secret_id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.app.email}"
 }

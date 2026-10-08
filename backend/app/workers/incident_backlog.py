@@ -15,7 +15,7 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import String, and_, cast, or_, select
+from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models.content import ContentItem
@@ -30,10 +30,12 @@ from app.models.operations import (
     Incident,
     IncidentState,
     NotificationOutbox,
+    NotificationOutboxState,
     OperationRun,
     OperationRunState,
 )
 from app.models.report import MonthlyReport
+from app.services.notification_transport import CHANNEL_UNAVAILABLE_CODE, safe_error_message
 from app.workers.task_incident_control import _audit, _transition_incident
 
 BACKLOG_INCIDENT_BATCH = 50
@@ -149,14 +151,36 @@ def _delivery_unknown_evidence(incident_source_id: object, observed_at: object):
             or_(
                 NotificationOutbox.state.in_(_FINAL_OUTBOX_STATES),
                 and_(status >= 300, status <= 399),
-                _channel_dead_while(NotificationOutbox.channel, observed_at),
+                _channel_dead_while(
+                    func.coalesce(
+                        NotificationOutbox.provider_response["channel_used"].as_string(),
+                        NotificationOutbox.channel,
+                    ),
+                    observed_at,
+                ),
             ),
         )
         .exists()
     )
 
 
-def _redirected_delivery(db: Session, incident: Incident, _now: datetime) -> str | None:
+def _hand_back_undelivered(row: NotificationOutbox, now: datetime) -> None:
+    """전달되지 않은 것이 확실한 보류 행을 '보낼 채널 없음' 보류로 옮긴다.
+
+    수신 불명 사고만 닫고 행을 그대로 두면 아무도 그 알림을 받지 못한 채 묻힌다. 이 표시로
+    옮기면 발송기가 채널이 살아 있을 때 다시 보내거나, 이미 해결된 사고·24시간이 지난 알림은
+    다시 보내지 않고 종결한다(`notification_channel_health.requeue_channel_held`).
+    """
+
+    if row.state != NotificationOutboxState.HOLD.value:
+        return
+    row.safe_error_code = CHANNEL_UNAVAILABLE_CODE
+    row.safe_error_message = safe_error_message(CHANNEL_UNAVAILABLE_CODE)
+    row.version += 1
+    row.updated_at = now
+
+
+def _redirected_delivery(db: Session, incident: Incident, now: datetime) -> str | None:
     # 302는 Slack이 받지 않았다는 뜻이다. '수신 여부 확인'이 아니라 웹훅 설정 오류이며,
     # 그 설정 오류는 채널 단위 사고 하나가 맡는다(`notification_channel_health`).
     row = db.get(NotificationOutbox, incident.source_id) if incident.source_id else None
@@ -167,9 +191,13 @@ def _redirected_delivery(db: Session, incident: Incident, _now: datetime) -> str
         return "delivery_reached_final_state"
     status = (row.provider_response or {}).get("http_status")
     if isinstance(status, int) and 300 <= status <= 399:
+        _hand_back_undelivered(row, now)
         return "redirect_was_not_delivered"
     # 그 채널이 죽어 있던 동안 관측된 불명은 전달되지 않은 것이다. 채널이 복구됐으면 닫는다.
-    if db.scalar(select(_channel_dead_while(row.channel, incident.first_seen_at))):
+    # 실제로 보낸 채널(대체 전송이면 다른 채널)로 맞추고, 그 기록이 없는 옛 행은 논리 채널로 본다.
+    channel_used = (row.provider_response or {}).get("channel_used") or row.channel
+    if db.scalar(select(_channel_dead_while(channel_used, incident.first_seen_at))):
+        _hand_back_undelivered(row, now)
         return "channel_was_dead_and_recovered"
     return None
 
