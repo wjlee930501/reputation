@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
 from app.models.operations import (
+    Incident,
     IncidentSeverity,
     JSONValue,
     NotificationOutbox,
@@ -21,7 +22,12 @@ from app.models.operations import (
 )
 from app.services.audit_log import write_audit_log
 from app.services.incident_safety import sanitize_operator_text
-from app.services.incident_types import IncidentFingerprint, IncidentOpenRequest
+from app.services.incident_types import (
+    QUIET_INCIDENT_TYPES,
+    IncidentFingerprint,
+    IncidentOpenRequest,
+    incident_is_quiet,
+)
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_contracts import (
     NotificationIntent,
@@ -66,14 +72,26 @@ class NotificationRetryConflict:
     current_state: str | None
 
 
+def _incident_type_stmt(incident_id: uuid.UUID):
+    return select(Incident.incident_type).where(Incident.id == incident_id)
+
+
 async def enqueue_notification(
     db: AsyncSession, intent: NotificationIntent, *, now: datetime | None = None
-) -> NotificationOutbox:
-    """Add one intent without committing the caller's business transaction."""
+) -> NotificationOutbox | None:
+    """Add one intent without committing the caller's business transaction.
+
+    조용한 사고 종류(`incident_types.QUIET_INCIDENT_TYPES`)의 알림은 넣지 않고 None을 돌려준다 —
+    모든 사고 알림이 이 입구를 지나므로 경로마다 막지 않아도 된다.
+    """
 
     validate_message(intent.message, allowed_admin_base_url=settings.ADMIN_BASE_URL)
     if not intent.dedupe_key.strip() or intent.max_attempts < 1:
         raise NotificationPayloadError("INVALID_NOTIFICATION_INTENT")
+    if intent.incident_id is not None and incident_is_quiet(
+        (await db.execute(_incident_type_stmt(intent.incident_id))).scalar_one_or_none()
+    ):
+        return None
     created_at = now or datetime.now(UTC)
     statement = (
         insert(NotificationOutbox)
@@ -111,6 +129,10 @@ def enqueue_notification_sync(
     validate_message(intent.message, allowed_admin_base_url=settings.ADMIN_BASE_URL)
     if not intent.dedupe_key.strip() or intent.max_attempts < 1:
         raise NotificationPayloadError("INVALID_NOTIFICATION_INTENT")
+    if intent.incident_id is not None and incident_is_quiet(
+        db.execute(_incident_type_stmt(intent.incident_id)).scalar_one_or_none()
+    ):
+        return
     created_at = now or datetime.now(UTC)
     db.execute(
         insert(NotificationOutbox)
@@ -314,6 +336,35 @@ async def recover_stale_sending(db: AsyncSession, *, now: datetime | None = None
     return recovered
 
 
+def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
+    """보낼 차례인 알림. 조용한 사고 종류에 묶인 행은 집지 않는다 — 입구에서 막기 전에 이미
+    쌓인 행(배포 전·배포 중 생성분)도 보내지 않게 한다."""
+
+    quiet_incident = (
+        select(Incident.id)
+        .where(
+            Incident.id == NotificationOutbox.incident_id,
+            func.upper(Incident.incident_type).in_(sorted(QUIET_INCIDENT_TYPES)),
+        )
+        .exists()
+    )
+    return (
+        select(NotificationOutbox)
+        .where(
+            NotificationOutbox.state.in_(("PENDING", "RETRYING")),
+            NotificationOutbox.next_attempt_at <= claimed_at,
+            ~quiet_incident,
+        )
+        .order_by(
+            NotificationOutbox.next_attempt_at,
+            NotificationOutbox.created_at,
+            NotificationOutbox.id,
+        )
+        .with_for_update(skip_locked=True)
+        .limit(max(1, min(limit, 100)))
+    )
+
+
 async def claim_notification_batch(
     db: AsyncSession,
     worker_id: str,
@@ -338,22 +389,7 @@ async def claim_notification_batch(
 
     claimed_at = now or datetime.now(UTC)
     rows = list(
-        (
-            await db.execute(
-                select(NotificationOutbox)
-                .where(
-                    NotificationOutbox.state.in_(("PENDING", "RETRYING")),
-                    NotificationOutbox.next_attempt_at <= claimed_at,
-                )
-                .order_by(
-                    NotificationOutbox.next_attempt_at,
-                    NotificationOutbox.created_at,
-                    NotificationOutbox.id,
-                )
-                .with_for_update(skip_locked=True)
-                .limit(max(1, min(limit, 100)))
-            )
-        ).scalars()
+        (await db.execute(claimable_notifications_stmt(claimed_at=claimed_at, limit=limit))).scalars()
     )
     snapshots: list[ClaimedNotification] = []
     for row in rows:
