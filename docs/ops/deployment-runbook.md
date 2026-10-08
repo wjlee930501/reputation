@@ -1,6 +1,14 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-06 원장 보고서 마케팅 검토 반영
+## 최신 운영 배포 — 2026-10-08 근본 원인 수정
+
+main `c5ada5a1`을 API·Worker·Beat에 배포했다(api `00235-db4`, worker `00224-xnt`, beat `00219-dfh`, DB head
+`0083_add_operation_run_not_before`). 절차: `.env.production` 대조 → `gcloud secrets versions disable 1 --secret=SLACK_WEBHOOK_URL_DEV`
+→ `deploy.sh backend` → readiness → `run_beat_entry daily-fleet-heartbeat`(18시 전이면 `before_summary_window`) → V0 재실행 →
+`python -m app.utils.notification_channel_cleanup` dry-run → `--confirm`. 롤백은 비활성화한 시크릿 버전을 먼저 enable한다.
+상세는 [근본 원인 수정 배포 기록](../releases/2026-10-08-root-cause-fixes-production.md).
+
+## 이전 운영 배포 — 2026-10-06 원장 보고서 마케팅 검토 반영
 
 main `dc4e3803`(#211)·`c2adafa5`(#212)·`61725afd`(#213)을 차례로 API·Worker·Beat에 배포했다. 현재 리비전은
 api `00228-wr6`, worker `00217-nfj`, beat `00212-fbx`, site `00143-mvd`, admin `00100-nvl`, DB head는
