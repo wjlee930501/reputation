@@ -51,9 +51,10 @@ LEAD_DIAGNOSIS_SUPERSEDE = "0080_lead_diagnosis_supersede"
 WITHHELD_CONTENT_STATUS = "0081_add_withheld_content_status"
 CONTENT_REFERENCE_CHECKS = "0082_add_content_reference_checks"
 OPERATION_RUN_NOT_BEFORE = "0083_add_operation_run_not_before"
+CONTENT_REVISIONS = "0084_add_content_revisions"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = OPERATION_RUN_NOT_BEFORE
+HEAD = CONTENT_REVISIONS
 
 
 def _script_directory() -> ScriptDirectory:
@@ -127,6 +128,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         WITHHELD_CONTENT_STATUS,
         CONTENT_REFERENCE_CHECKS,
         OPERATION_RUN_NOT_BEFORE,
+        CONTENT_REVISIONS,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -164,6 +166,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         WITHHELD_CONTENT_STATUS: LEAD_DIAGNOSIS_SUPERSEDE,
         CONTENT_REFERENCE_CHECKS: WITHHELD_CONTENT_STATUS,
         OPERATION_RUN_NOT_BEFORE: CONTENT_REFERENCE_CHECKS,
+        CONTENT_REVISIONS: OPERATION_RUN_NOT_BEFORE,
     }
 
 
@@ -175,6 +178,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        CONTENT_REVISIONS,
         OPERATION_RUN_NOT_BEFORE,
         CONTENT_REFERENCE_CHECKS,
         WITHHELD_CONTENT_STATUS,
@@ -215,7 +219,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-32:] == [
+    assert applied[-33:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -248,4 +252,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         WITHHELD_CONTENT_STATUS,
         CONTENT_REFERENCE_CHECKS,
         OPERATION_RUN_NOT_BEFORE,
+        CONTENT_REVISIONS,
     ]

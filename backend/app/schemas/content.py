@@ -1,13 +1,106 @@
 import uuid
+from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_core import PydanticCustomError
 
 ContentBriefStatus = Literal["DRAFT", "APPROVED", "NEEDS_REVIEW"]
 
 
+class RevisionSourceReference(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    hash: str = Field(min_length=1)
+    source_asset_ids: list[str] = Field(min_length=1)
+
+
+class RevisionTreatmentNarrative(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    source: Literal["approved_philosophy", "hospital_profile"]
+    angle: str = Field(min_length=1)
+
+
+class ContentRevisionSourceSnapshot(BaseModel):
+    """Exact approved writer-input brief frozen with an edition."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    schema_version: str = Field(min_length=1)
+    target_query: str = Field(min_length=1)
+    treatment_narrative: RevisionTreatmentNarrative
+    source_snapshot: RevisionSourceReference
+
+
+class ContentRevisionGenerationProvenance(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    evidence_note_ids: list[str] = Field(default_factory=list)
+    source_asset_ids: list[str] = Field(default_factory=list)
+    evidence_source_asset_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_grounded_identifier(self) -> "ContentRevisionGenerationProvenance":
+        if not (
+            self.evidence_note_ids or self.source_asset_ids or self.evidence_source_asset_ids
+        ):
+            raise PydanticCustomError(
+                "revision_generation_provenance_empty",
+                "revision generation provenance needs at least one grounded identifier",
+            )
+        return self
+
+
+class ContentRevisionReference(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    title: str = Field(min_length=1)
+    url: str = Field(min_length=1)
+
+
+class ContentRevisionReferenceCheck(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    url: str = Field(min_length=1)
+    verdict: Literal["PASS"]
+
+
+class ContentRevisionResponse(BaseModel):
+    """Immutable approved edition returned to revision-aware consumers."""
+
+    model_config = ConfigDict(from_attributes=True, frozen=True)
+
+    id: uuid.UUID
+    content_item_id: uuid.UUID
+    edition_no: int
+    legacy_content_revision: int
+    title: str
+    body: str
+    meta_description: str | None
+    faq_question: str | None
+    faq_answer_summary: str | None
+    references_list: list[ContentRevisionReference]
+    reference_checks: list[ContentRevisionReferenceCheck]
+    generation_philosophy_id: uuid.UUID | None
+    last_reviewed_philosophy_id: uuid.UUID | None
+    generated_at: datetime | None
+    reviewed_at: datetime | None
+    reviewed_by: str | None
+    source_snapshot: ContentRevisionSourceSnapshot
+    generation_provenance: ContentRevisionGenerationProvenance
+    source_snapshot_hash: str
+    source_fingerprint: str
+    approval_hash: str
+    approval_status: Literal["APPROVED"]
+    approved_at: datetime
+    approved_by: str | None
+    created_at: datetime
+
+
 class ContentItemResponse(BaseModel):
     id: str
+    active_revision_id: uuid.UUID | None = None
     content_type: str
     sequence_no: int
     total_count: int
@@ -53,6 +146,7 @@ class ContentItemResponse(BaseModel):
 class ContentItemDetail(ContentItemResponse):
     body: Optional[str]
     image_prompt: Optional[str]
+    active_revision: ContentRevisionResponse | None = None
 
 
 class ContentBriefUpdate(BaseModel):
