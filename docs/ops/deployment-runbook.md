@@ -167,6 +167,25 @@ bash scripts/deploy.sh all
 7. API, Site, Admin을 배포한다.
 8. 실제 트래픽·리비전과 외부 공개 표면을 별도로 검사한다. 앞선 readiness만으로 이후 프론트엔드까지 검증되었다고 보지 않는다.
 
+**배포 횟수와 시간대(2026-10-08).** 배포는 하루 한 번으로 묶고, 콘텐츠 배치 시간대(23:00과 01·04·07·12·18·22시 KST 전후)를
+피한다. 10/6~10/8의 V0 보고서 2건 유실과 `expired authenticated dispatch envelope` 폭주는 잦은 배포가 원인이었다 —
+Cloud Run이 옛 워커를 10초 뒤 SIGKILL하면 kombu가 미확인 메시지를 3600초 뒤 되돌려 봉투가 만료됐다. PR #226 뒤의
+워커는 `REMAP_SIGTERM=SIGQUIT`(cold shutdown)으로 실행 중 메시지를 즉시 큐에 반납하고, 반납된 사본은 새 워커가
+몇 초 안에 다시 받는다. 겹침 구간에 옛 워커는 새 릴리스가 서명한 6시간 봉투를 `invalid authenticated dispatch
+lifetime`으로 거절하므로, 그 시간대를 피하는 것이 여전히 중요하다. 배포 뒤에는 `run_beat_entry daily-fleet-heartbeat`로
+일일 요약을 즉시 받아 "점검 이상 없음"을 확인한다.
+
+**10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
+새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
+`deploy.sh`의 Backend 대상은 4단계에서 마이그레이션을 먼저 실행하므로 표준 경로를 쓰면 순서가 지켜진다.
+
+**Slack 웹훅 시크릿(PR #228).** `deploy.sh`는 주입할 `SLACK_WEBHOOK_URL`·`SLACK_WEBHOOK_URL_DEV` 값이 비어 있지 않으면
+`{}`를 POST해 생존을 확인한다(살아 있는 웹훅은 메시지를 만들지 않고 400 `no_text`를 돌려준다). 죽은 주소(3xx·403·404·410)면
+배포 전에 멈추고, 5xx·시간 초과는 한 번 더 본 뒤 경고만 남긴다. **선택** 시크릿의 latest 버전이 DISABLED이면 '의도적으로
+끔'으로 보고 주입하지 않는다(info 한 줄). 운영은 채널 하나이므로 `SLACK_WEBHOOK_URL_DEV`는
+`gcloud secrets versions disable 1 --secret=SLACK_WEBHOOK_URL_DEV`로 꺼 둔다. 조회 실패와 필수 시크릿의 비활성은 종전처럼
+배포를 멈춘다.
+
 **10/1 배치(PR #177, `0082_add_content_reference_checks`) — 0082 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 - 역순이면 새 ORM이 아직 없는 `content_items.reference_checks`를 읽는다. 그러면 콘텐츠를 조회하는 모든 경로(공개 사이트 포함)가 `UndefinedColumn`으로 실패한다.
 - `deploy.sh`의 Backend 대상(`all`·`backend`·`api`·`worker`·`beat`)은 4단계에서 마이그레이션을 먼저 실행한다.

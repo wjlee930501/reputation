@@ -126,10 +126,10 @@ declare -A SECRETS=(
   ["ADMIN_SECRET_KEY"]="Admin API 인증 키"
   ["WORKER_DISPATCH_SECRET"]="Celery 작업 메시지 전용 서명 키 (32자 이상)"
   ["SLACK_WEBHOOK_URL"]="Slack 웹훅 URL"
-  # AE가 고칠 수 없는 인프라 인시던트 전용 개발 채널. 값을 비워 두면 해당 알림은
-  # outbox HOLD로 남고 운영 채널로 폴백하지 않는다. deploy.sh가 optional secret으로
-  # mount하므로 컨테이너와 버전(빈 문자열이라도)은 있어야 한다.
-  ["SLACK_WEBHOOK_URL_DEV"]="개발팀 전용 Slack 웹훅 URL (미설정 시 개발 알림 HOLD)"
+  # 개발 담당 몫 알림의 전용 채널(선택). 운영은 채널 하나다 — 비어 있거나 버전이 비활성이면
+  # 개발 담당 알림은 운영 채널로 `[개발 확인]` 표시와 함께 간다. 값이 있으면 deploy.sh가 배포 전
+  # 웹훅 생존을 확인한다.
+  ["SLACK_WEBHOOK_URL_DEV"]="개발팀 전용 Slack 웹훅 URL (미설정 시 운영 채널로 [개발 확인])"
   # 도입문의 전용 채널. 값을 비워 두면 도입문의 알림은 SLACK_WEBHOOK_URL로 나간다.
   ["SLACK_WEBHOOK_URL_INQUIRY"]="도입문의 전용 Slack 웹훅 URL (미설정 시 운영 채널)"
   ["ADMIN_SESSION_SECRET"]="Admin 세션 서명키"
