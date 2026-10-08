@@ -126,6 +126,18 @@ readiness gate는 아래 절차를 따랐다. Site/Admin SA는 분리됐으며 l
 
 ## 운영 구성
 
+## 2026-10-09 purpose-first refactor 배포 계약
+
+이 절의 **PROPOSED**는 현재 승인된 purpose-first refactor 구현의 단일 기준선이다. 이 문서 변경 자체는 배포 완료·운영 데이터 변경·기존 보고서 재생성을 주장하지 않는다. 실제 배포 여부는 이 runbook의 revision, migration, readiness, 공개 표면, artifact 검증 기록으로만 판정한다.
+
+- 공개 활성화 소유자는 시스템이다. `profile_complete && site_built`가 충족되면 기본 주소를 자동 활성화하고, 자체 도메인은 DNS·TLS 확인 뒤 활성화한다. V0, `schedule_set`, Essence는 공개 활성화 게이트가 아니다. PAUSED, 명시적 비공개, 공개 권한 회수는 자동 복구·활성화로 되돌리지 않는다.
+- 콘텐츠 발행 소유자는 시스템이다. 승인된 운영 기준, 일정, tenant·공개 권한, 의료·사실 안전, 금지 표현, 근거와 artifact 검사를 통과한 글은 **자동 발행**한다. AE는 재시도로 해결되지 않은 terminal exception과 명시적 정정·철회만 처리하며, 정상 발행을 사람 승인 단계로 만들지 않는다.
+- 이미지 정책의 단일 PROPOSED 순서는 검증된 글 전용 이미지, 검증된 병원 공용 이미지, **이미지 없음** 또는 현재 장식 모티프다. 이미지 부재와 일시적 이미지 생성 장애는 안전한 본문 공개를 막지 않는다. 검증되지 않은 이미지·합성 provenance/hash·실제 원장으로 오인될 생성 인물은 계속 차단한다.
+- 근거 수정은 보수적인 정정/철회가 기본이다. 과거 승인 snapshot을 유지하는 **future-only** addendum/version만 명시적으로 선택할 수 있으며, 이는 hidden 상태·`authority_change`·미해결 의료 또는 사실 위험을 자동 해제하거나 과거 콘텐츠를 자동 재공개하지 않는다.
+- 월간 보고서 소유자는 시스템 생성과 AE의 **사람 전달** 기록으로 나뉜다. 닫힌 기간은 COMPLETE/LIMITED/**UNAVAILABLE** 중 하나로 표현한다. UNAVAILABLE도 `sov_pct=null`, 플랫폼별 confirmed/failed/ambiguous/pending 수, 콘텐츠 실적과 다음 조치를 갖춘 정직한 운영 보고서이며, hospital/period/audience/path/bytes/digest가 검증된 artifact/evidence identity와 맞으면 전달할 수 있다. null은 0이 아니고 비교 근거가 없으면 delta를 숨긴다. 시스템은 원장에게 자동 전달하지 않으며 전달 이력은 append-only다.
+
+이 계약을 구현하는 배포는 영구 policy flag/config나 별도 rejection branch를 추가하지 않는다. 배포 전후에는 위 안전 경계와 공개 콘텐츠·전달 artifact의 기존 정체성을 회귀 검증한다.
+
 | 항목 | 확인된 구성 |
 |---|---|
 | GCP project / region | `mso-platform-481505` / `asia-northeast3` |
