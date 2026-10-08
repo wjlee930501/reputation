@@ -8,6 +8,18 @@ api `00228-wr6`, worker `00217-nfj`, beat `00212-fbx`, site `00143-mvd`, admin `
 [배포 기록](../releases/2026-10-06-report-marketing-feedback-production.md)을 본다. `deploy.sh`는 작업 PC의
 Docker로 이미지를 빌드한다 — Docker Desktop이 응답하지 않으면 빌드 단계에서 멈추므로 `docker info`로 먼저 확인한다.
 
+## 예약 작업 즉시 실행
+
+배포로 고친 예약 작업(Beat 항목)은 다음 예약 시각을 기다리지 않고 바로 한 번 돌릴 수 있다. Beat와 같은
+작업·큐·서명 헤더로 큐에 넣기만 하므로 실행 경로·서명 검증·작업의 상한과 비용 가드는 예약 실행과 같다.
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.run_beat_entry,post-publish-ai-review
+```
+
+항목 이름은 `backend/app/core/celery_app.py`의 `beat_schedule` 키다. 결과는 Worker 로그에서 반환 task id로 확인한다.
+
 ## 이전 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
 
 main `a8a86b57`을 5개 서비스에, #194·#196·#197(최종 `ce731db7`)을 API·Worker·Beat에 배포했다. 현재 리비전은
