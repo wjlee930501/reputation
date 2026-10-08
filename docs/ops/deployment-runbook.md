@@ -171,8 +171,10 @@ bash scripts/deploy.sh all
 피한다. 10/6~10/8의 V0 보고서 2건 유실과 `expired authenticated dispatch envelope` 폭주는 잦은 배포가 원인이었다 —
 Cloud Run이 옛 워커를 10초 뒤 SIGKILL하면 kombu가 미확인 메시지를 3600초 뒤 되돌려 봉투가 만료됐다. PR #226 뒤의
 워커는 `REMAP_SIGTERM=SIGQUIT`(cold shutdown)으로 실행 중 메시지를 즉시 큐에 반납하고, 반납된 사본은 새 워커가
-몇 초 안에 다시 받는다. 겹침 구간에 옛 워커는 새 릴리스가 서명한 6시간 봉투를 `invalid authenticated dispatch
-lifetime`으로 거절하므로, 그 시간대를 피하는 것이 여전히 중요하다. 배포 뒤에는 `run_beat_entry daily-fleet-heartbeat`로
+몇 초 안에 다시 받는다. 봉투 수명은 2단계로 올린다 — 이번 릴리스는 수락 상한만 6시간(`DISPATCH_MAX_LIFETIME_SECONDS`)으로
+열고 서명은 1시간(`DISPATCH_TTL_SECONDS`) 그대로 두어 겹침 구간의 옛 워커가 새 봉투를 거절하지 않게 하고, #226 이전
+워커 리비전이 모두 사라진 다음 릴리스에서 서명을 6시간으로 올린다. 옛 워커가 실행 중이던 메시지는 7200초 뒤 되돌아와
+만료로 거절되지만(일회성, 사고 1건), 새 순서에서는 만료 사본이 실행을 claim하거나 FAILED로 끝내지 못한다. 배포 뒤에는 `run_beat_entry daily-fleet-heartbeat`로
 일일 요약을 즉시 받아 "점검 이상 없음"을 확인한다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
