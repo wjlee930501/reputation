@@ -2,13 +2,13 @@
 
 ## 최신 운영 배포 — 2026-10-08 근본 원인 수정(dispatch 배달·운영 채널 하나·운영 신호)
 
-main `c5ada5a1`(PR #226·#227·#228 런타임, #229 문서)을 API·Worker·Beat에 배포했다. 현재 리비전은 api `00235-db4`,
-worker `00224-xnt`, beat `00219-dfh`이고 Site·Admin은 그대로, **DB head는 `0083_add_operation_run_not_before`**다.
+main `c5ada5a1`(PR #226·#227·#228 런타임, #229 문서)을 API·Worker·Beat에 배포했고, 이어 main `de74e3ed`(PR #231)를 두 번째로
+배포했다. 현재 리비전은 api `00236-hhz`, worker `00225-cmn`, beat `00220-cxc`이고 Site·Admin은 그대로, **DB head는 `0083_add_operation_run_not_before`**다.
 `SLACK_WEBHOOK_URL_DEV` 버전 1을 비활성화해 운영 채널 하나로 전환했다(옛 리비전 롤백 전에 다시 enable 필요). readiness 17개
 검사 전부 통과, `slack_webhook_valid={operator: alive, developer: not_configured}`. 유실된 V0 2건을 재실행했고 옛 `SLACK_DEV`
 채널 사고는 단일 채널 모드로 닫혔다. 배포 중 네 번째 원인을 발견했다 — 옛 워커가 12:25 KST에 Redis 연결을 잃은 뒤 4시간 10분
 동안 조용히 멎어 있었고(로그 0줄), 그 감지 경보는 죽은 개발 웹훅으로 가 전달되지 않았다. 브로커 연결 복원력(소켓 timeout·
-keepalive·health check·멎은 소비자 자가 종료)은 PR #231로 main에 들어갔고(`ad5a4b69`) **미배포**다 — 다음 배포(하루 1회)에 포함한다. 배포는 하루 한 번, 배치 시간대 밖에서 한다. 상세는
+keepalive·health check·멎은 소비자 자가 종료)은 PR #231(`ad5a4b69`)로 같은 날 20:57 KST에 두 번째 배포했다(대표 지시, 재발 방지 우선) — api `00236-hhz`, worker `00225-cmn`, beat `00220-cxc`. 옛 워커의 cold shutdown으로 기동 직후 ERROR·WARNING 0건, `/live` 정상. 배포는 하루 한 번, 배치 시간대 밖에서 한다. 상세는
 [근본 원인 수정 배포 기록](docs/releases/2026-10-08-root-cause-fixes-production.md)을 본다.
 
 ## 이전 운영 배포 — 2026-10-06 원장 보고서 마케팅 검토 반영
@@ -144,7 +144,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.17** · 갱신일: **2026-10-08 (Asia/Seoul)**
+문서 버전: **2.18** · 갱신일: **2026-10-08 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
