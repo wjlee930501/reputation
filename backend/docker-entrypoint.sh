@@ -19,7 +19,9 @@ case "$SERVICE" in
   worker)
     # Cloud Run 서비스는 $PORT 리슨이 필수 — celery는 HTTP가 없으므로
     # 경량 헬스 서버를 사이드 프로세스로 띄운다 (없으면 revision ready 실패).
-    python -m app.workers.health_server &
+    # --worker-heartbeat: /live(Cloud Run liveness probe)가 consumer heartbeat의 나이도 본다.
+    # 브로커 재연결에서 멈춘 consumer는 WORKER_LIVENESS_STALE_SECONDS 뒤 재시작된다.
+    python -m app.workers.health_server --worker-heartbeat &
     # Cloud Run은 리비전을 바꿀 때 SIGTERM을 보내고 10초 뒤 SIGKILL한다. Celery 기본 SIGTERM은
     # 실행 중 태스크를 기다리는 warm shutdown이라 10초 안에 끝나지 못하고 강제 종료돼 브로커
     # 채널이 닫히지 않는다. 그러면 kombu는 확인 안 된 메시지를 visibility_timeout이 지나서야

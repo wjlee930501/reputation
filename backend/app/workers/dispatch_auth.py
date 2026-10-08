@@ -6,6 +6,7 @@ import hmac
 import logging
 import time
 from collections.abc import Mapping, Sequence
+from datetime import timedelta
 from typing import Any, Protocol
 
 from celery import Task
@@ -16,6 +17,7 @@ from app.workers.dispatch_envelope import (
     ARGS_DIGEST_HEADER,
     CLOCK_SKEW_SECONDS,
     DISPATCH_MAX_LIFETIME_SECONDS,
+    DISPATCH_TTL_SECONDS,
     EXPIRES_HEADER,
     GLOBAL_TARGET,
     ISSUED_HEADER,
@@ -56,6 +58,14 @@ class DispatchAuthorizationError(PermissionError):
     """The broker message was not created by an authorized server process."""
 
 
+class ExpiredDispatchEnvelope(DispatchAuthorizationError):
+    """The envelope's signed lifetime ended before a worker consumed the message."""
+
+    def __init__(self, *, issued_at: int, current: int) -> None:
+        super().__init__("expired authenticated dispatch envelope")
+        self.age_seconds = current - issued_at
+
+
 class _Request(Protocol):
     headers: Mapping[str, str] | None
     id: str
@@ -86,8 +96,6 @@ def validate_task_dispatch(
     current = int(time.time() if now is None else now)
     issued_at = _integer_header(observed[ISSUED_HEADER])
     expires_at = _integer_header(observed[EXPIRES_HEADER])
-    if current > expires_at:
-        raise DispatchAuthorizationError("expired authenticated dispatch envelope")
     # 수명은 서명된 두 값의 차이라 위조할 수 없다. '정확히 같음'이면 TTL을 바꾸는 배포마다
     # 이전 릴리스가 서명한 메시지가 전부 거절되므로 상한만 건다.
     lifetime = expires_at - issued_at
@@ -123,6 +131,10 @@ def validate_task_dispatch(
         observed_signature, signature(task_name, expected)
     ):
         raise DispatchAuthorizationError("invalid authenticated dispatch signature")
+    # 만료는 서명·문맥이 맞은 봉투에만 판정한다. 만료 봉투 일부는 실패 대신 조용히 버려지므로
+    # (AuthenticatedTask.before_start), 위조된 봉투가 만료 분류로 그 경로를 타지 못하게 한다.
+    if current > expires_at:
+        raise ExpiredDispatchEnvelope(issued_at=issued_at, current=current)
 
 
 def require_dispatch(
@@ -163,14 +175,31 @@ class AuthenticatedTask(Task):
     abstract = True
 
     def before_start(self, task_id: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
-        validate_task_dispatch(
-            task_name=self.name,
-            task_id=task_id,
-            args=args,
-            kwargs=kwargs,
-            retries=int(self.request.retries or 0),
-            headers=self.request.headers,
-        )
+        try:
+            validate_task_dispatch(
+                task_name=self.name,
+                task_id=task_id,
+                args=args,
+                kwargs=kwargs,
+                retries=int(self.request.retries or 0),
+                headers=self.request.headers,
+            )
+        except ExpiredDispatchEnvelope as exc:
+            if not _is_run_less_periodic_dispatch(self.name, self.request.headers):
+                raise
+            # 매분 도는 드레인처럼 실행 기록 없고 주기가 봉투 수명(DISPATCH_TTL_SECONDS) 이하인 Beat
+            # 작업이 워커 정지 동안 쌓였다가 만료된 채 배달됐다. 봉투가 만료되기 전에 다음 주기가 이미
+            # 같은 일을 다시 보냈으므로 버려도 잃는 것이 없다. 실패로 올리면 메시지마다 ERROR 로그가
+            # 나고 사고 투영까지 간다 — 적체 한 번에 수천 건이다. Ignore는 task_failure를 내지 않는다.
+            # 주간·월간·야간 배치처럼 주기가 수명보다 긴 작업, 실행 기록이 있거나 주기 작업이 아닌
+            # 봉투는 그대로 실패로 남겨 사람이 놓친 실행을 알게 한다.
+            logger.warning(
+                "dispatch_expired_dropped task_name=%s task_id=%s age_seconds=%s",
+                self.name,
+                task_id,
+                exc.age_seconds,
+            )
+            raise Ignore() from exc
         from app.workers import operation_run_signals
 
         # 실행 claim은 봉투 검증을 통과한 사본만 한다. task_prerun에서 claim하던 때는 배포 뒤
@@ -226,6 +255,69 @@ class AuthenticatedTask(Task):
         raise DispatchAuthorizationError(
             f"task is not authorized by the claimed operation run ({reason})"
         )
+
+
+_FULL_CRONTAB_FIELDS = {
+    "hour": set(range(24)),
+    "day_of_week": set(range(7)),
+    "day_of_month": set(range(1, 32)),
+    "month_of_year": set(range(1, 13)),
+}
+
+
+def _schedule_period_seconds(schedule: Any) -> float | None:
+    """The longest gap between two runs of a Beat schedule, or None when not sub-hourly-uniform.
+
+    crontab은 시·일·요일·월이 모두 '매번'인 분 단위 일정만 다룬다(분 사이 최대 간격, 정시를 넘는
+    간격 포함). timedelta 일정은 그 간격이다. 그 밖의 일정(특정 시각·요일)은 None이다.
+    """
+    from celery.schedules import crontab
+    from celery.schedules import schedule as interval_schedule
+
+    if isinstance(schedule, crontab):
+        if any(getattr(schedule, name) != full for name, full in _FULL_CRONTAB_FIELDS.items()):
+            return None
+        minutes = sorted(schedule.minute)
+        if not minutes:
+            return None
+        gaps = [later - earlier for earlier, later in zip(minutes, minutes[1:], strict=False)]
+        gaps.append(60 - minutes[-1] + minutes[0])
+        return max(gaps) * 60.0
+    if isinstance(schedule, interval_schedule):
+        return schedule.run_every.total_seconds()
+    if isinstance(schedule, timedelta):
+        return schedule.total_seconds()
+    if isinstance(schedule, int | float):
+        return float(schedule)
+    return None
+
+
+def _is_run_less_periodic_dispatch(task_name: str, headers: Mapping[str, Any] | None) -> bool:
+    """A frequent Beat entry's message (same task and purpose) that carries no OperationRun.
+
+    '자주'는 주기가 봉투 수명 이하라는 뜻이다 — 만료된 사본을 버려도 그 전에 다음 주기가 돌았다.
+    """
+    if not isinstance(headers, Mapping) or headers.get("operation_run_id"):
+        return False
+    if headers.get(OPERATION_RUN_HEADER) not in (None, "-"):
+        return False
+    from app.core.celery_app import celery_app
+    from app.workers.generation_run_control import operation_run_required
+
+    if operation_run_required(task_name):
+        return False
+    purpose = headers.get(PURPOSE_HEADER)
+    for entry in (celery_app.conf.beat_schedule or {}).values():
+        options = entry.get("options") or {}
+        entry_headers = options.get("headers") or {}
+        # 헤더 없는 Beat 항목은 발행 시 태스크 기본 목적으로 서명된다.
+        entry_purpose = entry_headers.get(PURPOSE_HEADER) or expected_purpose(task_name)
+        if entry.get("task") != task_name or entry_purpose != purpose:
+            continue
+        period = _schedule_period_seconds(entry.get("schedule"))
+        if period is not None and 0 < period <= DISPATCH_TTL_SECONDS:
+            return True
+    return False
 
 
 def _integer_header(value: Any) -> int:

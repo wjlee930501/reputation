@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import redis
@@ -12,9 +14,15 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
+from app.workers import worker_liveness
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# `--worker-heartbeat`(worker 분기만)일 때 /live가 consumer heartbeat의 나이도 본다. Beat에는
+# consumer가 없으므로 끈 채로 둔다. 시작 시각은 기동 유예의 기준점이다.
+_CHECK_WORKER_HEARTBEAT = False
+_STARTED_AT = time.time()
 
 
 def _parent_process_alive() -> bool:
@@ -47,6 +55,29 @@ def _redis_ready() -> bool:
         client.close()
 
 
+def _worker_consumer_alive() -> bool:
+    if not _CHECK_WORKER_HEARTBEAT:
+        return True
+    alive = worker_liveness.consumer_alive(
+        started_at=_STARTED_AT,
+        stale_seconds=settings.WORKER_LIVENESS_STALE_SECONDS,
+        startup_grace_seconds=settings.WORKER_LIVENESS_STARTUP_GRACE_SECONDS,
+    )
+    if not alive:
+        # Cloud Run이 이 응답으로 인스턴스를 재시작한다 — 재시작 사유를 로그에 남긴다.
+        logger.warning(
+            "worker_liveness_failed reason=consumer_heartbeat_stale age_seconds=%s "
+            "stale_seconds=%s",
+            worker_liveness.heartbeat_age_seconds(),
+            settings.WORKER_LIVENESS_STALE_SECONDS,
+        )
+    return alive
+
+
+def is_live() -> bool:
+    return _parent_process_alive() and _worker_consumer_alive()
+
+
 def readiness_checks() -> dict[str, bool]:
     return {
         "celery_parent_alive": _parent_process_alive(),
@@ -66,7 +97,7 @@ def is_ready() -> bool:
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 — http.server interface
         if self.path == "/live":
-            healthy = _parent_process_alive()
+            healthy = is_live()
         elif self.path == "/ready":
             healthy = is_ready()
         else:
@@ -82,7 +113,11 @@ class _HealthHandler(BaseHTTPRequestHandler):
         return
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    global _CHECK_WORKER_HEARTBEAT
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--worker-heartbeat", action="store_true")
+    _CHECK_WORKER_HEARTBEAT = parser.parse_args(argv).worker_heartbeat
     port = int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     logger.info("worker health server listening on :%d", port)
