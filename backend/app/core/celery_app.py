@@ -202,9 +202,12 @@ celery_app.conf.update(
         "retry_on_timeout": True,
         "health_check_interval": REDIS_HEALTH_CHECK_INTERVAL_SECONDS,
     },
-    # 연결이 끊기면 다시 붙는다. 재시도 상한(기본 100회)은 일부러 남긴다 — 재연결이 끝내 안 되면
-    # 워커 프로세스가 끝나고 Cloud Run이 인스턴스를 새로 띄운다. /live의 heartbeat 검사와 별개인
-    # 두 번째 탈출구다. 시작 시 재시도는 명시해 Celery 6의 기본값 변경 경고를 없앤다.
+    # 연결이 끊기면 다시 붙는다. 재시도 상한(기본 100회)은 일부러 남긴다. 이 상한은 consumer의
+    # 재연결 경로(`Consumer.ensure_connected`)에만 걸린다 — 끝내 안 붙으면(약 47분 이상) OperationalError
+    # → "Unrecoverable error"로 워커가 EX_FAILURE 종료하고 Cloud Run이 새로 띄운다. 2026-10-08처럼
+    # Heart의 이벤트 발행(`EventDispatcher.send(retry=True)` → `Connection.ensure(max_retries=None)`)이
+    # 상한 없이 막히는 경우에는 이 값이 닿지 않으며, 그때 탈출구는 /live의 heartbeat 검사뿐이다.
+    # 시작 시 재시도는 명시해 Celery 6의 기본값 변경 경고를 없앤다.
     broker_connection_retry=True,
     broker_connection_retry_on_startup=True,
     broker_connection_max_retries=100,

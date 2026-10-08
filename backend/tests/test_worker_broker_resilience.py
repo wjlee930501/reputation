@@ -13,10 +13,14 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from celery.exceptions import Ignore
+from celery.schedules import crontab
+from celery.schedules import schedule as celery_schedule
 from celery.signals import heartbeat_sent, task_failure
 from redis.connection import parse_url
 
@@ -347,3 +351,138 @@ def test_a_forged_periodic_drain_that_is_not_expired_still_fails(monkeypatch) ->
 
 def test_the_expired_error_is_still_a_dispatch_authorization_error() -> None:
     assert issubclass(dispatch_auth.ExpiredDispatchEnvelope, dispatch_auth.DispatchAuthorizationError)
+
+
+# ── D. 주기가 봉투 수명보다 긴 작업·위조 봉투는 만료돼도 실패 ─────────────────────
+
+
+def _beat_entry(task_name: str) -> dict:
+    return next(
+        entry for entry in celery_app.conf.beat_schedule.values() if entry["task"] == task_name
+    )
+
+
+def _beat_headers(entry: dict) -> dict[str, str]:
+    return dispatch_auth.stamp_dispatch_headers(
+        task_name=entry["task"],
+        task_id="late",
+        args=list(entry.get("args") or []),
+        kwargs={},
+        retries=0,
+        headers=dict((entry.get("options") or {}).get("headers") or {}),
+        now=ISSUED,
+    )
+
+
+@pytest.mark.parametrize(
+    "task_name",
+    [
+        "app.workers.tasks.run_weekly_monitoring",  # 월 02:00
+        "app.workers.tasks.nightly_content_generation",  # 매일 23:00
+    ],
+)
+def test_an_expired_envelope_of_a_long_period_beat_task_still_fails(monkeypatch, task_name) -> None:
+    entry = _beat_entry(task_name)
+    args = tuple(entry.get("args") or ())
+    _production(monkeypatch, now=_EXPIRED)
+    headers = _beat_headers(entry)
+    task = SimpleNamespace(
+        name=task_name, request=SimpleNamespace(id="late", retries=0, headers=headers)
+    )
+
+    assert dispatch_auth._is_run_less_periodic_dispatch(task_name, headers) is False
+    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="expired"):
+        dispatch_auth.AuthenticatedTask.before_start(task, "late", args, {})
+
+
+def test_an_expired_every_minute_drain_is_ignored_not_failed(monkeypatch) -> None:
+    _production(monkeypatch, now=_EXPIRED)
+    task = SimpleNamespace(
+        name=DRAIN_TASK,
+        request=SimpleNamespace(id="late", retries=0, headers=_drain_headers()),
+    )
+    with pytest.raises(Ignore):
+        dispatch_auth.AuthenticatedTask.before_start(task, "late", (), {})
+
+
+def test_a_forged_and_expired_periodic_envelope_fails_instead_of_being_ignored(
+    monkeypatch,
+) -> None:
+    _production(monkeypatch, now=_EXPIRED)
+    headers = {**_drain_headers(), dispatch_envelope.SIGNATURE_HEADER: "0" * 64}
+
+    result, failures, _projected = _apply(monkeypatch, headers)
+
+    assert result.state == "FAILURE"
+    assert isinstance(result.result, dispatch_auth.DispatchAuthorizationError)
+    assert not isinstance(result.result, dispatch_auth.ExpiredDispatchEnvelope)
+    assert failures == ["late"]
+
+
+@pytest.mark.parametrize(
+    ("schedule", "period"),
+    [
+        (crontab(minute="*"), 60.0),
+        (crontab(minute="*/5"), 300.0),
+        (crontab(minute="0,10"), 50 * 60.0),  # 정시를 넘는 간격이 가장 길다
+        (crontab(minute=0), 3600.0),
+        (crontab(minute=0, hour="*/2"), None),
+        (crontab(hour=23, minute=0), None),
+        (crontab(hour=2, minute=0, day_of_week=1), None),
+        (timedelta(seconds=30), 30.0),
+        (celery_schedule(timedelta(minutes=10)), 600.0),
+        (45, 45.0),
+    ],
+)
+def test_schedule_period_seconds(schedule, period) -> None:
+    assert dispatch_auth._schedule_period_seconds(schedule) == period
+
+
+def test_only_beat_entries_within_the_envelope_lifetime_are_droppable() -> None:
+    droppable = set()
+    for entry in celery_app.conf.beat_schedule.values():
+        if dispatch_auth._is_run_less_periodic_dispatch(entry["task"], _beat_headers(entry)):
+            droppable.add(entry["task"])
+            period = dispatch_auth._schedule_period_seconds(entry["schedule"])
+            assert period is not None
+            assert period <= dispatch_envelope.DISPATCH_TTL_SECONDS
+    assert DRAIN_TASK in droppable
+    for long_period in (
+        "app.workers.tasks.run_weekly_monitoring",
+        "app.workers.tasks.nightly_content_generation",
+        "app.workers.tasks.run_monthly_reports",
+        "app.workers.tasks.run_monthly_sov_measurement",
+        "app.workers.naver_sync.weekly_naver_source_sync",
+        "app.workers.tasks.weekly_generation_rejection_rollup",
+        "app.workers.tasks.purge_expired_leads",
+    ):
+        assert long_period not in droppable
+
+
+# ── E. 실제 Heart가 신호로 liveness 파일을 갱신한다 ──────────────────────────────
+
+
+def test_a_real_heart_send_touches_the_liveness_file(monkeypatch, tmp_path) -> None:
+    from celery.worker.heartbeat import Heart
+
+    path = tmp_path / "hb"
+    monkeypatch.setattr(worker_liveness, "HEARTBEAT_FILE", path)
+    sent: list[str] = []
+    # EventDispatcher(enabled=True)와 같은 표면: Heart가 쓰는 속성만 둔다(브로커 없이).
+    eventer = SimpleNamespace(
+        enabled=True,
+        on_enabled=set(),
+        on_disabled=set(),
+        send=lambda event, **_fields: sent.append(event),
+    )
+    timer = SimpleNamespace(call_repeatedly=lambda *_a, **_k: object(), cancel=lambda _t: None)
+
+    heart = Heart(timer, eventer, interval=2.0)
+    heart.start()  # worker-online도 _send를 거친다
+
+    assert sent == ["worker-online"]
+    assert path.exists()
+    os.utime(path, (0, 0))
+    heart._send("worker-heartbeat")
+    assert sent[-1] == "worker-heartbeat"
+    assert worker_liveness.heartbeat_age_seconds(path=path) < 60
