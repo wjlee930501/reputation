@@ -188,7 +188,9 @@ async def test_real_postgres_scan_keeps_only_highest_state_and_summary_dedupes(
             text("SELECT count(*) FROM notification_outbox WHERE payload::text LIKE :pattern"),
             {"pattern": f"%{_PREFIX}%"},
         )
-        assert count == 1
+        # 한 창의 항목은 라벨별로 갈라 두 메시지다(복구 사실 = REPORT, 조치 필요 = ERROR).
+        # 같은 배치를 두 번 넣어도 늘지 않는다 — 중복 키가 배치·라벨별로 고정이다.
+        assert count == 2
 
 
 @pytest.mark.asyncio

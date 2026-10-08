@@ -363,7 +363,8 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
             later_window.end,
         )
         assert delivered.milestones == ()
-        assert delivered.states[f"monthly:{report_id}"] != ready_states[f"monthly:{report_id}"]
+        month_key = f"monthly:{hospital_id}:2026-07"
+        assert delivered.states[month_key] != ready_states[month_key]
 
 
 async def _no_pause() -> None:
