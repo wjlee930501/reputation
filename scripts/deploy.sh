@@ -1353,9 +1353,10 @@ run_rollback() {
   info "0084 목적 중심 전환 뒤에는 이 일반 롤백으로 baseline writer를 재개하지 마세요. Admin/Worker/Beat를 정지한 채 검증된 compatible_reader_sha의 API public/read와 Site만 복귀하는 절차를 docs/ops/deployment-runbook.md에서 따르세요."
 }
 
-# 0084 cleanup removes the legacy publish transport only after both durable
-# legacy queues are empty. This is a read-only production check and must run
-# before any migration, image rollout, or traffic mutation.
+# Purpose-first cleanup removes the legacy publish transport only after both
+# durable notification queues are empty and every safely convertible legacy
+# task incident has been reconciled. This is a read-only production check and
+# must run before any migration, image rollout, or traffic mutation.
 require_legacy_publish_retirement_clear() {
   local database_url="${DATABASE_URL:-}"
   [[ -n "$database_url" ]] \
@@ -1388,11 +1389,13 @@ if (
     value.get("status") != "READY"
     or value.get("open_legacy_transport") != 0
     or value.get("unapplied_sent") != 0
+    or value.get("convertible_legacy_incidents") != 0
     or not isinstance(value.get("total_historical"), int)
+    or not isinstance(value.get("unknown_legacy_incidents"), int)
 ):
     raise SystemExit(1)
 PY
-  ok "legacy publish backlog 0건 확인 완료 (증거: ${evidence_file})"
+  ok "legacy publish backlog 및 변환 가능한 legacy incident 0건 확인 완료 (증거: ${evidence_file})"
 }
 
 # ─── 메인 ──────────────────────────────────────────────────────────

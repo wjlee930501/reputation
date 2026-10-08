@@ -20,7 +20,7 @@ from operation_run_signal_support import (
 from operation_run_signal_support import (
     signal_store as _signal_store_fixture,  # noqa: F401
 )
-from sqlalchemy import create_engine, delete, select
+from sqlalchemy import create_engine, delete, func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
@@ -124,14 +124,21 @@ async def test_site_build_failure_stays_with_the_sweep_and_never_opens_a_generic
         assert stored is not None
         assert stored.state == OperationRunState.FAILED.value
         assert stored.safe_error_code == "TASK_FAILED"
-        assert db.scalar(select(Incident).where(Incident.operation_run_id == run.id)) is None
         assert (
             db.scalar(
-                select(Incident).where(
-                    Incident.dedupe_key == task_incident_control._incident_key(run.id)
+                select(func.count()).select_from(Incident).where(
+                    Incident.hospital_id == hospital_id
                 )
             )
-            is None
+            == 0
+        )
+        assert (
+            db.scalar(
+                select(func.count()).select_from(NotificationOutbox).where(
+                    NotificationOutbox.operation_run_id == run.id
+                )
+            )
+            == 0
         )
 
 
@@ -286,11 +293,11 @@ async def test_operator_retry_failure_records_on_the_open_site_build_incident(
             # 원인 하나에 사고 하나 — generic 사고를 따로 열지 않는다.
             assert (
                 db.scalar(
-                    select(Incident).where(
-                        Incident.dedupe_key == task_incident_control._incident_key(run.id)
+                    select(func.count()).select_from(Incident).where(
+                        Incident.hospital_id == hospital_id
                     )
                 )
-                is None
+                == 1
             )
             # 이미 열린 에피소드는 다시 알리지 않는다.
             assert (
@@ -420,11 +427,11 @@ async def test_operator_retry_failure_without_an_incident_opens_the_hospital_one
         # 같은 원인이 두 줄이 되지 않는다 — 실행 단위 generic 사고는 열리지 않는다.
         assert (
             db.scalar(
-                select(Incident).where(
-                    Incident.dedupe_key == task_incident_control._incident_key(run.id)
+                select(func.count()).select_from(Incident).where(
+                    Incident.hospital_id == hospital_id
                 )
             )
-            is None
+            == 1
         )
     # 다음 재시도의 성공이 그 한 건을 닫는다 — 사고 유형과 무관하게 dedupe 키로 찾는다.
     retry = await dispatch_test_run(

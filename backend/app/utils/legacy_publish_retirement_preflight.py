@@ -11,8 +11,11 @@ import json
 import anyio
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.database import get_async_sessionmaker
+from app.core.database import SyncSessionLocal, get_async_sessionmaker
 from app.services.content_publish_reconciliation import inspect_legacy_publish_history
+from app.services.legacy_task_incident_inventory import (
+    inspect_legacy_task_incidents,
+)
 
 
 async def _inspect() -> tuple[int, int, int]:
@@ -25,6 +28,8 @@ def main() -> int:
 
     try:
         total, open_transport, unapplied_sent = anyio.run(_inspect)
+        with SyncSessionLocal() as db:
+            legacy_incidents = inspect_legacy_task_incidents(db)
     except (OSError, SQLAlchemyError) as error:
         print(
             json.dumps(
@@ -37,7 +42,11 @@ def main() -> int:
             )
         )
         return 2
-    retirable = open_transport == 0 and unapplied_sent == 0
+    retirable = (
+        open_transport == 0
+        and unapplied_sent == 0
+        and legacy_incidents.convertible_open == 0
+    )
     print(
         json.dumps(
             {
@@ -45,6 +54,8 @@ def main() -> int:
                 "total_historical": total,
                 "open_legacy_transport": open_transport,
                 "unapplied_sent": unapplied_sent,
+                "convertible_legacy_incidents": legacy_incidents.convertible_open,
+                "unknown_legacy_incidents": legacy_incidents.unknown_open,
             },
             sort_keys=True,
         )

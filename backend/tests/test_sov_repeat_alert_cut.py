@@ -323,7 +323,7 @@ def test_run_sov_typed_failure_skips_generic_task_failed_slack(monkeypatch):
     assert task_incident_control.record_task_failure(task, "worker-task") is False
 
 
-def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
+def test_run_sov_success_recovers_domain_incident_without_slack(monkeypatch):
     """OPEN 공지가 나간 적이 없으면 복구도 조용히 끝난다.
 
     RUN_SOV의 비용 차단·분류된 실패는 파이프라인이 자기 인시던트를 내므로 위
@@ -332,13 +332,25 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     건이라면 RECOVERED가 반드시 따라간다(tests/test_task_incidents.py).
     """
     run_id = uuid.uuid4()
+    hospital_id = uuid.uuid4()
     task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
     run = SimpleNamespace(
         id=run_id,
+        hospital_id=hospital_id,
         operation_type="RUN_SOV",
         task_id="worker-task",
         state="RUNNING",
         not_before_at=None,
+        safe_error_code="TASK_FAILED",
+        idempotency_key=f"weekly-sov:{hospital_id}:2026-W41",
+        request_payload={
+            "_dispatch": {
+                "target_type": "hospital",
+                "target_id": str(hospital_id),
+                "task_args": [str(hospital_id)],
+            }
+        },
+        result_summary=None,
     )
     incident = SimpleNamespace(
         id=uuid.uuid4(),

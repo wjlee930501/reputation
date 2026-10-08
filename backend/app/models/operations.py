@@ -184,12 +184,14 @@ class Incident(Base):
         CheckConstraint("episode_seq >= 1", name="ck_incidents_episode_seq_positive"),
         CheckConstraint("occurrence_count >= 1", name="ck_incidents_occurrence_count"),
         CheckConstraint(
-            "(state IN ('RECOVERED', 'ACKNOWLEDGED') AND recovered_at IS NOT NULL) OR "
-            "(state IN ('OPEN', 'RETRYING') AND recovered_at IS NULL)",
+            "(state = 'RECOVERED' AND recovered_at IS NOT NULL) OR "
+            "(state IN ('OPEN', 'RETRYING') AND recovered_at IS NULL) OR "
+            "state = 'ACKNOWLEDGED'",
             name="ck_incidents_recovery_fact",
         ),
-        # A NULL acknowledged_by_id on an ACKNOWLEDGED row means the system closed
-        # an automatically recovered incident; a non-NULL one means a person did.
+        # A NULL acknowledged_by_id on an ACKNOWLEDGED row means a system disposition:
+        # either proven recovery or an audited supersession. A non-NULL owner means
+        # a person acknowledged the recovered incident through the ordinary API.
         CheckConstraint(
             "(state = 'ACKNOWLEDGED' AND acknowledged_at IS NOT NULL) OR "
             "(state <> 'ACKNOWLEDGED' AND acknowledged_at IS NULL "

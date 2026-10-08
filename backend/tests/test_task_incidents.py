@@ -21,6 +21,8 @@ from app.core import celery_app as celery_module
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.operations import Incident, IncidentState, NotificationOutbox
+from app.services import operation_terminal_outcomes
+from app.services.operation_terminal_outcomes import terminal_outcome_identity
 from app.workers import task_incident_control
 
 
@@ -68,13 +70,13 @@ def test_terminal_outcome_identity_separates_months_and_keeps_retry_scope() -> N
             result_summary={"measurement_month": f"{year:04d}-{month:02d}"},
         )
 
-    august_first = task_incident_control._terminal_outcome_identity(
+    august_first = terminal_outcome_identity(
         monthly_run(uuid.uuid4(), 2026, 8)
     )
-    august_retry = task_incident_control._terminal_outcome_identity(
+    august_retry = terminal_outcome_identity(
         monthly_run(uuid.uuid4(), 2026, 8)
     )
-    september = task_incident_control._terminal_outcome_identity(
+    september = terminal_outcome_identity(
         monthly_run(uuid.uuid4(), 2026, 9)
     )
 
@@ -99,7 +101,7 @@ def test_classified_domain_failure_is_not_reprojected_as_terminal_transport_fail
         result_summary=None,
     )
 
-    assert task_incident_control._terminal_outcome_identity(run) is None
+    assert terminal_outcome_identity(run) is None
 
 
 def test_unowned_classified_failure_is_never_silently_dropped() -> None:
@@ -113,25 +115,25 @@ def test_unowned_classified_failure_is_never_silently_dropped() -> None:
         result_summary={"measurement_month": "2026-08"},
     )
 
-    identity = task_incident_control._terminal_outcome_identity(run)
+    identity = terminal_outcome_identity(run)
 
     assert identity is not None
     assert identity.cause == "PERIOD_FINALIZATION_FAILED"
     assert identity.period == "2026-08"
     run.safe_error_code = "PERIOD_INPUT_INCOMPLETE"
-    other_cause = task_incident_control._terminal_outcome_identity(run)
+    other_cause = terminal_outcome_identity(run)
     assert other_cause is not None
     assert other_cause.dedupe_key != identity.dedupe_key
 
 
 def test_every_signalled_operation_has_an_explicit_domain_identity() -> None:
-    assert set(task_incident_control._DOMAIN_OUTCOME_NAMES) == set(
-        task_incident_control._SIGNALLED_DOMAIN_OPERATIONS
+    assert set(operation_terminal_outcomes._DOMAIN_OUTCOME_NAMES) == set(
+        operation_terminal_outcomes._SIGNALLED_DOMAIN_OPERATIONS
     )
-    assert set(task_incident_control._CLASSIFIED_DOMAIN_OWNERS) < set(
-        task_incident_control._SIGNALLED_DOMAIN_OPERATIONS
+    assert set(operation_terminal_outcomes._CLASSIFIED_DOMAIN_OWNERS) < set(
+        operation_terminal_outcomes._SIGNALLED_DOMAIN_OPERATIONS
     )
-    assert "MONTHLY_SOV_PERIOD" not in task_incident_control._CLASSIFIED_DOMAIN_OWNERS
+    assert "MONTHLY_SOV_PERIOD" not in operation_terminal_outcomes._CLASSIFIED_DOMAIN_OWNERS
 
 
 def test_equivalent_invocation_paths_share_domain_identity() -> None:
@@ -156,10 +158,10 @@ def test_equivalent_invocation_paths_share_domain_identity() -> None:
             result_summary=None,
         )
 
-    automatic = task_incident_control._terminal_outcome_identity(
+    automatic = terminal_outcome_identity(
         content_run("GENERATE_CONTENT_ITEM")
     )
-    operator_retry = task_incident_control._terminal_outcome_identity(
+    operator_retry = terminal_outcome_identity(
         content_run("REGENERATE_CONTENT")
     )
 
@@ -169,14 +171,14 @@ def test_equivalent_invocation_paths_share_domain_identity() -> None:
 
     changed_revision = content_run("REGENERATE_CONTENT")
     changed_revision.request_payload["revision"] = 8
-    next_identity = task_incident_control._terminal_outcome_identity(changed_revision)
+    next_identity = terminal_outcome_identity(changed_revision)
     assert next_identity is not None
     assert next_identity.dedupe_key != automatic.dedupe_key
 
     different_cause = content_run("REGENERATE_CONTENT")
     different_cause.safe_error_code = "TASK_FAILED_AFTER_TIMEOUT"
     # This operation owns classified errors, so the task body is authoritative.
-    assert task_incident_control._terminal_outcome_identity(different_cause) is None
+    assert terminal_outcome_identity(different_cause) is None
 
 
 def test_scheduled_and_manual_monthly_report_share_period_outcome() -> None:
@@ -201,10 +203,10 @@ def test_scheduled_and_manual_monthly_report_share_period_outcome() -> None:
             result_summary={"period_year": 2026, "period_month": 8},
         )
 
-    scheduled = task_incident_control._terminal_outcome_identity(
+    scheduled = terminal_outcome_identity(
         report_run("SCHEDULED_MONTHLY_REPORT")
     )
-    manual = task_incident_control._terminal_outcome_identity(
+    manual = terminal_outcome_identity(
         report_run("GENERATE_MONTHLY_REPORT")
     )
 

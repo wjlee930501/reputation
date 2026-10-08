@@ -301,22 +301,45 @@ compatible reader에서 no-image, `schedule_set=false`, 오래된 승인 참고�
 Beat, Admin을 시작하지 않는다. revision-aware writer를 복구하고 post-drain reconciliation과
 mirror/pointer parity 100%를 다시 확인한 뒤에만 Worker → Beat → Admin mutation 순으로 재개한다.
 
-로컬/CI 리허설은 `.omo/evidence/task-16/compatible-reader.json`을 fail-closed 입력으로 사용한다.
-이 파일에는 `verifiedTasks: "1-14"`, `createdBeforeTask15: true`,
-`readerContract: "purpose-first-compatible-public-read-v1"`, full `sourceSha`가 모두 있어야 한다.
-harness는 그 SHA를 `git archive`로 build한 뒤 image tag/ID/digest를 별도 evidence에 기록한다.
+로컬/CI 리허설은 추적되는
+`scripts/integrity_rehearsal/fixtures/compatible-reader.json` schema v2 manifest를 fail-closed
+입력으로 사용한다. 이 파일에는 원본 pre-Task-15 checkpoint와 그 직계 자식인 read-only
+hotfix의 full SHA, 정확한 3개 변경 경로, 검증 evidence hash가 모두 있어야 한다. harness는
+hotfix `sourceSha`의 parent가 `originalCheckpointSha`인지, diff가 allowlist와 정확히 일치하는지
+검증하고 그 SHA를 `git archive`로 build한 뒤 image tag/ID/digest를 별도 evidence에 기록한다.
 체크포인트가 없거나 build 뒤 old/new/compatible 정체성이 겹치면 리허설을 시작하지 않는다.
 외부 provider, GCS, Slack, DNS는 isolated fake boundary 밖으로 호출하지 않으며 그 미검증 범위를
 리허설 결과에 남긴다.
 
-0084 cleanup을 포함한 backend/API/Worker/Beat/migrate/all 배포 전에는 운영 DB의 legacy publish
-backlog를 읽기 전용으로 확인한다. 운영 `DATABASE_URL`을 주입하고 `scripts/deploy.sh`를 실행한다.
+0085를 포함한 backend/API/Worker/Beat/migrate/all 배포 전에는 운영 DB의 legacy publish
+backlog와 변환 가능한 legacy task incident를 읽기 전용으로 확인한다. 운영 `DATABASE_URL`을
+주입하고 `scripts/deploy.sh`를 실행한다.
 `CONTENT_PUBLISH_RECOVERY_DATABASE_URL`은 격리된 integration test fixture 전용이다. preflight는
 `CONTENT_PUBLISHED` open transport와 unapplied
-`SENT`를 각각 세어 둘 다 0일 때만 통과하며, 결과 JSON은 기본적으로
+`SENT`, `convertible_legacy_incidents`를 각각 세어 세 값이 모두 0일 때만 통과한다.
+`unknown_legacy_incidents`는 자동 변환할 근거가 없는 레코드를 사실대로 보고하지만 배포를
+자동 차단하지 않는다. 결과 JSON은 기본적으로
 `.omo/evidence/deploy-preflight/legacy-publish-retirement-<revision>-<UTC>.json`에 남는다. 한 건이라도
 남거나 DB/config 확인이 실패하면 배포를 시작하지 않는다. 운영 backlog는 실제 preflight를 실행하기
 전까지 UNKNOWN으로 취급하며 Slack 발송으로 drain을 시험하지 않는다.
+
+preflight가 변환 가능한 legacy incident를 보고하면 배포 전에 아래 maintenance CLI를 실행한다.
+이 명령은 legacy incident, operation run, 알림 outbox를 삭제하지 않고 정규 incident 변환과
+감사 로그만 남긴다. 같은 identity의 중복 실패는 가장 오래된 레코드만 정규 incident로 변환하고
+나머지는 `ACKNOWLEDGED`/`recovered_at=NULL`로 supersede한다. 정확히 같은 identity의 뒤이은 성공만
+recovery 근거로 사용하며 다른 월의 성공은 현재 실패를 회복시킨 것으로 취급하지 않는다.
+
+```bash
+cd backend
+DATABASE_URL='postgresql+asyncpg://operator:…@…/…' \
+  PYTHONPATH=. uv run python -m app.utils.reconcile_legacy_task_incidents
+```
+
+결과는 `status=APPLIED`와 `converted`, `superseded`, `recovered`, `unknown` count를 출력한다.
+같은 명령을 다시 실행해 앞의 세 mutation count가 모두 0인지 확인한 뒤 read-only preflight를
+재실행한다. `unknown`은 임의로 성공/회복 처리하지 말고 원본 incident와 operation run을 보존한 채
+운영자가 target/period 근거를 별도로 확인한다. 이 과정은 새 Slack/notification delivery를 만들지
+않으며, 실행 전후 incident/run/outbox count와 감사 로그를 배포 evidence에 함께 보관한다.
 
 ```bash
 DATABASE_URL='postgresql+asyncpg://read-only-user:…@…/…' \
