@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -30,6 +31,8 @@ from app.workers.generation_retry_policy import (
     next_recovery_sweep,
     retry_class_for,
 )
+
+logger = logging.getLogger(__name__)
 
 _SAFE_FAILURE_MESSAGE = "생성 작업이 완료되지 않았습니다. 운영 센터에서 원인을 확인해 주세요."
 GENERATION_REFERENCE_REJECTION_MESSAGE = (
@@ -259,38 +262,156 @@ def explicit_run_matches(
     )
 
 
+class DispatchVerdict(StrEnum):
+    AUTHORIZED = "AUTHORIZED"
+    # 실행은 있지만 이 배달의 몫이 아니다(더 새 사본·이미 끝남·다른 사본이 실행 중).
+    # 적체·재배달의 정상 결과라 실패로 세지 않는다.
+    STALE = "STALE"
+    # 실행이 없거나 대상·큐·인자가 다르다. 서명이 맞아도 막고 사고로 올린다.
+    INVALID = "INVALID"
+
+
+_TERMINAL_RUN_STATES = frozenset(
+    state.value
+    for state in (
+        OperationRunState.SUCCEEDED,
+        OperationRunState.PARTIAL,
+        OperationRunState.FAILED,
+        OperationRunState.CANCELLED,
+    )
+)
+
+
+def operation_run_dispatch_verdict(
+    db: Session,
+    task: GenerationTask,
+    task_name: str,
+    task_args: Sequence[JSONValue],
+) -> tuple[DispatchVerdict, str]:
+    """Bind an Admin dispatch to its claimed run, tenant, target, queue, and arguments.
+
+    대상·큐·인자 불일치는 언제나 INVALID다. 그것이 맞는 배달 중 소유권만 어긋난 것(실행이
+    더 새 task id로 다시 배포됐거나 이미 끝났거나 같은 id의 다른 사본이 실행 중)은 STALE이다.
+    """
+    policy = _OPERATION_TASK_POLICIES.get(task_name)
+    if policy is None:
+        return DispatchVerdict.INVALID, "no_operation_policy"
+    headers = task.request.headers
+    raw_run_id = headers.get("operation_run_id") if isinstance(headers, Mapping) else None
+    worker_id = task.request.id
+    if not isinstance(raw_run_id, str) or not isinstance(worker_id, str):
+        return DispatchVerdict.INVALID, "missing_operation_run"
+    try:
+        run = db.get(OperationRun, uuid.UUID(raw_run_id))
+    except ValueError:
+        return DispatchVerdict.INVALID, "missing_operation_run"
+    if run is None:
+        return DispatchVerdict.INVALID, "missing_operation_run"
+    operation_type, target_type, queue = policy
+    try:
+        dispatch = parse_stored_dispatch(run.request_payload.get("_dispatch"))
+    except (AttributeError, UnsafeDispatchPayload):
+        return DispatchVerdict.INVALID, "unsafe_stored_dispatch"
+    if not (
+        run.operation_type == operation_type
+        and dispatch.target_type == target_type
+        and dispatch.target_id
+        == str(run.hospital_id if target_type == "hospital" else task_args[0])
+        and dispatch.queue == queue
+        and dispatch.task_args == tuple(task_args)
+    ):
+        return DispatchVerdict.INVALID, "dispatch_mismatch"
+    state = getattr(run.state, "value", run.state)
+    claimed_version = getattr(task.request, "operation_run_claim_version", None)
+    if run.task_id != worker_id:
+        return DispatchVerdict.STALE, "superseded"
+    if state in _TERMINAL_RUN_STATES:
+        return DispatchVerdict.STALE, "already_terminal"
+    if state != OperationRunState.RUNNING.value:
+        # 내 task id의 대기 중 실행인데 claim하지 못했다 — 중복이 아니라 claim 저장 실패다.
+        return DispatchVerdict.INVALID, "unclaimed"
+    if run.lease_owner != worker_id:
+        return DispatchVerdict.STALE, "running_elsewhere"
+    if not isinstance(claimed_version, int):
+        return DispatchVerdict.STALE, "duplicate_delivery"
+    if run.version != claimed_version:
+        return DispatchVerdict.STALE, "version_changed"
+    return DispatchVerdict.AUTHORIZED, "authorized"
+
+
 def operation_run_dispatch_authorized(
     db: Session,
     task: GenerationTask,
     task_name: str,
     task_args: Sequence[JSONValue],
 ) -> bool:
-    """Bind an Admin dispatch to its claimed run, tenant, target, queue, and arguments."""
-    context = explicit_run_context(task)
-    policy = _OPERATION_TASK_POLICIES.get(task_name)
-    if context is None or policy is None:
-        return False
-    run = db.get(OperationRun, context.run_id)
-    if run is None:
-        return False
-    operation_type, target_type, queue = policy
+    verdict, _reason = operation_run_dispatch_verdict(db, task, task_name, task_args)
+    return verdict is DispatchVerdict.AUTHORIZED
+
+
+def mark_operation_run_queued(db: Session, run_id: uuid.UUID, observed_at: datetime) -> bool:
+    """CAS REQUESTED->QUEUED right after a successful publish, and commit.
+
+    REQUESTED로 남겨 두면 자율 복구가 2분 뒤 유실로 보고 사본을 하나 더 보낸다. 워커가 이미
+    claim했으면 아무것도 바꾸지 않는다. 이 표시는 장부일 뿐이라 실패해도 배포를 되돌리지
+    않는다 — 남은 REQUESTED는 자율 복구가 새 task id로 다시 보내고 이전 사본은 건너뛴다.
+    """
     try:
-        dispatch = parse_stored_dispatch(run.request_payload.get("_dispatch"))
-    except (AttributeError, UnsafeDispatchPayload):
+        queued = db.execute(
+            update(OperationRun)
+            .where(
+                OperationRun.id == run_id,
+                OperationRun.state == OperationRunState.REQUESTED,
+            )
+            .values(
+                state=OperationRunState.QUEUED,
+                queued_at=observed_at,
+                version=OperationRun.version + 1,
+            )
+            .returning(OperationRun.id)
+        ).scalar_one_or_none()
+        db.commit()
+    except Exception as error:  # noqa: BLE001 - 장부 실패가 이미 끝난 publish를 실패로 만들지 않는다.
+        db.rollback()
+        logger.warning(
+            "operation run queued mark failed run_id=%s error=%s", run_id, type(error).__name__
+        )
         return False
-    state = getattr(run.state, "value", run.state)
-    return (
-        run.operation_type == operation_type
-        and state == OperationRunState.RUNNING.value
-        and run.task_id == context.worker_id
-        and run.lease_owner == context.worker_id
-        and run.version == context.version
-        and dispatch.target_type == target_type
-        and dispatch.target_id
-        == str(run.hospital_id if target_type == "hospital" else task_args[0])
-        and dispatch.queue == queue
-        and dispatch.task_args == tuple(task_args)
-    )
+    return queued is not None
+
+
+def defer_operation_run(db: Session, task: GenerationTask, not_before: datetime) -> bool:
+    """Hand the claimed run back as QUEUED until ``not_before``, and commit.
+
+    긴 countdown 재시도 대신 쓴다. 지금 사본의 claim(task id·lease·판)이 그대로일 때만 바꾸며,
+    판을 올리므로 뒤이은 성공 신호가 이 실행을 SUCCEEDED로 끝내지 않는다. 자율 복구가
+    ``not_before`` 뒤에 새 task id·새 봉투로 다시 보낸다.
+    """
+    context = explicit_run_context(task)
+    if context is None:
+        return False
+    deferred = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == context.run_id,
+            OperationRun.task_id == context.worker_id,
+            OperationRun.state == OperationRunState.RUNNING,
+            OperationRun.lease_owner == context.worker_id,
+            OperationRun.version == context.version,
+        )
+        .values(
+            state=OperationRunState.QUEUED,
+            queued_at=datetime.now(UTC),
+            not_before_at=not_before,
+            heartbeat_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            version=OperationRun.version + 1,
+        )
+        .returning(OperationRun.id)
+    ).scalar_one_or_none()
+    db.commit()
+    return deferred is not None
 
 
 def operation_run_required(task_name: str) -> bool:

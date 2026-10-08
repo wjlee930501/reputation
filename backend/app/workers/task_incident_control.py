@@ -149,6 +149,10 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
         run = _tracked_run(db, run_id, worker_task_id)
         if run is None:
             return False
+        if _deferred(run):
+            # 태스크는 정상 반환했지만 일을 끝낸 것이 아니라 미뤘다(예: V0 비용 창). 결과물이 없는데
+            # 복구로 닫으면 사람이 봐야 할 사고가 조용히 사라진다.
+            return False
         incident = _recoverable_incident(db, run)
         if incident is None:
             return False
@@ -276,11 +280,24 @@ def _run_identity(
         return None
 
 
+def _deferred(run: OperationRun) -> bool:
+    state = getattr(run.state, "value", run.state)
+    return state == OperationRunState.QUEUED.value and run.not_before_at is not None
+
+
 def _tracked_run(db: Session, run_id: uuid.UUID, task_id: str) -> OperationRun | None:
     return db.scalar(
         select(OperationRun).where(OperationRun.id == run_id, OperationRun.task_id == task_id)
     )
 
+
+# 더 나중 실행이 옛 사고를 대신하는 종결. SUCCEEDED는 일을 끝냈고, FAILED는 자기 사고로 지금
+# 상태를 말한다. PARTIAL·CANCELLED·건너뛰기(OPERATION_SKIPPED)는 자기 사고를 열지 않으므로
+# 옛 사고를 닫으면 남은 문제가 아무 데도 보이지 않는다.
+_SUPERSEDING_RUN_STATES = (
+    OperationRunState.SUCCEEDED.value,
+    OperationRunState.FAILED.value,
+)
 
 # 한 tick에 닫는 해결된 사고 상한. 밀린 백로그도 몇 분 안에 비워진다.
 RESOLVED_TASK_INCIDENT_BATCH = 50
@@ -297,16 +314,29 @@ def _resolved_run_condition():
     측정·다음 생성처럼 **새 실행**이 같은 일을 끝내도 옛 사고는 계속 열려 일일 요약의
     '백그라운드 작업 중단'으로 쌓였다(2026-10-02 운영 96건 중 86건). 셋 중 하나면 해결이다.
     - 그 실행 자체가 결국 SUCCEEDED로 끝났다(실패 신호 뒤 같은 run의 재시도가 성공).
-    - 같은 종류·같은 대상(`_dispatch.target_id`)의 더 나중 실행이 SUCCEEDED다.
+    - 같은 종류·같은 대상의 더 나중 실행이 SUCCEEDED거나 FAILED다. 그 실행이 이 일을 이어받았고,
+      실패였다면 그 실행의 사고가 지금 상태를 대신 말한다(PARTIAL·CANCELLED는 대신하지 않는다).
     - 대상이 콘텐츠이고 그 글이 실행 뒤에 처음 공개됐다.
+
+    대상은 `_dispatch.target_id`다. 저장된 배포 정보가 없는 실행(대상 NULL)은 NULL=NULL이
+    참이 아니라 영영 짝을 찾지 못했다 — 그때는 같은 병원(병원 없음끼리 포함)을 같은 대상으로 본다.
     """
 
     later = OperationRun.__table__.alias("later_run")
     target = _dispatch_target(OperationRun.request_payload)
-    later_succeeded = exists().where(
+    later_target = _dispatch_target(later.c.request_payload)
+    same_target = or_(
+        later_target == target,
+        and_(
+            target.is_(None),
+            later_target.is_(None),
+            later.c.hospital_id.is_not_distinct_from(OperationRun.hospital_id),
+        ),
+    )
+    later_finished = exists().where(
         later.c.operation_type == OperationRun.operation_type,
-        _dispatch_target(later.c.request_payload) == target,
-        later.c.state == OperationRunState.SUCCEEDED.value,
+        same_target,
+        later.c.state.in_(_SUPERSEDING_RUN_STATES),
         later.c.requested_at > OperationRun.requested_at,
     )
     published_after = and_(
@@ -318,7 +348,7 @@ def _resolved_run_condition():
     )
     return or_(
         OperationRun.state == OperationRunState.SUCCEEDED.value,
-        later_succeeded,
+        later_finished,
         published_after,
     )
 

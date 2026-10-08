@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.celery_app import celery_app
-from app.workers import dispatch_auth, generation_run_control
+from app.workers import dispatch_auth, generation_run_control, operation_run_signals
+from app.workers.dispatch_envelope import DISPATCH_TTL_SECONDS
 
 CANARY_TASKS = {
     "app.workers.canary_tasks.canary_default": "canary-default",
@@ -173,10 +174,14 @@ def test_previous_release_dispatch_is_accepted_only_during_rollout_handoff(monke
         kwargs={},
         retries=0,
         headers=headers,
-        now=1_700_000_000 + dispatch_auth.RELEASE_HANDOFF_GRACE_SECONDS,
+        now=1_700_000_000 + DISPATCH_TTL_SECONDS,
     )
 
-    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="handoff expired"):
+    # 이전 릴리스의 메시지는 봉투 수명 동안 유효하고(적체·재배달 포함), 수명이 다하면 봉투
+    # 만료가 막는다. 따로 두던 짧은 인계 유예는 없다.
+    with pytest.raises(
+        dispatch_auth.DispatchAuthorizationError, match="^expired authenticated dispatch envelope$"
+    ):
         dispatch_auth.validate_task_dispatch(
             task_name="app.workers.autonomous_recovery.reconcile",
             task_id="rollout-task",
@@ -184,7 +189,7 @@ def test_previous_release_dispatch_is_accepted_only_during_rollout_handoff(monke
             kwargs={},
             retries=0,
             headers=headers,
-            now=1_700_000_000 + dispatch_auth.RELEASE_HANDOFF_GRACE_SECONDS + 1,
+            now=1_700_000_000 + DISPATCH_TTL_SECONDS + 1,
         )
 
 
@@ -357,7 +362,7 @@ def test_exact_worker_loss_redelivery_is_allowed_but_changed_or_expired_messages
             kwargs={},
             retries=0,
             headers=headers,
-            now=1_700_000_000 + dispatch_auth.DISPATCH_TTL_SECONDS + 1,
+            now=1_700_000_000 + DISPATCH_TTL_SECONDS + 1,
         )
 
 
@@ -617,6 +622,8 @@ def test_production_lead_recovery_reaches_the_worker_only_with_its_exact_run(
     )
 
     monkeypatch.setattr(dispatch_auth.time, "time", lambda: 1_700_000_001)
+    # claim은 test_dispatch_deploy_safe가 본다. 여기서는 claim된 뒤의 판(claim version 8)을 둔다.
+    monkeypatch.setattr(operation_run_signals, "track_operation_prerun", lambda **_kwargs: None)
     dispatch_auth.AuthenticatedTask.before_start(
         task,
         "task-id",

@@ -154,6 +154,9 @@ class OperationRun(Base):
     queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 미룬 실행(QUEUED)을 자율 복구가 다시 보낼 수 있는 가장 이른 시각(0083). 긴 Celery
+    # countdown 대신 쓴다 — 브로커·봉투·lease 시계보다 오래 사는 메시지를 만들지 않는다.
+    not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

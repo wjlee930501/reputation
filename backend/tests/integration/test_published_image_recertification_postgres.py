@@ -1443,10 +1443,11 @@ def test_a_block_whose_incident_is_not_visible_re_enters_the_sweep(pg_session, m
     )
     assert sent == 1 and len(dispatched) == 1
 
+    # publish 직후 QUEUED로 표시된다 — REQUESTED로 두면 자율 복구가 유실로 보고 또 보낸다.
     sweep_run = pg_session.execute(
         select(OperationRun).where(
             OperationRun.hospital_id == hospital.id,
-            OperationRun.state == OperationRunState.REQUESTED,
+            OperationRun.state == OperationRunState.QUEUED,
         )
     ).scalar_one()
     free, free_worker = _claim_requested_run(pg_session, sweep_run)

@@ -11,8 +11,20 @@ from typing import Any
 
 from app.core.config import settings
 
-DISPATCH_TTL_SECONDS = 3600
+# 두 단계로 늘리는 봉투 수명.
+# - DISPATCH_MAX_LIFETIME_SECONDS: 검증이 받아 주는 상한(`0 < 수명 <= 상한`). 브로커가 되돌린
+#   메시지(visibility_timeout 7200초)나 배포·적체로 늦게 소비되는 메시지가 유효하도록 6시간이다.
+# - DISPATCH_TTL_SECONDS: 발행자가 서명하는 수명. #226 이전 워커는 수명이 정확히 3600초인 봉투만
+#   받는다 — 롤아웃 겹침 구간에 그 워커가 6시간 봉투를 소비하면 task_prerun에서 실행을 claim한 뒤
+#   검증에 실패해 실행을 FAILED로 끝낸다. 그래서 이번 릴리스는 3600초로 서명한다.
+#   2026-10-08 이후 릴리스에서, #226 이전 워커 리비전이 더는 소비하지 않을 때 상한으로 올린다.
+DISPATCH_MAX_LIFETIME_SECONDS = 6 * 60 * 60
+DISPATCH_TTL_SECONDS = 60 * 60
 CLOCK_SKEW_SECONDS = 30
+# Celery countdown/eta의 상한. 이보다 긴 대기는 메시지로 들고 있지 않고 OperationRun의
+# `not_before_at`에 남겨 자율 복구가 그 시각 뒤에 새 봉투로 다시 보낸다 — 대기 메시지가
+# 브로커 visibility_timeout·봉투 TTL·실행 lease보다 오래 살아 배포 사이에 만료·중복되지 않게 한다.
+MAX_DISPATCH_COUNTDOWN_SECONDS = 15 * 60
 PREFIX = "reputation_dispatch_"
 PURPOSE_HEADER = f"{PREFIX}purpose"
 TARGET_HEADER = f"{PREFIX}target"

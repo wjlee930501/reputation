@@ -142,7 +142,14 @@ celery_app.conf.update(
     # Redis priority 0 is highest and 9 is lowest. It is advisory and cannot preempt work
     # already occupying both slots; queue-wait measurements determine whether later dedicated
     # capacity is justified. Priority queue ordering makes an available slot select control work.
-    broker_transport_options={"queue_order_strategy": "priority"},
+    # visibility_timeout: 확인(ack)되지 않은 메시지를 kombu가 다시 큐로 되돌리기까지의 시간.
+    # 가장 긴 hard time limit(2700초)과 prefetch 대기보다 길어 실행 중인 메시지를 중복 배달하지
+    # 않고, 검증 상한(`dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS`, 6시간)보다 짧다. 실행
+    # lease(`operation_run_signals`)는 이 값 이하다. 이번 릴리스는 아직 3600초로 서명하므로, 정상
+    # 종료 없이 끊겨 7200초 뒤 되돌아온 메시지는 만료돼 거절된다(사고로 보인다). 이제 검증이 claim
+    # 보다 먼저라 그 사본이 실행을 FAILED로 끝내지는 못한다. cold shutdown이 정상이면 메시지는 몇 초
+    # 안에 되돌아오므로 드문 일이고, 서명 수명을 6시간으로 올리는 다음 릴리스에서 사라진다.
+    broker_transport_options={"queue_order_strategy": "priority", "visibility_timeout": 7200},
     task_queue_max_priority=9,
     task_default_priority=4,
     task_annotations={
