@@ -426,8 +426,14 @@ def plan_corrections(
     review: Mapping[str, Any] | None,
     *,
     must_use_messages: Iterable[str] = (),
+    include_uncertain: bool = False,
 ) -> CorrectionPlan:
-    """저장된 검수 지적 중 이 패스가 맡을 것을 고른다."""
+    """저장된 검수 지적 중 이 패스가 맡을 것을 고른다.
+
+    `include_uncertain`은 공개 글 교정에서만 켠다. 위치가 특정된 UNCERTAIN 사실·안전 지적 문장도
+    HARD와 같이 고치거나 지운다 — 2026-10-08 운영에서 거의 모든 공개 글에 UNCERTAIN이 섞여 있어
+    HARD만 맡으면 글 전체가 사람에게 넘어갔다. 교정본은 어차피 독립 재검수 PASS가 있어야 쓰인다.
+    """
 
     must_use = [str(message) for message in must_use_messages if str(message).strip()]
     targets: dict[tuple[str, int, int], SentenceTarget] = {}
@@ -462,7 +468,7 @@ def plan_corrections(
             )
             continue
         if (
-            severity == "HARD"
+            (severity == "HARD" or (include_uncertain and severity == "UNCERTAIN"))
             and _label(finding.get("kind")) in _SENTENCE_KINDS
             and located is not None
         ):
@@ -1056,6 +1062,7 @@ async def run_minimal_correction(
     state: Mapping[str, Any] | None,
     limits: CorrectionLimits,
     dependencies: CorrectionDependencies,
+    include_uncertain: bool = False,
 ) -> CorrectionOutcome:
     """상한 안에서 교정→독립 재검수를 되풀이한다. PASS 하나만 성공이다."""
 
@@ -1069,7 +1076,9 @@ async def run_minimal_correction(
     history: list[dict[str, Any]] = []
     status = "NOT_APPLICABLE"
     while True:
-        plan = plan_corrections(current, current_review, must_use_messages=must_use)
+        plan = plan_corrections(
+            current, current_review, must_use_messages=must_use, include_uncertain=include_uncertain
+        )
         if not plan.applicable:
             if last_review is not None:
                 status = "BLOCKED"
@@ -1181,7 +1190,9 @@ def published_needs_human_reason(
         quote = str(finding.get("quote") or "").strip()
         if quote and _quote_matches(title, quote) and _locate(content, quote) is None:
             return "TITLE_FINDING"
-    plan = plan_corrections(content, review, must_use_messages=must_use_messages)
+    plan = plan_corrections(
+        content, review, must_use_messages=must_use_messages, include_uncertain=True
+    )
     if not plan.applicable:
         return "NOT_CORRECTABLE"
     if plan.uncorrectable:
@@ -1222,6 +1233,7 @@ async def run_published_correction(
         state=state,
         limits=limits,
         dependencies=dependencies,
+        include_uncertain=True,
     )
     if outcome.content is not None and outcome.content.get("title") != content.get("title"):
         logger.error("Published correction changed the title; discarding the candidate")

@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from celery import current_task
-from sqlalchemy import case, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import joinedload
 
 from app.core.celery_app import celery_app
@@ -131,7 +131,16 @@ def _flagged_stmt(limit: int):
             ContentItem.body.is_not(None),
             publicly_operational_hospital_predicate(),
             flag["status"].as_string() == POST_PUBLISH_FLAGGED,
-            flag["correction"]["finished"].as_string().is_distinct_from("true"),
+            or_(
+                flag["correction"]["finished"].as_string().is_distinct_from("true"),
+                # 예전 교정 규칙으로 돈을 쓰지 않고 사람에게 넘긴 글은 새 규칙으로 다시 본다
+                # (`published_correction.CORRECTION_RULES_VERSION`과 같은 판정).
+                and_(
+                    func.coalesce(flag["correction"]["passes"].as_integer(), 0) == 0,
+                    func.coalesce(flag["correction"]["rules_version"].as_integer(), 1)
+                    < pc.CORRECTION_RULES_VERSION,
+                ),
+            ),
         )
         .order_by(ContentItem.published_at, ContentItem.id)
         .options(joinedload(ContentItem.hospital))

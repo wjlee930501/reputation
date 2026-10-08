@@ -471,7 +471,7 @@ def test_correction_attempts_are_capped_per_post():
     assert pc.correction_exhausted({}, max_passes=2) is False
     assert pc.correction_exhausted({"correction": {"passes": 1}}, max_passes=2) is False
     assert pc.correction_exhausted({"correction": {"passes": 2}}, max_passes=2) is True
-    assert pc.correction_exhausted({"correction": {"finished": True}}, max_passes=2) is True
+    assert pc.correction_exhausted({"correction": {"finished": True, "rules_version": pc.CORRECTION_RULES_VERSION}}, max_passes=2) is True
     assert pc.correction_exhausted({}, max_passes=0) is True
 
 
@@ -773,3 +773,91 @@ def test_string_only_flag_that_now_passes_is_just_reviewed(monkeypatch, hooks):
     assert sweep.POST_PUBLISH_FLAG_KEY not in item.essence_check_summary
     assert item.post_publish_reviewed_by == "system:ai-review"
     assert hooks.recovered == [item.id]
+
+
+def _with_uncertain(item, *, quote=NEUTRAL_B, kind="MEDICAL_SAFETY"):
+    marker = item.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]
+    marker["structured_findings"].append(
+        {
+            "severity": "UNCERTAIN",
+            "kind": kind,
+            "message": "근거가 불분명한 단정입니다.",
+            "target": "CANDIDATE_TEXT",
+            "quote": quote,
+        }
+    )
+    return item
+
+
+def test_published_mode_takes_located_uncertain_sentences_too():
+    """2026-10-08 운영: 거의 모든 글에 UNCERTAIN이 섞여 있어 HARD만 고치면 전부 사람에게 갔다."""
+    item = _with_uncertain(_flagged_item())
+    review = {"findings": item.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["structured_findings"]}
+
+    assert mc.published_needs_human_reason(_content(item), review, must_use_messages=[MUST_USE]) is None
+    plan = mc.plan_corrections(_content(item), review, must_use_messages=[MUST_USE], include_uncertain=True)
+    assert {target.sentence.strip() for target in plan.targets} == {BAD, NEUTRAL_B}
+    assert plan.uncorrectable == ()
+
+
+def test_draft_mode_still_leaves_uncertain_sentences_alone():
+    item = _with_uncertain(_flagged_item())
+    review = {"findings": item.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["structured_findings"]}
+
+    plan = mc.plan_corrections(_content(item), review, must_use_messages=[MUST_USE])
+
+    assert [target.sentence.strip() for target in plan.targets] == [BAD]
+    assert plan.uncorrectable == ("근거가 불분명한 단정입니다.",)
+
+
+def test_published_mode_unlocated_uncertain_still_goes_to_the_human():
+    item = _with_uncertain(_flagged_item(), quote="본문에 없는 문장입니다.")
+    review = {"findings": item.essence_check_summary[sweep.POST_PUBLISH_FLAG_KEY]["structured_findings"]}
+
+    assert (
+        mc.published_needs_human_reason(_content(item), review, must_use_messages=[MUST_USE])
+        == "PARTLY_UNCORRECTABLE"
+    )
+
+
+def test_needs_human_judged_under_older_rules_without_spend_is_reopened():
+    """규칙이 바뀌면 돈을 쓰지 않고 사람에게 넘긴 글은 새 규칙으로 다시 본다(2026-10-08 18편)."""
+    old = {"correction": {"finished": True, "passes": 0, "last_status": "NEEDS_HUMAN"}}
+    spent = {"correction": {"finished": True, "passes": 1, "last_status": "BLOCKED"}}
+    current = {
+        "correction": {
+            "finished": True,
+            "passes": 0,
+            "last_status": "NEEDS_HUMAN",
+            "rules_version": pc.CORRECTION_RULES_VERSION,
+        }
+    }
+
+    assert pc.correction_exhausted(old, max_passes=2) is False
+    assert pc.correction_exhausted(spent, max_passes=2) is True
+    assert pc.correction_exhausted(current, max_passes=2) is True
+
+
+def test_attempt_records_the_rules_version():
+    marker = pc.marker_with_attempt(
+        {"status": "FLAGGED"},
+        outcome=mc.CorrectionOutcome(status="NEEDS_HUMAN"),
+        finished=True,
+        reason="NOT_CORRECTABLE",
+        now=NOW,
+    )
+
+    assert marker["correction"]["rules_version"] == pc.CORRECTION_RULES_VERSION
+
+
+def test_flagged_selection_reopens_free_older_rule_verdicts():
+    from sqlalchemy.dialects import postgresql
+
+    sql = str(
+        sweep._flagged_stmt(5).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "rules_version" in sql
+    assert "passes" in sql

@@ -93,6 +93,17 @@ def structured_review_from_marker(marker: Mapping[str, Any] | None) -> dict[str,
     return {"findings": list(findings)}
 
 
+# 교정 판정 규칙의 판. 규칙이 바뀌면 올린다 — 예전 규칙으로 돈을 쓰지 않고 사람에게 넘긴 글
+# (passes 0)은 새 규칙으로 다시 본다. 2: 위치가 특정된 UNCERTAIN 문장도 맡는다(2026-10-08).
+CORRECTION_RULES_VERSION = 2
+
+
+def _judged_under_older_rules_without_spend(state: Mapping[str, Any]) -> bool:
+    return int(state.get("passes") or 0) == 0 and int(
+        state.get("rules_version") or 1
+    ) < CORRECTION_RULES_VERSION
+
+
 def correction_state(marker: Mapping[str, Any] | None) -> dict[str, Any]:
     state = (marker or {}).get("correction")
     return dict(state) if isinstance(state, Mapping) else {}
@@ -104,6 +115,8 @@ def correction_exhausted(marker: Mapping[str, Any] | None, *, max_passes: int) -
     if max_passes <= 0:
         return True
     state = correction_state(marker)
+    if bool(state.get("finished")) and _judged_under_older_rules_without_spend(state):
+        return False
     return bool(state.get("finished")) or int(state.get("passes") or 0) >= max_passes
 
 
@@ -123,6 +136,7 @@ def marker_with_attempt(
         "passes": max(int(previous.get("passes") or 0), outcome.passes),
         "rereviews": max(int(previous.get("rereviews") or 0), outcome.rereviews),
         "finished": finished,
+        "rules_version": CORRECTION_RULES_VERSION,
         "last_status": outcome.status,
         "last_attempt_at": now.isoformat(),
         "history": history[-_HISTORY_LIMIT:],
