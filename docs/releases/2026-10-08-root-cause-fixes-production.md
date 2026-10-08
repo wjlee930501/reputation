@@ -55,8 +55,10 @@
 - 새 워커 기동 직후 07:35~07:37Z에 "expired authenticated dispatch envelope" ERROR 약 1,458건 — 4번 원인(옛 워커 멎음)으로
   쌓인 매분 유지 작업의 만료 사본이다. 새 순서라 실행을 claim하거나 FAILED로 끝내지 않았고 사고도 열리지 않았다. 다만
   OperationRun 없는 주기 작업의 만료 사본은 ERROR 대신 WARNING 한 줄·`Ignore`가 맞다 — 후속 PR에 포함.
-- 후속 PR(브로커 연결 복원력): 소켓 timeout·keepalive·health check, 재연결 무한 재시도, 멎은 소비자를 스스로 끝내는
-  엔트리포인트 감시, 주기 작업 만료 사본의 조용한 폐기.
+- 후속 PR #231(브로커 연결 복원력, main `ad5a4b69`, **미배포**): 소켓 timeout·keepalive·health check, 소비자 재연결 상한 100회,
+  `heartbeat_sent` 기반 liveness 파일로 `/live` 실패 → Cloud Run 재기동(멎은 Heart publish의 유일한 출구), 주기 ≤ 1시간인
+  Beat 작업의 만료 사본만 WARNING+Ignore. 로컬에서 `docker pause redis`로 멎음을 재현하고 `/live` 실패·복구를 확인했다.
+  운영 워커에는 `/live` liveness probe(10초 주기)가 이미 설정되어 있다.
 - 다음 릴리스에서 봉투 서명 수명을 6시간으로 올린다(#226 이전 워커 리비전이 모두 사라진 뒤).
 - `operation_runs`에 2026-09-07의 `NIGHTLY_CONTENT_GENERATION` RUNNING 1건이 남아 있다(옛 잔재, 실행 영향 없음) — 정리 대상.
 - 사후 `SLACK_DEV` 행 분포(정리 전): HOLD `DELIVERY_OUTCOME_UNKNOWN` 48 · HOLD `DEV_WEBHOOK_MISSING` 26 · FAILED 27 · SENT 19.
