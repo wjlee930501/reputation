@@ -50,8 +50,11 @@ from app.workers.incident_backlog import close_resolved_backlog_incidents
 from app.workers.task_incident_control import close_resolved_task_incidents
 
 _BATCH_SIZE: Final = 100
+# REQUESTED는 '아직 브로커에 넣지 못했다'만 뜻한다 — 모든 배포 지점이 publish 직후 QUEUED로
+# 바꾸므로 짧게 둔다. QUEUED는 '브로커에 있다'라서 적체를 유실로 오인하지 않도록 길게 둔다.
+# 관측된 최악의 content 적체는 약 70분이었고, 2분 만에 다시 보내던 때는 적체마다 사본이 생겼다.
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
-_QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=1)
+_QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=3)
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
 _REBUILD_SITE_BUDGET_WINDOW: Final = timedelta(hours=24)
@@ -440,6 +443,7 @@ def _start_recertify_run(
         },
         task_id=task_id,
     )
+    generation_run_control.mark_operation_run_queued(db, run.id, observed_at)
     return True
 
 
@@ -635,8 +639,9 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
     if policy is None or dispatch is None:
         _fail_unsafe_operation_run(db, run, observed_at)
         return False
-    if not run.task_id:
-        run.task_id = str(uuid.uuid4())
+    # 다시 보낼 때마다 새 task id다. 그래야 `run.task_id == 워커 task id`가 '지금 유효한 사본'을
+    # 한 가지 뜻으로 가리키고, 늦게 도착한 이전 사본은 실패가 아니라 건너뛰기(STALE)로 끝난다.
+    run.task_id = str(uuid.uuid4())
     celery_app.send_task(
         policy.task_name,
         args=list(dispatch.task_args),

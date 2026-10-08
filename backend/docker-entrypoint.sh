@@ -20,6 +20,12 @@ case "$SERVICE" in
     # Cloud Run 서비스는 $PORT 리슨이 필수 — celery는 HTTP가 없으므로
     # 경량 헬스 서버를 사이드 프로세스로 띄운다 (없으면 revision ready 실패).
     python -m app.workers.health_server &
+    # Cloud Run은 리비전을 바꿀 때 SIGTERM을 보내고 10초 뒤 SIGKILL한다. Celery 기본 SIGTERM은
+    # 실행 중 태스크를 기다리는 warm shutdown이라 10초 안에 끝나지 못하고 강제 종료돼 브로커
+    # 채널이 닫히지 않는다. 그러면 kombu는 확인 안 된 메시지를 visibility_timeout이 지나서야
+    # 되돌린다. SIGTERM을 cold shutdown(SIGQUIT)으로 바꾸면 실행 중 요청을 취소하고 채널을
+    # 정상 종료해 미확인 메시지가 몇 초 안에 큐로 돌아간다(acks_late라 다시 실행된다).
+    export REMAP_SIGTERM=SIGQUIT
     exec celery -A app.core.celery_app worker \
       --loglevel=info \
       -Q control,default,content,sov,reports,leadgen,certificates \

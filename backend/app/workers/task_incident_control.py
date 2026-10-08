@@ -282,6 +282,16 @@ def _tracked_run(db: Session, run_id: uuid.UUID, task_id: str) -> OperationRun |
     )
 
 
+_TERMINAL_RUN_STATES = tuple(
+    state.value
+    for state in (
+        OperationRunState.SUCCEEDED,
+        OperationRunState.PARTIAL,
+        OperationRunState.FAILED,
+        OperationRunState.CANCELLED,
+    )
+)
+
 # 한 tick에 닫는 해결된 사고 상한. 밀린 백로그도 몇 분 안에 비워진다.
 RESOLVED_TASK_INCIDENT_BATCH = 50
 
@@ -297,16 +307,29 @@ def _resolved_run_condition():
     측정·다음 생성처럼 **새 실행**이 같은 일을 끝내도 옛 사고는 계속 열려 일일 요약의
     '백그라운드 작업 중단'으로 쌓였다(2026-10-02 운영 96건 중 86건). 셋 중 하나면 해결이다.
     - 그 실행 자체가 결국 SUCCEEDED로 끝났다(실패 신호 뒤 같은 run의 재시도가 성공).
-    - 같은 종류·같은 대상(`_dispatch.target_id`)의 더 나중 실행이 SUCCEEDED다.
+    - 같은 종류·같은 대상의 더 나중 실행이 끝났다(성공이든 아니든). 그 실행이 이 일을 이어받았고,
+      실패였다면 그 실행의 사고가 지금 상태를 대신 말한다.
     - 대상이 콘텐츠이고 그 글이 실행 뒤에 처음 공개됐다.
+
+    대상은 `_dispatch.target_id`다. 저장된 배포 정보가 없는 실행(대상 NULL)은 NULL=NULL이
+    참이 아니라 영영 짝을 찾지 못했다 — 그때는 같은 병원(병원 없음끼리 포함)을 같은 대상으로 본다.
     """
 
     later = OperationRun.__table__.alias("later_run")
     target = _dispatch_target(OperationRun.request_payload)
-    later_succeeded = exists().where(
+    later_target = _dispatch_target(later.c.request_payload)
+    same_target = or_(
+        later_target == target,
+        and_(
+            target.is_(None),
+            later_target.is_(None),
+            later.c.hospital_id.is_not_distinct_from(OperationRun.hospital_id),
+        ),
+    )
+    later_finished = exists().where(
         later.c.operation_type == OperationRun.operation_type,
-        _dispatch_target(later.c.request_payload) == target,
-        later.c.state == OperationRunState.SUCCEEDED.value,
+        same_target,
+        later.c.state.in_(_TERMINAL_RUN_STATES),
         later.c.requested_at > OperationRun.requested_at,
     )
     published_after = and_(
@@ -318,7 +341,7 @@ def _resolved_run_condition():
     )
     return or_(
         OperationRun.state == OperationRunState.SUCCEEDED.value,
-        later_succeeded,
+        later_finished,
         published_after,
     )
 

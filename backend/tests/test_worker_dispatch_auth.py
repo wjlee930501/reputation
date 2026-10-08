@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.celery_app import celery_app
-from app.workers import dispatch_auth, generation_run_control
+from app.workers import dispatch_auth, generation_run_control, operation_run_signals
 
 CANARY_TASKS = {
     "app.workers.canary_tasks.canary_default": "canary-default",
@@ -176,7 +176,9 @@ def test_previous_release_dispatch_is_accepted_only_during_rollout_handoff(monke
         now=1_700_000_000 + dispatch_auth.RELEASE_HANDOFF_GRACE_SECONDS,
     )
 
-    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="handoff expired"):
+    # 인계 유예는 봉투 수명과 같다 — 적체·재배달된 이전 릴리스 메시지도 수명 안에서는 유효하고,
+    # 수명이 다하면 봉투 만료가 막는다.
+    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="expired"):
         dispatch_auth.validate_task_dispatch(
             task_name="app.workers.autonomous_recovery.reconcile",
             task_id="rollout-task",
@@ -617,6 +619,8 @@ def test_production_lead_recovery_reaches_the_worker_only_with_its_exact_run(
     )
 
     monkeypatch.setattr(dispatch_auth.time, "time", lambda: 1_700_000_001)
+    # claim은 test_dispatch_deploy_safe가 본다. 여기서는 claim된 뒤의 판(claim version 8)을 둔다.
+    monkeypatch.setattr(operation_run_signals, "track_operation_prerun", lambda **_kwargs: None)
     dispatch_auth.AuthenticatedTask.before_start(
         task,
         "task-id",

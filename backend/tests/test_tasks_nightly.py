@@ -4710,6 +4710,8 @@ class _AutoPublishDB:
         self.added = []
 
     def execute(self, stmt):
+        if isinstance(stmt, Update):  # publish 직후 실행을 QUEUED로 표시하는 CAS
+            return _Result(items=[])
         entity = _statement_entity(stmt)
         if entity is ContentItem:
             return _Result(items=[self.item] if self.item else [])
@@ -4724,6 +4726,9 @@ class _AutoPublishDB:
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        pass
 
     def begin_nested(self):
         # 발행기가 이미지 때문에만 막힌 글의 시스템 실행을 savepoint 안에서 넣는다(PR-B).
@@ -6661,6 +6666,8 @@ class _DigestGateDB:
         return False
 
     def execute(self, stmt):
+        if isinstance(stmt, Update):  # publish 직후 실행을 QUEUED로 표시하는 CAS
+            return SimpleNamespace(scalar_one_or_none=lambda: None)
         description = stmt.column_descriptions[0]
         entity = description["entity"]
         if entity is NotificationOutbox:
@@ -6685,6 +6692,9 @@ class _DigestGateDB:
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        pass
 
     def outbox(self):
         return [row for row in self.added if isinstance(row, NotificationOutbox)]

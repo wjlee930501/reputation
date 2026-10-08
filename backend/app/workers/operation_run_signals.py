@@ -9,7 +9,7 @@ from enum import StrEnum
 from typing import Protocol, assert_never
 from uuid import UUID
 
-from celery.signals import task_failure, task_postrun, task_prerun
+from celery.signals import task_failure, task_postrun
 from sqlalchemy import and_, func, or_, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql.dml import Update
@@ -20,6 +20,9 @@ from app.models.operations import JSONValue, OperationRun, OperationRunState
 logger = logging.getLogger(__name__)
 
 _HEADER = "operation_run_id"
+# 실행 lease. 가장 긴 hard time limit(2700초)보다 길어 살아 있는 실행을 다른 사본이
+# 가로채지 않고, 브로커 visibility_timeout(7200초, `core/celery_app.py`) 이하라서 강제 종료된
+# 실행은 브로커가 되돌린 사본이 도착할 때 이미 만료돼 이어받을 수 있다.
 _LEASE_SECONDS = 60 * 60
 _TASK_FAILED_MESSAGE = "작업 실행 중 오류가 발생했습니다. 운영 관제에서 다시 시도해 주세요."
 _TASK_REVOKED_MESSAGE = "작업 실행이 취소되었습니다."
@@ -42,13 +45,17 @@ class _PostrunState(StrEnum):
     RETRY = "RETRY"
 
 
-@task_prerun.connect(weak=False)
 def track_operation_prerun(
     *,
     task_id: str | None = None,
     task: _SignalTask | None = None,
     **_kwargs: JSONValue,
 ) -> None:
+    """Claim the run for this delivery.
+
+    task_prerun 수신자가 아니다 — `AuthenticatedTask.before_start`가 봉투 검증을 통과한
+    뒤에만 부른다. 만료·위조된 사본이 실행을 가져가거나 실패로 끝내지 못하게 하려는 것이다.
+    """
     run_id = _run_id_from_task(task)
     worker_id = _worker_id(task_id)
     if run_id is None or worker_id is None:

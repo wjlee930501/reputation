@@ -158,3 +158,68 @@ def test_an_unresolved_failure_stays_open(db):
     close_resolved_task_incidents(db)
 
     assert _state(db, incident) == "OPEN"
+
+
+def _untargeted_run(db, hospital, operation_type, state, *, at) -> OperationRun:
+    """저장된 배포 정보(`_dispatch`)가 없는 실행 — 대상이 NULL이다."""
+
+    run = OperationRun(
+        hospital_id=hospital.id,
+        operation_type=operation_type,
+        state=state,
+        request_payload={},
+        requested_at=at,
+    )
+    db.add(run)
+    db.flush()
+    return run
+
+
+def test_a_later_success_of_an_untargeted_run_closes_the_old_failure(db):
+    """대상이 NULL이면 NULL=NULL이 참이 아니라 영영 닫히지 않았다 — 같은 병원이면 같은 일이다."""
+
+    hospital = _hospital(db)
+    failed = _untargeted_run(
+        db, hospital, "TRIGGER_V0_REPORT", "FAILED", at=NOW - timedelta(hours=3)
+    )
+    incident = _incident(db, hospital, failed)
+    _untargeted_run(db, hospital, "TRIGGER_V0_REPORT", "SUCCEEDED", at=NOW)
+
+    assert close_resolved_task_incidents(db) == 1
+    assert _state(db, incident) == "ACKNOWLEDGED"
+
+
+def test_an_untargeted_failure_is_not_closed_by_another_hospitals_run(db):
+    hospital = _hospital(db)
+    failed = _untargeted_run(
+        db, hospital, "TRIGGER_V0_REPORT", "FAILED", at=NOW - timedelta(hours=3)
+    )
+    incident = _incident(db, hospital, failed)
+    _untargeted_run(db, _hospital(db), "TRIGGER_V0_REPORT", "SUCCEEDED", at=NOW)
+
+    close_resolved_task_incidents(db)
+
+    assert _state(db, incident) == "OPEN"
+
+
+def test_a_later_finished_run_supersedes_the_old_failure(db):
+    """같은 일을 이어받은 더 나중 실행이 끝났으면 옛 사고는 지금 상태를 말하지 않는다."""
+
+    hospital = _hospital(db)
+    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
+    incident = _incident(db, hospital, failed)
+    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "PARTIAL", at=NOW)
+
+    assert close_resolved_task_incidents(db) == 1
+    assert _state(db, incident) == "ACKNOWLEDGED"
+
+
+def test_a_later_run_still_in_flight_does_not_close_the_old_failure(db):
+    hospital = _hospital(db)
+    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
+    incident = _incident(db, hospital, failed)
+    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "QUEUED", at=NOW)
+
+    close_resolved_task_incidents(db)
+
+    assert _state(db, incident) == "OPEN"

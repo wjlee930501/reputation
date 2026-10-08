@@ -142,7 +142,12 @@ celery_app.conf.update(
     # Redis priority 0 is highest and 9 is lowest. It is advisory and cannot preempt work
     # already occupying both slots; queue-wait measurements determine whether later dedicated
     # capacity is justified. Priority queue ordering makes an available slot select control work.
-    broker_transport_options={"queue_order_strategy": "priority"},
+    # visibility_timeout: 확인(ack)되지 않은 메시지를 kombu가 다시 큐로 되돌리기까지의 시간.
+    # 기본 3600초는 봉투 TTL(당시 3600초)과 같아, 배포로 끊긴 메시지가 되돌아오는 순간 언제나
+    # 만료돼 거절됐다. 가장 긴 hard time limit(2700초)과 prefetch 대기보다 길어 실행 중인
+    # 메시지를 중복 배달하지 않고, 봉투 TTL(`dispatch_envelope.DISPATCH_TTL_SECONDS`)보다
+    # 짧아 되돌아온 메시지가 아직 유효하다. 실행 lease(`operation_run_signals`)는 이 값 이하다.
+    broker_transport_options={"queue_order_strategy": "priority", "visibility_timeout": 7200},
     task_queue_max_priority=9,
     task_default_priority=4,
     task_annotations={

@@ -11,7 +11,11 @@ from typing import Any
 
 from app.core.config import settings
 
-DISPATCH_TTL_SECONDS = 3600
+# 봉투 수명의 상한. 브로커가 되돌린 메시지(visibility_timeout 7200초)나 배포·적체로 늦게
+# 소비되는 메시지가 아직 유효해야 한다. 3600초였을 때는 배포마다 kombu가 미확인 메시지를
+# 정확히 1시간 뒤 되돌려 언제나 만료 거절됐다. 검증은 '같음'이 아니라 '이하'라서 이전
+# 릴리스가 3600초로 서명한 메시지도 롤아웃 중 그대로 유효하다.
+DISPATCH_TTL_SECONDS = 6 * 60 * 60
 CLOCK_SKEW_SECONDS = 30
 PREFIX = "reputation_dispatch_"
 PURPOSE_HEADER = f"{PREFIX}purpose"

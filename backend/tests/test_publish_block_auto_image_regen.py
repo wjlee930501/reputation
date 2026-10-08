@@ -36,7 +36,7 @@ from app.services.content_publication import (
 )
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
 from app.services.reference_verification import ReferenceVerifier
-from app.workers import dispatch_auth, tasks
+from app.workers import dispatch_auth, operation_run_signals, tasks
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
 from app.workers.generation_retry_policy import GenerationRetryClass
@@ -113,7 +113,10 @@ class _Savepoint:
 
 
 def _is_run_key_query(stmt) -> bool:
-    description = stmt.column_descriptions[0]
+    descriptions = getattr(stmt, "column_descriptions", None)
+    if not descriptions:  # publish 직후 실행을 QUEUED로 표시하는 UPDATE
+        return False
+    description = descriptions[0]
     return description["entity"] is OperationRun and description["name"] == "idempotency_key"
 
 
@@ -781,6 +784,8 @@ def _production_dispatch(monkeypatch, run=None):
     )
     monkeypatch.setattr(dispatch_auth.settings, "REPUTATION_RELEASE_REVISION", "release-a")
     monkeypatch.setattr(dispatch_auth.time, "time", lambda: 1_700_000_001)
+    # claim은 test_dispatch_deploy_safe가 본다. 여기서는 claim된 뒤의 판을 `_worker_task`가 둔다.
+    monkeypatch.setattr(operation_run_signals, "track_operation_prerun", lambda **_kwargs: None)
 
     class _RunSession:
         def __enter__(self):

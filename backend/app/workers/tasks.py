@@ -524,6 +524,7 @@ from app.workers.generation_run_control import (
     explicit_run_matches,
     finish_explicit_run,
     finish_item_run,
+    mark_operation_run_queued,
     safe_generation_rejection_message,
 )
 from app.workers.monthly_artifact_incident_control import (
@@ -5056,6 +5057,9 @@ def _dispatch_generation_item(db, recorder, item, *, notify: bool | None) -> boo
             type(error).__name__,
         )
         return False
+    # 브로커에 넣었으니 QUEUED다. content 큐 적체(최대 약 70분) 동안 REQUESTED로 두면 자율
+    # 복구가 2분 뒤 유실로 보고 같은 슬롯의 사본을 또 보냈다.
+    mark_operation_run_queued(db, run.id, datetime.now(timezone.utc))
     recorder.record(item.id, GenerationItemState.RUNNING)
     return True
 
@@ -7730,7 +7734,7 @@ def _auto_publish_one(
             )
             db.commit()
             if auto_image_run is not None:
-                _send_auto_image_regeneration(auto_image_run)
+                _send_auto_image_regeneration(db, auto_image_run)
             operator_line = operator_decides_digest_due(
                 code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
             )
@@ -7925,7 +7929,7 @@ def _reserve_auto_image_regeneration(
     return run
 
 
-def _send_auto_image_regeneration(run: OperationRun) -> None:
+def _send_auto_image_regeneration(db, run: OperationRun) -> None:
     """커밋된 실행을 서명된 봉투로 배포한다. 브로커 장애면 저장된 REQUESTED 실행을 자율 복구가 잇는다."""
 
     target_id = str(run.request_payload["_dispatch"]["target_id"])
@@ -7947,6 +7951,9 @@ def _send_auto_image_regeneration(run: OperationRun) -> None:
             target_id,
             type(error).__name__,
         )
+        return
+    # 브로커에 넣었으니 QUEUED다. REQUESTED로 두면 자율 복구가 2분 뒤 유실로 보고 사본을 또 보낸다.
+    mark_operation_run_queued(db, run.id, datetime.now(timezone.utc))
 
 
 def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> dict:
