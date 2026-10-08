@@ -110,7 +110,7 @@ def claims(monkeypatch):
         calls.append((run_id, worker_id))
         return result["version"]
 
-    monkeypatch.setattr(operation_run_signals, "_claim_safely", _claim)
+    monkeypatch.setattr(operation_run_signals, "_claim", _claim)
     return SimpleNamespace(calls=calls, result=result)
 
 
@@ -278,10 +278,8 @@ def test_a_bad_signature_still_fails_and_opens_an_incident(monkeypatch, claims) 
 # ── D. 시계 ──────────────────────────────────────────────────────────────────
 
 
-def test_an_envelope_signed_by_the_previous_release_ttl_still_validates(monkeypatch) -> None:
-    _production(monkeypatch, now=ISSUED + 10)
-    monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", 3600)
-    target = str(uuid.uuid4())
+def _stamp_with_lifetime(monkeypatch, lifetime: int, target: str) -> dict[str, str]:
+    monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", lifetime)
     headers = dispatch_auth.stamp_dispatch_headers(
         task_name=IMAGE_TASK,
         task_id="t",
@@ -291,32 +289,34 @@ def test_an_envelope_signed_by_the_previous_release_ttl_still_validates(monkeypa
         headers={},
         now=ISSUED,
     )
-    monkeypatch.undo()
+    monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", 3600)
+    return headers
+
+
+@pytest.mark.parametrize(
+    "lifetime",
+    # 3600초: #226 이전 릴리스와 이번 릴리스가 서명하는 수명. 상한: 다음 릴리스가 서명할 수명.
+    [3600, dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS],
+)
+def test_an_envelope_lifetime_within_the_bound_validates(monkeypatch, lifetime) -> None:
     _production(monkeypatch, now=ISSUED + 10)
+    target = str(uuid.uuid4())
+    headers = _stamp_with_lifetime(monkeypatch, lifetime, target)
 
     dispatch_auth.validate_task_dispatch(
         task_name=IMAGE_TASK, task_id="t", args=[target], kwargs={}, retries=0, headers=headers
     )
 
 
-@pytest.mark.parametrize("lifetime", [0, dispatch_envelope.DISPATCH_TTL_SECONDS + 1])
+@pytest.mark.parametrize("lifetime", [0, dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS + 1])
 def test_an_envelope_lifetime_outside_the_bound_is_rejected(monkeypatch, lifetime) -> None:
     _production(monkeypatch, now=ISSUED)
-    monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", lifetime)
     target = str(uuid.uuid4())
-    headers = dispatch_auth.stamp_dispatch_headers(
-        task_name=IMAGE_TASK,
-        task_id="t",
-        args=[target],
-        kwargs={},
-        retries=0,
-        headers={},
-        now=ISSUED,
-    )
-    monkeypatch.undo()
-    _production(monkeypatch, now=ISSUED)
+    headers = _stamp_with_lifetime(monkeypatch, lifetime, target)
 
-    with pytest.raises(dispatch_auth.DispatchAuthorizationError, match="lifetime"):
+    with pytest.raises(
+        dispatch_auth.DispatchAuthorizationError, match="invalid authenticated dispatch lifetime"
+    ):
         dispatch_auth.validate_task_dispatch(
             task_name=IMAGE_TASK,
             task_id="t",
@@ -327,7 +327,17 @@ def test_an_envelope_lifetime_outside_the_bound_is_rejected(monkeypatch, lifetim
         )
 
 
-def test_clocks_are_ordered_so_a_redelivered_message_is_never_expired() -> None:
+def test_this_release_signs_the_lifetime_pre_226_workers_accept() -> None:
+    """#226 이전 워커는 수명이 정확히 3600초인 봉투만 받는다 — 겹침 구간에 그 워커가 소비해도 안전하다."""
+
+    headers = dispatch_auth.stamp_dispatch_headers(
+        task_name=IMAGE_TASK, task_id="t", args=["x"], kwargs={}, retries=0, headers={}, now=ISSUED
+    )
+    issued = int(headers[dispatch_envelope.ISSUED_HEADER])
+    assert int(headers[dispatch_envelope.EXPIRES_HEADER]) - issued == 3600
+
+
+def test_clocks_are_ordered_for_redelivery_and_leases() -> None:
     longest_hard_limit = max(
         int(getattr(task, "time_limit", None) or celery_app.conf.task_time_limit)
         for name, task in celery_app.tasks.items()
@@ -336,8 +346,8 @@ def test_clocks_are_ordered_so_a_redelivered_message_is_never_expired() -> None:
     visibility = celery_app.conf.broker_transport_options["visibility_timeout"]
     assert celery_app.conf.broker_transport_options["queue_order_strategy"] == "priority"
     assert visibility > longest_hard_limit
-    assert dispatch_envelope.DISPATCH_TTL_SECONDS > visibility
-    assert dispatch_auth.RELEASE_HANDOFF_GRACE_SECONDS == dispatch_envelope.DISPATCH_TTL_SECONDS
+    assert dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS > visibility
+    assert dispatch_envelope.DISPATCH_TTL_SECONDS <= dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS
     # 살아 있는 실행을 다른 사본이 가로채지 않고(> hard limit), 강제 종료된 실행은
     # 재배달 사본이 이어받을 수 있다(<= visibility timeout).
     assert longest_hard_limit < operation_run_signals._LEASE_SECONDS <= visibility
@@ -500,7 +510,8 @@ def test_no_dispatch_site_holds_a_message_longer_than_the_bound() -> None:
     assert "countdown=_seconds_until_next_kst_cost_window" not in source
     v0 = inspect.getsource(tasks.trigger_v0_report)
     cost_branch = v0[v0.index("except V0CostDeferred") : v0.index("except V0MeasurementResumable")]
-    assert "defer_operation_run(" in cost_branch
+    assert "_defer_v0_until_cost_window(" in cost_branch
+    assert "defer_operation_run(" in inspect.getsource(tasks._defer_v0_until_cost_window)
 
 
 def test_a_deferred_run_is_not_stuck_before_its_time() -> None:
@@ -520,3 +531,133 @@ def test_a_deferred_run_is_not_stuck_before_its_time() -> None:
         _deferred(now + timedelta(minutes=1)), now
     )
     assert autonomous_recovery._operation_redispatch_is_due(_deferred(now), now)
+
+
+# ── V0 비용 보류의 저장 실패는 실행을 잃지 않는다 ───────────────────────────────
+
+
+class _NoSession:
+    def __enter__(self):
+        return SimpleNamespace()
+
+    def __exit__(self, *_exc):
+        return False
+
+
+class _Retry(Exception):
+    def __init__(self, **kwargs):
+        super().__init__("retry")
+        self.kwargs = kwargs
+
+
+def _v0_task(*, claimed: bool):
+    request = SimpleNamespace(
+        id="v0-copy",
+        headers={"operation_run_id": str(uuid.uuid4())},
+        operation_run_claim_version=3 if claimed else None,
+        kwargs={},
+    )
+
+    def _retry(**kwargs):
+        return _Retry(**kwargs)
+
+    return SimpleNamespace(request=request, retry=_retry)
+
+
+def test_a_failed_deferral_write_retries_within_the_bound(monkeypatch) -> None:
+    from app.workers import tasks
+
+    def _broken(*_args, **_kwargs):
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _NoSession)
+    monkeypatch.setattr(tasks, "defer_operation_run", _broken)
+
+    with pytest.raises(_Retry) as raised:
+        tasks._defer_v0_until_cost_window(_v0_task(claimed=True), RuntimeError("cost"), 0)
+
+    assert raised.value.kwargs["countdown"] == dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS
+
+
+def test_a_recorded_deferral_returns_without_a_long_countdown(monkeypatch) -> None:
+    from app.workers import tasks
+
+    deferred: list[datetime] = []
+    monkeypatch.setattr(tasks, "SyncSessionLocal", _NoSession)
+    monkeypatch.setattr(
+        tasks,
+        "defer_operation_run",
+        lambda _db, _task, not_before: deferred.append(not_before) or True,
+    )
+
+    result = tasks._defer_v0_until_cost_window(_v0_task(claimed=True), RuntimeError("cost"), 0)
+
+    assert result["status"] == "cost_deferred"
+    assert len(deferred) == 1 and deferred[0] > datetime.now(UTC)
+
+
+def test_a_run_less_v0_delivery_retries_within_the_bound(monkeypatch) -> None:
+    from app.workers import tasks
+
+    task = _v0_task(claimed=False)
+
+    with pytest.raises(_Retry) as raised:
+        tasks._defer_v0_until_cost_window(task, RuntimeError("cost"), 0)
+
+    assert raised.value.kwargs["countdown"] == dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS
+
+
+# ── claim을 확인하지 못한 배달은 중복이 아니라 되돌린다 ─────────────────────────
+
+
+def test_a_claim_database_error_requeues_instead_of_ignoring(monkeypatch) -> None:
+    from celery.exceptions import Reject
+    from sqlalchemy.exc import OperationalError
+
+    run = _image_run(task_id="copy", lease_owner="copy")
+    _production(monkeypatch, run=run)
+
+    def _down(*_args, **_kwargs):
+        raise OperationalError("UPDATE operation_runs", {}, Exception("connection lost"))
+
+    monkeypatch.setattr(operation_run_signals, "_claim", _down)
+    task = _task(_stamped(run, "copy"), "copy")
+    task.request.delivery_info = {"redelivered": True}
+
+    with pytest.raises(Reject) as raised:
+        dispatch_auth.AuthenticatedTask.before_start(
+            task, "copy", (run.request_payload["_dispatch"]["target_id"],), {}
+        )
+
+    assert raised.value.requeue is True
+    assert getattr(task.request, "operation_run_claim_version", None) is None
+
+
+# ── 미룬 실행은 복구로 보이지 않는다 ──────────────────────────────────────────
+
+
+def test_a_deferred_run_does_not_recover_its_incident(monkeypatch) -> None:
+    run_id = uuid.uuid4()
+    run = SimpleNamespace(
+        id=run_id,
+        state=OperationRunState.QUEUED,
+        not_before_at=datetime(2026, 10, 9, tzinfo=UTC),
+        operation_type="TRIGGER_V0_REPORT",
+    )
+
+    class _Session:
+        def __enter__(self):
+            return SimpleNamespace(scalar=lambda _statement: run)
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", _Session)
+    monkeypatch.setattr(
+        task_incident_control,
+        "_recoverable_incident",
+        lambda *_a: (_ for _ in ()).throw(AssertionError("a deferral is not a recovery")),
+    )
+    task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
+
+    assert task_incident_control.record_task_success(task, "v0-copy") is False

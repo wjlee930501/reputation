@@ -28,6 +28,10 @@ _TASK_FAILED_MESSAGE = "작업 실행 중 오류가 발생했습니다. 운영 �
 _TASK_REVOKED_MESSAGE = "작업 실행이 취소되었습니다."
 
 
+class OperationRunClaimUnavailable(RuntimeError):
+    """The claim could not be read or written; the delivery must not be judged a duplicate."""
+
+
 class _SignalRequest(Protocol):
     headers: Mapping[str, str] | None
     delivery_info: Mapping[str, object] | None
@@ -65,12 +69,31 @@ def track_operation_prerun(
     redelivered = isinstance(delivery_info, Mapping) and delivery_info.get(
         "redelivered"
     ) is True
-    task.request.operation_run_claim_version = _claim_safely(
-        run_id, worker_id, now, redelivered=redelivered
-    )
+    try:
+        claimed_version = _claim(run_id, worker_id, now, redelivered=redelivered)
+    except SQLAlchemyError as exc:
+        # 'claim이 맞지 않음(None)'과 'claim을 확인하지 못함'을 섞으면, DB 오류를 만난 재배달 사본이
+        # 중복으로 판정돼 버려지고 실행은 RUNNING에 영영 남는다. 호출자가 메시지를 되돌린다.
+        _log_database_error("claim", run_id, exc)
+        raise OperationRunClaimUnavailable(str(run_id)) from exc
+    task.request.operation_run_claim_version = claimed_version
 
 
 def _claim_safely(
+    run_id: UUID,
+    worker_id: str,
+    now: datetime,
+    *,
+    redelivered: bool,
+) -> int | None:
+    try:
+        return _claim(run_id, worker_id, now, redelivered=redelivered)
+    except SQLAlchemyError as exc:
+        _log_database_error("claim", run_id, exc)
+        return None
+
+
+def _claim(
     run_id: UUID,
     worker_id: str,
     now: datetime,
@@ -120,15 +143,11 @@ def _claim_safely(
         )
         .returning(OperationRun.version)
     )
-    try:
-        with SyncSessionLocal() as db:
-            db.execute(queued)
-            claimed_version = db.execute(running).scalar_one_or_none()
-            db.commit()
-            return claimed_version
-    except SQLAlchemyError as exc:
-        _log_database_error("claim", run_id, exc)
-        return None
+    with SyncSessionLocal() as db:
+        db.execute(queued)
+        claimed_version = db.execute(running).scalar_one_or_none()
+        db.commit()
+        return claimed_version
 
 
 @task_failure.connect(weak=False)

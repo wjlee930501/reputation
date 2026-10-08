@@ -202,16 +202,30 @@ def test_an_untargeted_failure_is_not_closed_by_another_hospitals_run(db):
     assert _state(db, incident) == "OPEN"
 
 
-def test_a_later_finished_run_supersedes_the_old_failure(db):
-    """같은 일을 이어받은 더 나중 실행이 끝났으면 옛 사고는 지금 상태를 말하지 않는다."""
+def test_a_later_failure_supersedes_the_old_failure(db):
+    """같은 일을 이어받은 더 나중 실행이 실패했으면 그 실행의 사고가 지금 상태를 말한다."""
 
     hospital = _hospital(db)
     failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
     incident = _incident(db, hospital, failed)
-    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "PARTIAL", at=NOW)
+    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW)
 
     assert close_resolved_task_incidents(db) == 1
     assert _state(db, incident) == "ACKNOWLEDGED"
+
+
+@pytest.mark.parametrize("later_state", ["PARTIAL", "CANCELLED"])
+def test_a_later_run_that_opens_no_incident_does_not_close_the_old_failure(db, later_state):
+    """PARTIAL(건너뛰기 포함)·CANCELLED는 자기 사고를 열지 않는다 — 닫으면 남은 문제가 사라진다."""
+
+    hospital = _hospital(db)
+    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
+    incident = _incident(db, hospital, failed)
+    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, later_state, at=NOW)
+
+    close_resolved_task_incidents(db)
+
+    assert _state(db, incident) == "OPEN"
 
 
 def test_a_later_run_still_in_flight_does_not_close_the_old_failure(db):

@@ -333,7 +333,13 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     """
     run_id = uuid.uuid4()
     task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
-    run = SimpleNamespace(id=run_id, operation_type="RUN_SOV", task_id="worker-task")
+    run = SimpleNamespace(
+        id=run_id,
+        operation_type="RUN_SOV",
+        task_id="worker-task",
+        state="RUNNING",
+        not_before_at=None,
+    )
     incident = SimpleNamespace(
         id=uuid.uuid4(),
         state="OPEN",

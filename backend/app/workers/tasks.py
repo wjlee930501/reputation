@@ -2593,6 +2593,46 @@ def _checkpoint_v0_progress(
     }
 
 
+def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: int):
+    """Hand a cost-deferred V0 run back to the database until the next KST cost window.
+
+    다음 비용 창(최대 약 24시간 뒤)까지 countdown으로 기다리면 그 메시지가 브로커·봉투·lease
+    시계보다 오래 살아 배포 사이에 만료·중복된다. 실행을 QUEUED로 돌려놓고 시각만 남기면
+    자율 복구가 그 뒤에 새 봉투로 다시 보낸다.
+    """
+    if explicit_run_context(task) is None:
+        # 실행 기록 없이 들어온 옛 배포다 — 상한 안의 짧은 재시도로 다시 확인한다.
+        raise task.retry(
+            exc=exc,
+            countdown=MAX_DISPATCH_COUNTDOWN_SECONDS,
+            kwargs=_v0_retry_kwargs(task, failure_retry_count),
+            max_retries=V0_CONTINUATION_MAX_RETRIES,
+        )
+    not_before = datetime.now(timezone.utc) + timedelta(
+        seconds=_seconds_until_next_kst_cost_window()
+    )
+    try:
+        with SyncSessionLocal() as db:
+            deferred = defer_operation_run(db, task, not_before)
+    except Exception as defer_error:  # noqa: BLE001 - DB 일시 장애가 실행을 잃게 하지 않는다.
+        # 미룸을 저장하지 못했다. 실패로 끝내면 실행이 FAILED가 돼 아무도 다시 보내지 않으므로
+        # 상한 안의 짧은 재시도로 다시 확인한다(비용 창 전이면 그때 다시 미룬다).
+        logger.warning(
+            "V0 cost deferral could not be recorded; retrying shortly: %s",
+            type(defer_error).__name__,
+        )
+        raise task.retry(
+            exc=exc,
+            countdown=MAX_DISPATCH_COUNTDOWN_SECONDS,
+            kwargs=_v0_retry_kwargs(task, failure_retry_count),
+            max_retries=V0_CONTINUATION_MAX_RETRIES,
+        ) from defer_error
+    return {
+        "status": "cost_deferred" if deferred else "stale_run",
+        "not_before": not_before.isoformat(),
+    }
+
+
 def _v0_retry_kwargs(task, failure_retry_count: int) -> dict[str, Any]:
     """Keep workflow failure budget separate from normal chunk count."""
     kwargs = dict(getattr(task.request, "kwargs", None) or {})
@@ -4730,26 +4770,7 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
 
     except V0CostDeferred as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
-        # 다음 비용 창(최대 약 24시간 뒤)까지 countdown으로 기다리면 그 메시지가 브로커·봉투·lease
-        # 시계보다 오래 살아 배포 사이에 만료·중복된다. 실행을 QUEUED로 돌려놓고 시각만 남기면
-        # 자율 복구가 그 뒤에 새 봉투로 다시 보낸다.
-        if explicit_run_context(self) is not None:
-            not_before = datetime.now(timezone.utc) + timedelta(
-                seconds=_seconds_until_next_kst_cost_window()
-            )
-            with SyncSessionLocal() as db:
-                deferred = defer_operation_run(db, self, not_before)
-            return {
-                "status": "cost_deferred" if deferred else "stale_run",
-                "not_before": not_before.isoformat(),
-            }
-        # 실행 기록 없이 들어온 옛 배포다 — 상한 안의 짧은 재시도로 다시 확인한다.
-        raise self.retry(
-            exc=exc,
-            countdown=MAX_DISPATCH_COUNTDOWN_SECONDS,
-            kwargs=_v0_retry_kwargs(self, failure_retry_count),
-            max_retries=V0_CONTINUATION_MAX_RETRIES,
-        )
+        return _defer_v0_until_cost_window(self, exc, failure_retry_count)
     except V0MeasurementResumable as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
         raise self.retry(
