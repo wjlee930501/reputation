@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import arrow
 import pytest
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.sql.dml import Update
 
 from app.core.celery_app import celery_app
 from app.models.audit import AdminAuditLog
@@ -76,10 +77,14 @@ class _RecoverySession:
         self.added = []
         self.statements = []
         self.commits = 0
+        self.queued_marks = 0
         self._operation_run_reads = 0
 
     def execute(self, statement):
         self.statements.append(statement)
+        if isinstance(statement, Update):  # publish 직후 실행을 QUEUED로 표시하는 CAS
+            self.queued_marks += 1
+            return SimpleNamespace(scalar_one_or_none=lambda: None)
         description = statement.column_descriptions[0]
         entity = description.get("entity")
         if entity is Hospital:
@@ -131,6 +136,9 @@ class _RecoverySession:
 
     def commit(self):
         self.commits += 1
+
+    def rollback(self):
+        pass
 
     def __enter__(self):
         return self
@@ -751,10 +759,12 @@ def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -
                     ),
                     "operation_run_id": str(run.id),
                 },
-                "task_id": "lost-before-publish",
+                "task_id": run.task_id,
             },
         )
     ]
+    # 다시 보낼 때마다 새 task id다 — 늦게 도착한 이전 사본은 건너뛰기로 끝난다.
+    assert run.task_id != "lost-before-publish"
     assert run.state == OperationRunState.QUEUED
     assert run.queued_at == now
     assert run.safe_error_code is None
@@ -846,10 +856,12 @@ def test_reconciler_requeues_only_expired_running_v0_with_same_lineage(monkeypat
                     ),
                     "operation_run_id": str(run.id),
                 },
-                "task_id": "hard-killed-v0-task",
+                "task_id": run.task_id,
             },
         )
     ]
+    # 다시 보낼 때마다 새 task id다 — 늦게 도착한 이전 사본은 건너뛰기로 끝난다.
+    assert run.task_id != "hard-killed-v0-task"
     assert run.state == OperationRunState.QUEUED
     assert run.lease_owner is None
     assert run.lease_expires_at is None
@@ -943,10 +955,12 @@ def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypa
                     ),
                     "operation_run_id": str(run.id),
                 },
-                "task_id": "unsafe-dispatch",
+                "task_id": run.task_id,
             },
         )
     ]
+    # 다시 보낼 때마다 새 task id다 — 늦게 도착한 이전 사본은 건너뛰기로 끝난다.
+    assert run.task_id != "unsafe-dispatch"
     assert run.state == OperationRunState.QUEUED
     assert run.safe_error_code is None
     assert run.completed_at is None
@@ -1077,10 +1091,12 @@ def test_reconciler_allows_monthly_report_period_dispatch(monkeypatch) -> None:
                     ),
                     "operation_run_id": str(run.id),
                 },
-                "task_id": "monthly-period-dispatch",
+                "task_id": run.task_id,
             },
         )
     ]
+    # 다시 보낼 때마다 새 task id다 — 늦게 도착한 이전 사본은 건너뛰기로 끝난다.
+    assert run.task_id != "monthly-period-dispatch"
 
 
 def test_reconciler_rebuilds_monthly_dispatch_from_summary_and_replaces_missing_task_id(
@@ -1141,8 +1157,8 @@ def test_reconciler_allows_monthly_report_rebuild_true_dispatch(monkeypatch) -> 
                 "task_args": [str(hospital_id), 2026, 7, True],
             }
         },
-        requested_at=now - timedelta(hours=2),
-        queued_at=now - timedelta(hours=2),
+        requested_at=now - timedelta(hours=4),
+        queued_at=now - timedelta(hours=4),
         safe_error_code=None,
         safe_error_message=None,
         version=3,
@@ -1227,8 +1243,8 @@ def test_reconciler_allows_monthly_report_coverage_recovery_dispatch(monkeypatch
                 "task_args": [str(hospital_id), 2026, 7, True, True],
             }
         },
-        requested_at=now - timedelta(hours=2),
-        queued_at=now - timedelta(hours=2),
+        requested_at=now - timedelta(hours=4),
+        queued_at=now - timedelta(hours=4),
         safe_error_code=None,
         safe_error_message=None,
         version=1,
@@ -1698,10 +1714,12 @@ def test_reconciler_redispatches_a_lost_fanned_out_generation_with_its_claim_tok
                     ),
                     "operation_run_id": str(run.id),
                 },
-                "task_id": "lost-generation-item",
+                "task_id": run.task_id,
             },
         )
     ]
+    # 다시 보낼 때마다 새 task id다 — 늦게 도착한 이전 사본은 건너뛰기로 끝난다.
+    assert run.task_id != "lost-generation-item"
     assert run.state == OperationRunState.QUEUED
     assert run.safe_error_code is None
 

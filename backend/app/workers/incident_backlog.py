@@ -15,8 +15,8 @@ from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import String, and_, cast, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from app.models.content import ContentItem
 from app.models.hospital import Hospital
@@ -30,10 +30,12 @@ from app.models.operations import (
     Incident,
     IncidentState,
     NotificationOutbox,
+    NotificationOutboxState,
     OperationRun,
     OperationRunState,
 )
 from app.models.report import MonthlyReport
+from app.services.notification_transport import CHANNEL_UNAVAILABLE_CODE, safe_error_message
 from app.workers.task_incident_control import _audit, _transition_incident
 
 BACKLOG_INCIDENT_BATCH = 50
@@ -115,13 +117,88 @@ def _content_published(db: Session, incident: Incident, _now: datetime) -> str |
     return None
 
 
-def _redirected_delivery(db: Session, incident: Incident, _now: datetime) -> str | None:
+_FINAL_OUTBOX_STATES = ("SENT", "FAILED")
+
+
+def _channel_dead_while(channel: object, observed_at: object):
+    """그 알림의 채널에 '수신 불명'이 관측된 시각을 덮는, 이미 복구된 채널 사고가 있다."""
+
+    channel_incident = aliased(Incident)
+    return (
+        select(channel_incident.id)
+        .where(
+            channel_incident.incident_type == "NOTIFICATION_DELIVERY_FAILED",
+            channel_incident.source_type == "NOTIFICATION_OUTBOX",
+            channel_incident.source_id == channel,
+            channel_incident.state.in_(
+                (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
+            ),
+            channel_incident.first_seen_at <= observed_at,
+            channel_incident.recovered_at >= observed_at,
+        )
+        .exists()
+    )
+
+
+def _delivery_unknown_evidence(incident_source_id: object, observed_at: object):
+    """수신 불명 사고를 닫을 근거가 있는 outbox 행. 해석기(`_redirected_delivery`)와 같은 규칙이다."""
+
+    status = NotificationOutbox.provider_response["http_status"].as_integer()
+    return (
+        select(NotificationOutbox.id)
+        .where(
+            cast(NotificationOutbox.id, String) == incident_source_id,
+            or_(
+                NotificationOutbox.state.in_(_FINAL_OUTBOX_STATES),
+                and_(status >= 300, status <= 399),
+                _channel_dead_while(
+                    func.coalesce(
+                        NotificationOutbox.provider_response["channel_used"].as_string(),
+                        NotificationOutbox.channel,
+                    ),
+                    observed_at,
+                ),
+            ),
+        )
+        .exists()
+    )
+
+
+def _hand_back_undelivered(row: NotificationOutbox, now: datetime) -> None:
+    """전달되지 않은 것이 확실한 보류 행을 '보낼 채널 없음' 보류로 옮긴다.
+
+    수신 불명 사고만 닫고 행을 그대로 두면 아무도 그 알림을 받지 못한 채 묻힌다. 이 표시로
+    옮기면 발송기가 채널이 살아 있을 때 다시 보내거나, 이미 해결된 사고·24시간이 지난 알림은
+    다시 보내지 않고 종결한다(`notification_channel_health.requeue_channel_held`).
+    """
+
+    if row.state != NotificationOutboxState.HOLD.value:
+        return
+    row.safe_error_code = CHANNEL_UNAVAILABLE_CODE
+    row.safe_error_message = safe_error_message(CHANNEL_UNAVAILABLE_CODE)
+    row.version += 1
+    row.updated_at = now
+
+
+def _redirected_delivery(db: Session, incident: Incident, now: datetime) -> str | None:
     # 302는 Slack이 받지 않았다는 뜻이다. '수신 여부 확인'이 아니라 웹훅 설정 오류이며,
-    # 그 설정 오류는 채널 단위 사고 하나가 맡는다(`notification_delivery`).
+    # 그 설정 오류는 채널 단위 사고 하나가 맡는다(`notification_channel_health`).
     row = db.get(NotificationOutbox, incident.source_id) if incident.source_id else None
-    status = (row.provider_response or {}).get("http_status") if row is not None else None
+    if row is None:
+        return None
+    # 사람이 다시 보내 결국 전달됐거나(SENT) 실패로 끝났다(FAILED는 전송 실패 사고가 맡는다).
+    if row.state in _FINAL_OUTBOX_STATES:
+        return "delivery_reached_final_state"
+    status = (row.provider_response or {}).get("http_status")
     if isinstance(status, int) and 300 <= status <= 399:
+        _hand_back_undelivered(row, now)
         return "redirect_was_not_delivered"
+    # 그 채널이 죽어 있던 동안 관측된 불명은 전달되지 않은 것이다. 채널이 복구됐으면 닫는다.
+    # 실제로 보낸 채널(대체 전송이면 다른 채널)로 맞추고, 그 기록이 없는 옛 행은 논리 채널로 본다.
+    channel_used = (row.provider_response or {}).get("channel_used") or row.channel
+    if db.scalar(select(_channel_dead_while(channel_used, incident.first_seen_at))):
+        _hand_back_undelivered(row, now)
+        return "channel_was_dead_and_recovered"
     return None
 
 
@@ -258,6 +335,12 @@ def close_resolved_backlog_incidents(
             .where(
                 Incident.state == IncidentState.OPEN.value,
                 Incident.incident_type.in_(tuple(RESOLVERS)),
+                # 수신 불명 사고는 수십 건이 근거 없이 쌓일 수 있다 — 닫을 근거가 있는 것만 집어
+                # 배치 앞자리를 근거 없는 오래된 사고가 차지하지 않게 한다.
+                or_(
+                    Incident.incident_type != "NOTIFICATION_DELIVERY_UNKNOWN",
+                    _delivery_unknown_evidence(Incident.source_id, Incident.first_seen_at),
+                ),
             )
             .order_by(Incident.last_seen_at, Incident.id)
             .with_for_update(skip_locked=True)

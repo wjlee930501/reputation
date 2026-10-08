@@ -25,7 +25,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta, timezone
-from typing import Any, Final
+from typing import Any, Final, Literal
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -734,11 +734,10 @@ def conditions_for(report: WatchdogReport, audience: str) -> tuple[str, ...]:
 
 
 def webhook_for(audience: str) -> str:
-    """알림 정책의 수신 채널. 감시만의 예외로 개발 채널이 없으면 운영 채널로 내린다.
+    """알림 정책의 수신 채널. 개발 채널이 없으면 운영 채널 하나로 운영한다.
 
-    일반 인시던트는 `SLACK_WEBHOOK_URL_DEV`가 비어 있으면 outbox에 HOLD로 남기고 운영
-    채널로 폴백하지 않는다. 이 부품은 그 HOLD를 처리할 Worker가 죽었을 때를 위해
-    존재하므로, 같은 규칙을 적용하면 막으려던 침묵을 그대로 만든다.
+    일반 알림(outbox)도 `SLACK_WEBHOOK_URL_DEV`가 비어 있으면 운영 채널로 `[개발 확인]`
+    표시와 함께 간다. 개발 웹훅이 설정돼 있는데 실패하면 `deliver`가 운영 채널로 대신 보낸다.
     """
     if audience == AUDIENCE_DEVELOPER:
         developer = settings.SLACK_WEBHOOK_URL_DEV.strip()
@@ -872,36 +871,79 @@ async def deliver(decision: AlertDecision) -> bool:
 
     전송 실패는 로그로만 남긴다. 다음 하트비트(5분)가 같은 사실을 다시 판정하며,
     중복 억제 키는 KST 시간 단위라 그때 다시 보낼 수 있다.
+
+    개발 담당 경보를 개발 웹훅이 확정적으로 거절하면(2xx가 아닌 응답) 운영 웹훅으로 한 번 더
+    보낸다. 시간 초과처럼 받았는지 모르면 중복을 피해 대체 전송하지 않는다 —
+    2026-09-19부터 개발 웹훅이 302를 돌려줘 경보가 ERROR 로그로만 85번 사라졌다.
     """
     if not (decision.send and decision.text and decision.webhook_url):
         return False
-    # SSRF 가드는 기존 알림 경로와 같은 허용 목록을 쓴다.
-    from app.services.notifier import _is_allowed_webhook
+    from app.services.notification_messages import (  # noqa: PLC0415
+        CHANNEL_FALLBACK_MARKER,
+        DEVELOPER_ROUTED_MARKER,
+        with_routing_marker,
+    )
 
-    if not _is_allowed_webhook(decision.webhook_url):
-        logger.error(
-            "pipeline watchdog: webhook rejected by allowlist audience=%s", decision.audience
-        )
+    operator = settings.SLACK_WEBHOOK_URL.strip()
+    developer = decision.audience == AUDIENCE_DEVELOPER
+    can_fall_back = developer and bool(operator) and decision.webhook_url != operator
+    text = decision.text
+    if developer and decision.webhook_url == operator:
+        # 개발 채널 없이 운영 채널 하나로 운영한다 — 개발 담당 경보임을 표시한다.
+        text = with_routing_marker(text, DEVELOPER_ROUTED_MARKER)
+    outcome = await _post_once_with_retry(
+        decision.webhook_url, text, decision.audience, quiet=can_fall_back
+    )
+    if outcome == "sent":
+        return True
+    if not can_fall_back or outcome == "unknown":
+        # 시간 초과·연결 끊김은 개발 채널이 받았을 수도 있다 — 운영 채널에 중복으로 보내지 않는다.
         return False
-    payload = {"text": decision.text}
+    logger.warning("pipeline watchdog: developer webhook rejected; falling back to operator channel")
+    return (
+        await _post_once_with_retry(
+            operator, with_routing_marker(decision.text, CHANNEL_FALLBACK_MARKER), decision.audience
+        )
+        == "sent"
+    )
+
+
+async def _post_once_with_retry(
+    url: str, text: str, audience: str, *, quiet: bool = False
+) -> Literal["sent", "rejected", "unknown"]:
+    """한 웹훅에 보낸다. 429·5xx·네트워크 오류만 한 번 더.
+
+    "rejected"는 Slack이 받지 않았다는 확정(2xx가 아닌 응답·허용 밖 주소)이고, "unknown"은
+    시간 초과·연결 오류처럼 받았는지 모르는 경우다. `quiet`면 실패를 경고로만 남긴다
+    (뒤이어 대체 전송을 하거나 받았을 수 있으므로 사람이 볼 오류가 아니다).
+    """
+
+    log = logger.warning if quiet else logger.error
+    # SSRF 가드는 기존 알림 경로와 같은 허용 목록을 쓴다.
+    from app.services.notifier import _is_allowed_webhook  # noqa: PLC0415
+
+    if not _is_allowed_webhook(url):
+        log("pipeline watchdog: webhook rejected by allowlist audience=%s", audience)
+        return "rejected"
+    payload = {"text": text}
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(decision.webhook_url, json=payload)
+                response = await client.post(url, json=payload)
                 response.raise_for_status()
-                return True
+                return "sent"
         except httpx.HTTPStatusError as exc:
             status = exc.response.status_code
             if (status == 429 or status >= 500) and attempt == 0:
                 continue
-            logger.error("pipeline watchdog: Slack delivery failed status=%s", status)
-            return False
+            log("pipeline watchdog: Slack delivery failed status=%s", status)
+            return "rejected"
         except httpx.HTTPError as exc:
             if attempt == 0:
                 continue
-            logger.error("pipeline watchdog: Slack delivery failed: %s", exc.__class__.__name__)
-            return False
-    return False
+            log("pipeline watchdog: Slack delivery failed: %s", exc.__class__.__name__)
+            return "unknown"
+    return "unknown"
 
 
 async def deliver_all(decisions: tuple[AlertDecision, ...]) -> tuple[bool, ...]:
