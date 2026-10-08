@@ -479,3 +479,44 @@ def test_the_queued_mark_never_fails_the_publish(monkeypatch) -> None:
         db, uuid.uuid4(), datetime(2026, 10, 8, tzinfo=UTC)
     )
     assert rolled_back == [True]
+
+
+# ── 긴 countdown 금지: 미룬 실행은 DB 시각으로 다시 보낸다 ─────────────────────
+
+
+def test_no_dispatch_site_holds_a_message_longer_than_the_bound() -> None:
+    import inspect
+
+    from app.workers import tasks
+
+    source = inspect.getsource(tasks)
+    literal = [int(value) for value in re.findall(r"countdown=(\d+)\b", source)]
+    assert literal and max(literal) <= dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS
+    assert dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS == 15 * 60
+    assert (
+        tasks.SOV_CONTINUATION_COUNTDOWN_SECONDS <= dispatch_envelope.MAX_DISPATCH_COUNTDOWN_SECONDS
+    )
+    # 다음 비용 창까지(최대 약 24시간) countdown으로 기다리던 V0 경로는 없다.
+    assert "countdown=_seconds_until_next_kst_cost_window" not in source
+    v0 = inspect.getsource(tasks.trigger_v0_report)
+    cost_branch = v0[v0.index("except V0CostDeferred") : v0.index("except V0MeasurementResumable")]
+    assert "defer_operation_run(" in cost_branch
+
+
+def test_a_deferred_run_is_not_stuck_before_its_time() -> None:
+    now = datetime(2026, 10, 8, 3, 0, tzinfo=UTC)
+
+    def _deferred(not_before):
+        return SimpleNamespace(
+            state=OperationRunState.QUEUED,
+            operation_type="TRIGGER_V0_REPORT",
+            queued_at=now - timedelta(hours=20),
+            requested_at=now - timedelta(hours=20),
+            not_before_at=not_before,
+        )
+
+    # QUEUED 유실 판정 유예(3시간)를 한참 넘겨도 정한 시각 전이면 보내지 않는다.
+    assert not autonomous_recovery._operation_redispatch_is_due(
+        _deferred(now + timedelta(minutes=1)), now
+    )
+    assert autonomous_recovery._operation_redispatch_is_due(_deferred(now), now)

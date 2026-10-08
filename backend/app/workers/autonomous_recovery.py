@@ -148,6 +148,10 @@ def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bo
         last_transition = run.requested_at
         grace = _REQUESTED_REDISPATCH_GRACE
     elif run.state == OperationRunState.QUEUED:
+        not_before = getattr(run, "not_before_at", None)
+        if not_before is not None:
+            # 워커가 미뤄 둔 실행이다(예: V0 비용 창). 그 시각 전에는 막힌 것이 아니다.
+            return not_before <= observed_at
         last_transition = run.queued_at or run.requested_at
         grace = _QUEUED_REDISPATCH_GRACE
     elif (
@@ -226,8 +230,14 @@ def reconcile() -> RecoveryCounts:
                         ),
                         and_(
                             OperationRun.state == OperationRunState.QUEUED,
+                            OperationRun.not_before_at.is_(None),
                             func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
                             <= observed_at - _QUEUED_REDISPATCH_GRACE,
+                        ),
+                        # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
+                        and_(
+                            OperationRun.state == OperationRunState.QUEUED,
+                            OperationRun.not_before_at <= observed_at,
                         ),
                         and_(
                             OperationRun.operation_type == "TRIGGER_V0_REPORT",
@@ -651,6 +661,7 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
     )
     run.state = OperationRunState.QUEUED
     run.queued_at = observed_at
+    run.not_before_at = None
     run.completed_at = None
     run.heartbeat_at = None
     run.lease_owner = None

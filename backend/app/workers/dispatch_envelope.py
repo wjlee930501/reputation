@@ -17,6 +17,10 @@ from app.core.config import settings
 # 릴리스가 3600초로 서명한 메시지도 롤아웃 중 그대로 유효하다.
 DISPATCH_TTL_SECONDS = 6 * 60 * 60
 CLOCK_SKEW_SECONDS = 30
+# Celery countdown/eta의 상한. 이보다 긴 대기는 메시지로 들고 있지 않고 OperationRun의
+# `not_before_at`에 남겨 자율 복구가 그 시각 뒤에 새 봉투로 다시 보낸다 — 대기 메시지가
+# 브로커 visibility_timeout·봉투 TTL·실행 lease보다 오래 살아 배포 사이에 만료·중복되지 않게 한다.
+MAX_DISPATCH_COUNTDOWN_SECONDS = 15 * 60
 PREFIX = "reputation_dispatch_"
 PURPOSE_HEADER = f"{PREFIX}purpose"
 TARGET_HEADER = f"{PREFIX}target"

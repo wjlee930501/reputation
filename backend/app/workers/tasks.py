@@ -471,6 +471,7 @@ from app.workers.dispatch_auth import (
     expected_purpose,
     require_dispatch,
 )
+from app.workers.dispatch_envelope import MAX_DISPATCH_COUNTDOWN_SECONDS
 from app.workers.generation_attempt_state import released_generation_attempt
 from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
@@ -520,6 +521,7 @@ from app.workers.generation_run_control import (
     classify_generation_failure,
     create_dispatched_item_run,
     create_item_run,
+    defer_operation_run,
     explicit_run_context,
     explicit_run_matches,
     finish_explicit_run,
@@ -4728,9 +4730,23 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
 
     except V0CostDeferred as exc:
         _reset_v0_analyzing_status(hospital_id, prior_status)
+        # 다음 비용 창(최대 약 24시간 뒤)까지 countdown으로 기다리면 그 메시지가 브로커·봉투·lease
+        # 시계보다 오래 살아 배포 사이에 만료·중복된다. 실행을 QUEUED로 돌려놓고 시각만 남기면
+        # 자율 복구가 그 뒤에 새 봉투로 다시 보낸다.
+        if explicit_run_context(self) is not None:
+            not_before = datetime.now(timezone.utc) + timedelta(
+                seconds=_seconds_until_next_kst_cost_window()
+            )
+            with SyncSessionLocal() as db:
+                deferred = defer_operation_run(db, self, not_before)
+            return {
+                "status": "cost_deferred" if deferred else "stale_run",
+                "not_before": not_before.isoformat(),
+            }
+        # 실행 기록 없이 들어온 옛 배포다 — 상한 안의 짧은 재시도로 다시 확인한다.
         raise self.retry(
             exc=exc,
-            countdown=_seconds_until_next_kst_cost_window(),
+            countdown=MAX_DISPATCH_COUNTDOWN_SECONDS,
             kwargs=_v0_retry_kwargs(self, failure_retry_count),
             max_retries=V0_CONTINUATION_MAX_RETRIES,
         )
@@ -9860,11 +9876,12 @@ def run_weekly_monitoring():
         # sov 워커(FIFO) 기준으로는 병원별 측정 태스크가 모두 끝난 뒤 실행된다.
         # 한계: sov 워커가 여러 개거나 측정 태스크가 재시도로 길어지면 일부 병원의 이번 주
         # 측정 결과가 반영되기 전에 실행될 수 있다 — 우선순위 조정은 최근 4주 누적 기준이라
-        # 다음 주 실행에서 따라잡는다. countdown은 측정 큐 소화 시간의 보수적 버퍼.
+        # 다음 주 실행에서 따라잡는다. countdown은 측정 큐 소화 시간의 보수적 버퍼이며,
+        # 대기 메시지가 배포 시계보다 오래 살지 않도록 상한(15분)을 넘기지 않는다.
         if hospitals:
             adjust_query_priorities.apply_async(
                 queue="sov",
-                countdown=1800,
+                countdown=MAX_DISPATCH_COUNTDOWN_SECONDS,
                 headers=build_dispatch_headers("adjust-query-priorities"),
             )
 
