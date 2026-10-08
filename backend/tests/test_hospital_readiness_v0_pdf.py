@@ -24,6 +24,7 @@ from app.services.image_engine import (
     image_content_hash_from_url,
     image_subject_hash,
 )
+from tests.publication_test_support import verified_reference_checks
 
 
 class _ReadinessDB:
@@ -76,6 +77,11 @@ def _hospital() -> Hospital:
         name="장편한외과의원",
         slug="janpyeonhan",
         status=HospitalStatus.ACTIVE,
+        address="서울 성동구 성수동",
+        phone="02-000-0000",
+        treatments=[{"name": "외과 진료"}],
+        site_built=True,
+        site_live=True,
         v0_report_done=True,
     )
 
@@ -167,11 +173,12 @@ async def test_the_pdf_count_query_is_restricted_to_initial_diagnosis_reports(mo
 
 # H-01: 준비도의 "발행 콘텐츠"는 발행 행 수가 아니라 공개 페이지가 실제로 내보내는
 # 편수여야 한다. 전 글이 보류 중인 병원이 통과로 보이면 운영자는 알 방법이 없다.
-def _published_item(*, certified: bool, philosophy_id: uuid.UUID) -> SimpleNamespace:
-    """공개 판정을 통과하는 발행 글 — `certified=False`면 이미지 인증만 비운다."""
+def _published_item(*, withheld: bool, philosophy_id: uuid.UUID) -> SimpleNamespace:
+    """Authentically approved article; ``withheld`` retracts its source authority."""
+
     title = "치질 원인과 치료"
     image_url = f"https://storage.googleapis.com/reputation-images/content/{'a' * 64}-ok.png"
-    return SimpleNamespace(
+    item = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=uuid.uuid4(),
         status=ContentStatus.PUBLISHED,
@@ -181,8 +188,13 @@ def _published_item(*, certified: bool, philosophy_id: uuid.UUID) -> SimpleNames
         meta_description=None,
         published_at=datetime.now(timezone.utc),
         essence_status=ESSENCE_STATUS_ALIGNED,
-        essence_check_summary={},
+        essence_check_summary=(
+            {"authority_change": {"reason": "approved_source_retracted"}}
+            if withheld
+            else {}
+        ),
         content_philosophy_id=philosophy_id,
+        content_brief=None,
         faq_question=None,
         faq_answer_summary=None,
         references_list=[
@@ -191,17 +203,33 @@ def _published_item(*, certified: bool, philosophy_id: uuid.UUID) -> SimpleNames
                 "url": "https://health.kdca.go.kr/healthinfo/biz/health/gnrlzHealthInfo/gnrlzHealthInfo.do",
             }
         ],
-        image_url=image_url if certified else None,
-        image_policy_verified_at=datetime.now(timezone.utc) if certified else None,
-        image_content_hash=image_content_hash_from_url(image_url) if certified else None,
-        image_subject_hash=(
-            image_subject_hash(ContentType.DISEASE, title) if certified else None
-        ),
-        image_policy_version=IMAGE_POLICY_VERSION if certified else None,
+        image_url=image_url,
+        image_policy_verified_at=datetime.now(timezone.utc),
+        image_content_hash=image_content_hash_from_url(image_url),
+        image_subject_hash=image_subject_hash(ContentType.DISEASE, title),
+        image_policy_version=IMAGE_POLICY_VERSION,
     )
+    checks = verified_reference_checks(item)
+    item.reference_checks = checks
+    revision_id = uuid.uuid4()
+    item.active_revision_id = revision_id
+    item.active_revision = SimpleNamespace(
+        id=revision_id,
+        content_item_id=item.id,
+        title=item.title,
+        body=item.body,
+        meta_description=item.meta_description,
+        faq_question=item.faq_question,
+        faq_answer_summary=item.faq_answer_summary,
+        references_list=item.references_list,
+        reference_checks=checks,
+        approval_status="APPROVED",
+        approval_hash="a" * 64,
+    )
+    return item
 
 
-async def _public_readiness(monkeypatch, *, certified: list[bool]) -> dict:
+async def _public_readiness(monkeypatch, *, withheld: list[bool]) -> dict:
     philosophy_id = uuid.uuid4()
 
     async def fake_public_philosophy_id(_db, _hospital_id):
@@ -215,14 +243,14 @@ async def _public_readiness(monkeypatch, *, certified: list[bool]) -> dict:
         report_count=1,
         v0_report_pdf_count=1,
         published_items=[
-            _published_item(certified=value, philosophy_id=philosophy_id) for value in certified
+            _published_item(withheld=value, philosophy_id=philosophy_id) for value in withheld
         ],
     )
     return payload
 
 
 async def test_readiness_counts_withheld_articles_apart_from_published_rows(monkeypatch):
-    payload = await _public_readiness(monkeypatch, certified=[True, False])
+    payload = await _public_readiness(monkeypatch, withheld=[False, True])
 
     assert payload["published_content_count"] == 2
     assert payload["public_content_count"] == 1
@@ -232,7 +260,7 @@ async def test_readiness_counts_withheld_articles_apart_from_published_rows(monk
 
 
 async def test_readiness_fails_the_published_check_when_every_article_is_withheld(monkeypatch):
-    payload = await _public_readiness(monkeypatch, certified=[False, False])
+    payload = await _public_readiness(monkeypatch, withheld=[True, True])
 
     assert payload["published_content_count"] == 2
     assert payload["public_content_count"] == 0

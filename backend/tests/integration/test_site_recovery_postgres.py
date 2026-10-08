@@ -111,7 +111,12 @@ def test_expired_running_site_build_gets_one_replacement_and_one_final_result(
     stale_claims: list[int | None] = []
     _patch_reconciler(monkeypatch, factory, now)
 
-    def finish_site_build(_name: str, *, task_id: str, **_kwargs) -> None:
+    def finish_site_build(
+        task_name: str, *, task_id: str | None = None, **_kwargs
+    ) -> None:
+        if task_name != "app.workers.tasks.build_aeo_site":
+            return
+        assert task_id is not None
         published_task_ids.append(task_id)
         stale_claims.append(
             operation_run_signals._claim(
@@ -183,10 +188,16 @@ def test_live_lease_site_build_is_not_taken_over(
     )
     publishes: list[str] = []
     _patch_reconciler(monkeypatch, factory, now)
+
+    def capture_site_build(task_name: str, **kwargs) -> None:
+        if task_name != "app.workers.tasks.build_aeo_site":
+            return
+        task_id = kwargs.get("task_id")
+        assert isinstance(task_id, str)
+        publishes.append(task_id)
+
     monkeypatch.setattr(
-        autonomous_recovery.celery_app,
-        "send_task",
-        lambda *_args, **kwargs: publishes.append(kwargs["task_id"]),
+        autonomous_recovery.celery_app, "send_task", capture_site_build
     )
     try:
         result = autonomous_recovery.reconcile.run()
@@ -220,10 +231,16 @@ def test_exhausted_expired_site_build_stops_and_opens_at_most_one_exception(
     )
     publishes: list[str] = []
     _patch_reconciler(monkeypatch, factory, now)
+
+    def capture_site_build(task_name: str, **kwargs) -> None:
+        if task_name != "app.workers.tasks.build_aeo_site":
+            return
+        task_id = kwargs.get("task_id")
+        assert isinstance(task_id, str)
+        publishes.append(task_id)
+
     monkeypatch.setattr(
-        autonomous_recovery.celery_app,
-        "send_task",
-        lambda *_args, **kwargs: publishes.append(kwargs["task_id"]),
+        autonomous_recovery.celery_app, "send_task", capture_site_build
     )
     try:
         first = autonomous_recovery.reconcile.run()

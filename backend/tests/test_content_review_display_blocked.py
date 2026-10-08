@@ -58,7 +58,6 @@ BLOCKED_SHAPES = {
     "review_unavailable": dict(
         essence_check_summary={"ai_review": {"status": "UNAVAILABLE", "unavailable_reason": "INVALID_RESPONSE"}}
     ),
-    "image_not_certified": dict(image_policy_verified_at=None),
     "forbidden_expression": dict(meta_description="완치를 약속드립니다."),
     "missing_references": dict(references_list=[]),
 }
@@ -185,9 +184,14 @@ def test_withheld_keeps_its_label():
     assert review["label"] == WITHHELD_DISPLAY_LABEL and review["publishable"] is False
 
 
-def test_published_rows_keep_their_labels():
+def test_published_rows_without_an_optional_image_stay_public_review_samples():
     item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
 
-    review = _serialize(item, philosophy_id)["display"]["review"]
+    serialized = _serialize(item, philosophy_id)
+    review = serialized["display"]["review"]
 
-    assert review["label"] == "공개 보류" and review["publishable"] is False
+    assert serialized["compliance"]["public_visibility"]["visible"] is True
+    assert review["label"] == "공개 내용 확인 대기"
+    assert review["reason"] == "공개된 글에 문제가 없는지 확인해 주세요."
+    assert review["publishable"] is False
+    assert review["notification_state"] == "NOT_REQUIRED"

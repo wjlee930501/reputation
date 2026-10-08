@@ -1,12 +1,39 @@
 """Real-Redis checks for Lua receipt atomicity (COST_GUARD_REDIS_URL is required)."""
 
 import uuid
+from collections.abc import AsyncIterator
 from datetime import datetime
 
+import pytest
 import redis.asyncio as redis_async
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.services import cost_guard
-from tests.db_env import require_redis_url
+from tests.db_env import require_db_url, require_redis_url
+
+
+@pytest.fixture(autouse=True)
+async def _rollback_durable_alerts(monkeypatch) -> AsyncIterator[None]:
+    """Keep real durable alert commits inside the integration fixture transaction."""
+    url = make_url(require_db_url("INTEGRATION_DATABASE_URL")).set(
+        drivername="postgresql+asyncpg"
+    )
+    engine = create_async_engine(url)
+    connection = await engine.connect()
+    transaction = await connection.begin()
+    factory = async_sessionmaker(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    monkeypatch.setattr(cost_guard, "get_async_sessionmaker", lambda: factory)
+    try:
+        yield
+    finally:
+        await transaction.rollback()
+        await connection.close()
+        await engine.dispose()
 
 
 async def test_real_redis_receipt_boundary_duplicate_and_zero_kill_switch(monkeypatch):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
+from collections.abc import Iterator
 from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
@@ -39,6 +40,23 @@ from app.workers.generation_attempt_state import (
 
 def _factory(pg_engine) -> sessionmaker[Session]:
     return sessionmaker(bind=pg_engine, expire_on_commit=False)
+
+
+@pytest.fixture
+def rollback_factory(pg_engine) -> Iterator[sessionmaker[Session]]:
+    """Real sessions whose commits stay inside one test-owned outer transaction."""
+    connection = pg_engine.connect()
+    transaction = connection.begin()
+    factory = sessionmaker(
+        bind=connection,
+        expire_on_commit=False,
+        join_transaction_mode="create_savepoint",
+    )
+    try:
+        yield factory
+    finally:
+        transaction.rollback()
+        connection.close()
 
 
 def _seed(factory: sessionmaker[Session]) -> tuple[uuid.UUID, uuid.UUID]:
@@ -551,9 +569,9 @@ def test_image_transport_ceiling_is_twelve_across_restarts(pg_engine) -> None:
 
 
 def test_image_503_exhaustion_keeps_text_publishable(
-    pg_engine, monkeypatch, provider_server
+    rollback_factory, monkeypatch, provider_server
 ) -> None:
-    factory = _factory(pg_engine)
+    factory = rollback_factory
     hospital_id, item_id = _seed(factory)
 
     async def failing_image(*_args, transport_observer, **_kwargs):
@@ -702,6 +720,6 @@ def test_image_503_exhaustion_keeps_text_publishable(
             assert item.status is ContentStatus.PUBLISHED
             assert item.body is not None and "건강검진 전 준비" in item.body
     finally:
-        # The immutable published revision is retained in the dedicated QA lane
-        # as verifier evidence; revision deletion is deliberately prohibited.
+        # The outer test transaction rolls back the inserted immutable revision.
+        # No revision DELETE or append-only bypass is used.
         pass
