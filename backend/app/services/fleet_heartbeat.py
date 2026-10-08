@@ -472,7 +472,7 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
     actions = []
     for group in facts.action_groups[:6]:
         copy = incident_copy(group.incident_type)
-        actions.append(f"• {safe_text(group.hospital_name, 70)} — {copy.title} {group.count}건\n  {copy.action}")
+        actions.append(f"• {safe_text(group.hospital_name, 70)} — {copy.title} 사고 {group.count}건\n  {copy.action}")
     shown_count = len(facts.action_groups[:6])
     if facts.operator_work > shown_count:
         actions.append(f"그 외 확인할 이슈 {facts.operator_work - shown_count}건은 운영센터에서 볼 수 있습니다.")

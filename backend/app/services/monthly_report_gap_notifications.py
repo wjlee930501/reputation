@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.hospital import Hospital
-from app.models.operations import OperationRun
 from app.models.report import MonthlyReport
 from app.services.monthly_period import (
     MONTHLY_RECOVERY_END_DAY,
@@ -28,6 +27,7 @@ from app.services.monthly_period import (
     prior_month_to_close,
 )
 from app.services.monthly_report_delivery import coverage_is_final
+from app.services.monthly_sov_cohort import hospital_requires_monthly_sov_success
 from app.services.notification_contracts import NotificationIntent
 from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import (
@@ -54,22 +54,6 @@ class MonthlyReportGap:
     # 이 공백을 되돌리는 자동 경로가 있는가(날짜와 무관한 성질). 기본값은 '없음'이라 분류를
     # 빠뜨린 호출이 거짓 약속을 하지 않는다.
     recoverable: bool = False
-
-
-def _hospital_has_monthly_sov(db: Session, hospital: Hospital, period_key: str) -> bool:
-    """`tasks._hospital_requires_monthly_sov_success`와 같은 코호트 판정 — catch-up이 도는 병원."""
-    if bool(getattr(hospital, "monthly_sov_cohort", False)):
-        return True
-    return (
-        db.execute(
-            select(OperationRun.id).where(
-                OperationRun.hospital_id == hospital.id,
-                OperationRun.operation_type == "RUN_SOV",
-                OperationRun.idempotency_key == f"monthly-sov:{hospital.id}:{period_key}",
-            )
-        ).first()
-        is not None
-    )
 
 
 def load_monthly_report_gaps(db: Session, now: datetime) -> tuple[str, list[MonthlyReportGap]]:
@@ -108,7 +92,7 @@ def load_monthly_report_gaps(db: Session, now: datetime) -> tuple[str, list[Mont
                 MonthlyReportGap(
                     hospital.name,
                     "COVERAGE_INCOMPLETE",
-                    recoverable=_hospital_has_monthly_sov(db, hospital, period_key),
+                    recoverable=hospital_requires_monthly_sov_success(db, hospital, period_key),
                 )
             )
     return period_key, gaps

@@ -33,7 +33,10 @@ from app.services.incident_cause_group import (
     canonical_cause_code,
     cost_guard_category,
 )
-from app.services.operator_action import requires_operator_action  # public API facade
+from app.services.operator_action import (  # public API facade
+    is_operator_todo,
+    requires_operator_action,
+)
 
 __all__ = (
     "canonical_cause_code",
@@ -376,8 +379,8 @@ def serialize_incident_row(
                 run,
                 # `authorize_run_retry`와 같은 규칙 — OWNER이거나 이 인시던트의 담당자.
                 enabled=True if actor is None else _may_act(actor, incident),
-                operator_required=requires_operator_action(
-                    incident.state, incident.sla_due_at, now
+                operator_required=is_operator_todo(
+                    incident.incident_type, incident.state, incident.sla_due_at, now
                 ),
             )
             if hospital_id
@@ -395,8 +398,10 @@ def serialize_incident_row(
             else (1 if hospital_id is not None else 0)
         ),
         cost_guard_category=budget_category,
-        requires_operator_action=requires_operator_action(
-            incident.state, incident.sla_due_at, now
+        # 화면이 이 필드로 '지금 처리할 표'와 접힌 맥락을 가른다 — 개발 담당 몫·조용한 종류는
+        # 상태가 OPEN이어도 운영 담당의 할 일이 아니다(`is_operator_todo`).
+        requires_operator_action=is_operator_todo(
+            incident.incident_type, incident.state, incident.sla_due_at, now
         ),
         safe_cause=projected_message,
         history=history(incident),

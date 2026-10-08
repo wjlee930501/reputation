@@ -560,9 +560,11 @@ def enqueue_missing_approved_essence_digest_sync(
 
 
 def _blocked_episode(db: Session, outcome: Mapping[str, object]) -> int:
-    """이 글이 지금 겪는 차단의 사고 epoch — 주제 교체·복구 뒤 다시 막히면 올라간다.
+    """이 글의 **이 차단**을 연 사고의 epoch — 주제 교체·복구 뒤 다시 막히면 올라간다.
 
-    사고가 글 단위가 아니라 병원 단위(승인 근거 없음 등)로 열렸어도 같은 병원의 epoch를 쓴다.
+    차단 코드가 같은 사고만 본다: 글 단위 사고, 없으면 병원 단위(승인 근거 없음 등) 사고.
+    코드가 같은 사고가 없을 때만 그 글의 가장 높은 epoch로 물러난다. 병원 안의 다른 코드
+    사고가 epoch를 올려도 이 글의 알림은 다시 나가지 않는다.
     """
 
     given = outcome.get("episode_seq")
@@ -572,20 +574,28 @@ def _blocked_episode(db: Session, outcome: Mapping[str, object]) -> int:
         hospital_id = uuid.UUID(str(outcome.get("hospital_id")))
     except ValueError:
         return 0
-    epoch = db.scalar(
-        select(func.max(Incident.episode_seq)).where(
-            Incident.hospital_id == hospital_id,
-            Incident.source_type == "CONTENT_GENERATION",
-            Incident.source_id.in_((str(outcome.get("content_id")), str(hospital_id))),
-        )
+    content_key = str(outcome.get("content_id"))
+    base = (
+        Incident.hospital_id == hospital_id,
+        Incident.source_type == "CONTENT_GENERATION",
     )
-    return int(epoch or 0)
+    code = outcome.get("code")
+    scopes: list[tuple] = []
+    if code:
+        scopes.append((Incident.source_id == content_key, Incident.safe_error_code == code))
+        scopes.append((Incident.source_id == str(hospital_id), Incident.safe_error_code == code))
+    scopes.append((Incident.source_id == content_key,))
+    for scope in scopes:
+        epoch = db.scalar(select(func.max(Incident.episode_seq)).where(*base, *scope))
+        if epoch:
+            return int(epoch)
+    return 0
 
 
 def _newly_blocked_outcomes(
     db: Session, blocked_outcomes: Sequence[Mapping[str, object]]
 ) -> list[Mapping[str, object]]:
-    """(글, 사고 epoch)마다 한 번만 알린다 — 이미 알린 글은 걸러 낸다.
+    """(글, 차단 코드, 사고 epoch)마다 한 번만 알린다 — 이미 알린 글은 걸러 낸다.
 
     같은 글이 막힌 채 이어지는 동안은 아침마다·재시도 지문이 바뀔 때마다 다시 나갈 이유가 없고,
     계속 열린 항목은 월요일 주간 요약(GENERATION_REJECTION_WEEKLY_ROLLUP)이 맡는다. 알림 기록은
@@ -597,7 +607,8 @@ def _newly_blocked_outcomes(
     now = datetime.now(UTC)
     for outcome in blocked_outcomes:
         episode = _blocked_episode(db, outcome)
-        key = f"{outcome.get('content_id')}:{episode}"
+        # 차단 코드가 바뀐 같은 글은 다른 문제이므로 다시 알린다.
+        key = f"{outcome.get('content_id')}:{outcome.get('code')}:{episode}"
         if key in seen:
             continue
         seen.add(key)

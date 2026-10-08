@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -289,4 +289,112 @@ def test_blocked_digest_reads_the_epoch_from_the_incident_when_not_given(db) -> 
             OperationRun.operation_type == "GENERATION_BLOCKED_NOTICE"
         )
     )
-    assert key == f"{item['content_id']}:3"
+    assert key == f"{item['content_id']}:GENERATION_REJECTED:3"
+
+
+def test_blocked_digest_ledger_key_includes_the_block_code(db) -> None:
+    hospital, _ = seed(db)
+    item = _blocked(hospital, "코드가 바뀌는 글", code="GENERATION_REJECTED")
+    del item["episode_seq"]  # 운영 경로: 호출자는 epoch를 넘기지 않는다
+    own = _incident(
+        db, hospital, "CONTENT_GENERATION_FAILED", "GENERATION_REJECTED",
+        source_id=str(item["content_id"]),
+    )
+    first = enqueue_generation_blocked_digest_sync(db, date(2026, 10, 7), PUBLISH_MORNING_BATCH, [item])
+    db.commit()
+    # 같은 글이 다른 코드로 막힌다(새 사고, 같은 epoch) — 다른 문제이므로 다시 알린다.
+    _incident(
+        db, hospital, "CONTENT_GENERATION_FAILED", "MISSING_REFERENCES",
+        source_id=str(item["content_id"]),
+    )
+    changed = enqueue_generation_blocked_digest_sync(
+        db, date(2026, 10, 8), PUBLISH_MORNING_BATCH, [{**item, "code": "MISSING_REFERENCES"}]
+    )
+    db.commit()
+    again = enqueue_generation_blocked_digest_sync(
+        db, date(2026, 10, 9), PUBLISH_MORNING_BATCH, [{**item, "code": "MISSING_REFERENCES"}]
+    )
+    db.commit()
+
+    assert own.episode_seq == 1
+    assert first is not None and changed is not None and again is None
+
+
+def test_hospital_incident_with_another_code_does_not_renotify_blocked_items(db) -> None:
+    hospital, _ = seed(db)
+    item = _blocked(hospital, "병원 사고와 무관한 글", code="GENERATION_REJECTED")
+    del item["episode_seq"]
+    _incident(
+        db, hospital, "CONTENT_GENERATION_FAILED", "GENERATION_REJECTED",
+        source_id=str(item["content_id"]),
+    )
+    first = enqueue_generation_blocked_digest_sync(db, date(2026, 10, 7), PUBLISH_MORNING_BATCH, [item])
+    db.commit()
+    # 같은 병원의 다른 원인 사고가 epoch를 올린다.
+    other = _incident(
+        db, hospital, "CONTENT_GENERATION_FAILED", "MISSING_APPROVED_ESSENCE",
+        source_id=str(hospital.id),
+    )
+    other.episode_seq = 5
+    db.commit()
+    second = enqueue_generation_blocked_digest_sync(db, date(2026, 10, 8), PUBLISH_MORNING_BATCH, [item])
+    db.commit()
+
+    assert first is not None and second is None
+
+
+# ── 직렬화된 행 필드와 콘텐츠 탭 링크도 같은 술어를 따른다 ────────────────────────
+
+
+async def test_queue_rows_carry_the_todo_predicate_not_the_state_only_one() -> None:
+
+    from test_operations_center_incident_pagination import _FakeDB, _group_row
+    from test_operations_center_incident_pagination import _incident as _queue_incident
+
+    from app.api.admin.operations_center_incident_queries import load_incidents_queue
+    from app.api.admin.operations_center_query_common import OperationsFilters
+    from app.models.hospital import Hospital
+
+    operator = _queue_incident(safe_error_code="SITE_BUILD_FAILED")
+    developer = _queue_incident(safe_error_code="BROKER_UNAVAILABLE")
+    developer.incident_type = "BROKER_UNAVAILABLE"
+    # 1차: 묶음 행(운영 몫 먼저). 2차: 사람 몫 페이지, 3차: 맥락(개발 몫) 행.
+    db = _FakeDB(
+        [_group_row(operator), _group_row(developer)],
+        [
+            [(operator, Hospital(id=operator.hospital_id, name="A", slug="a"), None, None, None)],
+            [(developer, Hospital(id=developer.hospital_id, name="B", slug="b"), None, None, None)],
+        ],
+    )
+
+    total, rows = await load_incidents_queue(
+        db, OperationsFilters(), page=1, page_size=25, overview=False,
+        now=datetime(2026, 8, 25, tzinfo=UTC),
+    )
+
+    by_cause = {row.cause_code: row for row in rows}
+    assert total == 1  # 운영 몫 묶음만 센다
+    assert by_cause["SITE_BUILD_FAILED"].requires_operator_action is True
+    assert by_cause["BROKER_UNAVAILABLE"].requires_operator_action is False
+
+
+async def test_content_tab_links_skip_developer_incidents_but_keep_quiet_ones(db) -> None:
+
+    from app.api.admin.content import _blocked_links_for
+
+    hospital, _ = seed(db)
+    developer_item, operator_item, quiet_item = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    _incident(db, hospital, "BROKER_UNAVAILABLE", "BROKER_UNAVAILABLE", source_id=str(developer_item))
+    _incident(db, hospital, "CONTENT_GENERATION_FAILED", "GENERATION_REJECTED", source_id=str(operator_item))
+    _incident(
+        db, hospital, "POST_PUBLISH_REVIEW_FLAGGED", "POST_PUBLISH_REVIEW_FLAGGED",
+        source_id=str(quiet_item),
+    )
+
+    links = await _blocked_links_for(
+        AsyncDB(db), hospital.id, [developer_item, operator_item, quiet_item]
+    )
+
+    assert developer_item not in links
+    assert links[operator_item]["kind"] == "incident"
+    assert links[quiet_item]["kind"] == "incident"  # 콘텐츠 탭에서만 보이는 계약
