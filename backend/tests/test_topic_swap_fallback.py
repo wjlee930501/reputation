@@ -828,7 +828,7 @@ def _patch_generation(monkeypatch, philosophy, slot, *, fail: bool) -> list[uuid
         tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {}
     )
     monkeypatch.setattr(tasks, "_generate_with_auto_review", fake_writer)
-    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: {})
+    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(tasks, "write_back_generated_content", write_back)
     monkeypatch.setattr(tasks, "_recover_missing_content_image", certified_image)
     monkeypatch.setattr(tasks, "recover_generation_incidents", ignore)

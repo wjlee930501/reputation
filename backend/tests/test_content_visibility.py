@@ -260,7 +260,7 @@ def test_admin_keeps_published_text_public_when_only_image_certificate_is_missin
     assert visibility["blocker_labels"] == []
 
 
-def test_notification_label_remains_available_during_an_image_only_outage():
+def test_retired_publish_notification_projection_is_ignored_during_image_outage():
     item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
     item._publish_notification_projection = {
         "state": "PENDING",
@@ -271,8 +271,8 @@ def test_notification_label_remains_available_during_an_image_only_outage():
 
     review = _serialize(item, philosophy_id)["display"]["review"]
 
-    assert review["label"] == "Slack 전달 대기"
-    assert review["notification_state"] == "PENDING"
+    assert review["label"] == "공개 내용 확인 대기"
+    assert review["notification_state"] == "NOT_REQUIRED"
 
 
 class _PatchDB:
@@ -388,8 +388,7 @@ async def test_body_edit_that_keeps_the_certificate_only_resubmits_the_index(mon
     assert submitted == [item.id]
 
 
-def test_visible_item_still_shows_the_notification_label_when_not_sent():
-    """공개 중인 글에서는 알림 상태 표시가 그대로 살아 있어야 한다."""
+def test_visible_item_ignores_retired_publish_notification_projection():
     item, philosophy_id = _published()
     item._publish_notification_projection = {
         "state": "PENDING",
@@ -400,8 +399,9 @@ def test_visible_item_still_shows_the_notification_label_when_not_sent():
 
     review = _serialize(item, philosophy_id)["display"]["review"]
 
-    assert review["label"] == "Slack 전달 대기"
-    assert review["reason"] == "잠시 후 자동으로 전달됩니다."
+    assert review["label"] == "공개 내용 확인 대기"
+    assert review["reason"] == "공개된 글에 문제가 없는지 확인해 주세요."
+    assert review["notification_state"] == "NOT_REQUIRED"
 
 
 _SENT_NOTIFICATION = {
@@ -430,7 +430,7 @@ def test_non_sample_published_item_is_public_not_pending_confirmation():
     serialized = _serialize(item, philosophy_id)
 
     assert serialized["post_publish_review_required"] is False
-    assert serialized["display"]["review"]["label"] == "공개 중"
+    assert serialized["display"]["review"]["label"] == "자동 관제 중"
 
 
 def test_reviewed_sample_no_longer_asks_for_confirmation():
@@ -442,7 +442,7 @@ def test_reviewed_sample_no_longer_asks_for_confirmation():
     serialized = _serialize(item, philosophy_id)
 
     assert serialized["post_publish_review_required"] is False
-    assert serialized["display"]["review"]["label"] == "공개 내용 확인 완료"
+    assert serialized["display"]["review"]["label"] == "자동 관제 중"
 
 
 def test_sample_without_a_notification_still_asks_for_confirmation():

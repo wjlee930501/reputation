@@ -79,6 +79,9 @@ def _hospital(db, name: str) -> tuple[Hospital, ContentSchedule]:
     hospital = Hospital(
         name=name,
         slug=f"withhold-worker-{uuid.uuid4().hex[:10]}",
+        address="서울시 강남구 테헤란로 1",
+        phone="02-1234-5678",
+        treatments=[{"name": "내과 진료"}],
         status=HospitalStatus.ACTIVE,
         site_live=True,
         profile_complete=True,

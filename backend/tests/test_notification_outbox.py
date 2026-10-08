@@ -142,6 +142,7 @@ async def _delete_channel_incidents(db) -> None:
     "incident_type",
     [
         "BACKGROUND_TASK_FAILED",
+        "OPERATION_TERMINAL_FAILED",
         "BROKER_UNAVAILABLE",
         "UNSAFE_STORED_DISPATCH",
         "NOTIFICATION_DELIVERY_FAILED",
@@ -941,17 +942,13 @@ def test_notification_worker_is_included_routed_and_scheduled_every_minute() -> 
 
 
 @pytest.mark.asyncio
-async def test_notification_worker_reconciles_sent_publish_hooks_every_tick(monkeypatch) -> None:
+async def test_notification_worker_only_reconciles_delivery_incidents_every_tick(monkeypatch) -> None:
     sessions = object()
     observed: list[tuple[str, object]] = []
 
     async def fake_dispatch(sessionmaker, _client, **_kwargs):
         observed.append(("dispatch", sessionmaker))
         return DispatchResult(claimed=1, sent=1)
-
-    async def fake_reconcile(sessionmaker):
-        observed.append(("reconcile", sessionmaker))
-        return 2
 
     async def fake_incident_reconcile(sessionmaker):
         observed.append(("incident_reconcile", sessionmaker))
@@ -961,25 +958,18 @@ async def test_notification_worker_reconciles_sent_publish_hooks_every_tick(monk
     monkeypatch.setattr(notification_tasks, "dispatch_notification_batch", fake_dispatch)
     monkeypatch.setattr(
         notification_tasks,
-        "reconcile_sent_publish_notifications",
-        fake_reconcile,
-    )
-    monkeypatch.setattr(
-        notification_tasks,
         "reconcile_sent_notification_incidents",
         fake_incident_reconcile,
     )
 
-    result, reconciled, incidents_recovered = await notification_tasks._dispatch_once(
+    result, incidents_recovered = await notification_tasks._dispatch_once(
         "worker:test"
     )
 
     assert result == DispatchResult(claimed=1, sent=1)
-    assert reconciled == 2
     assert incidents_recovered == 1
     assert observed == [
         ("dispatch", sessions),
-        ("reconcile", sessions),
         ("incident_reconcile", sessions),
     ]
 

@@ -12,7 +12,6 @@ from sqlalchemy.orm import Session
 from app.models.content import ContentItem
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
-from app.services.content_publish_notifications import build_publish_notification_intent
 from app.services.incident_types import incident_type_of
 from app.services.notification_contracts import IncidentSlackProjection, validate_message
 from app.services.notification_messages import build_open_incident_notification
@@ -140,54 +139,6 @@ def _ensure_incident_and_outbox(
     return incident, outbox, cast(SlackFixture, intent.message.payload())
 
 
-def _ensure_publish_outbox(
-    db: Session, hospital: Hospital, content: ContentItem, ae_id: uuid.UUID
-) -> tuple[Incident, NotificationOutbox, SlackFixture]:
-    incident = _one(db, Incident, dedupe_key="OPS-QA-20260810:publish-notification")
-    if incident is None:
-        incident = Incident(
-            hospital_id=hospital.id,
-            dedupe_key="OPS-QA-20260810:publish-notification",
-            incident_type="PUBLISH_NOTIFICATION_FAILED",
-            state="OPEN",
-            severity="MEDIUM",
-            customer_impact="콘텐츠는 공개됐지만 담당자가 공개 확인 알림을 받지 못했습니다.",
-            owner_id=ae_id,
-            sla_due_at=datetime.now(UTC) + timedelta(hours=4),
-            source_type="CONTENT_ITEM",
-            safe_error_code="PUBLISH_NOTIFICATION_FAILED",
-            safe_error_message="콘텐츠 공개 확인 알림 전달이 중단되었습니다.",
-            next_action="운영 센터에서 ‘Slack 다시 보내기’를 누르세요.",
-            admin_path=f"/hospitals/{hospital.id}/content?content={content.id}",
-        )
-        db.add(incident)
-        db.flush()
-    intent = build_publish_notification_intent(content, hospital)
-    validate_message(intent.message, allowed_admin_base_url=_ADMIN_BASE_URL)
-    outbox = _one(db, NotificationOutbox, dedupe_key=intent.dedupe_key)
-    if outbox is None:
-        outbox = NotificationOutbox(
-            hospital_id=hospital.id,
-            incident_id=incident.id,
-            dedupe_key=intent.dedupe_key,
-            notification_type=intent.notification_type,
-            channel="SLACK",
-            state="FAILED",
-            payload=intent.message.payload(),
-            fallback_text=intent.message.fallback_text,
-            attempt_count=1,
-            max_attempts=1,
-            next_attempt_at=null(),
-            safe_error_code="WEBHOOK_UNAVAILABLE",
-            safe_error_message="Slack 전달 연결이 응답하지 않았습니다.",
-        )
-        db.add(outbox)
-        db.flush()
-    else:
-        outbox.incident_id = incident.id
-    return incident, outbox, cast(SlackFixture, intent.message.payload())
-
-
 def ensure_complete_journey(
     db: Session,
     lead_id: uuid.UUID,
@@ -203,9 +154,6 @@ def ensure_complete_journey(
     diagnosis = ensure_lead_diagnosis(db, lead_id)
     run = _ensure_run(db, hospital, content)
     incident, outbox, slack_payload = _ensure_incident_and_outbox(db, hospital, run, ae_id)
-    publish_incident, publish_outbox, publish_slack_payload = _ensure_publish_outbox(
-        db, hospital, content, ae_id
-    )
     return {
         "hospital_ids": [hospital.id],
         "handoff_ids": [handoff.id],
@@ -215,7 +163,7 @@ def ensure_complete_journey(
         "source_asset_ids": [source.id],
         "lead_diagnosis_ids": [diagnosis.id],
         "operation_run_ids": [run.id],
-        "incident_ids": [incident.id, publish_incident.id],
-        "outbox_ids": [outbox.id, publish_outbox.id],
-        "slack_fixtures": [slack_payload, publish_slack_payload],
+        "incident_ids": [incident.id],
+        "outbox_ids": [outbox.id],
+        "slack_fixtures": [slack_payload],
     }

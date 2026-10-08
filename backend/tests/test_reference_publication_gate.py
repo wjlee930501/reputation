@@ -25,6 +25,7 @@ from app.services.content_engine import MissingCitableReferencesError
 from app.services.content_row_state import REFERENCE_RETRY_ROW_REASON, content_row_state
 from app.services.content_visibility import PublicVisibility
 from app.services.reference_publication import (
+    bind_reference_checks_to_revision,
     publication_references_current,
     refresh_publication_references,
     verify_publication_references,
@@ -686,6 +687,52 @@ async def test_refresh_reports_already_current_without_touching_the_row():
 
 def test_page_html_double_is_long_enough_for_the_empty_template_rule():
     assert len(document_body("치핵")) > 200
+
+
+def test_reference_free_operational_notice_binds_an_honest_empty_revision_evidence():
+    notice = SimpleNamespace(
+        content_type="NOTICE",
+        title="추석 연휴 진료 안내",
+        body="연휴 진료시간을 안내합니다.",
+        faq_question=None,
+        content_brief={"target_keyword": "NOTICE", "query_target": None},
+        query_target_id=None,
+        references_list=[],
+        reference_checks=None,
+    )
+
+    assert bind_reference_checks_to_revision(notice) == []
+
+
+def test_reference_required_faq_cannot_bind_fabricated_empty_evidence():
+    faq = SimpleNamespace(
+        content_type="FAQ",
+        title="치핵 치료 안내",
+        body="## 치핵 치료\n치료 방법을 안내합니다.",
+        faq_question="치핵은 어떻게 치료하나요?",
+        content_brief=None,
+        query_target_id=None,
+        references_list=[],
+        reference_checks=None,
+    )
+
+    assert bind_reference_checks_to_revision(faq) is None
+
+
+def test_malformed_reference_checks_never_bind_to_a_required_revision():
+    url = KDCA_VIEW.format(99125)
+    item = SimpleNamespace(
+        content_type="DISEASE",
+        title=HEMORRHOID_TITLE,
+        body="## 치핵 치료\n치핵 치료 방법을 안내합니다.",
+        faq_question=None,
+        content_brief=None,
+        query_target_id=None,
+        references_list=[{"title": "치핵", "url": url}],
+        reference_checks={"url": url, "verdict": "pass"},
+    )
+
+    assert bind_reference_checks_to_revision(item) is None
 
 
 async def test_unchanged_approved_revision_ignores_age_and_source_outage():
@@ -2120,7 +2167,7 @@ def test_first_generation_stores_the_reference_checks_for_the_publication_gates(
     url = KDCA_VIEW.format(9910)
     stored: list[dict] = []
 
-    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief, db):
         result = _generated_with_checks(item, url)
         stored.extend(result["reference_checks"])
         return result, SimpleNamespace(status=None, summary={})

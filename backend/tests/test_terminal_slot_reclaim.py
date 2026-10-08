@@ -19,6 +19,7 @@ from app.services.reference_requirement import (
     references_required_for,
 )
 from app.workers import tasks
+from app.workers.generation_attempt_state import fresh_generation_attempt
 from app.workers.generation_retry_policy import attempt_is_terminal
 from app.workers.nightly_generation_batch import _needs_generation_recovery
 from app.workers.topic_swap_fallback import topic_swap_budget_left, topic_swap_limit
@@ -180,6 +181,19 @@ def test_loader_selects_notice_with_linked_query_target():
 def test_topic_swap_budget_is_one_function(monkeypatch):
     monkeypatch.setattr("app.workers.topic_swap_fallback.settings.CONTENT_AUTO_TOPIC_SWAP_MAX", 1)
     assert topic_swap_limit() == 1
-    assert topic_swap_budget_left(SimpleNamespace(topic_swap_history=None)) is True
-    assert topic_swap_budget_left(SimpleNamespace(topic_swap_history=[{}])) is False
+    fresh = SimpleNamespace(
+        topic_swap_history=None,
+        essence_check_summary={
+            "generation_attempt": fresh_generation_attempt(topic_id="topic-a")
+        },
+    )
+    assert topic_swap_budget_left(fresh) is True
+    assert topic_swap_budget_left(
+        SimpleNamespace(
+            topic_swap_history=[{}], essence_check_summary=fresh.essence_check_summary
+        )
+    ) is False
+    assert topic_swap_budget_left(
+        SimpleNamespace(topic_swap_history=None, essence_check_summary=None)
+    ) is False
     assert tasks.topic_swap_budget_left is topic_swap_budget_left

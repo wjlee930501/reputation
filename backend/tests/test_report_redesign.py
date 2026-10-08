@@ -124,9 +124,9 @@ def test_v3_is_rendered_and_rejects_missing_evidence_page():
     corrupted = BytesIO()
     writer.write(corrupted)
     bound = v3_expectation(view, replace(expectation, period_label="2026-08"), 4)
-    with pytest.raises(DoctorPdfValidationError, match="본문 2쪽") as caught:
+    with pytest.raises(DoctorPdfValidationError) as caught:
         validate_doctor_pdf(corrupted.getvalue(), bound)
-    assert caught.value.code == "DOCTOR_PDF_MAIN_TEXT_MISSING"
+    assert caught.value.code == "DOCTOR_PDF_REQUIRED_TEXT_MISSING"
 
 
 def test_same_title_does_not_attribute_a_different_content_id():

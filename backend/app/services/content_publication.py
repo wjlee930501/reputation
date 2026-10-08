@@ -431,9 +431,6 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # 자동 교정 기록. 게이트가 이 기록으로 교정본에 묶인 재검수 PASS를 요구하고, 워커는
             # 글(주제)당 교정 상한을 센다 — 지우면 검수 없는 교정본이 통과하고 상한도 초기화된다.
             AUTO_CORRECTION_KEY,
-            # 발행기가 스스로 건 이미지 재생성의 하루·누적 계수. 매시 게이트 기록이 지우면
-            # 매시 다시 사고 누적 한도도 영영 닿지 않는다.
-            "auto_image_regeneration",
             # 사후 검수 스윕이 남긴 FLAGGED 표시. 지우면 같은 본문을 매일 다시 사고 인시던트를
             # 다시 건드린다. 본문을 고치는 PATCH가 명시적으로 지운다.
             "post_publish_ai_review",
@@ -481,8 +478,6 @@ def apply_essence_revalidation(
             "image_recertification",
             # 자동 교정 기록 — 지우면 글(주제)당 교정 상한이 초기화된다.
             AUTO_CORRECTION_KEY,
-            # 자동 이미지 재생성 계수 — 재승인이 지우면 누적 한도가 다시 열린다.
-            "auto_image_regeneration",
         ):
             if key in previous:
                 summary[key] = previous[key]

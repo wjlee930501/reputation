@@ -10,8 +10,8 @@ from types import SimpleNamespace  # noqa: E402
 from unittest.mock import Mock  # noqa: E402
 
 from app.models.content import ContentItem  # noqa: E402
-from app.workers import nowon_orthopedic_faq_regenerate as regenerate  # noqa: E402
 from app.workers import tasks  # noqa: E402
+from tests.fixtures import nowon_orthopedic_faq_regenerate_202608 as regenerate  # noqa: E402
 
 
 class _Scalars:

@@ -32,6 +32,22 @@ def _postgres_url() -> str:
     return require_db_url(_URL_ENV)
 
 
+def _limited_sov_summary() -> dict[str, object]:
+    return {
+        "observation_adequacy": {
+            "status": "LIMITED",
+            "planned_slots": 10,
+            "received_answers": 4,
+            "confirmed_slots": 3,
+            "ambiguous_slots": 1,
+            "answer_failed_slots": 0,
+            "judgment_failed_slots": 0,
+            "pending_slots": 6,
+            "pending_semantics": "INCLUDES_FAILURES",
+        }
+    }
+
+
 @pytest.mark.parametrize("quality", ["COMPLETE", "DEGRADED"])
 def test_committed_blocked_report_repairs_missing_incident_once(
     monkeypatch: pytest.MonkeyPatch, quality: str,
@@ -79,7 +95,7 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             report_type="MONTHLY",
             version=1,
             quality=quality,
-            sov_summary={"observation_adequacy": {"status": "LIMITED", "planned_slots": 10, "confirmed_slots": 3}} if quality == "DEGRADED" else {},
+            sov_summary=_limited_sov_summary() if quality == "DEGRADED" else {},
             planned_count=20,
             success_count=20,
             failed_count=0,
@@ -127,7 +143,7 @@ def test_committed_blocked_report_repairs_missing_incident_once(
             report_type="MONTHLY",
             version=1,
             quality=quality,
-            sov_summary={"observation_adequacy": {"status": "LIMITED", "planned_slots": 10, "confirmed_slots": 3}} if quality == "DEGRADED" else {},
+                sov_summary=_limited_sov_summary() if quality == "DEGRADED" else {},
             planned_count=20,
             success_count=20,
             failed_count=0,
@@ -297,7 +313,7 @@ def test_valid_paginated_artifact_recovers_false_invalid_incident(
             report_type="MONTHLY",
             version=1,
             quality=quality,
-            sov_summary={"observation_adequacy": {"status": "LIMITED", "planned_slots": 10, "confirmed_slots": 3}} if quality == "DEGRADED" else {},
+                sov_summary=_limited_sov_summary() if quality == "DEGRADED" else {},
             planned_count=20,
             success_count=20,
             failed_count=0,

@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+import re
 import uuid
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Final, Protocol
 
-from sqlalchemy import String, and_, case, exists, or_, select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
 from app.models.audit import AdminAuditLog
-from app.models.content import ContentItem
 from app.models.hospital import Hospital
 from app.models.operations import (
     Incident,
     IncidentSeverity,
     IncidentState,
+    JSONValue,
     NotificationOutbox,
     NotificationOutboxState,
     OperationRun,
@@ -26,11 +29,7 @@ from app.models.operations import (
 )
 from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_assignment import auto_assign_owner_sync, owner_label_sync
-from app.services.incident_safety import (
-    REBUILD_SITE_SWEEP_KEY_PREFIX,
-    build_incident_key,
-    site_build_incident_key,
-)
+from app.services.incident_safety import build_incident_key, site_build_incident_key
 from app.services.incident_types import IncidentFingerprint, incident_type_of
 from app.services.notification_contracts import (
     IncidentSlackProjection,
@@ -49,16 +48,64 @@ from app.services.site_build_incidents import (
 )
 
 _FINGERPRINT = IncidentFingerprint.UNKNOWN
-_CLASSIFIED_GENERATION_OPERATIONS = {
-    "REGENERATE_CONTENT",
-    "REGENERATE_CONTENT_IMAGE",
-    "RUN_SOV",
+_SIGNALLED_DOMAIN_OPERATIONS: Final = frozenset(
+    {
+        "CREATE_LEAD_DIAGNOSIS",
+        "GENERATE_CONTENT_ITEM",
+        "GENERATE_MONTHLY_REPORT",
+        "MONTHLY_SOV_PERIOD",
+        "RECERTIFY_PUBLISHED_IMAGE",
+        "RECOVER_LEAD_MEASUREMENT",
+        "RECOVER_LEAD_REPORT",
+        "REGENERATE_CONTENT",
+        "REGENERATE_CONTENT_IMAGE",
+        "RUN_SOV",
+        "SCHEDULED_MONTHLY_REPORT",
+        "TRIGGER_V0_REPORT",
+    }
+)
+_DOMAIN_OUTCOME_NAMES: Final = {
+    "CREATE_LEAD_DIAGNOSIS": "LEAD_DIAGNOSIS_CREATION",
+    "GENERATE_CONTENT_ITEM": "CONTENT_BODY_GENERATION",
+    "REGENERATE_CONTENT": "CONTENT_BODY_GENERATION",
+    "REGENERATE_CONTENT_IMAGE": "CONTENT_IMAGE_GENERATION",
+    "RECERTIFY_PUBLISHED_IMAGE": "CONTENT_IMAGE_CERTIFICATION",
+    "GENERATE_MONTHLY_REPORT": "MONTHLY_REPORT",
+    "SCHEDULED_MONTHLY_REPORT": "MONTHLY_REPORT",
+    "MONTHLY_SOV_PERIOD": "MONTHLY_SOV_FLEET",
+    "RUN_SOV": "SOV_MEASUREMENT",
+    "RECOVER_LEAD_MEASUREMENT": "LEAD_MEASUREMENT_RECOVERY",
+    "RECOVER_LEAD_REPORT": "LEAD_REPORT_RECOVERY",
+    "TRIGGER_V0_REPORT": "V0_REPORT",
 }
-_GENERIC_FAILURE_SLACK_SUPPRESSED_OPERATIONS = {"RUN_SOV"}
-# 자동 복구 sweep이 주인인 작업 (H-13). 최종 차단은 sweep이 병원 하나당
-# SITE_BUILD_RETRIES_EXHAUSTED 한 건으로 넘긴다
-# (`workers/autonomous_recovery._open_rebuild_site_incident`).
-_SWEEP_OWNED_OPERATIONS = {"REBUILD_SITE"}
+# These task bodies persist a classified exception before raising. Only these
+# owners may suppress the transport-level copy; an unowned safe_error_code is
+# projected below instead of being silently dropped.
+_CLASSIFIED_DOMAIN_OWNERS: Final = {
+    "CREATE_LEAD_DIAGNOSIS": "lead_diagnosis_tasks",
+    "GENERATE_CONTENT_ITEM": "generation_incident_control",
+    "GENERATE_MONTHLY_REPORT": "monthly_artifact_incident_control",
+    "RECERTIFY_PUBLISHED_IMAGE": "published_image_recertification",
+    "RECOVER_LEAD_MEASUREMENT": "lead_recovery_incidents",
+    "RECOVER_LEAD_REPORT": "lead_recovery_incidents",
+    "REGENERATE_CONTENT": "generation_incident_control",
+    "REGENERATE_CONTENT_IMAGE": "generation_incident_control",
+    "RUN_SOV": "weekly_sov_incident_control",
+    "TRIGGER_V0_REPORT": "v0_incident_control",
+}
+_PERIOD_TOKEN: Final = re.compile(r"(?:19|20)\d{2}-(?:0[1-9]|1[0-2]|W(?:0[1-9]|[1-4]\d|5[0-3]))")
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalOutcomeIdentity:
+    """Human exception identity for one durable domain outcome."""
+
+    dedupe_key: str
+    source_id: str
+    target_type: str
+    target_id: str
+    period: str | None
+    cause: str
 
 
 class SignalRequest(Protocol):
@@ -78,33 +125,20 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
         run = _tracked_run(db, run_id, worker_task_id)
         if run is None:
             return False
-        if run.operation_type in _SWEEP_OWNED_OPERATIONS:
-            if str(run.idempotency_key or "").startswith(REBUILD_SITE_SWEEP_KEY_PREFIX):
-                # sweep이 만든 자동 시도다. 시도 하나하나를 사람의 할 일로 만들지 않는다.
-                # 예산을 다 쓰기 전의 실패마다 generic 사고와 Slack을 열면 하루 세 번
-                # 조치 요청이 생기고, 뒤이은 자동 성공은 그중 자기 run의 사고 한 건만
-                # 닫는다. 예산을 다 쓴 뒤의 최종 차단은 sweep이 병원 하나당 한 건으로
-                # 넘기고, run 자체는 이 반환값과 무관하게
-                # `workers/operation_run_signals`가 FAILED로 종결한다.
-                return False
+        if run.operation_type == "REBUILD_SITE":
             if _record_site_build_operator_failure(db, run):
                 db.commit()
                 return True
-            # 병원이 없는 REBUILD_SITE 실행에만 남는 길이다 — 병원 단위 사고 키가 없어
-            # 실을 곳이 없으므로, 이 시도 하나를 아래 generic 경로가 사람에게 보인다.
-        if (
-            run.operation_type in _CLASSIFIED_GENERATION_OPERATIONS
-            and run.safe_error_code
-            and run.safe_error_code != "TASK_FAILED"
-        ):
-            # The task body has already terminalized the exact run and projected a
-            # pipeline-specific incident.  The Celery failure signal carries no
-            # new truth and must not create a second generic Slack episode.
             return False
-        previous_state = db.scalar(
-            select(Incident.state).where(Incident.dedupe_key == _incident_key(run.id))
+        identity = _terminal_outcome_identity(run)
+        if identity is None:
+            return False
+        previous = db.scalar(
+            select(Incident).where(Incident.dedupe_key == identity.dedupe_key)
         )
-        incident = _open_incident(db, run)
+        previous_state = previous.state if previous is not None else None
+        previous_run_id = previous.operation_run_id if previous is not None else None
+        incident = _open_incident(db, run, identity)
         # 이 경로로 열린 예외도 서비스 경로와 같은 규칙으로 담당자를 정한다 (H-15).
         # 여기만 배정을 건너뛰면 generic Celery 실패는 언제나 주인이 없다.
         assigned_owner_id = auto_assign_owner_sync(
@@ -120,8 +154,7 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
                     "auto_assigned_to": str(assigned_owner_id),
                 },
             )
-        should_notify = run.operation_type not in _GENERIC_FAILURE_SLACK_SUPPRESSED_OPERATIONS
-        if should_notify and (
+        if (
             previous_state is None
             or previous_state
             in {
@@ -135,7 +168,17 @@ def record_task_failure(task: SignalTask | None, task_id: str | None) -> bool:
                     _projection(db, incident), settings.ADMIN_BASE_URL
                 ),
             )
-        _audit(db, incident, "generic_task_failure_opened")
+        if previous_run_id is not None and previous_run_id != run.id:
+            _audit(
+                db,
+                incident,
+                "operation_attempt_superseded",
+                detail_extra={
+                    "superseded_run_id": str(previous_run_id),
+                    "superseding_run_id": str(run.id),
+                },
+            )
+        _audit(db, incident, "operation_terminal_failure_opened")
         db.commit()
     return True
 
@@ -177,7 +220,7 @@ def record_task_success(task: SignalTask | None, task_id: str | None) -> bool:
         if recovered is None:
             return False
         incident = recovered
-        # BACKGROUND_TASK_FAILED recovers when the next scheduled attempt succeeds.
+        # The domain outcome recovers when a later attempt for the same identity succeeds.
         # Nobody started that work, so the recovery is informational and the system
         # closes the incident itself instead of queueing a "확인 완료" click. It is
         # still sent whenever the "운영 확인 필요" notice actually reached the outbox:
@@ -291,146 +334,113 @@ def _tracked_run(db: Session, run_id: uuid.UUID, task_id: str) -> OperationRun |
     )
 
 
-# 더 나중 실행이 옛 사고를 대신하는 종결. SUCCEEDED는 일을 끝냈고, FAILED는 자기 사고로 지금
-# 상태를 말한다. PARTIAL·CANCELLED·건너뛰기(OPERATION_SKIPPED)는 자기 사고를 열지 않으므로
-# 옛 사고를 닫으면 남은 문제가 아무 데도 보이지 않는다.
-_SUPERSEDING_RUN_STATES = (
-    OperationRunState.SUCCEEDED.value,
-    OperationRunState.FAILED.value,
-)
+def _terminal_outcome_identity(run: OperationRun) -> TerminalOutcomeIdentity | None:
+    """Return the explicit domain outcome owned by a Celery terminal signal."""
 
-# 한 tick에 닫는 해결된 사고 상한. 밀린 백로그도 몇 분 안에 비워진다.
-RESOLVED_TASK_INCIDENT_BATCH = 50
-
-
-def _dispatch_target(payload_column):
-    return payload_column["_dispatch"]["target_id"].as_string()
-
-
-def _resolved_run_condition():
-    """이 실행이 맡았던 일이 이미 끝났다는 DB 근거.
-
-    사고는 실행(run) 하나에 묶여 그 실행의 성공만 닫았다(`record_task_success`). 다음 주
-    측정·다음 생성처럼 **새 실행**이 같은 일을 끝내도 옛 사고는 계속 열려 일일 요약의
-    '백그라운드 작업 중단'으로 쌓였다(2026-10-02 운영 96건 중 86건). 셋 중 하나면 해결이다.
-    - 그 실행 자체가 결국 SUCCEEDED로 끝났다(실패 신호 뒤 같은 run의 재시도가 성공).
-    - 같은 종류·같은 대상의 더 나중 실행이 SUCCEEDED거나 FAILED다. 그 실행이 이 일을 이어받았고,
-      실패였다면 그 실행의 사고가 지금 상태를 대신 말한다(PARTIAL·CANCELLED는 대신하지 않는다).
-    - 대상이 콘텐츠이고 그 글이 실행 뒤에 처음 공개됐다.
-
-    대상은 `_dispatch.target_id`다. 저장된 배포 정보가 없는 실행(대상 NULL)은 NULL=NULL이
-    참이 아니라 영영 짝을 찾지 못했다 — 그때는 같은 병원(병원 없음끼리 포함)을 같은 대상으로 본다.
-    """
-
-    later = OperationRun.__table__.alias("later_run")
-    target = _dispatch_target(OperationRun.request_payload)
-    later_target = _dispatch_target(later.c.request_payload)
-    same_target = or_(
-        later_target == target,
-        and_(
-            target.is_(None),
-            later_target.is_(None),
-            later.c.hospital_id.is_not_distinct_from(OperationRun.hospital_id),
+    if run.operation_type not in _SIGNALLED_DOMAIN_OPERATIONS:
+        return None
+    cause = str(run.safe_error_code or "TASK_FAILED")
+    if cause != "TASK_FAILED" and run.operation_type in _CLASSIFIED_DOMAIN_OWNERS:
+        # The task body already projected its classified domain exception.
+        return None
+    payload = run.request_payload if isinstance(run.request_payload, Mapping) else {}
+    dispatch = payload.get("_dispatch")
+    dispatch_map = dispatch if isinstance(dispatch, Mapping) else {}
+    target_type = str(
+        dispatch_map.get("target_type") or payload.get("source_type") or "hospital"
+    )
+    target_id = str(
+        dispatch_map.get("target_id")
+        or payload.get("source_id")
+        or run.hospital_id
+        or "fleet"
+    )
+    period = _operation_period(run, payload, dispatch_map)
+    context = _domain_context(payload, run.result_summary)
+    source_id = "|".join(
+        (
+            _DOMAIN_OUTCOME_NAMES[run.operation_type],
+            str(run.hospital_id or "fleet"),
+            target_type,
+            target_id,
+            period or "none",
+            context,
+        )
+    )
+    return TerminalOutcomeIdentity(
+        dedupe_key=build_incident_key(
+            "operation_terminal",
+            target_type,
+            f"{source_id}|{cause}",
+            _FINGERPRINT,
         ),
-    )
-    later_finished = exists().where(
-        later.c.operation_type == OperationRun.operation_type,
-        same_target,
-        later.c.state.in_(_SUPERSEDING_RUN_STATES),
-        later.c.requested_at > OperationRun.requested_at,
-    )
-    published_after = and_(
-        OperationRun.request_payload["_dispatch"]["target_type"].as_string() == "content_item",
-        exists().where(
-            ContentItem.id.cast(String) == target,
-            ContentItem.first_published_at > OperationRun.requested_at,
-        ),
-    )
-    return or_(
-        OperationRun.state == OperationRunState.SUCCEEDED.value,
-        later_finished,
-        published_after,
+        source_id=source_id,
+        target_type=target_type,
+        target_id=target_id,
+        period=period,
+        cause=cause,
     )
 
 
-def close_resolved_task_incidents(
-    db: Session, *, limit: int = RESOLVED_TASK_INCIDENT_BATCH
-) -> int:
-    """이미 해결된 일을 가리키는 generic 작업 실패 사고를 조용히 닫는다.
-
-    Slack 복구 알림은 보내지 않는다 — 지나간 일을 한꺼번에 정리하는 것이라 채널에 복구
-    메시지가 쏟아진다. 감사 기록만 남기고, 사람에게 보이는 표면(운영센터·일일 요약)에서
-    빠지게 한다. 커밋은 호출자가 한다.
-    """
-
-    live = (IncidentState.OPEN.value, IncidentState.RETRYING.value)
-    candidates = list(
-        db.execute(
-            select(Incident)
-            .join(OperationRun, OperationRun.id == Incident.operation_run_id)
-            .where(
-                Incident.incident_type == "BACKGROUND_TASK_FAILED",
-                Incident.source_type == "OPERATION_RUN",
-                Incident.state.in_(live),
-                _resolved_run_condition(),
-            )
-            .order_by(Incident.created_at, Incident.id)
-            .with_for_update(of=Incident, skip_locked=True)
-            .limit(limit)
-        )
-        .scalars()
-        .all()
-    )
-    closed = 0
-    for incident in candidates:
-        current: Incident | None = incident
-        if current.state == IncidentState.OPEN.value:
-            current = _transition_incident(
-                db, current, expected_state=IncidentState.OPEN, next_state=IncidentState.RETRYING
-            )
-        if current is None:
-            continue
-        current = _transition_incident(
-            db,
-            current,
-            expected_state=IncidentState.RETRYING,
-            next_state=IncidentState.RECOVERED,
-            recovered=True,
-        )
-        if current is None:
-            continue
-        acknowledged = _transition_incident(
-            db,
-            current,
-            expected_state=IncidentState.RECOVERED,
-            next_state=IncidentState.ACKNOWLEDGED,
-            acknowledged=True,
-        )
-        _audit(
-            db,
-            acknowledged or current,
-            "incident_recovered_by_later_success",
-            detail_extra={"slack_suppressed": True},
-        )
-        closed += 1
-    return closed
+def _operation_period(
+    run: OperationRun,
+    payload: Mapping[str, JSONValue],
+    dispatch: Mapping[str, JSONValue],
+) -> str | None:
+    summary = run.result_summary if isinstance(run.result_summary, Mapping) else {}
+    for key in ("measurement_month", "measurement_week"):
+        value = summary.get(key)
+        if isinstance(value, str) and _PERIOD_TOKEN.fullmatch(value):
+            return value
+    year, month = summary.get("period_year"), summary.get("period_month")
+    if isinstance(year, int) and isinstance(month, int) and 1 <= month <= 12:
+        return f"{year:04d}-{month:02d}"
+    args = dispatch.get("task_args")
+    if isinstance(args, Sequence) and not isinstance(args, (str, bytes)):
+        values = tuple(args)
+        if len(values) >= 4 and values[1] == "monthly":
+            if isinstance(values[2], int) and isinstance(values[3], int):
+                return f"{values[2]:04d}-{values[3]:02d}"
+        if run.operation_type == "GENERATE_MONTHLY_REPORT" and len(values) >= 3:
+            if isinstance(values[1], int) and isinstance(values[2], int):
+                return f"{values[1]:04d}-{values[2]:02d}"
+    for candidate in (
+        payload.get("source_id"),
+        run.idempotency_key,
+    ):
+        if isinstance(candidate, str) and (match := _PERIOD_TOKEN.search(candidate)):
+            return match.group(0)
+    return None
 
 
-def _incident_key(run_id: uuid.UUID) -> str:
-    return build_incident_key("worker_task", "operation_run", str(run_id), _FINGERPRINT)
+def _domain_context(
+    payload: Mapping[str, JSONValue], summary_value: JSONValue
+) -> str:
+    summary = summary_value if isinstance(summary_value, Mapping) else {}
+    for container in (payload, summary):
+        for key in (
+            "revision",
+            "subject_hash",
+            "generation_context_hash",
+            "source_snapshot_hash",
+        ):
+            value = container.get(key)
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                return f"{key}:{value}"
+    return "current"
 
 
 def _recoverable_incident(db: Session, run: OperationRun) -> Incident | None:
     """이 실행의 성공이 닫아야 할 사고 한 건.
 
-    일반 경로는 자기 run이 연 BACKGROUND_TASK_FAILED다. sweep이 주인인 작업은 시도마다
+    일반 경로는 같은 도메인 결과가 연 OPERATION_TERMINAL_FAILED다. sweep이 주인인 작업은 시도마다
     사고를 열지 않으므로, 운영자가 실패한 실행을 운영센터에서 다시 시도해 자식 run이
     성공하면 sweep이 남긴 병원 단위 최종 차단을 닫아야 한다 — 아무도 닫지 않으면 이미
     해결된 일이 사람의 할 일 목록에 영원히 남는다.
     """
 
     live = (IncidentState.OPEN.value, IncidentState.RETRYING.value)
-    if run.operation_type in _SWEEP_OWNED_OPERATIONS:
+    if run.operation_type == "REBUILD_SITE":
         if run.hospital_id is None:
             return None
         return db.scalar(
@@ -439,16 +449,20 @@ def _recoverable_incident(db: Session, run: OperationRun) -> Incident | None:
                 Incident.state.in_(live),
             )
         )
+    identity = _terminal_outcome_identity(run)
+    if identity is None:
+        return None
     return db.scalar(
         select(Incident).where(
-            Incident.dedupe_key == _incident_key(run.id),
-            Incident.operation_run_id == run.id,
+            Incident.dedupe_key == identity.dedupe_key,
             Incident.state.in_(live),
         )
     )
 
 
-def _open_incident(db: Session, run: OperationRun) -> Incident:
+def _open_incident(
+    db: Session, run: OperationRun, identity: TerminalOutcomeIdentity
+) -> Incident:
     now = datetime.now(UTC)
     impact, action = _operator_copy(run.operation_type)
     statement = (
@@ -457,14 +471,14 @@ def _open_incident(db: Session, run: OperationRun) -> Incident:
             id=uuid.uuid4(),
             hospital_id=run.hospital_id,
             operation_run_id=run.id,
-            dedupe_key=_incident_key(run.id),
-            incident_type="BACKGROUND_TASK_FAILED",
+            dedupe_key=identity.dedupe_key,
+            incident_type="OPERATION_TERMINAL_FAILED",
             state=IncidentState.OPEN.value,
             severity=IncidentSeverity.HIGH.value,
             customer_impact=impact,
-            source_type="OPERATION_RUN",
-            source_id=str(run.id),
-            safe_error_code="TASK_FAILED",
+            source_type="OPERATION_OUTCOME",
+            source_id=identity.source_id,
+            safe_error_code=identity.cause,
             safe_error_message="자동 작업이 완료되지 않았습니다.",
             next_action=action,
             admin_path="/operations",

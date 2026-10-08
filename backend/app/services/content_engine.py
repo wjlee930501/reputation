@@ -4,6 +4,7 @@
 - 유형별 프롬프트 분기
 - 의료광고 금지 표현 자동 필터 + 재생성
 """
+import hashlib
 import json
 import logging
 import re
@@ -991,6 +992,28 @@ operator_notes:
 {_bullet_list(content_brief.get('operator_notes') or [])}
 planned_publish_date: {content_brief.get('planned_publish_date') or ''}
 """.strip()
+
+
+def writer_input_fingerprint(
+    *,
+    hospital: Hospital,
+    content_type: ContentType,
+    existing_titles: list[str] | None,
+    philosophy: HospitalContentPhilosophy | None,
+    content_brief: dict | None,
+) -> str:
+    """Hash the effective, serializable inputs that shape a writer request."""
+
+    payload = {
+        "profile_context": _build_profile_context(hospital),
+        "philosophy_context": _build_philosophy_context(philosophy),
+        "brief_context": _build_content_brief_context(content_brief, philosophy),
+        "type_prompt": _fill_type_prompt(content_type, hospital, content_brief),
+        "existing_titles": list(existing_titles or [])[:EXISTING_TITLE_PROMPT_LIMIT],
+        "curated_candidates": _topic_aligned_curated_sources(content_brief),
+    }
+    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _usage_token(usage: object, field: str) -> int:

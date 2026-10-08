@@ -171,7 +171,7 @@ def test_a_swapped_slot_is_claimed_by_the_loader_and_written_by_the_real_worker(
     )
     written: list[str] = []
 
-    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief, db):
         topic = _target_name(pg_conn, item.query_target_id)
         written.append(topic)
         return (

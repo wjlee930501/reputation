@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import test from 'node:test'
 import ts from 'typescript'
 import * as delivery from './clinic-image-delivery.ts'
+import * as imagePolicy from './image-policy.ts'
 import * as imageHook from './use-clinic-image.ts'
 
 const source = readFileSync(
@@ -32,7 +33,7 @@ test('representative content images are present in server-rendered HTML', () => 
     if (id === '@/components/brand') return { ContentMotif: () => React.createElement('span') }
     if (id === '@/lib/clinic-image-delivery') return delivery
     if (id === '@/lib/use-clinic-image') return imageHook
-    if (id === '@/lib/image-policy') return { isOffAllowlistExternalUrl: () => false }
+    if (id === '@/lib/image-policy') return imagePolicy
     throw new Error(`Unexpected module: ${id}`)
   }
   Function('require', 'exports', 'module', compiled)(

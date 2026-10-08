@@ -285,10 +285,52 @@ RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매
 
 ## 롤백과 문서 변경
 
+### 0084 목적 중심 전환의 compatible-reader 롤백
+
+`41f61d6f2f47459e3135dac66e430e454a1f1735` baseline은 확장 스키마와 기존 입력을
+characterization하는 용도다. 이 버전은 이미지 필수, `schedule_set` 공개 gate, 참고자료 나이
+gate를 갖고 있으므로 0084 전환 뒤 public/read traffic의 롤백 대상이 아니다. Tasks 1~14를
+검증한 뒤 Task 15 cleanup 전에 만든 `compatible_reader_sha`의 full SHA와 이미지 digest만
+public/read 롤백 좌표로 사용한다.
+
+롤백 순서는 고정한다. 먼저 Admin mutation traffic, 모든 mutation Worker, Beat를 0으로 내려
+in-flight transaction이 없는지 확인한다. 그 다음 API public/read와 Site만 검증된 compatible
+reader 이미지로 전환한다. expanded DB를 그대로 두며 `alembic downgrade`는 실행하지 않는다.
+compatible reader에서 no-image, `schedule_set=false`, 오래된 승인 참고자료, pending candidate가
+있는 항목을 읽어 active approved body만 반환하는지 확인한다. 이 상태에서는 baseline Worker,
+Beat, Admin을 시작하지 않는다. revision-aware writer를 복구하고 post-drain reconciliation과
+mirror/pointer parity 100%를 다시 확인한 뒤에만 Worker → Beat → Admin mutation 순으로 재개한다.
+
+로컬/CI 리허설은 `.omo/evidence/task-16/compatible-reader.json`을 fail-closed 입력으로 사용한다.
+이 파일에는 `verifiedTasks: "1-14"`, `createdBeforeTask15: true`,
+`readerContract: "purpose-first-compatible-public-read-v1"`, full `sourceSha`가 모두 있어야 한다.
+harness는 그 SHA를 `git archive`로 build한 뒤 image tag/ID/digest를 별도 evidence에 기록한다.
+체크포인트가 없거나 build 뒤 old/new/compatible 정체성이 겹치면 리허설을 시작하지 않는다.
+외부 provider, GCS, Slack, DNS는 isolated fake boundary 밖으로 호출하지 않으며 그 미검증 범위를
+리허설 결과에 남긴다.
+
+0084 cleanup을 포함한 backend/API/Worker/Beat/migrate/all 배포 전에는 운영 DB의 legacy publish
+backlog를 읽기 전용으로 확인한다. 운영 `DATABASE_URL`을 주입하고 `scripts/deploy.sh`를 실행한다.
+`CONTENT_PUBLISH_RECOVERY_DATABASE_URL`은 격리된 integration test fixture 전용이다. preflight는
+`CONTENT_PUBLISHED` open transport와 unapplied
+`SENT`를 각각 세어 둘 다 0일 때만 통과하며, 결과 JSON은 기본적으로
+`.omo/evidence/deploy-preflight/legacy-publish-retirement-<revision>-<UTC>.json`에 남는다. 한 건이라도
+남거나 DB/config 확인이 실패하면 배포를 시작하지 않는다. 운영 backlog는 실제 preflight를 실행하기
+전까지 UNKNOWN으로 취급하며 Slack 발송으로 drain을 시험하지 않는다.
+
+```bash
+DATABASE_URL='postgresql+asyncpg://read-only-user:…@…/…' \
+  bash scripts/deploy.sh all
+```
+
 ```bash
 bash scripts/deploy.sh rollback
 ```
 
-롤백은 `.deploy-rollback`에 저장된 revision으로 **트래픽을 복귀**한다. 이미 적용된 DB 마이그레이션은 되돌리지 않는다. 스키마가 구버전과 호환되는지 먼저 판단하며 무조건 `alembic downgrade`하지 않는다. 롤백 뒤에도 현재 큐·API·공개 표면을 다시 확인한다.
+일반 롤백은 `.deploy-rollback`에 저장된 revision으로 **트래픽을 복귀**한다. 0084 목적 중심 전환에는
+위 compatible-reader 절차를 먼저 적용하며 이 일반 명령으로 baseline Worker/Beat/Admin까지 함께
+복구하지 않는다. 이미 적용된 DB 마이그레이션은 되돌리지 않는다. 스키마가 구버전과 호환되는지
+먼저 판단하며 무조건 `alembic downgrade`하지 않는다. 롤백 뒤에도 현재 큐·API·공개 표면을 다시
+확인한다.
 
 문서만 바뀐 릴리스는 기존 런타임이 그대로임을 기록한다. 문서 Git SHA를 기존 이미지의 소스 SHA로 바꿔 적거나 불필요한 전체 재배포를 수행하지 않는다.

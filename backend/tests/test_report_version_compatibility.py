@@ -42,14 +42,13 @@ def test_legacy_and_v3_metadata_survive_admin_serialization(version, pages):
 
 
 @pytest.mark.parametrize("version,pages", [
-    ("doctor-pdf-v1", 3), ("doctor-pdf-v2", 33),
-    ("doctor-pdf-v3", 1), ("doctor-pdf-v3", 3), ("doctor-pdf-v3", 33),
+    ("doctor-pdf-v1", 33), ("doctor-pdf-v2", 33), ("doctor-pdf-v3", 33),
 ])
-def test_version_page_boundaries_remain_fail_closed(version, pages):
+def test_all_versions_reject_unreadable_page_counts(version, pages):
     assert parse_doctor_artifact_metadata(_metadata(version, pages)) is None
 
 
-@pytest.mark.parametrize("field", ["sha256", "font_embedded", "required_text_present"])
+@pytest.mark.parametrize("field", ["sha256", "korean_to_unicode", "required_text_present"])
 def test_new_version_cannot_bypass_existing_artifact_proof(field):
     value = _metadata("doctor-pdf-v3", 4)
     value[field] = "invalid" if field == "sha256" else False

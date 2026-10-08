@@ -69,6 +69,23 @@ def _valid_artifact_metadata(*, sha256: str, byte_size: int) -> dict[str, object
     }
 
 
+def _complete_sov_summary(sov_pct: float) -> dict[str, object]:
+    return {
+        "sov_pct": sov_pct,
+        "observation_adequacy": {
+            "status": "COMPLETE",
+            "planned_slots": 20,
+            "received_answers": 20,
+            "confirmed_slots": 20,
+            "ambiguous_slots": 0,
+            "answer_failed_slots": 0,
+            "judgment_failed_slots": 0,
+            "pending_slots": 0,
+            "pending_semantics": "INCLUDES_FAILURES",
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_effective_delivery_advances_state_and_ignores_artifact_replacement(
     monkeypatch,
@@ -216,7 +233,7 @@ async def test_durable_cursor_catches_late_readiness_and_slack_failure_preserves
             excluded_count=0,
             pdf_path="gs://qa-private/ae.pdf",
             doctor_pdf_path="gs://qa-private/doctor.pdf",
-            sov_summary={"sov_pct": 20.0},
+                sov_summary=_complete_sov_summary(20.0),
             content_summary={
                 "published_count": 20,
                 "operations": {

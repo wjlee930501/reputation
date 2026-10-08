@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -131,36 +132,191 @@ def _legacy_budget(attempt: dict[str, Any]) -> dict[str, Any]:
         budget["writer_results"] = min(count, WRITER_RESULT_LIMIT)
         budget["reviewer_results"] = min(count, REVIEWER_RESULT_LIMIT)
         budget["text_http_attempts"] = min(count, TEXT_HTTP_ATTEMPT_LIMIT)
+    budget["legacy_baseline"] = {
+        "source": "LEGACY_COUNTERS",
+        "writer_results": budget["writer_results"],
+        "reviewer_results": budget["reviewer_results"],
+        "text_http_attempts": budget["text_http_attempts"],
+        "image_http_attempts": budget["image_http_attempts"],
+    }
     return budget
+
+
+_VERSIONED_COUNTER_KEYS = (
+    "writer_results",
+    "reviewer_results",
+    "topic_swaps",
+    "text_http_attempts",
+    "text_http_reserved",
+    "image_http_attempts",
+    "image_http_reserved",
+)
+_LEGACY_STATES = frozenset({"KNOWN_ZERO", "KNOWN_COUNTERS", "REPLACED"})
+_ACQUISITION_KINDS = frozenset({"WRITER", "REVIEWER", "IMAGE"})
+_ACQUISITION_STATUSES = frozenset({"RESERVED", "RESULT", "ERROR", "UNKNOWN"})
+
+
+def _strict_nonnegative_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _valid_reset_record(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("event") == "LEGACY_BUDGET_REPLACED"
+        and all(
+            isinstance(value.get(key), str) and bool(value[key])
+            for key in ("actor", "reason", "idempotency_key", "replaced_at")
+        )
+        and isinstance(value.get("previous_snapshot"), dict)
+    )
+
+
+def _validate_versioned_budget(raw: dict[str, Any]) -> dict[str, Any]:
+    """Reject partial or malformed v2 state before it can mint fresh allowance."""
+
+    if raw.get("version") != GENERATION_BUDGET_VERSION:
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    if raw.get("legacy_state") not in _LEGACY_STATES:
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    for key in _VERSIONED_COUNTER_KEYS:
+        if _strict_nonnegative_int(raw.get(key)) is None:
+            raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+
+    topics = raw.get("topics")
+    if (
+        not isinstance(topics, list)
+        or len(topics) > TOPIC_LIMIT
+        or any(not isinstance(topic, str) or not topic for topic in topics)
+        or len(set(topics)) != len(topics)
+    ):
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+
+    acquisitions = raw.get("acquisitions")
+    if not isinstance(acquisitions, list):
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    acquisition_ids: set[str] = set()
+    computed_writer_results = 0
+    computed_reviewer_results = 0
+    computed_text_attempts = 0
+    computed_text_reserved = 0
+    computed_image_attempts = 0
+    computed_image_reserved = 0
+    for entry in acquisitions:
+        if not isinstance(entry, dict):
+            raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+        acquisition_id = entry.get("id")
+        kind = entry.get("kind")
+        status = entry.get("status")
+        transport_reserved = _strict_nonnegative_int(entry.get("transport_reserved"))
+        transport_attempts = entry.get("transport_attempts", 0)
+        if (
+            not isinstance(acquisition_id, str)
+            or not acquisition_id
+            or acquisition_id in acquisition_ids
+            or kind not in _ACQUISITION_KINDS
+            or status not in _ACQUISITION_STATUSES
+            or transport_reserved is None
+            or transport_reserved > SEMANTIC_TRANSPORT_LIMIT
+            or _strict_nonnegative_int(transport_attempts) is None
+            or transport_attempts > SEMANTIC_TRANSPORT_LIMIT
+            or not isinstance(entry.get("reserved_at"), str)
+            or ("payload" in entry and not isinstance(entry["payload"], dict))
+        ):
+            raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+        acquisition_ids.add(acquisition_id)
+        if status in {"RESULT", "ERROR"} and kind == "WRITER":
+            computed_writer_results += 1
+        if status in {"RESULT", "ERROR"} and kind == "REVIEWER":
+            computed_reviewer_results += 1
+        if kind == "IMAGE":
+            computed_image_attempts += transport_attempts
+            if status == "RESERVED":
+                computed_image_reserved += transport_reserved - transport_attempts
+        else:
+            computed_text_attempts += transport_attempts
+            if status == "RESERVED":
+                computed_text_reserved += transport_reserved - transport_attempts
+
+    baseline = raw.get("legacy_baseline")
+    if raw["legacy_state"] == "KNOWN_COUNTERS":
+        if (
+            not isinstance(baseline, dict)
+            or baseline.get("source") != "LEGACY_COUNTERS"
+            or any(
+                _strict_nonnegative_int(baseline.get(key)) is None
+                for key in (
+                    "writer_results",
+                    "reviewer_results",
+                    "text_http_attempts",
+                    "image_http_attempts",
+                )
+            )
+        ):
+            raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    elif baseline is not None:
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    else:
+        baseline = {
+            "writer_results": 0,
+            "reviewer_results": 0,
+            "text_http_attempts": 0,
+            "image_http_attempts": 0,
+        }
+
+    if (
+        raw["writer_results"] != baseline["writer_results"] + computed_writer_results
+        or raw["reviewer_results"]
+        != baseline["reviewer_results"] + computed_reviewer_results
+        or raw["text_http_attempts"]
+        != baseline["text_http_attempts"] + computed_text_attempts
+        or raw["text_http_reserved"] != computed_text_reserved
+        or raw["image_http_attempts"]
+        != baseline["image_http_attempts"] + computed_image_attempts
+        or raw["image_http_reserved"] != computed_image_reserved
+    ):
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+
+    reset_record = raw.get("reset_record")
+    if reset_record is not None and not isinstance(reset_record, dict):
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    if raw["legacy_state"] == "REPLACED":
+        if not _valid_reset_record(reset_record):
+            raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    elif reset_record is not None:
+        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+    return dict(raw)
 
 
 def _budget_dict(attempt: dict[str, Any]) -> dict[str, Any]:
     raw = attempt.get(GENERATION_BUDGET_KEY)
     if not isinstance(raw, dict):
         return _legacy_budget(attempt)
-    if raw.get("version") != GENERATION_BUDGET_VERSION:
-        raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
-    return dict(raw)
+    return _validate_versioned_budget(raw)
 
 
 def read_generation_budget(attempt: dict[str, Any]) -> GenerationBudgetSnapshot:
     """Parse a versioned budget or conservatively translate known legacy counters."""
 
     budget = _budget_dict(attempt)
-    topics = budget.get("topics")
-    topic_values = tuple(str(value) for value in topics) if isinstance(topics, list) else ()
+    return _snapshot_from_budget(budget)
+
+
+def _snapshot_from_budget(budget: dict[str, Any]) -> GenerationBudgetSnapshot:
+    topics = budget["topics"]
+    topic_values = tuple(topics)
     reset = budget.get("reset_record")
     return GenerationBudgetSnapshot(
         version=GENERATION_BUDGET_VERSION,
-        legacy_state=str(budget.get("legacy_state") or "UNKNOWN"),
-        writer_results=_nonnegative_int(budget.get("writer_results")) or 0,
-        reviewer_results=_nonnegative_int(budget.get("reviewer_results")) or 0,
+        legacy_state=str(budget["legacy_state"]),
+        writer_results=budget["writer_results"],
+        reviewer_results=budget["reviewer_results"],
         topics=topic_values,
-        topic_swaps=_nonnegative_int(budget.get("topic_swaps")) or 0,
-        text_http_attempts=_nonnegative_int(budget.get("text_http_attempts")) or 0,
-        text_http_reserved=_nonnegative_int(budget.get("text_http_reserved")) or 0,
-        image_http_attempts=_nonnegative_int(budget.get("image_http_attempts")) or 0,
-        image_http_reserved=_nonnegative_int(budget.get("image_http_reserved")) or 0,
+        topic_swaps=budget["topic_swaps"],
+        text_http_attempts=budget["text_http_attempts"],
+        text_http_reserved=budget["text_http_reserved"],
+        image_http_attempts=budget["image_http_attempts"],
+        image_http_reserved=budget["image_http_reserved"],
         reset_record=dict(reset) if isinstance(reset, dict) else None,
     )
 
@@ -195,7 +351,7 @@ def reserve_acquisition(
     )
     if prior is not None:
         return {**attempt, GENERATION_BUDGET_KEY: budget}
-    snapshot = read_generation_budget({GENERATION_BUDGET_KEY: budget})
+    snapshot = _snapshot_from_budget(budget)
     if kind == "WRITER" and (
         snapshot.writer_results + _active_acquisitions(budget, kind) >= WRITER_RESULT_LIMIT
     ):
@@ -258,6 +414,7 @@ def acquisition_completed(
     reserved_key = "image_http_reserved" if kind == "IMAGE" else "text_http_reserved"
     spent_key = "image_http_attempts" if kind == "IMAGE" else "text_http_attempts"
     recorded = _nonnegative_int(entry.get("transport_attempts")) or 0
+    final_transport_attempts = max(recorded, used)
     remaining_reservation = max(0, SEMANTIC_TRANSPORT_LIMIT - recorded)
     budget[reserved_key] = max(
         0, (_nonnegative_int(budget.get(reserved_key)) or 0) - remaining_reservation
@@ -272,7 +429,7 @@ def acquisition_completed(
     entries[index] = {
         **entry,
         "status": outcome,
-        "transport_attempts": used,
+        "transport_attempts": final_transport_attempts,
         "completed_at": datetime.now(UTC).isoformat(),
         **({"payload": payload} if payload is not None else {}),
     }
@@ -319,7 +476,7 @@ def record_topic_swap(
     """Record the sole lifetime topic swap while preserving all provider spend."""
 
     budget = _budget_dict(attempt)
-    snapshot = read_generation_budget({GENERATION_BUDGET_KEY: budget})
+    snapshot = _snapshot_from_budget(budget)
     if snapshot.topic_swaps >= TOPIC_SWAP_LIMIT:
         raise GenerationBudgetExceeded("TOPIC_SWAP_EXHAUSTED")
     topics = list(snapshot.topics)
@@ -345,13 +502,21 @@ def replace_unknown_legacy_budget(
 
     raw_budget = attempt.get(GENERATION_BUDGET_KEY)
     if isinstance(raw_budget, dict):
-        raise GenerationBudgetExceeded("LEGACY_BUDGET_ALREADY_REPLACED")
-    try:
-        _legacy_budget(attempt)
-    except GenerationBudgetUnknown:
-        legacy_spend_is_unknown = True
+        if _valid_reset_record(raw_budget.get("reset_record")):
+            raise GenerationBudgetExceeded("LEGACY_BUDGET_ALREADY_REPLACED")
+        try:
+            _validate_versioned_budget(raw_budget)
+        except GenerationBudgetUnknown:
+            legacy_spend_is_unknown = True
+        else:
+            raise GenerationBudgetExceeded("LEGACY_BUDGET_ALREADY_REPLACED")
     else:
-        raise GenerationBudgetExceeded("LEGACY_BUDGET_IS_KNOWN")
+        try:
+            _legacy_budget(attempt)
+        except GenerationBudgetUnknown:
+            legacy_spend_is_unknown = True
+        else:
+            raise GenerationBudgetExceeded("LEGACY_BUDGET_IS_KNOWN")
     if not legacy_spend_is_unknown:  # pragma: no cover - the else branch raises
         raise GenerationBudgetExceeded("LEGACY_BUDGET_IS_KNOWN")
     budget = _zero_budget(None)
@@ -362,7 +527,7 @@ def replace_unknown_legacy_budget(
         "reason": reason,
         "idempotency_key": idempotency_key,
         "replaced_at": (replaced_at or datetime.now(UTC)).isoformat(),
-        "previous_snapshot": dict(attempt),
+        "previous_snapshot": copy.deepcopy(attempt),
     }
     return {**attempt, GENERATION_BUDGET_KEY: budget}
 

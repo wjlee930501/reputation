@@ -26,6 +26,7 @@ from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRunState
 from app.workers import generation_retry_policy, nightly_generation_batch, tasks
+from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY, fresh_generation_attempt
 from app.workers.generation_run_control import GenerationItemState
 from app.workers.nightly_generation_batch import (
     _needs_generation_recovery,
@@ -98,10 +99,7 @@ def worker(pg_session, monkeypatch):
 
 
 def _seed_finished_blocked_item(db) -> uuid.UUID:
-    """본문·이미지 URL·검수 시각·참고자료·승인 기준이 모두 있지만 내용 hash가 없는 행.
-
-    복구 필터가 보는 결함은 하나도 없고, 발행 판정은 이미지 인증 때문에 막힌다.
-    """
+    """워커가 끝난 뒤에도 금지 표현 차단을 보고해야 하는 행."""
 
     hospital = Hospital(
         name="claim해제의원",
@@ -142,13 +140,14 @@ def _seed_finished_blocked_item(db) -> uuid.UUID:
         sequence_no=1,
         total_count=12,
         title="허리디스크 초기 증상",
-        body="생성된 본문",
+        body="이 치료는 완치를 약속합니다.",
         references_list=[{"title": "질병관리청", "url": "https://www.kdca.go.kr/example"}],
         image_url="https://cdn.example/generated.png",
         image_policy_verified_at=datetime(2026, 9, 16, 7, 5, tzinfo=KST),
         image_content_hash=None,
         content_philosophy_id=philosophy.id,
         essence_status="ALIGNED",
+        essence_check_summary={GENERATION_ATTEMPT_KEY: fresh_generation_attempt()},
         scheduled_date=SLOT,
         status=ContentStatus.DRAFT,
     )

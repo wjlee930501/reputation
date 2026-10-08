@@ -180,10 +180,12 @@ def publication_references_missing(item: object) -> bool:
 def bind_reference_checks_to_revision(item: object) -> list[dict[str, Any]] | None:
     """Validate exact successful evidence while preserving authentic 0082 history."""
 
-    if not publication_references_current(item):
-        return None
     entries, malformed = split_reference_entries(getattr(item, "references_list", None))
     if malformed:
+        return None
+    if not entries:
+        return None if references_required(item) else []
+    if not publication_references_current(item):
         return None
     indexed = index_reference_checks(getattr(item, "reference_checks", None))
     for entry in entries:

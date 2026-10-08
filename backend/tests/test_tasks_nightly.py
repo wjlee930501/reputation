@@ -45,6 +45,7 @@ from app.services.reference_verification import (
 from app.workers import generation_incident_control, nightly_generation_batch, tasks
 from app.workers.content_backlog_recovery import _next_available_dates
 from app.workers.dispatch_envelope import PURPOSE_HEADER, TARGET_HEADER
+from app.workers.generation_attempt_state import fresh_generation_attempt
 from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
@@ -59,6 +60,63 @@ from app.workers.generation_retry_policy import (
 )
 from app.workers.topic_swap_fallback import exhausted_body_sample_reason
 from tests.reference_fetch_doubles import PageFetcher
+
+
+class _GenerationBudgetDB:
+    """Commit-capable unit double for the generation ledger's durable checkpoints."""
+
+    def commit(self) -> None:
+        return None
+
+
+def _complete_generation_input_shape(hospital, philosophy) -> None:
+    for name, default in {
+        "name": "예산 테스트 의원",
+        "address": None,
+        "phone": None,
+        "business_hours": {},
+        "region": [],
+        "specialties": [],
+        "keywords": [],
+        "director_name": None,
+        "director_career": None,
+        "director_philosophy": None,
+        "treatments": [],
+    }.items():
+        if not hasattr(hospital, name):
+            setattr(hospital, name, default)
+    for name, default in {
+        "version": 1,
+        "positioning_statement": None,
+        "doctor_voice": None,
+        "patient_promise": None,
+        "content_principles": [],
+        "tone_guidelines": [],
+        "must_use_messages": [],
+        "avoid_messages": [],
+        "medical_ad_risk_rules": [],
+        "treatment_narratives": [],
+        "prefer_topics": [],
+        "prefer_messages": [],
+    }.items():
+        if not hasattr(philosophy, name):
+            setattr(philosophy, name, default)
+
+
+async def _generate_with_known_zero_budget(**kwargs):
+    """Run the worker review seam for a genuinely new slot in focused unit tests."""
+
+    item = kwargs["item"]
+    if not isinstance(item.content_type, ContentType):
+        item.content_type = ContentType(
+            getattr(item.content_type, "value", item.content_type)
+        )
+    _complete_generation_input_shape(kwargs["hospital"], kwargs["philosophy"])
+    if item.essence_check_summary is None:
+        item.essence_check_summary = {
+            "generation_attempt": fresh_generation_attempt(topic_id="unit-test-topic")
+        }
+    return await tasks._generate_with_auto_review(db=_GenerationBudgetDB(), **kwargs)
 
 
 def test_nightly_generation_stmt_selects_missing_and_automatically_repairable_content():
@@ -147,7 +205,7 @@ async def test_generation_rewrites_once_with_automatic_review_feedback(monkeypat
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[],
@@ -206,7 +264,7 @@ async def test_target_keyword_miss_triggers_exactly_one_rewrite(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -259,7 +317,7 @@ async def test_target_keyword_miss_twice_accepts_the_article_with_a_soft_finding
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -319,7 +377,7 @@ async def test_alignment_rewrite_blocked_by_cost_guard_keeps_the_paid_candidate(
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", block_second_generation)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -374,7 +432,7 @@ async def test_alignment_rewrite_failure_keeps_the_paid_candidate(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -422,7 +480,7 @@ async def test_price_geo_seo_value_error_rewrites_in_the_same_tick(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[],
@@ -475,7 +533,7 @@ async def test_season_title_soft_finding_requests_only_one_rewrite(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="HEALTH", essence_check_summary=None),
         existing_titles=[],
@@ -534,7 +592,7 @@ async def test_independent_ai_review_requests_one_bounded_rewrite(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", fake_reviewer)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[],
@@ -585,13 +643,13 @@ async def test_fact_hard_finding_gets_one_removal_rewrite_then_stays_blocking(mo
         tasks, "screen_content_against_philosophy",
         lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []}),
     )
-    _content, screening = await tasks._generate_with_auto_review(
+    _content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[], philosophy=SimpleNamespace(), approved_brief=None,
     )
     assert len(generation_findings) == 2, "삭제형 재작성은 정확히 1회"
-    assert reviews == 2, "재작성 결과는 반드시 독립 검수를 다시 받는다"
+    assert reviews == 1, "같은 후보의 durable 차단 검수 결과를 다시 구매하지 않는다"
     assert "삭제하거나" in generation_findings[1][0]
     assert "새로운 사실" in generation_findings[1][0]
     assert "장비 보유 사실" in generation_findings[1][1]
@@ -605,9 +663,15 @@ async def test_removal_rewrite_that_clears_the_hard_finding_is_publishable(monke
     """삭제형 재작성이 지적을 없애면 그 글은 살린다(재검수 통과가 근거다)."""
 
     reviews = 0
+    generations = 0
 
     async def generate(*_args, **_kwargs):
-        return {"title": "장비 안내", "body": "본문"}
+        nonlocal generations
+        generations += 1
+        return {
+            "title": "장비 안내",
+            "body": "근거 없는 단정" if generations == 1 else "승인 자료 안의 안내",
+        }
 
     async def reviewer(**_kwargs):
         nonlocal reviews
@@ -642,7 +706,7 @@ async def test_removal_rewrite_that_clears_the_hard_finding_is_publishable(monke
         tasks, "screen_content_against_philosophy",
         lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []}),
     )
-    _content, screening = await tasks._generate_with_auto_review(
+    _content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[], philosophy=SimpleNamespace(), approved_brief=None,
@@ -691,7 +755,7 @@ async def test_one_session_never_buys_more_than_three_generations(monkeypatch):
         tasks, "screen_content_against_philosophy",
         lambda *_args: SimpleNamespace(status="ALIGNED", summary={"blocking": False, "findings": []}),
     )
-    await tasks._generate_with_auto_review(
+    await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[], philosophy=SimpleNamespace(),
@@ -722,7 +786,7 @@ async def test_ai_reviewer_is_never_called_before_deterministic_gate_passes(monk
     monkeypatch.setattr(tasks, "review_generated_content", reviewer_must_not_run)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
 
-    _content, screening = await tasks._generate_with_auto_review(
+    _content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="FAQ", essence_check_summary=None),
         existing_titles=[],
@@ -772,7 +836,7 @@ async def test_duplicate_topic_spends_one_shared_rewrite_and_then_accepts(monkey
     monkeypatch.setattr(tasks, "review_generated_content", _reviewer())
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=["허리디스크 초기증상과 자가진단 방법"],
@@ -812,7 +876,7 @@ async def test_duplicate_topic_rewrite_that_changes_angle_leaves_no_finding(monk
     monkeypatch.setattr(tasks, "review_generated_content", _reviewer())
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=["허리디스크 초기증상과 자가진단 방법"],
@@ -845,7 +909,7 @@ async def test_duplicate_topic_shares_the_soft_budget_with_keyword_remediation(
     monkeypatch.setattr(tasks, "review_generated_content", _reviewer())
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
 
-    _content, screening = await tasks._generate_with_auto_review(
+    _content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=["허리디스크 초기증상과 자가진단 방법"],
@@ -891,7 +955,7 @@ async def test_soft_reference_finding_drops_the_named_reference_without_a_rewrit
     monkeypatch.setattr(tasks, "review_generated_content", reviewer)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -938,7 +1002,7 @@ async def test_unmatched_reference_finding_stays_advisory(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", reviewer)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -979,7 +1043,7 @@ async def test_reference_finding_never_removes_the_last_evidence(monkeypatch):
     monkeypatch.setattr(tasks, "review_generated_content", reviewer)
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", _allow_cost)
 
-    content, screening = await tasks._generate_with_auto_review(
+    content, screening = await _generate_with_known_zero_budget(
         hospital=SimpleNamespace(id=uuid.uuid4()),
         item=SimpleNamespace(content_type="DISEASE", essence_check_summary=None),
         existing_titles=[],
@@ -1501,7 +1565,9 @@ def _nightly_item(hospital_name: str):
         generation_claimed_at=None,
         content_philosophy_id=None,
         essence_status=None,
-        essence_check_summary=None,
+        essence_check_summary={
+            "generation_attempt": fresh_generation_attempt(topic_id="unit-test-topic")
+        },
         scheduled_date=date(2026, 8, 19),
     )
 
@@ -1932,7 +1998,7 @@ def test_changed_generation_context_allows_exactly_one_retry(monkeypatch):
         id=uuid.uuid4(),
         hospital_id=uuid.uuid4(),
         body=None,
-        content_type=SimpleNamespace(value="FAQ"),
+        content_type=ContentType.FAQ,
         scheduled_date=date(2026, 8, 20),
         query_target_id=None,
         essence_check_summary=None,
@@ -2103,7 +2169,7 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
         body="stored body",
         title="stored title",
         content_philosophy_id=philosophy.id,
-        content_type=SimpleNamespace(value="FAQ"),
+        content_type=ContentType.FAQ,
         query_target_id=None,
         scheduled_date=date(2026, 8, 20),
         published_at=None,
@@ -2195,7 +2261,9 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
         tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {}
     )
     monkeypatch.setattr(tasks, "_generate_with_auto_review", regenerated)
-    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: _args[2].summary)
+    monkeypatch.setattr(
+        tasks, "_generation_summary", lambda *_args, **_kwargs: _args[2].summary
+    )
     monkeypatch.setattr(tasks, "write_back_generated_content", write_content)
     monkeypatch.setattr(tasks, "_recover_missing_content_image", lambda *_args: (_ for _ in ()).throw(
         AssertionError("fact-hard rewrite result must not spend image budget")))
@@ -2390,7 +2458,9 @@ def test_recovery_fills_image_fragment_without_rewriting_body(monkeypatch):
         ],
         faq_question="진료 전 무엇을 확인해야 하나요?",
         faq_answer_summary="증상과 복용약을 정리합니다.",
-        essence_check_summary=None,
+        essence_check_summary={
+            "generation_attempt": fresh_generation_attempt(topic_id="unit-test-topic")
+        },
     )
     hospital = SimpleNamespace(id=uuid.uuid4(), name="조각복구의원", slug="fragment")
     philosophy = SimpleNamespace(id=uuid.uuid4())
@@ -2556,7 +2626,8 @@ def test_policy_rejected_image_retries_once_with_the_repair_prompt(monkeypatch):
     item = SimpleNamespace(
         id=uuid.uuid4(), hospital_id=uuid.uuid4(), title="주제", image_url=None,
         content_type=SimpleNamespace(value="FAQ"), query_target_id=None,
-        content_revision=1, generation_claim_token=None, essence_check_summary=None,
+        content_revision=1, generation_claim_token=None,
+        essence_check_summary={"generation_attempt": fresh_generation_attempt()},
     )
     hospital = SimpleNamespace(id=item.hospital_id, name="정책거절의원", slug="policy-clinic")
     db = _NightlyTaskDB()
@@ -3580,7 +3651,7 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
     item = SimpleNamespace(
         id="content-1",
         hospital_id="hospital-1",
-        content_type=SimpleNamespace(value="FAQ"),
+        content_type=ContentType.FAQ,
         title=None,
         body=None,
         meta_description=None,
@@ -3595,13 +3666,16 @@ def test_generate_single_content_item_stays_draft_until_manual_publish(monkeypat
         brief_status=None,
         content_brief=None,
         essence_status=None,
-        essence_check_summary=None,
+        essence_check_summary={
+            "generation_attempt": fresh_generation_attempt(topic_id="unit-test-topic")
+        },
         references_list=None,
         faq_question=None,
         faq_answer_summary=None,
     )
     hospital = SimpleNamespace(id="hospital-1", slug="test-clinic")
     philosophy = SimpleNamespace(id="philosophy-1")
+    _complete_generation_input_shape(hospital, philosophy)
 
     class _ExistingTitles:
         def all(self):
@@ -4197,52 +4271,6 @@ def test_monthly_slot_generation_recovers_positive_shortfall_without_incident(mo
     assert recovered == [{"hospital_id": "h1", "period_key": "2026-09"}]
 
 
-def test_monthly_slot_generation_runs_isolated_nowon_august_backfill(monkeypatch):
-    db = _MonthlySlotDB([])
-    calls = {"count": 0}
-
-    def fake_backfill():
-        calls["count"] += 1
-        return 9
-
-    monkeypatch.setattr(
-        tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 8, 26, tzinfo="Asia/Seoul")
-    )
-    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "backfill_nowon_august_2026_slots", fake_backfill)
-    monkeypatch.setattr(tasks, "regenerate_nowon_orthopedic_faq", lambda: 0)
-
-    tasks.monthly_slot_generation()
-
-    assert db.commit_calls == 1
-    assert calls["count"] == 1
-
-
-def test_monthly_slot_generation_runs_nowon_orthopedic_faq_regenerate(monkeypatch):
-    db = _MonthlySlotDB([])
-    calls = {"backfill": 0, "regenerate": 0}
-
-    def fake_backfill():
-        calls["backfill"] += 1
-        return 9
-
-    def fake_regenerate():
-        calls["regenerate"] += 1
-        return 1
-
-    monkeypatch.setattr(
-        tasks.arrow, "now", lambda *_a, **_k: arrow.get(2026, 8, 26, tzinfo="Asia/Seoul")
-    )
-    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
-    monkeypatch.setattr(tasks, "backfill_nowon_august_2026_slots", fake_backfill)
-    monkeypatch.setattr(tasks, "regenerate_nowon_orthopedic_faq", fake_regenerate)
-
-    tasks.monthly_slot_generation()
-
-    assert db.commit_calls == 1
-    assert calls == {"backfill": 1, "regenerate": 1}
-
-
 def test_monthly_slot_generation_keeps_prior_success_when_later_schedule_conflicts(monkeypatch):
     hospitals = [
         SimpleNamespace(id="h1", name="첫번째의원", status=HospitalStatus.ACTIVE),
@@ -4662,6 +4690,7 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(tasks, "assess_content_publication", lambda *_args: assessment)
+    monkeypatch.setattr(tasks, "bind_reference_checks_to_revision", lambda _item: [])
     monkeypatch.setattr(
         tasks, "write_audit_log_sync", lambda *_args, **kwargs: audits.append(kwargs)
     )
@@ -4693,18 +4722,19 @@ def test_auto_publish_does_not_treat_profile_hero_as_verified_content_image(monk
     def assert_no_fallback_before_gate(candidate, _philosophy):
         assert candidate.image_url is None
         return SimpleNamespace(
-            publishable=False,
-            code="CONTENT_IMAGE_NOT_READY",
-            message="대표 이미지가 아직 준비되지 않았습니다.",
+            publishable=True,
+            code=None,
+            message=None,
             violations=(),
-            essence_status="NEEDS_REVIEW",
-            essence_summary={"blocking": True, "findings": []},
+            essence_status="ALIGNED",
+            essence_summary={"blocking": False, "findings": []},
             philosophy_id=philosophy.id,
         )
 
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: db)
     monkeypatch.setattr(tasks, "get_current_approved_philosophy_sync", lambda *_args: philosophy)
     monkeypatch.setattr(tasks, "assess_content_publication", assert_no_fallback_before_gate)
+    monkeypatch.setattr(tasks, "bind_reference_checks_to_revision", lambda _item: [])
     monkeypatch.setattr(
         tasks.arrow,
         "now",
@@ -4717,15 +4747,14 @@ def test_auto_publish_does_not_treat_profile_hero_as_verified_content_image(monk
 
     outcome = tasks._auto_publish_one(item.id)
 
-    assert outcome["kind"] == "blocked"
-    assert item.status == tasks.ContentStatus.DRAFT
+    assert outcome["kind"] == "published"
+    assert item.status == tasks.ContentStatus.PUBLISHED
     assert item.image_url is None
     assert item.image_prompt is None
     assert [log.action for log in db.added if hasattr(log, "action")] == [
-        "auto_publish_blocked",
+        "auto_publish_content",
     ]
-    # 대체 이미지를 붙이는 대신 이미지 재생성 시스템 실행을 한 번 건다(PR-B, 발행은 하지 않는다).
-    assert [call["args"] for call in dispatched] == [[str(item.id)]]
+    assert dispatched == []
 
 
 # ── 08:00 자동 발행 안전 게이트: **실제** assess_content_publication으로 검증 ──
@@ -5132,7 +5161,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
     item = SimpleNamespace(
         id="content-1",
         hospital_id="hospital-1",
-        content_type=SimpleNamespace(value="FAQ"),
+        content_type=ContentType.FAQ,
         title=None,
         body=None,
         image_url="gs://bucket/existing.png",
@@ -5142,9 +5171,13 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
         content_brief=None,
         query_target_id=None,
         exposure_action_id=None,
+        essence_check_summary={
+            "generation_attempt": fresh_generation_attempt(topic_id="unit-test-topic")
+        },
     )
     hospital = SimpleNamespace(id="hospital-1", slug="test-clinic")
     philosophy = SimpleNamespace(id="philosophy-1")
+    _complete_generation_input_shape(hospital, philosophy)
 
     class _ExistingTitles:
         def all(self):
@@ -5162,6 +5195,7 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
             self._results = [_ExistingTitles(), _ApprovedPhilosophy()]
             self.commit_calls = 0
             self.rollback_calls = 0
+            self.events = []
 
         def execute(self, stmt):
             if isinstance(stmt, Update):
@@ -5170,9 +5204,11 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
 
         def commit(self):
             self.commit_calls += 1
+            self.events.append("commit")
 
         def rollback(self):
             self.rollback_calls += 1
+            self.events.append("rollback")
 
         def refresh(self, _obj):
             pass
@@ -5187,10 +5223,20 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
             "faq_answer_summary": None,
         }
 
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.99,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
     def _boom_image(*_args, **_kwargs):
         raise AssertionError("결과를 버렸는데 이미지 생성까지 진행했다")
 
     monkeypatch.setattr(tasks, "generate_content", fake_generate_content)
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
     monkeypatch.setattr(tasks, "generate_image", _boom_image)
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_args: philosophy)
     # 이 테스트의 대상은 write-back 가드다 — 브리프 플래너는 범위 밖이라 고정한다.
@@ -5205,7 +5251,8 @@ def test_regeneration_discards_its_result_when_the_slot_was_cancelled(monkeypatc
     tasks._generate_single_content_item(db, item, hospital)
 
     assert db.rollback_calls == 1, "0행이면 롤백하고 결과를 버려야 한다"
-    assert db.commit_calls == 1, "플래너 확정 커밋 외에 본문 커밋이 일어나면 안 된다"
+    assert db.events[-1] == "rollback", "CAS 0행 뒤 본문을 커밋하면 안 된다"
+    assert db.commit_calls >= 5, "플래너와 provider 예산 checkpoint는 먼저 durable 해야 한다"
     # 추적 객체가 오염되지 않아야 다음 반복이 안전하다.
     assert item.title is None
     assert item.body is None
@@ -6307,7 +6354,9 @@ def _sweep_regeneration_harness(monkeypatch, philosophy, item, *, body="다시 �
         tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {}
     )
     monkeypatch.setattr(tasks, "_generate_with_auto_review", regenerated)
-    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: _args[2].summary)
+    monkeypatch.setattr(
+        tasks, "_generation_summary", lambda *_args, **_kwargs: _args[2].summary
+    )
     monkeypatch.setattr(tasks, "write_back_generated_content", write_content)
     monkeypatch.setattr(
         tasks, "_recover_missing_content_image", lambda *_args: tasks.GenerationItemState.SUCCEEDED

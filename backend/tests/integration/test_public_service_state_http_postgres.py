@@ -21,6 +21,7 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.content_visibility import assess_public_visibility
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.essence_readiness import get_public_approved_philosophy_id
@@ -29,6 +30,7 @@ from app.services.image_engine import (
     image_content_hash_from_url,
     image_subject_hash,
 )
+from tests.publication_test_support import verified_reference_checks
 
 pytestmark = pytest.mark.asyncio
 
@@ -125,9 +127,30 @@ async def _seed_public_history(db, *, hospital_id: uuid.UUID, slug: str) -> tupl
         published_at=now,
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=philosophy.id,
+        generation_philosophy_id=philosophy.id,
+        last_reviewed_philosophy_id=philosophy.id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": "진료 예약 전 준비 사항",
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 예약 안내",
+            },
+            "source_snapshot": {
+                "hash": philosophy.source_snapshot_hash,
+                "source_asset_ids": [str(source.id)],
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {"source_asset_ids": [str(source.id)]}
+        },
     )
+    content.reference_checks = verified_reference_checks(content, checked_at=now)
     db.add(content)
     await db.flush()
+    written = await reconcile_content_revisions(db, content_item_id=content.id)
+    assert written.created_count == 1
+    await db.refresh(content, attribute_names=["active_revision_id", "active_revision"])
     return hospital, content
 
 

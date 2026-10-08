@@ -70,8 +70,6 @@ from app.services.content_publication import (
     publication_field_values,
     record_publication_identity,
 )
-from app.services.content_publish_notifications import project_publish_notification
-from app.services.content_publish_state import attach_publish_notification_state
 from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.content_row_state import ROW_STATE_LABELS, content_row_state
 from app.services.content_visibility import (
@@ -614,7 +612,6 @@ async def list_content(
 
     result = await db.execute(stmt)
     items = result.scalars().all()
-    await attach_publish_notification_state(db, items)
 
     public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
     # 병원 게이트는 요청당 한 번만 본다 — 행마다 다시 읽을 값이 아니다.
@@ -639,7 +636,6 @@ async def get_content(
 ):
     """콘텐츠 상세 (본문 포함)"""
     item = await _get_content(db, content_id, hospital_id)
-    await attach_publish_notification_state(db, (item,))
     return await _serialize_single(db, hospital_id, item)
 
 
@@ -1911,6 +1907,18 @@ async def _require_restorable_references(db, item: ContentItem, verification) ->
     참고자료 목록 자체는 절대 바꾸지 않는다(공개됐던 글의 참고자료를 자동으로 고치지 않는다).
     """
 
+    # WITHHELD rows keep their immutable approved edition as the public authority.
+    # Mirror fields can be stale or can have been edited by an older writer during a
+    # mixed-version rollout; they cannot invalidate evidence already bound to that
+    # approved edition. `publication_references_current` reads the eagerly loaded
+    # active revision and treats its approval-bound evidence as age-independent.
+    if (
+        getattr(item, "active_revision_id", None) is not None
+        and item.__dict__.get("active_revision") is not None
+        and publication_references_current(item)
+    ):
+        return
+
     if verification is not None and not apply_publication_reference_refresh(item, verification):
         raise HTTPException(
             status_code=409,
@@ -2101,6 +2109,7 @@ async def _get_content(db, content_id, hospital_id) -> ContentItem:
             ContentItem,
             content_id,
             options=(selectinload(ContentItem.active_revision),),
+            populate_existing=True,
         )
     else:
         item = await db.get(ContentItem, content_id)
@@ -2366,11 +2375,15 @@ def _serialize_item_display(
         blocked_reason=blocked_reason,
     )
     if status_value == ContentStatus.PUBLISHED.value:
-        notification = getattr(item, "_publish_notification_projection", None)
-        if notification is None:
-            notification = project_publish_notification(
-                None, notification_id=None, safe_error_code=None
-            )
+        notification = {
+            "state": "NOT_REQUIRED",
+            "label": "자동 관제 중",
+            "problem": None,
+            "publication_impact": "콘텐츠 발행에는 영향이 없습니다.",
+            "next_action": "문제가 감지된 항목만 예외 큐에 표시됩니다.",
+            "notification_id": None,
+            "safe_error_code": None,
+        }
         review["notification_state"] = notification["state"]
         review["notification"] = notification
         pending_review_sample = is_human_post_publish_review_sample(item) and (

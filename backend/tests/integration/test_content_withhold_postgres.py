@@ -35,6 +35,7 @@ from app.schemas.content import ContentBriefUpdate
 from app.services import indexnow, site_revalidate
 from app.services import site_revalidation_control as revalidation_control
 from app.services.audit_log import reset_request_actor, set_request_actor
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
@@ -118,6 +119,8 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
         id=uuid.uuid4(),
         name="보존전환병원",
         slug=f"withhold-{suffix}",
+        address="서울시 강남구 테헤란로 1",
+        phone="02-1234-5678",
         status=HospitalStatus.ACTIVE,
         profile_complete=True,
         v0_report_done=True,
@@ -128,7 +131,7 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
         specialties=[],
         keywords=[],
         competitors=[],
-        treatments=[],
+        treatments=[{"name": "소화기 진료"}],
     )
     session.add(hospital)
     await session.flush()
@@ -153,6 +156,7 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
         positioning_statement="근거 중심으로 충분히 설명합니다.",
         patient_promise="확인된 정보만 환자에게 안내합니다.",
         source_snapshot_hash=compute_sources_snapshot_hash([source]),
+        source_asset_ids=[str(source.id)],
         approved_at=processed_at,
     )
     schedule = ContentSchedule(
@@ -169,7 +173,7 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
     content_type = ContentType.FAQ
     image_hash = hashlib.sha256(f"{suffix}-image".encode()).hexdigest()
     image_url = f"gs://reputation-images/content/{image_hash}-fixture.png"
-    published = status == ContentStatus.PUBLISHED
+    published = status in {ContentStatus.PUBLISHED, ContentStatus.WITHHELD}
     item = ContentItem(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -188,7 +192,7 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
         image_subject_hash=image_subject_hash(content_type, title),
         image_policy_version=IMAGE_POLICY_VERSION,
         scheduled_date=date(2026, 9, 10),
-        status=status,
+        status=ContentStatus.PUBLISHED if published else status,
         published_at=_PUBLISHED_AT if published else None,
         published_by=_ACTOR if published else None,
         first_published_at=_FIRST_PUBLISHED_AT if published else None,
@@ -196,6 +200,23 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
         content_revision=3,
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=philosophy.id,
+        generation_philosophy_id=philosophy.id,
+        last_reviewed_philosophy_id=philosophy.id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": "위내시경 전 준비 사항",
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 검사 전 안내",
+            },
+            "source_snapshot": {
+                "hash": philosophy.source_snapshot_hash,
+                "source_asset_ids": [str(source.id)],
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {"source_asset_ids": [str(source.id)]}
+        },
     )
     # 공개됐던 글이 받은 실제 문서 확인 기록(같은 URL·같은 글 주제·신선함). restore의 참고자료
     # 게이트는 이 기록이 없거나 낡았으면 다시 확인하고, 통과하지 못하면 거절한다.
@@ -218,6 +239,13 @@ async def _seed(session, *, status=ContentStatus.PUBLISHED) -> tuple[Hospital, C
     ]
     session.add(item)
     await session.flush()
+    if published:
+        written = await reconcile_content_revisions(session, content_item_id=item.id)
+        assert written.created_count == 1
+        await session.refresh(item, attribute_names=["active_revision_id", "active_revision"])
+        if status == ContentStatus.WITHHELD:
+            item.status = ContentStatus.WITHHELD
+            await session.flush()
     return hospital, item
 
 
@@ -436,7 +464,7 @@ async def test_each_withhold_and_restore_opens_its_own_cache_refresh_retry(
     assert sorted(failing_site_revalidation) == sorted(str(run.id) for run in runs)
 
 
-async def test_restore_is_refused_when_references_were_emptied(
+async def test_restore_uses_active_revision_when_pending_references_were_emptied(
     pg_async_session, verified_actor, revalidations
 ):
     session = pg_async_session
@@ -449,15 +477,13 @@ async def test_restore_is_refused_when_references_were_emptied(
     await session.refresh(item)
     assert item.references_list == []
 
-    error = await _http_error(_restore(session, hospital, item))
+    result = await _restore(session, hospital, item)
 
-    assert error.status_code == 409
-    assert error.detail["code"] == "RESTORE_BLOCKED"
-    assert "MISSING_REFERENCES" in error.detail["blockers"]
-    assert "STATUS_NOT_PUBLISHED" not in error.detail["blockers"]
+    assert result["detail"] == "Restored"
     await session.refresh(item)
-    assert item.status == ContentStatus.WITHHELD
-    assert await _audit(session, item, "restore_content") == []
+    assert item.status == ContentStatus.PUBLISHED
+    public_item = await get_content_public(None, hospital.slug, item.id, db=session)
+    assert public_item["references"] == _REFERENCES
 
 
 async def test_restore_is_refused_after_an_authority_change(
@@ -484,7 +510,6 @@ async def test_restore_is_refused_after_an_authority_change(
     [
         {"status": HospitalStatus.PAUSED},
         {"site_live": False},
-        {"schedule_set": False},
     ],
 )
 async def test_restore_is_refused_for_a_hospital_without_a_public_site(
@@ -503,6 +528,22 @@ async def test_restore_is_refused_for_a_hospital_without_a_public_site(
     assert error.detail["code"] == "HOSPITAL_NOT_PUBLIC"
     await session.refresh(item)
     assert item.status == ContentStatus.WITHHELD
+
+
+async def test_restore_preserves_historical_article_without_schedule(
+    pg_async_session, verified_actor, revalidations
+):
+    session = pg_async_session
+    hospital, item = await _seed(session)
+    await _withhold(session, hospital, item)
+    hospital.schedule_set = False
+    await session.flush()
+
+    result = await _restore(session, hospital, item)
+
+    assert result["detail"] == "Restored"
+    await session.refresh(item)
+    assert item.status == ContentStatus.PUBLISHED
 
 
 @pytest.mark.parametrize(
@@ -842,7 +883,7 @@ async def _stale_reference_checks(session, item) -> None:
     await session.commit()
 
 
-async def test_restore_is_refused_when_a_legacy_reference_fails_a_real_get(
+async def test_restore_ignores_stale_mirror_checks_when_active_revision_is_approved(
     pg_async_session, verified_actor, revalidations
 ):
     session = pg_async_session
@@ -850,36 +891,21 @@ async def test_restore_is_refused_when_a_legacy_reference_fails_a_real_get(
     await _withhold(session, hospital, item)
     await _stale_reference_checks(session, item)
     await session.refresh(item)
-    before = {
-        "references_list": item.references_list,
-        "content_revision": item.content_revision,
-        "status": item.status,
-    }
     url = _REFERENCES[0]["url"]
     fetcher = PageFetcher({url: (404, url, "")})
 
     with override_reference_fetcher(fetcher):
-        error = await _http_error(_restore(session, hospital, item))
+        result = await _restore(session, hospital, item)
 
-    assert error.status_code == 409
-    assert error.detail["code"] == "REFERENCES_NOT_VERIFIED"
-    assert url in error.detail["message"]
-    assert "PATCH" in error.detail["message"]
-    assert fetcher.calls == [url]
+    assert result["detail"] == "Restored"
+    assert fetcher.calls == []
     await session.refresh(item)
-    # 공개됐던 글의 참고자료는 빼지도·채우지도·바꾸지도 않는다. 검증 기록만 남는다.
-    assert {
-        "references_list": item.references_list,
-        "content_revision": item.content_revision,
-        "status": item.status,
-    } == before
-    assert item.status == ContentStatus.WITHHELD
-    assert item.reference_checks[0]["reason"] == "dead_link"
-    assert await _audit(session, item, "restore_content") == []
-    assert str(item.id) not in await _public_ids(session, hospital)
+    assert item.status == ContentStatus.PUBLISHED
+    assert item.reference_checks is None
+    assert str(item.id) in await _public_ids(session, hospital)
 
 
-async def test_restore_is_refused_while_the_institution_site_is_down(
+async def test_restore_does_not_refetch_approved_revision_during_site_outage(
     pg_async_session, verified_actor, revalidations
 ):
     import httpx
@@ -890,17 +916,18 @@ async def test_restore_is_refused_while_the_institution_site_is_down(
     await _stale_reference_checks(session, item)
     url = _REFERENCES[0]["url"]
 
-    with override_reference_fetcher(PageFetcher({url: httpx.ConnectError("down")})):
-        error = await _http_error(_restore(session, hospital, item))
+    fetcher = PageFetcher({url: httpx.ConnectError("down")})
+    with override_reference_fetcher(fetcher):
+        result = await _restore(session, hospital, item)
 
-    assert error.status_code == 409
-    assert "기관 사이트에 접속하지 못함" in error.detail["message"]
+    assert result["detail"] == "Restored"
+    assert fetcher.calls == []
     await session.refresh(item)
-    assert item.status == ContentStatus.WITHHELD
+    assert item.status == ContentStatus.PUBLISHED
     assert item.references_list == _REFERENCES
 
 
-async def test_restore_reverifies_a_legacy_reference_and_republishes_when_it_passes(
+async def test_restore_does_not_replace_approved_evidence_from_stale_mirror(
     pg_async_session, verified_actor, revalidations
 ):
     session = pg_async_session
@@ -915,12 +942,11 @@ async def test_restore_reverifies_a_legacy_reference_and_republishes_when_it_pas
         result = await _restore(session, hospital, item)
 
     assert result["detail"] == "Restored"
-    assert fetcher.calls == [url]
+    assert fetcher.calls == []
     await session.refresh(item)
     assert item.status == ContentStatus.PUBLISHED
     assert item.references_list == _REFERENCES
-    assert item.reference_checks[0]["verdict"] == "pass"
-    assert item.reference_checks[0]["topic_fingerprint"] == item_topic_fingerprint(item)
+    assert item.reference_checks is None
 
 
 async def test_restore_uses_a_fresh_same_topic_pass_without_a_get(

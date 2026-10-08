@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.operations import OperationRun
 from app.services.reference_verification import item_topic_fingerprint, reference_check_record
 from app.workers import tasks
@@ -70,6 +71,14 @@ def _empty_slot(db, hospital, schedule, *, sequence_no):
 
 
 def _complete_row(db, hospital, schedule, *, sequence_no):
+    philosophy = db.execute(
+        select(HospitalContentPhilosophy).where(
+            HospitalContentPhilosophy.hospital_id == hospital.id,
+            HospitalContentPhilosophy.status == PhilosophyStatus.APPROVED,
+        )
+    ).scalar_one()
+    source_asset_id = str(uuid.uuid4())
+    philosophy.source_snapshot_hash = "b" * 64
     item = ContentItem(
         hospital_id=hospital.id,
         schedule_id=schedule.id,
@@ -81,6 +90,26 @@ def _complete_row(db, hospital, schedule, *, sequence_no):
         scheduled_date=TODAY,
         status=ContentStatus.DRAFT,
         references_list=[{"title": "질병관리청", "url": FRESH_URL}],
+        content_philosophy_id=philosophy.id,
+        generation_philosophy_id=philosophy.id,
+        last_reviewed_philosophy_id=philosophy.id,
+        essence_status="ALIGNED",
+        content_brief={
+            "schema_version": "content-brief-v1",
+            "target_query": MEDICAL_TITLE,
+            "treatment_narrative": {
+                "source": "hospital_profile",
+                "angle": "진료 기준과 내원 시점",
+            },
+            "source_snapshot": {
+                "hash": "b" * 64,
+                "source_asset_ids": [source_asset_id],
+            },
+        },
+        essence_check_summary={
+            "blocking": False,
+            "generation_provenance": {"source_asset_ids": [source_asset_id]},
+        },
     )
     db.add(item)
     db.flush()

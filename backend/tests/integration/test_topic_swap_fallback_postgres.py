@@ -5,6 +5,7 @@ mock으로는 확인할 수 없는 것만 본다: 어떤 행이 `FOR UPDATE SKIP
 정말로 0행이 되는가. 인시던트 종결은 자기 async 세션을 쓰므로 여기서는 대상 선택만 본다.
 """
 
+import json
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
@@ -23,7 +24,11 @@ from app.workers import (
     tasks,
     topic_swap_fallback,
 )
-from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
+from app.workers.generation_attempt_state import (
+    GENERATION_ATTEMPT_KEY,
+    WRITER_RESULT_LIMIT,
+    fresh_generation_attempt,
+)
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import (
     SAMPLE_BODY_DAILY_BUDGET,
@@ -32,14 +37,32 @@ from app.workers.generation_retry_policy import (
 
 NOW = datetime(2026, 9, 16, 1, 0, tzinfo=UTC)
 SLOT = date(2026, 9, 16)
-EXHAUSTED = {
-    GENERATION_ATTEMPT_KEY: {
-        "reason": "GENERATION_REJECTED",
-        "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
-    }
-}
 
 
+def _exhausted_summary(topic_id: uuid.UUID) -> str:
+    attempt = fresh_generation_attempt(topic_id=str(topic_id))
+    attempt.update(
+        {
+            "reason": "GENERATION_REJECTED",
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+        }
+    )
+    attempt["budget"]["writer_results"] = WRITER_RESULT_LIMIT
+    attempt["budget"]["text_http_attempts"] = WRITER_RESULT_LIMIT
+    attempt["budget"]["acquisitions"] = [
+        {
+            "id": f"writer-exhausted-{index}",
+            "kind": "WRITER",
+            "status": "RESULT",
+            "transport_reserved": 3,
+            "transport_attempts": 1,
+            "reserved_at": f"2026-09-0{index + 1}T00:00:00+00:00",
+            "completed_at": f"2026-09-0{index + 1}T00:00:01+00:00",
+            "payload": {"title": f"exhausted candidate {index + 1}"},
+        }
+        for index in range(WRITER_RESULT_LIMIT)
+    ]
+    return json.dumps({GENERATION_ATTEMPT_KEY: attempt})
 @pytest.fixture
 def pg_session(pg_conn):
     session = Session(
@@ -117,8 +140,7 @@ def _seed_item(conn, hospital_id: uuid.UUID, **overrides) -> uuid.UUID:
         "title": "대장내시경 수면 여부 안내",
         "scheduled_date": SLOT,
         "status": ContentStatus.DRAFT.value,
-        "summary": '{"generation_attempt": {"reason": "GENERATION_REJECTED",'
-        ' "retry_class": "OPERATOR_REQUIRED"}}',
+        "summary": _exhausted_summary(target_id),
         "first_published_at": None,
         "human_edited_at": None,
         "topic_swap_history": None,
@@ -645,6 +667,9 @@ def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
     item_id = _seed_item(pg_conn, hospital_id)
 
     assert _swap(pg_session).swapped == 1
+    current_target_id = pg_conn.execute(
+        text("SELECT query_target_id FROM content_items WHERE id=:id"), {"id": item_id}
+    ).scalar_one()
 
     # 새 주제도 소진됐다고 가정하고 같은 pass를 다시 돌린다.
     pg_conn.execute(
@@ -654,8 +679,7 @@ def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
         ),
         {
             "id": item_id,
-            "summary": '{"generation_attempt": {"reason": "GENERATION_REJECTED",'
-            ' "retry_class": "OPERATOR_REQUIRED"}}',
+            "summary": _exhausted_summary(current_target_id),
         },
     )
 
@@ -670,7 +694,7 @@ def test_the_second_pass_never_swaps_the_same_slot_again(pg_conn, pg_session):
 
 
 def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(
-    pg_conn, pg_session
+    pg_conn, pg_session, monkeypatch
 ):
     """신기한속 f0217d98: 61810ef4(영상의학과)가 소진되면 d7a5603e(영상의학과)가 아니라
     같은 병원의 내과 질문으로 바꾼다. 병원 진료과 목록에는 영상의학과도 들어 있다."""
@@ -706,7 +730,12 @@ def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(
                 "specialty": specialty,
                 "priority": priority,
             },
-        )
+            )
+    monkeypatch.setattr(
+        topic_swap_fallback,
+        "curated_sources_for_topic",
+        lambda _topics: ["https://health.kdca.go.kr"],
+    )
     schedule_id = uuid.uuid4()
     item_id = uuid.uuid4()
     pg_conn.execute(
@@ -730,8 +759,7 @@ def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(
             "schedule_id": schedule_id,
             "target": ids["61810ef4"],
             "slot": SLOT,
-            "summary": '{"generation_attempt": {"reason": "GENERATION_REJECTED",'
-            ' "retry_class": "OPERATOR_REQUIRED"}}',
+            "summary": _exhausted_summary(ids["61810ef4"]),
         },
     )
 

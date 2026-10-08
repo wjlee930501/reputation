@@ -1,9 +1,26 @@
 import os
 
+# 프로덕션/QA 셸의 시크릿은 테스트 시나리오의 명시적 설정을 덮어쓰면 안 된다. 특히
+# ``Settings(...)``가 프로덕션 검증을 시험할 때와 actor 시크릿 미설정 경로를 시험할 때
+# ambient env가 결과를 바꾸지 않도록 app import 전에 제거한다.
+for _secret_name in (
+    "WORKER_DISPATCH_SECRET",
+    "SLACK_WEBHOOK_URL",
+    "BFF_ACTOR_SECRET",
+    "PIPELINE_WATCHDOG_TOKEN",
+    "SITE_REVALIDATE_SECRET",
+    "SITE_BFF_SECRET",
+    "LEAD_LOCK_HASH_PEPPER",
+    "LEAD_REPORT_TOKEN_SECRET",
+    "RESEND_API_KEY",
+    "NHN_SMS_SECRET_KEY",
+):
+    os.environ.pop(_secret_name, None)
+
 # setdefault가 아니라 강제 설정 — 테스트가 X-Admin-Key로 이 값을 보내므로, CI 잡 env가
 # 다른 ADMIN_SECRET_KEY를 깔아두면 setdefault로는 401이 난다 (suite를 hermetic하게 유지).
 os.environ["ADMIN_SECRET_KEY"] = "test-admin-key"
-os.environ.setdefault("APP_ENV", "test")
+os.environ["APP_ENV"] = "test"
 # backend/.env(개발 DB·Redis)가 테스트 설정에 섞이지 않게 dotenv를 끈다 — 테스트 설정은
 # 프로세스 env와 아래 기본값에서만 온다. Settings가 import 시점에 읽으므로 app import 전에 둔다.
 os.environ["REPUTATION_DISABLE_DOTENV"] = "1"
@@ -11,7 +28,7 @@ os.environ["REPUTATION_DISABLE_DOTENV"] = "1"
 # settings만 연결 불가능한 표지 호스트로 바꾸고, 그 호스트로 연결하면 변수 이름을 밝힌
 # 실패가 난다(tests/db_env.py).
 # 모든 LLM·이미지 호출은 OpenRouter 키 하나로 나간다 — 테스트에서도 동일한 계약.
-os.environ.setdefault("OPENROUTER_API_KEY", "test-openrouter-key")
+os.environ["OPENROUTER_API_KEY"] = "test-openrouter-key"
 # Google 이미지 경로가 실패하는 테스트가 실제 OpenAI로 새지 않게 폴백은 기본 꺼 둔다.
 # 폴백을 검증하는 테스트만 settings.IMAGE_FALLBACK_PROVIDER="openai"로 켠다.
 os.environ.setdefault("IMAGE_FALLBACK_PROVIDER", "")

@@ -9,7 +9,9 @@ from app.workers.generation_attempt_state import (
     acquisition_completed,
     fresh_generation_attempt,
     read_generation_budget,
+    replace_unknown_legacy_budget,
     reserve_acquisition,
+    transport_attempt_started,
 )
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
@@ -76,6 +78,175 @@ def test_lifetime_budget_rejects_unknown_legacy_spend() -> None:
         reserve_acquisition(legacy_attempt, acquisition_id="writer-1", kind="WRITER")
 
 
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "partial",
+        "missing_counter",
+        "string_counter",
+        "bool_counter",
+        "negative_counter",
+        "topics_not_list",
+        "topic_not_string",
+        "duplicate_topics",
+        "acquisitions_not_list",
+        "acquisition_not_object",
+        "acquisition_missing_fields",
+        "completed_acquisition_counter_mismatch",
+        "reserved_acquisition_counter_mismatch",
+        "known_counters_without_baseline",
+        "legacy_baseline_counter_mismatch",
+        "reset_record_not_object",
+    ],
+)
+def test_versioned_budget_malformed_fields_never_mint_allowance(malformation: str) -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    budget = attempt["budget"]
+    if malformation == "partial":
+        attempt["budget"] = {"version": 2}
+    elif malformation == "missing_counter":
+        del budget["writer_results"]
+    elif malformation == "string_counter":
+        budget["writer_results"] = "0"
+    elif malformation == "bool_counter":
+        budget["writer_results"] = False
+    elif malformation == "negative_counter":
+        budget["reviewer_results"] = -1
+    elif malformation == "topics_not_list":
+        budget["topics"] = "topic-a"
+    elif malformation == "topic_not_string":
+        budget["topics"] = [1]
+    elif malformation == "duplicate_topics":
+        budget["topics"] = ["topic-a", "topic-a"]
+    elif malformation == "acquisitions_not_list":
+        budget["acquisitions"] = "bad"
+    elif malformation == "acquisition_not_object":
+        budget["acquisitions"] = ["bad"]
+    elif malformation == "acquisition_missing_fields":
+        budget["acquisitions"] = [{"id": "writer-old"}]
+    elif malformation == "completed_acquisition_counter_mismatch":
+        budget["acquisitions"] = [
+            {
+                "id": "writer-old",
+                "kind": "WRITER",
+                "status": "RESULT",
+                "transport_reserved": 3,
+                "transport_attempts": 1,
+                "reserved_at": "2026-10-09T00:00:00+00:00",
+                "payload": {"title": "already paid"},
+            }
+        ]
+    elif malformation == "reserved_acquisition_counter_mismatch":
+        budget["acquisitions"] = [
+            {
+                "id": "writer-old",
+                "kind": "WRITER",
+                "status": "RESERVED",
+                "transport_reserved": 3,
+                "reserved_at": "2026-10-09T00:00:00+00:00",
+            }
+        ]
+    elif malformation == "known_counters_without_baseline":
+        budget["legacy_state"] = "KNOWN_COUNTERS"
+    elif malformation == "legacy_baseline_counter_mismatch":
+        budget["legacy_state"] = "KNOWN_COUNTERS"
+        budget["writer_results"] = 1
+        budget["legacy_baseline"] = {
+            "source": "LEGACY_COUNTERS",
+            "writer_results": 0,
+            "reviewer_results": 0,
+            "text_http_attempts": 0,
+            "image_http_attempts": 0,
+        }
+    elif malformation == "reset_record_not_object":
+        budget["reset_record"] = "bad"
+
+    with pytest.raises(GenerationBudgetUnknown, match="LEGACY_SPEND_UNKNOWN"):
+        reserve_acquisition(attempt, acquisition_id="writer-new", kind="WRITER")
+
+
+def test_genuine_fresh_versioned_budget_still_reserves_normally() -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+
+    reserved = reserve_acquisition(
+        attempt, acquisition_id="writer-new", kind="WRITER"
+    )
+
+    assert reserved["budget"]["text_http_reserved"] == 3
+    assert reserved["budget"]["acquisitions"][0]["status"] == "RESERVED"
+
+
+def test_known_legacy_counter_survives_reserve_transport_and_completion() -> None:
+    legacy = {
+        "reason": "GENERATION_REJECTED",
+        "provider_attempt_count": 1,
+    }
+
+    reserved = reserve_acquisition(
+        legacy, acquisition_id="writer-after-legacy", kind="WRITER"
+    )
+    started = transport_attempt_started(
+        reserved, acquisition_id="writer-after-legacy"
+    )
+    completed = acquisition_completed(
+        started,
+        acquisition_id="writer-after-legacy",
+        transport_attempts=1,
+        outcome="RESULT",
+    )
+
+    budget = read_generation_budget(completed)
+    assert budget.legacy_state == "KNOWN_COUNTERS"
+    assert (budget.writer_results, budget.reviewer_results) == (2, 1)
+    assert budget.text_http_attempts == 2
+    assert budget.text_http_reserved == 0
+
+
+def test_malformed_versioned_budget_can_be_replaced_once_with_full_audit_snapshot() -> None:
+    malformed = {
+        "reason": "GENERATION_FAILED",
+        "budget": {"version": 2, "writer_results": "corrupt"},
+    }
+
+    replaced = replace_unknown_legacy_budget(
+        malformed,
+        actor="admin@example.test",
+        reason="Verified unknown historical provider spend",
+        idempotency_key="reset-malformed-v2",
+        replaced_at=datetime(2026, 10, 9, tzinfo=UTC),
+    )
+
+    snapshot = read_generation_budget(replaced)
+    assert snapshot.legacy_state == "REPLACED"
+    assert snapshot.reset_record is not None
+    assert snapshot.reset_record["previous_snapshot"] == malformed
+    with pytest.raises(GenerationBudgetExceeded, match="ALREADY_REPLACED"):
+        replace_unknown_legacy_budget(
+            replaced,
+            actor="admin@example.test",
+            reason="second attempt",
+            idempotency_key="reset-malformed-v2-again",
+        )
+
+
+def test_corrupted_replacement_record_cannot_be_reset_again() -> None:
+    replaced = replace_unknown_legacy_budget(
+        {"reason": "GENERATION_FAILED"},
+        actor="admin@example.test",
+        reason="Verified unknown historical provider spend",
+        idempotency_key="reset-legacy",
+    )
+    replaced["budget"]["writer_results"] = "corrupt"
+
+    with pytest.raises(GenerationBudgetExceeded, match="ALREADY_REPLACED"):
+        replace_unknown_legacy_budget(
+            replaced,
+            actor="admin@example.test",
+            reason="second attempt",
+            idempotency_key="reset-legacy-again",
+        )
+
+
 def test_lifetime_budget_stops_writer_and_total_http_ceiling() -> None:
     # Given: six completed writer results using all 18 possible writer transports.
     attempt = fresh_generation_attempt(topic_id="topic-a")
@@ -139,6 +310,26 @@ def test_timeout_is_a_conservatively_consumed_unknown_transport() -> None:
         if entry["id"] == "writer-timeout"
     )
     assert acquisition["status"] == "UNKNOWN"
+
+
+def test_precall_transport_checkpoint_survives_zero_attempt_exception_summary() -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    attempt = reserve_acquisition(
+        attempt, acquisition_id="image-timeout", kind="IMAGE"
+    )
+    attempt = transport_attempt_started(attempt, acquisition_id="image-timeout")
+
+    completed = acquisition_completed(
+        attempt,
+        acquisition_id="image-timeout",
+        transport_attempts=0,
+        outcome="UNKNOWN",
+    )
+
+    budget = read_generation_budget(completed)
+    assert budget.image_http_attempts == 1
+    acquisition = completed["budget"]["acquisitions"][0]
+    assert acquisition["transport_attempts"] == 1
 
 
 def test_environment_failure_retries_at_an_actual_scheduled_sweep() -> None:

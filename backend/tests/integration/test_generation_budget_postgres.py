@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import threading
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.error import HTTPError
@@ -290,13 +290,234 @@ def test_fake_transport_through_worker_review_flow_counts_actual_http(
                 "emit_article",
                 "report_review",
             ]
+            philosophy.doctor_voice = "같은 승인본 ID 안에서 바뀐 설명 방식"
+            changed, _changed_screening = tasks._run_async(
+                tasks._generate_with_auto_review(
+                    db=db,
+                    hospital=hospital,
+                    item=item,
+                    existing_titles=[],
+                    philosophy=philosophy,
+                    approved_brief=None,
+                )
+            )
+            assert changed["title"] == content["title"]
+            assert changed["body"] == content["body"]
+            assert [
+                request["payload"]["tools"][0]["function"]["name"]
+                for request in _ProviderHandler.requests
+            ] == ["emit_article", "report_review", "emit_article", "report_review"]
+            unchanged, _unchanged_screening = tasks._run_async(
+                tasks._generate_with_auto_review(
+                    db=db,
+                    hospital=hospital,
+                    item=item,
+                    existing_titles=[],
+                    philosophy=philosophy,
+                    approved_brief=None,
+                )
+            )
+            assert unchanged["body"] == changed["body"]
+            assert len(_ProviderHandler.requests) == 4
+
+            approved_brief = {
+                "target_query": "바뀐 건강검진 준비 질문",
+                "source_snapshot": {"hash": "brief-v2", "source_asset_ids": ["source-v2"]},
+            }
+            tasks._run_async(
+                tasks._generate_with_auto_review(
+                    db=db,
+                    hospital=hospital,
+                    item=item,
+                    existing_titles=[],
+                    philosophy=philosophy,
+                    approved_brief=approved_brief,
+                )
+            )
+            assert len(_ProviderHandler.requests) == 6
+            tasks._run_async(
+                tasks._generate_with_auto_review(
+                    db=db,
+                    hospital=hospital,
+                    item=item,
+                    existing_titles=[],
+                    philosophy=philosophy,
+                    approved_brief=approved_brief,
+                )
+            )
+            assert len(_ProviderHandler.requests) == 6
 
         with factory() as verify:
             item = verify.get(ContentItem, item_id)
             assert item is not None
             budget = read_generation_budget(item.essence_check_summary["generation_attempt"])
-            assert (budget.writer_results, budget.reviewer_results) == (1, 1)
-            assert budget.text_http_attempts == 2
+            assert (budget.writer_results, budget.reviewer_results) == (3, 3)
+            assert budget.text_http_attempts == 6
+            assert budget.text_http_reserved == 0
+    finally:
+        _cleanup(factory, hospital_id)
+
+
+def test_worker_writeback_keeps_lifetime_budget_across_restart_day_and_regeneration(
+    pg_engine, monkeypatch, provider_server
+) -> None:
+    factory = _factory(pg_engine)
+    hospital_id, item_id = _seed(factory)
+    first_day = datetime(2026, 10, 9, 23, 0, tzinfo=UTC)
+
+    class FrozenDateTime(datetime):
+        current = first_day
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.current.astimezone(tz) if tz is not None else cls.current.replace(tzinfo=None)
+
+    try:
+        wire_client = OpenAI(
+            api_key="loopback-only",
+            base_url=f"{provider_server}/v1",
+            max_retries=0,
+        )
+        monkeypatch.setattr(content_engine, "client", wire_client)
+        monkeypatch.setattr(content_ai_review, "_llm_client", lambda: wire_client)
+        monkeypatch.setattr(content_engine.settings, "OPENROUTER_API_KEY", "loopback-only")
+        monkeypatch.setattr(tasks, "datetime", FrozenDateTime)
+
+        async def allowed(*_args, **_kwargs):
+            return CostGuardDecision(allowed=True)
+
+        async def noop(*_args, **_kwargs):
+            return None
+
+        monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
+        monkeypatch.setattr(cost_guard, "reserve", allowed)
+        monkeypatch.setattr(cost_guard, "record_provider_call", noop)
+        monkeypatch.setattr(cost_guard, "settle_reservation", noop)
+        monkeypatch.setattr(provider_usage, "record_attempt", noop)
+        monkeypatch.setattr(
+            tasks,
+            "screen_content_against_philosophy",
+            lambda _item, _philosophy: EssenceScreeningResult(
+                status=ESSENCE_STATUS_ALIGNED, summary={}
+            ),
+        )
+        monkeypatch.setattr(
+            tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: None
+        )
+        monkeypatch.setattr(
+            tasks,
+            "_recover_missing_content_image",
+            lambda *_args, **_kwargs: tasks.GenerationItemState.SUCCEEDED,
+        )
+        monkeypatch.setattr(tasks, "_persist_publication_readiness", lambda *_args: None)
+
+        with factory() as db:
+            hospital = db.get(Hospital, hospital_id)
+            item = db.get(ContentItem, item_id)
+            assert hospital is not None and item is not None
+            hospital.director_name = "김예산"
+            item.content_type = ContentType.COLUMN
+            first_philosophy = HospitalContentPhilosophy(
+                hospital_id=hospital_id,
+                version=1,
+                status=PhilosophyStatus.APPROVED,
+                is_base=True,
+                positioning_statement="환자의 질문을 차분히 설명합니다.",
+                doctor_voice="차분한 설명",
+                patient_promise="확인 가능한 내용만 안내합니다.",
+                content_principles=[],
+                tone_guidelines=[],
+                must_use_messages=[],
+                avoid_messages=[],
+                treatment_narratives=[],
+                local_context={},
+                medical_ad_risk_rules=[],
+                evidence_map={},
+                source_asset_ids=[],
+                unsupported_gaps=[],
+                conflict_notes=[],
+                source_snapshot_hash="1" * 64,
+            )
+            db.add(first_philosophy)
+            db.commit()
+            first_id = first_philosophy.id
+
+        selected_id = first_id
+        monkeypatch.setattr(
+            tasks,
+            "_generation_philosophy_sync",
+            lambda db, *_args: db.get(HospitalContentPhilosophy, selected_id),
+        )
+
+        with factory() as first_worker:
+            item = first_worker.get(ContentItem, item_id)
+            hospital = first_worker.get(Hospital, hospital_id)
+            assert item is not None and hospital is not None
+            state, code, _message = tasks._generate_single_content_item(
+                first_worker, item, hospital
+            )
+            assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+            assert item.content_philosophy_id == first_id
+
+        assert len(_ProviderHandler.requests) == 2
+        FrozenDateTime.current = first_day + timedelta(days=1)
+        with factory() as restarted_next_day:
+            item = restarted_next_day.get(ContentItem, item_id)
+            hospital = restarted_next_day.get(Hospital, hospital_id)
+            assert item is not None and hospital is not None
+            state, code, _message = tasks._generate_single_content_item(
+                restarted_next_day, item, hospital
+            )
+            assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+        assert len(_ProviderHandler.requests) == 2
+
+        with factory() as db:
+            first_philosophy = db.get(HospitalContentPhilosophy, first_id)
+            assert first_philosophy is not None
+            first_philosophy.status = PhilosophyStatus.ARCHIVED
+            first_philosophy.is_base = False
+            second_philosophy = HospitalContentPhilosophy(
+                hospital_id=hospital_id,
+                version=2,
+                status=PhilosophyStatus.APPROVED,
+                is_base=True,
+                positioning_statement="검사 전 준비를 먼저 설명합니다.",
+                doctor_voice="간결한 설명",
+                patient_promise="최신 승인 기준으로 안내합니다.",
+                content_principles=[],
+                tone_guidelines=[],
+                must_use_messages=[],
+                avoid_messages=[],
+                treatment_narratives=[],
+                local_context={},
+                medical_ad_risk_rules=[],
+                evidence_map={},
+                source_asset_ids=[],
+                unsupported_gaps=[],
+                conflict_notes=[],
+                source_snapshot_hash="2" * 64,
+            )
+            db.add(second_philosophy)
+            db.commit()
+            selected_id = second_philosophy.id
+
+        with factory() as regeneration_worker:
+            item = regeneration_worker.get(ContentItem, item_id)
+            hospital = regeneration_worker.get(Hospital, hospital_id)
+            assert item is not None and hospital is not None
+            state, code, _message = tasks._generate_single_content_item(
+                regeneration_worker, item, hospital
+            )
+            assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+            assert item.content_philosophy_id == selected_id
+
+        assert len(_ProviderHandler.requests) == 4
+        with factory() as verify:
+            item = verify.get(ContentItem, item_id)
+            assert item is not None
+            budget = read_generation_budget(item.essence_check_summary["generation_attempt"])
+            assert (budget.writer_results, budget.reviewer_results) == (2, 2)
+            assert budget.text_http_attempts == 4
             assert budget.text_http_reserved == 0
     finally:
         _cleanup(factory, hospital_id)

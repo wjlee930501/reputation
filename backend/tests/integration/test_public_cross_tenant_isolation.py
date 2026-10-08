@@ -24,12 +24,14 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
     image_subject_hash,
 )
+from tests.publication_test_support import verified_reference_checks
 
 # slowapi @limiter.limit 우회 — 라우트를 FastAPI 요청 라이프사이클 밖에서 직접 호출한다
 # (tests/test_public_site.py와 동일 패턴).
@@ -117,6 +119,7 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         positioning_statement=f"{label} 병원은 근거 중심으로 충분히 설명합니다.",
         patient_promise="확인된 정보만 환자에게 안내합니다.",
         source_snapshot_hash=compute_sources_snapshot_hash([source]),
+        source_asset_ids=[str(source.id)],
         approved_at=processed_at,
     )
     schedule = ContentSchedule(
@@ -160,9 +163,30 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         published_at=processed_at,
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=philosophy.id,
+        generation_philosophy_id=philosophy.id,
+        last_reviewed_philosophy_id=philosophy.id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": f"{label} 병원 진료 정보",
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 진료 안내",
+            },
+            "source_snapshot": {
+                "hash": philosophy.source_snapshot_hash,
+                "source_asset_ids": [str(source.id)],
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {"source_asset_ids": [str(source.id)]}
+        },
     )
+    content.reference_checks = verified_reference_checks(content, checked_at=processed_at)
     session.add(content)
     await session.flush()
+    written = await reconcile_content_revisions(session, content_item_id=content.id)
+    assert written.created_count == 1
+    await session.refresh(content, attribute_names=["active_revision_id", "active_revision"])
     return _Tenant(hospital, philosophy, schedule, content, photo)
 
 
@@ -195,10 +219,39 @@ async def _seed_content(session, tenant: _Tenant, *, philosophy_id, title: str) 
         image_subject_hash=image_subject_hash(content_type, title),
         image_policy_version=IMAGE_POLICY_VERSION,
         essence_status=ESSENCE_STATUS_ALIGNED,
-        content_philosophy_id=philosophy_id,
+        content_philosophy_id=tenant.philosophy.id,
+        generation_philosophy_id=tenant.philosophy.id,
+        last_reviewed_philosophy_id=tenant.philosophy.id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": title,
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 진료 안내",
+            },
+            "source_snapshot": {
+                "hash": tenant.philosophy.source_snapshot_hash,
+                "source_asset_ids": tenant.philosophy.source_asset_ids,
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {
+                "source_asset_ids": tenant.philosophy.source_asset_ids
+            }
+        },
+    )
+    item.reference_checks = verified_reference_checks(
+        item, checked_at=datetime(2026, 7, 22, 7, 59, tzinfo=timezone.utc)
     )
     session.add(item)
     await session.flush()
+    written = await reconcile_content_revisions(session, content_item_id=item.id)
+    assert written.created_count == 1
+    if philosophy_id != tenant.philosophy.id:
+        # Start from a legitimately approved tenant-A edition, then reproduce the corrupt
+        # mutable pointer that the cross-tenant read guard must contain.
+        item.content_philosophy_id = philosophy_id
+        await session.flush()
     return item
 
 

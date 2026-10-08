@@ -1,7 +1,6 @@
-"""One-off August 2026 slot close for 노원탑365의원.
+"""Test-only archive of the retired August 2026 slot close for 노원탑365의원.
 
-This module deliberately owns its database session so the normal monthly-slot
-transaction and its tests remain isolated from the hospital-specific queries.
+Runtime code must never import this historical customer-specific procedure.
 """
 
 import logging

@@ -14,6 +14,7 @@ Celery 태스크 전체
 import asyncio
 import copy
 import hashlib
+import json
 import logging
 import threading
 import uuid
@@ -82,6 +83,7 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
     candidate_sha256,
+    content_review_input_payload,
     hospital_review_facts_fingerprint,
     review_from_payload,
     review_generated_content,
@@ -91,6 +93,7 @@ from app.services.content_engine import (
     MissingCitableReferencesError,
     generate_content,
     generation_failure_detail,
+    writer_input_fingerprint,
 )
 from app.services.content_engine import (
     SEASON_MISMATCH_FINDING_PREFIX as SEASON_MISMATCH_FINDING_PREFIX,
@@ -117,7 +120,6 @@ from app.services.content_publication import (
     image_certification_current,
     image_is_hospital_fallback,
     image_is_reused,
-    public_candidate_review_safe,
     record_publication_identity,
 )
 from app.services.content_publish_notifications import (
@@ -480,7 +482,6 @@ from app.workers.content_publication_block_control import ensure_publication_blo
 from app.workers.dispatch_auth import (
     DispatchAuthorizationError,
     build_dispatch_headers,
-    expected_purpose,
     require_dispatch,
 )
 from app.workers.dispatch_envelope import MAX_DISPATCH_COUNTDOWN_SECONDS
@@ -578,8 +579,6 @@ from app.workers.nightly_generation_batch import (
     write_back_generated_image,
     write_back_published_image_certificate,
 )
-from app.workers.nowon_august_backfill import backfill_nowon_august_2026_slots
-from app.workers.nowon_orthopedic_faq_regenerate import regenerate_nowon_orthopedic_faq
 from app.workers.topic_swap_fallback import (
     TOPIC_SWAPPED_REASON,
     swap_exhausted_topics,
@@ -658,18 +657,14 @@ _IMAGE_FAILURE_REASONS = frozenset(
 _STORED_IMAGE_TERMINAL_CODES = frozenset(
     {_IMAGE_RETRY_EXHAUSTED_CODE, _IMAGE_POLICY_REJECTION_CODE}
 )
+# Mixed-version compatibility for already-queued publisher-created image runs.
+# No current producer creates this key; the recognition path keeps those historical
+# runs on their original quiet-notification semantics while they drain.
+_AUTO_IMAGE_REGEN_KEY_PREFIX = "auto-image-regen:"
+_AUTO_IMAGE_REGEN_OPERATION = "REGENERATE_CONTENT_IMAGE"
 # 워커가 실제로 결제해 남긴 이미지 원인. 게이트가 관측하는 증상(`_IMAGE_SYMPTOM_CODES`)이
 # 이 기록을 대신 쓰면 예산 사다리와 재사용 자격이 함께 사라진다.
 _STORED_IMAGE_CAUSE_CODES = _IMAGE_FAILURE_REASONS | {"COST_BLOCKED", _IMAGE_REUSED_CODE}
-# 이미지 때문에만 막힌 글에 발행기가 스스로 거는 이미지 재생성 한도. 글당 KST 하루 1회,
-# 누적 3회다. 계수는 배포를 큐에 넣을 때 쓰고(`auto_image_regeneration`), 한도를 넘으면 종전
-# 이미지 예산·재사용·인시던트 흐름이 그대로 소유한다.
-AUTO_IMAGE_REGEN_DAILY_CAP = 1
-AUTO_IMAGE_REGEN_TOTAL_CAP = 3
-_AUTO_IMAGE_REGEN_KEY = "auto_image_regeneration"
-_AUTO_IMAGE_REGEN_KEY_PREFIX = "auto-image-regen:"
-_AUTO_IMAGE_REGEN_OPERATION = "REGENERATE_CONTENT_IMAGE"
-_GENERATE_CONTENT_IMAGE_TASK = "app.workers.tasks.generate_content_image"
 
 
 def _generation_attempt_context(
@@ -699,6 +694,8 @@ def _generation_summary(
     screening: Any,
     philosophy: Any,
     approved_brief: dict | None,
+    *,
+    generation_attempt: dict[str, Any] | None = None,
 ) -> dict:
     summary = dict(screening.summary or {})
     summary["generation_provenance"] = build_generation_provenance(
@@ -707,6 +704,8 @@ def _generation_summary(
         philosophy=philosophy,
         approved_brief=approved_brief,
     )
+    if generation_attempt is not None:
+        summary[_GENERATION_ATTEMPT_KEY] = generation_attempt
     return summary
 
 
@@ -2290,6 +2289,30 @@ async def _generate_with_auto_review(
 ) -> tuple[dict[str, Any], EssenceScreeningResult]:
     """Adapt the stable worker entry point to the bounded review service."""
     ledger = GenerationBudgetLedger(db, item)
+    review_context = content_review_input_payload(
+        hospital=hospital,
+        philosophy=philosophy,
+        content={},
+        content_brief=approved_brief,
+    )
+    input_payload = {
+        "writer": writer_input_fingerprint(
+            hospital=hospital,
+            content_type=item.content_type,
+            existing_titles=existing_titles,
+            philosophy=philosophy,
+            content_brief=approved_brief,
+        ),
+        "review": review_context,
+    }
+    context_id = hashlib.sha256(
+        json.dumps(
+            input_payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
 
     async def _budgeted_generate(*args, **kwargs):
         findings = [str(value) for value in (kwargs.get("remediation_findings") or [])]
@@ -2297,7 +2320,7 @@ async def _generate_with_auto_review(
             "\n".join(findings).encode("utf-8")
         ).hexdigest()[:16]
         topic_id = str(getattr(item, "query_target_id", "") or "unassigned")
-        acquisition_prefix = f"writer:{topic_id}:{fingerprint}"
+        acquisition_prefix = f"writer:{context_id}:{topic_id}:{fingerprint}"
         cached = ledger.latest_payload(acquisition_prefix)
         if cached is not None:
             return cached
@@ -2342,7 +2365,7 @@ async def _generate_with_auto_review(
     async def _budgeted_review(**kwargs):
         content = kwargs.get("content") or {}
         candidate_id = candidate_sha256(content)
-        acquisition_id = f"reviewer:{candidate_id}"
+        acquisition_id = f"reviewer:{context_id}:{candidate_id}"
         reservation = ledger.reserve(acquisition_id=acquisition_id, kind="REVIEWER")
         if reservation.cached_payload is not None:
             return review_from_payload(reservation.cached_payload)
@@ -5769,7 +5792,12 @@ def _run_generation_item(
                 "last_reviewed_philosophy_id": philosophy.id,
                 "essence_status": screening.status,
                 "essence_check_summary": _generation_summary(
-                    db, hospital.id, screening, philosophy, approved_brief
+                    db,
+                    hospital.id,
+                    screening,
+                    philosophy,
+                    approved_brief,
+                    generation_attempt=_stored_generation_attempt(item),
                 ),
             },
         )
@@ -6586,8 +6614,6 @@ def generate_content_image(self, content_id: str):
     """Regenerate only the cover image while preserving operator-reviewed text."""
     item_id = uuid.UUID(content_id)
     with SyncSessionLocal() as db:
-        # 발행기가 스스로 건 실행이면 실패해도 바로 알리지 않는다 — 누른 사람이 없고, 남은 예산의
-        # 복구는 스윕이 소유한다(RETRYING). 알림은 종전처럼 아침 요약이 소유한다.
         notify_failure = not _is_auto_image_regeneration_run(db, self)
         item = db.get(ContentItem, item_id)
         if not item:
@@ -7096,7 +7122,12 @@ def _generate_single_content_item(
             "essence_check_summary": _with_auto_correction_state(
                 _with_body_repair_state(
                     _generation_summary(
-                        db, hospital.id, screening, philosophy, approved_brief
+                        db,
+                        hospital.id,
+                        screening,
+                        philosophy,
+                        approved_brief,
+                        generation_attempt=_stored_generation_attempt(item),
                     ),
                     carried_repair_state,
                 ),
@@ -7930,20 +7961,6 @@ def _auto_publish_one(
                 code=code,
                 message=message,
             )
-            # 이미지 때문에만 막힌 글은 Admin “이미지 다시 만들기”와 같은 작업을 시스템 실행으로
-            # 한 번 건다. 행·병원 잠금을 쥔 채 판정 기록보다 먼저 예약한다 — 실행 기록·계수·시도
-            # 기록이 아래의 첫 커밋(시도 기록이 하는 커밋 또는 그 뒤의 커밋) 하나에 함께 실린다.
-            # 배포는 그 커밋 뒤에만 한다.
-            spent_image_runs = (
-                _auto_image_regeneration_due(db, item, assessment, today_kst)
-                if read_only_row is None
-                else None
-            )
-            auto_image_run = (
-                _reserve_auto_image_regeneration(db, item, today_kst, spent_image_runs)
-                if spent_image_runs is not None
-                else None
-            )
             # 인시던트가 기한을 빌릴 정본 기록을 먼저 남긴다(예산은 쓰지 않는다). claim 행이면
             # `item`은 분리된 사본이라 기록도 사본에만 남는다 — 워커가 시도 기록의 소유자다.
             # 사본에 남기는 것은 요약의 시도 지문(`attempt_fingerprint`)을 claim 없는 글과 같게
@@ -7953,8 +7970,6 @@ def _auto_publish_one(
                 db if read_only_row is None else _DETACHED_VIEW_SESSION, item, philosophy, code
             )
             db.commit()
-            if auto_image_run is not None:
-                _send_auto_image_regeneration(db, auto_image_run)
             operator_line = operator_decides_digest_due(
                 code, item, batch=PUBLISH_MORNING_BATCH, today=today_kst
             )
@@ -8046,16 +8061,8 @@ def _auto_publish_one(
         return payload
 
 
-def _auto_image_regeneration_key_prefix(item_id: object) -> str:
-    return f"{_AUTO_IMAGE_REGEN_KEY_PREFIX}{item_id}:"
-
-
 def _is_auto_image_regeneration_run(db, task) -> bool:
-    """이 이미지 태스크가 발행기가 스스로 건 시스템 실행 아래에서 도는가.
-
-    표지는 발행기가 남긴 실행의 멱등 키(`auto-image-regen:<글>:<KST 날짜>`)다. Admin 실행은 요청 헤더의
-    키를 쓰고, 실행 문맥이 없는 직접 호출은 어느 쪽도 아니다.
-    """
+    """Recognize a pre-upgrade publisher-created image run while its queue drains."""
 
     context = explicit_run_context(task)
     if context is None:
@@ -8067,135 +8074,6 @@ def _is_auto_image_regeneration_run(db, task) -> bool:
         and run.requested_by_id is None
         and str(run.idempotency_key or "").startswith(_AUTO_IMAGE_REGEN_KEY_PREFIX)
     )
-
-
-def _auto_image_regeneration_due(
-    db, item: ContentItem, assessment: Any, today_kst: date
-) -> tuple[str, ...] | None:
-    """이 차단에 발행기가 이미지 재생성을 스스로 걸 수 있으면 이미 쓴 시스템 실행 키를, 아니면 `None`.
-
-    게이트 순서상 이미지 코드는 본문·참고자료·금지 표현·독립 검수·운영 기준을 모두 통과한 뒤에만
-    나온다. 그래도 저장된 검수가 막고 있으면 사지 않는다 — 막힌 본문에 이미지를 사지 않는다.
-    오늘 이미지 예산을 다 쓴 글, 비용 가드 보류, 종착 이미지 원인은 종전 흐름이 소유한다.
-    하루·누적 한도는 지금까지 만든 시스템 실행 행으로 센다 — 요약의 계수는 본문 재작성이 요약을
-    통째로 다시 쓰면 사라지지만 실행 기록은 남는다.
-    """
-
-    if assessment.code not in _IMAGE_SYMPTOM_CODES:
-        return None
-    if not public_candidate_review_safe(item):
-        return None
-    if _stored_generation_attempt(item).get("reason") in (
-        {"COST_BLOCKED"} | _STORED_IMAGE_TERMINAL_CODES
-    ):
-        return None
-    if _image_attempts_exhausted_today(item):
-        return None
-    prefix = _auto_image_regeneration_key_prefix(item.id)
-    # 시스템 실행만 센다(`_is_auto_image_regeneration_run`과 같은 정의). 취소·실패로 끝난 실행도
-    # 센다 — 계수는 큐에 넣을 때 쓴 것이다.
-    keys = tuple(
-        str(key)
-        for key in db.execute(
-            select(OperationRun.idempotency_key).where(
-                OperationRun.hospital_id == item.hospital_id,
-                OperationRun.operation_type == _AUTO_IMAGE_REGEN_OPERATION,
-                OperationRun.requested_by_id.is_(None),
-                OperationRun.idempotency_key.startswith(prefix, autoescape=True),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    today_count = sum(key == f"{prefix}{today_kst.isoformat()}" for key in keys)
-    if today_count >= AUTO_IMAGE_REGEN_DAILY_CAP or len(keys) >= AUTO_IMAGE_REGEN_TOTAL_CAP:
-        return None
-    return keys
-
-
-def _reserve_auto_image_regeneration(
-    db, item: ContentItem, today_kst: date, spent_keys: tuple[str, ...] = ()
-) -> OperationRun | None:
-    """시스템 소유 이미지 재생성 실행을 만들고 계수를 쓴다. 커밋은 호출자가 한다.
-
-    Admin 경로와 같은 실행 종류(REGENERATE_CONTENT_IMAGE)·같은 저장 payload라 Worker 인증과
-    자율 복구의 재배포가 그대로 적용된다. 요청자는 없다(시스템 실행) — Admin 감사를 만들지 않는다.
-    멱등 키는 글·KST 날짜로 정해, 같은 날 두 번 사지 않는다(유일 인덱스가 겹친 쪽을 막는다).
-    `spent_keys`는 한도 판정이 읽은 이 글의 시스템 실행 키다 — 표시용 계수도 이것으로 만든다.
-    """
-
-    target_id = str(item.id)
-    observed_at = datetime.now(timezone.utc)
-    run = OperationRun(
-        id=uuid.uuid4(),
-        hospital_id=item.hospital_id,
-        operation_type=_AUTO_IMAGE_REGEN_OPERATION,
-        state=OperationRunState.REQUESTED,
-        idempotency_key=f"{_auto_image_regeneration_key_prefix(target_id)}{today_kst.isoformat()}",
-        requested_by_id=None,
-        task_id=str(uuid.uuid4()),
-        requested_at=observed_at,
-        attempt_count=0,
-        total_count=0,
-        success_count=0,
-        failure_count=0,
-        skipped_count=0,
-        request_payload=operation_run_payloads.build_request_payload(
-            operation_run_payloads.DispatchPayload(
-                "content_item", target_id, "content", (target_id,)
-            )
-        ),
-        version=1,
-    )
-    savepoint = db.begin_nested()
-    try:
-        db.add(run)
-        savepoint.commit()
-    except IntegrityError:
-        # 같은 날의 시스템 실행이 이미 있다 — 이 시간대는 사지 않는다.
-        savepoint.rollback()
-        return None
-    # 화면·감사용 계수. 저장된 요약을 다시 읽지 않고 한도 판정이 읽은 실행 행에 이번 한 건을 더한다
-    # — 요약이 깨졌거나 지워졌어도 실패하지 않고 1부터 다시 세지도 않는다.
-    period = today_kst.isoformat()
-    today_key = run.idempotency_key
-    item.essence_check_summary = {
-        **(item.essence_check_summary or {}),
-        _AUTO_IMAGE_REGEN_KEY: {
-            "period": period,
-            "count": sum(key == today_key for key in spent_keys) + 1,
-            "total": len(spent_keys) + 1,
-            "last_triggered_at": observed_at.isoformat(),
-        },
-    }
-    return run
-
-
-def _send_auto_image_regeneration(db, run: OperationRun) -> None:
-    """커밋된 실행을 서명된 봉투로 배포한다. 브로커 장애면 저장된 REQUESTED 실행을 자율 복구가 잇는다."""
-
-    target_id = str(run.request_payload["_dispatch"]["target_id"])
-    try:
-        generate_content_image.apply_async(
-            args=[target_id],
-            queue="content",
-            task_id=run.task_id,
-            headers={
-                **build_dispatch_headers(
-                    expected_purpose(_GENERATE_CONTENT_IMAGE_TASK), target_id
-                ),
-                "operation_run_id": str(run.id),
-            },
-        )
-    except Exception as error:
-        logger.warning(
-            "auto image regeneration publish failed for %s: %s",
-            target_id,
-            type(error).__name__,
-        )
-        return
-    # 브로커에 넣었으니 QUEUED다. REQUESTED로 두면 자율 복구가 2분 뒤 유실로 보고 사본을 또 보낸다.
-    mark_operation_run_queued(db, run.id, datetime.now(timezone.utc))
 
 
 def _publication_notification_payload(item: ContentItem, hospital: Hospital) -> dict:
@@ -10057,19 +9935,6 @@ def monthly_slot_generation(current_month: bool = False):
                     error_code=error_code,
                 )
             )
-
-    # One-off close: keep its session and failure boundary separate from September
-    # reconciliation. The recurring monthly beat runs every six hours on Aug 26-31.
-    if today.year == 2026 and today.month == 8 and today.day >= 26:
-        try:
-            backfill_nowon_august_2026_slots()
-        except Exception:
-            logger.exception("Nowon August backfill failed after monthly slot reconciliation")
-        try:
-            regenerate_nowon_orthopedic_faq()
-        except Exception:
-            logger.exception("Nowon orthopedic FAQ regeneration failed after August backfill")
-
 
 def _log_blocked_convertible_tracking_sets(registration: Any) -> None:
     if not isinstance(registration, Mapping):

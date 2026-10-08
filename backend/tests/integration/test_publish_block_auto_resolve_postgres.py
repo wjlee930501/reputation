@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -33,6 +34,7 @@ from app.services.content_ai_review import (
 from app.services.image_engine import IMAGE_POLICY_VERSION, image_subject_hash
 from app.services.reference_verification import item_topic_fingerprint, reference_check_record
 from app.workers import nightly_generation_batch, tasks
+from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY, fresh_generation_attempt
 from tests.integration import test_operator_decides_digest_postgres as digest
 from tests.integration.test_operator_decides_digest_postgres import _hospital
 from tests.integration.test_reference_claim_last_run_postgres import (
@@ -72,6 +74,8 @@ def _blocked_post(db, *, scheduled_date=SLOT) -> tuple[Hospital, ContentItem]:
     hospital.director_name = "이현진"
     hospital.director_career = "가톨릭대학교 성모병원 정형외과 전공의 수련, 정형외과 전문의"
     philosophy = _approved_philosophy(db, hospital)
+    source_asset_id = str(uuid.uuid4())
+    philosophy.source_snapshot_hash = "a" * 64
     title = "허리 통증, 언제 병원에 가야 할까요?"
     item = ContentItem(
         hospital_id=hospital.id,
@@ -86,6 +90,21 @@ def _blocked_post(db, *, scheduled_date=SLOT) -> tuple[Hospital, ContentItem]:
         status=ContentStatus.DRAFT,
         references_list=[{"title": "요통", "url": FRESH_URL}],
         content_philosophy_id=philosophy.id,
+        generation_philosophy_id=philosophy.id,
+        last_reviewed_philosophy_id=philosophy.id,
+        essence_status="ALIGNED",
+        content_brief={
+            "schema_version": "content-brief-v1",
+            "target_query": title,
+            "treatment_narrative": {
+                "source": "hospital_profile",
+                "angle": "허리 통증 내원 시점",
+            },
+            "source_snapshot": {
+                "hash": "a" * 64,
+                "source_asset_ids": [source_asset_id],
+            },
+        },
     )
     db.add(item)
     db.flush()
@@ -115,6 +134,8 @@ def _blocked_post(db, *, scheduled_date=SLOT) -> tuple[Hospital, ContentItem]:
     item.image_policy_verified_at = checked
     candidate = tasks._stored_candidate(item)
     item.essence_check_summary = {
+        GENERATION_ATTEMPT_KEY: fresh_generation_attempt(),
+        "generation_provenance": {"source_asset_ids": [source_asset_id]},
         "blocking": True,
         "findings": ["원장 수련기관이 승인 프로필과 다릅니다."],
         "ai_review": {
@@ -320,12 +341,15 @@ def test_exhausted_correction_is_swapped_by_the_existing_pass_to_an_offered_serv
     holter = target("홀터검사 받을 수 있는 병원")
     item.query_target_id = failed.id
     summary = dict(item.essence_check_summary)
-    summary["generation_attempt"] = {
+    attempt = {
+        **summary[GENERATION_ATTEMPT_KEY],
         "reason": "CONTENT_AI_HARD_FINDING",
         "retry_class": "SAMPLE_RECOVERABLE",
         AUTO_CORRECTION_EXHAUSTED_KEY: True,
         "next_retry_at": _kst(SLOT, 1).to("UTC").isoformat(),
     }
+    attempt["budget"]["topics"] = [str(failed.id)]
+    summary[GENERATION_ATTEMPT_KEY] = attempt
     summary[mc.AUTO_CORRECTION_KEY] = {"passes": 2, "rereviews": 2, "exhausted": True}
     item.essence_check_summary = summary
     db.commit()
@@ -334,6 +358,11 @@ def test_exhausted_correction_is_swapped_by_the_existing_pass_to_an_offered_serv
         return True
 
     monkeypatch.setattr(topic_swap_fallback, "_recover_incident_async", no_incident)
+    monkeypatch.setattr(
+        topic_swap_fallback,
+        "curated_sources_for_topic",
+        lambda _topics: [FRESH_URL],
+    )
     philosophy = _approved_philosophy(db, hospital)
     monkeypatch.setattr(tasks, "_generation_philosophy_sync", lambda *_a: philosophy)
     one_am = _kst(SLOT, 1)
