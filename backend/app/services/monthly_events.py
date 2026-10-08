@@ -153,6 +153,9 @@ class MonthlyEvent:
     occurred_at: datetime
     # 확정 답변의 관측 요약. 없으면 숫자를 지어내지 않는다.
     headline_label: str | None = None
+    # 이미 전달한 달에 숫자가 달라진 새 버전이 준비됐다. 같은 숫자의 문구·디자인 갱신
+    # (TEMPLATE_REFRESH)은 이 값을 켜지 않고, 알림도 만들지 않는다.
+    redelivery_needed: bool = False
 
 
 def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
@@ -178,9 +181,15 @@ def project_monthly_event(event: MonthlyEvent) -> MilestoneProjection:
                 MilestoneKind.MONTHLY_CUSTOMER_READY,
                 event.hospital_id,
                 event.hospital_name,
-                "월간 레포트 전달 준비 완료",
-                "월간 리포트를 원장에게 전달할 수 있습니다.",
-                "고객용 PDF를 확인해 원장님께 전달한 뒤, 보고서 화면에 전달 기록을 남겨 주세요.",
+                "월간 레포트 새 버전 재전달 필요"
+                if event.redelivery_needed
+                else "월간 레포트 전달 준비 완료",
+                "이미 전달한 달의 숫자가 달라진 새 버전이 준비됐습니다. 이전에 보낸 파일과 다릅니다."
+                if event.redelivery_needed
+                else "월간 리포트를 원장에게 전달할 수 있습니다.",
+                "새 고객용 PDF를 확인해 원장님께 다시 전달한 뒤, 보고서 화면에 전달 기록을 남겨 주세요."
+                if event.redelivery_needed
+                else "고객용 PDF를 확인해 원장님께 전달한 뒤, 보고서 화면에 전달 기록을 남겨 주세요.",
                 event.owner_label,
                 sla_label,
                 admin_path,

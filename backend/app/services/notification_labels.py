@@ -37,13 +37,14 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     "INCIDENT_OPEN": NotificationLabel.ERROR,
     "INCIDENT_SUMMARY": NotificationLabel.ERROR,
     "MILESTONE_ACTION": NotificationLabel.ERROR,
-    # 마일스톤 요약은 항목별 확인을 요구하는 운영자 큐 투영이다.
+    # 마일스톤 요약은 둘로 갈린다. 사람의 조치를 요구하는 항목(차단·기한 초과·무효 처리)은
+    # ERROR, 전달 준비 완료·전달 기록처럼 읽고 다음 일을 잡으면 되는 항목은 REPORT다.
+    # "전달 준비 완료"가 오류로 읽히면 채널의 Error가 신호를 잃는다.
     "MILESTONE_SUMMARY": NotificationLabel.ERROR,
-    "CONTENT_PUBLISHED": NotificationLabel.ERROR,
     "MISSING_APPROVED_ESSENCE_DIGEST": NotificationLabel.ERROR,
     "GENERATION_BLOCKED_DIGEST": NotificationLabel.ERROR,
     "CONTENT_BATCH_BLOCKED": NotificationLabel.ERROR,
-    "ONBOARDING_SITE_BUILT": NotificationLabel.ERROR,
+    # 사람이 고칠 최종 차단만 ERROR다. 자동 복구가 아직 맡은 공백은 아래 REPORT로 간다.
     "MONTHLY_REPORT_GAP_SUMMARY": NotificationLabel.ERROR,
     "COST_GUARD_LIMIT_REACHED": NotificationLabel.ERROR,
     "COST_GUARD_SOFT_WARNING": NotificationLabel.ERROR,
@@ -52,6 +53,13 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     # 복구·현황 보고
     "INCIDENT_RECOVERED": NotificationLabel.REPORT,
     "MILESTONE_RECOVERED": NotificationLabel.REPORT,
+    "MILESTONE_SUMMARY_REPORT": NotificationLabel.REPORT,
+    # 공개 완료·사이트 준비 완료는 일어난 일의 보고다. 막힌 사유가 붙어도 다음 단계를 알릴 뿐
+    # 실패가 아니다.
+    "CONTENT_PUBLISHED": NotificationLabel.REPORT,
+    "ONBOARDING_SITE_BUILT": NotificationLabel.REPORT,
+    # 자동 재측정·마감이 실제로 돌고 있는 공백 — 사람이 할 일이 없다.
+    "MONTHLY_REPORT_GAP_AUTO": NotificationLabel.REPORT,
     # 주간 요약의 본문은 계약 예정 대비 발행 수율이며 차단이 0건이어도 나간다.
     "GENERATION_REJECTION_WEEKLY_ROLLUP": NotificationLabel.REPORT,
     "CONTENT_BATCH_PREPARED": NotificationLabel.REPORT,

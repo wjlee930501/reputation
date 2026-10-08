@@ -32,6 +32,7 @@ from app.services.fleet_heartbeat import FleetFacts, build_fleet_heartbeat
 from app.services.measurement_manifest_policy import ManifestPolicyVersionTransition
 from app.services.monthly_report_gap_notifications import (
     MonthlyReportGap,
+    build_monthly_report_gap_auto_summary,
     build_monthly_report_gap_summary,
 )
 from app.services.naver_handoff_contracts import NaverHandoffItem, NaverHandoffState
@@ -60,6 +61,7 @@ from app.services.notification_milestone_messages import (
     build_milestone_action_notification,
     build_milestone_recovery_notification,
     build_milestone_summary_notification,
+    split_milestone_batch,
 )
 from app.services.onboarding_notifications import (
     build_hospital_activated_notification,
@@ -186,6 +188,18 @@ def _milestone(*, requires_action: bool, recovery: bool = False) -> MilestonePro
         requires_action=requires_action,
         is_recovery=recovery,
         recovery_of="HANDOFF_OVERDUE:0" if recovery else None,
+    )
+
+
+def _ready_milestone() -> MilestoneProjection:
+    """월간 레포트 전달 준비 완료 — 사람의 조치가 아니라 읽고 넘길 현황이다."""
+
+    return replace(
+        _milestone(requires_action=True),
+        stable_id="MONTHLY_CUSTOMER_READY:1",
+        kind=MilestoneKind.MONTHLY_CUSTOMER_READY,
+        status_label="월간 레포트 전달 준비 완료",
+        period_label="2026년 8월",
     )
 
 
@@ -320,8 +334,26 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
         ),
     ),
     (
+        "MILESTONE_SUMMARY_REPORT",
+        NotificationLabel.REPORT,
+        lambda: build_milestone_summary_notification(
+            MilestoneBatch(
+                (_ready_milestone(),), _NOW, _NOW + timedelta(days=1)
+            ),
+            _ADMIN,
+        ),
+    ),
+    (
+        "MONTHLY_REPORT_GAP_AUTO",
+        NotificationLabel.REPORT,
+        lambda: build_monthly_report_gap_auto_summary(
+            period_key="2026-08",
+            gaps=[MonthlyReportGap("장편한외과의원", "MISSING", recoverable=True)],
+        ),
+    ),
+    (
         "CONTENT_PUBLISHED",
-        NotificationLabel.ERROR,
+        NotificationLabel.REPORT,
         lambda: build_publish_notification_intent(
             _PublishedItem(
                 uuid.UUID("c1000000-0000-0000-0000-000000000001"),
@@ -369,7 +401,7 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
     ),
     (
         "ONBOARDING_SITE_BUILT",
-        NotificationLabel.ERROR,
+        NotificationLabel.REPORT,
         lambda: build_site_built_notification(
             hospital_id=_HOSPITAL,
             hospital_name="장편한외과의원",
@@ -634,3 +666,44 @@ def test_weekly_rollup_stays_a_report_when_blocks_exist() -> None:
     assert intent.message.fallback_text.startswith(REPORT_LABEL)
     assert f"{REPORT_LABEL} 주간 콘텐츠 발행 요약" in payload
     assert "발행 3/5" in payload and "본문·근거 확인 필요 1건" in payload
+
+
+def test_delivery_ready_summary_is_a_report_and_blocked_summary_is_an_error() -> None:
+    ready = build_milestone_summary_notification(
+        MilestoneBatch((_ready_milestone(),), _NOW, _NOW + timedelta(days=1)), _ADMIN
+    )
+    blocked = build_milestone_summary_notification(
+        MilestoneBatch(
+            (replace(_ready_milestone(), stable_id="MONTHLY_BLOCKED:1", kind=MilestoneKind.MONTHLY_BLOCKED,
+                     status_label="월간 리포트 차단"),),
+            _NOW,
+            _NOW + timedelta(days=1),
+        ),
+        _ADMIN,
+    )
+
+    assert ready.notification_type == "MILESTONE_SUMMARY_REPORT"
+    assert ready.message.fallback_text.startswith(REPORT_LABEL)
+    assert blocked.notification_type == "MILESTONE_SUMMARY"
+    assert blocked.message.fallback_text.startswith(ERROR_LABEL)
+
+
+def test_a_mixed_window_splits_into_one_report_and_one_error_message() -> None:
+    ready = _ready_milestone()
+    blocked = replace(
+        ready, stable_id="MONTHLY_BLOCKED:2", kind=MilestoneKind.MONTHLY_BLOCKED,
+        status_label="월간 리포트 차단", hospital_id=uuid.uuid4(),
+    )
+    parts = split_milestone_batch(
+        MilestoneBatch((ready, blocked), _NOW, _NOW + timedelta(minutes=15))
+    )
+    built = [build_milestone_summary_notification(part, _ADMIN) for part in parts]
+
+    assert [intent.notification_type for intent in built] == [
+        "MILESTONE_SUMMARY",
+        "MILESTONE_SUMMARY_REPORT",
+    ]
+    assert [intent.message.fallback_text.split("]")[0] + "]" for intent in built] == [
+        ERROR_LABEL,
+        REPORT_LABEL,
+    ]

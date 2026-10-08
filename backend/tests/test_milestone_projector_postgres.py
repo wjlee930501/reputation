@@ -107,9 +107,6 @@ async def test_effective_delivery_advances_state_and_ignores_artifact_replacemen
 
     first_artifact_id = uuid.uuid4()
     before_delivery = facts(artifact_id=first_artifact_id, delivered=False)
-    key, projection = milestone_monthly_projection._project_observed_current(
-        before_delivery, datetime(2026, 8, 10, 2, tzinfo=UTC)
-    )
 
     class EmptyDeliveries:
         def scalars(self):
@@ -121,19 +118,29 @@ async def test_effective_delivery_advances_state_and_ignores_artifact_replacemen
 
     current_facts = facts(artifact_id=first_artifact_id, delivered=True)
 
+    async def load_before(_db):
+        return {report_id: before_delivery}
+
     async def load_delivered(_db):
         return {report_id: current_facts}
 
+    monkeypatch.setattr(milestone_monthly_projection, "load_report_facts", load_before)
+    before = await observe_monthly_milestones(
+        DB(),
+        datetime(2026, 8, 10, 2, tzinfo=UTC),
+        {},
+        datetime(2026, 8, 10, 1, tzinfo=UTC),
+    )
     monkeypatch.setattr(milestone_monthly_projection, "load_report_facts", load_delivered)
     delivered = await observe_monthly_milestones(
         DB(),
         datetime(2026, 8, 10, 3, tzinfo=UTC),
-        {key: projection.stable_id},
+        before.states,
         datetime(2026, 8, 10, 2, tzinfo=UTC),
     )
 
     assert delivered.milestones == ()
-    assert delivered.states[key] != projection.stable_id
+    assert delivered.states != before.states  # 전달 사실은 상태에 남지만 알림은 만들지 않는다
 
     current_facts = facts(artifact_id=uuid.uuid4(), delivered=True)
     regenerated = await observe_monthly_milestones(
@@ -445,10 +452,10 @@ async def test_one_failing_report_projection_does_not_stop_other_hospitals_miles
     healthy = _observed_facts(quality="COMPLETE", sov_summary={"sov_pct": 22.0})
     project_current = milestone_monthly_projection._project_observed_current
 
-    def failing(facts: ReportFacts, observed_at: datetime):
+    def failing(facts: ReportFacts, observed_at: datetime, *args):
         if facts.report.id == broken.report.id:
             raise NotificationPayloadError("CUSTOMER_READY_GATE_BLOCKED")
-        return project_current(facts, observed_at)
+        return project_current(facts, observed_at, *args)
 
     async def load(_db):
         return {broken.report.id: broken, healthy.report.id: healthy}
@@ -463,4 +470,4 @@ async def test_one_failing_report_projection_does_not_stop_other_hospitals_miles
     )
 
     assert [projection.hospital_id for projection in scan.milestones] == [healthy.hospital.id]
-    assert f"monthly:{broken.report.id}" not in scan.states
+    assert f"monthly:{broken.hospital.id}:2026-07" not in scan.states

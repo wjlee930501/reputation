@@ -28,6 +28,7 @@ from app.workers.milestone_monthly_projection import observe_monthly_milestones
 _ADMIN = "http://localhost:3000"
 _HOSPITAL_ID = uuid.UUID("b1390000-0000-0000-0000-000000000001")
 _REPORT_ID = uuid.UUID("c1390000-0000-0000-0000-000000000001")
+_MANIFEST_ID = uuid.UUID("a1390000-0000-0000-0000-000000000001")
 _WINDOW = datetime(2026, 9, 21, 18, tzinfo=UTC)
 
 
@@ -84,21 +85,33 @@ def _blocked_facts(
     )
 
 
-def _ready_facts() -> ReportFacts:
-    """같은 리포트가 전달 준비 완료로 넘어간 모습."""
+def _ready_facts(
+    *,
+    report_id: uuid.UUID = _REPORT_ID,
+    version: int = 1,
+    supersedes: uuid.UUID | None = None,
+    sov_pct: float = 20.0,
+    delivered: bool = False,
+    valid_artifact: bool = True,
+) -> ReportFacts:
+    """같은 리포트가 전달 준비 완료로 넘어간 모습. 인자로 새 버전·전달 이력을 만든다."""
 
     validated_at = _WINDOW - timedelta(hours=1)
     return ReportFacts(
         report=SimpleNamespace(
-            id=_REPORT_ID,
+            id=report_id,
+            version=version,
+            supersedes_report_id=supersedes,
+            manifest_id=_MANIFEST_ID,
             quality="COMPLETE",
             planned_count=20,
             success_count=20,
             failed_count=0,
-            created_at=_WINDOW - timedelta(days=20),
+            excluded_count=0,
+            created_at=_WINDOW - timedelta(days=20 - version),
             period_year=2026,
             period_month=8,
-            sov_summary={"sov_pct": 20.0},
+            sov_summary={"sov_pct": sov_pct},
         ),
         hospital=SimpleNamespace(id=_HOSPITAL_ID, name="서울W내과의원 위례점"),
         manifest=SimpleNamespace(closed_at=_WINDOW - timedelta(days=10)),
@@ -107,10 +120,10 @@ def _ready_facts() -> ReportFacts:
             validated_at=validated_at,
             created_at=validated_at,
         ),
-        artifact_state=ReportArtifactState.VALID,
-        ready=True,
-        delivered=False,
-        blockers=(),
+        artifact_state=ReportArtifactState.VALID if valid_artifact else ReportArtifactState.MISSING,
+        ready=valid_artifact,
+        delivered=delivered,
+        blockers=() if valid_artifact else ("DOCTOR_ARTIFACT_UNVALIDATED",),
     )
 
 
@@ -233,8 +246,8 @@ async def test_delivered_past_months_leave_the_current_state_scan(monkeypatch) -
     )
 
     assert set(scan.states) == {
-        f"monthly:{undelivered_old.report.id}",
-        f"monthly:{delivered_recent.report.id}",
+        f"monthly:{_HOSPITAL_ID}:2026-04",
+        f"monthly:{_HOSPITAL_ID}:2026-08",
     }
 
 
@@ -269,3 +282,140 @@ def test_summary_collapses_one_hospitals_repeated_blocked_months() -> None:
     # 접기는 표시에만 적용한다 — 실제 건수와 dedupe 키는 여섯 건을 그대로 센다.
     assert "6건" in intent.message.fallback_text
     assert len({item.stable_id for item in projections}) == 6
+
+
+# ── 알림은 같은 달의 새 보고서 버전이 아니라 읽는 사람에게 달라진 것을 따른다 ──────────────
+
+_V1 = uuid.UUID("c1390000-0000-0000-0000-0000000000a1")
+_V2 = uuid.UUID("c1390000-0000-0000-0000-0000000000a2")
+_MONTH_KEY = f"monthly:{_HOSPITAL_ID}:2026-08"
+
+
+def _later(minutes: int) -> datetime:
+    return _WINDOW + timedelta(minutes=minutes)
+
+
+@pytest.mark.asyncio
+async def test_template_refresh_version_never_renotifies_ready(monkeypatch) -> None:
+    """같은 숫자의 새 버전(TEMPLATE_REFRESH)은 PDF 검증 중이든 끝났든 알리지 않는다."""
+
+    first = await _observe(monkeypatch, [_ready_facts(report_id=_V1)], {})
+    assert [item.kind for item in first.milestones] == [MilestoneKind.MONTHLY_CUSTOMER_READY]
+
+    v1 = _ready_facts(report_id=_V1)
+    refreshing = _ready_facts(
+        report_id=_V2, version=2, supersedes=_V1, valid_artifact=False
+    )
+    pending = await _observe(monkeypatch, [v1, refreshing], first.states, _later(15))
+    refreshed = await _observe(
+        monkeypatch,
+        [v1, _ready_facts(report_id=_V2, version=2, supersedes=_V1)],
+        pending.states,
+        _later(30),
+    )
+
+    assert pending.milestones == () and refreshed.milestones == ()
+    assert refreshed.states == first.states  # 키도, 값도 그대로
+
+
+@pytest.mark.asyncio
+async def test_ready_again_after_block_notifies_exactly_once(monkeypatch) -> None:
+    blocked = await _observe(monkeypatch, [_blocked_facts()], {})
+    ready = await _observe(monkeypatch, [_ready_facts()], blocked.states, _later(15))
+    still_ready = await _observe(monkeypatch, [_ready_facts()], ready.states, _later(30))
+    # 새 보고서 버전이 같은 숫자로 다시 만들어져도 한 번 더 나가지 않는다.
+    refreshed = await _observe(
+        monkeypatch,
+        [_ready_facts(), _ready_facts(report_id=_V2, version=2, supersedes=_REPORT_ID)],
+        still_ready.states,
+        _later(45),
+    )
+
+    assert [item.kind for item in ready.milestones] == [MilestoneKind.MONTHLY_CUSTOMER_READY]
+    assert still_ready.milestones == () and refreshed.milestones == ()
+
+
+@pytest.mark.asyncio
+async def test_never_delivered_blocked_month_stays_quiet_across_versions(monkeypatch) -> None:
+    first = await _observe(monkeypatch, [_blocked_facts()], {})
+    v2 = _blocked_facts(report_id=_V2)
+    v2.report.version, v2.report.supersedes_report_id = 2, _REPORT_ID
+    v2.report.created_at += timedelta(days=1)
+    later = await _observe(
+        monkeypatch, [_blocked_facts(), v2], first.states, _later(15 * 96)
+    )
+
+    assert first.milestones and later.milestones == ()
+    assert set(later.states) == {_MONTH_KEY}
+
+
+@pytest.mark.asyncio
+async def test_changed_rebuild_after_delivery_notifies_redelivery_once(monkeypatch) -> None:
+    delivered = _ready_facts(delivered=True)
+    quiet = await _observe(monkeypatch, [delivered], {})
+    assert quiet.milestones == ()  # 이미 전달한 달은 처음 봐도 알리지 않는다
+
+    rebuilt = _ready_facts(report_id=_V2, version=2, supersedes=_REPORT_ID, sov_pct=33.0)
+    fired = await _observe(monkeypatch, [delivered, rebuilt], quiet.states, _later(15))
+    repeated = await _observe(monkeypatch, [delivered, rebuilt], fired.states, _later(30))
+
+    assert [item.kind for item in fired.milestones] == [MilestoneKind.MONTHLY_CUSTOMER_READY]
+    assert "재전달" in fired.milestones[0].status_label
+    assert repeated.milestones == ()
+
+
+@pytest.mark.asyncio
+async def test_template_refresh_after_delivery_stays_silent(monkeypatch) -> None:
+    delivered = _ready_facts(delivered=True)
+    quiet = await _observe(monkeypatch, [delivered], {})
+    refresh = _ready_facts(report_id=_V2, version=2, supersedes=_REPORT_ID)  # 같은 숫자
+
+    scan = await _observe(monkeypatch, [delivered, refresh], quiet.states, _later(15))
+
+    assert scan.milestones == ()
+
+
+@pytest.mark.asyncio
+async def test_deploy_migrates_report_keyed_states_without_a_burst(monkeypatch) -> None:
+    """배포 직후 첫 관측: 옛 `monthly:{report_id}` 상태를 새 키로 옮기고 아무것도 다시 알리지 않는다."""
+
+    ready_month = _ready_facts()
+    blocked_month = _blocked_facts(
+        period=(2026, 7), report_id=uuid.UUID("c1390000-0000-0000-0000-0000000000b1")
+    )
+    legacy = {
+        f"monthly:{_REPORT_ID}": "milestone:v1:legacy-hash",
+        f"monthly:{blocked_month.report.id}": "milestone:v1:legacy-blocked",
+    }
+
+    migrated = await _observe(monkeypatch, [ready_month, blocked_month], legacy)
+
+    assert migrated.milestones == ()
+    assert set(migrated.states) == {_MONTH_KEY, f"monthly:{_HOSPITAL_ID}:2026-07"}
+    # 옮긴 뒤에는 옛 키가 남지 않고, 이후에도 조용하다.
+    after = await _observe(
+        monkeypatch, [ready_month, blocked_month], migrated.states, _later(15)
+    )
+    assert after.milestones == ()
+    # 대조군: 옛 상태도 새 상태도 없으면 처음 보는 준비 완료로 한 번 알린다.
+    fresh = await _observe(monkeypatch, [ready_month], {})
+    assert len(fresh.milestones) == 1
+
+
+@pytest.mark.asyncio
+async def test_migration_keeps_ready_when_template_refresh_is_validating(monkeypatch) -> None:
+    """배포 순간 템플릿 갱신 PDF가 검증 중이어도 검증이 끝날 때 다시 알리지 않는다."""
+
+    legacy = {f"monthly:{_V1}": "milestone:v1:legacy-ready"}
+    v1 = _ready_facts(report_id=_V1)
+    refreshing = _ready_facts(report_id=_V2, version=2, supersedes=_V1, valid_artifact=False)
+
+    during = await _observe(monkeypatch, [v1, refreshing], legacy)
+    done = await _observe(
+        monkeypatch,
+        [v1, _ready_facts(report_id=_V2, version=2, supersedes=_V1)],
+        during.states,
+        _later(15),
+    )
+
+    assert during.milestones == () and done.milestones == ()

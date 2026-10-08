@@ -81,6 +81,30 @@ class MilestoneBatch:
     window_end: datetime
 
 
+_SUMMARY_EVENT: Final = "MILESTONE_SUMMARY"
+_SUMMARY_REPORT_EVENT: Final = "MILESTONE_SUMMARY_REPORT"
+
+
+def is_report_milestone(milestone: MilestoneProjection) -> bool:
+    """사람의 조치를 요구하지 않는 항목 — 전달 준비 완료와 복구·전달 기록 사실.
+
+    라벨의 축이다(`notification_labels`). 이런 항목이 Error 제목으로 나가면 채널의 Error가
+    진짜 차단 신호를 잃는다.
+    """
+    return milestone.kind is MilestoneKind.MONTHLY_CUSTOMER_READY or milestone.is_recovery
+
+
+def split_milestone_batch(batch: MilestoneBatch) -> tuple[MilestoneBatch, ...]:
+    """한 창의 항목을 조치 필요(ERROR)와 보고(REPORT) 두 메시지로 가른다. 조치 필요가 먼저다."""
+    errors = tuple(item for item in batch.milestones if not is_report_milestone(item))
+    reports = tuple(item for item in batch.milestones if is_report_milestone(item))
+    return tuple(
+        MilestoneBatch(items, batch.window_start, batch.window_end)
+        for items in (errors, reports)
+        if items
+    )
+
+
 def build_milestone_action_notification(
     milestone: MilestoneProjection, admin_base_url: str
 ) -> NotificationIntent:
@@ -101,6 +125,9 @@ def build_milestone_summary_notification(
     batch: MilestoneBatch, admin_base_url: str
 ) -> NotificationIntent:
     ordered = _ordered_unique(batch.milestones)
+    # 한 메시지의 라벨은 하나다. 보고 항목만 모인 배치는 REPORT, 조치 항목이 하나라도 섞이면
+    # 보수적으로 ERROR다(`enqueue_milestone_summary`는 미리 갈라 보내므로 섞이지 않는다).
+    event = _SUMMARY_REPORT_EVENT if all(map(is_report_milestone, ordered)) else _SUMMARY_EVENT
     window_start = canonical_time(batch.window_start)
     window_end = canonical_time(batch.window_end)
     if batch.window_end <= batch.window_start:
@@ -123,7 +150,7 @@ def build_milestone_summary_notification(
     if len(chunks) > MAX_BLOCKS - 3:
         raise NotificationPayloadError("MILESTONE_SUMMARY_EXCEEDS_SLACK_LIMIT")
     blocks = (
-        header_block("milestone_summary_header", prefixed_for_event("MILESTONE_SUMMARY", f"[업무 알림] 병원 {len({item.hospital_id for item in ordered})}곳 · {len(ordered)}건")),
+        header_block("milestone_summary_header", prefixed_for_event(event, f"[업무 알림] 병원 {len({item.hospital_id for item in ordered})}곳 · {len(ordered)}건")),
         section_block(
             "milestone_summary_window",
             f"{display_time(batch.window_start)} ~ {display_time(batch.window_end)} · 새로 확인된 항목만 모았습니다.",
@@ -133,7 +160,7 @@ def build_milestone_summary_notification(
     )
     message = validated_message(
         RenderedSlackMessage(
-            prefixed_for_event("MILESTONE_SUMMARY", f"[업무 알림] {len(ordered)}건 | " + " / ".join(
+            prefixed_for_event(event, f"[업무 알림] {len(ordered)}건 | " + " / ".join(
                 f"{safe_text(group[0].hospital_name, 50)} {_period_text(group)}: "
                 f"{safe_text(group[0].status_label, 70)}"
                 for group in displayed[:5]
@@ -145,8 +172,8 @@ def build_milestone_summary_notification(
     )
     hospital_ids = {item.hospital_id for item in ordered}
     return NotificationIntent(
-        dedupe_key=f"MILESTONE_SUMMARY:{digest}",
-        notification_type="MILESTONE_SUMMARY",
+        dedupe_key=f"{event}:{digest}",
+        notification_type=event,
         message=message,
         hospital_id=next(iter(hospital_ids)) if len(hospital_ids) == 1 else None,
     )
@@ -157,11 +184,18 @@ async def enqueue_milestone_summary(
     batch: MilestoneBatch,
     admin_base_url: str,
 ) -> NotificationOutbox:
-    """Enqueue one summary inside the caller's uncommitted domain transaction."""
+    """Enqueue the summaries inside the caller's uncommitted domain transaction.
 
-    return await enqueue_notification(
-        db, build_milestone_summary_notification(batch, admin_base_url)
-    )
+    조치 필요 항목과 보고 항목은 라벨이 다르므로 각각 한 메시지로 나간다. 반환은 첫 행이다.
+    """
+
+    rows = [
+        await enqueue_notification(db, build_milestone_summary_notification(part, admin_base_url))
+        for part in split_milestone_batch(batch)
+    ]
+    if not rows:
+        raise NotificationPayloadError("MILESTONE_SUMMARY_REQUIRES_EVENTS")
+    return rows[0]
 
 
 def _single_notification(

@@ -283,7 +283,10 @@ def test_heartbeat_unknown(change):
 
 def test_missing_measurements_and_failed_run_are_not_normal():
     assert "일부 상태 미확인" in heartbeat(facts=FleetFacts(2, 0, 0, 0, 1, 0)).message.fallback_text
-    assert "미완료 작업 있음" in heartbeat(facts=FleetFacts(2, 0, 0, 1, 2, 0)).message.fallback_text
+    # 복구 근거 없는 작업 실패는 개발 담당 몫이라 운영 담당의 상태 제목을 바꾸지 않고 별도 줄로 간다.
+    failed = heartbeat(facts=FleetFacts(2, 0, 0, 1, 2, 0)).message.fallback_text
+    assert "미완료 작업 있음" not in failed.splitlines()[0]
+    assert "개발 확인 1건" in failed
 
 
 def test_daily_outbox_real_dedupe_and_kst_boundary(db):

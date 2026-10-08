@@ -857,7 +857,7 @@ async def list_hospitals(
             h,
             readiness_state=readiness_states[h.id],
             # 자동 검수가 막힌 초안도 사람이 풀어야 하는 예외다 — 현황 화면의 예외 카드와
-            # 같은 규칙으로 센 인시던트 수에 더한다(카드 수 == 이 숫자).
+            # 같은 규칙(`is_operator_todo`의 원인 묶음)으로 센 인시던트 수에 더한다(카드 수 == 이 숫자).
             open_exception_count=(
                 incident_counts.get(h.id, 0) + int(readiness_states[h.id].escalated_draft)
             ),
