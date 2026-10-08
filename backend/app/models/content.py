@@ -210,7 +210,7 @@ class ContentItem(Base):
 
     # 본문 근거 자료 (GEO 신호 — AI 인용 가능성 ↑)
     # list of {"title": str, "url": str}
-    references_list: Mapped[list] = mapped_column(_jsonb_type(), nullable=False)
+    references_list: Mapped[list] = mapped_column(_jsonb_type(), nullable=False, default=list)
     # 참고자료 URL의 실제 검증 기록(참고자료마다 url·지문·final_url·status·page_title·
     # text_len·verdict·reason·checked_at). 발행 직전 게이트가 같은 URL의 신선한 통과를
     # 요구한다(`services/reference_verification.py`). migration 0082.

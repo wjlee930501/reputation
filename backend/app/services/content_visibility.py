@@ -53,12 +53,14 @@ _ACTIVE_REVISION_MISSING_LABEL: Final = "승인된 공개 판이 없음"
 
 
 # `assess_public_visibility`와 그 헬퍼가 실제로 읽는 컬럼. 판정 표본은 행 단위로 읽어야
-# 하므로, 판정에 쓰지 않는 대용량 컬럼(content_brief·image_prompt·검수 이력)까지 실어
-# 나르지 않는다. body는 공백·금지 표현 검사가 쓰므로 뺄 수 없다. 판정에 새 필드를 더하면
-# 이 목록에도 더해야 한다 — 빠뜨리면 지연 로딩이 async 세션에서 바로 드러난다.
+# 하므로 image_prompt·검수 이력처럼 판정에 쓰지 않는 대용량 컬럼까지 실어 나르지 않는다.
+# body는 공백·금지 표현 검사가, content_brief는 참고자료 주제 지문 검사가 쓰므로 뺄 수 없다.
+# 판정에 새 필드를 더하면 이 목록에도 더해야 한다 — 빠뜨리면 지연 로딩이 async 세션에서
+# 바로 드러난다.
 _VISIBILITY_COLUMNS: Final = (
     ContentItem.id,
     ContentItem.hospital_id,
+    ContentItem.active_revision_id,
     ContentItem.status,
     ContentItem.content_type,
     ContentItem.title,
@@ -68,6 +70,7 @@ _VISIBILITY_COLUMNS: Final = (
     ContentItem.essence_status,
     ContentItem.essence_check_summary,
     ContentItem.content_philosophy_id,
+    ContentItem.content_brief,
     ContentItem.faq_question,
     ContentItem.faq_answer_summary,
     ContentItem.references_list,
@@ -75,8 +78,9 @@ _VISIBILITY_COLUMNS: Final = (
 
 
 def visibility_load_only() -> Load:
-    """공개 가시성 판정에 필요한 컬럼만 싣는 로더 옵션."""
-    return load_only(*_VISIBILITY_COLUMNS)
+    """Load the authoritative edition without async lazy IO during pure evaluation."""
+
+    return load_only(*_VISIBILITY_COLUMNS).joinedload(ContentItem.active_revision)
 
 
 @dataclass(frozen=True, slots=True)
