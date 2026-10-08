@@ -26,6 +26,10 @@ from app.services.operation_run_payloads import (
     build_request_payload,
     parse_stored_dispatch,
 )
+from app.workers.generation_attempt_state import (
+    GenerationBudgetExceeded,
+    GenerationBudgetUnknown,
+)
 from app.workers.generation_retry_policy import (
     GenerationRetryClass,
     next_recovery_sweep,
@@ -168,6 +172,12 @@ class ExplicitRunContext:
 def classify_generation_failure(error: BaseException) -> tuple[str, str]:
     """Map runtime failures to allowlisted operator-safe facts."""
     match error:
+        case GenerationBudgetUnknown():
+            code = "LEGACY_SPEND_UNKNOWN"
+            message = "기존 생성 비용 기록을 확인할 수 없어 자동 재시도를 중단했습니다."
+        case GenerationBudgetExceeded():
+            code = "GENERATION_BUDGET_EXHAUSTED"
+            message = "이 콘텐츠의 자동 생성 예산을 모두 사용했습니다."
         case TimeoutError() | openai.APITimeoutError():
             code = "PROVIDER_TIMEOUT"
             message = _SAFE_FAILURE_MESSAGE

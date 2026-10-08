@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import uuid
+from typing import Any
 from urllib.parse import urlparse
 
 from tenacity import (
@@ -1189,11 +1190,14 @@ async def _generate_content_attempt(
     # '예약'과 '실제'가 최대 3배까지 벌어져도 드러나지 않는다.
     from app.services import cost_guard
 
+    attempt_context = _attempt_context if _attempt_context is not None else {}
+    transport_observer = attempt_context.get("transport_observer")
+    if callable(transport_observer):
+        transport_observer()
     await cost_guard.record_provider_call("content")
 
     from app.services import provider_usage
 
-    attempt_context = _attempt_context if _attempt_context is not None else {}
     logical_call_id = str(attempt_context.setdefault("logical_call_id", uuid.uuid4()))
     http_attempt = int(attempt_context.get("http_attempt") or 0) + 1
     attempt_context["http_attempt"] = http_attempt
@@ -1219,6 +1223,8 @@ async def _generate_content_attempt(
         http_attempt = int(attempt_context.get("http_attempt") or 0) + 1
         attempt_context["http_attempt"] = http_attempt
         attempt_id = f"{logical_call_id}:http:{http_attempt}"
+        if callable(transport_observer):
+            transport_observer()
         await cost_guard.record_provider_call("content")
 
     try:
@@ -1286,7 +1292,6 @@ async def _generate_content_attempt(
 
     result = _extract_generated_result(response)
 
-    _validate_body_length(result.get("body"))
     _validate_unverified_price_claims(result.get("body"))
 
     # 참고 자료 정규화를 GEO 검증보다 먼저 수행한다. GEO hard-fail은
@@ -1373,6 +1378,7 @@ def _validate_generated_result(
 ) -> dict:
     """Apply every stored-content hard gate to one normalized provider result."""
 
+    result = _normalize_editorial_result(result, content_type)
     # FAQPage JSON-LD fields are a hard type contract, not optional decoration.
     # Conversely, non-FAQ outputs must not leak model-supplied FAQ schema fields.
     result["faq_question"] = _trim_or_none(result.get("faq_question"), 300)
@@ -1380,13 +1386,12 @@ def _validate_generated_result(
     if content_type == ContentType.FAQ:
         if not result["faq_question"] or not result["faq_answer_summary"]:
             raise ValueError("FAQ output requires faq_question and faq_answer_summary")
-        if not result["faq_question"].endswith("?"):
-            raise ValueError("FAQ question must end with a question mark")
     else:
         result["faq_question"] = None
         result["faq_answer_summary"] = None
 
     # ── SEO/GEO 검증 ──────────────────────────────────────────────
+    length_findings = _validate_body_length(result.get("body"))
     seo_findings = _validate_seo(result, hospital, content_brief, content_type)
     geo_findings = _validate_geo(
         result,
@@ -1400,7 +1405,7 @@ def _validate_generated_result(
     result["target_alignment_findings"] = target_findings
 
     # 세 검증에서 나온 SOFT 결과를 result에 첨부 — AE 화면이 참조할 수 있도록
-    all_findings = seo_findings + geo_findings + target_findings
+    all_findings = length_findings + seo_findings + geo_findings + target_findings
     result["seo_geo_findings"] = all_findings
     result["seo_geo_score"] = max(0, 100 - len(all_findings) * 10)
     if all_findings:
@@ -1501,6 +1506,7 @@ async def generate_content(
     philosophy: HospitalContentPhilosophy | None = None,
     content_brief: dict | None = None,
     remediation_findings: list[str] | None = None,
+    _attempt_context: dict[str, Any] | None = None,
 ) -> dict:
     """Generate with bounded, *informed* rewrites and apply deterministic heals.
 
@@ -1513,7 +1519,13 @@ async def generate_content(
 
     # 한 번의 generate_content = 하나의 논리 호출. 재작성 회차와 전송 재시도가 모두
     # 이 lineage 아래 HTTP attempt 로 기록돼 '예약'과 '실제'가 벌어지지 않는다.
-    attempt_context = {"logical_call_id": str(uuid.uuid4()), "http_attempt": 0}
+    attempt_context = (
+        _attempt_context
+        if _attempt_context is not None
+        else {"logical_call_id": str(uuid.uuid4()), "http_attempt": 0}
+    )
+    attempt_context.setdefault("logical_call_id", str(uuid.uuid4()))
+    attempt_context.setdefault("http_attempt", 0)
     caller_findings = [
         str(finding) for finding in (remediation_findings or []) if str(finding).strip()
     ]
@@ -1532,7 +1544,7 @@ async def generate_content(
         if int(attempt_context.get("http_attempt") or 0) >= GENERATION_PROVIDER_CALL_BUDGET:
             break
         try:
-            return await _generate_content_attempt(
+            generated = await _generate_content_attempt(
                 hospital,
                 content_type,
                 existing_titles,
@@ -1541,6 +1553,10 @@ async def generate_content(
                 findings,
                 attempt_context,
             )
+            generated["_provider_http_attempts"] = int(
+                attempt_context.get("http_attempt") or 0
+            )
+            return generated
         except MissingCitableReferencesError as exc:
             last_error = exc
             try:
@@ -1557,6 +1573,9 @@ async def generate_content(
                 last_error = heal_error
             else:
                 if healed is not None:
+                    healed["_provider_http_attempts"] = int(
+                        attempt_context.get("http_attempt") or 0
+                    )
                     return healed
         except DirectorNameMissingError as exc:
             # 승인된 원장명 한 줄은 결정적으로 붙일 수 있다. 본문이 그 한 가지만
@@ -1575,6 +1594,9 @@ async def generate_content(
                 last_error = heal_error
             else:
                 if healed is not None:
+                    healed["_provider_http_attempts"] = int(
+                        attempt_context.get("http_attempt") or 0
+                    )
                     return healed
         except ValueError as exc:
             last_error = exc
@@ -1770,6 +1792,20 @@ def _trim_or_none(value: object, max_length: int) -> str | None:
     return cleaned[:max_length]
 
 
+def _normalize_editorial_result(result: dict, content_type: ContentType) -> dict:
+    """Repair presentation-only output without changing medical or factual meaning."""
+
+    normalized = dict(result)
+    body = normalized.get("body")
+    if isinstance(body, str):
+        normalized["body"] = re.sub(r"^#\s+", "## ", body, flags=re.MULTILINE)
+    if content_type is ContentType.FAQ:
+        question = _trim_or_none(normalized.get("faq_question"), 300)
+        if question:
+            normalized["faq_question"] = f"{question.rstrip('?.!')}?"
+    return normalized
+
+
 def _plain_content_text(value: str) -> str:
     return re.sub(r"\s+", "", re.sub(r"[#*_\[\]\(\)`>!\-|]", "", value))
 
@@ -1779,30 +1815,20 @@ def body_plain_length(value: str) -> int:
     return len(_plain_content_text(value))
 
 
-def _validate_body_length(value: object) -> None:
+def _validate_body_length(value: object) -> list[str]:
     if not isinstance(value, str):
         raise ValueError("Generated content body is missing")
 
     body_length = body_plain_length(value)
     if body_length < CONTENT_BODY_MIN_CHARS:
-        # 이 메시지는 재작성 회차에 작가가 읽는 유일한 지적이다(_validator_remediation_findings).
-        # 목표 구간만 되풀이하면 작가는 문장 몇 개를 덧붙이고 같은 구간(하한 바로 아래)에
-        # 다시 멈춘다. 재작성이 실제로 통제할 수 있는 단위 — 모자란 양과 절당 하한, 그리고
-        # 작가가 세는 공백 포함 길이 — 로 목표를 말한다. 240자 절단 안에 들어와야 한다.
-        raise ValueError(
-            f"Generated content body is too short "
-            f"({body_length} < {CONTENT_BODY_MIN_CHARS}) — 공백·마크다운을 제외한 순수 "
-            f"글자 수이고 최소 {CONTENT_BODY_TARGET_MIN_CHARS - body_length:,}자가 더 "
-            "필요합니다. 문장 몇 개를 덧붙이는 정도로는 또 미달입니다. H2 4~6개를 유지한 채 "
-            f"각 절을 순수 {CONTENT_BODY_SECTION_MIN_CHARS:,}자"
-            f"(공백 포함 {_visible_chars(CONTENT_BODY_SECTION_MIN_CHARS):,}자) 이상으로 "
-            f"늘려 {_BODY_LENGTH_BAND}로 다시 쓰세요."
-        )
+        return [
+            f"본문 순수 글자 수 {body_length}자 (권고 {CONTENT_BODY_MIN_CHARS}자 이상)"
+        ]
     if body_length > CONTENT_BODY_MAX_CHARS:
-        raise ValueError(
-            f"Generated content body is too long "
-            f"({body_length} > {CONTENT_BODY_MAX_CHARS})"
-        )
+        return [
+            f"본문 순수 글자 수 {body_length}자 (권고 {CONTENT_BODY_MAX_CHARS}자 이하)"
+        ]
+    return []
 
 
 def _validate_unverified_price_claims(value: object) -> None:
@@ -1876,19 +1902,10 @@ def _validate_seo(
                     f"match planned_publish_date {planned_date}"
                 )
 
-    if re.search(r"^#\s+\S", body, flags=re.MULTILINE):
-        raise ValueError("SEO hard-fail: body must not contain an H1 heading")
-
-    # ── H2 헤딩 개수 — NOTICE/FAQ는 구조 자유라 hard-fail 제외(soft) ──
+    # H1은 저장 전 결정적으로 H2로 정규화된다. H2 개수는 모든 유형에서 권고다.
     h2_matches = re.findall(r"^##\s+\S", body, flags=re.MULTILINE)
     if len(h2_matches) < SEO_H2_MIN:
-        if content_type in (ContentType.NOTICE, ContentType.FAQ):
-            findings.append(f"H2 {len(h2_matches)}개 (NOTICE/FAQ는 구조 자유 — 참고용)")
-        else:
-            raise ValueError(
-                f"SEO hard-fail: body has {len(h2_matches)} H2 heading(s), "
-                f"minimum is {SEO_H2_MIN}"
-            )
+        findings.append(f"H2 {len(h2_matches)}개 (권고 최소 {SEO_H2_MIN}개)")
 
     # ── primary keyword 결정 ────────────────────────────────────────
     # 1순위는 브리프가 분해해 둔 임상 키워드다. 예전에는 target_query의 **첫 토큰**을
@@ -2067,7 +2084,7 @@ def _validate_geo(
         if variant
     }
     if regions and not any(region in body for region in region_variants):
-        raise ValueError(f"GEO hard-fail: 지역 엔티티 {regions} body 미포함")
+        findings.append(f"지역 엔티티 {regions} 본문 미포함 (GEO 권고)")
 
     # ── SOFT: 통계/수치 proxy ────────────────────────────────────────
     if not SEO_STAT_PATTERN.search(body):

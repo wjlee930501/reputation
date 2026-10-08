@@ -1,21 +1,100 @@
-"""Explicit authority changes; retain the stable base for unaffected public reads.
+"""Explicit authority changes with stable public reads for unaffected content."""
 
-Ordinary new sources do not resynthesise a base. Withdrawal/correction of a source
-actually used by the base blocks NEW generation until one bounded reapproval.
-Only dependent articles are withdrawn. Missing legacy lineage is labelled unknown,
-never fabricated as exact source attribution. Call inside the source transaction.
-"""
-
+import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from typing import Any, Final
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select, update
 
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
+from app.services.content_provenance import generation_input_source_ids
 from app.services.essence_engine import ESSENCE_STATUS_NEEDS_REVIEW
 
-AUTHORITY_CHANGE_FIELD = "authority_change_required"
+AUTHORITY_CHANGE_FIELD: Final = "authority_change_required"
+SOURCE_VERSION_METADATA_KEY: Final = "_source_version"
+FUTURE_ONLY_ADDENDUM_MODE: Final = "FUTURE_ONLY_ADDENDUM"
+
+
+def _valid_source_version_lineage(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or value.get("mode") != FUTURE_ONLY_ADDENDUM_MODE:
+        return None
+    root_source_id = value.get("root_source_id")
+    previous_source_id = value.get("previous_source_id")
+    version = value.get("version")
+    if (
+        not isinstance(root_source_id, str)
+        or not isinstance(previous_source_id, str)
+        or not isinstance(version, int)
+        or isinstance(version, bool)
+        or version < 2
+    ):
+        return None
+    try:
+        root = str(uuid.UUID(root_source_id))
+        previous = str(uuid.UUID(previous_source_id))
+    except ValueError:
+        return None
+    return {
+        "mode": FUTURE_ONLY_ADDENDUM_MODE,
+        "root_source_id": root,
+        "previous_source_id": previous,
+        "version": version,
+    }
+
+
+def without_source_version_authority(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Remove server-owned source lineage from client-controlled metadata."""
+
+    cleaned = dict(metadata or {})
+    cleaned.pop(SOURCE_VERSION_METADATA_KEY, None)
+    return cleaned
+
+
+def preserve_source_version_authority(
+    current: Mapping[str, Any] | None,
+    requested: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Apply a metadata patch while retaining server-owned source lineage."""
+
+    merged = without_source_version_authority(requested)
+    current_lineage = _valid_source_version_lineage(
+        (current or {}).get(SOURCE_VERSION_METADATA_KEY)
+    )
+    if current_lineage is not None:
+        merged[SOURCE_VERSION_METADATA_KEY] = current_lineage
+    return merged
+
+
+def future_addendum_metadata(
+    source: Any,
+    requested: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    """Build server-owned lineage for a new future-only source addendum."""
+
+    parent_metadata = getattr(source, "source_metadata", None)
+    parent_lineage = (
+        parent_metadata.get(SOURCE_VERSION_METADATA_KEY)
+        if isinstance(parent_metadata, dict)
+        else None
+    )
+    parent_version = 1
+    root_source_id = str(source.id)
+    valid_parent_lineage = _valid_source_version_lineage(parent_lineage)
+    if valid_parent_lineage is not None:
+        parent_version = valid_parent_lineage["version"]
+        root_source_id = valid_parent_lineage["root_source_id"]
+    return {
+        **without_source_version_authority(requested),
+        SOURCE_VERSION_METADATA_KEY: {
+            "mode": FUTURE_ONLY_ADDENDUM_MODE,
+            "root_source_id": root_source_id,
+            "previous_source_id": str(source.id),
+            "version": parent_version + 1,
+        },
+    }
 
 
 def authority_refresh_required(base) -> bool:
@@ -27,12 +106,12 @@ def authority_refresh_required(base) -> bool:
 
 def invalidate_article_authority(item, *, source_id, base, reason, now):
     summary = dict(item.essence_check_summary or {})
-    provenance = summary.get("generation_provenance")
-    exact = isinstance(provenance, dict) and "evidence_source_asset_ids" in provenance
+    generation_inputs = generation_input_source_ids(item)
+    exact = generation_inputs is not None
     dependencies = set(
         str(value)
         for value in (
-            provenance.get("evidence_source_asset_ids", ())
+            generation_inputs
             if exact
             else base.source_asset_ids or ()
         )
@@ -45,9 +124,12 @@ def invalidate_article_authority(item, *, source_id, base, reason, now):
         return False
     source_ids.add(str(source_id))
     summary["authority_change"] = {
+        **prior,
         "source_ids": sorted(source_ids),
         "reason": reason,
-        "dependency_certainty": "EXACT" if exact else "UNKNOWN_LEGACY",
+        "dependency_certainty": "EXACT_INPUT" if exact else "UNKNOWN_LEGACY",
+        "dependency_scope": "GENERATION_INPUT" if exact else "UNKNOWN",
+        "semantic_claim_dependency": False,
         "requested_at": now.isoformat(),
     }
     summary["blocking"] = True
@@ -57,6 +139,8 @@ def invalidate_article_authority(item, *, source_id, base, reason, now):
     item.content_revision = int(item.content_revision or 1) + 1
     item.generation_claim_token = None
     item.generation_claimed_at = None
+    if hasattr(item, "active_revision_id"):
+        item.active_revision_id = None
     if item.published_at is not None and item.first_published_at is None:
         item.first_published_at, item.first_published_by = item.published_at, item.published_by
     if item.status == ContentStatus.PUBLISHED:
@@ -112,6 +196,7 @@ async def invalidate_source_authority(db, hospital_id, source_id, *, reason):
         if not (isinstance(gap, dict) and gap.get("field") == AUTHORITY_CHANGE_FIELD)
     ] + [
         {
+            **marker,
             "field": AUTHORITY_CHANGE_FIELD,
             "source_ids": sorted(ids),
             "reason": reason,

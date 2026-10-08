@@ -30,12 +30,12 @@ def test_pin_manifest_close_is_first_day_at_0015_kst() -> None:
     assert _month_close(2028, 2) == datetime(2028, 3, 1, 0, 15, tzinfo=KST)
 
 
-def test_monthly_close_keeps_day_one_first_tick_and_catches_up_through_day_seven() -> None:
+def test_monthly_close_keeps_day_one_first_tick_and_finalizes_on_day_eight() -> None:
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
 
     assert schedule.minute == {15}
     assert schedule.hour == {0}
-    assert schedule.day_of_month == set(range(1, 8))
+    assert schedule.day_of_month == set(range(1, 9))
 
 
 def test_reporting_period_handles_leap_year_and_year_boundary() -> None:

@@ -17,13 +17,15 @@ from sqlalchemy.orm import Session
 
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital
-from app.models.monthly_control import MonthlyMeasurementManifest
+from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
 from app.models.operations import OperationRun, OperationRunState
 from app.models.report import MonthlyReport
 from app.models.sov import ExposureAction
 from app.services.monthly_period import ReportBuildReason
+from app.services.monthly_report_snapshot import report_render_inputs, restore_doctor_view
 from app.services.monthly_template_refresh import (
     TemplateRefreshRefused,
+    doctor_view_facts,
     number_tokens,
     numeric_diff,
 )
@@ -145,6 +147,9 @@ def _first_version(session: Session):
 
 
 def _change_live_rows(session, hospital, items):
+    hospital.name = "현재 이름으로 바뀐 의원"
+    hospital.director_philosophy = "마감 뒤 승인된 현재 운영 철학"
+    items[0].title = "마감 뒤 바뀐 현재 글 제목"
     # 늦은 발행: 7월 몫이 원래 마감 뒤에 공개됐다.
     late = items[3]
     late.status = ContentStatus.PUBLISHED
@@ -198,13 +203,16 @@ def test_template_refresh_keeps_every_number_when_live_rows_changed(pg_session, 
     pg_session.refresh(action)
     assert action.linked_report_id is None
     first_view, second_view = renders["doctor"]
+    assert first_view["hospital_name"] == second_view["hospital_name"] == "템플릿 갱신 가상 의원"
+    assert "마감 뒤 바뀐 현재 글 제목" not in str(second_view)
+    assert renders["ae"][1]["hospital"].name == "템플릿 갱신 가상 의원"
     assert second_view["tiles"][0]["value"] == first_view["tiles"][0]["value"]
     assert second_view["narrative"].current == first_view["narrative"].current
     assert renders["ae"][1]["published_count"] == renders["ae"][0]["published_count"]
     assert renders["ae"][1]["content_operations"] == renders["ae"][0]["content_operations"]
 
 
-def test_template_refresh_refuses_when_immutable_facts_no_longer_match(pg_session, renders):
+def test_template_refresh_uses_snapshot_when_backdated_live_fact_appears(pg_session, renders):
     hospital, schedule, _items, first = _first_version(pg_session)
     # 원래 마감 이전으로 기록된 발행이 뒤늦게 생겼다 — 같은 마감으로도 숫자를 재현할 수 없다.
     pg_session.add(
@@ -213,23 +221,68 @@ def test_template_refresh_refuses_when_immutable_facts_no_longer_match(pg_sessio
     )
     pg_session.commit()
 
-    plan = tasks.build_monthly_template_refresh_plan(
-        pg_session, hospital, ANCHOR, observed_now=datetime(2026, 10, 9, tzinfo=timezone.utc)
+    outcome = tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:frozen:{hospital.id}"
     )
-    assert plan.verdict.status == "DIFF"
-    assert {finding.code for finding in plan.verdict.findings} >= {"PUBLISHED_COUNT"}
-    with pytest.raises(TemplateRefreshRefused):
-        tasks._build_monthly_template_refresh(
-            pg_session, hospital, ANCHOR, correlation_key=f"test:refused:{hospital.id}"
-        )
-    pg_session.rollback()
+
+    assert outcome == "created"
     versions = pg_session.execute(
         select(MonthlyReport.version).where(MonthlyReport.hospital_id == hospital.id)
+        .order_by(MonthlyReport.version)
     ).scalars().all()
-    assert versions == [first.version]
+    assert versions == [first.version, 2]
+    assert renders["ae"][1]["published_count"] == renders["ae"][0]["published_count"]
 
 
-def test_precheck_blocks_open_manifest_in_flight_runs_and_recovery_window(pg_session, renders):
+def test_snapshot_refresh_does_not_require_or_mutate_old_pdf(pg_session, renders):
+    hospital, _schedule, _items, first = _first_version(pg_session)
+    artifact = pg_session.execute(
+        select(MonthlyReportArtifact).where(MonthlyReportArtifact.report_id == first.id)
+    ).scalar_one()
+    original_artifact = (
+        artifact.path,
+        artifact.sha256,
+        dict(artifact.validation_metadata),
+    )
+    first.doctor_pdf_path = "gs://qa-private/deleted-old.pdf"
+    first.sent_at = datetime(2026, 8, 2, tzinfo=timezone.utc)
+    pg_session.commit()
+
+    outcome = tasks._build_monthly_template_refresh(
+        pg_session, hospital, ANCHOR, correlation_key=f"test:invalid-old:{hospital.id}"
+    )
+
+    assert outcome == "created"
+    pg_session.refresh(first)
+    pg_session.refresh(artifact)
+    assert first.doctor_pdf_path == "gs://qa-private/deleted-old.pdf"
+    assert first.sent_at == datetime(2026, 8, 2, tzinfo=timezone.utc)
+    assert artifact.validated is True
+    assert (artifact.path, artifact.sha256, artifact.validation_metadata) == original_artifact
+
+
+def test_persisted_snapshot_pdf_facts_survive_live_title_and_essence_changes(pg_session, renders):
+    hospital, _schedule, items, first = _first_version(pg_session)
+    frozen = report_render_inputs(first.content_summary)
+    assert frozen is not None
+    before_view = restore_doctor_view(frozen.doctor_view)
+    before_text = _rendered_text(before_view)
+
+    _change_live_rows(pg_session, hospital, items)
+    pg_session.refresh(first)
+    persisted = report_render_inputs(first.content_summary)
+    assert persisted is not None
+    after_view = restore_doctor_view(persisted.doctor_view)
+    after_text = _rendered_text(after_view)
+
+    assert doctor_view_facts(after_view) == doctor_view_facts(before_view)
+    assert after_text == before_text
+    assert "현재 이름으로 바뀐 의원" not in after_text
+    assert "마감 뒤 바뀐 현재 글 제목" not in after_text
+    assert "마감 뒤 승인된 현재 운영 철학" not in after_text
+
+
+def test_legacy_incomplete_precheck_blocks_without_mutation(pg_session, renders):
     hospital = Hospital(name="열린 매니페스트 가상 의원", slug=f"open-{uuid.uuid4().hex}")
     pg_session.add(hospital)
     pg_session.flush()
@@ -263,10 +316,21 @@ def test_precheck_blocks_open_manifest_in_flight_runs_and_recovery_window(pg_ses
     codes = {finding.code for finding in plan.verdict.findings if finding.kind == "BLOCKER"}
     assert plan.verdict.status == "BLOCKED"
     assert {
-        "MANIFEST_NOT_CLOSED", "OPERATION_IN_FLIGHT", "RECOVERY_PENDING",
-        "NO_VALID_DOCTOR_ARTIFACT", "STORED_SUMMARY_INCOMPLETE",
+        "OPERATION_IN_FLIGHT", "RECOVERY_PENDING", "LEGACY_RENDER_INPUTS_INCOMPLETE",
     } <= codes
     assert plan.doctor_view is None
+    original_content = dict(plan.superseded.content_summary)
+    with pytest.raises(TemplateRefreshRefused) as refused:
+        tasks._build_monthly_template_refresh(
+            pg_session, hospital, ANCHOR, correlation_key=f"test:legacy-incomplete:{hospital.id}"
+        )
+    assert "LEGACY_RENDER_INPUTS_INCOMPLETE" in str(refused.value)
+    pg_session.rollback()
+    reports = pg_session.execute(
+        select(MonthlyReport).where(MonthlyReport.hospital_id == hospital.id)
+    ).scalars().all()
+    assert len(reports) == 1
+    assert reports[0].content_summary == original_content
 
 
 def test_recovery_window_only_blocks_hospitals_whose_measurement_is_incomplete(pg_session):

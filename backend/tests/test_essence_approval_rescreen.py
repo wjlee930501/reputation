@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from app.api.admin.essence import _rescreen_content_items
 from app.models.essence import PhilosophyStatus
 from app.services.content_ai_review import candidate_review_coverage, candidate_sha256
+from app.services.essence_readiness import resolve_essence_readiness
 
 
 def test_new_philosophy_rescreens_and_relinks_existing_content():
@@ -109,3 +110,19 @@ def test_essence_approval_cannot_erase_unresolved_independent_review() -> None:
     assert item.essence_status == "NEEDS_ESSENCE_REVIEW"
     assert item.essence_check_summary["ai_review"]["status"] == "REVISE"
     assert item.essence_check_summary["blocking"] is True
+
+
+def test_future_only_addendum_does_not_make_approved_base_unavailable() -> None:
+    approved = SimpleNamespace(
+        id=uuid.uuid4(),
+        source_snapshot_hash="approved-snapshot",
+        unsupported_gaps=[],
+        evidence_noise_hash=None,
+    )
+    addendum = SimpleNamespace(status="PENDING")
+
+    readiness = resolve_essence_readiness(approved, [addendum])
+
+    assert readiness.current is approved
+    assert readiness.public_philosophy is approved
+    assert readiness.is_stale

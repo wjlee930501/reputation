@@ -408,6 +408,39 @@ test('queue view distinguishes loading, empty, error and ready', () => {
   assert.equal(deriveQueueView({ queue: 'TODAY', total: 1, page: 1, page_size: 25, items: [row('a')] }, '', false), 'ready')
 })
 
+test('legacy budget replacement uses the projected reason action and idempotency key', () => {
+  // Given: the server projects the one-time replacement through the existing POST action surface.
+  const incident = row('legacy-budget', {
+    incident_id: 'incident-legacy-budget',
+    content_id: 'content-1',
+    action: {
+      kind: 'POST_ACTION',
+      label: '레거시 예산 교체 후 다시 시도',
+      method: 'POST',
+      path: '/api/admin/hospitals/hospital-1/content/content-1/regenerate',
+      enabled: true,
+      reason_required: true,
+      requires_idempotency_key: true,
+    },
+  })
+
+  // When: the shared operations detail creates its mutation.
+  const mutation = primaryOperationsMutation(
+    { incident, run: null },
+    '이전 비용 기록을 확인할 수 없습니다',
+  )
+
+  // Then: the authenticated proxy sends the reason and creates one replay-safe key.
+  assert.equal(mutation?.kind, 'POST_ACTION')
+  assert.equal(mutation?.requiresIdempotencyKey, true)
+  assert.deepEqual(
+    mutationRequestBody(mutation?.kind ?? 'POST_ACTION', {
+      reason: mutation?.reason ?? '',
+    }),
+    { reason: '이전 비용 기록을 확인할 수 없습니다' },
+  )
+})
+
 test('every error identifier the backend can store has an operator explanation', () => {
   // 서버는 원인을 알고 코드로 저장하는데 화면 목록이 짧아서 "원인 설명을 확인할 수
   // 없습니다"로 덮이던 것이 G-1이다. 백엔드 소스에서 코드를 긁어 빠진 것이 없는지 본다.

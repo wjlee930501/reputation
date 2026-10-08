@@ -41,6 +41,7 @@ from app.schemas.essence import (
     PhilosophyApprove,
     PhilosophyPatch,
     PhilosophyResponse,
+    SourceAddendumCreate,
     SourceAssetCreate,
     SourceAssetPatch,
     SourceAssetResponse,
@@ -78,7 +79,10 @@ from app.services.gcs_utils import get_signed_url
 from app.services.incident_types import IncidentFingerprint
 from app.services.knowledge_changes import (
     authority_refresh_required,
+    future_addendum_metadata,
     invalidate_source_authority,
+    preserve_source_version_authority,
+    without_source_version_authority,
 )
 from app.services.naver_handoff import (
     NaverCrawlOptions,
@@ -587,7 +591,9 @@ async def create_source(
         url=_clean_optional(body.url),
         raw_text=_clean_optional(body.raw_text),
         operator_note=_clean_optional(body.operator_note),
-        source_metadata=merge_source_metadata_patch({}, body.source_metadata),
+        source_metadata=merge_source_metadata_patch(
+            {}, without_source_version_authority(body.source_metadata)
+        ),
         content_hash=compute_source_content_hash(
             body.title.strip(),
             _clean_optional(body.url),
@@ -618,6 +624,65 @@ async def get_source(
     return _serialize_source(source, evidence_notes=notes, evidence_note_count=len(notes))
 
 
+@router.post(
+    "/sources/{source_id}/addenda",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SourceAssetResponse,
+)
+async def create_source_addendum(
+    hospital_id: uuid.UUID,
+    source_id: uuid.UUID,
+    body: SourceAddendumCreate,
+    db: AsyncSession = Depends(get_db),
+):
+    """Append future evidence without changing an approved source or active article."""
+
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    source = await _get_source_or_404(db, hospital_id, source_id)
+    if source.source_type in PHOTO_SOURCE_TYPES:
+        raise HTTPException(status_code=422, detail="사진 자료는 future-only 추가 자료를 지원하지 않습니다.")
+    if source.status == SourceStatus.EXCLUDED:
+        raise HTTPException(status_code=409, detail="철회된 자료에는 추가 자료를 연결할 수 없습니다.")
+
+    title = (body.title or source.title).strip()
+    url = _clean_optional(body.url)
+    raw_text = _clean_optional(body.raw_text)
+    operator_note = _clean_optional(body.operator_note)
+    addendum = HospitalSourceAsset(
+        hospital_id=hospital_id,
+        source_type=source.source_type,
+        title=title,
+        url=url,
+        raw_text=raw_text,
+        operator_note=operator_note,
+        source_metadata=merge_source_metadata_patch(
+            {}, future_addendum_metadata(source, body.source_metadata)
+        ),
+        content_hash=compute_source_content_hash(title, url, raw_text, operator_note),
+        status=SourceStatus.PENDING,
+        created_by=body.created_by,
+    )
+    db.add(addendum)
+    await db.flush()
+    await write_audit_log(
+        db,
+        action="create_source_future_addendum",
+        hospital_id=hospital_id,
+        actor=default_actor(),
+        target_type="source_asset",
+        target_id=addendum.id,
+        detail={"previous_source_id": str(source.id), "mode": "FUTURE_ONLY_ADDENDUM"},
+    )
+    await db.commit()
+    await db.refresh(addendum)
+    if addendum.raw_text and addendum.raw_text.strip():
+        await _start_source_processing_best_effort(
+            db, hospital_id=hospital_id, source_ids=[addendum.id]
+        )
+    _enqueue_essence_review_best_effort(hospital_id)
+    return _serialize_source(addendum)
+
+
 @router.patch("/sources/{source_id}", response_model=SourceAssetResponse)
 async def patch_source(
     hospital_id: uuid.UUID,
@@ -636,6 +701,9 @@ async def patch_source(
             update["source_metadata"],
         )
     if "source_metadata" in update:
+        update["source_metadata"] = preserve_source_version_authority(
+            source.source_metadata, update["source_metadata"]
+        )
         update["source_metadata"] = merge_source_metadata_patch(
             source.source_metadata,
             update["source_metadata"],

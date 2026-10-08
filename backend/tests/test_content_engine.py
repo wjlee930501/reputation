@@ -218,14 +218,14 @@ def test_validate_body_length_accepts_expert_blog_length():
     _validate_body_length("## 제목\n" + ("본문입니다. " * 360))
 
 
-def test_validate_body_length_rejects_short_body():
-    with pytest.raises(ValueError, match="too short"):
-        _validate_body_length("짧은 본문")
+def test_validate_body_length_advises_short_body():
+    findings = _validate_body_length("짧은 본문")
+    assert any("권고" in finding for finding in findings)
 
 
-def test_validate_body_length_rejects_runaway_body():
-    with pytest.raises(ValueError, match="too long"):
-        _validate_body_length("긴 본문입니다. " * 900)
+def test_validate_body_length_advises_runaway_body():
+    findings = _validate_body_length("긴 본문입니다. " * 900)
+    assert any("권고" in finding for finding in findings)
 
 
 @pytest.mark.parametrize(
@@ -1103,23 +1103,21 @@ async def test_provider_call_asks_for_enough_tokens_to_finish_a_korean_article(
     assert recorder.calls[0]["max_tokens"] == 12000
 
 
-async def test_validator_rejection_is_fed_back_instead_of_a_blind_identical_retry(
+async def test_editorial_length_advice_does_not_buy_a_rewrite(
     monkeypatch,
 ):
-    """결정적 검증 실패는 같은 프롬프트로 다시 사도 같은 결과다 — 지적을 넘겨 다시 쓰게 한다."""
+    """Safe short content is stored with advice instead of buying another draft."""
     short = _valid_payload(body="## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다.")
     recorder = _Recorder([short, _valid_payload()])
     _install_writer_doubles(monkeypatch, recorder)
 
     saved = await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
 
-    assert saved["body"] == _valid_payload()["body"]
-    assert len(recorder.calls) == 2
+    assert saved["body"] == short["body"]
+    assert len(recorder.calls) == 1
     first_user = recorder.calls[0]["messages"][1]["content"]
-    second_user = recorder.calls[1]["messages"][1]["content"]
     assert "직전 응답이 시스템 검증에서 거부" not in first_user
-    assert "직전 응답이 시스템 검증에서 거부" in second_user
-    assert "too short" in second_user
+    assert any("본문 순수 글자 수" in finding for finding in saved["seo_geo_findings"])
     # 프롬프트 캐시 접두어 순서는 회차와 무관하게 고정이어야 한다.
     for call in recorder.calls:
         system = call["messages"][0]["content"]
@@ -1141,7 +1139,9 @@ async def test_truncation_feedback_tells_the_writer_to_shorten_the_body(monkeypa
 
 async def test_caller_remediation_findings_survive_a_validator_rejection(monkeypatch):
     """재작성을 요청한 원래 이유(독립 검수 지적)가 검증 실패로 사라지면 안 된다."""
-    short = _valid_payload(body="## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다.")
+    short = _valid_payload(
+        body="## 안내\n테스트의원 김의사 원장이 노원에서 진료비 10만원으로 안내합니다."
+    )
     recorder = _Recorder([short, _valid_payload()])
     _install_writer_doubles(monkeypatch, recorder)
 
@@ -1443,36 +1443,23 @@ async def test_faq_generation_asks_the_provider_for_the_required_fields(monkeypa
     )
 
 
-def test_too_short_rejection_tells_the_writer_the_unit_and_the_target():
-    """숫자만 돌려주면 작가는 화면 길이로 세어 몇 문장만 덧붙이고 또 미달한다."""
-    with pytest.raises(ValueError) as excinfo:
-        _validate_body_length("## 안내\n" + "짧은 본문입니다. " * 20)
+def test_too_short_body_returns_advice_instead_of_rejection():
+    findings = _validate_body_length("## 안내\n" + "짧은 본문입니다. " * 20)
 
-    message = str(excinfo.value)
-    assert "too short" in message
-    assert "공백·마크다운을 제외한 순수" in message
-    assert (
-        f"{content_engine.CONTENT_BODY_TARGET_MIN_CHARS:,}~"
-        f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자"
-    ) in message
-    # 지적은 재작성 프롬프트에 240자 상한으로 실린다 — 잘려서 목표가 사라지면 안 된다.
-    finding = content_engine._validator_remediation_findings(excinfo.value, [])[0]
-    assert f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자" in finding
+    assert len(findings) == 1
+    assert "본문 순수 글자 수" in findings[0]
+    assert f"권고 {content_engine.CONTENT_BODY_MIN_CHARS}자 이상" in findings[0]
 
 
-async def test_short_body_feedback_reaches_the_writer_with_the_target_range(monkeypatch):
+async def test_short_body_advice_does_not_reach_the_writer_as_rewrite_feedback(monkeypatch):
     short = _valid_payload(body="## 안내\n테스트의원 김의사 원장이 노원에서 안내합니다.")
     recorder = _Recorder([short, _valid_payload()])
     _install_writer_doubles(monkeypatch, recorder)
 
-    await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
+    saved = await content_engine.generate_content(_writer_hospital(), ContentType.NOTICE)
 
-    second_user = recorder.calls[1]["messages"][1]["content"]
-    assert "too short" in second_user
-    assert (
-        f"{content_engine.CONTENT_BODY_TARGET_MIN_CHARS:,}~"
-        f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자"
-    ) in second_user
+    assert len(recorder.calls) == 1
+    assert any("본문 순수 글자 수" in finding for finding in saved["seo_geo_findings"])
 
 
 def test_remediation_context_keeps_deletions_from_shrinking_the_body():
@@ -1518,22 +1505,15 @@ def test_faq_asks_for_a_per_section_floor_like_disease_does():
         assert section_floor in content_engine.TYPE_PROMPTS[content_type]
 
 
-def test_the_too_short_rejection_names_the_shortfall_and_the_per_section_floor():
-    """목표 구간만 되풀이하면 작가는 몇 문장을 덧붙이고 같은 구간에서 또 멈춘다."""
+def test_the_too_short_advice_reports_the_measured_length():
     body = "## 안내\n" + "짧은 본문입니다. " * 20
     measured = len(content_engine._plain_content_text(body))
 
-    with pytest.raises(ValueError) as excinfo:
-        _validate_body_length(body)
+    findings = _validate_body_length(body)
 
-    message = str(excinfo.value)
-    shortfall = content_engine.CONTENT_BODY_TARGET_MIN_CHARS - measured
-    assert f"{shortfall:,}자가 더 필요합니다" in message
-    assert f"{content_engine.CONTENT_BODY_SECTION_MIN_CHARS:,}자" in message
-    # 재작성 지적은 240자로 잘린다 — 잘려서 절당 하한이나 목표가 사라지면 안 된다.
-    finding = content_engine._validator_remediation_findings(excinfo.value, [])[0]
-    assert f"{shortfall:,}자가 더 필요합니다" in finding
-    assert f"{content_engine.CONTENT_BODY_TARGET_MAX_CHARS:,}자" in finding
+    assert findings == [
+        f"본문 순수 글자 수 {measured}자 (권고 {content_engine.CONTENT_BODY_MIN_CHARS}자 이상)"
+    ]
 
 
 def test_every_rewrite_round_carries_the_length_requirement_not_just_deletions():
@@ -1737,8 +1717,11 @@ async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monk
     rounds: list[dict] = [
         # 1회차: 분량은 충분하지만 references가 비어 GEO 하드 거절.
         {"body": long_body, "references": []},
-        # 2회차: references를 채우는 대신 본문을 줄여 분량 거절.
-        {"body": "## 이명\n" + ("짧게 요약합니다. " * 20), "references": [reference]},
+        # 2회차: references를 채웠지만 의료광고 금지 표현이 남아 하드 거절.
+        {
+            "body": "## 이명\n노원이비인후과의원 김원장이 노원에서 최고의 진료를 안내합니다.",
+            "references": [reference],
+        },
         {"body": long_body, "references": [reference]},
     ]
     user_messages: list[str] = []
@@ -1778,8 +1761,8 @@ async def test_a_rewrite_round_carries_every_deterministic_rejection_so_far(monk
     assert len(user_messages) == 3
     # 2회차는 빈 references 지적만 봤다.
     assert "references is empty" in user_messages[1]
-    # 3회차는 분량 지적과 함께 **앞선 회차의 references 지적도** 본다.
-    assert "too short" in user_messages[2]
+    # 3회차는 새 하드 지적과 함께 **앞선 회차의 references 지적도** 본다.
+    assert "Forbidden medical expressions" in user_messages[2]
     assert "references is empty" in user_messages[2]
 
 

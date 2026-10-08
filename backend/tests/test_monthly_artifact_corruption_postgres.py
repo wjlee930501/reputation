@@ -39,7 +39,7 @@ def test_scalar_list_and_nonnumeric_metadata_open_once_without_crashing(
     async_url = _postgres_url().replace("postgresql://", "postgresql+asyncpg://", 1)
     async_engine = create_async_engine(async_url, poolclass=NullPool)
     async_sessions = async_sessionmaker(async_engine, class_=AsyncSession, expire_on_commit=False)
-    hospital_ids = [uuid.uuid4() for _ in range(3)]
+    hospital_ids = [uuid.uuid4() for _ in range(4)]
     monkeypatch.setattr(
         monthly_artifact_incident_control, "get_async_sessionmaker", lambda: async_sessions
     )
@@ -74,7 +74,7 @@ def test_scalar_list_and_nonnumeric_metadata_open_once_without_crashing(
 
     try:
         for index, (hospital_id, metadata) in enumerate(
-            zip(hospital_ids, metadata_values, strict=True)
+            zip(hospital_ids[:3], metadata_values, strict=True)
         ):
             hospital = Hospital(
                 id=hospital_id,
@@ -108,6 +108,26 @@ def test_scalar_list_and_nonnumeric_metadata_open_once_without_crashing(
                     validation_metadata=metadata,
                 )
             )
+        old_hospital = Hospital(
+            id=hospital_ids[3],
+            name="복구 범위 밖 과거 의원",
+            slug=f"artifact-old-{uuid.uuid4().hex}",
+        )
+        old_report = MonthlyReport(
+            hospital_id=old_hospital.id,
+            period_year=2020,
+            period_month=1,
+            report_type="MONTHLY",
+            version=1,
+            quality="COMPLETE",
+            planned_count=1,
+            success_count=1,
+            failed_count=0,
+            doctor_pdf_path=None,
+            delivery_blockers=["DOCTOR_ARTIFACT_UNVALIDATED"],
+            created_at=datetime(2020, 2, 1, tzinfo=timezone.utc),
+        )
+        session.add_all((old_hospital, old_report))
         session.commit()
 
         first = monthly_artifact_reconciliation.reconcile_monthly_artifact_incidents.run()

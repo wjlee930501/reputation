@@ -1,6 +1,16 @@
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
+
 from app.services.post_publish_review_policy import AUTO_PUBLISH_CATCHUP_DAYS
+from app.workers.generation_attempt_state import (
+    GenerationBudgetExceeded,
+    GenerationBudgetUnknown,
+    acquisition_completed,
+    fresh_generation_attempt,
+    read_generation_budget,
+    reserve_acquisition,
+)
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
     ENVIRONMENT_ATTEMPT_BUDGET,
@@ -23,6 +33,112 @@ from app.workers.generation_retry_policy import (
     sample_daily_budget,
     spend_repair_session,
 )
+
+
+def test_lifetime_budget_reserves_transport_before_writer_result() -> None:
+    # Given: a genuinely new slot with a known-zero, versioned lifetime budget.
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+
+    # When: one writer acquisition is reserved and then completes after two HTTP attempts.
+    reserved = reserve_acquisition(attempt, acquisition_id="writer-1", kind="WRITER")
+    completed = acquisition_completed(
+        reserved,
+        acquisition_id="writer-1",
+        transport_attempts=2,
+        outcome="RESULT",
+    )
+
+    # Then: the semantic result and actual transport attempts are separately durable.
+    budget = read_generation_budget(completed)
+    assert budget.writer_results == 1
+    assert budget.reviewer_results == 0
+    assert budget.text_http_attempts == 2
+    assert budget.text_http_reserved == 0
+
+
+def test_lifetime_budget_counts_crashed_reservation_conservatively() -> None:
+    # Given: a reservation committed before a provider call, followed by a worker crash.
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    crashed = reserve_acquisition(attempt, acquisition_id="writer-crashed", kind="WRITER")
+
+    # When/Then: restart sees all three possible transport attempts as consumed headroom.
+    budget = read_generation_budget(crashed)
+    assert budget.text_http_attempts == 0
+    assert budget.text_http_reserved == 3
+
+
+def test_lifetime_budget_rejects_unknown_legacy_spend() -> None:
+    # Given: an old slot with no counter that proves how much was bought.
+    legacy_attempt = {"reason": "GENERATION_FAILED"}
+
+    # When/Then: it receives no fresh allowance automatically.
+    with pytest.raises(GenerationBudgetUnknown):
+        reserve_acquisition(legacy_attempt, acquisition_id="writer-1", kind="WRITER")
+
+
+def test_lifetime_budget_stops_writer_and_total_http_ceiling() -> None:
+    # Given: six completed writer results using all 18 possible writer transports.
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    for index in range(6):
+        acquisition_id = f"writer-{index}"
+        attempt = reserve_acquisition(
+            attempt, acquisition_id=acquisition_id, kind="WRITER"
+        )
+        attempt = acquisition_completed(
+            attempt,
+            acquisition_id=acquisition_id,
+            transport_attempts=3,
+            outcome="RESULT",
+        )
+
+    # When/Then: a seventh writer result cannot be purchased on another day or restart.
+    with pytest.raises(GenerationBudgetExceeded):
+        reserve_acquisition(attempt, acquisition_id="writer-7", kind="WRITER")
+
+
+def test_lifetime_budget_allows_at_most_thirty_six_text_review_transports() -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    for kind in ("WRITER", "REVIEWER"):
+        for index in range(6):
+            acquisition_id = f"{kind.lower()}-{index}"
+            attempt = reserve_acquisition(
+                attempt, acquisition_id=acquisition_id, kind=kind
+            )
+            attempt = acquisition_completed(
+                attempt,
+                acquisition_id=acquisition_id,
+                transport_attempts=3,
+                outcome="RESULT",
+            )
+
+    budget = read_generation_budget(attempt)
+    assert (budget.writer_results, budget.reviewer_results) == (6, 6)
+    assert budget.text_http_attempts == 36
+    with pytest.raises(GenerationBudgetExceeded, match="REVIEWER_RESULTS"):
+        reserve_acquisition(attempt, acquisition_id="reviewer-7", kind="REVIEWER")
+
+
+def test_timeout_is_a_conservatively_consumed_unknown_transport() -> None:
+    attempt = fresh_generation_attempt(topic_id="topic-a")
+    attempt = reserve_acquisition(
+        attempt, acquisition_id="writer-timeout", kind="WRITER"
+    )
+    attempt = acquisition_completed(
+        attempt,
+        acquisition_id="writer-timeout",
+        transport_attempts=1,
+        outcome="UNKNOWN",
+    )
+
+    budget = read_generation_budget(attempt)
+    assert budget.text_http_attempts == 1
+    assert budget.writer_results == 0
+    acquisition = next(
+        entry
+        for entry in attempt["budget"]["acquisitions"]
+        if entry["id"] == "writer-timeout"
+    )
+    assert acquisition["status"] == "UNKNOWN"
 
 
 def test_environment_failure_retries_at_an_actual_scheduled_sweep() -> None:

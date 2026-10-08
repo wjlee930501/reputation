@@ -106,8 +106,8 @@ REFERENCE_MIN_BODY_CHARS = 200
 # 판정·저장되는 제목 길이 상한.
 REFERENCE_PAGE_TITLE_MAX_CHARS = 200
 
-# 2: 글 주제 지문(`topic_fingerprint`)과 미룸 판정(`deferred`)이 더해졌다.
-REFERENCE_CHECKS_SCHEMA_VERSION = 2
+# 3: 실제 문서 identity/content 지문과 retrieval evidence를 승인 판에 함께 고정한다.
+REFERENCE_CHECKS_SCHEMA_VERSION = 3
 
 VERDICT_PASS = "pass"
 VERDICT_FAIL = "fail"
@@ -836,6 +836,30 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
+def _evidence_sha256(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _document_identity(fetched: FetchResult, page_title: str) -> str:
+    final_url = str(fetched.final_url or fetched.url).strip()
+    normalized_title = " ".join((page_title or "").split())
+    return _evidence_sha256(f"{final_url}\n{normalized_title}")
+
+
+def _content_fingerprint(fetched: FetchResult) -> str:
+    body = " ".join(html_body_text(fetched.html).split())
+    return _evidence_sha256(body)
+
+
+def _retrieval_evidence(fetched: FetchResult, observed: datetime) -> dict[str, Any]:
+    return {
+        "status": fetched.status,
+        "final_url": fetched.final_url,
+        "retrieved_at": _iso(observed),
+        "fetch_error": fetched.error,
+    }
+
+
 def _parse_time(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -862,11 +886,19 @@ def reference_check_record(
     fetch_error: str | None = None,
     verified_at: datetime | str | None = None,
     topic_fingerprint: str | None = None,
+    document_identity: str | None = None,
+    content_fingerprint: str | None = None,
+    retrieval_evidence: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if isinstance(verified_at, datetime):
         verified_value: str | None = _iso(verified_at)
     else:
         verified_value = verified_at
+    evidence_schema_version = (
+        REFERENCE_CHECKS_SCHEMA_VERSION
+        if document_identity and content_fingerprint and retrieval_evidence
+        else 2
+    )
     return {
         "url": url,
         "url_fingerprint": reference_url_fingerprint(url),
@@ -883,7 +915,10 @@ def reference_check_record(
         "verified_at": verified_value,
         # 이 판정에 쓴 글 주제의 지문. 지금 글의 주제 지문과 다르면 신선한 통과가 아니다.
         "topic_fingerprint": topic_fingerprint,
-        "schema_version": REFERENCE_CHECKS_SCHEMA_VERSION,
+        "document_identity": document_identity,
+        "content_fingerprint": content_fingerprint,
+        "retrieval_evidence": dict(retrieval_evidence or {}),
+        "schema_version": evidence_schema_version,
     }
 
 
@@ -930,17 +965,38 @@ def _final_url_excluded(check: Mapping[str, Any]) -> bool:
 def check_is_fresh_pass(
     check: Mapping[str, Any] | None, *, now: datetime, topic_fingerprint: str
 ) -> bool:
-    if not check or check.get("verdict") != VERDICT_PASS or _final_url_excluded(check):
+    if (
+        not check
+        or str(check.get("verdict") or "").lower() != VERDICT_PASS
+        or _final_url_excluded(check)
+    ):
         return False
     if not _same_topic(check, topic_fingerprint):
         return False
     return _age_within(check.get("checked_at"), now=now, limit=REFERENCE_CHECK_MAX_AGE)
 
 
+def check_is_revision_bound_pass(
+    check: Mapping[str, Any] | None, *, topic_fingerprint: str
+) -> bool:
+    """Accept exact approved evidence without turning elapsed time into revocation."""
+
+    if not check or str(check.get("verdict") or "").lower() != VERDICT_PASS:
+        return False
+    if _final_url_excluded(check) or not _same_topic(check, topic_fingerprint):
+        return False
+    # A real timestamp distinguishes migrated valid evidence from a fabricated bare PASS.
+    return _parse_time(check.get("checked_at")) is not None
+
+
 def _reusable_previous_pass(
     check: Mapping[str, Any] | None, *, now: datetime, topic_fingerprint: str
 ) -> bool:
-    if not check or check.get("verdict") != VERDICT_PASS or _final_url_excluded(check):
+    if (
+        not check
+        or str(check.get("verdict") or "").lower() != VERDICT_PASS
+        or _final_url_excluded(check)
+    ):
         return False
     if not _same_topic(check, topic_fingerprint):
         return False
@@ -979,8 +1035,9 @@ def reference_gate_status(
     *,
     topic_terms: Sequence[str],
     now: datetime | None = None,
+    revision_bound: bool = False,
 ) -> ReferenceGateStatus:
-    """모든 참고자료에 같은 URL·같은 글 주제의 신선한 통과 기록이 있는가. 깨진 항목은 실패다."""
+    """Require exact URL/topic evidence; immutable approved editions do not expire by age."""
 
     observed = now or datetime.now(timezone.utc)
     fingerprint = topic_fingerprint(topic_terms)
@@ -990,9 +1047,12 @@ def reference_gate_status(
     for reference in entries:
         url = str(reference.get("url") or "").strip()
         check = indexed.get(reference_url_fingerprint(url))
-        if reference_exclusion_reason(url) is not None or not check_is_fresh_pass(
-            check, now=observed, topic_fingerprint=fingerprint
-        ):
+        valid = (
+            check_is_revision_bound_pass(check, topic_fingerprint=fingerprint)
+            if revision_bound
+            else check_is_fresh_pass(check, now=observed, topic_fingerprint=fingerprint)
+        )
+        if reference_exclusion_reason(url) is not None or not valid:
             missing.append(url)
     return ReferenceGateStatus(
         current=not missing and not malformed,
@@ -1201,6 +1261,13 @@ class ReferenceVerifier:
                     fetch_error=fetched.error,
                     verified_at=str(prior.get("verified_at")),
                     topic_fingerprint=fingerprint,
+                    document_identity=str(prior.get("document_identity") or "") or None,
+                    content_fingerprint=str(prior.get("content_fingerprint") or "") or None,
+                    retrieval_evidence=(
+                        prior.get("retrieval_evidence")
+                        if isinstance(prior.get("retrieval_evidence"), Mapping)
+                        else None
+                    ),
                 )
             if transient and defer_transient and not curated:
                 # 기관 사이트 일시 장애는 문서가 없다는 증거가 아니다. 제거·치유·보류하지 않고
@@ -1235,6 +1302,13 @@ class ReferenceVerifier:
                 fetch_error=fetched.error,
                 verified_at=observed if actually_seen else None,
                 topic_fingerprint=fingerprint,
+                document_identity=(
+                    _document_identity(fetched, judged.page_title) if actually_seen else None
+                ),
+                content_fingerprint=_content_fingerprint(fetched) if actually_seen else None,
+                retrieval_evidence=(
+                    _retrieval_evidence(fetched, observed) if actually_seen else None
+                ),
             )
 
         references = [ref for ref in references if isinstance(ref, Mapping)]

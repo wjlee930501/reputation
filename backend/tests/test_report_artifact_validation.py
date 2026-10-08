@@ -17,6 +17,7 @@ from app.services.report_artifact_validation import (
     parse_doctor_artifact_metadata,
     render_validated_doctor_pdf,
     validate_doctor_pdf,
+    validate_persisted_doctor_artifact,
 )
 from app.workers.monthly_artifact_reconciliation import _artifact_is_valid
 
@@ -119,32 +120,87 @@ def test_internal_markers_survive_extractor_line_wraps() -> None:
     assert report_artifact_validation.internal_markers_in("원장님께 전달드립니다") == []
 
 
-def test_validator_rejects_a_two_page_artifact_when_no_appendix_was_rendered() -> None:
-    """부록이 없는데 2쪽이면 본문이 넘친 것이다 — 그 파일은 원장에게 나가면 안 된다."""
+def test_extra_pages_never_override_missing_frozen_facts() -> None:
     with pytest.raises(DoctorPdfValidationError) as exc:
         validate_doctor_pdf(_blank_pdf(2), _expectation())
 
-    assert exc.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
-    assert "1쪽" in exc.value.problem
+    assert exc.value.code == "DOCTOR_PDF_REQUIRED_TEXT_MISSING"
     assert "원장님께 전달" in exc.value.customer_impact
     assert "리포트 다시 만들기" in exc.value.next_action
 
 
-def test_validator_rejects_a_one_page_artifact_when_the_appendix_was_expected() -> None:
-    """부록 행이 있는데 1쪽이면 표가 통째로 사라진 것이다."""
+def test_extra_readable_page_is_valid_when_all_frozen_facts_remain_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expectation = _expectation()
+    facts = "\n".join(
+        (expectation.hospital_name, expectation.coverage_text, expectation.caveat_text)
+    )
+    pages = [
+        SimpleNamespace(
+            mediabox=SimpleNamespace(width=595.28, height=841.89),
+            extract_text=lambda: facts,
+        ),
+        SimpleNamespace(
+            mediabox=SimpleNamespace(width=595.28, height=841.89),
+            extract_text=lambda: "추가 설명 페이지도 읽을 수 있습니다.",
+        ),
+    ]
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "PdfReader",
+        lambda *_args, **_kwargs: SimpleNamespace(pages=pages),
+    )
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "_pretendard_font_facts",
+        lambda _page: (True, True),
+    )
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "_uri_links",
+        lambda _page: (expectation.public_url,),
+    )
+
+    metadata = validate_doctor_pdf(b"two-readable-pages", expectation)
+
+    assert metadata.page_count == 2
+
+
+def test_alternate_korean_font_is_qa_metadata_not_a_delivery_blocker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expectation = _expectation()
+    _stub_valid_pdf(
+        monkeypatch,
+        "\n".join(
+            (expectation.hospital_name, expectation.coverage_text, expectation.caveat_text)
+        ),
+    )
+    monkeypatch.setattr(
+        report_artifact_validation,
+        "_pretendard_font_facts",
+        lambda _page: (False, True),
+    )
+
+    metadata = validate_doctor_pdf(b"alternate-korean-font", expectation)
+
+    assert metadata.korean_to_unicode is True
+
+
+def test_appendix_expectation_never_substitutes_for_required_facts() -> None:
     with pytest.raises(DoctorPdfValidationError) as exc:
         validate_doctor_pdf(_blank_pdf(1), _expectation(appendix_expected=True))
 
-    assert exc.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
-    assert "2쪽" in exc.value.problem
+    assert exc.value.code == "DOCTOR_PDF_REQUIRED_TEXT_MISSING"
 
 
 @pytest.mark.parametrize("pages", [3, 4])
-def test_validator_never_allows_more_than_the_appendix_page(pages: int) -> None:
+def test_blank_pdf_fails_on_missing_facts_regardless_of_page_count(pages: int) -> None:
     with pytest.raises(DoctorPdfValidationError) as exc:
         validate_doctor_pdf(_blank_pdf(pages), _expectation(appendix_expected=True))
 
-    assert exc.value.code == "DOCTOR_PDF_PAGE_COUNT_INVALID"
+    assert exc.value.code == "DOCTOR_PDF_REQUIRED_TEXT_MISSING"
 
 
 def test_persisted_metadata_parser_fails_closed_for_incomplete_or_old_shapes() -> None:
@@ -186,8 +242,10 @@ def test_reconciler_uses_closed_two_page_metadata_contract() -> None:
         "sha256": "a" * 64,
         "byte_size": 4096,
     }
-    report = SimpleNamespace(doctor_pdf_path="gs://private/doctor.pdf")
+    report = SimpleNamespace(id="report-1", doctor_pdf_path="gs://private/doctor.pdf")
     artifact = SimpleNamespace(
+        report_id=report.id,
+        audience="DOCTOR",
         validated=True,
         path=report.doctor_pdf_path,
         sha256=metadata["sha256"],
@@ -198,6 +256,50 @@ def test_reconciler_uses_closed_two_page_metadata_contract() -> None:
     assert _artifact_is_valid(report, artifact)
     artifact.validation_metadata = {**metadata, "page_count": "2"}
     assert not _artifact_is_valid(report, artifact)
+
+
+@pytest.mark.parametrize("mutation", ["report", "audience", "path", "digest", "extra"])
+def test_canonical_persisted_projection_rejects_identity_or_metadata_drift(mutation: str) -> None:
+    report = SimpleNamespace(id="report-1", doctor_pdf_path="gs://private/doctor.pdf")
+    metadata = {
+        "validation_version": DOCTOR_ARTIFACT_VALIDATION_VERSION,
+        "validation_source": "SYSTEM",
+        "page_count": 7,
+        "page_size": "A4",
+        "glyph_count": 840,
+        "font_family": "NanumGothic",
+        "font_embedded": False,
+        "korean_to_unicode": True,
+        "link_count": 1,
+        "expected_link_present": True,
+        "required_text_present": True,
+        "sha256": "a" * 64,
+        "byte_size": 4096,
+    }
+    artifact = SimpleNamespace(
+        report_id=report.id,
+        audience="DOCTOR",
+        path=report.doctor_pdf_path,
+        validated=True,
+        sha256=metadata["sha256"],
+        byte_size=metadata["byte_size"],
+        validation_metadata=metadata,
+    )
+    if mutation == "report":
+        artifact.report_id = "cross-hospital-report"
+    elif mutation == "audience":
+        artifact.audience = "INTERNAL"
+    elif mutation == "path":
+        artifact.path = "gs://other/doctor.pdf"
+    elif mutation == "digest":
+        artifact.sha256 = "b" * 64
+    else:
+        artifact.validation_metadata = {**metadata, "unexpected": True}
+
+    result = validate_persisted_doctor_artifact(report, artifact)
+
+    assert result.state == "INVALID"
+    assert result.code == "DOCTOR_ARTIFACT_INVALID"
 
 
 @pytest.mark.parametrize(
@@ -231,6 +333,35 @@ def test_renderer_rejects_unsafe_public_links_before_creating_an_annotation(
 
     assert exc.value.code == "DOCTOR_PDF_PUBLIC_URL_INVALID"
     assert "안전한 병원 공개 주소" in exc.value.problem
+
+
+@pytest.mark.skipif(
+    os.getenv("REQUIRE_PDF_RENDER") is None,
+    reason="WeasyPrint 네이티브 의존성이 필요하다. CI에서 REQUIRE_PDF_RENDER=1로 강제한다.",
+)
+def test_real_extra_page_and_alternate_korean_font_pass_semantic_validation() -> None:
+    from weasyprint import HTML
+
+    expectation = _expectation()
+    html = f"""
+    <style>
+      @page {{ size: A4; margin: 20mm; }}
+      body {{ font-family: serif; }}
+      .extra {{ break-before: page; }}
+    </style>
+    <h1>{expectation.hospital_name}</h1>
+    <p>{expectation.coverage_text}</p>
+    <p>{expectation.caveat_text}</p>
+    <a href="{expectation.public_url}">병원 공개 정보</a>
+    <section class="extra"><h2>추가 설명</h2><p>읽을 수 있는 설명 페이지입니다.</p></section>
+    """
+    pdf_bytes = HTML(string=html).write_pdf()
+
+    metadata = validate_doctor_pdf(pdf_bytes, expectation)
+
+    assert metadata.page_count == 2
+    assert metadata.required_text_present is True
+    assert metadata.expected_link_present is True
 
 
 @pytest.mark.skipif(

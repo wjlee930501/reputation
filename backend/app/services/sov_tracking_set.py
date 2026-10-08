@@ -325,20 +325,36 @@ def _hospital_matches_monthly_cohort(hospital: Hospital) -> bool:
 
 
 def iter_monthly_sov_cohort(db) -> list[Hospital]:
-    """편입된 모든 병원을 돌려준다. 상한으로 자르지 않는다.
+    """편입된 모든 병원을 돌려준다. 질문 수 변화로 서비스 기간에서 빼지 않는다.
 
     예전에는 SOV_MONTHLY_COHORT_LIMIT에서 잘라 초과 병원이 조용히 측정되지 않았다.
     상한은 이제 비용 경고 기준일 뿐이다(`run_monthly_sov_measurement`가 경고·인시던트).
+    같은 이유로 등록 뒤 질문이 10→9 또는 0개가 되어도 해당 월의 보고 대상은 유지한다.
+    현재 질문 집합의 유효성은 측정 가능성/표본 크기 사실이지 계약 코호트 판정이 아니다.
     """
 
-    hospitals = _convertible_hospitals(db)
-    cohort: list[Hospital] = []
-    for hospital in hospitals:
-        if not _hospital_matches_monthly_cohort(hospital):
-            continue
-        if _stored_tracking_set_is_valid(_load_targets(db, hospital.id)):
-            cohort.append(hospital)
-    return cohort
+    convertible = _convertible_hospitals(db)
+    execute = getattr(db, "execute", None)
+    if not callable(execute):
+        return [hospital for hospital in convertible if _hospital_matches_monthly_cohort(hospital)]
+    enrolled = list(
+        execute(
+            select(Hospital)
+            .where(
+                Hospital.status == HospitalStatus.ACTIVE,
+                Hospital.monthly_sov_cohort.is_(True),
+            )
+            .order_by(Hospital.created_at, Hospital.id)
+        )
+        .scalars()
+        .all()
+    )
+    by_id = {
+        hospital.id: hospital
+        for hospital in (*convertible, *enrolled)
+        if _hospital_matches_monthly_cohort(hospital)
+    }
+    return list(by_id.values())
 
 
 def hospital_in_monthly_cohort(db, hospital_id: uuid.UUID) -> bool:

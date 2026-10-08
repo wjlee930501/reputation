@@ -344,6 +344,8 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   PROVIDER_TIMEOUT: '콘텐츠 생성 서비스의 응답이 제시간에 오지 않았습니다.',
   PROVIDER_UNAVAILABLE: '콘텐츠 생성 서비스를 일시적으로 사용할 수 없습니다.',
   GENERATION_REJECTED: '콘텐츠 생성 서비스가 이번 요청을 처리하지 못했습니다.',
+  LEGACY_SPEND_UNKNOWN: '이전 생성 비용 기록을 확인할 수 없어 자동 생성을 중단했습니다. 사유를 남기고 예산을 한 번 교체해야 합니다.',
+  GENERATION_BUDGET_EXHAUSTED: '이 콘텐츠 슬롯의 평생 자동 생성 예산을 모두 사용했습니다.',
   TOPIC_SWAPPED: '같은 주제로는 자동 생성이 소진되어 다른 주제로 다시 준비합니다. 다음 복구 배치가 새 주제로 생성합니다.',
   MISSING_APPROVED_ESSENCE: '승인된 콘텐츠 운영 기준이 없어 자동 생성을 시작하지 않았습니다.',
   IMAGE_GENERATION_FAILED: '본문은 준비됐지만 대표 이미지를 만들지 못했습니다.',

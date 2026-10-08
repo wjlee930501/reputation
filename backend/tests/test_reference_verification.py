@@ -916,3 +916,44 @@ async def test_malformed_port_url_is_rejected_without_crashing_or_fetching():
     assert outcome.kept == []
     assert outcome.checks[0]["reason"] == "not_citable"
     assert fetcher.calls == []
+
+
+async def test_private_ip_reference_is_blocked_before_fetch():
+    private_url = "http://127.0.0.1:8080/internal-evidence"
+    fetcher = PageFetcher()
+
+    outcome = await ReferenceVerifier(fetcher, domain_spacing=0).verify(
+        [{"title": "내부 문서", "url": private_url}], topic_terms=HEMORRHOID_TOPIC
+    )
+
+    assert outcome.kept == []
+    assert outcome.checks[0]["reason"] == "not_citable"
+    assert fetcher.calls == []
+
+
+async def test_changed_document_records_revision_bound_retrieval_evidence():
+    """A successful retrieval records stable identity and changed document bytes."""
+
+    url = KDCA_VIEW.format(99121)
+    first = page_html(
+        "치핵 | 국가건강정보포털 | 질병관리청",
+        "치핵 원인과 증상, 진단과 치료를 설명합니다. " * 30,
+    )
+    changed = page_html(
+        "치핵 | 국가건강정보포털 | 질병관리청",
+        "치핵 수술 뒤 회복과 통증 관리 방법을 설명합니다. " * 30,
+    )
+
+    first_result = await ReferenceVerifier(
+        PageFetcher({url: (200, url, first)}), domain_spacing=0
+    ).verify([{"title": "치핵", "url": url}], topic_terms=["치핵"])
+    changed_result = await ReferenceVerifier(
+        PageFetcher({url: (200, url, changed)}), domain_spacing=0
+    ).verify([{"title": "치핵", "url": url}], topic_terms=["치핵"])
+
+    first_check = first_result.checks[0]
+    changed_check = changed_result.checks[0]
+    assert first_check["document_identity"] == changed_check["document_identity"]
+    assert first_check["content_fingerprint"] != changed_check["content_fingerprint"]
+    assert first_check["retrieval_evidence"]["status"] == 200
+    assert first_check["retrieval_evidence"]["final_url"] == url

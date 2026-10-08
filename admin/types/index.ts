@@ -271,8 +271,31 @@ export interface ContentRowState {
   link: { kind: 'incident' | 'run'; href: string; next_action?: string | null } | null
 }
 
+export interface PendingContentCandidate {
+  schema_version: 'content-candidate-v1'
+  base_active_revision_id: string
+  base_content_revision: number
+  candidate_sha256: string
+  title: string
+  body: string
+  meta_description: string | null
+  faq_question: string | null
+  faq_answer_summary: string | null
+  references_list: ContentReference[]
+  reference_checks: Array<{ url: string; verdict: 'PASS' }>
+  created_at: string
+  created_by: string
+  review: {
+    status: 'PASS' | 'REVISE' | 'UNAVAILABLE'
+    candidate_sha256: string
+    reviewed_at: string
+  } | null
+}
+
 export interface ContentItem {
   id: string
+  active_revision_id?: string | null
+  pending_revision?: PendingContentCandidate | null
   content_type: 'FAQ' | 'DISEASE' | 'TREATMENT' | 'COLUMN' | 'HEALTH' | 'LOCAL' | 'NOTICE'
   sequence_no: number
   total_count: number

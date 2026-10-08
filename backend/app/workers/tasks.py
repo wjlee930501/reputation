@@ -30,10 +30,10 @@ import arrow
 import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
-from sqlalchemy import ColumnElement, and_, delete, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, NoInspectionAvailable
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
@@ -83,6 +83,7 @@ from app.services.content_ai_review import (
     ContentAiReviewUnavailableReason,
     candidate_sha256,
     hospital_review_facts_fingerprint,
+    review_from_payload,
     review_generated_content,
 )
 from app.services.content_engine import (
@@ -329,7 +330,19 @@ from app.services.monthly_report_delivery import (
 from app.services.monthly_report_gap_notifications import (
     enqueue_monthly_report_gap_summary_sync,
 )
-from app.services.monthly_sov import build_monthly_sov
+from app.services.monthly_report_snapshot import (
+    REPORT_SNAPSHOT_SCHEMA_VERSION,
+    FrozenAeRenderInput,
+    FrozenHospitalRenderInput,
+    FrozenMeasurementRenderInput,
+    FrozenPeriodRenderInput,
+    ReportRenderInputs,
+    ReportSnapshot,
+    freeze_doctor_view,
+    report_render_inputs,
+    restore_doctor_view,
+)
+from app.services.monthly_sov import build_monthly_sov, build_monthly_sov_horizon_summary
 from app.services.monthly_sov_cohort import hospital_requires_monthly_sov_success
 from app.services.monthly_sov_repository import load_monthly_sov_manifest
 from app.services.monthly_sov_types import ManifestCellInput
@@ -338,11 +351,8 @@ from app.services.monthly_template_refresh import (
     IN_FLIGHT_STATES,
     RefreshVerdict,
     TemplateRefreshRefused,
-    doctor_view_expectations,
+    doctor_view_facts,
     missing_stored_paths,
-    number_tokens,
-    numeric_diff,
-    stored_observed_at,
 )
 from app.services.must_use_verbatim import required_must_use_messages
 from app.services.notification_copy import (
@@ -375,6 +385,7 @@ from app.services.reference_publication import (
     REFERENCE_SITE_UNREACHABLE_CODE,
     PublicationReferenceRefresh,
     apply_publication_reference_refresh,
+    bind_reference_checks_to_revision,
     publication_references_current,
     publication_references_settled,
     reference_outage_alert_due,
@@ -473,7 +484,13 @@ from app.workers.dispatch_auth import (
     require_dispatch,
 )
 from app.workers.dispatch_envelope import MAX_DISPATCH_COUNTDOWN_SECONDS
-from app.workers.generation_attempt_state import released_generation_attempt
+from app.workers.generation_attempt_state import (
+    GENERATION_BUDGET_KEY,
+    GenerationBudgetExceeded,
+    GenerationBudgetLedger,
+    GenerationBudgetUnknown,
+    released_generation_attempt,
+)
 from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
     GenerationItemRecorder,
@@ -1374,6 +1391,8 @@ def _remember_generation_attempt(
         "provider_attempt_count": provider_attempt_count,
         "guard_deferral_count": guard_deferral_count,
     }
+    if GENERATION_BUDGET_KEY in previous:
+        attempt[GENERATION_BUDGET_KEY] = previous[GENERATION_BUDGET_KEY]
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
@@ -1513,7 +1532,12 @@ def _clear_generation_attempt(db, item: ContentItem) -> None:
     if not isinstance(summary, dict) or _GENERATION_ATTEMPT_KEY not in summary:
         return
     updated = dict(summary)
-    updated.pop(_GENERATION_ATTEMPT_KEY, None)
+    previous = updated.get(_GENERATION_ATTEMPT_KEY)
+    budget = previous.get(GENERATION_BUDGET_KEY) if isinstance(previous, dict) else None
+    if isinstance(budget, dict):
+        updated[_GENERATION_ATTEMPT_KEY] = {GENERATION_BUDGET_KEY: budget}
+    else:
+        updated.pop(_GENERATION_ATTEMPT_KEY, None)
     item.essence_check_summary = updated
     db.commit()
 
@@ -1916,6 +1940,54 @@ def _image_guard_kwargs(item: ContentItem) -> dict[str, Any]:
     return guard_kwargs
 
 
+def _generate_image_with_budget(db, item: ContentItem, **kwargs) -> tuple[str, str]:
+    """Run one image asset acquisition under its independent lifetime transport cap."""
+
+    ledger = GenerationBudgetLedger(db, item)
+    acquisition_number = ledger.next_sequence("IMAGE")
+    acquisition_id = f"image:{item.id}:{acquisition_number}"
+    reservation = ledger.reserve(acquisition_id=acquisition_id, kind="IMAGE")
+    if reservation.cached_payload is not None:
+        return (
+            str(reservation.cached_payload.get("image_url") or ""),
+            str(reservation.cached_payload.get("image_prompt") or ""),
+        )
+
+    def _transport_started() -> None:
+        # Image providers run in a thread executor. A SQLAlchemy Session is not
+        # thread-safe, so each real HTTP start checkpoints through its own short
+        # session while the outer worker waits for that executor.
+        if isinstance(db, Session):
+            with Session(bind=db.get_bind(), expire_on_commit=False) as transport_db:
+                current = transport_db.get(ContentItem, item.id)
+                if current is None:
+                    raise GenerationBudgetExceeded("CONTENT_SLOT_MISSING")
+                transport_ledger = GenerationBudgetLedger(transport_db, current)
+                transport_reservation = transport_ledger.reserve(
+                    acquisition_id=reservation.acquisition_id, kind="IMAGE"
+                )
+                transport_ledger.transport_started(transport_reservation)
+            return
+        ledger.transport_started(reservation)
+    try:
+        image_url, image_prompt = _run_async(
+            generate_image(
+                **kwargs,
+                transport_observer=_transport_started,
+            )
+        )
+    except BaseException:  # noqa: BROAD_EXCEPT_OK -- cancellation/timeout remains consumed
+        ledger.complete(reservation, transport_attempts=0, outcome="UNKNOWN")
+        raise
+    ledger.complete(
+        reservation,
+        transport_attempts=0,
+        outcome="RESULT",
+        payload={"image_url": image_url, "image_prompt": image_prompt},
+    )
+    return image_url, image_prompt
+
+
 def _recover_missing_content_image(
     db,
     item: ContentItem,
@@ -1970,21 +2042,21 @@ def _recover_missing_content_image(
         # 저장된 진단으로 만든 repair 프롬프트로 한 번 더 만들어 본다
         # (content_image_certification._replace_unsafe와 같은 경로).
         prior_policy_rejection = _stored_image_policy_repair(item)
-        image_url, image_prompt = _run_async(
-            generate_image(
-                item.content_type,
-                hospital.slug,
-                topic=image_source_title,
-                direction=hospital_image_direction(hospital),
-                hospital_id=hospital.id,
-                diagnostics=diagnostics,
-                policy_repair=prior_policy_rejection is not None,
-                prior_policy_rejection=(
-                    dict(prior_policy_rejection)
-                    if prior_policy_rejection is not None
-                    else None
-                ),
-            )
+        image_url, image_prompt = _generate_image_with_budget(
+            db,
+            item,
+            content_type=item.content_type,
+            hospital_name=hospital.slug,
+            topic=image_source_title,
+            direction=hospital_image_direction(hospital),
+            hospital_id=hospital.id,
+            diagnostics=diagnostics,
+            policy_repair=prior_policy_rejection is not None,
+            prior_policy_rejection=(
+                dict(prior_policy_rejection)
+                if prior_policy_rejection is not None
+                else None
+            ),
         )
         if not image_url:
             logger.warning("Image generation returned no URL for %s (text saved)", item.id)
@@ -2025,6 +2097,34 @@ def _recover_missing_content_image(
         db.refresh(item)
         _clear_generation_attempt(db, item)
         return GenerationItemState.SUCCEEDED
+    except GenerationBudgetExceeded:
+        _remember_generation_attempt(
+            db,
+            item,
+            philosophy,
+            _IMAGE_RETRY_EXHAUSTED_CODE,
+            count_attempt=False,
+            extra={
+                "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+                "next_retry_at": None,
+            },
+        )
+        if _image_reuse_is_due(item):
+            return _reuse_hospital_image(db, item, hospital, philosophy, _image_guard_kwargs(item))
+        return GenerationItemState.PARTIAL
+    except GenerationBudgetUnknown:
+        _remember_generation_attempt(
+            db,
+            item,
+            philosophy,
+            "LEGACY_SPEND_UNKNOWN",
+            count_attempt=False,
+            extra={
+                "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+                "next_retry_at": None,
+            },
+        )
+        return GenerationItemState.PARTIAL
     except Exception as error:
         logger.warning(
             "Image generation failed for %s (text saved): %s",
@@ -2181,6 +2281,7 @@ HARD_REMOVAL_MAX_GENERATIONS = 1
 
 async def _generate_with_auto_review(
     *,
+    db,
     hospital: Hospital,
     item: ContentItem,
     existing_titles: list[str],
@@ -2188,6 +2289,85 @@ async def _generate_with_auto_review(
     approved_brief: dict | None,
 ) -> tuple[dict[str, Any], EssenceScreeningResult]:
     """Adapt the stable worker entry point to the bounded review service."""
+    ledger = GenerationBudgetLedger(db, item)
+
+    async def _budgeted_generate(*args, **kwargs):
+        findings = [str(value) for value in (kwargs.get("remediation_findings") or [])]
+        fingerprint = hashlib.sha256(
+            "\n".join(findings).encode("utf-8")
+        ).hexdigest()[:16]
+        topic_id = str(getattr(item, "query_target_id", "") or "unassigned")
+        acquisition_prefix = f"writer:{topic_id}:{fingerprint}"
+        cached = ledger.latest_payload(acquisition_prefix)
+        if cached is not None:
+            return cached
+        acquisition_id = acquisition_prefix
+        if ledger.acquisition_status(acquisition_id) in {"ERROR", "UNKNOWN"}:
+            acquisition_id = f"{acquisition_prefix}:retry:{ledger.next_sequence('WRITER')}"
+        reservation = ledger.reserve(acquisition_id=acquisition_id, kind="WRITER")
+        if reservation.cached_payload is not None:
+            return reservation.cached_payload
+        attempt_context: dict[str, Any] = {
+            "logical_call_id": acquisition_id,
+            "http_attempt": 0,
+            "transport_observer": lambda: ledger.transport_started(reservation),
+        }
+        try:
+            candidate = await generate_content(
+                *args, **kwargs, _attempt_context=attempt_context
+            )
+        except ValueError:
+            ledger.complete(
+                reservation,
+                transport_attempts=int(attempt_context.get("http_attempt") or 0),
+                outcome="ERROR",
+            )
+            raise
+        except BaseException:  # noqa: BROAD_EXCEPT_OK -- cancellation/timeout consumes reserved transport
+            ledger.complete(
+                reservation,
+                transport_attempts=int(attempt_context.get("http_attempt") or 0),
+                outcome="UNKNOWN",
+            )
+            raise
+        transport_attempts = int(candidate.pop("_provider_http_attempts", 0) or 0)
+        ledger.complete(
+            reservation,
+            transport_attempts=transport_attempts,
+            outcome="RESULT",
+            payload=candidate,
+        )
+        return candidate
+
+    async def _budgeted_review(**kwargs):
+        content = kwargs.get("content") or {}
+        candidate_id = candidate_sha256(content)
+        acquisition_id = f"reviewer:{candidate_id}"
+        reservation = ledger.reserve(acquisition_id=acquisition_id, kind="REVIEWER")
+        if reservation.cached_payload is not None:
+            return review_from_payload(reservation.cached_payload)
+        attempt_counter: dict[str, int] = {"http_attempt": 0}
+        try:
+            review = await review_generated_content(
+                **kwargs,
+                attempt_counter=attempt_counter,
+                transport_observer=lambda: ledger.transport_started(reservation),
+            )
+        except BaseException:  # noqa: BROAD_EXCEPT_OK -- cancellation/timeout consumes reserved transport
+            ledger.complete(
+                reservation,
+                transport_attempts=attempt_counter["http_attempt"],
+                outcome="UNKNOWN",
+            )
+            raise
+        ledger.complete(
+            reservation,
+            transport_attempts=attempt_counter["http_attempt"],
+            outcome="RESULT",
+            payload=review.payload(),
+        )
+        return review
+
     return await generate_reviewed_content(
         hospital=hospital,
         item=item,
@@ -2195,8 +2375,8 @@ async def _generate_with_auto_review(
         philosophy=philosophy,
         approved_brief=approved_brief,
         dependencies=ContentReviewDependencies(
-            generate=generate_content,
-            review=review_generated_content,
+            generate=_budgeted_generate,
+            review=_budgeted_review,
             screen=screen_content_against_philosophy,
             check_cost=cost_guard.check_and_increment,
         ),
@@ -5542,6 +5722,7 @@ def _run_generation_item(
         expected_revision = int(getattr(item, "content_revision", 1) or 1)
         content_data, screening = _run_async(
             _generate_with_auto_review(
+                db=db,
                 hospital=hospital,
                 item=item,
                 existing_titles=existing_titles,
@@ -6454,15 +6635,15 @@ def generate_content_image(self, content_id: str):
             image_source_title = item.title or "병원 의료 정보"
             expected_revision = int(getattr(item, "content_revision", 1) or 1)
             diagnostics: dict[str, object] = {}
-            image_url, image_prompt = _run_async(
-                generate_image(
-                    item.content_type,
-                    hospital.slug,
-                    topic=image_source_title,
-                    direction=hospital_image_direction(hospital),
-                    hospital_id=hospital.id,
-                    diagnostics=diagnostics,
-                )
+            image_url, image_prompt = _generate_image_with_budget(
+                db,
+                item,
+                content_type=item.content_type,
+                hospital_name=hospital.slug,
+                topic=image_source_title,
+                direction=hospital_image_direction(hospital),
+                hospital_id=hospital.id,
+                diagnostics=diagnostics,
             )
             if not image_url:
                 release_generation_claim(db, item_id, claim_token)
@@ -6874,6 +7055,7 @@ def _generate_single_content_item(
     expected_revision = int(getattr(item, "content_revision", 1) or 1)
     content_data, screening = _run_async(
         _generate_with_auto_review(
+            db=db,
             hospital=hospital,
             item=item,
             existing_titles=existing_titles,
@@ -7804,6 +7986,11 @@ def _auto_publish_one(
         # transaction invisible. Check only after blocker projection so a missing body/image
         # still reaches Operations Center even when the revalidation dependency is unavailable.
         ensure_site_revalidate_configured()
+        bound_reference_checks = bind_reference_checks_to_revision(item)
+        if bound_reference_checks is None:
+            _log_auto_publish_skip("reference_evidence_not_bound", content_id, item=item)
+            return None
+        item.reference_checks = bound_reference_checks
         item.status = ContentStatus.PUBLISHED
         record_publication_identity(
             item,
@@ -7813,6 +8000,19 @@ def _auto_publish_one(
         item.post_publish_notified_at = None
         item.post_publish_reviewed_at = None
         item.post_publish_reviewed_by = None
+        if isinstance(item, ContentItem):
+            item.active_revision_id = None
+            item.pending_revision = None
+            db.flush()
+            revision_write = db.execute(
+                text("SELECT * FROM reconcile_content_revisions(:content_item_id)"),
+                {"content_item_id": item.id},
+            ).one()
+            db.refresh(item, attribute_names=["active_revision_id"])
+            if item.active_revision_id is None or revision_write.created_count != 1:
+                db.rollback()
+                _log_auto_publish_skip("approved_revision_not_created", content_id, item=item)
+                return None
         write_audit_log_sync(
             db,
             action="auto_publish_content",
@@ -7834,7 +8034,11 @@ def _auto_publish_one(
                 content_id=item.id,
                 aeo_domain=hospital.aeo_domain,
                 treatments=hospital.treatments,
-                revision=int(getattr(item, "content_revision", 1) or 1),
+                revision=(
+                    str(item.active_revision_id)
+                    if item.active_revision_id is not None
+                    else int(getattr(item, "content_revision", 1) or 1)
+                ),
             )
         payload = _publication_notification_payload(item, hospital)
         enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
@@ -8376,6 +8580,8 @@ def run_sov_for_hospital(
                     )
                 # Persist the whole selected repeat plan before the first paid call.
                 db.commit()
+                if monthly:
+                    slots_by_cell = _bounded_monthly_slot_page(slots_by_cell)
             success_count = 0
             failure_count = 0
             for spec_index, spec in enumerate(measurement_specs):
@@ -8752,6 +8958,88 @@ def _resolve_monthly_measurement_period(
     return None
 
 
+def _monthly_sov_recovery_deadline(year: int, month: int) -> datetime:
+    """Return the inclusive KST service-period recovery horizon."""
+
+    period = reporting_period(year, month)
+    return period.ends_at + timedelta(days=7) - timedelta(seconds=1)
+
+
+def _monthly_sov_deadline_reached(
+    observed_at: datetime, year: int, month: int
+) -> bool:
+    return observed_at.astimezone(ZoneInfo("Asia/Seoul")) >= _monthly_sov_recovery_deadline(
+        year, month
+    )
+
+
+def _finalize_monthly_sov_period_run(
+    db, period_key: str, *, observed_at: datetime
+) -> bool:
+    """Close the fleet execution after the horizon using frozen slot facts."""
+
+    try:
+        year_text, month_text = period_key.split("-", 1)
+        year, month = int(year_text), int(month_text)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if not _monthly_sov_deadline_reached(observed_at, year, month):
+        return False
+    run = db.execute(
+        select(OperationRun)
+        .where(
+            OperationRun.operation_type == MONTHLY_SOV_PERIOD_OPERATION,
+            OperationRun.idempotency_key == f"monthly-sov-period:{period_key}",
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if run is None or run.state == OperationRunState.SUCCEEDED:
+        return run is not None
+    manifests = db.execute(
+        select(MonthlyMeasurementManifest).where(
+            MonthlyMeasurementManifest.period_year == year,
+            MonthlyMeasurementManifest.period_month == month,
+        )
+    ).scalars().all()
+    configured_platforms = tuple(
+        dict.fromkeys(
+            platform
+            for manifest in manifests
+            for platform in (manifest.configured_platforms or ())
+        )
+    )
+    slots = db.execute(
+        select(MeasurementObservationSlot)
+        .join(
+            MonthlyMeasurementCell,
+            MonthlyMeasurementCell.id == MeasurementObservationSlot.monthly_cell_id,
+        )
+        .join(
+            MonthlyMeasurementManifest,
+            MonthlyMeasurementManifest.id == MonthlyMeasurementCell.manifest_id,
+        )
+        .where(
+            MonthlyMeasurementManifest.period_year == year,
+            MonthlyMeasurementManifest.period_month == month,
+        )
+    ).scalars().all()
+    horizon = build_monthly_sov_horizon_summary(slots, configured_platforms)
+    summary = dict(run.result_summary or {})
+    summary["measurement_horizon"] = horizon
+    summary["recovery_deadline"] = _monthly_sov_recovery_deadline(year, month).isoformat()
+    run.state = OperationRunState.SUCCEEDED
+    run.completed_at = observed_at
+    run.heartbeat_at = None
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.result_summary = summary
+    run.safe_error_code = None
+    run.safe_error_message = None
+    run.version += 1
+    db.commit()
+    return True
+
+
 def _complete_monthly_measurement_and_dispatch_report(
     db,
     task,
@@ -8776,12 +9064,15 @@ def _complete_monthly_measurement_and_dispatch_report(
         and coverage.failed_count == 0
         and coverage.excluded_count == 0
     )
-    adequacy = _manifest_observation_adequacy(manifest, deadline_reached=True)
+    deadline_reached = _monthly_sov_deadline_reached(observed_at, year, month)
+    adequacy = _manifest_observation_adequacy(
+        manifest, deadline_reached=deadline_reached
+    )
     finalized = (
         legacy_complete
         if adequacy is None
-        else adequacy.planned_slots > 0
-        and adequacy.status in {"COMPLETE", "LIMITED", "UNAVAILABLE"}
+        else adequacy.status == "COMPLETE"
+        or deadline_reached and adequacy.status in {"LIMITED", "UNAVAILABLE"}
     )
     if not finalized:
         error_code = "MONTHLY_SOV_MEASUREMENT_INCOMPLETE"
@@ -9908,33 +10199,297 @@ def run_weekly_monitoring():
             )
 
 
-@celery_app.task(name="app.workers.tasks.run_monthly_sov_measurement")
-def run_monthly_sov_measurement():
-    """Run each converted hospital's fixed LOCAL set once in the month-end window."""
+MONTHLY_SOV_PERIOD_OPERATION = "MONTHLY_SOV_PERIOD"
+MONTHLY_SOV_PAGE_SIZE = 10
+MONTHLY_SOV_PERIOD_LEASE = timedelta(minutes=20)
 
-    require_dispatch(current_task, "monthly-sov-measurement")
-    today_kst = arrow.now("Asia/Seoul").date()
-    if today_kst.day < settings.SOV_MONTHLY_WINDOW_START_DAY:
-        logger.info("Monthly measurement window is not open: %s", today_kst)
-        return
-    observed_at = datetime.now(timezone.utc)
-    period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
-    with SyncSessionLocal() as db:
-        registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
-        _commit_new_cohort_enrollments(db, registration)
-        _log_blocked_convertible_tracking_sets(registration)
-        _report_monthly_cohort_gaps(registration, period_key)
-        hospitals = iter_monthly_sov_cohort(db)
-        _warn_monthly_cohort_over_limit(len(hospitals), period_key)
-        for hospital in hospitals:
-            run = _ensure_monthly_sov_operation_run(db, hospital, period_key, observed_at)
-            if run is None or run.task_id is None:
-                continue
+
+@dataclass(frozen=True, slots=True)
+class MonthlySovPeriodClaim:
+    run_id: uuid.UUID
+    owner: str
+    version: int
+    cursor_hospital_id: uuid.UUID | None
+    cursor_slot_id: uuid.UUID | None
+
+
+def _period_cursor(summary: Mapping[str, Any] | None) -> tuple[uuid.UUID | None, uuid.UUID | None]:
+    raw = (summary or {}).get("monthly_measurement_cursor")
+    if not isinstance(raw, Mapping):
+        return None, None
+
+    def parsed(value: Any) -> uuid.UUID | None:
+        try:
+            return uuid.UUID(str(value)) if value else None
+        except (TypeError, ValueError):
+            return None
+
+    return parsed(raw.get("hospital_id")), parsed(raw.get("slot_id"))
+
+
+def _claim_monthly_sov_period_run(
+    db, period_key: str, *, owner: str, observed_at: datetime
+) -> MonthlySovPeriodClaim | None:
+    """Claim the one NULL-scoped fleet row for a service period."""
+
+    idempotency_key = f"monthly-sov-period:{period_key}"
+    run = db.execute(
+        select(OperationRun)
+        .where(
+            OperationRun.hospital_id.is_(None),
+            OperationRun.requested_by_id.is_(None),
+            OperationRun.operation_type == MONTHLY_SOV_PERIOD_OPERATION,
+            OperationRun.idempotency_key == idempotency_key,
+        )
+        .with_for_update()
+    ).scalar_one_or_none()
+    if run is None:
+        run = OperationRun(
+            id=uuid.uuid4(),
+            hospital_id=None,
+            operation_type=MONTHLY_SOV_PERIOD_OPERATION,
+            state=OperationRunState.RUNNING,
+            idempotency_key=idempotency_key,
+            requested_by_id=None,
+            task_id=owner,
+            attempt_count=1,
+            total_count=0,
+            success_count=0,
+            failure_count=0,
+            skipped_count=0,
+            request_payload={"source_type": MONTHLY_SOV_PERIOD_OPERATION, "source_id": period_key},
+            result_summary={
+                "measurement_month": period_key,
+                "monthly_measurement_cursor": {"hospital_id": None, "slot_id": None},
+            },
+            requested_at=observed_at,
+            started_at=observed_at,
+            heartbeat_at=observed_at,
+            lease_owner=owner,
+            lease_expires_at=observed_at + MONTHLY_SOV_PERIOD_LEASE,
+            version=1,
+        )
+        db.add(run)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            return _claim_monthly_sov_period_run(
+                db, period_key, owner=owner, observed_at=observed_at
+            )
+        return MonthlySovPeriodClaim(run.id, owner, 1, None, None)
+    if run.state == OperationRunState.SUCCEEDED:
+        db.rollback()
+        return None
+    lease_expires_at = run.lease_expires_at
+    if lease_expires_at is not None and lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=timezone.utc)
+    if lease_expires_at is not None and lease_expires_at > observed_at:
+        db.rollback()
+        return None
+    expected_version = run.version
+    cursor_hospital_id, cursor_slot_id = _period_cursor(run.result_summary)
+    claimed = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run.id,
+            OperationRun.version == expected_version,
+            or_(
+                OperationRun.lease_expires_at.is_(None),
+                OperationRun.lease_expires_at <= observed_at,
+            ),
+        )
+        .values(
+            state=OperationRunState.RUNNING,
+            task_id=owner,
+            lease_owner=owner,
+            lease_expires_at=observed_at + MONTHLY_SOV_PERIOD_LEASE,
+            heartbeat_at=observed_at,
+            attempt_count=OperationRun.attempt_count + 1,
+            version=OperationRun.version + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    if claimed.rowcount != 1:
+        return None
+    return MonthlySovPeriodClaim(
+        run.id, owner, expected_version + 1, cursor_hospital_id, cursor_slot_id
+    )
+
+
+def _advance_monthly_sov_period_run(
+    db,
+    claim: MonthlySovPeriodClaim,
+    *,
+    hospital_id: uuid.UUID,
+    slot_id: uuid.UUID | None,
+    dispatched: bool,
+    observed_at: datetime,
+) -> MonthlySovPeriodClaim | None:
+    run = db.get(OperationRun, claim.run_id)
+    if run is None:
+        return None
+    summary = dict(run.result_summary or {})
+    summary["monthly_measurement_cursor"] = {
+        "hospital_id": str(hospital_id),
+        "slot_id": str(slot_id) if slot_id is not None else None,
+    }
+    values = {
+        "result_summary": summary,
+        "total_count": OperationRun.total_count + 1,
+        "success_count": OperationRun.success_count + (1 if dispatched else 0),
+        "skipped_count": OperationRun.skipped_count + (0 if dispatched else 1),
+        "heartbeat_at": observed_at,
+        "lease_expires_at": observed_at + MONTHLY_SOV_PERIOD_LEASE,
+        "version": OperationRun.version + 1,
+    }
+    advanced = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == claim.run_id,
+            OperationRun.version == claim.version,
+            OperationRun.lease_owner == claim.owner,
+        )
+        .values(**values)
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    if advanced.rowcount != 1:
+        return None
+    return MonthlySovPeriodClaim(
+        claim.run_id,
+        claim.owner,
+        claim.version + 1,
+        hospital_id,
+        slot_id,
+    )
+
+
+def _release_monthly_sov_period_run(
+    db, claim: MonthlySovPeriodClaim, *, observed_at: datetime
+) -> bool:
+    released = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == claim.run_id,
+            OperationRun.version == claim.version,
+            OperationRun.lease_owner == claim.owner,
+        )
+        .values(
+            lease_owner=None,
+            lease_expires_at=None,
+            heartbeat_at=observed_at,
+            version=OperationRun.version + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    db.commit()
+    return released.rowcount == 1
+
+
+def _round_robin_hospitals(
+    hospitals: Sequence[Hospital], cursor_hospital_id: uuid.UUID | None
+) -> list[Hospital]:
+    ordered = sorted(hospitals, key=lambda hospital: str(hospital.id))
+    if cursor_hospital_id is None:
+        return ordered
+    after = [hospital for hospital in ordered if str(hospital.id) > str(cursor_hospital_id)]
+    before = [hospital for hospital in ordered if str(hospital.id) <= str(cursor_hospital_id)]
+    return [*after, *before]
+
+
+def _first_pending_monthly_slot_id(
+    db, hospital_id: uuid.UUID, year: int, month: int
+) -> uuid.UUID | None:
+    return db.execute(
+        select(MeasurementObservationSlot.id)
+        .join(
+            MonthlyMeasurementCell,
+            MonthlyMeasurementCell.id == MeasurementObservationSlot.monthly_cell_id,
+        )
+        .join(
+            MonthlyMeasurementManifest,
+            MonthlyMeasurementManifest.id == MonthlyMeasurementCell.manifest_id,
+        )
+        .where(
+            MonthlyMeasurementManifest.hospital_id == hospital_id,
+            MonthlyMeasurementManifest.period_year == year,
+            MonthlyMeasurementManifest.period_month == month,
+            or_(
+                and_(
+                    MeasurementObservationSlot.answer_status != "RECEIVED",
+                    MeasurementObservationSlot.answer_attempt_count < 3,
+                ),
+                and_(
+                    MeasurementObservationSlot.answer_status == "RECEIVED",
+                    MeasurementObservationSlot.judgment_status.not_in(
+                        ("CONFIRMED", "AMBIGUOUS")
+                    ),
+                    MeasurementObservationSlot.judgment_attempt_count < 3,
+                ),
+            ),
+        )
+        .order_by(MeasurementObservationSlot.id)
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _bounded_monthly_slot_page(
+    slots_by_cell: Mapping[uuid.UUID, Sequence[MeasurementObservationSlot]],
+    *,
+    limit: int = MONTHLY_SOV_PAGE_SIZE,
+) -> dict[uuid.UUID, list[MeasurementObservationSlot]]:
+    """Keep all durable terminals and at most ``limit`` unfinished paid stages."""
+
+    pending_ids = {
+        slot.id
+        for slots in slots_by_cell.values()
+        for slot in slots
+        if slot_needs_answer(slot) or slot_needs_judgment(slot)
+    }
+    selected_pending_ids = set(sorted(pending_ids, key=str)[:limit])
+    return {
+        cell_id: [
+            slot
+            for slot in slots
+            if not (slot_needs_answer(slot) or slot_needs_judgment(slot))
+            or slot.id in selected_pending_ids
+        ]
+        for cell_id, slots in slots_by_cell.items()
+    }
+
+
+def _dispatch_monthly_sov_period_sweep(
+    db,
+    hospitals: Sequence[Hospital],
+    *,
+    year: int,
+    month: int,
+    observed_at: datetime,
+    owner: str,
+) -> dict[uuid.UUID, uuid.UUID | None]:
+    """Dispatch one bounded hospital page each under the period lease and cursor."""
+
+    period_key = f"{year:04d}-{month:02d}"
+    if _monthly_sov_deadline_reached(observed_at, year, month):
+        _finalize_monthly_sov_period_run(db, period_key, observed_at=observed_at)
+        return {}
+    claim = _claim_monthly_sov_period_run(
+        db, period_key, owner=owner, observed_at=observed_at
+    )
+    if claim is None:
+        return {}
+    dispatched_runs: dict[uuid.UUID, uuid.UUID | None] = {}
+    for hospital in _round_robin_hospitals(hospitals, claim.cursor_hospital_id):
+        run = _ensure_monthly_sov_operation_run(db, hospital, period_key, observed_at)
+        dispatched = False
+        run_id = run.id if run is not None else None
+        if run is not None and run.task_id is not None:
             hospital_id = str(hospital.id)
-            task_args = [hospital_id, "monthly", today_kst.year, today_kst.month]
             try:
                 run_sov_for_hospital.apply_async(
-                    args=task_args,
+                    args=[hospital_id, "monthly", year, month],
                     queue="sov",
                     headers={
                         **build_dispatch_headers("run-sov", hospital_id),
@@ -9947,8 +10502,54 @@ def run_monthly_sov_measurement():
                     "Monthly visibility measurement dispatch failed; recovery will redispatch",
                     extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
                 )
-                continue
-            _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+            else:
+                dispatched = _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+        dispatched_runs[hospital.id] = run_id
+        next_claim = _advance_monthly_sov_period_run(
+            db,
+            claim,
+            hospital_id=hospital.id,
+            slot_id=_first_pending_monthly_slot_id(db, hospital.id, year, month),
+            dispatched=dispatched,
+            observed_at=observed_at,
+        )
+        if next_claim is None:
+            return dispatched_runs
+        claim = next_claim
+    _release_monthly_sov_period_run(db, claim, observed_at=observed_at)
+    return dispatched_runs
+
+
+@celery_app.task(name="app.workers.tasks.run_monthly_sov_measurement")
+def run_monthly_sov_measurement():
+    """Run each converted hospital's fixed LOCAL set once in the month-end window."""
+
+    require_dispatch(current_task, "monthly-sov-measurement")
+    now_kst = arrow.now("Asia/Seoul")
+    today_kst = now_kst.date()
+    if today_kst.day < settings.SOV_MONTHLY_WINDOW_START_DAY:
+        logger.info("Monthly measurement window is not open: %s", today_kst)
+        return
+    observed_at = now_kst.datetime.astimezone(timezone.utc)
+    period_key = f"{today_kst.year:04d}-{today_kst.month:02d}"
+    with SyncSessionLocal() as db:
+        owner = str(getattr(getattr(current_task, "request", None), "id", None) or uuid.uuid4())
+        registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
+        _commit_new_cohort_enrollments(db, registration)
+        _log_blocked_convertible_tracking_sets(registration)
+        _report_monthly_cohort_gaps(registration, period_key)
+        hospitals = _round_robin_hospitals(
+            iter_monthly_sov_cohort(db), None
+        )
+        _warn_monthly_cohort_over_limit(len(hospitals), period_key)
+        _dispatch_monthly_sov_period_sweep(
+            db,
+            hospitals,
+            year=today_kst.year,
+            month=today_kst.month,
+            observed_at=observed_at,
+            owner=owner,
+        )
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
@@ -10235,9 +10836,7 @@ def _ensure_monthly_sov_operation_run(
         if existing.state == OperationRunState.FAILED:
             code = existing.safe_error_code or ""
             retry_window = _monthly_sov_retry_window(period_key, observed_at)
-            if code.endswith("COST_GUARD_BLOCKED") and retry_window and (
-                _monthly_sov_pending_budget_fits(db, hospital, period_key)
-            ):
+            if code.endswith("COST_GUARD_BLOCKED") and retry_window:
                 return _rearm_unchanged(OperationRunState.FAILED)
             if retry_window and not code.endswith("COST_GUARD_BLOCKED"):
                 failed_cell_count = _monthly_sov_failed_cell_count(
@@ -10337,65 +10936,6 @@ def _monthly_sov_failed_cell_count(
         getattr(cell, "state", None) == "FAILED"
         for cell in (getattr(manifest, "cells", ()) or ())
     )
-
-
-def _monthly_sov_pending_budget_fits(db, hospital: Hospital, period_key: str) -> bool:
-    try:
-        year_text, month_text = period_key.split("-", 1)
-        year, month = int(year_text), int(month_text)
-    except (AttributeError, TypeError, ValueError):
-        return False
-    manifest = db.execute(
-        select(MonthlyMeasurementManifest)
-        .options(
-            selectinload(MonthlyMeasurementManifest.cells).selectinload(
-                MonthlyMeasurementCell.observation_slots
-            )
-        )
-        .where(
-            MonthlyMeasurementManifest.hospital_id == hospital.id,
-            MonthlyMeasurementManifest.period_year == year,
-            MonthlyMeasurementManifest.period_month == month,
-        )
-    ).scalar_one_or_none()
-    if manifest is None:
-        return False
-    repeat_count = _manifest_slot_repeat_count(manifest)
-    if repeat_count is None:
-        pending_count = sum(
-            cell.state == "FAILED" for cell in (manifest.cells or ())
-        )
-        if pending_count <= 0:
-            return False
-        needed = pending_count * SOV_REPEAT_WEEKLY
-    else:
-        needed = 0
-        has_pending = False
-        max_judgment_calls = 2 if (hospital.competitors or []) else 1
-        for cell in manifest.cells or ():
-            if cell.state == "EXCLUDED":
-                continue
-            slots = list(cell.observation_slots or ())
-            missing = max(0, repeat_count - len(slots))
-            if missing:
-                has_pending = True
-                needed += missing * (1 + max_judgment_calls)
-            for slot in slots:
-                if slot_is_terminal(slot):
-                    continue
-                has_pending = True
-                if slot_needs_answer(slot):
-                    needed += 1 + max_judgment_calls
-                elif slot_needs_judgment(slot):
-                    needed += sov_engine.estimate_judgment_provider_calls(
-                        hospital.name,
-                        slot.raw_response or "",
-                        competitors=hospital.competitors or [],
-                    )
-        if not has_pending:
-            return False
-    daily_remaining, monthly_remaining = _run_async(cost_guard.remaining_units("sov"))
-    return needed <= daily_remaining and needed <= monthly_remaining
 
 
 def _mark_weekly_sov_operation_queued(db, run_id: uuid.UUID, observed_at: datetime) -> bool:
@@ -10748,13 +11288,13 @@ def _latest_monthly_report_operation_run(
 def _monthly_sov_measurement_succeeded(
     db, hospital_id: uuid.UUID, period_key: str
 ) -> bool:
+    """Return whether frozen facts are final; a task-level SUCCEEDED state is irrelevant."""
     run = (
         db.execute(
             select(OperationRun)
             .where(
                 OperationRun.hospital_id == hospital_id,
                 OperationRun.operation_type == "RUN_SOV",
-                OperationRun.state == OperationRunState.SUCCEEDED,
                 or_(
                     OperationRun.idempotency_key
                     == f"monthly-sov:{hospital_id}:{period_key}",
@@ -10768,8 +11308,6 @@ def _monthly_sov_measurement_succeeded(
         .scalars()
         .first()
     )
-    if run is None:
-        return False
     try:
         year_text, month_text = period_key.split("-", 1)
         year, month = int(year_text), int(month_text)
@@ -10789,14 +11327,15 @@ def _monthly_sov_measurement_succeeded(
         )
     ).scalar_one_or_none()
     if manifest is None:
-        _mark_monthly_measurement_incomplete(
-            db,
-            run,
-            planned=0,
-            success=0,
-            failed=0,
-            manifest_closed=False,
-        )
+        if run is not None:
+            _mark_monthly_measurement_incomplete(
+                db,
+                run,
+                planned=0,
+                success=0,
+                failed=0,
+                manifest_closed=False,
+            )
         return False
 
     summary = summarize_manifest(
@@ -10811,21 +11350,24 @@ def _monthly_sov_measurement_succeeded(
         and summary.failed_count == 0
         and summary.excluded_count == 0
     )
-    adequacy = _manifest_observation_adequacy(manifest, deadline_reached=True)
+    observed_at = datetime.now(timezone.utc)
+    deadline_reached = _monthly_sov_deadline_reached(observed_at, year, month)
+    adequacy = _manifest_observation_adequacy(
+        manifest, deadline_reached=deadline_reached
+    )
     finalized = (
         legacy_complete
         if adequacy is None
-        else adequacy.planned_slots > 0
-        and adequacy.status in {"COMPLETE", "LIMITED", "UNAVAILABLE"}
+        else adequacy.status == "COMPLETE"
+        or deadline_reached and adequacy.status in {"LIMITED", "UNAVAILABLE"}
     )
     if finalized:
-        observed_at = datetime.now(timezone.utc)
         if manifest.closed_at is None:
             if observed_at < manifest.closes_at:
                 return False
             close_manifest(manifest, now=observed_at)
             db.commit()
-    else:
+    elif run is not None:
         _mark_monthly_measurement_incomplete(
             db,
             run,
@@ -11053,6 +11595,42 @@ def _headline_uses_full_current_cohort(
         monthly_sov.comparison.status != "COMPARABLE"
         or monthly_sov.comparison_cell_keys == current_local_keys
     )
+
+
+def _freeze_platform_availability(
+    payload: dict[str, Any], cells: tuple[ManifestCellInput, ...]
+) -> dict[str, Any]:
+    """Add each platform's frozen k/n and terminal slot outcomes to the render payload."""
+    frozen = copy.deepcopy(payload)
+    availability_rows: list[dict[str, Any]] = []
+    for platform in frozen.get("platforms", []):
+        platform_id = platform.get("platform")
+        rows = tuple(cell for cell in cells if cell.platform == platform_id)
+        platform["confirmed_mentioned_count"] = platform.get("mentioned_attempts", 0)
+        platform["confirmed_sample_count"] = platform.get("attempts_used", 0)
+        platform["availability"] = {
+            "planned_slots": sum(cell.planned_repeat_count for cell in rows),
+            "received_answers": sum(cell.received_answer_count for cell in rows),
+            "confirmed_slots": sum(cell.confirmed_slot_count for cell in rows),
+            "ambiguous_slots": sum(cell.ambiguous_slot_count for cell in rows),
+            "answer_failed_slots": sum(cell.answer_failed_slot_count for cell in rows),
+            "judgment_failed_slots": sum(cell.judgment_failed_slot_count for cell in rows),
+            "pending_slots": sum(cell.pending_slot_count for cell in rows),
+            "pending_semantics": "INCLUDES_FAILURES",
+        }
+        availability_rows.append(
+            {
+                "platform": platform_id,
+                "confirmed_mentioned_count": platform["confirmed_mentioned_count"],
+                "confirmed_sample_count": platform["confirmed_sample_count"],
+                **platform["availability"],
+            }
+        )
+    availability = frozen.get("observation_adequacy")
+    if isinstance(availability, dict):
+        availability["platforms"] = availability_rows
+        availability["pending_semantics"] = "INCLUDES_FAILURES"
+    return frozen
 
 
 def _build_monthly_report_for_hospital(
@@ -11319,7 +11897,10 @@ def _build_monthly_report_for_hospital(
         period_end=period_end,
         next_month=next_month,
     )
-    monthly_sov_payload = monthly_sov.to_payload()
+    monthly_sov_payload = _freeze_platform_availability(
+        monthly_sov.to_payload(),
+        current_loaded.cells if current_loaded is not None else (),
+    )
 
     # "서비스 시작 시점(V0) 대비" 참고선. 질문 세트가 충분히 겹치지 않으면 None이라
     # 원장 페이지에 아무 말도 하지 않는다 — 다른 질문으로 잰 두 수치를 나란히
@@ -11382,6 +11963,81 @@ def _build_monthly_report_for_hospital(
     )
     talking_points = list(doctor_view["talking_points"])
 
+    snapshot_cells = [
+        {
+            "query_key": cell.query_key,
+            "query_text": cell.query_text,
+            "query_intent": cell.query_intent,
+            "query_intent_source": cell.query_intent_source,
+            "platform": cell.platform,
+            "state": cell.state,
+            "planned": cell.planned_repeat_count,
+            "answers_received": cell.received_answer_count,
+            "confirmed": cell.confirmed_slot_count,
+            "ambiguous": cell.ambiguous_slot_count,
+            "answer_failed": cell.answer_failed_slot_count,
+            "judgment_failed": cell.judgment_failed_slot_count,
+            "pending": cell.pending_slot_count,
+            "attempts": [
+                {
+                    "record_id": str(attempt.record_id),
+                    "measured_at": attempt.measured_at.isoformat(),
+                    "succeeded": attempt.succeeded,
+                    "mentioned": attempt.is_mentioned,
+                    "answer_model": attempt.answer_model,
+                    "search_calls": attempt.search_calls,
+                    "mention_context": attempt.mention_context,
+                }
+                for attempt in cell.attempts
+            ],
+        }
+        for cell in (current_loaded.cells if current_loaded is not None else ())
+    ]
+    report_snapshot = ReportSnapshot(
+        schema_version=REPORT_SNAPSHOT_SCHEMA_VERSION,
+        render_inputs=ReportRenderInputs(
+            hospital=FrozenHospitalRenderInput(
+                name=h.name,
+                slug=h.slug,
+                plan=h.plan,
+                region=list(h.region or []),
+                specialties=list(h.specialties or []),
+            ),
+            period=FrozenPeriodRenderInput(
+                year=now.year,
+                month=now.month,
+                starts_at=period_start,
+                ends_at=period_end,
+                cutoff_at=actual_now,
+            ),
+            public_url=_public_site_url(h.aeo_domain, h.slug),
+            doctor_view=freeze_doctor_view(doctor_view),
+            doctor_metric_facts=doctor_view_facts(doctor_view),
+            ae_report=FrozenAeRenderInput(
+                sov_pct=sov_pct,
+                published_count=len(actual_published_contents),
+                repeat_count=SOV_REPEAT_WEEKLY,
+                attribution=attribution,
+                strategy=strategy,
+                sov_coverage=monthly_sov_payload,
+                content_operations=content_operations.payload,
+                citations=citations,
+                talking_points=talking_points,
+            ),
+            measurement=FrozenMeasurementRenderInput(
+                protocol=(
+                    (manifest.platform_provenance or {}).get("measurement_protocol")
+                    if manifest is not None
+                    else None
+                ),
+                platforms=list(report_platforms or []),
+                cells=snapshot_cells,
+                availability=monthly_sov_payload.get("observation_adequacy"),
+                comparison=monthly_sov_payload["comparison"],
+            ),
+        ),
+    ).model_dump(mode="json")
+
     pdf_path = generate_pdf_report(
         hospital=h,
         period_start=period_start,
@@ -11424,6 +12080,7 @@ def _build_monthly_report_for_hospital(
             "citations": citations,
             # AE 미팅 키트 — Admin 리포트 상세가 content_summary를 그대로 준다.
             "talking_points": talking_points,
+            "report_snapshot": report_snapshot,
         },
         essence_summary=essence_summary,
     )
@@ -11461,13 +12118,17 @@ def _attach_doctor_artifact_and_commit(
     doctor_view,
     now: arrow.Arrow,
     operation_run_id: uuid.UUID | None,
+    *,
+    render_hospital=None,
+    public_url: str | None = None,
 ) -> str:
     """원장용 PDF를 검증·저장해 리포트에 붙이고 커밋한다. 일반 생성과 템플릿 갱신이 공유한다."""
     artifact_error: DoctorPdfValidationError | None = None
     try:
-        public_url = _public_site_url(h.aeo_domain, h.slug)
+        artifact_hospital = render_hospital or h
+        artifact_public_url = public_url or _public_site_url(h.aeo_domain, h.slug)
         doctor_artifact = generate_doctor_pdf_report(
-            h, report.id, period_start, doctor_view, public_url
+            artifact_hospital, report.id, period_start, doctor_view, artifact_public_url
         )
         report.doctor_pdf_path = doctor_artifact.path
         report.delivery_blockers = [
@@ -11530,7 +12191,6 @@ def _template_refresh_blockers(
     h: Hospital,
     now: arrow.Arrow,
     latest: MonthlyReport | None,
-    manifest: MonthlyMeasurementManifest | None,
     *,
     observed_now: datetime,
     exclude_run_id: uuid.UUID | None,
@@ -11569,14 +12229,8 @@ def _template_refresh_blockers(
     if latest is None:
         verdict.add("BLOCKER", "NO_REPORT")
         return
-    if manifest is None:
-        verdict.add("BLOCKER", "MANIFEST_MISSING")
-    elif manifest.closed_at is None:
-        verdict.add("BLOCKER", "MANIFEST_NOT_CLOSED")
-    if not _has_valid_doctor_artifact(db, latest):
-        verdict.add("BLOCKER", "NO_VALID_DOCTOR_ARTIFACT", f"v{latest.version}")
     for path in missing_stored_paths(latest.content_summary, latest.sov_summary):
-        verdict.add("BLOCKER", "STORED_SUMMARY_INCOMPLETE", path)
+        verdict.add("BLOCKER", path)
 
 
 def build_monthly_template_refresh_plan(
@@ -11595,131 +12249,28 @@ def build_monthly_template_refresh_plan(
     원장에게 보여 줄 공개 글 제목·답변 발췌·초기 측정 참고선·누적 발행 편수만 읽는다.
     """
     verdict = RefreshVerdict()
-    period = reporting_period(now.year, now.month)
     latest = _latest_monthly_report(db, h.id, now.year, now.month)
-    manifest = None
-    if latest is not None and latest.manifest_id is not None:
-        manifest = db.get(MonthlyMeasurementManifest, latest.manifest_id)
     _template_refresh_blockers(
-        db, h, now, latest, manifest,
+        db, h, now, latest,
         observed_now=observed_now, exclude_run_id=exclude_run_id, verdict=verdict,
         allow_recovery_pending=allow_recovery_pending,
     )
-    if latest is None or manifest is None or verdict.status == "BLOCKED":
+    if latest is None or verdict.status == "BLOCKED":
         return MonthlyTemplateRefreshPlan(latest, None, None, verdict)
-    sov = latest.sov_summary
-    content = latest.content_summary
-    operations = content["operations"]
-    timing = content["contract_timing"]
-    try:
-        observed_at = stored_observed_at(content)
-    except ValueError as exc:
-        verdict.add("BLOCKER", "OBSERVED_AT_INVALID", str(exc))
+    render_inputs = report_render_inputs(latest.content_summary)
+    if render_inputs is None:
+        verdict.add("BLOCKER", "LEGACY_RENDER_INPUTS_INCOMPLETE")
         return MonthlyTemplateRefreshPlan(latest, None, None, verdict)
-
-    current_loaded = load_monthly_sov_manifest(db, manifest)
-    prior_manifest = _prior_monthly_manifest(db, h.id, now)
-    prior_loaded = (
-        load_monthly_sov_manifest(db, prior_manifest) if prior_manifest is not None else None
+    doctor_view = restore_doctor_view(render_inputs.doctor_view)
+    facts = doctor_view_facts(doctor_view)
+    if facts != render_inputs.doctor_metric_facts:
+        verdict.add("DIFF", "SNAPSHOT_METRIC_FACTS")
+    return MonthlyTemplateRefreshPlan(
+        latest,
+        doctor_view,
+        copy.deepcopy(latest.content_summary),
+        verdict,
     )
-    protocol = (manifest.platform_provenance or {}).get("measurement_protocol")
-    monthly_sov = build_monthly_sov(
-        current_loaded.cells,
-        tuple(manifest.configured_platforms),
-        prior_cells=prior_loaded.cells if prior_loaded is not None else None,
-        prior_platforms=(
-            tuple(prior_manifest.configured_platforms) if prior_manifest is not None else None
-        ),
-        current_protocol=protocol,
-        prior_protocol=(
-            (prior_manifest.platform_provenance or {}).get("measurement_protocol")
-            if prior_manifest is not None
-            else None
-        ),
-    )
-    # 출력 숫자는 저장된 요약에서 나온다. 다시 계산한 값이 다르면 기록만 남긴다.
-    for line in numeric_diff(sov, monthly_sov.to_payload(), prefix="sov_summary")[:5]:
-        verdict.add("WARN", "SOV_RECOMPUTE_DRIFT", line)
-
-    actual, visible, contract = _load_monthly_publication_facts(
-        db, h.id, period.starts_at, period.ends_at, observed_at
-    )
-    early, late = _contract_publication_timing_counts(contract, period.starts_at, period.ends_at)
-    for code, live, stored in (
-        ("PUBLISHED_COUNT", len(actual), content["published_count"]),
-        ("CONTRACT_PUBLISHED_COUNT", len(contract), timing["published_for_contract_count"]),
-        ("EARLY_PUBLICATION_COUNT", early, timing["early_publication_count"]),
-        ("LATE_RECOVERY_COUNT", late, timing["late_recovery_count"]),
-    ):
-        if live != stored:
-            verdict.add("DIFF", code, f"저장 {stored} / 같은 마감 기준 재계산 {live}")
-
-    first_publication_at = func.coalesce(ContentItem.first_published_at, ContentItem.published_at)
-    cumulative_published_count = db.execute(
-        select(func.count())
-        .select_from(ContentItem)
-        .where(
-            ContentItem.hospital_id == h.id,
-            first_publication_at < period.ends_at,
-            first_publication_at <= observed_at,
-        )
-    ).scalar_one()
-    v0_baseline = _load_v0_baseline(
-        db,
-        h.id,
-        current_sov_pct=(
-            sov["sov_pct"]
-            if _headline_uses_full_current_cohort(monthly_sov, current_loaded.cells)
-            else None
-        ),
-        tracking_query_texts=[
-            cell.query_text for cell in current_loaded.cells if cell.query_intent == "LOCAL"
-        ],
-        current_platforms=tuple(manifest.configured_platforms),
-        current_protocol=protocol,
-        current_cells=current_loaded.cells,
-    )
-    doctor_view = build_doctor_report_view(
-        report_kind="MONTHLY",
-        protocol_label=str((protocol or {}).get("policy_version") or "기록 없음"),
-        hospital=h,
-        sov_pct=sov["sov_pct"],
-        prev_sov_pct=(sov.get("comparison") or {}).get("prior_sov_pct"),
-        published_count=content["published_count"],
-        plan_quota=operations["plan_quota"],
-        supplementary_count=operations["supplementary_count"],
-        early_publication_count=timing["early_publication_count"],
-        late_recovery_count=timing["late_recovery_count"],
-        contract_published_count=timing["published_for_contract_count"],
-        attribution=content["attribution"],
-        citations=content["citations"],
-        published_contents=list(visible),
-        v0_baseline=v0_baseline,
-        records=list(current_loaded.scored_records),
-        platforms=list(manifest.configured_platforms),
-        sov_coverage=sov,
-        comparison_reason=(sov.get("comparison") or {}).get("reason"),
-        cumulative_published_count=cumulative_published_count,
-        reference_prev_sov_pct=_prior_reported_sov_pct(db, prior_manifest),
-    )
-    stored_points = number_tokens(content.get("talking_points") or [])
-    new_points = number_tokens(doctor_view["talking_points"])
-    if stored_points != new_points:
-        verdict.add("DIFF", "TALKING_POINT_NUMBERS", f"{stored_points} → {new_points}")
-    for problem in doctor_view_expectations(
-        doctor_view, sov_summary=sov, content_summary=content
-    ):
-        verdict.add("DIFF", "DOCTOR_VIEW_NUMBER", problem)
-    scratch = SimpleNamespace()
-    apply_manifest_to_report(scratch, manifest)
-    for name in ("quality", "planned_count", "success_count", "failed_count", "excluded_count"):
-        if getattr(scratch, name) != getattr(latest, name):
-            verdict.add(
-                "DIFF", "MANIFEST_SUMMARY", f"{name}: {getattr(latest, name)} → {getattr(scratch, name)}"
-            )
-    new_content = copy.deepcopy(content)
-    new_content["talking_points"] = list(doctor_view["talking_points"])
-    return MonthlyTemplateRefreshPlan(latest, doctor_view, new_content, verdict)
 
 
 def _build_monthly_template_refresh(
@@ -11756,20 +12307,24 @@ def _build_monthly_template_refresh(
         raise RuntimeError("template refresh lost the report version race")
     sov = copy.deepcopy(old.sov_summary)
     content = plan.content_summary
+    render_inputs = report_render_inputs(content)
+    assert render_inputs is not None
+    frozen_hospital = SimpleNamespace(**render_inputs.hospital.model_dump())
+    ae = render_inputs.ae_report
     pdf_path = generate_pdf_report(
-        hospital=h,
-        period_start=period.starts_at,
-        period_end=period.ends_at,
+        hospital=frozen_hospital,
+        period_start=render_inputs.period.starts_at,
+        period_end=render_inputs.period.ends_at,
         report_type="MONTHLY",
-        sov_pct=sov["sov_pct"],
-        published_count=content["published_count"],
-        repeat_count=SOV_REPEAT_WEEKLY,
-        attribution=content["attribution"],
-        strategy=content["strategy"],
-        sov_coverage=sov,
-        content_operations=content["operations"],
-        citations=content["citations"],
-        talking_points=content["talking_points"],
+        sov_pct=ae.sov_pct,
+        published_count=ae.published_count,
+        repeat_count=ae.repeat_count,
+        attribution=ae.attribution,
+        strategy=ae.strategy,
+        sov_coverage=ae.sov_coverage,
+        content_operations=ae.content_operations,
+        citations=ae.citations,
+        talking_points=ae.talking_points,
         report_version=version_plan.version,
     )
     blockers = [b for b in (old.delivery_blockers or []) if b != "DOCTOR_ARTIFACT_UNVALIDATED"]
@@ -11798,7 +12353,15 @@ def _build_monthly_template_refresh(
     db.add(report)
     db.flush()
     return _attach_doctor_artifact_and_commit(
-        db, h, report, period.starts_at, plan.doctor_view, now, operation_run_id
+        db,
+        h,
+        report,
+        render_inputs.period.starts_at,
+        plan.doctor_view,
+        now,
+        operation_run_id,
+        render_hospital=frozen_hospital,
+        public_url=render_inputs.public_url,
     )
 
 
@@ -11830,28 +12393,20 @@ def run_monthly_reports(self):
         result = db.execute(stmt)
         eligible_hospitals = result.scalars().all()
         period_key = f"{period.year:04d}-{period.month:02d}"
+        observed_at = now.datetime.astimezone(timezone.utc)
+        if _monthly_sov_deadline_reached(observed_at, period.year, period.month):
+            _finalize_monthly_sov_period_run(
+                db, period_key, observed_at=observed_at
+            )
         hospitals = []
         blocked: list[str] = []
-        observed_at = now.datetime.astimezone(timezone.utc)
+        measurement_pending: list[Hospital] = []
         for hospital in eligible_hospitals:
             if _hospital_requires_monthly_sov_success(
                 db, hospital, period
             ) and not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
                 blocked.append(hospital.name)
-                measurement_run_id = (
-                    _dispatch_monthly_sov_catchup(db, hospital, period_key, observed_at)
-                    if is_monthly_recovery_window(
-                        now.datetime, period.year, period.month
-                    )
-                    else None
-                )
-                _record_weekly_sov_failure(
-                    hospital,
-                    period_key,
-                    "MONTHLY_SOV_MEASUREMENT_INCOMPLETE",
-                    measurement_run_id,
-                    measurement_mode="monthly",
-                )
+                measurement_pending.append(hospital)
                 continue
             latest_run = _latest_monthly_report_operation_run(
                 db, hospital.id, period.year, period.month
@@ -11896,6 +12451,27 @@ def run_monthly_reports(self):
                     blocked.append(hospital.name)
                     continue
             hospitals.append((hospital, "build"))
+        measurement_runs: dict[uuid.UUID, uuid.UUID | None] = {}
+        if measurement_pending and is_monthly_recovery_window(
+            now.datetime, period.year, period.month
+        ):
+            owner = str(getattr(getattr(self, "request", None), "id", None) or uuid.uuid4())
+            measurement_runs = _dispatch_monthly_sov_period_sweep(
+                db,
+                measurement_pending,
+                year=period.year,
+                month=period.month,
+                observed_at=observed_at,
+                owner=owner,
+            )
+        for hospital in measurement_pending:
+            _record_weekly_sov_failure(
+                hospital,
+                period_key,
+                "MONTHLY_SOV_MEASUREMENT_INCOMPLETE",
+                measurement_runs.get(hospital.id),
+                measurement_mode="monthly",
+            )
         failures: list[str] = []
         successes = 0
 

@@ -45,24 +45,65 @@ def upgrade() -> None:
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
         sa.CheckConstraint("edition_no > 0", name="ck_content_revisions_edition_positive"),
-        sa.CheckConstraint("legacy_content_revision > 0", name="ck_content_revisions_legacy_revision_positive"),
-        sa.CheckConstraint("approval_status = 'APPROVED'", name="ck_content_revisions_approval_status"),
-        sa.CheckConstraint("jsonb_typeof(references_list) = 'array'", name="ck_content_revisions_references_array"),
-        sa.CheckConstraint("jsonb_typeof(reference_checks) = 'array'", name="ck_content_revisions_reference_checks_array"),
-        sa.CheckConstraint("jsonb_typeof(source_snapshot) = 'object'", name="ck_content_revisions_source_snapshot_object"),
-        sa.CheckConstraint("jsonb_typeof(generation_provenance) = 'object'", name="ck_content_revisions_generation_provenance_object"),
+        sa.CheckConstraint(
+            "legacy_content_revision > 0", name="ck_content_revisions_legacy_revision_positive"
+        ),
+        sa.CheckConstraint(
+            "approval_status = 'APPROVED'", name="ck_content_revisions_approval_status"
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(references_list) = 'array'", name="ck_content_revisions_references_array"
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(reference_checks) = 'array'",
+            name="ck_content_revisions_reference_checks_array",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(source_snapshot) = 'object'",
+            name="ck_content_revisions_source_snapshot_object",
+        ),
+        sa.CheckConstraint(
+            "jsonb_typeof(generation_provenance) = 'object'",
+            name="ck_content_revisions_generation_provenance_object",
+        ),
         sa.ForeignKeyConstraint(["content_item_id"], ["content_items.id"], ondelete="RESTRICT"),
-        sa.ForeignKeyConstraint(["generation_philosophy_id"], ["hospital_content_philosophies.id"], ondelete="SET NULL"),
-        sa.ForeignKeyConstraint(["last_reviewed_philosophy_id"], ["hospital_content_philosophies.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(
+            ["generation_philosophy_id"], ["hospital_content_philosophies.id"], ondelete="SET NULL"
+        ),
+        sa.ForeignKeyConstraint(
+            ["last_reviewed_philosophy_id"],
+            ["hospital_content_philosophies.id"],
+            ondelete="SET NULL",
+        ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("content_item_id", "edition_no", name="uq_content_revisions_item_edition"),
+        sa.UniqueConstraint(
+            "content_item_id", "edition_no", name="uq_content_revisions_item_edition"
+        ),
     )
-    op.create_index("ix_content_revisions_content_item_id", "content_revisions", ["content_item_id"])
+    op.create_index(
+        "ix_content_revisions_content_item_id", "content_revisions", ["content_item_id"]
+    )
     op.add_column(
         "content_items",
         sa.Column("active_revision_id", postgresql.UUID(as_uuid=True), nullable=True),
     )
-    op.create_foreign_key("fk_content_items_active_revision_id", "content_items", "content_revisions", ["active_revision_id"], ["id"], ondelete="SET NULL")
+    op.add_column(
+        "content_items",
+        sa.Column("pending_revision", postgresql.JSONB(), nullable=True),
+    )
+    op.create_check_constraint(
+        "ck_content_items_pending_revision_object",
+        "content_items",
+        "pending_revision IS NULL OR jsonb_typeof(pending_revision) = 'object'",
+    )
+    op.create_foreign_key(
+        "fk_content_items_active_revision_id",
+        "content_items",
+        "content_revisions",
+        ["active_revision_id"],
+        ["id"],
+        ondelete="SET NULL",
+    )
     op.create_index("ix_content_items_active_revision_id", "content_items", ["active_revision_id"])
     op.execute(_RECONCILE_FUNCTION_SQL)
     op.execute("SELECT * FROM reconcile_content_revisions()")
@@ -80,6 +121,8 @@ def downgrade() -> None:
     op.execute("DROP FUNCTION IF EXISTS reconcile_content_revisions(uuid)")
     op.drop_index("ix_content_items_active_revision_id", table_name="content_items")
     op.drop_constraint("fk_content_items_active_revision_id", "content_items", type_="foreignkey")
+    op.drop_constraint("ck_content_items_pending_revision_object", "content_items", type_="check")
+    op.drop_column("content_items", "pending_revision")
     op.drop_column("content_items", "active_revision_id")
     op.drop_index("ix_content_revisions_content_item_id", table_name="content_revisions")
     op.drop_table("content_revisions")
@@ -131,10 +174,16 @@ BEGIN
                   AND jsonb_array_length(item.reference_checks) = 0)
                  OR (jsonb_array_length(item.references_list) > 0
                      AND jsonb_array_length(item.reference_checks) > 0
-                     AND EXISTS (SELECT 1 FROM jsonb_array_elements(item.references_list) ref
-                         WHERE btrim(coalesce(ref ->> 'title', '')) <> '' AND btrim(coalesce(ref ->> 'url', '')) <> '')
-                     AND EXISTS (SELECT 1 FROM jsonb_array_elements(item.reference_checks) check_row
-                         WHERE check_row ->> 'verdict' = 'PASS' AND btrim(coalesce(check_row ->> 'url', '')) <> '')))
+                     AND NOT EXISTS (
+                         SELECT 1 FROM jsonb_array_elements(item.references_list) ref
+                         WHERE btrim(coalesce(ref ->> 'title', '')) = ''
+                            OR btrim(coalesce(ref ->> 'url', '')) = ''
+                            OR NOT EXISTS (
+                                SELECT 1 FROM jsonb_array_elements(item.reference_checks) check_row
+                                WHERE lower(coalesce(check_row ->> 'verdict', '')) = 'pass'
+                                  AND btrim(coalesce(check_row ->> 'url', '')) = btrim(ref ->> 'url')
+                            )
+                     )))
             AND NOT coalesce((item.essence_check_summary ->> 'blocking')::boolean, false)
             AND NOT coalesce((item.essence_check_summary ->> 'authority_change')::boolean, false)
             AND NOT coalesce(item.essence_check_summary -> 'ai_review' ->> 'status' = 'UNAVAILABLE', false)

@@ -42,9 +42,10 @@ from app.schemas.operations import (
     CostGuardKillSwitchRequest,
     CostGuardKillSwitchResponse,
     CostGuardStatusResponse,
+    LegacyBudgetReplacementRequest,
 )
 from app.services import cost_guard
-from app.services.audit_log import default_actor, write_audit_log
+from app.services.audit_log import default_actor, verified_request_actor, write_audit_log
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.content_yield import compute_content_yield_async, kst_week_start
 from app.services.hospital_lifecycle import missing_profile_requirement_keys
@@ -75,6 +76,13 @@ from app.services.post_publish_review_policy import (
     publicly_operational_hospital_predicate,
 )
 from app.services.v0_claim import latest_active_v0_run, v0_claim_is_alive
+from app.workers.generation_attempt_state import (
+    GENERATION_ATTEMPT_KEY,
+    GenerationBudgetExceeded,
+    GenerationBudgetUnknown,
+    read_generation_budget,
+    replace_unknown_legacy_budget,
+)
 from app.workers.tasks import (
     build_aeo_site,
     generate_content_image,
@@ -968,6 +976,7 @@ async def regenerate_content_operation(
     content_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
     idempotency_key: IdempotencyKeyHeader = None,
+    body: LegacyBudgetReplacementRequest | None = Body(default=None),
 ):
     hospital = await _get_hospital_or_404(db, hospital_id)
     item = await db.get(ContentItem, content_id)
@@ -982,6 +991,62 @@ async def regenerate_content_operation(
             status_code=409,
             detail="Published, cancelled or withheld content cannot be regenerated",
         )
+    summary = item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
+    attempt = summary.get(GENERATION_ATTEMPT_KEY)
+    attempt = dict(attempt) if isinstance(attempt, dict) else {}
+    legacy_unknown = False
+    try:
+        budget = read_generation_budget(attempt)
+    except GenerationBudgetUnknown:
+        legacy_unknown = True
+        budget = None
+    if budget is not None and budget.reset_record is not None and body is not None:
+        raise HTTPException(status_code=409, detail="Legacy generation budget was already replaced")
+    if legacy_unknown:
+        actor = verified_request_actor()
+        if actor is None:
+            raise HTTPException(status_code=401, detail="Verified Admin actor is required")
+        if body is None or idempotency_key is None:
+            raise HTTPException(
+                status_code=409,
+                detail="Legacy spend is unknown; reason and Idempotency-Key are required",
+            )
+        locked = await db.execute(
+            select(ContentItem)
+            .where(ContentItem.id == content_id, ContentItem.hospital_id == hospital.id)
+            .with_for_update()
+        )
+        item = locked.scalar_one_or_none()
+        if item is None:
+            raise HTTPException(status_code=404, detail="Content not found")
+        locked_summary = (
+            item.essence_check_summary if isinstance(item.essence_check_summary, dict) else {}
+        )
+        locked_attempt = locked_summary.get(GENERATION_ATTEMPT_KEY)
+        locked_attempt = dict(locked_attempt) if isinstance(locked_attempt, dict) else {}
+        try:
+            replacement = replace_unknown_legacy_budget(
+                locked_attempt,
+                actor=actor,
+                reason=body.reason,
+                idempotency_key=idempotency_key,
+            )
+        except GenerationBudgetExceeded as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        item.essence_check_summary = {
+            **locked_summary,
+            GENERATION_ATTEMPT_KEY: replacement,
+        }
+        await write_audit_log(
+            db,
+            action="LEGACY_BUDGET_REPLACED",
+            hospital_id=hospital.id,
+            actor=actor,
+            target_type="content_item",
+            target_id=content_id,
+            detail=replacement["budget"]["reset_record"],
+        )
+        await db.commit()
     dispatch = await _enqueue_with_truthful_audit(
         db,
         action="regenerate_content",
@@ -992,6 +1057,11 @@ async def regenerate_content_operation(
         args=[str(content_id)],
         queue="content",
         idempotency_key=idempotency_key,
+        request_payload_extra=(
+            {"reason": body.reason, "legacy_budget_replaced": legacy_unknown}
+            if body is not None
+            else None
+        ),
     )
     return {
         "detail": "Content regeneration queued",

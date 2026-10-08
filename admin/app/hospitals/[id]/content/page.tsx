@@ -240,11 +240,12 @@ export default function ContentPage() {
       meta_description: editMeta,
       references: editReferences,
     }
+    const editable = selected.pending_revision
     const original = {
-      title: selected.title ?? '',
-      body: selected.body ?? '',
-      meta_description: selected.meta_description ?? '',
-      references: (selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })),
+      title: editable?.title ?? selected.title ?? '',
+      body: editable?.body ?? selected.body ?? '',
+      meta_description: editable?.meta_description ?? selected.meta_description ?? '',
+      references: (editable?.references_list ?? selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })),
     }
     if (!editFieldsDiffer(current, original)) return
     saveDraftSnapshot(id, selected.id, current)
@@ -442,10 +443,11 @@ export default function ContentPage() {
 
   function enterEditMode() {
     if (!selected) return
-    setEditTitle(selected.title ?? '')
-    setEditBody(selected.body ?? '')
-    setEditMeta(selected.meta_description ?? '')
-    setEditReferences((selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })))
+    const editable = selected.pending_revision
+    setEditTitle(editable?.title ?? selected.title ?? '')
+    setEditBody(editable?.body ?? selected.body ?? '')
+    setEditMeta(editable?.meta_description ?? selected.meta_description ?? '')
+    setEditReferences((editable?.references_list ?? selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })))
     setViolations([])
     setEditError(null)
     setEditMode(true)
@@ -453,10 +455,10 @@ export default function ContentPage() {
     // 세션 만료로 저장하지 못한 채 남아 있는 스냅샷이 있으면 복구 배너로 안내한다.
     const draft = readDraftSnapshot(id, selected.id)
     if (draft && draftDiffersFromCurrent(draft, {
-      title: selected.title ?? '',
-      body: selected.body ?? '',
-      meta_description: selected.meta_description ?? '',
-      references: (selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })),
+      title: editable?.title ?? selected.title ?? '',
+      body: editable?.body ?? selected.body ?? '',
+      meta_description: editable?.meta_description ?? selected.meta_description ?? '',
+      references: (editable?.references_list ?? selected.references ?? []).map((ref) => ({ title: ref.title ?? '', url: ref.url ?? '' })),
     })) {
       setRecoverableDraft(draft)
     } else {
@@ -467,7 +469,9 @@ export default function ContentPage() {
 
   function enterReferenceEditMode() {
     enterEditMode()
-    if ((selected?.references?.length ?? 0) === 0) setEditReferences([{ title: '', url: '' }])
+    if ((selected?.pending_revision?.references_list.length ?? selected?.references?.length ?? 0) === 0) {
+      setEditReferences([{ title: '', url: '' }])
+    }
     window.setTimeout(() => {
       referencesEditorRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
       referencesEditorRef.current?.querySelector<HTMLInputElement>('input')?.focus()
@@ -553,6 +557,9 @@ export default function ContentPage() {
       setSelected(updated)
       setEditMode(false)
       setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
+      if (updated.pending_revision) {
+        setActionSuccess('수정본을 저장했습니다. 안전검사가 끝날 때까지 현재 공개 글은 그대로 유지됩니다.')
+      }
     } catch (e: unknown) {
       // 금지 표현 → 목록 문서 거절(422)의 서버 문장 → 일반 안내 순서다(`saveEditFailure`).
       const failure = saveEditFailure(e)
@@ -560,6 +567,30 @@ export default function ContentPage() {
       setEditError(failure.message)
     } finally {
       setEditSaving(false)
+    }
+  }
+
+  async function handleCancelCandidate() {
+    if (!selected?.pending_revision) return
+    setActionLoading(true)
+    setEditError(null)
+    clearActionFeedback()
+    try {
+      const updated = await fetchAPI<ContentItem>(
+        `/admin/hospitals/${id}/content/${selected.id}/candidate/cancel`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ candidate_sha256: selected.pending_revision.candidate_sha256 }),
+        },
+      )
+      setSelected(updated)
+      setItems((prev) => prev.map((it) => (it.id === updated.id ? updated : it)))
+      setActionSuccess('검토 중이던 수정본을 취소했습니다. 공개 글은 변경되지 않았습니다.')
+    } catch {
+      setEditError(safeOperatorError('content', '최신 수정본을 다시 확인한 뒤 ‘수정본 취소’를 다시 누르세요.'))
+      void refreshItem(selected.id)
+    } finally {
+      setActionLoading(false)
     }
   }
 
@@ -1041,6 +1072,43 @@ export default function ContentPage() {
             ) : (
               /* Read mode */
               <div className="p-6">
+                {selected.pending_revision && (
+                  <section aria-labelledby="pending-candidate-title" className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-4 text-amber-950">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h4 id="pending-candidate-title" className="text-sm font-bold">수정본 검토 중</h4>
+                        <p className="mt-1 text-xs leading-5 text-amber-900">
+                          안전검사가 끝날 때까지 현재 공개 글은 그대로 유지됩니다. 아래 내용이 다음 공개본 후보입니다.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCancelCandidate}
+                        disabled={actionLoading}
+                        className="inline-flex min-h-11 items-center rounded-lg border border-amber-300 bg-white px-3 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        {actionLoading ? '처리 중...' : '수정본 취소'}
+                      </button>
+                    </div>
+                    <details className="mt-3 border-t border-amber-200 pt-3">
+                      <summary className="flex min-h-11 cursor-pointer items-center text-sm font-semibold">
+                        수정본 미리보기
+                      </summary>
+                      <div className="mt-2 rounded-lg border border-amber-200 bg-white p-4 text-slate-700">
+                        <p className="text-base font-bold text-slate-900">{selected.pending_revision.title}</p>
+                        {selected.pending_revision.meta_description && (
+                          <p className="mt-1 text-xs text-slate-500">{selected.pending_revision.meta_description}</p>
+                        )}
+                        <div className="prose prose-sm mt-4 max-w-none text-slate-700">
+                          <ReactMarkdown>{selected.pending_revision.body}</ReactMarkdown>
+                        </div>
+                        <p className="mt-4 text-xs text-slate-500">
+                          참고 자료 {selected.pending_revision.references_list.length}건
+                        </p>
+                      </div>
+                    </details>
+                  </section>
+                )}
                 <div className="mb-5 border border-slate-200 rounded-lg overflow-hidden">
                   <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 text-xs font-semibold text-slate-600 uppercase tracking-wide">
                     답변 노출 콘텐츠 가이드

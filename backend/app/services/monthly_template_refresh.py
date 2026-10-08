@@ -19,27 +19,11 @@ from datetime import datetime
 from math import isfinite
 from typing import Any
 
-# 템플릿 갱신이 저장된 값만으로 원장·AE 리포트를 다시 그리려면 반드시 있어야 하는 칸.
-REQUIRED_CONTENT_SUMMARY_PATHS: tuple[tuple[str, ...], ...] = (
-    ("published_count",),
-    ("operations",),
-    ("operations", "plan_quota"),
-    ("operations", "supplementary_count"),
-    ("contract_timing",),
-    ("contract_timing", "early_publication_count"),
-    ("contract_timing", "late_recovery_count"),
-    ("contract_timing", "published_for_contract_count"),
-    ("contract_timing", "observed_at"),
-    ("attribution",),
-    ("strategy",),
-    ("citations",),
-    ("talking_points",),
+from app.services.monthly_report_snapshot import (
+    LEGACY_RENDER_INPUTS_INCOMPLETE,
+    report_render_inputs,
 )
-REQUIRED_SOV_SUMMARY_PATHS: tuple[tuple[str, ...], ...] = (
-    ("sov_pct",),
-    ("comparison",),
-    ("comparison", "reason"),
-)
+
 IN_FLIGHT_OPERATION_TYPES = ("GENERATE_MONTHLY_REPORT", "SCHEDULED_MONTHLY_REPORT", "RUN_SOV")
 IN_FLIGHT_STATES = ("REQUESTED", "QUEUED", "RUNNING")
 
@@ -100,19 +84,11 @@ def _dig(value: Any, path: Iterable[str]) -> Any:
 
 
 def missing_stored_paths(
-    content_summary: Any, sov_summary: Any
+    content_summary: Any, _sov_summary: Any
 ) -> list[str]:
-    missing = [
-        "content_summary." + ".".join(path)
-        for path in REQUIRED_CONTENT_SUMMARY_PATHS
-        if _dig(content_summary, path) is _MISSING
-    ]
-    missing.extend(
-        "sov_summary." + ".".join(path)
-        for path in REQUIRED_SOV_SUMMARY_PATHS
-        if _dig(sov_summary, path) is _MISSING
-    )
-    return missing
+    if report_render_inputs(content_summary) is not None:
+        return []
+    return [LEGACY_RENDER_INPUTS_INCOMPLETE]
 
 
 def stored_observed_at(content_summary: Mapping[str, Any]) -> datetime:

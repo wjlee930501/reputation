@@ -31,25 +31,29 @@ def _jsonb_type():
     return JSON().with_variant(JSONB, "postgresql")
 
 
+def _nullable_jsonb_type():
+    return JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+
+
 class ContentType(str, enum.Enum):
-    FAQ = "FAQ"             # Q&A 형식
-    DISEASE = "DISEASE"     # 질환 가이드
-    TREATMENT = "TREATMENT" # 시술·치료 안내
-    COLUMN = "COLUMN"       # 원장 칼럼
-    HEALTH = "HEALTH"       # 건강 정보
-    LOCAL = "LOCAL"         # 지역 특화
-    NOTICE = "NOTICE"       # 병원 공지
+    FAQ = "FAQ"  # Q&A 형식
+    DISEASE = "DISEASE"  # 질환 가이드
+    TREATMENT = "TREATMENT"  # 시술·치료 안내
+    COLUMN = "COLUMN"  # 원장 칼럼
+    HEALTH = "HEALTH"  # 건강 정보
+    LOCAL = "LOCAL"  # 지역 특화
+    NOTICE = "NOTICE"  # 병원 공지
 
 
 class ContentStatus(str, enum.Enum):
-    DRAFT = "DRAFT"           # 생성 완료 또는 자동 발행 안전검사 대기
-    READY = "READY"           # 레거시 호환 상태 (신규 기본 플로우는 DRAFT→PUBLISHED)
-    PUBLISHED = "PUBLISHED"   # 발행 완료
-    REJECTED = "REJECTED"     # 반려 (재생성 필요)
-    CANCELLED = "CANCELLED"   # 중복·오래된 슬롯 종료 (자동 재생성/발행 제외)
+    DRAFT = "DRAFT"  # 생성 완료 또는 자동 발행 안전검사 대기
+    READY = "READY"  # 레거시 호환 상태 (신규 기본 플로우는 DRAFT→PUBLISHED)
+    PUBLISHED = "PUBLISHED"  # 발행 완료
+    REJECTED = "REJECTED"  # 반려 (재생성 필요)
+    CANCELLED = "CANCELLED"  # 중복·오래된 슬롯 종료 (자동 재생성/발행 제외)
     # 공개됐던 글을 본문·참고자료·이미지·발행 이력을 보존한 채 공개 사이트에서 내린 상태.
     # restore로만 PUBLISHED로 되돌린다. 자동 발행·재생성·이미지 작업 대상이 아니다(0081).
-    WITHHELD = "WITHHELD"     # 비공개(보존)
+    WITHHELD = "WITHHELD"  # 비공개(보존)
 
 
 class ContentRevisionApprovalStatus(str, enum.Enum):
@@ -151,17 +155,17 @@ class ContentItem(Base):
     )
 
     content_type: Mapped[ContentType] = mapped_column(Enum(ContentType), nullable=False)
-    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)   # 이번 달 N번째
-    total_count: Mapped[int] = mapped_column(Integer, nullable=False)   # 이번 달 전체 편수
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)  # 이번 달 N번째
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)  # 이번 달 전체 편수
 
     # 콘텐츠 본문
     title: Mapped[str | None] = mapped_column(String(300))
-    body: Mapped[str | None] = mapped_column(Text)          # 마크다운
+    body: Mapped[str | None] = mapped_column(Text)  # 마크다운
     meta_description: Mapped[str | None] = mapped_column(String(300))  # SEO용 요약
 
     # 이미지
-    image_url: Mapped[str | None] = mapped_column(String(500))    # GCS public URL
-    image_prompt: Mapped[str | None] = mapped_column(Text)        # 생성에 쓴 프롬프트
+    image_url: Mapped[str | None] = mapped_column(String(500))  # GCS public URL
+    image_prompt: Mapped[str | None] = mapped_column(Text)  # 생성에 쓴 프롬프트
 
     # 스케줄·상태
     scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -185,6 +189,9 @@ class ContentItem(Base):
     active_revision_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("content_revisions.id", ondelete="SET NULL")
     )
+    # One explicitly typed, mutable proposal. It is never read by public routes;
+    # only a hash-bound PASS may turn it into a ContentRevision and swap the pointer.
+    pending_revision: Mapped[dict | None] = mapped_column(_nullable_jsonb_type())
     query_target_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("ai_query_targets.id", ondelete="SET NULL")
     )
@@ -223,7 +230,9 @@ class ContentItem(Base):
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
+    published_by: Mapped[str | None] = mapped_column(
+        String(100)
+    )  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
     # 최초 공개 사실은 반려 후 새 판을 재발행해도 바뀌지 않는다. published_*는 현재
     # 판의 생애주기이고 first_published_*는 닫힌 월의 실제 발행 이력이다.
     first_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

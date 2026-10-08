@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
@@ -315,6 +316,54 @@ class ContentAiReview:
             "escalated_model": self.escalated_model,
             "review_rounds": self.review_rounds,
         }
+
+
+def review_from_payload(payload: dict[str, Any]) -> ContentAiReview:
+    """Rehydrate a durable reviewer result without buying the same result again."""
+
+    findings: list[ContentAiFinding] = []
+    for raw in payload.get("findings") or []:
+        if not isinstance(raw, dict):
+            continue
+        findings.append(
+            ContentAiFinding(
+                severity=ContentAiFindingSeverity(str(raw.get("severity"))),
+                kind=ContentAiFindingKind(str(raw.get("kind"))),
+                message=str(raw.get("message") or ""),
+                quote=str(raw.get("quote") or ""),
+                target=ContentAiFindingTarget(
+                    str(raw.get("target") or ContentAiFindingTarget.CANDIDATE_TEXT.value)
+                ),
+                original_severity=(
+                    ContentAiFindingSeverity(str(raw["original_severity"]))
+                    if raw.get("original_severity")
+                    else None
+                ),
+            )
+        )
+    unavailable = payload.get("unavailable_reason")
+    coverage = payload.get("coverage")
+    return ContentAiReview(
+        status=ContentAiReviewStatus(str(payload.get("status"))),
+        confidence=float(payload.get("confidence") or 0.0),
+        findings=tuple(findings),
+        summary=str(payload.get("summary") or ""),
+        model=str(payload.get("model") or ""),
+        candidate_sha256=str(payload.get("candidate_sha256") or ""),
+        coverage=dict(coverage) if isinstance(coverage, dict) else None,
+        provider_attempted=(
+            bool(payload["provider_attempted"])
+            if payload.get("provider_attempted") is not None
+            else None
+        ),
+        unavailable_reason=(
+            ContentAiReviewUnavailableReason(str(unavailable)) if unavailable else None
+        ),
+        escalated_model=(
+            str(payload["escalated_model"]) if payload.get("escalated_model") else None
+        ),
+        review_rounds=int(payload.get("review_rounds") or 1),
+    )
 
 
 def _bounded_text(value: object, limit: int) -> str:
@@ -812,6 +861,7 @@ async def _provider_review(
     http_attempt: int,
     must_use_messages: list[str] | None = None,
     attempt_counter: dict[str, int] | None = None,
+    transport_observer: Callable[[], None] | None = None,
 ) -> ContentAiReview:
     """Run one metered reviewer round; every failure mode stays UNAVAILABLE.
 
@@ -819,6 +869,8 @@ async def _provider_review(
     남긴다 — 강제 tool_choice 거절 뒤 auto 재시도가 붙으면 번호를 하나 더 쓴다.
     """
 
+    if transport_observer is not None:
+        transport_observer()
     await cost_guard.record_provider_call("content")
     from app.services import provider_usage
 
@@ -845,6 +897,8 @@ async def _provider_review(
         attempt_id = f"{attempt_id}:tool-choice-auto"
         http_attempt += 1
         counter["http_attempt"] = http_attempt
+        if transport_observer is not None:
+            transport_observer()
         await cost_guard.record_provider_call("content")
 
     try:
@@ -947,6 +1001,8 @@ async def review_generated_content(
     attempt_id: str | None = None,
     http_attempt: int = 1,
     model: str | None = None,
+    attempt_counter: dict[str, int] | None = None,
+    transport_observer: Callable[[], None] | None = None,
 ) -> ContentAiReview:
     """Return bounded advisory findings; provider/cost failures never grant PASS.
 
@@ -1002,7 +1058,8 @@ async def review_generated_content(
     # 승인본 문구만 면제 근거다 — 저장 본문 재검수·공개 재검수 백필이 넘기는 옛 가이드
     # (`content_brief`)의 문구는 승인이 철회·수정된 값일 수 있어 면제하지 않는다.
     must_use_messages = await approved_must_use_messages_with_record(hospital, philosophy)
-    attempt_counter = {"http_attempt": http_attempt}
+    counter = attempt_counter if attempt_counter is not None else {}
+    counter["http_attempt"] = http_attempt - 1
     first = await _provider_review(
         client=client,
         payload=payload,
@@ -1014,7 +1071,8 @@ async def review_generated_content(
         attempt_id=attempt_id or f"{logical_call_id}:http:{http_attempt}",
         http_attempt=http_attempt,
         must_use_messages=must_use_messages,
-        attempt_counter=attempt_counter,
+        attempt_counter=counter,
+        transport_observer=transport_observer,
     )
     if not first.escalation_eligible:
         return first
@@ -1031,7 +1089,7 @@ async def review_generated_content(
     if not escalation_decision.allowed:
         # 예산이 막으면 첫 판정을 그대로 유지한다(차단은 풀리지 않는다).
         return first
-    escalated_http_attempt = attempt_counter["http_attempt"] + 1
+    escalated_http_attempt = counter["http_attempt"] + 1
     second = await _provider_review(
         client=client,
         payload=payload,
@@ -1043,6 +1101,8 @@ async def review_generated_content(
         attempt_id=f"{logical_call_id}:escalated:http:{escalated_http_attempt}",
         http_attempt=escalated_http_attempt,
         must_use_messages=must_use_messages,
+        attempt_counter=counter,
+        transport_observer=transport_observer,
     )
     if second.status == ContentAiReviewStatus.UNAVAILABLE:
         # 공급자·파서 오류는 PASS를 만들 수 없다. 첫 차단 판정을 유지한다.
@@ -1071,4 +1131,5 @@ __all__ = (
     "hospital_review_facts_fingerprint",
     "hospital_review_profile",
     "review_generated_content",
+    "review_from_payload",
 )

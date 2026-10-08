@@ -8,11 +8,6 @@ from dataclasses import dataclass
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.admin.reports import (
-    _artifact_state,
-    _current_essence_delivery_blockers,
-    _delivery_gate,
-)
 from app.models.hospital import Hospital
 from app.models.monthly_control import (
     MonthlyMeasurementManifest,
@@ -20,11 +15,12 @@ from app.models.monthly_control import (
     ReportArtifactState,
 )
 from app.models.report import MonthlyReport
-from app.services.essence_readiness import get_essence_readiness
 from app.services.monthly_delivery_projection import (
     delivery_is_effective,
     latest_delivery_event_subquery,
 )
+from app.services.monthly_report_delivery import monthly_report_delivery_gate
+from app.services.report_artifact_validation import validate_persisted_doctor_artifact
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,32 +67,21 @@ async def load_report_facts(db: AsyncSession) -> dict[uuid.UUID, ReportFacts]:
         )
     ).all()
     facts_by_report: dict[uuid.UUID, ReportFacts] = {}
-    readiness_by_hospital = {}
     for report, hospital, manifest, artifact, latest_delivery_type in rows:
-        gate = _delivery_gate(report, manifest, artifact)
-        if report.hospital_id not in readiness_by_hospital:
-            readiness_by_hospital[report.hospital_id] = await get_essence_readiness(db, report.hospital_id)
-        readiness = readiness_by_hospital[report.hospital_id]
-        current_blockers = _current_essence_delivery_blockers(report, readiness)
+        gate = monthly_report_delivery_gate(report, manifest, artifact)
+        artifact_result = validate_persisted_doctor_artifact(report, artifact)
         facts_by_report[report.id] = ReportFacts(
             report,
             hospital,
             manifest,
             artifact,
-            _artifact_state(report, artifact),
-            gate.ready and not current_blockers,
+            ReportArtifactState(artifact_result.state),
+            gate.ready,
             delivery_is_effective(
                 latest_event_type=latest_delivery_type,
                 legacy_sent_at_present=report.sent_at is not None,
             ),
-            tuple(
-                item
-                for item in (
-                    gate.code,
-                    "CURRENT_READINESS_BLOCKED" if current_blockers else None,
-                )
-                if item is not None
-            ),
+            (gate.code,) if gate.code is not None else (),
         )
     return facts_by_report
 

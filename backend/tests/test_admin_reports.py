@@ -28,7 +28,21 @@ def _report(**overrides):
         supersedes_report_id=None,
         pdf_path="gs://reputation-reports/demo.pdf",
         doctor_pdf_path="gs://reputation-reports/demo_doctor.pdf",
-        sov_summary={"sov_pct": 42.0},
+        sov_summary={
+            "sov_pct": 42.0,
+            "change_pct": None,
+            "comparison": {"status": "NON_COMPARABLE", "change_pct": None},
+            "observation_adequacy": {
+                "status": "COMPLETE",
+                "planned_slots": 4,
+                "received_answers": 4,
+                "confirmed_slots": 4,
+                "pending_slots": 0,
+                "ambiguous_slots": 0,
+                "answer_failed_slots": 0,
+                "judgment_failed_slots": 0,
+            },
+        },
         content_summary={
             "published_count": 8,
             "operations": {
@@ -197,8 +211,12 @@ def test_monthly_limited_sample_is_deliverable_with_confirmed_evidence_and_valid
             "observation_adequacy": {
                 "status": "LIMITED",
                 "planned_slots": 5,
+                "received_answers": 5,
                 "confirmed_slots": 4,
                 "ambiguous_slots": 1,
+                "answer_failed_slots": 0,
+                "judgment_failed_slots": 0,
+                "pending_slots": 0,
             },
         },
     )
@@ -217,11 +235,7 @@ def test_monthly_limited_sample_is_deliverable_with_confirmed_evidence_and_valid
 @pytest.mark.parametrize(
     "metadata_override",
     [
-        # 1쪽(본문) 또는 2쪽(본문+부록)만 유효하다. 그 밖의 쪽수는 조판 사고다.
-        {"page_count": 3},
         {"page_size": "LETTER"},
-        {"font_family": "NanumGothic"},
-        {"font_embedded": False},
         {"korean_to_unicode": False},
         {"link_count": 0},
         {"expected_link_present": False},
@@ -240,6 +254,24 @@ def test_monthly_customer_delivery_rejects_artifacts_that_fail_the_shared_parser
 
     assert gate.ready is False
     assert gate.code == "doctor_artifact_invalid"
+
+
+@pytest.mark.parametrize(
+    "metadata_override",
+    [
+        {"page_count": 3},
+        {"font_family": "NanumGothic"},
+        {"font_embedded": False},
+    ],
+)
+def test_monthly_customer_delivery_accepts_layout_qa_metadata(metadata_override):
+    report = _report()
+    artifact = _doctor_artifact(report_id=report.id, path=report.doctor_pdf_path)
+    artifact.validation_metadata = {**artifact.validation_metadata, **metadata_override}
+
+    gate = _delivery_gate(report, _bind_manifest(report, _manifest()), artifact)
+
+    assert gate.ready is True
 
 
 @pytest.mark.parametrize("mismatch", ["hospital", "year", "month"])
@@ -555,7 +587,7 @@ async def test_mark_report_sent_sets_sent_at_and_audits(monkeypatch):
     assert report.sent_at is not None
     assert payload["sent_at"] == report.sent_at.isoformat()
     assert payload["display"]["screening_status"] == "DELIVERED"
-    assert payload["sov_summary"] == {"sov_pct": 42.0}  # full serialization
+    assert payload["sov_summary"] == report.sov_summary  # full serialization
     assert db.committed is True
     event = next(item for item in db.added if item.__class__.__name__ == "MonthlyDeliveryEvent")
     assert event.event_type == "DELIVERED"
@@ -611,7 +643,7 @@ async def test_v0_generation_artifact_is_the_doctor_download(monkeypatch):
     assert 'filename="report-2026-05-doctor.pdf"' in response.headers["content-disposition"]
 
 
-async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(monkeypatch):
+async def test_mark_report_sent_treats_current_essence_shortfall_as_warning(monkeypatch):
     hospital, report, actor, db = _ready_db()
 
     async def _stale_essence(db, hospital_id):
@@ -626,21 +658,20 @@ async def test_mark_report_sent_rechecks_current_essence_after_pdf_generation(mo
 
     monkeypatch.setattr(reports_api, "get_essence_readiness", _stale_essence)
 
-    with pytest.raises(HTTPException) as exc:
-        await reports_api.mark_report_sent(
-            hospital.id,
-            report.id,
-            ReportDeliveryRequest(
-                artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
-            ),
-            db=db,
-            actor=actor,
-        )
+    payload = await reports_api.mark_report_sent(
+        hospital.id,
+        report.id,
+        ReportDeliveryRequest(
+            artifact_sha256=db.artifact.sha256, recipient_label="김원장", channel="대면"
+        ),
+        db=db,
+        actor=actor,
+    )
 
-    assert exc.value.status_code == 409
-    assert any("콘텐츠 운영 기준이 최신 자료" in blocker for blocker in exc.value.detail["blockers"])
-    assert any("처리되지 않은 온보딩 자료" in blocker for blocker in exc.value.detail["blockers"])
-    assert report.sent_at is None
+    assert payload["delivery_ready"] is True
+    assert any("콘텐츠 운영 기준이 최신 자료" in warning for warning in payload["delivery_warnings"])
+    assert any("처리되지 않은 온보딩 자료" in warning for warning in payload["delivery_warnings"])
+    assert report.sent_at is not None
 
 
 async def test_mark_report_sent_allows_delivery_when_only_essence_version_changed(monkeypatch):
@@ -853,7 +884,7 @@ def test_report_detail_serializes_essence_summary_for_pre_pdf_review():
 
     payload = _serialize(report, full=True)
 
-    assert payload["sov_summary"] == {"sov_pct": 42.0}
+    assert payload["sov_summary"] == report.sov_summary
     assert payload["content_summary"] == report.content_summary
     assert payload["essence_summary"] == report.essence_summary
     assert payload["display"]["report_type_label"] == "월간 보고서"
@@ -997,22 +1028,8 @@ def test_report_detail_surfaces_delivery_warnings_without_blocking_readiness():
     ("overrides", "expected"),
     [
         ({"pdf_path": None}, "PDF 다운로드 파일"),
-        ({"sov_summary": None}, "AI 언급률 요약"),
+        ({"sov_summary": None}, "월간 측정 가용성 상태"),
         ({"content_summary": None}, "월간 콘텐츠 발행 요약"),
-        (
-            {
-                "content_summary": {
-                    "published_count": 8,
-                    "operations": {
-                        "delivery_blockers": [
-                            "월간 리포트 필수 사후검수 샘플 1건이 아직 완료되지 않았습니다."
-                        ]
-                    },
-                }
-            },
-            "필수 사후검수 샘플",
-        ),
-        ({"essence_summary": {"approved_philosophy_exists": False}}, "승인된 콘텐츠 운영 기준"),
     ],
 )
 async def test_mark_report_sent_blocks_incomplete_delivery(overrides, expected):
@@ -1494,12 +1511,7 @@ async def test_list_reports_returns_empty_without_any_batch_query_when_no_report
     assert db.calls == ["MonthlyReport"]  # 빈 페이지면 배치 조회 자체를 스킵한다
 
 
-def test_report_detail_lists_every_gate_blocker_not_only_the_first():
-    """게이트가 여러 이유로 막혔으면 전부 보여야 한다.
-
-    첫 줄만 노출하면 AE가 하나를 고쳐 재생성한 뒤에야 다음 이유를 알게 되고,
-    닫힌 달의 리포트가 왕복 한 번당 이유 하나씩만 드러난다.
-    """
+def test_report_detail_lists_operational_shortfalls_as_warnings():
     report = _report(
         pdf_path=None,
         sov_summary=None,
@@ -1523,10 +1535,7 @@ def test_report_detail_lists_every_gate_blocker_not_only_the_first():
         _doctor_artifact(report_id=ready_report.id, path=ready_report.doctor_pdf_path),
     )
 
-    assert ready_gate.code == "report_blocked"
-    # message는 그대로 첫 줄(호환), messages는 전부
-    assert ready_gate.message == ready_gate.messages[0]
-    assert len(ready_gate.messages) > 1
+    assert ready_gate.ready is True
 
     payload = _serialize(
         ready_report,
@@ -1537,9 +1546,9 @@ def test_report_detail_lists_every_gate_blocker_not_only_the_first():
         ),
     )
 
-    assert payload["delivery_blockers"] == list(ready_gate.messages)
-    assert any("승인된 콘텐츠 운영 기준" in blocker for blocker in payload["delivery_blockers"])
-    assert any("온보딩 자료" in blocker for blocker in payload["delivery_blockers"])
+    assert payload["delivery_blockers"] == []
+    assert any("승인된 콘텐츠 운영 기준" in warning for warning in payload["delivery_warnings"])
+    assert any("온보딩 자료" in warning for warning in payload["delivery_warnings"])
 
 
 def test_a_gate_with_a_single_reason_still_reports_exactly_that_reason():

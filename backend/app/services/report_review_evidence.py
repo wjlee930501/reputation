@@ -19,13 +19,27 @@ class OperatorCopy:
     next_action: str
 
 
-def _measurement_copy(quality: str) -> tuple[str, OperatorCopy]:
+def _measurement_copy(quality: str, availability: str | None = None) -> tuple[str, OperatorCopy]:
     if quality == "COMPLETE":
         return quality, OperatorCopy(
             "필수 측정 완료",
             "계획한 질문과 AI 서비스 측정이 모두 끝났습니다.",
             "측정 근거가 모두 있어 원장 보고 자료를 검토할 수 있습니다.",
             "아래 측정 근거와 원장 전달용 PDF를 확인해 주세요.",
+        )
+    if availability == "LIMITED":
+        return quality, OperatorCopy(
+            "제한된 표본으로 측정 완료",
+            "일부 반복 측정이 실패하거나 모호해 확정된 표본만 집계했습니다.",
+            "제한된 결과라는 점을 원장님께 설명하면서 전달할 수 있습니다.",
+            "측정 한계를 확인한 뒤 원장 전달용 PDF를 검토해 주세요.",
+        )
+    if availability == "UNAVAILABLE":
+        return quality, OperatorCopy(
+            "이번 달 언급률 미산출",
+            "확정 가능한 측정 표본이 없어 언급률을 산출하지 않았습니다.",
+            "0%로 오해되지 않도록 측정 실패·대기 현황과 다음 조치를 설명할 수 있습니다.",
+            "운영 보고서의 실패 현황과 다음 조치를 확인해 주세요.",
         )
     if quality == "DEGRADED":
         return quality, OperatorCopy(
@@ -143,7 +157,11 @@ async def build_report_review_evidence(
     notification_state, notification_copy = _notification_copy(
         notification.state if notification is not None else None
     )
-    quality, measurement_copy = _measurement_copy(report.quality)
+    stored_summary = getattr(report, "sov_summary", None)
+    summary = stored_summary if isinstance(stored_summary, dict) else {}
+    adequacy = summary.get("observation_adequacy")
+    availability = adequacy.get("status") if isinstance(adequacy, dict) else None
+    quality, measurement_copy = _measurement_copy(report.quality, availability)
     operations_url = f"/operations?queue=REPORTS&hospital_id={report.hospital_id}"
     supersedes = str(report.supersedes_report_id) if report.supersedes_report_id else None
     return {

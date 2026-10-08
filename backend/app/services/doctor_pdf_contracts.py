@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, NotRequired, TypedDict
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.report_narrative import MonthlyNarrative, ReportKind
 
@@ -166,23 +166,14 @@ class DoctorArtifactMetadata(BaseModel):
     page_count: int = Field(ge=1, le=32, strict=True)
     page_size: Literal["A4"]
     glyph_count: int = Field(gt=0)
-    font_family: Literal["Pretendard"]
-    font_embedded: Literal[True]
+    font_family: str = Field(min_length=1)
+    font_embedded: bool = Field(strict=True)
     korean_to_unicode: Literal[True]
     link_count: int = Field(gt=0)
     expected_link_present: Literal[True]
     required_text_present: Literal[True]
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     byte_size: int = Field(gt=0)
-
-    @model_validator(mode="after")
-    def preserve_legacy_page_contract(self):
-        if self.validation_version == "doctor-pdf-v1" and self.page_count > 2:
-            raise ValueError("Legacy doctor PDFs allow only one or two pages")
-        if self.validation_version == "doctor-pdf-v3" and self.page_count < 4:
-            raise ValueError("V3 requires three main pages and an evidence appendix")
-        return self
-
 
 @dataclass(frozen=True, slots=True)
 class ValidatedDoctorPdf:

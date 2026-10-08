@@ -103,7 +103,13 @@ def public_surface_has_required_references(item: ContentItem) -> bool:
     content_type = getattr(item, "content_type", None)
     if content_type is not None and _type_value(content_type) not in _REFERENCES_REQUIRED_VALUES:
         return True
-    return count_citable_references(item) > 0
+    if count_citable_references(item) <= 0:
+        return False
+    if not hasattr(item, "approval_status"):
+        return True
+    from app.services.reference_publication import publication_references_current
+
+    return publication_references_current(item)
 
 
 def count_citable_references(item: ContentItem) -> int:

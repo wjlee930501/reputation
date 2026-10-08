@@ -30,7 +30,11 @@ from app.models.essence import (
 from app.models.hospital import Hospital
 from app.services.content_image_binding import certified_public_image_asset
 from app.services.content_publication import PUBLICATION_CHECK_FIELDS, publication_field_values
-from app.services.content_visibility import UNSET_PHILOSOPHY, assess_public_visibility
+from app.services.content_visibility import (
+    UNSET_PHILOSOPHY,
+    approved_public_view,
+    assess_public_visibility,
+)
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     get_public_approved_philosophy_id,
@@ -314,10 +318,14 @@ async def list_published_contents(
 
     stmt = (
         select(ContentItem)
-        .options(selectinload(ContentItem.query_target))
+        .options(
+            selectinload(ContentItem.query_target),
+            selectinload(ContentItem.active_revision),
+        )
         .where(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.active_revision_id.is_not(None),
             ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
             ContentItem.content_philosophy_id == public_philosophy.id,
         )
@@ -340,7 +348,10 @@ async def get_content_public(
 
     item_result = await db.execute(
         select(ContentItem)
-        .options(selectinload(ContentItem.query_target))
+        .options(
+            selectinload(ContentItem.query_target),
+            selectinload(ContentItem.active_revision),
+        )
         .where(ContentItem.id == content_id)
     )
     item = item_result.scalar_one_or_none()
@@ -748,25 +759,29 @@ def _serialize_item(
     slug: str,
     hospital: Hospital | None = None,
 ) -> dict:
+    public_item = approved_public_view(item)
+    if public_item is None:
+        raise RuntimeError("public serialization requires an active approved revision")
     query_target = getattr(item, "__dict__", {}).get("query_target")
     query_target_id = getattr(item, "query_target_id", None)
     d = {
         "id": str(item.id),
         "content_type": item.content_type,
-        "title": item.title,
-        "meta_description": item.meta_description,
+        "title": public_item.title,
+        "meta_description": public_item.meta_description,
         "image_url": _content_image_url(slug, item, hospital),
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
-        "references": item.references_list or [],
-        "faq_question": item.faq_question,
-        "faq_answer_summary": item.faq_answer_summary,
+        "references": public_item.references_list or [],
+        "faq_question": public_item.faq_question,
+        "faq_answer_summary": public_item.faq_answer_summary,
+        "revision_hash": public_item.revision_hash,
         "query_target_id": str(query_target_id) if query_target_id else None,
         "query_target_treatment": getattr(query_target, "treatment", None)
         if query_target is not None
         else None,
-        "reading_minutes": _reading_minutes(item.body),
+        "reading_minutes": _reading_minutes(public_item.body),
     }
     return d
 
@@ -777,5 +792,8 @@ def _serialize_item_detail(
     hospital: Hospital | None = None,
 ) -> dict:
     serialized = _serialize_item(item, slug, hospital)
-    serialized["body"] = item.body
+    public_item = approved_public_view(item)
+    if public_item is None:
+        raise RuntimeError("public serialization requires an active approved revision")
+    serialized["body"] = public_item.body
     return serialized

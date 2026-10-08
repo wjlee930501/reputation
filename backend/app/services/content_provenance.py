@@ -45,6 +45,33 @@ def generation_evidence_note_ids(philosophy: Any, approved_brief: dict | None) -
     return ids
 
 
+def generation_input_source_ids(item: Any) -> tuple[str, ...] | None:
+    """Return source inputs recorded by the writer, or ``None`` for legacy/invalid data.
+
+    The list proves only that a source was included in the generation input.  It
+    does not claim that every sentence in the article semantically depends on it.
+    Explicit correction/retraction therefore treats inclusion conservatively,
+    while malformed legacy provenance remains an unknown-review case.
+    """
+
+    summary = getattr(item, "essence_check_summary", None)
+    provenance = summary.get("generation_provenance") if isinstance(summary, dict) else None
+    if not isinstance(provenance, dict) or "evidence_source_asset_ids" not in provenance:
+        return None
+    raw_ids = provenance["evidence_source_asset_ids"]
+    if not isinstance(raw_ids, list):
+        return None
+    parsed: set[str] = set()
+    for raw_id in raw_ids:
+        if not isinstance(raw_id, str):
+            return None
+        try:
+            parsed.add(str(uuid.UUID(raw_id)))
+        except ValueError:
+            return None
+    return tuple(sorted(parsed))
+
+
 def build_generation_provenance(
     db,
     *,
@@ -89,13 +116,10 @@ def removed_generation_source_ids(item: Any, philosophy: Any) -> tuple[str, ...]
     deterministic re-screen path instead of causing a fleet-wide false outage.
     """
 
-    summary = getattr(item, "essence_check_summary", None)
-    provenance = summary.get("generation_provenance") if isinstance(summary, dict) else None
-    if not isinstance(provenance, dict) or "evidence_source_asset_ids" not in provenance:
+    generation_inputs = generation_input_source_ids(item)
+    if generation_inputs is None:
         return ()
-    dependencies = {
-        str(value) for value in (provenance.get("evidence_source_asset_ids") or [])
-    }
+    dependencies = set(generation_inputs)
     current = {
         str(value) for value in (getattr(philosophy, "source_asset_ids", None) or [])
     }
@@ -139,6 +163,8 @@ def mark_removed_source_dependency(item: Any, philosophy: Any) -> tuple[str, ...
         item.last_reviewed_philosophy_id = getattr(philosophy, "id", None)
     if hasattr(item, "content_revision"):
         item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
+    if hasattr(item, "active_revision_id"):
+        item.active_revision_id = None
 
     # A source withdrawal is an automatic unpublish-and-repair event only for the
     # articles that actually depended on that source. Keep the old body as input

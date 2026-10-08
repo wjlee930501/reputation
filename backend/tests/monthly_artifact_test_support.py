@@ -1,14 +1,46 @@
 """Shared typed fixtures for Task24 monthly doctor-artifact PostgreSQL tests."""
 
 import uuid
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from app.models.monthly_control import MonthlyMeasurementManifest
 from app.models.report import MonthlyReport
+from app.services.monthly_sov_types import CellAttempt, ManifestCellInput
 from app.services.report_artifact_validation import (
     DoctorArtifactMetadata,
     PublishedDoctorPdf,
 )
+
+
+def complete_cells() -> tuple[ManifestCellInput, ...]:
+    measured_at = datetime(2026, 7, 31, tzinfo=timezone.utc)
+    return tuple(
+        ManifestCellInput(
+            query_key=f"{platform}:local:recovery",
+            query_text="지역 병원 추천",
+            platform=platform,
+            query_intent="LOCAL",
+            state="SUCCESS",
+            query_matrix_id=None,
+            query_target_id=None,
+            query_variant_id=None,
+            query_intent_source="FROZEN",
+            attempts=tuple(
+                CellAttempt(
+                    record_id=uuid.uuid4(),
+                    measured_at=measured_at,
+                    succeeded=True,
+                    is_mentioned=index < 5,
+                )
+                for index in range(10)
+            ),
+            planned_repeat_count=10,
+            received_answer_count=10,
+            confirmed_slot_count=10,
+        )
+        for platform in ("chatgpt", "gemini")
+    )
 
 
 def monthly_sov() -> SimpleNamespace:
@@ -22,9 +54,50 @@ def monthly_sov() -> SimpleNamespace:
         "excluded_count": 0,
         "query_intent_snapshot": "FROZEN",
         "cells": [],
-        "platforms": [],
+        "platforms": [
+            {
+                "platform": platform,
+                "mention_rate": 50.0,
+                "mentioned_attempts": 5,
+                "attempts_used": 10,
+            }
+            for platform in ("chatgpt", "gemini")
+        ],
         "queries": [],
         "segments": {},
+        "observation_adequacy": {
+            "status": "COMPLETE",
+            "planned_slots": 20,
+            "received_answers": 20,
+            "confirmed_slots": 20,
+            "ambiguous_slots": 0,
+            "answer_failed_slots": 0,
+            "judgment_failed_slots": 0,
+            "pending_slots": 0,
+            "pending_semantics": "INCLUDES_FAILURES",
+            "platforms": [
+                {
+                    "platform": "chatgpt",
+                    "planned_slots": 10,
+                    "received_answers": 10,
+                    "confirmed_slots": 10,
+                    "ambiguous_slots": 0,
+                    "answer_failed_slots": 0,
+                    "judgment_failed_slots": 0,
+                    "pending_slots": 0,
+                },
+                {
+                    "platform": "gemini",
+                    "planned_slots": 10,
+                    "received_answers": 10,
+                    "confirmed_slots": 10,
+                    "ambiguous_slots": 0,
+                    "answer_failed_slots": 0,
+                    "judgment_failed_slots": 0,
+                    "pending_slots": 0,
+                },
+            ],
+        },
         "comparison": {
             "status": "NON_COMPARABLE",
             "reason": "NO_PRIOR_MANIFEST",

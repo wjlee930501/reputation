@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 
 from app.core.config import settings
 from app.models.monthly_control import MonthlyMeasurementManifest, MonthlyReportArtifact
 from app.models.report import MonthlyReport
-from app.services.report_artifact_validation import parse_doctor_artifact_metadata
+from app.services.report_artifact_validation import validate_persisted_doctor_artifact
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +25,81 @@ class DeliveryGate:
         if self.messages:
             return self.messages
         return (self.message,) if self.message else ()
+
+
+_AVAILABILITY_COUNT_KEYS = (
+    "planned_slots",
+    "received_answers",
+    "confirmed_slots",
+    "ambiguous_slots",
+    "answer_failed_slots",
+    "judgment_failed_slots",
+    "pending_slots",
+)
+
+
+def _availability_counts_are_consistent(row: Mapping[str, object]) -> bool:
+    values = {key: row.get(key) for key in _AVAILABILITY_COUNT_KEYS}
+    present = {key for key, value in values.items() if value is not None}
+    if present <= {"confirmed_slots"}:
+        value = values["confirmed_slots"]
+        return value is None or type(value) is int and value >= 0
+    if present and present != set(_AVAILABILITY_COUNT_KEYS):
+        return False
+    if not present:
+        return True
+    if any(type(value) is not int or value < 0 for value in values.values()):
+        return False
+    planned = values["planned_slots"]
+    received = values["received_answers"]
+    confirmed = values["confirmed_slots"]
+    ambiguous = values["ambiguous_slots"]
+    answer_failed = values["answer_failed_slots"]
+    judgment_failed = values["judgment_failed_slots"]
+    pending = values["pending_slots"]
+    if planned != confirmed + ambiguous + pending:
+        return False
+    received_floor = confirmed + ambiguous + judgment_failed
+    return (
+        received_floor <= received <= planned - answer_failed
+        and answer_failed + judgment_failed <= pending
+    )
+
+
+def _availability_platforms_are_consistent(adequacy: Mapping[str, object]) -> bool:
+    platforms = adequacy.get("platforms")
+    if platforms is None:
+        return True
+    if not isinstance(platforms, list) or not platforms:
+        return False
+    if any(not isinstance(row, Mapping) for row in platforms):
+        return False
+    rows = [row for row in platforms if isinstance(row, Mapping)]
+    platform_ids = [row.get("platform") for row in rows]
+    if any(not isinstance(value, str) or not value for value in platform_ids):
+        return False
+    if len(platform_ids) != len(set(platform_ids)):
+        return False
+    for row in rows:
+        if not _availability_counts_are_consistent(row):
+            return False
+        mentioned = row.get("confirmed_mentioned_count")
+        sample = row.get("confirmed_sample_count")
+        confirmed = row.get("confirmed_slots")
+        if mentioned is not None or sample is not None:
+            if (
+                type(mentioned) is not int
+                or type(sample) is not int
+                or mentioned < 0
+                or sample < mentioned
+                or type(confirmed) is not int
+                or sample > confirmed
+            ):
+                return False
+    return all(
+        adequacy.get(key) == sum(row.get(key, 0) for row in rows)
+        for key in _AVAILABILITY_COUNT_KEYS
+    )
 
 
 def safe_local_report_path(pdf_path: str) -> Path | None:
@@ -55,60 +132,110 @@ def monthly_report_delivery_blockers(report: MonthlyReport) -> list[str]:
         blockers.append("PDF 다운로드 파일이 준비되지 않았습니다.")
 
     sov_summary = report.sov_summary if isinstance(report.sov_summary, dict) else {}
-    if sov_summary.get("sov_pct") is None:
-        blockers.append("AI 언급률 요약이 없습니다.")
+    adequacy = sov_summary.get("observation_adequacy")
+    if not isinstance(adequacy, Mapping):
+        blockers.append("월간 측정 가용성 상태를 확인할 수 없습니다.")
+    else:
+        if not _availability_counts_are_consistent(
+            adequacy
+        ) or not _availability_platforms_are_consistent(adequacy):
+            blockers.append("월간 측정 가용성 건수의 합계가 계획 표본과 일치하지 않습니다.")
+        status = adequacy.get("status")
+        confirmed = adequacy.get("confirmed_slots")
+        sov_pct = sov_summary.get("sov_pct")
+        numeric_sov = (
+            isinstance(sov_pct, (int, float))
+            and not isinstance(sov_pct, bool)
+            and isfinite(sov_pct)
+            and 0 <= sov_pct <= 100
+        )
+        if status == "UNAVAILABLE":
+            if confirmed != 0:
+                blockers.append("측정 불가 상태의 확정 답변 수가 0이 아닙니다.")
+            if sov_pct is not None:
+                blockers.append("확정된 답변이 없는 달에는 AI 언급률을 0으로 표시할 수 없습니다.")
+        elif status == "LIMITED":
+            if not isinstance(confirmed, int) or isinstance(confirmed, bool) or confirmed <= 0:
+                blockers.append("제한된 결과에 확정 답변 수가 없습니다.")
+            if sov_pct is not None and not numeric_sov:
+                blockers.append("제한된 결과의 AI 언급률 값이 올바르지 않습니다.")
+        elif status == "COMPLETE":
+            if not numeric_sov:
+                blockers.append("완료된 측정의 AI 언급률이 없습니다.")
+        else:
+            blockers.append("지원하지 않는 월간 측정 가용성 상태입니다.")
+
+        comparison = sov_summary.get("comparison")
+        top_level_change = sov_summary.get("change_pct")
+        comparison_change = (
+            comparison.get("change_pct") if isinstance(comparison, Mapping) else None
+        )
+        if (
+            not isinstance(comparison, Mapping)
+            or comparison.get("status") != "COMPARABLE"
+        ) and (top_level_change is not None or comparison_change is not None):
+            blockers.append("비교할 수 없는 표본에는 전월 대비 증감을 표시할 수 없습니다.")
 
     content_summary = report.content_summary if isinstance(report.content_summary, dict) else {}
     if "published_count" not in content_summary:
         blockers.append("월간 콘텐츠 발행 요약이 없습니다.")
     operations_summary = content_summary.get("operations")
-    if isinstance(operations_summary, dict):
-        for blocker in operations_summary.get("delivery_blockers") or []:
-            if isinstance(blocker, str) and blocker:
-                blockers.append(blocker)
-    else:
+    if not isinstance(operations_summary, dict):
         blockers.append("월간 콘텐츠 운영 검수 요약이 없습니다.")
 
     essence = report.essence_summary if isinstance(report.essence_summary, dict) else {}
-    if not essence.get("approved_philosophy_exists"):
-        blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
-    # source_stale stays in essence_summary as audit metadata only (#95 BaseEssence);
-    # hash drift must not block delivery by itself.
-
-    source_count = essence.get("source_count")
-    processed_count = essence.get("processed_source_count")
-    if not isinstance(source_count, int) or source_count < 1:
-        blockers.append("리포트에 반영된 온보딩 자료가 없습니다.")
-    elif processed_count != source_count:
-        blockers.append("처리되지 않은 온보딩 자료가 남아 있습니다.")
-
-    if (essence.get("needs_review_content_count") or 0) > 0:
-        blockers.append("운영 기준 재검수가 필요한 콘텐츠가 남아 있습니다.")
-    if (essence.get("missing_philosophy_content_count") or 0) > 0:
-        blockers.append("승인된 운영 기준 없이 생성된 콘텐츠가 남아 있습니다.")
     if essence.get("medical_risk_findings"):
         blockers.append("의료광고 리스크 표현이 발견된 콘텐츠가 있습니다.")
     return blockers
 
 
+def monthly_report_delivery_warnings(report: MonthlyReport) -> list[str]:
+    """Operational gaps disclosed to the AE without rewriting closed-period facts."""
+    warnings: list[str] = []
+    sov_summary = report.sov_summary if isinstance(report.sov_summary, dict) else {}
+    adequacy = sov_summary.get("observation_adequacy")
+    if isinstance(adequacy, Mapping) and adequacy.get("status") == "LIMITED":
+        warnings.append(
+            "일부 반복 측정이 모호하거나 실패해 확정된 표본만으로 제한된 결과를 제공합니다."
+        )
+    if isinstance(adequacy, Mapping) and adequacy.get("status") == "UNAVAILABLE":
+        warnings.append("확정 가능한 측정 표본을 확보하지 못해 언급률을 산출하지 않았습니다.")
+
+    content_summary = report.content_summary if isinstance(report.content_summary, dict) else {}
+    operations = content_summary.get("operations")
+    if isinstance(operations, Mapping):
+        for key in ("delivery_blockers", "delivery_warnings"):
+            warnings.extend(
+                value
+                for value in operations.get(key) or []
+                if isinstance(value, str) and value
+            )
+
+    essence = report.essence_summary if isinstance(report.essence_summary, dict) else {}
+    if not essence.get("approved_philosophy_exists"):
+        warnings.append("승인된 콘텐츠 운영 기준이 없습니다.")
+    source_count = essence.get("source_count")
+    processed_count = essence.get("processed_source_count")
+    if not isinstance(source_count, int) or source_count < 1:
+        warnings.append("리포트에 반영된 온보딩 자료가 없습니다.")
+    elif processed_count != source_count:
+        warnings.append("처리되지 않은 온보딩 자료가 남아 있습니다.")
+    if (essence.get("needs_review_content_count") or 0) > 0:
+        warnings.append("운영 기준 재검수가 필요한 콘텐츠가 남아 있습니다.")
+    if (essence.get("missing_philosophy_content_count") or 0) > 0:
+        warnings.append("승인된 운영 기준 없이 생성된 콘텐츠가 남아 있습니다.")
+    warnings.extend(
+        value
+        for value in (getattr(report, "delivery_blockers", None) or [])
+        if isinstance(value, str) and value != "DOCTOR_ARTIFACT_UNVALIDATED"
+    )
+    return list(dict.fromkeys(warnings))
+
+
 def monthly_doctor_artifact_is_valid(
     report: MonthlyReport, artifact: MonthlyReportArtifact | None
 ) -> bool:
-    if artifact is None:
-        return False
-    metadata = parse_doctor_artifact_metadata(artifact.validation_metadata)
-    return bool(
-        artifact.report_id == report.id
-        and artifact.audience == "DOCTOR"
-        and artifact.path == report.doctor_pdf_path
-        and artifact.validated is True
-        and len(artifact.sha256) == 64
-        and all(character in "0123456789abcdef" for character in artifact.sha256)
-        and artifact.byte_size > 0
-        and metadata is not None
-        and metadata.sha256 == artifact.sha256
-        and metadata.byte_size == artifact.byte_size
-    )
+    return validate_persisted_doctor_artifact(report, artifact).valid
 
 
 def coverage_is_final(report: MonthlyReport) -> bool:
@@ -132,6 +259,10 @@ def coverage_is_final(report: MonthlyReport) -> bool:
     if adequacy is not None and not isinstance(adequacy, dict):
         return False
     if isinstance(adequacy, dict):
+        if not _availability_counts_are_consistent(
+            adequacy
+        ) or not _availability_platforms_are_consistent(adequacy):
+            return False
         counter_keys = (
             "planned_slots",
             "confirmed_slots",
@@ -148,7 +279,7 @@ def coverage_is_final(report: MonthlyReport) -> bool:
             return False
         if "planned_slots" in adequacy:
             planned = adequacy["planned_slots"]
-            if planned <= 0 or any(adequacy.get(key, 0) > planned for key in counter_keys[1:]):
+            if any(adequacy.get(key, 0) > planned for key in counter_keys[1:]):
                 return False
     if report.quality == "COMPLETE":
         if isinstance(adequacy, dict) and adequacy.get("status") not in (None, "LEGACY_UNKNOWN"):
@@ -170,12 +301,17 @@ def coverage_is_final(report: MonthlyReport) -> bool:
                 )
             )
         return counts_complete
-    return bool(
-        report.quality == "DEGRADED"
-        and isinstance(adequacy, dict)
-        and adequacy.get("status") == "LIMITED"
-        and adequacy.get("confirmed_slots", 0) > 0
-    )
+    # Older builders persisted a terminal LIMITED/UNAVAILABLE manifest as BLOCKED.
+    # The closed frozen facts now decide availability; preserve that history rather
+    # than requiring an in-place rewrite solely to use the delivery contract.
+    if report.quality not in {"DEGRADED", "BLOCKED"} or not isinstance(adequacy, dict):
+        return False
+    if adequacy.get("status") == "LIMITED":
+        confirmed = adequacy.get("confirmed_slots")
+        return type(confirmed) is int and confirmed > 0
+    if adequacy.get("status") == "UNAVAILABLE":
+        return adequacy.get("confirmed_slots") == 0
+    return False
 
 
 def monthly_report_delivery_gate(

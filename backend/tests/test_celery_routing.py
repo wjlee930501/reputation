@@ -153,12 +153,12 @@ def test_essence_auto_review_has_immediate_and_periodic_recovery_routes():
     assert REDBEAT_SCHEDULE_VERSION >= "2026-08-18.2"
 
 
-def test_monthly_reports_close_first_on_day_one_and_catch_up_daily_through_day_seven():
+def test_monthly_reports_close_first_then_finalize_after_day_seven_horizon():
     schedule = celery_app.conf.beat_schedule["monthly-reports"]["schedule"]
     assert schedule.minute == {15}
     assert schedule.hour == {0}
-    assert schedule.day_of_month == set(range(1, 8))
-    assert REDBEAT_SCHEDULE_VERSION >= "2026-09-04.1"
+    assert schedule.day_of_month == set(range(1, 9))
+    assert REDBEAT_SCHEDULE_VERSION >= "2026-10-09.1"
 
 
 def test_monthly_sov_measurement_runs_only_in_the_month_end_window():

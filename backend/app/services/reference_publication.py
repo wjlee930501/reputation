@@ -143,13 +143,28 @@ class PublicationReferenceRefresh:
 
 
 def publication_references_current(item: object, *, now: datetime | None = None) -> bool:
-    """발행 게이트 — 모든 참고자료에 같은 URL·같은 주제의 신선한 통과 기록이 있는가."""
+    """Require current draft evidence or immutable evidence bound to an approved edition."""
 
+    evidence = item
+    status = _status_value(item)
+    if status in {"PUBLISHED", "WITHHELD"} and getattr(item, "active_revision_id", None) is not None:
+        loaded_revision = getattr(item, "__dict__", {}).get("active_revision")
+        if loaded_revision is not None:
+            evidence = loaded_revision
     return reference_gate_status(
-        getattr(item, "references_list", None),
-        getattr(item, "reference_checks", None),
+        getattr(evidence, "references_list", None),
+        getattr(evidence, "reference_checks", None),
         topic_terms=item_topic_terms(item),
         now=now,
+        revision_bound=str(
+            getattr(
+                getattr(evidence, "approval_status", ""),
+                "value",
+                getattr(evidence, "approval_status", ""),
+            )
+            or ""
+        ).upper()
+        == "APPROVED",
     ).current
 
 
@@ -160,6 +175,35 @@ def publication_references_missing(item: object) -> bool:
         return False
     entries, _malformed = split_reference_entries(getattr(item, "references_list", None))
     return not entries
+
+
+def bind_reference_checks_to_revision(item: object) -> list[dict[str, Any]] | None:
+    """Validate exact successful evidence while preserving authentic 0082 history."""
+
+    if not publication_references_current(item):
+        return None
+    entries, malformed = split_reference_entries(getattr(item, "references_list", None))
+    if malformed:
+        return None
+    indexed = index_reference_checks(getattr(item, "reference_checks", None))
+    for entry in entries:
+        url = str(entry.get("url") or "").strip()
+        check = indexed.get(reference_url_fingerprint(url))
+        if check is None or str(check.get("verdict") or "").lower() != VERDICT_PASS:
+            return None
+        schema_version = int(check.get("schema_version") or 0)
+        if schema_version >= 3 and not (
+            str(check.get("document_identity") or "").strip()
+            and str(check.get("content_fingerprint") or "").strip()
+            and isinstance(check.get("retrieval_evidence"), Mapping)
+            and check["retrieval_evidence"].get("status") == 200
+            and str(check["retrieval_evidence"].get("final_url") or "").strip()
+        ):
+            return None
+    checks = getattr(item, "reference_checks", None)
+    if not isinstance(checks, list) or any(not isinstance(check, Mapping) for check in checks):
+        return None
+    return [dict(check) for check in checks]
 
 
 def _strips_curated_references(item: object, *, title: object = None) -> bool:
@@ -251,9 +295,7 @@ async def refresh_publication_references(
         names_curated_document(entry, previous_checks) for entry in references
     )
     if (
-        reference_gate_status(
-            raw_references, previous_checks, topic_terms=topic_terms, now=observed
-        ).current
+        publication_references_current(item, now=observed)
         and not (required and not references)
         and not strip_curated
     ):

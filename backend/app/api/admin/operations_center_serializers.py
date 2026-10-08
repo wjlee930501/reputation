@@ -163,6 +163,22 @@ def retry_action(
         # 남은 예산 검사는 재시도 라우트가 서버에서 한 번 더 한다.
         return None
     code = str(run.safe_error_code or "")
+    if code == "LEGACY_SPEND_UNKNOWN":
+        payload = run.request_payload if isinstance(run.request_payload, dict) else {}
+        content_id = str(payload.get("source_id") or "")
+        if not content_id:
+            return None
+        return OperationsAction(
+            kind="POST_ACTION",
+            label="레거시 예산 교체 후 다시 시도",
+            method="POST",
+            path=(
+                f"/api/admin/hospitals/{hospital_id}/content/{content_id}/regenerate"
+            ),
+            enabled=enabled,
+            reason_required=True,
+            requires_idempotency_key=True,
+        )
     if code == "CONTENT_AI_REVIEW_UNAVAILABLE" and operator_required:
         # 자동 재검수가 한도에 닿아 사람에게 넘어온 검수 장애다. "시스템 재시도 중"은 더는 사실이
         # 아니고, 할 일은 인시던트 조치 문장(원고 확인·수정)이 말한다 — 재시도 버튼을 내지 않는다.

@@ -1,4 +1,6 @@
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol, TypedDict
 
 from app.services import sov_engine
 from app.services.monthly_sov_types import (
@@ -13,6 +15,92 @@ from app.services.monthly_sov_types import (
     SegmentSummary,
 )
 from app.services.sov_statistics import delta_significance, wilson_interval
+
+
+class HorizonObservation(Protocol):
+    platform: str
+    answer_status: str
+    judgment_status: str
+
+
+class HorizonPlatformSummary(TypedDict):
+    platform: str
+    planned_slots: int
+    received_answers: int
+    confirmed_slots: int
+    ambiguous_slots: int
+    answer_failed_slots: int
+    judgment_failed_slots: int
+    pending_slots: int
+
+
+class MonthlySovHorizonSummary(TypedDict):
+    status: str
+    planned_slots: int
+    received_answers: int
+    confirmed_slots: int
+    ambiguous_slots: int
+    answer_failed_slots: int
+    judgment_failed_slots: int
+    pending_slots: int
+    platforms: list[HorizonPlatformSummary]
+
+
+def build_monthly_sov_horizon_summary(
+    observations: Iterable[HorizonObservation], configured_platforms: tuple[str, ...]
+) -> MonthlySovHorizonSummary:
+    """Freeze truthful terminal counts without folding non-confirmed slots into negatives."""
+
+    rows = tuple(observations)
+
+    def summarize(platform: str) -> HorizonPlatformSummary:
+        platform_rows = tuple(row for row in rows if row.platform == platform)
+        confirmed = sum(row.judgment_status == "CONFIRMED" for row in platform_rows)
+        ambiguous = sum(row.judgment_status == "AMBIGUOUS" for row in platform_rows)
+        return {
+            "platform": platform,
+            "planned_slots": len(platform_rows),
+            "received_answers": sum(
+                row.answer_status == "RECEIVED" for row in platform_rows
+            ),
+            "confirmed_slots": confirmed,
+            "ambiguous_slots": ambiguous,
+            "answer_failed_slots": sum(
+                row.answer_status == "FAILED" for row in platform_rows
+            ),
+            "judgment_failed_slots": sum(
+                row.answer_status == "RECEIVED" and row.judgment_status == "FAILED"
+                for row in platform_rows
+            ),
+            "pending_slots": len(platform_rows) - confirmed - ambiguous,
+        }
+
+    platforms = [summarize(platform) for platform in dict.fromkeys(configured_platforms)]
+    planned = len(rows)
+    confirmed = sum(row.judgment_status == "CONFIRMED" for row in rows)
+    status = (
+        "COMPLETE"
+        if planned > 0 and confirmed == planned
+        else "LIMITED"
+        if confirmed > 0
+        else "UNAVAILABLE"
+    )
+    return {
+        "status": status,
+        "planned_slots": planned,
+        "received_answers": sum(row.answer_status == "RECEIVED" for row in rows),
+        "confirmed_slots": confirmed,
+        "ambiguous_slots": sum(row.judgment_status == "AMBIGUOUS" for row in rows),
+        "answer_failed_slots": sum(row.answer_status == "FAILED" for row in rows),
+        "judgment_failed_slots": sum(
+            row.answer_status == "RECEIVED" and row.judgment_status == "FAILED"
+            for row in rows
+        ),
+        "pending_slots": planned
+        - confirmed
+        - sum(row.judgment_status == "AMBIGUOUS" for row in rows),
+        "platforms": platforms,
+    }
 
 
 def _scored_cells(

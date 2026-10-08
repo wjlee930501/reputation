@@ -688,6 +688,58 @@ def test_page_html_double_is_long_enough_for_the_empty_template_rule():
     assert len(document_body("치핵")) > 200
 
 
+async def test_unchanged_approved_revision_ignores_age_and_source_outage():
+    """Immutable approved evidence survives age without another retrieval purchase."""
+
+    url = KDCA_VIEW.format(99122)
+    approved = SimpleNamespace(
+        approval_status="APPROVED",
+        title=HEMORRHOID_TITLE,
+        body="## 치핵의 원인과 치료\n치핵 진료 안내",
+        faq_question=None,
+        content_brief=None,
+        references_list=[{"title": "치핵", "url": url}],
+        reference_checks=[_pass(url, age=timedelta(days=365))],
+        content_type="DISEASE",
+    )
+    _stamp(approved)
+    fetcher = PageFetcher({url: (503, url, "")})
+
+    refresh = await refresh_publication_references(
+        approved, ReferenceVerifier(fetcher, domain_spacing=0)
+    )
+
+    assert publication_references_current(approved)
+    assert refresh.already_current
+    assert fetcher.calls == []
+
+
+def test_explicit_retract_blocks_unchanged_approved_revision(monkeypatch):
+    """An explicit source withdrawal remains blocking for an approved edition."""
+
+    from app.services import reference_verification
+
+    url = KDCA_VIEW.format(99123)
+    approved = SimpleNamespace(
+        approval_status="APPROVED",
+        title=HEMORRHOID_TITLE,
+        body="## 치핵의 원인과 치료\n치핵 진료 안내",
+        faq_question=None,
+        content_brief=None,
+        references_list=[{"title": "치핵", "url": url}],
+        reference_checks=[_pass(url, age=timedelta(days=365))],
+        content_type="DISEASE",
+    )
+    _stamp(approved)
+    monkeypatch.setattr(
+        reference_verification,
+        "reference_exclusion_reason",
+        lambda candidate: "source_retracted" if candidate == url else None,
+    )
+
+    assert not publication_references_current(approved)
+
+
 # ── Pass 2: 기관 사이트 일시 장애는 미룸(제거·치유·보류 없음) ──────────────────
 
 

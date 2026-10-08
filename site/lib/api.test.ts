@@ -174,14 +174,18 @@ test('fetchContent throws a generic error on other non-ok statuses (surfaces as 
 test('fetchContent returns parsed JSON on a 200', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>
-    new Response(JSON.stringify(contentPayload({ id: 'abc', title: '제목', body: '본문' })), {
+    new Response(
+      JSON.stringify(contentPayload({ id: 'abc', title: '제목', body: '본문', revision_hash: 'a'.repeat(64) })),
+      {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    })) as typeof fetch
+      },
+    )) as typeof fetch
   try {
     const content = await fetchContent('demo-clinic', 'abc')
     assert.equal(content.id, 'abc')
     assert.equal(content.title, '제목')
+    assert.equal(content.revision_hash, 'a'.repeat(64))
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -258,6 +262,20 @@ test('fetchContent rejects malformed backend payloads at runtime', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>
     new Response(JSON.stringify(contentPayload({ body: null })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    await assert.rejects(() => fetchContent('demo-clinic', 'abc'), /Invalid content payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchContent rejects a malformed active revision cache identity', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(contentPayload({ revision_hash: 7 })), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })) as typeof fetch

@@ -22,7 +22,10 @@ from app.models.essence import PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, IncidentState
 from app.workers import generation_retry_policy, nightly_generation_batch, topic_swap_fallback
-from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
+from app.workers.generation_attempt_state import (
+    GENERATION_ATTEMPT_KEY,
+    fresh_generation_attempt,
+)
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import GenerationRetryClass
 
@@ -36,7 +39,13 @@ SLOT = date(2026, 9, 16)
 
 
 def _attempt(reason="GENERATION_REJECTED", retry_class=GenerationRetryClass.OPERATOR_REQUIRED):
-    return {GENERATION_ATTEMPT_KEY: {"reason": reason, "retry_class": retry_class.value}}
+    return {
+        GENERATION_ATTEMPT_KEY: {
+            **fresh_generation_attempt(),
+            "reason": reason,
+            "retry_class": retry_class.value,
+        }
+    }
 
 
 def _item(**overrides):
@@ -228,7 +237,12 @@ def test_swap_resets_the_slot_and_keeps_the_month_accounting(chosen_target):
     assert values["title"] is None
     assert values["body"] is None
     assert values["references_list"] is None
-    assert values["essence_check_summary"] is None  # 시도 기록·독립 검수 메타를 함께 비운다
+    swapped_attempt = values["essence_check_summary"][GENERATION_ATTEMPT_KEY]
+    assert swapped_attempt["budget"]["topic_swaps"] == 1
+    assert swapped_attempt["budget"]["topics"] == [
+        str(item.query_target_id),
+        str(chosen_target.id),
+    ]
     assert values["generated_at"] is None
     assert values["generation_claim_token"] is None
     assert values["brief_status"] is None
@@ -768,7 +782,7 @@ def _patch_generation(monkeypatch, philosophy, slot, *, fail: bool) -> list[uuid
     async def ignore(*_args, **_kwargs):
         return None
 
-    async def fake_writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+    async def fake_writer(*, db, hospital, item, existing_titles, philosophy, approved_brief):
         writer_calls.append(item.id)
         if fail:
             raise ValueError("GEO hard-fail: references is empty for FAQ")

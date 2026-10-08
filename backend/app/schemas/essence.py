@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.essence import EvidenceNoteType, PhilosophyStatus, SourceStatus, SourceType
 
@@ -29,6 +29,25 @@ class SourceAssetPatch(BaseModel):
     operator_note: str | None = None
     source_metadata: dict[str, Any] | None = None
     updated_by: str | None = Field(default=None, max_length=100)
+
+
+class SourceAddendumCreate(BaseModel):
+    """A future-only evidence version that leaves approved history untouched."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    title: str | None = Field(default=None, min_length=1, max_length=300)
+    url: str | None = Field(default=None, max_length=1000)
+    raw_text: str | None = None
+    operator_note: str | None = None
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+    created_by: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def require_url_or_text(self) -> "SourceAddendumCreate":
+        if not (self.url and self.url.strip()) and not (self.raw_text and self.raw_text.strip()):
+            raise ValueError("추가 자료의 url 또는 raw_text 중 하나는 필수입니다.")
+        return self
 
 
 class EvidenceNoteResponse(BaseModel):

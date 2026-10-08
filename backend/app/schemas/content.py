@@ -42,9 +42,7 @@ class ContentRevisionGenerationProvenance(BaseModel):
 
     @model_validator(mode="after")
     def require_grounded_identifier(self) -> "ContentRevisionGenerationProvenance":
-        if not (
-            self.evidence_note_ids or self.source_asset_ids or self.evidence_source_asset_ids
-        ):
+        if not (self.evidence_note_ids or self.source_asset_ids or self.evidence_source_asset_ids):
             raise PydanticCustomError(
                 "revision_generation_provenance_empty",
                 "revision generation provenance needs at least one grounded identifier",
@@ -63,7 +61,36 @@ class ContentRevisionReferenceCheck(BaseModel):
     model_config = ConfigDict(extra="allow", frozen=True)
 
     url: str = Field(min_length=1)
-    verdict: Literal["PASS"]
+    verdict: Literal["pass", "fail", "deferred", "PASS"]
+
+
+class PendingCandidateReview(BaseModel):
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+    status: Literal["PASS", "REVISE", "UNAVAILABLE"]
+    candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    reviewed_at: datetime
+
+
+class PendingContentCandidate(BaseModel):
+    """One unapproved text candidate, explicitly separate from the active edition."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["content-candidate-v1"] = "content-candidate-v1"
+    base_active_revision_id: uuid.UUID
+    base_content_revision: int = Field(ge=1)
+    candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    title: str = Field(min_length=1, max_length=300)
+    body: str = Field(min_length=1)
+    meta_description: str | None = Field(default=None, max_length=300)
+    faq_question: str | None = Field(default=None, max_length=300)
+    faq_answer_summary: str | None = Field(default=None, max_length=600)
+    references_list: list[ContentRevisionReference]
+    reference_checks: list[ContentRevisionReferenceCheck]
+    created_at: datetime
+    created_by: str = Field(min_length=1, max_length=100)
+    review: PendingCandidateReview | None = None
 
 
 class ContentRevisionResponse(BaseModel):
@@ -101,6 +128,7 @@ class ContentRevisionResponse(BaseModel):
 class ContentItemResponse(BaseModel):
     id: str
     active_revision_id: uuid.UUID | None = None
+    pending_revision: PendingContentCandidate | None = None
     content_type: str
     sequence_no: int
     total_count: int

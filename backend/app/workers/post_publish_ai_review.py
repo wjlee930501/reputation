@@ -30,6 +30,7 @@ import logging
 import time
 import uuid
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 from celery import current_task
@@ -41,6 +42,7 @@ from app.core.config import settings
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
+from app.schemas.content import PendingContentCandidate
 from app.services import indexnow
 from app.services import published_correction as pc
 from app.services.audit_log import write_audit_log_sync
@@ -49,6 +51,14 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     candidate_sha256,
     review_generated_content,
+)
+from app.services.content_candidate_publication import (
+    CandidateApprovalApplied,
+    parse_pending_candidate,
+    pending_candidate_content,
+    publish_pending_candidate_sync,
+    reject_pending_candidate,
+    stage_pending_candidate,
 )
 from app.services.content_minimal_correction import (
     CorrectionDependencies,
@@ -92,6 +102,9 @@ _FLAG_SCAN_MULTIPLIER = 5
 def _candidate_content(item: ContentItem) -> dict[str, Any]:
     """생성 경로의 저장 본문 재검수와 같은 필드 집합."""
 
+    pending = parse_pending_candidate(item)
+    if pending is not None and pending.review is None:
+        return pending_candidate_content(pending)
     return pc.candidate_content(item)
 
 
@@ -104,7 +117,10 @@ def _review_stmt(limit: int):
         select(ContentItem)
         .join(Hospital, ContentItem.hospital_id == Hospital.id)
         .where(
-            human_post_publish_review_predicate(),
+            or_(
+                human_post_publish_review_predicate(),
+                ContentItem.pending_revision.is_not(None),
+            ),
             publicly_operational_hospital_predicate(),
             ContentItem.body.is_not(None),
             flag_status.is_distinct_from(POST_PUBLISH_FLAGGED),
@@ -172,9 +188,9 @@ def _flag_payload(
         "status": POST_PUBLISH_FLAGGED,
         "candidate_sha256": reviewed_hash,
         "checked_at": now.isoformat(),
-        "findings": [
-            finding.message for finding in review.blocking_findings if finding.message
-        ][:5],
+        "findings": [finding.message for finding in review.blocking_findings if finding.message][
+            :5
+        ],
         # 자동 교정이 읽는 구조(severity·kind·target·quote·message). 문구 문자열만으로는 어느
         # 문장을 고칠지 알 수 없다.
         "structured_findings": [
@@ -189,9 +205,7 @@ def _flag_payload(
     return payload
 
 
-def apply_review_outcome(
-    item: ContentItem, review: ContentAiReview, *, now: datetime
-) -> str:
+def apply_review_outcome(item: ContentItem, review: ContentAiReview, *, now: datetime) -> str:
     """검수 결과를 잠근 행에 적용한다. `REVIEWED`·`FLAGGED`·`UNAVAILABLE`·`SKIPPED`를 돌려준다.
 
     호출부가 행을 `FOR UPDATE`로 다시 읽은 직후에 부른다. 그 사이 본문이 바뀌었거나(해시 불일치)
@@ -207,7 +221,9 @@ def apply_review_outcome(
         # 아니므로 확인 기록·인시던트는 남기지 않는다.
         if review.candidate_sha256 != candidate_sha256(item):
             return "SKIPPED"
-        summary = dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
+        summary = (
+            dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
+        )
         summary["ai_review"] = review.payload()
         item.essence_check_summary = summary
         return "WITHHELD_REVIEWED"
@@ -217,7 +233,9 @@ def apply_review_outcome(
         or review.candidate_sha256 != candidate_sha256(item)
     ):
         return "SKIPPED"
-    summary = dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
+    summary = (
+        dict(item.essence_check_summary) if isinstance(item.essence_check_summary, dict) else {}
+    )
     if review.blocking_findings:
         summary[POST_PUBLISH_FLAG_KEY] = _flag_payload(
             review, review.candidate_sha256, now, summary.get(POST_PUBLISH_FLAG_KEY)
@@ -252,7 +270,9 @@ def _open_flag_incident(
 ) -> None:
     from app.services.ops_incident_alerts import open_ops_incident
 
-    findings = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY, {}).get("findings") or []
+    findings = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY, {}).get(
+        "findings"
+    ) or []
     detail = f" 지적: {findings[0]}" if findings else ""
     if needs_human_reason:
         # 자동 교정을 이미 시도했거나 시도할 수 없는 글 — 사람이 직접 고쳐야 한다고 분명히 말한다.
@@ -324,6 +344,68 @@ def _review_and_apply(db, item, hospital, philosophy, run_async, now: datetime) 
     if locked is None:
         db.rollback()
         return "SKIPPED"
+    pending = parse_pending_candidate(locked)
+    if pending is not None and pending.review is None:
+        if review.status == ContentAiReviewStatus.UNAVAILABLE:
+            db.rollback()
+            return "UNAVAILABLE"
+        if review.candidate_sha256 != pending.candidate_sha256:
+            db.rollback()
+            return "SKIPPED"
+        if review.status != ContentAiReviewStatus.PASS or review.blocking_findings:
+            reject_pending_candidate(
+                locked,
+                expected_candidate_sha256=pending.candidate_sha256,
+                review_payload=review.payload(),
+                reviewed_at=now,
+            )
+            db.commit()
+            return "CANDIDATE_REJECTED"
+        publication = publish_pending_candidate_sync(
+            db,
+            locked,
+            review,
+            philosophy=philosophy,
+            approved_by=POST_PUBLISH_AI_REVIEWER,
+            approved_at=now,
+        )
+        if not isinstance(publication, CandidateApprovalApplied):
+            db.rollback()
+            return "CONFLICT"
+        write_audit_log_sync(
+            db,
+            action="content_candidate_published",
+            hospital_id=hospital.id,
+            actor=POST_PUBLISH_AI_REVIEWER,
+            target_type="content_item",
+            target_id=locked.id,
+            detail={
+                "candidate_sha256": publication.candidate_sha256,
+                "active_revision_id": str(locked.active_revision_id),
+            },
+        )
+        indexnow.enqueue_content_published_sync(
+            db,
+            slug=hospital.slug,
+            content_id=locked.id,
+            aeo_domain=hospital.aeo_domain,
+            treatments=hospital.treatments,
+            revision=str(locked.active_revision_id),
+        )
+        enqueue_public_surface_intent(db, hospital, content_ids=[locked.id])
+        db.commit()
+        try:
+            run_async(
+                trigger_content_site_revalidate_safe(
+                    hospital.slug,
+                    locked.id,
+                    hospital_name=hospital.name,
+                    treatments=hospital.treatments,
+                )
+            )
+        except Exception:  # noqa: BLE001 - committed intent owns retry.
+            logger.exception("candidate publication revalidation failed for %s", locked.id)
+        return "CANDIDATE_PUBLISHED"
     outcome = apply_review_outcome(locked, review, now=now)
     db.commit()
     return outcome
@@ -405,8 +487,9 @@ def _correct_flagged(db, item, hospital, philosophy, run_async, now: datetime) -
         if locked is None:
             db.rollback()
             return "SKIPPED"
+        candidate_row = SimpleNamespace(**vars(locked))
         status, apply_reason = pc.apply_published_correction(
-            locked,
+            candidate_row,
             outcome,
             base_sha=base_sha,
             base_revision=base_revision,
@@ -418,6 +501,51 @@ def _correct_flagged(db, item, hospital, philosophy, run_async, now: datetime) -
             logger.info("Discarding post-publish correction for %s — row changed", item_id)
             return "CONFLICT"
         if status == "CORRECTED":
+            if not hasattr(locked, "active_revision_id"):
+                # Rolling expand compatibility. Current ORM rows always take the
+                # candidate path; old worker objects finish under their old contract.
+                status, apply_reason = pc.apply_published_correction(
+                    locked,
+                    outcome,
+                    base_sha=base_sha,
+                    base_revision=base_revision,
+                    philosophy=philosophy,
+                    now=now,
+                )
+                if status != "CORRECTED":
+                    db.rollback()
+                    return "CONFLICT"
+            else:
+                corrected = pc.candidate_content(candidate_row)
+                staged = stage_pending_candidate(
+                    locked,
+                    expected_active_revision_id=locked.active_revision_id,
+                    expected_content_revision=base_revision,
+                    title=corrected["title"],
+                    body=corrected["body"],
+                    meta_description=corrected["meta_description"],
+                    faq_question=corrected["faq_question"],
+                    faq_answer_summary=corrected["faq_answer_summary"],
+                    references_list=corrected["references_list"],
+                    reference_checks=list(locked.reference_checks or []),
+                    created_by=pc.POST_PUBLISH_CORRECTION_ACTOR,
+                    created_at=now,
+                )
+                if not isinstance(staged, PendingContentCandidate):
+                    db.rollback()
+                    return "CONFLICT"
+                publication = publish_pending_candidate_sync(
+                    db,
+                    locked,
+                    outcome.review,
+                    philosophy=philosophy,
+                    approved_by=pc.POST_PUBLISH_CORRECTION_ACTOR,
+                    approved_at=now,
+                )
+                if not isinstance(publication, CandidateApprovalApplied):
+                    db.rollback()
+                    return "CONFLICT"
+                locked.essence_check_summary = candidate_row.essence_check_summary
             new_revision = int(locked.content_revision)
             write_audit_log_sync(
                 db,
