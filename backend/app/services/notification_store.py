@@ -304,7 +304,9 @@ async def recover_stale_sending(db: AsyncSession, *, now: datetime | None = None
     )
     recovered = 0
     for row in stale_rows:
-        incident_id = await create_delivery_unknown_incident(
+        # 행의 incident_id는 이 알림이 말하는 사고다. 수신 불명 사고는 source_id로 이 행을
+        # 가리키므로 덮어쓰지 않는다 — 덮어쓰면 열림/복구 짝과 조용한 사고 필터가 어긋난다.
+        await create_delivery_unknown_incident(
             db,
             row,
             now=observed_at,
@@ -320,7 +322,6 @@ async def recover_stale_sending(db: AsyncSession, *, now: datetime | None = None
             )
             .values(
                 state=NotificationOutboxState.HOLD.value,
-                incident_id=incident_id,
                 lease_owner=None,
                 lease_expires_at=None,
                 next_attempt_at=None,

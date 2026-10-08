@@ -23,6 +23,7 @@ from sqlalchemy import text
 from app.core.celery_app import celery_app
 from app.core.config import settings
 from app.core.database import SyncSessionLocal
+from app.services.notification_transport import probe_webhook_sync
 from app.workers.canary_tasks import read_queue_canaries
 
 EXPECTED_BEAT_SCHEDULES = {
@@ -287,9 +288,30 @@ def _queue_operator_label(queue: str) -> str:
     }.get(queue, "자동 작업")
 
 
+def _slack_webhook_facts() -> dict[str, str]:
+    """설정된 Slack 웹훅마다 빈 본문 탐침 결과. 비밀값(주소)은 싣지 않는다.
+
+    개발 채널 웹훅이 2026-09-19부터 302를 돌려줬지만 준비 점검은 운영 웹훅이 '있는지'만
+    봤다. 이제 주소가 실제로 살아 있는지 같은 분류(`classify_webhook_probe`)로 확인한다.
+    """
+
+    developer = settings.SLACK_WEBHOOK_URL_DEV.strip()
+    return {
+        "operator": probe_webhook_sync(settings.SLACK_WEBHOOK_URL.strip()),
+        # 비어 있으면 운영 채널 하나로 운영하는 정상 상태다.
+        "developer": probe_webhook_sync(developer) if developer else "not_configured",
+    }
+
+
+def _slack_webhooks_not_dead(facts: dict[str, str]) -> bool:
+    # 모름(5xx·시간 초과)은 Slack 쪽 일시 장애일 수 있어 막지 않는다. 죽음만 막는다.
+    return "dead" not in facts.values()
+
+
 def build_report() -> dict[str, Any]:
     database = _database_facts()
     canaries = _queue_canary_facts()
+    slack_webhooks = _slack_webhook_facts()
     checks: dict[str, bool] = {
         "database_connected": True,
         "schema_current": bool(database["schema_current"]),
@@ -298,11 +320,17 @@ def build_report() -> dict[str, Any]:
         **_workflow_facts(),
         **_configuration_facts(),
         "queue_canaries_current": bool(canaries["queue_canaries_current"]),
+        "slack_webhooks_not_dead": _slack_webhooks_not_dead(slack_webhooks),
     }
     return {
         "ready": all(checks.values()),
         "checks": checks,
-        "facts": {**database, "worker_canaries": canaries, "inquiry_sms": _inquiry_sms_facts()},
+        "facts": {
+            **database,
+            "worker_canaries": canaries,
+            "inquiry_sms": _inquiry_sms_facts(),
+            "slack_webhook_valid": slack_webhooks,
+        },
     }
 
 

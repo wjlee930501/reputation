@@ -157,9 +157,9 @@ BACKEND_OPTIONAL_SECRET_NAMES=(
   # IndexNow 키. backend가 제출하고 site가 같은 값을 키 파일로 응답해야 소유가 증명된다 —
   # 두 서비스에 반드시 같은 시크릿을 주입할 것. 미설정이면 제출만 건너뛰고 발행은 정상 동작.
   "INDEXNOW_KEY"
-  # 개발팀 전용 Slack 채널(docs/ops/slack-notification-policy.md). AE가 고칠 수 없는
-  # 인프라 인시던트만 이쪽으로 나간다. 비어 있으면 개발팀 알림은 outbox HOLD로 남고
-  # 운영 채널로 폴백하지 않는다. 배포 전 값을 확인하되 배포 자체는 막지 않는 optional이다.
+  # 개발팀 전용 Slack 채널(docs/ops/slack-notification-policy.md). 비어 있거나 latest 버전이
+  # 비활성이면 운영 채널 하나로 운영한다 — 개발 담당 알림은 운영 채널로 `[개발 확인]` 표시와
+  # 함께 간다. 값이 있으면 배포 전에 웹훅이 살아 있는지 확인한다(verify_slack_webhooks).
   "SLACK_WEBHOOK_URL_DEV"
   # 도입문의 전용 Slack 채널(#noti-도입문의-뉴비짓). 공개 도입문의 접수 알림만 이쪽으로 나간다.
   # secret이 없거나 값이 비어 있으면 기존 운영 채널(SLACK_WEBHOOK_URL)로 보낸다.
@@ -534,8 +534,13 @@ build_secret_args() {
     if [[ "$status" -eq 2 ]]; then
       fail_secret_lookup "$name"
     fi
-    if [[ "$status" -ne 0 ]]; then
-      fail "Secret Manager secret ${name} latest version must be ENABLED before deploy."
+    if [[ "$status" -eq 1 ]]; then
+      # 선택 시크릿의 latest가 비활성(또는 쓸 수 있는 버전 없음)이면 '의도적으로 끔'이다.
+      # Secret Manager는 빈 값을 깔끔히 담지 못하고 시크릿을 지우면 terraform이 어긋나므로,
+      # 끄는 방법은 버전 비활성화다(예: 단일 채널 운영의 SLACK_WEBHOOK_URL_DEV). 주입하지
+      # 않으면 env가 없어 settings 기본값("")이 쓰인다. 조회 실패(2)는 위에서 그대로 멈춘다.
+      info "선택 시크릿 ${name}: 활성 버전이 없어 주입하지 않습니다(의도적으로 끔)."
+      continue
     fi
     pairs+="${pairs:+,}${name}=${name}:latest"
   done
@@ -543,6 +548,62 @@ build_secret_args() {
   if [[ -n "$pairs" ]]; then
     SECRET_ARGS=("--set-secrets=${pairs}")
   fi
+}
+
+# ─── Slack 웹훅 생존 확인 ──────────────────────────────────────────
+# 2026-09-19에 등록된 개발 채널 웹훅이 처음부터 302를 돌려줘 한 번도 전달되지 않았는데,
+# 배포는 시크릿이 '있는지'만 봤다. 주입할 웹훅마다 빈 본문 `{}`을 POST해 살아 있는지 본다 —
+# 살아 있는 Slack 웹훅은 메시지를 만들지 않고 400 no_text/invalid_payload/missing_text를 준다.
+# 3xx·403·404·410은 죽은 주소이므로 배포를 멈춘다. 5xx·시간 초과는 한 번 더 보고, 그래도
+# 모르면 경고만 남긴다(Slack 일시 장애로 배포를 막지 않는다). 값이 빈 웹훅은 확인하지 않는다
+# (빈 개발 웹훅 = 운영 채널 하나로 운영). 주소는 출력하지 않는다.
+SLACK_WEBHOOKS_VERIFIED=0
+
+# alive · dead · unknown
+classify_slack_webhook_once() {
+  local url="$1" out code body
+  out="$(curl -sS -X POST -H 'Content-Type: application/json' --data '{}' \
+    --max-time 10 -w $'\n%{http_code}' "$url" 2>/dev/null || true)"
+  code="${out##*$'\n'}"
+  body="${out%$'\n'*}"
+  body="$(printf '%s' "$body" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  if [[ "$code" == "400" && ( "$body" == "no_text" || "$body" == "invalid_payload" || "$body" == "missing_text" ) ]]; then
+    echo "alive"
+  elif [[ "$code" =~ ^3[0-9][0-9]$ || "$code" == "403" || "$code" == "404" || "$code" == "410" ]]; then
+    echo "dead"
+  else
+    echo "unknown"
+  fi
+}
+
+verify_slack_webhooks() {
+  [[ "$SLACK_WEBHOOKS_VERIFIED" == "1" ]] && return 0
+  local name url verdict injected
+  injected=",${SECRET_ARGS[0]:-},"; injected="${injected//--set-secrets=/}"
+  for name in SLACK_WEBHOOK_URL SLACK_WEBHOOK_URL_DEV; do
+    [[ "$injected" == *",${name}=${name}:latest,"* ]] || continue
+    url="$(gcloud secrets versions access latest --secret="$name" --project="$PROJECT_ID" 2>/dev/null)" \
+      || fail "Secret Manager secret ${name} 값을 읽지 못해 Slack 웹훅을 확인할 수 없습니다."
+    url="${url//[$'\r\n\t ']/}"
+    if [[ -z "$url" ]]; then
+      continue
+    fi
+    command -v curl >/dev/null 2>&1 || fail "curl이 없어 Slack 웹훅(${name})을 확인할 수 없습니다."
+    verdict="$(classify_slack_webhook_once "$url")"
+    if [[ "$verdict" == "unknown" ]]; then
+      sleep 2
+      verdict="$(classify_slack_webhook_once "$url")"
+    fi
+    case "$verdict" in
+      alive) ok "Slack 웹훅 ${name} 확인됨" ;;
+      dead)
+        fail "Slack 웹훅 ${name}가 죽은 주소입니다(리다이렉트·403·404). 알림이 전달되지 않습니다.
+   새 웹훅을 발급해 새 버전으로 넣거나, ${name}가 선택 시크릿이면 버전을 비활성화하세요
+   (gcloud secrets versions disable <버전> --secret=${name})." ;;
+      *) info "경고: Slack 웹훅 ${name}의 생존을 확인하지 못했습니다(5xx·시간 초과). 배포는 계속합니다." ;;
+    esac
+  done
+  SLACK_WEBHOOKS_VERIFIED=1
 }
 
 if [[ "$TARGET" != "rollback" ]]; then
@@ -553,6 +614,7 @@ prepare_backend_secret_args() {
   REQUIRED_SECRET_NAMES=("${BACKEND_REQUIRED_SECRET_NAMES[@]}")
   OPTIONAL_SECRET_NAMES=("${BACKEND_OPTIONAL_SECRET_NAMES[@]}")
   build_secret_args
+  verify_slack_webhooks
 }
 
 prepare_site_secret_args() {

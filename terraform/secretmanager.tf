@@ -27,10 +27,11 @@ resource "google_secret_manager_secret" "slack_webhook_url" {
   }
 }
 
-# 개발팀 전용 Slack 채널. AE가 고칠 수 없는 인프라 인시던트만 이쪽으로 나간다.
-# 값이 빈 문자열이면 backend는 기존대로 SLACK_WEBHOOK_URL 한 곳으로만 보낸다 —
-# 즉 "빈 버전 1개"가 유효한 운영 상태이며, 그래도 secret 컨테이너와 버전은 있어야
-# Cloud Run이 mount할 수 있다(INDEXNOW_KEY와 같은 취급).
+# 개발팀 전용 Slack 채널(선택). 값이 비었거나 latest 버전이 비활성이면(deploy.sh가
+# 주입하지 않는다) backend는 운영 채널(SLACK_WEBHOOK_URL) 하나로 운영한다 — 개발 담당
+# 알림은 운영 채널로 `[개발 확인]` 표시와 함께 간다. 값이 있으면 deploy.sh가 웹훅 생존을
+# 확인하고 죽은 주소(3xx·403·404)면 배포를 멈춘다. 운영 중 죽으면 채널 사고가 열리고
+# 복구될 때까지 운영 채널로 `[채널 대체 전송]` 표시와 함께 대신 보낸다.
 resource "google_secret_manager_secret" "slack_webhook_url_dev" {
   secret_id = "SLACK_WEBHOOK_URL_DEV"
   project   = var.project_id
@@ -40,7 +41,7 @@ resource "google_secret_manager_secret" "slack_webhook_url_dev" {
 }
 
 # 도입문의 전용 Slack 채널(#noti-도입문의-뉴비짓). 공개 도입문의 접수 알림만 이쪽으로 나간다.
-# 값이 빈 문자열이면 backend는 기존대로 SLACK_WEBHOOK_URL로 보낸다(SLACK_WEBHOOK_URL_DEV와 같은 취급).
+# 값이 빈 문자열이면 backend는 기존대로 SLACK_WEBHOOK_URL로 보낸다.
 resource "google_secret_manager_secret" "slack_webhook_url_inquiry" {
   secret_id = "SLACK_WEBHOOK_URL_INQUIRY"
   project   = var.project_id

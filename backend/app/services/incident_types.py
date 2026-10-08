@@ -38,6 +38,9 @@ class IncidentAudience(StrEnum):
     ``DEVELOPER`` incidents describe infrastructure an AE cannot repair (broker,
     background task crashes, notification transport, cache refresh, PDF rendering).
     Routing those to a separate webhook keeps the AE channel actionable.
+
+    개발 웹훅이 없으면(단일 채널 운영) 개발 대상 알림도 운영 채널로 가며 `[개발 확인]`
+    표시가 붙는다. 대상 구분은 표시·묶음에 계속 쓰인다(`notification_delivery`).
     """
 
     OPERATOR = "operator"

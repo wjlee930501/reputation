@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -25,7 +26,7 @@ from app.services.incident_types import (
     IncidentAudience,
     incident_audience,
 )
-from app.services.notification_delivery import _webhook_for
+from app.services.notification_delivery import _resolve_route
 from app.services.notification_outbox import (
     ClaimedNotification,
     DispatchResult,
@@ -112,6 +113,7 @@ async def outbox_sessions():
         await cleanup.execute(text("DELETE FROM incidents WHERE source_type='NOTIFICATION_OUTBOX' AND source_id IN (SELECT id::text FROM notification_outbox WHERE dedupe_key LIKE 'OPS-QA-T10-%')"))
         await cleanup.execute(text("DELETE FROM notification_outbox WHERE dedupe_key LIKE 'OPS-QA-T10-%'"))
         await cleanup.execute(text("DELETE FROM incidents WHERE dedupe_key LIKE 'OPS-QA-T10-%'"))
+        await _delete_channel_incidents(cleanup)
         await cleanup.commit()
     try:
         yield sessions
@@ -120,8 +122,20 @@ async def outbox_sessions():
             await cleanup.execute(text("DELETE FROM incidents WHERE source_type='NOTIFICATION_OUTBOX' AND source_id IN (SELECT id::text FROM notification_outbox WHERE dedupe_key LIKE 'OPS-QA-T10-%')"))
             await cleanup.execute(text("DELETE FROM notification_outbox WHERE dedupe_key LIKE 'OPS-QA-T10-%'"))
             await cleanup.execute(text("DELETE FROM incidents WHERE dedupe_key LIKE 'OPS-QA-T10-%'"))
+            await _delete_channel_incidents(cleanup)
             await cleanup.commit()
         await engine.dispose()
+
+
+async def _delete_channel_incidents(db) -> None:
+    """채널 사고는 모든 전송의 경로를 바꾸므로 테스트 사이에 남기지 않는다(알림 행 포함)."""
+
+    channel_incidents = (
+        "SELECT id FROM incidents WHERE incident_type='NOTIFICATION_DELIVERY_FAILED' "
+        "AND source_id IN ('SLACK','SLACK_DEV')"
+    )
+    await db.execute(text(f"DELETE FROM notification_outbox WHERE incident_id IN ({channel_incidents})"))
+    await db.execute(text(f"DELETE FROM incidents WHERE id IN ({channel_incidents})"))
 
 
 @pytest.mark.parametrize(
@@ -162,105 +176,135 @@ def test_unregistered_incident_types_stay_on_the_operator_channel(incident_type:
     assert intent.channel == "SLACK"
 
 
-def test_developer_rows_never_fall_back_to_the_operator_webhook() -> None:
-    # Given: one developer-channel row and one ordinary operator row
-    developer = _claimed("SLACK_DEV")
-    operator = _claimed("SLACK")
+def test_developer_rows_route_to_the_operator_channel_when_no_developer_webhook() -> None:
+    # Given: single-channel mode (no developer webhook) and two-channel mode
+    single = {"SLACK": "https://ops.example.test", "SLACK_DEV": ""}
+    both = {"SLACK": "https://ops.example.test", "SLACK_DEV": "https://dev.example.test"}
 
-    # When / Then: an unset developer webhook cannot cross the audience boundary
-    assert _webhook_for(developer, "https://ops.example.test", "") is None
-    assert (
-        _webhook_for(developer, "https://ops.example.test", "https://dev.example.test")
-        == "https://dev.example.test"
+    # When / Then: developer rows reach a human on the operator channel, visibly marked
+    route = _resolve_route("SLACK_DEV", None, single, set())
+    assert (route.url, route.channel, route.marker) == ("https://ops.example.test", "SLACK", "[개발 확인]")
+    assert _resolve_route("SLACK_DEV", None, both, set()).url == "https://dev.example.test"
+    assert _resolve_route("SLACK_DEV", None, both, set()).marker is None
+    assert _resolve_route("SLACK", None, both, set()).url == "https://ops.example.test"
+
+
+def test_a_dead_channel_reroutes_to_the_other_webhook_or_holds_without_one() -> None:
+    both = {"SLACK": "https://ops.example.test", "SLACK_DEV": "https://dev.example.test"}
+    single = {"SLACK": "https://ops.example.test", "SLACK_DEV": ""}
+
+    rerouted = _resolve_route("SLACK_DEV", None, both, {"SLACK_DEV"})
+    assert (rerouted.url, rerouted.channel, rerouted.marker) == (
+        "https://ops.example.test",
+        "SLACK",
+        "[채널 대체 전송]",
     )
-    assert (
-        _webhook_for(operator, "https://ops.example.test", "https://dev.example.test")
-        == "https://ops.example.test"
-    )
+    # 운영 채널이 죽었는데 다른 채널이 없다 = 진짜 장애. 보류한다.
+    assert _resolve_route("SLACK", None, single, {"SLACK"}).url is None
+    # 두 채널이 모두 죽었다.
+    assert _resolve_route("SLACK", None, both, {"SLACK", "SLACK_DEV"}).url is None
 
 
-@pytest.mark.asyncio
-async def test_missing_developer_webhook_holds_without_http_attempt(
-    monkeypatch, caplog
-) -> None:
-    row = _claimed(SLACK_DEVELOPER_CHANNEL)
-    decisions = []
+def test_a_delivery_incident_is_never_notified_through_the_channel_it_describes() -> None:
+    both = {"SLACK": "https://ops.example.test", "SLACK_DEV": "https://dev.example.test"}
 
-    class FakeSession:
-        async def __aenter__(self):
-            return self
+    # 개발 채널을 말하는 사고의 알림(개발 담당)은 운영 채널로 간다 — 채널이 아직 건강해도.
+    route = _resolve_route("SLACK_DEV", "SLACK_DEV", both, set())
+    assert (route.url, route.marker) == ("https://ops.example.test", "[채널 대체 전송]")
+    # 다른 채널이 없으면 같은 채널이 사람에게 닿는 유일한 길이다.
+    single = {"SLACK": "https://ops.example.test", "SLACK_DEV": ""}
+    assert _resolve_route("SLACK_DEV", "SLACK", single, set()).url == "https://ops.example.test"
 
-        async def __aexit__(self, *_exc):
-            return False
 
+class _FakeSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+
+def _isolate_dispatch(monkeypatch, row, decisions=None) -> None:
     async def recover(*_args, **_kwargs):
         return 0
 
     async def claim(*_args, **_kwargs):
         return (row,)
 
-    async def finalize(_db, claimed, decision, _now):
-        decisions.append((claimed, decision))
+    async def finalize(_db, claimed, decision, _now, **_kwargs):
+        if decisions is not None:
+            decisions.append((claimed, decision))
         return True
+
+    async def no_health(*_args, **_kwargs):
+        return {}
+
+    async def nothing(*_args, **_kwargs):
+        return None
 
     monkeypatch.setattr(notification_delivery, "recover_stale_sending", recover)
     monkeypatch.setattr(notification_delivery, "claim_notification_batch", claim)
     monkeypatch.setattr(notification_delivery, "_finalize", finalize)
+    monkeypatch.setattr(notification_delivery, "refresh_channel_health", no_health)
+    monkeypatch.setattr(notification_delivery, "described_channels", no_health)
+    monkeypatch.setattr(notification_delivery, "recover_after_send", nothing)
+    monkeypatch.setattr(notification_delivery, "run_notification_success_hook", nothing)
 
+
+@pytest.mark.asyncio
+async def test_empty_developer_webhook_delivers_to_operator_with_developer_marker(
+    monkeypatch,
+) -> None:
+    row = ClaimedNotification(
+        uuid.uuid4(),
+        None,
+        None,
+        None,
+        {
+            "text": "[Error : 오류 발생] [조치 필요] 시스템 · 백그라운드 작업 실패",
+            "blocks": [
+                {"type": "header", "block_id": "header", "text": {"type": "plain_text", "text": "[Error : 오류 발생] [조치 필요] 시스템"}},
+                {"type": "section", "block_id": "body", "text": {"type": "mrkdwn", "text": "본문"}},
+            ],
+        },
+        1,
+        3,
+        "worker",
+        1,
+        SLACK_DEVELOPER_CHANNEL,
+    )
+    _isolate_dispatch(monkeypatch, row)
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(request)
         return httpx.Response(200, text="ok")
 
+    operator_url = "https://hooks.slack.com/services/OPERATOR/ONLY/X"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await dispatch_notification_batch(
-            FakeSession,
+            _FakeSession,
             client,
-            webhook_url="https://hooks.slack.com/services/OPERATOR/ONLY/X",
+            webhook_url=operator_url,
             developer_webhook_url="",
-            worker_id="worker-dev-webhook-missing",
+            worker_id="worker-single-channel",
             now=_NOW,
         )
 
-    assert (result.claimed, result.held, result.sent) == (1, 1, 0)
-    assert requests == []
-    assert "Developer Slack webhook missing" in caplog.text
-    assert len(decisions) == 1
-    claimed, decision = decisions[0]
-    assert claimed is row
-    assert decision.state == NotificationOutboxState.HOLD
-    assert decision.code == "DEV_WEBHOOK_MISSING"
-    assert decision.attempted is False
+    assert (result.sent, result.held) == (1, 0)
+    assert [str(request.url) for request in requests] == [operator_url]
+    body = json.loads(requests[0].content)
+    assert body["text"].startswith("[Error : 오류 발생] [개발 확인] [조치 필요]")
+    assert body["blocks"][0]["text"]["text"] == "[Error : 오류 발생] [개발 확인] [조치 필요] 시스템"
+    assert body["blocks"][1]["text"]["text"] == "본문"
+    # 저장된 payload는 그대로다 — 표시는 전송 사본에만 붙는다.
+    assert row.payload["text"].startswith("[Error : 오류 발생] [조치 필요]")
 
 
 @pytest.mark.asyncio
 async def test_configured_developer_webhook_uses_only_developer_url(monkeypatch) -> None:
     row = _claimed(SLACK_DEVELOPER_CHANNEL)
-
-    class FakeSession:
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_exc):
-            return False
-
-    async def recover(*_args, **_kwargs):
-        return 0
-
-    async def claim(*_args, **_kwargs):
-        return (row,)
-
-    async def finalize(*_args, **_kwargs):
-        return True
-
-    async def success_hook(*_args, **_kwargs):
-        return None
-
-    monkeypatch.setattr(notification_delivery, "recover_stale_sending", recover)
-    monkeypatch.setattr(notification_delivery, "claim_notification_batch", claim)
-    monkeypatch.setattr(notification_delivery, "_finalize", finalize)
-    monkeypatch.setattr(notification_delivery, "run_notification_success_hook", success_hook)
+    _isolate_dispatch(monkeypatch, row)
 
     requested_urls: list[str] = []
 
@@ -271,7 +315,7 @@ async def test_configured_developer_webhook_uses_only_developer_url(monkeypatch)
     developer_url = "https://hooks.slack.com/services/DEVELOPER/ONLY/X"
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         result = await dispatch_notification_batch(
-            FakeSession,
+            _FakeSession,
             client,
             webhook_url="https://hooks.slack.com/services/OPERATOR/ONLY/X",
             developer_webhook_url=developer_url,
@@ -503,8 +547,11 @@ async def test_stale_sending_lease_moves_to_hold(outbox_sessions) -> None:
         assert row.safe_error_code == "DELIVERY_OUTCOME_UNKNOWN"
         assert row.next_attempt_at is None
         assert row.lease_owner is None
-        assert row.incident_id is not None
-        incident = await verify.get(Incident, row.incident_id)
+        # 행이 말하는 사고(없음)는 그대로 두고, 수신 불명 사고는 source_id로 행을 가리킨다.
+        assert row.incident_id is None
+        incident = await verify.scalar(
+            select(Incident).where(Incident.source_id == str(row.id))
+        )
         assert incident is not None
         assert incident.incident_type == "NOTIFICATION_DELIVERY_UNKNOWN"
         assert incident.source_id == str(row.id)
@@ -671,7 +718,7 @@ async def test_rate_limit_honors_retry_after_and_permanent_4xx_fails(outbox_sess
             )
         )
         assert delivery_incident is not None
-        assert rows["OPS-QA-T10-400"].incident_id == delivery_incident.id
+        assert rows["OPS-QA-T10-400"].incident_id is None  # 실패가 행의 사고 연결을 덮지 않는다
         assert delivery_incident.state == IncidentState.OPEN
         assert delivery_incident.safe_error_code == "SLACK_PERMANENT_ERROR"
 
@@ -697,8 +744,10 @@ async def test_ambiguous_delivery_outcomes_are_held(outbox_sessions, outcome: st
         assert row is not None and row.state == NotificationOutboxState.HOLD
         assert row.safe_error_code == "DELIVERY_OUTCOME_UNKNOWN"
         assert row.next_attempt_at is None
-        assert row.incident_id is not None
-        incident = await verify.get(Incident, row.incident_id)
+        assert row.incident_id is None
+        incident = await verify.scalar(
+            select(Incident).where(Incident.source_id == str(row.id))
+        )
         assert incident is not None
         assert incident.incident_type == "NOTIFICATION_DELIVERY_UNKNOWN"
         assert incident.source_id == str(row.id)
@@ -979,14 +1028,22 @@ async def test_sent_delivery_incident_is_recovered_by_periodic_reconciliation(
 async def test_a_redirect_is_one_channel_configuration_incident_not_a_delivery_check(
     outbox_sessions,
 ) -> None:
-    """302는 Slack이 받지 않았다는 뜻이다 — '수신 여부 확인' 사고를 알림마다 열지 않는다(2026-10-02)."""
+    """302는 Slack이 받지 않았다는 뜻이다 — '수신 여부 확인' 사고를 알림마다 열지 않는다(2026-10-02).
+
+    운영 채널 하나뿐인데 그 웹훅이 죽었다 = 보낼 곳이 없다. 알림은 버리지 않고 보류한다.
+    """
+
+    posts = 0
 
     def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
         return httpx.Response(302, headers={"Location": "https://example.invalid/"})
 
     await _dispatch_once(outbox_sessions, "OPS-QA-T10-REDIRECT-1", handler)
     await _dispatch_once(outbox_sessions, "OPS-QA-T10-REDIRECT-2", handler)
 
+    assert posts == 1  # 두 번째 알림은 죽은 채널로 다시 보내지 않는다(탐침은 한 시간 뒤)
     async with outbox_sessions() as verify:
         rows = (
             await verify.execute(
@@ -995,14 +1052,20 @@ async def test_a_redirect_is_one_channel_configuration_incident_not_a_delivery_c
                 )
             )
         ).scalars().all()
-        assert {row.state for row in rows} == {NotificationOutboxState.FAILED}
-        assert {row.safe_error_code for row in rows} == {"WEBHOOK_URL_REJECTED"}
-        incident_ids = {row.incident_id for row in rows}
-        assert len(incident_ids) == 1  # 채널 하나의 설정 오류 사고 하나
-        incident = await verify.get(Incident, incident_ids.pop())
-        assert incident.incident_type == "NOTIFICATION_DELIVERY_FAILED"
-        assert incident.hospital_id is None
-        assert incident.source_id == rows[0].channel
+        assert {row.state for row in rows} == {NotificationOutboxState.HOLD}
+        assert {row.safe_error_code for row in rows} == {"SLACK_CHANNEL_UNAVAILABLE"}
+        assert {row.incident_id for row in rows} == {None}
+        channel_incidents = (
+            await verify.execute(
+                select(Incident).where(
+                    Incident.incident_type == "NOTIFICATION_DELIVERY_FAILED",
+                    Incident.source_id.in_(("SLACK", "SLACK_DEV")),
+                )
+            )
+        ).scalars().all()
+        assert len(channel_incidents) == 1  # 채널 하나의 설정 오류 사고 하나
+        assert channel_incidents[0].source_id == "SLACK"
+        assert channel_incidents[0].hospital_id is None
         unknown = await verify.scalar(
             select(func.count(Incident.id)).where(
                 Incident.incident_type == "NOTIFICATION_DELIVERY_UNKNOWN",
@@ -1010,11 +1073,292 @@ async def test_a_redirect_is_one_channel_configuration_incident_not_a_delivery_c
             )
         )
         assert unknown == 0
-        # 채널 단위 사고는 공용 픽스처 정리(outbox 단위) 밖이라 여기서 지운다.
-        await verify.execute(
-            text("UPDATE notification_outbox SET incident_id = NULL WHERE dedupe_key LIKE 'OPS-QA-T10-REDIRECT-%'")
+
+
+async def _seed(outbox_sessions, key: str, *, channel: str = "SLACK") -> uuid.UUID:
+    async with outbox_sessions() as db:
+        row = await enqueue_notification(db, replace(_intent(key), channel=channel), now=_NOW)
+        await db.commit()
+        return row.id
+
+
+async def _dispatch_two_channels(outbox_sessions, handler, *, now: datetime, developer_url: str):
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        return await dispatch_notification_batch(
+            outbox_sessions,
+            client,
+            webhook_url=_OPS_URL,
+            developer_webhook_url=developer_url,
+            worker_id=f"worker-{uuid.uuid4().hex}",
+            now=now,
+            limit=10,
         )
-        await verify.execute(
-            text("DELETE FROM incidents WHERE id = :id"), {"id": incident.id}
+
+
+_OPS_URL = "https://hooks.slack.com/services/T/OPS/X"
+_DEV_URL = "https://hooks.slack.com/services/T/DEV/X"
+
+
+async def _channel_incident(db, channel: str) -> Incident | None:
+    return await db.scalar(
+        select(Incident)
+        .where(
+            Incident.incident_type == "NOTIFICATION_DELIVERY_FAILED",
+            Incident.source_id == channel,
         )
-        await verify.commit()
+        .execution_options(populate_existing=True)
+    )
+
+
+@pytest.mark.asyncio
+async def test_dead_developer_webhook_opens_one_channel_incident_noticed_on_the_operator_channel(
+    outbox_sessions,
+) -> None:
+    # Given: the developer webhook answers 302 (the 2026-09-19 production fact)
+    first = await _seed(outbox_sessions, "OPS-QA-T10-DEVDEAD-1", channel="SLACK_DEV")
+    second = await _seed(outbox_sessions, "OPS-QA-T10-DEVDEAD-2", channel="SLACK_DEV")
+    seen: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), json.loads(request.content)))
+        if str(request.url) == _DEV_URL:
+            return httpx.Response(302, headers={"Location": "https://example.invalid/"})
+        return httpx.Response(200, text="ok")
+
+    # When: two dispatcher ticks run
+    await _dispatch_two_channels(outbox_sessions, handler, now=_NOW, developer_url=_DEV_URL)
+    await _dispatch_two_channels(
+        outbox_sessions, handler, now=_NOW + timedelta(seconds=5), developer_url=_DEV_URL
+    )
+
+    # Then: the developer webhook got exactly one POST; everything else went to ops
+    dev_posts = [url for url, _ in seen if url == _DEV_URL]
+    assert len(dev_posts) == 1
+    ops_bodies = [body for url, body in seen if url == _OPS_URL]
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK_DEV")
+        assert incident is not None and incident.state == IncidentState.OPEN
+        notice = await verify.scalar(
+            select(NotificationOutbox).where(
+                NotificationOutbox.incident_id == incident.id,
+                NotificationOutbox.notification_type == "INCIDENT_OPEN",
+            )
+        )
+        assert notice is not None and notice.state == NotificationOutboxState.SENT
+        rows = {
+            row.id: row
+            for row in (
+                await verify.execute(
+                    select(NotificationOutbox).where(NotificationOutbox.id.in_((first, second)))
+                )
+            ).scalars()
+        }
+        assert {row.state for row in rows.values()} == {NotificationOutboxState.SENT}
+        assert {row.incident_id for row in rows.values()} == {None}
+    # 채널 사고 알림과 재전송된 개발 알림 모두 운영 채널에 '채널 대체 전송' 표시로 갔다.
+    assert len(ops_bodies) == 3
+    assert all("[채널 대체 전송]" in body["text"] for body in ops_bodies)
+    notice_texts = [body["text"] for body in ops_bodies if body["text"].startswith("[Error")]
+    assert notice_texts and notice_texts[0].startswith("[Error : 오류 발생] [채널 대체 전송]")
+
+
+@pytest.mark.asyncio
+async def test_hourly_probe_recovers_the_channel_and_requeues_held_rows(outbox_sessions) -> None:
+    # Given: a single-channel operator webhook went dead and one row is held
+    held = await _seed(outbox_sessions, "OPS-QA-T10-PROBE-1")
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-PROBE-1", dead)
+    probes: list[dict] = []
+
+    def alive(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body == {}:
+            probes.append(body)
+            return httpx.Response(400, text="no_text")
+        return httpx.Response(200, text="ok")
+
+    # When: a tick inside the hour does not probe; a tick after the hour does
+    async with httpx.AsyncClient(transport=httpx.MockTransport(alive)) as client:
+        early = await dispatch_notification_batch(
+            outbox_sessions, client, webhook_url="https://hooks.slack.com/services/T/B/X",
+            worker_id="w-early", now=_NOW + timedelta(minutes=30), limit=10,
+        )
+        later = await dispatch_notification_batch(
+            outbox_sessions, client, webhook_url="https://hooks.slack.com/services/T/B/X",
+            worker_id="w-later", now=_NOW + timedelta(hours=1, minutes=1), limit=10,
+        )
+
+    # Then: one probe, the channel incident recovered, the held row was delivered
+    assert early.sent == 0
+    assert len(probes) == 1
+    assert later.sent >= 1
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK")
+        assert incident is not None
+        assert incident.state == IncidentState.ACKNOWLEDGED
+        row = await verify.get(NotificationOutbox, held)
+        assert row is not None and row.state == NotificationOutboxState.SENT
+
+
+@pytest.mark.asyncio
+async def test_dead_probe_keeps_the_incident_and_waits_another_hour(outbox_sessions) -> None:
+    await _seed(outbox_sessions, "OPS-QA-T10-PROBE-DEAD")
+    redirect = lambda _request: httpx.Response(302, headers={"Location": "https://x.invalid/"})  # noqa: E731
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-PROBE-DEAD", redirect)
+    posts = 0
+
+    def still_dead(_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        posts += 1
+        return httpx.Response(302, headers={"Location": "https://x.invalid/"})
+
+    for minutes in (61, 62, 90):
+        await _dispatch_once(
+            outbox_sessions, "OPS-QA-T10-PROBE-DEAD", still_dead, now=_NOW + timedelta(minutes=minutes)
+        )
+
+    assert posts == 1  # 61분의 탐침 한 번. 62·90분은 마지막 관측에서 한 시간이 안 됐다.
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK")
+        assert incident is not None and incident.state == IncidentState.OPEN
+
+
+@pytest.mark.asyncio
+async def test_single_channel_mode_closes_the_old_developer_channel_incident(outbox_sessions) -> None:
+    # Given: the production state — an open SLACK_DEV channel incident — then dev webhook emptied
+    await _seed(outbox_sessions, "OPS-QA-T10-SINGLE-1", channel="SLACK_DEV")
+    await _dispatch_two_channels(
+        outbox_sessions,
+        lambda request: httpx.Response(302, headers={"Location": "https://x.invalid/"})
+        if str(request.url) == _DEV_URL
+        else httpx.Response(200, text="ok"),
+        now=_NOW,
+        developer_url=_DEV_URL,
+    )
+    developer_row = await _seed(outbox_sessions, "OPS-QA-T10-SINGLE-2", channel="SLACK_DEV")
+    seen: list[dict] = []
+
+    def ops(request: httpx.Request) -> httpx.Response:
+        assert str(request.url) == _OPS_URL
+        seen.append(json.loads(request.content))
+        return httpx.Response(200, text="ok")
+
+    # When: the next tick runs with SLACK_WEBHOOK_URL_DEV="" (single-channel mode)
+    await _dispatch_two_channels(
+        outbox_sessions, ops, now=_NOW + timedelta(minutes=1), developer_url=""
+    )
+
+    # Then: the dev channel incident is closed without a probe and developer rows carry [개발 확인]
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK_DEV")
+        assert incident is not None and incident.state == IncidentState.ACKNOWLEDGED
+        row = await verify.get(NotificationOutbox, developer_row)
+        assert row is not None and row.state == NotificationOutboxState.SENT
+    assert any("[개발 확인]" in body["text"] for body in seen)
+
+
+@pytest.mark.asyncio
+async def test_a_successful_send_on_the_channel_recovers_its_incident(outbox_sessions) -> None:
+    # Given: an acknowledged-then-reopened style state — the channel incident is OPEN but the
+    # dispatcher has no other channel, so routing holds; a person fixed the webhook and the
+    # probe interval has passed with Slack accepting real deliveries
+    from app.services.notification_channel_health import recover_after_send
+
+    await _seed(outbox_sessions, "OPS-QA-T10-SENDREC")
+    await _dispatch_once(
+        outbox_sessions, "OPS-QA-T10-SENDREC", lambda _r: httpx.Response(403, text="invalid_token")
+    )
+    async with outbox_sessions() as db:
+        assert (await _channel_incident(db, "SLACK")).state == IncidentState.OPEN
+
+    await recover_after_send(outbox_sessions, "SLACK", now=_NOW + timedelta(minutes=2))
+
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK")
+        assert incident is not None and incident.state == IncidentState.ACKNOWLEDGED
+        recovered_notice = await verify.scalar(
+            select(func.count(NotificationOutbox.id)).where(
+                NotificationOutbox.incident_id == incident.id,
+                NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
+            )
+        )
+        assert recovered_notice == 1  # 열림 알림이 큐에 있었으므로 복구 알림으로 짝을 닫는다
+
+
+@pytest.mark.asyncio
+async def test_a_payload_rejection_stays_one_rows_failure_not_a_channel_incident(
+    outbox_sessions,
+) -> None:
+    await _dispatch_once(
+        outbox_sessions, "OPS-QA-T10-ROW400", lambda _r: httpx.Response(400, text="invalid_blocks")
+    )
+    async with outbox_sessions() as verify:
+        assert await _channel_incident(verify, "SLACK") is None
+
+
+@pytest.mark.asyncio
+async def test_channel_cleanup_is_dry_run_by_default_and_closes_only_stale_rows(outbox_sessions) -> None:
+    from app.utils.notification_channel_cleanup import run_cleanup
+
+    # Given: the production shape — a dead SLACK_DEV channel incident, one held notice about an
+    # incident already closed, and one held notice about a still-open incident
+    await _seed(outbox_sessions, "OPS-QA-T10-CLEAN-DEAD", channel="SLACK_DEV")
+    await _dispatch_two_channels(
+        outbox_sessions,
+        lambda request: httpx.Response(302, headers={"Location": "https://x.invalid/"})
+        if str(request.url) == _DEV_URL
+        else httpx.Response(200, text="ok"),
+        now=_NOW,
+        developer_url=_DEV_URL,
+    )
+    ids: dict[str, uuid.UUID] = {}
+    async with outbox_sessions() as db:
+        for name, state in (("CLOSED", IncidentState.ACKNOWLEDGED), ("OPEN", IncidentState.OPEN)):
+            subject = Incident(
+                dedupe_key=f"OPS-QA-T10-CLEAN-SUBJECT-{name}",
+                incident_type="BACKGROUND_TASK_FAILED",
+                state=state,
+                severity="HIGH",
+                customer_impact="테스트",
+                source_type="TEST",
+                next_action="테스트",
+                admin_path="/operations",
+                recovered_at=_NOW if name == "CLOSED" else None,
+                acknowledged_at=_NOW if name == "CLOSED" else None,
+            )
+            db.add(subject)
+            await db.flush()
+            row = await enqueue_notification(
+                db,
+                replace(_intent(f"OPS-QA-T10-CLEAN-{name}"), channel="SLACK_DEV", incident_id=subject.id),
+                now=_NOW,
+            )
+            row.state = NotificationOutboxState.HOLD
+            row.next_attempt_at = None
+            row.safe_error_code = "DEV_WEBHOOK_MISSING"
+            ids[name] = row.id
+        await db.commit()
+
+    # When: dry-run, then --confirm with the developer webhook emptied
+    dry = await run_cleanup(outbox_sessions, confirm=False, developer_webhook_url="", now=_NOW)
+    async with outbox_sessions() as verify:
+        assert (await verify.get(NotificationOutbox, ids["CLOSED"])).state == NotificationOutboxState.HOLD
+        assert (await _channel_incident(verify, "SLACK_DEV")).state == IncidentState.OPEN
+    applied = await run_cleanup(outbox_sessions, confirm=True, developer_webhook_url="", now=_NOW)
+
+    # Then: only the stale row became terminal; the channel incident closed as single-channel mode
+    assert dry["stale_developer_rows"] == 1 and dry["developer_channel_incident_open"] is True
+    assert dry["developer_channel_incident_resolved"] is False
+    assert applied["developer_channel_incident_resolved"] is True
+    async with outbox_sessions() as verify:
+        closed = await verify.get(NotificationOutbox, ids["CLOSED"])
+        still = await verify.get(NotificationOutbox, ids["OPEN"])
+        assert closed.state == NotificationOutboxState.FAILED
+        assert closed.safe_error_code == "STALE_NOT_RESENT"
+        assert still.state == NotificationOutboxState.HOLD
+        assert (await _channel_incident(verify, "SLACK_DEV")).state == IncidentState.ACKNOWLEDGED
+    # 개발 웹훅이 아직 설정돼 있으면 채널 사고는 닫지 않는다(탐침이 맡는다).
+    again = await run_cleanup(
+        outbox_sessions, confirm=True, developer_webhook_url=_DEV_URL, now=_NOW
+    )
+    assert again["stale_developer_rows"] == 0
