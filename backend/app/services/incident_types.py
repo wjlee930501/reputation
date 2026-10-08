@@ -63,6 +63,18 @@ _DEVELOPER_INCIDENT_TYPES: frozenset[str] = frozenset(
 )
 
 
+# Slack에 올리지 않는 사고 종류. 사고 행과 Admin 화면에는 그대로 남고 알림만 보내지 않는다.
+# 사후검수 지적은 계약상 운영자 큐에 올리지 않는 표본 확인이며, 하루 20편씩 지적·교정 복구마다
+# Slack을 보내 24시간에 60건이 나갔다(2026-10-08 대표 지시로 끔). 콘텐츠 탭에서 본다.
+QUIET_INCIDENT_TYPES: frozenset[str] = frozenset({"POST_PUBLISH_REVIEW_FLAGGED"})
+
+
+def incident_is_quiet(incident_type: str | None) -> bool:
+    """이 종류의 사고는 Slack 알림을 만들지 않는다."""
+
+    return bool(incident_type) and incident_type.strip().upper() in QUIET_INCIDENT_TYPES
+
+
 def incident_audience(incident_type: str | None) -> IncidentAudience:
     """Return the audience registered for one incident type (default: operator)."""
 
