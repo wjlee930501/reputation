@@ -17,12 +17,13 @@ from app.services.contract_delivery_coverage import (
     FleetContractCoverage,
     collect_contract_delivery_coverage,
 )
-from app.services.incident_types import notification_channel_for_incident_type
+from app.services.incident_cause_group import cause_group_key
+from app.services.incident_types import incident_is_quiet
 from app.services.notification_contracts import NotificationIntent, SlackMessage, validate_message
 from app.services.notification_copy import incident_copy
 from app.services.notification_labels import prefixed_for_event
 from app.services.notification_milestone_rendering import safe_text
-from app.services.operator_action import requires_operator_action
+from app.services.operator_action import is_operator_todo, requires_operator_action
 from app.services.pipeline_watchdog import KST, WatchdogReport
 from app.services.post_publish_review_policy import publicly_operational_hospital_predicate
 from app.utils.db_locks import _is_postgres_bind
@@ -46,6 +47,8 @@ class FleetFacts:
     unresolved_failed_runs: int | None = None
     contract_coverage: FleetContractCoverage | None = None
     action_groups: tuple[FleetActionGroup, ...] = ()
+    # 개발 담당만 고칠 수 있는 열린 사고의 원인 묶음 수. 운영 담당의 할 일에 섞지 않는다.
+    developer_work: int = 0
 
 
 _FAILED_STATES = ("FAILED", "PARTIAL")
@@ -294,29 +297,67 @@ def collect_fleet_facts(db, *, now):
         )
         or 0
     )
-    # Group deadlines instead of loading incident bodies or hospital names.
-    recovering = operator_work = 0
-    action_groups = []
+    # 운영센터와 같은 묶음 단위(원인 하나 = 1건)로, 같은 술어(`is_operator_todo`)로 센다.
+    # 사고 본문은 읽지 않고 묶음 키 재료와 기한 경과 여부만 읽는다.
+    operator_groups: dict[str, list[str | None]] = {}
+    operator_kinds: dict[str, str] = {}
+    developer_keys: set[str] = set()
+    recovering_keys: set[str] = set()
     overdue = Incident.sla_due_at < now
-    for state, past_due, name, kind, count in db.execute(
+    for (
+        state,
+        past_due,
+        hospital_name,
+        kind,
+        incident_code,
+        source_type,
+        source_id,
+        run_code,
+        run_operation_type,
+    ) in db.execute(
         select(
             Incident.state,
             overdue,
             Hospital.name,
             Incident.incident_type,
-            func.count(),
+            Incident.safe_error_code,
+            Incident.source_type,
+            Incident.source_id,
+            OperationRun.safe_error_code,
+            OperationRun.operation_type,
         )
         .select_from(Incident)
         .outerjoin(Hospital, Hospital.id == Incident.hospital_id)
+        .outerjoin(OperationRun, OperationRun.id == Incident.operation_run_id)
         .where(Incident.state.in_([IncidentState.OPEN, IncidentState.RETRYING]))
-        .group_by(Incident.state, overdue, Hospital.name, Incident.incident_type)
     ):
+        # 조용한 종류(사후검수 지적)는 어느 건수에도 넣지 않는다 — 콘텐츠 탭에서만 본다.
+        if incident_is_quiet(kind):
+            continue
+        key = cause_group_key(
+            incident_safe_error_code=incident_code,
+            incident_type=kind or "",
+            source_type=source_type,
+            source_id=source_id,
+            run_safe_error_code=run_code,
+            run_operation_type=run_operation_type,
+        )
         deadline = now - timedelta(microseconds=1) if past_due else None
-        if requires_operator_action(state, deadline, now):
-            operator_work += count
-            action_groups.append(FleetActionGroup(name or "시스템", kind or "", count))
+        if is_operator_todo(kind, state, deadline, now):
+            operator_groups.setdefault(key, []).append(hospital_name)
+            operator_kinds.setdefault(key, kind or "")
+        elif requires_operator_action(state, deadline, now):
+            # 사람의 일이지만 개발 담당의 몫이다.
+            developer_keys.add(key)
         else:
-            recovering += count
+            recovering_keys.add(key)
+    operator_work = len(operator_groups)
+    recovering = len(recovering_keys)
+    action_groups = []
+    for key, names in operator_groups.items():
+        distinct = {name or "시스템" for name in names}
+        label = next(iter(distinct)) if len(distinct) == 1 else f"{len(distinct)}개 병원"
+        action_groups.append(FleetActionGroup(label, operator_kinds[key], len(names)))
     failed = int(
         db.scalar(
             select(func.count())
@@ -385,7 +426,12 @@ def collect_fleet_facts(db, *, now):
     unresolved = int(db.scalar(
         select(func.count()).select_from(OperationRun).where(*unresolved_filters)
     ) or 0)
-    return FleetFacts(hospitals, recovering, operator_work, failed, measured_count, reports, unresolved, collect_contract_delivery_coverage(db, now=now), tuple(sorted(action_groups, key=lambda item: (-item.count, item.hospital_name, item.incident_type))))
+    return FleetFacts(
+        hospitals, recovering, operator_work, failed, measured_count, reports, unresolved,
+        collect_contract_delivery_coverage(db, now=now),
+        tuple(sorted(action_groups, key=lambda item: (-item.count, item.hospital_name, item.incident_type))),
+        len(developer_keys),
+    )
 
 
 def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, admin_base_url):
@@ -405,15 +451,12 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
         or not report.beat_alive
         or report.generation_batch_stale
         or bool(report.publish_due_remaining)
-        or (
-            facts.unresolved_failed_runs
-            if facts.unresolved_failed_runs is not None
-            else facts.failed_runs
-        ) > 0
         or facts.operator_work > 0
         or bool(facts.contract_coverage and facts.contract_coverage.delivery_at_risk)
     )
     # A known outage/action must not disappear behind missing measurement data.
+    # 개발 담당 몫(인프라 사고·복구 근거 없는 작업 실패)은 아래 별도 줄에만 싣고 운영 담당의
+    # 상태 제목을 바꾸지 않는다 — 운영 담당이 할 수 없는 일로 '확인 필요'가 되지 않게 한다.
     state = "미완료 작업 있음" if degraded else "일부 상태 미확인" if unknown else "점검 이상 없음"
     if facts.operator_work:
         state += " · 담당자 확인 필요"
@@ -429,9 +472,8 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
     actions = []
     for group in facts.action_groups[:6]:
         copy = incident_copy(group.incident_type)
-        role = "개발 담당" if notification_channel_for_incident_type(group.incident_type) == "SLACK_DEV" else "운영 담당"
-        actions.append(f"• {safe_text(group.hospital_name, 70)} — {copy.title} {group.count}건 ({role})\n  {copy.action}")
-    shown_count = sum(item.count for item in facts.action_groups[:6])
+        actions.append(f"• {safe_text(group.hospital_name, 70)} — {copy.title} 사고 {group.count}건\n  {copy.action}")
+    shown_count = len(facts.action_groups[:6])
     if facts.operator_work > shown_count:
         actions.append(f"그 외 확인할 이슈 {facts.operator_work - shown_count}건은 운영센터에서 볼 수 있습니다.")
     if not actions:
@@ -450,8 +492,13 @@ def build_fleet_heartbeat(report: WatchdogReport, facts: FleetFacts, *, now, adm
             state_lines.append(f"계약 일정 미확인 {coverage.unknown_schedule_hospitals}곳")
     state_lines += [f"최근 35일 양 서비스의 확정 답변이 있는 병원 {facts.measured_hospitals}/{facts.hospitals}곳 (월간 측정 완료 수는 아님)",
         "최초 발행은 현재 공개 건수와 다릅니다. 실제 공개 화면·보고서 전달 여부는 각 병원 화면에서 확인합니다."]
-    if facts.unresolved_failed_runs:
-        state_lines.append(f"복구 근거가 아직 없는 작업 실패 {facts.unresolved_failed_runs}건 — 개발 담당 확인 필요")
+    # 개발 확인 줄은 건수만 말한다. 항목을 나열하면 운영 담당의 할 일처럼 읽힌다.
+    unresolved_failed = (
+        facts.unresolved_failed_runs if facts.unresolved_failed_runs is not None else facts.failed_runs
+    )
+    developer_total = facts.developer_work + unresolved_failed
+    if developer_total:
+        state_lines.append(f"개발 확인 {developer_total}건 — 개발 담당이 확인합니다")
     details = "\n".join(state_lines)
     todo = "\n".join(actions)
     url = admin_base_url.rstrip("/") + "/operations"

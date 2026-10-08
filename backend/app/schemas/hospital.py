@@ -81,7 +81,8 @@ class HospitalListItem(HospitalItemBase):
     public_service_state: HospitalStateItem
     content_state: HospitalStateItem
     domain_state: HospitalDomainStateItem
-    # 인시던트(OPEN·RETRYING·ACKNOWLEDGED) + 사람이 풀어야 하는 예외 초안.
+    # 운영 담당이 풀어야 하는 인시던트의 원인 묶음 수(`is_operator_todo`: 개발 담당 몫·조용한
+    # 종류 제외, 자동 복구 중 제외) + 사람이 풀어야 하는 예외 초안.
     open_exception_count: int
     # 계약이 없거나 담당 AE가 비어 있으면 None이다.
     ae_owner: Optional[HospitalAeOwner] = None

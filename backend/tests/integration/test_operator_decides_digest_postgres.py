@@ -25,7 +25,6 @@ from app.services.reference_verification import override_reference_fetcher
 from app.workers import tasks
 from app.workers.generation_incident_control import (
     PREPUBLISH_MORNING_BATCH,
-    PUBLISH_MORNING_BATCH,
     REFERENCES_OPERATOR_DECIDES_CAUSE,
 )
 from app.workers.generation_retry_policy import OPERATOR_DECIDES_KEY, GenerationRetryClass
@@ -285,7 +284,7 @@ def test_seven_forty_five_names_a_same_day_unwritten_operator_slot_once(gate_db,
 def test_seven_forty_five_then_eight_oclock_leave_one_digest_with_one_operator_line(
     gate_db, incidents, monkeypatch
 ):
-    """평소 아침: 07:45 {A,B} == 08:00 {A,B} → 같은 중복 키 → outbox 행 하나, 보류 줄 하나.
+    """평소 아침: 07:45 {A,B} == 08:00 {A,B} → 08:00은 이미 알린 글이라 요약을 다시 만들지 않는다 → outbox 행 하나, 보류 줄 하나.
 
     A는 오늘 예정인 진료비 글의 사람의 결정 보류, B는 두 요약이 모두 싣는 원고 미생성 슬롯,
     C는 지난 예정일(catch-up)의 같은 보류라 어느 요약에도 오르지 않는다.
@@ -332,10 +331,11 @@ def test_seven_forty_five_then_eight_oclock_leave_one_digest_with_one_operator_l
     incidents.clear()
     _run_eight(monkeypatch)
 
-    # 08:00도 세 글을 보류로 판정했고 요약을 조립했다(A를 실었다) — 07:45와 같은 키라 합쳐졌다.
+    # 08:00도 세 글을 보류로 판정하지만, 07:45가 이미 알린 (글, 코드, 사고 epoch)라 새 요약을
+    # 조립하지 않는다 — 계약은 그대로 '요약 한 건, 보류 줄 하나'다.
     assert {call["item_id"] for call in incidents} == {item.id for item in items}
-    assert [batch for batch, _key in keys] == [PREPUBLISH_MORNING_BATCH, PUBLISH_MORNING_BATCH]
-    assert keys[0][1] == keys[1][1] == row.dedupe_key
+    assert [batch for batch, _key in keys] == [PREPUBLISH_MORNING_BATCH]
+    assert keys[0][1] == row.dedupe_key
     [again] = _digests_for(db, hospital)
     assert again.id == row.id
     text = _section_text(again)

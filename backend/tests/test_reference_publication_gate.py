@@ -339,6 +339,9 @@ class _GateDB:
             scalar_one_or_none=lambda: self.item,
         )
 
+    def scalar(self, _stmt):
+        return None  # 사고 epoch·이미 알린 글 기록 조회 — 이 더블에는 해당 행이 없다.
+
     def add(self, value):
         self.added.append(value)
 

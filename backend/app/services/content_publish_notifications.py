@@ -10,11 +10,17 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Literal, Protocol, TypedDict, assert_never
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.operations import NotificationOutbox, NotificationOutboxState
+from app.models.operations import (
+    Incident,
+    NotificationOutbox,
+    NotificationOutboxState,
+    OperationRun,
+    OperationRunState,
+)
 from app.services.notification_contracts import (
     NotificationIntent,
     NotificationPayloadError,
@@ -40,6 +46,8 @@ GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE = "GENERATION_BLOCKED_DIGEST"
 GENERATION_REJECTION_WEEKLY_ROLLUP_NOTIFICATION_TYPE = (
     "GENERATION_REJECTION_WEEKLY_ROLLUP"
 )
+# 새로 막힌 글을 이미 알렸다는 기록(`_newly_blocked_outcomes`)의 실행 종류.
+_BLOCKED_NOTICE_OPERATION = "GENERATION_BLOCKED_NOTICE"
 _DEDUPE_PREFIX = f"{PUBLISH_NOTIFICATION_TYPE}:"
 _MISSING_ESSENCE_DIGEST_DEDUPE_PREFIX = (
     f"{MISSING_APPROVED_ESSENCE_DIGEST_NOTIFICATION_TYPE}:"
@@ -310,23 +318,16 @@ def build_generation_blocked_digest_intent(
             str(outcome.get("code") or "UNKNOWN"),
             str(outcome.get("cause") or "자동 생성 작업이 완료되지 않았습니다."),
             _generation_blocked_display_title(outcome.get("title"), outcome.get("code")),
-            str(outcome.get("attempt_fingerprint") or ""),
+            str(outcome.get("episode_seq") or ""),
         )
         for outcome in blocked_outcomes
     ]
+    # 식별은 (병원, 글, 차단 코드, 사고 epoch)다. 예정일·원인 문구·시도 지문은 같은 차단 안에서도
+    # 움직이므로 넣지 않는다 — 넣으면 새 글 하나가 더해질 때마다 이미 알린 글까지 전부 다시 나간다.
     identity = sorted(
         {
-            f"{hospital_id}:{content_id}:{scheduled_date}:{code}:{cause}:{attempt_fingerprint}"
-            for (
-                hospital_id,
-                _,
-                content_id,
-                scheduled_date,
-                code,
-                cause,
-                _,
-                attempt_fingerprint,
-            ) in entries
+            f"{hospital_id}:{content_id}:{code}:{episode}"
+            for (hospital_id, _, content_id, _, code, _, _, episode) in entries
         }
     )
     _reuse_identity, reuse_lines = _image_reuse_section(reused_outcomes)
@@ -343,7 +344,7 @@ def build_generation_blocked_digest_intent(
             code,
             cause,
             title,
-            _attempt_fingerprint,
+            _episode,
         ),
         outcome,
     ) in zip(entries, blocked_outcomes, strict=True):
@@ -401,10 +402,10 @@ def build_generation_blocked_digest_intent(
         settings.ADMIN_BASE_URL,
     )
     return NotificationIntent(
-        # A due slot remains the same operational state across morning batches and
-        # calendar days. Re-page only when its schedule, safe cause, blocker code,
-        # tenant identity, or persisted generation-attempt fingerprint changes.
-        dedupe_key=f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}v2:{digest}",
+        # 같은 차단은 아침 배치와 날짜가 바뀌어도 같은 운영 상태다. 키는 새로 막힌 글의
+        # (병원, 글, 코드, 사고 epoch)에서만 나온다 — `enqueue_generation_blocked_digest_sync`가
+        # 이미 알린 글을 걸러 보내므로, 글 하나가 더해져도 앞서 알린 글이 다시 나가지 않는다.
+        dedupe_key=f"{_GENERATION_BLOCKED_DIGEST_DEDUPE_PREFIX}v3:{digest}",
         notification_type=GENERATION_BLOCKED_DIGEST_NOTIFICATION_TYPE,
         message=message,
         max_attempts=3,
@@ -558,6 +559,81 @@ def enqueue_missing_approved_essence_digest_sync(
     return _enqueue_notification_sync(db, intent)
 
 
+def _blocked_episode(db: Session, outcome: Mapping[str, object]) -> int:
+    """이 글의 **이 차단**을 연 사고의 epoch — 주제 교체·복구 뒤 다시 막히면 올라간다.
+
+    차단 코드가 같은 사고만 본다: 글 단위 사고, 없으면 병원 단위(승인 근거 없음 등) 사고.
+    코드가 같은 사고가 없을 때만 그 글의 가장 높은 epoch로 물러난다. 병원 안의 다른 코드
+    사고가 epoch를 올려도 이 글의 알림은 다시 나가지 않는다.
+    """
+
+    given = outcome.get("episode_seq")
+    if isinstance(given, int):
+        return given
+    try:
+        hospital_id = uuid.UUID(str(outcome.get("hospital_id")))
+    except ValueError:
+        return 0
+    content_key = str(outcome.get("content_id"))
+    base = (
+        Incident.hospital_id == hospital_id,
+        Incident.source_type == "CONTENT_GENERATION",
+    )
+    code = outcome.get("code")
+    scopes: list[tuple] = []
+    if code:
+        scopes.append((Incident.source_id == content_key, Incident.safe_error_code == code))
+        scopes.append((Incident.source_id == str(hospital_id), Incident.safe_error_code == code))
+    scopes.append((Incident.source_id == content_key,))
+    for scope in scopes:
+        epoch = db.scalar(select(func.max(Incident.episode_seq)).where(*base, *scope))
+        if epoch:
+            return int(epoch)
+    return 0
+
+
+def _newly_blocked_outcomes(
+    db: Session, blocked_outcomes: Sequence[Mapping[str, object]]
+) -> list[Mapping[str, object]]:
+    """(글, 차단 코드, 사고 epoch)마다 한 번만 알린다 — 이미 알린 글은 걸러 낸다.
+
+    같은 글이 막힌 채 이어지는 동안은 아침마다·재시도 지문이 바뀔 때마다 다시 나갈 이유가 없고,
+    계속 열린 항목은 월요일 주간 요약(GENERATION_REJECTION_WEEKLY_ROLLUP)이 맡는다. 알림 기록은
+    `GENERATION_BLOCKED_NOTICE` 실행 한 줄이며 도메인 트랜잭션과 함께 커밋·롤백된다.
+    """
+
+    fresh: list[Mapping[str, object]] = []
+    seen: set[str] = set()
+    now = datetime.now(UTC)
+    for outcome in blocked_outcomes:
+        episode = _blocked_episode(db, outcome)
+        # 차단 코드가 바뀐 같은 글은 다른 문제이므로 다시 알린다.
+        key = f"{outcome.get('content_id')}:{outcome.get('code')}:{episode}"
+        if key in seen:
+            continue
+        seen.add(key)
+        already = db.scalar(
+            select(OperationRun.id).where(
+                OperationRun.operation_type == _BLOCKED_NOTICE_OPERATION,
+                OperationRun.idempotency_key == key,
+            )
+        )
+        if already is not None:
+            continue
+        db.add(
+            OperationRun(
+                operation_type=_BLOCKED_NOTICE_OPERATION,
+                state=OperationRunState.SUCCEEDED.value,
+                idempotency_key=key,
+                attempt_count=1,
+                started_at=now,
+                completed_at=now,
+            )
+        )
+        fresh.append({**outcome, "episode_seq": episode})
+    return fresh
+
+
 def enqueue_generation_blocked_digest_sync(
     db: Session,
     cycle_date: date,
@@ -565,12 +641,20 @@ def enqueue_generation_blocked_digest_sync(
     blocked_outcomes: Sequence[Mapping[str, object]],
     reused_outcomes: Sequence[Mapping[str, object]] = (),
 ) -> NotificationOutbox | None:
-    """Add at most one digest for an unchanged blocked-publication set."""
+    """Add one digest for the items that became blocked since the last one.
 
+    The digest names only newly blocked (content, incident epoch) pairs. A set that is
+    still blocked tomorrow is not re-announced; one new item pages only itself.
+    """
+
+    # 대체 이미지 발행만으로는 알리지 않는다 — 막힌 글이 새로 생긴 요약에 덧붙을 뿐이다.
     if not blocked_outcomes:
         return None
+    fresh = _newly_blocked_outcomes(db, blocked_outcomes)
+    if not fresh:
+        return None
     intent = build_generation_blocked_digest_intent(
-        cycle_date, batch, blocked_outcomes, reused_outcomes=reused_outcomes
+        cycle_date, batch, fresh, reused_outcomes=reused_outcomes
     )
     existing = db.execute(
         select(NotificationOutbox).where(NotificationOutbox.dedupe_key == intent.dedupe_key)

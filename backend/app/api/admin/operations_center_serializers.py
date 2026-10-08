@@ -25,11 +25,22 @@ from app.schemas.operations import (
     OperationsRunSummary,
     OperationsSlackState,
 )
-from app.services import cost_guard
 from app.services import published_image_recertification as recertification
-from app.services.operator_action import requires_operator_action  # public API facade
+from app.services.incident_cause_group import (  # 운영센터·일일 요약이 같은 묶음 규칙을 쓴다
+    COST_LIMIT_CAUSE_CODE as _COST_LIMIT_CAUSE_CODE,
+)
+from app.services.incident_cause_group import (
+    canonical_cause_code,
+    cost_guard_category,
+)
+from app.services.operator_action import (  # public API facade
+    is_operator_todo,
+    requires_operator_action,
+)
 
 __all__ = (
+    "canonical_cause_code",
+    "cost_guard_category",
     "assign_action",
     "history",
     "incident_actions",
@@ -70,25 +81,9 @@ _IMAGE_TERMINAL_CODES: Final = frozenset(
     {"IMAGE_GENERATION_RETRIES_EXHAUSTED", "CONTENT_IMAGE_POLICY_REJECTED"}
 )
 
-_COST_LIMIT_CAUSE_CODES: Final = frozenset(
-    {
-        "COST_BLOCKED",
-        "COST_GUARD_LIMIT_REACHED",
-        "LEAD_DIAGNOSIS_COST_BLOCKED",
-        "WEEKLY_SOV_COST_GUARD_BLOCKED",
-        "MONTHLY_SOV_COST_GUARD_BLOCKED",
-    }
-)
-_COST_LIMIT_CAUSE_CODE: Final = "COST_LIMIT_EXHAUSTED"
 _COST_LIMIT_CAUSE_MESSAGE: Final = (
     "오늘 설정된 AI 사용 한도가 소진되어 관련 자동 작업과 측정이 차단되었습니다."
 )
-
-
-def canonical_cause_code(code: str | None, incident_type: str) -> str:
-    """Return a stable root-cause key shared by cost-limit symptoms."""
-    normalized = (code or incident_type or "").strip().upper() or "OPERATION_FAILED"
-    return _COST_LIMIT_CAUSE_CODE if normalized in _COST_LIMIT_CAUSE_CODES else normalized
 
 
 def cause_message(code: str, stored_message: str | None, impact: str) -> str:
@@ -97,40 +92,6 @@ def cause_message(code: str, stored_message: str | None, impact: str) -> str:
         return _COST_LIMIT_CAUSE_MESSAGE
     projected = (stored_message or impact or "").strip()
     return projected or "운영 작업이 완료되지 않은 원인을 확인해야 합니다."
-
-
-def cost_guard_category(
-    cause_code: str,
-    *,
-    incident_type: str,
-    source_type: str | None,
-    source_id: str | None,
-    run_operation_type: str | None,
-) -> str | None:
-    """Resolve the budget bucket behind a canonical cost-limit incident.
-
-    Takes the five scalars it actually reads rather than the ORM rows, so the queue's
-    cheap grouping pass can call it on a column projection instead of loading whole
-    `Incident` objects just to throw them away.
-    """
-    if cause_code != _COST_LIMIT_CAUSE_CODE:
-        return None
-    if source_type == "COST_GUARD" and source_id:
-        category = source_id.split(":", 1)[0].lower()
-        if category in cost_guard.CATEGORIES:
-            return category
-    context = " ".join(
-        filter(None, (incident_type, source_type, run_operation_type))
-    ).upper()
-    if "LEAD" in context:
-        return "leadgen"
-    if any(token in context for token in ("SOV", "MEASUREMENT", "V0_REPORT")):
-        return "sov"
-    if "IMAGE" in context:
-        return "image"
-    if "ESSENCE" in context:
-        return "essence"
-    return "content"
 
 
 def owner_projection(user: AdminUser | None) -> OperationsOwner | None:
@@ -418,8 +379,8 @@ def serialize_incident_row(
                 run,
                 # `authorize_run_retry`와 같은 규칙 — OWNER이거나 이 인시던트의 담당자.
                 enabled=True if actor is None else _may_act(actor, incident),
-                operator_required=requires_operator_action(
-                    incident.state, incident.sla_due_at, now
+                operator_required=is_operator_todo(
+                    incident.incident_type, incident.state, incident.sla_due_at, now
                 ),
             )
             if hospital_id
@@ -437,8 +398,10 @@ def serialize_incident_row(
             else (1 if hospital_id is not None else 0)
         ),
         cost_guard_category=budget_category,
-        requires_operator_action=requires_operator_action(
-            incident.state, incident.sla_due_at, now
+        # 화면이 이 필드로 '지금 처리할 표'와 접힌 맥락을 가른다 — 개발 담당 몫·조용한 종류는
+        # 상태가 OPEN이어도 운영 담당의 할 일이 아니다(`is_operator_todo`).
+        requires_operator_action=is_operator_todo(
+            incident.incident_type, incident.state, incident.sla_due_at, now
         ),
         safe_cause=projected_message,
         history=history(incident),

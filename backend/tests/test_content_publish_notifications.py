@@ -189,7 +189,7 @@ def test_many_blocked_slots_collapse_into_one_morning_slack_message() -> None:
     assert "병원 2곳 · 글 5건" in payload
     assert "가나의원" in payload
     assert "다라의원" in payload
-    assert intent.dedupe_key.startswith("GENERATION_BLOCKED_DIGEST:v2:")
+    assert intent.dedupe_key.startswith("GENERATION_BLOCKED_DIGEST:v3:")
     assert len(intent.message.blocks) <= 50
 
 
@@ -249,10 +249,16 @@ def test_blocked_digest_realerts_only_for_meaningful_episode_changes() -> None:
         PUBLISH_MORNING_BATCH,
         [{**blocked, "cause": "새 운영 기준에서 근거 충돌이 확인되었습니다."}],
     )
+    new_epoch = build_generation_blocked_digest_intent(
+        date(2026, 8, 20), PUBLISH_MORNING_BATCH, [{**blocked, "episode_seq": 2}]
+    )
 
+    # 식별은 (병원, 글, 코드, 사고 epoch)뿐이다. 예정일·원인 문구가 움직여도 같은 차단이고,
+    # 복구 뒤 다시 막혀 epoch가 올라갈 때만 새 알림이다.
     assert next_day_same.dedupe_key == original.dedupe_key
-    assert rescheduled.dedupe_key != original.dedupe_key
-    assert changed_cause.dedupe_key != original.dedupe_key
+    assert rescheduled.dedupe_key == original.dedupe_key
+    assert changed_cause.dedupe_key == original.dedupe_key
+    assert new_epoch.dedupe_key != original.dedupe_key
 
 
 def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
@@ -276,7 +282,8 @@ def test_unchanged_rejected_slot_is_suppressed_across_mornings() -> None:
 
     payload = first.message.payload_json()
     assert first.dedupe_key == second.dedupe_key
-    assert changed.dedupe_key != first.dedupe_key
+    # 시도 지문이 바뀌어도 같은 차단이다 — 재시도 때마다 다시 나가지 않는다.
+    assert changed.dedupe_key == first.dedupe_key
     assert "본문·근거 확인 필요" in payload
     assert "가격·지역·검색 구조 자동 검수 게이트가" not in payload
     assert "콘텐츠에서 해당 글의 차단 사유" in payload

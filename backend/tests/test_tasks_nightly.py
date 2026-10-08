@@ -1454,6 +1454,10 @@ class _NightlyTaskDB:
     def execute(self, _statement):
         return self._QueryResult()
 
+    def scalar(self, _statement):
+        # 막힌 글의 사고 epoch·이미 알린 글 기록 조회 — 이 더블에는 해당 행이 없다.
+        return None
+
     def add(self, value):
         self.added.append(value)
 
@@ -2244,6 +2248,10 @@ def test_same_context_style_soft_finding_regenerates_body(monkeypatch):
             return []
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def execute(self, _statement):
             return Result()
 
@@ -2601,6 +2609,10 @@ def test_newly_approved_essence_regenerates_body_from_previous_snapshot(monkeypa
             return []
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def execute(self, _statement):
             return Result()
 
@@ -2674,6 +2686,10 @@ def test_current_essence_faq_with_missing_schema_fields_is_repaired(monkeypatch)
             return []
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def execute(self, _statement):
             return Result()
 
@@ -2847,6 +2863,10 @@ def test_seven_forty_five_pages_stored_empty_slot_without_publishing(
             return None
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         commits = 0
 
         def __init__(self):
@@ -2948,6 +2968,10 @@ def test_seven_forty_five_digest_surfaces_stored_generation_cause_once(
             return None
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __init__(self):
             self.added = []
 
@@ -3035,6 +3059,10 @@ def test_seven_forty_five_digest_calls_a_topic_swapped_slot_a_missing_draft(monk
             return None
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __init__(self):
             self.added = []
 
@@ -3094,6 +3122,10 @@ def test_seven_forty_five_task_uses_hero_fallback_and_never_generates(monkeypatc
             return [item]
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def execute(self, _statement):
             return Result()
 
@@ -3171,6 +3203,10 @@ def test_seven_forty_five_leaves_a_slot_a_live_worker_is_generating_alone(
     )
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __init__(self):
             self.added = []
 
@@ -3661,6 +3697,10 @@ def test_unapproved_essence_skips_before_cost_or_provider_call(monkeypatch):
             return []
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __init__(self):
             self.commit_calls = 0
 
@@ -3739,6 +3779,10 @@ def test_drifted_source_hash_still_allows_generation(monkeypatch):
         rowcount = 1
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __init__(self, philosophy, sources):
             self.philosophy = philosophy
             self.sources = sources
@@ -4574,6 +4618,10 @@ def test_auto_publish_one_commits_publication_before_external_effects(monkeypatc
     )
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         commits = 0
         execute_calls = 0
 
@@ -5174,6 +5222,10 @@ def test_eight_oclock_digest_autonomy(monkeypatch, code, attempts, expected):
     content_ids = [uuid.uuid4(), uuid.uuid4()]
     hospital_id = uuid.uuid4()
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __enter__(self):
             return self
         def __exit__(self, *_args):
@@ -5226,6 +5278,10 @@ def test_a_morning_pass_records_what_it_did_even_when_nothing_was_published(
     hospital_id = uuid.uuid4()
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __enter__(self):
             return self
 
@@ -5281,6 +5337,10 @@ def test_weekly_rejection_rollup_uses_the_completed_kst_week_once(monkeypatch):
     captured = {}
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __enter__(self):
             return self
 
@@ -5349,6 +5409,10 @@ def test_weekly_rollup_still_reports_yield_when_no_rejection_is_open(monkeypatch
     captured = {}
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __enter__(self):
             return self
 
@@ -5400,6 +5464,10 @@ def test_weekly_rejection_rollup_query_includes_rejected_class_only() -> None:
             return []
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def execute(self, statement):
             captured["statement"] = statement
             return Result()
@@ -5884,6 +5952,10 @@ def test_reused_image_publication_reaches_the_eight_oclock_digest(monkeypatch):
     digests = []
 
     class DB:
+        def scalar(self, _statement):
+            # 막힌 글의 사고 epoch 조회 — 이 더블에는 사고 행이 없다.
+            return None
+
         def __enter__(self):
             return self
 
@@ -6687,6 +6759,21 @@ class _DigestGateDB:
             return SimpleNamespace(scalar_one_or_none=lambda: match)
         return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: list(self.items)))
 
+    def scalar(self, stmt):
+        # 새로 막힌 글을 이미 알렸는지 보는 기록(`GENERATION_BLOCKED_NOTICE`) 조회.
+        # 사고 epoch 조회는 이 더블에 사고 행이 없어 None이다.
+        if stmt.column_descriptions[0]["entity"] is not OperationRun:
+            return None
+        key = stmt.whereclause.clauses[1].right.value
+        return next(
+            (
+                row.idempotency_key
+                for row in self.added
+                if isinstance(row, OperationRun) and row.idempotency_key == key
+            ),
+            None,
+        )
+
     def add(self, value):
         self.added.append(value)
 
@@ -6954,8 +7041,9 @@ def test_rerunning_seven_forty_five_keeps_one_digest_for_the_operator_hold(monke
     first_attempts = [dict(item.essence_check_summary["generation_attempt"]) for item in (written, unwritten)]
     _od_run(db)
 
-    assert len(keys) == 2 and keys[0] == keys[1]
-    assert len(db.outbox()) == 1  # 같은 날 다시 돌아도 outbox가 중복 키로 합친다
+    # 두 번째 실행은 새로 막힌 글이 없어 요약을 조립하지도 않는다(글·사고 epoch마다 한 번만 알린다).
+    assert len(keys) == 1
+    assert len(db.outbox()) == 1
     assert [item.essence_check_summary["generation_attempt"] for item in (written, unwritten)] == (
         first_attempts
     )
@@ -7045,7 +7133,7 @@ def test_eight_oclock_alone_keeps_the_operator_copy_off_an_ordinary_blocker(monk
 def test_seven_forty_five_then_eight_oclock_send_one_digest_for_the_operator_hold(
     monkeypatch, with_other_blocker
 ):
-    """평소 아침: 07:45 {A,B} == 08:00 {A,B} → 같은 중복 키 → 08:00은 합쳐져 한 건뿐이다.
+    """평소 아침: 07:45 {A,B} == 08:00 {A,B} → 08:00은 이미 알린 글이라 요약을 만들지 않는다.
 
     A는 오늘 예정인 사람의 결정 보류, B는 두 요약이 모두 싣는 지속 차단(원고 미생성)이다.
     """
@@ -7063,12 +7151,10 @@ def test_seven_forty_five_then_eight_oclock_send_one_digest_for_the_operator_hol
     attempts = [dict(item.essence_check_summary["generation_attempt"]) for item in items]
     _od_run_eight(monkeypatch, db)
 
-    # 08:00도 요약을 조립했고(A를 실었다) 07:45와 같은 키라 outbox가 합쳤다.
+    # 08:00은 같은 글을 이미 알렸으므로 요약을 다시 조립하지 않는다 — 07:45의 한 건뿐이다.
     assert [batch for batch, _key in keys] == [
         generation_incident_control.PREPUBLISH_MORNING_BATCH,
-        generation_incident_control.PUBLISH_MORNING_BATCH,
     ]
-    assert keys[0][1] == keys[1][1]
     [row] = db.outbox()
     text = _od_digest_text(row)
     assert text.count(_OD_LINE_TITLE) == 1

@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from app.services import monthly_report_gap_notifications as notifications
 
 
-def test_daily_gap_summary_has_stable_day_dedupe_and_one_admin_link():
+def test_gap_summary_dedupe_does_not_repeat_by_day_and_has_one_admin_link():
     intent = notifications.build_monthly_report_gap_summary(
         period_key="2026-08",
         summary_date="2026-09-02",
@@ -15,7 +15,9 @@ def test_daily_gap_summary_has_stable_day_dedupe_and_one_admin_link():
         ],
     )
 
-    assert intent.dedupe_key == "MONTHLY_REPORT_GAP_SUMMARY:2026-08:2026-09-02"
+    # 날짜는 키에 들어가지 않는다 — 같은 공백이 매일 반복해서 나가지 않는다.
+    assert intent.dedupe_key.startswith("MONTHLY_REPORT_GAP_SUMMARY:2026-08:")
+    assert "2026-09-02" not in intent.dedupe_key
     assert intent.notification_type == "MONTHLY_REPORT_GAP_SUMMARY"
     assert intent.message.admin_url.endswith("/operations?queue=reports")
     assert len(intent.message.payload()["blocks"]) == 4

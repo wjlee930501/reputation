@@ -90,11 +90,13 @@ from app.services.gap_driven_slots import (
 )
 from app.services.gcs_utils import get_signed_url
 from app.services.image_engine import image_subject_hash
+from app.services.incident_types import incident_is_quiet
 from app.services.operation_runs import (
     OperationCommand,
     OperationQueueUnavailable,
     dispatch_operation,
 )
+from app.services.operator_action import is_operator_todo
 from app.services.ops_incident_alerts import open_ops_incident
 from app.services.post_publish_review_policy import is_human_post_publish_review_sample
 from app.services.public_surface_intents import enqueue_public_surface_intent
@@ -2293,6 +2295,7 @@ async def _blocked_links_for(
                 Incident.next_action,
                 Incident.state,
                 Incident.sla_due_at,
+                Incident.incident_type,
             )
             .where(
                 Incident.hospital_id == hospital_id,
@@ -2340,8 +2343,16 @@ async def _blocked_links_for(
             "next_action": message,
         }
     incident_links: dict[uuid.UUID, dict[str, Any]] = {}
-    for source_id, incident_id, next_action, incident_state, sla_due_at in incident_rows:
-        if not requires_operator_action(incident_state, sla_due_at, now):
+    for source_id, incident_id, next_action, incident_state, sla_due_at, kind in incident_rows:
+        # 개발 담당 몫은 운영 센터 조치 링크를 만들지 않는다. 조용한 종류(사후검수 지적)는
+        # 운영자 큐에 올리지 않는 대신 콘텐츠 탭에서만 보이므로 사람의 일이면 링크한다.
+        if not (
+            is_operator_todo(kind, incident_state, sla_due_at, now)
+            or (
+                incident_is_quiet(kind)
+                and requires_operator_action(incident_state, sla_due_at, now)
+            )
+        ):
             continue
         incident_links.setdefault(
             uuid.UUID(source_id),

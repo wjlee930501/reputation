@@ -17,17 +17,15 @@ from app.api.admin.operations_center_query_common import (
     owner_predicate,
     sla_predicate,
 )
-from app.api.admin.operations_center_serializers import (
-    canonical_cause_code,
-    cost_guard_category,
-    requires_operator_action,
-    serialize_incident_row,
-)
+from app.api.admin.operations_center_serializers import serialize_incident_row
 from app.models.admin_user import AdminUser
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.schemas.operations import OperationsOwner, OperationsQueueRow
+from app.services.incident_cause_group import cause_group_key as _cause_group_key
+from app.services.incident_types import incident_is_quiet
 from app.services.notification_channel_health import outbox_row_of_incident
+from app.services.operator_action import is_operator_todo
 
 HospitalScope = uuid.UUID | None | EllipsisType
 
@@ -95,35 +93,6 @@ def _group_incident_rows(
             )
         )
     return projections
-
-
-def _cause_group_key(
-    *,
-    incident_safe_error_code: str | None,
-    incident_type: str,
-    source_type: str | None,
-    source_id: str | None,
-    run_safe_error_code: str | None,
-    run_operation_type: str | None,
-) -> str:
-    """Same grouping key `serialize_incident_row` derives, without building a full row.
-
-    Takes scalars so the lean pass-1 query below can select just the cause-key columns
-    instead of hydrating whole `Incident` objects for every match — must stay identical
-    to `serialize_incident_row`'s `projected_group_key` or the two passes disagree on
-    which incidents share a group.
-    """
-    projected_code = canonical_cause_code(
-        incident_safe_error_code or run_safe_error_code, incident_type
-    )
-    budget_category = cost_guard_category(
-        projected_code,
-        incident_type=incident_type,
-        source_type=source_type,
-        source_id=source_id,
-        run_operation_type=run_operation_type,
-    )
-    return f"{projected_code}:{budget_category}" if budget_category is not None else projected_code
 
 
 def _hospital_scope_predicate(hospital_scope: HospitalScope) -> ColumnElement[bool] | None:
@@ -230,7 +199,10 @@ async def load_incidents_queue(
             run_safe_error_code=run_code,
             run_operation_type=run_operation_type,
         )
-        if actionable_first and not requires_operator_action(state, sla_due_at, now):
+        # 조용한 종류(사후검수 지적)는 계약상 운영자 큐에 올리지 않는다 — 맥락 행으로도 싣지 않는다.
+        if actionable_first and incident_is_quiet(incident_type):
+            continue
+        if actionable_first and not is_operator_todo(incident_type, state, sla_due_at, now):
             pending_groups.setdefault(key, []).append(row_id)
             continue
         groups.setdefault(key, []).append(row_id)
@@ -320,8 +292,8 @@ async def _operator_incident_groups(
 
     거르기가 묶기보다 먼저다. 순서가 반대면 같은 원인의 자동 복구 중 건이 대표가 되어,
     목록은 1건으로 세는데 현황은 카드를 하나도 만들지 못한다. 세 가지를 큐와 똑같이 쓴다:
-    상태는 큐의 ACTIVE 필터(`ACTIVE_INCIDENT_STATES`), 사람 몫 판정은 큐 행과 같은
-    `requires_operator_action`, 묶음은 같은 원인 그룹(`_cause_group_key`)이다.
+    상태는 큐의 ACTIVE 필터(`ACTIVE_INCIDENT_STATES`), 운영 담당의 할 일 판정은 큐와 일일 요약이
+    쓰는 `is_operator_todo`(개발 담당·조용한 종류 제외), 묶음은 같은 원인 그룹(`_cause_group_key`)이다.
     """
     if not hospital_ids:
         return {}
@@ -362,7 +334,7 @@ async def _operator_incident_groups(
         run_code,
         run_operation_type,
     ) in rows:
-        if not requires_operator_action(state, sla_due_at, now):
+        if not is_operator_todo(incident_type, state, sla_due_at, now):
             continue
         key = _cause_group_key(
             incident_safe_error_code=incident_code,

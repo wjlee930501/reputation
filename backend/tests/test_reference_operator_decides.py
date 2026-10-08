@@ -1453,6 +1453,7 @@ async def test_a_saved_blocked_post_stays_blocked_while_its_incident_is_open(mon
         REFERENCES_OPERATOR_DECIDES_ACTION,
         "OPEN",
         None,
+        "CONTENT_GENERATION_FAILED",  # 인시던트 종류 — 운영 담당 몫이라 링크가 만들어진다
     )
 
     with override_reference_fetcher(_spine_and_hemorrhoid_fetcher()):
