@@ -19,7 +19,6 @@ from app.models.content import ContentItem, ContentStatus
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     has_required_faq_fields,
-    image_certification_current,
     public_candidate_review_safe,
     public_surface_has_required_references,
     publication_field_values,
@@ -45,7 +44,6 @@ VISIBILITY_BLOCKER_LABELS: dict[str, str] = {
     "NOT_PUBLISHED_AT": "발행 시각이 없음",
     "FAQ_FIELDS_MISSING": "FAQ 질문·직접 답변 누락",
     "MISSING_REFERENCES": "인용 가능한 참고 자료 없음",
-    "IMAGE_NOT_CERTIFIED": "대표 이미지 재인증 대기",
     "AI_REVIEW_UNRESOLVED": "독립 검수 지적 미해결",
     "FORBIDDEN_EXPRESSION": "의료광고 금지 표현 포함",
 }
@@ -70,16 +68,6 @@ _VISIBILITY_COLUMNS: Final = (
     ContentItem.faq_question,
     ContentItem.faq_answer_summary,
     ContentItem.references_list,
-    ContentItem.image_url,
-    ContentItem.image_policy_verified_at,
-    ContentItem.image_content_hash,
-    ContentItem.image_subject_hash,
-    ContentItem.image_policy_version,
-    # 재사용 이미지의 인증 모양은 이 컬럼으로만 구분된다 — 빼면 판정이 지연 로딩을
-    # 시도하다 async 세션에서 터지거나, 인증된 이미지를 미인증으로 오판한다.
-    ContentItem.image_reused_from_content_id,
-    # 병원 히어로 대체 이미지의 인증 모양도 같다(migration 0075).
-    ContentItem.image_fallback_source,
 )
 
 
@@ -126,8 +114,6 @@ def assess_public_visibility(
         blockers.append("FAQ_FIELDS_MISSING")
     if not public_surface_has_required_references(item):
         blockers.append("MISSING_REFERENCES")
-    if not image_certification_current(item):
-        blockers.append("IMAGE_NOT_CERTIFIED")
     if not public_candidate_review_safe(item):
         blockers.append("AI_REVIEW_UNRESOLVED")
     if check_forbidden_content_fields(publication_field_values(item), PUBLICATION_CHECK_FIELDS):

@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { isOffAllowlistExternalUrl } from './image-policy.ts'
+import { contentCoverImageSource, isOffAllowlistExternalUrl } from './image-policy.ts'
+
+test('content covers render certified payload URLs or the existing null motif', () => {
+  assert.equal(contentCoverImageSource('/api/v1/public/hospitals/a/contents/b/image?v=abc'), '/api/v1/public/hospitals/a/contents/b/image?v=abc')
+  assert.equal(contentCoverImageSource(' https://storage.googleapis.com/bucket/image.png '), 'https://storage.googleapis.com/bucket/image.png')
+  assert.equal(contentCoverImageSource(null), null)
+  assert.equal(contentCoverImageSource('   '), null)
+  assert.equal(contentCoverImageSource('javascript:alert(1)'), null)
+  assert.equal(contentCoverImageSource('//attacker.example/image.png'), null)
+  assert.equal(contentCoverImageSource('not a URL'), null)
+})
 
 test('public API assets stay on the responsive image optimizer path', () => {
   assert.equal(

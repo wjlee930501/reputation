@@ -1,9 +1,11 @@
 import { isPubliclyServing } from './public-service-state.ts'
+import type { PublicServiceVerdict } from './public-service-state.ts'
 import type { HospitalStatusValue } from '../types/index.ts'
 
 export function customDomainLiveUrl(input: {
   status?: HospitalStatusValue | null
   site_live?: boolean | null
+  public_service_state?: PublicServiceVerdict | null
   aeo_domain?: string | null
   hasUnsavedChange: boolean
 }): string | null {

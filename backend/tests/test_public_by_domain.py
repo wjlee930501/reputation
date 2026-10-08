@@ -88,6 +88,11 @@ def _hospital():
         aeo_domain="clinic.example.com",
         status=HospitalStatus.ACTIVE,
         site_live=True,
+        site_built=True,
+        profile_complete=False,
+        address="서울시 강남구",
+        phone="02-1234-5678",
+        treatments=[{"name": "대장항문 진료"}],
     )
 
 
@@ -113,6 +118,19 @@ async def test_by_domain_normalizes_path_param_before_lookup():
     params = db.statements[0].compile().params
     assert "clinic.example.com" in params.values()
     assert HospitalStatus.ACTIVE in params.values()  # ACTIVE 필터가 SQL에 포함
+
+
+async def test_by_domain_sql_uses_minimum_public_facts_without_profile_completion():
+    db = FakeDB(_hospital())
+
+    await _get_by_domain(_request(), "clinic.example.com", db=db)
+
+    compiled = str(db.statements[0].compile())
+    where_clause = compiled.partition("\nWHERE ")[2]
+    assert where_clause
+    assert "profile_complete" not in where_clause
+    for column in ("site_built", "address", "phone", "treatments"):
+        assert column in compiled
 
 
 async def test_by_domain_unknown_domain_is_404():

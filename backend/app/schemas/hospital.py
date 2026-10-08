@@ -89,6 +89,7 @@ class HospitalListItem(HospitalItemBase):
 
 
 class HospitalDetail(HospitalItemBase):
+    public_service_state: HospitalStateItem
     # `profile_complete`는 서버가 이 목록에서 파생한다 — 화면은 "남은 필수 항목 N개"만
     # 보여 주고 완료를 직접 표시하지 않는다(설계 §4.5).
     missing_profile_requirements: list[ProfileRequirementItem]

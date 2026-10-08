@@ -58,7 +58,6 @@ from app.services.content_publication import (
     count_citable_references,
     has_required_faq_fields,
     has_required_references,
-    image_certification_current,
     public_candidate_review_safe,
     publication_field_values,
     record_publication_identity,
@@ -89,6 +88,7 @@ from app.services.gap_driven_slots import (
     plan_gap_driven_slots,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.hospital_states import AvailabilityVerdict, schedule_availability_verdict
 from app.services.image_engine import image_subject_hash
 from app.services.incident_types import incident_is_quiet
 from app.services.operation_runs import (
@@ -192,23 +192,21 @@ class ScheduleCreate(BaseModel):
 
 
 def _content_readiness_blockers(readiness: EssenceReadiness) -> list[str]:
-    # Source processing and snapshot freshness are onboarding diagnostics once a
-    # stable base exists; they must not close scheduling/generation write gates.
-    if readiness.current is not None:
-        return []
-    blockers: list[str] = []
-    if readiness.required_source_count == 0:
-        blockers.append("병원 근거 자료를 1개 이상 추가해 주세요.")
-    if readiness.has_unprocessed_sources:
-        blockers.append(
-            f"처리되지 않은 병원 근거 자료 "
-            f"{readiness.required_source_count - readiness.processed_source_count}개가 남아 있습니다."
-        )
-    if readiness.approved is None:
-        blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
-    else:
-        blockers.append("콘텐츠 운영 기준 재온보딩 승인을 기다리고 있습니다.")
-    return blockers
+    return [blocker.message for blocker in _content_schedule_availability(readiness).blockers]
+
+
+def _content_schedule_availability(readiness: EssenceReadiness) -> AvailabilityVerdict:
+    """Adapt essence facts to the shared schedule-availability decision."""
+
+    return schedule_availability_verdict(
+        essence_current=readiness.current is not None,
+        required_sources=readiness.required_source_count,
+        unprocessed_sources=max(
+            readiness.required_source_count - readiness.processed_source_count,
+            0,
+        ),
+        approved_philosophy_exists=readiness.approved is not None,
+    )
 
 
 async def _schedule_readiness_blockers(db: AsyncSession, hospital: Hospital) -> list[str]:
@@ -1138,8 +1136,6 @@ async def publish_content(
         "FAQ_FIELDS_MISSING",
         "MISSING_REFERENCES",
         "FORBIDDEN_EXPRESSION",
-        "CONTENT_IMAGE_NOT_READY",
-        "CONTENT_IMAGE_NOT_VERIFIED",
     }:
         philosophy = await _get_approved_philosophy(db, hospital_id)
         assessment = assess_content_publication(item, philosophy)
@@ -2221,8 +2217,6 @@ def _build_compliance_summary(
         blockers.append("권위 있는 참고 자료가 1개 이상 필요합니다.")
     if item.title and item.body and not has_required_faq_fields(item):
         blockers.append("FAQ 질문과 직접 답변 요약이 필요합니다.")
-    if item.title and item.body and not image_certification_current(item):
-        blockers.append("대표 이미지 자동 정책 검사가 필요합니다.")
     if not public_candidate_review_safe(item):
         blockers.append("독립 검수 지적이 해결되지 않았습니다.")
     if item.essence_status != ESSENCE_STATUS_ALIGNED:

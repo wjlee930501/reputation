@@ -9,12 +9,20 @@ from app.services.hospital_states import (
     PublicServiceState,
     content_state,
     domain_state,
+    generation_availability_verdict,
     public_service_state,
+    schedule_availability_verdict,
+    serialize_availability,
 )
 
 
 def _hospital(**overrides):
     base = dict(
+        name="테스트병원",
+        slug="test-hospital",
+        address="서울시 강남구",
+        phone="02-1234-5678",
+        treatments=[{"name": "진료 항목"}],
         status=HospitalStatus.ACTIVE,
         site_live=True,
         site_built=True,
@@ -43,7 +51,24 @@ def test_public_service_mirrors_the_serving_gate():
         )
     )
     assert not_live.kind == "not_live"
-    assert not_live.remaining == ("profile_complete", "site_built")
+    assert not_live.remaining == ("service_inactive", "public_permission_missing", "site_not_built")
+
+
+def test_public_service_uses_minimum_public_facts_not_enrichment_completion():
+    hospital = _hospital(
+        profile_complete=False,
+        website_url=None,
+        latitude=None,
+        longitude=None,
+        director_name=None,
+    )
+
+    assert public_service_state(hospital) == PublicServiceState(kind="live", remaining=())
+
+    for field in ("name", "slug", "address", "phone", "treatments"):
+        incomplete = _hospital(profile_complete=True)
+        setattr(incomplete, field, [] if field == "treatments" else None)
+        assert field in public_service_state(incomplete).remaining
 
 
 def test_content_state_needs_schedule_and_a_current_essence():
@@ -74,6 +99,42 @@ def test_content_state_needs_schedule_and_a_current_essence():
         ).kind
         == "exception"
     )
+
+
+def test_schedule_and_generation_availability_are_distinct():
+    schedule = schedule_availability_verdict(
+        essence_current=True,
+        required_sources=1,
+        unprocessed_sources=0,
+        approved_philosophy_exists=True,
+    )
+    generation = generation_availability_verdict(
+        _hospital(schedule_set=False),
+        schedule_availability=schedule,
+    )
+
+    assert serialize_availability(schedule) == {"available": True, "blockers": []}
+    assert generation.available is False
+    assert [blocker.code for blocker in generation.blockers] == ["schedule"]
+
+
+def test_schedule_availability_returns_server_messages_for_every_blocker():
+    verdict = schedule_availability_verdict(
+        essence_current=False,
+        required_sources=2,
+        unprocessed_sources=1,
+        approved_philosophy_exists=False,
+    )
+
+    payload = serialize_availability(verdict)
+    assert payload["available"] is False
+    assert payload["blockers"] == [
+        {
+            "code": "sources_processing",
+            "message": "근거 자료 처리 중 1건입니다. 처리가 끝나면 자동으로 이어집니다.",
+        },
+        {"code": "essence_missing", "message": "콘텐츠 운영 기준을 자동으로 만드는 중입니다."},
+    ]
 
 
 def test_no_sources_is_human_work_not_an_automatic_review():

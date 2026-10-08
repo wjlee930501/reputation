@@ -119,6 +119,8 @@ export interface Hospital {
   site_built?: boolean
   site_live: boolean
   schedule_set: boolean
+  /** 새 backend가 주는 공개 정본. 누락은 혼합 버전에서 fail-closed로 해석한다. */
+  public_service_state?: PublicServiceStateValue
   created_at: string | null
   address?: string
   /** 층·호 같은 상세 주소. 좌표 변환에는 쓰이지 않는다. */

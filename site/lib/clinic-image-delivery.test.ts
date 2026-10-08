@@ -47,7 +47,7 @@ test('covers retain the fallback during loading without hiding no-JS images', ()
   assert.match(cover, /clinic-cover-motif/)
   assert.match(cover, /clinic-cover-watermark/)
   assert.doesNotMatch(cover, /!showImage|!image.showImage|opacity:/)
-  assert.match(cover, /src=\{src\}/) // preserve original identity and certification query.
+  assert.match(cover, /src=\{imageSrc\}/) // preserve the accepted identity and certification query.
 })
 
 for (const [label, values, expected] of [

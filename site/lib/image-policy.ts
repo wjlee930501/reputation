@@ -33,3 +33,15 @@ export function isOffAllowlistExternalUrl(src: string | null | undefined): boole
     return false
   }
 }
+
+export function contentCoverImageSource(src: string | null | undefined): string | null {
+  const value = src?.trim()
+  if (!value) return null
+  if (value.startsWith('/')) return value.startsWith('//') ? null : value
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? value : null
+  } catch {
+    return null
+  }
+}

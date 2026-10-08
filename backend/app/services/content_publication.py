@@ -377,25 +377,10 @@ def assess_content_publication(
             philosophy_id=getattr(philosophy, "id", None),
         )
 
-    if not getattr(item, "image_url", None):
-        return _blocked(
-            code="CONTENT_IMAGE_NOT_READY",
-            message="대표 이미지가 아직 준비되지 않았습니다.",
-            item=item,
-            philosophy=philosophy,
-        )
-    # 인증되지 않은 이미지는 어떤 경우에도 공개하지 않는다. 재사용 이미지도 같은
-    # 함수로 판정한다 — 통과 근거는 원본 글에 대한 명시적 marker이지 합성값이 아니다.
-    if not image_certification_current(item):
-        return _blocked(
-            code="CONTENT_IMAGE_NOT_VERIFIED",
-            message="대표 이미지의 자동 정책 검사가 아직 완료되지 않았습니다.",
-            item=item,
-            philosophy=philosophy,
-        )
-
     summary = dict(screening.summary or {})
-    if image_is_reused(item) or image_is_hospital_fallback(item):
+    if image_certification_current(item) and (
+        image_is_reused(item) or image_is_hospital_fallback(item)
+    ):
         # 이 판의 대표 이미지는 이 글의 주제로 만든 것이 아니다 — 같은 병원의 다른 글에서
         # 빌렸거나, 첫 글이라 병원 대표 이미지를 썼다. 사후 교체 스윕과 운영 화면이 그
         # 사실을 볼 수 있게 남긴다 — 교체되면 사라진다. 읽는 쪽이 하나뿐이도록 두 경우가

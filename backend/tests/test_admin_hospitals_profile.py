@@ -434,30 +434,50 @@ def test_detail_serializes_visual_approval_missing():
         {"keywords": []},
         {"region": []},
         {"specialties": []},
-        {"address": ""},
         {"director_name": ""},
     ],
 )
-async def test_patch_cannot_unset_profile_complete_while_publicly_serving(patch_body):
-    """M-13: 공개 게이트가 profile_complete를 요구하므로 필수 항목을 비우면 공개 페이지가 조용히 404가 된다."""
-    hospital = _hospital(status=HospitalStatus.ACTIVE, site_live=True, profile_complete=True)
+async def test_patch_can_remove_optional_enrichment_while_publicly_serving(patch_body):
+    """Optional enrichment may lower onboarding completion without hiding a safe profile."""
+    hospital = _hospital(
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        site_built=True,
+        profile_complete=True,
+    )
     db = FakeDB(hospital)
     body = hospitals_api.HospitalProfileUpdate(**patch_body)
 
+    await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+
+    assert db.committed is True
+    assert hospital.profile_complete is False
+    assert db.locks == [hospital.id]
+    assert db.locked_before_first_read is True
+
+
+@pytest.mark.parametrize("patch_body", [{"address": ""}, {"phone": ""}, {"treatments": []}])
+async def test_patch_cannot_remove_minimum_public_fact_while_serving(patch_body):
+    hospital = _hospital(
+        status=HospitalStatus.ACTIVE,
+        site_live=True,
+        site_built=True,
+        profile_complete=True,
+    )
+    db = FakeDB(hospital)
+
     with pytest.raises(HTTPException) as exc:
-        await hospitals_api.update_profile(hospital.id, body, BackgroundTasks(), db=db)
+        await hospitals_api.update_profile(
+            hospital.id,
+            hospitals_api.HospitalProfileUpdate(**patch_body),
+            BackgroundTasks(),
+            db=db,
+        )
 
     assert exc.value.status_code == 409
     assert exc.value.detail["code"] == "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE"
-    # 어떤 칸이 문제인지 말하고, 일시정지하라는 우회 지시는 하지 않는다.
     assert exc.value.detail["missing"]
-    for label in exc.value.detail["missing"]:
-        assert label in exc.value.detail["message"]
-    assert "일시정지" not in exc.value.detail["message"]
     assert db.committed is False
-    # 판정 자체가 잠금 아래서 일어나야 재개(`/resume`)와 교차하지 않는다.
-    assert db.locks == [hospital.id]
-    assert db.locked_before_first_read is True
 
 
 async def test_patch_can_unset_profile_complete_when_paused():

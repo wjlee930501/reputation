@@ -17,6 +17,10 @@ export interface ReadinessCheck {
 }
 
 export interface ContentReadiness {
+  schedule_availability?: {
+    available: boolean
+    blockers: Array<{ code: string; message: string }>
+  } | null
   essence?: {
     processed_source_count?: number | null
     required_source_count?: number | null
@@ -28,33 +32,11 @@ export interface ContentReadiness {
   checks?: ReadinessCheck[]
 }
 
-/** 사람이 하는 일은 자료를 올리는 것뿐이고, 나머지는 기다리는 일이다. */
-const BLOCKER_COPY: Record<string, string> = {
-  essence_sources: `${ADMIN_COPY.evidence} 처리가 끝나면 발행 일정을 저장할 수 있습니다. 올린 자료는 저장 즉시 자동으로 처리됩니다.`,
-  essence_philosophy: `${ADMIN_COPY.operatingStandard}을 자동으로 만드는 중입니다. 완료되면 발행 일정을 저장할 수 있습니다.`,
-  essence_freshness: `새로 올린 ${ADMIN_COPY.evidence}를 ${ADMIN_COPY.operatingStandard}에 반영하는 중입니다. 자동 갱신이 끝나면 저장할 수 있습니다.`,
-}
-
-const BLOCKER_KEYS = ['essence_sources', 'essence_philosophy', 'essence_freshness']
-
-const MISSING_SOURCE_COPY =
-  `병원 정보 화면에서 ${ADMIN_COPY.evidence}를 1개 이상 올려 주세요. 처리는 자동으로 이어집니다.`
-
 export function contentReadinessBlockers(readiness: ContentReadiness | null): string[] {
   if (!readiness) return []
-  const checkByKey = new Map((readiness.checks ?? []).map((check) => [check.key, check]))
-  const blockers: string[] = []
-
-  if ((readiness.essence?.required_source_count ?? 0) === 0) {
-    blockers.push(MISSING_SOURCE_COPY)
-  }
-  for (const key of BLOCKER_KEYS) {
-    const check = checkByKey.get(key)
-    if (check && !check.passed) {
-      blockers.push(BLOCKER_COPY[key] ?? `${check.label} 단계가 자동으로 진행 중입니다.`)
-    }
-  }
-  return Array.from(new Set(blockers))
+  const availability = readiness.schedule_availability
+  if (!availability) return ['발행 일정 가능 여부를 서버에서 확인할 수 없습니다.']
+  return Array.from(new Set(availability.blockers.map((blocker) => blocker.message)))
 }
 
 /**

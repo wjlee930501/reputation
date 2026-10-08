@@ -12,6 +12,7 @@ export interface DomainProfile {
   site_built?: boolean
   site_live?: boolean
   schedule_set?: boolean
+  public_service_state?: Hospital['public_service_state']
   domain_management_mode?: DomainManagementMode
   domain_dns_strategy?: DomainDnsStrategy
   domain_registrar?: string | null

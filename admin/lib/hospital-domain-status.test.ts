@@ -459,8 +459,8 @@ test('an untracked certificate state is not upgraded to 운영 중 by a live che
 })
 
 test('a paused hospital on the platform address is never labelled 운영 중', () => {
-  assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }), '운영 일시 정지')
-  assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'ACTIVE' }), '운영 중')
+  assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'PAUSED', public_service_state: { kind: 'paused', remaining: [] } }), '운영 일시 정지')
+  assert.equal(domainHeaderStatus({ aeo_domain: null, site_live: true, status: 'ACTIVE', public_service_state: { kind: 'live', remaining: [] } }), '운영 중')
   // 자기 도메인이 없으면 이 배지는 '어느 주소를 쓰는가'만 말한다 — 운영 여부는 옆의 상태
   // 배지가 말하므로 일시정지라고 주소 이름까지 바꾸지 않는다.
   assert.equal(readHospitalDomainStatus({ aeo_domain: null, site_live: true, status: 'PAUSED' }).label, '기본 주소')

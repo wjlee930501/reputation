@@ -84,6 +84,9 @@ async def _hospital(
     hospital = Hospital(
         name=name,
         slug=f"clinic-{uuid.uuid4().hex[:12]}",
+        address="서울시 강남구",
+        phone="02-1234-5678",
+        treatments=[{"name": "진료 항목"}],
         status=status,
         site_live=site_live,
         site_built=site_built,
@@ -235,11 +238,11 @@ async def test_list_rows_carry_the_three_states(pg_async_session):
     }
     assert rows[str(preparing.id)]["public_service_state"] == {
         "kind": "not_live",
-        "remaining": ["profile_complete", "site_built"],
+        "remaining": ["service_inactive", "public_permission_missing", "site_not_built"],
     }
     assert rows[str(preparing.id)]["content_state"] == {
         "kind": "preparing",
-        "remaining": ["schedule"],
+        "remaining": ["schedule", "public_service"],
     }
 
 
