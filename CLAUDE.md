@@ -187,7 +187,7 @@ Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 l
 ### Admin 화면과 사람의 일
 
 - 병원 화면은 `/hospitals/{id}` 아래 탭 4개(`현황 · 병원 정보 · 콘텐츠 · 보고서`)뿐이다. 옛 8개 경로(`dashboard, onboarding, profile, schedule, wiki, essence, query-targets, exposure-actions`)는 `admin/lib/route-redirects.ts`의 매핑으로 새 탭에 redirect되며 2026-10-09에 제거한다. 그 전에 백엔드가 만드는 admin 딥링크도 새 경로로 옮긴다. 새 탭·화면·전용 lib를 만들 때 옛 경로를 되살리지 않는다.
-- 병원 상태는 `hospital_states.py`의 3상태(`준비 중 · 운영 중 · 일시정지`)와 `hospital_overview`의 예외 카드로만 표현한다. 사람의 할 일은 `requires_operator_action`(운영센터 직렬화기) 한 규칙으로 판정하고 현황·콘텐츠·운영센터·Slack이 같은 판정을 쓴다. 기한 안의 자동 재시도(`RETRYING`)와 `RUNNING`을 사람의 일로 표시하지 않으며, 스윕이 소유한 복구(예: 사이트 준비 재시도)는 시도마다 인시던트를 열지 않고 예산 소진 시 원인별 인시던트 하나만 연다.
+- 병원 상태는 `hospital_states.py`의 3상태(`준비 중 · 운영 중 · 일시정지`)와 `hospital_overview`의 예외 카드로만 표현한다. 사람의 할 일은 `operator_action.is_operator_todo`(기한 지난 사람의 일 ∧ 운영 대상 ∧ 조용한 종류 아님) 한 규칙으로 판정하고 현황·콘텐츠·운영센터·Slack이 같은 판정을 쓴다 — 직렬화된 행의 `requires_operator_action`도 이 술어의 값이다. 기한 안의 자동 재시도(`RETRYING`)와 `RUNNING`을 사람의 일로 표시하지 않으며, 스윕이 소유한 복구(예: 사이트 준비 재시도)는 시도마다 인시던트를 열지 않고 예산 소진 시 원인별 인시던트 하나만 연다.
 - 사람이 하는 일은 계약 등록(한 화면 `/hospitals/new` → 병원 생성·계약 기록·인수 수락 한 트랜잭션), 병원 정보·공개 주소 결정, 예외 카드의 서버 허용 행동, 보고서 전달 기록이다. 운영자 문구는 `admin/lib/admin-copy.ts`의 `ADMIN_COPY`만 쓰고, `scripts/check_user_facing_terms.py`가 `admin/app`·`admin/lib`·`admin/types` 전체에서 통일 전 용어를 막는다. 백엔드가 만드는 운영자 문구(`readiness_operator_copy.py` 등)는 가드 밖이므로 존재하는 탭 이름만 쓰는지 검토 때 확인한다.
 - 계약 등록으로 태어난 인수 기록은 `HANDOFF_ACCEPTED`이며 `sla_due_at`은 인수 기한이라 수락 뒤에는 온보딩 큐·마일스톤에서 기한 초과로 읽지 않는다.
 
