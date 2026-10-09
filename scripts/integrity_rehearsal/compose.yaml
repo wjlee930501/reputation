@@ -1,12 +1,17 @@
-x-runtime: &runtime
+x-backend-common: &backend-common
   platform: linux/amd64
-  image: integrity-rehearsal:${REHEARSAL_ID:?}
-  build: {context: ./context, dockerfile: Dockerfile}
   env_file: ./runtime.env
   networks: [isolated]
-  volumes: ['./:/rehearsal:ro']
+  volumes:
+    - './:/rehearsal:ro'
+    - '${REHEARSAL_ARTIFACTS:?REHEARSAL_ARTIFACTS is required}:/artifacts'
   security_opt: ['no-new-privileges:true']
   cap_drop: [ALL]
+
+x-new-backend: &new-backend
+  <<: *backend-common
+  image: '${NEW_IMAGE:?NEW_IMAGE is required}'
+
 services:
   postgres:
     image: postgres:16.4-bookworm
@@ -30,24 +35,111 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
-  fixture:
-    <<: *runtime
-    command: ['python', '/rehearsal/fixture.py']
-  migrate:
-    <<: *runtime
+  migrate-new:
+    <<: *new-backend
     environment: {SERVICE: migrate}
-  api:
-    <<: *runtime
-    environment: {SERVICE: api}
-  worker:
-    <<: *runtime
-    environment: {SERVICE: worker, CELERY_CONCURRENCY: '2'}
-  beat:
-    <<: *runtime
-    environment: {SERVICE: beat}
+  fixture:
+    <<: *new-backend
+    command: ['python', '/rehearsal/fixture.py']
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8090/health']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  api-old:
+    <<: *backend-common
+    image: '${OLD_IMAGE:?OLD_IMAGE is required}'
+    environment: {SERVICE: api, REPUTATION_RELEASE_REVISION: '${OLD_SOURCE_SHA:?OLD_SOURCE_SHA is required}'}
+    healthcheck: &api-health
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8000/health/live']
+      interval: 2s
+      timeout: 3s
+      retries: 45
+  worker-old:
+    <<: *backend-common
+    image: '${OLD_IMAGE:?OLD_IMAGE is required}'
+    environment:
+      SERVICE: worker
+      CELERY_CONCURRENCY: '2'
+      REPUTATION_RELEASE_REVISION: '${OLD_SOURCE_SHA:?OLD_SOURCE_SHA is required}'
+    healthcheck: &celery-health
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:8000/ready']
+      interval: 2s
+      timeout: 3s
+      retries: 45
+  api-new:
+    <<: *new-backend
+    environment: {SERVICE: api, REPUTATION_RELEASE_REVISION: '${NEW_SOURCE_SHA:?NEW_SOURCE_SHA is required}'}
+    healthcheck: *api-health
+  worker-new:
+    <<: *new-backend
+    environment:
+      SERVICE: worker
+      CELERY_CONCURRENCY: '2'
+      REPUTATION_RELEASE_REVISION: '${NEW_SOURCE_SHA:?NEW_SOURCE_SHA is required}'
+    healthcheck: *celery-health
+  beat-new:
+    <<: *new-backend
+    environment: {SERVICE: beat, REPUTATION_RELEASE_REVISION: '${NEW_SOURCE_SHA:?NEW_SOURCE_SHA is required}'}
+    healthcheck: *celery-health
+  api-compatible:
+    <<: *backend-common
+    image: '${COMPATIBLE_IMAGE:?COMPATIBLE_IMAGE is required}'
+    environment:
+      SERVICE: api
+      REPUTATION_RELEASE_REVISION: '${COMPATIBLE_SOURCE_SHA:?COMPATIBLE_SOURCE_SHA is required}'
+      REHEARSAL_READ_ONLY_ROLE: compatible-public-reader
+    healthcheck: *api-health
+  site-new:
+    image: '${SITE_IMAGE:?SITE_IMAGE is required}'
+    environment:
+      PORT: '3000'
+      BACKEND_URL: '${SITE_BACKEND_URL:-http://api-new:8000}'
+      NEXT_PUBLIC_BACKEND_URL: '${SITE_BACKEND_URL:-http://api-new:8000}'
+      NEXT_PUBLIC_API_URL: '${SITE_BACKEND_URL:-http://api-new:8000}/api/v1/public'
+      NEXT_PUBLIC_SITE_URL: 'https://reputation.rehearsal.example.test'
+      SITE_REVALIDATE_SECRET: 'test-only-revalidation'
+    networks:
+      isolated:
+        aliases: [reputation.rehearsal.example.test]
+    security_opt: ['no-new-privileges:true']
+    cap_drop: [ALL]
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:3000/']
+      interval: 2s
+      timeout: 3s
+      retries: 45
+  admin-new:
+    image: '${ADMIN_IMAGE:?ADMIN_IMAGE is required}'
+    environment:
+      PORT: '3001'
+      BACKEND_URL: 'http://api-new:8000'
+      ADMIN_SECRET_KEY: 'test-only-admin-000000000000000000000000000000'
+      ADMIN_SESSION_SECRET: 'test-only-session-0000000000000000000000000000'
+      BFF_ACTOR_SECRET: 'test-only-actor-000000000000000000000000000000'
+    networks: [isolated]
+    security_opt: ['no-new-privileges:true']
+    cap_drop: [ALL]
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '--spider', 'http://127.0.0.1:3001/login']
+      interval: 2s
+      timeout: 3s
+      retries: 45
+  browser:
+    image: '${BROWSER_IMAGE:?BROWSER_IMAGE is required}'
+    init: true
+    ipc: host
+    networks: [isolated]
+    volumes:
+      - './:/rehearsal:ro'
+      - '${REHEARSAL_ARTIFACTS:?REHEARSAL_ARTIFACTS is required}:/artifacts'
+    command: ['node', '/rehearsal/browser.mjs', '--base-url', '${BROWSER_API_URL:-http://api-new:8000}', '--site-url', 'http://reputation.rehearsal.example.test:3000', '--admin-url', 'http://admin-new:3001', '--output-dir', '/artifacts/browser', '--mode', '${BROWSER_MODE:-new-flow}']
+    security_opt: ['no-new-privileges:true']
   probe:
-    <<: *runtime
-    command: ['python', '/rehearsal/check.py', 'initial']
+    <<: *new-backend
+    command: ['python', '/rehearsal/check.py', 'preflight']
+    environment:
+      REPUTATION_RELEASE_REVISION: '${NEW_SOURCE_SHA:?NEW_SOURCE_SHA is required}'
 networks:
   isolated:
     internal: true

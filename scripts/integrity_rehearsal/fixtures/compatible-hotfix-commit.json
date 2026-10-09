@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "sanitized-compatible-hotfix-commit-evidence",
+  "status": "VERIFIED",
+  "sourceSha": "057b9d1e8045603193e0b5b266f740940126e9b6",
+  "parentSha": "be540bc0335d0215dc89507b553761390e68b953",
+  "changedPaths": [
+    "backend/app/api/admin/hospital_overview.py",
+    "backend/app/models/content.py",
+    "backend/app/services/content_visibility.py"
+  ],
+  "sourceFileSha256": {
+    "backend/app/api/admin/hospital_overview.py": "659a4fe495f6d09c50a3324be5891d47efa2f1745c983e212e90930dd97969e4",
+    "backend/app/models/content.py": "36a24be318ed67c789f7147ff85fffbfc9991c00a48721a4ce6a48e10e0b1061",
+    "backend/app/services/content_visibility.py": "2b268f6db20b40e0e95d81e8f6b6c11d6f67c7452de101c26a7b9aa962791bb7"
+  },
+  "sourceEvidenceSha256": "801ecaebe304aff0d6ece9a77d2c9c269db8b0604659c5ab9290018507b41ebd",
+  "redactions": ["local worktree path"]
+}

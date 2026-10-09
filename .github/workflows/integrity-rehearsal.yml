@@ -4,7 +4,10 @@ on:
   pull_request:
     paths:
       - 'backend/**'
+      - 'admin/**'
+      - 'site/**'
       - 'scripts/integrity_rehearsal/**'
+      - 'scripts/deploy.sh'
       - '.github/workflows/integrity-rehearsal.yml'
 permissions:
   contents: read
@@ -18,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Syntax check
         run: |
@@ -28,11 +32,21 @@ jobs:
           for path in Path('scripts/integrity_rehearsal').glob('*.py'):
               ast.parse(path.read_text(), filename=str(path))
           PY
+      - name: Verify pinned baseline before isolation
+        run: |
+          git cat-file -e '41f61d6f2f47459e3135dac66e430e454a1f1735^{commit}'
+          test "$(git rev-parse 41f61d6f2f47459e3135dac66e430e454a1f1735)" = 41f61d6f2f47459e3135dac66e430e454a1f1735
+          printf 'RUNTIME_SOURCE_SHA=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          printf 'COMPATIBLE_READER_MANIFEST=%s\n' 'scripts/integrity_rehearsal/fixtures/compatible-reader.json' >> "$GITHUB_ENV"
+      - name: Validate rehearsal scaffold
+        run: |
+          bash scripts/integrity_rehearsal/run.sh --scaffold-check
+          bash scripts/integrity_rehearsal/run.sh --bootstrap-check
       - name: Build and rehearse in disposable internal network
         run: timeout --signal=TERM --kill-after=30s 17m bash scripts/integrity_rehearsal/run.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: integrity-rehearsal-evidence
-          path: scripts/integrity_rehearsal/artifacts/
+          path: .omo/evidence/task-16/runs/
           if-no-files-found: warn

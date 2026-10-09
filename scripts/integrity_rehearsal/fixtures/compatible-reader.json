@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "verifiedTasks": "1-14",
+  "readerContract": "purpose-first-compatible-public-read-v1",
+  "sourceSha": "057b9d1e8045603193e0b5b266f740940126e9b6",
+  "createdBeforeTask15": false,
+  "originalCheckpointSha": "be540bc0335d0215dc89507b553761390e68b953",
+  "originalCheckpointCreatedBeforeTask15": true,
+  "verificationScope": "Read-only compatible reader hotfix; final global runtime verification remains pending",
+  "hotfix": {
+    "parentSha": "be540bc0335d0215dc89507b553761390e68b953",
+    "createdAfterTask15Started": true,
+    "paths": [
+      "backend/app/api/admin/hospital_overview.py",
+      "backend/app/models/content.py",
+      "backend/app/services/content_visibility.py"
+    ],
+    "evidence": [
+      "scripts/integrity_rehearsal/fixtures/compatible-hotfix-commit.json",
+      "scripts/integrity_rehearsal/fixtures/compatible-public-hotfix-verify.json",
+      "scripts/integrity_rehearsal/fixtures/regression-environment-verify.json"
+    ]
+  }
+}
