@@ -102,7 +102,10 @@ ARTIFACTS="$ROOT/.omo/evidence/task-16/runs/$RUN_ID"
 REGISTRY="$ROOT/.omo/evidence/task-16/resources.json"
 mkdir -p "$ARTIFACTS" "$RUN/new-context" "$RUN/old-context" "$RUN/old-export" \
   "$RUN/compatible-context" "$RUN/compatible-export" "$RUN/new-source" "$RUN/docker-config"
-chmod 755 "$RUN" "$ARTIFACTS"
+chmod 755 "$RUN"
+# The backend probe runs as appuser, while GitHub Actions owns this bind source.
+# Keep the writable scope to this disposable per-run artifact directory.
+chmod 1777 "$ARTIFACTS"
 
 DOCKER_ENDPOINT=$(docker context inspect --format '{{.Endpoints.docker.Host}}')
 case "$DOCKER_ENDPOINT" in unix://*) ;; *) fail "a local Docker socket is required" ;; esac
