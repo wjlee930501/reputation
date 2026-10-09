@@ -145,6 +145,72 @@ test('fetchHospital accepts backend-nullable hospital fields and normalizes UI d
   }
 })
 
+test('fetchHospital accepts backend-omitted optional enrichment and normalizes UI defaults', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify(hospitalPayload({
+        website_url: undefined,
+        blog_url: undefined,
+        kakao_channel_url: undefined,
+        google_business_profile_url: undefined,
+        google_maps_url: undefined,
+        naver_place_url: undefined,
+        latitude: undefined,
+        longitude: undefined,
+        director_name: undefined,
+        director_career: undefined,
+      })),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as typeof fetch
+  try {
+    const hospital = await fetchHospital('demo-clinic')
+    assert.equal(hospital.website_url, null)
+    assert.equal(hospital.blog_url, null)
+    assert.equal(hospital.kakao_channel_url, null)
+    assert.equal(hospital.google_business_profile_url, null)
+    assert.equal(hospital.google_maps_url, null)
+    assert.equal(hospital.naver_place_url, null)
+    assert.equal(hospital.latitude, null)
+    assert.equal(hospital.longitude, null)
+    assert.equal(hospital.director_name, '')
+    assert.equal(hospital.director_career, '')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchHospital still rejects a present non-string external URL', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(hospitalPayload({ website_url: { href: 'https://bad.test' } })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    await assert.rejects(() => fetchHospital('demo-clinic'), /Invalid hospital payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchHospital still rejects a present non-number coordinate', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(hospitalPayload({ latitude: '37.5' })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    await assert.rejects(() => fetchHospital('demo-clinic'), /Invalid hospital payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('fetchContent throws ContentNotFoundError on a 404 (so the page can call notFound())', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof fetch

@@ -7,6 +7,7 @@ operator-facing messages, while allowing internal identifiers such as `brief_id`
 """
 from __future__ import annotations
 
+import ast
 import re
 import sys
 from pathlib import Path
@@ -149,11 +150,11 @@ def banned_labels_for_line(
     return [label for label, pattern in (patterns or BANNED_PATTERNS) if pattern.search(line)]
 
 
-def iter_scannable_lines(path: Path) -> list[tuple[int, str]]:
-    """주석·docstring을 걷어낸, 실제로 화면에 나갈 수 있는 줄만 돌려준다."""
+def _plain_scannable_lines(source: str) -> list[tuple[int, str]]:
+    """Return non-comment lines for TypeScript and invalid Python source."""
     lines: list[tuple[int, str]] = []
     in_triple_quoted_comment = False
-    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for lineno, line in enumerate(source.splitlines(), start=1):
         stripped = line.strip()
         if stripped.startswith(('"""', "'''")):
             if stripped.count('"""') == 1 or stripped.count("'''") == 1:
@@ -169,6 +170,66 @@ def iter_scannable_lines(path: Path) -> list[tuple[int, str]]:
             continue
         lines.append((lineno, line))
     return lines
+
+
+def _docstring_node_ids(tree: ast.Module) -> set[int]:
+    """Return string nodes that Python reserves for documentation, never display copy."""
+    docstrings: set[int] = set()
+    owners = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    for owner in ast.walk(tree):
+        if not isinstance(owner, owners) or not owner.body:
+            continue
+        first_statement = owner.body[0]
+        if isinstance(first_statement, ast.Expr) and isinstance(first_statement.value, ast.Constant):
+            if isinstance(first_statement.value.value, str):
+                docstrings.add(id(first_statement.value))
+    return docstrings
+
+
+def _python_scannable_lines(source: str) -> list[tuple[int, str]]:
+    """Return Python string literal fragments while excluding implementation names."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return _plain_scannable_lines(source)
+
+    source_lines = source.splitlines()
+    docstring_ids = _docstring_node_ids(tree)
+    f_string_text_ids = {
+        id(value)
+        for joined_string in ast.walk(tree)
+        if isinstance(joined_string, ast.JoinedStr)
+        for value in joined_string.values
+        if isinstance(value, ast.Constant) and isinstance(value.value, str)
+    }
+    literal_lines: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if id(node) in docstring_ids:
+            continue
+        if id(node) in f_string_text_ids:
+            fragments = [
+                repr(fragment) for fragment in node.value.splitlines() or [node.value]
+            ]
+        else:
+            literal = ast.get_source_segment(source, node)
+            if literal is None:
+                continue
+            fragments = literal.splitlines() or [literal]
+        for offset, fragment in enumerate(fragments):
+            lineno = node.lineno + offset
+            if INTERNAL_ONLY_MARKER not in source_lines[lineno - 1]:
+                literal_lines.append((lineno, fragment))
+    return sorted(literal_lines)
+
+
+def iter_scannable_lines(path: Path) -> list[tuple[int, str]]:
+    """Return user-facing string fragments, ignoring Python implementation identifiers."""
+    source = path.read_text(encoding="utf-8")
+    if path.suffix == ".py":
+        return _python_scannable_lines(source)
+    return _plain_scannable_lines(source)
 
 
 def unified_term_violations() -> list[str]:
