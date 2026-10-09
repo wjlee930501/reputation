@@ -567,7 +567,9 @@ export function primaryOperationsMutation(
 ): OperationsMutationDescriptor | null {
   const row = detail.incident
   const run = detail.run
-  const retry = enabledPostAction(run?.retry ?? null) ?? enabledPostAction(row.retry)
+  const retry = run && run.retry !== undefined
+    ? enabledPostAction(run.retry)
+    : enabledPostAction(row.retry)
   if (retry?.kind === 'RETRY_RUN') {
     return {
       kind: 'RETRY_RUN',
@@ -578,6 +580,9 @@ export function primaryOperationsMutation(
       label: retry.label,
       requiresIdempotencyKey: true,
     }
+  }
+  if (retry?.kind === 'POST_ACTION') {
+    return mutationFromPostAction(retry, row, reason)
   }
   // 서버가 이 행이 지금 받을 수 있는 상태 전이를 직접 실어 보낸다(`resolve_action`).
   // 그 판단이 화면의 상태 추론보다 정확하다 — 인가와 복구 관측까지 보고 정한 값이다.

@@ -33,7 +33,7 @@ import {
   slackStateLabel,
   updateOperationsQuery,
 } from './operations-center.ts'
-import type { OperationsQueueRow, OperationsRunState } from '../types/index.ts'
+import type { OperationsQueueRow, OperationsRunState, OperationsRunSummary } from '../types/index.ts'
 
 function row(
   id: string,
@@ -438,6 +438,91 @@ test('legacy budget replacement uses the projected reason action and idempotency
       reason: mutation?.reason ?? '',
     }),
     { reason: '이전 비용 기록을 확인할 수 없습니다' },
+  )
+})
+
+test('legacy budget replacement binds the authenticated run retry before incident transitions', () => {
+  const replacement = {
+    kind: 'POST_ACTION',
+    label: '레거시 예산 교체 후 다시 시도',
+    method: 'POST' as const,
+    path: '/api/admin/hospitals/hospital-1/content/content-1/regenerate',
+    enabled: true,
+    reason_required: true,
+    requires_idempotency_key: true,
+  }
+  const incident = row('incident:legacy-budget-run', {
+    queue: 'INCIDENTS',
+    status: 'FAILED',
+    incident_id: 'incident-legacy-budget-run',
+    operation_run_id: 'run-legacy-budget',
+    content_id: 'content-1',
+    retry: replacement,
+    resolve: {
+      kind: 'ACK_INCIDENT',
+      label: '문제 확인 완료',
+      method: 'POST',
+      path: '/admin/operations/hospitals/hospital-1/incidents/incident-legacy-budget-run/ack',
+      enabled: true,
+      reason_required: true,
+      requires_version: true,
+    },
+  })
+  const run = {
+    run_id: 'run-legacy-budget',
+    parent_run_id: null,
+    operation_type: 'REGENERATE_CONTENT',
+    state: 'FAILED' as const,
+    attempt_count: 1,
+    total_count: 1,
+    success_count: 0,
+    failure_count: 1,
+    skipped_count: 0,
+    safe_error_code: 'LEGACY_SPEND_UNKNOWN',
+    safe_error_message: null,
+    requested_at: '2026-10-09T00:00:00Z',
+    queued_at: '2026-10-09T00:00:01Z',
+    started_at: '2026-10-09T00:00:02Z',
+    completed_at: '2026-10-09T00:00:03Z',
+    version: 1,
+    retry: replacement,
+  }
+
+  const mutation = primaryOperationsMutation(
+    { incident, run },
+    '확인된 이전 비용 기록을 교체합니다',
+  )
+
+  assert.equal(mutation?.kind, 'POST_ACTION')
+  assert.equal(mutation?.label, replacement.label)
+  assert.equal(mutation?.path, replacement.path)
+  assert.equal(mutation?.targetId, run.run_id)
+  assert.equal(mutation?.requiresIdempotencyKey, true)
+  assert.deepEqual(mutationRequestBody(mutation?.kind ?? 'POST_ACTION', {
+    reason: mutation?.reason ?? '',
+  }), { reason: '확인된 이전 비용 기록을 교체합니다' })
+
+  const rowOnlyMutation = primaryOperationsMutation(
+    { incident, run: null },
+    '목록에서 확인된 이전 비용 기록을 교체합니다',
+  )
+  assert.equal(rowOnlyMutation?.kind, 'POST_ACTION')
+  assert.equal(rowOnlyMutation?.path, replacement.path)
+
+  const { retry: omittedRetry, ...legacyRun } = run
+  assert.equal(omittedRetry, replacement)
+  const mixedVersionMutation = primaryOperationsMutation(
+    { incident, run: legacyRun as OperationsRunSummary },
+    '혼합 버전 목록에서 이전 비용 기록을 교체합니다',
+  )
+  assert.equal(mixedVersionMutation?.kind, 'POST_ACTION')
+  assert.equal(mixedVersionMutation?.path, replacement.path)
+
+  const disabledRun = { ...run, retry: { ...replacement, enabled: false } }
+  const disabledIncident = { ...incident, resolve: null }
+  assert.equal(
+    primaryOperationsMutation({ incident: disabledIncident, run: disabledRun }, '권한 없음'),
+    null,
   )
 })
 
