@@ -346,7 +346,7 @@ def test_real_extra_page_and_alternate_korean_font_pass_semantic_validation() ->
     html = f"""
     <style>
       @page {{ size: A4; margin: 20mm; }}
-      body {{ font-family: serif; }}
+      body {{ font-family: "NanumGothic", sans-serif; }}
       .extra {{ break-before: page; }}
     </style>
     <h1>{expectation.hospital_name}</h1>
@@ -360,6 +360,8 @@ def test_real_extra_page_and_alternate_korean_font_pass_semantic_validation() ->
     metadata = validate_doctor_pdf(pdf_bytes, expectation)
 
     assert metadata.page_count == 2
+    assert metadata.font_family == "OTHER_KOREAN_FONT"
+    assert metadata.korean_to_unicode is True
     assert metadata.required_text_present is True
     assert metadata.expected_link_present is True
 
