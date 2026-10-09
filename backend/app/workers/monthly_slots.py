@@ -16,6 +16,7 @@ from app.services.gap_driven_slots import (
 )
 from app.services.schedule_reconciliation import month_items_query, remaining_month_slots
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+from app.workers.generation_attempt_state import fresh_generation_attempt
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +102,15 @@ def create_next_month_slots_for_schedule(
                         scheduled_date=slot.scheduled_date,
                         status=ContentStatus.DRAFT,
                         query_target_id=slot.query_target_id,
+                        essence_check_summary={
+                            "generation_attempt": fresh_generation_attempt(
+                                topic_id=(
+                                    str(slot.query_target_id)
+                                    if slot.query_target_id
+                                    else None
+                                )
+                            )
+                        },
                         # 결정 근거는 기존 JSON 컬럼에 남긴다(마이그레이션 없음).
                         # brief_status는 그대로 비워 둬 생성 시점 브리프 승인 경로를 막지 않는다.
                         content_brief=(

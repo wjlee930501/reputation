@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from app.models.content import ContentStatus, ContentType
 from app.services.content_row_state import ROW_STATE_LABELS, RowState, content_row_state
-from app.services.content_visibility import PublicVisibility
+from app.services.content_visibility import VISIBILITY_BLOCKER_LABELS, PublicVisibility
 
 
 def _item(**over):
@@ -22,7 +22,7 @@ def _item(**over):
 
 
 VISIBLE = PublicVisibility(visible=True, blockers=())
-WITHHELD = PublicVisibility(visible=False, blockers=("IMAGE_NOT_CERTIFIED",))
+WITHHELD = PublicVisibility(visible=False, blockers=("PHILOSOPHY_MISMATCH",))
 
 
 def test_published_rows_follow_the_public_visibility():
@@ -32,7 +32,8 @@ def test_published_rows_follow_the_public_visibility():
     withheld = content_row_state(
         _item(), WITHHELD, compliance_blockers=(), blocked_link=None, today=date(2026, 9, 9)
     )
-    assert withheld.kind == "withheld" and withheld.reason == "대표 이미지 재인증 대기"
+    assert withheld.kind == "withheld"
+    assert withheld.reason == VISIBILITY_BLOCKER_LABELS["PHILOSOPHY_MISMATCH"]
 
 
 def test_drafts_are_scheduled_generating_or_blocked():

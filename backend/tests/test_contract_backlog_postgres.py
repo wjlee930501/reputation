@@ -19,7 +19,7 @@ TODAY = date(2026, 9, 17)
 @pytest.fixture
 def db():
     url = make_url(require_db_url("SYNC_DATABASE_URL"))
-    assert url.database == "reputation_test", "Only the test database may be used"
+    assert (url.database or "").endswith("_test"), "Only a *_test database may be used"
     engine = create_engine(url)
     with engine.connect() as connection:
         transaction = connection.begin()

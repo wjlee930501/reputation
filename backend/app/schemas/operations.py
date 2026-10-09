@@ -58,6 +58,22 @@ class CostGuardDailyLimitResponse(BaseModel):
     daily_limit_default: int
 
 
+class LegacyBudgetReplacementRequest(BaseModel):
+    """Explicit reason required only when replacing unknown legacy generation spend."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    reason: str = Field(min_length=3, max_length=200)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        cleaned = value.strip()
+        if len(cleaned) < 3:
+            raise ValueError("예산 교체 사유를 3자 이상 입력해 주세요.")
+        return cleaned
+
+
 class AttentionHospital(BaseModel):
     """공개됐지만 아직 사람이 확인하지 않은 콘텐츠가 있는 병원 한 곳."""
 

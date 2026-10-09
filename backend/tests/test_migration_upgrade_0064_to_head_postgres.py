@@ -66,7 +66,9 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
     database_url = _database_url()
     parsed = make_url(_sync_url(database_url))
     assert parsed.host in {"127.0.0.1", "localhost"}
-    assert parsed.database == "reputation_autonomy_migration"
+    assert parsed.database == "reputation_autonomy_migration" or (
+        parsed.database is not None and parsed.database.endswith("_revisions_upgrade_test")
+    )
 
     engine = create_engine(parsed)
     hospital_id = uuid.UUID("a6500000-0000-0000-0000-000000000001")
@@ -284,7 +286,8 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                     "SELECT image_url, image_policy_verified_at, generation_philosophy_id, "
                     "last_reviewed_philosophy_id, content_revision, image_content_hash, "
                     "image_subject_hash, image_policy_version, first_published_at, "
-                    "first_published_by, human_edited_at, topic_swap_history "
+                    "first_published_by, human_edited_at, topic_swap_history, "
+                    "active_revision_id "
                     "FROM content_items WHERE id=:id"
                 ),
                 {"id": content_id},
@@ -307,6 +310,13 @@ def test_populated_0064_upgrades_without_inventing_provenance_or_measurements(
                 2026, 8, 30, 9, 0, tzinfo=timezone.utc
             )
             assert content.topic_swap_history is None
+            # 이 legacy 행은 승인 provenance/ALIGNED 판정이 없으므로 0084가 공개 판을
+            # 발명하지 않는다. 기존 공개 필드는 old reader가 그대로 읽는다.
+            assert content.active_revision_id is None
+            assert connection.execute(
+                text("SELECT count(*) FROM content_revisions WHERE content_item_id=:id"),
+                {"id": content_id},
+            ).scalar_one() == 0
             erased_content = connection.execute(
                 text(
                     "SELECT first_published_at, first_published_by, human_edited_at "

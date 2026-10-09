@@ -56,7 +56,6 @@ EVENT_LABELS: Final[dict[str, NotificationLabel]] = {
     "MILESTONE_SUMMARY_REPORT": NotificationLabel.REPORT,
     # 공개 완료·사이트 준비 완료는 일어난 일의 보고다. 막힌 사유가 붙어도 다음 단계를 알릴 뿐
     # 실패가 아니다.
-    "CONTENT_PUBLISHED": NotificationLabel.REPORT,
     "ONBOARDING_SITE_BUILT": NotificationLabel.REPORT,
     # 자동 재측정·마감이 실제로 돌고 있는 공백 — 사람이 할 일이 없다.
     "MONTHLY_REPORT_GAP_AUTO": NotificationLabel.REPORT,

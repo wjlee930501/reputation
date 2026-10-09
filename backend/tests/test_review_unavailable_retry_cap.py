@@ -854,8 +854,7 @@ def test_an_outage_retry_never_makes_the_post_publishable(monkeypatch):
 
 
 def test_a_successful_retry_still_goes_through_the_unchanged_gate(monkeypatch):
-    """(PR-B 4e) 재검수가 통과해도 발행은 게이트가 정한다 — 이미지가 없으면 이미지로, 금지 표현이
-    들어오면 금지 표현으로 막힌다. 통과한 재검수는 계수를 지운다."""
+    """재검수 통과 뒤 선택 이미지 부재는 허용하지만 금지 표현은 계속 차단한다."""
 
     philosophy = _approved_philosophy()
     item = _stored_post(philosophy, image=False)
@@ -873,10 +872,12 @@ def test_a_successful_retry_still_goes_through_the_unchanged_gate(monkeypatch):
     assert item.essence_check_summary["ai_review"]["status"] == "PASS"
     assert "review_unavailable_total" not in _attempt(item)
     payload = _publish_once(monkeypatch, item, philosophy, _kst(SLOT, 8))
-    assert payload["kind"] == "blocked" and payload["code"] == "CONTENT_IMAGE_NOT_READY"
-    assert item.status is tasks.ContentStatus.DRAFT
+    assert payload["kind"] == "published"
+    assert item.status is tasks.ContentStatus.PUBLISHED
 
-    item.meta_description = "완치를 약속드립니다."
-    payload = _publish_once(monkeypatch, item, philosophy, _kst(SLOT, 9))
+    unsafe = _stored_post(philosophy, image=False)
+    unsafe.essence_check_summary["ai_review"] = _review(ContentAiReviewStatus.PASS).payload()
+    unsafe.meta_description = "완치를 약속드립니다."
+    payload = _publish_once(monkeypatch, unsafe, philosophy, _kst(SLOT, 9))
     assert payload["kind"] == "blocked" and payload["code"] == "FORBIDDEN_EXPRESSION"
-    assert item.status is tasks.ContentStatus.DRAFT and item.published_at is None
+    assert unsafe.status is tasks.ContentStatus.DRAFT and unsafe.published_at is None

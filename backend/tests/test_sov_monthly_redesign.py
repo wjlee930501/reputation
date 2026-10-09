@@ -261,6 +261,15 @@ def _patch_monthly_window(monkeypatch, db, registration, cohort):
     monkeypatch.setattr(tasks, "register_convertible_tracking_sets", lambda *_a, **_k: registration)
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_a, **_k: cohort)
     monkeypatch.setattr(tasks, "_ensure_monthly_sov_operation_run", lambda *_a, **_k: None)
+    _patch_monthly_period_claim(monkeypatch)
+
+
+def _patch_monthly_period_claim(monkeypatch):
+    claim = tasks.MonthlySovPeriodClaim(uuid.uuid4(), "test-task", 1, None, None)
+    monkeypatch.setattr(tasks, "_claim_monthly_sov_period_run", lambda *_a, **_k: claim)
+    monkeypatch.setattr(tasks, "_advance_monthly_sov_period_run", lambda *_a, **_k: claim)
+    monkeypatch.setattr(tasks, "_release_monthly_sov_period_run", lambda *_a, **_k: True)
+    monkeypatch.setattr(tasks, "_first_pending_monthly_slot_id", lambda *_a, **_k: None)
 
 
 def test_monthly_window_opens_one_gap_incident_per_unenrolled_hospital(monkeypatch):
@@ -317,7 +326,9 @@ def test_cohort_over_limit_measures_everyone_and_opens_one_warning(monkeypatch, 
     with caplog.at_level(logging.WARNING, logger=tasks.logger.name):
         tasks.run_monthly_sov_measurement.run()
 
-    assert ensured == cohort  # 상한 초과여도 한 곳도 빠지지 않는다
+    assert {hospital.id for hospital in ensured} == {
+        hospital.id for hospital in cohort
+    }  # 상한 초과여도 한 곳도 빠지지 않는다
     assert opened == [{"period_key": "2026-10", "cohort_size": 3, "limit": 2}]
     assert any("exceeds cost warning threshold" in r.getMessage() for r in caplog.records)
 
@@ -362,8 +373,8 @@ def test_cohort_returns_every_enrolled_valid_hospital_without_cutting(monkeypatc
     )
 
     # 상한으로 자르지 않는다 — 편입·유효 세트 조건을 만족한 병원은 전부 측정 대상이다.
-    # (보호 의도: 외부 병원·세트 부족 병원은 여전히 제외)
-    assert sov_tracking_set.iter_monthly_sov_cohort(object()) == [first, second]
+    # 편입 플래그가 서비스 기간의 정본이다. 9개로 줄어든 병원도 보고 대상에 남는다.
+    assert sov_tracking_set.iter_monthly_sov_cohort(object()) == [first, second, invalid]
 
 
 class _SpecDB:
@@ -804,6 +815,7 @@ def test_measurement_beats_log_each_blocked_tracking_set(
     )
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [])
     if beat == "monthly":
+        _patch_monthly_period_claim(monkeypatch)
         monkeypatch.setattr(
             tasks.arrow,
             "now",
@@ -870,6 +882,7 @@ def test_monthly_measurement_registers_locked_names_before_cohort(monkeypatch):
         "iter_monthly_sov_cohort",
         lambda *_args, **_kwargs: order.append("cohort") or [],
     )
+    _patch_monthly_period_claim(monkeypatch)
 
     tasks.run_monthly_sov_measurement.run()
 
@@ -1860,6 +1873,7 @@ def test_monthly_beat_does_not_dispatch_when_the_requested_refresh_loses(
         "iter_monthly_sov_cohort",
         lambda *_args, **_kwargs: [SimpleNamespace(id=hospital_id)],
     )
+    _patch_monthly_period_claim(monkeypatch)
 
     _run_with_timeout(tasks.run_monthly_sov_measurement.run)
 

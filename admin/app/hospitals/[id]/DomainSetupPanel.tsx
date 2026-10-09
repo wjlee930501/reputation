@@ -118,6 +118,7 @@ export function DomainSetupPanel({ hospitalId, profile, onProfileChange, onHeade
   const customDomainUrl = customDomainLiveUrl({
     status: profile.status,
     site_live: profile.site_live,
+    public_service_state: profile.public_service_state,
     aeo_domain: currentDomain,
     hasUnsavedChange,
   })

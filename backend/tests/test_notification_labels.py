@@ -25,7 +25,6 @@ from app.services.content_publish_notifications import (
     build_generation_blocked_digest_intent,
     build_generation_rejection_weekly_rollup_intent,
     build_missing_approved_essence_digest_intent,
-    build_publish_notification_intent,
 )
 from app.services.cost_guard import _build_cost_alert_intent
 from app.services.fleet_heartbeat import FleetFacts, build_fleet_heartbeat
@@ -204,20 +203,6 @@ def _ready_milestone() -> MilestoneProjection:
 
 
 @dataclass(frozen=True)
-class _PublishedItem:
-    id: uuid.UUID
-    hospital_id: uuid.UUID
-    title: str | None
-    published_at: datetime
-
-
-@dataclass(frozen=True)
-class _Hospital:
-    id: uuid.UUID
-    name: str
-
-
-@dataclass(frozen=True)
 class _YieldFact:
     hospital_name: str
     due: int
@@ -349,19 +334,6 @@ _SAMPLES: tuple[tuple[str, NotificationLabel, object], ...] = (
         lambda: build_monthly_report_gap_auto_summary(
             period_key="2026-08",
             gaps=[MonthlyReportGap("장편한외과의원", "MISSING", recoverable=True)],
-        ),
-    ),
-    (
-        "CONTENT_PUBLISHED",
-        NotificationLabel.REPORT,
-        lambda: build_publish_notification_intent(
-            _PublishedItem(
-                uuid.UUID("c1000000-0000-0000-0000-000000000001"),
-                _HOSPITAL,
-                "무릎 통증 자주 묻는 질문",
-                _NOW,
-            ),
-            _Hospital(_HOSPITAL, "장편한외과의원"),
         ),
     ),
     (

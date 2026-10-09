@@ -15,7 +15,6 @@ from app.api.admin.operations_center_query_common import (
     owner_predicate,
 )
 from app.api.admin.operations_center_serializers import owner_projection
-from app.api.admin.reports import _delivery_gate
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital
@@ -39,6 +38,7 @@ from app.services.monthly_delivery_projection import (
     latest_monthly_report_subquery,
 )
 from app.services.monthly_period import is_monthly_recovery_window, reporting_period
+from app.services.monthly_report_delivery import monthly_report_delivery_gate
 
 ReportQueueState = Literal[
     "MISSING",
@@ -156,7 +156,7 @@ def _report_queue_state(
     """Project the reports queue from the same gate that protects mark-sent."""
     if report is None:
         return "MISSING", None
-    gate = _delivery_gate(report, manifest, artifact)
+    gate = monthly_report_delivery_gate(report, manifest, artifact)
     if gate.ready:
         return "DELIVERY_PENDING", None
     if gate.code is None:

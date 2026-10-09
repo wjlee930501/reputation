@@ -271,6 +271,11 @@ def test_topic_swap_still_moves_to_a_compatible_topic(monkeypatch, swap_side_eff
     monkeypatch.setattr(
         topic_swap_fallback, "_choose_target", lambda _db, **_k: _internal_medicine_target()
     )
+    monkeypatch.setattr(
+        topic_swap_fallback,
+        "curated_sources_for_topic",
+        lambda _topics: [{"title": "공신력 근거", "url": "https://health.kdca.go.kr"}],
+    )
     db = _FakeDB([_swap_item()])
 
     report = _run(db)
@@ -282,6 +287,11 @@ def test_swap_resets_the_reference_checks_of_the_old_topic(monkeypatch, swap_sid
     monkeypatch.setattr(
         topic_swap_fallback, "_choose_target", lambda _db, **_k: _internal_medicine_target()
     )
+    monkeypatch.setattr(
+        topic_swap_fallback,
+        "curated_sources_for_topic",
+        lambda _topics: [{"title": "공신력 근거", "url": "https://health.kdca.go.kr"}],
+    )
     db = _FakeDB([_swap_item()])
 
     _run(db)
@@ -289,4 +299,3 @@ def test_swap_resets_the_reference_checks_of_the_old_topic(monkeypatch, swap_sid
     statement = db.updates[0]
     values = {key.name: value for key, value in statement._values.items()}
     assert "reference_checks" in values
-

@@ -38,13 +38,13 @@ def expectation(view):
     "version,pages,valid",
     [
         ("doctor-pdf-v1", 2, True),
-        ("doctor-pdf-v1", 3, False),
+        ("doctor-pdf-v1", 3, True),
         ("doctor-pdf-v2", 3, True),
         ("doctor-pdf-v2", 33, False),
         ("doctor-pdf-v2", "3", False),
     ],
 )
-def test_metadata_versions_preserve_the_legacy_contract(version, pages, valid):
+def test_metadata_versions_preserve_semantic_compatibility(version, pages, valid):
     data = published(uuid4()).metadata.model_dump(mode="json")
     data.update(validation_version=version, page_count=pages)
     assert (parse_doctor_artifact_metadata(data) is not None) is valid

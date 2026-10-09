@@ -346,6 +346,35 @@ def test_real_slot_failures_still_open_partial_incident(monkeypatch):
     assert calls.finished[0][0][2] == tasks.OperationRunState.PARTIAL
 
 
+def test_partial_budget_actual_worker_entrypoint_executes_at_most_ten_pending_stages(
+    monkeypatch,
+):
+    task, hospital, cells, _default_slots, calls = _shell(monkeypatch)
+    pending = [_slot(terminal=False) for _index in range(14)]
+    slots = {cells[0].id: pending[:7], cells[1].id: pending[7:]}
+    for cell in cells:
+        cell.observation_slots = slots[cell.id]
+    monkeypatch.setattr(
+        tasks,
+        "ensure_monthly_slots",
+        lambda _db, *, cell, **_kwargs: slots[cell.id],
+    )
+    monkeypatch.setattr(tasks, "_sov_chunk_deadline_reached", lambda *_args: False)
+    monkeypatch.setattr(tasks, "_weekly_manifest_is_resolved", lambda *_args: False)
+    monkeypatch.setattr(
+        tasks,
+        "_complete_monthly_measurement_and_dispatch_report",
+        lambda *_args, **_kwargs: False,
+    )
+
+    _run(task, hospital)
+
+    assert len(calls.executed) == tasks.MONTHLY_SOV_PAGE_SIZE
+    assert len(set(calls.executed)) == tasks.MONTHLY_SOV_PAGE_SIZE
+    assert len({slot.id for slot in pending} - set(calls.executed)) == 4
+    assert calls.recovered == []
+
+
 def test_weekly_chunk_stop_keeps_partial_incident(monkeypatch):
     task, hospital, _cells, _slots, calls = _shell(monkeypatch, measurement_mode="weekly")
     _deadline_after(monkeypatch, 0)

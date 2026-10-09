@@ -29,6 +29,7 @@ from app.models.hospital import Hospital, HospitalStatus, Plan
 from app.models.operations import Incident, IncidentSeverity, OperationRun
 from app.models.sov import QueryMatrix, SovRecord
 from app.schemas.operations import OperationsQueue
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.essence_auto_review import AUTO_ESSENCE_ACTOR
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.evidence_noise import compute_evidence_noise_hash
@@ -37,6 +38,7 @@ from app.services.image_engine import (
     image_content_hash_from_url,
     image_subject_hash,
 )
+from tests.publication_test_support import verified_reference_checks
 
 pytestmark = pytest.mark.asyncio
 
@@ -67,6 +69,9 @@ async def _hospital(
     hospital = Hospital(
         name=name,
         slug=f"clinic-{uuid.uuid4().hex[:12]}",
+        address="서울시 강남구 테헤란로 1",
+        phone="02-1234-5678",
+        treatments=[{"name": "내과 진료"}],
         status=status,
         site_live=site_live,
         site_built=site_built,
@@ -117,6 +122,7 @@ async def _hospital(
     hospital._test_snapshot_hash = compute_sources_snapshot_hash(
         [] if without_sources else [source]
     )
+    hospital._test_source_id = source.id
     hospital._test_philosophy_id = None
     if approved_essence:
         philosophy = HospitalContentPhilosophy(
@@ -179,14 +185,43 @@ async def _content(db, hospital: Hospital, *, withheld: bool = False) -> Content
         ],
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=hospital._test_philosophy_id,
+        generation_philosophy_id=hospital._test_philosophy_id,
+        last_reviewed_philosophy_id=hospital._test_philosophy_id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": title,
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 안내",
+            },
+            "source_snapshot": {
+                "hash": hospital._test_snapshot_hash,
+                "source_asset_ids": [str(hospital._test_source_id)],
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {
+                "source_asset_ids": [str(hospital._test_source_id)]
+            }
+        },
         image_url=None if withheld else image_url,
         image_policy_verified_at=None if withheld else datetime.now(UTC),
         image_content_hash=None if withheld else image_content_hash_from_url(image_url),
         image_subject_hash=None if withheld else image_subject_hash(ContentType.FAQ, title),
         image_policy_version=None if withheld else IMAGE_POLICY_VERSION,
     )
+    item.reference_checks = verified_reference_checks(item)
     db.add(item)
     await db.flush()
+    written = await reconcile_content_revisions(db, content_item_id=item.id)
+    assert written.created_count == 1
+    await db.refresh(item, attribute_names=["active_revision_id", "active_revision"])
+    if withheld:
+        item.essence_check_summary = {
+            **item.essence_check_summary,
+            "authority_change": {"reason": "source_retracted"},
+        }
+        await db.flush()
     return item
 
 
@@ -309,8 +344,9 @@ async def test_preparing_hospital_splits_human_work_from_system_work(pg_async_se
 
     assert overview.public_service.kind == "not_live"
     assert [(c.key, c.actor, c.href) for c in overview.public_service.remaining] == [
-        ("profile_complete", "human", f"/hospitals/{hospital.id}/info#info-director"),
-        ("site_built", "system", None),
+        ("service_inactive", "human", None),
+        ("public_permission_missing", "human", None),
+        ("site_not_built", "system", None),
     ]
     # 예외는 준비 중보다 앞선다 — 사람이 손대야 나머지가 풀린다.
     assert overview.content.kind == "exception"

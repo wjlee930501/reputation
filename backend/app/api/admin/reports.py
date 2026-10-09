@@ -49,12 +49,15 @@ from app.services.monthly_delivery_projection import (
 )
 from app.services.monthly_report_delivery import (
     DeliveryGate,
-    monthly_doctor_artifact_is_valid,
     monthly_report_delivery_blockers,
     monthly_report_delivery_gate,
+    monthly_report_delivery_warnings,
     safe_local_report_path,
 )
-from app.services.report_artifact_validation import parse_doctor_artifact_metadata
+from app.services.report_artifact_validation import (
+    parse_doctor_artifact_metadata,
+    validate_persisted_doctor_artifact,
+)
 from app.services.report_file_integrity import ReportFileUnavailable, read_verified_report
 from app.services.report_review_evidence import build_report_review_evidence
 
@@ -154,15 +157,9 @@ def _report_delivery_warnings(r: MonthlyReport) -> list[str]:
         )
     if isinstance(adequacy, dict) and adequacy.get("status") == "UNAVAILABLE":
         warnings.append("확정 가능한 측정 표본을 확보하지 못해 언급률을 산출하지 않았습니다.")
-    if r.report_type != "MONTHLY":
-        return warnings
-    content_summary = r.content_summary if isinstance(r.content_summary, dict) else {}
-    operations_summary = content_summary.get("operations")
-    if isinstance(operations_summary, dict):
-        for warning in operations_summary.get("delivery_warnings") or []:
-            if isinstance(warning, str) and warning:
-                warnings.append(warning)
-    return warnings
+    if r.report_type == "MONTHLY":
+        warnings.extend(monthly_report_delivery_warnings(r))
+    return list(dict.fromkeys(warnings))
 
 
 def _artifact_state(
@@ -186,8 +183,8 @@ def _artifact_state(
             and artifact.byte_size > 0
         )
         return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
-    valid = monthly_doctor_artifact_is_valid(report, artifact)
-    return ReportArtifactState.VALID if valid else ReportArtifactState.INVALID
+    result = validate_persisted_doctor_artifact(report, artifact)
+    return ReportArtifactState(result.state)
 
 
 def _delivery_gate(
@@ -222,12 +219,13 @@ def _delivery_gate(
             return DeliveryGate(False, "v0_sample_unverified", "초기 진단 표본 상태를 확인할 수 없습니다.")
         return DeliveryGate(True, None, None)
 
-    return monthly_report_delivery_gate(report, manifest, artifact)
+    gate = monthly_report_delivery_gate(report, manifest, artifact)
+    return gate
 
 
 def _current_essence_delivery_blockers(
-    r: MonthlyReport,
-    readiness: EssenceReadiness,
+    _r: MonthlyReport,
+    _readiness: EssenceReadiness,
 ) -> list[str]:
     """Validate the stored report snapshot against current source truth for true blockers.
 
@@ -238,18 +236,7 @@ def _current_essence_delivery_blockers(
     SoV numbers do not depend on the essence version — so that case is a warning
     only; see _current_essence_delivery_warnings.
     """
-    if r.report_type != "MONTHLY":
-        return []
-
-    blockers: list[str] = []
-    if readiness.current is None:
-        blockers.append(
-            "콘텐츠 운영 기준이 최신 자료·근거 노트와 다릅니다. "
-            "자동 재검수가 끝나면(또는 예외 승인 뒤) 다시 확인해 주세요."
-        )
-    if readiness.has_unprocessed_sources:
-        blockers.append("현재 처리되지 않은 온보딩 자료가 남아 있습니다.")
-    return blockers
+    return []
 
 
 def _current_essence_delivery_warnings(
@@ -262,15 +249,25 @@ def _current_essence_delivery_warnings(
     never gate mark-sent — it is a freshness signal for the AE, not a second approval
     gate.
     """
-    if r.report_type != "MONTHLY" or readiness.current is None:
+    if r.report_type != "MONTHLY":
         return []
 
+    warnings: list[str] = []
+    if readiness.current is None:
+        warnings.append(
+            "콘텐츠 운영 기준이 최신 자료·근거 노트와 다릅니다. "
+            "자동 재검수가 끝나면(또는 예외 승인 뒤) 다시 확인해 주세요."
+        )
+    if readiness.has_unprocessed_sources:
+        warnings.append("현재 처리되지 않은 온보딩 자료가 남아 있습니다.")
+    if readiness.current is None:
+        return warnings
     essence = r.essence_summary if isinstance(r.essence_summary, dict) else {}
     stored_version = essence.get("philosophy_version")
     current_version = readiness.current.version
     if current_version is not None and stored_version != current_version:
-        return ["운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요."]
-    return []
+        warnings.append("운영 기준이 리포트 생성 이후 갱신되었습니다 — 필요 시 재생성해 주세요.")
+    return warnings
 
 
 @router.get(
@@ -723,7 +720,7 @@ def _delivery_conflict(code: str, message: str, blockers: list[str] | None = Non
 
 
 async def _assert_customer_ready(
-    db: AsyncSession,
+    _db: AsyncSession,
     report: MonthlyReport,
     manifest: MonthlyMeasurementManifest | None,
     artifact: MonthlyReportArtifact | None,
@@ -731,11 +728,6 @@ async def _assert_customer_ready(
     gate = _delivery_gate(report, manifest, artifact)
     if not gate.ready:
         raise _delivery_conflict(gate.code or "report_blocked", gate.message or "전달할 수 없습니다.")
-    if report.report_type == "MONTHLY":
-        readiness = await get_essence_readiness(db, report.hospital_id)
-        blockers = _current_essence_delivery_blockers(report, readiness)
-        if blockers:
-            raise _delivery_conflict("current_readiness_blocked", blockers[0], blockers)
 
 
 def _new_delivery_event(

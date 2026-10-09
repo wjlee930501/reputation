@@ -31,25 +31,33 @@ def _jsonb_type():
     return JSON().with_variant(JSONB, "postgresql")
 
 
+def _nullable_jsonb_type():
+    return JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+
+
 class ContentType(str, enum.Enum):
-    FAQ = "FAQ"             # Q&A 형식
-    DISEASE = "DISEASE"     # 질환 가이드
-    TREATMENT = "TREATMENT" # 시술·치료 안내
-    COLUMN = "COLUMN"       # 원장 칼럼
-    HEALTH = "HEALTH"       # 건강 정보
-    LOCAL = "LOCAL"         # 지역 특화
-    NOTICE = "NOTICE"       # 병원 공지
+    FAQ = "FAQ"  # Q&A 형식
+    DISEASE = "DISEASE"  # 질환 가이드
+    TREATMENT = "TREATMENT"  # 시술·치료 안내
+    COLUMN = "COLUMN"  # 원장 칼럼
+    HEALTH = "HEALTH"  # 건강 정보
+    LOCAL = "LOCAL"  # 지역 특화
+    NOTICE = "NOTICE"  # 병원 공지
 
 
 class ContentStatus(str, enum.Enum):
-    DRAFT = "DRAFT"           # 생성 완료 또는 자동 발행 안전검사 대기
-    READY = "READY"           # 레거시 호환 상태 (신규 기본 플로우는 DRAFT→PUBLISHED)
-    PUBLISHED = "PUBLISHED"   # 발행 완료
-    REJECTED = "REJECTED"     # 반려 (재생성 필요)
-    CANCELLED = "CANCELLED"   # 중복·오래된 슬롯 종료 (자동 재생성/발행 제외)
+    DRAFT = "DRAFT"  # 생성 완료 또는 자동 발행 안전검사 대기
+    READY = "READY"  # 레거시 호환 상태 (신규 기본 플로우는 DRAFT→PUBLISHED)
+    PUBLISHED = "PUBLISHED"  # 발행 완료
+    REJECTED = "REJECTED"  # 반려 (재생성 필요)
+    CANCELLED = "CANCELLED"  # 중복·오래된 슬롯 종료 (자동 재생성/발행 제외)
     # 공개됐던 글을 본문·참고자료·이미지·발행 이력을 보존한 채 공개 사이트에서 내린 상태.
     # restore로만 PUBLISHED로 되돌린다. 자동 발행·재생성·이미지 작업 대상이 아니다(0081).
-    WITHHELD = "WITHHELD"     # 비공개(보존)
+    WITHHELD = "WITHHELD"  # 비공개(보존)
+
+
+class ContentRevisionApprovalStatus(str, enum.Enum):
+    APPROVED = "APPROVED"
 
 
 # 요금제별 유형·편수 배분
@@ -147,17 +155,17 @@ class ContentItem(Base):
     )
 
     content_type: Mapped[ContentType] = mapped_column(Enum(ContentType), nullable=False)
-    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)   # 이번 달 N번째
-    total_count: Mapped[int] = mapped_column(Integer, nullable=False)   # 이번 달 전체 편수
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)  # 이번 달 N번째
+    total_count: Mapped[int] = mapped_column(Integer, nullable=False)  # 이번 달 전체 편수
 
     # 콘텐츠 본문
     title: Mapped[str | None] = mapped_column(String(300))
-    body: Mapped[str | None] = mapped_column(Text)          # 마크다운
+    body: Mapped[str | None] = mapped_column(Text)  # 마크다운
     meta_description: Mapped[str | None] = mapped_column(String(300))  # SEO용 요약
 
     # 이미지
-    image_url: Mapped[str | None] = mapped_column(String(500))    # GCS public URL
-    image_prompt: Mapped[str | None] = mapped_column(Text)        # 생성에 쓴 프롬프트
+    image_url: Mapped[str | None] = mapped_column(String(500))  # GCS public URL
+    image_prompt: Mapped[str | None] = mapped_column(Text)  # 생성에 쓴 프롬프트
 
     # 스케줄·상태
     scheduled_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -176,6 +184,14 @@ class ContentItem(Base):
     content_revision: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1, server_default="1"
     )
+    # 0084 expand 단계에서는 legacy 공개 필드가 정본이다. 이 포인터는 승인된 불변 판을
+    # 비교·전환할 준비만 하며 public read가 아직 권위 있게 사용하지 않는다.
+    active_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("content_revisions.id", ondelete="SET NULL")
+    )
+    # One explicitly typed, mutable proposal. It is never read by public routes;
+    # only a hash-bound PASS may turn it into a ContentRevision and swap the pointer.
+    pending_revision: Mapped[dict | None] = mapped_column(_nullable_jsonb_type())
     query_target_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("ai_query_targets.id", ondelete="SET NULL")
     )
@@ -194,7 +210,7 @@ class ContentItem(Base):
 
     # 본문 근거 자료 (GEO 신호 — AI 인용 가능성 ↑)
     # list of {"title": str, "url": str}
-    references_list: Mapped[list | None] = mapped_column(_jsonb_type())
+    references_list: Mapped[list] = mapped_column(_jsonb_type(), nullable=False, default=list)
     # 참고자료 URL의 실제 검증 기록(참고자료마다 url·지문·final_url·status·page_title·
     # text_len·verdict·reason·checked_at). 발행 직전 게이트가 같은 URL의 신선한 통과를
     # 요구한다(`services/reference_verification.py`). migration 0082.
@@ -214,7 +230,9 @@ class ContentItem(Base):
     # 타임스탬프
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    published_by: Mapped[str | None] = mapped_column(String(100))  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
+    published_by: Mapped[str | None] = mapped_column(
+        String(100)
+    )  # AE 이름 또는 SYSTEM_AUTO_PUBLISH
     # 최초 공개 사실은 반려 후 새 판을 재발행해도 바뀌지 않는다. published_*는 현재
     # 판의 생애주기이고 first_published_*는 닫힌 월의 실제 발행 이력이다.
     first_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -263,4 +281,78 @@ class ContentItem(Base):
     query_target: Mapped["AIQueryTarget | None"] = relationship()
     exposure_action: Mapped["ExposureAction | None"] = relationship(
         foreign_keys=[exposure_action_id]
+    )
+    active_revision: Mapped["ContentRevision | None"] = relationship(
+        foreign_keys=[active_revision_id], post_update=True
+    )
+    revisions: Mapped[list["ContentRevision"]] = relationship(
+        back_populates="content_item",
+        foreign_keys="ContentRevision.content_item_id",
+        passive_deletes=True,
+    )
+
+
+class ContentRevision(Base):
+    """An immutable, explicitly approved public text edition."""
+
+    __tablename__ = "content_revisions"
+    __table_args__ = (
+        Index(
+            "uq_content_revisions_item_edition",
+            "content_item_id",
+            "edition_no",
+            unique=True,
+        ),
+        Index("ix_content_revisions_content_item_id", "content_item_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    content_item_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("content_items.id", ondelete="RESTRICT"), nullable=False
+    )
+    edition_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 0066의 CAS counter 의미를 바꾸지 않고 승인 당시 값을 그대로 보존한다.
+    legacy_content_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    title: Mapped[str] = mapped_column(String(300), nullable=False)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    meta_description: Mapped[str | None] = mapped_column(String(300))
+    faq_question: Mapped[str | None] = mapped_column(String(300))
+    faq_answer_summary: Mapped[str | None] = mapped_column(String(600))
+    references_list: Mapped[list | None] = mapped_column(_jsonb_type())
+    # 실제 검증 결과와 생성 입력 snapshot을 판 안에 복사해 후속 source 변경과 무관하게
+    # 승인 근거를 재현한다. 이미지는 텍스트 판의 hash/identity에 포함하지 않는다.
+    reference_checks: Mapped[list] = mapped_column(_jsonb_type(), nullable=False)
+    source_snapshot: Mapped[dict] = mapped_column(_jsonb_type(), nullable=False)
+    generation_provenance: Mapped[dict] = mapped_column(_jsonb_type(), nullable=False)
+
+    generation_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    last_reviewed_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
+    )
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reviewed_by: Mapped[str | None] = mapped_column(String(100))
+    source_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    approval_status: Mapped[ContentRevisionApprovalStatus] = mapped_column(
+        Enum(
+            ContentRevisionApprovalStatus,
+            native_enum=False,
+            create_constraint=False,
+            length=20,
+        ),
+        nullable=False,
+    )
+    approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    approved_by: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    content_item: Mapped["ContentItem"] = relationship(
+        back_populates="revisions", foreign_keys=[content_item_id]
     )

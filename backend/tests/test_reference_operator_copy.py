@@ -1,7 +1,7 @@
 """참고 자료 보류·거절 문구는 Admin에 실제로 있는 조작만 말한다(리뷰 3차 F5, 4차 F5 잔여).
 
-예전 문구의 '해당 항목을 종료'는 막다른 길이었다 — 콘텐츠 화면에는 항목 종료 버튼이 없고
-(`admin/lib/content-page-contract.test.ts`가 '/cancel'·'콘텐츠 항목 종료'를 금지한다), 운영 센터의
+예전 문구의 '해당 항목을 종료'는 막다른 길이었다 — 콘텐츠 화면에는 슬롯 종료 버튼이 없고
+(`admin/lib/content-page-contract.test.ts`가 일반 '/cancel'·'콘텐츠 항목 종료'를 금지한다), 운영 센터의
 조작은 다시 시도·해결·담당 지정뿐이다. 문구가 이름 붙이는 조작(“콘텐츠 수정”·“참고 자료 추가”,
 제목·본문 편집, 저장)이 콘텐츠 화면 소스에 실제로 있는지, 없는 조작을 말하지 않는지 확인한다.
 
@@ -97,7 +97,10 @@ def test_the_content_screen_really_has_no_close_or_regenerate_action():
     for fragment in ("'/cancel'", "'콘텐츠 항목 종료'", "'즉시 재생성'", "'발행일 옮기기'"):
         assert fragment in contract
     page = _page()
-    assert "/cancel" not in page and "콘텐츠 항목 종료" not in page
+    assert "/candidate/cancel" in page
+    without_candidate_cancel = page.replace("/candidate/cancel", "")
+    assert "/cancel" not in without_candidate_cancel
+    assert "콘텐츠 항목 종료" not in page
 
 
 def test_the_edit_controls_the_copy_names_exist_on_the_content_screen():

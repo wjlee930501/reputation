@@ -21,6 +21,8 @@ from app.core import celery_app as celery_module
 from app.models.admin_user import AdminUser
 from app.models.handoff import HospitalHandoff
 from app.models.operations import Incident, IncidentState, NotificationOutbox
+from app.services import operation_terminal_outcomes
+from app.services.operation_terminal_outcomes import terminal_outcome_identity
 from app.workers import task_incident_control
 
 
@@ -47,85 +49,170 @@ def test_untracked_task_failure_does_not_emit_an_unrecoverable_alert(monkeypatch
     assert enqueued == []
 
 
-def test_classified_generation_run_suppresses_generic_failure_slack(monkeypatch) -> None:
-    run_id = uuid.uuid4()
-    task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
+def test_terminal_outcome_identity_separates_months_and_keeps_retry_scope() -> None:
+    hospital_id = uuid.uuid4()
+
+    def monthly_run(run_id: uuid.UUID, year: int, month: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=run_id,
+            hospital_id=hospital_id,
+            operation_type="RUN_SOV",
+            safe_error_code="TASK_FAILED",
+            idempotency_key=f"monthly-sov:{hospital_id}:{year:04d}-{month:02d}",
+            request_payload={
+                "_dispatch": {
+                    "target_type": "hospital",
+                    "target_id": str(hospital_id),
+                    "queue": "sov",
+                    "task_args": [str(hospital_id), "monthly", year, month],
+                }
+            },
+            result_summary={"measurement_month": f"{year:04d}-{month:02d}"},
+        )
+
+    august_first = terminal_outcome_identity(
+        monthly_run(uuid.uuid4(), 2026, 8)
+    )
+    august_retry = terminal_outcome_identity(
+        monthly_run(uuid.uuid4(), 2026, 8)
+    )
+    september = terminal_outcome_identity(
+        monthly_run(uuid.uuid4(), 2026, 9)
+    )
+
+    assert august_first is not None
+    assert august_retry is not None
+    assert september is not None
+    assert august_first.dedupe_key == august_retry.dedupe_key
+    assert august_first.source_id == august_retry.source_id
+    assert august_first.dedupe_key != september.dedupe_key
+    assert august_first.period == "2026-08"
+    assert september.period == "2026-09"
+
+
+def test_classified_domain_failure_is_not_reprojected_as_terminal_transport_failure() -> None:
     run = SimpleNamespace(
-        id=run_id,
+        id=uuid.uuid4(),
+        hospital_id=uuid.uuid4(),
         operation_type="REGENERATE_CONTENT",
         safe_error_code="GENERATION_REJECTED",
+        idempotency_key=None,
+        request_payload={},
+        result_summary=None,
     )
 
-    class FakeSession:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", FakeSession)
-    monkeypatch.setattr(task_incident_control, "_tracked_run", lambda *_args: run)
-    monkeypatch.setattr(
-        task_incident_control,
-        "_open_incident",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("generic incident must not be opened after classification")
-        ),
-    )
-
-    assert task_incident_control.record_task_failure(task, "worker-task") is False
+    assert terminal_outcome_identity(run) is None
 
 
-def test_run_sov_task_failed_stays_durable_without_generic_slack(monkeypatch) -> None:
-    run_id = uuid.uuid4()
-    task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
+def test_unowned_classified_failure_is_never_silently_dropped() -> None:
     run = SimpleNamespace(
-        id=run_id,
-        operation_type="RUN_SOV",
-        safe_error_code="TASK_FAILED",
-    )
-    # 이미 담당자가 있는 재발 건 — 자동 배정은 새 에피소드의 첫 open에만 돈다.
-    incident = SimpleNamespace(
         id=uuid.uuid4(),
         hospital_id=None,
-        owner_id=uuid.uuid4(),
-        first_seen_at=datetime(2026, 9, 1, tzinfo=UTC),
-    )
-    committed = []
-    audits = []
-
-    class FakeSession:
-        def scalar(self, _stmt):
-            return None
-
-        def commit(self):
-            committed.append(True)
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *_exc):
-            return False
-
-    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", FakeSession)
-    monkeypatch.setattr(task_incident_control, "_tracked_run", lambda *_args: run)
-    monkeypatch.setattr(task_incident_control, "_open_incident", lambda *_args: incident)
-    monkeypatch.setattr(
-        task_incident_control,
-        "_enqueue",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("RUN_SOV TASK_FAILED must not enqueue generic Slack")
-        ),
-    )
-    monkeypatch.setattr(
-        task_incident_control,
-        "_audit",
-        lambda _db, opened, action, **_kwargs: audits.append((opened, action)),
+        operation_type="MONTHLY_SOV_PERIOD",
+        safe_error_code="PERIOD_FINALIZATION_FAILED",
+        idempotency_key="monthly-sov-period:2026-08",
+        request_payload={"source_type": "MONTHLY_SOV_PERIOD", "source_id": "2026-08"},
+        result_summary={"measurement_month": "2026-08"},
     )
 
-    assert task_incident_control.record_task_failure(task, "worker-task") is True
-    assert committed == [True]
-    assert audits == [(incident, "generic_task_failure_opened")]
+    identity = terminal_outcome_identity(run)
+
+    assert identity is not None
+    assert identity.cause == "PERIOD_FINALIZATION_FAILED"
+    assert identity.period == "2026-08"
+    run.safe_error_code = "PERIOD_INPUT_INCOMPLETE"
+    other_cause = terminal_outcome_identity(run)
+    assert other_cause is not None
+    assert other_cause.dedupe_key != identity.dedupe_key
+
+
+def test_every_signalled_operation_has_an_explicit_domain_identity() -> None:
+    assert set(operation_terminal_outcomes._DOMAIN_OUTCOME_NAMES) == set(
+        operation_terminal_outcomes._SIGNALLED_DOMAIN_OPERATIONS
+    )
+    assert set(operation_terminal_outcomes._CLASSIFIED_DOMAIN_OWNERS) < set(
+        operation_terminal_outcomes._SIGNALLED_DOMAIN_OPERATIONS
+    )
+    assert "MONTHLY_SOV_PERIOD" not in operation_terminal_outcomes._CLASSIFIED_DOMAIN_OWNERS
+
+
+def test_equivalent_invocation_paths_share_domain_identity() -> None:
+    hospital_id = uuid.uuid4()
+    content_id = uuid.uuid4()
+
+    def content_run(operation_type: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            hospital_id=hospital_id,
+            operation_type=operation_type,
+            safe_error_code="TASK_FAILED",
+            idempotency_key=None,
+            request_payload={
+                "revision": 7,
+                "_dispatch": {
+                    "target_type": "content_item",
+                    "target_id": str(content_id),
+                    "task_args": [str(content_id)],
+                },
+            },
+            result_summary=None,
+        )
+
+    automatic = terminal_outcome_identity(
+        content_run("GENERATE_CONTENT_ITEM")
+    )
+    operator_retry = terminal_outcome_identity(
+        content_run("REGENERATE_CONTENT")
+    )
+
+    assert automatic is not None and operator_retry is not None
+    assert automatic.dedupe_key == operator_retry.dedupe_key
+    assert automatic.source_id == operator_retry.source_id
+
+    changed_revision = content_run("REGENERATE_CONTENT")
+    changed_revision.request_payload["revision"] = 8
+    next_identity = terminal_outcome_identity(changed_revision)
+    assert next_identity is not None
+    assert next_identity.dedupe_key != automatic.dedupe_key
+
+    different_cause = content_run("REGENERATE_CONTENT")
+    different_cause.safe_error_code = "TASK_FAILED_AFTER_TIMEOUT"
+    # This operation owns classified errors, so the task body is authoritative.
+    assert terminal_outcome_identity(different_cause) is None
+
+
+def test_scheduled_and_manual_monthly_report_share_period_outcome() -> None:
+    hospital_id = uuid.uuid4()
+
+    def report_run(operation_type: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            id=uuid.uuid4(),
+            hospital_id=hospital_id,
+            operation_type=operation_type,
+            safe_error_code="TASK_FAILED",
+            idempotency_key=f"report:{hospital_id}:2026-08",
+            request_payload={
+                "source_type": "MONTHLY_REPORT",
+                "source_id": "2026-08",
+                "_dispatch": {
+                    "target_type": "hospital",
+                    "target_id": str(hospital_id),
+                    "task_args": [str(hospital_id), 2026, 8],
+                },
+            },
+            result_summary={"period_year": 2026, "period_month": 8},
+        )
+
+    scheduled = terminal_outcome_identity(
+        report_run("SCHEDULED_MONTHLY_REPORT")
+    )
+    manual = terminal_outcome_identity(
+        report_run("GENERATE_MONTHLY_REPORT")
+    )
+
+    assert scheduled is not None and manual is not None
+    assert scheduled.dedupe_key == manual.dedupe_key
+    assert scheduled.period == manual.period == "2026-08"
 
 
 def test_runtime_batch_header_supplies_failure_correlation() -> None:

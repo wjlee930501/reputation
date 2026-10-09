@@ -9,8 +9,6 @@ from sqlalchemy import String, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.operations import Incident, IncidentState, NotificationOutbox
-from app.services.content_publish_delivery import apply_publish_notification_sent
-from app.services.content_publish_notifications import PUBLISH_NOTIFICATION_TYPE
 from app.services.incidents import mark_recovered, mark_retrying
 
 _INCIDENT_CAS_ATTEMPTS = 3
@@ -28,12 +26,6 @@ async def run_notification_success_hook(
 ) -> None:
     """Route a SENT fact to its typed domain hook without changing outbox truth."""
 
-    notification_type = await db.scalar(
-        select(NotificationOutbox.notification_type).where(NotificationOutbox.id == outbox_id)
-    )
-    if notification_type == PUBLISH_NOTIFICATION_TYPE:
-        await apply_publish_notification_sent(db, outbox_id, sent_at)
-        return
     if not await _recover_notification_delivery_incident(db, outbox_id, sent_at):
         await db.rollback()
         raise NotificationIncidentRecoveryPending(outbox_id)

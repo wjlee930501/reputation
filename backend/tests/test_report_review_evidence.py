@@ -107,6 +107,27 @@ async def test_review_evidence_translates_measurement_quality(quality, label, ac
     assert "SLA" not in json.dumps(evidence, ensure_ascii=False)
 
 
+@pytest.mark.parametrize(
+    ("quality", "availability", "label", "impact"),
+    [
+        ("DEGRADED", "LIMITED", "제한된 표본으로 측정 완료", "전달할 수 있습니다"),
+        ("BLOCKED", "UNAVAILABLE", "이번 달 언급률 미산출", "0%로 오해되지 않도록"),
+    ],
+)
+async def test_review_evidence_uses_the_same_closed_availability_contract(
+    quality, availability, label, impact
+):
+    report = _report(
+        quality=quality,
+        sov_summary={"observation_adequacy": {"status": availability}},
+    )
+
+    evidence = await build_report_review_evidence(_DB(), report)
+
+    assert evidence["measurement"]["quality_label"] == label
+    assert impact in evidence["measurement"]["customer_impact"]
+
+
 async def test_review_evidence_exposes_only_exactly_linked_notification_state():
     report = _report()
     run = _run(report)

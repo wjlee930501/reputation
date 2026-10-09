@@ -23,9 +23,6 @@ from app.workers import autonomous_recovery, tasks
 
 @pytest.fixture(autouse=True)
 def _no_resolved_task_incidents(monkeypatch):
-    # 해결된 사고 정리는 실제 Postgres 테스트(test_resolved_task_incidents_postgres)가 맡는다.
-    # 여기 가짜 세션은 그 질의를 흉내 내지 않는다.
-    monkeypatch.setattr(autonomous_recovery, "close_resolved_task_incidents", lambda _db: 0)
     monkeypatch.setattr(autonomous_recovery, "close_resolved_backlog_incidents", lambda _db: 0)
 
 
@@ -82,9 +79,15 @@ class _RecoverySession:
 
     def execute(self, statement):
         self.statements.append(statement)
-        if isinstance(statement, Update):  # publish 직후 실행을 QUEUED로 표시하는 CAS
+        if isinstance(statement, Update):  # 재배달 ownership/QUEUED를 표시하는 두 CAS
             self.queued_marks += 1
-            return SimpleNamespace(scalar_one_or_none=lambda: None)
+            current = self.operation_runs[0] if self.operation_runs else next(
+                (row for row in reversed(self.added) if isinstance(row, OperationRun)),
+                None,
+            )
+            return SimpleNamespace(
+                scalar_one_or_none=lambda: getattr(current, "id", None)
+            )
         description = statement.column_descriptions[0]
         entity = description.get("entity")
         if entity is Hospital:
@@ -173,7 +176,7 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
         "<crontab: 0 */6 25-31 * * (m/h/dM/MY/d)>"
     )
     assert str(schedules["monthly-reports"]["schedule"]) == (
-        "<crontab: 15 0 1-7 * * (m/h/dM/MY/d)>"
+        "<crontab: 15 0 1-8 * * (m/h/dM/MY/d)>"
     )
     assert str(schedules["monthly-report-gap-summary"]["schedule"]) == (
         "<crontab: 0 9 1-7 * * (m/h/dM/MY/d)>"
@@ -241,8 +244,8 @@ def test_reconciler_requeues_stranded_site_build_and_revalidation(monkeypatch) -
         ),
     ]
     assert run.heartbeat_at == now
-    # 실행 기록을 먼저 커밋하고(1) 마지막에 sweep 전체를 커밋한다(2).
-    assert session.commits == 2
+    # 새 run, REQUESTED redispatch intent, QUEUED CAS, sweep 마감.
+    assert session.commits == 4
 
 
 def test_site_build_recovery_does_not_requeue_a_hospital_with_a_queued_run(
@@ -290,6 +293,7 @@ def _rebuild_site_failures(hospital, now, count=3):
             state=OperationRunState.FAILED,
             hospital_id=hospital.id,
             task_id=f"failed-{index}",
+            attempt_count=count - index,
             requested_at=now - timedelta(hours=index + 1),
             queued_at=now - timedelta(hours=index + 1),
             completed_at=now - timedelta(hours=index + 1, minutes=-5),
@@ -768,8 +772,9 @@ def test_reconciler_redispatches_stranded_requested_operation_run(monkeypatch) -
     assert run.state == OperationRunState.QUEUED
     assert run.queued_at == now
     assert run.safe_error_code is None
-    assert run.version == 2
-    assert session.commits == 1
+    assert run.version == 3
+    # REQUESTED intent, publish 뒤 QUEUED CAS, sweep 마감.
+    assert session.commits == 3
 
 
 def test_reconciler_does_not_duplicate_legitimately_queued_operation(monkeypatch) -> None:
@@ -865,7 +870,7 @@ def test_reconciler_requeues_only_expired_running_v0_with_same_lineage(monkeypat
     assert run.state == OperationRunState.QUEUED
     assert run.lease_owner is None
     assert run.lease_expires_at is None
-    assert run.version == 8
+    assert run.version == 9
 
 
 def test_reconciler_does_not_take_over_live_running_v0(monkeypatch) -> None:
@@ -964,7 +969,7 @@ def test_reconciler_rebuilds_unsafe_stored_dispatch_from_hospital_truth(monkeypa
     assert run.state == OperationRunState.QUEUED
     assert run.safe_error_code is None
     assert run.completed_at is None
-    assert run.version == 2
+    assert run.version == 3
     assert session.added == []
 
 
@@ -1179,7 +1184,7 @@ def test_reconciler_allows_monthly_report_rebuild_true_dispatch(monkeypatch) -> 
     assert result["operation_runs"] == 1
     assert dispatched == [[str(hospital_id), 2026, 7, True]]
     assert run.state == OperationRunState.QUEUED
-    assert run.version == 4
+    assert run.version == 5
     assert session.added == []
 
 

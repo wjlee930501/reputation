@@ -396,20 +396,28 @@ def test_redispatch_always_sends_a_new_task_id_and_marks_queued(monkeypatch) -> 
         version=4,
     )
     sent: list[dict[str, object]] = []
+    commits: list[bool] = []
+    db = SimpleNamespace(
+        execute=lambda _statement: SimpleNamespace(
+            scalar_one_or_none=lambda: run.id
+        ),
+        commit=lambda: commits.append(True),
+    )
     monkeypatch.setattr(
         autonomous_recovery.celery_app,
         "send_task",
         lambda name, args, **kwargs: sent.append({"name": name, **kwargs}),
     )
 
-    assert autonomous_recovery._redispatch_operation_run(SimpleNamespace(), run, now)
+    assert autonomous_recovery._redispatch_operation_run(db, run, now)
 
     assert run.task_id != "original-copy"
     assert uuid.UUID(run.task_id)
     assert sent[0]["task_id"] == run.task_id
     assert run.state == OperationRunState.QUEUED
     assert run.queued_at == now
-    assert run.version == 5
+    assert run.version == 6
+    assert commits == [True, True]
 
 
 def test_a_queued_run_waits_hours_before_being_called_lost() -> None:

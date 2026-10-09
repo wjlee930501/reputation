@@ -26,6 +26,8 @@ export type DeliveryIssue = {
 type DeliveryContract = {
   deliveryReady: boolean
   deliveryBlockers: readonly string[]
+  /** 닫힌 달의 측정·운영 한계. 전달 가능 여부와 별도로 표시한다. */
+  deliveryWarnings?: readonly string[]
   effectiveEventType: string | null
   sentAt: string | null
   /** 월간 전달 기록 파이프라인 대상인지. 없으면 월간으로 본다(report-review.ts 참조). */

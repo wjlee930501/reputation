@@ -21,6 +21,7 @@ from app.models.handoff import HandoffState, HospitalHandoff
 from app.models.hospital import DomainDnsStrategy, Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
 from app.models.operations import OperationRun
+from app.schemas.operations import LegacyBudgetReplacementRequest
 from app.services import (
     audit_log,
     content_yield,
@@ -99,6 +100,9 @@ class FakeDB:
 
     async def execute(self, _statement):
         if not getattr(_statement, "is_update", False):
+            entity = _statement.column_descriptions[0].get("entity")
+            if getattr(entity, "__name__", "") == "ContentItem":
+                return SimpleNamespace(scalar_one_or_none=lambda: self.content)
             return SimpleNamespace(scalar_one_or_none=lambda: uuid.uuid4())
         run = next(item for item in self.added if isinstance(item, OperationRun))
         updated = _apply_run_update(run, _statement)
@@ -864,6 +868,68 @@ async def test_regenerate_content_operation_blocks_published(monkeypatch):
 
     assert exc.value.status_code == 409
     assert task.calls == []
+
+
+async def test_regenerate_replaces_unknown_legacy_budget_once(monkeypatch):
+    hospital = _hospital()
+    content = _content(
+        hospital.id,
+        essence_check_summary={"generation_attempt": {"reason": "GENERATION_FAILED"}},
+    )
+    db = FakeDB(hospital=hospital, content=content)
+    task = FakeTask()
+    monkeypatch.setattr(operations_api.regenerate_content_item, "apply_async", task.apply_async)
+    monkeypatch.setattr(operations_api, "verified_request_actor", lambda: "owner@example.com")
+
+    response = await operations_api.regenerate_content_operation(
+        hospital.id,
+        content.id,
+        db=db,
+        idempotency_key="legacy-budget-replace-1",
+        body=LegacyBudgetReplacementRequest(reason="이전 비용 기록 확인 불가"),
+    )
+
+    budget = content.essence_check_summary["generation_attempt"]["budget"]
+    assert response["detail"] == "Content regeneration queued"
+    assert budget["legacy_state"] == "REPLACED"
+    assert budget["reset_record"]["actor"] == "owner@example.com"
+    assert budget["reset_record"]["previous_snapshot"] == {
+        "reason": "GENERATION_FAILED"
+    }
+    assert [
+        row.action for row in db.added if isinstance(row, AdminAuditLog)
+    ][:1] == ["LEGACY_BUDGET_REPLACED"]
+
+    with pytest.raises(HTTPException) as second:
+        await operations_api.regenerate_content_operation(
+            hospital.id,
+            content.id,
+            db=db,
+            idempotency_key="legacy-budget-replace-2",
+            body=LegacyBudgetReplacementRequest(reason="다시 교체 시도"),
+        )
+    assert second.value.status_code == 409
+
+
+async def test_regenerate_unknown_legacy_budget_requires_verified_actor(monkeypatch):
+    hospital = _hospital()
+    content = _content(
+        hospital.id,
+        essence_check_summary={"generation_attempt": {"reason": "GENERATION_FAILED"}},
+    )
+    db = FakeDB(hospital=hospital, content=content)
+    monkeypatch.setattr(operations_api, "verified_request_actor", lambda: None)
+
+    with pytest.raises(HTTPException) as exc:
+        await operations_api.regenerate_content_operation(
+            hospital.id,
+            content.id,
+            db=db,
+            idempotency_key="legacy-budget-unauthorized",
+            body=LegacyBudgetReplacementRequest(reason="교체 시도"),
+        )
+
+    assert exc.value.status_code == 401
 
 
 async def test_regenerate_content_image_operation_queues_without_replacing_text(monkeypatch):

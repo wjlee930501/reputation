@@ -38,6 +38,7 @@ from app.services.specialty_compatibility import (
 )
 from app.utils.medical_filter import check_forbidden
 from app.workers import generation_incident_control, tasks, topic_swap_fallback
+from app.workers.generation_attempt_state import fresh_generation_attempt
 from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
     GenerationRetryClass,
@@ -471,6 +472,7 @@ def _blocked_item(philosophy, body, finding, *, scheduled=None, history=None):
         "blocking": True,
         "findings": [finding["message"]],
         "ai_review": _review_payload(tasks._stored_candidate(item), finding),
+        "generation_attempt": fresh_generation_attempt(topic_id="blocked-topic"),
     }
     return item
 
@@ -1294,7 +1296,9 @@ def _empty_slot(philosophy):
     for name in ("title", "body", "meta_description", "faq_question", "faq_answer_summary"):
         setattr(item, name, None)
     item.references_list = None
-    item.essence_check_summary = None
+    item.essence_check_summary = {
+        "generation_attempt": fresh_generation_attempt(topic_id="empty-slot-topic")
+    }
     return item
 
 
@@ -1315,12 +1319,15 @@ def _first_generation(monkeypatch, calls, philosophy, item, body, finding):
             status=None, summary={}
         )
 
-    def summary(*_args):
-        return {
+    def summary(*_args, generation_attempt=None):
+        result = {
             "blocking": True,
             "findings": [finding["message"]],
             "ai_review": _review_payload(written, finding),
         }
+        if generation_attempt is not None:
+            result["generation_attempt"] = generation_attempt
+        return result
 
     outcomes: list = []
 

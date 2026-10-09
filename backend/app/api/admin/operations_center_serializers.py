@@ -37,6 +37,7 @@ from app.services.operator_action import (  # public API facade
     is_operator_todo,
     requires_operator_action,
 )
+from app.workers.generation_attempt_state import legacy_generation_budget_replaced
 
 __all__ = (
     "canonical_cause_code",
@@ -144,6 +145,8 @@ def retry_action(
     *,
     enabled: bool = True,
     operator_required: bool = False,
+    generation_source_valid: bool | None = None,
+    generation_summary: object = None,
 ) -> OperationsAction | None:
     """Return the Admin BFF retry mutation descriptor only for supported failed runs.
 
@@ -163,6 +166,26 @@ def retry_action(
         # 남은 예산 검사는 재시도 라우트가 서버에서 한 번 더 한다.
         return None
     code = str(run.safe_error_code or "")
+    if code == "LEGACY_SPEND_UNKNOWN":
+        if generation_source_valid is False or legacy_generation_budget_replaced(
+            generation_summary
+        ):
+            return None
+        payload = run.request_payload if isinstance(run.request_payload, dict) else {}
+        content_id = str(payload.get("source_id") or "")
+        if not content_id:
+            return None
+        return OperationsAction(
+            kind="POST_ACTION",
+            label="레거시 예산 교체 후 다시 시도",
+            method="POST",
+            path=(
+                f"/api/admin/hospitals/{hospital_id}/content/{content_id}/regenerate"
+            ),
+            enabled=enabled,
+            reason_required=True,
+            requires_idempotency_key=True,
+        )
     if code == "CONTENT_AI_REVIEW_UNAVAILABLE" and operator_required:
         # 자동 재검수가 한도에 닿아 사람에게 넘어온 검수 장애다. "시스템 재시도 중"은 더는 사실이
         # 아니고, 할 일은 인시던트 조치 문장(원고 확인·수정)이 말한다 — 재시도 버튼을 내지 않는다.
@@ -282,6 +305,8 @@ def run_summary(
     *,
     retry_enabled: bool = True,
     operator_required: bool = False,
+    generation_source_valid: bool | None = None,
+    generation_summary: object = None,
 ) -> OperationsRunSummary | None:
     """Project a durable operation run and its eligible retry affordance.
 
@@ -309,7 +334,12 @@ def run_summary(
         completed_at=run.completed_at,
         version=run.version,
         retry=retry_action(
-            hospital_id, run, enabled=retry_enabled, operator_required=operator_required
+            hospital_id,
+            run,
+            enabled=retry_enabled,
+            operator_required=operator_required,
+            generation_source_valid=generation_source_valid,
+            generation_summary=generation_summary,
         ),
     )
 
@@ -327,6 +357,8 @@ def serialize_incident_row(
     same_type_count: int = 1,
     affected_hospital_count: int | None = None,
     actor: AdminUser | None = None,
+    generation_source_valid: bool | None = None,
+    generation_summary: object = None,
 ) -> OperationsQueueRow:
     """Build the operations queue projection for one incident and its related records.
 
@@ -382,6 +414,8 @@ def serialize_incident_row(
                 operator_required=is_operator_todo(
                     incident.incident_type, incident.state, incident.sla_due_at, now
                 ),
+                generation_source_valid=generation_source_valid,
+                generation_summary=generation_summary,
             )
             if hospital_id
             else None

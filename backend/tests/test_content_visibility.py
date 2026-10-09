@@ -83,12 +83,11 @@ def test_fully_certified_published_item_is_visible():
     assert result.visible is True and result.blockers == ()
 
 
-def test_title_edit_that_invalidates_the_image_certificate_withholds_with_a_reason():
+def test_title_edit_that_invalidates_the_image_certificate_keeps_text_visible():
     item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
     result = assess_public_visibility(item, philosophy_id)
-    assert result.visible is False
-    assert result.blockers == ("IMAGE_NOT_CERTIFIED",)
-    assert VISIBILITY_BLOCKER_LABELS["IMAGE_NOT_CERTIFIED"] == "대표 이미지 재인증 대기"
+    assert result.visible is True
+    assert result.blockers == ()
 
 
 def test_reused_certified_image_is_visible_without_its_own_subject_binding():
@@ -106,7 +105,7 @@ def test_reused_certified_image_is_visible_without_its_own_subject_binding():
     assert result.visible is True and result.blockers == ()
 
 
-def test_reused_image_without_byte_binding_is_still_withheld():
+def test_reused_image_without_byte_binding_keeps_text_visible():
     item, philosophy_id = _published(
         image_reused_from_content_id=uuid.uuid4(),
         image_content_hash=None,
@@ -114,10 +113,11 @@ def test_reused_image_without_byte_binding_is_still_withheld():
 
     result = assess_public_visibility(item, philosophy_id)
 
-    assert result.blockers == ("IMAGE_NOT_CERTIFIED",)
+    assert result.visible is True
+    assert result.blockers == ()
 
 
-def test_reused_image_on_a_retired_policy_version_is_withheld():
+def test_reused_image_on_a_retired_policy_version_keeps_text_visible():
     item, philosophy_id = _published(
         image_reused_from_content_id=uuid.uuid4(),
         image_policy_version="2000-01-01",
@@ -125,14 +125,17 @@ def test_reused_image_on_a_retired_policy_version_is_withheld():
 
     result = assess_public_visibility(item, philosophy_id)
 
-    assert result.blockers == ("IMAGE_NOT_CERTIFIED",)
+    assert result.visible is True
+    assert result.blockers == ()
 
 
-def test_visibility_loads_the_reuse_marker_column():
-    """판정이 읽는 컬럼은 load_only 목록에 있어야 한다 — 빠지면 async 세션에서 터진다."""
+def test_visibility_does_not_load_optional_image_columns():
+    """본문 가시성 판정은 선택 이미지의 인증 상태를 읽지 않는다."""
     from app.services.content_visibility import _VISIBILITY_COLUMNS
 
-    assert "image_reused_from_content_id" in {column.key for column in _VISIBILITY_COLUMNS}
+    keys = {column.key for column in _VISIBILITY_COLUMNS}
+    assert "image_url" not in keys
+    assert "image_reused_from_content_id" not in keys
 
 
 def test_every_blocker_has_a_korean_label_and_a_stable_order():
@@ -188,7 +191,7 @@ def test_site_and_admin_read_the_same_answer_from_one_judgment():
         )
 
     assert assess_public_visibility(certified, certified_pid).visible is True
-    assert assess_public_visibility(cleared, cleared_pid).visible is False
+    assert assess_public_visibility(cleared, cleared_pid).visible is True
     assert "FORBIDDEN_EXPRESSION" in assess_public_visibility(forbidden, forbidden_pid).blockers
 
 
@@ -229,11 +232,8 @@ def test_a_non_serving_hospital_keeps_the_items_own_reasons_behind_its_own():
         "public_visibility"
     ]
 
-    assert visibility["blockers"] == ["HOSPITAL_NOT_SERVING", "IMAGE_NOT_CERTIFIED"]
-    assert visibility["blocker_labels"] == [
-        "병원 공개 서비스 중이 아님",
-        "대표 이미지 재인증 대기",
-    ]
+    assert visibility["blockers"] == ["HOSPITAL_NOT_SERVING"]
+    assert visibility["blocker_labels"] == ["병원 공개 서비스 중이 아님"]
 
 
 def test_a_serving_hospital_is_unchanged():
@@ -249,24 +249,18 @@ def test_a_serving_hospital_is_unchanged():
     assert serialized["row_state"]["kind"] == "public"
 
 
-def test_admin_serializes_a_withheld_published_item_as_withheld():
-    """admin 표시 경로 — 공개 페이지가 숨기는 글에 '공개 완료'가 붙으면 H-01이다."""
+def test_admin_keeps_published_text_public_when_only_image_certificate_is_missing():
     item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
 
     serialized = _serialize(item, philosophy_id)
 
-    review = serialized["display"]["review"]
-    assert review["label"] == "공개 보류"
-    assert "대표 이미지 재인증 대기" in review["reason"]
-    assert review["publishable"] is False
     visibility = serialized["compliance"]["public_visibility"]
-    assert visibility["visible"] is False
-    assert visibility["blockers"] == ["IMAGE_NOT_CERTIFIED"]
-    assert visibility["blocker_labels"] == ["대표 이미지 재인증 대기"]
+    assert visibility["visible"] is True
+    assert visibility["blockers"] == []
+    assert visibility["blocker_labels"] == []
 
 
-def test_notification_label_never_overwrites_the_withheld_label():
-    """알림 문구가 사유를 덮으면 AE는 글이 공개 페이지에 없다는 사실을 볼 수 없다."""
+def test_retired_publish_notification_projection_is_ignored_during_image_outage():
     item, philosophy_id = _published(image_policy_verified_at=None, image_content_hash=None)
     item._publish_notification_projection = {
         "state": "PENDING",
@@ -277,9 +271,8 @@ def test_notification_label_never_overwrites_the_withheld_label():
 
     review = _serialize(item, philosophy_id)["display"]["review"]
 
-    assert review["label"] == "공개 보류"
-    assert "대표 이미지 재인증 대기" in review["reason"]
-    assert review["notification_state"] == "PENDING"
+    assert review["label"] == "공개 내용 확인 대기"
+    assert review["notification_state"] == "NOT_REQUIRED"
 
 
 class _PatchDB:
@@ -395,8 +388,7 @@ async def test_body_edit_that_keeps_the_certificate_only_resubmits_the_index(mon
     assert submitted == [item.id]
 
 
-def test_visible_item_still_shows_the_notification_label_when_not_sent():
-    """공개 중인 글에서는 알림 상태 표시가 그대로 살아 있어야 한다."""
+def test_visible_item_ignores_retired_publish_notification_projection():
     item, philosophy_id = _published()
     item._publish_notification_projection = {
         "state": "PENDING",
@@ -407,8 +399,9 @@ def test_visible_item_still_shows_the_notification_label_when_not_sent():
 
     review = _serialize(item, philosophy_id)["display"]["review"]
 
-    assert review["label"] == "Slack 전달 대기"
-    assert review["reason"] == "잠시 후 자동으로 전달됩니다."
+    assert review["label"] == "공개 내용 확인 대기"
+    assert review["reason"] == "공개된 글에 문제가 없는지 확인해 주세요."
+    assert review["notification_state"] == "NOT_REQUIRED"
 
 
 _SENT_NOTIFICATION = {
@@ -437,7 +430,7 @@ def test_non_sample_published_item_is_public_not_pending_confirmation():
     serialized = _serialize(item, philosophy_id)
 
     assert serialized["post_publish_review_required"] is False
-    assert serialized["display"]["review"]["label"] == "공개 중"
+    assert serialized["display"]["review"]["label"] == "자동 관제 중"
 
 
 def test_reviewed_sample_no_longer_asks_for_confirmation():
@@ -449,7 +442,7 @@ def test_reviewed_sample_no_longer_asks_for_confirmation():
     serialized = _serialize(item, philosophy_id)
 
     assert serialized["post_publish_review_required"] is False
-    assert serialized["display"]["review"]["label"] == "공개 내용 확인 완료"
+    assert serialized["display"]["review"]["label"] == "자동 관제 중"
 
 
 def test_sample_without_a_notification_still_asks_for_confirmation():
@@ -487,8 +480,7 @@ async def test_title_only_edit_after_publish_enters_the_review_sample(monkeypatc
     assert is_human_post_publish_review_sample(item) is True
 
 
-def test_withheld_sample_still_reads_as_withheld():
-    """공개 보류가 표본 여부보다 앞선다 — 공개 페이지에 없는 글에 확인은 성립하지 않는다."""
+def test_image_only_outage_does_not_turn_a_public_sample_into_withheld():
     item, philosophy_id = _published(
         sequence_no=1, image_policy_verified_at=None, image_content_hash=None
     )
@@ -496,4 +488,4 @@ def test_withheld_sample_still_reads_as_withheld():
 
     serialized = _serialize(item, philosophy_id)
 
-    assert serialized["display"]["review"]["label"] == "공개 보류"
+    assert serialized["display"]["review"]["label"] == "공개 내용 확인 대기"

@@ -24,6 +24,21 @@ test('server delivery readiness is the only positive authority', () => {
   assert.equal(readReportDeliveryState({ deliveryReady: true, deliveryBlockers: ['자료 변경'] }).ready, false)
 })
 
+test('an unavailable closed month stays ready while its limitation remains a warning', () => {
+  const report = {
+    deliveryReady: true,
+    deliveryBlockers: [],
+    deliveryWarnings: ['확정 가능한 측정 표본을 확보하지 못해 언급률을 산출하지 않았습니다.'],
+    effectiveEventType: null,
+    sentAt: null,
+  }
+
+  assert.deepEqual(readReportDeliveryState(report), { ready: true, blockers: [] })
+  assert.equal(reportStatusLabel(report), '고객 전달 전 검수 가능')
+  assert.equal(shouldShowDeliveryProblem(report), false)
+  assert.match(report.deliveryWarnings[0], /산출하지 않았습니다/)
+})
+
 test('only the validated doctor artifact becomes the primary download', () => {
   assert.equal(
     getDoctorDownload('h1', 'r1', 'VALID', { deliveryReady: true, effectiveEventType: null, sentAt: null }),

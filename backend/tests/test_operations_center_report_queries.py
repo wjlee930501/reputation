@@ -60,7 +60,20 @@ def _delivery_facts():
         failed_count=0,
         pdf_path="gs://reports/internal.pdf",
         doctor_pdf_path="gs://reports/doctor.pdf",
-        sov_summary={"sov_pct": 10.0},
+        sov_summary={
+            "sov_pct": 10.0,
+            "observation_adequacy": {
+                "status": "COMPLETE",
+                "planned_slots": 2,
+                "received_answers": 2,
+                "confirmed_slots": 2,
+                "ambiguous_slots": 0,
+                "answer_failed_slots": 0,
+                "judgment_failed_slots": 0,
+                "pending_slots": 0,
+                "pending_semantics": "INCLUDES_FAILURES",
+            },
+        },
         content_summary={"published_count": 1, "operations": {"delivery_blockers": []}},
         essence_summary={
             "approved_philosophy_exists": True,

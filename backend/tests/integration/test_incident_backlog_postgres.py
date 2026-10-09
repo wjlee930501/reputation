@@ -62,27 +62,41 @@ def _state(db, incident) -> str:
     return db.get(Incident, incident.id).state
 
 
-def _sov_run(db, hospital, at, state="SUCCEEDED"):
+def _sov_run(db, hospital, at, period, state="SUCCEEDED"):
+    summary_key = "measurement_week" if "W" in period else "measurement_month"
     db.add(
         OperationRun(
             hospital_id=hospital.id, operation_type="RUN_SOV", state=state,
             request_payload={}, requested_at=at,
+            idempotency_key=f"backlog-sov:{hospital.id}:{period}",
+            result_summary={summary_key: period},
         )
     )
     db.flush()
 
 
-def test_a_weekly_measurement_failure_closes_after_a_later_successful_week(db):
+def test_measurement_failure_closes_only_for_the_same_period(db):
     hospital = _hospital(db)
-    blocked = _incident(db, "WEEKLY_SOV_MEASUREMENT_FAILED", hospital=hospital)
-    still = _incident(db, "WEEKLY_SOV_MEASUREMENT_FAILED", hospital=_hospital(db))
-    _sov_run(db, hospital, NOW - timedelta(days=20))
+    weekly = _incident(
+        db,
+        "WEEKLY_SOV_MEASUREMENT_FAILED",
+        hospital=hospital,
+        source_id=f"{hospital.id}:2026-W39",
+    )
+    old_month = _incident(
+        db,
+        "MONTHLY_SOV_MEASUREMENT_FAILED",
+        hospital=hospital,
+        source_id=f"{hospital.id}:2026-08",
+    )
+    _sov_run(db, hospital, NOW - timedelta(days=20), "2026-W39")
+    _sov_run(db, hospital, NOW - timedelta(days=10), "2026-09")
 
     close_resolved_backlog_incidents(db, now=NOW)
 
-    assert _state(db, blocked) == "ACKNOWLEDGED"
-    # 그 뒤로 한 번도 측정이 성공하지 못한 병원은 아직 진행 중인 문제다.
-    assert _state(db, still) == "OPEN"
+    assert _state(db, weekly) == "ACKNOWLEDGED"
+    # A different month's success cannot recover the unresolved August outcome.
+    assert _state(db, old_month) == "OPEN"
 
 
 def test_past_weeks_and_budget_periods_close_but_current_ones_stay(db):

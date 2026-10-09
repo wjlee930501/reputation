@@ -167,6 +167,9 @@ jobs:
       # 네이티브 라이브러리가 있어야 한다. 목록은 backend/Dockerfile 런타임 스테이지의
       # WeasyPrint 줄과 **같은 것**을 깐다 — CI에만 있는 패키지는 프로덕션 이미지에 없는
       # 의존성을 대신 채워 주는 셈이라, 정작 컨테이너에서 깨지는 렌더를 초록으로 통과시킨다.
+      # fonts-nanum도 런타임에 이미 설치된다. 원장용 실제 리포트는 번들 Pretendard를
+      # 임베드하지만, 이 검증용 fixture는 Pretendard 이외의 읽을 수 있는 한국어 폰트도
+      # 의미 검사를 통과하는지 확인하므로 같은 Linux 폰트를 명시적으로 고른다.
       #
       # uv.lock이 고정한 weasyprint 69가 실제로 여는 것은 text/ffi.py 기준
       # gobject/pango/harfbuzz/fontconfig/pangoft2뿐이다(앞 둘은 libpango·libpangoft2가
@@ -176,7 +179,7 @@ jobs:
       - name: Install WeasyPrint native dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b
+          sudo apt-get install -y libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz0b fonts-nanum
 
       # Resolves the exact dependency graph from uv.lock (matching backend/Dockerfile's
       # `uv sync --locked --no-dev`, plus the dev extra for pytest/ruff) instead of

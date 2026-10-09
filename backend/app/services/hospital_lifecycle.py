@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any, Final, TypedDict
 
+from sqlalchemy import and_, cast, func, literal
+from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
-from app.models.hospital import Hospital
+from app.models.hospital import Hospital, HospitalStatus
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +40,78 @@ class ActivationGateSnapshot(TypedDict):
     ready: bool
     missing: list[str]
     prerequisites: list[ActivationRequirementSnapshot]
+
+
+@dataclass(frozen=True, slots=True)
+class LifecycleVerdict:
+    """A server-owned decision and the stable machine blockers behind it."""
+
+    allowed: bool
+    blockers: tuple[str, ...]
+
+
+_MINIMUM_PUBLIC_TEXT_FIELDS: Final = ("name", "slug", "address", "phone")
+
+
+def minimum_public_fact_blockers(hospital: Hospital) -> tuple[str, ...]:
+    """Return missing facts required to identify, contact, and understand a clinic."""
+
+    missing = [
+        field for field in _MINIMUM_PUBLIC_TEXT_FIELDS if not _text(getattr(hospital, field, None))
+    ]
+    if not _has_named_treatment(getattr(hospital, "treatments", None)):
+        missing.append("treatments")
+    return tuple(missing)
+
+
+def profile_publication_verdict(hospital: Hospital) -> LifecycleVerdict:
+    """Decide whether the clinic profile may be served on the public surface.
+
+    ``profile_complete`` is an enrichment/onboarding signal. Public serving uses
+    the minimum patient-facing facts plus explicit service and publication
+    permission, so losing an optional channel or coordinate cannot hide a live
+    clinic.
+    """
+
+    blockers: list[str] = []
+    if hospital.status != HospitalStatus.ACTIVE:
+        blockers.append("service_inactive")
+    if not bool(hospital.site_live):
+        blockers.append("public_permission_missing")
+    if not bool(hospital.site_built):
+        blockers.append("site_not_built")
+    blockers.extend(minimum_public_fact_blockers(hospital))
+    return LifecycleVerdict(allowed=not blockers, blockers=tuple(blockers))
+
+
+def article_publication_verdict(hospital: Hospital) -> LifecycleVerdict:
+    """Decide hospital-level article serving without consulting future schedules."""
+
+    return profile_publication_verdict(hospital)
+
+
+def public_hospital_sql_expression() -> ColumnElement[bool]:
+    """SQL twin of :func:`profile_publication_verdict` for public lookups."""
+
+    return and_(
+        Hospital.status == HospitalStatus.ACTIVE,
+        Hospital.site_live.is_(True),
+        Hospital.site_built.is_(True),
+        *(
+            func.length(func.trim(getattr(Hospital, field))) > 0
+            for field in _MINIMUM_PUBLIC_TEXT_FIELDS
+        ),
+        func.jsonb_path_exists(
+            cast(Hospital.treatments, JSONB),
+            cast(
+                literal(
+                    '$[*] ? ((@.type() == "string" && @ != "") || '
+                    '(@.type() == "object" && @.name.type() == "string" && @.name != ""))'
+                ),
+                JSONPATH,
+            ),
+        ),
+    )
 
 
 def _text(value: Any) -> bool:

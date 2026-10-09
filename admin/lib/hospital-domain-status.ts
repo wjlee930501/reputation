@@ -1,6 +1,7 @@
 import { platformSiteHost } from './platform-domain.ts'
 import type { HospitalStatusValue } from '../types/index.ts'
 import { isPubliclyServing } from './public-service-state.ts'
+import type { PublicServiceVerdict } from './public-service-state.ts'
 
 type DomainTone = 'live' | 'waiting' | 'dns_verified' | 'issuing' | 'failed' | 'default' | 'empty'
 
@@ -11,6 +12,7 @@ interface HospitalDomainInput {
   aeo_domain?: string | null
   site_built?: boolean | null
   site_live?: boolean | null
+  public_service_state?: PublicServiceVerdict | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null
   domain_last_checked_at?: string | null
@@ -274,6 +276,7 @@ export function certificateIssuingCanBeRetried(
 interface DomainHeaderInput {
   status?: HospitalStatusValue | null
   site_live?: boolean | null
+  public_service_state?: PublicServiceVerdict | null
   aeo_domain?: string | null
   domain_cert_dns_verified_at?: string | null
   domain_cert_job_state?: string | null

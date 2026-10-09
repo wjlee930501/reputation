@@ -853,7 +853,7 @@ async def test_snapshot_separates_effective_and_configured_daily_limit(monkeypat
     assert content["daily_limit_default"] == 2
 
 
-async def test_remaining_units_are_fail_closed_and_count_unused_capacity(monkeypatch):
+async def test_remaining_units_distinguish_unavailable_from_exhausted_zero(monkeypatch):
     _set_limits(monkeypatch, category="sov", daily=10, monthly=20)
     redis = FakeRedis()
     await cost_guard.check_and_increment("sov", count=4, redis_client=redis)
@@ -862,7 +862,7 @@ async def test_remaining_units_are_fail_closed_and_count_unused_capacity(monkeyp
     assert remaining == (6, 16)
 
     redis.fail = True
-    assert await cost_guard.remaining_units("sov", redis_client=redis) == (0, 0)
+    assert await cost_guard.remaining_units("sov", redis_client=redis) == (None, None)
 
 
 async def test_release_reservation_refunds_unused_units_without_going_negative(monkeypatch, alerts):

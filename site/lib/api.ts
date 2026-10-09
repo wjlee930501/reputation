@@ -53,6 +53,8 @@ export interface ContentSummary {
   references: ContentReference[]
   faq_question: string | null
   faq_answer_summary: string | null
+  // Active immutable edition identity. Optional only for already-cached expand responses.
+  revision_hash?: string
   // 운영자가 연결한 추적 질문의 공개 클러스터 연결. 구버전 ISR 응답 호환을 위해 optional.
   query_target_id?: string | null
   query_target_treatment?: string | null
@@ -126,6 +128,7 @@ function isContentSummaryPayload(value: unknown): value is ContentSummary {
     value.references.every(isContentReferencePayload) &&
     isNullableString(value.faq_question) &&
     isNullableString(value.faq_answer_summary) &&
+    (value.revision_hash === undefined || typeof value.revision_hash === 'string') &&
     (value.query_target_id === undefined || isNullableString(value.query_target_id)) &&
     (value.query_target_treatment === undefined || isNullableString(value.query_target_treatment)) &&
     (value.reading_minutes === undefined || typeof value.reading_minutes === 'number')

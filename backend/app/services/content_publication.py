@@ -103,7 +103,13 @@ def public_surface_has_required_references(item: ContentItem) -> bool:
     content_type = getattr(item, "content_type", None)
     if content_type is not None and _type_value(content_type) not in _REFERENCES_REQUIRED_VALUES:
         return True
-    return count_citable_references(item) > 0
+    if count_citable_references(item) <= 0:
+        return False
+    if not hasattr(item, "approval_status"):
+        return True
+    from app.services.reference_publication import publication_references_current
+
+    return publication_references_current(item)
 
 
 def count_citable_references(item: ContentItem) -> int:
@@ -377,25 +383,10 @@ def assess_content_publication(
             philosophy_id=getattr(philosophy, "id", None),
         )
 
-    if not getattr(item, "image_url", None):
-        return _blocked(
-            code="CONTENT_IMAGE_NOT_READY",
-            message="대표 이미지가 아직 준비되지 않았습니다.",
-            item=item,
-            philosophy=philosophy,
-        )
-    # 인증되지 않은 이미지는 어떤 경우에도 공개하지 않는다. 재사용 이미지도 같은
-    # 함수로 판정한다 — 통과 근거는 원본 글에 대한 명시적 marker이지 합성값이 아니다.
-    if not image_certification_current(item):
-        return _blocked(
-            code="CONTENT_IMAGE_NOT_VERIFIED",
-            message="대표 이미지의 자동 정책 검사가 아직 완료되지 않았습니다.",
-            item=item,
-            philosophy=philosophy,
-        )
-
     summary = dict(screening.summary or {})
-    if image_is_reused(item) or image_is_hospital_fallback(item):
+    if image_certification_current(item) and (
+        image_is_reused(item) or image_is_hospital_fallback(item)
+    ):
         # 이 판의 대표 이미지는 이 글의 주제로 만든 것이 아니다 — 같은 병원의 다른 글에서
         # 빌렸거나, 첫 글이라 병원 대표 이미지를 썼다. 사후 교체 스윕과 운영 화면이 그
         # 사실을 볼 수 있게 남긴다 — 교체되면 사라진다. 읽는 쪽이 하나뿐이도록 두 경우가
@@ -440,9 +431,6 @@ def apply_publication_assessment(item: ContentItem, assessment: PublicationAsses
             # 자동 교정 기록. 게이트가 이 기록으로 교정본에 묶인 재검수 PASS를 요구하고, 워커는
             # 글(주제)당 교정 상한을 센다 — 지우면 검수 없는 교정본이 통과하고 상한도 초기화된다.
             AUTO_CORRECTION_KEY,
-            # 발행기가 스스로 건 이미지 재생성의 하루·누적 계수. 매시 게이트 기록이 지우면
-            # 매시 다시 사고 누적 한도도 영영 닿지 않는다.
-            "auto_image_regeneration",
             # 사후 검수 스윕이 남긴 FLAGGED 표시. 지우면 같은 본문을 매일 다시 사고 인시던트를
             # 다시 건드린다. 본문을 고치는 PATCH가 명시적으로 지운다.
             "post_publish_ai_review",
@@ -490,8 +478,6 @@ def apply_essence_revalidation(
             "image_recertification",
             # 자동 교정 기록 — 지우면 글(주제)당 교정 상한이 초기화된다.
             AUTO_CORRECTION_KEY,
-            # 자동 이미지 재생성 계수 — 재승인이 지우면 누적 한도가 다시 열린다.
-            "auto_image_regeneration",
         ):
             if key in previous:
                 summary[key] = previous[key]

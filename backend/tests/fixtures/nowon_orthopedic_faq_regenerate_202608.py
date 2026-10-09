@@ -1,4 +1,4 @@
-"""Dispatch the locked Nowon orthopedic FAQ item for regeneration."""
+"""Test-only archive of the retired Nowon orthopedic FAQ regeneration."""
 
 import logging
 import uuid
@@ -8,7 +8,7 @@ from sqlalchemy import select
 from app.core.database import SyncSessionLocal
 from app.models.content import ContentItem
 from app.workers.dispatch_auth import build_dispatch_headers
-from app.workers.nowon_august_backfill import NOWON_HOSPITAL_ID
+from tests.fixtures.nowon_august_backfill_202608 import NOWON_HOSPITAL_ID
 
 logger = logging.getLogger(__name__)
 

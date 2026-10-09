@@ -3,6 +3,8 @@ from app.models.audit import AdminAuditLog
 from app.models.content import (
     PLAN_DISTRIBUTION,
     ContentItem,
+    ContentRevision,
+    ContentRevisionApprovalStatus,
     ContentSchedule,
     ContentStatus,
     ContentType,
@@ -83,7 +85,8 @@ __all__ = [
     "HospitalHandoff", "HandoffState", "HandoffSource",
     "HospitalPhysician",
     "AdminAuditLog", "AdminUser",
-    "ContentSchedule", "ContentItem", "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",
+    "ContentSchedule", "ContentItem", "ContentRevision", "ContentRevisionApprovalStatus",
+    "ContentType", "ContentStatus", "PLAN_DISTRIBUTION",
     "HospitalSourceAsset", "HospitalSourceEvidenceNote", "HospitalContentPhilosophy",
     "SourceType", "SourceStatus", "EvidenceNoteType", "PhilosophyStatus",
     "AIQueryTarget", "AIQueryVariant", "ExposureAction", "ExposureGap",

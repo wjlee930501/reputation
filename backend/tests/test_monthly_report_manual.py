@@ -81,6 +81,23 @@ def _delivery_ready_essence_summary() -> dict:
     }
 
 
+def _complete_sov_summary(sov_pct: float = 47.0) -> dict[str, object]:
+    return {
+        "sov_pct": sov_pct,
+        "observation_adequacy": {
+            "status": "COMPLETE",
+            "planned_slots": 20,
+            "received_answers": 20,
+            "confirmed_slots": 20,
+            "ambiguous_slots": 0,
+            "answer_failed_slots": 0,
+            "judgment_failed_slots": 0,
+            "pending_slots": 0,
+            "pending_semantics": "INCLUDES_FAILURES",
+        },
+    }
+
+
 def _closed_manifest(
     session: Session,
     hospital_id: uuid.UUID,
@@ -889,7 +906,7 @@ def test_rebuild_run_links_new_report_version_and_records_validated_artifact(
         failed_count=0,
         pdf_path="gs://qa-private/rebuilt-ae.pdf",
         doctor_pdf_path="gs://qa-private/rebuilt-doctor.pdf",
-        sov_summary={"sov_pct": 47.0},
+        sov_summary=_complete_sov_summary(),
         content_summary=_delivery_ready_content_summary(),
         essence_summary=_delivery_ready_essence_summary(),
     )
@@ -969,9 +986,13 @@ def test_limited_measurement_with_valid_pdf_finishes_quietly(
             "observation_adequacy": {
                 "status": "LIMITED",
                 "planned_slots": 5,
+                "received_answers": 5,
                 "confirmed_slots": 4,
                 "ambiguous_slots": 1,
+                "answer_failed_slots": 0,
+                "judgment_failed_slots": 0,
                 "pending_slots": 0,
+                "pending_semantics": "INCLUDES_FAILURES",
             },
         },
         content_summary=_delivery_ready_content_summary(),
@@ -1025,7 +1046,7 @@ def test_limited_measurement_with_valid_pdf_finishes_quietly(
     ]
 
 
-@pytest.mark.parametrize("invalid_fact", ["manifest_open", "manifest_mismatch", "report_blocker"])
+@pytest.mark.parametrize("invalid_fact", ["manifest_open", "manifest_mismatch", "medical_risk"])
 def test_worker_does_not_finish_when_persisted_delivery_fact_is_invalid(
     monthly_pg_session: Session,
     invalid_fact: str,
@@ -1043,9 +1064,9 @@ def test_worker_does_not_finish_when_persisted_delivery_fact_is_invalid(
         closed=invalid_fact != "manifest_open",
     )
 
-    content_summary = _delivery_ready_content_summary()
-    if invalid_fact == "report_blocker":
-        content_summary["operations"]["delivery_blockers"] = ["운영 검수 차단"]
+    essence_summary = _delivery_ready_essence_summary()
+    if invalid_fact == "medical_risk":
+        essence_summary["medical_risk_findings"] = ["의료광고 위험 표현"]
     report = MonthlyReport(
         hospital_id=hospital.id,
         period_year=2026,
@@ -1060,9 +1081,9 @@ def test_worker_does_not_finish_when_persisted_delivery_fact_is_invalid(
         excluded_count=0,
         pdf_path=f"gs://qa-private/{invalid_fact}-ae.pdf",
         doctor_pdf_path=f"gs://qa-private/{invalid_fact}-doctor.pdf",
-        sov_summary={"sov_pct": 47.0},
-        content_summary=content_summary,
-        essence_summary=_delivery_ready_essence_summary(),
+        sov_summary=_complete_sov_summary(),
+        content_summary=_delivery_ready_content_summary(),
+        essence_summary=essence_summary,
     )
     run = OperationRun(
         hospital_id=hospital.id,
@@ -1104,6 +1125,7 @@ def test_worker_does_not_finish_when_persisted_delivery_fact_is_invalid(
 def test_monthly_publication_fact_survives_source_withdrawal_and_repair(
     monthly_pg_session: Session,
 ) -> None:
+    withdrawn_source_id = str(uuid.uuid4())
     hospital = Hospital(
         name="발행 이력 보존 의원",
         slug=f"monthly-publication-history-{uuid.uuid4().hex}",
@@ -1132,10 +1154,12 @@ def test_monthly_publication_fact_survives_source_withdrawal_and_repair(
         published_at=first_published_at,
         published_by="FIRST_AE",
         first_published_at=first_published_at,
-        first_published_by="FIRST_AE",
-        essence_check_summary={
-            "generation_provenance": {"evidence_source_asset_ids": ["withdrawn-source"]}
-        },
+            first_published_by="FIRST_AE",
+            essence_check_summary={
+                "generation_provenance": {
+                    "evidence_source_asset_ids": [withdrawn_source_id]
+                }
+            },
     )
     monthly_pg_session.add(item)
     monthly_pg_session.commit()
@@ -1156,7 +1180,7 @@ def test_monthly_publication_fact_survives_source_withdrawal_and_repair(
     during = tasks._load_monthly_publication_facts(
         monthly_pg_session, hospital.id, period_start, period_end, observed_at
     )
-    assert removed == ("withdrawn-source",)
+    assert removed == (withdrawn_source_id,)
     assert tuple(len(rows) for rows in during) == (1, 0, 1)
     assert item.status == ContentStatus.REJECTED
     assert item.published_at == first_published_at
@@ -1368,7 +1392,7 @@ def test_scheduled_batch_is_partial_and_preserves_successful_hospital(
             failed_count=0,
             pdf_path="gs://qa-private/scheduled-ae.pdf",
             doctor_pdf_path="gs://qa-private/scheduled-doctor.pdf",
-            sov_summary={"sov_pct": 47.0},
+            sov_summary=_complete_sov_summary(),
             content_summary=_delivery_ready_content_summary(),
             essence_summary=_delivery_ready_essence_summary(),
         )
@@ -1477,7 +1501,7 @@ def test_first_day_close_uses_historical_service_interval_not_current_status(
             failed_count=0,
             pdf_path="gs://qa-private/historical-ae.pdf",
             doctor_pdf_path="gs://qa-private/historical-doctor.pdf",
-            sov_summary={"sov_pct": 47.0},
+            sov_summary=_complete_sov_summary(),
             content_summary=_delivery_ready_content_summary(),
             essence_summary=_delivery_ready_essence_summary(),
         )
@@ -1580,7 +1604,7 @@ def test_scheduled_replay_reclaims_a_prior_failure(
             failed_count=0,
             pdf_path="gs://qa-private/recovered-ae.pdf",
             doctor_pdf_path="gs://qa-private/recovered-doctor.pdf",
-            sov_summary={"sov_pct": 47.0},
+            sov_summary=_complete_sov_summary(),
             content_summary=_delivery_ready_content_summary(),
             essence_summary=_delivery_ready_essence_summary(),
         )

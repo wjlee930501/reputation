@@ -77,6 +77,7 @@ def test_public_serializer_never_exposes_carried_over_from():
         carried_over_from=date(2026, 6, 30),  # 값이 있어도
     )
 
-    serialized = public_site._serialize_item(item, "test-slug", full=True)
+    serialized = public_site._serialize_item_detail(item, "test-slug")
 
+    assert serialized["body"] == "본문"
     assert "carried_over_from" not in serialized

@@ -41,11 +41,17 @@ from app.services.content_brief import PLANNING_REASON_KEY
 from app.services.content_similarity import DUPLICATE_TITLE_THRESHOLD, topic_similarity
 from app.services.content_target_planner import _choose_target
 from app.services.incidents import mark_recovered, mark_retrying
+from app.services.reference_requirement import references_required_for
+from app.services.reference_verification import curated_sources_for_topic
 from app.services.specialty_compatibility import target_conflicts_with_hospital
 from app.services.sync_async_bridge import SyncAsyncBridge
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
+    GenerationBudgetExceeded,
+    GenerationBudgetUnknown,
     read_generation_attempt,
+    read_generation_budget,
+    record_topic_swap,
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
 from app.workers.generation_retry_policy import (
@@ -159,7 +165,13 @@ def topic_swap_budget_left(item: ContentItem) -> bool:
     """이 슬롯이 자동 주제 교체를 한 번 더 쓸 수 있는가 — 교체 상한의 단일 판정."""
 
     history = getattr(item, "topic_swap_history", None)
-    return (len(history) if isinstance(history, list) else 0) < topic_swap_limit()
+    if (len(history) if isinstance(history, list) else 0) >= topic_swap_limit():
+        return False
+    try:
+        budget = read_generation_budget(read_generation_attempt(item))
+    except GenerationBudgetUnknown:
+        return False
+    return budget.topic_swaps < 1 and len(budget.topics) < 2
 
 
 def _candidate_stmt(
@@ -294,6 +306,11 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
     그대로 둔다 — 계약 월과 이월 회계는 주제와 무관하다.
     """
 
+    swapped_attempt = record_topic_swap(
+        read_generation_attempt(item),
+        from_topic_id=str(item.query_target_id) if item.query_target_id else None,
+        to_topic_id=str(target_id),
+    )
     return {
         "query_target_id": target_id,
         "exposure_action_id": None,
@@ -311,7 +328,7 @@ def _reset_values(item: ContentItem, target_id: uuid.UUID, history_entry: dict) 
         "reference_checks": None,
         # 독립 검수 메타와 저장된 생성 시도 기록이 한 JSON에 있다. 새 주제에는 둘 다
         # 근거가 없으므로 통째로 비운다 — 시도 기록이 지워져야 로더 필터를 통과한다.
-        "essence_check_summary": None,
+        "essence_check_summary": {GENERATION_ATTEMPT_KEY: swapped_attempt},
         "essence_status": None,
         "generated_at": None,
         # 이미지는 옛 주제에 결합된 인증이다. 빌린 이미지의 주제 hash를 새 제목으로
@@ -361,6 +378,10 @@ def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dic
     if target_conflicts_with_hospital(target, hospital):
         return None, "incompatible_specialty"
     new_topic = str(target.name or "")
+    if references_required_for(item.content_type, query_target_id=target.id) and not (
+        curated_sources_for_topic([new_topic])
+    ):
+        return None, "no_candidate_target"
     if _topic_is_too_similar(new_topic, item):
         return None, "similar_topic"
 
@@ -381,15 +402,21 @@ def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dic
         "incident_recovered": False,
     }
     previous_action_id = item.exposure_action_id
+    try:
+        reset_values = _reset_values(item, target.id, entry)
+    except (GenerationBudgetUnknown, GenerationBudgetExceeded):
+        return None, "no_candidate_target"
     updated = db.execute(
         update(ContentItem)
         .where(
             ContentItem.id == item.id,
             ContentItem.content_revision == revision_before,
             ContentItem.status == item.status,
+            ContentItem.first_published_at.is_(None),
+            ContentItem.human_edited_at.is_(None),
             _inactive_claim_filter(_claim_expiry(now)),
         )
-        .values(**_reset_values(item, target.id, entry))
+        .values(**reset_values)
         .execution_options(synchronize_session=False)
     )
     if updated.rowcount != 1:

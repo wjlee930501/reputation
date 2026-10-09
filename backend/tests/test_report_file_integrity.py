@@ -67,6 +67,21 @@ def ready_report(tmp_path, monkeypatch):
     from app.api.admin import reports
     from app.services.essence_readiness import EssenceReadiness
     hospital, report, actor, db = _ready_db()
+    report.sov_summary = {
+        **(report.sov_summary or {}),
+        "change_pct": None,
+        "comparison": {"status": "NON_COMPARABLE", "change_pct": None},
+        "observation_adequacy": {
+            "status": "COMPLETE",
+            "planned_slots": 10,
+            "received_answers": 10,
+            "confirmed_slots": 10,
+            "pending_slots": 0,
+            "ambiguous_slots": 0,
+            "answer_failed_slots": 0,
+            "judgment_failed_slots": 0,
+        },
+    }
     path = tmp_path / "doctor.pdf"
     path.write_bytes(DATA)
     monkeypatch.setattr(settings, "REPORT_OUTPUT_DIR", str(tmp_path))
@@ -98,7 +113,7 @@ async def test_doctor_download_rejects_unverified_stored_bytes(ready_report, sta
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["missing", "same_size"])
-async def test_mark_sent_rejects_unverified_stored_bytes(ready_report, state):
+async def test_mark_sent_rejects_artifact_storage_mismatch(ready_report, state):
     from fastapi import HTTPException
 
     from app.api.admin import reports

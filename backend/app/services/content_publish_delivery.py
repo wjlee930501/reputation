@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
+from typing import Final
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,13 +14,40 @@ from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.operations import Incident, IncidentState, NotificationOutbox
 from app.services.audit_log import write_audit_log
-from app.services.content_publish_notifications import (
-    PUBLISH_NOTIFICATION_TYPE,
-    parse_publish_notification_identity,
-)
 from app.services.incidents import mark_recovered, mark_retrying
 
 _INCIDENT_CAS_ATTEMPTS = 3
+LEGACY_PUBLISH_NOTIFICATION_TYPE: Final = "CONTENT_PUBLISHED"
+_DEDUPE_PREFIX: Final = f"{LEGACY_PUBLISH_NOTIFICATION_TYPE}:"
+_EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyPublishIdentity:
+    content_id: uuid.UUID
+    published_at: datetime
+
+
+def parse_legacy_publish_identity(key: str) -> LegacyPublishIdentity | None:
+    if not key.startswith(_DEDUPE_PREFIX):
+        return None
+    parts = key.split(":")
+    if len(parts) != 3:
+        return None
+    try:
+        return LegacyPublishIdentity(
+            content_id=uuid.UUID(parts[1]),
+            published_at=_EPOCH + timedelta(microseconds=int(parts[2])),
+        )
+    except (ValueError, OverflowError):
+        return None
+
+
+def legacy_publish_dedupe_key(content_id: uuid.UUID, published_at: datetime) -> str:
+    normalized = published_at.astimezone(UTC)
+    elapsed = normalized - _EPOCH
+    micros = ((elapsed.days * 86_400) + elapsed.seconds) * 1_000_000 + elapsed.microseconds
+    return f"{_DEDUPE_PREFIX}{content_id}:{micros}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +58,7 @@ class PublishIncidentRecoveryPending(RuntimeError):
         return f"publish incident recovery pending for outbox {self.outbox_id}"
 
 
-async def apply_publish_notification_sent(
+async def apply_legacy_publish_delivery(
     db: AsyncSession, outbox_id: uuid.UUID, sent_at: datetime
 ) -> bool:
     """Stamp the matching publication and recover its incident after observed delivery."""
@@ -40,7 +68,7 @@ async def apply_publish_notification_sent(
         .where(NotificationOutbox.id == outbox_id)
         .with_for_update()
     )
-    if outbox is None or outbox.notification_type != PUBLISH_NOTIFICATION_TYPE:
+    if outbox is None or outbox.notification_type != LEGACY_PUBLISH_NOTIFICATION_TYPE:
         return False
     marker_exists = await db.scalar(
         select(AdminAuditLog.id).where(
@@ -51,7 +79,7 @@ async def apply_publish_notification_sent(
     )
     if marker_exists is not None:
         return False
-    identity = parse_publish_notification_identity(outbox.dedupe_key)
+    identity = parse_legacy_publish_identity(outbox.dedupe_key)
     if identity is None:
         return False
     hospital_id = (

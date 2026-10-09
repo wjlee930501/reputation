@@ -145,6 +145,72 @@ test('fetchHospital accepts backend-nullable hospital fields and normalizes UI d
   }
 })
 
+test('fetchHospital accepts backend-omitted optional enrichment and normalizes UI defaults', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(
+      JSON.stringify(hospitalPayload({
+        website_url: undefined,
+        blog_url: undefined,
+        kakao_channel_url: undefined,
+        google_business_profile_url: undefined,
+        google_maps_url: undefined,
+        naver_place_url: undefined,
+        latitude: undefined,
+        longitude: undefined,
+        director_name: undefined,
+        director_career: undefined,
+      })),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    )) as typeof fetch
+  try {
+    const hospital = await fetchHospital('demo-clinic')
+    assert.equal(hospital.website_url, null)
+    assert.equal(hospital.blog_url, null)
+    assert.equal(hospital.kakao_channel_url, null)
+    assert.equal(hospital.google_business_profile_url, null)
+    assert.equal(hospital.google_maps_url, null)
+    assert.equal(hospital.naver_place_url, null)
+    assert.equal(hospital.latitude, null)
+    assert.equal(hospital.longitude, null)
+    assert.equal(hospital.director_name, '')
+    assert.equal(hospital.director_career, '')
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchHospital still rejects a present non-string external URL', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(hospitalPayload({ website_url: { href: 'https://bad.test' } })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    await assert.rejects(() => fetchHospital('demo-clinic'), /Invalid hospital payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchHospital still rejects a present non-number coordinate', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(hospitalPayload({ latitude: '37.5' })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    await assert.rejects(() => fetchHospital('demo-clinic'), /Invalid hospital payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('fetchContent throws ContentNotFoundError on a 404 (so the page can call notFound())', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () => new Response('not found', { status: 404 })) as typeof fetch
@@ -174,14 +240,18 @@ test('fetchContent throws a generic error on other non-ok statuses (surfaces as 
 test('fetchContent returns parsed JSON on a 200', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>
-    new Response(JSON.stringify(contentPayload({ id: 'abc', title: '제목', body: '본문' })), {
+    new Response(
+      JSON.stringify(contentPayload({ id: 'abc', title: '제목', body: '본문', revision_hash: 'a'.repeat(64) })),
+      {
       status: 200,
       headers: { 'content-type': 'application/json' },
-    })) as typeof fetch
+      },
+    )) as typeof fetch
   try {
     const content = await fetchContent('demo-clinic', 'abc')
     assert.equal(content.id, 'abc')
     assert.equal(content.title, '제목')
+    assert.equal(content.revision_hash, 'a'.repeat(64))
   } finally {
     globalThis.fetch = originalFetch
   }
@@ -258,6 +328,20 @@ test('fetchContent rejects malformed backend payloads at runtime', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (async () =>
     new Response(JSON.stringify(contentPayload({ body: null })), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })) as typeof fetch
+  try {
+    await assert.rejects(() => fetchContent('demo-clinic', 'abc'), /Invalid content payload/)
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('fetchContent rejects a malformed active revision cache identity', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(contentPayload({ revision_hash: 7 })), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     })) as typeof fetch

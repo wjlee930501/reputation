@@ -11,10 +11,10 @@ from app.models.operations import OperationRun
 
 
 def hospital_requires_monthly_sov_success(db, hospital, period_key: str) -> bool:
-    """월간 측정 전환 경로 병원은 해당 월 측정 SUCCEEDED 없이 리포트를 만들지 않는다.
+    """Return whether this service period must use the frozen monthly measurement path.
 
-    전환 윈도우(8/24–31)에 묶지 않는다. 9/1 직전 달 마감에서도 실패한 전환 병원은
-    빈 월간 리포트를 만들지 않고, 월간 측정을 쓰지 않는 병원은 기존 마감 경로를 탄다.
+    The caller decides readiness from its manifest facts. OperationRun existence only
+    identifies an enrolled legacy hospital; its SUCCEEDED state is not a delivery gate.
     """
     if bool(getattr(hospital, "monthly_sov_cohort", False)):
         return True

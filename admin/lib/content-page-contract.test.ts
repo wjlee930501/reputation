@@ -40,7 +40,10 @@ test('운영 복구 버튼과 그 요청 경로는 콘텐츠 화면에 없다', 
     assert.equal(page.includes(fragment), false, `콘텐츠 화면에 ${fragment}이(가) 남아 있다`)
   }
   // 템플릿 리터럴로 조립한 요청 경로까지 잡는다 (경로 끝이 따옴표·역따옴표).
-  assert.doesNotMatch(page, /\/(publish|regenerate|regenerate-image|reschedule|cancel|brief)['"`]/)
+  assert.doesNotMatch(
+    page.replaceAll('/candidate/cancel', ''),
+    /\/(publish|regenerate|regenerate-image|reschedule|cancel|brief)['"`]/,
+  )
 })
 
 test('행 상태는 서버 판정을 그대로 쓰고, 표본만 사람이 확인한다', () => {
@@ -116,7 +119,7 @@ test('편집 저장은 PATCH 한 번이고, 이후 자동 재검수를 안내한
 
 test('저장 실패 중 목록 문서 거절(422)만 서버 안내 문장을 보여 준다', () => {
   const start = page.indexOf('async function handleSaveEdit()')
-  const handler = page.slice(start, page.indexOf('const currentYear', start))
+  const handler = page.slice(start, page.indexOf('async function handleCancelCandidate()', start))
   // 분기(금지 표현 → 422 코드 → 일반 안내)는 `saveEditFailure` 한 곳이다(content-save-errors.test.ts).
   assert.match(handler, /const failure = saveEditFailure\(e\)/)
   assert.match(handler, /if \(failure\.violations\.length > 0\) setViolations\(failure\.violations\)/)

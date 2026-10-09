@@ -15,6 +15,7 @@ import base64
 import hashlib
 import logging
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
@@ -389,15 +390,18 @@ class _CallCounter:
     consume two scarce image-generation units.
     """
 
-    __slots__ = ("count", "review_count", "events", "logical_call_id")
+    __slots__ = ("count", "review_count", "events", "logical_call_id", "transport_observer")
 
-    def __init__(self) -> None:
+    def __init__(self, transport_observer: Callable[[], None] | None = None) -> None:
         self.count = 0
         self.review_count = 0
         self.events: list[dict[str, object]] = []
         self.logical_call_id = str(uuid.uuid4())
+        self.transport_observer = transport_observer
 
     def tick(self, provider: str = "unknown", model: str = "unknown") -> dict[str, object]:
+        if self.transport_observer is not None:
+            self.transport_observer()
         self.count += 1
         event: dict[str, object] = {
             "provider": provider,
@@ -484,6 +488,7 @@ async def generate_image(
     diagnostics: dict[str, object] | None = None,
     policy_repair: bool = False,
     prior_policy_rejection: dict[str, object] | None = None,
+    transport_observer: Callable[[], None] | None = None,
 ) -> tuple[str, str]:
     """
     대표 이미지 생성 후 GCS에 저장.
@@ -541,6 +546,7 @@ async def generate_image(
                     else ImagePolicyStage.OPENAI_PRIMARY
                 ),
                 counters=counters,
+                transport_observer=transport_observer,
             )
             if outcome.url or outcome.terminal:
                 return outcome.url, outcome.prompt
@@ -564,6 +570,7 @@ async def generate_image(
             policy_repair=policy_repair,
             prior_policy_rejection=prior_policy_rejection,
             counters=counters,
+            transport_observer=transport_observer,
         )
         if outcome.url or outcome.terminal:
             return outcome.url, outcome.prompt
@@ -592,6 +599,7 @@ async def generate_image(
                 stage=ImagePolicyStage.OPENAI_FALLBACK,
                 counters=counters,
                 prior_failure=outcome.reason,
+                transport_observer=transport_observer,
             )
             if fallback.url:
                 if diagnostics is not None:
@@ -621,6 +629,7 @@ async def _openai_stage(
     stage: ImagePolicyStage,
     counters: list[_CallCounter],
     prior_failure: str | None = None,
+    transport_observer: Callable[[], None] | None = None,
 ) -> _StageOutcome:
     """One OpenAI candidate. As primary, a policy rejection ends the attempt; as the
     fallback after Google, the recorded diagnostic keeps Google's failure as ``prior_failure``."""
@@ -636,7 +645,7 @@ async def _openai_stage(
         prompt_version = "openai-fallback-v1"
     else:
         prompt_version = "openai-primary-v1"
-    attempts = _CallCounter()
+    attempts = _CallCounter(transport_observer)
     counters.append(attempts)
     try:
         url = await loop.run_in_executor(
@@ -696,6 +705,7 @@ async def _google_stages(
     policy_repair: bool,
     prior_policy_rejection: dict[str, object] | None,
     counters: list[_CallCounter],
+    transport_observer: Callable[[], None] | None = None,
 ) -> _StageOutcome:
     """Google primary (or repair) candidate, then the safety-neutral topical fallback."""
 
@@ -707,7 +717,7 @@ async def _google_stages(
     google_stage = (
         ImagePolicyStage.GOOGLE_REPAIR if policy_repair else ImagePolicyStage.GOOGLE_PRIMARY
     )
-    attempts = _CallCounter()
+    attempts = _CallCounter(transport_observer)
     counters.append(attempts)
     try:
         url = await loop.run_in_executor(

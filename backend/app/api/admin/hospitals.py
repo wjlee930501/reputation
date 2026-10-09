@@ -92,8 +92,10 @@ from app.services.hospital_duplicates import find_duplicate_hospitals, normalize
 from app.services.hospital_geocoding import GeocodingError, geocode_address
 from app.services.hospital_lifecycle import (
     activation_gate_error,
+    article_publication_verdict,
     evaluate_activation_gate,
     missing_profile_requirement_keys,
+    profile_publication_verdict,
     profile_requirements,
 )
 from app.services.hospital_logo import (
@@ -113,6 +115,8 @@ from app.services.hospital_states import (
     content_state,
     domain_state,
     public_service_state,
+    schedule_availability_verdict,
+    serialize_availability,
 )
 from app.services.hospital_usage import LEDGER_KINDS, aggregate_usage
 from app.services.keyword_analysis import (
@@ -1079,6 +1083,7 @@ async def update_profile(
         )
     submitted_channels = _submitted_channel_urls(h, body, update_data)
     was_complete = h.profile_complete
+    was_public = _has_public_site(h)
     # 이 저장이 비운 항목만 완료를 되돌린다. 저장 전 이미 비어 있던 항목(레거시)까지 세면,
     # 무관한 칸 하나를 고치려다 공개 중인 병원이 차단되거나 완료가 풀린다.
     missing_before = set(missing_profile_requirement_keys(h))
@@ -1122,16 +1127,28 @@ async def update_profile(
         item for item in requirements_after if not item.passed and item.key not in missing_before
     ]
 
-    # 공개 게이트(api/public/site.py)는 profile_complete를 요구한다. 운영 중에 이 저장이
-    # 필수 항목을 비우면 화면은 계속 '운영 중'인데 공개 페이지만 404가 된다.
-    if was_complete and newly_missing and _has_public_site(h):
-        labels = [item.label for item in newly_missing]
+    # 선택 보강은 profile_complete만 되돌리고 공개판은 유지한다. 실제 최소 공개 사실을
+    # 지우는 저장만 막아, 저장 직전까지 열린 병원이 조용히 404로 바뀌지 않게 한다.
+    public_after = profile_publication_verdict(h)
+    minimum_public_labels = {
+        "name": "병원명",
+        "slug": "병원 공개 주소 식별자",
+        "address": "주소",
+        "phone": "전화번호",
+        "treatments": "진료 항목",
+    }
+    lost_public_facts = [
+        minimum_public_labels[blocker]
+        for blocker in public_after.blockers
+        if blocker in minimum_public_labels
+    ]
+    if was_public and lost_public_facts:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "PROFILE_COMPLETE_REQUIRED_WHILE_LIVE",
-                "message": f"공개 중인 병원의 필수 항목은 비울 수 없습니다: {', '.join(labels)}",
-                "missing": labels,
+                "message": f"공개 중인 병원의 최소 공개 정보는 비울 수 없습니다: {', '.join(lost_public_facts)}",
+                "missing": lost_public_facts,
             },
         )
 
@@ -1595,10 +1612,14 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     public_philosophy_id = (
         await get_public_approved_philosophy_id(db, h.id) if published_items else None
     )
-    public_content_count = sum(
-        1
-        for item in published_items
-        if assess_public_visibility(item, public_philosophy_id).visible
+    public_content_count = (
+        sum(
+            1
+            for item in published_items
+            if assess_public_visibility(item, public_philosophy_id).visible
+        )
+        if article_publication_verdict(h).allowed
+        else 0
     )
     withheld_content_count = published_count - public_content_count
     content_slot_count = await _count(
@@ -1675,6 +1696,12 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
     # "기다리면 되는 상태"인지 알려 주는 유일한 숫자다(ADM-06).
     processing_source_count = max(
         essence.required_source_count - essence.processed_source_count, 0
+    )
+    schedule_availability = schedule_availability_verdict(
+        essence_current=essence.current is not None,
+        required_sources=essence.required_source_count,
+        unprocessed_sources=processing_source_count,
+        approved_philosophy_exists=essence.approved is not None,
     )
     readiness_actions = readiness_next_actions(
         has_content_slots=content_slot_count > 0,
@@ -1807,6 +1834,7 @@ async def get_readiness(hospital_id: uuid.UUID, db: AsyncSession = Depends(get_d
             "source_stale": bool(approved_philosophy and not source_snapshot_fresh),
             "blocked_content_count": essence_blocked_content_count,
         },
+        "schedule_availability": serialize_availability(schedule_availability),
         "checks": [_serialize_readiness_check(c) for c in checks],
     }
 
@@ -1834,7 +1862,7 @@ async def _count(db: AsyncSession, stmt) -> int:
 
 
 def _has_public_site(h: Hospital) -> bool:
-    return h.status == HospitalStatus.ACTIVE and bool(h.site_live)
+    return profile_publication_verdict(h).allowed
 
 
 def serialize_hospital_detail(h: Hospital) -> dict:
@@ -1914,6 +1942,7 @@ def serialize_hospital_detail(h: Hospital) -> dict:
         "site_built": h.site_built,
         "site_live": h.site_live,
         "schedule_set": h.schedule_set,
+        "public_service_state": _serialize_state(public_service_state(h)),
         "created_at": h.created_at.isoformat() if h.created_at else None,
     }
 

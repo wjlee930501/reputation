@@ -1,85 +1,65 @@
-# Isolated integrity release rehearsal
+# Mixed-version integrity rehearsal
 
-Manager invocation, from the repository root:
+This directory is the isolated Task 16 release rehearsal. It uses a disposable Docker
+Compose project, an internal-only network, synthetic hospital/admin/report fixtures, and
+test-only provider callbacks. It must never load the repository `.env`, cloud credentials,
+or the shared QA PostgreSQL/Redis containers.
 
-```sh
-bash scripts/integrity_rehearsal/run.sh
+Fast scaffold validation:
+
+```bash
+bash scripts/integrity_rehearsal/run.sh --scaffold-check
 ```
 
-Requires a local Docker daemon, Docker Buildx, Compose supporting `up --wait`, Bash, and
-internet access for image/dependency build pulls. No global installs. Linux CI
-uses a 17-minute execution limit (20-minute job). A cold image build can dominate
-runtime. An initial Linux/amd64 run completed the queue and worker-loss scenarios.
-Use the frozen commit CI and run artifacts, not this document, for the current verdict.
+CI/bootstrap validation uses only tracked inputs and performs no Docker build:
 
-The runner creates a unique Compose project and fresh build context from an
-allowlist of production backend inputs. It builds the unmodified production
-Dockerfile and runs disposable PostgreSQL 16.4 and Redis 7.4.0. Database storage is
-tmpfs; no existing stack or retained `/tmp` state is used. There are no host ports,
-Docker socket mounts, cloud credentials, host env propagation, or external
-runtime networks. Docker CLI runs with an empty per-run config (no registry login)
-and cleared environment; it explicitly retains only the selected local Unix Docker socket. Runtime
-network is `internal: true`. Image pulls/build dependency downloads happen before
-runtime isolation. Base tags may move; exact resolved build logs are retained.
+```bash
+RUNTIME_SOURCE_SHA="$(git rev-parse HEAD)" \
+  COMPATIBLE_READER_MANIFEST=scripts/integrity_rehearsal/fixtures/compatible-reader.json \
+  bash scripts/integrity_rehearsal/run.sh --bootstrap-check
+```
 
-`APP_ENV=production` activates real startup and dispatch safety validation, but
-**every configuration value is a public test-only fixture**. No production env
-file is loaded. Cloud project is empty, dotenv disabled, ADC points to a nonexistent
-file, and metadata points to a closed loopback port. API, worker, and beat run
-stock `SERVICE` entrypoints. Worker pool/concurrency and registration are asserted
-via real Celery inspection. Beat is stopped after startup/canary checks so scheduled
-business tasks cannot race fixture scenarios. No Celery tasks are eagerly run.
+Final execution is fail-closed on the tracked schema-v2 compatible reader manifest. It
+records both the original pre-Task-15 checkpoint and the narrowly verified read-only
+hotfix that is the actual rollback image:
 
-## Assertions executed by the harness
+```json
+{
+  "schemaVersion": 2,
+  "verifiedTasks": "1-14",
+  "createdBeforeTask15": false,
+  "originalCheckpointCreatedBeforeTask15": true,
+  "readerContract": "purpose-first-compatible-public-read-v1",
+  "sourceSha": "<hotfix full SHA>",
+  "originalCheckpointSha": "<original full SHA>",
+  "hotfix": {
+    "parentSha": "<original full SHA>",
+    "createdAfterTask15Started": true,
+    "paths": ["<exact allowlisted reader paths>"],
+    "evidence": ["<non-empty verification artifacts>"]
+  }
+}
+```
 
-- Seven signed canaries delivered on seven actual Redis queues, with matching task
-  IDs, database/Redis/outbox checks, and current-release canary records.
-- Real registered image-refresh/reconciler tasks; unsigned protocol-v2 broker
-  message rejected by the production dispatch gate.
-- Two PostgreSQL sessions compete on row lock and live lease. Expired claim is
-  replaced; old-token success and failure writebacks cannot overwrite the owner.
-- Fifty terminal candidates followed by an eligible 51st row. A signed image-refresh
-  delivery must reach the HTTP provider fixture, record failure, retain fallback
-  marker, and leave certification absent. Two further actual task deliveries must
-  skip all rows without further provider HTTP calls. A second fixture gives the
-  first fifty rows live leases; the next available claim must still execute. Retry deadline is moved into
-  the future explicitly to avoid crossing a real KST sweep boundary.
-- Transactional public-surface intent created through the application service,
-  real reconciler delivery, real callback request held at the HTTP boundary, then
-  worker container SIGKILL. Pending durable state must survive. Test advances its
-  heartbeat past the retry deadline, restarts the worker, dispatches reconciliation
-  through Redis, and requires a second callback plus persisted `SUCCEEDED` /
-  `ACCEPTED`, preserving `page_visibility_verified=false`.
+The harness builds the compatible reader from that exact Git object and records its image
+ID/digest. The pinned `41f61d6f...` baseline is used only for expanded-schema and original
+input characterization. A validated local baseline registry is an optional cache. When it
+is absent, as in a clean CI checkout, the runner builds the baseline from the pinned Git
+object and records the resulting image identity. Rollback traffic is served by
+`api-compatible`; no compatible worker, Beat, or Admin role exists.
 
-## Fixture boundary and provenance
+Final command:
 
-`sitecustomize.py` changes only OpenRouter's transport base URL to the internal
-fixture. It does not replace task bodies, broker, database sessions, safety gates,
-policy review, certification, or writeback functions. The HTTP provider always
-returns 503, exercising the real image pipeline's failure handling. The site
-fixture checks the callback secret and test tenant paths and records receipts in
-Redis. Unexpected HTTP paths fail and are recorded.
+```bash
+COMPATIBLE_READER_MANIFEST=scripts/integrity_rehearsal/fixtures/compatible-reader.json \
+  RUNTIME_SOURCE_SHA=<verified-full-40-character-runtime-sha> \
+  timeout --signal=TERM --kill-after=30s 17m \
+  bash scripts/integrity_rehearsal/run.sh
+```
 
-Database rows are **TEST ONLY, intentionally uncertified and not publishable**.
-Their PUBLISHED status and fallback marker exist solely to enter the refresh
-selector; they are not evidence of publication or patient-visible content. No
-synthetic image hashes, approval outcomes, policy certifications, or PASS review
-metadata are inserted. Scenario output is emitted only after assertions.
-
-## Explicit missing coverage
-
-No successful image generation/policy review/upload/certified replacement; no
-crash precisely between an image-success commit and its immediate callback; no
-image-refresh success-path atomicity proof. Durable recovery uses a separately
-committed application public-surface intent and loss during a callback. Claims
-compete through real DB sessions, not simultaneous successful provider workers.
-No invalid signature/expired signature matrix beyond unsigned-message rejection.
-No long-duration beat schedule/delivery proof, frontend/browser/CDN visibility,
-cloud storage/IAM, external provider correctness, or production readiness claim.
-
-Evidence is under `artifacts/<unique-run>/`: assertion JSONL, build/container logs,
-resolved Compose config, container status, cleanup log, and exit status. Any failed
-assertion or command fails the run. EXIT/INT/TERM clean only this project's resources;
-SIGKILL of the runner itself cannot execute cleanup. Use the recorded Compose
-project name to remove leftovers in that case. Historical `scripts/release_e2e/`
-is neither imported nor changed.
+Each run writes artifacts under `.omo/evidence/task-16/runs/` and registers its Docker
+project/resources in `.omo/evidence/task-16/resources.json`. The EXIT trap captures logs,
+removes only that project and images built by the run, and records a cleanup receipt.
+The terminal artifact gate requires all 27 named browser captures across the new-flow,
+PASS-promotion, and compatible-reader rollback sessions, including the scrolled report
+rows, internal report evidence, and the pre/post legacy-budget action states.

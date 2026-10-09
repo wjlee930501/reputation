@@ -10,6 +10,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,7 +20,6 @@ from app.models.content import ContentItem, ContentStatus
 from app.services.content_publication import (
     PUBLICATION_CHECK_FIELDS,
     has_required_faq_fields,
-    image_certification_current,
     public_candidate_review_safe,
     public_surface_has_required_references,
     publication_field_values,
@@ -45,19 +45,22 @@ VISIBILITY_BLOCKER_LABELS: dict[str, str] = {
     "NOT_PUBLISHED_AT": "발행 시각이 없음",
     "FAQ_FIELDS_MISSING": "FAQ 질문·직접 답변 누락",
     "MISSING_REFERENCES": "인용 가능한 참고 자료 없음",
-    "IMAGE_NOT_CERTIFIED": "대표 이미지 재인증 대기",
     "AI_REVIEW_UNRESOLVED": "독립 검수 지적 미해결",
     "FORBIDDEN_EXPRESSION": "의료광고 금지 표현 포함",
 }
+_ACTIVE_REVISION_MISSING: Final = "ACTIVE_REVISION_MISSING"
+_ACTIVE_REVISION_MISSING_LABEL: Final = "승인된 공개 판이 없음"
 
 
 # `assess_public_visibility`와 그 헬퍼가 실제로 읽는 컬럼. 판정 표본은 행 단위로 읽어야
-# 하므로, 판정에 쓰지 않는 대용량 컬럼(content_brief·image_prompt·검수 이력)까지 실어
-# 나르지 않는다. body는 공백·금지 표현 검사가 쓰므로 뺄 수 없다. 판정에 새 필드를 더하면
-# 이 목록에도 더해야 한다 — 빠뜨리면 지연 로딩이 async 세션에서 바로 드러난다.
+# 하므로 image_prompt·검수 이력처럼 판정에 쓰지 않는 대용량 컬럼까지 실어 나르지 않는다.
+# body는 공백·금지 표현 검사가, content_brief는 참고자료 주제 지문 검사가 쓰므로 뺄 수 없다.
+# 판정에 새 필드를 더하면 이 목록에도 더해야 한다 — 빠뜨리면 지연 로딩이 async 세션에서
+# 바로 드러난다.
 _VISIBILITY_COLUMNS: Final = (
     ContentItem.id,
     ContentItem.hospital_id,
+    ContentItem.active_revision_id,
     ContentItem.status,
     ContentItem.content_type,
     ContentItem.title,
@@ -67,25 +70,17 @@ _VISIBILITY_COLUMNS: Final = (
     ContentItem.essence_status,
     ContentItem.essence_check_summary,
     ContentItem.content_philosophy_id,
+    ContentItem.content_brief,
     ContentItem.faq_question,
     ContentItem.faq_answer_summary,
     ContentItem.references_list,
-    ContentItem.image_url,
-    ContentItem.image_policy_verified_at,
-    ContentItem.image_content_hash,
-    ContentItem.image_subject_hash,
-    ContentItem.image_policy_version,
-    # 재사용 이미지의 인증 모양은 이 컬럼으로만 구분된다 — 빼면 판정이 지연 로딩을
-    # 시도하다 async 세션에서 터지거나, 인증된 이미지를 미인증으로 오판한다.
-    ContentItem.image_reused_from_content_id,
-    # 병원 히어로 대체 이미지의 인증 모양도 같다(migration 0075).
-    ContentItem.image_fallback_source,
 )
 
 
 def visibility_load_only() -> Load:
-    """공개 가시성 판정에 필요한 컬럼만 싣는 로더 옵션."""
-    return load_only(*_VISIBILITY_COLUMNS)
+    """Load the authoritative edition without async lazy IO during pure evaluation."""
+
+    return load_only(*_VISIBILITY_COLUMNS).joinedload(ContentItem.active_revision)
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,7 +90,12 @@ class PublicVisibility:
 
     @property
     def blocker_labels(self) -> list[str]:
-        return [VISIBILITY_BLOCKER_LABELS.get(code, code) for code in self.blockers]
+        return [
+            _ACTIVE_REVISION_MISSING_LABEL
+            if code == _ACTIVE_REVISION_MISSING
+            else VISIBILITY_BLOCKER_LABELS.get(code, code)
+            for code in self.blockers
+        ]
 
 
 def assess_public_visibility(
@@ -104,6 +104,10 @@ def assess_public_visibility(
 ) -> PublicVisibility:
     """저장된 그대로의 글이 지금 공개 페이지에 나가도 되는가. 모든 차단 사유를 모은다."""
     blockers: list[str] = []
+    public_item = approved_public_view(item)
+    if public_item is None:
+        blockers.append(_ACTIVE_REVISION_MISSING)
+        public_item = item
     if (getattr(item, "essence_check_summary", None) or {}).get("authority_change"):
         blockers.append("CONTENT_AUTHORITY_CHANGED")
     if current_philosophy_id is not UNSET_PHILOSOPHY and not (
@@ -116,23 +120,58 @@ def assess_public_visibility(
         blockers.append("STATUS_NOT_PUBLISHED")
     if getattr(item, "essence_status", None) != ESSENCE_STATUS_ALIGNED:
         blockers.append("ESSENCE_NOT_ALIGNED")
-    if not (getattr(item, "title", None) or "").strip():
+    if not (getattr(public_item, "title", None) or "").strip():
         blockers.append("EMPTY_TITLE")
-    if not (getattr(item, "body", None) or "").strip():
+    if not (getattr(public_item, "body", None) or "").strip():
         blockers.append("EMPTY_BODY")
     if getattr(item, "published_at", None) is None:
         blockers.append("NOT_PUBLISHED_AT")
-    if not has_required_faq_fields(item):
+    if not has_required_faq_fields(public_item):
         blockers.append("FAQ_FIELDS_MISSING")
-    if not public_surface_has_required_references(item):
+    if not public_surface_has_required_references(public_item):
         blockers.append("MISSING_REFERENCES")
-    if not image_certification_current(item):
-        blockers.append("IMAGE_NOT_CERTIFIED")
     if not public_candidate_review_safe(item):
         blockers.append("AI_REVIEW_UNRESOLVED")
-    if check_forbidden_content_fields(publication_field_values(item), PUBLICATION_CHECK_FIELDS):
+    if check_forbidden_content_fields(
+        publication_field_values(public_item), PUBLICATION_CHECK_FIELDS
+    ):
         blockers.append("FORBIDDEN_EXPRESSION")
     return PublicVisibility(visible=not blockers, blockers=tuple(blockers))
+
+
+def approved_public_view(item: Any) -> Any | None:
+    """Overlay workflow metadata with the immutable active edition's public text.
+
+    Objects from an older deployment have no pointer attribute and keep the expand-phase
+    legacy projection. Current ORM rows fail closed when their pointer or loaded owner is
+    absent, so an unapproved legacy mirror cannot become public.
+    """
+
+    if not hasattr(item, "active_revision_id"):
+        projected = SimpleNamespace(**vars(item))
+        from app.services.content_ai_review import candidate_sha256
+
+        projected.revision_hash = candidate_sha256(item)
+        return projected
+    if getattr(item, "active_revision_id", None) is None:
+        return None
+    revision = getattr(item, "__dict__", {}).get("active_revision")
+    if revision is None or getattr(revision, "content_item_id", item.id) != item.id:
+        return None
+    projected = SimpleNamespace(**vars(item))
+    for field in (
+        "title",
+        "body",
+        "meta_description",
+        "faq_question",
+        "faq_answer_summary",
+        "references_list",
+        "reference_checks",
+    ):
+        setattr(projected, field, getattr(revision, field))
+    projected.approval_status = revision.approval_status
+    projected.revision_hash = revision.approval_hash
+    return projected
 
 
 def withheld_by_hospital_gate(visibility: PublicVisibility) -> PublicVisibility:
@@ -142,9 +181,7 @@ def withheld_by_hospital_gate(visibility: PublicVisibility) -> PublicVisibility:
     "공개 중"이라고 말하면 AE는 없는 페이지를 고객에게 알린다(H-01과 같은 종류의 갈라짐).
     """
 
-    return PublicVisibility(
-        visible=False, blockers=(HOSPITAL_NOT_SERVING, *visibility.blockers)
-    )
+    return PublicVisibility(visible=False, blockers=(HOSPITAL_NOT_SERVING, *visibility.blockers))
 
 
 async def assess_sampled_visibility(

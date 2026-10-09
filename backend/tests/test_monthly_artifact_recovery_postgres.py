@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import arrow
 import pytest
-from monthly_artifact_test_support import apply_complete, monthly_sov, published
+from monthly_artifact_test_support import apply_complete, complete_cells, monthly_sov, published
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -62,10 +62,13 @@ def test_failed_v1_then_valid_v2_recovers_once(monkeypatch: pytest.MonkeyPatch) 
             return False
 
     monkeypatch.setattr(monthly_artifact_reconciliation, "SyncSessionLocal", SessionContext)
+    frozen_cells = complete_cells()
     monkeypatch.setattr(
         tasks,
         "load_monthly_sov_manifest",
-        lambda *_args: SimpleNamespace(cells=(), selected_records=(), scored_records=()),
+        lambda *_args: SimpleNamespace(
+            cells=frozen_cells, selected_records=(), scored_records=()
+        ),
     )
     monkeypatch.setattr(tasks, "build_monthly_sov", lambda *_args, **_kwargs: monthly_sov())
     monkeypatch.setattr(tasks, "generate_pdf_report", lambda **_kwargs: "gs://qa-private/ae.pdf")

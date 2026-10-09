@@ -24,12 +24,14 @@ from app.models.essence import (
     SourceType,
 )
 from app.models.hospital import Hospital, HospitalStatus
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
     image_content_hash_from_url,
     image_subject_hash,
 )
+from tests.publication_test_support import verified_reference_checks
 
 # slowapi @limiter.limit 우회 — 라우트를 FastAPI 요청 라이프사이클 밖에서 직접 호출한다
 # (tests/test_public_site.py와 동일 패턴).
@@ -60,6 +62,8 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         id=uuid.uuid4(),
         name=f"교차테넌트{label}병원",
         slug=f"xtenant-{label}-{suffix}",
+        address="서울시 강남구",
+        phone="02-1234-5678",
         status=HospitalStatus.ACTIVE,
         profile_complete=True,
         v0_report_done=True,
@@ -70,7 +74,7 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         specialties=[],
         keywords=[],
         competitors=[],
-        treatments=[],
+        treatments=[{"name": "대장항문 진료"}],
     )
     session.add(hospital)
     await session.flush()
@@ -115,6 +119,7 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         positioning_statement=f"{label} 병원은 근거 중심으로 충분히 설명합니다.",
         patient_promise="확인된 정보만 환자에게 안내합니다.",
         source_snapshot_hash=compute_sources_snapshot_hash([source]),
+        source_asset_ids=[str(source.id)],
         approved_at=processed_at,
     )
     schedule = ContentSchedule(
@@ -158,9 +163,30 @@ async def _seed_tenant(session, *, label: str) -> _Tenant:
         published_at=processed_at,
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=philosophy.id,
+        generation_philosophy_id=philosophy.id,
+        last_reviewed_philosophy_id=philosophy.id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": f"{label} 병원 진료 정보",
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 진료 안내",
+            },
+            "source_snapshot": {
+                "hash": philosophy.source_snapshot_hash,
+                "source_asset_ids": [str(source.id)],
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {"source_asset_ids": [str(source.id)]}
+        },
     )
+    content.reference_checks = verified_reference_checks(content, checked_at=processed_at)
     session.add(content)
     await session.flush()
+    written = await reconcile_content_revisions(session, content_item_id=content.id)
+    assert written.created_count == 1
+    await session.refresh(content, attribute_names=["active_revision_id", "active_revision"])
     return _Tenant(hospital, philosophy, schedule, content, photo)
 
 
@@ -193,10 +219,39 @@ async def _seed_content(session, tenant: _Tenant, *, philosophy_id, title: str) 
         image_subject_hash=image_subject_hash(content_type, title),
         image_policy_version=IMAGE_POLICY_VERSION,
         essence_status=ESSENCE_STATUS_ALIGNED,
-        content_philosophy_id=philosophy_id,
+        content_philosophy_id=tenant.philosophy.id,
+        generation_philosophy_id=tenant.philosophy.id,
+        last_reviewed_philosophy_id=tenant.philosophy.id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": title,
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 진료 안내",
+            },
+            "source_snapshot": {
+                "hash": tenant.philosophy.source_snapshot_hash,
+                "source_asset_ids": tenant.philosophy.source_asset_ids,
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {
+                "source_asset_ids": tenant.philosophy.source_asset_ids
+            }
+        },
+    )
+    item.reference_checks = verified_reference_checks(
+        item, checked_at=datetime(2026, 7, 22, 7, 59, tzinfo=timezone.utc)
     )
     session.add(item)
     await session.flush()
+    written = await reconcile_content_revisions(session, content_item_id=item.id)
+    assert written.created_count == 1
+    if philosophy_id != tenant.philosophy.id:
+        # Start from a legitimately approved tenant-A edition, then reproduce the corrupt
+        # mutable pointer that the cross-tenant read guard must contain.
+        item.content_philosophy_id = philosophy_id
+        await session.flush()
     return item
 
 
@@ -298,6 +353,57 @@ async def test_content_image_under_another_hospitals_slug_is_404(pg_async_sessio
     )
 
     assert status == 404
+
+
+async def test_uncertified_image_is_null_while_the_published_text_remains_public(
+    pg_async_session, tenants
+):
+    a, _ = tenants
+    a.content.image_policy_verified_at = None
+    a.content.image_content_hash = None
+    await pg_async_session.commit()
+
+    listed = await list_published_contents(
+        None, a.slug, limit=20, offset=0, db=pg_async_session
+    )
+    detail = await get_content_public(
+        None, a.slug, a.content.id, db=pg_async_session
+    )
+
+    assert listed[0]["id"] == str(a.content.id)
+    assert listed[0]["image_url"] is None
+    assert detail["body"] == "본문"
+    assert detail["image_url"] is None
+    assert await _status_of(
+        get_public_content_image(None, a.slug, a.content.id, db=pg_async_session)
+    ) == 404
+
+
+async def test_certified_hospital_asset_fills_only_the_optional_image_binding(
+    pg_async_session, tenants
+):
+    a, _ = tenants
+    fallback_hash = hashlib.sha256(f"{a.slug}-hospital-fallback".encode()).hexdigest()
+    fallback_url = f"gs://reputation-images/content/{fallback_hash}-hospital.png"
+    a.content.image_policy_verified_at = None
+    a.content.image_content_hash = None
+    a.hospital.hero_image_url = f"https://clinic.example/{a.slug}/hero.png"
+    a.hospital.fallback_image_url = fallback_url
+    a.hospital.fallback_image_source_url = a.hospital.hero_image_url
+    a.hospital.fallback_image_content_hash = fallback_hash
+    a.hospital.fallback_image_policy_version = IMAGE_POLICY_VERSION
+    a.hospital.fallback_image_verified_at = datetime.now(timezone.utc)
+    await pg_async_session.commit()
+
+    listed = await list_published_contents(
+        None, a.slug, limit=20, offset=0, db=pg_async_session
+    )
+
+    assert listed[0]["id"] == str(a.content.id)
+    assert listed[0]["image_url"] == (
+        f"/api/v1/public/hospitals/{a.slug}/contents/{a.content.id}/image"
+        f"?v={fallback_hash}"
+    )
 
 
 async def test_public_asset_under_another_hospitals_slug_is_404(pg_async_session, tenants):

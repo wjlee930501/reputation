@@ -59,6 +59,9 @@ async def _hospital(
     hospital = Hospital(
         name=name,
         slug=f"clinic-{uuid.uuid4().hex[:12]}",
+        address="서울시 강남구 테헤란로 1",
+        phone="02-1234-5678",
+        treatments=[{"name": "내과 진료"}],
         status=HospitalStatus.ACTIVE,
         site_live=True,
         site_built=True,

@@ -738,6 +738,12 @@ def _generation_operator_copy(
         "CONTENT_AI_REVIEW_CONFIG_ERROR": (
             "독립 검수 공급자 인증과 모델 설정을 확인하세요. 자동 재시도 대상이 아닙니다."
         ),
+        "LEGACY_SPEND_UNKNOWN": (
+            "이전 생성 비용 기록을 확인할 수 없어 자동 생성을 안전하게 중단했습니다."
+        ),
+        "GENERATION_BUDGET_EXHAUSTED": (
+            "이 콘텐츠 슬롯의 평생 자동 생성 예산을 모두 사용했습니다."
+        ),
         "CONTENT_IMAGE_NOT_READY": (
             "시스템 재시도 중입니다. 다음 예약 배치가 대표 이미지 생성을 다시 시도합니다."
         ),

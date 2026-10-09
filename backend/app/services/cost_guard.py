@@ -663,11 +663,11 @@ async def remaining_units(
     category: str,
     *,
     redis_client: redis_async.Redis | None = None,
-) -> tuple[int, int]:
+) -> tuple[int | None, int | None]:
     """현재 기간의 (일일, 월간) 예약 가능 수를 반환한다.
 
-    재디스패치 판단용이므로 Redis를 읽지 못하면 fail-closed로 ``(0, 0)``을
-    반환한다. 설정상 상한이 없는 범위는 충분히 큰 값으로 표현한다.
+    Redis를 읽지 못하면 ``(None, None)``을 반환한다. 이는 실제로 상한을 모두 쓴
+    ``(0, 0)``과 다른 사실이다. 설정상 상한이 없는 범위는 충분히 큰 값으로 표현한다.
     """
     if category not in _CATEGORY_LABELS:
         raise ValueError(f"unknown cost_guard category: {category}")
@@ -706,7 +706,7 @@ async def remaining_units(
             category,
             exc.__class__.__name__,
         )
-        return (0, 0)
+        return (None, None)
 
 
 async def release_reservation(

@@ -7,6 +7,7 @@ PATCH  /admin/hospitals/{id}/content/{cid}          — 제목/본문/meta 수�
 PATCH  /admin/hospitals/{id}/content/{cid}/brief    — 타깃 질의/액션/brief 수정
 POST   /admin/hospitals/{id}/content/{cid}/reschedule — 미발행 콘텐츠 발행일 재배치
 POST   /admin/hospitals/{id}/content/{cid}/cancel    — 중복·노후 슬롯 종료
+POST   /admin/hospitals/{id}/content/{cid}/candidate/cancel — 검수 중 편집 후보 폐기
 POST   /admin/hospitals/{id}/content/{cid}/publish  — 발행
 POST   /admin/hospitals/{id}/content/{cid}/reject   — 반려
 POST   /admin/hospitals/{id}/content/{cid}/withhold — 공개 글 비공개(보존) 전환
@@ -17,6 +18,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Final, Optional
 
 import arrow
@@ -47,6 +49,12 @@ from app.services.content_brief import (
     is_usable_content_brief,
 )
 from app.services.content_calendar import generate_monthly_slots
+from app.services.content_candidate_publication import (
+    CandidateStageConflict,
+    active_public_text,
+    cancel_pending_candidate_cas,
+    stage_pending_candidate_cas,
+)
 from app.services.content_engine import (
     FORBIDDEN_CHECK_FIELDS,
     _normalize_references,
@@ -58,13 +66,11 @@ from app.services.content_publication import (
     count_citable_references,
     has_required_faq_fields,
     has_required_references,
-    image_certification_current,
     public_candidate_review_safe,
     publication_field_values,
     record_publication_identity,
 )
-from app.services.content_publish_notifications import project_publish_notification
-from app.services.content_publish_state import attach_publish_notification_state
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.content_row_state import ROW_STATE_LABELS, content_row_state
 from app.services.content_visibility import (
     PublicVisibility,
@@ -89,6 +95,7 @@ from app.services.gap_driven_slots import (
     plan_gap_driven_slots,
 )
 from app.services.gcs_utils import get_signed_url
+from app.services.hospital_states import AvailabilityVerdict, schedule_availability_verdict
 from app.services.image_engine import image_subject_hash
 from app.services.incident_types import incident_is_quiet
 from app.services.operation_runs import (
@@ -106,6 +113,7 @@ from app.services.published_image_recertification import (
 )
 from app.services.reference_publication import (
     apply_publication_reference_refresh,
+    bind_reference_checks_to_revision,
     disallowed_curated_references,
     publication_references_current,
     publication_references_missing,
@@ -135,7 +143,10 @@ from app.services.site_revalidate import (
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden_content_fields
 from app.workers.dispatch_auth import build_dispatch_headers
-from app.workers.generation_attempt_state import released_generation_attempt
+from app.workers.generation_attempt_state import (
+    fresh_generation_attempt,
+    released_generation_attempt,
+)
 from app.workers.tasks import recertify_published_content_image, regenerate_content_item
 
 logger = logging.getLogger(__name__)
@@ -192,23 +203,21 @@ class ScheduleCreate(BaseModel):
 
 
 def _content_readiness_blockers(readiness: EssenceReadiness) -> list[str]:
-    # Source processing and snapshot freshness are onboarding diagnostics once a
-    # stable base exists; they must not close scheduling/generation write gates.
-    if readiness.current is not None:
-        return []
-    blockers: list[str] = []
-    if readiness.required_source_count == 0:
-        blockers.append("병원 근거 자료를 1개 이상 추가해 주세요.")
-    if readiness.has_unprocessed_sources:
-        blockers.append(
-            f"처리되지 않은 병원 근거 자료 "
-            f"{readiness.required_source_count - readiness.processed_source_count}개가 남아 있습니다."
-        )
-    if readiness.approved is None:
-        blockers.append("승인된 콘텐츠 운영 기준이 없습니다.")
-    else:
-        blockers.append("콘텐츠 운영 기준 재온보딩 승인을 기다리고 있습니다.")
-    return blockers
+    return [blocker.message for blocker in _content_schedule_availability(readiness).blockers]
+
+
+def _content_schedule_availability(readiness: EssenceReadiness) -> AvailabilityVerdict:
+    """Adapt essence facts to the shared schedule-availability decision."""
+
+    return schedule_availability_verdict(
+        essence_current=readiness.current is not None,
+        required_sources=readiness.required_source_count,
+        unprocessed_sources=max(
+            readiness.required_source_count - readiness.processed_source_count,
+            0,
+        ),
+        approved_philosophy_exists=readiness.approved is not None,
+    )
 
 
 async def _schedule_readiness_blockers(db: AsyncSession, hospital: Hospital) -> list[str]:
@@ -258,6 +267,10 @@ class PublishBody(BaseModel):
 
 class PostPublishReviewBody(BaseModel):
     note: str | None = Field(default=None, max_length=1000)
+
+
+class CancelCandidateBody(BaseModel):
+    candidate_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RejectBody(BaseModel):
@@ -345,8 +358,11 @@ async def set_schedule(
     old_result = await db.execute(old_stmt)
     old_schedules = old_result.scalars().all()
     old_schedule_ids = [old.id for old in old_schedules]
-    future_heads = [old for old in old_schedules
-                    if getattr(old, "active_from", body.active_from) > body.active_from]
+    future_heads = [
+        old
+        for old in old_schedules
+        if getattr(old, "active_from", body.active_from) > body.active_from
+    ]
     for old in old_schedules:
         if old not in future_heads:
             old.is_active = False
@@ -354,12 +370,17 @@ async def set_schedule(
     # A replacement only fills the unallocated hospital/month obligation.
     target_month = arrow.get(body.active_from).floor("month")
     existing_rows = (await db.execute(month_items_query(hospital_id, target_month))).all()
-    period_plan = (await db.execute(
-        select(ContentSchedule.plan).where(
-            ContentSchedule.hospital_id == hospital_id,
-            ContentSchedule.active_from <= target_month.ceil("month").date(),
-        ).order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc()).limit(1)
-    )).scalar_one_or_none() or body.plan
+    period_plan = (
+        await db.execute(
+            select(ContentSchedule.plan)
+            .where(
+                ContentSchedule.hospital_id == hospital_id,
+                ContentSchedule.active_from <= target_month.ceil("month").date(),
+            )
+            .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none() or body.plan
 
     schedule = ContentSchedule(
         hospital_id=hospital_id,
@@ -419,6 +440,13 @@ async def set_schedule(
             scheduled_date=slot.scheduled_date,
             status=ContentStatus.DRAFT,
             query_target_id=slot.query_target_id,
+            # Only slot creation may mint known-zero lifetime spend. Existing rows
+            # without this marker are legacy-unknown and require an audited reset.
+            essence_check_summary={
+                "generation_attempt": fresh_generation_attempt(
+                    topic_id=str(slot.query_target_id) if slot.query_target_id else None
+                )
+            },
             # 결정 근거는 기존 JSON 컬럼에 남긴다(마이그레이션 없음). brief_status는
             # 비워 둬 생성 시점 브리프 승인 경로를 그대로 태운다.
             content_brief=(
@@ -570,6 +598,7 @@ async def list_content(
 
     stmt = (
         select(ContentItem)
+        .options(selectinload(ContentItem.active_revision))
         .where(
             ContentItem.hospital_id == hospital_id,
             ContentItem.scheduled_date >= period_start,
@@ -583,7 +612,6 @@ async def list_content(
 
     result = await db.execute(stmt)
     items = result.scalars().all()
-    await attach_publish_notification_state(db, items)
 
     public_philosophy_id = await get_public_approved_philosophy_id(db, hospital_id)
     # 병원 게이트는 요청당 한 번만 본다 — 행마다 다시 읽을 값이 아니다.
@@ -608,7 +636,6 @@ async def get_content(
 ):
     """콘텐츠 상세 (본문 포함)"""
     item = await _get_content(db, content_id, hospital_id)
-    await attach_publish_notification_state(db, (item,))
     return await _serialize_single(db, hospital_id, item)
 
 
@@ -626,12 +653,19 @@ async def update_content(
     # 참고자료의 실제 문서 검증(GET)은 병원 잠금·행 잠금을 잡기 **전에** 끝낸다. 느린 기관
     # 사이트가 같은 병원의 편집·발행을 막지 않게 하고, 잠근 뒤에는 검증 당시의 행(판·참고자료·
     # 글 주제)이 그대로인지만 비교한다 — 바뀌었으면 409로 다시 시도하게 한다.
+    unlocked_item = await _get_content(db, content_id, hospital_id)
+    expected_content_revision = int(getattr(unlocked_item, "content_revision", 1) or 1)
+    expected_active_revision_id = getattr(unlocked_item, "active_revision_id", None)
     normalized_refs: list[dict] | None = None
     patched_reference_checks: list[dict] = []
     pre_patch_snapshot = None
+    public_candidate_change = (
+        getattr(unlocked_item.status, "value", unlocked_item.status) == ContentStatus.PUBLISHED.value
+        and expected_active_revision_id is not None
+        and bool(body.model_fields_set & (set(FORBIDDEN_CHECK_FIELDS) | {"references"}))
+    )
     if body.references is not None:
         normalized_refs = _validated_patch_references(body)
-        unlocked_item = await _get_content(db, content_id, hospital_id)
         # 발행 전 진료비·병원 선택 글에 검증된 문서 목록의 문서는 GET 전에 거절한다 — 다음 발행
         # 재검증이 어차피 뺀다. 판정은 저장될 제목(바꾸면 새 제목)으로 한다.
         _reject_curated_references_for_no_source_topic(unlocked_item, body, normalized_refs)
@@ -639,11 +673,20 @@ async def update_content(
         patched_reference_checks = await _verify_patched_references(
             unlocked_item, body, normalized_refs
         )
+    elif public_candidate_change:
+        active = active_public_text(unlocked_item)
+        if active is None:
+            raise HTTPException(status_code=409, detail="Approved revision is unavailable")
+        pre_patch_snapshot = reference_snapshot(unlocked_item)
+        patched_reference_checks = await _verify_patched_references(
+            unlocked_item, body, active.references_list
+        )
     await acquire_hospital_advisory_lock(db, hospital_id)
     item = await _get_content(db, content_id, hospital_id)
     if isinstance(item, ContentItem):
         locked_result = await db.execute(
             select(ContentItem)
+            .options(selectinload(ContentItem.active_revision))
             .where(ContentItem.id == content_id, ContentItem.hospital_id == hospital_id)
             .with_for_update(of=ContentItem)
             .execution_options(populate_existing=True)
@@ -718,6 +761,80 @@ async def update_content(
             detail={"message": "의료광고 금지 표현이 포함되어 있습니다.", "violations": violations},
         )
 
+    public_fields_changed = bool(body.model_fields_set & set(FORBIDDEN_CHECK_FIELDS)) or (
+        "references" in body.model_fields_set
+    )
+    if was_published and public_fields_changed and expected_active_revision_id is not None:
+        active = active_public_text(item)
+        if active is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "ACTIVE_REVISION_REQUIRED",
+                    "message": "승인된 공개 판을 확인할 수 없어 편집 후보를 저장하지 않았습니다.",
+                },
+            )
+        candidate_references = (
+            normalized_refs if normalized_refs is not None else active.references_list
+        )
+        candidate_checks = merge_reference_checks(
+            active.reference_checks, patched_reference_checks
+        )
+        title = str(effective_values["title"] or "")
+        candidate_body = str(effective_values["body"] or "")
+        if not title.strip() or not candidate_body.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="공개 글의 제목과 본문은 비울 수 없습니다.",
+            )
+        candidate_view = SimpleNamespace(
+            title=title,
+            body=candidate_body,
+            meta_description=effective_values["meta_description"],
+            faq_question=effective_values["faq_question"],
+            faq_answer_summary=effective_values["faq_answer_summary"],
+            content_brief=getattr(item, "content_brief", None),
+            content_type=getattr(item, "content_type", None),
+            references_list=candidate_references,
+            reference_checks=candidate_checks,
+        )
+        bound_checks = bind_reference_checks_to_revision(candidate_view)
+        if bound_checks is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "REFERENCE_EVIDENCE_NOT_BOUND",
+                    "message": "편집 후보의 참고 자료 검증 근거를 새 판에 고정하지 못했습니다.",
+                },
+            )
+        staged = await stage_pending_candidate_cas(
+            db,
+            item,
+            expected_active_revision_id=expected_active_revision_id,
+            expected_content_revision=expected_content_revision,
+            title=title,
+            body=candidate_body,
+            meta_description=effective_values["meta_description"],
+            faq_question=effective_values["faq_question"],
+            faq_answer_summary=effective_values["faq_answer_summary"],
+            references_list=candidate_references,
+            reference_checks=bound_checks,
+            created_by=verified_request_actor() or default_actor(),
+            created_at=datetime.now(timezone.utc),
+        )
+        if isinstance(staged, CandidateStageConflict):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "STALE_CONTENT_REVISION",
+                    "message": "다른 변경이 먼저 저장되어 편집 후보를 덮어쓰지 않았습니다.",
+                },
+            )
+        item.human_edited_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(item)
+        return await _serialize_single(db, hospital_id, item)
+
     # 참고 자료 (A1) — 생성 경로와 동일한 정규화/화이트리스트 검증을 거친다.
     # 일부가 탈락하면 운영자가 모르는 채 저장되는 것보다 명시적으로 거절하는 편이 안전.
     previous_ai_review = None
@@ -762,9 +879,6 @@ async def update_content(
 
     # 공개 후 확인 기록은 그 당시 본문에 대한 기록이다. 공개 필드가 바뀌면 이전 확인을
     # 무효화해 Admin 목록에서 다시 공개 내용 확인 대기로 보이게 한다.
-    public_fields_changed = bool(body.model_fields_set & set(FORBIDDEN_CHECK_FIELDS)) or (
-        "references" in body.model_fields_set
-    )
     # body_updated_at은 컬럼 이름과 달리 "공개 텍스트가 편집된 시각"이다. 제목·meta·FAQ·
     # 참고자료도 공개 표면에 나가는 텍스트인데 본문 변경만 기록하면, 공개 뒤 제목만 고친
     # 글이 사람 확인 표본(post_publish_review_policy)과 Site 재검증 키에서 빠진다.
@@ -794,7 +908,11 @@ async def update_content(
         # fallback for rolling workers returning a legacy screening-only summary.
         item.essence_check_summary.setdefault("ai_review", previous_ai_review)
     _mark_review_stale_after_edit(item)
-    if has_published_edition and public_fields_changed and isinstance(item.essence_check_summary, dict):
+    if (
+        has_published_edition
+        and public_fields_changed
+        and isinstance(item.essence_check_summary, dict)
+    ):
         # 고친 본문은 사후 검수 스윕이 새 해시로 다시 본다 — 옛 본문의 FLAGGED 표시를 걷는다.
         item.essence_check_summary = {
             k: v for k, v in item.essence_check_summary.items() if k != "post_publish_ai_review"
@@ -1000,6 +1118,51 @@ async def cancel_content(
     return await _serialize_single(db, hospital_id, item)
 
 
+@router.post(
+    "/{hospital_id}/content/{content_id}/candidate/cancel",
+    response_model=ContentItemDetail,
+)
+async def cancel_content_candidate(
+    hospital_id: uuid.UUID,
+    content_id: uuid.UUID,
+    body: CancelCandidateBody,
+    db: AsyncSession = Depends(get_db),
+):
+    """Discard one observed edit candidate while keeping the approved edition public."""
+
+    await acquire_hospital_advisory_lock(db, hospital_id)
+    item = await _get_content(db, content_id, hospital_id)
+    await _lock_content_status(db, hospital_id, content_id, item.status)
+    await db.refresh(item)
+    if item.status != ContentStatus.PUBLISHED or item.active_revision_id is None:
+        raise HTTPException(status_code=409, detail="Only published content candidates can be cancelled")
+    cancelled = await cancel_pending_candidate_cas(
+        db,
+        item,
+        expected_candidate_sha256=body.candidate_sha256,
+    )
+    if not cancelled:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "STALE_CONTENT_CANDIDATE",
+                "message": "편집 후보가 이미 바뀌어 폐기하지 않았습니다.",
+            },
+        )
+    await write_audit_log(
+        db,
+        action="cancel_content_candidate",
+        hospital_id=hospital_id,
+        actor=verified_request_actor() or default_actor(),
+        target_type="content_item",
+        target_id=content_id,
+        detail={"candidate_sha256": body.candidate_sha256},
+    )
+    await db.commit()
+    await db.refresh(item)
+    return await _serialize_single(db, hospital_id, item)
+
+
 async def _lock_content_status(
     db: AsyncSession,
     hospital_id: uuid.UUID,
@@ -1138,8 +1301,6 @@ async def publish_content(
         "FAQ_FIELDS_MISSING",
         "MISSING_REFERENCES",
         "FORBIDDEN_EXPRESSION",
-        "CONTENT_IMAGE_NOT_READY",
-        "CONTENT_IMAGE_NOT_VERIFIED",
     }:
         philosophy = await _get_approved_philosophy(db, hospital_id)
         assessment = assess_content_publication(item, philosophy)
@@ -1171,6 +1332,16 @@ async def publish_content(
             },
         )
 
+    bound_reference_checks = bind_reference_checks_to_revision(item)
+    if bound_reference_checks is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REFERENCE_EVIDENCE_NOT_BOUND",
+                "message": "참고 자료 검증 근거를 승인 판에 고정하지 못해 발행하지 않았습니다.",
+            },
+        )
+    item.reference_checks = bound_reference_checks
     item.status = ContentStatus.PUBLISHED
     # A selectively withdrawn source may have temporarily moved a previously
     # published row through guarded regeneration. Preserve its actual first
@@ -1184,6 +1355,21 @@ async def publish_content(
     item.post_publish_notified_at = None
     item.post_publish_reviewed_at = None
     item.post_publish_reviewed_by = None
+    item.active_revision_id = None
+    item.pending_revision = None
+    if isinstance(db, AsyncSession):
+        await db.flush()
+        revision_write = await reconcile_content_revisions(db, content_item_id=item.id)
+        await db.refresh(item, attribute_names=["active_revision_id"])
+        if item.active_revision_id is None or revision_write.created_count != 1:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "APPROVED_REVISION_NOT_CREATED",
+                    "message": "승인 근거가 완전한 공개 판을 만들지 못해 발행하지 않았습니다.",
+                },
+            )
     await write_audit_log(
         db,
         action="publish_content",
@@ -1207,7 +1393,11 @@ async def publish_content(
             content_id=item.id,
             aeo_domain=hospital.aeo_domain,
             treatments=hospital.treatments,
-            revision=int(getattr(item, "content_revision", 1) or 1),
+            revision=(
+                str(item.active_revision_id)
+                if item.active_revision_id is not None
+                else int(getattr(item, "content_revision", 1) or 1)
+            ),
         )
     enqueue_public_surface_intent(db, hospital, content_ids=[item.id])
     await db.commit()
@@ -1410,6 +1600,8 @@ async def reject_content(
     item.post_publish_reviewed_at = None
     item.post_publish_reviewed_by = None
     item.generated_at = None
+    item.active_revision_id = None
+    item.pending_revision = None
     # 야간 생성은 scheduled_date == 내일 인 슬롯만 집는다. 발행일 당일(또는 그 후) 반려된
     # 아이템은 그대로 두면 영원히 재생성되지 않으므로 내일로 재스케줄한다.
     today_seoul = arrow.now("Asia/Seoul").date()
@@ -1500,6 +1692,7 @@ async def withhold_content(
 
     published_at = item.published_at
     item.status = ContentStatus.WITHHELD
+    item.pending_revision = None
     item.generation_claimed_at = None
     item.generation_claim_token = None
     item.content_revision = int(getattr(item, "content_revision", 1) or 1) + 1
@@ -1678,17 +1871,13 @@ async def _get_hospital(db, hospital_id) -> Hospital:
     return h
 
 
-async def _get_hospital_for_schedule_update(
-    db: AsyncSession, hospital_id: uuid.UUID
-) -> Hospital:
+async def _get_hospital_for_schedule_update(db: AsyncSession, hospital_id: uuid.UUID) -> Hospital:
     """Serialize schedule replacement: the row lock is unconditional.
 
     폴백으로 잠금 없는 조회를 허용하면 Result 타입이 조금만 달라져도 직렬화가 조용히
     사라진다 — 스케줄 교체는 슬롯 삭제/재생성을 동반하므로 그 조용한 실패가 가장 위험하다.
     """
-    result = await db.execute(
-        select(Hospital).where(Hospital.id == hospital_id).with_for_update()
-    )
+    result = await db.execute(select(Hospital).where(Hospital.id == hospital_id).with_for_update())
     hospital = result.scalar_one_or_none()
     if hospital is None:
         raise HTTPException(status_code=404, detail="Hospital not found")
@@ -1717,6 +1906,18 @@ async def _require_restorable_references(db, item: ContentItem, verification) ->
     `verification`은 잠금 전에 만든 검증 결과다. 잠근 행이 그때와 같을 때만 기록을 붙인다.
     참고자료 목록 자체는 절대 바꾸지 않는다(공개됐던 글의 참고자료를 자동으로 고치지 않는다).
     """
+
+    # WITHHELD rows keep their immutable approved edition as the public authority.
+    # Mirror fields can be stale or can have been edited by an older writer during a
+    # mixed-version rollout; they cannot invalidate evidence already bound to that
+    # approved edition. `publication_references_current` reads the eagerly loaded
+    # active revision and treats its approval-bound evidence as age-independent.
+    if (
+        getattr(item, "active_revision_id", None) is not None
+        and item.__dict__.get("active_revision") is not None
+        and publication_references_current(item)
+    ):
+        return
 
     if verification is not None and not apply_publication_reference_refresh(item, verification):
         raise HTTPException(
@@ -1830,8 +2031,7 @@ def _reject_curated_references_for_no_source_topic(
         detail={
             "code": "CURATED_REFERENCE_NOT_ALLOWED",
             "message": (
-                CURATED_REFERENCE_NOT_ALLOWED_MESSAGE
-                + f" 넣을 수 없는 주소: {', '.join(urls)}"
+                CURATED_REFERENCE_NOT_ALLOWED_MESSAGE + f" 넣을 수 없는 주소: {', '.join(urls)}"
             ),
             "urls": urls,
         },
@@ -1904,7 +2104,15 @@ async def _verify_patched_references(
 
 
 async def _get_content(db, content_id, hospital_id) -> ContentItem:
-    item = await db.get(ContentItem, content_id)
+    if isinstance(db, AsyncSession):
+        item = await db.get(
+            ContentItem,
+            content_id,
+            options=(selectinload(ContentItem.active_revision),),
+            populate_existing=True,
+        )
+    else:
+        item = await db.get(ContentItem, content_id)
     if not item or item.hospital_id != hospital_id:
         raise HTTPException(status_code=404, detail="Content not found")
     return item
@@ -2167,11 +2375,15 @@ def _serialize_item_display(
         blocked_reason=blocked_reason,
     )
     if status_value == ContentStatus.PUBLISHED.value:
-        notification = getattr(item, "_publish_notification_projection", None)
-        if notification is None:
-            notification = project_publish_notification(
-                None, notification_id=None, safe_error_code=None
-            )
+        notification = {
+            "state": "NOT_REQUIRED",
+            "label": "자동 관제 중",
+            "problem": None,
+            "publication_impact": "콘텐츠 발행에는 영향이 없습니다.",
+            "next_action": "문제가 감지된 항목만 예외 큐에 표시됩니다.",
+            "notification_id": None,
+            "safe_error_code": None,
+        }
         review["notification_state"] = notification["state"]
         review["notification"] = notification
         pending_review_sample = is_human_post_publish_review_sample(item) and (
@@ -2221,8 +2433,6 @@ def _build_compliance_summary(
         blockers.append("권위 있는 참고 자료가 1개 이상 필요합니다.")
     if item.title and item.body and not has_required_faq_fields(item):
         blockers.append("FAQ 질문과 직접 답변 요약이 필요합니다.")
-    if item.title and item.body and not image_certification_current(item):
-        blockers.append("대표 이미지 자동 정책 검사가 필요합니다.")
     if not public_candidate_review_safe(item):
         blockers.append("독립 검수 지적이 해결되지 않았습니다.")
     if item.essence_status != ESSENCE_STATUS_ALIGNED:
@@ -2365,9 +2575,7 @@ async def _blocked_links_for(
     return {**run_links, **incident_links}
 
 
-async def _serialize_single(
-    db: AsyncSession, hospital_id: uuid.UUID, item: ContentItem
-) -> dict:
+async def _serialize_single(db: AsyncSession, hospital_id: uuid.UUID, item: ContentItem) -> dict:
     """단건 응답 — 목록과 같은 판정·같은 차단 링크를 쓴다."""
     links = await _blocked_links_for(db, hospital_id, [item.id])
     return _serialize_item(
@@ -2406,6 +2614,8 @@ def _serialize_item(
     )
     d = {
         "id": str(item.id),
+        "active_revision_id": getattr(item, "active_revision_id", None),
+        "pending_revision": getattr(item, "pending_revision", None),
         "content_type": content_type,
         "sequence_no": item.sequence_no,
         "total_count": item.total_count,

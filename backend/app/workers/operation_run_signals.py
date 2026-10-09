@@ -1,4 +1,14 @@
-"""Celery signal bridge for durable OperationRun lifecycle truth."""
+"""Celery signal bridge for durable OperationRun lifecycle truth.
+
+Ownership stays split by transport fact:
+
+* a broker redelivery keeps the same task ID and may reclaim only its own RUNNING lease;
+* autonomous domain recovery replaces the task ID/version only after a RUNNING lease expires;
+* a live lease, terminal run, or exhausted site-build budget is never claimed by a new delivery.
+
+The recovery sweep establishes replacement ownership before publish. These signals only claim,
+heartbeat, retry, or finish the exact task ID/version that reached the worker.
+"""
 
 from __future__ import annotations
 

@@ -27,18 +27,24 @@ from app.models.essence import (
     PhilosophyStatus,
     SourceStatus,
 )
-from app.models.hospital import Hospital, HospitalStatus
-from app.services.content_publication import (
-    PUBLICATION_CHECK_FIELDS,
-    publication_field_values,
+from app.models.hospital import Hospital
+from app.services.content_image_binding import certified_public_image_asset
+from app.services.content_publication import PUBLICATION_CHECK_FIELDS, publication_field_values
+from app.services.content_visibility import (
+    UNSET_PHILOSOPHY,
+    approved_public_view,
+    assess_public_visibility,
 )
-from app.services.content_visibility import UNSET_PHILOSOPHY, assess_public_visibility
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED
 from app.services.essence_readiness import (
     get_public_approved_philosophy_id,
     get_public_essence_readiness,
 )
-from app.services.hospital_lifecycle import activation_gate_snapshot
+from app.services.hospital_lifecycle import (
+    article_publication_verdict,
+    profile_publication_verdict,
+    public_hospital_sql_expression,
+)
 from app.services.hospital_logo import is_public_logo_ref, public_logo_url
 from app.services.photo_assets import effective_photo_metadata
 from app.services.public_asset_ref import is_public_asset_path
@@ -118,10 +124,7 @@ async def get_hospital_by_domain(request: Request, domain: str, db: AsyncSession
         select(Hospital)
         .where(
             match_clause,
-            Hospital.status == HospitalStatus.ACTIVE,
-            Hospital.site_live.is_(True),
-            Hospital.profile_complete.is_(True),
-            Hospital.site_built.is_(True),
+            public_hospital_sql_expression(),
         )
         .limit(1)
     )
@@ -156,10 +159,7 @@ async def get_tenant_health_by_domain(
                 select(Hospital)
                 .where(
                     match_clause,
-                    Hospital.status == HospitalStatus.ACTIVE,
-                    Hospital.site_live.is_(True),
-                    Hospital.profile_complete.is_(True),
-                    Hospital.site_built.is_(True),
+                    public_hospital_sql_expression(),
                 )
                 .limit(1)
             )
@@ -180,12 +180,7 @@ async def get_tenant_health_by_domain(
 @limiter.limit(settings.PUBLIC_SITE_RATE_LIMIT)
 async def list_hospitals(request: Request, db: AsyncSession = Depends(get_db)):
     """Public list of active hospitals for sitemap generation."""
-    stmt = select(Hospital).where(
-        Hospital.status == HospitalStatus.ACTIVE,
-        Hospital.site_live.is_(True),
-        Hospital.profile_complete.is_(True),
-        Hospital.site_built.is_(True),
-    )
+    stmt = select(Hospital).where(public_hospital_sql_expression())
     result = await db.execute(stmt)
     hospitals = result.scalars().all()
     return [_serialize_hospital_summary(h) for h in hospitals]
@@ -323,17 +318,21 @@ async def list_published_contents(
 
     stmt = (
         select(ContentItem)
-        .options(selectinload(ContentItem.query_target))
+        .options(
+            selectinload(ContentItem.query_target),
+            selectinload(ContentItem.active_revision),
+        )
         .where(
             ContentItem.hospital_id == h.id,
             ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.active_revision_id.is_not(None),
             ContentItem.essence_status == ESSENCE_STATUS_ALIGNED,
             ContentItem.content_philosophy_id == public_philosophy.id,
         )
         .order_by(ContentItem.published_at.desc(), ContentItem.id.desc())
     )
     items = await _load_public_safe_items(db, stmt, offset=offset, limit=limit)
-    return [_serialize_item(item, h.slug) for item in items]
+    return [_serialize_item(item, h.slug, h) for item in items]
 
 
 @router.get("/{slug}/contents/{content_id}")
@@ -349,7 +348,10 @@ async def get_content_public(
 
     item_result = await db.execute(
         select(ContentItem)
-        .options(selectinload(ContentItem.query_target))
+        .options(
+            selectinload(ContentItem.query_target),
+            selectinload(ContentItem.active_revision),
+        )
         .where(ContentItem.id == content_id)
     )
     item = item_result.scalar_one_or_none()
@@ -359,7 +361,7 @@ async def get_content_public(
         or not _is_public_safe_content(item, public_philosophy.id if public_philosophy else None)
     ):
         raise HTTPException(status_code=404, detail="Content not found")
-    return _serialize_item(item, h.slug, full=True)
+    return _serialize_item_detail(item, h.slug, h)
 
 
 @router.get("/{slug}/contents/{content_id}/image")
@@ -382,10 +384,12 @@ async def get_public_content_image(
         not item
         or item.hospital_id != h.id
         or not _is_public_safe_content(item, public_philosophy_id)
-        or not item.image_url
     ):
         raise HTTPException(status_code=404, detail="Content image not found")
-    return public_asset_response(item.image_url, hospital_id=h.id, media_type="image/png")
+    asset = certified_public_image_asset(item, h)
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Content image not found")
+    return public_asset_response(asset.image_url, hospital_id=h.id, media_type="image/png")
 
 
 # ── 헬퍼 ─────────────────────────────────────────────────────────
@@ -398,24 +402,18 @@ async def _get_active_hospital(db: AsyncSession, slug: str) -> Hospital:
 
 
 def _is_active_public_hospital(hospital: Hospital | None) -> bool:
-    """Use the same STEP 5 gate as activation even if a row drifts out of sync."""
-    return bool(
-        hospital
-        and hospital.status == HospitalStatus.ACTIVE
-        and hospital.site_live
-        and activation_gate_snapshot(hospital)["ready"]
-    )
+    """Use the canonical minimum-facts and explicit-permission profile verdict."""
+
+    return bool(hospital and profile_publication_verdict(hospital).allowed)
 
 
 def is_public_serving_hospital(hospital: Hospital | None) -> bool:
     """공개 페이지가 이 병원의 콘텐츠를 실제로 내보내는가 — 목록·상세·이미지의 병원 게이트.
 
-    ACTIVE + site_live + 활성화 선행조건 + 발행 요일 설정. 글 하나하나의 공개 여부는
-    `content_visibility`가 따로 판정한다. Admin이 "공개 중" 편수를 세려면 같은 조건을
-    다시 쓰는 대신 이 함수를 불러야 한다 — 조건을 옮겨 적으면 일시정지 병원의 발행 글이
-    admin에서만 공개 중으로 보인다.
+    일정은 미래 생성의 조건이지 이미 공개된 글의 권한이 아니다. 글 하나하나의 공개
+    여부는 `content_visibility`가 따로 판정한다.
     """
-    return _is_active_public_hospital(hospital) and bool(hospital.schedule_set)
+    return bool(hospital and article_publication_verdict(hospital).allowed)
 
 
 def _vetted_public_about(philosophy: HospitalContentPhilosophy | None) -> str | None:
@@ -493,7 +491,7 @@ def _serialize_hospital(
         for asset in photo_records
     ]
 
-    return {
+    payload = {
         "id": str(h.id),
         "name": h.name,
         "slug": h.slug,
@@ -549,6 +547,23 @@ def _serialize_hospital(
         else h.created_at.isoformat()
         if getattr(h, "created_at", None)
         else None,
+    }
+    optional_enrichment_fields = {
+        "website_url",
+        "blog_url",
+        "kakao_channel_url",
+        "google_business_profile_url",
+        "google_maps_url",
+        "naver_place_url",
+        "latitude",
+        "longitude",
+        "director_name",
+        "director_career",
+    }
+    return {
+        key: value
+        for key, value in payload.items()
+        if value is not None or key not in optional_enrichment_fields
     }
 
 
@@ -666,15 +681,22 @@ def _safe_public_text(value: object) -> str | None:
     return text if text and not check_forbidden(text) else None
 
 
-def _content_image_url(slug: str, item: ContentItem) -> str:
+def _content_image_url(
+    slug: str,
+    item: ContentItem,
+    hospital: Hospital | None = None,
+) -> str | None:
     # gs:// 저장본만 안정 프록시 경로로 노출한다 — 요청마다 backend가 fresh signed URL로
     # 302하므로 SSG/CDN 캐시 HTML이 만료 URL을 박아 403으로 깨지는 일을 막는다.
     # 이미 사용 가능한 URL(레거시 상대 public asset 경로 "/api/.../assets/..." 또는 http(s))은
     # 프록시로 감싸면 _asset_response가 처리 못 해 404가 나므로 그대로 통과시킨다.
-    ref = item.image_url or ""
+    asset = certified_public_image_asset(item, hospital)
+    if asset is None:
+        return None
+    ref = asset.image_url
     if ref.startswith("gs://"):
         proxy_url = f"/api/v1/public/hospitals/{slug}/contents/{item.id}/image"
-        content_hash = str(getattr(item, "image_content_hash", "") or "").strip()
+        content_hash = asset.content_hash
         # The proxy route remains stable and performs the tenant/public-safety check.
         # Version only by the certified bytes so Next/browser image caches cannot keep
         # serving a replaced unsafe image under the old optimizer cache key.
@@ -732,27 +754,46 @@ def _reading_minutes(body: str | None) -> int:
     return max(1, round(len(stripped) / _KOREAN_READING_SPEED_CHARS_PER_MIN))
 
 
-def _serialize_item(item: ContentItem, slug: str, full: bool = False) -> dict:
+def _serialize_item(
+    item: ContentItem,
+    slug: str,
+    hospital: Hospital | None = None,
+) -> dict:
+    public_item = approved_public_view(item)
+    if public_item is None:
+        raise RuntimeError("public serialization requires an active approved revision")
     query_target = getattr(item, "__dict__", {}).get("query_target")
     query_target_id = getattr(item, "query_target_id", None)
     d = {
         "id": str(item.id),
         "content_type": item.content_type,
-        "title": item.title,
-        "meta_description": item.meta_description,
-        "image_url": _content_image_url(slug, item) if item.image_url else None,
+        "title": public_item.title,
+        "meta_description": public_item.meta_description,
+        "image_url": _content_image_url(slug, item, hospital),
         "scheduled_date": str(item.scheduled_date),
         "published_at": item.published_at.isoformat() if item.published_at else None,
         "body_updated_at": item.body_updated_at.isoformat() if item.body_updated_at else None,
-        "references": item.references_list or [],
-        "faq_question": item.faq_question,
-        "faq_answer_summary": item.faq_answer_summary,
+        "references": public_item.references_list or [],
+        "faq_question": public_item.faq_question,
+        "faq_answer_summary": public_item.faq_answer_summary,
+        "revision_hash": public_item.revision_hash,
         "query_target_id": str(query_target_id) if query_target_id else None,
         "query_target_treatment": getattr(query_target, "treatment", None)
         if query_target is not None
         else None,
-        "reading_minutes": _reading_minutes(item.body),
+        "reading_minutes": _reading_minutes(public_item.body),
     }
-    if full:
-        d["body"] = item.body
     return d
+
+
+def _serialize_item_detail(
+    item: ContentItem,
+    slug: str,
+    hospital: Hospital | None = None,
+) -> dict:
+    serialized = _serialize_item(item, slug, hospital)
+    public_item = approved_public_view(item)
+    if public_item is None:
+        raise RuntimeError("public serialization requires an active approved revision")
+    serialized["body"] = public_item.body
+    return serialized

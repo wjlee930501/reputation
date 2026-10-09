@@ -54,6 +54,12 @@ _DOMAIN_LABELS = {
 # 다시 쓰면 "자동 진행 중인 일"이 운영자의 할 일 링크로 새어 나간다 — 링크는 사람 몫에만
 # 붙인다. (`{hospital_id}`는 아래에서 채운다.)
 _CONDITIONS: dict[str, tuple[str, str, str | None]] = {
+    "service_inactive": ("서비스 활성화", "human", None),
+    "public_permission_missing": ("공개 노출 확인", "human", None),
+    "site_not_built": ("공개 페이지 준비", "system", None),
+    "address": ("병원 주소 입력", "human", "/hospitals/{hospital_id}/info"),
+    "phone": ("병원 전화번호 입력", "human", "/hospitals/{hospital_id}/info"),
+    "treatments": ("진료 항목 입력", "human", "/hospitals/{hospital_id}/info"),
     # 링크는 실제로 그 값을 채우는 칸으로 보낸다. 화면 위쪽만 가리키면 사람이 다시 찾는다.
     "profile_complete": (
         "필수 병원 정보 입력",

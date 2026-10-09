@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "kind": "sanitized-compatible-public-hotfix-verification",
+  "recommendation": "APPROVE",
+  "scope": "read-only compatible reader hotfix",
+  "sourceSha": "057b9d1e8045603193e0b5b266f740940126e9b6",
+  "observables": [
+    "shared visibility projection eagerly loads the active revision",
+    "approved grounded content is not falsely blocked for missing references",
+    "canonical lifecycle blockers serialize without legacy-key substitution"
+  ],
+  "targetedVerification": "4 passed in 2.99s",
+  "sourceEvidenceSha256": "bb30cebdb38803aee3703f4d60dec68c2c7a9ce78aead1ef44ac8bbe691bbe19",
+  "redactions": ["local database command and environment paths"]
+}

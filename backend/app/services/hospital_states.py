@@ -13,13 +13,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from app.models.hospital import HospitalStatus
+from app.models.hospital import Hospital, HospitalStatus
+from app.services.hospital_lifecycle import (
+    article_publication_verdict,
+    profile_publication_verdict,
+)
 
 
 @dataclass(frozen=True, slots=True)
 class PublicServiceState:
     kind: Literal["live", "paused", "not_live"]
-    remaining: tuple[str, ...]  # 사람이 채울 조건 키: profile_complete · site_built
+    remaining: tuple[str, ...]  # 최소 공개 사실·서비스 권한 blocker key
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,18 +42,86 @@ class DomainState:
     last_check_ok: bool | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AvailabilityBlocker:
+    code: str
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class AvailabilityVerdict:
+    available: bool
+    blockers: tuple[AvailabilityBlocker, ...]
+
+
+def schedule_availability_verdict(
+    *,
+    essence_current: bool,
+    required_sources: int,
+    unprocessed_sources: int,
+    approved_philosophy_exists: bool,
+) -> AvailabilityVerdict:
+    """Return the backend-owned eligibility to create or replace a schedule."""
+
+    if essence_current:
+        return AvailabilityVerdict(available=True, blockers=())
+    blockers: list[AvailabilityBlocker] = []
+    if required_sources == 0:
+        blockers.append(AvailabilityBlocker(
+            "sources_required",
+            "병원 정보 화면에서 근거 자료를 1개 이상 올려 주세요. 처리는 자동으로 이어집니다.",
+        ))
+    if unprocessed_sources > 0:
+        blockers.append(AvailabilityBlocker(
+            "sources_processing",
+            f"근거 자료 처리 중 {unprocessed_sources}건입니다. 처리가 끝나면 자동으로 이어집니다.",
+        ))
+    blockers.append(AvailabilityBlocker(
+        "essence_missing" if not approved_philosophy_exists else "essence_reapproval",
+        "콘텐츠 운영 기준을 자동으로 만드는 중입니다."
+        if not approved_philosophy_exists
+        else "변경된 근거를 콘텐츠 운영 기준에 반영하는 중입니다.",
+    ))
+    return AvailabilityVerdict(available=False, blockers=tuple(blockers))
+
+
+def generation_availability_verdict(
+    hospital: Hospital,
+    *,
+    schedule_availability: AvailabilityVerdict,
+) -> AvailabilityVerdict:
+    """Return automatic-generation eligibility, separate from historical serving."""
+
+    blockers: list[AvailabilityBlocker] = []
+    if not bool(hospital.schedule_set):
+        blockers.append(AvailabilityBlocker("schedule", "콘텐츠 발행 일정이 필요합니다."))
+    blockers.extend(schedule_availability.blockers)
+    blockers.extend(
+        AvailabilityBlocker(code, "공개 서비스 상태를 확인해 주세요.")
+        for code in article_publication_verdict(hospital).blockers
+    )
+    return AvailabilityVerdict(available=not blockers, blockers=tuple(blockers))
+
+
+def serialize_availability(verdict: AvailabilityVerdict) -> dict[str, bool | list[dict[str, str]]]:
+    return {
+        "available": verdict.available,
+        "blockers": [
+            {"code": blocker.code, "message": blocker.message} for blocker in verdict.blockers
+        ],
+    }
+
+
 def public_service_state(hospital: Any) -> PublicServiceState:
-    """`_has_public_site`(hospitals.py)와 같은 게이트. PAUSED는 남은 조건이 아니라 상태다."""
+    """Expose the canonical public-profile verdict. PAUSED remains a state."""
     status = getattr(hospital, "status", None)
     status = getattr(status, "value", status)
     if status == HospitalStatus.PAUSED.value:
         return PublicServiceState("paused", ())
-    if status == HospitalStatus.ACTIVE.value and bool(getattr(hospital, "site_live", False)):
+    verdict = profile_publication_verdict(hospital)
+    if verdict.allowed:
         return PublicServiceState("live", ())
-    remaining = tuple(
-        key for key in ("profile_complete", "site_built") if not bool(getattr(hospital, key, False))
-    )
-    return PublicServiceState("not_live", remaining)
+    return PublicServiceState("not_live", verdict.blockers)
 
 
 def content_state(
@@ -63,25 +135,35 @@ def content_state(
     """`schedule_set && essence_readiness.current` (설계 §4.2). 예외는 준비 중보다 앞선다."""
     if escalated_draft and not essence_current:
         return ContentState("exception", ())
+    status = getattr(hospital, "status", None)
+    status = getattr(status, "value", status)
+    schedule = schedule_availability_verdict(
+        essence_current=essence_current,
+        required_sources=required_sources,
+        unprocessed_sources=unprocessed_sources,
+        approved_philosophy_exists=required_sources > 0,
+    )
+    generation = generation_availability_verdict(
+        hospital,
+        schedule_availability=schedule,
+    )
+    if generation.available:
+        return ContentState("auto", ())
+
     remaining: list[str] = []
-    if not bool(getattr(hospital, "schedule_set", False)):
-        remaining.append("schedule")
-    if unprocessed_sources > 0 and not essence_current:
-        remaining.append(f"sources:{unprocessed_sources}")
-    if not essence_current:
-        # 자료가 하나도 없으면 자동 검수는 시작조차 하지 않는다(WAITING_FOR_SOURCES).
-        # 그때 남은 일은 시스템 처리가 아니라 사람이 공식 채널·근거 자료를 등록하는 것이다.
-        remaining.append("essence_review" if required_sources > 0 else "sources_required")
-    if remaining:
-        return ContentState("preparing", tuple(remaining))
-    # 야간 생성은 공개 서비스 중인 병원에만 돈다(`nightly_generation_batch`). 멈춰 있는
-    # 병원을 "자동 발행 중"이라 부르면 화면이 하지 않는 일을 하고 있다고 말한다.
-    public = public_service_state(hospital)
-    if public.kind == "paused":
-        return ContentState("preparing", ("service_paused",))
-    if public.kind != "live":
-        return ContentState("preparing", ("public_service",))
-    return ContentState("auto", ())
+    for blocker in generation.blockers:
+        if blocker.code == "sources_processing":
+            remaining.append(f"sources:{unprocessed_sources}")
+        elif blocker.code in {"essence_missing", "essence_reapproval"}:
+            remaining.append("essence_review" if required_sources > 0 else "sources_required")
+        elif blocker.code == "service_inactive" and status == HospitalStatus.PAUSED.value:
+            remaining.append("service_paused")
+        elif blocker.code in {"service_inactive", "public_permission_missing", "site_not_built"}:
+            if "public_service" not in remaining:
+                remaining.append("public_service")
+        else:
+            remaining.append(blocker.code)
+    return ContentState("preparing", tuple(dict.fromkeys(remaining)))
 
 
 def domain_state(hospital: Any) -> DomainState:

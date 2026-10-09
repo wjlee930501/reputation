@@ -90,15 +90,41 @@ export interface HospitalPhoto {
   approved_usage?: string[] | null
 }
 
+const HOSPITAL_EXTERNAL_URL_FIELDS = [
+  'website_url',
+  'blog_url',
+  'kakao_channel_url',
+  'google_business_profile_url',
+  'google_maps_url',
+  'naver_place_url',
+] as const
+
+type HospitalExternalUrlField = (typeof HOSPITAL_EXTERNAL_URL_FIELDS)[number]
+
 type HospitalPayload = Omit<
   Hospital,
-  'address' | 'phone' | 'business_hours' | 'director_name' | 'director_career'
+  | 'address'
+  | 'phone'
+  | 'business_hours'
+  | 'director_name'
+  | 'director_career'
+  | 'latitude'
+  | 'longitude'
+  | HospitalExternalUrlField
 > & {
   address: string | null
   phone: string | null
   business_hours: Record<string, string> | null
-  director_name: string | null
-  director_career: string | null
+  director_name?: string | null
+  director_career?: string | null
+  latitude?: number | null
+  longitude?: number | null
+  website_url?: string | null
+  blog_url?: string | null
+  kakao_channel_url?: string | null
+  google_business_profile_url?: string | null
+  google_maps_url?: string | null
+  naver_place_url?: string | null
 }
 
 const DEV_ASSETS_BACKEND_BASE = 'http://localhost:8000'
@@ -172,15 +198,6 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string'
 }
 
-const HOSPITAL_EXTERNAL_URL_FIELDS = [
-  'website_url',
-  'blog_url',
-  'kakao_channel_url',
-  'google_business_profile_url',
-  'google_maps_url',
-  'naver_place_url',
-] as const
-
 function isNullableNumber(value: unknown): value is number | null {
   return value === null || typeof value === 'number'
 }
@@ -242,9 +259,11 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
       (Array.isArray(value.physicians) && value.physicians.every(isHospitalPhysicianPayload))) &&
     isNullableString(value.phone) &&
     isNullableStringRecord(value.business_hours) &&
-    HOSPITAL_EXTERNAL_URL_FIELDS.every((field) => isNullableString(value[field])) &&
-    isNullableNumber(value.latitude) &&
-    isNullableNumber(value.longitude) &&
+    HOSPITAL_EXTERNAL_URL_FIELDS.every(
+      (field) => value[field] === undefined || isNullableString(value[field]),
+    ) &&
+    (value.latitude === undefined || isNullableNumber(value.latitude)) &&
+    (value.longitude === undefined || isNullableNumber(value.longitude)) &&
     isNullableString(value.wikidata_qid) &&
     isNullableString(value.gbp_place_id) &&
     isNullableString(value.naver_place_id) &&
@@ -253,8 +272,8 @@ function isHospitalPayload(value: unknown): value is HospitalPayload {
     isStringArray(value.region) &&
     isStringArray(value.specialties) &&
     isStringArray(value.keywords) &&
-    isNullableString(value.director_name) &&
-    isNullableString(value.director_career) &&
+    (value.director_name === undefined || isNullableString(value.director_name)) &&
+    (value.director_career === undefined || isNullableString(value.director_career)) &&
     isNullableString(value.director_philosophy) &&
     // public_about은 신규 필드 — 구버전 ISR 캐시 응답에 없을 수 있어 undefined도 허용.
     (value.public_about === undefined || isNullableString(value.public_about)) &&
@@ -289,6 +308,14 @@ function normalizeHospitalPayload(hospital: HospitalPayload): Hospital {
     business_hours: hospital.business_hours ?? {},
     director_name: hospital.director_name ?? '',
     director_career: hospital.director_career ?? '',
+    latitude: hospital.latitude ?? null,
+    longitude: hospital.longitude ?? null,
+    website_url: null,
+    blog_url: null,
+    kakao_channel_url: null,
+    google_business_profile_url: null,
+    google_maps_url: null,
+    naver_place_url: null,
     // 구버전 응답에 필드가 없으면 null로 정규화 (다운스트림은 string | null만 본다).
     public_about: hospital.public_about ?? null,
     brand_primary_color: hospital.brand_primary_color ?? null,

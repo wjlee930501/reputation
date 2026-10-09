@@ -10,7 +10,12 @@ const scheduleSection = readFileSync(
 )
 
 test('자료가 하나도 없으면 사람이 할 일은 올리는 것뿐이다', () => {
-  const blockers = contentReadinessBlockers({ essence: { required_source_count: 0 } })
+  const blockers = contentReadinessBlockers({
+    schedule_availability: {
+      available: false,
+      blockers: [{ code: 'sources_required', message: '병원 정보 화면에서 근거 자료를 1개 이상 올려 주세요. 처리는 자동으로 이어집니다.' }],
+    },
+  })
   assert.deepEqual(blockers, [
     '병원 정보 화면에서 근거 자료를 1개 이상 올려 주세요. 처리는 자동으로 이어집니다.',
   ])
@@ -18,20 +23,20 @@ test('자료가 하나도 없으면 사람이 할 일은 올리는 것뿐이다'
 
 test('남은 준비는 자동으로 진행 중이라고만 말한다 — 없는 버튼을 누르라고 하지 않는다', () => {
   const blockers = contentReadinessBlockers({
-    essence: { required_source_count: 2 },
-    checks: [
-      // 서버가 보낸 next_action이 없는 버튼을 가리켜도 화면은 그것을 쓰지 않는다.
-      { key: 'essence_sources', label: '근거 자료 처리', passed: false, next_action: '‘처리 시작’을 누르세요.' },
-      { key: 'essence_philosophy', label: '콘텐츠 운영 기준', passed: false },
-      { key: 'essence_freshness', label: '기준 갱신', passed: true },
-    ],
+    schedule_availability: {
+      available: false,
+      blockers: [
+        { code: 'sources_processing', message: '근거 자료 처리가 자동으로 진행 중입니다.' },
+        { code: 'essence_missing', message: '콘텐츠 운영 기준을 자동으로 만드는 중입니다.' },
+      ],
+    },
   })
 
   assert.equal(blockers.length, 2)
   for (const blocker of blockers) {
     assert.doesNotMatch(blocker, /처리 시작|누르|버튼|완료해/)
   }
-  assert.match(blockers[0], /자동으로 처리됩니다/)
+  assert.match(blockers[0], /자동으로 진행 중/)
   assert.match(blockers[1], /자동으로 만드는 중/)
 })
 
@@ -39,10 +44,27 @@ test('통과한 준비와 빈 응답은 아무것도 남기지 않는다', () =>
   assert.deepEqual(contentReadinessBlockers(null), [])
   assert.deepEqual(
     contentReadinessBlockers({
-      essence: { required_source_count: 1 },
-      checks: [{ key: 'essence_sources', label: '근거 자료 처리', passed: true }],
+      schedule_availability: { available: true, blockers: [] },
     }),
     [],
+  )
+})
+
+test('서버 판정이 빠진 혼합 버전 응답은 가능으로 추정하지 않는다', () => {
+  assert.deepEqual(contentReadinessBlockers({}), [
+    '발행 일정 가능 여부를 서버에서 확인할 수 없습니다.',
+  ])
+})
+
+test('서버가 새 blocker를 추가해도 문구를 버리지 않는다', () => {
+  assert.deepEqual(
+    contentReadinessBlockers({
+      schedule_availability: {
+        available: false,
+        blockers: [{ code: 'future_rule', message: '서버가 설명한 새 차단 사유' }],
+      },
+    }),
+    ['서버가 설명한 새 차단 사유'],
   )
 })
 

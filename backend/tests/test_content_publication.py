@@ -69,27 +69,26 @@ def test_publication_policy_blocks_missing_reference(monkeypatch):
     assert assessment.essence_summary["blocking"] is True
 
 
-def test_publication_policy_blocks_missing_representative_image(monkeypatch):
+def test_publication_policy_allows_safe_text_without_a_representative_image(monkeypatch):
     _aligned(monkeypatch)
 
     assessment = content_publication.assess_content_publication(
         _item(image_url=None), _philosophy()
     )
 
-    assert assessment.publishable is False
-    assert assessment.code == "CONTENT_IMAGE_NOT_READY"
-    assert assessment.essence_summary["blocking"] is True
+    assert assessment.publishable is True
+    assert assessment.code is None
 
 
-def test_publication_policy_blocks_unverified_representative_image(monkeypatch):
+def test_publication_policy_allows_safe_text_with_an_unverified_image(monkeypatch):
     _aligned(monkeypatch)
 
     assessment = content_publication.assess_content_publication(
         _item(image_policy_verified_at=None), _philosophy()
     )
 
-    assert assessment.publishable is False
-    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+    assert assessment.publishable is True
+    assert assessment.code is None
 
 
 def _reused(**overrides):
@@ -128,27 +127,28 @@ def test_publication_policy_does_not_mark_an_own_image_as_reused(monkeypatch):
     assert "image_reused" not in assessment.essence_summary
 
 
-def test_reused_image_still_requires_the_byte_binding(monkeypatch):
-    """marker가 있어도 바이트 결합이 없으면 인증이 아니다 — 합성 통과를 만들지 않는다."""
+def test_reused_image_without_byte_binding_does_not_block_safe_text(monkeypatch):
     _aligned(monkeypatch)
 
     assessment = content_publication.assess_content_publication(
         _reused(image_content_hash=None), _philosophy()
     )
 
-    assert assessment.publishable is False
-    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+    assert assessment.publishable is True
+    assert assessment.code is None
+    assert "image_reused" not in assessment.essence_summary
 
 
-def test_reused_image_with_a_retired_policy_version_is_not_current(monkeypatch):
+def test_reused_image_with_a_retired_policy_version_does_not_block_safe_text(monkeypatch):
     _aligned(monkeypatch)
 
     assessment = content_publication.assess_content_publication(
         _reused(image_policy_version="2000-01-01"), _philosophy()
     )
 
-    assert assessment.publishable is False
-    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+    assert assessment.publishable is True
+    assert assessment.code is None
+    assert "image_reused" not in assessment.essence_summary
 
 
 def test_reused_image_survives_a_title_edit_but_an_own_image_does_not():
@@ -210,27 +210,29 @@ def test_an_own_topic_image_carries_neither_substitution_key(monkeypatch):
     assert "image_fallback" not in assessment.essence_summary
 
 
-def test_hospital_fallback_image_still_requires_the_byte_binding(monkeypatch):
-    """marker가 있어도 내용 hash가 URL과 묶이지 않으면 인증이 아니다."""
+def test_invalid_hospital_fallback_does_not_block_text_or_claim_reuse(monkeypatch):
     _aligned(monkeypatch)
 
     assessment = content_publication.assess_content_publication(
         _hospital_fallback(image_content_hash=None), _philosophy()
     )
 
-    assert assessment.publishable is False
-    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+    assert assessment.publishable is True
+    assert assessment.code is None
+    assert "image_reused" not in assessment.essence_summary
+    assert "image_fallback" not in assessment.essence_summary
 
 
-def test_hospital_fallback_image_with_a_retired_policy_version_is_not_current(monkeypatch):
+def test_retired_hospital_fallback_policy_does_not_block_safe_text(monkeypatch):
     _aligned(monkeypatch)
 
     assessment = content_publication.assess_content_publication(
         _hospital_fallback(image_policy_version="2000-01-01"), _philosophy()
     )
 
-    assert assessment.publishable is False
-    assert assessment.code == "CONTENT_IMAGE_NOT_VERIFIED"
+    assert assessment.publishable is True
+    assert assessment.code is None
+    assert "image_reused" not in assessment.essence_summary
 
 
 def test_unknown_fallback_marker_does_not_grant_certification():

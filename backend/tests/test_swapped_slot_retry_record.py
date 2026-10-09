@@ -88,7 +88,8 @@ _RETRYABLE_FAILURES = [
 
 
 def _fail_writer_with(monkeypatch, writer_calls: list, error: BaseException) -> None:
-    async def failing_writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+    async def failing_writer(*, db, hospital, item, existing_titles, philosophy, approved_brief):
+        del db
         writer_calls.append(item.id)
         raise error
 

@@ -16,6 +16,7 @@ from app.models.operations import OperationRun, OperationRunState
 from app.services.doctor_pdf_contracts import DoctorPdfExpectation
 from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
 from app.services.monthly_period import ReportBuildReason, plan_report_version
+from app.services.monthly_report_snapshot import freeze_doctor_view, restore_doctor_view
 from app.services.monthly_template_refresh import (
     REQUIRE_STORED_BACKING,
     RefreshVerdict,
@@ -29,6 +30,7 @@ from app.services.monthly_template_refresh import (
     pdf_fact_problems,
     stored_only_facts,
 )
+from app.services.report_narrative import MonthlyNarrative
 from app.workers import autonomous_recovery, tasks
 
 
@@ -41,11 +43,32 @@ def test_numeric_diff_reports_changed_added_and_removed_numbers():
     ]
 
 
-def test_missing_stored_paths_names_every_absent_field():
-    missing = missing_stored_paths({"published_count": 1}, {"sov_pct": 1})
-    assert "content_summary.contract_timing.observed_at" in missing
-    assert "sov_summary.comparison.reason" in missing
-    assert "content_summary.published_count" not in missing
+def test_missing_stored_paths_rejects_malformed_snapshot_without_inventing_fields():
+    missing = missing_stored_paths(
+        {"published_count": 1, "report_snapshot": {"schema_version": 1}},
+        {"sov_pct": 1},
+    )
+    assert missing == ["LEGACY_RENDER_INPUTS_INCOMPLETE"]
+
+
+def test_legacy_summary_without_render_snapshot_is_explicitly_incomplete():
+    content = {
+        "published_count": 1,
+        "operations": {"plan_quota": 12, "supplementary_count": 0},
+        "contract_timing": {
+            "early_publication_count": 0,
+            "late_recovery_count": 0,
+            "published_for_contract_count": 1,
+            "observed_at": "2026-08-01T00:00:00+00:00",
+        },
+        "attribution": {},
+        "strategy": {},
+        "citations": {},
+        "talking_points": [],
+    }
+    sov = {"sov_pct": 0.0, "comparison": {"reason": "NO_PRIOR_MANIFEST"}}
+
+    assert missing_stored_paths(content, sov) == ["LEGACY_RENDER_INPUTS_INCOMPLETE"]
 
 
 def test_number_tokens_ignore_wording_but_keep_order():
@@ -224,6 +247,16 @@ def test_rendering_the_same_view_twice_gives_identical_pdf_facts():
     facts = doctor_view_facts(view)
     assert pdf_fact_problems(_pdf_text(view), facts) == []
     assert facts["highlight.cumulative_published"] == "40"
+
+
+def test_snapshot_round_trip_renders_identical_pdf_facts():
+    original = monthly_view(cumulative_published_count=40)
+
+    restored = restore_doctor_view(freeze_doctor_view(original))
+
+    assert isinstance(restored["narrative"], MonthlyNarrative)
+    assert doctor_view_facts(restored) == doctor_view_facts(original)
+    assert pdf_fact_problems(_pdf_text(restored), doctor_view_facts(original)) == []
 
 
 def test_doctor_view_expectations_catch_a_tile_that_does_not_match_storage():

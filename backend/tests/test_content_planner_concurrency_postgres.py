@@ -20,7 +20,7 @@ from tests.db_env import require_db_url
 
 def test_parallel_writers_serialize_question_selection_until_the_brief_is_committed():
     url = make_url(require_db_url("SYNC_DATABASE_URL"))
-    assert url.database == "reputation_test"
+    assert (url.database or "").endswith("_test"), "Only a *_test database may be used"
     engine = create_engine(url)
     first_planned, second_entered, release_first = (
         threading.Event(),

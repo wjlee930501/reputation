@@ -107,6 +107,14 @@ _ALLOWED: dict[tuple[str, str], str] = {
         "backend/tests/test_operation_run_signal_support.py",
         'f"postgresql+psycopg2://reputation:reputation@127.0.0.1:{port}/reputation_test",',
     ): "unreachable probe on a just-closed OS-assigned loopback port",
+    (
+        "backend/tests/integration/test_content_revision_publish_postgres.py",
+        'yield f"http://127.0.0.1:{server.server_port}/reference"',
+    ): "test-owned HTTP reference server on an OS-assigned port; not a DB/Redis URL",
+    (
+        "backend/tests/integration/test_generation_budget_postgres.py",
+        'yield f"http://127.0.0.1:{server.server_port}"',
+    ): "test-owned HTTP provider server on an OS-assigned port; not a DB/Redis URL",
 }
 
 

@@ -176,6 +176,43 @@ def test_coverage_text_partial_names_confirmed_out_of_planned():
     assert "전부" not in text
 
 
+def test_inclusive_pending_semantics_render_in_the_real_director_pdf():
+    from pypdf import PdfReader
+
+    from app.services.doctor_pdf_contracts import DoctorPdfExpectation
+    from app.services.doctor_pdf_rendering import render_validated_doctor_pdf
+
+    coverage = _coverage(40.0, None, reason="NO_PRIOR_MANIFEST")
+    coverage["observation_adequacy"] = {
+        "lineage": "SLOTTED",
+        "status": "LIMITED",
+        "planned_slots": 18,
+        "confirmed_slots": 15,
+        "pending_semantics": "INCLUDES_FAILURES",
+    }
+    view = monthly_view(
+        sov_coverage=coverage,
+        platforms=["chatgpt", "gemini"],
+        records=[],
+    )
+    assert "미확정(실패 포함)" in view["coverage_text"]
+    expectation = DoctorPdfExpectation(
+        view["hospital_name"],
+        view["coverage_text"],
+        "이 결과는 진료의 질을 평가하거나 환자 수 증가를 보장하지 않습니다.",
+        "https://fictional.example.invalid/",
+        appendix_expected=bool(view["appendix_rows"]),
+    )
+    rendered = render_validated_doctor_pdf(
+        view=view,
+        period_label="2026-08",
+        public_url=expectation.public_url,
+        expectation=expectation,
+    )
+    text = "".join(page.extract_text() or "" for page in PdfReader(BytesIO(rendered.pdf_bytes)).pages)
+    assert "미확정(실패포함)" in "".join(text.split())
+
+
 def test_coverage_text_uses_single_date_or_range_without_old_label():
     adequacy = {"lineage": "SLOTTED", "planned_slots": 18, "confirmed_slots": 18, "status": "COMPLETE"}
 

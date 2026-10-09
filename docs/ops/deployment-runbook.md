@@ -126,6 +126,18 @@ readiness gate는 아래 절차를 따랐다. Site/Admin SA는 분리됐으며 l
 
 ## 운영 구성
 
+## 2026-10-09 purpose-first refactor 배포 계약
+
+이 절의 **PROPOSED**는 현재 승인된 purpose-first refactor 구현의 단일 기준선이다. 이 문서 변경 자체는 배포 완료·운영 데이터 변경·기존 보고서 재생성을 주장하지 않는다. 실제 배포 여부는 이 runbook의 revision, migration, readiness, 공개 표면, artifact 검증 기록으로만 판정한다.
+
+- 공개 활성화 소유자는 시스템이다. `profile_complete && site_built`가 충족되면 기본 주소를 자동 활성화하고, 자체 도메인은 DNS·TLS 확인 뒤 활성화한다. V0, `schedule_set`, Essence는 공개 활성화 게이트가 아니다. PAUSED, 명시적 비공개, 공개 권한 회수는 자동 복구·활성화로 되돌리지 않는다.
+- 콘텐츠 발행 소유자는 시스템이다. 승인된 운영 기준, 일정, tenant·공개 권한, 의료·사실 안전, 금지 표현, 근거와 artifact 검사를 통과한 글은 **자동 발행**한다. AE는 재시도로 해결되지 않은 terminal exception과 명시적 정정·철회만 처리하며, 정상 발행을 사람 승인 단계로 만들지 않는다.
+- 이미지 정책의 단일 PROPOSED 순서는 검증된 글 전용 이미지, 검증된 병원 공용 이미지, **이미지 없음** 또는 현재 장식 모티프다. 이미지 부재와 일시적 이미지 생성 장애는 안전한 본문 공개를 막지 않는다. 검증되지 않은 이미지·합성 provenance/hash·실제 원장으로 오인될 생성 인물은 계속 차단한다.
+- 근거 수정은 보수적인 정정/철회가 기본이다. 과거 승인 snapshot을 유지하는 **future-only** addendum/version만 명시적으로 선택할 수 있으며, 이는 hidden 상태·`authority_change`·미해결 의료 또는 사실 위험을 자동 해제하거나 과거 콘텐츠를 자동 재공개하지 않는다.
+- 월간 보고서 소유자는 시스템 생성과 AE의 **사람 전달** 기록으로 나뉜다. 닫힌 기간은 COMPLETE/LIMITED/**UNAVAILABLE** 중 하나로 표현한다. UNAVAILABLE도 `sov_pct=null`, 플랫폼별 confirmed/failed/ambiguous/pending 수, 콘텐츠 실적과 다음 조치를 갖춘 정직한 운영 보고서이며, hospital/period/audience/path/bytes/digest가 검증된 artifact/evidence identity와 맞으면 전달할 수 있다. null은 0이 아니고 비교 근거가 없으면 delta를 숨긴다. 시스템은 원장에게 자동 전달하지 않으며 전달 이력은 append-only다.
+
+이 계약을 구현하는 배포는 영구 policy flag/config나 별도 rejection branch를 추가하지 않는다. 배포 전후에는 위 안전 경계와 공개 콘텐츠·전달 artifact의 기존 정체성을 회귀 검증한다.
+
 | 항목 | 확인된 구성 |
 |---|---|
 | GCP project / region | `mso-platform-481505` / `asia-northeast3` |
@@ -273,10 +285,75 @@ RedBeat `2026-09-07.2`에는 IndexNow retry와 provider usage spool drain이 매
 
 ## 롤백과 문서 변경
 
+### 0084 목적 중심 전환의 compatible-reader 롤백
+
+`41f61d6f2f47459e3135dac66e430e454a1f1735` baseline은 확장 스키마와 기존 입력을
+characterization하는 용도다. 이 버전은 이미지 필수, `schedule_set` 공개 gate, 참고자료 나이
+gate를 갖고 있으므로 0084 전환 뒤 public/read traffic의 롤백 대상이 아니다. Tasks 1~14를
+검증한 뒤 Task 15 cleanup 전에 만든 `compatible_reader_sha`의 full SHA와 이미지 digest만
+public/read 롤백 좌표로 사용한다.
+
+롤백 순서는 고정한다. 먼저 Admin mutation traffic, 모든 mutation Worker, Beat를 0으로 내려
+in-flight transaction이 없는지 확인한다. 그 다음 API public/read와 Site만 검증된 compatible
+reader 이미지로 전환한다. expanded DB를 그대로 두며 `alembic downgrade`는 실행하지 않는다.
+compatible reader에서 no-image, `schedule_set=false`, 오래된 승인 참고자료, pending candidate가
+있는 항목을 읽어 active approved body만 반환하는지 확인한다. 이 상태에서는 baseline Worker,
+Beat, Admin을 시작하지 않는다. revision-aware writer를 복구하고 post-drain reconciliation과
+mirror/pointer parity 100%를 다시 확인한 뒤에만 Worker → Beat → Admin mutation 순으로 재개한다.
+
+로컬/CI 리허설은 추적되는
+`scripts/integrity_rehearsal/fixtures/compatible-reader.json` schema v2 manifest를 fail-closed
+입력으로 사용한다. 이 파일에는 원본 pre-Task-15 checkpoint와 그 직계 자식인 read-only
+hotfix의 full SHA, 정확한 3개 변경 경로, 검증 evidence hash가 모두 있어야 한다. harness는
+hotfix `sourceSha`의 parent가 `originalCheckpointSha`인지, diff가 allowlist와 정확히 일치하는지
+검증하고 그 SHA를 `git archive`로 build한 뒤 image tag/ID/digest를 별도 evidence에 기록한다.
+체크포인트가 없거나 build 뒤 old/new/compatible 정체성이 겹치면 리허설을 시작하지 않는다.
+외부 provider, GCS, Slack, DNS는 isolated fake boundary 밖으로 호출하지 않으며 그 미검증 범위를
+리허설 결과에 남긴다.
+
+0085를 포함한 backend/API/Worker/Beat/migrate/all 배포 전에는 운영 DB의 legacy publish
+backlog와 변환 가능한 legacy task incident를 읽기 전용으로 확인한다. 운영 `DATABASE_URL`을
+주입하고 `scripts/deploy.sh`를 실행한다.
+`CONTENT_PUBLISH_RECOVERY_DATABASE_URL`은 격리된 integration test fixture 전용이다. preflight는
+`CONTENT_PUBLISHED` open transport와 unapplied
+`SENT`, `convertible_legacy_incidents`를 각각 세어 세 값이 모두 0일 때만 통과한다.
+`unknown_legacy_incidents`는 자동 변환할 근거가 없는 레코드를 사실대로 보고하지만 배포를
+자동 차단하지 않는다. 결과 JSON은 기본적으로
+`.omo/evidence/deploy-preflight/legacy-publish-retirement-<revision>-<UTC>.json`에 남는다. 한 건이라도
+남거나 DB/config 확인이 실패하면 배포를 시작하지 않는다. 운영 backlog는 실제 preflight를 실행하기
+전까지 UNKNOWN으로 취급하며 Slack 발송으로 drain을 시험하지 않는다.
+
+preflight가 변환 가능한 legacy incident를 보고하면 배포 전에 아래 maintenance CLI를 실행한다.
+이 명령은 legacy incident, operation run, 알림 outbox를 삭제하지 않고 정규 incident 변환과
+감사 로그만 남긴다. 같은 identity의 중복 실패는 가장 오래된 레코드만 정규 incident로 변환하고
+나머지는 `ACKNOWLEDGED`/`recovered_at=NULL`로 supersede한다. 정확히 같은 identity의 뒤이은 성공만
+recovery 근거로 사용하며 다른 월의 성공은 현재 실패를 회복시킨 것으로 취급하지 않는다.
+
+```bash
+cd backend
+DATABASE_URL='postgresql+asyncpg://operator:…@…/…' \
+  PYTHONPATH=. uv run python -m app.utils.reconcile_legacy_task_incidents
+```
+
+결과는 `status=APPLIED`와 `converted`, `superseded`, `recovered`, `unknown` count를 출력한다.
+같은 명령을 다시 실행해 앞의 세 mutation count가 모두 0인지 확인한 뒤 read-only preflight를
+재실행한다. `unknown`은 임의로 성공/회복 처리하지 말고 원본 incident와 operation run을 보존한 채
+운영자가 target/period 근거를 별도로 확인한다. 이 과정은 새 Slack/notification delivery를 만들지
+않으며, 실행 전후 incident/run/outbox count와 감사 로그를 배포 evidence에 함께 보관한다.
+
+```bash
+DATABASE_URL='postgresql+asyncpg://read-only-user:…@…/…' \
+  bash scripts/deploy.sh all
+```
+
 ```bash
 bash scripts/deploy.sh rollback
 ```
 
-롤백은 `.deploy-rollback`에 저장된 revision으로 **트래픽을 복귀**한다. 이미 적용된 DB 마이그레이션은 되돌리지 않는다. 스키마가 구버전과 호환되는지 먼저 판단하며 무조건 `alembic downgrade`하지 않는다. 롤백 뒤에도 현재 큐·API·공개 표면을 다시 확인한다.
+일반 롤백은 `.deploy-rollback`에 저장된 revision으로 **트래픽을 복귀**한다. 0084 목적 중심 전환에는
+위 compatible-reader 절차를 먼저 적용하며 이 일반 명령으로 baseline Worker/Beat/Admin까지 함께
+복구하지 않는다. 이미 적용된 DB 마이그레이션은 되돌리지 않는다. 스키마가 구버전과 호환되는지
+먼저 판단하며 무조건 `alembic downgrade`하지 않는다. 롤백 뒤에도 현재 큐·API·공개 표면을 다시
+확인한다.
 
 문서만 바뀐 릴리스는 기존 런타임이 그대로임을 기록한다. 문서 Git SHA를 기존 이미지의 소스 SHA로 바꿔 적거나 불필요한 전체 재배포를 수행하지 않는다.

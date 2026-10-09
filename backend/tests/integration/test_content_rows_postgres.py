@@ -23,6 +23,7 @@ from app.models.essence import (
 )
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, IncidentSeverity, OperationRun, OperationRunState
+from app.services.content_revision_storage import reconcile_content_revisions
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, compute_sources_snapshot_hash
 from app.services.image_engine import (
     IMAGE_POLICY_VERSION,
@@ -30,6 +31,7 @@ from app.services.image_engine import (
     image_subject_hash,
 )
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
+from tests.publication_test_support import verified_reference_checks
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,6 +47,9 @@ async def _hospital(db, name: str, **overrides) -> Hospital:
         **{
             "name": name,
             "slug": f"clinic-{uuid.uuid4().hex[:12]}",
+            "address": "서울시 강남구 테헤란로 1",
+            "phone": "02-1234-5678",
+            "treatments": [{"name": "내과 진료"}],
             "status": HospitalStatus.ACTIVE,
             "site_live": True,
             "profile_complete": True,
@@ -81,12 +86,15 @@ async def _hospital(db, name: str, **overrides) -> Hospital:
         positioning_statement=f"{name}은 근거 중심으로 충분히 설명합니다.",
         patient_promise="확인된 정보만 환자에게 안내합니다.",
         source_snapshot_hash=compute_sources_snapshot_hash([source]),
+        source_asset_ids=[str(source.id)],
         approved_at=datetime.now(UTC),
     )
     db.add(philosophy)
     await db.flush()
     hospital._test_schedule_id = schedule.id
     hospital._test_philosophy_id = philosophy.id
+    hospital._test_source_id = source.id
+    hospital._test_source_snapshot_hash = philosophy.source_snapshot_hash
     hospital._test_seq = 0
     return hospital
 
@@ -127,14 +135,44 @@ async def _content(
         ],
         essence_status=ESSENCE_STATUS_ALIGNED,
         content_philosophy_id=hospital._test_philosophy_id,
+        generation_philosophy_id=hospital._test_philosophy_id,
+        last_reviewed_philosophy_id=hospital._test_philosophy_id,
+        content_brief={
+            "schema_version": "content-brief-v2",
+            "target_query": title,
+            "treatment_narrative": {
+                "source": "approved_philosophy",
+                "angle": "공식 자료에 근거한 안내",
+            },
+            "source_snapshot": {
+                "hash": hospital._test_source_snapshot_hash,
+                "source_asset_ids": [str(hospital._test_source_id)],
+            },
+        },
+        essence_check_summary={
+            "generation_provenance": {
+                "source_asset_ids": [str(hospital._test_source_id)]
+            }
+        },
         image_url=None if withheld else image_url,
         image_policy_verified_at=None if withheld else datetime.now(UTC),
         image_content_hash=None if withheld else image_content_hash_from_url(image_url),
         image_subject_hash=None if withheld else image_subject_hash(ContentType.FAQ, title),
         image_policy_version=None if withheld else IMAGE_POLICY_VERSION,
     )
+    item.reference_checks = verified_reference_checks(item)
     db.add(item)
     await db.flush()
+    if status == ContentStatus.PUBLISHED:
+        written = await reconcile_content_revisions(db, content_item_id=item.id)
+        assert written.created_count == 1
+        await db.refresh(item, attribute_names=["active_revision_id", "active_revision"])
+        if withheld:
+            item.essence_check_summary = {
+                **item.essence_check_summary,
+                "authority_change": {"reason": "source_retracted"},
+            }
+            await db.flush()
     return item
 
 
@@ -267,7 +305,7 @@ async def test_every_row_carries_the_site_judgment_and_its_block_link(pg_async_s
     withheld = rows[str(seeded["withheld"].id)]["row_state"]
     assert withheld["kind"] == "withheld"
     assert withheld["label"] == "공개 보류"
-    assert withheld["reason"] == "대표 이미지 재인증 대기"
+    assert withheld["reason"] == "CONTENT_AUTHORITY_CHANGED"
     assert withheld["link"]["kind"] == "run"
     # run 전용 화면은 없다 — 그 병원의 인시던트 큐로 보낸다.
     assert withheld["link"]["href"] == f"/operations?queue=incidents&hospital_id={hospital.id}"

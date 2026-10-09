@@ -86,6 +86,20 @@ _FAKE_NOOP_TOOL = "\n".join(
     ]
 )
 
+_FAKE_UV = "\n".join(
+    [
+        "#!/usr/bin/env bash",
+        'echo "uv $*" >> "$FAKE_COMMAND_LOG"',
+        'if [[ -n "${FAKE_RETIREMENT_PREFLIGHT_JSON:-}" ]]; then',
+        "  printf '%s\\n' \"$FAKE_RETIREMENT_PREFLIGHT_JSON\"",
+        "else",
+        "  printf '%s\\n' '{\"status\":\"READY\",\"total_historical\":0,\"open_legacy_transport\":0,\"unapplied_sent\":0,\"convertible_legacy_incidents\":0,\"unknown_legacy_incidents\":0}'",
+        "fi",
+        'exit "${FAKE_RETIREMENT_PREFLIGHT_EXIT:-0}"',
+        "",
+    ]
+)
+
 
 def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     """deploy.sh + terraform/cloudrun.tf를 그대로 복사한 임시 프로젝트를 만든다.
@@ -110,6 +124,7 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     _write_executable(fake_bin / "gcloud", _FAKE_GCLOUD)
     for tool in ("docker", "gsutil"):
         _write_executable(fake_bin / tool, _FAKE_NOOP_TOOL.replace("TOOL", tool))
+    _write_executable(fake_bin / "uv", _FAKE_UV)
 
     return project, fake_bin, tmp_path / "commands.log"
 
@@ -123,6 +138,7 @@ def _clean_env(fake_bin: Path, command_log: Path, **extra: str) -> dict[str, str
         "GCP_PROJECT_ID": "test-project",
         "GCP_REGION": "asia-northeast3",
         "REPUTATION_RELEASE_REVISION": "test-source-revision",
+        "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
     }
     env.update(extra)
     return env
@@ -178,6 +194,94 @@ def test_production_env_template_passes_every_deploy_guard(tmp_path: Path) -> No
     assert len(set(release_lines)) == 1
     assert release_lines[0].endswith('"')
     assert release_lines[0] == 'env REPUTATION_RELEASE_REVISION: "test-source-revision"'
+
+
+def test_backend_deploy_fails_closed_on_legacy_publish_backlog(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            FAKE_RETIREMENT_PREFLIGHT_JSON=(
+                '{"status":"BLOCKED","total_historical":3,'
+                '"open_legacy_transport":1,"unapplied_sent":2,'
+                '"convertible_legacy_incidents":0,"unknown_legacy_incidents":0}'
+            ),
+            FAKE_RETIREMENT_PREFLIGHT_EXIT="1",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "legacy publish retirement preflight 실패" in result.stderr
+    commands = command_log.read_text()
+    assert "uv run python -m app.utils.legacy_publish_retirement_preflight" in commands
+    assert "gcloud run deploy" not in commands
+
+
+def test_backend_deploy_fails_closed_on_convertible_legacy_incident(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            FAKE_RETIREMENT_PREFLIGHT_JSON=(
+                '{"status":"READY","total_historical":3,'
+                '"open_legacy_transport":0,"unapplied_sent":0,'
+                '"convertible_legacy_incidents":1,"unknown_legacy_incidents":2}'
+            ),
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "legacy publish retirement evidence 형식" in result.stderr
+    commands = command_log.read_text()
+    assert "uv run python -m app.utils.legacy_publish_retirement_preflight" in commands
+    assert "gcloud run deploy" not in commands
+
+
+def test_backend_deploy_allows_unknown_unconvertible_legacy_incident(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            FAKE_RETIREMENT_PREFLIGHT_JSON=(
+                '{"status":"READY","total_historical":3,'
+                '"open_legacy_transport":0,"unapplied_sent":0,'
+                '"convertible_legacy_incidents":0,"unknown_legacy_incidents":2}'
+            ),
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "gcloud run deploy reputation-api" in command_log.read_text()
 
 
 # Keys where `.env.production.example` intentionally differs from the config.py
@@ -878,6 +982,7 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             ]
         ),
     )
+    _write_executable(fake_bin / "uv", _FAKE_UV)
 
     env = os.environ.copy()
     env.update(
@@ -891,6 +996,7 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "CLOUD_SQL_CONNECTION_NAME": "test-project:asia-northeast3:reputation-db",
             "DB_USER": "reputation",
             "GCP_STORAGE_BUCKET": "reputation-assets",
+            "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
             "OPENAI_CHATGPT_USE_WEB_SEARCH": "true",
                 "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
@@ -1050,6 +1156,7 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
             ]
         ),
     )
+    _write_executable(fake_bin / "uv", _FAKE_UV)
 
     env = os.environ.copy()
     env.update(
@@ -1059,6 +1166,7 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
             "GCP_PROJECT_ID": "test-project",
             "GCP_REGION": "asia-northeast3",
             "PUBLIC_DOMAIN": "reputation.example.test",
+            "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
                 "ADMIN_DOMAIN": "admin.reputation.example.test",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
                 "SKIP_PUBLIC_DNS_PREFLIGHT": "1",

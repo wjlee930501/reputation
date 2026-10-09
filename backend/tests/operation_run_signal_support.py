@@ -28,8 +28,9 @@ _SYNC_URL_ENV = "OPERATION_RUN_SIGNAL_SYNC_DATABASE_URL"
 DATABASE_URL = os.getenv(_ASYNC_URL_ENV)
 SYNC_DATABASE_URL = os.getenv(_SYNC_URL_ENV)
 
-# Seconds a reachability probe waits for a connection before the fixture gives up.
-_PROBE_CONNECT_TIMEOUT = 2
+# Keep the required-Postgres probe bounded while tolerating transient Docker I/O
+# pressure during the full suite. A failed endpoint still fails; it is never skipped.
+_PROBE_CONNECT_TIMEOUT = 10
 
 
 def _unavailable(reason: str) -> None:

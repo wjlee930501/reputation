@@ -1051,9 +1051,14 @@ def _director_coverage_text(
             )
         else:
             partial = "일부만 확인한 달입니다. " if adequacy.get("status") != "COMPLETE" else ""
+            pending_label = (
+                "미확정(실패 포함)"
+                if adequacy.get("pending_semantics") == "INCLUDES_FAILURES"
+                else "확인하지 못한 답"
+            )
             parts.append(
                 f"{partial}같은 질문을 반복해 물은 {planned}회 가운데 {confirmed}회의 답을 "
-                "확인했습니다. 확인하지 못한 답은 ‘언급되지 않음’으로 세지 않았습니다."
+                f"확인했습니다. {pending_label}은 ‘언급되지 않음’으로 세지 않았습니다."
             )
     comparison = coverage.get("comparison") or {}
     if comparison.get("status") == "COMPARABLE":
@@ -1430,7 +1435,15 @@ def build_doctor_report_view(
         planned = int(adequacy.get("planned_slots") or 0)
         confirmed = int(adequacy.get("confirmed_slots") or 0)
         partial = "부분 측정 · " if adequacy.get("status") != "COMPLETE" else ""
-        coverage_text += f" {partial}계획 답변 {planned}회 중 {confirmed}회 판정 확정. 미확정은 미언급으로 세지 않습니다."
+        pending_label = (
+            "미확정(실패 포함)"
+            if adequacy.get("pending_semantics") == "INCLUDES_FAILURES"
+            else "미확정"
+        )
+        coverage_text += (
+            f" {partial}계획 답변 {planned}회 중 {confirmed}회 판정 확정. "
+            f"{pending_label}은 미언급으로 세지 않습니다."
+        )
     comparison = coverage.get("comparison") or {}
     if comparison.get("status") == "COMPARABLE":
         coverage_text += f" 상단 비교 수치는 두 달의 같은 질문·서비스 {comparison.get('matched_cell_count', 0)}개 조합 기준입니다."

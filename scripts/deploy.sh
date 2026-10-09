@@ -1350,6 +1350,52 @@ run_rollback() {
 
   ok "롤백 완료 — ${rolled}개 서비스"
   info "주의: 트래픽만 되돌립니다. 이미 적용된 DB 마이그레이션은 되돌아가지 않습니다. 신구 스키마가 호환되지 않으면 alembic downgrade를 별도로 판단해 실행하세요."
+  info "0084 목적 중심 전환 뒤에는 이 일반 롤백으로 baseline writer를 재개하지 마세요. Admin/Worker/Beat를 정지한 채 검증된 compatible_reader_sha의 API public/read와 Site만 복귀하는 절차를 docs/ops/deployment-runbook.md에서 따르세요."
+}
+
+# Purpose-first cleanup removes the legacy publish transport only after both
+# durable notification queues are empty and every safely convertible legacy
+# task incident has been reconciled. This is a read-only production check and
+# must run before any migration, image rollout, or traffic mutation.
+require_legacy_publish_retirement_clear() {
+  local database_url="${DATABASE_URL:-}"
+  [[ -n "$database_url" ]] \
+    || fail "DATABASE_URL이 없습니다. legacy publish backlog를 읽기 전용으로 확인할 수 없어 배포를 중단합니다."
+  command -v uv >/dev/null 2>&1 \
+    || fail "legacy publish retirement preflight에 필요한 uv가 설치되지 않았습니다."
+
+  local evidence_dir="${DEPLOY_EVIDENCE_DIR:-${PROJECT_ROOT}/.omo/evidence/deploy-preflight}"
+  local evidence_file="${evidence_dir}/legacy-publish-retirement-${RELEASE_REVISION}-$(date -u '+%Y%m%dT%H%M%SZ').json"
+  mkdir -p "$evidence_dir"
+  info "legacy publish transport/SENT backlog 읽기 전용 확인 중..."
+  local status=0
+  (
+    cd "$PROJECT_ROOT/backend"
+    env DATABASE_URL="$database_url" PYTHONPATH=. \
+      uv run python -m app.utils.legacy_publish_retirement_preflight
+  ) >"$evidence_file" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    cat "$evidence_file" >&2 || true
+    fail "legacy publish retirement preflight 실패(exit=${status}). 배포를 중단했습니다. 증거: ${evidence_file}"
+  fi
+  python3 - "$evidence_file" <<'PY' || fail "legacy publish retirement evidence 형식이 올바르지 않습니다: ${evidence_file}"
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+if (
+    value.get("status") != "READY"
+    or value.get("open_legacy_transport") != 0
+    or value.get("unapplied_sent") != 0
+    or value.get("convertible_legacy_incidents") != 0
+    or not isinstance(value.get("total_historical"), int)
+    or not isinstance(value.get("unknown_legacy_incidents"), int)
+):
+    raise SystemExit(1)
+PY
+  ok "legacy publish backlog 및 변환 가능한 legacy incident 0건 확인 완료 (증거: ${evidence_file})"
 }
 
 # ─── 메인 ──────────────────────────────────────────────────────────
@@ -1363,6 +1409,7 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    require_legacy_publish_retirement_clear
     capture_rollback_point reputation-api reputation-worker reputation-beat
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
@@ -1381,6 +1428,7 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    require_legacy_publish_retirement_clear
     if [[ "$TARGET" == "api" ]]; then
       capture_rollback_point reputation-worker reputation-beat reputation-api
     else
@@ -1432,6 +1480,7 @@ case "$TARGET" in
     fi
     require_secret_versions "${SITE_REQUIRED_SECRET_NAMES[@]}" "${ADMIN_REQUIRED_SECRET_NAMES[@]}"
     prepare_backend_secret_args
+    require_legacy_publish_retirement_clear
     capture_rollback_point \
       reputation-api reputation-worker reputation-beat \
       reputation-site reputation-admin
@@ -1457,6 +1506,7 @@ case "$TARGET" in
     if is_cloudsql_mode; then
       require_cloudsql_app_user
     fi
+    require_legacy_publish_retirement_clear
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
     ;;

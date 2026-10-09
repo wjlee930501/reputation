@@ -44,18 +44,38 @@ _KST = ZoneInfo("Asia/Seoul")
 Resolver = Callable[[Session, Incident, datetime], str | None]
 
 
-def _later_weekly_measurement(db: Session, incident: Incident, _now: datetime) -> str | None:
+def _measurement_period(incident: Incident) -> str | None:
+    source_id = str(incident.source_id or "")
+    _scope, separator, period = source_id.rpartition(":")
+    return period if separator and period else None
+
+
+def _same_period_measurement(
+    db: Session, incident: Incident, _now: datetime
+) -> str | None:
     if incident.hospital_id is None:
         return None
+    period = _measurement_period(incident)
+    if period is None:
+        return None
+    summary_field = (
+        "measurement_month"
+        if incident.incident_type == "MONTHLY_SOV_MEASUREMENT_FAILED"
+        else "measurement_week"
+    )
     succeeded = db.scalar(
         select(OperationRun.id).where(
             OperationRun.hospital_id == incident.hospital_id,
             OperationRun.operation_type == "RUN_SOV",
             OperationRun.state == OperationRunState.SUCCEEDED.value,
-            OperationRun.requested_at > incident.last_seen_at,
+            OperationRun.requested_at > incident.first_seen_at,
+            or_(
+                OperationRun.result_summary[summary_field].as_string() == period,
+                OperationRun.idempotency_key.endswith(f":{period}"),
+            ),
         ).limit(1)
     )
-    return "later_weekly_measurement_succeeded" if succeeded is not None else None
+    return "same_period_measurement_succeeded" if succeeded is not None else None
 
 
 def _iso_week_end(label: str) -> date | None:
@@ -68,7 +88,7 @@ def _iso_week_end(label: str) -> date | None:
 
 def _weekly_capacity(db: Session, incident: Incident, now: datetime) -> str | None:
     if incident.hospital_id is not None:
-        return _later_weekly_measurement(db, incident, now)
+        return _same_period_measurement(db, incident, now)
     # 전체 주간 용량 초과는 그 주가 끝나면 손쓸 것이 없다. 다음 주에도 넘치면 새 주의 사고가 열린다.
     week_end = _iso_week_end(str(incident.source_id or ""))
     if week_end is not None and now.astimezone(_KST).date() > week_end:
@@ -312,7 +332,8 @@ def _monthly_cohort_enrolled(db: Session, incident: Incident, _now: datetime) ->
 
 RESOLVERS: dict[str, Resolver] = {
     "MONTHLY_SOV_COHORT_GAP": _monthly_cohort_enrolled,
-    "WEEKLY_SOV_MEASUREMENT_FAILED": _later_weekly_measurement,
+    "WEEKLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
+    "MONTHLY_SOV_MEASUREMENT_FAILED": _same_period_measurement,
     "SOV_HIGH_PRIORITY_CAP_EXCEEDED": _weekly_capacity,
     "COST_GUARD_LIMIT_REACHED": _budget_period,
     "V0_REPORT_FAILED": _v0_report_created,

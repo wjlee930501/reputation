@@ -15,7 +15,13 @@ from app.api.admin import content as api
 from app.api.admin import director_feedback as feedback_api
 from app.api.admin import handoffs
 from app.models.audit import AdminAuditLog
-from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
+from app.models.content import (
+    ContentItem,
+    ContentRevision,
+    ContentSchedule,
+    ContentStatus,
+    ContentType,
+)
 from app.models.director_delta import DirectorDelta
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus, Plan
@@ -39,6 +45,7 @@ def db():
         Hospital,
         ContentSchedule,
         ContentItem,
+        ContentRevision,
         AdminAuditLog,
         DirectorDelta,
         HospitalContentPhilosophy,

@@ -354,6 +354,18 @@ def test_judgment_retry_reuses_answer_and_settles_each_stage(pg_engine, monkeypa
         assert final.answer_attempt_count == 1
         assert final.judgment_attempt_count == 2
         assert final.judgment_status == "CONFIRMED"
+        replayed = tasks._execute_paid_observation_slot(
+            db,
+            slot=final,
+            hospital=hospital,
+            query_text=query.query_text,
+            competitors=[],
+            protocol=protocol,
+        )
+        assert replayed["verdict"] == "MATCHED"
+        assert len(fetches) == 1
+        assert len(judgments) == 2
+        assert len(reservations) == 3
 
     with Session(pg_engine) as cleanup:
         _cleanup_hospital(cleanup, hospital_id)

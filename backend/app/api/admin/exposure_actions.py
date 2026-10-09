@@ -40,6 +40,7 @@ from app.services.exposure_content_linker import (
     link_content_to_exposure_action,
     unlink_content_from_exposure_action,
 )
+from app.workers.generation_attempt_state import fresh_generation_attempt
 
 logger = logging.getLogger(__name__)
 
@@ -576,6 +577,9 @@ async def _create_content_slot(
         total_count=total_count,
         scheduled_date=scheduled_date,
         status=ContentStatus.DRAFT,
+        essence_check_summary={
+            "generation_attempt": fresh_generation_attempt(topic_id=None)
+        },
     )
     db.add(item)
     await db.flush()

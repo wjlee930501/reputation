@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
@@ -47,7 +47,6 @@ from app.workers import generation_run_control
 from app.workers.dispatch_auth import build_dispatch_headers, require_dispatch
 from app.workers.dispatch_envelope import expected_purpose
 from app.workers.incident_backlog import close_resolved_backlog_incidents
-from app.workers.task_incident_control import close_resolved_task_incidents
 
 _BATCH_SIZE: Final = 100
 # REQUESTED는 '아직 브로커에 넣지 못했다'만 뜻한다 — 모든 배포 지점이 publish 직후 QUEUED로
@@ -155,12 +154,12 @@ def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bo
         last_transition = run.queued_at or run.requested_at
         grace = _QUEUED_REDISPATCH_GRACE
     elif (
-        run.operation_type == "TRIGGER_V0_REPORT"
+        run.operation_type in {"TRIGGER_V0_REPORT", "REBUILD_SITE"}
         and run.state == OperationRunState.RUNNING
         and run.lease_expires_at is not None
     ):
-        # V0's stage checkpoints make takeover safe after the former worker's
-        # durable lease proves it can no longer own this execution.
+        # V0 checkpoints and idempotent site preparation make takeover safe only after
+        # the former worker's durable lease proves it can no longer own this execution.
         return run.lease_expires_at <= observed_at
     else:
         return False
@@ -240,7 +239,9 @@ def reconcile() -> RecoveryCounts:
                             OperationRun.not_before_at <= observed_at,
                         ),
                         and_(
-                            OperationRun.operation_type == "TRIGGER_V0_REPORT",
+                            OperationRun.operation_type.in_(
+                                ("TRIGGER_V0_REPORT", "REBUILD_SITE")
+                            ),
                             OperationRun.state == OperationRunState.RUNNING,
                             OperationRun.lease_expires_at.isnot(None),
                             OperationRun.lease_expires_at <= observed_at,
@@ -266,19 +267,28 @@ def reconcile() -> RecoveryCounts:
             )
             run.heartbeat_at = observed_at
         operation_redispatches = 0
+        handled_site_hospitals: set[uuid.UUID] = set()
         for run in operation_runs:
+            if _site_rebuild_attempts_exhausted(run):
+                if _fail_exhausted_site_rebuild(db, run, observed_at):
+                    if run.hospital_id is not None:
+                        handled_site_hospitals.add(run.hospital_id)
+                continue
             redispatched = _redispatch_operation_run(db, run, observed_at)
             if redispatched:
                 operation_redispatches += 1
+                if run.operation_type == "REBUILD_SITE" and run.hospital_id is not None:
+                    handled_site_hospitals.add(run.hospital_id)
         # 실행 기록을 먼저 커밋하는 경로이므로 같은 tick의 상태 변경 뒤에 둔다.
         site_builds = 0
         for hospital in hospitals:
+            if hospital.id in handled_site_hospitals:
+                continue
             rebuild = _ensure_rebuild_site_run(db, hospital, observed_at)
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
-        resolved_task_incidents = close_resolved_task_incidents(db)
-        resolved_task_incidents += close_resolved_backlog_incidents(db)
+        resolved_task_incidents = close_resolved_backlog_incidents(db)
         db.commit()
     return {
         "site_builds": site_builds,
@@ -491,7 +501,7 @@ def _ensure_rebuild_site_run(
             # 같은 run을 재배달한다 — 판단은 일반 재배달 규칙과 하나로 유지한다.
             return run if _operation_redispatch_is_due(run, observed_at) else None
     failed = _failures_since_last_success(recent)
-    if len(failed) >= _REBUILD_SITE_ATTEMPT_BUDGET:
+    if _site_build_attempts_used(failed) >= _REBUILD_SITE_ATTEMPT_BUDGET:
         _open_rebuild_site_incident(
             db, hospital, max(failed, key=_run_observed_at), observed_at
         )
@@ -532,6 +542,68 @@ def _ensure_rebuild_site_run(
         return None
     db.commit()
     return run
+
+
+def _site_rebuild_attempts_exhausted(run: OperationRun) -> bool:
+    return (
+        run.operation_type == "REBUILD_SITE"
+        and run.state == OperationRunState.RUNNING
+        and run.attempt_count >= _REBUILD_SITE_ATTEMPT_BUDGET
+    )
+
+
+def _site_build_attempts_used(failed: list[OperationRun]) -> int:
+    """Count legacy one-run failures and cumulative takeover attempts consistently."""
+
+    return max(
+        len(failed),
+        max((run.attempt_count for run in failed), default=0),
+    )
+
+
+def _fail_exhausted_site_rebuild(
+    db, run: OperationRun, observed_at: datetime
+) -> bool:
+    """Terminalize one expired site run only if its lease/version ownership is unchanged."""
+
+    failed = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run.id,
+            OperationRun.task_id == run.task_id,
+            OperationRun.state == OperationRunState.RUNNING,
+            OperationRun.version == run.version,
+            OperationRun.lease_expires_at <= observed_at,
+            OperationRun.attempt_count >= _REBUILD_SITE_ATTEMPT_BUDGET,
+        )
+        .values(
+            state=OperationRunState.FAILED,
+            completed_at=observed_at,
+            heartbeat_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            safe_error_code="SITE_BUILD_RETRIES_EXHAUSTED",
+            safe_error_message="사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다.",
+            version=OperationRun.version + 1,
+        )
+        .returning(OperationRun.id)
+        .execution_options(synchronize_session=False)
+    ).scalar_one_or_none()
+    if failed is None:
+        return False
+    run.state = OperationRunState.FAILED
+    run.completed_at = observed_at
+    run.heartbeat_at = None
+    run.lease_owner = None
+    run.lease_expires_at = None
+    run.safe_error_code = "SITE_BUILD_RETRIES_EXHAUSTED"
+    run.safe_error_message = "사이트 준비 자동 재실행이 하루치 예산을 모두 사용했습니다."
+    run.version += 1
+    db.commit()
+    hospital = db.get(Hospital, run.hospital_id)
+    if hospital is not None:
+        _open_rebuild_site_incident(db, hospital, run, observed_at)
+    return True
 
 
 def _runs_started_today(recent: list[OperationRun], observed_at: datetime) -> int:
@@ -651,16 +723,43 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
         return False
     # 다시 보낼 때마다 새 task id다. 그래야 `run.task_id == 워커 task id`가 '지금 유효한 사본'을
     # 한 가지 뜻으로 가리키고, 늦게 도착한 이전 사본은 실패가 아니라 건너뛰기(STALE)로 끝난다.
-    run.task_id = str(uuid.uuid4())
-    celery_app.send_task(
-        policy.task_name,
-        args=list(dispatch.task_args),
-        queue=policy.queue,
-        headers=_operation_run_dispatch_headers(policy, dispatch, run),
-        task_id=run.task_id,
-    )
-    run.state = OperationRunState.QUEUED
-    run.queued_at = observed_at
+    # task id와 REQUESTED intent를 먼저 commit해야 즉시 실행된 worker의 별도 DB session도
+    # 자기 task id를 보고 claim할 수 있다. version/task-id CAS는 같은 stale 사본을 든 다른
+    # reconciler가 이미 전진한 실행을 다시 REQUESTED로 되돌리는 것을 막는다.
+    previous_task_id = run.task_id
+    previous_state = run.state
+    previous_version = run.version
+    task_id = str(uuid.uuid4())
+    prepared_version = previous_version + 1
+    prepared = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run.id,
+            OperationRun.task_id == previous_task_id,
+            OperationRun.state == previous_state,
+            OperationRun.version == previous_version,
+        )
+        .values(
+            task_id=task_id,
+            state=OperationRunState.REQUESTED,
+            queued_at=None,
+            not_before_at=None,
+            completed_at=None,
+            heartbeat_at=None,
+            lease_owner=None,
+            lease_expires_at=None,
+            safe_error_code=None,
+            safe_error_message=None,
+            version=prepared_version,
+        )
+        .returning(OperationRun.id)
+        .execution_options(synchronize_session=False)
+    ).scalar_one_or_none()
+    if prepared is None:
+        return False
+    run.task_id = task_id
+    run.state = OperationRunState.REQUESTED
+    run.queued_at = None
     run.not_before_at = None
     run.completed_at = None
     run.heartbeat_at = None
@@ -668,7 +767,36 @@ def _redispatch_operation_run(db, run: OperationRun, observed_at: datetime) -> b
     run.lease_expires_at = None
     run.safe_error_code = None
     run.safe_error_message = None
-    run.version += 1
+    run.version = prepared_version
+    db.commit()
+    celery_app.send_task(
+        policy.task_name,
+        args=list(dispatch.task_args),
+        queue=policy.queue,
+        headers=_operation_run_dispatch_headers(policy, dispatch, run),
+        task_id=task_id,
+    )
+    queued = db.execute(
+        update(OperationRun)
+        .where(
+            OperationRun.id == run.id,
+            OperationRun.task_id == task_id,
+            OperationRun.state == OperationRunState.REQUESTED,
+            OperationRun.version == prepared_version,
+        )
+        .values(
+            state=OperationRunState.QUEUED,
+            queued_at=observed_at,
+            version=prepared_version + 1,
+        )
+        .returning(OperationRun.id)
+        .execution_options(synchronize_session=False)
+    ).scalar_one_or_none()
+    if queued is not None:
+        run.state = OperationRunState.QUEUED
+        run.queued_at = observed_at
+        run.version = prepared_version + 1
+    db.commit()
     return True
 
 

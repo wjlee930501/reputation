@@ -24,7 +24,7 @@ import pytest
 
 from app.services.reference_verification import ReferenceVerifier, override_reference_fetcher
 from app.workers import generation_retry_policy, nightly_generation_batch, tasks
-from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
+from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY, fresh_generation_attempt
 from tests.reference_fetch_doubles import PageFetcher
 from tests.test_tasks_nightly import (
     _approved_philosophy,
@@ -463,6 +463,10 @@ def test_a_worker_mid_image_is_not_paged_and_its_stale_flush_erases_nothing(monk
 
     hospital = _publication_hospital()
     row = _textual_row_without_image(hospital)
+    row.essence_check_summary = {
+        **(row.essence_check_summary or {}),
+        GENERATION_ATTEMPT_KEY: fresh_generation_attempt(),
+    }
     _claim(row, _kst(9, 52))
     philosophy = _approved_philosophy()
     worker_item = copy.copy(row)  # 본문 write-back 뒤 refresh한 워커의 추적 객체

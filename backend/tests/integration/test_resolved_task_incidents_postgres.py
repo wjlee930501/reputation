@@ -1,239 +1,189 @@
-"""이미 해결된 일을 가리키는 generic 작업 실패 사고를 닫는다(2026-10-02).
-
-사고는 실행 하나에 묶여 그 실행의 성공만 닫았다. 다음 주 측정·다음 생성 같은 새 실행이 같은
-일을 끝내도 옛 사고가 열려 일일 요약의 '백그라운드 작업 중단'으로 쌓였다.
-"""
+"""Real PostgreSQL proof for one period-scoped terminal operation exception."""
 
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import create_engine, delete, func, select
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.models.audit import AdminAuditLog
-from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.services.operation_run_payloads import DispatchPayload, build_request_payload
-from app.workers.task_incident_control import close_resolved_task_incidents
+from app.workers import task_incident_control
+from tests.db_env import require_db_url
 
-NOW = datetime.now(UTC)
+
+def _database_url() -> str:
+    return require_db_url("OPERATIONS_TEST_DATABASE_URL")
 
 
 @pytest.fixture
-def db(pg_conn):
-    session = Session(bind=pg_conn, expire_on_commit=False, join_transaction_mode="create_savepoint")
-    try:
-        yield session
-    finally:
-        session.close()
-
-
-def _hospital(db) -> Hospital:
-    hospital = Hospital(
-        name="해결 사고 정리 가상의원",
-        slug=f"resolved-{uuid.uuid4().hex[:10]}",
-        status=HospitalStatus.ACTIVE,
-    )
-    db.add(hospital)
-    db.flush()
-    return hospital
-
-
-def _run(db, hospital, operation_type, target_type, target_id, state, *, at) -> OperationRun:
-    run = OperationRun(
-        hospital_id=hospital.id,
-        operation_type=operation_type,
-        state=state,
-        request_payload=build_request_payload(
-            DispatchPayload(target_type, str(target_id), "default", (str(target_id),))
-        ),
-        requested_at=at,
-    )
-    db.add(run)
-    db.flush()
-    return run
-
-
-def _incident(db, hospital, run) -> Incident:
-    incident = Incident(
-        hospital_id=hospital.id,
-        operation_run_id=run.id,
-        dedupe_key=f"worker_task:{run.id}",
-        incident_type="BACKGROUND_TASK_FAILED",
-        state="OPEN",
-        severity="HIGH",
-        customer_impact="자동 작업이 완료되지 않았습니다.",
-        source_type="OPERATION_RUN",
-        source_id=str(run.id),
-        safe_error_code="TASK_FAILED",
-        next_action="작업 오류를 확인해 주세요.",
-        admin_path="/operations",
-    )
-    db.add(incident)
-    db.flush()
-    return incident
-
-
-def _state(db, incident) -> str:
-    db.expire_all()
-    return db.get(Incident, incident.id).state
-
-
-def test_a_later_success_on_the_same_target_closes_the_old_failure(db):
-    hospital = _hospital(db)
-    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=30))
-    incident = _incident(db, hospital, failed)
-    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "SUCCEEDED", at=NOW - timedelta(days=23))
-
-    assert close_resolved_task_incidents(db) >= 1
-
-    assert _state(db, incident) == "ACKNOWLEDGED"
-    audit = db.scalar(
-        select(AdminAuditLog).where(
-            AdminAuditLog.target_id == str(incident.id),
-            AdminAuditLog.action == "incident_recovered_by_later_success",
+def operation_store(monkeypatch: pytest.MonkeyPatch):
+    engine = create_engine(_database_url())
+    factory = sessionmaker(engine, expire_on_commit=False, class_=Session)
+    hospital_id = uuid.uuid4()
+    with factory() as db:
+        db.add(
+            Hospital(
+                id=hospital_id,
+                name="Task15 기간 예외 테스트의원",
+                slug=f"task15-terminal-{hospital_id.hex[:10]}",
+                status=HospitalStatus.ACTIVE,
+            )
         )
-    )
-    assert audit is not None and audit.detail["slack_suppressed"] is True
-    # 지난 일을 정리하는 것이라 복구 Slack을 쌓지 않는다.
-    assert db.scalar(
-        select(NotificationOutbox).where(NotificationOutbox.incident_id == incident.id)
-    ) is None
+        db.commit()
+    monkeypatch.setattr(task_incident_control, "SyncSessionLocal", factory)
+    try:
+        yield factory, hospital_id
+    finally:
+        with factory() as db:
+            run_ids = tuple(
+                db.scalars(select(OperationRun.id).where(OperationRun.hospital_id == hospital_id))
+            )
+            incident_ids = tuple(
+                db.scalars(select(Incident.id).where(Incident.hospital_id == hospital_id))
+            )
+            if incident_ids:
+                db.execute(
+                    delete(NotificationOutbox).where(
+                        NotificationOutbox.incident_id.in_(incident_ids)
+                    )
+                )
+                db.execute(delete(Incident).where(Incident.id.in_(incident_ids)))
+            if run_ids:
+                # AdminAuditLog is deliberately append-only. The test removes its
+                # mutable fixtures but preserves the supersession evidence exactly
+                # as production retirement must preserve historical audit rows.
+                db.execute(delete(OperationRun).where(OperationRun.id.in_(run_ids)))
+            db.execute(delete(Hospital).where(Hospital.id == hospital_id))
+            db.commit()
+        engine.dispose()
 
 
-def test_a_run_that_eventually_succeeded_closes_its_own_failure(db):
-    hospital = _hospital(db)
-    run = _run(db, hospital, "TRIGGER_V0_REPORT", "hospital", hospital.id, "SUCCEEDED", at=NOW)
-    incident = _incident(db, hospital, run)
-
-    close_resolved_task_incidents(db)
-
-    assert _state(db, incident) == "ACKNOWLEDGED"
-
-
-def test_a_published_content_item_closes_its_generation_failure(db):
-    hospital = _hospital(db)
-    schedule = ContentSchedule(
-        hospital_id=hospital.id, plan="PLAN_12", publish_days=[1], active_from=date(2026, 9, 1)
-    )
-    db.add(schedule)
-    db.flush()
-    item = ContentItem(
-        hospital_id=hospital.id,
-        schedule_id=schedule.id,
-        content_type=ContentType.DISEASE,
-        sequence_no=1,
-        total_count=12,
-        scheduled_date=date(2026, 9, 30),
-        title="가상 안내 글",
-        status=ContentStatus.PUBLISHED,
-        first_published_at=NOW - timedelta(days=1),
-    )
-    db.add(item)
-    db.flush()
-    failed = _run(
-        db, hospital, "GENERATE_CONTENT_ITEM", "content_item", item.id, "FAILED",
-        at=NOW - timedelta(days=2),
-    )
-    incident = _incident(db, hospital, failed)
-
-    close_resolved_task_incidents(db)
-
-    assert _state(db, incident) == "ACKNOWLEDGED"
-
-
-def test_an_unresolved_failure_stays_open(db):
-    hospital = _hospital(db)
-    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=1))
-    incident = _incident(db, hospital, failed)
-    # 다른 종류의 성공, 다른 대상의 성공, 더 이른 성공은 해결 근거가 아니다.
-    _run(db, hospital, "TRIGGER_V0_REPORT", "hospital", hospital.id, "SUCCEEDED", at=NOW)
-    _run(db, hospital, "RUN_SOV", "hospital", uuid.uuid4(), "SUCCEEDED", at=NOW)
-    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "SUCCEEDED", at=NOW - timedelta(days=5))
-
-    close_resolved_task_incidents(db)
-
-    assert _state(db, incident) == "OPEN"
-
-
-def _untargeted_run(db, hospital, operation_type, state, *, at) -> OperationRun:
-    """저장된 배포 정보(`_dispatch`)가 없는 실행 — 대상이 NULL이다."""
-
+def _monthly_run(
+    factory: sessionmaker[Session],
+    hospital_id: uuid.UUID,
+    *,
+    period: str,
+    state: str,
+) -> OperationRun:
+    year_text, month_text = period.split("-", 1)
+    task_id = str(uuid.uuid4())
     run = OperationRun(
-        hospital_id=hospital.id,
-        operation_type=operation_type,
+        id=uuid.uuid4(),
+        hospital_id=hospital_id,
+        operation_type="RUN_SOV",
         state=state,
-        request_payload={},
-        requested_at=at,
+        idempotency_key=f"monthly-sov:{hospital_id}:{period}:attempt:{task_id}",
+        task_id=task_id,
+        request_payload=build_request_payload(
+            DispatchPayload(
+                "hospital",
+                str(hospital_id),
+                "sov",
+                (str(hospital_id), "monthly", int(year_text), int(month_text)),
+            )
+        ),
+        result_summary={"measurement_month": period},
+        requested_at=datetime.now(UTC),
     )
-    db.add(run)
-    db.flush()
+    with factory() as db:
+        db.add(run)
+        db.commit()
     return run
 
 
-def test_a_later_success_of_an_untargeted_run_closes_the_old_failure(db):
-    """대상이 NULL이면 NULL=NULL이 참이 아니라 영영 닫히지 않았다 — 같은 병원이면 같은 일이다."""
-
-    hospital = _hospital(db)
-    failed = _untargeted_run(
-        db, hospital, "TRIGGER_V0_REPORT", "FAILED", at=NOW - timedelta(hours=3)
+def _task(run: OperationRun) -> SimpleNamespace:
+    return SimpleNamespace(
+        request=SimpleNamespace(headers={"operation_run_id": str(run.id)})
     )
-    incident = _incident(db, hospital, failed)
-    _untargeted_run(db, hospital, "TRIGGER_V0_REPORT", "SUCCEEDED", at=NOW)
-
-    assert close_resolved_task_incidents(db) == 1
-    assert _state(db, incident) == "ACKNOWLEDGED"
 
 
-def test_an_untargeted_failure_is_not_closed_by_another_hospitals_run(db):
-    hospital = _hospital(db)
-    failed = _untargeted_run(
-        db, hospital, "TRIGGER_V0_REPORT", "FAILED", at=NOW - timedelta(hours=3)
-    )
-    incident = _incident(db, hospital, failed)
-    _untargeted_run(db, _hospital(db), "TRIGGER_V0_REPORT", "SUCCEEDED", at=NOW)
+def test_same_period_retry_supersedes_one_card_and_preserves_attempt_history(
+    operation_store,
+) -> None:
+    factory, hospital_id = operation_store
+    first = _monthly_run(factory, hospital_id, period="2026-08", state="FAILED")
+    second = _monthly_run(factory, hospital_id, period="2026-08", state="FAILED")
 
-    close_resolved_task_incidents(db)
+    assert task_incident_control.record_task_failure(_task(first), first.task_id) is True
+    assert task_incident_control.record_task_failure(_task(second), second.task_id) is True
 
-    assert _state(db, incident) == "OPEN"
+    with factory() as db:
+        incidents = tuple(
+            db.scalars(
+                select(Incident).where(
+                    Incident.hospital_id == hospital_id,
+                    Incident.incident_type == "OPERATION_TERMINAL_FAILED",
+                )
+            )
+        )
+        assert len(incidents) == 1
+        assert incidents[0].operation_run_id == second.id
+        assert incidents[0].occurrence_count == 2
+        assert incidents[0].state == "OPEN"
+        assert db.scalar(
+            select(func.count(OperationRun.id)).where(
+                OperationRun.id.in_((first.id, second.id))
+            )
+        ) == 2
+        superseded = db.scalar(
+            select(AdminAuditLog).where(
+                AdminAuditLog.action == "operation_attempt_superseded",
+                AdminAuditLog.target_id == str(incidents[0].id),
+            )
+        )
+        assert superseded is not None
+        assert superseded.detail["superseded_run_id"] == str(first.id)
+        assert superseded.detail["superseding_run_id"] == str(second.id)
 
 
-def test_a_later_failure_supersedes_the_old_failure(db):
-    """같은 일을 이어받은 더 나중 실행이 실패했으면 그 실행의 사고가 지금 상태를 말한다."""
+def test_other_month_success_does_not_recover_prior_month(operation_store) -> None:
+    factory, hospital_id = operation_store
+    august = _monthly_run(factory, hospital_id, period="2026-08", state="FAILED")
+    september = _monthly_run(factory, hospital_id, period="2026-09", state="SUCCEEDED")
 
-    hospital = _hospital(db)
-    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
-    incident = _incident(db, hospital, failed)
-    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW)
+    assert task_incident_control.record_task_failure(_task(august), august.task_id) is True
+    assert task_incident_control.record_task_success(_task(september), september.task_id) is False
 
-    assert close_resolved_task_incidents(db) == 1
-    assert _state(db, incident) == "ACKNOWLEDGED"
-
-
-@pytest.mark.parametrize("later_state", ["PARTIAL", "CANCELLED"])
-def test_a_later_run_that_opens_no_incident_does_not_close_the_old_failure(db, later_state):
-    """PARTIAL(건너뛰기 포함)·CANCELLED는 자기 사고를 열지 않는다 — 닫으면 남은 문제가 사라진다."""
-
-    hospital = _hospital(db)
-    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
-    incident = _incident(db, hospital, failed)
-    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, later_state, at=NOW)
-
-    close_resolved_task_incidents(db)
-
-    assert _state(db, incident) == "OPEN"
+    with factory() as db:
+        incident = db.scalar(
+            select(Incident).where(
+                Incident.hospital_id == hospital_id,
+                Incident.incident_type == "OPERATION_TERMINAL_FAILED",
+            )
+        )
+        assert incident is not None and incident.state == "OPEN"
+        assert incident.source_id is not None
+        assert "|2026-08|" in incident.source_id
 
 
-def test_a_later_run_still_in_flight_does_not_close_the_old_failure(db):
-    hospital = _hospital(db)
-    failed = _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "FAILED", at=NOW - timedelta(days=7))
-    incident = _incident(db, hospital, failed)
-    _run(db, hospital, "RUN_SOV", "hospital", hospital.id, "QUEUED", at=NOW)
+def test_same_period_success_recovers_the_one_terminal_card(operation_store) -> None:
+    factory, hospital_id = operation_store
+    failed = _monthly_run(factory, hospital_id, period="2026-08", state="FAILED")
+    succeeded = _monthly_run(factory, hospital_id, period="2026-08", state="SUCCEEDED")
 
-    close_resolved_task_incidents(db)
+    assert task_incident_control.record_task_failure(_task(failed), failed.task_id) is True
+    assert task_incident_control.record_task_success(_task(succeeded), succeeded.task_id) is True
 
-    assert _state(db, incident) == "OPEN"
+    with factory() as db:
+        incident = db.scalar(
+            select(Incident).where(
+                Incident.hospital_id == hospital_id,
+                Incident.incident_type == "OPERATION_TERMINAL_FAILED",
+            )
+        )
+        assert incident is not None
+        assert incident.state == "ACKNOWLEDGED"
+        assert incident.recovered_at is not None
+        assert db.scalar(
+            select(func.count(Incident.id)).where(
+                Incident.hospital_id == hospital_id,
+                Incident.incident_type == "OPERATION_TERMINAL_FAILED",
+            )
+        ) == 1

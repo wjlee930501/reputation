@@ -21,8 +21,8 @@ from app.models.content import (  # noqa: E402
 )
 from app.models.hospital import Hospital  # noqa: E402
 from app.services import content_calendar  # noqa: E402
-from app.workers import nowon_august_backfill as backfill  # noqa: E402
 from app.workers import tasks  # noqa: E402
+from tests.fixtures import nowon_august_backfill_202608 as backfill  # noqa: E402
 
 ACTIVE_SCHEDULE_ID = uuid.UUID("19a2e255-1111-4111-8111-111111111111")
 INACTIVE_SCHEDULE_ID = uuid.UUID("9834e123-2222-4222-8222-222222222222")

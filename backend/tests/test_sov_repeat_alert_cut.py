@@ -323,7 +323,7 @@ def test_run_sov_typed_failure_skips_generic_task_failed_slack(monkeypatch):
     assert task_incident_control.record_task_failure(task, "worker-task") is False
 
 
-def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
+def test_run_sov_success_recovers_domain_incident_without_slack(monkeypatch):
     """OPEN 공지가 나간 적이 없으면 복구도 조용히 끝난다.
 
     RUN_SOV의 비용 차단·분류된 실패는 파이프라인이 자기 인시던트를 내므로 위
@@ -332,13 +332,25 @@ def test_run_sov_success_recovers_generic_incident_without_slack(monkeypatch):
     건이라면 RECOVERED가 반드시 따라간다(tests/test_task_incidents.py).
     """
     run_id = uuid.uuid4()
+    hospital_id = uuid.uuid4()
     task = SimpleNamespace(request=SimpleNamespace(headers={"operation_run_id": str(run_id)}))
     run = SimpleNamespace(
         id=run_id,
+        hospital_id=hospital_id,
         operation_type="RUN_SOV",
         task_id="worker-task",
         state="RUNNING",
         not_before_at=None,
+        safe_error_code="TASK_FAILED",
+        idempotency_key=f"weekly-sov:{hospital_id}:2026-W41",
+        request_payload={
+            "_dispatch": {
+                "target_type": "hospital",
+                "target_id": str(hospital_id),
+                "task_args": [str(hospital_id)],
+            }
+        },
+        result_summary=None,
     )
     incident = SimpleNamespace(
         id=uuid.uuid4(),
@@ -555,7 +567,7 @@ def test_monthly_task_resolves_prior_period_only_after_close_cutoff():
     ) == (2026, 8)
 
 
-def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypatch):
+def test_cost_guard_failed_run_does_not_rearm_after_recovery_horizon():
     existing = _failed_monthly_run(code="MONTHLY_SOV_COST_GUARD_BLOCKED")
 
     class _DB:
@@ -567,13 +579,11 @@ def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypat
         def commit(self):
             self.commits += 1
 
-    monkeypatch.setattr(tasks, "_monthly_sov_pending_budget_fits", lambda *_args: False)
-
     run = tasks._ensure_monthly_sov_operation_run(
         _DB(),
         SimpleNamespace(id=uuid.uuid4()),
         "2026-08",
-        datetime(2026, 9, 7, 14, 59, 59, tzinfo=UTC),
+        datetime(2026, 9, 7, 15, 0, tzinfo=UTC),
     )
 
     assert run is None
@@ -581,8 +591,8 @@ def test_cost_guard_failed_run_does_not_rearm_when_budget_insufficient(monkeypat
     assert existing.version == 3
 
 
-def test_cost_guard_failed_run_rearms_when_remaining_units_cover_pending(
-    signal_store, monkeypatch
+def test_cost_guard_failed_run_rearms_one_bounded_page_without_whole_budget_fit(
+    signal_store,
 ):
     _factory, hospital_id = signal_store
     seeded = seed_closed_monthly_sov_run(
@@ -591,8 +601,6 @@ def test_cost_guard_failed_run_rearms_when_remaining_units_cover_pending(
         OperationRunState.FAILED,
         safe_error_code="MONTHLY_SOV_COST_GUARD_BLOCKED",
     )
-    monkeypatch.setattr(tasks, "_monthly_sov_pending_budget_fits", lambda *_args: True)
-
     with operation_run_signals.SyncSessionLocal() as db:
         run = tasks._ensure_monthly_sov_operation_run(
             db,
@@ -607,31 +615,11 @@ def test_cost_guard_failed_run_rearms_when_remaining_units_cover_pending(
     assert run.version == 4
 
 
-def test_pending_budget_fit_counts_failed_cells_times_repeat(monkeypatch):
-    hospital = SimpleNamespace(id=uuid.uuid4())
-    manifest = SimpleNamespace(
-        cells=[
-            SimpleNamespace(state="FAILED"),
-            SimpleNamespace(state="FAILED"),
-            SimpleNamespace(state="SUCCESS"),
-        ]
-    )
+def test_monthly_rearm_has_no_whole_remaining_budget_fit_gate():
+    source = inspect.getsource(tasks._ensure_monthly_sov_operation_run)
 
-    class _DB:
-        def execute(self, _stmt):
-            return SimpleNamespace(scalar_one_or_none=lambda: manifest)
-
-    async def remaining(_category):
-        return (20, 20)
-
-    monkeypatch.setattr(tasks.cost_guard, "remaining_units", remaining)
-    assert tasks._monthly_sov_pending_budget_fits(_DB(), hospital, "2026-08") is True
-
-    async def too_small(_category):
-        return (5, 100)
-
-    monkeypatch.setattr(tasks.cost_guard, "remaining_units", too_small)
-    assert tasks._monthly_sov_pending_budget_fits(_DB(), hospital, "2026-08") is False
+    assert "remaining_units" not in source
+    assert "pending_budget_fits" not in source
 
 
 # ── 4. per-spec reserve + chunk-commit ───────────────────────────────────────
@@ -967,7 +955,7 @@ def _patch_monthly_report_batch(monkeypatch, hospitals, *, now, succeeded_ids=No
 
     monkeypatch.setattr(tasks, "_build_monthly_report_for_hospital", _build)
     monkeypatch.setattr(tasks, "_finish_monthly_operation_run", lambda *_args: None)
-    monkeypatch.setattr(tasks, "_dispatch_monthly_sov_catchup", lambda *_args: None)
+    monkeypatch.setattr(tasks, "_dispatch_monthly_sov_period_sweep", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(tasks, "_record_weekly_sov_failure", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         tasks.arrow,
@@ -997,8 +985,9 @@ def test_sep1_does_not_build_august_report_without_monthly_success(monkeypatch):
     incidents = []
     monkeypatch.setattr(
         tasks,
-        "_dispatch_monthly_sov_catchup",
-        lambda *_args: catchups.append(True) or uuid.uuid4(),
+        "_dispatch_monthly_sov_period_sweep",
+        lambda _db, hospitals, **_kwargs: catchups.append(True)
+        or {item.id: uuid.uuid4() for item in hospitals},
     )
     monkeypatch.setattr(
         tasks,

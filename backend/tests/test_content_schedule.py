@@ -170,22 +170,22 @@ async def test_set_schedule_requires_processed_sources_and_fresh_approved_essenc
     ("readiness", "expected"),
     [
         (
-            EssenceReadiness(None, None, 0, 0, "empty"),
-            [
-                "병원 근거 자료를 1개 이상 추가해 주세요.",
-                "승인된 콘텐츠 운영 기준이 없습니다.",
+                EssenceReadiness(None, None, 0, 0, "empty"),
+                [
+                    "병원 정보 화면에서 근거 자료를 1개 이상 올려 주세요. 처리는 자동으로 이어집니다.",
+                    "콘텐츠 운영 기준을 자동으로 만드는 중입니다.",
             ],
         ),
         (
             EssenceReadiness(None, None, 1, 2, "partial"),
-            [
-                "처리되지 않은 병원 근거 자료 1개가 남아 있습니다.",
-                "승인된 콘텐츠 운영 기준이 없습니다.",
+                [
+                    "근거 자료 처리 중 1건입니다. 처리가 끝나면 자동으로 이어집니다.",
+                    "콘텐츠 운영 기준을 자동으로 만드는 중입니다.",
             ],
         ),
         (
             EssenceReadiness(SimpleNamespace(), None, 2, 2, "stale"),
-            ["콘텐츠 운영 기준 재온보딩 승인을 기다리고 있습니다."],
+            ["변경된 근거를 콘텐츠 운영 기준에 반영하는 중입니다."],
         ),
         (
             EssenceReadiness(

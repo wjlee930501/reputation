@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "kind": "sanitized-regression-environment-verification",
+  "recommendation": "APPROVE",
+  "sourceCheckpointSha": "be540bc0335d0215dc89507b553761390e68b953",
+  "observables": {
+    "ownedMatrix": "164 passed",
+    "realPostgresPair": "13 passed",
+    "migration0084": "11 passed",
+    "unsafeDatabaseNameRejected": true
+  },
+  "sourceEvidenceSha256": "3716f2bbfffbb4af2fdda2c66fc4f688784448148301c7a48e41c5a0ef02bec7",
+  "redactions": ["local lane paths and database connection details"]
+}

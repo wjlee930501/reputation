@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import anyio
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import String, and_, cast, exists, func, or_, select
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import aliased
 
 from app.core.celery_app import celery_app
@@ -16,17 +17,16 @@ from app.models.operations import Incident, IncidentState, OperationRun, Operati
 from app.models.report import MonthlyReport
 from app.services.monthly_report_delivery import coverage_is_final
 from app.services.report_artifact_validation import (
-    DoctorArtifactMetadata,
     DoctorPdfValidationError,
-    parse_doctor_artifact_metadata,
+    validate_persisted_doctor_artifact,
 )
 from app.workers.monthly_artifact_incident_contracts import MonthlyArtifactIncidentContext
 from app.workers.monthly_artifact_incident_control import ensure_monthly_artifact_failure_batch
 from app.workers.monthly_artifact_recovery_control import recover_monthly_artifact_failure_batch
 
-_BLOCKER = "DOCTOR_ARTIFACT_UNVALIDATED"
 _SOURCE_TYPE = "MONTHLY_REPORT_ARTIFACT"
 _BATCH_SIZE = 100
+_CANDIDATE_LOOKBACK = timedelta(days=45)
 
 
 class _RunSummary(BaseModel):
@@ -67,69 +67,7 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
                 newer.version > MonthlyReport.version,
             )
         )
-        metadata = cast(MonthlyReportArtifact.validation_metadata, JSONB)
-        metadata_keys = (
-            "validation_version",
-            "validation_source",
-            "page_count",
-            "page_size",
-            "glyph_count",
-            "font_family",
-            "font_embedded",
-            "korean_to_unicode",
-            "link_count",
-            "expected_link_present",
-            "required_text_present",
-            "sha256",
-            "byte_size",
-        )
-        canonical_metadata = func.jsonb_build_object(
-            *(item for key in metadata_keys for item in (key, metadata.op("->")(key)))
-        )
-        glyph_text = metadata.op("->>")("glyph_count")
-        link_text = metadata.op("->>")("link_count")
-        sql_artifact_valid = and_(
-            MonthlyReportArtifact.id.is_not(None),
-            MonthlyReportArtifact.validated.is_(True),
-            MonthlyReportArtifact.path == MonthlyReport.doctor_pdf_path,
-            MonthlyReportArtifact.sha256 == metadata.op("->>")("sha256"),
-            cast(MonthlyReportArtifact.byte_size, String)
-            == metadata.op("->>")("byte_size"),
-            metadata == canonical_metadata,
-            func.jsonb_typeof(metadata.op("->")("page_count")) == "number",
-            func.jsonb_typeof(metadata.op("->")("glyph_count")) == "number",
-            func.jsonb_typeof(metadata.op("->")("link_count")) == "number",
-            func.jsonb_typeof(metadata.op("->")("byte_size")) == "number",
-            func.jsonb_typeof(metadata.op("->")("font_embedded")) == "boolean",
-            func.jsonb_typeof(metadata.op("->")("korean_to_unicode")) == "boolean",
-            func.jsonb_typeof(metadata.op("->")("expected_link_present")) == "boolean",
-            func.jsonb_typeof(metadata.op("->")("required_text_present")) == "boolean",
-            or_(
-                and_(metadata.op("->>")("validation_version") == "doctor-pdf-v1",
-                     metadata.op("->>")("page_count").in_(("1", "2"))),
-                and_(metadata.op("->>")("validation_version") == "doctor-pdf-v2",
-                     metadata.op("->>")("page_count").in_(tuple(str(n) for n in range(1, 33)))),
-                and_(metadata.op("->>")("validation_version") == "doctor-pdf-v3",
-                     metadata.op("->>")("page_count").in_(tuple(str(n) for n in range(4, 33)))),
-            ),
-            metadata.op("->>")("validation_source") == "SYSTEM",
-            metadata.op("->>")("page_size") == "A4",
-            glyph_text.op("~")(r"^[1-9][0-9]*$"),
-            metadata.op("->>")("font_family") == "Pretendard",
-            metadata.op("->>")("font_embedded") == "true",
-            metadata.op("->>")("korean_to_unicode") == "true",
-            link_text.op("~")(r"^[1-9][0-9]*$"),
-            metadata.op("->>")("expected_link_present") == "true",
-            metadata.op("->>")("required_text_present") == "true",
-        )
-        invalid_truth = or_(
-            and_(
-                MonthlyReport.doctor_pdf_path.is_(None),
-                cast(MonthlyReport.delivery_blockers, String).contains(_BLOCKER),
-            ),
-            and_(MonthlyReport.doctor_pdf_path.is_not(None), ~sql_artifact_valid),
-        )
-        adequacy = cast(MonthlyReport.sov_summary, JSONB).op("->")("observation_adequacy")
+        candidate_cutoff = datetime.now(timezone.utc) - _CANDIDATE_LOOKBACK
         rows = db.execute(
             select(MonthlyReport, Hospital, MonthlyReportArtifact, Incident)
             .join(Hospital, Hospital.id == MonthlyReport.hospital_id)
@@ -150,19 +88,11 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
                 ),
             )
             .where(
-                or_(
-                    MonthlyReport.quality == "COMPLETE",
-                    and_(
-                        MonthlyReport.quality == "DEGRADED",
-                        adequacy.op("->>")("status") == "LIMITED",
-                        func.jsonb_typeof(adequacy.op("->")("confirmed_slots")) == "number",
-                        adequacy.op("->>")("confirmed_slots").op("~")(r"^[1-9][0-9]*$"),
-                    ),
-                ),
+                MonthlyReport.report_type == "MONTHLY",
                 is_latest,
                 or_(
-                    and_(invalid_truth, Incident.id.is_(None)),
-                    and_(sql_artifact_valid, Incident.id.is_not(None)),
+                    MonthlyReport.created_at >= candidate_cutoff,
+                    Incident.id.is_not(None),
                 ),
             )
             .order_by(MonthlyReport.created_at, MonthlyReport.id)
@@ -216,9 +146,12 @@ def reconcile_monthly_artifact_incidents() -> dict[str, int | str]:
                 month=report.period_month,
                 operation_run_id=run.id if run is not None else None,
             )
-            if _artifact_is_valid(report, artifact) and incident is not None:
-                recovery_contexts.append(context)
-            elif incident is None:
+            artifact_valid = _artifact_is_valid(report, artifact)
+            if artifact_valid:
+                if incident is not None:
+                    recovery_contexts.append(context)
+                continue
+            if incident is None:
                 if report.doctor_pdf_path is None:
                     error = DoctorPdfValidationError(
                         "DOCTOR_PDF_INCIDENT_RECONCILED",
@@ -266,26 +199,4 @@ def _artifact_is_valid(
     report: MonthlyReport,
     artifact: MonthlyReportArtifact | None,
 ) -> bool:
-    if artifact is None:
-        return False
-    metadata = parse_doctor_artifact_metadata(artifact.validation_metadata)
-    return bool(
-        artifact.validated
-        and artifact.path == report.doctor_pdf_path
-        and metadata is not None
-        and _metadata_is_canonical(artifact.validation_metadata, metadata)
-        and metadata.sha256 == artifact.sha256
-        and metadata.byte_size == artifact.byte_size
-    )
-
-
-def _metadata_is_canonical(value: object, metadata: DoctorArtifactMetadata) -> bool:
-    """Reject Pydantic-coercible JSON so Python and the SQL JSONB predicate agree."""
-
-    if not isinstance(value, dict):
-        return False
-    canonical = metadata.model_dump(mode="json")
-    return value.keys() == canonical.keys() and all(
-        type(value[key]) is type(expected) and value[key] == expected
-        for key, expected in canonical.items()
-    )
+    return validate_persisted_doctor_artifact(report, artifact).valid

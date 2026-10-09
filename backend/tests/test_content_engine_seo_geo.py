@@ -21,6 +21,7 @@ import pytest
 from app.models.content import ContentType
 from app.services.content_engine import (
     _REFERENCE_DROP_NOT_CITABLE,
+    _normalize_editorial_result,
     _normalize_references,
     _reference_drop_notes,
     _validate_geo,
@@ -91,13 +92,23 @@ class TestValidateSeo:
         # 구조 정상이므로 hard-fail 없이 통과 — soft findings도 없어야 함
         assert isinstance(findings, list)
 
-    def test_body_h1_is_rejected_because_page_title_owns_h1(self):
+    def test_body_h1_is_normalized_because_page_title_owns_h1(self):
         h = _hospital()
         result = _good_result(h)
         result["body"] = f"# {result['title']}\n\n{result['body']}"
 
-        with pytest.raises(ValueError, match="must not contain an H1"):
-            _validate_seo(result, h, None, ContentType.DISEASE)
+        normalized = _normalize_editorial_result(result, ContentType.DISEASE)
+
+        assert normalized["body"].startswith("## ")
+        assert not normalized["body"].startswith("# ")
+
+    def test_faq_question_punctuation_is_normalized_without_rewrite(self):
+        result = _good_result()
+        result["faq_question"] = "검사 전 금식이 필요한가요."
+
+        normalized = _normalize_editorial_result(result, ContentType.FAQ)
+
+        assert normalized["faq_question"] == "검사 전 금식이 필요한가요?"
 
     def test_mismatched_seasonal_title_is_a_soft_rewrite_finding(self):
         h = _hospital()
@@ -154,8 +165,7 @@ class TestValidateSeo:
         findings = _validate_seo(result, h, brief, ContentType.DISEASE)
         assert any("발목골절" in f for f in findings)
 
-    def test_fewer_than_two_h2_headings_raises_value_error(self):
-        """H2 헤딩이 1개뿐이면 ValueError (hard-fail → retry)"""
+    def test_fewer_than_two_h2_headings_is_advisory(self):
         h = _hospital()
         result = _good_result(h)
         result["body"] = (
@@ -164,16 +174,15 @@ class TestValidateSeo:
             "대한정형외과학회 가이드라인에 따르면 힘줄 파열이 흔합니다.\n"
             "| 항목 | 내용 |\n|---|---|\n| 기간 | 6주 |\n"
         )
-        with pytest.raises(ValueError, match="SEO hard-fail.*H2 heading"):
-            _validate_seo(result, h, None, ContentType.DISEASE)
+        findings = _validate_seo(result, h, None, ContentType.DISEASE)
+        assert any("H2 1개" in finding for finding in findings)
 
-    def test_zero_h2_headings_raises_value_error(self):
-        """H2 헤딩이 0개면 ValueError"""
+    def test_zero_h2_headings_is_advisory(self):
         h = _hospital()
         result = _good_result(h)
         result["body"] = "어깨 통증 환자의 70%가 보존 치료로 회복합니다. " * 50
-        with pytest.raises(ValueError, match="SEO hard-fail.*H2 heading"):
-            _validate_seo(result, h, None, ContentType.DISEASE)
+        findings = _validate_seo(result, h, None, ContentType.DISEASE)
+        assert any("H2 0개" in finding for finding in findings)
 
     def test_title_too_long_is_soft_finding(self):
         """title이 60자 초과면 soft finding — ValueError 미발생"""
@@ -324,12 +333,11 @@ class TestValidateGeo:
         with pytest.raises(ValueError, match="원장명"):
             _validate_geo(result, h, ContentType.FAQ)
 
-    def test_missing_region_hard_fails(self):
-        """지역 엔티티가 body에 없으면 생성 결과를 저장하지 않는다."""
+    def test_missing_region_is_advisory(self):
         h = _hospital(region=["제주"])  # body는 '강남' 기준
         result = _good_result()
-        with pytest.raises(ValueError, match="지역 엔티티"):
-            _validate_geo(result, h, ContentType.FAQ)
+        findings = _validate_geo(result, h, ContentType.FAQ)
+        assert any("지역 엔티티" in finding for finding in findings)
 
     @pytest.mark.parametrize(
         ("profile_region", "body_region"),

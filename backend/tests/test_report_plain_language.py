@@ -268,11 +268,11 @@ def test_page_markers_are_plain_korean():
         assert marker in html
 
 
-def test_validator_page_markers_match_the_template():
+def test_template_page_markers_are_not_runtime_delivery_gates():
     from app.services import report_artifact_validation
 
     source = Path(report_artifact_validation.__file__).read_text()
-    assert '("01 / 이번 달 결과", "02 / 이번 달 한 일", "03 / 다음 달 계획")' in source
+    assert '("01 / 이번 달 결과", "02 / 이번 달 한 일", "03 / 다음 달 계획")' not in source
 
 
 @pytest.mark.parametrize("name", sorted(SCENARIOS))

@@ -14,13 +14,18 @@ from app.api.public.site import (
     _serialize_hospital,
     _serialize_hospital_summary,
     _serialize_item,
+    _serialize_item_detail,
     _vetted_public_about,
 )
 from app.models.content import ContentStatus
 from app.models.essence import PhilosophyStatus, SourceType
 from app.models.hospital import HospitalStatus
 from app.services.essence_engine import ESSENCE_STATUS_ALIGNED, ESSENCE_STATUS_NEEDS_REVIEW
-from app.services.image_engine import IMAGE_POLICY_VERSION, image_subject_hash
+from app.services.image_engine import (
+    IMAGE_POLICY_VERSION,
+    image_content_hash_from_url,
+    image_subject_hash,
+)
 
 # slowapi @limiter.limit 우회 — 단위 테스트는 FastAPI 요청 라이프사이클 밖에서 실행된다
 # (test_public_by_domain.py와 동일 패턴).
@@ -475,7 +480,7 @@ def test_serialize_item_list_response_includes_reading_minutes_without_body():
     assert serialized["reading_minutes"] == 2
     assert "body" not in serialized
 
-    full = _serialize_item(item, "test-slug", full=True)
+    full = _serialize_item_detail(item, "test-slug")
     assert full["body"] == "가" * 1200
     assert full["reading_minutes"] == 2
 
@@ -516,6 +521,11 @@ def test_serialize_item_versions_stable_content_image_proxy_url_by_certified_byt
         meta_description="m",
         image_url=f"gs://reputation-images/content/{first_hash}-reviewed.png",
         image_content_hash=first_hash,
+        image_subject_hash=image_subject_hash("FAQ", "t"),
+        image_policy_version=IMAGE_POLICY_VERSION,
+        image_policy_verified_at=datetime(2026, 6, 1, 7, 0, 0),
+        image_reused_from_content_id=None,
+        image_fallback_source=None,
         scheduled_date=date(2026, 6, 1),
         published_at=datetime(2026, 6, 1, 8, 0, 0),
         body_updated_at=None,
@@ -541,9 +551,113 @@ def test_serialize_item_versions_stable_content_image_proxy_url_by_certified_byt
     assert replaced["image_url"].endswith(f"?v={second_hash}")
 
 
-def test_serialize_item_passes_through_non_gcs_image_url():
-    # gs:// 가 아닌 이미 사용 가능한 URL(레거시 상대 public asset 경로/http)은 /contents/{id}/image
-    # 프록시로 감싸면 _asset_response가 처리 못 해 404 → 그대로 통과시켜야 한다.
+def test_serialize_item_drops_an_uncertified_image_without_dropping_text():
+    image_hash = "e" * 64
+    item = SimpleNamespace(
+        id="unsafe-image",
+        content_type="FAQ",
+        title="바뀐 제목",
+        meta_description="안전한 설명",
+        image_url=f"gs://reputation-images/content/{image_hash}-reviewed.png",
+        image_content_hash=image_hash,
+        image_subject_hash=image_subject_hash("FAQ", "이전 제목"),
+        image_policy_version=IMAGE_POLICY_VERSION,
+        image_policy_verified_at=datetime(2026, 6, 1, 7, 0, 0),
+        image_reused_from_content_id=None,
+        image_fallback_source=None,
+        scheduled_date=date(2026, 6, 1),
+        published_at=datetime(2026, 6, 1, 8, 0, 0),
+        body_updated_at=None,
+        references_list=[],
+        faq_question="어떻게 확인하나요?",
+        faq_answer_summary="진료를 통해 확인합니다.",
+        body="검증된 본문",
+        query_target_id=None,
+    )
+
+    serialized = _serialize_item_detail(item, "test-hospital")
+
+    assert serialized["title"] == "바뀐 제목"
+    assert serialized["body"] == "검증된 본문"
+    assert serialized["image_url"] is None
+
+
+def test_serialize_item_uses_only_a_current_certified_hospital_fallback():
+    fallback_hash = "f" * 64
+    fallback_url = f"gs://reputation-images/content/{fallback_hash}-hospital.png"
+    item = SimpleNamespace(
+        id="fallback-image",
+        content_type="DISEASE",
+        title="안전한 글",
+        meta_description=None,
+        image_url=None,
+        image_content_hash=None,
+        image_subject_hash=None,
+        image_policy_version=None,
+        image_policy_verified_at=None,
+        image_reused_from_content_id=None,
+        image_fallback_source=None,
+        scheduled_date=date(2026, 6, 1),
+        published_at=datetime(2026, 6, 1, 8, 0, 0),
+        body_updated_at=None,
+        references_list=[],
+        faq_question=None,
+        faq_answer_summary=None,
+        body="검증된 본문",
+        query_target_id=None,
+    )
+    hospital = SimpleNamespace(
+        hero_image_url="https://clinic.example/hero.png",
+        fallback_image_url=fallback_url,
+        fallback_image_source_url="https://clinic.example/hero.png",
+        fallback_image_content_hash=image_content_hash_from_url(fallback_url),
+        fallback_image_policy_version=IMAGE_POLICY_VERSION,
+        fallback_image_verified_at=datetime(2026, 6, 1, 7, 0, 0),
+    )
+
+    serialized = _serialize_item(item, "test-hospital", hospital=hospital)
+
+    assert serialized["image_url"] == (
+        "/api/v1/public/hospitals/test-hospital/contents/fallback-image/image"
+        f"?v={fallback_hash}"
+    )
+
+
+def test_serialize_item_rejects_a_stale_or_malformed_hospital_fallback():
+    item = SimpleNamespace(
+        id="fallback-image",
+        content_type="DISEASE",
+        title="안전한 글",
+        meta_description=None,
+        image_url=None,
+        image_content_hash=None,
+        image_subject_hash=None,
+        image_policy_version=None,
+        image_policy_verified_at=None,
+        image_reused_from_content_id=None,
+        image_fallback_source=None,
+        scheduled_date=date(2026, 6, 1),
+        published_at=datetime(2026, 6, 1, 8, 0, 0),
+        body_updated_at=None,
+        references_list=[],
+        faq_question=None,
+        faq_answer_summary=None,
+        body="검증된 본문",
+        query_target_id=None,
+    )
+    hospital = SimpleNamespace(
+        hero_image_url="https://clinic.example/new-hero.png",
+        fallback_image_url="gs://reputation-images/content/not-a-hash-hospital.png",
+        fallback_image_source_url="https://clinic.example/old-hero.png",
+        fallback_image_content_hash="a" * 64,
+        fallback_image_policy_version=IMAGE_POLICY_VERSION,
+        fallback_image_verified_at=datetime(2026, 6, 1, 7, 0, 0),
+    )
+
+    assert _serialize_item(item, "test-hospital", hospital=hospital)["image_url"] is None
+
+
+def test_serialize_item_drops_uncertified_legacy_and_external_image_urls():
     def _item(image_url):
         return SimpleNamespace(
             id="abc-123",
@@ -561,9 +675,9 @@ def test_serialize_item_passes_through_non_gcs_image_url():
         )
 
     legacy = "/api/v1/public/hospitals/jangpyeonhanoegwayiweon/assets/asset-1"
-    assert _serialize_item(_item(legacy), "jangpyeonhanoegwayiweon")["image_url"] == legacy
+    assert _serialize_item(_item(legacy), "jangpyeonhanoegwayiweon")["image_url"] is None
     absolute = "https://cdn.example.com/x.png"
-    assert _serialize_item(_item(absolute), "jangpyeonhanoegwayiweon")["image_url"] == absolute
+    assert _serialize_item(_item(absolute), "jangpyeonhanoegwayiweon")["image_url"] is None
     assert _serialize_item(_item(None), "jangpyeonhanoegwayiweon")["image_url"] is None
 
 
@@ -702,7 +816,11 @@ class _ImageFakeDB(_SequentialFakeDB):
 def _active_hospital(slug="test-hospital"):
     return SimpleNamespace(
         id="hospital-id",
+        name="테스트병원",
         slug=slug,
+        address="서울시 강남구",
+        phone="02-1234-5678",
+        treatments=[{"name": "진료 항목"}],
         status=HospitalStatus.ACTIVE,
         site_live=True,
         profile_complete=True,
@@ -712,14 +830,16 @@ def _active_hospital(slug="test-hospital"):
     )
 
 
-def test_public_hospital_requires_profile_and_site_but_not_background_v0():
+def test_public_hospital_requires_minimum_facts_and_permission_but_not_enrichment_or_v0():
     hospital = _active_hospital()
     assert _is_active_public_hospital(hospital)
     hospital.v0_report_done = False
     assert _is_active_public_hospital(hospital)
-    for field in ("profile_complete", "site_built"):
+    hospital.profile_complete = False
+    assert _is_active_public_hospital(hospital)
+    for field in ("site_built", "address", "phone", "treatments"):
         drifted = _active_hospital()
-        setattr(drifted, field, False)
+        setattr(drifted, field, [] if field == "treatments" else False)
         assert not _is_active_public_hospital(drifted)
 
 
@@ -764,18 +884,27 @@ async def test_list_published_contents_defaults_offset_to_zero(monkeypatch):
     assert contents_stmt._offset_clause.value == 0
 
 
-async def test_list_published_contents_is_empty_until_schedule_is_set(monkeypatch):
+async def test_list_published_contents_keeps_safe_history_when_schedule_is_unset(monkeypatch):
     hospital = _active_hospital()
     hospital.schedule_set = False
-    db = _SequentialFakeDB([_FakeResult([hospital])])
+    philosophy_id = uuid.uuid4()
+    safe = _published_item(
+        title="이미 공개된 안전한 글",
+        content_philosophy_id=philosophy_id,
+        query_target=None,
+    )
+    db = _SequentialFakeDB([_FakeResult([hospital]), _FakeResult([safe])])
+    philosophy = SimpleNamespace(id=philosophy_id)
 
-    async def _must_not_read_essence(*_args, **_kwargs):
-        raise AssertionError("schedule gate must run before essence/content queries")
+    async def _fresh(*_args, **_kwargs):
+        return philosophy
 
-    monkeypatch.setattr(site_api, "get_public_essence_readiness", _must_not_read_essence)
-    assert await _list_published_contents(
+    monkeypatch.setattr(site_api, "get_public_essence_readiness", _fresh)
+    result = await _list_published_contents(
         SimpleNamespace(), "test-hospital", limit=20, offset=0, db=db
-    ) == []
+    )
+
+    assert [item["id"] for item in result] == [str(safe.id)]
 
 
 async def test_list_published_contents_scans_past_a_filtered_raw_page(monkeypatch):
@@ -828,6 +957,69 @@ async def test_content_image_uses_the_historical_public_approval(monkeypatch):
     )
     assert result == {"ref": item.image_url}
     assert seen == ["hospital-id"]
+
+
+async def test_content_image_endpoint_uses_certified_hospital_fallback(monkeypatch):
+    philosophy_id = uuid.uuid4()
+    fallback_hash = "f" * 64
+    fallback_url = f"gs://reputation-images/content/{fallback_hash}-hospital.png"
+    item = _published_item(
+        hospital_id="hospital-id",
+        content_philosophy_id=philosophy_id,
+        image_url=None,
+        image_content_hash=None,
+        image_subject_hash=None,
+        image_policy_version=None,
+        image_policy_verified_at=None,
+    )
+    hospital = _active_hospital()
+    hospital.hero_image_url = "https://clinic.example/hero.png"
+    hospital.fallback_image_url = fallback_url
+    hospital.fallback_image_source_url = hospital.hero_image_url
+    hospital.fallback_image_content_hash = image_content_hash_from_url(fallback_url)
+    hospital.fallback_image_policy_version = IMAGE_POLICY_VERSION
+    hospital.fallback_image_verified_at = datetime(2026, 6, 1, 7, 0, 0)
+    db = _ImageFakeDB([_FakeResult([hospital])], item)
+
+    async def _public_id(_db, _hospital_id):
+        return philosophy_id
+
+    monkeypatch.setattr(site_api, "get_public_approved_philosophy_id", _public_id)
+    monkeypatch.setattr(
+        site_api,
+        "public_asset_response",
+        lambda ref, **_kwargs: {"ref": ref},
+    )
+
+    result = await _get_public_content_image(
+        SimpleNamespace(), "test-hospital", item.id, db=db
+    )
+
+    assert result == {"ref": fallback_url}
+
+
+async def test_content_image_endpoint_rejects_uncertified_bytes_but_text_stays_public(
+    monkeypatch,
+):
+    philosophy_id = uuid.uuid4()
+    item = _published_item(
+        hospital_id="hospital-id",
+        content_philosophy_id=philosophy_id,
+        image_policy_verified_at=None,
+    )
+    db = _ImageFakeDB([_FakeResult([_active_hospital()])], item)
+
+    async def _public_id(_db, _hospital_id):
+        return philosophy_id
+
+    monkeypatch.setattr(site_api, "get_public_approved_philosophy_id", _public_id)
+
+    assert _is_public_safe_content(item, philosophy_id) is True
+    with pytest.raises(HTTPException) as exc_info:
+        await _get_public_content_image(
+            SimpleNamespace(), "test-hospital", item.id, db=db
+        )
+    assert exc_info.value.status_code == 404
 
 
 # ── 의료광고 필터: 공개 직렬화(세 번째 적용 지점) ─────────────────────────

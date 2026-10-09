@@ -26,6 +26,7 @@ from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.operations import OperationRunState
 from app.workers import generation_retry_policy, nightly_generation_batch, tasks
+from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY, fresh_generation_attempt
 from app.workers.nightly_generation_batch import claim_generation_lease
 
 KST = ZoneInfo("Asia/Seoul")
@@ -125,6 +126,7 @@ def _seed_empty_slot(db) -> tuple[uuid.UUID, HospitalContentPhilosophy]:
         total_count=12,
         title="허리디스크 초기 증상",
         body=None,
+        essence_check_summary={GENERATION_ATTEMPT_KEY: fresh_generation_attempt()},
         scheduled_date=SLOT,
         status=ContentStatus.DRAFT,
     )
@@ -155,7 +157,7 @@ def operator_regenerate(pg_session, monkeypatch):
     async def allowed(*_args, **_kwargs):
         return SimpleNamespace(allowed=True)
 
-    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief):
+    async def writer(*, hospital, item, existing_titles, philosophy, approved_brief, db):
         state.writer_calls.append(item.id)
         if state.during_writer is not None:
             state.during_writer(item)
@@ -184,7 +186,13 @@ def operator_regenerate(pg_session, monkeypatch):
     monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allowed)
     monkeypatch.setattr(tasks, "prepare_automatic_content_brief_sync", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(tasks, "_generate_with_auto_review", writer)
-    monkeypatch.setattr(tasks, "_generation_summary", lambda *_args: {})
+    monkeypatch.setattr(
+        tasks,
+        "_generation_summary",
+        lambda *_args, generation_attempt=None, **_kwargs: {
+            GENERATION_ATTEMPT_KEY: generation_attempt
+        },
+    )
     monkeypatch.setattr(tasks, "generate_image", image)
     monkeypatch.setattr(tasks, "open_generation_incident", ignore)
     monkeypatch.setattr(tasks, "recover_generation_incidents", ignore)
