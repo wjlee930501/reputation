@@ -108,18 +108,18 @@ class ContentRevisionResponse(BaseModel):
     faq_question: str | None
     faq_answer_summary: str | None
     references_list: list[ContentRevisionReference]
-    reference_checks: list[ContentRevisionReferenceCheck]
+    reference_checks: list[ContentRevisionReferenceCheck] | None
     generation_philosophy_id: uuid.UUID | None
     last_reviewed_philosophy_id: uuid.UUID | None
     generated_at: datetime | None
     reviewed_at: datetime | None
     reviewed_by: str | None
-    source_snapshot: ContentRevisionSourceSnapshot
-    generation_provenance: ContentRevisionGenerationProvenance
-    source_snapshot_hash: str
-    source_fingerprint: str
+    source_snapshot: ContentRevisionSourceSnapshot | None
+    generation_provenance: ContentRevisionGenerationProvenance | None
+    source_snapshot_hash: str | None
+    source_fingerprint: str | None
     approval_hash: str
-    approval_status: Literal["APPROVED"]
+    approval_status: Literal["APPROVED", "HISTORICAL_PUBLICATION"]
     approved_at: datetime
     approved_by: str | None
     created_at: datetime

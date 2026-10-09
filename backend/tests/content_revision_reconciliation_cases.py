@@ -122,33 +122,112 @@ def test_unknown_legacy_provenance_is_not_fabricated_or_approved(migrated_engine
         assert revision_count == 0
 
 
-@pytest.mark.parametrize(
-    ("content_id", "expected_brief", "expected_provenance"),
-    [
-        (MALFORMED_ID, None, None),
-        (HASH_ONLY_ID, {"hash": "hash-only", "source_asset_ids": []}, {}),
-    ],
-)
-def test_malformed_or_hash_only_unknown_provenance_is_not_auto_approved(
+def test_historical_snapshot_preserves_the_pre_migration_public_subset(migrated_engine) -> None:
+    with migrated_engine.connect() as connection:
+        snapshotted_ids = set(
+            connection.execute(
+                text(
+                    "SELECT DISTINCT content_item_id FROM content_revisions"
+                )
+            ).scalars()
+        )
+
+    assert snapshotted_ids == {VISIBLE_ID, MALFORMED_ID, HASH_ONLY_ID}
+
+
+@pytest.mark.parametrize("content_id", [MALFORMED_ID, HASH_ONLY_ID])
+def test_previously_published_text_gets_a_truthful_historical_snapshot(
     migrated_engine,
     content_id: uuid.UUID,
-    expected_brief,
-    expected_provenance,
 ) -> None:
     with migrated_engine.connect() as connection:
         row = connection.execute(
-            text("SELECT active_revision_id, content_brief, essence_check_summary FROM content_items WHERE id=:id"),
+            text(
+                "SELECT ci.active_revision_id, cr.approval_status, cr.title, cr.body, "
+                "cr.source_snapshot, cr.generation_provenance, cr.source_snapshot_hash, "
+                "cr.source_fingerprint FROM content_items ci "
+                "LEFT JOIN content_revisions cr ON cr.id=ci.active_revision_id "
+                "WHERE ci.id=:id"
+            ),
             {"id": content_id},
         ).one()
-        assert row.active_revision_id is None
-        if expected_brief is None:
-            assert row.content_brief is None
-        else:
-            assert row.content_brief["source_snapshot"] == expected_brief
-        if expected_provenance is not None:
-            assert row.essence_check_summary["generation_provenance"] == expected_provenance
+        assert row.active_revision_id is not None
+        assert row.approval_status == "HISTORICAL_PUBLICATION"
+        assert row.title in {"오도된 근거", "해시만 근거"}
+        assert row.body in {"오도 본문", "해시 본문"}
+        assert row.generation_provenance is None
+        assert row.source_snapshot_hash is None
+        assert row.source_fingerprint is None
+        assert row.source_snapshot is None
         revision_count = connection.execute(
             text("SELECT count(*) FROM content_revisions WHERE content_item_id=:id"),
             {"id": content_id},
         ).scalar_one()
-        assert revision_count == 0
+        assert revision_count == 1
+
+
+def test_reconciliation_preserves_frozen_history_until_explicit_unpublish(migrated_engine) -> None:
+    with migrated_engine.begin() as connection:
+        historical_id = connection.execute(
+            text("SELECT active_revision_id FROM content_items WHERE id=:id"),
+            {"id": MALFORMED_ID},
+        ).scalar_one()
+        connection.execute(
+            text(
+                "UPDATE content_items edited SET "
+                "title='승인되지 않은 편집', body='승인되지 않은 본문', content_revision=8, "
+                "content_brief=source.content_brief, "
+                "essence_check_summary=source.essence_check_summary, "
+                "references_list=source.references_list, reference_checks=source.reference_checks "
+                "FROM content_items source WHERE edited.id=:id AND source.id=:source_id"
+            ),
+            {"id": MALFORMED_ID, "source_id": VISIBLE_ID},
+        )
+        assert connection.execute(
+            text("SELECT * FROM reconcile_content_revisions(:id)"),
+            {"id": MALFORMED_ID},
+        ).one() == (0, 0, 1)
+        assert connection.execute(
+            text("SELECT active_revision_id FROM content_items WHERE id=:id"),
+            {"id": MALFORMED_ID},
+        ).scalar_one() == historical_id
+        historical = connection.execute(
+            text(
+                "SELECT approval_status, title, body FROM content_revisions "
+                "WHERE id=:id"
+            ),
+            {"id": historical_id},
+        ).one()
+        assert historical == ("HISTORICAL_PUBLICATION", "오도된 근거", "오도 본문")
+
+        connection.execute(
+            text("UPDATE content_items SET active_revision_id=NULL WHERE id=:id"),
+            {"id": MALFORMED_ID},
+        )
+        assert connection.execute(
+            text("SELECT * FROM reconcile_content_revisions(:id)"),
+            {"id": MALFORMED_ID},
+        ).one() == (1, 0, 0)
+        approved = connection.execute(
+            text(
+                "SELECT cr.id, cr.approval_status, cr.title, cr.body "
+                "FROM content_items ci JOIN content_revisions cr "
+                "ON cr.id=ci.active_revision_id WHERE ci.id=:id"
+            ),
+            {"id": MALFORMED_ID},
+        ).one()
+        assert approved.id != historical_id
+        assert (approved.approval_status, approved.title, approved.body) == (
+            "APPROVED",
+            "승인되지 않은 편집",
+            "승인되지 않은 본문",
+        )
+
+        connection.execute(
+            text("UPDATE content_items SET status='WITHHELD' WHERE id=:id"),
+            {"id": MALFORMED_ID},
+        )
+        assert connection.execute(
+            text("SELECT * FROM reconcile_content_revisions(:id)"),
+            {"id": MALFORMED_ID},
+        ).one() == (0, 1, 0)

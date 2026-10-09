@@ -58,6 +58,7 @@ class ContentStatus(str, enum.Enum):
 
 class ContentRevisionApprovalStatus(str, enum.Enum):
     APPROVED = "APPROVED"
+    HISTORICAL_PUBLICATION = "HISTORICAL_PUBLICATION"
 
 
 # 요금제별 유형·편수 배분
@@ -322,9 +323,9 @@ class ContentRevision(Base):
     references_list: Mapped[list | None] = mapped_column(_jsonb_type())
     # 실제 검증 결과와 생성 입력 snapshot을 판 안에 복사해 후속 source 변경과 무관하게
     # 승인 근거를 재현한다. 이미지는 텍스트 판의 hash/identity에 포함하지 않는다.
-    reference_checks: Mapped[list] = mapped_column(_jsonb_type(), nullable=False)
-    source_snapshot: Mapped[dict] = mapped_column(_jsonb_type(), nullable=False)
-    generation_provenance: Mapped[dict] = mapped_column(_jsonb_type(), nullable=False)
+    reference_checks: Mapped[list | None] = mapped_column(_nullable_jsonb_type())
+    source_snapshot: Mapped[dict | None] = mapped_column(_nullable_jsonb_type())
+    generation_provenance: Mapped[dict | None] = mapped_column(_nullable_jsonb_type())
 
     generation_philosophy_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("hospital_content_philosophies.id", ondelete="SET NULL")
@@ -335,15 +336,15 @@ class ContentRevision(Base):
     generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_by: Mapped[str | None] = mapped_column(String(100))
-    source_snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    source_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    source_fingerprint: Mapped[str | None] = mapped_column(String(64))
     approval_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     approval_status: Mapped[ContentRevisionApprovalStatus] = mapped_column(
         Enum(
             ContentRevisionApprovalStatus,
             native_enum=False,
             create_constraint=False,
-            length=20,
+            length=32,
         ),
         nullable=False,
     )

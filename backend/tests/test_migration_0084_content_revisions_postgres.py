@@ -255,6 +255,12 @@ test_active_pointer_cannot_reference_another_content_item = (
 test_unknown_legacy_provenance_is_not_fabricated_or_approved = (
     reconciliation_cases.test_unknown_legacy_provenance_is_not_fabricated_or_approved
 )
-test_malformed_or_hash_only_unknown_provenance_is_not_auto_approved = (
-    reconciliation_cases.test_malformed_or_hash_only_unknown_provenance_is_not_auto_approved
+test_historical_snapshot_preserves_the_pre_migration_public_subset = (
+    reconciliation_cases.test_historical_snapshot_preserves_the_pre_migration_public_subset
+)
+test_previously_published_text_gets_a_truthful_historical_snapshot = (
+    reconciliation_cases.test_previously_published_text_gets_a_truthful_historical_snapshot
+)
+test_reconciliation_preserves_frozen_history_until_explicit_unpublish = (
+    reconciliation_cases.test_reconciliation_preserves_frozen_history_until_explicit_unpublish
 )

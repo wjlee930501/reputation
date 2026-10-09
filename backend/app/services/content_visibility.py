@@ -169,7 +169,9 @@ def approved_public_view(item: Any) -> Any | None:
         "reference_checks",
     ):
         setattr(projected, field, getattr(revision, field))
-    projected.approval_status = revision.approval_status
+    approval_status = getattr(revision.approval_status, "value", revision.approval_status)
+    if approval_status != "HISTORICAL_PUBLICATION":
+        projected.approval_status = revision.approval_status
     projected.revision_hash = revision.approval_hash
     return projected
 
