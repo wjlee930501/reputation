@@ -302,6 +302,18 @@ def read_generation_budget(attempt: dict[str, Any]) -> GenerationBudgetSnapshot:
     return _snapshot_from_budget(budget)
 
 
+def legacy_generation_budget_replaced(summary: Any) -> bool:
+    """Match the mutation gate that rejects a second authenticated replacement."""
+
+    if not isinstance(summary, dict):
+        return False
+    attempt = summary.get(GENERATION_ATTEMPT_KEY)
+    if not isinstance(attempt, dict):
+        return False
+    budget = attempt.get(GENERATION_BUDGET_KEY)
+    return isinstance(budget, dict) and _valid_reset_record(budget.get("reset_record"))
+
+
 def _snapshot_from_budget(budget: dict[str, Any]) -> GenerationBudgetSnapshot:
     topics = budget["topics"]
     topic_values = tuple(topics)

@@ -574,6 +574,127 @@ def test_run_projection_retry_follows_the_same_authorization_as_the_route() -> N
     assert blocked.retry.enabled is False
 
 
+def test_legacy_reset_action_is_suppressed_by_the_durable_replacement_ledger() -> None:
+    """A spent one-time reset is not offered while its replacement run is in flight."""
+    from app.api.admin.operations_center_serializers import run_summary, serialize_incident_row
+    from app.workers.generation_attempt_state import replace_unknown_legacy_budget
+
+    incident = _incident(
+        safe_error_code="LEGACY_SPEND_UNKNOWN",
+        safe_error_message="이전 생성 기록의 사용량을 확인할 수 없습니다.",
+    )
+    content_id = uuid.uuid4()
+    incident.source_type = "CONTENT_GENERATION"
+    incident.source_id = str(content_id)
+    run = _failed_run(incident.hospital_id)
+    run.safe_error_code = "LEGACY_SPEND_UNKNOWN"
+    run.request_payload = {"source_id": str(content_id)}
+    run.attempt_count = run.total_count = run.failure_count = 1
+    run.success_count = run.skipped_count = 0
+    run.requested_at = incident.last_seen_at
+    run.version = 1
+    incident.operation_run_id = run.id
+    replaced_attempt = replace_unknown_legacy_budget(
+        {},
+        actor="owner@example.test",
+        reason="이전 비용 기록을 확인할 수 없어 교체합니다",
+        idempotency_key="legacy-reset-projection-test",
+        replaced_at=datetime(2026, 10, 9, tzinfo=UTC),
+    )
+    generation_summary = {"generation_attempt": replaced_attempt}
+
+    row = serialize_incident_row(
+        incident,
+        None,
+        None,
+        run,
+        None,
+        incident.last_seen_at,
+        generation_summary=generation_summary,
+    )
+    projected_run = run_summary(
+        run.hospital_id,
+        run,
+        generation_source_valid=True,
+        generation_summary=generation_summary,
+    )
+
+    assert row.retry is None
+    assert projected_run is not None and projected_run.retry is None
+
+    malformed_but_spent = {
+        "generation_attempt": {
+            **replaced_attempt,
+            "budget": {**replaced_attempt["budget"], "writer_results": "corrupt"},
+        }
+    }
+    malformed_projection = run_summary(
+        run.hospital_id,
+        run,
+        generation_source_valid=True,
+        generation_summary=malformed_but_spent,
+    )
+    assert malformed_projection is not None and malformed_projection.retry is None
+
+    invalid_reset = dict(replaced_attempt["budget"]["reset_record"])
+    invalid_reset.pop("actor")
+    resettable_unknown = {
+        "generation_attempt": {
+            **replaced_attempt,
+            "budget": {**replaced_attempt["budget"], "reset_record": invalid_reset},
+        }
+    }
+    resettable_projection = run_summary(
+        run.hospital_id,
+        run,
+        generation_source_valid=True,
+        generation_summary=resettable_unknown,
+    )
+    assert resettable_projection is not None and resettable_projection.retry is not None
+
+    mismatched_source = run_summary(
+        run.hospital_id,
+        run,
+        generation_source_valid=False,
+        generation_summary=None,
+    )
+    assert mismatched_source is not None and mismatched_source.retry is None
+
+
+async def test_legacy_generation_source_rejects_incident_run_source_mismatch() -> None:
+    """Incident detail fails closed before reading a different content ledger."""
+    from app.api.admin.operations_center_read_routes import _legacy_generation_source
+
+    run = _failed_run(uuid.uuid4())
+    content_id = uuid.uuid4()
+    run.safe_error_code = "LEGACY_SPEND_UNKNOWN"
+    run.request_payload = {"source_id": str(content_id)}
+
+    class _Result:
+        def one_or_none(self):
+            return content_id, {}
+
+    class _DB:
+        calls = 0
+
+        async def execute(self, _statement):
+            self.calls += 1
+            return _Result()
+
+    db = _DB()
+
+    mismatched = await _legacy_generation_source(
+        db,
+        run,
+        expected_source_id=str(uuid.uuid4()),
+    )
+    direct_run = await _legacy_generation_source(db, run)
+
+    assert mismatched == (False, None)
+    assert direct_run == (True, {})
+    assert db.calls == 1
+
+
 async def test_run_retry_enabled_matches_owner_and_assignee_only() -> None:
     """`authorize_run_retry`와 같은 판정 하나를 화면과 라우트가 나눠 쓴다."""
     from app.api.admin.operations_center_actions import run_retry_enabled

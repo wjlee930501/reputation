@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.admin.operations_center_actions import (
@@ -29,7 +30,8 @@ from app.api.admin.operations_center_serializers import (
 )
 from app.core.database import get_db
 from app.models.admin_user import AdminUser
-from app.models.operations import OperationRun
+from app.models.content import ContentItem
+from app.models.operations import Incident, OperationRun
 from app.schemas.operations import (
     IncidentDetailResponse,
     OperationsOverviewResponse,
@@ -42,6 +44,35 @@ from app.schemas.operations import (
 router = APIRouter()
 _PAGE_SIZE = 25
 _OVERVIEW_SIZE = 5
+
+
+async def _legacy_generation_source(
+    db: AsyncSession,
+    run: OperationRun,
+    *,
+    expected_source_id: str | None = None,
+) -> tuple[bool | None, object]:
+    if run.safe_error_code != "LEGACY_SPEND_UNKNOWN":
+        return None, None
+    payload = run.request_payload if isinstance(run.request_payload, dict) else {}
+    source_id = str(payload.get("source_id") or "")
+    if expected_source_id is not None and source_id != expected_source_id:
+        return False, None
+    try:
+        content_id = uuid.UUID(source_id)
+    except ValueError:
+        return False, None
+    row = (
+        await db.execute(
+            select(ContentItem.id, ContentItem.essence_check_summary).where(
+                ContentItem.id == content_id,
+                ContentItem.hospital_id == run.hospital_id,
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return False, None
+    return True, row[1]
 
 
 @router.get("/overview", response_model=OperationsOverviewResponse)
@@ -128,6 +159,29 @@ async def _incident_detail(
         )
     item = items[0]
     run = await db.get(OperationRun, item.operation_run_id) if item.operation_run_id else None
+    incident_source_id = (
+        await db.scalar(
+            select(Incident.source_id).where(
+                Incident.id == incident_id,
+                Incident.hospital_id == hospital_scope,
+            )
+        )
+        if (
+            hospital_scope is not None
+            and run is not None
+            and run.safe_error_code == "LEGACY_SPEND_UNKNOWN"
+        )
+        else None
+    )
+    generation_source_valid, generation_summary = (
+        await _legacy_generation_source(
+            db,
+            run,
+            expected_source_id=incident_source_id or "",
+        )
+        if run is not None
+        else (None, None)
+    )
     run_projection = (
         run_summary(
             hospital_scope,
@@ -135,6 +189,8 @@ async def _incident_detail(
             retry_enabled=await run_retry_enabled(db, actor, run),
             # 화면은 이 자리의 재시도를 행의 것보다 앞세운다 — 같은 인시던트 판정을 넘긴다.
             operator_required=requires_operator_action(item.status, item.sla_due_at, now),
+            generation_source_valid=generation_source_valid,
+            generation_summary=generation_summary,
         )
         if hospital_scope is not None and run is not None
         else None
@@ -180,8 +236,13 @@ async def get_operation_run_detail(
 ) -> OperationsRunSummary:
     """Read one safe run projection without stored payloads or task metadata."""
     run = await scoped_run(db, hospital_id, run_id)
+    generation_source_valid, generation_summary = await _legacy_generation_source(db, run)
     projection = run_summary(
-        hospital_id, run, retry_enabled=await run_retry_enabled(db, actor, run)
+        hospital_id,
+        run,
+        retry_enabled=await run_retry_enabled(db, actor, run),
+        generation_source_valid=generation_source_valid,
+        generation_summary=generation_summary,
     )
     if projection is None:
         raise operations_error(404, "OPERATION_RUN_NOT_FOUND", "작업 기록을 찾을 수 없습니다.")

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 from types import EllipsisType
 
-from sqlalchemy import select
+from sqlalchemy import String, and_, cast, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql.elements import ColumnElement
@@ -19,6 +19,7 @@ from app.api.admin.operations_center_query_common import (
 )
 from app.api.admin.operations_center_serializers import serialize_incident_row
 from app.models.admin_user import AdminUser
+from app.models.content import ContentItem
 from app.models.hospital import Hospital
 from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.schemas.operations import OperationsOwner, OperationsQueueRow
@@ -52,17 +53,38 @@ _INCIDENT_ORDER_BY = (
     Incident.last_seen_at.desc(),
     Incident.id,
 )
+IncidentProjectionRow = tuple[
+    Incident,
+    Hospital | None,
+    AdminUser | None,
+    OperationRun | None,
+    NotificationOutbox | None,
+]
+IncidentProjectionRowWithSummary = tuple[*IncidentProjectionRow, uuid.UUID | None, object]
 
 
 def _group_incident_rows(
-    rows: list[tuple[Incident, Hospital | None, AdminUser | None, OperationRun | None, NotificationOutbox | None]],
+    rows: list[IncidentProjectionRow | IncidentProjectionRowWithSummary],
     now: datetime,
     actor: AdminUser | None = None,
 ) -> list[OperationsQueueRow]:
     """Collapse repeated symptoms into one stable root-cause projection."""
     grouped: dict[str, list[OperationsQueueRow]] = {}
-    for incident, hospital, owner, run, outbox in rows:
-        row = serialize_incident_row(incident, hospital, owner, run, outbox, now, actor=actor)
+    for source in rows:
+        incident, hospital, owner, run, outbox = source[:5]
+        generation_source_valid = source[5] is not None if len(source) == 7 else None
+        generation_summary = source[6] if len(source) == 7 else None
+        row = serialize_incident_row(
+            incident,
+            hospital,
+            owner,
+            run,
+            outbox,
+            now,
+            actor=actor,
+            generation_source_valid=generation_source_valid,
+            generation_summary=generation_summary,
+        )
         key = row.cause_group_key or row.cause_code or incident.incident_type
         grouped.setdefault(key, []).append(row)
 
@@ -263,6 +285,13 @@ async def _load_grouped_rows(
         .limit(1)
         .scalar_subquery()
     )
+    legacy_content_match = and_(
+        OperationRun.safe_error_code == "LEGACY_SPEND_UNKNOWN",
+        ContentItem.hospital_id == Incident.hospital_id,
+        cast(ContentItem.id, String) == Incident.source_id,
+        cast(ContentItem.id, String)
+        == OperationRun.request_payload["source_id"].as_string(),
+    )
     statement = (
         select(
             Incident,
@@ -270,10 +299,13 @@ async def _load_grouped_rows(
             owner,
             OperationRun,
             NotificationOutbox,
+            ContentItem.id,
+            ContentItem.essence_check_summary,
         )
         .outerjoin(Hospital, Hospital.id == Incident.hospital_id)
         .outerjoin(owner, owner.id == Incident.owner_id)
         .outerjoin(OperationRun, OperationRun.id == Incident.operation_run_id)
+        .outerjoin(ContentItem, legacy_content_match)
         .outerjoin(NotificationOutbox, NotificationOutbox.id == latest_outbox_id)
         .where(Incident.id.in_(incident_ids))
         .order_by(*_INCIDENT_ORDER_BY)

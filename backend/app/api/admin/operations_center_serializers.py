@@ -37,6 +37,7 @@ from app.services.operator_action import (  # public API facade
     is_operator_todo,
     requires_operator_action,
 )
+from app.workers.generation_attempt_state import legacy_generation_budget_replaced
 
 __all__ = (
     "canonical_cause_code",
@@ -144,6 +145,8 @@ def retry_action(
     *,
     enabled: bool = True,
     operator_required: bool = False,
+    generation_source_valid: bool | None = None,
+    generation_summary: object = None,
 ) -> OperationsAction | None:
     """Return the Admin BFF retry mutation descriptor only for supported failed runs.
 
@@ -164,6 +167,10 @@ def retry_action(
         return None
     code = str(run.safe_error_code or "")
     if code == "LEGACY_SPEND_UNKNOWN":
+        if generation_source_valid is False or legacy_generation_budget_replaced(
+            generation_summary
+        ):
+            return None
         payload = run.request_payload if isinstance(run.request_payload, dict) else {}
         content_id = str(payload.get("source_id") or "")
         if not content_id:
@@ -298,6 +305,8 @@ def run_summary(
     *,
     retry_enabled: bool = True,
     operator_required: bool = False,
+    generation_source_valid: bool | None = None,
+    generation_summary: object = None,
 ) -> OperationsRunSummary | None:
     """Project a durable operation run and its eligible retry affordance.
 
@@ -325,7 +334,12 @@ def run_summary(
         completed_at=run.completed_at,
         version=run.version,
         retry=retry_action(
-            hospital_id, run, enabled=retry_enabled, operator_required=operator_required
+            hospital_id,
+            run,
+            enabled=retry_enabled,
+            operator_required=operator_required,
+            generation_source_valid=generation_source_valid,
+            generation_summary=generation_summary,
         ),
     )
 
@@ -343,6 +357,8 @@ def serialize_incident_row(
     same_type_count: int = 1,
     affected_hospital_count: int | None = None,
     actor: AdminUser | None = None,
+    generation_source_valid: bool | None = None,
+    generation_summary: object = None,
 ) -> OperationsQueueRow:
     """Build the operations queue projection for one incident and its related records.
 
@@ -398,6 +414,8 @@ def serialize_incident_row(
                 operator_required=is_operator_todo(
                     incident.incident_type, incident.state, incident.sla_due_at, now
                 ),
+                generation_source_valid=generation_source_valid,
+                generation_summary=generation_summary,
             )
             if hospital_id
             else None
