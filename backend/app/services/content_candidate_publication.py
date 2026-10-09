@@ -348,6 +348,7 @@ def publish_pending_candidate_sync(
     )
     if not isinstance(outcome, CandidateApprovalApplied):
         return outcome
+    item.active_revision_id = None
     db.flush()
     reconciled = db.execute(
         text("SELECT * FROM reconcile_content_revisions(:content_item_id)"),
@@ -384,6 +385,7 @@ async def publish_pending_candidate(
     )
     if not isinstance(outcome, CandidateApprovalApplied):
         return outcome
+    item.active_revision_id = None
     await db.flush()
     reconciled = (
         await db.execute(

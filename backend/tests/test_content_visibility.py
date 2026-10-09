@@ -6,7 +6,12 @@ from types import SimpleNamespace
 
 import app.api.public.site as site
 from app.api.admin import content as admin_content
-from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.content import (
+    ContentItem,
+    ContentRevisionApprovalStatus,
+    ContentStatus,
+    ContentType,
+)
 from app.models.hospital import HospitalStatus
 from app.services.content_visibility import (
     HOSPITAL_NOT_SERVING,
@@ -81,6 +86,54 @@ def test_fully_certified_published_item_is_visible():
     item, philosophy_id = _published()
     result = assess_public_visibility(item, philosophy_id)
     assert result.visible is True and result.blockers == ()
+
+
+def test_historical_publication_keeps_legacy_reference_semantics_but_safety_gates() -> None:
+    item, philosophy_id = _published(
+        active_revision_id=uuid.uuid4(),
+        reference_checks=[],
+    )
+    item.active_revision = SimpleNamespace(
+        content_item_id=item.id,
+        title=item.title,
+        body=item.body,
+        meta_description=item.meta_description,
+        faq_question=item.faq_question,
+        faq_answer_summary=item.faq_answer_summary,
+        references_list=item.references_list,
+        reference_checks=[],
+        approval_status=ContentRevisionApprovalStatus.HISTORICAL_PUBLICATION,
+        approval_hash="a" * 64,
+    )
+
+    assert assess_public_visibility(item, philosophy_id).visible is True
+
+    item.active_revision.title = "최고의 병원"
+    assert assess_public_visibility(item, philosophy_id).visible is False
+
+
+def test_current_approval_still_requires_revision_bound_reference_evidence() -> None:
+    item, philosophy_id = _published(
+        active_revision_id=uuid.uuid4(),
+        reference_checks=[],
+    )
+    item.active_revision = SimpleNamespace(
+        content_item_id=item.id,
+        title=item.title,
+        body=item.body,
+        meta_description=item.meta_description,
+        faq_question=item.faq_question,
+        faq_answer_summary=item.faq_answer_summary,
+        references_list=item.references_list,
+        reference_checks=[],
+        approval_status=ContentRevisionApprovalStatus.APPROVED,
+        approval_hash="a" * 64,
+    )
+
+    visibility = assess_public_visibility(item, philosophy_id)
+
+    assert visibility.visible is False
+    assert "MISSING_REFERENCES" in visibility.blockers
 
 
 def test_title_edit_that_invalidates_the_image_certificate_keeps_text_visible():

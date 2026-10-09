@@ -53,9 +53,10 @@ CONTENT_REFERENCE_CHECKS = "0082_add_content_reference_checks"
 OPERATION_RUN_NOT_BEFORE = "0083_add_operation_run_not_before"
 CONTENT_REVISIONS = "0084_add_content_revisions"
 ACKNOWLEDGED_SUPERSESSION = "0085_allow_acknowledged_incident_supersession"
+HISTORICAL_PUBLICATIONS = "0086_preserve_historical_publications"
 
 PRODUCTION_STAMP = CONTENT_CUSTOMIZATION
-HEAD = ACKNOWLEDGED_SUPERSESSION
+HEAD = HISTORICAL_PUBLICATIONS
 
 
 def _script_directory() -> ScriptDirectory:
@@ -131,6 +132,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OPERATION_RUN_NOT_BEFORE,
         CONTENT_REVISIONS,
         ACKNOWLEDGED_SUPERSESSION,
+        HISTORICAL_PUBLICATIONS,
     )
     parents = {
         revision: script.get_revision(revision).down_revision for revision in recovered
@@ -170,6 +172,7 @@ def test_hardening_revisions_keep_their_recovered_parents() -> None:
         OPERATION_RUN_NOT_BEFORE: CONTENT_REFERENCE_CHECKS,
         CONTENT_REVISIONS: OPERATION_RUN_NOT_BEFORE,
         ACKNOWLEDGED_SUPERSESSION: CONTENT_REVISIONS,
+        HISTORICAL_PUBLICATIONS: ACKNOWLEDGED_SUPERSESSION,
     }
 
 
@@ -181,6 +184,7 @@ def test_upgrade_from_the_production_stamp_runs_the_linear_tail() -> None:
     ]
 
     assert pending == [
+        HISTORICAL_PUBLICATIONS,
         ACKNOWLEDGED_SUPERSESSION,
         CONTENT_REVISIONS,
         OPERATION_RUN_NOT_BEFORE,
@@ -223,7 +227,7 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
     ]
 
     assert len(applied) == len(set(applied))
-    assert applied[-34:] == [
+    assert applied[-35:] == [
         PHOTO_PROVENANCE,
         IMAGE_POLICY,
         CONTENT_CUSTOMIZATION,
@@ -258,4 +262,5 @@ def test_fresh_database_applies_the_whole_chain_in_order() -> None:
         OPERATION_RUN_NOT_BEFORE,
         CONTENT_REVISIONS,
         ACKNOWLEDGED_SUPERSESSION,
+        HISTORICAL_PUBLICATIONS,
     ]
