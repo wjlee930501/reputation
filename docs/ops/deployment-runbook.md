@@ -314,6 +314,10 @@ hotfix `sourceSha`의 parent가 `originalCheckpointSha`인지, diff가 allowlist
 0085를 포함한 backend/API/Worker/Beat/migrate/all 배포 전에는 운영 DB의 legacy publish
 backlog와 변환 가능한 legacy task incident를 읽기 전용으로 확인한다. 운영 `DATABASE_URL`을
 주입하고 `scripts/deploy.sh`를 실행한다.
+운영 Cloud SQL은 사설 IP뿐이라 작업 PC에서는 직접 붙지 못한다. 로컬 `DATABASE_URL`이 비어 있으면
+`deploy.sh`가 같은 읽기 전용 확인을 VPC 안의 `reputation-migrate` Job(그 시점에 배포돼 있는 이미지 그대로,
+migrate·이미지 갱신 전)으로 실행하고 로그의 결과 한 줄(`jsonPayload`)을 증거 파일로 남긴다. 통과 기준은 같고,
+Job이 돌지 못하거나 결과를 읽지 못하면 배포를 시작하지 않는다(2026-10-10).
 `CONTENT_PUBLISH_RECOVERY_DATABASE_URL`은 격리된 integration test fixture 전용이다. preflight는
 `CONTENT_PUBLISHED` open transport와 unapplied
 `SENT`, `convertible_legacy_incidents`를 각각 세어 세 값이 모두 0일 때만 통과한다.
