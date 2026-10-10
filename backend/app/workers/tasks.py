@@ -160,7 +160,12 @@ from app.services.content_target_planner import prepare_automatic_content_brief_
 from app.services.content_yield import compute_content_yield
 from app.services.doctor_pdf_contracts import DoctorReportView, DoctorV0Baseline
 from app.services.doctor_report_artifact import generate_doctor_pdf_report
-from app.services.domain_health_control import record_domain_health_check
+from app.services.domain_health_control import (
+    PUBLIC_SITE_OUTAGE_MIN_HOSPITALS,
+    is_public_site_server_error,
+    record_domain_health_check,
+    record_public_site_check,
+)
 from app.services.domain_health_probe import check_custom_domain_https as _check_custom_domain_https
 from app.services.domain_live_status import LiveDomainCheck, apply_live_domain_check
 from app.services.essence_auto_review import (
@@ -12669,10 +12674,8 @@ def monitor_live_custom_domains():
             .all()
         )
 
-    new_failures = 0
-    recoveries = 0
-    state_unavailable = 0
     refreshed = 0
+    observed: list[tuple[Hospital, str, bool, str]] = []
     timeout = httpx.Timeout(10.0, connect=5.0)
     with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for hospital in hospitals:
@@ -12700,32 +12703,63 @@ def monitor_live_custom_domains():
                     ),
                 )
             )
-            try:
-                outcome = _run_async(
-                    record_domain_health_check(
-                        hospital_id=hospital.id,
-                        canonical_host=domain,
-                        healthy=healthy,
-                        safe_reason=reason,
-                    )
-                )
-                new_failures += int(outcome.incident_opened)
-                recoveries += int(outcome.incident_recovered)
-            except Exception as exc:  # noqa: BLE001 — no fallback may invent incident truth.
-                state_unavailable += 1
-                logger.warning(
-                    "domain health persistence unavailable: code=%s",
-                    exc.__class__.__name__,
-                )
-
+            observed.append((hospital, domain, healthy, reason))
             if not healthy:
                 logger.warning("custom domain marker rejected: reason=%s", reason)
+
+    # 같은 실행에서 두 곳 이상이 공유 공개 서비스의 5xx를 받았다면 병원 문제가 아니다. 그 병원들의
+    # 점검은 기록하되 병원별 인시던트는 열지 않고, 공개 서비스 인시던트 하나가 소유한다.
+    server_errors = sum(
+        1
+        for _hospital, _domain, healthy, reason in observed
+        if not healthy and is_public_site_server_error(reason)
+    )
+    shared_outage = server_errors >= PUBLIC_SITE_OUTAGE_MIN_HOSPITALS
+
+    new_failures = 0
+    recoveries = 0
+    state_unavailable = 0
+    for hospital, domain, healthy, reason in observed:
+        try:
+            outcome = _run_async(
+                record_domain_health_check(
+                    hospital_id=hospital.id,
+                    canonical_host=domain,
+                    healthy=healthy,
+                    safe_reason=reason,
+                    open_incident=not (shared_outage and is_public_site_server_error(reason)),
+                )
+            )
+            new_failures += int(outcome.incident_opened)
+            recoveries += int(outcome.incident_recovered)
+        except Exception as exc:  # noqa: BLE001 — no fallback may invent incident truth.
+            state_unavailable += 1
+            logger.warning(
+                "domain health persistence unavailable: code=%s",
+                exc.__class__.__name__,
+            )
+
+    public_site_opened = public_site_recovered = False
+    if observed:
+        try:
+            public_site = _run_async(record_public_site_check(failing_hospitals=server_errors))
+            public_site_opened = public_site.incident_opened
+            public_site_recovered = public_site.incident_recovered
+        except Exception as exc:  # noqa: BLE001 — no fallback may invent incident truth.
+            state_unavailable += 1
+            logger.warning(
+                "public site health persistence unavailable: code=%s",
+                exc.__class__.__name__,
+            )
     return {
         "checked": len(hospitals),
         "new_failures": new_failures,
         "recoveries": recoveries,
         "state_unavailable": state_unavailable,
         "status_refreshed": refreshed,
+        "shared_server_errors": server_errors,
+        "public_site_incident_opened": public_site_opened,
+        "public_site_incident_recovered": public_site_recovered,
     }
 
 

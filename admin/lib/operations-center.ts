@@ -385,6 +385,7 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   SITE_BUILD_DISPATCH_FAILED: '공개 정보 갱신 작업을 처리 대기열에 넣지 못했습니다.',
   CACHE_REVALIDATION_FAILED: '공개 사이트의 내용 갱신을 확인하지 못했습니다.',
   DOMAIN_UNHEALTHY: '공개 주소가 정상으로 응답하지 않습니다.',
+  PUBLIC_SITE_UNAVAILABLE: '여러 병원의 공개 주소가 같은 점검에서 서버 오류를 반환했습니다.',
   // 알림·전달
   PUBLISH_NOTIFICATION_FAILED: '발행은 됐지만 담당자 알림을 보내지 못했습니다.',
   WEBHOOK_UNAVAILABLE: '알림 전송 대상이 응답하지 않습니다.',

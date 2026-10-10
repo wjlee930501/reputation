@@ -149,6 +149,7 @@ async def _delete_channel_incidents(db) -> None:
         "NOTIFICATION_DELIVERY_UNKNOWN",
         "CACHE_REVALIDATION_FAILED",
         "MONTHLY_DOCTOR_PDF_BLOCKED",
+        "PUBLIC_SITE_UNAVAILABLE",
     ],
 )
 def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) -> None:
