@@ -74,13 +74,22 @@ async def observe_monthly_milestones(
     facts_by_report = await load_report_facts(db)
     delivered_months = _delivered_months(facts_by_report)
     legacy_months = _legacy_state_months(facts_by_report, previous_states)
+    latest = latest_report_facts(facts_by_report)
+    settled_through = _latest_settled_months(latest, delivered_months)
     states: dict[str, str] = {}
     changed: list[MilestoneProjection] = []
-    for facts in latest_report_facts(facts_by_report):
+    for facts in latest:
         if not _in_observation_scope(facts, observed_at):
             continue
         key = _month_key(facts)
         month = _month_of(facts)
+        previous = previous_states.get(key)
+        if _superseded_while_unready(facts, settled_through):
+            # 알리지 않되 기억은 넘긴다. 커서는 합쳐지지 않고 통째로 바뀌므로, 여기서 키를 버리면
+            # 늦은 달이 다시 막혀 이 달이 범위로 돌아올 때 '처음 보는 차단'으로 다시 알려진다.
+            if previous is not None:
+                states[key] = previous
+            continue
         try:
             event_type = _current_state(facts)
             ever_delivered = month in delivered_months
@@ -91,7 +100,6 @@ async def observe_monthly_milestones(
                 and _numbers_changed_since_prior(facts, facts_by_report)
             )
             fingerprint = _month_fingerprint(event_type, facts, ever_delivered, redelivery)
-            previous = previous_states.get(key)
             if previous is None and month in legacy_months:
                 # 배포 전의 `monthly:{report_id}` 상태가 이 달을 이미 알고 있다. 새 키에는 현재 모습을
                 # 기록만 해 두고 알리지 않는다 — 안 그러면 배포 직후 모든 달이 한꺼번에 다시 나간다.
@@ -103,6 +111,10 @@ async def observe_monthly_milestones(
             # 한 리포트의 게이트 불일치가 다른 병원의 알림까지 멈추면 안 된다. 이 리포트만
             # 이번 창에서 건너뛰고 로그로 남긴다 — 다음 창에서 다시 시도한다.
             logger.warning("monthly milestone skipped: report=%s reason=%s", facts.report.id, exc)
+            # 건너뛴 달의 기억은 그대로 넘긴다. 지우면 다음 창에 같은 상태가 '처음 보는 상태'로
+            # 읽혀 아무것도 바뀌지 않은 달의 알림이 다시 나간다.
+            if previous is not None:
+                states[key] = previous
             continue
         # PDF 재검증 중인 순간(템플릿 갱신 직후)은 준비 완료를 되돌리지 않는다. 되돌리면 검증이
         # 끝나는 순간 '처음 준비 완료'로 읽혀 같은 달의 알림이 다시 나간다.
@@ -214,6 +226,7 @@ def _in_observation_scope(facts: ReportFacts, observed_at: datetime) -> bool:
     순간 한 병원에서 여러 달치 차단이 한꺼번에 투영된다. 사람이 할 일은 그 병원의
     자료 하나이지 닫힌 달의 리포트가 아니다. 전달되지 않은 달은 지연 전달을 위해
     기간과 무관하게 남긴다 — 늦게 준비된 리포트의 전달 알림을 잃지 않는다.
+    더 늦은 달에 밀린 미준비 달은 `_superseded_while_unready`가 따로 조용히 한다.
     """
 
     if not facts.delivered:
@@ -221,6 +234,37 @@ def _in_observation_scope(facts: ReportFacts, observed_at: datetime) -> bool:
     local = observed_at.astimezone(KST)
     report = facts.report
     return report.period_year * 12 + report.period_month >= local.year * 12 + local.month - 1
+
+
+def _superseded_while_unready(facts: ReportFacts, settled_through: dict[uuid.UUID, int]) -> bool:
+    """더 늦은 달이 준비·전달된 병원의 이른 달이 막혀 있거나 PDF 검증을 기다리는가.
+
+    그동안은 알리지 않는다. AE의 다음 할 일은 그 늦은 달의 전달이지 지나간 달의 차단이 아니다 —
+    2026-10-09 배포 직후 9월이 준비된 7개 병원에 8월 '월간 리포트 차단'이 나갔다. 이른 달이
+    전달 준비 완료가 되면 다시 알린다: 아직 전달하지 않은 계약 월은 AE가 전달해야 할 일이고,
+    `_should_notify`가 같은 준비 완료를 한 번만 알린다. 전달 정정·철회·재전달
+    (`_project_delivery_events`)은 사람의 행동이라 이 판정과 무관하다.
+    """
+
+    settled = settled_through.get(facts.hospital.id)
+    report = facts.report
+    if settled is None or report.period_year * 12 + report.period_month >= settled:
+        return False
+    return _current_state(facts) is not MonthlyEventType.CUSTOMER_READY
+
+
+def _latest_settled_months(
+    latest: tuple[ReportFacts, ...], delivered_months: set[_Month]
+) -> dict[uuid.UUID, int]:
+    """병원마다 최신 리포트가 전달 준비 완료이거나 전달된 가장 늦은 계약 월(연×12+월)."""
+
+    settled: dict[uuid.UUID, int] = {}
+    for facts in latest:
+        month = _month_of(facts)
+        if month in delivered_months or _current_state(facts) is MonthlyEventType.CUSTOMER_READY:
+            hospital_id, year, number = month
+            settled[hospital_id] = max(settled.get(hospital_id, 0), year * 12 + number)
+    return settled
 
 
 def _current_state(facts: ReportFacts) -> MonthlyEventType:

@@ -91,9 +91,16 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
         recorded.append(facts)
         return SimpleNamespace(incident_opened=False, incident_recovered=True)
 
+    public_site = []
+
+    async def record_public_site(**facts):
+        public_site.append(facts)
+        return SimpleNamespace(incident_opened=False, incident_recovered=False)
+
     monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _Session([hospital]))
     monkeypatch.setattr(tasks.httpx, "Client", Client)
     monkeypatch.setattr(tasks, "record_domain_health_check", record)
+    monkeypatch.setattr(tasks, "record_public_site_check", record_public_site)
 
     result = tasks.monitor_live_custom_domains.run()
 
@@ -104,14 +111,19 @@ def test_domain_monitor_uses_bounded_no_redirect_probe_and_durable_control(monke
             "canonical_host": "clinic.example.com",
             "healthy": True,
             "safe_reason": "tenant_marker_ok",
+            "open_incident": True,
         }
     ]
+    assert public_site == [{"failing_hospitals": 0}]
     assert result == {
         "checked": 1,
         "new_failures": 0,
         "recoveries": 1,
         "state_unavailable": 0,
         "status_refreshed": 1,
+        "shared_server_errors": 0,
+        "public_site_incident_opened": False,
+        "public_site_incident_recovered": False,
     }
     # A-1: 살아 있는 도메인의 관측이 배지·트래커가 읽는 상태에 그대로 반영돼야 한다.
     assert hospital.domain_last_check_ok is True

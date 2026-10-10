@@ -63,6 +63,9 @@ _DEVELOPER_INCIDENT_TYPES: frozenset[str] = frozenset(
         "NOTIFICATION_DELIVERY_UNKNOWN",
         "CACHE_REVALIDATION_FAILED",
         "MONTHLY_DOCTOR_PDF_BLOCKED",
+        # 같은 점검에서 여러 병원 주소가 공유 공개 서비스의 5xx를 받은 상태. AE가 병원 정보에서 고칠
+        # 수 있는 일이 아니다(`domain_health_control.record_public_site_check`).
+        "PUBLIC_SITE_UNAVAILABLE",
     }
 )
 

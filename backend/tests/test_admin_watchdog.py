@@ -112,12 +112,20 @@ async def test_alert_endpoint_sends_one_message_per_audience(monkeypatch):
         delivered.extend(values)
         return tuple(True for _ in values)
 
+    recorded: list[tuple] = []
     monkeypatch.setattr(watchdog, "_evaluate_and_decide", lambda: (_report(), decisions))
     monkeypatch.setattr(watchdog.pipeline_watchdog, "deliver_all", fake_deliver_all)
+    monkeypatch.setattr(
+        watchdog.pipeline_watchdog,
+        "record_deliveries",
+        lambda values, outcomes: recorded.append((values, outcomes)),
+    )
 
     payload = await watchdog.run_pipeline_watchdog_alert()
 
     assert list(delivered) == list(decisions)
+    # 전달 결과가 에피소드 기록으로 돌아가야 실패한 ALERT만 다시 보낸다.
+    assert recorded == [(decisions, (True, True))]
     assert payload["alerts"] == [
         {
             "audience": "developer",
@@ -159,6 +167,7 @@ async def test_alert_endpoint_stays_silent_when_healthy(monkeypatch):
 
     monkeypatch.setattr(watchdog, "_evaluate_and_decide", lambda: (healthy, decisions))
     monkeypatch.setattr(watchdog.pipeline_watchdog, "deliver_all", fake_deliver_all)
+    monkeypatch.setattr(watchdog.pipeline_watchdog, "record_deliveries", lambda *_args: None)
 
     payload = await watchdog.run_pipeline_watchdog_alert()
 
