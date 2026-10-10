@@ -52,6 +52,14 @@ _FAKE_GCLOUD = "\n".join(
         "  fi",
         "done",
         'case "$*" in',
+        '  "run services describe "*"spec.traffic"*)',
+        '    if [[ "${FAKE_TRAFFIC_PINNED:-0}" == "1" ]]; then',
+        '      echo ""',
+        "    else",
+        '      echo "True"',
+        "    fi",
+        "    exit 0",
+        "    ;;",
         '  "run services describe "*)',
         '    echo "${FAKE_READY_REVISION:-}"',
         "    exit 0",
@@ -1880,3 +1888,31 @@ def test_backend_vpc_preflight_fails_closed_when_job_cannot_run(tmp_path: Path) 
     assert result.returncode != 0
     assert "MIGRATE_JOB_UNAVAILABLE" in result.stderr
     assert "gcloud run deploy" not in commands
+
+
+def test_deploy_stops_before_mutation_when_traffic_is_pinned(tmp_path: Path) -> None:
+    """고정 트래픽이면 새 리비전이 바로 은퇴하고 옛 코드가 남는다 — 첫 mutation 전에 멈춘다."""
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            FAKE_READY_REVISION="reputation-api-00239-mqs",
+            FAKE_TRAFFIC_PINNED="1",
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode != 0
+    # api 대상은 worker·beat·api 순으로 좌표를 잡으므로 첫 고정 서비스에서 멈춘다.
+    assert "--to-latest" in result.stderr
+    assert "트래픽이 최신 리비전이 아닌 특정 리비전에 고정" in result.stderr
+    commands = command_log.read_text()
+    assert "gcloud run deploy" not in commands
+    assert "docker build" not in commands

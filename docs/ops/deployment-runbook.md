@@ -1,6 +1,14 @@
 # 현재 배포와 헬스체크
 
-## 최신 운영 배포 — 2026-10-08 근본 원인 수정
+## 최신 운영 배포 — 2026-10-10 반복 알림 근본 수정
+
+main `2cc60247`(api `00240-c9n`, worker `00230-s6m`, beat `00225-npd`, admin `00104-gkq`, DB 0086 그대로). Backend 배포의
+legacy publish 사전 확인은 로컬 `DATABASE_URL` 없이 VPC 안 migrate Job으로 돈다. **배포 전 서비스 트래픽이 최신을 따라가는지
+확인한다** — 특정 리비전에 고정돼 있으면 `gcloud run deploy`가 새 리비전을 바로 은퇴시키고 옛 코드가 남는다(이번 API).
+`deploy.sh`는 이제 고정을 배포 전에 막고(`update-traffic --to-latest` 안내), 배포 뒤 트래픽을 받는 리비전이 최신 Ready인지 확인한다.
+상세는 [배포 기록](../releases/2026-10-10-alert-noise-production.md).
+
+## 이전 운영 배포 — 2026-10-08 근본 원인 수정
 
 main `c5ada5a1`을 API·Worker·Beat에 배포했다(api `00235-db4`, worker `00224-xnt`, beat `00219-dfh`, DB head
 `0083_add_operation_run_not_before`). 절차: `.env.production` 대조 → `gcloud secrets versions disable 1 --secret=SLACK_WEBHOOK_URL_DEV`
