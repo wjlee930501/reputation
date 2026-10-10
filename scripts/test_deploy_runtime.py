@@ -64,6 +64,21 @@ _FAKE_GCLOUD = "\n".join(
         '    echo "reputation"',
         "    exit 0",
         "    ;;",
+        '  "run jobs execute reputation-migrate "*"legacy_publish_retirement_preflight"*)',
+        '    if [[ "${FAKE_VPC_JOB_FAILS:-0}" == "1" ]]; then',
+        "      exit 1",
+        "    fi",
+        '    echo "reputation-migrate-fake01"',
+        "    exit 0",
+        "    ;;",
+        '  "logging read "*)',
+        '    if [[ -n "${FAKE_VPC_PREFLIGHT_JSON:-}" ]]; then',
+        '      printf \'[{"jsonPayload": %s}]\\n\' "$FAKE_VPC_PREFLIGHT_JSON"',
+        "    else",
+        "      echo '[]'",
+        "    fi",
+        "    exit 0",
+        "    ;;",
         '  "run jobs create "*)',
         '    if [[ "${FAKE_JOBS_CREATE_FAILS:-0}" == "1" ]]; then',
         "      exit 1",
@@ -1798,3 +1813,70 @@ def test_asset_bucket_preflight_placeholder_bucket_is_unchanged(
     ) in result.stderr
     assert "storage buckets describe" not in commands
     assert "gsutil" not in commands
+
+
+def _run_backend_without_local_db(tmp_path: Path, **extra: str) -> tuple[subprocess.CompletedProcess, str]:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(
+            fake_bin,
+            command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            DATABASE_URL="",
+            LEGACY_PREFLIGHT_LOG_INTERVAL="0",
+            LEGACY_PREFLIGHT_LOG_ATTEMPTS="2",
+            **extra,
+        ),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_backend_preflight_runs_in_vpc_job_without_local_database_url(tmp_path: Path) -> None:
+    """운영 Cloud SQL은 사설 IP뿐이다 — 로컬 DATABASE_URL이 없으면 migrate Job으로 같은 확인을 한다."""
+    result, commands = _run_backend_without_local_db(
+        tmp_path,
+        FAKE_VPC_PREFLIGHT_JSON=(
+            '{"status":"READY","total_historical":16,"open_legacy_transport":0,'
+            '"unapplied_sent":0,"convertible_legacy_incidents":0,"unknown_legacy_incidents":2}'
+        ),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "legacy_publish_retirement_preflight" in commands
+    assert "gcloud run jobs execute reputation-migrate" in commands
+    assert "uv run python -m app.utils.legacy_publish_retirement_preflight" not in commands
+    # 확인이 이미지 갱신·배포보다 먼저 돈다.
+    preflight_at = commands.index("legacy_publish_retirement_preflight")
+    assert preflight_at < commands.index("gcloud run deploy")
+
+
+def test_backend_vpc_preflight_fails_closed_on_backlog(tmp_path: Path) -> None:
+    result, commands = _run_backend_without_local_db(
+        tmp_path,
+        FAKE_VPC_PREFLIGHT_JSON=(
+            '{"status":"BLOCKED","total_historical":3,"open_legacy_transport":1,'
+            '"unapplied_sent":2,"convertible_legacy_incidents":0,"unknown_legacy_incidents":0}'
+        ),
+    )
+    assert result.returncode != 0
+    assert "gcloud run deploy" not in commands
+
+
+def test_backend_vpc_preflight_fails_closed_without_result(tmp_path: Path) -> None:
+    result, commands = _run_backend_without_local_db(tmp_path)
+    assert result.returncode != 0
+    assert "PREFLIGHT_RESULT_NOT_FOUND" in result.stderr
+    assert "gcloud run deploy" not in commands
+
+
+def test_backend_vpc_preflight_fails_closed_when_job_cannot_run(tmp_path: Path) -> None:
+    result, commands = _run_backend_without_local_db(tmp_path, FAKE_VPC_JOB_FAILS="1")
+    assert result.returncode != 0
+    assert "MIGRATE_JOB_UNAVAILABLE" in result.stderr
+    assert "gcloud run deploy" not in commands

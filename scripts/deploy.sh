@@ -1357,23 +1357,71 @@ run_rollback() {
 # durable notification queues are empty and every safely convertible legacy
 # task incident has been reconciled. This is a read-only production check and
 # must run before any migration, image rollout, or traffic mutation.
+# 운영 Cloud SQL은 사설 IP뿐이라 작업 PC에서 직접 붙지 못한다. 로컬 DATABASE_URL이 없으면
+# 이미 VPC 안에서 DB에 붙는 migrate Job을 '지금 배포된 이미지 그대로' 같은 읽기 전용 명령으로
+# 실행하고, Cloud Run이 jsonPayload로 저장한 결과 한 줄을 로그에서 읽는다. 이 함수는 migrate·이미지
+# 갱신보다 먼저 돌므로 Job 이미지는 아직 바뀌지 않았다. 확인 내용과 통과 기준은 로컬 경로와 같다.
+LEGACY_PREFLIGHT_LOG_ATTEMPTS="${LEGACY_PREFLIGHT_LOG_ATTEMPTS:-12}"
+LEGACY_PREFLIGHT_LOG_INTERVAL="${LEGACY_PREFLIGHT_LOG_INTERVAL:-5}"
+
+run_legacy_publish_preflight_in_vpc() {
+  local execution job_status=0 attempt json=""
+  execution="$(gcloud run jobs execute reputation-migrate --region="$REGION" --project="$PROJECT_ID" \
+      --args=python,-m,app.utils.legacy_publish_retirement_preflight \
+      --wait --format='value(metadata.name)' 2>/dev/null)" || job_status=$?
+  if [[ -z "$execution" ]]; then
+    echo '{"status":"BLOCKED","reason":"MIGRATE_JOB_UNAVAILABLE"}'
+    return 2
+  fi
+  for ((attempt = 1; attempt <= LEGACY_PREFLIGHT_LOG_ATTEMPTS; attempt++)); do
+    json="$(gcloud logging read \
+        "resource.type=\"cloud_run_job\" AND labels.\"run.googleapis.com/execution_name\"=\"${execution}\"" \
+        --project="$PROJECT_ID" --limit=50 --format=json 2>/dev/null | python3 -c '
+import json, sys
+try:
+    entries = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(1)
+for entry in entries if isinstance(entries, list) else []:
+    payload = entry.get("jsonPayload")
+    if isinstance(payload, dict) and "status" in payload:
+        print(json.dumps(payload, sort_keys=True))
+        raise SystemExit(0)
+raise SystemExit(1)
+' 2>/dev/null)" && break
+    json=""
+    sleep "$LEGACY_PREFLIGHT_LOG_INTERVAL"
+  done
+  if [[ -z "$json" ]]; then
+    echo "{\"status\":\"BLOCKED\",\"reason\":\"PREFLIGHT_RESULT_NOT_FOUND\",\"execution\":\"${execution}\"}"
+    return 2
+  fi
+  printf '%s\n' "$json"
+  return "$job_status"
+}
+
 require_legacy_publish_retirement_clear() {
   local database_url="${DATABASE_URL:-}"
-  [[ -n "$database_url" ]] \
-    || fail "DATABASE_URL이 없습니다. legacy publish backlog를 읽기 전용으로 확인할 수 없어 배포를 중단합니다."
-  command -v uv >/dev/null 2>&1 \
-    || fail "legacy publish retirement preflight에 필요한 uv가 설치되지 않았습니다."
+  if [[ -n "$database_url" ]]; then
+    command -v uv >/dev/null 2>&1 \
+      || fail "legacy publish retirement preflight에 필요한 uv가 설치되지 않았습니다."
+  fi
 
   local evidence_dir="${DEPLOY_EVIDENCE_DIR:-${PROJECT_ROOT}/.omo/evidence/deploy-preflight}"
   local evidence_file="${evidence_dir}/legacy-publish-retirement-${RELEASE_REVISION}-$(date -u '+%Y%m%dT%H%M%SZ').json"
   mkdir -p "$evidence_dir"
-  info "legacy publish transport/SENT backlog 읽기 전용 확인 중..."
   local status=0
-  (
-    cd "$PROJECT_ROOT/backend"
-    env DATABASE_URL="$database_url" PYTHONPATH=. \
-      uv run python -m app.utils.legacy_publish_retirement_preflight
-  ) >"$evidence_file" || status=$?
+  if [[ -n "$database_url" ]]; then
+    info "legacy publish transport/SENT backlog 읽기 전용 확인 중(로컬 DATABASE_URL)..."
+    (
+      cd "$PROJECT_ROOT/backend"
+      env DATABASE_URL="$database_url" PYTHONPATH=. \
+        uv run python -m app.utils.legacy_publish_retirement_preflight
+    ) >"$evidence_file" || status=$?
+  else
+    info "legacy publish transport/SENT backlog 읽기 전용 확인 중(VPC 안 migrate Job, 현재 이미지)..."
+    run_legacy_publish_preflight_in_vpc >"$evidence_file" || status=$?
+  fi
   if [[ "$status" -ne 0 ]]; then
     cat "$evidence_file" >&2 || true
     fail "legacy publish retirement preflight 실패(exit=${status}). 배포를 중단했습니다. 증거: ${evidence_file}"
