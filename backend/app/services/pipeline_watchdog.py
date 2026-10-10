@@ -79,16 +79,17 @@ CONDITION_BEAT_DOWN: Final = "beat_down"
 # 것(`publish_missing`)과, 열어 보고 공개 직전 안전검사에서 되돌린 것
 # (`publish_gate_residual`)은 사람이 할 일이 완전히 다르다.
 CONDITION_PUBLISH_MISSING: Final = "publish_missing"
+# 게이트 잔여는 판정·API에만 남기고 알리지 않는다. 발행기는 실행됐고 안전검사가 막은
+# 것이라 파이프라인 생존 문제가 아니다 — 그 보류는 07:45·08:00 차단 요약, 원인별 인시던트,
+# 18:00 일일 요약이 이미 소유한다(2026-10-10 같은 경보가 매시 다섯 번 나갔다).
 CONDITION_PUBLISH_GATE_RESIDUAL: Final = "publish_gate_residual"
 
 # 알림 정책의 수신자 구분. 순수 인프라 정지는 AE가 고칠 수 없으므로 개발 채널이 받고,
 # "오늘 글이 한 건도 안 나갔다"는 고객이 보는 사실이라 운영 채널이 받는다.
 AUDIENCE_DEVELOPER: Final = "developer"
 AUDIENCE_OPERATOR: Final = "operator"
-# 두 발행 조건 모두 "오늘 공개가 0건"이라는 고객이 보는 사실이라 운영 채널이 소유한다.
-_OPERATOR_CONDITIONS: Final = frozenset(
-    {CONDITION_PUBLISH_MISSING, CONDITION_PUBLISH_GATE_RESIDUAL}
-)
+# "발행기가 오늘 글을 한 건도 열어 보지 못했다"는 고객이 보는 사실이라 운영 채널이 소유한다.
+_OPERATOR_CONDITIONS: Final = frozenset({CONDITION_PUBLISH_MISSING})
 
 # 발행기가 오늘 실제로 게이트를 돌렸다는 증거를 읽는 폭. 5개 병원 × 시간당 한 번이라
 # 하루치가 이 안에 들어오고, 손상된 하루에도 쿼리가 폭주하지 않는다.
@@ -97,10 +98,26 @@ _BLOCK_AUDIT_SCAN_LIMIT: Final = 500
 PUBLISH_BLOCK_SAMPLE_LIMIT: Final = 20
 
 _KEY_NAMESPACE: Final = "reputation:pipeline-watchdog:v1"
-_DEDUPE_TTL_SECONDS: Final = 3600
-# 알린 상태를 기억해 두고, 조건이 사라지면 복구 한 건을 보낸다. 하루가 지나도
-# 복구 알림이 오지 않았다면 그 인시던트는 이미 사람이 다른 경로로 확인한 것이다.
+# 활성 에피소드와 인프라 관측을 기억한다. 하트비트(5분)마다 갱신되므로 조건이 이어지는
+# 동안에는 만료되지 않는다. 하트비트가 하루 넘게 끊겼다면 그 기억은 버려도 된다.
 _STATE_TTL_SECONDS: Final = 24 * 3600
+# 동시에 도착한 두 호출의 같은 전이 전송을 막는 잠금. 하트비트 간격(5분)보다 짧아야
+# 다음 하트비트의 재시도를 막지 않는다.
+_SEND_LOCK_SECONDS: Final = 240
+# 전달이 확인되지 않은 ALERT의 재시도 간격 — 매 하트비트가 아니라 15분에 한 번.
+_RETRY_INTERVAL: Final = timedelta(minutes=15)
+# 인프라 조건(Beat 정지·핵심 큐 정지)의 히스테리시스. 배포 중 Beat 재시작은 RedBeat 락을
+# 1~3분 비우고, Worker 교체는 canary 한 주기를 놓칠 수 있다. 4분 이상 떨어진 연속 두
+# 하트비트에서 같은 사실을 봐야 알리고, 같은 간격의 연속 두 정상 하트비트가 있어야 복구로 본다.
+_CONFIRM_MIN_GAP: Final = timedelta(minutes=4)
+# 대기 중인 관측이 이보다 오래되면(하트비트가 끊겼던 경우) 연속 관측으로 보지 않는다.
+_OBSERVATION_MAX_AGE: Final = timedelta(minutes=30)
+# Redis 장애 시 fail-open 전송을 허용하는 KST 분(0~4분) — 시간당 한 번.
+_FAIL_OPEN_MINUTE_LIMIT: Final = 5
+# KST 하루 단위로 성립하는 조건. 날짜가 바뀌면 조용히 사라지며 복구로 알리지 않는다.
+_DAY_SCOPED_CONDITIONS: Final = frozenset({CONDITION_PUBLISH_MISSING})
+# 예전에 알렸지만 더는 알리지 않는 조건. 이전 배포가 남긴 기억에서 조용히 지운다.
+_RETIRED_CONDITIONS: Final = frozenset({CONDITION_PUBLISH_GATE_RESIDUAL})
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,8 +194,7 @@ class WatchdogReport:
             conditions.append(CONDITION_BEAT_DOWN)
         if self.publish_missing:
             conditions.append(CONDITION_PUBLISH_MISSING)
-        if self.publish_gate_residual:
-            conditions.append(CONDITION_PUBLISH_GATE_RESIDUAL)
+        # `publish_gate_residual`은 알림 근거가 아니다(위 CONDITION_PUBLISH_GATE_RESIDUAL 주석).
         return tuple(sorted(conditions))
 
     @property
@@ -233,6 +249,8 @@ class AlertDecision:
     text: str | None
     reason: str
     webhook_url: str | None
+    # 이 결정이 가리키는 에피소드의 조건 집합 — 전달 확인을 같은 에피소드에만 기록한다.
+    conditions: tuple[str, ...] = ()
 
 
 # ─── Redis 접근 ────────────────────────────────────────────────────
@@ -607,45 +625,7 @@ def _developer_alert_text(report: WatchdogReport) -> str:
     return "\n".join(body)
 
 
-_BLOCK_REASON_LINES: Final = 3
-
-
-def _gate_residual_problem_lines(report: WatchdogReport) -> list[str]:
-    """막힌 글의 병원·원인을 평문으로 적는다 — 내부 코드는 넣지 않는다."""
-
-    blocked = report.publish_blocked_today
-    hospitals = {fact.hospital_name for fact in blocked}
-    lines = [
-        f"• 오늘 발행 예정 {report.publish_due_remaining}건 가운데 08:30까지 공개된 글이 "
-        "한 건도 없습니다.",
-        f"• 아침 자동 발행은 실행됐습니다. 병원 {len(hospitals)}곳의 글 {len(blocked)}건이 "
-        "공개 직전 자동 안전검사에서 되돌아왔습니다.",
-    ]
-    for code, count in report.publish_block_reasons[:_BLOCK_REASON_LINES]:
-        lines.append(f"• {generation_safe_cause(code)} ({count}건)")
-    return lines
-
-
 def _operator_alert_text(report: WatchdogReport) -> str:
-    if report.publish_gate_residual:
-        body = [
-            "오늘 예정된 글이 아직 한 건도 공개되지 않았습니다.",
-            "",
-            "무슨 문제인지",
-            *_gate_residual_problem_lines(report),
-            *_context_lines(report),
-            "",
-            "고객 영향",
-            "오늘 병원 공개 화면에 새 글이 올라가지 않습니다. 이 상태로 하루가 지나면 그날의 "
-            "계약 분량이 밀립니다.",
-            "",
-            "지금 할 일",
-            "운영센터에서 오늘 발행 큐의 각 항목을 열어 되돌아온 이유를 확인해 주세요. "
-            "자동 복구가 진행 중인 항목은 그대로 두고, 조치가 필요한 항목만 처리하면 됩니다. "
-            "예약 실행기와 대기열 자체는 정상이므로 재시작은 필요하지 않습니다.",
-            _operations_link(),
-        ]
-        return "\n".join(body)
     body = [
         "오늘 예정된 글이 아직 한 건도 공개되지 않았습니다.",
         "",
@@ -746,121 +726,397 @@ def webhook_for(audience: str) -> str:
     return settings.SLACK_WEBHOOK_URL
 
 
-# ─── 중복 억제 ─────────────────────────────────────────────────────
+# ─── 에피소드 ─────────────────────────────────────────────────────
+#
+# 한 수신자에게 "같은 원인 집합"은 한 번만 알린다. 2026-10-10 운영 채널에 같은 발행 경보가
+# 08:30부터 매시 다섯 번 왔다 — 중복 억제 키에 KST 시간이 들어 있었기 때문이다. 이제
+# 수신자별 활성 에피소드를 Redis에 두고, 원인 집합에 새 조건이 생길 때만 다시 알린다.
+#
+#   확정 조건 집합 C(인프라 조건은 아래 히스테리시스를 거친다)
+#   C에 저장된 에피소드에 없는 조건이 있다            → ALERT, 새 에피소드(delivered=false)
+#   같은 에피소드인데 아직 전달 확인이 없다            → 15분에 한 번 ALERT 재시도
+#   C가 줄기만 했다                                    → 조용히 에피소드를 줄인다
+#   C가 비었다(확정 대기 관측도 없음) + 전달된 에피소드 → RECOVERY 한 번, 에피소드 삭제
+#   전달된 적 없는 에피소드가 사라졌다                 → 조용히 삭제
+#   하루 단위 조건(당일 발행 0건)의 날짜가 지났다      → 그 조건만 조용히 버린다(복구 아님)
 
 
 def _signature(conditions: tuple[str, ...]) -> str:
     return hashlib.sha256("|".join(conditions).encode("utf-8")).hexdigest()[:16]
 
 
-def _dedupe_key(kind: str, audience: str, signature: str, *, now: datetime) -> str:
-    hour = now.astimezone(KST).strftime("%Y%m%dT%H")
-    return f"{_KEY_NAMESPACE}:{kind}:{audience}:{signature}:{hour}"
-
-
 def _state_key(audience: str) -> str:
     return f"{_KEY_NAMESPACE}:active:{audience}"
 
 
-def _fail_open(report: WatchdogReport, audience: str) -> AlertDecision:
-    conditions = conditions_for(report, audience)
-    if conditions:
-        return AlertDecision(
-            True,
-            "ALERT",
-            audience,
-            build_alert_text(report, audience),
-            "redis_unavailable",
-            webhook_for(audience),
+def _observation_key() -> str:
+    return f"{_KEY_NAMESPACE}:observations"
+
+
+def _send_lock_key(kind: str, audience: str, signature: str) -> str:
+    return f"{_KEY_NAMESPACE}:send:{kind}:{audience}:{signature}"
+
+
+def _is_infra_condition(condition: str) -> bool:
+    return condition == CONDITION_BEAT_DOWN or condition.startswith(f"{CONDITION_QUEUE_STALE}:")
+
+
+def _owned_by(condition: str, audience: str) -> bool:
+    if audience == AUDIENCE_OPERATOR:
+        return condition in _OPERATOR_CONDITIONS
+    return condition not in _OPERATOR_CONDITIONS
+
+
+def _decode_json(raw: Any) -> Any:
+    if raw is None:
+        return None
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class _Observations:
+    """인프라 조건의 확정·확정 대기·해제 대기 관측. 시각은 tz-aware UTC다."""
+
+    confirmed: frozenset[str]
+    pending: dict[str, datetime]
+    clearing: dict[str, datetime]
+
+    def as_json(self) -> str:
+        return json.dumps(
+            {
+                "confirmed": sorted(self.confirmed),
+                "pending": {key: value.isoformat() for key, value in sorted(self.pending.items())},
+                "clearing": {
+                    key: value.isoformat() for key, value in sorted(self.clearing.items())
+                },
+            },
+            ensure_ascii=False,
         )
-    return AlertDecision(False, None, audience, None, "redis_unavailable_no_state", None)
+
+
+def _load_observations(client: redis.Redis) -> _Observations:
+    stored = _decode_json(client.get(_observation_key()))
+    if not isinstance(stored, dict):
+        return _Observations(frozenset(), {}, {})
+
+    def times(name: str) -> dict[str, datetime]:
+        raw = stored.get(name)
+        if not isinstance(raw, dict):
+            return {}
+        parsed = {str(key): _parse_time(value) for key, value in raw.items()}
+        return {key: value for key, value in parsed.items() if value is not None}
+
+    confirmed = stored.get("confirmed")
+    return _Observations(
+        frozenset(str(item) for item in confirmed) if isinstance(confirmed, list) else frozenset(),
+        times("pending"),
+        times("clearing"),
+    )
+
+
+def _fresh_since(first: datetime | None, *, now: datetime) -> datetime | None:
+    """하트비트가 오래 비어 있었다면 연속 관측이 아니다 — 처음부터 다시 센다."""
+    if first is None or now - first > _OBSERVATION_MAX_AGE:
+        return None
+    return first
+
+
+def _advance_observations(
+    previous: _Observations, raw: frozenset[str], *, now: datetime
+) -> _Observations:
+    """인프라 조건 하나하나를 히스테리시스로 확정하거나 해제한다.
+
+    조건은 4분 이상 떨어진 연속 두 하트비트에서 보여야 확정되고, 4분 이상 떨어진 연속
+    두 정상 하트비트가 있어야 해제된다. 배포 중 Beat 재시작은 1~3분 동안 RedBeat 락을
+    비우므로 한 번의 관측으로 알리면 배포마다 '멈춤 → 복구' 쌍이 나간다(2026-10-09
+    14:30~15:45). 08:30 발행 확인 job은 같은 분의 하트비트와 몇 초 차이로 겹치므로 4분
+    간격이 그 두 호출을 한 관측으로 묶는다.
+    """
+
+    confirmed = set(previous.confirmed)
+    pending: dict[str, datetime] = {}
+    clearing: dict[str, datetime] = {}
+    for condition in sorted(raw | previous.confirmed):
+        if condition in raw:
+            if condition in confirmed:
+                continue
+            first = _fresh_since(previous.pending.get(condition), now=now)
+            if first is not None and now - first >= _CONFIRM_MIN_GAP:
+                confirmed.add(condition)
+            else:
+                pending[condition] = first or now
+            continue
+        first_healthy = _fresh_since(previous.clearing.get(condition), now=now)
+        if first_healthy is not None and now - first_healthy >= _CONFIRM_MIN_GAP:
+            confirmed.discard(condition)
+        else:
+            clearing[condition] = first_healthy or now
+    return _Observations(frozenset(confirmed), pending, clearing)
+
+
+@dataclass(frozen=True, slots=True)
+class _Episode:
+    conditions: tuple[str, ...]
+    kst_date: str
+    opened_at: str
+    delivered: bool
+    last_attempt_at: datetime | None
+
+    def as_json(self) -> str:
+        return json.dumps(
+            {
+                "conditions": list(self.conditions),
+                "kst_date": self.kst_date,
+                "opened_at": self.opened_at,
+                "delivered": self.delivered,
+                "last_attempt_at": (
+                    self.last_attempt_at.isoformat() if self.last_attempt_at else None
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+
+def _stored_conditions(values: list[Any]) -> tuple[str, ...]:
+    # 더는 알리지 않는 조건(게이트 잔여)은 기억에서도 조용히 뺀다 — 남겨 두면 배포 직후
+    # '조건이 사라졌다'로 읽혀 아무도 기다리지 않은 복구가 나간다.
+    return tuple(sorted({str(item) for item in values} - _RETIRED_CONDITIONS))
+
+
+def _load_episode(client: redis.Redis, audience: str) -> _Episode | None:
+    stored = _decode_json(client.get(_state_key(audience)))
+    if isinstance(stored, list):
+        # 이전 형식(조건 목록만 저장) — 이미 알린 에피소드로 읽어 배포 직후 같은 조건을
+        # 다시 알리지 않는다. 날짜가 없으므로 하루 단위 조건은 다음 판정에서 버려진다.
+        conditions = _stored_conditions(stored)
+        return _Episode(conditions, "", "", True, None) if conditions else None
+    if not isinstance(stored, dict) or not isinstance(stored.get("conditions"), list):
+        return None
+    conditions = _stored_conditions(stored["conditions"])
+    if not conditions:
+        return None
+    return _Episode(
+        conditions=conditions,
+        kst_date=str(stored.get("kst_date") or ""),
+        opened_at=str(stored.get("opened_at") or ""),
+        delivered=bool(stored.get("delivered")),
+        last_attempt_at=_parse_time(stored.get("last_attempt_at")),
+    )
+
+
+def _save_episode(client: redis.Redis, audience: str, episode: _Episode) -> None:
+    client.set(_state_key(audience), episode.as_json(), ex=_STATE_TTL_SECONDS)
+
+
+def _claim_send(
+    client: redis.Redis, kind: str, audience: str, conditions: tuple[str, ...]
+) -> bool:
+    """동시에 도착한 두 호출(하트비트와 08:30 발행 확인)이 같은 전이를 두 번 보내지 않게 한다."""
+    return bool(
+        client.set(
+            _send_lock_key(kind, audience, _signature(conditions)),
+            "1",
+            nx=True,
+            ex=_SEND_LOCK_SECONDS,
+        )
+    )
+
+
+def _silent(audience: str, reason: str) -> AlertDecision:
+    return AlertDecision(False, None, audience, None, reason, None)
+
+
+def _alert(report: WatchdogReport, audience: str, reason: str, conditions: tuple[str, ...]) -> AlertDecision:
+    return AlertDecision(
+        True,
+        "ALERT",
+        audience,
+        build_alert_text(report, audience),
+        reason,
+        webhook_for(audience),
+        conditions,
+    )
+
+
+def _fail_open(report: WatchdogReport, audience: str, *, now: datetime) -> AlertDecision:
+    """Redis 없이 보낼지 정한다 — 기억이 없으므로 KST 매시 첫 하트비트에만 보낸다.
+
+    Redis가 죽으면 Beat 락도 읽지 못해 `beat_down`이 계속 성립한다. 기억 없이 매 하트비트
+    (5분)마다 보내면 시간당 12건이 된다. Cloud Scheduler 하트비트는 매시 :00, :05, … 에
+    돌므로 '분 < 5' 조건은 결정적으로 시간당 한 번만 참이다. 히스테리시스도 기억이
+    필요하므로 이 경로는 관측된 조건을 그대로 쓴다.
+    """
+    conditions = conditions_for(report, audience)
+    if not conditions:
+        return _silent(audience, "redis_unavailable_no_state")
+    if now.astimezone(KST).minute >= _FAIL_OPEN_MINUTE_LIMIT:
+        return _silent(audience, "redis_unavailable_throttled")
+    return _alert(report, audience, "redis_unavailable", conditions)
+
+
+def _confirmed_for(
+    report: WatchdogReport, audience: str, observations: _Observations
+) -> tuple[tuple[str, ...], bool]:
+    """수신자의 확정 조건 집합과, 아직 확정을 기다리는 인프라 관측이 있는지."""
+    direct = {item for item in conditions_for(report, audience) if not _is_infra_condition(item)}
+    infra = {item for item in observations.confirmed if _owned_by(item, audience)}
+    waiting = any(_owned_by(item, audience) for item in observations.pending)
+    return tuple(sorted(direct | infra)), waiting
+
+
+def _drop_stale_day_conditions(
+    client: redis.Redis, audience: str, stored: _Episode | None, kst_date: str
+) -> _Episode | None:
+    """하루 단위 조건은 그날의 사실이다. 날짜가 바뀌어 사라진 것은 복구가 아니다."""
+    if stored is None or stored.kst_date == kst_date:
+        return stored
+    kept = tuple(item for item in stored.conditions if item not in _DAY_SCOPED_CONDITIONS)
+    if not kept:
+        client.delete(_state_key(audience))
+        return None
+    return _Episode(kept, stored.kst_date, stored.opened_at, stored.delivered, stored.last_attempt_at)
 
 
 def _decide_one(
-    report: WatchdogReport, audience: str, *, now: datetime, client: redis.Redis
+    report: WatchdogReport,
+    audience: str,
+    *,
+    now: datetime,
+    client: redis.Redis,
+    observations: _Observations,
 ) -> AlertDecision:
-    conditions = conditions_for(report, audience)
-    webhook = webhook_for(audience)
-    try:
-        if conditions:
-            claimed = bool(
-                client.set(
-                    _dedupe_key("alert", audience, _signature(conditions), now=now),
-                    "1",
-                    nx=True,
-                    ex=_DEDUPE_TTL_SECONDS,
-                )
+    current, waiting = _confirmed_for(report, audience, observations)
+    stored = _drop_stale_day_conditions(
+        client, audience, _load_episode(client, audience), report.kst_date
+    )
+
+    if current:
+        if stored is None or not set(current) <= set(stored.conditions):
+            if not _claim_send(client, "alert", audience, current):
+                return _silent(audience, "deduped")
+            _save_episode(
+                client, audience, _Episode(current, report.kst_date, now.isoformat(), False, now)
             )
-            client.set(
-                _state_key(audience),
-                json.dumps(list(conditions), ensure_ascii=False),
-                ex=_STATE_TTL_SECONDS,
-            )
-            if not claimed:
-                return AlertDecision(False, None, audience, None, "deduped", None)
-            return AlertDecision(
-                True,
-                "ALERT",
-                audience,
-                build_alert_text(report, audience),
-                "new_condition_set",
-                webhook,
-            )
-        previous = client.get(_state_key(audience))
-        if previous is None:
-            return AlertDecision(False, None, audience, None, "healthy", None)
-        claimed = bool(
-            client.set(
-                _dedupe_key("recovery", audience, _previous_signature(previous), now=now),
-                "1",
-                nx=True,
-                ex=_DEDUPE_TTL_SECONDS,
-            )
+            return _alert(report, audience, "new_condition_set", current)
+        retry_due = not stored.delivered and (
+            stored.last_attempt_at is None or now - stored.last_attempt_at >= _RETRY_INTERVAL
         )
-        client.delete(_state_key(audience))
-        if not claimed:
-            return AlertDecision(False, None, audience, None, "deduped", None)
-        return AlertDecision(
-            True,
-            "RECOVERY",
+        if retry_due and _claim_send(client, "retry", audience, current):
+            _save_episode(
+                client, audience, _Episode(current, report.kst_date, stored.opened_at, False, now)
+            )
+            return _alert(report, audience, "retry_undelivered", current)
+        # 같은 에피소드(또는 줄어든 집합) — 날짜와 TTL만 갱신하고 조용히 둔다.
+        _save_episode(
+            client,
             audience,
-            build_recovery_text(report, audience),
-            "recovered",
-            webhook,
+            _Episode(
+                current, report.kst_date, stored.opened_at, stored.delivered, stored.last_attempt_at
+            ),
         )
-    except RedisError:
-        return _fail_open(report, audience)
+        return _silent(audience, "deduped" if stored.delivered else "delivery_pending")
+
+    if stored is None:
+        return _silent(audience, "healthy")
+    if waiting:
+        # 새 조건이 확정을 기다리는 동안에는 복구를 말하지 않는다 — 곧 다시 알릴 수 있다.
+        _save_episode(client, audience, stored)
+        return _silent(audience, "awaiting_confirmation")
+    client.delete(_state_key(audience))
+    if not stored.delivered:
+        return _silent(audience, "recovered_before_delivery")
+    if not _claim_send(client, "recovery", audience, stored.conditions):
+        return _silent(audience, "deduped")
+    return AlertDecision(
+        True,
+        "RECOVERY",
+        audience,
+        build_recovery_text(report, audience),
+        "recovered",
+        webhook_for(audience),
+        stored.conditions,
+    )
 
 
 def decide_alerts(report: WatchdogReport, *, now: datetime) -> tuple[AlertDecision, ...]:
-    """수신자별로 보낼지 정한다. Redis 장애 시 알림은 fail-open으로 보낸다.
+    """수신자별로 보낼지 정한다. Redis 장애 시 알림은 시간당 한 번 fail-open으로 보낸다.
 
     복구는 "앞서 알린 사실"이 있어야 성립하므로, 그 기억을 잃은 경우(Redis 장애)에는
     보내지 않는다. 아무도 알림을 받은 적 없는 복구 메시지는 소음일 뿐이다.
     """
     audiences = (AUDIENCE_DEVELOPER, AUDIENCE_OPERATOR)
+    observed = now.astimezone(UTC)
     try:
         with _connect_redis() as client:
+            raw_infra = frozenset(
+                item for item in report.critical_conditions if _is_infra_condition(item)
+            )
+            observations = _advance_observations(
+                _load_observations(client), raw_infra, now=observed
+            )
+            client.set(_observation_key(), observations.as_json(), ex=_STATE_TTL_SECONDS)
             return tuple(
-                _decide_one(report, audience, now=now, client=client) for audience in audiences
+                _decide_one(
+                    report, audience, now=observed, client=client, observations=observations
+                )
+                for audience in audiences
             )
     except RedisError:
-        return tuple(_fail_open(report, audience) for audience in audiences)
+        return tuple(_fail_open(report, audience, now=observed) for audience in audiences)
 
 
-def _previous_signature(raw: Any) -> str:
-    if isinstance(raw, bytes):
-        try:
-            raw = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return _signature(())
+def record_deliveries(
+    decisions: tuple[AlertDecision, ...], delivered: tuple[bool, ...]
+) -> None:
+    """전달이 확인된(2xx) ALERT만 에피소드를 delivered로 바꾼다.
+
+    실패한 ALERT는 delivered=false로 남아 다음 하트비트부터 15분에 한 번 다시 보낸다.
+    Redis가 없으면 기억할 곳이 없으므로 넘어간다(fail-open 경로가 시간당 한 번 보낸다).
+    """
+    confirmed = [
+        decision
+        for decision, ok in zip(decisions, delivered, strict=True)
+        if ok and decision.send and decision.kind == "ALERT" and decision.conditions
+    ]
+    if not confirmed:
+        return
     try:
-        stored = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return _signature(())
-    if not isinstance(stored, list):
-        return _signature(())
-    return _signature(tuple(sorted(str(item) for item in stored)))
+        with _connect_redis() as client:
+            for decision in confirmed:
+                stored = _load_episode(client, decision.audience)
+                if stored is None or stored.delivered:
+                    continue
+                if stored.conditions != tuple(sorted(decision.conditions)):
+                    # 그사이 다른 에피소드가 시작됐다 — 그 에피소드의 전달은 따로 확인한다.
+                    continue
+                _save_episode(
+                    client,
+                    decision.audience,
+                    _Episode(
+                        stored.conditions, stored.kst_date, stored.opened_at, True,
+                        stored.last_attempt_at,
+                    ),
+                )
+    except RedisError:
+        logger.warning("pipeline watchdog: Redis unavailable while recording delivery")
 
 
 # ─── 전송 ─────────────────────────────────────────────────────────
@@ -869,8 +1125,8 @@ def _previous_signature(raw: Any) -> str:
 async def deliver(decision: AlertDecision) -> bool:
     """webhook으로 직접 보낸다 — outbox drain은 Worker가 살아 있어야 돈다.
 
-    전송 실패는 로그로만 남긴다. 다음 하트비트(5분)가 같은 사실을 다시 판정하며,
-    중복 억제 키는 KST 시간 단위라 그때 다시 보낼 수 있다.
+    전송 실패는 로그로 남기고 False를 돌려준다. 호출자가 `record_deliveries`로 결과를
+    기록하며, 전달이 확인되지 않은 ALERT 에피소드는 다음 하트비트부터 15분에 한 번 다시 보낸다.
 
     개발 담당 경보를 개발 웹훅이 확정적으로 거절하면(2xx가 아닌 응답) 운영 웹훅으로 한 번 더
     보낸다. 시간 초과처럼 받았는지 모르면 중복을 피해 대체 전송하지 않는다 —

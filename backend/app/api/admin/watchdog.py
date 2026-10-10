@@ -76,6 +76,8 @@ async def run_pipeline_watchdog_alert() -> dict[str, Any]:
     """판정 후 필요한 경우에만 수신자별로 Slack 한 건씩 직접 보낸다."""
     report, decisions = await run_in_threadpool(_evaluate_and_decide)
     delivered = await pipeline_watchdog.deliver_all(decisions)
+    # 전달이 확인된 ALERT만 에피소드를 '전달됨'으로 바꾼다. 실패한 것은 다음 하트비트가 다시 보낸다.
+    await run_in_threadpool(pipeline_watchdog.record_deliveries, decisions, delivered)
     return {
         "report": _payload(report),
         "alerts": [
