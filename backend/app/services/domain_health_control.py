@@ -36,6 +36,9 @@ from app.services.notification_store import enqueue_notification
 
 _OPERATION_TYPE = "DOMAIN_HEALTH_CHECK"
 _SOURCE_TYPE = "DOMAIN_HEALTH"
+# 한 번의 실패로는 열지 않는다. 2026-10-09 12:30 UTC 공개 서비스의 일시적 503 한 번이 세 병원에
+# `[조치 필요]`를 열었고, 앞뒤 점검은 모두 정상이었다. 연속 두 번(15분 간격) 실패해야 사람을 부른다.
+_FAILURE_CHECKS = 2
 _RECOVERY_CHECKS = 3
 
 
@@ -55,7 +58,11 @@ async def record_domain_health_check(
     safe_reason: str,
     observed_at: datetime | None = None,
 ) -> DomainHealthOutcome:
-    """Append one immutable check and transition only its exact tenant incident."""
+    """Append one immutable check and transition only its exact tenant incident.
+
+    실패는 같은 도메인의 연속 `_FAILURE_CHECKS`번째부터 병원 인시던트를 연다. 한 번의 실패는
+    기록만 남긴다.
+    """
 
     checked_at = observed_at or datetime.now(UTC)
     sessions = get_async_sessionmaker()
@@ -108,7 +115,12 @@ async def record_domain_health_check(
             return DomainHealthOutcome(False, 0, False, False)
 
         if not healthy:
-            opened = await _open_domain_incident(db, hospital, run, canonical_host, safe_reason)
+            opened = False
+            failures = await _failure_streak(db, hospital_id, domain_key_value)
+            if failures >= _FAILURE_CHECKS:
+                opened = await _open_domain_incident(
+                    db, hospital, run, canonical_host, safe_reason
+                )
             await db.commit()
             return DomainHealthOutcome(True, 0, opened, False)
 
@@ -120,27 +132,64 @@ async def record_domain_health_check(
         return DomainHealthOutcome(True, streak, False, recovered)
 
 
-async def _healthy_streak(db: AsyncSession, hospital_id: uuid.UUID, domain_key: str) -> int:
+async def _state_streak(
+    db: AsyncSession,
+    *,
+    hospital_id: uuid.UUID | None,
+    operation_type: str,
+    key_prefix: str,
+    state: str,
+    limit: int,
+) -> int:
+    """How many of the newest checks in one history are in ``state``, up to ``limit``."""
+
+    owner = (
+        OperationRun.hospital_id.is_(None)
+        if hospital_id is None
+        else OperationRun.hospital_id == hospital_id
+    )
     rows = list(
         (
             await db.execute(
                 select(OperationRun.state)
                 .where(
-                    OperationRun.hospital_id == hospital_id,
-                    OperationRun.operation_type == _OPERATION_TYPE,
-                    OperationRun.idempotency_key.like(f"domain-health:{domain_key}:%"),
+                    owner,
+                    OperationRun.operation_type == operation_type,
+                    OperationRun.idempotency_key.like(f"{key_prefix}%"),
                 )
                 .order_by(OperationRun.requested_at.desc(), OperationRun.id.desc())
-                .limit(_RECOVERY_CHECKS)
+                .limit(limit)
             )
         ).scalars()
     )
     streak = 0
-    for state in rows:
-        if state != OperationRunState.SUCCEEDED.value:
+    for row_state in rows:
+        if row_state != state:
             break
         streak += 1
     return streak
+
+
+async def _healthy_streak(db: AsyncSession, hospital_id: uuid.UUID, domain_key: str) -> int:
+    return await _state_streak(
+        db,
+        hospital_id=hospital_id,
+        operation_type=_OPERATION_TYPE,
+        key_prefix=f"domain-health:{domain_key}:",
+        state=OperationRunState.SUCCEEDED.value,
+        limit=_RECOVERY_CHECKS,
+    )
+
+
+async def _failure_streak(db: AsyncSession, hospital_id: uuid.UUID, domain_key: str) -> int:
+    return await _state_streak(
+        db,
+        hospital_id=hospital_id,
+        operation_type=_OPERATION_TYPE,
+        key_prefix=f"domain-health:{domain_key}:",
+        state=OperationRunState.FAILED.value,
+        limit=_FAILURE_CHECKS,
+    )
 
 
 async def _open_domain_incident(

@@ -142,8 +142,10 @@ async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
             safe_reason="tls_or_network_error",
             observed_at=start + timedelta(hours=7),
         )
-        assert first.incident_opened is True
-        assert long_failure.incident_opened is False
+        # 한 번의 실패는 기록만 남기고, 연속 두 번째 실패가 인시던트를 연다.
+        assert first.recorded is True
+        assert first.incident_opened is False
+        assert long_failure.incident_opened is True
 
         for offset in (timedelta(hours=7, minutes=15), timedelta(hours=7, minutes=30)):
             partial = await control.record_domain_health_check(
@@ -162,6 +164,8 @@ async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
             observed_at=start + timedelta(hours=7, minutes=45),
         )
         assert reset.healthy_streak == 0
+        # 정상 사이에 낀 한 번의 실패는 열려 있는 인시던트도 다시 건드리지 않는다.
+        assert reset.incident_opened is False
 
         outcomes = []
         for minutes in (480, 495, 510):
@@ -205,7 +209,7 @@ async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
             )
             assert len(incidents) == 1
             assert incidents[0].state == IncidentState.RECOVERED.value
-            assert incidents[0].occurrence_count == 3
+            assert incidents[0].occurrence_count == 1
             assert incidents[0].admin_path == f"/hospitals/{hospital_id}/info"
             assert run_count == 8
             assert outbox_count == 1
