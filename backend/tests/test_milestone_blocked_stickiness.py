@@ -222,7 +222,11 @@ async def test_blocked_operator_copy_change_still_notifies(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_delivered_past_months_leave_the_current_state_scan(monkeypatch) -> None:
-    """이미 전달한 지난 계약 월은 병원 공통 차단이 켜져도 다시 사람을 부르지 않는다."""
+    """이미 전달한 지난 계약 월은 병원 공통 차단이 켜져도 다시 사람을 부르지 않는다.
+
+    전달하지 않은 4월도 더 늦은 8월이 이미 전달됐으므로 빠진다 — AE가 4월을 전달할 일은 없다.
+    더 늦은 준비·전달 달이 없는 미전달 달이 남는 것은 `test_milestone_monthly_scope`가 확인한다.
+    """
 
     delivered_old = _blocked_facts(
         period=(2026, 3),
@@ -245,10 +249,7 @@ async def test_delivered_past_months_leave_the_current_state_scan(monkeypatch) -
         {},
     )
 
-    assert set(scan.states) == {
-        f"monthly:{_HOSPITAL_ID}:2026-04",
-        f"monthly:{_HOSPITAL_ID}:2026-08",
-    }
+    assert set(scan.states) == {f"monthly:{_HOSPITAL_ID}:2026-08"}
 
 
 def test_summary_collapses_one_hospitals_repeated_blocked_months() -> None:
@@ -380,8 +381,9 @@ async def test_deploy_migrates_report_keyed_states_without_a_burst(monkeypatch) 
     """배포 직후 첫 관측: 옛 `monthly:{report_id}` 상태를 새 키로 옮기고 아무것도 다시 알리지 않는다."""
 
     ready_month = _ready_facts()
+    # 막힌 달은 준비된 8월보다 늦은 달이어야 관측 범위에 남아 이주를 검사할 수 있다.
     blocked_month = _blocked_facts(
-        period=(2026, 7), report_id=uuid.UUID("c1390000-0000-0000-0000-0000000000b1")
+        period=(2026, 9), report_id=uuid.UUID("c1390000-0000-0000-0000-0000000000b1")
     )
     legacy = {
         f"monthly:{_REPORT_ID}": "milestone:v1:legacy-hash",
@@ -391,7 +393,7 @@ async def test_deploy_migrates_report_keyed_states_without_a_burst(monkeypatch) 
     migrated = await _observe(monkeypatch, [ready_month, blocked_month], legacy)
 
     assert migrated.milestones == ()
-    assert set(migrated.states) == {_MONTH_KEY, f"monthly:{_HOSPITAL_ID}:2026-07"}
+    assert set(migrated.states) == {_MONTH_KEY, f"monthly:{_HOSPITAL_ID}:2026-09"}
     # 옮긴 뒤에는 옛 키가 남지 않고, 이후에도 조용하다.
     after = await _observe(
         monkeypatch, [ready_month, blocked_month], migrated.states, _later(15)
