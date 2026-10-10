@@ -223,3 +223,70 @@ async def test_wrong_marker_resets_streak_and_three_valid_checks_recover_once(
             await db.execute(delete(Hospital).where(Hospital.id == hospital_id))
             await db.commit()
         await engine.dispose()
+
+
+async def _delete_public_site_rows(sessions) -> None:
+    async with sessions() as db:
+        incident_ids = select(Incident.id).where(Incident.source_type == "PUBLIC_SITE_HEALTH")
+        await db.execute(
+            delete(NotificationOutbox).where(NotificationOutbox.incident_id.in_(incident_ids))
+        )
+        await db.execute(delete(Incident).where(Incident.source_type == "PUBLIC_SITE_HEALTH"))
+        await db.execute(
+            delete(OperationRun).where(OperationRun.operation_type == "PUBLIC_SITE_HEALTH_CHECK")
+        )
+        await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_shared_public_site_outage_opens_one_developer_incident_after_two_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine(_async_database_url())
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    start = datetime(2026, 10, 9, 12, 30, tzinfo=UTC)
+    monkeypatch.setattr(control, "get_async_sessionmaker", lambda: sessions)
+
+    try:
+        await _delete_public_site_rows(sessions)
+        verdicts = [3, 3, 2, 0, 1, 0]  # 실행마다 5xx를 받은 병원 수
+        outcomes = [
+            await control.record_public_site_check(
+                failing_hospitals=count, observed_at=start + timedelta(minutes=15 * index)
+            )
+            for index, count in enumerate(verdicts)
+        ]
+        duplicate = await control.record_public_site_check(
+            failing_hospitals=3, observed_at=start + timedelta(minutes=75)
+        )
+
+        assert [item.incident_opened for item in outcomes] == [False, True, False, False, False, False]
+        assert [item.incident_recovered for item in outcomes] == [False] * 5 + [True]
+        assert duplicate.recorded is False
+
+        async with sessions() as db:
+            incidents = list(
+                (
+                    await db.execute(
+                        select(Incident).where(Incident.source_type == "PUBLIC_SITE_HEALTH")
+                    )
+                ).scalars()
+            )
+            outbox = list(
+                (
+                    await db.execute(
+                        select(NotificationOutbox).where(
+                            NotificationOutbox.incident_id == incidents[0].id
+                        )
+                    )
+                ).scalars()
+            )
+            assert len(incidents) == 1
+            assert incidents[0].hospital_id is None
+            assert incidents[0].incident_type == "PUBLIC_SITE_UNAVAILABLE"
+            assert incidents[0].state == IncidentState.RECOVERED.value
+            assert incidents[0].occurrence_count == 2
+            assert [row.channel for row in outbox] == ["SLACK_DEV"]
+    finally:
+        await _delete_public_site_rows(sessions)
+        await engine.dispose()
