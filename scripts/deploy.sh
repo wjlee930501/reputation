@@ -688,6 +688,7 @@ deploy_api() {
     --execution-environment=gen2
   set -u
 
+  require_serving_latest reputation-api
   ok "API 배포 완료"
 }
 
@@ -718,6 +719,7 @@ deploy_worker() {
     --no-cpu-throttling
   set -u
 
+  require_serving_latest reputation-worker
   ok "Worker 배포 완료"
 }
 
@@ -748,6 +750,7 @@ deploy_beat() {
     --no-cpu-throttling
   set -u
 
+  require_serving_latest reputation-beat
   ok "Beat 배포 완료"
 }
 
@@ -866,6 +869,7 @@ deploy_site() {
     --timeout=60 \
     --cpu-boost
 
+  require_serving_latest reputation-site
   ok "Site 배포 완료"
 }
 
@@ -890,6 +894,7 @@ deploy_admin() {
     --timeout=60 \
     --cpu-boost
 
+  require_serving_latest reputation-admin
   ok "Admin 배포 완료"
 }
 
@@ -1278,8 +1283,43 @@ current_ready_revision() {
     --format='value(status.latestReadyRevisionName)' 2>/dev/null || true
 }
 
+# 배포 뒤 실제로 트래픽을 받는 리비전이 방금 Ready가 된 최신 리비전인지 확인한다. 고정 트래픽·은퇴 같은
+# 이유로 옛 리비전이 계속 서비스되면 "배포 완료"를 말하지 않는다.
+require_serving_latest() {
+  local service="$1" ready serving
+  ready="$(current_ready_revision "$service")"
+  serving="$(gcloud run services describe "$service" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
+  if [[ -n "$ready" && -n "$serving" && "$ready" != "$serving" ]]; then
+    fail "${service}: 최신 Ready 리비전(${ready})이 아니라 ${serving}가 트래픽을 받고 있습니다. 새 코드가 서비스되지 않습니다."
+  fi
+}
+
+# 트래픽이 특정 리비전에 고정돼 있으면 `gcloud run deploy`는 새 리비전을 만들자마자 은퇴시키고, 트래픽은
+# 옛 리비전에 남는다. 그런데도 deploy는 성공으로 끝나 "배포 완료"가 거짓이 된다(2026-10-10 API가 10/9 리비전에
+# 고정돼 새 코드가 서비스되지 않았다). 첫 mutation 전에 막고, 무엇을 하면 되는지 알려 준다.
+service_traffic_follows_latest() {
+  local service="$1" latest
+  latest="$(gcloud run services describe "$service" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format='value(spec.traffic[].latestRevision)' 2>/dev/null || true)"
+  [[ "$latest" == *True* ]]
+}
+
 capture_rollback_point() {
   local service revision captured=0
+
+  for service in "$@"; do
+    revision="$(current_ready_revision "$service")"
+    if [[ -n "$revision" ]] && ! service_traffic_follows_latest "$service"; then
+      fail "${service}의 트래픽이 최신 리비전이 아닌 특정 리비전에 고정돼 있습니다(현재 ${revision}). 이대로 배포하면 새 리비전이
+   만들어지자마자 은퇴하고 옛 코드가 계속 서비스됩니다. 고정이 의도한 것이 아니면 먼저
+   gcloud run services update-traffic ${service} --to-latest --region=${REGION} 를 실행한 뒤 다시 배포하세요."
+    fi
+  done
 
   {
     printf '# scripts/deploy.sh %s — %s (project=%s region=%s)\n' \

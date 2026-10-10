@@ -1,6 +1,15 @@
 # Re:putation — 현재 프로젝트 개발 안내
 
-## 최신 운영 배포 — 2026-10-08 근본 원인 수정(dispatch 배달·운영 채널 하나·운영 신호)
+## 최신 운영 배포 — 2026-10-10 반복 Slack 알림 근본 수정
+
+main `2cc60247`(PR #236·#237)을 API·Worker·Beat·Admin에 배포했다. 현재 리비전은 api `00240-c9n`, worker `00230-s6m`,
+beat `00225-npd`, admin `00104-gkq`이고 DB head는 `0086_preserve_historical_publications` 그대로다. 감시는 조건 에피소드당
+한 번·연속 두 점검으로 알리고 안전검사 보류는 알리지 않으며, 공개 주소 점검은 연속 두 번 실패해야 사고를 연다. 같은 병원의
+나중 달이 준비된 이른 달의 차단은 알리지 않는다. 배포 중 API 트래픽이 10/9 리비전에 **고정**돼 새 코드가 서비스되지 않는 거짓
+성공을 발견해 `--to-latest`로 옮겼고, `deploy.sh`가 고정 트래픽을 배포 전에 막고 배포 뒤 서비스 리비전을 확인하게 했다.
+상세는 [반복 알림 근본 수정 배포 기록](docs/releases/2026-10-10-alert-noise-production.md)을 본다.
+
+## 이전 운영 배포 — 2026-10-08 근본 원인 수정(dispatch 배달·운영 채널 하나·운영 신호)
 
 main `c5ada5a1`(PR #226·#227·#228 런타임, #229 문서)을 API·Worker·Beat에 배포했고, 이어 main `de74e3ed`(PR #231)를 두 번째로
 배포했다. 현재 리비전은 api `00236-hhz`, worker `00225-cmn`, beat `00220-cxc`이고 Site·Admin은 그대로, **DB head는 `0083_add_operation_run_not_before`**다.
@@ -144,7 +153,7 @@ BaseEssence의 일반 자료 추가 drift는 재합성하지 않는다. 명시�
 Site/Admin IAM 분리는 단계적으로 적용한다. 구 revision 종료 전 legacy grants를 회수하지 않는다.
 
 
-문서 버전: **2.19** · 갱신일: **2026-10-10 (Asia/Seoul)**
+문서 버전: **2.20** · 갱신일: **2026-10-10 (Asia/Seoul)**
 소스 기준선: **`4db1b69` 이후 커밋 이력 정합성 보완**
 구현 상태: **체크포인트 2(`a774851`) 운영 배포 완료. 그 뒤 main의 stable-base Essence(`8c59141`) 등 31개 커밋과 콘텐츠 수율 버전업 v2.7(`claude/system-performance-review-x6vtn4`, [계획](docs/plans/2026-09-12-content-yield-versionup-plan.md))은 미배포**
 
