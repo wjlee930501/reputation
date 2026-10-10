@@ -79,11 +79,17 @@ async def observe_monthly_milestones(
     states: dict[str, str] = {}
     changed: list[MilestoneProjection] = []
     for facts in latest:
-        if not _in_observation_scope(facts, observed_at, settled_through):
+        if not _in_observation_scope(facts, observed_at):
             continue
         key = _month_key(facts)
         month = _month_of(facts)
         previous = previous_states.get(key)
+        if _superseded_while_unready(facts, settled_through):
+            # 알리지 않되 기억은 넘긴다. 커서는 합쳐지지 않고 통째로 바뀌므로, 여기서 키를 버리면
+            # 늦은 달이 다시 막혀 이 달이 범위로 돌아올 때 '처음 보는 차단'으로 다시 알려진다.
+            if previous is not None:
+                states[key] = previous
+            continue
         try:
             event_type = _current_state(facts)
             ever_delivered = month in delivered_months
@@ -213,31 +219,38 @@ def _project_observed_current(
     )
 
 
-def _in_observation_scope(
-    facts: ReportFacts, observed_at: datetime, settled_through: dict[uuid.UUID, int]
-) -> bool:
+def _in_observation_scope(facts: ReportFacts, observed_at: datetime) -> bool:
     """Keep the current-state scan on months operators can still act on.
-
-    같은 병원의 더 늦은 달이 전달 준비 완료이거나 이미 전달됐다면, 그보다 이른 달은 조용히
-    빠진다(알림도 상태도 남기지 않는다). AE의 다음 할 일은 그 늦은 달의 전달이지 지나간 달이
-    아니다 — 2026-10-09 배포 직후 9월이 준비된 7개 병원에 8월 '월간 리포트 차단'이 나갔다.
-    전달 정정·철회·재전달(`_project_delivery_events`)은 사람의 행동이라 이 범위와 무관하다.
 
     이미 전달한 지난 계약 월의 리포트는 병원 공통 차단(예: 근거 자료 철회)이 켜지는
     순간 한 병원에서 여러 달치 차단이 한꺼번에 투영된다. 사람이 할 일은 그 병원의
-    자료 하나이지 닫힌 달의 리포트가 아니다. 전달되지 않은 달은 그 병원의 가장 늦은
-    준비·전달 달 이후라면 기간과 무관하게 남긴다 — 늦게 준비된 리포트의 전달 알림을 잃지 않는다.
+    자료 하나이지 닫힌 달의 리포트가 아니다. 전달되지 않은 달은 지연 전달을 위해
+    기간과 무관하게 남긴다 — 늦게 준비된 리포트의 전달 알림을 잃지 않는다.
+    더 늦은 달에 밀린 미준비 달은 `_superseded_while_unready`가 따로 조용히 한다.
     """
 
-    report = facts.report
-    period = report.period_year * 12 + report.period_month
-    settled = settled_through.get(facts.hospital.id)
-    if settled is not None and period < settled:
-        return False
     if not facts.delivered:
         return True
     local = observed_at.astimezone(KST)
-    return period >= local.year * 12 + local.month - 1
+    report = facts.report
+    return report.period_year * 12 + report.period_month >= local.year * 12 + local.month - 1
+
+
+def _superseded_while_unready(facts: ReportFacts, settled_through: dict[uuid.UUID, int]) -> bool:
+    """더 늦은 달이 준비·전달된 병원의 이른 달이 막혀 있거나 PDF 검증을 기다리는가.
+
+    그동안은 알리지 않는다. AE의 다음 할 일은 그 늦은 달의 전달이지 지나간 달의 차단이 아니다 —
+    2026-10-09 배포 직후 9월이 준비된 7개 병원에 8월 '월간 리포트 차단'이 나갔다. 이른 달이
+    전달 준비 완료가 되면 다시 알린다: 아직 전달하지 않은 계약 월은 AE가 전달해야 할 일이고,
+    `_should_notify`가 같은 준비 완료를 한 번만 알린다. 전달 정정·철회·재전달
+    (`_project_delivery_events`)은 사람의 행동이라 이 판정과 무관하다.
+    """
+
+    settled = settled_through.get(facts.hospital.id)
+    report = facts.report
+    if settled is None or report.period_year * 12 + report.period_month >= settled:
+        return False
+    return _current_state(facts) is not MonthlyEventType.CUSTOMER_READY
 
 
 def _latest_settled_months(

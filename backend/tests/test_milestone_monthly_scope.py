@@ -122,9 +122,8 @@ async def test_august_turning_blocked_is_silent_when_september_is_ready(monkeypa
     scan = await _observe(monkeypatch, [_blocked(8), _ready(9)], before)
 
     assert scan.milestones == ()
-    # 8월은 상태도 남기지 않는다 — 9월이 대신한다.
-    assert set(scan.states) == {_SEP_KEY}
-    assert scan.states[_SEP_KEY] == "READY:False"
+    # 8월은 알리지 않되 기억은 그대로 넘긴다 — 9월이 다시 막혀도 같은 일을 다시 알리지 않도록.
+    assert scan.states == before
 
 
 @pytest.mark.asyncio
@@ -134,7 +133,7 @@ async def test_august_is_silent_when_september_was_delivered(monkeypatch) -> Non
     scan = await _observe(monkeypatch, [_blocked(8), _blocked(9, delivered=True)], before)
 
     assert scan.milestones == ()
-    assert _AUG_KEY not in scan.states
+    assert scan.states[_AUG_KEY] == "READY:False"
 
 
 @pytest.mark.asyncio
@@ -162,7 +161,47 @@ async def test_september_newly_ready_notifies_and_august_leaves(monkeypatch) -> 
     assert [(item.kind, _month_of(item)) for item in scan.milestones] == [
         (MilestoneKind.MONTHLY_CUSTOMER_READY, 9)
     ]
-    assert set(scan.states) == {_SEP_KEY}
+    assert scan.states[_AUG_KEY] == "BLOCKED:True:True"
+
+
+@pytest.mark.asyncio
+async def test_superseded_august_turning_ready_notifies_once(monkeypatch) -> None:
+    """한 번도 전달하지 않은 8월이 9월 전달 뒤에 고쳐지면 AE가 전달할 일이다 — 한 번 알린다."""
+
+    before = {_AUG_KEY: "BLOCKED:True:True", _SEP_KEY: "READY:True"}
+    september = _ready(9, delivered=True)
+
+    blocked = await _observe(monkeypatch, [_blocked(8), september], before)
+    fixed = await _observe(
+        monkeypatch, [_ready(8), september], blocked.states, _WINDOW + timedelta(minutes=15)
+    )
+    again = await _observe(
+        monkeypatch, [_ready(8), september], fixed.states, _WINDOW + timedelta(minutes=30)
+    )
+
+    assert blocked.milestones == ()
+    assert [(item.kind, _month_of(item)) for item in fixed.milestones] == [
+        (MilestoneKind.MONTHLY_CUSTOMER_READY, 8)
+    ]
+    assert again.milestones == ()
+
+
+@pytest.mark.asyncio
+async def test_august_does_not_re_alert_when_september_blocks_again(monkeypatch) -> None:
+    """8월 차단을 이미 알린 뒤 9월이 준비되면 8월은 빠진다. 9월이 다시 막혀 8월이 범위로 돌아와도
+    기억이 남아 있으므로 8월 차단을 다시 알리지 않는다(원래 사고의 재현 경로)."""
+
+    before = {_AUG_KEY: "BLOCKED:True:True", _SEP_KEY: "READY:False"}
+
+    excluded = await _observe(monkeypatch, [_blocked(8), _ready(9)], before)
+    returned = await _observe(
+        monkeypatch, [_blocked(8), _blocked(9)], excluded.states, _WINDOW + timedelta(minutes=15)
+    )
+
+    assert excluded.milestones == ()
+    assert excluded.states[_AUG_KEY] == "BLOCKED:True:True"
+    assert all(_month_of(item) != 8 for item in returned.milestones)
+    assert returned.states[_AUG_KEY] == "BLOCKED:True:True"
 
 
 @pytest.mark.asyncio

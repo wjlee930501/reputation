@@ -224,8 +224,8 @@ async def test_blocked_operator_copy_change_still_notifies(monkeypatch) -> None:
 async def test_delivered_past_months_leave_the_current_state_scan(monkeypatch) -> None:
     """이미 전달한 지난 계약 월은 병원 공통 차단이 켜져도 다시 사람을 부르지 않는다.
 
-    전달하지 않은 4월도 더 늦은 8월이 이미 전달됐으므로 빠진다 — AE가 4월을 전달할 일은 없다.
-    더 늦은 준비·전달 달이 없는 미전달 달이 남는 것은 `test_milestone_monthly_scope`가 확인한다.
+    전달하지 않은 4월도 막혀 있는 동안은 더 늦은 8월이 이미 전달됐으므로 알리지 않는다. 처음 보는
+    달이라 넘길 기억도 없다. 4월이 전달 준비 완료가 되면 다시 알린다 — 아직 전달할 계약 월이다.
     """
 
     delivered_old = _blocked_facts(
@@ -250,6 +250,20 @@ async def test_delivered_past_months_leave_the_current_state_scan(monkeypatch) -
     )
 
     assert set(scan.states) == {f"monthly:{_HOSPITAL_ID}:2026-08"}
+    assert all("2026년 4월" != item.period_label for item in scan.milestones)
+
+    april_ready = _ready_facts(report_id=uuid.UUID("c1390000-0000-0000-0000-0000000000a4"))
+    april_ready.report.period_month = 4
+    later = await _observe(
+        monkeypatch,
+        [delivered_old, april_ready, delivered_recent],
+        scan.states,
+        observed_at=_WINDOW + timedelta(minutes=15),
+    )
+
+    assert [(item.kind, item.period_label) for item in later.milestones] == [
+        (MilestoneKind.MONTHLY_CUSTOMER_READY, "2026년 4월")
+    ]
 
 
 def test_summary_collapses_one_hospitals_repeated_blocked_months() -> None:
