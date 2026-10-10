@@ -660,6 +660,7 @@ def test_failed_delivery_retries_every_fifteen_minutes_until_delivered(monkeypat
     report = _publish_missing_report(monkeypatch, start)
     beats = Heartbeats(monkeypatch, deliver=False)
 
+    beats.beat(report, start - timedelta(minutes=5))  # 첫 관측 — 확정은 다음 하트비트다.
     beats.beat(report, start)
     beats.beat(report, start + timedelta(minutes=5))
     beats.beat(report, start + timedelta(minutes=10))
@@ -723,6 +724,7 @@ def test_kst_midnight_rollover_is_not_a_recovery(monkeypatch, webhooks):
     missing = _publish_missing_report(monkeypatch, morning)
     beats = Heartbeats(monkeypatch)
     beats.beat(missing, morning)
+    beats.beat(missing, morning + timedelta(minutes=5))  # 두 번째 관측에서 확정된다.
     beats.beat(missing, datetime(2026, 10, 9, 14, 55, tzinfo=UTC))  # KST 23:55
 
     # 자정이 지나면 08:30 전이라 발행 판정 자체가 없다 — 정상 보고서와 같다.
@@ -736,8 +738,11 @@ def test_kst_midnight_rollover_is_not_a_recovery(monkeypatch, webhooks):
     assert after_midnight.critical_conditions == ()
     beats.beat(after_midnight, midnight)
     beats.beat(after_midnight, midnight + timedelta(minutes=5))
-    # 다음 날 08:30에 또 0건이면 그날의 새 사실로 한 번 알린다.
-    beats.beat(missing, datetime(2026, 10, 9, 23, 30, tzinfo=UTC))
+    # 다음 날 08:30에 또 0건이면 그날의 새 사실로 한 번 알린다(전날 확정은 이어받지 않는다).
+    next_morning = datetime(2026, 10, 9, 23, 30, tzinfo=UTC)
+    first_look = beats.beat(missing, next_morning)
+    assert all(not decision.send for decision in first_look)
+    beats.beat(missing, next_morning + timedelta(minutes=5))
 
     assert beats.sent == [
         ("operator", "ALERT", "new_condition_set"),
@@ -827,7 +832,7 @@ def test_a_remembered_gate_residual_alert_is_dropped_without_a_recovery(monkeypa
     assert beats.sent == []
 
 
-def test_redis_outage_fails_open_at_most_once_per_hour(monkeypatch, webhooks):
+def test_redis_outage_fails_open_at_most_once_per_twenty_minutes(monkeypatch, webhooks):
     start = datetime(2026, 10, 9, 5, 0, tzinfo=UTC)  # KST 14:00
     broken = _broken_report(monkeypatch, start)
     monkeypatch.setattr(pipeline_watchdog, "_connect_redis", lambda: FakeRedis(broken=True))
@@ -837,17 +842,18 @@ def test_redis_outage_fails_open_at_most_once_per_hour(monkeypatch, webhooks):
         now = start + timedelta(minutes=5 * step)
         for decision in pipeline_watchdog.decide_alerts(_at(broken, now), now=now):
             if decision.send:
-                sent.append((now.astimezone(KST).hour, decision.audience, decision.reason))
+                local = now.astimezone(KST)
+                sent.append((f"{local:%H:%M}", decision.audience, decision.reason))
     # 전달 기록도 Redis 없이 예외 없이 넘어가야 한다.
     pipeline_watchdog.record_deliveries(
         pipeline_watchdog.decide_alerts(broken, now=start), (True, True)
     )
 
+    # 실제 장애가 알려지기까지 최대 20분, 시간당 최대 세 건.
     assert sent == [
-        (14, "developer", "redis_unavailable"),
-        (14, "operator", "redis_unavailable"),
-        (15, "developer", "redis_unavailable"),
-        (15, "operator", "redis_unavailable"),
+        (slot, audience, "redis_unavailable")
+        for slot in ("14:00", "14:20", "14:40", "15:00", "15:20", "15:40")
+        for audience in ("developer", "operator")
     ]
 
 
@@ -1042,3 +1048,130 @@ def test_watchdog_registers_no_celery_task():
 
     assert not [name for name in celery_app.tasks if "watchdog" in name]
     assert "watchdog" not in json.dumps(list(celery_app.conf.beat_schedule))
+
+
+# ── 리뷰 #236: 당일 발행 히스테리시스·정직한 복구·전달 기록 경합 ──────────────────
+
+
+def _gate_residual_report(monkeypatch, now):
+    """발행기는 돌았지만 오늘 예정 글을 공개 직전 안전검사가 모두 보류한 보고서."""
+    report, _ = _install(
+        monkeypatch,
+        now=now,
+        beat_last_run=now - timedelta(minutes=2),
+        session_results=(5, 0, now - timedelta(hours=9)),
+        block_rows=(_block_row("MISSING_REFERENCES", content_id="a"),),
+    )
+    assert report.publish_gate_residual and report.critical_conditions == ()
+    return report
+
+
+def test_a_publisher_still_running_at_0830_sends_nothing(monkeypatch, webhooks):
+    """08:30에 08:00 발행기가 아직 도는 중이면 한 번 0건으로 보인다 — 알리고 복구하지 않는다."""
+    start = datetime(2026, 10, 9, 23, 30, tzinfo=UTC)  # KST 08:30
+    missing = _publish_missing_report(monkeypatch, start)
+    healthy = _healthy_report(monkeypatch, start)
+    beats = Heartbeats(monkeypatch)
+
+    beats.beat(missing, start)
+    for step in range(1, 6):
+        beats.beat(healthy, start + timedelta(minutes=5 * step))
+
+    assert beats.sent == []
+
+
+def test_operator_recovery_after_gate_holds_does_not_claim_publication(monkeypatch, webhooks):
+    start = datetime(2026, 10, 9, 23, 30, tzinfo=UTC)
+    missing = _publish_missing_report(monkeypatch, start)
+    residual = _gate_residual_report(monkeypatch, start)
+    beats = Heartbeats(monkeypatch)
+    beats.beat(missing, start)
+    beats.beat(missing, start + timedelta(minutes=5))
+
+    beats.beat(residual, start + timedelta(minutes=10))
+    recovery = beats.beat(residual, start + timedelta(minutes=15))
+
+    operator = [d for d in recovery if d.send and d.audience == "operator"]
+    assert [d.kind for d in operator] == ["RECOVERY"]
+    assert "다시 공개되고 있습니다" not in operator[0].text
+    assert "모두 보류됐습니다" in operator[0].text
+    assert "콘텐츠 보류 알림" in operator[0].text
+    assert "0건" in operator[0].text
+
+
+def test_operator_recovery_with_publications_still_says_publishing_resumed(monkeypatch, webhooks):
+    start = datetime(2026, 10, 9, 23, 30, tzinfo=UTC)
+    missing = _publish_missing_report(monkeypatch, start)
+    published = replace(
+        _healthy_report(monkeypatch, start),
+        publish_checked=True,
+        publish_due_remaining=2,
+        publish_published_today=3,
+        publish_partial=True,
+    )
+    beats = Heartbeats(monkeypatch)
+    beats.beat(missing, start)
+    beats.beat(missing, start + timedelta(minutes=5))
+    beats.beat(published, start + timedelta(minutes=10))
+    recovery = beats.beat(published, start + timedelta(minutes=15))
+
+    operator = [d for d in recovery if d.send and d.audience == "operator"]
+    assert "다시 공개되고 있습니다" in operator[0].text
+    assert "3건" in operator[0].text
+
+
+def test_a_database_outage_is_not_a_publish_recovery(monkeypatch, webhooks):
+    start = datetime(2026, 10, 9, 23, 30, tzinfo=UTC)
+    missing = _publish_missing_report(monkeypatch, start)
+    unknown = replace(
+        missing,
+        database_available=False,
+        publish_checked=False,
+        publish_missing=False,
+        publish_due_remaining=None,
+        publish_published_today=None,
+    )
+    beats = Heartbeats(monkeypatch)
+    beats.beat(missing, start)
+    beats.beat(missing, start + timedelta(minutes=5))
+    for step in range(2, 8):
+        beats.beat(unknown, start + timedelta(minutes=5 * step))
+    beats.beat(missing, start + timedelta(minutes=40))
+
+    assert beats.sent == [("operator", "ALERT", "new_condition_set")]
+
+
+def test_an_overlapping_heartbeat_cannot_erase_a_recorded_delivery(monkeypatch, webhooks):
+    """08:30:00 발행 확인과 08:30:04 하트비트가 겹친다. 뒤 호출이 전달 기록 전에 읽은 에피소드를
+    기록 뒤에 저장해도 전달 사실은 남는다 — 15분 뒤 같은 ALERT가 다시 나가지 않는다."""
+    start = datetime(2026, 10, 9, 23, 30, tzinfo=UTC)
+    report = _publish_missing_report(monkeypatch, start)
+    beats = Heartbeats(monkeypatch)
+    beats.beat(report, start - timedelta(minutes=5))
+
+    beats.client.clock = start.timestamp()
+    first = pipeline_watchdog.decide_alerts(_at(report, start), now=start)
+    assert [d.reason for d in first if d.send] == ["new_condition_set"]
+
+    real_load = pipeline_watchdog._load_episode
+    raced = []
+
+    def load_then_other_call_records(client, audience):
+        stored = real_load(client, audience)
+        if audience == "operator" and not raced:
+            raced.append(True)
+            # 이 호출이 에피소드를 읽은 직후, 앞 호출이 2xx를 받고 전달을 기록한다.
+            pipeline_watchdog.record_deliveries(first, tuple(d.send for d in first))
+        return stored
+
+    monkeypatch.setattr(pipeline_watchdog, "_load_episode", load_then_other_call_records)
+    overlapping = start + timedelta(seconds=4)
+    second = pipeline_watchdog.decide_alerts(_at(report, overlapping), now=overlapping)
+    monkeypatch.setattr(pipeline_watchdog, "_load_episode", real_load)
+
+    later = [
+        beats.beat(report, start + timedelta(minutes=5 * step)) for step in range(1, 12)
+    ]
+
+    assert raced and all(not d.send for d in second)
+    assert all(not d.send for decisions in later for d in decisions)
