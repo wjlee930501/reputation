@@ -61,6 +61,17 @@ _FAKE_GCLOUD = "\n".join(
         '    echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
         "    exit 1",
         "    ;;",
+        '  "storage cp "*)',
+        '    if [[ "${FAKE_LOCK_HELD:-0}" == "1" && "$*" == *"--if-generation-match=0"* ]]; then',
+        '      echo "ERROR: HTTPError 412: At least one of the pre-conditions you specified did not hold." >&2',
+        "      exit 1",
+        "    fi",
+        "    exit 0",
+        "    ;;",
+        '  "storage cat "*)',
+        '    printf \'%s\\n\' "${FAKE_LOCK_CONTENT:-}"',
+        "    exit 0",
+        "    ;;",
         '  "run services describe "*"spec.traffic"*)',
         '    if [[ "${FAKE_TRAFFIC_PINNED:-0}" == "1" ]]; then',
         '      echo ""',
@@ -172,6 +183,8 @@ def _clean_env(fake_bin: Path, command_log: Path, **extra: str) -> dict[str, str
         "GCP_REGION": "asia-northeast3",
         "REPUTATION_RELEASE_REVISION": "test-source-revision",
         "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
+        # 배치 시간대 밖의 고정 시각 — 실제 시각에 따라 테스트가 깨지지 않게 한다.
+        "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
     }
     env.update(extra)
     return env
@@ -1035,6 +1048,7 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "DB_USER": "reputation",
             "GCP_STORAGE_BUCKET": "reputation-assets",
             "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
+            "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
             "OPENAI_CHATGPT_USE_WEB_SEARCH": "true",
                 "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
@@ -1210,6 +1224,7 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
             "GCP_REGION": "asia-northeast3",
             "PUBLIC_DOMAIN": "reputation.example.test",
             "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
+            "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
                 "ADMIN_DOMAIN": "admin.reputation.example.test",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
                 "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
@@ -2058,3 +2073,77 @@ def test_unreadable_live_env_fails_closed(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "운영 서비스 env를 읽지 못했습니다" in result.stderr
     assert "gcloud run deploy" not in command_log.read_text()
+
+
+def _run_target(tmp_path: Path, target: str, *args: str, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", target, *args],
+        cwd=project,
+        env=_clean_env(
+            fake_bin, command_log,
+            SKIP_ASSET_BUCKET_PREFLIGHT="1",
+            SKIP_PUBLIC_DNS_PREFLIGHT="1",
+            PUBLIC_DOMAIN="reputation.example.test",
+            ADMIN_DOMAIN="admin.reputation.example.test",
+            **extra,
+        ),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+@pytest.mark.parametrize("clock", ["2026-10-11T22:30", "2026-10-11T00:20", "2026-10-11T12:45", "2026-10-11T17:15"])
+def test_backend_deploy_is_blocked_inside_a_batch_window(tmp_path: Path, clock: str) -> None:
+    result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
+    assert result.returncode != 0
+    assert "콘텐츠 배치" in result.stderr
+    assert "--override-reason" in result.stderr
+    assert "docker build" not in commands
+    assert "storage cp" not in commands
+
+
+@pytest.mark.parametrize("clock", ["2026-10-11T12:46", "2026-10-11T14:30", "2026-10-11T02:46"])
+def test_backend_deploy_runs_outside_batch_windows(tmp_path: Path, clock: str) -> None:
+    result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
+    assert result.returncode == 0, result.stderr
+    assert "ops/deploy-lock/2026-10-11.json" in commands
+    assert "--if-generation-match=0" in commands
+    # 잠금은 첫 mutation(이미지 빌드) 전에 잡는다.
+    assert commands.index("storage cp") < commands.index("docker build")
+
+
+def test_second_release_on_the_same_day_is_refused(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_LOCK_HELD="1",
+        FAKE_LOCK_CONTENT='{"day": "2026-10-11", "revision": "another-release"}',
+    )
+    assert result.returncode != 0
+    assert "하루 한 번" in result.stderr
+    assert "docker build" not in commands
+
+
+def test_retrying_the_same_release_on_the_same_day_is_allowed(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_LOCK_HELD="1",
+        FAKE_LOCK_CONTENT='{"day": "2026-10-11", "revision": "test-source-revision"}',
+    )
+    assert result.returncode == 0, result.stderr
+    assert "같은 릴리스" in result.stderr
+
+
+def test_override_reason_passes_the_rules_and_is_recorded(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", "--override-reason=발행 장애 긴급 수정",
+        DEPLOY_CLOCK_KST="2026-10-11T22:50", FAKE_LOCK_HELD="1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "배포 규칙 예외: 발행 장애 긴급 수정" in result.stderr
+    assert "ops/deploy-lock/2026-10-11-override-2250" in commands
+
+
+def test_site_deploy_is_not_bound_by_the_backend_rules(tmp_path: Path) -> None:
+    result, commands = _run_target(tmp_path, "site", DEPLOY_CLOCK_KST="2026-10-11T22:50")
+    assert result.returncode == 0, result.stderr
+    assert "storage cp" not in commands
