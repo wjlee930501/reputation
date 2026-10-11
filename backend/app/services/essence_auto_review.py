@@ -63,10 +63,14 @@ AUTO_ESSENCE_CONFIDENCE = 0.90
 AUTO_ESSENCE_ADJUDICATION_CONFIDENCE = 0.95
 AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS = 2
 # 자동 재검수 예산. 한 번 보류했다고 영구 정지시키지 않는다 — LLM 출력은 확률적이라
-# 같은 입력에서도 다음 판이 통과할 수 있다. 대신 사이클마다 24h × 2^(cycle-1)로 물러서고
-# 예산을 다 쓰면 그때 사람의 일이 된다(무한 재구매 금지).
+# 같은 입력에서도 다음 판이 통과할 수 있다. 사이클마다 1h → 4h → 12h로 물러서고
+# 4번째 보류에서 예산을 다 쓰면 그때 사람의 일이 된다(무한 재구매 금지, 합계 약 17시간).
 AUTO_ESSENCE_MAX_RECOVERY_CYCLES = 4
-AUTO_ESSENCE_RECOVERY_BASE_BACKOFF = timedelta(hours=24)
+AUTO_ESSENCE_RECOVERY_BACKOFFS: tuple[timedelta, ...] = (
+    timedelta(hours=1),
+    timedelta(hours=4),
+    timedelta(hours=12),
+)
 # 필수 자료가 이 시간 넘게 ERROR면 합성 입력과 완결성 검사에서 빼고 그 사실을 gap으로
 # 남긴다. 자료 한 건의 영구 실패가 병원 전체의 Essence를 영원히 막지 않게 한다.
 ERROR_SOURCE_EXCLUSION_AFTER = timedelta(hours=72)
@@ -458,11 +462,18 @@ def effective_recovery_cycle(philosophy: HospitalContentPhilosophy) -> int:
     return cycles
 
 
+def automatic_recovery_backoff(cycle: int) -> timedelta:
+    """사이클 c를 쓴 보류가 다음 자동 재검수까지 기다리는 시간. 읽기·쓰기가 같은 표를 쓴다."""
+
+    index = min(max(int(cycle), 1), len(AUTO_ESSENCE_RECOVERY_BACKOFFS)) - 1
+    return AUTO_ESSENCE_RECOVERY_BACKOFFS[index]
+
+
 def automatic_recovery_due_at(philosophy: HospitalContentPhilosophy) -> datetime | None:
     """다음 자동 재검수가 가능한 시각. None이면 자동 예산이 끝났다(사람의 일).
 
-    사이클 c를 이미 쓴 초안은 마지막 시도로부터 24h × 2^(c-1)이 지나야 다시 시도한다.
-    표식이 없는 옛 초안(c=0)과 레거시 영구 정지 표식은 지금 바로 한 번 받는다.
+    사이클 c를 이미 쓴 초안은 마지막 시도로부터 `automatic_recovery_backoff(c)`가 지나야
+    다시 시도한다. 표식이 없는 옛 초안(c=0)과 레거시 영구 정지 표식은 지금 바로 한 번 받는다.
     """
 
     cycles = effective_recovery_cycle(philosophy)
@@ -471,7 +482,7 @@ def automatic_recovery_due_at(philosophy: HospitalContentPhilosophy) -> datetime
         return None
     if cycles <= 0 or last_at is None:
         return datetime.min.replace(tzinfo=timezone.utc)
-    return last_at + AUTO_ESSENCE_RECOVERY_BASE_BACKOFF * (2 ** (cycles - 1))
+    return last_at + automatic_recovery_backoff(cycles)
 
 
 def automatic_recovery_owns_draft(philosophy: HospitalContentPhilosophy) -> bool:
@@ -1859,7 +1870,7 @@ def refresh_essence_snapshot(
         effective_recovery_cycle(retryable_auto_draft) if retryable_auto_draft else 0
     ) + 1
     next_attempt_at = (
-        escalated_at + AUTO_ESSENCE_RECOVERY_BASE_BACKOFF * (2 ** (recovery_cycle - 1))
+        escalated_at + automatic_recovery_backoff(recovery_cycle)
         if recovery_cycle < AUTO_ESSENCE_MAX_RECOVERY_CYCLES
         else None
     )
@@ -1935,11 +1946,12 @@ __all__ = (
     "AUTO_ESSENCE_CONFIDENCE",
     "AUTO_ESSENCE_MAX_RECOVERY_CYCLES",
     "AUTO_ESSENCE_MAX_SYNTHESIS_ATTEMPTS",
-    "AUTO_ESSENCE_RECOVERY_BASE_BACKOFF",
+    "AUTO_ESSENCE_RECOVERY_BACKOFFS",
     "ERROR_SOURCE_EXCLUSION_AFTER",
     "EssenceAiReview",
     "EssenceRefreshResult",
     "EssenceRefreshStatus",
+    "automatic_recovery_backoff",
     "automatic_recovery_due_at",
     "automatic_recovery_owns_draft",
     "effective_recovery_cycle",

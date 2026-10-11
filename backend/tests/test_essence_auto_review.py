@@ -509,18 +509,27 @@ def _auto_draft(
     )
 
 
-def test_escalated_draft_waits_one_day_then_two_then_four() -> None:
+def test_escalated_draft_waits_one_then_four_then_twelve_hours() -> None:
     last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
 
     assert essence_auto_review.automatic_recovery_due_at(
         _auto_draft(cycles=1, last_at=last_at)
-    ) == last_at + timedelta(hours=24)
+    ) == last_at + timedelta(hours=1)
     assert essence_auto_review.automatic_recovery_due_at(
         _auto_draft(cycles=2, last_at=last_at)
-    ) == last_at + timedelta(hours=48)
+    ) == last_at + timedelta(hours=4)
     assert essence_auto_review.automatic_recovery_due_at(
         _auto_draft(cycles=3, last_at=last_at)
-    ) == last_at + timedelta(hours=96)
+    ) == last_at + timedelta(hours=12)
+
+
+def test_recovery_backoff_is_one_table_for_read_and_write() -> None:
+    assert essence_auto_review.automatic_recovery_backoff(1) == timedelta(hours=1)
+    assert essence_auto_review.automatic_recovery_backoff(2) == timedelta(hours=4)
+    assert essence_auto_review.automatic_recovery_backoff(3) == timedelta(hours=12)
+    # 표 밖의 사이클은 마지막 칸을 쓴다(상한 4에서는 도달하지 않지만 0·음수·초과에 안전하다).
+    assert essence_auto_review.automatic_recovery_backoff(0) == timedelta(hours=1)
+    assert essence_auto_review.automatic_recovery_backoff(9) == timedelta(hours=12)
 
 
 def test_automatic_recovery_budget_is_exhausted_at_four_cycles() -> None:
@@ -532,8 +541,8 @@ def test_automatic_recovery_budget_is_exhausted_at_four_cycles() -> None:
     assert essence_auto_review._is_retryable_auto_draft(exhausted, far_future) is False
     # 예산 안이면 기한 전에는 재시도하지 않고, 기한이 지나면 다시 한 번 만든다.
     pending = _auto_draft(cycles=1, last_at=last_at)
-    assert essence_auto_review._is_retryable_auto_draft(pending, last_at + timedelta(hours=1)) is False
-    assert essence_auto_review._is_retryable_auto_draft(pending, last_at + timedelta(hours=25)) is True
+    assert essence_auto_review._is_retryable_auto_draft(pending, last_at + timedelta(minutes=30)) is False
+    assert essence_auto_review._is_retryable_auto_draft(pending, last_at + timedelta(hours=1)) is True
 
 
 def test_legacy_permanent_stop_marker_resumes_the_ladder_instead_of_starving() -> None:
@@ -564,7 +573,7 @@ def test_automatic_budget_owns_a_waiting_draft_even_before_its_due_time() -> Non
     waiting = _auto_draft(cycles=1, last_at=last_at)
 
     assert essence_auto_review.automatic_recovery_owns_draft(waiting) is True
-    assert essence_auto_review._is_retryable_auto_draft(waiting, last_at + timedelta(hours=1)) is False
+    assert essence_auto_review._is_retryable_auto_draft(waiting, last_at + timedelta(minutes=30)) is False
     # 사람이 손댄 초안은 예산과 무관하게 사람의 일이다.
     assert essence_auto_review.automatic_recovery_owns_draft(_auto_draft(edited=True)) is False
     assert (
