@@ -36,6 +36,17 @@ gcloud run jobs execute reputation-migrate --project mso-platform-481505 --regio
 
 항목 이름은 `backend/app/core/celery_app.py`의 `beat_schedule` 키다. 결과는 Worker 로그에서 반환 task id로 확인한다.
 
+## 운영 DB 읽기 전용 조회
+
+운영 DB는 사설 IP라 작업 PC에서 직접 붙지 않는다. 자율 운영 지표(Q1~Q6, 쿼리 원문은 `backend/app/utils/ops_sql_report.py`)는
+VPC 안의 migrate Job으로 돌린다. CLI는 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행하고 끝나면 롤백하며, 쿼리마다 JSON 한 줄을
+Job 로그에 남긴다. gcloud `--args`는 쉼표로 인자를 나누므로 `--only`는 쿼리마다 따로 넘긴다(`--only=q1,q3`은 한 토큰이 아니다).
+
+```bash
+gcloud run jobs execute reputation-migrate --project mso-platform-481505 --region asia-northeast3 --wait \
+  --args=python,-m,app.utils.ops_sql_report,--only=q1,--only=q3
+```
+
 ## 이전 운영 배포 — 2026-10-01 미결 PR 정리·원장 보고서 개편
 
 main `a8a86b57`을 5개 서비스에, #194·#196·#197(최종 `ce731db7`)을 API·Worker·Beat에 배포했다. 현재 리비전은
@@ -203,7 +214,43 @@ Cloud Run이 옛 워커를 10초 뒤 SIGKILL하면 kombu가 미확인 메시지�
 열고 서명은 1시간(`DISPATCH_TTL_SECONDS`) 그대로 두어 겹침 구간의 옛 워커가 새 봉투를 거절하지 않게 하고, #226 이전
 워커 리비전이 모두 사라진 다음 릴리스에서 서명을 6시간으로 올린다. 옛 워커가 실행 중이던 메시지는 7200초 뒤 되돌아와
 만료로 거절되지만(일회성, 사고 1건), 새 순서에서는 만료 사본이 실행을 claim하거나 FAILED로 끝내지 못한다. 배포 뒤에는 `run_beat_entry daily-fleet-heartbeat`로
-일일 요약을 즉시 받아 "점검 이상 없음"을 확인한다.
+일일 요약을 즉시 받아 "점검 이상 없음"을 확인한다. **2026-10-11 릴리스(Phase 0)에서 서명을 6시간으로 올렸다**(#226 이전 워커
+`00223-llc` 이하는 10/8 이후 트래픽 없음 — 10/8의 `00224-xnt`부터 #226이 들어 있다). 이후 워커를 `00223` 이하로 롤백하지 않는다 —
+그 리비전은 수명이 정확히 1시간인 봉투만 받으므로 6시간 봉투를 모두 거절한다.
+
+**Phase 0(2026-10-11, `0087_add_operation_run_redispatch_count`) — 배포 전 확인.** 0087은 추가형(`operation_runs.redispatch_count`
+NOT NULL DEFAULT 0)이라 `deploy.sh`의 migrate 선행 순서로 충분하다. 배포 전에 아래를 읽기 전용으로 조회해 기록한다([운영 DB 읽기 전용 조회](#운영-db-읽기-전용-조회)의
+migrate Job으로 돌리거나 같은 SELECT를 읽기 전용 세션에서 실행한다).
+
+```sql
+-- (a) 배포 뒤 첫 자율 복구가 FAILED(OPERATION_RUN_ABANDONED)로 정리할 RUNNING 잔재. MONTHLY_SOV_PERIOD는 20일 기준이라
+--     10일 결과에 들어 있어도 정리되지 않을 수 있다.
+SELECT operation_type, count(*) FROM operation_runs
+WHERE state='RUNNING' AND operation_type <> 'SITE_REVALIDATION'
+  AND (lease_expires_at IS NULL OR lease_expires_at <= now())
+  AND updated_at <= now() - interval '10 days'
+GROUP BY 1;
+-- (b) 교체 후보 SQL이 정수로 캐스트하는 수리 일수(essence_check_summary 최상위 automatic_body_repair). 기대값 0.
+SELECT count(*) FROM content_items
+WHERE jsonb_typeof(essence_check_summary->'automatic_body_repair') = 'object'
+  AND jsonb_typeof(essence_check_summary->'automatic_body_repair'->'exhausted_days') NOT IN ('number','null');
+-- (c) 이미 교체된 슬롯 수와, 첫 스윕에서 곧바로 교체될 수 있는 생성 예산 소진(RETRYING) 슬롯 수.
+SELECT count(*) FILTER (WHERE jsonb_array_length(coalesce(topic_swap_history,'[]'::jsonb)) > 0) AS swapped,
+       count(*) FILTER (WHERE essence_check_summary->'generation_attempt'->>'reason' = 'GENERATION_BUDGET_EXHAUSTED'
+                          AND essence_check_summary->'generation_attempt'->>'retry_class' = 'SAMPLE_RECOVERABLE'
+                          AND first_published_at IS NULL AND human_edited_at IS NULL
+                          AND jsonb_array_length(coalesce(topic_swap_history,'[]'::jsonb)) = 0) AS swap_candidates
+FROM content_items
+WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
+```
+
+(b)가 0이 아니면 배포 전에 그 행을 확인한다 — 정수가 아닌 값은 교체 후보 SQL의 캐스트를 실패시킨다. (c)의 `swap_candidates`는
+현재 주제의 작가 예산이 찼는지를 파이썬 술어가 다시 보므로 상한일 뿐이다.
+
+**Phase 0 — 배포 뒤 1회 조치.** 배포만으로는 이미 기한 없이 굳은 슬롯이 풀리지 않는다(게이트가 예전에 `OPERATOR_REQUIRED`로
+남긴 `CONTENT_NOT_GENERATED` 등). `ops_sql_report --only=q4`로 `OPERATOR_REQUIRED`·`INPUT_CHANGE_REQUIRED` 슬롯을 원인별로 뽑고,
+그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다.
+다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**
 새 ORM이 `operation_runs.not_before_at`을 SELECT한다. 추가형·NULL 허용이라 0083 위의 옛 코드는 안전하다.
