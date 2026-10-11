@@ -164,6 +164,13 @@ readiness gate는 아래 절차를 따랐다. Site/Admin SA는 분리됐으며 l
 
 저장소 루트의 `.env.production`과 접근 가능한 Secret Manager 설정을 준비한다. 비밀 값을 추적 파일에 넣지 않는다. `scripts/deploy.sh`는 Git 소스 버전을 고정하고 필수 환경·secret·DB 연결·공개 도메인 등을 검사한다.
 
+**`deploy.sh`가 스스로 지키는 규칙(2026-10 자율 운영 P2).** 사람이 배포 전후에 하던 확인 몇 가지를 스크립트가 맡는다.
+
+- **env 정본은 운영 서비스다.** backend 대상(`backend·api·worker·beat·all·migrate`)은 운영 `reputation-api`의 현재 env(비밀 아닌 값)를 배포 입력으로 쓴다. 로컬 `.env.production`이 다르면 바뀌는 키 이름만(값은 출력하지 않음) 보여 주고 멈춘다. 로컬 값으로 바꾸려는 것이 맞으면 `--accept-env-diff`를 붙인다. 서비스가 없는 신규 환경은 `.env.production`으로 시작한다. 운영 env를 읽지 못하면(권한 등) 로컬 파일로 대신 배포하지 않는다.
+- **시간대와 하루 한 번.** Worker·Beat를 바꾸는 대상(`backend·api·worker·beat·all`)은 콘텐츠 배치(23:00과 01·04·07·12·18·22시 KST) 앞뒤 45분 안이면 멈추고, KST 하루 한 릴리스만 배포한다(`gs://reputation-reports-<project>/ops/deploy-lock/<KST 날짜>.json`, 같은 릴리스의 재시도는 허용). 예외는 `--override-reason="사유"`로만 하고 사유는 같은 경로의 `<날짜>-override-<HHMM>.json`에 남는다. `site·admin·migrate·rollback`은 막지 않는다.
+- **자동 롤백.** readiness Job이 실패하거나, API 배포 뒤 공개 표면 확인(`/api/v1/health/live`의 `release`가 이번 배포 SHA인지, 배포 전 정상이던 병원 헬스의 `slug`·`canonical_host`·Site 리비전이 그대로인지 — `scripts/deploy_smoke.py`)이 실패하면 `.deploy-rollback`의 배포 시작 전 리비전으로 트래픽을 자동으로 되돌린다. DB 마이그레이션은 되돌리지 않는다. 0084 같은 비호환 릴리스는 `AUTO_ROLLBACK=0`으로 끄고(멈추기만 한다) 아래 롤백 절을 따른다. 공개 표면 확인은 `SKIP_POST_DEPLOY_SMOKE=1`로 건너뛸 수 있다(로그에 남는다).
+- **고정 트래픽.** 서비스 트래픽이 특정 리비전에 고정돼 있으면 배포 전에 멈춘다. 고정이 의도한 것이 아니면 `--unpin`을 붙인다 — 새 리비전이 Ready가 된 뒤 `update-traffic --to-latest`로 옮기고, 롤백 좌표는 지금 트래픽을 받는 리비전으로 남긴다(배포 전에 `--to-latest`를 먼저 치면 고정의 이유였을 리비전으로 트래픽이 간다).
+
 **(완료 2026-09-08 — 체크포인트 2 배포 전에 아래 절차로 생성했다. 새 프로젝트/환경에서만 다시 필요하다.)** **`BFF_ACTOR_SECRET` 생성(H-10).** 백엔드는 사람이 일으키는 admin 변경(POST/PATCH/PUT/DELETE)에 Admin BFF가 서명한 actor 단언을 요구하고, 이 값이 비어 있으면 API가 프로덕션에서 부팅에 실패한다. API와 Admin이 **같은 값**을 읽어야 서명이 검증된다. Terraform이 secret 리소스와 두 서비스 주입·IAM을 선언하고(`terraform/secretmanager.tf`), `scripts/deploy.sh`도 API·Admin 필수 시크릿 목록에 넣어 값이 없으면 배포 전 검사에서 멈춘다. 배포 전에 값만 만들어 둔다.
 
 ```bash
@@ -270,7 +277,7 @@ terraform -chdir=terraform apply -target=google_cloud_scheduler_job.watchdog_hea
 | 런타임 | 5개 서비스 Ready, 의도한 revision에 트래픽, 환경·secret 참조 보존 |
 | DB | Alembic 현재 revision과 이미지의 expected head 일치 |
 | 작업 | 현재 릴리스의 7개 큐 canary, 필수 task routing·priority, RedBeat schedule `2026-09-07.2`, queue wait |
-| API / Admin | health와 로그인 표면 정상, 인증·오류 경계 유지 |
+| API / Admin | health와 로그인 표면 정상(LB 경로 `/api/v1/health/live`의 `release`가 배포 SHA — `deploy.sh`가 자동 확인), 인증·오류 경계 유지 |
 | 병원 공개 표면 | 홈페이지와 대표 글, 이미지 SSR, 정확한 병원·canonical·공개 주소 |
 | 크롤러 표면 | host별 sitemap, robots, llms.txt의 404/503·no-store, 부분 sitemap 금지, 구조화 데이터와 공개 URL 범위 |
 | 복구 | IndexNow intent와 provider usage spool의 1분 drain, retry 상한·중복 억제·정상 무알림 |
