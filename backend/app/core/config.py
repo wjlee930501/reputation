@@ -407,7 +407,9 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP", "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES"
+        "POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP",
+        "POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES",
+        "POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS",
     )
     @classmethod
     def _validate_post_publish_correction_budget(cls, value: int) -> int:
@@ -572,6 +574,9 @@ class Settings(BaseSettings):
     # 행에 쓰이므로 비용은 글당 교정 호출 + 재검수 호출이다. 0이면 자동 교정을 끈다(FLAGGED 표시만 남는다).
     POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP: int = 20
     POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES: int = 2
+    # 자동 교정이 끝나고도 UNCERTAIN(확신 부족)만 남은 공개 글을 검수 모델로 한 번 더 보는 대기 일수.
+    # PASS면 확인 완료로 닫는다. 0이면 끈다. 비용은 교정 하루 상한(POST_PUBLISH_AUTO_CORRECTION_DAILY_CAP)에 함께 센다.
+    POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS: int = 7
     # docker-entrypoint.sh의 `celery worker -c`와 같은 환경변수를 읽는다. 운영자의
     # 처리량 손잡이이며 여기서는 용량 경고 계산에만 쓴다(워커 기동값은 entrypoint가 정한다).
     CELERY_CONCURRENCY: int = 2

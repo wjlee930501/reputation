@@ -22,6 +22,9 @@
   쓴다. 아니면 글은 그대로이고 FLAGGED 표시·인시던트가 남으며(시도 기록과 함께) 글당 상한
   (`POST_PUBLISH_AUTO_CORRECTION_MAX_PASSES`)을 넘기면 사람이 직접 고친다고 인시던트가 말한다.
   표시에 구조화 지적(인용)이 없는 옛 FLAGGED 글은 문구에서 인용을 짐작하지 않고 재검수로 구조를 얻는다.
+- 자동 교정이 끝나고도 UNCERTAIN(확신 부족)만 남은 글은 `POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS` 뒤 검수
+  모델로 한 번만 더 본다(표시의 `senior_rereview`가 재구매를 막는다). PASS면 확인 완료로 닫는다. HARD가
+  나와도 조용한 FLAGGED 사고의 문구만 갱신한다 — 사후검수 지적은 Slack·할 일로 올리지 않는다(10/8 지시).
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
 
@@ -84,6 +87,7 @@ POST_PUBLISH_AI_REVIEW_PURPOSE = "post-publish-ai-review"
 POST_PUBLISH_AI_REVIEWER = "system:ai-review"
 POST_PUBLISH_FLAG_KEY = pc.POST_PUBLISH_FLAG_KEY
 POST_PUBLISH_FLAGGED = "FLAGGED"
+POST_PUBLISH_SENIOR_REREVIEW_KEY = "senior_rereview"
 
 POST_PUBLISH_INCIDENT_PIPELINE = "post_publish_ai_review"
 POST_PUBLISH_INCIDENT_OBJECT = "content_item"
@@ -178,6 +182,53 @@ def _withheld_stmt(limit: int):
     )
 
 
+def _uncertain_settled_stmt(limit: int):
+    """교정이 끝났는데 FLAGGED로 남고 아직 상위 재검수를 받지 않은 공개 글."""
+
+    flag = ContentItem.essence_check_summary[POST_PUBLISH_FLAG_KEY]
+    return (
+        select(ContentItem)
+        .join(Hospital, ContentItem.hospital_id == Hospital.id)
+        .where(
+            ContentItem.status == ContentStatus.PUBLISHED,
+            ContentItem.post_publish_reviewed_at.is_(None),
+            ContentItem.body.is_not(None),
+            ContentItem.pending_revision.is_(None),
+            publicly_operational_hospital_predicate(),
+            flag["status"].as_string() == POST_PUBLISH_FLAGGED,
+            flag["correction"]["finished"].as_string() == "true",
+            flag[POST_PUBLISH_SENIOR_REREVIEW_KEY].as_string().is_(None),
+        )
+        .order_by(ContentItem.published_at, ContentItem.id)
+        .options(joinedload(ContentItem.hospital))
+        .limit(limit)
+    )
+
+
+def uncertain_only(marker: object) -> bool:
+    """표시의 구조화 지적이 모두 UNCERTAIN(확신 부족)인가. 구조를 모르면 아니다."""
+
+    findings = marker.get("structured_findings") if isinstance(marker, dict) else None
+    if not findings:
+        return False
+    return all(
+        isinstance(finding, dict) and str(finding.get("severity", "")).upper() == "UNCERTAIN"
+        for finding in findings
+    )
+
+
+def settled_long_enough(marker: object, now: datetime, days: int) -> bool:
+    """마지막 검수(`checked_at`)에서 `days`일이 지났는가. 시각을 읽을 수 없으면 아니다."""
+
+    try:
+        checked = datetime.fromisoformat(str((marker or {}).get("checked_at")))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    if checked.tzinfo is None:
+        return False
+    return now - checked >= timedelta(days=days)
+
+
 def _flag_payload(
     review: ContentAiReview,
     reviewed_hash: str,
@@ -257,6 +308,7 @@ _NEEDS_HUMAN_COPY = {
     "NOT_CORRECTABLE": "지적이 문장 하나를 고치는 방식으로는 풀 수 없는 내용입니다.",
     "PARTLY_UNCORRECTABLE": "지적 일부는 문장 하나를 고치는 방식으로는 풀 수 없는 내용입니다.",
     "blocked": "자동으로 고친 본문이 독립 재검수를 통과하지 못했습니다.",
+    "SENIOR_REREVIEW_HARD": "상위 검수 모델이 안전 지적을 다시 확인했습니다.",
 }
 _NEEDS_HUMAN_DEFAULT_COPY = "자동 교정이 안전 검사를 통과하지 못했습니다."
 
@@ -408,6 +460,62 @@ def _review_and_apply(db, item, hospital, philosophy, run_async, now: datetime) 
         return "CANDIDATE_PUBLISHED"
     outcome = apply_review_outcome(locked, review, now=now)
     db.commit()
+    return outcome
+
+
+def senior_rereview_flagged(db, item, hospital, philosophy, run_async, now: datetime) -> str:
+    """UNCERTAIN만 남은 공개 글을 검수 모델로 한 번 더 본다. PASS면 확인 완료로 닫고 사고를 닫는다.
+
+    FLAGGED면 표시에 재검수 사실(`senior_rereview`)을 같은 커밋에 남겨 다시 사지 않는다. 그 재검수가
+    HARD를 내면 조용한 FLAGGED 사고의 문구만 갱신한다(사후검수 지적은 Slack·할 일이 아니다).
+    """
+
+    item_id = item.id
+    try:
+        review = run_async(
+            review_generated_content(
+                hospital=hospital,
+                philosophy=philosophy,
+                content=_candidate_content(item),
+                content_brief=getattr(item, "content_brief", None),
+                model=None,  # 검수 모델(CLAUDE_MODEL_REVIEW)
+            )
+        )
+    except Exception as error:  # noqa: BLE001 - 한 글의 실패가 하루 스윕을 멈추지 않는다.
+        logger.warning(
+            "senior post-publish re-review failed for %s: %s", item_id, type(error).__name__
+        )
+        db.rollback()
+        return "UNAVAILABLE"
+    if review.status == ContentAiReviewStatus.UNAVAILABLE:
+        db.rollback()
+        return "UNAVAILABLE"
+    locked = _lock_item(db, item_id)
+    if locked is None:
+        db.rollback()
+        return "SKIPPED"
+    outcome = apply_review_outcome(locked, review, now=now)
+    if outcome == "FLAGGED":
+        summary = dict(locked.essence_check_summary)
+        marker = dict(summary[POST_PUBLISH_FLAG_KEY])
+        marker[POST_PUBLISH_SENIOR_REREVIEW_KEY] = {
+            "at": now.isoformat(),
+            "model": settings.CLAUDE_MODEL_REVIEW,
+        }
+        summary[POST_PUBLISH_FLAG_KEY] = marker
+        locked.essence_check_summary = summary
+    db.commit()
+    if outcome == "REVIEWED":
+        _recover_flag_incident(locked, hospital, run_async)
+    elif outcome == "FLAGGED" and not uncertain_only(
+        locked.essence_check_summary[POST_PUBLISH_FLAG_KEY]
+    ):
+        try:
+            _open_flag_incident(
+                locked, hospital, run_async, needs_human_reason="SENIOR_REREVIEW_HARD"
+            )
+        except Exception:  # noqa: BLE001 - 인시던트 기록 실패가 저장된 표시를 되돌리지 않는다.
+            logger.exception("post-publish flag incident failed for %s", item_id)
     return outcome
 
 
@@ -717,6 +825,36 @@ def review_post_publish_samples() -> dict[str, int]:
                 if result != "SKIPPED":
                     corrections += 1
                 tally(result)
+        # 1b) 교정으로 못 푼 UNCERTAIN만 남은 글 — 며칠 뒤 검수 모델로 한 번 더 본다(PASS면 닫힌다).
+        rereview_days = int(settings.POST_PUBLISH_UNCERTAIN_REREVIEW_DAYS)
+        if correction_cap > 0 and rereview_days > 0:
+            rereview_now = datetime.now(UTC)
+            settled = list(
+                db.execute(_uncertain_settled_stmt(correction_cap * _FLAG_SCAN_MULTIPLIER))
+                .unique()
+                .scalars()
+                .all()
+            )
+            for item in settled:
+                if corrections >= correction_cap or out_of_budget():
+                    break
+                marker = (item.essence_check_summary or {}).get(POST_PUBLISH_FLAG_KEY)
+                if not uncertain_only(marker) or not settled_long_enough(
+                    marker, rereview_now, rereview_days
+                ):
+                    continue
+                hospital = item.hospital
+                if hospital.id not in philosophies:
+                    philosophies[hospital.id] = _generation_philosophy_sync(db, hospital.id)
+                if philosophies[hospital.id] is None:
+                    counts["skipped"] += 1
+                    continue
+                result = senior_rereview_flagged(
+                    db, item, hospital, philosophies[hospital.id], _run_async, rereview_now
+                )
+                corrections += 1
+                tally(result)
+                _bump(counts, f"senior_rereview_{result.lower()}")
         if cap <= 0:
             logger.info("post-publish AI review sweep finished: %s", counts)
             return counts
