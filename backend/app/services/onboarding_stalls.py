@@ -93,12 +93,13 @@ def detect_onboarding_stalls(
         and facts.schedule_set
         and facts.published_count == 0
         and facts.active_since is not None
+        # 사람이 일정을 꺼서 활성 일정이 없으면 발행 0편은 의도된 상태다.
+        and facts.first_schedule_start is not None
     ):
-        started = facts.active_since
-        if facts.first_schedule_start is not None:
-            started = max(
-                started, datetime.combine(facts.first_schedule_start, time.min, tzinfo=_KST)
-            )
+        started = max(
+            facts.active_since,
+            datetime.combine(facts.first_schedule_start, time.min, tzinfo=_KST),
+        )
         if now - started >= PUBLICATION_STALL_AFTER:
             found.append(OnboardingStall.NO_PUBLICATION)
     if (
@@ -244,15 +245,30 @@ def _object_id(hospital_id: uuid.UUID, stall: OnboardingStall) -> str:
     return f"{hospital_id}:{stall.value}"
 
 
-async def _incident_state(object_id: str) -> str | None:
-    key = build_incident_key(
+def stall_incident_key(hospital_id: uuid.UUID, stall: OnboardingStall) -> str:
+    """`open_ops_incident`가 이 정체에 쓰는 dedupe key와 같은 값."""
+
+    return build_incident_key(
         ONBOARDING_STALL_PIPELINE,
         ONBOARDING_STALL_OBJECT_TYPE,
-        object_id,
+        _object_id(hospital_id, stall),
         IncidentFingerprint.MISSING_PREREQUISITE,
     )
+
+
+async def _load_incident_states() -> dict[str, str]:
+    """정체 사고 전부의 (dedupe key → 상태). 실행마다 한 세션·한 번만 읽는다."""
+
+    prefix = f"incident:v1:{ONBOARDING_STALL_PIPELINE}:"
     async with get_async_sessionmaker()() as db:
-        return await db.scalar(select(Incident.state).where(Incident.dedupe_key == key))
+        rows = (
+            await db.execute(
+                select(Incident.dedupe_key, Incident.state).where(
+                    Incident.dedupe_key.startswith(prefix)
+                )
+            )
+        ).all()
+    return {key: str(state) for key, state in rows}
 
 
 async def apply_onboarding_stalls(
@@ -262,17 +278,22 @@ async def apply_onboarding_stalls(
     source_fetch_alerts: bool,
     open_incident: Callable[..., Awaitable[object]] = open_ops_incident,
     recover_incident: Callable[..., Awaitable[bool]] = recover_ops_incident,
-    incident_state: Callable[[str], Awaitable[str | None]] = _incident_state,
+    incident_states: Callable[[], Awaitable[dict[str, str]]] = _load_incident_states,
 ) -> dict[str, int]:
-    """새 정체는 한 번만 열고(확인된 사고는 다시 열지 않는다), 풀린 정체는 조용히 닫는다."""
+    """새 정체는 한 번만 열고(확인된 사고는 다시 열지 않는다), 풀린 정체는 조용히 닫는다.
 
+    사고 상태는 실행마다 한 번 읽는다. 사고 행이 없거나 이미 닫힌 규칙은 닫으러 가지 않는다.
+    """
+
+    states = await incident_states()
     opened = recovered = 0
     for facts in facts_list:
         found = set(detect_onboarding_stalls(facts, now, source_fetch_alerts=source_fetch_alerts))
         for stall in OnboardingStall:
             object_id = _object_id(facts.hospital_id, stall)
+            state = states.get(stall_incident_key(facts.hospital_id, stall))
             if stall in found:
-                if await incident_state(object_id) not in _REOPENABLE:
+                if state not in _REOPENABLE:
                     continue
                 problem, impact, action, tab = _STALL_COPY[stall]
                 await open_incident(
@@ -294,6 +315,8 @@ async def apply_onboarding_stalls(
                     notify=True,
                 )
                 opened += 1
+            elif state in _REOPENABLE:
+                continue
             elif await recover_incident(
                 pipeline=ONBOARDING_STALL_PIPELINE,
                 object_type=ONBOARDING_STALL_OBJECT_TYPE,

@@ -30,3 +30,25 @@ async def test_targets_and_window_start_come_from_existing_rows(pg_async_session
     assert targets == [PendingDomain(hospital.id, "DNS대기의원", "www.dns-poll.example")]
     started = await _poll_started_at_in(pg_async_session, targets[0])
     assert abs((started - newer).total_seconds()) < 1
+
+
+async def test_window_start_falls_back_to_the_hospital_row_without_an_audit_row(
+    pg_async_session,
+) -> None:
+    hospital = Hospital(
+        id=uuid.uuid4(), name="감사행없는의원", slug=f"dns-poll-{uuid.uuid4().hex[:8]}",
+        status=HospitalStatus.PENDING_DOMAIN, site_built=True, profile_complete=True,
+        aeo_domain="www.dns-legacy.example",
+    )
+    pg_async_session.add(hospital)
+    await pg_async_session.flush()
+    updated = datetime.now(UTC) - timedelta(days=20)
+    hospital.updated_at = updated
+    await pg_async_session.flush()
+
+    started = await _poll_started_at_in(
+        pg_async_session, PendingDomain(hospital.id, hospital.name, "www.dns-legacy.example")
+    )
+
+    # 도메인 저장 감사행이 없는 옛 병원은 병원 행의 마지막 수정 시각을 창 시작으로 쓴다.
+    assert started is not None and abs((started - updated).total_seconds()) < 1

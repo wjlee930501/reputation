@@ -69,26 +69,37 @@ async def poll_pending_domains(
     recover: Callable[[PendingDomain], Awaitable[None]],
 ) -> DomainPollSummary:
     summary = DomainPollSummary()
+    unknown_start = 0
     for target in targets:
-        if poll_window_expired(await poll_started_at(target), now, max_days=max_days):
-            await escalate(target)
-            summary.expired += 1
-            continue
+        started_at = await poll_started_at(target)
+        if started_at is None:
+            unknown_start += 1
+        expired = poll_window_expired(started_at, now, max_days=max_days)
+        # 창이 지나도 계속 묻는다 — DNS 조회는 비용이 없고, 늦게 맞춘 병원도 같은 경로로 열린다.
         try:
             response = await verify(target)
         except HTTPException:
             # 게이트 미충족·도메인 변경·인증서 진행 중 — 사람 경로가 409로 답하는 상태다.
             summary.skipped += 1
-            continue
+            response = None
         except Exception as exc:  # noqa: BLE001 — 한 도메인의 오류가 나머지를 막지 않는다.
             logger.warning("pending domain poll failed: code=%s", exc.__class__.__name__)
             summary.skipped += 1
-            continue
+            response = None
         if getattr(response, "dns_verified", False):
             summary.verified += 1
             await recover(target)
-        else:
+            continue
+        if response is not None:
             summary.not_ready += 1
+        if expired:
+            # 사고는 한 번만 연다(이미 열려 있으면 `escalate`가 건드리지 않는다).
+            await escalate(target)
+            summary.expired += 1
+    if unknown_start:
+        logger.warning(
+            "pending domain poll window start unknown: count=%s (not expired)", unknown_start
+        )
     return summary
 
 
@@ -110,15 +121,31 @@ async def _load_targets_in(db: AsyncSession) -> list[PendingDomain]:
 
 
 async def _poll_started_at_in(db: AsyncSession, target: PendingDomain) -> datetime | None:
-    """창 시작 = 이 도메인을 마지막으로 저장한 시각(`connect_domain` 감사행)."""
+    """창 시작 = 이 도메인을 마지막으로 저장한 시각(`connect_domain` 감사행).
 
-    return await db.scalar(
+    감사행이 없는 옛 병원은 병원 행의 마지막 수정 시각, 그것도 없으면 인증서 작업 시작
+    시각을 쓴다. 셋 다 없으면 None(만료시키지 않는다).
+    """
+
+    saved_at = await db.scalar(
         select(func.max(AdminAuditLog.created_at)).where(
             AdminAuditLog.hospital_id == target.hospital_id,
             AdminAuditLog.action == "connect_domain",
             func.lower(AdminAuditLog.target_id) == target.domain,
         )
     )
+    if saved_at is not None:
+        return saved_at
+    row = (
+        await db.execute(
+            select(Hospital.updated_at, Hospital.domain_cert_job_started_at).where(
+                Hospital.id == target.hospital_id
+            )
+        )
+    ).first()
+    if row is None:
+        return None
+    return row[0] or row[1]
 
 
 def _object_id(target: PendingDomain) -> str:

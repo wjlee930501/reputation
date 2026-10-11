@@ -658,21 +658,24 @@ def _source(status, *, hours_ago: float, title: str = "자료"):
     )
 
 
-def test_error_source_is_excluded_at_once_when_another_source_is_processed() -> None:
+def test_error_source_beside_a_processed_one_waits_one_hour_grace() -> None:
     now = datetime(2026, 9, 12, tzinfo=timezone.utc)
-    fresh_error = _source(SourceStatus.ERROR, hours_ago=0.1, title="방금 실패한 자료")
+    fresh_error = _source(SourceStatus.ERROR, hours_ago=0.5, title="방금 실패한 자료")
+    hour_old_error = _source(SourceStatus.ERROR, hours_ago=1, title="조금 전 실패한 자료")
     processed = _source(SourceStatus.PROCESSED, hours_ago=200)
 
     usable, excluded = essence_auto_review._split_stale_error_sources(
-        [fresh_error, processed], now
+        [fresh_error, hour_old_error, processed], now
     )
 
-    assert [s.id for s in usable] == [processed.id]
-    assert [s.id for s in excluded] == [fresh_error.id]
+    # 곧 고쳐질 자료를 위해 1시간은 기다린다 — 다른 자료가 처리됐어도 즉시 빼지 않는다.
+    assert [s.id for s in usable] == [fresh_error.id, processed.id]
+    assert [s.id for s in excluded] == [hour_old_error.id]
     gap = essence_auto_review._excluded_error_source_gaps(excluded)[0]
     assert gap["field"] == "excluded_error_source"
-    assert gap["source_asset_id"] == str(fresh_error.id)
+    assert gap["source_asset_id"] == str(hour_old_error.id)
     assert "시간" not in gap["reason"] and "제외" in gap["reason"]
+    assert "다시 온보딩" in gap["reason"]
 
 
 def test_error_source_alone_waits_six_hours() -> None:

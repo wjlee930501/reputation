@@ -56,10 +56,64 @@ async def test_poll_activates_ready_domains_and_skips_the_rest() -> None:
         poll_started_at=poll_started_at, verify=verify, escalate=escalate, recover=recover,
     )
 
-    assert verified == [ready, waiting, blocked]  # 만료된 도메인은 더 묻지 않는다
+    # 창이 지난 도메인도 계속 묻는다(DNS 조회는 비용이 없다). 사고는 아직 맞지 않을 때만 연다.
+    assert verified == [ready, waiting, blocked, stale]
     assert escalated == [stale]
     assert recovered == [ready]
-    assert (summary.verified, summary.not_ready, summary.skipped, summary.expired) == (1, 1, 1, 1)
+    assert (summary.verified, summary.not_ready, summary.skipped, summary.expired) == (1, 2, 1, 1)
+
+
+async def test_expired_domain_that_becomes_ready_activates_and_closes_its_incident() -> None:
+    stale = _target("늦게 맞춘 병원")
+    escalated: list = []
+    recovered: list = []
+
+    async def poll_started_at(_t):
+        return NOW - timedelta(days=30)
+
+    async def verify(_t):
+        return SimpleNamespace(dns_verified=True)
+
+    async def escalate(target):
+        escalated.append(target)
+
+    async def recover(target):
+        recovered.append(target)
+
+    summary = await poll_pending_domains(
+        [stale], NOW, max_days=14,
+        poll_started_at=poll_started_at, verify=verify, escalate=escalate, recover=recover,
+    )
+
+    assert escalated == [] and recovered == [stale]
+    assert (summary.verified, summary.expired) == (1, 0)
+
+
+async def test_unknown_window_start_logs_one_warning_and_never_expires(caplog) -> None:
+    targets = [_target("a"), _target("b")]
+    escalated: list = []
+
+    async def poll_started_at(_t):
+        return None
+
+    async def verify(_t):
+        return SimpleNamespace(dns_verified=False)
+
+    async def escalate(target):
+        escalated.append(target)
+
+    async def noop(_t):
+        return None
+
+    with caplog.at_level("WARNING", logger="app.workers.domain_dns_poll"):
+        summary = await poll_pending_domains(
+            targets, NOW, max_days=14,
+            poll_started_at=poll_started_at, verify=verify, escalate=escalate, recover=noop,
+        )
+
+    assert escalated == [] and summary.not_ready == 2
+    warnings = [r for r in caplog.records if "window start unknown" in r.getMessage()]
+    assert len(warnings) == 1
 
 
 async def test_unexpected_error_on_one_domain_does_not_stop_the_others() -> None:

@@ -1146,7 +1146,7 @@ def test_conflicting_sources_escalate_straight_to_a_person(pg_session) -> None:
     assert essence_refresh_needed(pg_session, hospital.id) is False
 
 
-def test_fresh_error_source_is_excluded_at_once_beside_a_processed_one(pg_session) -> None:
+def test_error_source_beside_a_processed_one_is_excluded_after_one_hour(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="fresh-error-beside")
     pg_session.delete(previous)
     broken = HospitalSourceAsset(
@@ -1161,7 +1161,12 @@ def test_fresh_error_source_is_excluded_at_once_beside_a_processed_one(pg_sessio
     pg_session.add(broken)
     pg_session.flush()
 
-    # 다른 필수 자료가 처리됐으면 실패 자료를 기다리지 않는다.
+    # 방금 실패한 자료는 1시간 유예 동안 합성을 막는다(곧 고쳐질 수 있다).
+    assert essence_refresh_needed(pg_session, hospital.id) is False
+    broken.updated_at = datetime.now(timezone.utc) - timedelta(hours=1, minutes=5)
+    pg_session.flush()
+
+    # 유예가 지나면 다른 필수 자료가 처리된 이상 6시간을 다 기다리지 않는다.
     assert essence_refresh_needed(pg_session, hospital.id) is True
     result = refresh_essence_snapshot(
         pg_session,
