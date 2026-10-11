@@ -2318,6 +2318,11 @@ async def _generate_with_auto_review(
             default=str,
         ).encode("utf-8")
     ).hexdigest()[:16]
+    # 작가 결과의 재생 범위는 한 claim(세션)이다. 같은 claim의 재배달은 저장된 결과를 다시
+    # 쓰고(중복 구매 없음), 새 claim은 새 표본을 산다. 본문이 저장되지 않은 실패(제목 거절
+    # 등)가 다음 세션에서 같은 후보를 0원에 재생해 표본 예산만 태우지 않게 한다.
+    # claim이 없는 직접 호출(테스트·도구)은 종전처럼 하나의 범위를 공유한다.
+    session_scope = str(getattr(item, "generation_claim_token", None) or "unclaimed")
 
     async def _budgeted_generate(*args, **kwargs):
         findings = [str(value) for value in (kwargs.get("remediation_findings") or [])]
@@ -2325,7 +2330,7 @@ async def _generate_with_auto_review(
             "\n".join(findings).encode("utf-8")
         ).hexdigest()[:16]
         topic_id = str(getattr(item, "query_target_id", "") or "unassigned")
-        acquisition_prefix = f"writer:{context_id}:{topic_id}:{fingerprint}"
+        acquisition_prefix = f"writer:{context_id}:{topic_id}:{session_scope}:{fingerprint}"
         cached = ledger.latest_payload(acquisition_prefix)
         if cached is not None:
             return cached

@@ -35,6 +35,7 @@ from app.services.content_ai_review import (
     ContentAiReviewStatus,
     ContentAiReviewUnavailableReason,
 )
+from app.services.content_engine import EXAM_TREATMENT_TITLE_FINDING_PREFIX
 from app.services.essence_engine import compute_sources_snapshot_hash
 from app.services.post_publish_review_policy import auto_publish_catchup_start
 from app.services.reference_verification import (
@@ -7304,3 +7305,99 @@ def test_eight_oclock_judges_every_post_with_the_date_the_run_started(monkeypatc
     text = _od_digest_text(row)
     assert text.count(_OD_LINE_TITLE) == 1
     assert "발행 보류 1편" in text
+
+
+# ── 작가 재생 범위는 claim 하나(0-2) ────────────────────────────────────────
+
+_EXAM_TITLE_REJECTED = {
+    "title": "갑상선초음파 치료 비용",
+    "body": "본문",
+    "target_alignment_findings": [
+        f"{EXAM_TREATMENT_TITLE_FINDING_PREFIX}: 제목 '갑상선초음파 치료 비용'"
+    ],
+}
+
+
+def _patch_exam_title_rejection(monkeypatch) -> list:
+    """작가가 매번 검사 제목에 '치료'를 붙인다 — 본문이 저장되지 않는 ValueError 경로."""
+
+    calls: list = []
+
+    async def fake_generate(*_args, **kwargs):
+        calls.append(kwargs.get("remediation_findings"))
+        return dict(_EXAM_TITLE_REJECTED)
+
+    async def allow_cost(*_args, **_kwargs):
+        return SimpleNamespace(allowed=True)
+
+    async def reviewer_pass(**_kwargs):
+        return ContentAiReview(
+            status=ContentAiReviewStatus.PASS,
+            confidence=0.98,
+            findings=(),
+            summary="통과",
+            model="reviewer-test",
+        )
+
+    monkeypatch.setattr(tasks, "generate_content", fake_generate)
+    monkeypatch.setattr(
+        tasks,
+        "screen_content_against_philosophy",
+        lambda *_args: SimpleNamespace(
+            status="ALIGNED", summary={"blocking": False, "findings": []}
+        ),
+    )
+    monkeypatch.setattr(tasks, "review_generated_content", reviewer_pass)
+    monkeypatch.setattr(tasks.cost_guard, "check_and_increment", allow_cost)
+    return calls
+
+
+def _claimed_item(claim_token):
+    return SimpleNamespace(
+        content_type="FAQ", essence_check_summary=None, generation_claim_token=claim_token
+    )
+
+
+async def _session(item) -> None:
+    with pytest.raises(ValueError, match="Exam title"):
+        await _generate_with_known_zero_budget(
+            hospital=SimpleNamespace(id=uuid.UUID(int=7)),
+            item=item,
+            existing_titles=[],
+            philosophy=SimpleNamespace(),
+            approved_brief=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_new_claim_resamples_the_writer_after_an_unsaved_rejection(monkeypatch):
+    # Given: 한 세션이 작가 2회(초안 + 보완)를 사고 제목 거절로 끝났다. 본문은 저장되지 않는다.
+    calls = _patch_exam_title_rejection(monkeypatch)
+    item = _claimed_item(uuid.uuid4())
+    await _session(item)
+    assert len(calls) == 2
+
+    # When: 다음 스윕이 새 claim으로 같은 슬롯을 다시 집는다.
+    item.generation_claim_token = uuid.uuid4()
+    await _session(item)
+
+    # Then: 저장된 후보를 0원에 재생하지 않고 작가를 실제로 다시 산다.
+    assert len(calls) == 4
+    writer_ids = [
+        entry["id"]
+        for entry in item.essence_check_summary["generation_attempt"]["budget"]["acquisitions"]
+        if entry["kind"] == "WRITER"
+    ]
+    assert len(writer_ids) == len(set(writer_ids)) == 4
+
+
+@pytest.mark.asyncio
+async def test_same_claim_redelivery_replays_without_buying_again(monkeypatch):
+    calls = _patch_exam_title_rejection(monkeypatch)
+    item = _claimed_item(uuid.uuid4())
+    await _session(item)
+
+    # 같은 claim의 재배달(서명 봉투 재배달·자율 복구)은 저장된 결과를 다시 쓴다.
+    await _session(item)
+
+    assert len(calls) == 2
