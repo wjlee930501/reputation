@@ -344,7 +344,12 @@ def test_other_content_prefixed_reasons_are_not_released(monkeypatch, reason):
     """CONTENT_로 시작한다고 게이트 증상 기록이 아니다 — 원인은 정확히 일치해야 풀린다."""
 
     item, record, writer_calls, _seen = _gate_recorded_slot(monkeypatch)
-    stored = {**record, "reason": reason}
+    # 게이트 기록은 이제 ENVIRONMENT_RECOVERABLE이다 — 원인만 다른 사람 몫 기록으로 만든다.
+    stored = {
+        **record,
+        "reason": reason,
+        "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+    }
     item.essence_check_summary = {GENERATION_ATTEMPT_KEY: stored}
 
     finished = _press_retry(monkeypatch, item, _SAME_DAY, operator=True)

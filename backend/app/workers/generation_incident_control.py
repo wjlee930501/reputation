@@ -218,6 +218,14 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
         return False
     if code in _AUTOMATIC_RECOVERY_CODES:
         return True
+    if (
+        code == "CONTENT_NOT_GENERATED"
+        and attempt.get("reason") == code
+        and attempt.get("retry_class") == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    ):
+        # 게이트가 남긴 원고 미생성 증상은 3일 창 안에서 스윕이 다시 집는다(유실된 배달).
+        # 창이 끝나면 위의 `recovery_is_abandoned`가 먼저 사람의 일로 돌린다.
+        return True
     return (
         attempt.get("reason") == code
         and attempt.get("retry_class") == GenerationRetryClass.SAMPLE_RECOVERABLE.value
@@ -518,11 +526,11 @@ def generation_operator_action(code: str, message: str | None = None) -> str:
 # 시도”가 지금 다시 시도하면 그 말이 틀린다(`ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION`·`PROVIDER_RETRY_NOW_ACTIONS`).
 _ENVIRONMENT_WAIT_CODES = frozenset({"PROVIDER_TIMEOUT", "PROVIDER_UNAVAILABLE"})
 
-# 원고 미생성은 07:45·08:00 게이트가 기록한다(`tasks._record_gate_blocker_decision`). 분류는
-# OPERATOR_REQUIRED이고 다음 시도 시각이 없어 01·04·07·12·18·22시 복구와 23시 야간 배치 어느
-# 것도 이 슬롯을 다시 쓰지 않는다(`_generation_attempt_is_unchanged`). 예외는 생성 지문(운영 기준·
-# 유형·측정 질문·검사 규칙 판, `tasks._generation_attempt_context`)이 바뀐 때뿐이다. 운영센터의
-# “작업 다시 시도”는 이 기록의 억제를 풀고 원고를 만든다(`tasks.regenerate_content_item`).
+# 원고 미생성은 07:45·08:00 게이트가 기록한다(`tasks._record_gate_blocker_decision`). 기록이 없던
+# 빈 슬롯(유실된 배달)·환경 기록은 ENVIRONMENT_RECOVERABLE·3일 창으로 남아 다음 스윕이 다시 쓴다.
+# 이 조치 문구는 그 창이 끝났거나, 게이트가 종착 기록(소진된 표본 등)을 덮어 OPERATOR_REQUIRED로
+# 남긴 경우의 것이다. 운영센터의 “작업 다시 시도”는 이 기록의 억제를 풀고 원고를 만든다
+# (`tasks.regenerate_content_item`).
 CONTENT_NOT_GENERATED_OPERATOR_ACTION = (
     "예약된 자동 복구는 이 글의 원고 생성을 다시 시도하지 않습니다(운영 기준이 새로 승인되는 등 "
     "생성 조건이 바뀔 때만 다시 시도합니다). 운영 센터에서 해당 항목의 “작업 다시 시도”를 누르세요."

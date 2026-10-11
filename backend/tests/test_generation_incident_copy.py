@@ -110,6 +110,17 @@ def _exhaust_provider(monkeypatch, item, code="PROVIDER_TIMEOUT") -> dict:
     return attempt
 
 
+def _operator_gate_record(monkeypatch, item, moment) -> dict:
+    """게이트가 종착 기록(소진된 표본 등)을 덮을 때 남기는 원고 미생성 — 사람의 몫·기한 없음."""
+
+    _remember(monkeypatch, item, moment, "CONTENT_NOT_GENERATED", count_attempt=False)
+    record = dict(item.essence_check_summary["generation_attempt"])
+    record["retry_class"] = GenerationRetryClass.OPERATOR_REQUIRED.value
+    record["next_retry_at"] = None
+    item.essence_check_summary = {**item.essence_check_summary, "generation_attempt": record}
+    return record
+
+
 class _Session:
     """`scalar`는 차례로 (같은 키의 이전 인시던트, 원인 인시던트)를 돌려준다."""
 
@@ -205,16 +216,35 @@ def test_the_not_generated_action_no_longer_promises_the_overnight_sweeps():
 @pytest.mark.asyncio
 async def test_a_gate_recorded_not_generated_slot_says_no_sweep_will_write_it(monkeypatch):
     item = _slot()
-    _remember(monkeypatch, item, _kst(9, 16, 7, 45), "CONTENT_NOT_GENERATED", count_attempt=False)
+    _operator_gate_record(monkeypatch, item, _kst(9, 16, 7, 45))
     stored = tasks._stored_generation_attempt(item)
     assert stored["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
-    assert "next_retry_at" not in stored  # 어떤 스윕도 집지 않는다
+    assert stored["next_retry_at"] is None  # 어떤 스윕도 집지 않는다
 
     request, incident = await _open(monkeypatch, item, "CONTENT_NOT_GENERATED")
 
     assert request.next_action == CONTENT_NOT_GENERATED_OPERATOR_ACTION
     assert incident.state == IncidentState.OPEN.value
     assert incident.sla_due_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_gate_recorded_empty_slot_without_a_prior_cause_is_retrying(monkeypatch):
+    """기록 없는 빈 슬롯(유실된 배달)의 원고 미생성은 다음 스윕이 소유한 RETRYING이다(감사 F9)."""
+
+    item = _slot()
+    _remember(monkeypatch, item, _kst(9, 16, 7, 45), "CONTENT_NOT_GENERATED", count_attempt=False)
+    stored = tasks._stored_generation_attempt(item)
+    assert stored["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    due = _kst(9, 16, 12).astimezone(UTC)
+    assert stored["next_retry_at"] == due.isoformat()
+
+    request, incident = await _open(monkeypatch, item, "CONTENT_NOT_GENERATED")
+
+    assert incident.state == IncidentState.RETRYING.value
+    assert incident.sla_due_at == due
+    assert "자동 복구가" in request.next_action
+    assert not requires_operator_action(incident.state, incident.sla_due_at, _kst(9, 16, 11, 59))
 
 
 @pytest.mark.asyncio
@@ -337,7 +367,7 @@ async def test_a_reused_retrying_cause_drops_its_stale_deadline_once_no_sweep_ow
     stale = _kst(9, 16, 12).astimezone(UTC)
     cause = _incident("CONTENT_AI_HARD_FINDING", state=IncidentState.RETRYING.value, sla_due_at=stale)
     observed = _kst(9, 16, 7, 45)
-    _remember(monkeypatch, item, observed, "CONTENT_NOT_GENERATED", count_attempt=False)
+    _operator_gate_record(monkeypatch, item, observed)
 
     request, _unused = await _open(monkeypatch, item, "CONTENT_NOT_GENERATED", scalars=(None, cause))
 
@@ -676,7 +706,7 @@ async def test_a_reused_open_cause_keeps_its_deadline(monkeypatch):
     kept = _kst(9, 16, 12).astimezone(UTC)
     cause = _incident("CONTENT_AI_HARD_FINDING", state=IncidentState.OPEN.value, sla_due_at=kept)
     observed = _kst(9, 16, 7, 45)
-    _remember(monkeypatch, item, observed, "CONTENT_NOT_GENERATED", count_attempt=False)
+    _operator_gate_record(monkeypatch, item, observed)
 
     await _open(monkeypatch, item, "CONTENT_NOT_GENERATED", scalars=(None, cause))
 

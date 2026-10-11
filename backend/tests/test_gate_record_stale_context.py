@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from test_topic_swap_fallback import (
@@ -119,8 +119,8 @@ def test_stale_context_record_from_real_attempts_is_also_left_for_the_sweep(monk
     assert _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT)
 
 
-def test_a_slot_without_any_record_is_still_recorded_by_the_gate(monkeypatch):
-    """기록이 없는 빈 슬롯은 종전대로 게이트가 원고 미생성(사람의 몫)으로 남긴다."""
+def test_a_slot_without_any_record_is_recorded_as_a_recoverable_symptom(monkeypatch):
+    """기록이 없는 빈 슬롯(유실된 배달)은 게이트가 복구 가능한 원고 미생성으로 남기고 다음 스윕이 집는다."""
 
     philosophy, item = _empty_slot(monkeypatch)
     assert _loader_takes(monkeypatch, item, _OLD_GATE_AT)
@@ -129,8 +129,10 @@ def test_a_slot_without_any_record_is_still_recorded_by_the_gate(monkeypatch):
 
     record = _record(item)
     assert record["reason"] == "CONTENT_NOT_GENERATED"
-    assert record["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
-    assert not _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT)
+    assert record["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    assert record["next_retry_at"] == _NEXT_SWEEP_AT.astimezone(UTC).isoformat()
+    assert not _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT - timedelta(minutes=1))
+    assert _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT)
 
 
 def test_an_already_frozen_current_context_record_is_not_released_by_this_deploy(monkeypatch):
@@ -141,12 +143,19 @@ def test_an_already_frozen_current_context_record_is_not_released_by_this_deploy
     """
 
     philosophy, item = _empty_slot(monkeypatch)
-    frozen = _remember(
+    recorded = _remember(
         monkeypatch, item, philosophy, _HOURLY_GATE_AT, "CONTENT_NOT_GENERATED", count_attempt=False
     )
+    # 배포 전 게이트가 남긴 모양 — OPERATOR_REQUIRED·기한 키 없음.
+    frozen = {
+        key: value
+        for key, value in recorded.items()
+        if key not in ("next_retry_at", "environment_since")
+    }
+    frozen["retry_class"] = GenerationRetryClass.OPERATOR_REQUIRED.value
+    item.essence_check_summary = {GENERATION_ATTEMPT_KEY: frozen}
     assert f"gate_catalog={tasks.GENERATION_GATE_CATALOG_VERSION};" in frozen["context"]
     assert frozen["provider_attempt_count"] == 0
-    assert "next_retry_at" not in frozen
 
     _gate(monkeypatch, item, philosophy, _kst(2026, 9, 16, 10, 0))
 
@@ -184,5 +193,6 @@ def test_a_current_context_exhausted_failure_stays_excluded(monkeypatch):
     _gate(monkeypatch, item, philosophy, _HOURLY_GATE_AT)
 
     assert _record(item)["reason"] == "CONTENT_NOT_GENERATED"
+    assert _record(item)["next_retry_at"] is None  # 덮어도 3일 창을 이어 받는다
     assert not _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT)
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 17, 1, 0))

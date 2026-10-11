@@ -350,7 +350,8 @@ def test_an_exhausted_environment_budget_is_handled_as_before(monkeypatch, swapp
     """(b') 3일 창을 다 써 어떤 스윕도 집지 않는 기록은 소유자가 없다 — 종전처럼 덮는다.
 
     분류는 여전히 ENVIRONMENT_RECOVERABLE이지만 `next_retry_at=None`으로 굳었다
-    (`recovery_is_abandoned`). 그대로 두면 운영자가 부른 재시도도 같은 원인으로 건너뛴다.
+    (`recovery_is_abandoned`). 덮은 원고 미생성 기록도 같은 3일 창을 이어 받아 사람의 일로
+    남는다 — 증상 덮어쓰기가 새 3일 창을 열지 않는다.
     """
 
     philosophy = _approved_philosophy()
@@ -371,7 +372,9 @@ def test_an_exhausted_environment_budget_is_handled_as_before(monkeypatch, swapp
 
     after = _stored(item)
     assert after["reason"] == "CONTENT_NOT_GENERATED"
-    assert after["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert after["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    assert after["next_retry_at"] is None
+    assert recovery_is_abandoned(after) is True
 
 
 @pytest.mark.parametrize("swapped", [True, False], ids=["swapped", "not_swapped"])
@@ -477,7 +480,9 @@ def test_a_legacy_record_without_a_schedule_that_is_not_due_is_overwritten(monke
 
     after = _stored(item)
     assert after["reason"] == "CONTENT_NOT_GENERATED"
-    assert after["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    # 덮은 증상은 복구 가능한 원고 미생성이다 — 다음 스윕(12:00)이 다시 쓴다.
+    assert after["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    assert after["next_retry_at"] == _kst(2026, 9, 16, 12).astimezone(UTC).isoformat()
 
 
 @pytest.mark.parametrize(

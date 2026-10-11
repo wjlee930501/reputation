@@ -36,7 +36,6 @@ from app.services.notification_copy import display_time
 from app.workers import generation_incident_control, generation_retry_policy, tasks
 from app.workers.generation_attempt_state import GENERATION_ATTEMPT_KEY
 from app.workers.generation_incident_control import (
-    CONTENT_NOT_GENERATED_OPERATOR_ACTION,
     ENVIRONMENT_EXHAUSTED_OPERATOR_ACTION,
     operator_retry_releases,
 )
@@ -70,8 +69,16 @@ def test_a_gate_recorded_slot_says_press_and_pressing_writes_it(monkeypatch):
 
     action = _action(monkeypatch, item, "CONTENT_NOT_GENERATED", _SLOT_GATE_AT)
 
-    assert action == CONTENT_NOT_GENERATED_OPERATOR_ACTION
-    assert _PRESS_ANYTIME in action
+    # 기록 없던 슬롯의 원고 미생성은 이제 다음 스윕이 다시 쓴다 — 시각과 버튼을 함께 말한다.
+    due = generation_incident_control._stored_retry_deadline(
+        item.essence_check_summary[GENERATION_ATTEMPT_KEY]
+    )
+    assert due is not None
+    assert action == (
+        f"자동 복구가 {display_time(due.astimezone(UTC))}에 이 글의 원고 생성을 다시 시도합니다. 원인이 "
+        "풀렸으면 운영 센터에서 해당 항목의 “작업 다시 시도”를 눌러 지금 바로 다시 시도할 수 있습니다."
+    )
+    assert _PRESS_NOW in action
     assert operator_retry_releases(item)
     assert _press_retry(monkeypatch, item, _PRESS, operator=True) == [
         (OperationRunState.SUCCEEDED, None)

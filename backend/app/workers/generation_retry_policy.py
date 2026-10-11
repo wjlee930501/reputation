@@ -35,12 +35,15 @@ ENVIRONMENT_ATTEMPT_BUDGET = 4
 REVIEW_UNAVAILABLE_CODE = "CONTENT_AI_REVIEW_UNAVAILABLE"
 # 하루 4회(`ENVIRONMENT_ATTEMPT_BUDGET`) 예산이 다음 KST 일에 다시 열리는 환경 원인. 공급자
 # 장애는 몇 시간~하루면 풀리는데 평생 4회로 끝내면 하루짜리 장애가 사람의 일로 굳는다.
+# 원고 미생성(CONTENT_NOT_GENERATED)은 게이트가 예산 없이 남긴 증상이다 — 유실된 배달을
+# 다음 스윕이 다시 집게 한다.
 DAILY_RESET_ENVIRONMENT_CODES = frozenset(
     {
         REVIEW_UNAVAILABLE_CODE,
         "PROVIDER_TIMEOUT",
         "PROVIDER_UNAVAILABLE",
         "GENERATION_FAILED",
+        "CONTENT_NOT_GENERATED",
     }
 )
 # 일일 초기화 코드의 끝. 처음 관측한 KST 날부터 이 일수가 지나면 어떤 스윕도 다시 사지 않고
@@ -101,6 +104,7 @@ _ENVIRONMENT_CODES = frozenset(
         "PROVIDER_UNAVAILABLE",
         "CONTENT_AI_REVIEW_UNAVAILABLE",
         "GENERATION_FAILED",
+        "CONTENT_NOT_GENERATED",
     }
 )
 # 이미지 표본 실패. 하루 4회(야간 스윕 수)까지 재시도하고 다음 KST 일에 초기화된다.

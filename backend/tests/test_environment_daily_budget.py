@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 
 import pytest
-from test_gate_record_stale_context import _empty_slot, _loader_takes, _remember
+from test_gate_record_stale_context import _empty_slot, _gate, _loader_takes, _record, _remember
 from test_topic_swap_fallback import _kst
 
 from app.workers.generation_retry_policy import (
@@ -118,3 +118,67 @@ def test_the_worker_hands_over_after_three_days(monkeypatch):
     assert last["next_retry_at"] is None
     assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 19, 1))
     assert recovery_is_abandoned(last, _kst(2026, 9, 19, 1)) is True
+
+
+# ── 0-4: 게이트의 원고 미생성은 복구 가능한 증상이다 ─────────────────────────────
+
+
+def test_the_gate_record_of_an_empty_slot_is_picked_up_by_the_next_sweep(monkeypatch):
+    """배달이 유실돼 시도 기록이 없는 빈 슬롯 — 07:45 게이트 뒤 12:00 스윕이 다시 집는다."""
+
+    philosophy, item = _empty_slot(monkeypatch)
+
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 16, 7, 45))
+
+    record = _record(item)
+    assert record["reason"] == "CONTENT_NOT_GENERATED"
+    assert record["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+    assert record["provider_attempt_count"] == 0
+    assert record["next_retry_at"] == _kst(2026, 9, 16, 12).astimezone(UTC).isoformat()
+    assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 16, 11, 59))
+    assert _loader_takes(monkeypatch, item, _kst(2026, 9, 16, 12))
+
+
+def test_a_slot_whose_dispatch_keeps_getting_lost_reaches_the_operator_after_three_days(monkeypatch):
+    philosophy, item = _empty_slot(monkeypatch)
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 16, 7, 45))
+    # 매일 아침 게이트가 같은 증상을 본다. 창 안에서는 기록을 바꾸지 않는다.
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 18, 7, 45))
+    assert isinstance(_record(item)["next_retry_at"], str)
+    assert _loader_takes(monkeypatch, item, _kst(2026, 9, 18, 12))
+
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
+
+    record = _record(item)
+    assert record["next_retry_at"] is None
+    assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 19, 12))
+    assert recovery_is_abandoned(record, _kst(2026, 9, 19, 12)) is True
+
+
+def test_the_gate_overwrite_of_an_abandoned_provider_record_keeps_the_window(monkeypatch):
+    """3일을 다 쓴 공급자 기록을 게이트가 원고 미생성으로 덮어도 새 3일 창이 열리지 않는다."""
+
+    philosophy, item = _empty_slot(monkeypatch)
+    for day in (16, 17, 18):
+        for hour in (1, 4, 7, 12):
+            exhausted = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), "PROVIDER_TIMEOUT")
+    assert exhausted["next_retry_at"] is None
+
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
+
+    record = _record(item)
+    assert record["reason"] == "CONTENT_NOT_GENERATED"
+    assert record[ENVIRONMENT_SINCE_KEY] == exhausted[ENVIRONMENT_SINCE_KEY]
+    assert record["next_retry_at"] is None
+    assert not _loader_takes(monkeypatch, item, _kst(2026, 9, 19, 12))
+
+
+def test_a_gate_recorded_empty_slot_is_owned_by_the_sweep_until_the_window_ends(monkeypatch):
+    from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
+
+    philosophy, item = _empty_slot(monkeypatch)
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 16, 7, 45))
+    assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is True
+
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
+    assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is False

@@ -1512,9 +1512,17 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
 
     stored = _stored_generation_attempt(item)
     stored_reason = stored.get("reason")
-    if stored_reason == code and bool(stored.get(OPERATOR_DECIDES_KEY)) == (
-        operator_decides_references(code, item)
+    if (
+        stored_reason == code
+        and bool(stored.get(OPERATOR_DECIDES_KEY)) == operator_decides_references(code, item)
+        and not (
+            code == "CONTENT_NOT_GENERATED"
+            and isinstance(stored.get("next_retry_at"), str)
+            and environment_window_closed(stored)
+        )
     ):
+        # 같은 증상을 이미 기록했다. 예외: 원고 미생성의 3일 창이 끝났는데 저장된 기한이
+        # 아직 문자열이면 한 번 다시 써서 `next_retry_at=None`(사람의 일)으로 굳힌다.
         return
     if code in _IMAGE_SYMPTOM_CODES and stored_reason in _STORED_IMAGE_CAUSE_CODES:
         return
@@ -1556,6 +1564,25 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
         # 시도 전이다. 여기서 증상을 지금 문맥의 기한 없는 OPERATOR_REQUIRED로 쓰면 그 시도가
         # 작가 0회로 사라진다(2026-10-02 gate_catalog 갱신 뒤 09:00 발행기가 4건을 그렇게
         # 굳혔다). 기록이 아예 없는 빈 슬롯은 종전대로 아래에서 기록한다.
+        return
+    if code == "CONTENT_NOT_GENERATED" and stored.get("retry_class") in (
+        GenerationRetryClass.OPERATOR_REQUIRED.value,
+        GenerationRetryClass.INPUT_CHANGE_REQUIRED.value,
+    ):
+        # 사람·입력 변경이 소유한 종착 기록(소진된 본문 표본·인용 없는 HARD 등)을 증상이 덮을 때는
+        # 종전처럼 사람의 몫으로 남긴다. 원고 미생성이 복구 가능한 증상이 됐다고 종착 기록을
+        # 자동 재시도로 되살리면 표본 사다리·주제 교체 상한을 우회해 작가 세션을 다시 산다.
+        _remember_generation_attempt(
+            db,
+            item,
+            philosophy,
+            code,
+            count_attempt=False,
+            extra={
+                "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+                "next_retry_at": None,
+            },
+        )
         return
     _remember_generation_attempt(db, item, philosophy, code, count_attempt=False)
 

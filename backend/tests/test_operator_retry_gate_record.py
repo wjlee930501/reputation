@@ -86,7 +86,7 @@ def _gate_recorded_slot(monkeypatch):
     tasks._record_gate_blocker_decision(_WorkerDB(), item, philosophy, "CONTENT_NOT_GENERATED")
     record = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
     assert record["reason"] == "CONTENT_NOT_GENERATED"
-    assert record["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert record["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
     return item, record, writer_calls, seen_at_writer
 
 
@@ -192,26 +192,35 @@ def test_operator_retry_writes_the_gate_recorded_empty_slot_once(monkeypatch, mo
     assert released["attempt_period"] == "2026-09-17"  # 다음 날에도 게이트 날의 기간이다
 
 
-@pytest.mark.parametrize("moment", [_SAME_DAY, _NEXT_DAY], ids=["same_day", "next_day"])
-def test_dispatch_without_an_operator_run_keeps_the_suppression(monkeypatch, moment):
+def test_dispatch_without_an_operator_run_keeps_the_suppression_until_the_stored_time(monkeypatch):
     item, record, writer_calls, _seen = _gate_recorded_slot(monkeypatch)
 
-    finished = _press_retry(monkeypatch, item, moment, operator=False)
+    finished = _press_retry(monkeypatch, item, _SAME_DAY, operator=False)
 
     assert writer_calls == []
     assert finished == [(OperationRunState.FAILED, "CONTENT_NOT_GENERATED")]
     assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
 
 
-@pytest.mark.parametrize("moment", [_SAME_DAY, _NEXT_DAY], ids=["same_day", "next_day"])
-def test_recovery_sweep_keeps_the_suppression(monkeypatch, moment):
+def test_recovery_sweep_keeps_the_suppression_until_the_stored_time(monkeypatch):
     item, record, writer_calls, _seen = _gate_recorded_slot(monkeypatch)
 
-    state, code, _message = _generate_once(monkeypatch, item, moment)
+    state, code, _message = _generate_once(monkeypatch, item, _SAME_DAY)
 
     assert (state, code) == (tasks.GenerationItemState.SKIPPED, "CONTENT_NOT_GENERATED")
     assert writer_calls == []
     assert item.essence_check_summary[GENERATION_ATTEMPT_KEY] == record
+
+
+def test_the_next_recovery_sweep_writes_a_gate_recorded_empty_slot(monkeypatch):
+    """게이트의 원고 미생성은 복구 가능한 증상이다 — 저장된 다음 시각 뒤의 스윕이 쓴다(감사 F9)."""
+
+    item, _record, writer_calls, _seen = _gate_recorded_slot(monkeypatch)
+
+    state, code, _message = _generate_once(monkeypatch, item, _NEXT_DAY)
+
+    assert (state, code) == (tasks.GenerationItemState.SUCCEEDED, None)
+    assert writer_calls == [item.id]
 
 
 @pytest.mark.parametrize(
@@ -226,8 +235,12 @@ def test_recovery_sweep_keeps_the_suppression(monkeypatch, moment):
 )
 def test_operator_retry_keeps_the_suppression_for_other_stored_reasons(monkeypatch, reason):
     item, record, writer_calls, _seen = _gate_recorded_slot(monkeypatch)
-    # 같은 context·같은 OPERATOR_REQUIRED 기록에서 원인만 다르다.
-    stored = {**record, "reason": reason}
+    # 같은 context·같은 OPERATOR_REQUIRED 기록에서 원인만 다르다(게이트 기록은 이제 환경 분류다).
+    stored = {
+        **record,
+        "reason": reason,
+        "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+    }
     item.essence_check_summary = {GENERATION_ATTEMPT_KEY: stored}
 
     finished = _press_retry(monkeypatch, item, _SAME_DAY, operator=True)
@@ -453,7 +466,7 @@ def test_a_legacy_sample_record_the_gate_overwrites_is_retried_by_the_operator(m
 
     overwritten = dict(item.essence_check_summary[GENERATION_ATTEMPT_KEY])
     assert overwritten["reason"] == "CONTENT_NOT_GENERATED"
-    assert overwritten["retry_class"] == GenerationRetryClass.OPERATOR_REQUIRED.value
+    assert overwritten["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
     assert overwritten["provider_attempt_count"] == 0  # 원인이 바뀌어 계수가 리셋됐다
 
     finished = _press_retry(monkeypatch, item, _kst(2026, 9, 16, 7, 50), operator=True)
