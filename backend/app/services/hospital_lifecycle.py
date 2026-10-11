@@ -11,6 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB, JSONPATH
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.config import settings
 from app.models.hospital import Hospital, HospitalStatus
 
 
@@ -148,13 +149,20 @@ def profile_requirements(hospital: Hospital) -> list[ProfileRequirement]:
         and math.isfinite(longitude)
         and -180 <= longitude <= 180
     )
+    # 보강 항목 플래그(기본 꺼짐, 대표 결정 전): 원장 약력·진료 철학·Google 병원 정보를
+    # 완료 판정에서 뺀다. 원장명·네이버 플레이스는 계속 필수다. 키는 그대로 둔다(Admin이 그린다).
+    optional = bool(settings.PROFILE_GATE_OPTIONAL_ENRICHMENT)
     return [
         ProfileRequirement(
             "director_basic",
-            "원장명·약력",
-            _text(hospital.director_name) and _text(hospital.director_career),
+            "원장명" if optional else "원장명·약력",
+            _text(hospital.director_name) and (optional or _text(hospital.director_career)),
         ),
-        ProfileRequirement("director_philosophy", "진료 철학", _text(hospital.director_philosophy)),
+        ProfileRequirement(
+            "director_philosophy",
+            "진료 철학",
+            optional or _text(hospital.director_philosophy),
+        ),
         ProfileRequirement(
             "contact",
             "주소·전화번호·진료시간",
@@ -169,8 +177,8 @@ def profile_requirements(hospital: Hospital) -> list[ProfileRequirement]:
         ),
         ProfileRequirement(
             "ai_channels",
-            "네이버 플레이스·Google 병원 정보",
-            _text(hospital.naver_place_url) and has_google,
+            "네이버 플레이스" if optional else "네이버 플레이스·Google 병원 정보",
+            _text(hospital.naver_place_url) and (optional or has_google),
         ),
         ProfileRequirement(
             "geo",
