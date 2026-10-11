@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import Interval, and_, case, func, literal, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -79,6 +79,9 @@ _ABANDONED_RUNNING_AFTER_BY_TYPE: Final[dict[str, timedelta]] = {
     "MONTHLY_SOV_PERIOD": timedelta(days=20),
 }
 _RUN_ABANDONED: Final = "OPERATION_RUN_ABANDONED"
+# 사고 없이 FAILED만 남은 멈춘 실행을 다시 찾는 범위와 tick당 상한.
+_RECOVERY_STOP_REPAIR_WINDOW: Final = timedelta(days=7)
+_RECOVERY_STOP_REPAIR_LIMIT: Final = 50
 _RECOVERY_STOP_MESSAGES: Final[dict[str, str]] = {
     # FAILED는 마지막 재배달의 유예(기본값 × 8) 뒤에 온다 — V0·월간 보고서는 6시간, 그 밖은 24시간.
     _REDISPATCH_EXHAUSTED: (
@@ -194,6 +197,19 @@ def _queued_redispatch_grace(run: OperationRun) -> timedelta:
         else _QUEUED_REDISPATCH_GRACE
     )
     return base * (2 ** min(_redispatch_count(run), _REDISPATCH_BUDGET))
+
+
+def _queued_redispatch_grace_sql():
+    """`_queued_redispatch_grace`의 SQL 판."""
+
+    base = case(
+        (
+            OperationRun.operation_type.in_(tuple(_FAST_QUEUED_REDISPATCH_TYPES)),
+            literal(_FAST_QUEUED_REDISPATCH_GRACE, Interval()),
+        ),
+        else_=literal(_QUEUED_REDISPATCH_GRACE, Interval()),
+    )
+    return base * func.power(2, func.least(OperationRun.redispatch_count, _REDISPATCH_BUDGET))
 
 
 def _counts_against_redispatch_budget(run: OperationRun) -> bool:
@@ -364,19 +380,12 @@ def reconcile() -> RecoveryCounts:
                                 and_(
                                     OperationRun.state == OperationRunState.QUEUED,
                                     OperationRun.not_before_at.is_(None),
-                                    # 유형별 기본 유예로 고른다(다른 유형의 45분~3시간 적체가 배치를
-                                    # 채우지 않게). 재배달 횟수에 따른 두 배 판정은
-                                    # `_operation_redispatch_is_due`가 한다.
+                                    # `_queued_redispatch_grace`와 같은 유예(유형별 기본 × 2^횟수)를
+                                    # SQL에서 건다. 아직 두 배 유예 안의 행이 배치(100)를 채워 이미
+                                    # 기한이 지난 V0·만료 lease를 굶기지 않게 한다.
                                     func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
-                                    <= case(
-                                        (
-                                            OperationRun.operation_type.in_(
-                                                tuple(_FAST_QUEUED_REDISPATCH_TYPES)
-                                            ),
-                                            observed_at - _FAST_QUEUED_REDISPATCH_GRACE,
-                                        ),
-                                        else_=observed_at - _QUEUED_REDISPATCH_GRACE,
-                                    ),
+                                    + _queued_redispatch_grace_sql()
+                                    <= observed_at,
                                 ),
                                 # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
                                 and_(
@@ -455,6 +464,7 @@ def reconcile() -> RecoveryCounts:
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
+        _repair_unrecorded_recovery_stops(db, observed_at)
         resolved_task_incidents = close_resolved_backlog_incidents(db)
         db.commit()
     return {
@@ -1234,7 +1244,8 @@ def _stop_operation_run(db, run: OperationRun, observed_at: datetime, code: str)
     run.safe_error_code = code
     run.safe_error_message = message
     run.version += 1
-    db.commit()
+    # FAILED와 사고(·알림 intent)는 한 트랜잭션이다. 둘 사이에서 끊기면 FAILED 실행은 다시
+    # 후보가 되지 않아 사고가 영영 열리지 않는다 — 함께 되돌아가면 다음 tick이 다시 멈춘다.
     hospital = (
         db.get(Hospital, run.hospital_id)
         if run.operation_type == "REBUILD_SITE" and run.hospital_id is not None
@@ -1245,7 +1256,46 @@ def _stop_operation_run(db, run: OperationRun, observed_at: datetime, code: str)
         _open_rebuild_site_incident(db, hospital, run, observed_at)
     else:
         _open_recovery_stop_incident(db, run, observed_at, code)
+    db.commit()
     return True
+
+
+def _unrecorded_recovery_stops_query(observed_at: datetime):
+    """원인 사고에 기록되지 않은 채 멈춘 실행(최근 7일). 같은 원인 사고의 마지막 관측이 실행의
+    종료보다 늦으면 이미 기록된 것이다. 사이트 준비는 병원 사고가 맡으므로 뺀다."""
+
+    recorded = (
+        select(Incident.id)
+        .where(
+            Incident.incident_type == _RECOVERY_STOP_INCIDENT_TYPE,
+            Incident.safe_error_code == OperationRun.safe_error_code,
+            Incident.last_seen_at >= OperationRun.completed_at,
+        )
+        .exists()
+    )
+    return (
+        select(OperationRun)
+        .where(
+            OperationRun.state == OperationRunState.FAILED,
+            OperationRun.safe_error_code.in_(tuple(_RECOVERY_STOP_MESSAGES)),
+            OperationRun.operation_type != "REBUILD_SITE",
+            OperationRun.completed_at >= observed_at - _RECOVERY_STOP_REPAIR_WINDOW,
+            ~recorded,
+        )
+        .order_by(OperationRun.completed_at, OperationRun.id)
+        # 같은 tick의 다른 reconciler가 같은 실행으로 사고·알림을 두 번 만들지 않게 한다.
+        .with_for_update(skip_locked=True)
+        .limit(_RECOVERY_STOP_REPAIR_LIMIT)
+    )
+
+
+def _repair_unrecorded_recovery_stops(db, observed_at: datetime) -> int:
+    """FAILED만 남고 원인 사고가 없는 멈춘 실행에 사고를 채운다(멱등, tick당 상한). 커밋은 호출자."""
+
+    runs = db.execute(_unrecorded_recovery_stops_query(observed_at)).scalars().all()
+    for run in runs:
+        _open_recovery_stop_incident(db, run, observed_at, str(run.safe_error_code))
+    return len(runs)
 
 
 def _open_recovery_stop_incident(
