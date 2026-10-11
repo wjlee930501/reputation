@@ -159,12 +159,13 @@ def environment_window_last_day(attempt: Mapping) -> date | None:
     """일일 초기화 환경 원인이 자동 재시도를 살 수 있는 마지막 KST 날. 상한이 없으면 `None`.
 
     시작은 그 환경 장애 연속 구간을 처음 관측한 시각(`environment_since`)이다. 그 키가 없는
-    레거시 기록은 `first_observed_at`, 그것도 없으면 `observed_at`으로 본다.
+    레거시 기록은 마지막 관측일(`observed_at`)부터 3일 창을 받는다 — 같은 문맥의 옛 표본 실패
+    시각을 물려받을 수 있는 `first_observed_at`으로 보면 이미 닫힌 창으로 읽힌다.
     """
 
     if attempt.get("reason") not in WINDOWED_ENVIRONMENT_CODES:
         return None
-    for key in (ENVIRONMENT_SINCE_KEY, "first_observed_at", "observed_at"):
+    for key in (ENVIRONMENT_SINCE_KEY, "observed_at"):
         raw = attempt.get(key)
         if not isinstance(raw, str):
             continue
@@ -643,9 +644,10 @@ def retry_is_due(attempt: dict, now: datetime | None = None) -> bool:
         attempt.get("reason") in DAILY_RESET_ENVIRONMENT_CODES
         and stored_attempt_period(attempt) != environment_attempt_period(observed)
     )
-    # Review outages receive a fresh bounded allowance on the next KST day so an
-    # already-written due slot cannot remain empty forever. Other provider failures
-    # retain their finite H-08 budget.
+    # 일일 초기화 원인(검수 장애·공급자 장애·원고 미생성)은 다음 KST 날에 새 하루 예산을 받아
+    # 이미 기한이 된 슬롯이 영영 비지 않는다. 공급자 장애·원고 미생성의 끝은 위의 3일 창
+    # (`environment_window_closed`), 검수 장애의 끝은 후보별 연속 실패 한도다. 그 밖의 환경
+    # 원인(COST_BLOCKED 등)은 유한한 H-08 예산 그대로다.
     if count >= ENVIRONMENT_ATTEMPT_BUDGET and not budget_reset_due:
         return False
     not_before = review_unavailable_not_before(attempt)

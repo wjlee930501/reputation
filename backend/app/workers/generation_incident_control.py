@@ -40,6 +40,7 @@ from app.workers.generation_retry_policy import (
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
     GenerationRetryClass,
+    environment_window_closed,
     next_recovery_deadline,
     recovery_is_abandoned,
     repair_recovery_remains,
@@ -222,9 +223,11 @@ def scheduled_recovery_owns_blocker(code: str, item) -> bool:
         code == "CONTENT_NOT_GENERATED"
         and attempt.get("reason") == code
         and attempt.get("retry_class") == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+        and not environment_window_closed(attempt)
     ):
         # 게이트가 남긴 원고 미생성 증상은 3일 창 안에서 스윕이 다시 집는다(유실된 배달).
-        # 창이 끝나면 위의 `recovery_is_abandoned`가 먼저 사람의 일로 돌린다.
+        # 창이 끝나면 게이트가 기록을 다시 쓰기 전(기한 문자열이 남은 동안)에도 소유하지 않는다
+        # — `tasks._record_gate_blocker_decision`과 같은 판정이다.
         return True
     return (
         attempt.get("reason") == code
@@ -277,9 +280,10 @@ def scheduled_recovery_deadline(item, code: str) -> datetime | None:
 
 
 def environment_recovery_exhausted(code: str, item) -> bool:
-    """공급자 장애의 환경 예산이 끝나 예약 복구가 이 빈 슬롯을 더 집지 않는가.
+    """공급자 장애의 자동 재시도 창이 끝나 예약 복구가 이 빈 슬롯을 더 집지 않는가.
 
-    `ENVIRONMENT_ATTEMPT_BUDGET`을 다 쓰면 재시도 정책이 다음 시도 시각을 `None`으로 저장한다
+    하루 예산(`ENVIRONMENT_ATTEMPT_BUDGET`)은 KST 날마다 다시 열리고, 처음 관측한 날부터 3일 창
+    (`environment_window_closed`)이 끝나면 재시도 정책이 다음 시도 시각을 `None`으로 저장한다
     (`recovery_is_abandoned`). 그 뒤에도 '다음 예약 배치가 다시 시도합니다'라고 하면 사람이 할
     일이 없는 것처럼 보인다. 본문이 있는 글은 저장 본문 수리가 소유하므로 여기 들지 않는다.
     """

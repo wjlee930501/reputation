@@ -19,6 +19,7 @@ from app.workers.generation_retry_policy import (
     ENVIRONMENT_SINCE_KEY,
     GenerationRetryClass,
     environment_window_closed,
+    environment_window_last_day,
     next_recovery_deadline,
     recovery_is_abandoned,
     retry_is_due,
@@ -182,3 +183,36 @@ def test_a_gate_recorded_empty_slot_is_owned_by_the_sweep_until_the_window_ends(
 
     _gate(monkeypatch, item, philosophy, _kst(2026, 9, 19, 7, 45))
     assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is False
+
+
+def test_a_closed_window_with_a_stale_deadline_is_not_owned_by_the_sweep(monkeypatch):
+    """게이트가 아직 다시 쓰지 않아 기한 문자열이 남았어도 창이 끝났으면 스윕 소유가 아니다."""
+
+    from test_topic_swap_fallback import _freeze
+
+    from app.workers.generation_incident_control import scheduled_recovery_owns_blocker
+
+    philosophy, item = _empty_slot(monkeypatch)
+    _gate(monkeypatch, item, philosophy, _kst(2026, 9, 16, 7, 45))
+    assert isinstance(_record(item)["next_retry_at"], str)
+
+    _freeze(monkeypatch, _kst(2026, 9, 19, 7, 0))
+
+    assert scheduled_recovery_owns_blocker("CONTENT_NOT_GENERATED", item) is False
+
+
+def test_a_legacy_record_without_the_window_start_counts_from_its_last_observation():
+    """`environment_since`가 없는 배포 전 기록은 마지막 관측일부터 3일 창을 받는다."""
+
+    legacy = {
+        "reason": "PROVIDER_TIMEOUT",
+        "retry_class": GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value,
+        "provider_attempt_count": ENVIRONMENT_ATTEMPT_BUDGET,
+        "attempt_period": "2026-09-16",
+        "first_observed_at": _kst(2026, 9, 1, 1).isoformat(),
+        "observed_at": _kst(2026, 9, 16, 12).isoformat(),
+    }
+
+    assert environment_window_last_day(legacy) == date(2026, 9, 18)
+    assert environment_window_closed(legacy, _kst(2026, 9, 18, 22)) is False
+    assert environment_window_closed(legacy, _kst(2026, 9, 19, 1)) is True

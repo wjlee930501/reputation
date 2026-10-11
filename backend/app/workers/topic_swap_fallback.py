@@ -57,7 +57,10 @@ from app.workers.generation_attempt_state import (
     read_generation_budget,
     record_topic_swap,
 )
-from app.workers.generation_incident_control import generation_incident_dedupe_key
+from app.workers.generation_incident_control import (
+    _body_repair_budget_remains,
+    generation_incident_dedupe_key,
+)
 from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
     BODY_REPAIR_STATE_KEY,
@@ -70,7 +73,6 @@ from app.workers.generation_retry_policy import (
     environment_attempt_period,
     has_model_declared_hard_finding,
     next_recovery_deadline,
-    repair_recovery_remains,
 )
 from app.workers.nightly_generation_batch import (
     GENERATION_WRITE_BACK_STATUSES,
@@ -116,6 +118,7 @@ class SwapReport:
     considered: int = 0
     swapped: int = 0
     no_candidate_target: int = 0
+    # 방어용 라벨이다. `_choose_target`이 이미 진료과 불일치를 거르므로 실제로는 거의 오지 않는다.
     incompatible_specialty: int = 0
     similar_topic: int = 0
     write_conflicts: int = 0
@@ -304,10 +307,9 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
         reason in BODY_REPAIR_SWAP_CODES
         and attempt.get("retry_class") != GenerationRetryClass.INPUT_CHANGE_REQUIRED.value
     ):
-        summary = getattr(item, "essence_check_summary", None)
-        repair_state = summary.get(BODY_REPAIR_STATE_KEY) if isinstance(summary, dict) else None
         # 수리 예산이 남았으면(오늘 또는 내일) 아직 작가가 고친다. 3일을 다 쓴 뒤에만 바꾼다.
-        if isinstance(repair_state, dict) and not repair_recovery_remains(repair_state):
+        # 수리 기록이 없으면 예산이 남은 것이다(인시던트 소유 판정과 같은 술어).
+        if not _body_repair_budget_remains(item):
             return reason
         return None
     if reason == "CONTENT_AI_HARD_FINDING" and attempt.get(AUTO_CORRECTION_EXHAUSTED_KEY):
@@ -317,6 +319,9 @@ def exhausted_body_sample_reason(item: ContentItem) -> str | None:
     # 현재 주제의 작가 예산(6회)은 하루 예산으로 첫날에 다 찬다. 남은 소진 일수는 지출 없는
     # 공회전이라 기다리지 않고 곧바로 교체한다. 교체 상한을 다 쓴 뒤의 소진은 위 방어선이
     # 막아 종전 사다리대로 `OPERATOR_REQUIRED`로 간다.
+    # 사흘짜리 공급자 장애도 주제당 HTTP 상한(36)을 다 써 생성 예산 소진으로 이 계단에 들어와
+    # 한 번뿐인 주제 교체를 쓸 수 있다. HTTP 예산이 남지 않은 주제는 교체로만 이어갈 수 있으므로
+    # 의도적으로 받아들인 결정이다.
     writers_spent = reason == BUDGET_EXHAUSTED_REASON and current_topic_writers_exhausted(
         attempt
     )

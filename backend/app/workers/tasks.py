@@ -1372,7 +1372,8 @@ def _remember_generation_attempt(
             and stored_attempt_period(previous) != attempt_period
         ):
             # 하루 예산은 KST 날마다 다시 열린다. 3일 창의 시작(`environment_since`)은 아래에서
-            # 따로 잇는다.
+            # 따로 잇는다. 같은 날 안에서는 `previous.reason`을 일부러 보지 않는다 — 원인이 바뀌어도
+            # (PROVIDER_TIMEOUT → GENERATION_FAILED) 그날의 계수를 이어 센다.
             provider_attempt_count = 0
         provider_attempt_count += 1
     if (
@@ -1581,6 +1582,8 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
             extra={
                 "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
                 "next_retry_at": None,
+                # 사람의 일로 남긴 기록에는 환경 창의 시작을 남기지 않는다.
+                ENVIRONMENT_SINCE_KEY: None,
             },
         )
         return
