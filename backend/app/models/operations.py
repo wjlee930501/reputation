@@ -157,6 +157,11 @@ class OperationRun(Base):
     # 미룬 실행(QUEUED)을 자율 복구가 다시 보낼 수 있는 가장 이른 시각(0083). 긴 Celery
     # countdown 대신 쓴다 — 브로커·봉투·lease 시계보다 오래 사는 메시지를 만들지 않는다.
     not_before_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # 자율 복구가 QUEUED 유실·lease 만료로 이 실행을 새 task id로 다시 보낸 횟수(0087).
+    # claim 횟수(`attempt_count`)와 다르다 — 유형별 재배달 예산은 이 값으로 센다.
+    redispatch_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     version: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
