@@ -13,6 +13,11 @@
 #   bash scripts/deploy.sh migrate      # DB 마이그레이션 실행
 #   bash scripts/deploy.sh rollback     # 직전 배포 시작 시점의 리비전으로 트래픽 복귀
 #
+# 옵션(대상 뒤에 붙인다):
+#   --accept-env-diff         로컬 .env.production이 운영 env와 다를 때 로컬 값으로 배포
+#   --override-reason="사유"  배치 시간대·하루 한 번 규칙을 이번만 넘김(사유 기록)
+#   --unpin                   특정 리비전에 고정된 트래픽을 새 리비전 배포 뒤 옮김
+#
 # 모든 배포 대상은 첫 mutation 전에 각 서비스의 현재 리비전을 .deploy-rollback에
 # 기록한다. 중간에 실패해 서비스 버전이 섞이면 `rollback`으로 한 번에 되돌린다
 # (트래픽만 되돌린다 — 이미 적용된 DB 마이그레이션은 별도 판단이 필요하다).
@@ -39,8 +44,30 @@ fail()  { echo -e "${RED}✗${RESET} $1" >&2; exit 1; }
 # ─── 설정 ─────────────────────────────────────────────────────────
 TARGET="${1:-}"
 if [[ -z "$TARGET" ]]; then
-  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate|rollback]"
+  echo "Usage: bash scripts/deploy.sh [backend|api|worker|beat|site|admin|all|migrate|rollback] [--accept-env-diff] [--unpin] [--override-reason=사유]"
   exit 1
+fi
+shift
+
+# 옵션 — 모르는 옵션은 무시하지 않는다(오타가 안전 장치를 끄지 않게).
+#   --accept-env-diff        로컬 .env.production이 운영 env와 달라도 로컬 값으로 바꾼다
+#   --override-reason=사유   배치 시간대·하루 한 번 규칙을 이번만 넘긴다. 사유는 기록된다
+#   --unpin                  특정 리비전에 고정된 트래픽을 이번 배포의 새 리비전으로 옮긴다
+ACCEPT_ENV_DIFF=0
+UNPIN_TRAFFIC=0
+OVERRIDE_REASON=""
+OVERRIDE_GIVEN=0
+for arg in "$@"; do
+  case "$arg" in
+    --accept-env-diff) ACCEPT_ENV_DIFF=1 ;;
+    --unpin) UNPIN_TRAFFIC=1 ;;
+    --override-reason=*) OVERRIDE_GIVEN=1; OVERRIDE_REASON="${arg#--override-reason=}" ;;
+    *) fail "알 수 없는 옵션: ${arg}" ;;
+  esac
+done
+# 빈 사유(--override-reason= 또는 공백뿐)는 규칙을 넘기는 근거가 아니다.
+if [[ "$OVERRIDE_GIVEN" == "1" && -z "${OVERRIDE_REASON//[[:space:]]/}" ]]; then
+  fail "--override-reason=에는 사유를 적어야 합니다."
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

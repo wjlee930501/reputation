@@ -1916,3 +1916,33 @@ def test_deploy_stops_before_mutation_when_traffic_is_pinned(tmp_path: Path) -> 
     commands = command_log.read_text()
     assert "gcloud run deploy" not in commands
     assert "docker build" not in commands
+
+
+def test_unknown_option_stops_before_anything_runs(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", "--acept-env-diff"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "알 수 없는 옵션: --acept-env-diff" in result.stderr
+    assert not command_log.exists() or "gcloud run deploy" not in command_log.read_text()
+
+
+def test_empty_override_reason_is_refused(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", "--override-reason=  "],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode != 0
+    assert "사유를 적어야" in result.stderr
