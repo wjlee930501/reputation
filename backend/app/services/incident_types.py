@@ -59,6 +59,8 @@ _DEVELOPER_INCIDENT_TYPES: frozenset[str] = frozenset(
         "OPERATION_TERMINAL_FAILED",
         "BROKER_UNAVAILABLE",
         "UNSAFE_STORED_DISPATCH",
+        # 자율 복구가 예산을 다 쓰거나 안전하게 다시 돌릴 수 없어 멈춘 실행(원인별 사고 하나).
+        "OPERATION_RECOVERY_EXHAUSTED",
         "NOTIFICATION_DELIVERY_FAILED",
         "NOTIFICATION_DELIVERY_UNKNOWN",
         "CACHE_REVALIDATION_FAILED",

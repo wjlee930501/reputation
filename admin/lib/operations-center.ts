@@ -402,6 +402,10 @@ export const SAFE_CAUSE_CODE_MESSAGES: Record<string, string> = {
   TASK_FAILED: '자동 작업이 완료되지 않았습니다.',
   HOSPITAL_NOT_FOUND: '작업 대상 병원 정보를 찾지 못했습니다.',
   UNSAFE_STORED_DISPATCH: '저장된 작업 요청이 안전 검사를 통과하지 못해 다시 실행하지 않았습니다.',
+  // 자동 복구가 멈춘 작업 — 운영 관제에서 '작업 다시 시도'로 이어 간다
+  OPERATION_REDISPATCH_EXHAUSTED: '자동 재배달을 정해진 횟수만큼 했지만 작업이 시작되지 않거나 끝나지 않아 자동 복구를 멈췄습니다.',
+  OPERATION_LEASE_EXPIRED: '보고서 재생성 작업이 끝나지 않은 채 중단되어, 새 버전이 중복으로 생기지 않도록 자동으로 다시 실행하지 않았습니다.',
+  OPERATION_RUN_ABANDONED: '오랫동안 진행 기록이 없는 작업을 자동 복구가 종료 처리했습니다.',
   UNVERIFIED_ADMIN_ACTOR: '요청한 담당자 계정을 확인하지 못했습니다.',
 }
 

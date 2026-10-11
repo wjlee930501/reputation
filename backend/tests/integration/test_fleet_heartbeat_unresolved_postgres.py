@@ -703,3 +703,42 @@ def test_a_batch_ended_outside_its_recorder_still_counts(db):
     _attempt(db, item, "SUCCEEDED", RETRIED_AT)
 
     assert facts.delta() == (1, 1)
+
+
+def test_runs_stopped_under_one_cause_incident_are_all_accounted(db):
+    """자율 복구가 멈춘 실행들은 원인 사고 하나가 마지막 실행만 가리켜도 모두 사고로 설명된다."""
+    facts = _Facts(db)
+    first = _run(
+        db, "TRIGGER_V0_REPORT", "FAILED", at=FAILED_AT, hospital=_hospital(db),
+        error_code="OPERATION_REDISPATCH_EXHAUSTED",
+    )
+    last = _run(
+        db, "RUN_SOV", "FAILED", at=RETRIED_AT, hospital=_hospital(db),
+        error_code="OPERATION_REDISPATCH_EXHAUSTED",
+    )
+    db.add(
+        Incident(
+            hospital_id=None,
+            dedupe_key=f"heartbeat-test:{uuid.uuid4()}",
+            incident_type="OPERATION_RECOVERY_EXHAUSTED",
+            state="OPEN",
+            severity="HIGH",
+            customer_impact="테스트",
+            source_type="OPERATION_RUN",
+            source_id="OPERATION_REDISPATCH_EXHAUSTED",
+            safe_error_code="OPERATION_REDISPATCH_EXHAUSTED",
+            operation_run_id=last.id,
+            next_action="테스트",
+            admin_path="/operations",
+            first_seen_at=FAILED_AT,
+            last_seen_at=RETRIED_AT,
+        )
+    )
+    # 다른 원인 코드로 실패한 실행은 이 사고로 설명되지 않는다.
+    _run(
+        db, "RUN_SOV", "FAILED", at=RETRIED_AT, hospital=_hospital(db),
+        error_code="OPERATION_LEASE_EXPIRED",
+    )
+
+    assert first.id != last.id
+    assert facts.delta() == (3, 1)
