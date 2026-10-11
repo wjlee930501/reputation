@@ -19,6 +19,10 @@ KST = ZoneInfo("Asia/Seoul")
 AUGUST_2026_CONVERSION_START_DAY = 24
 AUGUST_2026_CONVERSION_END_DAY = 31
 MONTHLY_RECOVERY_END_DAY = 7
+# 7일 23:59:59까지 자동 복구, 8일 00:15 월간 배치가 마감 사실로 최종화한다. 공백의 최종 판정은 이날 한다.
+MONTHLY_FINALIZE_DAY = MONTHLY_RECOVERY_END_DAY + 1
+# 8일 최종화 뒤 마지막 판정 시각(공백 요약 Beat와 같은 09:00 KST).
+MONTHLY_FINAL_JUDGMENT_HOUR = 9
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +129,29 @@ def is_monthly_recovery_window(now: datetime, year: int, month: int) -> bool:
     except MonthlyPeriodError:
         return False
     return (prior.year, prior.month) == (year, month)
+
+
+def monthly_recovery_deadline(year: int, month: int) -> datetime:
+    """그 달 측정을 자동 복구가 소유하는 마지막 시각 — 다음 달 7일 23:59:59 KST.
+
+    8일 00:15 월간 배치는 이 시각이 지난 고정 사실로 LIMITED/UNAVAILABLE을 최종화한다.
+    """
+
+    return reporting_period(year, month).ends_at + timedelta(
+        days=MONTHLY_RECOVERY_END_DAY
+    ) - timedelta(seconds=1)
+
+
+def monthly_final_judgment_at(year: int, month: int) -> datetime:
+    """그 달 측정 실패가 사람의 일이 되는 시각 — 다음 달 8일 09:00 KST.
+
+    복구 마감(7일 23:59:59)과 8일 00:15 최종화 사이에 '조치 필요'가 먼저 나가면, 몇 분 뒤
+    최종화가 닫을 일을 사람에게 넘기는 오탐이 된다. 최종화 뒤 공백 요약의 마지막 판정과 맞춘다.
+    """
+
+    return reporting_period(year, month).ends_at + timedelta(
+        days=MONTHLY_FINALIZE_DAY - 1, hours=MONTHLY_FINAL_JUDGMENT_HOUR
+    )
 
 
 def require_closed_period(year: int, month: int, *, now: datetime) -> MonthlyPeriod:

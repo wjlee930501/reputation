@@ -108,14 +108,18 @@ def test_current_month_slot_failure_waits_one_reconciliation():
     assert deadline == start + DEFAULT_RETRYING_DEADLINE
 
 
-def test_monthly_sov_deadline_is_the_recovery_horizon():
+def test_monthly_sov_deadline_is_the_final_judgment_after_the_recovery_horizon():
+    # 복구 마감(7일 23:59:59) 뒤 8일 00:15 최종화가 닫을 기회를 갖도록 8일 09:00 판정까지 기계 소유다
+    # (Phase 1-6a, `test_monthly_sov_incident_retrying.py`).
+    from app.services.monthly_period import monthly_final_judgment_at
     from app.workers.tasks import _monthly_sov_recovery_deadline
 
     start = datetime(2026, 10, 25, tzinfo=UTC)
     request = _request("MONTHLY_SOV_MEASUREMENT_FAILED", f"{HOSPITAL}:2026-10")
     deadline = retry_deadline(request, episode_start=start, observed_at=start)
-    assert deadline == datetime(2026, 11, 7, 23, 59, 59, tzinfo=KST)
-    assert deadline == _monthly_sov_recovery_deadline(2026, 10)
+    assert deadline == datetime(2026, 11, 8, 9, 0, tzinfo=KST)
+    assert deadline == monthly_final_judgment_at(2026, 10)
+    assert deadline > _monthly_sov_recovery_deadline(2026, 10)
     late = deadline + timedelta(seconds=1)
     assert retry_deadline(request, episode_start=start, observed_at=late) is None
 

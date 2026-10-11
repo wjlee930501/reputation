@@ -218,17 +218,34 @@ def _monthly_slot_window(
     return min(deadline, period_start) if period_start > episode_start else deadline
 
 
+# 질문 세트·측정 기준이 없거나 어긋난 실패는 사람이 입력을 바꿔야 풀린다 — 처음부터 사람의 일이다.
+# 나머지(부분·미완료·비용 보류)는 1~7일 catch-up과 24~말일 6시간 tick이 실제로 다시 산다.
+MONTHLY_SOV_HUMAN_ERROR_CODES = frozenset(
+    {
+        "MONTHLY_SOV_NO_MEASUREMENT_MANIFEST",
+        "MONTHLY_SOV_MEASUREMENT_POLICY_DRIFT",
+        "MONTHLY_SOV_UNRESOLVED_MANIFEST_STATE",
+    }
+)
+
+
 def _monthly_sov_window(
     request: IncidentOpenRequest, _episode_start: datetime
 ) -> datetime | None:
-    """월간 측정은 다음 달 7일 23:59:59 KST까지 catch-up이 맡는다(`tasks._monthly_sov_recovery_deadline`)."""
+    """월간 측정은 다음 달 7일 23:59:59 KST까지 catch-up이 맡고 8일 00:15 배치가 최종화한다.
 
+    기한은 최종화 뒤 마지막 판정 시각(8일 09:00 KST, `monthly_period.monthly_final_judgment_at`)이다.
+    복구 마감에서 끊으면 00:00~00:15 사이에 보류된 '조치 필요'가 나가고 곧 최종화가 닫는 오탐이 된다.
+    """
+
+    if (request.safe_error_code or "").strip().upper() in MONTHLY_SOV_HUMAN_ERROR_CODES:
+        return None
     period = _period_month(request.source_id)
     if period is None:
         return None
     year, month = period
     next_start = datetime(year + (month == 12), month % 12 + 1, 1, tzinfo=_KST)
-    return next_start + timedelta(days=7) - timedelta(seconds=1)
+    return next_start + timedelta(days=7, hours=9)
 
 
 _DEVELOPER = IncidentTypePolicy(audience=IncidentAudience.DEVELOPER)

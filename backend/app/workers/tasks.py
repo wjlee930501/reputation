@@ -313,6 +313,7 @@ from app.services.monthly_period import (
     eligible_hospital_ids,
     is_monthly_recovery_window,
     lock_report_version_plan,
+    monthly_recovery_deadline,
     reporting_period,
     require_closed_period,
     scheduled_report_period,
@@ -8866,8 +8867,7 @@ def _resolve_monthly_measurement_period(
 def _monthly_sov_recovery_deadline(year: int, month: int) -> datetime:
     """Return the inclusive KST service-period recovery horizon."""
 
-    period = reporting_period(year, month)
-    return period.ends_at + timedelta(days=7) - timedelta(seconds=1)
+    return monthly_recovery_deadline(year, month)
 
 
 def _monthly_sov_deadline_reached(
@@ -9352,6 +9352,25 @@ def _recover_sov_failure(
             period_key=period_key,
         )
     return recover_weekly_sov_failure(hospital_id=hospital_id, week_key=period_key)
+
+
+def _close_finalized_monthly_sov_incident(hospital: Hospital, period_key: str) -> None:
+    """측정이 최종(COMPLETE, 또는 마감 뒤 LIMITED/UNAVAILABLE)이면 그 달 측정 사고는 기계가 닫는다.
+
+    마감으로 닫힌 달에는 새 RUN_SOV 성공이 없어 백로그 해결 규칙이 근거를 찾지 못한다.
+    닫지 않으면 8일 09:00 판정 기한이 지나 이미 전달 가능한 달이 사람의 일로 남는다.
+    """
+    try:
+        _run_async(
+            _recover_sov_failure(
+                hospital_id=hospital.id, period_key=period_key, measurement_mode="monthly"
+            )
+        )
+    except Exception:
+        logger.exception(
+            "Finalized monthly measurement incident could not be closed",
+            extra={"hospital_id": str(hospital.id), "period_key": period_key},
+        )
 
 
 def _start_measurement_run(
@@ -12294,12 +12313,12 @@ def run_monthly_reports(self):
         blocked: list[str] = []
         measurement_pending: list[Hospital] = []
         for hospital in eligible_hospitals:
-            if _hospital_requires_monthly_sov_success(
-                db, hospital, period
-            ) and not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
-                blocked.append(hospital.name)
-                measurement_pending.append(hospital)
-                continue
+            if _hospital_requires_monthly_sov_success(db, hospital, period):
+                if not _monthly_sov_measurement_succeeded(db, hospital.id, period_key):
+                    blocked.append(hospital.name)
+                    measurement_pending.append(hospital)
+                    continue
+                _close_finalized_monthly_sov_incident(hospital, period_key)
             latest_run = _latest_monthly_report_operation_run(
                 db, hospital.id, period.year, period.month
             )

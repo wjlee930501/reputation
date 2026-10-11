@@ -260,6 +260,12 @@ async def _open_sov_failure(
                 IncidentState.RECOVERED.value,
                 IncidentState.ACKNOWLEDGED.value,
             }
+            # 기계가 들고 있던 에피소드(월간 catch-up)가 사람 몫 원인으로 바뀌었다. 이미 보류된
+            # 열림 알림이 있으면 같은 키라 새로 넣지 않고, 비용 보류로 시작해 없었으면 처음 알린다.
+            or (
+                previous_state == IncidentState.RETRYING.value
+                and incident.state == IncidentState.OPEN.value
+            )
         ):
             await enqueue_notification(
                 db,
