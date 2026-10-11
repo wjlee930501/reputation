@@ -261,14 +261,22 @@ def test_the_repair_query_finds_only_recent_unrecorded_cause_stops() -> None:
 
 def test_the_repair_upserts_one_incident_per_found_run(monkeypatch) -> None:
     rows = [
-        SimpleNamespace(id=uuid.uuid4(), safe_error_code="OPERATION_RUN_ABANDONED"),
-        SimpleNamespace(id=uuid.uuid4(), safe_error_code="OPERATION_LEASE_EXPIRED"),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            safe_error_code="OPERATION_RUN_ABANDONED",
+            completed_at=NOW - timedelta(hours=3),
+        ),
+        SimpleNamespace(
+            id=uuid.uuid4(),
+            safe_error_code="OPERATION_LEASE_EXPIRED",
+            completed_at=NOW - timedelta(hours=1),
+        ),
     ]
-    opened: list[tuple[object, str]] = []
+    opened: list[tuple[object, str, datetime]] = []
     monkeypatch.setattr(
         autonomous_recovery,
         "_open_recovery_stop_incident",
-        lambda _db, run, _at, code: opened.append((run.id, code)),
+        lambda _db, run, _at, code, *, occurred_at: opened.append((run.id, code, occurred_at)),
     )
     db = SimpleNamespace(
         execute=lambda _statement: SimpleNamespace(
@@ -277,4 +285,5 @@ def test_the_repair_upserts_one_incident_per_found_run(monkeypatch) -> None:
     )
 
     assert autonomous_recovery._repair_unrecorded_recovery_stops(db, NOW) == 2
-    assert opened == [(row.id, row.safe_error_code) for row in rows]
+    # 사고의 에피소드는 복구한 tick이 아니라 실행이 멈춘 시각에 묶인다.
+    assert opened == [(row.id, row.safe_error_code, row.completed_at) for row in rows]

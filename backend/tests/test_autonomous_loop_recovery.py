@@ -608,6 +608,8 @@ def test_site_build_budget_only_counts_the_last_day_of_runs(monkeypatch) -> None
         for statement in session.statements
         if statement.column_descriptions[0].get("entity") is OperationRun
         and "REBUILD_SITE" in statement.compile().params.values()
+        # 멈춘 실행 복구 조회도 REBUILD_SITE를 (제외 조건으로) 싣는다.
+        and "OPERATION_RECOVERY_EXHAUSTED" not in statement.compile().params.values()
     )
     assert now - timedelta(hours=24) in budget_query.compile().params.values()
 
