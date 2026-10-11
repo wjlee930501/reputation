@@ -641,8 +641,8 @@ class Settings(BaseSettings):
     # SoV
     SOV_TRACKING_SET_N_DEFAULT: int = 15
     # 월간 코호트(Hospital.monthly_sov_cohort)는 계약된 ACTIVE 병원이 자동 편입되며 전원 측정한다.
-    # 이 값은 자르는 상한이 아니라 비용 경고 기준이다 — 넘으면 경고 로그와 월 1건의 사고만 남긴다.
-    SOV_MONTHLY_COHORT_LIMIT: int = 7
+    # 비용 경고선은 `sov_tracking_set.monthly_sov_cohort_cost_threshold`가
+    # COST_GUARD_MONTHLY_SOV_QUERIES에서 계산한다(손으로 맞추는 병원 수 설정은 없앴다).
     SOV_MONTHLY_WINDOW_START_DAY: int = 24
     # 아직 전환되지 않은 병원의 주간 측정 반복 횟수.
     SOV_REPEAT_COUNT_WEEKLY: int = 5

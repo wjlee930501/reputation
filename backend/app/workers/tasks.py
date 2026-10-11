@@ -453,6 +453,7 @@ from app.services.sov_tracking_set import (
     MEASUREMENT_WINDOW_MONTH_END,
     hospital_in_monthly_cohort,
     iter_monthly_sov_cohort,
+    monthly_sov_cohort_cost_threshold,
     register_convertible_tracking_sets,
     tracking_set_fingerprint,
     tracking_set_members,
@@ -10029,8 +10030,8 @@ def _report_monthly_cohort_gaps(registration: Any, period_key: str) -> None:
 
 
 def _warn_monthly_cohort_over_limit(cohort_size: int, period_key: str) -> None:
-    """SOV_MONTHLY_COHORT_LIMIT은 비용 경고 기준이다. 병원을 자르지 않고 알리기만 한다."""
-    limit = settings.SOV_MONTHLY_COHORT_LIMIT
+    """비용 경고선(월 SoV 상한 ÷ 병원 1곳 고정 세트 비용)을 넘으면 알리기만 한다. 병원을 자르지 않는다."""
+    limit = monthly_sov_cohort_cost_threshold()
     if cohort_size <= limit:
         return
     logger.warning(

@@ -318,7 +318,7 @@ def test_cohort_over_limit_measures_everyone_and_opens_one_warning(monkeypatch, 
     monkeypatch.setattr(
         tasks, "_ensure_monthly_sov_operation_run", lambda _db, hospital, *_a: ensured.append(hospital)
     )
-    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 2)
+    monkeypatch.setattr(tasks, "monthly_sov_cohort_cost_threshold", lambda: 2)
     opened: list[dict] = []
     monkeypatch.setattr(tasks, "open_monthly_cohort_over_limit", lambda **kw: opened.append(kw) or kw)
     monkeypatch.setattr(tasks, "_run_async", lambda value: value)
@@ -336,7 +336,7 @@ def test_cohort_over_limit_measures_everyone_and_opens_one_warning(monkeypatch, 
 def test_cohort_at_or_under_limit_opens_no_warning(monkeypatch):
     cohort = [SimpleNamespace(id=uuid.uuid4(), name="병원")]
     _patch_monthly_window(monkeypatch, _monthly_window_db(), {}, cohort)
-    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 1)
+    monkeypatch.setattr(tasks, "monthly_sov_cohort_cost_threshold", lambda: 1)
     monkeypatch.setattr(
         tasks, "open_monthly_cohort_over_limit", lambda **_k: pytest.fail("no warning expected")
     )
@@ -707,7 +707,6 @@ def test_window_mismatch_uses_existing_policy_changed_reason():
 def test_guard_defaults_pin_locked_august_conversion_envelope():
     assert Settings.model_fields["COST_GUARD_MONTHLY_SOV_QUERIES"].default == 4260
     assert Settings.model_fields["COST_GUARD_DAILY_SOV_QUERIES"].default == 1260
-    assert Settings.model_fields["SOV_MONTHLY_COHORT_LIMIT"].default == 7
     assert 7 * 15 * 2 * 5 + 210 == 1260
     assert 3000 + 1260 == 4260
     assert monthly_sov_guard_units(
@@ -755,7 +754,6 @@ def test_converted_cohort_is_not_dispatched_by_weekly_beat_outside_month_end_win
         tasks, "register_convertible_tracking_sets", lambda *_args, **_kwargs: None
     )
     monkeypatch.setattr(tasks, "iter_monthly_sov_cohort", lambda *_args, **_kwargs: [converted])
-    monkeypatch.setattr(tasks.settings, "SOV_MONTHLY_COHORT_LIMIT", 7)
     monkeypatch.setattr(
         tasks,
         "_ensure_weekly_sov_operation_run",

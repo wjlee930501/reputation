@@ -84,8 +84,9 @@ async def open_monthly_cohort_over_limit(
                 customer_impact=message,
                 source_type=_SOURCE_TYPE,
                 next_action=(
-                    "측정 비용 한도(COST_GUARD_MONTHLY_SOV_QUERIES)가 병원 수를 감당하는지 "
-                    "확인하고 SOV_MONTHLY_COHORT_LIMIT을 함께 조정하세요."
+                    "월 측정 비용 한도(COST_GUARD_MONTHLY_SOV_QUERIES)를 병원 수에 맞게 올릴지 비용 "
+                    "담당자와 정하세요. 경고선은 한도에서 자동 계산되며 이 알림은 그 달이 끝나면 "
+                    "자동으로 닫힙니다."
                 ),
                 admin_path="/operations",
                 hospital_id=None,
