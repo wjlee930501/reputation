@@ -219,9 +219,22 @@ def test_a_revalidation_run_is_never_called_abandoned() -> None:
 def test_a_monthly_sov_period_run_waiting_for_its_day_8_finalizer_is_not_abandoned() -> None:
     """월말 창의 마지막 sweep(말일 18시) 뒤 8일 00:15 최종화까지 약 7일 6시간 손대지 않는다."""
 
-    period = _stale(days=8)
-    period.operation_type = "MONTHLY_SOV_PERIOD"
-    assert not autonomous_recovery._is_abandoned_running(period, NOW)
-    lost = _stale(days=11)
-    lost.operation_type = "MONTHLY_SOV_PERIOD"
-    assert autonomous_recovery._is_abandoned_running(lost, NOW)
+    def period(days: float):
+        run = _stale(days=days)
+        run.operation_type = "MONTHLY_SOV_PERIOD"
+        return run
+
+    abandoned = autonomous_recovery._is_abandoned_running
+    assert not abandoned(period(8), NOW)
+    # 월간 측정 구간 실행은 따로 20일을 기다린다 — 8일 최종화 tick을 놓쳐도 다음 tick까지 둔다.
+    assert not abandoned(period(11), NOW)
+    assert not abandoned(period(19), NOW)
+    assert abandoned(period(21), NOW)
+    # 다른 유형은 기본 10일 그대로다.
+    assert abandoned(_stale(days=11), NOW)
+
+
+def test_the_exhausted_message_names_the_budget_and_both_ways_a_copy_is_lost() -> None:
+    message = autonomous_recovery._RECOVERY_STOP_MESSAGES[autonomous_recovery._REDISPATCH_EXHAUSTED]
+    assert f"{autonomous_recovery._REDISPATCH_BUDGET}번" in message
+    assert "시작되지 않거나 끝나지 않아" in message

@@ -64,6 +64,7 @@ def _image_run(*, task_id: str, state=OperationRunState.RUNNING, lease_owner=Non
     return SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="REGENERATE_CONTENT_IMAGE",
+        redispatch_count=0,
         state=state,
         task_id=task_id,
         lease_owner=lease_owner,
@@ -408,6 +409,7 @@ def test_redispatch_always_sends_a_new_task_id_and_marks_queued(monkeypatch) -> 
     run = SimpleNamespace(
         id=uuid.uuid4(),
         operation_type="TRIGGER_V0_REPORT",
+        redispatch_count=0,
         state=OperationRunState.QUEUED,
         hospital_id=hospital_id,
         task_id="original-copy",
@@ -461,6 +463,7 @@ def test_a_queued_run_waits_hours_before_being_called_lost() -> None:
         return SimpleNamespace(
             state=OperationRunState.QUEUED,
             operation_type="GENERATE_CONTENT_ITEM",
+            redispatch_count=0,
             queued_at=now - timedelta(minutes=minutes),
             requested_at=now - timedelta(minutes=minutes),
         )
@@ -563,6 +566,7 @@ def test_a_deferred_run_is_not_stuck_before_its_time() -> None:
         return SimpleNamespace(
             state=OperationRunState.QUEUED,
             operation_type="TRIGGER_V0_REPORT",
+            redispatch_count=0,
             queued_at=now - timedelta(hours=20),
             requested_at=now - timedelta(hours=20),
             not_before_at=not_before,
@@ -701,6 +705,7 @@ def test_a_deferred_run_does_not_recover_its_incident(monkeypatch) -> None:
         state=OperationRunState.QUEUED,
         not_before_at=datetime(2026, 10, 9, tzinfo=UTC),
         operation_type="TRIGGER_V0_REPORT",
+        redispatch_count=0,
     )
 
     class _Session:

@@ -71,13 +71,20 @@ _REDISPATCH_EXHAUSTED: Final = "OPERATION_REDISPATCH_EXHAUSTED"
 _LEASE_EXPIRED: Final = "OPERATION_LEASE_EXPIRED"
 # 이만큼 아무 갱신이 없고 lease도 없는 RUNNING은 끝낼 주체가 사라진 잔재다(9/7 야간 배치 잔재).
 # 시작 시각이 아니라 마지막 갱신으로 본다 — 월간 측정 구간 실행은 24~31일 내내 RUNNING이다.
-# 10일인 이유: 정상인 `MONTHLY_SOV_PERIOD`는 말일 18시(KST) 마지막 창 sweep 뒤 다음 달 8일
-# 00:15 최종화(`_finalize_monthly_sov_period_run`)까지 약 7일 6시간 아무도 건드리지 않는다.
-# 7일로 두면 매달 정상 실행을 FAILED로 만들고 사고를 연다.
 _ABANDONED_RUNNING_AFTER: Final = timedelta(days=10)
+# 유형별로 더 길게 기다리는 예외. 정상인 `MONTHLY_SOV_PERIOD`는 말일 18시(KST) 마지막 창 sweep 뒤
+# 다음 달 8일 00:15 최종화(`_finalize_monthly_sov_period_run`)까지 약 7일 6시간 아무도 건드리지
+# 않는다. 기본 10일과의 여유가 3일뿐이라 이 유형만 20일을 기다린다.
+_ABANDONED_RUNNING_AFTER_BY_TYPE: Final[dict[str, timedelta]] = {
+    "MONTHLY_SOV_PERIOD": timedelta(days=20),
+}
 _RUN_ABANDONED: Final = "OPERATION_RUN_ABANDONED"
 _RECOVERY_STOP_MESSAGES: Final[dict[str, str]] = {
-    _REDISPATCH_EXHAUSTED: "자동 재배달을 3번 했지만 작업이 시작되지 않아 자동 복구를 멈췄습니다.",
+    # FAILED는 마지막 재배달의 유예(기본값 × 8) 뒤에 온다 — V0·월간 보고서는 6시간, 그 밖은 24시간.
+    _REDISPATCH_EXHAUSTED: (
+        f"자동 재배달을 {_REDISPATCH_BUDGET}번 했지만 작업이 시작되지 않거나 끝나지 않아 "
+        "자동 복구를 멈췄습니다."
+    ),
     _LEASE_EXPIRED: (
         "보고서 재생성 작업이 끝나지 않은 채 중단됐습니다. 다시 실행하면 새 버전이 중복으로 생길 수 "
         "있어 자동으로 다시 실행하지 않았습니다."
@@ -177,7 +184,7 @@ class RecoveryCounts(TypedDict):
 
 
 def _redispatch_count(run: OperationRun) -> int:
-    return int(getattr(run, "redispatch_count", 0) or 0)
+    return run.redispatch_count
 
 
 def _queued_redispatch_grace(run: OperationRun) -> timedelta:
@@ -225,7 +232,10 @@ def _is_abandoned_running(run: OperationRun, observed_at: datetime) -> bool:
     if lease is not None and lease > observed_at:
         return False
     touched = getattr(run, "updated_at", None)
-    return touched is not None and touched <= observed_at - _ABANDONED_RUNNING_AFTER
+    window = _ABANDONED_RUNNING_AFTER_BY_TYPE.get(
+        str(getattr(run, "operation_type", "")), _ABANDONED_RUNNING_AFTER
+    )
+    return touched is not None and touched <= observed_at - window
 
 
 def _abandoned_running_clause(observed_at: datetime):
@@ -237,7 +247,14 @@ def _abandoned_running_clause(observed_at: datetime):
             OperationRun.lease_expires_at.is_(None),
             OperationRun.lease_expires_at <= observed_at,
         ),
-        OperationRun.updated_at <= observed_at - _ABANDONED_RUNNING_AFTER,
+        OperationRun.updated_at
+        <= case(
+            *(
+                (OperationRun.operation_type == operation_type, observed_at - window)
+                for operation_type, window in _ABANDONED_RUNNING_AFTER_BY_TYPE.items()
+            ),
+            else_=observed_at - _ABANDONED_RUNNING_AFTER,
+        ),
     )
 
 
@@ -670,6 +687,7 @@ def _ensure_rebuild_site_run(
         task_id=str(uuid.uuid4()),
         requested_at=observed_at,
         attempt_count=len(failed),
+        redispatch_count=0,
         total_count=0,
         success_count=0,
         failure_count=0,

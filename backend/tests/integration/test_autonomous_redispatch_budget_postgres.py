@@ -249,9 +249,11 @@ def test_an_expired_recertify_run_is_left_to_its_sweep(db, pg_conn, monkeypatch)
     assert _reload(db, run).state == OperationRunState.RUNNING
 
 
-def _nightly(db, *, updated_days_ago: int) -> OperationRun:
+def _nightly(
+    db, *, updated_days_ago: int, operation_type: str = "NIGHTLY_CONTENT_GENERATION"
+) -> OperationRun:
     run = OperationRun(
-        operation_type="NIGHTLY_CONTENT_GENERATION",
+        operation_type=operation_type,
         state=OperationRunState.RUNNING,
         idempotency_key=f"nightly:{uuid.uuid4()}",
         task_id=f"nightly-{uuid.uuid4().hex[:8]}",
@@ -285,3 +287,63 @@ def test_a_ten_day_old_running_remnant_is_closed_with_one_incident(
     assert _reload(db, recent).state == OperationRunState.RUNNING
     incident = _cause_incident(db, "OPERATION_RUN_ABANDONED")
     assert incident is not None and incident.state == "OPEN"
+
+
+def test_a_monthly_sov_period_run_gets_its_longer_window_in_sql(db, pg_conn, monkeypatch) -> None:
+    waiting = _nightly(db, updated_days_ago=11, operation_type="MONTHLY_SOV_PERIOD")
+    lost = _nightly(db, updated_days_ago=21, operation_type="MONTHLY_SOV_PERIOD")
+
+    _reconcile(monkeypatch, pg_conn)
+
+    assert _reload(db, waiting).state == OperationRunState.RUNNING
+    assert _reload(db, lost).safe_error_code == "OPERATION_RUN_ABANDONED"
+
+
+def test_the_cause_incident_closes_once_every_stopped_run_has_a_succeeded_retry(
+    db, pg_conn, monkeypatch
+) -> None:
+    from app.workers.incident_backlog import close_resolved_backlog_incidents
+
+    stopped = _run(
+        db,
+        operation_type="RUN_SOV",
+        state=OperationRunState.QUEUED,
+        queue="sov",
+        minutes_ago=24 * 60 + 1,
+        redispatch_count=3,
+    )
+    _reconcile(monkeypatch, pg_conn)
+    incident = _cause_incident(db, "OPERATION_REDISPATCH_EXHAUSTED")
+    assert incident is not None and incident.state == "OPEN"
+    stopped = _reload(db, stopped)
+
+    # 운영 관제의 '작업 다시 시도'는 parent_run_id로 실패 실행을 가리키는 새 실행을 만든다.
+    retry = OperationRun(
+        hospital_id=stopped.hospital_id,
+        operation_type="RUN_SOV",
+        state=OperationRunState.RUNNING,
+        parent_run_id=stopped.id,
+        idempotency_key=f"retry:{uuid.uuid4()}",
+        task_id=f"retry-{uuid.uuid4().hex[:8]}",
+        request_payload=stopped.request_payload,
+        requested_at=NOW + timedelta(minutes=5),
+        version=1,
+    )
+    db.add(retry)
+    db.commit()
+    # 아직 성공하지 않은 재시도는 근거가 아니다.
+    later = NOW + timedelta(minutes=30)
+    close_resolved_backlog_incidents(db, now=later)
+    db.expire_all()
+    assert _cause_incident(db, "OPERATION_REDISPATCH_EXHAUSTED").state == "OPEN"
+
+    retry.state = OperationRunState.SUCCEEDED
+    retry.completed_at = later
+    db.commit()
+    assert close_resolved_backlog_incidents(db, now=later) >= 1
+    db.commit()
+    db.expire_all()
+    assert _cause_incident(db, "OPERATION_REDISPATCH_EXHAUSTED").state in (
+        "RECOVERED",
+        "ACKNOWLEDGED",
+    )
