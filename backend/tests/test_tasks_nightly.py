@@ -2275,8 +2275,12 @@ def test_style_rewrite_to_fact_hard_skips_image_spend(monkeypatch):
 
     assert state == tasks.GenerationItemState.FAILED
     assert code == "CONTENT_AI_HARD_FINDING"
-    assert "근거" in message
-    assert tasks._stored_generation_attempt(item)["reason"] == code
+    # 인용 없는 사실 HARD는 교정 이력 없이도 주제 교체 계단으로 넘어간다(감사 0-6). 예정일이
+    # 스윕 창 밖이라 교체 기한이 없어 곧바로 사람의 일이다.
+    assert "주제" in message
+    attempt = tasks._stored_generation_attempt(item)
+    assert attempt["reason"] == code
+    assert attempt["auto_correction_exhausted"] is True
 
 
 def test_same_context_style_soft_finding_regenerates_body(monkeypatch):
