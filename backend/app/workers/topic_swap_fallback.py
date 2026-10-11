@@ -82,6 +82,10 @@ TOPIC_SWAPPED_REASON = "TOPIC_SWAPPED"
 # 못하는 비후보가 한 페이지를 통째로 채울 수 있으므로 정렬 키로 그 뒤를 이어 읽는다.
 TOPIC_SWAP_SELECT_LIMIT = 50
 TOPIC_SWAP_MAX_PAGES = 5
+# 한 슬롯을 교체할 때 살펴보는 측정 질문 후보 수. 고른 질문이 진료과 불일치·수기 목록 문서 없음·
+# 기존 주제와 유사로 맞지 않으면 그 질문을 빼고 다음 후보를 고른다(`_choose_target`은 결정적이라
+# 빼지 않으면 같은 질문을 다시 고른다).
+TOPIC_SWAP_CANDIDATE_LIMIT = 5
 # 인시던트 종결 수렴은 창 전체가 아니라 미완료 이력만 읽으므로 더 넉넉히 둔다. 남은 행은
 # 다음 pass가 이어서 닫는다(멱등).
 TOPIC_SWAP_RECONCILE_LIMIT = 200
@@ -378,30 +382,53 @@ def _superseded_incident(db, item: ContentItem, reason: str) -> Incident | None:
     ).scalar_one_or_none()
 
 
-def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dict | None, str]:
-    """한 슬롯의 주제를 바꾼다. `(history 항목 또는 None, 결과 라벨)`."""
+def _target_rejection(target, item: ContentItem, hospital) -> str | None:
+    """이 측정 질문으로 바꾸면 안 되는 이유(결과 라벨). 바꿔도 되면 ``None``."""
 
     # 병원 대표 진료과와 어울리지 않는 질문(내과 병원의 영상의학과 질문 등)은 교체 후보에서
     # 뺀다. 61810ef4 → d7a5603e처럼 같은 계열로 바꿔 봐야 같은 이유로 다시 소진된다.
-    hospital = getattr(item, "hospital", None)
-    target = _choose_target(
-        db,
-        item=item,
-        hospital_id=item.hospital_id,
-        exclude_target_ids={item.query_target_id},
-        hospital=hospital,
-    )
-    if target is None:
-        return None, "no_candidate_target"
     if target_conflicts_with_hospital(target, hospital):
-        return None, "incompatible_specialty"
+        return "incompatible_specialty"
     new_topic = str(target.name or "")
     if references_required_for(item.content_type, query_target_id=target.id) and not (
         curated_sources_for_topic([new_topic])
     ):
-        return None, "no_candidate_target"
+        return "no_candidate_target"
     if _topic_is_too_similar(new_topic, item):
-        return None, "similar_topic"
+        return "similar_topic"
+    return None
+
+
+def _swap_target(db, item: ContentItem) -> tuple[Any, str]:
+    """교체할 측정 질문과 결과 라벨. 맞는 질문이 없으면 `(None, 마지막 거절 라벨)`."""
+
+    hospital = getattr(item, "hospital", None)
+    excluded: set = {item.query_target_id}
+    label = "no_candidate_target"
+    for _attempt in range(TOPIC_SWAP_CANDIDATE_LIMIT):
+        target = _choose_target(
+            db,
+            item=item,
+            hospital_id=item.hospital_id,
+            exclude_target_ids=excluded,
+            hospital=hospital,
+        )
+        if target is None:
+            return None, label
+        rejection = _target_rejection(target, item, hospital)
+        if rejection is None:
+            return target, "swapped"
+        label = rejection
+        excluded.add(target.id)
+    return None, label
+
+
+def _swap_one(db, item: ContentItem, reason: str, *, now: datetime) -> tuple[dict | None, str]:
+    """한 슬롯의 주제를 바꾼다. `(history 항목 또는 None, 결과 라벨)`."""
+
+    target, label = _swap_target(db, item)
+    if target is None:
+        return None, label
 
     superseded = _superseded_incident(db, item, reason)
     revision_before = int(item.content_revision or 1)
