@@ -3,7 +3,7 @@
 ## 최신 운영 배포 — 2026-10-11 Phase 0 자율성 보완 (배포 전)
 
 **이 절은 배포 기록이 아니다.** 현재 운영은 아래 2026-10-10 절 그대로이고, 배포는 [운영 배포 절차](docs/ops/deployment-runbook.md)의
-별도 검증으로 기록한다. 브랜치 `claude/autonomy-p0`(main `8c8f6e60` 기준)가 [자율 운영 보완 MasterPlan](docs/superpowers/plans/2026-10-11-autonomy-masterplan.md)의
+별도 검증으로 기록한다. 브랜치 `claude/autonomy-p0`(main `8c8f6e60` 기준)가 [자율 운영 보완 MasterPlan](docs/plans/2026-10-11-autonomy-masterplan.md)의
 Phase 0을 구현했다 — 주제 교체 뒤 새 예산과 즉시 교체(P0-A), 공급자 장애 일일 예산·3일 창·원고 미생성 재분류·교체 계단 확대(P0-B),
 봉투 서명 6시간·재배달 예산 3회·lease 인수 확대·10일 잔재 정리·읽기 전용 운영 조회 CLI(P0-C). 새 DB head는
 `0087_add_operation_run_redispatch_count`(추가형). 아래 계약 문장은 이 브랜치 기준이며, 배포 전 확인과 배포 뒤 1회 조치는 배포 안내의

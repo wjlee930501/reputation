@@ -4,7 +4,7 @@
 
 **Goal:** Re:putation을 "사람이 매일 배포하고 알림을 읽어야 굴러가는 반자동 시스템"에서 "정상 경로·실패 복구·자기 감시가 스스로 수렴하고, 사람은 계약·공식 정보·공개 주소·진짜 예외만 맡는 시스템"으로 바꾼다.
 
-**Architecture:** 감사([2026-10-11 감사·개선 계획](../../plans/2026-10-11-autonomy-audit-and-improvement-plan.md))가 확인한 구조 결함 F1~F12를 세 Phase로 닫는다. Phase 0은 **수렴하지 않는 재시도·재배달**을 수렴시키고(생성 예산·재시도 정책·디스패치), Phase 1은 **사고 모델을 "사람의 일"에 맞추며**(유형 소유 레지스트리·해결 규칙·월초 오탐·V0/리드 자동 재실행), Phase 2는 **온보딩 정체·자기 감시·배포**를 코드화한다. 의료·사실·tenant·공개 권한·승인 근거·artifact 무결성 검사는 어디서도 완화하지 않는다.
+**Architecture:** 감사([2026-10-11 감사·개선 계획](./2026-10-11-autonomy-audit-and-improvement-plan.md))가 확인한 구조 결함 F1~F12를 세 Phase로 닫는다. Phase 0은 **수렴하지 않는 재시도·재배달**을 수렴시키고(생성 예산·재시도 정책·디스패치), Phase 1은 **사고 모델을 "사람의 일"에 맞추며**(유형 소유 레지스트리·해결 규칙·월초 오탐·V0/리드 자동 재실행), Phase 2는 **온보딩 정체·자기 감시·배포**를 코드화한다. 의료·사실·tenant·공개 권한·승인 근거·artifact 무결성 검사는 어디서도 완화하지 않는다.
 
 **Tech Stack:** Python 3.11/FastAPI/SQLAlchemy/Alembic/Celery/RedBeat(backend), pytest(단위는 DB 없이, `*_postgres.py`는 로컬 Postgres×3+Redis), bash(`scripts/deploy.sh` + `scripts/test_deploy_runtime.py`), Terraform(GCP 경보). 기준 소스 main `8c8f6e60`, DB head `0086`.
 
@@ -68,7 +68,7 @@
 - 로컬 테스트: `source <scratchpad>/masterplan/testenv.sh` 뒤 `cd backend && .venv/bin/python -m pytest <file> -q`. 컨테이너 `rep-pg-main`(5432)·`rep-pg-aux`(5434, +`reputation_autonomy_migration`)·`rep-pg-redel`(55432)·`rep-redis`(6379)는 2026-10-11에 띄워 head 0086까지 올렸다. 새 마이그레이션(0087)이 생기면 세 DB 모두 `alembic upgrade head`를 다시 한다. `REQUIRE_PDF_RENDER=0`이라 PDF 렌더 테스트는 skip된다 — "전체 통과"로 보고하지 않는다.
 - 기준선: Phase 0 시작 전 main `8c8f6e60`에서 `ruff check` + 전체 pytest 결과를 `baseline-tests.log`에 남긴다(실패가 있으면 그 집합을 "기존 실패"로 기록하고 각 태스크는 새 실패 0을 기준으로 한다).
 - 운영 DB 조회: 읽기 전용 CLI가 없다. **Phase 0 첫 태스크로 `backend/app/utils/ops_sql_report.py`(Q1~Q6 내장, `SET TRANSACTION READ ONLY`, JSON 출력)를 추가**하고 `gcloud run jobs execute reputation-migrate --args=python,-m,app.utils.ops_sql_report,--only=q1,...`로 돌린다(쿼리 원문: `testenv-and-queries.md` Part B). 배포 전후 지표(§6)는 이 CLI로 뽑는다.
-- 터미널: 각 Phase 배포는 [배포 안내](../../ops/deployment-runbook.md)대로. 배포 직전 `.env.production`을 운영 API env와 대조한다(P2-B 2-9a가 이 수동 단계를 없앤다).
+- 터미널: 각 Phase 배포는 [배포 안내](../ops/deployment-runbook.md)대로. 배포 직전 `.env.production`을 운영 API env와 대조한다(P2-B 2-9a가 이 수동 단계를 없앤다).
 
 ## 5. Phase별 완료 기준 (Definition of Done)
 
