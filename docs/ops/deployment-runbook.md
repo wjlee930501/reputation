@@ -249,7 +249,7 @@ WHERE status NOT IN ('PUBLISHED','CANCELLED','WITHHELD');
 
 **Phase 0 — 배포 뒤 1회 조치.** 배포만으로는 이미 기한 없이 굳은 슬롯이 풀리지 않는다(게이트가 예전에 `OPERATOR_REQUIRED`로
 남긴 `CONTENT_NOT_GENERATED` 등). `ops_sql_report --only=q4`로 `OPERATOR_REQUIRED`·`INPUT_CHANGE_REQUIRED` 슬롯을 원인별로 뽑고,
-그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다.
+그중 원고 미생성으로 동결된 슬롯은 운영센터 사고 큐(`/operations?queue=incidents`)의 "작업 다시 시도"로 한 번 풀어 준다. `LEGACY_SPEND_UNKNOWN`(2026-10-11 조회 기준 12건)은 이 버튼으로 풀리지 않는다 — 운영센터의 "레거시 예산 교체 후 다시 시도"(`POST /api/admin/hospitals/{h}/content/{c}/regenerate`, 사유 필수·검증된 actor·멱등 키)로 글마다 예산을 교체해야 하며, 사람이 지출 사실을 확인하는 감사 가능한 행위라 일괄 스크립트로 대신하지 않는다.
 다음 날 지표는 MasterPlan §5 Phase 0 (f)를 따른다.
 
 **10/8 배치(PR #226, `0083_add_operation_run_not_before`) — 0083 migrate Job을 먼저 끝내고, 코드는 그 다음 배포한다.**

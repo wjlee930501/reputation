@@ -85,7 +85,7 @@
 | 일일 요약 "사람의 일" 건수 | 항상 >0 | 평상시 0~2 | Q1 + fleet heartbeat |
 | 조치 필요 알림 비율 | 25~35% | ≥70% | Q2 |
 | 7일 넘게 OPEN | 9종 영구 | 0 | Q1 |
-| 교체 뒤 첫 시도 | `WRITER_RESULTS_EXHAUSTED` | 실제 작가 호출 | Q6 |
+| 교체 뒤 첫 시도 | `WRITER_RESULTS_EXHAUSTED` | 실제 작가 호출 | Q6(한계: 최신 시도만 읽어 '교체 직후 첫 시도'는 근사. `topic_swap_history` 항목에 첫 시도 결과를 남기는 이벤트는 Phase 1 후속) |
 | OPERATOR_REQUIRED 글/월 | — | −70% | Q4 |
 | 월초 오탐 사고 | 3종/월 | 0 | Q1 (11월 1~8일) |
 | 온보딩 리드타임 | 사람 대기 2곳 | 프로필 완료 + 2일 | Q5 + 감사행 |
