@@ -8,11 +8,29 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+import uuid
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 
 import arrow
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
+from app.models.content import ContentItem, ContentSchedule
+from app.models.handoff import HospitalHandoff
+from app.models.hospital import Hospital, HospitalStatus
+from app.services.audit_log import write_audit_log_sync
 from app.services.content_calendar import generate_monthly_slots
+from app.services.enum_values import enum_value
+from app.services.essence_readiness import get_essence_readiness_sync
+from app.services.hospital_states import schedule_availability_verdict
+from app.utils.db_locks import acquire_hospital_advisory_lock_sync
+
+INITIAL_SCHEDULE_ACTOR = "system:essence-auto-approval"
+#: 슬롯을 즉시 만들 수 있는 상태(monthly_slots와 같은 집합). PAUSED는 여기 없다.
+INITIAL_SCHEDULE_STATUSES: frozenset[HospitalStatus] = frozenset(
+    {HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN}
+)
 
 #: admin/lib/schedule.ts `DEFAULT_PUBLISH_DAYS_BY_PLAN`과 같은 값(월=0 … 일=6).
 #: 요일 수 × 4주가 정확히 계약 편수라 28일짜리 달도 엄격 배치가 된다.
@@ -46,3 +64,121 @@ def initial_schedule_terms(
     except ValueError:
         return days, month.shift(months=1).date()
     return days, earliest
+
+
+@dataclass(frozen=True, slots=True)
+class InitialScheduleOutcome:
+    created: bool
+    reason: str
+    schedule_id: uuid.UUID | None = None
+    active_from: date | None = None
+    slots_created: int = 0
+
+
+def ensure_initial_content_schedule(
+    db: Session,
+    hospital_id: uuid.UUID,
+    *,
+    today: date,
+    trigger: str,
+    actor: str = INITIAL_SCHEDULE_ACTOR,
+) -> InitialScheduleOutcome:
+    """일정이 한 번도 없던 병원에 계약 요금제 일정을 만든다. 커밋은 호출부가 한다.
+
+    사람 경로와 같은 병원 잠금 아래에서 다시 확인하므로, 같은 순간 사람이 저장한 일정이나
+    다른 워커의 실행과 겹쳐도 일정은 하나만 생긴다. 일정 행이 하나라도 있으면(사람이 끈
+    일정 포함) 건드리지 않는다 — 명시적으로 끈 일정을 되살리지 않는다.
+    """
+
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    acquire_hospital_advisory_lock_sync(db, hospital_id)
+    hospital = db.execute(
+        select(Hospital).where(Hospital.id == hospital_id).with_for_update()
+    ).scalar_one_or_none()
+    if hospital is None:
+        return InitialScheduleOutcome(False, "NOT_FOUND")
+    if hospital.schedule_set:
+        return InitialScheduleOutcome(False, "ALREADY_SET")
+    if hospital.status not in INITIAL_SCHEDULE_STATUSES:
+        return InitialScheduleOutcome(False, "STATUS_NOT_ELIGIBLE")
+    if db.scalar(
+        select(ContentSchedule.id).where(ContentSchedule.hospital_id == hospital_id).limit(1)
+    ) is not None:
+        return InitialScheduleOutcome(False, "SCHEDULE_EXISTS")
+    plan = enum_value(hospital.plan)
+    if plan not in DEFAULT_PUBLISH_DAYS_BY_PLAN:
+        return InitialScheduleOutcome(False, "PLAN_MISSING")
+    # 사람 경로(`_content_schedule_availability`)와 같은 판정을 쓴다.
+    readiness = get_essence_readiness_sync(db, hospital_id)
+    verdict = schedule_availability_verdict(
+        essence_current=readiness.current is not None,
+        required_sources=readiness.required_source_count,
+        unprocessed_sources=max(
+            readiness.required_source_count - readiness.processed_source_count, 0
+        ),
+        approved_philosophy_exists=readiness.approved is not None,
+    )
+    if not verdict.available:
+        return InitialScheduleOutcome(False, "ESSENCE_NOT_CURRENT")
+
+    effective_at = db.scalar(
+        select(HospitalHandoff.contract_effective_at).where(
+            HospitalHandoff.hospital_id == hospital_id
+        )
+    )
+    contract_on = arrow.get(effective_at).to("Asia/Seoul").date() if effective_at else None
+    publish_days, active_from = initial_schedule_terms(
+        plan, today=today, contract_effective_on=contract_on
+    )
+
+    schedule = ContentSchedule(
+        hospital_id=hospital_id,
+        plan=plan,
+        publish_days=publish_days,
+        active_from=active_from,
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    schedule.hospital = hospital
+    db.add(schedule)
+    db.flush()
+
+    month = arrow.get(active_from).floor("month")
+    create_next_month_slots_for_schedule(
+        db, schedule, month, month.date(), month.ceil("month").date()
+    )
+    slots_created = int(
+        db.scalar(
+            select(func.count())
+            .select_from(ContentItem)
+            .where(ContentItem.schedule_id == schedule.id)
+        )
+        or 0
+    )
+    hospital.schedule_set = True
+    status_value = enum_value(hospital.status)
+    # 사람 경로(`set_schedule`)와 같은 action·target·detail 키에 자동 생성 사실만 더한다.
+    write_audit_log_sync(
+        db,
+        action="set_schedule",
+        hospital_id=hospital_id,
+        actor=actor,
+        target_type="content_schedule",
+        target_id=schedule.id,
+        detail={
+            "plan": plan,
+            "publish_days": publish_days,
+            "active_from": str(active_from),
+            "slots_created": slots_created,
+            "slots_rescheduled": 0,
+            "future_contract_preserved": False,
+            "old_schedule_ids": [],
+            "previous_status": status_value,
+            "new_status": status_value,
+            "trigger": trigger,
+            "contract_effective_on": str(contract_on) if contract_on else None,
+        },
+    )
+    db.flush()
+    return InitialScheduleOutcome(True, "CREATED", schedule.id, active_from, slots_created)
