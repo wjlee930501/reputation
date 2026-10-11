@@ -33,6 +33,8 @@ export interface AutofillResponse {
 
 /** 계약 등록 직후 만들어 둔 자동 입력 초안. 저장하지 않은 제안이다. */
 export interface StoredAutofillDraft extends AutofillResponse {
+  /** false면 저장된 초안 없이 상담 요청 제안(`lead_suggestions`)만 왔다. */
+  has_draft: boolean
   created_at: string | null
   /** 상담 요청이 받은 값 — 확인 전 제안으로만 채운다(병원에 자동 저장하지 않음). */
   lead_suggestions: { phone?: string }

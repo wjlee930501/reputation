@@ -22,9 +22,14 @@ def test_first_of_month_start_keeps_the_full_quota() -> None:
     assert prorated_first_month_quota("PLAN_12", [0, 2, 4], date(2026, 10, 1)) == 12
 
 
-def test_proration_never_drops_below_one() -> None:
-    # 10/31(토) 시작이면 남은 월·수·금이 없지만 첫 달 약속은 최소 1편이다.
-    assert prorated_first_month_quota("PLAN_12", [0, 2, 4], date(2026, 10, 31)) == 1
+def test_proration_is_at_least_one_while_a_publish_weekday_remains() -> None:
+    # 10/30(금) 시작이면 남은 월·수·금은 하루 → ceil(1/13×12) = 1편.
+    assert prorated_first_month_quota("PLAN_12", [0, 2, 4], date(2026, 10, 30)) == 1
+
+
+def test_no_remaining_publish_weekday_means_no_first_month_slots() -> None:
+    # 10/31(토) 시작이면 그 달에 남은 게시 요일이 없다 — 첫 달 약속은 0편, 다음 달부터 시작한다.
+    assert prorated_first_month_quota("PLAN_12", [0, 2, 4], date(2026, 10, 31)) == 0
 
 
 def test_unknown_plan_has_no_quota() -> None:

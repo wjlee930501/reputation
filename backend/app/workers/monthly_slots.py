@@ -8,7 +8,10 @@ from app.models.content import ContentItem, ContentSchedule, ContentStatus
 from app.models.hospital import HospitalStatus
 from app.services.content_brief import PLANNING_REASON_KEY
 from app.services.content_calendar import generate_monthly_slots
-from app.services.content_month_target import month_content_target_sync
+from app.services.content_month_target import (
+    first_month_without_publish_days,
+    month_content_target_sync,
+)
 from app.services.gap_driven_slots import (
     ExistingSlot,
     build_gap_targets,
@@ -42,6 +45,9 @@ def create_next_month_slots_for_schedule(
     # 계약보다 한 달 일찍 자동 발행이 시작된다.
     active_from = schedule.active_from
     if active_from and active_from > next_month_end:
+        return False
+    # 첫 계약 월인데 시작일 뒤로 게시 요일이 없으면 그 달 약속은 0편이다(다음 달부터).
+    if month_total is None and first_month_without_publish_days(db, schedule, next_month):
         return False
     # 활성화일이 대상 월 중간에 걸리면 그 날짜 이후로만 발행해야 한다.
     start_date = active_from if active_from and active_from > next_month_start else None

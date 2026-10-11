@@ -134,9 +134,33 @@ async def test_stored_draft_is_served_with_the_lead_phone_only_as_a_suggestion()
         hospital.id, db=_DraftDB(hospital, run, lead)
     )
 
+    assert body["has_draft"] is True
     assert body["draft"] == {"address": "서울시 강남구"}
     assert body["lead_suggestions"] == {"phone": "02-123-4567"}
     assert "phone" not in body["draft"]
+
+
+async def test_lead_suggestion_without_a_stored_draft_says_so() -> None:
+    from app.api.admin import hospitals as hospitals_api
+
+    hospital = SimpleNamespace(id=uuid.uuid4(), source_lead_id=uuid.uuid4())
+    lead = SimpleNamespace(clinic_phone="02-1", purged_at=None)
+
+    body = await hospitals_api.get_profile_autofill_draft(
+        hospital.id, db=_DraftDB(hospital, None, lead)
+    )
+
+    assert body["has_draft"] is False
+    assert body["draft"] == {} and body["lead_suggestions"] == {"phone": "02-1"}
+
+
+def test_draft_endpoint_reads_the_worker_operation_type() -> None:
+    import inspect
+
+    from app.api.admin import hospitals as hospitals_api
+
+    assert hospitals_api.PROFILE_AUTOFILL_OPERATION == module.PROFILE_AUTOFILL_OPERATION
+    assert '"PROFILE_AUTOFILL"' not in inspect.getsource(hospitals_api.get_profile_autofill_draft)
 
 
 async def test_purged_lead_and_no_draft_answer_not_found() -> None:

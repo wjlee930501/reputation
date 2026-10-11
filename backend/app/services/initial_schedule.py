@@ -21,13 +21,15 @@ from app.models.content import ContentItem, ContentSchedule
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.audit_log import write_audit_log_sync
-from app.services.content_month_target import prorated_first_month_quota
+from app.services.content_month_target import (
+    INITIAL_SCHEDULE_ACTOR,
+    prorated_first_month_quota,
+)
 from app.services.enum_values import enum_value
 from app.services.essence_readiness import get_essence_readiness_sync
 from app.services.hospital_states import schedule_availability_verdict
 from app.utils.db_locks import acquire_hospital_advisory_lock_sync
 
-INITIAL_SCHEDULE_ACTOR = "system:essence-auto-approval"
 #: 슬롯을 즉시 만들 수 있는 상태(monthly_slots와 같은 집합). PAUSED는 여기 없다.
 INITIAL_SCHEDULE_STATUSES: frozenset[HospitalStatus] = frozenset(
     {HospitalStatus.ACTIVE, HospitalStatus.PENDING_DOMAIN}
@@ -142,16 +144,18 @@ def ensure_initial_content_schedule(
 
     # 첫 계약 월은 남은 게시 요일로 안분한다. 슬롯이 그 편수를 `total_count`로 기록하고,
     # 보고서·현황·계약 이행 집계·당월 조정이 같은 값을 약속 편수로 읽는다.
+    # 남은 게시 요일이 없으면(0편) 이번 달 슬롯은 만들지 않고 월말 배치가 다음 달을 만든다.
     first_month_target = prorated_first_month_quota(plan, publish_days, active_from)
     month = arrow.get(active_from).floor("month")
-    create_next_month_slots_for_schedule(
-        db,
-        schedule,
-        month,
-        month.date(),
-        month.ceil("month").date(),
-        month_total=first_month_target,
-    )
+    if first_month_target:
+        create_next_month_slots_for_schedule(
+            db,
+            schedule,
+            month,
+            month.date(),
+            month.ceil("month").date(),
+            month_total=first_month_target,
+        )
     slots_created = int(
         db.scalar(
             select(func.count())

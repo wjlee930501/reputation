@@ -147,6 +147,7 @@ from app.services.site_revalidate import (
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
 from app.workers.dispatch_auth import build_dispatch_headers
+from app.workers.profile_autofill_tasks import PROFILE_AUTOFILL_OPERATION
 from app.workers.tasks import build_aeo_site, trigger_v0_report
 
 logger = logging.getLogger(__name__)
@@ -1419,8 +1420,7 @@ async def get_profile_autofill_draft(
         select(OperationRun)
         .where(
             OperationRun.hospital_id == hospital_id,
-            # workers/profile_autofill_tasks.PROFILE_AUTOFILL_OPERATION
-            OperationRun.operation_type == "PROFILE_AUTOFILL",
+            OperationRun.operation_type == PROFILE_AUTOFILL_OPERATION,
         )
         .order_by(OperationRun.created_at.desc())
         .limit(1)
@@ -1434,6 +1434,8 @@ async def get_profile_autofill_draft(
         raise HTTPException(status_code=404, detail={"code": "AUTOFILL_DRAFT_NOT_FOUND"})
     summary = dict(run.result_summary or {}) if run is not None else {}
     return {
+        # 초안 없이 상담 요청 제안만 있는 응답과 저장된 초안을 구분한다.
+        "has_draft": run is not None,
         "draft": summary.get("draft", {}),
         "field_meta": summary.get("field_meta", {}),
         "violations": summary.get("violations", []),

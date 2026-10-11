@@ -47,3 +47,13 @@ def test_past_contract_effective_date_never_moves_the_start_backwards() -> None:
 def test_unknown_plan_is_rejected() -> None:
     with pytest.raises(KeyError):
         initial_schedule_terms("PLAN_99", today=date(2026, 9, 30), contract_effective_on=None)
+
+
+def test_saturday_start_with_no_publish_weekday_left_keeps_the_start_but_promises_zero() -> None:
+    from app.services.content_month_target import prorated_first_month_quota
+
+    days, active_from = initial_schedule_terms(
+        "PLAN_20", today=date(2026, 10, 30), contract_effective_on=None
+    )
+    assert active_from == date(2026, 10, 31)  # 토요일 — 10월에 남은 월~금이 없다
+    assert prorated_first_month_quota("PLAN_20", days, active_from) == 0

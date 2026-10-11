@@ -8,8 +8,10 @@ from sqlalchemy import delete, select
 from test_geo_autonomy_hardening import NOW, heartbeat, seed
 from test_geo_autonomy_hardening import db as db
 
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import HospitalStatus
+from app.services.content_month_target import INITIAL_SCHEDULE_ACTOR
 from app.services.contract_delivery_coverage import collect_contract_delivery_coverage
 from app.services.fleet_heartbeat import FleetFacts
 
@@ -196,6 +198,12 @@ def test_prorated_first_contract_month_uses_the_prorated_denominator(db):
     schedule.active_from = date(2026, 9, 14)
     for row in db.scalars(select(ContentItem)):
         row.total_count = 5
+    db.add(
+        AdminAuditLog(
+            hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
+            target_type="content_schedule", target_id=str(schedule.id), detail={},
+        )
+    )
     db.flush()
 
     facts = collect_contract_delivery_coverage(db, now=NOW)

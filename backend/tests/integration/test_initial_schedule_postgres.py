@@ -264,3 +264,39 @@ def test_a_human_mid_month_first_schedule_keeps_the_full_quota(pg_session) -> No
         month_content_target_sync(pg_session, hospital.id, arrow.get(date(2026, 10, 1)), "PLAN_12")
         == 12
     )
+
+
+def test_no_publish_weekday_left_creates_no_slots_this_month_and_full_next_month(
+    pg_session,
+) -> None:
+    import arrow
+
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    hospital = _seed(pg_session, plan=Plan.PLAN_20)
+
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=date(2026, 10, 30), trigger="essence_auto_approval"
+    )
+
+    assert outcome.created is True and outcome.slots_created == 0
+    assert outcome.active_from == date(2026, 10, 31)
+    assert pg_session.get(Hospital, hospital.id).schedule_set is True
+    [audit] = _audit_rows(pg_session, hospital.id)
+    assert audit.detail["first_month_target"] == 0
+    schedule = pg_session.get(ContentSchedule, outcome.schedule_id)
+    october = arrow.get(date(2026, 10, 1))
+    # 매일 당월 조정도 10/31 하루에 20편을 몰아 넣지 않는다.
+    assert (
+        create_next_month_slots_for_schedule(
+            pg_session, schedule, october, october.date(), october.ceil("month").date(),
+            not_before=date(2026, 10, 31),
+        )
+        is False
+    )
+    assert _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31)) == []
+    november = arrow.get(date(2026, 11, 1))
+    assert create_next_month_slots_for_schedule(
+        pg_session, schedule, november, november.date(), november.ceil("month").date()
+    )
+    assert len(_month_rows(pg_session, hospital.id, date(2026, 11, 1), date(2026, 11, 30))) == 20

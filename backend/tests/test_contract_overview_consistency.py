@@ -8,8 +8,10 @@ from test_geo_autonomy_hardening import NOW, AsyncDB, seed
 from test_geo_autonomy_hardening import db as db
 
 from app.api.admin import hospital_overview as overview
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.hospital import Plan
+from app.services.content_month_target import INITIAL_SCHEDULE_ACTOR
 
 
 async def test_overview_uses_current_terms_not_the_future_plan(db, monkeypatch):
@@ -78,6 +80,12 @@ async def test_overview_shows_the_prorated_first_contract_month(db, monkeypatch)
     schedule.active_from = date(2026, 9, 14)
     for row in db.query(ContentItem).all():
         row.total_count = 5
+    db.add(
+        AdminAuditLog(
+            hospital_id=hospital.id, actor=INITIAL_SCHEDULE_ACTOR, action="set_schedule",
+            target_type="content_schedule", target_id=str(schedule.id), detail={},
+        )
+    )
     db.flush()
     monkeypatch.setattr(overview.arrow, "now", lambda *args: arrow.get(NOW))
     monkeypatch.setattr(overview, "weekly_mention_trend", AsyncMock(return_value=[]))
