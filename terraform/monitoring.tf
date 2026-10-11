@@ -346,3 +346,70 @@ resource "google_monitoring_alert_policy" "operator_5xx" {
     content = "Re:putation API/Admin에서 HTTP 5xx 발생. 온보딩 BFF, backend revision, DB/Redis readiness를 확인할 것."
   }
 }
+
+# ── 자기 감시 경로의 실패 (2026-10 자율 운영 감사 F8) ─────────────────
+# 운영 Slack 채널 하나로 운영하므로 Slack 자체나 외부 감시가 멈추면 그 사실을 전할 곳이 없다.
+# 두 경보 모두 Slack을 거치지 않고 필수 ops 이메일 채널로 간다.
+#
+# 1) Cloud Scheduler가 감시 엔드포인트를 부르지 못했다(토큰 공백 401, LB·API 장애).
+resource "google_monitoring_alert_policy" "watchdog_scheduler_failures" {
+  count        = var.alert_email != "" ? 1 : 0
+  project      = var.project_id
+  display_name = "${var.app_name} pipeline watchdog scheduler failures"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Cloud Scheduler watchdog attempt failed"
+    condition_matched_log {
+      filter = "resource.type=\"cloud_scheduler_job\" AND severity>=ERROR AND (resource.labels.job_id=\"${google_cloud_scheduler_job.watchdog_heartbeat.name}\" OR resource.labels.job_id=\"${google_cloud_scheduler_job.watchdog_publish_check.name}\")"
+    }
+  }
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "86400s"
+  }
+
+  notification_channels = distinct(concat(
+    [google_monitoring_notification_channel.email[0].id],
+    var.notification_channels,
+  ))
+
+  documentation {
+    content = "외부 파이프라인 감시(Cloud Scheduler → /api/v1/admin/watchdog/pipeline/alert) 호출이 실패했습니다. 401이면 PIPELINE_WATCHDOG_TOKEN 값과 Scheduler 헤더를, 5xx면 API 리비전 로그를 확인하세요. 감시가 멈춘 동안 Beat·Worker 정지와 발행 0건이 Slack으로 알려지지 않습니다."
+  }
+}
+
+# 2) 감시 결과나 운영 알림이 Slack에 닿지 않았다 — API의 감시 전송 실패, Worker의 '보낼 채널 없음'.
+#    로그 기반 정책은 조건 하나만 허용하므로 필터 하나에 OR로 묶는다.
+resource "google_monitoring_alert_policy" "slack_path_failures" {
+  count        = var.alert_email != "" ? 1 : 0
+  project      = var.project_id
+  display_name = "${var.app_name} Slack alert path failures"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Watchdog or operator notifications not delivered to Slack"
+    condition_matched_log {
+      filter = "resource.type=\"cloud_run_revision\" AND severity>=ERROR AND ((resource.labels.service_name=\"${var.app_name}-api\" AND jsonPayload.message:\"pipeline watchdog\") OR (resource.labels.service_name=\"${var.app_name}-worker\" AND jsonPayload.message:\"No live Slack channel\"))"
+    }
+  }
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s"
+    }
+    auto_close = "86400s"
+  }
+
+  notification_channels = distinct(concat(
+    [google_monitoring_notification_channel.email[0].id],
+    var.notification_channels,
+  ))
+
+  documentation {
+    content = "운영 Slack 채널로 알림이 전달되지 않습니다. 'No live Slack channel'이면 SLACK_WEBHOOK_URL이 죽었습니다(웹훅을 다시 발급해 Secret Manager에 새 버전을 넣으면 한 시간 안에 자동 복구됩니다). 'pipeline watchdog'이면 외부 감시 경보가 Slack에 닿지 않았거나 감시가 Redis·DB를 읽지 못했습니다."
+  }
+}
