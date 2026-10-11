@@ -31,7 +31,7 @@ import arrow
 import httpx
 from billiard.exceptions import SoftTimeLimitExceeded, WorkerLostError
 from celery import current_task
-from sqlalchemy import ColumnElement, and_, delete, func, or_, select, text, update
+from sqlalchemy import ColumnElement, and_, delete, exists, func, or_, select, text, update
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.exc import IntegrityError, NoInspectionAvailable
 from sqlalchemy.orm import Session, joinedload, selectinload
@@ -3984,6 +3984,61 @@ def _cost_guarded_essence_review(
     return _run_async(_call())
 
 
+def _ensure_initial_schedule_safe(hospital_uuid: uuid.UUID, *, trigger: str) -> str:
+    """승인된 공개 병원의 첫 일정을 만든다. 실패해도 Essence 승인·검수 결과를 되돌리지 않는다.
+
+    다음 15분 조정(`_ensure_initial_schedules`)이 같은 일을 다시 시도한다.
+    """
+
+    from app.services.initial_schedule import ensure_initial_content_schedule
+
+    try:
+        with SyncSessionLocal() as db:
+            outcome = ensure_initial_content_schedule(
+                db,
+                hospital_uuid,
+                today=arrow.now("Asia/Seoul").date(),
+                trigger=trigger,
+            )
+            if outcome.created:
+                db.commit()
+            else:
+                db.rollback()
+            return outcome.reason
+    except Exception:
+        logger.exception("initial content schedule failed for hospital %s", hospital_uuid)
+        return "FAILED"
+
+
+def _ensure_initial_schedules(*, limit: int = 200) -> int:
+    """일정이 한 번도 없는 공개(ACTIVE·PENDING_DOMAIN) 병원의 첫 일정을 회수한다.
+
+    승인 직후 호출이 실패했거나, 사람이 승인했거나, 승인 뒤에 공개된 병원을 모두 집는다.
+    """
+
+    from app.services.initial_schedule import INITIAL_SCHEDULE_STATUSES
+
+    with SyncSessionLocal() as db:
+        hospital_ids = list(
+            db.execute(
+                select(Hospital.id)
+                .where(
+                    Hospital.schedule_set.isnot(True),
+                    Hospital.status.in_(tuple(INITIAL_SCHEDULE_STATUSES)),
+                    ~exists().where(ContentSchedule.hospital_id == Hospital.id),
+                )
+                .order_by(Hospital.id)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+    return sum(
+        _ensure_initial_schedule_safe(hospital_id, trigger="reconcile_sweep") == "CREATED"
+        for hospital_id in hospital_ids
+    )
+
+
 def _defer_essence_escalation_to_automatic_retry(
     *,
     object_id: str,
@@ -4049,6 +4104,7 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
     require_dispatch(self, "auto-review-essence-snapshot", hospital_id)
     hospital_uuid = uuid.UUID(hospital_id)
     hospital_name = "병원"
+    initial_schedule: str | None = None
     hospital_slug: str | None = None
     refresh_claim_token = (
         f"{str(self.request.id or uuid.uuid4())}:retry:{int(self.request.retries or 0)}"
@@ -4199,10 +4255,17 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                     hospital_name=hospital_name,
                 )
             )
+        if result.status == EssenceRefreshStatus.AUTO_APPROVED:
+            # 승인은 이미 커밋됐다. 첫 일정은 별도 세션의 부수효과라 실패해도 승인을
+            # 되돌리지 않고, 15분 조정이 다시 시도한다.
+            initial_schedule = _ensure_initial_schedule_safe(
+                hospital_uuid, trigger="essence_auto_approval"
+            )
 
     return {
         "status": result.status.value,
         "hospital_id": hospital_id,
+        "initial_schedule": initial_schedule,
         "snapshot_hash": result.snapshot_hash,
         "philosophy_id": str(result.philosophy_id) if result.philosophy_id else None,
         "findings": list(result.findings),
@@ -4499,8 +4562,10 @@ def reconcile_essence_snapshots(self) -> dict[str, int]:
             headers=build_dispatch_headers("auto-review-essence-snapshot", hospital_id),
         )
         queued += 1
+    initial_schedules_created = _ensure_initial_schedules()
     return {
         "queued": queued,
+        "initial_schedules_created": initial_schedules_created,
         "source_fetches_redispatched": redispatched_fetches,
         "source_runs_created": len(created_source_runs),
         "source_runs_resumed": resumed_source_runs,

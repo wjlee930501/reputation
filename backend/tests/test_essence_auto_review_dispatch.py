@@ -379,3 +379,86 @@ def test_system_owned_essence_refresh_never_opens_human_incident(monkeypatch, st
     response, opened, _recovered, _deferred = _run_essence_task(monkeypatch, result)
     assert response["status"] == status.value
     assert opened == []
+
+
+# ── 첫 일정 자동 생성 ──────────────────────────────────────────────────────
+
+
+def test_auto_approval_creates_the_first_schedule_once(monkeypatch) -> None:
+    calls: list[tuple[uuid.UUID, str]] = []
+    monkeypatch.setattr(
+        tasks,
+        "_ensure_initial_schedule_safe",
+        lambda hospital_id, *, trigger: calls.append((hospital_id, trigger)) or "CREATED",
+    )
+    result = EssenceRefreshResult(EssenceRefreshStatus.AUTO_APPROVED, uuid.uuid4())
+
+    response, _opened, _recovered, _deferred = _run_essence_task(monkeypatch, result)
+
+    assert calls == [(result.hospital_id, "essence_auto_approval")]
+    assert response["initial_schedule"] == "CREATED"
+
+
+@pytest.mark.parametrize(
+    "status", [EssenceRefreshStatus.ESCALATED, EssenceRefreshStatus.UP_TO_DATE]
+)
+def test_other_outcomes_leave_scheduling_to_the_sweep(monkeypatch, status) -> None:
+    calls: list = []
+    monkeypatch.setattr(
+        tasks, "_ensure_initial_schedule_safe", lambda *a, **k: calls.append(a) or "CREATED"
+    )
+    result = EssenceRefreshResult(status, uuid.uuid4(), previous_philosophy_id=uuid.uuid4())
+
+    _run_essence_task(monkeypatch, result)
+
+    assert calls == []
+
+
+def test_schedule_failure_never_undoes_the_approval(monkeypatch) -> None:
+    class _Boom:
+        def __enter__(self):
+            raise RuntimeError("db down")
+
+        def __exit__(self, *_a):
+            return False
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _Boom())
+    assert tasks._ensure_initial_schedule_safe(uuid.uuid4(), trigger="x") == "FAILED"
+
+
+def test_sweep_offers_only_unscheduled_public_hospitals(monkeypatch) -> None:
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    statements: list = []
+
+    class _IdsDB:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def execute(self, stmt):
+            statements.append(str(stmt))
+
+            class _R:
+                def scalars(self):
+                    return self
+
+                def all(self):
+                    return list(ids)
+
+            return _R()
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _IdsDB())
+    outcomes = iter(["CREATED", "ESSENCE_NOT_CURRENT"])
+    seen: list = []
+    monkeypatch.setattr(
+        tasks,
+        "_ensure_initial_schedule_safe",
+        lambda hospital_id, *, trigger: seen.append((hospital_id, trigger)) or next(outcomes),
+    )
+
+    assert tasks._ensure_initial_schedules() == 1
+    assert seen == [(ids[0], "reconcile_sweep"), (ids[1], "reconcile_sweep")]
+    sql = statements[0]
+    assert "content_schedules" in sql and "schedule_set" in sql and "status" in sql
