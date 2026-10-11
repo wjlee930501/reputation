@@ -8,13 +8,16 @@ from app.workers.generation_attempt_state import (
     TEXT_HTTP_ATTEMPT_LIMIT,
     GenerationBudgetExceeded,
     GenerationBudgetUnknown,
+    _topic_boundary,
     acquisition_completed,
+    current_topic_writers_exhausted,
     fresh_generation_attempt,
     read_generation_budget,
     record_topic_swap,
     replace_unknown_legacy_budget,
     reserve_acquisition,
     transport_attempt_started,
+    writer_acquisition_prefix,
 )
 from app.workers.generation_retry_policy import (
     BODY_REPAIR_DAILY_BUDGET,
@@ -976,10 +979,27 @@ def test_pre_fix_swapped_budget_without_marker_derives_the_new_topic_boundary() 
 
     # Then: 새 주제의 작가 획득이 아직 없으면 목록 전체를 옛 주제의 지출로 본다.
     attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=2)
+    assert current_topic_writers_exhausted(attempt) is False
     # 새 주제가 2회를 썼으므로 4회가 더 남는다.
     attempt = _buy(attempt, kind="WRITER", topic="topic-b", count=4, start=2)
     with pytest.raises(GenerationBudgetExceeded, match="WRITER_RESULTS_EXHAUSTED"):
         reserve_acquisition(attempt, acquisition_id="writer:ctx:topic-b:9", kind="WRITER")
+
+
+def test_writer_acquisition_prefix_carries_the_topic_token_the_boundary_reads() -> None:
+    # 표시 없는 옛 교체 예산의 경계(`_topic_boundary`)는 작가 획득 id 안의 `:{topic}:`를 찾는다.
+    # 실제 작가 획득 id(`tasks._generate_with_auto_review`)가 이 형식을 벗어나면 여기서 깨진다.
+    prefix = writer_acquisition_prefix("ctx", "topic-b", "claim-1", "fp")
+    assert ":topic-b:" in prefix
+
+    attempt = _buy(
+        fresh_generation_attempt(topic_id="topic-a"), kind="WRITER", topic="topic-a", count=6
+    )
+    attempt["budget"]["topics"] = ["topic-a", "topic-b"]
+    attempt["budget"]["topic_swaps"] = 1
+    attempt = reserve_acquisition(attempt, acquisition_id=prefix, kind="WRITER")
+
+    assert _topic_boundary(attempt["budget"]) == 6
 
 
 def test_unswapped_budget_keeps_the_existing_six_result_ceiling() -> None:

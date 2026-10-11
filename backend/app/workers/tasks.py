@@ -496,6 +496,7 @@ from app.workers.generation_attempt_state import (
     GenerationBudgetLedger,
     GenerationBudgetUnknown,
     released_generation_attempt,
+    writer_acquisition_prefix,
 )
 from app.workers.generation_batch_run import (
     GenerationBatchRecorder,
@@ -2385,7 +2386,9 @@ async def _generate_with_auto_review(
             "\n".join(findings).encode("utf-8")
         ).hexdigest()[:16]
         topic_id = str(getattr(item, "query_target_id", "") or "unassigned")
-        acquisition_prefix = f"writer:{context_id}:{topic_id}:{session_scope}:{fingerprint}"
+        acquisition_prefix = writer_acquisition_prefix(
+            context_id, topic_id, session_scope, fingerprint
+        )
         cached = ledger.latest_payload(acquisition_prefix)
         if cached is not None:
             return cached

@@ -388,6 +388,15 @@ def _entries(budget: dict[str, Any]) -> list[dict[str, Any]]:
     return [entry for entry in raw if isinstance(entry, dict)] if isinstance(raw, list) else []
 
 
+def writer_acquisition_prefix(
+    context_id: str, topic_id: str, session_scope: str, fingerprint: str
+) -> str:
+    """작가 획득 id의 접두. `_topic_boundary`가 이 안의 `:{topic_id}:` 토큰을 찾는다."""
+
+    return f"writer:{context_id}:{topic_id}:{session_scope}:{fingerprint}"
+
+
+# 표시 없는 옛 교체 예산은 `writer_acquisition_prefix`의 id 형식(`:{topic_id}:` 토큰)에 기댄다.
 def _topic_boundary(budget: dict[str, Any]) -> int | None:
     """현재 주제의 첫 획득 위치. 교체 전이면 None — 평생 계수가 곧 현재 주제의 계수다.
 
@@ -485,6 +494,7 @@ def reserve_acquisition(
         return {**attempt, GENERATION_BUDGET_KEY: budget}
     snapshot = _snapshot_from_budget(budget)
     usage = _current_topic_usage(budget)
+    # 평생 상한(주제 수 × 주제당 상한)은 추정한 주제 경계가 틀려도 지출을 막는 마지막 방어선이다.
     if kind == "WRITER" and (
         _topic_writers_full(usage)
         or snapshot.writer_results + _active_acquisitions(budget, kind)

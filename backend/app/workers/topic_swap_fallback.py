@@ -61,6 +61,7 @@ from app.workers.generation_incident_control import generation_incident_dedupe_k
 from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
     BODY_REPAIR_STATE_KEY,
+    GENERATION_BUDGET_EXHAUSTED_CODE,
     OPERATOR_DECIDES_KEY,
     SAMPLE_BODY_CODES,
     SAMPLE_BODY_DAILY_BUDGET,
@@ -105,7 +106,7 @@ TOPIC_SWAP_RECONCILE_LIMIT = 200
 UNRECONCILED_HISTORY = [{"incident_recovered": False}]
 # 생성 예산 소진의 시도 기록 코드(`generation_run_control.classify_generation_failure`).
 # 현재 주제의 작가 예산이 다 찬 소진은 소진 일수를 기다리지 않고 교체 후보다.
-BUDGET_EXHAUSTED_REASON = "GENERATION_BUDGET_EXHAUSTED"
+BUDGET_EXHAUSTED_REASON = GENERATION_BUDGET_EXHAUSTED_CODE
 
 
 @dataclass(frozen=True, slots=True)

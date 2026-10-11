@@ -31,6 +31,7 @@ from app.workers.generation_attempt_state import (
     GenerationBudgetUnknown,
 )
 from app.workers.generation_retry_policy import (
+    GENERATION_BUDGET_EXHAUSTED_CODE,
     GenerationRetryClass,
     next_recovery_sweep,
     retry_class_for,
@@ -176,7 +177,7 @@ def classify_generation_failure(error: BaseException) -> tuple[str, str]:
             code = "LEGACY_SPEND_UNKNOWN"
             message = "기존 생성 비용 기록을 확인할 수 없어 자동 재시도를 중단했습니다."
         case GenerationBudgetExceeded():
-            code = "GENERATION_BUDGET_EXHAUSTED"
+            code = GENERATION_BUDGET_EXHAUSTED_CODE
             message = "이 콘텐츠의 자동 생성 예산을 모두 사용했습니다."
         case TimeoutError() | openai.APITimeoutError():
             code = "PROVIDER_TIMEOUT"

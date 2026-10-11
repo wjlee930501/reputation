@@ -7357,6 +7357,9 @@ def _patch_exam_title_rejection(monkeypatch) -> list:
 
 
 def _claimed_item(claim_token):
+    # 가짜 행이 흉내 내는 속성이 실제 모델에 있어야 한다. 이름이 바뀌면 작가 획득 범위가
+    # 조용히 "unclaimed"로 떨어져 이 테스트들이 의미를 잃는다.
+    assert hasattr(ContentItem, "generation_claim_token")
     return SimpleNamespace(
         content_type="FAQ", essence_check_summary=None, generation_claim_token=claim_token
     )

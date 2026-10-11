@@ -117,9 +117,12 @@ SAMPLE_IMAGE_CODES = frozenset(
         "CONTENT_IMAGE_NOT_VERIFIED",
     }
 )
+# 생성 예산 소진의 시도 기록 코드(`generation_run_control.classify_generation_failure`가 쓴다).
+# 이 모듈은 다른 생성 모듈을 import하지 않는 잎이라 정본 상수를 여기 둔다.
+GENERATION_BUDGET_EXHAUSTED_CODE = "GENERATION_BUDGET_EXHAUSTED"
 # 본문 표본 실패. 작가 세션은 비싸므로 하루 2회로 제한한다.
 SAMPLE_BODY_CODES = frozenset(
-    {"GENERATION_REJECTED", "CONTENT_AI_HARD_FINDING", "GENERATION_BUDGET_EXHAUSTED"}
+    {"GENERATION_REJECTED", "CONTENT_AI_HARD_FINDING", GENERATION_BUDGET_EXHAUSTED_CODE}
 )
 _SAMPLE_CODES = SAMPLE_IMAGE_CODES | SAMPLE_BODY_CODES
 _INPUT_CODES = frozenset(
