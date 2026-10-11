@@ -1655,10 +1655,12 @@ async def test_failed_ops_email_is_retried_after_fifteen_minutes(outbox_sessions
     notification_channel_health._last_ops_email_attempt.clear()
     dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
 
+    # 첫 회차가 채널 사고를 연다. 메일은 사고를 이미 확인한 다음 회차부터 시도한다.
     await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead)
     await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=5))
-    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=16))
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=10))
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=21))
 
-    # 처음과 15분이 지난 뒤에만 시도한다. 같은 키라 Resend가 중복을 막는다.
+    # 첫 시도(5분)와 15분이 지난 뒤(21분)에만 시도한다. 같은 키라 Resend가 중복을 막는다.
     assert len(attempts) == 2
     assert attempts[0] == attempts[1]

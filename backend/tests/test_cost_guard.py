@@ -198,9 +198,9 @@ def fail_open_incidents(monkeypatch):
     recorder = FailOpenRecorder()
     monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", recorder.open)
     monkeypatch.setattr(cost_guard_health, "_recover_fail_open_incident", recorder.recover)
-    cost_guard_health._REPORTED.clear()
+    cost_guard_health.reset_for_tests()
     yield recorder
-    cost_guard_health._REPORTED.clear()
+    cost_guard_health.reset_for_tests()
 
 
 @pytest.fixture
@@ -1051,3 +1051,50 @@ async def test_fail_open_incident_failure_never_blocks_the_guard_decision(monkey
     decision = await cost_guard.check_and_increment("content", redis_client=redis)
 
     assert decision.allowed is True
+
+
+async def test_failed_incident_write_is_retried_on_a_later_fail_open(monkeypatch, alerts, fail_open_incidents):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    attempts: list[str] = []
+
+    async def broken_once(category, _error_name, *, now):
+        attempts.append(category)
+        if len(attempts) == 1:
+            raise RuntimeError("db down")
+
+    monkeypatch.setattr(cost_guard_health, "_open_fail_open_incident", broken_once)
+    redis = FakeRedis()
+    redis.fail = True
+
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    # 기록에 실패한 카테고리는 '알렸음'이 아니다.
+    assert "content" not in cost_guard_health._REPORTED
+    await cost_guard.check_and_increment("content", redis_client=redis)  # 1분 안 — 다시 시도하지 않는다
+    clock[0] += 61
+    await cost_guard.check_and_increment("content", redis_client=redis)
+
+    assert attempts == ["content", "content"]
+    assert "content" in cost_guard_health._REPORTED
+
+
+async def test_fail_open_right_after_recovery_does_not_reopen(monkeypatch, alerts, fail_open_incidents):
+    _set_limits(monkeypatch, daily=10, monthly=10)
+    clock = [1_000.0]
+    monkeypatch.setattr(cost_guard_health, "_monotonic", lambda: clock[0])
+    redis = FakeRedis()
+
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    redis.fail = False
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    # 복구 직후 10분 안의 깜빡임은 사고를 다시 열지 않는다(알림 깜빡임 방지).
+    clock[0] += 300
+    redis.fail = True
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    assert fail_open_incidents.opened == [("content", "RedisError")]
+
+    clock[0] += 301
+    await cost_guard.check_and_increment("content", redis_client=redis)
+    assert fail_open_incidents.opened == [("content", "RedisError"), ("content", "RedisError")]

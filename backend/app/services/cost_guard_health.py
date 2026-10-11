@@ -5,13 +5,16 @@ Redis 장애 때 비용 가드는 가용성을 위해 호출을 허용한다(fai
 
 - 프로세스·카테고리마다 첫 fail-open에 ERROR 한 줄(GCP worker ERROR 경보가 이메일로 승격)과 개발 대상
   사고 하나(`COST_GUARD_FAIL_OPEN`)를 남긴다. 사고 키는 카테고리 단위라 여러 프로세스가 같은 사고를 만진다.
-- 같은 프로세스에서 그 카테고리의 가드가 다시 Redis로 판정하면 사고를 복구한다.
+- 같은 프로세스에서 그 카테고리의 가드가 다시 Redis로 판정하면 사고를 복구한다. 복구 뒤 10분 안의
+  fail-open은 사고를 다시 열지 않는다(깜빡임마다 열림·복구 알림이 짝지어 나가지 않게).
+- 사고 기록에 성공해야 '알렸음'으로 본다. 실패하면 1분 뒤 다음 fail-open이 다시 기록한다.
 - 사고 기록 실패는 가드 결정에 영향을 주지 않는다(`cost_guard._enqueue_durable_cost_alert`와 같은 원칙).
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -44,8 +47,25 @@ logger = logging.getLogger(__name__)
 FAIL_OPEN_INCIDENT_TYPE = "COST_GUARD_FAIL_OPEN"
 _ACTOR = "cost-guard"
 _RECOVERY_REASON = "cost guard judged with redis again"
-# 이 프로세스가 사고로 알린 카테고리. 워커 자식은 50개 작업마다 바뀌므로 자연히 다시 관측된다.
+# 이 프로세스가 사고로 기록한 카테고리. 워커 자식은 50개 작업마다 바뀌므로 자연히 다시 관측된다.
 _REPORTED: set[str] = set()
+# 마지막 사고 기록 시도·복구 시각(프로세스 시계). 실패한 기록의 재시도 간격과 복구 직후 재열림 억제에 쓴다.
+_ATTEMPTED_AT: dict[str, float] = {}
+_RECOVERED_AT: dict[str, float] = {}
+_RETRY_SECONDS = 60.0
+_REOPEN_COOLDOWN_SECONDS = 600.0
+_monotonic = time.monotonic
+
+
+def reset_for_tests() -> None:
+    _REPORTED.clear()
+    _ATTEMPTED_AT.clear()
+    _RECOVERED_AT.clear()
+
+
+def _within(stamps: dict[str, float], category: str, seconds: float, now: float) -> bool:
+    stamp = stamps.get(category)
+    return stamp is not None and now - stamp < seconds
 
 
 def _request(category: str, error_name: str) -> IncidentOpenRequest:
@@ -141,10 +161,15 @@ async def _recover_fail_open_incident(category: str, *, now: datetime) -> None:
 
 async def report_fail_open(category: str, error_name: str) -> None:
     """fail-open 관측. 프로세스·카테고리당 첫 번째만 ERROR와 사고, 이후는 WARNING."""
-    if category in _REPORTED:
+    now = _monotonic()
+    if (
+        category in _REPORTED
+        or _within(_ATTEMPTED_AT, category, _RETRY_SECONDS, now)
+        or _within(_RECOVERED_AT, category, _REOPEN_COOLDOWN_SECONDS, now)
+    ):
         logger.warning("cost_guard fail-open (redis unavailable): category=%s error=%s", category, error_name)
         return
-    _REPORTED.add(category)
+    _ATTEMPTED_AT[category] = now
     logger.error(
         "cost_guard_fail_open category=%s error=%s — 비용 상한 없이 호출을 허용하는 중", category, error_name
     )
@@ -152,6 +177,8 @@ async def report_fail_open(category: str, error_name: str) -> None:
         await _open_fail_open_incident(category, error_name, now=datetime.now(UTC))
     except Exception:  # noqa: BLE001 — 사고 기록 실패가 가드 결정을 바꾸지 않는다.
         logger.warning("cost_guard fail-open incident not recorded: category=%s", category)
+        return
+    _REPORTED.add(category)
 
 
 async def report_guard_healthy(category: str) -> None:
@@ -159,6 +186,7 @@ async def report_guard_healthy(category: str) -> None:
     if category not in _REPORTED:
         return
     _REPORTED.discard(category)
+    _RECOVERED_AT[category] = _monotonic()
     try:
         await _recover_fail_open_incident(category, now=datetime.now(UTC))
     except Exception:  # noqa: BLE001 — 복구 기록 실패가 가드 결정을 바꾸지 않는다.

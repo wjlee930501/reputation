@@ -264,23 +264,27 @@ async def _defer(event: ProviderUsageEvent) -> bool:
             pipe.zadd(_RECOVERY_INDEX_KEY, {key: event.created_at.timestamp()})
             pipe.zremrangebyrank(_RECOVERY_INDEX_KEY, 0, -_RECOVERY_MAX_ITEMS - 1)
             results = await pipe.execute()
-            dropped = int(results[2] or 0)
-            if dropped:
-                # 상한(1만 건)을 넘겨 가장 오래된 기록을 버렸다 — 되살릴 수 없다. DB가 돌아오면 drain이
-                # 이 카운터를 개발 사고로 바꾼다(report_dropped_usage).
-                await client.incrby(_RECOVERY_DROPPED_KEY, dropped)
-                logger.error(
-                    "provider_usage_spool_truncated dropped=%s max_items=%s",
-                    dropped,
-                    _RECOVERY_MAX_ITEMS,
-                )
-            return True
         except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError):
             logger.warning(
                 "provider usage recovery spool unavailable: idempotency_key=%s",
                 event.idempotency_key,
             )
             return False
+        dropped = int(results[2] or 0)
+        if dropped:
+            # 상한(1만 건)을 넘겨 가장 오래된 기록을 버렸다 — 되살릴 수 없다. DB가 돌아오면 drain이
+            # 이 카운터를 개발 사고로 바꾼다(report_dropped_usage). 이번 기록은 이미 spool에 있으므로
+            # 카운터 실패가 spool 실패로 보고되지 않게 따로 다룬다.
+            logger.error(
+                "provider_usage_spool_truncated dropped=%s max_items=%s",
+                dropped,
+                _RECOVERY_MAX_ITEMS,
+            )
+            try:
+                await client.incrby(_RECOVERY_DROPPED_KEY, dropped)
+            except (OSError, RedisError, RuntimeError, TimeoutError):
+                logger.error("provider_usage_spool_truncated_count_lost dropped=%s", dropped)
+        return True
 
 
 async def replay_deferred_attempts(

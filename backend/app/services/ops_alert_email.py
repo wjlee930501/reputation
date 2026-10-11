@@ -58,8 +58,9 @@ async def send_ops_alert(
 
     to = settings.OPS_ALERT_EMAIL.strip()
     if not to or not mailer.is_configured():
-        # 2-6b의 GCP 로그 경보 필터("pipeline watchdog")가 이 줄을 잡는다.
-        logger.error("pipeline watchdog: ops alert email not configured key=%s", idempotency_key)
+        # 'ops alert email:' 접두사 — API에서는 GCP 경보 slack_path_failures, Worker에서는
+        # worker_beat_errors(모든 worker ERROR)가 이 줄을 이메일로 알린다.
+        logger.error("ops alert email: not configured key=%s", idempotency_key)
         return False
     try:
         await mailer.send_email(
@@ -71,7 +72,7 @@ async def send_ops_alert(
         )
     except mailer.MailNotConfigured as exc:
         logger.error(
-            "pipeline watchdog: ops alert email failed key=%s error=%s",
+            "ops alert email: failed key=%s error=%s",
             idempotency_key,
             exc.__class__.__name__,
         )
@@ -80,14 +81,14 @@ async def send_ops_alert(
         if str(exc).startswith(_CONFLICT_PREFIX):
             return True
         logger.error(
-            "pipeline watchdog: ops alert email failed key=%s error=%s",
+            "ops alert email: failed key=%s error=%s",
             idempotency_key,
             str(exc)[:80],
         )
         return False
     except httpx.HTTPError as exc:
         logger.error(
-            "pipeline watchdog: ops alert email failed key=%s error=%s",
+            "ops alert email: failed key=%s error=%s",
             idempotency_key,
             exc.__class__.__name__,
         )

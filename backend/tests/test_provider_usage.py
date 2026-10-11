@@ -494,3 +494,33 @@ async def test_incident_failure_puts_the_dropped_count_back(monkeypatch):
 
     assert await provider_usage.report_dropped_usage(redis_client=redis) == 0
     assert redis.counters[provider_usage._RECOVERY_DROPPED_KEY] == 3
+
+
+async def test_counter_failure_does_not_turn_a_stored_spool_into_a_failure(monkeypatch, caplog):
+    # spool 저장은 이미 성공했다 — 유실 카운터만 실패해도 기록은 spool에 있다(정상 경로로 되돌리지 않는다).
+    db = FakeDB()
+    await provider_usage.record_attempt(
+        provider="openai", model="m", workflow="SOV_ANSWER", cost_category="sov",
+        hospital_id=uuid.uuid4(), logical_call_id="c", http_attempt=1, usage=None,
+        idempotency_key="k-trunc-counter", db=db,
+    )
+    event = next(value for value in db.added if isinstance(value, ProviderUsageEvent))
+    redis = FakeSpoolRedis(existing=provider_usage._RECOVERY_MAX_ITEMS)
+
+    async def broken_incrby(_key, _amount):
+        raise provider_usage.RedisError("counter down")
+
+    redis.incrby = broken_incrby
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_client(_injected=None):
+        yield redis
+
+    monkeypatch.setattr(provider_usage, "_recovery_redis_client", fake_client)
+
+    assert await provider_usage._defer(event) is True
+    messages = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any(m.startswith("provider_usage_spool_truncated_count_lost") for m in messages)
+    assert not any("recovery spool unavailable" in r.getMessage() for r in caplog.records)

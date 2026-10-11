@@ -2041,7 +2041,7 @@ def test_live_service_env_is_the_source_when_the_local_file_matches(tmp_path: Pa
     assert result.returncode == 0, result.stderr
     assert "운영 서비스 env를 정본으로" in result.stderr
     # 옛 릴리스 값은 렌더에서 빠지고 이번 릴리스 값만 한 번 들어간다(YAML 중복 키 없음).
-    release_lines = [l for l in commands.splitlines() if l.startswith("env REPUTATION_RELEASE_REVISION:")]
+    release_lines = [line for line in commands.splitlines() if line.startswith("env REPUTATION_RELEASE_REVISION:")]
     assert release_lines and set(release_lines) == {'env REPUTATION_RELEASE_REVISION: "test-source-revision"'}
 
 
@@ -2197,10 +2197,10 @@ def test_readiness_failure_rolls_traffic_back_automatically(tmp_path: Path) -> N
     )
     assert result.returncode != 0
     assert "자동 롤백" in result.stderr
-    traffic = [l for l in commands.splitlines() if l.startswith("gcloud run services update-traffic")]
+    traffic = [line for line in commands.splitlines() if line.startswith("gcloud run services update-traffic")]
     # worker·beat·api 모두 배포 전 리비전으로 되돌린다(api는 아직 바뀌지 않았어도 같은 좌표로 고정).
-    assert {l.split()[4] for l in traffic} == {"reputation-worker", "reputation-beat", "reputation-api"}
-    assert all("--to-revisions=reputation-api-00240-old=100" in l for l in traffic)
+    assert {line.split()[4] for line in traffic} == {"reputation-worker", "reputation-beat", "reputation-api"}
+    assert all("--to-revisions=reputation-api-00240-old=100" in line for line in traffic)
     # API는 readiness 뒤에 배포하므로 배포되지 않는다.
     assert "gcloud run deploy reputation-api" not in commands
 
@@ -2220,7 +2220,7 @@ def test_auto_rollback_can_be_switched_off(tmp_path: Path) -> None:
 def test_api_deploy_runs_a_baseline_then_verifies_the_new_release(tmp_path: Path) -> None:
     result, commands = _run_target(tmp_path, "api", FAKE_READY_REVISION="reputation-site-00143-mvd")
     assert result.returncode == 0, result.stderr
-    smoke = [l for l in commands.splitlines() if l.startswith("SMOKE ")]
+    smoke = [line for line in commands.splitlines() if line.startswith("SMOKE ")]
     assert smoke[0].startswith("SMOKE baseline --public-domain reputation.example.test")
     assert smoke[1].startswith("SMOKE verify --public-domain reputation.example.test")
     assert "--api-release test-source-revision" in smoke[1]
@@ -2261,10 +2261,10 @@ def test_unpin_moves_pinned_traffic_to_the_new_revision_after_deploy(tmp_path: P
     assert result.returncode == 0, result.stderr
     assert "고정 트래픽을 이번 배포에서 풉니다" in result.stderr
     lines = commands.splitlines()
-    deploy_at = next(i for i, l in enumerate(lines) if l.startswith("gcloud run deploy reputation-api"))
+    deploy_at = next(i for i, line in enumerate(lines) if line.startswith("gcloud run deploy reputation-api"))
     unpin_at = next(
-        i for i, l in enumerate(lines)
-        if l.startswith("gcloud run services update-traffic reputation-api") and "--to-latest" in l
+        i for i, line in enumerate(lines)
+        if line.startswith("gcloud run services update-traffic reputation-api") and "--to-latest" in line
     )
     # 새 리비전이 생긴 뒤에만 옮긴다 — 배포 전에 옮기면 고정의 이유였을 리비전으로 트래픽이 간다.
     assert deploy_at < unpin_at

@@ -382,8 +382,9 @@ resource "google_monitoring_alert_policy" "watchdog_scheduler_failures" {
   }
 }
 
-# 2) 감시 결과나 운영 알림이 Slack에 닿지 않았다 — API의 감시 전송 실패, Worker의 '보낼 채널 없음'.
+# 2) 외부 감시 결과나 운영 경보 메일이 닿지 않았다 — API의 감시 전송 실패·운영 경보 메일 실패.
 #    로그 기반 정책은 조건 하나만 허용하므로 필터 하나에 OR로 묶는다.
+#    Worker 쪽 Slack 경로 실패('No live Slack channel'·운영 경보 메일 실패)는 worker_beat_errors가 이미 이메일로 보낸다.
 resource "google_monitoring_alert_policy" "slack_path_failures" {
   count        = var.alert_email != "" ? 1 : 0
   project      = var.project_id
@@ -391,9 +392,9 @@ resource "google_monitoring_alert_policy" "slack_path_failures" {
   combiner     = "OR"
 
   conditions {
-    display_name = "Watchdog or operator notifications not delivered to Slack"
+    display_name = "Watchdog alerts not delivered to Slack or ops email"
     condition_matched_log {
-      filter = "resource.type=\"cloud_run_revision\" AND severity>=ERROR AND ((resource.labels.service_name=\"${var.app_name}-api\" AND jsonPayload.message:\"pipeline watchdog\") OR (resource.labels.service_name=\"${var.app_name}-worker\" AND jsonPayload.message:\"No live Slack channel\"))"
+      filter = "resource.type=\"cloud_run_revision\" AND severity>=ERROR AND resource.labels.service_name=\"${var.app_name}-api\" AND (jsonPayload.message:\"pipeline watchdog\" OR jsonPayload.message:\"ops alert email\")"
     }
   }
 
@@ -410,6 +411,6 @@ resource "google_monitoring_alert_policy" "slack_path_failures" {
   ))
 
   documentation {
-    content = "운영 Slack 채널로 알림이 전달되지 않습니다. 'No live Slack channel'이면 SLACK_WEBHOOK_URL이 죽었습니다(웹훅을 다시 발급해 Secret Manager에 새 버전을 넣으면 한 시간 안에 자동 복구됩니다). 'pipeline watchdog'이면 외부 감시 경보가 Slack에 닿지 않았거나 감시가 Redis·DB를 읽지 못했습니다."
+    content = "외부 감시 경보가 전달되지 않았습니다. 'pipeline watchdog'이면 감시 경보가 Slack에 닿지 않았거나 감시가 Redis·DB를 읽지 못했습니다. 'ops alert email'이면 2차 경로(운영 경보 메일)도 실패했습니다 — OPS_ALERT_EMAIL·RESEND_API_KEY를 확인하세요. 운영 웹훅 자체가 죽은 경우(SLACK_WEBHOOK_URL)는 웹훅을 다시 발급해 Secret Manager에 새 버전을 넣으면 한 시간 안에 자동 복구됩니다."
   }
 }

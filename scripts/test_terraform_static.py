@@ -126,9 +126,11 @@ def test_watchdog_and_slack_path_failures_alert_by_email() -> None:
         monitoring, 'resource "google_monitoring_alert_policy" "slack_path_failures"'
     )
     assert r'jsonPayload.message:\"pipeline watchdog\"' in slack_path
-    assert r'jsonPayload.message:\"No live Slack channel\"' in slack_path
+    assert r'jsonPayload.message:\"ops alert email\"' in slack_path
     assert '${var.app_name}-api' in slack_path
-    assert '${var.app_name}-worker' in slack_path
+    # Worker의 '보낼 채널 없음'·운영 경보 메일 실패는 worker_beat_errors(모든 worker ERROR)가 이미 이메일로 보낸다.
+    assert '${var.app_name}-worker' not in slack_path
+    assert "No live Slack channel" not in slack_path
     assert "google_monitoring_notification_channel.email[0].id" in slack_path
     # 로그 기반 정책은 조건 하나만 허용한다.
     assert slack_path.count("condition_matched_log") == 1

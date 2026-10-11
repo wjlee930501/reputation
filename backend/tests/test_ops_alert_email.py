@@ -64,5 +64,5 @@ async def test_missing_address_is_not_sent_and_logged_for_the_gcp_alert(monkeypa
     sent = await ops_alert_email.send_ops_alert(idempotency_key="k", title="t", lines=("a",))
     assert sent is False
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    # 2-6b의 GCP 경보 필터("pipeline watchdog")가 이 줄을 잡는다.
-    assert errors and errors[0].startswith("pipeline watchdog: ops alert email not configured")
+    # API에서는 GCP 경보 slack_path_failures("ops alert email"), Worker에서는 worker_beat_errors가 이 줄을 잡는다.
+    assert errors and errors[0].startswith("ops alert email: not configured")

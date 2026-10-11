@@ -452,6 +452,7 @@ def _ops_email_lines(incident: Incident) -> tuple[str, ...]:
 async def email_dead_operator_channel(
     sessions: async_sessionmaker[AsyncSession],
     webhooks: Mapping[str, str],
+    unhealthy: Mapping[str, uuid.UUID],
     *,
     now: datetime,
 ) -> bool:
@@ -463,16 +464,19 @@ async def email_dead_operator_channel(
     상태는 바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
     """
 
+    # `unhealthy`는 발송기가 이번 회차에 이미 확인한 채널 사고(채널 → 사고 id)다 — 다시 조회하지 않는다.
+    incident_id = unhealthy.get(SLACK_CHANNEL)
+    if incident_id is None:
+        return False
+    developer_live = bool(webhooks.get(SLACK_DEVELOPER_CHANNEL, "").strip()) and (
+        SLACK_DEVELOPER_CHANNEL not in unhealthy
+    )
+    if developer_live:
+        return False  # 개발 채널이 대신 받는다(`[채널 대체 전송]`).
     async with sessions() as db:
-        unhealthy = await load_unhealthy_channels(db)
-        incident = unhealthy.get(SLACK_CHANNEL)
+        incident = await db.get(Incident, incident_id)
         if incident is None:
             return False
-        developer_live = bool(webhooks.get(SLACK_DEVELOPER_CHANNEL, "").strip()) and (
-            SLACK_DEVELOPER_CHANNEL not in unhealthy
-        )
-        if developer_live:
-            return False  # 개발 채널이 대신 받는다(`[채널 대체 전송]`).
         marker = _ops_email_marker(incident)
         already = await db.scalar(
             select(AdminAuditLog.id)
