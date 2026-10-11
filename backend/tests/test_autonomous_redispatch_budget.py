@@ -186,3 +186,42 @@ def test_a_monthly_rebuild_is_not_rerun_after_its_worker_died() -> None:
     assert refused(rebuild)
     assert not refused(plain)
     assert not refused(_running("RUN_SOV"))
+
+
+def _stale(state=OperationRunState.RUNNING, *, days: float, lease_delta=None):
+    return SimpleNamespace(
+        state=state,
+        operation_type="NIGHTLY_CONTENT_GENERATION",
+        updated_at=NOW - timedelta(days=days),
+        lease_expires_at=None if lease_delta is None else NOW + lease_delta,
+    )
+
+
+def test_only_ten_days_without_progress_marks_a_run_abandoned() -> None:
+    abandoned = autonomous_recovery._is_abandoned_running
+    assert abandoned(_stale(days=11), NOW)
+    assert abandoned(_stale(days=11, lease_delta=timedelta(days=-7)), NOW)
+    assert not abandoned(_stale(days=9), NOW)
+    assert not abandoned(_stale(days=11, lease_delta=timedelta(minutes=5)), NOW)
+    assert not abandoned(_stale(OperationRunState.QUEUED, days=30), NOW)
+    # 갱신 시각이 없는 가벼운 객체(기존 테스트의 SimpleNamespace)는 버려진 것으로 보지 않는다.
+    assert not abandoned(SimpleNamespace(state=OperationRunState.RUNNING), NOW)
+
+
+def test_a_revalidation_run_is_never_called_abandoned() -> None:
+    """재검증 실행은 같은 reconcile의 재검증 루프가 소유한다."""
+
+    run = _stale(days=30)
+    run.operation_type = "SITE_REVALIDATION"
+    assert not autonomous_recovery._is_abandoned_running(run, NOW)
+
+
+def test_a_monthly_sov_period_run_waiting_for_its_day_8_finalizer_is_not_abandoned() -> None:
+    """월말 창의 마지막 sweep(말일 18시) 뒤 8일 00:15 최종화까지 약 7일 6시간 손대지 않는다."""
+
+    period = _stale(days=8)
+    period.operation_type = "MONTHLY_SOV_PERIOD"
+    assert not autonomous_recovery._is_abandoned_running(period, NOW)
+    lost = _stale(days=11)
+    lost.operation_type = "MONTHLY_SOV_PERIOD"
+    assert autonomous_recovery._is_abandoned_running(lost, NOW)

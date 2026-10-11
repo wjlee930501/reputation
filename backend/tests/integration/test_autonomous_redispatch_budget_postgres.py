@@ -247,3 +247,41 @@ def test_an_expired_recertify_run_is_left_to_its_sweep(db, pg_conn, monkeypatch)
 
     assert _sent_for(sent, run) == []
     assert _reload(db, run).state == OperationRunState.RUNNING
+
+
+def _nightly(db, *, updated_days_ago: int) -> OperationRun:
+    run = OperationRun(
+        operation_type="NIGHTLY_CONTENT_GENERATION",
+        state=OperationRunState.RUNNING,
+        idempotency_key=f"nightly:{uuid.uuid4()}",
+        task_id=f"nightly-{uuid.uuid4().hex[:8]}",
+        request_payload={"window_start": "2026-09-08", "window_end": "2026-09-09"},
+        attempt_count=1,
+        started_at=NOW - timedelta(days=updated_days_ago),
+        heartbeat_at=NOW - timedelta(days=updated_days_ago),
+        lease_owner="dead-batch",
+        lease_expires_at=NOW - timedelta(days=updated_days_ago) + timedelta(hours=2),
+        requested_at=NOW - timedelta(days=updated_days_ago),
+        updated_at=NOW - timedelta(days=updated_days_ago),
+        version=3,
+    )
+    db.add(run)
+    db.commit()
+    return run
+
+
+def test_a_ten_day_old_running_remnant_is_closed_with_one_incident(
+    db, pg_conn, monkeypatch
+) -> None:
+    remnant = _nightly(db, updated_days_ago=11)
+    recent = _nightly(db, updated_days_ago=9)
+
+    _reconcile(monkeypatch, pg_conn)
+
+    closed = _reload(db, remnant)
+    assert closed.state == OperationRunState.FAILED
+    assert closed.safe_error_code == "OPERATION_RUN_ABANDONED"
+    assert closed.lease_owner is None and closed.lease_expires_at is None
+    assert _reload(db, recent).state == OperationRunState.RUNNING
+    incident = _cause_incident(db, "OPERATION_RUN_ABANDONED")
+    assert incident is not None and incident.state == "OPEN"

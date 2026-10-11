@@ -69,12 +69,20 @@ _REDISPATCH_BUDGET: Final = 3
 _RECOVERY_STOP_INCIDENT_TYPE: Final = "OPERATION_RECOVERY_EXHAUSTED"
 _REDISPATCH_EXHAUSTED: Final = "OPERATION_REDISPATCH_EXHAUSTED"
 _LEASE_EXPIRED: Final = "OPERATION_LEASE_EXPIRED"
+# 이만큼 아무 갱신이 없고 lease도 없는 RUNNING은 끝낼 주체가 사라진 잔재다(9/7 야간 배치 잔재).
+# 시작 시각이 아니라 마지막 갱신으로 본다 — 월간 측정 구간 실행은 24~31일 내내 RUNNING이다.
+# 10일인 이유: 정상인 `MONTHLY_SOV_PERIOD`는 말일 18시(KST) 마지막 창 sweep 뒤 다음 달 8일
+# 00:15 최종화(`_finalize_monthly_sov_period_run`)까지 약 7일 6시간 아무도 건드리지 않는다.
+# 7일로 두면 매달 정상 실행을 FAILED로 만들고 사고를 연다.
+_ABANDONED_RUNNING_AFTER: Final = timedelta(days=10)
+_RUN_ABANDONED: Final = "OPERATION_RUN_ABANDONED"
 _RECOVERY_STOP_MESSAGES: Final[dict[str, str]] = {
     _REDISPATCH_EXHAUSTED: "자동 재배달을 3번 했지만 작업이 시작되지 않아 자동 복구를 멈췄습니다.",
     _LEASE_EXPIRED: (
         "보고서 재생성 작업이 끝나지 않은 채 중단됐습니다. 다시 실행하면 새 버전이 중복으로 생길 수 "
         "있어 자동으로 다시 실행하지 않았습니다."
     ),
+    _RUN_ABANDONED: "10일 넘게 진행 기록이 없는 작업을 종료 처리했습니다.",
 }
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
@@ -207,6 +215,32 @@ def _lease_takeover_refused(run: OperationRun) -> bool:
     )
 
 
+def _is_abandoned_running(run: OperationRun, observed_at: datetime) -> bool:
+    if run.state != OperationRunState.RUNNING:
+        return False
+    if str(getattr(run, "operation_type", "")) == "SITE_REVALIDATION":
+        # 재검증 실행은 같은 reconcile의 재검증 루프가 소유한다.
+        return False
+    lease = getattr(run, "lease_expires_at", None)
+    if lease is not None and lease > observed_at:
+        return False
+    touched = getattr(run, "updated_at", None)
+    return touched is not None and touched <= observed_at - _ABANDONED_RUNNING_AFTER
+
+
+def _abandoned_running_clause(observed_at: datetime):
+    return and_(
+        OperationRun.state == OperationRunState.RUNNING,
+        # 재검증 실행은 같은 reconcile의 재검증 루프가 소유한다.
+        OperationRun.operation_type != "SITE_REVALIDATION",
+        or_(
+            OperationRun.lease_expires_at.is_(None),
+            OperationRun.lease_expires_at <= observed_at,
+        ),
+        OperationRun.updated_at <= observed_at - _ABANDONED_RUNNING_AFTER,
+    )
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -299,42 +333,50 @@ def reconcile() -> RecoveryCounts:
             for run in db.execute(
                 select(OperationRun)
                 .where(
-                    OperationRun.operation_type.in_(tuple(_OPERATION_REDISPATCH_POLICIES)),
                     or_(
                         and_(
-                            OperationRun.state == OperationRunState.REQUESTED,
-                            OperationRun.requested_at
-                            <= observed_at - _REQUESTED_REDISPATCH_GRACE,
-                        ),
-                        and_(
-                            OperationRun.state == OperationRunState.QUEUED,
-                            OperationRun.not_before_at.is_(None),
-                            # 유형별 기본 유예로 고른다(다른 유형의 45분~3시간 적체가 배치를
-                            # 채우지 않게). 재배달 횟수에 따른 두 배 판정은
-                            # `_operation_redispatch_is_due`가 한다.
-                            func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
-                            <= case(
-                                (
-                                    OperationRun.operation_type.in_(
-                                        tuple(_FAST_QUEUED_REDISPATCH_TYPES)
-                                    ),
-                                    observed_at - _FAST_QUEUED_REDISPATCH_GRACE,
+                            OperationRun.operation_type.in_(
+                                tuple(_OPERATION_REDISPATCH_POLICIES)
+                            ),
+                            or_(
+                                and_(
+                                    OperationRun.state == OperationRunState.REQUESTED,
+                                    OperationRun.requested_at
+                                    <= observed_at - _REQUESTED_REDISPATCH_GRACE,
                                 ),
-                                else_=observed_at - _QUEUED_REDISPATCH_GRACE,
+                                and_(
+                                    OperationRun.state == OperationRunState.QUEUED,
+                                    OperationRun.not_before_at.is_(None),
+                                    # 유형별 기본 유예로 고른다(다른 유형의 45분~3시간 적체가 배치를
+                                    # 채우지 않게). 재배달 횟수에 따른 두 배 판정은
+                                    # `_operation_redispatch_is_due`가 한다.
+                                    func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
+                                    <= case(
+                                        (
+                                            OperationRun.operation_type.in_(
+                                                tuple(_FAST_QUEUED_REDISPATCH_TYPES)
+                                            ),
+                                            observed_at - _FAST_QUEUED_REDISPATCH_GRACE,
+                                        ),
+                                        else_=observed_at - _QUEUED_REDISPATCH_GRACE,
+                                    ),
+                                ),
+                                # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
+                                and_(
+                                    OperationRun.state == OperationRunState.QUEUED,
+                                    OperationRun.not_before_at <= observed_at,
+                                ),
+                                and_(
+                                    OperationRun.operation_type.in_(tuple(_LEASE_TAKEOVER_TYPES)),
+                                    OperationRun.state == OperationRunState.RUNNING,
+                                    OperationRun.lease_expires_at.isnot(None),
+                                    OperationRun.lease_expires_at <= observed_at,
+                                ),
                             ),
                         ),
-                        # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
-                        and_(
-                            OperationRun.state == OperationRunState.QUEUED,
-                            OperationRun.not_before_at <= observed_at,
-                        ),
-                        and_(
-                            OperationRun.operation_type.in_(tuple(_LEASE_TAKEOVER_TYPES)),
-                            OperationRun.state == OperationRunState.RUNNING,
-                            OperationRun.lease_expires_at.isnot(None),
-                            OperationRun.lease_expires_at <= observed_at,
-                        ),
-                    ),
+                        # 끝낼 주체가 사라진 RUNNING 잔재(정책 밖 유형 포함).
+                        _abandoned_running_clause(observed_at),
+                    )
                 )
                 .order_by(OperationRun.requested_at, OperationRun.id)
                 .with_for_update(skip_locked=True)
@@ -343,6 +385,7 @@ def reconcile() -> RecoveryCounts:
             .scalars()
             .all()
             if _operation_redispatch_is_due(run, observed_at)
+            or _is_abandoned_running(run, observed_at)
         ]
 
         for run in runs:
@@ -357,6 +400,14 @@ def reconcile() -> RecoveryCounts:
         operation_redispatches = 0
         handled_site_hospitals: set[uuid.UUID] = set()
         for run in operation_runs:
+            if _is_abandoned_running(run, observed_at):
+                if (
+                    _stop_operation_run(db, run, observed_at, _RUN_ABANDONED)
+                    and run.operation_type == "REBUILD_SITE"
+                    and run.hospital_id is not None
+                ):
+                    handled_site_hospitals.add(run.hospital_id)
+                continue
             if _site_rebuild_attempts_exhausted(run):
                 if _fail_exhausted_site_rebuild(db, run, observed_at):
                     if run.hospital_id is not None:
