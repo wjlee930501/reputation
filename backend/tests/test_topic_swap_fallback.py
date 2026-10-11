@@ -239,6 +239,13 @@ def test_swap_resets_the_slot_and_keeps_the_month_accounting(chosen_target):
     assert values["references_list"] is None
     swapped_attempt = values["essence_check_summary"][GENERATION_ATTEMPT_KEY]
     assert swapped_attempt["budget"]["topic_swaps"] == 1
+    # 새 주제의 예산은 이 위치 뒤의 획득만 센다(평생 계수는 그대로 남는다).
+    assert swapped_attempt["budget"]["prior_topic_spend"] == {
+        "acquisition_count": 0,
+        "writer_results": 0,
+        "reviewer_results": 0,
+        "text_http_attempts": 0,
+    }
     assert swapped_attempt["budget"]["topics"] == [
         str(item.query_target_id),
         str(chosen_target.id),

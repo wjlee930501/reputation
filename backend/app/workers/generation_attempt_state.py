@@ -47,6 +47,14 @@ TOPIC_SWAP_LIMIT = 1
 SEMANTIC_TRANSPORT_LIMIT = 3
 TEXT_HTTP_ATTEMPT_LIMIT = 36
 IMAGE_HTTP_ATTEMPT_LIMIT = 12
+# 주제 교체는 새 주제에 작가·검수·본문 전송 예산을 처음부터 준다. 슬롯 평생 상한은
+# 주제 수(TOPIC_LIMIT)만큼이다 — 교체가 평생 한 번뿐이므로 이 곱이 실제 최대 지출이다.
+# 이미지 전송은 주제가 아니라 슬롯의 것이라 평생 IMAGE_HTTP_ATTEMPT_LIMIT 그대로다.
+LIFETIME_WRITER_RESULT_LIMIT = TOPIC_LIMIT * WRITER_RESULT_LIMIT
+LIFETIME_REVIEWER_RESULT_LIMIT = TOPIC_LIMIT * REVIEWER_RESULT_LIMIT
+LIFETIME_TEXT_HTTP_ATTEMPT_LIMIT = TOPIC_LIMIT * TEXT_HTTP_ATTEMPT_LIMIT
+PRIOR_TOPIC_SPEND_KEY = "prior_topic_spend"
+_PRIOR_TOPIC_COUNTERS = ("writer_results", "reviewer_results", "text_http_attempts")
 
 AcquisitionKind = Literal["WRITER", "REVIEWER", "IMAGE"]
 AcquisitionOutcome = Literal["RESULT", "ERROR", "UNKNOWN"]
@@ -277,6 +285,25 @@ def _validate_versioned_budget(raw: dict[str, Any]) -> dict[str, Any]:
     ):
         raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
 
+    prior = raw.get(PRIOR_TOPIC_SPEND_KEY)
+    if prior is not None:
+        count = (
+            _strict_nonnegative_int(prior.get("acquisition_count"))
+            if isinstance(prior, dict)
+            else None
+        )
+        if (
+            count is None
+            or count > len(acquisitions)
+            or raw["topic_swaps"] < 1
+            or any(
+                _strict_nonnegative_int(prior.get(key)) is None
+                or prior[key] > raw[key]
+                for key in _PRIOR_TOPIC_COUNTERS
+            )
+        ):
+            raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
+
     reset_record = raw.get("reset_record")
     if reset_record is not None and not isinstance(reset_record, dict):
         raise GenerationBudgetUnknown("LEGACY_SPEND_UNKNOWN")
@@ -346,6 +373,79 @@ def _active_acquisitions(budget: dict[str, Any], kind: AcquisitionKind) -> int:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _TopicUsage:
+    writer_results: int
+    reviewer_results: int
+    active_writers: int
+    active_reviewers: int
+    text_http_attempts: int
+    text_http_reserved: int
+
+
+def _entries(budget: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = budget.get("acquisitions")
+    return [entry for entry in raw if isinstance(entry, dict)] if isinstance(raw, list) else []
+
+
+def _topic_boundary(budget: dict[str, Any]) -> int | None:
+    """현재 주제의 첫 획득 위치. 교체 전이면 None — 평생 계수가 곧 현재 주제의 계수다.
+
+    교체 표시(`prior_topic_spend`)가 있으면 그 위치를 쓴다. 표시 없이 교체만 기록된 옛
+    예산(이 수정 이전의 교체)은 획득 목록이 시간순으로만 늘어난다는 사실로 경계를 찾는다 —
+    작가 획득 id에는 주제가 들어가므로(`writer:{context}:{topic}:…`) 새 주제의 첫 작가
+    획득이 경계다. 아직 없으면(교체 직후 곧바로 소진된 경우) 목록 전체가 옛 주제의 것이다.
+    """
+
+    prior = budget.get(PRIOR_TOPIC_SPEND_KEY)
+    if isinstance(prior, dict):
+        return int(prior["acquisition_count"])
+    if int(budget.get("topic_swaps") or 0) < 1:
+        return None
+    entries = _entries(budget)
+    topics = budget.get("topics") or []
+    if topics:
+        marker = f":{topics[-1]}:"
+        for index, entry in enumerate(entries):
+            if entry.get("kind") == "WRITER" and marker in str(entry.get("id") or ""):
+                return index
+    return len(entries)
+
+
+def _current_topic_usage(budget: dict[str, Any]) -> _TopicUsage:
+    boundary = _topic_boundary(budget)
+    if boundary is None:
+        return _TopicUsage(
+            writer_results=budget["writer_results"],
+            reviewer_results=budget["reviewer_results"],
+            active_writers=_active_acquisitions(budget, "WRITER"),
+            active_reviewers=_active_acquisitions(budget, "REVIEWER"),
+            text_http_attempts=budget["text_http_attempts"],
+            text_http_reserved=budget["text_http_reserved"],
+        )
+    writer = reviewer = active_writers = active_reviewers = attempts = reserved = 0
+    for entry in _entries(budget)[boundary:]:
+        kind = entry.get("kind")
+        if kind == "IMAGE":
+            continue
+        used = _nonnegative_int(entry.get("transport_attempts")) or 0
+        held = _nonnegative_int(entry.get("transport_reserved")) or 0
+        attempts += used
+        status = entry.get("status")
+        if status == "RESERVED":
+            reserved += max(0, held - used)
+            if kind == "WRITER":
+                active_writers += 1
+            else:
+                active_reviewers += 1
+        elif status in {"RESULT", "ERROR"}:
+            if kind == "WRITER":
+                writer += 1
+            else:
+                reviewer += 1
+    return _TopicUsage(writer, reviewer, active_writers, active_reviewers, attempts, reserved)
+
+
 def reserve_acquisition(
     attempt: dict[str, Any], *, acquisition_id: str, kind: AcquisitionKind
 ) -> dict[str, Any]:
@@ -364,21 +464,32 @@ def reserve_acquisition(
     if prior is not None:
         return {**attempt, GENERATION_BUDGET_KEY: budget}
     snapshot = _snapshot_from_budget(budget)
+    usage = _current_topic_usage(budget)
     if kind == "WRITER" and (
-        snapshot.writer_results + _active_acquisitions(budget, kind) >= WRITER_RESULT_LIMIT
+        usage.writer_results + usage.active_writers >= WRITER_RESULT_LIMIT
+        or snapshot.writer_results + _active_acquisitions(budget, kind)
+        >= LIFETIME_WRITER_RESULT_LIMIT
     ):
         raise GenerationBudgetExceeded("WRITER_RESULTS_EXHAUSTED")
     if kind == "REVIEWER" and (
-        snapshot.reviewer_results + _active_acquisitions(budget, kind)
-        >= REVIEWER_RESULT_LIMIT
+        usage.reviewer_results + usage.active_reviewers >= REVIEWER_RESULT_LIMIT
+        or snapshot.reviewer_results + _active_acquisitions(budget, kind)
+        >= LIFETIME_REVIEWER_RESULT_LIMIT
     ):
         raise GenerationBudgetExceeded("REVIEWER_RESULTS_EXHAUSTED")
     attempt_key = "image_http_reserved" if kind == "IMAGE" else "text_http_reserved"
     spent_key = "image_http_attempts" if kind == "IMAGE" else "text_http_attempts"
-    limit = IMAGE_HTTP_ATTEMPT_LIMIT if kind == "IMAGE" else TEXT_HTTP_ATTEMPT_LIMIT
     spent = _nonnegative_int(budget.get(spent_key)) or 0
     reserved = _nonnegative_int(budget.get(attempt_key)) or 0
-    if spent + reserved + SEMANTIC_TRANSPORT_LIMIT > limit:
+    if kind == "IMAGE":
+        exhausted = spent + reserved + SEMANTIC_TRANSPORT_LIMIT > IMAGE_HTTP_ATTEMPT_LIMIT
+    else:
+        exhausted = (
+            usage.text_http_attempts + usage.text_http_reserved + SEMANTIC_TRANSPORT_LIMIT
+            > TEXT_HTTP_ATTEMPT_LIMIT
+            or spent + reserved + SEMANTIC_TRANSPORT_LIMIT > LIFETIME_TEXT_HTTP_ATTEMPT_LIMIT
+        )
+    if exhausted:
         raise GenerationBudgetExceeded(
             "IMAGE_HTTP_ATTEMPTS_EXHAUSTED" if kind == "IMAGE" else "TEXT_HTTP_ATTEMPTS_EXHAUSTED"
         )
@@ -485,7 +596,12 @@ def transport_attempt_started(
 def record_topic_swap(
     attempt: dict[str, Any], *, from_topic_id: str | None, to_topic_id: str
 ) -> dict[str, Any]:
-    """Record the sole lifetime topic swap while preserving all provider spend."""
+    """Record the sole lifetime topic swap; the new topic gets a fresh per-topic budget.
+
+    평생 계수(writer_results 등)는 그대로 두고 — 지출 사실은 지우지 않는다 — 교체 시점의
+    획득 위치와 계수를 `prior_topic_spend`로 남긴다. `reserve_acquisition`은 그 위치 뒤의
+    획득만 현재 주제의 지출로 센다. 평생 상한은 TOPIC_LIMIT × 주제당 상한이다.
+    """
 
     budget = _budget_dict(attempt)
     snapshot = _snapshot_from_budget(budget)
@@ -499,6 +615,12 @@ def record_topic_swap(
         raise GenerationBudgetExceeded("TOPIC_LIMIT_EXHAUSTED")
     budget["topics"] = topics
     budget["topic_swaps"] = snapshot.topic_swaps + 1
+    budget[PRIOR_TOPIC_SPEND_KEY] = {
+        "acquisition_count": len(_entries(budget)),
+        "writer_results": snapshot.writer_results,
+        "reviewer_results": snapshot.reviewer_results,
+        "text_http_attempts": snapshot.text_http_attempts,
+    }
     return {**attempt, GENERATION_BUDGET_KEY: budget}
 
 

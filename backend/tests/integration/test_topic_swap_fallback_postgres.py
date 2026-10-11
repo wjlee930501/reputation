@@ -27,6 +27,7 @@ from app.workers import (
 from app.workers.generation_attempt_state import (
     GENERATION_ATTEMPT_KEY,
     WRITER_RESULT_LIMIT,
+    GenerationBudgetLedger,
     fresh_generation_attempt,
 )
 from app.workers.generation_incident_control import generation_incident_dedupe_key
@@ -770,3 +771,33 @@ def test_internal_medicine_slot_is_swapped_to_a_compatible_topic_not_radiology(
     pg_session.refresh(row)
     assert row.query_target_id == ids["internal"]
     assert row.query_target_id != ids["d7a5603e"]
+
+
+def test_the_swapped_topic_actually_buys_its_first_writer_call(pg_conn, pg_session):
+    """교체된 주제의 첫 작가 호출이 옛 주제의 소진으로 막히지 않는다(0-1).
+
+    옛 주제가 작가 결과 6회를 다 쓴 슬롯을 교체한 뒤, 정본 원장(`GenerationBudgetLedger`)이
+    새 주제의 작가 획득을 실제로 예약하는지 본다. 종전에는 교체가 `topics`만 바꾸고 예산을
+    이월해 첫 `reserve`가 곧바로 WRITER_RESULTS_EXHAUSTED였다.
+    """
+
+    hospital_id = _seed_hospital(pg_conn)
+    item_id = _seed_item(pg_conn, hospital_id, scheduled_date=SLOT - timedelta(days=1))
+
+    assert _swap(pg_session).swapped == 1
+    row = pg_session.get(ContentItem, item_id)
+    pg_session.refresh(row)
+
+    ledger = GenerationBudgetLedger(pg_session, row)
+    reservation = ledger.reserve(
+        acquisition_id=f"writer:ctx:{row.query_target_id}:claim:first", kind="WRITER"
+    )
+
+    assert reservation.cached_payload is None
+    pg_session.refresh(row)
+    budget = row.essence_check_summary[GENERATION_ATTEMPT_KEY]["budget"]
+    # 지출 사실은 지우지 않는다 — 평생 계수는 옛 주제의 6회 그대로다.
+    assert budget["writer_results"] == WRITER_RESULT_LIMIT
+    assert budget["prior_topic_spend"]["writer_results"] == WRITER_RESULT_LIMIT
+    assert budget["prior_topic_spend"]["acquisition_count"] == WRITER_RESULT_LIMIT
+    assert budget["acquisitions"][-1]["status"] == "RESERVED"
