@@ -10011,22 +10011,110 @@ def _commit_new_cohort_enrollments(db, registration: Any) -> None:
         db.commit()
 
 
-def _report_monthly_cohort_gaps(registration: Any, period_key: str) -> None:
-    """창이 열렸는데 코호트 밖인 ACTIVE 병원마다 기간별 사고 한 건. 실패해도 측정은 계속한다."""
+NO_SOV_RECORD_REASON = "no SovRecord"
+# 월말 창에서 기록 없는 병원에 주간 측정 1회를 보낸 뒤 편입을 기다리는 시간(6시간 tick 4번).
+COHORT_BOOTSTRAP_GRACE = timedelta(hours=24)
+
+
+def _report_monthly_cohort_gaps(
+    registration: Any,
+    period_key: str,
+    *,
+    skip_reasons: frozenset[str] = frozenset(),
+    retrying_until: Mapping[uuid.UUID, datetime] | None = None,
+) -> None:
+    """코호트 밖 ACTIVE 병원마다 기간별 사고 한 건. 실패해도 측정은 계속한다.
+
+    `skip_reasons`의 사유는 이 실행이 스스로 풀므로 알리지 않는다(주간 실행의 기록 없음).
+    `retrying_until`에 든 병원은 측정을 보냈으므로 그 기한까지 자동 복구로 연다.
+    """
     if not isinstance(registration, Mapping):
         return
+    owned = retrying_until or {}
     for item in registration.get("not_enrolled") or []:
+        if str(item.get("reason") or "") in skip_reasons:
+            continue
         try:
+            hospital_id = uuid.UUID(str(item["hospital_id"]))
             _run_async(
                 open_monthly_cohort_gap(
-                    hospital_id=uuid.UUID(str(item["hospital_id"])),
+                    hospital_id=hospital_id,
                     hospital_name=str(item.get("name") or "unknown"),
                     period_key=period_key,
                     reason=str(item.get("reason") or "unknown"),
+                    retrying_until=owned.get(hospital_id),
                 )
             )
         except Exception:
             logger.exception("Monthly cohort gap incident failed", extra={"item": str(item)})
+
+
+def _weekly_sov_idempotency_key(hospital_id: uuid.UUID, week_key: str) -> str:
+    return f"weekly-sov:{hospital_id}:{week_key}"
+
+
+def _dispatch_weekly_sov_measurement(
+    db, hospital: Hospital, week_key: str, observed_at: datetime
+) -> bool:
+    """병원·ISO주 멱등 주간 측정 1회. 실행 기록이 생기면 True(발행 실패는 자율 복구가 다시 보낸다)."""
+    run = _ensure_weekly_sov_operation_run(db, hospital, week_key, observed_at)
+    if run is None or run.task_id is None:
+        return False
+    hospital_id = str(hospital.id)
+    try:
+        run_sov_for_hospital.apply_async(
+            args=[hospital_id],
+            queue="sov",
+            headers={
+                **build_dispatch_headers("run-sov", hospital_id),
+                "operation_run_id": str(run.id),
+            },
+            task_id=run.task_id,
+        )
+    except Exception:
+        logger.exception(
+            "Weekly visibility measurement dispatch failed; autonomous recovery will redispatch",
+            extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
+        )
+        return True
+    _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+    return True
+
+
+def _bootstrap_unmeasured_hospitals(
+    db, registration: Any, today_kst: date, observed_at: datetime
+) -> dict[uuid.UUID, datetime]:
+    """기록이 없어 편입되지 못한 ACTIVE 병원에 이번 주 측정 1회를 바로 보낸다(다음 6시간 tick이 편입).
+
+    병원마다 자동 복구 기한(그 주 측정 요청 + 24시간)을 돌려준다. 이미 이번 주 측정이 있으면 다시
+    보내지 않고 그 요청 시각을 기준으로 한다 — tick마다 기한을 밀면 영원히 '복구 중'에 남는다.
+    """
+    owned: dict[uuid.UUID, datetime] = {}
+    if not isinstance(registration, Mapping):
+        return owned
+    week_key = _weekly_measurement_key(today_kst)
+    for item in registration.get("not_enrolled") or []:
+        if item.get("reason") != NO_SOV_RECORD_REASON:
+            continue
+        try:
+            hospital = db.get(Hospital, uuid.UUID(str(item["hospital_id"])))
+        except (KeyError, ValueError):
+            continue
+        if hospital is None or hospital.status != HospitalStatus.ACTIVE:
+            continue
+        requested_at = db.execute(
+            select(OperationRun.requested_at).where(
+                OperationRun.hospital_id == hospital.id,
+                OperationRun.operation_type == "RUN_SOV",
+                OperationRun.idempotency_key == _weekly_sov_idempotency_key(hospital.id, week_key),
+            )
+        ).scalar_one_or_none()
+        if requested_at is None:
+            if not _dispatch_weekly_sov_measurement(db, hospital, week_key, observed_at):
+                continue
+            requested_at = observed_at
+        owned[hospital.id] = requested_at + COHORT_BOOTSTRAP_GRACE
+    return owned
 
 
 def _warn_monthly_cohort_over_limit(cohort_size: int, period_key: str) -> None:
@@ -10059,6 +10147,12 @@ def run_weekly_monitoring():
         registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
         _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
+        # 기록 없는 병원은 이 실행이 바로 측정한다 — 사람 몫 사유(질문 세트 부족 등)만 24일 전에 미리 알린다.
+        _report_monthly_cohort_gaps(
+            registration,
+            f"{today_kst.year:04d}-{today_kst.month:02d}",
+            skip_reasons=frozenset({NO_SOV_RECORD_REASON}),
+        )
         stmt = select(Hospital).where(Hospital.status == HospitalStatus.ACTIVE)
         result = db.execute(stmt)
         monthly_ids = {hospital.id for hospital in iter_monthly_sov_cohort(db)}
@@ -10075,27 +10169,7 @@ def run_weekly_monitoring():
         ]
 
         for h in hospitals:
-            run = _ensure_weekly_sov_operation_run(db, h, week_key, observed_at)
-            if run is None or run.task_id is None:
-                continue
-            hospital_id = str(h.id)
-            try:
-                run_sov_for_hospital.apply_async(
-                    args=[hospital_id],
-                    queue="sov",
-                    headers={
-                        **build_dispatch_headers("run-sov", hospital_id),
-                        "operation_run_id": str(run.id),
-                    },
-                    task_id=run.task_id,
-                )
-            except Exception:
-                logger.exception(
-                    "Weekly visibility measurement dispatch failed; autonomous recovery will redispatch",
-                    extra={"hospital_id": hospital_id, "operation_run_id": str(run.id)},
-                )
-                continue
-            _mark_weekly_sov_operation_queued(db, run.id, observed_at)
+            _dispatch_weekly_sov_measurement(db, h, week_key, observed_at)
 
         # 측정 결과 기반 질문 우선순위 조정 (P1-4) — 같은 "sov" 큐 뒤에 적재되므로 단일
         # sov 워커(FIFO) 기준으로는 병원별 측정 태스크가 모두 끝난 뒤 실행된다.
@@ -10449,7 +10523,6 @@ def run_monthly_sov_measurement():
         registration = register_convertible_tracking_sets(db, n=15, enroll_new=True)
         _commit_new_cohort_enrollments(db, registration)
         _log_blocked_convertible_tracking_sets(registration)
-        _report_monthly_cohort_gaps(registration, period_key)
         hospitals = _round_robin_hospitals(
             iter_monthly_sov_cohort(db), None
         )
@@ -10462,6 +10535,9 @@ def run_monthly_sov_measurement():
             observed_at=observed_at,
             owner=owner,
         )
+        # 코호트 측정을 먼저 큐에 넣은 뒤 보낸다 — 같은 sov 큐에서 코호트가 먼저 돈다.
+        bootstrapped = _bootstrap_unmeasured_hospitals(db, registration, today_kst, observed_at)
+        _report_monthly_cohort_gaps(registration, period_key, retrying_until=bootstrapped)
 
 
 @celery_app.task(name="app.workers.tasks.adjust_query_priorities")
@@ -10565,7 +10641,7 @@ def _ensure_weekly_sov_operation_run(
     week_key: str,
     observed_at: datetime,
 ) -> OperationRun | None:
-    idempotency_key = f"weekly-sov:{hospital.id}:{week_key}"
+    idempotency_key = _weekly_sov_idempotency_key(hospital.id, week_key)
     existing = db.execute(
         select(OperationRun).where(
             OperationRun.hospital_id == hospital.id,

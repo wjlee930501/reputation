@@ -287,6 +287,8 @@ def test_monthly_window_opens_one_gap_incident_per_unenrolled_hospital(monkeypat
     opened: list[dict] = []
     monkeypatch.setattr(tasks, "open_monthly_cohort_gap", lambda **kw: opened.append(kw) or kw)
     monkeypatch.setattr(tasks, "_run_async", lambda value: value)
+    # 기록 없는 병원 1회 측정은 `test_monthly_cohort_bootstrap.py`가 본다 — 여기서는 보내지 못한 경우.
+    monkeypatch.setattr(tasks, "_bootstrap_unmeasured_hospitals", lambda *_a: {})
 
     tasks.run_monthly_sov_measurement.run()
 
@@ -296,6 +298,7 @@ def test_monthly_window_opens_one_gap_incident_per_unenrolled_hospital(monkeypat
             "hospital_name": "기록 없음",
             "period_key": "2026-10",
             "reason": "no SovRecord",
+            "retrying_until": None,
         }
     ]
 
