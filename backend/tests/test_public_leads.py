@@ -521,3 +521,52 @@ def test_diagnosis_fields_are_cleaned_and_screened():
         _inquiry_body(core_keywords=["환자 홍길동 수술 기록"])
     with pytest.raises(ValueError, match="50자"):
         _inquiry_body(core_keywords=["가" * 51])
+
+
+async def test_a_failed_sms_opens_one_operator_incident_after_the_response(monkeypatch):
+    _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "FAILED")
+    opened = []
+
+    async def fake_open(**kwargs):
+        opened.append(kwargs)
+
+    monkeypatch.setattr(leads_api, "open_ops_incident", fake_open)
+    tasks = BackgroundTasks()
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=tasks,
+        db=FakeDB(),
+    )
+    assert opened == []  # 접수 응답 전에는 열지 않는다
+    await tasks()
+
+    assert [item["incident_type"] for item in opened] == ["INQUIRY_SMS_FAILED"]
+    assert opened[0]["object_id"] == "lead-id"
+    assert opened[0]["hospital_name"] == "도입문의"  # 병원명·연락처를 사고 제목에 싣지 않는다
+
+
+async def test_skipped_sms_opens_nothing(monkeypatch):
+    _silence_notifier(monkeypatch)
+    _sms_result(monkeypatch, "SKIPPED")
+    monkeypatch.setattr(leads_api, "open_ops_incident", lambda **_k: pytest.fail("no incident"))
+    tasks = BackgroundTasks()
+
+    await _create_lead(
+        request=FakeRequest(),
+        body=_inquiry_body(specialty=None, region_keyword=None, core_keywords=None),
+        background_tasks=tasks,
+        db=FakeDB(),
+    )
+    await tasks()
+
+
+async def test_an_incident_failure_never_breaks_the_intake(monkeypatch):
+    async def broken_open(**_kwargs):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(leads_api, "open_ops_incident", broken_open)
+
+    await leads_api._open_inquiry_sms_incident("lead-id")

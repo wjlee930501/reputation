@@ -13,6 +13,7 @@ NHN Cloud SMS v3.0: `POST /sms/v3.0/appKeys/{appKey}/sender/mms`, 헤더 `X-Secr
 있어야 하며 미등록이면 per-recipient resultCode로 거절된다.
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -49,6 +50,12 @@ ACK_SMS_BODY = "\n".join(
 SMS_SENT = "SENT"
 SMS_FAILED = "FAILED"
 SMS_SKIPPED = "SKIPPED"
+
+# 요청이 사업자에 닿지 않았거나(연결 실패) 처리를 거절한(429·503) 경우만 한 번 다시 보낸다.
+# 읽기 시간 초과·그 밖의 5xx는 이미 발송됐을 수 있어 재시도하면 원장 휴대전화에 문자가 두 번 간다.
+_RETRYABLE_TRANSPORT = (httpx.ConnectError, httpx.ConnectTimeout)
+_RETRYABLE_STATUS = frozenset({429, 503})
+INQUIRY_SMS_RETRY_DELAY_SECONDS = 0.5
 
 _MOBILE = re.compile(r"^01[016789]\d{7,8}$")
 
@@ -132,8 +139,8 @@ def parse_nhn_response(status_code: int, payload: object) -> AckSmsOutcome:
     return AckSmsOutcome(SMS_SENT, None, request_id)
 
 
-async def deliver(to: str) -> AckSmsOutcome:
-    """NHN Cloud에 1건 발송. 예외를 밖으로 내지 않는다."""
+async def _deliver_once(to: str) -> tuple[AckSmsOutcome, bool]:
+    """(결과, 다시 보내도 안전한가)."""
     url, headers, payload = build_nhn_request(to=to)
     try:
         async with httpx.AsyncClient(timeout=settings.INQUIRY_SMS_TIMEOUT_SECONDS) as client:
@@ -141,7 +148,9 @@ async def deliver(to: str) -> AckSmsOutcome:
     except httpx.HTTPError as exc:
         # 시크릿이 섞일 수 있는 URL·본문은 기록하지 않는다. 예외 종류만으로 원인 분류는 된다.
         logger.error("inquiry SMS to %s failed: %s", mask_mobile(to), exc.__class__.__name__)
-        return AckSmsOutcome(SMS_FAILED, exc.__class__.__name__)
+        return AckSmsOutcome(SMS_FAILED, exc.__class__.__name__), isinstance(
+            exc, _RETRYABLE_TRANSPORT
+        )
     try:
         body = response.json()
     except ValueError:
@@ -151,6 +160,16 @@ async def deliver(to: str) -> AckSmsOutcome:
         logger.info("inquiry SMS sent to %s request_id=%s", mask_mobile(to), outcome.request_id)
     else:
         logger.error("inquiry SMS to %s rejected: %s", mask_mobile(to), outcome.detail)
+    return outcome, response.status_code in _RETRYABLE_STATUS
+
+
+async def deliver(to: str) -> AckSmsOutcome:
+    """NHN Cloud에 1건 발송. 닿지 않은 실패만 한 번 다시 보낸다. 예외를 밖으로 내지 않는다."""
+    outcome, retryable = await _deliver_once(to)
+    if outcome.sent or not retryable:
+        return outcome
+    await asyncio.sleep(INQUIRY_SMS_RETRY_DELAY_SECONDS)
+    outcome, _ = await _deliver_once(to)
     return outcome
 
 

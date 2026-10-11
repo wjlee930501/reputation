@@ -150,6 +150,7 @@ async def test_acknowledge_sends_once_and_records_the_outcome_on_the_lead(monkey
 
 async def test_acknowledge_records_provider_failure_without_raising(monkeypatch):
     _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
     client = _FakeClient(error=httpx.ConnectTimeout("timeout"))
     monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
 
@@ -189,3 +190,72 @@ async def test_acknowledge_suppresses_a_repeat_from_the_same_contact(monkeypatch
     assert outcome.status == "SKIPPED"
     assert lead.ack_sms_status == "SKIPPED"
     assert client.calls == []
+
+
+class _SequenceClient(_FakeClient):
+    def __init__(self, outcomes):
+        super().__init__()
+        self._outcomes = list(outcomes)
+
+    async def post(self, url, headers=None, json=None):
+        self.calls.append({"url": url})
+        outcome = self._outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _ok():
+    return httpx.Response(
+        200,
+        json={"header": {"isSuccessful": True}, "body": {"data": {"sendResultList": [{"resultCode": 0}]}}},
+    )
+
+
+async def test_a_connect_failure_is_retried_once_and_can_succeed(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.ConnectError("refused"), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.sent
+    assert len(client.calls) == 2
+
+
+async def test_a_read_timeout_is_not_retried_because_the_text_may_have_gone_out(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.ReadTimeout("slow"), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.status == "FAILED"
+    assert len(client.calls) == 1
+
+
+async def test_a_503_is_retried_once(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(503), httpx.Response(503)])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.status == "FAILED"
+    assert outcome.detail == "HTTP 503"
+    assert len(client.calls) == 2
+
+
+async def test_a_plain_500_is_not_retried(monkeypatch):
+    _configure(monkeypatch)
+    monkeypatch.setattr(inquiry_sms, "INQUIRY_SMS_RETRY_DELAY_SECONDS", 0)
+    client = _SequenceClient([httpx.Response(500), _ok()])
+    monkeypatch.setattr(inquiry_sms.httpx, "AsyncClient", lambda **kwargs: client)
+
+    outcome = await inquiry_sms.acknowledge_inquiry(FakeDB(), _lead())
+
+    assert outcome.status == "FAILED"
+    assert len(client.calls) == 1
