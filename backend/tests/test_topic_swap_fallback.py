@@ -1171,3 +1171,46 @@ def test_only_the_empty_slot_symptom_leaves_the_swap_record_alone(
     after = item.essence_check_summary[GENERATION_ATTEMPT_KEY]
     assert (after == swapped) is kept
     assert after["reason"] == (topic_swap_fallback.TOPIC_SWAPPED_REASON if kept else gate_code)
+
+
+# ── 0-5: 후보를 여러 개 살펴본다 ──────────────────────────────────────────────
+
+
+def test_a_rejected_candidate_is_excluded_and_the_next_one_is_taken(monkeypatch):
+    similar = _target("허리디스크 초기증상 자가진단")
+    good = _target()
+    excluded_per_call: list[set] = []
+
+    def choose(db, *, exclude_target_ids, **kwargs):
+        excluded_per_call.append(set(exclude_target_ids))
+        for candidate in (similar, good):
+            if candidate.id not in exclude_target_ids:
+                return candidate
+        return None
+
+    monkeypatch.setattr(topic_swap_fallback, "_choose_target", choose)
+    item = _item()
+    db = _FakeDB([item])
+
+    report = _run(db)
+
+    assert (report.considered, report.swapped, report.similar_topic) == (1, 1, 0)
+    assert excluded_per_call == [{item.query_target_id}, {item.query_target_id, similar.id}]
+    assert _values(db)["query_target_id"] == good.id
+
+
+def test_the_candidate_search_is_bounded(monkeypatch):
+    calls: list[int] = []
+
+    def choose(db, **kwargs):
+        calls.append(1)
+        return _target("허리디스크 초기증상 자가진단")  # 매번 새 id, 매번 유사
+
+    monkeypatch.setattr(topic_swap_fallback, "_choose_target", choose)
+    db = _FakeDB([_item()])
+
+    report = _run(db)
+
+    assert len(calls) == topic_swap_fallback.TOPIC_SWAP_CANDIDATE_LIMIT
+    assert (report.swapped, report.similar_topic) == (0, 1)
+    assert db.updates == []
