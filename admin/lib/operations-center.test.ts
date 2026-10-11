@@ -565,6 +565,24 @@ test('every error identifier the backend can store has an operator explanation',
   assert.deepEqual(missing, [], `these codes render as an unknown cause: ${missing.join(', ')}`)
 })
 
+test('codes autonomous recovery stops a run with have an operator explanation', () => {
+  // 자율 복구는 이 코드들을 상수로 저장해 위 소스 스캔(`safe_error_code="..."`)에 걸리지 않는다.
+  const source = readFileSync(
+    new URL('../../backend/app/workers/autonomous_recovery.py', import.meta.url),
+    'utf8',
+  )
+  const codes = [...source.matchAll(/^_[A-Z_]+: Final = "(OPERATION_[A-Z_]+)"$/gm)].map((match) => match[1])
+  assert.deepEqual(codes.sort(), [
+    'OPERATION_LEASE_EXPIRED',
+    'OPERATION_RECOVERY_EXHAUSTED',
+    'OPERATION_REDISPATCH_EXHAUSTED',
+    'OPERATION_RUN_ABANDONED',
+  ])
+  for (const code of codes.filter((code) => code !== 'OPERATION_RECOVERY_EXHAUSTED')) {
+    assert.ok(code in SAFE_CAUSE_CODE_MESSAGES, `${code} renders as an unknown cause`)
+  }
+})
+
 test('a known code becomes an explanation, and every explanation reads as Korean prose', () => {
   assert.equal(
     safeCauseText('PROVIDER_TIMEOUT'),

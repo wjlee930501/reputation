@@ -1,10 +1,17 @@
 """읽기 전용 운영 조회: 자율 운영 지표(Q1~Q6)를 JSON 한 줄씩 출력한다.
 
-첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고, 끝나면 롤백한다.
-운영에서는 VPC 안의 migrate Job으로 돌린다(`--args`는 쉼표로 나뉘므로 `--only=q1`처럼 한 토큰)::
+새 세션의 트랜잭션에서 첫 문장으로 `SET TRANSACTION READ ONLY`를 실행해 DB 수준에서 쓰기를 막고,
+끝나면 롤백한다. 받은 세션에 이미 열린 트랜잭션이 있으면 먼저 롤백해 새로 시작한다::
 
-    python -m app.utils.ops_sql_report                 # 전부
-    python -m app.utils.ops_sql_report --only=q1,q3    # 고른 것만
+    python -m app.utils.ops_sql_report                          # 전부
+    python -m app.utils.ops_sql_report --only=q1,q3             # 고른 것만(쉼표 목록)
+    python -m app.utils.ops_sql_report --only=q1 --only=q3      # 반복도 된다
+
+운영에서는 VPC 안의 migrate Job으로 돌린다. gcloud `--args`는 쉼표로 인자를 나누므로 쿼리마다
+`--only`를 따로 넘긴다::
+
+    gcloud run jobs execute reputation-migrate --wait \
+      --args=python,-m,app.utils.ops_sql_report,--only=q1,--only=q3
 
 출력: 쿼리마다 `{"q": "q1", "rows": [...]}` 한 줄. 보조 쿼리는 `q1b`·`q3b`로 같은 이름 아래 나온다.
 """
@@ -141,6 +148,9 @@ def _labels(name: str, count: int) -> list[str]:
 def run_report(db: Any, names: Sequence[str], *, out: TextIO = sys.stdout) -> None:
     """고른 쿼리를 읽기 전용 트랜잭션 하나에서 실행하고 언제나 롤백한다."""
 
+    # SET TRANSACTION은 트랜잭션의 첫 문장이어야 한다. 세션이 이미 무언가를 실행했다면 그
+    # 트랜잭션을 버리고 새로 시작한다.
+    db.rollback()
     try:
         db.execute(text("SET TRANSACTION READ ONLY"))
         for name in names:
@@ -171,14 +181,25 @@ def _query_names(raw: str) -> list[str]:
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="python -m app.utils.ops_sql_report", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="python -m app.utils.ops_sql_report",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--only",
         type=_query_names,
-        default=list(QUERIES),
-        help="쉼표로 구분한 쿼리 이름(예: --only=q1,q3). 생략하면 전부.",
+        action="append",
+        default=None,
+        help="쿼리 이름. 반복하거나 쉼표로 묶는다(--only=q1 --only=q3, --only=q1,q3). 생략하면 전부.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.only is None:
+        args.only = list(QUERIES)
+    else:
+        # 반복과 쉼표 목록을 한 줄로 펴고, 같은 쿼리는 처음 나온 자리에서 한 번만 돈다.
+        args.only = list(dict.fromkeys(name for names in args.only for name in names))
+    return args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
