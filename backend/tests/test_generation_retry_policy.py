@@ -642,10 +642,12 @@ def test_environment_budget_is_finite_unless_the_code_resets_daily() -> None:
             "attempt_period": slot.isoformat(),
         }
 
-    assert next_recovery_deadline(attempt("PROVIDER_TIMEOUT"), scheduled_date=slot, now=now) is None
-    assert next_recovery_deadline(
-        attempt("CONTENT_AI_REVIEW_UNAVAILABLE"), scheduled_date=slot, now=now
-    ) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
+    # 비용 가드 보류는 하루 초기화가 없다. 공급자 장애는 검수 장애처럼 다음 KST 일에 다시 열린다.
+    assert next_recovery_deadline(attempt("COST_BLOCKED"), scheduled_date=slot, now=now) is None
+    for reason in ("CONTENT_AI_REVIEW_UNAVAILABLE", "PROVIDER_TIMEOUT"):
+        assert next_recovery_deadline(
+            attempt(reason), scheduled_date=slot, now=now
+        ) == _kst(2026, 9, 15, 1, 0).astimezone(UTC)
 
 
 def test_terminal_classes_and_unreachable_slots_have_no_deadline() -> None:

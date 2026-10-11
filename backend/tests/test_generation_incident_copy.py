@@ -102,10 +102,11 @@ def _remember(monkeypatch, item, moment, reason, *, count_attempt=True) -> dict:
 
 
 def _exhaust_provider(monkeypatch, item, code="PROVIDER_TIMEOUT") -> dict:
-    """D-1 23:00 야간 배치와 D 01·04·07시 복구 — 환경 예산 4회를 모두 쓴다."""
+    """D-3~D-1 사흘 동안 01·04·07·12시 복구 — 하루 4회 예산과 3일 창을 모두 쓴다."""
 
-    for moment in (_kst(9, 15, 23), _kst(9, 16, 1), _kst(9, 16, 4), _kst(9, 16, 7)):
-        attempt = _remember(monkeypatch, item, moment, code)
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            attempt = _remember(monkeypatch, item, _kst(9, day, hour), code)
     return attempt
 
 

@@ -86,8 +86,10 @@ def test_an_exhausted_provider_failure_says_press_now_and_pressing_writes_it(
     """예산 소진은 07:45 전이어도 누르면 된다 — 게이트를 기다리라고 하지 않는다."""
 
     philosophy, item, writer_calls, _seen = _slot_with_writer(monkeypatch, swapped=False)
-    for moment in (_kst(2026, 9, 15, 23), _kst(2026, 9, 16, 1), _kst(2026, 9, 16, 4), _FAILED_AT):
-        record = _remember(monkeypatch, item, philosophy, moment, code)
+    # 하루 4회 예산이 날마다 다시 열리므로 3일 창(9/13~9/15)을 다 써야 소진이다.
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            record = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), code)
     assert record["next_retry_at"] is None
     assert generation_retry_policy.recovery_is_abandoned(record)
 

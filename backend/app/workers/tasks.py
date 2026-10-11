@@ -522,13 +522,17 @@ from app.workers.generation_retry_policy import (
     AUTO_CORRECTION_EXHAUSTED_KEY,
     BODY_REPAIR_CODES,
     BODY_REPAIR_STATE_KEY,
+    DAILY_RESET_ENVIRONMENT_CODES,
+    ENVIRONMENT_SINCE_KEY,
     OPERATOR_DECIDES_KEY,
     REVIEW_UNAVAILABLE_CODE,
     SAMPLE_EXHAUSTED_DAY_LIMIT,
     SAMPLE_IMAGE_DAILY_BUDGET,
+    WINDOWED_ENVIRONMENT_CODES,
     GenerationRetryClass,
     attempt_is_terminal,
     environment_attempt_period,
+    environment_window_closed,
     has_model_declared_hard_finding,
     next_recovery_deadline,
     repair_session_is_available,
@@ -1363,6 +1367,13 @@ def _remember_generation_attempt(
             previous if same_context else None, reason, observed_at
         )
     elif retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE:
+        if (
+            reason in DAILY_RESET_ENVIRONMENT_CODES
+            and stored_attempt_period(previous) != attempt_period
+        ):
+            # 하루 예산은 KST 날마다 다시 열린다. 3일 창의 시작(`environment_since`)은 아래에서
+            # 따로 잇는다.
+            provider_attempt_count = 0
         provider_attempt_count += 1
     if (
         reason == "IMAGE_GENERATION_FAILED"
@@ -1397,6 +1408,23 @@ def _remember_generation_attempt(
     }
     if GENERATION_BUDGET_KEY in previous:
         attempt[GENERATION_BUDGET_KEY] = previous[GENERATION_BUDGET_KEY]
+    if (
+        retry_class == GenerationRetryClass.ENVIRONMENT_RECOVERABLE
+        and reason in WINDOWED_ENVIRONMENT_CODES
+    ):
+        # 환경 장애 연속 구간의 시작. 원인 문자열이 바뀌어도(PROVIDER_TIMEOUT → GENERATION_FAILED,
+        # 게이트의 CONTENT_NOT_GENERATED 덮어쓰기) 같은 문맥의 환경 기록이 이어지면 시작을 잇는다 —
+        # 원인을 갈아타며 3일 창을 새로 여는 일이 없게 한다.
+        carried = (
+            previous.get(ENVIRONMENT_SINCE_KEY)
+            if previous.get("context") == context
+            and previous.get("retry_class")
+            == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
+            else None
+        )
+        attempt[ENVIRONMENT_SINCE_KEY] = (
+            carried if isinstance(carried, str) else observed_at.isoformat()
+        )
     if reason == "GENERATION_REJECTED":
         attempt["message"] = safe_generation_rejection_message(message)
     # 이 차단이 어떤 승인 사실 위에서 내려졌는지 남긴다. 사람이 그 자료를 채우면 스윕이
@@ -1504,6 +1532,7 @@ def _record_gate_blocker_decision(db, item: ContentItem, philosophy, code: str) 
             GenerationRetryClass.SAMPLE_RECOVERABLE,
         )
         and (retry_is_due(stored) or isinstance(stored.get("next_retry_at"), str))
+        and not environment_window_closed(stored)
     ):
         # 스윕이 아직 소유한 실패(PROVIDER_TIMEOUT 등)도 같다. 덮으면 로더가 다시 집지
         # 않고, CONTENT_NOT_GENERATED는 교체 후보 코드가 아니라 교체 이력과 무관하게 영영

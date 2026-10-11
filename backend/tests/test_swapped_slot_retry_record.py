@@ -347,7 +347,7 @@ def test_the_empty_slot_symptom_keeps_either_recoverable_class(
 
 @pytest.mark.parametrize("swapped", [True, False], ids=["swapped", "not_swapped"])
 def test_an_exhausted_environment_budget_is_handled_as_before(monkeypatch, swapped):
-    """(b') 4회 예산을 다 써 어떤 스윕도 집지 않는 기록은 소유자가 없다 — 종전처럼 덮는다.
+    """(b') 3일 창을 다 써 어떤 스윕도 집지 않는 기록은 소유자가 없다 — 종전처럼 덮는다.
 
     분류는 여전히 ENVIRONMENT_RECOVERABLE이지만 `next_retry_at=None`으로 굳었다
     (`recovery_is_abandoned`). 그대로 두면 운영자가 부른 재시도도 같은 원인으로 건너뛴다.
@@ -357,11 +357,10 @@ def test_an_exhausted_environment_budget_is_handled_as_before(monkeypatch, swapp
     item = _swapped_slot(philosophy)
     if not swapped:
         item.topic_swap_history = None
-    for hour in (1, 4, 7):
-        _freeze(monkeypatch, _kst(2026, 9, 15, hour, 0))
-        tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, "PROVIDER_TIMEOUT")
-    _freeze(monkeypatch, _WRITTEN_AT)
-    tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, "PROVIDER_TIMEOUT")
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            _freeze(monkeypatch, _kst(2026, 9, day, hour, 0))
+            tasks._remember_generation_attempt(_WorkerDB(), item, philosophy, "PROVIDER_TIMEOUT")
     exhausted = _stored(item)
     assert exhausted["retry_class"] == GenerationRetryClass.ENVIRONMENT_RECOVERABLE.value
     assert exhausted["provider_attempt_count"] == 4

@@ -106,8 +106,10 @@ def test_stale_context_record_from_real_attempts_is_also_left_for_the_sweep(monk
 
     philosophy, item = _empty_slot(monkeypatch)
     monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", _OLD_CATALOG)
-    for moment in (_kst(2026, 9, 15, 23), _kst(2026, 9, 16, 1), _kst(2026, 9, 16, 4), _kst(2026, 9, 16, 7)):
-        old = _remember(monkeypatch, item, philosophy, moment, "PROVIDER_TIMEOUT")
+    # 하루 4회 예산이 날마다 다시 열리므로 3일 창(9/13~9/15)을 다 써야 기한이 없어진다.
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            old = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), "PROVIDER_TIMEOUT")
     assert old["next_retry_at"] is None and old["provider_attempt_count"] > 0
     monkeypatch.setattr(tasks, "GENERATION_GATE_CATALOG_VERSION", _NEW_CATALOG)
 
@@ -172,8 +174,9 @@ def test_a_current_context_exhausted_failure_stays_excluded(monkeypatch):
     """같은 문맥에서 예산을 다 쓴 실패는 게이트가 종전대로 덮고 로더는 계속 뺀다(회귀)."""
 
     philosophy, item = _empty_slot(monkeypatch)
-    for moment in (_kst(2026, 9, 15, 23), _kst(2026, 9, 16, 1), _kst(2026, 9, 16, 4), _kst(2026, 9, 16, 7)):
-        exhausted = _remember(monkeypatch, item, philosophy, moment, "PROVIDER_TIMEOUT")
+    for day in (13, 14, 15):
+        for hour in (1, 4, 7, 12):
+            exhausted = _remember(monkeypatch, item, philosophy, _kst(2026, 9, day, hour), "PROVIDER_TIMEOUT")
     assert exhausted["provider_attempt_count"] > 0
     assert exhausted["next_retry_at"] is None
     assert not _loader_takes(monkeypatch, item, _NEXT_SWEEP_AT)
