@@ -146,6 +146,13 @@ async def open_or_touch_incident(
             (Incident.state == IncidentState.OPEN.value, Incident.sla_due_at),
             else_=literal(retry_until, type_=Incident.sla_due_at.type),
         )
+    elif incident_policy(request.incident_type).sweep_owned:
+        # 스윕 소유 종류가 OPEN으로 넘어가면(기한 경과·사람의 일인 원인) 지난 자동 재시도 기한을 지운다.
+        # 이미 OPEN인 행은 사람이 정한 기한일 수 있어 그대로 둔다(`assign_incident`).
+        touch["sla_due_at"] = case(
+            (Incident.state == IncidentState.OPEN.value, Incident.sla_due_at),
+            else_=None,
+        )
     statement = base.on_conflict_do_update(
         index_elements=[Incident.dedupe_key], set_=touch
     ).returning(Incident).execution_options(populate_existing=True)

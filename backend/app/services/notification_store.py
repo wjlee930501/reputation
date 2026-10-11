@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, func, select, update
+from sqlalchemy import String, and_, cast, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session, aliased
@@ -399,10 +399,15 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
 
 
 async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
-    """발송 전에 끝난 사고의 열림 알림, 그리고 열림이 한 번도 나가지 않은 복구 알림을 종결한다.
+    """채널에 닿지 않을 짝을 종결한다(`INCIDENT_RESOLVED_BEFORE_SEND`).
 
-    짝 계약("나간 OPEN에는 반드시 RECOVERED가 따른다")을 지킨다: 나갔을 수 있는 열림 알림
-    (PENDING·SENDING·RETRYING·HOLD·SENT)이 하나라도 남아 있으면 복구 알림은 그대로 보낸다.
+    1. 열림 알림: 사고가 발송 전에 복구·확인됐거나, 사고가 그 뒤 다시 열려 지난 에피소드의 것이
+       됐다(현재 에피소드 시작보다 먼저 만들었고 현재 에피소드 키가 아니다). 지난 에피소드의 '조치
+       필요'를 지금 보내면 새 에피소드의 보류(스윕 소유 기한)를 앞질러 사람을 부른다.
+    2. 복구 알림: 그보다 먼저 만든 열림 알림이 있었고 그중 채널에 닿았을 수 있는 것(PENDING·
+       SENDING·RETRYING·HOLD·SENT)이 하나도 없다 — 모두 FAILED(발송 전 종결·전송 실패)다.
+       나중 에피소드의 열림은 이 복구의 짝이 아니므로 세지 않는다.
+    짝 계약("나간 OPEN에는 반드시 RECOVERED가 따른다")은 그대로다.
     """
 
     settled = {
@@ -413,12 +418,21 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         "version": NotificationOutbox.version + 1,
         "updated_at": now,
     }
-    resolved_incident = (
+    current_episode_key = func.concat(
+        "INCIDENT_OPEN:", cast(Incident.id, String), ":e", cast(Incident.episode_seq, String)
+    )
+    resolved_or_superseded = (
         select(Incident.id)
         .where(
             Incident.id == NotificationOutbox.incident_id,
-            Incident.state.in_(
-                (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
+            or_(
+                Incident.state.in_(
+                    (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
+                ),
+                and_(
+                    NotificationOutbox.created_at < Incident.first_seen_at,
+                    NotificationOutbox.dedupe_key != current_episode_key,
+                ),
             ),
         )
         .exists()
@@ -428,19 +442,20 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         .where(
             NotificationOutbox.notification_type == "INCIDENT_OPEN",
             NotificationOutbox.state.in_(_SENDABLE_STATES),
-            resolved_incident,
+            resolved_or_superseded,
         )
         .values(**settled)
         .execution_options(synchronize_session=False)
     )
-    suppressed = aliased(NotificationOutbox)
+    unreached = aliased(NotificationOutbox)
     reached = aliased(NotificationOutbox)
-    open_was_suppressed = (
-        select(suppressed.id)
+    open_never_reached = (
+        select(unreached.id)
         .where(
-            suppressed.incident_id == NotificationOutbox.incident_id,
-            suppressed.notification_type == "INCIDENT_OPEN",
-            suppressed.safe_error_code == RESOLVED_BEFORE_SEND_CODE,
+            unreached.incident_id == NotificationOutbox.incident_id,
+            unreached.notification_type == "INCIDENT_OPEN",
+            unreached.state == NotificationOutboxState.FAILED.value,
+            unreached.created_at <= NotificationOutbox.created_at,
         )
         .exists()
     )
@@ -450,6 +465,7 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
             reached.incident_id == NotificationOutbox.incident_id,
             reached.notification_type == "INCIDENT_OPEN",
             reached.state.in_(_MAY_HAVE_REACHED_STATES),
+            reached.created_at <= NotificationOutbox.created_at,
         )
         .exists()
     )
@@ -458,7 +474,7 @@ async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
         .where(
             NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
             NotificationOutbox.state.in_(_SENDABLE_STATES),
-            open_was_suppressed,
+            open_never_reached,
             ~open_may_have_reached,
         )
         .values(**settled)

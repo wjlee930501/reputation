@@ -455,7 +455,7 @@ def reconcile() -> RecoveryCounts:
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
-        resolved_task_incidents = close_resolved_backlog_incidents(db) + settle_incidents(db)
+        resolved_task_incidents = _settle_incident_backlog(db)
         db.commit()
     return {
         "site_builds": site_builds,
@@ -464,6 +464,15 @@ def reconcile() -> RecoveryCounts:
         "image_recertifications": recertifications,
         "resolved_task_incidents": resolved_task_incidents,
     }
+
+
+def _settle_incident_backlog(db) -> int:
+    """근거로 닫을 사고와 자동화가 끝낸 사고를 정리한다(사고 쪽 정리의 한 이음매).
+
+    새 정리 단계는 여기에 더한다 — 재조정 테스트는 이 한 함수만 막으면 된다.
+    """
+
+    return close_resolved_backlog_incidents(db) + settle_incidents(db)
 
 
 def _cleared_certificate_candidates(db) -> list[ContentItem]:

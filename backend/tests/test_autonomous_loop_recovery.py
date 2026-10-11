@@ -23,15 +23,19 @@ from app.workers import autonomous_recovery, tasks
 
 @pytest.fixture(autouse=True)
 def _no_resolved_task_incidents(monkeypatch):
-    monkeypatch.setattr(autonomous_recovery, "close_resolved_backlog_incidents", lambda _db: 0)
-    monkeypatch.setattr(autonomous_recovery, "settle_incidents", lambda _db: 0)
+    monkeypatch.setattr(autonomous_recovery, "_settle_incident_backlog", lambda _db: 0)
 
 
 class _ScalarResult:
+    """가짜 결과. 이 테스트가 모르는 읽기 전용 조회에는 빈 결과로 답한다."""
+
     def __init__(self, values):
         self._values = values
 
     def scalars(self):
+        return self
+
+    def unique(self):
         return self
 
     def all(self):
@@ -39,6 +43,15 @@ class _ScalarResult:
 
     def first(self):
         return self._values[0] if self._values else None
+
+    def one_or_none(self):
+        return self.first()
+
+    def scalar_one_or_none(self):
+        return self.first()
+
+    def scalar(self):
+        return self.first()
 
 
 class _RecoverySession:
@@ -89,7 +102,8 @@ class _RecoverySession:
             return SimpleNamespace(
                 scalar_one_or_none=lambda: getattr(current, "id", None)
             )
-        description = statement.column_descriptions[0]
+        descriptions = getattr(statement, "column_descriptions", None) or [{}]
+        description = descriptions[0]
         entity = description.get("entity")
         if entity is Hospital:
             return _ScalarResult(self.hospitals)

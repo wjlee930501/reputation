@@ -622,6 +622,10 @@ async def test_slack_success_never_recovers_the_linked_incident(outbox_sessions)
             source_type="CONTENT",
             next_action="운영 센터 확인",
             admin_path="/operations",
+            # 알림과 같은 고정 시계로 연다 — 에피소드 시작보다 먼저 만든 열림 알림은 지난
+            # 에피소드의 것으로 종결된다(`settle_incident_notices`).
+            first_seen_at=_NOW,
+            last_seen_at=_NOW,
         )
         db.add(incident)
         await db.flush()
@@ -673,6 +677,8 @@ async def test_retry_success_recovers_notification_delivery_incident(outbox_sess
             safe_error_code="DELIVERY_RETRY_EXHAUSTED",
             next_action="Slack 설정 확인 후 재시도",
             admin_path="/operations",
+            first_seen_at=_NOW,
+            last_seen_at=_NOW,
         )
         db.add(incident)
         await db.flush()

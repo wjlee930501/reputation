@@ -87,10 +87,7 @@ def _patch_reconciler(monkeypatch, factory: sessionmaker[Session], now: datetime
     monkeypatch.setattr(operation_run_signals, "SyncSessionLocal", factory)
     monkeypatch.setattr(autonomous_recovery, "_now", lambda: now)
     monkeypatch.setattr(autonomous_recovery, "require_dispatch", lambda *_args: None)
-    monkeypatch.setattr(
-        autonomous_recovery, "close_resolved_backlog_incidents", lambda _db: 0
-    )
-    monkeypatch.setattr(autonomous_recovery, "settle_incidents", lambda _db: 0)
+    monkeypatch.setattr(autonomous_recovery, "_settle_incident_backlog", lambda _db: 0)
     monkeypatch.setattr(
         autonomous_recovery,
         "_dispatch_published_image_recertifications",

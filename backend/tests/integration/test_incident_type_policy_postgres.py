@@ -60,6 +60,8 @@ async def test_touch_after_the_window_hands_the_incident_to_people(pg_async_sess
     late = await _open(pg_async_session, request, NOW + timedelta(hours=25))
 
     assert late.state == "OPEN"
+    # 사람에게 넘어간 OPEN은 지난 자동 재시도 기한을 남기지 않는다.
+    assert late.sla_due_at is None
 
 
 async def test_unregistered_type_keeps_todays_open_without_deadline(pg_async_session):

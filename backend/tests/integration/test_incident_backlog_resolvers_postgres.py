@@ -6,14 +6,16 @@ import uuid
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentSchedule, ContentStatus, ContentType
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.lead import SalesLead
 from app.models.lead_diagnosis import LeadDelivery, LeadDiagnosis, LeadReportArtifact
-from app.models.operations import Incident, OperationRun
+from app.models.operations import Incident, NotificationOutbox, OperationRun
 from app.workers.incident_backlog import close_resolved_backlog_incidents
 
 NOW = datetime(2026, 10, 2, 9, 0, tzinfo=UTC)
@@ -250,11 +252,15 @@ def test_content_dispatch_failure_waits_for_near_slots_then_hands_over_after_a_d
                       seen=NOW - timedelta(hours=2), sla=NOW + timedelta(hours=22))
     stale = _incident(db, "CONTENT_DISPATCH_FAILED", hospital=hospital, state="RETRYING",
                       seen=NOW - timedelta(hours=25), sla=NOW - timedelta(hours=1))
+    # 넘김 시각은 사고에 저장된 기한이 정본이다(관측 시각에서 다시 계산하지 않는다).
+    handed_over = _incident(db, "CONTENT_DISPATCH_FAILED", hospital=hospital, state="RETRYING",
+                            seen=NOW - timedelta(hours=2), sla=NOW - timedelta(minutes=1))
 
     close_resolved_backlog_incidents(db, now=NOW)
 
     assert _state(db, fresh) == "RETRYING"
     assert _state(db, stale) == "ACKNOWLEDGED"
+    assert _state(db, handed_over) == "ACKNOWLEDGED"
 
 
 def test_cohort_over_limit_closes_when_its_month_ends(db):
@@ -275,3 +281,52 @@ def test_unverified_actor_closes_after_thirty_quiet_days(db):
 
     assert _state(db, quiet) == "ACKNOWLEDGED"
     assert _state(db, recent) == "OPEN"
+
+
+def _open_notice(db, incident, state="SENT"):
+    db.add(
+        NotificationOutbox(
+            dedupe_key=f"INCIDENT_OPEN:{incident.id}:e1", notification_type="INCIDENT_OPEN",
+            channel="SLACK", state=state, incident_id=incident.id, payload={},
+            fallback_text="테스트", next_attempt_at=None,
+            sent_at=NOW - timedelta(days=20) if state == "SENT" else None,
+        )
+    )
+    db.flush()
+
+
+def _close_audit(db, incident) -> dict:
+    return db.scalars(
+        select(AdminAuditLog.detail).where(
+            AdminAuditLog.target_id == str(incident.id),
+            AdminAuditLog.action == "incident_resolved_by_later_evidence",
+        )
+    ).one()
+
+
+def _notice_kinds(db, incident) -> list[str]:
+    return sorted(
+        db.scalars(
+            select(NotificationOutbox.notification_type).where(
+                NotificationOutbox.incident_id == incident.id
+            )
+        ).all()
+    )
+
+
+def test_a_delivered_open_is_followed_by_its_recovery_notice_when_evidence_closes_it(db):
+    """짝 계약: 채널에 나간 '조치 필요'는 근거로 닫힐 때도 '해결' 알림으로 닫는다."""
+
+    announced = _incident(db, "MONTHLY_SOV_COHORT_OVER_LIMIT", source_id="2026-09")
+    _open_notice(db, announced)
+    silent = _incident(db, "MONTHLY_SOV_COHORT_OVER_LIMIT", source_id="2026-08")
+
+    close_resolved_backlog_incidents(db, now=NOW)
+
+    assert _state(db, announced) == "ACKNOWLEDGED"
+    assert _notice_kinds(db, announced) == ["INCIDENT_OPEN", "INCIDENT_RECOVERED"]
+    assert _close_audit(db, announced)["slack_suppressed"] is False
+    # 열림 알림이 없던 사고는 조용히 닫는다 — 아무도 받지 않은 일에 '해결'은 필요 없다.
+    assert _state(db, silent) == "ACKNOWLEDGED"
+    assert _notice_kinds(db, silent) == []
+    assert _close_audit(db, silent)["slack_suppressed"] is True

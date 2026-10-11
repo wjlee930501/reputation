@@ -8,6 +8,10 @@
 한다. 자동 재시도 중(RETRYING)인 사고는 자동화의 것이라 건드리지 않는다. 단 스윕 소유 종류
 (`incident_types.SWEEP_OWNED_INCIDENT_TYPES`)는 처음부터 RETRYING으로 열리므로 같은 근거로 닫는다.
 닫는 근거가 없는 종류를 새로 만들지 않는다 — 새 종류는 여기 resolver 또는 명시적 복구 경로를 함께 둔다.
+
+Slack 짝 계약: 그 사고의 '조치 필요'(INCIDENT_OPEN)가 outbox에 들어간 적이 있으면 닫을 때 '해결'
+(INCIDENT_RECOVERED)을 함께 넣는다. 그 열림이 채널에 닿지 않았다면 발송기가 둘을 함께 종결한다
+(`notification_store.settle_incident_notices`). 열림 알림이 없던 사고는 감사만 남기고 조용히 닫는다.
 """
 
 from __future__ import annotations
@@ -479,8 +483,10 @@ def _content_dispatch_superseded(db: Session, incident: Incident, now: datetime)
     )
     if unwritten is None:
         return "near_slots_generated"
-    # 하루가 지나면 남은 글은 야간·복구 스윕과 글 단위 생성 사고(CONTENT_GENERATION_FAILED)가 소유한다.
-    if now - incident.first_seen_at >= DEFAULT_RETRYING_DEADLINE:
+    # 스윕 소유 기한(사고에 저장된 `sla_due_at`)이 지나면 남은 글은 야간·복구 스윕과 글 단위
+    # 생성 사고(CONTENT_GENERATION_FAILED)가 소유한다. 기한 없는 옛 OPEN 행은 관측 + 하루로 본다.
+    handover = incident.sla_due_at or incident.first_seen_at + DEFAULT_RETRYING_DEADLINE
+    if handover <= now:
         return "per_item_generation_owns_retry"
     return None
 
@@ -622,10 +628,39 @@ RESOLVERS: dict[str, Resolver] = {
 _RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)))
 
 
+def _finish_recovered(
+    db: Session, recovered: Incident, action: str, **detail: str | bool
+) -> Incident:
+    """RECOVERED가 된 사고를 시스템 확인으로 닫는다. 나간 열림 알림이 있으면 복구 알림을 넣는다.
+
+    "채널에 나간 '조치 필요'는 반드시 '해결'로 닫는다"(`open_notice_exists_sync`)를 근거·연결 실행
+    성공 어느 쪽으로 닫든 같은 규칙으로 지킨다. 감사의 `slack_suppressed`는 복구 알림을 넣지 않았는가다.
+    """
+
+    notified = open_notice_exists_sync(db, recovered.id)
+    if notified:
+        enqueue_notification_sync(
+            db,
+            build_recovered_incident_notification(
+                _projection(db, recovered), settings.ADMIN_BASE_URL
+            ),
+        )
+    acknowledged = _transition_incident(
+        db,
+        recovered,
+        expected_state=IncidentState.RECOVERED,
+        next_state=IncidentState.ACKNOWLEDGED,
+        acknowledged=True,
+    )
+    closed = acknowledged or recovered
+    _audit(db, closed, action, detail_extra={**detail, "slack_suppressed": not notified})
+    return closed
+
+
 def close_resolved_backlog_incidents(
     db: Session, *, limit: int = BACKLOG_INCIDENT_BATCH, now: datetime | None = None
 ) -> int:
-    """근거가 있는 열린 사고를 조용히 닫는다. Slack은 보내지 않는다. 커밋은 호출자가 한다."""
+    """근거가 있는 열린 사고를 닫는다. 나간 열림 알림이 있을 때만 복구 알림을 넣는다. 커밋은 호출자."""
 
     observed = now or datetime.now(UTC)
     candidates = list(
@@ -677,24 +712,12 @@ def close_resolved_backlog_incidents(
         )
         if recovered is None:
             continue
-        acknowledged = _transition_incident(
-            db,
-            recovered,
-            expected_state=IncidentState.RECOVERED,
-            next_state=IncidentState.ACKNOWLEDGED,
-            acknowledged=True,
-        )
-        _audit(
-            db,
-            acknowledged or recovered,
-            "incident_resolved_by_later_evidence",
-            detail_extra={"evidence": reason, "slack_suppressed": True},
-        )
+        _finish_recovered(db, recovered, "incident_resolved_by_later_evidence", evidence=reason)
         closed += 1
     return closed
 
 
-def bound_unowned_retrying(
+def default_retry_deadlines(
     db: Session, *, now: datetime, limit: int = BACKLOG_INCIDENT_BATCH
 ) -> int:
     """기한 없이 남은 RETRYING에 마지막 변경 + 24시간 기한을 단다(배포 전 행·옛 호출자).
@@ -777,25 +800,12 @@ def close_retrying_with_linked_success(
         )
         if recovered is None:
             continue
-        if open_notice_exists_sync(db, recovered.id):
-            enqueue_notification_sync(
-                db,
-                build_recovered_incident_notification(
-                    _projection(db, recovered), settings.ADMIN_BASE_URL
-                ),
-            )
-        acknowledged = _transition_incident(
+        _finish_recovered(
             db,
             recovered,
-            expected_state=IncidentState.RECOVERED,
-            next_state=IncidentState.ACKNOWLEDGED,
-            acknowledged=True,
-        )
-        _audit(
-            db,
-            acknowledged or recovered,
             "incident_closed_by_linked_success",
-            detail_extra={"evidence": "linked_run_succeeded", "linked_run_id": str(linked.id)},
+            evidence="linked_run_succeeded",
+            linked_run_id=str(linked.id),
         )
         closed += 1
     return closed
@@ -852,7 +862,7 @@ def settle_incidents(
 
     observed = now or datetime.now(UTC)
     return (
-        bound_unowned_retrying(db, now=observed, limit=limit)
+        default_retry_deadlines(db, now=observed, limit=limit)
         + close_retrying_with_linked_success(db, now=observed, limit=limit)
         + acknowledge_settled_recoveries(db, now=observed, limit=limit)
     )
