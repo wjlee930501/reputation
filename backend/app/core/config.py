@@ -553,6 +553,10 @@ class Settings(BaseSettings):
     CONTENT_AUTO_CORRECTION_MAX_PASSES: int = 2
     CONTENT_AUTO_CORRECTION_MAX_REREVIEWS: int = 2
     CONTENT_AUTO_TOPIC_SWAP_MAX: int = 1
+    # 진료비·병원 선택 글의 참고자료 보류(사람이 정함, `operator_decides`)도 주제 교체 계단에
+    # 넣는가. 켜면 수기 목록 문서가 있는 의료 주제의 다른 측정 질문으로 한 번 바꿔 쓴다.
+    # 기본은 꺼짐 — 계약(CLAUDE.md "곧바로 OPERATOR_REQUIRED(사람이 정함)") 변경이라 대표 결정 뒤에 켠다.
+    CONTENT_TOPIC_SWAP_OPERATOR_DECIDES: bool = False
     # 같은 원고 후보의 독립 검수가 공급자 장애·잘린 응답으로 연속 실패할 때 자동 재검수를
     # 사는 최대 횟수(KST 날을 넘어 누적). 닿으면 사람의 일(OPERATOR_REQUIRED)로 넘긴다.
     CONTENT_AI_REVIEW_UNAVAILABLE_MAX_RETRIES: int = 6

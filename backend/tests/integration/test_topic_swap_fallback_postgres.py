@@ -838,3 +838,61 @@ def test_a_retrying_slot_whose_topic_spent_its_writers_is_swapped_on_day_one(
     row = pg_session.get(ContentItem, item_id)
     pg_session.refresh(row)
     assert row.topic_swap_history[0]["reason_code"] == "GENERATION_BUDGET_EXHAUSTED"
+
+
+# ── 0-6b: 수리 예산 소진·사람이 정하는 참고자료 보류의 후보 SQL ─────────────────────
+
+
+def _repair_blocked_summary(topic_id, *, exhausted_days: int, operator_decides: bool) -> str:
+    attempt = fresh_generation_attempt(topic_id=str(topic_id))
+    attempt.update(
+        {
+            "reason": "MISSING_REFERENCES",
+            "retry_class": GenerationRetryClass.OPERATOR_REQUIRED.value,
+        }
+    )
+    if operator_decides:
+        attempt[generation_retry_policy.OPERATOR_DECIDES_KEY] = True
+    return json.dumps(
+        {
+            GENERATION_ATTEMPT_KEY: attempt,
+            generation_retry_policy.BODY_REPAIR_STATE_KEY: {
+                "period": "2026-09-15",
+                "count": 2,
+                "exhausted_days": exhausted_days,
+            },
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("exhausted_days", "operator_decides", "flag", "swapped"),
+    [
+        (3, False, False, 1),  # 수리 3일 소진 → 교체
+        (2, False, False, 0),  # 수리 예산이 남았다
+        (3, True, False, 0),  # 사람이 정하는 보류 — 기본은 교체하지 않는다
+        (0, True, True, 1),  # 대표가 켠 경우에만 보류도 교체
+    ],
+    ids=["repair_exhausted", "repair_left", "operator_decides_off", "operator_decides_on"],
+)
+def test_the_candidate_sql_selects_reference_blocks_by_their_ladder(
+    pg_conn, pg_session, monkeypatch, exhausted_days, operator_decides, flag, swapped
+):
+    monkeypatch.setattr(
+        topic_swap_fallback.settings, "CONTENT_TOPIC_SWAP_OPERATOR_DECIDES", flag
+    )
+    hospital_id = _seed_hospital(pg_conn)
+    target_id = pg_conn.execute(
+        text("SELECT id FROM ai_query_targets WHERE hospital_id=:h AND name=:name"),
+        {"h": hospital_id, "name": "대장내시경 수면 여부"},
+    ).scalar_one()
+    _seed_item(
+        pg_conn,
+        hospital_id,
+        scheduled_date=SLOT - timedelta(days=1),
+        summary=_repair_blocked_summary(
+            target_id, exhausted_days=exhausted_days, operator_decides=operator_decides
+        ),
+    )
+
+    assert _swap(pg_session).swapped == swapped

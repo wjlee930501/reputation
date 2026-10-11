@@ -1214,3 +1214,70 @@ def test_the_candidate_search_is_bounded(monkeypatch):
     assert len(calls) == topic_swap_fallback.TOPIC_SWAP_CANDIDATE_LIMIT
     assert (report.swapped, report.similar_topic) == (0, 1)
     assert db.updates == []
+
+
+# ── 0-6b: 수리 예산 소진·사람이 정하는 참고자료 보류도 교체 계단에 ──────────────────
+
+
+def _repair_exhausted(reason="MISSING_REFERENCES", *, exhausted_days=3, **attempt_fields):
+    summary = _attempt(reason=reason)
+    summary[GENERATION_ATTEMPT_KEY].update(attempt_fields)
+    summary[generation_retry_policy.BODY_REPAIR_STATE_KEY] = {
+        "period": "2026-09-15",
+        "count": 2,
+        "exhausted_days": exhausted_days,
+    }
+    return summary
+
+
+@pytest.mark.parametrize("reason", ["MISSING_REFERENCES", "FAQ_FIELDS_MISSING", "ESSENCE_NOT_ALIGNED"])
+def test_a_body_repair_code_is_a_candidate_once_its_repair_budget_is_spent(reason):
+    item = _item(essence_check_summary=_repair_exhausted(reason))
+
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) == reason
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        _repair_exhausted(exhausted_days=2),  # 수리 예산이 아직 남았다(내일 또 고친다)
+        _repair_exhausted(retry_class=GenerationRetryClass.INPUT_CHANGE_REQUIRED.value),
+        _repair_exhausted("FORBIDDEN_EXPRESSION"),  # 입력 변경 종착 — 교체 대상 아님
+        _repair_exhausted(**{generation_retry_policy.OPERATOR_DECIDES_KEY: True}),
+        _attempt(reason="MISSING_REFERENCES"),  # 수리 기록이 없다
+    ],
+    ids=["budget_left", "input_change", "forbidden", "operator_decides", "no_repair_state"],
+)
+def test_body_repair_records_that_are_not_swapped(summary):
+    assert topic_swap_fallback.exhausted_body_sample_reason(_item(essence_check_summary=summary)) is None
+
+
+def test_the_operator_decides_hold_is_swapped_only_behind_the_flag(monkeypatch):
+    summary = _attempt(reason="MISSING_REFERENCES")
+    summary[GENERATION_ATTEMPT_KEY][generation_retry_policy.OPERATOR_DECIDES_KEY] = True
+    item = _item(essence_check_summary=summary)
+
+    monkeypatch.setattr(topic_swap_fallback.settings, "CONTENT_TOPIC_SWAP_OPERATOR_DECIDES", False)
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) is None
+
+    monkeypatch.setattr(topic_swap_fallback.settings, "CONTENT_TOPIC_SWAP_OPERATOR_DECIDES", True)
+    assert topic_swap_fallback.exhausted_body_sample_reason(item) == "MISSING_REFERENCES"
+
+
+def test_a_reference_blocked_slot_is_not_swapped_into_a_cost_question(monkeypatch):
+    cost = _target("대장내시경 비용")
+    good = _target()
+
+    def choose(db, *, exclude_target_ids, **kwargs):
+        for candidate in (cost, good):
+            if candidate.id not in exclude_target_ids:
+                return candidate
+        return None
+
+    monkeypatch.setattr(topic_swap_fallback, "_choose_target", choose)
+    db = _FakeDB([_item(essence_check_summary=_repair_exhausted())])
+
+    report = _run(db)
+
+    assert report.swapped == 1
+    assert _values(db)["query_target_id"] == good.id
