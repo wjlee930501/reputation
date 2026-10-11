@@ -29,6 +29,9 @@ export const ADMIN_COPY = {
   aeOwner: '담당 AE',
   postPublishReview: '공개 후 확인',
   postPublishReviewed: '확인 완료',
+  // 계약 등록 직후 백그라운드로 찾아 둔 병원 정보(저장 전 제안).
+  storedAutofillApply: '등록 때 찾아 둔 정보 채우기',
+  storedAutofillMissing: '등록 때 찾아 둔 정보가 아직 없습니다.',
 } as const
 
 export function describeMentionRate(value: number | null): string {

@@ -617,6 +617,13 @@ class _RegisterResult:
         return self._single
 
 
+@pytest.fixture(autouse=True)
+def _no_autofill_dispatch(monkeypatch):
+    dispatched: list[uuid.UUID] = []
+    monkeypatch.setattr(handoffs_api, "_dispatch_profile_autofill", dispatched.append)
+    return dispatched
+
+
 class _RegisterDB:
     """계약 등록이 만지는 것만 흉내 낸다 — 중복 조회·slug 조회·flush·commit/rollback."""
 
@@ -1040,3 +1047,16 @@ async def test_register_contract_refuses_an_inactive_owner(_verified_actor) -> N
     assert exc.value.status_code == 422
     assert exc.value.detail["code"] == "ACTIVE_OWNER_REQUIRED"
     assert db.added == []
+
+
+async def test_register_contract_queues_the_profile_autofill_after_commit(
+    _verified_actor, _no_autofill_dispatch
+) -> None:
+    ae = _account("OPERATOR")
+    db = _RegisterDB([ae])
+
+    await handoffs_api.register_contract(_registration(ae), db=db, actor=ae)
+
+    hospital = next(row for row in db.added if isinstance(row, Hospital))
+    assert db.committed is True
+    assert _no_autofill_dispatch == [hospital.id]

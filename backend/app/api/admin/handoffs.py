@@ -1,5 +1,6 @@
 """Explicit, audited customer handoff transitions."""
 
+import logging
 import uuid
 from datetime import UTC, datetime, time, timedelta, timezone
 
@@ -34,7 +35,9 @@ from app.services.audit_log import verified_request_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals
 from app.utils.db_locks import acquire_hospital_advisory_lock
 from app.utils.medical_filter import check_forbidden
+from app.workers.dispatch_auth import build_dispatch_headers
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin/handoffs", tags=["Admin — Handoffs"])
 
 #: 계약 등록은 `/admin/hospitals` 아래에 산다 — 운영자에게는 "병원을 만드는 일"이고,
@@ -75,6 +78,25 @@ def _hospital_exists(hospital_id: uuid.UUID | None) -> dict[str, object]:
     if hospital_id is not None:
         detail["hospital_id"] = str(hospital_id)
     return detail
+
+
+def _dispatch_profile_autofill(hospital_id: uuid.UUID) -> None:
+    """등록이 커밋된 뒤 자동 입력 초안을 백그라운드로 만든다. 실패해도 등록은 그대로다.
+
+    디스패치가 유실되면 회수하지 않는다 — 초안은 편의 기능이고 병원 정보 화면의
+    "자동 입력" 버튼이 같은 일을 사람이 즉시 할 수 있다.
+    """
+
+    from app.workers.profile_autofill_tasks import autofill_registered_hospital_profile
+
+    try:
+        autofill_registered_hospital_profile.apply_async(
+            args=[str(hospital_id)],
+            queue="default",
+            headers=build_dispatch_headers("autofill-registered-profile", str(hospital_id)),
+        )
+    except Exception:
+        logger.warning("profile autofill dispatch failed for hospital %s", hospital_id)
 
 
 def _lead_profile_seed(lead: SalesLead | None) -> dict[str, list[str]]:
@@ -648,6 +670,7 @@ async def register_contract(
         raise
     await db.refresh(hospital)
     await db.refresh(handoff)
+    _dispatch_profile_autofill(hospital.id)
     return {
         **serialize_hospital_detail(hospital),
         "handoff": serialize_handoff_summary(handoff),

@@ -149,6 +149,7 @@ celery_app = Celery(
         "app.workers.autonomous_recovery",
         "app.workers.content_backlog_recovery",
         "app.workers.domain_certificate_tasks",
+        "app.workers.profile_autofill_tasks",
         "app.workers.operation_run_signals",
         "app.workers.canary_tasks",
         "app.workers.indexnow_retry",
@@ -318,6 +319,9 @@ celery_app.conf.update(
         },
         "app.workers.domain_certificate_tasks.provision_domain_certificate": {
             "queue": "certificates"
+        },
+        "app.workers.profile_autofill_tasks.autofill_registered_hospital_profile": {
+            "queue": "default"
         },
         "app.workers.canary_tasks.canary_default": {"queue": "default"},
         "app.workers.canary_tasks.canary_content": {"queue": "content"},
