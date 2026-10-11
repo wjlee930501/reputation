@@ -8,7 +8,8 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from datetime import date, datetime
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import redis.asyncio as redis_async
 from redis.exceptions import RedisError
@@ -31,6 +32,8 @@ _RECOVERY_INDEX_KEY = "provider_usage:recovery:index"
 _RECOVERY_TTL_SECONDS = 7 * 24 * 60 * 60
 _RECOVERY_MAX_ITEMS = 10_000
 _RECOVERY_RETRY_DELAY_SECONDS = 60
+# spool이 상한을 넘겨 버린 기록 수. 잘리는 순간은 DB가 죽어 있으므로 사고는 drain이 나중에 연다.
+_RECOVERY_DROPPED_KEY = "provider_usage:recovery:dropped"
 
 _HOSPITAL_KIND_BY_CATEGORY = {
     "content": HospitalUsageKind.CONTENT.value,
@@ -260,7 +263,17 @@ async def _defer(event: ProviderUsageEvent) -> bool:
             pipe.set(key, json.dumps(_event_payload(event)), ex=_RECOVERY_TTL_SECONDS)
             pipe.zadd(_RECOVERY_INDEX_KEY, {key: event.created_at.timestamp()})
             pipe.zremrangebyrank(_RECOVERY_INDEX_KEY, 0, -_RECOVERY_MAX_ITEMS - 1)
-            await pipe.execute()
+            results = await pipe.execute()
+            dropped = int(results[2] or 0)
+            if dropped:
+                # 상한(1만 건)을 넘겨 가장 오래된 기록을 버렸다 — 되살릴 수 없다. DB가 돌아오면 drain이
+                # 이 카운터를 개발 사고로 바꾼다(report_dropped_usage).
+                await client.incrby(_RECOVERY_DROPPED_KEY, dropped)
+                logger.error(
+                    "provider_usage_spool_truncated dropped=%s max_items=%s",
+                    dropped,
+                    _RECOVERY_MAX_ITEMS,
+                )
             return True
         except (OSError, RedisError, RuntimeError, TimeoutError, TypeError, ValueError):
             logger.warning(
@@ -322,6 +335,69 @@ async def replay_deferred_attempts(
         except (OSError, RedisError, RuntimeError, TimeoutError):
             logger.warning("provider usage recovery replay skipped: redis unavailable")
             return {"recovered": recovered, "missing": missing, "failed": failed + 1}
+
+
+async def _open_spool_truncation_incident(dropped: int, *, now: datetime) -> None:
+    from app.models.operations import IncidentSeverity  # noqa: PLC0415
+    from app.services.incident_types import (  # noqa: PLC0415
+        IncidentFingerprint,
+        IncidentOpenRequest,
+    )
+    from app.services.incidents import open_or_touch_incident  # noqa: PLC0415
+
+    # KST 하루 한 건 — 같은 날 추가 유실은 같은 사고를 touch한다. 유실은 되살릴 수 없으므로 자동
+    # 복구하지 않는다. 개발 대상이라 운영자 할 일이 아니라 '개발 확인'으로만 보인다.
+    kst_date = now.astimezone(ZoneInfo("Asia/Seoul")).date().isoformat()
+    sessionmaker = get_async_sessionmaker()
+    async with sessionmaker() as db:
+        await open_or_touch_incident(
+            db,
+            IncidentOpenRequest(
+                pipeline="provider_usage",
+                object_type="recovery_spool",
+                object_id=kst_date,
+                fingerprint=IncidentFingerprint.CONFIGURATION_ERROR,
+                incident_type="PROVIDER_USAGE_SPOOL_TRUNCATED",
+                severity=IncidentSeverity.MEDIUM,
+                customer_impact="DB 저장 실패가 길어져 AI 사용량 기록 일부를 버렸습니다. 비용 집계가 실제보다 적습니다.",
+                source_type="PROVIDER_USAGE",
+                next_action="DB 저장이 실패한 원인을 확인해 주세요. 버려진 기록은 되살릴 수 없습니다.",
+                admin_path="/operations",
+                source_id=kst_date,
+                safe_error_code="PROVIDER_USAGE_SPOOL_TRUNCATED",
+                safe_error_message=f"dropped={dropped} max_items={_RECOVERY_MAX_ITEMS}",
+            ),
+            actor="provider-usage-recovery",
+            reason="provider usage spool truncated",
+            now=now,
+        )
+        await db.commit()
+
+
+async def report_dropped_usage(*, redis_client: redis_async.Redis | None = None) -> int:
+    """spool이 버린 기록 수를 개발 사고로 바꾸고 카운터를 비운다. 실패하면 카운터를 되돌린다."""
+    async with _recovery_redis_client(redis_client) as client:
+        try:
+            pipe = client.pipeline(transaction=True)
+            pipe.get(_RECOVERY_DROPPED_KEY)
+            pipe.delete(_RECOVERY_DROPPED_KEY)
+            raw, _deleted = await pipe.execute()
+        except (OSError, RedisError, RuntimeError, TimeoutError):
+            logger.warning("provider usage dropped counter unavailable: redis unavailable")
+            return 0
+        dropped = int(raw or 0)
+        if not dropped:
+            return 0
+        try:
+            await _open_spool_truncation_incident(dropped, now=datetime.now(UTC))
+        except Exception:  # noqa: BLE001 — 다음 drain이 다시 시도한다.
+            logger.warning("provider usage spool truncation incident not recorded: dropped=%s", dropped)
+            try:
+                await client.incrby(_RECOVERY_DROPPED_KEY, dropped)
+            except (OSError, RedisError, RuntimeError, TimeoutError):
+                logger.error("provider_usage_spool_truncated_count_lost dropped=%s", dropped)
+            return 0
+        return dropped
 
 
 def normalize_cache_status(
