@@ -239,6 +239,10 @@ def _configuration_facts() -> dict[str, bool]:
         "web_search_enabled": settings.OPENAI_CHATGPT_USE_WEB_SEARCH,
         "release_revision_configured": bool(settings.REPUTATION_RELEASE_REVISION.strip())
         or settings.APP_ENV != "production",
+        # Cloud Scheduler 외부 감시의 유일한 자격 증명. 비면 감시 호출이 전부 401이고 API는 그래도
+        # 뜨므로(부팅을 막지 않는다) 외부 감시가 조용히 꺼진다(2026-10 자율 운영 감사 F8).
+        "pipeline_watchdog_token_configured": bool(settings.PIPELINE_WATCHDOG_TOKEN.strip())
+        or settings.APP_ENV != "production",
     }
 
 
