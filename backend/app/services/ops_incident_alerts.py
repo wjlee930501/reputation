@@ -53,8 +53,13 @@ async def open_ops_incident(
     sla_label: str = "확인 필요",
     notify: bool = True,
     severity: IncidentSeverity = IncidentSeverity.HIGH,
+    retry_until: datetime | None = None,
 ) -> uuid.UUID:
-    """Open/touch one incident and enqueue only on first-open or reopen."""
+    """Open/touch one incident and enqueue only on first-open or reopen.
+
+    `retry_until`은 스윕 소유 종류에서 다음 자동 시도 시각이다 — 그때까지 RETRYING이고 열림
+    알림은 발송기가 보류한다.
+    """
 
     sessions = get_async_sessionmaker()
     async with sessions() as db:
@@ -78,6 +83,7 @@ async def open_ops_incident(
                 source_id=object_id,
                 safe_error_code=safe_error_code,
                 safe_error_message=problem,
+                retry_until=retry_until,
             ),
             actor=actor,
             reason="operational failure observed",

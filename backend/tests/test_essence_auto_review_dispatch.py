@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.models.operations import Incident, IncidentState
+from app.models.operations import Incident, IncidentSeverity, IncidentState
 from app.services import ops_incident_alerts
 from app.services.essence_auto_review import EssenceRefreshResult, EssenceRefreshStatus
 from app.services.incident_safety import build_incident_key
@@ -56,11 +56,6 @@ def _run_essence_task(monkeypatch, result: EssenceRefreshResult, *, hospital_sta
     monkeypatch.setattr(tasks, "recover_ops_incident", fake_recover_exact)
     monkeypatch.setattr(
         tasks, "recover_ops_incidents_for_hospital", fake_recover_hospital
-    )
-    monkeypatch.setattr(
-        tasks,
-        "_defer_essence_escalation_to_automatic_retry",
-        lambda **kwargs: deferred.append(kwargs) or True,
     )
 
     response = tasks.auto_review_essence_snapshot.run(str(result.hospital_id))
@@ -308,9 +303,10 @@ def test_escalation_with_recovery_budget_left_is_not_operator_work(monkeypatch) 
     # 시도마다 새 인시던트를 열지 않는다 — 같은 병원·snapshot 한 건을 만지기만 한다.
     assert len(opened) == 1
     assert opened[0]["object_id"] == f"{hospital_id}:current-snapshot"
-    assert deferred == [
-        {"object_id": f"{hospital_id}:current-snapshot", "retry_due_at": retry_at}
-    ]
+    # 처음부터 RETRYING+다음 자동 재검수 시각으로 연다(OPEN→Slack→RETRYING 경합 없음).
+    assert opened[0]["retry_until"] == retry_at
+    assert opened[0]["severity"] == IncidentSeverity.MEDIUM
+    assert deferred == []
 
 
 def test_exhausted_escalation_becomes_operator_work(monkeypatch) -> None:
@@ -328,6 +324,8 @@ def test_exhausted_escalation_becomes_operator_work(monkeypatch) -> None:
     _, opened, _recovered, deferred = _run_essence_task(monkeypatch, result)
 
     assert len(opened) == 1
+    assert opened[0]["retry_until"] is None
+    assert opened[0]["severity"] == IncidentSeverity.HIGH
     assert deferred == []
 
 

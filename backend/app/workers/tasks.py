@@ -3984,55 +3984,6 @@ def _cost_guarded_essence_review(
     return _run_async(_call())
 
 
-def _defer_essence_escalation_to_automatic_retry(
-    *,
-    object_id: str,
-    retry_due_at: datetime,
-) -> bool:
-    """자동 재검수 예산이 남은 보류는 아직 기계의 일이다 — RETRYING + 다음 시도 기한.
-
-    같은 병원·snapshot 인시던트 하나를 시도마다 새로 열지 않고 상태만 바꾼다. 기한이
-    지나면 `requires_operator_action`이 그때부터 사람의 일로 읽으므로, 자동 복구가 죽어도
-    운영자 큐에서 사라지지 않는다.
-    """
-
-    from app.core.database import get_async_sessionmaker
-    from app.services.incidents import build_incident_key, mark_retrying
-
-    key = build_incident_key(
-        "essence_auto_review",
-        "essence_snapshot",
-        object_id,
-        IncidentFingerprint.VALIDATION_FAILED,
-    )
-
-    async def _run() -> bool:
-        async with get_async_sessionmaker()() as async_db:
-            incident = await async_db.scalar(select(Incident).where(Incident.dedupe_key == key))
-            if incident is None or incident.state != IncidentState.OPEN.value:
-                return False
-            retrying = await mark_retrying(
-                async_db,
-                incident.id,
-                expected_version=incident.version,
-                actor=AUTO_ESSENCE_ACTOR,
-                reason="automatic essence re-review owns this escalation",
-            )
-            if not isinstance(retrying, Incident):
-                return False
-            retrying.sla_due_at = retry_due_at
-            retrying.severity = IncidentSeverity.MEDIUM
-            await async_db.commit()
-            return True
-
-    try:
-        return bool(_run_async(_run()))
-    except Exception:
-        # 인시던트 상태는 보조 표시다. 실패해도 보류 사실과 재시도 예산은 DB에 남아 있다.
-        logger.exception("Failed to defer Essence escalation incident for %s", object_id)
-        return False
-
-
 @celery_app.task(
     name="app.workers.tasks.auto_review_essence_snapshot",
     bind=True,
@@ -4147,6 +4098,14 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
 
     if result.requires_operator and result.previous_philosophy_id is None:
         snapshot = result.snapshot_hash or "unknown"
+        # 예산이 남은 보류는 처음부터 RETRYING+다음 자동 재검수 시각으로 연다 — 시도마다 새로
+        # 열지 않고 같은 병원·snapshot 한 건을 만진다. 열림 알림은 발송기가 그 시각까지 보류하고,
+        # 그 안에 승인되면 보내지 않는다. 소진되면 OPEN이며 그때 사람의 일이 된다.
+        retry_until = (
+            None
+            if result.automatic_recovery_exhausted
+            else result.next_automatic_attempt_at
+        )
         _run_async(
             open_ops_incident(
                 pipeline="essence_auto_review",
@@ -4167,15 +4126,12 @@ def auto_review_essence_snapshot(self, hospital_id: str) -> dict[str, object]:
                 admin_path=f"/hospitals/{hospital_id}",
                 fingerprint=IncidentFingerprint.VALIDATION_FAILED,
                 actor=AUTO_ESSENCE_ACTOR,
+                retry_until=retry_until,
+                severity=(
+                    IncidentSeverity.MEDIUM if retry_until is not None else IncidentSeverity.HIGH
+                ),
             )
         )
-        if not result.automatic_recovery_exhausted:
-            # 예산이 남은 동안은 같은 인시던트를 RETRYING으로 둔다 — 시도마다 새로 열지
-            # 않고, 자동 재검수 기한이 지나야 운영자의 할 일이 된다.
-            _defer_essence_escalation_to_automatic_retry(
-                object_id=f"{hospital_id}:{snapshot}",
-                retry_due_at=result.next_automatic_attempt_at or datetime.now(timezone.utc),
-            )
     elif result.status in {
         EssenceRefreshStatus.ESCALATED,
         EssenceRefreshStatus.AUTO_APPROVED,
