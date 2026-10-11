@@ -5,7 +5,7 @@
 미생성은 매일 00:15 배치가 다시 만든다. 코호트 밖 병원의 측정 미완료는 어떤 자동 경로도 없다.
 - 자동 복구가 도는 공백(AUTO): 집합이 바뀐 날에만 REPORT 한 건. 매일 같은 요약을 반복하지 않는다.
 - 자동 경로가 없는 공백(MANUAL): 병원·월마다 ERROR 한 건.
-- 마지막 복구일(7일)에도 남은 AUTO 공백: 더 돌 배치가 없으므로 '자동 복구 종료' ERROR 한 건.
+- 8일 00:15 최종화 뒤(8일 09:00)에도 남은 AUTO 공백: 더 돌 자동 복구가 없으므로 '자동 복구 종료' ERROR 한 건.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from app.core.config import settings
 from app.models.hospital import Hospital
 from app.models.report import MonthlyReport
 from app.services.monthly_period import (
+    MONTHLY_FINALIZE_DAY,
     MONTHLY_RECOVERY_END_DAY,
     eligible_hospital_ids,
     prior_month_to_close,
@@ -149,8 +150,8 @@ def build_monthly_report_gap_auto_summary(
         counts_text=f"*{period_key}* · 총 {len(gaps)}곳\n{summary}",
         detail=(
             f"대상: {_names(gaps)}\n"
-            "시스템이 매월 1~7일 자동 재측정·마감을 계속합니다. 수동으로 반복 실행하지 마세요. "
-            "끝내 풀리지 않은 공백은 마지막 복구일에 별도 조치 알림으로 안내합니다."
+            "시스템이 매월 1~7일 자동 재측정·마감을 계속하고 8일 00:15에 최종 마감합니다. "
+            "수동으로 반복 실행하지 마세요. 최종 마감 뒤에도 남은 공백은 8일 오전에 별도 조치 알림으로 안내합니다."
         ),
         fallback_tail="시스템이 자동 재측정·마감을 진행합니다. 수동으로 반복 실행하지 마세요.",
     )
@@ -214,10 +215,11 @@ def build_monthly_report_gap_summary(
 def monthly_report_gap_intents(
     *, period_key: str, gaps: list[MonthlyReportGap], day: int
 ) -> list[NotificationIntent]:
-    """오늘 보낼 알림 — 자동 복구 보고, 병원별 조치 필요, 마지막 복구일의 종료 요약."""
+    """오늘 보낼 알림 — 자동 복구 보고, 병원별 조치 필요, 8일 최종화 뒤의 종료 요약."""
 
-    # 마지막 복구일(7일)에는 이튿날 00:15 배치가 없다. 그 뒤에는 자동 복구가 남아 있지 않다.
-    recovery_ahead = day < MONTHLY_RECOVERY_END_DAY
+    # 7일 23:59:59까지 자동 복구가 돌고 8일 00:15 배치가 마감 사실로 최종화한다.
+    # 8일 09:00 판정은 그 최종화 뒤라, 이때 남은 공백만 자동 복구가 끝난 것이다.
+    recovery_ahead = day <= MONTHLY_RECOVERY_END_DAY
     auto = [gap for gap in gaps if gap.recoverable and recovery_ahead]
     closing = [gap for gap in gaps if gap.recoverable and not recovery_ahead]
     manual = [gap for gap in gaps if not gap.recoverable]
@@ -236,7 +238,7 @@ def monthly_report_gap_intents(
 
 def enqueue_monthly_report_gap_summary_sync(db: Session, *, now: datetime) -> bool:
     local = now.astimezone(KST)
-    if not 1 <= local.day <= MONTHLY_RECOVERY_END_DAY:
+    if not 1 <= local.day <= MONTHLY_FINALIZE_DAY:
         return False
     period_key, gaps = load_monthly_report_gaps(db, now)
     if not gaps:

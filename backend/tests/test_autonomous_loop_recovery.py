@@ -180,7 +180,7 @@ def test_recovery_beat_and_retryable_month_schedules_are_declared() -> None:
         "<crontab: 15 0 1-8 * * (m/h/dM/MY/d)>"
     )
     assert str(schedules["monthly-report-gap-summary"]["schedule"]) == (
-        "<crontab: 0 9 1-7 * * (m/h/dM/MY/d)>"
+        "<crontab: 0 9 1-8 * * (m/h/dM/MY/d)>"
     )
 
 

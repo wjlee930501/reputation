@@ -23,25 +23,24 @@ def test_gap_summary_dedupe_does_not_repeat_by_day_and_has_one_admin_link():
     assert len(intent.message.payload()["blocks"]) == 4
 
 
-def test_gap_summary_is_edge_limited_to_days_one_through_seven(monkeypatch):
+def test_gap_summary_runs_days_one_through_eight(monkeypatch):
     loaded = []
-    enqueued = []
     monkeypatch.setattr(
         notifications,
         "load_monthly_report_gaps",
         lambda *_args, **_kwargs: loaded.append(True) or ("2026-08", []),
     )
     monkeypatch.setattr(
-        notifications,
-        "enqueue_onboarding_notification_sync",
-        lambda *_args, **_kwargs: enqueued.append(True),
+        notifications, "enqueue_onboarding_notification_sync", lambda *_a, **_k: None
     )
 
+    # UTC 9/8 00:00 = KST 9/8 09:00 — 8일 최종화 뒤의 마지막 판정 날이다.
     assert not notifications.enqueue_monthly_report_gap_summary_sync(
         object(), now=datetime(2026, 9, 8, tzinfo=UTC)
     )
+    # UTC 9/9 00:00 = KST 9/9 09:00 — 더 돌지 않는다.
     assert not notifications.enqueue_monthly_report_gap_summary_sync(
-        object(), now=datetime(2026, 9, 2, tzinfo=UTC)
+        object(), now=datetime(2026, 9, 9, tzinfo=UTC)
     )
+
     assert loaded == [True]
-    assert enqueued == []

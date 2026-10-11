@@ -195,16 +195,19 @@ def test_manual_error_is_once_per_hospital_and_period() -> None:
     assert other_period[0].dedupe_key not in keys
 
 
-def test_last_recovery_day_closes_still_open_auto_gaps_with_one_error() -> None:
+def test_day_seven_is_still_automatic_and_day_eight_closes_with_one_error() -> None:
     open_auto = [
         gaps.MonthlyReportGap("A의원", "MISSING", recoverable=True),
         gaps.MonthlyReportGap("B의원", "COVERAGE_INCOMPLETE", recoverable=True),
     ]
 
-    intents = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=7)
+    day_seven = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=7)
+    day_eight = gaps.monthly_report_gap_intents(period_key="2026-09", gaps=open_auto, day=8)
 
-    assert [intent.notification_type for intent in intents] == ["MONTHLY_REPORT_GAP_SUMMARY"]
-    [closing] = intents
+    # 7일 밤 23:59:59까지 복구가 돌고 8일 00:15가 최종화한다 — 7일은 아직 사람의 일이 아니다.
+    assert [intent.notification_type for intent in day_seven] == ["MONTHLY_REPORT_GAP_AUTO"]
+    assert [intent.notification_type for intent in day_eight] == ["MONTHLY_REPORT_GAP_SUMMARY"]
+    [closing] = day_eight
     assert closing.message.fallback_text.startswith(ERROR_LABEL)
     assert "자동 복구 종료" in closing.message.fallback_text
     assert _AUTO_PROMISE not in closing.message.fallback_text
