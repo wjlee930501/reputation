@@ -12,7 +12,16 @@ from datetime import date, datetime, time, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
-from app.models.hospital import HospitalStatus
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.content import ContentItem, ContentSchedule
+from app.models.essence import HospitalSourceAsset, SourceStatus
+from app.models.handoff import HospitalHandoff
+from app.models.hospital import Hospital, HospitalStatus
+from app.models.monthly_control import HospitalServiceInterval
+from app.services.essence_readiness import get_essence_readiness
+from app.services.essence_sources import required_text_source_predicate
 
 ONBOARDING_STALL_PIPELINE = "onboarding_stall"
 ONBOARDING_STALL_OBJECT_TYPE = "hospital"
@@ -95,3 +104,101 @@ def detect_onboarding_stalls(
     ):
         found.append(OnboardingStall.SOURCES_UNREACHABLE)
     return tuple(found)
+
+
+async def load_onboarding_facts(db: AsyncSession) -> list[OnboardingFacts]:
+    """판정에 필요한 사실을 병원별로 모은다. PAUSED도 읽어야 열린 사고를 닫을 수 있다.
+
+    공개 시작은 열린 서비스 구간, 발행은 최초 공개 사실(`first_published_at`), 근거 자료는
+    필수 텍스트 자료, 채널 주소 자료는 URL이 있고 제외되지 않은 자료다. Essence 승인 시각은
+    공개 상태인데 일정이 없는 병원(정체 후보)만 readiness로 읽는다(권한 변경이면 current가 아님).
+    """
+
+    hospitals = (await db.execute(select(Hospital))).scalars().all()
+    accepted = dict(
+        (await db.execute(select(HospitalHandoff.hospital_id, HospitalHandoff.accepted_at))).all()
+    )
+    active_since = dict(
+        (
+            await db.execute(
+                select(
+                    HospitalServiceInterval.hospital_id,
+                    func.max(HospitalServiceInterval.started_at),
+                )
+                .where(HospitalServiceInterval.ended_at.is_(None))
+                .group_by(HospitalServiceInterval.hospital_id)
+            )
+        ).all()
+    )
+    schedule_start = dict(
+        (
+            await db.execute(
+                select(ContentSchedule.hospital_id, func.min(ContentSchedule.active_from))
+                .where(ContentSchedule.is_active.is_(True))
+                .group_by(ContentSchedule.hospital_id)
+            )
+        ).all()
+    )
+    published = dict(
+        (
+            await db.execute(
+                select(ContentItem.hospital_id, func.count())
+                .where(ContentItem.first_published_at.is_not(None))
+                .group_by(ContentItem.hospital_id)
+            )
+        ).all()
+    )
+    required = dict(
+        (
+            await db.execute(
+                select(HospitalSourceAsset.hospital_id, func.count())
+                .where(required_text_source_predicate())
+                .group_by(HospitalSourceAsset.hospital_id)
+            )
+        ).all()
+    )
+    channel = {
+        hospital_id: (int(total), int(errors), latest)
+        for hospital_id, total, errors, latest in (
+            await db.execute(
+                select(
+                    HospitalSourceAsset.hospital_id,
+                    func.count(),
+                    func.count().filter(HospitalSourceAsset.status == SourceStatus.ERROR),
+                    func.max(HospitalSourceAsset.updated_at),
+                )
+                .where(
+                    HospitalSourceAsset.url.is_not(None),
+                    HospitalSourceAsset.status != SourceStatus.EXCLUDED,
+                )
+                .group_by(HospitalSourceAsset.hospital_id)
+            )
+        ).all()
+    }
+
+    facts: list[OnboardingFacts] = []
+    for hospital in hospitals:
+        essence_since = None
+        if hospital.status in _PUBLIC_STATUSES and not hospital.schedule_set:
+            current = (await get_essence_readiness(db, hospital.id)).current
+            essence_since = getattr(current, "approved_at", None) if current else None
+        total, errors, latest = channel.get(hospital.id, (0, 0, None))
+        facts.append(
+            OnboardingFacts(
+                hospital_id=hospital.id,
+                hospital_name=hospital.name,
+                status=hospital.status,
+                profile_complete=bool(hospital.profile_complete),
+                schedule_set=bool(hospital.schedule_set),
+                handoff_accepted_at=accepted.get(hospital.id),
+                essence_current_since=essence_since,
+                active_since=active_since.get(hospital.id),
+                first_schedule_start=schedule_start.get(hospital.id),
+                published_count=int(published.get(hospital.id, 0)),
+                required_source_count=int(required.get(hospital.id, 0)),
+                channel_source_count=total,
+                # 채널 주소가 모두 ERROR일 때 그 중 가장 늦은 실패 시각이 "모두 실패한 시각"이다.
+                channel_sources_all_error_since=latest if total and errors == total else None,
+            )
+        )
+    return facts
