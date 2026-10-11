@@ -6,16 +6,17 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.core.config import settings
 from app.models.audit import AdminAuditLog
 from app.models.operations import (
     Incident,
     IncidentSeverity,
+    IncidentState,
     JSONValue,
     NotificationOutbox,
     NotificationOutboxState,
@@ -24,6 +25,7 @@ from app.services.audit_log import write_audit_log
 from app.services.incident_safety import sanitize_operator_text
 from app.services.incident_types import (
     QUIET_INCIDENT_TYPES,
+    SWEEP_OWNED_INCIDENT_TYPES,
     IncidentFingerprint,
     IncidentOpenRequest,
     incident_is_quiet,
@@ -39,6 +41,19 @@ from app.services.notification_contracts import (
 # 싣고, 이 칸은 목록·검색용 미리보기라 길이에 맞춰 자른다. 자르지 않으면 긴 일일 요약이
 # StringDataRightTruncation으로 저장 자체가 실패해 알림이 사라진다.
 _FALLBACK_TEXT_COLUMN_LIMIT = 1000
+
+# 사고가 알림 발송 전에 복구·확인됐다 — 보내지 않고 종결한다. 그 사고의 열림 알림이 하나도
+# 나가지 않았다면 짝인 복구 알림도 보내지 않는다(나가지 않은 '조치 필요'에 '해결'은 필요 없다).
+RESOLVED_BEFORE_SEND_CODE = "INCIDENT_RESOLVED_BEFORE_SEND"
+_RESOLVED_BEFORE_SEND_MESSAGE = "사고가 알림 발송 전에 복구·확인되어 보내지 않았습니다."
+_SENDABLE_STATES = (NotificationOutboxState.PENDING.value, NotificationOutboxState.RETRYING.value)
+_MAY_HAVE_REACHED_STATES = (
+    NotificationOutboxState.PENDING.value,
+    NotificationOutboxState.SENDING.value,
+    NotificationOutboxState.RETRYING.value,
+    NotificationOutboxState.HOLD.value,
+    NotificationOutboxState.SENT.value,
+)
 
 
 def _stored_fallback_text(text: str) -> str:
@@ -338,8 +353,14 @@ async def recover_stale_sending(db: AsyncSession, *, now: datetime | None = None
 
 
 def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
-    """보낼 차례인 알림. 조용한 사고 종류에 묶인 행은 집지 않는다 — 입구에서 막기 전에 이미
-    쌓인 행(배포 전·배포 중 생성분)도 보내지 않게 한다."""
+    """보낼 차례인 알림.
+
+    - 조용한 사고 종류에 묶인 행은 집지 않는다 — 입구에서 막기 전에 이미 쌓인 행(배포 전·배포 중
+      생성분)도 보내지 않게 한다.
+    - 스윕이 재시도를 소유하는 사고(`SWEEP_OWNED_INCIDENT_TYPES`)가 기한 안에서 RETRYING이면 그
+      열림 알림을 집지 않는다. 기한이 지나면 그때 나간다 — 사람에게 넘어가는 순간의 알림이다.
+      콘텐츠 생성처럼 등록하지 않은 종류는 RETRYING이어도 종전처럼 나간다(아침 알림 계약).
+    """
 
     quiet_incident = (
         select(Incident.id)
@@ -349,12 +370,23 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
         )
         .exists()
     )
+    machine_owned = (
+        select(Incident.id)
+        .where(
+            Incident.id == NotificationOutbox.incident_id,
+            func.upper(Incident.incident_type).in_(sorted(SWEEP_OWNED_INCIDENT_TYPES)),
+            Incident.state == IncidentState.RETRYING.value,
+            Incident.sla_due_at > claimed_at,
+        )
+        .exists()
+    )
     return (
         select(NotificationOutbox)
         .where(
-            NotificationOutbox.state.in_(("PENDING", "RETRYING")),
+            NotificationOutbox.state.in_(_SENDABLE_STATES),
             NotificationOutbox.next_attempt_at <= claimed_at,
             ~quiet_incident,
+            ~and_(NotificationOutbox.notification_type == "INCIDENT_OPEN", machine_owned),
         )
         .order_by(
             NotificationOutbox.next_attempt_at,
@@ -363,6 +395,74 @@ def claimable_notifications_stmt(*, claimed_at: datetime, limit: int):
         )
         .with_for_update(skip_locked=True)
         .limit(max(1, min(limit, 100)))
+    )
+
+
+async def settle_incident_notices(db: AsyncSession, *, now: datetime) -> None:
+    """발송 전에 끝난 사고의 열림 알림, 그리고 열림이 한 번도 나가지 않은 복구 알림을 종결한다.
+
+    짝 계약("나간 OPEN에는 반드시 RECOVERED가 따른다")을 지킨다: 나갔을 수 있는 열림 알림
+    (PENDING·SENDING·RETRYING·HOLD·SENT)이 하나라도 남아 있으면 복구 알림은 그대로 보낸다.
+    """
+
+    settled = {
+        "state": NotificationOutboxState.FAILED.value,
+        "next_attempt_at": None,
+        "safe_error_code": RESOLVED_BEFORE_SEND_CODE,
+        "safe_error_message": _RESOLVED_BEFORE_SEND_MESSAGE,
+        "version": NotificationOutbox.version + 1,
+        "updated_at": now,
+    }
+    resolved_incident = (
+        select(Incident.id)
+        .where(
+            Incident.id == NotificationOutbox.incident_id,
+            Incident.state.in_(
+                (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
+            ),
+        )
+        .exists()
+    )
+    await db.execute(
+        update(NotificationOutbox)
+        .where(
+            NotificationOutbox.notification_type == "INCIDENT_OPEN",
+            NotificationOutbox.state.in_(_SENDABLE_STATES),
+            resolved_incident,
+        )
+        .values(**settled)
+        .execution_options(synchronize_session=False)
+    )
+    suppressed = aliased(NotificationOutbox)
+    reached = aliased(NotificationOutbox)
+    open_was_suppressed = (
+        select(suppressed.id)
+        .where(
+            suppressed.incident_id == NotificationOutbox.incident_id,
+            suppressed.notification_type == "INCIDENT_OPEN",
+            suppressed.safe_error_code == RESOLVED_BEFORE_SEND_CODE,
+        )
+        .exists()
+    )
+    open_may_have_reached = (
+        select(reached.id)
+        .where(
+            reached.incident_id == NotificationOutbox.incident_id,
+            reached.notification_type == "INCIDENT_OPEN",
+            reached.state.in_(_MAY_HAVE_REACHED_STATES),
+        )
+        .exists()
+    )
+    await db.execute(
+        update(NotificationOutbox)
+        .where(
+            NotificationOutbox.notification_type == "INCIDENT_RECOVERED",
+            NotificationOutbox.state.in_(_SENDABLE_STATES),
+            open_was_suppressed,
+            ~open_may_have_reached,
+        )
+        .values(**settled)
+        .execution_options(synchronize_session=False)
     )
 
 
@@ -389,6 +489,7 @@ async def claim_notification_batch(
     """
 
     claimed_at = now or datetime.now(UTC)
+    await settle_incident_notices(db, now=claimed_at)
     rows = list(
         (await db.execute(claimable_notifications_stmt(claimed_at=claimed_at, limit=limit))).scalars()
     )
