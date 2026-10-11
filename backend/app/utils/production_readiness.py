@@ -70,6 +70,7 @@ EXPECTED_TASKS = {
     "app.workers.autonomous_recovery.reconcile",
     "app.workers.content_backlog_recovery.reconcile",
     "app.workers.domain_certificate_tasks.provision_domain_certificate",
+    "app.workers.profile_autofill_tasks.autofill_registered_hospital_profile",
     "app.workers.canary_tasks.canary_content",
     "app.workers.canary_tasks.canary_default",
     "app.workers.canary_tasks.canary_leadgen",
@@ -195,6 +196,7 @@ def _workflow_facts() -> dict[str, bool]:
     import app.workers.naver_sync  # noqa: F401, PLC0415
     import app.workers.notification_tasks  # noqa: F401, PLC0415
     import app.workers.post_publish_ai_review  # noqa: F401, PLC0415
+    import app.workers.profile_autofill_tasks  # noqa: F401, PLC0415
     import app.workers.provider_usage_recovery  # noqa: F401, PLC0415
     import app.workers.published_image_refresh  # noqa: F401, PLC0415
     import app.workers.tasks  # noqa: F401, PLC0415
