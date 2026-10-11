@@ -100,6 +100,9 @@ class _RecoverySession:
                 return _ScalarResult(self.visible_block_keys)
             return _ScalarResult(self.rebuild_site_incidents)
         if entity is OperationRun:
+            if "operation_runs.safe_error_code IN" in str(statement):
+                # 사고 없이 FAILED만 남은 멈춘 실행 복구 조회 — 이 가짜 DB에는 없다.
+                return _ScalarResult(())
             self._operation_run_reads += 1
             # 1: SITE_REVALIDATION, 2: 재배달 후보, 그다음 병원별 사이트 준비 이력,
             # 마지막이 재인증 실행 이력.

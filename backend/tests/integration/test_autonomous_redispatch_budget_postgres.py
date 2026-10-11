@@ -347,3 +347,107 @@ def test_the_cause_incident_closes_once_every_stopped_run_has_a_succeeded_retry(
         "RECOVERED",
         "ACKNOWLEDGED",
     )
+
+
+def _stop_incidents_and_outbox(db, code: str) -> tuple[int, int]:
+    key = build_incident_key(
+        "autonomous_recovery", "operation_recovery_stop", code, IncidentFingerprint.UNKNOWN
+    )
+    incidents = db.scalars(select(Incident).where(Incident.dedupe_key == key)).all()
+    outbox = (
+        db.scalars(
+            select(NotificationOutbox).where(
+                NotificationOutbox.incident_id.in_([incident.id for incident in incidents])
+            )
+        ).all()
+        if incidents
+        else []
+    )
+    return len(incidents), len(outbox)
+
+
+def test_a_crash_between_failing_the_run_and_opening_the_incident_converges(
+    db, pg_conn, monkeypatch
+) -> None:
+    run = _run(
+        db,
+        operation_type="RUN_SOV",
+        state=OperationRunState.QUEUED,
+        queue="sov",
+        minutes_ago=24 * 60 + 1,
+        redispatch_count=3,
+    )
+    real_open = autonomous_recovery._open_recovery_stop_incident
+    calls = {"n": 0}
+
+    def crash_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("DB connection lost after the run update")
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(autonomous_recovery, "_open_recovery_stop_incident", crash_once)
+    with pytest.raises(RuntimeError):
+        _reconcile(monkeypatch, pg_conn)
+    # 실행 상태와 사고는 함께 되돌아간다 — FAILED인데 사고가 없는 실행이 남지 않는다.
+    assert _reload(db, run).state == OperationRunState.QUEUED
+
+    _reconcile(monkeypatch, pg_conn)
+    _reconcile(monkeypatch, pg_conn)
+
+    assert _reload(db, run).safe_error_code == "OPERATION_REDISPATCH_EXHAUSTED"
+    assert _stop_incidents_and_outbox(db, "OPERATION_REDISPATCH_EXHAUSTED") == (1, 1)
+
+
+def test_a_failed_stop_left_without_its_incident_is_repaired_once(
+    db, pg_conn, monkeypatch
+) -> None:
+    """이전 릴리스처럼 FAILED만 커밋되고 사고가 없는 실행은 다음 tick이 사고를 채운다."""
+
+    orphan = _run(
+        db,
+        operation_type="RUN_SOV",
+        state=OperationRunState.QUEUED,
+        queue="sov",
+        minutes_ago=90,
+    )
+    orphan.state = OperationRunState.FAILED
+    orphan.safe_error_code = "OPERATION_RUN_ABANDONED"
+    orphan.completed_at = NOW - timedelta(hours=2)
+    db.commit()
+
+    _reconcile(monkeypatch, pg_conn)
+    _reconcile(monkeypatch, pg_conn)
+
+    assert _stop_incidents_and_outbox(db, "OPERATION_RUN_ABANDONED") == (1, 1)
+    incident = _cause_incident(db, "OPERATION_RUN_ABANDONED")
+    assert incident is not None and incident.operation_run_id == orphan.id
+
+
+def test_a_due_v0_is_not_starved_by_runs_still_inside_their_doubled_grace(
+    db, pg_conn, monkeypatch
+) -> None:
+    waiting = [
+        _run(
+            db,
+            operation_type="RUN_SOV",
+            state=OperationRunState.QUEUED,
+            queue="sov",
+            # 기본 3시간은 지났지만 한 번 재배달돼 6시간을 기다리는 중이다.
+            minutes_ago=4 * 60,
+            redispatch_count=1,
+        )
+        for _ in range(autonomous_recovery._BATCH_SIZE)
+    ]
+    v0 = _run(
+        db,
+        operation_type="TRIGGER_V0_REPORT",
+        state=OperationRunState.QUEUED,
+        queue="reports",
+        minutes_ago=46,
+    )
+
+    sent = _reconcile(monkeypatch, pg_conn)
+
+    assert len(_sent_for(sent, v0)) == 1
+    assert all(_sent_for(sent, run) == [] for run in waiting)
