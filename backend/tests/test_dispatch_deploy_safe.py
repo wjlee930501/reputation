@@ -4,7 +4,7 @@
 - 이미 다른 사본이 가져간 실행의 늦은 사본은 실패가 아니라 Ignore다 — task_failure도 사고도 없다.
 - 서명·봉투가 틀린 배달은 그대로 실패하고 사고를 연다.
 - 재배달은 언제나 새 task id로 보내고 QUEUED로 표시한다.
-- 봉투 수명은 '정확히 같음'이 아니라 상한이다 — 이전 릴리스(3600초) 봉투도 롤아웃 중 유효하다.
+- 봉투 수명은 '정확히 같음'이 아니라 상한이다 — 직전 릴리스(3600초) 봉투도 롤아웃 중 유효하고, 서명은 상한(6시간)과 같다.
 """
 
 from __future__ import annotations
@@ -279,6 +279,7 @@ def test_a_bad_signature_still_fails_and_opens_an_incident(monkeypatch, claims) 
 
 
 def _stamp_with_lifetime(monkeypatch, lifetime: int, target: str) -> dict[str, str]:
+    original = dispatch_envelope.DISPATCH_TTL_SECONDS
     monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", lifetime)
     headers = dispatch_auth.stamp_dispatch_headers(
         task_name=IMAGE_TASK,
@@ -289,13 +290,13 @@ def _stamp_with_lifetime(monkeypatch, lifetime: int, target: str) -> dict[str, s
         headers={},
         now=ISSUED,
     )
-    monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", 3600)
+    monkeypatch.setattr(dispatch_envelope, "DISPATCH_TTL_SECONDS", original)
     return headers
 
 
 @pytest.mark.parametrize(
     "lifetime",
-    # 3600초: #226 이전 릴리스와 이번 릴리스가 서명하는 수명. 상한: 다음 릴리스가 서명할 수명.
+    # 3600초: 직전 릴리스(1시간 서명)가 보낸 봉투 — 롤아웃 겹침 중에도 유효해야 한다. 상한: 이번 릴리스가 서명하는 수명.
     [3600, dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS],
 )
 def test_an_envelope_lifetime_within_the_bound_validates(monkeypatch, lifetime) -> None:
@@ -327,14 +328,47 @@ def test_an_envelope_lifetime_outside_the_bound_is_rejected(monkeypatch, lifetim
         )
 
 
-def test_this_release_signs_the_lifetime_pre_226_workers_accept() -> None:
-    """#226 이전 워커는 수명이 정확히 3600초인 봉투만 받는다 — 겹침 구간에 그 워커가 소비해도 안전하다."""
+def test_the_publisher_signs_the_full_accepted_lifetime() -> None:
+    """서명 수명은 수락 상한과 같다(2026-10-11). #226 이전 워커(≤ worker-00224)는 모두 사라졌다."""
 
     headers = dispatch_auth.stamp_dispatch_headers(
         task_name=IMAGE_TASK, task_id="t", args=["x"], kwargs={}, retries=0, headers={}, now=ISSUED
     )
     issued = int(headers[dispatch_envelope.ISSUED_HEADER])
-    assert int(headers[dispatch_envelope.EXPIRES_HEADER]) - issued == 3600
+    assert (
+        int(headers[dispatch_envelope.EXPIRES_HEADER]) - issued
+        == dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS
+    )
+
+
+def test_signed_lifetime_covers_broker_redelivery_within_the_accepted_bound() -> None:
+    """SIGKILL로 visibility_timeout 뒤 되돌아온 사본도 아직 유효해야 한다."""
+
+    visibility = celery_app.conf.broker_transport_options["visibility_timeout"]
+    assert (
+        visibility
+        <= dispatch_envelope.DISPATCH_TTL_SECONDS
+        <= dispatch_envelope.DISPATCH_MAX_LIFETIME_SECONDS
+    )
+
+
+def test_a_copy_redelivered_after_the_visibility_timeout_still_validates(monkeypatch) -> None:
+    visibility = celery_app.conf.broker_transport_options["visibility_timeout"]
+    _production(monkeypatch, now=ISSUED + visibility + 60)
+    target = str(uuid.uuid4())
+    headers = dispatch_auth.stamp_dispatch_headers(
+        task_name=IMAGE_TASK,
+        task_id="t",
+        args=[target],
+        kwargs={},
+        retries=0,
+        headers={},
+        now=ISSUED,
+    )
+
+    dispatch_auth.validate_task_dispatch(
+        task_name=IMAGE_TASK, task_id="t", args=[target], kwargs={}, retries=0, headers=headers
+    )
 
 
 def test_clocks_are_ordered_for_redelivery_and_leases() -> None:
