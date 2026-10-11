@@ -22,6 +22,7 @@ from sqlalchemy import String, and_, cast, func, or_, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Session, aliased
 
+from app.core.config import settings
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital
@@ -42,9 +43,12 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.models.report import MonthlyReport
+from app.services.dependency_incident_helpers import open_notice_exists_sync
 from app.services.incident_types import DEFAULT_RETRYING_DEADLINE, SWEEP_OWNED_INCIDENT_TYPES
+from app.services.notification_messages import build_recovered_incident_notification
+from app.services.notification_store import enqueue_notification_sync
 from app.services.notification_transport import CHANNEL_UNAVAILABLE_CODE, safe_error_message
-from app.workers.task_incident_control import _audit, _transition_incident
+from app.workers.task_incident_control import _audit, _projection, _transition_incident
 
 BACKLOG_INCIDENT_BATCH = 50
 _KST = ZoneInfo("Asia/Seoul")
@@ -716,10 +720,122 @@ def bound_unowned_retrying(
     return len(rows)
 
 
+# 생성 사고는 연결 실행이 끝나도 글이 막혀 있을 수 있고 자체 복구(`generation_incident_control`)가 닫는다.
+_OWNER_MANAGED_SOURCES = ("CONTENT_GENERATION",)
+_RECOVERED_ACK_GRACE = timedelta(hours=24)
+
+
+def close_retrying_with_linked_success(
+    db: Session, *, now: datetime, limit: int = BACKLOG_INCIDENT_BATCH
+) -> int:
+    """Admin '복구 확인 완료'와 같은 근거(연결 실행 SUCCEEDED·같은 병원 범위)를 기계가 확인해 닫는다.
+
+    버튼보다 좁다: 그 성공이 사고의 마지막 관측 뒤에 끝났을 때만이고, 생성 사고는 제외한다.
+    짝 계약: 그 사고의 열림 알림이 outbox에 있었다면 복구 알림을 넣는다. 그 열림이 나가지
+    않았다면 발송기가 복구 알림도 함께 종결한다(`notification_store.settle_incident_notices`).
+    """
+
+    rows = db.execute(
+        select(Incident, OperationRun)
+        .join(OperationRun, OperationRun.id == Incident.operation_run_id)
+        .where(
+            Incident.state == IncidentState.RETRYING.value,
+            Incident.source_type.notin_(_OWNER_MANAGED_SOURCES),
+            OperationRun.state == OperationRunState.SUCCEEDED.value,
+            OperationRun.hospital_id.is_not_distinct_from(Incident.hospital_id),
+            OperationRun.completed_at > Incident.last_seen_at,
+        )
+        .order_by(Incident.last_seen_at, Incident.id)
+        .with_for_update(of=Incident, skip_locked=True)
+        .limit(limit)
+    ).all()
+    closed = 0
+    for incident, linked in rows:
+        recovered = _transition_incident(
+            db,
+            incident,
+            expected_state=IncidentState.RETRYING,
+            next_state=IncidentState.RECOVERED,
+            recovered=True,
+        )
+        if recovered is None:
+            continue
+        if open_notice_exists_sync(db, recovered.id):
+            enqueue_notification_sync(
+                db,
+                build_recovered_incident_notification(
+                    _projection(db, recovered), settings.ADMIN_BASE_URL
+                ),
+            )
+        acknowledged = _transition_incident(
+            db,
+            recovered,
+            expected_state=IncidentState.RECOVERED,
+            next_state=IncidentState.ACKNOWLEDGED,
+            acknowledged=True,
+        )
+        _audit(
+            db,
+            acknowledged or recovered,
+            "incident_closed_by_linked_success",
+            detail_extra={"evidence": "linked_run_succeeded", "linked_run_id": str(linked.id)},
+        )
+        closed += 1
+    return closed
+
+
+def acknowledge_settled_recoveries(
+    db: Session, *, now: datetime, limit: int = BACKLOG_INCIDENT_BATCH
+) -> int:
+    """복구된 지 하루가 지난 사고를 시스템 확인으로 닫는다(acknowledged_by_id NULL = 기계가 닫음).
+
+    RECOVERED는 이미 사람의 일이 아니다(`operator_action.requires_operator_action`). '확인됨'
+    화면의 클릭을 남기지 않으려는 정리이며 Slack을 만들지 않는다.
+    """
+
+    rows = list(
+        db.execute(
+            select(Incident)
+            .where(
+                Incident.state == IncidentState.RECOVERED.value,
+                Incident.recovered_at <= now - _RECOVERED_ACK_GRACE,
+            )
+            .order_by(Incident.recovered_at, Incident.id)
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    closed = 0
+    for incident in rows:
+        acknowledged = _transition_incident(
+            db,
+            incident,
+            expected_state=IncidentState.RECOVERED,
+            next_state=IncidentState.ACKNOWLEDGED,
+            acknowledged=True,
+        )
+        if acknowledged is None:
+            continue
+        _audit(
+            db,
+            acknowledged,
+            "incident_auto_acknowledged",
+            detail_extra={"evidence": "recovered_over_24h"},
+        )
+        closed += 1
+    return closed
+
+
 def settle_incidents(
     db: Session, *, now: datetime | None = None, limit: int = BACKLOG_INCIDENT_BATCH
 ) -> int:
-    """자동화가 끝낸 일을 사람의 일로 남기지 않는 정리. 커밋은 호출자가 한다."""
+    """자동화가 끝낸 일을 사람의 일로 남기지 않는 정리. Slack은 짝 계약이 요구할 때만. 커밋은 호출자."""
 
     observed = now or datetime.now(UTC)
-    return bound_unowned_retrying(db, now=observed, limit=limit)
+    return (
+        bound_unowned_retrying(db, now=observed, limit=limit)
+        + close_retrying_with_linked_success(db, now=observed, limit=limit)
+        + acknowledge_settled_recoveries(db, now=observed, limit=limit)
+    )
