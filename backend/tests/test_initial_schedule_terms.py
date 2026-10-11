@@ -22,12 +22,12 @@ def test_start_tomorrow_when_the_rest_of_the_month_fits_the_contract() -> None:
     assert active_from == date(2026, 10, 1)
 
 
-def test_mid_month_start_moves_to_the_first_of_next_month() -> None:
-    # 10/12~10/31의 월·수·금은 9일뿐이라 12편을 엄격하게 배치할 수 없다.
+def test_mid_month_start_begins_tomorrow() -> None:
+    # 첫 계약 월은 다음 달로 미루지 않고 남은 기간을 안분해 바로 시작한다(D3).
     _days, active_from = initial_schedule_terms(
         "PLAN_12", today=date(2026, 10, 11), contract_effective_on=None
     )
-    assert active_from == date(2026, 11, 1)
+    assert active_from == date(2026, 10, 12)
 
 
 def test_future_contract_effective_date_wins_over_tomorrow() -> None:

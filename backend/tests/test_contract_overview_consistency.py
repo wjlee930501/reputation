@@ -69,3 +69,19 @@ async def test_overview_counts_original_month_not_the_recovery_date(db, monkeypa
     db.flush()
     again = await overview._month_summary(AsyncDB(db), hospital)
     assert again.published_count == 6
+
+
+async def test_overview_shows_the_prorated_first_contract_month(db, monkeypatch):
+    """첫 일정이 월 중간에 시작해 안분된 첫 달은 현황 카드도 그 편수를 약속으로 보인다."""
+
+    hospital, schedule = seed(db)
+    schedule.active_from = date(2026, 9, 14)
+    for row in db.query(ContentItem).all():
+        row.total_count = 5
+    db.flush()
+    monkeypatch.setattr(overview.arrow, "now", lambda *args: arrow.get(NOW))
+    monkeypatch.setattr(overview, "weekly_mention_trend", AsyncMock(return_value=[]))
+
+    result = await overview._month_summary(AsyncDB(db), hospital)
+
+    assert result.planned_total == 5

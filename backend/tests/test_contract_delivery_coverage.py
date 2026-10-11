@@ -187,3 +187,18 @@ def test_coverage_read_does_not_mutate_existing_rows_or_commit(db):
     assert before == [
         (row.id, row.status, row.scheduled_date) for row in db.scalars(select(ContentItem))
     ]
+
+
+def test_prorated_first_contract_month_uses_the_prorated_denominator(db):
+    """첫 일정이 월 중간에 시작해 안분된 첫 달은 그 편수가 약속이다(D3)."""
+
+    hospital, schedule = active(db)
+    schedule.active_from = date(2026, 9, 14)
+    for row in db.scalars(select(ContentItem)):
+        row.total_count = 5
+    db.flush()
+
+    facts = collect_contract_delivery_coverage(db, now=NOW)
+
+    assert (facts.expected, facts.allocated, facts.missing_allocations) == (5, 5, 0)
+    assert not facts.delivery_at_risk

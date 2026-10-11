@@ -48,9 +48,14 @@ def build_monthly_content_operations_snapshot(
     contract_published_count: int | None = None,
     early_publication_count: int = 0,
     late_recovery_count: int = 0,
+    contract_quota: int | None = None,
 ) -> MonthlyContentOperationSnapshot:
-    """Summarize closed-month content operations for report delivery control."""
-    plan_quota = monthly_quota_for_plan(plan)
+    """Summarize closed-month content operations for report delivery control.
+
+    `contract_quota`는 그 달 약속 편수다(첫 계약 월 안분, `content_month_target`).
+    주지 않으면 요금제 편수를 쓴다.
+    """
+    plan_quota = contract_quota if contract_quota is not None else monthly_quota_for_plan(plan)
     published_count = len(published_items)
     slot_counts = Counter(_status_value(item) for item in scheduled_items)
     actionable_unpublished = [

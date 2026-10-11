@@ -168,3 +168,99 @@ def test_never_revives_a_schedule_a_person_turned_off(pg_session) -> None:
     )
 
     assert outcome.reason == "SCHEDULE_EXISTS"
+
+
+# ── 첫 계약 월 안분(D3) ─────────────────────────────────────────────────────
+
+MID_MONTH = date(2026, 10, 11)  # 내일(10/12)부터 10월의 남은 월·수·금은 9일, 전체는 13일
+
+
+def _month_rows(pg_session, hospital_id, start: date, end: date):
+    return pg_session.execute(
+        select(ContentItem.scheduled_date, ContentItem.total_count, ContentItem.sequence_no)
+        .where(
+            ContentItem.hospital_id == hospital_id,
+            ContentItem.scheduled_date >= start,
+            ContentItem.scheduled_date <= end,
+        )
+        .order_by(ContentItem.sequence_no)
+    ).all()
+
+
+def test_mid_month_approval_starts_tomorrow_with_a_prorated_first_month(pg_session) -> None:
+    import arrow
+
+    from app.services.content_month_target import month_content_target_sync
+    from app.workers.monthly_slots import create_next_month_slots_for_schedule
+
+    hospital = _seed(pg_session)
+
+    outcome = ensure_initial_content_schedule(
+        pg_session, hospital.id, today=MID_MONTH, trigger="essence_auto_approval"
+    )
+
+    assert outcome.created is True
+    assert outcome.active_from == date(2026, 10, 12)
+    rows = _month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31))
+    # ceil(9 / 13 × 12) = 9편이 이번 달 남은 주에만 놓이고, 슬롯이 그 약속 편수를 기록한다.
+    assert outcome.slots_created == len(rows) == 9
+    assert all(row.scheduled_date >= date(2026, 10, 12) for row in rows)
+    assert {row.total_count for row in rows} == {9}
+    [audit] = _audit_rows(pg_session, hospital.id)
+    assert audit.detail["first_month_target"] == 9
+
+    october = arrow.get(date(2026, 10, 1))
+    november = arrow.get(date(2026, 11, 1))
+    assert month_content_target_sync(pg_session, hospital.id, october, "PLAN_12") == 9
+    assert month_content_target_sync(pg_session, hospital.id, november, "PLAN_12") == 12
+
+    # 매일 도는 당월 조정(`monthly_slot_generation(current_month=True)`)과 같은 호출이
+    # 안분된 첫 달을 요금제 편수로 다시 채우지 않는다.
+    schedule = pg_session.get(ContentSchedule, outcome.schedule_id)
+    assert (
+        create_next_month_slots_for_schedule(
+            pg_session,
+            schedule,
+            october,
+            october.date(),
+            october.ceil("month").date(),
+            not_before=date(2026, 10, 13),
+        )
+        is False
+    )
+    assert len(_month_rows(pg_session, hospital.id, date(2026, 10, 1), date(2026, 10, 31))) == 9
+
+    # 다음 달은 월말 배치가 요금제 편수 그대로 만든다.
+    assert create_next_month_slots_for_schedule(
+        pg_session, schedule, november, november.date(), november.ceil("month").date()
+    )
+    november_rows = _month_rows(pg_session, hospital.id, date(2026, 11, 1), date(2026, 11, 30))
+    assert len(november_rows) == 12 and {row.total_count for row in november_rows} == {12}
+
+
+def test_a_human_mid_month_first_schedule_keeps_the_full_quota(pg_session) -> None:
+    import arrow
+
+    from app.services.content_month_target import month_content_target_sync
+
+    hospital = _seed(pg_session)
+    schedule = ContentSchedule(
+        hospital_id=hospital.id, plan="PLAN_12", publish_days=[0, 1, 2, 3, 4, 5, 6],
+        active_from=date(2026, 10, 12), is_active=True,
+    )
+    pg_session.add(schedule)
+    pg_session.flush()
+    for seq in range(1, 13):
+        pg_session.add(
+            ContentItem(
+                hospital_id=hospital.id, schedule_id=schedule.id, content_type="FAQ",
+                sequence_no=seq, total_count=12, scheduled_date=date(2026, 10, 12 + seq),
+            )
+        )
+    pg_session.flush()
+
+    # 사람이 만든 첫 달은 슬롯이 요금제 편수를 기록하므로 약속 편수가 소급해 줄지 않는다.
+    assert (
+        month_content_target_sync(pg_session, hospital.id, arrow.get(date(2026, 10, 1)), "PLAN_12")
+        == 12
+    )

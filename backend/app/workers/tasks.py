@@ -43,7 +43,6 @@ from app.models.content import (
     ContentItem,
     ContentSchedule,
     ContentStatus,
-    monthly_quota_for_plan,
 )
 from app.models.essence import (
     HospitalContentPhilosophy,
@@ -112,6 +111,7 @@ from app.services.content_minimal_correction import (
     propose_sentence_corrections,
     run_minimal_correction,
 )
+from app.services.content_month_target import month_content_target_sync
 from app.services.content_provenance import build_generation_provenance
 from app.services.content_publication import (
     HOSPITAL_FALLBACK_IMAGE_SOURCE,
@@ -11776,8 +11776,11 @@ def _build_monthly_report_for_hospital(
         .order_by(ContentSchedule.active_from.desc(), ContentSchedule.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    # 약속 편수: 요금제 편수, 첫 계약 월을 안분한 달은 그 편수(content_month_target).
+    period_quota = month_content_target_sync(db, h.id, arrow.get(period_start), period_plan)
     content_operations = build_monthly_content_operations_snapshot(
         plan=period_plan,
+        contract_quota=period_quota,
         scheduled_items=contract_scheduled_contents,
         published_items=actual_published_contents,
         cutoff_at=actual_now,
@@ -11946,7 +11949,7 @@ def _build_monthly_report_for_hospital(
         sov_pct=sov_pct,
         prev_sov_pct=prev_sov,
         published_count=len(actual_published_contents),
-        plan_quota=monthly_quota_for_plan(period_plan),
+        plan_quota=period_quota,
         supplementary_count=supplementary_count,
         early_publication_count=early_publication_count,
         late_recovery_count=late_recovery_count,

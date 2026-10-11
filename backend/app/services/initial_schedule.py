@@ -4,6 +4,7 @@
 여기는 아직 일정이 한 번도 없던 병원의 *첫* 일정만 만든다 — 교체·재배치가 없으므로
 슬롯 생성은 월말 배치와 같은 `create_next_month_slots_for_schedule`을 쓰고, 감사행은
 사람 경로와 같은 action·detail 키로 남긴다. 사람은 언제든 콘텐츠 화면에서 교체할 수 있다.
+첫 계약 월은 승인 시점부터 남은 게시 요일로 안분한 편수로 시작한다(D3).
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from app.models.content import ContentItem, ContentSchedule
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.services.audit_log import write_audit_log_sync
-from app.services.content_calendar import generate_monthly_slots
+from app.services.content_month_target import prorated_first_month_quota
 from app.services.enum_values import enum_value
 from app.services.essence_readiness import get_essence_readiness_sync
 from app.services.hospital_states import schedule_availability_verdict
@@ -49,20 +50,15 @@ def initial_schedule_terms(
 ) -> tuple[list[int], date]:
     """첫 일정의 (발행 요일, 시작일).
 
-    시작일은 내일과 계약 효력일 중 늦은 날이다. 그 달 남은 기본 요일로 계약 편수를 엄격하게
-    배치할 수 없으면(사람 경로의 첫 일정 검사와 같은 규칙) 다음 달 1일로 미룬다 — 남은
-    며칠에 한 달 편수를 몰아 넣지 않는다.
+    시작일은 내일과 계약 효력일 중 늦은 날이다. 월 중간이어도 다음 달로 미루지 않는다 —
+    첫 계약 월은 남은 게시 요일 비율로 약속 편수를 줄여 바로 시작한다
+    (`content_month_target.prorated_first_month_quota`).
     """
 
     days = list(DEFAULT_PUBLISH_DAYS_BY_PLAN[plan])
     earliest = today + timedelta(days=1)
     if contract_effective_on is not None and contract_effective_on > earliest:
         earliest = contract_effective_on
-    month = arrow.get(earliest).floor("month")
-    try:
-        generate_monthly_slots(plan, days, month, start_date=earliest)
-    except ValueError:
-        return days, month.shift(months=1).date()
     return days, earliest
 
 
@@ -144,9 +140,17 @@ def ensure_initial_content_schedule(
     db.add(schedule)
     db.flush()
 
+    # 첫 계약 월은 남은 게시 요일로 안분한다. 슬롯이 그 편수를 `total_count`로 기록하고,
+    # 보고서·현황·계약 이행 집계·당월 조정이 같은 값을 약속 편수로 읽는다.
+    first_month_target = prorated_first_month_quota(plan, publish_days, active_from)
     month = arrow.get(active_from).floor("month")
     create_next_month_slots_for_schedule(
-        db, schedule, month, month.date(), month.ceil("month").date()
+        db,
+        schedule,
+        month,
+        month.date(),
+        month.ceil("month").date(),
+        month_total=first_month_target,
     )
     slots_created = int(
         db.scalar(
@@ -178,6 +182,7 @@ def ensure_initial_content_schedule(
             "new_status": status_value,
             "trigger": trigger,
             "contract_effective_on": str(contract_on) if contract_on else None,
+            "first_month_target": first_month_target,
         },
     )
     db.flush()

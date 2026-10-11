@@ -31,6 +31,10 @@ from app.schemas.hospital_overview import (
     RemainingCondition,
     StateCard,
 )
+from app.services.content_month_target import (
+    first_month_recorded_total_stmt,
+    resolve_month_target,
+)
 from app.services.content_visibility import assess_sampled_visibility, visibility_load_only
 from app.services.essence_readiness import EssenceReadinessState, get_essence_readiness_states
 from app.services.hospital_states import content_state, domain_state, public_service_state
@@ -212,7 +216,13 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
     contract_date = func.coalesce(ContentItem.carried_over_from, ContentItem.scheduled_date)
     rows = (
         await db.execute(
-            select(ContentItem, contract_plan.label("contract_plan"))
+            select(
+                ContentItem,
+                contract_plan.label("contract_plan"),
+                first_month_recorded_total_stmt(hospital.id, now)
+                .scalar_subquery()
+                .label("first_month_total"),
+            )
             .select_from(Hospital)
             .outerjoin(
                 ContentItem,
@@ -227,8 +237,9 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
             .options(visibility_load_only())
         )
     ).all()
-    items = [item for item, _plan in rows if item is not None]
+    items = [item for item, _plan, _first_total in rows if item is not None]
     effective_plan = rows[0][1] if rows else None
+    first_month_total = rows[0][2] if rows else None
     plan = effective_plan if effective_plan is not None else hospital.plan
     # DB PUBLISHED만으로 공개 성공을 선언하지 않는다 — 공개 API는 병원 게이트를 먼저 보고
     # 통과한 병원의 글만 내보낸다. 일시정지·준비 중 병원은 발행 글이 몇 편이든 공개 페이지가
@@ -247,7 +258,8 @@ async def _month_summary(db: AsyncSession, hospital: Hospital) -> MonthSummary:
         published_count=len(items),
         public_count=public_count,
         withheld_count=len(items) - public_count,
-        planned_total=monthly_quota_for_plan(plan) or 0,
+        # 첫 계약 월을 안분한 달은 그 편수가 약속이다(content_month_target).
+        planned_total=resolve_month_target(monthly_quota_for_plan(plan), first_month_total) or 0,
         mention_rate=measured[0] if measured else None,
         mention_rate_measured_at=measured[1] if measured else None,
         next_report_date=date(next_month.year, next_month.month, 1),
