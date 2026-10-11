@@ -33,6 +33,7 @@ from app.schemas.handoff import (
 from app.services.audit_log import verified_request_actor, write_audit_log
 from app.services.hospital_duplicates import find_duplicate_hospitals
 from app.utils.db_locks import acquire_hospital_advisory_lock
+from app.utils.medical_filter import check_forbidden
 
 router = APIRouter(prefix="/admin/handoffs", tags=["Admin — Handoffs"])
 
@@ -74,6 +75,33 @@ def _hospital_exists(hospital_id: uuid.UUID | None) -> dict[str, object]:
     if hospital_id is not None:
         detail["hospital_id"] = str(hospital_id)
     return detail
+
+
+def _lead_profile_seed(lead: SalesLead | None) -> dict[str, list[str]]:
+    """상담 요청이 이미 받은 진료과·지역·핵심 키워드를 병원 기본값으로 옮긴다.
+
+    병원 대표번호(`clinic_phone`)는 옮기지 않는다 — 공개 페이지에 바로 나가는 사실이라
+    AE가 확인해야 하고, 병원 행으로 복사하면 리드 보관기간 파기를 우회한다(PII-2·PII-3).
+    키워드는 공개 표면에 쓰이므로 의료광고 금지 표현이 든 값은 버린다.
+    """
+
+    if lead is None:
+        return {}
+    seed: dict[str, list[str]] = {}
+    specialty = (lead.specialty or "").strip()
+    if specialty:
+        seed["specialties"] = [specialty]
+    region = (lead.region_keyword or "").strip()
+    if region:
+        seed["region"] = [region]
+    keywords = [
+        keyword.strip()
+        for keyword in (lead.core_keywords or [])
+        if isinstance(keyword, str) and keyword.strip() and not check_forbidden(keyword.strip())
+    ]
+    if keywords:
+        seed["keywords"] = list(dict.fromkeys(keywords))
+    return seed
 
 
 async def _convertible_lead(db: AsyncSession, lead_id: uuid.UUID | None) -> SalesLead | None:
@@ -505,12 +533,14 @@ async def register_contract(
             },
         )
 
+    lead_seed = _lead_profile_seed(lead)
     hospital = Hospital(
         name=name,
         slug=await allocate_hospital_slug(db, name),
         plan=body.plan,
         source_lead_id=body.lead_id,
         onboarding_note="Created from admin contract registration.",
+        **lead_seed,
     )
     handoff = HospitalHandoff(
         state=HandoffState.HANDOFF_ACCEPTED,
@@ -550,6 +580,7 @@ async def register_contract(
                 "slug": hospital.slug,
                 "plan": body.plan.value,
                 "source_lead_id": str(body.lead_id) if body.lead_id else None,
+                "lead_profile_seed": sorted(lead_seed),
             },
         )
         await write_audit_log(
