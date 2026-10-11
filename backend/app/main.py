@@ -218,7 +218,9 @@ async def health():
 # LB를 통해 API 헬스에 도달하려면 이 경로가 필요하다 (/health/*는 site로 간다).
 @app.get("/api/v1/health/live")
 async def liveness_via_lb():
-    return {"status": "ok"}
+    # 배포 확인(scripts/deploy_smoke.py)이 LB 너머 API가 이번 배포 소스인지 이 값으로 본다.
+    # 이미 Worker canary·dispatch 봉투가 쓰는 REPUTATION_RELEASE_REVISION만 내보낸다(그 밖의 빌드 정보 없음).
+    return {"status": "ok", "release": settings.REPUTATION_RELEASE_REVISION.strip() or None}
 
 
 @app.get("/api/v1/health/ready")

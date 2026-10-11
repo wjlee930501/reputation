@@ -51,3 +51,15 @@ def test_readiness_returns_503_on_redis_failure(monkeypatch):
 
     assert response.status_code == 503
     assert response.json() == {"detail": {"status": "error", "redis": "unavailable"}}
+
+
+def test_lb_liveness_reports_the_release_revision(monkeypatch):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "REPUTATION_RELEASE_REVISION", "abc1234def5678")
+    with TestClient(app) as client:
+        response = client.get("/api/v1/health/live")
+
+    assert response.status_code == 200
+    # deploy_smoke.py가 LB 너머 API가 이번 배포 소스인지 이 값으로 확인한다.
+    assert response.json() == {"status": "ok", "release": "abc1234def5678"}

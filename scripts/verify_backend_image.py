@@ -38,6 +38,15 @@ def require_isolated_image() -> None:
         raise RuntimeError("Run from the production image working directory")
 
 
+def liveness_payload_ok(route: str, status_code: int, payload: object) -> bool:
+    """`/health/live`는 상태만, LB 경로는 배포 확인용 `release`를 함께 돌려준다(테스트 이미지에서는 None)."""
+    if status_code != 200 or not isinstance(payload, dict) or payload.get("status") != "ok":
+        return False
+    if route == "/api/v1/health/live":
+        return set(payload) == {"status", "release"}
+    return payload == {"status": "ok"}
+
+
 async def verify_liveness() -> dict[str, bool]:
     """Exercise the ASGI app and middleware without opening a network socket."""
     from httpx import ASGITransport, AsyncClient
@@ -50,9 +59,7 @@ async def verify_liveness() -> dict[str, bool]:
     ) as client:
         for route in ("/health/live", "/api/v1/health/live"):
             response = await client.get(route)
-            checks[route] = response.status_code == 200 and response.json() == {
-                "status": "ok"
-            }
+            checks[route] = liveness_payload_ok(route, response.status_code, response.json())
         response = await client.get("/docs")
         checks["development_docs_disabled"] = response.status_code == 404
     return checks

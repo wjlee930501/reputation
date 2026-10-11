@@ -164,6 +164,22 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
 
     shutil.copy2(PROJECT_ROOT / "scripts" / "deploy.sh", project / "scripts" / "deploy.sh")
     shutil.copy2(PROJECT_ROOT / "scripts" / "deploy_env.py", project / "scripts" / "deploy_env.py")
+    # 배포 뒤 공개 표면 확인 스텁 — 실제 네트워크를 쓰지 않고 호출만 기록한다.
+    _write_executable(
+        project / "scripts" / "deploy_smoke.py",
+        "\n".join([
+            "#!/usr/bin/env python3",
+            "import os, sys",
+            "with open(os.environ['FAKE_COMMAND_LOG'], 'a') as log:",
+            "    log.write('SMOKE ' + ' '.join(sys.argv[1:]) + '\\n')",
+            "if sys.argv[1] == 'baseline':",
+            "    out = sys.argv[sys.argv.index('--out') + 1]",
+            "    open(out, 'w').write('jangpyeon.example.test jangpyeon\\n')",
+            "    raise SystemExit(0)",
+            "raise SystemExit(int(os.environ.get('FAKE_SMOKE_VERIFY_EXIT', '0')))",
+            "",
+        ]),
+    )
     shutil.copy2(
         PROJECT_ROOT / "terraform" / "cloudrun.tf", project / "terraform" / "cloudrun.tf"
     )
@@ -1052,6 +1068,7 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
             "GCP_STORAGE_BUCKET": "reputation-assets",
             "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
             "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
+            "SKIP_POST_DEPLOY_SMOKE": "1",
             "OPENAI_CHATGPT_USE_WEB_SEARCH": "true",
                 "CERTIFICATE_MANAGER_AUTO_PROVISION": "true",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
@@ -1228,6 +1245,7 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
             "PUBLIC_DOMAIN": "reputation.example.test",
             "DATABASE_URL": "postgresql+asyncpg://read-only:test@db.example.test/reputation",
             "DEPLOY_CLOCK_KST": "2026-10-11T14:30",
+            "SKIP_POST_DEPLOY_SMOKE": "1",
                 "ADMIN_DOMAIN": "admin.reputation.example.test",
                 "REPUTATION_RELEASE_REVISION": "test-source-revision",
                 "SKIP_PUBLIC_DNS_PREFLIGHT": "1",
@@ -2176,3 +2194,39 @@ def test_auto_rollback_can_be_switched_off(tmp_path: Path) -> None:
     assert "AUTO_ROLLBACK=0" in result.stderr
     assert "gcloud run services update-traffic" not in commands
     assert "gcloud run deploy reputation-api" not in commands
+
+
+def test_api_deploy_runs_a_baseline_then_verifies_the_new_release(tmp_path: Path) -> None:
+    result, commands = _run_target(tmp_path, "api", FAKE_READY_REVISION="reputation-site-00143-mvd")
+    assert result.returncode == 0, result.stderr
+    smoke = [l for l in commands.splitlines() if l.startswith("SMOKE ")]
+    assert smoke[0].startswith("SMOKE baseline --public-domain reputation.example.test")
+    assert smoke[1].startswith("SMOKE verify --public-domain reputation.example.test")
+    assert "--api-release test-source-revision" in smoke[1]
+    assert "--site-release reputation-site-00143-mvd" in smoke[1]
+    # 기준선은 첫 mutation 전, 확인은 API 배포 뒤.
+    assert commands.index("SMOKE baseline") < commands.index("docker build")
+    assert commands.index("gcloud run deploy reputation-api") < commands.index("SMOKE verify")
+
+
+def test_failed_smoke_after_api_deploy_rolls_back(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00240-old", FAKE_SMOKE_VERIFY_EXIT="1"
+    )
+    assert result.returncode != 0
+    assert "공개 표면 확인" in result.stderr
+    assert "자동 롤백" in result.stderr
+    assert commands.index("SMOKE verify") < commands.index("gcloud run services update-traffic")
+
+
+def test_smoke_domain_comes_from_site_base_url_without_public_domain(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "SMOKE baseline --public-domain reputation.motionlabs.kr" in command_log.read_text()

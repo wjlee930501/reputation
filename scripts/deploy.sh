@@ -1588,6 +1588,45 @@ rollback_after_failed_gate() {
   fail "${reason}. 자동 롤백도 실패했습니다 — bash scripts/deploy.sh rollback 으로 다시 시도하고 서비스 상태를 확인하세요."
 }
 
+# ─── 배포 뒤 공개 표면 확인 ─────────────────────────────────────────
+# API 배포 뒤 LB 너머 API가 이번 릴리스인지, 배포 전 정상이던 병원 헬스가 그대로인지 본다. 실패하면 자동 롤백.
+SMOKE_HOSTS_FILE=""
+
+smoke_public_domain() {
+  if [[ -n "$PUBLIC_DOMAIN" ]]; then
+    printf '%s' "$PUBLIC_DOMAIN"
+    return
+  fi
+  read_env_file_value SITE_BASE_URL | sed -E 's#^https?://##; s#/.*$##'
+}
+
+capture_smoke_baseline() {
+  if [[ "${SKIP_POST_DEPLOY_SMOKE:-0}" == "1" ]]; then
+    info "SKIP_POST_DEPLOY_SMOKE=1 — 배포 뒤 공개 표면 확인을 건너뜁니다."
+    return
+  fi
+  local domain
+  domain="$(smoke_public_domain)"
+  [[ -n "$domain" ]] \
+    || fail "배포 뒤 확인할 공개 도메인을 알 수 없습니다. PUBLIC_DOMAIN이나 SITE_BASE_URL을 설정하세요."
+  SMOKE_HOSTS_FILE="$(mktemp)"; TEMP_ENV_FILES+=("$SMOKE_HOSTS_FILE")
+  python3 "${SCRIPT_DIR}/deploy_smoke.py" baseline --public-domain "$domain" --out "$SMOKE_HOSTS_FILE" \
+    || fail "배포 전 공개 표면 기준선을 만들지 못했습니다."
+}
+
+run_post_deploy_smoke() {
+  [[ -n "$SMOKE_HOSTS_FILE" ]] || return 0
+  local domain site_release
+  domain="$(smoke_public_domain)"
+  site_release="$(gcloud run services describe reputation-site --region="$REGION" --project="$PROJECT_ID" \
+      --format='value(status.traffic[0].revisionName)' 2>/dev/null || true)"
+  info "배포 뒤 공개 표면 확인 중(${domain})..."
+  python3 "${SCRIPT_DIR}/deploy_smoke.py" verify --public-domain "$domain" --hosts "$SMOKE_HOSTS_FILE" \
+      --api-release "$RELEASE_REVISION" --site-release "$site_release" \
+    || rollback_after_failed_gate "배포 뒤 공개 표면 확인(API release·병원 헬스)에 실패했습니다"
+  ok "배포 뒤 공개 표면 확인 완료"
+}
+
 # Purpose-first cleanup removes the legacy publish transport only after both
 # durable notification queues are empty and every safely convertible legacy
 # task incident has been reconciled. This is a read-only production check and
@@ -1694,6 +1733,7 @@ case "$TARGET" in
     fi
     require_legacy_publish_retirement_clear
     require_deploy_slot
+    capture_smoke_baseline
     capture_rollback_point reputation-api reputation-worker reputation-beat
     IMAGE_URL=$(build_and_push)
     run_migration "$IMAGE_URL"
@@ -1702,6 +1742,7 @@ case "$TARGET" in
     deploy_beat "$IMAGE_URL"
     run_production_readiness_gate "$IMAGE_URL"
     deploy_api "$IMAGE_URL"
+    run_post_deploy_smoke
     ;;
   api|worker|beat)
     prepare_backend_secret_args
@@ -1714,6 +1755,9 @@ case "$TARGET" in
     fi
     require_legacy_publish_retirement_clear
     require_deploy_slot
+    if [[ "$TARGET" == "api" ]]; then
+      capture_smoke_baseline
+    fi
     if [[ "$TARGET" == "api" ]]; then
       capture_rollback_point reputation-worker reputation-beat reputation-api
     else
@@ -1730,6 +1774,7 @@ case "$TARGET" in
       deploy_beat "$IMAGE_URL"
       run_production_readiness_gate "$IMAGE_URL"
       deploy_api "$IMAGE_URL"
+      run_post_deploy_smoke
     else
       "deploy_${TARGET}" "$IMAGE_URL"
       run_production_readiness_gate "$IMAGE_URL"
@@ -1767,6 +1812,7 @@ case "$TARGET" in
     prepare_backend_secret_args
     require_legacy_publish_retirement_clear
     require_deploy_slot
+    capture_smoke_baseline
     capture_rollback_point \
       reputation-api reputation-worker reputation-beat \
       reputation-site reputation-admin
@@ -1783,6 +1829,7 @@ case "$TARGET" in
     deploy_api "$IMAGE_URL"
     deploy_site "$SITE_IMAGE_URL"
     deploy_admin "$ADMIN_IMAGE_URL"
+    run_post_deploy_smoke
     ;;
   migrate)
     prepare_backend_secret_args

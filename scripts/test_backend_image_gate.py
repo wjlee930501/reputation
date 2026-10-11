@@ -84,3 +84,14 @@ def test_ci_image_smoke_has_no_network_or_production_credentials():
     assert "APP_ENV=test" in gate and "REPUTATION_DISABLE_DOTENV=1" in gate
     assert "--entrypoint python" in gate and "verify_backend_image.py:ro" in gate
     assert "--env-file" not in gate and "secrets." not in gate
+
+
+def test_liveness_payload_allows_the_release_key_only_on_the_lb_route():
+    # /api/v1/health/live는 배포 확인(deploy_smoke.py)용 release를 함께 돌려준다 — 테스트 이미지에서는 None.
+    module = load_smoke()
+    assert module.liveness_payload_ok("/health/live", 200, {"status": "ok"})
+    assert not module.liveness_payload_ok("/health/live", 200, {"status": "ok", "release": None})
+    assert module.liveness_payload_ok("/api/v1/health/live", 200, {"status": "ok", "release": None})
+    assert module.liveness_payload_ok("/api/v1/health/live", 200, {"status": "ok", "release": "sha"})
+    assert not module.liveness_payload_ok("/api/v1/health/live", 200, {"status": "ok"})
+    assert not module.liveness_payload_ok("/api/v1/health/live", 503, {"status": "ok", "release": None})
