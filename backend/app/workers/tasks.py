@@ -12885,6 +12885,16 @@ def monitor_live_custom_domains():
                 "public site health persistence unavailable: code=%s",
                 exc.__class__.__name__,
             )
+    # PENDING_DOMAIN 병원의 자기 도메인도 같은 15분 주기에 수동 확인과 같은 경로로 확인한다.
+    from app.workers import domain_dns_poll
+
+    try:
+        pending = _run_async(
+            domain_dns_poll.poll_pending_custom_domains_once(datetime.now(timezone.utc))
+        )
+    except Exception as exc:  # noqa: BLE001 — 대기 도메인 폴링이 라이브 감시 결과를 지우지 않는다.
+        logger.warning("pending domain poll failed: code=%s", exc.__class__.__name__)
+        pending = domain_dns_poll.DomainPollSummary()
     return {
         "checked": len(hospitals),
         "new_failures": new_failures,
@@ -12894,6 +12904,10 @@ def monitor_live_custom_domains():
         "shared_server_errors": server_errors,
         "public_site_incident_opened": public_site_opened,
         "public_site_incident_recovered": public_site_recovered,
+        "pending_domains_verified": pending.verified,
+        "pending_domains_not_ready": pending.not_ready,
+        "pending_domains_skipped": pending.skipped,
+        "pending_domains_expired": pending.expired,
     }
 
 

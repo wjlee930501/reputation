@@ -81,3 +81,53 @@ async def test_unexpected_error_on_one_domain_does_not_stop_the_others() -> None
         poll_started_at=poll_started_at, verify=verify, escalate=noop, recover=noop,
     )
     assert (summary.skipped, summary.verified) == (1, 1)
+
+
+def test_live_domain_monitor_also_polls_pending_domains(monkeypatch) -> None:
+    from app.workers import domain_dns_poll, tasks
+
+    called: list = []
+
+    async def fake_once(now):
+        called.append(now)
+        return domain_dns_poll.DomainPollSummary(verified=1)
+
+    monkeypatch.setattr(tasks, "require_dispatch", lambda *_a, **_k: None)
+    monkeypatch.setattr(domain_dns_poll, "poll_pending_custom_domains_once", fake_once)
+
+    class _NoHospitals:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def execute(self, _stmt):
+            return SimpleNamespace(scalars=lambda: SimpleNamespace(all=lambda: []))
+
+    monkeypatch.setattr(tasks, "SyncSessionLocal", lambda: _NoHospitals())
+
+    result = tasks.monitor_live_custom_domains.run()
+
+    assert len(called) == 1
+    assert result["pending_domains_verified"] == 1
+
+
+async def test_settled_hospitals_close_their_expired_dns_incident_quietly() -> None:
+    from app.workers.domain_dns_poll import recover_settled_dns_incidents
+
+    still_waiting = _target("대기")
+    activated_by_hand = uuid.uuid4()
+    recovered: list = []
+
+    async def recover(hospital_id, name):
+        recovered.append((hospital_id, name))
+
+    closed = await recover_settled_dns_incidents(
+        [still_waiting],
+        [(still_waiting.hospital_id, "대기"), (activated_by_hand, "수동공개")],
+        recover=recover,
+    )
+
+    assert closed == 1
+    assert recovered == [(activated_by_hand, "수동공개")]

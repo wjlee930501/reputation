@@ -118,6 +118,12 @@ _CATALOG = {
         "신청 내역에서 받는 주소와 전송 결과를 확인한 뒤 필요한 경우에만 다시 보내 주세요.",
         "메일 전송 기록 보기",
     ),
+    # 대기 도메인 폴링(workers/domain_dns_poll) — 저장 뒤 14일 동안 DNS가 맞지 않았다.
+    "CUSTOM_DOMAIN_DNS_NOT_CONFIGURED": ActionCopy(
+        "병원 주소 DNS 미설정",
+        "병원 정보의 공개 주소에서 DNS 안내를 병원에 다시 전달하거나 기본 주소로 운영할지 정해 주세요.",
+        "공개 주소 상태 보기",
+    ),
     # 온보딩 정체(services/onboarding_stalls) — 시간만 흐르고 다음 단계로 가지 않는 병원.
     "ONBOARDING_PROFILE_INCOMPLETE": ActionCopy(
         "병원 기본 정보 미완료",
