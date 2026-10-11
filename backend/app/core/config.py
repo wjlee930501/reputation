@@ -709,6 +709,10 @@ class Settings(BaseSettings):
     # 리포트 발송 (Resend). 비어 있으면 발송을 시도하지 않고 delivery 행에 사유를 남긴다 —
     # 조용히 성공 처리하면 "발송 완료"인데 아무도 못 받는 상태가 된다.
     RESEND_API_KEY: str = ""
+    # 운영 경보 메일(2차 경로). 운영 Slack 채널이 죽었거나 외부 감시가 Slack에 전하지 못했을 때만
+    # 이 주소로 Resend 메일을 보낸다(services/ops_alert_email.py). 비어 있으면 보내지 않고 ERROR만 남긴다.
+    # 운영 값은 Terraform `alert_email`(GCP 경보 이메일 채널)과 같은 주소로 둔다 — 주소는 코드에 두지 않는다.
+    OPS_ALERT_EMAIL: str = ""
     # 도입문의 접수 직후 원장 휴대전화로 나가는 안내 문자(LMS). NHN Cloud Notification SMS.
     # INQUIRY_SMS_PROVIDER가 비어 있으면 발송을 시도하지 않고 리드에 SKIPPED 사유를 남긴다 —
     # 조용히 성공 처리하면 "문자 발송됨"인데 원장은 아무것도 못 받은 상태가 된다.

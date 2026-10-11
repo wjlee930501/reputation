@@ -1175,3 +1175,54 @@ def test_an_overlapping_heartbeat_cannot_erase_a_recorded_delivery(monkeypatch, 
 
     assert raced and all(not d.send for d in second)
     assert all(not d.send for decisions in later for d in decisions)
+
+
+async def test_undelivered_alerts_are_emailed_once_per_episode(monkeypatch):
+    calls: list[dict] = []
+
+    async def fake_send(**kwargs):
+        calls.append(kwargs)
+        return True
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", fake_send)
+    now = datetime(2026, 10, 11, 0, 5, tzinfo=UTC)
+    decisions = (
+        pipeline_watchdog.AlertDecision(
+            True, "ALERT", "developer", "인프라 경보", "new_condition_set",
+            "https://hooks.slack.com/ops", ("beat_down",), "2026-10-11T00:00:00+00:00",
+        ),
+        pipeline_watchdog.AlertDecision(
+            True, "ALERT", "operator", "발행 경보", "redis_unavailable",
+            "https://hooks.slack.com/ops", ("publish_missing",), None,
+        ),
+        pipeline_watchdog.AlertDecision(
+            True, "RECOVERY", "operator", "복구", "recovered", "https://hooks.slack.com/ops"
+        ),
+        pipeline_watchdog.AlertDecision(False, None, "operator", None, "deduped", None),
+    )
+
+    emailed = await pipeline_watchdog.email_undelivered(
+        decisions, (False, False, False, False), now=now
+    )
+
+    # 전달 실패한 ALERT만 메일로 간다. RECOVERY·보내지 않은 결정은 메일이 없다.
+    assert emailed == (True, True, False, False)
+    assert [call["idempotency_key"] for call in calls] == [
+        "watchdog:developer:2026-10-11T00:00:00+00:00",
+        "watchdog:operator:2026-10-11:" + pipeline_watchdog._signature(("publish_missing",)),
+    ]
+    assert calls[0]["lines"] == ("인프라 경보",)
+
+
+async def test_delivered_alerts_are_not_emailed(monkeypatch):
+    async def unexpected(**_kwargs):
+        raise AssertionError("delivered alerts must not be emailed")
+
+    monkeypatch.setattr(pipeline_watchdog.ops_alert_email, "send_ops_alert", unexpected)
+    decision = pipeline_watchdog.AlertDecision(
+        True, "ALERT", "operator", "발행", "new_condition_set", "https://hooks.slack.com/ops",
+        ("publish_missing",), "e1",
+    )
+    assert await pipeline_watchdog.email_undelivered(
+        (decision,), (True,), now=datetime(2026, 10, 11, tzinfo=UTC)
+    ) == (False,)

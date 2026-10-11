@@ -345,6 +345,8 @@ def build_report() -> dict[str, Any]:
             "worker_canaries": canaries,
             "inquiry_sms": _inquiry_sms_facts(),
             "slack_webhook_valid": slack_webhooks,
+            # 2차 경로(운영 경보 메일) 설정 — 참고 사실이며 준비 판정을 막지 않는다.
+            "ops_alert_email_configured": bool(settings.OPS_ALERT_EMAIL.strip()),
         },
     }
 

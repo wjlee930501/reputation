@@ -78,6 +78,10 @@ async def run_pipeline_watchdog_alert() -> dict[str, Any]:
     delivered = await pipeline_watchdog.deliver_all(decisions)
     # 전달이 확인된 ALERT만 에피소드를 '전달됨'으로 바꾼다. 실패한 것은 다음 하트비트가 다시 보낸다.
     await run_in_threadpool(pipeline_watchdog.record_deliveries, decisions, delivered)
+    # Slack이 받지 않은 ALERT는 운영 경보 메일로도 보낸다(에피소드당 한 통, 2차 경로).
+    emailed = await pipeline_watchdog.email_undelivered(
+        decisions, delivered, now=report.observed_at
+    )
     return {
         "report": _payload(report),
         "alerts": [
@@ -86,8 +90,11 @@ async def run_pipeline_watchdog_alert() -> dict[str, Any]:
                 "kind": decision.kind,
                 "sent": decision.send,
                 "delivered": was_delivered,
+                "emailed": was_emailed,
                 "reason": decision.reason,
             }
-            for decision, was_delivered in zip(decisions, delivered, strict=True)
+            for decision, was_delivered, was_emailed in zip(
+                decisions, delivered, emailed, strict=True
+            )
         ],
     }

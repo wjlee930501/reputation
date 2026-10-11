@@ -44,6 +44,7 @@ from app.models.audit import AdminAuditLog
 from app.models.content import ContentItem, ContentStatus
 from app.models.hospital import Hospital
 from app.models.operations import OperationRun
+from app.services import ops_alert_email
 from app.services.notification_labels import label_for_event, prefixed
 from app.services.post_publish_review_policy import (
     AUTO_PUBLISH_BLOCKED_ACTION,
@@ -1295,3 +1296,38 @@ async def _post_once_with_retry(
 
 async def deliver_all(decisions: tuple[AlertDecision, ...]) -> tuple[bool, ...]:
     return tuple([await deliver(decision) for decision in decisions])
+
+
+_EMAIL_TITLE: Final = "외부 감시 경보를 Slack에 전달하지 못했습니다"
+
+
+def _email_key(decision: AlertDecision, *, now: datetime) -> str:
+    """에피소드당 하나. Redis가 없어 에피소드가 없으면 KST 날짜와 조건 집합으로 묶는다."""
+    if decision.episode_id:
+        return f"watchdog:{decision.audience}:{decision.episode_id}"
+    kst_date = now.astimezone(KST).date().isoformat()
+    return f"watchdog:{decision.audience}:{kst_date}:{_signature(decision.conditions)}"
+
+
+async def email_undelivered(
+    decisions: tuple[AlertDecision, ...], delivered: tuple[bool, ...], *, now: datetime
+) -> tuple[bool, ...]:
+    """Slack이 받지 않은 ALERT를 운영 경보 메일로 보낸다(2차 경로).
+
+    전달되지 않은 ALERT는 15분마다 다시 판정되므로 이 함수도 다시 불린다. 키가 에피소드에
+    묶여 있어 Resend가 24시간 동안 한 통으로 묶는다. RECOVERY는 메일로 보내지 않는다.
+    메일은 판정·에피소드 기록을 바꾸지 않는다(알림 성공과 저장 성공을 섞지 않는다).
+    """
+    results: list[bool] = []
+    for decision, ok in zip(decisions, delivered, strict=True):
+        if ok or not (decision.send and decision.kind == "ALERT" and decision.text):
+            results.append(False)
+            continue
+        results.append(
+            await ops_alert_email.send_ops_alert(
+                idempotency_key=_email_key(decision, now=now),
+                title=_EMAIL_TITLE,
+                lines=tuple(decision.text.splitlines()),
+            )
+        )
+    return tuple(results)
