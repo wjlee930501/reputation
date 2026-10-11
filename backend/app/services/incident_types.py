@@ -244,7 +244,11 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     # 닫는 근거는 `incident_backlog.RESOLVERS`(같은 원인 코드의 후속 성공)에 있다.
     "OPERATION_RECOVERY_EXHAUSTED": _DEVELOPER,
     "NOTIFICATION_DELIVERY_FAILED": _DEVELOPER,
-    "NOTIFICATION_DELIVERY_UNKNOWN": _DEVELOPER,
+    # 행 단위 수신 불명. 채널 단위 전송 사고(NOTIFICATION_DELIVERY_FAILED)가 정본이고, 행은
+    # `incident_backlog` 근거가 정리한다 — 상태 기록이며 Slack·할 일·요약 건수에서 빠진다.
+    "NOTIFICATION_DELIVERY_UNKNOWN": IncidentTypePolicy(
+        audience=IncidentAudience.DEVELOPER, quiet=True
+    ),
     "CACHE_REVALIDATION_FAILED": _DEVELOPER,
     "MONTHLY_DOCTOR_PDF_BLOCKED": _DEVELOPER,
     # 같은 점검에서 여러 병원 주소가 공유 공개 서비스의 5xx를 받은 상태. AE가 병원 정보에서 고칠
@@ -253,6 +257,20 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     # 사후검수 지적은 계약상 운영자 큐에 올리지 않는 표본 확인이며, 하루 20편씩 지적·교정 복구마다
     # Slack을 보내 24시간에 60건이 나갔다(2026-10-08 대표 지시로 끔). 콘텐츠 탭에서 본다.
     "POST_PUBLISH_REVIEW_FLAGGED": IncidentTypePolicy(quiet=True),
+    # AE가 Admin에서 고칠 수 없는 일 → 개발 담당(Phase 1-8). 일일 요약의 "개발 확인"으로만 센다.
+    # 위조·불일치 actor 헤더는 BFF 서명 문제다(30일 무재발이면 근거로 닫힌다).
+    "UNVERIFIED_ADMIN_ACTOR": _DEVELOPER,
+    # 조치가 비용 경고 기준·측정 한도 환경값 변경(배포 일)이다.
+    "MONTHLY_SOV_COHORT_OVER_LIMIT": _DEVELOPER,
+    # 하루 자동 재실행 예산을 다 쓴 사이트 준비 = 코드·인프라 문제. 사람이 누른 재시도의
+    # 실패(SITE_BUILD_FAILED)는 운영 담당 그대로다. 비용 한도(COST_GUARD_*)는 대표 결정이라
+    # 운영 담당에 남긴다.
+    "SITE_BUILD_RETRIES_EXHAUSTED": _DEVELOPER,
+    # 상태로 충분한 관찰 — 행은 남고 Slack·할 일·요약 건수에서 빠진다(Phase 1-8).
+    # 주간 상한 초과는 주가 끝나면 근거로 닫힌다. 주간 측정은 월간 근거의 보조이며, 사람의 일은
+    # 월간 측정 실패·코호트 공백이 따로 연다(같은 사고에 묶인 정책 전환 안내도 함께 조용해진다).
+    "SOV_HIGH_PRIORITY_CAP_EXCEEDED": IncidentTypePolicy(quiet=True),
+    "WEEKLY_SOV_MEASUREMENT_FAILED": IncidentTypePolicy(quiet=True),
     # 스윕이 재시도를 소유한다 — 기한 안에서는 사람의 일이 아니다.
     "MONTHLY_SLOT_GENERATION_FAILED": IncidentTypePolicy(
         sweep_owned=True, retry_window=_monthly_slot_window

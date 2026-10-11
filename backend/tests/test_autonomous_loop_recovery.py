@@ -393,7 +393,8 @@ def test_site_build_recovery_hands_a_spent_budget_to_one_incident(monkeypatch) -
     # 사람이 볼 사고 하나에 운영자 채널 알림 하나.
     assert len(intents) == 1
     assert intents[0].notification_type == "INCIDENT_OPEN"
-    assert intents[0].channel == "SLACK"
+    # 하루 자동 재실행 예산 소진은 코드·인프라 문제 — 개발 담당(Phase 1-8).
+    assert intents[0].channel == "SLACK_DEV"
     assert intents[0].incident_id == incident.id
     assert [
         row.action for row in session.added if isinstance(row, AdminAuditLog)

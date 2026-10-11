@@ -21,6 +21,7 @@ from app.services.incident_types import (
     incident_policy,
     retry_deadline,
 )
+from app.services.operator_action import is_operator_todo
 
 KST = ZoneInfo("Asia/Seoul")
 HOSPITAL = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -142,3 +143,37 @@ def test_every_sweep_owned_type_has_a_way_to_close():
     # 운영 기준 승인(`ops_incident_alerts.recover_ops_incidents_for_hospital`, tasks의 Essence 처리).
     explicit_recovery = {"MONTHLY_SLOT_GENERATION_FAILED", "ESSENCE_AUTO_REVIEW_ESCALATED"}
     assert SWEEP_OWNED_INCIDENT_TYPES - set(RESOLVERS) <= explicit_recovery
+
+
+@pytest.mark.parametrize(
+    "incident_type",
+    [
+        "UNVERIFIED_ADMIN_ACTOR",
+        "MONTHLY_SOV_COHORT_OVER_LIMIT",
+        "SITE_BUILD_RETRIES_EXHAUSTED",
+    ],
+)
+def test_work_an_ae_cannot_do_goes_to_the_developer(incident_type):
+    assert incident_audience(incident_type) is IncidentAudience.DEVELOPER
+    assert is_operator_todo(incident_type, "OPEN", None, datetime(2026, 10, 26, tzinfo=UTC)) is False
+
+
+@pytest.mark.parametrize(
+    "incident_type",
+    ["SOV_HIGH_PRIORITY_CAP_EXCEEDED", "WEEKLY_SOV_MEASUREMENT_FAILED", "NOTIFICATION_DELIVERY_UNKNOWN"],
+)
+def test_state_only_kinds_are_quiet(incident_type):
+    assert incident_is_quiet(incident_type) is True
+
+
+def test_people_owned_kinds_stay_with_the_operator():
+    # 비용 한도는 대표 결정이라 운영 큐에 남는다(D6). 자료 처리 실패는 유일한 신호라 강등하지 않는다(D7).
+    # 사람이 누른 사이트 재시도의 실패(SITE_BUILD_FAILED)는 운영 담당의 일이다.
+    for incident_type in (
+        "COST_GUARD_LIMIT_REACHED",
+        "SITE_BUILD_FAILED",
+        "SOURCE_PROCESSING_FAILED",
+        "MONTHLY_SOV_COHORT_GAP",
+    ):
+        assert incident_audience(incident_type) is IncidentAudience.OPERATOR
+        assert incident_is_quiet(incident_type) is False

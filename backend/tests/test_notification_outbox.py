@@ -151,6 +151,9 @@ async def _delete_channel_incidents(db) -> None:
         "MONTHLY_DOCTOR_PDF_BLOCKED",
         "PUBLIC_SITE_UNAVAILABLE",
         "OPERATION_RECOVERY_EXHAUSTED",
+        "UNVERIFIED_ADMIN_ACTOR",
+        "MONTHLY_SOV_COHORT_OVER_LIMIT",
+        "SITE_BUILD_RETRIES_EXHAUSTED",
     ],
 )
 def test_pure_infrastructure_incidents_leave_the_ae_channel(incident_type: str) -> None:
