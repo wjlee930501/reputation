@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -59,3 +60,85 @@ def test_the_grace_stops_growing_at_the_budget() -> None:
 def test_a_deferred_run_still_follows_its_own_time() -> None:
     run = _queued("TRIGGER_V0_REPORT", 600, not_before=NOW + timedelta(minutes=1))
     assert not autonomous_recovery._operation_redispatch_is_due(run, NOW)
+
+
+def _running(operation_type: str, *, redispatch_count: int = 0, lease_delta=timedelta(seconds=-1)):
+    return SimpleNamespace(
+        state=OperationRunState.RUNNING,
+        operation_type=operation_type,
+        queued_at=NOW - timedelta(hours=2),
+        requested_at=NOW - timedelta(hours=2),
+        lease_expires_at=NOW + lease_delta,
+        not_before_at=None,
+        redispatch_count=redispatch_count,
+        request_payload={},
+    )
+
+
+def test_the_budget_counts_only_presumed_lost_copies() -> None:
+    exhausted = autonomous_recovery._redispatch_budget_exhausted
+    assert exhausted(_queued("RUN_SOV", 600, redispatch_count=3))
+    assert exhausted(_running("RUN_SOV", redispatch_count=3))
+    assert not exhausted(_queued("RUN_SOV", 600, redispatch_count=2))
+    # 미룬 실행의 정시 재배달과 publish 실패(REQUESTED)는 예산을 쓰지 않는다.
+    assert not exhausted(_queued("TRIGGER_V0_REPORT", 600, redispatch_count=3, not_before=NOW))
+    requested = _queued("RUN_SOV", 600, redispatch_count=9)
+    requested.state = OperationRunState.REQUESTED
+    assert not exhausted(requested)
+
+
+def _fake_redispatch_db(run):
+    commits: list[bool] = []
+    return SimpleNamespace(
+        execute=lambda _statement: SimpleNamespace(scalar_one_or_none=lambda: run.id),
+        commit=lambda: commits.append(True),
+    )
+
+
+def _v0_run(state, *, redispatch_count=0, not_before=None):
+    hospital_id = uuid.uuid4()
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        operation_type="TRIGGER_V0_REPORT",
+        state=state,
+        hospital_id=hospital_id,
+        task_id="original-copy",
+        request_payload={
+            "_dispatch": {
+                "target_type": "hospital",
+                "target_id": str(hospital_id),
+                "queue": "reports",
+                "task_args": [str(hospital_id)],
+            }
+        },
+        requested_at=NOW - timedelta(hours=4),
+        queued_at=NOW - timedelta(hours=4),
+        not_before_at=not_before,
+        completed_at=None,
+        heartbeat_at=None,
+        lease_owner=None,
+        lease_expires_at=None,
+        safe_error_code=None,
+        safe_error_message=None,
+        version=4,
+        redispatch_count=redispatch_count,
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "not_before", "expected"),
+    [
+        (OperationRunState.QUEUED, None, 2),
+        (OperationRunState.QUEUED, NOW - timedelta(minutes=1), 1),
+        (OperationRunState.REQUESTED, None, 1),
+    ],
+)
+def test_a_redispatch_records_whether_it_spent_the_budget(
+    monkeypatch, state, not_before, expected
+) -> None:
+    run = _v0_run(state, redispatch_count=1, not_before=not_before)
+    monkeypatch.setattr(autonomous_recovery.celery_app, "send_task", lambda *_a, **_k: None)
+
+    assert autonomous_recovery._redispatch_operation_run(_fake_redispatch_db(run), run, NOW)
+
+    assert run.redispatch_count == expected
