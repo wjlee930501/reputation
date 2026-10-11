@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import Interval, and_, case, func, literal, or_, select, update
+from sqlalchemy import Interval, and_, case, func, literal, null, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -423,6 +423,9 @@ def reconcile() -> RecoveryCounts:
                 headers=build_dispatch_headers("retry-site-revalidation", str(run.id)),
             )
             run.heartbeat_at = observed_at
+        # 사고 없이 FAILED만 남은 멈춘 실행을 이번 tick의 새 멈춤보다 먼저 기록한다. 새 멈춤이
+        # 먼저 `last_seen_at`을 지금으로 올리면 더 이른 멈춤이 '기록됨'으로 보인다.
+        _repair_unrecorded_recovery_stops(db, observed_at)
         operation_redispatches = 0
         handled_site_hospitals: set[uuid.UUID] = set()
         for run in operation_runs:
@@ -464,7 +467,6 @@ def reconcile() -> RecoveryCounts:
             if rebuild is not None and _redispatch_operation_run(db, rebuild, observed_at):
                 site_builds += 1
         recertifications = _dispatch_published_image_recertifications(db, observed_at)
-        _repair_unrecorded_recovery_stops(db, observed_at)
         resolved_task_incidents = close_resolved_backlog_incidents(db)
         db.commit()
     return {
@@ -1294,20 +1296,42 @@ def _repair_unrecorded_recovery_stops(db, observed_at: datetime) -> int:
 
     runs = db.execute(_unrecorded_recovery_stops_query(observed_at)).scalars().all()
     for run in runs:
-        _open_recovery_stop_incident(db, run, observed_at, str(run.safe_error_code))
+        _open_recovery_stop_incident(
+            db, run, observed_at, str(run.safe_error_code), occurred_at=run.completed_at
+        )
     return len(runs)
 
 
 def _open_recovery_stop_incident(
-    db, run: OperationRun, observed_at: datetime, code: str
+    db,
+    run: OperationRun,
+    observed_at: datetime,
+    code: str,
+    *,
+    occurred_at: datetime | None = None,
 ) -> None:
-    """원인 코드 하나에 사고 하나. 열려 있으면 횟수만 늘리고, 닫혔으면 새 에피소드로 다시 연다."""
+    """원인 코드 하나에 사고 하나. 열려 있으면 횟수만 늘리고, 닫혔으면 새 에피소드로 다시 연다.
 
+    `occurred_at`은 실행이 멈춘 시각이다(기본은 관측 시각). 사고의 시각은 이 값으로만 움직인다:
+    - `last_seen_at`은 뒤로 가지 않는다(`greatest`). 먼저 시작한 reconciler가 더 이른 시각으로
+      늦게 기록해도 이미 기록된 멈춤을 '기록 안 됨'으로 되돌리지 않는다.
+    - 열린 사고의 `first_seen_at`은 더 이른 멈춤까지 넓힌다(`least`) — 나중에 복구해 기록한 멈춤도
+      이번 에피소드에 들어가 해결 판정(`incident_backlog._stopped_runs_recovered`)이 본다.
+    - 닫힌 사고는 마지막 관측보다 늦은 멈춤만 새 에피소드로 다시 연다. 그보다 이른 관측은 이미
+      닫힌 일이라 상태·횟수·에피소드를 바꾸지 않고 알림도 내지 않는다.
+    """
+
+    occurred_at = occurred_at or observed_at
     dedupe_key = build_incident_key(
         "autonomous_recovery", "operation_recovery_stop", code, IncidentFingerprint.UNKNOWN
     )
     closed = (IncidentState.RECOVERED.value, IncidentState.ACKNOWLEDGED.value)
-    previous_state = db.scalar(select(Incident.state).where(Incident.dedupe_key == dedupe_key))
+    previous_episode = db.scalar(
+        select(Incident.episode_seq).where(Incident.dedupe_key == dedupe_key)
+    )
+    is_closed = Incident.state.in_(closed)
+    reopen = and_(is_closed, Incident.last_seen_at < occurred_at)
+    counted = or_(~is_closed, reopen)
     message = _RECOVERY_STOP_MESSAGES[code]
     impact = "자동 복구가 멈춘 작업이 있어 진단·보고서·콘텐츠·사이트 준비 결과가 늦어질 수 있습니다."
     next_action = (
@@ -1331,29 +1355,29 @@ def _open_recovery_stop_incident(
             safe_error_message=message,
             next_action=next_action,
             admin_path="/operations",
-            first_seen_at=observed_at,
-            last_seen_at=observed_at,
+            first_seen_at=occurred_at,
+            last_seen_at=occurred_at,
             created_at=observed_at,
             updated_at=observed_at,
         )
         .on_conflict_do_update(
             index_elements=[Incident.dedupe_key],
             set_={
-                "state": IncidentState.OPEN.value,
-                "operation_run_id": run.id,
-                "last_seen_at": observed_at,
-                "occurrence_count": Incident.occurrence_count + 1,
-                "episode_seq": case(
-                    (Incident.state.in_(closed), Incident.episode_seq + 1),
-                    else_=Incident.episode_seq,
-                ),
+                "state": case((counted, IncidentState.OPEN.value), else_=Incident.state),
+                "operation_run_id": case((counted, run.id), else_=Incident.operation_run_id),
+                "last_seen_at": func.greatest(Incident.last_seen_at, occurred_at),
+                "occurrence_count": Incident.occurrence_count + case((counted, 1), else_=0),
+                "episode_seq": Incident.episode_seq + case((reopen, 1), else_=0),
                 "first_seen_at": case(
-                    (Incident.state.in_(closed), observed_at),
-                    else_=Incident.first_seen_at,
+                    (reopen, occurred_at),
+                    (is_closed, Incident.first_seen_at),
+                    else_=func.least(Incident.first_seen_at, occurred_at),
                 ),
-                "recovered_at": None,
-                "acknowledged_at": None,
-                "acknowledged_by_id": None,
+                "recovered_at": case((reopen, null()), else_=Incident.recovered_at),
+                "acknowledged_at": case((reopen, null()), else_=Incident.acknowledged_at),
+                "acknowledged_by_id": case(
+                    (reopen, null()), else_=Incident.acknowledged_by_id
+                ),
                 "version": Incident.version + 1,
                 "updated_at": observed_at,
             },
@@ -1361,7 +1385,8 @@ def _open_recovery_stop_incident(
         .returning(Incident)
         .execution_options(populate_existing=True)
     ).scalar_one()
-    if previous_state is not None and previous_state not in closed:
+    if previous_episode is not None and incident.episode_seq == previous_episode:
+        # 열린 사고에 더해졌거나, 닫힌 사고의 지난 관측이다 — 새로 알릴 일이 없다.
         return
     auto_assign_owner_sync(db, incident, observed_at=observed_at)
     projection = IncidentSlackProjection(
