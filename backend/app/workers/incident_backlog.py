@@ -716,7 +716,8 @@ def bound_unowned_retrying(
             "incident_retry_deadline_defaulted",
             detail_extra={"sla_due_at": incident.sla_due_at.isoformat()},
         )
-    db.flush()
+    if rows:
+        db.flush()
     return len(rows)
 
 
