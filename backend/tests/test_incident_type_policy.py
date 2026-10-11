@@ -131,3 +131,14 @@ def test_unparseable_period_is_people_owned():
     now = datetime(2026, 10, 26, 3, tzinfo=UTC)
     request = _request("MONTHLY_SOV_MEASUREMENT_FAILED", "garbage")
     assert retry_deadline(request, episode_start=now, observed_at=now) is None
+
+
+def test_every_sweep_owned_type_has_a_way_to_close():
+    """스윕 소유 종류는 근거(resolver) 또는 명시적 복구 경로가 있어야 영원히 RETRYING에 남지 않는다."""
+
+    from app.workers.incident_backlog import RESOLVERS
+
+    # 명시적 복구 경로: 슬롯 재조정 성공(`monthly_slot_incident_control.recover_monthly_slot_failure`),
+    # 운영 기준 승인(`ops_incident_alerts.recover_ops_incidents_for_hospital`, tasks의 Essence 처리).
+    explicit_recovery = {"MONTHLY_SLOT_GENERATION_FAILED", "ESSENCE_AUTO_REVIEW_ESCALATED"}
+    assert SWEEP_OWNED_INCIDENT_TYPES - set(RESOLVERS) <= explicit_recovery
