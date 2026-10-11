@@ -23,6 +23,7 @@ from app.services.incident_types import (
 from app.services.incidents import open_or_touch_incident
 from app.services.notification_channel_health import (
     described_channels,
+    email_dead_operator_channel,
     open_channel_incident,
     recover_after_send,
     refresh_channel_health,
@@ -155,6 +156,8 @@ async def dispatch_notification_batch(
     for channel in sorted(sent_channels - unhealthy):
         # 이 채널로 실제 전달이 관측됐다 — 그 채널의 사고가 열려 있었다면 닫는다.
         await recover_after_send(sessions, channel, now=dispatch_at)
+    # 운영 채널이 죽었고 대체 채널도 없으면 Slack 밖(운영 경보 메일)으로 한 번 알린다.
+    await email_dead_operator_channel(sessions, webhooks, now=dispatch_at)
     return DispatchResult(claimed=len(claimed), **counts)
 
 

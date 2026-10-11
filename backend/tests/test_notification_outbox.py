@@ -20,7 +20,7 @@ from app.models.operations import (
     NotificationOutbox,
     NotificationOutboxState,
 )
-from app.services import notification_delivery
+from app.services import notification_channel_health, notification_delivery
 from app.services.incident_types import (
     SLACK_DEVELOPER_CHANNEL,
     IncidentAudience,
@@ -256,6 +256,7 @@ def _isolate_dispatch(monkeypatch, row, decisions=None) -> None:
     monkeypatch.setattr(notification_delivery, "recover_after_send", nothing)
     monkeypatch.setattr(notification_delivery, "requeue_channel_held", nothing)
     monkeypatch.setattr(notification_delivery, "run_notification_success_hook", nothing)
+    monkeypatch.setattr(notification_delivery, "email_dead_operator_channel", nothing)
 
 
 @pytest.mark.asyncio
@@ -1605,3 +1606,59 @@ async def test_operations_center_and_retry_target_the_row_a_delivery_incident_de
         with pytest.raises(HTTPException):
             await _authorize_notification_retry(db, stranger, failed)
         await db.rollback()
+
+
+@pytest.mark.asyncio
+async def test_dead_operator_channel_without_alternate_is_emailed_once_per_episode(
+    outbox_sessions, monkeypatch
+) -> None:
+    # Given: 단일 채널 운영에서 운영 웹훅이 죽었다 — 채널 사고의 열림 알림도 보낼 곳이 없다
+    sent: list[dict] = []
+
+    async def fake_send(**kwargs):
+        sent.append(kwargs)
+        return True
+
+    monkeypatch.setattr(notification_channel_health.ops_alert_email, "send_ops_alert", fake_send)
+    notification_channel_health._last_ops_email_attempt.clear()
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+
+    # When: 사고가 열린 회차와 20분 뒤 회차(탐침 간격 안)가 돈다
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-1", dead)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-1", dead, now=_NOW + timedelta(minutes=20))
+
+    # Then: 사고 episode당 메일 한 통, 감사 기록이 '보냄'을 남긴다
+    async with outbox_sessions() as verify:
+        incident = await _channel_incident(verify, "SLACK")
+        assert incident is not None
+        marker = f"{incident.id}:e{incident.episode_seq}"
+        audits = (
+            await verify.execute(
+                select(AdminAuditLog).where(
+                    AdminAuditLog.action == "ops_alert_email_sent", AdminAuditLog.target_id == marker
+                )
+            )
+        ).scalars().all()
+    assert [call["idempotency_key"] for call in sent] == [f"ops-channel-down:{marker}"]
+    assert len(audits) == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_ops_email_is_retried_after_fifteen_minutes(outbox_sessions, monkeypatch) -> None:
+    attempts: list[str] = []
+
+    async def failing_send(**kwargs):
+        attempts.append(kwargs["idempotency_key"])
+        return False
+
+    monkeypatch.setattr(notification_channel_health.ops_alert_email, "send_ops_alert", failing_send)
+    notification_channel_health._last_ops_email_attempt.clear()
+    dead = lambda _request: httpx.Response(404, text="no_service")  # noqa: E731
+
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead)
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=5))
+    await _dispatch_once(outbox_sessions, "OPS-QA-T10-EMAIL-2", dead, now=_NOW + timedelta(minutes=16))
+
+    # 처음과 15분이 지난 뒤에만 시도한다. 같은 키라 Resend가 중복을 막는다.
+    assert len(attempts) == 2
+    assert attempts[0] == attempts[1]
