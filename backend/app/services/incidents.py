@@ -25,6 +25,7 @@ from app.services.incident_safety import (
     sanitize_operator_text,
 )
 from app.services.incident_types import (
+    DEFAULT_RETRYING_DEADLINE,
     IncidentFilters,
     IncidentFingerprint,
     IncidentLabels,
@@ -246,11 +247,28 @@ async def assign_incident(
 
 
 async def mark_retrying(
-    db: AsyncSession, incident_id: uuid.UUID, *, expected_version: int, actor: str, reason: str
+    db: AsyncSession,
+    incident_id: uuid.UUID,
+    *,
+    expected_version: int,
+    actor: str,
+    reason: str,
+    now: datetime | None = None,
 ) -> IncidentMutationResult:
+    """OPEN→RETRYING. 기한 없는 RETRYING은 주인 없는 '복구 중'이므로 기본 기한(24시간)을 단다.
+
+    미래 기한이 이미 있으면 그대로 둔다. 호출자는 돌려받은 행에 더 정확한 기한을 덮어쓸 수 있고,
+    사람의 일을 다른 사고가 가진 경우(MISSING_APPROVED_ESSENCE)는 None으로 지울 수 있다.
+    """
+
+    changed_at = now or datetime.now(UTC)
+    deadline = case(
+        (Incident.sla_due_at > changed_at, Incident.sla_due_at),
+        else_=literal(changed_at + DEFAULT_RETRYING_DEADLINE, type_=Incident.sla_due_at.type),
+    )
     return await _transition(
         db, incident_id, expected_version, IncidentState.OPEN, IncidentState.RETRYING,
-        actor, "incident_retrying", reason
+        actor, "incident_retrying", reason, {"sla_due_at": deadline}, changed_at,
     )
 
 
@@ -327,17 +345,17 @@ async def auto_acknowledge_incident(
 async def _transition(
     db: AsyncSession, incident_id: uuid.UUID, expected_version: int,
     current: IncidentState, target: IncidentState, actor: str, action: str, reason: str,
-    extra: dict[str, str | uuid.UUID | datetime | None] | None = None,
+    extra: dict[str, object] | None = None,
     now: datetime | None = None,
 ) -> IncidentMutationResult:
-    values: dict[str, str | uuid.UUID | datetime | None] = {"state": target.value}
+    values: dict[str, object] = {"state": target.value}
     values.update(extra or {})
     return await _mutate(db, incident_id, expected_version, current, values, actor, action, reason, now)
 
 
 async def _mutate(
     db: AsyncSession, incident_id: uuid.UUID, expected_version: int,
-    required_state: IncidentState | None, values: dict[str, str | uuid.UUID | datetime | None],
+    required_state: IncidentState | None, values: dict[str, object],
     actor: str, action: str, reason: str, now: datetime | None,
     *, detail_extra: dict[str, str | bool] | None = None,
 ) -> IncidentMutationResult:

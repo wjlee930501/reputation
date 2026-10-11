@@ -24,6 +24,7 @@ from app.workers import autonomous_recovery, tasks
 @pytest.fixture(autouse=True)
 def _no_resolved_task_incidents(monkeypatch):
     monkeypatch.setattr(autonomous_recovery, "close_resolved_backlog_incidents", lambda _db: 0)
+    monkeypatch.setattr(autonomous_recovery, "settle_incidents", lambda _db: 0)
 
 
 class _ScalarResult:

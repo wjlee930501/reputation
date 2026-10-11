@@ -35,6 +35,7 @@ from app.models.operations import (
     OperationRunState,
 )
 from app.models.report import MonthlyReport
+from app.services.incident_types import DEFAULT_RETRYING_DEADLINE
 from app.services.notification_transport import CHANNEL_UNAVAILABLE_CODE, safe_error_message
 from app.workers.task_incident_control import _audit, _transition_incident
 
@@ -492,3 +493,54 @@ def close_resolved_backlog_incidents(
         )
         closed += 1
     return closed
+
+
+def bound_unowned_retrying(
+    db: Session, *, now: datetime, limit: int = BACKLOG_INCIDENT_BATCH
+) -> int:
+    """기한 없이 남은 RETRYING에 마지막 변경 + 24시간 기한을 단다(배포 전 행·옛 호출자).
+
+    기한 없는 RETRYING은 `requires_operator_action`이 영원히 사람의 일로 보지 않는 '주인 없는
+    복구 중'이다. MISSING_APPROVED_ESSENCE 생성 보류는 사람의 일을 별도 ESCALATED 사고가
+    가지므로 제외한다(같은 원인을 두 번 세지 않는다).
+    """
+
+    rows = list(
+        db.execute(
+            select(Incident)
+            .where(
+                Incident.state == IncidentState.RETRYING.value,
+                Incident.sla_due_at.is_(None),
+                or_(
+                    Incident.incident_type != "CONTENT_GENERATION_FAILED",
+                    Incident.safe_error_code.is_distinct_from("MISSING_APPROVED_ESSENCE"),
+                ),
+            )
+            .order_by(Incident.updated_at, Incident.id)
+            .with_for_update(skip_locked=True)
+            .limit(limit)
+        )
+        .scalars()
+        .all()
+    )
+    for incident in rows:
+        incident.sla_due_at = incident.updated_at + DEFAULT_RETRYING_DEADLINE
+        incident.version += 1
+        incident.updated_at = now
+        _audit(
+            db,
+            incident,
+            "incident_retry_deadline_defaulted",
+            detail_extra={"sla_due_at": incident.sla_due_at.isoformat()},
+        )
+    db.flush()
+    return len(rows)
+
+
+def settle_incidents(
+    db: Session, *, now: datetime | None = None, limit: int = BACKLOG_INCIDENT_BATCH
+) -> int:
+    """자동화가 끝낸 일을 사람의 일로 남기지 않는 정리. 커밋은 호출자가 한다."""
+
+    observed = now or datetime.now(UTC)
+    return bound_unowned_retrying(db, now=observed, limit=limit)
