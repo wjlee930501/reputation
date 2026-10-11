@@ -679,6 +679,10 @@ class Settings(BaseSettings):
     # 경고 로그를 남기고 무시한다. 수동 발행(/publish)과 이미 공개된 글에는 영향이 없다.
     # 해석은 `post_publish_review_policy.auto_publish_hold` 한 곳에서만 한다.
     AUTO_PUBLISH_HOLD_HOSPITALS: str = ""
+    # 근거 자료가 0건이고 등록한 채널 주소를 모두 24시간 넘게 읽지 못한 병원을 사람의 일
+    # (ONBOARDING_SOURCES_UNREACHABLE)로 올릴지. 기본 꺼짐 — 켜기 전에는 CLAUDE.md의
+    # "채널 fetch 실패는 인시던트가 아니라 자료 행 상태" 계약이 그대로다(대표 결정).
+    ONBOARDING_SOURCE_FETCH_ALERTS_ENABLED: bool = False
 
     # Lead retention (개인정보보호법 제21조 — 보유기간)
     LEAD_RETENTION_DAYS: int = 180  # 수집 후 자동 파기까지 일수
