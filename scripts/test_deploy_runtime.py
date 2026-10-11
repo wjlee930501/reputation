@@ -62,6 +62,8 @@ _FAKE_GCLOUD = "\n".join(
         "    exit 1",
         "    ;;",
         '  "storage cp "*)',
+        # 잠금·예외 기록의 내용(JSON)도 남긴다 — $3이 기록 파일이다.
+        '    sed "s/^/LOCKREC /" "$3" >> "$FAKE_COMMAND_LOG"',
         '    if [[ "${FAKE_LOCK_HELD:-0}" == "1" && "$*" == *"--if-generation-match=0"* ]]; then',
         '      echo "ERROR: HTTPError 412: At least one of the pre-conditions you specified did not hold." >&2',
         "      exit 1",
@@ -2115,7 +2117,21 @@ def _run_target(tmp_path: Path, target: str, *args: str, **extra: str):
     return result, command_log.read_text() if command_log.exists() else ""
 
 
-@pytest.mark.parametrize("clock", ["2026-10-11T22:30", "2026-10-11T00:20", "2026-10-11T12:45", "2026-10-11T17:15"])
+# 22:15~02:00은 야간 생성(23:00)·복구 스윕(01시)이 몇 시간 이어지므로 통째로 막고, 그 밖의 배치
+# (04·07·08·12·18·22시 — 08시는 07:45·08:00 발행 게이트와 08:30 외부 감시)는 앞뒤 45분을 막는다.
+@pytest.mark.parametrize(
+    "clock",
+    [
+        "2026-10-11T22:30",
+        "2026-10-11T23:59",
+        "2026-10-11T00:20",
+        "2026-10-11T01:55",
+        "2026-10-11T08:30",
+        "2026-10-11T12:45",
+        "2026-10-11T17:15",
+        "2026-10-11T21:30",
+    ],
+)
 def test_backend_deploy_is_blocked_inside_a_batch_window(tmp_path: Path, clock: str) -> None:
     result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
     assert result.returncode != 0
@@ -2123,15 +2139,20 @@ def test_backend_deploy_is_blocked_inside_a_batch_window(tmp_path: Path, clock: 
     assert "--override-reason" in result.stderr
     assert "docker build" not in commands
     assert "storage cp" not in commands
+    # 가장 싼 확인이 먼저다 — legacy publish 사전 확인(VPC Job/uv)까지 가지 않는다.
+    assert "uv " not in commands
 
 
-@pytest.mark.parametrize("clock", ["2026-10-11T12:46", "2026-10-11T14:30", "2026-10-11T02:46"])
+@pytest.mark.parametrize(
+    "clock", ["2026-10-11T02:00", "2026-10-11T02:46", "2026-10-11T09:00", "2026-10-11T12:46", "2026-10-11T14:30"]
+)
 def test_backend_deploy_runs_outside_batch_windows(tmp_path: Path, clock: str) -> None:
     result, commands = _run_target(tmp_path, "api", DEPLOY_CLOCK_KST=clock)
     assert result.returncode == 0, result.stderr
     assert "ops/deploy-lock/2026-10-11.json" in commands
     assert "--if-generation-match=0" in commands
-    # 잠금은 첫 mutation(이미지 빌드) 전에 잡는다.
+    # 잠금은 legacy 사전 확인과 첫 mutation(이미지 빌드) 전에 잡는다.
+    assert commands.index("storage cp") < commands.index("uv ")
     assert commands.index("storage cp") < commands.index("docker build")
 
 
@@ -2258,3 +2279,117 @@ def test_pinned_traffic_without_unpin_still_stops(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "--unpin" in result.stderr
     assert "gcloud run deploy" not in commands
+
+
+def test_same_release_lock_is_compared_as_json_not_text(tmp_path: Path) -> None:
+    # 공백 없는 JSON도 같은 릴리스로 읽는다(문자열 비교가 아니다).
+    result, _commands = _run_target(
+        tmp_path, "api", FAKE_LOCK_HELD="1", FAKE_LOCK_CONTENT='{"revision":"test-source-revision"}'
+    )
+    assert result.returncode == 0, result.stderr
+    assert "같은 릴리스" in result.stderr
+
+
+def _detach_command_log(project: Path, fake_bin: Path, command_log: Path) -> None:
+    """스텁이 FAKE_COMMAND_LOG 없이도 같은 파일에 기록하게 한다 — 운영처럼 테스트 표지가 없는 실행."""
+    literal = str(command_log)
+    for stub in fake_bin.iterdir():
+        stub.write_text(stub.read_text().replace('"$FAKE_COMMAND_LOG"', f'"{literal}"'))
+    smoke = project / "scripts" / "deploy_smoke.py"
+    smoke.write_text(smoke.read_text().replace("os.environ['FAKE_COMMAND_LOG']", repr(literal)))
+
+
+def _run_without_test_marker(tmp_path: Path, *args: str, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    _detach_command_log(project, fake_bin, command_log)
+    env = _clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra)
+    env.pop("FAKE_COMMAND_LOG")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", *args],
+        cwd=project, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_deploy_clock_is_not_a_silent_bypass_outside_tests(tmp_path: Path) -> None:
+    # 테스트 표지(FAKE_COMMAND_LOG)가 없으면 고정 시각을 믿지 않는다 — 사유 없이는 멈춘다.
+    result, commands = _run_without_test_marker(tmp_path, DEPLOY_CLOCK_KST="2026-10-11T14:30")
+    assert result.returncode != 0
+    assert "DEPLOY_CLOCK_KST" in result.stderr
+    assert "--override-reason" in result.stderr
+    assert "docker build" not in commands
+    assert "storage cp" not in commands
+
+
+def test_deploy_clock_outside_tests_needs_a_reason_and_is_recorded(tmp_path: Path) -> None:
+    result, commands = _run_without_test_marker(
+        tmp_path, "--override-reason=시각 재현 점검", DEPLOY_CLOCK_KST="2026-10-11T14:30"
+    )
+    assert result.returncode == 0, result.stderr
+    records = [line for line in commands.splitlines() if line.startswith("LOCKREC ")]
+    assert records and all('"clock_override": true' in line for line in records)
+    assert any('"override_reason": "시각 재현 점검"' in line for line in records)
+
+
+def _failing_docker_build(fake_bin: Path) -> None:
+    _write_executable(
+        fake_bin / "docker",
+        "\n".join([
+            "#!/usr/bin/env bash",
+            'echo "docker $*" >> "$FAKE_COMMAND_LOG"',
+            'if [[ "$1" == "build" ]]; then exit 1; fi',
+            "exit 0",
+            "",
+        ]),
+    )
+
+
+def _run_api_with(tmp_path: Path, prepare, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    prepare(fake_bin)
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_failure_before_any_mutation_returns_the_daily_lock(tmp_path: Path) -> None:
+    result, commands = _run_api_with(tmp_path, _failing_docker_build)
+    assert result.returncode != 0
+    assert "gcloud run deploy" not in commands
+    assert "gcloud storage rm gs://reputation-reports-test-project/ops/deploy-lock/2026-10-11.json" in commands
+    assert "잠금을 되돌" in result.stderr
+
+
+def test_a_lock_this_run_did_not_create_is_never_returned(tmp_path: Path) -> None:
+    # 같은 릴리스의 재시도는 앞선 실행의 잠금을 쓴다 — 실패해도 남의 잠금을 지우지 않는다.
+    result, commands = _run_api_with(
+        tmp_path, _failing_docker_build,
+        FAKE_LOCK_HELD="1", FAKE_LOCK_CONTENT='{"revision": "test-source-revision"}',
+    )
+    assert result.returncode != 0
+    assert "storage rm" not in commands
+
+
+def test_failure_after_mutation_keeps_the_daily_lock(tmp_path: Path) -> None:
+    result, commands = _run_api_with(
+        tmp_path, lambda _bin: None, FAKE_READINESS_EXIT="1", AUTO_ROLLBACK="0"
+    )
+    assert result.returncode != 0
+    assert "gcloud run deploy reputation-worker" in commands
+    assert "storage rm" not in commands
+
+
+def test_a_minority_of_unhealthy_hospitals_warns_without_rollback(tmp_path: Path) -> None:
+    # 병원 한두 곳의 헬스 실패(자기 도메인 인증서 등)는 경고로 멈추고 트래픽은 그대로 둔다.
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00240-old", FAKE_SMOKE_VERIFY_EXIT="3"
+    )
+    assert result.returncode != 0
+    assert "경고" in result.stderr
+    assert "gcloud run services update-traffic" not in commands

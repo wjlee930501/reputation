@@ -1,6 +1,6 @@
 import json
 
-from scripts.deploy_smoke import baseline_hosts, public_hosts, verify
+from scripts.deploy_smoke import SmokeResult, baseline_hosts, exit_code, public_hosts, verify
 
 
 def _hospitals() -> bytes:
@@ -51,11 +51,12 @@ def test_verify_passes_when_api_release_and_hospitals_match() -> None:
         "https://jangpyeon.reputation.example.test/.well-known/reputation-health": (
             200, _health("jangpyeon", "jangpyeon.reputation.example.test")),
     })
-    problems = verify(
+    result = verify(
         "reputation.example.test", [("jangpyeon.reputation.example.test", "jangpyeon")],
         api_release="sha-new", site_release="site-00143-mvd", fetch=fetch, attempts=1, delay=0,
     )
-    assert problems == []
+    assert result.problems == []
+    assert exit_code(result) == 0
 
 
 def test_verify_reports_an_old_api_release_and_a_broken_hospital() -> None:
@@ -64,11 +65,12 @@ def test_verify_reports_an_old_api_release_and_a_broken_hospital() -> None:
         "https://jangpyeon.reputation.example.test/.well-known/reputation-health": (
             200, _health("other", "jangpyeon.reputation.example.test")),
     })
-    problems = verify(
+    result = verify(
         "reputation.example.test", [("jangpyeon.reputation.example.test", "jangpyeon")],
         api_release="sha-new", site_release="", fetch=fetch, attempts=2, delay=0,
     )
-    assert problems == [
+    assert result.needs_rollback
+    assert result.problems == [
         "API release가 sha-new가 아닙니다(받은 값: sha-old)",
         "jangpyeon.reputation.example.test: 다른 병원(other)이 응답했습니다",
     ]
@@ -82,8 +84,23 @@ def test_verify_checks_the_site_release_when_given() -> None:
         "https://jangpyeon.reputation.example.test/.well-known/reputation-health": (
             200, _health("jangpyeon", "jangpyeon.reputation.example.test", release="site-00142-old")),
     })
-    problems = verify(
+    result = verify(
         "reputation.example.test", [("jangpyeon.reputation.example.test", "jangpyeon")],
         api_release="sha-new", site_release="site-00143-mvd", fetch=fetch, attempts=1, delay=0,
     )
-    assert problems == ["jangpyeon.reputation.example.test: Site 리비전이 site-00143-mvd가 아닙니다(site-00142-old)"]
+    assert result.problems == ["jangpyeon.reputation.example.test: Site 리비전이 site-00143-mvd가 아닙니다(site-00142-old)"]
+
+
+def test_rollback_only_for_the_api_release_or_at_least_half_of_the_hospitals() -> None:
+    one_of_three = SmokeResult(api_problem=None, host_problems=("a: x",), checked_hosts=3)
+    two_of_three = SmokeResult(api_problem=None, host_problems=("a: x", "b: x"), checked_hosts=3)
+    half = SmokeResult(api_problem=None, host_problems=("a: x",), checked_hosts=2)
+    api = SmokeResult(api_problem="API release", host_problems=(), checked_hosts=3)
+    clean = SmokeResult(api_problem=None, host_problems=(), checked_hosts=0)
+
+    # 한 곳의 실패(자기 도메인 인증서 등)는 경고(3) — 트래픽을 되돌리지 않는다.
+    assert (one_of_three.needs_rollback, exit_code(one_of_three)) == (False, 3)
+    assert (two_of_three.needs_rollback, exit_code(two_of_three)) == (True, 1)
+    assert (half.needs_rollback, exit_code(half)) == (True, 1)
+    assert (api.needs_rollback, exit_code(api)) == (True, 1)
+    assert (clean.needs_rollback, exit_code(clean)) == (False, 0)
