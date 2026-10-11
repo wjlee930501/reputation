@@ -1463,10 +1463,35 @@ current_ready_revision() {
     --format='value(status.latestReadyRevisionName)' 2>/dev/null || true
 }
 
+# 지금 트래픽을 받는 리비전. 고정을 풀 때의 롤백 좌표다(최신 Ready가 아니다).
+current_serving_revision() {
+  local service="$1"
+  gcloud run services describe "$service" \
+    --region="$REGION" \
+    --project="$PROJECT_ID" \
+    --format='value(status.traffic[0].revisionName)' 2>/dev/null || true
+}
+
+# --unpin으로 이번 배포에서 고정 트래픽을 풀 서비스(capture_rollback_point가 채운다).
+UNPIN_SERVICES=()
+
+service_is_unpinning() {
+  local service="$1" name
+  for name in ${UNPIN_SERVICES[@]+"${UNPIN_SERVICES[@]}"}; do
+    [[ "$name" == "$service" ]] && return 0
+  done
+  return 1
+}
+
 # 배포 뒤 실제로 트래픽을 받는 리비전이 방금 Ready가 된 최신 리비전인지 확인한다. 고정 트래픽·은퇴 같은
 # 이유로 옛 리비전이 계속 서비스되면 "배포 완료"를 말하지 않는다.
 require_serving_latest() {
   local service="$1" ready serving
+  if service_is_unpinning "$service"; then
+    # --unpin: 새 리비전이 Ready가 된 지금 고정 트래픽을 옮긴다(배포 전에는 옮기지 않는다).
+    gcloud run services update-traffic "$service" --region="$REGION" --project="$PROJECT_ID" --to-latest \
+      || fail "${service}: 고정 트래픽을 새 리비전으로 옮기지 못했습니다. gcloud run services describe ${service}로 확인하세요."
+  fi
   ready="$(current_ready_revision "$service")"
   serving="$(gcloud run services describe "$service" \
     --region="$REGION" \
@@ -1495,9 +1520,14 @@ capture_rollback_point() {
   for service in "$@"; do
     revision="$(current_ready_revision "$service")"
     if [[ -n "$revision" ]] && ! service_traffic_follows_latest "$service"; then
+      if [[ "$UNPIN_TRAFFIC" == "1" ]]; then
+        UNPIN_SERVICES+=("$service")
+        info "${service}: 고정 트래픽을 이번 배포에서 풉니다(--unpin). 롤백 좌표는 지금 트래픽을 받는 리비전입니다."
+        continue
+      fi
       fail "${service}의 트래픽이 최신 리비전이 아닌 특정 리비전에 고정돼 있습니다(현재 ${revision}). 이대로 배포하면 새 리비전이
-   만들어지자마자 은퇴하고 옛 코드가 계속 서비스됩니다. 고정이 의도한 것이 아니면 먼저
-   gcloud run services update-traffic ${service} --to-latest --region=${REGION} 를 실행한 뒤 다시 배포하세요."
+   만들어지자마자 은퇴하고 옛 코드가 계속 서비스됩니다. 고정이 의도한 것이 아니면 --unpin을 붙여 다시 배포하세요
+   (새 리비전이 Ready가 된 뒤 트래픽을 옮기고, 롤백 좌표는 지금 서비스 중인 리비전으로 남깁니다)."
     fi
   done
 
@@ -1507,7 +1537,11 @@ capture_rollback_point() {
   } > "$ROLLBACK_STATE_FILE"
 
   for service in "$@"; do
-    revision="$(current_ready_revision "$service")"
+    if service_is_unpinning "$service"; then
+      revision="$(current_serving_revision "$service")"
+    else
+      revision="$(current_ready_revision "$service")"
+    fi
     if [[ -n "$revision" ]]; then
       printf '%s=%s\n' "$service" "$revision" >> "$ROLLBACK_STATE_FILE"
       captured=$((captured + 1))

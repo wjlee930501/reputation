@@ -1967,7 +1967,7 @@ def test_deploy_stops_before_mutation_when_traffic_is_pinned(tmp_path: Path) -> 
     )
     assert result.returncode != 0
     # api 대상은 worker·beat·api 순으로 좌표를 잡으므로 첫 고정 서비스에서 멈춘다.
-    assert "--to-latest" in result.stderr
+    assert "--unpin" in result.stderr
     assert "트래픽이 최신 리비전이 아닌 특정 리비전에 고정" in result.stderr
     commands = command_log.read_text()
     assert "gcloud run deploy" not in commands
@@ -2230,3 +2230,31 @@ def test_smoke_domain_comes_from_site_base_url_without_public_domain(tmp_path: P
     )
     assert result.returncode == 0, result.stderr
     assert "SMOKE baseline --public-domain reputation.motionlabs.kr" in command_log.read_text()
+
+
+def test_unpin_moves_pinned_traffic_to_the_new_revision_after_deploy(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", "--unpin",
+        FAKE_READY_REVISION="reputation-api-00239-mqs", FAKE_TRAFFIC_PINNED="1",
+    )
+    assert result.returncode == 0, result.stderr
+    assert "고정 트래픽을 이번 배포에서 풉니다" in result.stderr
+    lines = commands.splitlines()
+    deploy_at = next(i for i, l in enumerate(lines) if l.startswith("gcloud run deploy reputation-api"))
+    unpin_at = next(
+        i for i, l in enumerate(lines)
+        if l.startswith("gcloud run services update-traffic reputation-api") and "--to-latest" in l
+    )
+    # 새 리비전이 생긴 뒤에만 옮긴다 — 배포 전에 옮기면 고정의 이유였을 리비전으로 트래픽이 간다.
+    assert deploy_at < unpin_at
+    state = (tmp_path / "project" / ".deploy-rollback").read_text()
+    assert "reputation-api=reputation-api-00239-mqs" in state
+
+
+def test_pinned_traffic_without_unpin_still_stops(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00239-mqs", FAKE_TRAFFIC_PINNED="1"
+    )
+    assert result.returncode != 0
+    assert "--unpin" in result.stderr
+    assert "gcloud run deploy" not in commands
