@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, TypedDict
 
 from celery import current_task
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from app.core.celery_app import celery_app
@@ -54,6 +54,17 @@ _BATCH_SIZE: Final = 100
 # 관측된 최악의 content 적체는 약 70분이었고, 2분 만에 다시 보내던 때는 적체마다 사본이 생겼다.
 _REQUESTED_REDISPATCH_GRACE: Final = timedelta(minutes=2)
 _QUEUED_REDISPATCH_GRACE: Final = timedelta(hours=3)
+# 고객이 기다리는 결과(V0·월간 보고서)는 45분만 기다린다. 배포 중 유실은 cold shutdown
+# (REMAP_SIGTERM=SIGQUIT)이 몇 초 안에 메시지를 반납해 사라졌고, 남은 대기는 앞 큐(content·sov)의
+# 적체다 — reports 큐는 priority 순서상 뒤에 있다. 적체 중 다시 보내도 늦게 온 이전 사본은
+# task id가 달라 STALE로 물러나므로 공급자 비용이 없다.
+_FAST_QUEUED_REDISPATCH_GRACE: Final = timedelta(minutes=45)
+_FAST_QUEUED_REDISPATCH_TYPES: Final = frozenset(
+    {"TRIGGER_V0_REPORT", "GENERATE_MONTHLY_REPORT"}
+)
+# 유형별 재배달 예산. 재배달마다 QUEUED 유예가 두 배가 되므로(45m→90m→3h→6h) 정상 적체로는
+# 소진되지 않는다. 다 쓰면 실행을 FAILED로 끝내고 원인별 사고 하나에 묶는다.
+_REDISPATCH_BUDGET: Final = 3
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
 _REBUILD_SITE_BUDGET_WINDOW: Final = timedelta(hours=24)
@@ -128,6 +139,19 @@ class RecoveryCounts(TypedDict):
     resolved_task_incidents: int
 
 
+def _redispatch_count(run: OperationRun) -> int:
+    return int(getattr(run, "redispatch_count", 0) or 0)
+
+
+def _queued_redispatch_grace(run: OperationRun) -> timedelta:
+    base = (
+        _FAST_QUEUED_REDISPATCH_GRACE
+        if str(run.operation_type) in _FAST_QUEUED_REDISPATCH_TYPES
+        else _QUEUED_REDISPATCH_GRACE
+    )
+    return base * (2 ** min(_redispatch_count(run), _REDISPATCH_BUDGET))
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -152,7 +176,7 @@ def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bo
             # 워커가 미뤄 둔 실행이다(예: V0 비용 창). 그 시각 전에는 막힌 것이 아니다.
             return not_before <= observed_at
         last_transition = run.queued_at or run.requested_at
-        grace = _QUEUED_REDISPATCH_GRACE
+        grace = _queued_redispatch_grace(run)
     elif (
         run.operation_type in {"TRIGGER_V0_REPORT", "REBUILD_SITE"}
         and run.state == OperationRunState.RUNNING
@@ -230,8 +254,19 @@ def reconcile() -> RecoveryCounts:
                         and_(
                             OperationRun.state == OperationRunState.QUEUED,
                             OperationRun.not_before_at.is_(None),
+                            # 유형별 기본 유예로 고른다(다른 유형의 45분~3시간 적체가 배치를
+                            # 채우지 않게). 재배달 횟수에 따른 두 배 판정은
+                            # `_operation_redispatch_is_due`가 한다.
                             func.coalesce(OperationRun.queued_at, OperationRun.requested_at)
-                            <= observed_at - _QUEUED_REDISPATCH_GRACE,
+                            <= case(
+                                (
+                                    OperationRun.operation_type.in_(
+                                        tuple(_FAST_QUEUED_REDISPATCH_TYPES)
+                                    ),
+                                    observed_at - _FAST_QUEUED_REDISPATCH_GRACE,
+                                ),
+                                else_=observed_at - _QUEUED_REDISPATCH_GRACE,
+                            ),
                         ),
                         # 미룬 실행은 적체가 아니다 — 정한 시각이 지났을 때만 보낸다.
                         and_(
