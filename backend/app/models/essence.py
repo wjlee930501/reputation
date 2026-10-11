@@ -95,7 +95,7 @@ AUTO_RECOVERY_CYCLE_GAP_FIELD = "automatic_recovery_cycle"
 # 마지막 자동 재검수 시각(ISO). 사이클 수와 함께 읽어야 다음 재시도 시점이 정해지므로
 # 클라이언트가 지우거나 앞당기지 못하게 서버 소유로 둔다.
 AUTO_RECOVERY_LAST_AT_GAP_FIELD = "automatic_recovery_last_at"
-# 72시간 넘게 처리 오류인 필수 자료를 근거에서 제외했다는 사실. 승인 근거의 일부이므로
+# 처리 오류로 제외한 필수 자료를 근거에서 뺐다는 사실. 승인 근거의 일부이므로
 # 사람이 지울 수 없다 — 자료를 고쳐 다시 처리하면 새 snapshot이 되어 사라진다.
 EXCLUDED_ERROR_SOURCE_GAP_FIELD = "excluded_error_source"
 # 자동 재검수로 풀 수 없는 보류(자료 간 상충·프롬프트 주입 의심)라 바로 사람에게 넘겼다는 표식.

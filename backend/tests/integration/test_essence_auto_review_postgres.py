@@ -1087,9 +1087,13 @@ def test_required_source_stuck_in_error_is_excluded_and_recorded_as_a_gap(pg_ses
     assert pg_session.get(HospitalSourceAsset, broken.id).status == SourceStatus.ERROR
 
 
-def test_recently_failed_source_still_blocks_synthesis(pg_session) -> None:
+def test_recently_failed_source_alone_still_blocks_synthesis(pg_session) -> None:
     hospital, source, note, previous = _seed_baseline(pg_session, label="fresh-error-source")
     pg_session.delete(previous)
+    # 처리된 다른 자료가 없을 때만 6시간을 기다린다 — 기준선 자료를 빼 실패 자료만 남긴다.
+    pg_session.delete(note)
+    pg_session.flush()
+    pg_session.delete(source)
     broken = HospitalSourceAsset(
         id=uuid.uuid4(),
         hospital_id=hospital.id,
@@ -1140,3 +1144,36 @@ def test_conflicting_sources_escalate_straight_to_a_person(pg_session) -> None:
     )
     # 다음 15분 조정이 같은 입력을 다시 사지 않는다.
     assert essence_refresh_needed(pg_session, hospital.id) is False
+
+
+def test_fresh_error_source_is_excluded_at_once_beside_a_processed_one(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="fresh-error-beside")
+    pg_session.delete(previous)
+    broken = HospitalSourceAsset(
+        id=uuid.uuid4(),
+        hospital_id=hospital.id,
+        source_type=SourceType.INTERVIEW,
+        title="방금 실패한 자료",
+        raw_text="본문은 있으나 처리에 실패한 자료",
+        content_hash="fresh-error-beside-hash",
+        status=SourceStatus.ERROR,
+    )
+    pg_session.add(broken)
+    pg_session.flush()
+
+    # 다른 필수 자료가 처리됐으면 실패 자료를 기다리지 않는다.
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=lambda *_a, **_k: _candidate_payload(source, note),
+        reviewer=lambda *_a, **_k: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.AUTO_APPROVED
+    approved = pg_session.get(HospitalContentPhilosophy, result.philosophy_id)
+    assert [
+        gap["source_asset_id"]
+        for gap in approved.unsupported_gaps or []
+        if isinstance(gap, dict) and gap.get("field") == "excluded_error_source"
+    ] == [str(broken.id)]

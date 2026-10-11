@@ -72,9 +72,10 @@ AUTO_ESSENCE_RECOVERY_BACKOFFS: tuple[timedelta, ...] = (
     timedelta(hours=4),
     timedelta(hours=12),
 )
-# 필수 자료가 이 시간 넘게 ERROR면 합성 입력과 완결성 검사에서 빼고 그 사실을 gap으로
-# 남긴다. 자료 한 건의 영구 실패가 병원 전체의 Essence를 영원히 막지 않게 한다.
-ERROR_SOURCE_EXCLUSION_AFTER = timedelta(hours=72)
+# 필수 자료가 6시간 넘게 ERROR이거나, 다른 필수 자료가 이미 처리됐다면 ERROR 자료를 합성
+# 입력과 완결성 검사에서 빼고 gap으로 남긴다. 자료 한 건의 영구 실패가 병원 전체의
+# Essence를 막지 않게 한다.
+ERROR_SOURCE_EXCLUSION_AFTER = timedelta(hours=6)
 # 같은 입력(snapshot+previous)으로 반복 실패하는 병원이 15분마다 합성·검수를 다시
 # 사지 않도록, 시도 횟수에 따라 다음 claim을 미룬다.
 _CLAIM_RETRY_BASE_BACKOFF = timedelta(minutes=15)
@@ -555,13 +556,17 @@ def _split_stale_error_sources(
     sources: list[HospitalSourceAsset],
     now: datetime,
 ) -> tuple[list[HospitalSourceAsset], list[HospitalSourceAsset]]:
-    """72시간 넘게 ERROR인 필수 자료를 합성 입력에서 분리한다.
+    """ERROR 필수 자료를 합성 입력에서 분리한다.
 
-    ERROR는 자동 재시도가 없는 종착지라, 자료 한 건이 고쳐지지 않으면 병원 전체의
-    Essence가 영원히 만들어지지 않는다. 자료 상태는 그대로 두고(사람이 고치면 새
-    snapshot이 된다) 이번 합성에서만 빼며, 그 사실은 후보의 gap으로 남는다.
+    ERROR는 자동 재시도가 없는 종착지다. 다른 필수 자료가 이미 처리됐다면 기다릴 이유가
+    없으므로 바로 빼고, ERROR 자료뿐이면 6시간을 기다린다(곧 고쳐질 자료를 위해). 자료
+    상태는 그대로 두고(사람이 고치면 새 snapshot이 된다) 제외 사실만 gap으로 남는다.
+    세 호출부(필요 판정·진입·writeback 재검사)가 같은 `now`로 같은 답을 낸다.
     """
 
+    has_processed = any(
+        _status_value(source.status) == SourceStatus.PROCESSED.value for source in sources
+    )
     usable: list[HospitalSourceAsset] = []
     stale: list[HospitalSourceAsset] = []
     for source in sources:
@@ -571,7 +576,9 @@ def _split_stale_error_sources(
                 or _as_utc(getattr(source, "processed_at", None))
                 or _as_utc(getattr(source, "created_at", None))
             )
-            if since is not None and now - since >= ERROR_SOURCE_EXCLUSION_AFTER:
+            if has_processed or (
+                since is not None and now - since >= ERROR_SOURCE_EXCLUSION_AFTER
+            ):
                 stale.append(source)
                 continue
         usable.append(source)
@@ -583,9 +590,8 @@ def _excluded_error_source_gaps(sources: list[HospitalSourceAsset]) -> list[dict
         {
             "field": EXCLUDED_ERROR_SOURCE_GAP_FIELD,
             "reason": (
-                f"자료 '{(source.title or str(source.id))[:120]}'가 "
-                f"{int(ERROR_SOURCE_EXCLUSION_AFTER.total_seconds() // 3600)}시간 넘게 "
-                "처리되지 않아 이번 근거에서 제외했습니다."
+                f"자료 '{(source.title or str(source.id))[:120]}'의 처리가 실패해 "
+                "이번 근거에서 제외했습니다."
             ),
             "source_asset_id": str(source.id),
         }
@@ -1525,8 +1531,9 @@ def refresh_essence_snapshot(
     previous = _approved(db, hospital_id)
 
     now = datetime.now(timezone.utc)
-    # 72시간 넘게 ERROR인 필수 자료는 이번 합성의 입력과 완결성 검사에서 뺀다. 자료
-    # 상태는 그대로 두고(사람이 고치면 새 snapshot이 된다) 제외 사실만 gap으로 남긴다.
+    # 제외 대상 ERROR 필수 자료(다른 자료가 처리됐거나 6시간 경과)는 이번 합성의 입력과
+    # 완결성 검사에서 뺀다. 자료 상태는 그대로 두고(사람이 고치면 새 snapshot이 된다)
+    # 제외 사실만 gap으로 남긴다.
     sources, excluded_error_sources = _split_stale_error_sources(
         _required_sources(db, hospital_id), now
     )

@@ -639,46 +639,49 @@ def test_repeated_claim_failures_back_off_up_to_one_day() -> None:
     assert capped == completed_at + timedelta(hours=24)
 
 
-# ── 72시간 넘게 ERROR인 필수 자료 ────────────────────────────────────────────
+# ── 처리 ERROR인 필수 자료 ───────────────────────────────────────────────────
 
 
-def test_required_source_is_only_excluded_after_three_days_of_error() -> None:
+def _source(status, *, hours_ago: float, title: str = "자료"):
     now = datetime(2026, 9, 12, tzinfo=timezone.utc)
-    fresh = SimpleNamespace(
+    at = now - timedelta(hours=hours_ago)
+    return SimpleNamespace(
         id=uuid.uuid4(),
-        title="어제 실패한 자료",
-        status=SourceStatus.ERROR,
-        updated_at=now - timedelta(hours=10),
-        processed_at=None,
-        created_at=now - timedelta(hours=10),
+        title=title,
+        status=status,
+        updated_at=at,
+        processed_at=at if status == SourceStatus.PROCESSED else None,
+        created_at=at,
     )
-    stale = SimpleNamespace(
-        id=uuid.uuid4(),
-        title="나흘째 실패한 자료",
-        status=SourceStatus.ERROR,
-        updated_at=now - timedelta(days=4),
-        processed_at=None,
-        created_at=now - timedelta(days=4),
-    )
-    processed = SimpleNamespace(
-        id=uuid.uuid4(),
-        title="정상 자료",
-        status=SourceStatus.PROCESSED,
-        updated_at=now - timedelta(days=9),
-        processed_at=now - timedelta(days=9),
-        created_at=now - timedelta(days=9),
-    )
+
+
+def test_error_source_is_excluded_at_once_when_another_source_is_processed() -> None:
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    fresh_error = _source(SourceStatus.ERROR, hours_ago=0.1, title="방금 실패한 자료")
+    processed = _source(SourceStatus.PROCESSED, hours_ago=200)
 
     usable, excluded = essence_auto_review._split_stale_error_sources(
-        [fresh, stale, processed], now
+        [fresh_error, processed], now
     )
 
-    assert [source.id for source in usable] == [fresh.id, processed.id]
-    assert [source.id for source in excluded] == [stale.id]
+    assert [s.id for s in usable] == [processed.id]
+    assert [s.id for s in excluded] == [fresh_error.id]
     gap = essence_auto_review._excluded_error_source_gaps(excluded)[0]
     assert gap["field"] == "excluded_error_source"
-    assert gap["source_asset_id"] == str(stale.id)
-    assert "72시간" in gap["reason"]
+    assert gap["source_asset_id"] == str(fresh_error.id)
+    assert "시간" not in gap["reason"] and "제외" in gap["reason"]
+
+
+def test_error_source_alone_waits_six_hours() -> None:
+    now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+    young = _source(SourceStatus.ERROR, hours_ago=5)
+    old = _source(SourceStatus.ERROR, hours_ago=6)
+    pending = _source(SourceStatus.PENDING, hours_ago=1)
+
+    usable, excluded = essence_auto_review._split_stale_error_sources([young, old, pending], now)
+
+    assert [s.id for s in usable] == [young.id, pending.id]
+    assert [s.id for s in excluded] == [old.id]
 
 
 # ── 샤드 검수가 근거의 일부만 본다는 사실 ────────────────────────────────────
