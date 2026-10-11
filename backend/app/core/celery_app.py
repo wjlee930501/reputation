@@ -224,7 +224,8 @@ celery_app.conf.update(
     # Beat 신뢰성 (Cloud Run 롤아웃 중 구/신 beat가 잠시 공존):
     # RedBeat은 Redis 분산 락으로 단일 dispatcher를 보장하고, 스케줄 상태를
     # Redis에 보존해 재시작 후에도 last-run 정보가 유지된다(중복/누락 방지).
-    beat_scheduler="redbeat.RedBeatScheduler",
+    # RedBeat + tick마다 인스턴스 로컬 생존 파일 갱신(Beat /live가 그 나이를 본다).
+    beat_scheduler="app.workers.beat_scheduler.LivenessRedBeatScheduler",
     redbeat_redis_url=_redis_url_with_socket_options(settings.REDIS_URL),
     # RedBeat 기본 max loop interval은 300초다. 기존 락 TTL도 정확히 300초여서
     # 다음 tick에서 이미 만료된 락을 extend하며 LockNotOwnedError가 발생했다.

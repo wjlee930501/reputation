@@ -22,6 +22,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 HEARTBEAT_FILE = Path(tempfile.gettempdir()) / "reputation-worker-consumer-heartbeat"
+# Beat 스케줄 루프(RedBeat tick)의 인스턴스 로컬 생존 증거. `beat_scheduler.LivenessRedBeatScheduler`가 쓴다.
+BEAT_TICK_FILE = Path(tempfile.gettempdir()) / "reputation-beat-tick"
 
 
 def touch_heartbeat(*_args: Any, path: Path | None = None, **_kwargs: Any) -> None:

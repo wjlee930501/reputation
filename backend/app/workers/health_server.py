@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # `--worker-heartbeat`(worker 분기만)일 때 /live가 consumer heartbeat의 나이도 본다. Beat에는
 # consumer가 없으므로 끈 채로 둔다. 시작 시각은 기동 유예의 기준점이다.
 _CHECK_WORKER_HEARTBEAT = False
+# `--beat-tick`(beat 분기만)일 때 /live가 RedBeat tick 파일의 나이를 본다.
+_CHECK_BEAT_TICK = False
 _STARTED_AT = time.time()
 
 
@@ -74,8 +76,28 @@ def _worker_consumer_alive() -> bool:
     return alive
 
 
+def _beat_ticking() -> bool:
+    if not _CHECK_BEAT_TICK:
+        return True
+    alive = worker_liveness.consumer_alive(
+        started_at=_STARTED_AT,
+        stale_seconds=settings.BEAT_LIVENESS_STALE_SECONDS,
+        startup_grace_seconds=settings.BEAT_LIVENESS_STARTUP_GRACE_SECONDS,
+        path=worker_liveness.BEAT_TICK_FILE,
+        now=time.time(),
+    )
+    if not alive:
+        # Cloud Run이 이 응답으로 Beat를 재시작한다 — 재시작 사유를 남긴다.
+        logger.warning(
+            "beat_liveness_failed reason=tick_stale age_seconds=%s stale_seconds=%s",
+            worker_liveness.heartbeat_age_seconds(path=worker_liveness.BEAT_TICK_FILE),
+            settings.BEAT_LIVENESS_STALE_SECONDS,
+        )
+    return alive
+
+
 def is_live() -> bool:
-    return _parent_process_alive() and _worker_consumer_alive()
+    return _parent_process_alive() and _worker_consumer_alive() and _beat_ticking()
 
 
 def readiness_checks() -> dict[str, bool]:
@@ -114,10 +136,13 @@ class _HealthHandler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> None:
-    global _CHECK_WORKER_HEARTBEAT
+    global _CHECK_WORKER_HEARTBEAT, _CHECK_BEAT_TICK
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker-heartbeat", action="store_true")
-    _CHECK_WORKER_HEARTBEAT = parser.parse_args(argv).worker_heartbeat
+    parser.add_argument("--beat-tick", action="store_true")
+    args = parser.parse_args(argv)
+    _CHECK_WORKER_HEARTBEAT = args.worker_heartbeat
+    _CHECK_BEAT_TICK = args.beat_tick
     port = int(os.environ.get("PORT", "8080"))
     server = HTTPServer(("0.0.0.0", port), _HealthHandler)
     logger.info("worker health server listening on :%d", port)
