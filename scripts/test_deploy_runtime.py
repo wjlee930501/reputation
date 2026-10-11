@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -52,6 +53,14 @@ _FAKE_GCLOUD = "\n".join(
         "  fi",
         "done",
         'case "$*" in',
+        '  "run services describe "*"--format=json"*)',
+        '    if [[ -n "${FAKE_SERVICE_ENV_JSON:-}" ]]; then',
+        '      printf \'%s\\n\' "$FAKE_SERVICE_ENV_JSON"',
+        "      exit 0",
+        "    fi",
+        '    echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
+        "    exit 1",
+        "    ;;",
         '  "run services describe "*"spec.traffic"*)',
         '    if [[ "${FAKE_TRAFFIC_PINNED:-0}" == "1" ]]; then',
         '      echo ""',
@@ -140,6 +149,7 @@ def _make_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     fake_bin.mkdir()
 
     shutil.copy2(PROJECT_ROOT / "scripts" / "deploy.sh", project / "scripts" / "deploy.sh")
+    shutil.copy2(PROJECT_ROOT / "scripts" / "deploy_env.py", project / "scripts" / "deploy_env.py")
     shutil.copy2(
         PROJECT_ROOT / "terraform" / "cloudrun.tf", project / "terraform" / "cloudrun.tf"
     )
@@ -951,6 +961,11 @@ def test_all_deploy_path_preserves_preflight_and_runtime_flags(tmp_path: Path) -
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                # 운영 서비스 env 정본 조회 — 이 테스트는 신규 환경(서비스 없음) 경로를 탄다.
+                'if [[ "$1 $2 $3" == "run services describe" && "$*" == *"--format=json"* ]]; then',
+                '  echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
+                "  exit 1",
+                "fi",
                 'for arg in "$@"; do',
                 '  if [[ "$arg" == --env-vars-file=* ]]; then',
                 '    sed "s/^/env /" "${arg#*=}" >> "$FAKE_COMMAND_LOG"',
@@ -1134,6 +1149,11 @@ def test_supabase_deploy_path_uses_secret_database_urls_without_cloudsql_flags(
                 "#!/usr/bin/env bash",
                 "set -euo pipefail",
                 'echo "gcloud $*" >> "$FAKE_COMMAND_LOG"',
+                # 운영 서비스 env 정본 조회 — 이 테스트는 신규 환경(서비스 없음) 경로를 탄다.
+                'if [[ "$1 $2 $3" == "run services describe" && "$*" == *"--format=json"* ]]; then',
+                '  echo "ERROR: (gcloud.run.services.describe) Cannot find service [reputation-api]" >&2',
+                "  exit 1",
+                "fi",
                 'if [[ "$1 $2" == "secrets describe" ]]; then',
                 "  exit 0",
                 "fi",
@@ -1946,3 +1966,95 @@ def test_empty_override_reason_is_refused(tmp_path: Path) -> None:
     )
     assert result.returncode != 0
     assert "사유를 적어야" in result.stderr
+
+
+def _live_service_json(**overrides: str) -> str:
+    """`.env.production.example`의 비어 있지 않은 값을 그대로 가진 운영 API 서비스(JSON)."""
+    pairs = [
+        (key, value)
+        for key, value in _dotenv_pairs((PROJECT_ROOT / ".env.production.example").read_text())
+        if value
+    ]
+    env = [{"name": key, "value": overrides.get(key, value)} for key, value in pairs]
+    env.append({"name": "SERVICE", "value": "api"})
+    env.append({"name": "REPUTATION_RELEASE_REVISION", "value": "previous-release"})
+    env.append({"name": "SLACK_WEBHOOK_URL", "valueFrom": {"secretKeyRef": {"name": "SLACK_WEBHOOK_URL", "key": "latest"}}})
+    return json.dumps({"spec": {"template": {"spec": {"containers": [{"env": env}]}}}})
+
+
+def _run_api_with_live_env(tmp_path: Path, *args: str, local: bool = True, **extra: str):
+    project, fake_bin, command_log = _make_project(tmp_path)
+    if local:
+        shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api", *args],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1", **extra),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return result, command_log.read_text() if command_log.exists() else ""
+
+
+def test_live_service_env_is_the_source_when_the_local_file_matches(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(tmp_path, FAKE_SERVICE_ENV_JSON=_live_service_json())
+    assert result.returncode == 0, result.stderr
+    assert "운영 서비스 env를 정본으로" in result.stderr
+    # 옛 릴리스 값은 렌더에서 빠지고 이번 릴리스 값만 한 번 들어간다(YAML 중복 키 없음).
+    release_lines = [l for l in commands.splitlines() if l.startswith("env REPUTATION_RELEASE_REVISION:")]
+    assert release_lines and set(release_lines) == {'env REPUTATION_RELEASE_REVISION: "test-source-revision"'}
+
+
+def test_a_stale_local_file_stops_before_mutation_and_names_the_keys(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(
+        tmp_path, FAKE_SERVICE_ENV_JSON=_live_service_json(CLAUDE_MODEL="anthropic/claude-live-only")
+    )
+    assert result.returncode != 0
+    assert "changed: CLAUDE_MODEL" in result.stderr
+    assert "--accept-env-diff" in result.stderr
+    # 값은 출력하지 않는다.
+    assert "claude-live-only" not in result.stderr
+    assert "gcloud run deploy" not in commands
+    assert "docker build" not in commands
+
+
+def test_accept_env_diff_deploys_the_local_values(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(
+        tmp_path,
+        "--accept-env-diff",
+        FAKE_SERVICE_ENV_JSON=_live_service_json(CLAUDE_MODEL="anthropic/claude-live-only"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "claude-live-only" not in commands
+    assert "gcloud run deploy reputation-api" in commands
+
+
+def test_no_local_file_uses_the_live_env(tmp_path: Path) -> None:
+    result, commands = _run_api_with_live_env(
+        tmp_path, local=False, FAKE_SERVICE_ENV_JSON=_live_service_json()
+    )
+    assert result.returncode == 0, result.stderr
+    assert "gcloud run deploy reputation-api" in commands
+
+
+def test_unreadable_live_env_fails_closed(tmp_path: Path) -> None:
+    project, fake_bin, command_log = _make_project(tmp_path)
+    shutil.copy2(PROJECT_ROOT / ".env.production.example", project / ".env.production")
+    # 권한 오류는 '서비스 없음'이 아니다 — 로컬 파일로 넘어가지 않는다.
+    _write_executable(
+        fake_bin / "gcloud",
+        _FAKE_GCLOUD.replace(
+            "Cannot find service [reputation-api]", "PERMISSION_DENIED: caller lacks run.services.get"
+        ),
+    )
+    result = subprocess.run(
+        ["bash", "scripts/deploy.sh", "api"],
+        cwd=project,
+        env=_clean_env(fake_bin, command_log, SKIP_ASSET_BUCKET_PREFLIGHT="1"),
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert result.returncode != 0
+    assert "운영 서비스 env를 읽지 못했습니다" in result.stderr
+    assert "gcloud run deploy" not in command_log.read_text()

@@ -228,6 +228,15 @@ ALL_MANAGED_SECRET_NAMES=(
   "SYNC_DATABASE_URL"
 )
 
+# make_service_env_file이 서비스별로 직접 써 넣는 키 — .env.production에 없어도 된다.
+DEPLOY_INJECTED_ENV_KEYS=(
+  "SERVICE"
+  "APP_ENV"
+  "OPENAI_CHATGPT_USE_WEB_SEARCH"
+  "CERTIFICATE_MANAGER_AUTO_PROVISION"
+  "REPUTATION_RELEASE_REVISION"
+)
+
 BACKEND_REQUIRED_SECRET_NAMES=("${BACKEND_BASE_REQUIRED_SECRET_NAMES[@]}")
 REQUIRED_SECRET_NAMES=()
 OPTIONAL_SECRET_NAMES=()
@@ -260,6 +269,63 @@ fi
 if [[ -z "$PROJECT_ID" ]]; then
   fail "GCP_PROJECT_ID 환경변수 또는 gcloud config를 설정해 주세요."
 fi
+
+# ─── env 정본: 운영 서비스의 현재 env ─────────────────────────────
+# `--env-vars-file`은 서비스 env를 통째로 바꾼다. 작업 PC의 .env.production이 정본이던 동안 오래된 파일이
+# 두 번(9/23·10/1) 발견됐다. backend 대상의 정본은 이제 운영 reputation-api의 현재 env(비밀 아닌 값)이고,
+# 로컬 파일은 '바꾸려는 값'을 담은 제안이다. 둘이 다르면 키 이름만 보여 주고 멈춘다. 로컬 값으로 바꾸는 것이
+# 맞으면 --accept-env-diff로 다시 실행한다. 서비스가 아직 없으면(신규 환경) 로컬 파일로 시작한다.
+LOCAL_ENV_FILE="$ENV_FILE"
+ENV_SOURCE="local"
+# 배포가 서비스·릴리스마다 직접 넣는 키 — 렌더에서 빼야 YAML 중복 키가 생기지 않는다.
+LIVE_ENV_DROP_KEYS=("SERVICE" "APP_ENV" "REPUTATION_RELEASE_REVISION")
+
+resolve_backend_env_source() {
+  local err live_json live_file status=0 diff_out
+  err="$(mktemp)"; TEMP_ENV_FILES+=("$err")
+  live_json="$(gcloud run services describe reputation-api --region="$REGION" --project="$PROJECT_ID" \
+      --format=json 2>"$err")" || status=$?
+  if (( status != 0 )); then
+    if grep -qiE "could not be found|cannot find service|NOT_FOUND" "$err"; then
+      [[ -f "$LOCAL_ENV_FILE" ]] \
+        || fail "운영 서비스가 아직 없고 .env.production도 없습니다. 신규 환경은 .env.production.example을 복사해 작성하세요."
+      info "운영 서비스가 아직 없어 .env.production으로 시작합니다(신규 환경)."
+      return
+    fi
+    cat "$err" >&2
+    fail "운영 서비스 env를 읽지 못했습니다(reputation-api). gcloud 인증·권한을 확인하세요. 로컬 파일로 대신 배포하지 않습니다."
+  fi
+
+  live_file="$(mktemp)"; TEMP_ENV_FILES+=("$live_file")
+  printf '%s' "$live_json" | python3 "${SCRIPT_DIR}/deploy_env.py" render \
+      --service-json - --out "$live_file" --drop "${LIVE_ENV_DROP_KEYS[@]}" \
+    || fail "운영 서비스 env를 배포 입력으로 옮기지 못했습니다(여러 줄 값 등). 위 오류를 확인하세요."
+
+  if [[ -f "$LOCAL_ENV_FILE" ]]; then
+    status=0
+    diff_out="$(python3 "${SCRIPT_DIR}/deploy_env.py" diff --local "$LOCAL_ENV_FILE" --live "$live_file" \
+        --ignore "${LIVE_ENV_DROP_KEYS[@]}" "${ALL_MANAGED_SECRET_NAMES[@]}")" || status=$?
+    if (( status == 1 )); then
+      echo "$diff_out" >&2
+      if [[ "$ACCEPT_ENV_DIFF" == "1" ]]; then
+        info "--accept-env-diff: 위 키를 로컬 .env.production 값으로 바꿉니다."
+        return
+      fi
+      fail "로컬 .env.production이 운영 env와 다릅니다(위 키 목록, 값은 출력하지 않음). 운영 값이 맞으면 로컬 파일을 지우거나 고친 뒤 다시 실행하고, 로컬 값으로 바꾸려면 --accept-env-diff를 붙이세요."
+    elif (( status != 0 )); then
+      fail "env 비교에 실패했습니다(deploy_env.py diff exit=${status})."
+    fi
+  fi
+  ENV_FILE="$live_file"
+  ENV_SOURCE="live"
+  ok "운영 서비스 env를 정본으로 씁니다(reputation-api 현재 env)."
+}
+
+case "$TARGET" in
+  backend|api|worker|beat|all|migrate)
+    resolve_backend_env_source
+    ;;
+esac
 
 if [[ "$TARGET" != "rollback" && ! -f "$ENV_FILE" ]]; then
   fail ".env.production 파일이 없습니다. .env.production.example을 복사해서 작성해 주세요."
@@ -1115,15 +1181,6 @@ require_pinned_measurement_models() {
 # 없으면 해당 env를 렌더링하지 않으므로 결과가 일치한다.
 TERRAFORM_ENV_SOURCE="${PROJECT_ROOT}/terraform/cloudrun.tf"
 
-# make_service_env_file이 서비스별로 직접 써 넣는 키 — .env.production에 없어도 된다.
-DEPLOY_INJECTED_ENV_KEYS=(
-  "SERVICE"
-  "APP_ENV"
-  "OPENAI_CHATGPT_USE_WEB_SEARCH"
-  "CERTIFICATE_MANAGER_AUTO_PROVISION"
-  "REPUTATION_RELEASE_REVISION"
-)
-
 is_deploy_injected_env_key() {
   local key="$1"
   local name
@@ -1139,6 +1196,11 @@ env_file_declares_key() {
 }
 
 require_no_dropped_terraform_env() {
+  if [[ "$ENV_SOURCE" == "live" ]]; then
+    # 운영 env 자신은 운영 env보다 키를 잃을 수 없다 — 이 검사의 대상(오래된 로컬 파일)이 아니다.
+    info "운영 서비스 env를 정본으로 쓰므로 Terraform env 드롭 preflight를 건너뜁니다."
+    return
+  fi
   if [[ "${SKIP_TERRAFORM_ENV_PREFLIGHT:-0}" == "1" ]]; then
     info "SKIP_TERRAFORM_ENV_PREFLIGHT=1 — Terraform env 드롭 preflight를 건너뜁니다."
     return
