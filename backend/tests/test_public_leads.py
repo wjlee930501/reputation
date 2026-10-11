@@ -102,8 +102,18 @@ async def test_create_lead_records_notification_failure(monkeypatch):
     )
     await _create_lead(request=FakeRequest(), body=body, background_tasks=BackgroundTasks(), db=db)
 
-    assert db.added[0].notification_status == "FAILED"
+    # 실패는 끝이 아니다 — drain이 1시간 동안 다시 보낸다.
+    assert db.added[0].notification_status == "PENDING"
     assert "Slack/webhook" in db.added[0].notification_error
+
+
+def test_diagnosis_note_constants_stay_importable_from_the_api():
+    """문구 정본은 서비스(drain 재발송이 같은 줄을 다시 만든다), API 이름도 그대로 보인다."""
+    from app.services import inquiry_diagnosis
+
+    assert leads_api.DIAGNOSIS_NOTE_QUEUED == inquiry_diagnosis.DIAGNOSIS_NOTE_QUEUED
+    assert leads_api.DIAGNOSIS_NOTE_NO_INPUT == inquiry_diagnosis.DIAGNOSIS_NOTE_NO_INPUT
+    assert leads_api.DIAGNOSIS_NOTE_REFUSED == inquiry_diagnosis.DIAGNOSIS_NOTE_REFUSED
 
 
 async def test_create_lead_ignores_forwarded_ip_from_untrusted_remote(monkeypatch):

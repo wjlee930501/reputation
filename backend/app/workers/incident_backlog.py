@@ -26,6 +26,7 @@ from app.core.config import settings
 from app.models.content import ContentItem, ContentStatus
 from app.models.essence import HospitalContentPhilosophy, PhilosophyStatus
 from app.models.hospital import Hospital
+from app.models.lead import SalesLead
 from app.models.lead_diagnosis import (
     REPORTABLE_EXECUTION_STATUSES,
     DeliveryStatus,
@@ -349,6 +350,18 @@ def _monthly_cohort_enrolled(db: Session, incident: Incident, _now: datetime) ->
     return "enrolled_in_monthly_cohort" if hospital is not None and hospital.monthly_sov_cohort else None
 
 
+def _lead_followed_up(db: Session, incident: Incident, _now: datetime) -> str | None:
+    """리드 부수효과(접수 알림·안내 문자) 실패는 사람이 그 리드를 맡으면(상태 ≠ NEW) 끝난다."""
+    try:
+        lead_id = uuid.UUID(str(incident.source_id))
+    except (TypeError, ValueError):
+        return None
+    lead = db.get(SalesLead, lead_id)
+    if lead is None or lead.purged_at is not None:
+        return "lead_purged"
+    return "lead_followed_up" if (lead.status or "NEW") != "NEW" else None
+
+
 def _uuid_source(incident: Incident) -> uuid.UUID | None:
     try:
         return uuid.UUID(str(incident.source_id))
@@ -601,6 +614,9 @@ RESOLVERS: dict[str, Resolver] = {
     "CONTENT_DISPATCH_FAILED": _content_dispatch_superseded,
     "MONTHLY_SOV_COHORT_OVER_LIMIT": _month_closed,
     "UNVERIFIED_ADMIN_ACTOR": _unverified_actor_quiet,
+    # Phase 1-9c: 도입문의 부수효과 실패 — 리드를 맡으면 닫힌다.
+    "LEAD_INTAKE_NOTIFICATION_FAILED": _lead_followed_up,
+    "INQUIRY_SMS_FAILED": _lead_followed_up,
 }
 # 스윕 소유 종류는 RETRYING으로 열리므로 그 상태에서도 근거로 닫는다. 나머지 RETRYING은 자동화의 것이다.
 _RETRYING_RESOLVABLE = tuple(sorted(SWEEP_OWNED_INCIDENT_TYPES & set(RESOLVERS)))

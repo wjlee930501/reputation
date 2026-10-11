@@ -12,13 +12,13 @@ from app.core.database import get_db
 from app.core.rate_limit import get_request_ip, limiter
 from app.models.lead import SalesLead
 from app.services import inquiry_diagnosis, inquiry_sms, notifier
+from app.services.inquiry_diagnosis import (
+    DIAGNOSIS_NOTE_NO_INPUT,
+    DIAGNOSIS_NOTE_QUEUED,
+    DIAGNOSIS_NOTE_REFUSED,
+)
 
 logger = logging.getLogger(__name__)
-
-# Slack 한 줄로 나가는 자동 처리 결과. 고정 문구만 쓴다 — 사용자 입력이 섞이면 안 된다.
-DIAGNOSIS_NOTE_QUEUED = "초도 노출 진단 자동 시작"
-DIAGNOSIS_NOTE_NO_INPUT = "진료과·지역·키워드 미입력 — Admin에서 초도 진단 생성"
-DIAGNOSIS_NOTE_REFUSED = "초도 노출 진단 자동 생성 거절 — Admin에서 입력값 확인 후 생성"
 
 router = APIRouter(prefix="/public/leads", tags=["Public — Leads"])
 
@@ -220,7 +220,8 @@ async def create_lead(
         source_path=body.source_path,
         created_at=lead.created_at,
     )
-    lead.notification_status = "SENT" if notified else "FAILED"
+    # 실패는 끝이 아니다 — 매분 drain이 1시간 동안 다시 보내고, 그래도 못 보내면 사고로 올린다.
+    lead.notification_status = "SENT" if notified else "PENDING"
     lead.notification_error = None if notified else "Slack/webhook delivery failed or is not configured."
 
     # ── 접수 안내 문자. Slack 뒤에 보낸다 — AE 알림이 문자 사업자 장애에 묶이면 안 된다.
