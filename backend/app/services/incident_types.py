@@ -303,6 +303,9 @@ INCIDENT_TYPE_POLICIES: dict[str, IncidentTypePolicy] = {
     "CONTENT_DISPATCH_FAILED": IncidentTypePolicy(sweep_owned=True, retry_window=_one_day_window),
     # 자동 재검수 예산이 남은 보류. 다음 시도 시각은 호출자가 안다(`retry_until`).
     "ESSENCE_AUTO_REVIEW_ESCALATED": IncidentTypePolicy(sweep_owned=True),
+    # 재시도가 끝난 V0 실패는 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 돈다(재실행 시각 + 유예,
+    # 호출자 기한). 소진·측정 기준 변경은 기한 없이 사람의 일이다. V0 리포트가 생기면 근거가 닫는다.
+    "V0_REPORT_FAILED": IncidentTypePolicy(sweep_owned=True),
     # 기록이 없어 코호트에 못 든 병원에 월말 창이 주간 측정 1회를 보냈다(요청 + 24시간, 호출자 기한).
     # 기한이 없는 공백(질문 세트 부족 등)은 처음부터 사람의 일이다. 편입되면 근거가 닫는다.
     "MONTHLY_SOV_COHORT_GAP": IncidentTypePolicy(sweep_owned=True),

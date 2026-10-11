@@ -816,3 +816,26 @@ def test_the_consumption_query_only_counts_v0_reports_created_after_the_run():
     report_sql = next(sql for sql in db.statements if "FROM monthly_reports" in sql)
     assert "monthly_reports.report_type = 'V0'" in report_sql
     assert "monthly_reports.created_at >=" in report_sql
+
+
+def test_the_same_lineage_reuses_a_completed_measurement_for_seven_days():
+    """6시간 간격 자동 재실행이 이미 끝난 150건 측정을 다시 사지 않는다(Phase 1-9a, D9)."""
+    db = _LookupSession([], {}, 0)
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+    v0_checkpoint.find_reusable_v0_measurement_run(
+        db, uuid.uuid4(), operation_run_id=uuid.uuid4(), now=now
+    )
+
+    cutoff = now - timedelta(seconds=v0_checkpoint.V0_RESUME_MAX_AGE_SECONDS)
+    assert cutoff.strftime("%Y-%m-%d %H:%M:%S") in db.statements[0]
+
+
+def test_a_request_without_lineage_keeps_the_six_hour_window():
+    db = _LookupSession([], {}, 0)
+    now = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+
+    v0_checkpoint.find_reusable_v0_measurement_run(db, uuid.uuid4(), operation_run_id=None, now=now)
+
+    cutoff = now - timedelta(seconds=v0_checkpoint.V0_CHECKPOINT_MAX_AGE_SECONDS)
+    assert cutoff.strftime("%Y-%m-%d %H:%M:%S") in db.statements[0]

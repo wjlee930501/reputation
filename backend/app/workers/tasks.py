@@ -2910,6 +2910,114 @@ def _defer_v0_until_cost_window(task, exc: BaseException, failure_retry_count: i
     }
 
 
+V0_AUTO_RERUN_BUDGET = 3
+V0_AUTO_RERUN_INTERVAL = timedelta(hours=6)
+# 재실행이 실제로 돌 시간. 이 안에 끝나지 않으면 그때 사람의 일이다.
+V0_AUTO_RERUN_GRACE = timedelta(hours=2)
+V0_AUTO_RERUN_SUMMARY_KEY = "v0_auto_reruns"
+V0_AUTO_RERUN_NEXT_ACTION = (
+    "시스템이 같은 진단을 6시간 뒤 자동으로 다시 만듭니다(최대 3회). 이미 끝난 측정은 다시 사지 않습니다. "
+    "조치하지 마세요 — 끝내 실패하면 그때 다시 알립니다."
+)
+
+
+def _v0_auto_reruns_used(summary: object) -> int:
+    if not isinstance(summary, Mapping):
+        return 0
+    value = summary.get(V0_AUTO_RERUN_SUMMARY_KEY, 0)
+    if type(value) is int and 0 <= value <= V0_AUTO_RERUN_BUDGET:
+        return value
+    # 손상된 예산으로 재실행을 무한히 열지 않는다.
+    return V0_AUTO_RERUN_BUDGET
+
+
+def _schedule_v0_auto_rerun(task, *, now: datetime | None = None) -> datetime | None:
+    """같은 실행을 6시간 뒤로 미룬다. 예산 소진·기록 없음·지난 사본이면 None(=지금 사람의 일).
+
+    같은 OperationRun id라 측정 lineage(v0_checkpoint)가 이어진다 — 성공한 공급자 단계는 다시 사지 않는다.
+    """
+    context = explicit_run_context(task)
+    if context is None:
+        return None
+    not_before = (now or datetime.now(timezone.utc)) + V0_AUTO_RERUN_INTERVAL
+    try:
+        with SyncSessionLocal() as db:
+            run = db.get(OperationRun, context.run_id)
+            if run is None:
+                return None
+            used = _v0_auto_reruns_used(run.result_summary)
+            if used >= V0_AUTO_RERUN_BUDGET:
+                return None
+            summary = {
+                **(run.result_summary if isinstance(run.result_summary, Mapping) else {}),
+                V0_AUTO_RERUN_SUMMARY_KEY: used + 1,
+            }
+            deferred = defer_operation_run(db, task, not_before, result_summary=summary)
+    except Exception:  # noqa: BLE001 - 미룸을 못 남기면 지금 사람에게 넘긴다(아래 OPEN).
+        logger.exception("V0 auto rerun could not be scheduled")
+        return None
+    return not_before if deferred else None
+
+
+def _finish_v0_run_failed(task, hospital_id: str) -> None:
+    """도메인 사고(V0_REPORT_FAILED)가 이미 열렸다 — 실행을 명시 종결해 일반 실패 사고가 겹치지 않게 한다."""
+    try:
+        with SyncSessionLocal() as db:
+            finish_explicit_run(
+                db,
+                task,
+                uuid.UUID(hospital_id),
+                OperationRunState.FAILED,
+                safe_error_code="V0_REPORT_FAILED",
+                safe_error_message="초기 진단 리포트를 만들지 못했습니다.",
+            )
+    except Exception:  # noqa: BLE001 - 종결 실패는 Celery 신호가 TASK_FAILED로 대신 끝낸다.
+        logger.exception("V0 run could not be terminalized explicitly")
+
+
+def _handle_v0_final_failure(task, hospital_id: str, exc: BaseException) -> dict | None:
+    """재시도가 끝난 V0 실패. 자동 재실행을 잡으면 그 결과를, 사람에게 넘기면 None을 돌려준다."""
+    summary = getattr(exc, "summary", None)
+    summary = summary if isinstance(summary, Mapping) else {}
+    # 측정 기준 변경은 같은 lineage로 다시 돌려도 같은 이유로 멈춘다.
+    rerun_at = None if isinstance(exc, V0MeasurementPolicyDrift) else _schedule_v0_auto_rerun(task)
+    try:
+        _run_async(
+            open_ops_incident(
+                pipeline="v0_report",
+                object_type="hospital",
+                object_id=hospital_id,
+                incident_type="V0_REPORT_FAILED",
+                safe_error_code=summary.get("safe_error_code", "V0_REPORT_RETRIES_EXHAUSTED"),
+                problem=summary.get(
+                    "safe_error_message", "초기 진단 리포트 생성 재시도가 모두 실패했습니다."
+                ),
+                customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
+                next_action=(
+                    V0_AUTO_RERUN_NEXT_ACTION
+                    if rerun_at is not None
+                    else summary.get(
+                        "next_action",
+                        "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
+                    )
+                ),
+                source_type="V0_REPORT",
+                hospital_name="병원 초기 진단",
+                hospital_id=uuid.UUID(hospital_id),
+                actor="v0-report-worker",
+                # 재실행이 기한까지 소유한다(RETRYING, 열림 알림 보류). 없으면 사람의 일(OPEN)이고,
+                # 같은 에피소드에 보류된 열림 알림이 그때 나간다.
+                retry_until=(rerun_at + V0_AUTO_RERUN_GRACE) if rerun_at is not None else None,
+            )
+        )
+    except Exception:
+        logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
+    if rerun_at is not None:
+        return {"status": "auto_rerun_scheduled", "not_before": rerun_at.isoformat()}
+    _finish_v0_run_failed(task, hospital_id)
+    return None
+
+
 def _v0_retry_kwargs(task, failure_retry_count: int) -> dict[str, Any]:
     """Keep workflow failure budget separate from normal chunk count."""
     kwargs = dict(getattr(task.request, "kwargs", None) or {})
@@ -4968,6 +5076,23 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             # V0 결과를 롤백하지 않고 로그만 남긴다 (post-commit side effect 격리).
             _seed_query_targets_from_matrix_sync(hospital.id)
 
+            # 자동 재실행 중(RETRYING)이던 실패 사고는 성공한 이 실행이 바로 닫는다. 열림 알림이
+            # 나갔으면 복구 알림이 짝으로 따른다(백로그 근거 정리는 Slack 없이 닫는다).
+            try:
+                _run_async(
+                    recover_ops_incident(
+                        pipeline="v0_report",
+                        object_type="hospital",
+                        object_id=hospital_id,
+                        fingerprint=IncidentFingerprint.UNKNOWN,
+                        hospital_name="병원 초기 진단",
+                        actor="v0-report-worker",
+                        reason="V0 report created",
+                    )
+                )
+            except Exception:
+                logger.exception("V0 failure incident recovery failed (non-fatal)")
+
             # 콘텐츠 허브 준비는 프로필 완료 시 이미 독립 디스패치된다. 이 호출은 V0가
             # 끝났을 때 한 번 더 보내는 멱등 복구 신호이며, 실패는 V0 결과를 되돌리지 않는다.
             try:
@@ -5029,36 +5154,12 @@ def trigger_v0_report(self, hospital_id: str, failure_retry_count: int = 0):
             exc, (V0MeasurementUnavailable, V0MeasurementPolicyDrift)
         )
         if terminal_measurement_failure or failure_retry_count >= self.max_retries:
-            # 공급자별 재시도와 회로 차단까지 끝난 측정 실패는 150건 전체를 Celery가
-            # 다시 돌려도 회복되지 않는다. 즉시 사람 확인 대상으로 넘긴다. 그 밖의
-            # 일시적 작업 오류만 task-level 재시도를 사용한다.
-            try:
-                _run_async(
-                    open_ops_incident(
-                        pipeline="v0_report",
-                        object_type="hospital",
-                        object_id=hospital_id,
-                        incident_type="V0_REPORT_FAILED",
-                        safe_error_code=getattr(exc, "summary", {}).get(
-                            "safe_error_code", "V0_REPORT_RETRIES_EXHAUSTED"
-                        ),
-                        problem=getattr(exc, "summary", {}).get(
-                            "safe_error_message",
-                            "초기 진단 리포트 생성 재시도가 모두 실패했습니다.",
-                        ),
-                        customer_impact="초기 진단 리포트를 준비할 수 없습니다.",
-                        next_action=getattr(exc, "summary", {}).get(
-                            "next_action",
-                            "운영센터에서 원인을 확인하고 초기 진단 리포트를 수동 재실행하세요.",
-                        ),
-                        source_type="V0_REPORT",
-                        hospital_name="병원 초기 진단",
-                        hospital_id=uuid.UUID(hospital_id),
-                        actor="v0-report-worker",
-                    )
-                )
-            except Exception:
-                logger.exception("V0 final-failure ops alert delivery failed (non-fatal)")
+            # 공급자별 재시도와 회로 차단까지 끝난 실패다. 150건 전체를 Celery가 바로 다시
+            # 돌리지 않고, 같은 실행을 6시간 뒤로 미뤄 최대 3회 다시 해 본다(측정 lineage 유지 —
+            # 끝난 측정은 다시 사지 않는다). 소진 뒤에만 사람에게 넘긴다.
+            outcome = _handle_v0_final_failure(self, hospital_id, exc)
+            if outcome is not None:
+                return outcome
             raise exc
         next_failure_count = failure_retry_count + 1
         _persist_v0_workflow_failure_count(
