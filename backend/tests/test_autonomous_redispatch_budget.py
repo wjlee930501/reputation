@@ -142,3 +142,47 @@ def test_a_redispatch_records_whether_it_spent_the_budget(
     assert autonomous_recovery._redispatch_operation_run(_fake_redispatch_db(run), run, NOW)
 
     assert run.redispatch_count == expected
+
+
+def test_every_idempotent_policy_type_is_taken_over_and_recertify_is_not() -> None:
+    """새 재배달 정책을 더하면 인수 여부를 여기서 명시적으로 정해야 한다."""
+
+    assert autonomous_recovery._LEASE_TAKEOVER_TYPES == (
+        set(autonomous_recovery._OPERATION_REDISPATCH_POLICIES) - {"RECERTIFY_PUBLISHED_IMAGE"}
+    )
+
+
+@pytest.mark.parametrize(
+    "operation_type",
+    [
+        "RUN_SOV",
+        "GENERATE_MONTHLY_REPORT",
+        "REGENERATE_CONTENT",
+        "REGENERATE_CONTENT_IMAGE",
+        "GENERATE_CONTENT_ITEM",
+        "TRIGGER_V0_REPORT",
+        "REBUILD_SITE",
+    ],
+)
+def test_an_expired_lease_is_due_for_takeover(operation_type) -> None:
+    assert autonomous_recovery._operation_redispatch_is_due(_running(operation_type), NOW)
+    assert not autonomous_recovery._operation_redispatch_is_due(
+        _running(operation_type, lease_delta=timedelta(seconds=1)), NOW
+    )
+
+
+def test_recertify_stays_with_its_own_sweep() -> None:
+    assert not autonomous_recovery._operation_redispatch_is_due(
+        _running("RECERTIFY_PUBLISHED_IMAGE"), NOW
+    )
+
+
+def test_a_monthly_rebuild_is_not_rerun_after_its_worker_died() -> None:
+    refused = autonomous_recovery._lease_takeover_refused
+    rebuild = _running("GENERATE_MONTHLY_REPORT")
+    rebuild.request_payload = {"_dispatch": {"task_args": ["h", 2026, 9, True]}}
+    plain = _running("GENERATE_MONTHLY_REPORT")
+    plain.request_payload = {"_dispatch": {"task_args": ["h", 2026, 9]}}
+    assert refused(rebuild)
+    assert not refused(plain)
+    assert not refused(_running("RUN_SOV"))

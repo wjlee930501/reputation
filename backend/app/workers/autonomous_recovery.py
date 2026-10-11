@@ -68,8 +68,13 @@ _FAST_QUEUED_REDISPATCH_TYPES: Final = frozenset(
 _REDISPATCH_BUDGET: Final = 3
 _RECOVERY_STOP_INCIDENT_TYPE: Final = "OPERATION_RECOVERY_EXHAUSTED"
 _REDISPATCH_EXHAUSTED: Final = "OPERATION_REDISPATCH_EXHAUSTED"
+_LEASE_EXPIRED: Final = "OPERATION_LEASE_EXPIRED"
 _RECOVERY_STOP_MESSAGES: Final[dict[str, str]] = {
     _REDISPATCH_EXHAUSTED: "자동 재배달을 3번 했지만 작업이 시작되지 않아 자동 복구를 멈췄습니다.",
+    _LEASE_EXPIRED: (
+        "보고서 재생성 작업이 끝나지 않은 채 중단됐습니다. 다시 실행하면 새 버전이 중복으로 생길 수 "
+        "있어 자동으로 다시 실행하지 않았습니다."
+    ),
 }
 _RECERTIFY_DISPATCH_LIMIT: Final = 20
 _REBUILD_SITE_ATTEMPT_BUDGET: Final = 3
@@ -137,6 +142,24 @@ _OPERATION_REDISPATCH_POLICIES: Final[dict[str, _RedispatchPolicy]] = {
 }
 
 
+# lease가 만료된 RUNNING을 새 task id로 다시 보내도 안전한 유형과 근거(2026-10-11).
+# lease(1시간)는 가장 긴 hard limit(2700초)보다 길어, 만료된 RUNNING은 죽은 실행이다.
+_LEASE_TAKEOVER_TYPES: Final = frozenset(
+    {
+        "TRIGGER_V0_REPORT",  # 측정 체크포인트 — 이미 산 공급자 단계를 다시 사지 않는다
+        "REBUILD_SITE",  # 상태 준비는 멱등이고 하루 시도 예산이 있다
+        "RUN_SOV",  # 고정 manifest의 남은 칸만 측정, 슬롯은 유료 호출 전에 저장된다
+        "GENERATE_MONTHLY_REPORT",  # rebuild=False만 — 아래 `_lease_takeover_refused`
+        "REGENERATE_CONTENT",  # 글 단위 생성 lease + 일일 예산
+        "REGENERATE_CONTENT_IMAGE",  # 같은 생성 lease + 이미지 일일 예산
+        # 저장된 claim token이 바뀌었으면 공급자 호출 없이 CANCELLED로 끝난다.
+        generation_run_control.GENERATE_CONTENT_ITEM_OPERATION,
+    }
+)
+# RECERTIFY_PUBLISHED_IMAGE는 넣지 않는다 — 재인증 sweep이 30분 뒤 좌초 실행을 새 실행으로
+# 대체하므로(`IN_FLIGHT_TIMEOUT`) 인수하면 같은 (글, subject)에 주인이 둘이 된다.
+
+
 class RecoveryCounts(TypedDict):
     site_builds: int
     site_revalidations: int
@@ -174,6 +197,16 @@ def _redispatch_budget_exhausted(run: OperationRun) -> bool:
     return _counts_against_redispatch_budget(run) and _redispatch_count(run) >= _REDISPATCH_BUDGET
 
 
+def _lease_takeover_refused(run: OperationRun) -> bool:
+    """월간 보고서 재생성(rebuild=True)은 다시 돌면 새 버전을 하나 더 만든다 — 인수하지 않는다."""
+
+    return (
+        str(run.operation_type) == "GENERATE_MONTHLY_REPORT"
+        and run.state == OperationRunState.RUNNING
+        and _stored_monthly_report_flags(run) != ()
+    )
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -200,12 +233,12 @@ def _operation_redispatch_is_due(run: OperationRun, observed_at: datetime) -> bo
         last_transition = run.queued_at or run.requested_at
         grace = _queued_redispatch_grace(run)
     elif (
-        run.operation_type in {"TRIGGER_V0_REPORT", "REBUILD_SITE"}
+        run.operation_type in _LEASE_TAKEOVER_TYPES
         and run.state == OperationRunState.RUNNING
         and run.lease_expires_at is not None
     ):
-        # V0 checkpoints and idempotent site preparation make takeover safe only after
-        # the former worker's durable lease proves it can no longer own this execution.
+        # 이전 워커의 lease가 만료돼 더는 이 실행을 소유할 수 없다는 것이 증명된 뒤에만 인수한다.
+        # 재실행 안전성은 유형별로 `_LEASE_TAKEOVER_TYPES` 주석에 있다.
         return run.lease_expires_at <= observed_at
     else:
         return False
@@ -296,9 +329,7 @@ def reconcile() -> RecoveryCounts:
                             OperationRun.not_before_at <= observed_at,
                         ),
                         and_(
-                            OperationRun.operation_type.in_(
-                                ("TRIGGER_V0_REPORT", "REBUILD_SITE")
-                            ),
+                            OperationRun.operation_type.in_(tuple(_LEASE_TAKEOVER_TYPES)),
                             OperationRun.state == OperationRunState.RUNNING,
                             OperationRun.lease_expires_at.isnot(None),
                             OperationRun.lease_expires_at <= observed_at,
@@ -330,6 +361,9 @@ def reconcile() -> RecoveryCounts:
                 if _fail_exhausted_site_rebuild(db, run, observed_at):
                     if run.hospital_id is not None:
                         handled_site_hospitals.add(run.hospital_id)
+                continue
+            if _lease_takeover_refused(run):
+                _stop_operation_run(db, run, observed_at, _LEASE_EXPIRED)
                 continue
             if _redispatch_budget_exhausted(run):
                 if (

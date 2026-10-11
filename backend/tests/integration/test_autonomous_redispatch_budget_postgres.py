@@ -192,3 +192,58 @@ def test_an_exhausted_budget_fails_runs_under_one_cause_incident(
         select(NotificationOutbox).where(NotificationOutbox.incident_id == incident.id)
     ).all()
     assert len(outbox) == 1  # 같은 원인의 두 번째 실행은 Slack을 다시 보내지 않는다
+
+
+def test_an_expired_sov_run_is_taken_over(db, pg_conn, monkeypatch) -> None:
+    run = _run(
+        db,
+        operation_type="RUN_SOV",
+        state=OperationRunState.RUNNING,
+        queue="sov",
+        minutes_ago=90,
+        lease_expires_at=NOW - timedelta(seconds=1),
+    )
+
+    sent = _reconcile(monkeypatch, pg_conn)
+
+    assert len(_sent_for(sent, run)) == 1
+    current = _reload(db, run)
+    assert current.state == OperationRunState.QUEUED
+    assert current.lease_owner is None
+    assert current.redispatch_count == 1
+
+
+def test_an_expired_monthly_rebuild_is_stopped_not_rerun(db, pg_conn, monkeypatch) -> None:
+    run = _run(
+        db,
+        operation_type="GENERATE_MONTHLY_REPORT",
+        state=OperationRunState.RUNNING,
+        queue="reports",
+        args=(2026, 9, True),
+        minutes_ago=90,
+        lease_expires_at=NOW - timedelta(seconds=1),
+    )
+
+    sent = _reconcile(monkeypatch, pg_conn)
+
+    assert _sent_for(sent, run) == []
+    current = _reload(db, run)
+    assert current.state == OperationRunState.FAILED
+    assert current.safe_error_code == "OPERATION_LEASE_EXPIRED"
+    assert _cause_incident(db, "OPERATION_LEASE_EXPIRED") is not None
+
+
+def test_an_expired_recertify_run_is_left_to_its_sweep(db, pg_conn, monkeypatch) -> None:
+    run = _run(
+        db,
+        operation_type="RECERTIFY_PUBLISHED_IMAGE",
+        state=OperationRunState.RUNNING,
+        queue="content",
+        minutes_ago=90,
+        lease_expires_at=NOW - timedelta(seconds=1),
+    )
+
+    sent = _reconcile(monkeypatch, pg_conn)
+
+    assert _sent_for(sent, run) == []
+    assert _reload(db, run).state == OperationRunState.RUNNING
