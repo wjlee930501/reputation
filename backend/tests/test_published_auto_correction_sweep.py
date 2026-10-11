@@ -23,10 +23,10 @@ class _Rows:
 
 
 class _SweepDb:
-    """호출 순서: FLAGGED 조회 → 비공개 조회 → 표본 조회."""
+    """호출 순서: FLAGGED 조회 → (교정이 켜져 있으면) UNCERTAIN 상위 재검수 조회 → 비공개 조회 → 표본 조회."""
 
     def __init__(self, flagged):
-        self._batches = [flagged, [], []]
+        self._batches = [flagged, [], [], []]
 
     def __enter__(self):
         return self
