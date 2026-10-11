@@ -118,6 +118,27 @@ _CATALOG = {
         "신청 내역에서 받는 주소와 전송 결과를 확인한 뒤 필요한 경우에만 다시 보내 주세요.",
         "메일 전송 기록 보기",
     ),
+    # 온보딩 정체(services/onboarding_stalls) — 시간만 흐르고 다음 단계로 가지 않는 병원.
+    "ONBOARDING_PROFILE_INCOMPLETE": ActionCopy(
+        "병원 기본 정보 미완료",
+        "병원 정보 화면에서 남은 필수 항목을 채워 주세요. 채우면 공개 준비가 자동으로 이어집니다.",
+        "병원 정보 열기",
+    ),
+    "ONBOARDING_SCHEDULE_MISSING": ActionCopy(
+        "발행 일정 없음",
+        "콘텐츠 화면에서 발행 일정을 저장해 주세요. 저장하면 글 생성이 자동으로 시작됩니다.",
+        "콘텐츠 열기",
+    ),
+    "ONBOARDING_NO_PUBLICATION": ActionCopy(
+        "첫 발행 지연",
+        "콘텐츠 화면에서 생성·발행이 멈춘 사유를 확인해 주세요.",
+        "콘텐츠 열기",
+    ),
+    "ONBOARDING_SOURCES_UNREACHABLE": ActionCopy(
+        "근거 자료 없음",
+        "병원 정보 화면에서 채널 주소를 고치거나 원장 인터뷰 같은 근거 자료를 올려 주세요.",
+        "병원 정보 열기",
+    ),
 }
 
 

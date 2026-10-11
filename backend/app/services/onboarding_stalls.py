@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from enum import StrEnum
@@ -15,13 +16,18 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_async_sessionmaker
 from app.models.content import ContentItem, ContentSchedule
 from app.models.essence import HospitalSourceAsset, SourceStatus
 from app.models.handoff import HospitalHandoff
 from app.models.hospital import Hospital, HospitalStatus
 from app.models.monthly_control import HospitalServiceInterval
+from app.models.operations import Incident, IncidentSeverity, IncidentState
 from app.services.essence_readiness import get_essence_readiness
 from app.services.essence_sources import required_text_source_predicate
+from app.services.incident_safety import build_incident_key
+from app.services.incident_types import IncidentFingerprint
+from app.services.ops_incident_alerts import open_ops_incident, recover_ops_incident
 
 ONBOARDING_STALL_PIPELINE = "onboarding_stall"
 ONBOARDING_STALL_OBJECT_TYPE = "hospital"
@@ -202,3 +208,101 @@ async def load_onboarding_facts(db: AsyncSession) -> list[OnboardingFacts]:
             )
         )
     return facts
+
+
+# (문제, 고객 영향, 다음 행동, 병원 탭 경로) — 존재하는 탭 이름만 쓴다.
+_STALL_COPY: dict[OnboardingStall, tuple[str, str, str, str]] = {
+    OnboardingStall.PROFILE_INCOMPLETE: (
+        "고객 인수 3일이 지났지만 병원 기본 정보가 완료되지 않았습니다.",
+        "병원 공개 페이지와 콘텐츠 운영이 시작되지 않습니다.",
+        "병원 정보 화면에서 남은 필수 항목을 채워 주세요.",
+        "info",
+    ),
+    OnboardingStall.SCHEDULE_MISSING: (
+        "콘텐츠 운영 기준 승인 뒤 24시간이 지났지만 발행 일정이 만들어지지 않았습니다.",
+        "공개 페이지는 열려 있어도 새 글이 만들어지지 않습니다.",
+        "콘텐츠 화면에서 발행 일정을 저장해 주세요.",
+        "content",
+    ),
+    OnboardingStall.NO_PUBLICATION: (
+        "공개 운영과 일정 시작 뒤 7일이 지났지만 발행된 글이 없습니다.",
+        "병원 공개 페이지에 글이 하나도 없습니다.",
+        "콘텐츠 화면에서 생성·발행이 멈춘 사유를 확인해 주세요.",
+        "content",
+    ),
+    OnboardingStall.SOURCES_UNREACHABLE: (
+        "등록한 채널 주소를 모두 24시간 넘게 읽지 못했고 근거 자료가 없습니다.",
+        "콘텐츠 운영 기준을 만들 수 없어 콘텐츠 운영이 시작되지 않습니다.",
+        "병원 정보 화면에서 채널 주소를 고치거나 원장 인터뷰 같은 근거 자료를 올려 주세요.",
+        "info",
+    ),
+}
+_REOPENABLE = {None, IncidentState.RECOVERED.value}
+
+
+def _object_id(hospital_id: uuid.UUID, stall: OnboardingStall) -> str:
+    return f"{hospital_id}:{stall.value}"
+
+
+async def _incident_state(object_id: str) -> str | None:
+    key = build_incident_key(
+        ONBOARDING_STALL_PIPELINE,
+        ONBOARDING_STALL_OBJECT_TYPE,
+        object_id,
+        IncidentFingerprint.MISSING_PREREQUISITE,
+    )
+    async with get_async_sessionmaker()() as db:
+        return await db.scalar(select(Incident.state).where(Incident.dedupe_key == key))
+
+
+async def apply_onboarding_stalls(
+    facts_list: Sequence[OnboardingFacts],
+    now: datetime,
+    *,
+    source_fetch_alerts: bool,
+    open_incident: Callable[..., Awaitable[object]] = open_ops_incident,
+    recover_incident: Callable[..., Awaitable[bool]] = recover_ops_incident,
+    incident_state: Callable[[str], Awaitable[str | None]] = _incident_state,
+) -> dict[str, int]:
+    """새 정체는 한 번만 열고(확인된 사고는 다시 열지 않는다), 풀린 정체는 조용히 닫는다."""
+
+    opened = recovered = 0
+    for facts in facts_list:
+        found = set(detect_onboarding_stalls(facts, now, source_fetch_alerts=source_fetch_alerts))
+        for stall in OnboardingStall:
+            object_id = _object_id(facts.hospital_id, stall)
+            if stall in found:
+                if await incident_state(object_id) not in _REOPENABLE:
+                    continue
+                problem, impact, action, tab = _STALL_COPY[stall]
+                await open_incident(
+                    pipeline=ONBOARDING_STALL_PIPELINE,
+                    object_type=ONBOARDING_STALL_OBJECT_TYPE,
+                    object_id=object_id,
+                    incident_type=stall.value,
+                    safe_error_code=stall.value,
+                    problem=problem,
+                    customer_impact=impact,
+                    next_action=action,
+                    source_type="ONBOARDING_STALL",
+                    hospital_name=facts.hospital_name,
+                    hospital_id=facts.hospital_id,
+                    admin_path=f"/hospitals/{facts.hospital_id}/{tab}",
+                    fingerprint=IncidentFingerprint.MISSING_PREREQUISITE,
+                    actor=ONBOARDING_STALL_ACTOR,
+                    severity=IncidentSeverity.MEDIUM,
+                    notify=True,
+                )
+                opened += 1
+            elif await recover_incident(
+                pipeline=ONBOARDING_STALL_PIPELINE,
+                object_type=ONBOARDING_STALL_OBJECT_TYPE,
+                object_id=object_id,
+                fingerprint=IncidentFingerprint.MISSING_PREREQUISITE,
+                hospital_name=facts.hospital_name,
+                actor=ONBOARDING_STALL_ACTOR,
+                reason="onboarding progressed",
+                notify=False,
+            ):
+                recovered += 1
+    return {"opened": opened, "recovered": recovered}

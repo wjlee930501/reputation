@@ -1,6 +1,5 @@
 """온보딩 정체 판정의 사실 로더 — 실 Postgres."""
 
-
 import uuid
 from datetime import UTC, datetime, timedelta
 

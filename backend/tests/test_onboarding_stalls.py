@@ -89,3 +89,79 @@ def test_unreachable_sources_only_behind_the_flag() -> None:
 def test_paused_hospital_never_stalls() -> None:
     assert _detect(_facts(status=HospitalStatus.PAUSED, profile_complete=False,
                           schedule_set=False, published_count=0)) == ()
+
+
+async def test_apply_opens_new_stalls_once_and_quietly_closes_solved_ones() -> None:
+    from app.services.onboarding_stalls import apply_onboarding_stalls
+
+    stalled = _facts(published_count=0, active_since=NOW - timedelta(days=8))
+    healthy = _facts()
+    opened: list[dict] = []
+    recovered: list[dict] = []
+    states = {f"{stalled.hospital_id}:{OnboardingStall.NO_PUBLICATION.value}": None}
+
+    async def fake_open(**kwargs):
+        opened.append(kwargs)
+        return uuid.uuid4()
+
+    async def fake_recover(**kwargs):
+        recovered.append(kwargs)
+        return kwargs["object_id"].startswith(str(healthy.hospital_id)) and kwargs[
+            "object_id"
+        ].endswith(OnboardingStall.PROFILE_INCOMPLETE.value)
+
+    async def fake_state(object_id: str):
+        return states.get(object_id)
+
+    summary = await apply_onboarding_stalls(
+        [stalled, healthy], NOW, source_fetch_alerts=False,
+        open_incident=fake_open, recover_incident=fake_recover, incident_state=fake_state,
+    )
+
+    assert [o["incident_type"] for o in opened] == ["ONBOARDING_NO_PUBLICATION"]
+    assert opened[0]["safe_error_code"] == "ONBOARDING_NO_PUBLICATION"
+    assert opened[0]["admin_path"] == f"/hospitals/{stalled.hospital_id}/content"
+    assert opened[0]["notify"] is True
+    assert all(r["notify"] is False for r in recovered)
+    assert summary == {"opened": 1, "recovered": 1}
+
+
+async def test_acknowledged_or_open_stall_is_not_reopened() -> None:
+    from app.services.onboarding_stalls import apply_onboarding_stalls
+
+    stalled = _facts(published_count=0, active_since=NOW - timedelta(days=8))
+    opened: list = []
+
+    async def fake_open(**kwargs):
+        opened.append(kwargs)
+
+    async def fake_recover(**_kwargs):
+        return False
+
+    for state in ("OPEN", "ACKNOWLEDGED", "RETRYING"):
+        async def fake_state(_object_id, _state=state):
+            return _state
+
+        await apply_onboarding_stalls(
+            [stalled], NOW, source_fetch_alerts=False,
+            open_incident=fake_open, recover_incident=fake_recover, incident_state=fake_state,
+        )
+    assert opened == []
+
+
+def test_milestone_task_runs_the_stall_scan_and_survives_its_failure(monkeypatch) -> None:
+    from app.workers import milestone_event_tasks as module
+
+    async def fake_project(_now):
+        return module.ProjectionResult(0, 0, False)
+
+    async def boom(_now):
+        raise RuntimeError("scan down")
+
+    monkeypatch.setattr(module, "_project_once", fake_project)
+    monkeypatch.setattr(module, "_scan_onboarding_stalls_once", boom)
+
+    result = module.project_milestone_events.run()
+
+    assert result["onboarding_count"] == 0
+    assert result["onboarding_stalls_opened"] == 0
