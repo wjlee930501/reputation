@@ -72,6 +72,9 @@ _FAKE_GCLOUD = "\n".join(
         '    printf \'%s\\n\' "${FAKE_LOCK_CONTENT:-}"',
         "    exit 0",
         "    ;;",
+        '  "run jobs execute reputation-production-readiness"*)',
+        '    exit "${FAKE_READINESS_EXIT:-0}"',
+        "    ;;",
         '  "run services describe "*"spec.traffic"*)',
         '    if [[ "${FAKE_TRAFFIC_PINNED:-0}" == "1" ]]; then',
         '      echo ""',
@@ -2147,3 +2150,29 @@ def test_site_deploy_is_not_bound_by_the_backend_rules(tmp_path: Path) -> None:
     result, commands = _run_target(tmp_path, "site", DEPLOY_CLOCK_KST="2026-10-11T22:50")
     assert result.returncode == 0, result.stderr
     assert "storage cp" not in commands
+
+
+def test_readiness_failure_rolls_traffic_back_automatically(tmp_path: Path) -> None:
+    result, commands = _run_target(
+        tmp_path, "api", FAKE_READY_REVISION="reputation-api-00240-old", FAKE_READINESS_EXIT="1"
+    )
+    assert result.returncode != 0
+    assert "자동 롤백" in result.stderr
+    traffic = [l for l in commands.splitlines() if l.startswith("gcloud run services update-traffic")]
+    # worker·beat·api 모두 배포 전 리비전으로 되돌린다(api는 아직 바뀌지 않았어도 같은 좌표로 고정).
+    assert {l.split()[4] for l in traffic} == {"reputation-worker", "reputation-beat", "reputation-api"}
+    assert all("--to-revisions=reputation-api-00240-old=100" in l for l in traffic)
+    # API는 readiness 뒤에 배포하므로 배포되지 않는다.
+    assert "gcloud run deploy reputation-api" not in commands
+
+
+def test_auto_rollback_can_be_switched_off(tmp_path: Path) -> None:
+    # 0084 같은 비호환 릴리스는 일반 롤백이 위험하다 — AUTO_ROLLBACK=0이면 되돌리지 않고 멈춘다.
+    result, commands = _run_target(
+        tmp_path, "api",
+        FAKE_READY_REVISION="reputation-api-00240-old", FAKE_READINESS_EXIT="1", AUTO_ROLLBACK="0",
+    )
+    assert result.returncode != 0
+    assert "AUTO_ROLLBACK=0" in result.stderr
+    assert "gcloud run services update-traffic" not in commands
+    assert "gcloud run deploy reputation-api" not in commands

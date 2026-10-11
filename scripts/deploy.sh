@@ -17,6 +17,9 @@
 #   --accept-env-diff         로컬 .env.production이 운영 env와 다를 때 로컬 값으로 배포
 #   --override-reason="사유"  배치 시간대·하루 한 번 규칙을 이번만 넘김(사유 기록)
 #   --unpin                   특정 리비전에 고정된 트래픽을 새 리비전 배포 뒤 옮김
+# 환경변수:
+#   AUTO_ROLLBACK=0           배포 뒤 확인(readiness 등)이 실패해도 자동 롤백하지 않고 멈춤
+#                             (비호환 릴리스용 — 기본은 배포 시작 전 리비전으로 자동 롤백)
 #
 # 모든 배포 대상은 첫 mutation 전에 각 서비스의 현재 리비전을 .deploy-rollback에
 # 기록한다. 중간에 실패해 서비스 버전이 섞이면 `rollback`으로 한 번에 되돌린다
@@ -1354,7 +1357,7 @@ run_production_readiness_gate() {
   set -u
 
   gcloud run jobs execute reputation-production-readiness --region="$REGION" --wait \
-    || fail "새 배포의 자동 작업 준비 확인에 실패했습니다. 트래픽 승격을 중단하고 롤백 좌표를 확인하세요."
+    || rollback_after_failed_gate "새 배포의 자동 작업 준비 확인(readiness)에 실패했습니다"
   ok "현재 배포 버전의 모든 작업 큐 준비 확인 완료"
 }
 
@@ -1568,6 +1571,21 @@ run_rollback() {
   ok "롤백 완료 — ${rolled}개 서비스"
   info "주의: 트래픽만 되돌립니다. 이미 적용된 DB 마이그레이션은 되돌아가지 않습니다. 신구 스키마가 호환되지 않으면 alembic downgrade를 별도로 판단해 실행하세요."
   info "0084 목적 중심 전환 뒤에는 이 일반 롤백으로 baseline writer를 재개하지 마세요. Admin/Worker/Beat를 정지한 채 검증된 compatible_reader_sha의 API public/read와 Site만 복귀하는 절차를 docs/ops/deployment-runbook.md에서 따르세요."
+}
+
+# 배포 뒤 검사(readiness·공개 표면)가 실패하면 사람을 기다리지 않고 배포 시작 전 리비전으로 트래픽을 되돌린다.
+# run_rollback은 실패 시 fail(exit)하므로 서브셸로 부르고 결과에 따라 메시지를 남긴다.
+# 비호환 릴리스(예: 0084 목적 중심 전환)처럼 일반 롤백이 위험하면 AUTO_ROLLBACK=0으로 끈다 — 그때는 멈추기만 한다.
+rollback_after_failed_gate() {
+  local reason="$1"
+  if [[ "${AUTO_ROLLBACK:-1}" == "0" ]]; then
+    fail "${reason}. AUTO_ROLLBACK=0이라 자동 롤백하지 않았습니다 — 서비스 상태를 확인하고 필요하면 bash scripts/deploy.sh rollback 으로 되돌리세요."
+  fi
+  info "${reason} — 배포 시작 전 리비전으로 자동 롤백합니다."
+  if ( run_rollback ); then
+    fail "${reason}. 배포 시작 전 리비전으로 트래픽을 자동으로 되돌렸습니다(DB 마이그레이션은 그대로입니다)."
+  fi
+  fail "${reason}. 자동 롤백도 실패했습니다 — bash scripts/deploy.sh rollback 으로 다시 시도하고 서비스 상태를 확인하세요."
 }
 
 # Purpose-first cleanup removes the legacy publish transport only after both
