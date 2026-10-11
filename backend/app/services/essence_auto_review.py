@@ -552,6 +552,26 @@ def _is_retryable_auto_draft(
     return bool(automatic_recovery_owns_draft(philosophy) and due_at is not None and now >= due_at)
 
 
+def _select_retryable_auto_draft(
+    drafts: list[HospitalContentPhilosophy],
+    now: datetime,
+) -> tuple[HospitalContentPhilosophy | None, list[HospitalContentPhilosophy]]:
+    """같은 snapshot의 DRAFT 중 다시 만들 시스템 초안과 함께 보관할 옛 시스템 초안.
+
+    모든 초안이 사람이 손대지 않은 시스템 초안일 때만 최신 하나를 고른다. 하나라도 사람의
+    판단이 들어간 초안이 있으면 기계가 덮지 않는다(빈 결과 = 사람의 일).
+    """
+
+    if not drafts or not all(automatic_recovery_owns_draft(draft) for draft in drafts):
+        return None, []
+    latest = max(
+        drafts, key=lambda draft: (int(getattr(draft, "version", 0) or 0), str(draft.id))
+    )
+    if not _is_retryable_auto_draft(latest, now):
+        return None, []
+    return latest, [draft for draft in drafts if draft is not latest]
+
+
 def _split_stale_error_sources(
     sources: list[HospitalSourceAsset],
     now: datetime,
@@ -1497,10 +1517,8 @@ def essence_refresh_needed(db: Session, hospital_id: uuid.UUID) -> bool:
         # An automatic escalation gets a bounded number of recovery cycles with
         # backoff. Manual/ambiguous drafts and exhausted drafts stay operator-owned
         # and never consume AI cost every reconciliation interval.
-        if len(existing_drafts) != 1:
-            return False
-        existing_draft = existing_drafts[0]
-        if not _is_retryable_auto_draft(existing_draft, now):
+        selected, _retired = _select_retryable_auto_draft(existing_drafts, now)
+        if selected is None:
             return False
     if _claim_backoff_active(
         db,
@@ -1567,18 +1585,18 @@ def refresh_essence_snapshot(
     noise_hash = load_evidence_noise_hash_sync(db, hospital_id)
     existing_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
     retryable_auto_draft: HospitalContentPhilosophy | None = None
+    retired_auto_drafts: list[HospitalContentPhilosophy] = []
     if existing_drafts:
-        if len(existing_drafts) == 1:
-            existing_draft = existing_drafts[0]
-            if _is_retryable_auto_draft(existing_draft, now):
-                retryable_auto_draft = existing_draft
+        retryable_auto_draft, retired_auto_drafts = _select_retryable_auto_draft(
+            existing_drafts, now
+        )
         if retryable_auto_draft is None:
-            existing_draft = existing_drafts[0]
+            existing_draft = existing_drafts[-1]
             # 자동 재검수 예산이 남아 있으면 이 보류는 아직 기계의 일이다. 남은 예산과
             # 다음 시도 시각을 실어 호출부가 인시던트를 사람의 일로 올리지 않게 한다.
             due_at = (
                 automatic_recovery_due_at(existing_draft)
-                if len(existing_drafts) == 1 and automatic_recovery_owns_draft(existing_draft)
+                if all(automatic_recovery_owns_draft(draft) for draft in existing_drafts)
                 else None
             )
             return EssenceRefreshResult(
@@ -1733,12 +1751,11 @@ def refresh_essence_snapshot(
 
     # A DRAFT that appeared after synthesis/review was not the payload the reviewer
     # inspected. Never lend that review decision to a different row.
-    current_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
-    competing_drafts = [
-        draft
-        for draft in current_drafts
-        if retryable_auto_draft is None or draft.id != retryable_auto_draft.id
+    superseded_ids = [
+        draft.id for draft in [retryable_auto_draft, *retired_auto_drafts] if draft is not None
     ]
+    current_drafts = _drafts_for_snapshot(db, hospital_id, snapshot_hash)
+    competing_drafts = [draft for draft in current_drafts if draft.id not in superseded_ids]
     if competing_drafts:
         existing_draft = competing_drafts[0]
         _finish_essence_refresh_claim(claim_run, state=OperationRunState.CANCELLED)
@@ -1758,11 +1775,13 @@ def refresh_essence_snapshot(
 
     # A prior automatic escalation is an implementation artifact, not a human
     # decision. Supersede it only after a complete fresh synthesis/review cycle.
-    if retryable_auto_draft is not None:
-        current_retryable = db.get(HospitalContentPhilosophy, retryable_auto_draft.id)
+    # 같은 snapshot에 남은 옛 시스템 초안도 이 새 판으로 함께 갈음한다.
+    for superseded_id in superseded_ids:
+        current_retryable = db.get(HospitalContentPhilosophy, superseded_id)
         if current_retryable is not None and current_retryable.status == PhilosophyStatus.DRAFT:
             current_retryable.status = PhilosophyStatus.ARCHIVED
-            db.flush()
+    if superseded_ids:
+        db.flush()
 
     candidate = HospitalContentPhilosophy(
         hospital_id=hospital_id,
@@ -1874,6 +1893,7 @@ def refresh_essence_snapshot(
                 "superseded_auto_draft_id": (
                     str(retryable_auto_draft.id) if retryable_auto_draft else None
                 ),
+                "retired_auto_draft_ids": [str(draft.id) for draft in retired_auto_drafts],
                 "all_required_sources_processed": True,
                 "excluded_error_source_ids": [
                     str(source.id) for source in excluded_error_sources
@@ -1962,6 +1982,7 @@ def refresh_essence_snapshot(
             "superseded_auto_draft_id": (
                 str(retryable_auto_draft.id) if retryable_auto_draft else None
             ),
+            "retired_auto_draft_ids": [str(draft.id) for draft in retired_auto_drafts],
             "all_required_sources_processed": True,
             "excluded_error_source_ids": [str(source.id) for source in excluded_error_sources],
             "automatic_recovery_cycle": recovery_cycle,

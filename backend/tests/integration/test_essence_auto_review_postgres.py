@@ -1177,3 +1177,49 @@ def test_fresh_error_source_is_excluded_at_once_beside_a_processed_one(pg_sessio
         for gap in approved.unsupported_gaps or []
         if isinstance(gap, dict) and gap.get("field") == "excluded_error_source"
     ] == [str(broken.id)]
+
+
+def test_two_untouched_system_drafts_retry_the_latest_and_archive_both(pg_session) -> None:
+    hospital, source, note, previous = _seed_baseline(pg_session, label="two-system-drafts")
+    pg_session.delete(previous)
+    pg_session.flush()
+    synthesize = _always_forbidden_payload(source, note)
+
+    first = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=lambda *_a, **_k: _approved_review(note),
+    )
+    assert first.status == EssenceRefreshStatus.ESCALATED
+    first_draft = pg_session.get(HospitalContentPhilosophy, first.philosophy_id)
+    # 옛 배포·수동 재검수 요청과 겹쳐 같은 snapshot에 시스템 초안이 하나 더 남은 상태.
+    stray = HospitalContentPhilosophy(
+        hospital_id=hospital.id,
+        version=first_draft.version + 1,
+        status=PhilosophyStatus.DRAFT,
+        created_by=AUTO_ESSENCE_ACTOR,
+        **_candidate_payload(source, note),
+    )
+    pg_session.add(stray)
+    pg_session.flush()
+    stray.unsupported_gaps = list(first_draft.unsupported_gaps or [])
+    pg_session.flush()
+    _rewind_automatic_recovery(pg_session, first.philosophy_id, hours=24)
+    _rewind_automatic_recovery(pg_session, stray.id, hours=24)
+
+    assert essence_refresh_needed(pg_session, hospital.id) is True
+    result = refresh_essence_snapshot(
+        pg_session,
+        hospital.id,
+        synthesizer=synthesize,
+        reviewer=lambda *_a, **_k: _approved_review(note),
+    )
+
+    assert result.status == EssenceRefreshStatus.ESCALATED
+    assert result.automatic_recovery_cycle == 2
+    assert result.philosophy_id not in {first.philosophy_id, stray.id}
+    for old_id in (first.philosophy_id, stray.id):
+        assert pg_session.get(HospitalContentPhilosophy, old_id).status == (
+            PhilosophyStatus.ARCHIVED
+        )

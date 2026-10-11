@@ -490,6 +490,7 @@ def _auto_draft(
     reviewed_by=None,
     edited: bool = False,
     findings: bool = True,
+    version: int = 1,
 ):
     created_at = datetime(2026, 9, 1, tzinfo=timezone.utc)
     gaps = []
@@ -506,6 +507,8 @@ def _auto_draft(
         updated_at=created_at + timedelta(seconds=1) if edited else created_at,
         reviewed_by=reviewed_by,
         approved_at=None,
+        version=version,
+        id=uuid.uuid4(),
     )
 
 
@@ -772,3 +775,38 @@ def test_terminal_marker_is_server_owned() -> None:
 
     assert AUTO_RECOVERY_TERMINAL_GAP_FIELD == "automatic_recovery_terminal"
     assert AUTO_RECOVERY_TERMINAL_GAP_FIELD in SERVER_OWNED_GAP_FIELDS
+
+
+# ── 같은 snapshot의 시스템 초안이 여럿이면 최신 하나만 다시 만든다 ─────────────
+
+
+def test_several_untouched_system_drafts_retry_the_latest_and_retire_the_rest() -> None:
+    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    older = _auto_draft(cycles=1, last_at=last_at, version=3)
+    latest = _auto_draft(cycles=1, last_at=last_at, version=5)
+
+    chosen, retired = essence_auto_review._select_retryable_auto_draft(
+        [older, latest], last_at + timedelta(hours=2)
+    )
+
+    assert chosen is latest
+    assert retired == [older]
+
+
+def test_a_human_touched_draft_keeps_every_draft_with_the_person() -> None:
+    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    system = _auto_draft(cycles=1, last_at=last_at, version=3)
+    touched = _auto_draft(cycles=1, last_at=last_at, version=4, edited=True)
+
+    assert essence_auto_review._select_retryable_auto_draft(
+        [system, touched], last_at + timedelta(days=1)
+    ) == (None, [])
+
+
+def test_latest_draft_not_yet_due_is_not_retried() -> None:
+    last_at = datetime(2026, 9, 10, tzinfo=timezone.utc)
+    drafts = [_auto_draft(cycles=1, last_at=last_at, version=v) for v in (1, 2)]
+
+    assert essence_auto_review._select_retryable_auto_draft(
+        drafts, last_at + timedelta(minutes=10)
+    ) == (None, [])
