@@ -61,8 +61,16 @@ _tls = threading.local()
 DIAGNOSIS_SOFT_TIME_LIMIT = 900
 DIAGNOSIS_LEASE_SECONDS = DIAGNOSIS_SOFT_TIME_LIMIT + 300
 
-# 실행 재시도 상한. 넘으면 FAILED로 종결하고 AE에게 넘긴다(= DLQ).
-MAX_EXECUTION_ATTEMPTS = 3
+# 실행 재시도 상한. 넘으면 FAILED로 종결하고 AE에게 넘긴다(= DLQ). 첫 실패는 바로(일시 장애),
+# 이후 1·2·4시간을 물러서 공급자 장애가 몇 시간 이어져도 사람 몫이 되지 않게 한다. 즉시 재시도만
+# 두면 1분 폴러가 3회를 약 3분 안에 태워 10분짜리 장애도 사람에게 넘어갔다.
+MAX_EXECUTION_ATTEMPTS = 5
+EXECUTION_RETRY_BACKOFF = (
+    timedelta(0),
+    timedelta(hours=1),
+    timedelta(hours=2),
+    timedelta(hours=4),
+)
 
 # 리포트 렌더 재시도 상한. 소진하면 BLOCKED — 자동으로 빈 리포트를 보내지 않는다.
 MAX_REPORT_ATTEMPTS = 3
@@ -80,6 +88,44 @@ LEAD_NOTIFICATION_FAILED = "FAILED"
 
 class LeadRecoveryRejected(RuntimeError):
     """Recovery lost its compare-and-swap gate or remained terminal."""
+
+
+def execution_retry_not_before(attempts_done: int, now: datetime) -> datetime | None:
+    """`attempts_done`번째 시도가 실패한 뒤 다음 시도가 가능한 시각. 소진이면 None."""
+    if attempts_done >= MAX_EXECUTION_ATTEMPTS:
+        return None
+    index = min(max(attempts_done, 1), len(EXECUTION_RETRY_BACKOFF)) - 1
+    return now + EXECUTION_RETRY_BACKOFF[index]
+
+
+async def _requeue_with_backoff(
+    session,
+    diagnosis_id,
+    *,
+    attempts: int,
+    error: str | None = None,
+    now: datetime | None = None,
+    from_failed: bool = False,
+) -> None:
+    """실패한 진단을 PENDING으로 되돌리되 물러설 시각을 남긴다.
+
+    `cost_deferred_until`은 이름과 달리 '다음 실행 가능 시각'이다 — claim과 폴러가 이미 이 값을
+    존중하고, 엔진은 비용 보류 사유가 있을 때만 지운다(물러서기는 사유를 남기지 않는다).
+    """
+    observed = now or datetime.now(timezone.utc)
+    values: dict[str, object] = {
+        "execution_status": ExecutionStatus.PENDING.value,
+        "running_since": None,
+        "cost_deferred_until": execution_retry_not_before(attempts, observed),
+    }
+    if error is not None:
+        values["error"] = error
+    predicates = [LeadDiagnosis.id == diagnosis_id]
+    if from_failed:
+        predicates.append(LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value)
+        values["finished_at"] = None
+    await session.execute(update(LeadDiagnosis).where(*predicates).values(**values))
+    await session.commit()
 
 
 def _run_async(coro):
@@ -229,27 +275,29 @@ async def _run_lead_diagnosis(
         ).scalar_one_or_none()
         if diagnosis is None:  # pragma: no cover - claim이 성공했으면 존재한다
             return {"skipped": "missing"}
+        # 롤백 뒤 비동기 지연 로드를 피하려고 이번 시도 번호를 먼저 잡아 둔다.
+        attempts = int(diagnosis.execution_attempts or 1)
 
         try:
             result = await lead_diagnosis_engine.run_diagnosis_measurements(session, diagnosis)
         except Exception as exc:
             # 실행 중 죽으면 RUNNING으로 남는다. 되돌려 놓아야 폴러가 다시 집는다 —
-            # 리스 만료를 기다리면 15분 SLA 안에 재시도할 기회가 사라진다.
+            # 리스 만료를 기다리지 않고, 시도 번호에 맞춰 물러선 시각에 다시 잡는다.
             await session.rollback()
-            await session.execute(
-                update(LeadDiagnosis)
-                .where(LeadDiagnosis.id == pk)
-                .values(
-                    execution_status=(
-                        ExecutionStatus.FAILED.value
-                        if recovery_expected_attempts is not None
-                        else ExecutionStatus.PENDING.value
-                    ),
-                    running_since=None,
-                    error=f"{type(exc).__name__}: {exc}"[:2000],
+            error = f"{type(exc).__name__}: {exc}"[:2000]
+            if recovery_expected_attempts is not None:
+                await session.execute(
+                    update(LeadDiagnosis)
+                    .where(LeadDiagnosis.id == pk)
+                    .values(
+                        execution_status=ExecutionStatus.FAILED.value,
+                        running_since=None,
+                        error=error,
+                    )
                 )
-            )
-            await session.commit()
+                await session.commit()
+            else:
+                await _requeue_with_backoff(session, pk, attempts=attempts, error=error)
             raise
         if (
             recovery_expected_attempts is not None
@@ -268,21 +316,9 @@ async def _run_lead_diagnosis(
             recovery_expected_attempts is None
             and result.get("status") == ExecutionStatus.FAILED.value
             and not result.get("blocked")
-            and (diagnosis.execution_attempts or 1) < MAX_EXECUTION_ATTEMPTS
+            and attempts < MAX_EXECUTION_ATTEMPTS
         ):
-            await session.execute(
-                update(LeadDiagnosis)
-                .where(
-                    LeadDiagnosis.id == pk,
-                    LeadDiagnosis.execution_status == ExecutionStatus.FAILED.value,
-                )
-                .values(
-                    execution_status=ExecutionStatus.PENDING.value,
-                    running_since=None,
-                    finished_at=None,
-                )
-            )
-            await session.commit()
+            await _requeue_with_backoff(session, pk, attempts=attempts, from_failed=True)
             logger.info(
                 "lead diagnosis %s requeued for retry (attempt %s/%s): %s",
                 diagnosis_id,
